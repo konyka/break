@@ -21,11 +21,11 @@ namespace bk {
 
 class BaseApplication : public ApplicationInterface {
  public:
-  virtual int Init();
-  virtual void DeInit();
-  virtual void Tick();
+  virtual int Init() override;
+  virtual void DeInit() override;
+  virtual void Tick() override;
 
-  virtual bool IsQuit();
+  virtual bool IsQuit() override;
 
  protected:
   bool is_quit_ { false };
