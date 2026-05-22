@@ -1,0 +1,15 @@
+#version 450 core
+
+vec2 POS[3] = vec2[3](
+    vec2(-1.0, -1.0),
+    vec2( 3.0, -1.0),
+    vec2(-1.0,  3.0)
+);
+
+layout(location = 0) out vec2 vUV;
+
+void main() {
+    vec2 p = POS[gl_VertexIndex];
+    gl_Position = vec4(p, 1.0, 1.0);
+    vUV = p * 0.5 + 0.5;
+}

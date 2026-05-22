@@ -1,0 +1,87 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 pos_life;      // xyz = position, w = current life
+    vec4 vel_maxlife;   // xyz = velocity, w = max lifetime
+    vec4 size_color;    // x = size, yzw = color (linear RGB)
+};
+
+layout(std430, binding = 0) buffer ParticleBuf {
+    Particle particles[];
+};
+
+layout(push_constant) uniform Push {
+    float dt;
+    float emit_rate;
+    float pad0;
+    float pad1;
+    vec3  emit_pos;
+    float gravity;
+    vec3  emit_vel_min;
+    float emit_vel_range;
+    vec3  emit_vel_max;
+    float lifetime_min;
+    vec3  pad2;
+    float lifetime_range;
+} push;
+
+uint hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x45d9f3bu;
+    x ^= x >> 16;
+    x *= 0x45d9f3bu;
+    x ^= x >> 16;
+    return x;
+}
+
+float random_float(uint seed) {
+    return float(hash(seed)) / 4294967295.0;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= particles.length()) return;
+
+    Particle p = particles[idx];
+    float life = p.pos_life.w;
+    float max_life = p.vel_maxlife.w;
+
+    if (life <= 0.0) {
+        /* Respawn this particle */
+        uint seed = idx * 12749u + hash(uint(push.emit_rate * 1000.0));
+        float rx = random_float(seed);
+        float ry = random_float(seed + 1u);
+        float rz = random_float(seed + 2u);
+        float rl = random_float(seed + 3u);
+
+        vec3 vel_min = push.emit_vel_min;
+        vec3 vel_max = push.emit_vel_max;
+        vec3 vel = vel_min + (vel_max - vel_min) * vec3(rx, ry, rz);
+
+        float lifetime = push.lifetime_min + rl * push.lifetime_range;
+
+        p.pos_life = vec4(push.emit_pos, lifetime);
+        p.vel_maxlife = vec4(vel, lifetime);
+        p.size_color = vec4(1.0, 1.0, 0.8, 1.0);
+    } else {
+        /* Update alive particle */
+        vec3 pos = p.pos_life.xyz;
+        vec3 vel = p.vel_maxlife.xyz;
+
+        vel.y -= push.gravity * push.dt;
+        pos += vel * push.dt;
+        life -= push.dt;
+
+        /* Fade out near end of life */
+        float t = clamp(life / max(max_life, 0.001), 0.0, 1.0);
+        float size = mix(0.1, p.size_color.x, t);
+
+        p.pos_life = vec4(pos, life);
+        p.vel_maxlife = vec4(vel, max_life);
+        p.size_color.x = size;
+        p.size_color.w = t;
+    }
+
+    particles[idx] = p;
+}
