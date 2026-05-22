@@ -57,6 +57,8 @@ dkms.conf
 
 build/
 build-gl/
+build-asan/
+build-debug/
 .sisyphus/
 *.spv
 frag.spv
