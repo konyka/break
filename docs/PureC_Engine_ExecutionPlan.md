@@ -870,6 +870,23 @@ Vulkan:  3-4 周出三角形  (instance/device/swapchain/renderpass/pipeline/fra
 
 **性能**: ~216 FPS, 17/17 测试通过, 双后端构建成功
 
+**Phase 8R: SSGI (Screen-Space Global Illumination)**
+
+| 子步骤 | 任务 | 文件 | 状态 |
+|--------|------|------|------|
+| 8R.1 | SSGI shader: 8-sample hemisphere probe, interleaved gradient noise | `ssgi_vk.frag`, `ssgi.frag` | ✅ 完成 |
+| 8R.2 | SSGI system: half-res HDR FBO + blur FBO | `ssgi.h`, `ssgi.c` | ✅ 完成 |
+| 8R.3 | Integration: after SSR, before TAA | `main.c` | ✅ 完成 |
+| 8R.4 | 构建、测试、验证 | 全部 | ✅ 完成 |
+
+关键实现:
+- 8 采样半球探针，交错梯度噪声用于时间稳定性
+- 法线加权 GI，距离衰减
+- 重用泛光模糊着色器进行 GI 平滑
+- 半分辨率 HDR FBO
+
+**性能**: ~216 FPS, 17/17 测试通过, 双后端构建成功
+
 **Phase 8S: Lens Flare / Light Streaks**
 
 | 子步骤 | 任务 | 文件 | 状态 |
