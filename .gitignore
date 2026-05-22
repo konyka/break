@@ -56,3 +56,7 @@ Mkfile.old
 dkms.conf
 
 build/
+build-gl/
+.sisyphus/
+*.spv
+frag.spv
