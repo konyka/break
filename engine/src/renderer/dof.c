@@ -58,7 +58,7 @@ static RHIPipeline dof_create_pipe(RHIDevice *dev,
 bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     memset(dof, 0, sizeof(*dof));
     dof->device = dev;
-    dof->focus_dist = 10.0f;
+    dof->focus_dist = -1.0f;
     dof->focus_range = 5.0f;
 
 #ifdef ENGINE_VULKAN

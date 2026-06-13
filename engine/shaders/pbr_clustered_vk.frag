@@ -4,20 +4,31 @@ layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
 
+/* Vulkan GLSL forbids non-opaque uniforms outside a block, so fog colour and
+ * the underwater flag live in the push-constant block. u_proj was unused by
+ * this fragment shader, so its 64-byte slot is reclaimed (block = 228 bytes,
+ * within the 256-byte push limit). Offsets must match rhi_vk.c's clustered map. */
 layout(push_constant) uniform PushConstants {
-    mat4 u_model;
-    mat4 u_view;
-    mat4 u_proj;
-    vec3 u_camera_pos;
-    float _pad0;
-    vec3 u_ambient;
-    float _pad1;
-    float u_screen_w;
-    float u_screen_h;
-    float u_near;
-    float u_far;
-    uint u_point_count;
-    uint u_dir_count;
+    mat4 u_model;       /*   0 */
+    mat4 u_view;        /*  64 */
+    vec3 u_camera_pos;  /* 128 */
+    float u_fog_near;   /* 140 */
+    vec3 u_ambient;     /* 144 */
+    float u_fog_far;    /* 156 */
+    float u_screen_w;   /* 160 */
+    float u_screen_h;   /* 164 */
+    float u_near;       /* 168 */
+    float u_far;        /* 172 */
+    uint u_point_count; /* 176 */
+    uint u_dir_count;   /* 180 */
+    float u_shadow_bias;/* 184 */
+    vec3 u_fog_color;   /* 192 */
+    float u_underwater; /* 204 */
+    uint u_point_shadow_count;    /* 208 */
+    uint u_point_shadow_light_0;  /* 212 */
+    uint u_point_shadow_light_1;  /* 216 */
+    uint u_point_shadow_light_2;  /* 220 */
+    uint u_point_shadow_light_3;  /* 224 */
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -25,62 +36,25 @@ layout(binding = 1) uniform sampler2D u_shadow_map;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 layout(binding = 3) uniform sampler2D u_normal_map;
 layout(binding = 4) uniform sampler2D u_emissive;
-layout(binding = 5) uniform sampler2D u_ssao;
+layout(set = 0, binding = 5) uniform sampler2D u_ssao;
 layout(set = 1, binding = 0) uniform samplerBuffer u_light_data;
 layout(set = 1, binding = 1) uniform samplerBuffer u_light_grid;
+#ifdef HAS_IBL
+layout(set = 0, binding = 6) uniform sampler2D u_brdf_lut;
+layout(set = 0, binding = 7) uniform samplerCube u_irradiance_map;
+layout(set = 0, binding = 8) uniform samplerCube u_prefilter_map;
+#endif
+layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 
 layout(location = 0) out vec4 FragColor;
 
 const float PI = 3.14159265359;
 
-const vec3 SKY_ZENITH  = vec3(0.25, 0.42, 0.78);
-const vec3 SKY_HORIZON = vec3(0.50, 0.68, 0.90);
-const vec3 SKY_NADIR   = vec3(0.08, 0.08, 0.12);
+const float PI_IBL = 3.14159265;
+const vec3 IBL_RAYLEIGH = vec3(5.5e-6, 13.0e-6, 22.4e-6);
+const float IBL_MIE = 21.0e-6;
 
-vec3 sky_color(vec3 dir) {
-    float t = dir.y;
-    if (t > 0.0)
-        return mix(SKY_HORIZON, SKY_ZENITH, pow(t, 0.6));
-    else
-        return mix(SKY_HORIZON, SKY_NADIR, pow(-t, 0.8));
-}
-
-vec3 irradiance_hemisphere(vec3 normal) {
-    vec3 up = abs(normal.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-    vec3 tangent = normalize(cross(up, normal));
-    vec3 bitangent = cross(normal, tangent);
-
-    vec3 irradiance = vec3(0.0);
-    float samples = 0.0;
-    float phi_step = 0.523598;   /* PI/6 = 30 degrees */
-    float cos_step = 0.2;
-
-    for (float phi = 0.0; phi < 6.283185; phi += phi_step) {
-        for (float cos_t = 0.1; cos_t < 1.0; cos_t += cos_step) {
-            float sin_t = sqrt(1.0 - cos_t * cos_t);
-            vec3 local = vec3(sin_t * cos(phi), cos_t, sin_t * sin(phi));
-            vec3 sample_dir = tangent * local.x + normal * local.y + bitangent * local.z;
-            irradiance += sky_color(sample_dir) * cos_t;
-            samples += 1.0;
-        }
-    }
-    return irradiance / samples;
-}
-
-vec3 prefiltered_specular(vec3 R, float roughness) {
-    float blur = roughness * 0.5;
-    vec3 up = abs(R.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-    vec3 t1 = normalize(cross(up, R)) * blur;
-    vec3 t2 = cross(R, t1) * blur;
-
-    vec3 sum = sky_color(R);
-    sum += sky_color(R + t1);
-    sum += sky_color(R - t1);
-    sum += sky_color(R + t2);
-    sum += sky_color(R - t2);
-    return sum / 5.0;
-}
-
+/* Light readers must precede their first use (GLSL has no forward decls). */
 struct PointLight { vec3 pos; float radius; vec3 color; float _pad; };
 struct DirLight   { vec3 dir; float _pad0; vec3 color; float _pad1; };
 
@@ -102,40 +76,125 @@ DirLight read_dir_light(int index) {
     return l;
 }
 
-float d_ggx(vec3 N, vec3 H, float r) {
-    float a2 = r * r; a2 *= a2;
-    float d = max(dot(N, H), 0.0); d *= d;
-    float denom = d * (a2 - 1.0) + 1.0;
-    return a2 / (PI * denom * denom + 1e-4);
+/* The light grid is a dense uint array viewed through an RGBA32F texel buffer.
+ * Logical uint index k lives in component (k & 3) of texel (k >> 2); recover the
+ * original integer bits with floatBitsToUint. */
+uint grid_u32(uint k) {
+    return floatBitsToUint(texelFetch(u_light_grid, int(k >> 2u))[int(k & 3u)]);
 }
 
-float g_schlick(float NdV, float r) {
-    float k = (r + 1.0); k *= k; k /= 8.0;
-    return NdV / (NdV * (1.0 - k) + k);
+vec3 sky_color_ibl(vec3 dir, vec3 sun_dir, vec3 sun_col) {
+    float cos_sun = max(dot(dir, sun_dir), -1.0);
+
+    float rayleigh_p = (3.0 / (16.0 * PI_IBL)) * (1.0 + cos_sun * cos_sun);
+    float g = 0.758;
+    float g2 = g * g;
+    float mie_p = (1.0 - g2) / ((4.0 * PI_IBL) * max(pow(1.0 + g2 - 2.0 * g * cos_sun, 1.5), 1e-6));
+
+    float zenith_angle = acos(clamp(dir.y, -1.0, 1.0));
+    float density = exp(-zenith_angle * 6371.0 / 8400.0) + exp(-zenith_angle * 6371.0 / 1250.0);
+    density = min(density, 1.0);
+
+    vec3 scattering = (IBL_RAYLEIGH * rayleigh_p + vec3(IBL_MIE * mie_p)) * 20.0 * density;
+    vec3 extinction = exp(-(IBL_RAYLEIGH + vec3(IBL_MIE * 0.1)) * density * 0.5 * 60.0);
+
+    vec3 sky = sun_col * scattering * extinction;
+
+    float sun_disc = smoothstep(0.9995, 0.9999, cos_sun);
+    sky += sun_col * 1.0 * sun_disc * extinction;
+
+    float horizon_fog = pow(1.0 - abs(dir.y), 3.0);
+    sky += sun_col * 0.1 * horizon_fog;
+
+    return max(sky, vec3(0.0));
 }
 
-float g_smith(vec3 N, vec3 V, vec3 L, float r) {
-    return g_schlick(max(dot(N, V), 0.0), r) * g_schlick(max(dot(N, L), 0.0), r);
+vec3 irradiance_hemisphere(vec3 normal) {
+    vec3 sun_dir = normalize(-read_dir_light(0).dir);
+    vec3 sun_col = read_dir_light(0).color;
+    vec3 up = abs(normal.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 tangent = normalize(cross(up, normal));
+    vec3 bitangent = cross(normal, tangent);
+
+    vec3 irradiance = vec3(0.0);
+    float samples = 0.0;
+    float phi_step = 0.523598;
+    float cos_step = 0.2;
+
+    for (float phi = 0.0; phi < 6.283185; phi += phi_step) {
+        for (float cos_t = 0.1; cos_t < 1.0; cos_t += cos_step) {
+            float sin_t = sqrt(1.0 - cos_t * cos_t);
+            vec3 local = vec3(sin_t * cos(phi), cos_t, sin_t * sin(phi));
+            vec3 sample_dir = tangent * local.x + normal * local.y + bitangent * local.z;
+            irradiance += sky_color_ibl(sample_dir, sun_dir, sun_col) * cos_t;
+            samples += 1.0;
+        }
+    }
+    return irradiance / samples;
 }
 
-vec3 f_schlick(float cosT, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cosT, 5.0);
+vec3 prefiltered_specular(vec3 R, float roughness) {
+    vec3 sun_dir = normalize(-read_dir_light(0).dir);
+    vec3 sun_col = read_dir_light(0).color;
+    float blur = roughness * 0.5;
+    vec3 up = abs(R.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 t1 = normalize(cross(up, R)) * blur;
+    vec3 t2 = cross(R, t1) * blur;
+
+    vec3 sum = sky_color_ibl(R, sun_dir, sun_col);
+    sum += sky_color_ibl(R + t1, sun_dir, sun_col);
+    sum += sky_color_ibl(R - t1, sun_dir, sun_col);
+    sum += sky_color_ibl(R + t2, sun_dir, sun_col);
+    sum += sky_color_ibl(R - t2, sun_dir, sun_col);
+    return sum / 5.0;
 }
 
-vec3 pbr(vec3 N, vec3 V, vec3 L, vec3 rad, vec3 alb, float met, float rou) {
+// Normal Distribution Function - GGX/Trowbridge-Reitz
+float D_GGX(float NdotH, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH2 = NdotH * NdotH;
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    return a2 / (PI * denom * denom);
+}
+
+// Fresnel - Schlick approximation
+vec3 F_Schlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Geometry - Smith's method with GGX (Schlick-GGX, k = (r+1)^2/8 for direct lighting)
+float G_SmithGGX(float NdotV, float NdotL, float roughness) {
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    float ggx1 = NdotV / (NdotV * (1.0 - k) + k);
+    float ggx2 = NdotL / (NdotL * (1.0 - k) + k);
+    return ggx1 * ggx2;
+}
+
+// Cook-Torrance microfacet BRDF (direct lighting term)
+vec3 cook_torrance_brdf(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 albedo, float metallic, float roughness) {
     vec3 H = normalize(V + L);
-    vec3 F0 = mix(vec3(0.04), alb, met);
-    float D = d_ggx(N, H, rou);
-    float G = g_smith(N, V, L, rou);
-    vec3  F = f_schlick(max(dot(H, V), 0.0), F0);
-    vec3 spec = (D * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 1e-4);
-    vec3 kD = (1.0 - F) * (1.0 - met);
-    return (kD * alb / PI + spec) * rad * max(dot(N, L), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float HdotV = max(dot(H, V), 0.0);
+
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    float D = D_GGX(NdotH, roughness);
+    vec3  F = F_Schlick(HdotV, F0);
+    float G = G_SmithGGX(NdotV, NdotL, roughness);
+
+    vec3 numerator = D * F * G;
+    float denominator = 4.0 * NdotV * NdotL + 0.0001;
+    vec3 specular = numerator / denominator;
+
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+    return (kD * albedo / PI + specular) * radiance * NdotL;
 }
 
 const int SHADOW_MATRIX_OFFSET = 520;
-
-const float cascade_splits[5] = float[](0.1, 5.0, 15.0, 40.0, 100.0);
 
 mat4 get_cascade_vp(int cascade) {
     int offset = SHADOW_MATRIX_OFFSET + cascade * 4;
@@ -147,43 +206,100 @@ mat4 get_cascade_vp(int cascade) {
     );
 }
 
-float pcf_shadow(vec2 uv, float compare, vec2 texel_size) {
-    float shadow = 0.0;
-    float bias = 0.002;
+/* The 4 CSM cascades are packed into the 2x2 quadrants of a single shadow
+ * atlas; cascade c lives at quadrant (c&1, c>>1). Sampling is clamped to the
+ * quadrant interior so PCF/PCSS taps cannot bleed across cascade borders. */
+float sample_cascade(int cascade, vec2 uv, vec2 offset, vec2 texel_size) {
+    vec2 q = vec2(float(cascade & 1), float(cascade >> 1));
+    vec2 qmin = q * 0.5 + texel_size;
+    vec2 qmax = (q + vec2(1.0)) * 0.5 - texel_size;
+    vec2 auv = (q + uv) * 0.5 + offset;
+    return texture(u_shadow_map, clamp(auv, qmin, qmax)).r;
+}
+
+float find_blocker(int cascade, vec2 uv, float compare, vec2 texel_size, float search_width) {
+    float blocker_sum = 0.0;
+    int blocker_count = 0;
     for (int x = -2; x <= 2; x++) {
         for (int y = -2; y <= 2; y++) {
-            float d = texture(u_shadow_map, uv + vec2(x, y) * texel_size).r;
+            float d = sample_cascade(cascade, uv, vec2(x, y) * texel_size * search_width, texel_size);
+            if (d < compare - 0.002) {
+                blocker_sum += d;
+                blocker_count++;
+            }
+        }
+    }
+    if (blocker_count == 0) return -1.0;
+    return blocker_sum / float(blocker_count);
+}
+
+float pcf_shadow(int cascade, vec2 uv, float compare, vec2 texel_size, float filter_radius) {
+    float shadow = 0.0;
+    float bias = pc.u_shadow_bias;
+    int samples = int(ceil(filter_radius * 2.0));
+    samples = clamp(samples, 1, 5);
+    for (int x = -samples; x <= samples; x++) {
+        for (int y = -samples; y <= samples; y++) {
+            float d = sample_cascade(cascade, uv, vec2(x, y) * texel_size * filter_radius, texel_size);
             shadow += (compare - bias) > d ? 0.3 : 1.0;
         }
     }
-    return shadow / 25.0;
+    float total = float((2 * samples + 1) * (2 * samples + 1));
+    return shadow / total;
 }
 
 float shadow_test(vec3 world_pos) {
-    vec4 vp_pos = pc.u_view * vec4(world_pos, 1.0);
-    float view_depth = -vp_pos.z;
-
-    int cascade = 0;
+    /* Pick the tightest (highest-resolution) cascade whose frustum contains the
+     * fragment. Split-independent, so correct regardless of the CPU splits. */
+    int cascade = -1;
+    vec3 ndc = vec3(0.0);
     for (int i = 0; i < 4; i++) {
-        if (view_depth < cascade_splits[i + 1]) {
+        vec4 clip = get_cascade_vp(i) * vec4(world_pos, 1.0);
+        vec3 n = clip.xyz / clip.w;
+        vec2 uv = n.xy * 0.5 + 0.5;
+        if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0) {
             cascade = i;
+            ndc = n;
             break;
         }
-        cascade = i;
     }
+    if (cascade < 0) return 1.0;
 
-    mat4 light_vp = get_cascade_vp(cascade);
-    vec4 clip = light_vp * vec4(world_pos, 1.0);
-    vec3 ndc = clip.xyz / clip.w;
     vec2 uv = ndc.xy * 0.5 + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+    /* Real per-quadrant texel size derived from the bound atlas resolution. */
+    vec2 texel_size = 1.0 / vec2(textureSize(u_shadow_map, 0));
 
-    vec2 texel_size = vec2(1.0 / 1024.0);
-    return pcf_shadow(uv, ndc.z, texel_size);
+    float light_size = 0.02 * (1.0 + float(cascade) * 0.5);
+    float search_width = light_size / max(ndc.z, 1e-3);
+
+    float blocker = find_blocker(cascade, uv, ndc.z, texel_size, search_width);
+    if (blocker < 0.0) return 1.0;
+
+    float penumbra = (ndc.z - blocker) / max(blocker, 1e-3);
+    float filter_radius = penumbra * light_size * 40.0;
+    filter_radius = clamp(filter_radius, 1.0, 5.0);
+
+    return pcf_shadow(cascade, uv, ndc.z, texel_size, filter_radius);
 }
 
 float shadow_cascade(vec3 world_pos) {
     return shadow_test(world_pos);
+}
+
+float point_shadow_test(vec3 wpos, int light_idx, vec3 light_pos, float light_radius) {
+    if (pc.u_point_shadow_count == 0u) return 1.0;
+    int slot = -1;
+    if (pc.u_point_shadow_count > 0u && pc.u_point_shadow_light_0 == uint(light_idx)) slot = 0;
+    else if (pc.u_point_shadow_count > 1u && pc.u_point_shadow_light_1 == uint(light_idx)) slot = 1;
+    else if (pc.u_point_shadow_count > 2u && pc.u_point_shadow_light_2 == uint(light_idx)) slot = 2;
+    else if (pc.u_point_shadow_count > 3u && pc.u_point_shadow_light_3 == uint(light_idx)) slot = 3;
+    if (slot < 0) return 1.0;
+    vec3 frag_to_light = wpos - light_pos;
+    float dist = length(frag_to_light);
+    if (dist > light_radius) return 0.0;
+    float compare = dist / max(light_radius, 1e-4);
+    float depth = texture(u_point_shadow_cubes[slot], frag_to_light).r;
+    return compare <= depth + pc.u_shadow_bias ? 1.0 : 0.15;
 }
 
 vec3 perturb_normal(vec3 N, vec3 V, vec2 uv) {
@@ -251,16 +367,31 @@ void main() {
     vec3 emissive = texture(u_emissive, pom_uv).rgb;
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
-    vec3 kD = (1.0 - f_schlick(max(dot(N, V), 0.0), F0)) * (1.0 - metallic);
+    vec3 kD = (1.0 - F_Schlick(max(dot(N, V), 0.0), F0)) * (1.0 - metallic);
 
+#ifdef HAS_IBL
+    // ---- IBL ambient (split-sum approximation) ----
+    vec3 F_env  = F_Schlick(max(dot(N, V), 0.0), F0);
+    vec3 kD_env = (vec3(1.0) - F_env) * (1.0 - metallic);
+
+    vec3 irradiance  = texture(u_irradiance_map, N).rgb;
+    vec3 diffuse_ibl = irradiance * albedo * kD_env;
+
+    vec3 R = reflect(-V, N);
+    float lod = roughness * 4.0; // 5 mip levels (0-4)
+    vec3 prefiltered  = textureLod(u_prefilter_map, R, lod).rgb;
+    vec2 brdf         = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), roughness)).rg;
+    vec3 specular_ibl = prefiltered * (F_env * brdf.x + brdf.y);
+#else
     vec3 irradiance = irradiance_hemisphere(N);
     vec3 diffuse_ibl = irradiance * albedo * kD;
 
     vec3 R = reflect(-V, N);
     vec3 prefiltered = prefiltered_specular(R, roughness);
-    vec3 F = f_schlick(max(dot(N, R), 0.0), F0);
+    vec3 F = F_Schlick(max(dot(N, R), 0.0), F0);
     vec2 brdf = vec2(0.8, 0.2);
     vec3 specular_ibl = prefiltered * (F * brdf.x + brdf.y);
+#endif
 
     float ao = texture(u_ssao, vUV).r;
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
@@ -268,7 +399,7 @@ void main() {
     for (uint di = 0u; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
         float shadow = shadow_test(vWorldPos);
-        color += pbr(N, V, normalize(-dl.dir), dl.color * shadow, albedo, metallic, roughness);
+        color += cook_torrance_brdf(N, V, normalize(-dl.dir), dl.color * shadow, albedo, metallic, roughness);
     }
 
     if (pc.u_point_count > 0u && pc.u_screen_w > 0.0) {
@@ -281,23 +412,35 @@ void main() {
             if (ld >= pc.u_near * pow(pc.u_far / pc.u_near, float(z) / 24.0)) cz = z;
         }
         uint ci = cx + cy * 16u + cz * 128u;
-        int go = int(texelFetch(u_light_grid, int(ci * 2u)).r);
-        int gc = int(texelFetch(u_light_grid, int(ci * 2u + 1u)).r);
-        int gb = 16 * 8 * 24 * 2;
+        uint go = grid_u32(ci * 2u);
+        uint gc = grid_u32(ci * 2u + 1u);
+        uint gb = 16u * 8u * 24u * 2u;
 
-        for (int i = 0; i < gc; i++) {
-            int li = int(texelFetch(u_light_grid, gb + go + i).r);
+        for (uint i = 0u; i < gc; i++) {
+            int li = int(grid_u32(gb + go + i));
             PointLight pl = read_point_light(li);
             vec3 toL = pl.pos - vWorldPos;
             float dist = length(toL);
             if (dist > pl.radius) continue;
             vec3 L = toL / max(dist, 1e-3);
             float att = 1.0 - dist / pl.radius; att *= att;
-            color += pbr(N, V, L, pl.color * att, albedo, metallic, roughness);
+            float pshadow = point_shadow_test(vWorldPos, li, pl.pos, pl.radius);
+            color += cook_torrance_brdf(N, V, L, pl.color * att * pshadow, albedo, metallic, roughness);
         }
     }
 
     color += emissive;
+
+    float fog_dist = length(vWorldPos - pc.u_camera_pos);
+    float fog_factor = clamp((fog_dist - pc.u_fog_near) / max(pc.u_fog_far - pc.u_fog_near, 0.001), 0.0, 1.0);
+    color = mix(color, pc.u_fog_color, fog_factor);
+
+    if (pc.u_underwater > 0.5) {
+        color = mix(color, vec3(0.0, 0.15, 0.25), 0.35);
+        float uw_absorb = clamp(fog_dist * 0.02, 0.0, 0.6);
+        color *= (1.0 - uw_absorb);
+        color.r *= 0.7;
+    }
 
     color = color / (color + vec3(1.0));
     color = pow(color, vec3(1.0 / 2.2));

@@ -7,7 +7,11 @@ struct Particle {
     vec4 size_color;    // x = size, yzw = color (linear RGB)
 };
 
-layout(std430, binding = 0) buffer ParticleBuf {
+/* Vulkan drives the parameters through a push-constant block (the host writes
+ * the whole 80-byte range as a blob); desktop GL uses individually-set loose
+ * uniforms with the same semantics. The P_* macros unify the body. */
+#ifdef VULKAN
+layout(std430, set = 0, binding = 0) buffer ParticleBuf {
     Particle particles[];
 };
 
@@ -25,6 +29,38 @@ layout(push_constant) uniform Push {
     vec3  pad2;
     float lifetime_range;
 } push;
+
+#define P_DT             push.dt
+#define P_EMIT_RATE      push.emit_rate
+#define P_EMIT_POS       push.emit_pos
+#define P_GRAVITY        push.gravity
+#define P_EMIT_VEL_MIN   push.emit_vel_min
+#define P_EMIT_VEL_MAX   push.emit_vel_max
+#define P_LIFETIME_MIN   push.lifetime_min
+#define P_LIFETIME_RANGE push.lifetime_range
+#else
+layout(std430, binding = 0) buffer ParticleBuf {
+    Particle particles[];
+};
+
+uniform float u_dt;
+uniform float u_emit_rate;
+uniform vec3  u_emit_pos;
+uniform float u_gravity;
+uniform vec3  u_emit_vel_min;
+uniform vec3  u_emit_vel_max;
+uniform float u_lifetime_min;
+uniform float u_lifetime_range;
+
+#define P_DT             u_dt
+#define P_EMIT_RATE      u_emit_rate
+#define P_EMIT_POS       u_emit_pos
+#define P_GRAVITY        u_gravity
+#define P_EMIT_VEL_MIN   u_emit_vel_min
+#define P_EMIT_VEL_MAX   u_emit_vel_max
+#define P_LIFETIME_MIN   u_lifetime_min
+#define P_LIFETIME_RANGE u_lifetime_range
+#endif
 
 uint hash(uint x) {
     x ^= x >> 16;
@@ -49,19 +85,19 @@ void main() {
 
     if (life <= 0.0) {
         /* Respawn this particle */
-        uint seed = idx * 12749u + hash(uint(push.emit_rate * 1000.0));
+        uint seed = idx * 12749u + hash(uint(P_EMIT_RATE * 1000.0));
         float rx = random_float(seed);
         float ry = random_float(seed + 1u);
         float rz = random_float(seed + 2u);
         float rl = random_float(seed + 3u);
 
-        vec3 vel_min = push.emit_vel_min;
-        vec3 vel_max = push.emit_vel_max;
+        vec3 vel_min = P_EMIT_VEL_MIN;
+        vec3 vel_max = P_EMIT_VEL_MAX;
         vec3 vel = vel_min + (vel_max - vel_min) * vec3(rx, ry, rz);
 
-        float lifetime = push.lifetime_min + rl * push.lifetime_range;
+        float lifetime = P_LIFETIME_MIN + rl * P_LIFETIME_RANGE;
 
-        p.pos_life = vec4(push.emit_pos, lifetime);
+        p.pos_life = vec4(P_EMIT_POS, lifetime);
         p.vel_maxlife = vec4(vel, lifetime);
         p.size_color = vec4(1.0, 1.0, 0.8, 1.0);
     } else {
@@ -69,9 +105,9 @@ void main() {
         vec3 pos = p.pos_life.xyz;
         vec3 vel = p.vel_maxlife.xyz;
 
-        vel.y -= push.gravity * push.dt;
-        pos += vel * push.dt;
-        life -= push.dt;
+        vel.y -= P_GRAVITY * P_DT;
+        pos += vel * P_DT;
+        life -= P_DT;
 
         /* Fade out near end of life */
         float t = clamp(life / max(max_life, 0.001), 0.0, 1.0);

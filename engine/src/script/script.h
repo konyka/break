@@ -21,12 +21,14 @@ typedef struct {
     char         target[64];
     f32          value;
     f32          args[3];
+    i32          resolved_index;  /* cached global index (-1 = unresolved) */
 } ScriptOp;
 
 typedef struct {
     char       name[64];
     ScriptOp  *ops;
     u32        op_count;
+    u32        op_capacity;
 } ScriptFunc;
 
 typedef struct {

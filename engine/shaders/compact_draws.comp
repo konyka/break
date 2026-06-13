@@ -1,0 +1,60 @@
+#version 450
+layout(local_size_x = 64) in;
+
+/*
+ * compact_draws.comp
+ *
+ * GPU stream-compaction pass for the indirect draw / GPU-driven pipeline.
+ *
+ * Reads:
+ *   - all_draws       : N DrawIndexedIndirectCommand entries (5 * uint32 each)
+ *   - visibility      : N visibility flags (1 = visible, 0 = culled)
+ * Writes:
+ *   - visible_draws   : visible commands appended at slots [0 .. count-1]
+ *   - draw_count.count: total number of visible draws (atomic counter)
+ *
+ * The single shader file targets both Vulkan (push_constant) and OpenGL
+ * (regular uniform) - shaderc auto-defines VULKAN when compiling for Vulkan.
+ */
+
+layout(std430, binding = 0) readonly buffer AllDraws {
+    uint data[];   /* 5 * draw_count uints */
+} all_draws;
+
+layout(std430, binding = 1) readonly buffer Visibility {
+    uint flags[];  /* 1 = visible, 0 = culled */
+} visibility;
+
+layout(std430, binding = 2) buffer VisibleDraws {
+    uint data[];
+} visible_draws;
+
+layout(std430, binding = 3) buffer DrawCount {
+    uint count;
+} draw_count;
+
+#ifdef VULKAN
+layout(push_constant) uniform PushConstants {
+    uint total_draws;
+} pc;
+#define TOTAL_DRAWS pc.total_draws
+#else
+uniform int total_draws;
+#define TOTAL_DRAWS uint(total_draws)
+#endif
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= TOTAL_DRAWS) return;
+
+    if (visibility.flags[idx] != 0u) {
+        uint slot = atomicAdd(draw_count.count, 1u);
+        uint src_offset = idx  * 5u;
+        uint dst_offset = slot * 5u;
+        /* Copy DrawIndexedIndirectCommand: index_count, instance_count,
+         * first_index, vertex_offset, first_instance. */
+        for (uint i = 0u; i < 5u; ++i) {
+            visible_draws.data[dst_offset + i] = all_draws.data[src_offset + i];
+        }
+    }
+}

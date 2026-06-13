@@ -9,6 +9,8 @@ typedef struct {
     RHIOffscreenFBO  fxaa_fbo;
     i32              loc_screen_w;
     i32              loc_screen_h;
+    i32              loc_threshold;
+    f32              threshold;
     bool             ready;
 } FXAASystem;
 

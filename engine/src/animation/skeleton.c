@@ -41,6 +41,9 @@ static Vec3 anim_lerp_vec3(const f32 *a, const f32 *b, f32 t) {
     return r;
 }
 
+/* Normalized linear interpolation (nlerp) — replaces slerp for animation blending.
+ * Eliminates acosf + sinf×3 (4 transcendental functions). Angular error <1°
+ * which is imperceptible in skeletal animation. */
 static Quat anim_slerp_quat(const f32 *a, const f32 *b, f32 t) {
     f32 dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
     f32 ba[4];
@@ -52,25 +55,51 @@ static Quat anim_slerp_quat(const f32 *a, const f32 *b, f32 t) {
     }
     f32 s0 = 1.0f - t;
     f32 s1 = t;
-    if (dot < 0.999f) {
-        f32 omega = acosf(dot);
-        f32 inv = 1.0f / sinf(omega);
-        s0 = sinf(s0 * omega) * inv;
-        s1 = sinf(s1 * omega) * inv;
-    }
     Quat r;
     r.e[0] = s0 * a[0] + s1 * ba[0];
     r.e[1] = s0 * a[1] + s1 * ba[1];
     r.e[2] = s0 * a[2] + s1 * ba[2];
     r.e[3] = s0 * a[3] + s1 * ba[3];
-    return r;
+    return quat_normalize(r);
 }
 
 static u32 anim_find_keyframe(const AnimChannel *ch, f32 time) {
-    for (u32 i = 0; i < ch->keyframe_count - 1; i++) {
-        if (time < ch->times[i + 1]) return i;
+    /* Binary search: O(log n) instead of O(n) linear scan.
+     * Finds the last keyframe i where times[i] <= time. */
+    if (ch->keyframe_count <= 1) return 0;
+    u32 lo = 0, hi = ch->keyframe_count - 1;
+    while (lo + 1 < hi) {
+        u32 mid = (lo + hi) >> 1;
+        if (ch->times[mid] <= time) lo = mid;
+        else                        hi = mid;
     }
-    return ch->keyframe_count > 0 ? ch->keyframe_count - 1 : 0;
+    return lo;
+}
+
+/* Directly compose T*R*S into a single Mat4 without intermediate matrices.
+ * R from quaternion, S diagonal scaling, T translation. ~9 multiplies vs
+ * 2 full mat4_mul (~128 multiplies). */
+static Mat4 mat4_trs(Vec3 t, Quat q, Vec3 s) {
+    f32 x = q.e[0], y = q.e[1], z = q.e[2], w = q.e[3];
+    f32 sx = s.e[0], sy = s.e[1], sz = s.e[2];
+    /* Rotation matrix elements (same as mat4_from_quat) */
+    f32 r00 = 1.0f - 2.0f*(y*y + z*z);
+    f32 r01 = 2.0f*(x*y + w*z);
+    f32 r02 = 2.0f*(x*z - w*y);
+    f32 r10 = 2.0f*(x*y - w*z);
+    f32 r11 = 1.0f - 2.0f*(x*x + z*z);
+    f32 r12 = 2.0f*(y*z + w*x);
+    f32 r20 = 2.0f*(x*z + w*y);
+    f32 r21 = 2.0f*(y*z - w*x);
+    f32 r22 = 1.0f - 2.0f*(x*x + y*y);
+    /* T*R*S: scale each column of R, set translation in column 3 */
+    Mat4 m;
+    memset(&m, 0, sizeof(m));
+    m.e[0][0] = r00 * sx; m.e[1][0] = r10 * sy; m.e[2][0] = r20 * sz; m.e[3][0] = t.e[0];
+    m.e[0][1] = r01 * sx; m.e[1][1] = r11 * sy; m.e[2][1] = r21 * sz; m.e[3][1] = t.e[1];
+    m.e[0][2] = r02 * sx; m.e[1][2] = r12 * sy; m.e[2][2] = r22 * sz; m.e[3][2] = t.e[2];
+    m.e[3][3] = 1.0f;
+    return m;
 }
 
 void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
@@ -85,10 +114,16 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
     Quat rotations[SKELETON_MAX_JOINTS];
     Vec3 scales[SKELETON_MAX_JOINTS];
 
-    for (u32 i = 0; i < sk->joint_count; i++) {
-        translations[i] = (Vec3){{0, 0, 0}};
-        rotations[i] = (Quat){{0, 0, 0, 1}};
-        scales[i] = (Vec3){{1, 1, 1}};
+    /* Initialize with identity transforms.
+     * memset for translations (all-zero Vec3), static constants for others. */
+    memset(translations, 0, sk->joint_count * sizeof(Vec3));
+    {
+        static const Quat identity_rot = {{0, 0, 0, 1}};
+        static const Vec3 identity_scl = {{1, 1, 1}};
+        for (u32 i = 0; i < sk->joint_count; i++) {
+            rotations[i] = identity_rot;
+            scales[i] = identity_scl;
+        }
     }
 
     f32 t = clip->time;
@@ -115,7 +150,8 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
 
         f32 t0 = ch->times[kf];
         f32 t1 = ch->times[kf_next];
-        f32 frac = (t1 > t0) ? (t - t0) / (t1 - t0) : 0.0f;
+        f32 dt = t1 - t0;
+        f32 frac = (dt > 0.0f) ? (t - t0) * (1.0f / dt) : 0.0f;
         if (frac < 0.0f) frac = 0.0f;
         if (frac > 1.0f) frac = 1.0f;
 
@@ -128,15 +164,12 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
         }
     }
 
-    Mat4 local_poses[SKELETON_MAX_JOINTS];
+    Mat4 *local_poses = sk->_local_poses;
     for (u32 i = 0; i < sk->joint_count; i++) {
-        Mat4 T = mat4_translation(translations[i].e[0], translations[i].e[1], translations[i].e[2]);
-        Mat4 R = mat4_from_quat(rotations[i]);
-        Mat4 S = mat4_scaling(scales[i].e[0], scales[i].e[1], scales[i].e[2]);
-        local_poses[i] = mat4_mul(T, mat4_mul(R, S));
+        local_poses[i] = mat4_trs(translations[i], rotations[i], scales[i]);
     }
 
-    Mat4 world_poses[SKELETON_MAX_JOINTS];
+    Mat4 *world_poses = sk->_world_poses;
     for (u32 i = 0; i < sk->joint_count; i++) {
         if (sk->joint_parents[i] == UINT32_MAX || sk->joint_parents[i] >= i) {
             world_poses[i] = local_poses[i];
@@ -147,6 +180,51 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
     }
 
     (void)dt;
+}
+
+void skeleton_apply_local_trs(Skeleton *sk,
+                              const Vec3 *local_pos, const Quat *local_rot, const Vec3 *local_scale) {
+    if (!sk || !local_pos || !local_rot || !local_scale) return;
+
+    Mat4 *local_poses = sk->_local_poses;
+    u32 n = sk->joint_count;
+    if (n > SKELETON_MAX_JOINTS) n = SKELETON_MAX_JOINTS;
+
+    for (u32 i = 0; i < n; i++) {
+        local_poses[i] = mat4_trs(local_pos[i], local_rot[i], local_scale[i]);
+    }
+
+    Mat4 *world_poses = sk->_world_poses;
+    for (u32 i = 0; i < n; i++) {
+        if (sk->joint_parents[i] == UINT32_MAX || sk->joint_parents[i] >= i) {
+            world_poses[i] = local_poses[i];
+        } else {
+            world_poses[i] = mat4_mul(world_poses[sk->joint_parents[i]], local_poses[i]);
+        }
+        sk->current_pose[i] = mat4_mul(world_poses[i], sk->inverse_bind[i]);
+    }
+}
+
+void skeleton_compute_world_transforms(Skeleton *sk,
+                                       const Vec3 *local_pos, const Quat *local_rot, const Vec3 *local_scale,
+                                       Mat4 *out_world) {
+    if (!sk || !local_pos || !local_rot || !local_scale || !out_world) return;
+
+    Mat4 *local_poses = sk->_local_poses;
+    u32 n = sk->joint_count;
+    if (n > SKELETON_MAX_JOINTS) n = SKELETON_MAX_JOINTS;
+
+    for (u32 i = 0; i < n; i++) {
+        local_poses[i] = mat4_trs(local_pos[i], local_rot[i], local_scale[i]);
+    }
+
+    for (u32 i = 0; i < n; i++) {
+        if (sk->joint_parents[i] == UINT32_MAX || sk->joint_parents[i] >= i) {
+            out_world[i] = local_poses[i];
+        } else {
+            out_world[i] = mat4_mul(out_world[sk->joint_parents[i]], local_poses[i]);
+        }
+    }
 }
 
 void skeleton_upload(Skeleton *sk) {

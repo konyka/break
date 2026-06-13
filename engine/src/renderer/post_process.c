@@ -95,6 +95,17 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    pp->composite_pipe = pp_create_pipe(dev,
+#ifdef ENGINE_VULKAN
+        "shaders/post_vk.vert", "shaders/bloom_composite_vk.frag");
+#else
+        "shaders/post.vert", "shaders/bloom_composite.frag");
+#endif
+    if (!rhi_handle_valid(pp->composite_pipe)) {
+        LOG_WARN("PostProcess: composite pipeline failed");
+        return false;
+    }
+
     RHISamplerDesc sdesc;
     memset(&sdesc, 0, sizeof(sdesc));
     sdesc.min_filter = RHI_FILTER_LINEAR;
@@ -115,10 +126,15 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
 
     pp->fbo_ping = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
     pp->fbo_pong = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    pp->fbo_composite = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
     if (!rhi_handle_valid(pp->fbo_ping.fb) || !rhi_handle_valid(pp->fbo_pong.fb)) {
         LOG_WARN("PostProcess: FBO creation failed");
         return false;
     }
+
+    pp->loc_bloom_strength = rhi_pipeline_get_uniform_location(dev, pp->composite_pipe, "u_bloom_strength");
+    pp->loc_threshold = rhi_pipeline_get_uniform_location(dev, pp->extract_pipe, "u_threshold");
+    pp->loc_direction = rhi_pipeline_get_uniform_location(dev, pp->blur_pipe, "u_direction");
 
     LOG_INFO("PostProcess: bloom initialized (%ux%u)", pw, ph);
     pp->ready = true;
@@ -129,9 +145,11 @@ void post_process_shutdown(PostProcess *pp) {
     if (!pp->device) return;
     if (rhi_handle_valid(pp->fbo_ping.fb)) rhi_offscreen_fbo_destroy(pp->device, &pp->fbo_ping);
     if (rhi_handle_valid(pp->fbo_pong.fb)) rhi_offscreen_fbo_destroy(pp->device, &pp->fbo_pong);
+    if (rhi_handle_valid(pp->fbo_composite.fb)) rhi_offscreen_fbo_destroy(pp->device, &pp->fbo_composite);
     if (rhi_handle_valid(pp->sampler)) rhi_sampler_destroy(pp->device, pp->sampler);
     if (rhi_handle_valid(pp->extract_pipe)) rhi_pipeline_destroy(pp->device, pp->extract_pipe);
     if (rhi_handle_valid(pp->blur_pipe)) rhi_pipeline_destroy(pp->device, pp->blur_pipe);
+    if (rhi_handle_valid(pp->composite_pipe)) rhi_pipeline_destroy(pp->device, pp->composite_pipe);
     if (rhi_handle_valid(pp->tex_pipe)) rhi_pipeline_destroy(pp->device, pp->tex_pipe);
     memset(pp, 0, sizeof(*pp));
 }
@@ -141,20 +159,38 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
     if (!pp->ready) return;
 
     rhi_cmd_bind_pipeline(cmd, pp->extract_pipe);
-    rhi_cmd_set_uniform_f32(cmd, 0, pp->threshold);
+    if (pp->loc_threshold >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_threshold, pp->threshold);
     rhi_cmd_bind_texture(cmd, scene_color, pp->sampler, 0);
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_draw(cmd, 3, 1);
 
     rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
-    rhi_cmd_set_uniform_vec2(cmd, 0, 1.0f, 0.0f);
+
+    if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 1.0f, 0.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 0);
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
     rhi_cmd_draw(cmd, 3, 1);
 
-    rhi_cmd_set_uniform_vec2(cmd, 0, 0.0f, 1.0f);
+    if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 0.0f, 1.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_pong.color_tex, pp->sampler, 0);
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
+    rhi_cmd_draw(cmd, 3, 1);
+
+    if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 1.0f, 0.0f);
+    rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 0);
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
+    rhi_cmd_draw(cmd, 3, 1);
+
+    if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 0.0f, 1.0f);
+    rhi_cmd_bind_texture(cmd, pp->fbo_pong.color_tex, pp->sampler, 0);
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
+    rhi_cmd_draw(cmd, 3, 1);
+
+    rhi_cmd_bind_pipeline(cmd, pp->composite_pipe);
+    rhi_cmd_bind_texture(cmd, scene_color, pp->sampler, 0);
+    rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 1);
+    if (pp->loc_bloom_strength >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_bloom_strength, pp->bloom_strength);
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_composite);
     rhi_cmd_draw(cmd, 3, 1);
 
     rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
@@ -162,5 +198,6 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
 
 RHITexture post_process_get_bloom_texture(PostProcess *pp) {
     if (!pp->ready) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(pp->fbo_composite.fb)) return pp->fbo_composite.color_tex;
     return pp->fbo_ping.color_tex;
 }

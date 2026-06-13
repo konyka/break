@@ -83,6 +83,8 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
 
     fxaa->loc_screen_w = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_sw");
     fxaa->loc_screen_h = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_sh");
+    fxaa->loc_threshold = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_threshold");
+    fxaa->threshold = 0.0312f;
 
     fxaa->ready = true;
     LOG_INFO("FXAA: initialized (%ux%u)", width, height);
@@ -108,6 +110,7 @@ void fxaa_apply(FXAASystem *fxaa, RHICmdBuffer *cmd,
 
     if (fxaa->loc_screen_w >= 0) rhi_cmd_set_uniform_f32(cmd, fxaa->loc_screen_w, (f32)screen_w);
     if (fxaa->loc_screen_h >= 0) rhi_cmd_set_uniform_f32(cmd, fxaa->loc_screen_h, (f32)screen_h);
+    if (fxaa->loc_threshold >= 0) rhi_cmd_set_uniform_f32(cmd, fxaa->loc_threshold, fxaa->threshold);
 
     rhi_cmd_draw(cmd, 3, 1);
 }

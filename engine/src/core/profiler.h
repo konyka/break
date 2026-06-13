@@ -38,5 +38,26 @@ void profiler_pop(void);
 /* Query — returns NULL if no data */
 const ProfilerFrame *profiler_last_frame(void);
 
+/* Optional GPU samples paired with a CPU frame for Chrome trace export. */
+typedef struct {
+    const char *name;
+    f64         elapsed_ms;
+} ProfilerGpuRegion;
+
+typedef struct {
+    const char *key;
+    const char *value;
+} ProfilerMetaInstant;
+
+/* Write a Chrome Trace Event Format JSON file (chrome://tracing).
+ * `frame` is typically profiler_last_frame(); GPU regions may be NULL/0.
+ * Optional meta instant events (ph:"i") are appended when meta/meta_count set. */
+bool profiler_export_chrome_trace(const char *path,
+                                  const ProfilerFrame *frame,
+                                  const ProfilerGpuRegion *gpu_regions,
+                                  u32 gpu_count,
+                                  const ProfilerMetaInstant *meta,
+                                  u32 meta_count);
+
 /* Enable/disable */
 void profiler_set_enabled(bool enabled);

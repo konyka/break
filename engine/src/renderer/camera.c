@@ -11,48 +11,85 @@ void camera_init(Camera *cam, f32 fov, f32 aspect, f32 near_plane, f32 far_plane
     cam->far_plane        = far_plane;
     cam->move_speed       = 3.0f;
     cam->mouse_sensitivity = 0.002f;
-}
-
-static Vec3 camera_forward(const Camera *cam) {
-    f32 cp = cosf(cam->pitch);
-    return vec3_normalize(vec3(
-        cp * sinf(cam->yaw),
-        sinf(cam->pitch),
-        -cp * cosf(cam->yaw)
-    ));
-}
-
-static Vec3 camera_right(const Camera *cam) {
-    Vec3 fwd = camera_forward(cam);
-    Vec3 world_up = vec3(0.0f, 1.0f, 0.0f);
-    return vec3_normalize(vec3_cross(fwd, world_up));
+    /* Initialize cached trig so camera_view() works without camera_update(). */
+    cam->_cy = 1.0f; cam->_sy = 0.0f;
+    cam->_cp = 1.0f; cam->_sp = 0.0f;
+    /* Initialize cached projection as invalid (forces first-call recompute). */
+    cam->_proj_fov = -1.0f;
+    cam->_proj_aspect = -1.0f;
+    cam->_proj_near = -1.0f;
+    cam->_proj_far = -1.0f;
 }
 
 Mat4 camera_view(const Camera *cam) {
-    Vec3 fwd = camera_forward(cam);
-    Vec3 target = vec3_add(cam->position, fwd);
-    return mat4_lookat(cam->position, target, vec3(0.0f, 1.0f, 0.0f));
+    /* Direct view matrix from cached trig: eliminates mat4_lookat overhead
+     * (2 vec3_normalize + 2 vec3_cross + mat4_identity) and 4 redundant trig calls.
+     *
+     * forward  f = (cp*sy, sp, -cp*cy)     — analytically unit length
+     * right    s = (-cy, 0, -sy)            — analytically unit length
+     * up       u = s × f = (-sy*sp, cp, cy*sp) — analytically unit length
+     *
+     * view = | s.x   s.y   s.z   -dot(s,eye) |
+     *        | u.x   u.y   u.z   -dot(u,eye) |
+     *        |-f.x  -f.y  -f.z    dot(f,eye) |
+     *        |  0     0     0          1      |
+     */
+    f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
+    f32 ex = cam->position.e[0], ey = cam->position.e[1], ez = cam->position.e[2];
+
+    Mat4 m;
+    /* Row 0: right s = (-cy, 0, -sy) */
+    m.e[0][0] = -cy;  m.e[0][1] = 0.0f; m.e[0][2] = -sy;
+    m.e[0][3] = cy * ex + sy * ez;
+    /* Row 1: up u = (-sy*sp, cp, cy*sp) */
+    m.e[1][0] = -sy * sp;  m.e[1][1] = cp;  m.e[1][2] = cy * sp;
+    m.e[1][3] = sy * sp * ex - cp * ey - cy * sp * ez;
+    /* Row 2: -forward = (-cp*sy, -sp, cp*cy) */
+    m.e[2][0] = -cp * sy;  m.e[2][1] = -sp;  m.e[2][2] = cp * cy;
+    m.e[2][3] = cp * sy * ex + sp * ey - cp * cy * ez;
+    /* Row 3 */
+    m.e[3][0] = 0.0f;  m.e[3][1] = 0.0f;  m.e[3][2] = 0.0f;  m.e[3][3] = 1.0f;
+    return m;
 }
 
-Mat4 camera_projection(const Camera *cam) {
-    return mat4_perspective(cam->fov, cam->aspect, cam->near_plane, cam->far_plane);
+Mat4 camera_projection(Camera *cam) {
+    /* Cache projection matrix — skip tanf + 3 divisions when fov/aspect/near/far unchanged. */
+    if (cam->fov != cam->_proj_fov || cam->aspect != cam->_proj_aspect ||
+        cam->near_plane != cam->_proj_near || cam->far_plane != cam->_proj_far) {
+        cam->_proj = mat4_perspective(cam->fov, cam->aspect, cam->near_plane, cam->far_plane);
+        cam->_proj_fov = cam->fov;
+        cam->_proj_aspect = cam->aspect;
+        cam->_proj_near = cam->near_plane;
+        cam->_proj_far = cam->far_plane;
+    }
+    return cam->_proj;
 }
 
 void camera_update(Camera *cam, const InputState *input, f32 dt) {
+    /* Precompute trig values once — avoids 8-12 transcendental calls per frame */
+    f32 cy = cosf(cam->yaw);
+    f32 sy = sinf(cam->yaw);
+    f32 cp = cosf(cam->pitch);
+    f32 sp = sinf(cam->pitch);
+
+    /* Cache for camera_view() to reuse (avoids 4 redundant trig calls). */
+    cam->_cy = cy; cam->_sy = sy; cam->_cp = cp; cam->_sp = sp;
+
+    /* Forward = normalize(cp*sy, sp, -cp*cy) — already unit length since cp²+sp²=1 */
+    Vec3 fwd = {{cp * sy, sp, -cp * cy}};
+    /* Right = normalize(fwd × up) = normalize(-cy, 0, -sy) for up=(0,1,0) */
+    Vec3 right = {{-cy, 0.0f, -sy}};
+
     if (input_key_down(input, 'w')) {
-        Vec3 fwd = camera_forward(cam);
         cam->position = vec3_add(cam->position, vec3_scale(fwd, cam->move_speed * dt));
     }
     if (input_key_down(input, 's')) {
-        Vec3 fwd = camera_forward(cam);
         cam->position = vec3_sub(cam->position, vec3_scale(fwd, cam->move_speed * dt));
     }
     if (input_key_down(input, 'd')) {
-        Vec3 right = camera_right(cam);
         cam->position = vec3_add(cam->position, vec3_scale(right, cam->move_speed * dt));
     }
     if (input_key_down(input, 'a')) {
-        Vec3 right = camera_right(cam);
         cam->position = vec3_sub(cam->position, vec3_scale(right, cam->move_speed * dt));
     }
 

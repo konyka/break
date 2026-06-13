@@ -55,10 +55,11 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-build/
-build-gl/
-build-asan/
-build-debug/
+build*/
+engine/build-*/
 .sisyphus/
 *.spv
 frag.spv
+*.bin
+*.wav
+.qoder/

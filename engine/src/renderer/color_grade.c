@@ -104,8 +104,10 @@ void color_grade_shutdown(ColorGradeSystem *s) {
 
 void color_grade_apply(ColorGradeSystem *s, RHICmdBuffer *cmd,
                        RHITexture input_tex, f32 saturation, f32 contrast,
-                       f32 brightness, f32 temperature, f32 tint, u32 w, u32 h) {
+                       f32 brightness, f32 temperature, f32 tint,
+                       u32 w, u32 h) {
     if (!s->ready) return;
+    (void)w; (void)h;
 
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 

@@ -7,6 +7,7 @@ layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D u_taa_curr_tex;
 layout(binding = 1) uniform sampler2D u_taa_hist_tex;
 layout(binding = 2) uniform sampler2D u_taa_depth;
+layout(binding = 3) uniform sampler2D u_taa_velocity;
 
 layout(push_constant) uniform TAAParams {
     layout(offset = 0)  mat4 u_taa_curr_vp;
@@ -16,6 +17,7 @@ layout(push_constant) uniform TAAParams {
     layout(offset = 196) float u_taa_sh;
     layout(offset = 200) float u_taa_blend;
     layout(offset = 204) float u_taa_first_frame;
+    layout(offset = 208) float u_taa_use_velocity;
 };
 
 vec3 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec3 p) {
@@ -54,13 +56,18 @@ void main() {
     }
 
     if (depth < 1.0 && u_taa_first_frame < 0.5) {
-        vec2 ndc = vUV * 2.0 - 1.0;
-        vec4 clip_pos = vec4(ndc.x, ndc.y, depth, 1.0);
-        vec4 world_pos_h = u_taa_inv_proj * clip_pos;
-        vec3 world_pos = world_pos_h.xyz / world_pos_h.w;
-
-        vec4 prev_clip = u_taa_prev_vp * vec4(world_pos, 1.0);
-        vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
+        vec2 prev_uv;
+        if (u_taa_use_velocity > 0.5) {
+            vec2 vel = texture(u_taa_velocity, vUV).rg;
+            prev_uv = vUV - vel * 0.5;
+        } else {
+            vec2 ndc = vUV * 2.0 - 1.0;
+            vec4 clip_pos = vec4(ndc.x, ndc.y, depth, 1.0);
+            vec4 world_pos_h = u_taa_inv_proj * clip_pos;
+            vec3 world_pos = world_pos_h.xyz / world_pos_h.w;
+            vec4 prev_clip = u_taa_prev_vp * vec4(world_pos, 1.0);
+            prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
+        }
 
         if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 && prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
             vec3 hist_color = texture(u_taa_hist_tex, prev_uv).rgb;

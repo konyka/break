@@ -1,0 +1,11 @@
+# init.script - Phase 4 test script
+var gravity = -9.810000
+var speed = 6.000000
+var jump = 8.000000
+
+func on_update
+add speed 0.100000
+print
+
+func on_spawn
+spawn 0.000000 5.000000 0.000000

@@ -12,6 +12,10 @@ typedef struct {
     u32   joint_parents[SKELETON_MAX_JOINTS];
     Mat4  inverse_bind[SKELETON_MAX_JOINTS];
     Mat4  current_pose[SKELETON_MAX_JOINTS];
+    /* Persistent scratch buffers for local/world pose computation
+     * (avoids ~16KB stack allocation per evaluate call). */
+    Mat4  _local_poses[SKELETON_MAX_JOINTS];
+    Mat4  _world_poses[SKELETON_MAX_JOINTS];
     RHIBuffer joint_buf;
     RHIDevice *device;
 } Skeleton;
@@ -43,6 +47,13 @@ void skeleton_init(Skeleton *sk, RHIDevice *dev);
 void skeleton_shutdown(Skeleton *sk);
 void skeleton_set_joints(Skeleton *sk, u32 count, const u32 *parents, const Mat4 *inv_bind);
 void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt);
+/* Apply per-bone local TRS (from anim_blend_evaluate) and compute skinning matrices. */
+void skeleton_apply_local_trs(Skeleton *sk,
+                              const Vec3 *local_pos, const Quat *local_rot, const Vec3 *local_scale);
+/* Joint world matrices from local TRS (no inverse-bind); for IK after blending. */
+void skeleton_compute_world_transforms(Skeleton *sk,
+                                       const Vec3 *local_pos, const Quat *local_rot, const Vec3 *local_scale,
+                                       Mat4 *out_world);
 void skeleton_upload(Skeleton *sk);
 void anim_clip_init(AnimClip *clip, f32 duration, bool loop);
 void anim_clip_add_channel(AnimClip *clip, u32 joint_index, AnimPathType path,

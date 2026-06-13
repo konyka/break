@@ -1,6 +1,7 @@
 #include <core/log.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 static LogLevel min_level = LOG_INFO;
 
@@ -20,10 +21,9 @@ void log_write(LogLevel level, const char *file, int line,
                const char *fmt, ...) {
     if (level < min_level) return;
 
-    const char *basename = file;
-    for (const char *p = file; *p; p++) {
-        if (*p == '/') basename = p + 1;
-    }
+    /* strrchr is SIMD-optimized in glibc, faster than manual linear scan */
+    const char *slash = strrchr(file, '/');
+    const char *basename = slash ? slash + 1 : file;
 
     fprintf(stderr, "%s[%-5s]\033[0m \033[90m%s:%d\033[0m ",
             level_colors[level], level_strings[level], basename, line);

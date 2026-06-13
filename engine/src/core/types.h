@@ -19,3 +19,10 @@ typedef int64_t i64;
 
 typedef size_t    usize;
 typedef ptrdiff_t isize;
+
+/* ---- Cross-compiler alignment macro ---- */
+#if defined(_MSC_VER)
+    #define ENGINE_ALIGN(x) __declspec(align(x))
+#else
+    #define ENGINE_ALIGN(x) __attribute__((aligned(x)))
+#endif

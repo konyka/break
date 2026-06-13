@@ -18,6 +18,7 @@ typedef struct {
     i32              loc_screen_h;
     i32              loc_blend;
     i32              loc_first_frame;
+    i32              loc_use_velocity;
     bool             ready;
     bool             first_frame;
 } TAASystem;
@@ -26,6 +27,7 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height);
 void taa_shutdown(TAASystem *taa);
 void taa_resolve(TAASystem *taa, RHICmdBuffer *cmd,
                  RHITexture current_color, RHITexture depth_tex,
+                 RHITexture velocity_tex,
                  const f32 *curr_vp, const f32 *prev_vp,
                  const f32 *inv_proj, u32 screen_w, u32 screen_h);
 RHITexture taa_get_output(TAASystem *taa);

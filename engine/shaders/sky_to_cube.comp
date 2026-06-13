@@ -1,0 +1,131 @@
+#version 450
+/*
+ * Procedural environment cubemap capture.
+ *
+ * Renders the analytic atmospheric sky (Rayleigh + Mie single scattering, sun
+ * disc and horizon glow) directly into one face of an HDR (RGBA16F) cubemap.
+ * The output is LINEAR radiance — no tonemap / gamma — because it feeds the IBL
+ * convolution passes which expect physically-linear input.
+ *
+ * One dispatch produces a single face.  The host supplies the face index, the
+ * face resolution and the sun direction/color via push constants (Vulkan) or
+ * loose uniforms (OpenGL).
+ *
+ * Cloud raymarching from the raster skybox is intentionally omitted: it would
+ * dominate the convolution cost and contributes little to diffuse irradiance.
+ */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+/* Storage image lives in descriptor set 1 (set 0 = SSBO) on Vulkan; glslang
+ * defaults to set 0 so bind explicitly.  OpenGL ignores the set qualifier. */
+#ifdef VULKAN
+layout(rgba16f, set = 1, binding = 0) writeonly uniform image2D u_out_face;
+layout(push_constant) uniform PushConstants {
+    float u_roughness;   /* unused — keeps slot aligned with IBL push layout */
+    int   u_face;
+    int   u_face_size;
+    int   u_pad;
+    vec3  u_sun_dir;
+    float u_pad2;
+    vec3  u_sun_color;
+} pc;
+#define FACE       pc.u_face
+#define FACE_SIZE  pc.u_face_size
+#define SUN_DIR    pc.u_sun_dir
+#define SUN_COLOR  pc.u_sun_color
+#else
+layout(rgba16f, binding = 0) writeonly uniform image2D u_out_face;
+uniform int  u_face;
+uniform int  u_face_size;
+uniform vec3 u_sun_dir;
+uniform vec3 u_sun_color;
+#define FACE       u_face
+#define FACE_SIZE  u_face_size
+#define SUN_DIR    u_sun_dir
+#define SUN_COLOR  u_sun_color
+#endif
+
+const float PI = 3.14159265359;
+
+const vec3  RAYLEIGH_COEFF = vec3(5.5e-6, 13.0e-6, 22.4e-6);
+const float MIE_COEFF      = 21.0e-6;
+const float RAYLEIGH_SCALE = 8.4e3;
+const float MIE_SCALE      = 1.25e3;
+const float G_MIE          = 0.758;
+const float SUN_INTENSITY  = 20.0;
+
+float phase_rayleigh(float cos_theta) {
+    return (3.0 / (16.0 * PI)) * (1.0 + cos_theta * cos_theta);
+}
+
+float phase_mie(float cos_theta) {
+    float g  = G_MIE;
+    float g2 = g * g;
+    float num   = (1.0 - g2);
+    float denom = (4.0 * PI) * pow(1.0 + g2 - 2.0 * g * cos_theta, 1.5);
+    return num / max(denom, 1e-6);
+}
+
+float atmosphere_density(float height) {
+    float rayleigh = exp(-max(height, 0.0) / RAYLEIGH_SCALE);
+    float mie      = exp(-max(height, 0.0) / MIE_SCALE);
+    return min(rayleigh + mie, 1.0);
+}
+
+/* Convert (face, uv in [0,1]) to a unit direction.  Standard cubemap mapping. */
+vec3 cube_dir_from_face_uv(int face, vec2 uv) {
+    vec2 t = uv * 2.0 - 1.0;
+    vec3 d;
+    if      (face == 0) d = vec3( 1.0, -t.y, -t.x); /* +X */
+    else if (face == 1) d = vec3(-1.0, -t.y,  t.x); /* -X */
+    else if (face == 2) d = vec3( t.x,  1.0,  t.y); /* +Y */
+    else if (face == 3) d = vec3( t.x, -1.0, -t.y); /* -Y */
+    else if (face == 4) d = vec3( t.x, -t.y,  1.0); /* +Z */
+    else                d = vec3(-t.x, -t.y, -1.0); /* -Z */
+    return normalize(d);
+}
+
+vec3 sky_radiance(vec3 ray, vec3 sun) {
+    float cos_sun = max(dot(ray, sun), -1.0);
+
+    float rayleigh_phase = phase_rayleigh(cos_sun);
+    float mie_phase      = phase_mie(cos_sun);
+
+    float zenith  = acos(clamp(ray.y, -1.0, 1.0));
+    float density = atmosphere_density(zenith * 6371.0);
+
+    vec3  rayleigh_scat = RAYLEIGH_COEFF * rayleigh_phase * density;
+    float mie_scat      = MIE_COEFF * mie_phase * density;
+
+    vec3 scattering = (rayleigh_scat + vec3(mie_scat)) * SUN_INTENSITY;
+
+    float optical_depth = density * 0.5;
+    vec3  extinction = exp(-(RAYLEIGH_COEFF + vec3(MIE_COEFF * 0.1))
+                          * optical_depth * 6371.0 * 0.01);
+
+    vec3 sky = SUN_COLOR * scattering * extinction;
+
+    float sun_disc = smoothstep(0.9995, 0.9999, cos_sun);
+    float sun_halo = smoothstep(0.993, 0.999, cos_sun);
+    sky += SUN_COLOR * SUN_INTENSITY * 0.05 * sun_disc * extinction;
+    sky += SUN_COLOR * SUN_INTENSITY * 0.008 * sun_halo * extinction;
+
+    float horizon = 1.0 - abs(ray.y);
+    horizon = pow(horizon, 3.0);
+    sky += SUN_COLOR * 0.1 * horizon * extinction;
+
+    return max(sky, vec3(0.0));
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= FACE_SIZE || px.y >= FACE_SIZE) return;
+
+    vec2 uv  = (vec2(px) + 0.5) / float(FACE_SIZE);
+    vec3 ray = cube_dir_from_face_uv(FACE, uv);
+    vec3 sun = normalize(SUN_DIR);
+
+    vec3 radiance = sky_radiance(ray, sun);
+    imageStore(u_out_face, px, vec4(radiance, 1.0));
+}

@@ -4,6 +4,7 @@
 
 typedef struct {
     Vec4 planes[6];
+    u32  sign_mask[6];  /* bit 0/1/2 = plane normal e[0]/e[1]/e[2] >= 0 */
 } Frustum;
 
 Frustum frustum_from_vp(Mat4 vp);

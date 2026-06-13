@@ -1,0 +1,60 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+
+/* Set/binding convention from the Vulkan RHI:
+ *   set=2 (sampler_mip_layout) holds COMBINED_IMAGE_SAMPLER bindings.
+ *   set=1 (storage_image_layout) holds STORAGE_IMAGE bindings.
+ * The unit/binding numbers used by the engine match the binding= here.
+ * OpenGL GLSL rejects the set= qualifier, so it is only emitted under VULKAN;
+ * the binding= numbers are identical on both backends. */
+#ifdef VULKAN
+layout(set = 2, binding = 0) uniform sampler2D u_input_depth;
+layout(set = 1, binding = 1, r32f) uniform writeonly image2D u_output_mip;
+#else
+layout(binding = 0) uniform sampler2D u_input_depth;
+layout(binding = 1, r32f) uniform writeonly image2D u_output_mip;
+#endif
+
+#ifdef VULKAN
+layout(push_constant) uniform PushConstants {
+    vec2 output_size;
+} pc;
+#else
+uniform vec2 pc_output_size;
+#define pc_output_size_x pc_output_size.x
+#define pc_output_size_y pc_output_size.y
+#endif
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+#ifdef VULKAN
+    ivec2 out_size = ivec2(pc.output_size);
+#else
+    ivec2 out_size = ivec2(pc_output_size);
+#endif
+
+    if (pos.x >= out_size.x || pos.y >= out_size.y) return;
+
+    /* Compute UV at center of output texel */
+    vec2 uv = (vec2(pos) + 0.5) / vec2(out_size);
+
+    /* Texel size of the input texture */
+    vec2 texel_size = 1.0 / vec2(textureSize(u_input_depth, 0));
+
+    /* Sample 4 neighboring texels from the previous level */
+    float d0 = texture(u_input_depth, uv + vec2(-0.25, -0.25) * texel_size).r;
+    float d1 = texture(u_input_depth, uv + vec2( 0.25, -0.25) * texel_size).r;
+    float d2 = texture(u_input_depth, uv + vec2(-0.25,  0.25) * texel_size).r;
+    float d3 = texture(u_input_depth, uv + vec2( 0.25,  0.25) * texel_size).r;
+
+    /*
+     * Take the maximum depth (farthest point).
+     * For reversed-Z, you would take min instead.
+     * This ensures conservative occlusion: an object is only occluded
+     * if it is behind the farthest point in the Hi-Z cell.
+     */
+    float max_depth = max(max(d0, d1), max(d2, d3));
+
+    imageStore(u_output_mip, pos, vec4(max_depth, 0.0, 0.0, 0.0));
+}

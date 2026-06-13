@@ -37,17 +37,22 @@ void main() {
     vec4 vp = inv_p * vec4(ndc, depth, 1.0);
     vec3 view_pos = vp.xyz / vp.w;
 
-    int steps = 8;
-    float ray_len = 0.4;
-    float thickness = 0.03;
+    int steps = 12;
+    float ray_len = 0.5;
+    float thickness = 0.04;
     float t = ray_len / float(steps);
 
     vec2 screen_step = (light_dir.xy * 5.0) / res;
 
+    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    float noise = fract(magic.z * fract(dot(gl_FragCoord.xy, magic.xy)));
+    float jitter = noise * t;
+
     float shadow = 1.0;
 
     for (int i = 1; i <= steps; i++) {
-        vec3 ray_pos = view_pos + light_dir * t * float(i);
+        float offset = t * float(i) + jitter;
+        vec3 ray_pos = view_pos + light_dir * offset;
         vec2 sample_uv = vUV + screen_step * float(i);
 
         if (sample_uv.x < 0.0 || sample_uv.x > 1.0 ||
@@ -60,10 +65,12 @@ void main() {
 
         float diff = sampled_view.z - ray_pos.z;
         if (diff > 0.0 && diff < thickness) {
-            shadow = 0.0;
-            break;
+            float penumbra = 1.0 - smoothstep(0.0, thickness, diff);
+            shadow *= 1.0 - penumbra * 0.8;
         }
     }
+
+    shadow = max(shadow, 0.0);
 
     fragColor = vec4(vec3(shadow), 1.0);
 }

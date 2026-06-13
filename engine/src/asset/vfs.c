@@ -13,6 +13,12 @@ static u32 fnv1a(const char *str) {
     return hash;
 }
 
+/* Next power of 2 >= n */
+static u32 next_pow2(u32 n) {
+    n--; n |= n >> 1; n |= n >> 2; n |= n >> 4; n |= n >> 8; n |= n >> 16; n++;
+    return n < 4 ? 4 : n;
+}
+
 VFS *vfs_create(void) {
     VFS *vfs = calloc(1, sizeof(VFS));
     return vfs;
@@ -25,6 +31,7 @@ void vfs_destroy(VFS *vfs) {
             if (vfs->mounts[i].pak_fp) fclose(vfs->mounts[i].pak_fp);
             free(vfs->mounts[i].pak_entries);
             free(vfs->mounts[i].pak_names);
+            free(vfs->mounts[i].pak_hash_table);
         }
     }
     free(vfs);
@@ -75,6 +82,21 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     vfs->mounts[idx].pak_entries = entries;
     vfs->mounts[idx].pak_names = names;
 
+    /* Build hash table for O(1) lookup: open-addressing with linear probing */
+    u32 table_size = next_pow2(hdr.entry_count * 2);
+    u32 *table = (u32 *)malloc(table_size * sizeof(u32));
+    memset(table, 0xFF, table_size * sizeof(u32)); /* UINT32_MAX = empty */
+    u32 mask = table_size - 1;
+    for (u32 e = 0; e < hdr.entry_count; e++) {
+        u32 slot = entries[e].name_hash & mask;
+        while (table[slot] != UINT32_MAX) {
+            slot = (slot + 1) & mask;
+        }
+        table[slot] = e;
+    }
+    vfs->mounts[idx].pak_hash_table = table;
+    vfs->mounts[idx].pak_hash_size = table_size;
+
     LOG_INFO("VFS: mounted pak '%s' (%u files)", pak_path, hdr.entry_count);
     return true;
 }
@@ -88,20 +110,31 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
         u32 mi = i - 1;
 
         if (vfs->mounts[mi].type == VFS_MOUNT_PAK) {
-            for (u32 e = 0; e < vfs->mounts[mi].pak_header.entry_count; e++) {
-                if (vfs->mounts[mi].pak_entries[e].name_hash == hash) {
-                    const char *name = vfs->mounts[mi].pak_names + vfs->mounts[mi].pak_entries[e].name_offset;
-                    if (strcmp(name, path) == 0) {
-                        PakEntry *pe = &vfs->mounts[mi].pak_entries[e];
-                        VFSFile *f = calloc(1, sizeof(VFSFile));
-                        f->size = pe->size;
-                        f->data = malloc(pe->size);
-                        if (!f->data) { free(f); return NULL; }
-                        fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET);
-                        fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp);
-                        f->pos = 0;
-                        return f;
+            /* O(1) hash table lookup with linear probing */
+            u32 *table = vfs->mounts[mi].pak_hash_table;
+            u32 table_size = vfs->mounts[mi].pak_hash_size;
+            if (table && table_size > 0) {
+                u32 mask = table_size - 1;
+                u32 slot = hash & mask;
+                while (table[slot] != UINT32_MAX) {
+                    u32 e = table[slot];
+                    if (vfs->mounts[mi].pak_entries[e].name_hash == hash) {
+                        const char *name = vfs->mounts[mi].pak_names + vfs->mounts[mi].pak_entries[e].name_offset;
+                        if (strcmp(name, path) == 0) {
+                            PakEntry *pe = &vfs->mounts[mi].pak_entries[e];
+                            /* Single alloc: VFSFile + data */
+                            u8 *vfs_block = (u8 *)calloc(1, sizeof(VFSFile) + pe->size);
+                            if (!vfs_block) return NULL;
+                            VFSFile *f = (VFSFile *)vfs_block;
+                            f->data = vfs_block + sizeof(VFSFile);
+                            f->size = pe->size;
+                            fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET);
+                            fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp);
+                            f->pos = 0;
+                            return f;
+                        }
                     }
+                    slot = (slot + 1) & mask;
                 }
             }
         } else {
@@ -112,10 +145,12 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                 fseek(fp, 0, SEEK_END);
                 usize sz = (usize)ftell(fp);
                 fseek(fp, 0, SEEK_SET);
-                VFSFile *f = calloc(1, sizeof(VFSFile));
+                /* Single alloc: VFSFile + data */
+                u8 *vfs_block = (u8 *)calloc(1, sizeof(VFSFile) + sz);
+                if (!vfs_block) { fclose(fp); return NULL; }
+                VFSFile *f = (VFSFile *)vfs_block;
+                f->data = vfs_block + sizeof(VFSFile);
                 f->size = sz;
-                f->data = malloc(sz);
-                if (!f->data) { fclose(fp); free(f); return NULL; }
                 fread(f->data, 1, sz, fp);
                 fclose(fp);
                 f->pos = 0;
@@ -146,8 +181,7 @@ bool vfs_eof(VFSFile *f) {
 
 void vfs_close(VFSFile *f) {
     if (!f) return;
-    free(f->data);
-    free(f);
+    free(f); /* single free: VFSFile + data (allocated as one block) */
 }
 
 usize vfs_size(VFSFile *f) {
@@ -157,9 +191,10 @@ usize vfs_size(VFSFile *f) {
 u8 *vfs_read_all(VFS *vfs, const char *path, usize *out_size) {
     VFSFile *f = vfs_open(vfs, path);
     if (!f) return NULL;
-    u8 *data = f->data;
+    /* Copy data out: in single-alloc layout, data is freed with vfs_close */
+    u8 *data = (u8 *)malloc(f->size);
+    if (data) memcpy(data, f->data, f->size);
     if (out_size) *out_size = f->size;
-    f->data = NULL;
     vfs_close(f);
     return data;
 }

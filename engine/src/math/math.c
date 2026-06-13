@@ -1,6 +1,13 @@
 #include <math/math.h>
 #include <string.h>
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    #include <immintrin.h>
+    #define MATH_SSE2 1
+#else
+    #define MATH_SSE2 0
+#endif
+
 Mat4 mat4_identity(void) {
     Mat4 m = {0};
     m.e[0][0] = 1.0f; m.e[1][1] = 1.0f;
@@ -9,7 +16,25 @@ Mat4 mat4_identity(void) {
 }
 
 Mat4 mat4_mul(Mat4 a, Mat4 b) {
-    Mat4 out = {0};
+    Mat4 out;
+#if MATH_SSE2
+    /* SSE2: each result column = sum of a-columns scaled by b-elements.
+     * Memory layout: e[col][row], so e[c] is a contiguous 4-float column. */
+    for (int col = 0; col < 4; col++) {
+        __m128 c0 = _mm_set1_ps(b.e[col][0]);
+        __m128 c1 = _mm_set1_ps(b.e[col][1]);
+        __m128 c2 = _mm_set1_ps(b.e[col][2]);
+        __m128 c3 = _mm_set1_ps(b.e[col][3]);
+
+        __m128 r = _mm_mul_ps(_mm_loadu_ps(a.e[0]), c0);
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[1]), c1));
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[2]), c2));
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[3]), c3));
+
+        _mm_storeu_ps(out.e[col], r);
+    }
+#else
+    memset(&out, 0, sizeof(out));
     for (int col = 0; col < 4; col++) {
         for (int row = 0; row < 4; row++) {
             out.e[col][row] =
@@ -19,6 +44,7 @@ Mat4 mat4_mul(Mat4 a, Mat4 b) {
                 a.e[3][row] * b.e[col][3];
         }
     }
+#endif
     return out;
 }
 

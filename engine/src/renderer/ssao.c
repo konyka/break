@@ -112,8 +112,10 @@ void ssao_apply(SSAOSystem *ssao, RHICmdBuffer *cmd, RHITexture depth_tex,
                 const f32 *proj, const f32 *inv_proj, u32 screen_w, u32 screen_h) {
     if (!ssao->ready) return;
 
+    /* Depth is transitioned to a readable layout by the caller before the
+     * post-fx block (see main.c), so it is sampleable here regardless of
+     * whether SSAO is enabled. */
     rhi_cmd_end_render_pass(cmd);
-    rhi_cmd_transition_depth_to_read(cmd, depth_tex);
 
     /* ---- SSAO pass ---- */
     rhi_offscreen_fbo_bind(cmd, &ssao->ssao_fbo);
@@ -135,6 +137,7 @@ void ssao_apply(SSAOSystem *ssao, RHICmdBuffer *cmd, RHITexture depth_tex,
 
     rhi_cmd_bind_pipeline(cmd, ssao->blur_pipe);
     rhi_cmd_bind_texture(cmd, ssao->ssao_fbo.color_tex, ssao->sampler, 0);
+    rhi_cmd_bind_texture(cmd, depth_tex, ssao->sampler, 1);
 
     rhi_cmd_draw(cmd, 3, 1);
 

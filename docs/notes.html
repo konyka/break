@@ -1,0 +1,1643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pure C Engine - Notes & Reference</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'JetBrains Mono','Fira Code',monospace;background:#0a0a0f;color:#c8c8d8;line-height:1.6;padding:20px;max-width:1200px;margin:0 auto}
+h1{color:#e8e8f0;font-size:1.8em;border-bottom:2px solid #333;padding-bottom:10px;margin-bottom:20px}
+h2{color:#a0a0d0;font-size:1.3em;margin:30px 0 12px;padding-left:8px;border-left:3px solid #555}
+h3{color:#8888bb;font-size:1.05em;margin:18px 0 8px}
+a{color:#7b9fe0;text-decoration:none}
+a:hover{text-decoration:underline}
+table{width:100%;border-collapse:collapse;margin:8px 0 20px;font-size:0.88em}
+th{background:#161620;color:#9999cc;text-align:left;padding:8px 12px;border-bottom:1px solid #2a2a3a}
+td{padding:6px 12px;border-bottom:1px solid #1a1a28}
+tr:hover td{background:#12121e}
+.key{display:inline-block;background:#1e1e30;color:#b0b0e0;padding:2px 8px;border-radius:4px;font-size:0.85em;border:1px solid #333;min-width:28px;text-align:center}
+.on{color:#66dd88}
+.off{color:#dd6666}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:0.75em;font-weight:bold}
+.tag-rhi{background:#1a3a1a;color:#66cc66}
+.tag-render{background:#3a2a1a;color:#cc9944}
+.tag-scene{background:#1a1a3a;color:#6666cc}
+.tag-platform{background:#3a1a2a;color:#cc4488}
+.tag-debug{background:#2a2a1a;color:#aaaa44}
+.section{display:flex;gap:20px;flex-wrap:wrap}
+.section>div{flex:1;min-width:340px}
+.info-box{background:#111120;border:1px solid #2a2a3a;border-radius:6px;padding:12px 16px;margin:10px 0 20px}
+.info-box code{color:#88bbee}
+.pipeline{font-size:0.82em;background:#0d0d18;padding:12px;border-radius:6px;overflow-x:auto;white-space:nowrap}
+.pipeline span{display:inline-block;padding:4px 8px;margin:2px;border-radius:3px;background:#1a1a2e;border:1px solid #2a2a40}
+.pipeline .arrow{background:none;border:none;color:#555;padding:0 2px}
+</style>
+</head>
+<body>
+
+<h1>Pure C Engine - Notes & Reference</h1>
+
+<div class="info-box">
+<b>Status:</b> Phase 10DE complete | <b>Tests:</b> 16/16 (VK) | <b>Backends:</b> OpenGL + Vulkan | <b>Language:</b> C11 (C23 features) | <b>Target:</b> Linux/X11
+</div>
+
+<h2>Render Pipeline</h2>
+<div class="pipeline">
+<span>Scene Pass</span><span class="arrow">&rarr;</span>
+<span>SSAO</span><span class="arrow">&rarr;</span>
+<span>Contact Shadow</span><span class="arrow">&rarr;</span>
+<span>Volumetric</span><span class="arrow">&rarr;</span>
+<span>Lens Flare</span><span class="arrow">&rarr;</span>
+<span>SSR</span><span class="arrow">&rarr;</span>
+<span>SSGI</span><span class="arrow">&rarr;</span>
+<span>TAA</span><span class="arrow">&rarr;</span>
+<span>FXAA</span><span class="arrow">&rarr;</span>
+<span>CAS (Sharpen)</span><span class="arrow">&rarr;</span>
+<span>Motion Blur</span><span class="arrow">&rarr;</span>
+<span>DOF</span><span class="arrow">&rarr;</span>
+<span>SSS</span><span class="arrow">&rarr;</span>
+<span>Bloom</span><span class="arrow">&rarr;</span>
+<span>Tonemap</span><span class="arrow">&rarr;</span>
+<span>Color Grade</span><span class="arrow">&rarr;</span>
+<span>God Rays</span><span class="arrow">&rarr;</span>
+<span>[Debug Viz]</span><span class="arrow">&rarr;</span>
+<span>Lens Effects</span><span class="arrow">&rarr;</span>
+<span>[Inspector]</span><span class="arrow">&rarr;</span>
+<span>Upscale</span><span class="arrow">&rarr;</span>
+<span>UI</span>
+</div>
+
+<h2>Key Bindings</h2>
+
+<div class="section">
+<div>
+
+<h3><span class="tag tag-render">RENDER</span> Function Keys</h3>
+<table>
+<tr><th>Key</th><th>Action</th><th>Details</th></tr>
+<tr><td><span class="key">F1</span></td><td>Debug viz cycle</td><td>Off &rarr; Depth &rarr; Normals &rarr; AO &rarr; Cascades</td></tr>
+<tr><td><span class="key">F2</span></td><td>SSAO preset</td><td>Off &rarr; Low &rarr; Med &rarr; High (radius)</td></tr>
+<tr><td><span class="key">F3</span></td><td>Render target inspector</td><td>10 targets: scene_color, depth, ssao, blur, taa, fxaa, dof, bloom, godrays, sharpen</td></tr>
+<tr><td><span class="key">F4</span></td><td>Cascade split scale</td><td>0.5x &rarr; 1.0x &rarr; 2.0x &rarr; 4.0x</td></tr>
+<tr><td><span class="key">F6</span></td><td>FXAA quality</td><td>Low &rarr; Med &rarr; High (threshold)</td></tr>
+<tr><td><span class="key">F7</span></td><td>Bloom intensity</td><td>Off &rarr; Low &rarr; Med &rarr; High</td></tr>
+<tr><td><span class="key">F8</span></td><td>SSAO radius</td><td>Off &rarr; Low &rarr; Med &rarr; High</td></tr>
+<tr><td><span class="key">F9</span></td><td>God rays intensity</td><td>Cycle 4 levels</td></tr>
+<tr><td><span class="key">F10</span></td><td>TAA toggle</td><td>On/Off</td></tr>
+<tr><td><span class="key">F11</span></td><td>Motion blur toggle</td><td>On/Off</td></tr>
+<tr><td><span class="key">F12</span></td><td>Screenshot</td><td>Saves 24-bit BMP (screenshot_0.bmp, _1, ...)</td></tr>
+</table>
+
+<h3><span class="tag tag-debug">DEBUG</span> Profiling & Display</h3>
+<table>
+<tr><th>Key</th><th>Action</th><th>Details</th></tr>
+<tr><td><span class="key">Tab</span></td><td>Toggle debug UI</td><td>FPS, draw calls, GPU timing, frame graph</td></tr>
+<tr><td><span class="key">`</span></td><td>FPS limit cycle</td><td>60 &rarr; 30 &rarr; 120 &rarr; 144 &rarr; 240 &rarr; unlimited</td></tr>
+<tr><td><span class="key">PgUp</span></td><td>Exposure +</td><td>+0.2 (max 8.0)</td></tr>
+<tr><td><span class="key">PgDn</span></td><td>Exposure -</td><td>-0.2 (min 0.1)</td></tr>
+<tr><td><span class="key">ScrLk</span></td><td>Auto-exposure</td><td>Toggle auto exposure</td></tr>
+<tr><td><span class="key">F5</span></td><td>Script reload</td><td>Reload assets/init.script</td></tr>
+<tr><td><span class="key">M</span></td><td>Benchmark</td><td>120 frames with all effects OFF, reports avg ms/FPS, auto-restores</td></tr>
+</table>
+
+</div>
+<div>
+
+<h3><span class="tag tag-scene">SCENE</span> Lighting & Atmosphere</h3>
+<table>
+<tr><th>Key</th><th>Action</th><th>Details</th></tr>
+<tr><td><span class="key">L</span> hold</td><td>Sun rotate CW</td><td>Azimuth +1.5 rad/s</td></tr>
+<tr><td><span class="key">J</span> hold</td><td>Sun rotate CCW</td><td>Azimuth -1.5 rad/s</td></tr>
+<tr><td><span class="key">I</span> hold</td><td>Sun elevation up</td><td>+1.0 rad/s (max &pi;/2)</td></tr>
+<tr><td><span class="key">K</span> hold</td><td>Sun elevation down</td><td>-1.0 rad/s (min 0.05)</td></tr>
+<tr><td><span class="key">O</span></td><td>Time-of-day cycle</td><td>Auto-rotate sun azimuth + oscillate elevation</td></tr>
+<tr><td><span class="key">1</span></td><td>Temperature -</td><td>-0.05</td></tr>
+<tr><td><span class="key">2</span></td><td>Temperature +</td><td>+0.05</td></tr>
+<tr><td><span class="key">3</span></td><td>Tint -</td><td>-0.05</td></tr>
+<tr><td><span class="key">4</span></td><td>Tint +</td><td>+0.05</td></tr>
+<tr><td><span class="key">5</span></td><td>Color grade toggle</td><td>On/Off</td></tr>
+<tr><td><span class="key">6</span></td><td>Lens effects toggle</td><td>On/Off</td></tr>
+<tr><td><span class="key">7</span></td><td>Chromatic aberration</td><td>Off &rarr; Low &rarr; Med &rarr; High</td></tr>
+<tr><td><span class="key">8</span></td><td>Vignette</td><td>Off &rarr; Low &rarr; Med &rarr; High</td></tr>
+<tr><td><span class="key">C</span></td><td>Background color</td><td>6 presets: dark blue, black, gray, sky, deep space, overcast</td></tr>
+</table>
+
+<h3><span class="tag tag-scene">SCENE</span> Effects Toggles</h3>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td><span class="key">Home</span></td><td>Effect presets: Full &rarr; Balanced &rarr; Performance &rarr; Minimal</td></tr>
+<tr><td><span class="key">End</span></td><td>Reset ALL parameters (effects, sun, camera, wireframe)</td></tr>
+<tr><td><span class="key">Insert</span></td><td>DOF toggle</td></tr>
+<tr><td><span class="key">Delete</span></td><td>SSR toggle</td></tr>
+<tr><td><span class="key">[</span></td><td>SSGI toggle</td></tr>
+<tr><td><span class="key">]</span></td><td>Volumetric toggle</td></tr>
+<tr><td><span class="key">;</span></td><td>Contact shadow toggle</td></tr>
+<tr><td><span class="key">'</span></td><td>SSS toggle</td></tr>
+<tr><td><span class="key">,</span></td><td>Lens flare toggle</td></tr>
+<tr><td><span class="key">.</span></td><td>Sharpen toggle</td></tr>
+<tr><td><span class="key">=</span></td><td>Exposure +</td></tr>
+<tr><td><span class="key">-</span></td><td>Exposure -</td></tr>
+<tr><td><span class="key">=</span> (numpad)</td><td>Water toggle</td><td>On/Off (alpha blended water plane)</td></tr>
+<tr><td><span class="key">(</span></td><td>Water level -</td><td>-0.5 units</td></tr>
+<tr><td><span class="key">)</span></td><td>Water level +</td><td>+0.5 units</td></tr>
+</table>
+
+</div>
+<div>
+
+<h3><span class="tag tag-render">RENDER</span> Mode Controls</h3>
+<table>
+<tr><th>Key</th><th>Action</th><th>Details</th></tr>
+<tr><td><span class="key">H</span></td><td>AA mode cycle</td><td>Off &rarr; FXAA &rarr; TAA &rarr; FXAA+TAA</td></tr>
+<tr><td><span class="key">F</span></td><td>Wireframe toggle</td><td>3 pipeline variants (forward, instanced, skinned)</td></tr>
+<tr><td><span class="key">V</span></td><td>VSync toggle</td><td>GL: glXSwapIntervalEXT, VK: swapchain recreate</td></tr>
+<tr><td><span class="key">T</span></td><td>Texture filter</td><td>Linear &harr; Nearest</td></tr>
+<tr><td><span class="key">G</span></td><td>Fullscreen</td><td>EWMH _NET_WM_STATE_FULLSCREEN</td></tr>
+<tr><td><span class="key">U</span></td><td>Help overlay</td><td>Show all key bindings on-screen</td></tr>
+<tr><td><span class="key">Z</span></td><td>Shadow bias -</td><td>-0.001 (min 0.0)</td></tr>
+<tr><td><span class="key">X</span></td><td>Shadow bias +</td><td>+0.001 (max 0.05)</td></tr>
+<tr><td><span class="key">Scroll</span></td><td>FOV zoom</td><td>20&deg; &ndash; 120&deg;, 5&deg;/tick</td></tr>
+</table>
+
+<h3><span class="tag tag-scene">SCENE</span> Interaction</h3>
+<table>
+<tr><th>Key</th><th>Action</th><th>Details</th></tr>
+<tr><td><span class="key">WASD</span></td><td>Camera move</td><td>Relative to yaw</td></tr>
+<tr><td><span class="key">Mouse</span></td><td>Camera look</td><td>Click to capture, yaw/pitch</td></tr>
+<tr><td><span class="key">9</span></td><td>Speed +</td><td>+1.0 (max 20.0)</td></tr>
+<tr><td><span class="key">0</span></td><td>Speed -</td><td>-1.0 (min 0.5)</td></tr>
+<tr><td><span class="key">R</span></td><td>Scene reset</td><td>Reposition physics bodies</td></tr>
+<tr><td><span class="key">E</span></td><td>Spawn + push entity</td><td>Creates ECS entity (Transform+RigidBody+MeshRef) at camera, push forward</td></tr>
+<tr><td><span class="key">P</span> hold</td><td>Particle burst</td><td>Emitter at camera + 10x rate + upward impulse</td></tr>
+<tr><td><span class="key">B</span></td><td>Save scene</td><td>Binary: camera, sun, physics &rarr; scene_save.bin</td></tr>
+<tr><td><span class="key">N</span></td><td>Load scene</td><td>Restore from scene_save.bin</td></tr>
+<tr><td><span class="key">Y</span> hold</td><td>Terrain raise</td><td>Raise terrain at aim point (radius 3, speed 0.3/s)</td></tr>
+<tr><td><span class="key">H</span> hold</td><td>Terrain lower</td><td>Lower terrain at aim point (radius 3, speed -0.3/s)</td></tr>
+<tr><td><span class="key">Q</span></td><td>Terrain follow</td><td>Camera follows terrain height + 1.7m (eye level)</td></tr>
+<tr><td><span class="key">K</span></td><td>Layout cycle</td><td>Grid &rarr; Circle &rarr; Spiral &rarr; Wave (repositions entities)</td></tr>
+<tr><td><span class="key">/</span></td><td>Distance fog toggle</td><td>Linear fog using background color, near=10 far=50</td></tr>
+<tr><td><span class="key">\</span></td><td>Fog far +</td><td>+5 units (max 200), only when fog on</td></tr>
+<tr><td><span class="key">ESC</span></td><td>Quit</td><td></td></tr>
+<tr><td><span class="key">&uarr;&darr;</span></td><td>Saturation &plusmn;</td><td>Tonemap saturation</td></tr>
+<tr><td><span class="key">&larr;&rarr;</span></td><td>Contrast &plusmn;</td><td>Tonemap contrast</td></tr>
+</table>
+
+</div>
+</div>
+
+<h2>GPU Timers</h2>
+<div class="info-box">
+4 GPU timestamp queries: <code>shadow</code>, <code>forward</code>, <code>scene</code> (total), <code>postfx</code><br>
+GL: <code>glQueryCounter(GL_TIMESTAMP)</code> | VK: <code>VkQueryPool(VK_QUERY_TYPE_TIMESTAMP)</code> + <code>timestampPeriod</code>
+</div>
+
+<h2>Render Scale</h2>
+<div class="info-box">
+4 presets: <code>0.3x</code>, <code>0.5x</code> (default), <code>0.75x</code>, <code>1.0x</code><br>
+Dynamic FBO recreation on resize. Upscale via blit at pipeline end.
+</div>
+
+<h2>Shadow Cascades (CSM)</h2>
+<div class="info-box">
+4 cascades with split scale (F4). Debug viz (F1 mode 4) colors: R/G/B/Y.<br>
+Pipeline: depth-only pass &rarr; <code>cascade_vp[4]</code> uniforms &rarr; PBR shader samples cascade map.<br>
+Shadow bias adjustable: <code>u_shadow_bias</code> uniform (Z/X keys, default 0.002).
+</div>
+
+<h2>Frustum Culling</h2>
+<div class="info-box">
+<b>Method:</b> AABB-based frustum culling using mesh bounding boxes.<br>
+<b>AABB computation:</b> computed from vertex positions at mesh load time.<br>
+<b>World-space test:</b> 8 local AABB corners &times; world_transform &rarr; world AABB &rarr; <code>frustum_test_aabb</code><br>
+<b>Scope:</b> forward scene nodes only (skinned meshes excluded).<br>
+<b>Debug UI:</b> shows <code>Culled: N</code> per frame.
+</div>
+
+<h2>Terrain System</h2>
+<div class="info-box">
+<b>Grid:</b> 64&times;64, 40 units wide, 1.5x height scale<br>
+<b>Heightmap:</b> mutable <code>f32[64*64]</code> array, initialized from <code>sin(x*0.3)*cos(z*0.3)*2 + sin(x*0.1+z*0.15)*3</code><br>
+<b>Splatmap:</b> procedural multi-texture based on height + slope (4 biomes)<br>
+<b>&bull; Grass:</b> flat terrain (slope &lt; 0.5), green with fine pattern<br>
+<b>&bull; Rock:</b> steep terrain (slope &gt; 0.3), gray with noise grain<br>
+<b>&bull; Snow:</b> high altitude (y &gt; 3.5), white with sparkle<br>
+<b>&bull; Sand:</b> low altitude (y &lt; 1.5), tan with grain texture<br>
+<b>Shader:</b> custom <code>terrain.vert/frag</code> (+ <code>_vk</code> variants), with Blinn-Phong lighting<br>
+<b>Editing:</b> <code>terrain_modify_height(t, wx, wz, radius, strength)</code> &mdash; quadratic falloff brush<br>
+<b>VBO rebuild:</b> only affected region + 1-cell border (partial <code>glBufferSubData</code>)<br>
+<b>Height query:</b> bilinear interpolation via <code>terrain_get_height</code><br>
+<b>Keys:</b> Y=raise, H=lower (hold), Q=terrain follow, brush target = camera + forward*5
+</div>
+
+<h2>Water Plane</h2>
+<div class="info-box">
+<b>Mesh:</b> 80&times;80 unit quad at y=-1.0 (adjustable)<br>
+<b>Rendering:</b> alpha-blended, rendered in scene pass after terrain<br>
+<b>Shader:</b> custom <code>water.vert/frag</code> (+ <code>_vk</code> variants)<br>
+<b>Visuals:</b> 3-layer sine wave animation, Schlick Fresnel, specular highlights<br>
+<b>Depth fade:</b> distance-based (10-50 units), transparency 0.5-0.85<br>
+<b>Color:</b> deep blue (0.1, 0.3, 0.5), surface lighter with wave modulation<br>
+<b>Keys:</b> <code>=</code> toggle, <code>(</code>/<code>)</code> adjust water level &plusmn;0.5
+</div>
+
+<h2>Underwater Effect</h2>
+<div class="info-box">
+<b>Trigger:</b> camera.position.y &lt; water.water_y<br>
+<b>Clear color:</b> deep blue (0.0, 0.05, 0.15) replaces background<br>
+<b>Debug UI:</b> shows [UNDERWATER] indicator and water level<br>
+<b>Scene save/load:</b> water_y and water.enabled persisted
+</div>
+
+<h2>Entity Selection</h2>
+<div class="info-box">
+<b>Tab key:</b> cycle through entities with Transform+MeshRef components<br>
+<b>Highlight:</b> selected entity re-drawn with yellow albedo<br>
+<b>Move:</b> arrow keys (XZ), PgUp/PgDn (Y) at 5 units/s<br>
+<b>Delete:</b> Delete key calls world_destroy_entity()<br>
+<b>Debug UI:</b> shows "Selected: idx/count"
+</div>
+
+<h2>FPS Graph</h2>
+<div class="info-box">
+<b>Display:</b> text-based sparkline using ASCII block characters<br>
+<b>History:</b> 64-frame rolling buffer of frame time in ms<br>
+<b>Scale:</b> 9 levels: space (0ms) through # (>33ms)<br>
+<b>Position:</b> second line of debug overlay
+</div>
+
+<h2>Terrain Shadows</h2>
+<div class="info-box">
+<b>Method:</b> cascade 0 shadow map lookup in terrain.frag<br>
+<b>Uniforms:</b> u_light_vp (cascade VP matrix), u_shadow_map (depth texture), u_shadow_bias<br>
+<b>Shader:</b> terrain_shadow() projects world pos to light space, single-tap depth compare<br>
+<b>Result:</b> 0.4 shadow factor (60% darkened) or 1.0 (lit)<br>
+<b>Fallback:</b> returns 1.0 when UV out of shadow map bounds
+</div>
+
+<h2>Water Shadows</h2>
+<div class="info-box">
+<b>Method:</b> same cascade 0 shadow lookup as terrain<br>
+<b>Shader:</b> water_shadow() in water.frag / water_vk.frag<br>
+<b>Factor:</b> 0.5 (50% darkened) in shadow, 1.0 lit<br>
+<b>Binding:</b> shadow map at binding 1, light VP as uniform mat4
+</div>
+
+<h2>Entity Duplication</h2>
+<div class="info-box">
+<b>Key:</b> <code>]</code> — duplicate selected entity<br>
+<b>Creates:</b> new Entity with Transform (+1.5 X offset), MeshRef (copy), RigidBody (new physics body)<br>
+<b>Physics:</b> half_extent (0.5,0.5,0.5), mass 1.0, dynamic<br>
+<b>Counter:</b> selected_entity_count incremented
+</div>
+
+<h2>Terrain Presets</h2>
+<div class="info-box">
+<b>Key:</b> <code>;</code> — cycle through 5 procedural terrain types<br>
+<b>Presets:</b> Rolling Hills / Volcano / Waves / Ridged / Craters<br>
+<b>Algorithm:</b> simple_noise() = layered sin/cos, heightmap rebuilt via terrain_rebuild_region()<br>
+<b>Function:</b> <code>terrain_generate(Terrain *t, u32 preset)</code>
+</div>
+
+<h2>Time-of-Day Presets</h2>
+<div class="info-box">
+<b>Key:</b> <code>.</code> — cycle through 4 time presets<br>
+<b>Presets:</b> Noon / Sunset / Midnight / Dawn<br>
+<b>Sets:</b> sun_elevation + sun_azimuth + background color (bg_r/g/b) simultaneously
+</div>
+
+<h2>Particle Rate Presets</h2>
+<div class="info-box">
+<b>Key:</b> <code>'</code> — cycle through 6 particle emission rates<br>
+<b>Rates:</b> 200 (low) / 500 / 1000 / 2000 / 5000 (insane) / 0 (OFF)
+</div>
+
+<h2>Shoreline Foam</h2>
+<div class="info-box">
+<b>Location:</b> terrain.frag / terrain_vk.frag — where terrain height approaches water level<br>
+<b>Shader:</b> smoothstep(0.8, 0.0, dist) * (1.0 - smoothstep(-0.3, -0.8, dist))<br>
+<b>Pattern:</b> modulated with sin(x*6)*sin(z*5) for wave-like foam<br>
+<b>Color:</b> mixes toward (0.85, 0.9, 0.95) — white-blue foam<br>
+<b>Uniform:</b> u_water_y passed from terrain_render()
+</div>
+
+<h2>Collision Counter</h2>
+<div class="info-box">
+<b>Field:</b> PhysicsWorld.collision_count (reset each physics_step)<br>
+<b>Display:</b> shown in debug UI line: "Collisions: N"<br>
+<b>Counted:</b> every AABB overlap resolved in physics_step()
+</div>
+
+<h2>Third-Person Camera</h2>
+<div class="info-box">
+<b>Key:</b> <code>[</code> — toggle first/third person<br>
+<b>Method:</b> offsets view matrix by -forward * distance (5.0 units)<br>
+<b>Direction:</b> uses camera.yaw and camera.pitch for forward vector
+</div>
+
+<h2>Terrain Minimap</h2>
+<div class="info-box">
+<b>Display:</b> 8&times;8 ASCII grid at bottom of debug overlay<br>
+<b>Characters:</b> <code> .:oO@#</code> — 7 levels from flat to peak<br>
+<b>Sampling:</b> evenly samples 8&times;8 grid from 64&times;64 heightmap<br>
+<b>Scale:</b> height / height_scale * 6 mapped to character index
+</div>
+
+<h2>Selected Entity Impulse</h2>
+<div class="info-box">
+<b>Key:</b> <code>Space</code> — apply upward impulse to selected entity<br>
+<b>Force:</b> vec3(0, 8.0, 0) via physics_body_apply_impulse<br>
+<b>Requirement:</b> entity must have RigidBody component with valid physics_id
+</div>
+
+<h2>Water Depth Darken</h2>
+<div class="info-box">
+<b>Shader:</b> water.frag / water_vk.frag — u_water_y uniform<br>
+<b>Effect:</b> when camera below water, darken water color by depth<br>
+<b>Formula:</b> clamp(1.0 - (water_y - camera_y) * 0.15, 0.2, 1.0)
+</div>
+
+<h2>Gravity Toggle</h2>
+<div class="info-box">
+<b>Key:</b> <code>9</code> — toggle gravity on/off<br>
+<b>Effect:</b> sets all non-static RigidBody acceleration to (0,0,0) or (0,-9.81,0)<br>
+<b>Debug UI:</b> shows [ZERO-G] when disabled
+</div>
+
+<h2>Entity Debug Info</h2>
+<div class="info-box">
+<b>Display:</b> shown when entity is selected (Tab)<br>
+<b>Shows:</b> position (x, y, z) and velocity (vx, vy, vz) + speed<br>
+<b>Source:</b> reads CTransform.pos and physics->bodies[physics_id].velocity
+</div>
+
+<h2>Water Color Presets</h2>
+<div class="info-box">
+<b>Key:</b> <code>0</code> — cycle through 5 water colors<br>
+<b>Colors:</b> ocean blue / deep sea / tropical / murky / twilight<br>
+<b>Sets:</b> water.color Vec3 used by water shader
+</div>
+
+<h2>Underwater PBR Tint</h2>
+<div class="info-box">
+<b>Shader:</b> pbr_clustered.frag / pbr_clustered_vk.frag — u_underwater uniform<br>
+<b>Trigger:</b> set to 1.0 when camera below water level<br>
+<b>Effect:</b> teal tint (0,0.15,0.25) at 35% mix + distance-based absorption + red channel reduction<br>
+<b>GL:</b> regular uniform via cl_loc_underwater<br>
+<b>VK:</b> standalone uniform (not push constant — 252/256 limit)
+</div>
+
+<h2>Underwater Terrain Caustics</h2>
+<div class="info-box">
+<b>Shader:</b> terrain.frag / terrain_vk.frag — u_time uniform<br>
+<b>Effect:</b> when fragment below water level (world_y &lt; u_water_y), add caustic pattern<br>
+<b>Pattern:</b> sin/cos dual-wave pow(,3) sharpened + depth modulation for underwater darkening<br>
+<b>Uniform:</b> loc_time in terrain.h/terrain.c, passed total_time from main.c<br>
+<b>Intensity:</b> fades with depth below surface, multiply by (1.0 - depth * 0.3)
+</div>
+
+<h2>Camera Path Record/Playback</h2>
+<div class="info-box">
+<b>Key:</b> <code>,</code> — 3-state cycle: start recording &rarr; stop recording &rarr; playback &rarr; stop playback<br>
+<b>Buffer:</b> cam_path[600] stores {px, py, pz, yaw, pitch} per frame<br>
+<b>Record:</b> every frame stores camera position + orientation, auto-stops at 600 frames<br>
+<b>Playback:</b> overrides camera_update(), loops path continuously<br>
+<b>Debug UI:</b> [REC] or [PLAY] indicator with frame counter
+</div>
+
+<h2>Terrain Crater Preset</h2>
+<div class="info-box">
+<b>Key:</b> <code>;</code> — now cycles 5 presets (added Craters)<br>
+<b>Algorithm:</b> noise base + 5 procedural craters at fixed positions<br>
+<b>Crater shape:</b> depth falloff (1 - d/r) * 0.6 * height_scale, rim at r &lt; d &lt; r*1.5<br>
+<b>Crater positions:</b> (0.3,0.7), (0.7,0.3), (0.5,0.5), (0.2,0.2), (0.8,0.8) in normalized coords<br>
+<b>Radii:</b> 0.08 + i*0.02 per crater (slightly varied sizes)
+</div>
+
+<h2>Entity Trail Particles</h2>
+<div class="info-box">
+<b>Key:</b> <code>J</code> &mdash; toggle particle emitter to follow selected entity<br>
+<b>Mechanism:</b> when trail ON, sets particles.emit_pos to selected entity CTransform every frame<br>
+<b>Requires:</b> entity must be selected (Tab) with valid CTransform<br>
+<b>Debug UI:</b> [TRAIL] indicator when active
+</div>
+
+<h2>Collision Screen Shake</h2>
+<div class="info-box">
+<b>Trigger:</b> any new physics collision (collision_count increase between frames)<br>
+<b>Intensity:</b> adds 0.3 per collision, clamped at max 1.5<br>
+<b>Effect:</b> sinusoidal projection matrix perturbation (47.3Hz + 31.7Hz), decays 0.92&times;/frame<br>
+<b>Existing:</b> P-key boom also triggers shake at 1.0, explosion at 2.0
+</div>
+
+<h2>Entity Respawn on Fall</h2>
+<div class="info-box">
+<b>Trigger:</b> entity position Y &lt; -20.0 (fell off world)<br>
+<b>Respawn:</b> teleported to (0, 5, 0) with zero velocity<br>
+<b>Scope:</b> all entities with CTransform + CRigidBody in physics-sync loop<br>
+<b>Sync:</b> resets both CTransform.pos and physics body position+velocity
+</div>
+
+<h2>Explosion Force</h2>
+<div class="info-box">
+<b>Key:</b> <code>1</code> &mdash; radial impulse explosion from camera position<br>
+<b>Force:</b> max(0, 20 - distance&times;2) along direction away from epicenter<br>
+<b>Effects:</b> all physics bodies pushed + 5000 particle burst + screen shake 2.0<br>
+<b>Direction:</b> vec3_normalize(body_pos - camera_pos) scaled by force magnitude
+</div>
+
+<h2>Sun Disk Halo</h2>
+<div class="info-box">
+<b>Shader:</b> skybox.frag / skybox_vk.frag<br>
+<b>Sun disc:</b> smoothstep(0.9995, 0.9999, cos_sun) &mdash; sharp core<br>
+<b>Sun halo:</b> smoothstep(0.993, 0.999, cos_sun) &mdash; wider soft glow<br>
+<b>Intensity:</b> disc 0.05 &times; SUN_INTENSITY, halo 0.008 &times; SUN_INTENSITY, both &times; extinction
+</div>
+
+<h2>Entity Magnet</h2>
+<div class="info-box">
+<b>Key:</b> <code>2</code> &mdash; pull all dynamic bodies toward camera<br>
+<b>Force:</b> 10 / (1 + distance &times; 0.5) toward camera position<br>
+<b>Skips:</b> static physics bodies<br>
+<b>Effect:</b> inverse-distance attraction, bodies accelerate toward camera
+</div>
+
+<h2>Terrain Brush Size</h2>
+<div class="info-box">
+<b>Key:</b> <code>3</code> &mdash; cycle brush radius for terrain editing (Y/H keys)<br>
+<b>Sizes:</b> tiny (1) / small (3) / medium (6) / large (10) / huge (20)<br>
+<b>Default:</b> small (3.0) &mdash; same as original hardcoded value<br>
+<b>Affects:</b> terrain_modify_height() radius parameter
+</div>
+
+<h2>Entity Throw</h2>
+<div class="info-box">
+<b>Key:</b> <code>4</code> &mdash; throw selected entity along camera forward direction<br>
+<b>Impulse:</b> forward vector &times; 15.0 force magnitude<br>
+<b>Requires:</b> selected entity with valid RigidBody + physics_id<br>
+<b>Direction:</b> camera yaw+pitch used to compute forward vector
+</div>
+
+<h2>Restitution Presets</h2>
+<div class="info-box">
+<b>Key:</b> <code>5</code> &mdash; cycle bounce factor for all non-static bodies<br>
+<b>Values:</b> no bounce (0.0) / low (0.3) / medium (0.6) / high (0.9) / super bouncy (1.0)<br>
+<b>Default:</b> 0.3 (set in physics_body_create)<br>
+<b>Usage:</b> physics.c uses min(a.restitution, b.restitution) in collision resolution
+</div>
+
+<h2>Freeze/Unfreeze Entity</h2>
+<div class="info-box">
+<b>Key:</b> <code>6</code> &mdash; toggle is_static on selected entity's physics body<br>
+<b>Freeze:</b> sets is_static = true, entity stops moving and acts as immovable obstacle<br>
+<b>Unfreeze:</b> sets is_static = false, zeros velocity to prevent residual motion<br>
+<b>Requires:</b> selected entity with valid RigidBody component
+</div>
+
+<h2>Entity Scale</h2>
+<div class="info-box">
+<b>Key:</b> <code>7</code> &mdash; cycle physics half_extent for selected entity<br>
+<b>Sizes:</b> tiny (0.25) / small (0.5) / normal (1.0) / large (2.0) / huge (4.0)<br>
+<b>Effect:</b> changes collision AABB size, does not affect rendering mesh scale<br>
+<b>Requires:</b> selected entity with valid RigidBody + physics_id
+</div>
+
+<h2>Slow-Motion Physics</h2>
+<div class="info-box">
+<b>Key:</b> <code>8</code> &mdash; toggle slow-motion mode<br>
+<b>Effect:</b> physics timestep multiplied by 0.25 (quarter speed)<br>
+<b>Rendering:</b> continues at full frame rate, only physics slows down<br>
+<b>Debug UI:</b> [SLOW-MO] indicator when active
+</div>
+
+<h2>Entity Highlight Colors</h2>
+<div class="info-box">
+<b>Colors:</b> 8-color palette (yellow, red, green, cyan, pink, orange, blue, teal)<br>
+<b>Selection:</b> color = colors[entity_idx % 8], each entity gets unique highlight<br>
+<b>Purpose:</b> visually distinguish which entity is selected when multiple exist
+</div>
+
+<h2>Top-Down Camera</h2>
+<div class="info-box">
+<b>Key:</b> <code>[</code> &mdash; now cycles 3 modes: first-person &rarr; third-person &rarr; top-down<br>
+<b>Top-down:</b> camera 30 units above player position, looking straight down<br>
+<b>Matrix:</b> mat4_lookat(eye+30Y, eye, (0,0,-1)) &mdash; Z axis as up vector<br>
+<b>Movement:</b> WASD still moves the camera position on the ground plane
+</div>
+
+<h2>Terrain Flatten Brush</h2>
+<div class="info-box">
+<b>Key:</b> <code>A</code> &mdash; toggle flatten mode for terrain editing (Y/H keys)<br>
+<b>Algorithm:</b> 2-pass: compute avg height in radius, then lerp each point toward avg<br>
+<b>Lerp rate:</b> 20% per frame with radial falloff (1 - d&sup2;/r&sup2;), converges smoothly<br>
+<b>Default:</b> raise/lower mode (adds/subtracts height), flatten mode (smooths to average)<br>
+<b>Function:</b> <code>terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius)</code><br>
+<b>Debug UI:</b> [FLATTEN] indicator when active
+</div>
+
+<h2>Teleport Camera to Entity</h2>
+<div class="info-box">
+<b>Key:</b> <code>Backspace</code> &mdash; teleport camera to selected entity position<br>
+<b>Offset:</b> camera placed at entity.pos + (0, 2, 0) for overhead view<br>
+<b>Requires:</b> selected entity with valid CTransform
+</div>
+
+<h2>Entity Mass Presets</h2>
+<div class="info-box">
+<b>Key:</b> <code>D</code> &mdash; cycle mass for selected entity's physics body<br>
+<b>Values:</b> light (0.5) / normal (1.0) / heavy (5.0) / very heavy (20.0) / immovable (100.0)<br>
+<b>Effect:</b> heavier entities respond less to impulses (F = impulse/mass in physics)
+</div>
+
+<h2>Ambient Light Intensity</h2>
+<div class="info-box">
+<b>Key:</b> <code>S</code> &mdash; cycle ambient light multiplier<br>
+<b>Values:</b> dark (0.3x) / dim (0.5x) / normal (1.0x) / bright (2.0x) / overlit (4.0x)<br>
+<b>Scope:</b> affects all PBR shaders uniformly via ambient_col * ambient_mult
+</div>
+
+<h2>Teleport Entity to Camera</h2>
+<div class="info-box">
+<b>Key:</b> <code>W</code> &mdash; teleport selected entity to camera position<br>
+<b>Effect:</b> sets CTransform + physics body position, zeros velocity<br>
+<b>Requires:</b> selected entity with CTransform + CRigidBody
+</div>
+
+<h2>Scene Reset + Terrain</h2>
+<div class="info-box">
+<b>Key:</b> <code>R</code> &mdash; resets physics bodies AND regenerates terrain<br>
+<b>Terrain:</b> calls terrain_generate(terrain_preset) to undo manual brush edits<br>
+<b>Bodies:</b> repositions all non-static physics bodies to default positions
+</div>
+
+<h2>Camera Height Lock</h2>
+<div class="info-box">
+<b>Key:</b> <code>Q</code> &mdash; 3-mode cycle: free &rarr; terrain follow &rarr; height lock<br>
+<b>Free:</b> normal camera movement (default)<br>
+<b>Terrain follow:</b> camera Y follows terrain height + 1.7m<br>
+<b>Height lock:</b> camera Y frozen at current position, XZ movement still works<br>
+<b>Debug UI:</b> [LOCK-Y] indicator with locked height value
+</div>
+
+<h2>Velocity Damping Mode</h2>
+<div class="info-box">
+<b>Key:</b> <code>9</code> &mdash; now cycles 3 modes: gravity &rarr; zero-g &rarr; damping<br>
+<b>Damping:</b> velocity *= 0.95 per frame for all non-static bodies<br>
+<b>Effect:</b> gradual slowdown, objects coast to a stop over ~2 seconds<br>
+<b>Debug UI:</b> [ZERO-G] or [DAMPING] indicator
+</div>
+
+<h2>Terrain Erosion Brush</h2>
+<div class="info-box">
+<b>Key:</b> <code>A</code> &mdash; now cycles 3 modes: raise/lower &rarr; flatten &rarr; erode<br>
+<b>Algorithm:</b> thermal erosion — 4-neighbor height comparison<br>
+<b>Formula:</b> material moves from high to low neighbors, proportional to slope<br>
+<b>Rate:</b> amount = min(max_diff, h*0.5) * 0.5 per iteration<br>
+<b>Function:</b> <code>terrain_erode(Terrain *t, f32 wx, f32 wz, f32 radius, i32 iterations)</code><br>
+<b>Debug UI:</b> [ERODE] indicator when active
+</div>
+
+<h2>Entity-Camera Distance</h2>
+<div class="info-box">
+<b>Display:</b> shown in entity debug section when entity is selected<br>
+<b>Calculation:</b> vec3_len(camera_pos - entity_pos), updated every frame
+</div>
+
+<h2>Entity Velocity Direction</h2>
+<div class="info-box">
+<b>Display:</b> ASCII arrow character in entity debug when speed &gt; 0.1<br>
+<b>Arrows:</b> <code>^ v &lt; &gt;</code> for XZ, <code>U D</code> for vertical<br>
+<b>Logic:</b> picks axis with largest absolute velocity component
+</div>
+
+<h2>Terrain Height Statistics</h2>
+<div class="info-box">
+<b>Display:</b> appended to terrain preset line: <code>h:[min,max] avg=val</code><br>
+<b>Computation:</b> per-frame min/max/average over entire 64&times;64 heightmap<br>
+<b>Useful for:</b> verifying brush operations and preset generation results
+</div>
+
+<h2>Entity Stop/Impulse Toggle</h2>
+<div class="info-box">
+<b>Key:</b> <code>Space</code> &mdash; context-dependent action on selected entity<br>
+<b>If speed &gt; 2.0:</b> stops entity (zeros velocity), logs "STOPPED"<br>
+<b>If speed &le; 2.0:</b> applies upward impulse vec3(0, 8, 0)<br>
+<b>Threshold:</b> 2.0 m/s distinguishes "moving" from "stationary"
+</div>
+
+<h2>Triple Entity Spawn</h2>
+<div class="info-box">
+<b>Key:</b> <code>E</code> &mdash; now spawns 3 entities in a row<br>
+<b>Layout:</b> left/center/right, offset by camera right vector &times; 1.5 units<br>
+<b>Physics:</b> each entity gets camera forward impulse + 5 Y, same as before<br>
+<b>Capacity check:</b> stops spawning if physics capacity reached
+</div>
+
+<h2>FPS Graph Average</h2>
+<div class="info-box">
+<b>Display:</b> appended to FPS sparkline: <code>avg=X.Xms</code><br>
+<b>Calculation:</b> rolling 64-frame average of frame times<br>
+<b>Useful for:</b> quick performance assessment without mental math
+</div>
+
+<h2>Max Body Speed</h2>
+<div class="info-box">
+<b>Display:</b> "Max body speed: X.X m/s" when any body is moving &gt; 0.1<br>
+<b>Scan:</b> iterates all non-zero physics bodies each frame<br>
+<b>Useful for:</b> detecting runaway physics or extreme velocities
+</div>
+
+<h2>Collision Peak Tracker</h2>
+<div class="info-box">
+<b>Display:</b> "Collision peak: N (total: M)" with flash "!" indicator<br>
+<b>Peak:</b> maximum new collisions detected in a single frame<br>
+<b>Total:</b> cumulative collision count since scene start<br>
+<b>Flash:</b> "!" decays over ~0.33 seconds after each collision event
+</div>
+
+<h2>Water Wave Speed</h2>
+<div class="info-box">
+<b>Key:</b> <code>=</code> &mdash; now cycles 4 states: off &rarr; slow &rarr; normal &rarr; fast<br>
+<b>Speeds:</b> 0.25x (slow) / 1.0x (normal) / 3.0x (fast)<br>
+<b>Implementation:</b> <code>time_scale</code> field in WaterPlane, multiplied with dt before accumulating<br>
+<b>Affects:</b> all wave animations in water shader (sin/cos patterns)
+</div>
+
+<h2>All-Entity Stop</h2>
+<div class="info-box">
+<b>Key:</b> <code>Space</code> (no entity selected) &mdash; stops all moving bodies<br>
+<b>Behavior:</b> zeros velocity for all non-static bodies with speed &gt; 0.1<br>
+<b>Log:</b> reports count of stopped bodies
+</div>
+
+<h2>Sun Angle Display</h2>
+<div class="info-box">
+<b>Format:</b> <code>Sun: rad/rad (&deg;/&deg;)</code> in FPS debug line<br>
+<b>Conversion:</b> radians &times; 57.2958 (180/&pi;)<br>
+<b>Useful for:</b> understanding sun position without mental radian conversion
+</div>
+
+<h2>Terrain Noise Stamp Brush</h2>
+<div class="info-box">
+<b>Key:</b> <code>A</code> &mdash; now cycles 4 modes: raise/lower &rarr; flatten &rarr; erode &rarr; noise stamp<br>
+<b>Algorithm:</b> 3-octave sin/cos noise with seed from total_time<br>
+<b>Strength:</b> 1.5 with radial falloff (1 - d&sup2;/r&sup2;)<br>
+<b>Function:</b> <code>terrain_noise_stamp(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength, f32 seed)</code><br>
+<b>Debug UI:</b> [NOISE] indicator when active
+</div>
+
+<h2>Entity-Camera Position Swap</h2>
+<div class="info-box">
+<b>Key:</b> <code>Backspace</code> &mdash; swap camera and selected entity positions<br>
+<b>Bidirectional:</b> camera goes to entity+2Y, entity goes to old camera position<br>
+<b>Physics sync:</b> physics body position updated, velocity zeroed<br>
+<b>Requires:</b> selected entity with CTransform (+ CRigidBody if available)
+</div>
+
+<h2>Terrain Height Under Camera</h2>
+<div class="info-box">
+<b>Display:</b> "Terrain height: X.XX  Above: X.XX" in debug overlay<br>
+<b>Calculation:</b> terrain_get_height() at camera XZ, above = camera.y - terrain.y
+</div>
+
+<h2>Entity Above Ground Level</h2>
+<div class="info-box">
+<b>Display:</b> "ground=X.XX  agl=X.XX" in entity debug section<br>
+<b>AGL:</b> entity Y position minus terrain height at entity XZ<br>
+<b>Useful for:</b> checking if entities are falling through terrain or floating
+</div>
+
+<h2>Physics Capacity Display</h2>
+<div class="info-box">
+<b>Format:</b> <code>Physics: count/capacity</code> in entity debug line<br>
+<b>Shows:</b> current body count vs maximum capacity<br>
+<b>Useful for:</b> monitoring entity spawn limits
+</div>
+
+<h2>Entity Position Delta</h2>
+<div class="info-box">
+<b>Display:</b> "delta=(X,X,X)" per-frame position change for selected entity<br>
+<b>Hidden:</b> when delta &lt; 0.01 (entity stationary)<br>
+<b>Useful for:</b> tracking entity movement per frame
+</div>
+
+<h2>Entity Trajectory Prediction</h2>
+<div class="info-box">
+<b>Display:</b> "pred=(X,X,X) in 1s" — linear extrapolation of position<br>
+<b>Formula:</b> predicted = current_pos + velocity &times; 1.0s<br>
+<b>Shown:</b> only when entity is moving (speed &gt; 0.1)
+</div>
+
+<h2>Memory Usage Estimate</h2>
+<div class="info-box">
+<b>Display:</b> "Mem: ~N KB (entities N + physics N)" in debug overlay<br>
+<b>Estimate:</b> entities &times; sizeof(CTransform+CMeshRef+CRigidBody) + bodies &times; sizeof(RigidBody)<br>
+<b>Note:</b> rough estimate only, does not include GPU buffers or ECS overhead
+</div>
+
+<h2>Custom Gravity Direction</h2>
+<div class="info-box">
+<b>Key:</b> <span class="key">9</span> cycles 4 physics modes: gravity &rarr; zero-g &rarr; damping &rarr; custom gravity<br>
+<b>Custom mode:</b> arrow keys change gravity XZ, PgUp/PgDn change gravity Y<br>
+<b>Initial:</b> custom_gravity = (0, -9.81, 0)<br>
+<b>Debug:</b> "[CUSTOM-G]" in FPS line + "Gravity: (x,y,z) (arrows/PgUp/PgDn)"<br>
+<b>Note:</b> in custom mode, arrow keys no longer move entities (mode-specific behavior)
+</div>
+
+<h2>Tornado Mode</h2>
+<div class="info-box">
+<b>Key:</b> <span class="key">T</span> toggles tornado on/off<br>
+<b>Force:</b> tangential force = 15/(1+dist&times;0.3), direction = cross(Y, pos_normalized)<br>
+<b>Lift:</b> +2.0 m/s&sup2; upward when tornado active<br>
+<b>Affects:</b> all non-static physics bodies<br>
+<b>Debug:</b> "[TORNADO] Tangential force active"
+</div>
+
+<h2>Ray-Terrain Intersection</h2>
+<div class="info-box">
+<b>Method:</b> march camera forward ray, 0.5m steps, max 200 steps<br>
+<b>Detection:</b> when ray_y &le; terrain_get_height(ray_x, ray_z), hit found<br>
+<b>Boundary:</b> stops if ray exits terrain bounds (grid_size &times; scale)<br>
+<b>Display:</b> "Look-at terrain: (x,y,z) dist=d" (horizontal distance from camera)<br>
+<b>Note:</b> only shown when terrain is hit (not looking at sky/water)
+</div>
+
+<h2>Entity Spawn Cap</h2>
+<div class="info-box">
+<b>Cap:</b> 64 entities maximum (ENTITY_SPAWN_CAP)<br>
+<b>Enforced:</b> triple spawn (E key) and duplicate (] key) blocked when cap reached<br>
+<b>Feedback:</b> LOG_INFO "Entity cap reached (N/64)"<br>
+<b>Note:</b> physics body cap (physics.capacity) already existed
+</div>
+
+<h2>Collision Position Tracking</h2>
+<div class="info-box">
+<b>Storage:</b> PhysicsWorld.last_collision_pos = midpoint of colliding body pair<br>
+<b>Tracking:</b> main.c stores last_collision_pos + last_collision_frame on each collision<br>
+<b>Display:</b> "Last collision: (x,y,z) N frames ago" shown while collision_flash &gt; 0<br>
+<b>Physics:</b> vec3_scale(vec3_add(pos_a, pos_b), 0.5f)
+</div>
+
+<h2>Gravity Well</h2>
+<div class="info-box">
+<b>Key:</b> <span class="key">F5</span> toggles gravity well on/off<br>
+<b>Force:</b> direction = normalize(cam_pos - body_pos), strength = 20/(1+dist)<br>
+<b>Minimum distance:</b> 0.5m (prevents oscillation)<br>
+<b>Affects:</b> all non-static physics bodies<br>
+<b>Debug:</b> "[GRAVITY WELL] Attracting to camera"
+</div>
+
+<h2>Entity Kinetic Energy</h2>
+<div class="info-box">
+<b>Formula:</b> KE = 0.5 &times; mass &times; speed&sup2; (Joules)<br>
+<b>Display:</b> appended to velocity line: "vel=(x,y,z) speed=s KE=nJ"<br>
+<b>Source:</b> reads mass from physics->bodies[physics_id].mass
+</div>
+
+<h2>Entity Mass Display</h2>
+<div class="info-box">
+<b>Display:</b> "size=(x,y,z) mass=m rest=r [STATIC]" for selected entity<br>
+<b>Source:</b> RigidBody.mass (set via D key preset)<br>
+<b>Note:</b> mass was previously not shown in entity debug info
+</div>
+
+<h2>Respawn Counter</h2>
+<div class="info-box">
+<b>Storage:</b> PhysicsWorld.respawn_count, incremented when body hits floor at Y=-10<br>
+<b>Display:</b> "Respawns: N" shown when count &gt; 0<br>
+<b>Physics:</b> floor bounce at Y=-10 in physics_step()
+</div>
+
+<h2>Camera Angle Display</h2>
+<div class="info-box">
+<b>Display:</b> "Camera: yaw=N&deg; pitch=N&deg; fov=N&deg;" in debug overlay<br>
+<b>Conversion:</b> radians &times; 57.2958 to degrees<br>
+<b>Note:</b> always shown (not conditional)
+</div>
+
+<h2>Collision-Intensity Screen Shake</h2>
+<div class="info-box">
+<b>Before:</b> fixed +0.3 per collision event<br>
+<b>After:</b> 0.15 &times; new_collision_count (scales with simultaneous collisions)<br>
+<b>Cap:</b> still 1.5 maximum shake intensity
+</div>
+
+<h2>System Kinetic Energy</h2>
+<div class="info-box">
+<b>Formula:</b> total_KE = sum(0.5 &times; mass_i &times; speed_i&sup2;) across all physics bodies<br>
+<b>Display:</b> "System KE: N J" only when &gt; 0.01<br>
+<b>Computed:</b> in same loop as max body speed
+</div>
+
+<h2>Center of Mass &amp; Momentum</h2>
+<div class="info-box">
+<b>Center of mass:</b> mass-weighted average position: sum(pos_i &times; mass_i) / total_mass<br>
+<b>Momentum:</b> sum(mass_i &times; velocity_i) across all bodies<br>
+<b>Display:</b> "Center of mass: (x,y,z)" and "Momentum: (x,y,z) |p|=mag"<br>
+<b>Condition:</b> only shown when physics bodies &gt; 1
+</div>
+
+<h2>Terrain Brush Radius Indicator</h2>
+<div class="info-box">
+<b>Display:</b> appended to terrain preset line as "brush=R"<br>
+<b>Values:</b> 1/3/6/10/20 (cycled by 3 key)<br>
+<b>Note:</b> always visible, helps track current brush setting
+</div>
+
+<h2>System Mass &amp; Average Speed</h2>
+<div class="info-box">
+<b>Total mass:</b> sum of all body masses, shown with KE as "mass: N kg"<br>
+<b>Average speed:</b> mean velocity of bodies with speed &gt; 0.1 m/s<br>
+<b>Moving count:</b> "Avg speed: N m/s (X/Y moving)" — X bodies in motion out of Y total
+</div>
+
+<h2>Physics Body Spatial Bounds</h2>
+<div class="info-box">
+<b>Computation:</b> min/max position across all non-zero bodies<br>
+<b>Span:</b> diagonal distance of bounding box = vec3_len(max - min)<br>
+<b>Display:</b> "Bodies span: N bounds: (min)-(max)"<br>
+<b>Note:</b> useful for seeing how spread out entities are
+</div>
+
+<h2>Terrain Height Standard Deviation</h2>
+<div class="info-box">
+<b>Formula:</b> std = sqrt(sum((h_i - avg)&sup2;) / N) — 2-pass computation<br>
+<b>Display:</b> appended to terrain line as "std=N"<br>
+<b>Note:</b> higher std = more varied terrain (mountains), lower = flatter
+</div>
+
+<h2>Terrain Water Coverage</h2>
+<div class="info-box">
+<b>Computation:</b> count heightmap vertices where height &lt; water.water_y<br>
+<b>Display:</b> "Water: y=N coverage: N%" appended to water info line<br>
+<b>Note:</b> useful for seeing how much terrain is submerged
+</div>
+
+<h2>FPS Min/Max Tracker</h2>
+<div class="info-box">
+<b>Tracking:</b> session-wide minimum and maximum FPS (static vars)<br>
+<b>Warmup:</b> skips first 30 frames to avoid initialization spikes<br>
+<b>Display:</b> "FPS range: min - max" shown below main FPS line
+</div>
+
+<h2>Closest Entity Pair</h2>
+<div class="info-box">
+<b>Algorithm:</b> O(n&sup2;) brute-force pairwise distance<br>
+<b>Display:</b> "Closest pair: A-B dist=N" with body indices<br>
+<b>Condition:</b> only computed when &gt; 2 physics bodies
+</div>
+
+<h2>Speed Histogram</h2>
+<div class="info-box">
+<b>Buckets:</b> &lt;1 m/s, 1-5 m/s, 5-15 m/s, 15+ m/s<br>
+<b>Display:</b> "Speed: &lt;1m/s:N &lt;5:N &lt;15:N 15+:N"<br>
+<b>Note:</b> counts all bodies (including static at 0)
+</div>
+
+<h2>Potential Energy &amp; Total Energy</h2>
+<div class="info-box">
+<b>KE:</b> sum of &frac12;mv&sup2; across all dynamic bodies<br>
+<b>PE:</b> sum of m&times;9.81&times;height across all dynamic bodies<br>
+<b>Display:</b> "Energy: KE=N PE=N Total=N J"<br>
+<b>Mass:</b> shown separately as "System mass: N kg"
+</div>
+
+<h2>Static vs Dynamic Count</h2>
+<div class="info-box">
+<b>Display:</b> "Static: N Dynamic: N" when any static bodies exist<br>
+<b>Note:</b> static bodies excluded from KE/PE/speed calculations
+</div>
+
+<h2>Farthest Entity from Camera</h2>
+<div class="info-box">
+<b>Tracking:</b> max distance from camera position across all dynamic bodies<br>
+<b>Display:</b> "Farthest body: #N at N m" only when &gt; 1m
+</div>
+
+<h2>Lowest AGL (Closest to Terrain)</h2>
+<div class="info-box">
+<b>AGL:</b> above-ground-level = body.y - terrain_get_height(body.x, body.z)<br>
+<b>Tracking:</b> minimum AGL across all dynamic bodies<br>
+<b>Display:</b> "Lowest AGL: #N at N m"
+</div>
+
+<h2>Terrain Slope at Entity</h2>
+<div class="info-box">
+<b>Gradient:</b> slope_dx = h(x+0.5,z) - h(x-0.5,z), slope_dz = h(x,z+0.5) - h(x,z-0.5)<br>
+<b>Magnitude:</b> sqrt(dx&sup2; + dz&sup2;)<br>
+<b>Angle:</b> atan(slope) &times; 57.2958 &rarr; degrees<br>
+<b>Display:</b> "slope=N (N&deg;)"
+</div>
+
+<h2>Time-of-Day Clock</h2>
+<div class="info-box">
+<b>Mapping:</b> hours = (azimuth / 2&pi; &times; 24 + 12) % 24<br>
+<b>Periods:</b> Night/Dawn/Morning/Noon/Afternoon/Dusk/Evening/Night (8 time zones)<br>
+<b>Display:</b> "Time: HH:MM (Period)"
+</div>
+
+<h2>Gravity Vector Display</h2>
+<div class="info-box">
+<b>Modes:</b> 0=(0,-9.81,0), 1=(0,0,0) zero-g, 2=(0,0,0)+damping, 3=custom_gravity<br>
+<b>Display:</b> "Gravity: (x,y,z) mode=N"
+</div>
+
+<h2>Entity Bounding Sphere Radius</h2>
+<div class="info-box">
+<b>Radius:</b> vec3_len(half_extent) &mdash; diagonal of the half-extent AABB<br>
+<b>Display:</b> "size=(x,y,z) r=N mass=m rest=r"
+</div>
+
+<h2>Water Depth at Camera</h2>
+<div class="info-box">
+<b>Computation:</b> water.water_y - camera.position.y (positive when below surface)<br>
+<b>Display:</b> "[UNDERWATER] depth: N m" only when camera is below water
+</div>
+
+<h2>Terrain Triangle Count</h2>
+<div class="info-box">
+<b>Formula:</b> (grid_size - 1) &times; (grid_size - 1) &times; 2 triangles<br>
+<b>Display:</b> "Terrain: Preset WxW (N tris) h:[min,max] avg=N std=N brush=R"
+</div>
+
+<h2>Shadow Cascade Splits</h2>
+<div class="info-box">
+<b>Splits:</b> 5 values from render.cascade_splits[0..4] defining CSM near/far planes<br>
+<b>Display:</b> "Shadow cascades: [0.10, 0.25, 0.50, 0.75, 1.00]"
+</div>
+
+<h2>Entity Velocity Direction (Hat Vector)</h2>
+<div class="info-box">
+<b>Computation:</b> velocity / speed = unit direction vector<br>
+<b>Display:</b> "dir=[^] hat=(0.00, 1.00, 0.00)" alongside ASCII arrow<br>
+<b>Condition:</b> only shown when speed &gt; 0.1 m/s
+</div>
+
+<h2>Camera Forward Vector &amp; Mouse Position</h2>
+<div class="info-box">
+<b>Forward:</b> (cos(yaw)&times;cos(pitch), sin(pitch), sin(yaw)&times;cos(pitch))<br>
+<b>Mouse:</b> InputState.mouse_x, mouse_y — cursor position in window coords<br>
+<b>Display:</b> "Forward: (x,y,z) Mouse: (X,Y)"
+</div>
+
+<h2>Entity Component Flags</h2>
+<div class="info-box">
+<b>Query:</b> world_get_component for COMP_TRANSFORM, COMP_MESH_REF, COMP_RIGID_BODY<br>
+<b>Display:</b> "comps: [Transform][Mesh][Physics]" — only present components shown<br>
+<b>Note:</b> useful for debugging ECS entity state
+</div>
+
+<h2>FPS Stability Indicator</h2>
+<div class="info-box">
+<b>Stable:</b> FPS range within 20% of minimum &rarr; "[stable]"<br>
+<b>Unstable:</b> range exceeds 20% variance &rarr; "[UNSTABLE]"<br>
+<b>Display:</b> appended to FPS range line
+</div>
+
+<h2>Camera Distance Traveled</h2>
+<div class="info-box">
+<b>Tracking:</b> camera_distance_traveled += vec3_len(pos - prev_pos) each frame<br>
+<b>Display:</b> "Traveled: N m" appended to forward vector line<br>
+<b>Skip:</b> frame 0 skipped to avoid initial spike
+</div>
+
+<h2>Terrain Type Classifier</h2>
+<div class="info-box">
+<b>Thresholds:</b> std &lt; 1.0 = "flat", &lt; 3.0 = "hilly", &lt; 6.0 = "mountainous", else "extreme"<br>
+<b>Display:</b> "Terrain: Preset (classification) WxW (N tris) ..."
+</div>
+
+<h2>Total Impulse Tracker</h2>
+<div class="info-box">
+<b>Tracking:</b> PhysicsWorld.total_impulse_applied += vec3_len(impulse) in apply_impulse<br>
+<b>Display:</b> "Respawns: N Impulse: N Ns" (Newton-seconds)
+</div>
+
+<h2>Session Info</h2>
+<div class="info-box">
+<b>Frame count:</b> engine.frame_count as u32<br>
+<b>Uptime:</b> total_time (accumulated delta_time) in seconds<br>
+<b>Display:</b> "Session: frame N uptime Ns"
+</div>
+
+<h2>Particle System Stats (9OA)</h2>
+<div class="info-box">
+<b>Display:</b> "Particles: RATE/s (max PARTICLES_MAX)"<br>
+<b>Source:</b> particles.emit_rate + PARTICLES_MAX (8192) from particles.h
+</div>
+
+<h2>Collision Camera Distance (9OB)</h2>
+<div class="info-box">
+<b>Calculation:</b> vec3_len(last_collision_pos - camera.position)<br>
+<b>Display:</b> appended to Last collision line: "dist=N.N"
+</div>
+
+<h2>Terrain Modify Counter (9OC)</h2>
+<div class="info-box">
+<b>Field:</b> Terrain.modify_count (u32)<br>
+<b>Incremented in:</b> terrain_modify_height, terrain_flatten, terrain_erode, terrain_noise_stamp<br>
+<b>Display:</b> "mods:N" in Terrain info line
+</div>
+
+<h2>Free-Falling Entity Count (9OD)</h2>
+<div class="info-box">
+<b>Detection:</b> velocity.e[1] < -1.0f<br>
+<b>Static bodies excluded</b><br>
+<b>Display:</b> "Falling: N" appended to Static/Dynamic line
+</div>
+
+<h2>Entity Spawn Time &amp; Average Age (9OE)</h2>
+<div class="info-box">
+<b>Field:</b> RigidBody.spawn_frame (u32) — set at creation via physics_body_create frame parameter<br>
+<b>Calculation:</b> (engine.frame_count - spawn_frame) * delta_time per dynamic body, averaged<br>
+<b>Display:</b> "Avg entity age: N.N s"
+</div>
+
+<h2>Speed Record (9OF)</h2>
+<div class="info-box">
+<b>Storage:</b> static f32 speed_record — persists across frames<br>
+<b>Update:</b> if (speed > speed_record) speed_record = speed<br>
+<b>Display:</b> appended to Max body speed line: "record: N.N"
+</div>
+
+<h2>Entity Height Range (9OG)</h2>
+<div class="info-box">
+<b>Calculation:</b> min/max Y of all dynamic bodies<br>
+<b>Display:</b> appended to Avg entity age line: "height: [min, max]"
+</div>
+
+<h2>Collision Rate (9OH)</h2>
+<div class="info-box">
+<b>Calculation:</b> physics->collision_count / total_time (collisions per second)<br>
+<b>Display:</b> appended to Collision peak line: "rate: N.N/s"
+</div>
+
+<h2>Velocity Direction Compass (9OI)</h2>
+<div class="info-box">
+<b>Accumulator:</b> Vec3 vel_sum across all moving bodies<br>
+<b>Bearing:</b> atan2(avg_vel.x, avg_vel.z) → degrees, 8-point compass (N/NE/E/SE/S/SW/W/NW)<br>
+<b>Display:</b> "Avg direction: N° (COMPASS)"
+</div>
+
+<h2>Impulse Efficiency (9OJ)</h2>
+<div class="info-box">
+<b>Calculation:</b> total_impulse_applied / collision_count = avg impulse per collision<br>
+<b>Display:</b> "avg N.N/col" appended to Respawn/Impulse line
+</div>
+
+<h2>Entity Spatial Density (9OK)</h2>
+<div class="info-box">
+<b>Calculation:</b> (count-1) / (span_x × span_y × span_z) of body AABB<br>
+<b>Display:</b> "density: N.NNNN/m³" appended to Bodies span line
+</div>
+
+<h2>Terrain Water Volume (9OL)</h2>
+<div class="info-box">
+<b>Global:</b> f32 terrain_water_vol<br>
+<b>Calculation:</b> Σ(water_y - heightmap[i]) for cells below water × cell_area<br>
+<b>Cell area:</b> terrain.scale² / (grid_size-1)²<br>
+<b>Display:</b> "vol: N m³" appended to Water line
+</div>
+
+<h2>Max Acceleration Tracking (9OM)</h2>
+<div class="info-box">
+<b>Calculation:</b> vec3_len(body.acceleration) per dynamic body, track max<br>
+<b>Display:</b> "max accel: N.N m/s²" appended to Max body speed line
+</div>
+
+<h2>Momentum Direction Compass (9PA)</h2>
+<div class="info-box">
+<b>Calculation:</b> atan2(momentum.x, momentum.z) → degrees + 8-point compass<br>
+<b>Display:</b> "dir: N° (COMPASS)" appended to Momentum line
+</div>
+
+<h2>Grounded Entity Count (9PB)</h2>
+<div class="info-box">
+<b>Detection:</b> AGL (above-ground-level) < 0.5m<br>
+<b>Display:</b> "Grounded: N" appended to Static/Dynamic/Falling line
+</div>
+
+<h2>Terrain Height Delta (9PC)</h2>
+<div class="info-box">
+<b>Field:</b> Terrain.total_delta (f32) — cumulative |strength| of all modifications<br>
+<b>Accumulated in:</b> all 4 modify functions (modify_height: fabsf(strength), flatten: radius×0.1, erode: iterations×0.1, noise_stamp: fabsf(strength))<br>
+<b>Display:</b> "delta:N" in Terrain info line
+</div>
+
+<h2>Nearest Entity (9PD)</h2>
+<div class="info-box">
+<b>Calculation:</b> min distance from camera to any dynamic body<br>
+<b>Display:</b> "Nearest body: #ID at N.N m" combined with Farthest body line
+</div>
+
+<h2>Mass-Weighted Average Speed (9PE)</h2>
+<div class="info-box">
+<b>Calculation:</b> Σ(mass × speed) / total_mass<br>
+<b>Display:</b> "mass-wtd: N.N m/s" in Avg speed line
+</div>
+
+<h2>Vertical Speed Extremes (9QA)</h2>
+<div class="info-box">
+<b>Tracking:</b> max velocity.y upward and downward across all dynamic bodies<br>
+<b>Display:</b> "vy: +N.N/-N.N" appended to Max body speed line
+</div>
+
+<h2>Max KE Body (9QB)</h2>
+<div class="info-box">
+<b>Tracking:</b> which dynamic body has highest kinetic energy<br>
+<b>Display:</b> "max KE: #ID (N.NJ)" appended to Energy line
+</div>
+
+<h2>Terrain Modification Rate (9QC)</h2>
+<div class="info-box">
+<b>Calculation:</b> terrain.modify_count / total_time (mods/second)<br>
+<b>Display:</b> "(N.N/s)" after mods count in Terrain line
+</div>
+
+<h2>Entity Cluster Count (9QD)</h2>
+<div class="info-box">
+<b>Algorithm:</b> Union-Find with path compression, 5m merge radius<br>
+<b>Limit:</b> up to 64 bodies processed<br>
+<b>Display:</b> "Entity clusters: N (5m radius)"
+</div>
+
+<h2>Collision Energy Estimate (9RA)</h2>
+<div class="info-box">
+<b>Formula:</b> (impulse/collision) × (mass-wtd speed) × 0.5<br>
+<b>Display:</b> "~N.NJ/col" appended to Collision peak line
+</div>
+
+<h2>Entity Rest Detection (9RB)</h2>
+<div class="info-box">
+<b>Field:</b> RigidBody.rest_frames (u32)<br>
+<b>Update:</b> physics_step increments if speed² < 0.0025, resets otherwise<br>
+<b>Threshold:</b> rest_frames > 60 = "resting"<br>
+<b>Display:</b> "Resting: N" appended to Static/Dynamic line
+</div>
+
+<h2>Camera Height AGL (9RC)</h2>
+<div class="info-box">
+<b>Calculation:</b> camera.position.y - terrain_get_height at camera XZ<br>
+<b>Display:</b> "AGL=N.N" appended to Camera angles line
+</div>
+
+<h2>Speed Standard Deviation (9RD)</h2>
+<div class="info-box">
+<b>Formula:</b> σ = sqrt(E[speed²] - E[speed]²) across all dynamic bodies<br>
+<b>Display:</b> "σ=N.N" appended to Speed histogram line
+</div>
+
+<h2>Momentum Magnitude Record (9SA)</h2>
+<div class="info-box">
+<b>Storage:</b> static f32 mom_record — session-persistent<br>
+<b>Display:</b> "record: N.N" appended to Momentum line
+</div>
+
+<h2>Camera Terrain Slope (9SB)</h2>
+<div class="info-box">
+<b>Calculation:</b> finite difference gradient ±0.5m at camera XZ<br>
+<b>Display:</b> "slope=N.N°" appended to Camera line
+</div>
+
+<h2>Activity Summary (9SC)</h2>
+<div class="info-box">
+<b>Display:</b> "Activity: N moving / N resting / N falling / N grounded (N total)"
+</div>
+
+<h2>Center of Mass Drift (9SD)</h2>
+<div class="info-box">
+<b>Globals:</b> Vec3 prev_com, f32 com_drift<br>
+<b>Calculation:</b> mass-weighted position centroid, accumulate distance from prev frame<br>
+<b>Display:</b> "CoM: (x,y,z) drift: N m (N.N m/s)"
+</div>
+
+<h2>PE Reference Height (9TA)</h2>
+<div class="info-box">
+<b>Calculation:</b> PE relative to min entity Y: pe_ref = PE - mass × 9.81 × min_y<br>
+<b>Display:</b> "PE=N.N (ref: N.N)" in Energy line
+</div>
+
+<h2>Closest Pair Relative Velocity (9TB)</h2>
+<div class="info-box">
+<b>Calculation:</b> vec3_len(vel_a - vel_b) for the closest entity pair<br>
+<b>Display:</b> "rel.v=N.N m/s" appended to Closest pair line
+</div>
+
+<h2>Camera Terrain Biome (9TC)</h2>
+<div class="info-box">
+<b>Classification:</b> height relative to avg±std: valley/plains/hills/peak<br>
+<b>Display:</b> "[BIOME h=N.N]" appended to Camera line
+</div>
+
+<h2>Impulse Rate (9TD)</h2>
+<div class="info-box">
+<b>Calculation:</b> total_impulse_applied / total_time (Ns/second)<br>
+<b>Display:</b> "N.N Ns/s" appended to Impulse line
+</div>
+
+<h2>KE Histogram (9UA)</h2>
+<div class="info-box">
+<b>Buckets:</b> &lt;1J / &lt;10 / &lt;50 / 50+<br>
+<b>Display:</b> "KE: &lt;1J:N &lt;10:N &lt;50:N 50+:N"
+</div>
+
+<h2>Closest Pair Terrain Height (9UB)</h2>
+<div class="info-box">
+<b>Calculation:</b> terrain_get_height at midpoint of closest pair<br>
+<b>Display:</b> "terrain=N.N" appended to Closest pair line
+</div>
+
+<h2>Angular Momentum (9UC)</h2>
+<div class="info-box">
+<b>Formula:</b> Σ(r × p) where r=position, p=mass×velocity<br>
+<b>Display:</b> "Angular momentum: (x,y,z) |L|=N.N"
+</div>
+
+<h2>Max Displacement from Spawn (9UD)</h2>
+<div class="info-box">
+<b>Field:</b> RigidBody.spawn_pos (Vec3) — set at creation<br>
+<b>Calculation:</b> max vec3_len(position - spawn_pos) across dynamic bodies<br>
+<b>Display:</b> "Max displacement: #ID at N.N m from spawn"
+</div>
+
+<h2>PE Histogram (9VA)</h2>
+<div class="info-box">
+<b>Buckets:</b> &lt;0 / &lt;10 / &lt;100 / 100+ J<br>
+<b>Display:</b> "PE: &lt;0:N &lt;10:N &lt;100:N 100+:N"
+</div>
+
+<h2>Collision Hot Body (9VB)</h2>
+<div class="info-box">
+<b>Field:</b> RigidBody.collision_count (u32) — incremented per collision in physics_step<br>
+<b>Display:</b> "Collision hot body: #ID (N collisions)"
+</div>
+
+<h2>Per-Body Average KE (9VC)</h2>
+<div class="info-box">
+<b>Calculation:</b> total_ke / (dynamic body count)<br>
+<b>Display:</b> "avg: N.N J/body" appended to Energy line
+</div>
+
+<h2>Height Percentiles (9VD)</h2>
+<div class="info-box">
+<b>Method:</b> Bubble-sort heights (up to 64), compute median/p25/p75<br>
+<b>Display:</b> "Height median: N (p25=N p75=N)"
+</div>
+
+<h2>Speed Percentiles (9WA)</h2>
+<div class="info-box">
+<b>Method:</b> Bubble-sort speeds (up to 64), compute p50/p90/p99<br>
+<b>Display:</b> "Speed p50=N p90=N p99=N m/s"
+</div>
+
+<h2>Average AGL (9WB)</h2>
+<div class="info-box">
+<b>Calculation:</b> Σ(position.y - terrain_height) / dynamic_count<br>
+<b>Display:</b> "avg AGL: N.N" appended to Lowest AGL line
+</div>
+
+<h2>Collision Hot Pair (9WC)</h2>
+<div class="info-box">
+<b>Fields:</b> PhysicsWorld.hot_pair_a/b/count — tracks pair with highest combined collision_count<br>
+<b>Display:</b> "Hot pair: #A-#B (N combined)"
+</div>
+
+<h2>Velocity/Acceleration Ratio (9WD)</h2>
+<div class="info-box">
+<b>Calculation:</b> avg_speed / max_accel — high = coasting, low = heavy force<br>
+<b>Display:</b> "v/a: N.N" appended to Avg speed line
+</div>
+
+<h2>KE Trend (9WE)</h2>
+<div class="info-box">
+<b>Method:</b> Compare total_ke to prev frame's value<br>
+<b>Threshold:</b> ±0.5J change triggers arrow<br>
+<b>Display:</b> "↑" (growing), "↓" (shrinking), "→" (stable) appended to Energy line
+</div>
+
+<h2>Height Outlier Detection (9XA)</h2>
+<div class="info-box">
+<b>Method:</b> Compute mean+std of entity heights, count bodies with |z-score| > 2<br>
+<b>Display:</b> "Height outliers: N (z>2, std=N.N)"
+</div>
+
+<h2>CoM Underwater Detection (9XB)</h2>
+<div class="info-box">
+<b>Calculation:</b> water.water_y - com.y, if positive → underwater<br>
+<b>Display:</b> "[UNDERWATER]" appended to CoM line
+</div>
+
+<h2>Per-Body Collision Rate (9XC)</h2>
+<div class="info-box">
+<b>Calculation:</b> hottest_body collision_count / total_time<br>
+<b>Display:</b> "N.N/s" appended to hot body line
+</div>
+
+<h2>Terrain Edit Efficiency (9XD)</h2>
+<div class="info-box">
+<b>Calculation:</b> terrain.total_delta / terrain.modify_count<br>
+<b>Display:</b> "avg N.N/mod" appended to Terrain line
+</div>
+
+<h2>Velocity Axis Distribution (9YA)</h2>
+<div class="info-box">
+<b>Calculation:</b> Σ(vx²), Σ(vy²), Σ(vz²) across all dynamic bodies, dominant = max<br>
+<b>Display:</b> "Velocity axis: X=N Y=N Z=N  dominant: X/Y/Z"
+</div>
+
+<h2>Entities In Front of Camera (9YB)</h2>
+<div class="info-box">
+<b>Calculation:</b> vec3_dot(body_pos - camera_pos, cam_forward) > 0<br>
+<b>Display:</b> "In front: N" appended to Nearest/Farthest line
+</div>
+
+<h2>PE/KE Ratio (9YC)</h2>
+<div class="info-box">
+<b>Calculation:</b> pe_ref / total_ke<br>
+<b>Classification:</b> >3 = PE-heavy, <0.33 = KE-heavy, else balanced<br>
+<b>Display:</b> "PE/KE=N.N [balanced/PE-heavy/KE-heavy]" in Energy line
+</div>
+
+<h2>Entity Spawn Rate (9YD)</h2>
+<div class="info-box">
+<b>Calculation:</b> (physics->count - 1) / total_time<br>
+<b>Display:</b> "spawn rate: N.N/s" appended to Session line
+</div>
+
+<h2>Terrain Gradient Direction (9YE)</h2>
+<div class="info-box">
+<b>Calculation:</b> atan2(chdx, chdz) → 8-point compass, points downhill<br>
+<b>Display:</b> "↓N/NE/E/SE/S/SW/W/NW" appended to Camera slope
+</div>
+
+<h2>AGL Histogram (9ZA)</h2>
+<div class="info-box">
+<b>Buckets:</b> &lt;1m / &lt;5m / &lt;15m / 15m+ above ground<br>
+<b>Display:</b> "AGL: &lt;1m:N &lt;5m:N &lt;15m:N 15m+:N"
+</div>
+
+<h2>Resting Body Residual KE (9ZB)</h2>
+<div class="info-box">
+<b>Calculation:</b> Σ KE of bodies with rest_frames > 60<br>
+<b>Display:</b> "KE=N.NJ" appended to Resting count
+</div>
+
+<h2>Nearest Entity Bearing (9ZC)</h2>
+<div class="info-box">
+<b>Calculation:</b> atan2(nearest.pos - camera.pos) → 8-point compass<br>
+<b>Display:</b> "Nearest bearing: N° (COMPASS)"
+</div>
+
+<h2>Terrain Max Slope Location (9ZD)</h2>
+<div class="info-box">
+<b>Calculation:</b> Find max gradient across heightmap using central differences<br>
+<b>Display:</b> "Terrain max slope: N.N° at (x, z)" if > 5°
+</div>
+
+<h2>Speed Spread (9ZE)</h2>
+<div class="info-box">
+<b>Calculation:</b> speeds[N-1] - speeds[0] (max - min) from sorted speed array<br>
+<b>Display:</b> "spread=N.N" appended to Speed percentiles line
+</div>
+
+<h2>Velocity Flow Vector (10AA)</h2>
+<div class="info-box">
+<b>Calculation:</b> vel_sum (accumulated across all dynamic bodies) displayed as raw (x,y,z) vector<br>
+<b>Display:</b> "flow: (x,y,z)" appended to Velocity axis line
+</div>
+
+<h2>Terrain Shoreline (10AB)</h2>
+<div class="info-box">
+<b>Calculation:</b> Count edges where submerged cell borders non-submerged cell (4-neighbor check)<br>
+<b>Global:</b> terrain_shoreline (u32)<br>
+<b>Display:</b> "shoreline: N edges" appended to Water line
+</div>
+
+<h2>Average Displacement from Spawn (10AC)</h2>
+<div class="info-box">
+<b>Calculation:</b> Σ vec3_len(pos - spawn_pos) / dyn_count<br>
+<b>Display:</b> "avg N.N m from spawn" appended to Displacement line
+</div>
+
+<h2>Momentum Conservation Drift (10AD)</h2>
+<div class="info-box">
+<b>Calculation:</b> |mom_mag - prev_mom_mag| / delta_time per frame<br>
+<b>Global:</b> prev_mom_mag (static f32)<br>
+<b>Display:</b> "drift: N.NN/s" in Momentum line
+</div>
+
+<h2>Forward Entity Density (10AE)</h2>
+<div class="info-box">
+<b>Calculation:</b> in_front_count / farthest_distance (entities per meter along view axis)<br>
+<b>Display:</b> "fwd density: N.NN/m" appended to Nearest/Farthest line
+</div>
+
+<h2>Fastest Entity (10BA)</h2>
+<div class="info-box">
+<b>Calculation:</b> Track which body ID has highest vec3_len(velocity) in stats loop<br>
+<b>Display:</b> "fastest #ID at N.N m/s" on Speed line
+</div>
+
+<h2>Terrain Std Delta (10BB)</h2>
+<div class="info-box">
+<b>Calculation:</b> terrain_hstd - prev_hstd per frame, stored as terrain_hstd_delta<br>
+<b>Display:</b> "(±N.NNN)" appended to Terrain std display
+</div>
+
+<h2>Entity Age Histogram (10BC)</h2>
+<div class="info-box">
+<b>Calculation:</b> 4 buckets: <5s (young), <20s (mid), <60s (old), 60+s (ancient)<br>
+<b>Display:</b> "histogram: <5s:N <20s:N <60s:N 60+s:N" on Entity age line
+</div>
+
+<h2>Impulse Per Collision Trend (10BD)</h2>
+<div class="info-box">
+<b>Calculation:</b> Compare imp_per_col to prev_ipc, show ↑/↓/→ arrow (threshold 0.05 Ns)<br>
+<b>Display:</b> Trend arrow after avg impulse per collision
+</div>
+
+<h2>Total Energy Trend (10BE)</h2>
+<div class="info-box">
+<b>Calculation:</b> KE+PE compared to prev frame, ↑/↓/→ arrow (threshold 1.0 J)<br>
+<b>Display:</b> Total=N.NJ ↑/↓/→ on Energy line
+</div>
+
+<h2>Avg Nearest Neighbor Distance (10CA)</h2>
+<div class="info-box">
+<b>Calculation:</b> For each non-static body, find min distance to any other body. Sum and average.<br>
+<b>Display:</b> "avg NN: N.N m" appended to Closest pair line
+</div>
+
+<h2>Water Depth Stats (10CB)</h2>
+<div class="info-box">
+<b>Calculation:</b> During terrain loop, track max and avg water depth per submerged cell<br>
+<b>Globals:</b> terrain_water_depth_avg (f32), terrain_water_depth_max (f32)<br>
+<b>Display:</b> "depth: avg=N.NN max=N.NN" on Water line
+</div>
+
+<h2>Avg Collision Impact Velocity (10CC)</h2>
+<div class="info-box">
+<b>Calculation:</b> In physics.c, accumulate vec3_len(vel_a - vel_b) per collision into PhysicsWorld.total_collision_speed<br>
+<b>Display:</b> "avg impact v: N.N m/s" on Collision peak line
+</div>
+
+<h2>Capacity Prediction (10CD)</h2>
+<div class="info-box">
+<b>Calculation:</b> (capacity - count) / spawn_rate = seconds until full. Only shown if < 3600s<br>
+<b>Display:</b> "cap NNN in Xs" on Session line when approaching limit
+</div>
+
+<h2>Camera Movement Speed (10CE)</h2>
+<div class="info-box">
+<b>Calculation:</b> camera_frame_dist / delta_time per frame<br>
+<b>Global:</b> camera_frame_dist (f32), set per frame from vec3_len(pos - prev_pos)<br>
+<b>Display:</b> "Speed: N.N m/s" on Forward line
+</div>
+
+<h2>Speed Consistency (10DA)</h2>
+<div class="info-box">
+<b>Calculation:</b> Coefficient of Variation = std(speeds) / mean(speeds) from sorted array<br>
+<b>Display:</b> "CV=N.NN" appended to Speed percentiles line. Low = uniform, High = diverse
+</div>
+
+<h2>Water Centroid (10DB)</h2>
+<div class="info-box">
+<b>Calculation:</b> Depth-weighted avg (x,z) of submerged cells, converted to world coords<br>
+<b>Globals:</b> terrain_water_cx, terrain_water_cz (f32)<br>
+<b>Display:</b> "centroid: (x,z)" on Water line
+</div>
+
+<h2>Resting Mass Fraction (10DC)</h2>
+<div class="info-box">
+<b>Calculation:</b> rest_mass / total_mass × 100% for bodies with rest_frames > 60<br>
+<b>Display:</b> "rest mass: N/N (N%)" on Activity line
+</div>
+
+<h2>Collision Center (10DD)</h2>
+<div class="info-box">
+<b>Calculation:</b> Σ(collision_midpoint) / collision_count in physics.c<br>
+<b>Fields:</b> PhysicsWorld.collision_center (Vec3), collision_center_count (u32)<br>
+<b>Display:</b> "Collision center: (x,y,z) from N collisions"
+</div>
+
+<h2>Vertical Velocity Histogram (10DE)</h2>
+<div class="info-box">
+<b>Calculation:</b> 4 buckets based on velocity.y: fast↓(&lt;-5), slow↓(-5 to 0), slow↑(0 to +5), fast↑(&gt;+5)<br>
+<b>Display:</b> "vy hist: fast↓N slow↓N slow↑N fast↑N" on Speed line
+</div>
+
+<h2>Distance Fog</h2>
+<b>Method:</b> Linear distance-based fog in PBR shader (GL + VK)<br>
+<b>Formula:</b> <code>mix(color, fog_color, clamp((dist - near) / (far - near), 0, 1))</code><br>
+<b>Fog color:</b> matches current background color (bg_r, bg_g, bg_b)<br>
+<b>Defaults:</b> near=10, far=50, disabled<br>
+<b>GL:</b> uniform u_fog_color/near/far | <b>VK:</b> fog_near/far in push constant padding, u_fog_color separate uniform<br>
+<b>When off:</b> near=99999, far=100000 (effectively disabled in shader)
+</div>
+
+<h2>Benchmark Mode</h2>
+<div class="info-box">
+<b>Key:</b> <span class="key">M</span> &mdash; runs 120 frames with all effects disabled<br>
+<b>Metrics:</b> accumulates wall-clock delta_time, reports avg ms and FPS<br>
+<b>Auto-restore:</b> all effect states saved before, restored after benchmark<br>
+<b>UI:</b> shows progress during run, result displayed for 3 seconds after
+</div>
+
+<h2>Effect Presets (Home)</h2>
+<table>
+<tr><th>Preset</th><th>TAA</th><th>MB</th><th>DOF</th><th>SSR</th><th>SSGI</th><th>SSAO</th><th>ContactSh</th><th>Volumetric</th><th>LensFlare</th><th>Bloom</th><th>GodRays</th><th>SSS</th><th>Sharpen</th><th>CG</th><th>LensFX</th></tr>
+<tr><td>Full</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">med</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">med</td><td class="on">med</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td></tr>
+<tr><td>Balanced</td><td class="on">&check;</td><td class="off">&times;</td><td class="on">&check;</td><td class="on">&check;</td><td class="off">&times;</td><td class="on">med</td><td class="on">&check;</td><td class="off">&times;</td><td class="off">&times;</td><td class="on">med</td><td class="on">med</td><td class="off">&times;</td><td class="on">&check;</td><td class="on">&check;</td><td class="on">&check;</td></tr>
+<tr><td>Perf</td><td class="on">&check;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="on">low</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="on">low</td><td class="on">low</td><td class="off">&times;</td><td class="off">&times;</td><td class="on">&check;</td><td class="off">&times;</td></tr>
+<tr><td>Minimal</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td><td class="off">&times;</td></tr>
+</table>
+
+<h2>Architecture Notes</h2>
+<div class="section">
+<div>
+<h3>RHI Abstraction</h3>
+<div class="info-box">
+<b>Files:</b> <code>rhi.h</code>, <code>rhi_gl.c</code>, <code>rhi_vk.c</code><br>
+<b>Resources:</b> Slot-based with generation counters (handle = index + generation)<br>
+<b>Key APIs:</b><br>
+<code>rhi_pipeline_create</code> &mdash; vertex layout auto-detected from desc flags<br>
+<code>rhi_cmd_set_uniform_*</code> &mdash; no push constants, uniform-by-name<br>
+<code>rhi_gpu_timer_create/begin/end/elapsed_ms</code> &mdash; both backends<br>
+<code>rhi_screenshot</code> &mdash; GL: glReadPixels + BMP, VK: stub<br>
+<code>rhi_set_vsync</code> &mdash; GL: glXSwapIntervalEXT, VK: swapchain recreate<br>
+<code>wireframe</code> &mdash; desc bool &rarr; GL glPolygonMode, VK POLYGON_MODE_LINE<br>
+<code>rhi_buffer_update_region</code> &mdash; partial VBO update (offset+size) for terrain editing
+</div>
+
+<h3>Mat4 / Vec3 Convention</h3>
+<div class="info-box">
+<b>Mat4:</b> Column-major: <code>e[col][row]</code><br>
+<b>Vec3:</b> <code>e[3]</code> array accessor, no named members<br>
+<b>rhi_cmd_draw:</b> <code>(cmd, vertex_count, instance_count)</code> &mdash; 3 args only
+</div>
+</div>
+<div>
+<h3>Build Commands</h3>
+<div class="info-box">
+<b>OpenGL:</b><br>
+<code>cd engine && cmake -B build && cmake --build build</code><br><br>
+<b>Vulkan:</b><br>
+<code>cd engine && cmake -B build-vk -DENGINE_VULKAN=ON && cmake --build build-vk</code><br><br>
+<b>Tests:</b><br>
+<code>./build/test_vulkan</code> (runs on both backends despite name)
+</div>
+
+<h3>Physics &harr; ECS Sync</h3>
+<div class="info-box">
+Every frame after <code>physics_step()</code>: ECS query for Transform+RigidBody components<br>
+Copies <code>physics->bodies[id].position</code> &rarr; <code>CTransform.pos[3]</code><br>
+Ensures instanced rendering displays physics bodies at correct positions<br>
+<b>E key</b> spawns full ECS entity (Transform + RigidBody + MeshRef) for proper rendering
+</div>
+
+<h3>Key X11 Keycodes</h3>
+<div class="info-box">
+F1=271 ... F12=282 | Home=285 | End=286 | Insert=287 | Delete=288<br>
+PgUp=280 | PgDn=281 | ScrLk=283 | Esc=256 | Tab=259<br>
+Scroll Up: Button4 | Scroll Down: Button5
+</div>
+
+<h3>Default Values</h3>
+<div class="info-box">
+camera.move_speed = 3.0 (range 0.5&ndash;20.0)<br>
+camera.fov = configurable via scroll (range 20&ndash;120)<br>
+sun_azimuth = 1.03, sun_elevation = 0.93<br>
+tonemap.exposure = 1.5 (auto on)<br>
+render_scale = 0.5x<br>
+</div>
+</div>
+</div>
+
+<h2>File Map</h2>
+<table>
+<tr><th>File</th><th>Purpose</th></tr>
+<tr><td><code>engine/src/main.c</code></td><td>Main loop, render pipeline, all key bindings (~3296 lines)</td></tr>
+<tr><td><code>engine/src/rhi/rhi.h</code></td><td>RHI API declarations</td></tr>
+<tr><td><code>engine/src/rhi/rhi_gl.c</code></td><td>OpenGL backend</td></tr>
+<tr><td><code>engine/src/rhi/rhi_vk.c</code></td><td>Vulkan backend</td></tr>
+<tr><td><code>engine/src/renderer/camera.h</code></td><td>Camera (position, yaw, pitch, fov, speed)</td></tr>
+<tr><td><code>engine/src/renderer/terrain.h</code></td><td>Terrain (editable heightmap, VBO, modify)</td></tr>
+<tr><td><code>engine/src/renderer/water.h</code></td><td>Water plane (alpha blend, Fresnel, waves)</td></tr>
+<tr><td><code>engine/shaders/terrain.vert/frag</code></td><td>Terrain splatmap shader (4 biomes, procedural textures)</td></tr>
+<tr><td><code>engine/src/renderer/debug_viz.h</code></td><td>Debug visualization (5 modes)</td></tr>
+<tr><td><code>engine/src/renderer/post_process.h</code></td><td>Post-FX system (FBO management)</td></tr>
+<tr><td><code>engine/src/renderer/taa.h</code></td><td>Temporal Anti-Aliasing</td></tr>
+<tr><td><code>engine/src/renderer/fxaa.h</code></td><td>FXAA</td></tr>
+<tr><td><code>engine/src/physics/physics.h</code></td><td>AABB physics (RigidBody, PhysicsWorld)</td></tr>
+<tr><td><code>engine/src/platform/window_x11.c</code></td><td>X11 platform (input, events, fullscreen)</td></tr>
+<tr><td><code>engine/src/platform/input.h</code></td><td>Input state (keys, mouse, scroll)</td></tr>
+<tr><td><code>engine/shaders/</code></td><td>GLSL + GLSL-VK shader pairs</td></tr>
+<tr><td><code>docs/PureC_Engine_ExecutionPlan.md</code></td><td>Full execution plan with phase tracking</td></tr>
+</table>
+
+<footer style="margin-top:40px;padding-top:12px;border-top:1px solid #222;color:#555;font-size:0.8em">
+Pure C Engine &mdash; Phase 10DE &mdash; Last updated: 2026-05-26
+</footer>
+
+</body>
+</html>

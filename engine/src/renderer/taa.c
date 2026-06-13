@@ -94,6 +94,7 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
     taa->loc_screen_h = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_sh");
     taa->loc_blend = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_blend");
     taa->loc_first_frame = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_first_frame");
+    taa->loc_use_velocity = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_use_velocity");
 
     taa->ready = true;
     LOG_INFO("TAA: initialized (%ux%u)", width, height);
@@ -113,6 +114,7 @@ void taa_shutdown(TAASystem *taa) {
 
 void taa_resolve(TAASystem *taa, RHICmdBuffer *cmd,
                  RHITexture current_color, RHITexture depth_tex,
+                 RHITexture velocity_tex,
                  const f32 *curr_vp, const f32 *prev_vp,
                  const f32 *inv_proj, u32 screen_w, u32 screen_h) {
     if (!taa->ready) return;
@@ -127,8 +129,9 @@ void taa_resolve(TAASystem *taa, RHICmdBuffer *cmd,
     rhi_cmd_bind_pipeline(cmd, taa->resolve_pipe);
 
     RHITexture hist_tex = taa->first_frame ? current_color : taa->history_fbo[read_idx].color_tex;
-    RHITexture tex[3] = { current_color, hist_tex, depth_tex };
-    rhi_cmd_bind_textures_multi(cmd, tex, 3, taa->sampler);
+    bool use_vel = rhi_handle_valid(velocity_tex);
+    RHITexture tex[4] = { current_color, hist_tex, depth_tex, velocity_tex };
+    rhi_cmd_bind_textures_multi(cmd, tex, use_vel ? 4 : 3, taa->sampler);
 
     if (taa->loc_curr_vp >= 0) rhi_cmd_set_uniform_mat4(cmd, taa->loc_curr_vp, curr_vp);
     if (taa->loc_prev_vp >= 0) rhi_cmd_set_uniform_mat4(cmd, taa->loc_prev_vp, prev_vp);
@@ -137,6 +140,7 @@ void taa_resolve(TAASystem *taa, RHICmdBuffer *cmd,
     if (taa->loc_screen_h >= 0) rhi_cmd_set_uniform_f32(cmd, taa->loc_screen_h, (f32)screen_h);
     if (taa->loc_blend >= 0) rhi_cmd_set_uniform_f32(cmd, taa->loc_blend, 0.1f);
     if (taa->loc_first_frame >= 0) rhi_cmd_set_uniform_f32(cmd, taa->loc_first_frame, taa->first_frame ? 1.0f : 0.0f);
+    if (taa->loc_use_velocity >= 0) rhi_cmd_set_uniform_f32(cmd, taa->loc_use_velocity, use_vel ? 1.0f : 0.0f);
 
     rhi_cmd_draw(cmd, 3, 1);
 

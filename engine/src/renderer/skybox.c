@@ -55,7 +55,8 @@ bool skybox_init(Skybox *sb, RHIDevice *dev) {
         return false;
     }
 
-    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .no_vertex_input = true, .depth_compare_lequal = true, .depth_write_disable = true};
+    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .no_vertex_input = true, .depth_compare_lequal = true, .depth_write_disable = true,
+                             .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
     sb->pipeline = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
@@ -67,6 +68,8 @@ bool skybox_init(Skybox *sb, RHIDevice *dev) {
 
     sb->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_inv_proj");
     sb->loc_view = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_view");
+    sb->loc_sun_dir = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_sun_dir");
+    sb->loc_sun_color = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_sun_color");
 
     sb->ready = true;
     return true;
@@ -78,19 +81,18 @@ void skybox_shutdown(Skybox *sb) {
     sb->ready = false;
 }
 
-void skybox_render(Skybox *sb, RHICmdBuffer *cmd, const f32 *view, const f32 *proj) {
+void skybox_render(Skybox *sb, RHICmdBuffer *cmd, const f32 *view, const f32 *inv_proj,
+                   f32 sun_dx, f32 sun_dy, f32 sun_dz,
+                   f32 sun_r, f32 sun_g, f32 sun_b) {
     if (!sb->ready) return;
 
     rhi_cmd_bind_pipeline(cmd, sb->pipeline);
 
-    Mat4 p;
-    memcpy(&p, proj, sizeof(p));
-    Mat4 inv_proj = mat4_inverse(p);
-    rhi_cmd_set_uniform_mat4(cmd, sb->loc_inv_proj, &inv_proj.e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, sb->loc_inv_proj, inv_proj);
+    rhi_cmd_set_uniform_mat4(cmd, sb->loc_view, view);
 
-    Mat4 v;
-    memcpy(&v, view, sizeof(v));
-    rhi_cmd_set_uniform_mat4(cmd, sb->loc_view, &v.e[0][0]);
+    if (sb->loc_sun_dir >= 0)   rhi_cmd_set_uniform_vec3(cmd, sb->loc_sun_dir, sun_dx, sun_dy, sun_dz);
+    if (sb->loc_sun_color >= 0) rhi_cmd_set_uniform_vec3(cmd, sb->loc_sun_color, sun_r, sun_g, sun_b);
 
 #ifndef ENGINE_VULKAN
     glDepthFunc(GL_LEQUAL);

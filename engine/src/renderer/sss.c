@@ -62,17 +62,20 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     s->dev = dev;
 
 #ifdef ENGINE_VULKAN
-    s->pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vk.frag");
+    s->h_pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vk.frag");
+    s->v_pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vertical_vk.frag");
 #else
-    s->pipe = sss_create_pipe(dev, "shaders/post.vert", "shaders/sss.frag");
+    s->h_pipe = sss_create_pipe(dev, "shaders/post.vert", "shaders/sss.frag");
+    s->v_pipe = sss_create_pipe(dev, "shaders/post.vert", "shaders/sss_vertical.frag");
 #endif
 
-    if (!rhi_handle_valid(s->pipe)) {
+    if (!rhi_handle_valid(s->h_pipe) || !rhi_handle_valid(s->v_pipe)) {
         LOG_WARN("SSS: pipeline creation failed");
         return false;
     }
 
     s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    s->blur_fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -83,10 +86,15 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
-    s->loc_strength  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sss_strength");
-    s->loc_sw        = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sss_sw");
-    s->loc_sh        = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sss_sh");
-    s->loc_max_dist  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sss_max_dist");
+    s->loc_strength  = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_strength");
+    s->loc_sw        = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_sw");
+    s->loc_sh        = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_sh");
+    s->loc_max_dist  = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_max_dist");
+
+    s->v_loc_strength = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_strength");
+    s->v_loc_sw       = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_sw");
+    s->v_loc_sh       = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_sh");
+    s->v_loc_max_dist = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_max_dist");
 
     s->ready = true;
     LOG_INFO("SSS: initialized (%ux%u)", w, h);
@@ -95,9 +103,11 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
 void sss_shutdown(SSSSystem *s) {
     if (!s->dev) return;
-    if (rhi_handle_valid(s->fbo.fb))   rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
-    if (rhi_handle_valid(s->sampler))  rhi_sampler_destroy(s->dev, s->sampler);
-    if (rhi_handle_valid(s->pipe))     rhi_pipeline_destroy(s->dev, s->pipe);
+    if (rhi_handle_valid(s->fbo.fb))      rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
+    if (rhi_handle_valid(s->blur_fbo.fb)) rhi_offscreen_fbo_destroy(s->dev, &s->blur_fbo);
+    if (rhi_handle_valid(s->sampler))     rhi_sampler_destroy(s->dev, s->sampler);
+    if (rhi_handle_valid(s->h_pipe))      rhi_pipeline_destroy(s->dev, s->h_pipe);
+    if (rhi_handle_valid(s->v_pipe))      rhi_pipeline_destroy(s->dev, s->v_pipe);
     s->ready = false;
 }
 
@@ -106,9 +116,9 @@ void sss_apply(SSSSystem *s, RHICmdBuffer *cmd,
                f32 strength, f32 max_dist, u32 w, u32 h) {
     if (!s->ready) return;
 
-    rhi_offscreen_fbo_bind(cmd, &s->fbo);
-
-    rhi_cmd_bind_pipeline(cmd, s->pipe);
+    /* Pass 1: Horizontal blur → blur_fbo */
+    rhi_offscreen_fbo_bind(cmd, &s->blur_fbo);
+    rhi_cmd_bind_pipeline(cmd, s->h_pipe);
     rhi_cmd_bind_texture(cmd, color_tex, s->sampler, 0);
     rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
 
@@ -116,6 +126,20 @@ void sss_apply(SSSSystem *s, RHICmdBuffer *cmd,
     if (s->loc_sw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_sw, (f32)w);
     if (s->loc_sh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_sh, (f32)h);
     if (s->loc_max_dist >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_max_dist, max_dist);
+
+    rhi_cmd_draw(cmd, 3, 1);
+
+    /* Pass 2: Vertical blur → fbo (reads blur_fbo + depth + original) */
+    rhi_offscreen_fbo_bind(cmd, &s->fbo);
+    rhi_cmd_bind_pipeline(cmd, s->v_pipe);
+    rhi_cmd_bind_texture(cmd, s->blur_fbo.color_tex, s->sampler, 0);
+    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
+    rhi_cmd_bind_texture(cmd, color_tex, s->sampler, 2);
+
+    if (s->v_loc_strength >= 0) rhi_cmd_set_uniform_f32(cmd, s->v_loc_strength, strength);
+    if (s->v_loc_sw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->v_loc_sw, (f32)w);
+    if (s->v_loc_sh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->v_loc_sh, (f32)h);
+    if (s->v_loc_max_dist >= 0) rhi_cmd_set_uniform_f32(cmd, s->v_loc_max_dist, max_dist);
 
     rhi_cmd_draw(cmd, 3, 1);
 }

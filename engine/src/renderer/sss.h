@@ -3,13 +3,19 @@
 
 typedef struct {
     RHIDevice *dev;
-    RHIPipeline pipe;
+    RHIPipeline h_pipe;
+    RHIPipeline v_pipe;
     RHIOffscreenFBO fbo;
+    RHIOffscreenFBO blur_fbo;
     RHISampler sampler;
     i32 loc_strength;
     i32 loc_sw;
     i32 loc_sh;
     i32 loc_max_dist;
+    i32 v_loc_strength;
+    i32 v_loc_sw;
+    i32 v_loc_sh;
+    i32 v_loc_max_dist;
     bool ready;
 } SSSSystem;
 

@@ -39,7 +39,10 @@ typedef struct {
     RHIBuffer vertex_buf;
     RHIBuffer index_buf;
     u32       index_count;
+    u32       vertex_count;
     u32       material_idx;
+    Vec3      aabb_min;
+    Vec3      aabb_max;
 } Mesh;
 
 typedef struct {
@@ -61,6 +64,25 @@ typedef struct {
     bool    skinned;
 } SceneNode;
 
+/* A serialized resource reference (mesh/material/texture) recovered from the
+ * BSCN RESOURCES chunk. `guid` is a deterministic content hash so the same
+ * resource keeps a stable identity across save/load. `type` holds a
+ * BscnResourceType value; `ref_index` is the scene-local mesh/material index it
+ * identifies (or the RHI handle index for textures). When `flags & 1` the
+ * inline descriptor (`u0..u2`, `f[]`) is valid (controlled by
+ * SerializeOptions.include_resources). */
+typedef struct {
+    u64  guid;
+    u32  type;        /* BscnResourceType */
+    u32  ref_index;
+    u32  flags;       /* bit0: descriptor inlined */
+    u32  u0, u1, u2;  /* mesh: index_count, vertex_count, material_idx
+                         material: alpha_mode, has_albedo, 0 */
+    f32  f[8];        /* mesh: aabb_min(3)+aabb_max(3)
+                         material: base_color(4)+metallic+roughness+emissive+cutoff */
+    char path[64];    /* optional source path; empty when unknown */
+} SceneResource;
+
 typedef struct {
     Material     *materials;
     u32           material_count;
@@ -75,8 +97,19 @@ typedef struct {
     Mat4         *inverse_bind;
     u32           anim_clip_count;
     AnimClip     *anim_clips;
+    /* Resource manifest (RESOURCES chunk); populated on load, owned by Scene. */
+    SceneResource *resources;
+    u32            resource_count;
 } Scene;
 
 bool   asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene);
 void   asset_scene_free(AssetCtx *ctx, Scene *scene);
 void   scene_compute_world_transforms(Scene *scene);
+
+/* ---- Async loading interface ---- */
+typedef void (*AssetAsyncCallback)(void *user_data, void *data, u32 size);
+
+u64  asset_load_texture_async(AssetCtx *ctx, const char *path,
+                              AssetAsyncCallback cb, void *user);
+u64  asset_load_file_async(AssetCtx *ctx, const char *path,
+                           AssetAsyncCallback cb, void *user);

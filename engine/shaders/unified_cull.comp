@@ -1,0 +1,117 @@
+#version 450
+layout(local_size_x = 64) in;
+
+/*
+ * unified_cull.comp - single-pass GPU-driven culling + draw compaction.
+ *
+ * For each draw command, frustum-test its bounding sphere; optionally reject
+ * against a Hi-Z pyramid (1-frame latency, same convention as occlusion_cull);
+ * if visible, atomically append its DrawIndexedIndirectCommand.
+ *
+ * Object i (binding 0) must correspond to draw command i (binding 1).
+ * Hi-Z sampler uses the compute sampler set (set 2 on Vulkan).
+ */
+
+struct CullObject {
+    vec4 pos_radius;   /* xyz = world-space center, w = bounding radius */
+};
+
+layout(std430, binding = 0) readonly buffer Objects {
+    CullObject objects[];
+};
+
+layout(std430, binding = 1) readonly buffer AllDraws {
+    uint data[];       /* DrawIndexedIndirectCommand: 5 uints per draw */
+} all_draws;
+
+layout(std430, binding = 2) buffer VisibleDraws {
+    uint data[];
+} visible_draws;
+
+layout(std430, binding = 3) buffer DrawCount {
+    uint count;
+} draw_count;
+
+layout(std430, binding = 4) buffer VisibleFlags {
+    uint flags[];
+};
+
+#ifdef VULKAN
+layout(set = 2, binding = 0) uniform sampler2D u_hi_z;
+layout(push_constant) uniform Push {
+    mat4 vp;
+    uint obj_count;
+    float hi_z_width;
+    float hi_z_height;
+    float use_hi_z;
+} pc;
+#define CULL_VP       pc.vp
+#define CULL_COUNT    pc.obj_count
+#define CULL_HI_Z_W   pc.hi_z_width
+#define CULL_HI_Z_H   pc.hi_z_height
+#define CULL_USE_HI_Z pc.use_hi_z
+#else
+layout(binding = 4) uniform sampler2D u_hi_z;
+uniform mat4 u_cull_vp;
+uniform int  u_cull_count;
+uniform float u_cull_hi_z_width;
+uniform float u_cull_hi_z_height;
+uniform float u_cull_use_hi_z;
+#define CULL_VP       u_cull_vp
+#define CULL_COUNT    uint(u_cull_count)
+#define CULL_HI_Z_W   u_cull_hi_z_width
+#define CULL_HI_Z_H   u_cull_hi_z_height
+#define CULL_USE_HI_Z u_cull_use_hi_z
+#endif
+
+bool sphere_frustum_visible(vec3 center, float radius) {
+    vec4 clip = CULL_VP * vec4(center, 1.0);
+    float w = clip.w;
+    if (w <= 0.0) w = 1e-6;
+    vec3 nc = clip.xyz / w;
+    float r = radius / w;
+    if (nc.x - r >  1.0) return false;
+    if (nc.x + r < -1.0) return false;
+    if (nc.y - r >  1.0) return false;
+    if (nc.y + r < -1.0) return false;
+    if (nc.z - r >  1.0) return false;
+    if (nc.z + r <  0.0) return false;
+    return true;
+}
+
+bool sphere_hi_z_visible(vec3 center, float radius) {
+    vec4 clip = CULL_VP * vec4(center, 1.0);
+    if (clip.w <= 0.0) return true;
+    vec3 ndc = clip.xyz / clip.w;
+    float r_ndc = radius / abs(clip.w);
+    vec2 ndc_min = ndc.xy - vec2(r_ndc);
+    vec2 ndc_max = ndc.xy + vec2(r_ndc);
+    ndc_min = clamp(ndc_min, vec2(-1.0), vec2(1.0));
+    ndc_max = clamp(ndc_max, vec2(-1.0), vec2(1.0));
+    vec2 screen_size = (ndc_max - ndc_min) * 0.5 * vec2(CULL_HI_Z_W, CULL_HI_Z_H);
+    float mip_level = ceil(log2(max(screen_size.x, screen_size.y)));
+    mip_level = clamp(mip_level, 0.0, float(textureQueryLevels(u_hi_z) - 1));
+    vec2 uv_center = (ndc_min + ndc_max) * 0.25 + 0.5;
+    float closest_z = ndc.z - r_ndc;
+    float hi_z_depth = textureLod(u_hi_z, uv_center, mip_level).r;
+    return closest_z <= hi_z_depth;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= CULL_COUNT) return;
+
+    vec3  center = objects[idx].pos_radius.xyz;
+    float radius = objects[idx].pos_radius.w;
+    flags[idx] = 0u;
+    if (!sphere_frustum_visible(center, radius)) return;
+    if (CULL_USE_HI_Z > 0.5 && !sphere_hi_z_visible(center, radius)) return;
+
+    flags[idx] = 1u;
+    uint slot = atomicAdd(draw_count.count, 1u);
+    uint src  = idx  * 5u;
+    uint dst  = slot * 5u;
+    for (uint i = 0u; i < 5u; ++i) {
+        visible_draws.data[dst + i] = all_draws.data[src + i];
+    }
+}

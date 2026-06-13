@@ -57,6 +57,25 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
         return false;
     }
 
+    /* ---- GPU alive-particle cull (Round 12) ---- */
+    usize cull_len = 0;
+    char *cull_src = read_file("shaders/particle_cull.comp", &cull_len);
+    if (cull_src) {
+        RHIShader cull_cs = rhi_shader_create_compute(dev, cull_src, cull_len);
+        free(cull_src);
+        if (rhi_handle_valid(cull_cs)) {
+            RHIPipelineDesc cull_desc = {0};
+            cull_desc.frag = cull_cs;
+            cull_desc.is_compute = true;
+            cull_desc.uses_storage = true;
+            ps->cull_pipeline = rhi_pipeline_create(dev, &cull_desc);
+            rhi_shader_destroy(dev, cull_cs);
+        }
+    }
+    if (!rhi_handle_valid(ps->cull_pipeline)) {
+        LOG_WARN("Particle cull shader unavailable — will draw all slots");
+    }
+
     /* ---- Graphics pipeline (particle render) ---- */
     usize vs_len = 0, fs_len = 0;
     char *vs_src = read_file("shaders/particle.vert", &vs_len);
@@ -105,6 +124,15 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     };
     ps->particle_ssbo = rhi_buffer_create(dev, &bdesc);
 
+    /* ---- Cull output: atomic count + alive indices ---- */
+    RHIBufferDesc cull_desc_buf = {
+        .usage = RHI_BUFFER_USAGE_STORAGE,
+        .size = sizeof(u32) + PARTICLES_MAX * sizeof(u32),
+        .initial_data = NULL,
+    };
+    ps->cull_buf = rhi_buffer_create(dev, &cull_desc_buf);
+    ps->cull_ready = rhi_handle_valid(ps->cull_buf) && rhi_handle_valid(ps->cull_pipeline);
+
     /* ---- Sampler + fallback texture ---- */
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -127,7 +155,45 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     }
 
     ps->initialized = true;
-    LOG_INFO("Particle system initialized (%u particles, compute-driven)", PARTICLES_MAX);
+    ps->last_alive_count = 0;
+
+    /* Build push constant template (Round 18): static fields baked once,
+     * only [0] (dt) is overwritten each frame in particles_compute. */
+    memset(ps->_push_template, 0, sizeof(ps->_push_template));
+    ps->_push_template[1]  = ps->emit_rate;
+    ps->_push_template[4]  = ps->emit_pos[0];
+    ps->_push_template[5]  = ps->emit_pos[1];
+    ps->_push_template[6]  = ps->emit_pos[2];
+    ps->_push_template[7]  = ps->gravity;
+    ps->_push_template[8]  = ps->emit_vel_min[0];
+    ps->_push_template[9]  = ps->emit_vel_min[1];
+    ps->_push_template[10] = ps->emit_vel_min[2];
+    ps->_push_template[12] = ps->emit_vel_max[0];
+    ps->_push_template[13] = ps->emit_vel_max[1];
+    ps->_push_template[14] = ps->emit_vel_max[2];
+    ps->_push_template[15] = ps->lifetime_min;
+    ps->_push_template[19] = ps->lifetime_range;
+
+    /* Cache all uniform locations (compute + render pipelines) */
+    ps->_loc_push_dt       = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "push.dt");
+    ps->_loc_dt            = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_dt");
+    ps->_loc_emit_rate     = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_rate");
+    ps->_loc_emit_pos      = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_pos");
+    ps->_loc_gravity       = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_gravity");
+    ps->_loc_emit_vel_min  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_vel_min");
+    ps->_loc_emit_vel_max  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_vel_max");
+    ps->_loc_lifetime_min  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_min");
+    ps->_loc_lifetime_range= rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_range");
+#ifdef ENGINE_VULKAN
+    ps->_loc_view = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.view");
+    ps->_loc_proj = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.proj");
+#else
+    ps->_loc_view = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "u_view");
+    ps->_loc_proj = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "u_proj");
+#endif
+
+    LOG_INFO("Particle system initialized (%u particles, compute-driven%s)",
+             PARTICLES_MAX, ps->cull_ready ? ", GPU cull" : "");
     return true;
 }
 
@@ -135,10 +201,13 @@ void particles_shutdown(ParticleSystem *ps) {
     if (!ps->device) return;
     if (rhi_handle_valid(ps->particle_tex))       rhi_texture_destroy(ps->device, ps->particle_tex);
     if (rhi_handle_valid(ps->sampler))             rhi_sampler_destroy(ps->device, ps->sampler);
+    if (rhi_handle_valid(ps->cull_buf))            rhi_buffer_destroy(ps->device, ps->cull_buf);
     if (rhi_handle_valid(ps->particle_ssbo))       rhi_buffer_destroy(ps->device, ps->particle_ssbo);
+    if (rhi_handle_valid(ps->cull_pipeline))       rhi_pipeline_destroy(ps->device, ps->cull_pipeline);
     if (rhi_handle_valid(ps->render_pipeline))     rhi_pipeline_destroy(ps->device, ps->render_pipeline);
     if (rhi_handle_valid(ps->compute_pipeline))    rhi_pipeline_destroy(ps->device, ps->compute_pipeline);
     ps->initialized = false;
+    ps->cull_ready = false;
 }
 
 void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
@@ -149,28 +218,44 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
     rhi_cmd_bind_pipeline(cmd, ps->compute_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
 
-    i32 loc = rhi_pipeline_get_uniform_location(ps->device, ps->compute_pipeline, "push.dt");
-    if (loc >= 0) {
+#ifdef ENGINE_VULKAN
+    /* Vulkan: copy pre-built template, overwrite only dt (Round 18). */
+    if (ps->_loc_push_dt >= 0) {
         f32 push_data[20];
-        memset(push_data, 0, sizeof(push_data));
+        memcpy(push_data, ps->_push_template, sizeof(push_data));
         push_data[0] = dt;
-        push_data[1] = ps->emit_rate;
-        push_data[4] = ps->emit_pos[0];
-        push_data[5] = ps->emit_pos[1];
-        push_data[6] = ps->emit_pos[2];
-        push_data[7] = ps->gravity;
-        push_data[8]  = ps->emit_vel_min[0];
-        push_data[9]  = ps->emit_vel_min[1];
-        push_data[10] = ps->emit_vel_min[2];
-        push_data[12] = ps->emit_vel_max[0];
-        push_data[13] = ps->emit_vel_max[1];
-        push_data[14] = ps->emit_vel_max[2];
-        push_data[15] = ps->lifetime_min;
-        push_data[19] = ps->lifetime_range;
-        rhi_cmd_set_uniform_mat4(cmd, loc, push_data);
+        rhi_cmd_set_uniform_mat4(cmd, ps->_loc_push_dt, push_data);
     }
+#else
+    /* OpenGL: use cached loose uniform locations */
+    if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);
+    if (ps->_loc_emit_rate >= 0)     rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_rate, ps->emit_rate);
+    if (ps->_loc_emit_pos >= 0)      rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_pos, ps->emit_pos[0], ps->emit_pos[1], ps->emit_pos[2]);
+    if (ps->_loc_gravity >= 0)       rhi_cmd_set_uniform_f32(cmd, ps->_loc_gravity, ps->gravity);
+    if (ps->_loc_emit_vel_min >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_min, ps->emit_vel_min[0], ps->emit_vel_min[1], ps->emit_vel_min[2]);
+    if (ps->_loc_emit_vel_max >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_max, ps->emit_vel_max[0], ps->emit_vel_max[1], ps->emit_vel_max[2]);
+    if (ps->_loc_lifetime_min >= 0)  rhi_cmd_set_uniform_f32(cmd, ps->_loc_lifetime_min, ps->lifetime_min);
+    if (ps->_loc_lifetime_range >= 0) rhi_cmd_set_uniform_f32(cmd, ps->_loc_lifetime_range, ps->lifetime_range);
+#endif
 
     rhi_cmd_dispatch(cmd, PARTICLES_MAX / 256, 1, 1);
+    rhi_cmd_memory_barrier(cmd);
+
+    rhi_cmd_begin_render_pass(cmd);
+}
+
+void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
+    if (!ps->initialized || !ps->cull_ready) return;
+
+    rhi_cmd_end_render_pass(cmd);
+
+    u32 zero = 0;
+    rhi_buffer_update(ps->device, ps->cull_buf, &zero, sizeof(u32));
+
+    rhi_cmd_bind_pipeline(cmd, ps->cull_pipeline);
+    rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
+    rhi_cmd_bind_storage_buffer(cmd, ps->cull_buf, 1);
+    rhi_cmd_dispatch(cmd, (PARTICLES_MAX + 255) / 256, 1, 1);
     rhi_cmd_memory_barrier(cmd);
 
     rhi_cmd_begin_render_pass(cmd);
@@ -179,13 +264,25 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
 void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj) {
     if (!ps->initialized) return;
 
+    u32 alive = PARTICLES_MAX;
+    if (ps->cull_ready) {
+        u32 *mapped = (u32 *)rhi_buffer_map(ps->device, ps->cull_buf);
+        if (mapped) {
+            alive = mapped[0];
+            if (alive > PARTICLES_MAX) alive = PARTICLES_MAX;
+            ps->last_alive_count = alive;
+            rhi_buffer_unmap(ps->device, ps->cull_buf);
+        }
+        if (alive == 0) return;
+    }
+
     rhi_cmd_bind_pipeline(cmd, ps->render_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
+    if (ps->cull_ready)
+        rhi_cmd_bind_storage_buffer(cmd, ps->cull_buf, 1);
 
-    i32 loc_view = rhi_pipeline_get_uniform_location(ps->device, ps->render_pipeline, "push.view");
-    if (loc_view >= 0) rhi_cmd_set_uniform_mat4(cmd, loc_view, view);
-    i32 loc_proj = rhi_pipeline_get_uniform_location(ps->device, ps->render_pipeline, "push.proj");
-    if (loc_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, loc_proj, proj);
+    if (ps->_loc_view >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_view, view);
+    if (ps->_loc_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_proj, proj);
 
-    rhi_cmd_draw(cmd, PARTICLES_MAX, 1);
+    rhi_cmd_draw(cmd, 1, alive);
 }

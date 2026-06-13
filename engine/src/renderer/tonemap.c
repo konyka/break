@@ -3,6 +3,7 @@
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static char *tm_read_file(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
@@ -57,27 +58,24 @@ static RHIPipeline tm_create_pipe(RHIDevice *dev,
 
 bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
     if (!tm || !dev) return false;
+    memset(tm, 0, sizeof(*tm));
     tm->device = dev;
     tm->exposure = 1.5f;
     tm->gamma = 2.2f;
-    tm->aberration = 0.003f;
-    tm->vignette = 0.4f;
-    tm->grain = 0.03f;
+    tm->mode = 0;
     tm->min_exposure = 0.5f;
     tm->max_exposure = 4.0f;
     tm->adaptation_speed = 3.0f;
     tm->current_luma = 0.5f;
-    tm->auto_exposure = false;
-    tm->saturation   = 1.1f;
-    tm->contrast     = 1.05f;
-    tm->brightness   = 1.0f;
-    tm->temperature  = 0.0f;
-    tm->tint         = 0.0f;
+    tm->auto_exposure = true;
+    tm->lum_idx      = 0;
 
 #ifdef ENGINE_VULKAN
     tm->tm_pipe = tm_create_pipe(dev, "shaders/post_vk.vert", "shaders/tonemap_vk.frag");
+    tm->lum_pipe = tm_create_pipe(dev, "shaders/post_vk.vert", "shaders/luminance_vk.frag");
 #else
     tm->tm_pipe = tm_create_pipe(dev, "shaders/post.vert", "shaders/tonemap.frag");
+    tm->lum_pipe = tm_create_pipe(dev, "shaders/post.vert", "shaders/luminance.frag");
 #endif
 
     if (!rhi_handle_valid(tm->tm_pipe)) {
@@ -96,26 +94,29 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
 
     tm->loc_exposure   = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_exposure");
     tm->loc_gamma      = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_gamma");
-    tm->loc_aberration = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_aberration");
-    tm->loc_vignette   = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_vignette");
-    tm->loc_grain      = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_grain");
-    tm->loc_time       = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_time");
-    tm->loc_screen_w   = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_screen_w");
-    tm->loc_screen_h   = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_screen_h");
-    tm->loc_saturation  = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_saturation");
-    tm->loc_contrast    = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_contrast");
-    tm->loc_brightness  = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_brightness");
-    tm->loc_temperature = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_temperature");
-    tm->loc_tint        = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_tint");
+    tm->loc_mode       = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_mode");
+    tm->loc_tm_lum      = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_lum");
+
+    if (rhi_handle_valid(tm->lum_pipe)) {
+        tm->lum_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, 1, 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
+        tm->lum_fbo[1] = rhi_offscreen_fbo_create_fmt(dev, 1, 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
+        tm->loc_lum_w     = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_w");
+        tm->loc_lum_h     = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_h");
+        tm->loc_lum_speed = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_speed");
+        tm->loc_lum_dt    = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_dt");
+        tm->loc_lum_tex   = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_hdr");
+        tm->loc_lum_prev  = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_prev");
+    }
 
     tm->ready = true;
-    LOG_INFO("Tonemap: initialized (ACES + cinematic, exposure=%.2f, gamma=%.2f)", tm->exposure, tm->gamma);
+    LOG_INFO("Tonemap: initialized (ACES + auto-exposure, exposure=%.2f, gamma=%.2f)", tm->exposure, tm->gamma);
     return true;
 }
 
 void tonemap_shutdown(TonemapSystem *tm) {
     if (!tm->device) return;
-    if (rhi_handle_valid(tm->lum_fbo.fb))  rhi_offscreen_fbo_destroy(tm->device, &tm->lum_fbo);
+    if (rhi_handle_valid(tm->lum_fbo[0].fb)) rhi_offscreen_fbo_destroy(tm->device, &tm->lum_fbo[0]);
+    if (rhi_handle_valid(tm->lum_fbo[1].fb)) rhi_offscreen_fbo_destroy(tm->device, &tm->lum_fbo[1]);
     if (rhi_handle_valid(tm->sampler))     rhi_sampler_destroy(tm->device, tm->sampler);
     if (rhi_handle_valid(tm->tm_pipe))     rhi_pipeline_destroy(tm->device, tm->tm_pipe);
     if (rhi_handle_valid(tm->lum_pipe))    rhi_pipeline_destroy(tm->device, tm->lum_pipe);
@@ -123,34 +124,43 @@ void tonemap_shutdown(TonemapSystem *tm) {
 }
 
 void tonemap_update_auto_exposure(TonemapSystem *tm, RHICmdBuffer *cmd,
-                                   RHITexture hdr_tex, f32 dt) {
+                                   RHITexture hdr_tex, u32 screen_w, u32 screen_h, f32 dt) {
     if (!tm->ready || !tm->auto_exposure) return;
-    (void)cmd;
-    (void)hdr_tex;
-    (void)dt;
+    if (!rhi_handle_valid(tm->lum_pipe)) return;
+
+    i32 read_idx  = tm->lum_idx;
+    i32 write_idx = 1 - tm->lum_idx;
+
+    rhi_offscreen_fbo_bind(cmd, &tm->lum_fbo[write_idx]);
+    rhi_cmd_bind_pipeline(cmd, tm->lum_pipe);
+    rhi_cmd_bind_texture(cmd, hdr_tex, tm->sampler, 0);
+    rhi_cmd_bind_texture(cmd, tm->lum_fbo[read_idx].color_tex, tm->sampler, 1);
+
+    if (tm->loc_lum_w >= 0)     rhi_cmd_set_uniform_f32(cmd, tm->loc_lum_w, (f32)screen_w);
+    if (tm->loc_lum_h >= 0)     rhi_cmd_set_uniform_f32(cmd, tm->loc_lum_h, (f32)screen_h);
+    if (tm->loc_lum_speed >= 0) rhi_cmd_set_uniform_f32(cmd, tm->loc_lum_speed, tm->adaptation_speed);
+    if (tm->loc_lum_dt >= 0)    rhi_cmd_set_uniform_f32(cmd, tm->loc_lum_dt, dt > 0.0f ? dt : 0.016f);
+
+    rhi_cmd_draw(cmd, 3, 1);
+
+    tm->lum_idx = write_idx;
 }
 
 void tonemap_apply(TonemapSystem *tm, RHICmdBuffer *cmd,
-                   RHITexture hdr_tex, u32 screen_w, u32 screen_h, f32 time, f32 dt) {
+                   RHITexture hdr_tex, u32 screen_w, u32 screen_h) {
     if (!tm->ready) return;
-    (void)dt;
+    (void)screen_w; (void)screen_h;
 
     rhi_cmd_bind_pipeline(cmd, tm->tm_pipe);
     rhi_cmd_bind_texture(cmd, hdr_tex, tm->sampler, 0);
 
+    if (tm->auto_exposure && rhi_handle_valid(tm->lum_pipe)) {
+        rhi_cmd_bind_texture(cmd, tm->lum_fbo[tm->lum_idx].color_tex, tm->sampler, 1);
+    }
+
     if (tm->loc_exposure >= 0)   rhi_cmd_set_uniform_f32(cmd, tm->loc_exposure, tm->exposure);
     if (tm->loc_gamma >= 0)      rhi_cmd_set_uniform_f32(cmd, tm->loc_gamma, tm->gamma);
-    if (tm->loc_aberration >= 0) rhi_cmd_set_uniform_f32(cmd, tm->loc_aberration, tm->aberration);
-    if (tm->loc_vignette >= 0)   rhi_cmd_set_uniform_f32(cmd, tm->loc_vignette, tm->vignette);
-    if (tm->loc_grain >= 0)      rhi_cmd_set_uniform_f32(cmd, tm->loc_grain, tm->grain);
-    if (tm->loc_time >= 0)       rhi_cmd_set_uniform_f32(cmd, tm->loc_time, time);
-    if (tm->loc_screen_w >= 0)   rhi_cmd_set_uniform_f32(cmd, tm->loc_screen_w, (f32)screen_w);
-    if (tm->loc_screen_h >= 0)   rhi_cmd_set_uniform_f32(cmd, tm->loc_screen_h, (f32)screen_h);
-    if (tm->loc_saturation >= 0)  rhi_cmd_set_uniform_f32(cmd, tm->loc_saturation, tm->saturation);
-    if (tm->loc_contrast >= 0)    rhi_cmd_set_uniform_f32(cmd, tm->loc_contrast, tm->contrast);
-    if (tm->loc_brightness >= 0)  rhi_cmd_set_uniform_f32(cmd, tm->loc_brightness, tm->brightness);
-    if (tm->loc_temperature >= 0) rhi_cmd_set_uniform_f32(cmd, tm->loc_temperature, tm->temperature);
-    if (tm->loc_tint >= 0)        rhi_cmd_set_uniform_f32(cmd, tm->loc_tint, tm->tint);
+    if (tm->loc_mode >= 0)       rhi_cmd_set_uniform_i32(cmd, tm->loc_mode, tm->mode);
 
     rhi_cmd_draw(cmd, 3, 1);
 }

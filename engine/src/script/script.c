@@ -21,7 +21,7 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
     char func_name[64] = {0};
     if (sscanf(line, "func %63s", func_name) == 1) {
         if (se->func_count < SCRIPT_MAX_CALLBACKS) {
-            strncpy(se->funcs[se->func_count].name, func_name, 63);
+            snprintf(se->funcs[se->func_count].name, sizeof(se->funcs[se->func_count].name), "%s", func_name);
             se->funcs[se->func_count].ops = NULL;
             se->funcs[se->func_count].op_count = 0;
             se->func_count++;
@@ -34,7 +34,7 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
         f32 val;
         if (sscanf(line, "var %63s = %f", var_name, &val) == 2) {
             if (se->global_count < SCRIPT_MAX_GLOBALS) {
-                strncpy(se->globals[se->global_count].name, var_name, 63);
+                snprintf(se->globals[se->global_count].name, sizeof(se->globals[se->global_count].name), "%s", var_name);
                 se->globals[se->global_count].value = val;
                 se->global_count++;
             }
@@ -43,24 +43,29 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
     }
 
     ScriptFunc *fn = &se->funcs[se->func_count - 1];
-    u32 new_count = fn->op_count + 1;
-    ScriptOp *new_ops = realloc(fn->ops, new_count * sizeof(ScriptOp));
-    if (!new_ops) return;
-    fn->ops = new_ops;
-    fn->op_count = new_count;
+    /* Capacity-based growth: initial 16, double when full (avoids per-op realloc) */
+    if (fn->op_count >= fn->op_capacity) {
+        u32 new_cap = fn->op_capacity == 0 ? 16 : fn->op_capacity * 2;
+        ScriptOp *new_ops = realloc(fn->ops, new_cap * sizeof(ScriptOp));
+        if (!new_ops) return;
+        fn->ops = new_ops;
+        fn->op_capacity = new_cap;
+    }
+    fn->op_count++;
 
-    ScriptOp *op = &fn->ops[new_count - 1];
+    ScriptOp *op = &fn->ops[fn->op_count - 1];
     memset(op, 0, sizeof(*op));
+    op->resolved_index = -1;  /* Task 5: mark as unresolved */
 
     char target[64] = {0};
     f32 val = 0;
     if (sscanf(line, "set %63s %f", target, &val) == 2) {
         op->type = SCRIPT_OP_SET;
-        strncpy(op->target, target, 63);
+        snprintf(op->target, sizeof(op->target), "%s", target);
         op->value = val;
     } else if (sscanf(line, "add %63s %f", target, &val) == 2) {
         op->type = SCRIPT_OP_ADD;
-        strncpy(op->target, target, 63);
+        snprintf(op->target, sizeof(op->target), "%s", target);
         op->value = val;
     } else if (sscanf(line, "spawn %f %f %f", &op->args[0], &op->args[1], &op->args[2]) == 3) {
         op->type = SCRIPT_OP_SPAWN;
@@ -74,6 +79,9 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
 bool script_load(ScriptEngine *se, const char *path) {
     for (u32 i = 0; i < se->func_count; i++) {
         free(se->funcs[i].ops);
+        se->funcs[i].ops = NULL;
+        se->funcs[i].op_count = 0;
+        se->funcs[i].op_capacity = 0;
     }
     se->func_count = 0;
     se->global_count = 0;
@@ -119,7 +127,7 @@ void script_set_global(ScriptEngine *se, const char *name, f32 value) {
         }
     }
     if (se->global_count < SCRIPT_MAX_GLOBALS) {
-        strncpy(se->globals[se->global_count].name, name, 63);
+        snprintf(se->globals[se->global_count].name, sizeof(se->globals[se->global_count].name), "%s", name);
         se->globals[se->global_count].value = value;
         se->global_count++;
     }
@@ -139,6 +147,26 @@ static ScriptFunc *script_find_func(ScriptEngine *se, const char *name) {
     return NULL;
 }
 
+/* Resolve or create global variable index (shared by SET/ADD, Round 18). */
+static inline i32 script_resolve_global(ScriptEngine *se, ScriptOp *op) {
+    if (op->resolved_index >= 0) return op->resolved_index;
+    for (u32 g = 0; g < se->global_count; g++) {
+        if (strcmp(se->globals[g].name, op->target) == 0) {
+            op->resolved_index = (i32)g;
+            return op->resolved_index;
+        }
+    }
+    if (se->global_count < SCRIPT_MAX_GLOBALS) {
+        op->resolved_index = (i32)se->global_count;
+        snprintf(se->globals[se->global_count].name,
+                 sizeof(se->globals[se->global_count].name), "%s", op->target);
+        se->globals[se->global_count].value = 0.0f;
+        se->global_count++;
+        return op->resolved_index;
+    }
+    return -1;
+}
+
 void script_call(ScriptEngine *se, const char *func_name) {
     ScriptFunc *fn = script_find_func(se, func_name);
     if (!fn) return;
@@ -146,12 +174,16 @@ void script_call(ScriptEngine *se, const char *func_name) {
     for (u32 i = 0; i < fn->op_count; i++) {
         ScriptOp *op = &fn->ops[i];
         switch (op->type) {
-        case SCRIPT_OP_SET:
-            script_set_global(se, op->target, op->value);
+        case SCRIPT_OP_SET: {
+            i32 idx = script_resolve_global(se, op);
+            if (idx >= 0 && (u32)idx < se->global_count)
+                se->globals[idx].value = op->value;
             break;
+        }
         case SCRIPT_OP_ADD: {
-            f32 cur = script_get_global(se, op->target);
-            script_set_global(se, op->target, cur + op->value);
+            i32 idx = script_resolve_global(se, op);
+            if (idx >= 0 && (u32)idx < se->global_count)
+                se->globals[idx].value += op->value;
             break;
         }
         case SCRIPT_OP_SPAWN:

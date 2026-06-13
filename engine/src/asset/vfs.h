@@ -43,6 +43,9 @@ struct VFS {
         PakHeader    pak_header;
         PakEntry    *pak_entries;
         char        *pak_names;
+        /* Hash table for O(1) entry lookup (open-addressing, linear probing) */
+        u32         *pak_hash_table;  /* maps hash → entry index, UINT32_MAX = empty */
+        u32          pak_hash_size;   /* power-of-2 table size */
     } mounts[VFS_MAX_MOUNTS];
     u32 mount_count;
 };

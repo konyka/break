@@ -1,0 +1,112 @@
+#version 450
+/*
+ * GPU clustered light binning.
+ *
+ * One invocation per cluster (16x8x24 = 3072).  Each invocation tests every
+ * point light against its cluster's screen tile + view-depth slice and writes
+ * the surviving light indices into a fixed per-cluster region of the grid
+ * buffer.  This replaces the CPU light_system_cull loop.
+ *
+ * Grid layout (dense uint, matches the CPU producer and the PBR consumer):
+ *   grid[ci*2 + 0]                     = offset (= ci * MAX_PER for the GPU path)
+ *   grid[ci*2 + 1]                     = light count for the cluster
+ *   grid[CLUSTER_COUNT*2 + offset + k] = k-th light index in the cluster
+ *
+ * Light data is read as a flat float array; each PointLight is 8 floats
+ * (pos.xyz, radius, color.xyz, pad), matching the texel-buffer layout the PBR
+ * shader reads with texelFetch.
+ *
+ * Only the view-projection matrix is needed: for this engine's perspective
+ * matrix clip.w == -view_z, so the view-space depth and screen-space position
+ * (and screen radius) are all derivable from the clip-space position.
+ */
+
+layout(local_size_x = 64) in;
+
+#ifdef VULKAN
+layout(std430, set = 0, binding = 0) readonly  buffer LightData { float light_data[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Grid      { uint  grid[]; };
+layout(push_constant) uniform PushConstants {
+    mat4 u_cc_vp;
+    vec4 u_cc_params0; /* x=point_count y=screen_w z=screen_h w=near */
+    vec4 u_cc_params1; /* x=far                                     */
+} pc;
+#define VP          pc.u_cc_vp
+#define POINT_COUNT uint(pc.u_cc_params0.x)
+#define SCREEN_W    pc.u_cc_params0.y
+#define SCREEN_H    pc.u_cc_params0.z
+#define NEARP       pc.u_cc_params0.w
+#define FARP        pc.u_cc_params1.x
+#else
+layout(std430, binding = 0) readonly  buffer LightData { float light_data[]; };
+layout(std430, binding = 1) writeonly buffer Grid      { uint  grid[]; };
+uniform mat4 u_cc_vp;
+uniform vec4 u_cc_params0;
+uniform vec4 u_cc_params1;
+#define VP          u_cc_vp
+#define POINT_COUNT uint(u_cc_params0.x)
+#define SCREEN_W    u_cc_params0.y
+#define SCREEN_H    u_cc_params0.z
+#define NEARP       u_cc_params0.w
+#define FARP        u_cc_params1.x
+#endif
+
+const uint CX = 16u;
+const uint CY = 8u;
+const uint CZ = 24u;
+const uint CLUSTER_COUNT = CX * CY * CZ;
+const uint MAX_PER = 128u;
+
+float cluster_depth(uint z) {
+    return NEARP * pow(FARP / NEARP, float(z) / float(CZ));
+}
+
+void main() {
+    uint ci = gl_GlobalInvocationID.x;
+    if (ci >= CLUSTER_COUNT) return;
+
+    uint cx = ci % CX;
+    uint cy = (ci / CX) % CY;
+    uint cz = ci / (CX * CY);
+
+    float z_near = cluster_depth(cz);
+    float z_far  = cluster_depth(cz + 1u);
+
+    float tile_w = SCREEN_W / float(CX);
+    float tile_h = SCREEN_H / float(CY);
+    float sx = float(cx)      * tile_w;
+    float ex = float(cx + 1u) * tile_w;
+    float sy = float(cy)      * tile_h;
+    float ey = float(cy + 1u) * tile_h;
+
+    uint gb     = CLUSTER_COUNT * 2u;
+    uint offset = ci * MAX_PER;
+    uint count  = 0u;
+    uint n      = POINT_COUNT;
+
+    for (uint li = 0u; li < n && count < MAX_PER; ++li) {
+        uint b  = li * 8u;
+        vec3  p = vec3(light_data[b], light_data[b + 1u], light_data[b + 2u]);
+        float r = light_data[b + 3u];
+
+        vec4  clip   = VP * vec4(p, 1.0);
+        float view_z = -clip.w; /* negative in front of the camera */
+
+        if (view_z + r < -z_far || view_z - r > -z_near) continue;
+
+        if (clip.w > 0.001) {
+            float inv_w = 1.0 / clip.w;
+            float sx2 = (clip.x * inv_w * 0.5 + 0.5) * SCREEN_W;
+            float sy2 = (clip.y * inv_w * 0.5 + 0.5) * SCREEN_H;
+            float screen_r = r / clip.w * SCREEN_W * 0.5;
+            if (sx2 + screen_r < sx || sx2 - screen_r > ex ||
+                sy2 + screen_r < sy || sy2 - screen_r > ey) continue;
+        }
+
+        grid[gb + offset + count] = li;
+        count++;
+    }
+
+    grid[ci * 2u]      = offset;
+    grid[ci * 2u + 1u] = count;
+}

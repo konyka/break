@@ -1,4 +1,5 @@
 #include <asset/asset.h>
+#include <asset/async_loader.h>
 #include <asset/vfs.h>
 #include <core/log.h>
 #include <stdlib.h>
@@ -165,6 +166,37 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     out_scene->mesh_count = 0;
     out_scene->skinned_mesh_count = 0;
 
+    /* Pre-build materials from cgltf data for O(1) lookup by pointer diff */
+    if (data->materials_count > 0) {
+        out_scene->materials = calloc(data->materials_count, sizeof(Material));
+        out_scene->material_count = (u32)data->materials_count;
+        for (u32 mi = 0; mi < data->materials_count; mi++) {
+            cgltf_material *cm = &data->materials[mi];
+            Material *mat = &out_scene->materials[mi];
+            memset(mat, 0, sizeof(Material));
+            mat->_material_ptr = (void *)cm;
+            { static const f32 white4[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+              memcpy(mat->base_color, white4, sizeof(white4)); }
+            mat->metallic_factor = cm->pbr_metallic_roughness.metallic_factor;
+            mat->roughness_factor = cm->pbr_metallic_roughness.roughness_factor;
+            mat->emissive_strength = cm->has_emissive_strength ?
+                cm->emissive_strength.emissive_strength : 1.0f;
+            if (cm->alpha_mode == cgltf_alpha_mode_opaque) mat->alpha_mode = ALPHA_OPAQUE;
+            else if (cm->alpha_mode == cgltf_alpha_mode_mask) mat->alpha_mode = ALPHA_MASK;
+            else mat->alpha_mode = ALPHA_BLEND;
+            mat->alpha_cutoff = cm->alpha_cutoff;
+
+            mat->albedo = load_gltf_texture(ctx, path,
+                cm->pbr_metallic_roughness.base_color_texture.texture);
+            mat->metallic_roughness = load_gltf_texture(ctx, path,
+                cm->pbr_metallic_roughness.metallic_roughness_texture.texture);
+            mat->normal_map = load_gltf_texture(ctx, path,
+                cm->normal_texture.texture);
+            mat->emissive = load_gltf_texture(ctx, path,
+                cm->emissive_texture.texture);
+        }
+    }
+
     for (u32 ni = 0; ni < data->nodes_count; ni++) {
         cgltf_node *node = &data->nodes[ni];
         SceneNode *sn = &out_scene->nodes[ni];
@@ -176,12 +208,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         sn->skinned = false;
 
         if (node->parent) {
-            for (u32 pj = 0; pj < data->nodes_count; pj++) {
-                if (&data->nodes[pj] == node->parent) {
-                    sn->parent_index = pj;
-                    break;
-                }
-            }
+            /* O(1): cgltf nodes are a contiguous array, pointer diff = index */
+            sn->parent_index = (u32)(node->parent - data->nodes);
         }
 
         cgltf_float node_matrix[16];
@@ -215,40 +243,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
             u32 mat_idx = 0;
             if (prim->material) {
-                bool found = false;
-                for (u32 mi2 = 0; mi2 < out_scene->material_count; mi2++) {
-                    if (out_scene->materials[mi2]._material_ptr == (void *)prim->material) {
-                        mat_idx = mi2;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    mat_idx = out_scene->material_count++;
-                    out_scene->materials = realloc(out_scene->materials, out_scene->material_count * sizeof(Material));
-                    Material *mat = &out_scene->materials[mat_idx];
-                    memset(mat, 0, sizeof(Material));
-                    mat->_material_ptr = (void *)prim->material;
-                    mat->base_color[0] = 1.0f; mat->base_color[1] = 1.0f;
-                    mat->base_color[2] = 1.0f; mat->base_color[3] = 1.0f;
-                    mat->metallic_factor = prim->material->pbr_metallic_roughness.metallic_factor;
-                    mat->roughness_factor = prim->material->pbr_metallic_roughness.roughness_factor;
-                    mat->emissive_strength = prim->material->has_emissive_strength ?
-                        prim->material->emissive_strength.emissive_strength : 1.0f;
-                    if (prim->material->alpha_mode == cgltf_alpha_mode_opaque) mat->alpha_mode = ALPHA_OPAQUE;
-                    else if (prim->material->alpha_mode == cgltf_alpha_mode_mask) mat->alpha_mode = ALPHA_MASK;
-                    else mat->alpha_mode = ALPHA_BLEND;
-                    mat->alpha_cutoff = prim->material->alpha_cutoff;
-
-                    mat->albedo = load_gltf_texture(ctx, path,
-                        prim->material->pbr_metallic_roughness.base_color_texture.texture);
-                    mat->metallic_roughness = load_gltf_texture(ctx, path,
-                        prim->material->pbr_metallic_roughness.metallic_roughness_texture.texture);
-                    mat->normal_map = load_gltf_texture(ctx, path,
-                        prim->material->normal_texture.texture);
-                    mat->emissive = load_gltf_texture(ctx, path,
-                        prim->material->emissive_texture.texture);
-                }
+                /* O(1): cgltf materials are a contiguous array, pointer diff = index */
+                mat_idx = (u32)(prim->material - data->materials);
             }
 
             u32 vert_count = (u32)pos_acc->count;
@@ -356,13 +352,28 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
                 RHIBufferDesc vbdesc = { .usage = RHI_BUFFER_USAGE_VERTEX, .size = vert_count * sizeof(Vertex), .initial_data = verts };
                 RHIBuffer vbuf = rhi_buffer_create(ctx->device, &vbdesc);
-                free(verts);
 
                 Mesh *m = &out_scene->meshes[out_scene->mesh_count++];
                 m->vertex_buf = vbuf;
                 m->index_buf = ibuf;
                 m->index_count = idx_count;
+                m->vertex_count = vert_count;
                 m->material_idx = mat_idx;
+                m->aabb_min = vec3(1e30f, 1e30f, 1e30f);
+                m->aabb_max = vec3(-1e30f, -1e30f, -1e30f);
+                {
+                f32 *mn = m->aabb_min.e, *mx = m->aabb_max.e;
+                for (u32 vi = 0; vi < vert_count; vi++) {
+                    const f32 *p = verts[vi].pos;
+                    if (p[0] < mn[0]) mn[0] = p[0];
+                    if (p[0] > mx[0]) mx[0] = p[0];
+                    if (p[1] < mn[1]) mn[1] = p[1];
+                    if (p[1] > mx[1]) mx[1] = p[1];
+                    if (p[2] < mn[2]) mn[2] = p[2];
+                    if (p[2] > mx[2]) mx[2] = p[2];
+                }
+                }
+                free(verts);
                 if (sn->mesh_index == UINT32_MAX) {
                     sn->mesh_index = out_scene->mesh_count - 1;
                     sn->material_idx = mat_idx;
@@ -376,25 +387,30 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     if (data->skins_count > 0) {
         cgltf_skin *skin = &data->skins[0];
         out_scene->joint_count = (u32)skin->joints_count;
-        out_scene->joint_parents = calloc(skin->joints_count, sizeof(u32));
-        out_scene->inverse_bind = calloc(skin->joints_count, sizeof(Mat4));
+        /* Single alloc: joint_parents (u32[]) + inverse_bind (Mat4[]) */
+        usize jp_bytes = skin->joints_count * sizeof(u32);
+        usize ib_off   = (jp_bytes + 15u) & ~(usize)15u;
+        u8 *skin_buf    = (u8 *)calloc(1, ib_off + skin->joints_count * sizeof(Mat4));
+        out_scene->joint_parents = (u32 *)skin_buf;
+        out_scene->inverse_bind  = (Mat4 *)(skin_buf + ib_off);
+
+        /* Build node_index → joint_index mapping for O(1) parent lookup */
+        u32 *node_to_joint = (u32 *)malloc(data->nodes_count * sizeof(u32));
+        for (u32 ni2 = 0; ni2 < data->nodes_count; ni2++) node_to_joint[ni2] = UINT32_MAX;
+        for (u32 jj = 0; jj < skin->joints_count; jj++) {
+            node_to_joint[(u32)(skin->joints[jj] - data->nodes)] = jj;
+        }
 
         for (u32 ji = 0; ji < skin->joints_count; ji++) {
             cgltf_node *joint = skin->joints[ji];
             if (joint->parent) {
-                bool found = false;
-                for (u32 jj = 0; jj < skin->joints_count; jj++) {
-                    if (skin->joints[jj] == joint->parent) {
-                        out_scene->joint_parents[ji] = jj;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) out_scene->joint_parents[ji] = UINT32_MAX;
+                u32 parent_node_idx = (u32)(joint->parent - data->nodes);
+                out_scene->joint_parents[ji] = node_to_joint[parent_node_idx];
             } else {
                 out_scene->joint_parents[ji] = UINT32_MAX;
             }
         }
+        free(node_to_joint);
 
         if (skin->inverse_bind_matrices) {
             const f32 *ibm_data = (const f32 *)cgltf_buffer_data(skin->inverse_bind_matrices);
@@ -506,9 +522,9 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
     }
     free(scene->materials);
     free(scene->nodes);
-    free(scene->joint_parents);
-    free(scene->inverse_bind);
+    free(scene->joint_parents); /* single alloc: joint_parents + inverse_bind */
     free(scene->anim_clips);
+    free(scene->resources);
     memset(scene, 0, sizeof(*scene));
 }
 
@@ -522,4 +538,46 @@ void scene_compute_world_transforms(Scene *scene) {
             node->world_transform = mat4_mul(parent->world_transform, node->local_transform);
         }
     }
+}
+
+/* ---- Async loading wrappers ---- */
+
+typedef struct {
+    AssetCtx *ctx;
+    AssetAsyncCallback user_cb;
+    void *user;
+} AssetTextureAsyncCtx;
+
+static void asset_texture_async_done(void *user_data, void *data, u32 size) {
+    AssetTextureAsyncCtx *actx = (AssetTextureAsyncCtx *)user_data;
+
+    if (actx && actx->user_cb) {
+        actx->user_cb(actx->user, data, size);
+    } else if (data) {
+        free(data);
+    }
+
+    free(actx);
+}
+
+u64 asset_load_texture_async(AssetCtx *ctx, const char *path,
+                             AssetAsyncCallback cb, void *user) {
+    if (!ctx || !path || !cb) return 0;
+
+    AssetTextureAsyncCtx *actx = calloc(1, sizeof(*actx));
+    if (!actx) return 0;
+    actx->ctx = ctx;
+    actx->user_cb = cb;
+    actx->user = user;
+
+    u64 id = async_loader_request_texture(path, asset_texture_async_done, actx,
+                                          ASYNC_PRIORITY_HIGH);
+    if (id == 0) free(actx);
+    return id;
+}
+
+u64 asset_load_file_async(AssetCtx *ctx, const char *path,
+                          AssetAsyncCallback cb, void *user) {
+    (void)ctx;
+    return async_loader_request(path, cb, user);
 }

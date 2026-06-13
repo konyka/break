@@ -4,20 +4,11 @@ layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
 uniform sampler2D u_tm_hdr;
+uniform sampler2D u_tm_lum;
 
 uniform float u_tm_exposure;
 uniform float u_tm_gamma;
-uniform float u_tm_aberration;
-uniform float u_tm_vignette;
-uniform float u_tm_grain;
-uniform float u_tm_time;
-uniform float u_tm_screen_w;
-uniform float u_tm_screen_h;
-uniform float u_tm_saturation;
-uniform float u_tm_contrast;
-uniform float u_tm_brightness;
-uniform float u_tm_temperature;
-uniform float u_tm_tint;
+uniform int u_tm_mode;
 
 vec3 aces_fit(vec3 x) {
     float a = 2.51;
@@ -28,47 +19,47 @@ vec3 aces_fit(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-float hash(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
+vec3 agx(vec3 val) {
+    val = max(val, 0.0);
+    val = val * mat3(
+        0.84247906, 0.04232824, 0.04237565,
+        0.07843371, 0.87846855, 0.07843397,
+        0.07922376, 0.07916613, 0.87923044);
+    val = clamp(val, 0.0, 1.0);
+    val = log2(val + 0.0001);
+    val = (val * 1.7 + 6.5) / 11.7;
+    val = clamp(val, 0.0, 1.0);
+    val = val * val * (3.0 - 2.0 * val);
+    val = val * mat3(
+        1.1968790, -0.0525374, -0.0525374,
+        -0.0920852, 1.1515179, -0.0920852,
+        -0.0398265, -0.0398265, 1.1637448);
+    return clamp(val, 0.0, 1.0);
+}
+
+vec3 khronos_neutral(vec3 c) {
+    c = max(c, 0.0);
+    c = c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14);
+    return clamp(c, 0.0, 1.0);
 }
 
 void main() {
-    vec2 center = vUV - 0.5;
-    float dist = length(center);
+    float scene_luma = texture(u_tm_lum, vec2(0.5)).r;
+    float auto_exp = scene_luma > 0.01 ? 1.0 / (scene_luma + 0.5) : u_tm_exposure;
+    float exposure = mix(u_tm_exposure, auto_exp, 0.8);
 
-    vec2 r_offset = center * u_tm_aberration * dist;
-    vec2 g_offset = center * u_tm_aberration * dist * 0.5;
-    vec2 b_offset = vec2(0.0);
+    vec3 hdr = texture(u_tm_hdr, vUV).rgb * exposure;
 
-    vec3 hdr;
-    hdr.r = texture(u_tm_hdr, vUV + r_offset).r;
-    hdr.g = texture(u_tm_hdr, vUV + g_offset).g;
-    hdr.b = texture(u_tm_hdr, vUV + b_offset).b;
-    hdr *= u_tm_exposure;
-
-    vec3 ldr = aces_fit(hdr);
-
-    float vig = 1.0 - dist * dist * u_tm_vignette;
-    ldr *= max(vig, 0.0);
-
-    float noise = hash(vUV * u_tm_screen_w + u_tm_time) * 2.0 - 1.0;
-    ldr += noise * u_tm_grain;
+    vec3 ldr;
+    if (u_tm_mode == 1) {
+        ldr = agx(hdr);
+    } else if (u_tm_mode == 2) {
+        ldr = khronos_neutral(hdr);
+    } else {
+        ldr = aces_fit(hdr);
+    }
 
     ldr = pow(max(ldr, vec3(0.0)), vec3(1.0 / u_tm_gamma));
-
-    float luma = dot(ldr, vec3(0.2126, 0.7152, 0.0722));
-    ldr = mix(vec3(luma), ldr, u_tm_saturation);
-
-    ldr = (ldr - 0.5) * u_tm_contrast + 0.5;
-    ldr *= u_tm_brightness;
-
-    vec3 warm = vec3(1.0, 0.85, 0.7);
-    vec3 cool = vec3(0.7, 0.85, 1.0);
-    vec3 wb = mix(cool, warm, u_tm_temperature * 0.5 + 0.5);
-    ldr *= wb;
-    ldr.g += u_tm_tint * 0.05;
 
     fragColor = vec4(clamp(ldr, 0.0, 1.0), 1.0);
 }

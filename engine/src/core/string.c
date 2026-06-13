@@ -17,10 +17,9 @@ Str str_slice(Str s, usize start, usize end) {
 }
 
 i32 str_find_char(Str s, char c) {
-    for (usize i = 0; i < s.len; i++) {
-        if (s.data[i] == c) return (i32)i;
-    }
-    return -1;
+    const void *p = memchr(s.data, c, s.len);
+    if (!p) return -1;
+    return (i32)((const char *)p - s.data);
 }
 
 u64 str_hash(Str s) {

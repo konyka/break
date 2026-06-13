@@ -8,6 +8,7 @@ layout(binding = 0) uniform sampler2D u_fxaa_tex;
 layout(push_constant) uniform FXAAParams {
     layout(offset = 0) float u_fxaa_sw;
     layout(offset = 4) float u_fxaa_sh;
+    layout(offset = 8) float u_fxaa_threshold;
 };
 
 void main() {
@@ -33,7 +34,7 @@ void main() {
     float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
 
     float range = lumaMax - lumaMin;
-    if (range < max(0.0312, lumaMax * 0.125)) {
+    if (range < max(u_fxaa_threshold, lumaMax * 0.125)) {
         fragColor = vec4(cM, 1.0);
         return;
     }

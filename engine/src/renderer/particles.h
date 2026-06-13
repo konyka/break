@@ -17,11 +17,15 @@ typedef struct {
 typedef struct {
     RHIDevice   *device;
     RHIPipeline  compute_pipeline;
+    RHIPipeline  cull_pipeline;
     RHIPipeline  render_pipeline;
     RHIBuffer    particle_ssbo;
+    RHIBuffer    cull_buf;       /* draw_count + alive particle indices */
     RHISampler   sampler;
     RHITexture   particle_tex;
     bool         initialized;
+    bool         cull_ready;
+    u32          last_alive_count;
 
     f32 emit_pos[3];
     f32 gravity;
@@ -30,9 +34,27 @@ typedef struct {
     f32 lifetime_range;
     f32 emit_vel_min[3];
     f32 emit_vel_max[3];
+
+    /* Cached uniform locations — compute pipeline */
+    i32 _loc_push_dt;              /* Vulkan: push.dt block */
+    i32 _loc_dt;                   /* OpenGL loose uniforms */
+    i32 _loc_emit_rate;
+    i32 _loc_emit_pos;
+    i32 _loc_gravity;
+    i32 _loc_emit_vel_min;
+    i32 _loc_emit_vel_max;
+    i32 _loc_lifetime_min;
+    i32 _loc_lifetime_range;
+    /* Cached uniform locations — render pipeline */
+    i32 _loc_view;
+    i32 _loc_proj;
+
+    /* Pre-built push constant template (Round 18) — only [0] (dt) changes per frame */
+    f32 _push_template[20];
 } ParticleSystem;
 
 bool  particles_init(ParticleSystem *ps, RHIDevice *dev);
 void  particles_shutdown(ParticleSystem *ps);
 void  particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt);
+void  particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd);
 void  particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj);

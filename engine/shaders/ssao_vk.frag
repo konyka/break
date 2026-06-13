@@ -15,33 +15,22 @@ layout(binding = 0) uniform sampler2D u_depth;
 
 layout(location = 0) out vec4 frag_color;
 
-const int KERNEL_SIZE = 16;
-vec3 KERNEL[KERNEL_SIZE];
-
 vec3 reconstruct_pos(vec2 uv, float depth) {
-    vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
     vec4 view = pc.u_ssao_inv_proj * ndc;
     return view.xyz / view.w;
 }
 
-void main() {
-    KERNEL[0]  = vec3( 0.05,  0.15, 0.25);
-    KERNEL[1]  = vec3(-0.10,  0.05, 0.35);
-    KERNEL[2]  = vec3( 0.20, -0.10, 0.45);
-    KERNEL[3]  = vec3(-0.15,  0.20, 0.55);
-    KERNEL[4]  = vec3( 0.10, -0.20, 0.65);
-    KERNEL[5]  = vec3(-0.25,  0.10, 0.30);
-    KERNEL[6]  = vec3( 0.15,  0.25, 0.50);
-    KERNEL[7]  = vec3(-0.05, -0.15, 0.40);
-    KERNEL[8]  = vec3( 0.30,  0.05, 0.20);
-    KERNEL[9]  = vec3(-0.20, -0.25, 0.60);
-    KERNEL[10] = vec3( 0.25,  0.15, 0.35);
-    KERNEL[11] = vec3(-0.30,  0.20, 0.45);
-    KERNEL[12] = vec3( 0.05, -0.30, 0.55);
-    KERNEL[13] = vec3(-0.15,  0.30, 0.25);
-    KERNEL[14] = vec3( 0.35, -0.05, 0.40);
-    KERNEL[15] = vec3(-0.25, -0.10, 0.30);
+vec3 reconstruct_normal(vec3 pos) {
+    return normalize(cross(dFdx(pos), dFdy(pos)));
+}
 
+float interleaved_gradient_noise(vec2 p) {
+    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    return fract(magic.z * fract(dot(p, magic.xy)));
+}
+
+void main() {
     float depth = texture(u_depth, vUV).r;
     if (depth >= 1.0) {
         frag_color = vec4(1.0);
@@ -49,35 +38,67 @@ void main() {
     }
 
     vec3 pos = reconstruct_pos(vUV, depth);
+    vec3 normal = reconstruct_normal(pos);
 
-    vec3 normal = normalize(cross(dFdx(pos), dFdy(pos)));
+    vec2 noise_scale = vec2(pc.u_ssao_sw, pc.u_ssao_sh);
+    float noise = interleaved_gradient_noise(gl_FragCoord.xy);
 
-    vec2 noise_scale = vec2(pc.u_ssao_sw / 4.0, pc.u_ssao_sh / 4.0);
+    vec3 view = normalize(-pos);
 
-    float occlusion = 0.0;
-    for (int i = 0; i < KERNEL_SIZE; i++) {
-        vec3 sample_dir = KERNEL[i];
-        float scale = float(i) / float(KERNEL_SIZE);
-        scale = mix(0.1, 1.0, scale * scale);
-        sample_dir *= scale;
+    float ao = 0.0;
 
-        vec3 tangent = normalize(cross(normal, vec3(0.0, 1.0, 0.0)));
-        float d = dot(normal, vec3(0.0, 1.0, 0.0));
-        if (abs(d) > 0.99) tangent = normalize(cross(normal, vec3(1.0, 0.0, 0.0)));
-        vec3 bitangent = cross(normal, tangent);
+    const int directions = 4;
+    const int steps = 6;
 
-        vec3 sample_pos = pos + (tangent * sample_dir.x + bitangent * sample_dir.y + normal * sample_dir.z) * pc.u_ssao_radius;
+    for (int d = 0; d < directions; d++) {
+        float angle = (float(d) + noise) * 3.14159265 / float(directions);
+        vec2 dir = vec2(cos(angle), sin(angle));
 
-        vec4 offset = pc.u_ssao_proj * vec4(sample_pos, 1.0);
-        offset.xy = offset.xy / offset.w * 0.5 + 0.5;
+        float horizon_neg = 1.0;
+        float horizon_pos = -1.0;
 
-        float sample_depth = texture(u_depth, offset.xy).r;
-        vec3 sample_world = reconstruct_pos(offset.xy, sample_depth);
+        for (int s = 0; s < steps; s++) {
+            float t = (float(s) + 0.5) / float(steps);
+            t *= pc.u_ssao_radius;
+            vec2 sample_uv = vUV + dir * t / noise_scale;
+            if (sample_uv.x < 0.0 || sample_uv.x > 1.0 || sample_uv.y < 0.0 || sample_uv.y > 1.0) continue;
 
-        float range_check = smoothstep(0.0, 1.0, pc.u_ssao_radius / abs(pos.z - sample_world.z));
-        occlusion += (sample_world.z >= sample_pos.z + pc.u_ssao_bias ? 1.0 : 0.0) * range_check;
+            float sd = texture(u_depth, sample_uv).r;
+            if (sd >= 1.0) continue;
+            vec3 sp = reconstruct_pos(sample_uv, sd);
+
+            vec3 diff = sp - pos;
+            float dist = length(diff);
+            vec3 sv = diff / max(dist, 0.001);
+
+            float cos_h = dot(view, sv);
+
+            float falloff = 1.0 - smoothstep(0.0, pc.u_ssao_radius, dist);
+
+            if (cos_h > horizon_pos) horizon_pos = cos_h;
+            if (cos_h < horizon_neg) horizon_neg = cos_h;
+        }
+
+        vec3 tangent = vec3(dir.x, dir.y, 0.0);
+        vec3 bitangent = normalize(cross(view, tangent));
+        vec3 n_proj = normal - bitangent * dot(normal, bitangent);
+
+        float n_len = length(n_proj);
+        float cos_n = n_len > 0.001 ? dot(normalize(n_proj), view) : 0.0;
+
+        float h1 = horizon_neg + pc.u_ssao_bias;
+        float h2 = clamp(horizon_pos + pc.u_ssao_bias, -1.0, 1.0);
+
+        float a1 = acos(clamp(cos_n, -1.0, 1.0));
+        float a2 = acos(clamp(h2, -1.0, 1.0));
+
+        float contrib = (sin(a2) - sin(a1)) * 0.5 + (a2 - a1) * cos_n;
+        contrib = max(contrib, 0.0);
+
+        ao += contrib;
     }
-    occlusion = 1.0 - occlusion / float(KERNEL_SIZE);
 
-    frag_color = vec4(occlusion, occlusion, occlusion, 1.0);
+    ao = 1.0 - ao / float(directions) * 2.0;
+
+    frag_color = vec4(clamp(ao, 0.0, 1.0), 0.0, 0.0, 1.0);
 }

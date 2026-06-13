@@ -1,5 +1,6 @@
 #include <asset/hotreload.h>
 #include <core/log.h>
+#include <stb_image.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,4 +94,77 @@ void hotreload_pipeline_shutdown(HotReloadPipeline *hr) {
 
 void hotreload_pipeline_poll(HotReloadPipeline *hr) {
     filewatch_poll(&hr->watcher);
+}
+
+static bool hotreload_reload_texture(HotReloadTexture *hr) {
+    if (!hr || !hr->device || !hr->target) return false;
+
+    int w = 0, h = 0, ch = 0;
+    u8 *data = stbi_load(hr->path, &w, &h, &ch, 4);
+    if (!data || w <= 0 || h <= 0) {
+        if (data) stbi_image_free(data);
+        LOG_WARN("Hot reload texture: failed to decode %s", hr->path);
+        return false;
+    }
+
+    RHITexture old = *hr->target;
+    RHITextureDesc desc = {
+        .width      = (u32)w,
+        .height     = (u32)h,
+        .format     = RHI_FORMAT_R8G8B8A8_UNORM,
+        .mip_levels = 1,
+        .data       = data,
+    };
+    RHITexture neu = rhi_texture_create(hr->device, &desc);
+    stbi_image_free(data);
+
+    if (!rhi_handle_valid(neu)) {
+        LOG_WARN("Hot reload texture: GPU upload failed for %s", hr->path);
+        return false;
+    }
+
+    if (rhi_handle_valid(old)) rhi_texture_destroy(hr->device, old);
+    *hr->target = neu;
+    LOG_INFO("Hot reload texture: reloaded %s (%dx%d)", hr->path, w, h);
+
+    if (hr->on_reloaded) hr->on_reloaded(hr->on_reloaded_user);
+    return true;
+}
+
+static void hotreload_texture_callback(const char *path, void *user) {
+    HotReloadTexture *hr = (HotReloadTexture *)user;
+    (void)path;
+    hotreload_reload_texture(hr);
+}
+
+bool hotreload_texture_init(HotReloadTexture *hr, RHIDevice *dev,
+                              const char *path, RHITexture *target) {
+    if (!hr || !dev || !path || !target) return false;
+    memset(hr, 0, sizeof(*hr));
+    hr->device = dev;
+    hr->target = target;
+    strncpy(hr->path, path, sizeof(hr->path) - 1);
+
+    filewatch_init(&hr->watcher);
+    filewatch_add(&hr->watcher, hr->path, hotreload_texture_callback, hr);
+    hr->ready = true;
+    return true;
+}
+
+void hotreload_texture_set_callback(HotReloadTexture *hr,
+                                      void (*on_reloaded)(void *user), void *user) {
+    if (!hr) return;
+    hr->on_reloaded = on_reloaded;
+    hr->on_reloaded_user = user;
+}
+
+void hotreload_texture_poll(HotReloadTexture *hr) {
+    if (!hr || !hr->ready) return;
+    filewatch_poll(&hr->watcher);
+}
+
+void hotreload_texture_shutdown(HotReloadTexture *hr) {
+    if (!hr) return;
+    filewatch_shutdown(&hr->watcher);
+    hr->ready = false;
 }

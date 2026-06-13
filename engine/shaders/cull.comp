@@ -1,52 +1,71 @@
 #version 450
+layout(local_size_x = 64) in;
+
+/*
+ * cull.comp - GPU frustum culling.
+ *
+ * Writes per-object visibility flags (1 = visible, 0 = culled) indexed by
+ * object index. The output buffer layout is identical to the visibility
+ * buffer consumed by compact_draws.comp (binding 1), so the cull result can
+ * drive GPU draw-compaction directly with no CPU readback.
+ *
+ * Single source for both backends: glslang predefines VULKAN for the Vulkan
+ * target environment; OpenGL uses plain default-block uniforms.
+ */
 
 struct CullObject {
-    vec4 pos_radius;
-};
-
-struct VisibleObject {
-    uint index;
+    vec4 pos_radius;   /* xyz = world-space center, w = bounding radius */
 };
 
 layout(std430, binding = 0) readonly buffer Objects {
     CullObject objects[];
 };
 
-layout(std430, binding = 1) writeonly buffer Visible {
-    VisibleObject visible[];
+layout(std430, binding = 1) writeonly buffer Visibility {
+    uint flags[];      /* 1 = visible, 0 = culled */
 };
 
-layout(std430, binding = 2) buffer IndirectCount {
-    uint count;
+layout(std430, binding = 2) buffer VisibleCount {
+    uint count;        /* atomic visible counter (optional stats) */
 };
 
+#ifdef VULKAN
 layout(push_constant) uniform Push {
     mat4 vp;
-};
+    uint obj_count;
+} pc;
+#define CULL_VP    pc.vp
+#define CULL_COUNT pc.obj_count
+#else
+uniform mat4 u_cull_vp;
+uniform int  u_cull_count;
+#define CULL_VP    u_cull_vp
+#define CULL_COUNT uint(u_cull_count)
+#endif
 
 bool sphere_visible(vec3 center, float radius) {
-    vec4 clip = vp * vec4(center, 1.0);
-    vec3 nc = clip.xyz / clip.w;
-
-    float r = radius / clip.w;
-    if (nc.x - r > 1.0) return false;
+    vec4 clip = CULL_VP * vec4(center, 1.0);
+    float w = clip.w;
+    if (w <= 0.0) w = 1e-6;          /* ortho light VP: w==1; guard perspective */
+    vec3 nc = clip.xyz / w;
+    float r = radius / w;
+    if (nc.x - r >  1.0) return false;
     if (nc.x + r < -1.0) return false;
-    if (nc.y - r > 1.0) return false;
+    if (nc.y - r >  1.0) return false;
     if (nc.y + r < -1.0) return false;
-    if (nc.z - r > 1.0) return false;
-    if (nc.z + r < 0.0) return false;
+    if (nc.z - r >  1.0) return false;
+    if (nc.z + r <  0.0) return false;
     return true;
 }
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= objects.length()) return;
+    if (idx >= CULL_COUNT) return;
 
-    vec3 center = objects[idx].pos_radius.xyz;
+    vec3  center = objects[idx].pos_radius.xyz;
     float radius = objects[idx].pos_radius.w;
 
-    if (sphere_visible(center, radius)) {
-        uint slot = atomicAdd(count, 1);
-        visible[slot].index = idx;
-    }
+    bool vis = sphere_visible(center, radius);
+    flags[idx] = vis ? 1u : 0u;
+    if (vis) atomicAdd(count, 1u);
 }

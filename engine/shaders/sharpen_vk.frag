@@ -14,30 +14,30 @@ layout(push_constant) uniform SharpParams {
 void main() {
     vec2 texel = 1.0 / vec2(u_sharp_sw, u_sharp_sh);
 
-    vec3 c   = texture(u_sharp_tex, vUV).rgb;
-    vec3 cU  = texture(u_sharp_tex, vUV + vec2(0, -texel.y)).rgb;
-    vec3 cD  = texture(u_sharp_tex, vUV + vec2(0,  texel.y)).rgb;
-    vec3 cL  = texture(u_sharp_tex, vUV + vec2(-texel.x, 0)).rgb;
-    vec3 cR  = texture(u_sharp_tex, vUV + vec2( texel.x, 0)).rgb;
+    vec3 a = texture(u_sharp_tex, vUV + vec2(-texel.x, -texel.y)).rgb;
+    vec3 b = texture(u_sharp_tex, vUV + vec2( 0.0,     -texel.y)).rgb;
+    vec3 c = texture(u_sharp_tex, vUV + vec2( texel.x, -texel.y)).rgb;
+    vec3 d = texture(u_sharp_tex, vUV + vec2(-texel.x,  0.0    )).rgb;
+    vec3 e = texture(u_sharp_tex, vUV).rgb;
+    vec3 f = texture(u_sharp_tex, vUV + vec2( texel.x,  0.0    )).rgb;
+    vec3 g = texture(u_sharp_tex, vUV + vec2(-texel.x,  texel.y)).rgb;
+    vec3 h = texture(u_sharp_tex, vUV + vec2( 0.0,      texel.y)).rgb;
+    vec3 i = texture(u_sharp_tex, vUV + vec2( texel.x,  texel.y)).rgb;
 
-    vec3 blur = (cU + cD + cL + cR) * 0.25;
-    vec3 sharp = c + (c - blur) * u_sharp_strength;
+    vec3 mn  = min(min(min(a, c), min(g, i)), min(min(b, d), min(f, h)));
+    vec3 mx  = max(max(max(a, c), max(g, i)), max(max(b, d), max(f, h)));
+    vec3 rng = mx - mn;
 
-    float luma_c = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float luma_min = min(dot(cU, vec3(0.2126, 0.7152, 0.0722)),
-                         min(dot(cD, vec3(0.2126, 0.7152, 0.0722)),
-                         min(dot(cL, vec3(0.2126, 0.7152, 0.0722)),
-                             dot(cR, vec3(0.2126, 0.7152, 0.0722)))));
-    float luma_max = max(dot(cU, vec3(0.2126, 0.7152, 0.0722)),
-                         max(dot(cD, vec3(0.2126, 0.7152, 0.0722)),
-                         max(dot(cL, vec3(0.2126, 0.7152, 0.0722)),
-                             dot(cR, vec3(0.2126, 0.7152, 0.0722)))));
-    luma_min = min(luma_min, luma_c);
-    luma_max = max(luma_max, luma_c);
+    float peak = -1.0 / (u_sharp_strength * 8.0 + 1.0);
+    vec3 w = vec3(1.0 + 4.0 * peak);
 
-    float luma_sharp = dot(sharp, vec3(0.2126, 0.7152, 0.0722));
-    float clamped = clamp(luma_sharp, luma_min, luma_max);
-    sharp = mix(sharp, c, (luma_sharp - clamped) / max(luma_sharp - luma_c, 0.001));
+    vec3 t = fma(a + c + g + i, vec3(4.0 * peak),
+                 (b + d + f + h) * vec3(peak));
+    vec3 out_color = max(e * w + t, 0.0) / max(w, 1e-5);
 
-    fragColor = vec4(max(sharp, vec3(0.0)), 1.0);
+    out_color = clamp(out_color, mn - rng * 0.125, mx + rng * 0.125);
+
+    out_color = max(out_color, vec3(0.0));
+
+    fragColor = vec4(out_color, 1.0);
 }

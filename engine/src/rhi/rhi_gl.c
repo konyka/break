@@ -1,11 +1,41 @@
 #include <glad.h>
-#include <GL/glx.h>
-#include <X11/Xlib.h>
+
+#ifdef ENGINE_PLATFORM_WINDOWS
+    #include <windows.h>
+    #include <GL/gl.h>
+    /* WGL extension function types */
+    typedef HGLRC (WINAPI *PFNWGLCREATECONTEXTATTRIBSARBPROC)(HDC, HGLRC, const int*);
+    #define WGL_CONTEXT_MAJOR_VERSION_ARB  0x2091
+    #define WGL_CONTEXT_MINOR_VERSION_ARB  0x2092
+    #define WGL_CONTEXT_PROFILE_MASK_ARB   0x9126
+    #define WGL_CONTEXT_CORE_PROFILE_BIT_ARB 0x00000001
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+    #include <EGL/egl.h>
+    #include <EGL/eglext.h>
+    #include <wayland-client.h>
+    #include <wayland-egl.h>
+#else
+    #include <GL/glx.h>
+    #include <X11/Xlib.h>
+#endif
 
 typedef struct {
+#ifdef ENGINE_PLATFORM_WINDOWS
+    HDC     hdc;
+    HWND    hwnd;
+    HGLRC   gl_ctx;
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+    struct wl_display    *wl_display;
+    struct wl_egl_window *egl_window;
+    EGLDisplay            egl_display;
+    EGLContext            egl_context;
+    EGLSurface            egl_surface;
+    EGLConfig             egl_config;
+#else
     Display   *display;
     Window     window;
     GLXContext gl_ctx;
+#endif
 } GLBackend;
 
 typedef struct {
@@ -16,6 +46,7 @@ typedef struct {
     u32    vertex_stride;
     bool   has_index;
     bool   alpha_blend;
+    bool   wireframe;
 } GLPipelineData;
 
 typedef struct {
@@ -32,6 +63,7 @@ typedef struct {
     GLuint gl_tex;
     u32    width;
     u32    height;
+    GLenum gl_internal_format;  /* GL internal format for image binding */
 } GLTextureData;
 
 typedef struct {
@@ -44,10 +76,172 @@ typedef struct {
     GLuint depth_rb;
 } GLFBOData;
 
+typedef struct {
+    GLuint gl_fbo;
+    GLuint color_tex[RHI_MRT_MAX_ATTACHMENTS];
+    GLuint depth_rb;    /* legacy renderbuffer (unused when depth_tex valid) */
+    GLuint depth_tex;   /* depth texture (GL_DEPTH_COMPONENT32F)           */
+    u32    attachment_count;
+} GLMRTFBOData;
+
+typedef struct {
+    GLuint gl_fbo;
+    GLuint depth_tex;   /* GL_TEXTURE_CUBE_MAP */
+} GLCubemapDepthFBOData;
+
+/* Cached vertex stride from the most recently bound pipeline.
+ * Avoids the O(4096) linear scan of device slots in bind_vertex_buffer. */
+static u32 g_cached_vertex_stride = 32;  /* default: 8 floats * sizeof(f32) */
+
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
     if (!gl) return false;
 
+#ifdef ENGINE_PLATFORM_WINDOWS
+    (void)display_native;
+    gl->hwnd = (HWND)window_native;
+    gl->hdc = GetDC(gl->hwnd);
+
+    /* Set pixel format */
+    PIXELFORMATDESCRIPTOR pfd = {0};
+    pfd.nSize = sizeof(pfd);
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    pfd.cDepthBits = 24;
+    pfd.cStencilBits = 8;
+
+    int format = ChoosePixelFormat(gl->hdc, &pfd);
+    SetPixelFormat(gl->hdc, format, &pfd);
+
+    /* Create temporary context */
+    HGLRC temp_ctx = wglCreateContext(gl->hdc);
+    wglMakeCurrent(gl->hdc, temp_ctx);
+
+    /* Get wglCreateContextAttribsARB */
+    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB =
+        (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+
+    if (wglCreateContextAttribsARB) {
+        /* Create OpenGL 4.5 Core Profile context */
+        int attribs[] = {
+            WGL_CONTEXT_MAJOR_VERSION_ARB, 4,
+            WGL_CONTEXT_MINOR_VERSION_ARB, 5,
+            WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+            0
+        };
+        gl->gl_ctx = wglCreateContextAttribsARB(gl->hdc, NULL, attribs);
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(temp_ctx);
+        wglMakeCurrent(gl->hdc, gl->gl_ctx);
+    } else {
+        gl->gl_ctx = temp_ctx; /* fallback */
+    }
+
+    /* Load OpenGL functions */
+    if (!gladLoadGL()) {
+        LOG_FATAL("GL: failed to load OpenGL functions");
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(gl->gl_ctx);
+        ReleaseDC(gl->hwnd, gl->hdc);
+        free(gl);
+        return false;
+    }
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+    gl->wl_display = (struct wl_display *)display_native;
+    gl->egl_window = (struct wl_egl_window *)window_native;
+    if (!gl->wl_display || !gl->egl_window) {
+        LOG_FATAL("GL: null Wayland display or egl_window");
+        free(gl);
+        return false;
+    }
+
+    gl->egl_display = eglGetDisplay((EGLNativeDisplayType)gl->wl_display);
+    if (gl->egl_display == EGL_NO_DISPLAY) {
+        LOG_FATAL("EGL: failed to get display");
+        free(gl);
+        return false;
+    }
+
+    EGLint egl_major = 0, egl_minor = 0;
+    if (!eglInitialize(gl->egl_display, &egl_major, &egl_minor)) {
+        LOG_FATAL("EGL: failed to initialize");
+        free(gl);
+        return false;
+    }
+
+    if (!eglBindAPI(EGL_OPENGL_API)) {
+        LOG_FATAL("EGL: failed to bind OpenGL API");
+        eglTerminate(gl->egl_display);
+        free(gl);
+        return false;
+    }
+
+    EGLint config_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 24,
+        EGL_STENCIL_SIZE, 8,
+        EGL_NONE
+    };
+
+    EGLint num_configs = 0;
+    if (!eglChooseConfig(gl->egl_display, config_attribs, &gl->egl_config, 1, &num_configs) || num_configs == 0) {
+        LOG_FATAL("EGL: failed to choose config");
+        eglTerminate(gl->egl_display);
+        free(gl);
+        return false;
+    }
+
+    EGLint context_attribs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 4,
+        EGL_CONTEXT_MINOR_VERSION, 5,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_NONE
+    };
+
+    gl->egl_context = eglCreateContext(gl->egl_display, gl->egl_config, EGL_NO_CONTEXT, context_attribs);
+    if (gl->egl_context == EGL_NO_CONTEXT) {
+        LOG_FATAL("EGL: failed to create OpenGL 4.5 context");
+        eglTerminate(gl->egl_display);
+        free(gl);
+        return false;
+    }
+
+    gl->egl_surface = eglCreateWindowSurface(gl->egl_display, gl->egl_config,
+                                              (EGLNativeWindowType)gl->egl_window, NULL);
+    if (gl->egl_surface == EGL_NO_SURFACE) {
+        LOG_FATAL("EGL: failed to create window surface");
+        eglDestroyContext(gl->egl_display, gl->egl_context);
+        eglTerminate(gl->egl_display);
+        free(gl);
+        return false;
+    }
+
+    if (!eglMakeCurrent(gl->egl_display, gl->egl_surface, gl->egl_surface, gl->egl_context)) {
+        LOG_FATAL("EGL: failed to make context current");
+        eglDestroySurface(gl->egl_display, gl->egl_surface);
+        eglDestroyContext(gl->egl_display, gl->egl_context);
+        eglTerminate(gl->egl_display);
+        free(gl);
+        return false;
+    }
+
+    if (!gladLoadGLLoader((GLADloadproc)eglGetProcAddress)) {
+        LOG_FATAL("GL: failed to load OpenGL functions");
+        eglMakeCurrent(gl->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroySurface(gl->egl_display, gl->egl_surface);
+        eglDestroyContext(gl->egl_display, gl->egl_context);
+        eglTerminate(gl->egl_display);
+        free(gl);
+        return false;
+    }
+#else
     Display *dpy = (Display *)display_native;
     if (!dpy) { LOG_FATAL("GL: null display"); free(gl); return false; }
 
@@ -88,6 +282,7 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
         free(gl);
         return false;
     }
+#endif
 
     LOG_INFO("OpenGL %s initialized", (const char *)glGetString(GL_VERSION));
     glEnable(GL_DEPTH_TEST);
@@ -104,8 +299,23 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
 static void gl_shutdown(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
     if (!gl) return;
+#ifdef ENGINE_PLATFORM_WINDOWS
+    wglMakeCurrent(NULL, NULL);
+    wglDeleteContext(gl->gl_ctx);
+    ReleaseDC(gl->hwnd, gl->hdc);
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+    if (gl->egl_display != EGL_NO_DISPLAY) {
+        eglMakeCurrent(gl->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (gl->egl_surface != EGL_NO_SURFACE)
+            eglDestroySurface(gl->egl_display, gl->egl_surface);
+        if (gl->egl_context != EGL_NO_CONTEXT)
+            eglDestroyContext(gl->egl_display, gl->egl_context);
+        eglTerminate(gl->egl_display);
+    }
+#else
     glXMakeCurrent(gl->display, None, NULL);
     glXDestroyContext(gl->display, gl->gl_ctx);
+#endif
     free(gl);
     dev->backend_data = NULL;
 }
@@ -127,7 +337,37 @@ static void gl_frame_end(RHIDevice *dev) {
 
 static void gl_present(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
+#ifdef ENGINE_PLATFORM_WINDOWS
+    SwapBuffers(gl->hdc);
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+    eglSwapBuffers(gl->egl_display, gl->egl_surface);
+#else
     glXSwapBuffers(gl->display, gl->window);
+#endif
+}
+
+static void gl_set_vsync(RHIDevice *dev, bool enabled) {
+    GLBackend *gl = (GLBackend *)dev->backend_data;
+#ifdef ENGINE_PLATFORM_WINDOWS
+    typedef BOOL (WINAPI *PFNWGLSWAPINTERVALEXTPROC)(int);
+    PFNWGLSWAPINTERVALEXTPROC fn = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+    if (fn) {
+        fn(enabled ? 1 : 0);
+    }
+    (void)gl;
+#elif defined(ENGINE_PLATFORM_WAYLAND)
+    eglSwapInterval(gl->egl_display, enabled ? 1 : 0);
+#else
+    typedef void (*PFNGLXSWAPINTERVALEXT)(Display *, GLXDrawable, int);
+    PFNGLXSWAPINTERVALEXT fn = (PFNGLXSWAPINTERVALEXT)glXGetProcAddress((const GLubyte *)"glXSwapIntervalEXT");
+    if (fn) {
+        fn(gl->display, gl->window, enabled ? 1 : 0);
+    }
+#endif
+}
+
+void rhi_set_vsync(RHIDevice *dev, bool enabled) {
+    gl_set_vsync(dev, enabled);
 }
 
 static void gl_cmd_begin_render_pass(void *cmd) {
@@ -140,31 +380,54 @@ static void gl_cmd_end_render_pass(void *cmd) {
 
 static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
     (void)cmd;
-    glUseProgram(pd->gl_program);
-    glBindVertexArray(pd->gl_vao);
-    if (pd->alpha_blend) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    } else {
-        glDisable(GL_BLEND);
+    /* Cached GL state: only issue state-change calls when pipeline differs
+     * from the last bound pipeline. Eliminates redundant driver validation. */
+    static bool g_gl_blend_enabled = false;
+    static bool g_gl_wireframe     = false;
+    static GLuint g_gl_program     = 0;
+    static GLuint g_gl_vao         = 0;
+
+    if (pd->gl_program != g_gl_program) {
+        glUseProgram(pd->gl_program);
+        g_gl_program = pd->gl_program;
+    }
+    if (pd->gl_vao != g_gl_vao) {
+        glBindVertexArray(pd->gl_vao);
+        g_gl_vao = pd->gl_vao;
+    }
+    if (pd->alpha_blend != g_gl_blend_enabled) {
+        if (pd->alpha_blend) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else {
+            glDisable(GL_BLEND);
+        }
+        g_gl_blend_enabled = pd->alpha_blend;
+    }
+    if (pd->wireframe != g_gl_wireframe) {
+        glPolygonMode(GL_FRONT_AND_BACK, pd->wireframe ? GL_LINE : GL_FILL);
+        g_gl_wireframe = pd->wireframe;
     }
 }
 
 static void gl_cmd_set_viewport(void *cmd, f32 x, f32 y, f32 w, f32 h) {
     (void)cmd;
-    glViewport((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+    /* Cached viewport: skip redundant glViewport calls */
+    static f32 g_gl_vp[4] = {-1, -1, -1, -1};
+    if (g_gl_vp[0] != x || g_gl_vp[1] != y || g_gl_vp[2] != w || g_gl_vp[3] != h) {
+        glViewport((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+        g_gl_vp[0] = x; g_gl_vp[1] = y; g_gl_vp[2] = w; g_gl_vp[3] = h;
+    }
 }
 
 static void gl_cmd_draw(void *cmd, u32 vertex_count, u32 instance_count) {
     (void)cmd;
-    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertex_count);
-    (void)instance_count;
+    glDrawArraysInstanced(GL_TRIANGLES, 0, (GLsizei)vertex_count, (GLsizei)instance_count);
 }
 
 static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) {
     (void)cmd;
-    glDrawElements(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL);
-    (void)instance_count;
+    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL, (GLsizei)instance_count);
 }
 
 static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
@@ -177,6 +440,7 @@ static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     RHIDevice *dev = calloc(1, sizeof(RHIDevice));
     if (!dev) return NULL;
+    rhi_init_freelist(dev);
 
     switch (backend) {
     case RHI_BACKEND_OPENGL: dev->backend_data = NULL; break;
@@ -240,6 +504,28 @@ void rhi_device_destroy(RHIDevice *dev) {
         case RHI_RES_CUBEMAP: {
             GLTextureData *td = (GLTextureData *)dev->slots[i].ptr;
             if (td) { glDeleteTextures(1, &td->gl_tex); free(td); }
+            break;
+        }
+        case RHI_RES_MRT_FBO: {
+            GLMRTFBOData *md = (GLMRTFBOData *)dev->slots[i].ptr;
+            if (md) {
+                if (md->gl_fbo) glDeleteFramebuffers(1, &md->gl_fbo);
+                for (u32 ai = 0; ai < md->attachment_count; ai++) {
+                    if (md->color_tex[ai]) glDeleteTextures(1, &md->color_tex[ai]);
+                }
+                if (md->depth_tex) glDeleteTextures(1, &md->depth_tex);
+                if (md->depth_rb) glDeleteRenderbuffers(1, &md->depth_rb);
+                free(md);
+            }
+            break;
+        }
+        case RHI_RES_CUBEMAP_DEPTH_FBO: {
+            GLCubemapDepthFBOData *cd = (GLCubemapDepthFBOData *)dev->slots[i].ptr;
+            if (cd) {
+                if (cd->gl_fbo) glDeleteFramebuffers(1, &cd->gl_fbo);
+                if (cd->depth_tex) glDeleteTextures(1, &cd->depth_tex);
+                free(cd);
+            }
             break;
         }
         default:
@@ -426,6 +712,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->gl_vao         = vao;
     pd->vertex_stride  = stride;
     pd->alpha_blend    = desc->alpha_blend;
+    pd->wireframe      = desc->wireframe;
     dev->slots[idx].ptr  = pd;
     dev->slots[idx].type = RHI_RES_PIPELINE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -494,7 +781,10 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     (void)cmd;
     extern RHIDevice *g_current_device;
     GLPipelineData *pd = (GLPipelineData *)rhi_get_resource(g_current_device, pipe);
-    if (pd) gl_cmd_bind_pipeline(cmd, pd);
+    if (pd) {
+        gl_cmd_bind_pipeline(cmd, pd);
+        g_cached_vertex_stride = pd->vertex_stride;
+    }
 }
 
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
@@ -502,22 +792,10 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
     if (bd) {
-        GLuint vao = 0;
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, (GLint *)&vao);
-        GLint bound_program = 0;
-        glGetIntegerv(GL_CURRENT_PROGRAM, &bound_program);
-        if (bound_program) {
-            for (u32 i = 0; i < g_current_device->next_slot && i < 4096; i++) {
-                if (g_current_device->slots[i].alive && g_current_device->slots[i].type == RHI_RES_PIPELINE) {
-                    GLPipelineData *pd = (GLPipelineData *)g_current_device->slots[i].ptr;
-                    if (pd && pd->gl_program == (GLuint)bound_program) {
-                        glBindVertexBuffer(0, bd->gl_buf, (GLintptr)offset, (GLsizei)pd->vertex_stride);
-                        return;
-                    }
-                }
-            }
-        }
-        glBindVertexBuffer(0, bd->gl_buf, (GLintptr)offset, 8 * sizeof(f32));
+        /* Use the stride cached by the most recent bind_pipeline call.
+         * This replaces the previous O(4096) linear slot scan. */
+        glBindVertexBuffer(0, bd->gl_buf, (GLintptr)offset,
+                           (GLsizei)g_cached_vertex_stride);
     }
 }
 
@@ -536,12 +814,73 @@ void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
     (void)cmd; (void)x; (void)y; (void)w; (void)h;
 }
 
+void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
+    (void)cmd;
+    /* Restrict rendering (and prevent cross-quadrant bleed) to one cascade
+     * quadrant of the shadow atlas. GL uses a native bottom-left origin; the
+     * sampling remap in the shaders uses the same quadrant convention. */
+    glViewport((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+}
+
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
     gl_cmd_draw(cmd, vertex_count, instance_count);
 }
 
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count) {
     gl_cmd_draw_indexed(cmd, index_count, instance_count);
+}
+
+void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
+                                   u32 draw_count, u32 stride) {
+    GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, cmd_buf);
+    if (!bd) return;
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bd->gl_buf);
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+                                (const void *)(uintptr_t)offset,
+                                (GLsizei)draw_count, (GLsizei)stride);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+}
+
+void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset,
+                                         RHIBuffer count_buf, u32 count_offset,
+                                         u32 max_draws, u32 stride) {
+    GLBufferData *cmd_bd   = (GLBufferData *)rhi_get_resource(dev, cmd_buf);
+    GLBufferData *count_bd = (GLBufferData *)rhi_get_resource(dev, count_buf);
+    if (!cmd_bd || !count_bd) return;
+
+    /* Prefer GL_ARB_indirect_parameters (core in 4.6) when available. */
+    if (glMultiDrawElementsIndirectCountARB) {
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
+        /* The ARB count buffer is bound to GL_PARAMETER_BUFFER_ARB (0x80EE). */
+        glBindBuffer(0x80EE, count_bd->gl_buf);
+        glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_INT,
+                                            (const void *)(uintptr_t)cmd_offset,
+                                            (GLintptr)count_offset,
+                                            (GLsizei)max_draws,
+                                            (GLsizei)stride);
+        glBindBuffer(0x80EE, 0);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+        return;
+    }
+
+    /* Fallback: read draw count from the GPU buffer and issue a regular
+     * glMultiDrawElementsIndirect with the resolved count. This stalls the
+     * pipeline but keeps the API working on GL 4.3-4.5. */
+    u32 actual = 0;
+    glBindBuffer(GL_COPY_READ_BUFFER, count_bd->gl_buf);
+    glGetBufferSubData(GL_COPY_READ_BUFFER, (GLintptr)count_offset,
+                       (GLsizeiptr)sizeof(u32), &actual);
+    glBindBuffer(GL_COPY_READ_BUFFER, 0);
+    if (actual > max_draws) actual = max_draws;
+    if (actual == 0) return;
+
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+                                (const void *)(uintptr_t)cmd_offset,
+                                (GLsizei)actual, (GLsizei)stride);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 }
 
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
@@ -593,9 +932,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
 
     u32 idx = rhi_alloc_slot(dev);
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
-    td->gl_tex = gl_tex;
-    td->width  = desc->width;
-    td->height = desc->height;
+    td->gl_tex            = gl_tex;
+    td->width             = desc->width;
+    td->height            = desc->height;
+    td->gl_internal_format = rhi_format_to_gl_internal(desc->format);
     dev->slots[idx].ptr  = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -607,6 +947,19 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     glDeleteTextures(1, &td->gl_tex);
     free(td);
     rhi_free_slot(dev, tex);
+}
+
+void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
+                            u32 width, u32 height, const void *data, usize size) {
+    (void)size;
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
+    if (!td || !data) return;
+    glBindTexture(GL_TEXTURE_2D, td->gl_tex);
+    /* Define + upload the requested level (mutable storage). RGBA8 streaming. */
+    glTexImage2D(GL_TEXTURE_2D, (GLint)mip_level, GL_RGBA8,
+                 (GLsizei)width, (GLsizei)height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 static GLenum rhi_filter_to_gl(RHIFilter f) {
@@ -646,12 +999,51 @@ static void gl_bind_tex_unit(u32 unit, RHITexture tex, RHISampler sampler) {
     extern RHIDevice *g_current_device;
     GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
     GLSamplerData *sd = (GLSamplerData *)rhi_get_resource(g_current_device, sampler);
+
+    /* Per-unit texture/sampler cache: skip redundant GL calls */
+    static GLuint g_tex_cache[16] = {0};
+    static GLuint g_sam_cache[16] = {0};
+    static u32    g_active_unit = UINT32_MAX;
+
     if (td) {
-        glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(GL_TEXTURE_2D, td->gl_tex);
+        /* Choose the GL target from the resource type: cubemaps (including
+         * point-shadow depth cubes) must bind to GL_TEXTURE_CUBE_MAP, never
+         * GL_TEXTURE_2D, otherwise sampling reads garbage / GL errors. */
+        GLenum target = GL_TEXTURE_2D;
+        bool depth_cube = false;
+        if (tex.index < RHI_MAX_RESOURCES) {
+            RHIResourceType t = g_current_device->slots[tex.index].type;
+            if (t == RHI_RES_CUBEMAP) {
+                target = GL_TEXTURE_CUBE_MAP;
+                depth_cube = (td->gl_internal_format == GL_DEPTH_COMPONENT32F ||
+                              td->gl_internal_format == GL_DEPTH_COMPONENT24 ||
+                              td->gl_internal_format == GL_DEPTH_COMPONENT);
+            }
+        }
+        if (unit < 16 && td->gl_tex == g_tex_cache[unit] && g_active_unit == unit) {
+            /* Texture already bound to this unit — only update sampler if needed */
+            if (depth_cube) { glBindSampler(unit, 0); return; }
+            if (sd && unit < 16 && sd->gl_sampler == g_sam_cache[unit]) return;
+        } else {
+            if (g_active_unit != unit) {
+                glActiveTexture(GL_TEXTURE0 + unit);
+                g_active_unit = unit;
+            }
+            if (unit < 16) g_tex_cache[unit] = td->gl_tex;
+            glBindTexture(target, td->gl_tex);
+            if (depth_cube) {
+                /* samplerCubeShadow relies on the texture's COMPARE_REF_TO_TEXTURE
+                 * params; a non-compare sampler object would disable the PCF. */
+                glBindSampler(unit, 0);
+                if (unit < 16) g_sam_cache[unit] = 0;
+                return;
+            }
+        }
     }
     if (sd) {
+        if (unit < 16 && sd->gl_sampler == g_sam_cache[unit]) return;
         glBindSampler(unit, sd->gl_sampler);
+        if (unit < 16) g_sam_cache[unit] = sd->gl_sampler;
     }
 }
 
@@ -665,6 +1057,32 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     gl_bind_tex_unit(3, normal, sampler);
     gl_bind_tex_unit(4, emissive, sampler);
     gl_bind_tex_unit(5, ssao, sampler);
+}
+
+void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
+    RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
+    RHITexture shadow, RHITexture ssao, RHISampler sampler,
+    RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map,
+    const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
+    (void)cmd;
+    gl_bind_tex_unit(0, albedo, sampler);
+    gl_bind_tex_unit(1, shadow, sampler);
+    gl_bind_tex_unit(2, mr, sampler);
+    gl_bind_tex_unit(3, normal, sampler);
+    gl_bind_tex_unit(4, emissive, sampler);
+    gl_bind_tex_unit(5, ssao, sampler);
+    if (point_shadow_cubes && point_shadow_count > 0u) {
+        u32 n = point_shadow_count > 4u ? 4u : point_shadow_count;
+        for (u32 i = 0u; i < n; i++)
+            gl_bind_tex_unit(10u + i, point_shadow_cubes[i], sampler);
+    }
+    /* IBL textures at units 7/8/9 matching GL shader layout bindings */
+    if (rhi_handle_valid(brdf_lut))
+        gl_bind_tex_unit(7, brdf_lut, sampler);
+    if (rhi_handle_valid(irradiance_map))
+        rhi_cmd_bind_cubemap(cmd, irradiance_map, sampler, 8u);
+    if (rhi_handle_valid(prefilter_map))
+        rhi_cmd_bind_cubemap(cmd, prefilter_map, sampler, 9u);
 }
 
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
@@ -787,12 +1205,16 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     (void)cmd;
     GLFBOData *fd = (GLFBOData *)rhi_get_resource(g_current_device, sm->fbo);
     if (fd) glBindFramebuffer(GL_FRAMEBUFFER, fd->gl_fbo);
+    /* Clear the whole atlas once with scissor disabled; per-cascade quadrant
+     * scissoring is applied afterwards via rhi_cmd_set_shadow_viewport. */
+    glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, sm->width, sm->height);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
+    glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
@@ -816,13 +1238,26 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     glGenTextures(1, &gl_tex);
     glBindTexture(GL_TEXTURE_CUBE_MAP, gl_tex);
 
-    for (u32 i = 0; i < 6; i++) {
-        glTexImage2D(GL_CUBE_FACES[i], 0, GL_RGBA8,
-                     (GLsizei)desc->size, (GLsizei)desc->size, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, desc->faces[i]);
+    GLenum internal = rhi_format_to_gl_internal(desc->format);
+    GLenum upload_fmt = rhi_format_to_gl_format(desc->format);
+    bool hdr = (desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT);
+    GLenum upload_type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    u32 mips = desc->mip_levels ? desc->mip_levels : 1u;
+
+    for (u32 m = 0; m < mips; m++) {
+        u32 msz = desc->size >> m; if (msz == 0u) msz = 1u;
+        for (u32 i = 0; i < 6; i++) {
+            /* Only upload mip 0 face data; higher mips (and HDR float faces with
+             * RGBA8 source data) are allocated empty and filled by compute. */
+            const void *data = (m == 0u && !hdr) ? desc->faces[i] : NULL;
+            glTexImage2D(GL_CUBE_FACES[i], (GLint)m, (GLint)internal,
+                         (GLsizei)msz, (GLsizei)msz, 0,
+                         upload_fmt, upload_type, data);
+        }
     }
 
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
+                    mips > 1u ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -831,12 +1266,25 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
 
     u32 idx = rhi_alloc_slot(dev);
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
-    td->gl_tex = gl_tex;
-    td->width  = desc->size;
-    td->height = desc->size;
-    dev->slots[idx].ptr  = td;
-    dev->slots[idx].type = RHI_RES_CUBEMAP;
+    td->gl_tex            = gl_tex;
+    td->width             = desc->size;
+    td->height            = desc->size;
+    td->gl_internal_format = internal;
+    dev->slots[idx].ptr   = td;
+    dev->slots[idx].type  = RHI_RES_CUBEMAP;
     return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+
+void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
+    /* GL has no explicit image layouts; ensure compute image writes are visible
+     * to subsequent texture sampling. */
+    (void)dev; (void)cm;
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+}
+
+void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
+    (void)dev; (void)tex;
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 }
 
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
@@ -861,22 +1309,48 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
     }
 }
 
+/* Cached GL depth function: skip redundant glDepthFunc calls */
+static GLenum g_gl_depth_func = GL_LESS;
+
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) {
     (void)cmd;
-    glDepthFunc(GL_LEQUAL);
+    if (g_gl_depth_func != GL_LEQUAL) {
+        glDepthFunc(GL_LEQUAL);
+        g_gl_depth_func = GL_LEQUAL;
+    }
 }
 
 void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
     (void)cmd;
-    glDepthFunc(GL_LESS);
+    if (g_gl_depth_func != GL_LESS) {
+        glDepthFunc(GL_LESS);
+        g_gl_depth_func = GL_LESS;
+    }
+}
+
+/* Cached GL_ARRAY_BUFFER binding: eliminates redundant glBindBuffer calls
+ * when multiple consecutive updates target different buffers. */
+static GLuint g_gl_bound_array_buffer = 0;
+
+static inline void gl_bind_array_buffer_cached(GLuint buf) {
+    if (buf != g_gl_bound_array_buffer) {
+        glBindBuffer(GL_ARRAY_BUFFER, buf);
+        g_gl_bound_array_buffer = buf;
+    }
 }
 
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return;
-    glBindBuffer(GL_ARRAY_BUFFER, bd->gl_buf);
+    gl_bind_array_buffer_cached(bd->gl_buf);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)size, data);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size) {
+    GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
+    if (!bd) return;
+    gl_bind_array_buffer_cached(bd->gl_buf);
+    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 }
 
 void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
@@ -995,14 +1469,352 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     (void)cmd;
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
-    if (bd) glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, bd->gl_buf);
+    /* SSBO binding cache: skip redundant glBindBufferBase calls */
+    static GLuint g_gl_ssbo_cache[8] = {0};
+    if (bd && binding < 8) {
+        if (g_gl_ssbo_cache[binding] != bd->gl_buf) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, bd->gl_buf);
+            g_gl_ssbo_cache[binding] = bd->gl_buf;
+        }
+    } else if (bd) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, bd->gl_buf);
+    }
 }
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     (void)cmd;
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+}
+
+void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only) {
+    (void)cmd;
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
+    if (!td) return;
+    GLenum access = write_only ? GL_WRITE_ONLY : GL_READ_WRITE;
+    /* Use recorded format; fall back to GL_RGBA16F for untracked textures. */
+    GLenum fmt = td->gl_internal_format ? td->gl_internal_format : GL_RGBA16F;
+    glBindImageTexture(unit, td->gl_tex, (GLint)mip_level, GL_FALSE, 0, access, fmt);
+}
+
+void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face, u32 mip, u32 unit, bool write_only) {
+    (void)cmd;
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, cm);
+    if (!td || face >= 6u) return;
+    GLenum access = write_only ? GL_WRITE_ONLY : GL_READ_WRITE;
+    GLenum fmt = td->gl_internal_format ? td->gl_internal_format : GL_RGBA8;
+    /* Bind a single face (layer) of the cubemap mip as an image. */
+    glBindImageTexture(unit, td->gl_tex, (GLint)mip, GL_FALSE, (GLint)face, access, fmt);
+}
+
+void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
+    /* GL: same as rhi_cmd_bind_cubemap — texture units are shared between
+     * compute and graphics stages. */
+    rhi_cmd_bind_cubemap(cmd, cm, sampler, unit);
+}
+
+void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit, u32 mip_level) {
+    (void)cmd; (void)mip_level;
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
+    GLSamplerData *sd = sampler.generation ? (GLSamplerData *)rhi_get_resource(g_current_device, sampler) : NULL;
+    if (!td) return;
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, td->gl_tex);
+    if (sd) glBindSampler(unit, sd->gl_sampler);
+    /* Clamp mip range for this binding */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)mip_level);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)mip_level);
+}
+
+void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
+    (void)cmd;
+    gl_bind_tex_unit(unit, tex, sampler);
 }
 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
+    /* GL has no explicit image layouts; FBO depth -> texture sampling hazards
+     * are resolved implicitly by the driver between draw calls. This is the GL
+     * analogue of the Vulkan layout transition and is intentionally a no-op. */
     (void)cmd; (void)depth_tex;
+}
+
+void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
+    (void)dev;
+    glReadPixels((GLint)x, (GLint)y, (GLint)w, (GLint)h, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+}
+
+struct RHIGPUTimer {
+    GLuint queries[2];
+    bool   started;
+    bool   result_ready;
+};
+
+RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
+    (void)dev;
+    RHIGPUTimer *t = calloc(1, sizeof(RHIGPUTimer));
+    glGenQueries(2, t->queries);
+    return t;
+}
+
+void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
+    (void)dev;
+    if (!t) return;
+    glDeleteQueries(2, t->queries);
+    free(t);
+}
+
+void rhi_gpu_timer_begin(RHIGPUTimer *t) {
+    if (!t) return;
+    glQueryCounter(t->queries[0], GL_TIMESTAMP);
+    t->started = true;
+}
+
+void rhi_gpu_timer_end(RHIGPUTimer *t) {
+    if (!t || !t->started) return;
+    glQueryCounter(t->queries[1], GL_TIMESTAMP);
+    t->result_ready = true;
+    t->started = false;
+}
+
+f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
+    if (!t || !t->result_ready) return 0.0;
+    GLuint64 start_ns = 0, end_ns = 0;
+    glGetQueryObjectui64v(t->queries[0], GL_QUERY_RESULT, &start_ns);
+    glGetQueryObjectui64v(t->queries[1], GL_QUERY_RESULT, &end_ns);
+    t->result_ready = false;
+    return (f64)(end_ns - start_ns) / 1e6;
+}
+
+/* ======================================================================== */
+/* MRT (Multiple Render Targets) framebuffer -- GL backend                  */
+/* ======================================================================== */
+
+RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
+                              const RHIFormat *formats, u32 attachment_count) {
+    RHIMRTFBO fbo = {0};
+    if (attachment_count == 0u || attachment_count > RHI_MRT_MAX_ATTACHMENTS) return fbo;
+    fbo.attachment_count = attachment_count;
+    fbo.width  = width;
+    fbo.height = height;
+
+    GLMRTFBOData *md = calloc(1, sizeof(GLMRTFBOData));
+    md->attachment_count = attachment_count;
+
+    glGenFramebuffers(1, &md->gl_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, md->gl_fbo);
+
+    GLenum draw_bufs[RHI_MRT_MAX_ATTACHMENTS];
+    for (u32 i = 0; i < attachment_count; i++) {
+        GLenum internal_fmt = rhi_format_to_gl_internal(formats[i]);
+        GLenum gl_fmt       = rhi_format_to_gl_format(formats[i]);
+        GLenum gl_type       = (formats[i] == RHI_FORMAT_R16G16B16A16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
+
+        glGenTextures(1, &md->color_tex[i]);
+        glBindTexture(GL_TEXTURE_2D, md->color_tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, internal_fmt, width, height, 0, gl_fmt, gl_type, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i,
+                               GL_TEXTURE_2D, md->color_tex[i], 0);
+        draw_bufs[i] = GL_COLOR_ATTACHMENT0 + i;
+    }
+    glDrawBuffers((GLsizei)attachment_count, draw_bufs);
+
+    /* Shared depth attachment (texture — readable in deferred lighting pass). */
+    glGenTextures(1, &md->depth_tex);
+    glBindTexture(GL_TEXTURE_2D, md->depth_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
+                 (GLsizei)width, (GLsizei)height, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, md->depth_tex, 0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    /* Register FBO handle. */
+    u32 fidx = rhi_alloc_slot(dev);
+    dev->slots[fidx].ptr  = md;
+    dev->slots[fidx].type = RHI_RES_MRT_FBO;
+    fbo.fb = rhi_make_handle(fidx, dev->slots[fidx].generation);
+
+    /* Register each color texture as a separate texture handle. */
+    for (u32 i = 0; i < attachment_count; i++) {
+        u32 cidx = rhi_alloc_slot(dev);
+        GLTextureData *td = calloc(1, sizeof(GLTextureData));
+        td->gl_tex            = md->color_tex[i];
+        td->width             = width;
+        td->height            = height;
+        td->gl_internal_format = rhi_format_to_gl_internal(formats[i]);
+        dev->slots[cidx].ptr  = td;
+        dev->slots[cidx].type = RHI_RES_TEXTURE;
+        fbo.color_tex[i] = rhi_make_handle(cidx, dev->slots[cidx].generation);
+    }
+
+    /* Register depth as a texture handle (readable for deferred lighting). */
+    if (md->depth_tex) {
+        u32 didx = rhi_alloc_slot(dev);
+        GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
+        dtd->gl_tex            = md->depth_tex;
+        dtd->width             = width;
+        dtd->height            = height;
+        dtd->gl_internal_format = GL_DEPTH_COMPONENT32F;
+        dev->slots[didx].ptr   = dtd;
+        dev->slots[didx].type  = RHI_RES_TEXTURE;
+        fbo.depth_tex = rhi_make_handle(didx, dev->slots[didx].generation);
+    } else {
+        fbo.depth_tex = RHI_HANDLE_NULL;
+    }
+
+    return fbo;
+}
+
+void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
+    if (!dev || !fbo) return;
+    GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource(dev, fbo->fb);
+    if (!md) { memset(fbo, 0, sizeof(*fbo)); return; }
+    glDeleteFramebuffers(1, &md->gl_fbo);
+    for (u32 i = 0; i < md->attachment_count; i++) {
+        if (md->color_tex[i]) glDeleteTextures(1, &md->color_tex[i]);
+        /* The texture slot shares the same GLTextureData pointer; null it
+         * out so device-destroy skips the double-free. */
+        if (rhi_handle_valid(fbo->color_tex[i])) {
+            GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, fbo->color_tex[i]);
+            if (td) { free(td); }
+            if (dev->slots[fbo->color_tex[i].index].ptr == td) {
+                dev->slots[fbo->color_tex[i].index].ptr = NULL;
+            }
+            rhi_free_slot(dev, fbo->color_tex[i]);
+        }
+    }
+    /* Depth texture is shared with the texture slot; clean up carefully. */
+    if (rhi_handle_valid(fbo->depth_tex)) {
+        GLTextureData *dtd = (GLTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        if (dtd) { free(dtd); }
+        if (dev->slots[fbo->depth_tex.index].ptr == dtd) {
+            dev->slots[fbo->depth_tex.index].ptr = NULL;
+        }
+        rhi_free_slot(dev, fbo->depth_tex);
+    } else if (md->depth_rb) {
+        glDeleteRenderbuffers(1, &md->depth_rb);
+    }
+    if (md->depth_tex) glDeleteTextures(1, &md->depth_tex);
+    free(md);
+    rhi_free_slot(dev, fbo->fb);
+    memset(fbo, 0, sizeof(*fbo));
+}
+
+void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
+    (void)cmd;
+    if (!fbo) return;
+    GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
+    if (!md) return;
+    glBindFramebuffer(GL_FRAMEBUFFER, md->gl_fbo);
+    glViewport(0, 0, fbo->width, fbo->height);
+}
+
+void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
+    (void)cmd;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
+}
+
+/* ======================================================================== */
+/* Depth cubemap FBO (point-light shadow maps) -- GL backend                */
+/* ======================================================================== */
+
+RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
+    RHICubemapDepthFBO fbo = {0};
+    fbo.size = size;
+
+    GLCubemapDepthFBOData *cd = calloc(1, sizeof(GLCubemapDepthFBOData));
+
+    /* Create depth cubemap texture. */
+    glGenTextures(1, &cd->depth_tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cd->depth_tex);
+    for (u32 face = 0; face < 6; face++) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0,
+                     GL_DEPTH_COMPONENT24, (GLsizei)size, (GLsizei)size,
+                     0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    /* Enable depth comparison for shadow sampling. */
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+
+    /* Create FBO (face attachments are set dynamically per-face). */
+    glGenFramebuffers(1, &cd->gl_fbo);
+    /* Set draw/read buffer once at creation time (depth-only, no color). */
+    glBindFramebuffer(GL_FRAMEBUFFER, cd->gl_fbo);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    /* Register depth texture handle. */
+    u32 tidx = rhi_alloc_slot(dev);
+    GLTextureData *td = calloc(1, sizeof(GLTextureData));
+    td->gl_tex            = cd->depth_tex;
+    td->width             = size;
+    td->height            = size;
+    td->gl_internal_format = GL_DEPTH_COMPONENT32F;
+    dev->slots[tidx].ptr  = td;
+    /* Tag as cubemap so gl_bind_tex_unit binds GL_TEXTURE_CUBE_MAP for the
+     * point-shadow depth cube (sampled as samplerCubeShadow). */
+    dev->slots[tidx].type = RHI_RES_CUBEMAP;
+    fbo.depth_tex = rhi_make_handle(tidx, dev->slots[tidx].generation);
+
+    /* Register FBO handle. */
+    u32 fidx = rhi_alloc_slot(dev);
+    dev->slots[fidx].ptr  = cd;
+    dev->slots[fidx].type = RHI_RES_CUBEMAP_DEPTH_FBO;
+    fbo.fb = rhi_make_handle(fidx, dev->slots[fidx].generation);
+
+    return fbo;
+}
+
+void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
+    if (!dev || !fbo) return;
+    GLCubemapDepthFBOData *cd = (GLCubemapDepthFBOData *)rhi_get_resource(dev, fbo->fb);
+    if (!cd) { memset(fbo, 0, sizeof(*fbo)); return; }
+    if (cd->gl_fbo) glDeleteFramebuffers(1, &cd->gl_fbo);
+    /* depth_tex is freed via its own texture slot; just free the FBO here. */
+    free(cd);
+    rhi_free_slot(dev, fbo->fb);
+    /* Caller is responsible for destroying the depth_tex handle separately
+     * via rhi_texture_destroy if needed; for simplicity we also clean it. */
+    if (rhi_handle_valid(fbo->depth_tex)) {
+        GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        if (td) { glDeleteTextures(1, &td->gl_tex); free(td); }
+        rhi_free_slot(dev, fbo->depth_tex);
+    }
+    memset(fbo, 0, sizeof(*fbo));
+}
+
+void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo, u32 face) {
+    (void)cmd;
+    if (!fbo || face >= 6u) return;
+    GLCubemapDepthFBOData *cd = (GLCubemapDepthFBOData *)rhi_get_resource(g_current_device, fbo->fb);
+    if (!cd) return;
+    glBindFramebuffer(GL_FRAMEBUFFER, cd->gl_fbo);
+    /* Attach the requested cubemap face as the depth attachment. */
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cd->depth_tex, 0);
+    /* draw/read buffer set once at FBO creation (depth-only) */
+    glViewport(0, 0, (GLsizei)fbo->size, (GLsizei)fbo->size);
+    glClear(GL_DEPTH_BUFFER_BIT);
+}
+
+void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
+    (void)cmd;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }

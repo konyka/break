@@ -1,11 +1,11 @@
-#version 330 core
+#version 450 core
 
-in vec2 vUV;
-out vec4 frag_color;
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 frag_color;
 
 uniform sampler2D u_scene;
 uniform sampler2D u_bloom;
-uniform float u_bloom_strength = 0.3;
+uniform float u_bloom_strength;
 
 void main() {
     vec3 scene = texture(u_scene, vUV).rgb;

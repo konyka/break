@@ -1,4 +1,5 @@
 #include <ui/font.h>
+#include <ui/utf8.h>
 #include <core/log.h>
 #include <math/math.h>
 #include <rhi/rhi.h>
@@ -8,6 +9,26 @@
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
+
+/* Codepoint ranges baked into the atlas (inclusive). ASCII printable +
+ * Latin-1 supplement covers western European accented letters and symbols. */
+typedef struct { u32 first, last; } GlyphRange;
+static const GlyphRange FONT_RANGES[] = {
+    { 0x20, 0x7E },  /* Basic Latin (printable ASCII) */
+    { 0xA0, 0xFF },  /* Latin-1 supplement            */
+};
+#define FONT_RANGE_COUNT (sizeof(FONT_RANGES) / sizeof(FONT_RANGES[0]))
+
+static const GlyphInfo *font_lookup_glyph(const FontRenderer *fr, u32 cp) {
+    if (cp < FONT_CPMAP_SIZE) {
+        i16 gi = fr->cp_map[cp];
+        if (gi >= 0) return &fr->glyphs[gi];
+    }
+    /* Fallback to '?' so unknown codepoints stay visible. */
+    if ('?' < FONT_CPMAP_SIZE && fr->cp_map['?'] >= 0)
+        return &fr->glyphs[fr->cp_map['?']];
+    return NULL;
+}
 
 extern RHIDevice *g_current_device;
 
@@ -53,47 +74,66 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     u8 *atlas = calloc(FONT_ATLAS_SIZE * FONT_ATLAS_SIZE, 1);
     if (!atlas) { free(ttf_buf); return false; }
 
-    u32 px = 1;
+    for (u32 i = 0; i < FONT_CPMAP_SIZE; i++) fr->cp_map[i] = -1;
+    fr->glyph_count = 0;
+
+    /* Reserve a small opaque white patch at the top-left for solid-fill quads.
+     * Sample its center so linear filtering never picks transparent neighbors. */
+    const u32 WHITE_PATCH = 4;
+    for (u32 wy = 0; wy < WHITE_PATCH; wy++)
+        for (u32 wx = 0; wx < WHITE_PATCH; wx++)
+            atlas[wy * FONT_ATLAS_SIZE + wx] = 255;
+    fr->white_u = 2.0f / (f32)FONT_ATLAS_SIZE;
+    fr->white_v = 2.0f / (f32)FONT_ATLAS_SIZE;
+
+    u32 px = WHITE_PATCH + 1;
     u32 py = 1;
     u32 row_height = 0;
 
-    for (u32 i = 0; i < FONT_GLYPH_COUNT; i++) {
-        int cp = 32 + i;
-        int advance, lsb;
-        stbtt_GetCodepointHMetrics(&fi, cp, &advance, &lsb);
+    for (u32 ri = 0; ri < FONT_RANGE_COUNT; ri++) {
+        for (u32 cp = FONT_RANGES[ri].first; cp <= FONT_RANGES[ri].last; cp++) {
+            if (fr->glyph_count >= FONT_MAX_GLYPHS) break;
 
-        int x0, y0, x1, y1;
-        stbtt_GetCodepointBitmapBox(&fi, cp, scale, scale, &x0, &y0, &x1, &y1);
+            int advance, lsb;
+            stbtt_GetCodepointHMetrics(&fi, (int)cp, &advance, &lsb);
 
-        int gw = x1 - x0;
-        int gh = y1 - y0;
+            int x0, y0, x1, y1;
+            stbtt_GetCodepointBitmapBox(&fi, (int)cp, scale, scale, &x0, &y0, &x1, &y1);
 
-        if (px + (u32)gw + 1 >= FONT_ATLAS_SIZE) {
-            px = 1;
-            py += row_height + 1;
-            row_height = 0;
+            int gw = x1 - x0;
+            int gh = y1 - y0;
+
+            if (px + (u32)gw + 1 >= FONT_ATLAS_SIZE) {
+                px = 1;
+                py += row_height + 1;
+                row_height = 0;
+            }
+            if (py + (u32)gh + 1 >= FONT_ATLAS_SIZE) {
+                LOG_WARN("Font: atlas overflow at codepoint U+%04X", cp);
+                break;
+            }
+
+            if (gw > 0 && gh > 0) {
+                stbtt_MakeCodepointBitmap(&fi, atlas + py * FONT_ATLAS_SIZE + px,
+                    gw, gh, FONT_ATLAS_SIZE, scale, scale, (int)cp);
+            }
+
+            u32 gi = fr->glyph_count++;
+            fr->glyphs[gi].codepoint = cp;
+            fr->glyphs[gi].advance = (f32)advance * scale;
+            fr->glyphs[gi].x_off = (f32)x0;
+            fr->glyphs[gi].y_off = (f32)y0;
+            fr->glyphs[gi].width = (f32)gw;
+            fr->glyphs[gi].height = (f32)gh;
+            fr->glyphs[gi].uv.x0 = (f32)px / (f32)FONT_ATLAS_SIZE;
+            fr->glyphs[gi].uv.y0 = (f32)py / (f32)FONT_ATLAS_SIZE;
+            fr->glyphs[gi].uv.x1 = (f32)(px + gw) / (f32)FONT_ATLAS_SIZE;
+            fr->glyphs[gi].uv.y1 = (f32)(py + gh) / (f32)FONT_ATLAS_SIZE;
+            if (cp < FONT_CPMAP_SIZE) fr->cp_map[cp] = (i16)gi;
+
+            px += (u32)gw + 1;
+            if ((u32)gh + 1 > row_height) row_height = (u32)gh + 1;
         }
-        if (py + (u32)gh + 1 >= FONT_ATLAS_SIZE) {
-            LOG_WARN("Font: atlas overflow at glyph %u", i);
-            break;
-        }
-
-        stbtt_MakeCodepointBitmap(&fi, atlas + py * FONT_ATLAS_SIZE + px,
-            gw, gh, FONT_ATLAS_SIZE, scale, scale, cp);
-
-        fr->glyphs[i].codepoint = (u32)cp;
-        fr->glyphs[i].advance = (f32)advance * scale;
-        fr->glyphs[i].x_off = (f32)x0;
-        fr->glyphs[i].y_off = (f32)y0;
-        fr->glyphs[i].width = (f32)gw;
-        fr->glyphs[i].height = (f32)gh;
-        fr->glyphs[i].uv.x0 = (f32)px / (f32)FONT_ATLAS_SIZE;
-        fr->glyphs[i].uv.y0 = (f32)py / (f32)FONT_ATLAS_SIZE;
-        fr->glyphs[i].uv.x1 = (f32)(px + gw) / (f32)FONT_ATLAS_SIZE;
-        fr->glyphs[i].uv.y1 = (f32)(py + gh) / (f32)FONT_ATLAS_SIZE;
-
-        px += (u32)gw + 1;
-        if ((u32)gh + 1 > row_height) row_height = (u32)gh + 1;
     }
 
     free(ttf_buf);
@@ -220,7 +260,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     }
 
     LOG_INFO("Font: initialized (%.0fpx, atlas %ux%u, %u glyphs)", font_size,
-        FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, FONT_GLYPH_COUNT);
+        FONT_ATLAS_SIZE, FONT_ATLAS_SIZE, fr->glyph_count);
     return true;
 }
 
@@ -246,17 +286,18 @@ void font_renderer_draw(FontRenderer *fr, const char *text, f32 x, f32 y,
     f32 inv_sh = 2.0f / screen_h;
     f32 inv_sw = 2.0f / screen_w;
 
-    usize len = strlen(text);
-    for (usize ti = 0; ti < len; ti++) {
-        u32 cp = (u32)(u8)text[ti];
+    const char *s = text;
+    while (*s) {
+        u32 cp;
+        s += utf8_decode(s, &cp);
         if (cp == '\n') {
             cursor_x = x;
             cursor_y += fr->ascent - fr->descent + fr->line_gap;
             continue;
         }
-        if (cp < 32 || cp >= 32 + FONT_GLYPH_COUNT) continue;
 
-        GlyphInfo *gi = &fr->glyphs[cp - 32];
+        const GlyphInfo *gi = font_lookup_glyph(fr, cp);
+        if (!gi) continue;
         if (gi->width <= 0 || gi->height <= 0) {
             cursor_x += gi->advance;
             continue;
@@ -272,20 +313,64 @@ void font_renderer_draw(FontRenderer *fr, const char *text, f32 x, f32 y,
         f32 x1 = (qx + qw) * inv_sw - 1.0f;
         f32 y1 = 1.0f - (qy + qh) * inv_sh;
 
-        FontVertex v[6];
-        v[0] = (FontVertex){x0, y0, gi->uv.x0, gi->uv.y0, r, g, b, a};
-        v[1] = (FontVertex){x1, y0, gi->uv.x1, gi->uv.y0, r, g, b, a};
-        v[2] = (FontVertex){x0, y1, gi->uv.x0, gi->uv.y1, r, g, b, a};
-        v[3] = (FontVertex){x1, y0, gi->uv.x1, gi->uv.y0, r, g, b, a};
-        v[4] = (FontVertex){x1, y1, gi->uv.x1, gi->uv.y1, r, g, b, a};
-        v[5] = (FontVertex){x0, y1, gi->uv.x0, gi->uv.y1, r, g, b, a};
-
         if (fr->quad_count >= fr->quad_capacity) break;
-        usize base = (usize)fr->quad_count * 6;
-        memcpy(fr->quad_data + base, v, sizeof(v));
+        usize base = (usize)fr->quad_count * 6 * sizeof(FontVertex);
+        FontVertex *dst = (FontVertex *)(fr->quad_data + base);
+        dst[0] = (FontVertex){x0, y0, gi->uv.x0, gi->uv.y0, r, g, b, a};
+        dst[1] = (FontVertex){x1, y0, gi->uv.x1, gi->uv.y0, r, g, b, a};
+        dst[2] = (FontVertex){x0, y1, gi->uv.x0, gi->uv.y1, r, g, b, a};
+        dst[3] = (FontVertex){x1, y0, gi->uv.x1, gi->uv.y0, r, g, b, a};
+        dst[4] = (FontVertex){x1, y1, gi->uv.x1, gi->uv.y1, r, g, b, a};
+        dst[5] = (FontVertex){x0, y1, gi->uv.x0, gi->uv.y1, r, g, b, a};
         fr->quad_count++;
         cursor_x += gi->advance;
     }
+}
+
+void font_renderer_draw_rect(FontRenderer *fr, f32 x, f32 y, f32 w, f32 h,
+                             f32 screen_w, f32 screen_h, f32 r, f32 g, f32 b, f32 a) {
+    if (w <= 0.0f || h <= 0.0f) return;
+    if (fr->quad_count >= fr->quad_capacity) return;
+
+    f32 inv_sw = 2.0f / screen_w;
+    f32 inv_sh = 2.0f / screen_h;
+    f32 x0 = x * inv_sw - 1.0f;
+    f32 y0 = 1.0f - y * inv_sh;
+    f32 x1 = (x + w) * inv_sw - 1.0f;
+    f32 y1 = 1.0f - (y + h) * inv_sh;
+
+    f32 u = fr->white_u, vv = fr->white_v;
+
+    usize base = (usize)fr->quad_count * 6 * sizeof(FontVertex);
+    FontVertex *dst = (FontVertex *)(fr->quad_data + base);
+    dst[0] = (FontVertex){x0, y0, u, vv, r, g, b, a};
+    dst[1] = (FontVertex){x1, y0, u, vv, r, g, b, a};
+    dst[2] = (FontVertex){x0, y1, u, vv, r, g, b, a};
+    dst[3] = (FontVertex){x1, y0, u, vv, r, g, b, a};
+    dst[4] = (FontVertex){x1, y1, u, vv, r, g, b, a};
+    dst[5] = (FontVertex){x0, y1, u, vv, r, g, b, a};
+    fr->quad_count++;
+}
+
+f32 font_renderer_text_width(const FontRenderer *fr, const char *text) {
+    f32 w = 0.0f, line_w = 0.0f;
+    const char *s = text;
+    while (*s) {
+        u32 cp;
+        s += utf8_decode(s, &cp);
+        if (cp == '\n') {
+            if (line_w > w) w = line_w;
+            line_w = 0.0f;
+            continue;
+        }
+        const GlyphInfo *gi = font_lookup_glyph(fr, cp);
+        if (gi) line_w += gi->advance;
+    }
+    return line_w > w ? line_w : w;
+}
+
+f32 font_renderer_line_height(const FontRenderer *fr) {
+    return fr->ascent - fr->descent + fr->line_gap;
 }
 
 void font_renderer_end(FontRenderer *fr, RHICmdBuffer *cmd, f32 screen_w, f32 screen_h) {

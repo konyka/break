@@ -1,0 +1,114 @@
+#version 450
+/*
+ * Diffuse irradiance cubemap generation (hemisphere cosine convolution).
+ *
+ * For each output texel we cosine-weighted sample the source environment
+ * cubemap over the hemisphere oriented by the surface normal.  This produces
+ * the diffuse irradiance term used by the split-sum IBL approximation.
+ *
+ * One dispatch produces a single face.  The host supplies the face index
+ * and the output resolution via push constants (Vulkan) / uniforms (OpenGL).
+ */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+/* Output is one cube face bound as a 2D storage image (the RHI binds a single
+ * face+mip view).  On Vulkan storage images live in set 1 and combined image
+ * samplers in set 2; glslang defaults to set 0 so bind explicitly. */
+#ifdef VULKAN
+layout(rgba16f, set = 1, binding = 0) writeonly uniform image2D u_out_face;
+layout(set = 2, binding = 1) uniform samplerCube u_env_map;
+layout(push_constant) uniform PushConstants {
+    float u_roughness;   /* unused — matches prefilter layout */
+    int   u_face;
+    int   u_face_size;
+    int   u_pad;
+} pc;
+#define FACE      pc.u_face
+#define FACE_SIZE pc.u_face_size
+#else
+layout(rgba16f, binding = 0) writeonly uniform image2D u_out_face;
+layout(binding = 1) uniform samplerCube u_env_map;
+uniform float u_roughness;   /* unused */
+uniform int   u_face;
+uniform int   u_face_size;
+#define FACE      u_face
+#define FACE_SIZE u_face_size
+#endif
+
+const float PI = 3.14159265359;
+
+/* Van der Corput radical inverse in base 2 — used for Hammersley sequence. */
+float radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u)  | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u)  | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u)  | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u)  | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+
+vec2 hammersley(uint i, uint n) {
+    return vec2(float(i) / float(n), radical_inverse_vdc(i));
+}
+
+/* Cosine-weighted hemisphere sample.
+ * xi.x: uniform in [0, 2π) for azimuthal angle φ
+ * xi.y: uniform in [0, 1] for cos²θ sampling
+ * Returns direction in tangent space (z = up). */
+vec3 cosine_sample_hemisphere(vec2 xi) {
+    float phi      = 2.0 * PI * xi.x;
+    float cosTheta = sqrt(xi.y);
+    float sinTheta = sqrt(1.0 - xi.y);
+    return vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+}
+
+/* Convert (face, uv in [0,1]) to a unit direction.  Standard cubemap mapping. */
+vec3 cube_dir_from_face_uv(int face, vec2 uv) {
+    vec2 t = uv * 2.0 - 1.0; /* [-1,1] */
+    vec3 d;
+    if      (face == 0) d = vec3( 1.0, -t.y, -t.x); /* +X */
+    else if (face == 1) d = vec3(-1.0, -t.y,  t.x); /* -X */
+    else if (face == 2) d = vec3( t.x,  1.0,  t.y); /* +Y */
+    else if (face == 3) d = vec3( t.x, -1.0, -t.y); /* -Y */
+    else if (face == 4) d = vec3( t.x, -t.y,  1.0); /* +Z */
+    else                d = vec3(-t.x, -t.y, -1.0); /* -Z */
+    return normalize(d);
+}
+
+/* Build tangent-to-world basis from normal N. */
+mat3 build_tangent_basis(vec3 N) {
+    vec3 up        = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent   = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+    return mat3(tangent, bitangent, N);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= FACE_SIZE || px.y >= FACE_SIZE) return;
+
+    vec2 uv = (vec2(px) + 0.5) / float(FACE_SIZE);
+    vec3 N  = cube_dir_from_face_uv(FACE, uv);
+
+    mat3  basis = build_tangent_basis(N);
+    vec3  irradiance = vec3(0.0);
+
+    /* Use enough samples for smooth diffuse lighting.
+     * 1024 samples is a good balance between quality and compute cost. */
+    const uint SAMPLE_COUNT = 1024u;
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i) {
+        vec2 xi = hammersley(i, SAMPLE_COUNT);
+        /* Cosine-weighted hemisphere sample in tangent space. */
+        vec3 H_tangent = cosine_sample_hemisphere(xi);
+        /* Transform to world space. */
+        vec3 L = basis * H_tangent;
+
+        /* The cosine-weighted PDF cancels with NdotL, so each sample
+         * contributes equally.  We just accumulate and divide by N. */
+        irradiance += texture(u_env_map, L).rgb;
+    }
+    irradiance /= float(SAMPLE_COUNT);
+
+    imageStore(u_out_face, px, vec4(irradiance, 1.0));
+}

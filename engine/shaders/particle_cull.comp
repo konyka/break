@@ -7,21 +7,30 @@ struct Particle {
     vec4 size_color;
 };
 
+#ifdef VULKAN
+layout(std430, set = 0, binding = 0) buffer ParticleBuf {
+    Particle particles[];
+};
+layout(std430, set = 0, binding = 1) buffer DrawBuf {
+    uint draw_count;
+    uint indices[];
+};
+#else
 layout(std430, binding = 0) buffer ParticleBuf {
     Particle particles[];
 };
-
 layout(std430, binding = 1) buffer DrawBuf {
     uint draw_count;
     uint indices[];
 };
+#endif
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= particles.length()) return;
 
     if (particles[idx].pos_life.w > 0.0) {
-        uint slot = atomicAdd(draw_count, 1);
+        uint slot = atomicAdd(draw_count, 1u);
         indices[slot] = idx;
     }
 }
