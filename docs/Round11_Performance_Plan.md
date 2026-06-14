@@ -434,6 +434,53 @@
 2. 本文档 — 对应 Round 小节标记 `[x]` 与实测结论
 3. **不修改** [PureC_Engine_ExecutionPlan.md](./PureC_Engine_ExecutionPlan.md) 历史 Phase 勾选（仅作 archive）
 
+## R49-R60 CPU 侧性能优化 + 审查修复
+
+**目标**：消除主循环 CPU 侧冗余矩阵运算与三角函数调用，修复 cam_fwd 前方向约定不一致。
+
+### [x] R49 mat4_mul_ortho_diag
+- 正交投影×视图矩阵稀疏乘法，利用 D 矩阵对角+平移结构
+- 21 mul + 12 add vs 通用 64 mul + 48 add
+- 对称正交(d3x=d3y=d3z=0)时 12 mul + 0 add
+
+### [x] R50 mat4_mul_proj_view
+- 透视投影×视图矩阵稀疏乘法，利用 P 矩阵稀疏结构
+- 24 mul + 10 add vs 通用 64 mul + 48 add
+- 支持 TAA jitter (e[2][0..1])
+
+### [x] R51 fast_rsqrt 重力循环
+- 重力方向归一化用 fast_rsqrt 替换 sqrtf + 除法
+- 距离阈值从 gdist < 0.5 改为 gd2 < 0.25（等价）
+
+### [x] R52 复用缓存三角函数 + camera_inv_view
+- 主循环 cam_cy/cam_sy/cam_cp/cam_sp 从 camera._cy 等缓存读取（省 4 cosf/sinf）
+- camera_inv_view: 解析逆视图矩阵，利用 R 正交性 R^T 列=V 旋转行，0 额外 trig
+
+### [x] R53-fix mat4_inv_perspective + inv(VP) 合成
+- 透视矩阵解析逆：3 div + 6 mul vs 通用 ~120 mul + 1 div
+- inv(VP) = camera_inv_view * mat4_inv_perspective 替代通用 mat4_inverse(VP)
+- third-person 时调整 inv(V) 的平移列
+- top-down 视角回退通用逆
+
+### [x] R58/R59 增量三角旋转
+- IK 轨道与轨道灯用 Taylor 近似(cos≈1-x²/2, sin≈x-x³/6)替代每帧 cosf/sinf
+- 256 帧周期性精确重置消除漂移
+- dt 尖峰回退到精确 trig
+
+### [x] R60-fix cam_fwd 前方向约定 + 路径缓存 trig
+- 旧 cam_fwd = (cy*cp, sp, sy*cp)：yaw=0 指向 +X（右方），与 camera_view 不一致
+- 新 cam_fwd = (cp*sy, sp, -cp*cy)：yaw=0 指向 -Z（前方），对齐 camera_view FPS 约定
+- 所有下游使用已更新：实体发射/地形笔刷/阴影级联/物理推力/音频监听
+- 路径摄像机分支手动更新 _cy/_sy/_cp/_sp 防止缓存过期
+
+### [x] 审查修复
+- 纠正 mat4_mul_ortho_diag 注释（7 非零元素/21 mul，非 4/16）
+- 删除冗余 cam_fwd 局部变量遮蔽（main.c L2888）
+- 修正 camera_inv_view 注释存储约定（e[col][row] 列主序，非 e[row][col]）
+- 补充 3 项新测试：逆 VP 端到端、非对称正交、极端 FOV
+
+**验收**：test_math 45/45、test_camera_frustum 22/22、engine_demo 编译通过。
+
 ## 构建与回归命令
 
 ```bash

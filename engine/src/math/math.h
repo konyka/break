@@ -163,6 +163,58 @@ Mat4 mat4_perspective(f32 fov_rad, f32 aspect, f32 near, f32 far);
 Mat4 mat4_lookat(Vec3 eye, Vec3 target, Vec3 up);
 Mat4 mat4_mul(Mat4 a, Mat4 b);
 Mat4 mat4_inverse(Mat4 m);
+/* R49: Multiply diagonal ortho matrix D by view matrix V (D*V).
+ * PRECONDITION: D must be diagonal + translation
+ *   (only d.e[i][i] and d.e[3][0..2] may be non-zero, d.e[3][3]==1).
+ *   Results are undefined for arbitrary matrices.
+ * D has 7 non-zero elements (d0,d1,d2,d3x,d3y,d3z,1): 21 muls + 12 adds vs 64+48 for generic mul.
+ * For symmetric ortho (d3x=d3y=d3z=0): 12 muls + 0 adds. */
+static inline Mat4 mat4_mul_ortho_diag(Mat4 d, Mat4 v) {
+    f32 d0 = d.e[0][0], d1 = d.e[1][1], d2 = d.e[2][2], d3x = d.e[3][0], d3y = d.e[3][1], d3z = d.e[3][2];
+    Mat4 out;
+    /* (D*V)[col][row] = d_row * V[col][row] + D[3][row] * V[col][3] */
+    out.e[0][0] = d0 * v.e[0][0] + d3x * v.e[0][3]; out.e[0][1] = d1 * v.e[0][1] + d3y * v.e[0][3]; out.e[0][2] = d2 * v.e[0][2] + d3z * v.e[0][3]; out.e[0][3] = v.e[0][3];
+    out.e[1][0] = d0 * v.e[1][0] + d3x * v.e[1][3]; out.e[1][1] = d1 * v.e[1][1] + d3y * v.e[1][3]; out.e[1][2] = d2 * v.e[1][2] + d3z * v.e[1][3]; out.e[1][3] = v.e[1][3];
+    out.e[2][0] = d0 * v.e[2][0] + d3x * v.e[2][3]; out.e[2][1] = d1 * v.e[2][1] + d3y * v.e[2][3]; out.e[2][2] = d2 * v.e[2][2] + d3z * v.e[2][3]; out.e[2][3] = v.e[2][3];
+    out.e[3][0] = d0 * v.e[3][0] + d3x;               out.e[3][1] = d1 * v.e[3][1] + d3y;               out.e[3][2] = d2 * v.e[3][2] + d3z;               out.e[3][3] = 1.0f;
+    return out;
+}
+/* R50: Multiply perspective projection P by view V (P*V), exploiting P sparsity.
+ * P has: e[0][0]=A, e[1][1]=B, e[2][2]=C, e[2][3]=-1, e[3][2]=D, rest=0
+ * (except TAA jitter / screen shake in e[2][0..1]).
+ * 24 muls + 10 adds vs 64+48 for generic mul. */
+static inline Mat4 mat4_mul_proj_view(Mat4 p, Mat4 v) {
+    f32 A = p.e[0][0], B = p.e[1][1], C = p.e[2][2], jx = p.e[2][0], jy = p.e[2][1], D = p.e[3][2];
+    Mat4 out;
+    /* (P*V)[col][row] = sum_k P[k][row] * V[col][k]
+     * P col0=(A,0,0,0), col1=(0,B,0,0), col2=(jx,jy,C,-1), col3=(0,0,D,0)
+     * row0: A*V[c][0]+jx*V[c][2]  row1: B*V[c][1]+jy*V[c][2]
+     * row2: C*V[c][2]+D*V[c][3]   row3: -V[c][2] */
+    out.e[0][0] = A * v.e[0][0] + jx * v.e[0][2]; out.e[0][1] = B * v.e[0][1] + jy * v.e[0][2]; out.e[0][2] = C * v.e[0][2] + D * v.e[0][3]; out.e[0][3] = -v.e[0][2];
+    out.e[1][0] = A * v.e[1][0] + jx * v.e[1][2]; out.e[1][1] = B * v.e[1][1] + jy * v.e[1][2]; out.e[1][2] = C * v.e[1][2] + D * v.e[1][3]; out.e[1][3] = -v.e[1][2];
+    out.e[2][0] = A * v.e[2][0] + jx * v.e[2][2]; out.e[2][1] = B * v.e[2][1] + jy * v.e[2][2]; out.e[2][2] = C * v.e[2][2] + D * v.e[2][3]; out.e[2][3] = -v.e[2][2];
+    out.e[3][0] = A * v.e[3][0] + jx * v.e[3][2]; out.e[3][1] = B * v.e[3][1] + jy * v.e[3][2]; out.e[3][2] = C * v.e[3][2] + D * v.e[3][3]; out.e[3][3] = -v.e[3][2];
+    return out;
+}
+/* R53-fix: Analytical inverse of a perspective projection matrix.
+ * PRECONDITION: p must be a standard perspective projection matrix
+ *   (output of mat4_perspective, optionally with TAA jitter / screen shake in e[2][0..1]).
+ *   p.e[0][0], p.e[1][1], p.e[3][2] must be non-zero.
+ *   Results are undefined for arbitrary matrices.
+ * P has: col0=(A,0,0,0), col1=(0,B,0,0), col2=(jx,jy,C,-1), col3=(0,0,D,0)
+ * inv(P): col0=(1/A,0,0,0), col1=(0,1/B,0,0), col2=(0,0,0,1/D), col3=(jx/A,jy/B,-1,C/D)
+ * Only 3 divisions + 6 muls vs ~120 muls + 1 div for generic mat4_inverse.
+ * Correctly includes TAA jitter (jx, jy) and screen shake. */
+static inline Mat4 mat4_inv_perspective(Mat4 p) {
+    f32 invA = 1.0f / p.e[0][0], invB = 1.0f / p.e[1][1];
+    f32 invD = 1.0f / p.e[3][2];
+    Mat4 out;
+    out.e[0][0] = invA;               out.e[0][1] = 0.0f;            out.e[0][2] = 0.0f; out.e[0][3] = 0.0f;
+    out.e[1][0] = 0.0f;                out.e[1][1] = invB;            out.e[1][2] = 0.0f; out.e[1][3] = 0.0f;
+    out.e[2][0] = 0.0f;                out.e[2][1] = 0.0f;            out.e[2][2] = 0.0f; out.e[2][3] = invD;
+    out.e[3][0] = p.e[2][0] * invA;    out.e[3][1] = p.e[2][1] * invB; out.e[3][2] = -1.0f; out.e[3][3] = p.e[2][2] * invD;
+    return out;
+}
 Mat4 mat4_translation(f32 x, f32 y, f32 z);
 Mat4 mat4_scaling(f32 x, f32 y, f32 z);
 Mat4 mat4_from_quat(Quat q);

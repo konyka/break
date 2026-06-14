@@ -25,5 +25,7 @@ typedef struct {
 
 void camera_init(Camera *cam, f32 fov, f32 aspect, f32 near_plane, f32 far_plane);
 Mat4 camera_view(const Camera *cam);
+/* R52: Analytical inverse view — uses cached trig, zero extra trig calls, ~0 muls. */
+Mat4 camera_inv_view(const Camera *cam);
 Mat4 camera_projection(Camera *cam);
 void camera_update(Camera *cam, const InputState *input, f32 dt);

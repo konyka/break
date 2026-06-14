@@ -433,6 +433,84 @@ TEST(mat4_perspective_extreme_aspect) {
     ASSERT_TRUE(isfinite(p.e[1][1]));
 }
 
+/* ---- R49/R50: Sparse matrix multiply correctness ---- */
+
+TEST(mat4_mul_ortho_diag_matches_generic) {
+    /* R49: diagonal ortho * view must match generic mat4_mul. */
+    Mat4 ortho = mat4_ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+    Quat q = quat_from_axis_angle(vec3(0.0f, 1.0f, 0.0f), 0.7f);
+    Mat4 view = mat4_from_quat(q);
+    view.e[3][0] = 1.0f; view.e[3][1] = 2.0f; view.e[3][2] = 3.0f;
+    Mat4 fast = mat4_mul_ortho_diag(ortho, view);
+    Mat4 ref  = mat4_mul(ortho, view);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_FLOAT_EQ(fast.e[c][r], ref.e[c][r], 1e-4f);
+}
+
+TEST(mat4_mul_proj_view_matches_generic) {
+    /* R50: perspective * view (with TAA jitter) must match generic mat4_mul. */
+    Mat4 proj = mat4_perspective(1.2f, 1.777f, 0.1f, 200.0f);
+    /* Simulate TAA jitter */
+    proj.e[2][0] = 0.0003f;
+    proj.e[2][1] = -0.0005f;
+    Mat4 view = mat4_lookat(vec3(1.0f, 2.0f, 5.0f), vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    Mat4 fast = mat4_mul_proj_view(proj, view);
+    Mat4 ref  = mat4_mul(proj, view);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_FLOAT_EQ(fast.e[c][r], ref.e[c][r], 1e-4f);
+}
+
+TEST(mat4_mul_ortho_diag_off_center) {
+    /* R49: non-symmetric ortho (d3x,d3y,d3z all non-zero) must match generic mat4_mul. */
+    Mat4 ortho = mat4_ortho(0.0f, 10.0f, 0.0f, 10.0f, 0.1f, 100.0f);
+    Quat q = quat_from_axis_angle(vec3(0.0f, 1.0f, 0.0f), 0.7f);
+    Mat4 view = mat4_from_quat(q);
+    view.e[3][0] = 1.0f; view.e[3][1] = 2.0f; view.e[3][2] = 3.0f;
+    Mat4 fast = mat4_mul_ortho_diag(ortho, view);
+    Mat4 ref  = mat4_mul(ortho, view);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_FLOAT_EQ(fast.e[c][r], ref.e[c][r], 1e-4f);
+}
+
+TEST(mat4_inv_perspective_matches_generic) {
+    /* R53-fix: analytical inv(perspective) must match generic mat4_inverse. */
+    Mat4 proj = mat4_perspective(1.2f, 1.777f, 0.1f, 200.0f);
+    /* Simulate TAA jitter */
+    proj.e[2][0] = 0.0003f;
+    proj.e[2][1] = -0.0005f;
+    Mat4 fast = mat4_inv_perspective(proj);
+    Mat4 ref  = mat4_inverse(proj);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_FLOAT_EQ(fast.e[c][r], ref.e[c][r], 1e-4f);
+}
+
+TEST(mat4_inv_perspective_product_is_identity) {
+    /* Verify P * inv(P) = I */
+    Mat4 proj = mat4_perspective(0.8f, 1.5f, 0.5f, 100.0f);
+    proj.e[2][0] = 0.001f;
+    proj.e[2][1] = -0.002f;
+    Mat4 ip = mat4_inv_perspective(proj);
+    Mat4 prod = mat4_mul(proj, ip);
+    Mat4 ident = mat4_identity();
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_FLOAT_EQ(prod.e[c][r], ident.e[c][r], 1e-5f);
+}
+
+TEST(mat4_inv_perspective_extreme_fov) {
+    /* R53-fix: near-180° FOV must still produce finite results. */
+    Mat4 proj = mat4_perspective(3.10f, 1.0f, 0.1f, 100.0f);
+    /* e[0][0] and e[1][1] are still non-zero (small but valid), so inv should be finite. */
+    Mat4 ip = mat4_inv_perspective(proj);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(isfinite(ip.e[c][r]));
+}
+
 TEST_MAIN_BEGIN()
     /* Vec3 */
     RUN_TEST(vec3_add);
@@ -458,6 +536,14 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mat4_ortho_off_center);
     RUN_TEST(mat4_mul_associativity);
     RUN_TEST(mat4_inverse_rotation);
+    /* Sparse multiply */
+    RUN_TEST(mat4_mul_ortho_diag_matches_generic);
+    RUN_TEST(mat4_mul_ortho_diag_off_center);
+    RUN_TEST(mat4_mul_proj_view_matches_generic);
+    /* Analytical inverse perspective */
+    RUN_TEST(mat4_inv_perspective_matches_generic);
+    RUN_TEST(mat4_inv_perspective_product_is_identity);
+    RUN_TEST(mat4_inv_perspective_extreme_fov);
     /* Quaternion */
     RUN_TEST(quat_identity_check);
     RUN_TEST(quat_normalize);

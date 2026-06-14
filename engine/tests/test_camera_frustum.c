@@ -289,6 +289,99 @@ TEST(frustum_point_aabb)
     ASSERT_TRUE(!frustum_test_aabb(&f, vec3(0, 0, 50), vec3(0, 0, 50)));
 }
 
+TEST(camera_inv_view_product_is_identity)
+{
+    /* R52-fix: V * inv(V) must equal identity matrix. */
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.0f, 0.1f, 100.0f);
+    cam.yaw = 0.7f;
+    cam.pitch = 0.3f;
+    cam.position = vec3(1.0f, 2.0f, 5.0f);
+    /* Must call camera_update to populate _cy/_sy/_cp/_sp */
+    InputState dummy_input = {0};
+    camera_update(&cam, &dummy_input, 0.016f);
+    /* Update again after changing yaw/pitch so trig is fresh */
+    cam.yaw = 0.7f; cam.pitch = 0.3f;
+    camera_update(&cam, &dummy_input, 0.016f);
+
+    Mat4 v = camera_view(&cam);
+    Mat4 iv = camera_inv_view(&cam);
+    Mat4 prod = mat4_mul(v, iv);
+    Mat4 ident = mat4_identity();
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(prod.e[c][r] - ident.e[c][r]) < 1e-4f);
+}
+
+TEST(camera_inv_view_matches_generic_inverse)
+{
+    /* R52-fix: analytical inv(V) must match generic mat4_inverse(V). */
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.0f, 0.1f, 100.0f);
+    cam.position = vec3(3.0f, -1.0f, 7.0f);
+    InputState dummy_input = {0};
+    camera_update(&cam, &dummy_input, 0.016f);
+    cam.yaw = 1.2f; cam.pitch = -0.4f;
+    camera_update(&cam, &dummy_input, 0.016f);
+
+    Mat4 v = camera_view(&cam);
+    Mat4 iv_analytical = camera_inv_view(&cam);
+    Mat4 iv_ref = mat4_inverse(v);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(iv_analytical.e[c][r] - iv_ref.e[c][r]) < 1e-4f);
+}
+
+TEST(camera_inv_view_near_gimbal_lock)
+{
+    /* R52-fix: V * inv(V) = I even near gimbal lock (pitch ≈ ±π/2). */
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.0f, 0.1f, 100.0f);
+    cam.position = vec3(0.0f, 5.0f, 0.0f);
+    InputState dummy_input = {0};
+    /* Test pitch near +π/2 */
+    cam.yaw = 0.0f; cam.pitch = 1.56f;
+    camera_update(&cam, &dummy_input, 0.016f);
+    Mat4 v = camera_view(&cam);
+    Mat4 iv = camera_inv_view(&cam);
+    Mat4 prod = mat4_mul(v, iv);
+    Mat4 ident = mat4_identity();
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(prod.e[c][r] - ident.e[c][r]) < 1e-4f);
+    /* Test pitch near -π/2 */
+    cam.pitch = -1.56f;
+    camera_update(&cam, &dummy_input, 0.016f);
+    v = camera_view(&cam);
+    iv = camera_inv_view(&cam);
+    prod = mat4_mul(v, iv);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(prod.e[c][r] - ident.e[c][r]) < 1e-4f);
+}
+
+/* R53-fix: End-to-end verification that inv(V)*inv(P) matches inv(VP).
+ * This tests the composition used in main.c's frame_inv_vp computation. */
+TEST(camera_inv_vp_matches_generic) {
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.5f, 0.1f, 200.0f);
+    cam.position = vec3(3.0f, 2.0f, -5.0f);
+    InputState dummy = {0};
+    cam.yaw = 0.8f; cam.pitch = 0.25f;
+    camera_update(&cam, &dummy, 0.016f);
+
+    Mat4 view = camera_view(&cam);
+    Mat4 proj = camera_projection(&cam);
+    proj.e[2][0] = 0.0003f; proj.e[2][1] = -0.0005f; /* TAA jitter */
+
+    Mat4 vp = mat4_mul_proj_view(proj, view);
+    Mat4 inv_vp_fast = mat4_mul(camera_inv_view(&cam), mat4_inv_perspective(proj));
+    Mat4 inv_vp_ref  = mat4_inverse(vp);
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(inv_vp_fast.e[c][r] - inv_vp_ref.e[c][r]) < 1e-3f);
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -313,4 +406,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(camera_near_far_equal);
     RUN_TEST(frustum_zero_radius_sphere);
     RUN_TEST(frustum_point_aabb);
+    /* Inverse view matrix correctness */
+    RUN_TEST(camera_inv_view_product_is_identity);
+    RUN_TEST(camera_inv_view_matches_generic_inverse);
+    RUN_TEST(camera_inv_view_near_gimbal_lock);
+    /* Inverse VP composition */
+    RUN_TEST(camera_inv_vp_matches_generic);
 TEST_MAIN_END()

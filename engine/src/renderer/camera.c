@@ -52,6 +52,27 @@ Mat4 camera_view(const Camera *cam) {
     return m;
 }
 
+Mat4 camera_inv_view(const Camera *cam) {
+    /* R52-fix: Analytical inverse view using cached trig — zero extra trig calls.
+     * V = [R|t] with R orthonormal → V_inv = [R^T | eye; 0 0 0 1].
+     * In e[col][row] column-major storage, R^T columns = rows of V's rotation block.
+     * V row0 = R_row0 = (s.x, u.x, -f.x, 0) = (-cy, -sy*sp, -cp*sy, 0)
+     * V row1 = R_row1 = (s.y, u.y, -f.y, 0) = (0, cp, -sp, 0)
+     * V row2 = R_row2 = (s.z, u.z, -f.z, 0) = (-sy, cy*sp, cp*cy, 0) */
+    f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
+    f32 ex = cam->position.e[0], ey = cam->position.e[1], ez = cam->position.e[2];
+    Mat4 m;
+    /* R^T col0 = R row0 */
+    m.e[0][0] = -cy;      m.e[0][1] = -sy * sp;  m.e[0][2] = -cp * sy;  m.e[0][3] = ex;
+    /* R^T col1 = R row1 */
+    m.e[1][0] = 0.0f;     m.e[1][1] = cp;         m.e[1][2] = -sp;        m.e[1][3] = ey;
+    /* R^T col2 = R row2 */
+    m.e[2][0] = -sy;      m.e[2][1] = cy * sp;    m.e[2][2] = cp * cy;    m.e[2][3] = ez;
+    /* Row 3 */
+    m.e[3][0] = 0.0f;     m.e[3][1] = 0.0f;       m.e[3][2] = 0.0f;       m.e[3][3] = 1.0f;
+    return m;
+}
+
 Mat4 camera_projection(Camera *cam) {
     /* Cache projection matrix — skip tanf + 3 divisions when fov/aspect/near/far unchanged. */
     if (cam->fov != cam->_proj_fov || cam->aspect != cam->_proj_aspect ||

@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**Round 31 完成** — DrawBench 对比脚本 + NetRep peer 分片。**DrawBench script(R31-1)**：`engine/scripts/draw_bench_compare.sh` unified vs legacy 两阶段。**Peer shard(R31-2)**：`peer_save/load_dir` + `save/load_delta`；`BREAK_NETREP_PEER_DIR`。**回归**：VK CTest **31/31**、GL **31/31**。
+最近更新：**Round 47 + Review 修复** — R49-R60 CPU 性能优化 + 代码审查修复。**R49**: `mat4_mul_ortho_diag` 稀疏正交×视图矩阵(21 mul vs 64+48)。**R50**: `mat4_mul_proj_view` 稀疏透视×视图(24 mul vs 64+48)。**R51**: `fast_rsqrt` 替换重力循环 sqrtf+除法。**R52**: 复用 camera_update 缓存三角函数(省 4 cosf/sinf)、`camera_inv_view` 解析逆视图(0 mul vs ~120)。**R53-fix**: `mat4_inv_perspective` 解析逆透视(3 div+6 mul vs ~120)、inv(VP)=inv(V)·inv(P) 合成。**R58/R59**: IK/轨道灯增量三角旋转+周期重置。**R60-fix**: cam_fwd 前方向约定修正((cy*cp,sp,sy*cp)→(cp*sy,sp,-cp*cy),对齐 camera_view -Z 朝向)；路径摄像机缓存 trig 更新。**审查修复**：纠正 mat4_mul_ortho_diag 注释(7非零元素/21mul)；删除冗余 cam_fwd 局部变量遮蔽；修正 camera_inv_view 存储约定注释(e[col][row]列主序)；补充逆VP端到端测试、非对称正交测试、极端FOV测试。**回归**：test_math 45/45、test_camera_frustum 22/22。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

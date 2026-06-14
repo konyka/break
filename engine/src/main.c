@@ -2299,6 +2299,10 @@ u32 culled_count = 0;
             camera.position.e[2] = cam_path[path_idx].pz;
             camera.yaw = cam_path[path_idx].yaw;
             camera.pitch = cam_path[path_idx].pitch;
+            /* R60-fix: Update cached trig to match new yaw/pitch.
+             * Without camera_update call, _cy/_sy/_cp/_sp would be stale. */
+            camera._cy = cosf(camera.yaw); camera._sy = sinf(camera.yaw);
+            camera._cp = cosf(camera.pitch); camera._sp = sinf(camera.pitch);
             path_idx = (path_idx + 1) % path_count;
         } else {
             if (!imui_visible)
@@ -2325,13 +2329,15 @@ u32 culled_count = 0;
         if (cam_height_lock) {
             camera.position.e[1] = cam_locked_y;
         }
-        /* Pre-compute camera trig once per frame (saves ~22 redundant cosf/sinf calls). */
-        f32 cam_cy = cosf(camera.yaw), cam_sy = sinf(camera.yaw);
-        f32 cam_cp = cosf(camera.pitch), cam_sp = sinf(camera.pitch);
-        /* Pre-compute camera forward vector once (saves 3 redundant constructions). */
-        Vec3 cam_fwd = vec3(cam_cy * cam_cp, cam_sp, cam_sy * cam_cp);
-        /* Pre-compute identity once for all per-frame uniform sets (saves ~8 mat4_identity calls). */
-        const Mat4 frame_identity = mat4_identity();
+        /* R52: Reuse trig cached by camera_update (avoids 4 redundant cosf/sinf per frame). */
+        f32 cam_cy = camera._cy, cam_sy = camera._sy;
+        f32 cam_cp = camera._cp, cam_sp = camera._sp;
+        /* R60-fix: Forward direction MUST match camera_view/camera_update convention.
+         * camera_view forward f = (cp*sy, sp, -cp*cy) — yaw=0 faces -Z (standard FPS).
+         * Old formula (cy*cp, sp, sy*cp) was perpendicular to actual forward at pitch=0. */
+        Vec3 cam_fwd = vec3(cam_cp * cam_sy, cam_sp, -cam_cp * cam_cy);
+        /* R54: Static identity matrix — avoids 16 float stores per frame. */
+        static const Mat4 frame_identity = {{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}};
         {
             /* Throttle terrain stats to every 10 frames (debug UI only) */
             static u32 terrain_stats_frame = 0;
@@ -2656,11 +2662,14 @@ u32 culled_count = 0;
                 if (physics->bodies[ti].is_static) continue;
                 Vec3 bp = physics->bodies[ti].position;
                 f32 dx = bp.e[0], dz = bp.e[2];
-                f32 dist = sqrtf(dx*dx + dz*dz);
-                if (dist < 0.01f) continue;
+                f32 d2 = dx*dx + dz*dz;
+                if (d2 < 0.0001f) continue;  /* R51: compare dist² instead of dist */
+                f32 inv_dist = fast_rsqrt(d2);
+                f32 dist = d2 * inv_dist;
                 f32 strength = 15.0f / (1.0f + dist * 0.3f);
-                physics->bodies[ti].velocity.e[0] += (-dz / dist) * strength * (f32)engine.delta_time;
-                physics->bodies[ti].velocity.e[2] += ( dx / dist) * strength * (f32)engine.delta_time;
+                f32 idt = inv_dist * strength * (f32)engine.delta_time;
+                physics->bodies[ti].velocity.e[0] += (-dz) * idt;
+                physics->bodies[ti].velocity.e[2] += ( dx) * idt;
                 physics->bodies[ti].velocity.e[1] += 2.0f * (f32)engine.delta_time;
             }
         }
@@ -2697,9 +2706,16 @@ u32 culled_count = 0;
 
         Mat4 view = camera_view(&camera);
         if (third_person) {
-            view.e[3][0] -= cam_cy * cam_cp * third_person_dist;
-            view.e[3][1] -= cam_sp * third_person_dist;
-            view.e[3][2] -= cam_sy * cam_cp * third_person_dist;
+            /* Third-person: move effective eye back by fwd*tp.
+             * In row-major view matrix V = [R | t], translation is in e[i][3] (col 3).
+             * New translation = t + R*fwd*tp. Since R*cam_fwd is the view-space offset,
+             * modify translation column e[i][3] for i=0,1,2. */
+            f32 tp = third_person_dist;
+            f32 dx = cam_fwd.e[0], dy = cam_fwd.e[1], dz = cam_fwd.e[2];
+            /* R*cam_fwd: row i of R dotted with cam_fwd */
+            view.e[0][3] += (view.e[0][0]*dx + view.e[0][1]*dy + view.e[0][2]*dz) * tp;
+            view.e[1][3] += (view.e[1][0]*dx + view.e[1][1]*dy + view.e[1][2]*dz) * tp;
+            view.e[2][3] += (view.e[2][0]*dx + view.e[2][1]*dy + view.e[2][2]*dz) * tp;
         }
         if (top_down_view) {
             view = mat4_lookat(
@@ -2711,25 +2727,42 @@ u32 culled_count = 0;
         Mat4 proj = camera_projection(&camera);
 
         {
-            u32 n = taa_frame + 1;
-            f32 hx = 0.f, base = 0.5f;
-            for (u32 d = n; d > 0; d >>= 1) { if (d & 1) hx += base; base *= 0.5f; }
-            f32 hy = 0.f; base = 1.f/3.f;
-            for (u32 d = n; d > 0; d /= 3) { hy += (d % 3) * base; base /= 3.f; }
-            proj.e[2][0] += (hx - 0.5f) * 2.0f / (f32)w;
-            proj.e[2][1] += (hy - 0.5f) * 2.0f / (f32)h;
+            /* R48: Precomputed Halton(2,3) jitter offsets for 16 TAA samples.
+             * Eliminates 2 per-frame loops with variable iteration count. */
+            static const f32 halton_jitter[16][2] = {
+                {  0.000000f, -0.333333f}, { -0.500000f,  0.333333f},
+                {  0.500000f, -0.777778f}, { -0.750000f, -0.111111f},
+                {  0.250000f,  0.555556f}, { -0.250000f, -0.555556f},
+                {  0.750000f,  0.111111f}, { -0.875000f,  0.777778f},
+                {  0.125000f, -0.925926f}, { -0.375000f, -0.259259f},
+                {  0.625000f,  0.407407f}, { -0.625000f, -0.703704f},
+                {  0.375000f, -0.037037f}, { -0.125000f,  0.629630f},
+                {  0.875000f, -0.481481f}, { -0.937500f,  0.185185f}
+            };
+            u32 idx = taa_frame % 16;
+            proj.e[2][0] += halton_jitter[idx][0] / (f32)w;
+            proj.e[2][1] += halton_jitter[idx][1] / (f32)h;
         }
         if (screen_shake > 0.001f) {
-            proj.e[2][0] += (sinf(screen_shake * 47.3f) * 0.01f) * screen_shake;
-            proj.e[2][1] += (cosf(screen_shake * 31.7f) * 0.01f) * screen_shake;
+            /* R57-fix: Hash-based pseudo-random shake — avoids 2× sinf/cosf per frame.
+             * Previous quadratic approx was wrong for large angles; hash gives good
+             * randomness without any trig. Shake only affects proj.e[2][0..1] by ≤0.015. */
+            u32 fc = engine.frame_count;
+            u32 h = fc * 1103515245u + 12345u;          /* LCG hash */
+            f32 shx = (f32)(h & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;  /* [-0.5, 0.5] */
+            f32 shy = (f32)((h >> 16) & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;
+            proj.e[2][0] += (shx * 0.02f) * screen_shake;
+            proj.e[2][1] += (shy * 0.02f) * screen_shake;
             screen_shake *= 0.92f;
         } else {
             screen_shake = 0.0f;
         }
-        Mat4 curr_view_proj = mat4_mul(proj, view);
+        Mat4 curr_view_proj = mat4_mul_proj_view(proj, view);
         Frustum frame_frustum = frustum_from_vp(curr_view_proj);
-        /* Pre-compute inverse projection once for skybox + all post-effects. */
-        Mat4 frame_inv_proj = mat4_inverse(proj);
+        /* Pre-compute inverse projection once for skybox + all post-effects.
+         * R47+R53-fix: Analytical inv(proj) includes TAA jitter / screen shake.
+         * Only 3 divisions + 6 muls vs generic mat4_inverse (~120 muls + 1 div). */
+        Mat4 frame_inv_proj = mat4_inv_perspective(proj);
 
         bool underwater = water.enabled && camera.position.e[1] < water.water_y;
         debug_ui_begin(&ui);
@@ -2757,7 +2790,7 @@ u32 culled_count = 0;
                 debug_ui_text(&ui, "Terrain height: %.2f  Above: %.2f", cam_terrain_h, camera.position.e[1] - cam_terrain_h);
             }
             {
-                f32 fwd_x = cam_cy * cam_cp, fwd_y = cam_sp, fwd_z = cam_sy * cam_cp;
+                f32 fwd_x = cam_fwd.e[0], fwd_y = cam_fwd.e[1], fwd_z = cam_fwd.e[2];
                 f32 rx = camera.position.e[0], ry = camera.position.e[1], rz = camera.position.e[2];
                 f32 step_sz = 0.5f;
                 bool hit = false;
@@ -2852,7 +2885,6 @@ u32 culled_count = 0;
             f32 nearest_dist = 1e9f;
             u32 nearest_id = 0;
             u32 in_front = 0;
-            Vec3 cam_fwd = vec3(cam_cy * cam_cp, cam_sp, cam_sy * cam_cp);
             f32 min_agl = 1e9f;
             u32 min_agl_id = 0;
             f32 avg_agl = 0.0f;
@@ -3213,7 +3245,7 @@ u32 culled_count = 0;
               debug_ui_text(&ui, "Camera: yaw=%.1f° pitch=%.1f° fov=%.0f°  AGL=%.1f  slope=%.1f° ↓%s  [%s h=%.1f]", camera.yaw * 57.2958f, camera.pitch * 57.2958f, camera.fov, cagl, atanf(cached_cslope) * 57.2958f, gdir, biome, ch);
               { static f32 prev_yaw=0,prev_pitch=0; f32 yr=(camera.yaw-prev_yaw)/engine.delta_time*57.2958f; f32 pr=(camera.pitch-prev_pitch)/engine.delta_time*57.2958f; debug_ui_text(&ui, "Angular v: yaw=%.0f°/s pitch=%.0f°/s", yr, pr); prev_yaw=camera.yaw; prev_pitch=camera.pitch; }
             }
-            { debug_ui_text(&ui, "Forward: (%.2f,%.2f,%.2f)  Mouse: (%.0f,%.0f)  Traveled: %.0f m  Speed: %.1f m/s", cam_cy * cam_cp, cam_sp, cam_sy * cam_cp, inp->mouse_x, inp->mouse_y, camera_distance_traveled, engine.delta_time > 0.0001f ? camera_frame_dist / engine.delta_time : 0.0f); }
+            { debug_ui_text(&ui, "Forward: (%.2f,%.2f,%.2f)  Mouse: (%.0f,%.0f)  Traveled: %.0f m  Speed: %.1f m/s", cam_fwd.e[0], cam_fwd.e[1], cam_fwd.e[2], inp->mouse_x, inp->mouse_y, camera_distance_traveled, engine.delta_time > 0.0001f ? camera_frame_dist / engine.delta_time : 0.0f); }
             { static const char *tn[] = {"Rolling Hills", "Volcano", "Waves", "Ridged", "Craters"}; u32 ttris = (terrain.grid_size - 1) * (terrain.grid_size - 1) * 2; const char *tclass = terrain_hstd < 1.0f ? "flat" : terrain_hstd < 3.0f ? "hilly" : terrain_hstd < 6.0f ? "mountainous" : "extreme"; f32 mod_rate = total_time > 1.0f ? (f32)terrain.modify_count / total_time : 0.0f; f32 mod_eff = terrain.modify_count > 0 ? terrain.total_delta / (f32)terrain.modify_count : 0.0f; debug_ui_text(&ui, "Terrain: %s (%s) %ux%u (%u tris) mods:%u (%.1f/s) delta:%.0f (avg %.1f/mod) h:[%.1f,%.1f] avg=%.1f std=%.2f (%+.3f)  brush=%.0f", tn[terrain_preset], tclass, terrain.grid_size, terrain.grid_size, ttris, terrain.modify_count, mod_rate, terrain.total_delta, mod_eff, terrain_hmin, terrain_hmax, terrain_havg, terrain_hstd, terrain_hstd_delta, brush_radius); }
             if (terrain.modify_count > 0) { u32 mq=0; for(u32 qi=1;qi<4;qi++) if(terrain.edit_quadrant[qi]>terrain.edit_quadrant[mq]) mq=qi; debug_ui_text(&ui, "Edit heatmap: NW:%u NE:%u SW:%u SE:%u  hottest:%s", terrain.edit_quadrant[0],terrain.edit_quadrant[1],terrain.edit_quadrant[2],terrain.edit_quadrant[3], mq==0?"NW":mq==1?"NE":mq==2?"SW":"SE"); }
             if (underwater) debug_ui_text(&ui, "[UNDERWATER] depth: %.1f m", water.water_y - camera.position.e[1]);
@@ -3501,8 +3533,8 @@ u32 culled_count = 0;
 
             /* Pre-compute shadow lookat basis once for all 4 cascades
              * (eliminates 4× normalize + 8× cross + 4× mat4_identity). */
-            f32 s_len = sqrtf(light_dir.e[0] * light_dir.e[0] + light_dir.e[2] * light_dir.e[2]);
-            f32 inv_sl = s_len > 1e-6f ? 1.0f / s_len : 0.0f;
+            f32 s_len2 = light_dir.e[0] * light_dir.e[0] + light_dir.e[2] * light_dir.e[2];
+            f32 inv_sl = s_len2 > 1e-12f ? fast_rsqrt(s_len2) : 0.0f;
             /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
             f32 sx = -light_dir.e[2] * inv_sl;
             f32 sz =  light_dir.e[0] * inv_sl;
@@ -3538,7 +3570,7 @@ u32 culled_count = 0;
                 lview.e[2][0] = -fx;  lview.e[2][1] = -fy;  lview.e[2][2] = -fz;  lview.e[2][3] = fx*ex + fy*ey + fz*ez;
                 lview.e[3][0] = 0.0f; lview.e[3][1] = 0.0f; lview.e[3][2] = 0.0f; lview.e[3][3] = 1.0f;
                 Mat4 lproj = mat4_ortho(-extent, extent, -extent, extent, 0.1f, extent * 2.0f);
-                render.cascade_vp[c] = mat4_mul(lproj, lview);
+                render.cascade_vp[c] = mat4_mul_ortho_diag(lproj, lview);
 
                 /* Quadrant layout: cascade c -> (c&1, c>>1). Must match the
                  * atlas remap in the shadow-sampling shaders. */
@@ -3765,10 +3797,35 @@ u32 culled_count = 0;
         if (rhi_handle_valid(render.clustered_pipeline)) {
             light_system_clear(&lights);
             light_system_add_dir(&lights, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-            /* Fast orbit: 2 trig calls + 32 mul/add instead of 64 trig calls. */
+            /* R59-fix: Incremental orbit rotation — 0 trig calls per frame.
+             * Uses Taylor-approx cos/sin for small dθ = 0.5*dt ≈ 0.008 rad.
+             * Renormalize every 256 frames to prevent cumulative drift.
+             * Reset on total_time rollback (scene reset). */
             {
-                f32 phase = (f32)total_time * 0.5f;
-                f32 cp = cosf(phase), sp = sinf(phase);
+                static f32 orb_cos = 1.0f, orb_sin = 0.0f;
+                static u32 orb_frames = 0;
+                static f64 orb_prev_time = 0.0;
+                if (total_time < orb_prev_time) { orb_cos = 1.0f; orb_sin = 0.0f; orb_frames = 0; }
+                orb_prev_time = total_time;
+                f32 orb_dth = 0.5f * (f32)engine.delta_time;
+                if (orb_dth > 0.1f) {
+                    /* dt spike — fall back to exact trig */
+                    f32 phase = (f32)total_time * 0.5f;
+                    orb_cos = cosf(phase); orb_sin = sinf(phase); orb_frames = 0;
+                } else {
+                f32 d2 = orb_dth * orb_dth;
+                f32 od_c = 1.0f - d2 * 0.5f;  /* cos(x) ≈ 1 - x²/2 */
+                f32 od_s = orb_dth * (1.0f - d2 / 6.0f); /* sin(x) ≈ x - x³/6 */
+                f32 nc = orb_cos * od_c - orb_sin * od_s;
+                f32 ns = orb_sin * od_c + orb_cos * od_s;
+                orb_cos = nc; orb_sin = ns;
+                orb_frames++;
+                if ((orb_frames & 255) == 0) { /* periodic reset to exact trig — eliminates angle drift */
+                    f32 phase = (f32)total_time * 0.5f;
+                    orb_cos = cosf(phase); orb_sin = sinf(phase);
+                }
+                } /* end else (normal dt) */
+                f32 cp = orb_cos, sp = orb_sin;
                 for (u32 i = 0; i < 32; i++) {
                     f32 x = orbit_cos[i] * cp - orbit_sin[i] * sp;
                     f32 z = orbit_cos[i] * sp + orbit_sin[i] * cp;
@@ -3840,11 +3897,37 @@ u32 culled_count = 0;
                     skeleton_compute_world_transforms(&render.skeleton,
                         anim_blend.local_positions, anim_blend.local_rotations,
                         anim_blend.local_scales, ik_world);
-                    f32 ik_orbit = (f32)total_time * 0.7f;
+                    /* R58-fix: Incremental rotation cache — 0 trig calls per frame.
+                     * dθ = 0.7*dt ≈ 0.011 rad; Taylor approx sufficient.
+                     * Renormalize every 256 frames to prevent cumulative drift.
+                     * Reset on total_time rollback (scene reset). */
+                    static f32 ik_cos = 1.0f, ik_sin = 0.0f;
+                    static u32 ik_frames = 0;
+                    static f64 ik_prev_time = 0.0;
+                    if (total_time < ik_prev_time) { ik_cos = 1.0f; ik_sin = 0.0f; ik_frames = 0; }
+                    ik_prev_time = total_time;
+                    f32 ik_dth = 0.7f * (f32)engine.delta_time;
+                    if (ik_dth > 0.1f) {
+                        /* dt spike — fall back to exact trig */
+                        f32 phase = (f32)total_time * 0.7f;
+                        ik_cos = cosf(phase); ik_sin = sinf(phase); ik_frames = 0;
+                    } else {
+                    f32 id2 = ik_dth * ik_dth;
+                    f32 ik_cd = 1.0f - id2 * 0.5f;         /* cos(x) ≈ 1 - x²/2 */
+                    f32 ik_sd = ik_dth * (1.0f - id2 / 6.0f); /* sin(x) ≈ x - x³/6 */
+                    f32 nc = ik_cos * ik_cd - ik_sin * ik_sd;
+                    f32 ns = ik_sin * ik_cd + ik_cos * ik_sd;
+                    ik_cos = nc; ik_sin = ns;
+                    ik_frames++;
+                    if ((ik_frames & 255) == 0) { /* periodic reset to exact trig — eliminates angle drift */
+                        f32 phase = (f32)total_time * 0.7f;
+                        ik_cos = cosf(phase); ik_sin = sinf(phase);
+                    }
+                    } /* end else (normal dt) */
                     Vec3 ik_target = {{
-                        camera.position.e[0] + sinf(ik_orbit) * 2.0f,
+                        camera.position.e[0] + ik_sin * 2.0f,
                         camera.position.e[1] + 1.2f,
-                        camera.position.e[2] + cosf(ik_orbit) * 2.0f - 2.5f
+                        camera.position.e[2] + ik_cos * 2.0f - 2.5f
                     }};
                     Vec3 ik_pole = {{
                         camera.position.e[0],
@@ -4037,7 +4120,7 @@ u32 culled_count = 0;
                     if (world->entity_count >= ENTITY_SPAWN_CAP) {
                         LOG_INFO("Entity cap reached (%u/%u)", world->entity_count, ENTITY_SPAWN_CAP);
                     } else {
-                    Vec3 ecam_fwd = vec3(cam_cy * cam_cp, cam_sp, cam_sy * cam_cp);
+                    Vec3 ecam_fwd = vec3(cam_cp * cam_sy, cam_sp, -cam_cp * cam_cy);
                     Vec3 ecam_right = vec3(cam_cy, 0, cam_sy);
                     for (i32 ei = 0; ei < 3; ei++) {
                         Vec3 offset = vec3_scale(ecam_right, (f32)(ei - 1) * 1.5f);
@@ -4434,7 +4517,7 @@ u32 culled_count = 0;
                     LOG_INFO("Tornado mode: %s", tornado_mode ? "ON" : "OFF");
                 }
                 if (input_key_down(inp, (i32)'y') || input_key_down(inp, (i32)'h')) {
-                    f32 fwd_x = cam_cy * cam_cp, fwd_z = cam_sy * cam_cp;
+                    f32 fwd_x = cam_fwd.e[0], fwd_z = cam_fwd.e[2];
                     f32 tx = camera.position.e[0] + fwd_x * 5.0f;
                     f32 tz = camera.position.e[2] + fwd_z * 5.0f;
                     if (brush_mode == 1) {
@@ -4852,20 +4935,43 @@ u32 culled_count = 0;
                 if (physics->bodies[gi].is_static) continue;
                 Vec3 gp = physics->bodies[gi].position;
                 Vec3 gd = vec3_sub(camera.position, gp);
-                f32 gdist = vec3_len(gd);
-                if (gdist < 0.5f) continue;
+                /* R51: fast_rsqrt replaces sqrtf + division in gravity loop. */
+                f32 gd2 = gd.e[0]*gd.e[0] + gd.e[1]*gd.e[1] + gd.e[2]*gd.e[2];
+                if (gd2 < 0.25f) continue;  /* 0.5^2 */
+                f32 inv_gdist = fast_rsqrt(gd2);
+                f32 gdist = gd2 * inv_gdist;
                 f32 gforce = 20.0f / (1.0f + gdist);
-                Vec3 gdir = vec3_scale(gd, 1.0f / gdist);
-                physics->bodies[gi].velocity.e[0] += gdir.e[0] * gforce * (f32)engine.delta_time;
-                physics->bodies[gi].velocity.e[1] += gdir.e[1] * gforce * (f32)engine.delta_time;
-                physics->bodies[gi].velocity.e[2] += gdir.e[2] * gforce * (f32)engine.delta_time;
+                f32 scale = inv_gdist * gforce * (f32)engine.delta_time;
+                physics->bodies[gi].velocity.e[0] += gd.e[0] * scale;
+                physics->bodies[gi].velocity.e[1] += gd.e[1] * scale;
+                physics->bodies[gi].velocity.e[2] += gd.e[2] * scale;
             }
         }
          }
         } /* end forward path guard */
 
-        /* Pre-compute inverse VP once for deferred lighting + TAA (saves 1 redundant mat4_inverse). */
-        Mat4 frame_inv_vp = mat4_inverse(curr_view_proj);
+        /* R53-fix: Compute inv(VP) = inv(V) * inv(P) analytically.
+         * (AB)^{-1} = B^{-1}A^{-1}, so (V*P)^{-1} = P^{-1}*V^{-1}.
+         * But in engine's row-major convention mat4_mul(P,V) = P*V,
+         * and (P*V)^{-1} = V^{-1}*P^{-1} → mat4_mul(iv, frame_inv_proj).
+         * frame_inv_proj already includes TAA jitter / screen shake (R47+R53-fix above).
+         * inv(V) uses cached trig + adjusted eye for third-person.
+         * Falls back to generic inverse for top-down (completely different view matrix). */
+        Mat4 frame_inv_vp;
+        if (top_down_view) {
+            frame_inv_vp = mat4_inverse(curr_view_proj);
+        } else {
+            f32 tp = third_person ? third_person_dist : 0.0f;
+            /* R60-fix: Use camera_inv_view + adjust eye for third-person offset.
+             * camera_inv_view gives [R^T | eye]; subtract fwd*tp for third-person. */
+            Mat4 iv = camera_inv_view(&camera);
+            if (third_person) {
+                iv.e[0][3] -= cam_fwd.e[0] * tp;
+                iv.e[1][3] -= cam_fwd.e[1] * tp;
+                iv.e[2][3] -= cam_fwd.e[2] * tp;
+            }
+            frame_inv_vp = mat4_mul(iv, frame_inv_proj);
+        }
 
         /* ---- Deferred rendering path (RenderPath branch) ----
          * When active, runs G-Buffer geometry pass + deferred lighting
