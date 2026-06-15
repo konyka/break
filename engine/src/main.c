@@ -2802,7 +2802,8 @@ u32 culled_count = 0;
                     if (ry <= rh) { hit = true; hit_h = rh; break; }
                 }
                 if (hit) {
-                    f32 rd = sqrtf((rx - camera.position.e[0])*(rx - camera.position.e[0]) + (rz - camera.position.e[2])*(rz - camera.position.e[2]));
+                    f32 rd2 = (rx - camera.position.e[0])*(rx - camera.position.e[0]) + (rz - camera.position.e[2])*(rz - camera.position.e[2]);
+                    f32 rd = rd2 > 1e-12f ? rd2 * fast_rsqrt(rd2) : 0.0f;
                     debug_ui_text(&ui, "Look-at terrain: (%.1f,%.1f,%.1f) dist=%.1f", rx, hit_h, rz, rd);
                 }
             }
@@ -3235,7 +3236,7 @@ u32 culled_count = 0;
                   slope_frame = (u32)engine.frame_count;
                   cached_chdx = terrain_get_height(&terrain, camera.position.e[0] + 0.5f, camera.position.e[2]) - terrain_get_height(&terrain, camera.position.e[0] - 0.5f, camera.position.e[2]);
                   cached_chdz = terrain_get_height(&terrain, camera.position.e[0], camera.position.e[2] + 0.5f) - terrain_get_height(&terrain, camera.position.e[0], camera.position.e[2] - 0.5f);
-                  cached_cslope = sqrtf(cached_chdx*cached_chdx + cached_chdz*cached_chdz);
+                  { f32 d2 = cached_chdx*cached_chdx + cached_chdz*cached_chdz; cached_cslope = d2 > 1e-12f ? d2 * fast_rsqrt(d2) : 0.0f; }
               }
               f32 ch = cam_terrain_h;
               const char *biome = ch < terrain_havg - terrain_hstd ? "valley" : ch < terrain_havg + terrain_hstd ? "plains" : ch < terrain_hmax - terrain_hstd ? "hills" : "peak";
@@ -3314,7 +3315,7 @@ u32 culled_count = 0;
                         eth = terrain_get_height(&terrain, st->pos[0], st->pos[2]);
                         f32 sdx = terrain_get_height(&terrain, st->pos[0] + 0.5f, st->pos[2]) - terrain_get_height(&terrain, st->pos[0] - 0.5f, st->pos[2]);
                         f32 sdz = terrain_get_height(&terrain, st->pos[0], st->pos[2] + 0.5f) - terrain_get_height(&terrain, st->pos[0], st->pos[2] - 0.5f);
-                        eslope = sqrtf(sdx * sdx + sdz * sdz);
+                        { f32 d2 = sdx * sdx + sdz * sdz; eslope = d2 > 1e-12f ? d2 * fast_rsqrt(d2) : 0.0f; }
                     }
                     debug_ui_text(&ui, "  ground=%.2f  agl=%.2f", eth, st->pos[1] - eth);
                     debug_ui_text(&ui, "  slope=%.2f (%.1f°)", eslope, atanf(eslope) * 57.2958f);
@@ -3328,7 +3329,7 @@ u32 culled_count = 0;
                 }
                 if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
                     Vec3 v = physics->bodies[sr->physics_id].velocity;
-                    f32 spd = sqrtf(v.e[0]*v.e[0]+v.e[1]*v.e[1]+v.e[2]*v.e[2]);
+                    f32 spd = vec3_len(v);
                     debug_ui_text(&ui, "  vel=(%.1f, %.1f, %.1f) speed=%.1f  KE=%.1fJ", v.e[0], v.e[1], v.e[2], spd, 0.5f * physics->bodies[sr->physics_id].mass * spd * spd);
                     if (spd > 0.1f) {
                         char arrow = '>';
@@ -3538,11 +3539,16 @@ u32 culled_count = 0;
             /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
             f32 sx = -light_dir.e[2] * inv_sl;
             f32 sz =  light_dir.e[0] * inv_sl;
-            /* u = s × f = (-sy*fx, fx²+fz², -sy*fz) */
+            /* u = cross(s_norm, f) = (-fy*fx, fx²+fz², -fy*fz); normalize for unit-length up row */
             f32 fx = light_dir.e[0], fy = light_dir.e[1], fz = light_dir.e[2];
-            f32 ux = -fy * fx;
-            f32 uy = fx * fx + fz * fz;
-            f32 uz = -fy * fz;
+            f32 ux_raw = -fy * sx;
+            f32 uy_raw =  sx * fz + sz * fx;  /* = inv_sl * (fx²+fz²) */
+            f32 uz_raw = -fy * sz;
+            f32 u_len2 = ux_raw * ux_raw + uy_raw * uy_raw + uz_raw * uz_raw;
+            f32 inv_ul = u_len2 > 1e-12f ? fast_rsqrt(u_len2) : 0.0f;
+            f32 ux = ux_raw * inv_ul;
+            f32 uy = uy_raw * inv_ul;
+            f32 uz = uz_raw * inv_ul;
 
             /* Bind the 2048x2048 shadow atlas once (clears the whole texture),
              * then render each of the 4 cascades into its own 1024x1024 quadrant

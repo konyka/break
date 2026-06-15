@@ -33,9 +33,11 @@ static Vec4 mat4_vec4(Mat4 m, Vec4 v) {
     r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m.e[3]), v3));
     _mm_storeu_ps(out.e, r);
 #else
+    /* Scalar fallback: must match SSE2 path (column-based M*v).
+     * out[i] = sum_k m.e[k][i] * v[k], NOT row-based dot product. */
     for (int i = 0; i < 4; i++) {
-        out.e[i] = m.e[i][0] * v.e[0] + m.e[i][1] * v.e[1] +
-                   m.e[i][2] * v.e[2] + m.e[i][3] * v.e[3];
+        out.e[i] = m.e[0][i] * v.e[0] + m.e[1][i] * v.e[1] +
+                   m.e[2][i] * v.e[2] + m.e[3][i] * v.e[3];
     }
 #endif
     return out;

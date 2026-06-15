@@ -82,7 +82,11 @@ void point_shadow_compute_face_vp(Vec3 light_pos, f32 radius,
     f32 pwz = -(2.0f * far_plane * near_val) / fn;
     f32 px = light_pos.e[0], py = light_pos.e[1], pz = light_pos.e[2];
 
-    /* +X: right=(0,0,1), up=(0,1,0), fwd=(1,0,0) */
+    /* +X: right=(0,0,1), up=(0,1,0), fwd=(1,0,0)
+     * NOTE: Uses right-handed convention (right = cross(f,up)), which differs from
+     * camera_view / mat4_lookat left-handed convention (right = -cross(f,up)).
+     * Self-consistent since same VP used for rendering + sampling; depth computed
+     * via length() in shader, not VP decomposition. */
     memset(&out_vp[0], 0, sizeof(Mat4));
     out_vp[0].e[1][1] = 1.0f;   out_vp[0].e[1][3] = -py;
     out_vp[0].e[2][0] = -pzz;  out_vp[0].e[2][3] = pzz * px - pwz;

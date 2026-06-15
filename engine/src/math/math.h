@@ -56,6 +56,7 @@ static inline Vec3 vec3_cross(Vec3 a, Vec3 b) {
         a.e[0]*b.e[1] - a.e[1]*b.e[0],
     }};
 }
+static inline f32 vec3_len_sq(Vec3 v) { return vec3_dot(v, v); }
 static inline f32 vec3_len(Vec3 v) {
     f32 l2 = vec3_dot(v, v);
     return l2 > 1e-12f ? l2 * fast_rsqrt(l2) : 0.0f;

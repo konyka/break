@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R63 审查加固** — CSM lview 左手约定对齐 + API 契约文档化 + 互斥逻辑显式化 + 测试加强。**R63-1**：CSM 阴影 lview 行0 从右手叉积改为左手叉积（e[0][0..2] 取反、e[0][3] 符号翻转），与 camera_view / mat4_lookat 约定统一。**R63-2**：math.h mat4_lookat 声明添加左手约定注释（API 契约文档化）。**R63-3**：top_down_view 从独立 if 改为 else if，显式表达与 third_person 互斥。**R63-4**：camera_view_matches_lookat 补充近 gimbal-lock 参数组合。**回归**：test_math 45/45、test_camera_frustum 24/24。
+最近更新：**R64 性能优化 + 正确性修复** — 热路径 sqrtf→fast_rsqrt + CSM u向量归一化 + mat4_vec4 标量回退修复 + vec3_len_sq + point_shadow 约定注释。**R64-1**：4处热路径 sqrtf 替换为 fast_rsqrt 模式（地形射线距离、相机斜率、实体斜率、实体速度），实体速度改用 vec3_len（内置 fast_rsqrt）。**R64-2**：CSM lview u 向量从 cross(s_unnorm, f) 改为 cross(s_norm, f) + normalize，恢复单位长度，消除阴影贴图分辨率浪费。**R64-3**：mat4_vec4 标量回退路径从 M^T*v 修正为 M*v，与 SSE2 路径一致（非 x86_64 平台可移植性修复）。**R64-4**：math.h 新增 vec3_len_sq 内联函数。**R64-5**：point_shadow_compute_face_vp 添加右手约定注释。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 
