@@ -481,6 +481,24 @@
 
 **验收**：test_math 45/45、test_camera_frustum 22/22、engine_demo 编译通过。
 
+## R61 审查修复：三角缓存顺序 + 第三人称逆VP测试
+
+**目标**：消除 camera_update 缓存三角函数一帧延迟，补充第三人称逆VP端到端测试。
+
+### [x] R61-1 camera_update 三角缓存顺序修复
+- 旧代码：先缓存 trig → 再更新 yaw/pitch → 下游读到旧帧 trig（一帧延迟）
+- 新代码：先 WASD 移动（用旧缓存 trig） → 更新 yaw/pitch → 缓存新 trig
+- 效果：cam_fwd / camera_view / camera_inv_view / main.c cam_cy 等均反映当帧朝向
+- WASD 移动仍使用旧帧朝向（语义正确：朝哪走）
+
+### [x] R61-2 第三人称逆VP端到端测试
+- 新增 camera_inv_vp_third_person 测试
+- 验证：view 矩阵应用 R*fwd*tp 偏移后，inv(VP) = (inv_view with eye-fwd*tp) * inv_proj
+- 与通用 mat4_inverse(VP) 逐元素比对（容差 1e-3）
+- 覆盖延迟光照/TAA 世界坐标重建路径
+
+**验收**：test_math 45/45、test_camera_frustum 23/23、engine_demo 编译通过。
+
 ## 构建与回归命令
 
 ```bash

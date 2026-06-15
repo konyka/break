@@ -87,18 +87,9 @@ Mat4 camera_projection(Camera *cam) {
 }
 
 void camera_update(Camera *cam, const InputState *input, f32 dt) {
-    /* Precompute trig values once — avoids 8-12 transcendental calls per frame */
-    f32 cy = cosf(cam->yaw);
-    f32 sy = sinf(cam->yaw);
-    f32 cp = cosf(cam->pitch);
-    f32 sp = sinf(cam->pitch);
-
-    /* Cache for camera_view() to reuse (avoids 4 redundant trig calls). */
-    cam->_cy = cy; cam->_sy = sy; cam->_cp = cp; cam->_sp = sp;
-
-    /* Forward = normalize(cp*sy, sp, -cp*cy) — already unit length since cp²+sp²=1 */
+    /* Save pre-update cached trig for WASD movement (move where you were looking). */
+    f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
     Vec3 fwd = {{cp * sy, sp, -cp * cy}};
-    /* Right = normalize(fwd × up) = normalize(-cy, 0, -sy) for up=(0,1,0) */
     Vec3 right = {{-cy, 0.0f, -sy}};
 
     if (input_key_down(input, 'w')) {
@@ -114,6 +105,7 @@ void camera_update(Camera *cam, const InputState *input, f32 dt) {
         cam->position = vec3_sub(cam->position, vec3_scale(right, cam->move_speed * dt));
     }
 
+    /* Update orientation from mouse input. */
     cam->yaw   += input->mouse_dx * cam->mouse_sensitivity;
     cam->pitch += input->mouse_dy * cam->mouse_sensitivity;
 
@@ -123,4 +115,10 @@ void camera_update(Camera *cam, const InputState *input, f32 dt) {
     f32 pitch_limit = 1.5533f;
     if (cam->pitch >  pitch_limit) cam->pitch =  pitch_limit;
     if (cam->pitch < -pitch_limit) cam->pitch = -pitch_limit;
+
+    /* Cache trig AFTER yaw/pitch update so downstream gets fresh values.
+     * Eliminates one-frame delay: camera_view/camera_inv_view and main.c
+     * cam_cy/cam_sy/cam_cp/cam_sp now reflect current frame's orientation. */
+    cam->_cy = cosf(cam->yaw); cam->_sy = sinf(cam->yaw);
+    cam->_cp = cosf(cam->pitch); cam->_sp = sinf(cam->pitch);
 }

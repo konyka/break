@@ -382,6 +382,45 @@ TEST(camera_inv_vp_matches_generic) {
             ASSERT_TRUE(fabsf(inv_vp_fast.e[c][r] - inv_vp_ref.e[c][r]) < 1e-3f);
 }
 
+/* R53-fix: End-to-end verification of inv(VP) with third-person offset.
+ * Reproduces main.c's third-person flow: view offset via R*fwd*tp,
+ * then inv(VP) = (inv_view with eye-fwd*tp) * inv_proj.
+ * Must match generic mat4_inverse(VP). */
+TEST(camera_inv_vp_third_person) {
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.5f, 0.1f, 200.0f);
+    cam.position = vec3(3.0f, 2.0f, -5.0f);
+    InputState dummy = {0};
+    cam.yaw = 0.8f; cam.pitch = 0.25f;
+    camera_update(&cam, &dummy, 0.016f);
+
+    Mat4 view = camera_view(&cam);
+    f32 tp = 5.0f;
+    /* cam_fwd with new convention: (cp*sy, sp, -cp*cy) */
+    Vec3 fwd = {{cam._cp * cam._sy, cam._sp, -cam._cp * cam._cy}};
+    /* Apply third-person offset to view: t_new = t + R*fwd*tp */
+    view.e[0][3] += (view.e[0][0]*fwd.e[0] + view.e[0][1]*fwd.e[1] + view.e[0][2]*fwd.e[2]) * tp;
+    view.e[1][3] += (view.e[1][0]*fwd.e[0] + view.e[1][1]*fwd.e[1] + view.e[1][2]*fwd.e[2]) * tp;
+    view.e[2][3] += (view.e[2][0]*fwd.e[0] + view.e[2][1]*fwd.e[1] + view.e[2][2]*fwd.e[2]) * tp;
+
+    Mat4 proj = camera_projection(&cam);
+    Mat4 vp = mat4_mul(proj, view);
+
+    /* Analytical: inv(V) with eye adjusted by -fwd*tp, then * inv(P) */
+    Mat4 iv = camera_inv_view(&cam);
+    iv.e[0][3] -= fwd.e[0] * tp;
+    iv.e[1][3] -= fwd.e[1] * tp;
+    iv.e[2][3] -= fwd.e[2] * tp;
+    Mat4 inv_vp_fast = mat4_mul(iv, mat4_inv_perspective(proj));
+
+    /* Reference: generic inverse */
+    Mat4 inv_vp_ref = mat4_inverse(vp);
+
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(inv_vp_fast.e[c][r] - inv_vp_ref.e[c][r]) < 1e-3f);
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -412,4 +451,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(camera_inv_view_near_gimbal_lock);
     /* Inverse VP composition */
     RUN_TEST(camera_inv_vp_matches_generic);
+    RUN_TEST(camera_inv_vp_third_person);
 TEST_MAIN_END()
