@@ -77,12 +77,15 @@ Mat4 mat4_lookat(Vec3 eye, Vec3 target, Vec3 up) {
     Vec3 u = vec3_cross(s, f);
 
     Mat4 m = mat4_identity();
-    m.e[0][0] =  s.e[0]; m.e[0][1] =  s.e[1]; m.e[0][2] =  s.e[2];
+    /* Left-handed view matrix matching camera_view convention:
+     * right s_L = -cross(f,up) = (-cy,0,-sy) so that s_L x u_L = f (not -f).
+     * camera_view uses this same left-handed basis: s x u = f, not -f. */
+    m.e[0][0] = -s.e[0]; m.e[0][1] = -s.e[1]; m.e[0][2] = -s.e[2];
+    m.e[0][3] =  vec3_dot(s, eye);
     m.e[1][0] =  u.e[0]; m.e[1][1] =  u.e[1]; m.e[1][2] =  u.e[2];
+    m.e[1][3] = -vec3_dot(u, eye);
     m.e[2][0] = -f.e[0]; m.e[2][1] = -f.e[1]; m.e[2][2] = -f.e[2];
-    m.e[3][0] = -vec3_dot(s, eye);
-    m.e[3][1] = -vec3_dot(u, eye);
-    m.e[3][2] =  vec3_dot(f, eye);
+    m.e[2][3] =  vec3_dot(f, eye);
     return m;
 }
 

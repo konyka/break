@@ -4121,7 +4121,7 @@ u32 culled_count = 0;
                         LOG_INFO("Entity cap reached (%u/%u)", world->entity_count, ENTITY_SPAWN_CAP);
                     } else {
                     Vec3 ecam_fwd = vec3(cam_cp * cam_sy, cam_sp, -cam_cp * cam_cy);
-                    Vec3 ecam_right = vec3(cam_cy, 0, cam_sy);
+                    Vec3 ecam_right = vec3(-cam_cy, 0, -cam_sy);
                     for (i32 ei = 0; ei < 3; ei++) {
                         Vec3 offset = vec3_scale(ecam_right, (f32)(ei - 1) * 1.5f);
                         Vec3 spawn_pos = vec3_add(vec3_add(camera.position, vec3_scale(ecam_fwd, 2.0f)), offset);

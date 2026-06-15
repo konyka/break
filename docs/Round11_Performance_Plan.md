@@ -497,7 +497,26 @@
 - 与通用 mat4_inverse(VP) 逐元素比对（容差 1e-3）
 - 覆盖延迟光照/TAA 世界坐标重建路径
 
-**验收**：test_math 45/45、test_camera_frustum 23/23、engine_demo 编译通过。
+## R62 审查修复：ecam_right 符号 + mat4_lookat 约定 + 等价性测试
+
+**目标**：修正 ecam_right 与 camera right 方向不一致，修正 mat4_lookat 矩阵存储约定，补充 camera_view 等价性测试。
+
+### [x] R62-1 ecam_right 符号修正
+- 旧代码：ecam_right = vec3(cam_cy, 0, cam_sy) — 指向摄像机左侧（与 camera_update right = (-cy,0,-sy) 反向）
+- 新代码：ecam_right = vec3(-cam_cy, 0, -cam_sy) — 与 camera right 方向一致
+- 效果：实体从右到左正确发射
+
+### [x] R62-2 mat4_lookat 矩阵存储约定修正
+- 旧代码：right = cross(f,up) 右手约定 + 平移在行3 — 与 camera_view 不兼容
+- 新代码：right = -cross(f,up) 左手约定 + 平移在列3 — 与 camera_view 一致
+- 效果：top_down_view 路径矩阵约定与主渲染路径统一
+
+### [x] R62-3 camera_view_matches_lookat 等价性测试
+- 新增测试：验证 camera_view 与 mat4_lookat 逐元素一致
+- 确保 camera_view 的解析构造与 mat4_lookat 的通用构造等价
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
 
 ## 构建与回归命令
 

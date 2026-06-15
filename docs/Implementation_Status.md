@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R61 审查修复** — camera_update 三角缓存顺序修复 + 第三人称逆VP测试。**R61-1**：将 camera_update 中 trig 缓存从 yaw/pitch 更新前移至更新后，消除 cam_fwd/camera_view 一帧延迟（WASD 移动仍用旧帧朝向）。**R61-2**：新增 camera_inv_vp_third_person 测试，验证第三人称 inv(VP)=inv(V,eye-fwd*tp)*inv(P) 与通用 mat4_inverse(VP) 一致。**回归**：test_math 45/45、test_camera_frustum 23/23。
+最近更新：**R62 审查修复** — ecam_right 符号修正 + mat4_lookat 约定对齐 + camera_view·lookat 等价性测试。**R62-1**：ecam_right 从 (cy,0,sy) 修正为 (-cy,0,-sy)，与 camera_update 的 right 方向一致（旧值指向摄像机左侧）。**R62-2**：mat4_lookat 从右手约定（平移在行3、right=cross(f,up)）修正为左手约定（平移在列3、right=-cross(f,up)），与 camera_view 一致。修复 top_down_view 路径的矩阵约定不一致。**R62-3**：新增 camera_view_matches_lookat 测试，验证 camera_view 与 mat4_lookat 逐元素一致。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

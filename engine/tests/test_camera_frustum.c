@@ -42,6 +42,25 @@ TEST(camera_view_lookat)
     ASSERT_TRUE(fabsf(v.e[3][3] - 1.0f) < EPS);
 }
 
+TEST(camera_view_matches_lookat)
+{
+    /* Verify camera_view output matches mat4_lookat for the same parameters.
+     * Both now use the engine convention (translation in column 3).
+     * Minor numerical differences from vec3_normalize are expected. */
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.5f, 0.1f, 200.0f);
+    cam.yaw = 0.8f; cam.pitch = 0.25f;
+    cam.position = vec3(3.0f, 2.0f, -5.0f);
+    InputState dummy = {0};
+    camera_update(&cam, &dummy, 0.016f);
+    Mat4 v_direct = camera_view(&cam);
+    Vec3 fwd = {{cam._cp * cam._sy, cam._sp, -cam._cp * cam._cy}};
+    Mat4 v_lookat = mat4_lookat(cam.position, vec3_add(cam.position, fwd), vec3(0, 1, 0));
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            ASSERT_TRUE(fabsf(v_direct.e[c][r] - v_lookat.e[c][r]) < 1e-4f);
+}
+
 TEST(camera_projection_perspective)
 {
     Camera cam;
@@ -428,6 +447,7 @@ TEST(camera_inv_vp_third_person) {
 TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_lookat);
+    RUN_TEST(camera_view_matches_lookat);
     RUN_TEST(camera_projection_perspective);
     RUN_TEST(camera_projection_aspect);
     RUN_TEST(frustum_from_vp_produces_normalized_planes);
