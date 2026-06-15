@@ -517,6 +517,31 @@
 
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
+## R63 审查加固：CSM lview 约定对齐 + API 契约 + 互斥逻辑 + 测试加强
+
+**目标**：消除 CSM 阴影视图矩阵与 camera_view 约定不一致，文档化 mat4_lookat API 契约，显式化互斥逻辑，加强测试覆盖。
+
+### [x] R63-1 CSM lview 行0 对齐左手约定
+- 旧行0：(sx, 0, sz, -(sx*ex+sz*ez)) — 右手叉积 right = cross(f,up)
+- 新行0：(-sx, 0, -sz, sx*ex+sz*ez) — 左手叉积 right = -cross(f,up)
+- 与 camera_view 行0 模式一致：(-s_RH, dot(s_RH, eye))
+- 阴影渲染+采样使用同一 VP，约定统一不影响正确性
+
+### [x] R63-2 math.h mat4_lookat API 契约文档化
+- 声明上方添加左手约定注释：right=-normalize(cross(f,up))、平移在 e[i][3]
+- 防止调用者按 textbook 右手约定使用
+
+### [x] R63-3 top_down_view 互斥逻辑显式化
+- 从 `if(top_down_view)` 改为 `else if(top_down_view)`
+- 显式表达 third_person 与 top_down_view 互斥
+- 添加注释标明 top_down 替换整个 view 矩阵
+
+### [x] R63-4 camera_view_matches_lookat 测试加强
+- 补充近 gimbal-lock 参数组合（pitch=1.5f，cp≈0.0707）
+- 验证 vec3_normalize 在小分母下 1e-4f 容差仍足够
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
 
 ## 构建与回归命令
 

@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R62 审查修复** — ecam_right 符号修正 + mat4_lookat 约定对齐 + camera_view·lookat 等价性测试。**R62-1**：ecam_right 从 (cy,0,sy) 修正为 (-cy,0,-sy)，与 camera_update 的 right 方向一致（旧值指向摄像机左侧）。**R62-2**：mat4_lookat 从右手约定（平移在行3、right=cross(f,up)）修正为左手约定（平移在列3、right=-cross(f,up)），与 camera_view 一致。修复 top_down_view 路径的矩阵约定不一致。**R62-3**：新增 camera_view_matches_lookat 测试，验证 camera_view 与 mat4_lookat 逐元素一致。**回归**：test_math 45/45、test_camera_frustum 24/24。
+最近更新：**R63 审查加固** — CSM lview 左手约定对齐 + API 契约文档化 + 互斥逻辑显式化 + 测试加强。**R63-1**：CSM 阴影 lview 行0 从右手叉积改为左手叉积（e[0][0..2] 取反、e[0][3] 符号翻转），与 camera_view / mat4_lookat 约定统一。**R63-2**：math.h mat4_lookat 声明添加左手约定注释（API 契约文档化）。**R63-3**：top_down_view 从独立 if 改为 else if，显式表达与 third_person 互斥。**R63-4**：camera_view_matches_lookat 补充近 gimbal-lock 参数组合。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

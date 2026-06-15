@@ -78,7 +78,7 @@ Mat4 mat4_lookat(Vec3 eye, Vec3 target, Vec3 up) {
 
     Mat4 m = mat4_identity();
     /* Left-handed view matrix matching camera_view convention:
-     * right s_L = -cross(f,up) = (-cy,0,-sy) so that s_L x u_L = f (not -f).
+     * right s_L = -normalize(cross(f,up)) so that s_L x u = f (not -f).
      * camera_view uses this same left-handed basis: s x u = f, not -f. */
     m.e[0][0] = -s.e[0]; m.e[0][1] = -s.e[1]; m.e[0][2] = -s.e[2];
     m.e[0][3] =  vec3_dot(s, eye);

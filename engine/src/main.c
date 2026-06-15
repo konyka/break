@@ -2716,8 +2716,8 @@ u32 culled_count = 0;
             view.e[0][3] += (view.e[0][0]*dx + view.e[0][1]*dy + view.e[0][2]*dz) * tp;
             view.e[1][3] += (view.e[1][0]*dx + view.e[1][1]*dy + view.e[1][2]*dz) * tp;
             view.e[2][3] += (view.e[2][0]*dx + view.e[2][1]*dy + view.e[2][2]*dz) * tp;
-        }
-        if (top_down_view) {
+        } else if (top_down_view) {
+            /* top_down replaces view entirely; not combinable with third_person */
             view = mat4_lookat(
                 vec3(camera.position.e[0], camera.position.e[1] + 30.0f, camera.position.e[2]),
                 camera.position,
@@ -3560,12 +3560,13 @@ u32 culled_count = 0;
                 Vec3 center = vec3_add(camera.position, vec3_scale(cam_fwd, mid));
 
                 f32 extent = zf - zn;
-                /* Direct view matrix from pre-computed basis (avoids mat4_lookat: 2 normalize + 2 cross + identity). */
+                /* Direct view matrix from pre-computed basis (avoids mat4_lookat: 2 normalize + 2 cross + identity).
+                 * Left-handed convention matching camera_view: right = -cross(f,up). */
                 f32 ex = center.e[0] - light_dir.e[0] * extent;
                 f32 ey = center.e[1] - light_dir.e[1] * extent;
                 f32 ez = center.e[2] - light_dir.e[2] * extent;
                 Mat4 lview;
-                lview.e[0][0] = sx;   lview.e[0][1] = 0.0f; lview.e[0][2] = sz;   lview.e[0][3] = -(sx*ex + sz*ez);
+                lview.e[0][0] = -sx;  lview.e[0][1] = 0.0f; lview.e[0][2] = -sz;  lview.e[0][3] = sx*ex + sz*ez;
                 lview.e[1][0] = ux;   lview.e[1][1] = uy;   lview.e[1][2] = uz;   lview.e[1][3] = -(ux*ex + uy*ey + uz*ez);
                 lview.e[2][0] = -fx;  lview.e[2][1] = -fy;  lview.e[2][2] = -fz;  lview.e[2][3] = fx*ex + fy*ey + fz*ez;
                 lview.e[3][0] = 0.0f; lview.e[3][1] = 0.0f; lview.e[3][2] = 0.0f; lview.e[3][3] = 1.0f;

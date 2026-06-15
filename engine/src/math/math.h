@@ -160,6 +160,9 @@ static inline Vec3 quat_rotate_vec3(Quat q, Vec3 v) {
 Mat4 mat4_identity(void);
 Mat4 mat4_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far);
 Mat4 mat4_perspective(f32 fov_rad, f32 aspect, f32 near, f32 far);
+/* Left-handed view matrix matching camera_view convention.
+ * right = -normalize(cross(f,up)), translation in e[i][3] (i=0,1,2).
+ * s_L x u = f (not -f). See camera_view() for the same basis. */
 Mat4 mat4_lookat(Vec3 eye, Vec3 target, Vec3 up);
 Mat4 mat4_mul(Mat4 a, Mat4 b);
 Mat4 mat4_inverse(Mat4 m);
