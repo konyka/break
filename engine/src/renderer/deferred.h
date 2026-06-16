@@ -24,7 +24,6 @@
 
 #include "../rhi/rhi.h"
 #include "../core/types.h"
-#include "point_shadow.h"
 
 typedef enum {
     RENDER_PATH_FORWARD  = 0,
@@ -55,6 +54,7 @@ typedef struct {
     /* ---- Internal fields (do not touch from application code). ---- */
     RHIMRTFBO       _mrt_fbo;     /* single MRT with 3 color + shared depth  */
     RHISampler      _gbuf_sampler;
+    RHISampler      _linear_sampler; /* LINEAR/CLAMP for shadow cubemaps on GL */
 
     /* Cached G-Buffer pass uniform locations (-1 if absent). */
     i32 _loc_gbuf_model;

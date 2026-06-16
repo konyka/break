@@ -212,7 +212,7 @@ void point_shadow_update(PointShadowSystem *sys,
     /* Score by squared distance to camera and pick the closest N.
      * Use inline partial insertion sort instead of qsort: for k=8 from n≤256,
      * this avoids function-pointer overhead and only sorts what we need. */
-    PSCandidate cand[256];
+    static PSCandidate cand[256];
     u32 cap = (u32)(sizeof(cand) / sizeof(cand[0]));
     u32 n = (light_count < cap) ? light_count : cap;
     for (u32 i = 0u; i < n; ++i) {

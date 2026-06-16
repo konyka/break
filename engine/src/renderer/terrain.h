@@ -10,6 +10,8 @@ typedef struct {
     u32         index_count;
     u32         grid_size;
     f32         scale;
+    f32         inv_scale;     /* 1.0f / scale, 预计算 */
+    f32         inv_nm1;       /* (f32)(grid_size - 1), 预计算 */
     f32         height_scale;
     f32        *heightmap;
     u32         modify_count;

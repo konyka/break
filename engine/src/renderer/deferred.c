@@ -253,6 +253,18 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         sys->_gbuf_sampler = rhi_sampler_create(dev, &sd);
     }
 
+    /* LINEAR sampler for shadow cubemap binding on GL backend. */
+    {
+        RHISamplerDesc lsd;
+        memset(&lsd, 0, sizeof(lsd));
+        lsd.min_filter = RHI_FILTER_LINEAR;
+        lsd.mag_filter = RHI_FILTER_LINEAR;
+        lsd.wrap_u     = RHI_WRAP_CLAMP_TO_EDGE;
+        lsd.wrap_v     = RHI_WRAP_CLAMP_TO_EDGE;
+        lsd.wrap_w     = RHI_WRAP_CLAMP_TO_EDGE;
+        sys->_linear_sampler = rhi_sampler_create(dev, &lsd);
+    }
+
     if (!rhi_handle_valid(sys->gbuffer_pipeline) ||
         !rhi_handle_valid(sys->lighting_pipeline)) {
         LOG_WARN("deferred: pipeline creation failed -- system disabled");
@@ -272,6 +284,10 @@ void deferred_destroy(DeferredSystem *sys, RHIDevice *dev) {
     if (rhi_handle_valid(sys->_gbuf_sampler)) {
         rhi_sampler_destroy(dev, sys->_gbuf_sampler);
         sys->_gbuf_sampler = RHI_HANDLE_NULL;
+    }
+    if (rhi_handle_valid(sys->_linear_sampler)) {
+        rhi_sampler_destroy(dev, sys->_linear_sampler);
+        sys->_linear_sampler = RHI_HANDLE_NULL;
     }
     if (rhi_handle_valid(sys->lighting_pipeline)) {
         rhi_pipeline_destroy(dev, sys->lighting_pipeline);
@@ -360,7 +376,7 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     }
     for (u32 i = 0u; i < psc_n; i++) {
         if (psc_tex && rhi_handle_valid(psc_tex[i]))
-            rhi_cmd_bind_texture(cmd, psc_tex[i], sys->_gbuf_sampler, 10u + i);
+            rhi_cmd_bind_texture(cmd, psc_tex[i], sys->_linear_sampler, 10u + i);
     }
     if (rhi_handle_valid(brdf_lut)) {
         rhi_cmd_bind_texture(cmd, brdf_lut, sys->_gbuf_sampler, 7);
@@ -420,17 +436,25 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     if (sys->_loc_point_shadow_count >= 0) {
         rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_count, (i32)psc_n);
     }
-    if (sys->_loc_point_shadow_light_0 >= 0) {
-        rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_0, (i32)psc_light_idx[0]);
-    }
-    if (sys->_loc_point_shadow_light_1 >= 0) {
-        rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_1, (i32)psc_light_idx[1]);
-    }
-    if (sys->_loc_point_shadow_light_2 >= 0) {
-        rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_2, (i32)psc_light_idx[2]);
-    }
-    if (sys->_loc_point_shadow_light_3 >= 0) {
-        rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_3, (i32)psc_light_idx[3]);
+    if (psc_light_idx) {
+        if (sys->_loc_point_shadow_light_0 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_0, (i32)psc_light_idx[0]);
+        if (sys->_loc_point_shadow_light_1 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_1, (i32)psc_light_idx[1]);
+        if (sys->_loc_point_shadow_light_2 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_2, (i32)psc_light_idx[2]);
+        if (sys->_loc_point_shadow_light_3 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_3, (i32)psc_light_idx[3]);
+    } else {
+        u32 sent = 0xFFFFFFFFu;
+        if (sys->_loc_point_shadow_light_0 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_0, (i32)sent);
+        if (sys->_loc_point_shadow_light_1 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_1, (i32)sent);
+        if (sys->_loc_point_shadow_light_2 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_2, (i32)sent);
+        if (sys->_loc_point_shadow_light_3 >= 0)
+            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_3, (i32)sent);
     }
 
     rhi_cmd_draw(cmd, 3u, 1u);

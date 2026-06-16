@@ -26,7 +26,7 @@ static void terrain_rebuild_region(Terrain *t, i32 gx0, i32 gz0, i32 gx1, i32 gz
     if (gx1 >= (i32)t->grid_size) { gx1 = (i32)t->grid_size - 1; }
     if (gz1 >= (i32)t->grid_size) { gz1 = (i32)t->grid_size - 1; }
 
-    f32 inv = 1.0f / (f32)(t->grid_size - 1);
+    f32 inv = 1.0f / t->inv_nm1;
     i32 row_width = gx1 - gx0 + 1;
 
     if (!t->_vert_staging) {
@@ -106,6 +106,8 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     t->device = dev;
     t->grid_size = grid_size;
     t->scale = scale;
+    t->inv_scale = (scale > 0.0f) ? 1.0f / scale : 0.0f;
+    t->inv_nm1 = (f32)(grid_size - 1);
     t->height_scale = height_scale;
     t->index_count = 0;
 
@@ -313,8 +315,8 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
 
 f32 terrain_get_height(const Terrain *t, f32 x, f32 z) {
     if (!t->heightmap) return 0.0f;
-    f32 gx = (x / t->scale + 0.5f) * (f32)(t->grid_size - 1);
-    f32 gz = (z / t->scale + 0.5f) * (f32)(t->grid_size - 1);
+    f32 gx = (x * t->inv_scale + 0.5f) * t->inv_nm1;
+    f32 gz = (z * t->inv_scale + 0.5f) * t->inv_nm1;
     i32 ix = (i32)floorf(gx); i32 iz = (i32)floorf(gz);
     f32 fx = gx - (f32)ix; f32 fz = gz - (f32)iz;
     f32 h00 = terrain_sample_height(t, ix, iz);
@@ -330,10 +332,10 @@ void terrain_modify_height(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength)
     t->modify_count++;
     t->total_delta += fabsf(strength);
     { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
-    f32 inv = 1.0f / (f32)(t->grid_size - 1);
-    i32 gr = (i32)(radius / t->scale * (f32)t->grid_size) + 1;
-    f32 cgx = (wx / t->scale + 0.5f) * (f32)(t->grid_size - 1);
-    f32 cgz = (wz / t->scale + 0.5f) * (f32)(t->grid_size - 1);
+    f32 inv = 1.0f / t->inv_nm1;
+    i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
+    f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
+    f32 cgz = (wz * t->inv_scale + 0.5f) * t->inv_nm1;
     i32 gx0 = (i32)floorf(cgx) - gr;
     i32 gz0 = (i32)floorf(cgz) - gr;
     i32 gx1 = (i32)ceilf(cgx) + gr;
@@ -364,10 +366,10 @@ void terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius) {
     t->modify_count++;
     t->total_delta += radius * 0.1f;
     { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
-    f32 inv = 1.0f / (f32)(t->grid_size - 1);
-    i32 gr = (i32)(radius / t->scale * (f32)t->grid_size) + 1;
-    f32 cgx = (wx / t->scale + 0.5f) * (f32)(t->grid_size - 1);
-    f32 cgz = (wz / t->scale + 0.5f) * (f32)(t->grid_size - 1);
+    f32 inv = 1.0f / t->inv_nm1;
+    i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
+    f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
+    f32 cgz = (wz * t->inv_scale + 0.5f) * t->inv_nm1;
     i32 gx0 = (i32)floorf(cgx) - gr;
     i32 gz0 = (i32)floorf(cgz) - gr;
     i32 gx1 = (i32)ceilf(cgx) + gr;
@@ -487,10 +489,10 @@ void terrain_noise_stamp(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength, f
     t->modify_count++;
     t->total_delta += fabsf(strength);
     { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
-    f32 inv = 1.0f / (f32)(t->grid_size - 1);
-    i32 gr = (i32)(radius / t->scale * (f32)t->grid_size) + 1;
-    f32 cgx = (wx / t->scale + 0.5f) * (f32)(t->grid_size - 1);
-    f32 cgz = (wz / t->scale + 0.5f) * (f32)(t->grid_size - 1);
+    f32 inv = 1.0f / t->inv_nm1;
+    i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
+    f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
+    f32 cgz = (wz * t->inv_scale + 0.5f) * t->inv_nm1;
     i32 gx0 = (i32)floorf(cgx) - gr; if (gx0 < 0) gx0 = 0;
     i32 gz0 = (i32)floorf(cgz) - gr; if (gz0 < 0) gz0 = 0;
     i32 gx1 = (i32)ceilf(cgx) + gr; if (gx1 >= (i32)t->grid_size) gx1 = (i32)t->grid_size - 1;

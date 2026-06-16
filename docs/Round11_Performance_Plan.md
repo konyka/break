@@ -664,6 +664,54 @@
 
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
+---
+
+## Round 69：栈数组补漏 + Deferred采样器修复 + terrain预计算 + 除法转乘法
+
+### R69-1 light_system_cull 栈数组改 static
+
+**问题**：`light_system_cull` 中 10 个局部数组共 ~16.5KB 在栈上分配，每帧调用。与R65-R66已修复的模式一致但遗漏。
+
+**修正**：全部改为 `static`。函数每帧最多调用一次，无并发访问。
+
+### R69-2 Deferred GL路径点阴影采样器修复
+
+**问题**：R68 移除 `pt_shadows` 参数后，GL 后台的延迟路径中点阴影立方体贴图绑定采样器从 `pt_shadows->sampler`(LINEAR) 降级为 `sys->_gbuf_sampler`(NEAREST)，导致阴影边缘锯齿。这是R68引入的渲染回归。
+
+**修正**：在 `DeferredSystem` 新增 `_linear_sampler`(LINEAR/CLAMP)。GL 路径点阴影绑定改用 `_linear_sampler`。
+
+### R69-3 帧循环 pl_pos/pl_rad 栈数组改 static
+
+**问题**：`pl_pos[256]`(3KB) + `pl_rad[256]`(1KB) 在帧循环栈上分配。
+
+**修正**：改为 `static`。
+
+### R69-4 point_shadow_update cand 栈数组改 static
+
+**问题**：`PSCandidate cand[256]`(2KB) 在栈上分配，每帧调用。
+
+**修正**：改为 `static`。
+
+### R69-5 deferred.h 残留 include + psc_light_idx NULL 防护
+
+**问题**：`deferred.h` 残留 `#include "point_shadow.h"`；`psc_light_idx` 指针参数无 NULL 防护。
+
+**修正**：移除残留 include；添加 NULL 检查（传 NULL 时写 0xFFFFFFFF 哨兵值）。
+
+### R69-6 terrain inv_scale/inv_nm1 预计算
+
+**问题**：terrain 热路径中 `x / t->scale` 和 `(f32)(grid_size - 1)` 每次调用执行除法。`scale` 和 `grid_size` 初始化后不变。
+
+**修正**：`Terrain` 结构体新增 `inv_scale` 和 `inv_nm1`，`terrain_init` 中预计算。所有热路径 `x/t->scale` → `x*t->inv_scale`，`(f32)(grid_size-1)` → `inv_nm1`。
+
+### R69-7 light_system_cull 逐光源除法→乘法
+
+**问题**：`screen_r[li] = pl->radius / (-view_pos[li].e[2])` 对每个光源执行除法（最多256次/帧）。
+
+**修正**：改为 `inv_vz = 1.0f / (-view_pos[li].e[2])`，`screen_r = pl->radius * inv_vz * screen_w * 0.5f`。
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
 
 ## 构建与回归命令
 

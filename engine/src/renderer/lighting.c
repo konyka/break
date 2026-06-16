@@ -134,18 +134,20 @@ void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 
         ls->_z_depths_dirty = false;
     }
 
-    /* Pre-transform all lights once (O(n)) before the O(clusters*n) loop */
+    /* Pre-transform all lights once (O(n)) before the O(clusters*n) loop.
+     * Static buffers: light_system_cull is called at most once per frame on
+     * the main thread; no concurrent access. */
     u32 pc = ls->point_count;
-    Vec4 view_pos[LIGHT_MAX_POINT];    /* view-space position per light */
-    Vec4 clip_pos[LIGHT_MAX_POINT];    /* clip-space position per light (proj * view_pos) */
-    f32 screen_x[LIGHT_MAX_POINT];    /* pre-computed screen-space X */
-    f32 screen_y[LIGHT_MAX_POINT];    /* pre-computed screen-space Y */
-    f32 screen_r[LIGHT_MAX_POINT];    /* pre-computed screen-space radius */
-    f32 screen_xmin[LIGHT_MAX_POINT]; /* pre-computed screen-space X bounds */
-    f32 screen_xmax[LIGHT_MAX_POINT];
-    f32 screen_ymin[LIGHT_MAX_POINT];
-    f32 screen_ymax[LIGHT_MAX_POINT];
-    bool screen_ok[LIGHT_MAX_POINT];  /* true if light is in front of camera */
+    static Vec4 view_pos[LIGHT_MAX_POINT];
+    static Vec4 clip_pos[LIGHT_MAX_POINT];
+    static f32 screen_x[LIGHT_MAX_POINT];
+    static f32 screen_y[LIGHT_MAX_POINT];
+    static f32 screen_r[LIGHT_MAX_POINT];
+    static f32 screen_xmin[LIGHT_MAX_POINT];
+    static f32 screen_xmax[LIGHT_MAX_POINT];
+    static f32 screen_ymin[LIGHT_MAX_POINT];
+    static f32 screen_ymax[LIGHT_MAX_POINT];
+    static bool screen_ok[LIGHT_MAX_POINT];
     for (u32 li = 0; li < pc; li++) {
         PointLight *pl = &ls->point_lights[li];
         Vec4 wp = vec4(pl->pos[0], pl->pos[1], pl->pos[2], 1.0f);
@@ -158,7 +160,8 @@ void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 
             f32 inv_w = 1.0f / sp.e[3];
             screen_x[li] = (sp.e[0] * inv_w * 0.5f + 0.5f) * (f32)screen_w;
             screen_y[li] = (sp.e[1] * inv_w * 0.5f + 0.5f) * (f32)screen_h;
-            screen_r[li] = pl->radius / (-view_pos[li].e[2]) * (f32)screen_w * 0.5f;
+            f32 inv_vz = 1.0f / (-view_pos[li].e[2]);
+            screen_r[li] = pl->radius * inv_vz * (f32)screen_w * 0.5f;
             screen_xmin[li] = screen_x[li] - screen_r[li];
             screen_xmax[li] = screen_x[li] + screen_r[li];
             screen_ymin[li] = screen_y[li] - screen_r[li];

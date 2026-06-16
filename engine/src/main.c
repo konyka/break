@@ -3698,8 +3698,8 @@ u32 culled_count = 0;
             /* Build contiguous position/radius arrays from LightSystem. */
             u32 pl_count = lights.point_count;
             if (pl_count > 0u && pt_shadows.ready) {
-                Vec3 pl_pos[LIGHT_MAX_POINT];
-                f32  pl_rad[LIGHT_MAX_POINT];
+                static Vec3 pl_pos[LIGHT_MAX_POINT];
+                static f32  pl_rad[LIGHT_MAX_POINT];
                 for (u32 pi = 0; pi < pl_count; pi++) {
                     pl_pos[pi].e[0] = lights.point_lights[pi].pos[0];
                     pl_pos[pi].e[1] = lights.point_lights[pi].pos[1];
