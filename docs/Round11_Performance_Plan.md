@@ -543,6 +543,32 @@
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
 
+## R65 审查修复：CSM u向量叉积修正 + 栈安全加固
+
+### R65-1 CSM lview u向量叉积公式修正（Critical）
+
+**问题**：R64 将 u 向量从 `cross(s_unnorm, f)` 改为 `cross(s_norm, f)` 时，叉积展开公式三处全部错误：
+- `ux_raw = -fy * sx`（实际计算 `fy*fz*inv_sl`）→ 应为 `-fy * fx`
+- `uy_raw = sx*fz + sz*fx`（实际计算 `inv_sl*(fx²-fz²)`）→ 应为 `fx*fx + fz*fz`
+- `uz_raw = -fy * sz`（实际计算 `-fy*fx*inv_sl`）→ 应为 `-fy * fz`
+
+典型太阳方向 `(0.465, -0.814, 0.349)` 下，错误 u 向量与正确方向夹角 ~83.5°，视空间 y 坐标相对误差 124%，CSM 阴影大面积错位。
+
+**修正**：回退为 `cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz)` + `fast_rsqrt` 归一化。该公式与 `cross(s_norm, f)` 方向相同（`s_norm = s_unnorm * inv_sl` 为标量缩放），语义清晰且不会引入新展开错误。
+
+### R65-2 渲染热路径栈数组→static持久缓冲区
+
+**问题**：main.c 中 12 处 16-64KB 栈数组（7× u32[16384] + 2× u8[16384] + 2× mega_mat_groups 内 u32[16384] + positions/radii[GPUCULL_MAX_OBJECTS]），最大并发路径栈占用 144KB。在受限栈环境（WASM 256KB、工作者线程 512KB）下可导致栈溢出。
+
+**修正**：
+- 新增 5 个文件作用域 static 缓冲区：`g_vis_flags[16384]`、`g_draw_vis[16384]`、`g_node_vis[16384]`、`g_cull_positions[GPUCULL_MAX_OBJECTS*3]`、`g_cull_radii[GPUCULL_MAX_OBJECTS]`
+- 所有路径（CSM/point shadow/forward/deferred）顺序执行，不并发访问，可安全复用
+- `node_vis = {0}` 零初始化改为显式 `memset(g_node_vis, 0, sizeof(g_node_vis))`
+- 最大并发路径栈占用从 **144KB → 0KB**
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
+
 ## 构建与回归命令
 
 ```bash

@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R64 性能优化 + 正确性修复** — 热路径 sqrtf→fast_rsqrt + CSM u向量归一化 + mat4_vec4 标量回退修复 + vec3_len_sq + point_shadow 约定注释。**R64-1**：4处热路径 sqrtf 替换为 fast_rsqrt 模式（地形射线距离、相机斜率、实体斜率、实体速度），实体速度改用 vec3_len（内置 fast_rsqrt）。**R64-2**：CSM lview u 向量从 cross(s_unnorm, f) 改为 cross(s_norm, f) + normalize，恢复单位长度，消除阴影贴图分辨率浪费。**R64-3**：mat4_vec4 标量回退路径从 M^T*v 修正为 M*v，与 SSE2 路径一致（非 x86_64 平台可移植性修复）。**R64-4**：math.h 新增 vec3_len_sq 内联函数。**R64-5**：point_shadow_compute_face_vp 添加右手约定注释。**回归**：test_math 45/45、test_camera_frustum 24/24。
+最近更新：**R65 审查修复 + 栈安全加固** — CSM lview u向量叉积公式修正 + 12处64KB栈数组改为static持久缓冲区。**R65-1**：R64引入的 CSM lview u向量叉积展开公式三处全部错误（ux=-fy*sx 应为 -fy*fx，uy=sx*fz+sz*fx 应为 sz*fx-sx*fz，uz=-fy*sz 应为 -fy*fz），导致阴影方向偏转~83.5°，修正为 cross(s_unnorm,f)+normalize 公式（-fy*fx, fx²+fz², -fy*fz + fast_rsqrt归一化）。**R65-2**：7处 u32 vis_flags/draw_vis[16384]（64KB×7）+ 2处 u8 node_vis[16384]（16KB×2）+ 2处 mega_mat_groups 内 vis_flags[16384]（64KB×2）+ 1处 f32 positions/radii[GPUCULL_MAX_OBJECTS]（48+16KB）——合计12处栈分配改为文件作用域 static g_vis_flags/g_draw_vis/g_node_vis/g_cull_positions/g_cull_radii，消除最大路径并发栈占用从144KB降至0KB。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

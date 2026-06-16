@@ -787,6 +787,16 @@ static u32 occ_idx_by_node[16384];
 OcclusionCullSystem occ_sys = {0};
 bool occ_cull_enabled = true;
 
+/* Frame-level persistent visibility buffers — shared across shadow/forward/deferred
+ * paths (executed sequentially within a frame, never concurrently).
+ * Replaces 11 stack-allocated 16-64KB arrays to prevent stack overflow on
+ * constrained stacks (WASM 256KB, worker threads 512KB). */
+static u32 g_vis_flags[16384];   /* 64KB: used by mega_mat_groups_* and CPU cull */
+static u32 g_draw_vis[16384];    /* 64KB: used by unified vis paths */
+static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
+static f32 g_cull_positions[GPUCULL_MAX_OBJECTS * 3]; /* 48KB: gpucull positions */
+static f32 g_cull_radii[GPUCULL_MAX_OBJECTS];         /* 16KB: gpucull radii */
+
 static void occ_rebuild_node_map(const Scene *scene) {
     u32 n = scene->node_count < 16384u ? scene->node_count : 16384u;
     for (u32 i = 0; i < n; i++) occ_idx_by_node[i] = OCC_NODE_MAP_INVALID;
@@ -887,15 +897,14 @@ static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffe
     if (!mb || !mb->valid) return 0u;
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 gcount = mb->mat_systems[g].current_draw_count;
-        u32 vis_flags[16384];
         u32 gi = 0u;
         for (u32 ci = 0; ci < mb->draw_cmd_count && gi < gcount; ci++) {
             if (mb->cmd_mat_group[ci] == (i32)g) {
-                vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
+                g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
                 gi++;
             }
         }
-        indirect_draw_upload_visibility(&mb->mat_systems[g], dev, vis_flags, gcount);
+        indirect_draw_upload_visibility(&mb->mat_systems[g], dev, g_vis_flags, gcount);
         indirect_draw_compact(&mb->mat_systems[g], dev, cmd);
         indirect_draw_execute(&mb->mat_systems[g], dev);
         calls++;
@@ -914,15 +923,14 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
         bind_material(cmd, render, mat, scene, pt_shadows);
 
         u32 gcount = mb->mat_systems[g].current_draw_count;
-        u32 vis_flags[16384];
         u32 gi = 0u;
         for (u32 ci = 0; ci < mb->draw_cmd_count && gi < gcount; ci++) {
             if (mb->cmd_mat_group[ci] == (i32)g) {
-                vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
+                g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
                 gi++;
             }
         }
-        indirect_draw_upload_visibility(&mb->mat_systems[g], render->device, vis_flags, gcount);
+        indirect_draw_upload_visibility(&mb->mat_systems[g], render->device, g_vis_flags, gcount);
         indirect_draw_compact(&mb->mat_systems[g], render->device, cmd);
         indirect_draw_execute(&mb->mat_systems[g], render->device);
         calls++;
@@ -3539,11 +3547,13 @@ u32 culled_count = 0;
             /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
             f32 sx = -light_dir.e[2] * inv_sl;
             f32 sz =  light_dir.e[0] * inv_sl;
-            /* u = cross(s_norm, f) = (-fy*fx, fx²+fz², -fy*fz); normalize for unit-length up row */
+            /* u = normalize(cross(s_norm, f)) = normalize(cross(s_unnorm, f))
+             * cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz); same direction as
+             * cross(s_norm, f) because s_norm = s_unnorm * inv_sl (scalar multiple). */
             f32 fx = light_dir.e[0], fy = light_dir.e[1], fz = light_dir.e[2];
-            f32 ux_raw = -fy * sx;
-            f32 uy_raw =  sx * fz + sz * fx;  /* = inv_sl * (fx²+fz²) */
-            f32 uz_raw = -fy * sz;
+            f32 ux_raw = -fy * fx;
+            f32 uy_raw =  fx * fx + fz * fz;
+            f32 uz_raw = -fy * fz;
             f32 u_len2 = ux_raw * ux_raw + uy_raw * uy_raw + uz_raw * uz_raw;
             f32 inv_ul = u_len2 > 1e-12f ? fast_rsqrt(u_len2) : 0.0f;
             f32 ux = ux_raw * inv_ul;
@@ -3604,14 +3614,13 @@ u32 culled_count = 0;
 
                     /* Per-cascade culling, then GPU stream-compaction. */
                     u32 vis_count = mega_buf.draw_cmd_count;
-                    u32 draw_vis[16384];
                     if (mega_use_unified_shadow(&mega_buf) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &render.cascade_vp[c].e[0][0],
-                                               vis_count, &occ_sys, draw_vis)) {
+                                               vis_count, &occ_sys, g_draw_vis)) {
                         u32 mc = mega_mat_groups_indirect(cmd, render.device,
-                                                          &mega_buf, draw_vis);
+                                                          &mega_buf, g_draw_vis);
                         draw_calls += mc;
-                        draw_bench_add(mc, mega_count_visible_draws(&mega_buf, draw_vis));
+                        draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
                         draw_bench_mark_unified();
                     } else if (gpucull_enabled && mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                   &render.cascade_vp[c].e[0][0], vis_count, &occ_sys)) {
@@ -3621,23 +3630,20 @@ u32 culled_count = 0;
                     } else {
                     if (gpucull_enabled && gpucull_sys.ready && vis_count <= GPUCULL_MAX_OBJECTS) {
                         /* Legacy: flags + compact (two compute passes). */
-                        f32 positions[GPUCULL_MAX_OBJECTS * 3];
-                        f32 radii[GPUCULL_MAX_OBJECTS];
                         u32 obj_idx = 0;
                         for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
                             if (mega_buf.node_spheres[ni].r < 0.0f) continue;
-                            positions[obj_idx*3+0] = mega_buf.node_spheres[ni].cx;
-                            positions[obj_idx*3+1] = mega_buf.node_spheres[ni].cy;
-                            positions[obj_idx*3+2] = mega_buf.node_spheres[ni].cz;
-                            radii[obj_idx] = mega_buf.node_spheres[ni].r;
+                            g_cull_positions[obj_idx*3+0] = mega_buf.node_spheres[ni].cx;
+                            g_cull_positions[obj_idx*3+1] = mega_buf.node_spheres[ni].cy;
+                            g_cull_positions[obj_idx*3+2] = mega_buf.node_spheres[ni].cz;
+                            g_cull_radii[obj_idx] = mega_buf.node_spheres[ni].r;
                             obj_idx++;
                         }
-                        gpucull_update_objects(&gpucull_sys, positions, radii, vis_count);
+                        gpucull_update_objects(&gpucull_sys, g_cull_positions, g_cull_radii, vis_count);
                         gpucull_dispatch_flags(&gpucull_sys, cmd, &render.cascade_vp[c].e[0][0],
                                                indirect_sys.visibility_buf);
                     } else {
                         /* CPU frustum culling per cascade */
-                        u32 vis_flags[16384];
                         Frustum shadow_frustum = frustum_from_vp(render.cascade_vp[c]);
                         u32 obj_idx = 0;
                         for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
@@ -3645,10 +3651,10 @@ u32 culled_count = 0;
                             Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
                                           mega_buf.node_spheres[ni].cy,
                                           mega_buf.node_spheres[ni].cz }};
-                            vis_flags[obj_idx] = frustum_test_sphere(&shadow_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
+                            g_vis_flags[obj_idx] = frustum_test_sphere(&shadow_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
                             obj_idx++;
                         }
-                        indirect_draw_upload_visibility(&indirect_sys, render.device, vis_flags, vis_count);
+                        indirect_draw_upload_visibility(&indirect_sys, render.device, g_vis_flags, vis_count);
                     }
                     indirect_draw_compact(&indirect_sys, render.device, cmd);
                     indirect_draw_execute(&indirect_sys, render.device);
@@ -3716,15 +3722,14 @@ u32 culled_count = 0;
                             /* Frustum cull from this cubemap face's perspective */
                             u32 vis_count = mega_buf.draw_cmd_count;
                             u32 face_idx = pli * POINT_SHADOW_FACES + pface;
-                            u32 draw_vis[16384];
                             if (mega_use_unified_shadow(&mega_buf) &&
                                 mega_unified_vis_flags(&gpucull_sys, cmd,
                                                        &pt_shadows.light_vp[face_idx].e[0][0],
-                                                       vis_count, &occ_sys, draw_vis)) {
+                                                       vis_count, &occ_sys, g_draw_vis)) {
                                 u32 mc = mega_mat_groups_indirect(cmd, render.device,
-                                                                  &mega_buf, draw_vis);
+                                                                  &mega_buf, g_draw_vis);
                                 draw_calls += mc;
-                                draw_bench_add(mc, mega_count_visible_draws(&mega_buf, draw_vis));
+                                draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
                                 draw_bench_mark_unified();
                             } else if (gpucull_enabled && mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
@@ -3734,21 +3739,20 @@ u32 culled_count = 0;
                                 draw_bench_mark_unified();
                             } else {
                                 Frustum pface_frustum = frustum_from_vp(pt_shadows.light_vp[face_idx]);
-                                u32 vis_flags[16384];
                                 u32 obj_idx = 0;
                                 for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
                                     if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                                     Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
                                                   mega_buf.node_spheres[ni].cy,
                                                   mega_buf.node_spheres[ni].cz }};
-                                    vis_flags[obj_idx] = frustum_test_sphere(&pface_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
+                                    g_vis_flags[obj_idx] = frustum_test_sphere(&pface_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
                                     obj_idx++;
                                 }
-                                indirect_draw_upload_visibility(&indirect_sys, render.device, vis_flags, vis_count);
+                                indirect_draw_upload_visibility(&indirect_sys, render.device, g_vis_flags, vis_count);
                                 indirect_draw_compact(&indirect_sys, render.device, cmd);
                                 indirect_draw_execute(&indirect_sys, render.device);
                                 draw_calls++;
-                                draw_bench_add(1u, mega_count_visible_draws(&mega_buf, vis_flags));
+                                draw_bench_add(1u, mega_count_visible_draws(&mega_buf, g_vis_flags));
                                 draw_bench_mark_legacy();
                             }
                         } else {
@@ -4782,18 +4786,17 @@ u32 culled_count = 0;
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
 
-                    u32 draw_vis[16384];
                     if (mega_use_unified_vis(false) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
-                                               mega_buf.draw_cmd_count, &occ_sys, draw_vis)) {
+                                               mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
                         u32 mc = mega_mat_groups_draw(cmd, &render, &scene, &pt_shadows,
-                                                      &mega_buf, draw_vis);
+                                                      &mega_buf, g_draw_vis);
                         draw_calls += mc;
-                        draw_bench_add(mc, mega_count_visible_draws(&mega_buf, draw_vis));
+                        draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
                         draw_bench_mark_unified();
                     } else {
                     /* Pre-compute per-node visibility (frustum + LOD) — parallel */
-                    u8 node_vis[16384] = {0};
+                    memset(g_node_vis, 0, sizeof(g_node_vis));
                     {
                         u32 nc = scene.node_count < 16384 ? scene.node_count : 16384;
                         u32 wc = task_worker_count(tasks);
@@ -4801,7 +4804,7 @@ u32 culled_count = 0;
                         u32 chunk = (nc + wc - 1) / wc;
                         VisTaskCtx vctxs[8];
                         for (u32 wi = 0; wi < wc; wi++) {
-                            vctxs[wi].node_vis = node_vis;
+                            vctxs[wi].node_vis = g_node_vis;
                             vctxs[wi].spheres  = mega_buf.node_spheres;
                             vctxs[wi].start    = wi * chunk;
                             vctxs[wi].end      = (wi + 1) * chunk;
@@ -4820,23 +4823,22 @@ u32 culled_count = 0;
                         bind_material(cmd, &render, mat, &scene, &pt_shadows);
 
                         u32 gcount = mega_buf.mat_systems[g].current_draw_count;
-                        u32 vis_flags[16384];
                         u32 gi = 0;
                         for (u32 ci = 0; ci < mega_buf.draw_cmd_count && gi < gcount; ci++) {
                             if (mega_buf.cmd_mat_group[ci] == (i32)g) {
                                 u32 ni = mega_buf.cmd_node_index[ci];
-                                vis_flags[gi] = node_vis[ni];
-                                if (!node_occ_visible(ni)) vis_flags[gi] = 0;
+                                g_vis_flags[gi] = g_node_vis[ni];
+                                if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                                 gi++;
                             }
                         }
-                        indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, vis_flags, gcount);
+                        indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
                         indirect_draw_compact(&mega_buf.mat_systems[g], render.device, cmd);
                         indirect_draw_execute(&mega_buf.mat_systems[g], render.device);
                         draw_calls++;
                     }
                     draw_bench_add(mega_buf.mat_group_count,
-                                   mega_count_visible_node_vis(&mega_buf, node_vis));
+                                   mega_count_visible_node_vis(&mega_buf, g_node_vis));
                     draw_bench_mark_legacy();
                     }
                 } else {
@@ -5016,17 +5018,16 @@ u32 culled_count = 0;
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
 
                 /* Pre-compute per-node visibility using camera frustum + LOD — parallel */
-                u32 draw_vis[16384];
                 if (mega_use_unified_vis(true) &&
                     mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
-                                           mega_buf.draw_cmd_count, &occ_sys, draw_vis)) {
+                                           mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
                     u32 mc = mega_mat_groups_draw(cmd, &render, &scene, &pt_shadows,
-                                                  &mega_buf, draw_vis);
+                                                  &mega_buf, g_draw_vis);
                     draw_calls += mc;
-                    draw_bench_add(mc, mega_count_visible_draws(&mega_buf, draw_vis));
+                    draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
                     draw_bench_mark_unified();
                 } else {
-                u8 node_vis[16384] = {0};
+                memset(g_node_vis, 0, sizeof(g_node_vis));
                 {
                     u32 nc = scene.node_count < 16384 ? scene.node_count : 16384;
                     Frustum gbuf_frustum = frame_frustum;
@@ -5035,7 +5036,7 @@ u32 culled_count = 0;
                     u32 chunk = (nc + wc - 1) / wc;
                     VisTaskCtx vctxs[8];
                     for (u32 wi = 0; wi < wc; wi++) {
-                        vctxs[wi].node_vis = node_vis;
+                        vctxs[wi].node_vis = g_node_vis;
                         vctxs[wi].spheres  = mega_buf.node_spheres;
                         vctxs[wi].start    = wi * chunk;
                         vctxs[wi].end      = (wi + 1) * chunk;
@@ -5055,22 +5056,21 @@ u32 culled_count = 0;
 
                     /* Build visibility for this material group's draw cmds */
                     u32 gcount = mega_buf.mat_systems[g].current_draw_count;
-                    u32 vis_flags[16384];
                     u32 gi = 0;
                     for (u32 ci = 0; ci < mega_buf.draw_cmd_count && gi < gcount; ci++) {
                         if (mega_buf.cmd_mat_group[ci] == (i32)g) {
                             u32 ni = mega_buf.cmd_node_index[ci];
-                            vis_flags[gi] = node_vis[ni];
+                            g_vis_flags[gi] = g_node_vis[ni];
                             gi++;
                         }
                     }
-                    indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, vis_flags, gcount);
+                    indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
                     indirect_draw_compact(&mega_buf.mat_systems[g], render.device, cmd);
                     indirect_draw_execute(&mega_buf.mat_systems[g], render.device);
                     draw_calls++;
                 }
                 draw_bench_add(mega_buf.mat_group_count,
-                               mega_count_visible_node_vis(&mega_buf, node_vis));
+                               mega_count_visible_node_vis(&mega_buf, g_node_vis));
                 draw_bench_mark_legacy();
                 }
             } else {
