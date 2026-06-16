@@ -639,9 +639,7 @@ static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, u32
     return psc_n;
 }
 
-static void clustered_set_point_shadow_uniforms(RHICmdBuffer *cmd, RenderState *rs,
-                                                const PointShadowSystem *pt) {
-    (void)pt;
+static void clustered_set_point_shadow_uniforms(RHICmdBuffer *cmd, RenderState *rs) {
     if (rs->cl_loc_point_shadow_count >= 0)
         rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_count, (i32)g_psc.count);
     if (rs->cl_loc_point_shadow_light_0 >= 0)
@@ -654,8 +652,7 @@ static void clustered_set_point_shadow_uniforms(RHICmdBuffer *cmd, RenderState *
         rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_3, (i32)g_psc.light_idx[3]);
 }
 
-static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene,
-                          const PointShadowSystem *pt_shadows) {
+static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
     RHITexture alb = (mat && rhi_handle_valid(mat->albedo)) ? mat->albedo : rs->fallback_tex;
     RHITexture mr  = (mat && rhi_handle_valid(mat->metallic_roughness)) ? mat->metallic_roughness : rs->fallback_mr;
     RHITexture nrm = (mat && rhi_handle_valid(mat->normal_map)) ? mat->normal_map : rs->fallback_normal;
@@ -670,7 +667,7 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
                                         g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
-    (void)scene; (void)pt_shadows;
+    (void)scene;
 }
 
 /* ---- Precomputed node bounding sphere ---- */
@@ -914,14 +911,14 @@ static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffe
 }
 
 static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *scene,
-                                PointShadowSystem *pt_shadows, MegaBuffer *mb,
+                                MegaBuffer *mb,
                                 const u32 *draw_vis) {
     u32 calls = 0u;
     if (!mb || !mb->valid) return 0u;
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 mat_idx = mb->mat_indices[g];
         Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
-        bind_material(cmd, render, mat, scene, pt_shadows);
+        bind_material(cmd, render, mat, scene);
 
         u32 gcount = mb->mat_systems[g].current_draw_count;
         memset(g_vis_flags, 0, gcount * sizeof(u32));
@@ -2780,6 +2777,23 @@ u32 culled_count = 0;
         debug_ui_begin(&ui);
         fps_history[fps_history_idx % 64] = (f32)engine.delta_time * 1000.0f;
         fps_history_idx++;
+
+        /* Compute dynamic-body CoM once per frame — used for both drift accumulation
+         * (after the ui.visible gate) and display (inside the gate). */
+        Vec3 frame_com = vec3(0,0,0);
+        f32 frame_com_mass = 0.0f;
+        if (physics->count > 1) {
+            for (u32 bi = 1; bi < physics->count; bi++) {
+                if (physics->bodies[bi].is_static) continue;
+                frame_com.e[0] += physics->bodies[bi].mass * physics->bodies[bi].position.e[0];
+                frame_com.e[1] += physics->bodies[bi].mass * physics->bodies[bi].position.e[1];
+                frame_com.e[2] += physics->bodies[bi].mass * physics->bodies[bi].position.e[2];
+                frame_com_mass += physics->bodies[bi].mass;
+            }
+            if (frame_com_mass > 0.01f)
+                frame_com = vec3_scale(frame_com, 1.0f / frame_com_mass);
+        }
+
         if (ui.visible) {
             debug_ui_text(&ui, "FPS: %.0f (%.2f ms)  Pos: (%.1f,%.1f,%.1f)  Speed: %.0f  Sun: %.1f/%.1f (%.0f°/%.0f°)  VSync: %s%s", engine.fps, engine.delta_time * 1000.0, camera.position.e[0], camera.position.e[1], camera.position.e[2], camera.move_speed, sun_azimuth, sun_elevation, sun_azimuth * 57.2958f, sun_elevation * 57.2958f, vsync_on ? "on" : "off", tod_cycle ? "  [TOD]" : "");
             {
@@ -3181,22 +3195,10 @@ u32 culled_count = 0;
                     debug_ui_text(&ui, "Activity: %u moving / %u resting / %u falling / %u grounded (%u total)  rest mass: %.0f/%.0f (%.0f%%)", moving, resting_count, falling_count, grounded_count, dyn, rest_mass, total_mass, total_mass > 0.01f ? rest_mass / total_mass * 100.0f : 0.0f);
                     debug_ui_text(&ui, "AGL: <1m:%u <5m:%u <15m:%u 15m+:%u", agl_b[0], agl_b[1], agl_b[2], agl_b[3]);
                 }
-                Vec3 com = vec3(0,0,0);
-                f32 tmass = 0.0f;
-                for (u32 bi = 1; bi < physics->count; bi++) {
-                    if (physics->bodies[bi].is_static) continue;
-                    com.e[0] += physics->bodies[bi].mass * physics->bodies[bi].position.e[0];
-                    com.e[1] += physics->bodies[bi].mass * physics->bodies[bi].position.e[1];
-                    com.e[2] += physics->bodies[bi].mass * physics->bodies[bi].position.e[2];
-                    tmass += physics->bodies[bi].mass;
-                }
-                if (tmass > 0.01f) {
-                    com = vec3_scale(com, 1.0f / tmass);
-                    if (total_time > 1.0f) {
-                        f32 com_depth = water.water_y - com.e[1];
-                        debug_ui_text(&ui, "CoM: (%.1f,%.1f,%.1f) drift: %.1f m (%.2f m/s)%s", com.e[0], com.e[1], com.e[2], com_drift, com_drift / total_time, com_depth > 0 ? " [UNDERWATER]" : "");
+                if (frame_com_mass > 0.01f && total_time > 1.0f) {
+                        f32 com_depth = water.water_y - frame_com.e[1];
+                        debug_ui_text(&ui, "CoM: (%.1f,%.1f,%.1f) drift: %.1f m (%.2f m/s)%s", frame_com.e[0], frame_com.e[1], frame_com.e[2], com_drift, com_drift / total_time, com_depth > 0 ? " [UNDERWATER]" : "");
                     }
-                }
             }
             } /* end physics debug stats throttle */
         }
@@ -3498,22 +3500,10 @@ u32 culled_count = 0;
 
         } /* end if(ui.visible) */
 
-        /* Always update prev_com / com_drift outside the visibility gate so
-         * the accumulator stays consistent across UI toggles. */
-        if (physics->count > 1) {
-            Vec3 com_now = vec3(0,0,0); f32 tmass = 0.0f;
-            for (u32 bi = 1; bi < physics->count; bi++) {
-                if (physics->bodies[bi].is_static) continue;
-                com_now.e[0] += physics->bodies[bi].mass * physics->bodies[bi].position.e[0];
-                com_now.e[1] += physics->bodies[bi].mass * physics->bodies[bi].position.e[1];
-                com_now.e[2] += physics->bodies[bi].mass * physics->bodies[bi].position.e[2];
-                tmass += physics->bodies[bi].mass;
-            }
-            if (tmass > 0.01f) {
-                com_now = vec3_scale(com_now, 1.0f / tmass);
-                com_drift += vec3_len(vec3_sub(com_now, prev_com));
-                prev_com = com_now;
-            }
+        /* Accumulate com_drift using the CoM computed before the gate. */
+        if (physics->count > 1 && frame_com_mass > 0.01f) {
+            com_drift += vec3_len(vec3_sub(frame_com, prev_com));
+            prev_com = frame_com;
         }
 
         debug_ui_end(&ui);
@@ -3899,7 +3889,7 @@ u32 culled_count = 0;
                     rhi_cmd_set_uniform_f32(cmd, render.cl_loc_fog_far, fog_enabled ? fog_far : 100000.0f);
                 if (render.cl_loc_underwater >= 0) rhi_cmd_set_uniform_f32(cmd, render.cl_loc_underwater, underwater ? 1.0f : 0.0f);
                 }
-            clustered_set_point_shadow_uniforms(cmd, &render, &pt_shadows);
+            clustered_set_point_shadow_uniforms(cmd, &render);
 
             rhi_cmd_bind_texel_buffers(cmd, lights.light_data_buf, lights.light_grid_buf);
 
@@ -3991,7 +3981,7 @@ u32 culled_count = 0;
                 for (u32 si = 0; si < scene.skinned_mesh_count; si++) {
                     SkinnedMesh *sm = &scene.skinned_meshes[si];
                     Material *mat = (sm->material_idx < scene.material_count) ? &scene.materials[sm->material_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                    bind_material(cmd, &render, mat, &scene);
                     rhi_cmd_bind_texel_buffers(cmd, render.skeleton.joint_buf, render.skeleton.joint_buf);
                     rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
                     if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
@@ -4003,7 +3993,7 @@ u32 culled_count = 0;
                     draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
                 }
             } else if (rhi_handle_valid(render.skinned_vbo)) {
-                bind_material(cmd, &render, NULL, &scene, &pt_shadows);
+                bind_material(cmd, &render, NULL, &scene);
                 rhi_cmd_bind_texel_buffers(cmd, render.skeleton.joint_buf, render.skeleton.joint_buf);
                 rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
                 rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0);
@@ -4690,7 +4680,7 @@ u32 culled_count = 0;
                 for (u32 i = 0; i < scene.mesh_count; i++) {
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                    bind_material(cmd, &render, mat, &scene);
                     rhi_cmd_bind_texel_buffers(cmd, render.instance_buf, render.instance_buf);
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -4740,7 +4730,7 @@ u32 culled_count = 0;
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
 
                             Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                            bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                            bind_material(cmd, &render, mat, &scene);
 
                             rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                             if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -4806,7 +4796,7 @@ u32 culled_count = 0;
                     if (mega_use_unified_vis(false) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                                mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
-                        u32 mc = mega_mat_groups_draw(cmd, &render, &scene, &pt_shadows,
+                        u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
                                                       &mega_buf, g_draw_vis);
                         draw_calls += mc;
                         draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
@@ -4837,7 +4827,7 @@ u32 culled_count = 0;
                     for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                         u32 mat_idx = mega_buf.mat_indices[g];
                         Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                        bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                        bind_material(cmd, &render, mat, &scene);
 
                         u32 gcount = mega_buf.mat_systems[g].current_draw_count;
                         memset(g_vis_flags, 0, gcount * sizeof(u32));
@@ -4924,7 +4914,7 @@ u32 culled_count = 0;
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &node->world_transform.e[0][0]);
 
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                    bind_material(cmd, &render, mat, &scene);
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -4944,7 +4934,7 @@ u32 culled_count = 0;
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
 
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                    bind_material(cmd, &render, mat, &scene);
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -5019,7 +5009,7 @@ u32 culled_count = 0;
 
             /* Render terrain. */
             if (rhi_handle_valid(terrain.vbo)) {
-                bind_material(cmd, &render, NULL, &scene, &pt_shadows);
+                bind_material(cmd, &render, NULL, &scene);
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
                 rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
@@ -5039,7 +5029,7 @@ u32 culled_count = 0;
                 if (mega_use_unified_vis(true) &&
                     mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                            mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
-                    u32 mc = mega_mat_groups_draw(cmd, &render, &scene, &pt_shadows,
+                    u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
                                                   &mega_buf, g_draw_vis);
                     draw_calls += mc;
                     draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
@@ -5070,7 +5060,7 @@ u32 culled_count = 0;
                 for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                     u32 mat_idx = mega_buf.mat_indices[g];
                     Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                    bind_material(cmd, &render, mat, &scene);
 
                     /* Build visibility for this material group's draw cmds */
                     u32 gcount = mega_buf.mat_systems[g].current_draw_count;
@@ -5100,7 +5090,7 @@ u32 culled_count = 0;
                 if (node->mesh_index >= scene.mesh_count) continue;
                 Mesh *m = &scene.meshes[node->mesh_index];
                 Material *mat = (node->material_idx < scene.material_count) ? &scene.materials[node->material_idx] : NULL;
-                bind_material(cmd, &render, mat, &scene, &pt_shadows);
+                bind_material(cmd, &render, mat, &scene);
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &node->world_transform.e[0][0]);
                 rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
@@ -5145,7 +5135,7 @@ u32 culled_count = 0;
                                    render.ibl.brdf_lut,
                                    render.ibl.irradiance_map,
                                    render.ibl.prefilter_map,
-                                   &pt_shadows,
+                                   g_psc.count, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.light_idx,
                                    0.1f, 100.0f, shadow_bias,
                                    &view.e[0][0], cam_uniform);
         }

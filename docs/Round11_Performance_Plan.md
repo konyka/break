@@ -640,6 +640,30 @@
 
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
+---
+
+## Round 68：CoM合并 + 死参数移除 + Deferred g_psc缓存
+
+### R68-1 CoM双重遍历合并
+
+**问题**：R67 将 com_drift/prev_com 更新移出 `if(ui.visible)` 门控后，门控内遗留旧 CoM 计算循环。UI 可见时同一组物理体被遍历两次——一次显示、一次累加。逻辑完全相同，维护风险高。
+
+**修正**：CoM 计算提升至 `if(ui.visible)` 之前，声明 `frame_com`/`frame_com_mass`。门控内仅读 `frame_com` 显示，门控后仅用 `frame_com` 累加。消除冗余 O(n) 循环。
+
+### R68-2 死参数移除
+
+**问题**：R67 `g_psc` 帧级缓存后，`bind_material` 的 `pt_shadows` 参数和 `clustered_set_point_shadow_uniforms` 的 `pt` 参数变为死代码（仅 `(void)` 抑制警告），12+1 处调用点仍传递 `&pt_shadows`，API 契约漂移误导维护。
+
+**修正**：移除两个函数的死参数，更新所有 12+1 调用点。同步移除 `mega_mat_groups_draw` 的 `pt_shadows` 参数及 2 处调用点。
+
+### R68-3 Deferred g_psc缓存统一
+
+**问题**：`deferred_lighting_pass` 仍内联执行 `point_shadow_gather`，与前向路径读 `g_psc` 帧级缓存不一致。每次延迟帧多做一次冗余 gather 遍历。
+
+**修正**：`deferred_lighting_pass` 签名从 `const PointShadowSystem *pt_shadows` 改为 `(u32 psc_count, const RHITexture *psc_tex, const u32 *psc_light_idx)`。调用方传入 `g_psc` 缓存数据。`deferred.c` 移除 `point_shadow.h` 依赖。延迟路径与前向路径完全统一读帧级缓存。
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
 
 ## 构建与回归命令
 

@@ -17,7 +17,6 @@
  * ========================================================================== */
 
 #include <renderer/deferred.h>
-#include <renderer/point_shadow.h>
 #include <core/log.h>
 
 #include <stdio.h>
@@ -329,25 +328,16 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             u32 point_count, u32 dir_count,
                             RHITexture shadow_map,
                             RHITexture brdf_lut, RHICubemap irradiance, RHICubemap prefilter,
-                            const PointShadowSystem *pt_shadows,
+                            u32 psc_count, const RHITexture *psc_tex, const u32 *psc_light_idx,
                             f32 near_plane, f32 far_plane, f32 shadow_bias,
                             const f32 *view_mat, const f32 *camera_data) {
     if (!sys || !dev || !sys->initialized) return;
 
     rhi_cmd_bind_pipeline(cmd, sys->lighting_pipeline);
 
-    RHITexture psc[4] = {0};
-    u32 psc_n = 0;
-    u32 psc_light_idx[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
-    if (pt_shadows && pt_shadows->ready && pt_shadows->active_count > 0u) {
-        psc_n = pt_shadows->active_count;
-        if (psc_n > 4u) psc_n = 4u;
-        for (u32 i = 0u; i < psc_n; i++) {
-            if (rhi_handle_valid(pt_shadows->cubemap_fbos[i].depth_tex))
-                psc[i] = pt_shadows->cubemap_fbos[i].depth_tex;
-            psc_light_idx[i] = pt_shadows->lights[i].src_index;
-        }
-    }
+    /* Point shadow cubemap data is pre-gathered by the caller (g_psc cache). */
+    u32 psc_n = psc_count;
+    if (psc_n > 4u) psc_n = 4u;
 
 #ifdef ENGINE_VULKAN
     rhi_cmd_bind_material_textures_ibl(cmd,
@@ -359,7 +349,7 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
         RHI_HANDLE_NULL,
         sys->_gbuf_sampler,
         brdf_lut, irradiance, prefilter,
-        psc_n > 0u ? psc : NULL, psc_n);
+        psc_n > 0u ? psc_tex : NULL, psc_n);
 #else
     rhi_cmd_bind_texture(cmd, sys->gbuf_albedo_metallic, sys->_gbuf_sampler, 0);
     rhi_cmd_bind_texture(cmd, sys->gbuf_normal,          sys->_gbuf_sampler, 1);
@@ -369,8 +359,8 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
         rhi_cmd_bind_texture(cmd, shadow_map, sys->_gbuf_sampler, 4);
     }
     for (u32 i = 0u; i < psc_n; i++) {
-        if (rhi_handle_valid(psc[i]))
-            rhi_cmd_bind_texture(cmd, psc[i], pt_shadows ? pt_shadows->sampler : sys->_gbuf_sampler, 10u + i);
+        if (psc_tex && rhi_handle_valid(psc_tex[i]))
+            rhi_cmd_bind_texture(cmd, psc_tex[i], sys->_gbuf_sampler, 10u + i);
     }
     if (rhi_handle_valid(brdf_lut)) {
         rhi_cmd_bind_texture(cmd, brdf_lut, sys->_gbuf_sampler, 7);

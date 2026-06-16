@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R67 审查加固 + 性能优化** — occ_rebuild_node_map提前 + terrain stats门控 + com_drift一致性 + fps_history持续采集 + point_shadow_gather帧级缓存。**R67-1**：occ_rebuild_node_map从forward分支内提升至forward/deferred分支之前（Critical），修复延迟路径occ_idx_by_node全为0导致可能全画面剔除的bug。**R67-2**：terrain stats O(nn)循环移入 ui.visible 门控（R66遗漏，每10帧4096次迭代浪费）。**R67-3**：com_drift/prev_com 更新从 if(ui.visible) 门控内移出，防止 UI 切换后累加器永久偏移。**R67-4**：fps_history 移出门控，UI 隐藏时仍持续采集帧时数据。**R67-5**：point_shadow_gather 帧级缓存 g_psc，从每帧9次调用降为1次，bind_material/clustered_set_point_shadow_uniforms/terrain 均读缓存。**回归**：test_math 45/45、test_camera_frustum 24/24。
+最近更新：**R68 审查加固 + 性能优化** — CoM双重遍历合并 + 死参数移除 + Deferred g_psc缓存。**R68-1**：动态体质心(CoM)从 `if(ui.visible)` 内外双重遍历合并为门控前单次计算 `frame_com`，UI可见时消除冗余 O(n) 物理循环；漂移累加 `com_drift`/`prev_com` 更新复用同一变量。**R68-2**：`bind_material` 和 `clustered_set_point_shadow_uniforms` 的死参数 `pt_shadows`/`pt` 移除（R67 g_psc缓存后仅 `(void)` 抑制警告），12处调用点同步更新；`mega_mat_groups_draw` 签名也移除 `pt_shadows` 参数。**R68-3**：`deferred_lighting_pass` 从内联 `point_shadow_gather` 改为接受预gather数据 `(psc_count, psc_tex, psc_light_idx)`，延迟路径与前向路径统一读 `g_psc` 帧级缓存；`deferred.c` 不再依赖 `point_shadow.h`。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 
