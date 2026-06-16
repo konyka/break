@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R65 审查修复 + 栈安全加固** — CSM lview u向量叉积公式修正 + 12处64KB栈数组改为static持久缓冲区。**R65-1**：R64引入的 CSM lview u向量叉积展开公式三处全部错误（ux=-fy*sx 应为 -fy*fx，uy=sx*fz+sz*fx 应为 sz*fx-sx*fz，uz=-fy*sz 应为 -fy*fz），导致阴影方向偏转~83.5°，修正为 cross(s_unnorm,f)+normalize 公式（-fy*fx, fx²+fz², -fy*fz + fast_rsqrt归一化）。**R65-2**：7处 u32 vis_flags/draw_vis[16384]（64KB×7）+ 2处 u8 node_vis[16384]（16KB×2）+ 2处 mega_mat_groups 内 vis_flags[16384]（64KB×2）+ 1处 f32 positions/radii[GPUCULL_MAX_OBJECTS]（48+16KB）——合计12处栈分配改为文件作用域 static g_vis_flags/g_draw_vis/g_node_vis/g_cull_positions/g_cull_radii，消除最大路径并发栈占用从144KB降至0KB。**回归**：test_math 45/45、test_camera_frustum 24/24。
+最近更新：**R66 审查加固 + 性能优化** — 512KB occ_aabbs栈数组修复 + 延迟遮挡剔除补正 + vis_flags陈旧数据防御 + CSM u_len2冗余消除 + Debug UI门控 + memset精确清零。**R66-1**：R65遗漏的 512KB ObjectAABB occ_aabbs[16384]栈数组改为static g_occ_aabbs，至此所有大栈数组已消除（总static常驻720KB，最大并发栈占用0KB）。**R66-2**：延迟渲染路径补 node_occ_visible 检查，与前向路径对齐，消除 overdraw。**R66-3**：g_vis_flags跨材质组迭代防御性 memset(g_vis_flags, 0, gcount*4) 清零，防止陈旧可见性标记泄漏（4处：mega_mat_groups_indirect/draw + forward/deferred 内联循环）。**R66-4**：CSM u向量归一化复用 inv_sl（对单位光方向 u_len2=s_len2），消除冗余 fast_rsqrt 调用。**R66-5**：Debug UI 添加 if(ui.visible) 门控，UI隐藏时跳过~720行计算和136次 vsnprintf。**R66-6**：memset(g_node_vis,0,nc) 精确清零仅实际使用范围（典型 nc<<16384）。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

@@ -569,6 +569,45 @@
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
 
+## R66 审查加固：栈安全补漏 + 遮挡剔除对齐 + Debug UI门控 + 冗余消除
+
+### R66-1 512KB occ_aabbs 栈数组→static缓冲区（Critical）
+
+**问题**：R65 修复了 12 处栈数组，但遗漏了 `ObjectAABB occ_aabbs[OCCLUSION_MAX_OBJECTS]`（16384×32B=512KB），是最大的单处栈分配。
+
+**修正**：新增 `static ObjectAABB g_occ_aabbs[OCCLUSION_MAX_OBJECTS]`，改为指针引用。至此所有大栈数组已消除，总 static 常驻 720KB，最大并发栈占用 0KB。
+
+### R66-2 延迟渲染路径补遮挡剔除检查
+
+**问题**：前向路径有 `if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;`，延迟路径缺少，两路径行为不对称，延迟 overdraw 增加。
+
+**修正**：延迟路径 visibility 构建循环中添加遮挡检查。
+
+### R66-3 g_vis_flags 跨材质组迭代防御性清零
+
+**问题**：static 缓冲区跨组迭代复用，未填满的尾部保留前组值（假阳性）。
+
+**修正**：4 处填充循环前添加 `memset(g_vis_flags, 0, gcount * sizeof(u32))`。
+
+### R66-4 CSM u 向量归一化复用 inv_sl
+
+**问题**：对单位光方向 `u_len2 = s_len2 = fx²+fz²`，第二次 `fast_rsqrt` 完全冗余。
+
+**修正**：直接用 `inv_sl` 乘各分量，消除冗余 rsqrt 和 u_len2 计算。
+
+### R66-5 Debug UI 可见性门控
+
+**问题**：720 行计算和 136 次 `vsnprintf` 无论 UI 可见性都执行，每帧 ~2ms+ 浪费。
+
+**修正**：`if (ui.visible) { ... }` 包裹计算；`debug_ui_text` 添加 `!ui->visible` 短路返回。
+
+### R66-6 memset(g_node_vis) 精确清零
+
+**修正**：`memset(g_node_vis, 0, nc)` 仅清零实际使用范围（典型 nc<<16384）。
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
+
 ## 构建与回归命令
 
 ```bash

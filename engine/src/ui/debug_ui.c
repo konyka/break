@@ -24,7 +24,7 @@ void debug_ui_begin(DebugUI *ui) {
 }
 
 void debug_ui_text(DebugUI *ui, const char *fmt, ...) {
-    if (ui->line_count >= 32) return;
+    if (!ui->visible || ui->line_count >= 32) return;
     va_list args;
     va_start(args, fmt);
     vsnprintf(ui->lines[ui->line_count], sizeof(ui->lines[0]), fmt, args);

@@ -796,6 +796,7 @@ static u32 g_draw_vis[16384];    /* 64KB: used by unified vis paths */
 static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
 static f32 g_cull_positions[GPUCULL_MAX_OBJECTS * 3]; /* 48KB: gpucull positions */
 static f32 g_cull_radii[GPUCULL_MAX_OBJECTS];         /* 16KB: gpucull radii */
+static ObjectAABB g_occ_aabbs[OCCLUSION_MAX_OBJECTS]; /* 512KB: occlusion AABB upload */
 
 static void occ_rebuild_node_map(const Scene *scene) {
     u32 n = scene->node_count < 16384u ? scene->node_count : 16384u;
@@ -897,6 +898,7 @@ static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffe
     if (!mb || !mb->valid) return 0u;
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 gcount = mb->mat_systems[g].current_draw_count;
+        memset(g_vis_flags, 0, gcount * sizeof(u32));
         u32 gi = 0u;
         for (u32 ci = 0; ci < mb->draw_cmd_count && gi < gcount; ci++) {
             if (mb->cmd_mat_group[ci] == (i32)g) {
@@ -923,6 +925,7 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
         bind_material(cmd, render, mat, scene, pt_shadows);
 
         u32 gcount = mb->mat_systems[g].current_draw_count;
+        memset(g_vis_flags, 0, gcount * sizeof(u32));
         u32 gi = 0u;
         for (u32 ci = 0; ci < mb->draw_cmd_count && gi < gcount; ci++) {
             if (mb->cmd_mat_group[ci] == (i32)g) {
@@ -2774,6 +2777,7 @@ u32 culled_count = 0;
 
         bool underwater = water.enabled && camera.position.e[1] < water.water_y;
         debug_ui_begin(&ui);
+        if (ui.visible) {
         fps_history[fps_history_idx % 64] = (f32)engine.delta_time * 1000.0f;
         fps_history_idx++;
             debug_ui_text(&ui, "FPS: %.0f (%.2f ms)  Pos: (%.1f,%.1f,%.1f)  Speed: %.0f  Sun: %.1f/%.1f (%.0f°/%.0f°)  VSync: %s%s", engine.fps, engine.delta_time * 1000.0, camera.position.e[0], camera.position.e[1], camera.position.e[2], camera.move_speed, sun_azimuth, sun_elevation, sun_azimuth * 57.2958f, sun_elevation * 57.2958f, vsync_on ? "on" : "off", tod_cycle ? "  [TOD]" : "");
@@ -3493,6 +3497,7 @@ u32 culled_count = 0;
             }
         }
 
+        } /* end if(ui.visible) */
         debug_ui_end(&ui);
 
         if (particle_trail && selected_entity_count > 0 && selected_entity_id > 0) {
@@ -3547,18 +3552,13 @@ u32 culled_count = 0;
             /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
             f32 sx = -light_dir.e[2] * inv_sl;
             f32 sz =  light_dir.e[0] * inv_sl;
-            /* u = normalize(cross(s_norm, f)) = normalize(cross(s_unnorm, f))
-             * cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz); same direction as
-             * cross(s_norm, f) because s_norm = s_unnorm * inv_sl (scalar multiple). */
+            /* u = normalize(cross(s_unnorm, f)) = cross(s_unnorm, f) * inv_sl
+             * cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz).
+             * For unit light_dir: u_len2 = s_len2, so inv_ul = inv_sl (no extra rsqrt). */
             f32 fx = light_dir.e[0], fy = light_dir.e[1], fz = light_dir.e[2];
-            f32 ux_raw = -fy * fx;
-            f32 uy_raw =  fx * fx + fz * fz;
-            f32 uz_raw = -fy * fz;
-            f32 u_len2 = ux_raw * ux_raw + uy_raw * uy_raw + uz_raw * uz_raw;
-            f32 inv_ul = u_len2 > 1e-12f ? fast_rsqrt(u_len2) : 0.0f;
-            f32 ux = ux_raw * inv_ul;
-            f32 uy = uy_raw * inv_ul;
-            f32 uz = uz_raw * inv_ul;
+            f32 ux = -fy * fx * inv_sl;
+            f32 uy = (fx * fx + fz * fz) * inv_sl;
+            f32 uz = -fy * fz * inv_sl;
 
             /* Bind the 2048x2048 shadow atlas once (clears the whole texture),
              * then render each of the 4 cascades into its own 1024x1024 quadrant
@@ -4796,9 +4796,9 @@ u32 culled_count = 0;
                         draw_bench_mark_unified();
                     } else {
                     /* Pre-compute per-node visibility (frustum + LOD) — parallel */
-                    memset(g_node_vis, 0, sizeof(g_node_vis));
                     {
                         u32 nc = scene.node_count < 16384 ? scene.node_count : 16384;
+                        memset(g_node_vis, 0, nc);
                         u32 wc = task_worker_count(tasks);
                         if (wc < 1) wc = 1;
                         u32 chunk = (nc + wc - 1) / wc;
@@ -4823,6 +4823,7 @@ u32 culled_count = 0;
                         bind_material(cmd, &render, mat, &scene, &pt_shadows);
 
                         u32 gcount = mega_buf.mat_systems[g].current_draw_count;
+                        memset(g_vis_flags, 0, gcount * sizeof(u32));
                         u32 gi = 0;
                         for (u32 ci = 0; ci < mega_buf.draw_cmd_count && gi < gcount; ci++) {
                             if (mega_buf.cmd_mat_group[ci] == (i32)g) {
@@ -5027,9 +5028,9 @@ u32 culled_count = 0;
                     draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
                     draw_bench_mark_unified();
                 } else {
-                memset(g_node_vis, 0, sizeof(g_node_vis));
                 {
                     u32 nc = scene.node_count < 16384 ? scene.node_count : 16384;
+                    memset(g_node_vis, 0, nc);
                     Frustum gbuf_frustum = frame_frustum;
                     u32 wc = task_worker_count(tasks);
                     if (wc < 1) wc = 1;
@@ -5056,11 +5057,13 @@ u32 culled_count = 0;
 
                     /* Build visibility for this material group's draw cmds */
                     u32 gcount = mega_buf.mat_systems[g].current_draw_count;
+                    memset(g_vis_flags, 0, gcount * sizeof(u32));
                     u32 gi = 0;
                     for (u32 ci = 0; ci < mega_buf.draw_cmd_count && gi < gcount; ci++) {
                         if (mega_buf.cmd_mat_group[ci] == (i32)g) {
                             u32 ni = mega_buf.cmd_node_index[ci];
                             g_vis_flags[gi] = g_node_vis[ni];
+                            if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                             gi++;
                         }
                     }
@@ -5149,7 +5152,7 @@ u32 culled_count = 0;
 
             /* Upload scene node AABBs for GPU culling. */
             u32 occ_count = 0;
-            ObjectAABB occ_aabbs[OCCLUSION_MAX_OBJECTS];
+            ObjectAABB *occ_aabbs = g_occ_aabbs;
             for (u32 ni = 0; ni < scene.node_count && occ_count < OCCLUSION_MAX_OBJECTS; ni++) {
                 SceneNode *nd = &scene.nodes[ni];
                 if (!nd->has_mesh || nd->skinned) continue;
