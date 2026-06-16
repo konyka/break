@@ -608,6 +608,39 @@
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
 
+## R67 审查加固：occ_map提前 + terrain stats门控 + com_drift一致性 + psc缓存
+
+### R67-1 occ_rebuild_node_map 提前至 forward/deferred 分支前（Critical）
+
+**问题**：R66 在延迟路径添加 `node_occ_visible` 检查，但 `occ_rebuild_node_map` 仅在 forward 分支内调用。延迟路径 `occ_idx_by_node` 全为 BSS 零值，若 object 0 被遮挡则全画面剔除。
+
+**修正**：将调用从 forward 分支内提升至分支之前。
+
+### R67-2 terrain stats 移入 ui.visible 门控
+
+**问题**：R66 遗漏 L2352 的 terrain stats O(nn) 循环（4096迭代/10帧），仅供 debug UI。
+
+**修正**：用 `if (ui.visible)` 包裹。
+
+### R67-3 com_drift/prev_com 一致性修复
+
+**问题**：UI隐藏时 prev_com 停止更新，恢复后 com_drift 累加永久偏移。
+
+**修正**：CoM 计算和 drift 累加移出门控，仅显示留在门控内。
+
+### R67-4 fps_history 持续采集
+
+**修正**：fps_history 两行移至 `if(ui.visible)` 之前。
+
+### R67-5 point_shadow_gather 帧级缓存
+
+**问题**：每帧 9 次 point_shadow_gather 调用，帧内点光状态不变。
+
+**修正**：`g_psc` 帧级缓存，gather 一次，bind_material/clustered/terrain 读缓存。9→1 次/帧。
+
+**验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
+
+
 ## 构建与回归命令
 
 ```bash

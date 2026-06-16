@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R66 审查加固 + 性能优化** — 512KB occ_aabbs栈数组修复 + 延迟遮挡剔除补正 + vis_flags陈旧数据防御 + CSM u_len2冗余消除 + Debug UI门控 + memset精确清零。**R66-1**：R65遗漏的 512KB ObjectAABB occ_aabbs[16384]栈数组改为static g_occ_aabbs，至此所有大栈数组已消除（总static常驻720KB，最大并发栈占用0KB）。**R66-2**：延迟渲染路径补 node_occ_visible 检查，与前向路径对齐，消除 overdraw。**R66-3**：g_vis_flags跨材质组迭代防御性 memset(g_vis_flags, 0, gcount*4) 清零，防止陈旧可见性标记泄漏（4处：mega_mat_groups_indirect/draw + forward/deferred 内联循环）。**R66-4**：CSM u向量归一化复用 inv_sl（对单位光方向 u_len2=s_len2），消除冗余 fast_rsqrt 调用。**R66-5**：Debug UI 添加 if(ui.visible) 门控，UI隐藏时跳过~720行计算和136次 vsnprintf。**R66-6**：memset(g_node_vis,0,nc) 精确清零仅实际使用范围（典型 nc<<16384）。**回归**：test_math 45/45、test_camera_frustum 24/24。
+最近更新：**R67 审查加固 + 性能优化** — occ_rebuild_node_map提前 + terrain stats门控 + com_drift一致性 + fps_history持续采集 + point_shadow_gather帧级缓存。**R67-1**：occ_rebuild_node_map从forward分支内提升至forward/deferred分支之前（Critical），修复延迟路径occ_idx_by_node全为0导致可能全画面剔除的bug。**R67-2**：terrain stats O(nn)循环移入 ui.visible 门控（R66遗漏，每10帧4096次迭代浪费）。**R67-3**：com_drift/prev_com 更新从 if(ui.visible) 门控内移出，防止 UI 切换后累加器永久偏移。**R67-4**：fps_history 移出门控，UI 隐藏时仍持续采集帧时数据。**R67-5**：point_shadow_gather 帧级缓存 g_psc，从每帧9次调用降为1次，bind_material/clustered_set_point_shadow_uniforms/terrain 均读缓存。**回归**：test_math 45/45、test_camera_frustum 24/24。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

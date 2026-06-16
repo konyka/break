@@ -622,6 +622,10 @@ static void render_shutdown(RenderState *rs) {
     rhi_device_destroy(rs->device);
 }
 
+/* Frame-level point shadow cache — gathered once per frame, consumed by
+ * bind_material, clustered_set_point_shadow_uniforms, and terrain. */
+static struct { RHITexture tex[4]; u32 light_idx[4]; u32 count; } g_psc;
+
 static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, u32 psc_light_idx[4]) {
     for (u32 i = 0u; i < 4u; i++) psc_light_idx[i] = 0xFFFFFFFFu;
     if (!pt || !pt->ready || pt->active_count == 0u) return 0u;
@@ -637,18 +641,17 @@ static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, u32
 
 static void clustered_set_point_shadow_uniforms(RHICmdBuffer *cmd, RenderState *rs,
                                                 const PointShadowSystem *pt) {
-    u32 psc_light_idx[4];
-    u32 psc_n = point_shadow_gather(pt, NULL, psc_light_idx);
+    (void)pt;
     if (rs->cl_loc_point_shadow_count >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_count, (i32)psc_n);
+        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_count, (i32)g_psc.count);
     if (rs->cl_loc_point_shadow_light_0 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_0, (i32)psc_light_idx[0]);
+        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_0, (i32)g_psc.light_idx[0]);
     if (rs->cl_loc_point_shadow_light_1 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_1, (i32)psc_light_idx[1]);
+        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_1, (i32)g_psc.light_idx[1]);
     if (rs->cl_loc_point_shadow_light_2 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_2, (i32)psc_light_idx[2]);
+        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_2, (i32)g_psc.light_idx[2]);
     if (rs->cl_loc_point_shadow_light_3 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_3, (i32)psc_light_idx[3]);
+        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_3, (i32)g_psc.light_idx[3]);
 }
 
 static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene,
@@ -664,14 +667,10 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     RHITexture brdf_lut = rs->ibl.brdf_lut;
     RHICubemap irr_map  = rs->ibl.irradiance_map;
     RHICubemap pref_map = rs->ibl.prefilter_map;
-    RHITexture psc[4] = {0};
-    u32 psc_light_idx[4];
-    u32 psc_n = point_shadow_gather(pt_shadows, psc, psc_light_idx);
-    (void)psc_light_idx;
     rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
-                                        psc_n > 0u ? psc : NULL, psc_n);
-    (void)scene;
+                                        g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+    (void)scene; (void)pt_shadows;
 }
 
 /* ---- Precomputed node bounding sphere ---- */
@@ -2349,6 +2348,7 @@ u32 culled_count = 0;
         Vec3 cam_fwd = vec3(cam_cp * cam_sy, cam_sp, -cam_cp * cam_cy);
         /* R54: Static identity matrix — avoids 16 float stores per frame. */
         static const Mat4 frame_identity = {{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}};
+        if (ui.visible) {
         {
             /* Throttle terrain stats to every 10 frames (debug UI only) */
             static u32 terrain_stats_frame = 0;
@@ -2420,6 +2420,7 @@ u32 culled_count = 0;
                 }
             }
         }
+        } /* end terrain stats ui.visible gate */
         /* Cache camera terrain height once per frame (avoids 3+ redundant lookups at same xz). */
         f32 cam_terrain_h = terrain_get_height(&terrain, camera.position.e[0], camera.position.e[2]);
         if (terrain_follow) {
@@ -2777,9 +2778,9 @@ u32 culled_count = 0;
 
         bool underwater = water.enabled && camera.position.e[1] < water.water_y;
         debug_ui_begin(&ui);
-        if (ui.visible) {
         fps_history[fps_history_idx % 64] = (f32)engine.delta_time * 1000.0f;
         fps_history_idx++;
+        if (ui.visible) {
             debug_ui_text(&ui, "FPS: %.0f (%.2f ms)  Pos: (%.1f,%.1f,%.1f)  Speed: %.0f  Sun: %.1f/%.1f (%.0f°/%.0f°)  VSync: %s%s", engine.fps, engine.delta_time * 1000.0, camera.position.e[0], camera.position.e[1], camera.position.e[2], camera.move_speed, sun_azimuth, sun_elevation, sun_azimuth * 57.2958f, sun_elevation * 57.2958f, vsync_on ? "on" : "off", tod_cycle ? "  [TOD]" : "");
             {
                 f32 tod_hours = fmodf(sun_azimuth / (2.0f * 3.14159265f) * 24.0f + 12.0f, 24.0f);
@@ -3191,8 +3192,6 @@ u32 culled_count = 0;
                 }
                 if (tmass > 0.01f) {
                     com = vec3_scale(com, 1.0f / tmass);
-                    com_drift += vec3_len(vec3_sub(com, prev_com));
-                    prev_com = com;
                     if (total_time > 1.0f) {
                         f32 com_depth = water.water_y - com.e[1];
                         debug_ui_text(&ui, "CoM: (%.1f,%.1f,%.1f) drift: %.1f m (%.2f m/s)%s", com.e[0], com.e[1], com.e[2], com_drift, com_drift / total_time, com_depth > 0 ? " [UNDERWATER]" : "");
@@ -3498,6 +3497,25 @@ u32 culled_count = 0;
         }
 
         } /* end if(ui.visible) */
+
+        /* Always update prev_com / com_drift outside the visibility gate so
+         * the accumulator stays consistent across UI toggles. */
+        if (physics->count > 1) {
+            Vec3 com_now = vec3(0,0,0); f32 tmass = 0.0f;
+            for (u32 bi = 1; bi < physics->count; bi++) {
+                if (physics->bodies[bi].is_static) continue;
+                com_now.e[0] += physics->bodies[bi].mass * physics->bodies[bi].position.e[0];
+                com_now.e[1] += physics->bodies[bi].mass * physics->bodies[bi].position.e[1];
+                com_now.e[2] += physics->bodies[bi].mass * physics->bodies[bi].position.e[2];
+                tmass += physics->bodies[bi].mass;
+            }
+            if (tmass > 0.01f) {
+                com_now = vec3_scale(com_now, 1.0f / tmass);
+                com_drift += vec3_len(vec3_sub(com_now, prev_com));
+                prev_com = com_now;
+            }
+        }
+
         debug_ui_end(&ui);
 
         if (particle_trail && selected_entity_count > 0 && selected_entity_id > 0) {
@@ -3785,10 +3803,15 @@ u32 culled_count = 0;
         rhi_gpu_timer_begin(gpu_scene_timer);
         rhi_gpu_timer_begin(gpu_forward_timer);
 
+        /* ---- Rebuild occlusion node map before forward/deferred branching ---- */
+        if (occ_cull_enabled && occ_sys.enabled)
+            occ_rebuild_node_map(&scene);
+
+        /* Cache point shadow gather once per frame (consumed by bind_material, terrain, etc.) */
+        g_psc.count = point_shadow_gather(&pt_shadows, g_psc.tex, g_psc.light_idx);
+
         /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
         if (render.render_path == RENDER_PATH_FORWARD) {
-            if (occ_cull_enabled && occ_sys.enabled)
-                occ_rebuild_node_map(&scene);
         if (rhi_handle_valid(scene_fbo.fb)) {
             rhi_offscreen_fbo_bind(cmd, &scene_fbo);
         }
@@ -3881,15 +3904,9 @@ u32 culled_count = 0;
             rhi_cmd_bind_texel_buffers(cmd, lights.light_data_buf, lights.light_grid_buf);
 
             rhi_cmd_set_uniform_mat4(cmd, render.cl_loc_model, &frame_identity.e[0][0]);
-            {
-                RHITexture psc[4] = {0};
-                u32 psc_light_idx[4];
-                u32 psc_n = point_shadow_gather(&pt_shadows, psc, psc_light_idx);
-                (void)psc_light_idx;
-                rhi_cmd_bind_material_textures_ibl(cmd, render.terrain_tex, render.fallback_mr, render.fallback_normal, render.fallback_emissive, render.shadow_map.depth_tex, render.ssao_tex, active_sampler,
-                    render.ibl.brdf_lut, render.ibl.irradiance_map, render.ibl.prefilter_map,
-                    psc_n > 0u ? psc : NULL, psc_n);
-            }
+            rhi_cmd_bind_material_textures_ibl(cmd, render.terrain_tex, render.fallback_mr, render.fallback_normal, render.fallback_emissive, render.shadow_map.depth_tex, render.ssao_tex, active_sampler,
+                render.ibl.brdf_lut, render.ibl.irradiance_map, render.ibl.prefilter_map,
+                g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
             rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0);
             rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
