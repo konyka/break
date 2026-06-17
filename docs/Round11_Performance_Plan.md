@@ -750,6 +750,18 @@
 
 **验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20。
 
+---
+
+## R71 fallback路径栈安全补全
+
+### R71-1 VisTaskCtx vctxs[8] 改 static
+
+**问题**：`main.c` 前向渲染 fallback 路径（L4812）和延迟渲染 fallback 路径（L5045）中 `VisTaskCtx vctxs[8]`（每元素~168B，8元素共~1.3KB）为非静态栈数组，每帧分配。R65-R70 批量修复中遗漏了此结构体数组。
+
+**修正**：两处均添加 `static` 关键字。安全性保证：前向与延迟路径互斥执行（由 `render.render_path` 决定）；`task_wait(tasks)` 确保 worker 线程完成后才可能重用；数组在使用前被完全初始化。
+
+**验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20。
+
 
 ## 构建与回归命令
 

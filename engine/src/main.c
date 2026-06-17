@@ -4809,7 +4809,7 @@ u32 culled_count = 0;
                         u32 wc = task_worker_count(tasks);
                         if (wc < 1) wc = 1;
                         u32 chunk = (nc + wc - 1) / wc;
-                        VisTaskCtx vctxs[8];
+                        static VisTaskCtx vctxs[8];
                         for (u32 wi = 0; wi < wc; wi++) {
                             vctxs[wi].node_vis = g_node_vis;
                             vctxs[wi].spheres  = mega_buf.node_spheres;
@@ -5042,7 +5042,7 @@ u32 culled_count = 0;
                     u32 wc = task_worker_count(tasks);
                     if (wc < 1) wc = 1;
                     u32 chunk = (nc + wc - 1) / wc;
-                    VisTaskCtx vctxs[8];
+                    static VisTaskCtx vctxs[8];
                     for (u32 wi = 0; wi < wc; wi++) {
                         vctxs[wi].node_vis = g_node_vis;
                         vctxs[wi].spheres  = mega_buf.node_spheres;
