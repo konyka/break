@@ -227,10 +227,10 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
         }
     }
 
-    /* Per-layer scratch buffers. */
-    Vec3 sample_pos[ANIM_BLEND_MAX_BONES];
-    Quat sample_rot[ANIM_BLEND_MAX_BONES];
-    Vec3 sample_scl[ANIM_BLEND_MAX_BONES];
+    /* Per-layer scratch buffers (static — avoids ~5KB per-frame stack). */
+    static Vec3 sample_pos[ANIM_BLEND_MAX_BONES];
+    static Quat sample_rot[ANIM_BLEND_MAX_BONES];
+    static Vec3 sample_scl[ANIM_BLEND_MAX_BONES];
 
     for (u32 li = 0; li < state->layer_count && li < ANIM_MAX_LAYERS; li++) {
         AnimationLayer *L = &state->layers[li];
@@ -255,9 +255,9 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
             const AnimClip *from_clip = clip_at(clips, clip_count,
                                                 state->crossfade.from_clip);
             if (from_clip) {
-                Vec3 from_pos[ANIM_BLEND_MAX_BONES];
-                Quat from_rot[ANIM_BLEND_MAX_BONES];
-                Vec3 from_scl[ANIM_BLEND_MAX_BONES];
+                static Vec3 from_pos[ANIM_BLEND_MAX_BONES];
+                static Quat from_rot[ANIM_BLEND_MAX_BONES];
+                static Vec3 from_scl[ANIM_BLEND_MAX_BONES];
                 fill_bind_pose(from_pos, from_rot, from_scl, state->bone_count);
                 /* Approximate from-clip time as wrapped current time. */
                 f32 ft = L->time;

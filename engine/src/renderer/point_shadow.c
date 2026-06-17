@@ -270,7 +270,7 @@ void point_shadow_update(PointShadowSystem *sys,
         sys->lights[slot].src_index    = si;
         sys->far_planes[slot]          = r;
 
-        Mat4 face_vp[POINT_SHADOW_FACES];
+        static Mat4 face_vp[POINT_SHADOW_FACES];
         point_shadow_compute_face_vp(p, r, face_vp);
         for (u32 f = 0u; f < POINT_SHADOW_FACES; ++f) {
             sys->light_vp[slot * POINT_SHADOW_FACES + f] = face_vp[f];

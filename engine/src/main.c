@@ -3911,7 +3911,7 @@ u32 culled_count = 0;
                 anim_blend_evaluate(&anim_blend, (f32)engine.delta_time,
                                     scene.anim_clips, scene.anim_clip_count);
                 if (anim_ik_ready && render.skeleton.joint_count >= 3u) {
-                    Mat4 ik_world[SKELETON_MAX_JOINTS];
+                    static Mat4 ik_world[SKELETON_MAX_JOINTS];
                     skeleton_compute_world_transforms(&render.skeleton,
                         anim_blend.local_positions, anim_blend.local_rotations,
                         anim_blend.local_scales, ik_world);

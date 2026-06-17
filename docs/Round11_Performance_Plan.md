@@ -712,6 +712,44 @@
 
 **验收**：test_math 45/45、test_camera_frustum 24/24、engine_demo 编译通过。
 
+---
+
+## R70 动画子系统栈安全 + test_terrain 回归修复
+
+### R70-1 test_terrain make_terrain 助手缺 inv_scale/inv_nm1 初始化
+
+**问题**：R69-6 给 `Terrain` 结构体新增 `inv_scale`/`inv_nm1` 预计算字段，`terrain_init` 中赋值。但 `test_terrain.c` 的 `make_terrain` 助手通过 `calloc` 创建 Terrain 并手动设置字段，未同步添加两个新字段（calloc 零初始化为 0.0f），导致 5 个测试失败。
+
+**修正**：在 `make_terrain` 中补上 `t->inv_scale = (scale > 0.0f) ? 1.0f / scale : 0.0f; t->inv_nm1 = (f32)(grid - 1);`。
+
+**验收**：test_terrain **22/22**（从 17/22 恢复）。
+
+### R70-2 anim_blend_evaluate 10KB 栈数组改 static
+
+**问题**：`anim_blend_evaluate`（每帧调用）中 6 个局部数组 `sample_pos[128]`/`sample_rot[128]`/`sample_scl[128]` + crossfade 路径 `from_pos[128]`/`from_rot[128]`/`from_scl[128]` 共 ~10KB 栈分配。R65-R69 已修复 main.c/lighting.c/point_shadow.c 的同类问题，但动画子系统尚未触及。
+
+**修正**：全部添加 `static` 关键字。
+
+### R70-3 skeleton_evaluate 5KB 栈数组改 static
+
+**问题**：`skeleton_evaluate`（每帧调用）中 `translations[128]`/`rotations[128]`/`scales[128]` 共 ~5KB 栈分配。
+
+**修正**：全部添加 `static` 关键字。
+
+### R70-4 main.c ik_world 8KB 栈数组改 static
+
+**问题**：`main.c` 帧循环 L3914 `Mat4 ik_world[SKELETON_MAX_JOINTS]`（128×64=8192B）在 R65-R69 批量修复中被遗漏。
+
+**修正**：添加 `static` 关键字。
+
+### R70-5 point_shadow_update face_vp 改 static
+
+**问题**：`point_shadow_update` 循环内 `Mat4 face_vp[POINT_SHADOW_FACES]`（6×64=384B）在 R69-4 修复同函数 `cand[256]` 时被遗漏。
+
+**修正**：添加 `static` 关键字。
+
+**验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20。
+
 
 ## 构建与回归命令
 

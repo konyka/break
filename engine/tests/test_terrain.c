@@ -23,6 +23,8 @@ static Terrain *make_terrain(u32 grid, f32 scale, f32 height_scale) {
     Terrain *t = (Terrain *)calloc(1, sizeof(Terrain));
     t->grid_size = grid;
     t->scale = scale;
+    t->inv_scale = (scale > 0.0f) ? 1.0f / scale : 0.0f;
+    t->inv_nm1 = (f32)(grid - 1);
     t->height_scale = height_scale;
     t->heightmap = (f32 *)calloc(grid * grid, sizeof(f32));
     t->modify_count = 0;

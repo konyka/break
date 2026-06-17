@@ -110,9 +110,9 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
         return;
     }
 
-    Vec3 translations[SKELETON_MAX_JOINTS];
-    Quat rotations[SKELETON_MAX_JOINTS];
-    Vec3 scales[SKELETON_MAX_JOINTS];
+    static Vec3 translations[SKELETON_MAX_JOINTS];
+    static Quat rotations[SKELETON_MAX_JOINTS];
+    static Vec3 scales[SKELETON_MAX_JOINTS];
 
     /* Initialize with identity transforms.
      * memset for translations (all-zero Vec3), static constants for others. */
