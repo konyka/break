@@ -985,6 +985,35 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R79 FBO绑定缓存 + 纹理上传缓存失配修复 + buffer尾部解绑消除 + scissor状态缓存
+
+### R79-1 FBO 绑定缓存（HIGH 性能）
+
+**问题**：所有 FBO 绑定函数（`rhi_cmd_bind_shadow_map`、`rhi_offscreen_fbo_bind/unbind`、`rhi_mrt_fbo_bind/unbind`、`rhi_cubemap_depth_fbo_bind_face/unbind`）每次无条件调 `glBindFramebuffer(GL_FRAMEBUFFER, ...)`，无缓存。点阴影渲染中同一 FBO 每光源绑定 6 次（每 cubemap 面一次），以 4 活跃光源计 ~20 次冗余绑定/帧。`glBindFramebuffer` 触发驱动端 FBO 完整性校验，是较昂贵的状态切换。
+
+**修正**：新增 `g_gl_bound_fbo` 文件作用域缓存 + `gl_bind_fbo_cached()` 辅助函数（与 `g_gl_vp`/`g_gl_indirect_buf` 同模式），替换全部 15 处 `glBindFramebuffer` 调用。
+
+### R79-2 rhi_texture_upload_mip 缓存失配修复（正确性）
+
+**问题**：`rhi_texture_upload_mip` 直接调 `glBindTexture(GL_TEXTURE_2D, td->gl_tex)` 上传 mip 数据，但不更新 `g_tex_cache[g_active_unit]`。上传后 `glBindTexture(GL_TEXTURE_2D, 0)` 解绑，但 `g_tex_cache` 仍持有旧纹理 ID。后续 `gl_bind_tex_unit` 在同一单元上若恰好匹配旧 ID 则误判缓存命中跳过 `glBindTexture`，采样到错误纹理（无纹理）。与 R77-1/R78-1 同类缓存失配 bug。
+
+**修正**：上传+解绑后失效缓存 `if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;`，确保下次 `gl_bind_tex_unit` 必然重绑。
+
+### R79-3 rhi_buffer_map/unmap 尾部解绑消除
+
+**问题**：`rhi_buffer_map` 和 `rhi_buffer_unmap` 末尾各调 `glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)` 解绑，无意义——下次 `glBindBuffer`/`glBindBufferBase` 会覆盖泛型绑定点。与 R77-2 移除 indirect buffer 尾部解绑同模式。
+
+**修正**：移除两处尾部解绑。
+
+### R79-4 GL_SCISSOR_TEST 状态缓存
+
+**问题**：`rhi_cmd_set_shadow_viewport` 每级联调 `glEnable(GL_SCISSOR_TEST)`，`rhi_cmd_bind_shadow_map`/`rhi_cmd_unbind_shadow_map` 各调 `glDisable(GL_SCISSOR_TEST)`。4 级联 + 2 解绑 = 6 次/帧，其中仅 1 次 enable + 1 次 disable 是实际状态切换。
+
+**修正**：新增 `g_gl_scissor_enabled` 布尔缓存，仅在状态实际变化时调 `glEnable`/`glDisable`。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash

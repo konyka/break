@@ -121,6 +121,23 @@ static u32    g_active_unit = UINT32_MAX;
 static GLuint g_gl_indirect_buf = 0;
 static GLuint g_gl_param_buf = 0;
 
+/* R79-1: FBO bind cache — avoids redundant glBindFramebuffer calls on every
+ * FBO switch. Point shadow rendering binds the same FBO 6× per light (once
+ * per cubemap face); without cache, each bind triggers driver-side FBO
+ * completeness validation. ~20-30 redundant calls/frame eliminated. */
+static GLuint g_gl_bound_fbo = 0;
+
+static void gl_bind_fbo_cached(GLuint fbo) {
+    if (g_gl_bound_fbo != fbo) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        g_gl_bound_fbo = fbo;
+    }
+}
+
+/* R79-4: GL_SCISSOR_TEST enable cache — avoids redundant glEnable/glDisable
+ * calls in shadow pass (4 cascades enable + 2 unbinds disable per frame). */
+static bool g_gl_scissor_enabled = false;
+
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
     if (!gl) return false;
@@ -844,7 +861,8 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
      * quadrant of the shadow atlas. GL uses a native bottom-left origin; the
      * sampling remap in the shaders uses the same quadrant convention. */
     gl_set_viewport_cached((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
-    glEnable(GL_SCISSOR_TEST);
+    /* R79-4: Cached scissor test enable. */
+    if (!g_gl_scissor_enabled) { glEnable(GL_SCISSOR_TEST); g_gl_scissor_enabled = true; }
     glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
 }
 
@@ -987,12 +1005,15 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     (void)size;
     GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
     if (!td || !data) return;
+    /* R79-2: Bind for upload — invalidate g_tex_cache afterward since both
+     * binds bypass the cache (same class of bug as R77-1/R78-1). */
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
     /* Define + upload the requested level (mutable storage). RGBA8 streaming. */
     glTexImage2D(GL_TEXTURE_2D, (GLint)mip_level, GL_RGBA8,
                  (GLsizei)width, (GLsizei)height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, data);
     glBindTexture(GL_TEXTURE_2D, 0);
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 }
 
 static GLenum rhi_filter_to_gl(RHIFilter f) {
@@ -1203,11 +1224,11 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
 
     GLuint gl_fbo = 0;
     glGenFramebuffers(1, &gl_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, gl_fbo);
+    gl_bind_fbo_cached(gl_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, td->gl_tex, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
 
     u32 idx = rhi_alloc_slot(dev);
     GLFBOData *fd = calloc(1, sizeof(GLFBOData));
@@ -1234,18 +1255,18 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     (void)cmd;
     GLFBOData *fd = (GLFBOData *)rhi_get_resource(g_current_device, sm->fbo);
-    if (fd) glBindFramebuffer(GL_FRAMEBUFFER, fd->gl_fbo);
+    if (fd) gl_bind_fbo_cached(fd->gl_fbo);
     /* Clear the whole atlas once with scissor disabled; per-cascade quadrant
      * scissoring is applied afterwards via rhi_cmd_set_shadow_viewport. */
-    glDisable(GL_SCISSOR_TEST);
+    if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; }
     gl_set_viewport_cached(0, 0, sm->width, sm->height);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; }
+    gl_bind_fbo_cached(0);
     gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
 
@@ -1386,8 +1407,9 @@ void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return NULL;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    /* R79-3: Removed trailing unbind — next glBindBuffer/glBindBufferBase
+     * will overwrite the generic binding point. Same pattern as R77-2. */
     void *ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bd->size, GL_MAP_READ_BIT);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     return ptr;
 }
 
@@ -1395,8 +1417,8 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    /* R79-3: Removed trailing unbind — same pattern as R77-2. */
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
@@ -1438,7 +1460,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     GLenum gl_type = (color_fmt == RHI_FORMAT_D32_FLOAT || color_fmt == RHI_FORMAT_R16G16B16A16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
     glGenFramebuffers(1, &fd->gl_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fd->gl_fbo);
+    gl_bind_fbo_cached(fd->gl_fbo);
 
     glGenTextures(1, &fd->color_tex);
     glBindTexture(GL_TEXTURE_2D, fd->color_tex);
@@ -1452,7 +1474,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fd->depth_rb);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
 
     u32 tidx = rhi_alloc_slot(dev);
     dev->slots[tidx].ptr = fd;
@@ -1490,13 +1512,13 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     if (!fbo) return;
     GLFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
     if (!fd) return;
-    glBindFramebuffer(GL_FRAMEBUFFER, fd->gl_fbo);
+    gl_bind_fbo_cached(fd->gl_fbo);
     gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
     gl_set_viewport_cached(0, 0, screen_w, screen_h);
 }
 
@@ -1646,7 +1668,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     md->attachment_count = attachment_count;
 
     glGenFramebuffers(1, &md->gl_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, md->gl_fbo);
+    gl_bind_fbo_cached(md->gl_fbo);
 
     GLenum draw_bufs[RHI_MRT_MAX_ATTACHMENTS];
     for (u32 i = 0; i < attachment_count; i++) {
@@ -1680,7 +1702,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                            GL_TEXTURE_2D, md->depth_tex, 0);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
 
     /* Register FBO handle. */
     u32 fidx = rhi_alloc_slot(dev);
@@ -1759,13 +1781,13 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     if (!fbo) return;
     GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
     if (!md) return;
-    glBindFramebuffer(GL_FRAMEBUFFER, md->gl_fbo);
+    gl_bind_fbo_cached(md->gl_fbo);
     gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
     gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
 
@@ -1800,10 +1822,10 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     /* Create FBO (face attachments are set dynamically per-face). */
     glGenFramebuffers(1, &cd->gl_fbo);
     /* Set draw/read buffer once at creation time (depth-only, no color). */
-    glBindFramebuffer(GL_FRAMEBUFFER, cd->gl_fbo);
+    gl_bind_fbo_cached(cd->gl_fbo);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
 
     /* Register depth texture handle. */
     u32 tidx = rhi_alloc_slot(dev);
@@ -1850,7 +1872,7 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     if (!fbo || face >= 6u) return;
     GLCubemapDepthFBOData *cd = (GLCubemapDepthFBOData *)rhi_get_resource(g_current_device, fbo->fb);
     if (!cd) return;
-    glBindFramebuffer(GL_FRAMEBUFFER, cd->gl_fbo);
+    gl_bind_fbo_cached(cd->gl_fbo);
     /* Attach the requested cubemap face as the depth attachment. */
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                            GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cd->depth_tex, 0);
@@ -1861,6 +1883,6 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
 
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_bind_fbo_cached(0);
     gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
