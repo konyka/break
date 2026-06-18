@@ -106,6 +106,21 @@ static void gl_set_viewport_cached(GLint x, GLint y, GLsizei w, GLsizei h) {
     }
 }
 
+/* R77-1: File-scope texture unit cache — shared by gl_bind_tex_unit,
+ * rhi_cmd_bind_texel_buffers, and rhi_cmd_bind_texture_mip. Previously
+ * these were static locals in gl_bind_tex_unit, invisible to the two
+ * functions that called glActiveTexture + glBindTexture directly. This
+ * caused stale cache state — gl_bind_tex_unit would skip glActiveTexture
+ * (false cache hit) and bind textures to the wrong unit. */
+static GLuint g_tex_cache[16] = {0};
+static GLuint g_sam_cache[16] = {0};
+static u32    g_active_unit = UINT32_MAX;
+
+/* R77-2: Indirect/parameter buffer cache — avoids redundant glBindBuffer
+ * calls and eliminates trailing unbinds between consecutive indirect draws. */
+static GLuint g_gl_indirect_buf = 0;
+static GLuint g_gl_param_buf = 0;
+
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
     if (!gl) return false;
@@ -845,11 +860,14 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
                                    u32 draw_count, u32 stride) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, cmd_buf);
     if (!bd) return;
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bd->gl_buf);
+    /* R77-2: Cache indirect buffer bind — skip if already bound. */
+    if (g_gl_indirect_buf != bd->gl_buf) {
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bd->gl_buf);
+        g_gl_indirect_buf = bd->gl_buf;
+    }
     glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
                                 (const void *)(uintptr_t)offset,
                                 (GLsizei)draw_count, (GLsizei)stride);
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 }
 
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset,
@@ -861,16 +879,20 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
 
     /* Prefer GL_ARB_indirect_parameters (core in 4.6) when available. */
     if (glMultiDrawElementsIndirectCountARB) {
-        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
-        /* The ARB count buffer is bound to GL_PARAMETER_BUFFER_ARB (0x80EE). */
-        glBindBuffer(0x80EE, count_bd->gl_buf);
+        /* R77-2: Cache binds — skip if already bound. Remove trailing unbinds. */
+        if (g_gl_indirect_buf != cmd_bd->gl_buf) {
+            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
+            g_gl_indirect_buf = cmd_bd->gl_buf;
+        }
+        if (g_gl_param_buf != count_bd->gl_buf) {
+            glBindBuffer(0x80EE, count_bd->gl_buf);
+            g_gl_param_buf = count_bd->gl_buf;
+        }
         glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_INT,
                                             (const void *)(uintptr_t)cmd_offset,
                                             (GLintptr)count_offset,
                                             (GLsizei)max_draws,
                                             (GLsizei)stride);
-        glBindBuffer(0x80EE, 0);
-        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
         return;
     }
 
@@ -885,11 +907,13 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
     if (actual > max_draws) actual = max_draws;
     if (actual == 0) return;
 
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
+    if (g_gl_indirect_buf != cmd_bd->gl_buf) {
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
+        g_gl_indirect_buf = cmd_bd->gl_buf;
+    }
     glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
                                 (const void *)(uintptr_t)cmd_offset,
                                 (GLsizei)actual, (GLsizei)stride);
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 }
 
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
@@ -1009,10 +1033,7 @@ static void gl_bind_tex_unit(u32 unit, RHITexture tex, RHISampler sampler) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
     GLSamplerData *sd = (GLSamplerData *)rhi_get_resource(g_current_device, sampler);
 
-    /* Per-unit texture/sampler cache: skip redundant GL calls */
-    static GLuint g_tex_cache[16] = {0};
-    static GLuint g_sam_cache[16] = {0};
-    static u32    g_active_unit = UINT32_MAX;
+    /* R77-1: Cache variables promoted to file scope — see definitions above. */
 
     if (td) {
         /* Choose the GL target from the resource type: cubemaps (including
@@ -1384,13 +1405,24 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
     extern RHIDevice *g_current_device;
     GLBufferData *bd0 = (GLBufferData *)rhi_get_resource(g_current_device, buf0);
     GLBufferData *bd1 = (GLBufferData *)rhi_get_resource(g_current_device, buf1);
+    /* R77-1: Route through the file-scope texture cache — previously called
+     * glActiveTexture + glBindTexture directly, leaving g_active_unit and
+     * g_tex_cache[5/6] stale. This caused gl_bind_tex_unit to skip
+     * glActiveTexture on the next call (false cache hit), binding textures
+     * to the wrong unit. */
     if (bd0 && bd0->tbo_tex) {
-        glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_BUFFER, bd0->tbo_tex);
+        if (g_active_unit != 5) { glActiveTexture(GL_TEXTURE5); g_active_unit = 5; }
+        if (g_tex_cache[5] != bd0->tbo_tex) {
+            glBindTexture(GL_TEXTURE_BUFFER, bd0->tbo_tex);
+            g_tex_cache[5] = bd0->tbo_tex;
+        }
     }
     if (bd1 && bd1->tbo_tex) {
-        glActiveTexture(GL_TEXTURE6);
-        glBindTexture(GL_TEXTURE_BUFFER, bd1->tbo_tex);
+        if (g_active_unit != 6) { glActiveTexture(GL_TEXTURE6); g_active_unit = 6; }
+        if (g_tex_cache[6] != bd1->tbo_tex) {
+            glBindTexture(GL_TEXTURE_BUFFER, bd1->tbo_tex);
+            g_tex_cache[6] = bd1->tbo_tex;
+        }
     }
 }
 
@@ -1522,16 +1554,22 @@ void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler s
 }
 
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit, u32 mip_level) {
-    (void)cmd; (void)mip_level;
+    (void)cmd;
     GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
-    GLSamplerData *sd = sampler.generation ? (GLSamplerData *)rhi_get_resource(g_current_device, sampler) : NULL;
     if (!td) return;
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_2D, td->gl_tex);
-    if (sd) glBindSampler(unit, sd->gl_sampler);
-    /* Clamp mip range for this binding */
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)mip_level);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)mip_level);
+    /* R77-1: Use gl_bind_tex_unit for texture/sampler binding (updates cache).
+     * Previously called glActiveTexture + glBindTexture directly, leaving
+     * g_active_unit and g_tex_cache[unit] stale. */
+    gl_bind_tex_unit(unit, tex, sampler);
+    /* Only update mip clamps if the level changed for this texture. */
+    static GLuint s_mip_tex = 0;
+    static GLint  s_mip_level = -1;
+    if (s_mip_tex != td->gl_tex || s_mip_level != (GLint)mip_level) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)mip_level);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)mip_level);
+        s_mip_tex = td->gl_tex;
+        s_mip_level = (GLint)mip_level;
+    }
 }
 
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {

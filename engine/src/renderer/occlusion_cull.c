@@ -295,7 +295,7 @@ void occlusion_cull_generate_hi_z(OcclusionCullSystem *sys, RHICmdBuffer *cmd, R
  * Uses 1-frame latency: reads back results from the previous frame's
  * visibility buffer before dispatching the new cull pass.
  * ======================================================================== */
-void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, Mat4 view_proj, u32 object_count) {
+void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const Mat4 *view_proj, u32 object_count) {
     if (!sys->device || !sys->enabled) return;
     if (!rhi_handle_valid(sys->cull_pipeline)) return;
     if (object_count == 0) return;
@@ -323,7 +323,7 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, Mat4 v
 
     /* Set push constants using cached uniform locations. */
     if (sys->_loc_cull_view_proj >= 0) {
-        rhi_cmd_set_uniform_mat4(cmd, sys->_loc_cull_view_proj, &view_proj.e[0][0]);
+        rhi_cmd_set_uniform_mat4(cmd, sys->_loc_cull_view_proj, &view_proj->e[0][0]);
     }
 
     if (sys->_loc_cull_object_count >= 0) {

@@ -55,7 +55,7 @@ void occlusion_cull_resize(OcclusionCullSystem *sys, u32 width, u32 height);
 /* Per-frame pipeline */
 void occlusion_cull_upload_aabbs(OcclusionCullSystem *sys, const ObjectAABB *aabbs, u32 count);
 void occlusion_cull_generate_hi_z(OcclusionCullSystem *sys, RHICmdBuffer *cmd, RHITexture depth_buffer);
-void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, Mat4 view_proj, u32 object_count);
+void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const Mat4 *view_proj, u32 object_count);
 bool occlusion_cull_is_visible(const OcclusionCullSystem *sys, u32 object_index);
 
 /* Statistics */

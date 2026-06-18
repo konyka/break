@@ -5186,7 +5186,7 @@ u32 culled_count = 0;
             }
             if (occ_count > 0) {
                 occlusion_cull_upload_aabbs(&occ_sys, occ_aabbs, occ_count);
-                occlusion_cull_dispatch(&occ_sys, cmd, curr_view_proj, occ_count);
+                occlusion_cull_dispatch(&occ_sys, cmd, &curr_view_proj, occ_count);
             }
         }
 

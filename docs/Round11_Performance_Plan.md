@@ -923,6 +923,41 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R77 纹理缓存提升修复正确性bug + 间接绘制buffer缓存 + occlusion_cull指针化
+
+### R77-1 纹理单元缓存提升为文件作用域（正确性修复 + 性能提升）
+
+**问题（CRITICAL 正确性）**：`g_tex_cache[16]`/`g_sam_cache[16]`/`g_active_unit` 原为 `gl_bind_tex_unit` 函数内的静态局部变量。两个函数绕过缓存直接调 GL：
+- `rhi_cmd_bind_texel_buffers`：直接 `glActiveTexture(GL_TEXTURE5/6)` + `glBindTexture(GL_TEXTURE_BUFFER, ...)`，不更新 `g_active_unit`/`g_tex_cache[5/6]`
+- `rhi_cmd_bind_texture_mip`：直接 `glActiveTexture(GL_TEXTURE0+unit)` + `glBindTexture(GL_TEXTURE_2D, ...)`，不更新缓存
+
+后果：后续 `gl_bind_tex_unit` 检查 `td->gl_tex == g_tex_cache[unit] && g_active_unit == unit` 时，缓存命中但实际绑定已被覆盖 → 跳过 `glActiveTexture` 和 `glBindTexture`，纹理绑定到错误的纹理单元。
+
+**性能影响**：`rhi_cmd_bind_texel_buffers` 在蒙皮网格循环中每帧调用 N 次，每次 4 次冗余 GL 调用。`rhi_cmd_bind_texture_mip` 在 Hi-Z mip 生成中每帧调用 ~10 次，每次 5 次冗余 GL 调用 + 2 次冗余 `glTexParameteri`。
+
+**修正**：
+- 将 `g_tex_cache`/`g_sam_cache`/`g_active_unit` 提升为文件作用域变量
+- `rhi_cmd_bind_texel_buffers`：改为通过缓存检查绑定，更新 `g_active_unit`/`g_tex_cache[5/6]`
+- `rhi_cmd_bind_texture_mip`：改为调用 `gl_bind_tex_unit`（已处理缓存），额外缓存 `mip_tex`/`mip_level` 避免重复 `glTexParameteri`
+
+### R77-2 间接绘制 buffer 缓存 + 移除冗余解绑
+
+**问题**：`rhi_cmd_draw_indexed_indirect` 和 `rhi_cmd_draw_indexed_indirect_count`（ARB 路径 + fallback 路径）每次调用后无条件 `glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0)` / `glBindBuffer(0x80EE, 0)`。在多材质组循环中（`mega_mat_groups_draw`/`mega_mat_groups_indirect`），产生 bind→draw→unbind→bind→draw→unbind 周期。每次 unbind 是一次冗余 GL 调用，且可能触发驱动 flush。
+
+**修正**：
+- 添加 `g_gl_indirect_buf`/`g_gl_param_buf` 文件作用域缓存
+- 绑定时检查缓存跳过重复 `glBindBuffer`
+- 移除所有尾部 `glBindBuffer(..., 0)` 解绑调用
+
+### R77-3 occlusion_cull_dispatch Mat4 按值传→指针
+
+**问题**：`occlusion_cull_dispatch` 按值传 `Mat4`（64B/次），与 R74-3 `mat4_vec4` 模式不一致。每帧调用 1 次，影响低但修复简单。
+
+**修正**：签名改为 `const Mat4 *view_proj`，调用点改为 `&curr_view_proj`。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash
