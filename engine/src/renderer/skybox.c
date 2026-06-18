@@ -95,7 +95,10 @@ void skybox_render(Skybox *sb, RHICmdBuffer *cmd, const f32 *view, const f32 *in
     if (sb->loc_sun_color >= 0) rhi_cmd_set_uniform_vec3(cmd, sb->loc_sun_color, sun_r, sun_g, sun_b);
 
 #ifndef ENGINE_VULKAN
-    glDepthFunc(GL_LEQUAL);
+    /* R78-2: Use cached depth function path — direct glDepthFunc calls bypassed
+     * g_gl_depth_func cache, causing potential desync (subsequent
+     * rhi_cmd_set_depth_func_* would skip glDepthFunc on false cache hit). */
+    rhi_cmd_set_depth_func_less_or_equal(cmd);
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
 #endif
@@ -103,6 +106,6 @@ void skybox_render(Skybox *sb, RHICmdBuffer *cmd, const f32 *view, const f32 *in
 #ifndef ENGINE_VULKAN
     glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
-    glDepthFunc(GL_LESS);
+    rhi_cmd_set_depth_func_less(cmd);
 #endif
 }

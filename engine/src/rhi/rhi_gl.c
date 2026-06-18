@@ -1327,16 +1327,15 @@ void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
 
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
     (void)cmd;
-    extern RHIDevice *g_current_device;
-    GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, cm);
-    GLSamplerData *sd = (GLSamplerData *)rhi_get_resource(g_current_device, sampler);
-    if (td) {
-        glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, td->gl_tex);
-    }
-    if (sd) {
-        glBindSampler(unit, sd->gl_sampler);
-    }
+    /* R78-1: Route through gl_bind_tex_unit — handles cubemap target detection
+     * via RHI_RES_CUBEMAP slot type and updates the file-scope texture cache.
+     * Previously called glActiveTexture + glBindTexture + glBindSampler directly,
+     * leaving g_active_unit/g_tex_cache/g_sam_cache stale — same class of bug
+     * as R77-1 fixed for rhi_cmd_bind_texel_buffers and rhi_cmd_bind_texture_mip.
+     * This was a regression: R77-1 made rhi_cmd_bind_texel_buffers trust
+     * g_active_unit, but cubemap bypass could leave it stale, causing TBO
+     * to bind to the wrong texture unit. */
+    gl_bind_tex_unit(unit, cm, sampler);
 }
 
 /* Cached GL depth function: skip redundant glDepthFunc calls */

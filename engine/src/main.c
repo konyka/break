@@ -3805,9 +3805,13 @@ u32 culled_count = 0;
                         }
                         }
 
-                        point_shadow_render_end(&pt_shadows, cmd, w, h);
                     }
                 }
+                /* R78-3: Unbind cubemap FBO once after all faces — previously called
+                 * point_shadow_render_end after each face, causing redundant
+                 * glBindFramebuffer(0) → glBindFramebuffer(fbo) + viewport toggling
+                 * per face (~96 redundant GL calls/frame with 4 lights × 6 faces). */
+                point_shadow_render_end(&pt_shadows, cmd, w, h);
             }
         }
 

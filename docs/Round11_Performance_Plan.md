@@ -958,6 +958,33 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R78 cubemap缓存修复R77回归 + skybox深度缓存 + 点阴影FBO解绑批处理
+
+### R78-1 rhi_cmd_bind_cubemap 缓存修复（CRITICAL 回归 + 性能）
+
+**问题（CRITICAL 回归）**：R77-1 将 `g_tex_cache`/`g_sam_cache`/`g_active_unit` 提升为文件作用域，并让 `rhi_cmd_bind_texel_buffers` 信任 `g_active_unit` 判断是否需要 `glActiveTexture`。但 `rhi_cmd_bind_cubemap` **仍直接调用** `glActiveTexture`+`glBindTexture`+`glBindSampler`，不更新缓存三变量——这是 R77-1 修复的同类 bug，但遗漏了此函数。
+
+**回归机制**：`bind_material` → `rhi_cmd_bind_material_textures_ibl` → `rhi_cmd_bind_cubemap`(unit 8/9) 不更新 `g_active_unit`。之后 `rhi_cmd_bind_texel_buffers` 检查 `g_active_unit != 5`，若 cubemap 使 `g_active_unit` 恰好残留为 5，则跳过 `glActiveTexture(GL_TEXTURE5)`，TBO 绑定到错误单元（unit 9）→ 蒙皮网格/延迟光照渲染错乱。
+
+**性能影响**：IBL cubemap 在所有材质组中完全相同（`rs->ibl.irradiance_map`/`rs->ibl.prefilter_map`），以 64 材质组计每帧 ~380 次冗余 GL 调用（64×2×3）。
+
+**修正**：`rhi_cmd_bind_cubemap` 改为调用 `gl_bind_tex_unit`（已正确处理 `RHI_RES_CUBEMAP` 类型，使用 `GL_TEXTURE_CUBE_MAP` target，并更新缓存三变量）。
+
+### R78-2 skybox_render 深度函数缓存失配修复
+
+**问题**：`skybox_render` 直接调 `glDepthFunc(GL_LEQUAL)` / `glDepthFunc(GL_LESS)` 不更新 `g_gl_depth_func` 缓存。若 skybox 前深度函数为 `GL_LEQUAL`（`g_gl_depth_func = GL_LEQUAL`），skybox 恢复为 LESS 但缓存仍为 LEQUAL → 后续 `rhi_cmd_set_depth_func_less_or_equal` 误判缓存命中跳过 `glDepthFunc`，深度测试函数错误。
+
+**修正**：替换为 `rhi_cmd_set_depth_func_less_or_equal(cmd)` / `rhi_cmd_set_depth_func_less(cmd)`，与缓存路径一致。
+
+### R78-3 点光源阴影逐面 FBO 解绑消除
+
+**问题**：点光源阴影渲染循环中，每个 cubemap 面后调用 `point_shadow_render_end` → `rhi_cubemap_depth_fbo_unbind`（绑定 FBO 0 + 设置屏幕 viewport），下一面立即重新绑定 cubemap FBO。以 4 活跃点光源×6 面计：每帧 48 次冗余 `glBindFramebuffer` + 48 次冗余 `glViewport` = ~96 次冗余 GL 调用。与 R77-2 移除 indirect buffer 尾部解绑的模式一致。
+
+**修正**：移除内循环中的 `point_shadow_render_end`，改为所有面完成后统一调用一次。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash
