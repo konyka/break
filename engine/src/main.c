@@ -2767,7 +2767,7 @@ u32 culled_count = 0;
             screen_shake = 0.0f;
         }
         Mat4 curr_view_proj = mat4_mul_proj_view(proj, view);
-        Frustum frame_frustum = frustum_from_vp(curr_view_proj);
+        Frustum frame_frustum = frustum_from_vp(&curr_view_proj);
         /* Pre-compute inverse projection once for skybox + all post-effects.
          * R47+R53-fix: Analytical inv(proj) includes TAA jitter / screen shake.
          * Only 3 divisions + 6 muls vs generic mat4_inverse (~120 muls + 1 div). */
@@ -3652,7 +3652,7 @@ u32 culled_count = 0;
                                                indirect_sys.visibility_buf);
                     } else {
                         /* CPU frustum culling per cascade */
-                        Frustum shadow_frustum = frustum_from_vp(render.cascade_vp[c]);
+                        Frustum shadow_frustum = frustum_from_vp(&render.cascade_vp[c]);
                         u32 obj_idx = 0;
                         for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
                             if (mega_buf.node_spheres[ni].r < 0.0f) continue;
@@ -3746,7 +3746,7 @@ u32 culled_count = 0;
                                 draw_bench_add(1u, mega_count_visible_draws(&mega_buf, NULL));
                                 draw_bench_mark_unified();
                             } else {
-                                Frustum pface_frustum = frustum_from_vp(pt_shadows.light_vp[face_idx]);
+                                Frustum pface_frustum = frustum_from_vp(&pt_shadows.light_vp[face_idx]);
                                 u32 obj_idx = 0;
                                 for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
                                     if (mega_buf.node_spheres[ni].r < 0.0f) continue;

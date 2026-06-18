@@ -1,14 +1,14 @@
 #include <renderer/cull.h>
 
-Frustum frustum_from_vp(Mat4 vp) {
+Frustum frustum_from_vp(const Mat4 *vp) {
     Frustum f;
     for (int i = 0; i < 4; i++) {
-        f.planes[0].e[i] = vp.e[3][i] + vp.e[0][i]; /* Left */
-        f.planes[1].e[i] = vp.e[3][i] - vp.e[0][i]; /* Right */
-        f.planes[2].e[i] = vp.e[3][i] + vp.e[1][i]; /* Bottom */
-        f.planes[3].e[i] = vp.e[3][i] - vp.e[1][i]; /* Top */
-        f.planes[4].e[i] = vp.e[3][i] - vp.e[2][i]; /* Near */
-        f.planes[5].e[i] = vp.e[3][i] + vp.e[2][i]; /* Far */
+        f.planes[0].e[i] = vp->e[3][i] + vp->e[0][i]; /* Left */
+        f.planes[1].e[i] = vp->e[3][i] - vp->e[0][i]; /* Right */
+        f.planes[2].e[i] = vp->e[3][i] + vp->e[1][i]; /* Bottom */
+        f.planes[3].e[i] = vp->e[3][i] - vp->e[1][i]; /* Top */
+        f.planes[4].e[i] = vp->e[3][i] - vp->e[2][i]; /* Near */
+        f.planes[5].e[i] = vp->e[3][i] + vp->e[2][i]; /* Far */
     }
     for (int p = 0; p < 6; p++) {
         f32 len2 = f.planes[p].e[0] * f.planes[p].e[0] +

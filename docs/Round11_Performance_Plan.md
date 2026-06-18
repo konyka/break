@@ -762,6 +762,36 @@
 
 **验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20。
 
+---
+
+## R72 terrain_erode一致性 + 物理栈安全 + frustum_from_vp指针化
+
+### R72-1 terrain_erode inv_scale/inv_nm1 转换
+
+**问题**：R69-6 将 `terrain_get_height`/`modify_height`/`flatten`/`noise_stamp` 中的 `x / t->scale` → `x * t->inv_scale`、`(f32)(n-1)` → `t->inv_nm1`，但遗漏了 `terrain_erode`（L435-440 仍用旧模式）。
+
+**修正**：`inv = 1.0f / t->inv_nm1`，`cgx/cgz = (wx * t->inv_scale + 0.5f) * t->inv_nm1`，`gr = radius * t->inv_scale * t->inv_nm1`。
+
+### R72-2 char_slide_resolve candidates[64] 改 static
+
+**问题**：`character.c` 的 `char_slide_resolve` 中 `u32 candidates[64]`（256B）在栈上分配，每帧最多调用 5 次（垂直/水平/step-up 解析）。R65-R71 处理了 main.c/lighting.c/animation.c 等但遗漏 character.c。
+
+**修正**：添加 `static` 关键字。
+
+### R72-3 ccd_sweep_static candidates[64] 改 static
+
+**问题**：`physics.c` 的 `ccd_sweep_static` 中 `u32 candidates[64]`（256B）在栈上分配，每个动态刚体每帧调用一次。
+
+**修正**：添加 `static` 关键字。
+
+### R72-4 frustum_from_vp Mat4 按值改 const 指针
+
+**问题**：`frustum_from_vp(Mat4 vp)` 按值接收 64 字节的 `Mat4` 结构体，每帧约 11 次调用（主视锥 1 + 级联阴影 4 + 点光源面 6），每次复制 64 字节。
+
+**修正**：签名改为 `frustum_from_vp(const Mat4 *vp)`，实现中 `vp.e` → `vp->e`，更新全部 15 处调用点（main.c 3处 + test_camera_frustum.c 12处）。
+
+**验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20、test_physics 34/34、test_character 20/20。
+
 
 ## 构建与回归命令
 

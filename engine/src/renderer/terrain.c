@@ -432,12 +432,12 @@ void terrain_erode(Terrain *t, f32 wx, f32 wz, f32 radius, i32 iterations) {
     t->total_delta += (f32)iterations * 0.1f;
     { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
     i32 n = (i32)t->grid_size;
-    f32 inv = 1.0f / (f32)(n - 1);
+    f32 inv = 1.0f / t->inv_nm1;
 
     /* Compute grid-space bounds for the erosion radius (like terrain_modify_height) */
-    f32 cgx = (wx / t->scale + 0.5f) * (f32)(n - 1);
-    f32 cgz = (wz / t->scale + 0.5f) * (f32)(n - 1);
-    f32 gr  = radius / t->scale * (f32)(n - 1);
+    f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
+    f32 cgz = (wz * t->inv_scale + 0.5f) * t->inv_nm1;
+    f32 gr  = radius * t->inv_scale * t->inv_nm1;
     i32 gx0 = (i32)(cgx - gr) - 1;  if (gx0 < 1)     gx0 = 1;
     i32 gx1 = (i32)(cgx + gr) + 2;  if (gx1 > n - 1) gx1 = n - 1;
     i32 gz0 = (i32)(cgz - gr) - 1;  if (gz0 < 1)     gz0 = 1;

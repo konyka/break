@@ -508,7 +508,7 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
         (origin.e[1] > end.e[1] ? origin.e[1] : end.e[1]) + radius,
         (origin.e[2] > end.e[2] ? origin.e[2] : end.e[2]) + radius);
 
-    u32 candidates[64];
+    static u32 candidates[64];
     u32 nc = bvh_query_aabb(&pw->bvh, sweep_box, candidates, 64);
 
     /* Precompute inverse direction to eliminate 3 divisions per candidate */

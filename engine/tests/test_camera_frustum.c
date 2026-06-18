@@ -107,7 +107,7 @@ TEST(frustum_from_vp_produces_normalized_planes)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* All 6 plane normals should be roughly unit length */
     for (int i = 0; i < 6; i++) {
@@ -126,7 +126,7 @@ TEST(frustum_extract_matches_from_vp)
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
 
-    Frustum f1 = frustum_from_vp(vp);
+    Frustum f1 = frustum_from_vp(&vp);
     Frustum f2;
     frustum_extract(&f2, &vp);
 
@@ -146,7 +146,7 @@ TEST(frustum_point_behind_camera_outside)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* Point well behind the camera (positive Z) should be outside */
     ASSERT_TRUE(!frustum_test_point(&f, vec3(0, 0, 50)));
@@ -160,7 +160,7 @@ TEST(frustum_point_far_outside)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* Point extremely far away should be outside */
     ASSERT_TRUE(!frustum_test_point(&f, vec3(0, 0, -500)));
@@ -174,7 +174,7 @@ TEST(frustum_point_lateral_outside)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* Point far to the side should be outside */
     ASSERT_TRUE(!frustum_test_point(&f, vec3(100, 0, -5)));
@@ -188,7 +188,7 @@ TEST(frustum_aabb_behind_camera)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* Box entirely behind camera */
     ASSERT_TRUE(!frustum_test_aabb(&f, vec3(-1,-1,10), vec3(1,1,20)));
@@ -202,7 +202,7 @@ TEST(frustum_sphere_far_outside)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     ASSERT_TRUE(!frustum_test_sphere(&f, vec3(100, 100, 100), 1.0f));
 }
@@ -214,7 +214,7 @@ TEST(frustum_cull_batch_empty)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     u32 vis[4];
     u32 count = frustum_cull_batch(&f, NULL, 0, vis);
@@ -229,7 +229,7 @@ TEST(frustum_cull_batch_all_behind)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     CullAABB boxes[2];
     boxes[0].min = vec3(-1, -1, 10);
@@ -252,7 +252,7 @@ TEST(frustum_cull_batch_filters_behind)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     CullAABB boxes[3];
     boxes[0].min = vec3(-1, -1, 10);  /* behind camera */
@@ -301,7 +301,7 @@ TEST(frustum_zero_radius_sphere)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* Zero-radius sphere behind camera should be outside */
     ASSERT_TRUE(!frustum_test_sphere(&f, vec3(0, 0, 50), 0.0f));
@@ -315,7 +315,7 @@ TEST(frustum_point_aabb)
     Mat4 v = camera_view(&cam);
     Mat4 p = camera_projection(&cam);
     Mat4 vp = mat4_mul(p, v);
-    Frustum f = frustum_from_vp(vp);
+    Frustum f = frustum_from_vp(&vp);
 
     /* Point AABB (min == max) behind camera */
     ASSERT_TRUE(!frustum_test_aabb(&f, vec3(0, 0, 50), vec3(0, 0, 50)));

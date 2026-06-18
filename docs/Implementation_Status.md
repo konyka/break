@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R71 审查加固 + fallback路径栈安全补全** — **R71-1**：`main.c` 前向/延迟 fallback 路径中 `VisTaskCtx vctxs[8]`(~1.3KB×2)改 `static`，R65-R70 遗漏的结构体数组补全。前向与延迟路径互斥执行，`task_wait` 确保 worker 完成后才重用。**回归**：test_terrain **22/22**、test_math **45/45**、test_camera_frustum **24/24**、test_animation **20/20**。栈安全总览：~768KB 常驻 static 缓冲区。
+最近更新：**R72 审查加固 + terrain_erode一致性 + 物理栈安全 + frustum_from_vp指针化** — **R72-1**：`terrain_erode` 补全 `inv_scale`/`inv_nm1` 转换（R69-6 遗漏），除法→乘法。**R72-2**：`char_slide_resolve` 的 `candidates[64]`(256B)改 `static`，每帧≤5次调用。**R72-3**：`ccd_sweep_static` 的 `candidates[64]`(256B)改 `static`，每动态刚体每帧调用。**R72-4**：`frustum_from_vp` 签名从 `Mat4 vp` 按值(64B)改为 `const Mat4 *vp` 指针，更新 15 处调用点（main.c 3处 + test_camera_frustum.c 12处）。**回归**：test_terrain **22/22**、test_math **45/45**、test_camera_frustum **24/24**、test_animation **20/20**、test_physics **34/34**、test_character **20/20**。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 
