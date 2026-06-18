@@ -823,6 +823,37 @@
 **验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20、test_physics 34/34、test_character 20/20。
 
 
+## R74 gpucull SSE打包bug修复 + 地形双重绘制方向修正 + mat4_vec4指针化
+
+### R74-1 gpucull_update_objects SSE 打包 bug 修复（CRITICAL）
+
+**问题**：`gpucull_update_objects` 中的 SSE 打包代码使用 `_mm_movelh_ps(pos, _mm_shuffle_ps(pos, rad, _MM_SHUFFLE(0, 0, 2, 2)))` 将位置 `(x, y, z, next_x)` 和半径 `(r, 0, 0, 0)` 打包为 `(x, y, z, z)`——第 4 个元素（半径 `r`）被错误替换为 z 坐标。这导致 GPU 剔除着色器使用 z 坐标作为包围球半径：z < 实际半径的物体被错误剔除（阴影缺失），z > 实际半径的物体过度通过（浪费 GPU 绘制）。
+
+R73-1 将此调用从级联循环内提升到循环前后，该 bug 进一步影响 unified 路径（覆盖了 `gpucull_upload_objects_unified` 写入的正确数据）。
+
+**修正**：将 SSE 打包替换为标量循环。原 SSE 代码每迭代处理一个元素（非两个），标量循环性能等同且正确。
+
+### R74-2 R73-3 地形双重绘制方向修正（视觉回归修复）
+
+**问题**：R73-3 假设 `terrain_render`（硬编码光照）是冗余绘制，当 clustered pipeline 可用时跳过它。但深度分析表明方向相反：
+
+1. `terrain_render` 先绘制，通过 LESS 深度测试并写入深度 D
+2. clustered 地形绘制后绘制，相同几何体产生相同深度 D，LESS 测试失败（D 不小于 D）→ 被深度剔除，零像素输出
+3. 因此 `terrain_render` 是可见绘制，clustered 地形才是被浪费的那次
+
+R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_water_y`）、水下焦散（依赖 `u_water_y` + `u_time`）、水下变暗效果全部丢失。聚簇路径从未设置 `water_y`/`time` uniform。
+
+**修正**：恢复 `terrain_render` 无条件调用，改为跳过 clustered 中的冗余地形绘制（被深度剔除，纯浪费 GPU draw call）。
+
+### R74-3 mat4_vec4 改为 const Mat4* 参数
+
+**问题**：`mat4_vec4(Mat4 m, Vec4 v)` 按值传递 Mat4（64B/次拷贝），是代码库中最后一个在逐帧热循环中按值传递 Mat4 的函数。在 `light_system_cull` 的逐光源预变换循环中被调用 2 次/光源，最多 256 个点光源 = 512 次按值拷贝/帧。此外 `light_system_cull` 中 `Mat4 v = *view; Mat4 p = *proj;` 产生 128B 不必要本地拷贝。
+
+**修正**：将 `mat4_vec4` 签名改为 `const Mat4 *m`，删除本地拷贝，直接传递 `view`/`proj` 指针。与 `mat4_mul`（R73-4）、`frustum_from_vp`（R72）的指针化模式一致。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash

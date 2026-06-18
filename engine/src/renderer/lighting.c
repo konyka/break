@@ -17,27 +17,29 @@ static f32 cluster_depth(u32 z_slice, f32 near, f32 far) {
     return near * powf(far / near, n);
 }
 
-static Vec4 mat4_vec4(Mat4 m, Vec4 v) {
+/* R74-3: const Mat4* parameter — eliminates 64B per-call copy in the per-light
+ * transform loop (up to 512 calls/frame for 256 point lights). */
+static Vec4 mat4_vec4(const Mat4 *m, Vec4 v) {
     Vec4 out;
 #if LIGHT_SSE2
     /* SSE2: each row of column-major Mat4 dot v.
-     * Row i = m.e[0][i], m.e[1][i], m.e[2][i], m.e[3][i] */
+     * Row i = m->e[0][i], m->e[1][i], m->e[2][i], m->e[3][i] */
     __m128 v0 = _mm_set1_ps(v.e[0]);
     __m128 v1 = _mm_set1_ps(v.e[1]);
     __m128 v2 = _mm_set1_ps(v.e[2]);
     __m128 v3 = _mm_set1_ps(v.e[3]);
     /* col0 * v0 + col1 * v1 + col2 * v2 + col3 * v3 gives one result per row */
-    __m128 r = _mm_mul_ps(_mm_loadu_ps(m.e[0]), v0);
-    r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m.e[1]), v1));
-    r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m.e[2]), v2));
-    r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m.e[3]), v3));
+    __m128 r = _mm_mul_ps(_mm_loadu_ps(m->e[0]), v0);
+    r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m->e[1]), v1));
+    r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m->e[2]), v2));
+    r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(m->e[3]), v3));
     _mm_storeu_ps(out.e, r);
 #else
     /* Scalar fallback: must match SSE2 path (column-based M*v).
-     * out[i] = sum_k m.e[k][i] * v[k], NOT row-based dot product. */
+     * out[i] = sum_k m->e[k][i] * v[k], NOT row-based dot product. */
     for (int i = 0; i < 4; i++) {
-        out.e[i] = m.e[0][i] * v.e[0] + m.e[1][i] * v.e[1] +
-                   m.e[2][i] * v.e[2] + m.e[3][i] * v.e[3];
+        out.e[i] = m->e[0][i] * v.e[0] + m->e[1][i] * v.e[1] +
+                   m->e[2][i] * v.e[2] + m->e[3][i] * v.e[3];
     }
 #endif
     return out;
@@ -116,9 +118,7 @@ void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 
     ls->screen_w = screen_w;
     ls->screen_h = screen_h;
 
-    /* Direct dereference: avoids two 64-byte memcpy (caller passes &Mat4). */
-    Mat4 v = *view;
-    Mat4 p = *proj;
+    /* R74-3: Pass view/proj pointers directly to mat4_vec4 — no local copies. */
 
     f32 near = 0.1f, far = 100.0f;
     ls->near_plane = near;
@@ -151,8 +151,8 @@ void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 
     for (u32 li = 0; li < pc; li++) {
         PointLight *pl = &ls->point_lights[li];
         Vec4 wp = vec4(pl->pos[0], pl->pos[1], pl->pos[2], 1.0f);
-        view_pos[li] = mat4_vec4(v, wp);
-        clip_pos[li] = mat4_vec4(p, view_pos[li]);  /* proj * view_pos */
+        view_pos[li] = mat4_vec4(view, wp);
+        clip_pos[li] = mat4_vec4(proj, view_pos[li]);  /* proj * view_pos */
 
         /* Pre-compute screen-space projection (depends only on light, not cluster) */
         Vec4 sp = clip_pos[li];

@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R73 审查加固 + CSM冗余消除 + 视锥内联化 + 地形双重绘制修复 + mat4_mul内联化** — **R73-1**：Legacy CSM 路径中 `gpucull_update_objects` 的 O(N) 打包循环+GPU上传从 4 级联循环内提升到循环前，消除 3 次冗余打包+上传。**R73-2**：`frustum_test_sphere`/`frustum_test_aabb`/`frustum_test_point` 从 cull.c 移至 cull.h 作为 `static inline`，使数千次/帧的逐节点裁剪调用可内联。**R73-3**：前向渲染路径中 `terrain_render`（硬编码光照）与 `clustered_pipeline`（PBR光照）双重绘制同一地形几何体，当 clustered pipeline 可用时跳过 `terrain_render`，消除冗余 GPU draw。**R73-4**：`mat4_mul` 从 math.c 的跨编译单元函数改为 math.h 中的 `static inline`，使骨架动画热路径（每帧 100-300 次调用）可内联，省去 128B/次栈拷贝。**回归**：test_terrain **22/22**、test_math **45/45**、test_camera_frustum **24/24**、test_animation **20/20**、test_physics **34/34**、test_character **20/20**。
+最近更新：**R74 审查加固 + gpucull SSE打包bug修复 + 地形双重绘制方向修正 + mat4_vec4指针化** — **R74-1**：`gpucull_update_objects` 的 SSE 打包代码将 `(x,y,z,r)` 错误打包为 `(x,y,z,z)`（`_mm_movelh_ps`+`_mm_shuffle_ps` 的组合丢失半径），导致 GPU 剔除着色器使用 z 坐标作为包围球半径。R73-1 将此调用提升到级联循环前后，该 bug 进一步影响 unified 路径。改为标量循环修复。**R74-2**：R73-3 的地形双重绘制修复方向错误——`terrain_render` 先绘制并写入深度，clustered 地形绘制因 LESS 深度测试被剔除（零像素输出），因此 `terrain_render` 才是可见绘制。跳过它导致海岸泡沫/水下焦散/水下变暗效果丢失。修正：恢复 `terrain_render` 无条件调用，改为跳过 clustered 中被深度剔除的冗余地形绘制。**R74-3**：`mat4_vec4(Mat4 m, Vec4 v)` 按值传递 Mat4（64B/次），在逐光源预变换循环中每帧最多 512 次调用。改为 `const Mat4 *m` 指针参数，与 `mat4_mul`/`frustum_from_vp` 的模式一致。同时删除 `light_system_cull` 中 `Mat4 v = *view; Mat4 p = *proj;` 的 128B 不必要本地拷贝。**回归**：全部 **23/23** 测试通过。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

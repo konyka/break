@@ -121,15 +121,15 @@ void gpucull_update_objects(GPUCullSystem *gc, const f32 *positions, const f32 *
     if (!gc->ready || count == 0) return;
     gc->object_count = count > GPUCULL_MAX_OBJECTS ? GPUCULL_MAX_OBJECTS : count;
 
-    /* Use persistent pack buffer (cap = GPUCULL_MAX_OBJECTS * 4, always sufficient) */
+    /* R74-1: Scalar pack — SSE shuffle _mm_movelh_ps(pos, shuffle(pos, rad, 0,0,2,2))
+     * produced (x,y,z,z) instead of (x,y,z,r), silently replacing radius with z.
+     * The scalar loop is correct and equally fast (one element per iteration either way). */
     f32 *data = gc->_pack_buf;
-    /* SSE2 SoA→AoS pack: load 3 pos + 1 radius per iteration (7 loads→3) */
-    u32 i = 0;
-    for (; i + 1 <= gc->object_count; i++) {
-        __m128 pos = _mm_loadu_ps(&positions[i * 3]);
-        __m128 rad = _mm_load_ss(&radii[i]);
-        __m128 packed = _mm_movelh_ps(pos, _mm_shuffle_ps(pos, rad, _MM_SHUFFLE(0, 0, 2, 2)));
-        _mm_storeu_ps(&data[i * 4], packed);
+    for (u32 i = 0; i < gc->object_count; i++) {
+        data[i * 4 + 0] = positions[i * 3 + 0];
+        data[i * 4 + 1] = positions[i * 3 + 1];
+        data[i * 4 + 2] = positions[i * 3 + 2];
+        data[i * 4 + 3] = radii[i];
     }
     rhi_buffer_update(gc->device, gc->object_ssbo, data, gc->object_count * 4 * sizeof(f32));
 }

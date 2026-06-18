@@ -3820,15 +3820,13 @@ u32 culled_count = 0;
 
         skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
 
-        /* R73-3: Skip terrain_render when clustered pipeline is active —
-         * the clustered pass below draws the same terrain geometry with PBR
-         * lighting (dynamic sun, IBL, point shadows), making terrain_render's
-         * hardcoded-lighting pass a redundant GPU draw. */
-        if (!rhi_handle_valid(render.clustered_pipeline)) {
-            terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                           render.terrain_tex, active_sampler,
-                           render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias, water.water_y, (f32)total_time);
-        }
+        /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
+         * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
+         * It runs unconditionally — the clustered terrain draw below was always
+         * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
+        terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                       render.terrain_tex, active_sampler,
+                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias, water.water_y, (f32)total_time);
 
         water_update(&water, (f32)engine.delta_time);
         water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
@@ -3914,10 +3912,10 @@ u32 culled_count = 0;
             rhi_cmd_bind_material_textures_ibl(cmd, render.terrain_tex, render.fallback_mr, render.fallback_normal, render.fallback_emissive, render.shadow_map.depth_tex, render.ssao_tex, active_sampler,
                 render.ibl.brdf_lut, render.ibl.irradiance_map, render.ibl.prefilter_map,
                 g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
-            rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
-            rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0);
-            rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
-            draw_calls++; tri_count += terrain.index_count / 3;
+            /* R74-2: Skip clustered terrain draw — terrain_render above already drew
+             * the same geometry and wrote identical depth. With LESS depth test,
+             * this draw would always fail (D not < D) and produce zero pixels.
+             * Skipping eliminates a wasted GPU draw call per frame. */
         }
 
         particles_cull(&particles, cmd);
