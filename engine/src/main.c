@@ -639,19 +639,6 @@ static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, u32
     return psc_n;
 }
 
-static void clustered_set_point_shadow_uniforms(RHICmdBuffer *cmd, RenderState *rs) {
-    if (rs->cl_loc_point_shadow_count >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_count, (i32)g_psc.count);
-    if (rs->cl_loc_point_shadow_light_0 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_0, (i32)g_psc.light_idx[0]);
-    if (rs->cl_loc_point_shadow_light_1 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_1, (i32)g_psc.light_idx[1]);
-    if (rs->cl_loc_point_shadow_light_2 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_2, (i32)g_psc.light_idx[2]);
-    if (rs->cl_loc_point_shadow_light_3 >= 0)
-        rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_shadow_light_3, (i32)g_psc.light_idx[3]);
-}
-
 static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
     RHITexture alb = (mat && rhi_handle_valid(mat->albedo)) ? mat->albedo : rs->fallback_tex;
     RHITexture mr  = (mat && rhi_handle_valid(mat->metallic_roughness)) ? mat->metallic_roughness : rs->fallback_mr;
@@ -831,6 +818,10 @@ typedef struct {
     u32       cmd_node_index[16384];
     NodeSphere node_spheres[16384];
     u32       sphere_count;
+    /* R75-2: Pre-built inverse index — group→cmd list. Eliminates O(N×G)
+     * linear scan in mega_mat_groups_draw/indirect (called 12-17×/frame). */
+    u32       group_cmd_offsets[MEGA_MAX_MAT_GROUPS + 1]; /* prefix sums */
+    u32       group_cmd_list[16384];                     /* sorted by group */
 } MegaBuffer;
 
 bool unified_cull_enabled = false;
@@ -895,12 +886,12 @@ static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffe
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 gcount = mb->mat_systems[g].current_draw_count;
         memset(g_vis_flags, 0, gcount * sizeof(u32));
-        u32 gi = 0u;
-        for (u32 ci = 0; ci < mb->draw_cmd_count && gi < gcount; ci++) {
-            if (mb->cmd_mat_group[ci] == (i32)g) {
-                g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
-                gi++;
-            }
+        /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
+        u32 start = mb->group_cmd_offsets[g];
+        u32 end   = mb->group_cmd_offsets[g + 1];
+        for (u32 gi = 0; gi < end - start; gi++) {
+            u32 ci = mb->group_cmd_list[start + gi];
+            g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
         }
         indirect_draw_upload_visibility(&mb->mat_systems[g], dev, g_vis_flags, gcount);
         indirect_draw_compact(&mb->mat_systems[g], dev, cmd);
@@ -922,12 +913,12 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
 
         u32 gcount = mb->mat_systems[g].current_draw_count;
         memset(g_vis_flags, 0, gcount * sizeof(u32));
-        u32 gi = 0u;
-        for (u32 ci = 0; ci < mb->draw_cmd_count && gi < gcount; ci++) {
-            if (mb->cmd_mat_group[ci] == (i32)g) {
-                g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
-                gi++;
-            }
+        /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
+        u32 start = mb->group_cmd_offsets[g];
+        u32 end   = mb->group_cmd_offsets[g + 1];
+        for (u32 gi = 0; gi < end - start; gi++) {
+            u32 ci = mb->group_cmd_list[start + gi];
+            g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
         }
         indirect_draw_upload_visibility(&mb->mat_systems[g], render->device, g_vis_flags, gcount);
         indirect_draw_compact(&mb->mat_systems[g], render->device, cmd);
@@ -1813,22 +1804,31 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     gcmd++;
                 }
 
+                /* R75-2: Build inverse index (group→cmd list) in O(N) — replaces
+                 * O(N×G) linear scans in mega_mat_groups_draw/indirect and here. */
+                {
+                    u32 group_counts[MEGA_MAX_MAT_GROUPS] = {0};
+                    for (u32 ci = 0; ci < gcmd; ci++)
+                        group_counts[(u32)mega_buf.cmd_mat_group[ci]]++;
+                    mega_buf.group_cmd_offsets[0] = 0;
+                    for (u32 g = 0; g < mega_buf.mat_group_count; g++)
+                        mega_buf.group_cmd_offsets[g + 1] = mega_buf.group_cmd_offsets[g] + group_counts[g];
+                    u32 fill_pos[MEGA_MAX_MAT_GROUPS] = {0};
+                    for (u32 ci = 0; ci < gcmd; ci++) {
+                        u32 g = (u32)mega_buf.cmd_mat_group[ci];
+                        mega_buf.group_cmd_list[mega_buf.group_cmd_offsets[g] + fill_pos[g]++] = ci;
+                    }
+                }
+
                 /* Create per-material IndirectDrawSystems (single pre-alloc scratch buffer) */
                 DrawIndexedIndirectCmd *gcmds_scratch = malloc((usize)mesh_cmd_count * sizeof(DrawIndexedIndirectCmd));
                 for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                    /* Count cmds in this group */
-                    u32 gcount = 0;
-                    for (u32 ci = 0; ci < mesh_cmd_count; ci++) {
-                        if (mega_buf.cmd_mat_group[ci] == (i32)g) gcount++;
-                    }
+                    u32 gcount = mega_buf.group_cmd_offsets[g + 1] - mega_buf.group_cmd_offsets[g];
                     if (gcount == 0) continue;
 
-                    /* Collect cmds for this group */
                     u32 gi = 0;
-                    for (u32 ci = 0; ci < mesh_cmd_count; ci++) {
-                        if (mega_buf.cmd_mat_group[ci] == (i32)g)
-                            gcmds_scratch[gi++] = cmds[ci];
-                    }
+                    for (u32 ci = mega_buf.group_cmd_offsets[g]; ci < mega_buf.group_cmd_offsets[g + 1]; ci++)
+                        gcmds_scratch[gi++] = cmds[mega_buf.group_cmd_list[ci]];
                     indirect_draw_init(&mega_buf.mat_systems[g], render.device, gcount);
                     indirect_draw_upload(&mega_buf.mat_systems[g], render.device, gcmds_scratch, gcount);
                 }
@@ -3871,51 +3871,13 @@ u32 culled_count = 0;
                     light_system_add_point(&lights, x, 2.0f, z, 6.0f, orbit_r[i], orbit_g[i], orbit_b[i]);
                 }
             }
-            /* Zero-copy cascade VP binding: pointer reference instead of 256-byte memcpy. */
-            light_system_set_cascade_vp(&lights, render.cascade_vp);
-            if (lights.gpu_cull) {
-                /* GPU cluster binning: upload only the light data, then dispatch
-                 * cluster_cull (it suspends the active pass and barriers the grid
-                 * write -> fragment texel read).  Screen size must match the
-                 * fragment's u_screen_w/h so cluster IDs line up. */
-                light_system_upload_lights(&lights);
-                light_system_cull_gpu(&lights, cmd, &curr_view_proj.e[0][0], w, h);
-            } else {
-                light_system_cull(&lights, &view, &proj, rw, rh);
-                light_system_upload(&lights);
-            }
-
-            rhi_cmd_bind_pipeline(cmd, render.clustered_pipeline);
-            rhi_cmd_set_uniform_mat4(cmd, render.cl_loc_view, &view.e[0][0]);
-            rhi_cmd_set_uniform_mat4(cmd, render.cl_loc_proj, &proj.e[0][0]);
-            rhi_cmd_set_uniform_vec3(cmd, render.cl_loc_ambient, 0.08f, 0.08f, 0.1f);
-            rhi_cmd_set_uniform_vec3(cmd, render.cl_loc_camera_pos,
-                                     camera.position.e[0], camera.position.e[1], camera.position.e[2]);
-            rhi_cmd_set_uniform_f32(cmd, render.cl_loc_screen_w, (f32)w);
-            rhi_cmd_set_uniform_f32(cmd, render.cl_loc_screen_h, (f32)h);
-            rhi_cmd_set_uniform_f32(cmd, render.cl_loc_near, 0.1f);
-            rhi_cmd_set_uniform_f32(cmd, render.cl_loc_far, 100.0f);
-            rhi_cmd_set_uniform_i32(cmd, render.cl_loc_point_count, (i32)lights.point_count);
-            rhi_cmd_set_uniform_i32(cmd, render.cl_loc_dir_count, (i32)lights.dir_count);
-            rhi_cmd_set_uniform_f32(cmd, render.cl_loc_shadow_bias, shadow_bias);
-                if (render.cl_loc_fog_color >= 0) {
-                    rhi_cmd_set_uniform_vec3(cmd, render.cl_loc_fog_color, bg_r, bg_g, bg_b);
-                    rhi_cmd_set_uniform_f32(cmd, render.cl_loc_fog_near, fog_enabled ? fog_near : 99999.0f);
-                    rhi_cmd_set_uniform_f32(cmd, render.cl_loc_fog_far, fog_enabled ? fog_far : 100000.0f);
-                if (render.cl_loc_underwater >= 0) rhi_cmd_set_uniform_f32(cmd, render.cl_loc_underwater, underwater ? 1.0f : 0.0f);
-                }
-            clustered_set_point_shadow_uniforms(cmd, &render);
-
-            rhi_cmd_bind_texel_buffers(cmd, lights.light_data_buf, lights.light_grid_buf);
-
-            rhi_cmd_set_uniform_mat4(cmd, render.cl_loc_model, &frame_identity.e[0][0]);
-            rhi_cmd_bind_material_textures_ibl(cmd, render.terrain_tex, render.fallback_mr, render.fallback_normal, render.fallback_emissive, render.shadow_map.depth_tex, render.ssao_tex, active_sampler,
-                render.ibl.brdf_lut, render.ibl.irradiance_map, render.ibl.prefilter_map,
-                g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
-            /* R74-2: Skip clustered terrain draw — terrain_render above already drew
-             * the same geometry and wrote identical depth. With LESS depth test,
-             * this draw would always fail (D not < D) and produce zero pixels.
-             * Skipping eliminates a wasted GPU draw call per frame. */
+            /* R75-1: Skip clustered cull/upload/bind — the clustered terrain draw
+             * was skipped in R74-2 (always depth-culled by terrain_render). No
+             * forward-path draw consumes the clustered light grid. Light
+             * population (clear + add_dir + 32× add_point) is kept because
+             * pt_shadows reads lights.point_count/lights.point_lights from the
+             * previous frame. This saves ~98K CPU iterations (cluster binning)
+             * + GPU upload + pipeline bind + ~10 uniform sets per frame. */
         }
 
         particles_cull(&particles, cmd);
@@ -4846,14 +4808,14 @@ u32 culled_count = 0;
 
                         u32 gcount = mega_buf.mat_systems[g].current_draw_count;
                         memset(g_vis_flags, 0, gcount * sizeof(u32));
-                        u32 gi = 0;
-                        for (u32 ci = 0; ci < mega_buf.draw_cmd_count && gi < gcount; ci++) {
-                            if (mega_buf.cmd_mat_group[ci] == (i32)g) {
-                                u32 ni = mega_buf.cmd_node_index[ci];
-                                g_vis_flags[gi] = g_node_vis[ni];
-                                if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
-                                gi++;
-                            }
+                        /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
+                        u32 start = mega_buf.group_cmd_offsets[g];
+                        u32 end   = mega_buf.group_cmd_offsets[g + 1];
+                        for (u32 gi = 0; gi < end - start; gi++) {
+                            u32 ci = mega_buf.group_cmd_list[start + gi];
+                            u32 ni = mega_buf.cmd_node_index[ci];
+                            g_vis_flags[gi] = g_node_vis[ni];
+                            if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                         }
                         indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
                         indirect_draw_compact(&mega_buf.mat_systems[g], render.device, cmd);
@@ -5080,14 +5042,14 @@ u32 culled_count = 0;
                     /* Build visibility for this material group's draw cmds */
                     u32 gcount = mega_buf.mat_systems[g].current_draw_count;
                     memset(g_vis_flags, 0, gcount * sizeof(u32));
-                    u32 gi = 0;
-                    for (u32 ci = 0; ci < mega_buf.draw_cmd_count && gi < gcount; ci++) {
-                        if (mega_buf.cmd_mat_group[ci] == (i32)g) {
-                            u32 ni = mega_buf.cmd_node_index[ci];
-                            g_vis_flags[gi] = g_node_vis[ni];
-                            if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
-                            gi++;
-                        }
+                    /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
+                    u32 start = mega_buf.group_cmd_offsets[g];
+                    u32 end   = mega_buf.group_cmd_offsets[g + 1];
+                    for (u32 gi = 0; gi < end - start; gi++) {
+                        u32 ci = mega_buf.group_cmd_list[start + gi];
+                        u32 ni = mega_buf.cmd_node_index[ci];
+                        g_vis_flags[gi] = g_node_vis[ni];
+                        if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                     }
                     indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
                     indirect_draw_compact(&mega_buf.mat_systems[g], render.device, cmd);

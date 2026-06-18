@@ -854,6 +854,31 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R75 聚簇块裁剪跳过 + mega_mat_groups逆索引O(N×G)→O(N)
+
+### R75-1 聚簇块裁剪/上传/绑定整体跳过
+
+**问题**：R74-2 跳过聚簇地形绘制后，聚簇块仍执行全部设置工作：
+- `light_system_cull`（CPU路径）：O(CLUSTER_COUNT × 点光数) = O(3072 × 32) ≈ 98,304 次迭代/帧
+- 或 `light_system_cull_gpu`（GPU路径）：compute dispatch + memory barrier
+- `light_system_upload`/`upload_lights`：2次buffer update
+- `rhi_cmd_bind_pipeline` + ~10次 `rhi_cmd_set_uniform_*` + 纹理/texel buffer绑定
+
+经追踪确认，`lights.light_data_buf`/`light_grid_buf` **仅在聚簇块内部**被引用——粒子、蒙皮管线、主管线均不使用聚簇光照缓冲。`lights` 的下一次引用在延迟路径（与前向互斥）。
+
+但光源填充（`light_system_clear` + `add_dir` + 32×`add_point`）**必须保留**——pt_shadows 在聚簇块之前读取 `lights.point_count`/`lights.point_lights`（读取上一帧填充的数据）。
+
+**修正**：在光源填充后直接跳过 cull/upload/bind 部分。删除未使用的 `clustered_set_point_shadow_uniforms` 函数（-Werror=unused-function）。
+
+### R75-2 mega_mat_groups 预构建逆索引 O(N×G)→O(N)
+
+**问题**：`mega_mat_groups_draw`/`mega_mat_groups_indirect` 及两处 legacy 路径执行 O(N×G) 线性扫描——对每个材质组 g（G次迭代），遍历所有 draw command（N次迭代）查找属于该组的命令。该扫描在阴影通道中每帧被调用 12-17 次（CSM 4级联 + 点光阴影 6面/光 + 前向/延迟 1-2次）。以 N=16384、G=8 计，每帧约 160-220 万次迭代。构建阶段也有 O(N×G) 双重扫描（计数+收集）。
+
+**修正**：在 `MegaBuffer` 中添加 `group_cmd_offsets[MEGA_MAX_MAT_GROUPS+1]`（前缀和）和 `group_cmd_list[16384]`（按组排序的cmd索引）。构建时单遍计数+前缀和+填充，总复杂度 O(N)。替换全部 4 处扫描循环 + 构建处双重扫描为逆索引查找。每帧迭代次数减少约 8 倍。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash
