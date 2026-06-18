@@ -883,10 +883,10 @@ static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffe
                                     const u32 *draw_vis) {
     u32 calls = 0u;
     if (!mb || !mb->valid) return 0u;
+    /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 gcount = mb->mat_systems[g].current_draw_count;
         memset(g_vis_flags, 0, gcount * sizeof(u32));
-        /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
         u32 start = mb->group_cmd_offsets[g];
         u32 end   = mb->group_cmd_offsets[g + 1];
         for (u32 gi = 0; gi < end - start; gi++) {
@@ -894,7 +894,10 @@ static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffe
             g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
         }
         indirect_draw_upload_visibility(&mb->mat_systems[g], dev, g_vis_flags, gcount);
-        indirect_draw_compact(&mb->mat_systems[g], dev, cmd);
+        indirect_draw_compact_no_barrier(&mb->mat_systems[g], dev, cmd);
+    }
+    rhi_cmd_memory_barrier(cmd);
+    for (u32 g = 0; g < mb->mat_group_count; g++) {
         indirect_draw_execute(&mb->mat_systems[g], dev);
         calls++;
     }
@@ -906,14 +909,10 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
                                 const u32 *draw_vis) {
     u32 calls = 0u;
     if (!mb || !mb->valid) return 0u;
+    /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
     for (u32 g = 0; g < mb->mat_group_count; g++) {
-        u32 mat_idx = mb->mat_indices[g];
-        Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
-        bind_material(cmd, render, mat, scene);
-
         u32 gcount = mb->mat_systems[g].current_draw_count;
         memset(g_vis_flags, 0, gcount * sizeof(u32));
-        /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
         u32 start = mb->group_cmd_offsets[g];
         u32 end   = mb->group_cmd_offsets[g + 1];
         for (u32 gi = 0; gi < end - start; gi++) {
@@ -921,7 +920,13 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
             g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
         }
         indirect_draw_upload_visibility(&mb->mat_systems[g], render->device, g_vis_flags, gcount);
-        indirect_draw_compact(&mb->mat_systems[g], render->device, cmd);
+        indirect_draw_compact_no_barrier(&mb->mat_systems[g], render->device, cmd);
+    }
+    rhi_cmd_memory_barrier(cmd);
+    for (u32 g = 0; g < mb->mat_group_count; g++) {
+        u32 mat_idx = mb->mat_indices[g];
+        Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
+        bind_material(cmd, render, mat, scene);
         indirect_draw_execute(&mb->mat_systems[g], render->device);
         calls++;
     }
@@ -1805,17 +1810,24 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
 
                 /* R75-2: Build inverse index (group→cmd list) in O(N) — replaces
-                 * O(N×G) linear scans in mega_mat_groups_draw/indirect and here. */
+                 * O(N×G) linear scans in mega_mat_groups_draw/indirect and here.
+                 * R76-1: Bounds-check group index — when >64 materials exist,
+                 * cmd_mat_group[ci] can be >= mat_group_count (overflow cmds
+                 * that couldn't create a new group). Skip those to avoid
+                 * stack buffer overflow on group_counts/fill_pos. */
                 {
                     u32 group_counts[MEGA_MAX_MAT_GROUPS] = {0};
-                    for (u32 ci = 0; ci < gcmd; ci++)
-                        group_counts[(u32)mega_buf.cmd_mat_group[ci]]++;
+                    for (u32 ci = 0; ci < gcmd; ci++) {
+                        u32 g = (u32)mega_buf.cmd_mat_group[ci];
+                        if (g < mega_buf.mat_group_count) group_counts[g]++;
+                    }
                     mega_buf.group_cmd_offsets[0] = 0;
                     for (u32 g = 0; g < mega_buf.mat_group_count; g++)
                         mega_buf.group_cmd_offsets[g + 1] = mega_buf.group_cmd_offsets[g] + group_counts[g];
                     u32 fill_pos[MEGA_MAX_MAT_GROUPS] = {0};
                     for (u32 ci = 0; ci < gcmd; ci++) {
                         u32 g = (u32)mega_buf.cmd_mat_group[ci];
+                        if (g >= mega_buf.mat_group_count) continue;
                         mega_buf.group_cmd_list[mega_buf.group_cmd_offsets[g] + fill_pos[g]++] = ci;
                     }
                 }
@@ -3943,6 +3955,9 @@ u32 culled_count = 0;
                 }
                 skeleton_evaluate(&render.skeleton, &render.anim_clip, engine.delta_time);
             }
+            /* R76-4: Skip skeleton upload, pipeline bind, and uniform sets when
+             * no skinned rendering will occur (no skinned meshes and no fallback VBO). */
+            if (scene.skinned_mesh_count > 0 || rhi_handle_valid(render.skinned_vbo)) {
             skeleton_upload(&render.skeleton);
 
             rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_skinned_pipeline) ? render.wire_skinned_pipeline : render.skinned_pipeline);
@@ -3976,6 +3991,7 @@ u32 culled_count = 0;
                 rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0);
                 rhi_cmd_draw_indexed(cmd, render.skinned_index_count, 1);
                 draw_calls++; tri_count += render.skinned_index_count / 3;
+            }
             }
         }
 
@@ -4801,11 +4817,8 @@ u32 culled_count = 0;
                         task_wait(tasks);
                     }
 
+                    /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
                     for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                        u32 mat_idx = mega_buf.mat_indices[g];
-                        Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                        bind_material(cmd, &render, mat, &scene);
-
                         u32 gcount = mega_buf.mat_systems[g].current_draw_count;
                         memset(g_vis_flags, 0, gcount * sizeof(u32));
                         /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
@@ -4818,7 +4831,13 @@ u32 culled_count = 0;
                             if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                         }
                         indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
-                        indirect_draw_compact(&mega_buf.mat_systems[g], render.device, cmd);
+                        indirect_draw_compact_no_barrier(&mega_buf.mat_systems[g], render.device, cmd);
+                    }
+                    rhi_cmd_memory_barrier(cmd);
+                    for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
+                        u32 mat_idx = mega_buf.mat_indices[g];
+                        Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
+                        bind_material(cmd, &render, mat, &scene);
                         indirect_draw_execute(&mega_buf.mat_systems[g], render.device);
                         draw_calls++;
                     }
@@ -5034,11 +5053,8 @@ u32 culled_count = 0;
                     task_wait(tasks);
                 }
 
+                /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
                 for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                    u32 mat_idx = mega_buf.mat_indices[g];
-                    Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene);
-
                     /* Build visibility for this material group's draw cmds */
                     u32 gcount = mega_buf.mat_systems[g].current_draw_count;
                     memset(g_vis_flags, 0, gcount * sizeof(u32));
@@ -5052,7 +5068,13 @@ u32 culled_count = 0;
                         if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                     }
                     indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
-                    indirect_draw_compact(&mega_buf.mat_systems[g], render.device, cmd);
+                    indirect_draw_compact_no_barrier(&mega_buf.mat_systems[g], render.device, cmd);
+                }
+                rhi_cmd_memory_barrier(cmd);
+                for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
+                    u32 mat_idx = mega_buf.mat_indices[g];
+                    Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
+                    bind_material(cmd, &render, mat, &scene);
                     indirect_draw_execute(&mega_buf.mat_systems[g], render.device);
                     draw_calls++;
                 }

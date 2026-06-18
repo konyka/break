@@ -170,6 +170,11 @@ void indirect_draw_upload_visibility(IndirectDrawSystem *sys, RHIDevice *dev,
  * ======================================================================== */
 
 void indirect_draw_compact(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd) {
+    indirect_draw_compact_no_barrier(sys, dev, cmd);
+    rhi_cmd_memory_barrier(cmd);
+}
+
+void indirect_draw_compact_no_barrier(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd) {
     if (!sys || !sys->ready || sys->current_draw_count == 0) return;
 
     /* Reset the atomic counter to zero before dispatch. */
@@ -190,8 +195,8 @@ void indirect_draw_compact(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer
     u32 groups = (sys->current_draw_count + 63u) / 64u;
     rhi_cmd_dispatch(cmd, groups, 1, 1);
 
-    /* Make compute writes visible to subsequent indirect draw / SSBO reads. */
-    rhi_cmd_memory_barrier(cmd);
+    /* R76-3: Barrier moved to caller — allows batching multiple groups'
+     * compacts before a single rhi_cmd_memory_barrier. */
 }
 
 /* ========================================================================

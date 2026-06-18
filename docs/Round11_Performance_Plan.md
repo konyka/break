@@ -879,6 +879,50 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R76 逆索引越界修复 + glViewport缓存统一 + barrier批处理 + skeleton_upload条件化
+
+### R76-1 修复 >64 材质时逆索引构建栈越界写（CRITICAL）
+
+**问题**：R75-2 逆索引构建中，当场景材质数超过 `MEGA_MAX_MAT_GROUPS`(64) 时，溢出的 draw command 的 `cmd_mat_group[ci]` 值为 64，直接用作 `group_counts[64]` 下标——而 `group_counts` 数组仅 64 元素（0-63），导致栈缓冲越界写。同样，填充阶段 `fill_pos[64]` 也越界。在正常场景（<64 材质）下不会触发，但在大型场景中会导致内存损坏。
+
+**修正**：在计数循环和填充循环中添加边界检查：
+- 计数：`if (g < mega_buf.mat_group_count) group_counts[g]++;`
+- 填充：`if (g >= mega_buf.mat_group_count) continue;`
+
+### R76-2 glViewport 缓存提升为文件作用域
+
+**问题**：`glViewport` 缓存 `g_gl_vp` 原为 `gl_cmd_set_viewport` 函数内的静态局部变量。但 9 个 FBO/shadow 绑定函数（`rhi_cmd_set_shadow_viewport`、`rhi_cmd_bind_shadow_map`、`rhi_cmd_unbind_shadow_map`、`rhi_offscreen_fbo_bind/unbind`、`rhi_mrt_fbo_bind/unbind`、`rhi_cubemap_depth_fbo_bind_face/unbind`、`gl_init`、`gl_resize`）绕过 `gl_cmd_set_viewport` 直接调用 `glViewport`，导致：
+1. 每帧 ~25 次冗余 `glViewport` 驱动调用（即使 viewport 未变）
+2. 缓存不同步——FBO 绑定后 viewport 改变但 `g_gl_vp` 未更新，后续 `gl_cmd_set_viewport` 误判为命中缓存而跳过实际 `glViewport` 调用
+
+**修正**：
+- 将 `g_gl_vp` 提升为文件作用域变量
+- 新增 `gl_set_viewport_cached(x, y, w, h)` 辅助函数封装缓存逻辑
+- `gl_cmd_set_viewport` 改为调用 `gl_set_viewport_cached`
+- 全部 9 处直接 `glViewport` 调用替换为 `gl_set_viewport_cached`
+
+### R76-3 indirect_draw_compact barrier 批处理
+
+**问题**：`indirect_draw_compact` 在每个材质组结束时发出 `rhi_cmd_memory_barrier`。一个渲染 pass 内有 G 个材质组，就产生 G 次 barrier。barrier 强制 GPU 等待之前的 compute shader 完成，打断命令流并行执行。以 G=8 计，每个 pass 8 次 barrier，每帧 12-17 个 pass → 96-136 次 barrier/帧。
+
+**修正**：
+- 新增 `indirect_draw_compact_no_barrier` 函数——与 `indirect_draw_compact` 相同但无 trailing barrier
+- `indirect_draw_compact` 重构为调用 `indirect_draw_compact_no_barrier` + `rhi_cmd_memory_barrier`
+- 全部 4 处多组循环（`mega_mat_groups_indirect`、`mega_mat_groups_draw`、legacy forward、legacy deferred）改为两阶段模式：
+  1. 阶段一：循环所有组执行 upload_visibility + compact_no_barrier
+  2. 单个 `rhi_cmd_memory_barrier`
+  3. 阶段二：循环所有组执行 bind_material + execute
+- 将 G 次 barrier/pass 降为 1 次
+
+### R76-4 skeleton_upload 移入条件检查内
+
+**问题**：`skeleton_upload`（上传骨骼矩阵到 GPU buffer）+ skinned pipeline bind + 7 个 uniform set 在 `skinned_mesh_count > 0` 检查之前无条件执行。当场景无蒙皮网格且无 fallback skinned VBO 时，这些操作全部浪费。
+
+**修正**：将 `skeleton_upload` + pipeline bind + uniform sets 包裹在 `if (scene.skinned_mesh_count > 0 || rhi_handle_valid(render.skinned_vbo))` 条件内。两个分支（skinned meshes / fallback VBO）都在条件内部，无蒙皮渲染时全部跳过。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash

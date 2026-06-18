@@ -59,8 +59,15 @@ void indirect_draw_upload(IndirectDrawSystem *sys, RHIDevice *dev,
 void indirect_draw_upload_visibility(IndirectDrawSystem *sys, RHIDevice *dev,
                                      const u32 *flags, u32 count);
 
-/* GPU compact: read visibility, append visible commands, atomically increment count. */
+/* GPU compact: read visibility, append visible commands, atomically increment count.
+ * Includes a memory barrier after the compute dispatch. */
 void indirect_draw_compact(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);
+
+/* R76-3: Same as indirect_draw_compact but without the trailing memory barrier.
+ * Allows batching multiple groups' compacts before a single barrier,
+ * reducing G barriers per pass to 1. Caller must issue rhi_cmd_memory_barrier
+ * before indirect_draw_execute. */
+void indirect_draw_compact_no_barrier(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);
 
 /* Issue the indirect draw using the compacted command + count buffers. */
 void indirect_draw_execute(IndirectDrawSystem *sys, RHIDevice *dev);

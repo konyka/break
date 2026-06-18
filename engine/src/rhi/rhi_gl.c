@@ -93,6 +93,19 @@ typedef struct {
  * Avoids the O(4096) linear scan of device slots in bind_vertex_buffer. */
 static u32 g_cached_vertex_stride = 32;  /* default: 8 floats * sizeof(f32) */
 
+/* R76-2: File-scope viewport cache — shared by all viewport-setting paths.
+ * Previously g_gl_vp was a static local in gl_cmd_set_viewport, invisible to
+ * the 9 FBO/shadow functions that called glViewport directly. This caused
+ * ~25 redundant glViewport calls per frame and a cache desync correctness risk. */
+static GLint g_gl_vp[4] = {-1, -1, -1, -1};
+
+static void gl_set_viewport_cached(GLint x, GLint y, GLsizei w, GLsizei h) {
+    if (g_gl_vp[0] != x || g_gl_vp[1] != y || g_gl_vp[2] != (GLint)w || g_gl_vp[3] != (GLint)h) {
+        glViewport(x, y, w, h);
+        g_gl_vp[0] = x; g_gl_vp[1] = y; g_gl_vp[2] = (GLint)w; g_gl_vp[3] = (GLint)h;
+    }
+}
+
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
     if (!gl) return false;
@@ -288,7 +301,7 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
-    glViewport(0, 0, w, h);
+    gl_set_viewport_cached(0, 0, w, h);
 
     dev->backend_data = gl;
     dev->width  = w;
@@ -321,7 +334,7 @@ static void gl_shutdown(RHIDevice *dev) {
 }
 
 static void gl_resize(RHIDevice *dev, u32 w, u32 h) {
-    glViewport(0, 0, w, h);
+    gl_set_viewport_cached(0, 0, w, h);
     dev->width  = w;
     dev->height = h;
 }
@@ -412,12 +425,8 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
 
 static void gl_cmd_set_viewport(void *cmd, f32 x, f32 y, f32 w, f32 h) {
     (void)cmd;
-    /* Cached viewport: skip redundant glViewport calls */
-    static f32 g_gl_vp[4] = {-1, -1, -1, -1};
-    if (g_gl_vp[0] != x || g_gl_vp[1] != y || g_gl_vp[2] != w || g_gl_vp[3] != h) {
-        glViewport((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
-        g_gl_vp[0] = x; g_gl_vp[1] = y; g_gl_vp[2] = w; g_gl_vp[3] = h;
-    }
+    /* R76-2: Uses file-scope g_gl_vp cache via gl_set_viewport_cached. */
+    gl_set_viewport_cached((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
 }
 
 static void gl_cmd_draw(void *cmd, u32 vertex_count, u32 instance_count) {
@@ -819,7 +828,7 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
     /* Restrict rendering (and prevent cross-quadrant bleed) to one cascade
      * quadrant of the shadow atlas. GL uses a native bottom-left origin; the
      * sampling remap in the shaders uses the same quadrant convention. */
-    glViewport((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+    gl_set_viewport_cached((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
     glEnable(GL_SCISSOR_TEST);
     glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
 }
@@ -1208,7 +1217,7 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     /* Clear the whole atlas once with scissor disabled; per-cascade quadrant
      * scissoring is applied afterwards via rhi_cmd_set_shadow_viewport. */
     glDisable(GL_SCISSOR_TEST);
-    glViewport(0, 0, sm->width, sm->height);
+    gl_set_viewport_cached(0, 0, sm->width, sm->height);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
@@ -1216,7 +1225,7 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
+    gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
 
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
@@ -1451,13 +1460,13 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     GLFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
     if (!fd) return;
     glBindFramebuffer(GL_FRAMEBUFFER, fd->gl_fbo);
-    glViewport(0, 0, fbo->width, fbo->height);
+    gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, screen_w, screen_h);
+    gl_set_viewport_cached(0, 0, screen_w, screen_h);
 }
 
 void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
@@ -1714,13 +1723,13 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
     if (!md) return;
     glBindFramebuffer(GL_FRAMEBUFFER, md->gl_fbo);
-    glViewport(0, 0, fbo->width, fbo->height);
+    gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
+    gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
 
 /* ======================================================================== */
@@ -1809,12 +1818,12 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                            GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cd->depth_tex, 0);
     /* draw/read buffer set once at FBO creation (depth-only) */
-    glViewport(0, 0, (GLsizei)fbo->size, (GLsizei)fbo->size);
+    gl_set_viewport_cached(0, 0, (GLsizei)fbo->size, (GLsizei)fbo->size);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
+    gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }
