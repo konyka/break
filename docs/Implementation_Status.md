@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R72 审查加固 + terrain_erode一致性 + 物理栈安全 + frustum_from_vp指针化** — **R72-1**：`terrain_erode` 补全 `inv_scale`/`inv_nm1` 转换（R69-6 遗漏），除法→乘法。**R72-2**：`char_slide_resolve` 的 `candidates[64]`(256B)改 `static`，每帧≤5次调用。**R72-3**：`ccd_sweep_static` 的 `candidates[64]`(256B)改 `static`，每动态刚体每帧调用。**R72-4**：`frustum_from_vp` 签名从 `Mat4 vp` 按值(64B)改为 `const Mat4 *vp` 指针，更新 15 处调用点（main.c 3处 + test_camera_frustum.c 12处）。**回归**：test_terrain **22/22**、test_math **45/45**、test_camera_frustum **24/24**、test_animation **20/20**、test_physics **34/34**、test_character **20/20**。
+最近更新：**R73 审查加固 + CSM冗余消除 + 视锥内联化 + 地形双重绘制修复 + mat4_mul内联化** — **R73-1**：Legacy CSM 路径中 `gpucull_update_objects` 的 O(N) 打包循环+GPU上传从 4 级联循环内提升到循环前，消除 3 次冗余打包+上传。**R73-2**：`frustum_test_sphere`/`frustum_test_aabb`/`frustum_test_point` 从 cull.c 移至 cull.h 作为 `static inline`，使数千次/帧的逐节点裁剪调用可内联。**R73-3**：前向渲染路径中 `terrain_render`（硬编码光照）与 `clustered_pipeline`（PBR光照）双重绘制同一地形几何体，当 clustered pipeline 可用时跳过 `terrain_render`，消除冗余 GPU draw。**R73-4**：`mat4_mul` 从 math.c 的跨编译单元函数改为 math.h 中的 `static inline`，使骨架动画热路径（每帧 100-300 次调用）可内联，省去 128B/次栈拷贝。**回归**：test_terrain **22/22**、test_math **45/45**、test_camera_frustum **24/24**、test_animation **20/20**、test_physics **34/34**、test_character **20/20**。
 
 此前：**Round 30 完成** — DrawBench 导出 + NetRep peer 持久。**DrawBench export(R30-1)**：CSV ring + Chrome meta；`BREAK_DRAW_BENCH_EXPORT`；F11 联动。**Peer persist(R30-2)**：`peer_save/load` + `BREAK_NETREP_PEER_FILE`。**回归**：VK CTest **31/31**、GL **31/31**。
 

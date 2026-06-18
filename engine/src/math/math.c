@@ -15,39 +15,6 @@ Mat4 mat4_identity(void) {
     return m;
 }
 
-Mat4 mat4_mul(Mat4 a, Mat4 b) {
-    Mat4 out;
-#if MATH_SSE2
-    /* SSE2: each result column = sum of a-columns scaled by b-elements.
-     * Memory layout: e[col][row], so e[c] is a contiguous 4-float column. */
-    for (int col = 0; col < 4; col++) {
-        __m128 c0 = _mm_set1_ps(b.e[col][0]);
-        __m128 c1 = _mm_set1_ps(b.e[col][1]);
-        __m128 c2 = _mm_set1_ps(b.e[col][2]);
-        __m128 c3 = _mm_set1_ps(b.e[col][3]);
-
-        __m128 r = _mm_mul_ps(_mm_loadu_ps(a.e[0]), c0);
-        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[1]), c1));
-        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[2]), c2));
-        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[3]), c3));
-
-        _mm_storeu_ps(out.e[col], r);
-    }
-#else
-    memset(&out, 0, sizeof(out));
-    for (int col = 0; col < 4; col++) {
-        for (int row = 0; row < 4; row++) {
-            out.e[col][row] =
-                a.e[0][row] * b.e[col][0] +
-                a.e[1][row] * b.e[col][1] +
-                a.e[2][row] * b.e[col][2] +
-                a.e[3][row] * b.e[col][3];
-        }
-    }
-#endif
-    return out;
-}
-
 Mat4 mat4_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near_val, f32 far_val) {
     Mat4 m = {0};
     m.e[0][0] =  2.0f / (right - left);

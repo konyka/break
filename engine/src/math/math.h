@@ -165,7 +165,35 @@ Mat4 mat4_perspective(f32 fov_rad, f32 aspect, f32 near, f32 far);
  * right = -normalize(cross(f,up)), translation in e[i][3] (i=0,1,2).
  * s_L x u = f (not -f). See camera_view() for the same basis. */
 Mat4 mat4_lookat(Vec3 eye, Vec3 target, Vec3 up);
-Mat4 mat4_mul(Mat4 a, Mat4 b);
+/* R73-4: static inline mat4_mul — enables inlining in skeleton/animation hot paths.
+ * Saves 128B per-call stack copy (two Mat4 by-value) + eliminates cross-TU call overhead. */
+static inline Mat4 mat4_mul(Mat4 a, Mat4 b) {
+    Mat4 out;
+#if MATH_SSE
+    for (int col = 0; col < 4; col++) {
+        __m128 c0 = _mm_set1_ps(b.e[col][0]);
+        __m128 c1 = _mm_set1_ps(b.e[col][1]);
+        __m128 c2 = _mm_set1_ps(b.e[col][2]);
+        __m128 c3 = _mm_set1_ps(b.e[col][3]);
+        __m128 r = _mm_mul_ps(_mm_loadu_ps(a.e[0]), c0);
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[1]), c1));
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[2]), c2));
+        r = _mm_add_ps(r, _mm_mul_ps(_mm_loadu_ps(a.e[3]), c3));
+        _mm_storeu_ps(out.e[col], r);
+    }
+#else
+    for (int col = 0; col < 4; col++) {
+        for (int row = 0; row < 4; row++) {
+            out.e[col][row] =
+                a.e[0][row] * b.e[col][0] +
+                a.e[1][row] * b.e[col][1] +
+                a.e[2][row] * b.e[col][2] +
+                a.e[3][row] * b.e[col][3];
+        }
+    }
+#endif
+    return out;
+}
 Mat4 mat4_inverse(Mat4 m);
 /* R49: Multiply diagonal ortho matrix D by view matrix V (D*V).
  * PRECONDITION: D must be diagonal + translation

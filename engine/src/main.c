@@ -3576,6 +3576,27 @@ u32 culled_count = 0;
             u32 atlas_half = render.shadow_map.width / 2u;
             rhi_cmd_bind_shadow_map(cmd, &render.shadow_map);
 
+            /* R73-1: Pre-pack legacy GPU cull objects — object data is cascade-independent.
+             * Hoists O(N) pack loop + GPU buffer upload out of the 4-cascade loop. */
+            bool legacy_gpucull_packed = false;
+            if (mega_buf.valid && gpu_indirect_enabled &&
+                gpucull_enabled && gpucull_sys.ready) {
+                u32 vc_pre = mega_buf.draw_cmd_count;
+                if (vc_pre <= GPUCULL_MAX_OBJECTS) {
+                    u32 obj_idx = 0;
+                    for (u32 ni = 0; ni < scene.node_count && obj_idx < vc_pre; ni++) {
+                        if (mega_buf.node_spheres[ni].r < 0.0f) continue;
+                        g_cull_positions[obj_idx*3+0] = mega_buf.node_spheres[ni].cx;
+                        g_cull_positions[obj_idx*3+1] = mega_buf.node_spheres[ni].cy;
+                        g_cull_positions[obj_idx*3+2] = mega_buf.node_spheres[ni].cz;
+                        g_cull_radii[obj_idx] = mega_buf.node_spheres[ni].r;
+                        obj_idx++;
+                    }
+                    gpucull_update_objects(&gpucull_sys, g_cull_positions, g_cull_radii, vc_pre);
+                    legacy_gpucull_packed = true;
+                }
+            }
+
             for (int c = 0; c < 4; c++) {
                 f32 zn = render.cascade_splits[c];
                 f32 zf = render.cascade_splits[c + 1];
@@ -3636,18 +3657,8 @@ u32 culled_count = 0;
                         draw_bench_add(1u, mega_count_visible_draws(&mega_buf, NULL));
                         draw_bench_mark_unified();
                     } else {
-                    if (gpucull_enabled && gpucull_sys.ready && vis_count <= GPUCULL_MAX_OBJECTS) {
-                        /* Legacy: flags + compact (two compute passes). */
-                        u32 obj_idx = 0;
-                        for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
-                            if (mega_buf.node_spheres[ni].r < 0.0f) continue;
-                            g_cull_positions[obj_idx*3+0] = mega_buf.node_spheres[ni].cx;
-                            g_cull_positions[obj_idx*3+1] = mega_buf.node_spheres[ni].cy;
-                            g_cull_positions[obj_idx*3+2] = mega_buf.node_spheres[ni].cz;
-                            g_cull_radii[obj_idx] = mega_buf.node_spheres[ni].r;
-                            obj_idx++;
-                        }
-                        gpucull_update_objects(&gpucull_sys, g_cull_positions, g_cull_radii, vis_count);
+                    if (legacy_gpucull_packed) {
+                        /* Legacy: flags + compact (two compute passes). Object data pre-packed. */
                         gpucull_dispatch_flags(&gpucull_sys, cmd, &render.cascade_vp[c].e[0][0],
                                                indirect_sys.visibility_buf);
                     } else {
@@ -3809,9 +3820,15 @@ u32 culled_count = 0;
 
         skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
 
-        terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                       render.terrain_tex, active_sampler,
-                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias, water.water_y, (f32)total_time);
+        /* R73-3: Skip terrain_render when clustered pipeline is active —
+         * the clustered pass below draws the same terrain geometry with PBR
+         * lighting (dynamic sun, IBL, point shadows), making terrain_render's
+         * hardcoded-lighting pass a redundant GPU draw. */
+        if (!rhi_handle_valid(render.clustered_pipeline)) {
+            terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                           render.terrain_tex, active_sampler,
+                           render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias, water.water_y, (f32)total_time);
+        }
 
         water_update(&water, (f32)engine.delta_time);
         water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],

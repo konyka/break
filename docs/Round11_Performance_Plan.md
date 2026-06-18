@@ -792,6 +792,36 @@
 
 **验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20、test_physics 34/34、test_character 20/20。
 
+---
+
+## R73 CSM冗余消除 + 视锥内联化 + 地形双重绘制修复 + mat4_mul内联化
+
+### R73-1 CSM legacy gpucull_update_objects 提升到级联循环前
+
+**问题**：Legacy CSM 路径中，`gpucull_update_objects` 的 O(N) 打包循环+GPU buffer upload 在 `for (c = 0; c < 4; c++)` 级联循环内执行，但对象数据（`mega_buf.node_spheres`）在 4 个级联间完全相同，导致每帧 4 次冗余打包+上传。
+
+**修正**：将打包循环+`gpucull_update_objects` 提升到级联循环前，设置 `legacy_gpucull_packed` 标志。循环内 legacy 路径仅调用 `gpucull_dispatch_flags`（依赖每级联的 `cascade_vp[c]`）。
+
+### R73-2 frustum_test_sphere/aabb/point 移至头文件 static inline
+
+**问题**：`frustum_test_sphere`、`frustum_test_aabb`、`frustum_test_point` 定义在 cull.c（非 inline），编译器无法将其内联到 main.c 的逐节点裁剪循环（每帧数千次调用）。无 LTO 时产生函数调用开销。
+
+**修正**：将三个函数移至 cull.h 作为 `static inline`，从 cull.c 删除旧定义。`frustum_from_vp` 保留在 .c 中（调用频率低，函数体较大）。
+
+### R73-3 前向路径地形双重绘制修复
+
+**问题**：前向渲染路径中，`terrain_render`（使用硬编码光照的 terrain pipeline）和 `clustered_pipeline`（使用 PBR 聚簇光照）在同一 FBO 上绘制同一地形几何体（`terrain.vbo`/`ibo`/`index_count`）。当 clustered pipeline 可用时，`terrain_render` 的整个 GPU draw（顶点处理+光栅化+片元着色）被 clustered 路径覆盖，完全浪费。
+
+**修正**：当 `rhi_handle_valid(render.clustered_pipeline)` 时跳过 `terrain_render`，仅保留 clustered 路径的地形绘制（PBR 光照、IBL、点阴影）。
+
+### R73-4 mat4_mul 改为 static inline
+
+**问题**：`mat4_mul(Mat4 a, Mat4 b)` 定义在 math.c（非 inline），按值传递两个 64B 的 Mat4 参数（共 128B 栈拷贝）。在骨架动画热路径中每帧调用 100-300 次（`skeleton_evaluate` 2×/关节 + `skeleton_apply_local_trs` 2×/关节 + `skeleton_compute_world_transforms` 1×/关节）。项目未启用 LTO，编译器无法跨编译单元内联。
+
+**修正**：将 `mat4_mul` 从 math.c 的函数定义改为 math.h 中的 `static inline` 定义（含 SSE 标量双路径），从 math.c 删除旧定义。所有调用点自动获得内联版本。
+
+**验收**：test_terrain 22/22、test_math 45/45、test_camera_frustum 24/24、test_animation 20/20、test_physics 34/34、test_character 20/20。
+
 
 ## 构建与回归命令
 
