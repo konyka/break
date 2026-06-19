@@ -4,9 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R81 VK深度函数no-op修复 + skybox死代码清理 + draw_bench参数门控 + 点阴影冗余uniform移除** — **R81-1**（CRITICAL 正确性）：R80 移除 skybox.c 的 `#ifndef ENGINE_VULKAN` 守卫后，`rhi_cmd_set_depth_func_less_or_equal`/`_less` 在 VK 后端也被调用，但其 VK 实现调 `vkCmdSetDepthCompareOp`——而 VK 管线未启用 `VK_DYNAMIC_STATE_DEPTH_COMPARE_OP` 动态状态，这是 Vulkan 验证错误/未定义行为。改为 no-op（与 `rhi_cmd_set_depth_mask`/`rhi_cmd_set_cull_face` 一致，深度比较由管线静态状态处理）。**R81-2**：skybox.c 移除死代码 `#include <glad.h>`（R80-2 后无直接 GL 调用）。**R81-3**：`draw_bench_add` 的 `mega_count_visible_draws`/`mega_count_visible_node_vis` 参数在 C 中先于函数调用求值，即使 `draw_bench_enabled=false`（默认）也执行 O(N) 遍历。8 处调用点添加 `draw_bench_enabled ?` 三元门控。**R81-4**：点阴影地形绘制中 `u_model=identity` 冗余——`point_shadow_render_begin` 已设为 identity，地形是第一个绘制。移除 24 次/帧冗余 `glUniformMatrix4fv`。**回归**：全部 **23/23** 测试通过。
+最近更新：**R82 静态数据生命周期优化：遮挡剔除AABB缓存 + 遗留gpucull跳过 + 点阴影per-face uniform提升 + occ节点映射移至init** — **R82-1**：统一剔除激活时（默认），遗留 gpucull 打包循环+GPU 上传的输出从不被消费（统一路径在 `mega_upload_unified_cull` 中已上传对象数据）。添加 `!unified_cull_enabled` 条件跳过。**R82-2**：遮挡剔除 AABB 每帧重算 8 角点世界变换（最多 16384×8=131072 次 mat-vec 乘法）+ 上传最多 393KB 到 GPU，但场景数据静态（`local_transform` 仅加载时设置，运行时不修改）。移至 init 缓存为 `g_occ_aabbs_count` + `g_occ_aabbs[]`。**R82-3**：点阴影 `point_shadow_render_begin` 中 `u_light_pos`/`u_far_plane` 为 per-light 常量，每光设置 6 次（每面 1 次）而非 1 次。添加 `face == 0u` 门控，消除每帧最多 80 次冗余 GL uniform 调用。**R82-4**：`occ_rebuild_node_map` 每帧重建节点→遮挡索引映射，但判定条件（`has_mesh`/`skinned`/`mesh_index`）运行时不变。移至 init（与 R82-2 合并）。**回归**：全部 **23/23** 测试通过。
 
-此前：**R80 VAO缓存提升文件作用域 + skybox深度遮罩/裁剪面缓存化** — R80-1 VAO缓存提升、R80-2 skybox深度遮罩/裁剪面缓存化。23/23 测试通过。
+此前：**R81 VK深度函数no-op修复 + skybox死代码清理 + draw_bench参数门控 + 点阴影冗余uniform移除** — R81-1 VK深度函数no-op修复（CRITICAL）、R81-2 skybox死代码清理、R81-3 draw_bench参数门控、R81-4 点阴影冗余uniform移除。23/23 测试通过。
 
 此前：**R79 FBO绑定缓存 + 纹理上传缓存失配修复 + buffer尾部解绑消除 + scissor状态缓存** — R79-1 FBO绑定缓存、R79-2 纹理上传缓存失配修复、R79-3 buffer尾部解绑消除、R79-4 scissor状态缓存。23/23 测试通过。
 

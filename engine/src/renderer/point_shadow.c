@@ -305,14 +305,19 @@ void point_shadow_render_begin(PointShadowSystem *sys, RHICmdBuffer *cmd,
     if (sys->loc_mvp >= 0)
         rhi_cmd_set_uniform_mat4(cmd, sys->loc_mvp,
                                  &sys->light_vp[idx].e[0][0]);
-    if (sys->loc_light_pos >= 0) {
-        Vec3 lp = sys->lights[light_index].position;
-        rhi_cmd_set_uniform_vec3(cmd, sys->loc_light_pos,
-                                 lp.e[0], lp.e[1], lp.e[2]);
+    /* R82-3: Per-light uniforms set only on first face (values don't change per face).
+     * Uniforms persist across FBO/viewport changes in both GL (program state) and
+     * VK (push constant state). Same pipeline bound for all faces. */
+    if (face == 0u) {
+        if (sys->loc_light_pos >= 0) {
+            Vec3 lp = sys->lights[light_index].position;
+            rhi_cmd_set_uniform_vec3(cmd, sys->loc_light_pos,
+                                     lp.e[0], lp.e[1], lp.e[2]);
+        }
+        if (sys->loc_far_plane >= 0)
+            rhi_cmd_set_uniform_f32(cmd, sys->loc_far_plane,
+                                    sys->far_planes[light_index]);
     }
-    if (sys->loc_far_plane >= 0)
-        rhi_cmd_set_uniform_f32(cmd, sys->loc_far_plane,
-                                sys->far_planes[light_index]);
 }
 
 void point_shadow_render_end(PointShadowSystem *sys, RHICmdBuffer *cmd,

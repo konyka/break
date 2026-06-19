@@ -1060,6 +1060,35 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R82 静态数据生命周期优化：遮挡剔除AABB缓存 + 遗留gpucull跳过 + 点阴影per-face uniform提升 + occ节点映射移至init
+
+### R82-1 统一剔除激活时跳过遗留 gpucull 打包
+
+**问题**：阴影级联渲染中，`legacy_gpucull_packed` 路径每帧执行 O(N) 打包循环（从 `node_spheres` 提取 position/radius）+ `gpucull_update_objects` GPU 上传。但当 `unified_cull_enabled=true`（默认，由 `mega_upload_unified_cull` 在 init 时设置）时，对象数据已通过 `gpucull_upload_objects_unified` 上传到统一 SSBO，级联循环使用统一路径（`mega_unified_cull_shadow`/`mega_unified_cull_draw`），遗留打包输出从不被消费。
+
+**修正**：在遗留打包条件中添加 `!unified_cull_enabled`，跳过完全浪费的 O(N) 循环 + GPU buffer 上传。
+
+### R82-2 遮挡剔除 AABB 移至 init 缓存
+
+**问题**：遮挡剔除每帧对所有场景节点执行 8 角点世界空间 AABB 变换（最多 16384×8=131072 次 mat-vec 乘法），然后通过 `occlusion_cull_upload_aabbs` → `glBufferSubData` 上传最多 393KB 到 GPU。但场景节点的 `world_transform` 是静态的——`local_transform` 仅在加载时设置，运行时无任何修改（已验证：全代码库无 `local_transform` 的运行时赋值）。此路径默认启用（`occ_cull_enabled=true`）。
+
+**修正**：在 init 阶段（紧接 sphere cache 构建之后）预计算世界空间 AABB 并缓存到 `g_occ_aabbs[]` + `g_occ_aabbs_count`。每帧仅需上传 + dispatch（Hi-Z 每帧变化，但 AABB 不变）。
+
+### R82-3 点阴影 per-face uniform 提升
+
+**问题**：`point_shadow_render_begin` 在每个面的调用中都设置 `u_light_pos` 和 `u_far_plane`，但这两个值仅依赖 `light_index` 不依赖 `face`。每个光设置 6 次（每面 1 次）而非 1 次。`POINT_SHADOW_MAX_LIGHTS=8`，每帧最多 8 光×5 冗余面×2 uniform = 80 次冗余 GL uniform 调用。
+
+**修正**：在 `point_shadow_render_begin` 中用 `face == 0u` 门控逐光 uniform。同一 `depth_pipeline` 绑定于所有面，OpenGL 中 uniform 属于 program 状态跨 FBO 切换保持不变，VK 中 push constant 属于 command buffer 状态跨 framebuffer bind 不重置。
+
+### R82-4 occ_rebuild_node_map 移至 init
+
+**问题**：`occ_rebuild_node_map` 每帧重建 `occ_idx_by_node` 映射，遍历所有节点两次（清除 + 构建）。但判定条件（`has_mesh`/`skinned`/`mesh_index`）在运行时不变——场景节点结构初始化后无修改。
+
+**修正**：在 init 阶段调用一次 `occ_rebuild_node_map`（与 R82-2 AABB 缓存合并），删除每帧调用。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash

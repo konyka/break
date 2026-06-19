@@ -780,6 +780,7 @@ static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
 static f32 g_cull_positions[GPUCULL_MAX_OBJECTS * 3]; /* 48KB: gpucull positions */
 static f32 g_cull_radii[GPUCULL_MAX_OBJECTS];         /* 16KB: gpucull radii */
 static ObjectAABB g_occ_aabbs[OCCLUSION_MAX_OBJECTS]; /* 512KB: occlusion AABB upload */
+static u32 g_occ_aabbs_count = 0;  /* R82-2: cached at init (scene data is static) */
 
 static void occ_rebuild_node_map(const Scene *scene) {
     u32 n = scene->node_count < 16384u ? scene->node_count : 16384u;
@@ -1870,6 +1871,37 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 mega_buf.sphere_count++;
             }
             LOG_INFO("Sphere cache: %u valid nodes", mega_buf.sphere_count);
+
+            /* R82-2/R82-4: Pre-compute occlusion AABBs + node map at init.
+             * Scene data is static after load (local_transform never modified at runtime),
+             * so world AABBs and node mapping are immutable. */
+            g_occ_aabbs_count = 0;
+            occ_rebuild_node_map(&scene);
+            for (u32 ni = 0; ni < scene.node_count && g_occ_aabbs_count < OCCLUSION_MAX_OBJECTS; ni++) {
+                SceneNode *nd = &scene.nodes[ni];
+                if (!nd->has_mesh || nd->skinned) continue;
+                if (nd->mesh_index >= scene.mesh_count) continue;
+                Mesh *om = &scene.meshes[nd->mesh_index];
+                Vec3 wmin = vec3(1e30f, 1e30f, 1e30f), wmax = vec3(-1e30f, -1e30f, -1e30f);
+                for (int ci = 0; ci < 8; ci++) {
+                    f32 lx = (ci & 1) ? om->aabb_max.e[0] : om->aabb_min.e[0];
+                    f32 ly = (ci & 2) ? om->aabb_max.e[1] : om->aabb_min.e[1];
+                    f32 lz = (ci & 4) ? om->aabb_max.e[2] : om->aabb_min.e[2];
+                    f32 wx = nd->world_transform.e[0][0]*lx + nd->world_transform.e[1][0]*ly + nd->world_transform.e[2][0]*lz + nd->world_transform.e[3][0];
+                    f32 wy = nd->world_transform.e[0][1]*lx + nd->world_transform.e[1][1]*ly + nd->world_transform.e[2][1]*lz + nd->world_transform.e[3][1];
+                    f32 wz = nd->world_transform.e[0][2]*lx + nd->world_transform.e[1][2]*ly + nd->world_transform.e[2][2]*lz + nd->world_transform.e[3][2];
+                    if (wx < wmin.e[0]) wmin.e[0] = wx;
+                    if (wx > wmax.e[0]) wmax.e[0] = wx;
+                    if (wy < wmin.e[1]) wmin.e[1] = wy;
+                    if (wy > wmax.e[1]) wmax.e[1] = wy;
+                    if (wz < wmin.e[2]) wmin.e[2] = wz;
+                    if (wz > wmax.e[2]) wmax.e[2] = wz;
+                }
+                g_occ_aabbs[g_occ_aabbs_count].min = wmin;
+                g_occ_aabbs[g_occ_aabbs_count].max = wmax;
+                g_occ_aabbs_count++;
+            }
+            LOG_INFO("Occlusion: %u cached AABBs", g_occ_aabbs_count);
 
             if (gpucull_sys.unified_ready)
                 mega_upload_unified_cull(&gpucull_sys, cmds, mega_buf.cmd_node_index,
@@ -3589,10 +3621,11 @@ u32 culled_count = 0;
             rhi_cmd_bind_shadow_map(cmd, &render.shadow_map);
 
             /* R73-1: Pre-pack legacy GPU cull objects — object data is cascade-independent.
-             * Hoists O(N) pack loop + GPU buffer upload out of the 4-cascade loop. */
+             * R82-1: Skip when unified cull is active — object data already uploaded
+             * via gpucull_upload_objects_unified at init, legacy pack output never consumed. */
             bool legacy_gpucull_packed = false;
             if (mega_buf.valid && gpu_indirect_enabled &&
-                gpucull_enabled && gpucull_sys.ready) {
+                gpucull_enabled && gpucull_sys.ready && !unified_cull_enabled) {
                 u32 vc_pre = mega_buf.draw_cmd_count;
                 if (vc_pre <= GPUCULL_MAX_OBJECTS) {
                     u32 obj_idx = 0;
@@ -3819,9 +3852,7 @@ u32 culled_count = 0;
         rhi_gpu_timer_begin(gpu_scene_timer);
         rhi_gpu_timer_begin(gpu_forward_timer);
 
-        /* ---- Rebuild occlusion node map before forward/deferred branching ---- */
-        if (occ_cull_enabled && occ_sys.enabled)
-            occ_rebuild_node_map(&scene);
+        /* R82-4: Occlusion node map built at init (scene data is static). */
 
         /* Cache point shadow gather once per frame (consumed by bind_material, terrain, etc.) */
         g_psc.count = point_shadow_gather(&pt_shadows, g_psc.tex, g_psc.light_idx);
@@ -5159,37 +5190,10 @@ u32 culled_count = 0;
         if (occ_cull_enabled && occ_sys.enabled && rhi_handle_valid(scene_fbo.depth_tex)) {
             occlusion_cull_generate_hi_z(&occ_sys, cmd, scene_fbo.depth_tex);
 
-            /* Upload scene node AABBs for GPU culling. */
-            u32 occ_count = 0;
-            ObjectAABB *occ_aabbs = g_occ_aabbs;
-            for (u32 ni = 0; ni < scene.node_count && occ_count < OCCLUSION_MAX_OBJECTS; ni++) {
-                SceneNode *nd = &scene.nodes[ni];
-                if (!nd->has_mesh || nd->skinned) continue;
-                if (nd->mesh_index >= scene.mesh_count) continue;
-                Mesh *om = &scene.meshes[nd->mesh_index];
-                /* Transform AABB corners to world space. */
-                Vec3 wmin = vec3(1e30f, 1e30f, 1e30f), wmax = vec3(-1e30f, -1e30f, -1e30f);
-                for (int ci = 0; ci < 8; ci++) {
-                    f32 lx = (ci & 1) ? om->aabb_max.e[0] : om->aabb_min.e[0];
-                    f32 ly = (ci & 2) ? om->aabb_max.e[1] : om->aabb_min.e[1];
-                    f32 lz = (ci & 4) ? om->aabb_max.e[2] : om->aabb_min.e[2];
-                    f32 wx = nd->world_transform.e[0][0]*lx + nd->world_transform.e[1][0]*ly + nd->world_transform.e[2][0]*lz + nd->world_transform.e[3][0];
-                    f32 wy = nd->world_transform.e[0][1]*lx + nd->world_transform.e[1][1]*ly + nd->world_transform.e[2][1]*lz + nd->world_transform.e[3][1];
-                    f32 wz = nd->world_transform.e[0][2]*lx + nd->world_transform.e[1][2]*ly + nd->world_transform.e[2][2]*lz + nd->world_transform.e[3][2];
-                    if (wx < wmin.e[0]) wmin.e[0] = wx;
-                    if (wx > wmax.e[0]) wmax.e[0] = wx;
-                    if (wy < wmin.e[1]) wmin.e[1] = wy;
-                    if (wy > wmax.e[1]) wmax.e[1] = wy;
-                    if (wz < wmin.e[2]) wmin.e[2] = wz;
-                    if (wz > wmax.e[2]) wmax.e[2] = wz;
-                }
-                occ_aabbs[occ_count].min = wmin;
-                occ_aabbs[occ_count].max = wmax;
-                occ_count++;
-            }
-            if (occ_count > 0) {
-                occlusion_cull_upload_aabbs(&occ_sys, occ_aabbs, occ_count);
-                occlusion_cull_dispatch(&occ_sys, cmd, &curr_view_proj, occ_count);
+            /* R82-2: AABBs cached at init — scene data is static. */
+            if (g_occ_aabbs_count > 0) {
+                occlusion_cull_upload_aabbs(&occ_sys, g_occ_aabbs, g_occ_aabbs_count);
+                occlusion_cull_dispatch(&occ_sys, cmd, &curr_view_proj, g_occ_aabbs_count);
             }
         }
 
