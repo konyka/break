@@ -4367,31 +4367,23 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
     VkDescriptorSet ds;
     if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
 
-    VkDescriptorImageInfo img_info = {0};
-    img_info.sampler = sd->sampler;
-    img_info.imageView = cd->view;
-    img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    /* R98-1: Single write with descriptorCount=2 for consecutive bindings 0-1.
+     * Both bindings use the same cubemap view (was 2 separate identical writes). */
+    VkDescriptorImageInfo img_infos[2];
+    memset(img_infos, 0, sizeof(img_infos));
+    img_infos[0].sampler = sd->sampler;
+    img_infos[0].imageView = cd->view;
+    img_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_infos[1] = img_infos[0];
 
-    VkDescriptorImageInfo dummy_info = {0};
-    dummy_info.sampler = sd->sampler;
-    dummy_info.imageView = cd->view;
-    dummy_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet writes[2];
-    memset(writes, 0, sizeof(writes));
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = ds;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = &img_info;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = ds;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &dummy_info;
-    vkUpdateDescriptorSets(vk->device, 2, writes, 0, NULL);
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = ds;
+    write.dstBinding = 0;
+    write.descriptorCount = 2;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = img_infos;
+    vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
 
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
