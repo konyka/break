@@ -3644,23 +3644,40 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     VkDescriptorImageInfo img_infos[9];
     memset(img_infos, 0, sizeof(img_infos));
 
-    /* R97-2: Use a single vkUpdateDescriptorSets write with descriptorCount=9
-     * for consecutive bindings 0-8, instead of 9 separate writes. */
+    /* R99-1: Split into 3 writes — binding 5 has descriptorCount=4 when
+     * feat_partially_bound, so a single descriptorCount=9 write would fill
+     * binding 5's array elements 1-3 instead of bindings 6-8. */
     for (int i = 0; i < 9; i++) {
         img_infos[i].sampler = sd->sampler;
         img_infos[i].imageView = views[i];
         img_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
-    VkWriteDescriptorSet write = {0};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = ds;
-    write.dstBinding = 0;
-    write.descriptorCount = 9;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = img_infos;
+    VkWriteDescriptorSet writes[3];
+    memset(writes, 0, sizeof(writes));
+    /* Bindings 0-4: albedo, shadow, mr, normal, emissive */
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = ds;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 5;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &img_infos[0];
+    /* Binding 5: ssao (element 0 only; array size is 4 when partially bound) */
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = ds;
+    writes[1].dstBinding = 5;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &img_infos[5];
+    /* Bindings 6-8: brdf_lut, irradiance, prefilter */
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = ds;
+    writes[2].dstBinding = 6;
+    writes[2].descriptorCount = 3;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &img_infos[6];
 
-    vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
+    vkUpdateDescriptorSets(vk->device, 3, writes, 0, NULL);
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
         0, 1, &ds, 0, NULL);

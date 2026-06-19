@@ -314,8 +314,14 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     if (t->loc_light_vp >= 0 && light_vp) rhi_cmd_set_uniform_mat4(cmd, t->loc_light_vp, light_vp);
     if (t->loc_water_y >= 0) rhi_cmd_set_uniform_f32(cmd, t->loc_water_y, water_y);
     if (t->loc_time >= 0) rhi_cmd_set_uniform_f32(cmd, t->loc_time, time);
-    rhi_cmd_bind_texture(cmd, fallback_tex, sampler, 0);
-    if (rhi_handle_valid(shadow_map)) rhi_cmd_bind_texture(cmd, shadow_map, sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures instead of two rhi_cmd_bind_texture
+     * calls. In the VK path, rhi_cmd_bind_texture ignores the unit parameter and
+     * binds all 9 descriptor slots to the same texture — the second call would
+     * overwrite the first, making the shader see shadow_map on binding 0 (u_albedo)
+     * instead of the terrain texture. rhi_cmd_bind_material_textures correctly
+     * assigns albedo→binding 0 and shadow→binding 1 in a single descriptor set. */
+    rhi_cmd_bind_material_textures(cmd, fallback_tex, fallback_tex, fallback_tex,
+                                   fallback_tex, shadow_map, fallback_tex, sampler);
     rhi_cmd_bind_vertex_buffer(cmd, t->vbo, 0);
     rhi_cmd_bind_index_buffer(cmd, t->ibo, 0);
     rhi_cmd_draw_indexed(cmd, t->index_count, 1);
