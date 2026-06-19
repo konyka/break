@@ -1273,6 +1273,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     /* VK_SUBOPTIMAL_KHR is a success — swapchain rebuild deferred to rhi_present */
 
     vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0);
+    vk->current_pipeline = VK_NULL_HANDLE; /* R89-1: reset pipeline cache for new command buffer */
 
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2602,8 +2603,11 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
      * different formats without breaking render-pass compatibility. */
     VkPipeline bound = pd->is_compute ? pd->pipeline
                      : vk_pipeline_for_fmt(vk, pd, vk->active_color_fmt);
-    vkCmdBindPipeline(vk->cmd_buffers[vk->current_frame], bind_point, bound);
-    vk->current_pipeline = bound;
+    /* R89-1: Skip redundant vkCmdBindPipeline when pipeline unchanged. */
+    if (bound != vk->current_pipeline) {
+        vkCmdBindPipeline(vk->cmd_buffers[vk->current_frame], bind_point, bound);
+        vk->current_pipeline = bound;
+    }
     vk->current_pipeline_data = pd;
     /* Start a fresh storage-buffer descriptor set for this pipeline binding. */
     vk->storage_set_valid = false;

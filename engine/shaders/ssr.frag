@@ -13,7 +13,7 @@ uniform float u_ssr_sw;
 uniform float u_ssr_sh;
 uniform float u_ssr_max_steps;
 uniform float u_ssr_stride;
-uniform float u_ssr_thickness;
+const float u_ssr_thickness = 0.05;  /* R89-2: hardcoded constant */
 
 vec3 view_pos_from_depth(vec2 uv, float depth) {
     vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);

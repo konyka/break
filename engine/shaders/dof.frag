@@ -8,8 +8,8 @@ uniform sampler2D u_dof_depth;
 
 uniform float u_dof_focus;
 uniform float u_dof_range;
-uniform float u_dof_near;
-uniform float u_dof_far;
+const float u_dof_near = 0.1;  /* R89-2: hardcoded constant */
+const float u_dof_far = 100.0;  /* R89-2: hardcoded constant */
 uniform float u_dof_sw;
 uniform float u_dof_sh;
 

@@ -1261,6 +1261,28 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R89 VK pipeline绑定缓存 + 着色器硬编码常量移至shader const(第二轮)
+
+### R89-1 VK pipeline 绑定缓存（MEDIUM CPU）
+
+**问题**：VK 后端 `rhi_cmd_bind_pipeline`（rhi_vk.c L2605）每次调用都执行 `vkCmdBindPipeline`，不检查 pipeline 是否已绑定。GL 后端已有 pipeline 缓存（`g_gl_program`/`g_gl_vao`，R80-1），VK 后端缺少对等优化。在多 draw call 渲染循环中，连续绘制相同 pipeline 的对象会重复记录 `vkCmdBindPipeline` 命令。
+
+**修正**：
+1. 在 `rhi_cmd_bind_pipeline` 中添加 `if (bound != vk->current_pipeline)` 检查，跳过冗余 `vkCmdBindPipeline` 调用。`current_pipeline_data` 和 `storage_set_valid` 仍每次更新以保持状态一致性。
+2. 在帧起始（`vkResetCommandBuffer` 后）重置 `vk->current_pipeline = VK_NULL_HANDLE`，确保新命令缓冲区的首次绑定不被跳过。
+
+**影响文件**：rhi_vk.c
+
+### R89-2 dof/ssr/upscale 硬编码常量 uniform → shader const（LOW GPU/CPU）
+
+**问题**：`dof.c`、`ssr.c`、`upscale.c` 每帧设置硬编码常量 uniform（`u_dof_near=0.1`、`u_dof_far=100.0`、`u_ssr_thickness=0.05`、`u_ups_sharp=0.0`），但这些值从不变化。与 R87-2/R87-3 相同模式。C 代码已有 `if (loc >= 0)` 守卫。
+
+**修正**：将 GL 着色器中的 `uniform float` 替换为 `const float`。uniform 被 const 替换后，`glGetUniformLocation` 返回 -1，`if (loc >= 0)` 守卫跳过 CPU 设置。VK 着色器使用 push constant offset，不受影响。`u_ups_sharp=0.0` 使 `if (u_ups_sharp > 0.0)` 分支成为死代码，编译器自动优化掉锐化计算。
+
+**影响文件**：dof.frag, ssr.frag, upscale.frag
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
