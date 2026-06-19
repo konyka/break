@@ -19,10 +19,12 @@ layout(location = 3) out vec4 out_velocity;        /* NDC delta xy */
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 
-uniform float u_metallic_default;
-uniform float u_roughness_default;
-uniform float u_ao_default;
-uniform float u_emissive_flag;
+/* R93-1: These uniforms are never set from C code. Use const defaults.
+ * u_ao_default=1.0 (full AO, no darkening) — was 0.0 (no AO) which was a bug. */
+const float u_metallic_default = 0.0;
+const float u_roughness_default = 0.0;
+const float u_ao_default = 1.0;
+const float u_emissive_flag = 0.0;
 
 /* Octahedron normal encoding (Cigolle et al.). Lossless on the unit sphere
  * up to 16-bit precision; deterministic round-trip with octahedron_decode. */

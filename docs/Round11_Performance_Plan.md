@@ -1357,6 +1357,24 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R93 gbuffer.frag 未设置uniform默认值修复
+
+### R93-1 gbuffer.frag u_ao_default 默认值修复（MEDIUM BUG）
+
+**问题**：`gbuffer.frag`（GL 版）声明 4 个 uniform（`u_metallic_default`/`u_roughness_default`/`u_ao_default`/`u_emissive_flag`），但 C 代码（`deferred.c`）从未查询或设置它们。GL 路径中这些 uniform 默认为 0.0：
+- `u_metallic_default=0.0` → `metal = mr.x + 0.0 = mr.x`（正确，从纹理读取）
+- `u_roughness_default=0.0` → `rough = mr.y + 0.0 = mr.y`（正确）
+- `u_ao_default=0.0` → `ao = 0.0`（**BUG：无环境光遮蔽**）
+- `u_emissive_flag=0.0` → 无自发光（正确）
+
+VK 版 `gbuffer_vk.frag` 使用 push constant offset 256-268，同样从未设置（deferred 路径可选，暂不处理 VK）。
+
+**修正**：将 4 个 `uniform float` 替换为 `const float`，其中 `u_ao_default` 修正为 `1.0`（完全 AO，无遮蔽变暗）。
+
+**影响文件**：gbuffer.frag
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
