@@ -150,7 +150,7 @@ void main() {
     }
 
     cloud_color = cloud_color / (cloud_color + vec3(1.0));
-    cloud_color = pow(cloud_color, vec3(1.0 / 2.2));
+    cloud_color = exp2(log2(max(cloud_color, vec3(0.0))) * (1.0 / 2.2));  /* R94-1: exp2 replaces pow */
 
     frag_color = vec4(cloud_color, 1.0);
 }

@@ -435,7 +435,7 @@ void main() {
     }
 
     color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0 / 2.2));
+    color = exp2(log2(max(color, vec3(0.0))) * (1.0 / 2.2));  /* R94-1: exp2 replaces pow */
 
     FragColor = vec4(color, 1.0);
 }

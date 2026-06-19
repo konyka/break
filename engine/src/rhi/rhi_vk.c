@@ -222,6 +222,16 @@ typedef struct {
      * can pick (or build) a render-pass-compatible pipeline variant.
      * VK_FORMAT_UNDEFINED means "do not variant" (depth-only/MRT passes). */
     VkFormat      active_color_fmt;
+    /* R94-2: viewport/scissor cache -- skip redundant vkCmdSetViewport/Scissor */
+    f32           cached_vp_x, cached_vp_y, cached_vp_w, cached_vp_h;
+    i32           cached_sc_x, cached_sc_y;
+    u32           cached_sc_w, cached_sc_h;
+    bool          vp_valid, sc_valid;
+    /* R94-3: push constant staging -- batch vkCmdPushConstants into one call */
+    u8            push_staging[256];
+    u32           push_dirty_min;
+    u32           push_dirty_max;
+    bool          push_dirty;
     VkRenderPass shadow_render_pass;
     VkRenderPass render_pass_load;      /* LOAD-op twin of the swapchain pass */
     VkImageView shadow_tex_view;
@@ -1274,6 +1284,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
 
     vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0);
     vk->current_pipeline = VK_NULL_HANDLE; /* R89-1: reset pipeline cache for new command buffer */
+    vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset viewport/scissor cache */
+    vk->push_dirty = true; vk->push_dirty_min = 0; vk->push_dirty_max = 256;  /* R94-3: re-flush all push constants for new command buffer */
 
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1305,6 +1317,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
 
     vk->frame_started = true;
     vk->current_pipeline = VK_NULL_HANDLE;
+    vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset for swapchain pass */
     vk->depth_lequal = false;
 
     vk->uniform_offset[vk->current_frame] = 0;
@@ -2577,6 +2590,10 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, vk->swap_extent};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->cached_vp_x = 0; vk->cached_vp_y = 0;  /* R94-2: update cache */
+    vk->cached_vp_w = (f32)vk->swap_extent.width; vk->cached_vp_h = (f32)vk->swap_extent.height;
+    vk->cached_sc_x = 0; vk->cached_sc_y = 0; vk->cached_sc_w = vk->swap_extent.width; vk->cached_sc_h = vk->swap_extent.height;
+    vk->vp_valid = true; vk->sc_valid = true;
     vk->current_pipeline = VK_NULL_HANDLE;
 }
 
@@ -2633,15 +2650,23 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
+    if (vk->vp_valid && vk->cached_vp_x == x && vk->cached_vp_y == y &&
+        vk->cached_vp_w == w && vk->cached_vp_h == h) return;  /* R94-2: cache hit */
     VkViewport vp = {x, y + h, w, -h, 0.0f, 1.0f};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    vk->cached_vp_x = x; vk->cached_vp_y = y; vk->cached_vp_w = w; vk->cached_vp_h = h;
+    vk->vp_valid = true;
 }
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
+    if (vk->sc_valid && vk->cached_sc_x == x && vk->cached_sc_y == y &&
+        vk->cached_sc_w == w && vk->cached_sc_h == h) return;  /* R94-2: cache hit */
     VkRect2D sc = {{x, y}, {w, h}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->cached_sc_x = x; vk->cached_sc_y = y; vk->cached_sc_w = w; vk->cached_sc_h = h;
+    vk->sc_valid = true;
 }
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
@@ -2649,16 +2674,31 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
     VKBackend *vk = vk_backend(g_current_device);
     /* Non-flipped: shadow depth passes use a top-left-origin viewport (see
      * rhi_cmd_bind_shadow_map), so cascade quadrants must match that. */
-    VkViewport vp = {(f32)x, (f32)y, (f32)w, (f32)h, 0.0f, 1.0f};
-    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
-    VkRect2D sc = {{(i32)x, (i32)y}, {w, h}};
-    vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    if (!vk->vp_valid || vk->cached_vp_x != (f32)x || vk->cached_vp_y != (f32)y ||
+        vk->cached_vp_w != (f32)w || vk->cached_vp_h != (f32)h) {  /* R94-2: cache */
+        VkViewport vp = {(f32)x, (f32)y, (f32)w, (f32)h, 0.0f, 1.0f};
+        vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+        vk->cached_vp_x = (f32)x; vk->cached_vp_y = (f32)y; vk->cached_vp_w = (f32)w; vk->cached_vp_h = (f32)h;
+        vk->vp_valid = true;
+    }
+    if (!vk->sc_valid || vk->cached_sc_x != (i32)x || vk->cached_sc_y != (i32)y ||
+        vk->cached_sc_w != w || vk->cached_sc_h != h) {
+        VkRect2D sc = {{(i32)x, (i32)y}, {w, h}};
+        vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+        vk->cached_sc_x = (i32)x; vk->cached_sc_y = (i32)y; vk->cached_sc_w = w; vk->cached_sc_h = h;
+        vk->sc_valid = true;
+    }
 }
+
+/* R94-3: Forward declaration — vk_flush_push_constants is defined below
+ * (before rhi_cmd_set_uniform_*) but called from draw/dispatch functions. */
+static void vk_flush_push_constants(VKBackend *vk);
 
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     vk_resume_pass_if_needed(vk);
+    vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDraw(vk->cmd_buffers[vk->current_frame], vertex_count, instance_count, 0, 0);
 }
 
@@ -2666,6 +2706,7 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     vk_resume_pass_if_needed(vk);
+    vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDrawIndexed(vk->cmd_buffers[vk->current_frame], index_count, instance_count, 0, 0, 0);
 }
 
@@ -2675,6 +2716,7 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, cmd_buf);
     if (!bd) return;
     vk_resume_pass_if_needed(vk);
+    vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
                              bd->buffer, (VkDeviceSize)offset,
                              draw_count, stride);
@@ -2688,6 +2730,7 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
     VKBufferData *count_bd = (VKBufferData *)rhi_get_resource(dev, count_buf);
     if (!cmd_bd || !count_bd) return;
     vk_resume_pass_if_needed(vk);
+    vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     if (vk->feat_draw_indirect_count) {
         /* Vulkan 1.2 core API; requires the drawIndirectCount feature. */
         vkCmdDrawIndexedIndirectCount(vk->cmd_buffers[vk->current_frame],
@@ -2710,6 +2753,7 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     /* Vulkan forbids vkCmdDispatch inside a render pass. Suspend the active
      * pass (its attachments are STOREd); the next draw/clear resumes it. */
     vk_suspend_pass_for_compute(vk);
+    vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDispatch(vk->cmd_buffers[vk->current_frame], x, y, z);
 }
 
@@ -3177,16 +3221,35 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
     vkCmdClearAttachments(vk->cmd_buffers[vk->current_frame], 1, &att, 1, &rect);
 }
 
+/* R94-3: Flush pending push constants to the command buffer. Called before
+ * every draw/dispatch to batch multiple rhi_cmd_set_uniform_* calls into
+ * a single vkCmdPushConstants. */
+static void vk_flush_push_constants(VKBackend *vk) {
+    if (!vk->push_dirty || !vk->current_pipeline_data) return;
+    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
+    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
+        stages, vk->push_dirty_min, vk->push_dirty_max - vk->push_dirty_min,
+        vk->push_staging + vk->push_dirty_min);
+    vk->push_dirty = false;
+    vk->push_dirty_min = 256;
+    vk->push_dirty_max = 0;
+}
+
+#define VK_PUSH_MARK(vk, offset, size) do { \
+    if ((u32)(offset) < (vk)->push_dirty_min) (vk)->push_dirty_min = (u32)(offset); \
+    if ((u32)(offset) + (u32)(size) > (vk)->push_dirty_max) (vk)->push_dirty_max = (u32)(offset) + (u32)(size); \
+} while(0)
+
 /* Push constants map to rhi_cmd_set_uniform_*. Location is used as byte offset. */
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
     if (location < 0) return;
-    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
-    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
-        stages, (u32)location, 64, m);
+    memcpy(vk->push_staging + location, m, 64);  /* R94-3: stage, flush at draw */
+    VK_PUSH_MARK(vk, location, 64);
+    vk->push_dirty = true;
 }
 
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z) {
@@ -3195,10 +3258,9 @@ void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
     if (!vk->current_pipeline_data) return;
     if (location < 0) return;
     f32 v[3] = {x, y, z};
-    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
-    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
-        stages, (u32)location, 12, v);
+    memcpy(vk->push_staging + location, v, 12);  /* R94-3: stage, flush at draw */
+    VK_PUSH_MARK(vk, location, 12);
+    vk->push_dirty = true;
 }
 
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
@@ -3207,10 +3269,9 @@ void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
     if (!vk->current_pipeline_data) return;
     if (location < 0) return;
     f32 v[2] = {x, y};
-    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
-    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
-        stages, (u32)location, 8, v);
+    memcpy(vk->push_staging + location, v, 8);  /* R94-3: stage, flush at draw */
+    VK_PUSH_MARK(vk, location, 8);
+    vk->push_dirty = true;
 }
 
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w) {
@@ -3219,10 +3280,9 @@ void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
     if (!vk->current_pipeline_data) return;
     if (location < 0) return;
     f32 v[4] = {x, y, z, w};
-    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
-    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
-        stages, (u32)location, 16, v);
+    memcpy(vk->push_staging + location, v, 16);  /* R94-3: stage, flush at draw */
+    VK_PUSH_MARK(vk, location, 16);
+    vk->push_dirty = true;
 }
 
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
@@ -3230,10 +3290,9 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
     if (location < 0) return;
-    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
-    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
-        stages, (u32)location, 4, &v);
+    memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
+    VK_PUSH_MARK(vk, location, 4);
+    vk->push_dirty = true;
 }
 
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
@@ -3241,10 +3300,9 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
     if (location < 0) return;
-    VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
-    vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,
-        stages, (u32)location, 4, &v);
+    memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
+    VK_PUSH_MARK(vk, location, 4);
+    vk->push_dirty = true;
 }
 
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {
