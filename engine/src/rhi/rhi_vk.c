@@ -3485,6 +3485,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_point_shadow_light_1") == 0) return 216;
         if (strcmp(name, "u_point_shadow_light_2") == 0) return 220;
         if (strcmp(name, "u_point_shadow_light_3") == 0) return 224;
+        if (strcmp(name, "u_pom_enabled") == 0) return 228;
     } else if (pd && pd->no_vertex_input && pd->uses_texel_buffer && !pd->is_compute) {
         /* deferred_light_vk: clustered lighting + IBL full-screen pass. */
         if (strcmp(name, "u_inv_vp") == 0)       return 0;

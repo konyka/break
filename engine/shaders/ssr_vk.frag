@@ -103,7 +103,7 @@ void main() {
         fade = smoothstep(0.0, 0.15, edge_fade);
 
         float n_dot_v = max(dot(normal_vs, view_dir), 0.0);
-        float fresnel = 0.04 + 0.96 * pow(1.0 - n_dot_v, 5.0);
+        float t = 1.0 - n_dot_v; float fresnel = 0.04 + 0.96 * (t * t * t * t * t); /* R84-4 */
         fade *= fresnel;
     }
 

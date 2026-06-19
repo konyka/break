@@ -1118,6 +1118,34 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+
+## R84 着色器效率优化(第二轮)：POM uniform门控 + SSGI循环不变量提升 + shadow_test提升 + F_Schlick pow→mul
+
+### R84-1 POM uniform 门控（HIGH GPU）
+
+**问题**：`pbr_clustered.frag` 和 `pbr_clustered_vk.frag` 中 `parallax_occlusion_mapping` 每片段无条件执行，即使材质没有高度图。POM 函数执行 16 次循环纹理采样 + 2 次插值采样 = 18 次纹理采样。当材质无 normal_map 时，fallback normal map 的 `.b=1.0` 导致循环始终跑满 16 次（`current_depth >= 1.0` 永远不满足 `h=1.0` 的情况直到最后一次）。
+
+**修正**：添加 `u_pom_enabled` uniform（GL: 独立 uniform 声明；VK: push constant offset 228，总块大小 232 字节 < 256 限制）。在 `main.c` 的 `bind_material` 中根据 `mat->normal_map` 是否有效设置 0/1。着色器中 `vec2 pom_uv = u_pom_enabled > 0.5 ? parallax_occlusion_mapping(V, N, vUV) : vUV;`。`rhi_vk.c` 添加 offset 228 映射。无高度图的材质每片段节省 18 次纹理采样 + TBN 构建 + 转置矩阵乘法。
+
+### R84-2 SSGI tangent/bitangent 循环不变量提升（MEDIUM GPU）
+
+**问题**：`ssgi.frag` 和 `ssgi_vk.frag` 中 `tangent_to_world` 函数在 16 次迭代循环内调用，但 `up`/`tangent`/`bitangent` 仅依赖 `normal`（循环不变量）。每次迭代冗余执行 `abs`、`cross`、`normalize` 各一次。此外，`tangent_to_world` 中的 `normalize()` 是冗余的——`tangent` 和 `bitangent` 正交且单位长度，`tangent*cos + bitangent*sin` 的长度已为 1。
+
+**修正**：将 `up`/`tangent`/`bitangent` 计算提升到循环前。循环内直接使用 `(tangent * cos(angle) + bitangent * sin(angle)).xy`，省去冗余的 `normalize()` 和函数调用开销。删除 `tangent_to_world` 函数。
+
+### R84-3 shadow_test 提升到方向光循环外（MEDIUM GPU）
+
+**问题**：`pbr_clustered.frag`、`pbr_clustered_vk.frag`、`deferred_light.frag`、`deferred_light_vk.frag` 中 `shadow_test(vWorldPos/wpos)` 在 `for (uint di = 0u; di < u_dir_count; di++)` 循环内调用，但 `shadow_test` 不依赖循环变量 `di`。`shadow_test` 内部执行 4 次级联矩阵乘法 + blocker 搜索（25 次纹理采样）+ PCF 过滤（最多 121 次纹理采样），是着色器中最重的操作之一。
+
+**修正**：将 `shadow_test` 调用提升到循环前，结果存入 `dir_shadow`，循环内直接使用。当 `u_dir_count > 1` 时节省 (N-1) 次完整的 shadow_test 调用。
+
+### R84-4 F_Schlick pow(x,5) 替换为乘法链（LOW GPU）
+
+**问题**：`F_Schlick`/`fresnel_schlick` 函数中 `pow(1.0 - cosTheta, 5.0)` 在 GPU 上展开为 `exp2(5.0 * log2(x))`，涉及 1 次 `log2` + 1 次 `fma` + 1 次 `exp2`。虽然现代 GPU 的超越函数单元较快，但 `pow(x, 5.0)` 可以用 4 次乘法精确计算：`x*x*x*x*x`，无需超越函数。
+
+**修正**：在 6 个着色器（`pbr_clustered.frag`、`pbr_clustered_vk.frag`、`deferred_light.frag`、`deferred_light_vk.frag`、`ssr.frag`、`ssr_vk.frag`）中将 `pow(x, 5.0)` 替换为 `float t = x; t*t*t*t*t`。F_Schlick 在每个方向光、点光、IBL 环境光计算中都被调用，替换后减少每次调用的 ALU 延迟。
+
+**验收**：全部 23/23 测试通过。
 ## 构建与回归命令
 
 ```bash

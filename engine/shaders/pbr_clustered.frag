@@ -23,6 +23,7 @@ uniform uint u_point_shadow_light_0;
 uniform uint u_point_shadow_light_1;
 uniform uint u_point_shadow_light_2;
 uniform uint u_point_shadow_light_3;
+uniform float u_pom_enabled; /* R84-1: 0=no height map, skip POM */
 
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 1) uniform sampler2D u_shadow_map;
@@ -152,7 +153,9 @@ float D_GGX(float NdotH, float roughness) {
 
 // Fresnel - Schlick approximation
 vec3 F_Schlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+    /* R84-4: Manual 5th power avoids transcendental pow() */
+    float t = clamp(1.0 - cosTheta, 0.0, 1.0);
+    return F0 + (1.0 - F0) * (t * t * t * t * t);
 }
 
 // Geometry - Smith's method with GGX (Schlick-GGX, k = (r+1)^2/8 for direct lighting)
@@ -342,7 +345,8 @@ void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(u_camera_pos - vWorldPos);
 
-    vec2 pom_uv = parallax_occlusion_mapping(V, N, vUV);
+    /* R84-1: Gate POM */
+    vec2 pom_uv = u_pom_enabled > 0.5 ? parallax_occlusion_mapping(V, N, vUV) : vUV;
 
     vec3 albedo = texture(u_albedo, pom_uv).rgb;
 
@@ -384,10 +388,11 @@ void main() {
     float ao = texture(u_ssao, vUV).r;
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
 
+    /* R84-3: shadow_test doesn't depend on loop variable */
+    float dir_shadow = shadow_test(vWorldPos);
     for (uint di = 0u; di < u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
-        float shadow = shadow_test(vWorldPos);
-        color += cook_torrance_brdf(N, V, normalize(-dl.dir), dl.color * shadow, albedo, metallic, roughness);
+        color += cook_torrance_brdf(N, V, normalize(-dl.dir), dl.color * dir_shadow, albedo, metallic, roughness);
     }
 
     if (u_point_count > 0u && u_screen_w > 0.0) {

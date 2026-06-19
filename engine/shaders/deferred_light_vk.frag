@@ -95,7 +95,9 @@ float geometry_smith(vec3 N, vec3 V, vec3 L, float r) {
 }
 
 vec3 fresnel_schlick(float cos_t, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cos_t, 5.0);
+    /* R84-4: Manual 5th power avoids transcendental pow() */
+    float t = 1.0 - cos_t;
+    return F0 + (1.0 - F0) * (t * t * t * t * t);
 }
 
 vec3 cook_torrance(vec3 albedo, float metallic, float roughness,
@@ -254,11 +256,12 @@ void main() {
 
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
 
+    /* R84-3: shadow_test doesn't depend on loop variable */
+    float dir_shadow = shadow_test(wpos);
     for (uint di = 0u; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
-        float shadow = shadow_test(wpos);
         color += cook_torrance(albedo, metal, rough, N, V, normalize(-dl.dir),
-                               dl.color * shadow);
+                               dl.color * dir_shadow);
     }
 
     float screen_w = pc.u_screen_params.x;

@@ -6,7 +6,7 @@ layout(location = 2) in vec2 vUV;
 
 /* Vulkan GLSL forbids non-opaque uniforms outside a block, so fog colour and
  * the underwater flag live in the push-constant block. u_proj was unused by
- * this fragment shader, so its 64-byte slot is reclaimed (block = 228 bytes,
+ * this fragment shader, so its 64-byte slot is reclaimed (block = 232 bytes,
  * within the 256-byte push limit). Offsets must match rhi_vk.c's clustered map. */
 layout(push_constant) uniform PushConstants {
     mat4 u_model;       /*   0 */
@@ -29,6 +29,7 @@ layout(push_constant) uniform PushConstants {
     uint u_point_shadow_light_1;  /* 216 */
     uint u_point_shadow_light_2;  /* 220 */
     uint u_point_shadow_light_3;  /* 224 */
+    float u_pom_enabled;          /* 228 */
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -160,7 +161,9 @@ float D_GGX(float NdotH, float roughness) {
 
 // Fresnel - Schlick approximation
 vec3 F_Schlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+    /* R84-4: Manual 5th power avoids transcendental pow() */
+    float t = clamp(1.0 - cosTheta, 0.0, 1.0);
+    return F0 + (1.0 - F0) * (t * t * t * t * t);
 }
 
 // Geometry - Smith's method with GGX (Schlick-GGX, k = (r+1)^2/8 for direct lighting)
@@ -354,7 +357,8 @@ void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(pc.u_camera_pos - vWorldPos);
 
-    vec2 pom_uv = parallax_occlusion_mapping(V, N, vUV);
+    /* R84-1: Gate POM */
+    vec2 pom_uv = pc.u_pom_enabled > 0.5 ? parallax_occlusion_mapping(V, N, vUV) : vUV;
 
     vec3 albedo = texture(u_albedo, pom_uv).rgb;
 
@@ -396,10 +400,11 @@ void main() {
     float ao = texture(u_ssao, vUV).r;
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
 
+    /* R84-3: shadow_test doesn't depend on loop variable */
+    float dir_shadow = shadow_test(vWorldPos);
     for (uint di = 0u; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
-        float shadow = shadow_test(vWorldPos);
-        color += cook_torrance_brdf(N, V, normalize(-dl.dir), dl.color * shadow, albedo, metallic, roughness);
+        color += cook_torrance_brdf(N, V, normalize(-dl.dir), dl.color * dir_shadow, albedo, metallic, roughness);
     }
 
     if (pc.u_point_count > 0u && pc.u_screen_w > 0.0) {

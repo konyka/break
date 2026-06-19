@@ -28,13 +28,6 @@ vec3 construct_normal(vec3 pos) {
     return normalize(cross(dFdx(pos), dFdy(pos)));
 }
 
-vec3 tangent_to_world(vec2 dir2d, vec3 normal) {
-    vec3 up = abs(normal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangent = normalize(cross(up, normal));
-    vec3 bitangent = cross(normal, tangent);
-    return normalize(tangent * dir2d.x + bitangent * dir2d.y);
-}
-
 void main() {
     float depth = texture(u_ssgi_depth, vUV).r;
     if (depth >= 1.0) {
@@ -47,6 +40,11 @@ void main() {
 
     float noise = interleaved_gradient_noise(gl_FragCoord.xy);
 
+    /* R84-2: Hoist tangent frame out of 16-iteration loop */
+    vec3 up = abs(normal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, normal));
+    vec3 bitangent = cross(normal, tangent);
+
     vec3 gi = vec3(0.0);
     float total_weight = 0.0;
 
@@ -56,7 +54,7 @@ void main() {
         float radius_scale = (float(i) + 0.5) / float(steps);
         radius_scale = radius_scale * radius_scale;
 
-        vec2 sample_offset = tangent_to_world(vec2(cos(angle), sin(angle)), normal).xy;
+        vec2 sample_offset = (tangent * cos(angle) + bitangent * sin(angle)).xy;
         sample_offset *= u_ssgi_radius * radius_scale;
         vec2 sample_uv = vUV + sample_offset / vec2(u_ssgi_sw, u_ssgi_sh);
 

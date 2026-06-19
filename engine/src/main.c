@@ -211,6 +211,7 @@ typedef struct {
     i32 cl_loc_point_shadow_light_1;
     i32 cl_loc_point_shadow_light_2;
     i32 cl_loc_point_shadow_light_3;
+    i32 cl_loc_pom_enabled;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
     i32 sk_loc_view, sk_loc_proj;
@@ -333,6 +334,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->cl_loc_point_shadow_light_1 = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_shadow_light_1");
     rs->cl_loc_point_shadow_light_2 = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_shadow_light_2");
     rs->cl_loc_point_shadow_light_3 = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_shadow_light_3");
+    rs->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_pom_enabled");
     }
 
     RHISamplerDesc sdesc = {
@@ -654,6 +656,7 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
                                         g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+    if (rs->cl_loc_pom_enabled >= 0) rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_pom_enabled, (mat && rhi_handle_valid(mat->normal_map)) ? 1.0f : 0.0f);
     (void)scene;
 }
 
