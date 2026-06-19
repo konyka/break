@@ -1204,6 +1204,43 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **修正**：添加 `cached_sun_t`、`cached_amb_mult`、`cached_sun_color`、`cached_ambient_col` 静态变量。仅在 `sun_t` 或 `ambient_mult` 变化时重计算 `sun_color` 和 `ambient_col`。
 
 **验收**：全部 23/23 测试通过。
+
+## R87 遮挡剔除GPU回读消除 + 着色器硬编码常量移至shader const
+
+### R87-1 遮挡剔除 GPU 回读消除（HIGH CPU/GPU）
+
+**问题**：`occlusion_cull_dispatch`（occlusion_cull.c L305-310）每帧通过 `rhi_buffer_map`（即 `glMapBufferRange(GL_MAP_READ_BIT)`）将可见性结果从 GPU 回读到 CPU，用于遮挡过滤。与 R86-2 粒子回读相同的管线停顿模式，但数据量更大（最多 16384×4=64KB vs 4 字节）。GL 路径阻塞 CPU 直到 GPU 完成写入。VK 路径因持久映射无停顿，但为保持后端一致性仍统一处理。
+
+**修正**：
+1. 新增 RHI 函数 `rhi_cmd_copy_buffer`：GL 用 `glCopyBufferSubData`（GPU 侧复制，非阻塞），VK 用 `vkCmdCopyBuffer`。
+2. 在 `OcclusionCullSystem` 中添加 `readback_staging` 缓冲区（与 `visibility_buffer` 相同大小）。
+3. `occlusion_cull_dispatch` 改为从 `readback_staging` 读取（上一帧的 GPU 侧副本），dispatch 完成后用 `rhi_cmd_copy_buffer` 将结果从 `visibility_buffer` 复制到 `readback_staging`。
+4. VK 后端为 storage buffer 自动添加 `VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT`，使所有 SSBO 可参与 GPU 侧复制。
+5. 系统已设计为 1 帧延迟，`object_count` 初始为 0 使首帧全部可见，staging 方案不改变延迟语义。
+
+**影响文件**：rhi.h, rhi_gl.c, rhi_vk.c, occlusion_cull.h, occlusion_cull.c, rhi_stubs.c
+
+### R87-2 terrain 硬编码光照 uniform → shader const（MEDIUM GPU/CPU）
+
+**问题**：`terrain_render`（terrain.c L300-302）每帧通过 `rhi_cmd_set_uniform_vec3` 设置 3 个硬编码常量（`u_light_dir`、`u_light_color`、`u_ambient`），但这些值从不变化。GL 路径每帧 3 次 `glUniform3f` 调用浪费 CPU 时间。VK 路径使用 push constant 且值打包在 vec4 中共享其他字段，不能修改布局。
+
+**修正**：
+1. GL 着色器（terrain.frag）：将 `uniform vec3 u_light_dir/color/ambient` 替换为 `const vec3`，编译器内联，无需 CPU 设置。
+2. C 代码（terrain.c）：为 3 个 uniform 添加 `if (loc >= 0)` 守卫。GL 路径 `loc=-1`（uniform 被 const 替换后优化掉）跳过设置；VK 路径 `loc>=0`（push constant 仍存在）正常设置。
+3. VK 着色器（terrain_vk.frag）不改：push constant 布局无法单独替换为 const。
+
+**影响文件**：terrain.frag, terrain.c
+
+### R87-3 后处理硬编码常量 uniform → shader const（LOW GPU/CPU）
+
+**问题**：`combined_taa_fxaa.frag`、`taa.frag`、`fxaa.frag` 中 `u_taa_blend`（0.1）和 `u_fxaa_threshold`（0.0312）为硬编码常量，但通过 `uniform` 声明，每帧由 CPU 设置。`combined_post_process.c` 已有 `if (loc >= 0)` 守卫，但 GL 着色器仍声明为 uniform 导致 loc 查找成功并每帧设置。
+
+**修正**：将 GL 着色器中的 `uniform float u_taa_blend/u_fxaa_threshold` 替换为 `const float`。uniform 被 const 替换后，`glGetUniformLocation` 返回 -1，`if (loc >= 0)` 守卫跳过 CPU 设置。VK 着色器使用 push constant offset，不受影响。
+
+**影响文件**：combined_taa_fxaa.frag, taa.frag, fxaa.frag
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

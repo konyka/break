@@ -119,6 +119,14 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
         return false;
     }
 
+    /* R87-1: Create staging buffer for non-blocking GPU-side copy readback. */
+    sys->readback_staging = rhi_buffer_create(dev, &vis_desc);
+    if (!rhi_handle_valid(sys->readback_staging)) {
+        LOG_WARN("OcclusionCull: failed to create readback staging buffer");
+        occlusion_cull_shutdown(sys);
+        return false;
+    }
+
     /* Create nearest sampler for Hi-Z */
     RHISamplerDesc samp_desc = {
         .min_filter = RHI_FILTER_NEAREST,
@@ -179,6 +187,8 @@ void occlusion_cull_shutdown(OcclusionCullSystem *sys) {
         rhi_buffer_destroy(sys->device, sys->aabb_buffer);
     if (rhi_handle_valid(sys->visibility_buffer))
         rhi_buffer_destroy(sys->device, sys->visibility_buffer);
+    if (rhi_handle_valid(sys->readback_staging))
+        rhi_buffer_destroy(sys->device, sys->readback_staging);
     if (rhi_handle_valid(sys->hi_z_pipeline))
         rhi_pipeline_destroy(sys->device, sys->hi_z_pipeline);
     if (rhi_handle_valid(sys->cull_pipeline))
@@ -302,11 +312,11 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
 
     u32 count = object_count > OCCLUSION_MAX_OBJECTS ? OCCLUSION_MAX_OBJECTS : object_count;
 
-    /* ---- Readback previous frame's visibility results (1-frame latency) ---- */
-    void *mapped = rhi_buffer_map(sys->device, sys->visibility_buffer);
+    /* ---- Readback from staging buffer (1-frame latency, non-blocking) — R87-1 ---- */
+    void *mapped = rhi_buffer_map(sys->device, sys->readback_staging);
     if (mapped) {
         memcpy(sys->visibility_readback, mapped, count * sizeof(u32));
-        rhi_buffer_unmap(sys->device, sys->visibility_buffer);
+        rhi_buffer_unmap(sys->device, sys->readback_staging);
     }
 
     /* ---- Dispatch new cull pass ---- */
@@ -342,8 +352,11 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
     u32 groups = (count + 63) / 64;
     rhi_cmd_dispatch(cmd, groups, 1, 1);
 
-    /* Memory barrier for subsequent reads */
+    /* Memory barrier: ensure compute writes complete before GPU-side copy */
     rhi_cmd_memory_barrier(cmd);
+
+    /* R87-1: GPU-side copy to staging buffer (avoids glMapBufferRange stall next frame). */
+    rhi_cmd_copy_buffer(cmd, sys->visibility_buffer, sys->readback_staging, count * sizeof(u32));
 
     sys->object_count = count;
 }

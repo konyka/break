@@ -304,6 +304,7 @@ void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex);
 void*       rhi_buffer_map(RHIDevice *dev, RHIBuffer buf);
 void        rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf);
+void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size);
 void        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels);
 
 typedef struct RHIGPUTimer RHIGPUTimer;

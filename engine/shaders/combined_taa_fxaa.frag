@@ -17,9 +17,9 @@ uniform mat4 u_taa_prev_vp;
 uniform mat4 u_taa_inv_proj;
 uniform float u_screen_w;
 uniform float u_screen_h;
-uniform float u_taa_blend;
+const float u_taa_blend = 0.1;
 uniform float u_taa_first_frame;
-uniform float u_fxaa_threshold;
+const float u_fxaa_threshold = 0.0312;
 uniform float u_taa_use_velocity;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);

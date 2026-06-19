@@ -6,9 +6,9 @@ in vec2 vUV;
 
 layout(location = 0) out vec4 FragColor;
 
-uniform vec3 u_light_dir;
-uniform vec3 u_light_color;
-uniform vec3 u_ambient;
+const vec3 u_light_dir = vec3(0.5, -0.8, 0.3);
+const vec3 u_light_color = vec3(1.0, 0.95, 0.9);
+const vec3 u_ambient = vec3(0.35, 0.35, 0.40);
 uniform vec3 u_camera_pos;
 
 uniform sampler2D u_albedo;

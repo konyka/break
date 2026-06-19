@@ -7,7 +7,7 @@ uniform sampler2D u_fxaa_tex;
 
 uniform float u_fxaa_sw;
 uniform float u_fxaa_sh;
-uniform float u_fxaa_threshold;
+const float u_fxaa_threshold = 0.0312;
 
 void main() {
     vec2 texel = vec2(1.0 / u_fxaa_sw, 1.0 / u_fxaa_sh);

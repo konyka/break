@@ -1471,6 +1471,18 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 }
 
+/* R87-1: GPU-side buffer copy (non-blocking, avoids glMapBufferRange stall). */
+void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
+    (void)cmd;
+    extern RHIDevice *g_current_device;
+    GLBufferData *src_bd = (GLBufferData *)rhi_get_resource(g_current_device, src);
+    GLBufferData *dst_bd = (GLBufferData *)rhi_get_resource(g_current_device, dst);
+    if (!src_bd || !dst_bd) return;
+    glBindBuffer(GL_COPY_READ_BUFFER, src_bd->gl_buf);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, dst_bd->gl_buf);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)size);
+}
+
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
     (void)cmd;
     extern RHIDevice *g_current_device;

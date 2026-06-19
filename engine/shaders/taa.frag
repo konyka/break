@@ -14,7 +14,7 @@ uniform mat4 u_taa_prev_vp;
 uniform mat4 u_taa_inv_proj;
 uniform float u_taa_sw;
 uniform float u_taa_sh;
-uniform float u_taa_blend;
+const float u_taa_blend = 0.1;
 uniform float u_taa_first_frame;
 uniform float u_taa_use_velocity;
 

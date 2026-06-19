@@ -22,6 +22,7 @@ typedef struct {
     /* Object data */
     RHIBuffer   aabb_buffer;        /* SSBO: ObjectAABB[max_objects] */
     RHIBuffer   visibility_buffer;  /* SSBO: u32[max_objects] (0=occluded, 1=visible) */
+    RHIBuffer   readback_staging;   /* R87-1: staging copy for non-blocking readback */
 
     /* Compute pipelines */
     RHIPipeline hi_z_pipeline;

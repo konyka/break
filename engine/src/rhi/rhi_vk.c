@@ -2108,7 +2108,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (desc->usage & RHI_BUFFER_USAGE_VERTEX)      ci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     if (desc->usage & RHI_BUFFER_USAGE_INDEX)        ci.usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (desc->usage & RHI_BUFFER_USAGE_UNIFORM)      ci.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    if (desc->usage & RHI_BUFFER_USAGE_STORAGE)      ci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (desc->usage & RHI_BUFFER_USAGE_STORAGE) {    ci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; ci.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; /* R87-1: enable GPU-side copy */ }
     if (desc->usage & RHI_BUFFER_USAGE_INDIRECT)     ci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (is_texel)                                     ci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
 
@@ -4361,6 +4361,17 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     if (!bd) return;
     if (bd->mapped) return; /* persistent mapping — do not unmap */
     vkUnmapMemory(vk->device, bd->memory);
+}
+
+/* R87-1: GPU-side buffer copy via vkCmdCopyBuffer (non-blocking). */
+void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
+    (void)cmd;
+    VKBackend *vk = vk_backend(g_current_device);
+    VKBufferData *src_bd = (VKBufferData *)rhi_get_resource(g_current_device, src);
+    VKBufferData *dst_bd = (VKBufferData *)rhi_get_resource(g_current_device, dst);
+    if (!src_bd || !dst_bd) return;
+    VkBufferCopy region = { .srcOffset = 0, .dstOffset = 0, .size = size };
+    vkCmdCopyBuffer(vk->cmd_buffers[vk->current_frame], src_bd->buffer, dst_bd->buffer, 1, &region);
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {

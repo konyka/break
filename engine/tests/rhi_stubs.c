@@ -30,6 +30,7 @@ void       rhi_buffer_destroy(RHIDevice *d, RHIBuffer b)               { (void)d
 void       rhi_buffer_update(RHIDevice *d, RHIBuffer b, const void *data, usize sz) { (void)d; (void)b; (void)data; (void)sz; }
 void      *rhi_buffer_map(RHIDevice *d, RHIBuffer b)                   { (void)d; (void)b; return NULL; }
 void       rhi_buffer_unmap(RHIDevice *d, RHIBuffer b)                 { (void)d; (void)b; }
+void       rhi_cmd_copy_buffer(RHICmdBuffer *c, RHIBuffer s, RHIBuffer d, usize sz) { (void)c; (void)s; (void)d; (void)sz; }
 void       rhi_buffer_update_region(RHIDevice *d, RHIBuffer b, usize off, const void *data, usize sz) { (void)d; (void)b; (void)off; (void)data; (void)sz; }
 
 RHIPipeline rhi_pipeline_create(RHIDevice *d, const RHIPipelineDesc *desc) { (void)d; (void)desc; return stub_pipeline; }

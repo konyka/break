@@ -297,9 +297,9 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     rhi_cmd_set_uniform_mat4(cmd, t->loc_model, &identity_model.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, t->loc_view, view);
     rhi_cmd_set_uniform_mat4(cmd, t->loc_proj, proj);
-    rhi_cmd_set_uniform_vec3(cmd, t->loc_light_dir, 0.5f, -0.8f, 0.3f);
-    rhi_cmd_set_uniform_vec3(cmd, t->loc_light_color, 1.0f, 0.95f, 0.9f);
-    rhi_cmd_set_uniform_vec3(cmd, t->loc_ambient, 0.35f, 0.35f, 0.40f);
+    if (t->loc_light_dir >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_light_dir, 0.5f, -0.8f, 0.3f);
+    if (t->loc_light_color >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_light_color, 1.0f, 0.95f, 0.9f);
+    if (t->loc_ambient >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_ambient, 0.35f, 0.35f, 0.40f);
     if (camera_pos) rhi_cmd_set_uniform_vec3(cmd, t->loc_camera_pos, camera_pos[0], camera_pos[1], camera_pos[2]);
     if (t->loc_albedo >= 0) rhi_cmd_set_uniform_i32(cmd, t->loc_albedo, 0);
     if (t->loc_shadow_bias >= 0) rhi_cmd_set_uniform_f32(cmd, t->loc_shadow_bias, shadow_bias);
