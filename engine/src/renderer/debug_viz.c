@@ -113,8 +113,10 @@ void debug_viz_apply(DebugVizSystem *s, RHICmdBuffer *cmd,
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    rhi_cmd_bind_texture(cmd, input_tex, s->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures — rhi_cmd_bind_texture ignores
+     * the unit parameter in VK and binds all 9 slots to one texture. */
+    rhi_cmd_bind_material_textures(cmd, input_tex, input_tex, input_tex,
+                                   input_tex, depth_tex, input_tex, s->sampler);
 
     if (s->loc_mode >= 0) rhi_cmd_set_uniform_i32(cmd, s->loc_mode, mode);
     if (s->loc_near >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_near, near_plane);

@@ -136,8 +136,11 @@ void ssao_apply(SSAOSystem *ssao, RHICmdBuffer *cmd, RHITexture depth_tex,
     rhi_offscreen_fbo_bind(cmd, &ssao->blur_fbo);
 
     rhi_cmd_bind_pipeline(cmd, ssao->blur_pipe);
-    rhi_cmd_bind_texture(cmd, ssao->ssao_fbo.color_tex, ssao->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, ssao->sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures — rhi_cmd_bind_texture ignores
+     * the unit parameter in VK and binds all 9 slots to one texture. */
+    rhi_cmd_bind_material_textures(cmd, ssao->ssao_fbo.color_tex, ssao->ssao_fbo.color_tex,
+                                   ssao->ssao_fbo.color_tex, ssao->ssao_fbo.color_tex,
+                                   depth_tex, ssao->ssao_fbo.color_tex, ssao->sampler);
 
     rhi_cmd_draw(cmd, 3, 1);
 

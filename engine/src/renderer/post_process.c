@@ -187,8 +187,10 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
     rhi_cmd_draw(cmd, 3, 1);
 
     rhi_cmd_bind_pipeline(cmd, pp->composite_pipe);
-    rhi_cmd_bind_texture(cmd, scene_color, pp->sampler, 0);
-    rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures — rhi_cmd_bind_texture ignores
+     * the unit parameter in VK and binds all 9 slots to one texture. */
+    rhi_cmd_bind_material_textures(cmd, scene_color, scene_color, scene_color,
+                                   scene_color, pp->fbo_ping.color_tex, scene_color, pp->sampler);
     if (pp->loc_bloom_strength >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_bloom_strength, pp->bloom_strength);
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_composite);
     rhi_cmd_draw(cmd, 3, 1);

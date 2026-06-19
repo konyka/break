@@ -119,8 +119,10 @@ void sss_apply(SSSSystem *s, RHICmdBuffer *cmd,
     /* Pass 1: Horizontal blur → blur_fbo */
     rhi_offscreen_fbo_bind(cmd, &s->blur_fbo);
     rhi_cmd_bind_pipeline(cmd, s->h_pipe);
-    rhi_cmd_bind_texture(cmd, color_tex, s->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures — rhi_cmd_bind_texture ignores
+     * the unit parameter in VK and binds all 9 slots to one texture. */
+    rhi_cmd_bind_material_textures(cmd, color_tex, color_tex, color_tex,
+                                   color_tex, depth_tex, color_tex, s->sampler);
 
     if (s->loc_strength >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_strength, strength);
     if (s->loc_sw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_sw, (f32)w);
@@ -132,9 +134,10 @@ void sss_apply(SSSSystem *s, RHICmdBuffer *cmd,
     /* Pass 2: Vertical blur → fbo (reads blur_fbo + depth + original) */
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
     rhi_cmd_bind_pipeline(cmd, s->v_pipe);
-    rhi_cmd_bind_texture(cmd, s->blur_fbo.color_tex, s->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
-    rhi_cmd_bind_texture(cmd, color_tex, s->sampler, 2);
+    /* R99-2: Use rhi_cmd_bind_material_textures for multi-texture binding. */
+    rhi_cmd_bind_material_textures(cmd, s->blur_fbo.color_tex, color_tex,
+                                   s->blur_fbo.color_tex, s->blur_fbo.color_tex,
+                                   depth_tex, s->blur_fbo.color_tex, s->sampler);
 
     if (s->v_loc_strength >= 0) rhi_cmd_set_uniform_f32(cmd, s->v_loc_strength, strength);
     if (s->v_loc_sw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->v_loc_sw, (f32)w);
