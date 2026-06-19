@@ -111,7 +111,7 @@ vec3 sky_color_ibl(vec3 dir, vec3 sun_dir, vec3 sun_col) {
 }
 
 vec3 irradiance_hemisphere(vec3 normal) {
-    vec3 sun_dir = normalize(-read_dir_light(0).dir);
+    vec3 sun_dir = (-read_dir_light(0).dir);  /* R100-1: R96-3 pre-normalized dir, skip normalize() */
     vec3 sun_col = read_dir_light(0).color;
     vec3 up = abs(normal.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
     vec3 tangent = normalize(cross(up, normal));
@@ -135,7 +135,7 @@ vec3 irradiance_hemisphere(vec3 normal) {
 }
 
 vec3 prefiltered_specular(vec3 R, float roughness) {
-    vec3 sun_dir = normalize(-read_dir_light(0).dir);
+    vec3 sun_dir = (-read_dir_light(0).dir);  /* R100-1: R96-3 pre-normalized dir, skip normalize() */
     vec3 sun_col = read_dir_light(0).color;
     float blur = roughness * 0.5;
     vec3 up = abs(R.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);

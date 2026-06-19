@@ -1587,6 +1587,24 @@ god_rays.c, motion_blur.c, upscale.c
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R100 — pbr_clustered IBL 函数冗余 normalize 消除
+
+### R100-1 (LOW GPU): pbr_clustered 着色器 IBL 函数 normalize(-read_dir_light(0).dir) 冗余消除
+
+**问题**：R96-3 在 C 端（`light_system_add_dir`）预归一化了方向光源方向，并更新了
+pbr_clustered 着色器主光照循环中的 `normalize(-dl.dir)` → `(-dl.dir)`。但 IBL 辅助
+函数 `irradiance_hemisphere` 和 `prefiltered_specular` 中的
+`normalize(-read_dir_light(0).dir)` 被遗漏，仍然在每个像素执行冗余的 `normalize()`
+（涉及 dot + sqrt + rsq 指令）。两个函数各调用一次，共 2 次冗余 normalize/像素。
+
+**修复**：将 `normalize(-read_dir_light(0).dir)` 替换为
+`(-read_dir_light(0).dir)`，与 R96-3 的主光照循环修复保持一致。
+
+**影响文件**：pbr_clustered.frag, pbr_clustered_vk.frag（各 2 处，共 4 处替换）
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
+
 ## 构建与回归命令
 
 ```bash
