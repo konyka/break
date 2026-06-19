@@ -2728,6 +2728,7 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
      * a shader reading bindings 0..7 sees every buffer (allocated lazily on the
      * first bind after rhi_cmd_bind_pipeline). Updating an as-yet-unused set
      * before the dispatch/draw consumes it is valid. */
+    bool need_bind = !vk->storage_set_valid;  /* R90-1: only bind once per pipeline */
     if (!vk->storage_set_valid) {
         VkDescriptorSetAllocateInfo dsai = {0};
         dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -2754,11 +2755,16 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     write.pBufferInfo = &buf_info;
 
     vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
-    VkPipelineBindPoint bp = cpd->is_compute ?
-        VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
-        bp, cpd->layout,
-        0, 1, &ds, 0, NULL);
+    /* R90-1: Skip redundant vkCmdBindDescriptorSets — the set is already bound
+     * from the first storage-buffer bind after pipeline bind. Subsequent
+     * vkUpdateDescriptorSets calls are visible to the GPU without re-binding. */
+    if (need_bind) {
+        VkPipelineBindPoint bp = cpd->is_compute ?
+            VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+            bp, cpd->layout,
+            0, 1, &ds, 0, NULL);
+    }
 }
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {

@@ -1283,6 +1283,23 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R90 VK storage描述符集冗余绑定消除
+
+### R90-1 VK rhi_cmd_bind_storage_buffer 冗余 vkCmdBindDescriptorSets 消除（MEDIUM CPU）
+
+**问题**：VK 后端 `rhi_cmd_bind_storage_buffer`（rhi_vk.c L2712）每次调用都执行 `vkCmdBindDescriptorSets`，即使描述符集已绑定。一个计算着色器 dispatch 通常绑定 4-5 个 SSBO，每个绑定都执行一次 `vkCmdBindDescriptorSets`，但首次绑定后后续绑定只需 `vkUpdateDescriptorSets` 更新描述符即可——Vulkan 保证已绑定描述符集的更新对后续 GPU 命令可见。
+
+**修正**：添加 `need_bind` 标志，仅在描述符集首次分配（`storage_set_valid` 为 false）时执行 `vkCmdBindDescriptorSets`。后续 `rhi_cmd_bind_storage_buffer` 调用仅执行 `vkUpdateDescriptorSets` 更新绑定槽位，跳过冗余的描述符集绑定命令。`rhi_cmd_bind_pipeline` 设置 `storage_set_valid = false` 确保新 pipeline 首次绑定时重新分配和绑定描述符集。
+
+**安全性分析**：
+- 存储描述符集绑定到 set 0，纹理描述符集绑定到 set 1，UBO 描述符集绑定到 `cpd->ubo_set`——互不干扰。
+- `rhi_cmd_bind_pipeline` 是唯一使 `storage_set_valid` 失效的函数，确保 pipeline 变化时重新绑定。
+- Vulkan 规范保证：`vkUpdateDescriptorSets` 对已绑定描述符集的更新在后续 draw/dispatch 命令中可见，无需重新绑定。
+
+**影响文件**：rhi_vk.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
