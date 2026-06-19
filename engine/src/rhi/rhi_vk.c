@@ -2590,10 +2590,7 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, vk->swap_extent};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
-    vk->cached_vp_x = 0; vk->cached_vp_y = 0;  /* R94-2: update cache */
-    vk->cached_vp_w = (f32)vk->swap_extent.width; vk->cached_vp_h = (f32)vk->swap_extent.height;
-    vk->cached_sc_x = 0; vk->cached_sc_y = 0; vk->cached_sc_w = vk->swap_extent.width; vk->cached_sc_h = vk->swap_extent.height;
-    vk->vp_valid = true; vk->sc_valid = true;
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-1: invalidate cache (render pass begin uses non-flipped viewport, different from rhi_cmd_set_viewport's flipped viewport) */
     vk->current_pipeline = VK_NULL_HANDLE;
 }
 
@@ -4055,6 +4052,7 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, {sm->width, sm->height}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
 }
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
@@ -4089,6 +4087,7 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, {screen_w, screen_h}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
     vk->current_pipeline = VK_NULL_HANDLE;
 }
 
@@ -4738,6 +4737,7 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, {fbo->width, fbo->height}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
@@ -4774,6 +4774,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, {screen_w, screen_h}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
     vk->current_pipeline = VK_NULL_HANDLE;
 }
 
@@ -5096,6 +5097,7 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, {fbo->width, fbo->height}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
@@ -5307,6 +5309,7 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     VkRect2D sc = {{0, 0}, {fbo->size, fbo->size}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
 }
 
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
