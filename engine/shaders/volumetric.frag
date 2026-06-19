@@ -11,7 +11,9 @@ uniform mat4 u_vol_view;
 uniform float u_vol_ldx;
 uniform float u_vol_ldy;
 uniform float u_vol_ldz;  /* R91-2: match C code + VK shader uniform names */
-uniform vec3 u_vol_light_color;
+uniform float u_vol_lcx;
+uniform float u_vol_lcy;
+uniform float u_vol_lcz;  /* R92-1: match C code + VK shader uniform names */
 uniform float u_vol_density;
 uniform float u_vol_fog_r;
 uniform float u_vol_fog_g;
@@ -55,7 +57,7 @@ void main() {
      * uniforms and the invariant shadow sample. */
     float shadow = texture(u_vol_shadow, vUV).r;
     float light_visibility = shadow > 0.01 ? 1.0 : 0.15;
-    vec3 lighting = fog_color * 0.3 + u_vol_light_color * light_amount * light_visibility;
+    vec3 lighting = fog_color * 0.3 + vec3(u_vol_lcx, u_vol_lcy, u_vol_lcz) * light_amount * light_visibility;
 
     for (int i = 0; i < steps; i++) {
         float t = (float(i) + 0.5) * step_size;

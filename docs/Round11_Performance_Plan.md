@@ -1330,6 +1330,33 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R92 GL/VK uniform名称不匹配修复（第二轮）
+
+### R92-1 volumetric.frag GL u_vol_light_color 名称不匹配修复（MEDIUM BUG）
+
+**问题**：与 R91-2 相同的模式。`volumetric.frag`（GL 版）声明 `uniform vec3 u_vol_light_color;`，但 C 代码（`volumetric.c` L94-96）查询 `"u_vol_lcx"`/`"u_vol_lcy"`/`"u_vol_lcz"`。GL 路径中 `loc_lcx/lcy/lcz = -1`，光照颜色默认为 `(0,0,0)`，体积雾缺少彩色光照贡献。VK 版 `volumetric_vk.frag` 已正确使用 `u_vol_lcx/ldy/ldz`（push constant offset 140/144/148）。
+
+**修正**：将 GL 着色器的 `uniform vec3 u_vol_light_color` 拆分为 `uniform float u_vol_lcx/ldy/ldz`，与 C 代码和 VK 着色器统一。
+
+**影响文件**：volumetric.frag
+
+### R92-2 occlusion_cull.comp / hi_z_generate.comp uniform名称不匹配修复（HIGH BUG）
+
+**问题**：遮挡剔除系统的计算着色器 uniform 名称在 GL、VK、C 代码三方不匹配：
+- C 代码（`occlusion_cull.c` L151-155）查询 `"pc.view_proj"`/`"pc.object_count"`/`"pc.hi_z_width"`/`"pc.hi_z_height"`/`"pc.output_size"`（带点号）
+- GL 着色器声明 `pc_view_proj`/`pc_object_count`/`pc_hi_z_width`/`pc_hi_z_height`/`pc_output_size`（带下划线，GLSL 不允许点号）
+- VK 后端 `rhi_pipeline_get_uniform_location` 无 `"pc.*"` 名称的 push constant 映射
+
+结果：GL 和 VK 两端 `loc = -1`，`if (loc >= 0)` 守卫跳过所有 uniform 设置。遮挡剔除计算着色器使用默认值（`object_count=0` → 所有调用提前返回，无可见性写入），Hi-Z mip 生成完全失效。**遮挡剔除系统在 GL 和 VK 两端均不工作**。
+
+**修正**：
+1. 将 C 代码的查询从 `"pc.*"` 改为 `"pc_*"`（匹配 GL 着色器名称）。
+2. 在 VK 后端 `rhi_pipeline_get_uniform_location` 的 compute 分支添加 push constant 映射：`pc_view_proj`@0, `pc_object_count`@64, `pc_hi_z_width`@68, `pc_hi_z_height`@72, `pc_output_size`@0。
+
+**影响文件**：occlusion_cull.c, rhi_vk.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

@@ -148,11 +148,11 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
     }
 
     /* Cache uniform locations once at init (avoids per-frame glGetUniformLocation). */
-    sys->_loc_hi_z_output_size  = rhi_pipeline_get_uniform_location(dev, sys->hi_z_pipeline, "pc.output_size");
-    sys->_loc_cull_view_proj    = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc.view_proj");
-    sys->_loc_cull_object_count = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc.object_count");
-    sys->_loc_cull_hi_z_width   = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc.hi_z_width");
-    sys->_loc_cull_hi_z_height  = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc.hi_z_height");
+    sys->_loc_hi_z_output_size  = rhi_pipeline_get_uniform_location(dev, sys->hi_z_pipeline, "pc_output_size");
+    sys->_loc_cull_view_proj    = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_view_proj");
+    sys->_loc_cull_object_count = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_object_count");
+    sys->_loc_cull_hi_z_width   = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_hi_z_width");
+    sys->_loc_cull_hi_z_height  = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_hi_z_height");
 
     /* Allocate CPU readback buffer */
     sys->visibility_readback = calloc(OCCLUSION_MAX_OBJECTS, sizeof(u32));

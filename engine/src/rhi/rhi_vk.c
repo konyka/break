@@ -3361,6 +3361,13 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_cull_hi_z_width") == 0)  return 68;
         if (strcmp(name, "u_cull_hi_z_height") == 0) return 72;
         if (strcmp(name, "u_cull_use_hi_z") == 0)    return 76;
+        /* Occlusion culling (occlusion_cull.comp): mat4 view_proj@0, uint object_count@64, float hi_z_width@68, float hi_z_height@72 */
+        if (strcmp(name, "pc_view_proj") == 0)       return 0;
+        if (strcmp(name, "pc_object_count") == 0)    return 64;
+        if (strcmp(name, "pc_hi_z_width") == 0)      return 68;
+        if (strcmp(name, "pc_hi_z_height") == 0)     return 72;
+        /* Hi-Z generation (hi_z_generate.comp): vec2 output_size@0 */
+        if (strcmp(name, "pc_output_size") == 0)     return 0;
         /* Draw compaction (compact_draws.comp): uint total_draws@0 */
         if (strcmp(name, "total_draws") == 0)       return 0;
         return -1;
