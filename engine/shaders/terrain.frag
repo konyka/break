@@ -6,7 +6,8 @@ in vec2 vUV;
 
 layout(location = 0) out vec4 FragColor;
 
-const vec3 u_light_dir = vec3(0.5, -0.8, 0.3);
+/* R88-2: Pre-normalized (length=0.98995) — avoids per-fragment normalize() */
+const vec3 u_light_dir = vec3(0.5050763, -0.8081220, 0.3030458);
 const vec3 u_light_color = vec3(1.0, 0.95, 0.9);
 const vec3 u_ambient = vec3(0.35, 0.35, 0.40);
 uniform vec3 u_camera_pos;
@@ -53,7 +54,7 @@ vec3 sand_color(vec2 uv) {
 
 void main() {
     vec3 N = normalize(vNormal);
-    vec3 L = normalize(-u_light_dir);
+    vec3 L = -u_light_dir; /* R88-2: already normalized */
     vec3 V = normalize(u_camera_pos - vWorldPos);
     vec3 H = normalize(L + V);
 

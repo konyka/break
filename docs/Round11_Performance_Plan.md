@@ -1241,6 +1241,26 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R88 着色器效率优化(第四轮)：cluster_cull pow→exp2 + terrain const向量预归一化
+
+### R88-1 cluster_cull.comp pow() → exp2()（MEDIUM GPU）
+
+**问题**：`cluster_cull.comp`（L60-62）的 `cluster_depth()` 函数使用 `pow(FARP / NEARP, float(z) / float(CZ))`。该计算着色器每帧由 `light_system_cull_gpu` dispatch，共 3072 个 invocation（16×8×24），每个调用 `cluster_depth()` 两次，即每帧 6144 次 `pow()` 调用。`pow()` 在 GPU 上使用超越函数指令，比 `exp2()` 更昂贵。R83-1 已将片元着色器中的聚类深度 `pow()` 循环替换为 `log2` O(1) 计算，但遗漏了该计算着色器。
+
+**修正**：将 `pow(base, exp)` 替换为 `exp2(log2(base) * exp)`。`log2(FARP / NEARP)` 是 uniform 不变量表达式，编译器可将其提升到循环外。`exp2()` 在 GPU 上通常映射到单个指令，比 `pow()` 更高效。
+
+**影响文件**：cluster_cull.comp
+
+### R88-2 terrain.frag const 向量预归一化（MEDIUM GPU）
+
+**问题**：R87-2 将 `terrain.frag` 中的 `u_light_dir` 从 `uniform` 改为 `const vec3`，但第 56 行仍对这一常量向量执行 `normalize(-u_light_dir)`。`normalize()` 对每个地形片元执行 `length()` + 3 次除法，而输入是编译期常量，归一化结果也是常量。仅影响 GL 版（VK 版使用 push constant，`u_light_dir` 非常量，`normalize()` 必需）。
+
+**修正**：预计算归一化值 `length(vec3(0.5,-0.8,0.3)) = sqrt(0.98) ≈ 0.98995`，将 const 声明改为已归一化值 `vec3(0.5050763, -0.8081220, 0.3030458)`，并将 `normalize(-u_light_dir)` 替换为 `-u_light_dir`（常量取反，无需归一化）。
+
+**影响文件**：terrain.frag
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

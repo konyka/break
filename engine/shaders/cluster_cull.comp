@@ -58,7 +58,8 @@ const uint CLUSTER_COUNT = CX * CY * CZ;
 const uint MAX_PER = 128u;
 
 float cluster_depth(uint z) {
-    return NEARP * pow(FARP / NEARP, float(z) / float(CZ));
+    /* R88-1: exp2(log2()) replaces pow() — avoids transcendental on GPU. */
+    return NEARP * exp2(log2(FARP / NEARP) * float(z) / float(CZ));
 }
 
 void main() {
