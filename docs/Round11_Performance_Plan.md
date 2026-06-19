@@ -1177,6 +1177,33 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **修正**：合并为单次 `F_env = F_Schlick(...)` 调用，移到 `#ifdef HAS_IBL` 之前。`kD_env = (1.0 - F_env) * (1.0 - metallic)` 也在前面计算。`#else` 路径使用 `kD_env` 替代原来的 `kD`。消除 IBL 路径中每片段 1 次冗余 F_Schlick 调用。
 
 **验收**：全部 23/23 测试通过。
+## R86 关键bug修复 + 粒子GPU回读消除 + VBO/IBO绑定缓存 + sun_color缓存
+
+### R86-1 blinn_phong_clustered 平方链错误修复（CRITICAL）
+
+**问题**：R85-1 在 blinn_phong_clustered.frag/vk 中将 `pow(max(dot(N,H),0.0), 32.0)` 替换为平方链时，初始值用了 `float spec = NdH * NdH`（NdH^2）而非 `float spec = NdH`（NdH^1），但两者都执行了相同的 5 次 `spec *= spec`。结果：clustered 变体计算 NdH^(2×2^5) = NdH^64 而非 NdH^32，使镜面高光显著过窄。
+
+**修正**：将初始值从 `NdH * NdH` 改为 `NdH`，使 5 次平方链正确计算 NdH^32。影响 4 处（blinn_phong_clustered.frag L70/L110、blinn_phong_clustered_vk.frag L76/L116）。
+
+### R86-2 粒子渲染 GPU 回读消除（HIGH CPU/GPU）
+
+**问题**：`particles_render`（particles.c L264-288）每帧通过 `rhi_buffer_map`（即 `glMapBufferRange(GL_MAP_READ_BIT)`）将存活粒子数量从 GPU 回读到 CPU，用于设置 `rhi_cmd_draw` 的实例数。这是阻塞式 GPU 回读，强制 CPU 等待 `particles_cull` 计算着色器完成后才能继续，造成 CPU-GPU 管线串行化停顿。但粒子顶点着色器已有早退保护（`if (P_INST >= draw_count) { gl_Position = vec4(0.0); gl_PointSize = 0.0; return; }`），`draw_count` 已通过 SSBO 绑定到着色器，回读完全多余。
+
+**修正**：移除 `rhi_buffer_map`/`rhi_buffer_unmap` 调用，直接绘制 `PARTICLES_MAX` 个实例。`last_alive_count` 设为 `PARTICLES_MAX`（仅用于 debug UI 近似显示）。
+
+### R86-3 VBO/IBO 绑定缓存（MEDIUM CPU）
+
+**问题**：`rhi_cmd_bind_vertex_buffer` 每次调用 `glBindVertexBuffer`，`rhi_cmd_bind_index_buffer` 每次调用 `glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ...)`，均无缓存检查。与引擎中所有其他 GL 状态缓存不一致（纹理 `g_tex_cache`、FBO `g_gl_bound_fbo`、VAO `g_gl_vao`、SSBO `g_gl_ssbo_cache`、间接缓冲 `g_gl_indirect_buf` 等均已缓存）。在多网格绘制循环中连续绘制经常重复绑定相同缓冲区。
+
+**修正**：添加文件作用域 `g_gl_bound_vbo` 和 `g_gl_bound_ibo` 缓存变量。在 `rhi_cmd_bind_vertex_buffer`/`rhi_cmd_bind_index_buffer` 中检查缓冲区是否已绑定。VAO 变化时（`gl_cmd_bind_pipeline` 和 `rhi_pipeline_create`）同步失效两个缓存。
+
+### R86-4 sun_color/ambient_col 缓存（LOW CPU）
+
+**问题**：`sun_color` 和 `ambient_col` 每帧重新计算，但仅依赖 `sun_elevation`（通过 `sun_t`）和 `ambient_mult`。太阳方向 `cached_sun_dir` 已在 elevation/azimuth 未变时跳过重计算，但 `sun_color`/`ambient_col` 未纳入同一缓存块。
+
+**修正**：添加 `cached_sun_t`、`cached_amb_mult`、`cached_sun_color`、`cached_ambient_col` 静态变量。仅在 `sun_t` 或 `ambient_mult` 变化时重计算 `sun_color` 和 `ambient_col`。
+
+**验收**：全部 23/23 测试通过。
 ## 构建与回归命令
 
 ```bash

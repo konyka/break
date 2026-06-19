@@ -3572,7 +3572,14 @@ u32 culled_count = 0;
 
         RHISampler active_sampler = nearest_filter && rhi_handle_valid(render.nearest_sampler) ? render.nearest_sampler : render.sampler;
 
-        /* Sun direction: cached — only recompute when elevation/azimuth change (saves 4 trig + normalize). */
+        /* R86-4: Cache sun_color/ambient_col — only recompute when sun_elevation
+         * or ambient_mult changes. Previously recomputed every frame. */
+        static f32 cached_sun_t = -1.0f;
+        static f32 cached_amb_mult = -1.0f;
+        static Vec3 cached_sun_color = {0};
+        static Vec3 cached_ambient_col = {0};
+
+        f32 sun_t = fmaxf(0.0f, fminf(sun_elevation / 1.0f, 1.0f));
         if (sun_elevation != cached_sun_el || sun_azimuth != cached_sun_az) {
             cached_sun_el = sun_elevation;
             cached_sun_az = sun_azimuth;
@@ -3582,15 +3589,20 @@ u32 culled_count = 0;
                 cosf(sun_elevation) * cosf(sun_azimuth)
             ));
         }
+        if (sun_t != cached_sun_t || ambient_mult != cached_amb_mult) {
+            cached_sun_t = sun_t;
+            cached_amb_mult = ambient_mult;
+            cached_sun_color = vec3(
+                0.8f + 0.2f * sun_t,
+                0.4f + 0.55f * sun_t,
+                0.2f + 0.7f * sun_t
+            );
+            f32 amb_t = fmaxf(0.15f, sun_t * 0.35f);
+            cached_ambient_col = vec3(amb_t * 0.9f * ambient_mult, amb_t * 0.9f * ambient_mult, amb_t * ambient_mult);
+        }
         Vec3 sun_dir_vec = cached_sun_dir;
-        f32 sun_t = fmaxf(0.0f, fminf(sun_elevation / 1.0f, 1.0f));
-        Vec3 sun_color = vec3(
-            0.8f + 0.2f * sun_t,
-            0.4f + 0.55f * sun_t,
-            0.2f + 0.7f * sun_t
-        );
-        f32 amb_t = fmaxf(0.15f, sun_t * 0.35f);
-        Vec3 ambient_col = vec3(amb_t * 0.9f * ambient_mult, amb_t * 0.9f * ambient_mult, amb_t * ambient_mult);
+        Vec3 sun_color = cached_sun_color;
+        Vec3 ambient_col = cached_ambient_col;
 
         draw_calls = 0;
         culled_count = 0;

@@ -264,18 +264,9 @@ void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
 void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj) {
     if (!ps->initialized) return;
 
-    u32 alive = PARTICLES_MAX;
-    if (ps->cull_ready) {
-        u32 *mapped = (u32 *)rhi_buffer_map(ps->device, ps->cull_buf);
-        if (mapped) {
-            alive = mapped[0];
-            if (alive > PARTICLES_MAX) alive = PARTICLES_MAX;
-            ps->last_alive_count = alive;
-            rhi_buffer_unmap(ps->device, ps->cull_buf);
-        }
-        if (alive == 0) return;
-    }
-
+    /* R86-2: Skip GPU readback — vertex shader has early-exit for excess
+     * instances (if (P_INST >= draw_count) return). The old rhi_buffer_map
+     * caused a CPU-GPU pipeline stall every frame. */
     rhi_cmd_bind_pipeline(cmd, ps->render_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
     if (ps->cull_ready)
@@ -284,5 +275,6 @@ void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, co
     if (ps->_loc_view >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_view, view);
     if (ps->_loc_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_proj, proj);
 
-    rhi_cmd_draw(cmd, 1, alive);
+    rhi_cmd_draw(cmd, 1, PARTICLES_MAX);
+    ps->last_alive_count = PARTICLES_MAX; /* approximate for debug UI */
 }

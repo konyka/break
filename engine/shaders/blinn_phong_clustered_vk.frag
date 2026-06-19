@@ -73,7 +73,7 @@ void main() {
         vec3 L = normalize(-dl.dir);
         vec3 H = normalize(L + V);
         float diff = max(dot(N, L), 0.0);
-        float NdH = max(dot(N, H), 0.0); float spec = NdH * NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
+        float NdH = max(dot(N, H), 0.0); float spec = NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
         color += dl.color * (diff + spec * 0.15) * albedo;
     }
 
@@ -113,7 +113,7 @@ void main() {
             float atten = 1.0 - dist / pl.radius;
             atten *= atten;
             float diff = max(dot(N, L), 0.0);
-            float NdH = max(dot(N, H), 0.0); float spec = NdH * NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
+            float NdH = max(dot(N, H), 0.0); float spec = NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
 
             color += pl.color * atten * (diff + spec * 0.15) * albedo;
         }

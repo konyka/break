@@ -145,6 +145,11 @@ static bool g_gl_scissor_enabled = false;
  * defensive against future hot-reload). */
 static GLuint g_gl_vao = 0;
 
+/* R86-3: VBO/IBO bind cache — avoids redundant glBindVertexBuffer and
+ * glBindBuffer(GL_ELEMENT_ARRAY_BUFFER) calls in draw loops. */
+static GLuint g_gl_bound_vbo = 0;
+static GLuint g_gl_bound_ibo = 0;
+
 /* R80-2: Depth mask and cull-face enable caches — skybox_render was
  * calling glDepthMask/glDisable(GL_CULL_FACE) directly, bypassing caches.
  * Same class of desync risk as R78-2 (glDepthFunc). */
@@ -452,6 +457,9 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
     if (pd->gl_vao != g_gl_vao) {
         glBindVertexArray(pd->gl_vao);
         g_gl_vao = pd->gl_vao;
+        /* R86-3: VAO change invalidates VBO/IBO binding state. */
+        g_gl_bound_vbo = 0;
+        g_gl_bound_ibo = 0;
     }
     if (pd->alpha_blend != g_gl_blend_enabled) {
         if (pd->alpha_blend) {
@@ -710,6 +718,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
     g_gl_vao = vao;  /* R80-1: Update cache — VAO is now bound. */
+    g_gl_bound_vbo = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
+    g_gl_bound_ibo = 0;
 
     u32 stride = desc->vertex_stride;
     if (desc->no_vertex_input) {
@@ -761,6 +771,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
 
     glBindVertexArray(0);
     g_gl_vao = 0;  /* R80-1: Update cache — default VAO is now bound. */
+    g_gl_bound_vbo = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
+    g_gl_bound_ibo = 0;
 
     u32 idx = rhi_alloc_slot(dev);
     GLPipelineData *pd = calloc(1, sizeof(GLPipelineData));
@@ -847,11 +859,11 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
     (void)cmd;
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
-    if (bd) {
-        /* Use the stride cached by the most recent bind_pipeline call.
-         * This replaces the previous O(4096) linear slot scan. */
+    if (bd && bd->gl_buf != g_gl_bound_vbo) {
+        /* R86-3: Cache VBO binding to avoid redundant glBindVertexBuffer calls. */
         glBindVertexBuffer(0, bd->gl_buf, (GLintptr)offset,
                            (GLsizei)g_cached_vertex_stride);
+        g_gl_bound_vbo = bd->gl_buf;
     }
 }
 
@@ -859,7 +871,11 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
     (void)cmd; (void)offset;
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
-    if (bd) glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bd->gl_buf);
+    if (bd && bd->gl_buf != g_gl_bound_ibo) {
+        /* R86-3: Cache IBO binding to avoid redundant glBindBuffer calls. */
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bd->gl_buf);
+        g_gl_bound_ibo = bd->gl_buf;
+    }
 }
 
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h) {
