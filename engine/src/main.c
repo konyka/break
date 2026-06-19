@@ -1902,6 +1902,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 g_occ_aabbs_count++;
             }
             LOG_INFO("Occlusion: %u cached AABBs", g_occ_aabbs_count);
+            /* R83-4: Upload AABBs once at init — data is static, no per-frame re-upload needed. */
+            if (g_occ_aabbs_count > 0)
+                occlusion_cull_upload_aabbs(&occ_sys, g_occ_aabbs, g_occ_aabbs_count);
 
             if (gpucull_sys.unified_ready)
                 mega_upload_unified_cull(&gpucull_sys, cmds, mega_buf.cmd_node_index,
@@ -5190,9 +5193,8 @@ u32 culled_count = 0;
         if (occ_cull_enabled && occ_sys.enabled && rhi_handle_valid(scene_fbo.depth_tex)) {
             occlusion_cull_generate_hi_z(&occ_sys, cmd, scene_fbo.depth_tex);
 
-            /* R82-2: AABBs cached at init — scene data is static. */
+            /* R82-2/R83-4: AABBs cached+uploaded at init — per-frame dispatch only. */
             if (g_occ_aabbs_count > 0) {
-                occlusion_cull_upload_aabbs(&occ_sys, g_occ_aabbs, g_occ_aabbs_count);
                 occlusion_cull_dispatch(&occ_sys, cmd, &curr_view_proj, g_occ_aabbs_count);
             }
         }

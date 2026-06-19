@@ -16,7 +16,18 @@ uniform float u_dof_sh;
 const int RINGS = 3;
 const int SAMPLES_PER_RING = 6;
 
-vec2 hex_disk[RINGS * SAMPLES_PER_RING + 1];
+/* R83-3: Precomputed const hex_disk — values depend only on compile-time
+ * constants RINGS=3 and SAMPLES_PER_RING=6. Eliminates 18 cos/sin/normalize/dot
+ * calls per fragment. */
+const vec2 hex_disk[RINGS * SAMPLES_PER_RING + 1] = vec2[](
+    vec2(0.0, 0.0),
+    vec2(0.33333, 0.19245), vec2(0.0, 0.38490), vec2(-0.33333, 0.19245),
+    vec2(-0.33333, -0.19245), vec2(0.0, -0.38490), vec2(0.33333, -0.19245),
+    vec2(0.66667, 0.38490), vec2(0.0, 0.76980), vec2(-0.66667, 0.38490),
+    vec2(-0.66667, -0.38490), vec2(0.0, -0.76980), vec2(0.66667, -0.38490),
+    vec2(1.0, 0.57735), vec2(0.0, 1.15470), vec2(-1.0, 0.57735),
+    vec2(-1.0, -0.57735), vec2(0.0, -1.15470), vec2(1.0, -0.57735)
+);
 
 float linearize_depth(float d) {
     float z_n = 2.0 * d - 1.0;
@@ -26,20 +37,6 @@ float linearize_depth(float d) {
 }
 
 void main() {
-    hex_disk[0] = vec2(0.0);
-    for (int ring = 1; ring <= RINGS; ring++) {
-        float r = float(ring) / float(RINGS);
-        for (int s = 0; s < SAMPLES_PER_RING; s++) {
-            float angle = float(s) / float(SAMPLES_PER_RING) * 6.283185;
-            float next_angle = float(s + 1) / float(SAMPLES_PER_RING) * 6.283185;
-            vec2 v1 = vec2(cos(angle), sin(angle));
-            vec2 v2 = vec2(cos(next_angle), sin(next_angle));
-            vec2 hex_dir = normalize(v1 + v2);
-            float hex_r = r / max(dot(hex_dir, v1), 0.001);
-            hex_disk[(ring - 1) * SAMPLES_PER_RING + s + 1] = hex_dir * hex_r;
-        }
-    }
-
     const int total_samples = RINGS * SAMPLES_PER_RING + 1;
 
     vec2 texel_size = vec2(1.0 / u_dof_sw, 1.0 / u_dof_sh);

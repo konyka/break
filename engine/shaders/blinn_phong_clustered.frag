@@ -82,11 +82,9 @@ void main() {
         cx = min(cx, 15u);
         cy = min(cy, 7u);
 
-        uint cz = 0u;
-        for (uint z = 0u; z < 24u; z++) {
-            float z_near = u_near * pow(u_far / u_near, float(z) / 24.0);
-            if (linear_depth >= z_near) cz = z;
-        }
+        /* R83-1: O(1) log2 replaces O(24) pow() loop — mathematically equivalent:
+         * ld >= near * (far/near)^(z/24)  <=>  z <= 24 * log2(ld/near) / log2(far/near) */
+        uint cz = min(uint(floor(24.0 * log2(max(linear_depth / u_near, 1.0)) / log2(u_far / u_near))), 23u);
 
         uint ci = cx + cy * 16u + cz * 16u * 8u;
 

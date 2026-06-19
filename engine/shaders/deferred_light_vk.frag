@@ -268,12 +268,11 @@ void main() {
         float ld = -vp.z;
         uint cx = min(uint(gl_FragCoord.x / (screen_w / 16.0)), 15u);
         uint cy = min(uint(gl_FragCoord.y / (screen_h / 8.0)), 7u);
-        uint cz = 0u;
+        /* R83-1: O(1) log2 replaces O(24) pow() loop — mathematically equivalent:
+         * ld >= near * (far/near)^(z/24)  <=>  z <= 24 * log2(ld/near) / log2(far/near) */
         float near_plane = pc.u_clip_params.x;
         float far_plane  = pc.u_clip_params.y;
-        for (uint z = 0u; z < 24u; z++) {
-            if (ld >= near_plane * pow(far_plane / near_plane, float(z) / 24.0)) cz = z;
-        }
+        uint cz = min(uint(floor(24.0 * log2(max(ld / near_plane, 1.0)) / log2(far_plane / near_plane))), 23u);
         uint ci = cx + cy * 16u + cz * 128u;
         uint go = grid_u32(ci * 2u);
         uint gc = grid_u32(ci * 2u + 1u);

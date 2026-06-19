@@ -53,6 +53,13 @@ void main() {
     vec3 accum = vec3(0.0);
     float transmittance = 1.0;
 
+    /* R83-2: Hoist loop-invariant texture sample + lighting computation.
+     * vUV is a fragment input — texture(u_vol_shadow, vUV) returns the same
+     * value every iteration. Also removed dead inverse(u_vol_view) computation. */
+    float shadow = texture(u_vol_shadow, vUV).r;
+    float light_visibility = shadow > 0.01 ? 1.0 : 0.15;
+    vec3 lighting = fog_color * 0.3 + vec3(u_vol_lcx, u_vol_lcy, u_vol_lcz) * light_amount * light_visibility;
+
     for (int i = 0; i < steps; i++) {
         float t = (float(i) + 0.5) * step_size;
         vec3 pos = ray_start + ray_dir * t;
@@ -62,12 +69,6 @@ void main() {
         density *= max(height_factor, 0.0);
 
         if (density < 0.0001) continue;
-
-        vec4 world_pos = inverse(u_vol_view) * vec4(pos, 1.0);
-        float shadow = texture(u_vol_shadow, vUV).r;
-        float light_visibility = shadow > 0.01 ? 1.0 : 0.15;
-
-        vec3 lighting = fog_color * 0.3 + vec3(u_vol_lcx, u_vol_lcy, u_vol_lcz) * light_amount * light_visibility;
 
         float fog_amount = density * step_size;
         accum += lighting * transmittance * fog_amount;

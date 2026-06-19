@@ -1089,6 +1089,35 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R83 着色器效率优化：聚类Z切片log2替换 + 体积雾循环不变量提升 + DOF const数组 + AABB上传移至init
+
+### R83-1 聚类 Z 切片 pow() 线性扫描替换为 log2（HIGH GPU）
+
+**问题**：6 个着色器（`deferred_light.frag`、`pbr_clustered.frag`、`pbr_clustered_vk.frag`、`deferred_light_vk.frag`、`blinn_phong_clustered.frag`、`blinn_phong_clustered_vk.frag`）中查找聚类 Z 切片使用 24 次迭代线性扫描，每片段调用 24 次 `pow()`。`pow()` 在 GPU 上展开为 `exp2(y * log2(x))`，每次约 10-20 ALU 周期。1080p 延迟光照 pass 中，每帧约 48M 次超越函数调用。
+
+**修正**：数学等价替换为 O(1) `log2`：`ld >= near * (far/near)^(z/24)` ⟺ `z <= 24 * log2(ld/near) / log2(far/near)`。`max(ld/near, 1.0)` 处理 `ld < near` 的情况（原代码此时 cz=0）。
+
+### R83-2 体积雾循环不变量提升（MEDIUM GPU）
+
+**问题**：`volumetric.frag` 和 `volumetric_vk.frag` 中 `texture(u_vol_shadow, vUV).r` 在 16 次迭代循环内执行，但 `vUV` 是片段输入 varying，循环中不变。每次采样返回相同值，造成 15 次冗余纹理采样。`light_visibility` 和 `lighting` 也都是循环不变量。VK 变体额外存在死代码 `vec4 world_pos = inverse(u_vol_view) * vec4(pos, 1.0)`（`world_pos` 未使用）。
+
+**修正**：将 `shadow`、`light_visibility`、`lighting` 提升到循环之前。VK 变体移除死代码 `inverse(u_vol_view)`。
+
+### R83-3 DOF hex_disk const 数组（MEDIUM GPU）
+
+**问题**：`dof.frag` 和 `dof_vk.frag` 中 `hex_disk` 数组的值仅依赖编译期常量 `RINGS=3` 和 `SAMPLES_PER_RING=6`，但每个片段都重新计算 18 次 `cos`/`sin`/`normalize`/`dot`。数组声明为非 `const` 全局变量并在 `main()` 中逐元素赋值，GLSL 编译器不会常量折叠。
+
+**修正**：将 `hex_disk` 改为 `const` 数组，用预计算的字面量初始化（19 个采样偏移）。删除 `main()` 中的循环填充代码。
+
+### R83-4 遮挡剔除 AABB 上传移至 init（LOW CPU）
+
+**问题**：R82-2 将 AABB 计算移至 init 缓存，但每帧仍通过 `occlusion_cull_upload_aabbs` → `glBufferSubData` 上传相同的静态数据到 GPU（最多 393KB）。AABB buffer 在 `occlusion_cull_init` 时创建，`occlusion_cull_resize` 仅重建 Hi-Z 纹理不影响 AABB buffer。
+
+**修正**：在 init 的 AABB 计算后立即调用 `occlusion_cull_upload_aabbs` 一次性上传。每帧仅保留 `occlusion_cull_dispatch`（Hi-Z 每帧变化，dispatch 必须每帧运行）。`sys->object_count` 由 dispatch 每帧设置，upload 的设置冗余。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash
