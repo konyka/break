@@ -90,7 +90,7 @@ vec3 sky_color_ibl(vec3 dir, vec3 sun_dir, vec3 sun_col) {
     float rayleigh_p = (3.0 / (16.0 * PI_IBL)) * (1.0 + cos_sun * cos_sun);
     float g = 0.758;
     float g2 = g * g;
-    float mie_p = (1.0 - g2) / ((4.0 * PI_IBL) * max(pow(1.0 + g2 - 2.0 * g * cos_sun, 1.5), 1e-6));
+    float mie_p = (1.0 - g2) / ((4.0 * PI_IBL) * max((1.0 + g2 - 2.0 * g * cos_sun) * sqrt(1.0 + g2 - 2.0 * g * cos_sun), 1e-6));
 
     float zenith_angle = acos(clamp(dir.y, -1.0, 1.0));
     float density = exp(-zenith_angle * 6371.0 / 8400.0) + exp(-zenith_angle * 6371.0 / 1250.0);
@@ -104,7 +104,7 @@ vec3 sky_color_ibl(vec3 dir, vec3 sun_dir, vec3 sun_col) {
     float sun_disc = smoothstep(0.9995, 0.9999, cos_sun);
     sky += sun_col * 1.0 * sun_disc * extinction;
 
-    float horizon_fog = pow(1.0 - abs(dir.y), 3.0);
+    float horizon_fog = (1.0 - abs(dir.y)) * (1.0 - abs(dir.y)) * (1.0 - abs(dir.y));
     sky += sun_col * 0.1 * horizon_fog;
 
     return max(sky, vec3(0.0));
@@ -371,12 +371,12 @@ void main() {
     vec3 emissive = texture(u_emissive, pom_uv).rgb;
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
-    vec3 kD = (1.0 - F_Schlick(max(dot(N, V), 0.0), F0)) * (1.0 - metallic);
+    /* R85-4: Compute F_Schlick once — reuse for both IBL and fallback paths. */
+    vec3 F_env  = F_Schlick(max(dot(N, V), 0.0), F0);
+    vec3 kD_env = (vec3(1.0) - F_env) * (1.0 - metallic);
 
 #ifdef HAS_IBL
     // ---- IBL ambient (split-sum approximation) ----
-    vec3 F_env  = F_Schlick(max(dot(N, V), 0.0), F0);
-    vec3 kD_env = (vec3(1.0) - F_env) * (1.0 - metallic);
 
     vec3 irradiance  = texture(u_irradiance_map, N).rgb;
     vec3 diffuse_ibl = irradiance * albedo * kD_env;
@@ -388,7 +388,7 @@ void main() {
     vec3 specular_ibl = prefiltered * (F_env * brdf.x + brdf.y);
 #else
     vec3 irradiance = irradiance_hemisphere(N);
-    vec3 diffuse_ibl = irradiance * albedo * kD;
+    vec3 diffuse_ibl = irradiance * albedo * kD_env;
 
     vec3 R = reflect(-V, N);
     vec3 prefiltered = prefiltered_specular(R, roughness);

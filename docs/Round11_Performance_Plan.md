@@ -1146,6 +1146,37 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **修正**：在 6 个着色器（`pbr_clustered.frag`、`pbr_clustered_vk.frag`、`deferred_light.frag`、`deferred_light_vk.frag`、`ssr.frag`、`ssr_vk.frag`）中将 `pow(x, 5.0)` 替换为 `float t = x; t*t*t*t*t`。F_Schlick 在每个方向光、点光、IBL 环境光计算中都被调用，替换后减少每次调用的 ALU 延迟。
 
 **验收**：全部 23/23 测试通过。
+## R85 着色器效率优化(第三轮)：blinn_phong albedo缓存 + skybox循环不变量 + pow→mul批量替换 + F_Schlick去重
+
+### R85-1 blinn_phong_clustered 循环内冗余 albedo 纹理采样（HIGH GPU）
+
+**问题**：`blinn_phong_clustered.frag` 和 `blinn_phong_clustered_vk.frag` 中 `texture(u_albedo, vUV)` 在方向光循环和点光源循环内每次迭代重新采样同一纹素。N 个方向光 + M 个点光源导致 `1 + N + M` 次纹理查找而非 1 次。同时 `pow(max(dot(N,H),0.0), 32.0)` 可用 5 次平方替代。
+
+**修正**：在 main() 开头将 albedo 采样缓存到局部变量 `albedo`，所有循环内直接复用。`pow(x, 32.0)` 替换为 `float NdH = max(dot(N,H),0.0); float spec = NdH * NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;`（5 次平方 = 2^5 = 32）。影响 blinn_phong_clustered.frag/vk 2 个着色器。
+
+### R85-2 skybox 云层循环冗余 normalize + 循环不变量 cos_light（HIGH GPU）
+
+**问题**：`skybox.frag` 和 `skybox_vk.frag` 中云层 24 次迭代循环内 `float cos_light = max(dot(normalize(pos), sun), 0.0)`。由于 `pos = ray * t` 且 `ray` 已归一化，`normalize(pos) = ray`，因此 `cos_light = max(dot(ray, sun), 0.0) = max(cos_sun, 0.0)` 是循环不变量（`cos_sun` 在 L71/L76 已计算）。每次迭代浪费 1 次 normalize（~4 ALU）+ 1 次 dot + 1 次 max。同时 `pow(horizon_fog, 3.0)` 和 `pow(x, 1.5)` 可用乘法/sqrt 替代。
+
+**修正**：将 `cos_light = max(cos_sun, 0.0)` 提升到循环前。循环内删除 `normalize(pos)` 和 `cos_light` 计算。`pow(x, 3.0)` → `x*x*x`，`pow(x, 1.5)` → `x*sqrt(x)`。影响 skybox.frag/vk 2 个着色器。
+
+### R85-3 pow() 批量替换为乘法（MEDIUM GPU）
+
+**问题**：R84-4 仅替换了 F_Schlick 中的 `pow(x, 5.0)`，但大量其他 `pow()` 调用仍使用超越函数。
+
+**修正**：跨 18 个着色器批量替换所有整数/半整数指数 `pow()` 调用：
+- `pow(x, 32.0)` → 5 次平方链（`spec *= spec` × 5）：blinn_phong.frag/vk、blinn_phong_clustered.frag/vk、skinned.frag/vk、instanced.frag/vk、water.frag/vk、terrain.frag/vk（12 着色器）
+- `pow(x, 3.0)` → 3 次乘法：skybox.frag/vk、pbr_clustered.frag/vk、sky_to_cube.comp、water.frag/vk、terrain.frag/vk
+- `pow(x, 1.5)` → `x * sqrt(x)`：skybox.frag/vk、pbr_clustered.frag/vk、sky_to_cube.comp
+- `pow(x, 5.0)` → 5 次乘法：brdf_lut.comp（在 1024 次蒙特卡洛积分循环中，256×256 LUT × 1024 样本 = 67M 次 pow 调用）
+
+### R85-4 pbr_clustered 重复 F_Schlick 调用去重（MEDIUM GPU）
+
+**问题**：`pbr_clustered.frag` 和 `pbr_clustered_vk.frag` 中 `F_Schlick(max(dot(N, V), 0.0), F0)` 在 L362 计算 `kD`（仅 `#else` 非 IBL 路径使用），又在 L366 重新计算 `F_env`（IBL 路径使用）。在 `HAS_IBL` 定义时，L362 的 `kD` 是死代码，但 F_Schlick 仍被求值。
+
+**修正**：合并为单次 `F_env = F_Schlick(...)` 调用，移到 `#ifdef HAS_IBL` 之前。`kD_env = (1.0 - F_env) * (1.0 - metallic)` 也在前面计算。`#else` 路径使用 `kD_env` 替代原来的 `kD`。消除 IBL 路径中每片段 1 次冗余 F_Schlick 调用。
+
+**验收**：全部 23/23 测试通过。
 ## 构建与回归命令
 
 ```bash

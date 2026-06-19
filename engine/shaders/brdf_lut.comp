@@ -80,7 +80,7 @@ vec2 integrate_brdf(float NdotV, float roughness) {
             float VdotH = max(dot(V, H), 0.0);
             float G     = geometry_smith_ibl(N, V, L, roughness);
             float G_Vis = (G * VdotH) / max(NdotH * NdotV, 1e-5);
-            float Fc    = pow(1.0 - VdotH, 5.0);
+            float _t = 1.0 - VdotH; float Fc = _t * _t * _t * _t * _t;
             A += (1.0 - Fc) * G_Vis;
             B += Fc * G_Vis;
         }

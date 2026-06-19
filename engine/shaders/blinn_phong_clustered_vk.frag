@@ -65,15 +65,16 @@ void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(pc.u_camera_pos - vWorldPos);
 
-    vec3 color = pc.u_ambient * texture(u_albedo, vUV).rgb;
+    vec3 albedo = texture(u_albedo, vUV).rgb;
+    vec3 color = pc.u_ambient * albedo;
 
     for (uint di = 0u; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
         vec3 L = normalize(-dl.dir);
         vec3 H = normalize(L + V);
         float diff = max(dot(N, L), 0.0);
-        float spec = pow(max(dot(N, H), 0.0), 32.0);
-        color += dl.color * (diff + spec * 0.15) * texture(u_albedo, vUV).rgb;
+        float NdH = max(dot(N, H), 0.0); float spec = NdH * NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
+        color += dl.color * (diff + spec * 0.15) * albedo;
     }
 
     if (pc.u_point_count > 0u && pc.u_screen_w > 0.0) {
@@ -112,9 +113,9 @@ void main() {
             float atten = 1.0 - dist / pl.radius;
             atten *= atten;
             float diff = max(dot(N, L), 0.0);
-            float spec = pow(max(dot(N, H), 0.0), 32.0);
+            float NdH = max(dot(N, H), 0.0); float spec = NdH * NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
 
-            color += pl.color * atten * (diff + spec * 0.15) * texture(u_albedo, vUV).rgb;
+            color += pl.color * atten * (diff + spec * 0.15) * albedo;
         }
     }
 

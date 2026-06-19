@@ -32,7 +32,8 @@ void main() {
     float wave3 = sin((vWorldPos.x + vWorldPos.z) * 0.5 + u_time * 1.5) * 0.08;
     float wave = (wave1 + wave2 + wave3) * fade;
 
-    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(normalize(u_camera_pos - vWorldPos), vec3(0, 1, 0)), 0.0), 3.0);
+    float _wf = 1.0 - max(dot(normalize(u_camera_pos - vWorldPos), vec3(0, 1, 0)), 0.0);
+    float fresnel = 0.04 + 0.96 * (_wf * _wf * _wf);
 
     vec3 deep = u_water_color * 0.5;
     vec3 surface = u_water_color * 1.2 + vec3(0.05, 0.08, 0.1) * wave;
@@ -47,7 +48,7 @@ void main() {
     }
     color *= depth_darken;
 
-    float specular = pow(max(0.0, sin(vWorldPos.x * 3.0 + u_time * 2.0) * sin(vWorldPos.z * 2.5 + u_time * 1.7)), 32.0) * 0.4 * fade;
+    float specular = max(0.0, sin(vWorldPos.x * 3.0 + u_time * 2.0) * sin(vWorldPos.z * 2.5 + u_time * 1.7)); specular *= specular; specular *= specular; specular *= specular; specular *= specular; specular *= specular; specular *= 0.4 * fade;
     color += vec3(specular);
 
     float alpha = mix(0.5, 0.85, fresnel) * fade;

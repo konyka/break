@@ -29,7 +29,7 @@ float phase_mie(float cos_theta) {
     float g = G_MIE;
     float g2 = g * g;
     float num = (1.0 - g2);
-    float denom = (4.0 * PI) * pow(1.0 + g2 - 2.0 * g * cos_theta, 1.5);
+    float denom = (4.0 * PI) * (1.0 + g2 - 2.0 * g * cos_theta) * sqrt(1.0 + g2 - 2.0 * g * cos_theta);
     return num / max(denom, 1e-6);
 }
 
@@ -97,7 +97,7 @@ void main() {
     sky += pc.u_sun_color * SUN_INTENSITY * 0.008 * sun_halo * extinction;
 
     float horizon_fog = 1.0 - abs(ray.y);
-    horizon_fog = pow(horizon_fog, 3.0);
+    horizon_fog = horizon_fog * horizon_fog * horizon_fog;
     sky += pc.u_sun_color * 0.1 * horizon_fog * extinction;
 
     const float CLOUD_MIN = 1500.0;
@@ -130,7 +130,8 @@ void main() {
                 float absorption = cloud_d * step_size * 0.001;
                 float beer = exp(-absorption);
 
-                float cos_light = max(dot(normalize(pos), sun), 0.0);
+                /* R85-2: cos_light is loop-invariant — normalize(ray*t) = ray, dot(ray,sun) = cos_sun */
+                float cos_light = max(cos_sun, 0.0);
                 float powder = 1.0 - exp(-cloud_d * 2.0);
                 float phase = 0.3 + 0.7 * max(cos_light, 0.0);
                 phase *= powder;

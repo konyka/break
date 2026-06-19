@@ -86,7 +86,7 @@ void main() {
                    sand_color(vUV) * sand_w) / total;
 
     float diff = max(dot(N, L), 0.0);
-    float spec = pow(max(dot(N, H), 0.0), 32.0) * rock_w / total;
+    float spec = max(dot(N, H), 0.0); spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec = spec * rock_w / total;
     float shadow = terrain_shadow(vWorldPos);
 
     vec3 color = albedo * (u_ambient + u_light_color * diff * shadow) + u_light_color * spec * shadow * 0.15;
@@ -99,7 +99,7 @@ void main() {
     if (vWorldPos.y < u_water_y) {
         float c1 = sin(vWorldPos.x * 2.5 + u_time * 0.8) * sin(vWorldPos.z * 2.3 - u_time * 0.6);
         float c2 = sin(vWorldPos.x * 3.7 - u_time * 1.1) * sin(vWorldPos.z * 3.1 + u_time * 0.9);
-        float caustic = pow(max(0.0, (c1 + c2) * 0.5), 3.0) * 0.4;
+        float caustic = max(0.0, (c1 + c2) * 0.5) * max(0.0, (c1 + c2) * 0.5) * max(0.0, (c1 + c2) * 0.5) * 0.4;
         float depth = clamp((u_water_y - vWorldPos.y) * 0.5, 0.0, 1.0);
         color += vec3(0.15, 0.25, 0.3) * caustic * depth;
         color *= mix(1.0, 0.6, depth * 0.4);

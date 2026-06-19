@@ -28,7 +28,7 @@ void main() {
     vec3 H = normalize(L + V);
 
     float diff = max(dot(N, L), 0.0);
-    float spec = pow(max(dot(N, H), 0.0), 32.0);
+    float spec = max(dot(N, H), 0.0); spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
     vec3 albedo = texture(u_albedo, vUV).rgb;
 
     vec3 color = pc.u_ambient * albedo + pc.u_light_color * (diff + spec * 0.15) * albedo;
