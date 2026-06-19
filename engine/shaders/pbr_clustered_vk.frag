@@ -404,7 +404,7 @@ void main() {
     float dir_shadow = shadow_test(vWorldPos);
     for (uint di = 0u; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
-        color += cook_torrance_brdf(N, V, normalize(-dl.dir), dl.color * dir_shadow, albedo, metallic, roughness);
+        color += cook_torrance_brdf(N, V, (-dl.dir)  /* R96-3: dl.dir pre-normalized in light_system_add_dir */, dl.color * dir_shadow, albedo, metallic, roughness);
     }
 
     if (pc.u_point_count > 0u && pc.u_screen_w > 0.0) {

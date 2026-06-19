@@ -105,6 +105,9 @@ void light_system_add_point(LightSystem *ls, f32 x, f32 y, f32 z, f32 r, f32 cr,
 void light_system_add_dir(LightSystem *ls, f32 dx, f32 dy, f32 dz, f32 cr, f32 cg, f32 cb) {
     if (ls->dir_count >= LIGHT_MAX_DIR) return;
     DirLight *l = &ls->dir_lights[ls->dir_count++];
+    /* R96-3: Normalize direction so shaders can skip normalize(-dl.dir). */
+    f32 len2 = dx*dx + dy*dy + dz*dz;
+    if (len2 > 1e-20f) { f32 inv = 1.0f / sqrtf(len2); dx *= inv; dy *= inv; dz *= inv; }
     l->dir[0] = dx; l->dir[1] = dy; l->dir[2] = dz;
     l->color[0] = cr; l->color[1] = cg; l->color[2] = cb;
 }

@@ -82,7 +82,7 @@ void main() {
     if (u_tm_mode == 1)      ldr = agx(hdr);
     else if (u_tm_mode == 2) ldr = khronos_neutral(hdr);
     else                     ldr = aces_fit(hdr);
-    ldr = pow(max(ldr, vec3(0.0)), vec3(1.0 / u_tm_gamma));
+    ldr = exp2(log2(max(ldr, vec3(0.0))) / u_tm_gamma)  /* R96-2: exp2 replaces pow */;
 
     /* Colour grade. */
     float luma = dot(ldr, LUMA);

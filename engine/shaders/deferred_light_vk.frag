@@ -260,7 +260,7 @@ void main() {
     float dir_shadow = shadow_test(wpos);
     for (uint di = 0u; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
-        color += cook_torrance(albedo, metal, rough, N, V, normalize(-dl.dir),
+        color += cook_torrance(albedo, metal, rough, N, V, (-dl.dir)  /* R96-3: dl.dir pre-normalized in light_system_add_dir */,
                                dl.color * dir_shadow);
     }
 

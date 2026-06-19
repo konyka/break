@@ -64,7 +64,7 @@ void main() {
 
     for (uint di = 0u; di < u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
-        vec3 L = normalize(-dl.dir);
+        vec3 L = (-dl.dir)  /* R96-3: dl.dir pre-normalized in light_system_add_dir */;
         vec3 H = normalize(L + V);
         float diff = max(dot(N, L), 0.0);
         float NdH = max(dot(N, H), 0.0); float spec = NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;

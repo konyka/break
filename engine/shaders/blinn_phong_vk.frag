@@ -24,7 +24,7 @@ layout(location = 0) out vec4 FragColor;
 
 void main() {
     vec3 N = normalize(vNormal);
-    vec3 L = normalize(-pc.u_light_dir);
+    vec3 L = (-pc.u_light_dir)  /* R96-3: u_light_dir pre-normalized on CPU */;
     vec3 V = normalize(pc.u_camera_pos - vWorldPos);
     vec3 H = normalize(L + V);
 

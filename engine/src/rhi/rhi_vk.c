@@ -1285,7 +1285,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0);
     vk->current_pipeline = VK_NULL_HANDLE; /* R89-1: reset pipeline cache for new command buffer */
     vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset viewport/scissor cache */
-    vk->push_dirty = true; vk->push_dirty_min = 0; vk->push_dirty_max = 256;  /* R94-3: re-flush all push constants for new command buffer */
+    vk->push_dirty = false; vk->push_dirty_min = 256; vk->push_dirty_max = 0;  /* R96-1: clean state — each set_uniform marks its own range. Avoids pushing 256 bytes to compute pipelines that only declare 128-byte push constant ranges. */
 
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -3223,6 +3223,11 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
  * a single vkCmdPushConstants. */
 static void vk_flush_push_constants(VKBackend *vk) {
     if (!vk->push_dirty || !vk->current_pipeline_data) return;
+    /* R96-1: Clamp dirty range to the pipeline's push constant range.
+     * Compute pipelines declare 128 bytes; graphics declare 256. */
+    u32 max_pc = vk->current_pipeline_data->is_compute ? 128 : 256;
+    if (vk->push_dirty_max > max_pc) vk->push_dirty_max = max_pc;
+    if (vk->push_dirty_min >= vk->push_dirty_max) { vk->push_dirty = false; return; }
     VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     if (vk->current_pipeline_data->is_compute) stages = VK_SHADER_STAGE_COMPUTE_BIT;
     vkCmdPushConstants(vk->cmd_buffers[vk->current_frame], vk->current_pipeline_data->layout,

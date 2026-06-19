@@ -59,7 +59,7 @@ void main() {
         ldr = aces_fit(hdr);
     }
 
-    ldr = pow(max(ldr, vec3(0.0)), vec3(1.0 / u_tm_gamma));
+    ldr = exp2(log2(max(ldr, vec3(0.0))) / u_tm_gamma)  /* R96-2: exp2 replaces pow */;
 
     fragColor = vec4(clamp(ldr, 0.0, 1.0), 1.0);
 }
