@@ -66,7 +66,7 @@ float fbm(vec2 p) {
 
 void main() {
     vec3 ray = normalize(v_ray_dir);
-    vec3 sun = normalize(u_sun_dir);
+    vec3 sun = u_sun_dir;  /* R91-3: C code already normalizes sun_dir */
 
     float cos_sun = max(dot(ray, sun), -1.0);
 

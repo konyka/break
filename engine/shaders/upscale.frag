@@ -11,7 +11,7 @@ uniform float u_ups_rw;
 uniform float u_ups_rh;
 uniform float u_ups_dw;
 uniform float u_ups_dh;
-const float u_ups_sharp = 0.0;  /* R89-2: hardcoded constant — sharpening disabled */
+uniform float u_ups_sharp;  /* R91-1: revert const — Pass 1 uses 0.3, Pass 2 uses 0.0 */
 uniform mat4 u_ups_inv_proj;
 uniform mat4 u_ups_prev_vp;
 

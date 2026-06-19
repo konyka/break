@@ -1283,6 +1283,8 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+> **R91-1 修正**：`u_ups_sharp` 不是硬编码常量——Pass 1 传入 `0.3f`（锐化），Pass 2 传入 `0.0f`（纯复制）。R89-2 将其改为 `const 0.0` 导致 GL 路径 Pass 1 锐化被静默禁用。R91-1 已恢复为 `uniform float u_ups_sharp;`。
+
 ## R90 VK storage描述符集冗余绑定消除
 
 ### R90-1 VK rhi_cmd_bind_storage_buffer 冗余 vkCmdBindDescriptorSets 消除（MEDIUM CPU）
@@ -1297,6 +1299,34 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 - Vulkan 规范保证：`vkUpdateDescriptorSets` 对已绑定描述符集的更新在后续 draw/dispatch 命令中可见，无需重新绑定。
 
 **影响文件**：rhi_vk.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
+## R91 Bug修复 + 冗余normalize消除
+
+### R91-1 upscale.frag u_ups_sharp const回归修复（HIGH 回归）
+
+**问题**：R89-2 将 `upscale.frag` 的 `u_ups_sharp` 改为 `const float u_ups_sharp = 0.0`，错误地认为它是硬编码常量。实际上 C 代码（`upscale.c`）在 Pass 1 传入 `sharpness = 0.3f`（TSR 锐化），Pass 2 传入 `0.0f`（纯复制）。const 化后 `glGetUniformLocation` 返回 -1，`if (loc_sharp >= 0)` 守卫跳过两次 uniform 设置，shader 中 `u_ups_sharp` 恒为 0.0，`if (u_ups_sharp > 0.0)` 成为死代码。**Pass 1 的锐化效果（0.3f）被静默禁用**，且与 VK 路径（`upscale_vk.frag` 使用 push constant，不受影响）产生行为不一致。
+
+**修正**：恢复为 `uniform float u_ups_sharp;`。
+
+**影响文件**：upscale.frag
+
+### R91-2 volumetric.frag GL uniform名称不匹配修复（MEDIUM BUG）
+
+**问题**：`volumetric.frag`（GL 版）声明 `uniform vec3 u_vol_light_dir;`，但 C 代码（`volumetric.c` L91-93）查询 uniform location 时使用 `"u_vol_ldx"`/`"u_vol_ldy"`/`"u_vol_ldz"`（与 VK 版 `volumetric_vk.frag` 一致）。GL 路径中 `loc_ldx/ldy/ldz = -1`（着色器中不存在这些 uniform），`if (loc >= 0)` 守卫跳过设置，`u_vol_light_dir` 从未被赋值，默认为 `(0,0,0)`，`normalize(vec3(0,0,0))` 产生未定义值。结果：GL 路径体积雾缺少方向光照散射，仅保留环境雾色项。
+
+**修正**：将 GL 着色器的 `uniform vec3 u_vol_light_dir` 拆分为 `uniform float u_vol_ldx/ldy/ldz`，与 C 代码和 VK 着色器统一。同时移除冗余 `normalize()`（C 代码已通过 `vec3_normalize` 归一化 `sun_dir`）。
+
+**影响文件**：volumetric.frag
+
+### R91-3 skybox/volumetric 冗余normalize消除（LOW GPU）
+
+**问题**：`skybox.frag`/`skybox_vk.frag` 中 `normalize(u_sun_dir)` 和 `volumetric_vk.frag` 中 `normalize(vec3(u_vol_ldx,...))` 对已归一化的向量执行冗余归一化。C 代码（`main.c` L3586）通过 `vec3_normalize()` 计算 `cached_sun_dir`，保证传入着色器的方向已是单位向量。
+
+**修正**：移除 4 个着色器中的冗余 `normalize()` 调用。
+
+**影响文件**：skybox.frag, skybox_vk.frag, volumetric.frag, volumetric_vk.frag
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 

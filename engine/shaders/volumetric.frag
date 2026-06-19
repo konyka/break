@@ -8,7 +8,9 @@ uniform sampler2D u_vol_shadow;
 
 uniform mat4 u_vol_inv_proj;
 uniform mat4 u_vol_view;
-uniform vec3 u_vol_light_dir;
+uniform float u_vol_ldx;
+uniform float u_vol_ldy;
+uniform float u_vol_ldz;  /* R91-2: match C code + VK shader uniform names */
 uniform vec3 u_vol_light_color;
 uniform float u_vol_density;
 uniform float u_vol_fog_r;
@@ -41,7 +43,7 @@ void main() {
     float step_size = ray_length / float(steps);
 
     vec3 fog_color = vec3(u_vol_fog_r, u_vol_fog_g, u_vol_fog_b);
-    vec3 light_dir = normalize(u_vol_light_dir);
+    vec3 light_dir = vec3(u_vol_ldx, u_vol_ldy, u_vol_ldz);  /* R91-2: C code already normalizes sun_dir */
     float light_amount = max(dot(-ray_dir, light_dir), 0.0);
 
     vec3 accum = vec3(0.0);
