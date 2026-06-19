@@ -94,18 +94,13 @@ void skybox_render(Skybox *sb, RHICmdBuffer *cmd, const f32 *view, const f32 *in
     if (sb->loc_sun_dir >= 0)   rhi_cmd_set_uniform_vec3(cmd, sb->loc_sun_dir, sun_dx, sun_dy, sun_dz);
     if (sb->loc_sun_color >= 0) rhi_cmd_set_uniform_vec3(cmd, sb->loc_sun_color, sun_r, sun_g, sun_b);
 
-#ifndef ENGINE_VULKAN
-    /* R78-2: Use cached depth function path — direct glDepthFunc calls bypassed
-     * g_gl_depth_func cache, causing potential desync (subsequent
-     * rhi_cmd_set_depth_func_* would skip glDepthFunc on false cache hit). */
+    /* R78-2/R80-2: All state changes go through cached RHI paths — no direct
+     * GL calls that could bypass caches (depth func, depth mask, cull face). */
     rhi_cmd_set_depth_func_less_or_equal(cmd);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
-#endif
+    rhi_cmd_set_depth_mask(cmd, false);
+    rhi_cmd_set_cull_face(cmd, false);
     rhi_cmd_draw(cmd, 3, 1);
-#ifndef ENGINE_VULKAN
-    glEnable(GL_CULL_FACE);
-    glDepthMask(GL_TRUE);
+    rhi_cmd_set_cull_face(cmd, true);
+    rhi_cmd_set_depth_mask(cmd, true);
     rhi_cmd_set_depth_func_less(cmd);
-#endif
 }

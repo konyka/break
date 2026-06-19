@@ -215,6 +215,8 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
 /* ---- Depth state ---- */
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd);
 void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd);
+void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled);
+void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled);
 
 /* ---- Texel buffer ---- */
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1);

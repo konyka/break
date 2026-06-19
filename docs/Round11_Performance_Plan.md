@@ -1014,6 +1014,23 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R80 VAO缓存提升文件作用域 + skybox深度遮罩/裁剪面缓存化
+
+### R80-1 VAO 缓存提升为文件作用域（防御性修复）
+
+**问题**：`g_gl_vao` 为 `gl_cmd_bind_pipeline` 的函数局部 static 变量，`rhi_pipeline_create` 中两处 `glBindVertexArray` 调用（创建时绑定 VAO 配置属性，配置后解绑回 0）不更新缓存。潜在 desync：若管线创建发生在渲染期间（如热重载），创建结束时 `glBindVertexArray(0)` 将实际 GL 状态置为 0，但 `g_gl_vao` 仍认为旧 VAO 已绑定 → 后续 `gl_cmd_bind_pipeline` 若绑定同一 VAO → 缓存命中 → 跳过 `glBindVertexArray` → 渲染错误。当前未触发（所有管线在初始化阶段创建，此时 `g_gl_vao` 为初始值 0，与创建后状态一致）。
+
+**修正**：将 `g_gl_vao` 提升为文件作用域（与 `g_gl_bound_fbo`/`g_gl_scissor_enabled` 同模式），`rhi_pipeline_create` 中两处 `glBindVertexArray` 后更新缓存。
+
+### R80-2 skybox glDepthMask/glCullFace 缓存化
+
+**问题**：`skybox_render` 直接调 `glDepthMask(GL_FALSE/GL_TRUE)` 和 `glDisable/glEnable(GL_CULL_FACE)` 绕过缓存——与 R78-2 `glDepthFunc` 同类问题。若后续有其他代码路径设置深度遮罩或裁剪面，将出现缓存失配。
+
+**修正**：新增 `g_gl_depth_mask`/`g_gl_cull_enabled` 文件作用域缓存 + `rhi_cmd_set_depth_mask`/`rhi_cmd_set_cull_face` RHI 函数。GL 后端缓存化，VK 后端 no-op（由管线状态处理）。skybox.c 移除所有直接 GL 调用和 `#ifndef ENGINE_VULKAN` 守卫，统一走 RHI 路径。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash

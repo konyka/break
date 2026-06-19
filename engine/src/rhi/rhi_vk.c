@@ -4316,6 +4316,10 @@ void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
     vkCmdSetDepthCompareOp(vk->cmd_buffers[vk->current_frame], VK_COMPARE_OP_LESS);
 }
 
+/* R80-2: Vulkan no-ops — depth mask and cull face are handled by pipeline state. */
+void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) { (void)cmd; (void)enabled; }
+void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) { (void)cmd; (void)enabled; }
+
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
     VKBackend *vk = vk_backend(dev);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);

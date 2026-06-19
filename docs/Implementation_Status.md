@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R79 FBO绑定缓存 + 纹理上传缓存失配修复 + buffer尾部解绑消除 + scissor状态缓存** — **R79-1**：所有 FBO 绑定函数（shadow_map/offscreen/MRT/cubemap_depth）每次无条件调 `glBindFramebuffer`，无缓存。点阴影渲染中同一 FBO 每光源绑定 6 次（每面一次），~20-30 次冗余调用/帧。新增 `g_gl_bound_fbo` 文件作用域缓存 + `gl_bind_fbo_cached()` 辅助函数，替换全部 15 处 `glBindFramebuffer` 调用。**R79-2**：`rhi_texture_upload_mip` 直接调 `glBindTexture` 上传 mip 数据但不更新 `g_tex_cache`，导致后续 `gl_bind_tex_unit` 误判缓存命中跳过绑定——与 R77-1/R78-1 同类缓存失配 bug。上传后失效缓存 `g_tex_cache[g_active_unit] = 0`。**R79-3**：`rhi_buffer_map`/`rhi_buffer_unmap` 尾部 `glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)` 解绑无意义（下次 `glBindBuffer`/`glBindBufferBase` 会覆盖），与 R77-2 移除 indirect buffer 尾部解绑同模式。**R79-4**：`glEnable(GL_SCISSOR_TEST)`/`glDisable(GL_SCISSOR_TEST)` 无缓存，阴影 pass 4 级联 enable + 2 次 disable = 6 次/帧，新增 `g_gl_scissor_enabled` 布尔缓存。**回归**：全部 **23/23** 测试通过。
+最近更新：**R80 VAO缓存提升文件作用域 + skybox深度遮罩/裁剪面缓存化** — **R80-1**：`g_gl_vao` 从 `gl_cmd_bind_pipeline` 函数局部 static 提升为文件作用域，`rhi_pipeline_create` 中两处 `glBindVertexArray` 调用后更新缓存。修复潜在 desync bug：若管线创建发生在渲染期间（如热重载），创建结束时 `glBindVertexArray(0)` 将实际 GL 状态置为 0，但缓存仍认为旧 VAO 已绑定 → 后续 `gl_cmd_bind_pipeline` 若绑定同一 VAO → 缓存命中 → 跳过 `glBindVertexArray` → 渲染错误。当前未触发（所有管线在初始化阶段创建），但为防御性修复。**R80-2**：`skybox_render` 直接调 `glDepthMask(GL_FALSE/GL_TRUE)` 和 `glDisable/glEnable(GL_CULL_FACE)` 绕过缓存——与 R78-2 `glDepthFunc` 同类问题。新增 `g_gl_depth_mask`/`g_gl_cull_enabled` 文件作用域缓存 + `rhi_cmd_set_depth_mask`/`rhi_cmd_set_cull_face` RHI 函数（GL 后端缓存化，VK 后端 no-op 由管线状态处理）。skybox.c 移除所有直接 GL 调用和 `#ifndef ENGINE_VULKAN` 守卫，统一走 RHI 路径。**回归**：全部 **23/23** 测试通过。
+
+此前：**R79 FBO绑定缓存 + 纹理上传缓存失配修复 + buffer尾部解绑消除 + scissor状态缓存** — R79-1 FBO绑定缓存、R79-2 纹理上传缓存失配修复、R79-3 buffer尾部解绑消除、R79-4 scissor状态缓存。23/23 测试通过。
 
 此前：**R78 cubemap缓存修复R77回归 + skybox深度缓存 + 点阴影FBO解绑批处理** — R78-1 cubemap缓存修复、R78-2 skybox深度缓存、R78-3 点阴影FBO解绑批处理。23/23 测试通过。
 

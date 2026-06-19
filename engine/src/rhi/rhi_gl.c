@@ -138,6 +138,19 @@ static void gl_bind_fbo_cached(GLuint fbo) {
  * calls in shadow pass (4 cascades enable + 2 unbinds disable per frame). */
 static bool g_gl_scissor_enabled = false;
 
+/* R80-1: VAO bind cache — promoted from function-local static in
+ * gl_cmd_bind_pipeline to file scope so rhi_pipeline_create can update
+ * it when it binds VAOs during setup. Prevents cache desync if pipeline
+ * creation ever happens during rendering (currently init-only, but
+ * defensive against future hot-reload). */
+static GLuint g_gl_vao = 0;
+
+/* R80-2: Depth mask and cull-face enable caches — skybox_render was
+ * calling glDepthMask/glDisable(GL_CULL_FACE) directly, bypassing caches.
+ * Same class of desync risk as R78-2 (glDepthFunc). */
+static bool g_gl_depth_mask = true;    /* GL default after gl_init */
+static bool g_gl_cull_enabled = true;  /* GL default after gl_init */
+
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
     if (!gl) return false;
@@ -430,7 +443,7 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
     static bool g_gl_blend_enabled = false;
     static bool g_gl_wireframe     = false;
     static GLuint g_gl_program     = 0;
-    static GLuint g_gl_vao         = 0;
+    /* R80-1: g_gl_vao moved to file scope — shared with rhi_pipeline_create. */
 
     if (pd->gl_program != g_gl_program) {
         glUseProgram(pd->gl_program);
@@ -696,6 +709,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     GLuint vao;
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
+    g_gl_vao = vao;  /* R80-1: Update cache — VAO is now bound. */
 
     u32 stride = desc->vertex_stride;
     if (desc->no_vertex_input) {
@@ -746,6 +760,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     }
 
     glBindVertexArray(0);
+    g_gl_vao = 0;  /* R80-1: Update cache — default VAO is now bound. */
 
     u32 idx = rhi_alloc_slot(dev);
     GLPipelineData *pd = calloc(1, sizeof(GLPipelineData));
@@ -1375,6 +1390,25 @@ void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
     if (g_gl_depth_func != GL_LESS) {
         glDepthFunc(GL_LESS);
         g_gl_depth_func = GL_LESS;
+    }
+}
+
+/* R80-2: Cached depth mask and cull-face enable — skybox_render previously
+ * called glDepthMask/glEnable/glDisable directly, bypassing caches. */
+void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) {
+    (void)cmd;
+    if (g_gl_depth_mask != enabled) {
+        glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+        g_gl_depth_mask = enabled;
+    }
+}
+
+void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
+    (void)cmd;
+    if (g_gl_cull_enabled != enabled) {
+        if (enabled) glEnable(GL_CULL_FACE);
+        else glDisable(GL_CULL_FACE);
+        g_gl_cull_enabled = enabled;
     }
 }
 
