@@ -125,9 +125,14 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     /* Pass 1: temporal upscale into output FBO */
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    rhi_cmd_bind_texture(cmd, input_tex, s->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
-    rhi_cmd_bind_texture(cmd, s->history[read_idx].color_tex, s->sampler, 2);
+    /* R99-2: Use rhi_cmd_bind_material_textures instead of three rhi_cmd_bind_texture
+     * calls. In the VK path, rhi_cmd_bind_texture ignores the unit parameter and
+     * binds all 9 descriptor slots to the same texture — each subsequent call
+     * overwrites the previous, so only the last texture (history) would be visible.
+     * rhi_cmd_bind_material_textures correctly assigns albedo->binding 0 (u_ups_src),
+     * shadow->binding 1 (u_ups_depth), mr->binding 2 (u_ups_history) in one call. */
+    rhi_cmd_bind_material_textures(cmd, input_tex, s->history[read_idx].color_tex,
+                                   input_tex, input_tex, depth_tex, input_tex, s->sampler);
 
     if (s->loc_rw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
     if (s->loc_rh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);
@@ -142,9 +147,10 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     /* Pass 2: copy result into history FBO for next frame */
     rhi_offscreen_fbo_bind(cmd, &s->history[write_idx]);
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    rhi_cmd_bind_texture(cmd, s->fbo.color_tex, s->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
-    rhi_cmd_bind_texture(cmd, s->history[read_idx].color_tex, s->sampler, 2);
+    /* R99-2: Same fix as Pass 1. */
+    rhi_cmd_bind_material_textures(cmd, s->fbo.color_tex, s->history[read_idx].color_tex,
+                                   s->fbo.color_tex, s->fbo.color_tex, depth_tex,
+                                   s->fbo.color_tex, s->sampler);
 
     if (s->loc_rw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
     if (s->loc_rh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);

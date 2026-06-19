@@ -133,8 +133,13 @@ void tonemap_update_auto_exposure(TonemapSystem *tm, RHICmdBuffer *cmd,
 
     rhi_offscreen_fbo_bind(cmd, &tm->lum_fbo[write_idx]);
     rhi_cmd_bind_pipeline(cmd, tm->lum_pipe);
-    rhi_cmd_bind_texture(cmd, hdr_tex, tm->sampler, 0);
-    rhi_cmd_bind_texture(cmd, tm->lum_fbo[read_idx].color_tex, tm->sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures instead of two rhi_cmd_bind_texture
+     * calls. In the VK path, rhi_cmd_bind_texture ignores the unit parameter and
+     * binds all 9 descriptor slots to the same texture — the second call would
+     * overwrite the first, making the shader see lum_prev on binding 0 (u_lum_hdr)
+     * instead of hdr_tex. */
+    rhi_cmd_bind_material_textures(cmd, hdr_tex, hdr_tex, hdr_tex,
+                                   hdr_tex, tm->lum_fbo[read_idx].color_tex, hdr_tex, tm->sampler);
 
     if (tm->loc_lum_w >= 0)     rhi_cmd_set_uniform_f32(cmd, tm->loc_lum_w, (f32)screen_w);
     if (tm->loc_lum_h >= 0)     rhi_cmd_set_uniform_f32(cmd, tm->loc_lum_h, (f32)screen_h);
@@ -152,10 +157,14 @@ void tonemap_apply(TonemapSystem *tm, RHICmdBuffer *cmd,
     (void)screen_w; (void)screen_h;
 
     rhi_cmd_bind_pipeline(cmd, tm->tm_pipe);
-    rhi_cmd_bind_texture(cmd, hdr_tex, tm->sampler, 0);
 
     if (tm->auto_exposure && rhi_handle_valid(tm->lum_pipe)) {
-        rhi_cmd_bind_texture(cmd, tm->lum_fbo[tm->lum_idx].color_tex, tm->sampler, 1);
+        /* R99-2: Use rhi_cmd_bind_material_textures to avoid VK texture binding
+         * overwrite bug when binding two textures. */
+        rhi_cmd_bind_material_textures(cmd, hdr_tex, hdr_tex, hdr_tex,
+                                       hdr_tex, tm->lum_fbo[tm->lum_idx].color_tex, hdr_tex, tm->sampler);
+    } else {
+        rhi_cmd_bind_texture(cmd, hdr_tex, tm->sampler, 0);
     }
 
     if (tm->loc_exposure >= 0)   rhi_cmd_set_uniform_f32(cmd, tm->loc_exposure, tm->exposure);

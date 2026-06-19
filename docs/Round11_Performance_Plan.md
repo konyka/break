@@ -1551,24 +1551,39 @@ binding 6-8），但描述符集状态与 R97 之前不一致。
 
 **影响文件**：rhi_vk.c, rhi_stubs.c（添加 stub）
 
-### R99-2 (MEDIUM 正确性): terrain.c VK 路径 rhi_cmd_bind_texture 双调用覆盖 bug
+### R99-2 (MEDIUM 正确性): VK 路径 rhi_cmd_bind_texture 多调用覆盖 bug（9 个文件）
 
-**问题**：`terrain_render()` 调用两次 `rhi_cmd_bind_texture`：
-1. `rhi_cmd_bind_texture(cmd, fallback_tex, sampler, 0)` — 地形纹理在 unit 0
-2. `rhi_cmd_bind_texture(cmd, shadow_map, sampler, 1)` — 阴影贴图在 unit 1
-
-在 VK 路径中，`rhi_cmd_bind_texture` 忽略 `unit` 参数，调用
+**问题**：多个渲染器在 VK 路径中连续调用 `rhi_cmd_bind_texture` 绑定多个纹理到
+不同 unit。但 VK 路径中 `rhi_cmd_bind_texture` 忽略 `unit` 参数，调用
 `rhi_cmd_bind_material_textures` 将全部 9 个描述符槽绑定到同一纹理，然后调用
-`vkCmdBindDescriptorSets`。第二次调用会覆盖第一次，使着色器在所有绑定上看到
-`shadow_map`，包括 binding 0（u_albedo）。这是预存 bug（非 R95-R98 引入），
-但因 terrain_vk.frag 的 u_albedo 声明后未实际使用（albedo 由过程化计算），
-当前无可见渲染错误。
+`vkCmdBindDescriptorSets`。后续调用会覆盖前面的描述符集，使着色器在所有绑定上
+只看到最后绑定的纹理。这是预存 bug（非 R95-R98 引入）。
 
-**修复**：将两次 `rhi_cmd_bind_texture` 调用替换为单次
-`rhi_cmd_bind_material_textures` 调用，正确分配 albedo→binding 0、
-shadow→binding 1，在单个描述符集中完成。
+**受影响的文件与绑定映射**：
 
-**影响文件**：terrain.c
+| 文件 | 原调用数 | 纹理→绑定映射 |
+|------|---------|---------------|
+| terrain.c | 2 | albedo→0, shadow→1 |
+| debug_viz.c | 2 | albedo→0, shadow→1 (depth) |
+| ssao.c (blur) | 2 | albedo→0, shadow→1 (depth) |
+| post_process.c (bloom) | 2 | albedo→0, shadow→1 (ping color) |
+| sss.c (pass 1) | 2 | albedo→0, shadow→1 (depth) |
+| sss.c (pass 2) | 3 | albedo→0, shadow→1 (depth), mr→2 (blur color) |
+| tonemap.c (auto_exposure) | 2 | albedo→0, shadow→1 (lum_prev) |
+| tonemap.c (apply) | 2 | albedo→0, shadow→1 (lum) |
+| god_rays.c | 2 | albedo→0, shadow→1 (depth) |
+| motion_blur.c | 2 | albedo→0, shadow→1 (depth) |
+| upscale.c (pass 1) | 3 | albedo→0, shadow→1 (depth), mr→2 (history) |
+| upscale.c (pass 2) | 3 | albedo→0, shadow→1 (depth), mr→2 (history) |
+
+**修复**：将多处的 `rhi_cmd_bind_texture` 调用替换为单次
+`rhi_cmd_bind_material_textures` 调用，通过参数顺序正确分配纹理到对应绑定
+（albedo→binding 0, shadow→binding 1, mr→binding 2），在单个描述符集中完成。
+对于 tonemap.c 的 `tonemap_apply` 函数，当不需要第二个纹理（非 auto_exposure）
+时保留单次 `rhi_cmd_bind_texture` 调用。
+
+**影响文件**：terrain.c, debug_viz.c, ssao.c, post_process.c, sss.c, tonemap.c,
+god_rays.c, motion_blur.c, upscale.c
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 

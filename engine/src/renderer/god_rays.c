@@ -112,8 +112,10 @@ void god_rays_apply(GodRaysSystem *s, RHICmdBuffer *cmd,
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    rhi_cmd_bind_texture(cmd, scene_tex, s->sampler, 0);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 1);
+    /* R99-2: Use rhi_cmd_bind_material_textures to avoid VK texture binding
+     * overwrite bug when binding two textures. */
+    rhi_cmd_bind_material_textures(cmd, scene_tex, scene_tex, scene_tex,
+                                   scene_tex, depth_tex, scene_tex, s->sampler);
 
     if (s->loc_sun_x >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_sun_x, sun_x);
     if (s->loc_sun_y >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_sun_y, sun_y);
