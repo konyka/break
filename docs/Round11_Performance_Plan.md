@@ -1031,6 +1031,35 @@ R73-3 跳过 `terrain_render` 导致：海岸泡沫（`terrain.frag` 依赖 `u_w
 **验收**：全部 23/23 测试通过。
 
 
+## R81 VK深度函数no-op修复 + skybox死代码清理 + draw_bench参数门控 + 点阴影冗余uniform移除
+
+### R81-1 VK rhi_cmd_set_depth_func_* 改为 no-op（CRITICAL 正确性）
+
+**问题（CRITICAL）**：R80 移除 skybox.c 的 `#ifndef ENGINE_VULKAN` 守卫后，`rhi_cmd_set_depth_func_less_or_equal`/`_less` 在 VK 后端也被调用。但其 VK 实现调 `vkCmdSetDepthCompareOp`，而 VK 管线未启用 `VK_DYNAMIC_STATE_DEPTH_COMPARE_OP` 动态状态（仅启用 VIEWPORT 和 SCISSOR），深度比较由管线静态设置（`depth.depthCompareOp`）。这是 Vulkan 验证错误/未定义行为。skybox.c 是这两个函数的唯一调用者。
+
+**修正**：VK 后端改为 no-op（与 `rhi_cmd_set_depth_mask`/`rhi_cmd_set_cull_face` 一致）。skybox 管线描述符已设 `depth_compare_lequal=true`，VK 管线创建时映射为 `VK_COMPARE_OP_LESS_OR_EQUAL`。
+
+### R81-2 skybox.c 移除死代码 #include <glad.h>
+
+**问题**：R80-2 将所有直接 GL 调用替换为 RHI 函数后，`#include <glad.h>` 成为死代码。
+
+**修正**：移除 `#ifndef ENGINE_VULKAN / #include <glad.h> / #endif`。
+
+### R81-3 draw_bench_add 参数门控
+
+**问题**：`draw_bench_add(mega_calls, legacy_est)` 的 `legacy_est` 参数在 C 中先于函数调用求值。即使 `draw_bench_enabled=false`（默认），`mega_count_visible_draws`/`mega_count_visible_node_vis` 的 O(N) 遍历仍执行。8 处调用点，最坏情况点阴影 pass 中 24 次 O(N) 遍历/帧。
+
+**修正**：8 处调用点添加 `draw_bench_enabled ?` 三元门控，禁用时传 `0u`。
+
+### R81-4 点阴影冗余 u_model uniform 移除
+
+**问题**：点阴影地形绘制中 `u_model=identity` 冗余——`point_shadow_render_begin` 已设为 identity，地形是该函数后的第一个绘制，中间无其他 uniform 变更。4 光源×6 面 = 24 次/帧冗余 `glUniformMatrix4fv`。
+
+**修正**：移除冗余 uniform 设置。
+
+**验收**：全部 23/23 测试通过。
+
+
 ## 构建与回归命令
 
 ```bash

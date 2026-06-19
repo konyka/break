@@ -4304,17 +4304,13 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
 
 /* ---- Depth state ---- */
 
-void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) {
-    (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    vkCmdSetDepthCompareOp(vk->cmd_buffers[vk->current_frame], VK_COMPARE_OP_LESS_OR_EQUAL);
-}
-
-void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
-    (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    vkCmdSetDepthCompareOp(vk->cmd_buffers[vk->current_frame], VK_COMPARE_OP_LESS);
-}
+/* R81-1: Vulkan no-ops — depth compare op is a static pipeline state
+ * (depth.depthCompareOp set at pipeline creation). VK_DYNAMIC_STATE_DEPTH_COMPARE_OP
+ * is NOT enabled, so calling vkCmdSetDepthCompareOp would be a validation error.
+ * skybox_render is the sole caller; the skybox pipeline descriptor sets
+ * depth_compare_lequal=true which maps to VK_COMPARE_OP_LESS_OR_EQUAL. */
+void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) { (void)cmd; }
+void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) { (void)cmd; }
 
 /* R80-2: Vulkan no-ops — depth mask and cull face are handled by pipeline state. */
 void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) { (void)cmd; (void)enabled; }

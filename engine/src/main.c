@@ -3661,12 +3661,12 @@ u32 culled_count = 0;
                         u32 mc = mega_mat_groups_indirect(cmd, render.device,
                                                           &mega_buf, g_draw_vis);
                         draw_calls += mc;
-                        draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
+                        draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                         draw_bench_mark_unified();
                     } else if (gpucull_enabled && mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                   &render.cascade_vp[c].e[0][0], vis_count, &occ_sys)) {
                         draw_calls++;
-                        draw_bench_add(1u, mega_count_visible_draws(&mega_buf, NULL));
+                        draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                         draw_bench_mark_unified();
                     } else {
                     if (legacy_gpucull_packed) {
@@ -3690,7 +3690,7 @@ u32 culled_count = 0;
                     indirect_draw_compact(&indirect_sys, render.device, cmd);
                     indirect_draw_execute(&indirect_sys, render.device);
                     draw_calls++;
-                    draw_bench_add(1u, mega_count_visible_draws(&mega_buf, NULL));
+                    draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                     draw_bench_mark_legacy();
                     }
                     tri_count += mega_buf.total_index_count / 3;
@@ -3738,8 +3738,7 @@ u32 culled_count = 0;
 
                         /* Render scene geometry into depth cubemap face. */
                         if (rhi_handle_valid(terrain.vbo)) {
-                            if (pt_shadows.loc_model >= 0)
-                                rhi_cmd_set_uniform_mat4(cmd, pt_shadows.loc_model, &frame_identity.e[0][0]);
+                            /* R81-4: u_model=identity already set by point_shadow_render_begin. */
                             rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
                             rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0);
                             rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
@@ -3760,13 +3759,13 @@ u32 culled_count = 0;
                                 u32 mc = mega_mat_groups_indirect(cmd, render.device,
                                                                   &mega_buf, g_draw_vis);
                                 draw_calls += mc;
-                                draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
+                                draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                                 draw_bench_mark_unified();
                             } else if (gpucull_enabled && mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
                                                           vis_count, &occ_sys)) {
                                 draw_calls++;
-                                draw_bench_add(1u, mega_count_visible_draws(&mega_buf, NULL));
+                                draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                                 draw_bench_mark_unified();
                             } else {
                                 Frustum pface_frustum = frustum_from_vp(&pt_shadows.light_vp[face_idx]);
@@ -3783,7 +3782,7 @@ u32 culled_count = 0;
                                 indirect_draw_compact(&indirect_sys, render.device, cmd);
                                 indirect_draw_execute(&indirect_sys, render.device);
                                 draw_calls++;
-                                draw_bench_add(1u, mega_count_visible_draws(&mega_buf, g_vis_flags));
+                                draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_vis_flags) : 0u);
                                 draw_bench_mark_legacy();
                             }
                         } else {
@@ -4796,7 +4795,7 @@ u32 culled_count = 0;
                         u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
                                                       &mega_buf, g_draw_vis);
                         draw_calls += mc;
-                        draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
+                        draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                         draw_bench_mark_unified();
                     } else {
                     /* Pre-compute per-node visibility (frustum + LOD) — parallel */
@@ -4846,7 +4845,7 @@ u32 culled_count = 0;
                         draw_calls++;
                     }
                     draw_bench_add(mega_buf.mat_group_count,
-                                   mega_count_visible_node_vis(&mega_buf, g_node_vis));
+                                   draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
                     draw_bench_mark_legacy();
                     }
                 } else {
@@ -5032,7 +5031,7 @@ u32 culled_count = 0;
                     u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
                                                   &mega_buf, g_draw_vis);
                     draw_calls += mc;
-                    draw_bench_add(mc, mega_count_visible_draws(&mega_buf, g_draw_vis));
+                    draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                     draw_bench_mark_unified();
                 } else {
                 {
@@ -5083,7 +5082,7 @@ u32 culled_count = 0;
                     draw_calls++;
                 }
                 draw_bench_add(mega_buf.mat_group_count,
-                               mega_count_visible_node_vis(&mega_buf, g_node_vis));
+                               draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
                 draw_bench_mark_legacy();
                 }
             } else {

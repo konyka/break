@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R80 VAO缓存提升文件作用域 + skybox深度遮罩/裁剪面缓存化** — **R80-1**：`g_gl_vao` 从 `gl_cmd_bind_pipeline` 函数局部 static 提升为文件作用域，`rhi_pipeline_create` 中两处 `glBindVertexArray` 调用后更新缓存。修复潜在 desync bug：若管线创建发生在渲染期间（如热重载），创建结束时 `glBindVertexArray(0)` 将实际 GL 状态置为 0，但缓存仍认为旧 VAO 已绑定 → 后续 `gl_cmd_bind_pipeline` 若绑定同一 VAO → 缓存命中 → 跳过 `glBindVertexArray` → 渲染错误。当前未触发（所有管线在初始化阶段创建），但为防御性修复。**R80-2**：`skybox_render` 直接调 `glDepthMask(GL_FALSE/GL_TRUE)` 和 `glDisable/glEnable(GL_CULL_FACE)` 绕过缓存——与 R78-2 `glDepthFunc` 同类问题。新增 `g_gl_depth_mask`/`g_gl_cull_enabled` 文件作用域缓存 + `rhi_cmd_set_depth_mask`/`rhi_cmd_set_cull_face` RHI 函数（GL 后端缓存化，VK 后端 no-op 由管线状态处理）。skybox.c 移除所有直接 GL 调用和 `#ifndef ENGINE_VULKAN` 守卫，统一走 RHI 路径。**回归**：全部 **23/23** 测试通过。
+最近更新：**R81 VK深度函数no-op修复 + skybox死代码清理 + draw_bench参数门控 + 点阴影冗余uniform移除** — **R81-1**（CRITICAL 正确性）：R80 移除 skybox.c 的 `#ifndef ENGINE_VULKAN` 守卫后，`rhi_cmd_set_depth_func_less_or_equal`/`_less` 在 VK 后端也被调用，但其 VK 实现调 `vkCmdSetDepthCompareOp`——而 VK 管线未启用 `VK_DYNAMIC_STATE_DEPTH_COMPARE_OP` 动态状态，这是 Vulkan 验证错误/未定义行为。改为 no-op（与 `rhi_cmd_set_depth_mask`/`rhi_cmd_set_cull_face` 一致，深度比较由管线静态状态处理）。**R81-2**：skybox.c 移除死代码 `#include <glad.h>`（R80-2 后无直接 GL 调用）。**R81-3**：`draw_bench_add` 的 `mega_count_visible_draws`/`mega_count_visible_node_vis` 参数在 C 中先于函数调用求值，即使 `draw_bench_enabled=false`（默认）也执行 O(N) 遍历。8 处调用点添加 `draw_bench_enabled ?` 三元门控。**R81-4**：点阴影地形绘制中 `u_model=identity` 冗余——`point_shadow_render_begin` 已设为 identity，地形是第一个绘制。移除 24 次/帧冗余 `glUniformMatrix4fv`。**回归**：全部 **23/23** 测试通过。
+
+此前：**R80 VAO缓存提升文件作用域 + skybox深度遮罩/裁剪面缓存化** — R80-1 VAO缓存提升、R80-2 skybox深度遮罩/裁剪面缓存化。23/23 测试通过。
 
 此前：**R79 FBO绑定缓存 + 纹理上传缓存失配修复 + buffer尾部解绑消除 + scissor状态缓存** — R79-1 FBO绑定缓存、R79-2 纹理上传缓存失配修复、R79-3 buffer尾部解绑消除、R79-4 scissor状态缓存。23/23 测试通过。
 

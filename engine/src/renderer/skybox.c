@@ -1,9 +1,7 @@
 #include <renderer/skybox.h>
 #include <core/log.h>
 #include <math/math.h>
-#ifndef ENGINE_VULKAN
-#include <glad.h>
-#endif
+/* R81-2: Removed #include <glad.h> — no more direct GL calls in this file. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
