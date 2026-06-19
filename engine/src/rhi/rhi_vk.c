@@ -3642,23 +3642,25 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     views[8] = alb_view;
 
     VkDescriptorImageInfo img_infos[9];
-    VkWriteDescriptorSet writes[9];
     memset(img_infos, 0, sizeof(img_infos));
-    memset(writes, 0, sizeof(writes));
 
+    /* R97-2: Use a single vkUpdateDescriptorSets write with descriptorCount=9
+     * for consecutive bindings 0-8, instead of 9 separate writes. */
     for (int i = 0; i < 9; i++) {
         img_infos[i].sampler = sd->sampler;
         img_infos[i].imageView = views[i];
         img_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = ds;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &img_infos[i];
     }
 
-    vkUpdateDescriptorSets(vk->device, 9, writes, 0, NULL);
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = ds;
+    write.dstBinding = 0;
+    write.descriptorCount = 9;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = img_infos;
+
+    vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
         0, 1, &ds, 0, NULL);
@@ -3734,9 +3736,7 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     }
 
     VkDescriptorImageInfo img_infos[10];
-    VkWriteDescriptorSet writes[10];
     memset(img_infos, 0, sizeof(img_infos));
-    memset(writes, 0, sizeof(writes));
 
     img_infos[0].sampler = sd->sampler;
     img_infos[0].imageView = alb_view;
@@ -3763,31 +3763,45 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     img_infos[8].imageView = cd_pref ? cd_pref->view : alb_view;
     img_infos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    for (int i = 0; i < 10; i++) {
-        u32 dst_binding = (i == 9) ? 10u : (u32)i;
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = ds;
-        writes[i].dstBinding = dst_binding;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        if (i == 5 && vk->feat_partially_bound) {
-            writes[i].descriptorCount = 4;
-            writes[i].pImageInfo = bind5_infos;
-        } else if (i == 5) {
-            writes[i].descriptorCount = 1;
-            writes[i].pImageInfo = &bind5_infos[0];
-        } else if (i == 9 && vk->feat_partially_bound) {
-            writes[i].descriptorCount = 4;
-            writes[i].pImageInfo = bind10_infos;
-        } else if (i == 9) {
-            writes[i].descriptorCount = 1;
-            writes[i].pImageInfo = &bind10_infos[0];
-        } else {
-            writes[i].descriptorCount = 1;
-            writes[i].pImageInfo = &img_infos[i];
-        }
-    }
+    /* R97-3: Batch descriptor writes — 4 consecutive-group writes instead of 10
+     * individual writes. Bindings 0-4, 5, 6-8, 10 are grouped by consecutiveness. */
+    u32 pt_shadow_n = vk->feat_partially_bound ? 4 : 1;
+    VkWriteDescriptorSet writes[4];
+    memset(writes, 0, sizeof(writes));
 
-    vkUpdateDescriptorSets(vk->device, 10, writes, 0, NULL);
+    /* Bindings 0-4: albedo, shadow, mr, normal, emissive */
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = ds;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 5;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &img_infos[0];
+
+    /* Binding 5: ssao or point_shadow_cubes[4] */
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = ds;
+    writes[1].dstBinding = 5;
+    writes[1].descriptorCount = pt_shadow_n;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = bind5_infos;
+
+    /* Bindings 6-8: brdf_lut, irradiance, prefilter */
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = ds;
+    writes[2].dstBinding = 6;
+    writes[2].descriptorCount = 3;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &img_infos[6];
+
+    /* Binding 10: point_shadow_cubes[4] (forward path) */
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = ds;
+    writes[3].dstBinding = 10;
+    writes[3].descriptorCount = pt_shadow_n;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = bind10_infos;
+
+    vkUpdateDescriptorSets(vk->device, 4, writes, 0, NULL);
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
         0, 1, &ds, 0, NULL);
@@ -3812,24 +3826,26 @@ void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
     if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
 
     VkDescriptorImageInfo img_infos[6];
-    VkWriteDescriptorSet writes[6];
     memset(img_infos, 0, sizeof(img_infos));
-    memset(writes, 0, sizeof(writes));
 
+    /* R97-4: Single vkUpdateDescriptorSets write with descriptorCount=count
+     * for consecutive bindings 0..count-1, instead of count separate writes. */
     for (int i = 0; i < count; i++) {
         VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, textures[i]);
         img_infos[i].sampler = sd->sampler;
         img_infos[i].imageView = td ? td->view : VK_NULL_HANDLE;
         img_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = ds;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &img_infos[i];
     }
 
-    vkUpdateDescriptorSets(vk->device, count, writes, 0, NULL);
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = ds;
+    write.dstBinding = 0;
+    write.descriptorCount = (u32)count;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = img_infos;
+
+    vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
         0, 1, &ds, 0, NULL);

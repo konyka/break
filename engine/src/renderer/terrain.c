@@ -297,7 +297,15 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     rhi_cmd_set_uniform_mat4(cmd, t->loc_model, &identity_model.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, t->loc_view, view);
     rhi_cmd_set_uniform_mat4(cmd, t->loc_proj, proj);
-    if (t->loc_light_dir >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_light_dir, 0.5f, -0.8f, 0.3f);
+    if (t->loc_light_dir >= 0) {
+        /* R97-1: Normalize light direction — terrain_vk.frag no longer normalizes
+         * (R96-3 removed normalize(-u_light_dir)). Original (0.5,-0.8,0.3) had
+         * length 0.98995, causing ~1% brightness error. */
+        f32 ldx = 0.5f, ldy = -0.8f, ldz = 0.3f;
+        f32 llen = sqrtf(ldx*ldx + ldy*ldy + ldz*ldz);
+        if (llen > 1e-20f) { f32 inv = 1.0f / llen; ldx *= inv; ldy *= inv; ldz *= inv; }
+        rhi_cmd_set_uniform_vec3(cmd, t->loc_light_dir, ldx, ldy, ldz);
+    }
     if (t->loc_light_color >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_light_color, 1.0f, 0.95f, 0.9f);
     if (t->loc_ambient >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_ambient, 0.35f, 0.35f, 0.40f);
     if (camera_pos) rhi_cmd_set_uniform_vec3(cmd, t->loc_camera_pos, camera_pos[0], camera_pos[1], camera_pos[2]);
