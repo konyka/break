@@ -51,6 +51,10 @@ else()
     add_compile_options(-Wall)
 endif()
 
+if(WIN32)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 # Sanitizers
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
@@ -116,6 +120,7 @@ src/renderer/lens_effects.c
     src/renderer/deferred.c
     src/asset/asset.c
     src/asset/async_loader.c
+    src/asset/decode_pipeline.c
     src/asset/hotreload.c
     src/asset/vfs.c
     src/asset/mipmap_stream.c
@@ -312,6 +317,19 @@ add_executable(packer tools/packer.c)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(packer PRIVATE -Wno-format-truncation)
 endif()
+if(ENGINE_PLATFORM STREQUAL "windows")
+    target_compile_definitions(packer PRIVATE _WIN32_WINNT=0x0601)
+endif()
+
+# Verification tool: mounts a .pak via VFS and compares against source files
+add_executable(verify_pak tools/verify_pak.c src/asset/vfs.c src/core/log.c)
+target_include_directories(verify_pak PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+if(ENGINE_PLATFORM STREQUAL "windows")
+    target_compile_definitions(verify_pak PRIVATE _WIN32_WINNT=0x0601)
+endif()
 
 # --- Unit Tests ---
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
@@ -346,14 +364,14 @@ if(ENGINE_BUILD_TESTS)
 
     # test_async_loader: needs async_loader.c + vfs.c + log.c
     add_executable(test_async_loader tests/test_async_loader.c
-        src/asset/async_loader.c src/asset/vfs.c src/core/log.c
+        src/asset/async_loader.c src/asset/decode_pipeline.c src/asset/vfs.c src/core/log.c
         external/stb_image_impl.c)
     target_include_directories(test_async_loader PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_async_loader PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
         target_link_libraries(test_async_loader PRIVATE pthread m)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_compile_definitions(test_async_loader PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_compile_definitions(test_async_loader PRIVATE ENGINE_PLATFORM_WINDOWS=1 _CRT_SECURE_NO_WARNINGS)
         target_link_libraries(test_async_loader PRIVATE kernel32)
     endif()
     add_test(NAME test_async_loader COMMAND test_async_loader)
@@ -361,7 +379,9 @@ if(ENGINE_BUILD_TESTS)
     # test_ecs: needs ecs.c + log.c
     add_executable(test_ecs tests/test_ecs.c src/ecs/ecs.c src/core/log.c)
     target_include_directories(test_ecs PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_ecs PRIVATE m)
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_ecs PRIVATE m)
+    endif()
     add_test(NAME test_ecs COMMAND test_ecs)
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
@@ -440,7 +460,7 @@ if(ENGINE_BUILD_TESTS)
 
     # test_mipmap_stream: streaming residency/eviction over async loader + VFS
     add_executable(test_mipmap_stream tests/test_mipmap_stream.c
-        src/asset/mipmap_stream.c src/asset/async_loader.c src/asset/vfs.c
+        src/asset/mipmap_stream.c src/asset/async_loader.c src/asset/decode_pipeline.c src/asset/vfs.c
         src/platform/time.c src/core/log.c external/stb_image_impl.c)
     target_include_directories(test_mipmap_stream PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
