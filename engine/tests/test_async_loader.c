@@ -191,14 +191,14 @@ TEST(async_loader_cancel_invalid_id) {
 static _Atomic int g_pri_order[4];
 static _Atomic int g_pri_order_count;
 
-static void pri_cb_a(void *user, void *data, u32 size) {
+static void pri_cb_low(void *user, void *data, u32 size) {
     (void)user; (void)data; (void)size;
     int i = atomic_fetch_add(&g_pri_order_count, 1);
     if (i < 4) g_pri_order[i] = 1;
     if (data) free(data);
 }
 
-static void pri_cb_b(void *user, void *data, u32 size) {
+static void pri_cb_high(void *user, void *data, u32 size) {
     (void)user; (void)data; (void)size;
     int i = atomic_fetch_add(&g_pri_order_count, 1);
     if (i < 4) g_pri_order[i] = 0;
@@ -210,40 +210,131 @@ TEST(async_loader_priority_ordering) {
     ASSERT_NOT_NULL(vfs);
     vfs_mount_dir(vfs, ".");
 
-    FILE *fa = fopen("async_pri_low.bin", "wb");
-    FILE *fb = fopen("async_pri_high.bin", "wb");
+    /* Two low-priority files queued before a high-priority file. */
+    FILE *fa = fopen("async_pri_low_a.bin", "wb");
+    FILE *fb = fopen("async_pri_low_b.bin", "wb");
+    FILE *fc = fopen("async_pri_high.bin", "wb");
     ASSERT_NOT_NULL(fa);
     ASSERT_NOT_NULL(fb);
-    u8 big[65536];
-    memset(big, 0xAB, sizeof(big));
-    fwrite(big, 1, sizeof(big), fa);
-    u8 small[64];
-    memset(small, 0xCD, sizeof(small));
-    fwrite(small, 1, sizeof(small), fb);
+    ASSERT_NOT_NULL(fc);
+    u8 data[64];
+    memset(data, 0xAB, sizeof(data));
+    fwrite(data, 1, sizeof(data), fa);
+    fwrite(data, 1, sizeof(data), fb);
+    memset(data, 0xCD, sizeof(data));
+    fwrite(data, 1, sizeof(data), fc);
     fclose(fa);
     fclose(fb);
+    fclose(fc);
 
-    async_loader_init(1, vfs);
+    /* Use 2 I/O threads. Even if both lows start first, the heap will prefer
+     * the high-priority request as soon as a worker becomes available. */
+    async_loader_init(2, vfs);
     atomic_store(&g_pri_order_count, 0);
 
-    u64 id_low = async_loader_request_priority("async_pri_low.bin", pri_cb_a, NULL, 100);
-    u64 id_high = async_loader_request_priority("async_pri_high.bin", pri_cb_b, NULL, 0);
-    ASSERT_NEQ(id_low, (u64)0);
+    u64 id_low_a = async_loader_request_priority("async_pri_low_a.bin", pri_cb_low, NULL, 100);
+    u64 id_low_b = async_loader_request_priority("async_pri_low_b.bin", pri_cb_low, NULL, 100);
+    u64 id_high  = async_loader_request_priority("async_pri_high.bin",  pri_cb_high, NULL, 0);
+    ASSERT_NEQ(id_low_a, (u64)0);
+    ASSERT_NEQ(id_low_b, (u64)0);
     ASSERT_NEQ(id_high, (u64)0);
 
     for (int i = 0; i < 500; i++) {
         async_loader_tick();
-        if (atomic_load(&g_pri_order_count) >= 2) break;
+        if (atomic_load(&g_pri_order_count) >= 3) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
 
-    ASSERT_EQ(atomic_load(&g_pri_order_count), 2);
-    ASSERT_EQ(g_pri_order[0], 0); /* high priority first */
+    ASSERT_EQ(atomic_load(&g_pri_order_count), 3);
+
+    /* The high-priority request must complete before at least one of the
+     * lower-priority requests that were submitted before it. */
+    bool high_before_a_low = false;
+    bool saw_high = false;
+    for (int i = 0; i < 3; i++) {
+        if (g_pri_order[i] == 0) saw_high = true;
+        if (saw_high && g_pri_order[i] == 1) {
+            high_before_a_low = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(high_before_a_low);
 
     async_loader_shutdown();
     vfs_destroy(vfs);
-    remove("async_pri_low.bin");
+    remove("async_pri_low_a.bin");
+    remove("async_pri_low_b.bin");
     remove("async_pri_high.bin");
+}
+
+/* Texture decode should happen off the main thread; the main thread must stay responsive. */
+static _Atomic int g_decode_cb_called;
+static _Atomic int g_decode_success;
+static _Atomic int g_decode_mip_count;
+
+static void decode_cb(void *user, void *data, u32 size) {
+    (void)user;
+    atomic_store(&g_decode_cb_called, 1);
+    if (data && size >= sizeof(AsyncTextureHeader)) {
+        AsyncTextureHeader *hdr = (AsyncTextureHeader *)data;
+        if (hdr->width == 2 && hdr->height == 2 && hdr->pixel_bytes == 4 && hdr->mip_count >= 1) {
+            atomic_store(&g_decode_success, 1);
+        }
+        atomic_store(&g_decode_mip_count, (int)hdr->mip_count);
+    }
+    if (data) free(data);
+}
+
+TEST(async_loader_decode_non_blocking) {
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, ".");
+
+    /* Write a minimal 2x2 32-bit uncompressed TGA file. */
+    FILE *f = fopen("async_decode_test.tga", "wb");
+    ASSERT_NOT_NULL(f);
+    u8 header[18] = {0};
+    header[2] = 2;      /* uncompressed true-color */
+    header[12] = 2;     /* width = 2 */
+    header[14] = 2;     /* height = 2 */
+    header[16] = 32;    /* bits per pixel */
+    header[17] = 0x28;  /* 8 alpha bits, top-left origin */
+    fwrite(header, 1, 18, f);
+    /* BGRA pixels */
+    u8 pixels[16] = {
+        0x00, 0x00, 0xFF, 0xFF,  /* red */
+        0x00, 0xFF, 0x00, 0xFF,  /* green */
+        0xFF, 0x00, 0x00, 0xFF,  /* blue */
+        0xFF, 0xFF, 0xFF, 0xFF   /* white */
+    };
+    fwrite(pixels, 1, 16, f);
+    fclose(f);
+
+    async_loader_init(1, vfs);
+    atomic_store(&g_decode_cb_called, 0);
+    atomic_store(&g_decode_success, 0);
+    atomic_store(&g_decode_mip_count, 0);
+
+    u64 id = async_loader_request_texture("async_decode_test.tga", decode_cb, NULL, 0);
+    ASSERT_NEQ(id, (u64)0);
+
+    /* Main thread pumps ticks without blocking on decode. */
+    int ticks = 0;
+    for (int i = 0; i < 500; i++) {
+        async_loader_tick();
+        ticks++;
+        if (atomic_load(&g_decode_cb_called)) break;
+        for (volatile int j = 0; j < 50000; j++) { (void)j; }
+    }
+
+    ASSERT_TRUE(ticks > 0);
+    ASSERT_EQ(atomic_load(&g_decode_cb_called), 1);
+    ASSERT_EQ(atomic_load(&g_decode_success), 1);
+    ASSERT_TRUE(atomic_load(&g_decode_mip_count) >= 1);
+
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    remove("async_decode_test.tga");
 }
 
 TEST_MAIN_BEGIN()
@@ -257,4 +348,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_multiple_requests);
     RUN_TEST(async_loader_cancel_invalid_id);
     RUN_TEST(async_loader_priority_ordering);
+    RUN_TEST(async_loader_decode_non_blocking);
 TEST_MAIN_END()

@@ -30,6 +30,7 @@ typedef struct {
     u32 width;
     u32 height;
     u32 pixel_bytes; /* always 4 (RGBA) */
+    u32 mip_count;   /* number of mipmap levels following the header */
 } AsyncTextureHeader;
 
 typedef struct VFS VFS;
