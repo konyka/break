@@ -65,6 +65,9 @@ typedef struct {
     u32         cache_signature;  /* hash of component types for cache lookup */
     u32         cache_version;    /* world version when cache was populated */
     bool        cached;           /* true if this query result is cached */
+    /* Exclude/Optional masks (component ID must be < 64) */
+    u64         exclude_mask;     /* archetypes containing any of these are excluded */
+    u64         optional_mask;    /* optional components: column may be NULL if absent */
 } Query;
 
 typedef struct {
@@ -118,6 +121,14 @@ Query     *world_query_cached(World *w, const ComponentType *types, u32 count);
 QueryIter  query_begin(Query *q);
 bool       query_next(QueryIter *it);
 void       query_done(Query *q);
+
+/* Exclude/Optional query builders (component ID must be < 64) */
+void       ecs_query_exclude(Query *q, ComponentType comp_id);
+void       ecs_query_optional(Query *q, ComponentType comp_id);
+
+/* Re-run archetype matching with current exclude/optional masks applied.
+ * Call after ecs_query_exclude / ecs_query_optional to rebuild matching list. */
+void       ecs_query_refresh(World *w, Query *q, const ComponentType *types, u32 count);
 
 /* Entity bitmap operations */
 bool       world_entity_exists(World *w, Entity e);

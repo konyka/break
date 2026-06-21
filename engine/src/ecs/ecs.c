@@ -606,6 +606,17 @@ Entity chunk_get_entity(Chunk *c, u32 index, u32 entity_offset) {
     return e;
 }
 
+/* Build component bitmask for a given archetype (covers component IDs 0-63) */
+static u64 archetype_component_mask(Archetype *a) {
+    u64 mask = 0;
+    for (u32 i = 0; i < a->key.count; i++) {
+        if (a->key.ids[i] < 64) {
+            mask |= (u64)1 << a->key.ids[i];
+        }
+    }
+    return mask;
+}
+
 Query *world_query(World *w, const ComponentType *types, u32 count) {
     u32 slot = w->query_next_slot;
     w->query_next_slot = (w->query_next_slot + 1) % 256;
@@ -615,6 +626,9 @@ Query *world_query(World *w, const ComponentType *types, u32 count) {
     q->match_count = 0;
     q->match_cap = ECS_QUERY_INLINE_CAP;
     q->matching = q->_inline_matching;
+    q->exclude_mask = 0;
+    q->optional_mask = 0;
+    q->cached = false;
 
     for (u32 i = 0; i < w->archetype_count; i++) {
         Archetype *a = &w->archetypes[i];
@@ -745,5 +759,72 @@ void world_query_invalidate(World *w) {
     /* Clear all cache entries */
     for (u32 i = 0; i < ECS_QUERY_CACHE_SIZE; i++) {
         w->query_cache[i] = 0xFFFFFFFF;
+    }
+}
+
+/* ---- Exclude / Optional query helpers ---- */
+
+void ecs_query_exclude(Query *q, ComponentType comp_id) {
+    if (!q || comp_id >= 64) return;
+    q->exclude_mask |= (u64)1 << comp_id;
+}
+
+void ecs_query_optional(Query *q, ComponentType comp_id) {
+    if (!q || comp_id >= 64) return;
+    q->optional_mask |= (u64)1 << comp_id;
+}
+
+void ecs_query_refresh(World *w, Query *q, const ComponentType *types, u32 count) {
+    if (!w || !q) return;
+
+    /* Save exclude/optional masks before resetting via world_query internals */
+    u64 saved_exclude  = q->exclude_mask;
+    u64 saved_optional = q->optional_mask;
+
+    /* Free old heap buffer if present */
+    if (q->match_cap > ECS_QUERY_INLINE_CAP) { free(q->matching); }
+    q->match_count = 0;
+    q->match_cap   = ECS_QUERY_INLINE_CAP;
+    q->matching    = q->_inline_matching;
+    q->exclude_mask  = saved_exclude;
+    q->optional_mask = saved_optional;
+    q->cached = false;
+
+    for (u32 i = 0; i < w->archetype_count; i++) {
+        Archetype *a = &w->archetypes[i];
+
+        /* Must contain all required (non-optional) components */
+        bool match = true;
+        for (u32 j = 0; j < count; j++) {
+            ComponentType cid = types[j];
+            bool is_optional = (cid < 64) && (saved_optional & ((u64)1 << cid));
+            if (!is_optional && archetype_find_component(a, cid) < 0) {
+                match = false;
+                break;
+            }
+        }
+        if (!match) continue;
+
+        /* Exclude: reject archetype if it has any excluded component */
+        if (saved_exclude) {
+            u64 arch_mask = archetype_component_mask(a);
+            if (arch_mask & saved_exclude) continue;
+        }
+
+        if (a->total_count == 0) continue;
+
+        if (q->match_count >= q->match_cap) {
+            u32 new_cap = q->match_cap * 2;
+            Archetype **new_buf;
+            if (q->match_cap <= ECS_QUERY_INLINE_CAP) {
+                new_buf = (Archetype **)malloc(new_cap * sizeof(Archetype *));
+                memcpy(new_buf, q->matching, q->match_count * sizeof(Archetype *));
+            } else {
+                new_buf = (Archetype **)realloc(q->matching, new_cap * sizeof(Archetype *));
+            }
+            q->matching = new_buf;
+            q->match_cap = new_cap;
+        }
+        q->matching[q->match_count++] = a;
     }
 }

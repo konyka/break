@@ -691,6 +691,134 @@ TEST(ecs_edge_cache_multi_transition) {
     world_destroy(w);
 }
 
+/* -----------------------------------------------------------------------
+ *  Exclude / Optional Query (ECS Query Enhancement)
+ * ----------------------------------------------------------------------- */
+
+TEST(ecs_query_exclude) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+    world_register_component(w, COMP_HEALTH,   sizeof(Health));
+
+    /* 3 entities with Position only */
+    for (int i = 0; i < 3; i++) {
+        Entity e = world_create_entity(w);
+        world_add_component(w, e, COMP_POSITION);
+    }
+    /* 4 entities with Position + Velocity (these should be excluded) */
+    for (int i = 0; i < 4; i++) {
+        Entity e = world_create_entity(w);
+        world_add_component(w, e, COMP_POSITION);
+        world_add_component(w, e, COMP_VELOCITY);
+    }
+
+    /* Query Position, exclude Velocity */
+    ComponentType req[] = { COMP_POSITION };
+    Query *q = world_query(w, req, 1);
+    ASSERT_NOT_NULL(q);
+    ecs_query_exclude(q, COMP_VELOCITY);
+    ecs_query_refresh(w, q, req, 1);
+
+    int count = 0;
+    QueryIter it = query_begin(q);
+    while (query_next(&it)) { count++; }
+    query_done(q);
+
+    /* Only the 3 Position-only entities should match */
+    ASSERT_EQ(count, 3);
+
+    world_destroy(w);
+}
+
+TEST(ecs_query_optional) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+    world_register_component(w, COMP_HEALTH,   sizeof(Health));
+
+    /* 3 entities with Position only */
+    for (int i = 0; i < 3; i++) {
+        Entity e = world_create_entity(w);
+        Position *p = (Position *)world_add_component(w, e, COMP_POSITION);
+        p->x = (float)(i + 10);
+    }
+    /* 2 entities with Position + Velocity */
+    for (int i = 0; i < 2; i++) {
+        Entity e = world_create_entity(w);
+        Position *p = (Position *)world_add_component(w, e, COMP_POSITION);
+        p->x = (float)(i + 20);
+        Velocity *v = (Velocity *)world_add_component(w, e, COMP_VELOCITY);
+        v->vx = (float)(i + 1);
+    }
+
+    /* Query Position (required), Velocity (optional) -> should match all 5 */
+    ComponentType req[] = { COMP_POSITION, COMP_VELOCITY };
+    Query *q = world_query(w, req, 2); /* first get base slot */
+    ASSERT_NOT_NULL(q);
+    ecs_query_optional(q, COMP_VELOCITY);
+    ecs_query_refresh(w, q, req, 2);
+
+    int total = 0;
+    QueryIter it = query_begin(q);
+    while (query_next(&it)) { total++; }
+    query_done(q);
+
+    /* All 5 entities (Position-only + Position+Velocity) should match */
+    ASSERT_EQ(total, 5);
+
+    world_destroy(w);
+}
+
+TEST(ecs_query_exclude_optional_combined) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+    world_register_component(w, COMP_HEALTH,   sizeof(Health));
+
+    /* 2 entities: Position only */
+    for (int i = 0; i < 2; i++) {
+        Entity e = world_create_entity(w);
+        world_add_component(w, e, COMP_POSITION);
+    }
+    /* 3 entities: Position + Velocity */
+    for (int i = 0; i < 3; i++) {
+        Entity e = world_create_entity(w);
+        world_add_component(w, e, COMP_POSITION);
+        world_add_component(w, e, COMP_VELOCITY);
+    }
+    /* 4 entities: Position + Health (should be excluded via Health exclude) */
+    for (int i = 0; i < 4; i++) {
+        Entity e = world_create_entity(w);
+        world_add_component(w, e, COMP_POSITION);
+        world_add_component(w, e, COMP_HEALTH);
+    }
+
+    /* Query: required=Position, optional=Velocity, exclude=Health
+     * Expected matches: 2 (Pos only) + 3 (Pos+Vel) = 5 */
+    ComponentType req[] = { COMP_POSITION, COMP_VELOCITY };
+    Query *q = world_query(w, req, 2);
+    ASSERT_NOT_NULL(q);
+    ecs_query_optional(q, COMP_VELOCITY);
+    ecs_query_exclude(q, COMP_HEALTH);
+    ecs_query_refresh(w, q, req, 2);
+
+    int count = 0;
+    QueryIter it = query_begin(q);
+    while (query_next(&it)) { count++; }
+    query_done(q);
+
+    ASSERT_EQ(count, 5);
+
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_entity_create);
@@ -717,4 +845,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_edge_cache_add_hit);
     RUN_TEST(ecs_edge_cache_remove_hit);
     RUN_TEST(ecs_edge_cache_multi_transition);
+    /* Exclude / Optional Query */
+    RUN_TEST(ecs_query_exclude);
+    RUN_TEST(ecs_query_optional);
+    RUN_TEST(ecs_query_exclude_optional_combined);
 TEST_MAIN_END()
