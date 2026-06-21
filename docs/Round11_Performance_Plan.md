@@ -1605,6 +1605,33 @@ pbr_clustered 着色器主光照循环中的 `normalize(-dl.dir)` → `(-dl.dir)
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
 
+
+### R103-1 (BUG GL): instanced.vert / skinned.vert / blinn_phong_clustered.frag 的 samplerBuffer binding 与 rhi_cmd_bind_texel_buffers 硬编码单元不匹配
+
+**问题**：GL 后端 `rhi_cmd_bind_texel_buffers` 硬编码将 texel buffer 绑定到纹理单元 5（buf0）和 6（buf1），这是为 pbr_clustered/deferred_light 着色器设计的（它们的 `u_light_data` 在 binding 5，`u_light_grid` 在 binding 6）。但 3 个 GL 着色器的 `samplerBuffer` binding 与此不匹配：
+
+1. **instanced.vert**：`u_instances` 在 `layout(binding = 1)`，但 `rhi_cmd_bind_texel_buffers` 绑定到单元 5。GL 端实例化渲染读取到错误数据（纹理单元 1 上没有 TBO 绑定），所有实例矩阵为零。
+2. **skinned.vert**：`u_joints` 在 `layout(binding = 1)`，同样的问题。GL 端骨骼动画读取到错误关节矩阵。
+3. **blinn_phong_clustered.frag**：`u_light_data` 在 `layout(binding = 1)`，`u_light_grid` 在 `layout(binding = 2)`，应为 5/6。
+
+**根因**：VK 端使用 `set = 1, binding = 0/1`，与 VK 的 `rhi_cmd_bind_texel_buffers` 一致（绑定到 set 1）。GL 端的 binding 声明没有同步更新为与硬编码单元 5/6 一致。
+
+**修复**：将 3 个 GL 着色器的 `samplerBuffer` binding 改为 5/6，与 `rhi_cmd_bind_texel_buffers` 的硬编码单元一致。GL 纹理单元允许不同目标（GL_TEXTURE_2D / GL_TEXTURE_BUFFER）共存于同一单元，因此 binding 5 上的 `u_ssao`（sampler2D）和 `u_instances`/`u_light_data`（samplerBuffer）不会冲突。
+
+**影响文件**：instanced.vert, skinned.vert, blinn_phong_clustered.frag
+
+### R103-2 (BUG): blinn_phong_clustered 着色器 light grid 读取方式与 pbr_clustered 不一致
+
+**问题**：`blinn_phong_clustered.frag` 和 `blinn_phong_clustered_vk.frag` 使用 `int(texelFetch(u_light_grid, k).r)` 直接读取 grid 数据，而 `pbr_clustered.frag` 使用 `grid_u32(k)` 函数（`floatBitsToUint(texelFetch(u_light_grid, k >> 2u)[k & 3u])`）。
+
+grid buffer 存储的是 `u32` 值数组，通过 RGBA32F texel buffer 上传。每个 texel 打包 4 个 u32。`pbr_clustered` 的 `grid_u32()` 正确解包：texel 索引 = k/4，分量 = k%4，然后用 `floatBitsToUint` 恢复原始 uint。而 `blinn_phong_clustered` 的直接读取会访问错误的 texel 索引（k 而非 k/4），并将 u32 位模式错误地解释为 float 再转 int，产生垃圾值。
+
+**修复**：在两个 `blinn_phong_clustered` 着色器中添加 `grid_u32()` 函数，并将所有 grid 读取调用改为使用该函数，与 `pbr_clustered` 保持一致。
+
+**影响文件**：blinn_phong_clustered.frag, blinn_phong_clustered_vk.frag
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

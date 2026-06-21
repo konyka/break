@@ -612,11 +612,40 @@ query_done(q);
 
 **注意**: `chunk_get_component` 需要 `component_size` 参数用于计算正确的 SoA 偏移：`(u8 *)chunk + component_offset + index * component_size`。
 
+### 5.6 查询过滤（Exclude / Optional）(R103)
+
+R103 新增 Exclude/Optional 组件过滤，使用位掩码 O(1) 判定原型匹配：
+
+```c
+// 排除包含指定组件的原型（如：查询所有不含 Disabled 组件的实体）
+void ecs_query_exclude(Query *q, const ComponentType *types, u32 count);
+
+// 标记可选组件（匹配包含该组件的原型，但不排除不含的原型）
+void ecs_query_optional(Query *q, const ComponentType *types, u32 count);
+
+// 查询失效时（原型增删导致匹配列表过期）重建匹配原型列表
+void ecs_query_refresh(World *w, Query *q);
+```
+
+**实现要点**：
+- `Query` 结构扩展 `exclude_mask`/`optional_mask` 两个 `u64` 位域，与 `key.mask` 做位运算一次判定
+- `query_matches_archetype` 逻辑：`(key.mask & q->include_mask) == q->include_mask && !(key.mask & q->exclude_mask)` + optional 修饰
+- `ecs_query_refresh` 在世界新增/删除原型导致查询结果可能过期时调用，重新扫描所有原型重建匹配列表
+- 典型用法：查询所有 `Position + Velocity` 且不含 `Static` 标记的实体
+
+```c
+ComponentType inc[] = { COMP_Position, COMP_Velocity };
+Query *q = world_query(world, inc, 2);
+ComponentType exc[] = { COMP_Static };
+ecs_query_exclude(q, exc, 1);
+ecs_query_refresh(world, q);
+```
+
 #### 模块关系
 - **被依赖**: 游戏逻辑层
 - **依赖**: Core（类型、内存）
 
-**单元测试：** `tests/test_ecs.c` (16 测试用例，覆盖实体创建/销毁/回收、generation 安全句柄、组件增删/数据完整性、并发查询、多组件迁移周期)
+**单元测试：** `tests/test_ecs.c` (28 测试用例，覆盖实体创建/销毁/回收、generation 安全句柄、组件增删/数据完整性、并发查询、多组件迁移周期、Exclude 过滤、Optional 匹性匹配、查询刷新)
 
 > **修复记录**: `world_query()` 原先始终使用 `queries[0]` 槽位，导致多次并发查询相互覆盖。已改为轮转槽位索引 (`query_next_slot`)，支持最多 256 个并发查询。
 
@@ -733,7 +762,26 @@ void     vfs_close(VFSFile *f);
 
 **单元测试：** `tests/test_vfs.c` (18 测试用例，覆盖目录挂载、文件读写、PAK 二进制格式、挂载优先级、边界条件)
 
-### 6.5 热重载 (`hotreload.h` / `hotreload.c`)
+### 6.5 Packer 打包工具 (`engine/tools/packer.c`)
+
+跨平台资源打包工具，将目录树打包为 `.pak` 格式供 VFS 挂载。
+
+**POSIX 实现**：标准 `readdir` 递归遍历 + `fread/fwrite` 数据拷贝。
+
+**Windows 实现 (R103)**：
+- `CreateFileMapping` + `MapViewOfFile` 零拷贝打包——内存映射直读文件数据，无额外 `memcpy`
+- `FindFirstFile`/`FindNextFile` 递归遍历目录树
+- 与 POSIX 版输出二进制兼容（相同 `VFS_PAK_MAGIC` + 小端字节序 + 4 字节对齐）
+
+**验证工具**：`engine/tools/verify_pak.c` — 读取并验证 `.pak` 文件头/索引/数据完整性。
+
+```c
+// 打包命令行用法
+packer <input_dir> <output.pak>
+verify_pak <output.pak>
+```
+
+### 6.6 热重载 (`hotreload.h` / `hotreload.c`)
 
 ```c
 typedef struct {
@@ -1619,18 +1667,42 @@ typedef struct {
 
 ## 15. 异步资源加载器 (`engine/src/asset/async_loader.c/h`)
 
-多线程异步 I/O 系统，支持文件加载回调和请求取消。
+多线程异步 I/O 系统，支持优先级调度、文件加载回调和解码管线。
 
 **核心 API：**
 - `async_loader_init(thread_count, vfs)` — 初始化 I/O 线程池
-- `async_loader_request(path, callback, user_data)` — 提交异步加载请求
+- `async_loader_request(path, callback, user_data)` — 提交异步加载请求（默认优先级）
+- `async_loader_request_priority(path, callback, user_data, priority)` — 提交带优先级的加载请求（priority 越小越优先）
+- `async_loader_request_range(path, offset, size, callback, user_data, priority)` — 范围加载
 - `async_loader_tick()` — 主线程回调分发，每帧调用
 - `async_loader_shutdown()` — 关闭线程池
 
+**优先级调度 (R103)：**
+- 请求队列从 FIFO 改为最小堆（min-heap），按 `priority` 字段排序
+- 高优先级请求（如 mipmap level 0）优先出队，低优先级（如远距离 mipmap）延后
+- 堆操作 O(log N) 入队/出队，与 FIFO 的 O(1) 入队相比增加少量开销，但保证关键资源优先加载
+
+**解码管线 (R103)：**
+
+新增 `decode_pipeline.c/h`，2-worker 解码线程池：
+- `decode_pipeline_init(worker_count)` — 初始化解码线程池
+- `decode_pipeline_submit(data, size, format, callback, user_data)` — 提交解码任务
+- `decode_pipeline_tick()` — 主线程轮询已完成的解码结果
+- `decode_pipeline_shutdown()` — 关闭解码线程池
+
+解码流程：
+1. I/O 线程从磁盘读取原始文件数据
+2. 将原始数据提交到解码管线的优先级队列
+3. 解码 worker 调用 `stb_image` 解码 + mipmap 生成
+4. 解码完成后将像素数据放入完成队列
+5. 主线程 `decode_pipeline_tick()` 取回解码结果，回调上层上传 GPU
+
 **生命周期：**
-1. 启动时创建 VFS 并初始化 loader（2 个 I/O 线程）
-2. 主循环每帧 `tick()` 处理完成回调
+1. 启动时创建 VFS 并初始化 loader（2 个 I/O 线程）+ 解码管线（2 个解码 worker）
+2. 主循环每帧 `tick()` 处理 I/O 完成回调 + `decode_pipeline_tick()` 处理解码完成回调
 3. 关闭时 `shutdown()` 等待所有请求完成并回收线程
+
+**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/优先级出队顺序/解码管线端到端)
 
 ---
 

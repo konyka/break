@@ -9,7 +9,7 @@ layout(location = 4) in vec4 aWeights;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 
-layout(binding = 1) uniform samplerBuffer u_joints;
+layout(binding = 5) uniform samplerBuffer u_joints;  /* R103-1: match GL rhi_cmd_bind_texel_buffers unit 5 */
 
 out vec3 vWorldPos;
 out vec3 vNormal;

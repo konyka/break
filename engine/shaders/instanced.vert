@@ -7,7 +7,7 @@ layout(location = 2) in vec2 aUV;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 
-layout(binding = 1) uniform samplerBuffer u_instances;
+layout(binding = 5) uniform samplerBuffer u_instances;  /* R103-1: match GL rhi_cmd_bind_texel_buffers unit 5 */
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;

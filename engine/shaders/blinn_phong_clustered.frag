@@ -16,8 +16,8 @@ uniform mat4 u_view;
 uniform float u_shadow_bias;
 
 layout(binding = 0) uniform sampler2D u_albedo;
-layout(binding = 1) uniform samplerBuffer u_light_data;
-layout(binding = 2) uniform samplerBuffer u_light_grid;
+layout(binding = 5) uniform samplerBuffer u_light_data;  /* R103-1: match GL rhi_cmd_bind_texel_buffers unit 5 */
+layout(binding = 6) uniform samplerBuffer u_light_grid;  /* R103-1: match GL rhi_cmd_bind_texel_buffers unit 6 */
 #ifdef HAS_POINT_SHADOW
 layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 #endif
@@ -76,6 +76,12 @@ float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_r
 }
 #endif
 
+/* R103-2: grid_u32 matches pbr_clustered.frag — grid buffer stores u32 values
+ * packed into RGBA32F texels; floatBitsToUint recovers the original uint. */
+uint grid_u32(uint k) {
+    return floatBitsToUint(texelFetch(u_light_grid, int(k >> 2u))[int(k & 3u)]);
+}
+
 void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(u_camera_pos - vWorldPos);
@@ -110,13 +116,13 @@ void main() {
 
         uint ci = cx + cy * 16u + cz * 16u * 8u;
 
-        int grid_offset = int(texelFetch(u_light_grid, int(ci * 2u)).r);
-        int grid_count = int(texelFetch(u_light_grid, int(ci * 2u + 1u)).r);
+        int grid_offset = int(grid_u32(ci * 2u));
+        int grid_count = int(grid_u32(ci * 2u + 1u));
 
         int grid_base = 16 * 8 * 24 * 2;
 
         for (int i = 0; i < grid_count; i++) {
-            int li = int(texelFetch(u_light_grid, grid_base + grid_offset + i).r);
+            int li = int(grid_u32(uint(grid_base + grid_offset + i)));
             PointLight pl = read_point_light(li);
 
             vec3 to_light = pl.pos - vWorldPos;
