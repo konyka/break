@@ -2,6 +2,7 @@
 #include <core/types.h>
 #include <rhi/rhi.h>
 #include <math/math.h>
+#include <renderer/point_shadow.h>
 
 #define CLUSTER_X 16
 #define CLUSTER_Y 8
@@ -15,7 +16,7 @@ typedef struct {
     f32 pos[3];
     f32 radius;
     f32 color[3];
-    f32 _pad;
+    f32 shadow_index; /* cubemap slot index, or -1.0f if no shadow */
 } PointLight;
 
 typedef struct {
@@ -77,6 +78,11 @@ void light_system_upload(LightSystem *ls);
  * leaving the cluster grid to be produced on the GPU.  Use with the GPU cull
  * path instead of light_system_upload (which also uploads a CPU-built grid). */
 void light_system_upload_lights(LightSystem *ls);
+
+/* Fill PointLight.shadow_index from the active point-shadow system.
+ * Lights with no shadow get -1.0f; shadow-casting lights get their cubemap slot
+ * index (0..3). Call before light_system_upload/light_system_upload_lights. */
+void light_system_set_point_shadow_indices(LightSystem *ls, const PointShadowSystem *ps);
 
 /* Bind external cascade VP array pointer (avoids 256-byte memcpy per frame).
  * Pass NULL to fall back to identity matrices.  Safe to call every frame. */

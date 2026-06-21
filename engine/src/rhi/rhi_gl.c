@@ -1152,7 +1152,7 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     gl_bind_tex_unit(2, mr, sampler);
     gl_bind_tex_unit(3, normal, sampler);
     gl_bind_tex_unit(4, emissive, sampler);
-    gl_bind_tex_unit(5, ssao, sampler);
+    gl_bind_tex_unit(11, ssao, sampler);
     if (point_shadow_cubes && point_shadow_count > 0u) {
         u32 n = point_shadow_count > 4u ? 4u : point_shadow_count;
         for (u32 i = 0u; i < n; i++)

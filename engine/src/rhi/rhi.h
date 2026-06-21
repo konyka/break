@@ -228,7 +228,8 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture shadow, RHITexture ssao, RHISampler sampler);
 
-/* Material + IBL textures: binds material (0-5) + brdf_lut/irradiance/prefilter (7-9) */
+/* Material + IBL textures: binds material (0-4) + shadow (1) + ssao (11) +
+ * brdf_lut/irradiance/prefilter (7-9) + point_shadow_cubes (10-13). */
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture shadow, RHITexture ssao, RHISampler sampler,

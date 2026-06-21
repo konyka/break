@@ -31,15 +31,11 @@ uniform float u_far;
 uniform float u_shadow_bias;
 uniform uint  u_point_count;
 uniform uint  u_dir_count;
-uniform uint  u_point_shadow_count;
-uniform uint  u_point_shadow_light_0;
-uniform uint  u_point_shadow_light_1;
-uniform uint  u_point_shadow_light_2;
-uniform uint  u_point_shadow_light_3;
+uniform float u_point_shadow_far_planes[4];
 
 const float PI = 3.14159265359;
 
-struct PointLight { vec3 pos; float radius; vec3 color; float _pad; };
+struct PointLight { vec3 pos; float radius; vec3 color; float shadow_index; };
 struct DirLight   { vec3 dir; float _pad0; vec3 color; float _pad1; };
 
 PointLight read_point_light(int index) {
@@ -47,7 +43,7 @@ PointLight read_point_light(int index) {
     vec4 d0 = texelFetch(u_light_data, base);
     vec4 d1 = texelFetch(u_light_data, base + 1);
     PointLight l;
-    l.pos = d0.xyz; l.radius = d0.w; l.color = d1.xyz;
+    l.pos = d0.xyz; l.radius = d0.w; l.color = d1.xyz; l.shadow_index = d1.w;
     return l;
 }
 
@@ -203,19 +199,14 @@ float shadow_test(vec3 world_pos) {
     return pcf_shadow(cascade, uv, ndc.z, texel_size, filter_radius);
 }
 
-float point_shadow_test(vec3 wpos, int light_idx, vec3 light_pos, float light_radius) {
-    if (u_point_shadow_count == 0u) return 1.0;
-    int slot = -1;
-    if (u_point_shadow_count > 0u && u_point_shadow_light_0 == uint(light_idx)) slot = 0;
-    else if (u_point_shadow_count > 1u && u_point_shadow_light_1 == uint(light_idx)) slot = 1;
-    else if (u_point_shadow_count > 2u && u_point_shadow_light_2 == uint(light_idx)) slot = 2;
-    else if (u_point_shadow_count > 3u && u_point_shadow_light_3 == uint(light_idx)) slot = 3;
-    if (slot < 0) return 1.0;
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    if (shadow_idx < 0 || shadow_idx > 3) return 1.0;
     vec3 frag_to_light = wpos - light_pos;
     float dist = length(frag_to_light);
     if (dist > light_radius) return 0.0;
-    float compare = dist / max(light_radius, 1e-4);
-    float depth = texture(u_point_shadow_cubes[slot], frag_to_light).r;
+    float far_plane = u_point_shadow_far_planes[shadow_idx];
+    float compare = dist / max(far_plane, 1e-4);
+    float depth = texture(u_point_shadow_cubes[shadow_idx], frag_to_light).r;
     return compare <= depth + u_shadow_bias ? 1.0 : 0.15;
 }
 
@@ -287,7 +278,7 @@ void main() {
             if (dist > pl.radius) continue;
             vec3 L = toL / max(dist, 1e-3);
             float att = 1.0 - dist / pl.radius; att *= att;
-            float pshadow = point_shadow_test(wpos, li, pl.pos, pl.radius);
+            float pshadow = point_shadow_test(wpos, int(pl.shadow_index), pl.pos, pl.radius);
             color += cook_torrance(albedo, metal, rough, N, V, L, pl.color * att * pshadow);
         }
     }

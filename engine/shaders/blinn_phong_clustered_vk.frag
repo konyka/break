@@ -18,11 +18,15 @@ layout(push_constant) uniform PushConstants {
     float u_far;
     uint u_point_count;
     uint u_dir_count;
+    float u_shadow_bias;
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(set = 1, binding = 0) uniform samplerBuffer u_light_data;
 layout(set = 1, binding = 1) uniform samplerBuffer u_light_grid;
+#ifdef HAS_POINT_SHADOW
+layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
+#endif
 
 layout(location = 0) out vec4 FragColor;
 
@@ -30,7 +34,7 @@ struct PointLight {
     vec3 pos;
     float radius;
     vec3 color;
-    float _pad;
+    float shadow_index;
 };
 
 struct DirLight {
@@ -48,6 +52,7 @@ PointLight read_point_light(int index) {
     l.pos = d0.xyz;
     l.radius = d0.w;
     l.color = d1.xyz;
+    l.shadow_index = d1.w;
     return l;
 }
 
@@ -60,6 +65,22 @@ DirLight read_dir_light(int index) {
     l.color = d1.xyz;
     return l;
 }
+
+#ifdef HAS_POINT_SHADOW
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    if (shadow_idx < 0 || shadow_idx > 3) return 1.0;
+    vec3 frag_to_light = wpos - light_pos;
+    float dist = length(frag_to_light);
+    if (dist > light_radius) return 0.0;
+    float compare = dist / max(light_radius, 1e-4);
+    float depth = texture(u_point_shadow_cubes[shadow_idx], frag_to_light).r;
+    return compare <= depth + pc.u_shadow_bias ? 1.0 : 0.15;
+}
+#else
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    return 1.0;
+}
+#endif
 
 void main() {
     vec3 N = normalize(vNormal);
@@ -115,7 +136,8 @@ void main() {
             float diff = max(dot(N, L), 0.0);
             float NdH = max(dot(N, H), 0.0); float spec = NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
 
-            color += pl.color * atten * (diff + spec * 0.15) * albedo;
+            float pshadow = point_shadow_test(vWorldPos, int(pl.shadow_index), pl.pos, pl.radius);
+            color += pl.color * atten * (diff + spec * 0.15) * albedo * pshadow;
         }
     }
 

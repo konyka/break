@@ -73,11 +73,7 @@ typedef struct {
     i32 _loc_shadow_bias;
     i32 _loc_point_count;
     i32 _loc_dir_count;
-    i32 _loc_point_shadow_count;
-    i32 _loc_point_shadow_light_0;
-    i32 _loc_point_shadow_light_1;
-    i32 _loc_point_shadow_light_2;
-    i32 _loc_point_shadow_light_3;
+    i32 _loc_point_shadow_far_planes;
 } DeferredSystem;
 
 void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height);
@@ -102,7 +98,7 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             u32 point_count, u32 dir_count,
                             RHITexture shadow_map,
                             RHITexture brdf_lut, RHICubemap irradiance, RHICubemap prefilter,
-                            u32 psc_count, const RHITexture *psc_tex, const u32 *psc_light_idx,
+                            u32 psc_count, const RHITexture *psc_tex, const f32 *psc_far_planes,
                             f32 near_plane, f32 far_plane, f32 shadow_bias,
                             const f32 *view_mat, const f32 *camera_data);
 

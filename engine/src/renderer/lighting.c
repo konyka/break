@@ -1,4 +1,5 @@
 #include <renderer/lighting.h>
+#include <renderer/point_shadow.h>
 #include <core/log.h>
 #include <math.h>
 #include <string.h>
@@ -268,6 +269,21 @@ void light_system_upload(LightSystem *ls) {
 
 void light_system_upload_lights(LightSystem *ls) {
     light_system_upload_lights_only(ls);
+}
+
+void light_system_set_point_shadow_indices(LightSystem *ls, const PointShadowSystem *ps) {
+    if (!ls) return;
+    for (u32 i = 0u; i < ls->point_count; i++) {
+        ls->point_lights[i].shadow_index = -1.0f;
+    }
+    if (!ps || ps->active_count == 0u) return;
+    u32 n = ps->active_count > 4u ? 4u : ps->active_count;
+    for (u32 s = 0u; s < n; s++) {
+        u32 src = ps->lights[s].src_index;
+        if (src < ls->point_count) {
+            ls->point_lights[src].shadow_index = (f32)s;
+        }
+    }
 }
 
 static char *ls_read_file(const char *path, usize *out_len) {

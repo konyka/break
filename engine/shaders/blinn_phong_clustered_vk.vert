@@ -18,6 +18,7 @@ layout(push_constant) uniform PushConstants {
     float u_far;
     uint u_point_count;
     uint u_dir_count;
+    float u_shadow_bias;
 } pc;
 
 layout(location = 0) out vec3 vWorldPos;

@@ -3557,12 +3557,8 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_shadow_bias") == 0) return 184;
         if (strcmp(name, "u_fog_color") == 0)   return 192;
         if (strcmp(name, "u_underwater") == 0)  return 204;
-        if (strcmp(name, "u_point_shadow_count") == 0) return 208;
-        if (strcmp(name, "u_point_shadow_light_0") == 0) return 212;
-        if (strcmp(name, "u_point_shadow_light_1") == 0) return 216;
-        if (strcmp(name, "u_point_shadow_light_2") == 0) return 220;
-        if (strcmp(name, "u_point_shadow_light_3") == 0) return 224;
-        if (strcmp(name, "u_pom_enabled") == 0) return 228;
+        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 208;
+        if (strcmp(name, "u_pom_enabled") == 0) return 224;
     } else if (pd && pd->no_vertex_input && pd->uses_texel_buffer && !pd->is_compute) {
         /* deferred_light_vk: clustered lighting + IBL full-screen pass. */
         if (strcmp(name, "u_inv_vp") == 0)       return 0;
@@ -3575,11 +3571,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_shadow_bias") == 0)   return 168;
         if (strcmp(name, "u_point_count") == 0)   return 176;
         if (strcmp(name, "u_dir_count") == 0)     return 180;
-        if (strcmp(name, "u_point_shadow_count") == 0) return 184;
-        if (strcmp(name, "u_point_shadow_light_0") == 0) return 188;
-        if (strcmp(name, "u_point_shadow_light_1") == 0) return 192;
-        if (strcmp(name, "u_point_shadow_light_2") == 0) return 196;
-        if (strcmp(name, "u_point_shadow_light_3") == 0) return 200;
+        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 184;
     } else if (pd && pd->no_vertex_input && !pd->uses_texel_buffer && !pd->is_compute) {
         /* Other full-screen post passes (tonemap, fxaa, etc.). */
         if (strcmp(name, "u_inv_vp") == 0)     return 0;

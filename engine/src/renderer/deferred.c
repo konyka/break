@@ -160,11 +160,7 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
     sys->_loc_shadow_bias  = rhi_pipeline_get_uniform_location(dev, p, "u_shadow_bias");
     sys->_loc_point_count  = rhi_pipeline_get_uniform_location(dev, p, "u_point_count");
     sys->_loc_dir_count    = rhi_pipeline_get_uniform_location(dev, p, "u_dir_count");
-    sys->_loc_point_shadow_count = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_count");
-    sys->_loc_point_shadow_light_0 = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_light_0");
-    sys->_loc_point_shadow_light_1 = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_light_1");
-    sys->_loc_point_shadow_light_2 = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_light_2");
-    sys->_loc_point_shadow_light_3 = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_light_3");
+    sys->_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_far_planes");
 }
 
 /* ----------------------------------------------------------------------------
@@ -185,11 +181,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_shadow_bias     = -1;
     sys->_loc_point_count     = -1;
     sys->_loc_dir_count       = -1;
-    sys->_loc_point_shadow_count = -1;
-    sys->_loc_point_shadow_light_0 = -1;
-    sys->_loc_point_shadow_light_1 = -1;
-    sys->_loc_point_shadow_light_2 = -1;
-    sys->_loc_point_shadow_light_3 = -1;
+    sys->_loc_point_shadow_far_planes = -1;
     sys->_loc_gbuf_model      = -1;
     sys->_loc_gbuf_view       = -1;
     sys->_loc_gbuf_proj       = -1;
@@ -344,7 +336,7 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             u32 point_count, u32 dir_count,
                             RHITexture shadow_map,
                             RHITexture brdf_lut, RHICubemap irradiance, RHICubemap prefilter,
-                            u32 psc_count, const RHITexture *psc_tex, const u32 *psc_light_idx,
+                            u32 psc_count, const RHITexture *psc_tex, const f32 *psc_far_planes,
                             f32 near_plane, f32 far_plane, f32 shadow_bias,
                             const f32 *view_mat, const f32 *camera_data) {
     if (!sys || !dev || !sys->initialized) return;
@@ -433,28 +425,13 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     if (sys->_loc_dir_count >= 0) {
         rhi_cmd_set_uniform_i32(cmd, sys->_loc_dir_count, (i32)dir_count);
     }
-    if (sys->_loc_point_shadow_count >= 0) {
-        rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_count, (i32)psc_n);
-    }
-    if (psc_light_idx) {
-        if (sys->_loc_point_shadow_light_0 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_0, (i32)psc_light_idx[0]);
-        if (sys->_loc_point_shadow_light_1 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_1, (i32)psc_light_idx[1]);
-        if (sys->_loc_point_shadow_light_2 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_2, (i32)psc_light_idx[2]);
-        if (sys->_loc_point_shadow_light_3 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_3, (i32)psc_light_idx[3]);
-    } else {
-        u32 sent = 0xFFFFFFFFu;
-        if (sys->_loc_point_shadow_light_0 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_0, (i32)sent);
-        if (sys->_loc_point_shadow_light_1 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_1, (i32)sent);
-        if (sys->_loc_point_shadow_light_2 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_2, (i32)sent);
-        if (sys->_loc_point_shadow_light_3 >= 0)
-            rhi_cmd_set_uniform_i32(cmd, sys->_loc_point_shadow_light_3, (i32)sent);
+    if (sys->_loc_point_shadow_far_planes >= 0) {
+        f32 far_planes[4] = {25.0f, 25.0f, 25.0f, 25.0f};
+        if (psc_far_planes) {
+            for (u32 i = 0u; i < psc_n; i++) far_planes[i] = psc_far_planes[i];
+        }
+        rhi_cmd_set_uniform_vec4(cmd, sys->_loc_point_shadow_far_planes,
+                                 far_planes[0], far_planes[1], far_planes[2], far_planes[3]);
     }
 
     rhi_cmd_draw(cmd, 3u, 1u);

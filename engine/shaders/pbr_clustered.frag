@@ -18,11 +18,7 @@ uniform uint u_point_count;
 uniform uint u_dir_count;
 uniform mat4 u_view;
 uniform float u_shadow_bias;
-uniform uint u_point_shadow_count;
-uniform uint u_point_shadow_light_0;
-uniform uint u_point_shadow_light_1;
-uniform uint u_point_shadow_light_2;
-uniform uint u_point_shadow_light_3;
+uniform float u_point_shadow_far_planes[4];
 uniform float u_pom_enabled; /* R84-1: 0=no height map, skip POM */
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -30,7 +26,7 @@ layout(binding = 1) uniform sampler2D u_shadow_map;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 layout(binding = 3) uniform sampler2D u_normal_map;
 layout(binding = 4) uniform sampler2D u_emissive;
-layout(binding = 5) uniform sampler2D u_ssao;
+layout(binding = 11) uniform sampler2D u_ssao;
 layout(binding = 5) uniform samplerBuffer u_light_data;
 layout(binding = 6) uniform samplerBuffer u_light_grid;
 #ifdef HAS_IBL
@@ -38,7 +34,9 @@ layout(binding = 7) uniform sampler2D u_brdf_lut;
 layout(binding = 8) uniform samplerCube u_irradiance_map;
 layout(binding = 9) uniform samplerCube u_prefilter_map;
 #endif
+#ifdef HAS_POINT_SHADOW
 layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4];
+#endif
 
 layout(location = 0) out vec4 FragColor;
 
@@ -49,7 +47,7 @@ const vec3 IBL_RAYLEIGH = vec3(5.5e-6, 13.0e-6, 22.4e-6);
 const float IBL_MIE = 21.0e-6;
 
 /* Light readers must precede their first use (GLSL has no forward decls). */
-struct PointLight { vec3 pos; float radius; vec3 color; float _pad; };
+struct PointLight { vec3 pos; float radius; vec3 color; float shadow_index; };
 struct DirLight   { vec3 dir; float _pad0; vec3 color; float _pad1; };
 
 PointLight read_point_light(int index) {
@@ -57,7 +55,7 @@ PointLight read_point_light(int index) {
     vec4 d0 = texelFetch(u_light_data, base);
     vec4 d1 = texelFetch(u_light_data, base + 1);
     PointLight l;
-    l.pos = d0.xyz; l.radius = d0.w; l.color = d1.xyz;
+    l.pos = d0.xyz; l.radius = d0.w; l.color = d1.xyz; l.shadow_index = d1.w;
     return l;
 }
 
@@ -277,21 +275,22 @@ float shadow_test(vec3 world_pos) {
     return pcf_shadow(cascade, uv, ndc.z, texel_size, filter_radius);
 }
 
-float point_shadow_test(vec3 wpos, int light_idx, vec3 light_pos, float light_radius) {
-    if (u_point_shadow_count == 0u) return 1.0;
-    int slot = -1;
-    if (u_point_shadow_count > 0u && u_point_shadow_light_0 == uint(light_idx)) slot = 0;
-    else if (u_point_shadow_count > 1u && u_point_shadow_light_1 == uint(light_idx)) slot = 1;
-    else if (u_point_shadow_count > 2u && u_point_shadow_light_2 == uint(light_idx)) slot = 2;
-    else if (u_point_shadow_count > 3u && u_point_shadow_light_3 == uint(light_idx)) slot = 3;
-    if (slot < 0) return 1.0;
+#ifdef HAS_POINT_SHADOW
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    if (shadow_idx < 0 || shadow_idx > 3) return 1.0;
     vec3 frag_to_light = wpos - light_pos;
     float dist = length(frag_to_light);
     if (dist > light_radius) return 0.0;
-    float compare = dist / max(light_radius, 1e-4);
-    float depth = texture(u_point_shadow_cubes[slot], frag_to_light).r;
+    float far_plane = u_point_shadow_far_planes[shadow_idx];
+    float compare = dist / max(far_plane, 1e-4);
+    float depth = texture(u_point_shadow_cubes[shadow_idx], frag_to_light).r;
     return compare <= depth + u_shadow_bias ? 1.0 : 0.15;
 }
+#else
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    return 1.0;
+}
+#endif
 
 vec3 perturb_normal(vec3 N, vec3 V, vec2 uv) {
     vec3 map = texture(u_normal_map, uv).rgb * 2.0 - 1.0;
@@ -416,7 +415,7 @@ void main() {
             if (dist > pl.radius) continue;
             vec3 L = toL / max(dist, 1e-3);
             float att = 1.0 - dist / pl.radius; att *= att;
-            float pshadow = point_shadow_test(vWorldPos, li, pl.pos, pl.radius);
+            float pshadow = point_shadow_test(vWorldPos, int(pl.shadow_index), pl.pos, pl.radius);
             color += cook_torrance_brdf(N, V, L, pl.color * att * pshadow, albedo, metallic, roughness);
         }
     }

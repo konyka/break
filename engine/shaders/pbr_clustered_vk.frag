@@ -24,12 +24,8 @@ layout(push_constant) uniform PushConstants {
     float u_shadow_bias;/* 184 */
     vec3 u_fog_color;   /* 192 */
     float u_underwater; /* 204 */
-    uint u_point_shadow_count;    /* 208 */
-    uint u_point_shadow_light_0;  /* 212 */
-    uint u_point_shadow_light_1;  /* 216 */
-    uint u_point_shadow_light_2;  /* 220 */
-    uint u_point_shadow_light_3;  /* 224 */
-    float u_pom_enabled;          /* 228 */
+    float u_point_shadow_far_planes[4]; /* 208 */
+    float u_pom_enabled;                /* 224 */
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -45,7 +41,9 @@ layout(set = 0, binding = 6) uniform sampler2D u_brdf_lut;
 layout(set = 0, binding = 7) uniform samplerCube u_irradiance_map;
 layout(set = 0, binding = 8) uniform samplerCube u_prefilter_map;
 #endif
+#ifdef HAS_POINT_SHADOW
 layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
+#endif
 
 layout(location = 0) out vec4 FragColor;
 
@@ -56,7 +54,7 @@ const vec3 IBL_RAYLEIGH = vec3(5.5e-6, 13.0e-6, 22.4e-6);
 const float IBL_MIE = 21.0e-6;
 
 /* Light readers must precede their first use (GLSL has no forward decls). */
-struct PointLight { vec3 pos; float radius; vec3 color; float _pad; };
+struct PointLight { vec3 pos; float radius; vec3 color; float shadow_index; };
 struct DirLight   { vec3 dir; float _pad0; vec3 color; float _pad1; };
 
 PointLight read_point_light(int index) {
@@ -64,7 +62,7 @@ PointLight read_point_light(int index) {
     vec4 d0 = texelFetch(u_light_data, base);
     vec4 d1 = texelFetch(u_light_data, base + 1);
     PointLight l;
-    l.pos = d0.xyz; l.radius = d0.w; l.color = d1.xyz;
+    l.pos = d0.xyz; l.radius = d0.w; l.color = d1.xyz; l.shadow_index = d1.w;
     return l;
 }
 
@@ -289,21 +287,22 @@ float shadow_cascade(vec3 world_pos) {
     return shadow_test(world_pos);
 }
 
-float point_shadow_test(vec3 wpos, int light_idx, vec3 light_pos, float light_radius) {
-    if (pc.u_point_shadow_count == 0u) return 1.0;
-    int slot = -1;
-    if (pc.u_point_shadow_count > 0u && pc.u_point_shadow_light_0 == uint(light_idx)) slot = 0;
-    else if (pc.u_point_shadow_count > 1u && pc.u_point_shadow_light_1 == uint(light_idx)) slot = 1;
-    else if (pc.u_point_shadow_count > 2u && pc.u_point_shadow_light_2 == uint(light_idx)) slot = 2;
-    else if (pc.u_point_shadow_count > 3u && pc.u_point_shadow_light_3 == uint(light_idx)) slot = 3;
-    if (slot < 0) return 1.0;
+#ifdef HAS_POINT_SHADOW
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    if (shadow_idx < 0 || shadow_idx > 3) return 1.0;
     vec3 frag_to_light = wpos - light_pos;
     float dist = length(frag_to_light);
     if (dist > light_radius) return 0.0;
-    float compare = dist / max(light_radius, 1e-4);
-    float depth = texture(u_point_shadow_cubes[slot], frag_to_light).r;
+    float far_plane = pc.u_point_shadow_far_planes[shadow_idx];
+    float compare = dist / max(far_plane, 1e-4);
+    float depth = texture(u_point_shadow_cubes[shadow_idx], frag_to_light).r;
     return compare <= depth + pc.u_shadow_bias ? 1.0 : 0.15;
 }
+#else
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    return 1.0;
+}
+#endif
 
 vec3 perturb_normal(vec3 N, vec3 V, vec2 uv) {
     vec3 map = texture(u_normal_map, uv).rgb * 2.0 - 1.0;
@@ -428,7 +427,7 @@ void main() {
             if (dist > pl.radius) continue;
             vec3 L = toL / max(dist, 1e-3);
             float att = 1.0 - dist / pl.radius; att *= att;
-            float pshadow = point_shadow_test(vWorldPos, li, pl.pos, pl.radius);
+            float pshadow = point_shadow_test(vWorldPos, int(pl.shadow_index), pl.pos, pl.radius);
             color += cook_torrance_brdf(N, V, L, pl.color * att * pshadow, albedo, metallic, roughness);
         }
     }

@@ -13,10 +13,14 @@ uniform float u_far;
 uniform uint u_point_count;
 uniform uint u_dir_count;
 uniform mat4 u_view;
+uniform float u_shadow_bias;
 
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 1) uniform samplerBuffer u_light_data;
 layout(binding = 2) uniform samplerBuffer u_light_grid;
+#ifdef HAS_POINT_SHADOW
+layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4];
+#endif
 
 layout(location = 0) out vec4 FragColor;
 
@@ -24,7 +28,7 @@ struct PointLight {
     vec3 pos;
     float radius;
     vec3 color;
-    float _pad;
+    float shadow_index;
 };
 
 struct DirLight {
@@ -42,6 +46,7 @@ PointLight read_point_light(int index) {
     l.pos = d0.xyz;
     l.radius = d0.w;
     l.color = d1.xyz;
+    l.shadow_index = d1.w;
     return l;
 }
 
@@ -54,6 +59,22 @@ DirLight read_dir_light(int index) {
     l.color = d1.xyz;
     return l;
 }
+
+#ifdef HAS_POINT_SHADOW
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    if (shadow_idx < 0 || shadow_idx > 3) return 1.0;
+    vec3 frag_to_light = wpos - light_pos;
+    float dist = length(frag_to_light);
+    if (dist > light_radius) return 0.0;
+    float compare = dist / max(light_radius, 1e-4);
+    float depth = texture(u_point_shadow_cubes[shadow_idx], frag_to_light).r;
+    return compare <= depth + u_shadow_bias ? 1.0 : 0.15;
+}
+#else
+float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_radius) {
+    return 1.0;
+}
+#endif
 
 void main() {
     vec3 N = normalize(vNormal);
@@ -109,7 +130,8 @@ void main() {
             float diff = max(dot(N, L), 0.0);
             float NdH = max(dot(N, H), 0.0); float spec = NdH; spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
 
-            color += pl.color * atten * (diff + spec * 0.15) * albedo;
+            float pshadow = point_shadow_test(vWorldPos, int(pl.shadow_index), pl.pos, pl.radius);
+            color += pl.color * atten * (diff + spec * 0.15) * albedo * pshadow;
         }
     }
 
