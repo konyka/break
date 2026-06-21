@@ -6,6 +6,8 @@
 #define SKELETON_MAX_JOINTS 128
 #define SKELETON_MAX_CHANNELS 64
 #define SKELETON_MAX_KEYFRAMES 256
+#define SKELETON_MAX_EVENTS 32
+#define SKELETON_MAX_EVENT_NAME 32
 
 typedef struct {
     u32   joint_count;
@@ -35,12 +37,19 @@ typedef struct {
 } AnimChannel;
 
 typedef struct {
+    f32  time;
+    char name[SKELETON_MAX_EVENT_NAME];
+} AnimEvent;
+
+typedef struct {
     f32         duration;
     f32         time;
     bool        playing;
     bool        loop;
     u32         channel_count;
     AnimChannel channels[SKELETON_MAX_CHANNELS];
+    u32         event_count;
+    AnimEvent   events[SKELETON_MAX_EVENTS];
 } AnimClip;
 
 void skeleton_init(Skeleton *sk, RHIDevice *dev);
@@ -58,3 +67,4 @@ void skeleton_upload(Skeleton *sk);
 void anim_clip_init(AnimClip *clip, f32 duration, bool loop);
 void anim_clip_add_channel(AnimClip *clip, u32 joint_index, AnimPathType path,
                             u32 keyframe_count, const f32 *times, const f32 *values);
+void anim_clip_add_event(AnimClip *clip, f32 time, const char *name);

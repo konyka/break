@@ -356,6 +356,111 @@ TEST(crossfade_zero_duration)
     anim_blend_state_destroy(&st);
 }
 
+/* ----------------------------------------------------------------------- */
+/*  Animation events (R101)                                                 */
+/* ----------------------------------------------------------------------- */
+
+static int g_evt_count;
+static char g_evt_name[32];
+static float g_evt_time;
+
+static void test_event_cb(const char *name, f32 time, void *user_data) {
+    (void)user_data;
+    g_evt_count++;
+    /* Copy name safely */
+    usize i = 0;
+    for (; i < 31 && name[i] != '\0'; i++) g_evt_name[i] = name[i];
+    g_evt_name[i] = '\0';
+    g_evt_time = time;
+}
+
+TEST(event_fires_when_crossed)
+{
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 2.0f, 0, 0, 0, 10, 0, 0);
+    anim_clip_add_event(&g_clips[0], 0.5f, "footstep");
+
+    g_evt_count = 0;
+    anim_set_event_callback(&st, test_event_cb, NULL);
+    anim_layer_play(&st, 0, 0, 1.0f, false);
+
+    /* dt=0.3: time 0 -> 0.3, event at 0.5 not crossed */
+    anim_blend_evaluate(&st, 0.3f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 0);
+
+    /* dt=0.3: time 0.3 -> 0.6, event at 0.5 crossed */
+    anim_blend_evaluate(&st, 0.3f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+    ASSERT_STR_EQ(g_evt_name, "footstep");
+    ASSERT_FLOAT_EQ(g_evt_time, 0.5f, 0.001f);
+
+    /* dt=0.3: time 0.6 -> 0.9, no new event */
+    anim_blend_evaluate(&st, 0.3f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(event_looping_wrap)
+{
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    anim_clip_add_event(&g_clips[0], 0.5f, "hit");
+
+    g_evt_count = 0;
+    anim_set_event_callback(&st, test_event_cb, NULL);
+    anim_layer_play(&st, 0, 0, 1.0f, true);  /* looping */
+
+    /* dt=0.6: time 0 -> 0.6, event at 0.5 fires (1st) */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+
+    /* dt=0.6: time 0.6 -> 0.2 (wrap), no event in [0.6,1.0) or [0,0.2) */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+
+    /* dt=0.6: time 0.2 -> 0.8, event at 0.5 fires (2nd) */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 2);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(event_no_callback_safe)
+{
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    anim_clip_add_event(&g_clips[0], 0.5f, "test");
+
+    /* No callback set — should not crash */
+    anim_layer_play(&st, 0, 0, 1.0f, false);
+    anim_blend_evaluate(&st, 1.0f, g_clips, 1);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(event_add_max_clamped)
+{
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    anim_clip_init(&g_clips[0], 1.0f, false);
+
+    /* Add SKELETON_MAX_EVENTS events */
+    for (u32 i = 0; i < SKELETON_MAX_EVENTS; i++) {
+        anim_clip_add_event(&g_clips[0], (f32)i * 0.01f, "evt");
+    }
+    ASSERT_EQ(g_clips[0].event_count, SKELETON_MAX_EVENTS);
+
+    /* Adding one more should be silently ignored */
+    anim_clip_add_event(&g_clips[0], 0.99f, "overflow");
+    ASSERT_EQ(g_clips[0].event_count, SKELETON_MAX_EVENTS);
+
+    anim_blend_state_destroy(&st);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(blend_state_init);
     RUN_TEST(layer_play_sets_active);
@@ -378,4 +483,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(layer_zero_weight_no_effect);
     RUN_TEST(ik_collinear_bones);
     RUN_TEST(crossfade_zero_duration);
+    /* Animation events (R101) */
+    RUN_TEST(event_fires_when_crossed);
+    RUN_TEST(event_looping_wrap);
+    RUN_TEST(event_no_callback_safe);
+    RUN_TEST(event_add_max_clamped);
 TEST_MAIN_END()

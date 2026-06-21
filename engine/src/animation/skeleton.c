@@ -252,3 +252,15 @@ void anim_clip_add_channel(AnimClip *clip, u32 joint_index, AnimPathType path,
         memcpy(ch->values[i], values + i * 4, sizeof(f32) * 4);
     }
 }
+
+void anim_clip_add_event(AnimClip *clip, f32 time, const char *name) {
+    if (!clip || !name) return;
+    if (clip->event_count >= SKELETON_MAX_EVENTS) return;
+    AnimEvent *ev = &clip->events[clip->event_count++];
+    ev->time = time;
+    /* Copy name with truncation and null-termination. */
+    usize i = 0;
+    for (; i < SKELETON_MAX_EVENT_NAME - 1 && name[i] != '\0'; i++)
+        ev->name[i] = name[i];
+    ev->name[i] = '\0';
+}

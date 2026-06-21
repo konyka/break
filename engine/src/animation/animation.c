@@ -207,6 +207,20 @@ static void advance_layer_time(AnimationLayer *L, f32 dt, f32 duration) {
     }
 }
 
+/* R101: Fire animation events whose timestamps fall in [t0, t1).
+ * Called after advance_layer_time to notify the host of timeline crossings. */
+static void fire_events_in_range(const AnimClip *clip, f32 t0, f32 t1,
+                                  AnimBlendState *state) {
+    if (!state->event_callback || !clip || clip->event_count == 0) return;
+    for (u32 i = 0; i < clip->event_count; i++) {
+        f32 et = clip->events[i].time;
+        if (et >= t0 && et < t1) {
+            state->event_callback(clip->events[i].name, et,
+                                  state->event_user_data);
+        }
+    }
+}
+
 void anim_blend_evaluate(AnimBlendState *state, f32 dt,
                          const AnimClip *clips, u32 clip_count) {
     if (!state) return;
@@ -238,7 +252,19 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
 
         const AnimClip *clip = clip_at(clips, clip_count, L->clip_index);
         f32 dur = clip ? clip->duration : 0.0f;
+        f32 prev_time = L->time;
         advance_layer_time(L, dt, dur);
+
+        /* R101: Fire events that fall in the time interval crossed this frame.
+         * For looping clips that wrapped, fire two ranges: [prev, dur) + [0, now). */
+        if (state->event_callback && clip && clip->event_count > 0) {
+            if (L->time > prev_time) {
+                fire_events_in_range(clip, prev_time, L->time, state);
+            } else if (L->time < prev_time && L->looping && dur > 0.0f) {
+                fire_events_in_range(clip, prev_time, dur, state);
+                fire_events_in_range(clip, 0.0f, L->time, state);
+            }
+        }
 
         /* Copy current output to sample buffer instead of fill_bind_pose.
          * clip_sample only writes bones with animation channels; unaddressed

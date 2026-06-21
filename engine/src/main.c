@@ -5208,8 +5208,16 @@ u32 culled_count = 0;
         if (occ_cull_enabled && occ_sys.enabled && rhi_handle_valid(scene_fbo.depth_tex)) {
             occlusion_cull_generate_hi_z(&occ_sys, cmd, scene_fbo.depth_tex);
 
-            /* R82-2/R83-4: AABBs cached+uploaded at init — per-frame dispatch only. */
-            if (g_occ_aabbs_count > 0) {
+            /* R82-2/R83-4: AABBs cached+uploaded at init — per-frame dispatch only.
+             * R101: When all rendering paths use unified cull (mega-buffer valid +
+             * unified forward enabled), the occlusion_cull_dispatch results are never
+             * consumed — node_occ_visible() is not called because the CPU fallback
+             * path is skipped.  Skip the dispatch to save 1 compute pass + barrier +
+             * buffer copy per frame.  Hi-Z generation above still runs (unified_cull
+             * samples it).  When unified is disabled or mega-buffer invalid, the CPU
+             * fallback path needs occlusion results, so dispatch as before. */
+            bool unified_all_active = mega_buf.valid && unified_forward_enabled;
+            if (g_occ_aabbs_count > 0 && !unified_all_active) {
                 occlusion_cull_dispatch(&occ_sys, cmd, &curr_view_proj, g_occ_aabbs_count);
             }
         }
