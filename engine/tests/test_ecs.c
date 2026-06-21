@@ -554,6 +554,143 @@ TEST(ecs_destroy_null_world) {
     ASSERT_TRUE(true);
 }
 
+/* -----------------------------------------------------------------------
+ *  Edge Cache (R102)
+ * ----------------------------------------------------------------------- */
+
+TEST(ecs_edge_cache_add_hit) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+
+    /* Entity 1: add Position (creates edge: empty → Position) */
+    Entity e1 = world_create_entity(w);
+    Position *p1 = (Position *)world_add_component(w, e1, COMP_POSITION);
+    ASSERT_NOT_NULL(p1);
+    p1->x = 10.0f;
+
+    /* Empty archetype should now have an add-edge for COMP_POSITION */
+    Archetype *empty = &w->archetypes[0];
+    ASSERT_TRUE(empty->edges_add_count > 0);
+
+    /* Entity 2: add Position (should use edge cache, not find_archetype) */
+    Entity e2 = world_create_entity(w);
+    Position *p2 = (Position *)world_add_component(w, e2, COMP_POSITION);
+    ASSERT_NOT_NULL(p2);
+    p2->x = 20.0f;
+
+    /* Both entities should be in the same archetype */
+    ASSERT_EQ(w->entity_archetype[e1.index], w->entity_archetype[e2.index]);
+
+    /* Verify data integrity */
+    Position *got1 = (Position *)world_get_component(w, e1, COMP_POSITION);
+    Position *got2 = (Position *)world_get_component(w, e2, COMP_POSITION);
+    ASSERT_FLOAT_EQ(got1->x, 10.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(got2->x, 20.0f, 1e-5f);
+
+    world_destroy(w);
+}
+
+TEST(ecs_edge_cache_remove_hit) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+
+    /* Create two entities with Position+Velocity */
+    Entity e1 = world_create_entity(w);
+    world_add_component(w, e1, COMP_POSITION);
+    world_add_component(w, e1, COMP_VELOCITY);
+
+    Entity e2 = world_create_entity(w);
+    world_add_component(w, e2, COMP_POSITION);
+    world_add_component(w, e2, COMP_VELOCITY);
+
+    /* Remove Velocity from e1 (creates edge: Pos+Vel → Pos) */
+    world_remove_component(w, e1, COMP_VELOCITY);
+
+    /* The Pos+Vel archetype should now have a remove-edge for COMP_VELOCITY */
+    u32 arch_e2 = w->entity_archetype[e2.index];
+    Archetype *pos_vel = &w->archetypes[arch_e2];
+    ASSERT_TRUE(pos_vel->edges_remove_count > 0);
+
+    /* Remove Velocity from e2 (should use edge cache) */
+    world_remove_component(w, e2, COMP_VELOCITY);
+
+    /* Both entities should now be in the Position-only archetype */
+    ASSERT_EQ(w->entity_archetype[e1.index], w->entity_archetype[e2.index]);
+
+    /* Position should still be valid for both */
+    Position *p1 = (Position *)world_get_component(w, e1, COMP_POSITION);
+    Position *p2 = (Position *)world_get_component(w, e2, COMP_POSITION);
+    ASSERT_NOT_NULL(p1);
+    ASSERT_NOT_NULL(p2);
+
+    world_destroy(w);
+}
+
+TEST(ecs_edge_cache_multi_transition) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+    world_register_component(w, COMP_HEALTH, sizeof(Health));
+
+    /* Create 50 entities, each gets Position → Velocity → Health added.
+     * After the first entity, all subsequent add_component calls should
+     * hit the edge cache. */
+    Entity ents[50];
+    for (int i = 0; i < 50; i++) {
+        ents[i] = world_create_entity(w);
+        Position *p = (Position *)world_add_component(w, ents[i], COMP_POSITION);
+        p->x = (float)i;
+        Velocity *v = (Velocity *)world_add_component(w, ents[i], COMP_VELOCITY);
+        v->vx = (float)(i + 1);
+        Health *h = (Health *)world_add_component(w, ents[i], COMP_HEALTH);
+        h->hp = i * 2;
+    }
+
+    /* All 50 entities should be in the same archetype (Pos+Vel+Health) */
+    u32 target_arch = w->entity_archetype[ents[0].index];
+    for (int i = 1; i < 50; i++) {
+        ASSERT_EQ(w->entity_archetype[ents[i].index], target_arch);
+    }
+
+    /* Verify data integrity for all entities */
+    for (int i = 0; i < 50; i++) {
+        Position *p = (Position *)world_get_component(w, ents[i], COMP_POSITION);
+        ASSERT_FLOAT_EQ(p->x, (float)i, 1e-5f);
+        Velocity *v = (Velocity *)world_get_component(w, ents[i], COMP_VELOCITY);
+        ASSERT_FLOAT_EQ(v->vx, (float)(i + 1), 1e-5f);
+        Health *h = (Health *)world_get_component(w, ents[i], COMP_HEALTH);
+        ASSERT_EQ(h->hp, i * 2);
+    }
+
+    /* Now remove Health from all entities — first creates edge, rest use cache */
+    for (int i = 0; i < 50; i++) {
+        world_remove_component(w, ents[i], COMP_HEALTH);
+    }
+
+    /* All should be in Pos+Vel archetype */
+    target_arch = w->entity_archetype[ents[0].index];
+    for (int i = 1; i < 50; i++) {
+        ASSERT_EQ(w->entity_archetype[ents[i].index], target_arch);
+    }
+
+    /* Health gone, Position intact */
+    for (int i = 0; i < 50; i++) {
+        ASSERT_TRUE(world_get_component(w, ents[i], COMP_HEALTH) == NULL);
+        Position *p = (Position *)world_get_component(w, ents[i], COMP_POSITION);
+        ASSERT_FLOAT_EQ(p->x, (float)i, 1e-5f);
+    }
+
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_entity_create);
@@ -576,4 +713,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_get_unregistered_component);
     RUN_TEST(ecs_large_entity_count);
     RUN_TEST(ecs_destroy_null_world);
+    /* Edge cache (R102) */
+    RUN_TEST(ecs_edge_cache_add_hit);
+    RUN_TEST(ecs_edge_cache_remove_hit);
+    RUN_TEST(ecs_edge_cache_multi_transition);
 TEST_MAIN_END()

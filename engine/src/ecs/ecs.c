@@ -35,6 +35,59 @@ static i32 archetype_find_component(Archetype *a, ComponentType id) {
     return -1;
 }
 
+/* R102: Archetype edge cache — O(1) transition lookup for add/remove.
+ * Each archetype stores a small array of (component_id → target_archetype*)
+ * edges.  The first add/remove of a given component from a given archetype
+ * pays the O(N) find_archetype cost; subsequent transitions with the same
+ * component are O(E) where E is edges per archetype (typically ≤ component
+ * type count, almost always single-digit). */
+
+static Archetype *edge_lookup_add(Archetype *a, ComponentType id) {
+    for (u32 i = 0; i < a->edges_add_count; i++) {
+        if (a->edges_add[i].component == id) return a->edges_add[i].target;
+    }
+    return NULL;
+}
+
+static Archetype *edge_lookup_remove(Archetype *a, ComponentType id) {
+    for (u32 i = 0; i < a->edges_remove_count; i++) {
+        if (a->edges_remove[i].component == id) return a->edges_remove[i].target;
+    }
+    return NULL;
+}
+
+static void edge_cache_add(Archetype *a, ComponentType id, Archetype *target) {
+    for (u32 i = 0; i < a->edges_add_count; i++) {
+        if (a->edges_add[i].component == id) {
+            a->edges_add[i].target = target;
+            return;
+        }
+    }
+    ArchetypeEdge *new_arr = realloc(a->edges_add,
+                                     (a->edges_add_count + 1) * sizeof(ArchetypeEdge));
+    if (!new_arr) return;
+    a->edges_add = new_arr;
+    a->edges_add[a->edges_add_count].component = id;
+    a->edges_add[a->edges_add_count].target    = target;
+    a->edges_add_count++;
+}
+
+static void edge_cache_remove(Archetype *a, ComponentType id, Archetype *target) {
+    for (u32 i = 0; i < a->edges_remove_count; i++) {
+        if (a->edges_remove[i].component == id) {
+            a->edges_remove[i].target = target;
+            return;
+        }
+    }
+    ArchetypeEdge *new_arr = realloc(a->edges_remove,
+                                     (a->edges_remove_count + 1) * sizeof(ArchetypeEdge));
+    if (!new_arr) return;
+    a->edges_remove = new_arr;
+    a->edges_remove[a->edges_remove_count].component = id;
+    a->edges_remove[a->edges_remove_count].target    = target;
+    a->edges_remove_count++;
+}
+
 static Chunk *chunk_alloc(u32 chunk_size) {
     Chunk *c = calloc(1, chunk_size);
     c->next = NULL;
@@ -290,26 +343,32 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
         return NULL;
     }
 
-    u32 new_count = old->key.count + 1;
-    /* Stack buffer to avoid heap alloc for typical component counts (<16) */
-    ComponentType stack_types[16];
-    ComponentType *new_types = (new_count <= 16) ? stack_types
-        : (ComponentType *)calloc(new_count, sizeof(ComponentType));
-    if (old->key.count > 0 && old->key.ids) {
-        memcpy(new_types, old->key.ids, old->key.count * sizeof(ComponentType));
-    }
-    new_types[old->key.count] = id;
-    for (u32 i = old->key.count; i > 0 && new_types[i] < new_types[i-1]; i--) {
-        ComponentType tmp = new_types[i];
-        new_types[i] = new_types[i-1];
-        new_types[i-1] = tmp;
-    }
-
-    Archetype *dest = find_archetype(w, new_types, new_count);
+    /* R102: Edge cache — try O(1) lookup before O(N) find_archetype */
+    Archetype *dest = edge_lookup_add(old, id);
     if (!dest) {
-        dest = create_archetype(w, new_types, new_count);
+        u32 new_count = old->key.count + 1;
+        /* Stack buffer to avoid heap alloc for typical component counts (<16) */
+        ComponentType stack_types[16];
+        ComponentType *new_types = (new_count <= 16) ? stack_types
+            : (ComponentType *)calloc(new_count, sizeof(ComponentType));
+        if (old->key.count > 0 && old->key.ids) {
+            memcpy(new_types, old->key.ids, old->key.count * sizeof(ComponentType));
+        }
+        new_types[old->key.count] = id;
+        for (u32 i = old->key.count; i > 0 && new_types[i] < new_types[i-1]; i--) {
+            ComponentType tmp = new_types[i];
+            new_types[i] = new_types[i-1];
+            new_types[i-1] = tmp;
+        }
+
+        dest = find_archetype(w, new_types, new_count);
+        if (!dest) {
+            dest = create_archetype(w, new_types, new_count);
+        }
+        if (new_types != stack_types) free(new_types);
+
+        edge_cache_add(old, id, dest);
     }
-    if (new_types != stack_types) free(new_types);
 
     u32 old_slot = w->entity_index[e.index];
     Chunk *old_chunk = old->chunks;
@@ -426,30 +485,34 @@ void world_remove_component(World *w, Entity e, ComponentType id) {
     i32 removed = archetype_find_component(old, id);
     if (removed < 0) return;
 
-    u32 new_count = old->key.count - 1;
-    Archetype *dest;
-    if (new_count == 0) {
-        dest = &w->archetypes[0];
-    } else {
-        /* Stack buffer to avoid heap alloc for typical component counts (<16) */
-        ComponentType stack_types[16];
-        ComponentType *new_types = (new_count <= 16) ? stack_types
-            : (ComponentType *)calloc(new_count, sizeof(ComponentType));
-        if (!new_types) return;
-        u32 j = 0;
-        for (u32 i = 0; i < old->key.count; i++) {
-            if ((i32)i == removed) continue;
-            new_types[j++] = old->key.ids[i];
+    /* R102: Edge cache — try O(1) lookup before O(N) find_archetype */
+    Archetype *dest = edge_lookup_remove(old, id);
+    if (!dest) {
+        u32 new_count = old->key.count - 1;
+        if (new_count == 0) {
+            dest = &w->archetypes[0];
+        } else {
+            /* Stack buffer to avoid heap alloc for typical component counts (<16) */
+            ComponentType stack_types[16];
+            ComponentType *new_types = (new_count <= 16) ? stack_types
+                : (ComponentType *)calloc(new_count, sizeof(ComponentType));
+            if (!new_types) return;
+            u32 j = 0;
+            for (u32 i = 0; i < old->key.count; i++) {
+                if ((i32)i == removed) continue;
+                new_types[j++] = old->key.ids[i];
+            }
+            dest = find_archetype(w, new_types, new_count);
+            if (!dest) {
+                dest = create_archetype(w, new_types, new_count);
+                /* archetypes 数组是固定大小的内联存储，create_archetype 不会使旧
+                   指针失效，但保险起见重新解算 old 指针。 */
+                old = &w->archetypes[arch_idx];
+            }
+            if (new_types != stack_types) free(new_types);
+            if (!dest) return;
         }
-        dest = find_archetype(w, new_types, new_count);
-        if (!dest) {
-            dest = create_archetype(w, new_types, new_count);
-            /* archetypes 数组是固定大小的内联存储，create_archetype 不会使旧
-               指针失效，但保险起见重新解算 old 指针。 */
-            old = &w->archetypes[arch_idx];
-        }
-        if (new_types != stack_types) free(new_types);
-        if (!dest) return;
+        edge_cache_remove(old, id, dest);
     }
 
     u32 old_slot = w->entity_index[e.index];
