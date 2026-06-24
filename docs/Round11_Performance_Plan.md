@@ -1811,6 +1811,49 @@ mgr->next_free = idx;
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+### R109-1 (ROBUSTNESS): str_copy buf_size=0 整数下溢导致缓冲区溢出
+
+**问题**：`str_copy` 使用 `usize len = s.len < buf_size - 1 ? s.len : buf_size - 1` 计算拷贝长度。当 `buf_size == 0` 时，`buf_size - 1` 因无符号整数下溢回绕为 `SIZE_MAX`，使得 `s.len < SIZE_MAX` 恒为真，`len = s.len`。随后的 `memcpy(buf, s.data, len)` 会向零大小缓冲区写入 `s.len` 字节，`buf[len] = '\0'` 进一步越界。测试用例 `test_string.c` L180 以 `buf_size=0` 调用 `str_copy` 并期望“不崩溃”，但实际行为是 UB。
+
+**修复**：在函数入口添加 `if (buf_size == 0) return (Str){buf, 0};` 提前返回，避免下溢。
+
+**影响文件**：string.c
+
+### R109-2 (ROBUSTNESS): cgltf_buffer_data 未检查 buffer/buffer->data 空指针
+
+**问题**：`cgltf_buffer_data` 在 `acc->buffer_view` 非空时直接解引用 `bv->buffer->data`：
+```c
+return (const u8 *)bv->buffer->data + bv->offset + acc->offset;
+```
+若 `bv->buffer` 为 NULL（畸形 glTF 或外部缓冲加载失败），解引用 NULL 导致崩溃。更隐蔽的是，若 `bv->buffer->data` 为 NULL，返回值为 `NULL + offset`——一个非 NULL 的悬空指针。所有调用者检查 NULL 但无法检测这种悬空指针，后续解引用导致 UB。
+
+**修复**：在解引用前添加 `if (!bv->buffer || !bv->buffer->data) return NULL;`。
+
+**影响文件**：asset.c
+
+### R109-3 (ROBUSTNESS): load_gltf_texture 路径拼接可溢出 tex_path[512]
+
+**问题**：`load_gltf_texture` 使用 `char tex_path[512]` 构建纹理路径。当 `last_slash` 存在时，`memcpy(tex_path, gltf_path, dir_len)` 中 `dir_len = last_slash - gltf_path + 1` 可超过 512 字节（若 `gltf_path` 极长），导致栈缓冲区溢出。随后的 `strncpy(tex_path + dir_len, ...)` 使用 `sizeof(tex_path) - dir_len - 1` 也会因 `dir_len > sizeof(tex_path)` 而下溢为巨大值。
+
+**修复**：在 `memcpy` 前添加 `if (dir_len >= sizeof(tex_path)) dir_len = sizeof(tex_path) - 1;` 钳制 `dir_len`。
+
+**影响文件**：asset.c
+
+### R109 审查确认无需修复的子系统
+
+1. **渲染图（Render Graph）**：`rg_compile` 死代码剔除使用 `culled` 标志保证每个 pass 最多入栈一次，栈大小不超过 `RG_MAX_PASSES`。`rg_reset` 正确归还纹理到池，池满时直接销毁。`rg_destroy` 正确释放所有已分配且非导入的纹理。
+2. **命令缓冲（cmd_buffer）**：双缓冲机制正确，每线程独立 `RenderCmdBuffer` 无共享写入。溢出时静默丢弃命令，避免动态分配。提交线程在 mutex/cond 保护下同步。
+3. **阴影映射（CSM）**：4 级级联正确打包到 2x2 atlas，`sample_cascade` 使用 `clamp(auv, qmin, qmax)` 防止跨级联采样泄漏。`find_blocker` 正确实现 PCSS。
+4. **点光阴影**：6 面 VP 矩阵解析构建正确，自洽使用右手系约定（depth 通过 `length()` 计算，不依赖 VP 分解）。
+5. **延迟渲染**：G-Buffer 管线和光照管线正确分离，`deferred_destroy` 逐个释放 sampler/pipeline/targets。
+6. **后期处理**：所有子系统（motion_blur、god_rays 等）使用 `ready` 标志门控，`rhi_cmd_bind_material_textures` 避免 VK 纹理绑定覆盖。
+7. **材质系统**：glTF 材质正确映射到引擎 `Material` 结构，`asset_scene_free` 逐个释放纹理。`bind_material` 在 main.c 中正确处理 NULL 材质回退。
+8. **字符串工具**：`str_eq`/`str_slice`/`str_find_char`/`str_hash` 均正确处理边界情况（空串、越界 start/end）。
+9. **glTF 加载**：顶点/索引/动画数据正确解析，权重归一化正确。cgltf 验证覆盖索引边界、父子环检测、属性计数一致性。
+10. **场景世界变换**：`scene_compute_world_transforms` 按节点顺序遍历，parent_index == UINT32_MAX 为根节点，依赖节点数组的拓扑排序（cgltf 保证）。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

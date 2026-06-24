@@ -32,6 +32,9 @@ u64 str_hash(Str s) {
 }
 
 Str str_copy(Str s, char *buf, usize buf_size) {
+    /* R109-1: Guard against buf_size == 0 — unsigned underflow in
+     * buf_size - 1 would wrap to SIZE_MAX and bypass the length clamp. */
+    if (buf_size == 0) return (Str){buf, 0};
     usize len = s.len < buf_size - 1 ? s.len : buf_size - 1;
     memcpy(buf, s.data, len);
     buf[len] = '\0';

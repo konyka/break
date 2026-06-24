@@ -84,6 +84,9 @@ static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_
     const char *last_slash = strrchr(gltf_path, '/');
     if (last_slash) {
         usize dir_len = (usize)(last_slash - gltf_path + 1);
+        /* R109-3: Clamp dir_len to prevent stack buffer overflow when
+         * gltf_path exceeds tex_path capacity. */
+        if (dir_len >= sizeof(tex_path)) dir_len = sizeof(tex_path) - 1;
         memcpy(tex_path, gltf_path, dir_len);
         strncpy(tex_path + dir_len, tex->image->uri, sizeof(tex_path) - dir_len - 1);
         tex_path[sizeof(tex_path) - 1] = '\0';
@@ -97,6 +100,9 @@ static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_
 static const u8 *cgltf_buffer_data(cgltf_accessor *acc) {
     if (!acc || !acc->buffer_view) return NULL;
     cgltf_buffer_view *bv = acc->buffer_view;
+    /* R109-2: Validate buffer and buffer->data to prevent NULL + offset
+     * from producing a non-NULL dangling pointer that callers won't detect. */
+    if (!bv->buffer || !bv->buffer->data) return NULL;
     return (const u8 *)bv->buffer->data + bv->offset + acc->offset;
 }
 
