@@ -115,6 +115,11 @@ static void gl_set_viewport_cached(GLint x, GLint y, GLsizei w, GLsizei h) {
 static GLuint g_tex_cache[16] = {0};
 static GLuint g_sam_cache[16] = {0};
 static u32    g_active_unit = UINT32_MAX;
+/* R106-2: SSBO binding cache promoted to file scope so rhi_buffer_destroy
+ * can invalidate entries.  When glDeleteBuffers reverts the binding point
+ * to 0, the cache must be cleared or a future buffer that reuses the same
+ * GL name would falsely register as already bound. */
+static GLuint g_gl_ssbo_cache[8] = {0};
 
 /* R77-2: Indirect/parameter buffer cache — avoids redundant glBindBuffer
  * calls and eliminates trailing unbinds between consecutive indirect draws. */
@@ -836,6 +841,12 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
 void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return;
+    /* R106-2: Invalidate SSBO cache — glDeleteBuffers reverts all SSBO binding
+     * points that referenced this buffer to 0, but the cache still holds the
+     * old name.  A future buffer reusing the same GL name would skip the bind. */
+    for (u32 i = 0; i < 8; i++) {
+        if (g_gl_ssbo_cache[i] == bd->gl_buf) g_gl_ssbo_cache[i] = 0;
+    }
     if (bd->tbo_tex) glDeleteTextures(1, &bd->tbo_tex);
     glDeleteBuffers(1, &bd->gl_buf);
     free(bd);
@@ -1026,6 +1037,12 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
     if (!td) return;
+    /* R106-2: Invalidate cache entries — glDeleteTextures reverts all bound
+     * units to 0, but the cache still holds the old name.  A future texture
+     * that reuses the same GL name would falsely skip the bind. */
+    for (u32 i = 0; i < 16; i++) {
+        if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
+    }
     glDeleteTextures(1, &td->gl_tex);
     free(td);
     rhi_free_slot(dev, tex);
@@ -1075,6 +1092,11 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
 void rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler) {
     GLSamplerData *sd = (GLSamplerData *)rhi_get_resource(dev, sampler);
     if (!sd) return;
+    /* R106-2: Invalidate cache entries — glDeleteSamplers detaches the sampler
+     * from all units, but the cache still holds the old name. */
+    for (u32 i = 0; i < 16; i++) {
+        if (g_sam_cache[i] == sd->gl_sampler) g_sam_cache[i] = 0;
+    }
     glDeleteSamplers(1, &sd->gl_sampler);
     free(sd);
     rhi_free_slot(dev, sampler);
@@ -1372,6 +1394,10 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, cm);
     if (!td) return;
+    /* R106-2: Invalidate cache entries — same as rhi_texture_destroy. */
+    for (u32 i = 0; i < 16; i++) {
+        if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
+    }
     glDeleteTextures(1, &td->gl_tex);
     free(td);
     rhi_free_slot(dev, cm);
@@ -1593,8 +1619,7 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     (void)cmd;
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
-    /* SSBO binding cache: skip redundant glBindBufferBase calls */
-    static GLuint g_gl_ssbo_cache[8] = {0};
+    /* R106-2: SSBO cache promoted to file scope for invalidation on destroy. */
     if (bd && binding < 8) {
         if (g_gl_ssbo_cache[binding] != bd->gl_buf) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, bd->gl_buf);

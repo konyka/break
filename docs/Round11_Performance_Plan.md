@@ -1699,6 +1699,52 @@ grid buffer 存储的是 `u32` 值数组，通过 RGBA32F texel buffer 上传。
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## Round 106
+
+### R106 审查范围
+
+VK 描述符池管理与帧生命周期、GL 状态缓存与资源销毁失效、RHI 资源槽泄漏、compute pipeline 切换状态、uniform ring buffer 溢出、render graph 资源生命周期、pool allocator 双释放。
+
+### R106 审查结论（无需修复）
+
+1. **VK 描述符池**：每帧 `vkResetDescriptorPool` 正确释放所有描述符集，pool maxSets=4096 充足。`VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT` 允许单个释放，但 per-frame reset 更高效。
+2. **RHI 资源槽**：`rhi_alloc_slot`/`rhi_free_slot` 使用侵入式自由链表，generation 计数防止悬空句柄。GL/VK `rhi_device_destroy` 正确遍历所有 alive 槽释放。
+3. **Uniform ring buffer**：4MB per-frame 环形缓冲，帧开始时 offset 归零。push constant 使用 `push_staging[256]` 固定缓冲，location 偏移由 `rhi_pipeline_get_uniform_location` 硬编码返回（均 ≤256），无溢出风险。
+4. **Render graph**：`rg_destroy` 正确释放所有 allocated 纹理和 pool 条目。`rg_compile` 拓扑排序 + 死 pass 剔除正确。`rg_reset` 清零 pass/resource 计数但保留 texture pool。
+5. **Pool allocator**：`pool_release` 检查 NULL，`pool_owns` 验证块边界。无双释放检测（标准 pool 设计），但 `pool_reset` 可安全回收所有块。
+6. **Render pass suspend/resume**：`vk_suspend_pass_for_compute` 正确结束 pass（STORE op），`vk_resume_pass_if_needed` 用 LOAD-op twin 恢复。`rhi_frame_end` 正确恢复挂起的 pass。
+7. **VK pipeline 变体**：`vk_pipeline_for_fmt` 惰性构建 render-pass-compatible 变体，`vk_pipeline_data_free` 正确销毁基础管线 + 所有变体 + 布局 + SPIR-V 副本。
+
+### R106-1 (CORRECTNESS): VK rhi_frame_begin 未重置 storage_set_valid 和 current_pipeline_data
+
+**问题**：`rhi_frame_begin` 调用 `vkResetDescriptorPool` 释放当前帧的所有描述符集，但未重置 `storage_set_valid`（仍为上一帧的 `true`）和 `current_pipeline_data`（仍指向上一帧的管线）。若新帧中 `rhi_cmd_bind_storage_buffer` 在 `rhi_cmd_bind_pipeline` 之前被调用：
+1. `current_pipeline_data` 非空（上一帧残留）→ 通过 guard 检查
+2. `storage_set_valid` 为 true → 跳过描述符集分配
+3. `vk->storage_set` 是被 `vkResetDescriptorPool` 释放的悬空句柄 → `vkUpdateDescriptorSets` 操作已释放的描述符集 → UB/崩溃
+
+当前渲染循环每帧首先 `rhi_cmd_bind_pipeline`（该函数正确重置 `storage_set_valid = false`），因此此 bug 为潜在状态。但 `current_pipeline_data` 未重置导致 guard 逻辑不可靠。
+
+**修复**：在 `rhi_frame_begin` 中添加 `vk->current_pipeline_data = NULL` 和 `vk->storage_set_valid = false`，与 `current_pipeline`（L1286 已重置）保持一致。
+
+**影响文件**：rhi_vk.c
+
+### R106-2 (CORRECTNESS): GL 纹理/采样器/SSBO 缓存在资源销毁时未失效
+
+**问题**：GL 后端维护三个绑定缓存：`g_tex_cache[16]`（纹理单元）、`g_sam_cache[16]`（采样器）、`g_gl_ssbo_cache[8]`（SSBO 绑定点）。当 `rhi_texture_destroy`/`rhi_cubemap_destroy`/`rhi_sampler_destroy`/`rhi_buffer_destroy` 调用 `glDeleteTextures`/`glDeleteSamplers`/`glDeleteBuffers` 时，GL 会将所有引用该对象的绑定点恢复为 0，但缓存仍持有旧 GL name。若 GL 复用该 name 分配新对象，缓存会误判为“已绑定”并跳过 `glBindTexture`/`glBindSampler`/`glBindBufferBase`，导致新对象未实际绑定到 GPU。
+
+此外，`g_gl_ssbo_cache` 原为 `rhi_cmd_bind_storage_buffer` 内的 `static` 局部变量，无法从 `rhi_buffer_destroy` 访问。已提升为文件作用域（与 R77-1 的 `g_tex_cache`/`g_sam_cache` 一致）。
+
+**修复**：
+1. 将 `g_gl_ssbo_cache` 从 static 局部提升为文件作用域变量
+2. `rhi_texture_destroy`：遍历 `g_tex_cache[16]`，匹配 `td->gl_tex` 的条目置 0
+3. `rhi_cubemap_destroy`：同上
+4. `rhi_sampler_destroy`：遍历 `g_sam_cache[16]`，匹配 `sd->gl_sampler` 的条目置 0
+5. `rhi_buffer_destroy`：遍历 `g_gl_ssbo_cache[8]`，匹配 `bd->gl_buf` 的条目置 0
+
+**影响文件**：rhi_gl.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

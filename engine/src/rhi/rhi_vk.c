@@ -1317,6 +1317,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
 
     vk->frame_started = true;
     vk->current_pipeline = VK_NULL_HANDLE;
+    vk->current_pipeline_data = NULL;  /* R106-1: reset stale pointer — desc pool was just reset, so storage_set is dangling */
+    vk->storage_set_valid = false;     /* R106-1: force re-alloc on next bind_storage_buffer */
     vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset for swapchain pass */
     vk->depth_lequal = false;
 
