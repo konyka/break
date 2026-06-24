@@ -1979,6 +1979,68 @@ return (const u8 *)bv->buffer->data + bv->offset + acc->offset;
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+---
+
+## R112：test_vulkan.c file_read 防御性加固（全引擎 read_file 统一完成）
+
+### R112 审查范围
+
+深度审查以下尚未检查的子系统：
+- 光照系统（lighting.c）
+- SSAO/SSR/TAA/DoF/Tonemap 后期处理效果
+- Mipmap 流式加载（mipmap_stream.c）
+- 文件监视系统（filewatch.c — Windows + Linux）
+- 全引擎 28 个 `read_file`/`file_read` 实现完整性验证
+
+### R112-1：test_vulkan.c file_read 缺少 ftell/malloc 检查（ROBUSTNESS）
+
+**问题**：`test_vulkan.c` 的 `file_read` 是引擎中最后一个未加固的
+`read_file` 实现。缺少 `ftell` 返回值检查（`sz < 0`）和 `malloc` NULL 检查。
+当 `ftell` 返回 -1 时，`malloc((usize)(-1)+1)=malloc(0)` 可能返回 NULL，
+随后 `fread(NULL,...)` 崩溃。
+
+R110 已修复 `particles.c` 和 `water.c` 的同类问题。经过全引擎 28 个
+`read_file`/`file_read` 实现逐一验证，此为最后一个遗漏。
+
+**修复**：添加 `sz < 0` 检查和 `malloc` NULL 检查。
+
+**影响文件**：test_vulkan.c
+
+### R112 审查确认无需修复的子系统
+
+1. **光照系统**：`light_system_init` 创建 2 缓冲区，使用时检查
+   `rhi_handle_valid`。`light_system_cull` 网格溢出保护
+   `grid_index_total >= CLUSTER_COUNT * LIGHT_MAX_PER_CLUSTER - LIGHT_MAX_POINT`。
+   `light_system_add_point/dir` 检查 `count >= MAX`。`ls_read_file` 完整检查。
+   GPU cull 管线可选，失败回退 CPU binning。
+2. **SSAO**：标准模式。`ssao_read_file` 完整检查。双管线（SSAO+blur）
+   验证后 `ready=true`。`ssao_apply` 检查 `ready`。
+3. **Tonemap**：`tm_read_file` 完整检查。`tm_pipe` 验证后 `ready=true`。
+   `lum_pipe` 可选——`rhi_handle_valid` 检查后创建 FBO。自动曝光双缓冲
+   ping-pong。`tonemap_apply` 检查 `ready && auto_exposure && lum_pipe`。
+4. **Mipmap 流式加载**：`memset` 初始化。`mipmap_stream_register` 检查
+   `mgr/ready/path` NULL + `mip_count` 钳制 + `memset(tex,0)` + `strncpy`
+   安全。`mipmap_stream_update` 内存预算检查 + `mip_alloc_req` NULL 检查。
+   `mipmap_load_callback` 检查 `req/mgr/t/l` 边界 + `data` 有效性。
+   `mipmap_stream_force_level` 超时等待。`mipmap_stream_invalidate` 释放所有。
+5. **DoF**：标准模式。`dof_read_file` 完整检查。管线验证后 `ready=true`。
+6. **SSR**：标准模式。`ssr_read_file` 完整检查。管线验证后 `ready=true`。
+7. **TAA**：标准模式。`taa_read_file` 完整检查。管线验证后 `ready=true`。
+   历史缓冲双缓冲 ping-pong + `first_frame` 标志。速度纹理可选。
+8. **FileWatch（Windows）**：`filewatch_add` 使用 `strncpy` + 显式 null 终止。
+   `filewatch_create_dir` calloc NULL 检查 + handle 清理。
+   `filewatch_poll_event` `WideCharToMultiByte` 结果钳制 + `snprintf` 结果检查。
+9. **FileWatch（Linux）**：`filewatch_init` 检查 `inotify_init1` 返回。
+   `filewatch_add` 使用 `strncpy` + 显式 null 终止。`fw_add_dir_recursive`
+   检查 `watch_count >= MAX` + `snprintf` 结果检查。事件队列环形缓冲区
+   + 满检查。`filewatch_destroy` 检查 `inotify_fd >= 0`。
+10. **全引擎 read_file 统一验证**：28 个 `read_file`/`file_read` 实现
+    （25 个 `*_read_file` + 3 个 `file_read*`）全部验证完成，均有完整
+    ftell/malloc/out_len 检查。R110 修复了 particles.c 和 water.c，
+    R112 修复了 test_vulkan.c，至此全引擎统一完成。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
