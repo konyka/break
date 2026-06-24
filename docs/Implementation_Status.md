@@ -333,3 +333,8 @@
   - **R104 审查**：深度审查 5 个新提交（ECS Exclude/Optional、点光 cubemap 阴影、异步加载优先级解码管线、Windows packer、Windows 编译修复），确认 point shadow 代码、VK push constant 布局、ECS 查询迭代、async loader 线程安全、Windows packer 资源释放均正确。`clustered_pipeline` 死代码不影响运行时。`HAS_POINT_SHADOW` 仅注入 pbr_clustered.frag（deferred_light.frag 无 #ifdef 守卫，blinn_phong 为回退着色器）。
   - **R104-1 decode pipeline 优先级队列**：`input_queue_push` 从 FIFO 追加改为优先级排序插入（低值=高优先级，与异步加载器 min-heap 一致），修复多 I/O 线程下低优先级请求先提交导致高优先级纹理延后解码的问题。同优先级保持 FIFO。
   - **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+- [x] Round 105：VFS/packer 防御性编程修复 ——
+  - **R105 审查**：全量深度审查着色器热路径、渲染循环、RHI 后端、点光阴影管线、ECS 查询、异步加载器、VFS/packer。确认 R84-R96 系列着色器优化无新冗余，渲染循环无冗余状态变更，点光阴影 VP 矩阵构建正确，GL/VK binding 匹配，ECS 查询迭代正确，async loader 线程安全。
+  - **R105-1 VFS NULL 检查**：`vfs_mount_dir`/`vfs_mount_pak` 添加 NULL 路径参数检查，防止 `strncpy`/`fopen`/`LOG` UB 崩溃。`vfs_mount_dir` 添加显式 null 终止。
+  - **R105-2 packer 缓冲区边界检查**：`add_file` 在 `memcpy` 前检查 `g_name_size + name_len` 是否超过 `g_names` 缓冲区大小，防止超长路径导致缓冲区溢出。
+  - **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。

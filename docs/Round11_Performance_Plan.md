@@ -1665,6 +1665,40 @@ grid buffer 存储的是 `u32` 值数组，通过 RGBA32F texel buffer 上传。
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## Round 105
+
+### R105 审查范围
+
+全量深度审查着色器热路径、渲染循环、内存分配模式、RHI 后端、点光阴影管线、ECS 查询迭代、异步加载器线程安全、VFS/packer 防御性编程。
+
+### R105 审查结论（无需修复）
+
+1. **着色器热路径**：R84-R96 系列已优化 POM 门控、SSGI 循环不变量提升、shadow_test 提升、F_Schlick pow→mul、预归一化光源方向。无新冗余计算。
+2. **渲染循环**：`point_shadow_gather` 在前向渲染前调用，`g_psc` 缓存正确。`point_shadow_render_end` 在所有面渲染后调用一次（R78-3）。无冗余状态变更。
+3. **点光阴影管线**：`point_shadow_compute_face_vp` 解析构建 6 面 VP 矩阵正确。`point_shadow_update` 偏插入排序选最近光源正确。`light_system_set_point_shadow_indices` 正确映射 shadow slot 到 light index。
+4. **RHI 后端**：GL `rhi_cmd_bind_material_textures_ibl` SSAO 绑定 unit 11 匹配 `pbr_clustered.frag` 的 `layout(binding = 11)`。VK 使用 `descriptorBindingPartiallyBound` 允许共享布局服务前向/延迟着色器。`rhi_cubemap_depth_fbo_bind_face` GL/VK 实现正确。
+5. **ECS 查询**：`world_query`/`query_next`/`world_query_cached` 迭代逻辑正确。`ecs_query_refresh` 正确处理 exclude/optional masks。
+6. **异步加载器**：mutex + condition variable + atomic 使用正确。decode pipeline 2-worker 设置正确（R104-1 修复后优先级队列生效）。
+7. **Windows packer**：`CreateFileMapping` 零拷贝 + `FindFirstFile`/`FindNextFile` 递归遍历，资源释放正确。
+
+### R105-1 (ROBUSTNESS): VFS mount 函数缺少 NULL 路径检查
+
+**问题**：`vfs_mount_dir` 和 `vfs_mount_pak` 未检查 `dir_path`/`pak_path` 是否为 NULL。传入 NULL 会导致 `strncpy(NULL, ...)` / `fopen(NULL, ...)` 触发未定义行为（崩溃），且 `LOG_INFO`/`LOG_ERROR` 的 `%s` 格式化 NULL 也是 UB。`test_vfs.c` 已标注此为 engine bug。
+
+**修复**：在两个函数的参数检查中添加 `!dir_path` / `!pak_path` 条件。同时在 `vfs_mount_dir` 的 `strncpy` 后显式设置 `path[VFS_MAX_PATH - 1] = '\0'` 保证终止。
+
+**影响文件**：vfs.c
+
+### R105-2 (ROBUSTNESS): packer add_file 缺少 g_names 缓冲区边界检查
+
+**问题**：`add_file` 中 `memcpy(g_names + g_name_size, rel_path, name_len)` 无边界检查。`g_names` 缓冲区大小为 `MAX_ENTRIES * MAX_PATH_LEN`（1,064,960 字节），但 `rel_path` 来自 `scan_dir` 的 `char[1024]` 缓冲，可超过 `MAX_PATH_LEN`(260)。当总名称数据超过缓冲区大小时，`memcpy` 溢出。
+
+**修复**：在 `memcpy` 前检查 `g_name_size + name_len > MAX_ENTRIES * MAX_PATH_LEN`，超限则跳过文件并警告。将 `name_len` 计算提前到边界检查之前。
+
+**影响文件**：packer.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

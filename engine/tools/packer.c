@@ -97,12 +97,19 @@ static void add_file(const char *rel_path, const char *abs_path) {
         return;
     }
 
+    u32 name_len = (u32)strlen(rel_path) + 1;
+    /* R105-2: Bounds-check g_names to prevent buffer overflow when
+     * relative paths exceed MAX_PATH_LEN or total name data exceeds buffer. */
+    if (g_name_size + name_len > MAX_ENTRIES * MAX_PATH_LEN) {
+        fprintf(stderr, "WARN: name buffer full, skipping '%s'\n", rel_path);
+        return;
+    }
+
     u32 idx = g_entry_count++;
     strncpy(g_paths[idx], abs_path, MAX_PATH_LEN - 1);
     g_paths[idx][MAX_PATH_LEN - 1] = '\0';
 
     u32 name_off = g_name_size;
-    u32 name_len = (u32)strlen(rel_path) + 1;
     memcpy(g_names + g_name_size, rel_path, name_len);
     g_name_size += name_len;
 
