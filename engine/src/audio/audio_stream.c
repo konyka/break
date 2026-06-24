@@ -64,6 +64,9 @@ i32 audio_stream_open(AudioStreamManager *mgr, const char *path, f32 volume, boo
     u32 sid = audio_play_streamed(mgr->audio, path, volume, looping, false, vec3(0, 0, 0));
     if (sid == 0) {
         LOG_WARN("AudioStream: failed to open '%s'", path);
+        /* R107-1: return slot to free list on failure to prevent slot exhaustion */
+        mgr->free_next[idx] = mgr->next_free;
+        mgr->next_free = idx;
         return -1;
     }
 
@@ -90,6 +93,9 @@ i32 audio_stream_open_3d(AudioStreamManager *mgr, const char *path, Vec3 positio
     u32 sid = audio_play_streamed(mgr->audio, path, volume, looping, true, position);
     if (sid == 0) {
         LOG_WARN("AudioStream: failed to open '%s' (3D)", path);
+        /* R107-1: return slot to free list on failure to prevent slot exhaustion */
+        mgr->free_next[idx] = mgr->next_free;
+        mgr->next_free = idx;
         return -1;
     }
     audio_source_set_attenuation(mgr->audio, sid, min_dist, max_dist, rolloff);
