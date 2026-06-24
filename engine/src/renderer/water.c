@@ -10,10 +10,13 @@ static char *file_read(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz < 0) { fclose(f); return NULL; }
     char *buf = malloc((usize)sz + 1);
-    *out_len = fread(buf, 1, (usize)sz, f);
-    buf[*out_len] = '\0';
+    if (!buf) { fclose(f); return NULL; }
+    usize rd = fread(buf, 1, (usize)sz, f);
+    buf[rd] = '\0';
     fclose(f);
+    if (out_len) *out_len = rd;
     return buf;
 }
 

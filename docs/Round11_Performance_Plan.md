@@ -1854,6 +1854,32 @@ return (const u8 *)bv->buffer->data + bv->offset + acc->offset;
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+### R110-1 (ROBUSTNESS): particles.c 和 water.c 的 read_file 缺少 ftell/malloc 错误检查
+
+**问题**：引擎中有 25 个 `read_file`/`file_read` 实现用于加载着色器源码。其中 23 个有完整的 `ftell` 返回值检查（`sz < 0`）和 `malloc` NULL 检查。但 `particles.c` 和 `water.c` 的实现遗漏了这两项检查：
+
+1. **`particles.c` L7-18**：`ftell` 返回 -1（文件错误）时，`malloc((usize)(-1)+1) = malloc(0)` 可能返回 NULL，随后 `fread(NULL, ...)` 解引用 NULL 崩溃。`malloc` 对正常大小返回 NULL（内存不足）时同样崩溃。且未检查 `out_len` 是否为 NULL。
+2. **`water.c` L9-17**：同样缺少 `sz < 0` 检查和 `malloc` NULL 检查。`*out_len = fread(...)` 直接解引用可能为 NULL 的 `out_len`。
+
+**修复**：在两个函数中添加 `if (sz < 0) { fclose(f); return NULL; }`、`if (!buf) { fclose(f); return NULL; }`、`if (out_len) *out_len = rd;`，与引擎其余 23 个实现统一。
+
+**影响文件**：particles.c, water.c
+
+### R110 审查确认无需修复的子系统
+
+1. **数学库**：`mat4_inverse` 检查 `det == 0.0f` 返回单位矩阵。`vec3_normalize` 检查 `l2 > 1e-12f` 避免除零。`fast_rsqrt` 使用 SSE `_mm_rsqrt_ss` + Newton-Raphson，调用者均先检查 `l2 > 1e-12f`。`quat_normalize` 处理零四元数。测试覆盖奇异矩阵、零向量、零四元数边缘情况。
+2. **粒子 GPU 着色器**：`particle_update.comp` 检查 `idx >= particles.length()`。`particle.vert` 检查 `P_INST >= draw_count` 和 `idx >= particles.length()`，均有 early-exit。
+3. **水面渲染**：`water_render` 检查 `w->enabled && rhi_handle_valid(w->pipeline)`。`water_shutdown` 检查 `w->device` 和 `rhi_handle_valid`。
+4. **字体渲染器**：`font_renderer_draw` 和 `font_renderer_draw_rect` 均检查 `quad_count >= quad_capacity` 后再写入。`vsnprintf` 使用 `sizeof(ui->lines[0])` 限制输出。
+5. **调试 UI**：`debug_ui_text` 检查 `line_count >= 32`。`vsnprintf` 使用固定缓冲区大小。`debug_ui_render` 循环 `i < line_count`。
+6. **渲染图**：`rg_compile` 死代码剔除使用 `culled` 标志保证每个 pass 最多入栈一次。`rg_reset` 正确归还纹理到池。`rg_destroy` 释放所有已分配且非导入的纹理。
+7. **命令缓冲**：双缓冲机制正确，每线程独立 `RenderCmdBuffer`。溢出时静默丢弃。
+8. **VK swapchain**：`rhi_frame_begin` 处理 `VK_ERROR_OUT_OF_DATE_KHR` 重建 swapchain。`rhi_device_resize` 调用 `vk_recreate_swapchain`。
+9. **CSM/点光阴影**：4 级级联 2x2 atlas 正确。`sample_cascade` 使用 `clamp` 防止跨级联泄漏。点光 6 面 VP 矩阵自洽。
+10. **后期处理管线**：所有 18 个子系统（SSAO/SSR/TAA/DoF/Volumetric/Tonemap/FXAA/SSGI/LensFlare/Sharpen/MotionBlur/ContactShadow/SSS/Upscale/ColorGrade/GodRays/DebugViz/LensEffects）均使用 `ready`/`initialized` 标志门控，`shutdown` 逐个检查 `rhi_handle_valid`。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

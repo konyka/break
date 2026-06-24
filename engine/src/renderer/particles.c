@@ -9,12 +9,14 @@ static char *read_file(const char *path, usize *out_len) {
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_SET);
     char *buf = malloc((usize)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
     usize len = fread(buf, 1, (usize)sz, f);
     buf[len] = '\0';
     fclose(f);
-    *out_len = len;
+    if (out_len) *out_len = len;
     return buf;
 }
 
