@@ -1880,6 +1880,105 @@ return (const u8 *)bv->buffer->data + bv->offset + acc->offset;
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+---
+
+## R111：GPU 剔除初始化验证 + 热重载路径终止修复
+
+### R111 审查范围
+
+深度审查以下尚未检查的子系统：
+- UTF-8 解码（utf8.c/h）
+- BVH 构建/遍历/查询（bvh.c/h）
+- 间接绘制系统（indirect_draw.c/h）
+- GPU 剔除统一管线（gpucull.c/h、compact_draws.comp、unified_cull.comp）
+- 遮挡剔除（occlusion_cull.c/h）
+- IBL 预计算（ibl.c/h）
+- 天空盒渲染（skybox.c/h）
+- 接触阴影（contact_shadow.c/h）
+- SSS 次表面散射（sss.c/h）
+- 热重载系统（hotreload.c/h）
+- ImGui 交互（imgui.c/h）
+- 后期处理着色器文件读取（ibl/occlusion_cull/skybox/contact_shadow/sss read_file）
+
+### R111-1：gpucull_init 缓冲区验证缺失（ROBUSTNESS）
+
+**问题**：`gpucull_init` 创建 3 个 GPU 缓冲区（`object_ssbo`、`visible_ssbo`、
+`count_buf`）后直接设置 `ready = true`，未验证任一缓冲区是否创建成功。若
+`rhi_buffer_create` 返回 `RHI_HANDLE_NULL`（GPU 内存不足或设备无效），后续
+`gpucull_update_objects`、`gpucull_dispatch` 等函数会使用无效 RHI 句柄调用
+`rhi_buffer_update`/`rhi_cmd_bind_storage_buffer`，导致崩溃或未定义行为。
+
+引擎中同类初始化函数均有完整验证：
+- `indirect_draw_init`（L94-101）：验证 4 个缓冲区，失败时清理并返回 false
+- `gpucull_init_unified`（L251-258）：验证 4 个缓冲区
+- `occlusion_cull_init`（L104-128）：逐个验证缓冲区+管线，失败时清理
+
+仅 `gpucull_init` 遗漏了此检查。
+
+**修复**：在 `gc->ready = true` 前添加三缓冲区有效性检查。失败时调用
+`gpucull_shutdown` 清理已创建的资源（pipeline + 有效缓冲区）并返回 false。
+`gpucull_shutdown` 内部逐个检查 `rhi_handle_valid`，对部分初始化的状态安全。
+
+**影响文件**：gpucull.c
+
+### R111-2：hotreload_pipeline_init 缺少 memset（ROBUSTNESS）
+
+**问题**：`hotreload_pipeline_init` 未先 `memset` 结构体就调用 `strncpy`
+拷贝着色器路径。`strncpy(dst, src, sizeof(dst)-1)` 当 `src` ≥ 255 字节时
+只拷贝 255 字节且不写入 null 终止符，`hr->vert_path[255]`/`hr->frag_path[255]`
+保持未初始化状态。后续 `filewatch_add` 使用这些路径时可能越界读取。
+
+`hotreload_texture_init` 正确使用了 `memset(hr, 0, sizeof(*hr))`，仅
+`hotreload_pipeline_init` 遗漏。
+
+**修复**：入口添加 `memset(hr, 0, sizeof(*hr))`，确保所有字段（包括路径
+末尾字节）初始化为零。
+
+**影响文件**：hotreload.c
+
+### R111 审查确认无需修复的子系统
+
+1. **UTF-8 解码**：`utf8_decode` 处理 1-4 字节序列，检查 continuation bytes、
+   overlong encoding、surrogate halves。malformed 序列返回 `UTF8_REPLACEMENT`
+   且始终前进 ≥1 字节，不会卡住。截断序列被 null 终止符的 continuation check
+   拦截（`\0 & 0xC0 != 0x80`）。`utf8_strlen` 用 `while (*s)` 遍历，安全。
+2. **BVH 构建/遍历/查询**：`bvh_alloc_node` 动态扩容。`bvh_build_recursive`
+   SAH 构建，leaf 条件 `count <= 1 || depth >= BVH_MAX_DEPTH`，分区保证非空
+   （`best_split <= start → start+1`，`>= end → end-1`）。`bvh_refit` 检查
+   `object_index >= object_count`。`bvh_query_aabb_recursive` 检查
+   `*found >= max_results`。`bvh_raycast` 处理零方向分量（±1e8f 替代）。
+   `bvh_query_pairs_dual` 自配对去重正确。
+3. **间接绘制**：`id_read_file` 有完整 ftell/malloc 检查。`indirect_draw_init`
+   验证 4 缓冲区+管线，失败清理。`indirect_draw_upload` 钳制 `count > max_draws`。
+   `compact_draws.comp` 检查 `idx >= TOTAL_DRAWS` early-exit。
+4. **GPU 剔除统一管线**：`gpucull_init_unified` 验证 4 缓冲区。`gc_read_file`
+   有完整检查。`gpucull_dispatch_unified` 检查 `unified_ready && object_count
+   && draw_count`。`gpucull_upload_objects_unified` 钳制 `count > MAX_OBJECTS`。
+   `unified_cull.comp` 检查 `idx >= count` early-exit。
+5. **遮挡剔除**：`oc_read_file` 有完整检查。`occlusion_cull_init` 逐个验证
+   纹理/缓冲区/管线，失败清理。`occlusion_cull_resize` 失败时禁用系统。
+   `occlusion_cull_is_visible` 检查 `object_index >= object_count` 返回 true
+   （保守可见）。`occlusion_cull_visible_count` SSE2 popcount 正确。
+6. **IBL**：`ibl_read_file` 有完整检查。`ibl_init` 逐个检查纹理/cubemap 有效性。
+   `ibl_generate` 仅在 3 个 map 全部有效时设置 `ready = true`。所有 pass 检查
+   `rhi_handle_valid` 后才 dispatch。`ibl_destroy` 逐个检查后释放。
+7. **天空盒**：`skybox_read_file` 有完整检查。`skybox_init` 验证着色器+管线
+   有效性。`skybox_render` 检查 `sb->ready`。状态变更通过 RHI 缓存路径。
+8. **接触阴影**：`cs_read_file` 有完整检查。`contact_shadow_init` 验证管线
+   有效性。`contact_shadow_apply` 检查 `s->ready`。
+9. **SSS**：`sss_read_file` 有完整检查。`sss_init` 验证双管线有效性。
+   `sss_apply` 检查 `s->ready`。双 pass 水平+垂直模糊正确。
+10. **ImGui**：`imui_init` 使用 `memset` 初始化。所有绘制函数检查 `ui->font`。
+    `vsnprintf` 使用 `sizeof(buf)` 限制。slider 检查 `value` NULL。按钮/复选框
+    交互逻辑正确（hot/active ID 状态机）。
+11. **热重载纹理**：`hotreload_texture_init` 使用 `memset` 初始化。
+    `hotreload_reload_texture` 检查 stbi_load 返回值、w/h 有效性、新纹理有效性。
+    旧纹理仅在新纹理有效时销毁。回调链正确。
+12. **后期处理着色器读取**：IBL/遮挡剔除/天空盒/接触阴影/SSS 的 `read_file`
+    实现均有完整 ftell/malloc/out_len 检查，与 R110 统一模式一致。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

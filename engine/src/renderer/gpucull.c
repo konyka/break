@@ -70,6 +70,18 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     };
     gc->count_buf = rhi_buffer_create(dev, &count_desc);
 
+    /* R111-1: Validate buffer creation before marking system ready.  Without
+     * this check a failed buffer creation leaves the system half-initialised
+     * and subsequent operations use invalid RHI handles.
+     * (indirect_draw_init and gpucull_init_unified already do this.) */
+    if (!rhi_handle_valid(gc->object_ssbo) ||
+        !rhi_handle_valid(gc->visible_ssbo) ||
+        !rhi_handle_valid(gc->count_buf)) {
+        LOG_WARN("GPUCull: buffer creation failed");
+        gpucull_shutdown(gc);
+        return false;
+    }
+
     gc->ready = true;
 
     /* Cache uniform locations for legacy pipeline */

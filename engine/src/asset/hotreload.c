@@ -69,6 +69,9 @@ bool hotreload_pipeline_init(HotReloadPipeline *hr, RHIDevice *dev,
                               const char *vert_path, const char *frag_path,
                               RHIPipelineDesc *out_desc) {
     (void)out_desc;
+    /* R111-2: Zero the struct first so strncpy-truncated paths are guaranteed
+     * null-terminated.  hotreload_texture_init already does this. */
+    memset(hr, 0, sizeof(*hr));
     hr->device = dev;
     hr->pipeline = RHI_HANDLE_NULL;
     hr->ready = false;
