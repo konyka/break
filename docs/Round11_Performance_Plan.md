@@ -1778,6 +1778,39 @@ mgr->next_free = idx;
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## Round 108
+
+### R108 审查范围
+
+场景序列化（BSCN 二进制加载/保存、JSON 加载/保存、Prefab）、相机系统（视锥体提取、AABB/球体/点测试、逆矩阵）、内存分配器（Arena 线性分配、Heap 对齐分配、Pool 固定块分配）、LOD 系统（距离策略、屏幕分数策略、滞后缓冲、偏置）、Profiler（帧/区域计时、环形缓冲）、输入系统（键状态机、鼠标/手柄/滚轮、帧间状态转换）、Frustum culling（p-vertex 选择、sign mask 优化、批量剔除）。
+
+### R108 审查结论（无需修复）
+
+1. **Arena 分配器**：`arena_alloc` 正确检查 `offset > capacity` 返回 NULL，对齐计算正确。`arena_free_all` 重置 offset。`arena_realloc_wrapper` 正确复制旧数据。
+2. **Heap 分配器**：`heap_alloc_fn` 通过 over-allocate + pointer stashing 实现对齐，`heap_free_fn` 正确恢复原始指针，`heap_realloc_fn` 处理 NULL ptr。
+3. **Pool 分配器**：R107 已确认无问题。
+4. **Profiler**：`profiler_push` 检查 `region_count >= PROFILER_MAX_REGIONS`，`profiler_pop` 检查 `region_count == 0`，均安全返回。单线程使用，无线程安全问题。
+5. **输入系统**：`input_set_key` 检查 `key < 0 || key >= INPUT_MAX_KEYS`。状态机正确转换（3→2 held, 1→0 up）。`input_new_frame` 正确处理帧间过渡。
+6. **Frustum culling**：使用 p-vertex 选择 + sign mask 优化，标准 Gribb-Hartmann 平面提取。测试覆盖边缘情况（点 AABB、零半径球、极端 FOV、near=far）。
+7. **LOD 系统**：10% 滞后缓冲防止抖动，预计算 1/(2^i) 表消除运行时除法，距离平方比较避免 sqrtf。屏幕分数近似合理。测试覆盖滞后、自动阈值、单 LOD、偏置。
+8. **相机系统**：视图/投影矩阵计算正确，逆视图矩阵验证 V*inv(V)=I，逆 VP 组合验证。测试覆盖第三人称、万向锁边缘、TAA jitter。
+9. **场景序列化 - JSON 路径**：JSON 加载/保存路径正确处理实体、组件、场景节点。`rd_bytes` 在 Reader 内做边界检查。
+10. **场景序列化 - 组件加载**：`load_components_chunk` 在 `memcpy` 前显式检查 `(u32)(r->end - r->p) < size`。`load_entities_chunk` 正确处理错误路径释放。
+
+### R108-1 (ROBUSTNESS): scene_load_binary 缺少 chunk 表和 chunk 数据边界验证
+
+**问题**：`scene_load_binary` 读取 BSCN 文件后，直接访问 chunk 表和 chunk 数据而未验证其偏移+大小是否在文件缓冲区内：
+1. **Chunk 表越界**：仅检查 `h.chunk_count > 64`，未检查 `table_off + chunk_count * sizeof(BscnChunkEntry) <= fsz`。若文件大小恰好为 `sizeof(BscnHeader)`（12 字节）且 `chunk_count` 为 1，则访问 `table[0]` 会读取缓冲区外的 12 字节。
+2. **Chunk 数据越界**：每个 chunk 的 `offset` 和 `size` 直接用于设置 `Reader`（`r.p = buf + offset; r.end = r.p + size`），未验证 `offset + size <= fsz`。畸形文件的 `offset=0, size=0xFFFFFFFF` 会使 `r.end` 指向缓冲区远后方，`rd_bytes` 的 `(u32)(r->end - r->p) < n` 检查会通过（差值巨大），但 `memcpy` 会读取缓冲区外的内存。
+
+**修复**：
+1. 读取 header 后验证 `table_off + chunk_count * sizeof(BscnChunkEntry) <= fsz`（使用 u64 避免溢出）。
+2. 每个 chunk 访问前验证 `offset + size <= fsz`（使用 u64 避免溢出），失败时设 `ok = false` 并中断。
+
+**影响文件**：scene_serial.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

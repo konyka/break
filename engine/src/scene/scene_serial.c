@@ -594,6 +594,9 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
 
     u32 table_off = (u32)sizeof(BscnHeader);
     if (h.chunk_count > 64) { free(buf); return false; }
+    /* R108-1: validate chunk table fits within file buffer */
+    u64 table_end = (u64)table_off + (u64)h.chunk_count * (u64)sizeof(BscnChunkEntry);
+    if (table_end > (u64)fsz) { free(buf); return false; }
     BscnChunkEntry *table = (BscnChunkEntry *)(buf + table_off);
 
     Entity *ents = NULL; u32 ent_count = 0;
@@ -602,6 +605,9 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     /* First pass: ENTITIES (must precede COMPONENTS). */
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
         if (table[i].type != BSCN_CHUNK_ENTITIES) continue;
+        /* R108-1: validate chunk data bounds */
+        u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
+        if (chunk_end > (u64)fsz) { ok = false; break; }
         Reader r;
         r.p = buf + table[i].offset;
         r.end = r.p + table[i].size;
@@ -609,6 +615,9 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     }
     /* Second pass: remaining chunks. */
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
+        /* R108-1: validate chunk data bounds */
+        u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
+        if (chunk_end > (u64)fsz) { ok = false; break; }
         Reader r;
         r.p = buf + table[i].offset;
         r.end = r.p + table[i].size;
