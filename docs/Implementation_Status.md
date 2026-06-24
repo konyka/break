@@ -329,3 +329,7 @@
   - **R103-3 异步加载优先级+解码管线**：priority 最小堆替换 FIFO 队列；新增 2-worker 解码线程池 `decode_pipeline.c/h`，stb_image 解码 + mipmap 生成不阻塞主线程，解码完成后回调主线程上传 GPU。`test_async_loader` 新增优先级和解码管线测试。
   - **R103-4 Windows Packer**：`CreateFileMapping` 零拷贝打包 + `FindFirstFile`/`FindNextFile` 递归遍历，与 POSIX 版二进制兼容；新增 `verify_pak.c` 验证工具。
   - **验收**：`test_ecs` 新增 5 项通过；`test_async_loader` 新增优先级/解码测试通过；双后端构建通过。
+- [x] Round 104：decode pipeline 优先级队列修复 ——
+  - **R104 审查**：深度审查 5 个新提交（ECS Exclude/Optional、点光 cubemap 阴影、异步加载优先级解码管线、Windows packer、Windows 编译修复），确认 point shadow 代码、VK push constant 布局、ECS 查询迭代、async loader 线程安全、Windows packer 资源释放均正确。`clustered_pipeline` 死代码不影响运行时。`HAS_POINT_SHADOW` 仅注入 pbr_clustered.frag（deferred_light.frag 无 #ifdef 守卫，blinn_phong 为回退着色器）。
+  - **R104-1 decode pipeline 优先级队列**：`input_queue_push` 从 FIFO 追加改为优先级排序插入（低值=高优先级，与异步加载器 min-heap 一致），修复多 I/O 线程下低优先级请求先提交导致高优先级纹理延后解码的问题。同优先级保持 FIFO。
+  - **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。

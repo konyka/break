@@ -168,15 +168,26 @@ static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *
 
 /* ---- Queue helpers ---- */
 
+/* R104-1: Priority-ordered insertion (lower value = higher priority).
+ * Matches the async loader's min-heap ordering so that high-priority textures
+ * are decoded first even when multiple I/O workers submit out of priority
+ * order.  For queues <= 256 entries, a linear scan is faster than a heap. */
 static void input_queue_push(DecodeJob *job) {
     async_mutex_lock(&g_decode.input.mutex);
     job->next = NULL;
-    if (g_decode.input.tail) {
-        g_decode.input.tail->next = job;
-    } else {
+    if (!g_decode.input.head ||
+        job->priority < g_decode.input.head->priority) {
+        job->next = g_decode.input.head;
         g_decode.input.head = job;
+        if (!g_decode.input.tail) g_decode.input.tail = job;
+    } else {
+        DecodeJob *prev = g_decode.input.head;
+        while (prev->next && prev->next->priority <= job->priority)
+            prev = prev->next;
+        job->next = prev->next;
+        prev->next = job;
+        if (!job->next) g_decode.input.tail = job;
     }
-    g_decode.input.tail = job;
     g_decode.input.count++;
     async_cond_broadcast(&g_decode.input.cond);
     async_mutex_unlock(&g_decode.input.mutex);

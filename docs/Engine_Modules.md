@@ -1682,7 +1682,7 @@ typedef struct {
 - 高优先级请求（如 mipmap level 0）优先出队，低优先级（如远距离 mipmap）延后
 - 堆操作 O(log N) 入队/出队，与 FIFO 的 O(1) 入队相比增加少量开销，但保证关键资源优先加载
 
-**解码管线 (R103)：**
+**解码管线 (R103/R104)：**
 
 新增 `decode_pipeline.c/h`，2-worker 解码线程池：
 - `decode_pipeline_init(worker_count)` — 初始化解码线程池
@@ -1692,7 +1692,7 @@ typedef struct {
 
 解码流程：
 1. I/O 线程从磁盘读取原始文件数据
-2. 将原始数据提交到解码管线的优先级队列
+2. 将原始数据提交到解码管线的优先级队列（R104-1：优先级排序插入，低值=高优先级，与异步加载器 min-heap 一致）
 3. 解码 worker 调用 `stb_image` 解码 + mipmap 生成
 4. 解码完成后将像素数据放入完成队列
 5. 主线程 `decode_pipeline_tick()` 取回解码结果，回调上层上传 GPU

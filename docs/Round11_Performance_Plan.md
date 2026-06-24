@@ -1632,6 +1632,39 @@ grid buffer 存储的是 `u32` 值数组，通过 RGBA32F texel buffer 上传。
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## Round 104
+
+### R104 审查范围
+
+审查以下 5 个新提交中的正确性和性能问题：
+
+- `7a992c8 feat(ecs): add Exclude/Optional query support`
+- `2fa351f feat(renderer): integrate point light cubemap shadow`
+- `3b53ea1 feat(asset): priority min-heap + 2-worker decode pipeline`
+- `4745d93 feat(tools): Windows packer with zero-copy memory mapping`
+- `21dd0d9 fix(build): Windows compilation fixes`
+
+### R104 审查结论（无需修复）
+
+1. **Point shadow 代码**：`far_planes[slot] = r`（光源半径），`blinn_phong_clustered` 使用 `light_radius` 替代 `far_plane` 等价。`shadow_index` 初始化正确（0xFF = 无阴影，slot index = 有阴影）。
+2. **clustered_pipeline 死代码**：`cl_loc_point_shadow_far_planes` 声明初始化但从未使用，因为 `clustered_pipeline` 从未在渲染循环中绑定。不影响运行时。
+3. **VK push constant 布局**：`float[4]` 使用 std430 紧密打包（16 字节），`rhi_cmd_set_uniform_vec4` 正确写入 16 字节。`deferred_light_vk.frag` 中 `u_clip_params.z` 是 shadow_bias 的空间优化打包，正确。
+4. **GL/VK deferred_light binding**：GL 和 VK 有不同的 binding 顺序，但各自匹配 C 端绑定代码。正确。
+5. **ECS Exclude/Optional**：`exclude_mask`/`optional_mask` 位掩码实现正确，`ecs_query_refresh` 正确保存/恢复 masks 并重新匹配原型。`world_query`/`query_next` 迭代逻辑正确。
+6. **async loader 线程安全**：mutex + condition variable + atomic 使用正确，shutdown 正确清理残留 jobs。
+7. **Windows packer**：`CreateFileMapping` 零拷贝 + `FindFirstFile`/`FindNextFile` 递归遍历，资源释放正确。
+8. **`HAS_POINT_SHADOW` 定义**：仅注入到 `pbr_clustered.frag`。`deferred_light.frag` 无 `#ifdef` 守卫（函数始终编译），`blinn_phong_clustered.frag` 有 `#ifdef` 守卫但该 define 从未为其注入（回退着色器，不影响运行时）。
+
+### R104-1 (PERF): decode pipeline 输入队列忽略 priority 字段
+
+**问题**：`decode_pipeline_submit` 接受 `priority` 参数并存储到 `DecodeJob.priority`，但 `input_queue_push` 简单追加到链表尾部（FIFO），完全忽略 priority。异步加载器使用 2 个 I/O 线程从 min-heap 弹出请求，低优先级请求可能先完成 I/O 并提交到 decode pipeline，导致高优先级纹理被延后解码，加剧纹理 pop-in。commit message 声称 "priority min-heap" 但实际实现是 FIFO。
+
+**修复**：将 `input_queue_push` 从 FIFO 追加改为优先级排序插入。低 priority 值 = 高优先级（与异步加载器的 `heap_item_higher` 一致）。对于 ≤ 256 条目的链表，线性扫描插入比堆更快。同优先级保持 FIFO（插入到最后一个 ≤ priority 的节点之后）。
+
+**影响文件**：decode_pipeline.c
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
