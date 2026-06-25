@@ -2288,6 +2288,55 @@ for 循环条件 `i < UINT32_MAX` 几乎永真，导致大规模越界读 `thres
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+---
+
+### R117：BVH/光照 calloc NULL 检查 + 地形/异步加载/遮挡剔除审查
+
+**审查范围**：terrain.c（622 行）、bvh.c（507 行）、async_loader.c（505 行）、
+lighting.c（357 行）、occlusion_cull.c（410 行）。
+
+#### R117-1：bvh.c calloc/realloc/malloc NULL 检查（5 处）
+
+**问题**：BVH SAH 构建路径中 5 处内存分配返回值未检查：
+
+1. `bvh_init`：`calloc(node_cap, sizeof(BVHNode))` 失败时 `bvh->nodes = NULL`，
+   后续 `bvh_build`/`bvh_insert`/`bvh_query_*` 解引用 NULL 崩溃。
+2. `bvh_alloc_node`：`realloc(bvh->nodes, new_cap * sizeof(BVHNode))` 失败时
+   返回 NULL。旧版直接 `bvh->nodes = new_nodes`，导致旧指针泄漏 +
+   `bvh->nodes` 置 NULL 后续崩溃。
+3-5. `bvh_build`：`leaf_map` calloc、`nodes` calloc、`_build_indices` malloc
+   三处分配失败时解引用 NULL。
+
+**修复**：
+- `bvh_init`：calloc 失败时 `bvh->capacity = 0; bvh->node_count = 0;
+  bvh->root = BVH_NULL` 安全返回。
+- `bvh_alloc_node`：使用临时指针 `new_nodes` 接收 realloc 结果，失败时返回
+  `BVH_NULL`，旧 `bvh->nodes` 保持不变（无泄漏）。
+- `bvh_build`：leaf_map/nodes/_build_indices 各自 calloc/malloc 失败时
+  清理已分配资源并 `bvh->root = BVH_NULL` 安全返回。
+
+#### R117-2：lighting.c staging_block calloc NULL 检查
+
+**问题**：`light_system_upload_grid` 中 `calloc(1, gb_off + gb_bytes)` 分配
+staging buffer 未检查 NULL，OOM 时 `ls->_upload_buf = NULL` 后续
+`memcpy` 崩溃。
+
+**修复**：添加 NULL 检查，失败时 LOG_ERROR + return。
+
+#### 审查确认无需修复的子系统
+
+1. **terrain.c**：heightmap 地形系统。`terrain_read_file` 有完整 ftell/malloc
+   NULL 检查。`terrain_init` calloc 有 NULL 检查。法线计算有 `nl2 > 0.0000001f`
+   防除零守卫。区域重建有 `tile_w * tile_h` 边界检查。
+2. **async_loader.c**：异步资源加载器。使用静态数组（ASYNC_MAX_REQUESTS=1024），
+   无动态分配。`heap_push`/`heap_pop` 有容量检查。range read 的 `malloc(to_read)`
+   有 NULL 检查。`strncpy` + null 终止安全。
+3. **occlusion_cull.c**：Hi-Z 遮挡剔除。`oc_read_file` 有完整 ftell/malloc NULL
+   检查。所有 RHI 句柄创建后验证，失败时调用 `occlusion_cull_shutdown`。
+   `calloc(OCCLUSION_MAX_OBJECTS, sizeof(u32))` 有 NULL 检查。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash

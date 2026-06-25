@@ -78,6 +78,7 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
     usize gb_off   = (ub_bytes + 3u) & ~(usize)3u;
     usize gb_bytes = ls->_grid_buf_size * sizeof(u32);
     u8 *staging_block = (u8 *)calloc(1, gb_off + gb_bytes);
+    if (!staging_block) { LOG_ERROR("Lighting: staging allocation failed"); return; }
     ls->_upload_buf = staging_block;
     ls->_grid_buf   = (u32 *)(staging_block + gb_off);
 

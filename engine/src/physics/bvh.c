@@ -79,6 +79,7 @@ void bvh_init(BVH *bvh, u32 initial_capacity) {
     u32 cap = initial_capacity < 4 ? 4 : initial_capacity;
     u32 node_cap = cap * 2;
     bvh->nodes = (BVHNode *)calloc(node_cap, sizeof(BVHNode));
+    if (!bvh->nodes) { bvh->capacity = 0; bvh->node_count = 0; bvh->root = BVH_NULL; return; }
     bvh->capacity = node_cap;
     bvh->node_count = 0;
     bvh->root = BVH_NULL;
@@ -104,7 +105,9 @@ void bvh_destroy(BVH *bvh) {
 static u32 bvh_alloc_node(BVH *bvh) {
     if (bvh->node_count >= bvh->capacity) {
         u32 new_cap = bvh->capacity * 2;
-        bvh->nodes = (BVHNode *)realloc(bvh->nodes, new_cap * sizeof(BVHNode));
+        BVHNode *new_nodes = (BVHNode *)realloc(bvh->nodes, new_cap * sizeof(BVHNode));
+        if (!new_nodes) return BVH_NULL;
+        bvh->nodes = new_nodes;
         memset(&bvh->nodes[bvh->capacity], 0, (new_cap - bvh->capacity) * sizeof(BVHNode));
         bvh->capacity = new_cap;
     }
@@ -296,6 +299,7 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     bvh->object_count = count;
     free(bvh->leaf_map);
     bvh->leaf_map = (u32 *)calloc(count, sizeof(u32));
+    if (!bvh->leaf_map) { bvh->root = BVH_NULL; return; }
 
     if (count == 0) {
         bvh->root = BVH_NULL;
@@ -307,6 +311,7 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     if (bvh->capacity < max_nodes) {
         free(bvh->nodes);
         bvh->nodes = (BVHNode *)calloc(max_nodes, sizeof(BVHNode));
+        if (!bvh->nodes) { bvh->capacity = 0; bvh->root = BVH_NULL; return; }
         bvh->capacity = max_nodes;
     }
 
@@ -314,6 +319,7 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     if (count > bvh->_build_indices_cap) {
         free(bvh->_build_indices);
         bvh->_build_indices = (u32 *)malloc(count * sizeof(u32));
+        if (!bvh->_build_indices) { bvh->_build_indices_cap = 0; bvh->root = BVH_NULL; return; }
         bvh->_build_indices_cap = count;
     }
     u32 *indices = bvh->_build_indices;
