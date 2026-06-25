@@ -2749,6 +2749,37 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+### R125：第七轮深度审查 — RHI 后端 calloc NULL 检查（GL 8 处 + VK 13 处）
+
+聚焦 RHI 资源创建函数中 `calloc` 返回值未检查的系统性缺陷。所有 21 处均为同一模式：`calloc` 后立即解引用指针写入字段，OOM 时 NULL 解引用崩溃。
+
+#### R125-1：GL 后端资源创建 calloc NULL 检查（8 处）
+
+**问题**：`rhi_gl.c` 中 8 个资源创建函数（shader×2、pipeline×2、buffer、texture、sampler、FBO）的 `calloc` 未检查返回值。失败时 `sd->field = value` 解引用 NULL 崩溃，且 `rhi_alloc_slot` 已分配的槽位泄漏。
+
+**修复**：将 `calloc` 移到 `rhi_alloc_slot` 之前，失败时清理已创建的 GL 资源（`glDeleteShader`/`glDeleteProgram`/`glDeleteVertexArrays`/`glDeleteBuffers`/`glDeleteTextures`/`glDeleteSamplers`/`glDeleteFramebuffers`）并返回 `RHI_HANDLE_NULL`。不浪费槽位。
+
+#### R125-2：VK 后端资源创建 calloc NULL 检查（13 处）
+
+**问题**：`rhi_vk.c` 中 13 个资源创建函数的 `calloc` 未检查返回值，与 GL 后端同一模式。
+
+**Category 1（7 处）**：`calloc` 在 VK 资源创建之后调用。修复：将 `calloc` 移到 `rhi_alloc_slot` 之前，失败时清理 VK 资源（`vkDestroyShaderModule`/`vkDestroyPipeline`+`vkDestroyPipelineLayout`/`vkDestroyBufferView`+`vkDestroyBuffer`+`vkFreeMemory`/`vkDestroyImageView`+`vkDestroyImage`+`vkFreeMemory`/`vkDestroySampler`）并返回 `RHI_HANDLE_NULL`。
+
+**Category 2（3 处）**：`calloc` 在 VK 资源创建之前调用（ShadowData、CubemapData、FBOData）。修复：`calloc` 后立即检查 NULL，返回空结构体（`sm`/`RHI_HANDLE_NULL`/`fbo`），避免创建 VK 资源后无法存储。
+
+**Category 3（3 处）**：`calloc` 在大函数内部，VK 资源已存在于父结构体中（shadow depth texture、FBO color/depth texture）。修复：`calloc` 后检查 NULL，提前返回空结构体。极端 OOM 时父结构体的 VK 资源可能泄漏，但避免 NULL 解引用崩溃。
+
+#### 审查确认安全的子系统
+
+1. **rhi.c 句柄管理**（93 行）：freelist O(1) 分配 + generation 代数防 use-after-free + `rhi_get_resource` 验证 index+generation+alive 三重检查。`rhi_alloc_slot` 池耗尽时 `LOG_FATAL` 不 abort 但返回 0，代数递增使旧句柄失效（仅资源泄漏，无 UAF）。
+2. **terrain.c**（629 行）：`terrain_sample_height` 有 clamp 边界检查；`terrain_erode` 的 `gx0 >= 1` / `gx1 <= n-1` 确保 `gx±1`/`gz±1` 不越界；`terrain_read_file` 有 `ftell <= 0` + malloc NULL 检查；`terrain_init` 的 `calloc` 有 NULL 检查。
+3. **render_graph.c / occlusion_cull.c**：`rg_create` calloc 有 NULL 检查；`occlusion_cull_init` visibility_readback calloc 有 NULL 检查。
+4. **log.c**：`LOG_FATAL` 仅日志输出不 abort（已知设计，非 bug）。
+5. **无危险函数**：无 `sprintf`/`gets`；`fgets` 全用 `sizeof(line)` 限制。
+6. **VK 初始化路径 calloc**（6 处）：`modes`/`swap_images`/`swap_views`/`render_semaphores`/`framebuffers`/`layer_props`/`gpus`/`queues` — 均为极小一次性分配（2-10 元素），仅极端 OOM 时失败，且 VK 后端默认不编译（`ENGINE_VULKAN=OFF`）。已知限制：失败时 VK 资源泄漏但不崩溃。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash

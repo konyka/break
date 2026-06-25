@@ -646,8 +646,9 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
     GLuint gl_sh = gl_compile_shader(source, len, type);
     if (!gl_sh) return RHI_HANDLE_NULL;
 
-    u32 idx = rhi_alloc_slot(dev);
     GLShaderData *sd = calloc(1, sizeof(GLShaderData));
+    if (!sd) { glDeleteShader(gl_sh); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     sd->gl_shader = gl_sh;
     dev->slots[idx].ptr  = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
@@ -665,8 +666,9 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
     GLuint gl_sh = gl_compile_shader(source, len, GL_COMPUTE_SHADER);
     if (!gl_sh) return RHI_HANDLE_NULL;
-    u32 idx = rhi_alloc_slot(dev);
     GLShaderData *sd = calloc(1, sizeof(GLShaderData));
+    if (!sd) { glDeleteShader(gl_sh); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     sd->gl_shader = gl_sh;
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
@@ -692,8 +694,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             return RHI_HANDLE_NULL;
         }
 
-        u32 idx = rhi_alloc_slot(dev);
         GLPipelineData *pd = calloc(1, sizeof(GLPipelineData));
+        if (!pd) { glDeleteProgram(program); return RHI_HANDLE_NULL; }
+        u32 idx = rhi_alloc_slot(dev);
         pd->gl_program = program;
         dev->slots[idx].ptr = pd;
         dev->slots[idx].type = RHI_RES_PIPELINE;
@@ -779,8 +782,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     g_gl_bound_vbo = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
     g_gl_bound_ibo = 0;
 
-    u32 idx = rhi_alloc_slot(dev);
     GLPipelineData *pd = calloc(1, sizeof(GLPipelineData));
+    if (!pd) { glDeleteProgram(program); glDeleteVertexArrays(1, &vao); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     pd->gl_program     = program;
     pd->gl_vao         = vao;
     pd->vertex_stride  = stride;
@@ -828,8 +832,9 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         glBindTexture(GL_TEXTURE_BUFFER, 0);
     }
 
-    u32 idx = rhi_alloc_slot(dev);
     GLBufferData *bd = calloc(1, sizeof(GLBufferData));
+    if (!bd) { glDeleteBuffers(1, &gl_buf); if (tbo_tex) glDeleteTextures(1, &tbo_tex); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     bd->gl_buf  = gl_buf;
     bd->tbo_tex = tbo_tex;
     bd->size    = desc->size;
@@ -1023,8 +1028,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    u32 idx = rhi_alloc_slot(dev);
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
+    if (!td) { glDeleteTextures(1, &gl_tex); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     td->gl_tex            = gl_tex;
     td->width             = desc->width;
     td->height            = desc->height;
@@ -1081,8 +1087,9 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     glSamplerParameteri(gl_samp, GL_TEXTURE_WRAP_T, rhi_wrap_to_gl(desc->wrap_v));
     glSamplerParameteri(gl_samp, GL_TEXTURE_WRAP_R, rhi_wrap_to_gl(desc->wrap_w));
 
-    u32 idx = rhi_alloc_slot(dev);
     GLSamplerData *sd = calloc(1, sizeof(GLSamplerData));
+    if (!sd) { glDeleteSamplers(1, &gl_samp); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     sd->gl_sampler = gl_samp;
     dev->slots[idx].ptr  = sd;
     dev->slots[idx].type = RHI_RES_SAMPLER;
@@ -1283,8 +1290,9 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     glReadBuffer(GL_NONE);
     gl_bind_fbo_cached(0);
 
-    u32 idx = rhi_alloc_slot(dev);
     GLFBOData *fd = calloc(1, sizeof(GLFBOData));
+    if (!fd) { glDeleteFramebuffers(1, &gl_fbo); sm.fbo = RHI_HANDLE_NULL; return sm; }
+    u32 idx = rhi_alloc_slot(dev);
     fd->gl_fbo = gl_fbo;
     dev->slots[idx].ptr  = fd;
     dev->slots[idx].type = RHI_RES_FRAMEBUFFER;

@@ -1564,8 +1564,9 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
     VkShaderModule mod = vk_compile_glsl(vk, source, len, is_fragment, &spirv, &spirv_size);
     if (mod == VK_NULL_HANDLE) { free(spirv); return RHI_HANDLE_NULL; }
 
-    u32 idx = rhi_alloc_slot(dev);
     VKShaderData *sd = calloc(1, sizeof(VKShaderData));
+    if (!sd) { vkDestroyShaderModule(vk->device, mod, NULL); free(spirv); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     sd->module = mod;
     sd->spirv = spirv;
     sd->spirv_size = spirv_size;
@@ -1612,8 +1613,9 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize le
     }
     shaderc_result_release(result);
     shaderc_compile_options_release(opts);
-    u32 idx = rhi_alloc_slot(dev);
     VKShaderData *sd = calloc(1, sizeof(VKShaderData));
+    if (!sd) { vkDestroyShaderModule(vk->device, mod, NULL); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     sd->module = mod;
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
@@ -1977,8 +1979,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             return RHI_HANDLE_NULL;
         }
 
-        u32 idx = rhi_alloc_slot(dev);
         VKPipelineData *pd = calloc(1, sizeof(VKPipelineData));
+        if (!pd) { vkDestroyPipeline(vk->device, pipeline, NULL); vkDestroyPipelineLayout(vk->device, layout, NULL); return RHI_HANDLE_NULL; }
+        u32 idx = rhi_alloc_slot(dev);
         pd->layout = layout;
         pd->pipeline = pipeline;
         pd->no_vertex_input = true;
@@ -2044,8 +2047,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         return RHI_HANDLE_NULL;
     }
 
-    u32 idx = rhi_alloc_slot(dev);
     VKPipelineData *pd = calloc(1, sizeof(VKPipelineData));
+    if (!pd) { vkDestroyPipeline(vk->device, pipeline, NULL); vkDestroyPipelineLayout(vk->device, layout, NULL); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     pd->layout = layout;
     pd->pipeline = pipeline;
     pd->vertex_stride = stride;
@@ -2157,8 +2161,9 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         vkCreateBufferView(vk->device, &bvci, NULL, &texel_view);
     }
 
-    u32 idx = rhi_alloc_slot(dev);
     VKBufferData *bd = calloc(1, sizeof(VKBufferData));
+    if (!bd) { if (texel_view) vkDestroyBufferView(vk->device, texel_view, NULL); vkDestroyBuffer(vk->device, buf, NULL); vkFreeMemory(vk->device, mem, NULL); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     bd->buffer = buf;
     bd->memory = mem;
     bd->size = desc->size;
@@ -2384,8 +2389,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
     }
 
-    u32 idx = rhi_alloc_slot(dev);
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
+    if (!td) { vkDestroyImageView(vk->device, view, NULL); vkDestroyImage(vk->device, image, NULL); vkFreeMemory(vk->device, mem, NULL); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     td->image = image;
     td->view = view;
     td->memory = mem;
@@ -2548,8 +2554,9 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     VkSampler sampler;
     vkCreateSampler(vk->device, &ci, NULL, &sampler);
 
-    u32 idx = rhi_alloc_slot(dev);
     VKSamplerData *sd = calloc(1, sizeof(VKSamplerData));
+    if (!sd) { vkDestroySampler(vk->device, sampler, NULL); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     sd->sampler = sampler;
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SAMPLER;
@@ -3933,6 +3940,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     sm.height = height;
 
     VKShadowData *sd = calloc(1, sizeof(VKShadowData));
+    if (!sd) return sm;
 
     VkImageCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -4016,8 +4024,9 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
         vk->shadow_render_pass = sd->render_pass;
     }
 
-    u32 tidx = rhi_alloc_slot(dev);
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
+    if (!td) return sm;
+    u32 tidx = rhi_alloc_slot(dev);
     td->image = sd->depth_image;
     td->view = sd->depth_view;
     td->memory = sd->depth_memory;
@@ -4142,6 +4151,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     VKBackend *vk = vk_backend(dev);
 
     VKCubemapData *cd = calloc(1, sizeof(VKCubemapData));
+    if (!cd) return RHI_HANDLE_NULL;
 
     VkFormat fmt = vk_format_from_rhi(desc->format);
     u32 mips = desc->mip_levels ? desc->mip_levels : 1u;
@@ -4552,6 +4562,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     VkFormat vk_color_fmt = vk_format_from_rhi(color_fmt);
 
     VKFBOData *fd = calloc(1, sizeof(VKFBOData));
+    if (!fd) return fbo;
     fd->color_fmt = vk_color_fmt;
 
     VkImageCreateInfo ci = {0};
@@ -4666,8 +4677,9 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     fbci.layers = 1;
     vkCreateFramebuffer(vk->device, &fbci, NULL, &fd->framebuffer);
 
-    u32 idx = rhi_alloc_slot(dev);
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
+    if (!td) return fbo;
+    u32 idx = rhi_alloc_slot(dev);
     td->image = fd->color_image;
     td->view = fd->color_view;
     td->memory = fd->color_memory;
@@ -4677,8 +4689,9 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     dev->slots[idx].type = RHI_RES_TEXTURE;
     fbo.color_tex = rhi_make_handle(idx, dev->slots[idx].generation);
 
-    u32 didx = rhi_alloc_slot(dev);
     VKTextureData *dd = calloc(1, sizeof(VKTextureData));
+    if (!dd) return fbo;
+    u32 didx = rhi_alloc_slot(dev);
     dd->image = fd->depth_image;
     dd->view = fd->depth_view;
     dd->memory = fd->depth_memory;
