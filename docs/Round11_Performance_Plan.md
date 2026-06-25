@@ -2618,6 +2618,68 @@ malloc 失败时 `_pack_buf = NULL`、`_zero_buf = NULL + offset`（野指针）
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+---
+
+### R123：第五轮深度审查 — font.c TTF ftell 回绕 + 异步加载器线程安全 + fd/socket 审查
+
+**审查策略**：第五轮聚焦资源生命周期和线程安全：
+- `ftell` 返回 -1 的完整覆盖（R120 修复了 vfs/font shader 路径，遗漏 TTF 路径）
+- 异步加载器竞态条件（slot 复用、完成队列溢出）
+- 文件描述符/socket 泄漏（错误路径上未关闭）
+- 命令注入（`system`/`popen`/`exec`）
+- 格式串注入（LOG/fprintf/printf 直接传用户输入）
+- `getenv` + `atoi` 输入验证
+- main.c 子系统初始化失败处理
+
+#### R123-1：font.c TTF 字体加载 ftell 回绕堆溢出
+
+**问题**（SECURITY）：`font_renderer_init` 中 TTF 字体文件加载路径：
+```c
+fseek(f, 0, SEEK_END);
+long sz = ftell(f);
+// 缺少 sz < 0 检查
+fseek(f, 0, SEEK_SET);
+u8 *ttf_buf = malloc((usize)sz);
+```
+当 `ftell` 返回 -1 时，`(usize)(-1) = SIZE_MAX`，`malloc(SIZE_MAX)` 在 overcommit
+系统上可能成功，`fread` 写入导致堆溢出。R120-2 修复了同一函数中 vertex/fragment
+shader 加载路径的 ftell 检查，但遗漏了 TTF 字体加载路径（L52）。
+
+**修复**：添加 `if (sz < 0) { fclose(f); return false; }` 检查。
+
+#### 审查确认无需修复的子系统
+
+1. **异步加载器**（async_loader.c 505 行）：
+   - Slot 分配使用 `atomic_fetch_add` + state CAS，仅从主线程提交 → 安全
+   - 完成队列 MPSC 无锁环形缓冲，`atomic_fetch_add` head + 单消费者 tail → 安全
+   - Worker 设置 data 后用 `memory_order_release` store state，消费者 `acquire` load → 正确 release-acquire 模式
+   - 取消操作使用 `compare_exchange_strong` → 无竞态
+   - `async_loader_shutdown` 先 `running=false` + `cond_broadcast` + join 全部线程后再释放资源 → 无 use-after-free
+   - 完成队列容量 256，溢出时会覆盖未消费条目（设计限制，非 bug，帧间 tick 排空）
+   - Slot 复用间隔 1024 请求，帧间 tick 排空完成队列 → TOCTOU 不实际发生
+
+2. **ftell 完整覆盖**（grep 全代码库）：
+   - `net_replication.c:535` — ftell==0 检查空文件，非 malloc 模式 → 安全
+   - `scene_serial.c:582` — `fsz < sizeof(BscnHeader)` 隐式覆盖 fsz < 0 → 安全
+   - `scene_serial.c:906` — `fsz <= 0` 显式覆盖 → 安全
+   - `hotreload.c` — R112 已修复 → 安全
+   - `vfs.c` / `font.c` shader 路径 — R120 已修复 → 安全
+   - `font.c` TTF 路径 — R123-1 本次修复 → 安全
+
+3. **命令注入**：全代码库无 `system()`/`popen()`/`exec*` 调用 → 安全
+
+4. **格式串注入**：全代码库无 `LOG_(x)` / `fprintf(stderr, x)` / `printf(x)` 单参数调用 → 安全
+
+5. **getenv + atoi**：16 处 `getenv` 调用全部有 `if (e && ...)` NULL 检查；`atoi` 仅在 env 存在时调用，非数字返回 0（合理默认值）→ 安全
+
+6. **后期处理初始化**（upscale/god_rays/sss/tonemap/motion_blur/ssgi）：pipeline 创建后已验证 `rhi_handle_valid`；FBO/sampler 未验证但 shutdown 函数有 `rhi_handle_valid` 守卫，且 `ready` 标志门控 apply 函数 → 可接受
+
+7. **filewatch.c fd 管理**：inotify fd 在 init 创建、shutdown 关闭，watch fd 存储在数组中按索引管理 → 安全
+
+8. **network.c socket 管理**：socket 在 init 创建、shutdown 关闭，`net_set_nonblocking` 在使用前设置 → 安全
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash

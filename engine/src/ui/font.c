@@ -50,6 +50,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
+    if (sz < 0) { fclose(f); return false; }
     fseek(f, 0, SEEK_SET);
     u8 *ttf_buf = malloc((usize)sz);
     if (!ttf_buf) { fclose(f); return false; }
