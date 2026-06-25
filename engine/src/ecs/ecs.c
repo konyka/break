@@ -90,6 +90,7 @@ static void edge_cache_remove(Archetype *a, ComponentType id, Archetype *target)
 
 static Chunk *chunk_alloc(u32 chunk_size) {
     Chunk *c = calloc(1, chunk_size);
+    if (!c) return NULL;
     c->next = NULL;
     c->count = 0;
     return c;
@@ -104,6 +105,7 @@ static Archetype *create_archetype(World *w, const ComponentType *types, u32 cou
     Archetype *a = &w->archetypes[idx];
     /* Single alloc: key.ids (ComponentType[]) + offsets (u32[]) */
     u32 *arch_buf = (u32 *)calloc(count * 2, sizeof(u32));
+    if (!arch_buf) { w->archetype_count--; return NULL; }
     a->key.ids = arch_buf;
     memcpy(a->key.ids, types, count * sizeof(ComponentType));
     a->key.count = count;
@@ -137,6 +139,7 @@ static Archetype *create_archetype(World *w, const ComponentType *types, u32 cou
 
 World *world_create(void) {
     World *w = calloc(1, sizeof(World));
+    if (!w) return NULL;
 
     /* Single allocation for all per-entity arrays (saves 3 calloc calls).
      * Layout: [Entity entities | u32 archetype | u32 index | u32 free_stack] */
@@ -145,6 +148,7 @@ World *world_create(void) {
     usize idx_bytes  = (usize)ECS_MAX_ENTITIES * sizeof(u32);
     usize free_bytes = (usize)ECS_MAX_ENTITIES * sizeof(u32);
     u8 *block = (u8 *)calloc(1, ent_bytes + arch_bytes + idx_bytes + free_bytes);
+    if (!block) { free(w); return NULL; }
     w->entities        = (Entity *)block;
     w->entity_archetype = (u32 *)(block + ent_bytes);
     w->entity_index     = (u32 *)(block + ent_bytes + arch_bytes);
@@ -236,12 +240,14 @@ Entity world_create_entity(World *w) {
     Archetype *empty = &w->archetypes[0];
     if (!empty->chunks) {
         empty->chunks = chunk_alloc(ECS_CHUNK_SIZE);
+        if (!empty->chunks) return ENTITY_NULL;
         empty->chunks->capacity = empty->chunk_capacity;
         empty->chunk_tail = empty->chunks;
     }
     Chunk *c = empty->chunk_tail;
     if (c->count >= c->capacity) {
         Chunk *nc = chunk_alloc(ECS_CHUNK_SIZE);
+        if (!nc) return ENTITY_NULL;
         nc->capacity = empty->chunk_capacity;
         c->next = nc;
         empty->chunk_tail = nc;
@@ -303,12 +309,14 @@ static void *archetype_alloc_slot(World *w, Archetype *a, u32 *out_global_index)
     (void)w;
     if (!a->chunks) {
         a->chunks = chunk_alloc(ECS_CHUNK_SIZE);
+        if (!a->chunks) return NULL;
         a->chunks->capacity = a->chunk_capacity;
         a->chunk_tail = a->chunks;
     }
     Chunk *c = a->chunk_tail;
     if (c->count >= c->capacity) {
         Chunk *nc = chunk_alloc(ECS_CHUNK_SIZE);
+        if (!nc) return NULL;
         nc->capacity = a->chunk_capacity;
         c->next = nc;
         a->chunk_tail = nc;
@@ -351,6 +359,7 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
         ComponentType stack_types[16];
         ComponentType *new_types = (new_count <= 16) ? stack_types
             : (ComponentType *)calloc(new_count, sizeof(ComponentType));
+        if (!new_types) return NULL;
         if (old->key.count > 0 && old->key.ids) {
             memcpy(new_types, old->key.ids, old->key.count * sizeof(ComponentType));
         }
@@ -408,6 +417,7 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
 
     u32 new_global_slot;
     Chunk *new_chunk = archetype_alloc_slot(w, dest, &new_global_slot);
+    if (!new_chunk) { if (old_data != stack_buf) free(old_data); return NULL; }
     u32 local_new = new_chunk->count - 1;
     u32 *entities = (u32 *)((u8 *)new_chunk + dest->entity_offset);
     entities[local_new] = e.index;
@@ -553,6 +563,7 @@ void world_remove_component(World *w, Entity e, ComponentType id) {
 
     u32 new_global_slot;
     Chunk *new_chunk = archetype_alloc_slot(w, dest, &new_global_slot);
+    if (!new_chunk) { if (old_data != stack_buf) free(old_data); return; }
     u32 local_new = new_chunk->count - 1;
     u32 *entities = (u32 *)((u8 *)new_chunk + dest->entity_offset);
     entities[local_new] = e.index;
@@ -646,9 +657,11 @@ Query *world_query(World *w, const ComponentType *types, u32 count) {
                 if (q->match_cap <= ECS_QUERY_INLINE_CAP) {
                     /* Transition from inline to heap */
                     new_buf = (Archetype **)malloc(new_cap * sizeof(Archetype *));
+                    if (!new_buf) break;
                     memcpy(new_buf, q->matching, q->match_count * sizeof(Archetype *));
                 } else {
                     new_buf = (Archetype **)realloc(q->matching, new_cap * sizeof(Archetype *));
+                    if (!new_buf) break;
                 }
                 q->matching = new_buf;
                 q->match_cap = new_cap;
@@ -818,9 +831,11 @@ void ecs_query_refresh(World *w, Query *q, const ComponentType *types, u32 count
             Archetype **new_buf;
             if (q->match_cap <= ECS_QUERY_INLINE_CAP) {
                 new_buf = (Archetype **)malloc(new_cap * sizeof(Archetype *));
+                if (!new_buf) break;
                 memcpy(new_buf, q->matching, q->match_count * sizeof(Archetype *));
             } else {
                 new_buf = (Archetype **)realloc(q->matching, new_cap * sizeof(Archetype *));
+                if (!new_buf) break;
             }
             q->matching = new_buf;
             q->match_cap = new_cap;

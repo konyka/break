@@ -2207,6 +2207,87 @@ window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R116：字体/脚本/ECS/LOD 防御性加固
+
+**审查范围**：deferred.c（439 行）、point_shadow.c（347 行）、font.c（389 行）、
+lod.c（308 行）、camera.c（125 行）、frustum_cull.c（88 行）、alloc.c（138 行）、
+pool.c（139 行）、profiler.c（136 行）、script.c（213 行）、script_lua.c（314 行）、
+ecs.c（831 行）、scene_serial.c（1099 行，部分）、input.c（61 行）、log.c（39 行）。
+
+### R116-1 font.c malloc NULL 检查（ROBUSTNESS）
+
+**问题**：`font_renderer_init` 中着色器源码加载 `malloc(vs_len + 1)` /
+`malloc(fs_len + 1)` 未检查 NULL，失败时 `fread(NULL, ...)` 崩溃。
+`quad_data` 分配 `malloc(quad_capacity * 6 * sizeof(FontVertex))` 同样未检查。
+
+**修复**：每个 malloc 后添加 NULL 检查，失败时 fclose 并置零长度（着色器），
+或返回 false（quad_data）。
+
+### R116-2 script.c ftell/malloc NULL 检查（ROBUSTNESS）
+
+**问题**：`script_load` 中 `ftell` 返回 -1 时 `(usize)sz + 1` 回绕为 0，
+`malloc(0)` 可能返回非 NULL 指针，`fread` 读取 `SIZE_MAX` 字节导致缓冲区溢出。
+`malloc` 返回 NULL 时 `fread(NULL, ...)` 崩溃。与 R112 `read_file` 加固模式一致。
+
+**修复**：添加 `sz < 0` 提前返回 + `malloc` NULL 检查。
+
+### R116-3 ecs.c calloc/malloc/realloc NULL 检查（ROBUSTNESS）
+
+**问题**：ECS 核心路径多处分配未检查返回值：
+- `chunk_alloc`：`calloc` 失败后 `c->next = NULL` 解引用 NULL。
+- `create_archetype`：`calloc` 失败后 `memcpy(NULL, ...)` 崩溃。
+- `world_create`：两处 `calloc` 失败后解引用 NULL。
+- `world_add_component`：`calloc(new_count, ...)` 失败后 `memcpy(NULL, ...)`。
+- `world_remove_component`：`archetype_alloc_slot` 返回 NULL 未检查。
+- `world_query`/`ecs_query_refresh`：`malloc`/`realloc` 失败后 `memcpy(NULL, ...)`
+  或 `q->matching[...] = a` 解引用 NULL。
+
+**修复**：
+- `chunk_alloc`：添加 NULL 检查返回 NULL。
+- `create_archetype`：添加 NULL 检查回滚 `archetype_count--` 返回 NULL。
+- `world_create`：两处 calloc 添加 NULL 检查返回 NULL。
+- `world_create_entity`：两处 `chunk_alloc` 添加 NULL 检查返回 `ENTITY_NULL`。
+- `archetype_alloc_slot`：两处 `chunk_alloc` 添加 NULL 检查返回 NULL。
+- `world_add_component`：`calloc` 添加 NULL 检查返回 NULL；`archetype_alloc_slot`
+  返回 NULL 时释放 `old_data` 并返回 NULL。
+- `world_remove_component`：`archetype_alloc_slot` 返回 NULL 时释放 `old_data`
+  并返回。
+- `world_query`/`ecs_query_refresh`：`malloc`/`realloc` 失败时 `break` 跳过当前
+  原型，查询结果降级但不崩溃。
+
+### R116-4 lod.c level_count==0 u32 下溢防护（ROBUSTNESS）
+
+**问题**：`lod_select_by_distance_sq` 和 `lod_select_by_screen_size` 中
+`group->level_count - 1` 当 `level_count == 0` 时 u32 下溢为 `UINT32_MAX`，
+for 循环条件 `i < UINT32_MAX` 几乎永真，导致大规模越界读 `thresholds_sq[i]`。
+
+**修复**：`lod_register` 入口添加 `group->level_count == 0` 提前返回。
+
+### 审查确认无需修复的子系统
+
+1. **deferred.c**：MRT G-Buffer 延迟渲染，`defrd_read_file` 完整 ftell/malloc NULL
+   检查。uniform 位置初始化 -1 + `>= 0` 守卫。管线创建失败调用 `deferred_destroy`。
+2. **point_shadow.c**：解析式 6 面 VP 矩阵构建，`far_plane > 0.1f` 守卫。partial
+   insertion sort 选择最近 N 个点光。uniform 位置 `>= 0` 守卫。RHI 句柄验证。
+3. **camera.c**：解析式 view/inv_view 矩阵（零额外三角函数），投影矩阵缓存。
+   pitch 钳制 ±1.5533。无内存分配。
+4. **frustum_cull.c**：Gribb-Hartmann 平面提取，`fast_rsqrt` + `1e-12f` 防除零。
+   p-vertex 方法 + sign_mask 分支免选。
+5. **alloc.c**：Heap/Arena/Debug 分配器。对齐分配存储 raw 指针。所有 malloc/realloc
+   检查 NULL。debug_alloc_create 检查 malloc。
+6. **pool.c**：固定块池分配器。`pool_init` 验证输入 + 对齐。`pool_init_alloc`
+   malloc + NULL 检查。`pool_acquire`/`pool_release`/`pool_owns` 全部安全。
+7. **profiler.c**：环形帧缓冲，`% PROFILER_MAX_FRAMES` 防越界。`region_count >=
+   PROFILER_MAX_REGIONS` 守卫。JSON 转义有边界检查。fopen + NULL 检查。
+8. **script_lua.c**：Lua 绑定，`checked_body` 验证 body id 范围。`key_down`
+   钳制 0-511。所有 Lua 错误路径正确 pop 栈。`luaL_loadfile` 内部处理文件 I/O。
+9. **scene_serial.c**：二进制/JSON 序列化。`bb_reserve` realloc + NULL 检查。
+   `emap_build` malloc + NULL 检查。R108 已验证 chunk 边界检查。
+10. **input.c**：输入状态机，所有 set 函数有范围检查。无内存分配。
+11. **log.c**：日志输出，`strrchr` 提取 basename。无内存分配。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

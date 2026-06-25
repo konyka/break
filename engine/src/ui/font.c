@@ -196,17 +196,23 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     if (vf) {
         fseek(vf, 0, SEEK_END); vs_len = (usize)ftell(vf); fseek(vf, 0, SEEK_SET);
         vs_src = malloc(vs_len + 1);
-        vs_len = fread(vs_src, 1, vs_len, vf);
-        vs_src[vs_len] = '\0';
-        fclose(vf);
+        if (!vs_src) { fclose(vf); vs_len = 0; }
+        else {
+            vs_len = fread(vs_src, 1, vs_len, vf);
+            vs_src[vs_len] = '\0';
+            fclose(vf);
+        }
     }
     FILE *ff = fopen(frag_path, "rb");
     if (ff) {
         fseek(ff, 0, SEEK_END); fs_len = (usize)ftell(ff); fseek(ff, 0, SEEK_SET);
         fs_src = malloc(fs_len + 1);
-        fs_len = fread(fs_src, 1, fs_len, ff);
-        fs_src[fs_len] = '\0';
-        fclose(ff);
+        if (!fs_src) { fclose(ff); fs_len = 0; }
+        else {
+            fs_len = fread(fs_src, 1, fs_len, ff);
+            fs_src[fs_len] = '\0';
+            fclose(ff);
+        }
     }
 
     if (!vs_src || !fs_src) {
@@ -247,6 +253,10 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
 
     fr->quad_capacity = 4096;
     fr->quad_data = malloc(fr->quad_capacity * 6 * sizeof(FontVertex));
+    if (!fr->quad_data) {
+        LOG_WARN("Font: quad data allocation failed");
+        return false;
+    }
     fr->quad_count = 0;
 
     RHIBufferDesc bdesc;

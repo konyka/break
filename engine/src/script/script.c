@@ -93,9 +93,11 @@ bool script_load(ScriptEngine *se, const char *path) {
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
+    if (sz < 0) { fclose(f); return false; }
 
     free(se->source);
     se->source = malloc((usize)sz + 1);
+    if (!se->source) { fclose(f); return false; }
     usize rd = fread(se->source, 1, (usize)sz, f);
     se->source[rd] = '\0';
     fclose(f);

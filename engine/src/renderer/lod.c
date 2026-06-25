@@ -143,6 +143,7 @@ void lod_shutdown(LODSystem *sys) {
 void lod_register(LODSystem *sys, u32 entity, const LODGroup *group) {
     if (sys->count >= LOD_MAX_GROUPS) return;
     if (entity >= LOD_MAX_GROUPS) return;
+    if (group->level_count == 0) return;  /* prevent u32 underflow in lod_select_* */
 
     u32 idx = sys->count;
     sys->groups[idx] = *group;
