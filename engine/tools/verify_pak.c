@@ -37,6 +37,12 @@ static int verify_file(VFS *vfs, const char *pak_name,
     }
     fseek(fp, 0, SEEK_END);
     long disk_size = ftell(fp);
+    if (disk_size < 0) {
+        fprintf(stderr, "FAIL: ftell error for '%s'\n", disk_path);
+        fclose(fp);
+        vfs_close(f);
+        return 0;
+    }
     fseek(fp, 0, SEEK_SET);
 
     if ((usize)disk_size != pak_size) {
@@ -48,11 +54,23 @@ static int verify_file(VFS *vfs, const char *pak_name,
     }
 
     /* Compare content */
-    u8 *disk_buf = malloc(disk_size);
-    fread(disk_buf, 1, disk_size, fp);
+    u8 *disk_buf = malloc((usize)disk_size);
+    if (!disk_buf && disk_size > 0) {
+        fprintf(stderr, "FAIL: malloc failed for '%s' (%ld bytes)\n", disk_path, disk_size);
+        fclose(fp);
+        vfs_close(f);
+        return 0;
+    }
+    fread(disk_buf, 1, (usize)disk_size, fp);
     fclose(fp);
 
     u8 *pak_buf = malloc(pak_size);
+    if (!pak_buf && pak_size > 0) {
+        fprintf(stderr, "FAIL: malloc failed for pak '%s' (%zu bytes)\n", pak_name, pak_size);
+        free(disk_buf);
+        vfs_close(f);
+        return 0;
+    }
     usize nread = vfs_read(f, pak_buf, pak_size);
     if (nread != pak_size) {
         fprintf(stderr, "FAIL: short read for '%s' (%zu/%zu)\n",
