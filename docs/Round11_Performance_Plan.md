@@ -2446,6 +2446,65 @@ platform/ 目录（5 个 demo 文件）、tests/test_framework.h。
 **验收**：审查未发现问题，无需代码修改。R102-R119 完成引擎全部源码
 （86 个 .c + 83 个 .h + framework + platform + tests）的全量审查。
 
+---
+
+### R120：第二轮深度审查 — ftell 回绕堆溢出 + VFS hash table NULL 检查
+
+**审查策略**：第一轮逐文件审查完成后，第二轮聚焦更微妙的问题模式：
+- 整数溢出在大小计算中（`sizeof(T) * count`）
+- `ftell` 返回 -1 时 `(usize)(-1) = SIZE_MAX` 导致的回绕
+- 线程安全/竞态条件
+- use-after-free / double-free
+
+#### R120-1：vfs.c ftell 回绕堆溢出 + hash table malloc NULL 检查
+
+**问题 1**（SECURITY）：`vfs_open` 目录挂载路径中：
+```c
+usize sz = (usize)ftell(fp);
+```
+当 `ftell` 返回 -1（文件不可 seek 或 I/O 错误）时，`sz = SIZE_MAX`。
+`calloc(1, sizeof(VFSFile) + SIZE_MAX)` 回绕为 `calloc(1, sizeof(VFSFile) - 1)`，
+分配极小缓冲区。`fread(f->data, 1, SIZE_MAX, fp)` 将文件数据写入超出缓冲区
+边界的地址 → 堆缓冲区溢出。
+
+**修复**：先检查 `ftell < 0`，失败时 `fclose + return NULL`。
+
+**问题 2**（ROBUSTNESS）：`vfs_mount_pak` 中 hash table 分配：
+```c
+u32 *table = (u32 *)malloc(table_size * sizeof(u32));
+memset(table, 0xFF, table_size * sizeof(u32));
+```
+`malloc` 失败时 `table = NULL`，`memset(NULL, ...)` 崩溃。
+
+**修复**：添加 NULL 检查，失败时清理已分配资源并返回 false。
+
+#### R120-2：font.c ftell 回绕堆溢出
+
+**问题**（SECURITY）：`font_renderer_init` 中两处着色器加载：
+```c
+vs_len = (usize)ftell(vf);  // ftell 返回 -1 时 vs_len = SIZE_MAX
+vs_src = malloc(vs_len + 1); // malloc(SIZE_MAX + 1) = malloc(0)
+```
+当 `ftell` 返回 -1 时，`vs_len = SIZE_MAX`，`malloc(SIZE_MAX + 1)` 回绕为
+`malloc(0)`。大多数实现返回非 NULL 指针（零大小分配），随后
+`fread(vs_src, 1, SIZE_MAX, vf)` 写入零字节缓冲区 → 堆缓冲区溢出。
+R116-1 添加了 `malloc` NULL 检查但未检查 `ftell < 0`。
+
+**修复**：先检查 `ftell < 0`，失败时 `fclose` 并置长度为 0。
+
+#### 审查确认无需修复的子系统
+
+第二轮扫描确认以下模式安全：
+1. **整数溢出在大小计算**：`decode_pipeline.c` 的 `malloc((usize)dst_w * dst_h * 4u)`
+   有 `usize` 提升 + NULL 检查。`scene_serial.c` 的 `malloc(sizeof(u32) * n * 2)`
+   的 `n` 由 `ECS_MAX_ENTITIES = 65536` 约束。`asset.c` 的 `calloc` 有内部溢出检查。
+2. **use-after-free / double-free**：grep 模式搜索未发现匹配。
+3. **线程安全**：`async_loader.c` 使用 MPSC 队列 + mutex 保护。
+   `decode_pipeline.c` 使用 `_Atomic bool running` + mutex 保护结果队列。
+   `task.c` 使用 Chase-Lev work-stealing deque。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash

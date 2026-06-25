@@ -194,7 +194,9 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     char *vs_src = NULL, *fs_src = NULL;
     FILE *vf = fopen(vert_path, "rb");
     if (vf) {
-        fseek(vf, 0, SEEK_END); vs_len = (usize)ftell(vf); fseek(vf, 0, SEEK_SET);
+        fseek(vf, 0, SEEK_END); long vsz = ftell(vf); fseek(vf, 0, SEEK_SET);
+        if (vsz < 0) { fclose(vf); vsz = 0; }
+        vs_len = (usize)vsz;
         vs_src = malloc(vs_len + 1);
         if (!vs_src) { fclose(vf); vs_len = 0; }
         else {
@@ -205,7 +207,9 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     }
     FILE *ff = fopen(frag_path, "rb");
     if (ff) {
-        fseek(ff, 0, SEEK_END); fs_len = (usize)ftell(ff); fseek(ff, 0, SEEK_SET);
+        fseek(ff, 0, SEEK_END); long fsz = ftell(ff); fseek(ff, 0, SEEK_SET);
+        if (fsz < 0) { fclose(ff); fsz = 0; }
+        fs_len = (usize)fsz;
         fs_src = malloc(fs_len + 1);
         if (!fs_src) { fclose(ff); fs_len = 0; }
         else {

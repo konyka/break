@@ -88,6 +88,7 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     /* Build hash table for O(1) lookup: open-addressing with linear probing */
     u32 table_size = next_pow2(hdr.entry_count * 2);
     u32 *table = (u32 *)malloc(table_size * sizeof(u32));
+    if (!table) { free(names); free(entries); fclose(fp); return false; }
     memset(table, 0xFF, table_size * sizeof(u32)); /* UINT32_MAX = empty */
     u32 mask = table_size - 1;
     for (u32 e = 0; e < hdr.entry_count; e++) {
@@ -146,7 +147,9 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
             FILE *fp = fopen(full, "rb");
             if (fp) {
                 fseek(fp, 0, SEEK_END);
-                usize sz = (usize)ftell(fp);
+                long fsz = ftell(fp);
+                if (fsz < 0) { fclose(fp); return NULL; }
+                usize sz = (usize)fsz;
                 fseek(fp, 0, SEEK_SET);
                 /* Single alloc: VFSFile + data */
                 u8 *vfs_block = (u8 *)calloc(1, sizeof(VFSFile) + sz);
