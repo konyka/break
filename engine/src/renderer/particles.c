@@ -149,6 +149,15 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     RHITextureDesc tdesc = { .width = 1, .height = 1, .format = RHI_FORMAT_R8G8B8A8_UNORM, .mip_levels = 1, .data = white };
     ps->particle_tex = rhi_texture_create(dev, &tdesc);
 
+    /* R122: Validate all RHI resources before marking system initialized. */
+    if (!rhi_handle_valid(ps->particle_ssbo) ||
+        !rhi_handle_valid(ps->sampler) ||
+        !rhi_handle_valid(ps->particle_tex)) {
+        LOG_WARN("Particle: buffer/texture/sampler creation failed");
+        particles_shutdown(ps);
+        return false;
+    }
+
     /* Initialize all particles as dead (life <= 0) */
     void *mapped = rhi_buffer_map(dev, ps->particle_ssbo);
     if (mapped) {

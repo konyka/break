@@ -2558,6 +2558,66 @@ if (!table) { free(names); free(entries); fclose(fp); return false; }
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+---
+
+### R122：第四轮深度审查 — 初始化路径 malloc NULL 检查 + RHI 句柄验证
+
+**审查策略**：聚焦初始化函数中的资源分配错误路径：
+- `malloc` 后未检查 NULL 即返回 true
+- `rhi_buffer_create`/`rhi_texture_create`/`rhi_sampler_create` 后未验证句柄
+- 多资源分配中部分失败时未清理已分配资源
+
+#### R122-1：gpucull.c malloc NULL 检查
+
+**问题**（ROBUSTNESS）：`gpucull_init` 中 `_pack_buf`/`_zero_buf` 的 malloc 未检查 NULL：
+```c
+u8 *gc_block = malloc(zb_off + zb_bytes);  // GPUCULL_MAX_OBJECTS 级别分配
+gc->_pack_buf = (f32 *)gc_block;
+gc->_zero_buf = (u32 *)(gc_block + pb_bytes);  // NULL + offset = 野指针
+return true;  // 标记为成功
+```
+malloc 失败时 `_pack_buf = NULL`、`_zero_buf = NULL + offset`（野指针），
+但函数返回 true。后续使用导致崩溃。
+
+**修复**：添加 NULL 检查，失败时 `gpucull_shutdown` + return false。
+
+#### R122-2：particles.c RHI 句柄验证
+
+**问题**（ROBUSTNESS）：`particles_init` 中 `particle_ssbo`、`sampler`、`particle_tex`
+创建后未验证句柄有效性。`particle_ssbo` 随后立即用于 `rhi_buffer_map`。
+若创建失败，系统标记 `initialized = true`，后续渲染命令使用无效句柄崩溃。
+
+**修复**：在标记 `initialized` 前添加 `rhi_handle_valid` 检查，失败时
+`particles_shutdown` + return false。
+
+#### R122-3：water.c RHI 句柄验证
+
+**问题**：`water_init` 中 `vbo`/`ibo` 创建后未验证。
+
+**修复**：添加 `rhi_handle_valid` 检查，失败时 `water_shutdown` + return false。
+
+#### R122-4：terrain.c RHI 句柄验证
+
+**问题**：`terrain_create` 中 `vbo`/`ibo` 创建后未验证。
+
+**修复**：添加 `rhi_handle_valid` 检查，失败时 `terrain_shutdown` + return false。
+
+#### R122-5：occlusion_cull.c sampler 句柄验证
+
+**问题**：`occlusion_cull_init` 中 `hi_z_sampler` 创建后未验证（缓冲区已有检查）。
+
+**修复**：将 sampler 验证加入现有的 pipeline 验证检查中。
+
+#### 审查确认无需修复的子系统
+
+1. **read_file 模式**（25 处 fopen）：全部有 ftell < 0 检查 + malloc NULL 检查 + fclose。
+2. **indirect_draw_init**：4 个 buffer 创建后统一验证 + `indirect_draw_destroy` 清理。
+3. **gpucull_init 缓冲区**（3 个 SSBO）：已有 R111-1 验证 + `gpucull_shutdown` 清理。
+4. **occlusion_cull_init 缓冲区**（3 个 buffer）：逐个验证 + `occlusion_cull_shutdown` 清理。
+5. **realloc**（4 处）：全部用临时变量 + NULL 检查（R121 已确认）。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash

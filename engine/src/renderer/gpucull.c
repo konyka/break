@@ -95,6 +95,11 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     usize zb_off   = (pb_bytes + 3u) & ~(usize)3u;
     usize zb_bytes = (usize)gc->_zero_buf_cap * sizeof(u32);
     u8 *gc_block   = (u8 *)malloc(zb_off + zb_bytes);
+    if (!gc_block) {
+        LOG_WARN("GPUCull: staging buffer allocation failed");
+        gpucull_shutdown(gc);
+        return false;
+    }
     gc->_pack_buf   = (f32 *)gc_block;
     gc->_zero_buf   = (u32 *)(gc_block + pb_bytes);  /* pre-allocated, zeroed on first use */
 

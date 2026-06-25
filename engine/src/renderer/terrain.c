@@ -268,6 +268,12 @@ t->loc_time        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_time
     t->ibo = rhi_buffer_create(dev, &ibdesc);
     free(geom_block);  /* Single free: verts + indices in one block */
 
+    if (!rhi_handle_valid(t->vbo) || !rhi_handle_valid(t->ibo)) {
+        LOG_WARN("Terrain: buffer creation failed");
+        terrain_shutdown(t);
+        return false;
+    }
+
     LOG_INFO("Terrain created: %ux%u grid, %u indices", grid_size, grid_size, t->index_count);
     /* _vert_staging already allocated as part of heightmap single block */
     return true;

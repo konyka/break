@@ -92,6 +92,12 @@ w->loc_model = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_model");
     RHIBufferDesc ibdesc = { .usage = RHI_BUFFER_USAGE_INDEX, .size = sizeof(indices), .initial_data = indices };
     w->ibo = rhi_buffer_create(dev, &ibdesc);
 
+    if (!rhi_handle_valid(w->vbo) || !rhi_handle_valid(w->ibo)) {
+        LOG_WARN("Water: buffer creation failed");
+        water_shutdown(w);
+        return false;
+    }
+
     LOG_INFO("Water plane initialized at y=%.1f (%.0fx%.0f)", water_y, size, size);
     return true;
 }

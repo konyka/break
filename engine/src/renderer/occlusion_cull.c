@@ -141,8 +141,9 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
     sys->hi_z_pipeline = oc_load_compute_pipeline(dev, "shaders/hi_z_generate.comp");
     sys->cull_pipeline = oc_load_compute_pipeline(dev, "shaders/occlusion_cull.comp");
 
-    if (!rhi_handle_valid(sys->hi_z_pipeline) || !rhi_handle_valid(sys->cull_pipeline)) {
-        LOG_WARN("OcclusionCull: one or more compute pipelines failed to load");
+    if (!rhi_handle_valid(sys->hi_z_sampler) ||
+        !rhi_handle_valid(sys->hi_z_pipeline) || !rhi_handle_valid(sys->cull_pipeline)) {
+        LOG_WARN("OcclusionCull: sampler or compute pipeline creation failed");
         occlusion_cull_shutdown(sys);
         return false;
     }
