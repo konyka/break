@@ -2152,6 +2152,61 @@ window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win
 
 **验收**：审查未发现问题，无需代码修改。BVH/VK/GL 三个构建路径均编译成功。
 
+## R115：网络复制缓冲区溢出 + glTF 资产加载防御性加固
+
+**审查范围**：物理系统（physics.c 687 行）、动画系统（animation.c 479 行）、
+渲染图（render_graph.c 621 行）、命令缓冲（cmd_buffer.c 508 行）、任务系统
+（task.c 722 行）、网络核心（network.c 463 行）、网络复制（net_replication.c
+559 行）、包序列化（packet.c 204 行）、资产加载（asset.c 590 行）、
+主循环（main.c 5607 行）。
+
+### 修复的问题
+
+1. **R115-1（ROBUSTNESS）**：`net_replicator_process` 未检查 `len > PACKET_MAX_SIZE`，
+   导致 `net_reorder_store` 中 `memcpy(slot->wire, wire, len)` 溢出
+   `u8 wire[PACKET_MAX_SIZE]`（1400 字节）缓冲区。内部接收路径
+   （`net_replicator_recv`）使用 `PACKET_MAX_SIZE` 大小的栈缓冲区所以安全，
+   但公共 API `net_replicator_feed`/`net_replicator_feed_from` 接受任意 `len`。
+   修复：在 `net_replicator_process` 入口添加 `len > PACKET_MAX_SIZE` 检查。
+
+2. **R115-2（ROBUSTNESS）**：`asset_load_gltf` 中多处 `calloc`/`malloc` 缺少 NULL
+   检查，分配大小来自不可信的 glTF 文件数据。畸形文件可触发超大分配请求，
+   `calloc` 返回 NULL 后循环写入导致崩溃。受影响的分配：`indices`、
+   `sverts`、`verts`、`skin_buf`、`node_to_joint`。修复：添加 NULL 检查，
+   分配失败时跳过原语或返回 false。
+
+3. **R115-3（ROBUSTNESS）**：`asset_load_gltf` 中 `cgltf_buffer_data` 返回值未检查
+   NULL。R109-2 已使 `cgltf_buffer_data` 在 `buffer`/`buffer->data` 为 NULL 时
+   返回 NULL，但调用方仍直接解引用。受影响的数据指针：`idx_data`、`pd`（顶点
+   位置）、`nd`（法线）、`ud`（UV）、`jd`/`wd`（骨骼权重）、`ibm_data`（逆绑定矩阵）。
+   修复：在循环条件中添加 NULL 守卫，或分配后检查并跳过。
+
+### 确认无需修复的子系统
+
+1. **physics.c**：calloc + NULL 检查。BVH broadphase + CCD sweep。碰撞检测
+   sphere/box/capsule 全组合，`fast_rsqrt` + `1e-12f` 防除零。`resolve_contact`
+   检查 `total_inv_mass <= 0`。body_id 边界检查。
+2. **animation.c**：`clip_find_keyframe` 二分搜索。`clip_sample` 检查
+   `ji >= bone_count`。`anim_ik_two_bone` 检查 `lab < eps || lcb < eps`，
+   `lat` clamp 到 `[0.001, lab+lcb-0.001]`。crossfade 事件回调循环 wrap。
+3. **render_graph.c**：calloc + NULL 检查。dead-pass culling + Kahn 拓扑排序 +
+   环检测。texture pool aliasing。所有资源句柄验证 `rg_resource_index_valid`。
+4. **cmd_buffer.c**：`cmd_buffer_reserve` 溢出检查。所有录制函数检查 NULL。
+   `parallel_renderer_submit` 排序 + 回放。线程安全：双缓冲 + mutex/cond。
+5. **task.c**：Chase-Lev 工作窃取队列，正确使用 `memory_order` 原子操作。
+   `task_alloc` pool 满回退 heap。`task_release` 引用计数。`task_wait_handle`
+   O(1) 查找 + generation 校验。
+6. **network.c**：跨平台 BSD sockets/Winsock2。所有 socket 操作检查
+   `INVALID_RAW_SOCKET`。`net__alloc_socket` calloc + NULL 检查 + fd 清理。
+   `net_poll` 栈/堆自适应。`net_close` 检查 `fd != INVALID_RAW_SOCKET`。
+7. **packet.c**：LE 编解码。`packet_can_write`/`packet_can_read` 边界检查。
+   `packet_read_begin` clamp `size > PACKET_MAX_SIZE`。所有读写函数安全。
+8. **main.c**：`shader_inject_define` malloc + NULL 检查。`file_read_full`
+   ftell/malloc 检查。多处大型 malloc（render_buf/cull_block/mega_block/
+   gcmds_scratch）缺少 NULL 检查，但均在启动时一次性分配，优先级低。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash

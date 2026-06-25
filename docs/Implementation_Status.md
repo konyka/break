@@ -4,7 +4,8 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R114 平台窗口管理与手柄输入审查（无需修复）** — 审查全平台窗口管理（window_x11.c 381 行 / window_wayland.c 719 行 / window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win.c 178 行）、剔除辅助（cull.c 31 行）。所有文件代码质量高：calloc + NULL 检查、资源释放完整、strncpy + memset 安全、设备热插拔处理完善。审查未发现问题，无需代码修改。
+最近更新：**R115 网络复制缓冲区溢出 + glTF 资产加载防御性加固** — **R115-1**（ROBUSTNESS）：`net_replicator_process` 未检查 `len > PACKET_MAX_SIZE`，导致 `net_reorder_store` 中 `memcpy(slot->wire, wire, len)` 溢出 1400 字节缓冲区。公共 API `net_replicator_feed`/`net_replicator_feed_from` 接受任意 `len`。修复：入口添加 `len > PACKET_MAX_SIZE` 检查。**R115-2**（ROBUSTNESS）：`asset_load_gltf` 中多处 `calloc`/`malloc` 缺少 NULL 检查，分配大小来自不可信 glTF 文件数据。修复：添加 NULL 检查。**R115-3**（ROBUSTNESS）：`cgltf_buffer_data` 返回值未检查 NULL（R109-2 已使该函数可返回 NULL）。修复：循环条件添加 NULL 守卫。审查确认 8 个子系统（物理、动画、渲染图、命令缓冲、任务系统、网络核心、包序列化、主循环）无需修复。23/23 测试通过。
+此前：**R114 平台窗口管理与手柄输入审查（无需修复）** — 审查全平台窗口管理（window_x11.c 381 行 / window_wayland.c 719 行 / window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win.c 178 行）、剔除辅助（cull.c 31 行）。所有文件代码质量高：calloc + NULL 检查、资源释放完整、strncpy + memset 安全、设备热插拔处理完善。审查未发现问题，无需代码修改。
 此前：**R113 SSGI uniform 位置硬编码 + VK buffer_update NULL deref 修复** — **R113-1**（CORRECTNESS）：`ssgi_init` 硬编码 blur uniform 位置 `loc_blur_dir_x = 0`，但 GL 链接器不保证 `u_direction` 在位置 0。`post_process.c` 正确查询了该位置，`ssgi.c` 遗漏。修复：用 `rhi_pipeline_get_uniform_location` 查询，并添加 `>= 0` 守卫。**R113-2**（ROBUSTNESS）：VK `rhi_buffer_update`/`rhi_buffer_update_region` fallback 路径 `vkMapMemory` 失败时 `mapped` 未定义，`memcpy` 崩溃。修复：检查返回值。审查确认 19 个子系统（全后期处理小文件、骨骼动画、引擎核心、RHI 句柄管理、平台时间）无需修复。23/23 测试通过。
 此前：**R112 test_vulkan.c file_read 防御性加固（全引擎 read_file 统一完成）** — **R112-1**（ROBUSTNESS）：`test_vulkan.c` 的 `file_read` 缺少 `ftell` 返回值检查和 `malloc` NULL 检查，是引擎中最后一个未加固的 `read_file` 实现。R110 修复了 `particles.c` 和 `water.c`，R112 修复了 `test_vulkan.c`，至此全引擎 28 个 `read_file`/`file_read` 实现全部完成统一加固。审查确认 10 个子系统（光照系统、SSAO、Tonemap、Mipmap 流式加载、DoF、SSR、TAA、FileWatch Windows/Linux、全引擎 read_file 验证）无需修复。23/23 测试通过。
 此前：**R111 GPU 剔除初始化验证 + 热重载路径终止修复** — **R111-1**（ROBUSTNESS）：`gpucull_init` 创建 3 个 GPU 缓冲区后未验证有效性就设置 `ready = true`。修复：添加三缓冲区有效性检查，失败时 `gpucull_shutdown` 清理并返回 false。**R111-2**（ROBUSTNESS）：`hotreload_pipeline_init` 未 `memset` 结构体就 `strncpy` 路径。修复：入口添加 `memset(hr, 0, sizeof(*hr))`。审查确认 12 个子系统无需修复。23/23 测试通过。
@@ -366,3 +367,9 @@
   - **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 - [x] Round 114：平台窗口管理与手柄输入审查（无需修复）——
   - **R114 审查**：全平台窗口管理（window_x11.c 381 行 / window_wayland.c 719 行 / window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win.c 178 行）、剔除辅助（cull.c 31 行）。所有文件 calloc + NULL 检查完整，资源释放完整，strncpy + memset 安全，设备热插拔处理完善。审查未发现问题，无需代码修改。
+- [x] Round 115：网络复制缓冲区溢出 + glTF 资产加载防御性加固 ——
+  - **R115 审查**：深度审查物理系统（physics.c）、动画系统（animation.c）、渲染图（render_graph.c）、命令缓冲（cmd_buffer.c）、任务系统（task.c）、网络核心（network.c）、网络复制（net_replication.c）、包序列化（packet.c）、资产加载（asset.c）、主循环（main.c）。
+  - **R115-1 net_replicator_process 缓冲区溢出**：`net_reorder_store` 中 `memcpy(slot->wire, wire, len)` 溢出 `u8 wire[PACKET_MAX_SIZE]`（1400 字节）。公共 API `net_replicator_feed`/`net_replicator_feed_from` 接受任意 `len`。修复：`net_replicator_process` 入口添加 `len > PACKET_MAX_SIZE` 检查。
+  - **R115-2 asset_load_gltf calloc NULL 检查**：`indices`、`sverts`、`verts`、`skin_buf`、`node_to_joint` 的 `calloc`/`malloc` 缺少 NULL 检查，分配大小来自不可信 glTF 文件数据。修复：添加 NULL 检查，分配失败时跳过原语或返回 false。
+  - **R115-3 asset_load_gltf cgltf_buffer_data NULL 检查**：`cgltf_buffer_data` 返回值未检查 NULL（R109-2 已使该函数可返回 NULL）。受影响指针：`idx_data`、`pd`、`nd`、`ud`、`jd`/`wd`、`ibm_data`。修复：循环条件添加 NULL 守卫，或分配后检查并跳过。
+  - **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。

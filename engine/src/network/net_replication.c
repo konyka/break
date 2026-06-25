@@ -262,6 +262,11 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
                                   const NetAddress *reply_to,
                                   NetTransformSnapshot *out, u32 max_count, u32 *out_count) {
     if (!rep || !wire || len == 0u || !out || !out_count) return NET_ERROR;
+    /* R115-1: Clamp len to PACKET_MAX_SIZE to prevent net_reorder_store buffer
+     * overflow when callers (net_replicator_feed / net_replicator_feed_from)
+     * pass arbitrary len.  The internal recv path already uses a
+     * PACKET_MAX_SIZE-sized stack buffer so this only affects the public API. */
+    if (len > PACKET_MAX_SIZE) return NET_ERROR;
     *out_count = 0u;
 
     PacketHeader hdr;

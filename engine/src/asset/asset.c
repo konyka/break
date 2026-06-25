@@ -259,25 +259,33 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
             if (idx_acc) {
                 idx_count = (u32)idx_acc->count;
+                /* R115-2/R115-3: Validate calloc and cgltf_buffer_data to prevent
+                 * NULL dereference on malformed glTF files with missing buffers. */
                 u32 *indices = calloc(idx_count, sizeof(u32));
-                if (idx_acc->component_type == cgltf_component_type_r_16u) {
-                    const u16 *src = (const u16 *)cgltf_buffer_data(idx_acc);
-                    for (u32 ii = 0; ii < idx_count; ii++) indices[ii] = (u32)src[ii];
-                } else if (idx_acc->component_type == cgltf_component_type_r_32u) {
-                    memcpy(indices, cgltf_buffer_data(idx_acc), idx_count * sizeof(u32));
-                } else {
-                    const u8 *src = cgltf_buffer_data(idx_acc);
-                    for (u32 ii = 0; ii < idx_count; ii++) indices[ii] = (u32)src[ii];
+                const u8 *idx_data = cgltf_buffer_data(idx_acc);
+                if (indices && idx_data) {
+                    if (idx_acc->component_type == cgltf_component_type_r_16u) {
+                        const u16 *src = (const u16 *)idx_data;
+                        for (u32 ii = 0; ii < idx_count; ii++) indices[ii] = (u32)src[ii];
+                    } else if (idx_acc->component_type == cgltf_component_type_r_32u) {
+                        memcpy(indices, idx_data, idx_count * sizeof(u32));
+                    } else {
+                        const u8 *src = idx_data;
+                        for (u32 ii = 0; ii < idx_count; ii++) indices[ii] = (u32)src[ii];
+                    }
+                    RHIBufferDesc ibdesc = { .usage = RHI_BUFFER_USAGE_INDEX, .size = idx_count * sizeof(u32), .initial_data = indices };
+                    ibuf = rhi_buffer_create(ctx->device, &ibdesc);
                 }
-                RHIBufferDesc ibdesc = { .usage = RHI_BUFFER_USAGE_INDEX, .size = idx_count * sizeof(u32), .initial_data = indices };
-                ibuf = rhi_buffer_create(ctx->device, &ibdesc);
                 free(indices);
             }
 
             if (jnt_acc && wgt_acc) {
                 sn->skinned = true;
                 SkinnedVertex *sverts = calloc(vert_count, sizeof(SkinnedVertex));
+                /* R115-2/R115-3: Skip primitive if allocation or buffer data fails. */
+                if (!sverts) continue;
                 const u8 *pd = cgltf_buffer_data(pos_acc);
+                if (!pd) { free(sverts); continue; }
                 usize ps = cgltf_accessor_stride(pos_acc);
                 for (u32 vi = 0; vi < vert_count; vi++) {
                     memcpy(sverts[vi].pos, pd + vi * ps, sizeof(f32) * 3);
@@ -285,14 +293,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 if (nrm_acc) {
                     const u8 *nd = cgltf_buffer_data(nrm_acc);
                     usize ns = cgltf_accessor_stride(nrm_acc);
-                    for (u32 vi = 0; vi < vert_count; vi++) {
+                    for (u32 vi = 0; nd && vi < vert_count; vi++) {
                         memcpy(sverts[vi].normal, nd + vi * ns, sizeof(f32) * 3);
                     }
                 }
                 if (uv_acc && cgltf_accessor_is_type(uv_acc, cgltf_type_vec2)) {
                     const u8 *ud = cgltf_buffer_data(uv_acc);
                     usize us = cgltf_accessor_stride(uv_acc);
-                    for (u32 vi = 0; vi < vert_count; vi++) {
+                    for (u32 vi = 0; ud && vi < vert_count; vi++) {
                         memcpy(sverts[vi].uv, ud + vi * us, sizeof(f32) * 2);
                     }
                 }
@@ -301,7 +309,7 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 const u8 *jd = cgltf_buffer_data(jnt_acc);
                 usize wgt_stride = cgltf_accessor_stride(wgt_acc);
                 const u8 *wd = cgltf_buffer_data(wgt_acc);
-                for (u32 vi = 0; vi < vert_count; vi++) {
+                for (u32 vi = 0; jd && wd && vi < vert_count; vi++) {
                     if (jnt_acc->component_type == cgltf_component_type_r_8u) {
                         const u8 *j = jd + vi * jnt_stride;
                         for (u32 k = 0; k < 4; k++) sverts[vi].joints[k] = (u32)j[k];
@@ -336,7 +344,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 }
             } else {
                 Vertex *verts = calloc(vert_count, sizeof(Vertex));
+                /* R115-2/R115-3: Skip primitive if allocation or buffer data fails. */
+                if (!verts) continue;
                 const u8 *pd = cgltf_buffer_data(pos_acc);
+                if (!pd) { free(verts); continue; }
                 usize ps = cgltf_accessor_stride(pos_acc);
                 for (u32 vi = 0; vi < vert_count; vi++) {
                     memcpy(verts[vi].pos, pd + vi * ps, sizeof(f32) * 3);
@@ -344,14 +355,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 if (nrm_acc) {
                     const u8 *nd = cgltf_buffer_data(nrm_acc);
                     usize ns = cgltf_accessor_stride(nrm_acc);
-                    for (u32 vi = 0; vi < vert_count; vi++) {
+                    for (u32 vi = 0; nd && vi < vert_count; vi++) {
                         memcpy(verts[vi].normal, nd + vi * ns, sizeof(f32) * 3);
                     }
                 }
                 if (uv_acc && cgltf_accessor_is_type(uv_acc, cgltf_type_vec2)) {
                     const u8 *ud = cgltf_buffer_data(uv_acc);
                     usize us = cgltf_accessor_stride(uv_acc);
-                    for (u32 vi = 0; vi < vert_count; vi++) {
+                    for (u32 vi = 0; ud && vi < vert_count; vi++) {
                         memcpy(verts[vi].uv, ud + vi * us, sizeof(f32) * 2);
                     }
                 }
@@ -397,11 +408,21 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         usize jp_bytes = skin->joints_count * sizeof(u32);
         usize ib_off   = (jp_bytes + 15u) & ~(usize)15u;
         u8 *skin_buf    = (u8 *)calloc(1, ib_off + skin->joints_count * sizeof(Mat4));
+        if (!skin_buf) {
+            LOG_ERROR("glTF: skin allocation failed");
+            cgltf_free(data);
+            return false;
+        }
         out_scene->joint_parents = (u32 *)skin_buf;
         out_scene->inverse_bind  = (Mat4 *)(skin_buf + ib_off);
 
         /* Build node_index → joint_index mapping for O(1) parent lookup */
         u32 *node_to_joint = (u32 *)malloc(data->nodes_count * sizeof(u32));
+        if (!node_to_joint) {
+            LOG_ERROR("glTF: node_to_joint allocation failed");
+            cgltf_free(data);
+            return false;
+        }
         for (u32 ni2 = 0; ni2 < data->nodes_count; ni2++) node_to_joint[ni2] = UINT32_MAX;
         for (u32 jj = 0; jj < skin->joints_count; jj++) {
             node_to_joint[(u32)(skin->joints[jj] - data->nodes)] = jj;
@@ -421,7 +442,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         if (skin->inverse_bind_matrices) {
             const f32 *ibm_data = (const f32 *)cgltf_buffer_data(skin->inverse_bind_matrices);
             usize ibm_count = (usize)skin->inverse_bind_matrices->count;
-            for (u32 ji = 0; ji < ibm_count && ji < skin->joints_count; ji++) {
+            /* R115-3: Check ibm_data for NULL (cgltf_buffer_data may return NULL). */
+            for (u32 ji = 0; ibm_data && ji < ibm_count && ji < skin->joints_count; ji++) {
                 memcpy(out_scene->inverse_bind[ji].e, ibm_data + ji * 16, sizeof(f32) * 16);
             }
         } else {
