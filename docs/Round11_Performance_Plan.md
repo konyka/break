@@ -2394,6 +2394,58 @@ ECS_JOB_POOL_SIZE，LOG_WARN 提示降级。仅处理前 512 个非空 chunk，
 
 **里程碑**：R102-R118 完成引擎全部 86 个 .c 源文件的逐文件深度审查。
 
+---
+
+### R119：头文件内联函数 + framework + platform demo 审查（无需修复）
+
+**审查范围**：83 个头文件（.h）、framework/ 目录（3 个 C++ 文件）、
+platform/ 目录（5 个 demo 文件）、tests/test_framework.h。
+
+#### 含内联函数的头文件（14 个，均无问题）
+
+1. **math.h**（253 行）：`fast_rsqrt`（SSE + Newton-Raphson + 标量回退）、
+   `vec3_len`/`vec3_normalize`（`1e-12f` 防除零）、`quat_normalize`/`quat_slerp`/
+   `quat_nlerp`（`1e-12f` 守卫 + `dot < 0` 翻转）、`quat_from_axis_angle`
+   （`1e-6f` 零长度轴守卫）、`mat4_mul`（SSE + 标量）、`mat4_mul_ortho_diag`/
+   `mat4_mul_proj_view`/`mat4_inv_perspective`（文档化前置条件）。
+2. **simd.h**（284 行）：SSE2 AABB overlap/ray-AABB intersection/vector ops/
+   batch AABB，全部有标量回退。shuffle 提取避免栈存储。
+3. **alloc.h**（84 行）：`arena_alloc` 有 `offset > capacity` 溢出检查。
+4. **pool.h**（62 行）：`pool_used`/`pool_capacity`/`pool_available` 有 NULL 检查。
+5. **cull.h**（48 行）：p-vertex + sign_mask AABB 测试，sphere 测试有 `-radius` 阈值。
+6. **imgui.h**（103 行）：`imui_slider_map` 有 `w > 0` 防除零，
+   `imui_slider_norm` 有 `maxv == minv` 防除零。
+7. **lighting.h**（105 行）：`light_system_set_cascade_vp` 简单指针赋值。
+8. **string.h**（31 行）：`str_from_c` null 终止扫描。
+9. **assert.h**（34 行）：`engine_assert` 宏 `do-while(0)` 包裹。
+10. **types.h**（29 行）：类型别名 + 对齐宏。
+11. **rhi.h**（317 行）：`rhi_handle_valid` 检查 generation != 0。
+12. **ecs.h**（139 行）：`entity_valid` 检查 generation != 0。
+13. **packet.h**（49 行）：纯声明，无内联函数。
+14. **async_loader_private.h**（58 行）：Win32/POSIX 线程原语薄封装。
+
+#### framework/ 目录（3 个 C++ 文件，均无问题）
+
+1. **base_application.cc**（53 行）：Init/DeInit/Tick/IsQuit 桩实现，无内存分配。
+2. **graphics_manager.cc**（21 行）：空命名空间。
+3. **main.cc**（25 行）：Init → Tick 循环 → DeInit 标准框架入口。
+
+#### platform/ 目录（5 个 demo 文件，不链接到引擎库）
+
+1. **hello_engine_xcb.c**（112 行）：独立 XCB 窗口 demo。
+2. **hello_engine_xcb_opengl.cc**：独立 XCB+OpenGL demo。
+3. **hello_engine_win.c**：独立 Win32 demo。
+4. **hello_engine_win_d2d.cc**：独立 Win32+D2D demo。
+5. **hello_engine_win_d3d.cc**：独立 Win32+D3D demo。
+
+#### tests/test_framework.h（96 行，无问题）
+
+标准测试宏框架：`ASSERT_TRUE/FALSE/EQ/NEQ/FLOAT_EQ/STR_EQ/NOT_NULL` +
+`RUN_TEST` + `TEST_MAIN_BEGIN/END`。所有宏使用 `do-while(0)` 包裹。
+
+**验收**：审查未发现问题，无需代码修改。R102-R119 完成引擎全部源码
+（86 个 .c + 83 个 .h + framework + platform + tests）的全量审查。
+
 ## 构建与回归命令
 
 ```bash
