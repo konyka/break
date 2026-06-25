@@ -102,8 +102,12 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
     ssgi->loc_screen_w = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_sw");
     ssgi->loc_screen_h = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_sh");
 
-    ssgi->loc_blur_dir_x = 0;
-    ssgi->loc_blur_dir_y = 4;
+    /* R113-1: Query the blur direction uniform location from the pipeline
+     * instead of hardcoding 0.  In GL the linker assigns locations and they
+     * are not guaranteed to be 0 — the hardcoded value was overwriting the
+     * wrong uniform, corrupting the SSGI blur pass. */
+    ssgi->loc_blur_dir_x = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_blur_pipe, "u_direction");
+    ssgi->loc_blur_dir_y = -1;  /* unused — kept for ABI compatibility */
 
     ssgi->ready = true;
     LOG_INFO("SSGI: initialized (%ux%u, radius=%.2f, intensity=%.2f)", pw, ph, ssgi->radius, ssgi->intensity);
@@ -144,7 +148,7 @@ void ssgi_apply(SSGISystem *ssgi, RHICmdBuffer *cmd,
     rhi_offscreen_fbo_bind(cmd, &ssgi->ssgi_blur_fbo);
     rhi_cmd_bind_pipeline(cmd, ssgi->ssgi_blur_pipe);
     rhi_cmd_bind_texture(cmd, ssgi->ssgi_fbo.color_tex, ssgi->sampler, 0);
-    rhi_cmd_set_uniform_vec2(cmd, ssgi->loc_blur_dir_x, 1.0f, 0.0f);
+    if (ssgi->loc_blur_dir_x >= 0) rhi_cmd_set_uniform_vec2(cmd, ssgi->loc_blur_dir_x, 1.0f, 0.0f);
     rhi_cmd_draw(cmd, 3, 1);
 }
 

@@ -4423,7 +4423,10 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
         memcpy(bd->mapped, data, size);
     } else {
         void *mapped;
-        vkMapMemory(vk->device, bd->memory, 0, size, 0, &mapped);
+        /* R113-2: Guard against vkMapMemory failure — without this check
+         * 'mapped' is undefined and memcpy would crash. */
+        if (vkMapMemory(vk->device, bd->memory, 0, size, 0, &mapped) != VK_SUCCESS)
+            return;
         memcpy(mapped, data, size);
         vkUnmapMemory(vk->device, bd->memory);
     }
@@ -4437,7 +4440,9 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const
         memcpy(bd->mapped + offset, data, size);
     } else {
         void *mapped;
-        vkMapMemory(vk->device, bd->memory, offset, size, 0, &mapped);
+        /* R113-2: Guard against vkMapMemory failure — same fix as rhi_buffer_update. */
+        if (vkMapMemory(vk->device, bd->memory, offset, size, 0, &mapped) != VK_SUCCESS)
+            return;
         memcpy(mapped, data, size);
         vkUnmapMemory(vk->device, bd->memory);
     }

@@ -2041,6 +2041,80 @@ R110 已修复 `particles.c` 和 `water.c` 的同类问题。经过全引擎 28 
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R113：SSGI uniform 位置硬编码 + VK buffer_update NULL deref（已完成）
+
+**审查范围**：RHI 后端（rhi_gl.c 1976 行 / rhi_vk.c 5342 行）、引擎核心
+（engine.c / rhi.c）、全后期处理小文件批量验证（combined_post_process /
+post_process / ssgi / volumetric / upscale / fxaa / color_grade / god_rays /
+motion_blur / sharpen / lens_flare / lens_effects / cinematic / debug_viz /
+forward_velocity）、骨骼动画（skeleton.c）、平台时间（time.c）。
+
+### 发现的问题
+
+1. **R113-1（中等 — GL 正确性 bug）**：`ssgi_init` 硬编码 blur uniform 位置
+   `loc_blur_dir_x = 0` 和 `loc_blur_dir_y = 4`，而非从管线查询。
+   SSGI blur 管线使用共享的 `bloom_blur.frag`，其中 `u_direction` 是
+   `uniform vec2`。在 GL 后端中，uniform 位置由链接器分配，不保证为 0。
+   `post_process.c` 正确使用了 `rhi_pipeline_get_uniform_location(dev,
+   pp->blur_pipe, "u_direction")` 查询，但 ssgi.c 遗漏。
+   硬编码值 0 在 GL 中可能指向 `u_texture` sampler 或其他 uniform，
+   导致 SSGI blur 方向写入错误位置，破坏渲染。
+   `loc_blur_dir_y = 4` 是完全未使用的死代码。
+   **修复**：用 `rhi_pipeline_get_uniform_location` 查询 `u_direction`，
+   并在 `ssgi_apply` 中添加 `>= 0` 守卫检查。
+
+2. **R113-2（低 — VK 极端 OOM 下 NULL deref）**：`rhi_buffer_update` 和
+   `rhi_buffer_update_region` 的 fallback 路径调用 `vkMapMemory` 后未检查
+   返回值。所有 VK 缓冲区使用持久映射（`bd->mapped`），fallback 路径仅在
+   `bd->mapped == NULL`（vkMapMemory 在创建时失败）时触发。此时再次
+   `vkMapMemory` 也可能失败，`mapped` 指针未定义，`memcpy` 崩溃。
+   **修复**：检查 `vkMapMemory` 返回 `VK_SUCCESS`，失败时提前返回。
+
+### 确认无需修复的子系统
+
+1. **combined_post_process.c**：`cpp_read_file` 完整检查。combined/fallback
+   两条路径均有 memset + 管线验证 + 逐资源 `rhi_handle_valid`。
+2. **post_process.c**：`pp_read_file` 完整检查。4 条管线逐个验证 + sampler
+   验证 + FBO ping/pong 验证。`post_process_get_bloom_texture` 检查
+   `fbo_composite` 有效性。
+3. **volumetric.c**：标准模式。`vol_read_file` 完整检查。管线验证后
+   `ready=true`。uniform 全部 `>= 0` 守卫。
+4. **upscale.c**：标准模式。`ups_read_file` 完整检查。双缓冲 history
+   ping-pong。TSR 时空上采样。
+5. **fxaa.c**：标准模式。`fxaa_read_file` 完整检查。管线验证后 `ready=true`。
+6. **color_grade.c**：标准模式。`cg_read_file` 完整检查。管线验证后 `ready=true`。
+7. **god_rays.c**：标准模式。`gr_read_file` 完整检查。`clip_w <= 0.001f`
+   早退安全。
+8. **motion_blur.c**：标准模式。`mb_read_file` 完整检查。
+9. **sharpen.c**：标准模式。`sh_read_file` 完整检查。
+10. **lens_flare.c**：标准模式。`lf_read_file` 完整检查。`light_view_z > 0`
+    和 `clip_w <= 0.001f` 早退安全。
+11. **lens_effects.c**：标准模式。`le_read_file` 完整检查。
+12. **cinematic.c**：标准模式。`cine_read_file` 完整检查。无 FBO（直写当前
+    render pass），设计正确。
+13. **debug_viz.c**：标准模式。`dv_read_file` 完整检查。
+14. **forward_velocity.c**：标准模式。`fv_read_file` 完整检查。
+    `forward_velocity_apply` 额外检查 `rhi_handle_valid(sys->fbo.fb)`。
+15. **skeleton.c**：`skeleton_set_joints` 钳制 `joint_count`。
+    `skeleton_evaluate` 检查 `ji >= joint_count`。`anim_find_keyframe`
+    二分搜索保证 `kf < keyframe_count`。`anim_clip_add_channel` 钳制
+    `keyframe_count`。`anim_clip_add_event` 手动 null 终止。
+    `skeleton_upload` 检查 `rhi_handle_valid`。
+16. **engine.c**：`engine_init` 检查 `platform_create` 返回。`engine_shutdown`
+    检查 `platform` 非空。帧率限制逻辑安全。
+17. **rhi.c**：`rhi_alloc_slot` 检查 `free_count == 0`。`rhi_get_resource`
+    检查 `index >= MAX` + `generation` 匹配 + `alive`。`rhi_free_slot`
+    检查 `generation` 匹配 + `alive`。freelist O(1) 分配/释放正确。
+18. **time.c**：Windows QPC + Linux clock_gettime(CLOCK_MONOTONIC)。
+    `time_sleep_us` Windows 分支区分 `>= 1000` 和 `> 0`。安全。
+19. **RHI 后端 calloc NULL 检查**：GL/VK 后端各 15 处 calloc，其中
+    5 处有 NULL 检查（init/device_create/gpu_timer）。其余 10 处
+    缺失但概率极低（小结构体 calloc 仅在极端内存压力下失败），
+    且失败后立即在首次字段访问时崩溃（fail-fast），不会产生隐蔽
+    腐败。后续可视需要补充。
+
+**验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
