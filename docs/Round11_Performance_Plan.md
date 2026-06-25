@@ -2115,6 +2115,43 @@ forward_velocity）、骨骼动画（skeleton.c）、平台时间（time.c）。
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+## R114：平台窗口管理与手柄输入审查（无需修复）
+
+**审查范围**：全平台窗口管理（window_x11.c 381 行 / window_wayland.c 719 行 /
+window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win.c 178 行）、
+剔除辅助（cull.c 31 行）。
+
+### 确认无需修复的子系统
+
+1. **window_x11.c**：calloc + NULL 检查。XOpenDisplay 检查。XRR 监视器枚举
+   正确释放（XRRFreeOutputInfo/XRRFreeCrtcInfo/XRRFreeScreenResources）。
+   `strncpy(m->name, output->name, 63)` 前有 `memset(m, 0, sizeof(MonitorInfo))`
+   保证 null 终止。`platform_get_monitor_info` 检查 `index >= count || !out`。
+   鼠标相对模式 warp-to-center + dx/dy 累加。全屏切换通过 _NET_WM_STATE。
+2. **window_wayland.c**：calloc + NULL 检查。wl_display_connect/wl_compositor/
+   xdg_wm_base/wl_surface 全部检查。XKB keymap mmap 检查 MAP_FAILED +
+   munmap + close(fd)。keyboard_key 检查 `xkb_state` 非空。相对指针通过
+   zwp_relative_pointer_v1 + zwp_pointer_constraints_v1（正确 Wayland 方法）。
+   输出监听器 4 回调（geometry/mode/scale/done），monitor_count 仅在 done 中
+   递增。platform_destroy 逐个检查释放所有 Wayland 资源。
+3. **window_win32.c**：calloc + NULL 检查。RegisterClassExA/CreateWindowExA
+   检查 + 清理。动态 DPI 函数加载（SetProcessDpiAwarenessContext/
+   GetDpiForWindow/GetDpiForMonitor）。Raw Input 64 字节栈缓冲区 + size 检查。
+   监视器枚举 WideCharToMultiByte + 显式 null 终止。全屏切换 save/restore
+   windowed style + rect。相对鼠标 RegisterRawInputDevices + ClipCursor。
+4. **gamepad_linux.c**：evdev 设备发现（/dev/input/event*）。ioctl(EVIOCGBIT)
+   过滤手柄（EV_KEY + EV_ABS + BTN_GAMEPAD）。ioctl(EVIOCGABS) 查询轴校准。
+   inotify 热插拔（IN_CREATE/IN_DELETE/IN_ATTRIB）。所有轴/按钮索引检查
+   `>= 0 && < MAX`。normalize_axis/trigger 检查 `range == 0`。read 错误处理
+   EAGAIN/EWOULDBLOCK/ENODEV。close_device 检查 `connected` + `fd >= 0`。
+5. **gamepad_win.c**：动态 XInput 加载（xinput1_4 → xinput1_3 → xinput9_1_0）。
+   gamepad_poll 检查 `initialized && out_pads && get_state`。normalize_stick
+   死区 + 重缩放。断开连接状态清除。gamepad_shutdown 检查 `initialized && dll`。
+6. **cull.c**：frustum_from_vp 提取 6 平面。`len2 > 1e-12f` 防除零。
+   sign_mask 预计算 p-vertex 选择。fast_rsqrt 归一化。
+
+**验收**：审查未发现问题，无需代码修改。BVH/VK/GL 三个构建路径均编译成功。
+
 ## 构建与回归命令
 
 ```bash
