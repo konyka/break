@@ -22,6 +22,10 @@ AudioSystem *audio_system_create(void) {
     usize align  = _Alignof(max_align_t);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
     u8 *audio_block = (u8 *)calloc(1, as_off + sizeof(struct AudioImpl));
+    if (!audio_block) {
+        LOG_ERROR("Audio: system allocation failed");
+        return NULL;
+    }
     AudioSystem *as  = (AudioSystem *)audio_block;
     struct AudioImpl *impl = (struct AudioImpl *)(audio_block + as_off);
 
@@ -35,6 +39,12 @@ AudioSystem *audio_system_create(void) {
     as->engine = impl;
     as->source_cap = 32;
     as->sources = calloc(as->source_cap, sizeof(AudioSource));
+    if (!as->sources) {
+        LOG_ERROR("Audio: sources allocation failed");
+        ma_engine_uninit(&impl->engine);
+        free(as);
+        return NULL;
+    }
     as->source_count = 0;
     as->listener_forward = vec3(0, 0, -1);
     as->listener_up = vec3(0, 1, 0);

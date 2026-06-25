@@ -62,7 +62,14 @@ void ecs_parallel_for(World *w, TaskSystem *ts,
         jobs = _job_pool;
     } else {
         jobs = (EcsJob *)malloc(job_count * sizeof(EcsJob));
-        heap_fallback = true;
+        if (!jobs) {
+            LOG_WARN("ECS: job allocation failed (%u jobs), running serially", job_count);
+            jobs = _job_pool;
+            /* Clamp to pool size: process only first ECS_JOB_POOL_SIZE chunks */
+            if (job_count > ECS_JOB_POOL_SIZE) job_count = ECS_JOB_POOL_SIZE;
+        } else {
+            heap_fallback = true;
+        }
     }
     u32 ji = 0;
     for (u32 ai = 0; ai < q->match_count; ai++) {

@@ -2337,6 +2337,63 @@ staging buffer 未检查 NULL，OOM 时 `ls->_upload_buf = NULL` 后续
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+---
+
+### R118：音频/ECS 系统 calloc NULL 检查 + IBL/间接绘制/UI/数学/UTF-8 审查
+
+**审查范围**：audio.c（306 行）、assert.c（18 行）、ecs_system.c（141 行）、
+math.c（122 行）、ibl.c（348 行）、indirect_draw.c（216 行）、debug_ui.c（69 行）、
+imgui.c（171 行）、utf8.c（65 行）。这是引擎源码全量审查的最后一轮——
+R102-R118 覆盖了全部 86 个 .c 源文件。
+
+#### R118-1：audio.c calloc NULL 检查（2 处）
+
+**问题**：`audio_system_create` 中两处 calloc 未检查返回值：
+
+1. `calloc(1, as_off + sizeof(struct AudioImpl))` 分配 AudioSystem + AudioImpl
+   单块内存。失败时 `audio_block = NULL`，`impl` 指向近零地址，
+   `ma_engine_init(NULL, &impl->engine)` 写入近零地址崩溃。
+2. `calloc(as->source_cap, sizeof(AudioSource))` 分配音源数组。失败时
+   `as->sources = NULL`，函数仍返回非 NULL AudioSystem，后续
+   `audio_play`/`audio_stop`/`audio_system_destroy` 解引用 NULL 崩溃。
+
+**修复**：
+- audio_block calloc 失败时 LOG_ERROR + return NULL。
+- sources calloc 失败时 LOG_ERROR + `ma_engine_uninit` 清理 + free + return NULL。
+
+#### R118-2：ecs_system.c 堆回退 malloc NULL 检查
+
+**问题**：`ecs_parallel_for` 中当 job_count > 512（ECS_JOB_POOL_SIZE）时
+回退到 `malloc(job_count * sizeof(EcsJob))`，未检查返回值。失败时
+`jobs = NULL`，后续 `jobs[ji].view.world = w` 写入 NULL 崩溃。
+
+**修复**：malloc 失败时回退到静态池 `_job_pool` 并钳制 job_count 到
+ECS_JOB_POOL_SIZE，LOG_WARN 提示降级。仅处理前 512 个非空 chunk，
+避免崩溃。
+
+#### 审查确认无需修复的子系统
+
+1. **assert.c**：`engine_assert_fail` 简单 abort 函数，basename 提取安全，无内存分配。
+2. **math.c**：纯数学函数。`mat4_inverse` 有 `det == 0.0f` 奇异矩阵守卫。
+   `mat4_perspective` 无除零风险（`tanf` 输入由调用方保证有效）。无内存分配。
+3. **ibl.c**：IBL 预计算。`ibl_read_file` 有完整 ftell/malloc NULL 检查。
+   所有 RHI 句柄创建后用 `rhi_handle_valid` 验证。uniform 位置用 `>= 0` 守卫。
+   `ibl_destroy` 逐资源检查并置 NULL。
+4. **indirect_draw.c**：GPU 间接绘制。`id_read_file` 有完整 ftell/malloc NULL 检查。
+   4 个 buffer 创建后全部验证，失败时 `indirect_draw_destroy` 清理并返回 false。
+   `_loc_total_draws` 有 `>= 0` 守卫。
+5. **debug_ui.c**：调试 UI 覆盖层。`line_count >= 32` 上限检查。`vsnprintf` 用
+   `sizeof(ui->lines[0])` 防溢出。font renderer 初始化失败时回退到 LOG_INFO。
+6. **imgui.c**：即时模式 UI。固定栈缓冲区 `char buf[256]`/`char buf[128]` +
+   `vsnprintf`/`snprintf` 安全。所有 widget 函数有 NULL font 检查。无内存分配。
+7. **utf8.c**：UTF-8 解码器。null 终止字节 `\0` 自动失败 continuation byte 检查。
+   overlong encoding 检查。UTF-16 surrogate halves（0xD800-0xDFFF）拒绝。
+   4-byte 范围验证（0x10000-0x10FFFF）。`utf8_strlen` 有 `while (*s)` 终止检查。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
+**里程碑**：R102-R118 完成引擎全部 86 个 .c 源文件的逐文件深度审查。
+
 ## 构建与回归命令
 
 ```bash
