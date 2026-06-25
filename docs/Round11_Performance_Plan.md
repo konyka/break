@@ -2505,6 +2505,59 @@ R116-1 添加了 `malloc` NULL 检查但未检查 `ftell < 0`。
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+---
+
+### R121：第三轮深度审查 — vfs double-free 修复 + 着色器/strncpy/realloc/shift 全扫描
+
+**审查策略**：第二轮修复 ftell 回绕后，第三轮系统扫描更微妙的问题模式：
+- `strncpy` 缺失 null 终止符
+- `snprintf`/`sprintf` 缓冲区安全
+- `realloc` 旧指针泄漏
+- 整数截断（`size_t` → `u32`）
+- 移位越界（`1u << i` 当 `i >= 32`）
+- `sscanf` 缓冲区溢出
+- `atoi` 输入验证
+- 着色器除零/越界
+
+#### R121-1：vfs.c `vfs_mount_pak` double-free（R120-1b 回归修复）
+
+**问题**（REGRESSION）：R120-1b 在 `vfs_mount_pak` 中添加了 hash table `malloc`
+NULL 检查：
+```c
+u32 idx = vfs->mount_count++;  // mount 已注册
+vfs->mounts[idx].pak_entries = entries;
+vfs->mounts[idx].pak_names = names;
+u32 *table = malloc(...);
+if (!table) { free(names); free(entries); fclose(fp); return false; }
+```
+但 `mount_count` 已递增且 `mounts[idx]` 已持有 `entries`/`names`/`fp` 指针。
+失败路径释放这些资源后返回，`vfs_destroy` 后续迭代时会再次 `free`/`fclose` →
+**double-free**。
+
+**修复**：将 hash table 构建移到 mount 注册之前。失败时只需释放资源并返回，
+无需回滚 mount 注册——因为 mount 尚未注册。
+
+#### 审查确认无需修复的子系统
+
+1. **strncpy**（24 处）：全部有显式 null 终止或依赖 calloc/memset 零初始化。
+2. **snprintf**（25 处）：全部使用 `sizeof(buf)`，无 `sprintf`。
+3. **realloc**（4 处）：全部使用临时变量 + NULL 检查（ecs.c/alloc.c/script.c）。
+4. **memcpy count*sizeof**（10 处）：count 全部有编译期或运行期边界约束。
+5. **整数截断**（4 处）：`size_t`→`u32`，实际值远小于 2^32。
+6. **移位操作**（17 处）：`LOD_MAX_LEVELS=4`、`bone<64` 检查、编译期常量。
+7. **sscanf**（6 处）：全部使用宽度限制（`%255s`/`%63s`）。
+8. **atoi**（16 处）：全部用于非对抗性环境变量/设备 ID 解析。
+9. **着色器**（cluster_cull/cull/compact_draws/brdf_lut/deferred_light）：
+   - cull.comp L49：`w <= 0.0 ? w = 1e-6` 防除零
+   - deferred_light.frag L111：`+ 0.001` 防 cook_torrance 除零
+   - deferred_light.frag L190/195/208：`max(x, 1e-3/1e-4)` 防除零
+   - brdf_lut.comp L82：`max(NdotH * NdotV, 1e-5)` 防除零
+   - cluster_cull.comp L98：`clip.w > 0.001` 防除零
+   - 所有 compute shader：`if (idx >= COUNT) return` 边界检查
+10. **编译器警告**：GCC 和 Clang 均零警告（排除第三方库）。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash

@@ -77,15 +77,8 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     fseek(fp, sizeof(PakHeader) + hdr.entry_count * sizeof(PakEntry), SEEK_SET);
     fread(names, 1, hdr.name_table_size, fp);
 
-    u32 idx = vfs->mount_count++;
-    vfs->mounts[idx].type = VFS_MOUNT_PAK;
-    strncpy(vfs->mounts[idx].path, pak_path, VFS_MAX_PATH - 1);
-    vfs->mounts[idx].pak_fp = fp;
-    vfs->mounts[idx].pak_header = hdr;
-    vfs->mounts[idx].pak_entries = entries;
-    vfs->mounts[idx].pak_names = names;
-
-    /* Build hash table for O(1) lookup: open-addressing with linear probing */
+    /* Build hash table for O(1) lookup: open-addressing with linear probing.
+     * R121: Moved BEFORE mount registration so failure doesn't require rollback. */
     u32 table_size = next_pow2(hdr.entry_count * 2);
     u32 *table = (u32 *)malloc(table_size * sizeof(u32));
     if (!table) { free(names); free(entries); fclose(fp); return false; }
@@ -98,6 +91,14 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
         }
         table[slot] = e;
     }
+
+    u32 idx = vfs->mount_count++;
+    vfs->mounts[idx].type = VFS_MOUNT_PAK;
+    strncpy(vfs->mounts[idx].path, pak_path, VFS_MAX_PATH - 1);
+    vfs->mounts[idx].pak_fp = fp;
+    vfs->mounts[idx].pak_header = hdr;
+    vfs->mounts[idx].pak_entries = entries;
+    vfs->mounts[idx].pak_names = names;
     vfs->mounts[idx].pak_hash_table = table;
     vfs->mounts[idx].pak_hash_size = table_size;
 
