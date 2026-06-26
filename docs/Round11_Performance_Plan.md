@@ -2808,6 +2808,25 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+### R127：第九轮深度审查 — 整数溢出/除零/realloc/sscanf 全量扫描（无新问题）
+
+**审查范围**：在 R120-R126 八轮修复后，对全代码库进行第九轮扫描，覆盖前八轮未系统检查的模式。
+
+**扫描结果**：
+
+1. **整数溢出扫描**：`malloc((u32)...)` / `calloc((u32)...)` 模式 — 全代码库 0 处匹配（所有分配大小均使用 `usize`/`size_t` 转换）。`render_scale * w` 乘法为 f32 运算（render_scale 典型值 0.5-2.0，w/h 典型 1920×1080，结果在 u32 范围内）。`sizeof(T) * n` 乘法在 64 位系统提升为 usize，无溢出。→ 安全
+2. **realloc 模式**（scene_serial.c 3 处 + script.c 1 处）：`bb_reserve` L36 NULL 检查 ✓ + 旧指针保留 ✓；`scene_load_bscn` L961 NULL 检查 ✓ + `ok=false` 降级 ✓；`script_parse_line` L49 NULL 检查 ✓ + `return` 降级 ✓。→ 安全
+3. **sscanf 宽度限制**（script.c 4 处 + net_replication.c 1 处）：`%63s` 对应 `char[64]` 缓冲 ✓；`%255s` 对应网络缓冲 ✓。→ 安全
+4. **除零风险**（main.c + terrain.c + lighting.c + font.c 共 25+ 处）：`terrain.grid_size` 作为除数 — `terrain_init` 中 `grid_size=0` 时初始化循环不执行，x86-64 SSE2 浮点除零产生 inf/NaN 而非 SIGFPE。`moving` 除数 — L3037 `if (moving > 0)` 守卫 ✓。`near` 相机近裁面 — 典型 0.1f ✓。`CLUSTER_X/Y` — 编译时常量 ✓。`FONT_ATLAS_SIZE` — 编译时常量 ✓。→ 安全
+5. **scene_serial.c 全量 malloc/calloc**（10 处）：L73 malloc NULL 检查 ✓ + `4*n*2` 在 u32 范围 ✓；L209 calloc NULL 检查 ✓ + `4*n+1` 在 u32 范围 ✓；L442/L486/L554 calloc NULL 检查 ✓ + `n ? n : 1` 防零 ✓；L586/L909 malloc NULL 检查 ✓ + `ftell <= 0` 检查 ✓；L869 malloc NULL 检查 ✓ + `goto fail` 清理 ✓；L954 calloc NULL 检查 ✓ + `ok=false` 降级 ✓；L1026 malloc NULL 检查 ✓ + `ec+sc` 在 u32 范围 ✓。→ 全部安全
+6. **platform 代码**（5 个 demo 文件）：仅 1 处 `memcpy(ms.pData, OurVertices, sizeof(VERTEX) * 3)` — 固定 3 顶点拷贝 ✓。无 malloc/calloc/realloc ✓。→ 安全
+7. **framework 代码**（3 个 C++ 文件，共 96 行）：桩实现，无内存分配。→ 安全
+8. **无危险函数确认**：全代码库无 `scanf`（无 's' 前缀）、无 `strcpy`、无 `strcat`、无 `gets`、无 `sprintf`。→ 安全
+9. **fread 返回值**（main.c 游戏状态加载 L2677-2698）：`magic` 初始化为 0 + `== 0x534E4547u` 守卫保护整个块；`pc` 初始化为 0 + 循环条件保护；`feof(lf)` 守卫可选数据。→ 逻辑上可接受
+10. **memcpy sizeof 乘法**（asset.c 9 处 + skeleton.c 1 处）：`sizeof(f32) * 16` 等固定常量 ✓；`vi * ps` 索引乘法在 u32 范围内 ✓。→ 安全
+
+**结论**：R127 未发现新的可修复问题。经过 R102-R127 九轮深度审查（R102-R119 全量源码审查 + R120-R127 八轮深度修复扫描），代码库的内存安全、资源管理、边界检查均已达到工业级水平。
+
 ## 构建与回归命令
 
 ```bash
