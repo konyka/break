@@ -1376,8 +1376,9 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 
-    u32 idx = rhi_alloc_slot(dev);
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
+    if (!td) { glDeleteTextures(1, &gl_tex); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
     td->gl_tex            = gl_tex;
     td->width             = desc->size;
     td->height            = desc->size;
@@ -1550,6 +1551,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     fbo.height = height;
 
     GLFBOData *fd = calloc(1, sizeof(GLFBOData));
+    if (!fd) return fbo;
 
     GLenum gl_internal = rhi_format_to_gl_internal(color_fmt);
     GLenum gl_format = rhi_format_to_gl_format(color_fmt);
@@ -1714,6 +1716,7 @@ struct RHIGPUTimer {
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
     (void)dev;
     RHIGPUTimer *t = calloc(1, sizeof(RHIGPUTimer));
+    if (!t) return NULL;
     glGenQueries(2, t->queries);
     return t;
 }
@@ -1760,6 +1763,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     fbo.height = height;
 
     GLMRTFBOData *md = calloc(1, sizeof(GLMRTFBOData));
+    if (!md) return fbo;
     md->attachment_count = attachment_count;
 
     glGenFramebuffers(1, &md->gl_fbo);
@@ -1807,8 +1811,9 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 
     /* Register each color texture as a separate texture handle. */
     for (u32 i = 0; i < attachment_count; i++) {
-        u32 cidx = rhi_alloc_slot(dev);
         GLTextureData *td = calloc(1, sizeof(GLTextureData));
+        if (!td) return fbo;
+        u32 cidx = rhi_alloc_slot(dev);
         td->gl_tex            = md->color_tex[i];
         td->width             = width;
         td->height            = height;
@@ -1820,8 +1825,9 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 
     /* Register depth as a texture handle (readable for deferred lighting). */
     if (md->depth_tex) {
-        u32 didx = rhi_alloc_slot(dev);
         GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
+        if (!dtd) return fbo;
+        u32 didx = rhi_alloc_slot(dev);
         dtd->gl_tex            = md->depth_tex;
         dtd->width             = width;
         dtd->height            = height;

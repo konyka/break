@@ -2827,6 +2827,28 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 
 **结论**：R127 未发现新的可修复问题。经过 R102-R127 九轮深度审查（R102-R119 全量源码审查 + R120-R127 八轮深度修复扫描），代码库的内存安全、资源管理、边界检查均已达到工业级水平。
 
+### R128：第十轮深度审查 — GL 后端 6 处 calloc NULL 检查遗漏修复
+
+**审查范围**：编译器警告（零警告）、枚举索引安全性（physics_mode % 4 守卫）、render_init GPU 资源错误路径（进程退出时 OS 回收，可接受）、rhi_gl.c 全量 calloc 复查。
+
+**发现问题**：R125 修复了 rhi_gl.c 中 8 处 calloc NULL 检查，但遗漏了以下 6 处（同一模式：calloc 后立即解引用指针写入字段，OOM 时 NULL 解引用崩溃）：
+
+1. **L1380** `rhi_cubemap_create` 中 `GLTextureData *td` — GL 纹理已创建（glDeleteTextures 清理）
+2. **L1552** `rhi_offscreen_fbo_create_fmt` 中 `GLFBOData *fd` — calloc 在 GL 资源之前
+3. **L1716** `rhi_gpu_timer_create` 中 `RHIGPUTimer *t` — calloc 在 GL 资源之前
+4. **L1762** `rhi_mrt_fbo_create` 中 `GLMRTFBOData *md` — calloc 在 GL 资源之前
+5. **L1811** `rhi_mrt_fbo_create` 中色纹理循环 `GLTextureData *td` — GL 纹理已创建
+6. **L1824** `rhi_mrt_fbo_create` 中深度纹理 `GLTextureData *dtd` — GL 深度纹理已创建
+
+**修复模式**（同 R125）：
+- calloc 在 GL 资源之后：移到 `rhi_alloc_slot` 之前，检查 NULL，清理 GL 资源（glDeleteTextures），返回 RHI_HANDLE_NULL/空 FBO
+- calloc 在 GL 资源之前：检查 NULL，返回空结构体
+- calloc 在循环内/大函数内：移到 `rhi_alloc_slot` 之前，检查 NULL，返回已构造的部分 FBO（极端 OOM 时 GL 资源泄漏但不崩溃）
+
+**VK 后端确认**：`rhi_offscreen_fbo_create_fmt`（L4564/L4680/L4692）3 处已被 R125 修复。VK 初始化路径 calloc（L717）为已知限制。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash
