@@ -463,6 +463,7 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         u32 mode_count = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface, &mode_count, NULL);
         VkPresentModeKHR *modes = calloc(mode_count, sizeof(VkPresentModeKHR));
+        if (!modes) { LOG_FATAL("VK: OOM present modes"); return; }
         vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface, &mode_count, modes);
         if (!vk->vsync) {
             for (u32 i = 0; i < mode_count; i++) {
@@ -486,7 +487,9 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
 
     vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, NULL);
     vk->swap_images = calloc(vk->swap_count, sizeof(VkImage));
+    if (!vk->swap_images) { LOG_FATAL("VK: OOM swap images"); return; }
     vk->swap_views = calloc(vk->swap_count, sizeof(VkImageView));
+    if (!vk->swap_views) { LOG_FATAL("VK: OOM swap views"); return; }
     vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, vk->swap_images);
 
     for (u32 i = 0; i < vk->swap_count; i++) {
@@ -502,6 +505,7 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     }
 
     vk->render_semaphores = calloc(vk->swap_count, sizeof(VkSemaphore));
+    if (!vk->render_semaphores) { LOG_FATAL("VK: OOM render semaphores"); return; }
     for (u32 i = 0; i < vk->swap_count; i++) {
         VkSemaphoreCreateInfo sci2 = {0};
         sci2.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -551,6 +555,7 @@ static void vk_create_depth(VKBackend *vk) {
 
 static void vk_create_framebuffers(VKBackend *vk) {
     vk->framebuffers = calloc(vk->swap_count, sizeof(VkFramebuffer));
+    if (!vk->framebuffers) { LOG_FATAL("VK: OOM framebuffers"); return; }
     for (u32 i = 0; i < vk->swap_count; i++) {
         VkImageView attachments[2] = { vk->swap_views[i], vk->depth_view };
         VkFramebufferCreateInfo ci = {0};
@@ -715,6 +720,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         u32 layer_count = 0;
         vkEnumerateInstanceLayerProperties(&layer_count, NULL);
         VkLayerProperties *props = calloc(layer_count, sizeof(VkLayerProperties));
+        if (!props) { LOG_FATAL("VK: OOM layer properties"); free(vk); return false; }
         vkEnumerateInstanceLayerProperties(&layer_count, props);
         bool found = false;
         for (u32 i = 0; i < layer_count; i++) {
@@ -785,6 +791,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vkEnumeratePhysicalDevices(vk->instance, &gpu_count, NULL);
     if (gpu_count == 0) { LOG_FATAL("Vulkan: no GPUs"); free(vk); return false; }
     VkPhysicalDevice *gpus = calloc(gpu_count, sizeof(VkPhysicalDevice));
+    if (!gpus) { LOG_FATAL("VK: OOM GPU list"); free(vk); return false; }
     vkEnumeratePhysicalDevices(vk->instance, &gpu_count, gpus);
     vk->physical = gpus[0];
     free(gpus);
@@ -797,6 +804,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     u32 queue_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(vk->physical, &queue_count, NULL);
     VkQueueFamilyProperties *queues = calloc(queue_count, sizeof(VkQueueFamilyProperties));
+    if (!queues) { LOG_FATAL("VK: OOM queue list"); free(vk); return false; }
     vkGetPhysicalDeviceQueueFamilyProperties(vk->physical, &queue_count, queues);
     vk->graphics_family = UINT32_MAX;
     vk->present_family = UINT32_MAX;

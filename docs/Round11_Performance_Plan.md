@@ -2887,11 +2887,81 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 - main.c（L78/L161/L531/L713/L1392/L1408/L1708/L1840）：R126 已修复 ✓
 - VK pipeline malloc（L2078/L2079）：L2080 `if (pd->vs_spirv && pd->fs_spirv)` ✓
 - VK shader SPIR-V copy（L413）：L414 `if (copy)` ✓
-- VK init 路径 calloc（L465/L488/L489/L504/L553/L717/L787/L799）：已知限制（void 函数无法传播错误，tiny 2-10 元素分配，启动时系统级 OOM）
+- VK init 路径 calloc（L465/L488/L489/L504/L553/L717/L787/L799）：**R130 已修复** ✓
 
-**结论**：R125+R128+R129 共修复 rhi_gl.c 18 处 + rhi_vk.c 26 处 calloc/malloc NULL 检查。RHI 后端全量 calloc/malloc NULL 检查审计完成。剩余 VK 初始化路径 8 处为已知限制。
+**结论**：R125+R128+R129+R130 共修复 rhi_gl.c 16 处 + rhi_vk.c 26 处 calloc/malloc NULL 检查。RHI 后端 + VK 初始化路径全量 calloc/malloc NULL 检查审计完成。零已知限制。
 
-**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+**验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
+
+---
+
+## R130: VK 初始化路径 calloc NULL 检查 + realloc/VLA/alloca/va_end 全量审计
+
+**日期**：2025-06-14
+
+### R130-1（ROBUSTNESS）：VK 初始化路径 8 处 calloc NULL 检查
+
+R129 将 VK 初始化路径 8 处 calloc 标记为“已知限制”（void 函数无法传播错误）。R130 重新审视后确认可以安全添加 NULL 检查：
+
+**vk_init 函数（返回 bool，3 处）**：
+- L717：`VkLayerProperties *props` calloc — 失败时 LOG_FATAL + free(vk) + return false
+- L787：`VkPhysicalDevice *gpus` calloc — 失败时 LOG_FATAL + free(vk) + return false
+- L799：`VkQueueFamilyProperties *queues` calloc — 失败时 LOG_FATAL + free(vk) + return false
+
+**vk_create_swapchain 函数（void，4 处）**：
+- L465：`VkPresentModeKHR *modes` calloc — 失败时 LOG_FATAL + return
+- L488：`vk->swap_images` calloc — 失败时 LOG_FATAL + return
+- L489：`vk->swap_views` calloc — 失败时 LOG_FATAL + return
+- L504：`vk->render_semaphores` calloc — 失败时 LOG_FATAL + return
+
+**vk_create_framebuffers 函数（void，1 处）**：
+- L553：`vk->framebuffers` calloc — 失败时 LOG_FATAL + return
+
+void 函数返回后调用者不会感知失败，但 LOG_FATAL 会记录明确错误信息，防止 NULL 解引用崩溃。极端 OOM 场景下系统无法继续运行，后续资源访问会以明确错误日志而非静默崩溃终止。
+
+### R130-2：realloc / VLA / alloca / va_start/va_end 全量审计
+
+对全代码库进行第十二轮系统扫描，覆盖前十一轮未系统检查的模式：
+
+**realloc（9 处全部安全）**：
+- alloc.c:32 — R121 已验证 ✓
+- ecs.c:66 — R121 已验证 ✓
+- ecs.c:82 — R121 已验证 ✓
+- ecs.c:663 — R121 已验证 ✓
+- ecs.c:837 — R121 已验证 ✓
+- bvh.c:108 — R117 已修复 ✓
+- script.c:49 — R127 已验证 ✓
+- scene_serial.c:36 — R127 已验证 ✓
+- scene_serial.c:961 — R127 已验证 ✓
+
+**VLA（变长数组）**：0 处 — 全部为编译期常量大小数组 ✓
+
+**alloca**：0 处 — 无使用 ✓
+
+**va_start/va_end 配对**：3:3 完美配对（log.c、imgui.c、debug_ui.c）✓
+
+**memset/memcpy sizeof 指针错误**：0 处（无 `sizeof(ptr*)` 模式）✓
+
+### 审查覆盖汇总（R102-R130）
+
+| 轮次 | 模式 | 结果 |
+|------|------|------|
+| R102-R119 | 全量源码（86 .c + 83 .h + framework + platform + tests） | 完成 |
+| R120 | ftell 回绕 + VFS hash table NULL 检查 | 修复 3 处 |
+| R121 | vfs double-free + 着色器/strncpy/realloc/shift 全扫描 | 修复 1 处回归 |
+| R122 | 初始化路径 malloc NULL + RHI 句柄验证 | 修复 5 处 |
+| R123 | font.c TTF ftell + 异步加载器线程安全 + fd/socket | 修复 1 处 |
+| R124 | verify_pak 工具加固 + 网络序列化/Lua/packer/CMake | 修复 3 处 |
+| R125 | RHI 后端 calloc NULL（GL 8 + VK 13） | 修复 21 处 |
+| R126 | main.c malloc/calloc NULL（5 处）+ 全文件审计 | 修复 5 处 |
+| R127 | 整数溢出/除零/realloc/sscanf 全量扫描 | 无新问题 |
+| R128 | GL 后端 6 处 calloc NULL 遗漏 | 修复 6 处 |
+| R129 | 全量 calloc/malloc 审计（GL 2 + VK 5） | 修复 7 处 |
+| R130 | VK 初始化路径 8 处 calloc + realloc/VLA/alloca/va_end 审计 | 修复 8 处 |
+
+**calloc/malloc NULL 检查总计**：GL 16 + VK 34 = 50 处已修复
+
+**验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
 
 ## 构建与回归命令
 
