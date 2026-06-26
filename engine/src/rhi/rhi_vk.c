@@ -4905,6 +4905,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 
     VKBackend *vk = vk_backend(dev);
     VKMRTFBOData *md = calloc(1, sizeof(VKMRTFBOData));
+    if (!md) return fbo;
     md->attachment_count = attachment_count;
 
     /* Create color attachments. */
@@ -5032,8 +5033,9 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 
     /* Register each color texture as a separate texture handle. */
     for (u32 i = 0; i < attachment_count; i++) {
-        u32 cidx = rhi_alloc_slot(dev);
         VKTextureData *td = calloc(1, sizeof(VKTextureData));
+        if (!td) return fbo;
+        u32 cidx = rhi_alloc_slot(dev);
         td->image = md->color_images[i];
         td->view = md->color_views[i];
         td->memory = md->color_memories[i];
@@ -5046,8 +5048,9 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 
     /* Register depth as a texture handle. */
     {
-        u32 didx = rhi_alloc_slot(dev);
         VKTextureData *dd = calloc(1, sizeof(VKTextureData));
+        if (!dd) return fbo;
+        u32 didx = rhi_alloc_slot(dev);
         dd->image = md->depth_image;
         dd->view = md->depth_view;
         dd->memory = md->depth_memory;
@@ -5156,6 +5159,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
 
     VKBackend *vk = vk_backend(dev);
     VKCubemapDepthFBOData *cd = calloc(1, sizeof(VKCubemapDepthFBOData));
+    if (!cd) return fbo;
     cd->size = size;
 
     /* Create depth cubemap image (6 layers). */
@@ -5263,8 +5267,9 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     }
 
     /* Register depth texture handle (cubemap). */
-    u32 tidx = rhi_alloc_slot(dev);
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
+    if (!td) return fbo;
+    u32 tidx = rhi_alloc_slot(dev);
     td->image = cd->depth_image;
     td->view = cd->depth_view;
     td->memory = cd->depth_memory;

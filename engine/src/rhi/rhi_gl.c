@@ -1901,8 +1901,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     fbo.size = size;
 
     GLCubemapDepthFBOData *cd = calloc(1, sizeof(GLCubemapDepthFBOData));
-
-    /* Create depth cubemap texture. */
+    if (!cd) return fbo;
     glGenTextures(1, &cd->depth_tex);
     glBindTexture(GL_TEXTURE_CUBE_MAP, cd->depth_tex);
     for (u32 face = 0; face < 6; face++) {
@@ -1929,8 +1928,9 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     gl_bind_fbo_cached(0);
 
     /* Register depth texture handle. */
-    u32 tidx = rhi_alloc_slot(dev);
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
+    if (!td) return fbo;
+    u32 tidx = rhi_alloc_slot(dev);
     td->gl_tex            = cd->depth_tex;
     td->width             = size;
     td->height            = size;

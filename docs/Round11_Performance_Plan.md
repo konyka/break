@@ -2849,6 +2849,50 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+### R129：全量 calloc/malloc/realloc NULL 检查审计 — RHI 后端 7 处遗漏修复
+
+**审查方法**：对全代码库执行 `grep -rn 'calloc\|malloc'`，逐一交叉验证每个调用点是否有 NULL 检查。覆盖引擎全部源码（排除 external/lua 和 test 文件）。
+
+**发现问题**：R125+R128 修复了 rhi_gl.c 中的主要资源创建函数，但遗漏了“辅助 FBO”函数（cubemap depth FBO 和 MRT FBO）中的 calloc。R129 发现 7 处遗漏：
+
+**GL 后端（2 处）**：
+1. **L1903** `rhi_cubemap_depth_fbo_create` 中 `GLCubemapDepthFBOData *cd` — calloc 在 GL 资源之前
+2. **L1933** 同函数中 `GLTextureData *td` — calloc 在 GL 资源之后，rhi_alloc_slot 之前
+
+**VK 后端（5 处）**：
+3. **L4907** `rhi_mrt_fbo_create` 中 `VKMRTFBOData *md` — calloc 在 VK 资源之前
+4. **L5036** 同函数色纹理循环 `VKTextureData *td` — calloc 在 VK 资源之后
+5. **L5050** 同函数深度纹理 `VKTextureData *dd` — calloc 在 VK 资源之后
+6. **L5158** `rhi_cubemap_depth_fbo_create` 中 `VKCubemapDepthFBOData *cd` — calloc 在 VK 资源之前
+7. **L5267** 同函数 `VKTextureData *td` — calloc 在 VK 资源之后
+
+**修复模式**（同 R125/R128）：calloc 移到 rhi_alloc_slot 之前，检查 NULL，返回空结构体或部分 FBO。
+
+**全量审计确认安全的子系统**：
+- core/alloc.c（arena/debug allocator）：L11/L110 malloc 有 NULL 检查 ✓
+- core/pool.c：L92 malloc 有 NULL 检查 ✓
+- platform/（window_x11/wayland/win32, filewatch）：calloc 全有 NULL 检查 ✓
+- renderer/（gpucull L97, occlusion_cull L159）：malloc/calloc 全有 NULL 检查 ✓
+- asset/（decode_pipeline L64/L135/L230/L343, async_loader L186, mipmap_stream L28）：全有 NULL 检查 ✓
+- ecs/（L92/L107/L141/L361/L406/L508/L551/L659/L833）：R116-R118 已修复 ✓
+- physics/（bvh L81/L301/L313/L321, physics L84）：R117/R122 已修复 ✓
+- audio/（L24/L41）：R118 已修复 ✓
+- vfs.c（L23/L68/L75/L83/L131/L156/L202）：R105 已修复 ✓
+- asset.c（L151/L170/L171/L177/L264/L284/L346/L410/L420/L459/L595）：R115 已修复 ✓
+- ui/font.c（L55/L75/L150/L201/L214/L260）：R116/R120/R123 已修复 ✓
+- task/task.c（L101/L190/L470）：R114 已修复 ✓
+- script/script.c（L99）：R116 已修复 ✓
+- network/network.c（L77/L392）：R124 已修复 ✓
+- scene/scene_serial.c（L73/L209/L442/L486/L554/L586/L869/L909/L954/L1026）：R127 已验证 ✓
+- main.c（L78/L161/L531/L713/L1392/L1408/L1708/L1840）：R126 已修复 ✓
+- VK pipeline malloc（L2078/L2079）：L2080 `if (pd->vs_spirv && pd->fs_spirv)` ✓
+- VK shader SPIR-V copy（L413）：L414 `if (copy)` ✓
+- VK init 路径 calloc（L465/L488/L489/L504/L553/L717/L787/L799）：已知限制（void 函数无法传播错误，tiny 2-10 元素分配，启动时系统级 OOM）
+
+**结论**：R125+R128+R129 共修复 rhi_gl.c 18 处 + rhi_vk.c 26 处 calloc/malloc NULL 检查。RHI 后端全量 calloc/malloc NULL 检查审计完成。剩余 VK 初始化路径 8 处为已知限制。
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash
