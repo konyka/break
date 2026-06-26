@@ -529,6 +529,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
         usize vb_bytes = (usize)vcount * 64;
         /* Single alloc: vdata (24*64B) + idata (36*4B) */
         u8 *geo_buf = (u8 *)calloc(1, vb_bytes + (usize)icount * 4);
+        if (!geo_buf) return false;
         u8 *vdata   = geo_buf;
         u32 *idata  = (u32 *)(geo_buf + vb_bytes);
         u32 vi = 0;
@@ -1389,6 +1390,7 @@ int main(int argc, char **argv) {
     usize uobj_off  = (udc_off + udc_bytes + _Alignof(GPUCullObject) - 1) & ~(_Alignof(GPUCullObject) - 1);
     usize uobj_bytes = (usize)GPUCULL_MAX_OBJECTS * sizeof(GPUCullObject);
     u8 *render_buf   = (u8 *)malloc(uobj_off + uobj_bytes);
+    if (!render_buf) { LOG_FATAL("OOM render_buf"); return 1; }
     f32              *instance_data    = (f32 *)render_buf;
     GPUCullDrawCmd   *unified_udc_buf  = (GPUCullDrawCmd *)(render_buf + udc_off);
     GPUCullObject    *unified_uobj_buf = (GPUCullObject *)(render_buf + uobj_off);
@@ -1404,6 +1406,7 @@ int main(int argc, char **argv) {
         usize vb_off   = (ab_off + ab_bytes + 3u) & ~(usize)3u;
         usize vb_bytes = (usize)CULL_BUF_CAP * sizeof(u32);
         u8 *cull_block = (u8 *)malloc(vb_off + vb_bytes);
+        if (!cull_block) { LOG_FATAL("OOM cull_block"); free(render_buf); return 1; }
         cull_node_map_buf = (u32 *)cull_block;
         cull_aabbs_buf    = (CullAABB *)(cull_block + ab_off);
         cull_visible_buf  = (u32 *)(cull_block + vb_off);
@@ -1703,6 +1706,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             usize c_off   = (i_off + i_bytes + 3u) & ~(usize)3u;
             usize c_bytes = (usize)mesh_cmd_count * sizeof(DrawIndexedIndirectCmd);
             u8 *mega_block = (u8 *)malloc(c_off + c_bytes);
+            if (!mega_block) { LOG_FATAL("OOM mega_block"); return 1; }
             MegaVert *vdata = (MegaVert *)mega_block;
             u32      *idata = (u32 *)(mega_block + i_off);
             DrawIndexedIndirectCmd *cmds = (DrawIndexedIndirectCmd *)(mega_block + c_off);
@@ -1834,6 +1838,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
                 /* Create per-material IndirectDrawSystems (single pre-alloc scratch buffer) */
                 DrawIndexedIndirectCmd *gcmds_scratch = malloc((usize)mesh_cmd_count * sizeof(DrawIndexedIndirectCmd));
+                if (!gcmds_scratch) { LOG_FATAL("OOM gcmds_scratch"); free(mega_block); return 1; }
                 for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                     u32 gcount = mega_buf.group_cmd_offsets[g + 1] - mega_buf.group_cmd_offsets[g];
                     if (gcount == 0) continue;

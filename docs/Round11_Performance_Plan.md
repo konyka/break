@@ -2780,6 +2780,34 @@ malloc 失败时 `fread(NULL, ...)` 为未定义行为。
 
 **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
 
+### R126：第八轮深度审查 — main.c malloc/calloc NULL 检查（5 处）
+
+聚焦 main.c（5607 行引擎 demo）中 5 处 `malloc`/`calloc` 返回值未检查的系统性缺陷，与 R125 RHI 后端同一模式。
+
+#### R126-1：main.c malloc/calloc NULL 检查（5 处）
+
+**问题**：main.c 中 5 处分配未检查返回值，OOM 时 NULL 解引用崩溃：
+1. **L531** `render_init()` 中 `calloc` 用于箱体几何体 — 失败时 `vdata=NULL`、`idata=NULL+vb_bytes`（野指针），循环写入崩溃
+2. **L1392** `main()` 中 `malloc` 用于渲染缓冲区 — 失败时 `instance_data=NULL`、`unified_udc_buf=NULL+udc_off`（野指针）
+3. **L1408** `main()` 中 `malloc` 用于裁剪缓冲区 — 同上模式
+4. **L1708** `main()` 中 `malloc` 用于 mega buffer — 失败时 `vdata=NULL`、`idata=NULL+i_off`（野指针）
+5. **L1840** `main()` 中 `malloc` 用于间接绘制 scratch buffer — 失败时 `gcmds_scratch=NULL`，循环写入崩溃
+
+**修复**：每处添加 NULL 检查 + `LOG_FATAL` + 资源清理（`free(render_buf)` / `free(mega_block)`）+ 返回（`return false` / `return 1`）。
+
+#### 审查确认安全的子系统
+
+1. **全代码库 read_file 模式**（25+ 处）：全部有 `ftell < 0` + `malloc NULL` + `fclose` → 安全
+2. **atoi/getenv 模式**（16 处）：全部有 `e && atoi(e)` NULL 守卫 → 安全
+3. **box_idx 数组索引**（L537）：`fi*6+fj` 最大 33 < 36 元素 → 安全
+4. **g_vis_flags 数组**（L776-894）：16384 元素，`gcount` 受 `CULL_BUF_CAP=16384` 限制 → 安全
+5. **heights/speeds 数组**（L3052-3082）：`nh<64`/`ns<64` 循环守卫 + `ns>1` 访问守卫 → 安全
+6. **terrain.heightmap 访问**（L2435-2436, L3537）：R125 已验证边界检查完善
+7. **无危险函数**：无 `sprintf`/`gets`；无 `memcpy` 越界
+8. **rhi_alloc_slot 池耗尽**（L52-54）：`LOG_FATAL` 不 abort 但返回 0，代数递增使旧句柄失效（仅资源泄漏，无 UAF）—— 已知限制
+
+**验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+
 ## 构建与回归命令
 
 ```bash
