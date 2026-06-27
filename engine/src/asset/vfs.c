@@ -97,6 +97,7 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     u32 idx = vfs->mount_count++;
     vfs->mounts[idx].type = VFS_MOUNT_PAK;
     strncpy(vfs->mounts[idx].path, pak_path, VFS_MAX_PATH - 1);
+    vfs->mounts[idx].path[VFS_MAX_PATH - 1] = '\0';
     vfs->mounts[idx].pak_fp = fp;
     vfs->mounts[idx].pak_header = hdr;
     vfs->mounts[idx].pak_entries = entries;

@@ -76,7 +76,9 @@ bool hotreload_pipeline_init(HotReloadPipeline *hr, RHIDevice *dev,
     hr->pipeline = RHI_HANDLE_NULL;
     hr->ready = false;
     strncpy(hr->vert_path, vert_path, sizeof(hr->vert_path) - 1);
+    hr->vert_path[sizeof(hr->vert_path) - 1] = '\0';
     strncpy(hr->frag_path, frag_path, sizeof(hr->frag_path) - 1);
+    hr->frag_path[sizeof(hr->frag_path) - 1] = '\0';
 
     hr->pipeline = hotreload_compile_pipeline(dev, vert_path, frag_path);
     if (!rhi_handle_valid(hr->pipeline)) return false;
@@ -147,6 +149,7 @@ bool hotreload_texture_init(HotReloadTexture *hr, RHIDevice *dev,
     hr->device = dev;
     hr->target = target;
     strncpy(hr->path, path, sizeof(hr->path) - 1);
+    hr->path[sizeof(hr->path) - 1] = '\0';
 
     filewatch_init(&hr->watcher);
     filewatch_add(&hr->watcher, hr->path, hotreload_texture_callback, hr);

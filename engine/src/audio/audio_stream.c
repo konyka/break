@@ -73,6 +73,7 @@ i32 audio_stream_open(AudioStreamManager *mgr, const char *path, f32 volume, boo
     AudioStream *s = &mgr->streams[idx];
     memset(s, 0, sizeof(*s));
     strncpy(s->path, path, sizeof(s->path) - 1);
+    s->path[sizeof(s->path) - 1] = '\0';
     s->source_id = sid;
     s->active = true;
     s->looping = looping;
@@ -103,6 +104,7 @@ i32 audio_stream_open_3d(AudioStreamManager *mgr, const char *path, Vec3 positio
     AudioStream *s = &mgr->streams[idx];
     memset(s, 0, sizeof(*s));
     strncpy(s->path, path, sizeof(s->path) - 1);
+    s->path[sizeof(s->path) - 1] = '\0';
     s->source_id = sid;
     s->active = true;
     s->looping = looping;

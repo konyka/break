@@ -173,6 +173,7 @@ i32 mipmap_stream_register(MipmapStreamManager *mgr, const char *path,
 
     memset(tex, 0, sizeof(*tex));
     strncpy(tex->path, path, sizeof(tex->path) - 1);
+    tex->path[sizeof(tex->path) - 1] = '\0';
     tex->width = width;
     tex->height = height;
     tex->mip_count = mip_count;

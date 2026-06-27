@@ -399,6 +399,7 @@ FileWatch *filewatch_create_dir(const char *dir_path) {
         return NULL;
     }
     strncpy(fw->base_path, dir_path, sizeof(fw->base_path) - 1);
+    fw->base_path[sizeof(fw->base_path) - 1] = '\0';
     fw_add_dir_recursive(fw, dir_path);
     return fw;
 }

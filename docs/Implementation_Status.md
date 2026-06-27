@@ -484,3 +484,13 @@
   - **R137-F test_vulkan.c 1 处**：golden image PPM fwrite — 失败时 return false。
   - **fwrite/fread 返回值检查总计**：R137 **43 处**已修复，跨 2 个源文件（main.c + test_vulkan.c）。
   - **验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
+
+- **R138 审查**：全引擎 `strncpy` 缺少显式 null 终止一致性审计。修复 13 处缺少 `buf[sizeof(buf)-1] = '\0'` 的 `strncpy` 调用。
+- **R138-A vfs.c PAK 挂载 1 处**：`vfs->mounts[idx].path` strncpy 后缺少 `path[VFS_MAX_PATH-1] = '\0'`（dir 挂载已有，PAK 挂载缺失）。
+- **R138-B filewatch.c Linux base_path 1 处**：`fw->base_path` strncpy 后缺少 null 终止（Windows 路径已有，Linux 缺失）。
+- **R138-C 平台窗口 2 处**：window_wayland.c + window_x11.c `MonitorInfo.name` strncpy 后缺少 `m->name[63] = '\0'`。
+- **R138-D hotreload.c 3 处**：vert_path + frag_path + texture path strncpy 后缺少 null 终止（memset 已零初始化，但缺少防御性终止）。
+- **R138-E mipmap_stream.c 1 处**：`tex->path` strncpy 后缺少 null 终止。
+- **R138-F audio_stream.c 2 处**：`s->path` strncpy 后缺少 null 终止（memset 已零初始化）。
+- **R138-G main.c 3 处**：draw_bench_csv_path + netrep_peer_file + netrep_peer_dir（静态变量零初始化，但缺少防御性终止）。
+- **strncpy null 终止审计总计**：R138 **13 处**已修复，跨 7 个源文件。所有缓冲区均已零初始化（calloc/memset/静态存储），修复前技术上安全但缺少防御性深度。

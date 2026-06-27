@@ -88,6 +88,7 @@ static void x11_query_monitors(Platform *p) {
         MonitorInfo *m = &p->monitors[p->monitor_count];
         memset(m, 0, sizeof(MonitorInfo));
         strncpy(m->name, output->name, 63);
+        m->name[63] = '\0';
 
         if (crtc) {
             m->x = crtc->x;

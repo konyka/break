@@ -383,6 +383,7 @@ static void output_geometry(void *data, struct wl_output *output,
         m->x = x;
         m->y = y;
         strncpy(m->name, model ? model : "unknown", 63);
+        m->name[63] = '\0';
     }
 }
 

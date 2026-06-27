@@ -1066,6 +1066,7 @@ static void draw_bench_export_all(void) {
     { const char *e = getenv("BREAK_DRAW_BENCH_EXPORT");
       if (e && e[0]) {
           strncpy(draw_bench_csv_path, e, sizeof(draw_bench_csv_path) - 1u);
+          draw_bench_csv_path[sizeof(draw_bench_csv_path) - 1u] = '\0';
       } }
     if (draw_bench_export_csv(draw_bench_csv_path))
         LOG_INFO("DrawBench CSV: %s", draw_bench_csv_path);
@@ -1249,6 +1250,7 @@ int main(int argc, char **argv) {
                   { const char *pf = getenv("BREAK_NETREP_PEER_FILE");
                     if (pf && pf[0]) {
                         strncpy(netrep_peer_file, pf, sizeof(netrep_peer_file) - 1u);
+                        netrep_peer_file[sizeof(netrep_peer_file) - 1u] = '\0';
                         if (net_replicator_peer_load(&net_rep, netrep_peer_file))
                             LOG_INFO("NetRep peers loaded: %s (%u peers)",
                                      netrep_peer_file, net_replicator_peer_count(&net_rep));
@@ -1257,6 +1259,7 @@ int main(int argc, char **argv) {
                   { const char *pd = getenv("BREAK_NETREP_PEER_DIR");
                     if (pd && pd[0]) {
                         strncpy(netrep_peer_dir, pd, sizeof(netrep_peer_dir) - 1u);
+                        netrep_peer_dir[sizeof(netrep_peer_dir) - 1u] = '\0';
                         if (net_replicator_peer_load_dir(&net_rep, netrep_peer_dir))
                             LOG_INFO("NetRep peers loaded: %s/ (%u peers)",
                                      netrep_peer_dir, net_replicator_peer_count(&net_rep));
