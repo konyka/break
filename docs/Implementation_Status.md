@@ -569,3 +569,8 @@
 - **R151-A asset.c scene_compute_world_transforms parent_index 边界检查**：将 `parent_index == UINT32_MAX` 检查扩展为 `parent_index == UINT32_MAX || parent_index >= scene->node_count || parent_index == i`，越界/自引用索引视为根节点（无父节点）。
 
 - **审计总计（R129-R151）**：**381 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护。
+
+- **R152 审查**：视锥剔除批处理缓冲区溢出防护 — `CULL_BUF_CAP=16384` 容量的 `cull_aabbs`/`cull_node_map` 数组在遍历场景节点时未检查 `cull_node_count` 是否超出容量。场景含超过 16384 个网格节点时堆溢出。修复 1 处。
+- **R152-A main.c cull_node_count 容量检查**：在 cull 循环内添加 `if (cull_node_count >= CULL_BUF_CAP) break;`，超出容量时停止添加节点，防止堆溢出。
+
+- **审计总计（R129-R152）**：**382 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护。

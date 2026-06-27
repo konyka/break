@@ -4927,6 +4927,9 @@ u32 culled_count = 0;
                     SceneNode *node = &scene.nodes[ni];
                     if (!node->has_mesh || node->skinned) continue;
                     if (node->mesh_index >= scene.mesh_count) continue;
+                    /* R152: Prevent cull buffer overflow — CULL_BUF_CAP is 16384.
+                     * A scene with more mesh nodes would overflow cull_aabbs/cull_node_map. */
+                    if (cull_node_count >= CULL_BUF_CAP) break;
 
                     Mesh *m = &scene.meshes[node->mesh_index];
                     Vec3 wmin = vec3(1e30f, 1e30f, 1e30f), wmax = vec3(-1e30f, -1e30f, -1e30f);
