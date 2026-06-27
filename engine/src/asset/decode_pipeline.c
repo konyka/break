@@ -118,18 +118,21 @@ static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *
         th = th > 1 ? th / 2 : 1;
         mip_count++;
     }
+    /* R153: Cap mip_count at 16 — widths/heights/offsets arrays are [16].
+     * A 65536×65536 texture produces 17 mip levels, overflowing the stack arrays. */
+    if (mip_count > 16) mip_count = 16;
 
     /* Compute level offsets/sizes. */
-    u32 widths[16];
-    u32 heights[16];
-    u32 offsets[16];
-    usize total_pix = 0;
+    u32    widths[16];
+    u32    heights[16];
+    usize  offsets[16];  /* R153: usize to prevent truncation on >4GB mip chains */
+    usize  total_pix = 0;
 
     tw = base_w; th = base_h;
     for (u32 i = 0; i < mip_count; i++) {
         widths[i] = tw;
         heights[i] = th;
-        offsets[i] = (u32)total_pix;
+        offsets[i] = total_pix;
         total_pix += (usize)tw * th * 4u;
         tw = tw > 1 ? tw / 2 : 1;
         th = th > 1 ? th / 2 : 1;
