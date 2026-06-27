@@ -551,3 +551,8 @@
 - **R148-A rhi_vk.c vkAcquireNextImageKHR 错误处理**：添加 `else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)` 子句，非 OUT_OF_DATE 错误时 LOG_ERROR + `frame_started = false` + 提前返回，防止 stale image_index 被用于后续渲染命令。
 
 - **审计总计（R129-R148）**：**375 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护。
+
+- **R149 审查**：Vulkan `vk_create_framebuffers` NULL 解引用防护 — 若 `vk_create_swapchain` 失败（如 `vkCreateSwapchainKHR` 错误、`swap_images`/`swap_views` OOM），`vk->swap_views` 为 NULL 但 `vk->swap_count` 保留 stale 值。`vk_create_framebuffers` 循环访问 `vk->swap_views[i]` 解引用 NULL。修复 1 处。
+- **R149-A rhi_vk.c vk_create_framebuffers NULL 守卫**：函数入口添加 `if (!vk->swap_views || vk->swap_count == 0) return;`，防止 `swap_views` 为 NULL 时解引用崩溃。
+
+- **审计总计（R129-R149）**：**376 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建 NULL 解引用防护。

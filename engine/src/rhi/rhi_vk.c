@@ -591,6 +591,11 @@ static void vk_create_depth(VKBackend *vk) {
 }
 
 static void vk_create_framebuffers(VKBackend *vk) {
+    /* R149: Guard against NULL swap_views — vk_create_swapchain may have failed
+     * (e.g., vkCreateSwapchainKHR error, OOM on swap_images/swap_views), leaving
+     * swap_count at a stale non-zero value while swap_views is NULL.
+     * Without this check, vk->swap_views[i] dereferences NULL. */
+    if (!vk->swap_views || vk->swap_count == 0) return;
     vk->framebuffers = calloc(vk->swap_count, sizeof(VkFramebuffer));
     if (!vk->framebuffers) { LOG_FATAL("VK: OOM framebuffers"); return; }
     for (u32 i = 0; i < vk->swap_count; i++) {
