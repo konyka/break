@@ -1396,6 +1396,14 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
             vk->frame_started = false;
             return (RHICmdBuffer *)vk;
         }
+    } else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        /* R148: Handle VK_ERROR_DEVICE_LOST / VK_ERROR_SURFACE_LOST_KHR / etc.
+         * Without this, a non-OUT_OF_DATE error falls through and proceeds to
+         * record commands with a stale image_index, potentially using an invalid
+         * framebuffer and causing a cascade of GPU errors. */
+        LOG_ERROR("VK: vkAcquireNextImageKHR failed (res=%d)", (int)res);
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
     }
     /* VK_SUBOPTIMAL_KHR is a success — swapchain rebuild deferred to rhi_present */
 

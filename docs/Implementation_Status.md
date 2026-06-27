@@ -546,3 +546,8 @@
 - **R147-B target_fps 路径 delta_time 钳制**：在目标帧率睡眠后的第二次 `delta_time` 计算同样添加钳制。
 
 - **审计总计（R129-R147）**：**374 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护。
+
+- **R148 审查**：Vulkan `vkAcquireNextImageKHR` 错误处理遗漏 — 首次调用仅处理 `VK_ERROR_OUT_OF_DATE_KHR`（交换链重建+重试），其他错误（如 `VK_ERROR_DEVICE_LOST`、`VK_ERROR_SURFACE_LOST_KHR`）直接落入后续代码，使用 stale 的 `image_index` 记录命令缓冲区，可能导致无效 framebuffer 的 GPU 错误级联。修复 1 处。
+- **R148-A rhi_vk.c vkAcquireNextImageKHR 错误处理**：添加 `else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)` 子句，非 OUT_OF_DATE 错误时 LOG_ERROR + `frame_started = false` + 提前返回，防止 stale image_index 被用于后续渲染命令。
+
+- **审计总计（R129-R148）**：**375 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护。
