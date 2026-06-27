@@ -501,7 +501,10 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         vci.subresourceRange.levelCount = 1;
         vci.subresourceRange.layerCount = 1;
-        vkCreateImageView(vk->device, &vci, NULL, &vk->swap_views[i]);
+        if (vkCreateImageView(vk->device, &vci, NULL, &vk->swap_views[i]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create swapchain image view %u", i);
+            return;
+        }
     }
 
     vk->render_semaphores = calloc(vk->swap_count, sizeof(VkSemaphore));
@@ -509,7 +512,10 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     for (u32 i = 0; i < vk->swap_count; i++) {
         VkSemaphoreCreateInfo sci2 = {0};
         sci2.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        vkCreateSemaphore(vk->device, &sci2, NULL, &vk->render_semaphores[i]);
+        if (vkCreateSemaphore(vk->device, &sci2, NULL, &vk->render_semaphores[i]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create render semaphore %u", i);
+            return;
+        }
     }
 }
 
@@ -529,7 +535,10 @@ static void vk_create_depth(VKBackend *vk) {
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    vkCreateImage(vk->device, &ci, NULL, &vk->depth_image);
+    if (vkCreateImage(vk->device, &ci, NULL, &vk->depth_image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create depth image");
+        return;
+    }
 
     VkMemoryRequirements mem_req;
     vkGetImageMemoryRequirements(vk->device, vk->depth_image, &mem_req);
@@ -539,8 +548,14 @@ static void vk_create_depth(VKBackend *vk) {
     ai.allocationSize = mem_req.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, &vk->depth_memory);
-    vkBindImageMemory(vk->device, vk->depth_image, vk->depth_memory, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &vk->depth_memory) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate depth memory");
+        return;
+    }
+    if (vkBindImageMemory(vk->device, vk->depth_image, vk->depth_memory, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind depth image memory");
+        return;
+    }
 
     VkImageViewCreateInfo vci = {0};
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -550,7 +565,10 @@ static void vk_create_depth(VKBackend *vk) {
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     vci.subresourceRange.levelCount = 1;
     vci.subresourceRange.layerCount = 1;
-    vkCreateImageView(vk->device, &vci, NULL, &vk->depth_view);
+    if (vkCreateImageView(vk->device, &vci, NULL, &vk->depth_view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create depth image view");
+        return;
+    }
 }
 
 static void vk_create_framebuffers(VKBackend *vk) {
@@ -566,7 +584,10 @@ static void vk_create_framebuffers(VKBackend *vk) {
         ci.width = vk->swap_extent.width;
         ci.height = vk->swap_extent.height;
         ci.layers = 1;
-        vkCreateFramebuffer(vk->device, &ci, NULL, &vk->framebuffers[i]);
+        if (vkCreateFramebuffer(vk->device, &ci, NULL, &vk->framebuffers[i]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create framebuffer %u", i);
+            return;
+        }
     }
 }
 
@@ -618,7 +639,10 @@ static void vk_create_render_pass(VKBackend *vk) {
     ci.dependencyCount = 1;
     ci.pDependencies = &dep;
 
-    vkCreateRenderPass(vk->device, &ci, NULL, &vk->render_pass);
+    if (vkCreateRenderPass(vk->device, &ci, NULL, &vk->render_pass) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create render pass");
+        return;
+    }
     if (vk->render_pass_load != VK_NULL_HANDLE) {
         vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
     }
@@ -896,7 +920,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     cpci.queueFamilyIndex = vk->graphics_family;
-    vkCreateCommandPool(vk->device, &cpci, NULL, &vk->cmd_pool);
+    if (vkCreateCommandPool(vk->device, &cpci, NULL, &vk->cmd_pool) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create command pool");
+        free(vk); return false;
+    }
 
     VkCommandBufferAllocateInfo cbai = {0};
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -912,7 +939,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         bci.size = vk->uniform_ring_size;
         bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(vk->device, &bci, NULL, &vk->uniform_ring[i].buffer);
+        if (vkCreateBuffer(vk->device, &bci, NULL, &vk->uniform_ring[i].buffer) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create uniform buffer %u", i);
+            free(vk); return false;
+        }
 
         VkMemoryRequirements mem_req;
         vkGetBufferMemoryRequirements(vk->device, vk->uniform_ring[i].buffer, &mem_req);
@@ -922,9 +952,18 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         mai.allocationSize = mem_req.size;
         mai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkAllocateMemory(vk->device, &mai, NULL, &vk->uniform_ring[i].memory);
-        vkBindBufferMemory(vk->device, vk->uniform_ring[i].buffer, vk->uniform_ring[i].memory, 0);
-        vkMapMemory(vk->device, vk->uniform_ring[i].memory, 0, vk->uniform_ring_size, 0, (void **)&vk->uniform_mapped[i]);
+        if (vkAllocateMemory(vk->device, &mai, NULL, &vk->uniform_ring[i].memory) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to allocate uniform memory %u", i);
+            free(vk); return false;
+        }
+        if (vkBindBufferMemory(vk->device, vk->uniform_ring[i].buffer, vk->uniform_ring[i].memory, 0) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to bind uniform buffer %u", i);
+            free(vk); return false;
+        }
+        if (vkMapMemory(vk->device, vk->uniform_ring[i].memory, 0, vk->uniform_ring_size, 0, (void **)&vk->uniform_mapped[i]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to map uniform memory %u", i);
+            free(vk); return false;
+        }
         vk->uniform_offset[i] = 0;
     }
 
@@ -2141,7 +2180,10 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (is_texel)                                     ci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
 
     VkBuffer buf;
-    vkCreateBuffer(vk->device, &ci, NULL, &buf);
+    if (vkCreateBuffer(vk->device, &ci, NULL, &buf) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create buffer");
+        return RHI_HANDLE_NULL;
+    }
 
     VkMemoryRequirements mem_req;
     vkGetBufferMemoryRequirements(vk->device, buf, &mem_req);
@@ -2154,8 +2196,17 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, props);
 
     VkDeviceMemory mem;
-    vkAllocateMemory(vk->device, &ai, NULL, &mem);
-    vkBindBufferMemory(vk->device, buf, mem, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate buffer memory");
+        vkDestroyBuffer(vk->device, buf, NULL);
+        return RHI_HANDLE_NULL;
+    }
+    if (vkBindBufferMemory(vk->device, buf, mem, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind buffer memory");
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyBuffer(vk->device, buf, NULL);
+        return RHI_HANDLE_NULL;
+    }
 
     /* initial_data is copied after persistent mapping is established (below) */
 
@@ -2230,7 +2281,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImage image;
-    vkCreateImage(vk->device, &ci, NULL, &image);
+    if (vkCreateImage(vk->device, &ci, NULL, &image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create texture image");
+        return RHI_HANDLE_NULL;
+    }
 
     VkMemoryRequirements mem_req;
     vkGetImageMemoryRequirements(vk->device, image, &mem_req);
@@ -2240,8 +2294,17 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     ai.allocationSize = mem_req.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkDeviceMemory mem;
-    vkAllocateMemory(vk->device, &ai, NULL, &mem);
-    vkBindImageMemory(vk->device, image, mem, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate texture memory");
+        vkDestroyImage(vk->device, image, NULL);
+        return RHI_HANDLE_NULL;
+    }
+    if (vkBindImageMemory(vk->device, image, mem, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind texture image memory");
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyImage(vk->device, image, NULL);
+        return RHI_HANDLE_NULL;
+    }
 
     VkImageViewCreateInfo vci = {0};
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
