@@ -2052,7 +2052,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         lci.pPushConstantRanges = &push_range;
 
         VkPipelineLayout layout;
-        vkCreatePipelineLayout(vk->device, &lci, NULL, &layout);
+        if (vkCreatePipelineLayout(vk->device, &lci, NULL, &layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create compute pipeline layout");
+            return RHI_HANDLE_NULL;
+        }
 
         VkComputePipelineCreateInfo cpci = {0};
         cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -2123,7 +2126,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     lci.pPushConstantRanges = &push_range;
 
     VkPipelineLayout layout;
-    vkCreatePipelineLayout(vk->device, &lci, NULL, &layout);
+    if (vkCreatePipelineLayout(vk->device, &lci, NULL, &layout) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create graphics pipeline layout");
+        return RHI_HANDLE_NULL;
+    }
 
     VkRenderPass base_rp = desc->is_shadow_depth ? vk->shadow_render_pass
                          : vk_pipeline_render_pass(vk, desc->color_format);
@@ -2356,7 +2362,12 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     vci.subresourceRange.levelCount = 1;
     vci.subresourceRange.layerCount = 1;
     VkImageView view;
-    vkCreateImageView(vk->device, &vci, NULL, &view);
+    if (vkCreateImageView(vk->device, &vci, NULL, &view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create texture image view");
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyImage(vk->device, image, NULL);
+        return RHI_HANDLE_NULL;
+    }
 
     if (desc->data) {
         VkBuffer staging;
@@ -2693,7 +2704,10 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     ci.maxLod = 0.0f;
 
     VkSampler sampler;
-    vkCreateSampler(vk->device, &ci, NULL, &sampler);
+    if (vkCreateSampler(vk->device, &ci, NULL, &sampler) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create sampler");
+        return RHI_HANDLE_NULL;
+    }
 
     VKSamplerData *sd = calloc(1, sizeof(VKSamplerData));
     if (!sd) { vkDestroySampler(vk->device, sampler, NULL); return RHI_HANDLE_NULL; }
@@ -4097,7 +4111,11 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(vk->device, &ci, NULL, &sd->depth_image);
+    if (vkCreateImage(vk->device, &ci, NULL, &sd->depth_image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create shadow image");
+        free(sd);
+        return sm;
+    }
 
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(vk->device, sd->depth_image, &mr);
@@ -4105,8 +4123,19 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, &sd->depth_memory);
-    vkBindImageMemory(vk->device, sd->depth_image, sd->depth_memory, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &sd->depth_memory) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate shadow memory");
+        vkDestroyImage(vk->device, sd->depth_image, NULL);
+        free(sd);
+        return sm;
+    }
+    if (vkBindImageMemory(vk->device, sd->depth_image, sd->depth_memory, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind shadow image memory");
+        vkFreeMemory(vk->device, sd->depth_memory, NULL);
+        vkDestroyImage(vk->device, sd->depth_image, NULL);
+        free(sd);
+        return sm;
+    }
 
     VkImageViewCreateInfo ivci = {0};
     ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -4116,7 +4145,13 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     ivci.subresourceRange.levelCount = 1;
     ivci.subresourceRange.layerCount = 1;
-    vkCreateImageView(vk->device, &ivci, NULL, &sd->depth_view);
+    if (vkCreateImageView(vk->device, &ivci, NULL, &sd->depth_view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create shadow image view");
+        vkFreeMemory(vk->device, sd->depth_memory, NULL);
+        vkDestroyImage(vk->device, sd->depth_image, NULL);
+        free(sd);
+        return sm;
+    }
 
     VkAttachmentDescription depth_att = {0};
     depth_att.format = VK_FORMAT_D32_SFLOAT;
@@ -4148,7 +4183,14 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     rpci.pSubpasses = &sp;
     rpci.dependencyCount = 1;
     rpci.pDependencies = &dep;
-    vkCreateRenderPass(vk->device, &rpci, NULL, &sd->render_pass);
+    if (vkCreateRenderPass(vk->device, &rpci, NULL, &sd->render_pass) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create shadow render pass");
+        vkDestroyImageView(vk->device, sd->depth_view, NULL);
+        vkFreeMemory(vk->device, sd->depth_memory, NULL);
+        vkDestroyImage(vk->device, sd->depth_image, NULL);
+        free(sd);
+        return sm;
+    }
     sd->render_pass_load = vk_make_resume_render_pass(vk, &rpci);
 
     VkFramebufferCreateInfo fbci = {0};
@@ -4159,7 +4201,16 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     fbci.width = width;
     fbci.height = height;
     fbci.layers = 1;
-    vkCreateFramebuffer(vk->device, &fbci, NULL, &sd->framebuffer);
+    if (vkCreateFramebuffer(vk->device, &fbci, NULL, &sd->framebuffer) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create shadow framebuffer");
+        if (sd->render_pass_load) vkDestroyRenderPass(vk->device, sd->render_pass_load, NULL);
+        vkDestroyRenderPass(vk->device, sd->render_pass, NULL);
+        vkDestroyImageView(vk->device, sd->depth_view, NULL);
+        vkFreeMemory(vk->device, sd->depth_memory, NULL);
+        vkDestroyImage(vk->device, sd->depth_image, NULL);
+        free(sd);
+        return sm;
+    }
 
     if (vk->shadow_render_pass == VK_NULL_HANDLE) {
         vk->shadow_render_pass = sd->render_pass;
@@ -4315,7 +4366,11 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    vkCreateImage(vk->device, &ci, NULL, &cd->image);
+    if (vkCreateImage(vk->device, &ci, NULL, &cd->image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create cubemap image");
+        free(cd);
+        return RHI_HANDLE_NULL;
+    }
 
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(vk->device, cd->image, &mr);
@@ -4323,8 +4378,19 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, &cd->memory);
-    vkBindImageMemory(vk->device, cd->image, cd->memory, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &cd->memory) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate cubemap memory");
+        vkDestroyImage(vk->device, cd->image, NULL);
+        free(cd);
+        return RHI_HANDLE_NULL;
+    }
+    if (vkBindImageMemory(vk->device, cd->image, cd->memory, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind cubemap image memory");
+        vkFreeMemory(vk->device, cd->memory, NULL);
+        vkDestroyImage(vk->device, cd->image, NULL);
+        free(cd);
+        return RHI_HANDLE_NULL;
+    }
 
     VkImageViewCreateInfo ivci = {0};
     ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -4334,7 +4400,13 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ivci.subresourceRange.levelCount = mips;
     ivci.subresourceRange.layerCount = 6;
-    vkCreateImageView(vk->device, &ivci, NULL, &cd->view);
+    if (vkCreateImageView(vk->device, &ivci, NULL, &cd->view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create cubemap image view");
+        vkFreeMemory(vk->device, cd->memory, NULL);
+        vkDestroyImage(vk->device, cd->image, NULL);
+        free(cd);
+        return RHI_HANDLE_NULL;
+    }
 
     /* Transition all 6 faces UNDEFINED -> SHADER_READ on a one-time-submit
      * command buffer. Cubemaps are created during init (before any frame's
