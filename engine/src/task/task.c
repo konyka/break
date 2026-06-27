@@ -189,6 +189,8 @@ static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio)
     if (!t) {
         /* Fallback: pool exhausted, allocate on heap */
         t = (Task *)calloc(1, sizeof(Task));
+        /* R156: calloc failure leaves t NULL — memset below would crash. */
+        if (!t) return NULL;
         /* Best-effort registration: mutex only needed for this rare path */
         platform_mutex_lock(ts->pool_mutex_storage);
         u32 cur = atomic_load(&ts->task_pool_count);
@@ -197,6 +199,11 @@ static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio)
             if (pool_idx < ts->task_pool_capacity) {
                 ts->task_pool[pool_idx] = t;
             }
+        } else {
+            /* R156: Pool exhausted and can't register — mark handle as
+             * invalid so task_wait_handle / task_submit_dep reject it
+             * instead of reading task_pool[] out of bounds. */
+            pool_idx = 0xFFFFFFFF;
         }
         platform_mutex_unlock(ts->pool_mutex_storage);
     }
@@ -559,7 +566,12 @@ void task_system_destroy(TaskSystem *ts) {
     /* Release the pool's reference on every registered task. After the worker
      * join above no other thread touches these, so any task whose execution
      * reference already dropped is freed here; the rest are freed now. */
+    /* R156: Clamp to capacity — task_pool_count can exceed task_pool_capacity
+     * when the pool is exhausted and tasks fall back to heap allocation.
+     * Without clamping, iterating past task_pool[] reads into _task_block
+     * memory, causing garbage pointer dereference in task_release. */
     u32 pool_count = atomic_load(&ts->task_pool_count);
+    if (pool_count > ts->task_pool_capacity) pool_count = ts->task_pool_capacity;
     for (u32 i = 0; i < pool_count; i++) {
         Task *t = ts->task_pool[i];
         if (t) task_release(t);
@@ -596,18 +608,21 @@ static void submit_to_system(TaskSystem *ts, Task *t) {
 
 void task_submit(TaskSystem *ts, TaskFn fn, void *ctx) {
     Task *t = task_alloc(ts, fn, ctx, TASK_PRIORITY_NORMAL);
+    if (!t) return;  /* R156: calloc failure */
     submit_to_system(ts, t);
 }
 
 void task_submit_n(TaskSystem *ts, TaskFn fn, void **ctxs, i32 count) {
     for (i32 i = 0; i < count; i++) {
         Task *t = task_alloc(ts, fn, ctxs[i], TASK_PRIORITY_NORMAL);
+        if (!t) continue;  /* R156: calloc failure */
         submit_to_system(ts, t);
     }
 }
 
 TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio) {
     Task *t = task_alloc(ts, fn, ctx, prio);
+    if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
     submit_to_system(ts, t);
     return h;
@@ -616,6 +631,7 @@ TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority pri
 TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
                            TaskHandle *deps, u32 dep_count) {
     Task *t = task_alloc(ts, fn, ctx, TASK_PRIORITY_NORMAL);
+    if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
 
     /* Set dependency count — task won't execute until all deps decrement it */
@@ -623,10 +639,12 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
 
     /* Link this task as parent of each dependency (O(1) lookup via pool index) */
     platform_mutex_lock(ts->pool_mutex_storage);
-    u32 pool_count = atomic_load(&ts->task_pool_count);
     for (u32 d = 0; d < dep_count; d++) {
         u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
-        if (idx >= pool_count) continue;
+        /* R156: Check against task_pool_capacity, not task_pool_count —
+         * pool_count can exceed capacity when pool is exhausted, causing
+         * out-of-bounds read on task_pool[]. */
+        if (idx >= ts->task_pool_capacity) continue;
         Task *dep = ts->task_pool[idx];
         if (dep && dep->handle == deps[d]) {
             dep->parent = t;
@@ -690,8 +708,9 @@ void task_wait_handle(TaskSystem *ts, TaskHandle handle) {
     u32 idx = (u32)(handle & 0xFFFFFFFFu);
     u32 gen = (u32)(handle >> 32);
 
-    u32 pool_count = atomic_load_explicit(&ts->task_pool_count, memory_order_acquire);
-    if (idx >= pool_count) return;  /* handle not found — already done */
+    /* R156: Check against task_pool_capacity, not task_pool_count —
+     * pool_count can exceed capacity when pool is exhausted. */
+    if (idx >= ts->task_pool_capacity) return;  /* handle not found — already done */
 
     Task *t = ts->task_pool[idx];
     if (!t || (u32)(t->handle >> 32) != gen) return;  /* recycled slot */
