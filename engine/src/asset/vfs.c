@@ -74,7 +74,9 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
 
     char *names = calloc(hdr.name_table_size, 1);
     if (!names) { free(entries); fclose(fp); return false; }
-    fseek(fp, sizeof(PakHeader) + hdr.entry_count * sizeof(PakEntry), SEEK_SET);
+    if (fseek(fp, sizeof(PakHeader) + hdr.entry_count * sizeof(PakEntry), SEEK_SET) != 0) {
+        free(names); free(entries); fclose(fp); return false;
+    }
     fread(names, 1, hdr.name_table_size, fp);
 
     /* Build hash table for O(1) lookup: open-addressing with linear probing.
@@ -133,7 +135,9 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                             VFSFile *f = (VFSFile *)vfs_block;
                             f->data = vfs_block + sizeof(VFSFile);
                             f->size = pe->size;
-                            fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET);
+                            if (fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET) != 0) {
+                                free(vfs_block); return NULL;
+                            }
                             fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp);
                             f->pos = 0;
                             return f;
@@ -147,11 +151,11 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
             snprintf(full, sizeof(full), "%s/%s", vfs->mounts[mi].path, path);
             FILE *fp = fopen(full, "rb");
             if (fp) {
-                fseek(fp, 0, SEEK_END);
+                if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
                 long fsz = ftell(fp);
                 if (fsz < 0) { fclose(fp); return NULL; }
                 usize sz = (usize)fsz;
-                fseek(fp, 0, SEEK_SET);
+                if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return NULL; }
                 /* Single alloc: VFSFile + data */
                 u8 *vfs_block = (u8 *)calloc(1, sizeof(VFSFile) + sz);
                 if (!vfs_block) { fclose(fp); return NULL; }

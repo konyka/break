@@ -578,9 +578,9 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     if (!w || !path) return false;
     FILE *fp = fopen(path, "rb");
     if (!fp) return false;
-    fseek(fp, 0, SEEK_END);
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
     long fsz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
     if (fsz < (long)sizeof(BscnHeader)) { fclose(fp); return false; }
 
     u8 *buf = (u8 *)malloc((size_t)fsz);
@@ -902,9 +902,9 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
     if (!w || !path) return false;
     FILE *fp = fopen(path, "rb");
     if (!fp) return false;
-    fseek(fp, 0, SEEK_END);
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
     long fsz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
     if (fsz <= 0) { fclose(fp); return false; }
     char *buf = (char *)malloc((size_t)fsz);
     if (!buf) { fclose(fp); return false; }

@@ -90,9 +90,9 @@ bool script_load(ScriptEngine *se, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
 
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
     long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
     if (sz < 0) { fclose(f); return false; }
 
     free(se->source);

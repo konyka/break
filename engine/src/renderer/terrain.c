@@ -89,9 +89,9 @@ static void terrain_rebuild_region(Terrain *t, i32 gx0, i32 gz0, i32 gx1, i32 gz
 static char *terrain_read_file(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
     if (sz <= 0) { fclose(f); return NULL; }
     char *buf = (char *)malloc((usize)sz + 1);
     if (!buf) { fclose(f); return NULL; }

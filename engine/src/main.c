@@ -154,10 +154,10 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
 static char *file_read_full(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return NULL; }
-    fseek(f, 0, SEEK_SET);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
     char *buf = malloc((usize)sz + 1);
     if (!buf) { fclose(f); return NULL; }
     usize read = fread(buf, 1, (usize)sz, f);

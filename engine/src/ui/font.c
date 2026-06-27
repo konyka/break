@@ -48,10 +48,10 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
         LOG_WARN("Font: cannot open %s", ttf_path);
         return false;
     }
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return false; }
-    fseek(f, 0, SEEK_SET);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
     u8 *ttf_buf = malloc((usize)sz);
     if (!ttf_buf) { fclose(f); return false; }
     fread(ttf_buf, 1, (usize)sz, f);
@@ -195,28 +195,34 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     char *vs_src = NULL, *fs_src = NULL;
     FILE *vf = fopen(vert_path, "rb");
     if (vf) {
-        fseek(vf, 0, SEEK_END); long vsz = ftell(vf); fseek(vf, 0, SEEK_SET);
-        if (vsz < 0) { fclose(vf); vsz = 0; }
-        vs_len = (usize)vsz;
-        vs_src = malloc(vs_len + 1);
-        if (!vs_src) { fclose(vf); vs_len = 0; }
+        long vsz = 0;
+        if (fseek(vf, 0, SEEK_END) == 0) vsz = ftell(vf);
+        if (vsz < 0 || fseek(vf, 0, SEEK_SET) != 0) { fclose(vf); }
         else {
-            vs_len = fread(vs_src, 1, vs_len, vf);
-            vs_src[vs_len] = '\0';
-            fclose(vf);
+            vs_len = (usize)vsz;
+            vs_src = malloc(vs_len + 1);
+            if (!vs_src) { fclose(vf); vs_len = 0; }
+            else {
+                vs_len = fread(vs_src, 1, vs_len, vf);
+                vs_src[vs_len] = '\0';
+                fclose(vf);
+            }
         }
     }
     FILE *ff = fopen(frag_path, "rb");
     if (ff) {
-        fseek(ff, 0, SEEK_END); long fsz = ftell(ff); fseek(ff, 0, SEEK_SET);
-        if (fsz < 0) { fclose(ff); fsz = 0; }
-        fs_len = (usize)fsz;
-        fs_src = malloc(fs_len + 1);
-        if (!fs_src) { fclose(ff); fs_len = 0; }
+        long fsz = 0;
+        if (fseek(ff, 0, SEEK_END) == 0) fsz = ftell(ff);
+        if (fsz < 0 || fseek(ff, 0, SEEK_SET) != 0) { fclose(ff); }
         else {
-            fs_len = fread(fs_src, 1, fs_len, ff);
-            fs_src[fs_len] = '\0';
-            fclose(ff);
+            fs_len = (usize)fsz;
+            fs_src = malloc(fs_len + 1);
+            if (!fs_src) { fclose(ff); fs_len = 0; }
+            else {
+                fs_len = fread(fs_src, 1, fs_len, ff);
+                fs_src[fs_len] = '\0';
+                fclose(ff);
+            }
         }
     }
 

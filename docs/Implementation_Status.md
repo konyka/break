@@ -463,4 +463,14 @@
   - **R135-L 资源创建 4 处**：vkCreateQueryPool（GPU 计时器）/vkCreateBufferView（texel buffer）/vkMapMemory×2（buffer_create 持久映射 + buffer_map）。
   - **R135-M cleanup/wait 13 处**：vkDeviceWaitIdle×8 + vkWaitForFences×5 — LOG_WARN 但继续执行。
   - **VK VkResult 检查总计**：R131 19 + R132 17 + R133 14 + R134 19 + R135 78 = **147 处**已修复。
+
+- **R136 审查**：全引擎 fseek 返回值检查审计。扫描发现 37 个源文件中 80 处未检查 fseek 返回值，涵盖所有 renderer 模块（29 文件）、asset/vfs.c（4 处，含 PAK 数据偏移定位）、ui/font.c（4 处 + 修复 double-close bug）、scene/scene_serial.c（4 处）、script/script.c（2 处）、main.c（2 处）、test_vulkan.c（2 处）、asset/hotreload.c（2 处）。**审计后零未检查 fseek 调用剩余。**
+  - **R136-A 标准模式 30 文件 60 处**：renderer 模块（particles/taa/ssr/gpucull/cinematic/volumetric/ssgi/lens_flare/sharpen/motion_blur/contact_shadow/upscale/god_rays/debug_viz/lens_effects/occlusion_cull/point_shadow/indirect_draw/color_grade/dof/fxaa/post_process/skybox/ssao/sss/tonemap/combined_post_process/forward_velocity）+ hotreload.c + main.c — `fseek(SEEK_END)` 和 `fseek(SEEK_SET)` 均未检查返回值，失败时 ftell 返回未定义值可能导致错误分配。
+  - **R136-B 内联模式 2 文件 4 处**：water.c 和 test_vulkan.c — fseek/ftell/fseek 写在同一行，拆分为多行并添加返回值检查。
+  - **R136-C font.c double-close bug 修复**：原代码当 `vsz < 0` 时 fclose(vf) 后继续执行 fread/fclose，导致 use-after-close 和 double-close。重构为 else 分支跳过 fread/fclose。
+  - **R136-D terrain.c 2 处**：fseek 顺序与标准模式不同（sz <= 0 检查在 fseek(SET) 之后），添加 fseek 返回值检查。
+  - **R136-E script.c 2 处**：fseek(SET) 在 sz < 0 检查之前，返回 false 而非 NULL。添加 fseek 返回值检查。
+  - **R136-F vfs.c 4 处**：PAK 挂载路径 fseek 到 name table 偏移 + vfs_open 中 fseek 到 data_offset + 标准文件大小模式。失败时清理已分配资源并返回。
+  - **R136-G scene_serial.c 4 处**：scene_load_binary 和 scene_load_json 各 2 处 fseek，使用 `fp` 变量名。失败时 fclose + return false。
+  - **fseek 返回值检查总计**：R136 **80 处**已修复，跨 37 个源文件。
   - **验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
