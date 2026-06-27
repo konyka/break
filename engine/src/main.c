@@ -108,14 +108,15 @@ static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgb) {
     memcpy(hdr + 42, &(u32){2835}, 4);
     FILE *f = fopen(path, "wb");
     if (!f) return;
-    fwrite(hdr, 1, 54, f);
+    bool bmp_ok = fwrite(hdr, 1, 54, f) == 54;
     u8 padding[3] = {0};
-    for (u32 y = 0; y < h; y++) {
+    for (u32 y = 0; y < h && bmp_ok; y++) {
         const u8 *row = rgb + (h - 1 - y) * row_sz;
-        fwrite(row, 1, row_sz, f);
-        if (pad) fwrite(padding, 1, pad, f);
+        bmp_ok = fwrite(row, 1, row_sz, f) == row_sz;
+        if (bmp_ok && pad) bmp_ok = fwrite(padding, 1, pad, f) == (usize)pad;
     }
     fclose(f);
+    if (!bmp_ok) LOG_WARN("BMP write: partial write failure for %s", path);
 }
 
 enum {
@@ -723,7 +724,12 @@ static u32 demo_write_stream_texture(const char *path, u32 size) {
                 p[3] = 255;
             }
         }
-        fwrite(buf, 1, (usize)s * s * 4u, f);
+        usize wbytes = (usize)s * s * 4u;
+        if (fwrite(buf, 1, wbytes, f) != wbytes) {
+            free(buf); fclose(f);
+            LOG_WARN("Stream texture write: partial write failure for %s", path);
+            return mips;
+        }
         free(buf);
         mips++;
         if (s == 1) break;
@@ -747,20 +753,22 @@ static bool demo_write_sine_wav(const char *path, u32 sample_rate, f32 seconds, 
     /* RIFF/WAVE header */
     u32 riff = 36 + data_bytes, fmt_len = 16, sr = sample_rate, br = byte_rate;
     u16 fmt_tag = 1, ch = (u16)channels, bps = (u16)bits, ba = block_align;
-    fwrite("RIFF", 1, 4, f); fwrite(&riff, 4, 1, f); fwrite("WAVE", 1, 4, f);
-    fwrite("fmt ", 1, 4, f); fwrite(&fmt_len, 4, 1, f);
-    fwrite(&fmt_tag, 2, 1, f); fwrite(&ch, 2, 1, f); fwrite(&sr, 4, 1, f);
-    fwrite(&br, 4, 1, f); fwrite(&ba, 2, 1, f); fwrite(&bps, 2, 1, f);
-    fwrite("data", 1, 4, f); fwrite(&data_bytes, 4, 1, f);
+    bool wav_ok = true;
+    wav_ok &= fwrite("RIFF", 1, 4, f) == 4; wav_ok &= fwrite(&riff, 4, 1, f) == 1; wav_ok &= fwrite("WAVE", 1, 4, f) == 4;
+    wav_ok &= fwrite("fmt ", 1, 4, f) == 4; wav_ok &= fwrite(&fmt_len, 4, 1, f) == 1;
+    wav_ok &= fwrite(&fmt_tag, 2, 1, f) == 1; wav_ok &= fwrite(&ch, 2, 1, f) == 1; wav_ok &= fwrite(&sr, 4, 1, f) == 1;
+    wav_ok &= fwrite(&br, 4, 1, f) == 1; wav_ok &= fwrite(&ba, 2, 1, f) == 1; wav_ok &= fwrite(&bps, 2, 1, f) == 1;
+    wav_ok &= fwrite("data", 1, 4, f) == 4; wav_ok &= fwrite(&data_bytes, 4, 1, f) == 1;
 
-    for (u32 i = 0; i < frames; i++) {
+    for (u32 i = 0; i < frames && wav_ok; i++) {
         f32 t = (f32)i / (f32)sample_rate;
         f32 env = 0.6f * (0.5f + 0.5f * sinf(t * 1.5f)); /* gentle tremolo */
         f32 s = env * sinf(6.2831853f * freq * t);
         i16 sample = (i16)(s * 32000.0f);
-        fwrite(&sample, 2, 1, f);
+        wav_ok = fwrite(&sample, 2, 1, f) == 1;
     }
     fclose(f);
+    if (!wav_ok) LOG_WARN("WAV write: partial write failure for %s", path);
     return true;
 }
 
@@ -2645,22 +2653,24 @@ u32 culled_count = 0;
                 /* Companion state file for runtime data (camera, physics, rendering). */
                 FILE *sf = fopen("scene_state.bin", "wb");
                 if (sf) {
+                    bool sv_ok = true;
                     u32 magic = 0x534E4547u;
-                    fwrite(&magic, 4, 1, sf);
-                    fwrite(&camera.position, sizeof(Camera), 1, sf);
-                    fwrite(&sun_azimuth, sizeof(f32), 1, sf);
-                    fwrite(&sun_elevation, sizeof(f32), 1, sf);
-                    fwrite(&tonemap.exposure, sizeof(f32), 1, sf);
-                    fwrite(&render_scale, sizeof(f32), 1, sf);
+                    sv_ok &= fwrite(&magic, 4, 1, sf) == 1;
+                    sv_ok &= fwrite(&camera.position, sizeof(Camera), 1, sf) == 1;
+                    sv_ok &= fwrite(&sun_azimuth, sizeof(f32), 1, sf) == 1;
+                    sv_ok &= fwrite(&sun_elevation, sizeof(f32), 1, sf) == 1;
+                    sv_ok &= fwrite(&tonemap.exposure, sizeof(f32), 1, sf) == 1;
+                    sv_ok &= fwrite(&render_scale, sizeof(f32), 1, sf) == 1;
                     u32 pc = physics->count;
-                    fwrite(&pc, sizeof(u32), 1, sf);
-                    for (u32 si = 0; si < pc; si++) {
-                        fwrite(&physics->bodies[si].position, sizeof(Vec3), 1, sf);
-                        fwrite(&physics->bodies[si].velocity, sizeof(Vec3), 1, sf);
+                    sv_ok &= fwrite(&pc, sizeof(u32), 1, sf) == 1;
+                    for (u32 si = 0; si < pc && sv_ok; si++) {
+                        sv_ok &= fwrite(&physics->bodies[si].position, sizeof(Vec3), 1, sf) == 1;
+                        sv_ok &= fwrite(&physics->bodies[si].velocity, sizeof(Vec3), 1, sf) == 1;
                     }
-                    fwrite(&water.water_y, sizeof(f32), 1, sf);
-                    fwrite(&water.enabled, sizeof(bool), 1, sf);
+                    sv_ok &= fwrite(&water.water_y, sizeof(f32), 1, sf) == 1;
+                    sv_ok &= fwrite(&water.enabled, sizeof(bool), 1, sf) == 1;
                     fclose(sf);
+                    if (!sv_ok) LOG_WARN("Scene state save: partial write failure");
                 }
             }
         }
@@ -2674,29 +2684,30 @@ u32 culled_count = 0;
             FILE *lf = fopen("scene_state.bin", "rb");
             if (lf) {
                 u32 magic = 0;
-                fread(&magic, 4, 1, lf);
-                if (magic == 0x534E4547u) {
-                    fread(&camera.position, sizeof(Camera), 1, lf);
-                    fread(&sun_azimuth, sizeof(f32), 1, lf);
-                    fread(&sun_elevation, sizeof(f32), 1, lf);
-                    fread(&tonemap.exposure, sizeof(f32), 1, lf);
-                    fread(&render_scale, sizeof(f32), 1, lf);
+                bool ld_ok = fread(&magic, 4, 1, lf) == 1;
+                if (ld_ok && magic == 0x534E4547u) {
+                    ld_ok &= fread(&camera.position, sizeof(Camera), 1, lf) == 1;
+                    ld_ok &= fread(&sun_azimuth, sizeof(f32), 1, lf) == 1;
+                    ld_ok &= fread(&sun_elevation, sizeof(f32), 1, lf) == 1;
+                    ld_ok &= fread(&tonemap.exposure, sizeof(f32), 1, lf) == 1;
+                    ld_ok &= fread(&render_scale, sizeof(f32), 1, lf) == 1;
                     u32 pc = 0;
-                    fread(&pc, sizeof(u32), 1, lf);
-                    for (u32 si = 0; si < pc && si < physics->capacity; si++) {
+                    ld_ok &= fread(&pc, sizeof(u32), 1, lf) == 1;
+                    for (u32 si = 0; si < pc && si < physics->capacity && ld_ok; si++) {
                         if (si < physics->count) {
-                            fread(&physics->bodies[si].position, sizeof(Vec3), 1, lf);
-                            fread(&physics->bodies[si].velocity, sizeof(Vec3), 1, lf);
+                            ld_ok &= fread(&physics->bodies[si].position, sizeof(Vec3), 1, lf) == 1;
+                            ld_ok &= fread(&physics->bodies[si].velocity, sizeof(Vec3), 1, lf) == 1;
                         } else {
                             Vec3 skip;
-                            fread(&skip, sizeof(Vec3), 1, lf);
-                            fread(&skip, sizeof(Vec3), 1, lf);
+                            ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
+                            ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                         }
                     }
-                    if (!feof(lf)) {
-                        fread(&water.water_y, sizeof(f32), 1, lf);
-                        fread(&water.enabled, sizeof(bool), 1, lf);
+                    if (ld_ok && !feof(lf)) {
+                        ld_ok &= fread(&water.water_y, sizeof(f32), 1, lf) == 1;
+                        ld_ok &= fread(&water.enabled, sizeof(bool), 1, lf) == 1;
                     }
+                    if (!ld_ok) LOG_WARN("Scene state load: partial read failure");
                     LOG_INFO("Runtime state restored (%u bodies)", pc);
                 }
                 fclose(lf);

@@ -112,8 +112,10 @@ static bool golden_write_ppm(const char *path, const u8 *grid) {
     FILE *f = fopen(path, "wb");
     if (!f) return false;
     fprintf(f, "P6\n%d %d\n255\n", GOLDEN_GW, GOLDEN_GH);
-    fwrite(grid, 1, (usize)GOLDEN_GW * GOLDEN_GH * 3, f);
+    usize gbytes = (usize)GOLDEN_GW * GOLDEN_GH * 3;
+    bool ok = fwrite(grid, 1, gbytes, f) == gbytes;
     fclose(f);
+    if (!ok) return false;
     return true;
 }
 

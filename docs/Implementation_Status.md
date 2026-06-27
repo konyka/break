@@ -474,3 +474,13 @@
   - **R136-G scene_serial.c 4 处**：scene_load_binary 和 scene_load_json 各 2 处 fseek，使用 `fp` 变量名。失败时 fclose + return false。
   - **fseek 返回值检查总计**：R136 **80 处**已修复，跨 37 个源文件。
   - **验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
+
+- **R137 审查**：main.c 场景状态保存/加载路径 + 文件写入工具函数 unchecked fwrite/fread 审计。修复 43 处未检查 fwrite/fread 返回值。
+  - **R137-A 场景状态保存 11 处**：magic/camera/sun_azimuth/sun_elevation/tonemap.exposure/render_scale/physics count + per-body position+velocity/water_y/water_enabled — 添加 `sv_ok` 跟踪，失败时 LOG_WARN。循环中添加 `&& sv_ok` 条件，首次失败后跳过后续写入。
+  - **R137-B 场景状态加载 13 处**：同上字段 — 添加 `ld_ok` 跟踪，fread 魔术数失败时跳过整个加载。循环中添加 `&& ld_ok` 条件，防止从截断文件读取垃圾数据。
+  - **R137-C BMP 写入器 3 处**：header fwrite + per-row fwrite + padding fwrite — 添加 `bmp_ok` 跟踪，header 失败时跳过行写入。
+  - **R137-D WAV 写入器 14 处**：13 个 header fwrite + 1 个 per-sample fwrite — 添加 `wav_ok` 跟踪，失败时跳过后续写入。
+  - **R137-E texture mipmap 写入器 1 处**：per-mip fwrite — 失败时 free+fclose+return mips，避免写入不完整 mip 链。
+  - **R137-F test_vulkan.c 1 处**：golden image PPM fwrite — 失败时 return false。
+  - **fwrite/fread 返回值检查总计**：R137 **43 处**已修复，跨 2 个源文件（main.c + test_vulkan.c）。
+  - **验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
