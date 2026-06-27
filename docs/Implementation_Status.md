@@ -447,3 +447,20 @@
   - **R124-1 verify_pak.c ftell+malloc**（SECURITY+ROBUSTNESS）：`verify_file` 中 `ftell(fp)` 缺少 < 0 检查；`malloc(disk_size)` 和 `malloc(pak_size)` 未检查 NULL 即用于 `fread`/`vfs_read`。修复：添加 `ftell < 0` 检查 + 两处 malloc NULL 检查 + 资源清理。
   - **确认安全**：packet.c（显式 LE 编码+全边界检查）；net_replication.c（sscanf %255s+重排序槽 PACKET_MAX_SIZE+可靠待发 PACKET_MAX_SIZE+parse_payload 钳制 max_count）；script_lua.c（checked_body+lua_pcall+luaL_check*）；packer.c（R105-2 边界检查+4GB 限制+MAX_ENTRIES）；network.c（fd 管理+net_close 检查 INVALID_RAW_SOCKET+net_poll NULL 检查）；CMakeLists.txt（-Werror -pedantic+第三方隔离+ASAN）；全代码库 read_file 25+ 处全有 ftell+malloc 检查。
   - **验收**：全部 23/23 测试通过。BVH/GL 构建路径编译成功。
+- [x] Round 135：VK VkResult 全路径收尾审计 — 78 处（含 R134 遗漏的 MRT FBO + cubemap depth face 路径）——
+  - **R135 审查**：R131-R134 已修复 69 处 VK VkResult 检查。R135 完成全部剩余未检查 VK 调用，覆盖帧路径、截图路径、纹理创建/上传路径、swapchain 创建路径、MRT FBO 创建路径（R134 遗漏）、cubemap depth FBO per-face 循环（R134 遗漏）、布局转换路径、GPU 计时器/缓冲区创建路径、以及所有清理/等待路径。**审计后零未检查 VK 调用剩余。**
+  - **R135-A frame_begin 5 处**：vkWaitForFences/vkResetFences/vkResetDescriptorPool/vkResetCommandBuffer/vkBeginCommandBuffer — 失败时 `frame_started = false` + 跳帧。
+  - **R135-B frame_end 2 处**：vkEndCommandBuffer/vkQueueSubmit — 失败时 `frame_started = false` + return。
+  - **R135-C rhi_screenshot 7 处**：vkDeviceWaitIdle/vkBindBufferMemory/vkAllocateCommandBuffers/vkBeginCommandBuffer/vkEndCommandBuffer/vkQueueWaitIdle/vkMapMemory — 失败时清理 staging 资源并返回。**关键：vkMapMemory 失败阻断 memcpy(NULL) 崩溃。**
+  - **R135-D rhi_texture_create staging+else 9 处**：staging 路径 3 处 + else 路径 6 处（vkAllocateCommandBuffers/vkBeginCommandBuffer/vkEndCommandBuffer/vkCreateFence/vkQueueSubmit/vkWaitForFences）— 逆序清理 cmd+view+image+memory。
+  - **R135-E rhi_texture_upload_mip 8 处**：vkBindBufferMemory/vkMapMemory/vkAllocateCommandBuffers/vkBeginCommandBuffer/vkEndCommandBuffer/vkCreateFence/vkQueueSubmit/vkWaitForFences。
+  - **R135-F rhi_cubemap_create 6 处**：vkAllocateCommandBuffers/vkBeginCommandBuffer/vkEndCommandBuffer/vkCreateFence/vkQueueSubmit/vkWaitForFences — 逆序清理 cd 资源 + return RHI_HANDLE_NULL。
+  - **R135-G rhi_cubemap_transition_to_read 7 处**：vkDeviceWaitIdle/vkAllocateCommandBuffers/vkBeginCommandBuffer/vkEndCommandBuffer/vkCreateFence/vkQueueSubmit/vkWaitForFences — void 函数，LOG_WARN + return。
+  - **R135-H rhi_texture_transition_to_read 7 处**：同 R135-G 模式。
+  - **R135-I init/swapchain 5 处**：vkCreateRenderPass（resume_render_pass）/vkQueueSubmit+vkQueueWaitIdle（init_image_layout）/vkGetSwapchainImagesKHR×2。
+  - **R135-J rhi_mrt_fbo_create 6 处（R134 遗漏）**：vkCreateImage/vkAllocateMemory/vkBindImageMemory/vkCreateImageView（depth）/vkCreateRenderPass/vkCreateFramebuffer — 逆序清理 color+depth 资源 + free(md) + return fbo。R134 文档误将 rhi_offscreen_fbo_create_fmt 标记为“rhi_mrt_fbo_create”。
+  - **R135-K rhi_cubemap_depth_fbo_create per-face 2 处（R134 遗漏）**：vkCreateImageView/vkCreateFramebuffer — 逆序清理 face views+framebuffers + depth 资源 + return fbo。
+  - **R135-L 资源创建 4 处**：vkCreateQueryPool（GPU 计时器）/vkCreateBufferView（texel buffer）/vkMapMemory×2（buffer_create 持久映射 + buffer_map）。
+  - **R135-M cleanup/wait 13 处**：vkDeviceWaitIdle×8 + vkWaitForFences×5 — LOG_WARN 但继续执行。
+  - **VK VkResult 检查总计**：R131 19 + R132 17 + R133 14 + R134 19 + R135 78 = **147 处**已修复。
+  - **验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。

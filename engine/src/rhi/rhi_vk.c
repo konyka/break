@@ -254,7 +254,8 @@ static VKBackend *vk_backend(RHIDevice *dev) {
 }
 
 static void vk_wait_frames(VKBackend *vk) {
-    vkWaitForFences(vk->device, VK_MAX_FRAMES, vk->fences, VK_TRUE, UINT64_MAX);
+    if (vkWaitForFences(vk->device, VK_MAX_FRAMES, vk->fences, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        LOG_WARN("VK: vkWaitForFences failed in wait_frames");
 }
 
 static u32 vk_find_memory(VKBackend *vk, u32 type_filter, VkMemoryPropertyFlags props) {
@@ -285,7 +286,8 @@ static VkRenderPass vk_make_resume_render_pass(VKBackend *vk,
     VkRenderPassCreateInfo ci = *clear_ci;
     ci.pAttachments = atts;
     VkRenderPass rp = VK_NULL_HANDLE;
-    vkCreateRenderPass(vk->device, &ci, NULL, &rp);
+    if (vkCreateRenderPass(vk->device, &ci, NULL, &rp) != VK_SUCCESS)
+        LOG_WARN("VK: vkCreateRenderPass failed in make_resume_render_pass");
     return rp;
 }
 
@@ -378,8 +380,10 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
-    vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(vk->graphics_queue);
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
+        LOG_FATAL("VK: vkQueueSubmit failed in init_image_layout");
+    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+        LOG_FATAL("VK: vkQueueWaitIdle failed in init_image_layout");
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
 }
 
@@ -493,12 +497,19 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         return;
     }
 
-    vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, NULL);
+    if (vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, NULL) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkGetSwapchainImagesKHR count query failed");
+        return;
+    }
     vk->swap_images = calloc(vk->swap_count, sizeof(VkImage));
     if (!vk->swap_images) { LOG_FATAL("VK: OOM swap images"); return; }
     vk->swap_views = calloc(vk->swap_count, sizeof(VkImageView));
     if (!vk->swap_views) { LOG_FATAL("VK: OOM swap views"); return; }
-    vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, vk->swap_images);
+    if (vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, vk->swap_images) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkGetSwapchainImagesKHR image query failed");
+        free(vk->swap_images);
+        return;
+    }
 
     for (u32 i = 0; i < vk->swap_count; i++) {
         VkImageViewCreateInfo vci = {0};
@@ -682,7 +693,8 @@ static void vk_cleanup_swapchain(VKBackend *vk) {
 }
 
 static void vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in recreate_swapchain");
     vk_cleanup_swapchain(vk);
     vk_create_swapchain(vk, w, h);
     vk_create_depth(vk);
@@ -1207,7 +1219,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 static void vk_shutdown(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     if (!vk) return;
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in shutdown");
 
     if (vk->shaderc_compiler) {
         shaderc_compiler_release(vk->shaderc_compiler);
@@ -1275,7 +1288,8 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
 void rhi_device_destroy(RHIDevice *dev) {
     if (!dev) return;
     VKBackend *vk = vk_backend(dev);
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in device_destroy");
 
     for (u32 i = 0; i < RHI_MAX_RESOURCES; i++) {
         if (!dev->slots[i].alive) continue;
@@ -1353,9 +1367,21 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     g_current_device = dev;
 
-    vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX);
-    vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]);
-    vkResetDescriptorPool(vk->device, vk->desc_pools[vk->current_frame], 0);
+    if (vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkWaitForFences failed in frame_begin");
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
+    }
+    if (vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkResetFences failed in frame_begin");
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
+    }
+    if (vkResetDescriptorPool(vk->device, vk->desc_pools[vk->current_frame], 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkResetDescriptorPool failed in frame_begin");
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
+    }
 
     VkResult res = vkAcquireNextImageKHR(vk->device, vk->swapchain, UINT64_MAX,
         vk->image_semaphores[vk->current_frame], VK_NULL_HANDLE, &vk->image_index);
@@ -1370,7 +1396,11 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     }
     /* VK_SUBOPTIMAL_KHR is a success — swapchain rebuild deferred to rhi_present */
 
-    vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0);
+    if (vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkResetCommandBuffer failed in frame_begin");
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
+    }
     vk->current_pipeline = VK_NULL_HANDLE; /* R89-1: reset pipeline cache for new command buffer */
     vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset viewport/scissor cache */
     vk->push_dirty = false; vk->push_dirty_min = 256; vk->push_dirty_max = 0;  /* R96-1: clean state — each set_uniform marks its own range. Avoids pushing 256 bytes to compute pipelines that only declare 128-byte push constant ranges. */
@@ -1378,7 +1408,11 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(vk->cmd_buffers[vk->current_frame], &bi);
+    if (vkBeginCommandBuffer(vk->cmd_buffers[vk->current_frame], &bi) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkBeginCommandBuffer failed in frame_begin");
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
+    }
 
     VkRenderPassBeginInfo rpi = {0};
     rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1421,7 +1455,8 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
     if (!vk) return;
 
     /* Wait for all frames to complete before reading back. */
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in screenshot");
 
     /* Create a host-visible staging buffer. */
     VkDeviceSize buf_size = (VkDeviceSize)w * h * 4u;
@@ -1452,7 +1487,12 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         return;
     }
-    vkBindBufferMemory(vk->device, staging_buf, staging_mem, 0);
+    if (vkBindBufferMemory(vk->device, staging_buf, staging_mem, 0) != VK_SUCCESS) {
+        LOG_WARN("screenshot: failed to bind staging buffer memory");
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        return;
+    }
 
     /* Allocate a one-shot command buffer for the copy. */
     VkCommandBufferAllocateInfo cmd_ai = {0};
@@ -1462,12 +1502,23 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
     cmd_ai.commandBufferCount = 1;
 
     VkCommandBuffer cmd;
-    vkAllocateCommandBuffers(vk->device, &cmd_ai, &cmd);
+    if (vkAllocateCommandBuffers(vk->device, &cmd_ai, &cmd) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate screenshot command buffer");
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
 
     VkCommandBufferBeginInfo begin = {0};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &begin);
+    if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to begin screenshot command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
 
     /* Transition swapchain image to TRANSFER_SRC_OPTIMAL. */
     VkImage src_image = vk->swap_images[vk->image_index];
@@ -1506,21 +1557,39 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, NULL, 0, NULL, 1, &barrier);
 
-    vkEndCommandBuffer(cmd);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to end screenshot command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
 
     /* Submit and wait. */
     VkSubmitInfo submit = {0};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    vkQueueSubmit(vk->graphics_queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(vk->graphics_queue);
+    if (vkQueueSubmit(vk->graphics_queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to submit screenshot command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
+    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+        LOG_WARN("VK: vkQueueWaitIdle failed in screenshot");
 
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
 
     /* Map buffer and copy RGBA to pixels (VK swapchain is BGRA, convert to RGBA). */
     void *mapped;
-    vkMapMemory(vk->device, staging_mem, 0, buf_size, 0, &mapped);
+    if (vkMapMemory(vk->device, staging_mem, 0, buf_size, 0, &mapped) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkMapMemory failed in screenshot");
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
     const u8 *src = (const u8 *)mapped;
     for (u32 i = 0; i < w * h; ++i) {
         pixels[i * 4u + 0u] = src[i * 4u + 2u]; /* R <- B */
@@ -1551,7 +1620,11 @@ RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     ci.queryCount = 2;
-    vkCreateQueryPool(vk->device, &ci, NULL, &t->query_pool);
+    if (vkCreateQueryPool(vk->device, &ci, NULL, &t->query_pool) != VK_SUCCESS) {
+        LOG_WARN("VK: vkCreateQueryPool failed");
+        free(t);
+        return NULL;
+    }
     return t;
 }
 
@@ -1603,7 +1676,11 @@ void rhi_frame_end(RHIDevice *dev) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
         vk->render_pass_active = false;
     }
-    vkEndCommandBuffer(vk->cmd_buffers[vk->current_frame]);
+    if (vkEndCommandBuffer(vk->cmd_buffers[vk->current_frame]) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkEndCommandBuffer failed in frame_end");
+        vk->frame_started = false;
+        return;
+    }
 
     VkSubmitInfo si = {0};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1617,7 +1694,11 @@ void rhi_frame_end(RHIDevice *dev) {
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &vk->render_semaphores[vk->image_index];
 
-    vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]);
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]) != VK_SUCCESS) {
+        LOG_FATAL("VK: vkQueueSubmit failed in frame_end");
+        vk->frame_started = false;
+        return;
+    }
     vk->frame_started = false;
 }
 
@@ -2264,7 +2345,10 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         bvci.buffer = buf;
         bvci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
         bvci.range = desc->size;
-        vkCreateBufferView(vk->device, &bvci, NULL, &texel_view);
+        if (vkCreateBufferView(vk->device, &bvci, NULL, &texel_view) != VK_SUCCESS) {
+            LOG_WARN("VK: vkCreateBufferView failed for texel buffer");
+            texel_view = VK_NULL_HANDLE;
+        }
     }
 
     VKBufferData *bd = calloc(1, sizeof(VKBufferData));
@@ -2278,7 +2362,10 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     /* Persistent mapping: HOST_VISIBLE | HOST_COHERENT memory stays mapped
      * for the buffer's lifetime. Eliminates vkMapMemory/vkUnmapMemory overhead
      * in rhi_buffer_update (called multiple times per frame). */
-    vkMapMemory(vk->device, mem, 0, desc->size, 0, (void **)&bd->mapped);
+    if (vkMapMemory(vk->device, mem, 0, desc->size, 0, (void **)&bd->mapped) != VK_SUCCESS) {
+        LOG_WARN("VK: vkMapMemory failed for persistent mapping in buffer_create");
+        bd->mapped = NULL;
+    }
     if (desc->initial_data && bd->mapped) {
         memcpy(bd->mapped, desc->initial_data, desc->size);
     }
@@ -2431,11 +2518,28 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         cbai.commandPool = vk->cmd_pool;
         cbai.commandBufferCount = 1;
         VkCommandBuffer tmp_cb;
-        vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb);
+        if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to allocate texture staging command buffer");
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
         VkCommandBufferBeginInfo cbi = {0};
         cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(tmp_cb, &cbi);
+        if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to begin texture staging command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkImageMemoryBarrier barrier = {0};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -2478,19 +2582,48 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         vkCmdPipelineBarrier(tmp_cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier2);
 
-        vkEndCommandBuffer(tmp_cb);
+        if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to end texture staging command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkFence upload_fence;
         VkFenceCreateInfo fci = {0};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        vkCreateFence(vk->device, &fci, NULL, &upload_fence);
+        if (vkCreateFence(vk->device, &fci, NULL, &upload_fence) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create texture upload fence");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkSubmitInfo si = {0};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &tmp_cb;
-        vkQueueSubmit(vk->graphics_queue, 1, &si, upload_fence);
-        vkWaitForFences(vk->device, 1, &upload_fence, VK_TRUE, UINT64_MAX);
+        if (vkQueueSubmit(vk->graphics_queue, 1, &si, upload_fence) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to submit texture staging commands");
+            vkDestroyFence(vk->device, upload_fence, NULL);
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
+        if (vkWaitForFences(vk->device, 1, &upload_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+            LOG_WARN("VK: vkWaitForFences failed for texture staging");
 
         vkDestroyFence(vk->device, upload_fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -2503,11 +2636,24 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         cbai.commandPool = vk->cmd_pool;
         cbai.commandBufferCount = 1;
         VkCommandBuffer tmp_cb;
-        vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb);
+        if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to allocate texture layout command buffer");
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
         VkCommandBufferBeginInfo cbi = {0};
         cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(tmp_cb, &cbi);
+        if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to begin texture layout command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkImageMemoryBarrier barrier = {0};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -2523,19 +2669,49 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(tmp_cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-        vkEndCommandBuffer(tmp_cb);
+        if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to end texture layout command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkFence layout_fence;
         VkFenceCreateInfo fci2 = {0};
         fci2.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        vkCreateFence(vk->device, &fci2, NULL, &layout_fence);
+        if (vkCreateFence(vk->device, &fci2, NULL, &layout_fence) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create texture layout fence");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkSubmitInfo si = {0};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &tmp_cb;
-        vkQueueSubmit(vk->graphics_queue, 1, &si, layout_fence);
-        vkWaitForFences(vk->device, 1, &layout_fence, VK_TRUE, UINT64_MAX);
+        if (vkQueueSubmit(vk->graphics_queue, 1, &si, layout_fence) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to submit texture layout commands");
+            vkDestroyFence(vk->device, layout_fence, NULL);
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
+        if (vkWaitForFences(vk->device, 1, &layout_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+            LOG_FATAL("VK: vkWaitForFences failed for texture layout");
+            vkDestroyFence(vk->device, layout_fence, NULL);
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         vkDestroyFence(vk->device, layout_fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -2585,10 +2761,20 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
         vkDestroyBuffer(vk->device, staging, NULL);
         return;
     }
-    vkBindBufferMemory(vk->device, staging, staging_mem, 0);
+    if (vkBindBufferMemory(vk->device, staging, staging_mem, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind mip staging buffer memory");
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return;
+    }
 
     void *mapped;
-    vkMapMemory(vk->device, staging_mem, 0, data_size, 0, &mapped);
+    if (vkMapMemory(vk->device, staging_mem, 0, data_size, 0, &mapped) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to map mip staging memory");
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return;
+    }
     memcpy(mapped, data, (size_t)data_size);
     vkUnmapMemory(vk->device, staging_mem);
 
@@ -2598,11 +2784,22 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     cbai.commandPool = vk->cmd_pool;
     cbai.commandBufferCount = 1;
     VkCommandBuffer cb;
-    vkAllocateCommandBuffers(vk->device, &cbai, &cb);
+    if (vkAllocateCommandBuffers(vk->device, &cbai, &cb) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate mip upload command buffer");
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
     VkCommandBufferBeginInfo cbi = {0};
     cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cb, &cbi);
+    if (vkBeginCommandBuffer(cb, &cbi) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to begin mip upload command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
 
     /* The texture was created with all mips already in SHADER_READ_ONLY.
      * Transition just this mip to TRANSFER_DST for the copy, then back. */
@@ -2638,18 +2835,38 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &to_read);
 
-    vkEndCommandBuffer(cb);
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to end mip upload command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
 
     VkFence fence;
     VkFenceCreateInfo fci = {0};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vkCreateFence(vk->device, &fci, NULL, &fence);
+    if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create mip upload fence");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
     VkSubmitInfo si = {0};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
-    vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
-    vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to submit mip upload commands");
+        vkDestroyFence(vk->device, fence, NULL);
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return;
+    }
+    if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        LOG_WARN("VK: vkWaitForFences failed for mip upload");
 
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
@@ -4241,7 +4458,8 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     VKBackend *vk = vk_backend(dev);
     VKShadowData *sd = rhi_get_resource(dev, sm->fbo);
     if (!sd) return;
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in shadow_map_destroy");
     vkDestroyFramebuffer(vk->device, sd->framebuffer, NULL);
     vkDestroyRenderPass(vk->device, sd->render_pass, NULL);
     if (sd->render_pass_load) vkDestroyRenderPass(vk->device, sd->render_pass_load, NULL);
@@ -4418,11 +4636,26 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
         cbai.commandPool = vk->cmd_pool;
         cbai.commandBufferCount = 1;
         VkCommandBuffer tmp_cb;
-        vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb);
+        if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to allocate cubemap layout command buffer");
+            vkDestroyImageView(vk->device, cd->view, NULL);
+            vkDestroyImage(vk->device, cd->image, NULL);
+            vkFreeMemory(vk->device, cd->memory, NULL);
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
         VkCommandBufferBeginInfo cbi = {0};
         cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(tmp_cb, &cbi);
+        if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to begin cubemap layout command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, cd->view, NULL);
+            vkDestroyImage(vk->device, cd->image, NULL);
+            vkFreeMemory(vk->device, cd->memory, NULL);
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
 
         VkImageMemoryBarrier barrier = {0};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -4439,18 +4672,52 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
         vkCmdPipelineBarrier(tmp_cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
-        vkEndCommandBuffer(tmp_cb);
+        if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to end cubemap layout command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, cd->view, NULL);
+            vkDestroyImage(vk->device, cd->image, NULL);
+            vkFreeMemory(vk->device, cd->memory, NULL);
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
 
         VkFence fence;
         VkFenceCreateInfo fci = {0};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        vkCreateFence(vk->device, &fci, NULL, &fence);
+        if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create cubemap layout fence");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, cd->view, NULL);
+            vkDestroyImage(vk->device, cd->image, NULL);
+            vkFreeMemory(vk->device, cd->memory, NULL);
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
         VkSubmitInfo si = {0};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &tmp_cb;
-        vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
-        vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to submit cubemap layout commands");
+            vkDestroyFence(vk->device, fence, NULL);
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, cd->view, NULL);
+            vkDestroyImage(vk->device, cd->image, NULL);
+            vkFreeMemory(vk->device, cd->memory, NULL);
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
+        if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+            LOG_FATAL("VK: vkWaitForFences failed for cubemap layout");
+            vkDestroyFence(vk->device, fence, NULL);
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+            vkDestroyImageView(vk->device, cd->view, NULL);
+            vkDestroyImage(vk->device, cd->image, NULL);
+            vkFreeMemory(vk->device, cd->memory, NULL);
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
         vkDestroyFence(vk->device, fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
     }
@@ -4466,7 +4733,8 @@ void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
     VKBackend *vk = vk_backend(dev);
     VKCubemapData *cd = rhi_get_resource(dev, cm);
     if (!cd) return;
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_destroy");
     for (u32 i = 0; i < 6; i++) {
         for (u32 m = 0; m < VK_MAX_MIP_VIEWS; m++) {
             if (cd->face_views[i][m]) vkDestroyImageView(vk->device, cd->face_views[i][m], NULL);
@@ -4487,7 +4755,8 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
 
     /* Prior compute writes ran in earlier queue submissions; make sure they
      * finished before re-transitioning, then barrier GENERAL -> SHADER_READ. */
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_transition_to_read");
 
     VkCommandBufferAllocateInfo cbai = {0};
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -4495,11 +4764,18 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
     cbai.commandPool = vk->cmd_pool;
     cbai.commandBufferCount = 1;
     VkCommandBuffer tmp_cb;
-    vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb);
+    if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to allocate cubemap transition command buffer");
+        return;
+    }
     VkCommandBufferBeginInfo cbi = {0};
     cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(tmp_cb, &cbi);
+    if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to begin cubemap transition command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
 
     VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -4516,18 +4792,32 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
     vkCmdPipelineBarrier(tmp_cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
-    vkEndCommandBuffer(tmp_cb);
+    if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to end cubemap transition command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
 
     VkFence fence;
     VkFenceCreateInfo fci = {0};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vkCreateFence(vk->device, &fci, NULL, &fence);
+    if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to create cubemap transition fence");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
     VkSubmitInfo si = {0};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
-    vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to submit cubemap transition commands");
+        vkDestroyFence(vk->device, fence, NULL);
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
+    if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        LOG_WARN("VK: vkWaitForFences failed for cubemap transition");
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
 }
@@ -4538,7 +4828,8 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
     if (!td || td->image == VK_NULL_HANDLE) return;
 
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in texture_transition_to_read");
 
     VkCommandBufferAllocateInfo cbai = {0};
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -4546,11 +4837,18 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     cbai.commandPool = vk->cmd_pool;
     cbai.commandBufferCount = 1;
     VkCommandBuffer tmp_cb;
-    vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb);
+    if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to allocate texture transition command buffer");
+        return;
+    }
     VkCommandBufferBeginInfo cbi = {0};
     cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(tmp_cb, &cbi);
+    if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to begin texture transition command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
 
     VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -4567,18 +4865,32 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     vkCmdPipelineBarrier(tmp_cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
-    vkEndCommandBuffer(tmp_cb);
+    if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to end texture transition command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
 
     VkFence fence;
     VkFenceCreateInfo fci = {0};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vkCreateFence(vk->device, &fci, NULL, &fence);
+    if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to create texture transition fence");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
     VkSubmitInfo si = {0};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
-    vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to submit texture transition commands");
+        vkDestroyFence(vk->device, fence, NULL);
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        return;
+    }
+    if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        LOG_WARN("VK: vkWaitForFences failed for texture transition");
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
 
@@ -4677,7 +4989,10 @@ void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     if (!bd) return NULL;
     if (bd->mapped) return bd->mapped;
     void *mapped = NULL;
-    vkMapMemory(vk->device, bd->memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+    if (vkMapMemory(vk->device, bd->memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+        LOG_WARN("VK: vkMapMemory failed in buffer_map");
+        return NULL;
+    }
     return mapped;
 }
 
@@ -5007,7 +5322,8 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     VKBackend *vk = vk_backend(dev);
     VKFBOData *fd = rhi_get_resource(dev, fbo->fb);
     if (!fd) return;
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in offscreen_fbo_destroy");
     vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
     vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
     if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
@@ -5254,7 +5570,16 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        vkCreateImage(vk->device, &ci, NULL, &md->depth_image);
+        if (vkCreateImage(vk->device, &ci, NULL, &md->depth_image) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create MRT depth image");
+            for (u32 i = 0; i < attachment_count; i++) {
+                vkDestroyImageView(vk->device, md->color_views[i], NULL);
+                vkDestroyImage(vk->device, md->color_images[i], NULL);
+                vkFreeMemory(vk->device, md->color_memories[i], NULL);
+            }
+            free(md);
+            return fbo;
+        }
 
         VkMemoryRequirements mr;
         vkGetImageMemoryRequirements(vk->device, md->depth_image, &mr);
@@ -5263,8 +5588,29 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         ai.allocationSize = mr.size;
         ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        vkAllocateMemory(vk->device, &ai, NULL, &md->depth_memory);
-        vkBindImageMemory(vk->device, md->depth_image, md->depth_memory, 0);
+        if (vkAllocateMemory(vk->device, &ai, NULL, &md->depth_memory) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to allocate MRT depth memory");
+            vkDestroyImage(vk->device, md->depth_image, NULL);
+            for (u32 i = 0; i < attachment_count; i++) {
+                vkDestroyImageView(vk->device, md->color_views[i], NULL);
+                vkDestroyImage(vk->device, md->color_images[i], NULL);
+                vkFreeMemory(vk->device, md->color_memories[i], NULL);
+            }
+            free(md);
+            return fbo;
+        }
+        if (vkBindImageMemory(vk->device, md->depth_image, md->depth_memory, 0) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to bind MRT depth image memory");
+            vkFreeMemory(vk->device, md->depth_memory, NULL);
+            vkDestroyImage(vk->device, md->depth_image, NULL);
+            for (u32 i = 0; i < attachment_count; i++) {
+                vkDestroyImageView(vk->device, md->color_views[i], NULL);
+                vkDestroyImage(vk->device, md->color_images[i], NULL);
+                vkFreeMemory(vk->device, md->color_memories[i], NULL);
+            }
+            free(md);
+            return fbo;
+        }
 
         VkImageViewCreateInfo ivci = {0};
         ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -5274,7 +5620,18 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
         ivci.subresourceRange.levelCount = 1;
         ivci.subresourceRange.layerCount = 1;
-        vkCreateImageView(vk->device, &ivci, NULL, &md->depth_view);
+        if (vkCreateImageView(vk->device, &ivci, NULL, &md->depth_view) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create MRT depth image view");
+            vkFreeMemory(vk->device, md->depth_memory, NULL);
+            vkDestroyImage(vk->device, md->depth_image, NULL);
+            for (u32 i = 0; i < attachment_count; i++) {
+                vkDestroyImageView(vk->device, md->color_views[i], NULL);
+                vkDestroyImage(vk->device, md->color_images[i], NULL);
+                vkFreeMemory(vk->device, md->color_memories[i], NULL);
+            }
+            free(md);
+            return fbo;
+        }
     }
 
     u32 depth_idx = attachment_count;
@@ -5313,7 +5670,19 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     rpci.pSubpasses = &sp;
     rpci.dependencyCount = 1;
     rpci.pDependencies = &dep;
-    vkCreateRenderPass(vk->device, &rpci, NULL, &md->render_pass);
+    if (vkCreateRenderPass(vk->device, &rpci, NULL, &md->render_pass) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT render pass");
+        vkDestroyImageView(vk->device, md->depth_view, NULL);
+        vkFreeMemory(vk->device, md->depth_memory, NULL);
+        vkDestroyImage(vk->device, md->depth_image, NULL);
+        for (u32 i = 0; i < attachment_count; i++) {
+            vkDestroyImageView(vk->device, md->color_views[i], NULL);
+            vkDestroyImage(vk->device, md->color_images[i], NULL);
+            vkFreeMemory(vk->device, md->color_memories[i], NULL);
+        }
+        free(md);
+        return fbo;
+    }
     md->render_pass_load = vk_make_resume_render_pass(vk, &rpci);
 
     /* Create framebuffer. */
@@ -5329,7 +5698,21 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     fbci.width = width;
     fbci.height = height;
     fbci.layers = 1;
-    vkCreateFramebuffer(vk->device, &fbci, NULL, &md->framebuffer);
+    if (vkCreateFramebuffer(vk->device, &fbci, NULL, &md->framebuffer) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT framebuffer");
+        if (md->render_pass_load) vkDestroyRenderPass(vk->device, md->render_pass_load, NULL);
+        vkDestroyRenderPass(vk->device, md->render_pass, NULL);
+        vkDestroyImageView(vk->device, md->depth_view, NULL);
+        vkFreeMemory(vk->device, md->depth_memory, NULL);
+        vkDestroyImage(vk->device, md->depth_image, NULL);
+        for (u32 i = 0; i < attachment_count; i++) {
+            vkDestroyImageView(vk->device, md->color_views[i], NULL);
+            vkDestroyImage(vk->device, md->color_images[i], NULL);
+            vkFreeMemory(vk->device, md->color_memories[i], NULL);
+        }
+        free(md);
+        return fbo;
+    }
 
     /* Register FBO handle. */
     u32 fidx = rhi_alloc_slot(dev);
@@ -5375,7 +5758,8 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     VKBackend *vk = vk_backend(dev);
     VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource(dev, fbo->fb);
     if (!md) { memset(fbo, 0, sizeof(*fbo)); return; }
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in mrt_fbo_destroy");
 
     vkDestroyFramebuffer(vk->device, md->framebuffer, NULL);
     vkDestroyRenderPass(vk->device, md->render_pass, NULL);
@@ -5587,7 +5971,20 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
         fvci.subresourceRange.levelCount = 1;
         fvci.subresourceRange.baseArrayLayer = face;
         fvci.subresourceRange.layerCount = 1;
-        vkCreateImageView(vk->device, &fvci, NULL, &cd->face_views[face]);
+        if (vkCreateImageView(vk->device, &fvci, NULL, &cd->face_views[face]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create cubemap depth face view %u", face);
+            for (u32 j = 0; j < face; j++) {
+                vkDestroyFramebuffer(vk->device, cd->face_fbos[j], NULL);
+                vkDestroyImageView(vk->device, cd->face_views[j], NULL);
+            }
+            if (cd->render_pass_load) vkDestroyRenderPass(vk->device, cd->render_pass_load, NULL);
+            vkDestroyRenderPass(vk->device, cd->render_pass, NULL);
+            vkDestroyImageView(vk->device, cd->depth_view, NULL);
+            vkFreeMemory(vk->device, cd->depth_memory, NULL);
+            vkDestroyImage(vk->device, cd->depth_image, NULL);
+            free(cd);
+            return fbo;
+        }
 
         VkFramebufferCreateInfo fbci = {0};
         fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -5597,7 +5994,21 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
         fbci.width = size;
         fbci.height = size;
         fbci.layers = 1;
-        vkCreateFramebuffer(vk->device, &fbci, NULL, &cd->face_fbos[face]);
+        if (vkCreateFramebuffer(vk->device, &fbci, NULL, &cd->face_fbos[face]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create cubemap depth face framebuffer %u", face);
+            vkDestroyImageView(vk->device, cd->face_views[face], NULL);
+            for (u32 j = 0; j < face; j++) {
+                vkDestroyFramebuffer(vk->device, cd->face_fbos[j], NULL);
+                vkDestroyImageView(vk->device, cd->face_views[j], NULL);
+            }
+            if (cd->render_pass_load) vkDestroyRenderPass(vk->device, cd->render_pass_load, NULL);
+            vkDestroyRenderPass(vk->device, cd->render_pass, NULL);
+            vkDestroyImageView(vk->device, cd->depth_view, NULL);
+            vkFreeMemory(vk->device, cd->depth_memory, NULL);
+            vkDestroyImage(vk->device, cd->depth_image, NULL);
+            free(cd);
+            return fbo;
+        }
     }
 
     /* Register depth texture handle (cubemap). */
@@ -5627,7 +6038,8 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
     VKBackend *vk = vk_backend(dev);
     VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource(dev, fbo->fb);
     if (!cd) { memset(fbo, 0, sizeof(*fbo)); return; }
-    vkDeviceWaitIdle(vk->device);
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_depth_fbo_destroy");
 
     for (u32 face = 0; face < 6; face++) {
         vkDestroyFramebuffer(vk->device, cd->face_fbos[face], NULL);
