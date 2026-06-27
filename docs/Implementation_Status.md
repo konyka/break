@@ -494,3 +494,8 @@
 - **R138-F audio_stream.c 2 处**：`s->path` strncpy 后缺少 null 终止（memset 已零初始化）。
 - **R138-G main.c 3 处**：draw_bench_csv_path + netrep_peer_file + netrep_peer_dir（静态变量零初始化，但缺少防御性终止）。
 - **strncpy null 终止审计总计**：R138 **13 处**已修复，跨 7 个源文件。所有缓冲区均已零初始化（calloc/memset/静态存储），修复前技术上安全但缺少防御性深度。
+
+- **R139 审查**：`snprintf` 返回值检查审计 — shader define 注入器中未检查的 snprintf 返回值。修复 4 处跨 2 个源文件。
+- **R139-A main.c shader_inject_define 2 处**：(1) `snprintf(NULL, 0, ...)` 返回值直接 cast 为 usize — 如果返回负值（编码错误），usize cast 产生巨大数值导致 malloc 失败或巨大分配。添加 `if (def_raw < 0) return NULL;`。(2) `snprintf(out + head, ...)` 返回值 `n` 直接 cast 为 usize 用于 memcpy 偏移 — 如果 n < 0，`(usize)n` 溢出为巨大数值导致缓冲区溢出。添加 `if (n < 0) { free(out); return NULL; }`。
+- **R139-B deferred.c defrd_inject_define 2 处**：与 main.c 相同模式，相同修复。
+- **snprintf 返回值审计总计**：R139 **4 处**已修复，跨 2 个源文件。修复前理论上存在编码错误时缓冲区溢出风险，实际触发概率极低（简单格式字符串 `"#define %s 1\n"` + 有效字符串参数）。

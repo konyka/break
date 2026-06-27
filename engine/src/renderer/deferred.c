@@ -31,11 +31,14 @@ static char *defrd_inject_define(const char *src, usize len, const char *name, u
     if (!src || !name) return NULL;
     const char *nl = memchr(src, '\n', len);
     usize head = nl ? (usize)(nl - src) + 1u : len;
-    usize def_len = (usize)snprintf(NULL, 0, "#define %s 1\n", name);
+    int def_raw = snprintf(NULL, 0, "#define %s 1\n", name);
+    if (def_raw < 0) return NULL;
+    usize def_len = (usize)def_raw;
     char *out = (char *)malloc(len + def_len + 1u);
     if (!out) return NULL;
     memcpy(out, src, head);
     int n = snprintf(out + head, def_len + 1u, "#define %s 1\n", name);
+    if (n < 0) { free(out); return NULL; }
     memcpy(out + head + (usize)n, src + head, len - head);
     out[head + (usize)n + (len - head)] = '\0';
     if (out_len) *out_len = head + (usize)n + (len - head);
