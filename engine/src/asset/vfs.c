@@ -77,7 +77,10 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     if (fseek(fp, sizeof(PakHeader) + hdr.entry_count * sizeof(PakEntry), SEEK_SET) != 0) {
         free(names); free(entries); fclose(fp); return false;
     }
-    fread(names, 1, hdr.name_table_size, fp);
+    if (fread(names, 1, hdr.name_table_size, fp) != hdr.name_table_size) {
+        /* R143: Check fread return — truncated PAK name table */
+        free(names); free(entries); fclose(fp); return false;
+    }
 
     /* Build hash table for O(1) lookup: open-addressing with linear probing.
      * R121: Moved BEFORE mount registration so failure doesn't require rollback. */
@@ -139,7 +142,10 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                             if (fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET) != 0) {
                                 free(vfs_block); return NULL;
                             }
-                            fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp);
+                            if (fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp) != pe->size) {
+                                /* R143: Check fread return — truncated PAK entry data */
+                                free(vfs_block); return NULL;
+                            }
                             f->pos = 0;
                             return f;
                         }
@@ -163,7 +169,10 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                 VFSFile *f = (VFSFile *)vfs_block;
                 f->data = vfs_block + sizeof(VFSFile);
                 f->size = sz;
-                fread(f->data, 1, sz, fp);
+                if (fread(f->data, 1, sz, fp) != sz) {
+                    /* R143: Check fread return — truncated file data */
+                    free(vfs_block); fclose(fp); return NULL;
+                }
                 fclose(fp);
                 f->pos = 0;
                 return f;

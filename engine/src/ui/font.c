@@ -54,7 +54,10 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
     u8 *ttf_buf = malloc((usize)sz);
     if (!ttf_buf) { fclose(f); return false; }
-    fread(ttf_buf, 1, (usize)sz, f);
+    if (fread(ttf_buf, 1, (usize)sz, f) != (usize)sz) {
+        /* R143: Check fread return — truncated TTF could cause stbtt UB */
+        free(ttf_buf); fclose(f); return false;
+    }
     fclose(f);
 
     stbtt_fontinfo fi;

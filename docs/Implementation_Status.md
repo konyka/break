@@ -517,3 +517,10 @@
 - **R142-D main.c benchmark 除零防护 1 处**：`1000.0 / avg_ms` 在 avg_ms=0（所有帧 delta_time=0）时产生 Inf。添加 `avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0` 检查。
 - **R142-E test_vulkan.c camera_init 同样防护 1 处**：与 main.c 相同的 h=0 防护。
 - **除零防护审计总计**：R142 **5 处**已修复，跨 3 个源文件。修复前窗口最小化时产生 Inf/NaN 投影矩阵导致渲染异常，实际触发概率中等（Wayland/X11 窗口最小化时 h=0）。
+
+- **R143 审查**：未检查 `fread` 返回值审计 — font.c + vfs.c 中 R137 遗漏的 `fread` 调用。修复 4 处跨 2 个源文件。
+- **R143-A font.c TTF 文件 fread 1 处**：`fread(ttf_buf, 1, sz, f)` 返回值未检查 — 如果 fread 失败（磁盘错误），ttf_buf 包含部分数据，后续 `stbtt_InitFont` 可能在无效数据上 UB。添加返回值检查，失败时 free + fclose + return false。
+- **R143-B vfs.c PAK name table fread 1 处**：`fread(names, 1, hdr.name_table_size, fp)` 返回值未检查 — 如果 fread 失败，names 包含部分数据，后续哈希表构建在无效名称上 UB。添加返回值检查，失败时 free(names) + free(entries) + fclose + return false。
+- **R143-C vfs.c PAK entry data fread 1 处**：`fread(f->data, 1, pe->size, pak_fp)` 返回值未检查 — 如果 fread 失败，f->data 包含部分数据，后续使用返回错误数据。添加返回值检查，失败时 free(vfs_block) + return NULL。
+- **R143-D vfs.c 普通文件数据 fread 1 处**：`fread(f->data, 1, sz, fp)` 返回值未检查 — 相同模式。添加返回值检查，失败时 free(vfs_block) + fclose + return NULL。
+- **fread 返回值审计总计**：R137 修复 main.c 43 处，R143 修复 font.c + vfs.c 4 处，合计 **47 处**已修复。修复前磁盘 I/O 错误时使用部分数据可能导致 UB 或数据损坏。
