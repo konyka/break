@@ -499,3 +499,8 @@
 - **R139-A main.c shader_inject_define 2 处**：(1) `snprintf(NULL, 0, ...)` 返回值直接 cast 为 usize — 如果返回负值（编码错误），usize cast 产生巨大数值导致 malloc 失败或巨大分配。添加 `if (def_raw < 0) return NULL;`。(2) `snprintf(out + head, ...)` 返回值 `n` 直接 cast 为 usize 用于 memcpy 偏移 — 如果 n < 0，`(usize)n` 溢出为巨大数值导致缓冲区溢出。添加 `if (n < 0) { free(out); return NULL; }`。
 - **R139-B deferred.c defrd_inject_define 2 处**：与 main.c 相同模式，相同修复。
 - **snprintf 返回值审计总计**：R139 **4 处**已修复，跨 2 个源文件。修复前理论上存在编码错误时缓冲区溢出风险，实际触发概率极低（简单格式字符串 `"#define %s 1\n"` + 有效字符串参数）。
+
+- **R140 审查**：`async_loader.c` 文件大小截断检查 — usize→u32 隐式截断防护。修复 2 处跨 1 个源文件。
+- **R140-A 全文件读取路径 1 处**：`vfs_read_all` 返回 `usize` file_size，直接 `(u32)file_size` 赋值给 `req->size`（u32）— 如果文件 >4GB，size 被截断导致回调收到错误大小。添加 `if (file_size > (usize)UINT32_MAX)` 检查，拒绝过大文件并设置 ASSET_FAILED。
+- **R140-B 范围读取路径 1 处**：`to_read`（usize）直接 `(u32)to_read` 赋值给 `req->size` — 如果范围 >4GB 同样截断。添加 `if (to_read > (usize)UINT32_MAX)` 检查，拒绝过大范围。
+- **截断检查审计总计**：R140 **2 处**已修复，跨 1 个源文件。修复前理论上 >4GB 文件会导致大小截断，实际触发概率低（游戏资产通常 <100MB）。

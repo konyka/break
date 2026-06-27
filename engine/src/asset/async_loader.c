@@ -183,6 +183,17 @@ static void io_worker_run(void) {
             if (f && f->size > req->range_offset) {
                 usize avail = f->size - req->range_offset;
                 usize to_read = req->range_length < avail ? req->range_length : avail;
+                if (to_read > (usize)UINT32_MAX) {
+                    /* R140: Range too large for u32 size field — reject */
+                    vfs_close(f);
+                    req->data = NULL;
+                    req->size = 0;
+                    atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
+                    enqueue_completion(slot_idx);
+                    atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                    LOG_WARN("Async range load: range too large (>%u bytes): %s", UINT32_MAX, req->path);
+                    continue;
+                }
                 u8 *data = malloc(to_read);
                 if (data) {
                     /* VFS data is a contiguous in-memory buffer — direct memcpy */
@@ -211,7 +222,16 @@ static void io_worker_run(void) {
             u8 *data = vfs_read_all(g_loader.vfs, req->path, &file_size);
 
             if (data && file_size > 0) {
-                if (req->decode_texture) {
+                if (file_size > (usize)UINT32_MAX) {
+                    /* R140: File too large for u32 size field — reject to prevent truncation */
+                    free(data);
+                    req->data = NULL;
+                    req->size = 0;
+                    atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
+                    enqueue_completion(slot_idx);
+                    atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                    LOG_WARN("Async load: file too large (>%u bytes): %s", UINT32_MAX, req->path);
+                } else if (req->decode_texture) {
                     /* Offload decode + mip-chain generation to the decode pipeline. */
                     if (decode_pipeline_submit(data, (u32)file_size, slot_idx,
                                                req->id, req->priority)) {
