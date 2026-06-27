@@ -3632,7 +3632,7 @@ void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
-    if (location < 0) return;
+    if (location < 0 || (u32)location + 64 > 256) return;  /* R146: bounds check push_staging[256] */
     memcpy(vk->push_staging + location, m, 64);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 64);
     vk->push_dirty = true;
@@ -3642,7 +3642,7 @@ void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
-    if (location < 0) return;
+    if (location < 0 || (u32)location + 12 > 256) return;  /* R146: bounds check push_staging[256] */
     f32 v[3] = {x, y, z};
     memcpy(vk->push_staging + location, v, 12);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 12);
@@ -3653,7 +3653,7 @@ void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
-    if (location < 0) return;
+    if (location < 0 || (u32)location + 8 > 256) return;  /* R146: bounds check push_staging[256] */
     f32 v[2] = {x, y};
     memcpy(vk->push_staging + location, v, 8);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 8);
@@ -3664,7 +3664,7 @@ void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
-    if (location < 0) return;
+    if (location < 0 || (u32)location + 16 > 256) return;  /* R146: bounds check push_staging[256] */
     f32 v[4] = {x, y, z, w};
     memcpy(vk->push_staging + location, v, 16);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 16);
@@ -3675,7 +3675,7 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
-    if (location < 0) return;
+    if (location < 0 || (u32)location + 4 > 256) return;  /* R146: bounds check push_staging[256] */
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
     vk->push_dirty = true;
@@ -3685,7 +3685,7 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (!vk->current_pipeline_data) return;
-    if (location < 0) return;
+    if (location < 0 || (u32)location + 4 > 256) return;  /* R146: bounds check push_staging[256] */
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
     vk->push_dirty = true;

@@ -535,3 +535,8 @@
 - **R145-B offset 累加溢出**：`u32 offset = 0` → `usize offset = 0`，赋值时 cast 为 u32，防止多级 mipmap 尺寸累加溢出。
 
 - **审计总计（R129-R145）**：**366 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护。
+
+- **R146 审查**：Vulkan push constant `push_staging[256]` 越界防护 — 6 个 `rhi_cmd_set_uniform_*` 函数仅检查 `location < 0`，未检查 `location + size > 256`，若硬编码偏移有误可导致栈缓冲区溢出。修复 6 处。
+- **R146-A-F rhi_vk.c push constant 越界检查**：`mat4(64B) / vec3(12B) / vec2(8B) / vec4(16B) / f32(4B) / i32(4B)` 6 个函数添加 `(u32)location + SIZE > 256` 边界检查。
+
+- **审计总计（R129-R146）**：**372 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护。
