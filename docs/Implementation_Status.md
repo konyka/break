@@ -610,4 +610,9 @@
 - **R157-A rhi.c rhi_alloc_slot 池耗尽 abort**：池耗尽时 `LOG_FATAL` 后返回 0，调用方不检查返回值直接 `dev->slots[idx].ptr = ...`，覆盖 slot 0 的已有资源，损坏空闲链表，导致后续分配重用已占用 slot 和 use-after-free。改为 `abort()` 防止静默损坏。
 - **R157-B vfs.c PAK entry_count 溢出检查**：恶意 PAK 文件 `entry_count > 2^30` 时 `entry_count * 2` 溢出 u32，`next_pow2` 返回极小值，哈希表过小导致线性探测无限循环。添加 `entry_count > (1u << 30)` 拒绝检查。
 
-- **审计总计（R129-R157）**：**409 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护、mip 链生成栈溢出与偏移截断防护、BVH 构建 OOM 崩溃防护、g_node_vis/node_spheres 固定数组越界读防护、任务系统 calloc 失败 NULL 解引用与 pool_count 越界读防护、RHI 资源池耗尽 slot 覆盖损坏防护、VFS PAK entry_count 乘法溢出防护。
+- **R158 审查**：内存分配器 usize 溢出防护 — `heap_alloc_fn`/`heap_realloc_fn` 中 `size + extra + sizeof(void*)` 可溢出 usize 导致 malloc 分配过小缓冲区；`pool_init_alloc` 中 `bs * block_count` 可溢出。修复 3 处。
+- **R158-A alloc.c heap_alloc_fn usize 溢出检查**：`size + extra + sizeof(void*)` 溢出 usize 时回绕到小值，malloc 分配过小缓冲区导致后续堆溢出。添加 `if (total < size) return NULL;` 溢出检查。
+- **R158-B alloc.c heap_realloc_fn usize 溢出检查**：同上，`new_size + extra + sizeof(void*)` 可溢出。添加溢出检查。
+- **R158-C pool.c pool_init_alloc usize 溢出检查**：`bs * block_count` 可溢出 usize。添加 `if (block_count > SIZE_MAX / bs) return false;` 预检查。
+
+- **审计总计（R129-R158）**：**412 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护、mip 链生成栈溢出与偏移截断防护、BVH 构建 OOM 崩溃防护、g_node_vis/node_spheres 固定数组越界读防护、任务系统 calloc 失败 NULL 解引用与 pool_count 越界读防护、RHI 资源池耗尽 slot 覆盖损坏防护、VFS PAK entry_count 乘法溢出防护、内存分配器 usize 加法溢出防护。

@@ -8,7 +8,11 @@
 static void *heap_alloc_fn(Alloc *self, usize size, usize align) {
     (void)self;
     usize extra = align - 1;
-    void *raw = malloc(size + extra + sizeof(void *));
+    usize total = size + extra + sizeof(void *);
+    /* R158: Guard against usize overflow — without this, a very large size
+     * wraps to a small value and malloc returns a tiny buffer. */
+    if (total < size) return NULL;
+    void *raw = malloc(total);
     if (!raw) return NULL;
     usize addr = (usize)raw + sizeof(void *);
     usize aligned = (addr + extra) & ~(align - 1);
@@ -29,7 +33,10 @@ static void *heap_realloc_fn(Alloc *self, void *ptr, usize old_size,
     if (!ptr) return heap_alloc_fn(self, new_size, align);
     void *raw = ((void **)ptr)[-1];
     usize extra = align - 1;
-    void *new_raw = realloc(raw, new_size + extra + sizeof(void *));
+    usize total = new_size + extra + sizeof(void *);
+    /* R158: Guard against usize overflow. */
+    if (total < new_size) return NULL;
+    void *new_raw = realloc(raw, total);
     if (!new_raw) return NULL;
     usize addr = (usize)new_raw + sizeof(void *);
     usize aligned = (addr + extra) & ~(align - 1);

@@ -88,6 +88,8 @@ bool pool_init_alloc(Pool *p, usize block_size, usize block_count, usize align) 
     usize bs = align_up(block_size, align);
 
     /* Over-allocate by `align` so pool_init can align the start within it. */
+    /* R158: Guard against usize overflow in bs * block_count. */
+    if (block_count > SIZE_MAX / bs) return false;
     usize bytes = bs * block_count + align;
     void *raw = malloc(bytes);
     if (!raw) return false;
