@@ -51,7 +51,10 @@ void rhi_init_freelist(RHIDevice *dev) {
 u32 rhi_alloc_slot(RHIDevice *dev) {
     if (dev->free_count == 0) {
         LOG_FATAL("RHI resource pool exhausted");
-        return 0;
+        /* R157: Abort instead of returning 0 — returning 0 causes callers to
+         * overwrite slot 0's existing resource, corrupting the free list and
+         * causing use-after-free when the old resource is destroyed. */
+        abort();
     }
     u32 idx = dev->free_head;
     dev->free_head = (u32)(uintptr_t)dev->slots[idx].ptr;

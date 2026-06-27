@@ -82,6 +82,13 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
         free(names); free(entries); fclose(fp); return false;
     }
 
+    /* R157: Validate entry_count before multiplication to prevent u32 overflow
+     * in next_pow2(entry_count * 2) — a malicious PAK with entry_count > 2^30
+     * would overflow, producing a tiny hash table and infinite loop in probing. */
+    if (hdr.entry_count > (1u << 30)) {
+        free(names); free(entries); fclose(fp); return false;
+    }
+
     /* Build hash table for O(1) lookup: open-addressing with linear probing.
      * R121: Moved BEFORE mount registration so failure doesn't require rollback. */
     u32 table_size = next_pow2(hdr.entry_count * 2);
