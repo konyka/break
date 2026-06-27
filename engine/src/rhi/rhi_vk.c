@@ -1211,6 +1211,9 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->height = h;
 
     vk->shaderc_compiler = shaderc_compiler_initialize();
+    if (!vk->shaderc_compiler) {
+        LOG_FATAL("Vulkan: shaderc_compiler_initialize failed");
+    }
 
     LOG_INFO("Vulkan initialized");
     return true;

@@ -45,9 +45,10 @@ static inline u32 platform_cpu_count(void) {
     return (u32)si.dwNumberOfProcessors;
 }
 typedef unsigned (__stdcall *win_thread_fn)(void *);
-static inline void platform_thread_create(void *handle_out, unsigned (__stdcall *fn)(void *), void *arg) {
+static inline bool platform_thread_create(void *handle_out, unsigned (__stdcall *fn)(void *), void *arg) {
     HANDLE h = (HANDLE)_beginthreadex(NULL, 0, fn, arg, 0, NULL);
     *(HANDLE *)handle_out = h;
+    return h != NULL;
 }
 static inline void platform_thread_join(void *handle_storage) {
     HANDLE h = *(HANDLE *)handle_storage;
@@ -77,8 +78,8 @@ static inline u32 platform_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (u32)n : 1;
 }
-static inline void platform_thread_create_posix(void *storage, void *(*fn)(void *), void *arg) {
-    pthread_create((pthread_t *)storage, NULL, fn, arg);
+static inline bool platform_thread_create_posix(void *storage, void *(*fn)(void *), void *arg) {
+    return pthread_create((pthread_t *)storage, NULL, fn, arg) == 0;
 }
 static inline void platform_thread_join_posix(void *storage) {
     pthread_join(*(pthread_t *)storage, NULL);
@@ -507,14 +508,30 @@ TaskSystem *task_system_create(i32 worker_count) {
     /* Start worker threads */
     for (i32 i = 0; i < worker_count; i++) {
         Worker *w = &ts->workers[i];
+        bool thread_ok;
 #ifdef ENGINE_PLATFORM_WINDOWS
-        platform_thread_create(&w->thread_handle, worker_entry, w);
+        thread_ok = platform_thread_create(&w->thread_handle, worker_entry, w);
 #else
-        platform_thread_create_posix(w->thread_storage, worker_entry, w);
+        thread_ok = platform_thread_create_posix(w->thread_storage, worker_entry, w);
 #endif
+        if (!thread_ok) {
+            LOG_ERROR("Task system: failed to create worker thread %d", i);
+            /* R141: Destroy deques for workers that were initialized but won't get threads */
+            for (i32 j = i; j < worker_count; j++) {
+                Worker *wj = &ts->workers[j];
+                for (int p = 0; p < TASK_PRIORITY_COUNT; p++) {
+                    deque_destroy(&wj->queues[p]);
+                }
+            }
+            ts->worker_count = (u32)i;
+            if (ts->worker_count == 0) {
+                LOG_FATAL("Task system: failed to create any worker threads");
+            }
+            break;
+        }
     }
 
-    LOG_INFO("Task system: %d workers (Chase-Lev work-stealing)", worker_count);
+    LOG_INFO("Task system: %d workers (Chase-Lev work-stealing)", ts->worker_count);
     return ts;
 }
 

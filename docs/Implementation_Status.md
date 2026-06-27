@@ -504,3 +504,8 @@
 - **R140-A 全文件读取路径 1 处**：`vfs_read_all` 返回 `usize` file_size，直接 `(u32)file_size` 赋值给 `req->size`（u32）— 如果文件 >4GB，size 被截断导致回调收到错误大小。添加 `if (file_size > (usize)UINT32_MAX)` 检查，拒绝过大文件并设置 ASSET_FAILED。
 - **R140-B 范围读取路径 1 处**：`to_read`（usize）直接 `(u32)to_read` 赋值给 `req->size` — 如果范围 >4GB 同样截断。添加 `if (to_read > (usize)UINT32_MAX)` 检查，拒绝过大范围。
 - **截断检查审计总计**：R140 **2 处**已修复，跨 1 个源文件。修复前理论上 >4GB 文件会导致大小截断，实际触发概率低（游戏资产通常 <100MB）。
+
+- **R141 审查**：线程创建与 shaderc 编译器初始化返回值检查。修复 3 处跨 2 个源文件。
+- **R141-A task.c 线程创建返回值检查 2 处**：(1) `platform_thread_create`（Windows `_beginthreadex`）返回值被忽略 — 如果线程创建失败，task_system_destroy 会尝试 join 未初始化的线程句柄（UB）。改为返回 `bool`，调用点检查失败并清理已初始化但未创建线程的 worker 的 deque，更新 `ts->worker_count`。(2) `platform_thread_create_posix`（`pthread_create`）相同问题相同修复。
+- **R141-B rhi_vk.c shaderc_compiler_initialize NULL 检查 1 处**：`shaderc_compiler_initialize()` 返回值直接赋值给 `vk->shaderc_compiler` 未检查 NULL — 如果初始化失败（OOM），后续 `shaderc_compile_into_spv` 使用 NULL compiler 为 UB。添加 NULL 检查 + LOG_FATAL。
+- **线程创建 + shaderc 审计总计**：R141 **3 处**已修复，跨 2 个源文件。修复前线程创建失败会导致 task_system_destroy UB（join 未初始化句柄）+ deque 内存泄漏；shaderc 初始化失败会导致后续编译调用 UB。
