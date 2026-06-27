@@ -529,3 +529,9 @@
 - **R144-A asset.c stbi_load_from_memory (int)sz 1 处**：`stbi_load_from_memory(raw, (int)sz, ...)` — `sz` 为 usize（64位），如果 >2GB，`(int)sz` 截断为负值，stbi 内部使用负长度可能 UB。添加 `if (sz > (usize)INT32_MAX)` 检查，拒绝过大文件。
 - **R144-B decode_pipeline.c stbi_load_from_memory (int)raw_size 1 处**：`stbi_load_from_memory(raw, (int)raw_size, ...)` — `raw_size` 为 u32，如果 >2GB（>INT32_MAX），`(int)raw_size` 截断为负值。添加 `if (raw_size > (u32)INT32_MAX)` 检查，拒绝过大文件。
 - **截断检查审计总计**：R140 修复 async_loader.c 2 处 usize→u32，R144 修复 asset.c + decode_pipeline.c 2 处 usize/u32→int，合计 **4 处**已修复。
+
+- **R145 审查**：`mipmap_level_size` u32 乘法溢出防护 — 纹理尺寸 `w * h * bpp` 在 u32 算术中可溢出（理论阈值 >32768×32768×4bpp），导致错误的 level_size=0 和错误的文件偏移。修复 2 处。
+- **R145-A mipmap_level_size 乘法溢出**：`return w * h * bpp` → 先 cast 到 usize 计算，再检查 `> UINT32_MAX` 则钳制为 UINT32_MAX。
+- **R145-B offset 累加溢出**：`u32 offset = 0` → `usize offset = 0`，赋值时 cast 为 u32，防止多级 mipmap 尺寸累加溢出。
+
+- **审计总计（R129-R145）**：**366 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护。

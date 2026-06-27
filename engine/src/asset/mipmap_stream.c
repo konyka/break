@@ -48,7 +48,10 @@ static u32 mipmap_level_size(u32 width, u32 height, u32 level, u32 bpp) {
     u32 h = height >> level;
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    return w * h * bpp;
+    /* R145: Cast to usize before multiplication to prevent u32 overflow
+     * for textures > 32768x32768 (theoretical on current GPUs but defensive). */
+    usize bytes = (usize)w * (usize)h * (usize)bpp;
+    return bytes > UINT32_MAX ? UINT32_MAX : (u32)bytes;
 }
 
 /* Compute desired mipmap level from screen coverage using integer exponent
@@ -183,9 +186,10 @@ i32 mipmap_stream_register(MipmapStreamManager *mgr, const char *path,
     tex->resident_level = mip_count;    /* nothing loaded yet */
 
     /* Compute offsets for each mipmap level in the file */
-    u32 offset = 0;
+    /* R145: Use usize for offset accumulation to prevent u32 overflow */
+    usize offset = 0;
     for (u32 l = 0; l < mip_count; l++) {
-        tex->level_offset[l] = offset;
+        tex->level_offset[l] = (u32)offset;
         tex->level_size[l] = mipmap_level_size(width, height, l, bytes_per_pixel);
         tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
         offset += tex->level_size[l];
