@@ -1452,7 +1452,8 @@ int main(int argc, char **argv) {
     Camera camera = {0};
     u32 w, h;
     platform_get_size(engine.platform, &w, &h);
-    camera_init(&camera, 1.047f, (f32)w / (f32)h, 0.1f, 100.0f);
+    /* R142: Guard against h==0 (window minimized) producing Inf/NaN aspect */
+    camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f);
 
     LOG_INFO("Phase 4 running — ECS: %u entities, Physics: %u bodies, Script: %s",
              world->entity_count - 1, physics->count, script.loaded ? "yes" : "no");
@@ -2002,7 +2003,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             bench_frames--;
             if (bench_frames == 0) {
                 f64 avg_ms = bench_start / 120.0 * 1000.0;
-                LOG_INFO("Benchmark: avg %.2f ms (%.0f FPS) with all effects OFF", avg_ms, 1000.0 / avg_ms);
+                LOG_INFO("Benchmark: avg %.2f ms (%.0f FPS) with all effects OFF", avg_ms, avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0);
                 taa_enabled = bench_saved.taa; fxaa_enabled = bench_saved.fxaa;
                 mb_enabled = bench_saved.mb; dof_enabled = bench_saved.dof;
                 ssr_enabled = bench_saved.ssr; ssgi_enabled = bench_saved.ssgi;
@@ -2299,7 +2300,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         bool need_rebuild = false;
         if (w != frame_w || h != frame_h) {
             rhi_device_resize(render.device, w, h);
-            camera.aspect = (f32)w / (f32)h;
+            camera.aspect = (f32)w / (f32)(h > 0 ? h : 1); /* R142: guard h==0 */
             need_rebuild = true;
         }
         u32 new_rw = (u32)(w * render_scale); if (new_rw < 1) new_rw = 1;

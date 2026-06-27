@@ -16,25 +16,36 @@ Mat4 mat4_identity(void) {
 }
 
 Mat4 mat4_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near_val, f32 far_val) {
+    /* R142: Guard against division by zero when dimensions are degenerate
+     * (e.g. window minimized to 0×0). Using epsilon avoids Inf/NaN matrices. */
+    f32 rl = (right - left);   if (fabsf(rl)  < 1e-20f) rl = 1e-20f;
+    f32 tb = (top - bottom);   if (fabsf(tb)  < 1e-20f) tb = 1e-20f;
+    f32 fn = (far_val - near_val); if (fabsf(fn) < 1e-20f) fn = 1e-20f;
     Mat4 m = {0};
-    m.e[0][0] =  2.0f / (right - left);
-    m.e[1][1] =  2.0f / (top - bottom);
-    m.e[2][2] = -2.0f / (far_val - near_val);
-    m.e[3][0] = -(right + left) / (right - left);
-    m.e[3][1] = -(top + bottom) / (top - bottom);
-    m.e[3][2] = -(far_val + near_val) / (far_val - near_val);
+    m.e[0][0] =  2.0f / rl;
+    m.e[1][1] =  2.0f / tb;
+    m.e[2][2] = -2.0f / fn;
+    m.e[3][0] = -(right + left) / rl;
+    m.e[3][1] = -(top + bottom) / tb;
+    m.e[3][2] = -(far_val + near_val) / fn;
     m.e[3][3] =  1.0f;
     return m;
 }
 
 Mat4 mat4_perspective(f32 fov_rad, f32 aspect, f32 near_val, f32 far_val) {
-    f32 f = 1.0f / tanf(fov_rad * 0.5f);
+    /* R142: Guard against division by zero when aspect or depth range is
+     * degenerate (e.g. window minimized to 0 height → aspect = Inf/NaN). */
+    f32 a = fabsf(aspect) < 1e-20f ? 1e-20f : aspect;
+    f32 fn = far_val - near_val; if (fabsf(fn) < 1e-20f) fn = 1e-20f;
+    f32 half = fov_rad * 0.5f;
+    f32 t = tanf(half); if (fabsf(t) < 1e-20f) t = 1e-20f;
+    f32 f = 1.0f / t;
     Mat4 m = {0};
-    m.e[0][0] = f / aspect;
+    m.e[0][0] = f / a;
     m.e[1][1] = f;
-    m.e[2][2] = -(far_val + near_val) / (far_val - near_val);
+    m.e[2][2] = -(far_val + near_val) / fn;
     m.e[2][3] = -1.0f;
-    m.e[3][2] = -(2.0f * far_val * near_val) / (far_val - near_val);
+    m.e[3][2] = -(2.0f * far_val * near_val) / fn;
     return m;
 }
 

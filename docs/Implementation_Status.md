@@ -509,3 +509,11 @@
 - **R141-A task.c 线程创建返回值检查 2 处**：(1) `platform_thread_create`（Windows `_beginthreadex`）返回值被忽略 — 如果线程创建失败，task_system_destroy 会尝试 join 未初始化的线程句柄（UB）。改为返回 `bool`，调用点检查失败并清理已初始化但未创建线程的 worker 的 deque，更新 `ts->worker_count`。(2) `platform_thread_create_posix`（`pthread_create`）相同问题相同修复。
 - **R141-B rhi_vk.c shaderc_compiler_initialize NULL 检查 1 处**：`shaderc_compiler_initialize()` 返回值直接赋值给 `vk->shaderc_compiler` 未检查 NULL — 如果初始化失败（OOM），后续 `shaderc_compile_into_spv` 使用 NULL compiler 为 UB。添加 NULL 检查 + LOG_FATAL。
 - **线程创建 + shaderc 审计总计**：R141 **3 处**已修复，跨 2 个源文件。修复前线程创建失败会导致 task_system_destroy UB（join 未初始化句柄）+ deque 内存泄漏；shaderc 初始化失败会导致后续编译调用 UB。
+
+- **R142 审查**：数学函数除零防护 + 窗口尺寸 0 防护。修复 5 处跨 3 个源文件。
+- **R142-A math.c mat4_ortho 除零防护 3 处**：`(right - left)`、`(top - bottom)`、`(far_val - near_val)` 三处除法在维度退化为 0 时产生 Inf/NaN 矩阵。添加 epsilon 钳制（`< 1e-20f → 1e-20f`）。
+- **R142-B math.c mat4_perspective 除零防护 3 处**：`aspect` 为 0（窗口最小化时 `w/0=Inf`）、`far_val - near_val` 为 0、`tanf(fov*0.5)` 为 0（FOV=0 或 FOV=π）三处除法产生 Inf/NaN。添加 epsilon 钳制。
+- **R142-C main.c camera.aspect 窗口最小化防护 2 处**：`camera_init` 和 resize 路径中 `(f32)w / (f32)h` 在 h=0 时产生 Inf。改为 `(f32)w / (f32)(h > 0 ? h : 1)`。
+- **R142-D main.c benchmark 除零防护 1 处**：`1000.0 / avg_ms` 在 avg_ms=0（所有帧 delta_time=0）时产生 Inf。添加 `avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0` 检查。
+- **R142-E test_vulkan.c camera_init 同样防护 1 处**：与 main.c 相同的 h=0 防护。
+- **除零防护审计总计**：R142 **5 处**已修复，跨 3 个源文件。修复前窗口最小化时产生 Inf/NaN 投影矩阵导致渲染异常，实际触发概率中等（Wayland/X11 窗口最小化时 h=0）。

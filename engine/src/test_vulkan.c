@@ -371,7 +371,7 @@ int main(int argc, char **argv) {
     Camera camera = {0};
     u32 w, h;
     platform_get_size(engine.platform, &w, &h);
-    camera_init(&camera, 1.047f, (f32)w / (f32)h, 0.1f, 100.0f);
+    camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f); /* R142: guard h==0 */
 
     u8 tex2_data[] = {200, 50, 50, 255};
     RHITextureDesc t2desc = { .width = 1, .height = 1, .format = RHI_FORMAT_R8G8B8A8_UNORM, .mip_levels = 1, .data = tex2_data };
