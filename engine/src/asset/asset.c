@@ -29,6 +29,12 @@ RHITexture asset_load_texture(AssetCtx *ctx, const char *path) {
             LOG_ERROR("VFS: texture not found: %s", path);
             return RHI_HANDLE_NULL;
         }
+        if (sz > (usize)INT32_MAX) {
+            /* R144: stbi_load_from_memory takes int len — reject >2GB to prevent truncation */
+            LOG_ERROR("Texture too large (>%d bytes): %s", INT32_MAX, path);
+            free(raw);
+            return RHI_HANDLE_NULL;
+        }
         data = stbi_load_from_memory(raw, (int)sz, &w, &h, &channels, 4);
         free(raw);
     } else {

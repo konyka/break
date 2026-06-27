@@ -100,6 +100,10 @@ static u8 *downsample_rgba8_box(const u8 *src, u32 src_w, u32 src_h,
 
 static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *out) {
     int w = 0, h = 0, ch = 0;
+    if (raw_size > (u32)INT32_MAX) {
+        /* R144: stbi_load_from_memory takes int len — reject >2GB to prevent truncation */
+        return false;
+    }
     u8 *base = stbi_load_from_memory(raw, (int)raw_size, &w, &h, &ch, 4);
     if (!base || w <= 0 || h <= 0) return false;
 

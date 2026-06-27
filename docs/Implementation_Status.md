@@ -524,3 +524,8 @@
 - **R143-C vfs.c PAK entry data fread 1 处**：`fread(f->data, 1, pe->size, pak_fp)` 返回值未检查 — 如果 fread 失败，f->data 包含部分数据，后续使用返回错误数据。添加返回值检查，失败时 free(vfs_block) + return NULL。
 - **R143-D vfs.c 普通文件数据 fread 1 处**：`fread(f->data, 1, sz, fp)` 返回值未检查 — 相同模式。添加返回值检查，失败时 free(vfs_block) + fclose + return NULL。
 - **fread 返回值审计总计**：R137 修复 main.c 43 处，R143 修复 font.c + vfs.c 4 处，合计 **47 处**已修复。修复前磁盘 I/O 错误时使用部分数据可能导致 UB 或数据损坏。
+
+- **R144 审查**：`stbi_load_from_memory` `(int)size` 截断检查 — 与 R140 同类的 usize→int 隐式截断防护。修复 2 处跨 2 个源文件。
+- **R144-A asset.c stbi_load_from_memory (int)sz 1 处**：`stbi_load_from_memory(raw, (int)sz, ...)` — `sz` 为 usize（64位），如果 >2GB，`(int)sz` 截断为负值，stbi 内部使用负长度可能 UB。添加 `if (sz > (usize)INT32_MAX)` 检查，拒绝过大文件。
+- **R144-B decode_pipeline.c stbi_load_from_memory (int)raw_size 1 处**：`stbi_load_from_memory(raw, (int)raw_size, ...)` — `raw_size` 为 u32，如果 >2GB（>INT32_MAX），`(int)raw_size` 截断为负值。添加 `if (raw_size > (u32)INT32_MAX)` 检查，拒绝过大文件。
+- **截断检查审计总计**：R140 修复 async_loader.c 2 处 usize→u32，R144 修复 asset.c + decode_pipeline.c 2 处 usize/u32→int，合计 **4 处**已修复。
