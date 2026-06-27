@@ -960,7 +960,9 @@ static u32 mega_count_visible_node_vis(const MegaBuffer *mb, const u8 *node_vis)
     u32 vis = 0u;
     for (u32 ci = 0; ci < mb->draw_cmd_count; ci++) {
         u32 ni = mb->cmd_node_index[ci];
-        if (node_vis[ni]) vis++;
+        /* R155: Guard against ni >= 16384 — g_node_vis is [16384] but cmd_node_index
+         * stores original node indices which can exceed 16384 when scene.node_count > 16384. */
+        if (ni >= 16384 || node_vis[ni]) vis++;
     }
     return vis;
 }
@@ -1096,10 +1098,18 @@ static void mega_upload_unified_cull(GPUCullSystem *gc,
         udc[ci].first_index    = cmds[ci].first_index;
         udc[ci].vertex_offset  = cmds[ci].vertex_offset;
         udc[ci].first_instance = cmds[ci].first_instance;
-        uobj[ci].position[0] = node_spheres[ni].cx;
-        uobj[ci].position[1] = node_spheres[ni].cy;
-        uobj[ci].position[2] = node_spheres[ni].cz;
-        uobj[ci].position[3] = node_spheres[ni].r;
+        /* R155: Guard against ni >= 16384 — node_spheres is [16384]. */
+        if (ni < 16384) {
+            uobj[ci].position[0] = node_spheres[ni].cx;
+            uobj[ci].position[1] = node_spheres[ni].cy;
+            uobj[ci].position[2] = node_spheres[ni].cz;
+            uobj[ci].position[3] = node_spheres[ni].r;
+        } else {
+            uobj[ci].position[0] = 0;
+            uobj[ci].position[1] = 0;
+            uobj[ci].position[2] = 0;
+            uobj[ci].position[3] = -1.0f; /* invalid radius → culled */
+        }
     }
 
     gpucull_upload_draw_cmds(gc, udc, mesh_cmd_count);
@@ -3666,7 +3676,7 @@ u32 culled_count = 0;
                 u32 vc_pre = mega_buf.draw_cmd_count;
                 if (vc_pre <= GPUCULL_MAX_OBJECTS) {
                     u32 obj_idx = 0;
-                    for (u32 ni = 0; ni < scene.node_count && obj_idx < vc_pre; ni++) {
+                    for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vc_pre; ni++) {
                         if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                         g_cull_positions[obj_idx*3+0] = mega_buf.node_spheres[ni].cx;
                         g_cull_positions[obj_idx*3+1] = mega_buf.node_spheres[ni].cy;
@@ -3747,7 +3757,7 @@ u32 culled_count = 0;
                         /* CPU frustum culling per cascade */
                         Frustum shadow_frustum = frustum_from_vp(&render.cascade_vp[c]);
                         u32 obj_idx = 0;
-                        for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
+                        for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vis_count; ni++) {
                             if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                             Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
                                           mega_buf.node_spheres[ni].cy,
@@ -3840,7 +3850,7 @@ u32 culled_count = 0;
                             } else {
                                 Frustum pface_frustum = frustum_from_vp(&pt_shadows.light_vp[face_idx]);
                                 u32 obj_idx = 0;
-                                for (u32 ni = 0; ni < scene.node_count && obj_idx < vis_count; ni++) {
+                                for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vis_count; ni++) {
                                     if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                                     Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
                                                   mega_buf.node_spheres[ni].cy,
@@ -4898,7 +4908,8 @@ u32 culled_count = 0;
                         for (u32 gi = 0; gi < end - start; gi++) {
                             u32 ci = mega_buf.group_cmd_list[start + gi];
                             u32 ni = mega_buf.cmd_node_index[ci];
-                            g_vis_flags[gi] = g_node_vis[ni];
+                            /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
+                            g_vis_flags[gi] = (ni < 16384) ? g_node_vis[ni] : 1;
                             if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                         }
                         indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
@@ -5138,7 +5149,8 @@ u32 culled_count = 0;
                     for (u32 gi = 0; gi < end - start; gi++) {
                         u32 ci = mega_buf.group_cmd_list[start + gi];
                         u32 ni = mega_buf.cmd_node_index[ci];
-                        g_vis_flags[gi] = g_node_vis[ni];
+                        /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
+                        g_vis_flags[gi] = (ni < 16384) ? g_node_vis[ni] : 1;
                         if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
                     }
                     indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);

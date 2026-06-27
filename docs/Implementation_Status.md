@@ -586,4 +586,13 @@
 - **R154-D bvh.c bvh_build 失败后 object_count 清零**：在 `bvh_build` 中所有分配失败路径（leaf_map/nodes/_build_indices）设置 `object_count = 0`，防止 `bvh_refit` 继续访问已释放的内存。
 - **R154-E bvh.c bvh_refit NULL 守卫**：在 `bvh_refit` 开头添加 `!bvh->nodes || !bvh->leaf_map || bvh->root == BVH_NULL` 检查，防止 `bvh_build` 失败后 NULL 解引用。
 
-- **审计总计（R129-R154）**：**391 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护、mip 链生成栈溢出与偏移截断防护、BVH 构建 OOM 崩溃防护。
+- **R155 审查**：g_node_vis / node_spheres 越界读防护 — `mega_buf.cmd_node_index[16384]` 存储原始节点索引，当 `scene.node_count > 16384` 时索引可超过 `g_node_vis[16384]` 和 `node_spheres[16384]` 的容量，导致固定大小数组越界读。修复 7 处。
+- **R155-A main.c mega_count_visible_node_vis**：`node_vis[ni]` 越界读，添加 `ni >= 16384` 条件使超限节点视为可见。
+- **R155-B main.c 前向渲染路径**：`g_node_vis[ni]` 越界读，改为 `(ni < 16384) ? g_node_vis[ni] : 1` 使超限节点视为可见。
+- **R155-C main.c 延迟渲染路径**：`g_node_vis[ni]` 越界读，改为 `(ni < 16384) ? g_node_vis[ni] : 1` 使超限节点视为可见。
+- **R155-D main.c mega_build_unified_udc**：`node_spheres[ni]` 越界读，添加 `ni < 16384` 条件分支，超限节点设置无效包围球（半径 -1）自动被剔除。
+- **R155-E main.c legacy gpucull pack 循环**：循环条件添加 `ni < 16384` 约束，防止 `node_spheres[ni]` 越界读。
+- **R155-F main.c shadow CPU frustum culling 循环**：循环条件添加 `ni < 16384` 约束，防止 `node_spheres[ni]` 越界读。
+- **R155-G main.c point light shadow culling 循环**：循环条件添加 `ni < 16384` 约束，防止 `node_spheres[ni]` 越界读。
+
+- **审计总计（R129-R155）**：**398 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护、mip 链生成栈溢出与偏移截断防护、BVH 构建 OOM 崩溃防护、g_node_vis/node_spheres 固定数组越界读防护。
