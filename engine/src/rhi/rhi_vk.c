@@ -348,7 +348,11 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cb, &bi);
+    if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to begin command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return;
+    }
 
     VkImageMemoryBarrier b = {0};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -365,7 +369,11 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
 
-    vkEndCommandBuffer(cb);
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to end command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return;
+    }
     VkSubmitInfo si = {0};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
@@ -930,7 +938,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     cbai.commandPool = vk->cmd_pool;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = VK_MAX_FRAMES;
-    vkAllocateCommandBuffers(vk->device, &cbai, vk->cmd_buffers);
+    if (vkAllocateCommandBuffers(vk->device, &cbai, vk->cmd_buffers) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate command buffers");
+        free(vk); return false;
+    }
 
     vk->uniform_ring_size = 4 * 1024 * 1024;
     for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
@@ -1010,7 +1021,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         dli.bindingCount = 10;
         dli.pBindings = binds;
         if (vk->feat_partially_bound) dli.pNext = &flags_ci;
-        vkCreateDescriptorSetLayout(vk->device, &dli, NULL, &vk->desc_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &dli, NULL, &vk->desc_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create desc layout");
+            free(vk); return false;
+        }
     }
 
     {
@@ -1028,7 +1042,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         tli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         tli.bindingCount = 2;
         tli.pBindings = texel_binds;
-        vkCreateDescriptorSetLayout(vk->device, &tli, NULL, &vk->texel_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &tli, NULL, &vk->texel_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create texel layout");
+            free(vk); return false;
+        }
     }
 
     {
@@ -1045,7 +1062,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         sli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         sli.bindingCount = 8;
         sli.pBindings = storage_binds;
-        vkCreateDescriptorSetLayout(vk->device, &sli, NULL, &vk->storage_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &sli, NULL, &vk->storage_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create storage layout");
+            free(vk); return false;
+        }
     }
 
     {
@@ -1061,7 +1081,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         svli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         svli.bindingCount = 4;
         svli.pBindings = svb;
-        vkCreateDescriptorSetLayout(vk->device, &svli, NULL, &vk->storage_vtx_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &svli, NULL, &vk->storage_vtx_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create storage vtx layout");
+            free(vk); return false;
+        }
     }
 
     /* Auxiliary layouts: storage image / sampled mip / UBO.  Each
@@ -1081,7 +1104,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         sili.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         sili.bindingCount = 4;
         sili.pBindings = sib;
-        vkCreateDescriptorSetLayout(vk->device, &sili, NULL, &vk->storage_image_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &sili, NULL, &vk->storage_image_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create storage image layout");
+            free(vk); return false;
+        }
     }
 
     {
@@ -1098,7 +1124,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         smli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         smli.bindingCount = 4;
         smli.pBindings = smb;
-        vkCreateDescriptorSetLayout(vk->device, &smli, NULL, &vk->sampler_mip_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &smli, NULL, &vk->sampler_mip_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create sampler mip layout");
+            free(vk); return false;
+        }
     }
 
     {
@@ -1116,7 +1145,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         uli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         uli.bindingCount = 4;
         uli.pBindings = ub;
-        vkCreateDescriptorSetLayout(vk->device, &uli, NULL, &vk->ubo_layout);
+        if (vkCreateDescriptorSetLayout(vk->device, &uli, NULL, &vk->ubo_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create UBO layout");
+            free(vk); return false;
+        }
     }
 
     {
@@ -1139,18 +1171,27 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         dpi.poolSizeCount = 5;
         dpi.pPoolSizes = pool_sizes;
         for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
-            vkCreateDescriptorPool(vk->device, &dpi, NULL, &vk->desc_pools[i]);
+            if (vkCreateDescriptorPool(vk->device, &dpi, NULL, &vk->desc_pools[i]) != VK_SUCCESS) {
+                LOG_FATAL("VK: failed to create descriptor pool %u", i);
+                free(vk); return false;
+            }
         }
     }
 
     for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
         VkSemaphoreCreateInfo sci2 = {0};
         sci2.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        vkCreateSemaphore(vk->device, &sci2, NULL, &vk->image_semaphores[i]);
+        if (vkCreateSemaphore(vk->device, &sci2, NULL, &vk->image_semaphores[i]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create image semaphore %u", i);
+            free(vk); return false;
+        }
         VkFenceCreateInfo fci = {0};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        vkCreateFence(vk->device, &fci, NULL, &vk->fences[i]);
+        if (vkCreateFence(vk->device, &fci, NULL, &vk->fences[i]) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create fence %u", i);
+            free(vk); return false;
+        }
     }
 
     dev->backend_data = vk;
@@ -2327,7 +2368,13 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         bci.size = data_size;
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(vk->device, &bci, NULL, &staging);
+        if (vkCreateBuffer(vk->device, &bci, NULL, &staging) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create staging buffer");
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         VkMemoryRequirements smr;
         vkGetBufferMemoryRequirements(vk->device, staging, &smr);
@@ -2336,11 +2383,34 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         smi.allocationSize = smr.size;
         smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkAllocateMemory(vk->device, &smi, NULL, &staging_mem);
-        vkBindBufferMemory(vk->device, staging, staging_mem, 0);
+        if (vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to allocate staging memory");
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
+        if (vkBindBufferMemory(vk->device, staging, staging_mem, 0) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to bind staging buffer");
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
 
         void *mapped;
-        vkMapMemory(vk->device, staging_mem, 0, data_size, 0, &mapped);
+        if (vkMapMemory(vk->device, staging_mem, 0, data_size, 0, &mapped) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to map staging memory");
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkDestroyImageView(vk->device, view, NULL);
+            vkDestroyImage(vk->device, image, NULL);
+            vkFreeMemory(vk->device, mem, NULL);
+            return RHI_HANDLE_NULL;
+        }
         memcpy(mapped, desc->data, data_size);
         vkUnmapMemory(vk->device, staging_mem);
 
