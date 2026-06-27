@@ -564,3 +564,8 @@
 - **R150-D rhi_offscreen_fbo_unbind framebuffers NULL 守卫**：同上。
 
 - **审计总计（R129-R150）**：**380 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护。
+
+- **R151 审查**：`scene_compute_world_transforms` parent_index 越界读防护 — 从二进制/JSON 场景文件读取的 `parent_index` 未验证边界，恶意/损坏文件可设置任意 u32 值，导致 `scene->nodes[parent_index]` 越界读。同时处理自引用（parent_index == i）读取未初始化 world_transform 的问题。修复 1 处。
+- **R151-A asset.c scene_compute_world_transforms parent_index 边界检查**：将 `parent_index == UINT32_MAX` 检查扩展为 `parent_index == UINT32_MAX || parent_index >= scene->node_count || parent_index == i`，越界/自引用索引视为根节点（无父节点）。
+
+- **审计总计（R129-R151）**：**381 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护。

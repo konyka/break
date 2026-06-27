@@ -565,7 +565,13 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
 void scene_compute_world_transforms(Scene *scene) {
     for (u32 i = 0; i < scene->node_count; i++) {
         SceneNode *node = &scene->nodes[i];
-        if (node->parent_index == UINT32_MAX) {
+        /* R151: Validate parent_index against node_count — a malformed BSCN/JSON
+         * file can set parent_index to any u32 value. Without this check,
+         * scene->nodes[parent_index] is an out-of-bounds read. Also handles
+         * self-references (parent_index == i) which would read uninitialized
+         * world_transform. */
+        if (node->parent_index == UINT32_MAX || node->parent_index >= scene->node_count
+            || node->parent_index == i) {
             node->world_transform = node->local_transform;
         } else {
             SceneNode *parent = &scene->nodes[node->parent_index];
