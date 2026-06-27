@@ -578,3 +578,12 @@
 - **R153-B decode_pipeline.c offsets 类型修正**：将 `u32 offsets[16]` 改为 `usize offsets[16]`，移除 `(u32)` 强制转换，防止大纹理 mip 链偏移截断导致堆损坏。
 
 - **审计总计（R129-R153）**：**384 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护、mip 链生成栈溢出与偏移截断防护。
+
+- **R154 审查**：BVH 构建 OOM 崩溃防护 — `bvh_alloc_node` 返回 `BVH_NULL` 时未检查，递归调用返回值未检查，`bvh_build` 失败后 `object_count` 仍非零导致 `bvh_refit` NULL 解引用。修复 7 处。
+- **R154-A bvh.c bvh_alloc_node 返回值检查**：在 `bvh_build_recursive` 中，`bvh_alloc_node` 返回 `BVH_NULL` 时提前返回 `BVH_NULL`，防止 `bvh->nodes[BVH_NULL]` 越界访问。
+- **R154-B bvh.c 递归调用返回值检查**：在 `bvh_build_recursive` 中，左右子树递归调用返回 `BVH_NULL` 时提前返回 `BVH_NULL`，防止 `bvh->nodes[left/right]` 越界访问。
+- **R154-C bvh.c bvh_build root NULL 检查**：在 `bvh_build` 中，`bvh_build_recursive` 返回后检查 `root != BVH_NULL` 再访问 `bvh->nodes[root]`。
+- **R154-D bvh.c bvh_build 失败后 object_count 清零**：在 `bvh_build` 中所有分配失败路径（leaf_map/nodes/_build_indices）设置 `object_count = 0`，防止 `bvh_refit` 继续访问已释放的内存。
+- **R154-E bvh.c bvh_refit NULL 守卫**：在 `bvh_refit` 开头添加 `!bvh->nodes || !bvh->leaf_map || bvh->root == BVH_NULL` 检查，防止 `bvh_build` 失败后 NULL 解引用。
+
+- **审计总计（R129-R154）**：**391 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护、场景图 parent_index 越界读防护、视锥剔除缓冲区溢出防护、mip 链生成栈溢出与偏移截断防护、BVH 构建 OOM 崩溃防护。

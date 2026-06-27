@@ -129,6 +129,9 @@ static u32 bvh_build_recursive(BVH *bvh, const BVHAABB *aabbs, u32 *indices,
                                 u32 start, u32 end, u32 depth) {
     u32 count = end - start;
     u32 node_idx = bvh_alloc_node(bvh);
+    /* R154: bvh_alloc_node returns BVH_NULL on realloc failure — must check
+     * before accessing bvh->nodes[node_idx], or out-of-bounds crash occurs. */
+    if (node_idx == BVH_NULL) return BVH_NULL;
 
     /* Compute bounds for this node */
     BVHAABB node_bounds = aabbs[indices[start]];
@@ -284,6 +287,9 @@ static u32 bvh_build_recursive(BVH *bvh, const BVHAABB *aabbs, u32 *indices,
 
     u32 left = bvh_build_recursive(bvh, aabbs, indices, start, best_split, depth + 1);
     u32 right = bvh_build_recursive(bvh, aabbs, indices, best_split, end, depth + 1);
+    /* R154: Propagate allocation failure from recursive calls — accessing
+     * bvh->nodes[left/right] with BVH_NULL is out-of-bounds crash. */
+    if (left == BVH_NULL || right == BVH_NULL) return BVH_NULL;
 
     bvh->nodes[node_idx].left = left;
     bvh->nodes[node_idx].right = right;
@@ -299,7 +305,7 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     bvh->object_count = count;
     free(bvh->leaf_map);
     bvh->leaf_map = (u32 *)calloc(count, sizeof(u32));
-    if (!bvh->leaf_map) { bvh->root = BVH_NULL; return; }
+    if (!bvh->leaf_map) { bvh->root = BVH_NULL; bvh->object_count = 0; return; }
 
     if (count == 0) {
         bvh->root = BVH_NULL;
@@ -311,7 +317,7 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     if (bvh->capacity < max_nodes) {
         free(bvh->nodes);
         bvh->nodes = (BVHNode *)calloc(max_nodes, sizeof(BVHNode));
-        if (!bvh->nodes) { bvh->capacity = 0; bvh->root = BVH_NULL; return; }
+        if (!bvh->nodes) { bvh->capacity = 0; bvh->root = BVH_NULL; bvh->object_count = 0; return; }
         bvh->capacity = max_nodes;
     }
 
@@ -319,18 +325,22 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     if (count > bvh->_build_indices_cap) {
         free(bvh->_build_indices);
         bvh->_build_indices = (u32 *)malloc(count * sizeof(u32));
-        if (!bvh->_build_indices) { bvh->_build_indices_cap = 0; bvh->root = BVH_NULL; return; }
+        if (!bvh->_build_indices) { bvh->_build_indices_cap = 0; bvh->root = BVH_NULL; bvh->object_count = 0; return; }
         bvh->_build_indices_cap = count;
     }
     u32 *indices = bvh->_build_indices;
     for (u32 i = 0; i < count; i++) indices[i] = i;
 
     bvh->root = bvh_build_recursive(bvh, aabbs, indices, 0, count, 0);
-    bvh->nodes[bvh->root].parent = BVH_NULL;
+    /* R154: Guard against BVH_NULL root from allocation failure in recursive build. */
+    if (bvh->root != BVH_NULL)
+        bvh->nodes[bvh->root].parent = BVH_NULL;
 }
 
 /* ---- Incremental Refit ---- */
 void bvh_refit(BVH *bvh, u32 object_index, BVHAABB new_bounds) {
+    /* R154: Guard against failed bvh_build — nodes/leaf_map could be NULL. */
+    if (!bvh->nodes || !bvh->leaf_map || bvh->root == BVH_NULL) return;
     if (object_index >= bvh->object_count) return;
     u32 leaf_idx = bvh->leaf_map[object_index];
     bvh->nodes[leaf_idx].bounds = new_bounds;
