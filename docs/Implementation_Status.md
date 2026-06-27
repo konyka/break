@@ -540,3 +540,9 @@
 - **R146-A-F rhi_vk.c push constant 越界检查**：`mat4(64B) / vec3(12B) / vec2(8B) / vec4(16B) / f32(4B) / i32(4B)` 6 个函数添加 `(u32)location + SIZE > 256` 边界检查。
 
 - **审计总计（R129-R146）**：**372 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护。
+
+- **R147 审查**：`delta_time` 钳制防护 — 进程暂停（调试器/系统休眠/窗口最小化）后恢复时，帧间时间差可能达到数秒甚至数分钟，导致超大 dt 值引起物理穿透、动画跳帧。修复 2 处。
+- **R147-A engine_frame delta_time 钳制**：在 `delta_time = (f64)(now_us - last_frame_us) / 1e6` 后添加 `if (delta_time > 0.1) delta_time = 0.1;`，将最大 dt 限制为 100ms（10 FPS 最低）。
+- **R147-B target_fps 路径 delta_time 钳制**：在目标帧率睡眠后的第二次 `delta_time` 计算同样添加钳制。
+
+- **审计总计（R129-R147）**：**374 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护。

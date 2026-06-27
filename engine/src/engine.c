@@ -56,6 +56,9 @@ bool engine_frame(Engine *e) {
 
     u64 now_us = time_microseconds();
     e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
+    /* R147: Clamp delta_time to prevent physics tunneling / animation jumps
+     * when the process is paused (debugger, system sleep, window minimized). */
+    if (e->delta_time > 0.1) e->delta_time = 0.1;
     e->last_frame_us = now_us;
     e->frame_count++;
     e->fps_accum += e->delta_time;
@@ -78,6 +81,7 @@ bool engine_frame(Engine *e) {
             time_sleep_us(sleep_us);
             now_us = time_microseconds();
             e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
+            if (e->delta_time > 0.1) e->delta_time = 0.1;  /* R147: clamp */
             e->last_frame_us = now_us;
         }
     }
