@@ -4792,7 +4792,11 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(vk->device, &ci, NULL, &fd->color_image);
+    if (vkCreateImage(vk->device, &ci, NULL, &fd->color_image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT color image");
+        free(fd);
+        return fbo;
+    }
 
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(vk->device, fd->color_image, &mr);
@@ -4801,8 +4805,19 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, &fd->color_memory);
-    vkBindImageMemory(vk->device, fd->color_image, fd->color_memory, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &fd->color_memory) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate MRT color memory");
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
+    if (vkBindImageMemory(vk->device, fd->color_image, fd->color_memory, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind MRT color image memory");
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
 
     VkImageViewCreateInfo ivci = {0};
     ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -4812,7 +4827,13 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ivci.subresourceRange.levelCount = 1;
     ivci.subresourceRange.layerCount = 1;
-    vkCreateImageView(vk->device, &ivci, NULL, &fd->color_view);
+    if (vkCreateImageView(vk->device, &ivci, NULL, &fd->color_view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT color image view");
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
 
     /* Defined sampling layout for the case this target is sampled before it is
      * ever rendered into (avoids VUID-vkCmdDraw-None-09600). */
@@ -4820,18 +4841,51 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
 
     ci.format = VK_FORMAT_D32_SFLOAT;
     ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    vkCreateImage(vk->device, &ci, NULL, &fd->depth_image);
+    if (vkCreateImage(vk->device, &ci, NULL, &fd->depth_image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT depth image");
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
     vkGetImageMemoryRequirements(vk->device, fd->depth_image, &mr);
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, &fd->depth_memory);
-    vkBindImageMemory(vk->device, fd->depth_image, fd->depth_memory, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &fd->depth_memory) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate MRT depth memory");
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
+    if (vkBindImageMemory(vk->device, fd->depth_image, fd->depth_memory, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind MRT depth image memory");
+        vkFreeMemory(vk->device, fd->depth_memory, NULL);
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
 
     ivci.image = fd->depth_image;
     ivci.format = VK_FORMAT_D32_SFLOAT;
     ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    vkCreateImageView(vk->device, &ivci, NULL, &fd->depth_view);
+    if (vkCreateImageView(vk->device, &ivci, NULL, &fd->depth_view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT depth image view");
+        vkFreeMemory(vk->device, fd->depth_memory, NULL);
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
 
     VkAttachmentDescription attachments[2] = {0};
     attachments[0].format = vk_color_fmt;
@@ -4876,7 +4930,17 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     rpci.pSubpasses = &sp;
     rpci.dependencyCount = 1;
     rpci.pDependencies = &dep;
-    vkCreateRenderPass(vk->device, &rpci, NULL, &fd->render_pass);
+    if (vkCreateRenderPass(vk->device, &rpci, NULL, &fd->render_pass) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT render pass");
+        vkDestroyImageView(vk->device, fd->depth_view, NULL);
+        vkFreeMemory(vk->device, fd->depth_memory, NULL);
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
     fd->render_pass_load = vk_make_resume_render_pass(vk, &rpci);
 
     VkImageView views[] = {fd->color_view, fd->depth_view};
@@ -4888,7 +4952,19 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     fbci.width = width;
     fbci.height = height;
     fbci.layers = 1;
-    vkCreateFramebuffer(vk->device, &fbci, NULL, &fd->framebuffer);
+    if (vkCreateFramebuffer(vk->device, &fbci, NULL, &fd->framebuffer) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT framebuffer");
+        if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
+        vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
+        vkDestroyImageView(vk->device, fd->depth_view, NULL);
+        vkFreeMemory(vk->device, fd->depth_memory, NULL);
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return fbo;
+    }
 
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
     if (!td) return fbo;
@@ -5081,7 +5157,10 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
     ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(vk->device, &ci, NULL, out_img);
+    if (vkCreateImage(vk->device, &ci, NULL, out_img) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT color image (helper)");
+        return;
+    }
 
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(vk->device, *out_img, &mr);
@@ -5090,8 +5169,17 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, out_mem);
-    vkBindImageMemory(vk->device, *out_img, *out_mem, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, out_mem) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate MRT color memory (helper)");
+        vkDestroyImage(vk->device, *out_img, NULL);
+        return;
+    }
+    if (vkBindImageMemory(vk->device, *out_img, *out_mem, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind MRT color image memory (helper)");
+        vkFreeMemory(vk->device, *out_mem, NULL);
+        vkDestroyImage(vk->device, *out_img, NULL);
+        return;
+    }
 
     VkImageViewCreateInfo ivci = {0};
     ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -5101,7 +5189,12 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
     ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     ivci.subresourceRange.levelCount = 1;
     ivci.subresourceRange.layerCount = 1;
-    vkCreateImageView(vk->device, &ivci, NULL, out_view);
+    if (vkCreateImageView(vk->device, &ivci, NULL, out_view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create MRT color image view (helper)");
+        vkFreeMemory(vk->device, *out_mem, NULL);
+        vkDestroyImage(vk->device, *out_img, NULL);
+        return;
+    }
 
     /* Defined sampling layout in case this G-buffer target is sampled before its
      * pass renders into it (avoids VUID-vkCmdDraw-None-09600). */
@@ -5391,7 +5484,11 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(vk->device, &ci, NULL, &cd->depth_image);
+    if (vkCreateImage(vk->device, &ci, NULL, &cd->depth_image) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create cubemap depth image");
+        free(cd);
+        return fbo;
+    }
 
     VkMemoryRequirements mr;
     vkGetImageMemoryRequirements(vk->device, cd->depth_image, &mr);
@@ -5400,8 +5497,19 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(vk->device, &ai, NULL, &cd->depth_memory);
-    vkBindImageMemory(vk->device, cd->depth_image, cd->depth_memory, 0);
+    if (vkAllocateMemory(vk->device, &ai, NULL, &cd->depth_memory) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to allocate cubemap depth memory");
+        vkDestroyImage(vk->device, cd->depth_image, NULL);
+        free(cd);
+        return fbo;
+    }
+    if (vkBindImageMemory(vk->device, cd->depth_image, cd->depth_memory, 0) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to bind cubemap depth image memory");
+        vkFreeMemory(vk->device, cd->depth_memory, NULL);
+        vkDestroyImage(vk->device, cd->depth_image, NULL);
+        free(cd);
+        return fbo;
+    }
 
     /* Full cubemap view (all 6 layers). */
     VkImageViewCreateInfo ivci = {0};
@@ -5412,7 +5520,13 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     ivci.subresourceRange.levelCount = 1;
     ivci.subresourceRange.layerCount = 6;
-    vkCreateImageView(vk->device, &ivci, NULL, &cd->depth_view);
+    if (vkCreateImageView(vk->device, &ivci, NULL, &cd->depth_view) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create cubemap depth image view");
+        vkFreeMemory(vk->device, cd->depth_memory, NULL);
+        vkDestroyImage(vk->device, cd->depth_image, NULL);
+        free(cd);
+        return fbo;
+    }
 
     /* Per-face 2D views and framebuffers. */
     VkAttachmentDescription att = {0};
@@ -5451,7 +5565,14 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     rpci.pSubpasses = &sp;
     rpci.dependencyCount = 1;
     rpci.pDependencies = &dep;
-    vkCreateRenderPass(vk->device, &rpci, NULL, &cd->render_pass);
+    if (vkCreateRenderPass(vk->device, &rpci, NULL, &cd->render_pass) != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to create cubemap depth render pass");
+        vkDestroyImageView(vk->device, cd->depth_view, NULL);
+        vkFreeMemory(vk->device, cd->depth_memory, NULL);
+        vkDestroyImage(vk->device, cd->depth_image, NULL);
+        free(cd);
+        return fbo;
+    }
     /* LOAD-op twin so the GPU-driven indirect cull/compaction (a compute
      * dispatch issued mid-pass) can suspend and resume this depth pass. */
     cd->render_pass_load = vk_make_resume_render_pass(vk, &rpci);
