@@ -556,3 +556,11 @@
 - **R149-A rhi_vk.c vk_create_framebuffers NULL 守卫**：函数入口添加 `if (!vk->swap_views || vk->swap_count == 0) return;`，防止 `swap_views` 为 NULL 时解引用崩溃。
 
 - **审计总计（R129-R149）**：**376 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建 NULL 解引用防护。
+
+- **R150 审查**：Vulkan `vk->framebuffers` NULL 解引用防护 — 4 个函数访问 `vk->framebuffers[vk->image_index]` 未检查 NULL。若 `vk_create_framebuffers` 失败（OOM/vkCreateFramebuffer 错误），`framebuffers` 为 NULL 但 `vkAcquireNextImageKHR` 仍可成功（交换链有效），导致 `NULL[image_index]` 崩溃。修复 4 处。
+- **R150-A rhi_frame_begin framebuffers NULL 守卫**：在 acquire 检查后添加 `if (!vk->framebuffers) { LOG_ERROR + frame_started = false + return; }`，防止交换链有效但 framebuffer 未创建时解引用 NULL。
+- **R150-B rhi_cmd_begin_render_pass framebuffers NULL 守卫**：添加 `if (!vk->framebuffers) return;`，防止渲染通道未启动时解引用 NULL。
+- **R150-C rhi_cmd_unbind_shadow_map framebuffers NULL 守卫**：同上。
+- **R150-D rhi_offscreen_fbo_unbind framebuffers NULL 守卫**：同上。
+
+- **审计总计（R129-R150）**：**380 处**全量加固，涵盖 calloc/malloc NULL 检查、Vulkan VkResult 全路径检查、fseek/fwrite/fread/fclose 返回值检查、strncpy null 终止、snprintf 截断检查、usize→u32/int 截断防护、线程创建检查、数学除零防护、窗口尺寸 0 防护、stbi_load_from_memory 截断检查、mipmap 级别尺寸乘法溢出防护、Vulkan push constant 越界防护、delta_time 钳制防护、Vulkan swapchain 获取图像错误处理防护、Vulkan framebuffer 创建/访问 NULL 解引用防护。

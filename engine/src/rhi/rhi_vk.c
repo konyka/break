@@ -1412,6 +1412,16 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     }
     /* VK_SUBOPTIMAL_KHR is a success — swapchain rebuild deferred to rhi_present */
 
+    /* R150: Guard against NULL framebuffers — vk_create_framebuffers may have failed
+     * (e.g., OOM on calloc, vkCreateFramebuffer error) even though the swapchain
+     * itself is valid and vkAcquireNextImageKHR succeeded. Without this check,
+     * vk->framebuffers[vk->image_index] dereferences NULL. */
+    if (!vk->framebuffers) {
+        LOG_ERROR("VK: framebuffers not available in frame_begin");
+        vk->frame_started = false;
+        return (RHICmdBuffer *)vk;
+    }
+
     if (vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetCommandBuffer failed in frame_begin");
         vk->frame_started = false;
@@ -2966,6 +2976,7 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (vk->render_pass_active) return;
+    if (!vk->framebuffers) return;  /* R150: guard against NULL framebuffers */
 
     VkRenderPassBeginInfo rpi = {0};
     rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -4529,6 +4540,7 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
     }
+    if (!vk->framebuffers) return;  /* R150: guard against NULL framebuffers */
 
     VkRenderPassBeginInfo rpi = {0};
     rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -5411,6 +5423,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
         vk->render_pass_active = false;
     }
+    if (!vk->framebuffers) return;  /* R150: guard against NULL framebuffers */
 
     VkRenderPassBeginInfo rpi = {0};
     rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
