@@ -103,6 +103,15 @@ static char *terrain_read_file(const char *path, usize *out_len) {
 }
 
 bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale) {
+    /* R161-A: Validate grid_size to prevent unsigned underflow in (grid_size - 1)
+     * expressions.  grid_size=0 causes (grid_size-1) to wrap to 0xFFFFFFFF,
+     * making the index-generation loop run ~4 billion iterations and write far
+     * past the 24-byte indices allocation — a massive heap buffer overflow.
+     * grid_size=1 causes division by zero in (f32)(grid_size-1) divisors. */
+    if (grid_size < 2) {
+        LOG_ERROR("Terrain: grid_size must be >= 2 (got %u)", grid_size);
+        return false;
+    }
     t->device = dev;
     t->grid_size = grid_size;
     t->scale = scale;

@@ -148,6 +148,12 @@ void lod_register(LODSystem *sys, u32 entity, const LODGroup *group) {
     u32 idx = sys->count;
     sys->groups[idx] = *group;
     sys->groups[idx].entity_id = entity;
+    /* R161-B: Clamp level_count to LOD_MAX_LEVELS to prevent out-of-bounds reads
+     * in thresholds_sq[] and meshes[] arrays during lod_select and lod_get_mesh.
+     * Without this, a caller setting level_count > 4 would cause OOB reads. */
+    if (sys->groups[idx].level_count > LOD_MAX_LEVELS) {
+        sys->groups[idx].level_count = LOD_MAX_LEVELS;
+    }
     /* Ensure thresholds_sq is populated (backward compat for callers that
      * only set thresholds without thresholds_sq). */
     for (u32 i = 0; i < group->level_count && i < LOD_MAX_LEVELS; i++) {
