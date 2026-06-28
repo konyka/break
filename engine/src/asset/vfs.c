@@ -72,7 +72,10 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
         free(entries); fclose(fp); return false;
     }
 
-    char *names = calloc(hdr.name_table_size, 1);
+    /* R160-A: Allocate name_table_size + 1 to guarantee a null terminator at the
+     * end of the buffer.  Without this, a PAK whose name table lacks a trailing
+     * '\0' would cause strcmp in vfs_open to read one byte past the allocation. */
+    char *names = calloc(hdr.name_table_size + 1, 1);
     if (!names) { free(entries); fclose(fp); return false; }
     if (fseek(fp, sizeof(PakHeader) + hdr.entry_count * sizeof(PakEntry), SEEK_SET) != 0) {
         free(names); free(entries); fclose(fp); return false;
@@ -97,6 +100,10 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     memset(table, 0xFF, table_size * sizeof(u32)); /* UINT32_MAX = empty */
     u32 mask = table_size - 1;
     for (u32 e = 0; e < hdr.entry_count; e++) {
+        /* R160-A: Validate name_offset before inserting into hash table.
+         * A malicious PAK could set name_offset >= name_table_size, causing an
+         * out-of-bounds read in vfs_open when computing the name pointer. */
+        if (entries[e].name_offset >= hdr.name_table_size) continue;
         u32 slot = entries[e].name_hash & mask;
         while (table[slot] != UINT32_MAX) {
             slot = (slot + 1) & mask;

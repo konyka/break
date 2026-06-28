@@ -139,6 +139,13 @@ static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *
     }
 
     usize hdr_sz = sizeof(AsyncTextureHeader);
+    /* R160-B: Guard against usize→u32 truncation in out->size.  A 32768×32768
+     * RGBA8 texture with mip chain exceeds 4 GB, which overflows the u32 size
+     * field and causes the caller to use a truncated length. */
+    if (hdr_sz + total_pix > (usize)UINT32_MAX) {
+        stbi_image_free(base);
+        return false;
+    }
     u8 *packed = (u8 *)malloc(hdr_sz + total_pix);
     if (!packed) {
         stbi_image_free(base);
