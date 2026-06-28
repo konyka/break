@@ -201,8 +201,14 @@ u32 lod_select(LODSystem *sys, u32 entity, Vec3 object_pos,
     if (sys->use_screen_size) {
         f32 fraction = lod_compute_screen_fraction(
             object_pos, group->bounding_radius, camera_pos, fov);
+        /* R162-A: Compute inv_bias = 1/(1+bias) to match lod_update_all.
+         * Previously sys->bias was passed directly as inv_bias, causing
+         * effective_fraction = fraction * bias (instead of fraction / (1+bias)).
+         * With default bias=0 this zeroed effective_fraction, always selecting
+         * the coarsest LOD level. */
+        f32 inv_bias = 1.0f / (1.0f + sys->bias);
         selected = lod_select_by_screen_size(
-            group, current, fraction, sys->screen_threshold, sys->bias);
+            group, current, fraction, sys->screen_threshold, inv_bias);
     } else {
         f32 dist_sq = lod_distance_sq(object_pos, camera_pos);
         selected = lod_select_by_distance_sq(group, current, dist_sq, sys->bias);
