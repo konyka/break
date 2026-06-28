@@ -61,7 +61,14 @@ static int verify_file(VFS *vfs, const char *pak_name,
         vfs_close(f);
         return 0;
     }
-    fread(disk_buf, 1, (usize)disk_size, fp);
+    /* R164: Check fread return value to detect I/O errors. */
+    if (fread(disk_buf, 1, (usize)disk_size, fp) != (usize)disk_size) {
+        fprintf(stderr, "FAIL: short read on disk for '%s'\n", disk_path);
+        free(disk_buf);
+        fclose(fp);
+        vfs_close(f);
+        return 0;
+    }
     fclose(fp);
 
     u8 *pak_buf = malloc(pak_size);

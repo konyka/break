@@ -215,7 +215,14 @@ static int write_file_data(const char *path, u32 size, FILE *out) {
         return 0;
     }
 
-    fwrite(data, 1, size, out);
+    /* R164: Check fwrite return value to detect disk-full errors. */
+    if (fwrite(data, 1, size, out) != size) {
+        fprintf(stderr, "ERROR: failed to write data for '%s' (disk full?)\n", path);
+        UnmapViewOfFile(data);
+        CloseHandle(hMap);
+        CloseHandle(hFile);
+        return 0;
+    }
 
     UnmapViewOfFile(data);
     CloseHandle(hMap);
@@ -237,7 +244,12 @@ static int write_file_data(const char *path, u32 size, FILE *out) {
             fclose(fp);
             return 0;
         }
-        fwrite(buf, 1, chunk, out);
+        /* R164: Check fwrite return value to detect disk-full errors. */
+        if (fwrite(buf, 1, chunk, out) != chunk) {
+            fprintf(stderr, "ERROR: failed to write data for '%s' (disk full?)\n", path);
+            fclose(fp);
+            return 0;
+        }
         remaining -= chunk;
     }
     fclose(fp);
@@ -283,10 +295,18 @@ int main(int argc, char **argv) {
     u32 entry_table_size = g_entry_count * (u32)sizeof(PakEntry);
     u32 data_start = header_size + entry_table_size + g_name_size;
 
-    u32 offset = data_start;
+    /* R164: Use u64 accumulator to detect u32 overflow in total data offset.
+     * PAK format uses u32 data_offset fields; if total packed data exceeds 4 GB,
+     * the u32 offset would silently wrap, producing a corrupt PAK file. */
+    u64 total_offset = (u64)data_start;
     for (u32 i = 0; i < g_entry_count; i++) {
-        g_entries[i].data_offset = offset;
-        offset += g_entries[i].size;
+        if (total_offset > 0xFFFFFFFFull) {
+            fprintf(stderr, "ERROR: total data size exceeds 4 GB limit "
+                    "(PAK format uses u32 offsets)\n");
+            return 1;
+        }
+        g_entries[i].data_offset = (u32)total_offset;
+        total_offset += g_entries[i].size;
     }
 
     FILE *out = fopen(output, "wb");
@@ -295,14 +315,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* R164: Check fwrite return values to detect disk-full / I/O errors. */
     u32 magic = PAK_MAGIC;
     u32 version = 1;
-    fwrite(&magic, 4, 1, out);
-    fwrite(&version, 4, 1, out);
-    fwrite(&g_entry_count, 4, 1, out);
-    fwrite(&g_name_size, 4, 1, out);
-    fwrite(g_entries, sizeof(PakEntry), g_entry_count, out);
-    fwrite(g_names, 1, g_name_size, out);
+    int write_ok = 1;
+    write_ok &= (fwrite(&magic, 4, 1, out) == 1);
+    write_ok &= (fwrite(&version, 4, 1, out) == 1);
+    write_ok &= (fwrite(&g_entry_count, 4, 1, out) == 1);
+    write_ok &= (fwrite(&g_name_size, 4, 1, out) == 1);
+    write_ok &= (fwrite(g_entries, sizeof(PakEntry), g_entry_count, out) == g_entry_count);
+    write_ok &= (fwrite(g_names, 1, g_name_size, out) == g_name_size);
+    if (!write_ok) {
+        fprintf(stderr, "ERROR: failed to write PAK header (disk full?)\n");
+        fclose(out);
+        return 1;
+    }
 
     for (u32 i = 0; i < g_entry_count; i++) {
         if (!write_file_data(g_paths[i], g_entries[i].size, out)) {
@@ -312,6 +339,7 @@ int main(int argc, char **argv) {
     }
 
     fclose(out);
-    printf("Packed %u files into '%s' (%u bytes)\n", g_entry_count, output, offset);
+    printf("Packed %u files into '%s' (%llu bytes)\n",
+           g_entry_count, output, (unsigned long long)total_offset);
     return 0;
 }
