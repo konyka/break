@@ -11,7 +11,11 @@
 
 /* ---- Constants ---- */
 #define ASYNC_HEAP_SIZE        256   /* Pending request heap capacity */
-#define ASYNC_QUEUE_SIZE       256   /* Completion queue capacity; power of 2 */
+/* R165-A: Queue capacity must match max requests to prevent MPSC ring-buffer
+ * overflow. With ASYNC_QUEUE_SIZE=256 and ASYNC_MAX_REQUESTS=1024, if more than
+ * 256 completions are enqueued before the consumer drains them, older entries
+ * are silently overwritten by newer producers, causing stale/corrupted data. */
+#define ASYNC_QUEUE_SIZE       1024  /* Completion queue capacity; power of 2 */
 #define ASYNC_QUEUE_MASK       (ASYNC_QUEUE_SIZE - 1)
 #define ASYNC_MAX_REQUESTS     1024
 #define ASYNC_SLOT_BITS        10    /* log2(1024) */
@@ -143,6 +147,33 @@ static void enqueue_completion(u64 slot_idx) {
     g_loader.completion_queue.indices[comp_slot & ASYNC_QUEUE_MASK] = slot_idx;
 }
 
+/* R165-C: Atomically transition request from ASSET_LOADING to a final state.
+ * If the request was cancelled (state changed to ASSET_CANCELLED by the main
+ * thread while the worker was doing I/O), free any allocated data and skip
+ * completion enqueue. This prevents the worker from overwriting ASSET_CANCELLED
+ * with ASSET_READY, which would cause the callback to fire even though the
+ * caller believes the request was cancelled.
+ *
+ * Returns true if the state was set successfully, false if cancelled. */
+static bool async_finalize(u32 slot_idx, AssetState final_state) {
+    AsyncRequest *req = &g_loader.requests[slot_idx];
+    u32 expected = (u32)ASSET_LOADING;
+    if (!atomic_compare_exchange_strong_explicit(
+            &req->state, &expected, (u32)final_state,
+            memory_order_acq_rel, memory_order_acquire)) {
+        /* State was changed to ASSET_CANCELLED — free data and skip */
+        if (req->data) {
+            free(req->data);
+            req->data = NULL;
+        }
+        atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+        return false;
+    }
+    enqueue_completion(slot_idx);
+    atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+    return true;
+}
+
 /* ---- Worker thread implementation ---- */
 
 static void io_worker_run(void) {
@@ -188,9 +219,7 @@ static void io_worker_run(void) {
                     vfs_close(f);
                     req->data = NULL;
                     req->size = 0;
-                    atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
-                    enqueue_completion(slot_idx);
-                    atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                    async_finalize(slot_idx, ASSET_FAILED);
                     LOG_WARN("Async range load: range too large (>%u bytes): %s", UINT32_MAX, req->path);
                     continue;
                 }
@@ -200,24 +229,25 @@ static void io_worker_run(void) {
                     memcpy(data, f->data + req->range_offset, to_read);
                     req->data = data;
                     req->size = (u32)to_read;
-                    atomic_store_explicit(&req->state, (u32)ASSET_READY, memory_order_release);
+                    vfs_close(f);
+                    async_finalize(slot_idx, ASSET_READY);
                 } else {
                     req->data = NULL;
                     req->size = 0;
-                    atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
+                    vfs_close(f);
+                    async_finalize(slot_idx, ASSET_FAILED);
                 }
-                vfs_close(f);
             } else {
                 req->data = NULL;
                 req->size = 0;
-                atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
                 if (f) vfs_close(f);
+                async_finalize(slot_idx, ASSET_FAILED);
                 LOG_WARN("Async range load failed: %s (offset=%zu)", req->path, req->range_offset);
             }
-            enqueue_completion(slot_idx);
-            atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
         } else {
-            /* Full file read */
+            /* Full file read
+             * R165-B: Same cancel-race protection as range load path (R165-C).
+             * All state transitions use async_finalize() for atomic CAS. */
             usize file_size = 0;
             u8 *data = vfs_read_all(g_loader.vfs, req->path, &file_size);
 
@@ -227,9 +257,7 @@ static void io_worker_run(void) {
                     free(data);
                     req->data = NULL;
                     req->size = 0;
-                    atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
-                    enqueue_completion(slot_idx);
-                    atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                    async_finalize(slot_idx, ASSET_FAILED);
                     LOG_WARN("Async load: file too large (>%u bytes): %s", UINT32_MAX, req->path);
                 } else if (req->decode_texture) {
                     /* Offload decode + mip-chain generation to the decode pipeline. */
@@ -242,23 +270,17 @@ static void io_worker_run(void) {
                         free(data);
                         req->data = NULL;
                         req->size = 0;
-                        atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
-                        enqueue_completion(slot_idx);
-                        atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                        async_finalize(slot_idx, ASSET_FAILED);
                     }
                 } else {
                     req->data = data;
                     req->size = (u32)file_size;
-                    atomic_store_explicit(&req->state, (u32)ASSET_READY, memory_order_release);
-                    enqueue_completion(slot_idx);
-                    atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                    async_finalize(slot_idx, ASSET_READY);
                 }
             } else {
                 req->data = NULL;
                 req->size = 0;
-                atomic_store_explicit(&req->state, (u32)ASSET_FAILED, memory_order_release);
-                enqueue_completion(slot_idx);
-                atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+                async_finalize(slot_idx, ASSET_FAILED);
                 LOG_WARN("Async load failed: %s", req->path);
             }
         }
