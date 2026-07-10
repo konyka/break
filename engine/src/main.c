@@ -868,7 +868,7 @@ static bool mega_unified_cull_draw(GPUCullSystem *gc, RHIDevice *dev, RHICmdBuff
         hz_w = occ->hi_z_width;
         hz_h = occ->hi_z_height;
     }
-    gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h, RHI_HANDLE_NULL);
+    gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h, RHI_HANDLE_NULL, true);
     gpucull_execute_indirect_draws(gc, dev);
     return true;
 }
@@ -887,8 +887,15 @@ static bool mega_unified_vis_flags(GPUCullSystem *gc, RHICmdBuffer *cmd,
         hz_w = occ->hi_z_width;
         hz_h = occ->hi_z_height;
     }
-    gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h, gc->visible_flags_ssbo);
-    return gpucull_read_vis_flags(gc, vis_count, out_flags);
+    /* R169: Read previous-frame staging BEFORE recording this frame's dispatch
+     * (Vulkan CB not yet submitted). First frame → all visible. */
+    bool have = gpucull_read_vis_flags(gc, vis_count, out_flags);
+    gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h,
+                             gc->visible_flags_ssbo, false /* flags-only */);
+    if (!have) {
+        for (u32 i = 0; i < vis_count; i++) out_flags[i] = 1u;
+    }
+    return true;
 }
 
 static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffer *mb,

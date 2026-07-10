@@ -3524,6 +3524,22 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R169：unified cull readback/compact + decode 取消（已完成）
+
+### [x] R169-A vis flags 1 帧延迟 readback
+- [x] `vis_flags_staging` + GPU→staging copy；读上一帧再 dispatch；首帧全可见
+
+### [x] R169-B flags-only 跳过 atomic compact
+- [x] `compact_draws` / `u_cull_write_draws`；vis-flags 路径不再 compact
+
+### [x] R169-C decode cancel 跳过 stbi/mip
+- [x] worker 在 decode 前检查 `ASSET_CANCELLED`
+
+### [x] R169-D VK PointSize feature
+- [x] 启用 `shaderTessellationAndGeometryPointSize`
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 ```bash

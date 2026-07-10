@@ -36,12 +36,14 @@ typedef struct {
     RHIBuffer       count_buf;           /* Atomic counter for visible count */
     RHIBuffer       draw_count_buf;      /* Atomic counter for draw count */
     RHIBuffer       visible_flags_ssbo;  /* Per-object visibility (1/0) from unified cull */
+    RHIBuffer       vis_flags_staging;   /* R169: 1-frame delayed CPU readback */
     RHISampler      hi_z_sampler;        /* Nearest sampler for unified Hi-Z reads */
     RHITexture      hi_z_fallback;       /* 1x1 placeholder when Hi-Z disabled */
     u32             object_count;
     u32             draw_count;
     bool            ready;
     bool            unified_ready;       /* Unified pipeline initialized */
+    bool            vis_flags_staging_valid; /* R169: staging has a completed GPU copy */
 
     /* Cached uniform locations (legacy pipeline) */
     i32             _loc_cull_vp;
@@ -52,6 +54,7 @@ typedef struct {
     i32             _loc_uni_hz_w;
     i32             _loc_uni_hz_h;
     i32             _loc_uni_use;
+    i32             _loc_uni_write;  /* R169: skip draw compaction when flags-only */
 
     /* Persistent staging buffers (avoid per-frame malloc/free) */
     f32            *_pack_buf;
@@ -88,15 +91,18 @@ void gpucull_upload_objects_unified(GPUCullSystem *gc, const GPUCullObject *obje
  *   - Frustum culling using view-projection matrix
  *   - Hierarchical Z-buffer occlusion culling when `hi_z_texture` is valid
  *     (uses previous frame's Hi-Z pyramid, 1-frame latency)
- *   - Compaction of visible draws into indirect draw buffer
+ *   - Compaction of visible draws into indirect draw buffer when compact_draws
+ *   - Copies vis flags to staging for next-frame CPU readback (R169)
  */
 void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                               const f32 *vp, const f32 *camera_pos,
                               RHITexture hi_z_texture,
                               u32 hi_z_width, u32 hi_z_height,
-                              RHIBuffer vis_flags_out);
+                              RHIBuffer vis_flags_out,
+                              bool compact_draws);
 
-/* Read per-draw visibility flags written by the last unified dispatch. */
+/* Read per-draw visibility flags from the previous frame's staging copy (R169).
+ * Returns false if no prior frame is available — caller should treat all as visible. */
 bool gpucull_read_vis_flags(GPUCullSystem *gc, u32 count, u32 *out_flags);
 
 /* Get the number of visible objects after unified culling */

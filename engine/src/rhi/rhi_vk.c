@@ -894,6 +894,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         enabled_features.fillModeNonSolid = VK_TRUE; /* wireframe debug pipelines */
         vk->feat_fill_mode_non_solid = true;
     }
+    /* R169: Allow VS/GS/TS to write PointSize (particle POINT_LIST sprites). */
+    if (supported_features2.features.shaderTessellationAndGeometryPointSize) {
+        enabled_features.shaderTessellationAndGeometryPointSize = VK_TRUE;
+    }
 
     VkPhysicalDeviceVulkan12Features enabled_vk12 = {0};
     enabled_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -3846,6 +3850,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_cull_hi_z_width") == 0)  return 68;
         if (strcmp(name, "u_cull_hi_z_height") == 0) return 72;
         if (strcmp(name, "u_cull_use_hi_z") == 0)    return 76;
+        if (strcmp(name, "u_cull_write_draws") == 0) return 80;
         /* Occlusion culling (occlusion_cull.comp): mat4 view_proj@0, uint object_count@64, float hi_z_width@68, float hi_z_height@72 */
         if (strcmp(name, "pc_view_proj") == 0)       return 0;
         if (strcmp(name, "pc_object_count") == 0)    return 64;

@@ -44,12 +44,14 @@ layout(push_constant) uniform Push {
     float hi_z_width;
     float hi_z_height;
     float use_hi_z;
+    float write_draws; /* R169: 0 = flags only (skip atomic compact) */
 } pc;
 #define CULL_VP       pc.vp
 #define CULL_COUNT    pc.obj_count
 #define CULL_HI_Z_W   pc.hi_z_width
 #define CULL_HI_Z_H   pc.hi_z_height
 #define CULL_USE_HI_Z pc.use_hi_z
+#define CULL_WRITE_DRAWS pc.write_draws
 #else
 layout(binding = 4) uniform sampler2D u_hi_z;
 uniform mat4 u_cull_vp;
@@ -57,11 +59,13 @@ uniform int  u_cull_count;
 uniform float u_cull_hi_z_width;
 uniform float u_cull_hi_z_height;
 uniform float u_cull_use_hi_z;
+uniform float u_cull_write_draws;
 #define CULL_VP       u_cull_vp
 #define CULL_COUNT    uint(u_cull_count)
 #define CULL_HI_Z_W   u_cull_hi_z_width
 #define CULL_HI_Z_H   u_cull_hi_z_height
 #define CULL_USE_HI_Z u_cull_use_hi_z
+#define CULL_WRITE_DRAWS u_cull_write_draws
 #endif
 
 bool sphere_frustum_visible(vec3 center, float radius) {
@@ -108,6 +112,8 @@ void main() {
     if (CULL_USE_HI_Z > 0.5 && !sphere_hi_z_visible(center, radius)) return;
 
     flags[idx] = 1u;
+    /* R169: flags-only path skips atomic compact (mega_unified_vis_flags). */
+    if (CULL_WRITE_DRAWS < 0.5) return;
     uint slot = atomicAdd(draw_count.count, 1u);
     uint src  = idx  * 5u;
     uint dst  = slot * 5u;

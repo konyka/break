@@ -257,6 +257,17 @@ static void decode_worker_run(void) {
         job->node.result.slot = job->slot;
         job->node.result.request_id = job->request_id;
 
+        /* R169: Skip expensive stbi+mip if the async request was cancelled. */
+        if (async_loader_status(job->request_id) == ASSET_CANCELLED) {
+            free(job->raw_data);
+            job->raw_data = NULL;
+            job->node.result.data = NULL;
+            job->node.result.size = 0;
+            job->node.result.success = false;
+            ready_queue_push(&job->node);
+            continue;
+        }
+
         if (!decode_generate_mipchain((u8 *)job->raw_data, job->raw_size, &job->node.result)) {
             job->node.result.data = NULL;
             job->node.result.size = 0;

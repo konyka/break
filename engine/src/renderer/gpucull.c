@@ -120,6 +120,7 @@ void gpucull_shutdown(GPUCullSystem *gc) {
         if (rhi_handle_valid(gc->visible_draws_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_draws_ssbo);
         if (rhi_handle_valid(gc->draw_count_buf)) rhi_buffer_destroy(gc->device, gc->draw_count_buf);
         if (rhi_handle_valid(gc->visible_flags_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_flags_ssbo);
+        if (rhi_handle_valid(gc->vis_flags_staging)) rhi_buffer_destroy(gc->device, gc->vis_flags_staging);
         if (rhi_handle_valid(gc->hi_z_sampler)) rhi_sampler_destroy(gc->device, gc->hi_z_sampler);
         if (rhi_handle_valid(gc->hi_z_fallback)) rhi_texture_destroy(gc->device, gc->hi_z_fallback);
     }
@@ -264,11 +265,15 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
         .usage = RHI_BUFFER_USAGE_STORAGE,
     };
     gc->visible_flags_ssbo = rhi_buffer_create(dev, &vis_flags_desc);
+    /* R169: staging twin for 1-frame delayed CPU readback (same pattern as occlusion). */
+    gc->vis_flags_staging = rhi_buffer_create(dev, &vis_flags_desc);
+    gc->vis_flags_staging_valid = false;
     
     if (!rhi_handle_valid(gc->draw_cmds_ssbo) ||
         !rhi_handle_valid(gc->visible_draws_ssbo) ||
         !rhi_handle_valid(gc->draw_count_buf) ||
-        !rhi_handle_valid(gc->visible_flags_ssbo)) {
+        !rhi_handle_valid(gc->visible_flags_ssbo) ||
+        !rhi_handle_valid(gc->vis_flags_staging)) {
         LOG_WARN("UnifiedCull: buffer creation failed");
         gc->unified_ready = false;
         return true;
@@ -300,6 +305,7 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     gc->_loc_uni_hz_w  = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_hi_z_width");
     gc->_loc_uni_hz_h  = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_hi_z_height");
     gc->_loc_uni_use   = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_use_hi_z");
+    gc->_loc_uni_write = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_write_draws");
 
     /* Zero the pre-allocated zero buffer (part of _pack_buf block) */
     memset(gc->_zero_buf, 0, gc->_zero_buf_cap * sizeof(u32));
@@ -343,7 +349,8 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                               const f32 *vp, const f32 *camera_pos,
                               RHITexture hi_z_texture,
                               u32 hi_z_width, u32 hi_z_height,
-                              RHIBuffer vis_flags_out) {
+                              RHIBuffer vis_flags_out,
+                              bool compact_draws) {
     (void)camera_pos;
     if (!gc || !gc->unified_ready || gc->object_count == 0 || gc->draw_count == 0) return;
 
@@ -355,9 +362,11 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
         rhi_buffer_update_region(gc->device, flags_buf, 0, gc->_zero_buf, n * sizeof(u32));
     }
 
-    /* Reset the compacted-draw atomic counter. */
-    u32 zero = 0;
-    rhi_buffer_update(gc->device, gc->draw_count_buf, &zero, sizeof(u32));
+    /* Reset the compacted-draw atomic counter when compaction is enabled. */
+    if (compact_draws) {
+        u32 zero = 0;
+        rhi_buffer_update(gc->device, gc->draw_count_buf, &zero, sizeof(u32));
+    }
 
     rhi_cmd_bind_pipeline(cmd, gc->unified_cull_pipe);
     rhi_cmd_bind_storage_buffer(cmd, gc->object_ssbo,        0);
@@ -384,21 +393,36 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
     if (loc_hz_h >= 0) rhi_cmd_set_uniform_f32(cmd, loc_hz_h, (f32)hi_z_height);
     i32 loc_use = gc->_loc_uni_use;
     if (loc_use >= 0) rhi_cmd_set_uniform_f32(cmd, loc_use, use_hi_z ? 1.0f : 0.0f);
+    i32 loc_wd = gc->_loc_uni_write;
+    if (loc_wd >= 0) rhi_cmd_set_uniform_f32(cmd, loc_wd, compact_draws ? 1.0f : 0.0f);
 
     u32 groups = (n + 63) / 64;
     rhi_cmd_dispatch(cmd, groups, 1, 1);
     rhi_cmd_memory_barrier(cmd);
+
+    /* R169: GPU→staging copy for next-frame CPU read (avoids same-CB map of
+     * unexecuted compute writes on Vulkan). */
+    if (rhi_handle_valid(gc->vis_flags_staging) &&
+        rhi_handle_valid(flags_buf) &&
+        flags_buf.index == gc->visible_flags_ssbo.index &&
+        flags_buf.generation == gc->visible_flags_ssbo.generation) {
+        rhi_cmd_copy_buffer(cmd, flags_buf, gc->vis_flags_staging, n * sizeof(u32));
+        gc->vis_flags_staging_valid = true;
+    }
 }
 
 bool gpucull_read_vis_flags(GPUCullSystem *gc, u32 count, u32 *out_flags) {
     if (!gc || !gc->unified_ready || !out_flags || count == 0u) return false;
-    if (!rhi_handle_valid(gc->visible_flags_ssbo)) return false;
+    if (!rhi_handle_valid(gc->vis_flags_staging)) return false;
     if (count > GPUCULL_MAX_OBJECTS) count = GPUCULL_MAX_OBJECTS;
 
-    void *mapped = rhi_buffer_map(gc->device, gc->visible_flags_ssbo);
+    /* R169: No prior GPU copy yet — caller should treat all as visible. */
+    if (!gc->vis_flags_staging_valid) return false;
+
+    void *mapped = rhi_buffer_map(gc->device, gc->vis_flags_staging);
     if (!mapped) return false;
     memcpy(out_flags, mapped, (usize)count * sizeof(u32));
-    rhi_buffer_unmap(gc->device, gc->visible_flags_ssbo);
+    rhi_buffer_unmap(gc->device, gc->vis_flags_staging);
     return true;
 }
 
