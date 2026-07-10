@@ -341,11 +341,20 @@ void async_loader_init(u32 io_thread_count, VFS *vfs) {
     g_loader.thread_count = io_thread_count;
 
     AsyncThreadFn fn = io_worker_fn();
+    u32 started = 0;
     for (u32 i = 0; i < io_thread_count; i++) {
-        async_thread_create(&g_loader.threads[i], fn, NULL);
+        if (!async_thread_create(&g_loader.threads[i], fn, NULL)) {
+            LOG_ERROR("Async loader: failed to create I/O thread %u", i);
+            break;
+        }
+        started++;
+    }
+    g_loader.thread_count = started;
+    if (started == 0) {
+        LOG_FATAL("Async loader: failed to create any I/O threads");
     }
 
-    LOG_INFO("Async loader initialized: %u I/O threads", io_thread_count);
+    LOG_INFO("Async loader initialized: %u I/O threads", started);
 }
 
 void async_loader_shutdown(void) {
@@ -450,6 +459,12 @@ void async_loader_tick(void) {
         if (req->id != result.request_id || st == (u32)ASSET_CANCELLED) {
             if (result.data) free(result.data);
             if (st == (u32)ASSET_CANCELLED) {
+                /* R167-D: Notify owner so user_data (e.g. MipLoadReq) is freed. */
+                if (req->callback) {
+                    req->callback(req->user_data, NULL, 0);
+                    req->callback = NULL;
+                    req->user_data = NULL;
+                }
                 atomic_store_explicit(&req->state, (u32)ASSET_UNLOADED, memory_order_release);
             }
             atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
@@ -508,7 +523,17 @@ bool async_loader_cancel(u64 request_id) {
         if (atomic_compare_exchange_strong_explicit(
                 &g_loader.requests[slot].state, &expected, (u32)ASSET_CANCELLED,
                 memory_order_acq_rel, memory_order_acquire)) {
-            LOG_DEBUG("Async request cancelled: %s", g_loader.requests[slot].path);
+            /* R167-D: Immediately notify owner with NULL data so user_data can
+             * be freed. Worker that finishes later will see CANCELLED and skip
+             * enqueue (async_finalize) or free data without a second callback
+             * (decode path clears callback here). */
+            AsyncRequest *req = &g_loader.requests[slot];
+            if (req->callback) {
+                req->callback(req->user_data, NULL, 0);
+                req->callback = NULL;
+                req->user_data = NULL;
+            }
+            LOG_DEBUG("Async request cancelled: %s", req->path);
             return true;
         }
         return false;

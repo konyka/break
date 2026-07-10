@@ -3485,6 +3485,31 @@ if (!ok) return false;
 
 **验收**：全部 23/23 测试通过。VK（ENGINE_VULKAN=ON）+ GL 构建路径编译成功。
 
+## R167：粒子 GPU cull 落地 + decode/mipmap 正确性（已完成）
+
+**原则**：性能最优先 — 先修“算了但没生效”的热路径，再补边界正确性。
+
+### [x] R167-PERF 粒子 draw_indirect
+- [x] `particle_cull.comp` / `particle.vert`：`DrawBuf` → `DrawIndirectCommand` + indices
+- [x] 新增 `rhi_cmd_draw_indirect`（VK `vkCmdDrawIndirect` / GL `glMultiDrawArraysIndirect`）
+- [x] `particles_render` 用 indirect 仅调度 alive 实例（不再每帧 8192 VS early-out）
+
+### [x] R167-A/B/C decode 管线
+- [x] `DECODE_INPUT_CAP` 强制生效；队满 submit 失败
+- [x] `DecodeResultNode` 嵌入 `DecodeJob`，消除二次 malloc 挂死 slot
+- [x] `async_thread_create`→`bool`；decode/async I/O 创建失败清理
+
+### [x] R167-D/E mipmap 流式
+- [x] invalidate 取消在途请求 + callback `request_id` 校验
+- [x] `async_loader_cancel` 立即 NULL 回调释放 `MipLoadReq`
+- [x] level_size 溢出拒绝注册（不再钳 UINT32_MAX）
+
+### [x] R167-F/G 边界
+- [x] occlusion `staging_valid`：首帧跳过零 staging readback
+- [x] `task_system_create`：`worker_count==0` 返回 NULL
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**（排除需显示的 `test_vulkan`）；详见 [Implementation_Status.md](./Implementation_Status.md) R167。
+
 ## 构建与回归命令
 
 ```bash

@@ -126,10 +126,12 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     };
     ps->particle_ssbo = rhi_buffer_create(dev, &bdesc);
 
-    /* ---- Cull output: atomic count + alive indices ---- */
+    /* ---- Cull output: DrawIndirectCommand + alive indices (R167) ----
+     * Layout: vertexCount, instanceCount, firstVertex, firstInstance, indices[].
+     * STORAGE|INDIRECT so compute can write instanceCount and draw_indirect can read. */
     RHIBufferDesc cull_desc_buf = {
-        .usage = RHI_BUFFER_USAGE_STORAGE,
-        .size = sizeof(u32) + PARTICLES_MAX * sizeof(u32),
+        .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
+        .size = 4u * sizeof(u32) + PARTICLES_MAX * sizeof(u32),
         .initial_data = NULL,
     };
     ps->cull_buf = rhi_buffer_create(dev, &cull_desc_buf);
@@ -260,8 +262,10 @@ void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
 
     rhi_cmd_end_render_pass(cmd);
 
-    u32 zero = 0;
-    rhi_buffer_update(ps->device, ps->cull_buf, &zero, sizeof(u32));
+    /* R167: Reset DrawIndirectCommand header — vertexCount=1 (point),
+     * instanceCount=0 (atomicAdd fills), firstVertex/firstInstance=0. */
+    u32 hdr[4] = {1u, 0u, 0u, 0u};
+    rhi_buffer_update(ps->device, ps->cull_buf, hdr, sizeof(hdr));
 
     rhi_cmd_bind_pipeline(cmd, ps->cull_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
@@ -275,9 +279,6 @@ void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
 void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj) {
     if (!ps->initialized) return;
 
-    /* R86-2: Skip GPU readback — vertex shader has early-exit for excess
-     * instances (if (P_INST >= draw_count) return). The old rhi_buffer_map
-     * caused a CPU-GPU pipeline stall every frame. */
     rhi_cmd_bind_pipeline(cmd, ps->render_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
     if (ps->cull_ready)
@@ -286,6 +287,14 @@ void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, co
     if (ps->_loc_view >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_view, view);
     if (ps->_loc_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_proj, proj);
 
-    rhi_cmd_draw(cmd, 1, PARTICLES_MAX);
-    ps->last_alive_count = PARTICLES_MAX; /* approximate for debug UI */
+    if (ps->cull_ready) {
+        /* R167: GPU-driven instance count — only alive particles invoke VS.
+         * Avoids scheduling PARTICLES_MAX (8192) empty early-out invocations.
+         * No CPU readback (R86-2): last_alive_count stays as upper-bound hint. */
+        rhi_cmd_draw_indirect(ps->device, ps->cull_buf, 0, 1, 16);
+        ps->last_alive_count = PARTICLES_MAX; /* upper bound; exact needs readback */
+    } else {
+        rhi_cmd_draw(cmd, 1, PARTICLES_MAX);
+        ps->last_alive_count = PARTICLES_MAX;
+    }
 }

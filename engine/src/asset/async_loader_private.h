@@ -24,10 +24,12 @@
     static inline void async_cond_wait(AsyncCond *c, AsyncMutex *m) { SleepConditionVariableCS(c, m, INFINITE); }
     static inline void async_cond_broadcast(AsyncCond *c) { WakeAllConditionVariable(c); }
 
-    static inline void async_thread_create(AsyncThread *t, AsyncThreadFn fn, void *arg) {
+    static inline bool async_thread_create(AsyncThread *t, AsyncThreadFn fn, void *arg) {
         *t = CreateThread(NULL, 0, fn, arg, 0, NULL);
+        return *t != NULL;
     }
     static inline void async_thread_join(AsyncThread t) {
+        if (!t) return;
         WaitForSingleObject(t, INFINITE);
         CloseHandle(t);
     }
@@ -50,8 +52,8 @@
     static inline void async_cond_wait(AsyncCond *c, AsyncMutex *m) { pthread_cond_wait(c, m); }
     static inline void async_cond_broadcast(AsyncCond *c) { pthread_cond_broadcast(c); }
 
-    static inline void async_thread_create(AsyncThread *t, AsyncThreadFn fn, void *arg) {
-        pthread_create(t, NULL, fn, arg);
+    static inline bool async_thread_create(AsyncThread *t, AsyncThreadFn fn, void *arg) {
+        return pthread_create(t, NULL, fn, arg) == 0;
     }
     static inline void async_thread_join(AsyncThread t) { pthread_join(t, NULL); }
 #endif

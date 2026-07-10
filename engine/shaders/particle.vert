@@ -7,13 +7,17 @@ struct Particle {
 };
 
 /* Vulkan supplies view/proj via a push-constant block; desktop GL uses loose
- * uniforms. Alive particles are indexed through DrawBuf (Round 12 GPU cull). */
+ * uniforms. Alive particles are indexed through DrawBuf (Round 12 GPU cull).
+ * R167: DrawBuf uses DrawIndirectCommand header; instanceCount drives draw. */
 #ifdef VULKAN
 layout(std430, set = 0, binding = 0) readonly buffer ParticleBuf {
     Particle particles[];
 };
 layout(std430, set = 0, binding = 1) readonly buffer DrawBuf {
-    uint draw_count;
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
     uint indices[];
 };
 layout(push_constant) uniform Push {
@@ -28,7 +32,10 @@ layout(std430, binding = 0) readonly buffer ParticleBuf {
     Particle particles[];
 };
 layout(std430, binding = 1) readonly buffer DrawBuf {
-    uint draw_count;
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
     uint indices[];
 };
 uniform mat4 u_view;
@@ -42,7 +49,9 @@ layout(location = 0) out vec4 v_color;
 layout(location = 1) out float v_size;
 
 void main() {
-    if (P_INST >= draw_count) {
+    /* R167: draw_indirect already limits instances to alive count; keep a
+     * defensive bound for the non-cull fallback path. */
+    if (P_INST >= instanceCount) {
         gl_Position = vec4(0.0);
         gl_PointSize = 0.0;
         v_color = vec4(0.0);

@@ -3115,6 +3115,18 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
     vkCmdDrawIndexed(vk->cmd_buffers[vk->current_frame], index_count, instance_count, 0, 0, 0);
 }
 
+void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
+                           u32 draw_count, u32 stride) {
+    VKBackend *vk = vk_backend(dev);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, cmd_buf);
+    if (!bd) return;
+    vk_resume_pass_if_needed(vk);
+    vk_flush_push_constants(vk);
+    vkCmdDrawIndirect(vk->cmd_buffers[vk->current_frame],
+                      bd->buffer, (VkDeviceSize)offset,
+                      draw_count, stride);
+}
+
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                                    u32 draw_count, u32 stride) {
     VKBackend *vk = vk_backend(dev);

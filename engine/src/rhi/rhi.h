@@ -157,6 +157,9 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h);
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count);
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count);
 /* ---- Indirect drawing (GPU-driven pipeline) ---- */
+/* Non-indexed DrawIndirect (VkDrawIndirectCommand / DrawArraysIndirect). */
+void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
+                           u32 draw_count, u32 stride);
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                                    u32 draw_count, u32 stride);
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset,

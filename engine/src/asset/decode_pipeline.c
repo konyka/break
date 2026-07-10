@@ -13,8 +13,19 @@
 #define DECODE_WORKER_COUNT 2
 #define DECODE_INPUT_CAP    256
 
-/* ---- Job queue (input) ---- */
+/* ---- Ready queue node (also embedded as first field of DecodeJob) ---- */
+typedef struct DecodeResultNode {
+    struct DecodeResultNode *next;
+    DecodeResult             result;
+} DecodeResultNode;
+
+/* ---- Job queue (input) ----
+ * R167-B: DecodeResultNode is the first field so ready_queue_push can take
+ * &job->node and decode_pipeline_poll can free((DecodeJob *)node). This
+ * eliminates a second malloc that previously caused permanent LOADING hangs
+ * when the result-node allocation failed after a successful job alloc. */
 typedef struct DecodeJob {
+    DecodeResultNode  node;
     struct DecodeJob *next;
     void             *raw_data;  /* owned by decode pipeline */
     u32               raw_size;
@@ -30,12 +41,6 @@ typedef struct {
     AsyncMutex mutex;
     AsyncCond  cond;
 } DecodeInputQueue;
-
-/* ---- Ready queue (completed results) ---- */
-typedef struct DecodeResultNode {
-    struct DecodeResultNode *next;
-    DecodeResult             result;
-} DecodeResultNode;
 
 typedef struct {
     DecodeResultNode *head;
@@ -185,9 +190,15 @@ static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *
 /* R104-1: Priority-ordered insertion (lower value = higher priority).
  * Matches the async loader's min-heap ordering so that high-priority textures
  * are decoded first even when multiple I/O workers submit out of priority
- * order.  For queues <= 256 entries, a linear scan is faster than a heap. */
-static void input_queue_push(DecodeJob *job) {
+ * order.  For queues <= 256 entries, a linear scan is faster than a heap.
+ * R167-A: Enforce DECODE_INPUT_CAP — reject when full so raw image bytes
+ * cannot accumulate unboundedly when I/O outpaces decode workers. */
+static bool input_queue_push(DecodeJob *job) {
     async_mutex_lock(&g_decode.input.mutex);
+    if (g_decode.input.count >= DECODE_INPUT_CAP) {
+        async_mutex_unlock(&g_decode.input.mutex);
+        return false;
+    }
     job->next = NULL;
     if (!g_decode.input.head ||
         job->priority < g_decode.input.head->priority) {
@@ -205,6 +216,7 @@ static void input_queue_push(DecodeJob *job) {
     g_decode.input.count++;
     async_cond_broadcast(&g_decode.input.cond);
     async_mutex_unlock(&g_decode.input.mutex);
+    return true;
 }
 
 static DecodeJob *input_queue_pop(void) {
@@ -241,26 +253,20 @@ static void decode_worker_run(void) {
         DecodeJob *job = input_queue_pop();
         if (!job) continue;
 
-        DecodeResultNode *node = (DecodeResultNode *)malloc(sizeof(DecodeResultNode));
-        if (!node) {
-            free(job->raw_data);
-            free(job);
-            continue;
-        }
+        /* R167-B: result lives inside the job — no second malloc. */
+        job->node.result.slot = job->slot;
+        job->node.result.request_id = job->request_id;
 
-        node->result.slot = job->slot;
-        node->result.request_id = job->request_id;
-
-        if (!decode_generate_mipchain((u8 *)job->raw_data, job->raw_size, &node->result)) {
-            node->result.data = NULL;
-            node->result.size = 0;
-            node->result.success = false;
+        if (!decode_generate_mipchain((u8 *)job->raw_data, job->raw_size, &job->node.result)) {
+            job->node.result.data = NULL;
+            job->node.result.size = 0;
+            job->node.result.success = false;
         }
 
         free(job->raw_data);
-        free(job);
+        job->raw_data = NULL;
 
-        ready_queue_push(node);
+        ready_queue_push(&job->node);
     }
 }
 
@@ -297,8 +303,38 @@ bool decode_pipeline_init(void) {
     async_mutex_init(&g_decode.ready.mutex);
 
     AsyncThreadFn fn = decode_worker_fn();
+    u32 started = 0;
     for (u32 i = 0; i < DECODE_WORKER_COUNT; i++) {
-        async_thread_create(&g_decode.threads[i], fn, NULL);
+        if (!async_thread_create(&g_decode.threads[i], fn, NULL)) {
+            LOG_ERROR("Decode pipeline: failed to create worker %u", i);
+            break;
+        }
+        started++;
+    }
+
+    if (started == 0) {
+        /* R167-C: No workers — tear down and fail init. */
+        atomic_store_explicit(&g_decode.running, false, memory_order_release);
+        async_mutex_destroy(&g_decode.input.mutex);
+        async_cond_destroy(&g_decode.input.cond);
+        async_mutex_destroy(&g_decode.ready.mutex);
+        memset(&g_decode, 0, sizeof(g_decode));
+        return false;
+    }
+
+    if (started < DECODE_WORKER_COUNT) {
+        /* Partial start: shut down the ones we created and fail cleanly. */
+        atomic_store_explicit(&g_decode.running, false, memory_order_release);
+        async_mutex_lock(&g_decode.input.mutex);
+        async_cond_broadcast(&g_decode.input.cond);
+        async_mutex_unlock(&g_decode.input.mutex);
+        for (u32 i = 0; i < started; i++)
+            async_thread_join(g_decode.threads[i]);
+        async_mutex_destroy(&g_decode.input.mutex);
+        async_cond_destroy(&g_decode.input.cond);
+        async_mutex_destroy(&g_decode.ready.mutex);
+        memset(&g_decode, 0, sizeof(g_decode));
+        return false;
     }
 
     LOG_INFO("Decode pipeline initialized: %u workers", DECODE_WORKER_COUNT);
@@ -330,13 +366,13 @@ void decode_pipeline_shutdown(void) {
     g_decode.input.count = 0;
     async_mutex_unlock(&g_decode.input.mutex);
 
-    /* Free any completed results that were not polled. */
+    /* Free any completed results that were not polled (node is DecodeJob). */
     async_mutex_lock(&g_decode.ready.mutex);
     DecodeResultNode *node = g_decode.ready.head;
     while (node) {
         DecodeResultNode *next = node->next;
         if (node->result.data) free(node->result.data);
-        free(node);
+        free((DecodeJob *)node);
         node = next;
     }
     g_decode.ready.head = NULL;
@@ -357,6 +393,7 @@ bool decode_pipeline_submit(void *raw_data, u32 raw_size, u64 slot, u64 request_
     DecodeJob *job = (DecodeJob *)malloc(sizeof(DecodeJob));
     if (!job) return false;
 
+    memset(&job->node, 0, sizeof(job->node));
     job->raw_data = raw_data;
     job->raw_size = raw_size;
     job->slot = slot;
@@ -364,7 +401,11 @@ bool decode_pipeline_submit(void *raw_data, u32 raw_size, u64 slot, u64 request_
     job->priority = priority;
     job->next = NULL;
 
-    input_queue_push(job);
+    if (!input_queue_push(job)) {
+        /* R167-A: queue full — caller (async_loader) fails the request. */
+        free(job);
+        return false;
+    }
     return true;
 }
 
@@ -377,7 +418,8 @@ bool decode_pipeline_poll(DecodeResult *out_result) {
         g_decode.ready.head = node->next;
         if (!g_decode.ready.head) g_decode.ready.tail = NULL;
         *out_result = node->result;
-        free(node);
+        /* node is first field of DecodeJob — free the whole job. */
+        free((DecodeJob *)node);
     }
     async_mutex_unlock(&g_decode.ready.mutex);
 

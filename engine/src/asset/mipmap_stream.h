@@ -35,7 +35,7 @@ typedef struct {
     u64                level_request_id[MIPMAP_STREAM_MAX_LEVELS];
     void              *level_data[MIPMAP_STREAM_MAX_LEVELS];
     u32                level_size[MIPMAP_STREAM_MAX_LEVELS];
-    u32                level_offset[MIPMAP_STREAM_MAX_LEVELS];  /* byte offset in file */
+    u64                level_offset[MIPMAP_STREAM_MAX_LEVELS];  /* byte offset in file — R166-B: u64 to prevent truncation >4GB */
     /* Visibility tracking */
     f32                screen_coverage;   /* 0.0 - 1.0, fraction of screen */
     u32                desired_level;     /* computed from coverage */
@@ -64,8 +64,8 @@ typedef struct {
     /* GPU upload hook (optional) */
     MipmapUploadFn     upload_fn;
     void              *upload_ctx;
-    /* Request context pool: avoids per-request malloc (16 bytes per slot) */
-    u8                 req_pool[MIPMAP_STREAM_REQ_POOL_SIZE * 16];
+    /* Request context pool: avoids per-request malloc (24 bytes/slot for MipLoadReq) */
+    u8                 req_pool[MIPMAP_STREAM_REQ_POOL_SIZE * 24];
     u32                req_pool_next;  /* next free slot index */
 } MipmapStreamManager;
 

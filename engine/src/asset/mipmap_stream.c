@@ -5,11 +5,13 @@
 #include <math.h>
 
 /* Per-request context so the completion callback knows where the bytes go.
- * Allocated from an internal pool to avoid per-request malloc. */
+ * Allocated from an internal pool to avoid per-request malloc.
+ * R167-D: request_id lets the callback reject stale completions after invalidate. */
 typedef struct {
     MipmapStreamManager *mgr;
     u32 tex;
     u32 level;
+    u64 request_id;
 } MipLoadReq;
 
 /* ========================================================================
@@ -17,11 +19,15 @@ typedef struct {
  * ======================================================================== */
 
 /* Pool-based allocation for MipLoadReq: avoids malloc in hot path.
- * Each slot is 16 bytes (sizeof MipLoadReq on 64-bit). Falls back to
- * malloc when the pool is exhausted. */
+ * Slot stride must match sizeof(MipLoadReq) (24 bytes on 64-bit). Falls back
+ * to malloc when the pool is exhausted. */
+#define MIPMAP_REQ_SLOT_STRIDE 24
+_Static_assert(sizeof(MipLoadReq) <= MIPMAP_REQ_SLOT_STRIDE,
+               "MipLoadReq exceeds pool slot stride");
+
 static MipLoadReq *mip_alloc_req(MipmapStreamManager *mgr) {
     if (mgr->req_pool_next < MIPMAP_STREAM_REQ_POOL_SIZE) {
-        MipLoadReq *r = (MipLoadReq *)(mgr->req_pool + mgr->req_pool_next * 16);
+        MipLoadReq *r = (MipLoadReq *)(mgr->req_pool + mgr->req_pool_next * MIPMAP_REQ_SLOT_STRIDE);
         mgr->req_pool_next++;
         return r;
     }
@@ -35,23 +41,24 @@ static void mip_free_req(MipLoadReq *req) {
     const u8 *pool_start = req->mgr ? req->mgr->req_pool : NULL;
     if (pool_start) {
         const u8 *p = (const u8 *)req;
-        if (p >= pool_start && p < pool_start + MIPMAP_STREAM_REQ_POOL_SIZE * 16) {
+        if (p >= pool_start &&
+            p < pool_start + MIPMAP_STREAM_REQ_POOL_SIZE * MIPMAP_REQ_SLOT_STRIDE) {
             return; /* pool entry — no free needed */
         }
     }
     free(req);
 }
 
-/* Compute byte size of a single mipmap level */
+/* Compute byte size of a single mipmap level.
+ * R167-E: Return 0 on overflow instead of clamping to UINT32_MAX (which
+ * corrupted level_offset accumulation). Caller must reject registration. */
 static u32 mipmap_level_size(u32 width, u32 height, u32 level, u32 bpp) {
     u32 w = width >> level;
     u32 h = height >> level;
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    /* R145: Cast to usize before multiplication to prevent u32 overflow
-     * for textures > 32768x32768 (theoretical on current GPUs but defensive). */
     usize bytes = (usize)w * (usize)h * (usize)bpp;
-    return bytes > UINT32_MAX ? UINT32_MAX : (u32)bytes;
+    return bytes > UINT32_MAX ? 0u : (u32)bytes;
 }
 
 /* Compute desired mipmap level from screen coverage using integer exponent
@@ -91,7 +98,8 @@ static void mipmap_recompute_resident(StreamedTexture *tex) {
 
 /* Async completion callback. Runs on the main thread via async_loader_tick.
  * Ownership of `data` is transferred to us, so we either keep it (resident
- * cache) or free it. This is also where the real GPU upload is triggered. */
+ * cache) or free it. This is also where the real GPU upload is triggered.
+ * Cancelled requests invoke this with data=NULL (R167-D async_loader_cancel). */
 static void mipmap_load_callback(void *user_data, void *data, u32 size) {
     MipLoadReq *req = (MipLoadReq *)user_data;
     if (!req) { if (data) free(data); return; }
@@ -99,19 +107,26 @@ static void mipmap_load_callback(void *user_data, void *data, u32 size) {
     MipmapStreamManager *mgr = req->mgr;
     u32 t = req->tex;
     u32 l = req->level;
+    u64 req_id = req->request_id;
     mip_free_req(req);
 
     if (!mgr || t >= mgr->texture_count) { if (data) free(data); return; }
     StreamedTexture *tex = &mgr->textures[t];
     if (l >= tex->mip_count) { if (data) free(data); return; }
 
-    /* Load failure: release the byte reservation made at request time. */
+    /* R167-D: Reject stale completions after invalidate/re-request. */
+    if (req_id == 0 || tex->level_request_id[l] != req_id ||
+        tex->level_state[l] != MIPMAP_LEVEL_LOADING) {
+        if (data) free(data);
+        return;
+    }
+
+    /* Load failure / cancel: release the byte reservation made at request time. */
     if (!data || size == 0) {
-        if (tex->level_state[l] == MIPMAP_LEVEL_LOADING) {
-            tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
-            if (mgr->total_resident_bytes >= tex->level_size[l])
-                mgr->total_resident_bytes -= tex->level_size[l];
-        }
+        tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
+        tex->level_request_id[l] = 0;
+        if (mgr->total_resident_bytes >= tex->level_size[l])
+            mgr->total_resident_bytes -= tex->level_size[l];
         return;
     }
 
@@ -119,6 +134,7 @@ static void mipmap_load_callback(void *user_data, void *data, u32 size) {
     if (tex->level_data[l]) free(tex->level_data[l]);
     tex->level_data[l] = data;
     tex->level_state[l] = MIPMAP_LEVEL_RESIDENT;
+    tex->level_request_id[l] = 0;
     if (l < tex->resident_level) tex->resident_level = l;
     mgr->cache_hits++;
 
@@ -189,10 +205,19 @@ i32 mipmap_stream_register(MipmapStreamManager *mgr, const char *path,
     /* R145: Use usize for offset accumulation to prevent u32 overflow */
     usize offset = 0;
     for (u32 l = 0; l < mip_count; l++) {
-        tex->level_offset[l] = (u32)offset;
-        tex->level_size[l] = mipmap_level_size(width, height, l, bytes_per_pixel);
+        u32 sz = mipmap_level_size(width, height, l, bytes_per_pixel);
+        /* R167-E: Reject textures whose level size overflows u32 — clamping
+         * would corrupt subsequent level_offset values. */
+        if (sz == 0) {
+            LOG_ERROR("MipmapStream: level %u size overflow for '%s' (%ux%u bpp=%u)",
+                      l, path, width, height, bytes_per_pixel);
+            mgr->texture_count--;
+            return -1;
+        }
+        tex->level_offset[l] = (u64)offset;
+        tex->level_size[l] = sz;
         tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
-        offset += tex->level_size[l];
+        offset += sz;
     }
 
     LOG_DEBUG("MipmapStream: registered '%s' (%ux%u, %u mips, %u bpp)",
@@ -241,6 +266,7 @@ void mipmap_stream_update(MipmapStreamManager *mgr) {
             ctx->mgr = mgr;
             ctx->tex = t;
             ctx->level = desired;
+            ctx->request_id = 0;
 
             u64 req_id = async_loader_request_range_priority(
                 tex->path,
@@ -252,6 +278,7 @@ void mipmap_stream_update(MipmapStreamManager *mgr) {
             );
 
             if (req_id > 0) {
+                ctx->request_id = req_id;
                 tex->level_state[desired] = MIPMAP_LEVEL_LOADING;
                 tex->level_request_id[desired] = req_id;
                 mgr->load_requests++;
@@ -310,6 +337,7 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
         ctx->mgr = mgr;
         ctx->tex = (u32)tex_idx;
         ctx->level = level;
+        ctx->request_id = 0;
 
         u64 req_id = async_loader_request_range_priority(
             tex->path,
@@ -321,6 +349,7 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
         );
         if (req_id == 0) { mip_free_req(ctx); return false; }
 
+        ctx->request_id = req_id;
         tex->level_state[level] = MIPMAP_LEVEL_LOADING;
         tex->level_request_id[level] = req_id;
         mgr->load_requests++;
@@ -372,8 +401,17 @@ void mipmap_stream_invalidate(MipmapStreamManager *mgr, i32 tex_idx) {
     if (!tex->active) return;
 
     for (u32 l = 0; l < tex->mip_count; l++) {
-        if (tex->level_state[l] == MIPMAP_LEVEL_RESIDENT ||
-            tex->level_state[l] == MIPMAP_LEVEL_LOADING) {
+        u64 inflight = 0;
+        if (tex->level_state[l] == MIPMAP_LEVEL_LOADING && tex->level_request_id[l] != 0) {
+            /* Mark stale BEFORE cancel so the cancel callback (NULL data) does
+             * not double-subtract the budget reservation. */
+            inflight = tex->level_request_id[l];
+            if (mgr->total_resident_bytes >= tex->level_size[l])
+                mgr->total_resident_bytes -= tex->level_size[l];
+            tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
+            tex->level_request_id[l] = 0;
+            async_loader_cancel(inflight);
+        } else if (tex->level_state[l] == MIPMAP_LEVEL_RESIDENT) {
             if (mgr->total_resident_bytes >= tex->level_size[l])
                 mgr->total_resident_bytes -= tex->level_size[l];
         }

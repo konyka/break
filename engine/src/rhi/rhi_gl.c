@@ -921,6 +921,20 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
     gl_cmd_draw_indexed(cmd, index_count, instance_count);
 }
 
+void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
+                           u32 draw_count, u32 stride) {
+    GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, cmd_buf);
+    if (!bd) return;
+    if (g_gl_indirect_buf != bd->gl_buf) {
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bd->gl_buf);
+        g_gl_indirect_buf = bd->gl_buf;
+    }
+    /* Match gl_cmd_draw topology (TRIANGLE_LIST / DrawArraysInstanced). */
+    glMultiDrawArraysIndirect(GL_TRIANGLES,
+                              (const void *)(uintptr_t)offset,
+                              (GLsizei)draw_count, (GLsizei)stride);
+}
+
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                                    u32 draw_count, u32 stride) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, cmd_buf);

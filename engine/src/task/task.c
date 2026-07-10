@@ -97,11 +97,20 @@ static _Thread_local i32 tls_worker_id = -1;
  * Chase-Lev Work-Stealing Deque
  * ============================================================ */
 
-static void deque_init(WorkStealDeque *dq, u32 capacity) {
+static bool deque_init(WorkStealDeque *dq, u32 capacity) {
     dq->capacity = capacity;
     dq->buffer = (Task **)calloc(capacity, sizeof(Task *));
+    /* R166-A: calloc failure leaves buffer NULL — subsequent push/steal/pop
+     * operations dereference NULL, causing crash. */
+    if (!dq->buffer) {
+        dq->capacity = 0;
+        atomic_store_explicit(&dq->top, 0, memory_order_relaxed);
+        atomic_store_explicit(&dq->bottom, 0, memory_order_relaxed);
+        return false;
+    }
     atomic_store_explicit(&dq->top, 0, memory_order_relaxed);
     atomic_store_explicit(&dq->bottom, 0, memory_order_relaxed);
+    return true;
 }
 
 static void deque_destroy(WorkStealDeque *dq) {
@@ -506,7 +515,22 @@ TaskSystem *task_system_create(i32 worker_count) {
         w->backoff_ns = 100;
         atomic_store_explicit(&w->active, false, memory_order_relaxed);
         for (int p = 0; p < TASK_PRIORITY_COUNT; p++) {
-            deque_init(&w->queues[p], DEQUE_CAPACITY);
+            if (!deque_init(&w->queues[p], DEQUE_CAPACITY)) {
+                /* R166-A: calloc failure — destroy already-initialized deques and abort */
+                LOG_FATAL("Task system: deque_init OOM at worker %d priority %d", i, p);
+                for (i32 j = 0; j <= i; j++) {
+                    Worker *wj = &ts->workers[j];
+                    for (int q = 0; q < TASK_PRIORITY_COUNT; q++) {
+                        if (j == i && q == p) break;
+                        deque_destroy(&wj->queues[q]);
+                    }
+                }
+                platform_mutex_destroy(ts->submit_mutex_storage);
+                platform_mutex_destroy(ts->pool_mutex_storage);
+                free(ts);
+                g_task_system = NULL;
+                return NULL;
+            }
         }
     }
 
@@ -532,7 +556,14 @@ TaskSystem *task_system_create(i32 worker_count) {
             }
             ts->worker_count = (u32)i;
             if (ts->worker_count == 0) {
+                /* R167-G: No workers at all — fail create instead of returning
+                 * a degraded handle that silently runs everything on the main thread. */
                 LOG_FATAL("Task system: failed to create any worker threads");
+                platform_mutex_destroy(ts->submit_mutex_storage);
+                platform_mutex_destroy(ts->pool_mutex_storage);
+                free(ts);
+                g_task_system = NULL;
+                return NULL;
             }
             break;
         }

@@ -47,6 +47,8 @@ typedef struct {
 
     /* CPU readback (for draw filtering, uses previous frame result) */
     u32        *visibility_readback;
+    /* R167-F: Skip staging readback until first GPU copy has completed. */
+    bool        staging_valid;
 } OcclusionCullSystem;
 
 bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u32 height);

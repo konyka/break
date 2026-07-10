@@ -170,6 +170,7 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
 
     sys->object_count = 0;
     sys->enabled = true;
+    sys->staging_valid = false;
 
     LOG_INFO("OcclusionCull: initialized (%ux%u, %u mip levels, max %u objects)",
              sys->hi_z_width, sys->hi_z_height, sys->hi_z_levels, OCCLUSION_MAX_OBJECTS);
@@ -313,11 +314,15 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
 
     u32 count = object_count > OCCLUSION_MAX_OBJECTS ? OCCLUSION_MAX_OBJECTS : object_count;
 
-    /* ---- Readback from staging buffer (1-frame latency, non-blocking) — R87-1 ---- */
-    void *mapped = rhi_buffer_map(sys->device, sys->readback_staging);
-    if (mapped) {
-        memcpy(sys->visibility_readback, mapped, count * sizeof(u32));
-        rhi_buffer_unmap(sys->device, sys->readback_staging);
+    /* ---- Readback from staging buffer (1-frame latency, non-blocking) — R87-1 ----
+     * R167-F: Skip until the first GPU→staging copy has completed; otherwise
+     * zero-initialized staging marks every object occluded on frame 0. */
+    if (sys->staging_valid) {
+        void *mapped = rhi_buffer_map(sys->device, sys->readback_staging);
+        if (mapped) {
+            memcpy(sys->visibility_readback, mapped, count * sizeof(u32));
+            rhi_buffer_unmap(sys->device, sys->readback_staging);
+        }
     }
 
     /* ---- Dispatch new cull pass ---- */
@@ -358,6 +363,8 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
 
     /* R87-1: GPU-side copy to staging buffer (avoids glMapBufferRange stall next frame). */
     rhi_cmd_copy_buffer(cmd, sys->visibility_buffer, sys->readback_staging, count * sizeof(u32));
+    /* R167-F: Next frame may safely read staging (1-frame latency). */
+    sys->staging_valid = true;
 
     sys->object_count = count;
 }
