@@ -47,6 +47,7 @@ typedef struct {
     bool   has_index;
     bool   alpha_blend;
     bool   wireframe;
+    bool   point_list;   /* R168-C: GL_POINTS + PROGRAM_POINT_SIZE */
 } GLPipelineData;
 
 typedef struct {
@@ -92,6 +93,9 @@ typedef struct {
 /* Cached vertex stride from the most recently bound pipeline.
  * Avoids the O(4096) linear scan of device slots in bind_vertex_buffer. */
 static u32 g_cached_vertex_stride = 32;  /* default: 8 floats * sizeof(f32) */
+/* R168-C: Draw mode of the currently bound graphics pipeline. */
+static GLenum g_gl_draw_mode = GL_TRIANGLES;
+static bool   g_gl_point_size_enabled = false;
 
 /* R76-2: File-scope viewport cache — shared by all viewport-setting paths.
  * Previously g_gl_vp was a static local in gl_cmd_set_viewport, invisible to
@@ -479,6 +483,14 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
         glPolygonMode(GL_FRONT_AND_BACK, pd->wireframe ? GL_LINE : GL_FILL);
         g_gl_wireframe = pd->wireframe;
     }
+    /* R168-C: Track draw mode + PROGRAM_POINT_SIZE for point sprites. */
+    g_gl_draw_mode = pd->point_list ? GL_POINTS : GL_TRIANGLES;
+    if (pd->point_list != g_gl_point_size_enabled) {
+        if (pd->point_list) glEnable(GL_PROGRAM_POINT_SIZE);
+        else                glDisable(GL_PROGRAM_POINT_SIZE);
+        g_gl_point_size_enabled = pd->point_list;
+    }
+    g_cached_vertex_stride = pd->vertex_stride;
 }
 
 static void gl_cmd_set_viewport(void *cmd, f32 x, f32 y, f32 w, f32 h) {
@@ -489,7 +501,7 @@ static void gl_cmd_set_viewport(void *cmd, f32 x, f32 y, f32 w, f32 h) {
 
 static void gl_cmd_draw(void *cmd, u32 vertex_count, u32 instance_count) {
     (void)cmd;
-    glDrawArraysInstanced(GL_TRIANGLES, 0, (GLsizei)vertex_count, (GLsizei)instance_count);
+    glDrawArraysInstanced(g_gl_draw_mode, 0, (GLsizei)vertex_count, (GLsizei)instance_count);
 }
 
 static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) {
@@ -790,6 +802,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->vertex_stride  = stride;
     pd->alpha_blend    = desc->alpha_blend;
     pd->wireframe      = desc->wireframe;
+    pd->point_list     = desc->point_list;
     dev->slots[idx].ptr  = pd;
     dev->slots[idx].type = RHI_RES_PIPELINE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -929,8 +942,8 @@ void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bd->gl_buf);
         g_gl_indirect_buf = bd->gl_buf;
     }
-    /* Match gl_cmd_draw topology (TRIANGLE_LIST / DrawArraysInstanced). */
-    glMultiDrawArraysIndirect(GL_TRIANGLES,
+    /* R168-C: Use bound pipeline's draw mode (POINTS for particles). */
+    glMultiDrawArraysIndirect(g_gl_draw_mode,
                               (const void *)(uintptr_t)offset,
                               (GLsizei)draw_count, (GLsizei)stride);
 }
@@ -1656,7 +1669,10 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     (void)cmd;
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    /* R168-B: Include COMMAND_BARRIER so compute writes to DrawIndirect /
+     * DrawElementsIndirect buffers are visible to subsequent indirect draws. */
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
+                    | GL_TEXTURE_FETCH_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 }
 
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only) {

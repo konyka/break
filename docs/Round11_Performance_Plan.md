@@ -3510,6 +3510,20 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**（排除需显示的 `test_vulkan`）；详见 [Implementation_Status.md](./Implementation_Status.md) R167。
 
+## R168：async 槽位串槽 + indirect 屏障 + 粒子 POINT（已完成）
+
+### [x] R168-A async_loader 仅 UNLOADED 复用
+- [x] submit 拒绝 CANCELLED/READY/LOADING
+- [x] cancel/skip/finalize-fail → UNLOADED
+
+### [x] R168-B compute→indirect 屏障
+- [x] GL `GL_COMMAND_BARRIER_BIT`；VK `INDIRECT_COMMAND_READ` + `DRAW_INDIRECT` stage
+
+### [x] R168-C 粒子 POINT_LIST
+- [x] `RHIPipelineDesc.point_list`；VK/GL 拓扑；`GL_PROGRAM_POINT_SIZE`
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 ```bash

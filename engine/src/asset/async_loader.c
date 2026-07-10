@@ -161,11 +161,14 @@ static bool async_finalize(u32 slot_idx, AssetState final_state) {
     if (!atomic_compare_exchange_strong_explicit(
             &req->state, &expected, (u32)final_state,
             memory_order_acq_rel, memory_order_acquire)) {
-        /* State was changed to ASSET_CANCELLED — free data and skip */
+        /* State was changed to ASSET_CANCELLED — free data and release slot.
+         * R168-A: Must return to UNLOADED so the slot can be safely reused;
+         * leaving CANCELLED allowed submit to overwrite an in-flight worker. */
         if (req->data) {
             free(req->data);
             req->data = NULL;
         }
+        atomic_store_explicit(&req->state, (u32)ASSET_UNLOADED, memory_order_release);
         atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
         return false;
     }
@@ -202,7 +205,10 @@ static void io_worker_run(void) {
         if (!atomic_compare_exchange_strong_explicit(
                 &req->state, &expected, (u32)ASSET_LOADING,
                 memory_order_acq_rel, memory_order_acquire)) {
-            /* State changed (cancelled), skip */
+            /* R168-A: Release CANCELLED (or other non-LOADING) slot to UNLOADED. */
+            if (expected == (u32)ASSET_CANCELLED) {
+                atomic_store_explicit(&req->state, (u32)ASSET_UNLOADED, memory_order_release);
+            }
             atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
             continue;
         }
@@ -397,8 +403,12 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
                % ASYNC_MAX_REQUESTS;
 
     u32 st = atomic_load(&g_loader.requests[slot].state);
-    if (st == (u32)ASSET_LOADING) {
-        LOG_ERROR("Async loader: slot in use, request dropped: %s", path);
+    /* R168-A: Only UNLOADED slots are reusable. CANCELLED/READY/FAILED/LOADING
+     * all mean an in-flight or unconsumed request still owns the slot — reusing
+     * them lets a late worker write another request's file bytes into the new
+     * owner's callback (data corruption after invalidate+reload). */
+    if (st != (u32)ASSET_UNLOADED) {
+        LOG_ERROR("Async loader: slot in use (state=%u), request dropped: %s", st, path);
         return 0;
     }
 

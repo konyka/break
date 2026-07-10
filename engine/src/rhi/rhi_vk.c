@@ -1992,7 +1992,9 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
 
     VkPipelineInputAssemblyStateCreateInfo assembly = {0};
     assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    /* R168-C: POINT_LIST for particle point sprites; default TRIANGLE_LIST. */
+    assembly.topology = desc->point_list ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                                         : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     assembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineViewportStateCreateInfo viewport = {0};
@@ -3237,12 +3239,15 @@ void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     /* Cover uniform-texel reads in the fragment stage too: GPU light binning
      * writes the cluster grid as a storage buffer in compute, then the PBR
-     * fragment shader samples it as a uniform texel buffer. */
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_HOST_READ_BIT;
+     * fragment shader samples it as a uniform texel buffer.
+     * R168-B: Also cover indirect command reads (particle/gpucull draw_indirect). */
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT
+                          | VK_ACCESS_HOST_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
     vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
-            | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+            | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT
+            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
         0, 1, &barrier, 0, NULL, 0, NULL);
 }
 

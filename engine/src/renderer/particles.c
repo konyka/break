@@ -108,6 +108,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     rpdesc.uses_storage = true;
     rpdesc.alpha_blend = true;
     rpdesc.depth_write_disable = true;
+    rpdesc.point_list = true; /* R168-C: POINT_LIST + gl_PointSize / PointCoord */
     ps->render_pipeline = rhi_pipeline_create(dev, &rpdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);

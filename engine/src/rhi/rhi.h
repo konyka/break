@@ -74,6 +74,7 @@ typedef struct {
     bool uses_storage;
     bool is_shadow_depth;
     bool wireframe;
+    bool point_list;             /* R168-C: POINT_LIST topology (particles) */
     /* Dedicated Vulkan push-constant layouts (see rhi_pipeline_get_uniform_location).
      * Ignored by the GL backend, which reflects uniform names directly. */
     bool terrain_layout;
