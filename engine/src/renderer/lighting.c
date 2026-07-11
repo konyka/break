@@ -62,13 +62,17 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
     ls->light_data_buf[1] = rhi_buffer_create(dev, &light_desc);
 
     usize grid_data_size = (CLUSTER_COUNT * 2 + CLUSTER_COUNT * LIGHT_MAX_PER_CLUSTER) * sizeof(u32);
+    /* R192-B: grid is GPU-written (cluster cull) / FS texelFetch — zero-init
+     * → DEVICE_LOCAL. light_data stays HOST_VISIBLE (per-frame host upload). */
+    void *grid_zero = calloc(1, grid_data_size);
     RHIBufferDesc grid_desc = {
         .usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE,
         .size = grid_data_size,
-        .initial_data = NULL,
+        .initial_data = grid_zero,
     };
     ls->light_grid_buf[0] = rhi_buffer_create(dev, &grid_desc);
     ls->light_grid_buf[1] = rhi_buffer_create(dev, &grid_desc);
+    free(grid_zero);
 
     ls->cluster_cull_pipeline = RHI_HANDLE_NULL;
     ls->gpu_cull = false;

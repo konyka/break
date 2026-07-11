@@ -3807,6 +3807,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R192：INDEX create 清 IBO 缓存 + light_grid DEVICE_LOCAL（已完成）
+
+### [x] R192-A INDEX create 清 g_gl_bound_ibo
+- [x] ELEMENT_ARRAY 解绑后 `g_gl_bound_ibo = 0`
+
+### [x] R192-B light_grid DEVICE_LOCAL
+- [x] VK `gpu_storage` 允许 STORAGE|TEXEL
+- [x] grid 零初始化；`light_data` 仍 HOST_VISIBLE
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

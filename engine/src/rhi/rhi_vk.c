@@ -2571,12 +2571,13 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
 
     /* R181/R184: DEVICE_LOCAL when initial_data is provided for:
      *  - static VERTEX/INDEX meshes
-     *  - GPU-only STORAGE (±INDIRECT) buffers (e.g. particle SSBOs)
-     * Dynamic VBOs (font, no initial_data) and UNIFORM/TEXEL stay host-visible. */
+     *  - GPU-only STORAGE (±INDIRECT, ±TEXEL) buffers (e.g. particle SSBOs,
+     *    light_grid TEXEL|STORAGE). UNIFORM and dynamic VERTEX/INDEX stay HV.
+     * R192-B: TEXEL no longer excludes gpu_storage (grid is CS-write/FS-read). */
     bool mesh_only = (desc->usage & (RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) != 0
         && (desc->usage & ~(RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
     bool gpu_storage = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0
-        && (desc->usage & (RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL
+        && (desc->usage & (RHI_BUFFER_USAGE_UNIFORM
                            | RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
     bool device_local = desc->initial_data != NULL && (mesh_only || gpu_storage);
     if (device_local)

@@ -863,8 +863,10 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     glBufferData(target, (GLsizeiptr)desc->size, desc->initial_data, usage);
     glBindBuffer(target, 0);
     /* R191-A: create bypasses cached binds — ARRAY_BUFFER cache would still
-     * think the previous buffer is bound after we unbound to 0. */
+     * think the previous buffer is bound after we unbound to 0.
+     * R192-A: same for ELEMENT_ARRAY / g_gl_bound_ibo (INDEX create). */
     if (target == GL_ARRAY_BUFFER) g_gl_bound_array_buffer = 0;
+    if (target == GL_ELEMENT_ARRAY_BUFFER) g_gl_bound_ibo = 0;
 
     GLuint tbo_tex = 0;
     if (is_texel) {
