@@ -155,6 +155,8 @@ static bool g_gl_scissor_enabled = false;
  * creation ever happens during rendering (currently init-only, but
  * defensive against future hot-reload). */
 static GLuint g_gl_vao = 0;
+/* R188: Program cache at file scope so destroy can invalidate it. */
+static GLuint g_gl_program = 0;
 
 /* R86-3: VBO/IBO bind cache — avoids redundant glBindVertexBuffer and
  * glBindBuffer(GL_ELEMENT_ARRAY_BUFFER) calls in draw loops. */
@@ -462,8 +464,7 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
      * from the last bound pipeline. Eliminates redundant driver validation. */
     static bool g_gl_blend_enabled = false;
     static bool g_gl_wireframe     = false;
-    static GLuint g_gl_program     = 0;
-    /* R80-1: g_gl_vao moved to file scope — shared with rhi_pipeline_create. */
+    /* R188: g_gl_program moved to file scope — shared with rhi_pipeline_destroy. */
 
     if (pd->gl_program != g_gl_program) {
         glUseProgram(pd->gl_program);
@@ -823,6 +824,14 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
 void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     GLPipelineData *pd = (GLPipelineData *)rhi_get_resource(dev, pipe);
     if (!pd) return;
+    /* R188: Invalidate program/VAO caches before delete — name reuse after
+     * resize rebuild would otherwise skip glUseProgram/glBindVertexArray. */
+    if (g_gl_program == pd->gl_program) g_gl_program = 0;
+    if (g_gl_vao == pd->gl_vao) {
+        g_gl_vao = 0;
+        g_gl_bound_vbo = 0;
+        g_gl_bound_ibo = 0;
+    }
     glDeleteProgram(pd->gl_program);
     glDeleteVertexArrays(1, &pd->gl_vao);
     if (pd->gl_vbo) glDeleteBuffers(1, &pd->gl_vbo);
@@ -881,6 +890,7 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     if (g_gl_bound_vbo == bd->gl_buf) g_gl_bound_vbo = 0;
     if (g_gl_bound_ibo == bd->gl_buf) g_gl_bound_ibo = 0;
     if (g_gl_indirect_buf == bd->gl_buf) g_gl_indirect_buf = 0;
+    if (g_gl_param_buf == bd->gl_buf) g_gl_param_buf = 0; /* R188: PARAMETER_BUFFER */
     if (g_gl_bound_array_buffer == bd->gl_buf) g_gl_bound_array_buffer = 0;
     if (bd->tbo_tex) {
         for (u32 i = 0; i < 16; i++) {

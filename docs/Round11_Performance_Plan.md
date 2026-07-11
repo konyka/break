@@ -3763,7 +3763,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R188：GL param/program/VAO 销毁缓存失效（已完成）
+
+### [x] R188-A g_gl_param_buf
+- [x] buffer_destroy 时清 PARAMETER_BUFFER 缓存
+
+### [x] R188-B pipeline_destroy
+- [x] 清 g_gl_program / g_gl_vao（及 VBO/IBO 绑定缓存）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 
