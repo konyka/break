@@ -233,6 +233,11 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const
 /* R171: Recorded GPU clear (vkCmdFillBuffer / glClearBufferSubData). Host
  * memcpy updates are NOT ordered between dispatches in the same Vulkan CB. */
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value);
+/* R183: Record a host→GPU buffer write into the command buffer (ordered vs
+ * later dispatches). Prefer over rhi_buffer_update when the same buffer is
+ * rewritten multiple times in one CB (e.g. CSM cascade visibility). */
+void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
+                           const void *data, usize size);
 
 /* ---- Material textures (binds albedo/mr/normal/emissive + shadow in one descriptor set) ---- */
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,

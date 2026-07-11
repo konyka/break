@@ -64,6 +64,11 @@ void indirect_draw_upload(IndirectDrawSystem *sys, RHIDevice *dev,
 void indirect_draw_upload_visibility(IndirectDrawSystem *sys, RHIDevice *dev,
                                      const u32 *flags, u32 count);
 
+/* R183: Same as upload_visibility but records the write into `cmd` so multiple
+ * cascade/face uploads in one CB stay ordered with their compact dispatches. */
+void indirect_draw_upload_visibility_cmd(IndirectDrawSystem *sys, RHIDevice *dev,
+                                         RHICmdBuffer *cmd, const u32 *flags, u32 count);
+
 /* GPU compact: read visibility, append visible commands, atomically increment count.
  * Includes a memory barrier after the compute dispatch. */
 void indirect_draw_compact(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);

@@ -11,8 +11,11 @@ void skeleton_init(Skeleton *sk, RHIDevice *dev) {
 }
 
 void skeleton_shutdown(Skeleton *sk) {
-    if (sk->device && rhi_handle_valid(sk->joint_buf)) {
-        rhi_buffer_destroy(sk->device, sk->joint_buf);
+    if (sk->device) {
+        if (rhi_handle_valid(sk->joint_buf[0]))
+            rhi_buffer_destroy(sk->device, sk->joint_buf[0]);
+        if (rhi_handle_valid(sk->joint_buf[1]))
+            rhi_buffer_destroy(sk->device, sk->joint_buf[1]);
     }
     memset(sk, 0, sizeof(*sk));
 }
@@ -25,11 +28,12 @@ void skeleton_set_joints(Skeleton *sk, u32 count, const u32 *parents, const Mat4
         sk->current_pose[i] = mat4_identity();
     }
 
-    if (!rhi_handle_valid(sk->joint_buf)) {
+    if (!rhi_handle_valid(sk->joint_buf[0])) {
         RHIBufferDesc desc = {0};
         desc.usage = RHI_BUFFER_USAGE_TEXEL;
         desc.size = SKELETON_MAX_JOINTS * sizeof(Mat4);
-        sk->joint_buf = rhi_buffer_create(sk->device, &desc);
+        sk->joint_buf[0] = rhi_buffer_create(sk->device, &desc);
+        sk->joint_buf[1] = rhi_buffer_create(sk->device, &desc);
     }
 }
 
@@ -228,9 +232,15 @@ void skeleton_compute_world_transforms(Skeleton *sk,
 }
 
 void skeleton_upload(Skeleton *sk) {
-    if (!rhi_handle_valid(sk->joint_buf)) return;
-    rhi_buffer_update(sk->device, sk->joint_buf, sk->current_pose,
+    RHIBuffer slot = skeleton_joint_slot(sk);
+    if (!rhi_handle_valid(slot)) return;
+    rhi_buffer_update(sk->device, slot, sk->current_pose,
         sk->joint_count * sizeof(Mat4));
+}
+
+RHIBuffer skeleton_joint_slot(const Skeleton *sk) {
+    if (!sk || !sk->device) return RHI_HANDLE_NULL;
+    return sk->joint_buf[rhi_frame_index(sk->device) & 1u];
 }
 
 void anim_clip_init(AnimClip *clip, f32 duration, bool loop) {

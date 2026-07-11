@@ -183,7 +183,7 @@ typedef struct {
     RHIPipeline   wire_pipeline;
     RHIPipeline   wire_instanced_pipeline;
     RHIPipeline   wire_skinned_pipeline;
-    RHIBuffer     instance_buf;
+    RHIBuffer     instance_buf[2]; /* R183: dual-slot vs in-flight instanced VS */
     RHISampler    sampler;
     RHISampler    nearest_sampler;
     RHITexture    fallback_tex;
@@ -451,7 +451,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
         RHIBufferDesc bdesc = {0};
         bdesc.usage = RHI_BUFFER_USAGE_TEXEL;
         bdesc.size = 10000 * 4 * 4 * sizeof(f32);
-        rs->instance_buf = rhi_buffer_create(rs->device, &bdesc);
+        rs->instance_buf[0] = rhi_buffer_create(rs->device, &bdesc);
+        rs->instance_buf[1] = rhi_buffer_create(rs->device, &bdesc);
     }
 
     {
@@ -611,7 +612,8 @@ static void render_shutdown(RenderState *rs) {
     skeleton_shutdown(&rs->skeleton);
     if (rhi_handle_valid(rs->instanced_pipeline)) rhi_pipeline_destroy(rs->device, rs->instanced_pipeline);
     if (rhi_handle_valid(rs->wire_instanced_pipeline)) rhi_pipeline_destroy(rs->device, rs->wire_instanced_pipeline);
-    if (rhi_handle_valid(rs->instance_buf)) rhi_buffer_destroy(rs->device, rs->instance_buf);
+    if (rhi_handle_valid(rs->instance_buf[0])) rhi_buffer_destroy(rs->device, rs->instance_buf[0]);
+    if (rhi_handle_valid(rs->instance_buf[1])) rhi_buffer_destroy(rs->device, rs->instance_buf[1]);
     if (rhi_handle_valid(rs->clustered_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_pipeline);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
@@ -3742,7 +3744,7 @@ u32 culled_count = 0;
                             g_vis_flags[obj_idx] = frustum_test_sphere(&shadow_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
                             obj_idx++;
                         }
-                        indirect_draw_upload_visibility(&indirect_sys, render.device, g_vis_flags, vis_count);
+                        indirect_draw_upload_visibility_cmd(&indirect_sys, render.device, cmd, g_vis_flags, vis_count);
                     }
                     indirect_draw_compact(&indirect_sys, render.device, cmd);
                     indirect_draw_execute(&indirect_sys, render.device);
@@ -3827,7 +3829,7 @@ u32 culled_count = 0;
                                     g_vis_flags[obj_idx] = frustum_test_sphere(&pface_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
                                     obj_idx++;
                                 }
-                                indirect_draw_upload_visibility(&indirect_sys, render.device, g_vis_flags, vis_count);
+                                indirect_draw_upload_visibility_cmd(&indirect_sys, render.device, cmd, g_vis_flags, vis_count);
                                 indirect_draw_compact(&indirect_sys, render.device, cmd);
                                 indirect_draw_execute(&indirect_sys, render.device);
                                 draw_calls++;
@@ -4024,7 +4026,7 @@ u32 culled_count = 0;
                     SkinnedMesh *sm = &scene.skinned_meshes[si];
                     Material *mat = (sm->material_idx < scene.material_count) ? &scene.materials[sm->material_idx] : NULL;
                     bind_material(cmd, &render, mat, &scene);
-                    rhi_cmd_bind_texel_buffers(cmd, render.skeleton.joint_buf, render.skeleton.joint_buf);
+                    rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                     rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
                     if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
                         rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0);
@@ -4036,7 +4038,7 @@ u32 culled_count = 0;
                 }
             } else if (rhi_handle_valid(render.skinned_vbo)) {
                 bind_material(cmd, &render, NULL, &scene);
-                rhi_cmd_bind_texel_buffers(cmd, render.skeleton.joint_buf, render.skeleton.joint_buf);
+                rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                 rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
                 rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0);
                 rhi_cmd_draw_indexed(cmd, render.skinned_index_count, 1);
@@ -4710,7 +4712,8 @@ u32 culled_count = 0;
             }
 
             if (instance_count > 0) {
-                rhi_buffer_update(render.device, render.instance_buf, instance_data, instance_count * 64);
+                RHIBuffer inst_slot = render.instance_buf[rhi_frame_index(render.device) & 1u];
+                rhi_buffer_update(render.device, inst_slot, instance_data, instance_count * 64);
                 rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ? render.wire_instanced_pipeline : render.instanced_pipeline);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_view, &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_proj, &proj.e[0][0]);
@@ -4724,7 +4727,7 @@ u32 culled_count = 0;
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
                     bind_material(cmd, &render, mat, &scene);
-                    rhi_cmd_bind_texel_buffers(cmd, render.instance_buf, render.instance_buf);
+                    rhi_cmd_bind_texel_buffers(cmd, inst_slot, inst_slot);
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
                         rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);

@@ -18,7 +18,7 @@ typedef struct {
      * (avoids ~16KB stack allocation per evaluate call). */
     Mat4  _local_poses[SKELETON_MAX_JOINTS];
     Mat4  _world_poses[SKELETON_MAX_JOINTS];
-    RHIBuffer joint_buf;
+    RHIBuffer joint_buf[2]; /* R183: dual-slot vs in-flight skinned VS read */
     RHIDevice *device;
 } Skeleton;
 
@@ -64,6 +64,9 @@ void skeleton_compute_world_transforms(Skeleton *sk,
                                        const Vec3 *local_pos, const Quat *local_rot, const Vec3 *local_scale,
                                        Mat4 *out_world);
 void skeleton_upload(Skeleton *sk);
+
+/* Current-frame joint texel buffer (rhi_frame_index & 1). */
+RHIBuffer skeleton_joint_slot(const Skeleton *sk);
 void anim_clip_init(AnimClip *clip, f32 duration, bool loop);
 void anim_clip_add_channel(AnimClip *clip, u32 joint_index, AnimPathType path,
                             u32 keyframe_count, const f32 *times, const f32 *values);

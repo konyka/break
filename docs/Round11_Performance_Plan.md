@@ -3708,7 +3708,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R183：CB 有序 visibility + joint/instance 双槽（已完成）
+
+### [x] R183-A cascade visibility 有序上传
+- [x] `rhi_cmd_update_buffer` + `indirect_draw_upload_visibility_cmd`
+
+### [x] R183-B joint/instance 双槽
+- [x] `joint_buf[2]` / `instance_buf[2]` + `rhi_frame_index&1`
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

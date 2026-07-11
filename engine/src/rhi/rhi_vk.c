@@ -5306,6 +5306,46 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     vkUnmapMemory(vk->device, bd->memory);
 }
 
+/* R183: Record host data into the CB so later dispatches see ordered writes
+ * (unlike rhi_buffer_update which memcpy's mapped memory immediately). */
+void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
+                           const void *data, usize size) {
+    (void)cmd;
+    if (!data || size == 0u) return;
+    VKBackend *vk = vk_backend(g_current_device);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    if (!bd) return;
+    if (offset + size > bd->size) {
+        if (offset >= bd->size) return;
+        size = bd->size - offset;
+    }
+    vk_suspend_pass_for_compute(vk);
+    VkCommandBuffer cb = vk->cmd_buffers[vk->current_frame];
+
+    /* vkCmdUpdateBuffer is limited to 65536 bytes and requires 4-byte align. */
+    if (size > 65536u || ((offset | size) & 3u) != 0u) {
+        LOG_WARN("VK: rhi_cmd_update_buffer requires 4-byte align and size<=65536");
+        return;
+    }
+    vkCmdUpdateBuffer(cb, bd->buffer, (VkDeviceSize)offset, (VkDeviceSize)size, data);
+
+    VkBufferMemoryBarrier to_shader = {0};
+    to_shader.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    to_shader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_shader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+                            | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    to_shader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_shader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_shader.buffer = bd->buffer;
+    to_shader.offset = offset;
+    to_shader.size = size;
+    vkCmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT
+            | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 1, &to_shader, 0, NULL);
+}
+
 /* R87-1: GPU-side buffer copy via vkCmdCopyBuffer (non-blocking). */
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
     (void)cmd;

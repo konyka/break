@@ -1579,6 +1579,23 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
                     | GL_BUFFER_UPDATE_BARRIER_BIT);
 }
 
+void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
+                           const void *data, usize size) {
+    (void)cmd;
+    if (!data || size == 0u) return;
+    extern RHIDevice *g_current_device;
+    GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
+    if (!bd) return;
+    if (offset + size > bd->size) {
+        if (offset >= bd->size) return;
+        size = bd->size - offset;
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT
+                    | GL_BUFFER_UPDATE_BARRIER_BIT);
+}
+
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
     (void)cmd;
     extern RHIDevice *g_current_device;

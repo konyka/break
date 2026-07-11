@@ -172,6 +172,15 @@ void indirect_draw_upload_visibility(IndirectDrawSystem *sys, RHIDevice *dev,
                              (usize)count * sizeof(u32));
 }
 
+void indirect_draw_upload_visibility_cmd(IndirectDrawSystem *sys, RHIDevice *dev,
+                                         RHICmdBuffer *cmd, const u32 *flags, u32 count) {
+    if (!sys || !sys->ready || !cmd || !flags || count == 0) return;
+    if (count > sys->max_draws) count = sys->max_draws;
+    /* R183: CB-ordered write — safe when the same slot is rewritten per cascade. */
+    rhi_cmd_update_buffer(cmd, indirect_draw_visibility_slot(sys, dev), 0, flags,
+                          (usize)count * sizeof(u32));
+}
+
 /* ========================================================================
  * GPU compact: dispatch compute shader to compact visible draws
  * ======================================================================== */
