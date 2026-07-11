@@ -3752,7 +3752,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R187：GL buffer 缓存失效 + 地形 VBO HOST_VISIBLE（已完成）
+
+### [x] R187-A destroy 缓存失效
+- [x] 清 VBO/IBO/indirect/array/TBO
+
+### [x] R187-B 地形 VBO
+- [x] 无 initial_data 保持 HOST_VISIBLE；IBO 仍 DEVICE_LOCAL
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

@@ -129,6 +129,8 @@ static GLuint g_gl_ssbo_cache[8] = {0};
  * calls and eliminates trailing unbinds between consecutive indirect draws. */
 static GLuint g_gl_indirect_buf = 0;
 static GLuint g_gl_param_buf = 0;
+/* R187: Hoisted so rhi_buffer_destroy can invalidate it. */
+static GLuint g_gl_bound_array_buffer = 0;
 
 /* R79-1: FBO bind cache — avoids redundant glBindFramebuffer calls on every
  * FBO switch. Point shadow rendering binds the same FBO 6× per light (once
@@ -875,6 +877,16 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     for (u32 i = 0; i < 8; i++) {
         if (g_gl_ssbo_cache[i] == bd->gl_buf) g_gl_ssbo_cache[i] = 0;
     }
+    /* R187: Also invalidate VBO/IBO/indirect/array caches and TBO tex units. */
+    if (g_gl_bound_vbo == bd->gl_buf) g_gl_bound_vbo = 0;
+    if (g_gl_bound_ibo == bd->gl_buf) g_gl_bound_ibo = 0;
+    if (g_gl_indirect_buf == bd->gl_buf) g_gl_indirect_buf = 0;
+    if (g_gl_bound_array_buffer == bd->gl_buf) g_gl_bound_array_buffer = 0;
+    if (bd->tbo_tex) {
+        for (u32 i = 0; i < 16; i++) {
+            if (g_tex_cache[i] == bd->tbo_tex) g_tex_cache[i] = 0;
+        }
+    }
     if (bd->tbo_tex) glDeleteTextures(1, &bd->tbo_tex);
     glDeleteBuffers(1, &bd->gl_buf);
     free(bd);
@@ -1507,8 +1519,6 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
 
 /* Cached GL_ARRAY_BUFFER binding: eliminates redundant glBindBuffer calls
  * when multiple consecutive updates target different buffers. */
-static GLuint g_gl_bound_array_buffer = 0;
-
 static inline void gl_bind_array_buffer_cached(GLuint buf) {
     if (buf != g_gl_bound_array_buffer) {
         glBindBuffer(GL_ARRAY_BUFFER, buf);

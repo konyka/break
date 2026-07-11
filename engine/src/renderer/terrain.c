@@ -262,12 +262,16 @@ t->loc_time        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_time
     }
     t->index_count = ii;
 
+    /* R187: VBO is edited by brush/generate — keep HOST_VISIBLE (no initial_data).
+     * IBO stays DEVICE_LOCAL via initial_data. */
     RHIBufferDesc vbdesc = {
         .usage = RHI_BUFFER_USAGE_VERTEX,
         .size = vert_count * 8 * sizeof(f32),
-        .initial_data = verts,
+        .initial_data = NULL,
     };
     t->vbo = rhi_buffer_create(dev, &vbdesc);
+    if (rhi_handle_valid(t->vbo))
+        rhi_buffer_update(dev, t->vbo, verts, vert_count * 8 * sizeof(f32));
 
     RHIBufferDesc ibdesc = {
         .usage = RHI_BUFFER_USAGE_INDEX,
