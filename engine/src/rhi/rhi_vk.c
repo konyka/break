@@ -5142,12 +5142,59 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
 /* R87-1: GPU-side buffer copy via vkCmdCopyBuffer (non-blocking). */
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
     (void)cmd;
+    if (size == 0u) return;
     VKBackend *vk = vk_backend(g_current_device);
     VKBufferData *src_bd = (VKBufferData *)rhi_get_resource(g_current_device, src);
     VKBufferData *dst_bd = (VKBufferData *)rhi_get_resource(g_current_device, dst);
     if (!src_bd || !dst_bd) return;
+    /* R177: Copy is invalid inside a render pass; also barrier compute→transfer
+     * so callers cannot forget (vis-flags / occlusion staging paths). */
+    vk_suspend_pass_for_compute(vk);
+    VkCommandBuffer cb = vk->cmd_buffers[vk->current_frame];
+
+    VkBufferMemoryBarrier barriers[2];
+    memset(barriers, 0, sizeof(barriers));
+    barriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].buffer = src_bd->buffer;
+    barriers[0].offset = 0;
+    barriers[0].size = size;
+    barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barriers[1].srcAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT
+                               | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].buffer = dst_bd->buffer;
+    barriers[1].offset = 0;
+    barriers[1].size = size;
+    vkCmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT
+            | VK_PIPELINE_STAGE_HOST_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 2, barriers, 0, NULL);
+
     VkBufferCopy region = { .srcOffset = 0, .dstOffset = 0, .size = size };
-    vkCmdCopyBuffer(vk->cmd_buffers[vk->current_frame], src_bd->buffer, dst_bd->buffer, 1, &region);
+    vkCmdCopyBuffer(cb, src_bd->buffer, dst_bd->buffer, 1, &region);
+
+    VkBufferMemoryBarrier to_host = {0};
+    to_host.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    to_host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT
+                          | VK_ACCESS_TRANSFER_READ_BIT;
+    to_host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_host.buffer = dst_bd->buffer;
+    to_host.offset = 0;
+    to_host.size = size;
+    vkCmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+            | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 1, &to_host, 0, NULL);
 }
 
 /* R171: Recorded fill so resets are ordered between dispatches in the same CB. */

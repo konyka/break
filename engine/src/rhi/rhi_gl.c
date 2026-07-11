@@ -1541,10 +1541,13 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
 /* R87-1: GPU-side buffer copy (non-blocking, avoids glMapBufferRange stall). */
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
     (void)cmd;
+    if (size == 0u) return;
     extern RHIDevice *g_current_device;
     GLBufferData *src_bd = (GLBufferData *)rhi_get_resource(g_current_device, src);
     GLBufferData *dst_bd = (GLBufferData *)rhi_get_resource(g_current_device, dst);
     if (!src_bd || !dst_bd) return;
+    /* R177: Ensure prior SSBO writes are visible to COPY_READ. */
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
     glBindBuffer(GL_COPY_READ_BUFFER, src_bd->gl_buf);
     glBindBuffer(GL_COPY_WRITE_BUFFER, dst_bd->gl_buf);
     glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)size);

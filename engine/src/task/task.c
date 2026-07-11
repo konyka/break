@@ -706,6 +706,7 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
 
     /* R170/R173: Link into each dep's waiter list (fan-out). Skip completed. */
     u32 actual_deps = 0u;
+    bool oom = false;
 
     platform_mutex_lock(ts->pool_mutex_storage);
     for (u32 d = 0; d < dep_count; d++) {
@@ -716,13 +717,41 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
         if (atomic_load_explicit(&dep->completed, memory_order_acquire)) continue;
 
         TaskWaitLink *link = (TaskWaitLink *)malloc(sizeof(TaskWaitLink));
-        if (!link) continue;
+        if (!link) { oom = true; break; }
         link->child = t;
         link->next = dep->waiters;
         dep->waiters = link;
         actual_deps++;
         atomic_fetch_add_explicit(&t->ref_count, 1, memory_order_relaxed);
     }
+
+    /* R177: malloc failure must not under-count deps (child would run early). */
+    if (oom) {
+        for (u32 d = 0; d < dep_count; d++) {
+            u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
+            if (idx >= ts->task_pool_capacity) continue;
+            Task *dep = ts->task_pool[idx];
+            if (!dep || dep->handle != deps[d]) continue;
+            TaskWaitLink **pp = &dep->waiters;
+            while (*pp) {
+                if ((*pp)->child == t) {
+                    TaskWaitLink *dead = *pp;
+                    *pp = dead->next;
+                    free(dead);
+                    task_release(t);
+                    break;
+                }
+                pp = &(*pp)->next;
+            }
+        }
+        atomic_store_explicit(&t->dep_count, 0u, memory_order_release);
+        atomic_store_explicit(&t->completed, true, memory_order_release);
+        platform_mutex_unlock(ts->pool_mutex_storage);
+        atomic_fetch_sub_explicit(&ts->total_tasks_submitted, 1, memory_order_relaxed);
+        task_release(t); /* drop exec ref; pool ref retained */
+        return TASK_HANDLE_INVALID;
+    }
+
     atomic_store_explicit(&t->dep_count, actual_deps, memory_order_release);
     platform_mutex_unlock(ts->pool_mutex_storage);
 
