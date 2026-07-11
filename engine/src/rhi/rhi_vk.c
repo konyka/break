@@ -1421,6 +1421,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     g_current_device = dev;
 
+    /* R175: Ensure deferred mip uploads finished before this frame samples them. */
+    vk_mip_upload_reclaim(vk);
+
     if (vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
         LOG_FATAL("VK: vkWaitForFences failed in frame_begin");
         vk->frame_started = false;

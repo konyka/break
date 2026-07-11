@@ -177,9 +177,10 @@ void indirect_draw_compact(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer
 void indirect_draw_compact_no_barrier(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd) {
     if (!sys || !sys->ready || sys->current_draw_count == 0) return;
 
-    /* Reset the atomic counter to zero before dispatch. */
-    u32 zero = 0;
-    rhi_buffer_update(dev, sys->draw_count_buf, &zero, sizeof(u32));
+    /* R175: GPU fill so reset is ordered with this CB's compact dispatch
+     * (host rhi_buffer_update is invisible to later recorded GPU work). */
+    (void)dev;
+    rhi_cmd_fill_buffer(cmd, sys->draw_count_buf, 0, sizeof(u32), 0u);
 
     rhi_cmd_bind_pipeline(cmd, sys->compact_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, sys->all_draws_buf,     0);

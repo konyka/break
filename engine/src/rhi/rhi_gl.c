@@ -1561,6 +1561,9 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI,
                          (GLintptr)offset, (GLsizeiptr)size,
                          GL_RED_INTEGER, GL_UNSIGNED_INT, &value);
+    /* R175: Clear is incoherent w.r.t. SSBO/indirect; barrier before compute/draw. */
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT
+                    | GL_BUFFER_UPDATE_BARRIER_BIT);
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
