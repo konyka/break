@@ -3634,6 +3634,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R176：gpucull count GPU 清零 + destroy reclaim（已完成）
+
+### [x] R176-A gpucull_dispatch_to GPU fill
+- [x] cascade 同 CB 多次 dispatch 时 `count_buf` 清零有序
+
+### [x] R176-B texture_destroy reclaim mip upload
+- [x] 销毁前等待/回收延迟 mip upload，避免写已毁 image
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

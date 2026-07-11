@@ -2984,6 +2984,8 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     VKBackend *vk = vk_backend(dev);
     VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
     if (!td) return;
+    /* R176: Pending mip upload may still reference this image — reclaim first. */
+    vk_mip_upload_reclaim(vk);
     vk_wait_frames(vk);
     for (u32 m = 0; m < VK_MAX_MIP_VIEWS; m++) {
         if (td->mip_views[m] != VK_NULL_HANDLE) {

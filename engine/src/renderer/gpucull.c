@@ -161,8 +161,9 @@ static void gpucull_dispatch_to(GPUCullSystem *gc, RHICmdBuffer *cmd,
                                 const f32 *vp, RHIBuffer flags_buf) {
     if (!gc->ready || gc->object_count == 0) return;
 
-    u32 zero = 0;
-    rhi_buffer_update(gc->device, gc->count_buf, &zero, sizeof(u32));
+    /* R176: GPU fill — host update is invisible to later recorded dispatches
+     * (cascade loop calls this multiple times per CB). */
+    rhi_cmd_fill_buffer(cmd, gc->count_buf, 0, sizeof(u32), 0u);
 
     rhi_cmd_bind_pipeline(cmd, gc->cull_pipe);
     rhi_cmd_bind_storage_buffer(cmd, gc->object_ssbo, 0);
