@@ -1370,7 +1370,12 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     if (rhi_handle_valid(sm->depth_tex)) rhi_texture_destroy(dev, sm->depth_tex);
     if (rhi_handle_valid(sm->fbo)) {
         GLFBOData *fd = (GLFBOData *)rhi_get_resource(dev, sm->fbo);
-        if (fd) { glDeleteFramebuffers(1, &fd->gl_fbo); }
+        if (fd) {
+            /* R189-B: invalidate FBO bind cache before delete. */
+            if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
+            glDeleteFramebuffers(1, &fd->gl_fbo);
+            free(fd);
+        }
         rhi_free_slot(dev, sm->fbo);
     }
     sm->fbo = RHI_HANDLE_NULL;
@@ -1689,8 +1694,20 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     dev->slots[tidx].ptr = fd;
     dev->slots[tidx].type = RHI_RES_FRAMEBUFFER;
 
+    /* R189-A: color_tex must be GLTextureData — gl_bind_tex_unit reads
+     * td->gl_tex. Sharing GLFBOData made it bind gl_fbo (field 0) instead
+     * of color_tex (field 1); FBO/texture names are different namespaces. */
+    GLTextureData *td = calloc(1, sizeof(GLTextureData));
+    if (!td) {
+        fbo.fb = rhi_make_handle(tidx, dev->slots[tidx].generation);
+        return fbo;
+    }
     u32 cidx = rhi_alloc_slot(dev);
-    dev->slots[cidx].ptr = fd;
+    td->gl_tex             = fd->color_tex;
+    td->width              = width;
+    td->height             = height;
+    td->gl_internal_format = gl_internal;
+    dev->slots[cidx].ptr  = td;
     dev->slots[cidx].type = RHI_RES_TEXTURE;
 
     fbo.fb = rhi_make_handle(tidx, dev->slots[tidx].generation);
@@ -1707,12 +1724,27 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (!dev || !fbo) return;
     GLFBOData *fd = rhi_get_resource(dev, fbo->fb);
     if (!fd) return;
+    /* R189-B: glDeleteFramebuffers unbinds; clear bind cache or a recycled
+     * name can falsely skip glBindFramebuffer after resize recreate. */
+    if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
+    if (rhi_handle_valid(fbo->color_tex)) {
+        GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, fbo->color_tex);
+        if (td) {
+            for (u32 i = 0; i < 16; i++) {
+                if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
+            }
+            free(td);
+        }
+        if (dev->slots[fbo->color_tex.index].ptr == td) {
+            dev->slots[fbo->color_tex.index].ptr = NULL;
+        }
+        rhi_free_slot(dev, fbo->color_tex);
+    }
     glDeleteFramebuffers(1, &fd->gl_fbo);
     glDeleteTextures(1, &fd->color_tex);
     glDeleteRenderbuffers(1, &fd->depth_rb);
     free(fd);
     rhi_free_slot(dev, fbo->fb);
-    rhi_free_slot(dev, fbo->color_tex);
     memset(fbo, 0, sizeof(*fbo));
 }
 
@@ -1962,9 +1994,16 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     if (!dev || !fbo) return;
     GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource(dev, fbo->fb);
     if (!md) { memset(fbo, 0, sizeof(*fbo)); return; }
+    /* R189-B: invalidate FBO bind cache before delete. */
+    if (g_gl_bound_fbo == md->gl_fbo) g_gl_bound_fbo = 0;
     glDeleteFramebuffers(1, &md->gl_fbo);
     for (u32 i = 0; i < md->attachment_count; i++) {
-        if (md->color_tex[i]) glDeleteTextures(1, &md->color_tex[i]);
+        if (md->color_tex[i]) {
+            for (u32 u = 0; u < 16; u++) {
+                if (g_tex_cache[u] == md->color_tex[i]) g_tex_cache[u] = 0;
+            }
+            glDeleteTextures(1, &md->color_tex[i]);
+        }
         /* The texture slot shares the same GLTextureData pointer; null it
          * out so device-destroy skips the double-free. */
         if (rhi_handle_valid(fbo->color_tex[i])) {
@@ -1979,7 +2018,12 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     /* Depth texture is shared with the texture slot; clean up carefully. */
     if (rhi_handle_valid(fbo->depth_tex)) {
         GLTextureData *dtd = (GLTextureData *)rhi_get_resource(dev, fbo->depth_tex);
-        if (dtd) { free(dtd); }
+        if (dtd) {
+            for (u32 u = 0; u < 16; u++) {
+                if (g_tex_cache[u] == dtd->gl_tex) g_tex_cache[u] = 0;
+            }
+            free(dtd);
+        }
         if (dev->slots[fbo->depth_tex.index].ptr == dtd) {
             dev->slots[fbo->depth_tex.index].ptr = NULL;
         }
@@ -2070,7 +2114,11 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
     if (!dev || !fbo) return;
     GLCubemapDepthFBOData *cd = (GLCubemapDepthFBOData *)rhi_get_resource(dev, fbo->fb);
     if (!cd) { memset(fbo, 0, sizeof(*fbo)); return; }
-    if (cd->gl_fbo) glDeleteFramebuffers(1, &cd->gl_fbo);
+    /* R189-B: invalidate FBO bind cache before delete. */
+    if (cd->gl_fbo) {
+        if (g_gl_bound_fbo == cd->gl_fbo) g_gl_bound_fbo = 0;
+        glDeleteFramebuffers(1, &cd->gl_fbo);
+    }
     /* depth_tex is freed via its own texture slot; just free the FBO here. */
     free(cd);
     rhi_free_slot(dev, fbo->fb);
@@ -2078,7 +2126,13 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
      * via rhi_texture_destroy if needed; for simplicity we also clean it. */
     if (rhi_handle_valid(fbo->depth_tex)) {
         GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, fbo->depth_tex);
-        if (td) { glDeleteTextures(1, &td->gl_tex); free(td); }
+        if (td) {
+            for (u32 i = 0; i < 16; i++) {
+                if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
+            }
+            glDeleteTextures(1, &td->gl_tex);
+            free(td);
+        }
         rhi_free_slot(dev, fbo->depth_tex);
     }
     memset(fbo, 0, sizeof(*fbo));

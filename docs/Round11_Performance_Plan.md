@@ -3774,6 +3774,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R189：GL offscreen color_tex 类型 + FBO 销毁缓存失效（已完成）
+
+### [x] R189-A offscreen color_tex → GLTextureData
+- [x] create 为 color 单独 calloc `GLTextureData`（对齐 MRT/VK）
+- [x] destroy 释放 td + 清 `g_tex_cache`
+
+### [x] R189-B FBO destroy 清 g_gl_bound_fbo
+- [x] offscreen / MRT / cubemap depth / shadow_map destroy
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
