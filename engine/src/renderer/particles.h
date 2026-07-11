@@ -21,11 +21,13 @@ typedef struct {
     RHIPipeline  render_pipeline;
     RHIBuffer    particle_ssbo;
     RHIBuffer    cull_buf;       /* draw_count + alive particle indices */
+    RHIBuffer    spawn_buf;      /* R174: uint claimed for emit budget */
     RHISampler   sampler;
     RHITexture   particle_tex;
     bool         initialized;
     bool         cull_ready;
     u32          last_alive_count;
+    f32          emit_accum;     /* R174: fractional emit carry */
 
     f32 emit_pos[3];
     f32 gravity;
@@ -45,6 +47,7 @@ typedef struct {
     i32 _loc_emit_vel_max;
     i32 _loc_lifetime_min;
     i32 _loc_lifetime_range;
+    i32 _loc_emit_budget;          /* R174: GL emit budget */
     /* Cached uniform locations — render pipeline */
     i32 _loc_view;
     i32 _loc_proj;

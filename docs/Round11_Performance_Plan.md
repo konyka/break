@@ -3608,6 +3608,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R174：粒子精确 emit + destroy 解挂 + mip_layout（已完成）
+
+### [x] R174-A 粒子 atomic spawn 预算
+- [x] `spawn_buf` + `emit_accum`；替代概率发射欠发
+
+### [x] R174-B task_system_destroy 解挂
+- [x] 强制清 dep_count / 摘 waiter → `task_wait` → join
+
+### [x] R174-C mip_layout 数据路径
+- [x] `desc->data` 仅标记 mip0 为 READ_ONLY
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

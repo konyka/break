@@ -582,6 +582,33 @@ TaskSystem *task_system_create(i32 worker_count) {
 }
 
 void task_system_destroy(TaskSystem *ts) {
+    /* R174: Force-resolve any blocked dependents so task_wait cannot hang on
+     * incomplete graphs, then drain runnable work before stopping workers. */
+    u32 pool_count = atomic_load(&ts->task_pool_count);
+    if (pool_count > ts->task_pool_capacity) pool_count = ts->task_pool_capacity;
+    platform_mutex_lock(ts->pool_mutex_storage);
+    for (u32 i = 0; i < pool_count; i++) {
+        Task *t = ts->task_pool[i];
+        if (!t) continue;
+        while (t->waiters) {
+            TaskWaitLink *link = t->waiters;
+            t->waiters = link->next;
+            Task *child = link->child;
+            free(link);
+            if (!child) continue;
+            u32 left = atomic_exchange_explicit(&child->dep_count, 0u, memory_order_acq_rel);
+            if (left > 0u) {
+                platform_mutex_unlock(ts->pool_mutex_storage);
+                schedule_ready(ts, NULL, child);
+                platform_mutex_lock(ts->pool_mutex_storage);
+            }
+            task_release(child);
+        }
+    }
+    platform_mutex_unlock(ts->pool_mutex_storage);
+
+    task_wait(ts);
+
     /* Signal shutdown */
     atomic_store_explicit(&ts->running, false, memory_order_release);
 
@@ -602,18 +629,19 @@ void task_system_destroy(TaskSystem *ts) {
         }
     }
 
-    /* Release the pool's reference on every registered task. After the worker
-     * join above no other thread touches these, so any task whose execution
-     * reference already dropped is freed here; the rest are freed now. */
     /* R156: Clamp to capacity — task_pool_count can exceed task_pool_capacity
-     * when the pool is exhausted and tasks fall back to heap allocation.
-     * Without clamping, iterating past task_pool[] reads into _task_block
-     * memory, causing garbage pointer dereference in task_release. */
-    u32 pool_count = atomic_load(&ts->task_pool_count);
+     * when the pool is exhausted and tasks fall back to heap allocation. */
+    pool_count = atomic_load(&ts->task_pool_count);
     if (pool_count > ts->task_pool_capacity) pool_count = ts->task_pool_capacity;
     for (u32 i = 0; i < pool_count; i++) {
         Task *t = ts->task_pool[i];
-        if (t) task_release(t);
+        if (!t) continue;
+        while (t->waiters) {
+            TaskWaitLink *link = t->waiters;
+            t->waiters = link->next;
+            free(link);
+        }
+        task_release(t);
     }
 
     platform_mutex_destroy(ts->submit_mutex_storage);

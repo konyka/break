@@ -2768,9 +2768,15 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     td->height = desc->height;
     td->format = fmt;
     td->mip_levels = ci.mipLevels;
-    /* R173: Both create paths leave all mips in SHADER_READ_ONLY_OPTIMAL. */
-    for (u32 m = 0; m < td->mip_levels && m < VK_MAX_MIP_VIEWS; m++) {
-        td->mip_layout[m] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    /* R174: data path only uploads/transitions mip 0; higher mips stay UNDEFINED.
+     * No-data path transitions the full chain to SHADER_READ_ONLY. */
+    if (desc->data) {
+        if (td->mip_levels > 0u)
+            td->mip_layout[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    } else {
+        for (u32 m = 0; m < td->mip_levels && m < VK_MAX_MIP_VIEWS; m++) {
+            td->mip_layout[m] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
     }
     dev->slots[idx].ptr = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;

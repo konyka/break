@@ -138,6 +138,15 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     ps->cull_buf = rhi_buffer_create(dev, &cull_desc_buf);
     ps->cull_ready = rhi_handle_valid(ps->cull_buf) && rhi_handle_valid(ps->cull_pipeline);
 
+    /* R174: Spawn claim counter for exact emit_rate budgeting. */
+    RHIBufferDesc spawn_desc = {
+        .usage = RHI_BUFFER_USAGE_STORAGE,
+        .size = sizeof(u32),
+        .initial_data = NULL,
+    };
+    ps->spawn_buf = rhi_buffer_create(dev, &spawn_desc);
+    ps->emit_accum = 0.0f;
+
     /* ---- Sampler + fallback texture ---- */
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -154,6 +163,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
 
     /* R122: Validate all RHI resources before marking system initialized. */
     if (!rhi_handle_valid(ps->particle_ssbo) ||
+        !rhi_handle_valid(ps->spawn_buf) ||
         !rhi_handle_valid(ps->sampler) ||
         !rhi_handle_valid(ps->particle_tex)) {
         LOG_WARN("Particle: buffer/texture/sampler creation failed");
@@ -198,6 +208,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     ps->_loc_emit_vel_max  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_vel_max");
     ps->_loc_lifetime_min  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_min");
     ps->_loc_lifetime_range= rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_range");
+    ps->_loc_emit_budget   = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_budget");
 #ifdef ENGINE_VULKAN
     ps->_loc_view = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.view");
     ps->_loc_proj = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.proj");
@@ -216,6 +227,7 @@ void particles_shutdown(ParticleSystem *ps) {
     if (rhi_handle_valid(ps->particle_tex))       rhi_texture_destroy(ps->device, ps->particle_tex);
     if (rhi_handle_valid(ps->sampler))             rhi_sampler_destroy(ps->device, ps->sampler);
     if (rhi_handle_valid(ps->cull_buf))            rhi_buffer_destroy(ps->device, ps->cull_buf);
+    if (rhi_handle_valid(ps->spawn_buf))           rhi_buffer_destroy(ps->device, ps->spawn_buf);
     if (rhi_handle_valid(ps->particle_ssbo))       rhi_buffer_destroy(ps->device, ps->particle_ssbo);
     if (rhi_handle_valid(ps->cull_pipeline))       rhi_pipeline_destroy(ps->device, ps->cull_pipeline);
     if (rhi_handle_valid(ps->render_pipeline))     rhi_pipeline_destroy(ps->device, ps->render_pipeline);
@@ -229,16 +241,27 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
 
     rhi_cmd_end_render_pass(cmd);
 
+    /* R174: Integer emit budget from rate*dt with fractional carry. */
+    ps->emit_accum += ps->emit_rate * dt;
+    u32 budget = 0u;
+    if (ps->emit_accum >= 1.0f) {
+        budget = (u32)ps->emit_accum;
+        ps->emit_accum -= (f32)budget;
+        if (budget > PARTICLES_MAX) budget = PARTICLES_MAX;
+    }
+    rhi_cmd_fill_buffer(cmd, ps->spawn_buf, 0, sizeof(u32), 0u);
+
     rhi_cmd_bind_pipeline(cmd, ps->compute_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
+    rhi_cmd_bind_storage_buffer(cmd, ps->spawn_buf, 1);
 
 #ifdef ENGINE_VULKAN
-    /* Vulkan: refresh dynamic fields each frame (R172: emit_rate was stale). */
     if (ps->_loc_push_dt >= 0) {
         f32 push_data[20];
         memcpy(push_data, ps->_push_template, sizeof(push_data));
         push_data[0] = dt;
         push_data[1] = ps->emit_rate;
+        push_data[2] = (f32)budget; /* pad0 = emit budget */
         push_data[4] = ps->emit_pos[0];
         push_data[5] = ps->emit_pos[1];
         push_data[6] = ps->emit_pos[2];
@@ -246,9 +269,9 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
         rhi_cmd_set_uniform_mat4(cmd, ps->_loc_push_dt, push_data);
     }
 #else
-    /* OpenGL: use cached loose uniform locations */
     if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);
     if (ps->_loc_emit_rate >= 0)     rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_rate, ps->emit_rate);
+    if (ps->_loc_emit_budget >= 0)   rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_budget, (f32)budget);
     if (ps->_loc_emit_pos >= 0)      rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_pos, ps->emit_pos[0], ps->emit_pos[1], ps->emit_pos[2]);
     if (ps->_loc_gravity >= 0)       rhi_cmd_set_uniform_f32(cmd, ps->_loc_gravity, ps->gravity);
     if (ps->_loc_emit_vel_min >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_min, ps->emit_vel_min[0], ps->emit_vel_min[1], ps->emit_vel_min[2]);
