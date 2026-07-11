@@ -1570,6 +1570,9 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
     if (!bd) return;
+    /* R185: Wait prior indirect/SSBO reads before clearing (cascade reuse). */
+    glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT
+                    | GL_BUFFER_UPDATE_BARRIER_BIT);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
     glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI,
                          (GLintptr)offset, (GLsizeiptr)size,

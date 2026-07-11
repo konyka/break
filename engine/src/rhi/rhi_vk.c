@@ -5426,7 +5426,10 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
 
     VkBufferMemoryBarrier to_transfer = {0};
     to_transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    to_transfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    /* R185: Also wait prior DRAW_INDIRECT / shader reads — CSM/point-shadow
+     * reuse the same count/draws buffer across cascades in one CB. */
+    to_transfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT
+                              | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
     to_transfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -5434,7 +5437,8 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     to_transfer.offset = offset;
     to_transfer.size = size;
     vkCmdPipelineBarrier(cb,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT
+            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 1, &to_transfer, 0, NULL);
 

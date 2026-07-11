@@ -58,15 +58,22 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     };
     gc->object_ssbo = rhi_buffer_create(dev, &obj_desc);
 
+    /* R185: GPU-only STORAGE → DEVICE_LOCAL via zeroed initial_data. */
+    usize vis_bytes = GPUCULL_MAX_OBJECTS * sizeof(u32);
+    void *vis_zero = calloc(1, vis_bytes);
     RHIBufferDesc vis_desc = {
-        .size = GPUCULL_MAX_OBJECTS * sizeof(u32),
+        .size = vis_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = vis_zero,
     };
     gc->visible_ssbo = rhi_buffer_create(dev, &vis_desc);
+    free(vis_zero);
 
+    u32 count_zero = 0u;
     RHIBufferDesc count_desc = {
         .size = sizeof(u32),
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = &count_zero,
     };
     gc->count_buf = rhi_buffer_create(dev, &count_desc);
 
@@ -250,27 +257,41 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     gc->draw_cmds_ssbo = rhi_buffer_create(dev, &draw_desc);
     
     /* Create visible draws SSBO (output, also used for indirect draw) */
+    usize vis_draws_bytes = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd);
+    void *vis_draws_zero = calloc(1, vis_draws_bytes);
     RHIBufferDesc vis_draws_desc = {
-        .size = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd),
+        .size = vis_draws_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
+        .initial_data = vis_draws_zero,
     };
     gc->visible_draws_ssbo = rhi_buffer_create(dev, &vis_draws_desc);
+    free(vis_draws_zero);
     
     /* Create draw count buffer (atomic counter) */
+    u32 draw_count_zero = 0u;
     RHIBufferDesc draw_count_desc = {
         .size = sizeof(u32),
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
+        .initial_data = &draw_count_zero,
     };
     gc->draw_count_buf = rhi_buffer_create(dev, &draw_count_desc);
 
+    usize vis_flags_bytes = GPUCULL_MAX_OBJECTS * sizeof(u32);
+    void *vis_flags_zero = calloc(1, vis_flags_bytes);
     RHIBufferDesc vis_flags_desc = {
-        .size = GPUCULL_MAX_OBJECTS * sizeof(u32),
+        .size = vis_flags_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = vis_flags_zero,
     };
     gc->visible_flags_ssbo = rhi_buffer_create(dev, &vis_flags_desc);
-    /* R169: staging twin for 1-frame delayed CPU readback (same pattern as occlusion). */
-    gc->vis_flags_staging[0] = rhi_buffer_create(dev, &vis_flags_desc);
-    gc->vis_flags_staging[1] = rhi_buffer_create(dev, &vis_flags_desc);
+    free(vis_flags_zero);
+    /* R169: staging twin for 1-frame delayed CPU readback — keep HOST_VISIBLE (no initial_data). */
+    RHIBufferDesc vis_flags_staging_desc = {
+        .size = vis_flags_bytes,
+        .usage = RHI_BUFFER_USAGE_STORAGE,
+    };
+    gc->vis_flags_staging[0] = rhi_buffer_create(dev, &vis_flags_staging_desc);
+    gc->vis_flags_staging[1] = rhi_buffer_create(dev, &vis_flags_staging_desc);
     gc->vis_flags_staging_valid[0] = false;
     gc->vis_flags_staging_valid[1] = false;
     gc->_zero_draws = NULL; /* R171: GPU fill replaces CPU zero-draws buffer */

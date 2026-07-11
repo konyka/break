@@ -70,21 +70,27 @@ bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws) 
     sys->all_draws_buf = rhi_buffer_create(dev, &all_desc);
 
     /* Compacted visible draws - both storage (compute writes) AND indirect
-     * (graphics reads as draw command source). */
+     * (graphics reads as draw command source). R185: DEVICE_LOCAL. */
+    usize visible_bytes = (usize)max_draws * sizeof(DrawIndexedIndirectCmd);
+    void *visible_zero = calloc(1, visible_bytes);
     RHIBufferDesc visible_desc = {
-        .size  = (usize)max_draws * sizeof(DrawIndexedIndirectCmd),
+        .size  = visible_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
+        .initial_data = visible_zero,
     };
     sys->visible_draws_buf = rhi_buffer_create(dev, &visible_desc);
+    free(visible_zero);
 
     /* Atomic draw counter - storage (atomicAdd target) + indirect (count source). */
+    u32 count_zero = 0u;
     RHIBufferDesc count_desc = {
         .size  = sizeof(u32),
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
+        .initial_data = &count_zero,
     };
     sys->draw_count_buf = rhi_buffer_create(dev, &count_desc);
 
-    /* Per-object visibility flags (1 = visible, 0 = culled). R182: dual slot. */
+    /* Per-object visibility flags — host-updated dual slot; stay HOST_VISIBLE. */
     RHIBufferDesc vis_desc = {
         .size  = (usize)max_draws * sizeof(u32),
         .usage = RHI_BUFFER_USAGE_STORAGE,

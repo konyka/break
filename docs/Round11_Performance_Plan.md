@@ -3730,7 +3730,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R185：fill 预屏障 + cull STORAGE DEVICE_LOCAL（已完成）
+
+### [x] R185-A fill 等 DRAW_INDIRECT
+- [x] VK 预屏障含 INDIRECT/SHADER_READ；GL fill 前 COMMAND barrier
+
+### [x] R185-B GPU-only cull STORAGE → DEVICE_LOCAL
+- [x] gpucull/indirect/occlusion 零初始化创建；staging 保持 HOST_VISIBLE
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

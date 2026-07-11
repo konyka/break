@@ -107,21 +107,29 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
         return false;
     }
 
-    /* Create visibility SSBO */
+    /* Create visibility SSBO (R185: DEVICE_LOCAL via zero init). */
+    usize vis_bytes = OCCLUSION_MAX_OBJECTS * sizeof(u32);
+    void *vis_zero = calloc(1, vis_bytes);
     RHIBufferDesc vis_desc = {
-        .size  = OCCLUSION_MAX_OBJECTS * sizeof(u32),
+        .size  = vis_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = vis_zero,
     };
     sys->visibility_buffer = rhi_buffer_create(dev, &vis_desc);
+    free(vis_zero);
     if (!rhi_handle_valid(sys->visibility_buffer)) {
         LOG_WARN("OcclusionCull: failed to create visibility buffer");
         occlusion_cull_shutdown(sys);
         return false;
     }
 
-    /* R87-1 / R172: Dual staging for in-flight frame slots. */
-    sys->readback_staging[0] = rhi_buffer_create(dev, &vis_desc);
-    sys->readback_staging[1] = rhi_buffer_create(dev, &vis_desc);
+    /* R87-1 / R172: Dual staging for in-flight frame slots — keep HOST_VISIBLE. */
+    RHIBufferDesc staging_desc = {
+        .size  = vis_bytes,
+        .usage = RHI_BUFFER_USAGE_STORAGE,
+    };
+    sys->readback_staging[0] = rhi_buffer_create(dev, &staging_desc);
+    sys->readback_staging[1] = rhi_buffer_create(dev, &staging_desc);
     if (!rhi_handle_valid(sys->readback_staging[0]) ||
         !rhi_handle_valid(sys->readback_staging[1])) {
         LOG_WARN("OcclusionCull: failed to create readback staging buffer");
