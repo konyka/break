@@ -3626,8 +3626,8 @@ if (!ok) return false;
 ### [x] R175-A cull instanceCount GPU fill
 - [x] init 写 header；每帧 `rhi_cmd_fill_buffer` 清 instanceCount
 
-### [x] R175-B upload_mip 用 mip_layout
-- [x] UNDEFINED 高层从 TOP_OF_PIPE transition
+### [x] R175-B upload_mip 用 mip_layout + 延迟 reclaim
+- [x] UNDEFINED 高层从 TOP_OF_PIPE transition；`frame_begin` reclaim
 
 ### [x] R175-C/D indirect compact + GL fill barrier
 - [x] compact 用 GPU fill；GL clear 后 memory barrier
