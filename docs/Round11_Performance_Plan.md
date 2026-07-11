@@ -3644,6 +3644,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R177：TaskWaitLink OOM 回滚 + copy_buffer 屏障（已完成）
+
+### [x] R177-A task_submit_dep OOM 回滚
+- [x] malloc 失败回滚 waiter，返回 INVALID（不欠计 dep）
+
+### [x] R177-B copy_buffer suspend/barrier
+- [x] VK：suspend + compute→transfer→host；GL：SSBO→COPY barrier
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
