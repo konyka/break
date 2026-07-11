@@ -27,7 +27,7 @@ typedef struct {
     RHITexture  atlas_tex;
     RHISampler  sampler;
     RHIPipeline pipeline;
-    RHIBuffer   vbo;
+    RHIBuffer   vbo[2]; /* R184: dual-slot vs in-flight font VS read */
     f32         font_size;
     f32         ascent;
     f32         descent;

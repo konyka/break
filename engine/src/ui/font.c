@@ -277,8 +277,9 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     memset(&bdesc, 0, sizeof(bdesc));
     bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
     bdesc.size = fr->quad_capacity * 6 * sizeof(FontVertex);
-    fr->vbo = rhi_buffer_create(dev, &bdesc);
-    if (!rhi_handle_valid(fr->vbo)) {
+    fr->vbo[0] = rhi_buffer_create(dev, &bdesc);
+    fr->vbo[1] = rhi_buffer_create(dev, &bdesc);
+    if (!rhi_handle_valid(fr->vbo[0]) || !rhi_handle_valid(fr->vbo[1])) {
         LOG_WARN("Font: VBO creation failed");
         return false;
     }
@@ -290,7 +291,8 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
 
 void font_renderer_shutdown(FontRenderer *fr) {
     if (!fr->device) return;
-    if (rhi_handle_valid(fr->vbo)) rhi_buffer_destroy(fr->device, fr->vbo);
+    if (rhi_handle_valid(fr->vbo[0])) rhi_buffer_destroy(fr->device, fr->vbo[0]);
+    if (rhi_handle_valid(fr->vbo[1])) rhi_buffer_destroy(fr->device, fr->vbo[1]);
     if (rhi_handle_valid(fr->sampler)) rhi_sampler_destroy(fr->device, fr->sampler);
     if (rhi_handle_valid(fr->atlas_tex)) rhi_texture_destroy(fr->device, fr->atlas_tex);
     if (rhi_handle_valid(fr->pipeline)) rhi_pipeline_destroy(fr->device, fr->pipeline);
@@ -402,11 +404,13 @@ void font_renderer_end(FontRenderer *fr, RHICmdBuffer *cmd, f32 screen_w, f32 sc
     if (fr->quad_count == 0) return;
 
     usize data_size = (usize)fr->quad_count * 6 * sizeof(FontVertex);
-    rhi_buffer_update(fr->device, fr->vbo, fr->quad_data, data_size);
+    /* R184: dual-slot — avoid host write racing prior frame's VS read. */
+    RHIBuffer slot = fr->vbo[rhi_frame_index(fr->device) & 1u];
+    rhi_buffer_update(fr->device, slot, fr->quad_data, data_size);
 
     rhi_cmd_bind_pipeline(cmd, fr->pipeline);
     rhi_cmd_bind_texture(cmd, fr->atlas_tex, fr->sampler, 0);
     rhi_cmd_set_uniform_vec4(cmd, 0, 1.0f, 1.0f, 1.0f, 1.0f);
-    rhi_cmd_bind_vertex_buffer(cmd, fr->vbo, 0);
+    rhi_cmd_bind_vertex_buffer(cmd, slot, 0);
     rhi_cmd_draw(cmd, fr->quad_count * 6, 1);
 }

@@ -119,35 +119,47 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
         return false;
     }
 
-    /* ---- Particle SSBO ---- */
+    /* ---- Particle SSBO (R184: DEVICE_LOCAL via zeroed initial_data) ---- */
+    usize particle_bytes = PARTICLES_MAX * sizeof(GPUParticle);
+    void *particle_zero = calloc(1, particle_bytes);
+    if (!particle_zero) {
+        LOG_WARN("Particle: particle zero alloc failed");
+        return false;
+    }
     RHIBufferDesc bdesc = {
         .usage = RHI_BUFFER_USAGE_STORAGE,
-        .size = PARTICLES_MAX * sizeof(GPUParticle),
-        .initial_data = NULL,
+        .size = particle_bytes,
+        .initial_data = particle_zero,
     };
     ps->particle_ssbo = rhi_buffer_create(dev, &bdesc);
+    free(particle_zero);
 
     /* ---- Cull output: DrawIndirectCommand + alive indices (R167) ----
      * Layout: vertexCount, instanceCount, firstVertex, firstInstance, indices[].
      * STORAGE|INDIRECT so compute can write instanceCount and draw_indirect can read. */
+    usize cull_bytes = 4u * sizeof(u32) + PARTICLES_MAX * sizeof(u32);
+    u32 *cull_init = (u32 *)calloc(1, cull_bytes);
+    if (!cull_init) {
+        LOG_WARN("Particle: cull init alloc failed");
+        particles_shutdown(ps);
+        return false;
+    }
+    cull_init[0] = 1u; /* vertexCount; instanceCount stays 0 */
     RHIBufferDesc cull_desc_buf = {
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
-        .size = 4u * sizeof(u32) + PARTICLES_MAX * sizeof(u32),
-        .initial_data = NULL,
+        .size = cull_bytes,
+        .initial_data = cull_init,
     };
     ps->cull_buf = rhi_buffer_create(dev, &cull_desc_buf);
+    free(cull_init);
     ps->cull_ready = rhi_handle_valid(ps->cull_buf) && rhi_handle_valid(ps->cull_pipeline);
-    /* R175: Seed DrawIndirect header once; per-frame only GPU-clears instanceCount. */
-    if (ps->cull_ready) {
-        u32 hdr[4] = {1u, 0u, 0u, 0u};
-        rhi_buffer_update(dev, ps->cull_buf, hdr, sizeof(hdr));
-    }
 
     /* R174: Spawn claim counter for exact emit_rate budgeting. */
+    u32 spawn_zero = 0u;
     RHIBufferDesc spawn_desc = {
         .usage = RHI_BUFFER_USAGE_STORAGE,
         .size = sizeof(u32),
-        .initial_data = NULL,
+        .initial_data = &spawn_zero,
     };
     ps->spawn_buf = rhi_buffer_create(dev, &spawn_desc);
     ps->emit_accum = 0.0f;
@@ -174,13 +186,6 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
         LOG_WARN("Particle: buffer/texture/sampler creation failed");
         particles_shutdown(ps);
         return false;
-    }
-
-    /* Initialize all particles as dead (life <= 0) */
-    void *mapped = rhi_buffer_map(dev, ps->particle_ssbo);
-    if (mapped) {
-        memset(mapped, 0, PARTICLES_MAX * sizeof(GPUParticle));
-        rhi_buffer_unmap(dev, ps->particle_ssbo);
     }
 
     ps->initialized = true;

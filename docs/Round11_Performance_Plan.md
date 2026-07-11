@@ -3719,7 +3719,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R184：font 双槽 + 粒子 SSBO DEVICE_LOCAL（已完成）
+
+### [x] R184-A font vbo[2]
+- [x] `rhi_frame_index&1` 上传与 bind 同槽
+
+### [x] R184-B 粒子 DEVICE_LOCAL
+- [x] STORAGE(+INDIRECT)+initial_data → DEVICE_LOCAL；粒子三缓冲零初始化创建
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

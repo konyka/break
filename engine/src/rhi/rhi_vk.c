@@ -2479,11 +2479,16 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (desc->usage & RHI_BUFFER_USAGE_INDIRECT)     ci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (is_texel)                                     ci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
 
-    /* R181: Static mesh VERTEX/INDEX with initial_data → DEVICE_LOCAL.
-     * Dynamic VBOs (font, no initial_data) and STORAGE/UNIFORM stay host-visible. */
+    /* R181/R184: DEVICE_LOCAL when initial_data is provided for:
+     *  - static VERTEX/INDEX meshes
+     *  - GPU-only STORAGE (±INDIRECT) buffers (e.g. particle SSBOs)
+     * Dynamic VBOs (font, no initial_data) and UNIFORM/TEXEL stay host-visible. */
     bool mesh_only = (desc->usage & (RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) != 0
         && (desc->usage & ~(RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
-    bool device_local = mesh_only && desc->initial_data != NULL;
+    bool gpu_storage = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0
+        && (desc->usage & (RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL
+                           | RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
+    bool device_local = desc->initial_data != NULL && (mesh_only || gpu_storage);
     if (device_local)
         ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
