@@ -3795,6 +3795,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R191：GL buffer create 缓存对称 + Hi-Z mip 钳制恢复（已完成）
+
+### [x] R191-A buffer_create 清绑定缓存
+- [x] ARRAY_BUFFER → `g_gl_bound_array_buffer = 0`
+- [x] texel TBO → `g_tex_cache[g_active_unit] = 0`
+
+### [x] R191-B Hi-Z mip 钳制恢复
+- [x] `g_mip_clamp_*` 文件作用域；`bind_texture_compute` 恢复 BASE/MAX
+- [x] `texture_destroy` 失效钳制跟踪
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

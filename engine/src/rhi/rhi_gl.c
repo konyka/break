@@ -163,6 +163,11 @@ static GLuint g_gl_program = 0;
 static GLuint g_gl_bound_vbo = 0;
 static GLuint g_gl_bound_ibo = 0;
 
+/* R191-B: GL bind_texture_mip clamps BASE/MAX_LEVEL; track so compute/full
+ * sampling can restore the full pyramid (VK uses per-mip views instead). */
+static GLuint g_mip_clamp_tex = 0;
+static GLint  g_mip_clamp_level = -1;
+
 /* R80-2: Depth mask and cull-face enable caches — skybox_render was
  * calling glDepthMask/glDisable(GL_CULL_FACE) directly, bypassing caches.
  * Same class of desync risk as R78-2 (glDepthFunc). */
@@ -857,6 +862,9 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (is_storage) usage = GL_DYNAMIC_DRAW;
     glBufferData(target, (GLsizeiptr)desc->size, desc->initial_data, usage);
     glBindBuffer(target, 0);
+    /* R191-A: create bypasses cached binds — ARRAY_BUFFER cache would still
+     * think the previous buffer is bound after we unbound to 0. */
+    if (target == GL_ARRAY_BUFFER) g_gl_bound_array_buffer = 0;
 
     GLuint tbo_tex = 0;
     if (is_texel) {
@@ -864,6 +872,8 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         glBindTexture(GL_TEXTURE_BUFFER, tbo_tex);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, gl_buf);
         glBindTexture(GL_TEXTURE_BUFFER, 0);
+        /* R191-A: same class as R190-A texture create. */
+        if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
     }
 
     GLBufferData *bd = calloc(1, sizeof(GLBufferData));
@@ -1109,6 +1119,10 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
      * that reuses the same GL name would falsely skip the bind. */
     for (u32 i = 0; i < 16; i++) {
         if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
+    }
+    if (g_mip_clamp_tex == td->gl_tex) {
+        g_mip_clamp_tex = 0;
+        g_mip_clamp_level = -1;
     }
     glDeleteTextures(1, &td->gl_tex);
     free(td);
@@ -1836,19 +1850,26 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler samp
      * g_active_unit and g_tex_cache[unit] stale. */
     gl_bind_tex_unit(unit, tex, sampler);
     /* Only update mip clamps if the level changed for this texture. */
-    static GLuint s_mip_tex = 0;
-    static GLint  s_mip_level = -1;
-    if (s_mip_tex != td->gl_tex || s_mip_level != (GLint)mip_level) {
+    if (g_mip_clamp_tex != td->gl_tex || g_mip_clamp_level != (GLint)mip_level) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)mip_level);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)mip_level);
-        s_mip_tex = td->gl_tex;
-        s_mip_level = (GLint)mip_level;
+        g_mip_clamp_tex = td->gl_tex;
+        g_mip_clamp_level = (GLint)mip_level;
     }
 }
 
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
     (void)cmd;
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
     gl_bind_tex_unit(unit, tex, sampler);
+    /* R191-B: bind_texture_mip left BASE/MAX clamped (Hi-Z gen); restore full
+     * chain so unified/occlusion compute can sample the pyramid. */
+    if (td && g_mip_clamp_tex == td->gl_tex) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1000);
+        g_mip_clamp_tex = 0;
+        g_mip_clamp_level = -1;
+    }
 }
 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
