@@ -112,6 +112,7 @@ void gpucull_shutdown(GPUCullSystem *gc) {
     
     /* Free persistent staging buffers (single alloc: _pack_buf + _zero_buf) */
     if (gc->_pack_buf)  { free(gc->_pack_buf);  gc->_pack_buf  = NULL; gc->_pack_buf_cap  = 0; gc->_zero_buf = NULL; gc->_zero_buf_cap = 0; }
+    if (gc->_zero_draws) { free(gc->_zero_draws); gc->_zero_draws = NULL; }
 
     /* Destroy unified pipeline resources */
     if (gc->unified_ready) {
@@ -268,6 +269,14 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     /* R169: staging twin for 1-frame delayed CPU readback (same pattern as occlusion). */
     gc->vis_flags_staging = rhi_buffer_create(dev, &vis_flags_desc);
     gc->vis_flags_staging_valid = false;
+
+    /* R170: Persistent zeroed draw cmds for compact-path clear (VK IndirectCount fallback). */
+    gc->_zero_draws = (GPUCullDrawCmd *)calloc(GPUCULL_MAX_DRAWS, sizeof(GPUCullDrawCmd));
+    if (!gc->_zero_draws) {
+        LOG_WARN("UnifiedCull: zero-draws buffer allocation failed");
+        gc->unified_ready = false;
+        return true;
+    }
     
     if (!rhi_handle_valid(gc->draw_cmds_ssbo) ||
         !rhi_handle_valid(gc->visible_draws_ssbo) ||
@@ -350,22 +359,26 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                               RHITexture hi_z_texture,
                               u32 hi_z_width, u32 hi_z_height,
                               RHIBuffer vis_flags_out,
-                              bool compact_draws) {
+                              bool compact_draws,
+                              bool stage_readback) {
     (void)camera_pos;
     if (!gc || !gc->unified_ready || gc->object_count == 0 || gc->draw_count == 0) return;
 
     u32 n = gc->draw_count < gc->object_count ? gc->draw_count : gc->object_count;
 
+    /* R170: Shader writes flags[idx]=0 for every idx < n — skip CPU zero upload. */
     RHIBuffer flags_buf = rhi_handle_valid(vis_flags_out) ? vis_flags_out : gc->visible_flags_ssbo;
-    if (rhi_handle_valid(flags_buf)) {
-        /* Use persistent zero buffer (cap = GPUCULL_MAX_OBJECTS, n never exceeds it) */
-        rhi_buffer_update_region(gc->device, flags_buf, 0, gc->_zero_buf, n * sizeof(u32));
-    }
 
-    /* Reset the compacted-draw atomic counter when compaction is enabled. */
+    /* Reset the compacted-draw atomic counter when compaction is enabled.
+     * R170: Also zero the first n compacted draw slots so VK fallback without
+     * drawIndirectCount cannot replay stale instanceCount from prior frames. */
     if (compact_draws) {
         u32 zero = 0;
         rhi_buffer_update(gc->device, gc->draw_count_buf, &zero, sizeof(u32));
+        if (gc->_zero_draws && n > 0u) {
+            rhi_buffer_update_region(gc->device, gc->visible_draws_ssbo, 0,
+                                     gc->_zero_draws, (usize)n * sizeof(GPUCullDrawCmd));
+        }
     }
 
     rhi_cmd_bind_pipeline(cmd, gc->unified_cull_pipe);
@@ -400,12 +413,11 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
     rhi_cmd_dispatch(cmd, groups, 1, 1);
     rhi_cmd_memory_barrier(cmd);
 
-    /* R169: GPU→staging copy for next-frame CPU read (avoids same-CB map of
-     * unexecuted compute writes on Vulkan). */
-    if (rhi_handle_valid(gc->vis_flags_staging) &&
-        rhi_handle_valid(flags_buf) &&
-        flags_buf.index == gc->visible_flags_ssbo.index &&
-        flags_buf.generation == gc->visible_flags_ssbo.generation) {
+    /* R169/R170: GPU→staging copy only for main-camera vis-flags readback.
+     * Shadow/compact paths must not overwrite the staging twin. */
+    if (stage_readback &&
+        rhi_handle_valid(gc->vis_flags_staging) &&
+        rhi_handle_valid(flags_buf)) {
         rhi_cmd_copy_buffer(cmd, flags_buf, gc->vis_flags_staging, n * sizeof(u32));
         gc->vis_flags_staging_valid = true;
     }

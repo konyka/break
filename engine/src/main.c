@@ -868,7 +868,7 @@ static bool mega_unified_cull_draw(GPUCullSystem *gc, RHIDevice *dev, RHICmdBuff
         hz_w = occ->hi_z_width;
         hz_h = occ->hi_z_height;
     }
-    gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h, RHI_HANDLE_NULL, true);
+    gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h, RHI_HANDLE_NULL, true, false);
     gpucull_execute_indirect_draws(gc, dev);
     return true;
 }
@@ -891,36 +891,12 @@ static bool mega_unified_vis_flags(GPUCullSystem *gc, RHICmdBuffer *cmd,
      * (Vulkan CB not yet submitted). First frame → all visible. */
     bool have = gpucull_read_vis_flags(gc, vis_count, out_flags);
     gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h,
-                             gc->visible_flags_ssbo, false /* flags-only */);
+                             gc->visible_flags_ssbo, false /* flags-only */,
+                             true /* stage_readback */);
     if (!have) {
         for (u32 i = 0; i < vis_count; i++) out_flags[i] = 1u;
     }
     return true;
-}
-
-static u32 mega_mat_groups_indirect(RHICmdBuffer *cmd, RHIDevice *dev, MegaBuffer *mb,
-                                    const u32 *draw_vis) {
-    u32 calls = 0u;
-    if (!mb || !mb->valid) return 0u;
-    /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
-    for (u32 g = 0; g < mb->mat_group_count; g++) {
-        u32 gcount = mb->mat_systems[g].current_draw_count;
-        memset(g_vis_flags, 0, gcount * sizeof(u32));
-        u32 start = mb->group_cmd_offsets[g];
-        u32 end   = mb->group_cmd_offsets[g + 1];
-        for (u32 gi = 0; gi < end - start; gi++) {
-            u32 ci = mb->group_cmd_list[start + gi];
-            g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
-        }
-        indirect_draw_upload_visibility(&mb->mat_systems[g], dev, g_vis_flags, gcount);
-        indirect_draw_compact_no_barrier(&mb->mat_systems[g], dev, cmd);
-    }
-    rhi_cmd_memory_barrier(cmd);
-    for (u32 g = 0; g < mb->mat_group_count; g++) {
-        indirect_draw_execute(&mb->mat_systems[g], dev);
-        calls++;
-    }
-    return calls;
 }
 
 static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *scene,
@@ -3474,8 +3450,8 @@ u32 culled_count = 0;
                 else if (unified_forward_enabled) tag = "+forward";
                 else if (unified_deferred_enabled) tag = "+deferred";
                 if (unified_shadow_enabled) {
-                    if (tag[0]) debug_ui_text(&ui, "UnifiedCull: on (1-pass%s +shadow-mat)", tag);
-                    else debug_ui_text(&ui, "UnifiedCull: on (1-pass +shadow-mat)");
+                    if (tag[0]) debug_ui_text(&ui, "UnifiedCull: on (1-pass%s +shadow-compact)", tag);
+                    else debug_ui_text(&ui, "UnifiedCull: on (1-pass +shadow-compact)");
                 } else {
                     debug_ui_text(&ui, "UnifiedCull: on (1-pass cull+compact%s)", tag);
                 }
@@ -3740,18 +3716,12 @@ u32 culled_count = 0;
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
 
-                    /* Per-cascade culling, then GPU stream-compaction. */
+                    /* R170: Shadow uses GPU compact only — never camera Hi-Z or
+                     * shared vis_flags staging (wrong VP / cross-view pollution). */
                     u32 vis_count = mega_buf.draw_cmd_count;
                     if (mega_use_unified_shadow(&mega_buf) &&
-                        mega_unified_vis_flags(&gpucull_sys, cmd, &render.cascade_vp[c].e[0][0],
-                                               vis_count, &occ_sys, g_draw_vis)) {
-                        u32 mc = mega_mat_groups_indirect(cmd, render.device,
-                                                          &mega_buf, g_draw_vis);
-                        draw_calls += mc;
-                        draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
-                        draw_bench_mark_unified();
-                    } else if (gpucull_enabled && mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
-                                                  &render.cascade_vp[c].e[0][0], vis_count, &occ_sys)) {
+                        mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
+                                                  &render.cascade_vp[c].e[0][0], vis_count, NULL)) {
                         draw_calls++;
                         draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                         draw_bench_mark_unified();
@@ -3836,21 +3806,13 @@ u32 culled_count = 0;
                             rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                             rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
 
-                            /* Frustum cull from this cubemap face's perspective */
+                            /* R170: Point-shadow faces — GPU compact, no camera Hi-Z. */
                             u32 vis_count = mega_buf.draw_cmd_count;
                             u32 face_idx = pli * POINT_SHADOW_FACES + pface;
                             if (mega_use_unified_shadow(&mega_buf) &&
-                                mega_unified_vis_flags(&gpucull_sys, cmd,
-                                                       &pt_shadows.light_vp[face_idx].e[0][0],
-                                                       vis_count, &occ_sys, g_draw_vis)) {
-                                u32 mc = mega_mat_groups_indirect(cmd, render.device,
-                                                                  &mega_buf, g_draw_vis);
-                                draw_calls += mc;
-                                draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
-                                draw_bench_mark_unified();
-                            } else if (gpucull_enabled && mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
+                                mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
-                                                          vis_count, &occ_sys)) {
+                                                          vis_count, NULL)) {
                                 draw_calls++;
                                 draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                                 draw_bench_mark_unified();

@@ -3246,12 +3246,13 @@ void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
      * fragment shader samples it as a uniform texel buffer.
      * R168-B: Also cover indirect command reads (particle/gpucull draw_indirect). */
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT
-                          | VK_ACCESS_HOST_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                          | VK_ACCESS_HOST_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT
+                          | VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
             | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT
-            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 1, &barrier, 0, NULL, 0, NULL);
 }
 

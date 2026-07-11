@@ -1091,7 +1091,7 @@ int main(int argc, char **argv) {
                 RHICmdBuffer *cmd = rhi_frame_begin(render.device);
                 if (!cmd) { break; }
                 rhi_cmd_end_render_pass(cmd);
-                gpucull_dispatch_unified(&uc, cmd, &vp.e[0][0], NULL, RHI_HANDLE_NULL, 0, 0, RHI_HANDLE_NULL, true);
+                gpucull_dispatch_unified(&uc, cmd, &vp.e[0][0], NULL, RHI_HANDLE_NULL, 0, 0, RHI_HANDLE_NULL, true, false);
                 rhi_frame_end(render.device);
                 rhi_present(render.device);
                 dispatch_ok++;

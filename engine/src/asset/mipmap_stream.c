@@ -185,6 +185,8 @@ i32 mipmap_stream_register(MipmapStreamManager *mgr, const char *path,
                             u32 bytes_per_pixel) {
     if (!mgr || !mgr->ready || !path) return -1;
     if (mgr->texture_count >= MIPMAP_STREAM_MAX_TEXTURES) return -1;
+    /* R170: Reject zero dims/mips/bpp before allocating a slot (mip_count-1 underflow). */
+    if (width == 0u || height == 0u || mip_count == 0u || bytes_per_pixel == 0u) return -1;
     if (mip_count > MIPMAP_STREAM_MAX_LEVELS) mip_count = MIPMAP_STREAM_MAX_LEVELS;
 
     i32 idx = (i32)mgr->texture_count++;

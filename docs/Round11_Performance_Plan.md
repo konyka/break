@@ -3540,7 +3540,31 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R170：阴影 Hi-Z/staging + MPSC/任务/indirect 回退（已完成）
+
+### [x] R170-A/B 阴影 compact + staging 隔离
+- [x] 阴影 `occ=NULL` + GPU compact；仅主相机 `stage_readback`
+
+### [x] R170-C transfer barrier
+- [x] VK TRANSFER；GL BUFFER_UPDATE
+
+### [x] R170-D MPSC sequence
+- [x] 写 indices 后 release 发布
+
+### [x] R170-E task 有效依赖
+- [x] `dep_count` 仅计有效 handle
+
+### [x] R170-F/G compact 清零 + 去 flags 上传
+- [x] compact 前清零 n draws；删除 flags CPU 零上传
+
+### [x] R170-H mipmap 零 mip
+- [x] register 拒绝 width/height/mip/bpp == 0
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 ```bash
 # Vulkan

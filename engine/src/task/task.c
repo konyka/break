@@ -665,10 +665,10 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
 
-    /* Set dependency count — task won't execute until all deps decrement it */
-    atomic_store_explicit(&t->dep_count, dep_count, memory_order_relaxed);
+    /* R170: Count only valid, live dependencies — invalid handles must not
+     * inflate dep_count or the task never becomes runnable. */
+    u32 actual_deps = 0u;
 
-    /* Link this task as parent of each dependency (O(1) lookup via pool index) */
     platform_mutex_lock(ts->pool_mutex_storage);
     for (u32 d = 0; d < dep_count; d++) {
         u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
@@ -679,13 +679,15 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
         Task *dep = ts->task_pool[idx];
         if (dep && dep->handle == deps[d]) {
             dep->parent = t;
+            actual_deps++;
             atomic_fetch_add_explicit(&t->ref_count, 1, memory_order_relaxed);
         }
     }
+    atomic_store_explicit(&t->dep_count, actual_deps, memory_order_release);
     platform_mutex_unlock(ts->pool_mutex_storage);
 
     /* If no actual dependencies found, submit immediately */
-    if (atomic_load_explicit(&t->dep_count, memory_order_acquire) == 0) {
+    if (actual_deps == 0u) {
         submit_to_system(ts, t);
     }
     /* Otherwise, task will be submitted when last dep completes (in execute_task) */

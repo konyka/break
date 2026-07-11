@@ -50,11 +50,14 @@ typedef struct {
     u32      count;
 } RequestHeap;
 
-/* MPSC completion queue (multiple producers = workers, single consumer = main thread) */
+/* MPSC completion queue (multiple producers = workers, single consumer = main thread).
+ * R170: Per-slot sequence publishes after the index write so the consumer never
+ * observes a new head with an uninitialized indices[] entry. */
 typedef struct {
     _Atomic u64 head;  /* fetch_add by producers */
     _Atomic u64 tail;  /* read by consumer (main thread only) */
     u64         indices[ASYNC_QUEUE_SIZE];
+    _Atomic u64 sequences[ASYNC_QUEUE_SIZE];
 } CompletionQueue;
 
 typedef struct {
@@ -142,9 +145,14 @@ static bool heap_pop(RequestHeap *heap, u64 *out_slot) {
 }
 
 static void enqueue_completion(u64 slot_idx) {
+    /* R170: Claim index with relaxed fetch_add, write payload, then publish
+     * sequence with release so poll cannot read a stale/empty slot. */
     u64 comp_slot = atomic_fetch_add_explicit(
-        &g_loader.completion_queue.head, 1, memory_order_acq_rel);
-    g_loader.completion_queue.indices[comp_slot & ASYNC_QUEUE_MASK] = slot_idx;
+        &g_loader.completion_queue.head, 1, memory_order_relaxed);
+    u32 i = (u32)(comp_slot & ASYNC_QUEUE_MASK);
+    g_loader.completion_queue.indices[i] = slot_idx;
+    atomic_store_explicit(&g_loader.completion_queue.sequences[i],
+                          comp_slot + 1u, memory_order_release);
 }
 
 /* R165-C: Atomically transition request from ASSET_LOADING to a final state.
@@ -495,7 +503,13 @@ void async_loader_tick(void) {
     u64 head = atomic_load_explicit(&g_loader.completion_queue.head, memory_order_acquire);
 
     while (tail < head) {
-        u64 idx = g_loader.completion_queue.indices[tail & ASYNC_QUEUE_MASK];
+        u32 qi = (u32)(tail & ASYNC_QUEUE_MASK);
+        /* R170: Wait until the producer has published this slot. */
+        u64 seq = atomic_load_explicit(&g_loader.completion_queue.sequences[qi],
+                                       memory_order_acquire);
+        if (seq != tail + 1u) break;
+
+        u64 idx = g_loader.completion_queue.indices[qi];
         AsyncRequest *req = &g_loader.requests[idx];
 
         u32 st = atomic_load_explicit(&req->state, memory_order_acquire);

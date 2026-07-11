@@ -61,6 +61,7 @@ typedef struct {
     usize           _pack_buf_cap;      /* capacity in f32 elements */
     u32            *_zero_buf;
     usize           _zero_buf_cap;      /* capacity in u32 elements */
+    GPUCullDrawCmd *_zero_draws;        /* R170: clear compacted draws for VK fallback */
 } GPUCullSystem;
 
 /* Legacy API */
@@ -92,14 +93,16 @@ void gpucull_upload_objects_unified(GPUCullSystem *gc, const GPUCullObject *obje
  *   - Hierarchical Z-buffer occlusion culling when `hi_z_texture` is valid
  *     (uses previous frame's Hi-Z pyramid, 1-frame latency)
  *   - Compaction of visible draws into indirect draw buffer when compact_draws
- *   - Copies vis flags to staging for next-frame CPU readback (R169)
+ *   - Copies vis flags to staging for next-frame CPU readback only when
+ *     stage_readback is set (main-camera vis-flags path; R170)
  */
 void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                               const f32 *vp, const f32 *camera_pos,
                               RHITexture hi_z_texture,
                               u32 hi_z_width, u32 hi_z_height,
                               RHIBuffer vis_flags_out,
-                              bool compact_draws);
+                              bool compact_draws,
+                              bool stage_readback);
 
 /* Read per-draw visibility flags from the previous frame's staging copy (R169).
  * Returns false if no prior frame is available — caller should treat all as visible. */

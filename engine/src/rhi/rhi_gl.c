@@ -1670,9 +1670,11 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     (void)cmd;
     /* R168-B: Include COMMAND_BARRIER so compute writes to DrawIndirect /
-     * DrawElementsIndirect buffers are visible to subsequent indirect draws. */
+     * DrawElementsIndirect buffers are visible to subsequent indirect draws.
+     * R170: BUFFER_UPDATE so compute→copy_buffer (vis_flags staging) is ordered. */
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
-                    | GL_TEXTURE_FETCH_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+                    | GL_TEXTURE_FETCH_BARRIER_BIT | GL_COMMAND_BARRIER_BIT
+                    | GL_BUFFER_UPDATE_BARRIER_BIT);
 }
 
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only) {
