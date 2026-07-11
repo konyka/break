@@ -1086,6 +1086,8 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     }
 
     glBindTexture(GL_TEXTURE_2D, 0);
+    /* R190-A: create bypasses gl_bind_tex_unit — invalidate active-unit cache. */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
     if (!td) { glDeleteTextures(1, &gl_tex); return RHI_HANDLE_NULL; }
@@ -1345,6 +1347,8 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     f32 border[] = {1.0f, 1.0f, 1.0f, 1.0f};
     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
     glBindTexture(GL_TEXTURE_2D, 0);
+    /* R190-A: secondary bind bypasses gl_bind_tex_unit. */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     GLuint gl_fbo = 0;
     glGenFramebuffers(1, &gl_fbo);
@@ -1444,6 +1448,8 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    /* R190-A: create bypasses gl_bind_tex_unit. */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
     if (!td) { glDeleteTextures(1, &gl_tex); return RHI_HANDLE_NULL; }
@@ -1682,6 +1688,8 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fd->color_tex, 0);
+    /* R190-A: create bypasses gl_bind_tex_unit. */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     glGenRenderbuffers(1, &fd->depth_rb);
     glBindRenderbuffer(GL_RENDERBUFFER, fd->depth_rb);
@@ -1948,6 +1956,8 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                            GL_TEXTURE_2D, md->depth_tex, 0);
+    /* R190-A: create bypasses gl_bind_tex_unit. */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     gl_bind_fbo_cached(0);
 
@@ -2078,6 +2088,8 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    /* R190-A: create bypasses gl_bind_tex_unit. */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     /* Create FBO (face attachments are set dynamically per-face). */
     glGenFramebuffers(1, &cd->gl_fbo);

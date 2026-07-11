@@ -3785,6 +3785,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R190：GL create 纹理缓存失效 + object_ssbo DEVICE_LOCAL（已完成）
+
+### [x] R190-A create 清 g_tex_cache
+- [x] texture / shadow / cubemap / offscreen / MRT / cubemap-depth create
+
+### [x] R190-B object_ssbo DEVICE_LOCAL
+- [x] 零初始化 `initial_data`（对齐 R185；legacy 更新走 staging）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -52,11 +52,17 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
         return false;
     }
 
+    /* R190-B: object data is upload-once (unified) / rare (legacy staging);
+     * zero-init → DEVICE_LOCAL so CS does not read HOST_VISIBLE every frame. */
+    usize obj_bytes = GPUCULL_MAX_OBJECTS * sizeof(f32) * 4;
+    void *obj_zero = calloc(1, obj_bytes);
     RHIBufferDesc obj_desc = {
-        .size = GPUCULL_MAX_OBJECTS * sizeof(f32) * 4,
+        .size = obj_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = obj_zero,
     };
     gc->object_ssbo = rhi_buffer_create(dev, &obj_desc);
+    free(obj_zero);
 
     /* R185: GPU-only STORAGE → DEVICE_LOCAL via zeroed initial_data. */
     usize vis_bytes = GPUCULL_MAX_OBJECTS * sizeof(u32);
