@@ -64,6 +64,7 @@ typedef struct {
     GLuint gl_tex;
     u32    width;
     u32    height;
+    u32    mip_levels;          /* R194-A: for MAX_LEVEL / incomplete-texture guard */
     GLenum gl_internal_format;  /* GL internal format for image binding */
 } GLTextureData;
 
@@ -1061,6 +1062,7 @@ static GLenum rhi_format_to_gl_internal(RHIFormat fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return GL_RGBA8;
     case RHI_FORMAT_B8G8R8A8_UNORM: return GL_RGBA8;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return GL_RGBA16F;
+    case RHI_FORMAT_R32_FLOAT:      return GL_R32F;
     case RHI_FORMAT_D32_FLOAT:      return GL_DEPTH_COMPONENT32F;
     default: return GL_RGBA8;
     }
@@ -1071,6 +1073,7 @@ static GLenum rhi_format_to_gl_format(RHIFormat fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return GL_RGBA;
     case RHI_FORMAT_B8G8R8A8_UNORM: return GL_BGRA;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return GL_RGBA;
+    case RHI_FORMAT_R32_FLOAT:      return GL_RED;
     case RHI_FORMAT_D32_FLOAT:      return GL_DEPTH_COMPONENT;
     default: return GL_RGBA;
     }
@@ -1081,21 +1084,31 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     glGenTextures(1, &gl_tex);
     glBindTexture(GL_TEXTURE_2D, gl_tex);
 
-    glTexImage2D(GL_TEXTURE_2D, 0,
-                 rhi_format_to_gl_internal(desc->format),
-                 (GLsizei)desc->width, (GLsizei)desc->height, 0,
-                 rhi_format_to_gl_format(desc->format),
-                  (desc->format == RHI_FORMAT_D32_FLOAT || desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE,
-                 desc->data);
+    u32 mips = desc->mip_levels ? desc->mip_levels : 1u;
+    GLenum internal = rhi_format_to_gl_internal(desc->format);
+    GLenum fmt = rhi_format_to_gl_format(desc->format);
+    GLenum typ = (desc->format == RHI_FORMAT_D32_FLOAT
+                  || desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
+                  || desc->format == RHI_FORMAT_R32_FLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
-    if (desc->mip_levels > 1) {
-        glGenerateMipmap(GL_TEXTURE_2D);
-    } else {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    /* Allocate every requested level so MIPMAP min filters stay complete. */
+    for (u32 m = 0; m < mips; m++) {
+        u32 mw = desc->width >> m; if (mw == 0u) mw = 1u;
+        u32 mh = desc->height >> m; if (mh == 0u) mh = 1u;
+        const void *level_data = (m == 0u) ? desc->data : NULL;
+        glTexImage2D(GL_TEXTURE_2D, (GLint)m, internal,
+                     (GLsizei)mw, (GLsizei)mh, 0, fmt, typ, level_data);
     }
+    if (desc->data && mips > 1u) {
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)(mips - 1u));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    mips > 1u ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
     glBindTexture(GL_TEXTURE_2D, 0);
     /* R190-A: create bypasses gl_bind_tex_unit — invalidate active-unit cache. */
@@ -1107,7 +1120,8 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     td->gl_tex            = gl_tex;
     td->width             = desc->width;
     td->height            = desc->height;
-    td->gl_internal_format = rhi_format_to_gl_internal(desc->format);
+    td->mip_levels        = mips;
+    td->gl_internal_format = internal;
     dev->slots[idx].ptr  = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1151,6 +1165,11 @@ static GLenum rhi_filter_to_gl(RHIFilter f) {
     return f == RHI_FILTER_LINEAR ? GL_LINEAR : GL_NEAREST;
 }
 
+/* R194-A: MIN_FILTER must be a MIPMAP enum or textureLod ignores lod (base only). */
+static GLenum rhi_min_filter_to_gl(RHIFilter f) {
+    return f == RHI_FILTER_LINEAR ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+}
+
 static GLenum rhi_wrap_to_gl(RHIWrapMode w) {
     return w == RHI_WRAP_CLAMP_TO_EDGE ? GL_CLAMP_TO_EDGE : GL_REPEAT;
 }
@@ -1158,7 +1177,7 @@ static GLenum rhi_wrap_to_gl(RHIWrapMode w) {
 RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     GLuint gl_samp = 0;
     glGenSamplers(1, &gl_samp);
-    glSamplerParameteri(gl_samp, GL_TEXTURE_MIN_FILTER, rhi_filter_to_gl(desc->min_filter));
+    glSamplerParameteri(gl_samp, GL_TEXTURE_MIN_FILTER, rhi_min_filter_to_gl(desc->min_filter));
     glSamplerParameteri(gl_samp, GL_TEXTURE_MAG_FILTER, rhi_filter_to_gl(desc->mag_filter));
     glSamplerParameteri(gl_samp, GL_TEXTURE_WRAP_S, rhi_wrap_to_gl(desc->wrap_u));
     glSamplerParameteri(gl_samp, GL_TEXTURE_WRAP_T, rhi_wrap_to_gl(desc->wrap_v));
@@ -1463,6 +1482,8 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, (GLint)(mips - 1u));
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
     /* R190-A: create bypasses gl_bind_tex_unit. */
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
@@ -1473,6 +1494,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     td->gl_tex            = gl_tex;
     td->width             = desc->size;
     td->height            = desc->size;
+    td->mip_levels        = mips;
     td->gl_internal_format = internal;
     dev->slots[idx].ptr   = td;
     dev->slots[idx].type  = RHI_RES_CUBEMAP;
@@ -1703,6 +1725,8 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     glTexImage2D(GL_TEXTURE_2D, 0, gl_internal, width, height, 0, gl_format, gl_type, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fd->color_tex, 0);
     /* R190-A: create bypasses gl_bind_tex_unit. */
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
@@ -1730,6 +1754,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     td->gl_tex             = fd->color_tex;
     td->width              = width;
     td->height             = height;
+    td->mip_levels         = 1u;
     td->gl_internal_format = gl_internal;
     dev->slots[cidx].ptr  = td;
     dev->slots[cidx].type = RHI_RES_TEXTURE;
@@ -1867,8 +1892,9 @@ void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler 
     /* R191-B: bind_texture_mip left BASE/MAX clamped (Hi-Z gen); restore full
      * chain so unified/occlusion compute can sample the pyramid. */
     if (td && g_mip_clamp_tex == td->gl_tex) {
+        GLint max_level = (td->mip_levels > 0u) ? (GLint)(td->mip_levels - 1u) : 0;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1000);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, max_level);
         g_mip_clamp_tex = 0;
         g_mip_clamp_level = -1;
     }
@@ -1961,6 +1987,8 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i,
                                GL_TEXTURE_2D, md->color_tex[i], 0);
         draw_bufs[i] = GL_COLOR_ATTACHMENT0 + i;
@@ -1977,6 +2005,8 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                            GL_TEXTURE_2D, md->depth_tex, 0);
     /* R190-A: create bypasses gl_bind_tex_unit. */
@@ -1998,6 +2028,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         td->gl_tex            = md->color_tex[i];
         td->width             = width;
         td->height            = height;
+        td->mip_levels        = 1u;
         td->gl_internal_format = rhi_format_to_gl_internal(formats[i]);
         dev->slots[cidx].ptr  = td;
         dev->slots[cidx].type = RHI_RES_TEXTURE;
@@ -2012,6 +2043,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         dtd->gl_tex            = md->depth_tex;
         dtd->width             = width;
         dtd->height            = height;
+        dtd->mip_levels        = 1u;
         dtd->gl_internal_format = GL_DEPTH_COMPONENT32F;
         dev->slots[didx].ptr   = dtd;
         dev->slots[didx].type  = RHI_RES_TEXTURE;
@@ -2110,6 +2142,8 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     /* Enable depth comparison for shadow sampling. */
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, 0);
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
     /* R190-A: create bypasses gl_bind_tex_unit. */
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
@@ -2129,6 +2163,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     td->gl_tex            = cd->depth_tex;
     td->width             = size;
     td->height            = size;
+    td->mip_levels        = 1u;
     td->gl_internal_format = GL_DEPTH_COMPONENT32F;
     dev->slots[tidx].ptr  = td;
     /* Tag as cubemap so gl_bind_tex_unit binds GL_TEXTURE_CUBE_MAP for the

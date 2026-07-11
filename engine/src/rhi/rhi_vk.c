@@ -3230,7 +3230,10 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     ci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     ci.unnormalizedCoordinates = VK_FALSE;
     ci.compareEnable = VK_FALSE;
-    ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    /* R194-B: match min_filter — Hi-Z NEAREST must not lerp across mips. */
+    ci.mipmapMode = (desc->min_filter == RHI_FILTER_LINEAR)
+        ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+        : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.mipLodBias = 0.0f;
     ci.minLod = 0.0f;
     /* R193-A: maxLod=0 clamped every textureLod/implicit LOD to mip0 — broke

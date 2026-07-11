@@ -3828,6 +3828,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R194：GL/VK sampler mip 过滤对齐（已完成）
+
+### [x] R194-A GL MIN_FILTER MIPMAP + MAX_LEVEL
+- [x] `NEAREST_MIPMAP_NEAREST` / `LINEAR_MIPMAP_LINEAR`
+- [x] 纹理/cubemap/FBO 设 `MAX_LEVEL`；`GLTextureData.mip_levels`
+- [x] `bind_texture_compute` 恢复用 `mip_levels-1`
+
+### [x] R194-B VK mipmapMode
+- [x] 按 `min_filter` 选 LINEAR / NEAREST
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
