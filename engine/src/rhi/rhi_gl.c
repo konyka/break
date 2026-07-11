@@ -1847,6 +1847,11 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
 }
 
+void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
+    /* GL bind never clears attachments — LOAD and CLEAR are identical. */
+    rhi_offscreen_fbo_bind(cmd, fbo);
+}
+
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     gl_bind_fbo_cached(0);

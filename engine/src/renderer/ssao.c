@@ -144,7 +144,8 @@ void ssao_apply(SSAOSystem *ssao, RHICmdBuffer *cmd, RHITexture depth_tex,
 
     rhi_cmd_draw(cmd, 3, 1);
 
-    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    /* R196-B: no intermediate unbind — next post effect bind switches FBO;
+     * unbind would Begin+Clear swapchain only to be discarded. */
 }
 
 RHITexture ssao_get_texture(SSAOSystem *ssao) {

@@ -127,7 +127,7 @@ void ssr_apply(SSRSystem *ssr, RHICmdBuffer *cmd, RHITexture color_tex, RHITextu
 
     rhi_cmd_draw(cmd, 3, 1);
 
-    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    /* R196-B: skip intermediate swapchain CLEAR unbind. */
 }
 
 RHITexture ssr_get_texture(SSRSystem *ssr) {

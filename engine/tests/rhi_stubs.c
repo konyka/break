@@ -62,6 +62,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *d, u32 w, u32 h)    { (void)
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *d, u32 w, u32 h, RHIFormat fmt) { (void)d; (void)w; (void)h; (void)fmt; return stub_offscreen_fbo; }
 void       rhi_offscreen_fbo_destroy(RHIDevice *d, RHIOffscreenFBO *fbo) { (void)d; (void)fbo; }
 void       rhi_offscreen_fbo_bind(RHICmdBuffer *c, RHIOffscreenFBO *fbo) { (void)c; (void)fbo; }
+void       rhi_offscreen_fbo_bind_load(RHICmdBuffer *c, RHIOffscreenFBO *fbo) { (void)c; (void)fbo; }
 void       rhi_offscreen_fbo_unbind(RHICmdBuffer *c, u32 w, u32 h)    { (void)c; (void)w; (void)h; }
 
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *c, i32 loc, f32 v)          { (void)c; (void)loc; (void)v; }

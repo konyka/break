@@ -3851,6 +3851,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R196：tonemap LOAD 保深度 + 后处理去掉中间 unbind（已完成）
+
+### [x] R196-A rhi_offscreen_fbo_bind_load
+- [x] VK 用 `render_pass_load`；深度若 READ_ONLY 先转回 attachment
+- [x] tonemap/cinematic 对 `scene_fbo` 改走 LOAD
+
+### [x] R196-B 删中间 unbind
+- [x] SSAO/TAA/SSR/DoF/volumetric/bloom/combined
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

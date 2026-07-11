@@ -147,7 +147,7 @@ void volumetric_apply(VolumetricSystem *vol, RHICmdBuffer *cmd,
 
     rhi_cmd_draw(cmd, 3, 1);
 
-    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    /* R196-B: skip intermediate swapchain CLEAR unbind. */
 }
 
 RHITexture volumetric_get_texture(VolumetricSystem *vol) {

@@ -126,7 +126,7 @@ void dof_apply(DOFSystem *dof, RHICmdBuffer *cmd, RHITexture color_tex, RHITextu
 
     rhi_cmd_draw(cmd, 3, 1);
 
-    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    /* R196-B: skip intermediate swapchain CLEAR unbind. */
 }
 
 RHITexture dof_get_texture(DOFSystem *dof) {

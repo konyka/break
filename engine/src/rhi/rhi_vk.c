@@ -5961,6 +5961,67 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
 }
 
+void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
+    (void)cmd;
+    if (!fbo) return;
+    VKBackend *vk = vk_backend(g_current_device);
+    VKFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
+    if (!fd || !fd->render_pass_load) {
+        /* Fallback if LOAD twin missing. */
+        rhi_offscreen_fbo_bind(cmd, fbo);
+        return;
+    }
+
+    /* Depth may be SHADER_READ_ONLY after transition_depth_to_read; LOAD twin
+     * expects DEPTH_STENCIL_ATTACHMENT (finalLayout of the clear pass). */
+    VKTextureData *dtd = (VKTextureData *)rhi_get_resource(g_current_device, fbo->depth_tex);
+    if (dtd && dtd->cur_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        vk_suspend_pass_for_compute(vk);
+        VkImageMemoryBarrier barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.image = dtd->image;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                              | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            0, 0, NULL, 0, NULL, 1, &barrier);
+        dtd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    } else if (dtd) {
+        dtd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+
+    if (vk->render_pass_active) {
+        vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
+        vk->render_pass_active = false;
+    }
+
+    VkRenderPassBeginInfo rpi = {0};
+    rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpi.renderPass = fd->render_pass_load;
+    rpi.framebuffer = fd->framebuffer;
+    rpi.renderArea.extent.width = fbo->width;
+    rpi.renderArea.extent.height = fbo->height;
+    rpi.clearValueCount = 0;
+    rpi.pClearValues = NULL;
+    vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi,
+        VK_SUBPASS_CONTENTS_INLINE);
+    vk->render_pass_active = true;
+    vk_record_pass(vk, fd->render_pass_load, fd->framebuffer, fbo->width, fbo->height, fd->color_fmt);
+
+    VkViewport vp = {0, 0, (f32)fbo->width, (f32)fbo->height, 0, 1};
+    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    VkRect2D sc = {{0, 0}, {fbo->width, fbo->height}};
+    vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false; vk->sc_valid = false;
+}
+
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);

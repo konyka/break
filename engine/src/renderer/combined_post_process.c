@@ -198,7 +198,7 @@ void combined_aa_apply(CombinedAA *caa, RHICmdBuffer *cmd,
             rhi_cmd_set_uniform_f32(cmd, caa->loc_use_velocity, use_vel ? 1.0f : 0.0f);
 
         rhi_cmd_draw(cmd, 3, 1);
-        rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+        /* R196-B: skip intermediate swapchain CLEAR unbind. */
 
         caa->history_idx = read_idx;
         caa->first_frame = false;
@@ -343,7 +343,7 @@ void combined_color_apply(CombinedColor *cc, RHICmdBuffer *cmd,
         if (cc->loc_screen_h >= 0)    rhi_cmd_set_uniform_f32(cmd, cc->loc_screen_h, (f32)screen_h);
 
         rhi_cmd_draw(cmd, 3, 1);
-        rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+        /* R196-B: skip intermediate swapchain CLEAR unbind. */
         return;
     }
 
@@ -376,7 +376,7 @@ void combined_color_apply(CombinedColor *cc, RHICmdBuffer *cmd,
     rhi_offscreen_fbo_bind(cmd, &cc->output_fbo);
     cinematic_apply(&cc->cinematic, cmd, cg_out, screen_w, screen_h, time);
 
-    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    /* R196-B: skip intermediate swapchain CLEAR unbind. */
 }
 
 RHITexture combined_color_get_output(CombinedColor *cc) {

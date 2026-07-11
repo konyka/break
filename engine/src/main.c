@@ -5375,7 +5375,7 @@ u32 culled_count = 0;
             used_combined_color = true;
         } else {
             if (tonemap.ready && rhi_handle_valid(scene_fbo.fb)) {
-                rhi_offscreen_fbo_bind(cmd, &scene_fbo);
+                rhi_offscreen_fbo_bind_load(cmd, &scene_fbo);
                 tonemap_apply(&tonemap, cmd, post_input, rw, rh);
                 tonemap_input = scene_fbo.color_tex;
             }
@@ -5394,7 +5394,7 @@ u32 culled_count = 0;
 
         /* Cinematic post-process when combined color path did not already apply it. */
         if (cine_sys.ready && cine_enabled && !used_combined_color) {
-            rhi_offscreen_fbo_bind(cmd, &scene_fbo);
+            rhi_offscreen_fbo_bind_load(cmd, &scene_fbo);
             cinematic_apply(&cine_sys, cmd, tonemap_input, rw, rh, (f32)total_time);
             tonemap_input = scene_fbo.color_tex;
         }

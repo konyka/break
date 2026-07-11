@@ -157,6 +157,7 @@ void post_process_shutdown(PostProcess *pp) {
 void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_color,
                          u32 screen_w, u32 screen_h) {
     if (!pp->ready) return;
+    (void)screen_w; (void)screen_h; /* R196-B: kept for API; unbind removed */
 
     rhi_cmd_bind_pipeline(cmd, pp->extract_pipe);
     if (pp->loc_threshold >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_threshold, pp->threshold);
@@ -195,7 +196,7 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_composite);
     rhi_cmd_draw(cmd, 3, 1);
 
-    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    /* R196-B: skip intermediate swapchain CLEAR unbind. */
 }
 
 RHITexture post_process_get_bloom_texture(PostProcess *pp) {

@@ -270,6 +270,9 @@ RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height);
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt);
 void            rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
+/* R196-A: re-bind without clearing (preserve color+depth). Tonemap/cinematic
+ * reuse scene_fbo; CLEAR bind would wipe depth needed by god_rays/upscale. */
+void            rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
 
 /* ---- MRT (Multiple Render Targets) framebuffer ---- */
