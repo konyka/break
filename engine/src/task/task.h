@@ -18,12 +18,18 @@ typedef u64 TaskHandle;
 #define TASK_HANDLE_INVALID ((TaskHandle)0)
 
 /* ---- Task Node ---- */
+typedef struct TaskWaitLink TaskWaitLink;
+struct TaskWaitLink {
+    struct Task *child;
+    TaskWaitLink *next;
+};
+
 typedef struct Task {
     TaskFn       fn;
     void        *ctx;
     _Atomic u32  dep_count;     /* outstanding dependency count */
     _Atomic u32  ref_count;     /* reference count for lifetime */
-    struct Task *parent;        /* parent task (dependency chain) */
+    TaskWaitLink *waiters;      /* R173: tasks waiting on this one (fan-out) */
     TaskPriority priority;
     TaskHandle   handle;
     _Atomic bool completed;     /* set true after fn() returns */

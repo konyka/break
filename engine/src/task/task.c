@@ -223,7 +223,7 @@ static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio)
     t->priority = prio;
     atomic_store_explicit(&t->dep_count, 0, memory_order_relaxed);
     atomic_store_explicit(&t->ref_count, 2, memory_order_relaxed); /* exec ref + pool ref */
-    t->parent = NULL;
+    t->waiters = NULL;
 
     /* Assign handle: encode pool index for O(1) lookup in wait_handle */
     u32 gen = (u32)(atomic_fetch_add_explicit(&ts->next_handle, 1, memory_order_relaxed) + 1);
@@ -335,16 +335,24 @@ static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
     atomic_store_explicit(&task->completed, true, memory_order_release);
     atomic_fetch_add_explicit(&ts->total_tasks_completed, 1, memory_order_relaxed);
 
-    /* Resolve parent dependency. Each dependency holds one reference to the
-     * parent (taken in task_submit_dep); release it here. */
-    Task *parent = task->parent;
-    if (parent) {
-        u32 old = atomic_fetch_sub_explicit(&parent->dep_count, 1, memory_order_acq_rel);
-        if (old == 1) {
-            /* All dependencies resolved — schedule parent (owner-safe). */
-            schedule_ready(ts, self, parent);
+    /* R173: Detach waiter list under pool lock (fan-out + race-safe). */
+    platform_mutex_lock(ts->pool_mutex_storage);
+    TaskWaitLink *waiters = task->waiters;
+    task->waiters = NULL;
+    platform_mutex_unlock(ts->pool_mutex_storage);
+
+    while (waiters) {
+        TaskWaitLink *link = waiters;
+        waiters = link->next;
+        Task *child = link->child;
+        free(link);
+        if (child) {
+            u32 old = atomic_fetch_sub_explicit(&child->dep_count, 1, memory_order_acq_rel);
+            if (old == 1) {
+                schedule_ready(ts, self, child);
+            }
+            task_release(child);
         }
-        task_release(parent);
     }
 
     task_release(task);
@@ -665,32 +673,39 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
 
-    /* R170: Count only valid, live dependencies — invalid handles must not
-     * inflate dep_count or the task never becomes runnable. */
+    /* R173: Count toward task_wait even while blocked on deps. */
+    atomic_fetch_add_explicit(&ts->total_tasks_submitted, 1, memory_order_relaxed);
+
+    /* R170/R173: Link into each dep's waiter list (fan-out). Skip completed. */
     u32 actual_deps = 0u;
 
     platform_mutex_lock(ts->pool_mutex_storage);
     for (u32 d = 0; d < dep_count; d++) {
         u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
-        /* R156: Check against task_pool_capacity, not task_pool_count —
-         * pool_count can exceed capacity when pool is exhausted, causing
-         * out-of-bounds read on task_pool[]. */
         if (idx >= ts->task_pool_capacity) continue;
         Task *dep = ts->task_pool[idx];
-        if (dep && dep->handle == deps[d]) {
-            dep->parent = t;
-            actual_deps++;
-            atomic_fetch_add_explicit(&t->ref_count, 1, memory_order_relaxed);
-        }
+        if (!dep || dep->handle != deps[d]) continue;
+        if (atomic_load_explicit(&dep->completed, memory_order_acquire)) continue;
+
+        TaskWaitLink *link = (TaskWaitLink *)malloc(sizeof(TaskWaitLink));
+        if (!link) continue;
+        link->child = t;
+        link->next = dep->waiters;
+        dep->waiters = link;
+        actual_deps++;
+        atomic_fetch_add_explicit(&t->ref_count, 1, memory_order_relaxed);
     }
     atomic_store_explicit(&t->dep_count, actual_deps, memory_order_release);
     platform_mutex_unlock(ts->pool_mutex_storage);
 
-    /* If no actual dependencies found, submit immediately */
+    /* Ready now — enqueue without double-counting submitted. */
     if (actual_deps == 0u) {
-        submit_to_system(ts, t);
+        if (tls_worker_id >= 0 && (u32)tls_worker_id < ts->worker_count) {
+            Worker *w = &ts->workers[tls_worker_id];
+            if (deque_push(&w->queues[t->priority], t)) return h;
+        }
+        enqueue_global(ts, t);
     }
-    /* Otherwise, task will be submitted when last dep completes (in execute_task) */
 
     return h;
 }

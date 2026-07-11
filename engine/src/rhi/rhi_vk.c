@@ -2768,6 +2768,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     td->height = desc->height;
     td->format = fmt;
     td->mip_levels = ci.mipLevels;
+    /* R173: Both create paths leave all mips in SHADER_READ_ONLY_OPTIMAL. */
+    for (u32 m = 0; m < td->mip_levels && m < VK_MAX_MIP_VIEWS; m++) {
+        td->mip_layout[m] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
     dev->slots[idx].ptr = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -2913,6 +2917,9 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
     vkDestroyBuffer(vk->device, staging, NULL);
     vkFreeMemory(vk->device, staging_mem, NULL);
+    /* R173: Upload ends in SHADER_READ_ONLY_OPTIMAL for this mip. */
+    if (mip_level < VK_MAX_MIP_VIEWS)
+        td->mip_layout[mip_level] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
