@@ -3840,6 +3840,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R195：GL offscreen 可采样 depth + Hi-Z 生成后恢复 mip（已完成）
+
+### [x] R195-A offscreen depth 纹理
+- [x] `GL_DEPTH_COMPONENT32F` 替代 renderbuffer
+- [x] 注册 `fbo.depth_tex`；destroy 对称清理
+
+### [x] R195-B Hi-Z 生成结束恢复
+- [x] `bind_texture_mip` 后再 `bind_texture_compute`（清 GL 钳制）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

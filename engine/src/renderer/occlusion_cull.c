@@ -313,10 +313,13 @@ void occlusion_cull_generate_hi_z(OcclusionCullSystem *sys, RHICmdBuffer *cmd, R
         rhi_cmd_memory_barrier(cmd);
     }
     /* R172: Final mip remains GENERAL after write — transition to sampleable
-     * so unified cull's full-mip view can use SHADER_READ_ONLY_OPTIMAL. */
+     * so unified cull's full-mip view can use SHADER_READ_ONLY_OPTIMAL.
+     * R195-B: GL bind_texture_mip clamps BASE/MAX to last level; restore full
+     * pyramid immediately (unified may skip occlusion_cull_dispatch). */
     if (sys->hi_z_levels > 0u) {
         rhi_cmd_bind_texture_mip(cmd, sys->hi_z_texture, sys->hi_z_sampler,
                                  0, sys->hi_z_levels - 1u);
+        rhi_cmd_bind_texture_compute(cmd, sys->hi_z_texture, sys->hi_z_sampler, 0);
     }
 }
 

@@ -75,7 +75,7 @@ typedef struct {
 typedef struct {
     GLuint gl_fbo;
     GLuint color_tex;
-    GLuint depth_rb;
+    GLuint depth_tex; /* R195-A: sampleable depth (was renderbuffer depth_rb) */
 } GLFBOData;
 
 typedef struct {
@@ -588,7 +588,7 @@ void rhi_device_destroy(RHIDevice *dev) {
             if (fd) {
                 if (fd->gl_fbo) glDeleteFramebuffers(1, &fd->gl_fbo);
                 if (fd->color_tex) glDeleteTextures(1, &fd->color_tex);
-                if (fd->depth_rb) glDeleteRenderbuffers(1, &fd->depth_rb);
+                if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
                 free(fd);
             }
             break;
@@ -1731,10 +1731,22 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     /* R190-A: create bypasses gl_bind_tex_unit. */
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
-    glGenRenderbuffers(1, &fd->depth_rb);
-    glBindRenderbuffer(GL_RENDERBUFFER, fd->depth_rb);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fd->depth_rb);
+    /* R195-A: sampleable depth texture (align VK / MRT) so Hi-Z/SSAO can bind
+     * fbo.depth_tex — renderbuffer depth was never exposed as RHITexture. */
+    glGenTextures(1, &fd->depth_tex);
+    glBindTexture(GL_TEXTURE_2D, fd->depth_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
+                 (GLsizei)width, (GLsizei)height, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, fd->depth_tex, 0);
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
     gl_bind_fbo_cached(0);
 
@@ -1759,8 +1771,24 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     dev->slots[cidx].ptr  = td;
     dev->slots[cidx].type = RHI_RES_TEXTURE;
 
+    GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
+    if (!dtd) {
+        fbo.fb = rhi_make_handle(tidx, dev->slots[tidx].generation);
+        fbo.color_tex = rhi_make_handle(cidx, dev->slots[cidx].generation);
+        return fbo;
+    }
+    u32 didx = rhi_alloc_slot(dev);
+    dtd->gl_tex             = fd->depth_tex;
+    dtd->width              = width;
+    dtd->height             = height;
+    dtd->mip_levels         = 1u;
+    dtd->gl_internal_format = GL_DEPTH_COMPONENT32F;
+    dev->slots[didx].ptr  = dtd;
+    dev->slots[didx].type = RHI_RES_TEXTURE;
+
     fbo.fb = rhi_make_handle(tidx, dev->slots[tidx].generation);
     fbo.color_tex = rhi_make_handle(cidx, dev->slots[cidx].generation);
+    fbo.depth_tex = rhi_make_handle(didx, dev->slots[didx].generation);
 
     return fbo;
 }
@@ -1789,9 +1817,22 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
         }
         rhi_free_slot(dev, fbo->color_tex);
     }
+    if (rhi_handle_valid(fbo->depth_tex)) {
+        GLTextureData *dtd = (GLTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        if (dtd) {
+            for (u32 i = 0; i < 16; i++) {
+                if (g_tex_cache[i] == dtd->gl_tex) g_tex_cache[i] = 0;
+            }
+            free(dtd);
+        }
+        if (dev->slots[fbo->depth_tex.index].ptr == dtd) {
+            dev->slots[fbo->depth_tex.index].ptr = NULL;
+        }
+        rhi_free_slot(dev, fbo->depth_tex);
+    }
     glDeleteFramebuffers(1, &fd->gl_fbo);
     glDeleteTextures(1, &fd->color_tex);
-    glDeleteRenderbuffers(1, &fd->depth_rb);
+    if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
     free(fd);
     rhi_free_slot(dev, fbo->fb);
     memset(fbo, 0, sizeof(*fbo));
