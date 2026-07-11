@@ -84,6 +84,7 @@ typedef struct {
     usize          size;
     bool           is_texel;
     u8            *mapped;
+    bool           device_local; /* R181: no persistent map; updates via staging */
 } VKBufferData;
 
 typedef struct {
@@ -2373,6 +2374,95 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     rhi_free_slot(dev, pipe);
 }
 
+/* R181: One-shot host→DEVICE_LOCAL buffer copy (create / rare update). */
+static bool vk_buffer_staging_upload(VKBackend *vk, VkBuffer dst, usize dst_offset,
+                                     const void *data, usize size) {
+    if (!data || size == 0u) return true;
+    VkBuffer staging;
+    VkDeviceMemory staging_mem;
+    VkBufferCreateInfo bci = {0};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->device, &bci, NULL, &staging) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements smr;
+    vkGetBufferMemoryRequirements(vk->device, staging, &smr);
+    VkMemoryAllocateInfo smi = {0};
+    smi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    smi.allocationSize = smr.size;
+    smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (smi.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    if (vkBindBufferMemory(vk->device, staging, staging_mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    void *mapped = NULL;
+    if (vkMapMemory(vk->device, staging_mem, 0, size, 0, &mapped) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    memcpy(mapped, data, size);
+    vkUnmapMemory(vk->device, staging_mem);
+
+    vk_wait_frames(vk);
+    VkCommandBufferAllocateInfo cbai = {0};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandPool = vk->cmd_pool;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer tmp_cb;
+    if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    VkCommandBufferBeginInfo cbi = {0};
+    cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    VkBufferCopy region = {0};
+    region.srcOffset = 0;
+    region.dstOffset = dst_offset;
+    region.size = size;
+    vkCmdCopyBuffer(tmp_cb, staging, dst, 1, &region);
+    if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &tmp_cb;
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+        LOG_WARN("VK: queue wait failed after buffer staging upload");
+    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+    vkDestroyBuffer(vk->device, staging, NULL);
+    vkFreeMemory(vk->device, staging_mem, NULL);
+    return true;
+}
+
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     VKBackend *vk = vk_backend(dev);
 
@@ -2389,6 +2479,14 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (desc->usage & RHI_BUFFER_USAGE_INDIRECT)     ci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (is_texel)                                     ci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
 
+    /* R181: Static mesh VERTEX/INDEX with initial_data → DEVICE_LOCAL.
+     * Dynamic VBOs (font, no initial_data) and STORAGE/UNIFORM stay host-visible. */
+    bool mesh_only = (desc->usage & (RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) != 0
+        && (desc->usage & ~(RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
+    bool device_local = mesh_only && desc->initial_data != NULL;
+    if (device_local)
+        ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
     VkBuffer buf;
     if (vkCreateBuffer(vk->device, &ci, NULL, &buf) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create buffer");
@@ -2402,8 +2500,16 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = mem_req.size;
 
-    VkMemoryPropertyFlags props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VkMemoryPropertyFlags props = device_local
+        ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, props);
+    if (ai.memoryTypeIndex == UINT32_MAX && device_local) {
+        /* Fallback if DEVICE_LOCAL unsupported for this usage mask. */
+        device_local = false;
+        props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, props);
+    }
 
     VkDeviceMemory mem;
     if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS) {
@@ -2417,8 +2523,6 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         vkDestroyBuffer(vk->device, buf, NULL);
         return RHI_HANDLE_NULL;
     }
-
-    /* initial_data is copied after persistent mapping is established (below) */
 
     VkBufferView texel_view = VK_NULL_HANDLE;
     if (is_texel) {
@@ -2441,15 +2545,22 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     bd->size = desc->size;
     bd->texel_view = texel_view;
     bd->is_texel = is_texel;
-    /* Persistent mapping: HOST_VISIBLE | HOST_COHERENT memory stays mapped
-     * for the buffer's lifetime. Eliminates vkMapMemory/vkUnmapMemory overhead
-     * in rhi_buffer_update (called multiple times per frame). */
-    if (vkMapMemory(vk->device, mem, 0, desc->size, 0, (void **)&bd->mapped) != VK_SUCCESS) {
-        LOG_WARN("VK: vkMapMemory failed for persistent mapping in buffer_create");
-        bd->mapped = NULL;
-    }
-    if (desc->initial_data && bd->mapped) {
-        memcpy(bd->mapped, desc->initial_data, desc->size);
+    bd->device_local = device_local;
+    if (!device_local) {
+        /* Persistent mapping: HOST_VISIBLE | HOST_COHERENT memory stays mapped
+         * for the buffer's lifetime. Eliminates vkMapMemory/vkUnmapMemory overhead
+         * in rhi_buffer_update (called multiple times per frame). */
+        if (vkMapMemory(vk->device, mem, 0, desc->size, 0, (void **)&bd->mapped) != VK_SUCCESS) {
+            LOG_WARN("VK: vkMapMemory failed for persistent mapping in buffer_create");
+            bd->mapped = NULL;
+        }
+        if (desc->initial_data && bd->mapped) {
+            memcpy(bd->mapped, desc->initial_data, desc->size);
+        }
+    } else if (desc->initial_data) {
+        if (!vk_buffer_staging_upload(vk, buf, 0, desc->initial_data, desc->size)) {
+            LOG_WARN("VK: DEVICE_LOCAL buffer staging upload failed");
+        }
     }
     dev->slots[idx].ptr = bd;
     dev->slots[idx].type = RHI_RES_BUFFER;
@@ -4658,7 +4769,9 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
+        vk->render_pass_active = false; /* R181: match offscreen_fbo_bind */
     }
+    vk->pass_suspended = false;
 
     VkRenderPassBeginInfo rpi = {0};
     rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -4688,7 +4801,9 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
+        vk->render_pass_active = false; /* R181: close state before early-return */
     }
+    vk->pass_suspended = false;
     if (!vk->framebuffers) return;  /* R150: guard against NULL framebuffers */
 
     VkRenderPassBeginInfo rpi = {0};
@@ -5130,9 +5245,14 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) { (void)cmd; (void)e
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
     VKBackend *vk = vk_backend(dev);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
-    if (!bd) return;
+    if (!bd || !data || size == 0u) return;
     if (bd->mapped) {
         memcpy(bd->mapped, data, size);
+    } else if (bd->device_local) {
+        /* R181: rare updates to static DEVICE_LOCAL meshes (e.g. terrain flatten). */
+        if (size > bd->size) size = bd->size;
+        if (!vk_buffer_staging_upload(vk, bd->buffer, 0, data, size))
+            LOG_WARN("VK: rhi_buffer_update staging failed");
     } else {
         void *mapped;
         /* R113-2: Guard against vkMapMemory failure — without this check
@@ -5147,9 +5267,14 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size) {
     VKBackend *vk = vk_backend(dev);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
-    if (!bd) return;
+    if (!bd || !data || size == 0u) return;
+    if (offset >= bd->size) return;
+    if (offset + size > bd->size) size = bd->size - offset;
     if (bd->mapped) {
         memcpy(bd->mapped + offset, data, size);
+    } else if (bd->device_local) {
+        if (!vk_buffer_staging_upload(vk, bd->buffer, offset, data, size))
+            LOG_WARN("VK: rhi_buffer_update_region staging failed");
     } else {
         void *mapped;
         /* R113-2: Guard against vkMapMemory failure — same fix as rhi_buffer_update. */

@@ -3686,7 +3686,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R181：shadow pass 状态 + 静态 mesh DEVICE_LOCAL（已完成）
+
+### [x] R181-A shadow pass 状态机
+- [x] End 后清 `render_pass_active` / `pass_suspended`
+
+### [x] R181-B 静态 mesh DEVICE_LOCAL
+- [x] VERTEX/INDEX + initial_data → DEVICE_LOCAL + staging；动态 VBO 仍 host-visible
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 
