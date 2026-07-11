@@ -269,14 +269,7 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     /* R169: staging twin for 1-frame delayed CPU readback (same pattern as occlusion). */
     gc->vis_flags_staging = rhi_buffer_create(dev, &vis_flags_desc);
     gc->vis_flags_staging_valid = false;
-
-    /* R170: Persistent zeroed draw cmds for compact-path clear (VK IndirectCount fallback). */
-    gc->_zero_draws = (GPUCullDrawCmd *)calloc(GPUCULL_MAX_DRAWS, sizeof(GPUCullDrawCmd));
-    if (!gc->_zero_draws) {
-        LOG_WARN("UnifiedCull: zero-draws buffer allocation failed");
-        gc->unified_ready = false;
-        return true;
-    }
+    gc->_zero_draws = NULL; /* R171: GPU fill replaces CPU zero-draws buffer */
     
     if (!rhi_handle_valid(gc->draw_cmds_ssbo) ||
         !rhi_handle_valid(gc->visible_draws_ssbo) ||
@@ -369,15 +362,14 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
     /* R170: Shader writes flags[idx]=0 for every idx < n — skip CPU zero upload. */
     RHIBuffer flags_buf = rhi_handle_valid(vis_flags_out) ? vis_flags_out : gc->visible_flags_ssbo;
 
-    /* Reset the compacted-draw atomic counter when compaction is enabled.
-     * R170: Also zero the first n compacted draw slots so VK fallback without
-     * drawIndirectCount cannot replay stale instanceCount from prior frames. */
+    /* Reset compacted-draw counter + draw slots via recorded GPU fill (R171).
+     * Host memcpy is NOT ordered between dispatches in the same Vulkan CB —
+     * shadow cascades would otherwise accumulate atomic counts. */
     if (compact_draws) {
-        u32 zero = 0;
-        rhi_buffer_update(gc->device, gc->draw_count_buf, &zero, sizeof(u32));
-        if (gc->_zero_draws && n > 0u) {
-            rhi_buffer_update_region(gc->device, gc->visible_draws_ssbo, 0,
-                                     gc->_zero_draws, (usize)n * sizeof(GPUCullDrawCmd));
+        rhi_cmd_fill_buffer(cmd, gc->draw_count_buf, 0, sizeof(u32), 0u);
+        if (n > 0u) {
+            rhi_cmd_fill_buffer(cmd, gc->visible_draws_ssbo, 0,
+                                (usize)n * sizeof(GPUCullDrawCmd), 0u);
         }
     }
 

@@ -1545,6 +1545,19 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
     glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)size);
 }
 
+/* R171: Recorded clear ordered with subsequent compute/indirect in the GL stream. */
+void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value) {
+    (void)cmd;
+    if (size == 0u) return;
+    extern RHIDevice *g_current_device;
+    GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
+    if (!bd) return;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI,
+                         (GLintptr)offset, (GLsizeiptr)size,
+                         GL_RED_INTEGER, GL_UNSIGNED_INT, &value);
+}
+
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
     (void)cmd;
     extern RHIDevice *g_current_device;

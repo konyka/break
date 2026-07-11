@@ -439,18 +439,22 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
 
     u64 seq = atomic_fetch_add_explicit(&g_loader.next_seq, 1, memory_order_relaxed);
 
+    /* R171: Increment pending before publishing to the heap so a fast worker
+     * cannot decrement from 0 (underflow to UINT_MAX). */
+    atomic_fetch_add_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
+
     async_mutex_lock(&g_loader.queue_mutex);
     bool pushed = heap_push(&g_loader.request_heap, slot, priority, seq);
     if (pushed) async_cond_broadcast(&g_loader.wake_cond);
     async_mutex_unlock(&g_loader.queue_mutex);
 
     if (!pushed) {
+        atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
         atomic_store_explicit(&req->state, (u32)ASSET_UNLOADED, memory_order_release);
         LOG_ERROR("Async loader: request heap full, request dropped: %s", path);
         return 0;
     }
 
-    atomic_fetch_add_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
     return id;
 }
 

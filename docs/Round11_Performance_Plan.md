@@ -3563,7 +3563,25 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R171：GPU fill 同 CB 清零 + Hi-Z mip + pending/mip（已完成）
+
+### [x] R171-A rhi_cmd_fill_buffer
+- [x] VK `vkCmdFillBuffer` / GL `glClearBufferSubData`；compact 路径录制清零
+
+### [x] R171-B Hi-Z 全 mip 采样 view
+- [x] `levelCount = mipLevels`
+
+### [x] R171-C pending_count 顺序
+- [x] heap 发布前递增，失败回滚
+
+### [x] R171-D mipmap admission 前驱逐
+- [x] 预算不足时先驱逐本纹理 finer resident levels
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 ```bash

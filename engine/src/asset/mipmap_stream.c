@@ -258,7 +258,22 @@ void mipmap_stream_update(MipmapStreamManager *mgr) {
 
         if (tex->level_state[desired] == MIPMAP_LEVEL_UNLOADED) {
             u32 needed = tex->level_size[desired];
-            /* Respect the budget; eviction below will free room for next time. */
+            /* R171: If over budget, evict this texture's finer resident levels
+             * first so desired mip can load (previously skipped forever). */
+            if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+                for (u32 l = 0; l < desired && l < tex->mip_count; l++) {
+                    if (tex->level_state[l] != MIPMAP_LEVEL_RESIDENT) continue;
+                    if (tex->level_data[l]) {
+                        free(tex->level_data[l]);
+                        tex->level_data[l] = NULL;
+                    }
+                    tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
+                    if (mgr->total_resident_bytes >= tex->level_size[l])
+                        mgr->total_resident_bytes -= tex->level_size[l];
+                    mgr->evictions++;
+                }
+                mipmap_recompute_resident(tex);
+            }
             if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
                 continue;
             }

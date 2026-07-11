@@ -61,7 +61,7 @@ typedef struct {
     usize           _pack_buf_cap;      /* capacity in f32 elements */
     u32            *_zero_buf;
     usize           _zero_buf_cap;      /* capacity in u32 elements */
-    GPUCullDrawCmd *_zero_draws;        /* R170: clear compacted draws for VK fallback */
+    GPUCullDrawCmd *_zero_draws;        /* unused after R171 GPU fill; kept NULL */
 } GPUCullSystem;
 
 /* Legacy API */

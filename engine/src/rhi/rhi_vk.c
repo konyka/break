@@ -2478,7 +2478,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = fmt;
     vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    vci.subresourceRange.levelCount = 1;
+    /* R171: Expose full mip chain for sampling (Hi-Z textureLod / textureQueryLevels).
+     * Per-mip storage image binds create their own single-level views. */
+    vci.subresourceRange.levelCount = ci.mipLevels;
     vci.subresourceRange.layerCount = 1;
     VkImageView view;
     if (vkCreateImageView(vk->device, &vci, NULL, &view) != VK_SUCCESS) {
@@ -5064,6 +5066,53 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
     if (!src_bd || !dst_bd) return;
     VkBufferCopy region = { .srcOffset = 0, .dstOffset = 0, .size = size };
     vkCmdCopyBuffer(vk->cmd_buffers[vk->current_frame], src_bd->buffer, dst_bd->buffer, 1, &region);
+}
+
+/* R171: Recorded fill so resets are ordered between dispatches in the same CB. */
+void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value) {
+    (void)cmd;
+    if (size == 0u) return;
+    VKBackend *vk = vk_backend(g_current_device);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    if (!bd) return;
+    /* vkCmdFillBuffer requires 4-byte alignment. */
+    if ((offset & 3u) || (size & 3u)) {
+        LOG_WARN("VK: rhi_cmd_fill_buffer requires 4-byte aligned offset/size");
+        return;
+    }
+    vk_suspend_pass_for_compute(vk);
+    VkCommandBuffer cb = vk->cmd_buffers[vk->current_frame];
+
+    VkBufferMemoryBarrier to_transfer = {0};
+    to_transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    to_transfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_transfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_transfer.buffer = bd->buffer;
+    to_transfer.offset = offset;
+    to_transfer.size = size;
+    vkCmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 1, &to_transfer, 0, NULL);
+
+    vkCmdFillBuffer(cb, bd->buffer, (VkDeviceSize)offset, (VkDeviceSize)size, value);
+
+    VkBufferMemoryBarrier to_shader = {0};
+    to_shader.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    to_shader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_shader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT
+                            | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    to_shader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_shader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_shader.buffer = bd->buffer;
+    to_shader.offset = offset;
+    to_shader.size = size;
+    vkCmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+        0, 0, NULL, 1, &to_shader, 0, NULL);
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
