@@ -148,11 +148,17 @@ void gpucull_shutdown(GPUCullSystem *gc) {
     
     gc->ready = false;
     gc->unified_ready = false;
+    gc->objects_uploaded = false;
 }
 
 void gpucull_update_objects(GPUCullSystem *gc, const f32 *positions, const f32 *radii, u32 count) {
     if (!gc->ready || count == 0) return;
-    gc->object_count = count > GPUCULL_MAX_OBJECTS ? GPUCULL_MAX_OBJECTS : count;
+    u32 n = count > GPUCULL_MAX_OBJECTS ? GPUCULL_MAX_OBJECTS : count;
+    /* R193-B: object_ssbo is DEVICE_LOCAL (R190); legacy CSM path called this
+     * every frame on static node_spheres → staging QueueWaitIdle. Skip when
+     * GPU already has this count (mega bake spheres do not change). */
+    if (gc->objects_uploaded && gc->object_count == n) return;
+    gc->object_count = n;
 
     /* R74-1: Scalar pack — SSE shuffle _mm_movelh_ps(pos, shuffle(pos, rad, 0,0,2,2))
      * produced (x,y,z,z) instead of (x,y,z,r), silently replacing radius with z.
@@ -165,6 +171,7 @@ void gpucull_update_objects(GPUCullSystem *gc, const f32 *positions, const f32 *
         data[i * 4 + 3] = radii[i];
     }
     rhi_buffer_update(gc->device, gc->object_ssbo, data, gc->object_count * 4 * sizeof(f32));
+    gc->objects_uploaded = true;
 }
 
 /* Internal: dispatch frustum cull, writing per-object visibility flags (1/0)
@@ -376,6 +383,7 @@ void gpucull_upload_objects_unified(GPUCullSystem *gc, const GPUCullObject *obje
     rhi_buffer_update_region(gc->device, gc->object_ssbo, 0,
                              packed, (usize)count * 4 * sizeof(f32));
     gc->object_count = count;
+    gc->objects_uploaded = true;
 }
 
 /*

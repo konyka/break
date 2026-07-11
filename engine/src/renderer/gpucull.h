@@ -43,6 +43,7 @@ typedef struct {
     u32             draw_count;
     bool            ready;
     bool            unified_ready;       /* Unified pipeline initialized */
+    bool            objects_uploaded;    /* R193-B: skip redundant DL object_ssbo staging */
     bool            vis_flags_staging_valid[2]; /* R172: per-slot completed GPU copy */
 
     /* Cached uniform locations (legacy pipeline) */

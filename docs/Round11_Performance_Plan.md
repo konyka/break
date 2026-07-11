@@ -3818,6 +3818,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R193：VK sampler maxLod + legacy object_ssbo 去重上传（已完成）
+
+### [x] R193-A sampler maxLod
+- [x] `ci.maxLod = VK_LOD_CLAMP_NONE`（修复 IBL/Hi-Z textureLod）
+
+### [x] R193-B objects_uploaded
+- [x] 同 count 跳过 DEVICE_LOCAL `rhi_buffer_update` staging
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

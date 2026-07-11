@@ -3233,7 +3233,9 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     ci.mipLodBias = 0.0f;
     ci.minLod = 0.0f;
-    ci.maxLod = 0.0f;
+    /* R193-A: maxLod=0 clamped every textureLod/implicit LOD to mip0 — broke
+     * IBL prefilter and Hi-Z pyramid sampling. Match GL default (~1000). */
+    ci.maxLod = VK_LOD_CLAMP_NONE;
 
     VkSampler sampler;
     if (vkCreateSampler(vk->device, &ci, NULL, &sampler) != VK_SUCCESS) {
