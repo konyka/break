@@ -101,6 +101,8 @@ typedef struct {
      * single-mip view, since the underlying VkImage was created with
      * both SAMPLED and STORAGE usage bits when applicable. */
     VkImageView    mip_views[VK_MAX_MIP_VIEWS];
+    /* R172: Per-mip layout tracking for Hi-Z ping-pong (UNDEFINED=0 unknown). */
+    VkImageLayout  mip_layout[VK_MAX_MIP_VIEWS];
     /* Tracked layout for depth targets that ping-pong between being a depth
      * attachment and a sampled texture (scene depth read by post-fx).  0 ==
      * VK_IMAGE_LAYOUT_UNDEFINED means "unknown / not yet tracked". */
@@ -1751,6 +1753,11 @@ void rhi_present(RHIDevice *dev) {
     vk->current_frame = (vk->current_frame + 1) % VK_MAX_FRAMES;
 }
 
+u32 rhi_frame_index(RHIDevice *dev) {
+    VKBackend *vk = vk_backend(dev);
+    return vk->current_frame;
+}
+
 void rhi_set_vsync(RHIDevice *dev, bool enabled) {
     VKBackend *vk = vk_backend(dev);
     vk->vsync = enabled;
@@ -3266,19 +3273,20 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
     vk_suspend_pass_for_compute(vk);
 
     /* Transition the requested mip to VK_IMAGE_LAYOUT_GENERAL so it can
-     * be written by a compute shader via imageStore.  Use UNDEFINED as
-     * the source layout so the first transition of a freshly created
-     * mip (which is in UNDEFINED rather than SHADER_READ_ONLY) is
-     * accepted by Vulkan; we discard whatever stale data was in the
-     * mip, which is the right behaviour for writeable Hi-Z generation. */
+     * be written by a compute shader via imageStore.
+     * R172: Use tracked per-mip oldLayout (UNDEFINED only on first use). */
+    VkImageLayout old_layout = (mip_level < VK_MAX_MIP_VIEWS)
+        ? td->mip_layout[mip_level] : VK_IMAGE_LAYOUT_UNDEFINED;
+    if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED && !write_only)
+        old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     VkImageMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.image = td->image;
-    barrier.oldLayout = write_only
-        ? VK_IMAGE_LAYOUT_UNDEFINED
-        : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = old_layout;
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcAccessMask = write_only ? 0 : VK_ACCESS_SHADER_READ_BIT;
+    barrier.srcAccessMask = (old_layout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0
+        : (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     barrier.dstAccessMask = write_only
         ? VK_ACCESS_SHADER_WRITE_BIT
         : (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
@@ -3293,6 +3301,8 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &barrier);
+    if (mip_level < VK_MAX_MIP_VIEWS)
+        td->mip_layout[mip_level] = VK_IMAGE_LAYOUT_GENERAL;
 
     /* Bind a STORAGE_IMAGE descriptor referencing a per-mip image
      * view (cached on the texture).  This requires the currently bound
@@ -3479,27 +3489,32 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler samp
     vk_suspend_pass_for_compute(vk);
 
     /* Ensure the source mip is in SHADER_READ_ONLY_OPTIMAL layout before
-     * a sampler reads it from a compute or fragment stage.  This protects
-     * Hi-Z generation passes that ping-pong between writing one mip via
-     * rhi_cmd_bind_image_texture and reading the previous mip here. */
-    VkImageMemoryBarrier barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.image = td->image;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = mip_level;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, NULL, 0, NULL, 1, &barrier);
+     * a sampler reads it. R172: honor tracked mip_layout. */
+    VkImageLayout old_layout = (mip_level < VK_MAX_MIP_VIEWS)
+        ? td->mip_layout[mip_level] : VK_IMAGE_LAYOUT_GENERAL;
+    if (old_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        VkImageMemoryBarrier barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.image = td->image;
+        barrier.oldLayout = (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+            ? VK_IMAGE_LAYOUT_GENERAL : old_layout;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = mip_level;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &barrier);
+        if (mip_level < VK_MAX_MIP_VIEWS)
+            td->mip_layout[mip_level] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
 
     /* Bind a COMBINED_IMAGE_SAMPLER referencing a per-mip image view. */
     VKPipelineData *cpd = vk->current_pipeline_data;

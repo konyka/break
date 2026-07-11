@@ -22,7 +22,7 @@ typedef struct {
     /* Object data */
     RHIBuffer   aabb_buffer;        /* SSBO: ObjectAABB[max_objects] */
     RHIBuffer   visibility_buffer;  /* SSBO: u32[max_objects] (0=occluded, 1=visible) */
-    RHIBuffer   readback_staging;   /* R87-1: staging copy for non-blocking readback */
+    RHIBuffer   readback_staging[2]; /* R172: per in-flight frame slot */
 
     /* Compute pipelines */
     RHIPipeline hi_z_pipeline;
@@ -47,8 +47,8 @@ typedef struct {
 
     /* CPU readback (for draw filtering, uses previous frame result) */
     u32        *visibility_readback;
-    /* R167-F: Skip staging readback until first GPU copy has completed. */
-    bool        staging_valid;
+    /* R167-F / R172: Per-slot staging validity after fence wait. */
+    bool        staging_valid[2];
 } OcclusionCullSystem;
 
 bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u32 height);

@@ -126,6 +126,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev);
 void          rhi_frame_end(RHIDevice *dev);
 void          rhi_present(RHIDevice *dev);
 void          rhi_set_vsync(RHIDevice *dev, bool enabled);
+/* R172: In-flight frame slot index (Vulkan 0..1 after fence wait; GL always 0). */
+u32           rhi_frame_index(RHIDevice *dev);
 
 /* ---- Resource creation ---- */
 RHIBuffer   rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc);

@@ -635,6 +635,11 @@ void rhi_present(RHIDevice *dev) {
     gl_present(dev);
 }
 
+u32 rhi_frame_index(RHIDevice *dev) {
+    (void)dev;
+    return 0u;
+}
+
 static GLuint gl_compile_shader(const char *source, usize len, GLenum type) {
     GLuint sh = glCreateShader(type);
     GLint slen = (GLint)len;

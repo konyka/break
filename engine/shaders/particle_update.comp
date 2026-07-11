@@ -84,8 +84,14 @@ void main() {
     float max_life = p.vel_maxlife.w;
 
     if (life <= 0.0) {
-        /* Respawn this particle */
+        /* R172: Probabilistic emit — expected spawns ≈ emit_rate * dt when many
+         * slots are dead; emit_rate=0 stops respawn entirely. */
         uint seed = idx * 12749u + hash(uint(P_EMIT_RATE * 1000.0));
+        float p_spawn = clamp(P_EMIT_RATE * P_DT / float(particles.length()), 0.0, 1.0);
+        if (random_float(seed + 4u) >= p_spawn) {
+            particles[idx] = p;
+            return;
+        }
         float rx = random_float(seed);
         float ry = random_float(seed + 1u);
         float rz = random_float(seed + 2u);

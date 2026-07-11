@@ -233,11 +233,16 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
 
 #ifdef ENGINE_VULKAN
-    /* Vulkan: copy pre-built template, overwrite only dt (Round 18). */
+    /* Vulkan: refresh dynamic fields each frame (R172: emit_rate was stale). */
     if (ps->_loc_push_dt >= 0) {
         f32 push_data[20];
         memcpy(push_data, ps->_push_template, sizeof(push_data));
         push_data[0] = dt;
+        push_data[1] = ps->emit_rate;
+        push_data[4] = ps->emit_pos[0];
+        push_data[5] = ps->emit_pos[1];
+        push_data[6] = ps->emit_pos[2];
+        push_data[7] = ps->gravity;
         rhi_cmd_set_uniform_mat4(cmd, ps->_loc_push_dt, push_data);
     }
 #else

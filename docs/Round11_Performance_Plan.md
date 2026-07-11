@@ -3580,7 +3580,25 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R172：staging 双缓冲 + Hi-Z 布局 + 粒子 emit（已完成）
+
+### [x] R172-A 双槽 staging
+- [x] `rhi_frame_index`；gpucull/occlusion `staging[2]`
+
+### [x] R172-B Hi-Z mip_layout
+- [x] 跟踪 per-mip layout；生成后末级可读
+
+### [x] R172-C 粒子 emit_rate
+- [x] 概率发射；VK push 每帧刷新 rate
+
+### [x] R172-D/E mipmap force + shutdown
+- [x] force 尊重预算；shutdown cancel 在途请求
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

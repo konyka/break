@@ -121,7 +121,8 @@ void gpucull_shutdown(GPUCullSystem *gc) {
         if (rhi_handle_valid(gc->visible_draws_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_draws_ssbo);
         if (rhi_handle_valid(gc->draw_count_buf)) rhi_buffer_destroy(gc->device, gc->draw_count_buf);
         if (rhi_handle_valid(gc->visible_flags_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_flags_ssbo);
-        if (rhi_handle_valid(gc->vis_flags_staging)) rhi_buffer_destroy(gc->device, gc->vis_flags_staging);
+        if (rhi_handle_valid(gc->vis_flags_staging[0])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[0]);
+        if (rhi_handle_valid(gc->vis_flags_staging[1])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
         if (rhi_handle_valid(gc->hi_z_sampler)) rhi_sampler_destroy(gc->device, gc->hi_z_sampler);
         if (rhi_handle_valid(gc->hi_z_fallback)) rhi_texture_destroy(gc->device, gc->hi_z_fallback);
     }
@@ -267,15 +268,18 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     };
     gc->visible_flags_ssbo = rhi_buffer_create(dev, &vis_flags_desc);
     /* R169: staging twin for 1-frame delayed CPU readback (same pattern as occlusion). */
-    gc->vis_flags_staging = rhi_buffer_create(dev, &vis_flags_desc);
-    gc->vis_flags_staging_valid = false;
+    gc->vis_flags_staging[0] = rhi_buffer_create(dev, &vis_flags_desc);
+    gc->vis_flags_staging[1] = rhi_buffer_create(dev, &vis_flags_desc);
+    gc->vis_flags_staging_valid[0] = false;
+    gc->vis_flags_staging_valid[1] = false;
     gc->_zero_draws = NULL; /* R171: GPU fill replaces CPU zero-draws buffer */
     
     if (!rhi_handle_valid(gc->draw_cmds_ssbo) ||
         !rhi_handle_valid(gc->visible_draws_ssbo) ||
         !rhi_handle_valid(gc->draw_count_buf) ||
         !rhi_handle_valid(gc->visible_flags_ssbo) ||
-        !rhi_handle_valid(gc->vis_flags_staging)) {
+        !rhi_handle_valid(gc->vis_flags_staging[0]) ||
+        !rhi_handle_valid(gc->vis_flags_staging[1])) {
         LOG_WARN("UnifiedCull: buffer creation failed");
         gc->unified_ready = false;
         return true;
@@ -405,28 +409,30 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
     rhi_cmd_dispatch(cmd, groups, 1, 1);
     rhi_cmd_memory_barrier(cmd);
 
-    /* R169/R170: GPU→staging copy only for main-camera vis-flags readback.
-     * Shadow/compact paths must not overwrite the staging twin. */
-    if (stage_readback &&
-        rhi_handle_valid(gc->vis_flags_staging) &&
-        rhi_handle_valid(flags_buf)) {
-        rhi_cmd_copy_buffer(cmd, flags_buf, gc->vis_flags_staging, n * sizeof(u32));
-        gc->vis_flags_staging_valid = true;
+    /* R169/R172: GPU→staging copy into the current in-flight frame slot.
+     * frame_begin waited this slot's fence, so CPU may safely map it next reuse. */
+    if (stage_readback && rhi_handle_valid(flags_buf)) {
+        u32 fi = rhi_frame_index(gc->device) & 1u;
+        if (rhi_handle_valid(gc->vis_flags_staging[fi])) {
+            rhi_cmd_copy_buffer(cmd, flags_buf, gc->vis_flags_staging[fi], n * sizeof(u32));
+            gc->vis_flags_staging_valid[fi] = true;
+        }
     }
 }
 
 bool gpucull_read_vis_flags(GPUCullSystem *gc, u32 count, u32 *out_flags) {
     if (!gc || !gc->unified_ready || !out_flags || count == 0u) return false;
-    if (!rhi_handle_valid(gc->vis_flags_staging)) return false;
     if (count > GPUCULL_MAX_OBJECTS) count = GPUCULL_MAX_OBJECTS;
 
-    /* R169: No prior GPU copy yet — caller should treat all as visible. */
-    if (!gc->vis_flags_staging_valid) return false;
+    /* R172: Read the slot whose fence was just waited in frame_begin. */
+    u32 fi = rhi_frame_index(gc->device) & 1u;
+    if (!rhi_handle_valid(gc->vis_flags_staging[fi])) return false;
+    if (!gc->vis_flags_staging_valid[fi]) return false;
 
-    void *mapped = rhi_buffer_map(gc->device, gc->vis_flags_staging);
+    void *mapped = rhi_buffer_map(gc->device, gc->vis_flags_staging[fi]);
     if (!mapped) return false;
     memcpy(out_flags, mapped, (usize)count * sizeof(u32));
-    rhi_buffer_unmap(gc->device, gc->vis_flags_staging);
+    rhi_buffer_unmap(gc->device, gc->vis_flags_staging[fi]);
     return true;
 }
 

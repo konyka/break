@@ -36,14 +36,14 @@ typedef struct {
     RHIBuffer       count_buf;           /* Atomic counter for visible count */
     RHIBuffer       draw_count_buf;      /* Atomic counter for draw count */
     RHIBuffer       visible_flags_ssbo;  /* Per-object visibility (1/0) from unified cull */
-    RHIBuffer       vis_flags_staging;   /* R169: 1-frame delayed CPU readback */
+    RHIBuffer       vis_flags_staging[2]; /* R172: per in-flight frame slot */
     RHISampler      hi_z_sampler;        /* Nearest sampler for unified Hi-Z reads */
     RHITexture      hi_z_fallback;       /* 1x1 placeholder when Hi-Z disabled */
     u32             object_count;
     u32             draw_count;
     bool            ready;
     bool            unified_ready;       /* Unified pipeline initialized */
-    bool            vis_flags_staging_valid; /* R169: staging has a completed GPU copy */
+    bool            vis_flags_staging_valid[2]; /* R172: per-slot completed GPU copy */
 
     /* Cached uniform locations (legacy pipeline) */
     i32             _loc_cull_vp;

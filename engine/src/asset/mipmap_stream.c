@@ -163,6 +163,20 @@ bool mipmap_stream_init(MipmapStreamManager *mgr, usize memory_budget) {
 void mipmap_stream_shutdown(MipmapStreamManager *mgr) {
     if (!mgr || !mgr->ready) return;
 
+    /* R172: Cancel in-flight loads so callbacks free MipLoadReq before async dies. */
+    for (u32 t = 0; t < mgr->texture_count; t++) {
+        StreamedTexture *tex = &mgr->textures[t];
+        if (!tex->active) continue;
+        for (u32 l = 0; l < tex->mip_count; l++) {
+            if (tex->level_state[l] == MIPMAP_LEVEL_LOADING && tex->level_request_id[l] != 0) {
+                async_loader_cancel(tex->level_request_id[l]);
+                tex->level_request_id[l] = 0;
+                tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
+            }
+        }
+    }
+    async_loader_tick();
+
     /* Free all resident level data */
     for (u32 t = 0; t < mgr->texture_count; t++) {
         StreamedTexture *tex = &mgr->textures[t];
@@ -349,6 +363,26 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
 
     /* Issue the load if it isn't already in flight. */
     if (tex->level_state[level] == MIPMAP_LEVEL_UNLOADED) {
+        u32 needed = tex->level_size[level];
+        /* R172: Evict finer levels then respect budget (same as update path). */
+        if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+            for (u32 l = 0; l < level && l < tex->mip_count; l++) {
+                if (tex->level_state[l] != MIPMAP_LEVEL_RESIDENT) continue;
+                if (tex->level_data[l]) {
+                    free(tex->level_data[l]);
+                    tex->level_data[l] = NULL;
+                }
+                tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
+                if (mgr->total_resident_bytes >= tex->level_size[l])
+                    mgr->total_resident_bytes -= tex->level_size[l];
+                mgr->evictions++;
+            }
+            mipmap_recompute_resident(tex);
+        }
+        if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+            return false;
+        }
+
         MipLoadReq *ctx = mip_alloc_req(mgr);
         if (!ctx) return false;
         ctx->mgr = mgr;
@@ -370,7 +404,7 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
         tex->level_state[level] = MIPMAP_LEVEL_LOADING;
         tex->level_request_id[level] = req_id;
         mgr->load_requests++;
-        mgr->total_resident_bytes += tex->level_size[level]; /* reserve */
+        mgr->total_resident_bytes += needed; /* reserve */
     }
 
     /* Block until the completion callback marks the level resident. We pump

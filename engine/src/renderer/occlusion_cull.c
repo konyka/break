@@ -119,9 +119,11 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
         return false;
     }
 
-    /* R87-1: Create staging buffer for non-blocking GPU-side copy readback. */
-    sys->readback_staging = rhi_buffer_create(dev, &vis_desc);
-    if (!rhi_handle_valid(sys->readback_staging)) {
+    /* R87-1 / R172: Dual staging for in-flight frame slots. */
+    sys->readback_staging[0] = rhi_buffer_create(dev, &vis_desc);
+    sys->readback_staging[1] = rhi_buffer_create(dev, &vis_desc);
+    if (!rhi_handle_valid(sys->readback_staging[0]) ||
+        !rhi_handle_valid(sys->readback_staging[1])) {
         LOG_WARN("OcclusionCull: failed to create readback staging buffer");
         occlusion_cull_shutdown(sys);
         return false;
@@ -170,7 +172,8 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
 
     sys->object_count = 0;
     sys->enabled = true;
-    sys->staging_valid = false;
+    sys->staging_valid[0] = false;
+    sys->staging_valid[1] = false;
 
     LOG_INFO("OcclusionCull: initialized (%ux%u, %u mip levels, max %u objects)",
              sys->hi_z_width, sys->hi_z_height, sys->hi_z_levels, OCCLUSION_MAX_OBJECTS);
@@ -189,8 +192,10 @@ void occlusion_cull_shutdown(OcclusionCullSystem *sys) {
         rhi_buffer_destroy(sys->device, sys->aabb_buffer);
     if (rhi_handle_valid(sys->visibility_buffer))
         rhi_buffer_destroy(sys->device, sys->visibility_buffer);
-    if (rhi_handle_valid(sys->readback_staging))
-        rhi_buffer_destroy(sys->device, sys->readback_staging);
+    if (rhi_handle_valid(sys->readback_staging[0]))
+        rhi_buffer_destroy(sys->device, sys->readback_staging[0]);
+    if (rhi_handle_valid(sys->readback_staging[1]))
+        rhi_buffer_destroy(sys->device, sys->readback_staging[1]);
     if (rhi_handle_valid(sys->hi_z_pipeline))
         rhi_pipeline_destroy(sys->device, sys->hi_z_pipeline);
     if (rhi_handle_valid(sys->cull_pipeline))
@@ -295,6 +300,12 @@ void occlusion_cull_generate_hi_z(OcclusionCullSystem *sys, RHICmdBuffer *cmd, R
         /* Memory barrier between mip levels */
         rhi_cmd_memory_barrier(cmd);
     }
+    /* R172: Final mip remains GENERAL after write — transition to sampleable
+     * so unified cull's full-mip view can use SHADER_READ_ONLY_OPTIMAL. */
+    if (sys->hi_z_levels > 0u) {
+        rhi_cmd_bind_texture_mip(cmd, sys->hi_z_texture, sys->hi_z_sampler,
+                                 0, sys->hi_z_levels - 1u);
+    }
 }
 
 /* ========================================================================
@@ -314,14 +325,13 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
 
     u32 count = object_count > OCCLUSION_MAX_OBJECTS ? OCCLUSION_MAX_OBJECTS : object_count;
 
-    /* ---- Readback from staging buffer (1-frame latency, non-blocking) — R87-1 ----
-     * R167-F: Skip until the first GPU→staging copy has completed; otherwise
-     * zero-initialized staging marks every object occluded on frame 0. */
-    if (sys->staging_valid) {
-        void *mapped = rhi_buffer_map(sys->device, sys->readback_staging);
+    /* ---- Readback from staging (R172: current frame slot after fence wait) ---- */
+    u32 fi = rhi_frame_index(sys->device) & 1u;
+    if (sys->staging_valid[fi]) {
+        void *mapped = rhi_buffer_map(sys->device, sys->readback_staging[fi]);
         if (mapped) {
             memcpy(sys->visibility_readback, mapped, count * sizeof(u32));
-            rhi_buffer_unmap(sys->device, sys->readback_staging);
+            rhi_buffer_unmap(sys->device, sys->readback_staging[fi]);
         }
     }
 
@@ -361,10 +371,9 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
     /* Memory barrier: ensure compute writes complete before GPU-side copy */
     rhi_cmd_memory_barrier(cmd);
 
-    /* R87-1: GPU-side copy to staging buffer (avoids glMapBufferRange stall next frame). */
-    rhi_cmd_copy_buffer(cmd, sys->visibility_buffer, sys->readback_staging, count * sizeof(u32));
-    /* R167-F: Next frame may safely read staging (1-frame latency). */
-    sys->staging_valid = true;
+    /* R87-1 / R172: GPU copy into current in-flight staging slot. */
+    rhi_cmd_copy_buffer(cmd, sys->visibility_buffer, sys->readback_staging[fi], count * sizeof(u32));
+    sys->staging_valid[fi] = true;
 
     sys->object_count = count;
 }
