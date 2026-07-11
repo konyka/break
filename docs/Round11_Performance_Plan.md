@@ -3654,6 +3654,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R178：粒子 Push 尾部 + GL frame_index（已完成）
+
+### [x] R178-A 粒子 Push 80B 尾部
+- [x] `set_uniform_mat4` 后补传 `lifetime_range`（offset 76）
+
+### [x] R178-B GL frame_index
+- [x] `frame_end` 递增；双槽 staging 可 ping-pong
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

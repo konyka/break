@@ -271,7 +271,10 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
         push_data[5] = ps->emit_pos[1];
         push_data[6] = ps->emit_pos[2];
         push_data[7] = ps->gravity;
+        /* R178: set_uniform_mat4 only copies 64 bytes; Push block is 80.
+         * lifetime_range lives at byte 76 — upload the tail explicitly. */
         rhi_cmd_set_uniform_mat4(cmd, ps->_loc_push_dt, push_data);
+        rhi_cmd_set_uniform_f32(cmd, ps->_loc_push_dt + 76, push_data[19]);
     }
 #else
     if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);

@@ -21,7 +21,7 @@ layout(std430, set = 0, binding = 1) buffer SpawnBuf {
 layout(push_constant) uniform Push {
     float dt;
     float emit_rate;
-    float pad0; /* R174: emit budget (as float bits of uint count) */
+    float pad0; /* R174: emit budget as float value (uint() truncates) */
     float pad1;
     vec3  emit_pos;
     float gravity;

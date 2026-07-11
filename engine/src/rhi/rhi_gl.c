@@ -398,6 +398,8 @@ static void gl_resize(RHIDevice *dev, u32 w, u32 h) {
     dev->height = h;
 }
 
+static u32 g_gl_frame_index = 0;
+
 static void *gl_frame_begin(RHIDevice *dev) {
     (void)dev;
     return NULL;
@@ -405,6 +407,8 @@ static void *gl_frame_begin(RHIDevice *dev) {
 
 static void gl_frame_end(RHIDevice *dev) {
     (void)dev;
+    /* R178: Advance so dual staging (gpucull/occlusion) can ping-pong. */
+    g_gl_frame_index++;
 }
 
 static void gl_present(RHIDevice *dev) {
@@ -637,7 +641,8 @@ void rhi_present(RHIDevice *dev) {
 
 u32 rhi_frame_index(RHIDevice *dev) {
     (void)dev;
-    return 0u;
+    /* R178: Was hardcoded 0 — dual staging always hit slot 0 and stalled on map. */
+    return g_gl_frame_index;
 }
 
 static GLuint gl_compile_shader(const char *source, usize len, GLenum type) {
