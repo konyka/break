@@ -230,6 +230,8 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled);
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1);
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size);
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size);
+/* R186: Host readback — works for HOST_VISIBLE and DEVICE_LOCAL (staging). */
+bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size);
 /* R171: Recorded GPU clear (vkCmdFillBuffer / glClearBufferSubData). Host
  * memcpy updates are NOT ordered between dispatches in the same Vulkan CB. */
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value);

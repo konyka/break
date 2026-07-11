@@ -1730,9 +1730,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 u32 vc = m->vertex_count;
                 u32 vbase = voff;
 
-                /* Map source VBO and transform vertices to world space */
-                MegaVert *src_v = (MegaVert *)rhi_buffer_map(render.device, m->vertex_buf);
-                if (src_v) {
+                /* R186: Read DEVICE_LOCAL mesh via staging (map fails on dGPU). */
+                MegaVert *src_v = (MegaVert *)malloc((usize)vc * sizeof(MegaVert));
+                u32 *src_i = (u32 *)malloc((usize)m->index_count * sizeof(u32));
+                if (!src_v || !src_i ||
+                    !rhi_buffer_read(render.device, m->vertex_buf, src_v, 0, (usize)vc * sizeof(MegaVert)) ||
+                    !rhi_buffer_read(render.device, m->index_buf, src_i, 0, (usize)m->index_count * sizeof(u32))) {
+                    LOG_WARN("Mega: failed to read mesh %u; aborting mega bake", nd->mesh_index);
+                    free(src_v); free(src_i); free(mega_block);
+                    mega_block = NULL;
+                    break;
+                }
+                {
                     Mat4 *wt = &nd->world_transform;
                     for (u32 vi = 0; vi < vc; vi++) {
                         f32 px = src_v[vi].pos[0], py = src_v[vi].pos[1], pz = src_v[vi].pos[2];
@@ -1746,16 +1755,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         vdata[voff+vi].uv[0] = src_v[vi].uv[0];
                         vdata[voff+vi].uv[1] = src_v[vi].uv[1];
                     }
-                    rhi_buffer_unmap(render.device, m->vertex_buf);
                 }
-
-                /* Map source IBO and remap indices with vertex offset */
-                u32 *src_i = (u32 *)rhi_buffer_map(render.device, m->index_buf);
-                if (src_i) {
-                    for (u32 ii = 0; ii < m->index_count; ii++)
-                        idata[ioff + ii] = src_i[ii] + vbase;
-                    rhi_buffer_unmap(render.device, m->index_buf);
-                }
+                for (u32 ii = 0; ii < m->index_count; ii++)
+                    idata[ioff + ii] = src_i[ii] + vbase;
+                free(src_v);
+                free(src_i);
 
                 /* Build indirect draw command for this scene node */
                 cmds[cidx].index_count    = m->index_count;
@@ -1770,6 +1774,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 cidx++;
             }
 
+            if (!mega_block) {
+                /* Bake aborted — leave mega_buf.valid false. */
+            } else {
             /* Create combined GPU buffers */
             RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
                                  .size  = total_verts * sizeof(MegaVert),
@@ -1935,6 +1942,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                      total_verts, total_idxs, mesh_cmd_count);
 
             free(mega_block); /* single free: vdata + idata + cmds */
+            } /* else mega bake succeeded */
         }
     }
 

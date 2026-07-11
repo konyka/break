@@ -62,12 +62,16 @@ bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws) 
     memset(sys, 0, sizeof(*sys));
     sys->max_draws = max_draws;
 
-    /* All draw commands - storage buffer (CPU-uploaded source data). */
+    /* All draw commands - storage buffer (CPU-uploaded once). R186: DEVICE_LOCAL. */
+    usize all_bytes = (usize)max_draws * sizeof(DrawIndexedIndirectCmd);
+    void *all_zero = calloc(1, all_bytes);
     RHIBufferDesc all_desc = {
-        .size  = (usize)max_draws * sizeof(DrawIndexedIndirectCmd),
+        .size  = all_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = all_zero,
     };
     sys->all_draws_buf = rhi_buffer_create(dev, &all_desc);
+    free(all_zero);
 
     /* Compacted visible draws - both storage (compute writes) AND indirect
      * (graphics reads as draw command source). R185: DEVICE_LOCAL. */

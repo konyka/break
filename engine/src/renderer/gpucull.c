@@ -249,12 +249,16 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
         return true;
     }
     
-    /* Create draw commands SSBO (input) */
+    /* Create draw commands SSBO (input, uploaded once). R186: DEVICE_LOCAL. */
+    usize draw_bytes = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd);
+    void *draw_zero = calloc(1, draw_bytes);
     RHIBufferDesc draw_desc = {
-        .size = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd),
+        .size = draw_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = draw_zero,
     };
     gc->draw_cmds_ssbo = rhi_buffer_create(dev, &draw_desc);
+    free(draw_zero);
     
     /* Create visible draws SSBO (output, also used for indirect draw) */
     usize vis_draws_bytes = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd);

@@ -95,12 +95,16 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
         return false;
     }
 
-    /* Create AABB SSBO */
+    /* Create AABB SSBO (uploaded once). R186: DEVICE_LOCAL. */
+    usize aabb_bytes = OCCLUSION_MAX_OBJECTS * sizeof(ObjectAABB);
+    void *aabb_zero = calloc(1, aabb_bytes);
     RHIBufferDesc aabb_desc = {
-        .size  = OCCLUSION_MAX_OBJECTS * sizeof(ObjectAABB),
+        .size  = aabb_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
+        .initial_data = aabb_zero,
     };
     sys->aabb_buffer = rhi_buffer_create(dev, &aabb_desc);
+    free(aabb_zero);
     if (!rhi_handle_valid(sys->aabb_buffer)) {
         LOG_WARN("OcclusionCull: failed to create AABB buffer");
         occlusion_cull_shutdown(sys);

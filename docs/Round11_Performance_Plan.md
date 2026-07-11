@@ -3741,7 +3741,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R186：mega DEVICE_LOCAL 读回 + 静态 SSBO DEVICE_LOCAL（已完成）
+
+### [x] R186-A rhi_buffer_read
+- [x] staging download；mega bake 失败 abort
+
+### [x] R186-B 静态 CPU 源 SSBO
+- [x] all_draws / draw_cmds / aabb 零初始化 → DEVICE_LOCAL
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

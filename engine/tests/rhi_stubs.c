@@ -31,6 +31,9 @@ void       rhi_buffer_destroy(RHIDevice *d, RHIBuffer b)               { (void)d
 void       rhi_buffer_update(RHIDevice *d, RHIBuffer b, const void *data, usize sz) { (void)d; (void)b; (void)data; (void)sz; }
 void      *rhi_buffer_map(RHIDevice *d, RHIBuffer b)                   { (void)d; (void)b; return NULL; }
 void       rhi_buffer_unmap(RHIDevice *d, RHIBuffer b)                 { (void)d; (void)b; }
+bool       rhi_buffer_read(RHIDevice *d, RHIBuffer b, void *dst, usize off, usize sz) {
+    (void)d; (void)b; (void)dst; (void)off; (void)sz; return false;
+}
 void       rhi_cmd_copy_buffer(RHICmdBuffer *c, RHIBuffer s, RHIBuffer d, usize sz) { (void)c; (void)s; (void)d; (void)sz; }
 void       rhi_cmd_fill_buffer(RHICmdBuffer *c, RHIBuffer b, usize off, usize sz, u32 v) { (void)c; (void)b; (void)off; (void)sz; (void)v; }
 void       rhi_cmd_update_buffer(RHICmdBuffer *c, RHIBuffer b, usize off, const void *d, usize sz) {

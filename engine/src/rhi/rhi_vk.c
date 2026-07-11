@@ -2463,6 +2463,96 @@ static bool vk_buffer_staging_upload(VKBackend *vk, VkBuffer dst, usize dst_offs
     return true;
 }
 
+/* R186: One-shot DEVICE_LOCAL→host download (mega mesh bake / rare readback). */
+static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_offset,
+                                       void *dst, usize size) {
+    if (!dst || size == 0u) return true;
+    VkBuffer staging;
+    VkDeviceMemory staging_mem;
+    VkBufferCreateInfo bci = {0};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->device, &bci, NULL, &staging) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements smr;
+    vkGetBufferMemoryRequirements(vk->device, staging, &smr);
+    VkMemoryAllocateInfo smi = {0};
+    smi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    smi.allocationSize = smr.size;
+    smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (smi.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    if (vkBindBufferMemory(vk->device, staging, staging_mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+
+    vk_wait_frames(vk);
+    VkCommandBufferAllocateInfo cbai = {0};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandPool = vk->cmd_pool;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer tmp_cb;
+    if (vkAllocateCommandBuffers(vk->device, &cbai, &tmp_cb) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    VkCommandBufferBeginInfo cbi = {0};
+    cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(tmp_cb, &cbi) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    VkBufferCopy region = {0};
+    region.srcOffset = src_offset;
+    region.dstOffset = 0;
+    region.size = size;
+    vkCmdCopyBuffer(tmp_cb, src, staging, 1, &region);
+    if (vkEndCommandBuffer(tmp_cb) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &tmp_cb;
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+        LOG_WARN("VK: queue wait failed after buffer staging download");
+    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+
+    void *mapped = NULL;
+    if (vkMapMemory(vk->device, staging_mem, 0, size, 0, &mapped) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        return false;
+    }
+    memcpy(dst, mapped, size);
+    vkUnmapMemory(vk->device, staging_mem);
+    vkDestroyBuffer(vk->device, staging, NULL);
+    vkFreeMemory(vk->device, staging_mem, NULL);
+    return true;
+}
+
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     VKBackend *vk = vk_backend(dev);
 
@@ -2490,7 +2580,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
                            | RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
     bool device_local = desc->initial_data != NULL && (mesh_only || gpu_storage);
     if (device_local)
-        ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT; /* R186: SRC for readback */
 
     VkBuffer buf;
     if (vkCreateBuffer(vk->device, &ci, NULL, &buf) != VK_SUCCESS) {
@@ -5295,6 +5385,11 @@ void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return NULL;
     if (bd->mapped) return bd->mapped;
+    /* R186: DEVICE_LOCAL cannot be persistently mapped — use rhi_buffer_read. */
+    if (bd->device_local) {
+        LOG_WARN("VK: rhi_buffer_map on DEVICE_LOCAL buffer; use rhi_buffer_read");
+        return NULL;
+    }
     void *mapped = NULL;
     if (vkMapMemory(vk->device, bd->memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
         LOG_WARN("VK: vkMapMemory failed in buffer_map");
@@ -5307,8 +5402,28 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     VKBackend *vk = vk_backend(dev);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return;
-    if (bd->mapped) return; /* persistent mapping — do not unmap */
+    if (bd->mapped || bd->device_local) return; /* persistent / no map */
     vkUnmapMemory(vk->device, bd->memory);
+}
+
+bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size) {
+    VKBackend *vk = vk_backend(dev);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    if (!bd || !dst || size == 0u) return false;
+    if (offset >= bd->size) return false;
+    if (offset + size > bd->size) size = bd->size - offset;
+    if (bd->mapped) {
+        memcpy(dst, bd->mapped + offset, size);
+        return true;
+    }
+    if (bd->device_local)
+        return vk_buffer_staging_download(vk, bd->buffer, offset, dst, size);
+    void *mapped = NULL;
+    if (vkMapMemory(vk->device, bd->memory, offset, size, 0, &mapped) != VK_SUCCESS)
+        return false;
+    memcpy(dst, mapped, size);
+    vkUnmapMemory(vk->device, bd->memory);
+    return true;
 }
 
 /* R183: Record host data into the CB so later dispatches see ordered writes

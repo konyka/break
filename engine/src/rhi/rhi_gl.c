@@ -1548,6 +1548,16 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 }
 
+bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size) {
+    GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
+    if (!bd || !dst || size == 0u) return false;
+    if (offset >= bd->size) return false;
+    if (offset + size > bd->size) size = bd->size - offset;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, dst);
+    return true;
+}
+
 /* R87-1: GPU-side buffer copy (non-blocking, avoids glMapBufferRange stall). */
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
     (void)cmd;
