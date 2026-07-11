@@ -4309,6 +4309,16 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_sharp_strength") == 0)     return 0;
     if (strcmp(name, "u_sharp_sw") == 0)           return 4;
     if (strcmp(name, "u_sharp_sh") == 0)           return 8;
+    /* Upscale TSR (upscale_vk.frag). R197-A: locations were missing — all loc_*
+     * returned -1 so push constants never reached the shader. */
+    if (strcmp(name, "u_ups_rw") == 0)             return 0;
+    if (strcmp(name, "u_ups_rh") == 0)             return 4;
+    if (strcmp(name, "u_ups_dw") == 0)             return 8;
+    if (strcmp(name, "u_ups_dh") == 0)             return 12;
+    if (strcmp(name, "u_ups_sharp") == 0)          return 16;
+    if (strcmp(name, "u_ups_copy_only") == 0)      return 20;
+    if (strcmp(name, "u_ups_inv_proj") == 0)       return 32;
+    if (strcmp(name, "u_ups_prev_vp") == 0)        return 96;
     if (strcmp(name, "u_view") == 0)        return 64;
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {

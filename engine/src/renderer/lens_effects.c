@@ -119,5 +119,5 @@ void lens_effects_apply(LensEffectsSystem *s, RHICmdBuffer *cmd,
     if (s->loc_grain_strength >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_grain_strength, grain_strength);
 
     rhi_cmd_draw(cmd, 3, 1);
-    rhi_offscreen_fbo_unbind(cmd, w, h);
+    /* R197-B: skip intermediate swapchain CLEAR unbind (main does final unbind). */
 }

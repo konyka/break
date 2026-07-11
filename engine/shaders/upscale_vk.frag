@@ -13,6 +13,7 @@ layout(push_constant) uniform UpscaleParams {
     layout(offset = 8)   float u_ups_dw;
     layout(offset = 12)  float u_ups_dh;
     layout(offset = 16)  float u_ups_sharp;
+    layout(offset = 20)  float u_ups_copy_only; /* R197-A: Pass 2 blit, skip TSR */
     layout(offset = 32)  mat4 u_ups_inv_proj;
     layout(offset = 96)  mat4 u_ups_prev_vp;
 };
@@ -59,9 +60,16 @@ vec3 clip_aabb(vec3 aabb_min, vec3 aabb_max, vec3 p) {
 }
 
 void main() {
-    vec2 render_texel = 1.0 / vec2(u_ups_rw, u_ups_rh);
     vec2 render_uv = vUV;
 
+    /* R197-A: Pass 2 must store Pass 1 output verbatim into history.
+     * Re-running TSR with stale read_idx history double-mixes and ghosts. */
+    if (u_ups_copy_only > 0.5) {
+        fragColor = vec4(clamp(texture(u_ups_src, render_uv).rgb, 0.0, 1.0), 1.0);
+        return;
+    }
+
+    vec2 render_texel = 1.0 / vec2(u_ups_rw, u_ups_rh);
     vec3 upscaled = sample_catmull(u_ups_src, render_uv, render_texel);
 
     if (u_ups_sharp > 0.0) {

@@ -92,9 +92,10 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     s->loc_rh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_rh");
     s->loc_dw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_dw");
     s->loc_dh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_dh");
-    s->loc_sharp    = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_sharp");
-    s->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_inv_proj");
-    s->loc_prev_vp  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_prev_vp");
+    s->loc_sharp     = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_sharp");
+    s->loc_copy_only = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_copy_only");
+    s->loc_inv_proj  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_inv_proj");
+    s->loc_prev_vp   = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_prev_vp");
 
     s->ready = true;
     LOG_INFO("Upscale: TSR initialized (%ux%u → %ux%u)", render_w, render_h, display_w, display_h);
@@ -134,31 +135,33 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     rhi_cmd_bind_material_textures(cmd, input_tex, s->history[read_idx].color_tex,
                                    input_tex, input_tex, depth_tex, input_tex, s->sampler);
 
-    if (s->loc_rw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
-    if (s->loc_rh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);
-    if (s->loc_dw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_dw, (f32)display_w);
-    if (s->loc_dh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
-    if (s->loc_sharp >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, sharpness);
-    if (s->loc_inv_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
-    if (s->loc_prev_vp >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
+    if (s->loc_rw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
+    if (s->loc_rh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);
+    if (s->loc_dw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dw, (f32)display_w);
+    if (s->loc_dh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
+    if (s->loc_sharp >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, sharpness);
+    if (s->loc_copy_only >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_copy_only, 0.0f);
+    if (s->loc_inv_proj >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
+    if (s->loc_prev_vp >= 0)   rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
 
     rhi_cmd_draw(cmd, 3, 1);
 
-    /* Pass 2: copy result into history FBO for next frame */
+    /* Pass 2: blit Pass 1 result into history (no second TSR mix). */
     rhi_offscreen_fbo_bind(cmd, &s->history[write_idx]);
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    /* R99-2: Same fix as Pass 1. */
-    rhi_cmd_bind_material_textures(cmd, s->fbo.color_tex, s->history[read_idx].color_tex,
-                                   s->fbo.color_tex, s->fbo.color_tex, depth_tex,
+    /* R197-A: history/depth unused when copy_only; bind fbo.color_tex for all slots. */
+    rhi_cmd_bind_material_textures(cmd, s->fbo.color_tex, s->fbo.color_tex,
+                                   s->fbo.color_tex, s->fbo.color_tex, s->fbo.color_tex,
                                    s->fbo.color_tex, s->sampler);
 
-    if (s->loc_rw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
-    if (s->loc_rh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);
-    if (s->loc_dw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_dw, (f32)display_w);
-    if (s->loc_dh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
-    if (s->loc_sharp >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, 0.0f);
-    if (s->loc_inv_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
-    if (s->loc_prev_vp >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
+    if (s->loc_rw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
+    if (s->loc_rh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);
+    if (s->loc_dw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dw, (f32)display_w);
+    if (s->loc_dh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
+    if (s->loc_sharp >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, 0.0f);
+    if (s->loc_copy_only >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_copy_only, 1.0f);
+    if (s->loc_inv_proj >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
+    if (s->loc_prev_vp >= 0)   rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
 
     rhi_cmd_draw(cmd, 3, 1);
 

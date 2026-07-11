@@ -129,5 +129,5 @@ void debug_viz_apply(DebugVizSystem *s, RHICmdBuffer *cmd,
     }
 
     rhi_cmd_draw(cmd, 3, 1);
-    rhi_offscreen_fbo_unbind(cmd, w, h);
+    /* R197-B: skip intermediate swapchain CLEAR unbind (main does final unbind). */
 }

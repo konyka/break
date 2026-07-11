@@ -13,6 +13,7 @@ typedef struct {
     i32 loc_dw;
     i32 loc_dh;
     i32 loc_sharp;
+    i32 loc_copy_only;
     i32 loc_inv_proj;
     i32 loc_prev_vp;
     bool ready;

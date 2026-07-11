@@ -3862,6 +3862,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R197：upscale history 真复制 + debug_viz/lens 中间 unbind（已完成）
+
+### [x] R197-A upscale Pass 2 copy_only + VK push 映射
+- [x] `u_ups_copy_only`：Pass 2 原样 blit，避免二次 TSR
+- [x] `rhi_vk.c` 补 `u_ups_*` location（此前恒 -1）
+
+### [x] R197-B 删 debug_viz / lens_effects 中间 unbind
+- [x] 对齐 R196-B，保留 main 最终 unbind
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
