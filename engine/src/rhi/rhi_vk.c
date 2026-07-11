@@ -4319,6 +4319,18 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_ups_copy_only") == 0)      return 20;
     if (strcmp(name, "u_ups_inv_proj") == 0)       return 32;
     if (strcmp(name, "u_ups_prev_vp") == 0)        return 96;
+    /* R198-A: luminance_vk.frag auto-exposure — missing map froze adaptation. */
+    if (strcmp(name, "u_lum_w") == 0)              return 0;
+    if (strcmp(name, "u_lum_h") == 0)              return 4;
+    if (strcmp(name, "u_lum_speed") == 0)          return 8;
+    if (strcmp(name, "u_lum_dt") == 0)             return 12;
+    /* R198-B: god_rays_vk.frag — missing map zeroed sun/intensity. */
+    if (strcmp(name, "u_gr_sun_x") == 0)           return 0;
+    if (strcmp(name, "u_gr_sun_y") == 0)           return 4;
+    if (strcmp(name, "u_gr_intensity") == 0)       return 8;
+    if (strcmp(name, "u_gr_decay") == 0)           return 12;
+    if (strcmp(name, "u_gr_sw") == 0)              return 16;
+    if (strcmp(name, "u_gr_sh") == 0)              return 20;
     if (strcmp(name, "u_view") == 0)        return 64;
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {

@@ -3873,6 +3873,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R198：VK luminance/god_rays push 映射（已完成）
+
+### [x] R198-A u_lum_* 
+- [x] luminance_vk auto-exposure speed/dt 映射
+
+### [x] R198-B u_gr_*
+- [x] god_rays_vk sun/intensity/sw/sh 映射
+- [x] `god_rays_apply` 推送 sw/sh
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

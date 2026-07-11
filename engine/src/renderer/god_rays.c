@@ -107,7 +107,6 @@ void god_rays_apply(GodRaysSystem *s, RHICmdBuffer *cmd,
                     f32 sun_x, f32 sun_y, f32 intensity,
                     u32 w, u32 h) {
     if (!s->ready) return;
-    (void)w; (void)h;
 
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 
@@ -117,9 +116,11 @@ void god_rays_apply(GodRaysSystem *s, RHICmdBuffer *cmd,
     rhi_cmd_bind_material_textures(cmd, scene_tex, scene_tex, scene_tex,
                                    scene_tex, depth_tex, scene_tex, s->sampler);
 
-    if (s->loc_sun_x >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_sun_x, sun_x);
-    if (s->loc_sun_y >= 0)    rhi_cmd_set_uniform_f32(cmd, s->loc_sun_y, sun_y);
+    if (s->loc_sun_x >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sun_x, sun_x);
+    if (s->loc_sun_y >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sun_y, sun_y);
     if (s->loc_intensity >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_intensity, intensity);
+    if (s->loc_sw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_sw, (f32)w);
+    if (s->loc_sh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_sh, (f32)h);
 
     rhi_cmd_draw(cmd, 3, 1);
 }
