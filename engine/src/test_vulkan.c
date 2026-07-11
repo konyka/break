@@ -1030,7 +1030,7 @@ int main(int argc, char **argv) {
                 rhi_cmd_set_uniform_f32(cmd, l_far, 100.0f);
                 rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls.point_count);
                 rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls.dir_count);
-                rhi_cmd_bind_texel_buffers(cmd, ls.light_data_buf, ls.light_grid_buf);
+                rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls), light_system_grid_slot(&ls));
                 /* Bind material + the real IBL cubemaps (bindings 6/7/8). */
                 rhi_cmd_bind_material_textures_ibl(cmd,
                     render.test_tex, render.test_tex, render.test_tex, render.test_tex,

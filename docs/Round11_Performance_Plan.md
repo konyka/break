@@ -3697,7 +3697,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R182：visibility/light 双槽 ring（已完成）
+
+### [x] R182-A visibility_buf[2]
+- [x] `rhi_frame_index&1` 上传与 compact 同槽
+
+### [x] R182-B light_data/grid[2]
+- [x] upload / cull_gpu / deferred bind 同槽
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

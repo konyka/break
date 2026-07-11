@@ -84,17 +84,19 @@ bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws) 
     };
     sys->draw_count_buf = rhi_buffer_create(dev, &count_desc);
 
-    /* Per-object visibility flags (1 = visible, 0 = culled). */
+    /* Per-object visibility flags (1 = visible, 0 = culled). R182: dual slot. */
     RHIBufferDesc vis_desc = {
         .size  = (usize)max_draws * sizeof(u32),
         .usage = RHI_BUFFER_USAGE_STORAGE,
     };
-    sys->visibility_buf = rhi_buffer_create(dev, &vis_desc);
+    sys->visibility_buf[0] = rhi_buffer_create(dev, &vis_desc);
+    sys->visibility_buf[1] = rhi_buffer_create(dev, &vis_desc);
 
     if (!rhi_handle_valid(sys->all_draws_buf) ||
         !rhi_handle_valid(sys->visible_draws_buf) ||
         !rhi_handle_valid(sys->draw_count_buf) ||
-        !rhi_handle_valid(sys->visibility_buf)) {
+        !rhi_handle_valid(sys->visibility_buf[0]) ||
+        !rhi_handle_valid(sys->visibility_buf[1])) {
         LOG_WARN("IndirectDraw: buffer creation failed");
         indirect_draw_destroy(sys, dev);
         return false;
@@ -122,9 +124,13 @@ void indirect_draw_destroy(IndirectDrawSystem *sys, RHIDevice *dev) {
         rhi_pipeline_destroy(dev, sys->compact_pipeline);
         sys->compact_pipeline = RHI_HANDLE_NULL;
     }
-    if (rhi_handle_valid(sys->visibility_buf)) {
-        rhi_buffer_destroy(dev, sys->visibility_buf);
-        sys->visibility_buf = RHI_HANDLE_NULL;
+    if (rhi_handle_valid(sys->visibility_buf[0])) {
+        rhi_buffer_destroy(dev, sys->visibility_buf[0]);
+        sys->visibility_buf[0] = RHI_HANDLE_NULL;
+    }
+    if (rhi_handle_valid(sys->visibility_buf[1])) {
+        rhi_buffer_destroy(dev, sys->visibility_buf[1]);
+        sys->visibility_buf[1] = RHI_HANDLE_NULL;
     }
     if (rhi_handle_valid(sys->draw_count_buf)) {
         rhi_buffer_destroy(dev, sys->draw_count_buf);
@@ -161,7 +167,8 @@ void indirect_draw_upload_visibility(IndirectDrawSystem *sys, RHIDevice *dev,
                                      const u32 *flags, u32 count) {
     if (!sys || !sys->ready || !flags || count == 0) return;
     if (count > sys->max_draws) count = sys->max_draws;
-    rhi_buffer_update_region(dev, sys->visibility_buf, 0, flags,
+    /* R182: write the slot that this frame's compact will read. */
+    rhi_buffer_update_region(dev, indirect_draw_visibility_slot(sys, dev), 0, flags,
                              (usize)count * sizeof(u32));
 }
 
@@ -179,12 +186,11 @@ void indirect_draw_compact_no_barrier(IndirectDrawSystem *sys, RHIDevice *dev, R
 
     /* R175: GPU fill so reset is ordered with this CB's compact dispatch
      * (host rhi_buffer_update is invisible to later recorded GPU work). */
-    (void)dev;
     rhi_cmd_fill_buffer(cmd, sys->draw_count_buf, 0, sizeof(u32), 0u);
 
     rhi_cmd_bind_pipeline(cmd, sys->compact_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, sys->all_draws_buf,     0);
-    rhi_cmd_bind_storage_buffer(cmd, sys->visibility_buf,    1);
+    rhi_cmd_bind_storage_buffer(cmd, indirect_draw_visibility_slot(sys, dev), 1);
     rhi_cmd_bind_storage_buffer(cmd, sys->visible_draws_buf, 2);
     rhi_cmd_bind_storage_buffer(cmd, sys->draw_count_buf,    3);
 

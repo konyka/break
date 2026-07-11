@@ -3729,7 +3729,7 @@ u32 culled_count = 0;
                     if (legacy_gpucull_packed) {
                         /* Legacy: flags + compact (two compute passes). Object data pre-packed. */
                         gpucull_dispatch_flags(&gpucull_sys, cmd, &render.cascade_vp[c].e[0][0],
-                                               indirect_sys.visibility_buf);
+                                               indirect_draw_visibility_slot(&indirect_sys, render.device));
                     } else {
                         /* CPU frustum culling per cascade */
                         Frustum shadow_frustum = frustum_from_vp(&render.cascade_vp[c]);
@@ -5184,7 +5184,7 @@ u32 culled_count = 0;
             }
 
             deferred_lighting_pass(dsys, render.device, cmd,
-                                   lights.light_data_buf, lights.light_grid_buf,
+                                   light_system_data_slot(&lights), light_system_grid_slot(&lights),
                                    lights.point_count, lights.dir_count,
                                    shadow_tex,
                                    render.ibl.brdf_lut,

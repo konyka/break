@@ -33,8 +33,8 @@ typedef struct {
     u32            point_count;
     u32            dir_count;
 
-    RHIBuffer      light_data_buf;
-    RHIBuffer      light_grid_buf;
+    RHIBuffer      light_data_buf[2]; /* R182: dual-slot vs in-flight GPU read */
+    RHIBuffer      light_grid_buf[2];
 
     /* GPU cluster binning (replaces light_system_cull when available). */
     RHIPipeline    cluster_cull_pipeline;
@@ -88,6 +88,14 @@ void light_system_set_point_shadow_indices(LightSystem *ls, const PointShadowSys
  * Pass NULL to fall back to identity matrices.  Safe to call every frame. */
 static inline void light_system_set_cascade_vp(LightSystem *ls, const Mat4 *src) {
     ls->cascade_vp_src = src;
+}
+
+/* Current-frame light buffer slots (rhi_frame_index & 1). */
+static inline RHIBuffer light_system_data_slot(const LightSystem *ls) {
+    return ls->light_data_buf[rhi_frame_index(ls->device) & 1u];
+}
+static inline RHIBuffer light_system_grid_slot(const LightSystem *ls) {
+    return ls->light_grid_buf[rhi_frame_index(ls->device) & 1u];
 }
 
 /* Loads the cluster_cull.comp pipeline; returns true and sets ls->gpu_cull on

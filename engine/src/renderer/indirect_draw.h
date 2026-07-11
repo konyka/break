@@ -39,13 +39,18 @@ typedef struct {
     RHIBuffer   all_draws_buf;      /* STORAGE: every potential draw */
     RHIBuffer   visible_draws_buf;  /* STORAGE | INDIRECT: compacted visible draws */
     RHIBuffer   draw_count_buf;     /* STORAGE | INDIRECT: atomic counter */
-    RHIBuffer   visibility_buf;     /* STORAGE: per-object visibility flags */
+    RHIBuffer   visibility_buf[2];  /* R182: dual-slot host upload vs in-flight GPU read */
     RHIPipeline compact_pipeline;   /* compute pipeline running compact_draws.comp */
     u32         max_draws;
     u32         current_draw_count; /* CPU-side count of entries uploaded this frame */
     bool        ready;
     i32         _loc_total_draws;  /* cached uniform location */
 } IndirectDrawSystem;
+
+/* Current-frame visibility slot (rhi_frame_index & 1). */
+static inline RHIBuffer indirect_draw_visibility_slot(const IndirectDrawSystem *sys, RHIDevice *dev) {
+    return sys->visibility_buf[rhi_frame_index(dev) & 1u];
+}
 
 /* Lifecycle */
 bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws);

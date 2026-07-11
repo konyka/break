@@ -58,7 +58,8 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
         .size = (LIGHT_MAX_POINT * sizeof(PointLight) + LIGHT_MAX_DIR * sizeof(DirLight) + 4 * sizeof(Mat4)),
         .initial_data = NULL,
     };
-    ls->light_data_buf = rhi_buffer_create(dev, &light_desc);
+    ls->light_data_buf[0] = rhi_buffer_create(dev, &light_desc);
+    ls->light_data_buf[1] = rhi_buffer_create(dev, &light_desc);
 
     usize grid_data_size = (CLUSTER_COUNT * 2 + CLUSTER_COUNT * LIGHT_MAX_PER_CLUSTER) * sizeof(u32);
     RHIBufferDesc grid_desc = {
@@ -66,7 +67,8 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
         .size = grid_data_size,
         .initial_data = NULL,
     };
-    ls->light_grid_buf = rhi_buffer_create(dev, &grid_desc);
+    ls->light_grid_buf[0] = rhi_buffer_create(dev, &grid_desc);
+    ls->light_grid_buf[1] = rhi_buffer_create(dev, &grid_desc);
 
     ls->cluster_cull_pipeline = RHI_HANDLE_NULL;
     ls->gpu_cull = false;
@@ -89,8 +91,10 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
 void light_system_shutdown(LightSystem *ls) {
     if (!ls->device) return;
     if (rhi_handle_valid(ls->cluster_cull_pipeline)) rhi_pipeline_destroy(ls->device, ls->cluster_cull_pipeline);
-    if (rhi_handle_valid(ls->light_grid_buf)) rhi_buffer_destroy(ls->device, ls->light_grid_buf);
-    if (rhi_handle_valid(ls->light_data_buf)) rhi_buffer_destroy(ls->device, ls->light_data_buf);
+    if (rhi_handle_valid(ls->light_grid_buf[0])) rhi_buffer_destroy(ls->device, ls->light_grid_buf[0]);
+    if (rhi_handle_valid(ls->light_grid_buf[1])) rhi_buffer_destroy(ls->device, ls->light_grid_buf[1]);
+    if (rhi_handle_valid(ls->light_data_buf[0])) rhi_buffer_destroy(ls->device, ls->light_data_buf[0]);
+    if (rhi_handle_valid(ls->light_data_buf[1])) rhi_buffer_destroy(ls->device, ls->light_data_buf[1]);
     free(ls->_upload_buf); /* single free: _upload_buf + _grid_buf */
     ls->_upload_buf = NULL;
     ls->_grid_buf = NULL;
@@ -228,7 +232,8 @@ done:;
 
 /* Upload light data only (shared helper). */
 static void light_system_upload_lights_only(LightSystem *ls) {
-    if (!rhi_handle_valid(ls->light_data_buf)) return;
+    RHIBuffer data_slot = light_system_data_slot(ls);
+    if (!rhi_handle_valid(data_slot)) return;
 
     usize light_struct_size = LIGHT_MAX_POINT * sizeof(PointLight) + LIGHT_MAX_DIR * sizeof(DirLight);
     usize total_size = light_struct_size + 4 * sizeof(Mat4);
@@ -250,21 +255,23 @@ static void light_system_upload_lights_only(LightSystem *ls) {
             };
             memcpy(ls->_upload_buf + light_struct_size, id4, 4 * sizeof(Mat4));
         }
-        rhi_buffer_update(ls->device, ls->light_data_buf, ls->_upload_buf, total_size);
+        /* R182: dual-slot — avoid host write racing prior frame's GPU read. */
+        rhi_buffer_update(ls->device, data_slot, ls->_upload_buf, total_size);
     }
 }
 
 void light_system_upload(LightSystem *ls) {
     light_system_upload_lights_only(ls);
 
-    if (!rhi_handle_valid(ls->light_grid_buf)) return;
+    RHIBuffer grid_slot = light_system_grid_slot(ls);
+    if (!rhi_handle_valid(grid_slot)) return;
 
     usize grid_count = CLUSTER_COUNT * 2 + ls->grid_index_total;
     if (ls->_grid_buf && grid_count <= ls->_grid_buf_size) {
         /* No memset needed: memcpy overwrites the exact regions uploaded. */
         memcpy(ls->_grid_buf, ls->grid_offsets_counts, CLUSTER_COUNT * 2 * sizeof(u32));
         memcpy(ls->_grid_buf + CLUSTER_COUNT * 2, ls->grid_indices, ls->grid_index_total * sizeof(u32));
-        rhi_buffer_update(ls->device, ls->light_grid_buf, ls->_grid_buf, grid_count * sizeof(u32));
+        rhi_buffer_update(ls->device, grid_slot, ls->_grid_buf, grid_count * sizeof(u32));
     }
 }
 
@@ -343,8 +350,8 @@ void light_system_cull_gpu(LightSystem *ls, RHICmdBuffer *cmd,
     ls->far_plane = 100.0f;
 
     rhi_cmd_bind_pipeline(cmd, ls->cluster_cull_pipeline);
-    rhi_cmd_bind_storage_buffer(cmd, ls->light_data_buf, 0);
-    rhi_cmd_bind_storage_buffer(cmd, ls->light_grid_buf, 1);
+    rhi_cmd_bind_storage_buffer(cmd, light_system_data_slot(ls), 0);
+    rhi_cmd_bind_storage_buffer(cmd, light_system_grid_slot(ls), 1);
     if (ls->cc_loc_vp >= 0)      rhi_cmd_set_uniform_mat4(cmd, ls->cc_loc_vp, vp);
     if (ls->cc_loc_params0 >= 0) rhi_cmd_set_uniform_vec4(cmd, ls->cc_loc_params0,
                                      (f32)ls->point_count, (f32)screen_w, (f32)screen_h, ls->near_plane);
