@@ -3675,7 +3675,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R180：粒子 pass 保活 + depth→compute 屏障（已完成）
+
+### [x] R180-A 粒子不拆 offscreen
+- [x] 删除 `end/begin_render_pass`；fill/dispatch suspend/resume
+
+### [x] R180-B depth→compute
+- [x] `transition_depth_to_read` dst 含 COMPUTE；FBO color mip_levels
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

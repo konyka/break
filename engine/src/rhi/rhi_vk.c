@@ -3734,9 +3734,11 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.layerCount = 1;
+    /* R180: Hi-Z compute samples depth immediately after this transition;
+     * FRAGMENT-only dst left compute unsynchronized. */
     vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL, 1, &barrier);
     td->cur_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
@@ -5558,6 +5560,10 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     td->memory = fd->color_memory;
     td->width = width;
     td->height = height;
+    td->format = vk_color_fmt;
+    td->mip_levels = 1u; /* R180: bind_texture_compute layout loop */
+    td->mip_layout[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    td->cur_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     dev->slots[idx].ptr = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;
     fbo.color_tex = rhi_make_handle(idx, dev->slots[idx].generation);
@@ -5570,6 +5576,10 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     dd->memory = fd->depth_memory;
     dd->width = width;
     dd->height = height;
+    /* mip_levels stays 0: bind_texture_compute uses COLOR aspect; depth
+     * layout is owned by rhi_cmd_transition_depth_to_read (cur_layout). */
+    dd->format = VK_FORMAT_D32_SFLOAT;
+    dd->cur_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     dev->slots[didx].ptr = dd;
     dev->slots[didx].type = RHI_RES_TEXTURE;
     fbo.depth_tex = rhi_make_handle(didx, dev->slots[didx].generation);

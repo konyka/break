@@ -244,7 +244,9 @@ void particles_shutdown(ParticleSystem *ps) {
 void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
     if (!ps->initialized) return;
 
-    rhi_cmd_end_render_pass(cmd);
+    /* R180: Do not end/begin_render_pass — that drops a suspended offscreen
+     * pass and restarts the swapchain CLEAR pass. fill/dispatch already
+     * suspend via vk_suspend_pass_for_compute; the next draw resumes. */
 
     /* R174: Integer emit budget from rate*dt with fractional carry. */
     ps->emit_accum += ps->emit_rate * dt;
@@ -297,14 +299,12 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
 
     rhi_cmd_dispatch(cmd, PARTICLES_MAX / 256, 1, 1);
     rhi_cmd_memory_barrier(cmd);
-
-    rhi_cmd_begin_render_pass(cmd);
 }
 
 void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
     if (!ps->initialized || !ps->cull_ready) return;
 
-    rhi_cmd_end_render_pass(cmd);
+    /* R180: Same as compute — keep offscreen pass suspend/resume intact. */
 
     /* R175: GPU-clear instanceCount only — host memcpy raced with in-flight
      * draw_indirect / prior cull on HOST_VISIBLE STORAGE|INDIRECT. */
@@ -315,8 +315,6 @@ void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
     rhi_cmd_bind_storage_buffer(cmd, ps->cull_buf, 1);
     rhi_cmd_dispatch(cmd, (PARTICLES_MAX + 255) / 256, 1, 1);
     rhi_cmd_memory_barrier(cmd);
-
-    rhi_cmd_begin_render_pass(cmd);
 }
 
 void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj) {
