@@ -178,6 +178,8 @@ void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y);
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w);
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v);
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v);
+/* R179: Raw push-constant / uniform blob (VK byte offset; GL no-op). */
+void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size);
 i32  rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name);
 
 /* ---- Framebuffer (depth-only for shadow pass) ---- */

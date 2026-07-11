@@ -1283,6 +1283,11 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     if (location >= 0) glUniform1f(location, v);
 }
 
+void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
+    /* GL uses per-uniform locations; raw push blobs are Vulkan-only. */
+    (void)cmd; (void)location; (void)data; (void)size;
+}
+
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     (void)cmd;
     if (location >= 0) glUniform1i(location, v);

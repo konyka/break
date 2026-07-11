@@ -63,6 +63,9 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *c, i32 loc, i32 v)          { (void)c
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *c, i32 loc, f32 a, f32 b)  { (void)c; (void)loc; (void)a; (void)b; }
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *c, i32 loc, f32 a, f32 b, f32 d) { (void)c; (void)loc; (void)a; (void)b; (void)d; }
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *c, i32 loc, const f32 *m)  { (void)c; (void)loc; (void)m; }
+void rhi_cmd_set_uniform_bytes(RHICmdBuffer *c, i32 loc, const void *data, u32 size) {
+    (void)c; (void)loc; (void)data; (void)size;
+}
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *c, i32 loc, f32 a, f32 b, f32 d, f32 e) { (void)c; (void)loc; (void)a; (void)b; (void)d; (void)e; }
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *c, RHIBuffer b, u32 bind) { (void)c; (void)b; (void)bind; }
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *c, RHITexture t, RHISampler s, u32 u, u32 mip) { (void)c; (void)t; (void)s; (void)u; (void)mip; }

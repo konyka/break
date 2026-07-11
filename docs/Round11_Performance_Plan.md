@@ -3664,7 +3664,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R179：粒子 live Push + compute 采样布局（已完成）
+
+### [x] R179-A live 80B Push
+- [x] 每帧从 `ps->*` 组装；`rhi_cmd_set_uniform_bytes` 一次上传
+
+### [x] R179-B bind_texture_compute 布局
+- [x] 全 mip → `SHADER_READ_ONLY_OPTIMAL` 后再采样
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
+
 
 
 

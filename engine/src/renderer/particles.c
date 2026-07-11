@@ -262,19 +262,26 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
 
 #ifdef ENGINE_VULKAN
     if (ps->_loc_push_dt >= 0) {
+        /* R179: Build full 80-byte Push from live ps->* (not stale template),
+         * and upload in one blob — mat4 helper only copies 64 bytes. */
         f32 push_data[20];
-        memcpy(push_data, ps->_push_template, sizeof(push_data));
-        push_data[0] = dt;
-        push_data[1] = ps->emit_rate;
-        push_data[2] = (f32)budget; /* pad0 = emit budget */
-        push_data[4] = ps->emit_pos[0];
-        push_data[5] = ps->emit_pos[1];
-        push_data[6] = ps->emit_pos[2];
-        push_data[7] = ps->gravity;
-        /* R178: set_uniform_mat4 only copies 64 bytes; Push block is 80.
-         * lifetime_range lives at byte 76 — upload the tail explicitly. */
-        rhi_cmd_set_uniform_mat4(cmd, ps->_loc_push_dt, push_data);
-        rhi_cmd_set_uniform_f32(cmd, ps->_loc_push_dt + 76, push_data[19]);
+        memset(push_data, 0, sizeof(push_data));
+        push_data[0]  = dt;
+        push_data[1]  = ps->emit_rate;
+        push_data[2]  = (f32)budget;
+        push_data[4]  = ps->emit_pos[0];
+        push_data[5]  = ps->emit_pos[1];
+        push_data[6]  = ps->emit_pos[2];
+        push_data[7]  = ps->gravity;
+        push_data[8]  = ps->emit_vel_min[0];
+        push_data[9]  = ps->emit_vel_min[1];
+        push_data[10] = ps->emit_vel_min[2];
+        push_data[12] = ps->emit_vel_max[0];
+        push_data[13] = ps->emit_vel_max[1];
+        push_data[14] = ps->emit_vel_max[2];
+        push_data[15] = ps->lifetime_min;
+        push_data[19] = ps->lifetime_range;
+        rhi_cmd_set_uniform_bytes(cmd, ps->_loc_push_dt, push_data, (u32)sizeof(push_data));
     }
 #else
     if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);

@@ -3648,6 +3648,34 @@ void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler 
     VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
     if (!sd) return;
 
+    /* R179: Full-view sampling requires every mip in READ_ONLY — Hi-Z writes
+     * leave mips GENERAL until explicitly transitioned. */
+    vk_suspend_pass_for_compute(vk);
+    for (u32 m = 0; m < td->mip_levels && m < VK_MAX_MIP_VIEWS; m++) {
+        VkImageLayout old_layout = td->mip_layout[m];
+        if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;
+        if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+            old_layout = VK_IMAGE_LAYOUT_GENERAL;
+        VkImageMemoryBarrier barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.image = td->image;
+        barrier.oldLayout = old_layout;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = m;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(vk->cmd_buffers[vk->current_frame],
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &barrier);
+        td->mip_layout[m] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
     VkDescriptorSetLayout layout = vk->sampler_mip_layout;
     VkDescriptorSetAllocateInfo dsai = {0};
     dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -3808,6 +3836,18 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     if (location < 0 || (u32)location + 4 > 256) return;  /* R146: bounds check push_staging[256] */
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
+    vk->push_dirty = true;
+}
+
+/* R179: Upload an arbitrary push-constant range in one mark (avoids mat4 64B truncation). */
+void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
+    (void)cmd;
+    if (!data || size == 0u) return;
+    VKBackend *vk = vk_backend(g_current_device);
+    if (!vk->current_pipeline_data) return;
+    if (location < 0 || (u32)location + size > 256u) return;
+    memcpy(vk->push_staging + location, data, size);
+    VK_PUSH_MARK(vk, location, size);
     vk->push_dirty = true;
 }
 
