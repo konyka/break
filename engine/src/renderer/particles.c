@@ -137,6 +137,11 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     };
     ps->cull_buf = rhi_buffer_create(dev, &cull_desc_buf);
     ps->cull_ready = rhi_handle_valid(ps->cull_buf) && rhi_handle_valid(ps->cull_pipeline);
+    /* R175: Seed DrawIndirect header once; per-frame only GPU-clears instanceCount. */
+    if (ps->cull_ready) {
+        u32 hdr[4] = {1u, 0u, 0u, 0u};
+        rhi_buffer_update(dev, ps->cull_buf, hdr, sizeof(hdr));
+    }
 
     /* R174: Spawn claim counter for exact emit_rate budgeting. */
     RHIBufferDesc spawn_desc = {
@@ -291,10 +296,9 @@ void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
 
     rhi_cmd_end_render_pass(cmd);
 
-    /* R167: Reset DrawIndirectCommand header — vertexCount=1 (point),
-     * instanceCount=0 (atomicAdd fills), firstVertex/firstInstance=0. */
-    u32 hdr[4] = {1u, 0u, 0u, 0u};
-    rhi_buffer_update(ps->device, ps->cull_buf, hdr, sizeof(hdr));
+    /* R175: GPU-clear instanceCount only — host memcpy raced with in-flight
+     * draw_indirect / prior cull on HOST_VISIBLE STORAGE|INDIRECT. */
+    rhi_cmd_fill_buffer(cmd, ps->cull_buf, sizeof(u32), sizeof(u32), 0u);
 
     rhi_cmd_bind_pipeline(cmd, ps->cull_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);

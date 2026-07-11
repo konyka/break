@@ -3621,6 +3621,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R175：粒子 cull GPU 清零 + mip upload 布局（已完成）
+
+### [x] R175-A cull instanceCount GPU fill
+- [x] init 写 header；每帧 `rhi_cmd_fill_buffer` 清 instanceCount
+
+### [x] R175-B upload_mip 用 mip_layout
+- [x] UNDEFINED 高层从 TOP_OF_PIPE transition
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -251,6 +251,34 @@ typedef struct {
 
 /* ---- Helpers ---- */
 
+/* R175: One in-flight mip upload — reclaim on next upload / device shutdown
+ * so async_loader_tick does not stall the main thread on every level. */
+typedef struct {
+    VkFence         fence;
+    VkBuffer        staging;
+    VkDeviceMemory  staging_mem;
+    VkCommandBuffer cb;
+    VkCommandPool   pool;
+    bool            pending;
+} VKMipUploadPending;
+static VKMipUploadPending g_mip_upload_pending;
+
+static void vk_mip_upload_reclaim(VKBackend *vk) {
+    if (!g_mip_upload_pending.pending || !vk) return;
+    if (g_mip_upload_pending.fence) {
+        if (vkWaitForFences(vk->device, 1, &g_mip_upload_pending.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+            LOG_WARN("VK: vkWaitForFences failed reclaiming mip upload");
+        vkDestroyFence(vk->device, g_mip_upload_pending.fence, NULL);
+    }
+    if (g_mip_upload_pending.cb)
+        vkFreeCommandBuffers(vk->device, g_mip_upload_pending.pool, 1, &g_mip_upload_pending.cb);
+    if (g_mip_upload_pending.staging)
+        vkDestroyBuffer(vk->device, g_mip_upload_pending.staging, NULL);
+    if (g_mip_upload_pending.staging_mem)
+        vkFreeMemory(vk->device, g_mip_upload_pending.staging_mem, NULL);
+    memset(&g_mip_upload_pending, 0, sizeof(g_mip_upload_pending));
+}
+
 static VKBackend *vk_backend(RHIDevice *dev) {
     return (VKBackend *)dev->backend_data;
 }
@@ -1235,6 +1263,18 @@ static void vk_shutdown(RHIDevice *dev) {
     if (!vk) return;
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shutdown");
+    /* R175: Device idle — free deferred mip-upload resources without waiting. */
+    if (g_mip_upload_pending.pending) {
+        if (g_mip_upload_pending.fence)
+            vkDestroyFence(vk->device, g_mip_upload_pending.fence, NULL);
+        if (g_mip_upload_pending.cb)
+            vkFreeCommandBuffers(vk->device, g_mip_upload_pending.pool, 1, &g_mip_upload_pending.cb);
+        if (g_mip_upload_pending.staging)
+            vkDestroyBuffer(vk->device, g_mip_upload_pending.staging, NULL);
+        if (g_mip_upload_pending.staging_mem)
+            vkFreeMemory(vk->device, g_mip_upload_pending.staging_mem, NULL);
+        memset(&g_mip_upload_pending, 0, sizeof(g_mip_upload_pending));
+    }
 
     if (vk->shaderc_compiler) {
         shaderc_compiler_release(vk->shaderc_compiler);
@@ -2790,6 +2830,9 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     if (!td || !data || size == 0) return;
     if (mip_level >= td->mip_levels) return;
 
+    /* R175: Reclaim previous fire-and-forget upload before allocating a new one. */
+    vk_mip_upload_reclaim(vk);
+
     /* Host-visible staging buffer holding the mip's pixels. */
     VkDeviceSize data_size = (VkDeviceSize)size;
     VkBuffer staging;
@@ -2852,11 +2895,12 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
         return;
     }
 
-    /* The texture was created with all mips already in SHADER_READ_ONLY.
-     * Transition just this mip to TRANSFER_DST for the copy, then back. */
+    /* R175: Use tracked mip_layout — data-create path leaves higher mips UNDEFINED. */
+    VkImageLayout old_layout = (mip_level < VK_MAX_MIP_VIEWS)
+        ? td->mip_layout[mip_level] : VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageMemoryBarrier to_dst = {0};
     to_dst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    to_dst.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_dst.oldLayout = old_layout;
     to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2865,9 +2909,12 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     to_dst.subresourceRange.baseMipLevel = mip_level;
     to_dst.subresourceRange.levelCount = 1;
     to_dst.subresourceRange.layerCount = 1;
-    to_dst.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    to_dst.srcAccessMask = (old_layout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0
+                         : VK_ACCESS_SHADER_READ_BIT;
     to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    VkPipelineStageFlags src_stage = (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+        ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    vkCmdPipelineBarrier(cb, src_stage,
         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_dst);
 
     VkBufferImageCopy region = {0};
@@ -2916,14 +2963,16 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
         vkFreeMemory(vk->device, staging_mem, NULL);
         return;
     }
-    if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
-        LOG_WARN("VK: vkWaitForFences failed for mip upload");
-
-    vkDestroyFence(vk->device, fence, NULL);
-    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
-    vkDestroyBuffer(vk->device, staging, NULL);
-    vkFreeMemory(vk->device, staging_mem, NULL);
-    /* R173: Upload ends in SHADER_READ_ONLY_OPTIMAL for this mip. */
+    /* R175: Do not stall the main thread — reclaim on next upload / shutdown. */
+    g_mip_upload_pending.fence = fence;
+    g_mip_upload_pending.staging = staging;
+    g_mip_upload_pending.staging_mem = staging_mem;
+    g_mip_upload_pending.cb = cb;
+    g_mip_upload_pending.pool = vk->cmd_pool;
+    g_mip_upload_pending.pending = true;
+    /* R173: Upload ends in SHADER_READ_ONLY_OPTIMAL for this mip.
+     * Layout is updated now; GPU may still be transitioning — safe because
+     * subsequent uses either wait via reclaim or go through frame fences. */
     if (mip_level < VK_MAX_MIP_VIEWS)
         td->mip_layout[mip_level] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
