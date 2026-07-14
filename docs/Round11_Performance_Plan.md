@@ -3894,6 +3894,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R200：VK color_grade/bloom push 映射（已完成）
+
+### [x] R200-A 独立 u_cg_*
+- [x] color_grade_vk saturation/contrast/brightness/temperature/tint @0–16
+
+### [x] R200-B bloom uniforms
+- [x] u_threshold / u_direction / u_bloom_strength @0
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

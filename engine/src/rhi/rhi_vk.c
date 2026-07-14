@@ -4344,6 +4344,16 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_cs_inv_proj") == 0)        return 12;
     if (strcmp(name, "u_cs_sw") == 0)              return 76;
     if (strcmp(name, "u_cs_sh") == 0)              return 80;
+    /* R200-A: color_grade_vk.frag standalone — combined_color_layout uses different offsets. */
+    if (strcmp(name, "u_cg_saturation") == 0)      return 0;
+    if (strcmp(name, "u_cg_contrast") == 0)        return 4;
+    if (strcmp(name, "u_cg_brightness") == 0)      return 8;
+    if (strcmp(name, "u_cg_temperature") == 0)     return 12;
+    if (strcmp(name, "u_cg_tint") == 0)            return 16;
+    /* R200-B: bloom extract/blur/composite — missing map killed bloom + SSGI blur. */
+    if (strcmp(name, "u_threshold") == 0)          return 0;
+    if (strcmp(name, "u_direction") == 0)          return 0; /* vec2 */
+    if (strcmp(name, "u_bloom_strength") == 0)     return 0;
     if (strcmp(name, "u_view") == 0)        return 64;
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {
