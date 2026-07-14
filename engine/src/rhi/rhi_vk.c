@@ -4354,6 +4354,19 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_threshold") == 0)          return 0;
     if (strcmp(name, "u_direction") == 0)          return 0; /* vec2 */
     if (strcmp(name, "u_bloom_strength") == 0)     return 0;
+    /* R201-A: sss_vk / sss_vertical_vk — missing map → sw/sh=0 divide-by-zero. */
+    if (strcmp(name, "u_sss_strength") == 0)       return 0;
+    if (strcmp(name, "u_sss_sw") == 0)             return 4;
+    if (strcmp(name, "u_sss_sh") == 0)             return 8;
+    if (strcmp(name, "u_sss_max_dist") == 0)       return 12;
+    if (strcmp(name, "u_sssv_strength") == 0)      return 0;
+    if (strcmp(name, "u_sssv_sw") == 0)            return 4;
+    if (strcmp(name, "u_sssv_sh") == 0)            return 8;
+    if (strcmp(name, "u_sssv_max_dist") == 0)      return 12;
+    /* R201-B: fxaa_vk.frag standalone threshold (combined_aa uses offset 208). */
+    if (strcmp(name, "u_fxaa_threshold") == 0)     return 8;
+    /* Standalone tonemap_vk.frag mode (combined_color uses offset 8). */
+    if (strcmp(name, "u_tm_mode") == 0)            return 16;
     if (strcmp(name, "u_view") == 0)        return 64;
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {

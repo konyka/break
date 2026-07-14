@@ -3904,6 +3904,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R201：VK SSS/FXAA/tonemap 独立 push 映射（已完成）
+
+### [x] R201-A u_sss_* / u_sssv_*
+- [x] sss_vk / sss_vertical_vk strength/sw/sh/max_dist
+
+### [x] R201-B 独立 FXAA threshold + tonemap mode
+- [x] u_fxaa_threshold@8；u_tm_mode@16
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
