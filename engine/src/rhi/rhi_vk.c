@@ -4331,6 +4331,19 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_gr_decay") == 0)           return 12;
     if (strcmp(name, "u_gr_sw") == 0)              return 16;
     if (strcmp(name, "u_gr_sh") == 0)              return 20;
+    /* R199-A: motion_blur_vk.frag — missing map zeroed strength/proj. */
+    if (strcmp(name, "u_mb_strength") == 0)        return 0;
+    if (strcmp(name, "u_mb_sw") == 0)              return 4;
+    if (strcmp(name, "u_mb_sh") == 0)              return 8;
+    if (strcmp(name, "u_mb_inv_proj") == 0)        return 12;
+    if (strcmp(name, "u_mb_prev_vp") == 0)         return 76;
+    /* R199-B: contact_shadow_vk.frag — missing map zeroed light/proj. */
+    if (strcmp(name, "u_cs_light_x") == 0)         return 0;
+    if (strcmp(name, "u_cs_light_y") == 0)         return 4;
+    if (strcmp(name, "u_cs_light_z") == 0)         return 8;
+    if (strcmp(name, "u_cs_inv_proj") == 0)        return 12;
+    if (strcmp(name, "u_cs_sw") == 0)              return 76;
+    if (strcmp(name, "u_cs_sh") == 0)              return 80;
     if (strcmp(name, "u_view") == 0)        return 64;
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {

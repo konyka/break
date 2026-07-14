@@ -3884,6 +3884,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R199：VK motion_blur/contact_shadow push 映射（已完成）
+
+### [x] R199-A u_mb_*
+- [x] motion_blur_vk strength/sw/sh/inv_proj/prev_vp
+
+### [x] R199-B u_cs_*
+- [x] contact_shadow_vk light/inv_proj/sw/sh
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
