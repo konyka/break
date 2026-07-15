@@ -5298,8 +5298,11 @@ u32 culled_count = 0;
         if (forward_vel_enabled && forward_vel.ready &&
             render.render_path != RENDER_PATH_DEFERRED &&
             rhi_handle_valid(scene_fbo.depth_tex) && taa_enabled) {
+            /* R205-A: Must pass inv(VP), not inv(P). Shader reconstructs a
+             * position then multiplies by curr/prev view-proj; inv_proj alone
+             * yields view-space coords and double-applies the view matrix. */
             forward_velocity_apply(&forward_vel, cmd, scene_fbo.depth_tex,
-                                   &frame_inv_proj.e[0][0], &curr_view_proj.e[0][0],
+                                   &frame_inv_vp.e[0][0], &curr_view_proj.e[0][0],
                                    &prev_view_proj.e[0][0], rw, rh);
             if (!rhi_handle_valid(render.deferred.gbuf_velocity))
                 taa_velocity = forward_velocity_get_texture(&forward_vel);
@@ -5330,8 +5333,9 @@ u32 culled_count = 0;
         }
 
         if (motion_blur.ready && rhi_handle_valid(scene_fbo.fb) && mb_enabled) {
+            /* R205-B: Same inv(VP)+prev_vp contract as TAA / forward_velocity. */
             motion_blur_apply(&motion_blur, cmd, taa_output, scene_fbo.depth_tex,
-                              &frame_inv_proj.e[0][0], &prev_view_proj.e[0][0],
+                              &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
                               1.0f, rw, rh);
             taa_output = motion_blur.fbo.color_tex;
         }
@@ -5471,8 +5475,9 @@ u32 culled_count = 0;
         }
 
         if (upscale_sys.ready) {
+            /* R205-B: History reprojection needs inv(VP), not inv(P). */
             upscale_apply(&upscale_sys, cmd, tonemap_input, scene_fbo.depth_tex,
-                          &frame_inv_proj.e[0][0], &prev_view_proj.e[0][0],
+                          &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
                           0.3f, rw, rh, w, h);
             rhi_offscreen_fbo_unbind(cmd, w, h);
             rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);

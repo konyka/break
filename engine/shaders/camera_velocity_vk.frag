@@ -6,7 +6,7 @@ layout(location = 0) out vec4 fragColor;
 layout(binding = 0) uniform sampler2D u_depth;
 
 layout(push_constant) uniform Push {
-    mat4 u_inv_proj;  /* 0 */
+    mat4 u_inv_proj;  /* 0: actually inv(VP) — see R205-A / main.c */
     mat4 u_curr_vp;   /* 64 */
     mat4 u_prev_vp;   /* 128 */
 } pc;
