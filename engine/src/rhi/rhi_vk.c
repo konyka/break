@@ -4258,19 +4258,12 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_ssgi_sh") == 0)             return 140;
     if (strcmp(name, "u_fxaa_sw") == 0)            return 0;
     if (strcmp(name, "u_fxaa_sh") == 0)            return 4;
+    /* R204-B: standalone tonemap_vk.frag layout (combined_color uses early map).
+     * Old mega-tonemap offsets (aberration@8 etc.) conflicted with screen_w/mode. */
     if (strcmp(name, "u_tm_exposure") == 0)       return 0;
     if (strcmp(name, "u_tm_gamma") == 0)           return 4;
-    if (strcmp(name, "u_tm_aberration") == 0)      return 8;
-    if (strcmp(name, "u_tm_vignette") == 0)        return 12;
-    if (strcmp(name, "u_tm_grain") == 0)            return 16;
-    if (strcmp(name, "u_tm_time") == 0)             return 20;
-    if (strcmp(name, "u_tm_screen_w") == 0)         return 24;
-    if (strcmp(name, "u_tm_screen_h") == 0)         return 28;
-    if (strcmp(name, "u_tm_saturation") == 0)       return 32;
-    if (strcmp(name, "u_tm_contrast") == 0)         return 36;
-    if (strcmp(name, "u_tm_brightness") == 0)       return 40;
-    if (strcmp(name, "u_tm_temperature") == 0)      return 44;
-    if (strcmp(name, "u_tm_tint") == 0)             return 48;
+    if (strcmp(name, "u_tm_screen_w") == 0)         return 8;
+    if (strcmp(name, "u_tm_screen_h") == 0)         return 12;
     if (strcmp(name, "u_cine_aberration") == 0)    return 0;
     if (strcmp(name, "u_cine_vignette") == 0)    return 4;
     if (strcmp(name, "u_cine_grain") == 0)       return 8;

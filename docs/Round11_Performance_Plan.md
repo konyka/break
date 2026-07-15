@@ -3934,6 +3934,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R204：gbuffer AO push 越界 + 独立 tonemap 映射（已完成）
+
+### [x] R204-A gbuffer_vk.frag 默认材质 const
+- [x] 去掉 offset 256+ push；ao_default=1.0（对齐 GL）
+
+### [x] R204-B tonemap_vk 独立 push 对齐
+- [x] exposure@0 gamma@4 screen_w@8 screen_h@12 mode@16；删除旧 mega 死映射
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
