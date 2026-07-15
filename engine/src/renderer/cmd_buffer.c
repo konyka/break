@@ -340,10 +340,9 @@ static void sort_buffer_indices_by_key(const FrameCommands *frame,
  * Replay a single command onto the RHI command buffer.
  *
  * NOTE: Some logical operations in the high-level command stream do not have
- * 1:1 RHI primitives yet (e.g. draw_indexed first_index / vertex_offset,
- * viewport min/max depth). For those we map to the closest available RHI call
- * so the system compiles and behaves sanely; finer-grained support is to be
- * added as the RHI grows. PUSH_CONSTANTS replays via rhi_cmd_set_uniform_bytes.
+ * 1:1 RHI primitives yet (e.g. viewport min/max depth). For those we map to the
+ * closest available RHI call. PUSH_CONSTANTS → rhi_cmd_set_uniform_bytes;
+ * DRAW_INDEXED → rhi_cmd_draw_indexed_base (first_index / vertex_offset).
  */
 static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
     switch (cmd->type) {
@@ -354,11 +353,12 @@ static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
         break;
 
     case RENDER_CMD_DRAW_INDEXED:
-        /* RHI exposes (index_count, instance_count); first_index and
-         * vertex_offset are recorded for future expansion. */
-        rhi_cmd_draw_indexed(rhi_cmd,
-                             cmd->draw_indexed.index_count,
-                             cmd->draw_indexed.instance_count);
+        /* R208-B: Honor first_index / vertex_offset via draw_indexed_base. */
+        rhi_cmd_draw_indexed_base(rhi_cmd,
+                                  cmd->draw_indexed.index_count,
+                                  cmd->draw_indexed.instance_count,
+                                  cmd->draw_indexed.first_index,
+                                  cmd->draw_indexed.vertex_offset);
         break;
 
     case RENDER_CMD_BIND_PIPELINE:

@@ -5258,10 +5258,11 @@ u32 culled_count = 0;
         }
 
         if (contact_shadow.ready && rhi_handle_valid(scene_fbo.fb) && cs_enabled) {
-            /* R207-A: Ray march is view-space; transform world sun_dir by view 3x3. */
-            f32 cs_lx = view.e[0][0]*sun_dir_vec.e[0] + view.e[0][1]*sun_dir_vec.e[1] + view.e[0][2]*sun_dir_vec.e[2];
-            f32 cs_ly = view.e[1][0]*sun_dir_vec.e[0] + view.e[1][1]*sun_dir_vec.e[1] + view.e[1][2]*sun_dir_vec.e[2];
-            f32 cs_lz = view.e[2][0]*sun_dir_vec.e[0] + view.e[2][1]*sun_dir_vec.e[1] + view.e[2][2]*sun_dir_vec.e[2];
+            /* R208-A: Match GPU/mat4_vec4 (column-major M*v). R207 used the
+             * transposed 3x3, so light dir disagreed with inv_proj view positions. */
+            f32 cs_lx = view.e[0][0]*sun_dir_vec.e[0] + view.e[1][0]*sun_dir_vec.e[1] + view.e[2][0]*sun_dir_vec.e[2];
+            f32 cs_ly = view.e[0][1]*sun_dir_vec.e[0] + view.e[1][1]*sun_dir_vec.e[1] + view.e[2][1]*sun_dir_vec.e[2];
+            f32 cs_lz = view.e[0][2]*sun_dir_vec.e[0] + view.e[1][2]*sun_dir_vec.e[1] + view.e[2][2]*sun_dir_vec.e[2];
             contact_shadow_apply(&contact_shadow, cmd, scene_fbo.depth_tex,
                                  &frame_inv_proj.e[0][0], cs_lx, cs_ly, cs_lz, rw, rh);
         }

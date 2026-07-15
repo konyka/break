@@ -522,6 +522,14 @@ static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) 
     glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL, (GLsizei)instance_count);
 }
 
+static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_count,
+                                     u32 first_index, i32 vertex_offset) {
+    (void)cmd;
+    const void *indices = (const void *)(uintptr_t)(first_index * sizeof(u32));
+    glDrawElementsInstancedBaseVertex(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT,
+                                      indices, (GLsizei)instance_count, (GLint)vertex_offset);
+}
+
 static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
     (void)cmd;
     glClearColor(r, g, b, a);
@@ -977,6 +985,14 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
 
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count) {
     gl_cmd_draw_indexed(cmd, index_count, instance_count);
+}
+
+void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count,
+                               u32 first_index, i32 vertex_offset) {
+    if (first_index == 0u && vertex_offset == 0)
+        gl_cmd_draw_indexed(cmd, index_count, instance_count);
+    else
+        gl_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index, vertex_offset);
 }
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,

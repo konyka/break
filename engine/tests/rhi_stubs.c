@@ -9,6 +9,9 @@
 
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vc, u32 ic) { (void)cmd; (void)vc; (void)ic; }
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 ic, u32 inst) { (void)cmd; (void)ic; (void)inst; }
+void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 ic, u32 inst, u32 fi, i32 vo) {
+    (void)cmd; (void)ic; (void)inst; (void)fi; (void)vo;
+}
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline p) { (void)cmd; (void)p; }
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer b, usize o) { (void)cmd; (void)b; (void)o; }
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer b, usize o) { (void)cmd; (void)b; (void)o; }

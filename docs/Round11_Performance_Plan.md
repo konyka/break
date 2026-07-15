@@ -3974,6 +3974,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R208：接触阴影列主序变换 + draw_indexed base（已完成）
+
+### [x] R208-A contact_shadow 光向改列主序 M*v
+- [x] 与 GPU/`mat4_vec4`/`lens_flare` 一致（修正 R207 转置 3×3）
+
+### [x] R208-B DRAW_INDEXED first_index/vertex_offset
+- [x] `rhi_cmd_draw_indexed_base`（VK + GL BaseVertex）+ cmd 回放
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
