@@ -4215,13 +4215,17 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "push.proj") == 0)         return 64;
         return -1;
     }
-    if (strcmp(name, "u_prev_vp") == 0)       return 192;
+    /* R203-A: gbuffer_vk.vert packs prev@192; camera_velocity_vk packs prev@128.
+     * An unconditional 192 made the late return 128 dead and broke forward_velocity. */
+    if (strcmp(name, "u_prev_vp") == 0)
+        return (pd && pd->no_vertex_input) ? 128 : 192;
     if (strcmp(name, "u_model") == 0)       return 0;
     if (strcmp(name, "u_view") == 0)        return 64;
     /* The clustered fragment shader drops the unused u_proj slot and reuses the
      * freed 64 bytes for camera/ambient/fog/shadow params (see clustered map). */
     if (strcmp(name, "u_proj") == 0)        return clustered ? -1 : 128;
-    if (strcmp(name, "u_light_vp") == 0)    return 64;
+    /* R203-B: generic u_light_vp@64 aliased u_view. Real users are covered by
+     * terrain/water/is_shadow_depth layouts above — do not map here. */
     if (strcmp(name, "u_vol_inv_proj") == 0)     return 0;
     if (strcmp(name, "u_vol_view") == 0)         return 64;
     if (strcmp(name, "u_vol_ldx") == 0)          return 128;
@@ -4423,7 +4427,6 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_albedo") == 0)      return -1;
     if (strcmp(name, "u_inv_proj") == 0)    return 0;
     if (strcmp(name, "u_curr_vp") == 0)     return 64;
-    if (strcmp(name, "u_prev_vp") == 0)     return 128;
     return -1;
 }
 

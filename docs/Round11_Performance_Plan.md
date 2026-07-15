@@ -3924,6 +3924,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R203：u_prev_vp 双映射 + 去掉误用 u_light_vp（已完成）
+
+### [x] R203-A u_prev_vp 按管线分流
+- [x] `no_vertex_input` → 128（camera_velocity）；否则 → 192（gbuffer）
+
+### [x] R203-B 删除通用 u_light_vp@64
+- [x] 避免与 `u_view@64` 别名；专用 layout 保留
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
