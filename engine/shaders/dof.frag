@@ -57,13 +57,9 @@ void main() {
     float depth = texture(u_dof_depth, vUV).r;
     float linear_depth = linearize_depth(depth);
 
-    float coc = 0.0;
-    if (linear_depth < focus) {
-        coc = (focus - linear_depth) / max(focus - u_dof_near, 0.001);
-    } else {
-        coc = (linear_depth - focus) / max(u_dof_far - focus, 0.001);
-    }
-    coc = clamp(coc, 0.0, 1.0);
+    /* R206-B: CoC from focus_range (C pushes u_dof_range); near/far only linearize. */
+    float range = max(u_dof_range, 0.001);
+    float coc = clamp(abs(linear_depth - focus) / range, 0.0, 1.0);
 
     float max_radius = 10.0;
     float blur_radius = coc * max_radius;
@@ -86,13 +82,7 @@ void main() {
         float sample_depth = texture(u_dof_depth, sample_uv).r;
         float sample_linear = linearize_depth(sample_depth);
 
-        float sample_coc = 0.0;
-        if (sample_linear < focus) {
-            sample_coc = (focus - sample_linear) / max(focus - u_dof_near, 0.001);
-        } else {
-            sample_coc = (sample_linear - focus) / max(u_dof_far - focus, 0.001);
-        }
-        sample_coc = clamp(sample_coc, 0.0, 1.0);
+        float sample_coc = clamp(abs(sample_linear - focus) / range, 0.0, 1.0);
 
         float weight = max(1.0 - sample_coc, 0.1);
 

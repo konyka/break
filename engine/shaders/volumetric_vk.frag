@@ -47,7 +47,8 @@ void main() {
     float step_size = ray_length / float(steps);
 
     vec3 fog_color = vec3(u_vol_fog_r, u_vol_fog_g, u_vol_fog_b);
-    vec3 light_dir = vec3(u_vol_ldx, u_vol_ldy, u_vol_ldz);  /* R91-3: C code already normalizes sun_dir */
+    /* R206-A: sun_dir is world-space; rays are view-space — transform before dot. */
+    vec3 light_dir = normalize((u_vol_view * vec4(u_vol_ldx, u_vol_ldy, u_vol_ldz, 0.0)).xyz);
     float light_amount = max(dot(-ray_dir, light_dir), 0.0);
 
     vec3 accum = vec3(0.0);

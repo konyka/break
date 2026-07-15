@@ -3954,6 +3954,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R206：体积光视空间光照 + DOF focus_range（已完成）
+
+### [x] R206-A volumetric 光向变到视空间
+- [x] `u_vol_view * vec4(sun_dir, 0)` 后再与射线方向 dot
+
+### [x] R206-B DOF CoC 使用 u_dof_range
+- [x] `abs(linear_depth - focus) / focus_range`（GL+VK）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
