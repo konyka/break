@@ -3914,6 +3914,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R202：水面阴影采样器 + 点光阴影 push 映射（已完成）
+
+### [x] R202-A water sampler
+- [x] `water_init` 创建 clamp+linear sampler；`bind_texture` 使用有效句柄
+
+### [x] R202-B is_shadow_depth push
+- [x] `u_model@0` / `u_light_vp|u_mvp@64` / `u_light_pos@128` / `u_far_plane@144`
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -4116,6 +4116,15 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_water_y") == 0)      return 224;
         return -1;
     }
+    /* R202-B: shadow depth pipelines (CSM depth_only + point_shadow_depth). */
+    if (pd && pd->build_desc.is_shadow_depth) {
+        if (strcmp(name, "u_model") == 0)      return 0;
+        if (strcmp(name, "u_light_vp") == 0)   return 64;  /* CSM */
+        if (strcmp(name, "u_mvp") == 0)        return 64;  /* point light */
+        if (strcmp(name, "u_light_pos") == 0)  return 128;
+        if (strcmp(name, "u_far_plane") == 0)  return 144;
+        return -1;
+    }
     /* Combined TAA+FXAA (combined_taa_fxaa_vk.frag). Push block (<=256B):
      *   u_taa_curr_vp@0 u_taa_prev_vp@64 u_taa_inv_proj@128
      *   u_screen_w@192 u_screen_h@196 u_taa_blend@200

@@ -18,6 +18,7 @@ typedef struct {
     i32 loc_time, loc_camera_pos, loc_water_color;
     i32 loc_light_vp, loc_shadow_bias, loc_water_y;
     i32 loc_model;
+    RHISampler sampler;
 } WaterPlane;
 
 bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size);

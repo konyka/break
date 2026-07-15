@@ -30,6 +30,7 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     w->color = vec3(0.1f, 0.3f, 0.5f);
     w->enabled = true;
     w->render_above = false;
+    w->sampler = RHI_HANDLE_NULL;
 
     usize vs_len = 0, fs_len = 0;
     char *vs_src = NULL, *fs_src = NULL;
@@ -68,6 +69,15 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     rhi_shader_destroy(dev, fs);
 
     if (!rhi_handle_valid(w->pipeline)) return false;
+
+    RHISamplerDesc sdesc = {
+        .min_filter = RHI_FILTER_LINEAR,
+        .mag_filter = RHI_FILTER_LINEAR,
+        .wrap_u = RHI_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = RHI_WRAP_CLAMP_TO_EDGE,
+        .wrap_w = RHI_WRAP_CLAMP_TO_EDGE,
+    };
+    w->sampler = rhi_sampler_create(dev, &sdesc);
 
     w->loc_view = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_view");
     w->loc_proj = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_proj");
@@ -108,6 +118,7 @@ void water_shutdown(WaterPlane *w) {
     if (!w->device) return;
     if (rhi_handle_valid(w->ibo))      rhi_buffer_destroy(w->device, w->ibo);
     if (rhi_handle_valid(w->vbo))      rhi_buffer_destroy(w->device, w->vbo);
+    if (rhi_handle_valid(w->sampler))  rhi_sampler_destroy(w->device, w->sampler);
     if (rhi_handle_valid(w->pipeline)) rhi_pipeline_destroy(w->device, w->pipeline);
 }
 
@@ -131,7 +142,8 @@ void water_render(WaterPlane *w, RHICmdBuffer *cmd,
     if (w->loc_shadow_bias >= 0) rhi_cmd_set_uniform_f32(cmd, w->loc_shadow_bias, shadow_bias);
     if (w->loc_water_y >= 0) rhi_cmd_set_uniform_f32(cmd, w->loc_water_y, w->water_y);
     if (w->loc_light_vp >= 0 && light_vp) rhi_cmd_set_uniform_mat4(cmd, w->loc_light_vp, light_vp);
-    if (rhi_handle_valid(shadow_map)) rhi_cmd_bind_texture(cmd, shadow_map, (RHISampler){0,0}, 1);
+    if (rhi_handle_valid(shadow_map) && rhi_handle_valid(w->sampler))
+        rhi_cmd_bind_texture(cmd, shadow_map, w->sampler, 1);
 
     /* Cached model matrix — only water_y changes per frame */
     static Mat4 model = {0};
