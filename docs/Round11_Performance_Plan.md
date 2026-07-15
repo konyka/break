@@ -3964,6 +3964,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R207：接触阴影视空间光向 + cmd push 回放（已完成）
+
+### [x] R207-A contact_shadow 光向×view
+- [x] main 调用前 view 3×3 变换世界 sun_dir
+
+### [x] R207-B PUSH_CONSTANTS 回放
+- [x] `rhi_cmd_set_uniform_bytes` 替代空操作
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -340,10 +340,10 @@ static void sort_buffer_indices_by_key(const FrameCommands *frame,
  * Replay a single command onto the RHI command buffer.
  *
  * NOTE: Some logical operations in the high-level command stream do not have
- * 1:1 RHI primitives yet (e.g. push_constants, draw_indexed first_index /
- * vertex_offset, viewport min/max depth). For those we map to the closest
- * available RHI call so the system compiles and behaves sanely; finer-grained
- * support is to be added as the RHI grows.
+ * 1:1 RHI primitives yet (e.g. draw_indexed first_index / vertex_offset,
+ * viewport min/max depth). For those we map to the closest available RHI call
+ * so the system compiles and behaves sanely; finer-grained support is to be
+ * added as the RHI grows. PUSH_CONSTANTS replays via rhi_cmd_set_uniform_bytes.
  */
 static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
     switch (cmd->type) {
@@ -413,8 +413,13 @@ static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
         break;
 
     case RENDER_CMD_PUSH_CONSTANTS:
-        /* No direct RHI counterpart yet — recorded but skipped on replay. */
-        (void)cmd;
+        /* R207-B: Replay into RHI push/uniform path (was a silent no-op). */
+        if (cmd->push_constants.size > 0u) {
+            rhi_cmd_set_uniform_bytes(rhi_cmd,
+                                      (i32)cmd->push_constants.offset,
+                                      cmd->push_constants.data,
+                                      cmd->push_constants.size);
+        }
         break;
 
     default:
