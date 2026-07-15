@@ -3984,6 +3984,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R209：god rays 方向投影 + 体积雾世界高度（已完成）
+
+### [x] R209-A god rays w=0 投影
+- [x] 去掉有限远点/VP 平移，方向光屏上位置稳定
+
+### [x] R209-B volumetric 世界高度雾
+- [x] `inverse(u_vol_view)` 取 world Y（GL+VK）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

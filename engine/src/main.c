@@ -5416,12 +5416,13 @@ u32 culled_count = 0;
             rhi_cmd_transition_depth_to_read(cmd, scene_fbo.depth_tex);
 
         if (gr_sys.ready) {
-            Vec3 sun_dir = sun_dir_vec;
-            Vec3 sun_world = vec3_scale(sun_dir, -100.0f);
+            /* R209-A: Directional sun — project w=0 (no VP translation). Finite
+             * point at -100*dir made screen UV drift with camera translation. */
             Mat4 vp = curr_view_proj;
-            f32 sx = vp.e[0][0]*sun_world.e[0] + vp.e[1][0]*sun_world.e[1] + vp.e[2][0]*sun_world.e[2] + vp.e[3][0];
-            f32 sy = vp.e[0][1]*sun_world.e[0] + vp.e[1][1]*sun_world.e[1] + vp.e[2][1]*sun_world.e[2] + vp.e[3][1];
-            f32 sw = vp.e[0][3]*sun_world.e[0] + vp.e[1][3]*sun_world.e[1] + vp.e[2][3]*sun_world.e[2] + vp.e[3][3];
+            f32 dx = -sun_dir_vec.e[0], dy = -sun_dir_vec.e[1], dz = -sun_dir_vec.e[2];
+            f32 sx = vp.e[0][0]*dx + vp.e[1][0]*dy + vp.e[2][0]*dz;
+            f32 sy = vp.e[0][1]*dx + vp.e[1][1]*dy + vp.e[2][1]*dz;
+            f32 sw = vp.e[0][3]*dx + vp.e[1][3]*dy + vp.e[2][3]*dz;
             f32 sun_sx = (sx / sw) * 0.5f + 0.5f;
             f32 sun_sy = (sy / sw) * 0.5f + 0.5f;
             if (sw > 0.0f && sun_sx > -0.5f && sun_sx < 1.5f && sun_sy > -0.5f && sun_sy < 1.5f) {

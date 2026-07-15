@@ -56,17 +56,20 @@ void main() {
 
     /* R83-2: Hoist loop-invariant texture sample + lighting computation.
      * vUV is a fragment input — texture(u_vol_shadow, vUV) returns the same
-     * value every iteration. Also removed dead inverse(u_vol_view) computation. */
+     * value every iteration. */
     float shadow = texture(u_vol_shadow, vUV).r;
     float light_visibility = shadow > 0.01 ? 1.0 : 0.15;
     vec3 lighting = fog_color * 0.3 + vec3(u_vol_lcx, u_vol_lcy, u_vol_lcz) * light_amount * light_visibility;
+    /* R209-B: Height fog needs world Y; pos is view-space (was tracking camera). */
+    mat4 inv_view = inverse(u_vol_view);
 
     for (int i = 0; i < steps; i++) {
         float t = (float(i) + 0.5) * step_size;
         vec3 pos = ray_start + ray_dir * t;
 
         float density = u_vol_density;
-        float height_factor = exp(-pos.y * 0.3);
+        float world_y = (inv_view * vec4(pos, 1.0)).y;
+        float height_factor = exp(-world_y * 0.3);
         density *= max(height_factor, 0.0);
 
         if (density < 0.0001) continue;
