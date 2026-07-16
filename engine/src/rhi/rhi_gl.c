@@ -1255,8 +1255,8 @@ static void gl_bind_tex_unit(u32 unit, RHITexture tex, RHISampler sampler) {
             if (unit < 16) g_tex_cache[unit] = td->gl_tex;
             glBindTexture(target, td->gl_tex);
             if (depth_cube) {
-                /* samplerCubeShadow relies on the texture's COMPARE_REF_TO_TEXTURE
-                 * params; a non-compare sampler object would disable the PCF. */
+                /* R215-A: Point-shadow cubes are samplerCube + manual .r compare;
+                 * bind texture params only (no sampler object / no COMPARE mode). */
                 glBindSampler(unit, 0);
                 if (unit < 16) g_sam_cache[unit] = 0;
                 return;
@@ -2202,9 +2202,9 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    /* Enable depth comparison for shadow sampling. */
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    /* R215-A: Shaders use samplerCube + .r manual compare (not samplerCubeShadow).
+     * COMPARE_REF_TO_TEXTURE makes non-shadow sampler reads undefined. */
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_COMPARE_MODE, GL_NONE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, 0);
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
@@ -2230,7 +2230,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     td->gl_internal_format = GL_DEPTH_COMPONENT32F;
     dev->slots[tidx].ptr  = td;
     /* Tag as cubemap so gl_bind_tex_unit binds GL_TEXTURE_CUBE_MAP for the
-     * point-shadow depth cube (sampled as samplerCubeShadow). */
+     * point-shadow depth cube (sampled as samplerCube + .r). */
     dev->slots[tidx].type = RHI_RES_CUBEMAP;
     fbo.depth_tex = rhi_make_handle(tidx, dev->slots[tidx].generation);
 

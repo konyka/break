@@ -15,4 +15,6 @@ void main() {
     vec4 world = pc.u_model * vec4(a_position, 1.0);
     v_world_pos = world.xyz;
     gl_Position = pc.u_mvp * vec4(a_position, 1.0);
+    /* R215-B: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
+    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

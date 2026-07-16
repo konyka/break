@@ -4052,6 +4052,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R215：GL 点阴影 COMPARE 关闭 + VK 点阴影 Z remap（已完成）
+
+### [x] R215-A GL cubemap COMPARE_MODE=NONE
+- [x] 与 `samplerCube` + `.r` 手动比较一致
+
+### [x] R215-B point_shadow_depth_vk.vert clip.z remap
+- [x] 对齐 depth_only / CSM
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
