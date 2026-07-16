@@ -4096,6 +4096,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R219：GL motion blur/SSS sampler binding（已完成）
+
+### [x] R219-A motion_blur.frag layout(binding 0/1)
+- [x] color@0 depth@shadow@1
+
+### [x] R219-B sss.frag + sss_vertical.frag bindings
+- [x] vertical: color@0 depth@1 original@2
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

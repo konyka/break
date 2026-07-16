@@ -3,9 +3,10 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_sssv_color;
-uniform sampler2D u_sssv_depth;
-uniform sampler2D u_sssv_original;
+/* R219-B: albedo@0 / shadow@1 / mr@2 — matches sss_apply material bind + VK. */
+layout(binding = 0) uniform sampler2D u_sssv_color;
+layout(binding = 1) uniform sampler2D u_sssv_depth;
+layout(binding = 2) uniform sampler2D u_sssv_original;
 
 uniform float u_sssv_strength;
 uniform float u_sssv_sw;

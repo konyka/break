@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_sss_color;
-uniform sampler2D u_sss_depth;
+/* R219-B: Match bind_material_textures (color@0, depth@shadow@1) and VK. */
+layout(binding = 0) uniform sampler2D u_sss_color;
+layout(binding = 1) uniform sampler2D u_sss_depth;
 
 uniform float u_sss_strength;
 uniform float u_sss_sw;
