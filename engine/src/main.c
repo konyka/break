@@ -659,7 +659,8 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
                                         g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
-    if (rs->cl_loc_pom_enabled >= 0) rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_pom_enabled, (mat && rhi_handle_valid(mat->normal_map)) ? 1.0f : 0.0f);
+    /* R216-B: Do not write cl_loc_pom_enabled here — offset is clustered@224,
+     * which aliases blinn_phong u_ambient; clustered draws are skipped (R75-1). */
     (void)scene;
 }
 
@@ -5360,7 +5361,9 @@ u32 culled_count = 0;
 
         if (rhi_handle_valid(scene_fbo.fb) && postfx.ready) {
             post_process_apply(&postfx, cmd, post_input, rw, rh);
-            if (rhi_handle_valid(postfx.fbo_composite.fb))
+            /* R216-A: R214-B skips drawing when bloom_strength<=0; do not switch
+             * to a stale/uncleared fbo_composite. */
+            if (postfx.bloom_strength > 0.0f && rhi_handle_valid(postfx.fbo_composite.fb))
                 post_input = postfx.fbo_composite.color_tex;
         }
 

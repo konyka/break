@@ -4063,6 +4063,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R216：bloom skip 不切 composite + 去掉误写 pom（已完成）
+
+### [x] R216-A bloom_strength>0 才切 fbo_composite
+- [x] 修复 R214-B early-return 后的陈旧 composite 回归
+
+### [x] R216-B 删除 bind_material 的 pom_enabled 写入
+- [x] clustered@224 不再覆盖 blinn u_ambient
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
