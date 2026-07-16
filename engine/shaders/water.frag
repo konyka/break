@@ -6,7 +6,9 @@ uniform float u_time;
 uniform vec3 u_camera_pos;
 uniform vec3 u_water_color;
 uniform mat4 u_light_vp;
-uniform sampler2D u_shadow_map;
+/* R217-A: Match water_render bind unit 1 / water_vk.frag; default unit 0
+ * would sample leftover terrain albedo as shadow depth. */
+layout(binding = 1) uniform sampler2D u_shadow_map;
 uniform float u_shadow_bias;
 uniform float u_water_y;
 

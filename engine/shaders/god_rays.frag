@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_gr_scene;
-uniform sampler2D u_gr_depth;
+/* R217-B: Match bind_material_textures (scene@0, depth@shadow@1) and VK. */
+layout(binding = 0) uniform sampler2D u_gr_scene;
+layout(binding = 1) uniform sampler2D u_gr_depth;
 
 uniform float u_gr_sun_x;
 uniform float u_gr_sun_y;

@@ -4074,6 +4074,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R217：GL water/god_rays sampler binding + god rays 零强度跳过（已完成）
+
+### [x] R217-A water.frag layout(binding=1)
+- [x] 与 water_render unit 1 / water_vk 对齐
+
+### [x] R217-B god_rays.frag bindings + intensity<=0 跳过
+- [x] scene@0 depth@1；main 仅 intensity>0 时切换 FBO
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -107,6 +107,9 @@ void god_rays_apply(GodRaysSystem *s, RHICmdBuffer *cmd,
                     f32 sun_x, f32 sun_y, f32 intensity,
                     u32 w, u32 h) {
     if (!s->ready) return;
+    /* R217-B: intensity==0 → no rays; skip fullscreen pass (caller must not
+     * switch tonemap_input to stale fbo). */
+    if (intensity <= 0.0f) return;
 
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 

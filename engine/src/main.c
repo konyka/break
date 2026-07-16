@@ -5428,7 +5428,8 @@ u32 culled_count = 0;
             f32 sw = vp.e[0][3]*dx + vp.e[1][3]*dy + vp.e[2][3]*dz;
             f32 sun_sx = (sx / sw) * 0.5f + 0.5f;
             f32 sun_sy = (sy / sw) * 0.5f + 0.5f;
-            if (sw > 0.0f && sun_sx > -0.5f && sun_sx < 1.5f && sun_sy > -0.5f && sun_sy < 1.5f) {
+            if (god_rays_intensity > 0.0f && sw > 0.0f &&
+                sun_sx > -0.5f && sun_sx < 1.5f && sun_sy > -0.5f && sun_sy < 1.5f) {
                 god_rays_apply(&gr_sys, cmd, tonemap_input, scene_fbo.depth_tex,
                                sun_sx, sun_sy, god_rays_intensity, rw, rh);
                 tonemap_input = gr_sys.fbo.color_tex;
