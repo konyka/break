@@ -163,6 +163,9 @@ static GLuint g_gl_program = 0;
  * glBindBuffer(GL_ELEMENT_ARRAY_BUFFER) calls in draw loops. */
 static GLuint g_gl_bound_vbo = 0;
 static GLuint g_gl_bound_ibo = 0;
+/* R224-A: Index type for glDrawElements* (set by bind_index_buffer). */
+static GLenum g_gl_index_type = GL_UNSIGNED_INT;
+static u32    g_gl_index_stride = 4u;
 
 /* R191-B: GL bind_texture_mip clamps BASE/MAX_LEVEL; track so compute/full
  * sampling can restore the full pyramid (VK uses per-mip views instead). */
@@ -519,14 +522,15 @@ static void gl_cmd_draw(void *cmd, u32 vertex_count, u32 instance_count) {
 
 static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) {
     (void)cmd;
-    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL, (GLsizei)instance_count);
+    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type, NULL,
+                            (GLsizei)instance_count);
 }
 
 static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_count,
                                      u32 first_index, i32 vertex_offset) {
     (void)cmd;
-    const void *indices = (const void *)(uintptr_t)(first_index * sizeof(u32));
-    glDrawElementsInstancedBaseVertex(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT,
+    const void *indices = (const void *)(uintptr_t)(first_index * (usize)g_gl_index_stride);
+    glDrawElementsInstancedBaseVertex(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type,
                                       indices, (GLsizei)instance_count, (GLint)vertex_offset);
 }
 
@@ -949,9 +953,12 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
     }
 }
 
-void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
+void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
     (void)cmd; (void)offset;
     extern RHIDevice *g_current_device;
+    /* R224-A: Cache index width for subsequent draw_indexed*. */
+    g_gl_index_type = is_u32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
+    g_gl_index_stride = is_u32 ? 4u : 2u;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
     if (bd && bd->gl_buf != g_gl_bound_ibo) {
         /* R86-3: Cache IBO binding to avoid redundant glBindBuffer calls. */

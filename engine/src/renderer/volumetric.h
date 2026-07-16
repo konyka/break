@@ -9,6 +9,7 @@ typedef struct {
     RHISampler       sampler;
     i32              loc_inv_proj;
     i32              loc_view;
+    i32              loc_inv_view;
     i32              loc_ldx;
     i32              loc_ldy;
     i32              loc_ldz;

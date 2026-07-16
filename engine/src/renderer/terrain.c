@@ -342,7 +342,7 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     rhi_cmd_bind_material_textures(cmd, fallback_tex, fallback_tex, fallback_tex,
                                    fallback_tex, shadow_map, fallback_tex, sampler);
     rhi_cmd_bind_vertex_buffer(cmd, t->vbo, 0);
-    rhi_cmd_bind_index_buffer(cmd, t->ibo, 0);
+    rhi_cmd_bind_index_buffer(cmd, t->ibo, 0, true);
     rhi_cmd_draw_indexed(cmd, t->index_count, 1);
 }
 

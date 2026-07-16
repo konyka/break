@@ -3338,12 +3338,14 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
     vkCmdBindVertexBuffers(vk->cmd_buffers[vk->current_frame], 0, 1, &bd->buffer, &off);
 }
 
-void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
+void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
     if (!bd) return;
-    vkCmdBindIndexBuffer(vk->cmd_buffers[vk->current_frame], bd->buffer, (VkDeviceSize)offset, VK_INDEX_TYPE_UINT32);
+    /* R224-A: Honor recorded index width (was hard-coded UINT32). */
+    VkIndexType itype = is_u32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+    vkCmdBindIndexBuffer(vk->cmd_buffers[vk->current_frame], bd->buffer, (VkDeviceSize)offset, itype);
 }
 
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h) {
@@ -4246,6 +4248,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_vol_fog_b") == 0)        return 164;
     if (strcmp(name, "u_vol_sw") == 0)           return 168;
     if (strcmp(name, "u_vol_sh") == 0)           return 172;
+    if (strcmp(name, "u_vol_inv_view") == 0)    return 176; /* R224-B */
     if (strcmp(name, "u_lf_light_x") == 0)          return 0;
     if (strcmp(name, "u_lf_light_y") == 0)          return 4;
     if (strcmp(name, "u_lf_intensity") == 0)        return 8;

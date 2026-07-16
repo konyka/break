@@ -150,7 +150,8 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd);
 void rhi_cmd_end_render_pass(RHICmdBuffer *cmd);
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe);
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset);
-void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset);
+/* is_u32=true → UINT32 indices; false → UINT16 (R224-A). */
+void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32);
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h);
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h);
 /* Set a non-Y-flipped viewport + matching scissor, matching the depth/shadow

@@ -21,6 +21,8 @@ layout(push_constant) uniform VolParams {
     layout(offset = 164) float u_vol_fog_b;
     layout(offset = 168) float u_vol_sw;
     layout(offset = 172) float u_vol_sh;
+    /* R224-B: CPU inv(view); fits in 256B push (ends @240). */
+    layout(offset = 176) mat4 u_vol_inv_view;
 };
 
 vec3 view_pos_from_depth(vec2 uv, float depth) {
@@ -60,15 +62,13 @@ void main() {
     float shadow = texture(u_vol_shadow, vUV).r;
     float light_visibility = shadow > 0.01 ? 1.0 : 0.15;
     vec3 lighting = fog_color * 0.3 + vec3(u_vol_lcx, u_vol_lcy, u_vol_lcz) * light_amount * light_visibility;
-    /* R209-B: Height fog needs world Y; pos is view-space (was tracking camera). */
-    mat4 inv_view = inverse(u_vol_view);
-
+    /* R209-B / R224-B: Height fog needs world Y from CPU inv(view). */
     for (int i = 0; i < steps; i++) {
         float t = (float(i) + 0.5) * step_size;
         vec3 pos = ray_start + ray_dir * t;
 
         float density = u_vol_density;
-        float world_y = (inv_view * vec4(pos, 1.0)).y;
+        float world_y = (u_vol_inv_view * vec4(pos, 1.0)).y;
         float height_factor = exp(-world_y * 0.3);
         density *= max(height_factor, 0.0);
 

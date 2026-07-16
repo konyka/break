@@ -3716,7 +3716,7 @@ u32 culled_count = 0;
 
                 if (rhi_handle_valid(terrain.vbo)) {
                     rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
-                    rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0);
+                    rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
                     rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
                     draw_calls++; tri_count += terrain.index_count / 3;
                 }
@@ -3725,7 +3725,7 @@ u32 culled_count = 0;
                     /* Indirect draw: batch all scene meshes in one GPU call.
                      * Mega-buffer has pre-baked world transforms so u_model=identity. */
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
-                    rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
+                    rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
 
                     /* R170: Shadow uses GPU compact only — never camera Hi-Z or
                      * shared vis_flags staging (wrong VP / cross-view pollution). */
@@ -3770,7 +3770,7 @@ u32 culled_count = 0;
                     Mesh *m = &scene.meshes[node->mesh_index];
                     if (render.depth_loc_model >= 0) rhi_cmd_set_uniform_mat4(cmd, render.depth_loc_model, &node->world_transform.e[0][0]);
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
-                    rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                    rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                     rhi_cmd_draw_indexed(cmd, m->index_count, 1);
                     draw_calls++; tri_count += m->index_count / 3;
                 }
@@ -3808,14 +3808,14 @@ u32 culled_count = 0;
                         if (rhi_handle_valid(terrain.vbo)) {
                             /* R81-4: u_model=identity already set by point_shadow_render_begin. */
                             rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
-                            rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0);
+                            rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
                             rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
                         }
 
                         if (mega_buf.valid && gpu_indirect_enabled) {
                             /* Indirect draw: mega-buffer has world-space verts, u_model=identity */
                             rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
-                            rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
+                            rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
 
                             /* R170: Point-shadow faces — GPU compact, no camera Hi-Z. */
                             u32 vis_count = mega_buf.draw_cmd_count;
@@ -3856,7 +3856,7 @@ u32 culled_count = 0;
                                                          &snode->world_transform.e[0][0]);
                             rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
                             if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
-                                rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0);
+                                rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
                                 rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
                             } else {
                                 rhi_cmd_draw(cmd, 3, 1);
@@ -4038,7 +4038,7 @@ u32 culled_count = 0;
                     rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                     rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
                     if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0);
+                        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
                         rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
                     } else {
                         rhi_cmd_draw(cmd, 3, 1);
@@ -4049,7 +4049,7 @@ u32 culled_count = 0;
                 bind_material(cmd, &render, NULL, &scene);
                 rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                 rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
-                rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0);
+                rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, render.skinned_index_count, 1);
                 draw_calls++; tri_count += render.skinned_index_count / 3;
             }
@@ -4739,7 +4739,7 @@ u32 culled_count = 0;
                     rhi_cmd_bind_texel_buffers(cmd, inst_slot, inst_slot);
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                         rhi_cmd_draw_indexed(cmd, m->index_count, instance_count);
                     } else {
                         rhi_cmd_draw(cmd, 3, instance_count);
@@ -4789,7 +4789,7 @@ u32 culled_count = 0;
 
                             rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                             if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
-                                rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                                rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                                 rhi_cmd_draw_indexed(cmd, m->index_count, 1);
                             } else {
                                 rhi_cmd_draw(cmd, 3, 1);
@@ -4831,7 +4831,7 @@ u32 culled_count = 0;
                     }
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                         rhi_cmd_draw_indexed(cmd, m->index_count, 1);
                     } else {
                         rhi_cmd_draw(cmd, 3, 1);
@@ -4846,7 +4846,7 @@ u32 culled_count = 0;
                 if (mega_buf.valid && gpu_indirect_enabled && mega_buf.mat_group_count > 0) {
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
-                    rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
+                    rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
 
                     if (mega_use_unified_vis(false) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
@@ -4980,7 +4980,7 @@ u32 culled_count = 0;
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                         rhi_cmd_draw_indexed(cmd, m->index_count, 1);
                     } else {
                         rhi_cmd_draw(cmd, 3, 1);
@@ -5000,7 +5000,7 @@ u32 culled_count = 0;
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                        rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                         rhi_cmd_draw_indexed(cmd, m->index_count, 1);
                     } else {
                         rhi_cmd_draw(cmd, 3, 1);
@@ -5075,7 +5075,7 @@ u32 culled_count = 0;
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
                 rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
-                rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0);
+                rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
             }
 
@@ -5083,7 +5083,7 @@ u32 culled_count = 0;
             if (mega_buf.valid && gpu_indirect_enabled && mega_buf.mat_group_count > 0) {
                 /* Per-material batched indirect draw: one draw call per material group */
                 rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
-                rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0);
+                rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
 
@@ -5161,7 +5161,7 @@ u32 culled_count = 0;
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &node->world_transform.e[0][0]);
                 rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                 if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
-                    rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0);
+                    rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
                     rhi_cmd_draw_indexed(cmd, m->index_count, 1);
                 } else {
                     rhi_cmd_draw(cmd, 3, 1);

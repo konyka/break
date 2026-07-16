@@ -1,5 +1,6 @@
 #include <renderer/volumetric.h>
 #include <core/log.h>
+#include <math/math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,6 +89,7 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
 
     vol->loc_inv_proj     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_inv_proj");
     vol->loc_view         = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_view");
+    vol->loc_inv_view     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_inv_view");
     vol->loc_ldx          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_ldx");
     vol->loc_ldy          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_ldy");
     vol->loc_ldz          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_ldz");
@@ -132,6 +134,11 @@ void volumetric_apply(VolumetricSystem *vol, RHICmdBuffer *cmd,
 
     if (vol->loc_inv_proj >= 0)     rhi_cmd_set_uniform_mat4(cmd, vol->loc_inv_proj, inv_proj);
     if (vol->loc_view >= 0)         rhi_cmd_set_uniform_mat4(cmd, vol->loc_view, view);
+    /* R224-B: One CPU inverse instead of per-fragment GLSL inverse(). */
+    if (vol->loc_inv_view >= 0 && view) {
+        Mat4 inv_view = mat4_inverse(*(const Mat4 *)view);
+        rhi_cmd_set_uniform_mat4(cmd, vol->loc_inv_view, &inv_view.e[0][0]);
+    }
     if (vol->loc_ldx >= 0)          rhi_cmd_set_uniform_f32(cmd, vol->loc_ldx, light_dir[0]);
     if (vol->loc_ldy >= 0)          rhi_cmd_set_uniform_f32(cmd, vol->loc_ldy, light_dir[1]);
     if (vol->loc_ldz >= 0)          rhi_cmd_set_uniform_f32(cmd, vol->loc_ldz, light_dir[2]);

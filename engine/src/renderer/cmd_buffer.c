@@ -373,10 +373,11 @@ static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
         break;
 
     case RENDER_CMD_BIND_INDEX_BUFFER:
-        /* is_u32 will be honored once the RHI gains an index-type parameter. */
+        /* R224-A: Forward recorded index width into RHI. */
         rhi_cmd_bind_index_buffer(rhi_cmd,
                                   cmd->bind_ib.buffer,
-                                  (usize)cmd->bind_ib.offset);
+                                  (usize)cmd->bind_ib.offset,
+                                  cmd->bind_ib.is_u32);
         break;
 
     case RENDER_CMD_BIND_UNIFORM:

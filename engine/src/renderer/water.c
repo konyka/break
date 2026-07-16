@@ -156,6 +156,6 @@ void water_render(WaterPlane *w, RHICmdBuffer *cmd,
     if (w->loc_model >= 0) rhi_cmd_set_uniform_mat4(cmd, w->loc_model, &model.e[0][0]);
 
     rhi_cmd_bind_vertex_buffer(cmd, w->vbo, 0);
-    rhi_cmd_bind_index_buffer(cmd, w->ibo, 0);
+    rhi_cmd_bind_index_buffer(cmd, w->ibo, 0, true);
     rhi_cmd_draw_indexed(cmd, 6, 1);
 }

@@ -9,6 +9,7 @@ layout(binding = 1) uniform sampler2D u_vol_shadow;
 
 uniform mat4 u_vol_inv_proj;
 uniform mat4 u_vol_view;
+uniform mat4 u_vol_inv_view; /* R224-B: CPU inverse — avoid per-pixel inverse() */
 uniform float u_vol_ldx;
 uniform float u_vol_ldy;
 uniform float u_vol_ldz;  /* R91-2: match C code + VK shader uniform names */
@@ -60,15 +61,13 @@ void main() {
     float shadow = texture(u_vol_shadow, vUV).r;
     float light_visibility = shadow > 0.01 ? 1.0 : 0.15;
     vec3 lighting = fog_color * 0.3 + vec3(u_vol_lcx, u_vol_lcy, u_vol_lcz) * light_amount * light_visibility;
-    /* R209-B: Height fog needs world Y; pos is view-space (was tracking camera). */
-    mat4 inv_view = inverse(u_vol_view);
-
+    /* R209-B / R224-B: Height fog needs world Y from CPU inv(view). */
     for (int i = 0; i < steps; i++) {
         float t = (float(i) + 0.5) * step_size;
         vec3 pos = ray_start + ray_dir * t;
 
         float density = u_vol_density;
-        float world_y = (inv_view * vec4(pos, 1.0)).y;
+        float world_y = (u_vol_inv_view * vec4(pos, 1.0)).y;
         float height_factor = exp(-world_y * 0.3);
         density *= max(height_factor, 0.0);
 

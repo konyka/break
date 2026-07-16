@@ -4151,6 +4151,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R224：index 类型 + volumetric CPU inv_view（已完成）
+
+### [x] R224-A rhi_cmd_bind_index_buffer(is_u32)
+- [x] VK IndexType + GL draw type/stride；cmd_buffer 回放转发
+
+### [x] R224-B volumetric u_vol_inv_view
+- [x] CPU mat4_inverse；VK push @176
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

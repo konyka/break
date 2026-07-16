@@ -174,7 +174,7 @@ static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vb
         rhi_cmd_set_uniform_vec3(cmd, render->loc_camera_pos, 0, 0, 5);
         rhi_cmd_bind_texture(cmd, render->test_tex, render->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-        rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
         rhi_cmd_draw_indexed(cmd, 3, 1);
         rhi_frame_end(render->device);
         rhi_present(render->device);
@@ -413,7 +413,7 @@ int main(int argc, char **argv) {
             rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
             rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-            rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
             rhi_cmd_draw_indexed(cmd, 3, 1);
 
             rhi_offscreen_fbo_unbind(cmd, 800, 600);
@@ -494,7 +494,7 @@ int main(int argc, char **argv) {
         rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
 
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-        rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
         rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
         rhi_cmd_draw_indexed(cmd, 3, 1);
 
@@ -505,7 +505,7 @@ int main(int argc, char **argv) {
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &m2.e[0][0]);
             rhi_cmd_bind_texture(cmd, tex2, render.sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-            rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
             rhi_cmd_draw_indexed(cmd, 3, 1);
         }
 
@@ -522,7 +522,7 @@ int main(int argc, char **argv) {
                                      camera.position.e[0], camera.position.e[1], camera.position.e[2]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-            rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
             rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
             rhi_cmd_draw_indexed(cmd, 3, 1);
         }
@@ -585,7 +585,7 @@ int main(int argc, char **argv) {
                                  camera.position.e[0], camera.position.e[1], camera.position.e[2]);
 
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-        rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
 
         for (u32 d = 0; d < draws_per_frame; d++) {
             Mat4 m = mat4_identity();
@@ -732,7 +732,7 @@ int main(int argc, char **argv) {
         rhi_cmd_bind_texel_buffers(cmd, instance_tbo, RHI_HANDLE_NULL);
 
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-        rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
         rhi_cmd_draw_indexed(cmd, 3, instance_idx);
 
         rhi_frame_end(render.device);
@@ -883,7 +883,7 @@ int main(int argc, char **argv) {
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
                 rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
                 rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-                rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+                rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, 3, 1);
                 rhi_offscreen_fbo_unbind(cmd, cw, ch);
 
@@ -1037,7 +1037,7 @@ int main(int argc, char **argv) {
                     render.test_tex, render.test_tex, render.sampler,
                     ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
                 rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-                rhi_cmd_bind_index_buffer(cmd, ibo, 0);
+                rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, 3, 1);
                 rhi_offscreen_fbo_unbind(cmd, iw, ih);
                 rhi_frame_end(render.device);
