@@ -4118,6 +4118,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R221：GL upscale/volumetric sampler binding（已完成）
+
+### [x] R221-A upscale.frag layout(binding 0/1/2)
+- [x] src@0 depth@shadow1 history@mr2
+
+### [x] R221-B volumetric.frag layout(binding 0/1)
+- [x] depth@0 shadow@1
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

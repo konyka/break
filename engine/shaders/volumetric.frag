@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_vol_depth;
-uniform sampler2D u_vol_shadow;
+/* R221-B: Match bind_textures_multi {depth, shadow} and volumetric_vk.frag. */
+layout(binding = 0) uniform sampler2D u_vol_depth;
+layout(binding = 1) uniform sampler2D u_vol_shadow;
 
 uniform mat4 u_vol_inv_proj;
 uniform mat4 u_vol_view;

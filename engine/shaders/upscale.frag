@@ -3,9 +3,10 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_ups_src;
-uniform sampler2D u_ups_depth;
-uniform sampler2D u_ups_history;
+/* R221-A: material bind — src@albedo0, depth@shadow1, history@mr2 (see upscale.c). */
+layout(binding = 0) uniform sampler2D u_ups_src;
+layout(binding = 1) uniform sampler2D u_ups_depth;
+layout(binding = 2) uniform sampler2D u_ups_history;
 
 uniform float u_ups_rw;
 uniform float u_ups_rh;
