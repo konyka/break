@@ -4,10 +4,11 @@ layout(location = 0) in vec2 vUV;
 
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_taa_curr_tex;
-uniform sampler2D u_taa_hist_tex;
-uniform sampler2D u_taa_depth;
-uniform sampler2D u_taa_velocity;
+/* R218-A: Match bind_textures_multi units 0–3 and taa_vk.frag. */
+layout(binding = 0) uniform sampler2D u_taa_curr_tex;
+layout(binding = 1) uniform sampler2D u_taa_hist_tex;
+layout(binding = 2) uniform sampler2D u_taa_depth;
+layout(binding = 3) uniform sampler2D u_taa_velocity;
 
 uniform mat4 u_taa_curr_vp;
 uniform mat4 u_taa_prev_vp;

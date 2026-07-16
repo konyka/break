@@ -4085,6 +4085,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R218：GL TAA/DoF sampler binding（已完成）
+
+### [x] R218-A combined_taa_fxaa.frag + taa.frag layout(binding 0–3)
+- [x] 对齐 bind_textures_multi / VK
+
+### [x] R218-B dof.frag layout(binding 0/1)
+- [x] color@0 depth@1
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

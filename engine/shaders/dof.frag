@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_dof_color;
-uniform sampler2D u_dof_depth;
+/* R218-B: Match bind_textures_multi units 0/1 and dof_vk.frag. */
+layout(binding = 0) uniform sampler2D u_dof_color;
+layout(binding = 1) uniform sampler2D u_dof_depth;
 
 uniform float u_dof_focus;
 uniform float u_dof_range;
