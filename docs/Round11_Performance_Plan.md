@@ -4018,6 +4018,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R212：Hi-Z 窗口深度比较 + vol/cs/lf 默认关闭（已完成）
+
+### [x] R212-A Hi-Z closest_z → 窗口空间
+- [x] `unified_cull.comp` / `occlusion_cull.comp`：`ndc.z * 0.5 + 0.5`
+- [x] 球视锥近平面改为 `-1`（OpenGL NDC）
+
+### [x] R212-B volumetric/contact_shadow/lens_flare 默认关闭
+- [x] 输出未合成前避免默认半分辨率空跑
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

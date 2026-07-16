@@ -79,7 +79,8 @@ bool sphere_frustum_visible(vec3 center, float radius) {
     if (nc.y - r >  1.0) return false;
     if (nc.y + r < -1.0) return false;
     if (nc.z - r >  1.0) return false;
-    if (nc.z + r <  0.0) return false;
+    /* R212-A: OpenGL NDC z∈[-1,1]; near plane is -1 (was 0, Vulkan half-range). */
+    if (nc.z + r < -1.0) return false;
     return true;
 }
 
@@ -96,7 +97,8 @@ bool sphere_hi_z_visible(vec3 center, float radius) {
     float mip_level = ceil(log2(max(screen_size.x, screen_size.y)));
     mip_level = clamp(mip_level, 0.0, float(textureQueryLevels(u_hi_z) - 1));
     vec2 uv_center = (ndc_min + ndc_max) * 0.25 + 0.5;
-    float closest_z = ndc.z - r_ndc;
+    /* R212-A: Hi-Z stores window depth [0,1]; convert closest NDC z. */
+    float closest_z = (ndc.z - r_ndc) * 0.5 + 0.5;
     float hi_z_depth = textureLod(u_hi_z, uv_center, mip_level).r;
     return closest_z <= hi_z_depth;
 }

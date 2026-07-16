@@ -84,7 +84,8 @@ void main() {
         vec3 ndc = clip.xyz / clip.w;
         ndc_min = min(ndc_min, ndc.xy);
         ndc_max = max(ndc_max, ndc.xy);
-        closest_z = min(closest_z, ndc.z);
+        /* R212-A: Hi-Z is window depth [0,1]; track closest in same space. */
+        closest_z = min(closest_z, ndc.z * 0.5 + 0.5);
     }
 
     if (crosses_near) {
