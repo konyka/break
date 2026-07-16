@@ -3995,6 +3995,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R210：后处理深度 NDC 对齐 + SSR/SSGI 默认关闭（已完成）
+
+### [x] R210-A 深度重建 depth*2-1
+- [x] SSAO/TAA/combined/MB/velocity/volumetric/contact/SSR/SSGI/upscale（GL+VK）与 deferred 对齐
+
+### [x] R210-B SSR/SSGI 默认关闭
+- [x] 输出未合成前避免默认半分辨率空跑
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -136,7 +136,7 @@ void main() {
             prev_uv = vUV - vel * 0.5;
         } else {
             vec2 ndc = vUV * 2.0 - 1.0;
-            vec4 world_h = u_taa_inv_proj * vec4(ndc, depth, 1.0);
+            vec4 world_h = u_taa_inv_proj * vec4(ndc, depth * 2.0 - 1.0, 1.0);
             vec3 world = world_h.xyz / world_h.w;
             vec4 prev_clip = u_taa_prev_vp * vec4(world, 1.0);
             prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;

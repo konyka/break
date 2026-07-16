@@ -22,7 +22,7 @@ uniform float u_vol_sw;
 uniform float u_vol_sh;
 
 vec3 view_pos_from_depth(vec2 uv, float depth) {
-    vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     vec4 view_h = u_vol_inv_proj * clip;
     return view_h.xyz / view_h.w;
 }

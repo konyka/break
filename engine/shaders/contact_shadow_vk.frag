@@ -34,7 +34,7 @@ void main() {
     vec3 light_dir = normalize(vec3(u_cs_light_x, u_cs_light_y, u_cs_light_z));
 
     vec2 ndc = vUV * 2.0 - 1.0;
-    vec4 vp = inv_p * vec4(ndc, depth, 1.0);
+    vec4 vp = inv_p * vec4(ndc, depth * 2.0 - 1.0, 1.0);
     vec3 view_pos = vp.xyz / vp.w;
 
     int steps = 12;

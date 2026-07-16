@@ -27,7 +27,7 @@ void main() {
     }
 
     vec2 ndc = vUV * 2.0 - 1.0;
-    vec4 view_pos = u_mb_inv_proj * vec4(ndc, depth, 1.0);
+    vec4 view_pos = u_mb_inv_proj * vec4(ndc, depth * 2.0 - 1.0, 1.0);
     view_pos.xyz /= view_pos.w;
 
     vec4 prev_clip = u_mb_prev_vp * vec4(view_pos.xyz, 1.0);

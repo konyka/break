@@ -60,7 +60,7 @@ void main() {
             prev_uv = vUV - vel * 0.5;
         } else {
             vec2 ndc = vUV * 2.0 - 1.0;
-            vec4 clip_pos = vec4(ndc.x, ndc.y, depth, 1.0);
+            vec4 clip_pos = vec4(ndc.x, ndc.y, depth * 2.0 - 1.0, 1.0);
             vec4 world_pos_h = u_taa_inv_proj * clip_pos;
             vec3 world_pos = world_pos_h.xyz / world_pos_h.w;
             vec4 prev_clip = u_taa_prev_vp * vec4(world_pos, 1.0);

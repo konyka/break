@@ -16,7 +16,7 @@ layout(binding = 0) uniform sampler2D u_depth;
 layout(location = 0) out vec4 frag_color;
 
 vec3 reconstruct_pos(vec2 uv, float depth) {
-    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     vec4 view = pc.u_ssao_inv_proj * ndc;
     return view.xyz / view.w;
 }

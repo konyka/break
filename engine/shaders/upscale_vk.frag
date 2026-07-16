@@ -84,7 +84,7 @@ void main() {
     float depth = texture(u_ups_depth, render_uv).r;
     if (depth < 1.0) {
         vec2 ndc = render_uv * 2.0 - 1.0;
-        vec4 clip_pos = vec4(ndc.x, ndc.y, depth, 1.0);
+        vec4 clip_pos = vec4(ndc.x, ndc.y, depth * 2.0 - 1.0, 1.0);
         vec4 view_pos = u_ups_inv_proj * clip_pos;
         view_pos.xyz /= view_pos.w;
         vec4 prev_clip = u_ups_prev_vp * vec4(view_pos.xyz, 1.0);

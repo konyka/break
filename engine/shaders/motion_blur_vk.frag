@@ -45,7 +45,7 @@ void main() {
     }
 
     vec2 ndc = vUV * 2.0 - 1.0;
-    vec4 view_pos = load_inv_proj() * vec4(ndc, depth, 1.0);
+    vec4 view_pos = load_inv_proj() * vec4(ndc, depth * 2.0 - 1.0, 1.0);
     view_pos.xyz /= view_pos.w;
 
     mat4 prev_vp = load_prev_vp();
