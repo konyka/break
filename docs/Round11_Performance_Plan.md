@@ -4030,6 +4030,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R213：VK CSM depth_only Z remap + GL SSAO binding（已完成）
+
+### [x] R213-A depth_only.vert Vulkan Z remap
+- [x] 活跃 CSM 路径（非未使用的 shadow_depth_vk.vert）
+
+### [x] R213-B GL SSAO 挪到 binding/unit 14
+- [x] 避开 `u_point_shadow_cubes[4]` 占用的 10–13
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

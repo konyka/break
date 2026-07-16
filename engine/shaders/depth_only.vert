@@ -22,4 +22,9 @@ layout(location = 0) in vec3 a_pos;
 
 void main() {
     gl_Position = U_LIGHT_VP * U_MODEL * vec4(a_pos, 1.0);
+#ifdef VULKAN
+    /* R213-A: OpenGL ortho → clip.z∈[-1,1]; Vulkan expects [0,1].
+     * Matches R211 intent (was applied to unused shadow_depth_vk.vert). */
+    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
+#endif
 }

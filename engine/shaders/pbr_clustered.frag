@@ -26,7 +26,7 @@ layout(binding = 1) uniform sampler2D u_shadow_map;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 layout(binding = 3) uniform sampler2D u_normal_map;
 layout(binding = 4) uniform sampler2D u_emissive;
-layout(binding = 11) uniform sampler2D u_ssao;
+layout(binding = 14) uniform sampler2D u_ssao; /* R213-B: was 11, collided with cubes[1] */
 layout(binding = 5) uniform samplerBuffer u_light_data;
 layout(binding = 6) uniform samplerBuffer u_light_grid;
 #ifdef HAS_IBL
