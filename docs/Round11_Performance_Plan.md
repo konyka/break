@@ -4129,6 +4129,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R222：GL SSR/SSGI sampler binding（已完成）
+
+### [x] R222-A ssr.frag layout(binding 0/1)
+- [x] color@0 depth@1
+
+### [x] R222-B ssgi.frag layout(binding 0/1)
+- [x] depth@0 color@1
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

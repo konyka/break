@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_ssgi_depth;
-uniform sampler2D u_ssgi_color;
+/* R222-B: Match bind_textures_multi {depth, color} and ssgi_vk.frag. */
+layout(binding = 0) uniform sampler2D u_ssgi_depth;
+layout(binding = 1) uniform sampler2D u_ssgi_color;
 
 uniform mat4 u_ssgi_inv_proj;
 uniform mat4 u_ssgi_proj;

@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_ssr_color;
-uniform sampler2D u_ssr_depth;
+/* R222-A: Match bind_textures_multi {color, depth} and ssr_vk.frag. */
+layout(binding = 0) uniform sampler2D u_ssr_color;
+layout(binding = 1) uniform sampler2D u_ssr_depth;
 
 uniform mat4 u_ssr_proj;
 uniform mat4 u_ssr_inv_proj;
