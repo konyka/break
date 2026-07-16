@@ -262,17 +262,19 @@ float shadow_test(vec3 world_pos) {
     /* Real per-quadrant texel size derived from the bound atlas resolution. */
     vec2 texel_size = 1.0 / vec2(textureSize(u_shadow_map, 0));
 
+    /* R211-A: Window-space Z for compare (OpenGL NDC → [0,1]; matches depth tex). */
+    float z_win = ndc.z * 0.5 + 0.5;
     float light_size = 0.02 * (1.0 + float(cascade) * 0.5);
-    float search_width = light_size / max(ndc.z, 1e-3);
+    float search_width = light_size / max(z_win, 1e-3);
 
-    float blocker = find_blocker(cascade, uv, ndc.z, texel_size, search_width);
+    float blocker = find_blocker(cascade, uv, z_win, texel_size, search_width);
     if (blocker < 0.0) return 1.0;
 
-    float penumbra = (ndc.z - blocker) / max(blocker, 1e-3);
+    float penumbra = (z_win - blocker) / max(blocker, 1e-3);
     float filter_radius = penumbra * light_size * 40.0;
     filter_radius = clamp(filter_radius, 1.0, 5.0);
 
-    return pcf_shadow(cascade, uv, ndc.z, texel_size, filter_radius);
+    return pcf_shadow(cascade, uv, z_win, texel_size, filter_radius);
 }
 
 #ifdef HAS_POINT_SHADOW

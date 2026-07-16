@@ -4006,6 +4006,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R211：CSM 窗口深度比较 + contact 采样 NDC（已完成）
+
+### [x] R211-A CSM 阴影 z→窗口空间
+- [x] terrain/water/PBR/deferred：`ndc.z * 0.5 + 0.5`
+- [x] `shadow_depth_vk.vert` OpenGL→VK clip.z remap
+
+### [x] R211-B contact_shadow 采样点 depth*2-1
+- [x] 与 R210 起点重建一致（GL+VK）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

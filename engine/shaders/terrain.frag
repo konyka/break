@@ -29,7 +29,9 @@ float terrain_shadow(vec3 world_pos) {
     vec2 texel = 1.0 / vec2(textureSize(u_shadow_map, 0));
     vec2 atlas_uv = clamp(uv * 0.5, texel, vec2(0.5) - texel);
     float d = texture(u_shadow_map, atlas_uv).r;
-    return (ndc.z - u_shadow_bias) > d ? 0.4 : 1.0;
+    /* R211-A: Compare in window depth [0,1]; ndc.z is OpenGL NDC [-1,1]. */
+    float z = ndc.z * 0.5 + 0.5;
+    return (z - u_shadow_bias) > d ? 0.4 : 1.0;
 }
 
 vec3 grass_color(vec2 uv) {

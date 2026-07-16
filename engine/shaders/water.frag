@@ -20,7 +20,8 @@ float water_shadow(vec3 wp) {
     /* u_light_vp is CSM cascade 0 -> quadrant (0,0) of the shadow atlas. */
     vec2 texel = 1.0 / vec2(textureSize(u_shadow_map, 0));
     vec2 atlas_uv = clamp(uv * 0.5, texel, vec2(0.5) - texel);
-    return (ndc.z - u_shadow_bias) > texture(u_shadow_map, atlas_uv).r ? 0.5 : 1.0;
+    float z = ndc.z * 0.5 + 0.5; /* R211-A: window depth */
+    return (z - u_shadow_bias) > texture(u_shadow_map, atlas_uv).r ? 0.5 : 1.0;
 }
 
 void main() {

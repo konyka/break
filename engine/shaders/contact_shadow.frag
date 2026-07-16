@@ -50,7 +50,7 @@ void main() {
 
         float sd = texture(u_cs_depth, sample_uv).r;
         vec2 s_ndc = sample_uv * 2.0 - 1.0;
-        vec4 svp = u_cs_inv_proj * vec4(s_ndc, sd, 1.0);
+        vec4 svp = u_cs_inv_proj * vec4(s_ndc, sd * 2.0 - 1.0, 1.0); /* R211-B */
         vec3 sampled_view = svp.xyz / svp.w;
 
         float diff = sampled_view.z - ray_pos.z;
