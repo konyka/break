@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 frag_color;
 
-uniform sampler2D u_scene;
-uniform sampler2D u_bloom;
+/* R220-B: Match bind_material_textures (scene@0, bloom@shadow@1) and VK. */
+layout(binding = 0) uniform sampler2D u_scene;
+layout(binding = 1) uniform sampler2D u_bloom;
 uniform float u_bloom_strength;
 
 void main() {

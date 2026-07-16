@@ -3,8 +3,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_lum_hdr;
-uniform sampler2D u_lum_prev;
+/* R220-A: Match bind_material_textures (hdr@0, prev@shadow@1) and VK. */
+layout(binding = 0) uniform sampler2D u_lum_hdr;
+layout(binding = 1) uniform sampler2D u_lum_prev;
 
 uniform float u_lum_w;
 uniform float u_lum_h;

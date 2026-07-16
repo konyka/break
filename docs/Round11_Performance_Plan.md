@@ -4107,6 +4107,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R220：GL tonemap/luminance/bloom sampler binding（已完成）
+
+### [x] R220-A luminance.frag + tonemap.frag layout(binding 0/1)
+- [x] hdr@0 prev/lum@shadow@1
+
+### [x] R220-B bloom_composite.frag layout(binding 0/1)
+- [x] scene@0 bloom@shadow@1
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
