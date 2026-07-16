@@ -26,4 +26,6 @@ void main() {
     vNormal = aNormal;
     vUV = aUV;
     gl_Position = pc.u_proj * pc.u_view * world_pos;
+    /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
+    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

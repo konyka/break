@@ -85,6 +85,10 @@ void main() {
     vec3 color = p.size_color.yzw;
 
     gl_Position = P_PROJ * P_VIEW * vec4(pos, 1.0);
+#ifdef VULKAN
+    /* R214-A: OpenGL proj → Vulkan clip.z [0,1]. */
+    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
+#endif
     gl_PointSize = max(1.0, size * 400.0 / gl_Position.w);
     v_color = vec4(color * alpha, alpha);
     v_size = size;

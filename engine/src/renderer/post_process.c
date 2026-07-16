@@ -157,6 +157,8 @@ void post_process_shutdown(PostProcess *pp) {
 void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_color,
                          u32 screen_w, u32 screen_h) {
     if (!pp->ready) return;
+    /* R214-B: bloom_strength==0 → skip extract/blur/composite (~6 fullscreen passes). */
+    if (pp->bloom_strength <= 0.0f) return;
     (void)screen_w; (void)screen_h; /* R196-B: kept for API; unbind removed */
 
     rhi_cmd_bind_pipeline(cmd, pp->extract_pipe);

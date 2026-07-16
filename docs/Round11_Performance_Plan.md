@@ -4041,6 +4041,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R214：主通道 VK Z remap + bloom 零开销跳过（已完成）
+
+### [x] R214-A 主通道 Vulkan clip.z remap
+- [x] terrain/water/PBR/blinn/gbuffer/skinned/instanced/particle（对齐 depth_only）
+
+### [x] R214-B bloom_strength<=0 early-return
+- [x] `post_process_apply` 跳过 extract/blur/composite
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -29,4 +29,6 @@ void main() {
     vec2 prev_ndc = prev_clip.xy / prev_clip.w;
     v_velocity  = curr_ndc - prev_ndc;
     gl_Position = curr_clip;
+    /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
+    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

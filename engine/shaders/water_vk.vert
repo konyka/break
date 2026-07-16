@@ -18,4 +18,6 @@ layout(location = 0) out vec3 vWorldPos;
 void main() {
     vWorldPos = aPos;
     gl_Position = pc.u_proj * pc.u_view * vec4(aPos, 1.0);
+    /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
+    gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }
