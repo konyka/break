@@ -12,6 +12,7 @@
 static RHIPipeline dummy_pipe(u32 id) { return (RHIPipeline){id, 1}; }
 static RHIBuffer   dummy_buf(u32 id)  { return (RHIBuffer){id, 1}; }
 static RHITexture  dummy_tex(u32 id)  { return (RHITexture){id, 1}; }
+static RHISampler  dummy_sam(u32 id)  { return (RHISampler){id, 1}; }
 
 /* ParallelRenderer is ~9MB — must be heap-allocated to avoid stack overflow */
 static ParallelRenderer *alloc_pr(void) {
@@ -172,7 +173,7 @@ TEST(cmd_bind_uniform_and_texture) {
     RHITexture tex = dummy_tex(7);
 
     cmd_bind_uniform(&buf, 2, ubo, 0, 256);
-    cmd_bind_texture(&buf, 0, tex);
+    cmd_bind_texture(&buf, 0, tex, dummy_sam(8));
 
     ASSERT_EQ(buf.count, 2u);
     ASSERT_EQ(buf.commands[0].type, RENDER_CMD_BIND_UNIFORM);
@@ -183,6 +184,7 @@ TEST(cmd_bind_uniform_and_texture) {
     ASSERT_EQ(buf.commands[1].type, RENDER_CMD_BIND_TEXTURE);
     ASSERT_EQ(buf.commands[1].bind_texture.slot, 0u);
     ASSERT_EQ(buf.commands[1].bind_texture.texture.index, 7u);
+    ASSERT_EQ(buf.commands[1].bind_texture.sampler.index, 8u);
 }
 
 TEST(cmd_scissor_viewport) {
@@ -262,7 +264,7 @@ TEST(cmd_null_buffer_drops) {
     cmd_bind_vertex_buffer(NULL, dummy_buf(1), 0);
     cmd_bind_index_buffer(NULL, dummy_buf(1), 0, false);
     cmd_bind_uniform(NULL, 0, dummy_buf(1), 0, 64);
-    cmd_bind_texture(NULL, 0, dummy_tex(1));
+    cmd_bind_texture(NULL, 0, dummy_tex(1), dummy_sam(2));
     cmd_set_scissor(NULL, 0, 0, 100, 100);
     cmd_set_viewport(NULL, 0, 0, 100, 100, 0, 1);
     cmd_push_constants(NULL, 0, 4, NULL);
@@ -328,7 +330,7 @@ TEST(cmd_mixed_command_sequence) {
     cmd_bind_vertex_buffer(&buf, dummy_buf(10), 0);
     cmd_bind_index_buffer(&buf, dummy_buf(20), 0, true);
     cmd_bind_uniform(&buf, 0, dummy_buf(30), 0, 128);
-    cmd_bind_texture(&buf, 0, dummy_tex(40));
+    cmd_bind_texture(&buf, 0, dummy_tex(40), dummy_sam(41));
     cmd_set_viewport(&buf, 0, 0, 1920, 1080, 0, 1);
     cmd_set_scissor(&buf, 0, 0, 1920, 1080);
     cmd_draw_indexed(&buf, 36, 1, 0, 0);

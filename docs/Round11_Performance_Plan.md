@@ -4140,6 +4140,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R223：ParallelRenderer sampler + 删除死 shadow_depth（已完成）
+
+### [x] R223-A cmd_bind_texture 记录并回放 sampler
+- [x] 修复 VK NULL sampler early-return
+
+### [x] R223-B 删除 unused shadow_depth*.vert/frag
+- [x] CSM 路径以 depth_only 为准
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

@@ -70,6 +70,7 @@ typedef struct {
         struct {
             u32        slot;
             RHITexture texture;
+            RHISampler sampler; /* R223-A: required for VK combined-image bind */
         } bind_texture;
         struct {
             i32 x, y;
@@ -152,7 +153,7 @@ void cmd_bind_pipeline(RenderCmdBuffer *buf, RHIPipeline pipeline);
 void cmd_bind_vertex_buffer(RenderCmdBuffer *buf, RHIBuffer buffer, u32 offset);
 void cmd_bind_index_buffer(RenderCmdBuffer *buf, RHIBuffer buffer, u32 offset, bool is_u32);
 void cmd_bind_uniform(RenderCmdBuffer *buf, u32 binding, RHIBuffer buffer, u32 offset, u32 size);
-void cmd_bind_texture(RenderCmdBuffer *buf, u32 slot, RHITexture texture);
+void cmd_bind_texture(RenderCmdBuffer *buf, u32 slot, RHITexture texture, RHISampler sampler);
 void cmd_set_scissor(RenderCmdBuffer *buf, i32 x, i32 y, u32 w, u32 h);
 void cmd_set_viewport(RenderCmdBuffer *buf, f32 x, f32 y, f32 w, f32 h, f32 min_d, f32 max_d);
 void cmd_push_constants(RenderCmdBuffer *buf, u32 offset, u32 size, const void *data);

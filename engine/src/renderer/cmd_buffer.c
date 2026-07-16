@@ -262,7 +262,7 @@ void cmd_bind_uniform(RenderCmdBuffer *buf, u32 binding, RHIBuffer buffer, u32 o
     cmd->bind_uniform.size     = size;
 }
 
-void cmd_bind_texture(RenderCmdBuffer *buf, u32 slot, RHITexture texture) {
+void cmd_bind_texture(RenderCmdBuffer *buf, u32 slot, RHITexture texture, RHISampler sampler) {
     RenderCmd *cmd = cmd_buffer_reserve(buf);
     if (!cmd) {
         return;
@@ -270,6 +270,7 @@ void cmd_bind_texture(RenderCmdBuffer *buf, u32 slot, RHITexture texture) {
     cmd->type                  = RENDER_CMD_BIND_TEXTURE;
     cmd->bind_texture.slot     = slot;
     cmd->bind_texture.texture  = texture;
+    cmd->bind_texture.sampler  = sampler;
 }
 
 void cmd_set_scissor(RenderCmdBuffer *buf, i32 x, i32 y, u32 w, u32 h) {
@@ -386,12 +387,11 @@ static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
         break;
 
     case RENDER_CMD_BIND_TEXTURE: {
-        /* Use a NULL/default sampler placeholder; concrete sampler binding is
-         * the caller's responsibility through dedicated material APIs. */
-        RHISampler default_sampler = RHI_HANDLE_NULL;
+        /* R223-A: Sampler is recorded with the command — VK bind_material_textures
+         * early-returns on NULL sampler, so a placeholder made binds a no-op. */
         rhi_cmd_bind_texture(rhi_cmd,
                              cmd->bind_texture.texture,
-                             default_sampler,
+                             cmd->bind_texture.sampler,
                              cmd->bind_texture.slot);
         break;
     }
