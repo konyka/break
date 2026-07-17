@@ -54,7 +54,8 @@ bool sphere_visible(vec3 center, float radius) {
     if (nc.y - r >  1.0) return false;
     if (nc.y + r < -1.0) return false;
     if (nc.z - r >  1.0) return false;
-    if (nc.z + r <  0.0) return false;
+    /* R233-A: Match unified_cull / OpenGL NDC z∈[-1,1]; near plane is -1 (was 0). */
+    if (nc.z + r < -1.0) return false;
     return true;
 }
 

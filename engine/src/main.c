@@ -859,7 +859,8 @@ static bool mega_use_unified_vis(bool deferred_pass) {
 
 static bool mega_unified_cull_draw(GPUCullSystem *gc, RHIDevice *dev, RHICmdBuffer *cmd,
                                    const f32 *vp, u32 vis_count,
-                                   OcclusionCullSystem *occ) {
+                                   OcclusionCullSystem *occ,
+                                   RHIPipeline restore_pipe) {
     if (!gc->unified_ready || !unified_cull_enabled ||
         vis_count == 0 || vis_count > GPUCULL_MAX_OBJECTS) {
         return false;
@@ -872,6 +873,10 @@ static bool mega_unified_cull_draw(GPUCullSystem *gc, RHIDevice *dev, RHICmdBuff
         hz_h = occ->hi_z_height;
     }
     gpucull_dispatch_unified(gc, cmd, vp, NULL, hi_z, hz_w, hz_h, RHI_HANDLE_NULL, true, false);
+    /* R233-B: GL compute glUseProgram replaces the graphics program; VK uses a
+     * separate bind point so this rebind is a cheap no-op on cache hit. */
+    if (rhi_handle_valid(restore_pipe))
+        rhi_cmd_bind_pipeline(cmd, restore_pipe);
     gpucull_execute_indirect_draws(gc, dev);
     return true;
 }
@@ -3732,7 +3737,8 @@ u32 culled_count = 0;
                     u32 vis_count = mega_buf.draw_cmd_count;
                     if (mega_use_unified_shadow(&mega_buf) &&
                         mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
-                                                  &render.cascade_vp[c].e[0][0], vis_count, NULL)) {
+                                                  &render.cascade_vp[c].e[0][0], vis_count, NULL,
+                                                  render.depth_pipeline)) {
                         draw_calls++;
                         draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                         draw_bench_mark_unified();
@@ -3756,6 +3762,8 @@ u32 culled_count = 0;
                         indirect_draw_upload_visibility_cmd(&indirect_sys, render.device, cmd, g_vis_flags, vis_count);
                     }
                     indirect_draw_compact(&indirect_sys, render.device, cmd);
+                    /* R233-B: compact compute clobbers GL graphics program. */
+                    rhi_cmd_bind_pipeline(cmd, render.depth_pipeline);
                     indirect_draw_execute(&indirect_sys, render.device);
                     draw_calls++;
                     draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
@@ -3823,7 +3831,8 @@ u32 culled_count = 0;
                             if (mega_use_unified_shadow(&mega_buf) &&
                                 mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
-                                                          vis_count, NULL)) {
+                                                          vis_count, NULL,
+                                                          pt_shadows.depth_pipeline)) {
                                 draw_calls++;
                                 draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                                 draw_bench_mark_unified();
@@ -3840,6 +3849,8 @@ u32 culled_count = 0;
                                 }
                                 indirect_draw_upload_visibility_cmd(&indirect_sys, render.device, cmd, g_vis_flags, vis_count);
                                 indirect_draw_compact(&indirect_sys, render.device, cmd);
+                                /* R233-B: restore point-shadow depth program after compact. */
+                                rhi_cmd_bind_pipeline(cmd, pt_shadows.depth_pipeline);
                                 indirect_draw_execute(&indirect_sys, render.device);
                                 draw_calls++;
                                 draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_vis_flags) : 0u);
