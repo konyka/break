@@ -187,6 +187,25 @@ static bool g_gl_scissor_rect_valid = false;
 static i32  g_gl_scissor_x = 0, g_gl_scissor_y = 0;
 static u32  g_gl_scissor_w = 0, g_gl_scissor_h = 0;
 
+/* R230: Match VK offscreen/MRT bind — full-FBO scissor + depth 0..1. */
+static void gl_set_fbo_pass_state(u32 w, u32 h) {
+    gl_set_viewport_cached(0, 0, (GLsizei)w, (GLsizei)h);
+    gl_set_depth_range_cached(0.0f, 1.0f);
+    if (!g_gl_scissor_enabled) {
+        glEnable(GL_SCISSOR_TEST);
+        g_gl_scissor_enabled = true;
+    }
+    if (!g_gl_scissor_rect_valid || g_gl_scissor_x != 0 || g_gl_scissor_y != 0 ||
+        g_gl_scissor_w != w || g_gl_scissor_h != h) {
+        glScissor(0, 0, (GLsizei)w, (GLsizei)h);
+        g_gl_scissor_x = 0;
+        g_gl_scissor_y = 0;
+        g_gl_scissor_w = w;
+        g_gl_scissor_h = h;
+        g_gl_scissor_rect_valid = true;
+    }
+}
+
 /* R191-B: GL bind_texture_mip clamps BASE/MAX_LEVEL; track so compute/full
  * sampling can restore the full pyramid (VK uses per-mip views instead). */
 static GLuint g_mip_clamp_tex = 0;
@@ -1919,7 +1938,8 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     GLFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
     if (!fd) return;
     gl_bind_fbo_cached(fd->gl_fbo);
-    gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
+    /* R230-A: VK sets full-FBO viewport/scissor + depth 0..1 on bind. */
+    gl_set_fbo_pass_state(fbo->width, fbo->height);
 }
 
 void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
@@ -1930,7 +1950,8 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     gl_bind_fbo_cached(0);
-    gl_set_viewport_cached(0, 0, screen_w, screen_h);
+    /* R230: VK unbind resets full-swapchain viewport/scissor + depth 0..1. */
+    gl_set_fbo_pass_state(screen_w, screen_h);
 }
 
 void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
@@ -2229,13 +2250,15 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
     if (!md) return;
     gl_bind_fbo_cached(md->gl_fbo);
-    gl_set_viewport_cached(0, 0, fbo->width, fbo->height);
+    /* R230-B: Same as offscreen — full MRT rect scissor + depth 0..1. */
+    gl_set_fbo_pass_state(fbo->width, fbo->height);
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     gl_bind_fbo_cached(0);
-    gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
+    /* R230: restore full-swapchain pass state (see offscreen unbind). */
+    gl_set_fbo_pass_state(screen_w, screen_h);
 }
 
 /* ======================================================================== */

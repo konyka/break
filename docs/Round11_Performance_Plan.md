@@ -4217,6 +4217,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R230：GL offscreen/MRT bind 对齐 VK scissor/depth（已完成）
+
+### [x] R230-A offscreen_fbo_bind/unbind gl_set_fbo_pass_state
+- [x] 全矩形 scissor + depth 0..1；unbind 还原 swapchain
+
+### [x] R230-B mrt_fbo_bind/unbind
+- [x] 同上
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
