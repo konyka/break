@@ -48,6 +48,8 @@ typedef struct {
     bool   alpha_blend;
     bool   wireframe;
     bool   point_list;   /* R168-C: GL_POINTS + PROGRAM_POINT_SIZE */
+    bool   depth_write_disable;  /* R232-A: parity with VK depthWriteEnable */
+    bool   depth_compare_lequal; /* R232-B: parity with VK compareOp */
 } GLPipelineData;
 
 typedef struct {
@@ -216,6 +218,8 @@ static GLint  g_mip_clamp_level = -1;
  * Same class of desync risk as R78-2 (glDepthFunc). */
 static bool g_gl_depth_mask = true;    /* GL default after gl_init */
 static bool g_gl_cull_enabled = true;  /* GL default after gl_init */
+/* R78-2 / R232-B: Cached GL depth function (default LESS after gl_init). */
+static GLenum g_gl_depth_func = GL_LESS;
 
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
@@ -544,6 +548,22 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
         if (pd->point_list) glEnable(GL_PROGRAM_POINT_SIZE);
         else                glDisable(GL_PROGRAM_POINT_SIZE);
         g_gl_point_size_enabled = pd->point_list;
+    }
+    /* R232-A: Apply depth write from pipeline (VK bakes into PSO). */
+    {
+        bool want_mask = !pd->depth_write_disable;
+        if (g_gl_depth_mask != want_mask) {
+            glDepthMask(want_mask ? GL_TRUE : GL_FALSE);
+            g_gl_depth_mask = want_mask;
+        }
+    }
+    /* R232-B: Apply depth compare from pipeline (VK bakes into PSO). */
+    {
+        GLenum want_func = pd->depth_compare_lequal ? GL_LEQUAL : GL_LESS;
+        if (g_gl_depth_func != want_func) {
+            glDepthFunc(want_func);
+            g_gl_depth_func = want_func;
+        }
     }
     g_cached_vertex_stride = pd->vertex_stride;
 }
@@ -879,6 +899,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->alpha_blend    = desc->alpha_blend;
     pd->wireframe      = desc->wireframe;
     pd->point_list     = desc->point_list;
+    pd->depth_write_disable  = desc->depth_write_disable;
+    pd->depth_compare_lequal = desc->depth_compare_lequal;
     dev->slots[idx].ptr  = pd;
     dev->slots[idx].type = RHI_RES_PIPELINE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1536,6 +1558,11 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
     (void)cmd;
+    /* Clear requires depth writes enabled (GL ignores clear when mask is false). */
+    if (!g_gl_depth_mask) {
+        glDepthMask(GL_TRUE);
+        g_gl_depth_mask = true;
+    }
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
@@ -1632,9 +1659,6 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
      * to bind to the wrong texture unit. */
     gl_bind_tex_unit(unit, cm, sampler);
 }
-
-/* Cached GL depth function: skip redundant glDepthFunc calls */
-static GLenum g_gl_depth_func = GL_LESS;
 
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) {
     (void)cmd;

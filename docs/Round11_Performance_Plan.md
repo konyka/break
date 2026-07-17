@@ -4239,6 +4239,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R232：GL pipeline depth write/compare（已完成）
+
+### [x] R232-A depth_write_disable → glDepthMask
+- [x] 对齐 VK depthWriteEnable
+
+### [x] R232-B depth_compare_lequal → glDepthFunc
+- [x] 对齐 VK compareOp；clear_depth 临时开 mask
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
