@@ -429,7 +429,12 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                  && rhi_handle_valid(gc->hi_z_sampler);
     RHITexture hi_z_bind = use_hi_z ? hi_z_texture : gc->hi_z_fallback;
     if (rhi_handle_valid(hi_z_bind)) {
+        /* R231-A: VK set2 binding0 → unit 0; GL unified_cull.comp layout(binding=4). */
+#ifdef ENGINE_VULKAN
         rhi_cmd_bind_texture_compute(cmd, hi_z_bind, gc->hi_z_sampler, 0);
+#else
+        rhi_cmd_bind_texture_compute(cmd, hi_z_bind, gc->hi_z_sampler, 4);
+#endif
     }
 
     i32 loc_vp = gc->_loc_uni_vp;

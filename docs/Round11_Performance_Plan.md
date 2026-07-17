@@ -4228,6 +4228,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R231：unified_cull Hi-Z unit + clear_color 语义（已完成）
+
+### [x] R231-A gpucull Hi-Z GL unit 4
+- [x] 对齐 unified_cull.comp layout(binding=4)
+
+### [x] R231-B clear_color 仅清 color
+- [x] 与 VK 对齐；forward 补 clear_depth
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

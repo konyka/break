@@ -581,7 +581,8 @@ static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_co
 static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
     (void)cmd;
     glClearColor(r, g, b, a);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    /* R231-B: Color only — match VK clear_color (callers clear depth explicitly). */
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 

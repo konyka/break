@@ -3890,6 +3890,8 @@ u32 culled_count = 0;
             rhi_offscreen_fbo_bind(cmd, &scene_fbo);
         }
         rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
+        /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
+        rhi_cmd_clear_depth(cmd);
 
         skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
 
