@@ -3465,9 +3465,9 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
                                       count_bd->buffer, (VkDeviceSize)count_offset,
                                       max_draws, stride);
     } else {
-        /* Fallback: the GPU count is unavailable, so issue max_draws draws.
-         * Compacted slots beyond the live count keep instanceCount=0 (cleared
-         * by the compaction pass), making the surplus draws no-ops. */
+        /* Fallback when drawIndirectCount is unavailable: issue max_draws.
+         * Callers (indirect_draw R234-B / gpucull R171) zero visible slots
+         * before compact so surplus commands are no-ops (indexCount=0). */
         vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
                                  cmd_bd->buffer, (VkDeviceSize)cmd_offset,
                                  max_draws, stride);

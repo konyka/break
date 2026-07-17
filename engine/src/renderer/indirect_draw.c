@@ -206,6 +206,11 @@ void indirect_draw_compact_no_barrier(IndirectDrawSystem *sys, RHIDevice *dev, R
     /* R175: GPU fill so reset is ordered with this CB's compact dispatch
      * (host rhi_buffer_update is invisible to later recorded GPU work). */
     rhi_cmd_fill_buffer(cmd, sys->draw_count_buf, 0, sizeof(u32), 0u);
+    /* R234-B: Zero visible slots before compact so VK IndirectCount fallback
+     * (draw max_draws) cannot resurrect stale surplus commands. Matches
+     * gpucull_dispatch_unified (R171). Live slots are rewritten by compact. */
+    rhi_cmd_fill_buffer(cmd, sys->visible_draws_buf, 0,
+                        (usize)sys->current_draw_count * sizeof(DrawIndexedIndirectCmd), 0u);
 
     rhi_cmd_bind_pipeline(cmd, sys->compact_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, sys->all_draws_buf,     0);

@@ -4261,6 +4261,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R234：前向/延迟 compute 后重绑 + compact 清零（已完成）
+
+### [x] R234-A restore graphics pipeline after forward/deferred compact
+- [x] `mega_mat_groups_draw(restore_pipe)` + legacy forward/deferred 路径
+
+### [x] R234-B zero visible_draws before compact
+- [x] `indirect_draw_compact_no_barrier` GPU fill（对齐 R171 unified）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

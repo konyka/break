@@ -909,7 +909,8 @@ static bool mega_unified_vis_flags(GPUCullSystem *gc, RHICmdBuffer *cmd,
 
 static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *scene,
                                 MegaBuffer *mb,
-                                const u32 *draw_vis) {
+                                const u32 *draw_vis,
+                                RHIPipeline restore_pipe) {
     u32 calls = 0u;
     if (!mb || !mb->valid) return 0u;
     /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
@@ -926,6 +927,10 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
         indirect_draw_compact_no_barrier(&mb->mat_systems[g], render->device, cmd);
     }
     rhi_cmd_memory_barrier(cmd);
+    /* R234-A: GL compute glUseProgram replaces the graphics program; bind_material
+     * only binds textures. Rebind before indirect execute (VK cache hit is cheap). */
+    if (rhi_handle_valid(restore_pipe))
+        rhi_cmd_bind_pipeline(cmd, restore_pipe);
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 mat_idx = mb->mat_indices[g];
         Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
@@ -4866,7 +4871,8 @@ u32 culled_count = 0;
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                                mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
                         u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
-                                                      &mega_buf, g_draw_vis);
+                                                      &mega_buf, g_draw_vis,
+                                                      active_pipeline);
                         draw_calls += mc;
                         draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                         draw_bench_mark_unified();
@@ -4911,6 +4917,9 @@ u32 culled_count = 0;
                         indirect_draw_compact_no_barrier(&mega_buf.mat_systems[g], render.device, cmd);
                     }
                     rhi_cmd_memory_barrier(cmd);
+                    /* R234-A: restore graphics pipeline after compact compute. */
+                    if (rhi_handle_valid(active_pipeline))
+                        rhi_cmd_bind_pipeline(cmd, active_pipeline);
                     for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                         u32 mat_idx = mega_buf.mat_indices[g];
                         Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
@@ -5106,7 +5115,8 @@ u32 culled_count = 0;
                     mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                            mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
                     u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
-                                                  &mega_buf, g_draw_vis);
+                                                  &mega_buf, g_draw_vis,
+                                                  dsys->gbuffer_pipeline);
                     draw_calls += mc;
                     draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                     draw_bench_mark_unified();
@@ -5152,6 +5162,9 @@ u32 culled_count = 0;
                     indirect_draw_compact_no_barrier(&mega_buf.mat_systems[g], render.device, cmd);
                 }
                 rhi_cmd_memory_barrier(cmd);
+                /* R234-A: restore gbuffer pipeline after compact compute. */
+                if (rhi_handle_valid(dsys->gbuffer_pipeline))
+                    rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_pipeline);
                 for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                     u32 mat_idx = mega_buf.mat_indices[g];
                     Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
