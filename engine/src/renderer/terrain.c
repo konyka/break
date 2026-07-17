@@ -206,6 +206,7 @@ t->loc_shadow_bias = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_shad
 t->loc_light_vp    = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_light_vp");
 t->loc_water_y     = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_water_y");
 t->loc_time        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_time");
+    t->loc_fog_strength = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_fog_strength");
 
     u32 vert_count = grid_size * grid_size;
     u32 idx_count = (grid_size - 1) * (grid_size - 1) * 6;
@@ -306,7 +307,7 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
                     const f32 camera_pos[3],
                     RHITexture fallback_tex, RHISampler sampler,
                     RHITexture shadow_map, const f32 *light_vp,
-                    f32 shadow_bias, f32 water_y, f32 time) {
+                    f32 shadow_bias, f32 water_y, f32 time, f32 fog_strength) {
     if (t->index_count == 0) return;
 
     static const Mat4 identity_model = { .e = {
@@ -327,7 +328,17 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     }
     if (t->loc_light_color >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_light_color, 1.0f, 0.95f, 0.9f);
     if (t->loc_ambient >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_ambient, 0.35f, 0.35f, 0.40f);
-    if (camera_pos) rhi_cmd_set_uniform_vec3(cmd, t->loc_camera_pos, camera_pos[0], camera_pos[1], camera_pos[2]);
+    /* R225-B: VK packs fog_strength in u_camera_pos.w; GL uses u_fog_strength. */
+    if (camera_pos) {
+#ifdef ENGINE_VULKAN
+        rhi_cmd_set_uniform_vec4(cmd, t->loc_camera_pos,
+                                 camera_pos[0], camera_pos[1], camera_pos[2], fog_strength);
+#else
+        rhi_cmd_set_uniform_vec3(cmd, t->loc_camera_pos,
+                                 camera_pos[0], camera_pos[1], camera_pos[2]);
+#endif
+    }
+    if (t->loc_fog_strength >= 0) rhi_cmd_set_uniform_f32(cmd, t->loc_fog_strength, fog_strength);
     if (t->loc_albedo >= 0) rhi_cmd_set_uniform_i32(cmd, t->loc_albedo, 0);
     if (t->loc_shadow_bias >= 0) rhi_cmd_set_uniform_f32(cmd, t->loc_shadow_bias, shadow_bias);
     if (t->loc_light_vp >= 0 && light_vp) rhi_cmd_set_uniform_mat4(cmd, t->loc_light_vp, light_vp);

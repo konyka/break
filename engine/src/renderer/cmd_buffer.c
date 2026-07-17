@@ -406,11 +406,14 @@ static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
         break;
 
     case RENDER_CMD_SET_VIEWPORT:
+        /* R225-A: Forward recorded min/max depth. */
         rhi_cmd_set_viewport(rhi_cmd,
                              cmd->viewport.x,
                              cmd->viewport.y,
                              cmd->viewport.w,
-                             cmd->viewport.h);
+                             cmd->viewport.h,
+                             cmd->viewport.min_depth,
+                             cmd->viewport.max_depth);
         break;
 
     case RENDER_CMD_PUSH_CONSTANTS:

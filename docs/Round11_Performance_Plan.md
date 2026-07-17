@@ -4162,6 +4162,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R225：viewport 深度范围 + 地形雾开关（已完成）
+
+### [x] R225-A rhi_cmd_set_viewport(min/max depth)
+- [x] VK viewport depth + GL glDepthRange；cmd_buffer 回放
+
+### [x] R225-B terrain u_fog_strength / camera_pos.w
+- [x] fog_enabled 控制距离雾强度
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 

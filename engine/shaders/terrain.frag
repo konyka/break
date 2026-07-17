@@ -19,6 +19,7 @@ uniform mat4 u_light_vp;
 uniform float u_shadow_bias;
 uniform float u_water_y;
 uniform float u_time;
+uniform float u_fog_strength; /* R225-B: 0 when distance fog off */
 
 float terrain_shadow(vec3 world_pos) {
     vec4 clip = u_light_vp * vec4(world_pos, 1.0);
@@ -100,7 +101,7 @@ void main() {
 
     float fog_dist = length(vWorldPos - u_camera_pos);
     float fog = clamp((fog_dist - 40.0) / 60.0, 0.0, 1.0);
-    color = mix(color, u_ambient * 1.5, fog * 0.3);
+    color = mix(color, u_ambient * 1.5, fog * u_fog_strength);
 
     FragColor = vec4(color, 1.0);
 }

@@ -3899,7 +3899,8 @@ u32 culled_count = 0;
          * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
         terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
                        render.terrain_tex, active_sampler,
-                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias, water.water_y, (f32)total_time);
+                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
+                       water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
 
         water_update(&water, (f32)engine.delta_time);
         water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],

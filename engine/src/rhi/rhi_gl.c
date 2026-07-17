@@ -967,8 +967,11 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, b
     }
 }
 
-void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h) {
+void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
+                          f32 min_depth, f32 max_depth) {
     gl_cmd_set_viewport(cmd, x, y, w, h);
+    /* R225-A: GL separates 2D viewport from depth range. */
+    glDepthRange((GLdouble)min_depth, (GLdouble)max_depth);
 }
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {

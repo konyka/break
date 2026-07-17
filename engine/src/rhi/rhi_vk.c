@@ -227,6 +227,7 @@ typedef struct {
     VkFormat      active_color_fmt;
     /* R94-2: viewport/scissor cache -- skip redundant vkCmdSetViewport/Scissor */
     f32           cached_vp_x, cached_vp_y, cached_vp_w, cached_vp_h;
+    f32           cached_vp_min_d, cached_vp_max_d;
     i32           cached_sc_x, cached_sc_y;
     u32           cached_sc_w, cached_sc_h;
     bool          vp_valid, sc_valid;
@@ -3348,14 +3349,19 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, b
     vkCmdBindIndexBuffer(vk->cmd_buffers[vk->current_frame], bd->buffer, (VkDeviceSize)offset, itype);
 }
 
-void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h) {
+void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
+                          f32 min_depth, f32 max_depth) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     if (vk->vp_valid && vk->cached_vp_x == x && vk->cached_vp_y == y &&
-        vk->cached_vp_w == w && vk->cached_vp_h == h) return;  /* R94-2: cache hit */
-    VkViewport vp = {x, y + h, w, -h, 0.0f, 1.0f};
+        vk->cached_vp_w == w && vk->cached_vp_h == h &&
+        vk->cached_vp_min_d == min_depth && vk->cached_vp_max_d == max_depth)
+        return;  /* R94-2: cache hit */
+    /* R225-A: Honor recorded depth range (was hard-coded 0..1). */
+    VkViewport vp = {x, y + h, w, -h, min_depth, max_depth};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
     vk->cached_vp_x = x; vk->cached_vp_y = y; vk->cached_vp_w = w; vk->cached_vp_h = h;
+    vk->cached_vp_min_d = min_depth; vk->cached_vp_max_d = max_depth;
     vk->vp_valid = true;
 }
 
@@ -3376,10 +3382,12 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
     /* Non-flipped: shadow depth passes use a top-left-origin viewport (see
      * rhi_cmd_bind_shadow_map), so cascade quadrants must match that. */
     if (!vk->vp_valid || vk->cached_vp_x != (f32)x || vk->cached_vp_y != (f32)y ||
-        vk->cached_vp_w != (f32)w || vk->cached_vp_h != (f32)h) {  /* R94-2: cache */
+        vk->cached_vp_w != (f32)w || vk->cached_vp_h != (f32)h ||
+        vk->cached_vp_min_d != 0.0f || vk->cached_vp_max_d != 1.0f) {  /* R94-2 / R225-A */
         VkViewport vp = {(f32)x, (f32)y, (f32)w, (f32)h, 0.0f, 1.0f};
         vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
         vk->cached_vp_x = (f32)x; vk->cached_vp_y = (f32)y; vk->cached_vp_w = (f32)w; vk->cached_vp_h = (f32)h;
+        vk->cached_vp_min_d = 0.0f; vk->cached_vp_max_d = 1.0f;
         vk->vp_valid = true;
     }
     if (!vk->sc_valid || vk->cached_sc_x != (i32)x || vk->cached_sc_y != (i32)y ||

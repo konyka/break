@@ -20,6 +20,7 @@ typedef struct {
     i32 loc_model, loc_view, loc_proj;
     i32 loc_light_dir, loc_light_color, loc_ambient, loc_camera_pos;
     i32 loc_albedo, loc_shadow_bias, loc_light_vp, loc_water_y, loc_time;
+    i32 loc_fog_strength;
     /* Persistent staging buffer for batched vertex upload */
     f32        *_vert_staging;
     u32         _vert_staging_cap;
@@ -36,7 +37,7 @@ void  terrain_render(Terrain *t, RHICmdBuffer *cmd,
                      const f32 camera_pos[3],
                      RHITexture fallback_tex, RHISampler sampler,
                      RHITexture shadow_map, const f32 *light_vp,
-                     f32 shadow_bias, f32 water_y, f32 time);
+                     f32 shadow_bias, f32 water_y, f32 time, f32 fog_strength);
 f32   terrain_get_height(const Terrain *t, f32 x, f32 z);
 void  terrain_modify_height(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength);
 void  terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius);

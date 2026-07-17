@@ -21,7 +21,10 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer b, u32 bind) { (vo
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture t, RHISampler s, u32 u) { (void)cmd; (void)t; (void)s; (void)u; }
 void rhi_cmd_bind_material_textures(RHICmdBuffer *c, RHITexture a, RHITexture mr, RHITexture n, RHITexture e, RHITexture sh, RHITexture ss, RHISampler s) { (void)c; (void)a; (void)mr; (void)n; (void)e; (void)sh; (void)ss; (void)s; }
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) { (void)cmd; (void)x; (void)y; (void)w; (void)h; }
-void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h) { (void)cmd; (void)x; (void)y; (void)w; (void)h; }
+void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
+                          f32 min_d, f32 max_d) {
+    (void)cmd; (void)x; (void)y; (void)w; (void)h; (void)min_d; (void)max_d;
+}
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) { (void)cmd; (void)x; (void)y; (void)w; (void)h; }
 
 /* Resource management stubs for modules that compile init/shutdown paths */

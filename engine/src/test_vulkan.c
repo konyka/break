@@ -479,7 +479,7 @@ int main(int argc, char **argv) {
 
         terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0],
                        &camera.position.e[0], render.test_tex, render.sampler,
-                       (RHITexture){0,0}, NULL, 0.0f, -1.0f, 0.0f);
+                       (RHITexture){0,0}, NULL, 0.0f, -1.0f, 0.0f, 0.0f);
 
         rhi_cmd_bind_pipeline(cmd, render.pipeline);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);

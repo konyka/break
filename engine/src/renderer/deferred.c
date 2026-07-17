@@ -324,7 +324,7 @@ void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     rhi_mrt_fbo_bind(cmd, &sys->_mrt_fbo);
     rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
     rhi_cmd_clear_depth(cmd);
-    rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, (f32)sys->width, (f32)sys->height);
+    rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, (f32)sys->width, (f32)sys->height, 0.0f, 1.0f);
 
     rhi_cmd_bind_pipeline(cmd, sys->gbuffer_pipeline);
 }
