@@ -2339,7 +2339,16 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                            GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, cd->depth_tex, 0);
     /* draw/read buffer set once at FBO creation (depth-only) */
+    /* R229-B: Drop leftover CSM/set_scissor so clear/draw cover the full face
+     * (VK sets a full-face scissor on bind). */
+    if (g_gl_scissor_enabled) {
+        glDisable(GL_SCISSOR_TEST);
+        g_gl_scissor_enabled = false;
+        g_gl_scissor_rect_valid = false;
+    }
     gl_set_viewport_cached(0, 0, (GLsizei)fbo->size, (GLsizei)fbo->size);
+    /* R229-A: Match VK face viewport min/maxDepth = 0..1 before clear/write. */
+    gl_set_depth_range_cached(0.0f, 1.0f);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 

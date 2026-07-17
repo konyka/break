@@ -4206,6 +4206,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R229：GL 点光 cubemap face depth/scissor（已完成）
+
+### [x] R229-A cubemap face glDepthRange(0,1)
+- [x] 对齐 VK face viewport depth
+
+### [x] R229-B cubemap face 禁用残留 scissor
+- [x] 避免 CSM 象限裁切整面 clear/draw
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
