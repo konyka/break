@@ -162,10 +162,17 @@ static GLuint g_gl_program = 0;
 /* R86-3: VBO/IBO bind cache — avoids redundant glBindVertexBuffer and
  * glBindBuffer(GL_ELEMENT_ARRAY_BUFFER) calls in draw loops. */
 static GLuint g_gl_bound_vbo = 0;
+static usize  g_gl_bound_vbo_offset = 0; /* R226-A: offset is part of bind key */
 static GLuint g_gl_bound_ibo = 0;
 /* R224-A: Index type for glDrawElements* (set by bind_index_buffer). */
 static GLenum g_gl_index_type = GL_UNSIGNED_INT;
 static u32    g_gl_index_stride = 4u;
+/* R226-A: GL IBO bind has no offset arg; apply at draw via indices pointer. */
+static usize  g_gl_index_offset = 0;
+/* R226-B: Cache for rhi_cmd_set_scissor (parity with VK). */
+static bool g_gl_scissor_rect_valid = false;
+static i32  g_gl_scissor_x = 0, g_gl_scissor_y = 0;
+static u32  g_gl_scissor_w = 0, g_gl_scissor_h = 0;
 
 /* R191-B: GL bind_texture_mip clamps BASE/MAX_LEVEL; track so compute/full
  * sampling can restore the full pyramid (VK uses per-mip views instead). */
@@ -483,8 +490,8 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
         glBindVertexArray(pd->gl_vao);
         g_gl_vao = pd->gl_vao;
         /* R86-3: VAO change invalidates VBO/IBO binding state. */
-        g_gl_bound_vbo = 0;
-        g_gl_bound_ibo = 0;
+        g_gl_bound_vbo = 0; g_gl_bound_vbo_offset = 0;
+        g_gl_bound_ibo = 0; g_gl_index_offset = 0;
     }
     if (pd->alpha_blend != g_gl_blend_enabled) {
         if (pd->alpha_blend) {
@@ -522,14 +529,17 @@ static void gl_cmd_draw(void *cmd, u32 vertex_count, u32 instance_count) {
 
 static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) {
     (void)cmd;
-    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type, NULL,
+    /* R226-A: Honor bind_index_buffer offset (was always NULL). */
+    const void *indices = (const void *)(uintptr_t)g_gl_index_offset;
+    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type, indices,
                             (GLsizei)instance_count);
 }
 
 static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_count,
                                      u32 first_index, i32 vertex_offset) {
     (void)cmd;
-    const void *indices = (const void *)(uintptr_t)(first_index * (usize)g_gl_index_stride);
+    const void *indices = (const void *)(uintptr_t)(
+        g_gl_index_offset + first_index * (usize)g_gl_index_stride);
     glDrawElementsInstancedBaseVertex(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type,
                                       indices, (GLsizei)instance_count, (GLint)vertex_offset);
 }
@@ -769,8 +779,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
     g_gl_vao = vao;  /* R80-1: Update cache — VAO is now bound. */
-    g_gl_bound_vbo = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
-    g_gl_bound_ibo = 0;
+    g_gl_bound_vbo = 0; g_gl_bound_vbo_offset = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
+    g_gl_bound_ibo = 0; g_gl_index_offset = 0;
 
     u32 stride = desc->vertex_stride;
     if (desc->no_vertex_input) {
@@ -822,8 +832,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
 
     glBindVertexArray(0);
     g_gl_vao = 0;  /* R80-1: Update cache — default VAO is now bound. */
-    g_gl_bound_vbo = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
-    g_gl_bound_ibo = 0;
+    g_gl_bound_vbo = 0; g_gl_bound_vbo_offset = 0;  /* R86-3: VAO change invalidates VBO/IBO cache. */
+    g_gl_bound_ibo = 0; g_gl_index_offset = 0;
 
     GLPipelineData *pd = calloc(1, sizeof(GLPipelineData));
     if (!pd) { glDeleteProgram(program); glDeleteVertexArrays(1, &vao); return RHI_HANDLE_NULL; }
@@ -847,8 +857,8 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     if (g_gl_program == pd->gl_program) g_gl_program = 0;
     if (g_gl_vao == pd->gl_vao) {
         g_gl_vao = 0;
-        g_gl_bound_vbo = 0;
-        g_gl_bound_ibo = 0;
+        g_gl_bound_vbo = 0; g_gl_bound_vbo_offset = 0;
+        g_gl_bound_ibo = 0; g_gl_index_offset = 0;
     }
     glDeleteProgram(pd->gl_program);
     glDeleteVertexArrays(1, &pd->gl_vao);
@@ -879,7 +889,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
      * think the previous buffer is bound after we unbound to 0.
      * R192-A: same for ELEMENT_ARRAY / g_gl_bound_ibo (INDEX create). */
     if (target == GL_ARRAY_BUFFER) g_gl_bound_array_buffer = 0;
-    if (target == GL_ELEMENT_ARRAY_BUFFER) g_gl_bound_ibo = 0;
+    if (target == GL_ELEMENT_ARRAY_BUFFER) { g_gl_bound_ibo = 0; g_gl_index_offset = 0; }
 
     GLuint tbo_tex = 0;
     if (is_texel) {
@@ -912,8 +922,8 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
         if (g_gl_ssbo_cache[i] == bd->gl_buf) g_gl_ssbo_cache[i] = 0;
     }
     /* R187: Also invalidate VBO/IBO/indirect/array caches and TBO tex units. */
-    if (g_gl_bound_vbo == bd->gl_buf) g_gl_bound_vbo = 0;
-    if (g_gl_bound_ibo == bd->gl_buf) g_gl_bound_ibo = 0;
+    if (g_gl_bound_vbo == bd->gl_buf) { g_gl_bound_vbo = 0; g_gl_bound_vbo_offset = 0; }
+    if (g_gl_bound_ibo == bd->gl_buf) { g_gl_bound_ibo = 0; g_gl_index_offset = 0; }
     if (g_gl_indirect_buf == bd->gl_buf) g_gl_indirect_buf = 0;
     if (g_gl_param_buf == bd->gl_buf) g_gl_param_buf = 0; /* R188: PARAMETER_BUFFER */
     if (g_gl_bound_array_buffer == bd->gl_buf) g_gl_bound_array_buffer = 0;
@@ -945,20 +955,24 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
     (void)cmd;
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
-    if (bd && bd->gl_buf != g_gl_bound_vbo) {
+    /* R226-A: Offset is part of the bind key — same VBO @ new offset must rebind. */
+    if (bd && (bd->gl_buf != g_gl_bound_vbo || offset != g_gl_bound_vbo_offset)) {
         /* R86-3: Cache VBO binding to avoid redundant glBindVertexBuffer calls. */
         glBindVertexBuffer(0, bd->gl_buf, (GLintptr)offset,
                            (GLsizei)g_cached_vertex_stride);
         g_gl_bound_vbo = bd->gl_buf;
+        g_gl_bound_vbo_offset = offset;
     }
 }
 
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
-    (void)cmd; (void)offset;
+    (void)cmd;
     extern RHIDevice *g_current_device;
     /* R224-A: Cache index width for subsequent draw_indexed*. */
     g_gl_index_type = is_u32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
     g_gl_index_stride = is_u32 ? 4u : 2u;
+    /* R226-A: Byte offset applied in glDrawElements* indices pointer. */
+    g_gl_index_offset = offset;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
     if (bd && bd->gl_buf != g_gl_bound_ibo) {
         /* R86-3: Cache IBO binding to avoid redundant glBindBuffer calls. */
@@ -975,7 +989,15 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
 }
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
-    (void)cmd; (void)x; (void)y; (void)w; (void)h;
+    (void)cmd;
+    /* R226-B: Was a no-op; cmd_buffer / ParallelRenderer scissor never applied. */
+    if (g_gl_scissor_rect_valid && g_gl_scissor_x == x && g_gl_scissor_y == y &&
+        g_gl_scissor_w == w && g_gl_scissor_h == h && g_gl_scissor_enabled)
+        return;
+    if (!g_gl_scissor_enabled) { glEnable(GL_SCISSOR_TEST); g_gl_scissor_enabled = true; }
+    glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+    g_gl_scissor_x = x; g_gl_scissor_y = y; g_gl_scissor_w = w; g_gl_scissor_h = h;
+    g_gl_scissor_rect_valid = true;
 }
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
@@ -987,6 +1009,10 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
     /* R79-4: Cached scissor test enable. */
     if (!g_gl_scissor_enabled) { glEnable(GL_SCISSOR_TEST); g_gl_scissor_enabled = true; }
     glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+    /* Keep set_scissor cache coherent with shadow quadrant scissor. */
+    g_gl_scissor_x = (i32)x; g_gl_scissor_y = (i32)y;
+    g_gl_scissor_w = w; g_gl_scissor_h = h;
+    g_gl_scissor_rect_valid = true;
 }
 
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
@@ -1454,14 +1480,14 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     if (fd) gl_bind_fbo_cached(fd->gl_fbo);
     /* Clear the whole atlas once with scissor disabled; per-cascade quadrant
      * scissoring is applied afterwards via rhi_cmd_set_shadow_viewport. */
-    if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; }
+    if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; g_gl_scissor_rect_valid = false; }
     gl_set_viewport_cached(0, 0, sm->width, sm->height);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; }
+    if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; g_gl_scissor_rect_valid = false; }
     gl_bind_fbo_cached(0);
     gl_set_viewport_cached(0, 0, (GLsizei)screen_w, (GLsizei)screen_h);
 }

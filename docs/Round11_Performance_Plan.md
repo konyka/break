@@ -4173,6 +4173,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R226：GL VBO/IBO offset + set_scissor（已完成）
+
+### [x] R226-A bind_vertex/index_buffer offset
+- [x] VBO offset 进缓存键；IBO offset 经 glDrawElements* indices
+
+### [x] R226-B rhi_cmd_set_scissor
+- [x] glScissor + 缓存；shadow viewport 同步
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
