@@ -531,7 +531,8 @@ static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) 
     (void)cmd;
     /* R226-A: Honor bind_index_buffer offset (was always NULL). */
     const void *indices = (const void *)(uintptr_t)g_gl_index_offset;
-    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type, indices,
+    /* R227-A: Use pipeline draw mode (was hardcoded GL_TRIANGLES). */
+    glDrawElementsInstanced(g_gl_draw_mode, (GLsizei)index_count, g_gl_index_type, indices,
                             (GLsizei)instance_count);
 }
 
@@ -540,7 +541,8 @@ static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_co
     (void)cmd;
     const void *indices = (const void *)(uintptr_t)(
         g_gl_index_offset + first_index * (usize)g_gl_index_stride);
-    glDrawElementsInstancedBaseVertex(GL_TRIANGLES, (GLsizei)index_count, g_gl_index_type,
+    /* R227-A: Use pipeline draw mode (was hardcoded GL_TRIANGLES). */
+    glDrawElementsInstancedBaseVertex(g_gl_draw_mode, (GLsizei)index_count, g_gl_index_type,
                                       indices, (GLsizei)instance_count, (GLint)vertex_offset);
 }
 
@@ -1054,7 +1056,8 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bd->gl_buf);
         g_gl_indirect_buf = bd->gl_buf;
     }
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+    /* R227-A/B: pipeline draw mode + bind_index_buffer index type (was TRIANGLES/U32). */
+    glMultiDrawElementsIndirect(g_gl_draw_mode, g_gl_index_type,
                                 (const void *)(uintptr_t)offset,
                                 (GLsizei)draw_count, (GLsizei)stride);
 }
@@ -1077,7 +1080,8 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
             glBindBuffer(0x80EE, count_bd->gl_buf);
             g_gl_param_buf = count_bd->gl_buf;
         }
-        glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_INT,
+        /* R227-A/B: pipeline draw mode + index type. */
+        glMultiDrawElementsIndirectCountARB(g_gl_draw_mode, g_gl_index_type,
                                             (const void *)(uintptr_t)cmd_offset,
                                             (GLintptr)count_offset,
                                             (GLsizei)max_draws,
@@ -1100,7 +1104,8 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_bd->gl_buf);
         g_gl_indirect_buf = cmd_bd->gl_buf;
     }
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT,
+    /* R227-A/B: pipeline draw mode + index type. */
+    glMultiDrawElementsIndirect(g_gl_draw_mode, g_gl_index_type,
                                 (const void *)(uintptr_t)cmd_offset,
                                 (GLsizei)actual, (GLsizei)stride);
 }

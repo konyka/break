@@ -4184,6 +4184,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R227：GL indexed draw mode + indirect index type（已完成）
+
+### [x] R227-A draw_indexed* g_gl_draw_mode
+- [x] 直接与间接索引绘制使用管线拓扑
+
+### [x] R227-B draw_indexed_indirect* g_gl_index_type
+- [x] 尊重 bind_index_buffer 的 16/32-bit 类型
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
