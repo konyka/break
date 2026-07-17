@@ -111,6 +111,19 @@ static void gl_set_viewport_cached(GLint x, GLint y, GLsizei w, GLsizei h) {
     }
 }
 
+/* R228: Cache depth range (parity with VK cached_vp_min_d/max_d). */
+static f32  g_gl_depth_near = 0.0f, g_gl_depth_far = 1.0f;
+static bool g_gl_depth_range_valid = false;
+
+static void gl_set_depth_range_cached(f32 near_z, f32 far_z) {
+    if (g_gl_depth_range_valid && g_gl_depth_near == near_z && g_gl_depth_far == far_z)
+        return;
+    glDepthRange((GLdouble)near_z, (GLdouble)far_z);
+    g_gl_depth_near = near_z;
+    g_gl_depth_far = far_z;
+    g_gl_depth_range_valid = true;
+}
+
 /* R77-1: File-scope texture unit cache — shared by gl_bind_tex_unit,
  * rhi_cmd_bind_texel_buffers, and rhi_cmd_bind_texture_mip. Previously
  * these were static locals in gl_bind_tex_unit, invisible to the two
@@ -986,8 +999,8 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, b
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
                           f32 min_depth, f32 max_depth) {
     gl_cmd_set_viewport(cmd, x, y, w, h);
-    /* R225-A: GL separates 2D viewport from depth range. */
-    glDepthRange((GLdouble)min_depth, (GLdouble)max_depth);
+    /* R225-A / R228: GL separates 2D viewport from depth range. */
+    gl_set_depth_range_cached(min_depth, max_depth);
 }
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
@@ -1008,6 +1021,8 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
      * quadrant of the shadow atlas. GL uses a native bottom-left origin; the
      * sampling remap in the shaders uses the same quadrant convention. */
     gl_set_viewport_cached((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+    /* R228-A: Match VK set_shadow_viewport — force depth range 0..1. */
+    gl_set_depth_range_cached(0.0f, 1.0f);
     /* R79-4: Cached scissor test enable. */
     if (!g_gl_scissor_enabled) { glEnable(GL_SCISSOR_TEST); g_gl_scissor_enabled = true; }
     glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
@@ -1487,6 +1502,8 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
      * scissoring is applied afterwards via rhi_cmd_set_shadow_viewport. */
     if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; g_gl_scissor_rect_valid = false; }
     gl_set_viewport_cached(0, 0, sm->width, sm->height);
+    /* R228-B: Clear/write shadow depth under standard 0..1 range (VK viewport). */
+    gl_set_depth_range_cached(0.0f, 1.0f);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 

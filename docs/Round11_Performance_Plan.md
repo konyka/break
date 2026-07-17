@@ -4195,6 +4195,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+
+## R228：GL 阴影 depth range 对齐（已完成）
+
+### [x] R228-A set_shadow_viewport glDepthRange(0,1)
+- [x] 与 VK cached_vp_min/max_d 对称；带缓存
+
+### [x] R228-B bind_shadow_map depth range
+- [x] 清 atlas 前强制 0..1
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
+
 ## 构建与回归命令
 
 
