@@ -5227,6 +5227,17 @@ u32 culled_count = 0;
 
             /* Cluster lights + cascade matrices for deferred lighting. */
             light_system_set_point_shadow_indices(&lights, &pt_shadows);
+            /* R268 (CORRECTNESS): publish this frame's CSM cascade matrices to the
+             * light data buffer (offset SHADOW_MATRIX_OFFSET) that deferred_light.frag's
+             * shadow_test() reads via get_cascade_vp(). Without this,
+             * light_system_upload*'s cascade_vp_src stayed NULL and it uploaded IDENTITY
+             * matrices, so the deferred shadow test selected the cascade and computed the
+             * shadow-map compare in a space unrelated to render.cascade_vp[] (the exact
+             * matrices the CSM depth pass rendered the atlas with) — e.g. a world point
+             * (0,0,-5) mapped to uv (0.5,0.5)/z=-2 and far points to uv>1 → whole regions
+             * unshadowed or wrongly shadowed. The cascade_vp[] were computed earlier this
+             * frame in the CSM depth pass; publish the same pointer before the upload. */
+            light_system_set_cascade_vp(&lights, render.cascade_vp);
             if (lights.gpu_cull) {
                 light_system_upload_lights(&lights);
                 light_system_cull_gpu(&lights, cmd, &curr_view_proj.e[0][0], rw, rh);

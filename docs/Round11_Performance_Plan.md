@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R268：延迟光照从未上传 CSM 级联矩阵（阴影恒用单位阵）（已完成）
+
+### [x] R268-A wire cascade_vp into the deferred light data upload
+- [x] light_system_set_cascade_vp（lighting.h:89）全仓库零调用 → cascade_vp_src 恒 NULL → upload 在 offset 520 写 4 单位阵（lighting.c:249）
+- [x] deferred_light.frag shadow_test/get_cascade_vp 用单位阵：P=(0,0,-5)→uv(0.5,0.5)/z=-2 与真实 atlas 空间不一致；P=(20,0,20)→uv>1→cascade<0→return 1.0（无影）
+- [x] 触发：切 DEFERRED（默认 FORWARD，p 键切换；延迟块注释「cascade matrices for deferred lighting」却未接线）
+- [x] 修复：main.c 延迟块 upload 前加 light_system_set_cascade_vp(&lights, render.cascade_vp)（CSM pass 已更早填好，零拷贝发布）
+- [x] 默认 FORWARD 不调 light_system_upload → golden 字节不变、仅影响 DEFERRED；靠构建+golden(FORWARD)回归+推导验证
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（含 golden）。
+
 ## R267：task_wait 完成计数 relaxed 递增致弱内存序可见性缺失（已完成）
 
 ### [x] R267-A make total_tasks_completed increment acq_rel
