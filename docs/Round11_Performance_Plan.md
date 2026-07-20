@@ -4279,7 +4279,18 @@ if (!ok) return false;
 ### [x] R235-B lift water verts to water_y
 - [x] `water.vert`/`water_vk.vert` 顶点用 `u_water_y`/`pc.u_watery.x` 抬升（网格在 y=0，之前不随水位移动）
 
-**验收**：双后端构建通过（VK/GL 各 240/240 目标，0 error）；非图形单测 30/30 通过。golden-image 回归（test_vulkan）在当前无 X11 显示的沙箱内无法执行；静态分析确认 golden 场景不渲染水面、GL golden 仅用默认剔除管线，故两后端 golden 均不受本轮改动影响。
+**验收**：双后端构建通过（VK/GL 各 240/240 目标，0 error）；VK/GL CTest 各 **31/31**（含 golden-image 回归，均通过）。
+
+## R236：延迟路径 Hi-Z / 后处理深度源修正（已完成）
+
+### [x] R236-A route deferred depth reads to gbuf_depth
+- [x] `main.c` 新增 `scene_depth` 选择器：`RENDER_PATH_DEFERRED && deferred.initialized && valid(gbuf_depth)` 时用 `deferred.gbuf_depth`，否则 `scene_fbo.depth_tex`
+- [x] Hi-Z 生成、depth transition 及 SSAO/接触阴影/体积光/lens_flare/SSR/SSGI/combined_aa/TAA/运动模糊/DoF/SSS/God Rays/debug_viz/inspector/upscale 全部改用 `scene_depth`
+- [x] 前向路径读取字节等价（`scene_depth == scene_fbo.depth_tex`），`forward_velocity`（前向专属）保持 `scene_fbo.depth_tex`
+
+**背景**：延迟路径下前向场景 Pass 被跳过、延迟光照 `depth_write_disable`，`scene_fbo.depth_tex` 从不写入；几何深度实际写在 G-Buffer MRT 的 `gbuf_depth`。此前所有深度型后处理读到空/陈旧深度。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
 ## 构建与回归命令
 

@@ -5245,11 +5245,23 @@ u32 culled_count = 0;
             draw_bench_record_frame((u32)engine.frame_count, mega_gpu);
         }
 
+        /* R236 (CORRECTNESS): On the deferred path scene_fbo.depth is never
+         * written — the forward scene pass is skipped (guarded above) and the
+         * deferred lighting pipeline sets depth_write_disable, so the real
+         * geometry depth lives in the G-buffer (deferred.gbuf_depth). Route all
+         * Hi-Z / post-fx depth reads through this selector. Forward path keeps
+         * scene_fbo.depth_tex, so its behavior is byte-identical. */
+        RHITexture scene_depth =
+            (render.render_path == RENDER_PATH_DEFERRED && render.deferred.initialized &&
+             rhi_handle_valid(render.deferred.gbuf_depth))
+                ? render.deferred.gbuf_depth
+                : scene_fbo.depth_tex;
+
         /* GPU Occlusion Culling: generate Hi-Z pyramid from depth buffer,
          * then dispatch compute to determine per-object visibility.
          * Results are consumed next frame (pipelined readback). */
-        if (occ_cull_enabled && occ_sys.enabled && rhi_handle_valid(scene_fbo.depth_tex)) {
-            occlusion_cull_generate_hi_z(&occ_sys, cmd, scene_fbo.depth_tex);
+        if (occ_cull_enabled && occ_sys.enabled && rhi_handle_valid(scene_depth)) {
+            occlusion_cull_generate_hi_z(&occ_sys, cmd, scene_depth);
 
             /* R82-2/R83-4: AABBs cached+uploaded at init — per-frame dispatch only.
              * R101: When all rendering paths use unified cull (mega-buffer valid +
@@ -5271,16 +5283,16 @@ u32 culled_count = 0;
          * it here otherwise so depth reads are correct regardless of which
          * effects are enabled (previously this relied on SSAO running). */
         bool occ_did_depth_read = occ_cull_enabled && occ_sys.enabled &&
-                                  rhi_handle_valid(scene_fbo.depth_tex);
-        if (!occ_did_depth_read && rhi_handle_valid(scene_fbo.depth_tex)) {
-            rhi_cmd_transition_depth_to_read(cmd, scene_fbo.depth_tex);
+                                  rhi_handle_valid(scene_depth);
+        if (!occ_did_depth_read && rhi_handle_valid(scene_depth)) {
+            rhi_cmd_transition_depth_to_read(cmd, scene_depth);
         }
 
         profiler_push("postfx");
         rhi_gpu_timer_begin(gpu_postfx_timer);
 
         if (rhi_handle_valid(scene_fbo.fb) && ssao.ready && ssao.radius > 0.0f) {
-            ssao_apply(&ssao, cmd, scene_fbo.depth_tex,
+            ssao_apply(&ssao, cmd, scene_depth,
                        &proj.e[0][0], &frame_inv_proj.e[0][0], rw, rh);
             render.ssao_tex = ssao_get_texture(&ssao);
         }
@@ -5291,31 +5303,31 @@ u32 culled_count = 0;
             f32 cs_lx = view.e[0][0]*sun_dir_vec.e[0] + view.e[1][0]*sun_dir_vec.e[1] + view.e[2][0]*sun_dir_vec.e[2];
             f32 cs_ly = view.e[0][1]*sun_dir_vec.e[0] + view.e[1][1]*sun_dir_vec.e[1] + view.e[2][1]*sun_dir_vec.e[2];
             f32 cs_lz = view.e[0][2]*sun_dir_vec.e[0] + view.e[1][2]*sun_dir_vec.e[1] + view.e[2][2]*sun_dir_vec.e[2];
-            contact_shadow_apply(&contact_shadow, cmd, scene_fbo.depth_tex,
+            contact_shadow_apply(&contact_shadow, cmd, scene_depth,
                                  &frame_inv_proj.e[0][0], cs_lx, cs_ly, cs_lz, rw, rh);
         }
 
         if (rhi_handle_valid(scene_fbo.fb) && vol.ready && vol_enabled) {
             f32 light_dir[] = { sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2] };
             f32 light_color[] = { sun_color.e[0], sun_color.e[1], sun_color.e[2] };
-            volumetric_apply(&vol, cmd, scene_fbo.depth_tex, render.shadow_map.depth_tex,
+            volumetric_apply(&vol, cmd, scene_depth, render.shadow_map.depth_tex,
                              &frame_inv_proj.e[0][0], &view.e[0][0], light_dir, light_color, rw, rh);
         }
 
         if (lens_flare.ready && rhi_handle_valid(scene_fbo.fb) && lf_enabled) {
             f32 ld[] = { sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2] };
-            lens_flare_apply(&lens_flare, cmd, scene_fbo.depth_tex,
+            lens_flare_apply(&lens_flare, cmd, scene_depth,
                              &view.e[0][0], &proj.e[0][0], ld,
                              sun_color.e[0], sun_color.e[1], sun_color.e[2], rw, rh);
         }
 
         if (rhi_handle_valid(scene_fbo.fb) && ssr_sys.ready && ssr_enabled) {
-            ssr_apply(&ssr_sys, cmd, scene_fbo.color_tex, scene_fbo.depth_tex,
+            ssr_apply(&ssr_sys, cmd, scene_fbo.color_tex, scene_depth,
                       &proj.e[0][0], &frame_inv_proj.e[0][0], &view.e[0][0], rw, rh);
         }
 
         if (ssgi_sys.ready && rhi_handle_valid(scene_fbo.fb) && ssgi_enabled) {
-            ssgi_apply(&ssgi_sys, cmd, scene_fbo.depth_tex, scene_fbo.color_tex,
+            ssgi_apply(&ssgi_sys, cmd, scene_depth, scene_fbo.color_tex,
                        &frame_inv_proj.e[0][0], &proj.e[0][0], rw, rh);
         }
 
@@ -5342,13 +5354,13 @@ u32 culled_count = 0;
         }
         if (rhi_handle_valid(scene_fbo.fb) && taa_enabled && fxaa_enabled &&
             combined_aa.ready && combined_aa.use_combined) {
-            combined_aa_apply(&combined_aa, cmd, scene_fbo.color_tex, scene_fbo.depth_tex,
+            combined_aa_apply(&combined_aa, cmd, scene_fbo.color_tex, scene_depth,
                                taa_velocity, &curr_view_proj.e[0][0], &prev_view_proj.e[0][0],
                                &frame_inv_vp.e[0][0], rw, rh);
             taa_output = combined_aa_get_output(&combined_aa);
         } else {
             if (rhi_handle_valid(scene_fbo.fb) && taa.ready && taa_enabled) {
-                taa_resolve(&taa, cmd, scene_fbo.color_tex, scene_fbo.depth_tex, taa_velocity,
+                taa_resolve(&taa, cmd, scene_fbo.color_tex, scene_depth, taa_velocity,
                             &curr_view_proj.e[0][0], &prev_view_proj.e[0][0],
                             &frame_inv_vp.e[0][0], rw, rh);
                 taa_output = taa_get_output(&taa);
@@ -5367,7 +5379,7 @@ u32 culled_count = 0;
 
         if (motion_blur.ready && rhi_handle_valid(scene_fbo.fb) && mb_enabled) {
             /* R205-B: Same inv(VP)+prev_vp contract as TAA / forward_velocity. */
-            motion_blur_apply(&motion_blur, cmd, taa_output, scene_fbo.depth_tex,
+            motion_blur_apply(&motion_blur, cmd, taa_output, scene_depth,
                               &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
                               1.0f, rw, rh);
             taa_output = motion_blur.fbo.color_tex;
@@ -5375,13 +5387,13 @@ u32 culled_count = 0;
 
         RHITexture post_input = taa_output;
         if (rhi_handle_valid(scene_fbo.fb) && dof_sys.ready && dof_enabled) {
-            dof_apply(&dof_sys, cmd, taa_output, scene_fbo.depth_tex,
+            dof_apply(&dof_sys, cmd, taa_output, scene_depth,
                       &frame_inv_proj.e[0][0], rw, rh);
             post_input = dof_get_texture(&dof_sys);
         }
 
         if (sss_sys.ready && rhi_handle_valid(scene_fbo.fb) && sss_enabled) {
-            sss_apply(&sss_sys, cmd, post_input, scene_fbo.depth_tex,
+            sss_apply(&sss_sys, cmd, post_input, scene_depth,
                       0.5f, 0.1f, rw, rh);
             post_input = sss_sys.fbo.color_tex;
         }
@@ -5442,8 +5454,8 @@ u32 culled_count = 0;
          * its depth in the attachment layout again; god rays and debug viz below
          * sample scene_fbo.depth_tex, so re-make it shader-readable (idempotent:
          * no-op on VK if it was never reverted, no-op entirely on GL). */
-        if (rhi_handle_valid(scene_fbo.depth_tex))
-            rhi_cmd_transition_depth_to_read(cmd, scene_fbo.depth_tex);
+        if (rhi_handle_valid(scene_depth))
+            rhi_cmd_transition_depth_to_read(cmd, scene_depth);
 
         if (gr_sys.ready) {
             /* R209-A: Directional sun — project w=0 (no VP translation). Finite
@@ -5457,7 +5469,7 @@ u32 culled_count = 0;
             f32 sun_sy = (sy / sw) * 0.5f + 0.5f;
             if (god_rays_intensity > 0.0f && sw > 0.0f &&
                 sun_sx > -0.5f && sun_sx < 1.5f && sun_sy > -0.5f && sun_sy < 1.5f) {
-                god_rays_apply(&gr_sys, cmd, tonemap_input, scene_fbo.depth_tex,
+                god_rays_apply(&gr_sys, cmd, tonemap_input, scene_depth,
                                sun_sx, sun_sy, god_rays_intensity, rw, rh);
                 tonemap_input = gr_sys.fbo.color_tex;
             }
@@ -5467,7 +5479,7 @@ u32 culled_count = 0;
             RHITexture viz_input = tonemap_input;
             if (debug_viz_mode == 3 && ssao.ready)
                 viz_input = ssao.blur_fbo.color_tex;
-            debug_viz_apply(&debug_viz, cmd, viz_input, scene_fbo.depth_tex,
+            debug_viz_apply(&debug_viz, cmd, viz_input, scene_depth,
                             debug_viz_mode, camera.near_plane, camera.far_plane,
                             render.cascade_splits, rw, rh);
             tonemap_input = debug_viz.fbo.color_tex;
@@ -5483,7 +5495,7 @@ u32 culled_count = 0;
             RHITexture insp_tex = scene_fbo.color_tex;
             switch (inspector_mode) {
             case 1: insp_tex = scene_fbo.color_tex; break;
-            case 2: insp_tex = scene_fbo.depth_tex; break;
+            case 2: insp_tex = scene_depth; break;
             case 3: insp_tex = rhi_handle_valid(ssao.ssao_fbo.fb) ? ssao.ssao_fbo.color_tex : scene_fbo.color_tex; break;
             case 4: insp_tex = rhi_handle_valid(ssao.blur_fbo.fb) ? ssao.blur_fbo.color_tex : scene_fbo.color_tex; break;
             case 5: insp_tex = taa_enabled && taa.ready ? taa_get_output(&taa) : scene_fbo.color_tex; break;
@@ -5513,7 +5525,7 @@ u32 culled_count = 0;
 
         if (upscale_sys.ready) {
             /* R205-B: History reprojection needs inv(VP), not inv(P). */
-            upscale_apply(&upscale_sys, cmd, tonemap_input, scene_fbo.depth_tex,
+            upscale_apply(&upscale_sys, cmd, tonemap_input, scene_depth,
                           &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
                           0.3f, rw, rh, w, h);
             rhi_offscreen_fbo_unbind(cmd, w, h);
