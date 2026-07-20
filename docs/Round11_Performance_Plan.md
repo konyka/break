@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R258：VK 延迟 G-buffer 深度 layout 跟踪缺失致 Hi-Z 屏障错误/缺失（已完成）
+
+### [x] R258-A track MRT depth cur_layout on bind
+- [x] MRT depth finalLayout=DEPTH_STENCIL_READ_ONLY_OPTIMAL（rhi_vk.c:6361），但深度纹理句柄 calloc→cur_layout=UNDEFINED，`rhi_mrt_fbo_bind` 未维护（对比 offscreen 6010）
+- [x] 延迟路径 scene_depth=gbuf_depth（main.c:5267）→ Hi-Z `transition_depth_to_read`（occlusion_cull.c:278）：首帧 oldLayout 取 ATTACHMENT 与实际 READ_ONLY 不符；此后 cur_layout=SHADER_READ 触发幂等早退（3948）→ 每帧 G-buffer 结束深度回到 READ_ONLY 却跳过转换+屏障 → Hi-Z 陈旧 layout 采样、缺 depth-write→compute-read 依赖 → 遮挡误剔/闪烁+validation 错误
+- [x] 修复：`rhi_mrt_fbo_bind` 置深度 cur_layout=DEPTH_STENCIL_READ_ONLY_OPTIMAL，每帧以正确 oldLayout 重发屏障，与 offscreen 同构
+- [x] 仅 VK；GL transition_depth_to_read 为 no-op 不受影响
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**。
+
 ## R256：场景世界变换单遍遍历假定父先于子（已完成）
 
 ### [x] R256-A resolve world transforms independent of node array order

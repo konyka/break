@@ -6515,6 +6515,22 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
     if (!md) return;
 
+    /* R258 (CORRECTNESS): this MRT (G-buffer) render pass ends with the depth
+     * attachment in DEPTH_STENCIL_READ_ONLY_OPTIMAL (its finalLayout, set at
+     * create). Track that on the depth texture handle so a later
+     * rhi_cmd_transition_depth_to_read issues a barrier with the correct
+     * oldLayout and actually re-runs each frame. Without this the depth's
+     * cur_layout stayed UNDEFINED (calloc): the first transition used
+     * oldLayout=DEPTH_STENCIL_ATTACHMENT_OPTIMAL (mismatching the real
+     * READ_ONLY layout), and from frame 2 the idempotent SHADER_READ_ONLY
+     * early-return skipped the barrier entirely — leaving the deferred Hi-Z
+     * compute to sample gbuf_depth with a stale layout AND no depth-write
+     * (LATE_FRAGMENT_TESTS) → compute-read dependency (occlusion flicker /
+     * validation errors). Mirrors rhi_offscreen_fbo_bind, which tracks its own
+     * ATTACHMENT_OPTIMAL finalLayout. GL is unaffected (transition is a no-op). */
+    VKTextureData *dtd = (VKTextureData *)rhi_get_resource(g_current_device, fbo->depth_tex);
+    if (dtd) dtd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
         vk->render_pass_active = false;
