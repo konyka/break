@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R265：视锥平面提取 GH 矩阵下标转置（构造 VP^T 视锥）（已完成）
+
+### [x] R265-A fix Gribb-Hartmann index transposition in frustum extraction
+- [x] `frustum_from_vp`（cull.c:3）与 `frustum_extract`（frustum_cull.c:18）在列主序 e[col][row] 上写成 `vp->e[3][i] ± vp->e[k][i]`，正确应为 `vp->e[i][3] ± vp->e[i][k]`（下标转置 → 提取 VP^T 的视锥）
+- [x] 引擎点变换约定 clip.e[r]=Σ_c e[c][r]·p.e[c]（mat4_vec4 / GLSL vp*p），故 plane.e[i]=(row3±row_k)[i]=e[i][3]±e[i][k]
+- [x] 实测：默认相机 20 万随机点，旧实现 148398/148398 真实在内点全判在外（100% 误判），改正后 0 误判
+- [x] 默认渲染/golden 正常之因：GPU 剔除（cull.comp 直接 vp*vec4，R11 默认开）不经此函数；错误仅落 CPU 回退/剔除路径（main.c 3777/3865/4122/4807/4981）
+- [x] 既有 24 例只断言「应在外」点在外（全剔除视锥恰满足）+ extract 与 from_vp 同错互比 → 未暴露
+- [x] 修复：仅转置下标，±/归一化/sign_mask 不变；GL/VK 共用，双端同修；GPU 路径不变故 golden 无回归
+- [x] 新增回归 frustum_point_in_front_visible（前方点/球/AABB 可见、身后不可见，交叉验证 clip 空间）
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（含 golden；test_camera_frustum 含新用例）。
+
 ## R264：arena_alloc used+size usize 回绕绕过容量检查（已完成）
 
 ### [x] R264-A guard arena_alloc against size overflow

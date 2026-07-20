@@ -18,14 +18,21 @@
 void frustum_extract(Frustum *f, const Mat4 *vp)
 {
     /* Extract 6 planes using Gribb-Hartmann method.
-     * Row j of column-major Mat4: vp->e[0][j], vp->e[1][j], vp->e[2][j], vp->e[3][j] */
+     * Row j of column-major Mat4 (as a functional of the point) = vp->e[0][j],
+     * vp->e[1][j], vp->e[2][j], vp->e[3][j]; its coefficient for point component
+     * i is vp->e[i][j].
+     * R265 (CORRECTNESS): plane.e[i] must be (row3 ± row_k)[i] = vp->e[i][3] ±
+     * vp->e[i][k]. The old code used vp->e[3][i] ± vp->e[k][i] (matrix indices
+     * transposed) → built the frustum of VP^T and misclassified ~every in-view
+     * point. Mirrors the frustum_from_vp fix; see that function for the full
+     * derivation. */
     for (int i = 0; i < 4; i++) {
-        f->planes[0].e[i] = vp->e[3][i] + vp->e[0][i]; /* Left */
-        f->planes[1].e[i] = vp->e[3][i] - vp->e[0][i]; /* Right */
-        f->planes[2].e[i] = vp->e[3][i] + vp->e[1][i]; /* Bottom */
-        f->planes[3].e[i] = vp->e[3][i] - vp->e[1][i]; /* Top */
-        f->planes[4].e[i] = vp->e[3][i] - vp->e[2][i]; /* Near:   row3 - row2 */
-        f->planes[5].e[i] = vp->e[3][i] + vp->e[2][i]; /* Far:    row3 + row2 */
+        f->planes[0].e[i] = vp->e[i][3] + vp->e[i][0]; /* Left */
+        f->planes[1].e[i] = vp->e[i][3] - vp->e[i][0]; /* Right */
+        f->planes[2].e[i] = vp->e[i][3] + vp->e[i][1]; /* Bottom */
+        f->planes[3].e[i] = vp->e[i][3] - vp->e[i][1]; /* Top */
+        f->planes[4].e[i] = vp->e[i][3] - vp->e[i][2]; /* Near:   row3 - row2 */
+        f->planes[5].e[i] = vp->e[i][3] + vp->e[i][2]; /* Far:    row3 + row2 */
     }
 
     /* Normalize each plane using fast_rsqrt (SSE rsqrt + Newton-Raphson) */

@@ -140,6 +140,52 @@ TEST(frustum_extract_matches_from_vp)
     }
 }
 
+/* R265: a point/volume directly in front of the camera must test VISIBLE.
+ * The pre-fix Gribb-Hartmann extraction transposed the matrix indices (built
+ * the frustum of VP^T) and reported essentially every in-view point as OUTSIDE.
+ * The old tests only asserted that genuinely-outside points are outside, so an
+ * all-rejecting frustum passed them; this pins the inside case. Cross-checked
+ * against the engine's own clip-space test clip = VP*p (clip.e[r] = sum_c
+ * vp.e[c][r]*p.e[c]) so it stays convention-consistent. */
+static bool clip_inside(const Mat4 *vp, Vec3 p)
+{
+    f32 c[4];
+    for (int r = 0; r < 4; r++) {
+        c[r] = vp->e[0][r]*p.e[0] + vp->e[1][r]*p.e[1] + vp->e[2][r]*p.e[2] + vp->e[3][r];
+    }
+    f32 w = c[3];
+    if (w <= 0.0f) return false;
+    return c[0] >= -w && c[0] <= w && c[1] >= -w && c[1] <= w && c[2] >= -w && c[2] <= w;
+}
+
+TEST(frustum_point_in_front_visible)
+{
+    Camera cam;
+    camera_init(&cam, 1.047f, 1.0f, 0.1f, 100.0f); /* default pos (0,2,8), looking -Z */
+    Mat4 v = camera_view(&cam);
+    Mat4 p = camera_projection(&cam);
+    Mat4 vp = mat4_mul(p, v);
+    Frustum f = frustum_from_vp(&vp);
+
+    /* Directly in front, well inside near/far — must be visible. */
+    Vec3 front = vec3(0, 2, -5);
+    ASSERT_TRUE(clip_inside(&vp, front));      /* ground truth */
+    ASSERT_TRUE(frustum_test_point(&f, front)); /* frustum agrees */
+    ASSERT_TRUE(frustum_test_sphere(&f, front, 1.0f));
+    ASSERT_TRUE(frustum_test_aabb(&f, vec3(-1, 1, -6), vec3(1, 3, -4)));
+
+    /* Behind the camera stays outside. */
+    Vec3 behind = vec3(0, 2, 50);
+    ASSERT_TRUE(!clip_inside(&vp, behind));
+    ASSERT_TRUE(!frustum_test_point(&f, behind));
+
+    /* Extract path must match and also report the front point visible. */
+    Frustum fe;
+    frustum_extract(&fe, &vp);
+    ASSERT_TRUE(frustum_test_point(&fe, front));
+    ASSERT_TRUE(!frustum_test_point(&fe, behind));
+}
+
 TEST(frustum_point_behind_camera_outside)
 {
     Camera cam;
@@ -467,6 +513,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(camera_projection_aspect);
     RUN_TEST(frustum_from_vp_produces_normalized_planes);
     RUN_TEST(frustum_extract_matches_from_vp);
+    RUN_TEST(frustum_point_in_front_visible);
     RUN_TEST(frustum_point_behind_camera_outside);
     RUN_TEST(frustum_point_far_outside);
     RUN_TEST(frustum_point_lateral_outside);
