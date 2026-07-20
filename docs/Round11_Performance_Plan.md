@@ -4341,6 +4341,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R242：异步加载器槽位分配扫描 + CAS 认领（已完成）
+
+### [x] R242-A async_submit_request must scan for a free slot, not drop on one probe
+- [x] 旧逻辑仅 `next_slot++ % 1024` 探测单槽，非 UNLOADED 即丢弃请求；重度流式（慢速 in-flight 加载令 next_slot 绕回占用槽）时即使有大量空闲槽也误丢，`mipmap_stream` 收到 `req_id==0` 不发起加载
+- [x] 改为从 `next_slot` 起最多扫描 1024 槽，用 CAS(`UNLOADED→LOADING`) 原子认领首个空闲槽；全满才丢弃
+- [x] CAS 同时关闭“load 检查 + store LOADING”非原子竞态（两个计数差 1024 倍数的并发 submit 可能共用同槽）
+- [x] 字段填充在 `heap_push`（queue_mutex release）前完成，worker 仅在入堆后可见该槽；删除冗余的 state=LOADING 二次 store
+
+**评估未改（误报）**：完成队列 1024 环形“无背压覆写导致永久停转”不成立——`ASYNC_QUEUE_SIZE=1024` 恰等于请求槽数 `ASYNC_MAX_REQUESTS=1024`，每槽两次 tick 间至多产生一个未消费完成项（槽只在 tick 里回到 UNLOADED 才能再提交），未消费完成项 ≤1024=容量，`head-tail` 不会超环、不会覆写（R165-A 即为此设容量 1024）。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 

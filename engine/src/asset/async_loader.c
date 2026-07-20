@@ -407,16 +407,29 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
     if (!path || !callback) return 0;
     if (range_length == 0 && decode_texture == false && range_offset > 0) return 0;
 
-    u32 slot = atomic_fetch_add_explicit(&g_loader.next_slot, 1, memory_order_relaxed)
-               % ASYNC_MAX_REQUESTS;
-
-    u32 st = atomic_load(&g_loader.requests[slot].state);
-    /* R168-A: Only UNLOADED slots are reusable. CANCELLED/READY/FAILED/LOADING
-     * all mean an in-flight or unconsumed request still owns the slot — reusing
-     * them lets a late worker write another request's file bytes into the new
-     * owner's callback (data corruption after invalidate+reload). */
-    if (st != (u32)ASSET_UNLOADED) {
-        LOG_ERROR("Async loader: slot in use (state=%u), request dropped: %s", st, path);
+    /* R242: Scan for a free slot and claim it atomically (CAS UNLOADED->LOADING).
+     * The old code probed a single round-robin slot and dropped the request if
+     * that slot was in use — spuriously failing even when many slots were free
+     * (heavy streaming with a slow in-flight load cycling next_slot past a busy
+     * slot). The CAS also closes a check-then-store race where two submits whose
+     * counters differ by a multiple of ASYNC_MAX_REQUESTS could both observe the
+     * same slot as UNLOADED and claim it. R168-A: only UNLOADED slots are
+     * reusable (a non-UNLOADED slot is still owned by an in-flight/unconsumed
+     * request; reusing it would let a late worker corrupt another owner's data). */
+    u32 slot = UINT32_MAX;
+    for (u32 probe = 0; probe < ASYNC_MAX_REQUESTS; probe++) {
+        u32 cand = (u32)(atomic_fetch_add_explicit(&g_loader.next_slot, 1,
+                                                   memory_order_relaxed) % ASYNC_MAX_REQUESTS);
+        u32 expected = (u32)ASSET_UNLOADED;
+        if (atomic_compare_exchange_strong_explicit(
+                &g_loader.requests[cand].state, &expected, (u32)ASSET_LOADING,
+                memory_order_acq_rel, memory_order_relaxed)) {
+            slot = cand;
+            break;
+        }
+    }
+    if (slot == UINT32_MAX) {
+        LOG_ERROR("Async loader: all slots in use, request dropped: %s", path);
         return 0;
     }
 
@@ -435,7 +448,9 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
     req->range_length = range_length;
     req->priority = priority;
     req->decode_texture = decode_texture;
-    atomic_store_explicit(&req->state, (u32)ASSET_LOADING, memory_order_release);
+    /* R242: state is already ASSET_LOADING (set by the CAS claim above). Field
+     * writes here are published to workers via the queue_mutex release below;
+     * workers only observe this slot after heap_push. */
 
     u64 seq = atomic_fetch_add_explicit(&g_loader.next_seq, 1, memory_order_relaxed);
 
