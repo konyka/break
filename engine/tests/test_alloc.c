@@ -121,6 +121,33 @@ TEST(arena_overflow)
     ASSERT_TRUE(p == NULL);
 }
 
+TEST(arena_overflow_size_no_wrap)
+{
+    /* R264: a near-SIZE_MAX size on a partially-used arena must be rejected.
+     * The old `used + size` wrapped past 0 to a small value that passed the
+     * `> capacity` test, returning an in-bounds pointer AND rewinding offset
+     * below its prior value (letting later allocs overlap live blocks). */
+    u8 buf[1024];
+    Arena arena;
+    arena_init(&arena, buf, sizeof(buf));
+    Alloc *a = &arena.base;
+
+    u8 *first = (u8 *)a->alloc(a, 1000, 1);   /* leave 24 bytes free */
+    ASSERT_NOT_NULL(first);
+    usize saved = arena.offset;
+    ASSERT_EQ(saved, (usize)1000);
+
+    void *p = a->alloc(a, SIZE_MAX, 1);
+    ASSERT_TRUE(p == NULL);
+    ASSERT_EQ(arena.offset, saved);           /* offset must NOT rewind */
+
+    /* Arena still usable and honours the real remaining capacity. */
+    void *ok = a->alloc(a, 24, 1);
+    ASSERT_NOT_NULL(ok);
+    void *too_big = a->alloc(a, 1, 1);
+    ASSERT_TRUE(too_big == NULL);
+}
+
 TEST(arena_alignment)
 {
     u8 buf[1024];
@@ -261,6 +288,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(arena_multiple_allocs);
     RUN_TEST(arena_free_all);
     RUN_TEST(arena_overflow);
+    RUN_TEST(arena_overflow_size_no_wrap);
     RUN_TEST(arena_alignment);
     RUN_TEST(arena_realloc);
     RUN_TEST(debug_alloc_tracking);

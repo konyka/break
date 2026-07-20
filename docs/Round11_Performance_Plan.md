@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R264：arena_alloc used+size usize 回绕绕过容量检查（已完成）
+
+### [x] R264-A guard arena_alloc against size overflow
+- [x] `arena_alloc`（alloc.h:52）`offset = used + size; if (offset > capacity) return NULL` 在 size 近 SIZE_MAX 时 used+size 回绕成小值 → 通过检查、返回界内指针、offset 回退 → 后续分配与存活块重叠（别名/越界写）
+- [x] 手算：cap=1024、used=1000、size=SIZE_MAX、align=1 → 1000+SIZE_MAX 回绕为 999，999>1024 假 → 非 NULL 且 offset 写 999（回退）
+- [x] 堆分配器 R158 已守卫同类回绕（total<size），arena 对称遗漏
+- [x] 修复：`used = aligned - buffer; if (used > capacity || size > capacity - used) return NULL;`（无回绕/下溢），随后 offset = used + size；常规 size 字节等价
+- [x] 纯 CPU 核心分配器，GL/VK 无关；新增回归 arena_overflow_size_no_wrap
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（test_alloc 16/16）。
+
 ## R263：窗口失焦未释放按键致粘键（已完成）
 
 ### [x] R263-A release all keys on focus loss

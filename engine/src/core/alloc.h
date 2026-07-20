@@ -53,10 +53,21 @@ static inline void *arena_alloc(Alloc *self, usize size, usize align) {
     Arena *a = (Arena *)self;
     usize current = (usize)(a->buffer + a->offset);
     usize aligned = (current + align - 1) & ~(align - 1);
-    usize offset  = aligned - (usize)a->buffer + size;
-    if (offset > a->capacity) return NULL;
-    void *ptr = a->buffer + (aligned - (usize)a->buffer);
-    a->offset = offset;
+    usize used    = aligned - (usize)a->buffer;
+    /* R264 (CORRECTNESS): compute the capacity check without a usize wrap. The
+     * old `offset = used + size; if (offset > capacity)` overflowed when `size`
+     * was near SIZE_MAX (e.g. an upstream `n * sizeof(T)` that itself wrapped):
+     * `used + size` rolled past 0 to a small value that passed the `> capacity`
+     * test, so arena_alloc returned an in-bounds pointer for an impossible
+     * request AND wrote `a->offset` *backwards* (below its old value), letting
+     * later allocations overlap live blocks (aliasing / OOB writes). The heap
+     * allocator already guards this exact class (R158: `if (total < size)`); the
+     * arena silently did not. Alignment padding can also push `used` past
+     * capacity on a nearly-full arena, so reject that first, then test the
+     * remaining space with a subtraction that cannot underflow. */
+    if (used > a->capacity || size > a->capacity - used) return NULL;
+    void *ptr = a->buffer + used;
+    a->offset = used + size;
     return ptr;
 }
 
