@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R253：glTF 蒙皮关节索引 >128 越界 texelFetch（已完成）
+
+### [x] R253-A clamp glTF joint indices to SKELETON_MAX_JOINTS
+- [x] 蒙皮 VS `texelFetch(u_joints, j*4+..)` 用原始关节索引；GPU 缓冲固定 128 mat4；R249 起 u32 JOINTS_0 可 ≥128；`asset.c` 原样写入 → 索引 ≥128 越界读 samplerBuffer（UB）
+- [x] 触发：带 skin 的 glTF 且顶点引用关节 index ≥128
+- [x] 修复：加载顶点关节后钳到 `[0, SKELETON_MAX_JOINTS-1]`（三分支统一）；`joints_count>128` 时 LOG_WARN
+
+**说明**：>128 关节 rig 引擎只有 128 槽，钳制保证 texelFetch 在界内、杜绝 UB，但该 rig 形变降级；彻底支持需提升 SKELETON_MAX_JOINTS（buffer/上传/内存连带改动），属更大改动，本项仅修安全性。现有资产 <128 关节，字节等价。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**。
+
 ## R252：skeleton_evaluate STEP 遗漏 + glTF UV/骨骼集索引（已完成）
 
 ### [x] R252-A skeleton_evaluate must honor STEP (default skinning path)

@@ -344,6 +344,17 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                         const u32 *j = (const u32 *)(jd + vi * jnt_stride);
                         for (u32 k = 0; k < 4; k++) sverts[vi].joints[k] = j[k];
                     }
+                    /* R253: the skinning shaders index texelFetch(u_joints, j*4+..)
+                     * and the joint buffer holds exactly SKELETON_MAX_JOINTS matrices
+                     * (skeleton_set_joints clamps joint_count to it and uploads only
+                     * that many). R249 enabled u32 JOINTS_0, so an index >= the limit
+                     * now reads out of bounds (UB) on both GL and VK. Clamp to the
+                     * last valid joint so the fetch stays in-bounds (oversized skins
+                     * are warned about below; deformation is degraded but not UB). */
+                    for (u32 k = 0; k < 4; k++) {
+                        if (sverts[vi].joints[k] >= (u32)SKELETON_MAX_JOINTS)
+                            sverts[vi].joints[k] = (u32)SKELETON_MAX_JOINTS - 1u;
+                    }
                     memcpy(sverts[vi].weights, wd + vi * wgt_stride, sizeof(f32) * 4);
                     f32 wsum = sverts[vi].weights[0] + sverts[vi].weights[1] + sverts[vi].weights[2] + sverts[vi].weights[3];
                     if (wsum > 0.0f) {
@@ -430,6 +441,15 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
     if (data->skins_count > 0) {
         cgltf_skin *skin = &data->skins[0];
+        /* R253: skeleton_set_joints clamps to SKELETON_MAX_JOINTS and the GPU joint
+         * buffer/skinning shaders only address that many matrices. A larger rig
+         * can't be skinned correctly (vertex joint indices are clamped above to
+         * avoid an out-of-bounds texelFetch); warn so the truncation is visible. */
+        if (skin->joints_count > (cgltf_size)SKELETON_MAX_JOINTS) {
+            LOG_WARN("glTF skin has %u joints but engine supports %d; extra joints are "
+                     "dropped and affected vertices clamped (skinning will be incorrect)",
+                     (u32)skin->joints_count, SKELETON_MAX_JOINTS);
+        }
         out_scene->joint_count = (u32)skin->joints_count;
         /* Single alloc: joint_parents (u32[]) + inverse_bind (Mat4[]) */
         usize jp_bytes = skin->joints_count * sizeof(u32);
