@@ -5441,6 +5441,8 @@ u32 culled_count = 0;
         if (combined_color.ready && combined_color.use_combined && cg_enabled &&
             rhi_handle_valid(scene_fbo.fb)) {
             combined_color_apply(&combined_color, cmd, post_input,
+                                 tonemap.lum_fbo[tonemap.lum_idx].color_tex,
+                                 tonemap.auto_exposure,
                                  tonemap.exposure, tonemap.gamma, tonemap.mode,
                                  cg_saturation, cg_contrast, cg_brightness,
                                  cg_temperature, cg_tint,

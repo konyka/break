@@ -90,8 +90,12 @@ typedef struct {
 
 bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 height);
 void combined_color_shutdown(CombinedColor *cc);
+/* R271: lum_tex + auto_exposure mirror tonemap_apply so the combined path
+ * applies auto-exposure identically to the separate tonemap pass. Pass the
+ * TonemapSystem's current lum_fbo[lum_idx].color_tex and its auto_exposure
+ * flag; when auto is off (or lum_tex invalid) it falls back to fixed exposure. */
 void combined_color_apply(CombinedColor *cc, RHICmdBuffer *cmd,
-                          RHITexture hdr_tex,
+                          RHITexture hdr_tex, RHITexture lum_tex, bool auto_exposure,
                           f32 exposure, f32 gamma, i32 tonemap_mode,
                           f32 saturation, f32 contrast, f32 brightness,
                           f32 temperature, f32 tint,

@@ -313,7 +313,7 @@ void combined_color_shutdown(CombinedColor *cc) {
 }
 
 void combined_color_apply(CombinedColor *cc, RHICmdBuffer *cmd,
-                          RHITexture hdr_tex,
+                          RHITexture hdr_tex, RHITexture lum_tex, bool auto_exposure,
                           f32 exposure, f32 gamma, i32 tonemap_mode,
                           f32 saturation, f32 contrast, f32 brightness,
                           f32 temperature, f32 tint,
@@ -325,7 +325,16 @@ void combined_color_apply(CombinedColor *cc, RHICmdBuffer *cmd,
         /* Single combined draw: tonemap + color grade + cinematic */
         rhi_offscreen_fbo_bind(cmd, &cc->output_fbo);
         rhi_cmd_bind_pipeline(cmd, cc->combined_pipe);
-        rhi_cmd_bind_texture(cmd, hdr_tex, cc->sampler, 0);
+        /* R271: bind the 1x1 adapted-luminance texture at binding 1 exactly like
+         * tonemap_apply so combined_color.frag can apply auto-exposure. When auto
+         * is off (or no lum texture) bind only the HDR source, matching the
+         * separate tonemap pass. */
+        if (auto_exposure && rhi_handle_valid(lum_tex)) {
+            rhi_cmd_bind_material_textures(cmd, hdr_tex, hdr_tex, hdr_tex,
+                                           hdr_tex, lum_tex, hdr_tex, cc->sampler);
+        } else {
+            rhi_cmd_bind_texture(cmd, hdr_tex, cc->sampler, 0);
+        }
 
         if (cc->loc_exposure >= 0)    rhi_cmd_set_uniform_f32(cmd, cc->loc_exposure, exposure);
         if (cc->loc_gamma >= 0)       rhi_cmd_set_uniform_f32(cmd, cc->loc_gamma, gamma);

@@ -6,7 +6,9 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_color_tex;
+layout(binding = 0) uniform sampler2D u_color_tex;
+/* R271: 1x1 adapted-luminance target (matches tonemap.frag u_tm_lum@1). */
+layout(binding = 1) uniform sampler2D u_tm_lum;
 
 uniform float u_tm_exposure;
 uniform float u_tm_gamma;
@@ -71,7 +73,13 @@ void main() {
     hdr.g = texture(u_color_tex, vUV).g;
     hdr.b = texture(u_color_tex, vUV - ca).b;
 
-    hdr *= u_tm_exposure;
+    /* R271: apply auto-exposure identically to tonemap.frag so the fused path
+     * matches the separate tonemap pass (was: fixed hdr *= u_tm_exposure, which
+     * silently ignored the per-frame auto-exposure the engine still computes). */
+    float scene_luma = texture(u_tm_lum, vec2(0.5)).r;
+    float auto_exp = scene_luma > 0.01 ? 1.0 / (scene_luma + 0.5) : u_tm_exposure;
+    float exposure = mix(u_tm_exposure, auto_exp, 0.8);
+    hdr *= exposure;
     vec3 ldr;
     if (u_tm_mode == 1)      ldr = agx(hdr);
     else if (u_tm_mode == 2) ldr = khronos_neutral(hdr);

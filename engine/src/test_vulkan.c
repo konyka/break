@@ -895,6 +895,7 @@ int main(int argc, char **argv) {
                 RHITexture aa_out = combined_aa_get_output(&caa);
 
                 combined_color_apply(&cc, cmd, aa_out,
+                                     RHI_HANDLE_NULL, false,
                                      1.0f, 2.2f, 0,
                                      1.0f, 1.0f, 1.0f, 0.0f, 0.0f,
                                      0.0f, 0.0f, 0.0f,

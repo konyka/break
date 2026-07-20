@@ -4420,6 +4420,21 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R271：combined color 融合后处理未接入自动曝光（默认路径曝光错误）（已完成）
+
+### [x] R271-A wire auto-exposure into the fused combined_color pass
+- [x] main.c:5438 每帧 tonemap_update_auto_exposure 在 1x1 lum_fbo 算自适应亮度，但默认走 combined_color_apply（5443）
+- [x] combined_color(.frag/_vk.frag) 只做 hdr*=u_tm_exposure，不绑 lum_fbo、不复现 tonemap.frag 的 mix(exposure,1/(luma+0.5),0.8)
+- [x] 根因：R13-3 移除 !auto_exposure 门禁让 combined 在 auto 开启时接管，却没把自动曝光接进 combined shader
+- [x] 触发：auto_exposure 默认 true(tonemap.c:70) + cg_enabled 默认 true + combined shader 加载成功（默认）三者同时成立
+- [x] 手算：HDR≈(4,4,4)→scene_luma≈4，独立 tonemap 有效曝光 mix(1.5,0.222,0.8)≈0.478，combined 用 1.5 → 约 3.1x 过曝
+- [x] 修复：GL+VK combined shader binding=1 加 u_tm_lum + 复制 tonemap*.frag 自动曝光逻辑（逐字节一致）
+- [x] combined_color_apply 增 lum_tex+auto_exposure 参，按 tonemap_apply 同法绑定（auto 开→bind_material_textures lum@1，否则 hdr@0）
+- [x] main.c 传 tonemap.lum_fbo[lum_idx].color_tex + tonemap.auto_exposure；test_vulkan TEST 6 传 NULL+false 保持固定曝光
+- [x] 零改 VK 描述符/push-constant 布局（binding 1 早在共享 desc_layout 0-5 sampler 中）；golden 只渲三角形不经后处理，无回归
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（含 golden 与 TEST 6）。
+
 ## R270：audio_play 未禁用默认 3D 空间化（2D 音源钉原点随听者衰减）（已完成）
 
 ### [x] R270-A disable default spatialization for the 2D audio_play path
