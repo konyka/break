@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R256：场景世界变换单遍遍历假定父先于子（已完成）
+
+### [x] R256-A resolve world transforms independent of node array order
+- [x] `scene_compute_world_transforms`（asset.c:617）单遍按下标顺序算 `world = parent.world * local`，仅守卫越界/自引用，未处理 parent_index > i（子先于父）；glTF 不保证父在 nodes[] 中先于子（cgltf 保留文件顺序），子先于父时乘到父未计算的 world → 子树网格落错世界位姿（mega-buffer 预变换 main.c:1707/4876）
+- [x] 文档「cgltf 保证拓扑排序」有误；R240 已把骨骼 world 解析改为顺序无关，场景节点路径为同类遗漏
+- [x] 修复：迭代至稳定（每遍重算，无变化即停），已排序数据一遍+确认收敛，最多 node_count 遍终止，无堆分配（每帧回退分支调用）；单遍语义对已排序数据字节等价
+- [x] 纯 CPU 场景层，GL/VK 无关
+
+**另证伪（未改）**：`bvh_raycast`/`ray_aabb_intersect` 起点在 AABB 内疑返回负 t——标量与 SSE 两路径 `tmin` 均以 0.0f 起算且只增（bvh.c:449/simd.h:90），起点在内返回 t=0（正确，射线即刻相交），无负 t，误报。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（asset.c 重链接依赖过重，未在 test_scene_serial 单测该函数，沿用 R249/R253 先例）。
+
 ## R255：VFS PAK 共享 FILE* 并发读竞态（已完成）
 
 ### [x] R255-A serialize concurrent PAK fseek+fread

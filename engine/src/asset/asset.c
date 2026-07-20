@@ -615,20 +615,37 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
 }
 
 void scene_compute_world_transforms(Scene *scene) {
-    for (u32 i = 0; i < scene->node_count; i++) {
-        SceneNode *node = &scene->nodes[i];
-        /* R151: Validate parent_index against node_count — a malformed BSCN/JSON
-         * file can set parent_index to any u32 value. Without this check,
-         * scene->nodes[parent_index] is an out-of-bounds read. Also handles
-         * self-references (parent_index == i) which would read uninitialized
-         * world_transform. */
-        if (node->parent_index == UINT32_MAX || node->parent_index >= scene->node_count
-            || node->parent_index == i) {
-            node->world_transform = node->local_transform;
-        } else {
-            SceneNode *parent = &scene->nodes[node->parent_index];
-            node->world_transform = mat4_mul(parent->world_transform, node->local_transform);
+    /* R256 (CORRECTNESS): resolve world transforms independent of node array
+     * order. glTF does NOT require a parent to precede its children in nodes[]
+     * (cgltf preserves file order; JSON scenes append in file order too), so a
+     * child can sit at a lower index than its parent. The old single forward pass
+     * then multiplied by the parent's not-yet-computed world_transform, placing
+     * that subtree's meshes at the wrong world position/orientation (mega-buffer
+     * pre-transform at main.c uses world_transform). This mirrors R240, which made
+     * the analogous skeleton joint resolution order-independent. Iterate until a
+     * pass changes nothing: the common already-ordered case converges in one
+     * productive pass plus a confirm pass; bounded by node_count to terminate on
+     * cycles (treated as roots via the parent-index guards below). */
+    u32 n = scene->node_count;
+    for (u32 pass = 0; pass < n; pass++) {
+        bool changed = false;
+        for (u32 i = 0; i < n; i++) {
+            SceneNode *node = &scene->nodes[i];
+            Mat4 w;
+            /* R151: guard malformed/self parent_index (out-of-bounds read). */
+            if (node->parent_index == UINT32_MAX || node->parent_index >= n
+                || node->parent_index == i) {
+                w = node->local_transform;
+            } else {
+                SceneNode *parent = &scene->nodes[node->parent_index];
+                w = mat4_mul(parent->world_transform, node->local_transform);
+            }
+            if (pass == 0 || memcmp(&node->world_transform, &w, sizeof(Mat4)) != 0) {
+                node->world_transform = w;
+                changed = true;
+            }
         }
+        if (!changed) break;
     }
 }
 
