@@ -4420,6 +4420,20 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R250：有序复制重排序缓冲窗口外别名覆写（已完成）
+
+### [x] R250-A net_reorder_store must not overwrite in-window slots
+- [x] `idx = seq % NET_REORDER_SLOTS`（32 槽）无条件覆写；等待缺失 `M` 时 `M+1` 与 `M+33` 别名同槽 → 后到覆写先到且仍需交付的包 → `drain` 等不到 `next_ordered_seq` → 有序流永久卡死
+- [x] 触发：`PACKET_ORDERED` 乱序且并发/排队序号跨度 ≥ 32（高 RTT/突发/丢包重传）
+- [x] 修复：`ahead = seq - next_ordered_seq`，`ahead >= NET_REORDER_SLOTS` 丢弃并 `reorder_stale++`，绝不覆写；窗口内 32 序号↔32 槽双射
+- [x] 新增 `ordered_reorder_out_of_window_no_stall` 回归测试
+
+**说明**：调用方 `net_repl_deliver_ordered` 已剔除陈旧/过去序号，`ahead` 为有效前向距离。纯 CPU 网络逻辑，GL/VK 无关。
+
+**另评估（未改）**：GL 后端 IBL 预计算 `ibl.c` 以 `if(!cmd)break`/`if(cmd)` 为录制条件，而 GL `rhi_frame_begin` 恒返回 NULL（仅 main 渲染循环不做该守卫）→ 疑似 GL 下 BRDF/irradiance/prefilter compute 被整段跳过。因与 GL golden 基准交互及「GL 计算 IBL 是否本就预期运行」尚需专项验证（贸然改动有 golden 回归风险），本轮记录待核，不修改。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含新增有序重排序回归）。
+
 ## R249：glTF 交错顶点 stride + JOINTS_0 u32（已完成）
 
 ### [x] R249-A cgltf_accessor_stride must honor byte stride

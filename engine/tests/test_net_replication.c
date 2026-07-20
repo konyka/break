@@ -152,6 +152,52 @@ TEST(ordered_reorder_buffer)
     net_replicator_shutdown(&rep);
 }
 
+TEST(ordered_reorder_out_of_window_no_stall)
+{
+    /* R250: a future packet >= next+NET_REORDER_SLOTS aliases (seq%SLOTS) onto an
+     * occupied in-window slot. The old code overwrote it, losing a still-needed
+     * packet and stalling the ordered stream. It must instead be dropped. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.ordered_layer = true;
+
+    u8 w2[PACKET_MAX_SIZE], w_far[PACKET_MAX_SIZE], w1[PACKET_MAX_SIZE];
+    u32 l2   = build_ordered_snap_wire(w2,   2u,               10u, 4.0f, 5.0f, 6.0f);
+    /* seq 2 + NET_REORDER_SLOTS aliases the same slot as seq 2 (2 % 32). */
+    u32 lfar = build_ordered_snap_wire(w_far, 2u + NET_REORDER_SLOTS, 10u, 9.0f, 9.0f, 9.0f);
+    u32 l1   = build_ordered_snap_wire(w1,   1u,               10u, 1.0f, 2.0f, 3.0f);
+
+    NetTransformSnapshot out[4] = {0};
+    u32 out_count = 0u;
+
+    /* Buffer seq 2 (waiting for seq 1). */
+    ASSERT_TRUE(net_replicator_feed(&rep, w2, l2, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 0u);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 1u);
+
+    /* Out-of-window seq must be dropped, NOT overwrite the buffered seq 2. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w_far, lfar, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 0u);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 1u);
+
+    /* seq 1 arrives → delivers 1, then drains the preserved seq 2. The drain
+     * reuses out[0] (matching ordered_reorder_buffer), so out[0] ends as seq 2's
+     * payload (4,5,6) and the buffer is fully drained (pending 0). Before the fix
+     * seq 2 would have been overwritten by the out-of-window packet and the drain
+     * would stall with reorder_pending stuck at 1. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w1, l1, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 4.0f, 0.001f);
+    ASSERT_FLOAT_EQ(out[0].position[1], 5.0f, 0.001f);
+    ASSERT_FLOAT_EQ(out[0].position[2], 6.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_delivered, 1u);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 0u);
+
+    net_replicator_shutdown(&rep);
+}
+
 TEST(reliable_ordered_combined)
 {
     ASSERT_TRUE(net_init());
@@ -603,6 +649,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(transform_snapshot_loopback);
     RUN_TEST(reliable_retry_pending);
     RUN_TEST(ordered_reorder_buffer);
+    RUN_TEST(ordered_reorder_out_of_window_no_stall);
     RUN_TEST(reliable_ordered_combined);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);

@@ -191,6 +191,20 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, u8 type, const u8 *wi
 
 static void net_reorder_store(NetReplicator *rep, u8 type, u32 seq, const u8 *wire, u32 len) {
     NetRepOrderedChannel *ch = net_ord_ch(rep, type);
+    /* R250: only buffer packets inside the [next, next+NET_REORDER_SLOTS) window.
+     * The slot index is seq % NET_REORDER_SLOTS, so a packet >= next+SLOTS aliases
+     * onto a slot that may already hold a distinct, still-needed in-window seq;
+     * the previous unconditional write overwrote it, dropping a packet the drain
+     * loop still expects and stalling the ordered stream forever (drain waits on
+     * next_ordered_seq which will never reappear). Within the window the 32 seqs
+     * map bijectively to the 32 slots, so no in-window aliasing can occur. The
+     * caller (net_repl_deliver_ordered) has already rejected stale/past seqs, so
+     * (seq - next_ordered_seq) is a valid forward distance here. */
+    u32 ahead = seq - ch->next_ordered_seq;
+    if (ahead >= (u32)NET_REORDER_SLOTS) {
+        ch->reorder_stale++;   /* out-of-window: buffer too small, drop (no overwrite) */
+        return;
+    }
     u32 idx = seq % NET_REORDER_SLOTS;
     NetReorderSlot *slot = &ch->slots[idx];
     if (slot->valid && slot->seq == seq) {
