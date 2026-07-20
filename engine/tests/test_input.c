@@ -375,6 +375,35 @@ TEST(multi_key_simultaneous)
     ASSERT_TRUE(input_key_down(&s, 30));   /* still held */
 }
 
+TEST(release_all_clears_held_and_pressed)
+{
+    /* R263: focus-loss must release held (2) and just-pressed (3) keys and mouse
+     * buttons so nothing stays stuck down; the just-released edge fires once and
+     * clears on the next frame. */
+    InputState s;
+    input_init(&s);
+
+    input_set_key(&s, 'w', true);            /* just pressed (3) */
+    input_new_frame(&s);                     /* -> held (2) */
+    input_set_key(&s, 'a', true);            /* just pressed (3) */
+    input_set_key(&s, INPUT_MOUSE_LEFT, true);
+
+    ASSERT_TRUE(input_key_down(&s, 'w'));
+    ASSERT_TRUE(input_key_down(&s, 'a'));
+    ASSERT_TRUE(input_key_down(&s, INPUT_MOUSE_LEFT));
+
+    input_release_all(&s);
+
+    ASSERT_TRUE(!input_key_down(&s, 'w'));   /* no longer driving movement */
+    ASSERT_TRUE(!input_key_down(&s, 'a'));
+    ASSERT_TRUE(!input_key_down(&s, INPUT_MOUSE_LEFT));
+    ASSERT_TRUE(input_key_released(&s, 'w')); /* release edge fired */
+
+    input_new_frame(&s);                     /* released (1) -> up (0) */
+    ASSERT_TRUE(!input_key_released(&s, 'w'));
+    ASSERT_TRUE(!input_key_down(&s, 'w'));
+}
+
 /* ------------------------------------------------------------------ */
 /*  Edge Cases                                                          */
 /* ------------------------------------------------------------------ */
@@ -466,6 +495,7 @@ int main(void) {
     RUN_TEST(pad_slots_independent);
     RUN_TEST(mouse_buttons_via_key_api);
     RUN_TEST(multi_key_simultaneous);
+    RUN_TEST(release_all_clears_held_and_pressed);
     /* Edge cases */
     RUN_TEST(key_boundary_index);
     RUN_TEST(multiple_new_frames_in_a_row);

@@ -194,7 +194,12 @@ static void keyboard_enter(void *data, struct wl_keyboard *kb, u32 serial,
 
 static void keyboard_leave(void *data, struct wl_keyboard *kb, u32 serial,
                            struct wl_surface *surface) {
-    (void)data; (void)kb; (void)serial; (void)surface;
+    (void)kb; (void)serial; (void)surface;
+    /* R263: keyboard focus lost — release all keys so a key released while
+     * unfocused (Wayland delivers no key event to an unfocused surface) can't
+     * stay stuck down and keep driving movement after refocus. */
+    Platform *p = data;
+    if (p) input_release_all(&p->input);
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *kb, u32 serial,

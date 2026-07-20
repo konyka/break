@@ -175,7 +175,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     XSelectInput(p->display, p->window,
                  ExposureMask | KeyPressMask | KeyReleaseMask |
                  ButtonPressMask | ButtonReleaseMask |
-                 PointerMotionMask | StructureNotifyMask);
+                 PointerMotionMask | StructureNotifyMask | FocusChangeMask);
 
     XMapWindow(p->display, p->window);
     XFlush(p->display);
@@ -274,6 +274,14 @@ PlatformEventResult platform_poll(Platform *p) {
         case ConfigureNotify:
             p->width  = (u32)ev.xconfigure.width;
             p->height = (u32)ev.xconfigure.height;
+            break;
+
+        case FocusOut:
+            /* R263: window lost focus — release all keys/mouse buttons so a
+             * physical release that happens while unfocused (X11 delivers no
+             * KeyRelease to an unfocused window) can't leave a key stuck down
+             * and keep driving WASD/camera once focus returns. */
+            input_release_all(&p->input);
             break;
         }
     }

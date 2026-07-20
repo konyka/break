@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R263：窗口失焦未释放按键致粘键（已完成）
+
+### [x] R263-A release all keys on focus loss
+- [x] Wayland keyboard_leave 空实现、X11 无 FocusOut 且缺 FocusChangeMask → 失焦不清 keys[]；OS 不向失焦客户端投递 release → 回焦后 input_key_down 仍真 → camera 持续移动
+- [x] 修复：新增 input_release_all（held/pressed→just-released，边沿正常、下帧归 0，覆盖 keys[] 内鼠标键，手柄不动）
+- [x] Wayland keyboard_leave 调用；X11 加 FocusChangeMask + FocusOut 分支调用
+- [x] 仅 Linux 输入层，GL/VK 无关；新增回归 release_all_clears_held_and_pressed
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**。
+
 ## R262：物理接触求解接近/分离判据反向（已完成）
 
 ### [x] R262-A fix inverted normal-impulse guard in resolve_contact

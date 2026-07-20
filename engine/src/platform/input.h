@@ -58,6 +58,11 @@ typedef struct {
 void input_init(InputState *s);
 void input_new_frame(InputState *s);
 void input_set_key(InputState *s, i32 key, bool pressed);
+/* R263: force-release every currently held/pressed key & mouse button. Call on
+ * window/keyboard focus loss so a key physically released while unfocused (whose
+ * release event the OS never delivers to an unfocused client) doesn't stay stuck
+ * "down" and drive WASD/camera after refocus. */
+void input_release_all(InputState *s);
 void input_set_mouse(InputState *s, f32 x, f32 y);
 void input_set_scroll(InputState *s, f32 dx, f32 dy);
 void input_set_pad_button(InputState *s, i32 pad, i32 button, bool pressed);

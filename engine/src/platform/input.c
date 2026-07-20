@@ -36,6 +36,16 @@ void input_set_key(InputState *s, i32 key, bool pressed) {
     }
 }
 
+void input_release_all(InputState *s) {
+    /* R263: mirror input_set_key(false) for every held/just-pressed slot so the
+     * just-released edge still fires once and input_key_down() goes false. Mouse
+     * buttons share keys[] (INPUT_MOUSE_* >= 300), so this covers them too.
+     * Gamepads are not window-focus bound and are left untouched. */
+    for (usize i = 0; i < INPUT_MAX_KEYS; i++) {
+        if (s->keys[i] == 3 || s->keys[i] == 2) s->keys[i] = 1;
+    }
+}
+
 void input_set_mouse(InputState *s, f32 x, f32 y) {
     s->mouse_dx += x - s->mouse_x;
     s->mouse_dy += y - s->mouse_y;
