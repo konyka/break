@@ -3913,31 +3913,18 @@ u32 culled_count = 0;
         /* Cache point shadow gather once per frame (consumed by bind_material, deferred, terrain) */
         g_psc.count = point_shadow_gather(&pt_shadows, g_psc.tex, g_psc.far_planes);
 
-        /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
-        if (render.render_path == RENDER_PATH_FORWARD) {
-        if (rhi_handle_valid(scene_fbo.fb)) {
-            rhi_offscreen_fbo_bind(cmd, &scene_fbo);
-        }
-        rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
-        /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
-        rhi_cmd_clear_depth(cmd);
-
-        skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-
-        /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
-         * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
-         * It runs unconditionally — the clustered terrain draw below was always
-         * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
-        terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                       render.terrain_tex, active_sampler,
-                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
-                       water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
-
-        water_update(&water, (f32)engine.delta_time);
-        water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                     render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
-
-        /* Clustered forward lighting pass */
+        /* R273 (CORRECTNESS): populate the light system every frame for BOTH
+         * render paths. This block used to live inside the forward-only guard
+         * below, so after toggling to DEFERRED (F-key path switch) the forward
+         * scene pass — and with it light_system_clear/add_dir/add_point — never
+         * ran again: deferred_lighting_pass then culled/uploaded a STALE snapshot
+         * (32 orbit point lights frozen at their last forward-frame positions +
+         * a frozen sun direction), so deferred lighting no longer matched the
+         * scene. Hoisted here so it runs regardless of path. Placed AFTER the
+         * pt_shadows gather above so that gather still observes the PREVIOUS
+         * frame's lights (R75-1 semantics preserved); nothing between here and
+         * the forward/deferred passes reads `lights`, so forward output is
+         * unchanged. */
         if (rhi_handle_valid(render.clustered_pipeline)) {
             light_system_clear(&lights);
             light_system_add_dir(&lights, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
@@ -3976,14 +3963,38 @@ u32 culled_count = 0;
                     light_system_add_point(&lights, x, 2.0f, z, 6.0f, orbit_r[i], orbit_g[i], orbit_b[i]);
                 }
             }
-            /* R75-1: Skip clustered cull/upload/bind — the clustered terrain draw
-             * was skipped in R74-2 (always depth-culled by terrain_render). No
-             * forward-path draw consumes the clustered light grid. Light
-             * population (clear + add_dir + 32× add_point) is kept because
-             * pt_shadows reads lights.point_count/lights.point_lights from the
-             * previous frame. This saves ~98K CPU iterations (cluster binning)
-             * + GPU upload + pipeline bind + ~10 uniform sets per frame. */
+            /* R75-1: forward path skips clustered cull/upload/bind (the clustered
+             * terrain draw was depth-culled away in R74-2, so no forward draw
+             * consumes the light grid). Deferred DOES cull/upload below. */
         }
+
+        /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
+        if (render.render_path == RENDER_PATH_FORWARD) {
+        if (rhi_handle_valid(scene_fbo.fb)) {
+            rhi_offscreen_fbo_bind(cmd, &scene_fbo);
+        }
+        rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
+        /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
+        rhi_cmd_clear_depth(cmd);
+
+        skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+
+        /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
+         * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
+         * It runs unconditionally — the clustered terrain draw below was always
+         * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
+        terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                       render.terrain_tex, active_sampler,
+                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
+                       water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
+
+        water_update(&water, (f32)engine.delta_time);
+        water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                     render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
+
+        /* R273: light population (clear + add_dir + 32× orbit add_point) moved
+         * above the forward/deferred split so DEFERRED gets fresh lights too.
+         * It used to be forward-only here. */
 
         particles_cull(&particles, cmd);
         particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0]);

@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R273：延迟渲染路径光源冻结（光源填充被前向 guard 独占）（已完成）
+
+### [x] R273-A populate lights every frame for BOTH render paths
+- [x] `main.c` 每帧的光源填充（`light_system_clear` + `light_system_add_dir` 太阳 + 32× 轨道 `light_system_add_point`）整块位于 `if (render.render_path == RENDER_PATH_FORWARD)` 前向 guard 内（3917–5065）
+- [x] 延迟路径（`RENDER_PATH_DEFERRED`，5094 起）**从不调用** `light_system_add_*`：切到 DEFERRED（UI 路径切换键）后前向 guard 整段被跳过 → `lights` 冻结在最后一个前向帧的快照
+- [x] 延迟 `light_system_upload_lights` + `light_system_cull(_gpu)`（5242–5246）随后 cull/upload 这份**陈旧**数据 → 32 盏轨道点光冻结在最后前向帧位置、太阳方向冻结，延迟光照不再随场景更新
+- [x] 手算/推理：切 DEFERRED 后第 N 帧，轨道相位停在切换瞬间；`pt_shadows` gather（3914）读的也是这份冻结点光 → 点光阴影一并冻结
+- [x] 修复：将光源填充整块**外提**到前向/延迟分支之前（`pt_shadows` gather 之后、前向 guard 之前），每帧为两路径无条件运行；保留 `if (rhi_handle_valid(render.clustered_pipeline))` 门（该管线 init 期恒建）
+- [x] 保序：填充位于 gather **之后**，故 gather 仍读上一帧光源（R75-1 语义不变）；此位置与前向绘制之间无任何代码读 `lights` → 前向输出逐字节不变；轨道动画静态局部随块整体迁移（单一实例，无重复定义）
+- [x] 副带修正：延迟路径下一帧 `pt_shadows` gather 现读到当帧刷新的点光 → 延迟点光阴影亦随场景更新
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（无针对帧循环的单测，以构建 + 全量套件通过为验证，同 R268/R271/R272 主循环接线修复惯例）。
+
 ## R272：延迟光照从不采样屏幕 SSAO（每帧算出却弃用）（已完成）
 
 ### [x] R272-A wire screen-space SSAO into the deferred lighting pass
