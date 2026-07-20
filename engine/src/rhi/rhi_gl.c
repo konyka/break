@@ -50,6 +50,7 @@ typedef struct {
     bool   point_list;   /* R168-C: GL_POINTS + PROGRAM_POINT_SIZE */
     bool   depth_write_disable;  /* R232-A: parity with VK depthWriteEnable */
     bool   depth_compare_lequal; /* R232-B: parity with VK compareOp */
+    bool   disable_culling;      /* R235-A: parity with VK cullMode NONE */
 } GLPipelineData;
 
 typedef struct {
@@ -565,6 +566,15 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
             g_gl_depth_func = want_func;
         }
     }
+    /* R235-A: Apply cull from pipeline (VK bakes cullMode into PSO). */
+    {
+        bool want_cull = !pd->disable_culling;
+        if (g_gl_cull_enabled != want_cull) {
+            if (want_cull) glEnable(GL_CULL_FACE);
+            else           glDisable(GL_CULL_FACE);
+            g_gl_cull_enabled = want_cull;
+        }
+    }
     g_cached_vertex_stride = pd->vertex_stride;
 }
 
@@ -901,6 +911,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->point_list     = desc->point_list;
     pd->depth_write_disable  = desc->depth_write_disable;
     pd->depth_compare_lequal = desc->depth_compare_lequal;
+    /* Match VK: no_vertex_input also forces cullMode NONE. */
+    pd->disable_culling      = desc->disable_culling || desc->no_vertex_input;
     dev->slots[idx].ptr  = pd;
     dev->slots[idx].type = RHI_RES_PIPELINE;
     return rhi_make_handle(idx, dev->slots[idx].generation);

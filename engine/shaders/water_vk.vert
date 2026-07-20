@@ -16,8 +16,10 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec3 vWorldPos;
 
 void main() {
-    vWorldPos = aPos;
-    gl_Position = pc.u_proj * pc.u_view * vec4(aPos, 1.0);
+    /* R235-B: Mesh verts sit at y=0; lift to logical water plane. */
+    vec3 wp = vec3(aPos.x, pc.u_watery.x, aPos.z);
+    vWorldPos = wp;
+    gl_Position = pc.u_proj * pc.u_view * vec4(wp, 1.0);
     /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
     gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

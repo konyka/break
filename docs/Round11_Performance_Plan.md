@@ -4271,6 +4271,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+## R235：GL disable_culling + 水面 water_y（已完成）
+
+### [x] R235-A apply pipeline cull on GL
+- [x] `gl_cmd_bind_pipeline` 按 `disable_culling`/`no_vertex_input` 执行 `glEnable/Disable(GL_CULL_FACE)`，与 VK PSO cullMode 对齐
+
+### [x] R235-B lift water verts to water_y
+- [x] `water.vert`/`water_vk.vert` 顶点用 `u_water_y`/`pc.u_watery.x` 抬升（网格在 y=0，之前不随水位移动）
+
+**验收**：双后端构建通过（VK/GL 各 240/240 目标，0 error）；非图形单测 30/30 通过。golden-image 回归（test_vulkan）在当前无 X11 显示的沙箱内无法执行；静态分析确认 golden 场景不渲染水面、GL golden 仅用默认剔除管线，故两后端 golden 均不受本轮改动影响。
+
 ## 构建与回归命令
 
 
