@@ -4312,6 +4312,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R239：角色胶囊 BVH 候选截断回退全扫（已完成）
+
+### [x] R239-A fallback to full scan when BVH query saturates
+- [x] `char_slide_resolve`：`bvh_query_aabb` 填满 64 槽即停会丢弃其余重叠静态体；`nc >= 64` 时置 `use_bvh=false` 回退全量线性扫描，避免角色穿墙/穿地形
+
+**评估未改**：`physics_step` 宽相位 BVH 积分前 refit / 积分后 query 的一帧延迟——对非 CCD 慢速体属既定权衡（快速体走独立 CCD 路径；积分中的 CCD 需积分前的树），安全修复需额外一轮 refit（perf 成本），暂不改。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 

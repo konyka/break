@@ -56,6 +56,11 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
         query_box.min = vec3(pos.e[0] - r - margin, pos.e[1] - margin, pos.e[2] - r - margin);
         query_box.max = vec3(pos.e[0] + r + margin, pos.e[1] + hh + cc->height + margin, pos.e[2] + r + margin);
         nc = bvh_query_aabb(&pw->bvh, query_box, candidates, 64);
+        /* R239 (CORRECTNESS): bvh_query_aabb stops writing once it fills the 64
+         * candidate slots, silently dropping any further overlapping static
+         * bodies. If the query saturated, fall back to the full linear scan
+         * below so the capsule cannot tunnel through the dropped geometry. */
+        if (nc >= 64u) use_bvh = false;
     }
 
     for (int iter = 0; iter < MAX_ITERS; iter++) {
