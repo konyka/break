@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R260：LOD 未注册 entity 与组索引 0 混同（已完成）
+
+### [x] R260-A verify entity_id in lod_select / lod_get_mesh
+- [x] `entity_to_group[]` 清零/复位为 0，未注册 entity 映射到 group 0；`lod_select`（lod.c:195）/`lod_get_mesh`（289）仅查 `group_idx>=count`，有组注册后未注册 entity 别名 entity 0 的 LOD（并写脏 current_levels）
+- [x] 修复：增加 `groups[group_idx].entity_id != entity` 校验（entity_id 经 register 写入、unregister swap-remove 同步），无需哨兵
+- [x] 运行时默认路径未暴露（main.c 仅对已注册节点调用），属公共 API 逻辑缺陷；纯 CPU
+- [x] 新增回归 `lod_select_unregistered_when_group0_exists`
+
+**另证伪（未改）**：VK `rhi_cmd_bind_image_cubemap_face` write_only 用 `oldLayout=UNDEFINED`——Vulkan 规范允许 oldLayout 恒取 UNDEFINED（丢弃内容），write_only 覆写整面正是此意图，WAR 仅需执行依赖（srcStageMask FRAGMENT|COMPUTE→COMPUTE 已提供），非 bug（R258 已同此结论）。
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**。
+
 ## R259：GL 阴影 clear 在 depth mask=false 时静默失效（已完成）
 
 ### [x] R259-A force depth mask on before shadow glClear(DEPTH)

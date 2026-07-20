@@ -192,7 +192,14 @@ u32 lod_select(LODSystem *sys, u32 entity, Vec3 object_pos,
     if (entity >= LOD_MAX_GROUPS) return 0;
 
     u32 group_idx = sys->entity_to_group[entity];
-    if (group_idx >= sys->count) return 0;
+    /* R260 (CORRECTNESS): entity_to_group[] is zero-initialised (lod_init) and
+     * lod_unregister resets removed entries to 0, so an entity that was never
+     * registered maps to group_idx 0. The old "group_idx >= count" guard passes
+     * for group_idx 0 once any group exists, aliasing this entity onto group 0's
+     * LODGroup and even writing current_levels[entity] below. Verify the resolved
+     * group actually belongs to this entity — entity_id is kept accurate across
+     * the swap-remove in lod_unregister. */
+    if (group_idx >= sys->count || sys->groups[group_idx].entity_id != entity) return 0;
 
     LODGroup *group = &sys->groups[group_idx];
     u32 current = sys->current_levels[entity];
@@ -288,7 +295,8 @@ LODMesh lod_get_mesh(LODSystem *sys, u32 entity) {
     u32 group_idx = sys->entity_to_group[entity];
     u32 level = sys->current_levels[entity];
 
-    if (group_idx >= sys->count) {
+    /* R260: reject unregistered entities that alias group 0 (see lod_select). */
+    if (group_idx >= sys->count || sys->groups[group_idx].entity_id != entity) {
         LODMesh empty;
         memset(&empty, 0, sizeof(empty));
         return empty;

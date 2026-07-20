@@ -211,6 +211,28 @@ TEST(lod_select_unregistered_entity) {
     lod_shutdown(&sys);
 }
 
+TEST(lod_select_unregistered_when_group0_exists) {
+    /* R260: with entity 0 registered at group index 0, an unregistered entity
+     * (entity_to_group[]==0) must NOT alias entity 0's LOD group. Before the fix
+     * the "group_idx >= count" guard passed (0 < 1) and returned entity 0's far
+     * level, also corrupting current_levels[999]. */
+    LODSystem sys;
+    lod_init(&sys);
+
+    LODGroup g = make_test_group(4, 10.0f);
+    lod_register(&sys, 0, &g);
+
+    Vec3 obj = vec3(0.0f, 0.0f, 0.0f);
+    Vec3 cam_far = vec3(1000.0f, 0.0f, 0.0f); /* would pick the coarsest level */
+    u32 level = lod_select(&sys, 999, obj, cam_far, 1.0f);
+    ASSERT_EQ(level, 0u); /* unregistered -> safe default, not group 0's LOD3 */
+
+    LODMesh m = lod_get_mesh(&sys, 999);
+    ASSERT_EQ(m.vertex_count, 0u); /* not entity 0's mesh */
+
+    lod_shutdown(&sys);
+}
+
 TEST(lod_single_level_group) {
     LODSystem sys;
     lod_init(&sys);
@@ -330,6 +352,7 @@ TEST_MAIN_BEGIN()
     /* Edge cases */
     RUN_TEST(lod_select_zero_distance);
     RUN_TEST(lod_select_unregistered_entity);
+    RUN_TEST(lod_select_unregistered_when_group0_exists);
     RUN_TEST(lod_single_level_group);
     RUN_TEST(lod_negative_bias);
     RUN_TEST(lod_get_mesh_unregistered);
