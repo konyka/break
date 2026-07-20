@@ -129,7 +129,9 @@ void audio_stream_play(AudioStreamManager *mgr, i32 stream_idx) {
 void audio_stream_pause(AudioStreamManager *mgr, i32 stream_idx) {
     if (!stream_idx_valid(mgr, stream_idx)) return;
     AudioStream *s = &mgr->streams[stream_idx];
-    audio_stop(mgr->audio, s->source_id); /* miniaudio stop pauses, keeps cursor */
+    /* R241: audio_stop() uninits the sound and frees the slot; use the pause-only
+     * primitive so the cursor/source survive and audio_stream_play() can resume. */
+    audio_source_stop(mgr->audio, s->source_id);
     s->state = AUDIO_STREAM_PAUSED;
 }
 

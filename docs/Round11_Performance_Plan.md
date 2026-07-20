@@ -4331,6 +4331,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R241：音频流 pause 误销毁音源修复（已完成）
+
+### [x] R241-A audio_stream_pause must not destroy the source
+- [x] 新增 `audio_source_stop`（只 `ma_sound_stop`，保留游标与槽位），`audio_stream_pause` 由 `audio_stop`（uninit+归还槽位）改调之
+- [x] 修复 pause 后无法恢复/崩溃/槽位复用串音；`audio_stream_play` 经 `audio_source_start` 正确从游标恢复
+
+**评估未改**：Linux `filewatch_poll` inotify 事件边界——内核保证 `read()` 只返回完整事件、不跨读截断，越界读不可触发，非真实 bug。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 

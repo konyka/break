@@ -53,6 +53,7 @@ void         audio_source_set_attenuation(AudioSystem *as, u32 source_id,
                                           f32 min_dist, f32 max_dist, f32 rolloff);
 void         audio_source_set_volume(AudioSystem *as, u32 source_id, f32 volume);
 void         audio_source_start(AudioSystem *as, u32 source_id);
+void         audio_source_stop(AudioSystem *as, u32 source_id);
 bool         audio_source_at_end(AudioSystem *as, u32 source_id);
 f32          audio_source_cursor_seconds(AudioSystem *as, u32 source_id);
 

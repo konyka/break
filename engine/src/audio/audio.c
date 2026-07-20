@@ -225,6 +225,16 @@ void audio_source_start(AudioSystem *as, u32 source_id) {
     if (src->active) ma_sound_start(&src->sound);
 }
 
+void audio_source_stop(AudioSystem *as, u32 source_id) {
+    if (!as || source_id == 0 || source_id > as->source_count) return;
+    AudioSource *src = &as->sources[source_id - 1];
+    /* R241: Pause only — ma_sound_stop halts playback but preserves the cursor
+     * and keeps the sound initialized and its slot allocated (unlike audio_stop,
+     * which uninits the sound and returns the slot to the free-list). This lets
+     * audio_source_start() resume from the same position. */
+    if (src->active) ma_sound_stop(&src->sound);
+}
+
 bool audio_source_at_end(AudioSystem *as, u32 source_id) {
     if (!as || source_id == 0 || source_id > as->source_count) return true;
     AudioSource *src = &as->sources[source_id - 1];
