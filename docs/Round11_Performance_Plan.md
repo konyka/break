@@ -4410,6 +4410,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image CSM 回归）。
 
+## R248：点光源阴影 clip 位置漏乘 u_model（已完成）
+
+### [x] R248-A point-shadow depth VS clip position must include u_model
+- [x] `point_shadow_depth(.vert/_vk.vert)`：`v_world_pos = u_model*pos`（供片元 world-depth），但 `gl_Position = u_mvp*pos` 漏乘 u_model；u_mvp 仅面 view-proj，legacy 路径上传 world_transform 到 u_model → 覆盖用模型空间、深度用世界空间，非单位节点点光阴影错 texel
+- [x] 两 VS 改 `gl_Position = u_mvp * (u_model * pos)`（VK 保留 z∈[0,1] 重映射）；mega-buffer/terrain 用 identity model 字节等价
+
+**评估未改**：Lua `checked_body` 拒绝 `id<=0`——经 test_script_lua/main.c:1349（地面 body 0）确认为既定「id 0=floor/none 哨兵」约定，spawn 体 id≥1 正常，非 bug。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 
