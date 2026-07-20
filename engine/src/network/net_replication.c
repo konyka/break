@@ -140,7 +140,11 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, u8 type, const u8 *wi
 
     NetRepUnreliableChannel *ch = net_unre_ch(rep, type);
 
-    if (hdr.ack >= rep->reliable_pending.seq)
+    /* R245: wraparound-safe "ack has reached pending.seq" (ack at-or-after seq),
+     * matching the seq-dedup convention (delta > 0x80000000u) used below. A naive
+     * `ack >= seq` fails once the 32-bit sequence wraps (e.g. seq=0xFFFFFFF0,
+     * ack=5), leaving reliable_pending stuck valid → endless retransmit. */
+    if ((hdr.ack - rep->reliable_pending.seq) < 0x80000000u)
         rep->reliable_pending.valid = false;
     rep->last_peer_ack = hdr.ack;
 
@@ -225,7 +229,7 @@ static i32 net_repl_deliver_ordered(NetReplicator *rep, u8 type, const u8 *wire,
     if (!packet_parse_header(wire, len, &hdr)) return NET_ERROR;
 
     NetRepOrderedChannel *ch = net_ord_ch(rep, type);
-    if (hdr.ack >= rep->reliable_pending.seq)
+    if ((hdr.ack - rep->reliable_pending.seq) < 0x80000000u) /* R245: wraparound-safe ack */
         rep->reliable_pending.valid = false;
     rep->last_peer_ack = hdr.ack;
 
@@ -374,7 +378,8 @@ i32 net_replicator_send_heartbeat_ack(NetReplicator *rep, const NetAddress *dst,
 
 i32 net_replicator_retry_pending(NetReplicator *rep) {
     if (!rep || !rep->socket || !rep->reliable_retry || !rep->reliable_pending.valid) return 0;
-    if (rep->reliable_pending.seq <= rep->last_peer_ack) {
+    /* R245: wraparound-safe "last_peer_ack has reached pending.seq" (see deliver). */
+    if ((rep->last_peer_ack - rep->reliable_pending.seq) < 0x80000000u) {
         rep->reliable_pending.valid = false;
         return 0;
     }

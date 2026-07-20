@@ -4376,6 +4376,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R245：frustum_extract sign_mask + 网络 ACK 回绕比较（已完成）
+
+### [x] R245-A frustum_extract must fill sign_mask
+- [x] `frustum_cull_batch`/`frustum_test_aabb` 用 `f->sign_mask[p]` 选 p-vertex；`frustum_from_vp` 写之，但 `frustum_extract` 从不写 → 零初始化 Frustum + extract 后剔除全取 min 角、误剔视锥内物体
+- [x] `frustum_extract` 归一化循环末尾按 `frustum_from_vp` 同法补写 sign_mask；`frustum_extract_matches_from_vp` 加 sign_mask 断言
+
+### [x] R245-B net_replication ACK/seq comparison must be wraparound-safe
+- [x] 可靠重传判「ACK 确认 pending」用裸 `ack >= seq`（143/229）与 `seq <= last_peer_ack`（377），u32 回绕后失效 → reliable_pending 永 valid、无限重发
+- [x] 三处改为 `(ack - seq) < 0x80000000u`，与同文件序号去重回绕安全写法一致（仅 reliable_retry 开启且回绕时表现）
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归 + frustum sign_mask 断言）。
+
 ## 构建与回归命令
 
 

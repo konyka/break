@@ -41,6 +41,14 @@ void frustum_extract(Frustum *f, const Mat4 *vp)
             f->planes[p].e[2] *= inv;
             f->planes[p].e[3] *= inv;
         }
+        /* R245: frustum_cull_batch / frustum_test_aabb select the p-vertex via
+         * f->sign_mask. frustum_from_vp fills it, but frustum_extract previously
+         * left it untouched, so an extract-produced frustum (esp. from a zeroed
+         * struct) had sign_mask==0 → every plane picked the min corner → wrong
+         * cull results. Compute it identically to frustum_from_vp. */
+        f->sign_mask[p] = (f->planes[p].e[0] >= 0.0f ? 1u : 0u)
+                        | (f->planes[p].e[1] >= 0.0f ? 2u : 0u)
+                        | (f->planes[p].e[2] >= 0.0f ? 4u : 0u);
     }
 }
 

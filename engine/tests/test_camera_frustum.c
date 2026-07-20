@@ -135,6 +135,8 @@ TEST(frustum_extract_matches_from_vp)
         for (int j = 0; j < 4; j++) {
             ASSERT_TRUE(fabsf(f1.planes[i].e[j] - f2.planes[i].e[j]) < EPS);
         }
+        /* R245: sign_mask must also match — batch/AABB culling depends on it. */
+        ASSERT_EQ(f1.sign_mask[i], f2.sign_mask[i]);
     }
 }
 
