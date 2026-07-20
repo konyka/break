@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R261：ECS query_next 迭代器 index off-by-one（已完成）
+
+### [x] R261-A query_next returns current 0-based row in it.index
+- [x] `query_next`（ecs.c:685）在返回前 `it->index++`，而文档用法（PureC_Engine_DeepDive.md:262 ECS_GET）循环体内用当前 it.index 取行 → 每 chunk 跳过行 0、末次越界读行 count
+- [x] 迭代次数仍正确（计数测试通过未暴露）；main.c 手遍历 / ecs_parallel_for 整列回调不读 it.index，运行时未触发，属文档化 API off-by-one
+- [x] 修复：query_begin 置 index=(u32)-1 哨兵；query_next 进 chunk 后先 ++ 再边界检查，返回时 index=当前有效 0-based 行；切 chunk 复位 -1
+- [x] 迭代次数与原实现一致；新增回归 ecs_query_index_zero_based（5 实体单 chunk 走过 0..4）
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**。
+
 ## R260：LOD 未注册 entity 与组索引 0 混同（已完成）
 
 ### [x] R260-A verify entity_id in lod_select / lod_get_mesh

@@ -186,6 +186,43 @@ TEST(ecs_query_iteration) {
     world_destroy(w);
 }
 
+TEST(ecs_query_index_zero_based) {
+    /* R261: query_next must leave it.index at the CURRENT 0-based row so the
+     * documented pattern chunk_get_component(it.chunk, it.index, ...) reads the
+     * right entity. 5 small entities fit in one 16KB chunk, so the rows walked
+     * must be exactly 0,1,2,3,4. The old pre-increment yielded 1,2,3,4,5 —
+     * skipping row 0 and reading one past the end on the last iteration. */
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    world_register_component(w, COMP_VELOCITY, sizeof(Velocity));
+
+    for (int i = 0; i < 5; i++) {
+        Entity e = world_create_entity(w);
+        world_add_component(w, e, COMP_POSITION);
+        world_add_component(w, e, COMP_VELOCITY);
+    }
+
+    ComponentType types[] = { COMP_POSITION, COMP_VELOCITY };
+    Query *q = world_query(w, types, 2);
+    ASSERT_NOT_NULL(q);
+
+    u32 expected = 0;
+    int count = 0;
+    QueryIter it = query_begin(q);
+    while (query_next(&it)) {
+        ASSERT_EQ(it.index, expected);   /* 0-based, contiguous, in-bounds */
+        expected++;
+        count++;
+    }
+    query_done(q);
+
+    ASSERT_EQ(count, 5);
+
+    world_destroy(w);
+}
+
 TEST(ecs_query_empty_result) {
     World *w = world_create();
     ASSERT_NOT_NULL(w);
@@ -828,6 +865,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_component_multiple);
     RUN_TEST(ecs_component_remove);
     RUN_TEST(ecs_query_iteration);
+    RUN_TEST(ecs_query_index_zero_based);
     RUN_TEST(ecs_query_empty_result);
     RUN_TEST(ecs_entity_recycle_slot_reuse);
     RUN_TEST(ecs_entity_recycle_stale_handle);

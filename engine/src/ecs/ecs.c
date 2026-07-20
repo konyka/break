@@ -673,23 +673,33 @@ Query *world_query(World *w, const ComponentType *types, u32 count) {
 }
 
 bool query_next(QueryIter *it) {
-    if (!it->query || it->arch_index >= it->query->match_count) return false;
+    if (!it->query) return false;
 
+    /* R261 (CORRECTNESS): on return, it->index must be the CURRENT row to read
+     * (0-based), matching the documented pattern
+     *   while (query_next(&it)) { T *c = chunk_get_component(it.chunk, it.index, ...); }
+     * (see PureC_Engine_DeepDive.md ECS_GET). The previous code pre-incremented
+     * it->index before `return true`, so callers read rows 1..count instead of
+     * 0..count-1 — skipping each chunk's first entity and reading one past the end
+     * on the final iteration (OOB). Iteration COUNT was already correct, so the
+     * counting-only tests never caught it. Here it->index is a sentinel
+     * ((u32)-1) between rows and is advanced *before* the bounds check, so a
+     * successful return leaves it->index pointing at the valid current row. */
     while (it->arch_index < it->query->match_count) {
         if (!it->chunk) {
             it->arch_index++;
             if (it->arch_index >= it->query->match_count) return false;
             it->chunk = it->query->matching[it->arch_index]->chunks;
-            it->index = 0;
+            it->index = (u32)-1;
+            continue;
         }
-        if (it->chunk && it->index < it->chunk->count) {
-            it->index++;
+        it->index++;
+        if (it->index < it->chunk->count) {
             return true;
         }
-        if (it->chunk) {
-            it->chunk = it->chunk->next;
-            it->index = 0;
-        }
+        /* current chunk exhausted; move to the next (index resets on entry) */
+        it->chunk = it->chunk->next;
+        it->index = (u32)-1;
     }
     return false;
 }
@@ -710,7 +720,8 @@ QueryIter query_begin(Query *q) {
     it.query = q;
     it.arch_index = 0;
     it.chunk = (q && q->match_count > 0) ? q->matching[0]->chunks : NULL;
-    it.index = 0;
+    /* R261: sentinel so the first query_next advances to row 0 (see query_next). */
+    it.index = (u32)-1;
     return it;
 }
 
