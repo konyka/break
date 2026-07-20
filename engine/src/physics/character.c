@@ -244,7 +244,12 @@ bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
             }
         }
 
-        if (valid && tmin < best_t) {
+        /* R254: require tmin >= 0, matching ccd_sweep_static (physics.c). Without
+         * it, a sweep starting inside a static AABB yields tmin < 0 (the box's
+         * entry plane is behind the origin) yet was reported as a hit with a
+         * negative t and an out_hit_pos = origin + delta*tmin lying opposite the
+         * sweep direction — not the first forward contact in [0,1]. */
+        if (valid && tmin >= 0.0f && tmin < best_t) {
             best_t = tmin;
             hit = true;
         }

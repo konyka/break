@@ -51,7 +51,15 @@ static bool packet_can_write(const PacketBuffer *buf, u32 n)
 static bool packet_can_read(const PacketBuffer *buf, u32 n)
 {
     if (!buf) return false;
-    return (buf->read_pos + n) <= PACKET_MAX_SIZE;
+    /* R254: bound by write_pos (the actual received/copied byte count set by
+     * packet_read_begin), not the fixed PACKET_MAX_SIZE capacity. A truncated or
+     * forged datagram left the tail of buf->data uninitialized, so reads past the
+     * real payload returned stale stack bytes instead of failing — e.g. a
+     * replication packet could declare N snapshots with only 1 present and the
+     * parser would fabricate the rest. This also makes read_truncated_packet /
+     * empty-payload reads deterministically return 0 rather than relying on the
+     * buffer tail happening to be zero. */
+    return (buf->read_pos + n) <= buf->write_pos;
 }
 
 /* ---- Serialization ---- */

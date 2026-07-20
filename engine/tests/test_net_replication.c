@@ -644,9 +644,40 @@ TEST(peer_save_delta)
 #endif
 }
 
+TEST(parse_payload_clamps_forged_count)
+{
+    /* R254: a packet declaring more snapshots than its byte length can hold must
+     * not fabricate entries. Build one that claims 5 but carries only 1; the
+     * parser must clamp recv_count to the bytes actually present (each entry is
+     * u32 + 3*f32 = 16 bytes), not read stale buffer past write_pos. */
+    PacketBuffer buf;
+    packet_begin(&buf, (u8)NET_PKT_TRANSFORM_SNAPSHOT, (u8)PACKET_UNRELIABLE);
+    packet_write_u16(&buf, 5u);          /* forged count */
+    packet_write_u32(&buf, 42u);         /* one real entity follows */
+    packet_write_f32(&buf, 1.0f);
+    packet_write_f32(&buf, 2.0f);
+    packet_write_f32(&buf, 3.0f);
+    u8 wire[PACKET_MAX_SIZE];
+    u32 len = packet_finish(&buf, 1u, 0u);
+    memcpy(wire, buf.data, len);
+
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    NetTransformSnapshot out[8] = {0};
+    u32 out_count = 99u;
+    ASSERT_TRUE(net_replicator_feed(&rep, wire, len, out, 8u, &out_count) > 0);
+    ASSERT_EQ(out_count, 1u);            /* clamped — no ghost entities */
+    ASSERT_EQ(out[0].entity_id, 42u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 1.0f, 0.001f);
+
+    net_replicator_shutdown(&rep);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(replicator_init_shutdown);
     RUN_TEST(transform_snapshot_loopback);
+    RUN_TEST(parse_payload_clamps_forged_count);
     RUN_TEST(reliable_retry_pending);
     RUN_TEST(ordered_reorder_buffer);
     RUN_TEST(ordered_reorder_out_of_window_no_stall);

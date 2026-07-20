@@ -411,6 +411,16 @@ static bool net_repl_parse_payload(const PacketBuffer *buf, NetTransformSnapshot
     if (n == 0u) return true;
     if (n > max_count) n = (u16)max_count;
 
+    /* R254: clamp the declared entry count to the bytes actually present so a
+     * truncated/forged length can't fabricate snapshots (each entry is
+     * entity_id:u32 + position:3*f32 = 16 bytes). Without this the loop below
+     * would read past write_pos — now zeros (see packet_can_read) — yet still
+     * report recv_count = n, producing ghost entities at (0,0,0). */
+    u32 avail = (buf->write_pos > buf->read_pos)
+              ? (buf->write_pos - buf->read_pos) / 16u : 0u;
+    if ((u32)n > avail) n = (u16)avail;
+    if (n == 0u) return true;
+
     for (u16 i = 0; i < n; i++) {
         out[i].entity_id = packet_read_u32((PacketBuffer *)buf);
         out[i].position[0] = packet_read_f32((PacketBuffer *)buf);

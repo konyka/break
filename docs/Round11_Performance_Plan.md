@@ -4420,6 +4420,22 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R254：packet 读取按实际长度边界 + 扫掠负 tmin（已完成）
+
+### [x] R254-A packet reads must be bounded by write_pos, parse must validate length
+- [x] `packet_can_read` 用 PACKET_MAX_SIZE 而非 write_pos → 越过真实 payload 读栈残留字节
+- [x] `net_repl_parse_payload` 读 n 后不校验剩余字节、读失败仍 return true 设 out_count=n → 伪造/截断包造 (0,0,0) 幽灵实体
+- [x] 修复：`packet_can_read` 改 `read_pos+n<=write_pos`（截断/空 payload 读确定性返 0）；parse 按 `(write_pos-read_pos)/16` 钳条目数
+- [x] 新增 `parse_payload_clamps_forged_count` 回归
+
+### [x] R254-B physics_sweep_test must reject negative tmin (match ccd_sweep_static)
+- [x] `physics_sweep_test` slab 判据缺 `tmin>=0`；起点在静态 AABB 内时 tmin<0 仍报 hit、t 为负、hit_pos 落反方向
+- [x] 修复：判据加 `tmin>=0.0f`，与 `ccd_sweep_static`(physics.c:558) 一致
+
+**说明**：二者纯 CPU（网络/物理），GL/VK 无关。`packet_can_read` 修复亦使既有 read_truncated_packet/空 payload 读不再依赖栈恰为 0。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含新增伪造条目数回归）。
+
 ## R253：glTF 蒙皮关节索引 >128 越界 texelFetch（已完成）
 
 ### [x] R253-A clamp glTF joint indices to SKELETON_MAX_JOINTS
