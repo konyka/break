@@ -4388,6 +4388,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归 + frustum sign_mask 断言）。
 
+## R246：非循环动画末端事件漏触发（已完成）
+
+### [x] R246-A event at et == duration must fire for non-looping clips
+- [x] 非循环片段钳到 duration，事件扫描半开 `[t0,t1)` 使 `et==duration` 事件因 `et<t1` 为假而漏触发，且此后帧不再推进→永久丢失
+- [x] `fire_events_in_range` 增 `inclusive_end`，仅「非循环且 `L->time>=dur` 被钳末端」时用闭区间上界，恰触发一次；循环 wrap 两段仍半开避免重复
+- [x] 新增 `event_at_duration_nonlooping_fires` 回归测试
+
+**评估未改**：Wayland `keyboard_key` 把 `REPEATED` 当松开——`wl_seat` 绑定 v5，`REPEATED`(state=2) 需 wl_keyboard v10 才会下发，当前 compositor 不会发送，非真实 bug。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归 + 动画末端事件）。
+
 ## 构建与回归命令
 
 

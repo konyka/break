@@ -208,13 +208,18 @@ static void advance_layer_time(AnimationLayer *L, f32 dt, f32 duration) {
 }
 
 /* R101: Fire animation events whose timestamps fall in [t0, t1).
- * Called after advance_layer_time to notify the host of timeline crossings. */
+ * Called after advance_layer_time to notify the host of timeline crossings.
+ * R246: inclusive_end makes the upper bound closed ([t0, t1]) so an event at
+ * exactly clip->duration fires when a non-looping clip is clamped to its end;
+ * with the default half-open range such an event would be lost forever (the
+ * clip stays clamped at duration, so no later frame re-enters this range). */
 static void fire_events_in_range(const AnimClip *clip, f32 t0, f32 t1,
-                                  AnimBlendState *state) {
+                                  bool inclusive_end, AnimBlendState *state) {
     if (!state->event_callback || !clip || clip->event_count == 0) return;
     for (u32 i = 0; i < clip->event_count; i++) {
         f32 et = clip->events[i].time;
-        if (et >= t0 && et < t1) {
+        bool hit = (et >= t0) && (inclusive_end ? (et <= t1) : (et < t1));
+        if (hit) {
             state->event_callback(clip->events[i].name, et,
                                   state->event_user_data);
         }
@@ -259,10 +264,15 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
          * For looping clips that wrapped, fire two ranges: [prev, dur) + [0, now). */
         if (state->event_callback && clip && clip->event_count > 0) {
             if (L->time > prev_time) {
-                fire_events_in_range(clip, prev_time, L->time, state);
+                /* R246: include the endpoint only when a non-looping clip has
+                 * just been clamped to its duration this frame, so an event at
+                 * et == duration fires exactly once (subsequent frames no longer
+                 * advance past prev_time == duration). */
+                bool at_end = (!L->looping && dur > 0.0f && L->time >= dur);
+                fire_events_in_range(clip, prev_time, L->time, at_end, state);
             } else if (L->time < prev_time && L->looping && dur > 0.0f) {
-                fire_events_in_range(clip, prev_time, dur, state);
-                fire_events_in_range(clip, 0.0f, L->time, state);
+                fire_events_in_range(clip, prev_time, dur, false, state);
+                fire_events_in_range(clip, 0.0f, L->time, false, state);
             }
         }
 

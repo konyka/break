@@ -403,6 +403,32 @@ TEST(event_fires_when_crossed)
     anim_blend_state_destroy(&st);
 }
 
+TEST(event_at_duration_nonlooping_fires)
+{
+    /* R246: a non-looping clip is clamped to its duration; an event at exactly
+     * clip->duration must still fire (half-open [t0,t1) would drop it). */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 2.0f, 0, 0, 0, 10, 0, 0);
+    anim_clip_add_event(&g_clips[0], 2.0f, "clip_end");  /* et == duration */
+
+    g_evt_count = 0;
+    anim_set_event_callback(&st, test_event_cb, NULL);
+    anim_layer_play(&st, 0, 0, 1.0f, false);  /* non-looping */
+
+    /* Advance past the end: time 0 -> clamped to 2.0; end event must fire once. */
+    anim_blend_evaluate(&st, 2.5f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+    ASSERT_STR_EQ(g_evt_name, "clip_end");
+    ASSERT_FLOAT_EQ(g_evt_time, 2.0f, 0.001f);
+
+    /* Further frames stay clamped — no duplicate firing. */
+    anim_blend_evaluate(&st, 0.5f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+
+    anim_blend_state_destroy(&st);
+}
+
 TEST(event_looping_wrap)
 {
     AnimBlendState st;
@@ -486,6 +512,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(crossfade_zero_duration);
     /* Animation events (R101) */
     RUN_TEST(event_fires_when_crossed);
+    RUN_TEST(event_at_duration_nonlooping_fires);
     RUN_TEST(event_looping_wrap);
     RUN_TEST(event_no_callback_safe);
     RUN_TEST(event_add_max_clamped);
