@@ -113,6 +113,14 @@ static const u8 *cgltf_buffer_data(cgltf_accessor *acc) {
 }
 
 static usize cgltf_accessor_stride(cgltf_accessor *acc) {
+    /* R249: honor the accessor byte stride. cgltf's fixup sets acc->stride to the
+     * bufferView's byteStride, or the compact element size when byteStride==0
+     * (see cgltf_fixup_pointers). The previous compact-only computation ignored
+     * interleaved buffers (byteStride > element size), so pos/normal/uv/joints/
+     * weights were read from wrong offsets and meshes came out mangled. For
+     * compact (non-interleaved) accessors acc->stride already equals the element
+     * size, so this is byte-identical there. */
+    if (acc->stride) return (usize)acc->stride;
     cgltf_size component_size = cgltf_component_size(acc->component_type);
     return component_size * cgltf_num_components(acc->type);
 }
@@ -322,6 +330,12 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     } else if (jnt_acc->component_type == cgltf_component_type_r_16u) {
                         const u16 *j = (const u16 *)(jd + vi * jnt_stride);
                         for (u32 k = 0; k < 4; k++) sverts[vi].joints[k] = (u32)j[k];
+                    } else if (jnt_acc->component_type == cgltf_component_type_r_32u) {
+                        /* R249: glTF 2.0 permits UNSIGNED_INT JOINTS_0 (e.g. skins
+                         * with >255 joints). Without this branch joints stayed 0,
+                         * collapsing all skinned verts onto joint 0. */
+                        const u32 *j = (const u32 *)(jd + vi * jnt_stride);
+                        for (u32 k = 0; k < 4; k++) sverts[vi].joints[k] = j[k];
                     }
                     memcpy(sverts[vi].weights, wd + vi * wgt_stride, sizeof(f32) * 4);
                     f32 wsum = sverts[vi].weights[0] + sverts[vi].weights[1] + sverts[vi].weights[2] + sverts[vi].weights[3];

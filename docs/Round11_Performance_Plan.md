@@ -4420,6 +4420,20 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R249：glTF 交错顶点 stride + JOINTS_0 u32（已完成）
+
+### [x] R249-A cgltf_accessor_stride must honor byte stride
+- [x] 原实现只返回紧凑元素大小，忽略 `acc->stride`（cgltf 已设为 bufferView byteStride）；交错顶点 glTF 的 pos/normal/uv/joints/weights 全读错偏移 → 网格变形
+- [x] `acc->stride` 非零直接返回，否则退化紧凑大小（紧凑资产字节等价）
+
+### [x] R249-B JOINTS_0 must handle UNSIGNED_INT (r_32u)
+- [x] 只处理 r_8u/r_16u，缺 r_32u；calloc 置 0 使关节恒为 0 → 蒙皮塌到 joint 0
+- [x] 新增 r_32u 分支按 jnt_stride 读 4×u32（对称索引路径已支持的 r_32u）
+
+**说明**：IBM 拷贝按 `ji*16` 紧凑步进不变（glTF 禁止 IBM accessor 带 byteStride）。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（现有资产紧凑布局，字节等价）。
+
 ## 构建与回归命令
 
 
