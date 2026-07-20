@@ -341,7 +341,8 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             RHITexture brdf_lut, RHICubemap irradiance, RHICubemap prefilter,
                             u32 psc_count, const RHITexture *psc_tex, const f32 *psc_far_planes,
                             f32 near_plane, f32 far_plane, f32 shadow_bias,
-                            const f32 *view_mat, const f32 *camera_data) {
+                            const f32 *view_mat, const f32 *camera_data,
+                            RHITexture ssao_tex) {
     if (!sys || !dev || !sys->initialized) return;
 
     rhi_cmd_bind_pipeline(cmd, sys->lighting_pipeline);
@@ -351,13 +352,17 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     if (psc_n > 4u) psc_n = 4u;
 
 #ifdef ENGINE_VULKAN
+    /* R272: pass the screen-space SSAO as the ssao arg (was RHI_HANDLE_NULL).
+     * With a valid handle, bind_material_textures_ibl routes SSAO to binding 5
+     * and point-shadow cubes to binding 10 — the same layout the forward path
+     * uses, matched by deferred_light_vk.frag's u_ssao@5 / cubes@10. */
     rhi_cmd_bind_material_textures_ibl(cmd,
         sys->gbuf_albedo_metallic,
         sys->gbuf_roughness_ao,
         sys->gbuf_normal,
         sys->gbuf_depth,
         shadow_map,
-        RHI_HANDLE_NULL,
+        ssao_tex,
         sys->_gbuf_sampler,
         brdf_lut, irradiance, prefilter,
         psc_n > 0u ? psc_tex : NULL, psc_n);
@@ -381,6 +386,11 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     }
     if (rhi_handle_valid(prefilter)) {
         rhi_cmd_bind_cubemap(cmd, prefilter, sys->_gbuf_sampler, 9);
+    }
+    /* R272: screen-space SSAO at unit 14 (u_ssao in deferred_light.frag),
+     * matching the forward path's R213-B binding. */
+    if (rhi_handle_valid(ssao_tex)) {
+        rhi_cmd_bind_texture(cmd, ssao_tex, sys->_gbuf_sampler, 14);
     }
 #endif
 

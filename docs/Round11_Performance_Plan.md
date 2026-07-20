@@ -4420,6 +4420,21 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R272：延迟光照从不采样屏幕 SSAO（每帧算出却弃用）（已完成）
+
+### [x] R272-A wire screen-space SSAO into the deferred lighting pass
+- [x] main.c:5318 每帧 ssao_apply（默认 radius=0.5）算屏幕 AO 到 blur_fbo，render.ssao_tex=ssao_get_texture()
+- [x] forward pbr_clustered.frag:389 ao=texture(u_ssao).r 乘进 IBL；deferred_light(.frag/_vk.frag) ao=rao.g 从不采样 u_ssao
+- [x] deferred.c 对 VK 传 ssao=RHI_HANDLE_NULL、GL 布局无 u_ssao → 延迟完全忽略屏幕 SSAO
+- [x] 手算：DEFERRED、rao.g=1.0、SSAO=0.4 → 期望 L_ibl×0.4，实际 L_ibl×1.0（比前向亮 2.5x）；触发 RENDER_PATH_DEFERRED 且 radius>0
+- [x] 修复：deferred_light_vk.frag u_point_shadow_cubes 5→10（移出 #ifdef HAS_IBL）、binding5 改 sampler2D u_ssao（复用 forward 每帧验证的 bind_material_textures_ibl 路径）
+- [x] GL deferred_light.frag unit14 加 u_ssao（对齐 R213-B）；两 shader ao = rao.g * texture(u_ssao,uv).r
+- [x] deferred_lighting_pass 加 ssao_tex 参，VK 传 ssao_tex/GL 绑 unit14；main.c 传 render.ssao_tex（与 forward 同源同 1 帧延迟）
+- [x] null-ssao 边角与前向逐字节相同（前向已生产验证），非新增风险；glslangValidator VK 两路径(±HAS_IBL)编译通过
+- [x] golden 只渲前向三角形、test_vulkan 不调 deferred_lighting_pass，测试套件无覆盖差异
+
+**验收**：双后端构建通过（+glslang SPIR-V 校验）；GL/VK CTest 各 **31/31**。
+
 ## R271：combined color 融合后处理未接入自动曝光（默认路径曝光错误）（已完成）
 
 ### [x] R271-A wire auto-exposure into the fused combined_color pass

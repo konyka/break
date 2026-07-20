@@ -5255,7 +5255,8 @@ u32 culled_count = 0;
                                    render.ibl.prefilter_map,
                                    g_psc.count, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.far_planes,
                                    0.1f, 100.0f, shadow_bias,
-                                   &view.e[0][0], cam_uniform);
+                                   &view.e[0][0], cam_uniform,
+                                   render.ssao_tex);
         }
 
         profiler_pop();

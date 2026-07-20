@@ -100,6 +100,7 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             RHITexture brdf_lut, RHICubemap irradiance, RHICubemap prefilter,
                             u32 psc_count, const RHITexture *psc_tex, const f32 *psc_far_planes,
                             f32 near_plane, f32 far_plane, f32 shadow_bias,
-                            const f32 *view_mat, const f32 *camera_data);
+                            const f32 *view_mat, const f32 *camera_data,
+                            RHITexture ssao_tex);
 
 #endif /* DEFERRED_H */

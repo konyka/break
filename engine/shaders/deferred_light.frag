@@ -13,6 +13,9 @@ layout(binding = 2) uniform sampler2D u_gbuf_roughness_ao;
 layout(binding = 3) uniform sampler2D u_gbuf_depth;
 layout(binding = 4) uniform sampler2D u_shadow_map;
 layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4];
+/* R272: screen-space SSAO at unit 14 (matches forward pbr_clustered.frag R213-B;
+ * deferred gbuffer uses 0-4, IBL 7-9, point-shadow cubes 10-13, so 14 is free). */
+layout(binding = 14) uniform sampler2D u_ssao;
 layout(binding = 5) uniform samplerBuffer u_light_data;
 layout(binding = 6) uniform samplerBuffer u_light_grid;
 #ifdef HAS_IBL
@@ -225,7 +228,10 @@ void main() {
     vec3  albedo  = am.rgb;
     float metal   = am.a;
     float rough   = max(rao.r, 0.04);
-    float ao      = rao.g;
+    /* R272: combine baked material AO (rao.g) with screen-space SSAO, matching
+     * the forward path which multiplies IBL by texture(u_ssao). Previously
+     * deferred ignored the per-frame SSAO entirely (used only rao.g). */
+    float ao      = rao.g * texture(u_ssao, uv).r;
 
     vec3 N    = octahedron_decode(texture(u_gbuf_normal, uv).rg);
     vec3 wpos = reconstruct_world_pos(uv, depth);

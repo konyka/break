@@ -11,7 +11,13 @@ layout(binding = 1) uniform sampler2D u_shadow_map;
 layout(binding = 2) uniform sampler2D u_gbuf_roughness_ao;
 layout(binding = 3) uniform sampler2D u_gbuf_normal;
 layout(binding = 4) uniform sampler2D u_gbuf_depth;
-layout(set = 0, binding = 5) uniform samplerCube u_point_shadow_cubes[4];
+/* R272: match the forward pbr_clustered_vk.frag binding scheme so deferred also
+ * consumes the screen-space SSAO — u_ssao at binding 5 (sampler2D), point-shadow
+ * cubes moved to binding 10. rhi_cmd_bind_material_textures_ibl already routes a
+ * valid ssao handle to binding 5 and the cubes to binding 10 (the exact path the
+ * forward draws exercise every frame). */
+layout(set = 0, binding = 5) uniform sampler2D u_ssao;
+layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 layout(set = 1, binding = 0) uniform samplerBuffer u_light_data;
 layout(set = 1, binding = 1) uniform samplerBuffer u_light_grid;
 #ifdef HAS_IBL
@@ -223,7 +229,10 @@ void main() {
     vec3  albedo  = am.rgb;
     float metal   = am.a;
     float rough   = max(rao.r, 0.04);
-    float ao      = rao.g;
+    /* R272: combine baked material AO (rao.g) with screen-space SSAO, matching
+     * the forward path which multiplies IBL by texture(u_ssao). Previously
+     * deferred ignored the per-frame SSAO entirely (used only rao.g). */
+    float ao      = rao.g * texture(u_ssao, uv).r;
 
     vec3 N    = octahedron_decode(texture(u_gbuf_normal, uv).rg);
     vec3 wpos = reconstruct_world_pos(uv, depth);
