@@ -232,6 +232,33 @@ TEST(blend_evaluate_step_holds_keyframe)
     anim_blend_state_destroy(&st);
 }
 
+TEST(skeleton_evaluate_step_holds_keyframe)
+{
+    /* R252: skeleton_evaluate (legacy skinning path, used when BREAK_ANIM_BLEND is
+     * unset) must honor STEP like clip_sample. LINEAR 0->10 over 1s reads 5 at
+     * t=0.5; STEP must hold 0, then reach 10 only at the final keyframe. */
+    Skeleton sk;
+    skeleton_init(&sk, NULL);
+    u32 parents[1] = { UINT32_MAX };          /* single root joint */
+    Mat4 inv_bind[1] = { mat4_identity() };
+    skeleton_set_joints(&sk, 1, parents, inv_bind);
+
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    g_clips[0].channels[0].interp = ANIM_INTERP_STEP;
+
+    /* Single joint + identity inverse-bind: current_pose[0] == local TRS;
+     * translation is the column-major e[3][*] row. */
+    g_clips[0].time = 0.5f;
+    skeleton_evaluate(&sk, &g_clips[0], 0.0f);
+    ASSERT_TRUE(fabsf(sk.current_pose[0].e[3][0]) < 0.001f);   /* held at key 0 */
+
+    g_clips[0].time = 1.0f;
+    skeleton_evaluate(&sk, &g_clips[0], 0.0f);
+    ASSERT_TRUE(fabsf(sk.current_pose[0].e[3][0] - 10.0f) < 0.001f); /* final key */
+
+    skeleton_shutdown(&sk);
+}
+
 TEST(anim_clip_add_channel)
 {
     AnimClip clip;
@@ -524,6 +551,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(crossfade_gradual);
     RUN_TEST(anim_clip_init_basic);
     RUN_TEST(blend_evaluate_step_holds_keyframe);
+    RUN_TEST(skeleton_evaluate_step_holds_keyframe);
     RUN_TEST(anim_clip_add_channel);
     RUN_TEST(ik_init);
     RUN_TEST(ik_set_target);

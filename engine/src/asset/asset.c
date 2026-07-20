@@ -254,9 +254,16 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 cgltf_attribute *attr = &prim->attributes[ai];
                 if (attr->type == cgltf_attribute_type_position) pos_acc = attr->data;
                 if (attr->type == cgltf_attribute_type_normal)   nrm_acc = attr->data;
-                if (attr->type == cgltf_attribute_type_texcoord) uv_acc  = attr->data;
-                if (attr->type == cgltf_attribute_type_joints)   jnt_acc = attr->data;
-                if (attr->type == cgltf_attribute_type_weights)  wgt_acc = attr->data;
+                /* R252: pick set 0 explicitly. glTF allows multiple TEXCOORD_n /
+                 * JOINTS_n / WEIGHTS_n; the previous unconditional assignment kept
+                 * whichever set appeared LAST in the attribute list. When TEXCOORD_1
+                 * (lightmap/detail UV) followed TEXCOORD_0, the mesh got bound to the
+                 * secondary UV set while materials default to texCoord 0 → visibly
+                 * wrong/stretched texturing. The engine consumes a single UV set and
+                 * a single 4-influence skin set, so bind index 0 for all three. */
+                if (attr->type == cgltf_attribute_type_texcoord && attr->index == 0) uv_acc  = attr->data;
+                if (attr->type == cgltf_attribute_type_joints   && attr->index == 0) jnt_acc = attr->data;
+                if (attr->type == cgltf_attribute_type_weights  && attr->index == 0) wgt_acc = attr->data;
             }
 
             if (!pos_acc) continue;

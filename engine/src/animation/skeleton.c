@@ -190,6 +190,13 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
         f32 frac = (dt > 0.0f) ? (t - t0) * (1.0f / dt) : 0.0f;
         if (frac < 0.0f) frac = 0.0f;
         if (frac > 1.0f) frac = 1.0f;
+        /* R252: STEP holds keyframe kf across [t0, t1), taking kf_next only at
+         * t >= t1 (glTF 2.0). R251 fixed this in the blend path (clip_sample) but
+         * this legacy evaluate — the default demo skinning path when
+         * BREAK_ANIM_BLEND is unset — still interpolated STEP channels, producing
+         * in-between poses the source never contains. Snapping frac to 0/1 keeps
+         * lerp/slerp exact at both endpoints. */
+        if (ch->interp == ANIM_INTERP_STEP) frac = (t >= t1) ? 1.0f : 0.0f;
 
         if (ch->path == ANIM_PATH_TRANSLATION) {
             translations[ji] = anim_lerp_vec3(ch->values[kf], ch->values[kf_next], frac);

@@ -4420,6 +4420,21 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R252：skeleton_evaluate STEP 遗漏 + glTF UV/骨骼集索引（已完成）
+
+### [x] R252-A skeleton_evaluate must honor STEP (default skinning path)
+- [x] R251 只修了 clip_sample（混合路径）；legacy `skeleton_evaluate`(`skeleton.c:183`) 恒 lerp/slerp、不读 `ch->interp`；默认 demo（未设 BREAK_ANIM_BLEND）走此路径 → STEP 动画被线性插值
+- [x] 修复：clamp frac 后 `if (interp==STEP) frac=(t>=t1)?1:0`，与 clip_sample 一致
+- [x] 新增 `skeleton_evaluate_step_holds_keyframe` 回归测试
+
+### [x] R252-B glTF must select attribute set index 0 (TEXCOORD/JOINTS/WEIGHTS)
+- [x] `if (type==texcoord) uv_acc=attr->data` 无差别覆盖 → 留下最后一个 TEXCOORD_*；TEXCOORD_1 在后则绑错 UV 集，材质默认 texCoord:0 → 贴图错位
+- [x] 修复：texcoord/joints/weights 均加 `&& attr->index==0` 只绑主集
+
+**说明**：引擎消费单 UV 集 + 单 4-权重蒙皮集；glTF set 索引从 0 连续，有 texcoord 即有 TEXCOORD_0。现有资产单 UV，R252-B 字节等价。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含新增 skeleton STEP 回归）。
+
 ## R251：CCD/扫掠 BVH 候选截断回退 + glTF STEP 插值（已完成）
 
 ### [x] R251-A ccd_sweep_static / physics_sweep_test must fall back on BVH saturation
