@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R267：task_wait 完成计数 relaxed 递增致弱内存序可见性缺失（已完成）
+
+### [x] R267-A make total_tasks_completed increment acq_rel
+- [x] task_wait（task.c:774）判完成只 acquire-load total_tasks_completed，不读每任务 completed → 与 execute_task 的 task->completed release store 无同步
+- [x] 完成计数递增（task.c:336）为 relaxed（非 release）→ acquire load 与 worker 内 task->fn() 非原子写（ecs_parallel_for / sys_sync_transform_from_physics）无 happens-before
+- [x] 后果：ARM/Apple Silicon（引擎支持 macOS）上 task_wait 返回后可读旧任务结果（错帧/抖动）；x86 TSO 恰好隐藏
+- [x] 修复：递增改 memory_order_acq_rel（各 worker 递增 acquire 前序、release 自身，串成 happens-before 链；仅 release 只与序列头同步、跨多 worker 不足）
+- [x] create 内 relaxed 清零（506，单线程）不受影响；x86 无法复现，靠推导+全量回归验证
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（含 golden 与 test_task）。
+
 ## R266：terrain_generate 对 height_scale 二次缩放（已完成）
 
 ### [x] R266-A fix double application of height_scale in terrain_generate

@@ -333,7 +333,20 @@ static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
 
     /* Mark completed BEFORE dependency resolution so wait_handle can see it. */
     atomic_store_explicit(&task->completed, true, memory_order_release);
-    atomic_fetch_add_explicit(&ts->total_tasks_completed, 1, memory_order_relaxed);
+    /* R267 (CORRECTNESS): task_wait() (see below) decides "all done" solely by
+     * acquire-loading total_tasks_completed and comparing it to submitted — it
+     * does NOT load each task's `completed` flag, so the per-task release store
+     * above never synchronizes with a global task_wait(). If this increment were
+     * memory_order_relaxed, the acquire load in task_wait() would not form a
+     * happens-before with the non-atomic writes performed inside task->fn()
+     * (e.g. ecs_parallel_for component updates, sys_sync_transform_from_physics),
+     * so a thread returning from task_wait() could read STALE task results on a
+     * weak-memory target (ARM / Apple Silicon; the engine supports macOS). x86
+     * TSO happens to hide this. Use acq_rel: each worker's increment acquires the
+     * prior workers' increments (chaining their fn() writes into a happens-before
+     * chain) and releases its own, so once task_wait()'s acquire load observes
+     * completed >= submitted, every finished task's writes are visible. */
+    atomic_fetch_add_explicit(&ts->total_tasks_completed, 1, memory_order_acq_rel);
 
     /* R173: Detach waiter list under pool lock (fan-out + race-safe). */
     platform_mutex_lock(ts->pool_mutex_storage);
