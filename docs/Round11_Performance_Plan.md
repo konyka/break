@@ -4321,6 +4321,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R240：骨骼世界矩阵不依赖关节数组顺序（已完成）
+
+### [x] R240-A order-independent skeleton world resolution
+- [x] 新增 `skel_resolve_world` 定点迭代，替换三处 `joint_parents[i] >= i => root` 启发式
+- [x] `joint_parents` 按 skin.joints 位置索引，glTF 不保证父先于子；旧启发式会把子关节误当根 → 蒙皮错误。定点迭代与顺序无关，已排序骨骼单遍收敛、结果不变（joint_count≤128 栈上 bounded）
+
+**评估未改**：场景图 `scene_compute_world_transforms` 同类单遍，其「节点数组父先于子」顺序已被文档明确列为既定假设（依赖 cgltf），R151 仅补越界/自引用防护，本轮不推翻该设计决定。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 

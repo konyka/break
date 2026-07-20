@@ -106,6 +106,38 @@ static Mat4 mat4_trs(Vec3 t, Quat q, Vec3 s) {
     return m;
 }
 
+/* R240: Resolve world_poses[i] = root ? local[i] : world[parent[i]] * local[i]
+ * for arbitrary joint ordering. glTF's skin.joints array is NOT required to
+ * list a parent joint before its children; the old "joint_parents[i] >= i =>
+ * treat as root" heuristic mis-rooted such children and corrupted the skin.
+ * Iterate to a fixpoint (joint_count <= SKELETON_MAX_JOINTS = 128). For skins
+ * already ordered parent-before-child this yields identical results in one pass. */
+static void skel_resolve_world(const u32 *parents, const Mat4 *local, Mat4 *world, u32 n) {
+    if (n > SKELETON_MAX_JOINTS) n = SKELETON_MAX_JOINTS;
+    bool resolved[SKELETON_MAX_JOINTS];
+    for (u32 i = 0; i < n; i++) resolved[i] = false;
+    u32 remaining = n;
+    for (u32 pass = 0; pass <= n && remaining > 0u; pass++) {
+        u32 progressed = 0u;
+        for (u32 i = 0; i < n; i++) {
+            if (resolved[i]) continue;
+            u32 p = parents[i];
+            if (p == UINT32_MAX || p >= n || p == i) {
+                world[i] = local[i];
+            } else if (resolved[p]) {
+                world[i] = mat4_mul(world[p], local[i]);
+            } else {
+                continue; /* parent not resolved yet — defer to a later pass */
+            }
+            resolved[i] = true;
+            remaining--;
+            progressed++;
+        }
+        if (progressed == 0u) break; /* parent cycle: leave remaining as roots */
+    }
+    for (u32 i = 0; i < n; i++) if (!resolved[i]) world[i] = local[i];
+}
+
 void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
     if (clip->channel_count == 0) {
         for (u32 i = 0; i < sk->joint_count; i++) {
@@ -174,12 +206,8 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
     }
 
     Mat4 *world_poses = sk->_world_poses;
+    skel_resolve_world(sk->joint_parents, local_poses, world_poses, sk->joint_count);
     for (u32 i = 0; i < sk->joint_count; i++) {
-        if (sk->joint_parents[i] == UINT32_MAX || sk->joint_parents[i] >= i) {
-            world_poses[i] = local_poses[i];
-        } else {
-            world_poses[i] = mat4_mul(world_poses[sk->joint_parents[i]], local_poses[i]);
-        }
         sk->current_pose[i] = mat4_mul(world_poses[i], sk->inverse_bind[i]);
     }
 
@@ -199,12 +227,8 @@ void skeleton_apply_local_trs(Skeleton *sk,
     }
 
     Mat4 *world_poses = sk->_world_poses;
+    skel_resolve_world(sk->joint_parents, local_poses, world_poses, n);
     for (u32 i = 0; i < n; i++) {
-        if (sk->joint_parents[i] == UINT32_MAX || sk->joint_parents[i] >= i) {
-            world_poses[i] = local_poses[i];
-        } else {
-            world_poses[i] = mat4_mul(world_poses[sk->joint_parents[i]], local_poses[i]);
-        }
         sk->current_pose[i] = mat4_mul(world_poses[i], sk->inverse_bind[i]);
     }
 }
@@ -222,13 +246,7 @@ void skeleton_compute_world_transforms(Skeleton *sk,
         local_poses[i] = mat4_trs(local_pos[i], local_rot[i], local_scale[i]);
     }
 
-    for (u32 i = 0; i < n; i++) {
-        if (sk->joint_parents[i] == UINT32_MAX || sk->joint_parents[i] >= i) {
-            out_world[i] = local_poses[i];
-        } else {
-            out_world[i] = mat4_mul(out_world[sk->joint_parents[i]], local_poses[i]);
-        }
-    }
+    skel_resolve_world(sk->joint_parents, local_poses, out_world, n);
 }
 
 void skeleton_upload(Skeleton *sk) {
