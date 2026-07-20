@@ -119,7 +119,21 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
     struct AudioImpl *impl = as->engine;
     AudioSource *src = &as->sources[id];
 
-    ma_result result = ma_sound_init_from_file(&impl->engine, path, 0, NULL, NULL, &src->sound);
+    /* R270 (CORRECTNESS): audio_play() takes no position — it is the 2D /
+     * non-positional variant (UI, music), paired with audio_play_3d() which
+     * adds a world position. miniaudio enables spatialization BY DEFAULT
+     * (flags=0) and initializes a sound's position to the origin (0,0,0), so a
+     * "2D" sound played here was actually spatialized: once the listener moved
+     * away from the origin (audio_system_update follows the camera every
+     * frame), it attenuated by listener distance — e.g. listener at (10,0,0)
+     * with the sound pinned at the origin gives inverse-model gain
+     * 1/(1+(10-1)) = 0.1 instead of the intended full-volume 1.0. The
+     * streaming path already guards this (audio_play_streamed sets
+     * MA_SOUND_FLAG_NO_SPATIALIZATION when !spatial); mirror it here so 2D
+     * sounds stay 2D. audio_play_3d re-enables spatialization explicitly. */
+    ma_result result = ma_sound_init_from_file(&impl->engine, path,
+                                               MA_SOUND_FLAG_NO_SPATIALIZATION,
+                                               NULL, NULL, &src->sound);
     if (result != MA_SUCCESS) {
         LOG_WARN("Failed to load sound: %s (%d)", path, result);
         /* Return slot to free-list */
@@ -140,6 +154,11 @@ void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume,
     u32 id = audio_play(as, path, volume, looping);
     if (id == 0) return;
     AudioSource *src = &as->sources[id - 1];
+    /* R270 (CORRECTNESS): audio_play() now inits with NO_SPATIALIZATION, so a
+     * 3D sound must re-enable it (and pick the same inverse-distance model the
+     * streaming 3D path uses) before positioning it. */
+    ma_sound_set_spatialization_enabled(&src->sound, MA_TRUE);
+    ma_sound_set_attenuation_model(&src->sound, ma_attenuation_model_inverse);
     ma_sound_set_position(&src->sound, position.e[0], position.e[1], position.e[2]);
 }
 

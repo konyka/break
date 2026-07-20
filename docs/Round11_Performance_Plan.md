@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R270：audio_play 未禁用默认 3D 空间化（2D 音源钉原点随听者衰减）（已完成）
+
+### [x] R270-A disable default spatialization for the 2D audio_play path
+- [x] audio_play（audio.c:113）无位置参、为 2D/非定位变体，却以 flags=0 init；miniaudio 默认开启 spatialization 且源初始位置 (0,0,0)
+- [x] audio_system_update 每帧把听者设为相机位置 → 听者离开原点后 2D 音源按逆距离随「听者到原点距离」衰减
+- [x] 手算（逆距离 min=1,rolloff=1）：听者(0,0,0)→增益1.0 ✓；(10,0,0)→1/(1+9)=0.1 ✗；(8,1.5,0)→d≈8.14→≈0.123 ✗（本应恒1.0）
+- [x] 对照 audio_play_streamed（audio.c:161）在 !spatial 时显式 MA_SOUND_FLAG_NO_SPATIALIZATION → audio_play 属对称遗漏
+- [x] 修复：audio_play init 加 MA_SOUND_FLAG_NO_SPATIALIZATION；audio_play_3d 设位置前显式 set_spatialization_enabled(TRUE)+set_attenuation_model(inverse) 恢复 3D
+- [x] 仓库当前无直接 audio_play 调用（仅 audio_play_3d 内部用），属公共 API CORRECTNESS；纯 miniaudio CPU，GL/VK 无关
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**。
+
 ## R269：动画渐进 crossfade 从不采样目标片段（淡入无效+末端硬切）（已完成）
 
 ### [x] R269-A sample the to-clip during a gradual crossfade
