@@ -3650,18 +3650,31 @@ u32 culled_count = 0;
 
             /* Pre-compute shadow lookat basis once for all 4 cascades
              * (eliminates 4× normalize + 8× cross + 4× mat4_identity). */
-            f32 s_len2 = light_dir.e[0] * light_dir.e[0] + light_dir.e[2] * light_dir.e[2];
-            f32 inv_sl = s_len2 > 1e-12f ? fast_rsqrt(s_len2) : 0.0f;
-            /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
-            f32 sx = -light_dir.e[2] * inv_sl;
-            f32 sz =  light_dir.e[0] * inv_sl;
-            /* u = normalize(cross(s_unnorm, f)) = cross(s_unnorm, f) * inv_sl
-             * cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz).
-             * For unit light_dir: u_len2 = s_len2, so inv_ul = inv_sl (no extra rsqrt). */
             f32 fx = light_dir.e[0], fy = light_dir.e[1], fz = light_dir.e[2];
-            f32 ux = -fy * fx * inv_sl;
-            f32 uy = (fx * fx + fz * fz) * inv_sl;
-            f32 uz = -fy * fz * inv_sl;
+            f32 s_len2 = fx * fx + fz * fz;
+            f32 sx, sz, ux, uy, uz;
+            if (s_len2 > 1e-12f) {
+                f32 inv_sl = fast_rsqrt(s_len2);
+                /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
+                sx = -fz * inv_sl;
+                sz =  fx * inv_sl;
+                /* u = normalize(cross(s_unnorm, f)) = cross(s_unnorm, f) * inv_sl
+                 * cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz).
+                 * For unit light_dir: u_len2 = s_len2, so inv_ul = inv_sl (no extra rsqrt). */
+                ux = -fy * fx * inv_sl;
+                uy = (fx * fx + fz * fz) * inv_sl;
+                uz = -fy * fz * inv_sl;
+            } else {
+                /* R247: sun_dir ∥ world up (zenith sun — reachable via a loaded
+                 * save whose sun_elevation ≈ ±π/2, which is not range-clamped).
+                 * light_dir × (0,1,0) collapses to zero, so inv_sl would be 0 and
+                 * the whole CSM view basis (sx,sz,ux,uy,uz) degenerates to a
+                 * rank-deficient matrix → broken/absent shadows. Fall back to a
+                 * fixed orthonormal basis in the XZ plane (row2 = -f stays valid
+                 * for f = (0,±1,0); this keeps lview invertible). */
+                sx = -1.0f; sz = 0.0f;
+                ux =  0.0f; uy = 0.0f; uz = 1.0f;
+            }
 
             /* Bind the 2048x2048 shadow atlas once (clears the whole texture),
              * then render each of the 4 cascades into its own 1024x1024 quadrant

@@ -4399,6 +4399,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归 + 动画末端事件）。
 
+## R247：太阳天顶方向 CSM 视图基退化（已完成）
+
+### [x] R247-A CSM must not degenerate when sun_dir ∥ world up
+- [x] `light_dir × (0,1,0)` 侧向基在 `s_len2=fx²+fz²→0`（太阳天顶，`sun_elevation≈±π/2`）时 `inv_sl=0` → `sx/sz/ux/uy/uz` 全 0 → `lview` 秩亏、cascade_vp 退化 → 阴影缺失/全影
+- [x] `sun_elevation` 经存档 `fread` 无范围校验可达 ±π/2
+- [x] `s_len2<1e-12` 时回退固定正交基（`sx=-1,sz=0,ux=0,uy=0,uz=1`，row2=-f 保持可逆、行列式正）；正常路径公式与数值不变
+
+**评估未改**：`physics_body_create` 满额返回 `pw->count`——该值 `>= count`，被所有物理访问器与子创建器守卫安全拒绝（池满时可接受降级；main.c 热路径先守卫），改返回值会牵动 Lua「id 0=none」约定，非高置信 bug。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image CSM 回归）。
+
 ## 构建与回归命令
 
 
