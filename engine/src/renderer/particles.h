@@ -4,14 +4,16 @@
 
 #define PARTICLES_MAX 8192
 
+/* R237: Must mirror the std430 `Particle` struct in particle_update.comp and
+ * particle.vert EXACTLY (3x vec4 = 48 bytes). The SSBO is GPU-only (compute
+ * writes, vertex shader reads); the CPU only uses this to size a zeroed initial
+ * buffer. The previous 13-float layout (52 bytes) did not match the shader
+ * stride, over-allocating the buffer and risking element misalignment if any
+ * CPU-side particle read/write were ever added. */
 typedef struct {
-    f32 pos[3];
-    f32 life;
-    f32 vel[3];
-    f32 max_life;
-    f32 size;
-    f32 color[3];
-    f32 alpha;
+    f32 pos_life[4];      /* xyz = position, w = current life        */
+    f32 vel_maxlife[4];   /* xyz = velocity, w = max lifetime        */
+    f32 size_color[4];    /* x = size, yzw = color (linear RGB)      */
 } GPUParticle;
 
 typedef struct {

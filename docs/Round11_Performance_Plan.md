@@ -4292,6 +4292,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R237：粒子 SSBO CPU/GPU 布局契约对齐（已完成）
+
+### [x] R237-A GPUParticle mirror std430 layout
+- [x] `particles.h` `GPUParticle` 由 13×f32(52B) 改为 3×vec4(48B)，精确对齐 `particle_update.comp`/`particle.vert` 的 std430 `Particle`
+- [x] 消除 `particle_ssbo` 32KB over-alloc 与 CPU/GPU 契约不符的隐患（SSBO 为 GPU 专用，当前无损坏）
+
+**误报排除**：本轮探索另报「粒子步长 52 vs 48 导致相邻字段串扰」与「`mat4_trs` 写入 R 的转置」，核实均为误报——SSBO GPU 布局自洽（CPU 不索引字段），`mat4_trs` 按列主序 `e[col][row]` 写入，与 `mat4_from_quat`/`mat4_scaling` 逐元素一致。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 
