@@ -929,7 +929,19 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                     if (!js_match(&r, '{')) { ok = false; break; }
                     Entity e = world_create_entity(w);
                     while (ok && !js_peek(&r, '}')) {
-                        if (js_key(&r, "components")) {
+                        if (js_key(&r, "gen")) {
+                            /* R243: JSON save emits "gen" but load previously
+                             * skipped it, so the (index, generation) identity —
+                             * restored on the binary path (see load_entities_chunk)
+                             * and asserted by generation_restore_roundtrip — was
+                             * lost on JSON round-trips. Restore it identically. */
+                            u32 g = 0;
+                            ok = js_u32(&r, &g);
+                            if (ok && g != 0) {
+                                w->entities[e.index].generation = g;
+                                e.generation = g;
+                            }
+                        } else if (js_key(&r, "components")) {
                             ok = json_load_components(w, &r, e);
                         } else {
                             /* skip key:value */

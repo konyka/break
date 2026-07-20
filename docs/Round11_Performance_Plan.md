@@ -4353,6 +4353,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R243：场景 JSON 反序列化恢复 generation（已完成）
+
+### [x] R243-A scene_load_json must restore per-entity generation
+- [x] `scene_save_json` 写出 `"gen"`，二进制路径 `load_entities_chunk` 恢复之（`generation_restore_roundtrip` 断言），但 JSON load 只处理 `"components"`、把 `"gen"` skip 丢弃 → `(index,generation)` 身份在 JSON round-trip 后丢失
+- [x] JSON 实体解析新增 `"gen"` 分支，按与二进制相同方式 `w->entities[e.index].generation = g; e.generation = g;`（save 顺序 id→gen→components，gen 先于 components 恢复，次序一致）
+- [x] 新增 `generation_restore_roundtrip_json` 回归测试镜像二进制版本
+
+**评估未改**：`scene_load_binary` 失败时不回滚（World/Scene 半加载脏状态）——安全修复需两阶段载入或销毁本次已创建实体，改动较大且易引入新 bug，本轮按“宁缺毋滥”记录、未改。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归 + 新增 JSON generation 往返）。
+
 ## 构建与回归命令
 
 

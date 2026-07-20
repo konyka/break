@@ -380,6 +380,45 @@ TEST(generation_restore_roundtrip)
     remove(path);
 }
 
+/* R243: JSON path must restore generation just like the binary path. Save emits
+ * "gen"; load previously discarded it, breaking (index, generation) identity on
+ * JSON round-trips. */
+TEST(generation_restore_roundtrip_json)
+{
+    const char *path = "/tmp/test_gen_restore.json";
+    World *w = world_create();
+    world_register_component(w, 1, sizeof(u32));
+
+    Entity a = world_create_entity(w);
+    Entity b = world_create_entity(w);
+    world_destroy_entity(w, a);
+    Entity c = world_create_entity(w);
+    world_add_component(w, b, 1);
+    world_add_component(w, c, 1);
+
+    u32 idx_c = c.index, idx_b = b.index;
+    u32 gen_c = w->entities[idx_c].generation;
+    u32 gen_b = w->entities[idx_b].generation;
+    ASSERT_TRUE(gen_c > 1u);
+
+    SerializeOptions opts = { .include_resources = false, .pretty_json = false };
+    ASSERT_TRUE(scene_save_json(w, NULL, path, &opts));
+
+    World *w2 = world_create();
+    world_register_component(w2, 1, sizeof(u32));
+    ASSERT_TRUE(scene_load_json(w2, NULL, path));
+
+    ASSERT_EQ(w2->entities[idx_c].generation, gen_c);
+    ASSERT_EQ(w2->entities[idx_b].generation, gen_b);
+
+    Entity restored = { idx_c, gen_c };
+    ASSERT_TRUE(world_entity_exists(w2, restored));
+
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -408,4 +447,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_roundtrip_refs_only);
     RUN_TEST(resources_guid_deterministic);
     RUN_TEST(generation_restore_roundtrip);
+    RUN_TEST(generation_restore_roundtrip_json);
 TEST_MAIN_END()
