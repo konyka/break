@@ -4364,6 +4364,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归 + 新增 JSON generation 往返）。
 
+## R244：字体 UI 除零 + 地形 init 失败泄漏（已完成）
+
+### [x] R244-A font_renderer must guard zero screen size
+- [x] `font_renderer_draw`/`font_renderer_draw_rect` 的 `2.0/screen_w`、`2.0/screen_h` 无 0 保护；最小化窗口（w/h==0）→ ±Inf/NaN 顶点写入 quad_data 并提交 draw（R142 仅保护相机 aspect）
+- [x] 两函数开头 `screen_w<=0||screen_h<=0` 即 return
+
+### [x] R244-B terrain_init must free heightmap on failure
+- [x] `terrain_init` 着色器编译失败（184 行）/管线创建失败（195 行）的 `return false` 泄漏第 126 行 calloc 的 heightmap+staging 块、留半初始化 Terrain
+- [x] 两失败路径 `return false` 前统一调 `terrain_shutdown(t)`，与成功路径（288 行 buffer 失败）一致
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 

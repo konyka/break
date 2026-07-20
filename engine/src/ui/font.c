@@ -306,7 +306,9 @@ void font_renderer_begin(FontRenderer *fr) {
 
 void font_renderer_draw(FontRenderer *fr, const char *text, f32 x, f32 y,
                          f32 screen_w, f32 screen_h, f32 r, f32 g, f32 b, f32 a) {
-    (void)screen_w;
+    /* R244: A minimized/zero-size window yields screen_w/h == 0; the pixel->NDC
+     * divides below would then emit ±Inf/NaN vertices into the draw buffer. */
+    if (screen_w <= 0.0f || screen_h <= 0.0f) return;
     f32 cursor_x = x;
     f32 cursor_y = y + fr->ascent;
     f32 inv_sh = 2.0f / screen_h;
@@ -356,6 +358,7 @@ void font_renderer_draw(FontRenderer *fr, const char *text, f32 x, f32 y,
 void font_renderer_draw_rect(FontRenderer *fr, f32 x, f32 y, f32 w, f32 h,
                              f32 screen_w, f32 screen_h, f32 r, f32 g, f32 b, f32 a) {
     if (w <= 0.0f || h <= 0.0f) return;
+    if (screen_w <= 0.0f || screen_h <= 0.0f) return; /* R244: avoid ±Inf/NaN */
     if (fr->quad_count >= fr->quad_capacity) return;
 
     f32 inv_sw = 2.0f / screen_w;

@@ -181,6 +181,7 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
         LOG_WARN("Terrain shader compile failed");
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
         if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        terrain_shutdown(t); /* R244: free heightmap block, mirror success-path cleanup */
         return false;
     }
 
@@ -192,7 +193,7 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
 
-    if (!rhi_handle_valid(t->pipeline)) return false;
+    if (!rhi_handle_valid(t->pipeline)) { terrain_shutdown(t); return false; } /* R244: free heightmap block */
 
     t->loc_model       = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_model");
     t->loc_view        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_view");
