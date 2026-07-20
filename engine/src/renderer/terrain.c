@@ -565,7 +565,19 @@ void terrain_noise_stamp(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength, f
 void terrain_generate(Terrain *t, u32 preset) {
     if (!t->heightmap) return;
     u32 n = t->grid_size;
-    f32 hs = t->height_scale;
+    /* R266 (CORRECTNESS): heightmap[] stores UNSCALED heights; world Y is
+     * heightmap[i] * height_scale, applied once at read time in
+     * terrain_rebuild_region (vertex bake) and terrain_get_height (physics /
+     * camera / picking). Every other writer honours this — terrain_init writes
+     * raw terrain_height_func, terrain_modify_height / terrain_noise_stamp add
+     * raw deltas. terrain_generate used to bake `t->height_scale` into each
+     * preset here as well, so the read-side multiply applied the scale a SECOND
+     * time: with the default height_scale=1.5 a generated preset ended up at
+     * 1.5² = 2.25× its intended amplitude (and, worse, made the stored heightmap
+     * depend on height_scale, so a later raw brush edit or a height_scale change
+     * no longer matched the terrain). Use a unit amplitude here so presets store
+     * normalized shapes and height_scale is applied exactly once. */
+    f32 hs = 1.0f;
 
     /* Precompute separable trig values for presets 2/3: O(n) instead of O(n²).
      * Single allocation for both LUT arrays: 2 mallocs → 1 per branch. */

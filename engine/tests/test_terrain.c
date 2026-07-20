@@ -295,6 +295,29 @@ TEST(generate_preset_nonzero)
     free_terrain(t);
 }
 
+TEST(generate_heightmap_is_scale_independent)
+{
+    /* R266: terrain_generate stores UNSCALED heights (height_scale is applied
+     * once at read time). So generating the same preset must yield the SAME
+     * stored heightmap regardless of height_scale. Before the fix, generate
+     * baked height_scale into the stored values, so hs=3 produced a heightmap
+     * 3x larger than hs=1 — and the read path then scaled it a second time. */
+    for (u32 preset = 0; preset < 5; preset++) {
+        Terrain *t1 = make_terrain(GRID, 10.0f, 1.0f);
+        Terrain *t3 = make_terrain(GRID, 10.0f, 3.0f);
+        fill_uniform(t1, 0.0f);
+        fill_uniform(t3, 0.0f);
+        terrain_generate(t1, preset);
+        terrain_generate(t3, preset);
+
+        for (u32 i = 0; i < GRID * GRID; i++) {
+            ASSERT_TRUE(fabsf(t1->heightmap[i] - t3->heightmap[i]) < 1e-4f);
+        }
+        free_terrain(t1);
+        free_terrain(t3);
+    }
+}
+
 TEST(generate_all_presets)
 {
     /* All 5 presets should produce non-zero heightmaps */
@@ -422,6 +445,7 @@ int main(void) {
     RUN_TEST(erode_null_heightmap);
     RUN_TEST(generate_preset_nonzero);
     RUN_TEST(generate_all_presets);
+    RUN_TEST(generate_heightmap_is_scale_independent);
     RUN_TEST(noise_stamp_modifies);
     RUN_TEST(noise_stamp_null_heightmap);
     /* Edge cases */

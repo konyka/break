@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R266：terrain_generate 对 height_scale 二次缩放（已完成）
+
+### [x] R266-A fix double application of height_scale in terrain_generate
+- [x] 约定：heightmap[] 存未缩放值，世界 Y = heightmap*height_scale 在读取端应用一次（rebuild 65/228、get_height 372）
+- [x] init/modify_height/noise_stamp 均写原始值；唯 terrain_generate（568）`hs=t->height_scale` 预乘 → 读取再乘 → hs² 倍
+- [x] 手算：hs=1.5、火山中心归一化 1.0 → 存 1.5 → 世界 2.25（应 1.5）；且存储依赖 hs，后续原始笔刷/改 hs 不自洽
+- [x] 触发：`;` 切 preset / `r` 重置调 terrain_generate（main.c 4596/4640）且 hs≠1
+- [x] 修复：terrain_generate 内 hs=1.0f（各项统一乘 hs，置 1 保留形状比例、去多余全局因子）
+- [x] golden 不渲染生成地形（仅按键触发；init 走 terrain_height_func）→ 无 golden 回归
+- [x] 新增回归 generate_heightmap_is_scale_independent（hs=1 与 hs=3 生成 heightmap 逐点相等）
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（含 golden；test_terrain 23/23）。
+
 ## R265：视锥平面提取 GH 矩阵下标转置（构造 VP^T 视锥）（已完成）
 
 ### [x] R265-A fix Gribb-Hartmann index transposition in frustum extraction
