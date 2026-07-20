@@ -63,13 +63,32 @@ void ecs_parallel_for(World *w, TaskSystem *ts,
     } else {
         jobs = (EcsJob *)malloc(job_count * sizeof(EcsJob));
         if (!jobs) {
+            /* R238 (CORRECTNESS/MEMORY): OOM with more non-empty chunks than the
+             * fixed pool can hold. The previous fallback clamped job_count to
+             * ECS_JOB_POOL_SIZE, but the fill loop below still iterated ALL
+             * non-empty chunks, writing jobs[512], jobs[513]... past
+             * _job_pool[ECS_JOB_POOL_SIZE] — an out-of-bounds .bss write — and
+             * also silently dropped the clamped-off chunks. Run every chunk
+             * serially in place: no job array, no overflow, no dropped chunks. */
             LOG_WARN("ECS: job allocation failed (%u jobs), running serially", job_count);
-            jobs = _job_pool;
-            /* Clamp to pool size: process only first ECS_JOB_POOL_SIZE chunks */
-            if (job_count > ECS_JOB_POOL_SIZE) job_count = ECS_JOB_POOL_SIZE;
-        } else {
-            heap_fallback = true;
+            for (u32 ai = 0; ai < q->match_count; ai++) {
+                Archetype *a = q->matching[ai];
+                for (Chunk *c = a->chunks; c; c = c->next) {
+                    if (c->count == 0) continue;
+                    EcsJob job;
+                    job.view.world     = w;
+                    job.view.archetype = a;
+                    job.view.chunk     = c;
+                    job.view.count     = c->count;
+                    job.fn             = fn;
+                    job.user           = user;
+                    ecs_job_run(&job);
+                }
+            }
+            query_done(q);
+            return;
         }
+        heap_fallback = true;
     }
     u32 ji = 0;
     for (u32 ai = 0; ai < q->match_count; ai++) {

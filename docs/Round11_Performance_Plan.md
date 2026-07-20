@@ -4302,6 +4302,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R238：ECS 并行 OOM 回退越界写修复（已完成）
+
+### [x] R238-A fix _job_pool OOB write on malloc failure
+- [x] `ecs_parallel_for` malloc 失败路径改为就地串行跑完全部 chunk 后 return，不再写钳制后的 `_job_pool`（消除 `jobs[512+]` 越界 .bss 写 + 漏跑 chunk）
+- [x] R118-2 仅钳制运行计数、未修填充循环，本轮补齐
+
+**误报/低置信排除**：网络有序 drain 反复覆盖 `out` 只保留最后一包——对 transform 全量快照属 latest-wins 预期语义（最后 drain 的是最高 seq 最新状态），未改。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
+
 ## 构建与回归命令
 
 
