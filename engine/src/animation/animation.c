@@ -56,6 +56,11 @@ static void clip_sample(const AnimClip *clip, f32 time,
             f32 dt = t1 - t0;
             frac = (dt > 0.0f) ? (time - t0) * (1.0f / dt) : 0.0f;
             frac = clampf(frac, 0.0f, 1.0f);
+            /* R251: STEP holds keyframe k0 across [t0, t1) and only takes k1's
+             * value once time reaches t1 (glTF 2.0) — never an in-between. Snapping
+             * frac to 0/1 keeps vec3_lerp / quat_nlerp exact at the endpoints, so
+             * the final keyframe (time == duration == t1) still reads correctly. */
+            if (ch->interp == ANIM_INTERP_STEP) frac = (time >= t1) ? 1.0f : 0.0f;
             v0 = ch->values[k0];
             v1 = ch->values[k1];
         }

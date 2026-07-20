@@ -508,8 +508,19 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
         (origin.e[1] > end.e[1] ? origin.e[1] : end.e[1]) + radius,
         (origin.e[2] > end.e[2] ? origin.e[2] : end.e[2]) + radius);
 
+    /* R251 (CORRECTNESS): bvh_query_aabb stops writing once its 64 candidate slots
+     * fill, silently dropping further overlapping static bodies. If the earliest-TOI
+     * blocker is among the dropped candidates, CCD reports no hit and the body
+     * tunnels through it. Mirror R239 (char_slide_resolve): use the BVH only when it
+     * is built AND the query did not saturate; otherwise fall back to a full scan. */
     static u32 candidates[64];
-    u32 nc = bvh_query_aabb(&pw->bvh, sweep_box, candidates, 64);
+    bool use_bvh = (pw->bvh.node_count > 0);
+    u32 nc = 0;
+    if (use_bvh) {
+        nc = bvh_query_aabb(&pw->bvh, sweep_box, candidates, 64);
+        if (nc >= 64u) use_bvh = false;
+    }
+    u32 total = use_bvh ? nc : pw->count;
 
     /* Precompute inverse direction to eliminate 3 divisions per candidate */
     f32 inv_dir[3];
@@ -517,8 +528,8 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
         inv_dir[a] = (fabsf(delta.e[a]) > 1e-8f) ? (1.0f / delta.e[a]) : 1e30f;
     }
 
-    for (u32 ci = 0; ci < nc; ci++) {
-        u32 k = candidates[ci];
+    for (u32 ci = 0; ci < total; ci++) {
+        u32 k = use_bvh ? candidates[ci] : ci;
         if (k == self) continue;
         RigidBody *s = &pw->bodies[k];
         if (!s->is_static) continue;

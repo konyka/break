@@ -28,8 +28,17 @@ typedef enum {
     ANIM_PATH_SCALE,
 } AnimPathType;
 
+/* glTF sampler interpolation. LINEAR is the default (value 0) so a zero-init or
+ * legacy channel behaves exactly as before. STEP holds the current keyframe until
+ * the next one (no interpolation), per glTF 2.0. */
+typedef enum {
+    ANIM_INTERP_LINEAR = 0,
+    ANIM_INTERP_STEP,
+} AnimInterp;
+
 typedef struct {
     AnimPathType path;
+    AnimInterp   interp;
     u32          joint_index;
     u32          keyframe_count;
     f32          times[SKELETON_MAX_KEYFRAMES];

@@ -538,6 +538,17 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             }
 
             anim_clip_add_channel(clip, joint_idx, path, n, times, &packed_values[0][0]);
+            /* R251 (CORRECTNESS): honor the sampler interpolation mode. cgltf exposes
+             * samp->interpolation; the loader previously ignored it, so STEP samplers
+             * (stepped/hard-cut animations, a common export default for mechanical
+             * motion) were interpolated linearly — producing in-between poses that
+             * never exist in the source. clip_sample holds the keyframe for STEP.
+             * (CUBICSPLINE would need 3x-tangent output parsing; treated as LINEAR
+             * here, matching the prior behavior.) */
+            if (samp->interpolation == cgltf_interpolation_type_step &&
+                clip->channel_count > 0) {
+                clip->channels[clip->channel_count - 1].interp = ANIM_INTERP_STEP;
+            }
         }
     }
 

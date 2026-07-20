@@ -203,6 +203,11 @@ bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
             origin.e[1] > end.e[1] ? origin.e[1] : end.e[1],
             origin.e[2] > end.e[2] ? origin.e[2] : end.e[2]);
         nc = bvh_query_aabb(&pw->bvh, sweep_box, candidates, 64);
+        /* R251 (CORRECTNESS): a saturated query (nc == 64) silently drops further
+         * overlapping bodies, so physics_sweep_test could miss the nearest hit and
+         * report a clear path through dropped geometry. Mirror R239: full-scan when
+         * the BVH candidate list saturated. */
+        if (nc >= 64u) use_bvh = false;
     }
 
     u32 total = use_bvh ? nc : pw->count;

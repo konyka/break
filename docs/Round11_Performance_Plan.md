@@ -4420,6 +4420,22 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R251：CCD/扫掠 BVH 候选截断回退 + glTF STEP 插值（已完成）
+
+### [x] R251-A ccd_sweep_static / physics_sweep_test must fall back on BVH saturation
+- [x] `bvh_query_aabb` 满 64 槽即返回、丢弃其余重叠体；`ccd_sweep_static`(`physics.c:492`)、`physics_sweep_test`(`character.c:185`) 只遍历前 64 → 最早 TOI 体被丢则 CCD 穿墙、扫掠漏命中（R239 只修了 char_slide_resolve）
+- [x] 触发：BVH 已建 + 扫掠盒与 >64 静态体重叠
+- [x] 修复：两处按 R239 模式「BVH 已建且 nc<64 用候选，否则全量扫描 pw->count」
+
+### [x] R251-B glTF STEP interpolation must hold the keyframe
+- [x] `asset_load_gltf` 从不读 `samp->interpolation`；`clip_sample` 恒 lerp/nlerp → STEP 动画被错误线性插值
+- [x] `AnimChannel` 增 `interp`（默认 LINEAR=0，零初始化不变）；`anim_clip_add_channel` 初始化 LINEAR；`asset.c` 对 `cgltf_interpolation_type_step` 置 STEP；`clip_sample` 对 STEP 令 `frac=(time>=t1)?1:0`
+- [x] 新增 `blend_evaluate_step_holds_keyframe` 回归测试
+
+**说明**：CUBICSPLINE 仍按 LINEAR（需额外 3× 切线 output 解析，本项仅含 STEP）。CCD 饱和的确定性回归测试不易构造（凡与扫掠盒重叠者皆近命中、BVH 遍历序不可控），故沿用 R239 先例，靠既有 CCD 测试保障无回归。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含新增 STEP 回归）。
+
 ## R250：有序复制重排序缓冲窗口外别名覆写（已完成）
 
 ### [x] R250-A net_reorder_store must not overwrite in-window slots

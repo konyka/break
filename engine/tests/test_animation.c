@@ -208,6 +208,30 @@ TEST(anim_clip_init_basic)
     ASSERT_EQ(clip.channel_count, 0u);
 }
 
+TEST(blend_evaluate_step_holds_keyframe)
+{
+    /* R251: a STEP sampler must hold keyframe k0 across the segment, not lerp.
+     * A LINEAR clip 0->10 over 1s reads 5 at t=0.5; STEP must read 0, then jump
+     * to 10 only once time reaches the final keyframe. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    g_clips[0].channels[0].interp = ANIM_INTERP_STEP;
+
+    anim_layer_play(&st, 0, 0, 1.0f, false);
+
+    /* t=0.5: held at keyframe 0 (0.0), NOT the linear midpoint (5.0). */
+    anim_blend_evaluate(&st, 0.5f, g_clips, 1);
+    ASSERT_TRUE(fabsf(st.local_positions[0].e[0]) < 0.001f);
+
+    /* Advance to the end (time -> 1.0, clamped): STEP now yields the last key. */
+    anim_blend_evaluate(&st, 0.5f, g_clips, 1);
+    ASSERT_TRUE(fabsf(st.local_positions[0].e[0] - 10.0f) < 0.001f);
+
+    anim_blend_state_destroy(&st);
+}
+
 TEST(anim_clip_add_channel)
 {
     AnimClip clip;
@@ -499,6 +523,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(crossfade_instant);
     RUN_TEST(crossfade_gradual);
     RUN_TEST(anim_clip_init_basic);
+    RUN_TEST(blend_evaluate_step_holds_keyframe);
     RUN_TEST(anim_clip_add_channel);
     RUN_TEST(ik_init);
     RUN_TEST(ik_set_target);

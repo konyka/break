@@ -274,6 +274,7 @@ void anim_clip_add_channel(AnimClip *clip, u32 joint_index, AnimPathType path,
     AnimChannel *ch = &clip->channels[clip->channel_count++];
     ch->joint_index = joint_index;
     ch->path = path;
+    ch->interp = ANIM_INTERP_LINEAR; /* default; callers may override (e.g. glTF STEP) */
     ch->keyframe_count = keyframe_count > SKELETON_MAX_KEYFRAMES ? SKELETON_MAX_KEYFRAMES : keyframe_count;
     for (u32 i = 0; i < ch->keyframe_count; i++) {
         ch->times[i] = times[i];
