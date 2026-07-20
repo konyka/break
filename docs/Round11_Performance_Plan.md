@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R262：物理接触求解接近/分离判据反向（已完成）
+
+### [x] R262-A fix inverted normal-impulse guard in resolve_contact
+- [x] `resolve_contact`（physics.c:192）法向冲量早退判据写反：normal 为 A→B、rel_vel=v_a-v_b 时 `dot>0`=靠近、`<0`=分离；原 `if(>0)return` 在靠近时 return → 法向冲量与 restitution 真实碰撞中永不施加，仅位置推挤运行
+- [x] 手算：动态盒落静态地板 n=(0,-1,0)、dot=+4>0 直接 return，竖直速度不被归零/反弹；表现为动态体穿透接触速度、不停不弹
+- [x] 既有 collision_detection 用零速两体（dot=0 两分支都不 return）+ 只断言 collision_count>0，未暴露
+- [x] 修复：`if (vel_along_normal < 0.0f) return;`（仅分离时跳过）；冲量公式本身正确
+- [x] 新增回归 collision_resolves_approach_velocity（两等质量动态盒对撞，A 的 x 速度由 +4.9 变 ~-1.5）
+
+**另评估（未改）**：particles_compute emit_accum 在钳 PARTICLES_MAX 前按未钳值扣减——R174 仅承诺小数 carry，仅病态大 dt 触发，丢弃超额可避免卡顿后补发爆发，属既定权衡。
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**。
+
 ## R261：ECS query_next 迭代器 index off-by-one（已完成）
 
 ### [x] R261-A query_next returns current 0-based row in it.index

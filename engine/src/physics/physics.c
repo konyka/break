@@ -189,7 +189,18 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
 
     Vec3 rel_vel = vec3_sub(a->velocity, b->velocity);
     f32 vel_along_normal = vec3_dot(rel_vel, normal);
-    if (vel_along_normal > 0.0f) return;
+    /* R262 (CORRECTNESS): `normal` points from A to B (physics.h; the position
+     * split above moves A by -normal and B by +normal to separate them, which is
+     * only correct for an A->B normal). With rel_vel = v_a - v_b, the bodies are
+     * APPROACHING along the contact when dot(rel_vel, normal) > 0 (A advancing
+     * toward B and/or B advancing toward A), and separating when it is < 0. The
+     * normal impulse must be applied on approach and skipped on separation. The
+     * guard was inverted (`> 0` → return), so it bailed out exactly when the
+     * bodies were closing: the normal impulse and restitution were never applied
+     * to a real collision (only the position push ran), so dynamic bodies passed
+     * their approach velocity straight through contacts — no stopping, no bounce,
+     * no normal momentum exchange. Skip only when already separating. */
+    if (vel_along_normal < 0.0f) return;
 
     f32 e = a->restitution < b->restitution ? a->restitution : b->restitution;
     f32 j = -(1.0f + e) * vel_along_normal * inv_total;

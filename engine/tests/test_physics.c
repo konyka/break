@@ -126,6 +126,28 @@ TEST(collision_detection)
     physics_world_destroy(pw);
 }
 
+TEST(collision_resolves_approach_velocity)
+{
+    /* R262: two equal-mass dynamic boxes overlapping and moving toward each other
+     * must have their approach velocity resolved (stopped/reversed) by the normal
+     * impulse. Before the fix the inverted guard skipped the impulse whenever the
+     * bodies were approaching, leaving the closing velocity untouched. */
+    PhysicsWorld *pw = physics_world_create(64);
+    u32 a = physics_body_create(pw, vec3(-0.9f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3( 0.9f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
+    pw->bodies[a].velocity = vec3( 5, 0, 0);  /* A moving +X toward B */
+    pw->bodies[b].velocity = vec3(-5, 0, 0);  /* B moving -X toward A */
+
+    physics_step(pw, 1.0f/60.0f);
+
+    ASSERT_TRUE(pw->collision_count > 0);
+    /* A was closing at +4.9 (post-damping). Resolved it must no longer race
+     * toward B; with restitution 0.3 it reverses to ~-1.5. Buggy code left ~+4.9. */
+    ASSERT_TRUE(pw->bodies[a].velocity.e[0] < 1.0f);
+    ASSERT_TRUE(pw->bodies[b].velocity.e[0] > -1.0f);
+    physics_world_destroy(pw);
+}
+
 TEST(ground_respawn)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -470,6 +492,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(impulse);
     RUN_TEST(impulse_static_ignored);
     RUN_TEST(collision_detection);
+    RUN_TEST(collision_resolves_approach_velocity);
     RUN_TEST(ground_respawn);
     RUN_TEST(raycast_hit);
     RUN_TEST(raycast_miss);
