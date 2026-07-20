@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R269：动画渐进 crossfade 从不采样目标片段（淡入无效+末端硬切）（已完成）
+
+### [x] R269-A sample the to-clip during a gradual crossfade
+- [x] anim_crossfade（animation.c:170）淡出前不改 L->clip_index（仍 from）；主路径采样 from → sample_*
+- [x] crossfade 块又采样 crossfade.from_clip（同 from）→ lerp(from,from)；to_clip 全程未 clip_sample → 输出恒 from、末端硬切
+- [x] 手算：clip0 x:0→10、clip1 x:0→20，dt=0.5→fade_t=0.5，期望 lerp(5,10,0.5)=7.5，实际 5
+- [x] 旧测试仅断言 1<x<19（x=5 亦过）→ 未暴露；触发 crossfade(dur>0)&&from!=to（F12/BREAK_ANIM_BLEND）
+- [x] 修复：改采样 crossfade.to_clip（to_*，未动关节从当前输出 seed，tt=fmod(L->time,to_dur)），sample_=lerp(from,to,fade_t)
+- [x] 强化 crossfade_gradual 断言中点 x=7.5（旧码=5 失败）；additive/IK 非同级高置信未改
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（test_animation 27/27）。
+
 ## R268：延迟光照从未上传 CSM 级联矩阵（阴影恒用单位阵）（已完成）
 
 ### [x] R268-A wire cascade_vp into the deferred light data upload

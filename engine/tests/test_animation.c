@@ -182,9 +182,13 @@ TEST(crossfade_gradual)
 
     /* Evaluate halfway through crossfade */
     anim_blend_evaluate(&st, 0.5f, g_clips, 2);
-    /* Should be blended between c0 and c1 */
+    /* R269: at t=0.5, fade_t=0.5, from-clip x=10*0.5=5, to-clip x=20*0.5=10,
+     * so the blended x must be lerp(5,10,0.5)=7.5 — the to-clip MUST contribute.
+     * The pre-fix code never sampled the to-clip and produced x=5 (from only),
+     * which still passed the old loose 1<x<19 bound. */
     f32 x = st.local_positions[0].e[0];
     ASSERT_TRUE(x > 1.0f && x < 19.0f);
+    ASSERT_FLOAT_EQ(x, 7.5f, 0.01f);
 
     /* Complete the crossfade */
     anim_blend_evaluate(&st, 0.6f, g_clips, 2);

@@ -293,23 +293,38 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
                               sample_scl, state->bone_count);
 
         if (state->crossfade.active && state->crossfade.layer_index == li) {
-            const AnimClip *from_clip = clip_at(clips, clip_count,
-                                                state->crossfade.from_clip);
-            if (from_clip) {
-                static Vec3 from_pos[ANIM_BLEND_MAX_BONES];
-                static Quat from_rot[ANIM_BLEND_MAX_BONES];
-                static Vec3 from_scl[ANIM_BLEND_MAX_BONES];
-                fill_bind_pose(from_pos, from_rot, from_scl, state->bone_count);
-                /* Approximate from-clip time as wrapped current time. */
-                f32 ft = L->time;
-                if (from_clip->duration > 0.0f)
-                    ft = fmodf(ft, from_clip->duration);
-                clip_sample(from_clip, ft, from_pos, from_rot, from_scl,
+            /* R269 (CORRECTNESS): during the fade L->clip_index is still the
+             * FROM clip (anim_crossfade only switches it at fade_done), so the
+             * main clip_sample above already produced the from-pose in sample_*.
+             * Blend it TOWARD the incoming TO clip by fade_t (0 -> from, 1 -> to).
+             * The old code instead re-sampled the FROM clip into from_* and did
+             * lerp(from_*, sample_*, fade_t) = lerp(from, from) — the TO clip was
+             * never sampled, so a gradual crossfade held the from-pose the whole
+             * duration and then hard-cut to the to-clip when it completed. */
+            const AnimClip *to_clip = clip_at(clips, clip_count,
+                                              state->crossfade.to_clip);
+            if (to_clip) {
+                static Vec3 to_pos[ANIM_BLEND_MAX_BONES];
+                static Quat to_rot[ANIM_BLEND_MAX_BONES];
+                static Vec3 to_scl[ANIM_BLEND_MAX_BONES];
+                u32 bc2 = state->bone_count;
+                /* Seed unaddressed bones from the layer's base, matching the
+                 * main sample path (bones the to-clip doesn't animate keep the
+                 * current output rather than snapping to bind pose). */
+                memcpy(to_pos, state->local_positions, bc2 * sizeof(Vec3));
+                memcpy(to_rot, state->local_rotations, bc2 * sizeof(Quat));
+                memcpy(to_scl, state->local_scales,    bc2 * sizeof(Vec3));
+                /* No separate to-clip time is tracked; wrap the layer time (same
+                 * approximation the from side used previously). */
+                f32 tt = L->time;
+                if (to_clip->duration > 0.0f)
+                    tt = fmodf(tt, to_clip->duration);
+                clip_sample(to_clip, tt, to_pos, to_rot, to_scl,
                             state->bone_count);
                 for (u32 b = 0; b < state->bone_count; b++) {
-                    sample_pos[b] = vec3_lerp(from_pos[b], sample_pos[b], fade_t);
-                    sample_rot[b] = quat_nlerp(from_rot[b], sample_rot[b], fade_t);
-                    sample_scl[b] = vec3_lerp(from_scl[b], sample_scl[b], fade_t);
+                    sample_pos[b] = vec3_lerp(sample_pos[b], to_pos[b], fade_t);
+                    sample_rot[b] = quat_nlerp(sample_rot[b], to_rot[b], fade_t);
+                    sample_scl[b] = vec3_lerp(sample_scl[b], to_scl[b], fade_t);
                 }
             }
         }
