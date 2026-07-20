@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R259：GL 阴影 clear 在 depth mask=false 时静默失效（已完成）
+
+### [x] R259-A force depth mask on before shadow glClear(DEPTH)
+- [x] `glClear(GL_DEPTH_BUFFER_BIT)` 在 `glDepthMask==FALSE` 时被 GL 忽略；`rhi_cmd_bind_shadow_map`（rhi_gl.c:1561）与 `rhi_cubemap_depth_fbo_bind_face`（2412）在绑定深度 pipeline 前 clear，未复位 mask
+- [x] `g_gl_depth_mask` file-scope 缓存被 depth_write_disable pipeline（后处理/UI）置 false；跨帧残留 + 阴影 pass 最先执行（particles_compute 早退不复位）→ atlas/cube 面 clear 静默失效 → CSM 脏块 / 点光拖影
+- [x] 修复：两处 clear 前加 `rhi_cmd_clear_depth` 同款守卫强制开 mask
+- [x] 仅 GL；VK 走 render pass loadOp=CLEAR 不受 mask 影响
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**。
+
 ## R258：VK 延迟 G-buffer 深度 layout 跟踪缺失致 Hi-Z 屏障错误/缺失（已完成）
 
 ### [x] R258-A track MRT depth cur_layout on bind

@@ -1558,6 +1558,14 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     gl_set_viewport_cached(0, 0, sm->width, sm->height);
     /* R228-B: Clear/write shadow depth under standard 0..1 range (VK viewport). */
     gl_set_depth_range_cached(0.0f, 1.0f);
+    /* R259 (CORRECTNESS): GL ignores glClear(DEPTH) while the depth write mask is
+     * false. The atlas is cleared here BEFORE the shadow depth pipeline (which
+     * re-enables the mask) is bound, so a stale g_gl_depth_mask==false — left by
+     * the previous frame's last depth_write_disable pipeline (post-fx / UI) and
+     * not reset before the shadow pass — makes this clear a silent no-op, leaving
+     * last frame's texels in the shadow atlas (CSM dirty blocks / ghosting).
+     * Mirror rhi_cmd_clear_depth: force the mask on for the clear. */
+    if (!g_gl_depth_mask) { glDepthMask(GL_TRUE); g_gl_depth_mask = true; }
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
@@ -2409,6 +2417,12 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     gl_set_viewport_cached(0, 0, (GLsizei)fbo->size, (GLsizei)fbo->size);
     /* R229-A: Match VK face viewport min/maxDepth = 0..1 before clear/write. */
     gl_set_depth_range_cached(0.0f, 1.0f);
+    /* R259 (CORRECTNESS): as in rhi_cmd_bind_shadow_map, this per-face clear runs
+     * before the depth pipeline is bound, so a stale g_gl_depth_mask==false (from a
+     * prior depth_write_disable pipeline) would make glClear(DEPTH) a no-op and
+     * leave stale depth in the cube face (point-light shadow ghosting). Force the
+     * mask on for the clear, matching rhi_cmd_clear_depth. */
+    if (!g_gl_depth_mask) { glDepthMask(GL_TRUE); g_gl_depth_mask = true; }
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
