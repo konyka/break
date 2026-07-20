@@ -48,6 +48,11 @@ struct VFS {
         u32          pak_hash_size;   /* power-of-2 table size */
     } mounts[VFS_MAX_MOUNTS];
     u32 mount_count;
+    /* R255: PAK mounts share one FILE* whose seek cursor is process-global; the
+     * async loader runs multiple IO workers that call vfs_open concurrently, so a
+     * lock serializes each PAK fseek+fread. Opaque to avoid leaking threading
+     * headers into vfs.h consumers (allocated/typed as AsyncMutex in vfs.c). */
+    void *pak_lock;
 };
 
 VFS    *vfs_create(void);

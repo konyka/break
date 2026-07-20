@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R255：VFS PAK 共享 FILE* 并发读竞态（已完成）
+
+### [x] R255-A serialize concurrent PAK fseek+fread
+- [x] PAK 挂载复用单个 pak_fp，`vfs_open` 命中时无锁 `fseek+fread`；async_loader 默认 2 worker 并发 `vfs_open` → 游标交错、读错 offset 仍可能满 size 通过校验 → 错误资源
+- [x] 修复：`struct VFS` 加不透明 `void *pak_lock`（AsyncMutex），vfs_open PAK 分支 fseek+fread 包锁；目录挂载独立 fopen 不受影响
+- [x] 单线程行为不变，既有 test_vfs 通过
+
+**另评估（未改）**：gpucull/occlusion 可见性回读「同槽读写」疑似 2 帧滞后——实为 `rhi_frame_begin` 仅等 `fences[fi]`，读 `staging[fi]`（两帧前）是 fence 保证已完成的安全设计；改读另一槽会读 fence 未等过的在途数据（GPU/CPU 竞态），属回归。该延迟与已接受的 Hi-Z 一帧延迟同类，不改。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **31/31**。
+
 ## R254：packet 读取按实际长度边界 + 扫掠负 tmin（已完成）
 
 ### [x] R254-A packet reads must be bounded by write_pos, parse must validate length

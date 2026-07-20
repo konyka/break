@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include "async_loader_private.h" /* R255: AsyncMutex for concurrent PAK reads */
 
 static u32 fnv1a(const char *str) {
     u32 hash = 2166136261u;
@@ -21,6 +22,10 @@ static u32 next_pow2(u32 n) {
 
 VFS *vfs_create(void) {
     VFS *vfs = calloc(1, sizeof(VFS));
+    if (!vfs) return NULL;
+    /* R255: serialize concurrent PAK fseek+fread (see struct comment). */
+    AsyncMutex *lock = (AsyncMutex *)malloc(sizeof(AsyncMutex));
+    if (lock) { async_mutex_init(lock); vfs->pak_lock = lock; }
     return vfs;
 }
 
@@ -33,6 +38,10 @@ void vfs_destroy(VFS *vfs) {
             free(vfs->mounts[i].pak_names);
             free(vfs->mounts[i].pak_hash_table);
         }
+    }
+    if (vfs->pak_lock) {
+        async_mutex_destroy((AsyncMutex *)vfs->pak_lock);
+        free(vfs->pak_lock);
     }
     free(vfs);
 }
@@ -153,11 +162,19 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                             VFSFile *f = (VFSFile *)vfs_block;
                             f->data = vfs_block + sizeof(VFSFile);
                             f->size = pe->size;
-                            if (fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET) != 0) {
-                                free(vfs_block); return NULL;
-                            }
-                            if (fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp) != pe->size) {
-                                /* R143: Check fread return — truncated PAK entry data */
+                            /* R255: the shared pak_fp cursor is mutated by
+                             * fseek+fread; async IO workers call this concurrently,
+                             * so hold the lock across both to keep each read atomic.
+                             * Without it two workers interleave seeks and one reads
+                             * another entry's bytes — still passing the size check. */
+                            AsyncMutex *lk = (AsyncMutex *)vfs->pak_lock;
+                            if (lk) async_mutex_lock(lk);
+                            bool pak_ok =
+                                fseek(vfs->mounts[mi].pak_fp, pe->data_offset, SEEK_SET) == 0 &&
+                                fread(f->data, 1, pe->size, vfs->mounts[mi].pak_fp) == pe->size;
+                            if (lk) async_mutex_unlock(lk);
+                            if (!pak_ok) {
+                                /* R143: bad seek or truncated PAK entry data */
                                 free(vfs_block); return NULL;
                             }
                             f->pos = 0;
