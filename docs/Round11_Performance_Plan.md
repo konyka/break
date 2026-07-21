@@ -4420,6 +4420,12 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R307：聚簇光照 CPU 分箱 + 占用剔除可见性 多窄线深审——无 demo 可达高置信 bug，不修复
+
+- 窄线 A：`renderer/lighting.c` CPU 聚簇分箱（`light_system_cull`）。`cluster_depth` 指数深度切片 `near*(far/near)^(z/CLUSTER_Z)`（z=0→near、z=CLUSTER_Z→far）正确；`mat4_vec4` 列主序 M*v（SSE2 与标量路径一致）正确；z-slice 重叠测试 `vp.z+r<-z_far || vp.z-r>-z_near`（view 空间 -Z 朝前、cluster 深度 [z_near,z_far] 映射 view-z [-z_far,-z_near]）正确；屏幕 AABB 拒绝测试 + `screen_ok`（w<=0.001 时跳过屏幕剔除、保守纳入所有过 z 的 cluster）正确；容量守卫 `grid_index_total >= CLUSTER_COUNT*LIGHT_MAX_PER_CLUSTER - LIGHT_MAX_POINT` 双重防溢出、goto done 后剩余 cluster 保持 memset 的 0/0（安全无光）；offset/count 连续（offset=进入前 total、advance 恰好 count）。记录（回退路径有意近似、非 bug）：`screen_r=radius*inv_vz*screen_w*0.5` 省略投影缩放因子（proj[0][0]≈1/(aspect·tan(fov/2))），对典型 FOV 近似成立，且 CPU 分箱仅在 GPU cluster_cull.comp 缺失/编译失败时回退启用。
+- 窄线 B：`renderer/occlusion_cull.c`。`oc_calc_mip_levels`（`while(max_dim>1) max_dim>>=1; levels++`）对 pow2/非 pow2 均等于 `floor(log2(max))+1`；`occlusion_cull_visible_count` SSE2 分支无关计数（`andnot(cmpeq(v,0), ones)` → 可见元素 4 字节 0xFF、`popcount(movemask)/4`）与标量尾部一致；`occlusion_cull_is_visible`（enabled/readback-null/`index>=object_count` → 保守返回可见）正确。记录（1 帧延迟可容忍、非高置信 bug）：`occlusion_cull_dispatch` readback 用新帧 clamp 后的 count 读上帧 staging，count 增长时读到 staging 尾部陈旧值——但占用剔除本就 1 帧延迟、误判可见安全且次帧自校正。
+- 决策：无 demo 可达高置信 CORRECTNESS 问题，不改代码（precedent R289/R290/R294/R296/R297/R300/R301/R306）。测试缺口（记录）：无 `light_system_cull` 精确 cluster 归属 golden（受 screen_r 近似影响，非确定性）；occlusion count 变化时的 staging 陈旧尾部无单测。
+
 ## R306：skeleton 世界矩阵解析 + frustum 剔除 多窄线深审——无 demo 可达高置信 bug，不修复
 
 - 窄线 A：`animation/skeleton.c`。`mat4_trs` 直接组合 T*R*S：旋转元素 r00..r22 与 `mat4_from_quat` 列主序（e[col][row]）逐一核对一致，列 0/1/2 分别乘 sx/sy/sz、列 3 为平移、底行 (0,0,0,1)——正确。`skel_resolve_world`（R240 定点法）对任意 joint 顺序（glTF 不保证父在子前）正确：`p==UINT32_MAX||p>=n||p==i` 视为根，未解析父延后到后续 pass，`pass<=n` 上界足够（最坏逆序链每 pass 解一个），parent-cycle 经 `progressed==0` 退出并把剩余当根。STEP（R252）`frac=(t>=t1)?1:0` 与 blend 路径一致。`skeleton_evaluate` 忽略 `dt` 是设计（main.c:4080 自行推进 `clip.time`）。记录（设计假设、非 bug）：无通道的关节 local 默认单位阵而非其 bind-local TRS，依赖"bind==单位 local"约定，无 glTF bind-local 数据不可确定性测试（precedent R300 潜在限制）。
