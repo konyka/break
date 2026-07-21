@@ -241,7 +241,14 @@ void lod_update_all(LODSystem *sys, Vec3 camera_pos, f32 fov,
         f32 inv_bias = 1.0f / (1.0f + sys->bias);
         for (u32 i = 0; i < update_count; i++) {
             LODGroup *group = &sys->groups[i];
-            u32 current = sys->current_levels[i];
+            /* R293 (CORRECTNESS): current_levels[] is indexed by ENTITY id (see
+             * lod.h + lod_register/lod_select/lod_get_level/lod_get_mesh), not by
+             * the dense group slot i. Reading/writing current_levels[i] here made
+             * lod_update_all update the wrong slot whenever an entity id differed
+             * from its registration index, so lod_get_level/lod_get_mesh(entity)
+             * kept returning the stale initial level 0. Index by entity_id. */
+            u32 entity = group->entity_id;
+            u32 current = sys->current_levels[entity];
 
             f32 fraction = lod_compute_screen_fraction(
                 positions[i], group->bounding_radius, camera_pos, fov);
@@ -251,7 +258,7 @@ void lod_update_all(LODSystem *sys, Vec3 camera_pos, f32 fov,
 
             if (selected != current) {
                 sys->lod_transitions_this_frame++;
-                sys->current_levels[i] = selected;
+                sys->current_levels[entity] = selected;
             }
 
             /* Accumulate triangle savings (LOD 0 is baseline) */
@@ -264,7 +271,10 @@ void lod_update_all(LODSystem *sys, Vec3 camera_pos, f32 fov,
         /* Distance strategy — O(n) linear pass */
         for (u32 i = 0; i < update_count; i++) {
             LODGroup *group = &sys->groups[i];
-            u32 current = sys->current_levels[i];
+            /* R293 (CORRECTNESS): index current_levels[] by entity id, not slot i
+             * (see the screen-size branch above). */
+            u32 entity = group->entity_id;
+            u32 current = sys->current_levels[entity];
 
             f32 dist_sq = lod_distance_sq(positions[i], camera_pos);
 
@@ -273,7 +283,7 @@ void lod_update_all(LODSystem *sys, Vec3 camera_pos, f32 fov,
 
             if (selected != current) {
                 sys->lod_transitions_this_frame++;
-                sys->current_levels[i] = selected;
+                sys->current_levels[entity] = selected;
             }
 
             /* Accumulate triangle savings */

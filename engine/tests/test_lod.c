@@ -339,6 +339,34 @@ TEST(lod_register_many_entities) {
     lod_shutdown(&sys);
 }
 
+/* R293: lod_update_all must index current_levels[] by entity id (as documented
+ * "per entity" in lod.h and as read back by lod_get_level/lod_get_mesh), NOT by
+ * the dense group slot. With non-sequential entity ids the old slot-indexed
+ * writes landed on the wrong entries and lod_get_level returned a stale level. */
+TEST(lod_update_all_indexes_by_entity_not_slot) {
+    LODSystem sys;
+    lod_init(&sys);
+
+    LODGroup g = make_test_group(4, 10.0f);
+    /* Register with entity ids that differ from their registration slot. */
+    lod_register(&sys, 5, &g);   /* slot 0, entity 5 */
+    lod_register(&sys, 3, &g);   /* slot 1, entity 3 */
+
+    /* positions[] parallel to group slots: slot0(entity5) far, slot1(entity3) near. */
+    Vec3 positions[2];
+    positions[0] = vec3(100.0f, 0.0f, 0.0f); /* dist²=10000 > 1600 → coarsest (3) */
+    positions[1] = vec3(1.0f, 0.0f, 0.0f);   /* dist²=1   < 100  → finest   (0) */
+    Vec3 cam = vec3(0.0f, 0.0f, 0.0f);
+
+    lod_update_all(&sys, cam, 1.0f, positions, 2);
+
+    /* Before the fix these read the never-updated current_levels[5]/[3] == 0. */
+    ASSERT_EQ(lod_get_level(&sys, 5), 3u);
+    ASSERT_EQ(lod_get_level(&sys, 3), 0u);
+
+    lod_shutdown(&sys);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lod_init_defaults);
     RUN_TEST(lod_register_entity);
@@ -359,4 +387,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lod_select_very_large_distance);
     RUN_TEST(lod_zero_level_count_group);
     RUN_TEST(lod_register_many_entities);
+    RUN_TEST(lod_update_all_indexes_by_entity_not_slot);
 TEST_MAIN_END()

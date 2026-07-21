@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R293：LOD `lod_update_all` 按 group slot 索引 `current_levels[]`（应按 entity id）致查询恒读陈旧 LOD0（已完成）
+
+### [x] R293-A lod_update_all 索引维度与 API 契约不一致
+- [x] `lod.h`：`current_levels[]` 注释为 "per entity"；`lod_register`/`lod_select`/`lod_get_level`/`lod_get_mesh` 均按 `current_levels[entity]` 读写
+- [x] `lod_update_all`（`lod.c` 屏幕尺寸 + 距离两分支）却按稠密 group slot `i` 读写 `current_levels[i]`
+- [x] entity id ≠ 注册 slot 时：批量更新写 `current_levels[slot]`、查询读 `current_levels[entity]` → 错位；`lod_get_level/lod_get_mesh(entity)` 恒返回 `lod_init`/`lod_register` 置的陈旧 0
+- [x] 手算：注册 entity=5(slot0)/3(slot1)，positions[0]远→3、[1]近→0；旧码写 [0]=3/[1]=0，`lod_get_level(5)` 读 [5]=0（远处物体永远最高细节网格，性能+LOD 双失效）
+- [x] 引擎主循环只用 `lod_select`（main.c:5034）故未触发，但 `lod_update_all` 为公开 API、契约错误
+- [x] 修复：两分支改 `u32 entity = group->entity_id; current_levels[entity]`（positions[]/groups[] 仍按 slot 并列，符合 count 批量契约）
+
+**验收**：回归测试 `lod_update_all_indexes_by_entity_not_slot`（非顺序 id 5/3 批量更新后断言 `lod_get_level(5)==3`、`(3)==0`）——旧 slot 索引版本编译验证**失败**（`lod_get_level(5) != 3`）、修复后通过。GL/VK 构建通过；GL/VK CTest 各 **31/31**（test_lod 19/19）。
+
 ## R292：异步加载器/解码管线 init/shutdown 循环重建同步原语致存活 worker 永久 park → join 死锁（已完成）
 
 ### [x] R292-A 交接后仍写请求 slot 的数据竞态（use-after-handoff）
