@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R321：任务系统 Chase-Lev 工作窃取队列 + 引用计数/依赖 fan-out + task_wait 记账深审——内存序与并发语义均正确，无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/task/task.c` + `task.h`）：
+  - Chase-Lev deque（对照 Lê/Pop/Cohen/Nardelli《Correct and Efficient Work-Stealing for Weak Memory Models》）:
+    - `deque_push`(owner):`b=load(bottom,relaxed)`、`t=load(top,acquire)`、满判 `b-t>=capacity`、写 `buffer[b&(cap-1)]`、`fence(release)`、`store(bottom,b+1,relaxed)`——release fence 保证元素写先于 bottom 发布。
+    - `deque_pop`(owner,LIFO):`b=load(bottom,relaxed)-1`、`store(bottom,b,relaxed)`、`fence(seq_cst)`、`t=load(top,relaxed)`;`t<=b` 取 `buffer[b&(cap-1)]`,末元素 `t==b` 用 `CAS(top,t→t+1,seq_cst)` 与 steal 竞争,失败置 NULL,末尾复位 `bottom=b+1`;空则复位 `bottom=b+1` 返 NULL。
+    - `deque_steal`(thief,FIFO):`t=load(top,acquire)`、`fence(seq_cst)`、`b=load(bottom,acquire)`、`t>=b` 空;**先读** `buffer[t&(cap-1)]` 再 `CAS(top,t→t+1,seq_cst)`,CAS 失败(竞争)返 NULL。
+    - `DEQUE_CAPACITY=1024`(头文件注释"must be power of 2"),唯一调用点传入,`&(cap-1)` 正确;`deque_init` calloc 失败置 `capacity=0`(R166-A),此时 push(`b-t>=0` 恒真返 false)/pop(空分支)/steal(`t>=b` 返 NULL)均安全不解引用 NULL buffer。
+  - 引用计数/依赖:`task_release` `fetch_sub(ref_count,1,acq_rel)`,`old==1` 且 `t` 不在 `_task_block` 范围内才 `free`;`execute_task` 完成顺序 `completed`(release)→`total_tasks_completed`(acq_rel,R267:让各 worker 的 fn() 非原子写经计数链对 `task_wait` 的 acquire 载入构成 happens-before,避免 ARM/Apple Silicon 弱内存读到陈旧结果)→pool 锁下摘 `waiters`→逐 `child` `fetch_sub(dep_count,1,acq_rel)`,`old==1` 即 `schedule_ready`,随后 `task_release(child)` 释放 waiter ref。
+  - 提交/记账:`task_submit_dep` L719 提交即 `total_tasks_submitted++`(R173,阻塞态也计入 task_wait);OOM(malloc waiter link 失败)回滚已建链接+`task_release`+`submitted--`+标 `completed` 避免子任务欠计早跑(R177);`actual_deps==0`(deps 已全完成)立即入队且不二次计数。
+  - `task_wait`:`completed>=submitted && pending(submit_count)==0` 终止。worker deque 内任务已计入 submitted 未计入 completed(`completed<submitted` 阻止提前返回),全局队列任务由 submitted 与 pending 双重覆盖;等待中帮忙执行(worker 先弹本地 deque、再 `worker_pull_submitted` 拉全局;非 worker 主线程 `drain_submitted_inline`);R174 shutdown 前用 `exchange(dep_count,0)` 强解阻塞子任务防 task_wait 挂死。
+- 结论：Chase-Lev 队列内存序、refcount/依赖 fan-out、submitted/completed 记账、task_wait 终止与协助执行均正确,已由 R156/R166/R170/R173/R174/R177/R267 系列加固。记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R320：BVH 光线求交遍历 + 自碰撞对偶枚举 + refit 深审——slab/遍历序/早退/对去重均正确，无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/physics/bvh.c`）：
