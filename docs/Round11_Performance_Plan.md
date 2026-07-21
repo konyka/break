@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R319：物理窄相闭式几何 + 冲量求解器深审——法线约定/穿透深度/位置速度分离/退化分支均正确，无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/physics/physics.c`）：
+  - 最近点：`closest_seg_seg(p1,q1,p2,q2)` 与 Ericson《Real-Time Collision Detection》逐分支一致——`a<=eps && e<=eps`→s=t=0、`a<=eps`→s=0,t=clamp(f/e)、`e<=eps`→t=0,s=clamp(-c/a)、一般情形 `denom=a·e-b²` 守卫后 `s=clamp((b·f-c·e)/denom)`、`t=(b·s+f)/e`,再对 `t<0`/`t>1` 重夹 s;倒数(inv_a/inv_e/inv_denom)只是把除法换乘法,语义不变。`closest_on_segment` 带 `denom>1e-12` 守卫,退化线段返回端点。
+  - 接触生成 `collide_ordered`(注释与 physics.h 约定"法线从 A 指向 B"):sphere-sphere `d=B-A`;sphere-capsule `d=capsuleSeg最近点-sphere`;capsule-capsule `d=c2-c1`(c1∈A,c2∈B);三者 `n=norm(d)`(dist²<=1e-12 回退 `(0,1,0)`)、`depth=r-dist`、`pt` 取球面/重叠中点。capsule-box:`sphere_vs_box(segp2,A半径,B)`,`segp2` 为段对盒 2 步迭代逼近的最近点,`dist²>=r²` 且 `segp2` 不在盒内才返 false(深穿透兜底)。box-box:AABB 最小平移向量(MTV),取 |dep| 最小轴、按符号定法线。
+  - `sphere_vs_box` 球心在盒内(dist²≈0)分支:遍历 3 轴取到 min/max 面的最小穿透 `best`、`exit_sign` 为推出方向,`nn[axis]=-exit_sign`(法线=推出反向)、`depth=best+r`。与盒外情形统一:求解器把 A 沿 `-n` 推离 B(盒内 `-n=exit_sign`=最小穿透面法向)。
+  - `resolve_contact`:`total_inv_mass<=0` 早退;位置修正 A `pos-=n·depth·(inv_a/total)`、B `pos+=n·depth·(inv_b/total)`(逆质量分配、A→B 法线下正确分离);`vel_along_normal=dot(v_a-v_b,n)`,R262 修正后仅 `<0`(分离)时跳过冲量;`j=-(1+e)·vn·inv_total`(e 取两者较小 restitution),A `vel+=j·n·inv_a`、B `vel-=j·n·inv_b`——标准法向冲量,无切向摩擦(设计如此)。
+  - kill-floor:`y-half<-10` 时夹回 `-10+half` 并 `vy=-vy·restitution`,防无限下落,`respawn_count++`。
+- 结论：闭式几何(Ericson 忠实实现)、接触法线/深度、冲量与位置分离、退化与深穿透兜底均正确,已由 R239/R262/R277/R280/R288/R302 系列加固。记为"评估、无修复"轮。无代码改动;总计 662 处修复。观察(非 bug):位置修正为 100% 无 slop/Baumgarte(可能抖动,属稳定性权衡);capsule-box 为迭代逼近(非精确段-盒最近点)。
+
 ## R318：场景序列化（BSCN 二进制/JSON/prefab）+ ECS 组件迁移/archetype swap-remove 深审——均正确/已加固，无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/scene/scene_serial.c` + `engine/src/ecs/ecs.c`）：
