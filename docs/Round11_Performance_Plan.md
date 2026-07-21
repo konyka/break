@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R343：GPU 遮挡剔除（Hi-Z 金字塔生成 / AABB 投影可见性 / 双缓冲回读）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/occlusion_cull.c` + `shaders/hi_z_generate.comp` + `shaders/occlusion_cull.comp`）：
+  - mip 计数：`oc_calc_mip_levels`（`max_dim=max(w,h)`，`while(max_dim>1){max_dim>>=1;levels++}`）对 1024 得 11 级，为满 mip 链，正确。
+  - 资源（init）：`hi_z_width/height = size/2`（≥1 钳制），`hi_z_texture` 建全 mip 链；`aabb_buffer`/`visibility_buffer`/`readback_staging[0/1]` 均 sized `OCCLUSION_MAX_OBJECTS`（AABB 为 `×sizeof(ObjectAABB)`，其余 `×sizeof(u32)`）；nearest+CLAMP 采样器；两个 compute pipeline（hi_z_generate/occlusion_cull）；缓存 uniform location 避免逐帧查询；任一失败 → shutdown。`resize` 重建纹理并重算 levels。
+  - Hi-Z 生成（`occlusion_cull_generate_hi_z`）：depth→read 转换后绑 pipeline，逐 mip：`out_w/h = hi_z_dim>>mip`（钳 ≥1），mip0 绑 depth_buffer（`bind_texture_compute` set2）、后续绑上一级（`bind_texture_mip`），输出当前 mip image（binding1），set `pc_output_size`，dispatch `((out+7)/8)²`，每级后 `memory_barrier` 保证写后读顺序；结尾 R172/R195-B 恢复全 mip 视图（GL bind_texture_mip 会钳 BASE/MAX，unified 路径可能跳过 dispatch）。
+  - dispatch（`occlusion_cull_dispatch`，1~2 帧延迟）：`count=min(object_count,MAX)`；`fi=frame_index&1`，若 `staging_valid[fi]` 则 map `readback_staging[fi]`、`memcpy(visibility_readback, count·4B)`（staging sized MAX，无越界）；绑 aabb(0)/visibility(1)/hi_z(compute set2,2)，set view_proj/count/宽高 uniform；dispatch `(count+63)/64`；`memory_barrier` 后 GPU-copy `visibility_buffer→readback_staging[fi]`、`staging_valid[fi]=true`。
+  - 查询：`is_visible`（`object_index≥object_count` 返回 true 保守可见，否则读 readback≠0）；`visible_count`（SSE2 `cmpeq_epi32`+`movemask`+popcount/4 分支统计 + 标量尾），逻辑正确。
+  - shader `hi_z_generate.comp`：`pos≥out_size` 早退；4-tap（±0.25 texel）nearest 采样取 `max`（保守 farthest，标准 Z），写 r32f image。
+  - shader `occlusion_cull.comp`：8 角投影，`clip.w≤0`（穿越近平面）保守标可见并返回；累积 `ndc_min/max` 与 `closest_z=ndc.z·0.5+0.5`（R212-A 窗口深度空间）；NDC 框外/`closest_z>1` 剔除；clamp NDC→screen 求 `mip=clamp(ceil(log2(max size)),0,levels-1)`；`uv_center=(ndc_min+ndc_max)·0.25+0.5`（NDC 中心→UV，代数正确）；`textureLod` 采 hi_z，`closest_z≤hi_z_depth` 为可见。
+  - 观察（非 bug，已知 Hi-Z 权衡）：`hi_z_width=width/2` 非强制 2 的幂，奇数维度下 4-tap 下采样可能漏采最远 texel，理论上可致偶发误剔除——属经典 Hi-Z 保守性局限，且遮挡剔除本为近似软剔除、结果以 1~2 帧延迟消费，非高置信可复现 bug。
+- 结论：mip 计数/资源尺寸/Hi-Z 逐级生成屏障/双缓冲 staging 回读/查询边界/两个 compute shader 的投影与深度比较均正确。记为“评估、无修复”轮。无代码改动；总计仍 664 处修复。
+
 ## R342：GPU 间接绘制压缩（visible 压缩 / 原子计数 / 双缓冲可见性 / fill 屏障）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/indirect_draw.c` + `rhi_cmd_fill_buffer` VK 实现）：
