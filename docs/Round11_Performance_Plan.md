@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R337：视锥剔除（Gribb-Hartmann 平面提取 / p-vertex AABB / 点 / 球测试）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/frustum_cull.c`、`cull.c::frustum_from_vp`、`cull.h` inline 测试）：
+  - 平面提取（`frustum_extract` 与 `frustum_from_vp` 逐行一致，均 R265 修复）：列主序 e[col][row]，clip 分量 `clip.e[r]=Σ_c vp->e[c][r]·p.e[c]`，故“row r”作为点的线性泛函其分量 i 系数为 `vp->e[i][r]`。平面系数 `plane.e[i]`（在 `frustum_test_*` 中被消费为 `e0*x+e1*y+e2*z+e3`）须为 `(row3±row_k)[i]=vp->e[i][3]±vp->e[i][k]`。旧代码 `vp->e[3][i]±vp->e[k][i]` 转置了两个矩阵下标 → 构建 VP^T 的视锥、经验上 100% 误判在视点；GPU 路径（cull.comp `vp*vec4(center,1)`）本就正确，故只影响 CPU 回退。左/右=row3±row0，下/上=row3±row1，近/远=row3∓row2。
+  - 归一化：对 6 平面用法线 `len2>1e-12` 守卫 + `fast_rsqrt`，四分量（含 e[3]）同乘 → e[3] 成为真正的有符号距离。
+  - `sign_mask[p]`（R245）：`(e0≥0?1)|(e1≥0?2)|(e2≥0?4)`，供 p-vertex 选角；`frustum_extract` 之前遗漏此计算（零结构体 → sign_mask==0 → 恒选 min 角 → 错误剔除），已补齐与 `frustum_from_vp` 相同。
+  - 测试：`frustum_cull_batch` / `frustum_test_aabb` 用 p-vertex（法线分量≥0 取 aabb_max 否则 aabb_min），选出最靠正法线方向的角，`dist<0` 即整盒在该平面外 → 保守剔除（可能假阳性、绝无假阴性，符合剔除正确性要求）；`frustum_test_point`（任一平面 d<0 → 外）；`frustum_test_sphere`（d<-radius → 球完全在负半空间 → 外）。
+  - 观察（非 bug）：近/远平面代码取 Near=row3-row2、Far=row3+row2，与标准 OpenGL [-1,1] 约定（Near=row3+row2）标签相反；但两个有效平面均被提取，6 个半空间的交集（视锥体）完全相同，而剔除对全部 6 平面做 `d<0` 测试、与平面“叫什么名”无关，故结果一致，仅注释命名不精确。`frustum_extract`（写入传入指针）与 `frustum_from_vp`（按值返回）为等价重复实现。
+- 结论：Gribb-Hartmann 提取（R265 转置修复）、归一化含距离项、sign_mask p-vertex 选角（R245）、AABB/点/球保守测试均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R336：相机系统（fly 控制/yaw-pitch 钳制/缓存三角值/解析 view 与 inv_view/投影缓存）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/camera.c`）：
