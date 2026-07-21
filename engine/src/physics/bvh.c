@@ -254,8 +254,16 @@ static u32 bvh_build_recursive(BVH *bvh, const BVHAABB *aabbs, u32 *indices,
     f32 axis_max = node_bounds.max.e[best_axis];
     f32 extent = axis_max - axis_min;
 
-    if (extent < 1e-7f) {
-        /* Degenerate: just split in half */
+    if (best_cost == FLT_MAX || extent < 1e-7f) {
+        /* R302 (CORRECTNESS): no usable SAH split was found (every candidate had
+         * an empty side — e.g. all centroids landed in a single bin on every
+         * axis, as with coincident or tightly-clustered bodies) or the chosen
+         * axis is degenerate. Median-split the index range so the tree stays
+         * balanced (depth O(log N)). The bin-partition below would otherwise
+         * collapse to a (1, count-1) split, driving depth to O(N); once it
+         * exceeds BVH_MAX_DEPTH the forced single-object leaf SILENTLY DROPS the
+         * remaining objects (their leaf_map stays 0), so they disappear from
+         * every query / raycast / pair test → missed collisions. */
         best_split = start + count / 2;
     } else {
         /* Use cached split_bin from SAH sweep — no need to re-scan centroids */

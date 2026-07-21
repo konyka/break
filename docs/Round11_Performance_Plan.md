@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R302：BVH SAH 无有效分裂时退化 (1,count-1) → 深度 O(N) 超 BVH_MAX_DEPTH 静默丢对象（已完成）
+
+### [x] R302-A `bvh_build_recursive` 分区在 SAH 找不到分裂时收缩为单对象一侧
+- [x] 症状：当所有质心落入同一 bin（坐标重合/紧簇的刚体，或少数大 AABB 撑开包围盒而众多小物体质心聚簇）时，SAH 各候选分裂总有一侧为空 → `best_cost` 恒为 `FLT_MAX`、`best_split_bin=0`；后续 bin 分区把全部索引挤到一侧、经 clamp 变成 `(1, count-1)` 分裂 → 树深度退化到 O(N)。
+- [x] 后果：深度一旦超过 `BVH_MAX_DEPTH=32`，被迫成叶的节点只存 `indices[start]` 一个对象，其余对象**被静默丢弃**（`leaf_map` 保持 calloc 的 0），从此不出现在任何 `bvh_query_aabb`/`bvh_raycast`/`bvh_query_pairs` 结果里 → 漏碰撞/漏射线命中。physics 中重合/紧簇刚体（同一 spawn 点批量生成、堆叠副本）即可触发。
+- [x] 修复：把分区分支的守卫从 `extent < 1e-7f` 扩展为 `best_cost == FLT_MAX || extent < 1e-7f`，无有效 SAH 分裂时改用中位分裂 `best_split = start + count/2`，保证每层减半、深度 O(log N)、depth-cap 实际不可达，所有对象都获得各自的单对象叶。仅影响原本退化的路径，正常 SAH 分裂（`best_cost<FLT_MAX`）行为不变。
+- [x] 回归：`test_physics.c::bvh_coincident_objects_not_dropped`——构建 40 个坐标完全重合的 AABB（N=40 > BVH_MAX_DEPTH=32），query 覆盖公共位置断言 `found==40` 且每个对象映射到唯一有效叶。修复前退化链只存 33 个、丢 ~7 个（断言失败）；修复后 40 个全部可达。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 test_async_loader）；test_physics 本地 38/38。
+
 ## R301：RHI 句柄池 + Mipmap 流式 + 日志 多窄线深审——无 demo 可达高置信 bug，不修复
 
 - 窄线 A：`rhi/rhi.c` 句柄池（generation + free-list）。`rhi_init_freelist` 侵入式空闲链、`rhi_alloc_slot` 的 `free_count==0` abort（R157，避免返 0 覆盖 slot0）、`generation++` 跳 0、`rhi_get_resource` 校验 `generation==h.gen && alive`、`rhi_free_slot` 经 `alive` 防双重释放（gen 不变、realloc 时才 ++ 使陈旧句柄失效）——均正确。调用方（rhi_gl.c 各 create）用 `dev->slots[idx].generation` 直接构造句柄，非 `next_slot`，无覆盖；多资源 FBO（MRT/cubemap depth）部分失败返回部分句柄为有意设计。

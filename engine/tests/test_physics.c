@@ -272,6 +272,42 @@ TEST(bvh_query_pairs_reports_all_overlaps)
     bvh_destroy(&bvh);
 }
 
+TEST(bvh_coincident_objects_not_dropped)
+{
+    /* R302: when all centroids coincide (duplicate / tightly-clustered bodies),
+     * SAH finds no valid split (every candidate leaves one side empty) and the
+     * partition used to collapse to a (1, count-1) split, driving tree depth to
+     * O(N). Once depth passed BVH_MAX_DEPTH the forced single-object leaf
+     * SILENTLY DROPPED the remaining objects (their leaf_map stayed 0), so they
+     * vanished from every query → missed collisions. A median split keeps depth
+     * O(log N), so every object remains reachable. N=40 > BVH_MAX_DEPTH(32) so
+     * the pre-fix chain would drop ~7 objects; the fix keeps all 40. */
+    enum { N = 40 };
+    BVH bvh;
+    bvh_init(&bvh, N);
+
+    BVHAABB aabbs[N];
+    for (u32 i = 0; i < N; i++)
+        aabbs[i] = (BVHAABB){ .min = vec3(0,0,0), .max = vec3(1,1,1) }; /* all coincident */
+    bvh_build(&bvh, aabbs, N);
+
+    u32 results[64];
+    u32 found = bvh_query_aabb(&bvh,
+        (BVHAABB){ .min = vec3(0.2f,0.2f,0.2f), .max = vec3(0.8f,0.8f,0.8f) }, results, 64);
+    ASSERT_EQ(found, (u32)N); /* every coincident object must stay reachable */
+
+    /* Each object maps to a distinct valid leaf — none dropped, none duplicated. */
+    bool seen[N];
+    for (u32 i = 0; i < N; i++) seen[i] = false;
+    for (u32 k = 0; k < found; k++) {
+        ASSERT_TRUE(results[k] < (u32)N);
+        ASSERT_TRUE(!seen[results[k]]);
+        seen[results[k]] = true;
+    }
+
+    bvh_destroy(&bvh);
+}
+
 TEST(bvh_raycast_test)
 {
     BVH bvh;
@@ -580,6 +616,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(raycast_miss);
     RUN_TEST(bvh_build_query);
     RUN_TEST(bvh_query_pairs_reports_all_overlaps);
+    RUN_TEST(bvh_coincident_objects_not_dropped);
     RUN_TEST(bvh_raycast_test);
     /* Edge cases */
     RUN_TEST(physics_empty_world_raycast);
