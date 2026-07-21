@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R314：手写矩阵捷径同类回归审计（R49/R50/R53 稀疏乘法+求逆、CSM 级联 VP）——无 bug，不修复
+
+- 动机：R313 发现 `point_shadow_compute_face_vp` 的"手写解析矩阵闭式"在列主序 `e[col][row]` 下彻底错误(正前方 w<0)。同源作者写了多个类似的稀疏/优化矩阵闭式,遂系统核验是否存在同类兄弟 bug。
+- 数值核验（/tmp/mm_check，通用 vs 优化，含 TAA jitter 透视 + 任意 lookat view + 对角平移 D）：
+  - `mat4_mul_proj_view(P,V)`（R50）vs `mat4_mul(P,V)`：maxdiff=0 OK
+  - `mat4_inv_perspective(P)`（R53）vs `mat4_inverse(P)`：maxdiff=1.86e-9 OK
+  - `mat4_mul_ortho_diag(D,V)`（R49）vs `mat4_mul(D,V)`：maxdiff=0 OK（含 `mat4_ortho` 输出）
+- CSM 级联 VP（main.c 3732–3752）：`lview` 用预计算 shadow 基直接填充,逐元素等价于 `mat4_lookat(eye=center−light_dir·extent, center, up=(0,1,0))` 左手约定——`s=(sx,0,sz)=normalize(f×up)`、`u=cross(s,f)`(x=−fy·fx·inv,y=(fx²+fz²)·inv,z=−fy·fz·inv)、row2=−f、平移=−基·eye,全部手算核对一致;`lproj=mat4_ortho(-extent,extent,-extent,extent,0.1,2·extent)` 经已验证的 `mat4_mul_ortho_diag` 合成。R247 对天顶太阳(light_dir∥up)退化基有 XZ 平面回退守卫。
+- 记录（非 bug）：CSM 未做 texel snapping → 相机移动时阴影边缘抖动(画质),非正确性缺陷,不在本轮修复范围;级联 XY 范围用 `extent=zf−zn` 启发式尺寸(非紧贴视锥角点)属分辨率取舍。
+- 结论：R313 的解析式错误为孤例;所有同类稀疏矩阵捷径与 CSM 级联 VP 均正确。记为"验证、无修复"轮,无代码改动;总计 662 处修复。
+
 ## R313：点光源立方体阴影 VP 解析式错误 → 正前方几何被裁剪、cubemap 为空、点阴影全失效（已完成）
 
 - 症状：`renderer/point_shadow.c::point_shadow_compute_face_vp` 用"解析闭式"直接填 `out_vp[face]`,注释自称"combined VP 至多 2 个非零行,≤4 非零元"。但本引擎 Mat4 为列主序 `e[col][row]`、`result[row]=Σ_col e[col][row]·v[col]`(透视 `e[2][3]=-1`→`clip.w=-view.z`,见 `mat4_mul_proj_view`),该闭式每面仅触及两"行"、且 clip.w 行系数挂在错误世界轴上。
