@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R315：屏幕空间光效（镜头光晕/TSR 上采样/God Rays/调试可视化）多窄线深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论：
+  - `lens_flare.c::lens_flare_apply`：把 `light_dir` 作无穷远方向(齐次 w=0)投影——view 仅旋转部分(`vx=view[0]lx+view[4]ly+view[8]lz` 等,列主序 flat = col·4+row),proj 正确丢弃 col3 平移(方向 w=0),得 `clip_w=proj[3]vx+proj[7]vy+proj[11]vz=-vz`。`light_view_z>0`(背对相机,view 空间前方为 −z)时绑 fbo 清屏并返回(避免残留光晕);`clip_w<=0.001` 二次守卫;NDC→screen `*0.5+0.5` 标准。正确。
+  - `upscale.c`：TSR 双 pass。pass1 读 `history[read_idx]`、写 `fbo`;pass2 `copy_only=1` 把 `fbo` 拷入 `history[write_idx]`;`history_idx=write_idx`。下一帧 `read_idx` 即上帧新写历史——ping-pong 正确。首帧读未初始化历史为 1 帧瞬态(非正确性 bug)。
+  - `god_rays`（C 侧 + main.c:5522 投影）：`god_rays_apply` 为薄封装(`intensity<=0` 早退)。太阳屏幕坐标在 main.c 用 `curr_view_proj` 对 `-sun_dir_vec`(w=0)投影:`sx=vp.e[0][0]dx+vp.e[1][0]dy+vp.e[2][0]dz` 等、`sw=vp.e[*][3]·dir`,`sun_sx=(sx/sw)*0.5+0.5`;仅当 `sw>0`(太阳在前)且屏幕 UV∈(-0.5,1.5) 才调用 apply 并切 `tonemap_input`,否则不调用、不切换(背对相机无残留)。正确。
+  - `debug_viz.c`：全屏深度/法线/AO/级联可视化薄封装;`cascade_splits[1..4]` 作 4 段级联远边界(跳过 [0]=near)索引正确。
+- 结论：均为正确薄封装/正确 CPU 投影,记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R314：手写矩阵捷径同类回归审计（R49/R50/R53 稀疏乘法+求逆、CSM 级联 VP）——无 bug，不修复
 
 - 动机：R313 发现 `point_shadow_compute_face_vp` 的"手写解析矩阵闭式"在列主序 `e[col][row]` 下彻底错误(正前方 w<0)。同源作者写了多个类似的稀疏/优化矩阵闭式,遂系统核验是否存在同类兄弟 bug。
