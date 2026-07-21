@@ -270,8 +270,19 @@ static i32 net_repl_deliver_ordered(NetReplicator *rep, u8 type, const u8 *wire,
     for (;;) {
         u32 late_count = 0u;
         i32 late = net_reorder_drain(rep, type, reply_to, out, max_count, &late_count, now_ms);
-        if (late <= 0 || late_count == 0u) break;
-        *out_count = late_count;
+        /* R299 (CORRECTNESS): break only when the next slot isn't ready or the
+         * drained packet failed to parse (late <= 0). The old `|| late_count == 0u`
+         * also broke on a successfully-drained ordered packet that legitimately
+         * carried 0 snapshots — which a foreign/forged peer can send (this
+         * engine's broadcast rejects count==0, but the receiver must be robust,
+         * same lineage as R254/R298). That premature break left every subsequent
+         * consecutive buffered packet stuck (next_ordered_seq had advanced past
+         * the empty one but the drain stopped), so reorder_pending never reached
+         * 0 and the ordered stream stalled permanently. Only overwrite out_count
+         * for a non-empty frame so a trailing empty packet can't clobber the last
+         * delivered snapshot set. */
+        if (late <= 0) break;
+        if (late_count > 0u) *out_count = late_count;
     }
     return n;
 }

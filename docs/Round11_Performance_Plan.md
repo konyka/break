@@ -4420,6 +4420,14 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R299：ordered reorder drain 遇 0 快照包 `late_count==0` 提前中断 → 后续连续缓冲包永久滞留、ordered 流 stall（已完成）
+
+### [x] R299-A drain 循环退出条件把"空帧"误当"无更多可投递"
+- [x] `net_repl_deliver_ordered` 投递到手的顺序包后，用 `for(;;){ drain; if (late<=0 || late_count==0u) break; *out_count=late_count; }` 排空后续连续缓冲包。`net_reorder_drain` 对已就绪槽调 `net_repl_deliver_unreliable` 返回 `(i32)len>0`，仅 `late_count` 反映该包快照数。当某**已缓冲的 ordered 包合法携带 0 快照**（`n==0`；本引擎 `net_replicator_broadcast` 拒绝 `count==0`，但**外部/伪造 peer 可发**）在 drain 时被投递 → `late>0` 但 `late_count==0` → `late_count==0u` 触发 **break**：此时 `next_ordered_seq` 已越过空包，但 drain 停止，其后连续缓冲包（seq+1…）永久滞留，`reorder_pending` 永不归零 → ordered 流永久 stall。与 R254/R298 加固伪造/他方包同脉络。
+- [x] 改为仅在 `late<=0`（下一槽未就绪或投递解析失败）时 break；空帧 `late_count==0` 不再中断循环，继续排空后续包；且仅 `late_count>0` 才覆盖 `*out_count`，避免尾随空包清掉上一有效快照集。有快照的常规路径行为不变。
+
+**验收**：新增回归 `ordered_reorder_zero_snapshot_no_stall`——缓冲 seq2(0 快照) 与 seq3(1 快照) 后投递 seq1，断言 `reorder_pending==0`、`reorder_delivered==2`、`out[0]` 为 seq3 载荷(7,8,9)。旧 drain 逻辑下该用例 **FAIL**（`reorder_pending != 0`，seq3 滞留）；修复后 GL/VK 各 CTest **31/31**（test_net_replication 19/19）。
+
 ## R298：`packet_can_write`/`packet_can_read` 边界检查整数溢出 → 巨大 size 绕过导致 memcpy 越界（已完成）
 
 ### [x] R298-A packet 边界检查用加法 `pos+n` 在 u32 回绕

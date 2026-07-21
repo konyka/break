@@ -105,6 +105,16 @@ static u32 build_ordered_snap_wire(u8 *out, u32 seq, u32 entity_id, f32 x, f32 y
                            entity_id, x, y, z);
 }
 
+static u32 build_ordered_empty_wire(u8 *out, u32 seq) {
+    /* An ordered TRANSFORM_SNAPSHOT frame declaring zero snapshots (n = 0). */
+    PacketBuffer buf;
+    packet_begin(&buf, (u8)NET_PKT_TRANSFORM_SNAPSHOT, (u8)PACKET_ORDERED);
+    packet_write_u16(&buf, 0);
+    u32 len = packet_finish(&buf, seq, 0);
+    memcpy(out, buf.data, len);
+    return len;
+}
+
 static u32 build_heartbeat_wire(u8 *out, u32 seq, u32 send_time_ms) {
     PacketBuffer buf;
     packet_begin(&buf, (u8)NET_PKT_HEARTBEAT, (u8)PACKET_UNRELIABLE);
@@ -194,6 +204,46 @@ TEST(ordered_reorder_out_of_window_no_stall)
     ASSERT_FLOAT_EQ(out[0].position[2], 6.0f, 0.001f);
     ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_delivered, 1u);
     ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 0u);
+
+    net_replicator_shutdown(&rep);
+}
+
+TEST(ordered_reorder_zero_snapshot_no_stall)
+{
+    /* R299: a buffered ordered packet carrying 0 snapshots must not halt the
+     * drain of subsequent consecutive buffered packets. The old drain loop broke
+     * on `late_count == 0`, so an empty frame in the middle of the reorder buffer
+     * left later packets stuck (reorder_pending never reaching 0) and the ordered
+     * stream stalled forever. A foreign/forged peer can send such a frame. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.ordered_layer = true;
+
+    u8 w_empty[PACKET_MAX_SIZE], w3[PACKET_MAX_SIZE], w1[PACKET_MAX_SIZE];
+    u32 le = build_ordered_empty_wire(w_empty, 2u);                 /* seq 2, 0 snapshots */
+    u32 l3 = build_ordered_snap_wire(w3, 3u, 30u, 7.0f, 8.0f, 9.0f);
+    u32 l1 = build_ordered_snap_wire(w1, 1u, 10u, 1.0f, 2.0f, 3.0f);
+
+    NetTransformSnapshot out[4] = {0};
+    u32 out_count = 0u;
+
+    /* Buffer seq 2 (empty) and seq 3 while waiting for the gap at seq 1. */
+    ASSERT_TRUE(net_replicator_feed(&rep, w_empty, le, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(net_replicator_feed(&rep, w3, l3, out, 4u, &out_count) > 0);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 2u);
+
+    /* seq 1 arrives → deliver 1, then drain seq 2 (empty) AND seq 3. The empty
+     * frame must not stop the drain: the buffer fully empties and seq 3's payload
+     * reaches the caller. Before the fix reorder_pending stuck at 1 and seq 3 was
+     * never delivered. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w1, l1, out, 4u, &out_count) > 0);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 0u);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_delivered, 2u);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 7.0f, 0.001f);
+    ASSERT_FLOAT_EQ(out[0].position[1], 8.0f, 0.001f);
+    ASSERT_FLOAT_EQ(out[0].position[2], 9.0f, 0.001f);
 
     net_replicator_shutdown(&rep);
 }
@@ -681,6 +731,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reliable_retry_pending);
     RUN_TEST(ordered_reorder_buffer);
     RUN_TEST(ordered_reorder_out_of_window_no_stall);
+    RUN_TEST(ordered_reorder_zero_snapshot_no_stall);
     RUN_TEST(reliable_ordered_combined);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);
