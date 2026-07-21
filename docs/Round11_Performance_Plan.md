@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R326：异步加载器 优先级最小堆 + Vyukov MPSC 完成队列 + 槽分配/回滚深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/asset/async_loader.c`，R292 仅做 TSan、未逐行审队列/堆语义）：
+  - 优先级二叉最小堆(queue_mutex 保护):`heap_item_higher(a,b)` = `a->priority != b->priority ? a->priority<b->priority : a->seq<b->seq`(低 priority 值=高优先、同优先 FIFO)。`heap_sift_up` while(idx>0) 与父 `(idx-1)/2` 比较交换;`heap_sift_down` 在 idx/left/right 中取最高优先(smallest)交换;`heap_push` append+sift_up,`count>=ASYNC_HEAP_SIZE(256)` 返 false;`heap_pop` 取 `items[0].slot`、`items[0]=items[--count]`、`count>0` 时 sift_down(count 减到 0 时自赋值/跳过均无害)。均为教科书正确实现。
+  - Vyukov 式 MPSC 完成队列(多 worker 生产、main 单消费):`enqueue_completion` `fetch_add(head,relaxed)` 领 comp_slot、`i=comp_slot&MASK`、写 `indices[i]`、`store(sequences[i], comp_slot+1, release)`。`async_loader_tick` drain:`tail<head` 循环,`qi=tail&MASK`,`load(sequences[qi],acquire)`,`seq != tail+1u` 即未发布→break;release/acquire 配对保证 `indices[qi]` 对消费者可见;sequence 存绝对槽号(comp_slot+1)可区分同一环位置的不同环绕圈;仅 `st==READY||FAILED` 调 callback、清 `data/callback`、置 UNLOADED;末尾 `store(tail,release)`。
+  - 容量不变式(R165-A):`ASYNC_MAX_REQUESTS==ASYNC_QUEUE_SIZE==1024`(且为 2 的幂);每请求至多产生一个在途完成,槽回收(state→UNLOADED)只发生在 drain 后,故在途完成 ≤1024,环位置 `comp_slot&1023` 对 1024 个 distinct comp_slot 双射,无未发布项被覆盖(恰好满);`ASYNC_HEAP_SIZE=256` 是并发 pending(已提交未被 worker 领取)上限,超出则 `heap_push` 优雅失败。
+  - 槽分配(R242):`for probe<MAX` 用 `fetch_add(next_slot)%MAX` 探测 + CAS `UNLOADED→LOADING`(acq_rel),避免旧版单槽轮询误失败与 check-then-store 竞争(两个相差 MAX 倍数的提交同时认领);全忙返 0。R171:先 `pending_count++` 再 heap_push(防快 worker 从 0 下溢);`heap_push` 失败回滚 `pending_count--`+state 置回 UNLOADED(release)+返 0,无槽泄漏。id 编码 `(counter<<SLOT_BITS)|slot`,`async_loader_status` O(1) 反解并校验 `id` 匹配。
+- 结论：最小堆、MPSC 完成队列内存序、容量关系、槽 CAS 分配与失败回滚均正确,已由 R165/R168-A/R170/R171/R242/R292 加固。记为"评估、无修复"轮。无代码改动;总计 663 处修复。
+
 ## R325：mipmap 流式加载（coverage→level/预算驱逐/字节记账/invalidate）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/asset/mipmap_stream.c`）：
