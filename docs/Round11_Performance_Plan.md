@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R325：mipmap 流式加载（coverage→level/预算驱逐/字节记账/invalidate）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/asset/mipmap_stream.c`）：
+  - `coverage_to_level`:避免 `log2f`,用 IEEE754 偏置指数 `exp_bits=(bits>>23)&0xFF` 近似 `level=(127-exp_bits)>>1 = floor(0.5·log2(1/coverage))`。验证:0.25→exp125→(2)>>1=1、0.0625→exp123→(4)>>1=2,与期望一致;`coverage>=1→0`、`<=0→mip_count-1`、subnormal(exp=0)→63 被 clamp 到 `mip_count-1`;结果 clamp 到 `[0,mip_count-1]`。`mipmap_level_size`:`w=width>>level`(下限 1)、`bytes=w·h·bpp` 以 usize 计算、`>UINT32_MAX` 返 0。
+  - 字节记账(核心):`total_resident_bytes` = Σ(RESIDENT 级大小)+Σ(LOADING 预留)。`mipmap_stream_update` Phase1 对 UNLOADED 的 desired 级:over-budget 时先驱逐本纹理更细 RESIDENT 级(带 `>=` 下溢守卫减字节),仍超则 `continue`;发请求成功 `total_resident_bytes += needed`(预留至 resident)。`mipmap_load_callback`:stale(req_id 不匹配 / state≠LOADING)仅 `free(data)`;失败(data==NULL/size==0)LOADING→UNLOADED 并减预留;成功 LOADING→RESIDENT **不再加**(已预留)、接管 data、可选 `upload_fn`。Phase2 over-budget 时驱逐 `l<desired_level` 的 RESIDENT 级减字节。`request_blocking` 同构(L407 预留,L416 以 state==UNLOADED 判失败)。
+  - `mipmap_stream_invalidate`:遍历各级,LOADING→(先减字节、置 UNLOADED、req_id=0,再 `async_loader_cancel`——顺序保证取消回调命中 state≠LOADING/req_id 不匹配而不双重扣减)、RESIDENT→减字节,统一 free `level_data`、置 UNLOADED、req_id=0,`resident_level=mip_count`。`mipmap_stream_shutdown`:先取消在途 LOADING(此时不必减字节,`ready=false` 后预算无意义)、再 free 全部 resident data。
+  - `mipmap_stream_register` R170:拒绝 `width/height/mip_count/bytes_per_pixel==0`(防 `mip_count-1` 下溢与零分配),`mip_count>MAX` 截断。
+- 结论：coverage→level 数学、预算/驱逐、请求→完成→失败→取消→驱逐→invalidate→shutdown 全流程字节记账自洽,无泄漏/无双重扣减/无越界,已由 R167-D/R170/R171/R172 加固。记为"评估、无修复"轮。无代码改动;总计 663 处修复。
+
 ## R324：网络 peer 管理/payload 解析/持久化深审（R323 相邻代码）——除 R323 外无 bug，不修复
 
 - 审计范围与结论（`engine/src/network/net_replication.c`，紧邻 R323 修复的接收/持久化路径）：
