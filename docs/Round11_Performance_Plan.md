@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R336：相机系统（fly 控制/yaw-pitch 钳制/缓存三角值/解析 view 与 inv_view/投影缓存）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/camera.c`）：
+  - `camera_view`：用缓存 `_cy/_sy/_cp/_sp` 直接构造左手系视图矩阵，避免 `mat4_lookat` 的 2×normalize+2×cross+4×trig。基向量 forward `f=(cp·sy, sp, -cp·cy)`、right `s=(-cy,0,-sy)`、up 行 `(-sy·sp, cp, cy·sp)`；静止（yaw=pitch=0）→ f=(0,0,-1)、s=(-1,0,0)、up=(0,1,0)（+y 正确）。平移列 `m.e[i][3]` 逐行验证 = `-dot(basis_i, eye)`（row0=cy·ex+sy·ez=-dot(s,eye)，row1/row2 同样成立）。与 R335 验证的 `mat4_lookat` 同一左手基（`s×u=f`）。
+  - `camera_inv_view`（R52-fix）：`V=[R|t]`，R 正交 → `V_inv=[R^T|eye]`（因 `t=-R·eye`，`-R^T·t=eye`）。逐元素核对：inv_view 旋转块（e[col][row]）恰为 view 旋转块的转置（`Vinv.e[col][row]=V.e[row][col]`，9 项全部匹配），平移列 =(ex,ey,ez)。零额外 trig。
+  - `camera_projection`：仅当 fov/aspect/near/far 任一变化才重算 `mat4_perspective` 并回写缓存参数；`camera_init` 置 `_proj_*=-1` 保证首次必算。
+  - `camera_update`：先保存帧首 `cy/sy/cp/sp`（= 上一帧末更新后的当前朝向）构造 fwd/right 供 WASD 平移（`vec3_scale(·, move_speed*dt)`）；`yaw += mouse_dx*sens`、`pitch += mouse_dy*sens`；yaw 单次 `<0 +2π` / `>2π -2π` 归一；pitch 钳到 ±1.5533（~89°，防两极 gimbal 翻转）；末尾 `cosf/sinf` 缓存三角值——放在钳制之后，消除 view/inv_view 与 main.c 镜像三角值的一帧延迟。
+  - 观察（非 bug）：`camera_view` 注释称 up `u=s×f`，实际数值为 `-(s×f)=f×s`（静止时给出正确 +y，且与 inv_view 转置关系自洽），仅注释标注不精确；yaw 单次 wrap 对单帧 >2π 的极端 mouse_dx 不完全归一，但 cosf/sinf 周期性使其无任何正确性影响（wrap 仅为长期精度而非语义）。
+- 结论：view/inv_view 解析构造与互逆关系、投影缓存失效检测、WASD 方向向量、pitch 钳制与 trig 缓存时机均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R335：数学库（mat4 逆/透视/lookat、quat 乘/slerp/nlerp/rotate、特化 proj·view 与解析逆）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/math/math.c`、`math.h`）：
