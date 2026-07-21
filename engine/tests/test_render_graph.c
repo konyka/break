@@ -310,6 +310,50 @@ TEST(reset_and_reuse)
     rg_destroy(rg);
 }
 
+TEST(reset_does_not_duplicate_pool_textures)
+{
+    /* R308: rg_pool_claim leaves a claimed texture's entry in the pool (only
+     * flips in_use), so rg_reset must NOT re-add that texture as a fresh pool
+     * entry. The old code appended unconditionally, so a texture claimed from
+     * the pool got re-pooled every frame: the pool grew by one duplicate per
+     * frame, and duplicates holding the same RHITexture let a later frame alias
+     * one physical texture to two distinct resources AND made rg_destroy free it
+     * twice. Drive several frames of create+compile+reset with a device set (so
+     * textures actually allocate) and assert the pool holds exactly the one
+     * distinct texture, not one entry per frame. */
+    RenderGraph *rg = rg_create();
+    int dummy_dev = 0;
+    rg_set_device(rg, (RHIDevice *)&dummy_dev); /* non-NULL → textures allocate */
+
+    RHITexture bb_handle = {.index = 5, .generation = 1};
+
+    for (int frame = 0; frame < 5; frame++) {
+        RGResource bb = rg_import_texture(rg, "bb", bb_handle);
+        RGTextureDesc td = { .width = 800, .height = 600, .format = 1,
+                             .mip_levels = 1, .is_depth = false, .name = "color" };
+        RGResource color = rg_create_texture(rg, "color", &td);
+        RGPass *p = rg_add_pass(rg, "main", RG_PASS_GRAPHICS);
+        rg_pass_write(p, color, RG_USAGE_COLOR_ATTACHMENT);
+        rg_pass_write(p, bb,    RG_USAGE_PRESENT);
+        ASSERT_TRUE(rg_compile(rg));
+        rg_reset(rg);
+    }
+
+    /* Exactly one distinct color texture was ever produced. Pre-fix this was 5
+     * (one duplicate appended per frame). */
+    ASSERT_EQ(rg->pool_count, 1u);
+
+    /* And no two pool entries share a handle (the aliasing/double-free hazard). */
+    for (u32 i = 0; i < rg->pool_count; i++) {
+        for (u32 j = i + 1; j < rg->pool_count; j++) {
+            ASSERT_FALSE(rg->texture_pool[i].tex.index == rg->texture_pool[j].tex.index &&
+                         rg->texture_pool[i].tex.generation == rg->texture_pool[j].tex.generation);
+        }
+    }
+
+    rg_destroy(rg);
+}
+
 TEST(resource_lookup)
 {
     RenderGraph *rg = rg_create();
@@ -421,6 +465,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(execute_callbacks);
     RUN_TEST(execute_skips_dead);
     RUN_TEST(reset_and_reuse);
+    RUN_TEST(reset_does_not_duplicate_pool_textures);
     RUN_TEST(resource_lookup);
     RUN_TEST(stats);
     /* Edge cases */

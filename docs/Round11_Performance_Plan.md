@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R308：render graph 纹理池重复入池 → 资源别名 + 析构双重释放（已完成）
+
+- 症状：`renderer/render_graph.c` 生命周期别名纹理池累积重复条目。`rg_pool_claim`（464–481 行）认领匹配描述的池纹理时仅置 `e->in_use=true` 返回，**不移除条目**（注释称"the entry is removed"实为原地翻标志）。`rg_reset`（96–131 行）遍历本帧所有 `allocated && !is_imported && !is_buffer && valid` 的资源，**无条件**追加为新池条目 `{tex, w,h,fmt,mip, in_use=false}`。
+- 根因：一个从池认领的纹理（`info->physical_texture` 即某池条目的 `.tex`）在下一帧 `rg_reset` 时被再次 push → 池中出现两条 `.tex` 句柄相同的条目。逐帧连锁：(1) 后续帧 `rg_pool_claim` 可把同一物理纹理分别发给两个不同 RG 资源 → 二者别名、写各自内容时互相覆写（渲染错误）；(2) `rg_destroy`（72–94 行）遍历整个 `texture_pool` 对每条 `rhi_texture_destroy`，共享句柄被销毁多次 → **双重释放**（RHI 句柄池 use-after-free / abort）；(3) 池每帧净增 ≥1 条，累积至溢出 `RG_MAX_RESOURCES(128)` 后 `rg_reset` 改走"池满则直接 destroy"分支 → 销毁仍被资源引用的活纹理。渲染图正常用法即逐帧 `rg_reset` + 至少一个跨帧持续的非导入纹理，故 demo 可达。
+- 修复：`rg_reset` 入池前先按句柄（`index`+`generation`）在现有池中查重，已存在（本帧从池认领）则 `continue` 跳过追加；尾部 `in_use=false` 循环仍会把既有条目复位供下帧复用。纯新建纹理（首帧 `rhi_texture_create` 的全新句柄）不在池中 → 正常入池。O(resource×pool) ≤128×128 每帧，可忽略。
+- 覆盖缺口：既有 `test_render_graph.c` 从不调用 `rg_set_device`（`device=NULL`）→ `rg_allocate_resources` 对非导入纹理走 `!device` 分支跳过创建、`allocated` 恒 false → `rg_reset` 永不入池、池永不填充，完全掩盖该 bug。
+- 回归 `reset_does_not_duplicate_pool_textures`：设非空 device（哑指针，桩 `rhi_texture_create` 返 `{1,1}`），5 帧 `create_texture("color")+pass write color&present bb+compile+reset`，断言 `rg->pool_count==1`（仅一份不同纹理）且任意两池条目句柄不相同。旧码 pool_count=5（每帧一份重复）→ FAIL；修复后 =1。
+- 验收：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 `test_async_loader`），`test_render_graph` 本地 **17/17**（含新用例）。
+
 ## R307：聚簇光照 CPU 分箱 + 占用剔除可见性 多窄线深审——无 demo 可达高置信 bug，不修复
 
 - 窄线 A：`renderer/lighting.c` CPU 聚簇分箱（`light_system_cull`）。`cluster_depth` 指数深度切片 `near*(far/near)^(z/CLUSTER_Z)`（z=0→near、z=CLUSTER_Z→far）正确；`mat4_vec4` 列主序 M*v（SSE2 与标量路径一致）正确；z-slice 重叠测试 `vp.z+r<-z_far || vp.z-r>-z_near`（view 空间 -Z 朝前、cluster 深度 [z_near,z_far] 映射 view-z [-z_far,-z_near]）正确；屏幕 AABB 拒绝测试 + `screen_ok`（w<=0.001 时跳过屏幕剔除、保守纳入所有过 z 的 cluster）正确；容量守卫 `grid_index_total >= CLUSTER_COUNT*LIGHT_MAX_PER_CLUSTER - LIGHT_MAX_POINT` 双重防溢出、goto done 后剩余 cluster 保持 memset 的 0/0（安全无光）；offset/count 连续（offset=进入前 total、advance 恰好 count）。记录（回退路径有意近似、非 bug）：`screen_r=radius*inv_vz*screen_w*0.5` 省略投影缩放因子（proj[0][0]≈1/(aspect·tan(fov/2))），对典型 FOV 近似成立，且 CPU 分箱仅在 GPU cluster_cull.comp 缺失/编译失败时回退启用。

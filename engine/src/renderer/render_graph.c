@@ -103,6 +103,28 @@ void rg_reset(RenderGraph *rg)
         RGResourceInfo *info = &rg->resources[i];
         if (info->allocated && !info->is_imported && !info->is_buffer &&
             rhi_handle_valid(info->physical_texture)) {
+            /* R308 (CORRECTNESS): a texture claimed from the pool this frame is
+             * ALREADY a pool entry — rg_pool_claim leaves the entry in place and
+             * only flips in_use, it does not remove it. Re-adding it here would
+             * create a second entry holding the same RHITexture handle, and then:
+             *   (1) a later frame's rg_pool_claim can hand that one physical
+             *       texture to two DISTINCT RG resources → they alias and clobber
+             *       each other's contents;
+             *   (2) rg_destroy walks the whole pool and rhi_texture_destroy()s the
+             *       shared handle once per duplicate → double free;
+             *   (3) the pool grows by one dup per frame until it overflows
+             *       RG_MAX_RESOURCES and starts destroying live textures.
+             * Only pool a texture that isn't already there; the trailing loop
+             * below resets in_use so the existing entry is reusable next frame. */
+            bool already_pooled = false;
+            for (u32 j = 0; j < rg->pool_count; j++) {
+                if (rg->texture_pool[j].tex.index == info->physical_texture.index &&
+                    rg->texture_pool[j].tex.generation == info->physical_texture.generation) {
+                    already_pooled = true;
+                    break;
+                }
+            }
+            if (already_pooled) continue;
             if (rg->pool_count < RG_MAX_RESOURCES) {
                 RGTexturePoolEntry *e = &rg->texture_pool[rg->pool_count++];
                 e->tex        = info->physical_texture;
