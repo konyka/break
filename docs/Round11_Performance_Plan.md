@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R338：骨骼评估（TRS 合成 / 不定序世界矩阵定点解析 / 蒙皮矩阵 / STEP 快照）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/animation/skeleton.c`）：
+  - `mat4_trs(t,q,s)`：列主序直接合成 T·R·S。R 元素同 `mat4_from_quat`；按列缩放：`m.e[0]=Rcol0*sx`、`m.e[1]=Rcol1*sy`、`m.e[2]=Rcol2*sz`，平移写 `m.e[3][0..2]=t`、`m.e[3][3]=1`，其余经 memset 归零。逐列核对与 `mat4_from_quat` 缩放版一致；语义 = glTF 节点变换（点先被 S 缩放、再 R 旋转、后 T 平移），省 2×mat4_mul（~128 mul → ~9 mul）。
+  - `skel_resolve_world`（R240）：`resolved[SKELETON_MAX_JOINTS]` 标记；每 pass 遍历未解析 joint，`p==UINT32_MAX||p>=n||p==i` → root（`world=local`），`resolved[p]` → `world[i]=mat4_mul(world[p],local[i])`，否则 `continue` 延后。外层 `for(pass<=n && remaining>0)`；某 pass `progressed==0`（父循环）则 break，循环末把未解析者当 root（`world[i]=local[i]`）。对任意 joint 排序正确（glTF skin.joints 不保证父先于子），已排序则一趟完成；`pass<=n` + 每 pass 至少解析一个（非环）保证 O(n²) 最坏但有界终止。
+  - `skeleton_evaluate`：`channel_count==0` → 全 identity 早退；TRS 初值 identity；逐通道 `ji>=joint_count` 跳过、单关键帧直取、否则 `anim_find_keyframe`（二分：最后 `times[i]<=t` 的 lo）+ `kf_next=min(kf+1,last)`；`frac=(t-t0)/(t1-t0)`（`dt>0` 才除、clamp[0,1]）；R252：`ANIM_INTERP_STEP` 时 `frac=(t>=t1)?1:0`（默认 demo 路径，此前对 STEP 通道做插值产生源中不存在的过渡姿态）；平移/缩放 lerp、旋转 nlerp；`local_poses[i]=mat4_trs(...)` → `skel_resolve_world` → `current_pose[i]=mat4_mul(world[i], inverse_bind[i])`（标准蒙皮矩阵）。
+  - `anim_slerp_quat`（实为 nlerp）：`dot<0` 时负化 b 取最短弧，`s0=1-t/s1=t` 线性 + `quat_normalize`；`skeleton_set_joints`（count 钳到 MAX、逐 joint 拷 parent/inv_bind、pose=identity、懒创建双缓冲 joint_buf）；`anim_clip_add_channel`（keyframe 钳 MAX、默认 LINEAR 可被 glTF STEP 覆盖）；`anim_clip_add_event`（名字截断 + null 终止）；`skeleton_upload`/`skeleton_joint_slot` 按 `rhi_frame_index&1` 双缓冲。
+  - 观察（非 bug）：`skeleton_evaluate(sk,clip,dt)` 的 `dt` 未用（时间取 `clip->time`，clip 推进在调用方），且行内 `f32 dt=t1-t0` 遮蔽同名参数——仅命名混淆无副作用；`translations/rotations/scales` 为函数内 static 数组（单线程动画评估下安全，避免大栈帧）；蒙皮公式省略 mesh 节点全局逆变换（假定 mesh 节点 = identity，为 demo 既有简化，非本轮回归）。
+- 结论：TRS 合成、任意序父层级定点解析、二分找帧 + STEP 快照 + lerp/nlerp、蒙皮矩阵与双缓冲上传均正确（R240/R251/R252 已加固）。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R337：视锥剔除（Gribb-Hartmann 平面提取 / p-vertex AABB / 点 / 球测试）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/frustum_cull.c`、`cull.c::frustum_from_vp`、`cull.h` inline 测试）：
