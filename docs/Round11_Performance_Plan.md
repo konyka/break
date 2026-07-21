@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R317：动画双骨骼 IK 求解器深审——数学正确、求解稳健，无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/animation/animation.c` 的 `anim_ik_two_bone`/`anim_ik_solve`/`anim_ik_set_target`）：
+  - 余弦定理角度：root 处期望角 `cos=(lab²+lat²-lcb²)/(2·lab·lat)`(opposite lcb)、mid 处 `cos=(lab²+lcb²-lat²)/(2·lab·lcb)`(opposite lat)——三角形三边与对角对应正确;当前角用 `atan2f(len(cross),dot)` 而非 `acosf(clamp(dot))`,在 0/π 附近更稳且天然落 [0,π]。
+  - `sin` 计算：`sin2=fmaxf(1-cos²,0)`、`sin=sin2>1e-12 ? sin2·fast_rsqrt(sin2) : 0`,恒等 `sin2·rsqrt(sin2)=sqrt(sin2)` 正确。
+  - 可达性/退化：`lat` 夹到 `[0.001, lab+lcb-0.001]`;目标过近(`lat<|lab-lcb|`)使 `1-cos²<0` 被 `fmaxf(...,0)` 夹为 0→退化成直/折配置(非崩溃、优雅降级);`lab<eps||lcb<eps` 直接返回单位四元数。
+  - 轴构造：弯曲平面法线 `axis0=cross(ac,pole_dir)`(pole 与链共线时回退到 ac 的任一垂向,含 |dot(ac,up)|>0.95 换 up),供 r0(root 弯曲)/r1(mid 弯曲)共用;reach 轴 `axis1=cross(ac,at)`(退化回退 axis0)。均为标准解析 2-bone IK。
+  - 组合：`root=quat_normalize(r2·r0)`(先弯 r0 后摆向目标 r2)、`mid=quat_normalize(r1)`;`anim_ik_solve` 按权重 `nlerp(I,delta,w)` 后左乘到 `rotations[]`,逐目标独立(不同链),调用方随后重解世界矩阵。
+  - 边界：`anim_ik_set_target`/`set_weight`/`set_active` 均 `index<ANIM_MAX_IK_TARGETS`;`solve` 迭代 `i<target_count && i<ANIM_MAX_IK_TARGETS`;`mat4_get_translation` 读列主序平移列(col3)正确。
+- 观察（非本轮修复，需先固定 FK 应用约定才能安全加强）：既有 `ik_two_bone_solver` 测试仅断言旋转非单位、未验证 tip 实际到达 target(弱覆盖);世界空间 delta 左乘到(局部)`rotations[]` 是骨架约定问题,有既有测试与 demo 运行覆盖。`chain_root/mid/tip` 未对关节数校验属 API 设计(调用方保证有效)。
+- 结论：IK 数学正确、求解稳健,记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R316：音频子系统（3D 空间化/槽位管理/衰减模型）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论：
