@@ -227,9 +227,13 @@ TEST(async_loader_priority_ordering) {
     fclose(fb);
     fclose(fc);
 
-    /* Use 2 I/O threads. Even if both lows start first, the heap will prefer
-     * the high-priority request as soon as a worker becomes available. */
-    async_loader_init(2, vfs);
+    /* Use a single I/O worker so the priority guarantee is deterministic:
+     * at most one low-priority request can be in flight at any moment, so the
+     * other low remains queued when the high-priority request arrives, and the
+     * heap serves the high-priority one before that still-queued low. With 2+
+     * workers both lows could be grabbed before the high is even enqueued,
+     * which is an inherent scheduling race rather than a priority-heap bug. */
+    async_loader_init(1, vfs);
     atomic_store(&g_pri_order_count, 0);
 
     u64 id_low_a = async_loader_request_priority("async_pri_low_a.bin", pri_cb_low, NULL, 100);

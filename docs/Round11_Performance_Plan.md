@@ -4420,6 +4420,27 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R292：异步加载器/解码管线 init/shutdown 循环重建同步原语致存活 worker 永久 park → join 死锁（已完成）
+
+### [x] R292-A 交接后仍写请求 slot 的数据竞态（use-after-handoff）
+- [x] `async_loader.c` `io_worker_run`（旧 280–281）在 `decode_pipeline_submit` 成功后仍写 `req->data=NULL; req->size=0;`
+- [x] 成功提交即移交 slot 所有权；`async_loader_tick`（旧 511/512）poll 到解码结果后写 slot 并推进状态机（READY→UNLOADED 复用）
+- [x] 解码 worker + 主线程 poll 足够快时，主线程可在本 worker 从 submit 返回前写同一 slot → 双线程同字节竞争（TSan 实证 280/281 vs 511/512），-O2 偶发状态机损坏 → worker 停在 cond_wait → shutdown join 死锁
+- [x] 两行本就冗余（claim 时已 NULL/0，其间无改写）
+- [x] 修复：成功交接后不再触碰 slot（删除两行）
+
+### [x] R292-B 进程内生命周期竞态：memset 重建互斥量/条件变量（死锁根因）
+- [x] `queue_mutex`/`wake_cond`（async_loader）与 `input.mutex`/`input.cond`/`ready.mutex`（decode_pipeline）原为结构成员，每轮 `memset`+init、shutdown 时 destroy
+- [x] 上一轮 worker 短暂存活过 shutdown 时，下一轮 init 的 memset 清零条件变量 futex 字（该 worker 正阻塞于 `async_cond_wait`）→ broadcast 丢失 → 永久 park；随后 re-init/destroy 与活对象竞争（TSan 实证 `__tsan_memset` + `pthread_*_init` 竞争）
+- [x] 修复：原语移出结构体，置文件静态、**进程内只初始化一次、永不销毁**（`g_sync_inited`/`g_decode_sync_inited` 门控；memset 仅清数据成员）；`running=false` 移入持锁区后再 broadcast（规范拆解）
+- [x] 存活 worker 永远在同一有效对象上等待/被唤醒 → 必观察 `running=false` 退出 → join 完成
+
+### [x] R292-C 测试确定化：`async_loader_priority_ordering` 固有调度竞态
+- [x] 原始代码即偶发失败（2 worker 时两个 low 可能在 high 入队前被同时抢占，非堆 bug）
+- [x] 改用单 I/O worker：至多 1 个 low 在途，另一 low 必仍在堆中，high（优先级 0）先于其被取出 → 确定化
+
+**验收**：TSan 40 轮零挂起；leakprobe 240k 轮 init/shutdown 零真实泄漏、零 `pthread_create` 失败；原生 -O2 压测 **4/120 挂起 → 0/150 挂起**、priority_ordering 200 次 0 失败。GL/VK 构建通过；GL/VK CTest 各 **31/31**（含 test_async_loader，ctest 下 30 连跑 0 挂起/0 失败）。
+
 ## R291：运行时关闭再开启 TAA 未失效冻结的 history（拖影/闪烁）（已完成）
 
 ### [x] R291-A TAA 热开关未 invalidate history/first_frame

@@ -74,13 +74,28 @@ typedef struct {
     CompletionQueue completion_queue;
     _Atomic u64     next_seq;
 
-    AsyncMutex      queue_mutex; /* protects request_heap and wake_cond */
-    AsyncCond       wake_cond;
-
     VFS            *vfs;
 } AsyncLoaderState;
 
 static AsyncLoaderState g_loader;
+
+/* R292 (CORRECTNESS/LIFECYCLE RACE): the queue mutex + wake condvar live OUTSIDE
+ * AsyncLoaderState and are initialized exactly once for the process lifetime.
+ *
+ * They used to be members of g_loader, which async_loader_init() re-creates with
+ * memset(&g_loader,0) + async_mutex_init/async_cond_init on every init, and
+ * async_loader_shutdown() tore down with async_*_destroy(). If an I/O worker from
+ * a previous init/shutdown cycle briefly outlived shutdown (a startup/teardown
+ * timing window), the next init's memset ZEROED the condvar's futex word while
+ * that worker was blocked in async_cond_wait on it — resetting the wait state so
+ * the shutdown broadcast was lost and the worker parked forever (then the next
+ * init's re-init/destroy raced on the live object; TSan-confirmed). Keeping the
+ * primitives process-stable means a lingering worker always waits on and is woken
+ * through the SAME valid object, so it observes running=false and exits, and join
+ * completes. Verified leak-free across 240k init/shutdown cycles. */
+static AsyncMutex g_queue_mutex; /* protects request_heap and g_wake_cond */
+static AsyncCond  g_wake_cond;
+static bool       g_sync_inited = false;
 
 /* ---- Heap helpers ---- */
 
@@ -192,17 +207,17 @@ static void io_worker_run(void) {
         u64 slot_idx = 0;
         bool have_work = false;
 
-        async_mutex_lock(&g_loader.queue_mutex);
+        async_mutex_lock(&g_queue_mutex);
         while (!have_work &&
                atomic_load_explicit(&g_loader.running, memory_order_acquire) &&
                g_loader.request_heap.count == 0) {
-            async_cond_wait(&g_loader.wake_cond, &g_loader.queue_mutex);
+            async_cond_wait(&g_wake_cond, &g_queue_mutex);
         }
         if (atomic_load_explicit(&g_loader.running, memory_order_acquire) &&
             g_loader.request_heap.count > 0) {
             have_work = heap_pop(&g_loader.request_heap, &slot_idx);
         }
-        async_mutex_unlock(&g_loader.queue_mutex);
+        async_mutex_unlock(&g_queue_mutex);
 
         if (!have_work) continue;
 
@@ -277,9 +292,22 @@ static void io_worker_run(void) {
                     /* Offload decode + mip-chain generation to the decode pipeline. */
                     if (decode_pipeline_submit(data, (u32)file_size, slot_idx,
                                                req->id, req->priority)) {
-                        req->data = NULL;
-                        req->size = 0;
-                        /* pending_count is decremented when the decode result is polled. */
+                        /* R292 (CORRECTNESS/DATA RACE): on a successful submit the
+                         * slot is handed off to the decode pipeline; ownership of
+                         * req->data / req->size passes to async_loader_tick(), which
+                         * writes the decoded result once decode_pipeline_poll()
+                         * returns it. A fast decode worker + main-thread poll can set
+                         * req->data/req->size (and state=READY, then UNLOADED for
+                         * reuse) BEFORE this worker returned from submit, so touching
+                         * the slot here races with the main thread on the same bytes
+                         * (TSan-confirmed at async_loader.c:280/281 vs 511/512) and,
+                         * under -O2, intermittently corrupts the request state machine
+                         * — leaving I/O workers parked in cond_wait so async_loader_
+                         * shutdown()'s join deadlocks. These writes were also
+                         * redundant: async_submit_request already left data=NULL and
+                         * size=0 at claim time and nothing mutates them in between.
+                         * pending_count is decremented when the decode result is
+                         * polled. Do NOT write the slot after a successful handoff. */
                     } else {
                         free(data);
                         req->data = NULL;
@@ -342,8 +370,13 @@ void async_loader_init(u32 io_thread_count, VFS *vfs) {
         atomic_store(&g_loader.requests[i].state, (u32)ASSET_UNLOADED);
     }
 
-    async_mutex_init(&g_loader.queue_mutex);
-    async_cond_init(&g_loader.wake_cond);
+    /* R292: initialize the process-stable primitives exactly once; never memset,
+     * re-init, or destroy them (see declaration comment). */
+    if (!g_sync_inited) {
+        async_mutex_init(&g_queue_mutex);
+        async_cond_init(&g_wake_cond);
+        g_sync_inited = true;
+    }
 
     if (!decode_pipeline_init()) {
         LOG_ERROR("Async loader: failed to initialize decode pipeline");
@@ -372,12 +405,15 @@ void async_loader_init(u32 io_thread_count, VFS *vfs) {
 }
 
 void async_loader_shutdown(void) {
+    /* R292: publish running=false WHILE HOLDING queue_mutex — the same lock
+     * io_worker_run holds across its predicate test + async_cond_wait — then
+     * broadcast, so the flag change and the wakeup are ordered against any waiter
+     * (canonical condvar teardown; the primary lifecycle fix is the process-stable
+     * primitives above). */
+    async_mutex_lock(&g_queue_mutex);
     atomic_store_explicit(&g_loader.running, false, memory_order_release);
-
-    /* Wake all I/O threads so they can exit */
-    async_mutex_lock(&g_loader.queue_mutex);
-    async_cond_broadcast(&g_loader.wake_cond);
-    async_mutex_unlock(&g_loader.queue_mutex);
+    async_cond_broadcast(&g_wake_cond);
+    async_mutex_unlock(&g_queue_mutex);
 
     for (u32 i = 0; i < g_loader.thread_count; i++) {
         async_thread_join(g_loader.threads[i]);
@@ -386,8 +422,9 @@ void async_loader_shutdown(void) {
     /* Decode pipeline must shut down after I/O threads have stopped submitting. */
     decode_pipeline_shutdown();
 
-    async_mutex_destroy(&g_loader.queue_mutex);
-    async_cond_destroy(&g_loader.wake_cond);
+    /* R292: g_queue_mutex / g_wake_cond are process-stable — do NOT destroy them
+     * (a future init reuses them; destroying risks a lingering worker touching a
+     * dead object). See declaration comment. */
 
     /* Free any undelivered loaded data */
     for (u32 i = 0; i < ASYNC_MAX_REQUESTS; i++) {
@@ -458,10 +495,10 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
      * cannot decrement from 0 (underflow to UINT_MAX). */
     atomic_fetch_add_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
 
-    async_mutex_lock(&g_loader.queue_mutex);
+    async_mutex_lock(&g_queue_mutex);
     bool pushed = heap_push(&g_loader.request_heap, slot, priority, seq);
-    if (pushed) async_cond_broadcast(&g_loader.wake_cond);
-    async_mutex_unlock(&g_loader.queue_mutex);
+    if (pushed) async_cond_broadcast(&g_wake_cond);
+    async_mutex_unlock(&g_queue_mutex);
 
     if (!pushed) {
         atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);

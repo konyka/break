@@ -38,14 +38,14 @@ typedef struct {
     DecodeJob *head;
     DecodeJob *tail;
     u32        count;
-    AsyncMutex mutex;
-    AsyncCond  cond;
+    /* R292: mutex/cond moved to process-stable file-static objects
+     * (g_decode_input_mutex / g_decode_input_cond). */
 } DecodeInputQueue;
 
 typedef struct {
     DecodeResultNode *head;
     DecodeResultNode *tail;
-    AsyncMutex        mutex;
+    /* R292: mutex moved to process-stable g_decode_ready_mutex. */
 } DecodeReadyQueue;
 
 typedef struct {
@@ -58,6 +58,20 @@ typedef struct {
 } DecodePipelineState;
 
 static DecodePipelineState g_decode;
+
+/* R292 (CORRECTNESS/LIFECYCLE RACE): mirror async_loader.c — the decode input
+ * mutex/condvar and the ready-queue mutex live OUTSIDE g_decode and are created
+ * exactly once for the process lifetime. decode_pipeline_init() memsets g_decode
+ * and decode_pipeline_shutdown() previously destroyed these; if a decode worker
+ * outlived shutdown, the next init's memset zeroed the condvar's futex word while
+ * it was blocked in async_cond_wait, losing the shutdown broadcast and parking it
+ * forever (TSan-confirmed re-init/destroy race on the live object). Keeping them
+ * process-stable guarantees a lingering worker waits on / is woken through the
+ * same valid object, observes running=false, and exits so join completes. */
+static AsyncMutex g_decode_input_mutex;
+static AsyncCond  g_decode_input_cond;
+static AsyncMutex g_decode_ready_mutex;
+static bool       g_decode_sync_inited = false;
 
 /* ---- Mipmap generation ---- */
 
@@ -194,9 +208,9 @@ static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *
  * R167-A: Enforce DECODE_INPUT_CAP — reject when full so raw image bytes
  * cannot accumulate unboundedly when I/O outpaces decode workers. */
 static bool input_queue_push(DecodeJob *job) {
-    async_mutex_lock(&g_decode.input.mutex);
+    async_mutex_lock(&g_decode_input_mutex);
     if (g_decode.input.count >= DECODE_INPUT_CAP) {
-        async_mutex_unlock(&g_decode.input.mutex);
+        async_mutex_unlock(&g_decode_input_mutex);
         return false;
     }
     job->next = NULL;
@@ -214,15 +228,15 @@ static bool input_queue_push(DecodeJob *job) {
         if (!job->next) g_decode.input.tail = job;
     }
     g_decode.input.count++;
-    async_cond_broadcast(&g_decode.input.cond);
-    async_mutex_unlock(&g_decode.input.mutex);
+    async_cond_broadcast(&g_decode_input_cond);
+    async_mutex_unlock(&g_decode_input_mutex);
     return true;
 }
 
 static DecodeJob *input_queue_pop(void) {
-    async_mutex_lock(&g_decode.input.mutex);
+    async_mutex_lock(&g_decode_input_mutex);
     while (!g_decode.input.head && atomic_load_explicit(&g_decode.running, memory_order_acquire)) {
-        async_cond_wait(&g_decode.input.cond, &g_decode.input.mutex);
+        async_cond_wait(&g_decode_input_cond, &g_decode_input_mutex);
     }
     DecodeJob *job = g_decode.input.head;
     if (job) {
@@ -230,12 +244,12 @@ static DecodeJob *input_queue_pop(void) {
         if (!g_decode.input.head) g_decode.input.tail = NULL;
         g_decode.input.count--;
     }
-    async_mutex_unlock(&g_decode.input.mutex);
+    async_mutex_unlock(&g_decode_input_mutex);
     return job;
 }
 
 static void ready_queue_push(DecodeResultNode *node) {
-    async_mutex_lock(&g_decode.ready.mutex);
+    async_mutex_lock(&g_decode_ready_mutex);
     node->next = NULL;
     if (g_decode.ready.tail) {
         g_decode.ready.tail->next = node;
@@ -243,7 +257,7 @@ static void ready_queue_push(DecodeResultNode *node) {
         g_decode.ready.head = node;
     }
     g_decode.ready.tail = node;
-    async_mutex_unlock(&g_decode.ready.mutex);
+    async_mutex_unlock(&g_decode_ready_mutex);
 }
 
 /* ---- Worker thread ---- */
@@ -309,9 +323,13 @@ bool decode_pipeline_init(void) {
     memset(&g_decode, 0, sizeof(g_decode));
     atomic_store(&g_decode.running, true);
 
-    async_mutex_init(&g_decode.input.mutex);
-    async_cond_init(&g_decode.input.cond);
-    async_mutex_init(&g_decode.ready.mutex);
+    /* R292: process-stable primitives — create once, never destroy (see decl). */
+    if (!g_decode_sync_inited) {
+        async_mutex_init(&g_decode_input_mutex);
+        async_cond_init(&g_decode_input_cond);
+        async_mutex_init(&g_decode_ready_mutex);
+        g_decode_sync_inited = true;
+    }
 
     AsyncThreadFn fn = decode_worker_fn();
     u32 started = 0;
@@ -324,11 +342,9 @@ bool decode_pipeline_init(void) {
     }
 
     if (started == 0) {
-        /* R167-C: No workers — tear down and fail init. */
+        /* R167-C: No workers — fail init. R292: leave the process-stable
+         * primitives intact (do not destroy); memset only clears g_decode. */
         atomic_store_explicit(&g_decode.running, false, memory_order_release);
-        async_mutex_destroy(&g_decode.input.mutex);
-        async_cond_destroy(&g_decode.input.cond);
-        async_mutex_destroy(&g_decode.ready.mutex);
         memset(&g_decode, 0, sizeof(g_decode));
         return false;
     }
@@ -336,14 +352,12 @@ bool decode_pipeline_init(void) {
     if (started < DECODE_WORKER_COUNT) {
         /* Partial start: shut down the ones we created and fail cleanly. */
         atomic_store_explicit(&g_decode.running, false, memory_order_release);
-        async_mutex_lock(&g_decode.input.mutex);
-        async_cond_broadcast(&g_decode.input.cond);
-        async_mutex_unlock(&g_decode.input.mutex);
+        async_mutex_lock(&g_decode_input_mutex);
+        async_cond_broadcast(&g_decode_input_cond);
+        async_mutex_unlock(&g_decode_input_mutex);
         for (u32 i = 0; i < started; i++)
             async_thread_join(g_decode.threads[i]);
-        async_mutex_destroy(&g_decode.input.mutex);
-        async_cond_destroy(&g_decode.input.cond);
-        async_mutex_destroy(&g_decode.ready.mutex);
+        /* R292: primitives are process-stable — do not destroy. */
         memset(&g_decode, 0, sizeof(g_decode));
         return false;
     }
@@ -353,18 +367,21 @@ bool decode_pipeline_init(void) {
 }
 
 void decode_pipeline_shutdown(void) {
+    /* R292: publish running=false UNDER input.mutex (the lock decode_worker_run
+     * holds across its predicate test + cond_wait in input_queue_pop), then
+     * broadcast — canonical condvar teardown. The primary lifecycle fix is the
+     * process-stable primitives (see decl comment). */
+    async_mutex_lock(&g_decode_input_mutex);
     atomic_store_explicit(&g_decode.running, false, memory_order_release);
-
-    async_mutex_lock(&g_decode.input.mutex);
-    async_cond_broadcast(&g_decode.input.cond);
-    async_mutex_unlock(&g_decode.input.mutex);
+    async_cond_broadcast(&g_decode_input_cond);
+    async_mutex_unlock(&g_decode_input_mutex);
 
     for (u32 i = 0; i < DECODE_WORKER_COUNT; i++) {
         async_thread_join(g_decode.threads[i]);
     }
 
     /* Free any jobs that were still waiting. */
-    async_mutex_lock(&g_decode.input.mutex);
+    async_mutex_lock(&g_decode_input_mutex);
     DecodeJob *job = g_decode.input.head;
     while (job) {
         DecodeJob *next = job->next;
@@ -375,10 +392,10 @@ void decode_pipeline_shutdown(void) {
     g_decode.input.head = NULL;
     g_decode.input.tail = NULL;
     g_decode.input.count = 0;
-    async_mutex_unlock(&g_decode.input.mutex);
+    async_mutex_unlock(&g_decode_input_mutex);
 
     /* Free any completed results that were not polled (node is DecodeJob). */
-    async_mutex_lock(&g_decode.ready.mutex);
+    async_mutex_lock(&g_decode_ready_mutex);
     DecodeResultNode *node = g_decode.ready.head;
     while (node) {
         DecodeResultNode *next = node->next;
@@ -388,11 +405,9 @@ void decode_pipeline_shutdown(void) {
     }
     g_decode.ready.head = NULL;
     g_decode.ready.tail = NULL;
-    async_mutex_unlock(&g_decode.ready.mutex);
+    async_mutex_unlock(&g_decode_ready_mutex);
 
-    async_mutex_destroy(&g_decode.input.mutex);
-    async_cond_destroy(&g_decode.input.cond);
-    async_mutex_destroy(&g_decode.ready.mutex);
+    /* R292: primitives are process-stable — do not destroy (see decl comment). */
 
     LOG_INFO("Decode pipeline shut down");
 }
@@ -423,7 +438,7 @@ bool decode_pipeline_submit(void *raw_data, u32 raw_size, u64 slot, u64 request_
 bool decode_pipeline_poll(DecodeResult *out_result) {
     if (!out_result) return false;
 
-    async_mutex_lock(&g_decode.ready.mutex);
+    async_mutex_lock(&g_decode_ready_mutex);
     DecodeResultNode *node = g_decode.ready.head;
     if (node) {
         g_decode.ready.head = node->next;
@@ -432,15 +447,15 @@ bool decode_pipeline_poll(DecodeResult *out_result) {
         /* node is first field of DecodeJob — free the whole job. */
         free((DecodeJob *)node);
     }
-    async_mutex_unlock(&g_decode.ready.mutex);
+    async_mutex_unlock(&g_decode_ready_mutex);
 
     return node != NULL;
 }
 
 u32 decode_pipeline_queue_count(void) {
     u32 count = 0;
-    async_mutex_lock(&g_decode.input.mutex);
+    async_mutex_lock(&g_decode_input_mutex);
     count = g_decode.input.count;
-    async_mutex_unlock(&g_decode.input.mutex);
+    async_mutex_unlock(&g_decode_input_mutex);
     return count;
 }
