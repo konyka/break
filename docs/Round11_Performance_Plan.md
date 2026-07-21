@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R313：点光源立方体阴影 VP 解析式错误 → 正前方几何被裁剪、cubemap 为空、点阴影全失效（已完成）
+
+- 症状：`renderer/point_shadow.c::point_shadow_compute_face_vp` 用"解析闭式"直接填 `out_vp[face]`,注释自称"combined VP 至多 2 个非零行,≤4 非零元"。但本引擎 Mat4 为列主序 `e[col][row]`、`result[row]=Σ_col e[col][row]·v[col]`(透视 `e[2][3]=-1`→`clip.w=-view.z`,见 `mat4_mul_proj_view`),该闭式每面仅触及两"行"、且 clip.w 行系数挂在错误世界轴上。
+- 数值验证（/tmp/ps_check，light=(2,3,5) r=10，取各面"光源正前方"点 light+normal·2）：
+  - 旧式:+X w=−18.19、+Y w=−18.29、+Z w=−38.29(**w<0→被近/w 裁剪整体丢弃**);−X ndc=(−2.31,1.36)、−Y ndc=(0.16,−0.41)、−Z ndc=(−0.10,0)(**落在 NDC 外或明显偏心**)。
+  - 参考 `mat4_perspective(90°,1,0.1,far) × RH_view(基)`:6 面全部 ndc=(0,0)、w=+2.0、depth 有效。
+  - 结论:旧式使 6 张深度 cubemap 捕获不到正对几何→点光源阴影从不成形(自 R82 引入解析式起静默损坏)。任何约定下"正前方点 w<0"都不可能正确。
+- 修复：`point_shadow_compute_face_vp` 改为逐面构建真实 view(row0=right、row1=up、row2=−forward、平移=−基·light)再 `mat4_mul(proj, view)`,基向量沿用原注释既定 (right,up,fwd)(s×u=f)。修复后 6 面正前方点→NDC(0,0)、w>0(/tmp/ps_verify:ALL FACES PASS,并与 `mat4_perspective·mat4_lookat` 参考一致)。成本可忽略(≤ POINT_SHADOW_MAX_LIGHTS×6 次小矩阵/帧),正确性优先于旧手写稀疏"优化";depth 仍由片元 `length()/far` 写入,各面朝向不变→cubemap 采样一致。
+- 可达性：`main.c:3850` 在 `lights.point_count>0 && pt_shadows.ready` 时 `point_shadow_update` + 逐光逐面 `render_begin` 渲染深度 cubemap→demo 可达。
+- 覆盖缺口：`point_shadow.c` 重度耦合 RHI(`rhi_shader_create/pipeline_create/cmd_*` 等约 15 个符号),为纯函数 `point_shadow_compute_face_vp` 建可链接单测需桩接整个 RHI,不切实际。按 R256(scene_serial)先例:以独立编译数值程序(旧式暴露 w<0、新式 6 面 PASS)+ 引擎双后端构建 + 全套件通过验证。
+- 验收：GL/VK 构建通过;CTest GL/VK 各 **30/30**（排除环境相关 `test_async_loader`）。
+
 ## R312：间接绘制/TAA/IBL/体积雾/场景世界变换/后处理合并链多窄线深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论：

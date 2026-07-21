@@ -69,52 +69,55 @@ static RHIPipeline ps_create_pipeline(RHIDevice *dev,
 }
 
 /* Build the 6 view-projection matrices for an omnidirectional shadow camera.
- * Analytical construction: cubemap face directions are axis-aligned, so the
- * combined VP = proj × view matrices have at most 2 non-zero rows with ≤4
- * non-zero entries each. Eliminates 6× mat4_lookat (12 normalize + 24 cross)
- * and 6× mat4_mul (384 muls + 384 adds) → 6× memset + 24 assignments. */
+ *
+ * R313 (CORRECTNESS): construct VP = proj · view from a real per-face view
+ * matrix. The previous "analytical closed form" (which claimed the VP had "at
+ * most 2 non-zero rows") was WRONG under this engine's column-major e[col][row]
+ * layout: each face only ever populated clip.x/clip.y OR clip.z, and its clip.w
+ * row depended on the WRONG world axes. Numerically, a point directly in front
+ * of the light on +X/+Y/+Z mapped to clip.w < 0 — i.e. it was clipped away by
+ * the near/w test — while -X/-Y/-Z placed it far outside NDC (|x/w| ≫ 1). The
+ * depth cubemaps therefore captured no/garbage geometry and point-light shadows
+ * never resolved. With this construction a front point maps to NDC (0,0) with
+ * w > 0 on every face (verified against mat4_perspective·mat4_lookat).
+ *
+ * Cost is trivial (≤ POINT_SHADOW_MAX_LIGHTS × 6 small mat4 builds per frame),
+ * so correctness wins over the old hand-rolled sparsity trick. Depth is written
+ * as linear distance in the fragment shader, so only each face's orientation
+ * (preserved from the original basis comments) matters, not the VP's z row. */
 void point_shadow_compute_face_vp(Vec3 light_pos, f32 radius,
                                   Mat4 out_vp[POINT_SHADOW_FACES]) {
     f32 far_plane = (radius > 0.1f) ? radius : 0.1f;
-    f32 near_val = 0.1f;
-    f32 fn = far_plane - near_val;
-    f32 pzz = -(far_plane + near_val) / fn;
-    f32 pwz = -(2.0f * far_plane * near_val) / fn;
-    f32 px = light_pos.e[0], py = light_pos.e[1], pz = light_pos.e[2];
+    Mat4 proj = mat4_perspective((f32)(M_PI * 0.5), 1.0f, 0.1f, far_plane);
 
-    /* +X: right=(0,0,1), up=(0,1,0), fwd=(1,0,0)
-     * NOTE: Uses right-handed convention (right = cross(f,up)), which differs from
-     * camera_view / mat4_lookat left-handed convention (right = -cross(f,up)).
-     * Self-consistent since same VP used for rendering + sampling; depth computed
-     * via length() in shader, not VP decomposition. */
-    memset(&out_vp[0], 0, sizeof(Mat4));
-    out_vp[0].e[1][1] = 1.0f;   out_vp[0].e[1][3] = -py;
-    out_vp[0].e[2][0] = -pzz;  out_vp[0].e[2][3] = pzz * px - pwz;
+    /* Per-face orthonormal basis (right s, up u, forward f) with s×u = f.
+     * Right-handed (differs from camera_view's left-handed convention); this is
+     * self-consistent because the same VP is used for rendering and the shader
+     * samples the cubemap by direction with a length()-based depth. */
+    static const Vec3 s_axis[POINT_SHADOW_FACES] = {  /* right  */
+        {{0,0, 1}}, {{0,0,-1}}, {{1,0,0}}, {{1,0,0}}, {{1,0,0}}, {{-1,0,0}}
+    };
+    static const Vec3 u_axis[POINT_SHADOW_FACES] = {  /* up     */
+        {{0,1,0}}, {{0,1,0}}, {{0,0,-1}}, {{0,0,1}}, {{0,1,0}}, {{0,1,0}}
+    };
+    static const Vec3 f_axis[POINT_SHADOW_FACES] = {  /* forward */
+        {{1,0,0}}, {{-1,0,0}}, {{0,1,0}}, {{0,-1,0}}, {{0,0,1}}, {{0,0,-1}}
+    };
 
-    /* -X: right=(0,0,-1), up=(0,1,0), fwd=(-1,0,0) */
-    memset(&out_vp[1], 0, sizeof(Mat4));
-    out_vp[1].e[1][1] = 1.0f;   out_vp[1].e[1][3] = -py;
-    out_vp[1].e[2][0] = pzz;   out_vp[1].e[2][3] = -pzz * px - pwz;
-
-    /* +Y: right=(1,0,0), up=(0,0,-1), fwd=(0,1,0) */
-    memset(&out_vp[2], 0, sizeof(Mat4));
-    out_vp[2].e[0][0] = 1.0f;   out_vp[2].e[0][3] = -px;
-    out_vp[2].e[2][1] = -pzz;  out_vp[2].e[2][3] = pzz * py - pwz;
-
-    /* -Y: right=(1,0,0), up=(0,0,1), fwd=(0,-1,0) */
-    memset(&out_vp[3], 0, sizeof(Mat4));
-    out_vp[3].e[0][0] = 1.0f;   out_vp[3].e[0][3] = -px;
-    out_vp[3].e[2][1] = pzz;   out_vp[3].e[2][3] = -pzz * py - pwz;
-
-    /* +Z: right=(1,0,0), up=(0,1,0), fwd=(0,0,1) */
-    memset(&out_vp[4], 0, sizeof(Mat4));
-    out_vp[4].e[0][0] = 1.0f;   out_vp[4].e[0][3] = -px;
-    out_vp[4].e[2][2] = -pzz;  out_vp[4].e[2][3] = pzz * pz - pwz;
-
-    /* -Z: right=(-1,0,0), up=(0,1,0), fwd=(0,0,-1) */
-    memset(&out_vp[5], 0, sizeof(Mat4));
-    out_vp[5].e[0][0] = -1.0f;  out_vp[5].e[0][3] = px;
-    out_vp[5].e[2][2] = pzz;   out_vp[5].e[2][3] = -pzz * pz - pwz;
+    for (u32 i = 0; i < POINT_SHADOW_FACES; ++i) {
+        Vec3 s = s_axis[i], u = u_axis[i], f = f_axis[i];
+        Mat4 view;
+        memset(&view, 0, sizeof(view));
+        /* Row 0 = right, row 1 = up, row 2 = -forward, translation = -basis·eye. */
+        view.e[0][0] = s.e[0]; view.e[1][0] = s.e[1]; view.e[2][0] = s.e[2];
+        view.e[3][0] = -vec3_dot(s, light_pos);
+        view.e[0][1] = u.e[0]; view.e[1][1] = u.e[1]; view.e[2][1] = u.e[2];
+        view.e[3][1] = -vec3_dot(u, light_pos);
+        view.e[0][2] = -f.e[0]; view.e[1][2] = -f.e[1]; view.e[2][2] = -f.e[2];
+        view.e[3][2] = vec3_dot(f, light_pos);
+        view.e[3][3] = 1.0f;
+        out_vp[i] = mat4_mul(proj, view);
+    }
 }
 
 /* ------------------------------------------------------------------- */
