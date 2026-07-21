@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R318：场景序列化（BSCN 二进制/JSON/prefab）+ ECS 组件迁移/archetype swap-remove 深审——均正确/已加固，无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/scene/scene_serial.c` + `engine/src/ecs/ecs.c`）：
+  - 序列化写：`bb_reserve` 容量倍增(`nc*=2`);`emit_components_chunk` 先写 0 占位再用 `out->data + count_pos`(**字节偏移**,非缓存指针)回填 instance 计数——即使中途 `bb_write` 触发 `realloc` 也安全;`emit_hierarchy_chunk` CSR 三趟(计数/前缀和/填充),单块 `calloc(4n+1)` 切成 `child_count[n]/offsets[n+1]/children[n]/cursor[n]`,`offsets[0]=0`、`children` 总量 ≤ n,边界正确。
+  - 序列化读:`Reader`+`rd_bytes` 全程 `(end-p)<n` 边界检查;`scene_load_binary` R108 用 `u64` 校验 chunk 表与每 chunk 数据不越界、`chunk_count>64` 拒绝;两趟加载(先 ENTITIES 建 `ents[]`,再 COMPONENTS/NODES/RESOURCES);`load_components_chunk` 用**磁盘 size** 跳过未知/尺寸不符组件(`known=type<MAX && component_sizes[type]==size`),避免布局漂移写坏;`load_resources_chunk` 对 `plen>=sizeof(path)` 截断并前进剩余字节且再校验 `p<=end`。
+  - generation 往返:R243 二进制(`load_entities_chunk`)与 JSON(`scene_load_json` 的 `"gen"` 分支)均恢复 `w->entities[e.index].generation`,保证 (index,gen) 统一 ID 往返一致。
+  - `emap_build`:单块 `malloc(2N·u32)`,临时借用 `saved_to_entity` 前 N 字节做 is_free 位图(4N≥N 无越界),两趟建 `entity_to_saved`/`saved_to_entity`;实体从 index 1 起(0 为 null 实体)。
+  - ECS 迁移:`w->archetypes` 是 `ECS_MAX_ARCHETYPES` 定长内联数组(`create_archetype` 用 `archetypes[archetype_count++]`,不 realloc/搬迁)→`world_add_component` L363 捕获的 `old` 指针跨 `create_archetype` 不悬空(`world_remove_component` L537 有多余的防御性重取,注释确认定长);`archetype_swap_remove` 定位删除槽与 `total_count-1` 末实体槽,复制列数据+实体索引、`w->entity_index[moved]=global_slot`,再 `lc->count--`/`total_count--`;`world_add_component` 顺序(dest `archetype_alloc_slot` → 紧凑缓冲拷贝交集列 → `archetype_swap_remove(old,old_slot)` → 写 `entity_archetype/entity_index`、`cache_version++`)对"e 是否为 old 末元素"两种情况均正确,被移动实体 ≠ e,无 `entity_index` 冲突。
+- 观察（非 demo 可达，不修复）：`scene_instantiate_prefab` 的 `position` 只偏移场景节点,但 `scene_save_prefab` 仅写 ENTITIES+COMPONENTS 两个 chunk(无 SCENE_NODES)→加载后 `node_count` 不增,`position` 对纯实体 prefab 成静默 no-op;类型无关序列化器无法通用偏移 Transform 组件,且 `scene_save_prefab`/`scene_instantiate_prefab` 无任何 demo/测试调用点(潜在 API)。
+- 结论：序列化与 ECS 迁移均正确/已加固,记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R317：动画双骨骼 IK 求解器深审——数学正确、求解稳健，无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/animation/animation.c` 的 `anim_ik_two_bone`/`anim_ik_solve`/`anim_ik_set_target`）：
