@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R322：角色控制器 滑动解算/step-up/grounded 状态机深审——法线约定/连跳守卫/退化处理/台阶接受判定均正确，无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/physics/character.c`）：
+  - `char_slide_resolve`（穿透解算,MAX_ITERS=6）:每轮建胶囊、取最深静态体接触 `(best_depth,best_n)`,`sep=-best_n`、`pos+=sep·best_depth` 推出。法线方向关键验证:`physics_collide(&cap,b,&ct)` 内部按 `shape_rank` 可能换序,但换序时 `if(swapped) n=vec3_scale(n,-1)` 把法线翻回调用方 (a→b=cap→b) 约定,故 `sep=-normal` 一定把胶囊推离 `b`(不会推进墙里/隧穿)。`sep.e[1]>slope_limit` 判 grounded(单位推出法线的 y 分量,可行走地面≈1、竖墙≈0)。R239:BVH `bvh_query_aabb` 填满 64 candidate 即饱和丢弃后续重叠体,`nc>=64` 时回退整表线扫防隧穿。
+  - `character_update`:
+    - 水平速度 `vx/vz=input·6·0.85`;跳跃 R280 守卫 `jump && grounded && vy<=0`(起跳后数帧胶囊仍与地面 AABB 重叠使 grounded 为真,缺 `vy<=0` 会每帧重施 jump_speed=连跳增高;静止时 vy=0 不影响正常跳),置 vy=jump_speed、grounded=false;随后 `vy+=gravity·dt`。
+    - 步骤 1 垂直:`pos.y+=vy·dt`→`char_slide_resolve`→`grounded_v`,`grounded_v && vy<0` 时夹 vy=0(落地)。
+    - 步骤 2 水平:`horiz=(vx·dt,0,vz·dt)`,`horiz_l2=0` 时 `horiz_len=0·fast_rsqrt(0)=0`(非 NaN,fast_rsqrt(0) 为大有限数、乘 0 得 0),`flat=slide_resolve(pos+horiz)`→`grounded_h`;`grounded=grounded_v||grounded_h`。
+    - 步骤 3 step-up(`horiz_len>1e-5 && grounded`):`dir=norm(horiz)`;`up=slide_resolve(pos+step_height)`(解 raise 后可能顶到天花板)→`stepped=slide_resolve(up+horiz)`→`down=slide_resolve(stepped-step_height)`→`grounded_d`;仅当 `grounded_d && horiz_progress(start,down,dir)>horiz_progress(start,flat,dir)+1e-4`(下台阶后水平进展比 flat 滑动更远,即 flat 被阻挡)才 `pos=down;grounded=true`,否则 `pos=flat`;无水平/未 grounded 时直接 `pos=flat`。
+- 结论：滑动解算法线约定、连跳/落地状态机、退化(零水平)处理、step-up 试探-比较接受判定均正确,已由 R239/R280 加固。记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R321：任务系统 Chase-Lev 工作窃取队列 + 引用计数/依赖 fan-out + task_wait 记账深审——内存序与并发语义均正确，无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/task/task.c` + `task.h`）：
