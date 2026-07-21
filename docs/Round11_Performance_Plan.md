@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R340：点光源阴影（cubemap 六面 VP 构造 / 线性距离深度 / 最近 N 光选择 / 面绑定）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/point_shadow.c`）：
+  - `point_shadow_compute_face_vp`（R313）：`far=(radius>0.1)?radius:0.1`，`proj=mat4_perspective(π/2, 1, 0.1, far)`；六面各有正交基 `s`(right)/`u`(up)/`f`(forward)，`f_axis` = {+X,-X,+Y,-Y,+Z,-Z}（正确）；view 用 `row0=s, row1=u, row2=-f, 平移=-basis·light_pos`（标准 lookAt 形式），`out_vp=mat4_mul(proj,view)`。R313 修复：旧"解析闭式"声称 VP 至多 2 非零行，但列主序 e[col][row] 下每面只填 clip.x/y 或 clip.z 且 clip.w 行依赖错误世界轴 → 正面点在 +X/+Y/+Z 得 clip.w<0 被近/w 裁掉、在 -X/-Y/-Z 得 |x/w|≫1 出 NDC → 深度 cubemap 捕获不到几何、点阴影永不解析；新构造下正面点映射 NDC(0,0)、w>0（对 mat4_perspective·mat4_lookat 验证）。逐面验证 view 为合法正交旋转（det=+1）。
+  - `point_shadow_update`：先把所有 `lights[i].shadow_index/src_index=0xFF`、`active_count=0`；`cand[256]`，`n=min(light_count,256)`，`priority=|pos-camera|²`；`take=min(n,POINT_SHADOW_MAX_LIGHTS)`；n≤MAX 时全插入排序，否则先对前 take 插排、再对 [take,n) 用 `>=cand[take-1].priority 跳过` 否则插入 top-take（丢弃当前最大）——正确的最近-N 部分选择；填 `lights[slot]`、`far_planes[slot]=r`，`r=(radii>0.1)?radii:25.0`（恒>0.1）传入 `compute_face_vp`（其内 `far=r`，与 far_planes 一致；compute 内的 0.1 分支仅为直接调用防御，update 路径不触发）。
+  - 渲染：`point_shadow_render_begin(light_index,face)` 校验 `light_index<active_count && face<6`，`rhi_cubemap_depth_fbo_bind_face` 绑对应面；R82-3 per-light uniform（light_pos、far_plane）仅在 `face==0` 设置（同一 pipeline 跨 6 面、值不随面变），fragment 写线性距离。
+  - 观察（非 bug）：`u_axis` 六面相对 LearnOpenGL 渲染约定（+X up=(0,-1,0) 等）整体取反。由于（a）R313 已验证正面点 NDC/w 正确，（b）深度存的是与朝向无关的 `length(frag-light)` 线性距离、cubemap 按方向采样，（c）此取反是与引擎 `rhi_cubemap_depth_fbo_bind_face` 的帧缓冲 Y 起点约定配套（若真错，demo 点阴影会呈现每面垂直镜像的明显伪影，实际正常），判定为刻意且自洽的约定，非 bug；贸然"改回标准"反而会破坏工作正常的阴影。
+- 结论：六面 VP 构造（R313 修复 + 正交性验证）、最近-N 选择排序、半径/far 一致性、面绑定与 per-light uniform 优化（R82-3）、线性距离深度均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R339：聚簇光照 CPU 剔除（指数深度切分 / froxel 分箱 / 屏幕 AABB 早退 / 光索引溢出防护）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/lighting.c::light_system_cull` + `cluster_depth` + `mat4_vec4`）：
