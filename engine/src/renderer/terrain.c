@@ -376,7 +376,13 @@ void terrain_modify_height(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength)
     if (!t->heightmap) return;
     t->modify_count++;
     t->total_delta += fabsf(strength);
-    { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
+    /* R303: split quadrants at the terrain's world center (0), not scale*0.5.
+     * World span is [-scale/2, +scale/2] (see terrain_init: fx=(x/(n-1)-0.5)*scale),
+     * so the old scale*0.5 threshold sits at the +x/+z edge: every in-bounds edit
+     * satisfied wx<hc && wz<hc and was misclassified into quadrant 0 (NW). The
+     * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
+     * regardless of where the user actually edited. */
+    { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
@@ -410,7 +416,13 @@ void terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius) {
     if (!t->heightmap) return;
     t->modify_count++;
     t->total_delta += radius * 0.1f;
-    { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
+    /* R303: split quadrants at the terrain's world center (0), not scale*0.5.
+     * World span is [-scale/2, +scale/2] (see terrain_init: fx=(x/(n-1)-0.5)*scale),
+     * so the old scale*0.5 threshold sits at the +x/+z edge: every in-bounds edit
+     * satisfied wx<hc && wz<hc and was misclassified into quadrant 0 (NW). The
+     * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
+     * regardless of where the user actually edited. */
+    { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
@@ -475,7 +487,13 @@ void terrain_erode(Terrain *t, f32 wx, f32 wz, f32 radius, i32 iterations) {
     if (!t->heightmap) return;
     t->modify_count++;
     t->total_delta += (f32)iterations * 0.1f;
-    { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
+    /* R303: split quadrants at the terrain's world center (0), not scale*0.5.
+     * World span is [-scale/2, +scale/2] (see terrain_init: fx=(x/(n-1)-0.5)*scale),
+     * so the old scale*0.5 threshold sits at the +x/+z edge: every in-bounds edit
+     * satisfied wx<hc && wz<hc and was misclassified into quadrant 0 (NW). The
+     * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
+     * regardless of where the user actually edited. */
+    { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
     i32 n = (i32)t->grid_size;
     f32 inv = 1.0f / t->inv_nm1;
 
@@ -533,7 +551,13 @@ void terrain_noise_stamp(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength, f
     if (!t->heightmap) return;
     t->modify_count++;
     t->total_delta += fabsf(strength);
-    { f32 hc=t->scale*0.5f; t->edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }
+    /* R303: split quadrants at the terrain's world center (0), not scale*0.5.
+     * World span is [-scale/2, +scale/2] (see terrain_init: fx=(x/(n-1)-0.5)*scale),
+     * so the old scale*0.5 threshold sits at the +x/+z edge: every in-bounds edit
+     * satisfied wx<hc && wz<hc and was misclassified into quadrant 0 (NW). The
+     * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
+     * regardless of where the user actually edited. */
+    { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;

@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R303：terrain 编辑象限统计阈值用 scale*0.5（+x/+z 边缘）而非世界中心 0 → 所有编辑误归 NW，heatmap 调试 UI 恒显 NW（已完成）
+
+### [x] R303-A `edit_quadrant` 象限分类阈值错误
+- [x] 症状：4 个编辑函数（`terrain_modify_height`/`terrain_flatten`/`terrain_erode`/`terrain_noise_stamp`）都用 `{ f32 hc=t->scale*0.5f; edit_quadrant[(wx<hc?0:1)+(wz<hc?0:2)]++; }` 分类编辑象限。但地形世界坐标居中于 0（`terrain_init`: `fx=(x/(n-1)-0.5)*scale` → span `[-scale/2,+scale/2]`），`scale*0.5` 恰是 +x/+z 边缘：任何 in-bounds 编辑都满足 `wx<hc && wz<hc` → 恒归象限 0（NW）。
+- [x] 后果：`main.c:3371` 的 "Edit heatmap: NW/NE/SW/SE hottest:…" 调试 UI（demo 可见）无论用户在哪编辑都恒报 NW，热力图功能失效。
+- [x] 修复：阈值改为世界中心 0（`wx<0.0f`/`wz<0.0f`），保持 x<0=west、z<0=north 及 0=NW/1=NE/2=SW/3=SE 的既有布局不变，仅纠正分界线位置。4 处相同行统一修正。
+- [x] 回归：`test_terrain.c::modify_height_quadrant_classification`——在 (+x,+z)/(-x,-z)/(-x,+z)/(+x,-z) 四个世界位置各编辑一次，断言分别落入 SE(3)/NW(0)/SW(2)/NE(1)，且 (+x,+z) 不再被误记为 NW。旧阈值把四者全记入 NW(0)（断言失败），修复后各归其位。原 `modify_height_quadrant_tracking` 仅检查 `total_q>0`，掩盖了误分类。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 test_async_loader）；test_terrain 本地 24/24。
+
 ## R302：BVH SAH 无有效分裂时退化 (1,count-1) → 深度 O(N) 超 BVH_MAX_DEPTH 静默丢对象（已完成）
 
 ### [x] R302-A `bvh_build_recursive` 分区在 SAH 找不到分裂时收缩为单对象一侧

@@ -205,6 +205,35 @@ TEST(modify_height_quadrant_tracking)
     free_terrain(t);
 }
 
+TEST(modify_height_quadrant_classification)
+{
+    /* R303: edits must be classified relative to the terrain's world center (0),
+     * not scale*0.5. The world spans [-scale/2,+scale/2]; index layout (see
+     * main.c heatmap) is 0=NW,1=NE,2=SW,3=SE where x<0=west, z<0=north.
+     * The old scale*0.5 threshold put every in-bounds edit into quadrant 0 (NW). */
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    fill_uniform(t, 0.0f);
+
+    /* +x,+z world position → east + south → SE (index 3). */
+    terrain_modify_height(t, 2.0f, 2.0f, 1.0f, 1.0f);
+    ASSERT_EQ(t->edit_quadrant[3], 1u); /* SE */
+    ASSERT_EQ(t->edit_quadrant[0], 0u); /* NOT misfiled as NW */
+    ASSERT_EQ(t->edit_quadrant[1], 0u);
+    ASSERT_EQ(t->edit_quadrant[2], 0u);
+
+    /* -x,-z world position → west + north → NW (index 0). */
+    terrain_modify_height(t, -2.0f, -2.0f, 1.0f, 1.0f);
+    ASSERT_EQ(t->edit_quadrant[0], 1u); /* NW */
+
+    /* -x,+z → west + south → SW (index 2); +x,-z → east + north → NE (index 1). */
+    terrain_modify_height(t, -2.0f, 2.0f, 1.0f, 1.0f);
+    ASSERT_EQ(t->edit_quadrant[2], 1u); /* SW */
+    terrain_modify_height(t, 2.0f, -2.0f, 1.0f, 1.0f);
+    ASSERT_EQ(t->edit_quadrant[1], 1u); /* NE */
+
+    free_terrain(t);
+}
+
 /* ------------------------------------------------------------------ */
 /* terrain_flatten tests                                               */
 /* ------------------------------------------------------------------ */
@@ -439,6 +468,7 @@ int main(void) {
     RUN_TEST(modify_height_outside_radius);
     RUN_TEST(modify_height_falloff);
     RUN_TEST(modify_height_quadrant_tracking);
+    RUN_TEST(modify_height_quadrant_classification);
     RUN_TEST(flatten_averages);
     RUN_TEST(flatten_null_heightmap);
     RUN_TEST(erode_reduces_peaks);
