@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R335：数学库（mat4 逆/透视/lookat、quat 乘/slerp/nlerp/rotate、特化 proj·view 与解析逆）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/math/math.c`、`math.h`）：
+  - `mat4_inverse`：标准 MESA/GLU 4×4 cofactor 展开（16 个 3×3 余子式），`det = e[0]*inv[0]+e[1]*inv[4]+e[2]*inv[8]+e[3]*inv[12]`；`det==0.0f` 精确判 → 返回 identity（避免 1/0）；否则整体 `*= 1/det`。
+  - `mat4_perspective`/`mat4_ortho`（R142）：对 `aspect`、`far-near`、`tan(fov/2)`、`right-left`、`top-bottom` 全部加 `<1e-20` 除零守卫（窗口最小化到 0×0 时 aspect=Inf/NaN），产出有限矩阵。
+  - `mat4_lookat`：左手系视图矩阵，`f=norm(target-eye)`、`s=norm(f×up)`、`u=s×f`，写 `-s / u / -f` 到旋转部分、平移用 `±dot(·,eye)`；与 `camera_view` 同基（`s×u=f`）。
+  - `mat4_from_quat`：列主序，逐列核对 = 标准四元数旋转矩阵 row-major 形式的对应列（col0=(1-2(y²+z²),2(xy+wz),2(xz-wy)) 等）。
+  - 四元数（math.h inline，(x,y,z,w) 存储）：`quat_mul` 标准 Hamilton 积；`quat_inverse` 共轭（单位假设）；`quat_normalize` `l2<=1e-12→QUAT_IDENTITY` + `fast_rsqrt`；`quat_slerp`（实为 nlerp）与 `quat_nlerp` 均先 `dot<0` 时负化 b 取最短弧、再 `s0=1-t/s1=t` 线性插值 + `quat_normalize`；`quat_from_axis_angle` 轴 `l<=1e-6→identity`、否则归一 + 半角 sin/cos；`quat_rotate_vec3` = `v + 2w(qv×v) + 2qv×(qv×v)`（`t=2(qv×v)`；`return v + w*t + qv×t`）标准优化式。
+  - 特化（均逐元素代数验证）：`mat4_mul` SSE 分支对每列广播 `b.e[col][k]` 与 `a.e[k]` 列相乘累加 → `out.col=Σ_k a.col_k·b[col][k]`，与标量分支 `out.e[col][row]=Σ_k a.e[k][row]·b.e[col][k]` 完全等价（列主序）。`mat4_mul_proj_view`（R50）：按 P 稀疏结构（col2=(jx,jy,C,-1)、col3=(0,0,D,0)）展开，逐行核对匹配通用 `Σ P.e[k][row]·V[col][k]`，正确含 TAA jitter/screen shake（jx,jy）。`mat4_inv_perspective`（R53-fix）：手工验证 `P·inv=I` 全 4 列（col0=(1,0,0,0)…col3=(0,0,0,1)），jx/jy 项在 col3 抵消。`mat4_mul_ortho_diag`（R49）：对角+平移矩阵专用乘。R73-4：`mat4_mul` 提升为 static inline 省 128B/调用栈拷贝。
+  - 观察（非 bug）：`mat4_inverse` 采用精确 `det==0`（非近奇异 epsilon），近奇异输入会得大数值，属通用逆的标准行为；`mat4_inv_perspective`/`mat4_mul_proj_view`/`mat4_mul_ortho_diag` 均有"须为对应结构矩阵"的前置条件，已在各自注释显式声明，调用点（相机/阴影/后处理）满足。
+- 结论：mat4 逆/投影/正交/lookat/quat 矩阵、四元数乘/插值/旋转/归一、以及所有 SIMD 与稀疏特化路径均数学正确且带除零/单位守卫。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R334：Linux 手柄 evdev 后端（事件解析/轴缩放/按钮边沿锁存/inotify 热插拔）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/platform/gamepad_linux.c`）：
