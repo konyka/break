@@ -4420,6 +4420,14 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R300：core 分配器/字符串 + VFS 多窄线深审——无 demo 可达高置信 bug，不修复（记录 1 处潜在限制）
+
+- 窄线 A：`core/pool.c` 定长池。free-list 前后向线程化（升序分发）、`pool_init` 的 pad/usable/count、`pool_init_alloc` 的 `block_count>SIZE_MAX/bs` 溢出守卫（R158）、`pool_owns` 的 `<buffer`/`off>=count*bs`/`off%bs==0` 边界与对齐检查、`pool_release` 的 `used>0` 下溢守卫——均正确；不检测双重释放属常见快路径设计（调用方契约）。
+- 窄线 B：`core/string.c`。`str_copy` 的 `buf_size==0` 下溢守卫（R109）、`str_slice` 的 `end>len`/`start>end` 钳制、`str_hash`(FNV-1a)、`str_eq` 的 `data==data` 短路——均正确。
+- 窄线 C：`asset/vfs.c`。PAK 哈希表开放寻址探测终止性（表 `next_pow2(entry_count*2)` 至少半空，恒有空槽）、`next_pow2(0)→4`、`name_offset>=name_table_size` 跳过（R160-A）、`entry_count>2^30` 守卫（R157）、name 表 `+1` 终止符（R160-A）、单块 `VFSFile+data` 分配、`vfs_read` 的 `pos<=size` 不变量（避免 `size-pos` 下溢）、R255 PAK 读锁——均正确。
+- 记录（潜在限制，**非 demo 可达**、不修复）：`core/alloc.c::heap_realloc_fn` 用 `realloc(raw,total)` 后按 `new_raw` 重算 `aligned=round_up(new_raw+8,align)`，但 realloc 保留的用户数据位于 `new_raw+old_off`。当 `align>16` 且 `new_raw%align != raw%align`（`malloc`/`realloc` 仅保证 16 字节对齐）时 `off_new!=off_old` → 返回指针与实际数据错位、首字节损坏。引擎内 heap realloc 仅用 align=1/≤16（`test_alloc` 用 align=1，`off` 恒为 8）故不触发；且失败触发依赖 `realloc` 返回基址的对齐残差、**无法确定性构造回归用例**，按宁缺毋滥不投机修复（precedent R297 字体超宽缺口）。修复方向（备忘）：realloc 后若 `new_off!=old_off` 则 `memmove((void*)aligned, new_raw+old_off, min(old_size,new_size))` 再写回 back-ptr。
+- 决策：无 demo 可达高置信 CORRECTNESS 问题，不改代码（precedent R289/R290/R294/R296/R297）。
+
 ## R299：ordered reorder drain 遇 0 快照包 `late_count==0` 提前中断 → 后续连续缓冲包永久滞留、ordered 流 stall（已完成）
 
 ### [x] R299-A drain 循环退出条件把"空帧"误当"无更多可投递"
