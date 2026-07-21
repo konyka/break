@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R334：Linux 手柄 evdev 后端（事件解析/轴缩放/按钮边沿锁存/inotify 热插拔）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/platform/gamepad_linux.c`）：
+  - 越界安全：按钮经 `evdev_btn_to_gamepad(code)` 映射，`idx>=0 && idx<INPUT_MAX_PAD_BUTTONS(16)` 才 `apply_button_state(&out->buttons[idx],...)`；轴 `if (ax>=0 && ax<INPUT_MAX_AXES(6) && ev.code<ABS_CNT && d->abs_info[ev.code].present)`；HAT0X/HAT0Y 直写 `out->buttons[GAMEPAD_BTN_DPAD_LEFT/RIGHT/UP/DOWN]`——这些常量为 13/14/11/12，恒 `<16`，无运行时查界但静态在界。
+  - 按钮状态机（`buttons[]`：0=up/1=released/2=held/3=pressed）：`apply_button_state(slot,pressed)`：pressed 且 `*slot!=2` → 3（已 held 则保持 2）；released 且 `*slot==3||*slot==2` → 1。evdev 仅在实际状态变化时投递 EV_KEY 事件，故 3→2（pressed→held）与 1→0（released→up）的每帧衰减由上层 input 帧推进完成，属标准即时输入边沿锁存。
+  - 轴缩放：`normalize_axis(v,min,max)` = `(v-min)/(max-min)*2-1`（`range==0→0` 防除零）；`normalize_trigger` = `(v-min)/(max-min)` 并 clamp[0,1]（扳机报 0..max → 0..1）。`device_query_axes` 用 `ioctl(EVIOCGABS(axis))` 读 min/max，`present=(min!=0||max!=0)`；ABS_Z/ABS_BRAKE→LTRIGGER、ABS_RZ/ABS_GAS→RTRIGGER（`is_trigger=true`），ABS_HAT0X/Y 转 DPAD 按钮（不落轴归一，因这些 case 不设 `ax`）。
+  - 热插拔：`inotify_init1(IN_NONBLOCK|IN_CLOEXEC)` + `inotify_add_watch(/dev/input, IN_CREATE|IN_DELETE|IN_ATTRIB)`，任一失败仅告警降级（hot-plug 关闭，不致命）；初始 `opendir` 扫描 `event*`；`process_inotify_events` 循环读、内层按 `p += sizeof(struct inotify_event)+ev->len` 步进、仅 `ev->len>0 && name` 前缀为 "event" 才处理，IN_CREATE/ATTRIB→`try_open_device`（EACCES 常见，靠后续 udev 设权限触发 IN_ATTRIB 重试）、IN_DELETE→`find_slot_by_path`+`close_device`。`try_open_device` 先 `find_slot_by_path` 去重、`fd_is_gamepad` 用 EVIOCGBIT 验 EV_KEY+EV_ABS+至少一个规范手柄键、`find_free_slot` 满则关 fd 告警。
+  - 生命周期：`close_device` 幂等（`!connected` 早退、close fd、memset、fd=-1）；`gamepad_poll` 先 `process_inotify_events` 再遍历设备——断开帧（`!d->connected && s->connected`）memset axes、全部按钮 `apply_button_state(false)`→released、清 connected/name；连接帧置 connected+`snprintf` name；`process_device_events` 非阻塞 read 循环：完整帧处理、EAGAIN/EWOULDBLOCK 返回、其他 errno（ENODEV 设备移除）`close_device`、短读/0 返回。`gamepad_shutdown` 关所有设备、`inotify_rm_watch`+close、memset。
+- 结论：事件解析越界防护、按钮边沿锁存语义、轴/扳机缩放与除零守卫、inotify 热插拔与权限重试、去重/幂等 close、断开清零均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R333：地形系统（高度图双线性采样/central-diff 法线/侵蚀邻居访问/编辑区域重建/坐标逆变换）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/terrain.c`）：
