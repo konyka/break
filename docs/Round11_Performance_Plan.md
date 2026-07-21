@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R296：相机(fly camera) + 角色控制器 + UI slider 三条窄线深审——均无高置信活跃 bug，不修复
+
+- 窄线 A：`camera.c` `camera_view`/`camera_inv_view`/`camera_update`。
+  - 存疑点核对：yaw=0 时 right `s=(-cy,0,-sy)=(-1,0,0)` 指向世界 -X，视图旋转块行列式 **det=-1**（看似镜像）。经 `math.c:52-60` `mat4_lookat` 注释确认——**"Left-handed view matrix matching camera_view convention … camera_view uses this same left-handed basis: s×u=f, not -f"**：这是跨 `camera_view`/`camera_inv_view`/`mat4_lookat` 一致且有文档的**左手约定**，投影(`mat4_perspective`)/剔除/golden 全据此构建，移动('d'→世界-X 但屏幕右)与之自洽——**非 bug**。
+  - `camera_inv_view` 验证为 view 的正确逆：view 平移 `-s·eye`/`-u·eye`/`f·eye` 与 inv 的 `R^T|eye` 手算吻合。yaw 单次 `±2π` wrap 即便大 `mouse_dx` 溢出也只影响 yaw 数值、经 `cosf/sinf` 周期性无害；pitch 夹取 `±1.5533`(≈89°)双向正确。
+- 窄线 B：`character.c` `char_slide_resolve`/`character_update`（滑动/地面/台阶/跳跃）。已由 R239(BVH 饱和回退)、R251(sweep 饱和回退)、R254(sweep tmin≥0)、R280(跳跃 vy≤0 守卫)覆盖；本轮复核 grounded 判定 `sep.y>slope_limit`、迭代分离(MAX_ITERS=6)多接触收敛、`horiz_len` 在零水平位移时 `>1e-5` 分支安全(0 或 NaN 均取 false)、step-up up→forward→down 与 `horiz_progress` 比较——**无新高置信 bug**。
+- 窄线 C：`imgui.c`/`imgui.h` `imui_slider_map`/`imui_slider_norm`。映射 `t=(mx-x)/w` 钳 [0,1] 后 `minv+t*(maxv-minv)`、norm 的 `maxv==minv→0` 与钳制均正确；knob 位置用 `(w-knob_w)*t` 而值映射用 `w` 仅视觉细节非功能 bug。
+- 决策：三条窄线均无 demo 可达的高置信 CORRECTNESS 问题，按宁缺毋滥**不改代码**（precedent R289/R290/R294）。测试缺口(记录)：无 camera view/inv_view 互逆 golden 单测、无 character step-up 场景单测。
+
 ## R295：`input_set_key` 按键 held 态被 OS 自动重复重置为 just-pressed → 一次性动作随重复率误触发（已完成）
 
 ### [x] R295-A input_set_key 的 just-pressed 边沿守卫与 gamepad 版不一致
