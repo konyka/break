@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R290：RHI 句柄池 + 聚簇光照分配（两条窄线深审——均无高置信 bug，不修复）
+
+- 窄线 A：RHI 资源句柄池（`rhi.c` 的 `rhi_alloc_slot`/`rhi_free_slot`/`rhi_get_resource`/`rhi_make_handle`）。
+  - 核对：句柄 `{index,generation}` 分离存储；NULL=`{0,0}` vs slot0 首资源 `{0,1}`（gen++ 后为 1，abort 保护池满不写 slot0）；generation 仅在 alloc 侧 ++、free 不 bump，`rhi_get_resource` 与 free 均校验 `gen==h.gen && alive`；释放后旧句柄 alive=F → 解引用 NULL；复用后 gen 不匹配 → NULL；double-free / 陈旧 free 被 gen+alive 拦截。手算 index/gen 序列全部自洽。**无 UAF/ABA/错误复用/free-list 损坏**。
+  - 被标记项 `rhi_handle_valid(h)=((h).generation!=0)`：全 engine 40+ 文件数百处作为"句柄非空/已初始化"**标准惯用法**，非存活检查；改其语义需传入 device、破坏宏签名、波及全局。既定设计，**不改**。
+- 窄线 B：聚簇光照簇网格构建 + 光源-簇分配（`lighting.c` + `cluster_cull.comp` + `pbr_clustered*.frag`/`deferred_light*.frag`）。
+  - 真分簇 16×8×24=3072 簇、每簇 128 灯、全局 index 393216；方向光不分簇。核对：簇线性索引 `ci=cx+cy*16+cz*128`（C 循环/compute 反解/片元一致，手算 ci=163 三方吻合）；tile 取整（1920 宽 tile_w=120，x=119→cx0、x=1920-1→cx15）；z-slice 对数 `near*(far/near)^(z/24)`，ld=10 → cz=16 两侧一致；view 深度符号 `view_z<0`、`view_z=-clip.w`；near/far=0.1/100 与 `camera_init`/`deferred_lighting_pass` 一致；光源 pos 与片元 wpos 均世界空间（无 view/world 混用）；grid offset（CPU 紧凑累加 / GPU 固定 ci*128）片元统一 `gb+go+i` 兼容。
+  - 邻近项（未达高置信、非 demo 可达）：CPU 全局 index 池耗尽时 `goto done` 使剩余簇 `count=0`（静默丢光）、每簇 128 灯 clamp——需 256 灯覆盖多数簇才触发，demo 32 灯 r=6 远未触顶，属容量设计边界；片元 `floor(log2…)` 与 `cluster_depth` 个别 slice 边界 FP off-by-one，属 shader 精度（排除项）。
+- 决策：两条窄线均无 demo 可达的高置信 CORRECTNESS 问题，按宁缺毋滥**不改代码**。测试缺口（记录）：无 `rhi_alloc_slot/free_slot/get_resource` 单测；无 GPU `cluster_cull.comp` 输出 vs 片元 `ci` golden、无 CPU/GPU offset 交叉验证、无 index 溢出/128 截断回归。
+
 ## R289：`mat4_lookat` 平移分量位置（探索报告——已证伪，不修复）
 
 - 窄线：数学库核心（`mat4_inverse`/`mat4_mul`/`quat_*`/`perspective`/`lookat`）。
