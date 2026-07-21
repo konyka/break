@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R281：GPU 粒子尺寸淡出复利坍缩（每帧读回已衰减尺寸做基准）（已完成）
+
+### [x] R281-A fade size from constant spawn base, not the fed-back field
+- [x] `particle_update.comp` 存活分支 `float size = mix(0.1, p.size_color.x, t)`：`size_color.x` 是顶点 shader 读的点精灵尺寸、也是本行每帧覆盖的持久字段 → 反馈复利 `sizeₙ = 0.1 + t·(sizeₙ₋₁ − 0.1)`
+- [x] 对照：相邻 alpha 行 `p.size_color.w = t` 每帧从 t 新鲜重算（正确）；唯独尺寸行读回自身，模式不一致 → 尺寸行为 bug
+- [x] 手算（max_life=2s、dt=1/60）：`(sizeₙ−0.1)=(size₀−0.1)·∏tₖ`，约 1 秒 ∏tₖ≈e⁻¹⁷ → 尺寸 0.3–0.5s 即坍缩到 0.1 地板；半衰期 t=0.5 应为 0.55，实测 ≈0.1
+- [x] 影响：全体粒子每帧可见（默认爆炸/拖尾预设）；粒子过早缩到最小、丧失随寿命线性收缩
+- [x] 修复：淡出基准改常量 spawn 尺寸 1.0（emit 分支恒写 size_color.x=1.0）→ `mix(0.1, 1.0, t)`，消除复利、线性收缩；顶点 shader 不动
+- [x] 验证：glslangValidator VK 编译通过；`test_vulkan` 运行时经 shaderc 编译该 comp；双后端全量套件；GPU-only 无 CPU 仿真桩故无针对性单测（同 R272/R275）
+
+**验收**：VK glslang 通过（GL loose-uniform 为 glslang 既有限制、运行时驱动正常）；GL/VK CTest 各 **31/31**。
+
 ## R280：角色控制器按住跳跃在上升段重复起跳（拔高/多段跳）（已完成）
 
 ### [x] R280-A gate jump on not-already-ascending

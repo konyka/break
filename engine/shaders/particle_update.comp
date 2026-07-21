@@ -128,9 +128,19 @@ void main() {
         pos += vel * P_DT;
         life -= P_DT;
 
-        /* Fade out near end of life */
+        /* Fade out near end of life.
+         * R281 (CORRECTNESS): interpolate from the constant SPAWN size (1.0,
+         * written in the emit branch above), NOT from the previous frame's
+         * already-faded size_color.x. size_color.x is the persistent field the
+         * vertex shader reads AND the one we overwrite every frame, so reading
+         * it back here fed the fade into itself: sizeₙ = 0.1 + t·(sizeₙ₋₁-0.1),
+         * a compounding decay. With fine dt that product collapses to the 0.1
+         * floor within a fraction of the lifetime (e.g. ~0.3-0.5s of a 2s life)
+         * instead of shrinking linearly with remaining life. The parallel alpha
+         * line below (`size_color.w = t`) correctly recomputes fresh from t each
+         * frame; the size fade must do the same against a constant base. */
         float t = clamp(life / max(max_life, 0.001), 0.0, 1.0);
-        float size = mix(0.1, p.size_color.x, t);
+        float size = mix(0.1, 1.0, t);
 
         p.pos_life = vec4(pos, life);
         p.vel_maxlife = vec4(vel, max_life);
