@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R328：渲染图 拓扑排序反向邻接表 fan-out 数组过小（误报环、拒绝执行无环图）修复
+
+- 位置：`engine/src/renderer/render_graph.c` `rg_topo_sort`（Kahn 拓扑排序）。
+- Bug：为把出边遍历从 O(V²) 降到 O(V+E)，用反向邻接表 `rdeps[dep] = {依赖 dep 的 pass}`。但 `rdeps` 第二维被误设为 `RG_MAX_PASS_DEPS(16)`：
+  - 前向 `pass->dependencies[]` 限 16 是正确的——单个 pass 依赖的 producer 数 ≤ 它读取的资源数（读槽上限 16）。
+  - 但**反向关系（dependents，被依赖数）不受该约束**：一个只写一次的共享资源（depth prepass、gbuffer、shadow map 等）可被其余每个 live pass 读取，故单个 producer 的 dependents 可达 `pass_count-1`（≤ `RG_MAX_PASSES-1` = 63）。
+  - 旧守卫 `if (rdeps_count[dep] < RG_MAX_PASS_DEPS) rdeps[dep][...]=p;` 在第 16 个 dependent 之后**静默丢弃反向边**，但 `in_degree[p]++` 仍无条件计入。producer 出队时只对已记录的 16 条反向边做 `--in_degree`，被丢弃的 dependent 的 in_degree 永不归零 → 永不入队 → `execution_count < live_total` → `rg_compile` 误报 `"cyclic dependency detected"` 返回 false → `rg_execute` 因 `!compiled` 直接 return → **整张（本可正确调度的无环）图不渲染**。
+- 修复：`u32 rdeps[RG_MAX_PASSES][RG_MAX_PASSES];`，守卫改 `< RG_MAX_PASSES`。因 `dependencies` 去重（`rg_derive_dependencies` 去重）且排除自依赖，`rdeps_count[dep] ≤ pass_count-1 < RG_MAX_PASSES`，守卫转为纯防御，不再丢边。栈占用 4KB→16KB（16×16→64×64 的 u32，单帧 compile 主线程调用，可接受；保留栈分配以维持可重入）。`in_degree`/`queue` 不变。
+- 回归测试（`engine/tests/test_render_graph.c::topo_high_fanout_producer`）：1 个 producer 写共享纹理 + 30 个 consumer 均读它（并各写 imported backbuffer 保持 live），远超旧上限 16。断言 `rg_compile` 成功（非误报环）、`rg_culled_pass_count==0`、`rg_pass_count==31` 且 `rg_execute` 不崩溃。旧代码此测试因 `ASSERT_TRUE(ok)` 失败。
+- 验证：`test_render_graph` 18/18；GL/VK 完整套件各 30/30（排除环境性 flaky 的 `test_async_loader`）。总计 664 处修复。
+
 ## R327：即时模式 GUI（hit-test/press 状态机/slider 拖拽/边沿锁存）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/ui/imgui.c` + `imgui.h`）：

@@ -428,8 +428,24 @@ static bool rg_topo_sort(RenderGraph *rg)
     u32 in_degree[RG_MAX_PASSES];
     memset(in_degree, 0, sizeof(in_degree));
 
-    /* Build reverse adjacency list: rdeps[p] = passes that depend on p. */
-    u32 rdeps[RG_MAX_PASSES][RG_MAX_PASS_DEPS];
+    /* Build reverse adjacency list: rdeps[p] = passes that depend on p.
+     *
+     * R328 (CORRECTNESS): the second dimension must be RG_MAX_PASSES, not
+     * RG_MAX_PASS_DEPS. `dependencies[]` is bounded by RG_MAX_PASS_DEPS because
+     * a pass depends on at most one producer per resource it reads (<=16 reads).
+     * But the REVERSE relation is unbounded by that: a single producer (e.g. a
+     * depth prepass or gbuffer written once) can be read by every other live
+     * pass, so it may have up to pass_count-1 (<= RG_MAX_PASSES-1) dependents.
+     * The old [RG_MAX_PASS_DEPS] array + `rdeps_count[dep] < RG_MAX_PASS_DEPS`
+     * guard silently DROPPED reverse edges past the 16th dependent while still
+     * counting them in in_degree[p]. Those dropped dependents' in_degree was
+     * then never decremented when the producer was scheduled, so it never
+     * reached 0, they were never enqueued, execution_count < live_total, and
+     * rg_compile spuriously reported a "cyclic dependency" and refused to run a
+     * perfectly acyclic graph. Size the fan-out array to RG_MAX_PASSES so every
+     * reverse edge is recorded (rdeps_count[dep] <= pass_count-1 < RG_MAX_PASSES,
+     * so the guard is now purely defensive). */
+    u32 rdeps[RG_MAX_PASSES][RG_MAX_PASSES];
     u32 rdeps_count[RG_MAX_PASSES];
     memset(rdeps_count, 0, sizeof(rdeps_count));
 
@@ -439,7 +455,7 @@ static bool rg_topo_sort(RenderGraph *rg)
             u32 dep = rg->passes[p].dependencies[d];
             if (dep < rg->pass_count && !rg->passes[dep].culled) {
                 in_degree[p]++;
-                if (rdeps_count[dep] < RG_MAX_PASS_DEPS) {
+                if (rdeps_count[dep] < RG_MAX_PASSES) {
                     rdeps[dep][rdeps_count[dep]++] = p;
                 }
             }

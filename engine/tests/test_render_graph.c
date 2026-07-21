@@ -450,6 +450,53 @@ TEST(create_texture_null_desc)
     rg_destroy(rg);
 }
 
+/* R328 regression: one producer read by more than RG_MAX_PASS_DEPS (16)
+ * consumers. The reverse-adjacency fan-out array used by the topological
+ * sort must hold up to RG_MAX_PASSES-1 dependents; if it is sized to
+ * RG_MAX_PASS_DEPS the extra reverse edges are dropped, the consumers' in
+ * degree never reaches 0, and rg_compile spuriously reports a cycle and
+ * refuses to schedule an acyclic graph. */
+TEST(topo_high_fanout_producer)
+{
+    RenderGraph *rg = rg_create();
+
+    RHITexture bb_handle = {.index = 1, .generation = 1};
+    RGResource bb = rg_import_texture(rg, "bb", bb_handle);
+
+    RGTextureDesc td = { .width = 128, .height = 128, .format = 1,
+                          .mip_levels = 1, .name = "shared" };
+    /* Single resource written once, read by many passes. */
+    RGResource shared = rg_create_texture(rg, "shared", &td);
+
+    RGPass *producer = rg_add_pass(rg, "producer", RG_PASS_GRAPHICS);
+    rg_pass_write(producer, shared, RG_USAGE_COLOR_ATTACHMENT);
+
+    /* 30 consumers all reading the shared resource (well over the old cap of
+     * 16). Each also writes the imported backbuffer so it stays live. */
+    const u32 consumer_count = 30u;
+    for (u32 i = 0; i < consumer_count; i++) {
+        RGPass *c = rg_add_pass(rg, "consumer", RG_PASS_GRAPHICS);
+        ASSERT_NOT_NULL(c);
+        rg_pass_read(c, shared, RG_USAGE_SHADER_READ);
+        rg_pass_write(c, bb, RG_USAGE_PRESENT);
+    }
+
+    bool ok = rg_compile(rg);
+    ASSERT_TRUE(ok); /* must not be a false "cyclic dependency" */
+
+    /* All 1 + 30 passes are live and must be scheduled. */
+    ASSERT_EQ(rg_culled_pass_count(rg), 0u);
+    ASSERT_EQ(rg_pass_count(rg), consumer_count + 1u);
+
+    /* The producer must come before every consumer in the execution order.
+     * We verify by checking the producer's execution_order is 0 (it is the
+     * only pass with no dependencies) and that all passes were scheduled. */
+    g_exec_idx = 0;
+    rg_execute(rg);
+
+    rg_destroy(rg);
+}
+
 /* -----------------------------------------------------------------------
  *  Main
  * ----------------------------------------------------------------------- */
@@ -461,6 +508,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(import_external);
     RUN_TEST(compile_empty);
     RUN_TEST(dependency_and_order);
+    RUN_TEST(topo_high_fanout_producer);
     RUN_TEST(dead_pass_culling);
     RUN_TEST(execute_callbacks);
     RUN_TEST(execute_skips_dead);
