@@ -78,6 +78,23 @@ static inline bool imui_press_logic(u32 id, bool hovered, bool mouse_down,
     return clicked;
 }
 
+/* Drop any in-progress interaction and re-sync the input edge latch.
+ *
+ * imui_begin/imui_end only run while the UI is drawn. When a panel is hidden
+ * (e.g. toggled off) those calls are skipped, so active_id and mouse_prev_down
+ * freeze at their last values. If a press was in progress when the panel closed
+ * — or the button is released while it is hidden — the stale mouse_prev_down=1
+ * combined with the next visible frame's mouse_up produces a phantom
+ * released-edge, firing a spurious click/toggle on reopen (and a stuck active_id
+ * blocks other widgets). Call this every frame the UI is NOT drawn, passing the
+ * current mouse-button state, to keep the latch fresh and clear the active item. */
+static inline void imui_reset_input(ImUI *ui, bool mouse_down) {
+    ui->active_id      = 0;
+    ui->hot_id         = 0;
+    ui->mouse_down     = mouse_down;
+    ui->mouse_prev_down = mouse_down;
+}
+
 /* ---- context lifecycle ------------------------------------------------ */
 
 void imui_init(ImUI *ui, FontRenderer *font);

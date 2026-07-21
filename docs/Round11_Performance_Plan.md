@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R285：imgui 面板隐藏期间交互状态冻结→重开误触发 release-click（已完成）
+
+### [x] R285-A reset imgui interaction state while the panel is hidden
+- [x] `main.c:5591` 仅 `imui_visible` 时跑 `imui_begin/end`；`imui_end` 帧末锁存 `mouse_prev_down`，`imui_begin` 不清 `active_id`
+- [x] 隐藏期间 begin/end 不执行 → `active_id`/`mouse_prev_down` 冻结
+- [x] 时序：checkbox 上按下(active_id=1, prev=true) → `` ` `` 隐藏 → 隐藏期间松开(未消费边沿) → 重开(mouse_down=false, prev 仍 true) → `released_now=true` 且 active_id==1 且 hovered → 误 `clicked` toggle；冻结 active_id 亦阻塞其它控件
+- [x] 修复：新增纯 inline `imui_reset_input(ui, mouse_down)`（清 active_id/hot_id、mouse_down=mouse_prev_down=当前），`main.c` 隐藏帧 `else if (imui_font_ready)` 调用
+- [x] 回归测试 `imui_hidden_reset_no_stale_click`：复现无 reset 的误 click，断言 reset 后 active_id=0/prev=false/重开无 click
+- [x] 其余 imgui 项（命中半开区间、slider 映射/钳制/拖出、边沿点击、纵向布局）核对一致
+
+**验收**：GL/VK 构建通过；GL/VK CTest 各 **31/31**（test_font_ui 含新用例）。
+
 ## R284：滚轮缩放把「度」量级作用于弧度 FOV（首次滚轮即破坏投影）（已完成）
 
 ### [x] R284-A scroll-wheel FOV zoom in radians (was degree magnitudes on radian fov)

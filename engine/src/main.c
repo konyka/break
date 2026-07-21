@@ -5601,6 +5601,14 @@ u32 culled_count = 0;
             imui_slider_float(&imui_ctx, 3, "Sun azimuth", &sun_azimuth, 0.0f, 6.2831853f);
             imui_slider_float(&imui_ctx, 4, "Sun elevation", &sun_elevation, -1.4f, 1.4f);
             imui_end(&imui_ctx, cmd);
+        } else if (imui_font_ready) {
+            /* R285 (CORRECTNESS): while the panel is hidden, imui_begin/end don't
+             * run, so active_id and mouse_prev_down freeze. A press started before
+             * closing (or a release that lands while hidden) would otherwise fire a
+             * stale released-click and toggle a setting on reopen. Keep the edge
+             * latch synced to the real mouse state and drop any in-progress press. */
+            InputState *imin = platform_input(engine.platform);
+            imui_reset_input(&imui_ctx, input_key_down(imin, INPUT_MOUSE_LEFT));
         }
 
         rhi_gpu_timer_end(gpu_postfx_timer);

@@ -204,6 +204,41 @@ TEST(imui_press_ids_independent)
     ASSERT_EQ(active, 1u);
 }
 
+TEST(imui_hidden_reset_no_stale_click)
+{
+    /* R285: a panel hidden mid-press must not fire a phantom click on reopen. */
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    const u32 id = 1;
+
+    /* Panel visible: hover then press down over checkbox id=1 -> becomes active. */
+    imui_press_logic(id, true, false, false, &ui.hot_id, &ui.active_id);
+    imui_press_logic(id, true, true, false, &ui.hot_id, &ui.active_id);
+    ASSERT_EQ(ui.active_id, id);
+    ui.mouse_prev_down = true; /* imui_end latch at end of that frame */
+
+    /* Sanity — WITHOUT the reset, a release edge on reopen (mouse now up but the
+     * stale latch still reads down) would wrongly register a click. */
+    {
+        u32 hot = ui.hot_id, active = ui.active_id;
+        bool stale = imui_press_logic(id, true, /*down*/false,
+                                      /*prev*/ui.mouse_prev_down, &hot, &active);
+        ASSERT_TRUE(stale);
+    }
+
+    /* Panel hidden: mouse released while hidden. Reset keeps the latch fresh
+     * and drops the active item. */
+    imui_reset_input(&ui, /*mouse_down now*/false);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_FALSE(ui.mouse_prev_down);
+
+    /* Reopen with cursor still over id=1, mouse up -> no phantom click. */
+    bool click = imui_press_logic(id, true, ui.mouse_down, ui.mouse_prev_down,
+                                  &ui.hot_id, &ui.active_id);
+    ASSERT_FALSE(click);
+    ASSERT_EQ(ui.active_id, 0u);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Main                                                                    */
 /* ----------------------------------------------------------------------- */
@@ -226,4 +261,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(imui_press_release_outside_no_click);
     RUN_TEST(imui_press_started_outside_no_click);
     RUN_TEST(imui_press_ids_independent);
+    RUN_TEST(imui_hidden_reset_no_stale_click);
 TEST_MAIN_END()
