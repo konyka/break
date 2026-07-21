@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R330：线程化解码流水线（stb 解码/box mip 链/优先级输入队列/worker 生命周期/所有权契约）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/asset/decode_pipeline.c`）：
+  - `decode_generate_mipchain`：`raw_size>INT32_MAX` 拒绝（R144，stbi 取 int len 防截断）；mip_count 计数循环 `while(tw>1||th>1)` 后 `if(mip_count>16)mip_count=16`（R153，防 `widths/heights/offsets[16]` 栈数组越界，65536² 会到 17 级）；`offsets[i]` 累加 `(usize)tw*th*4`，`hdr_sz+total_pix>UINT32_MAX` 拒绝（R160-B，防 `out->size` u32 截断）；level 0 memcpy base，level i(≥1) 从 `packed+hdr_sz+offsets[i-1]`（已写入的上一级）box 下采样，写入长度 `next_w*next_h*4` 恰为该级分配空间；1×1 输入 → mip_count=1，无 mip 循环。
+  - `downsample_rgba8_box`：2×2 盒式平均，`py>=src_h`/`px>=src_w` 跳过（奇数尺寸丢最后一行/列，标准盒式近似，非 bug）；`samples>0` 才除，退化写 0。
+  - `input_queue_push`（值小=优先，匹配 async_loader 最小堆序）：`count>=DECODE_INPUT_CAP(256)` 满则拒绝（R167-A，防 I/O 快于解码时原始字节无界堆积）；`!head||job.prio<head.prio` 头插，否则线扫跳过 `prev->next->prio<=job.prio` 的前缀后插入（等优先级 FIFO 稳定）；tail 维护：头插仅在空表 `if(!tail)tail=job`、尾插 `if(!job->next)tail=job`——逐案（相等/更小/更大优先级、空/非空表）验证无失同步。
+  - `input_queue_pop`：`while(!head && running) cond_wait`；running 转 false 后 head 空则返 NULL，worker `if(!job)continue`→再判 running→退出。
+  - worker `decode_worker_run`：R169 先查 `async_loader_status==ASSET_CANCELLED` 跳过昂贵 stbi+mip；无论成功/失败/取消都 `free(raw_data)` 一次并 `ready_queue_push(&job->node)`（node 为 DecodeJob 首字段，R167-B 消除第二次 malloc 曾致的 LOADING 永挂）。
+  - 生命周期：`decode_pipeline_shutdown` 在 `input.mutex` 下 `running=false`+`cond_broadcast`（canonical teardown，锁即 worker 跨"判谓词+cond_wait"所持），join 后释放剩余 input（raw_data+job）与未 poll 的 ready（result.data+job）；in-flight worker 会先完成在手 job 并 push ready 再退出，join 等待之，无丢 job/无泄漏。R292：input mutex/cond 与 ready mutex 为进程稳定（create-once/never-destroy），避免 worker 存活过 shutdown 时下一 init 的 memset 清零 futex 字导致丢广播永久 park（TSan 确认）。
+  - 所有权契约：`decode_pipeline_submit` 的全部 false 返回路径（raw_data 空/size 0、running false、malloc 失败、`input_queue_push` 满）均**不**释放 raw_data；唯一调用方 `async_loader.c` 在 submit 返回 false 的 else 分支 `free(data)`+`async_finalize(FAILED)`，返回 true 时所有权移交流水线、由 `async_loader_tick`/`decode_pipeline_poll` 落地——契约自洽，无泄漏/双重释放。
+  - 观察（非 bug）：`decode_generate_mipchain` 的 `!base||w<=0||h<=0` 早退分支若 base 非空却 w/h≤0 会漏释 base，但 stbi 契约保证返回非空时 w,h>0，实际不可达；仅 2 个 worker 用 `cond_broadcast` 而非 `cond_signal` 属可忽略的轻微唤醒开销（谓词重查保证正确）。
+- 结论：解码/mip、优先级队列、worker 循环、shutdown 释放、跨模块所有权契约均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R329：并行渲染器/命令缓冲（双缓冲 swap、submit 线程 condvar、按 key 排序、录制溢出）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/cmd_buffer.c` + `cmd_buffer.h`）：
