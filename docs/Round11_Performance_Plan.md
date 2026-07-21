@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R289：`mat4_lookat` 平移分量位置（探索报告——已证伪，不修复）
+
+- 窄线：数学库核心（`mat4_inverse`/`mat4_mul`/`quat_*`/`perspective`/`lookat`）。
+- 探索代理报告：`math.c:62–66` `mat4_lookat` 把平移写在 `e[0][3],e[1][3],e[2][3]`（而非 `e[3][0..2]`），在"标准列主序 `M·v`"下视空间变换错误。
+- **复核证伪**：引擎并非标准列主序消费。证据链：
+  1. `main.c:2812` 注释明确："row-major view matrix V=[R|t], translation is in e[i][3] (col 3)"；`camera.c` `camera_view` 同布局并同注释。
+  2. `mat4_lookat` 与 `camera_view` **字节相同**（`test_camera_frustum.c::camera_view_matches_lookat` 断言矩阵逐元素相等且通过）；`camera_view` 是出货主相机路径，渲染正常。
+  3. 实证（编译引擎 `math.c` 运行）：对 eye=(0,0,8) 看 -Z 的世界原点，按**行主序消费** `o[i]=Σ_j M.e[i][j]·v[j]` 得 view 空间 **(0,0,-8,1)**（正确）；按列主序消费才得 (0,0,0)（错误）。即消费模型是行主序（`e[i][j]`=行 i 列 j），此约定下平移在 `e[i][3]` 正确。
+  4. GL 上传 `glUniformMatrix4fv(..., GL_FALSE, ...)` + 着色器 `u_proj*u_view*world`；R265 已验证 `frustum_from_vp` 用 `vp->e[i][3]±vp->e[i][k]` 提取平面且 `clip_inside` 真值测试通过——整链自洽。
+- 决策：`mat4_lookat` 在引擎实际约定下**正确**；若按报告改到 `e[3][0..2]` 反而与 `camera_view` 不一致、破坏 `top_down_view`（`main.c:2823`）与相机 → 引入 bug。故**不改代码**。`mat4_inverse`（`M*M⁻¹=I`）、`quat_slerp/mul`、`mat4_from_quat`、`perspective/ortho`、`vec3_cross` 复核均正确。
+- 测试缺口（记录）：`test_math.c` 无 `mat4_lookat` 的几何 oracle 用例（如"光轴点→(0,0,z_view)"），仅有 fast/generic 一致性与 `P*inv=I`；`camera_view_matches_lookat` 只比矩阵相等。建议补几何断言以文档化该约定。
+
 ## R288：物理宽相 BVH `bvh_query_pairs` 用 `if(a<b)` 丢弃约半数碰撞对（已完成）
 
 ### [x] R288-A dual-traversal 叶-叶回调漏报
