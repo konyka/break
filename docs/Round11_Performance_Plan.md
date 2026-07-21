@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R323：网络可靠层 ack 语义修复——外发 ack 应回显收到的对端 sequence（可靠包无限重传）
+
+- 问题（`engine/src/network/net_replication.c`，correctness，demo 可达）：
+  - 包头 `ack` 字段（packet.h 注释 "acknowledged sequence"）语义 = "我在确认你发来的某个 sequence"。发送方在 `net_repl_deliver_unreliable`/`net_repl_deliver_ordered`(L147/246)通过 `(hdr.ack - rep->reliable_pending.seq) < 0x80000000u` 清除自己的 `reliable_pending`——即"对端的 ack 追上了我方 pending 的 seq"。
+  - 但接收侧把 `rep->last_peer_ack = hdr.ack`(对端对**我方**包的确认),而 `net_replicator_broadcast`/`send_heartbeat`/`send_heartbeat_ack` 又用 `rep->last_peer_ack` 作为**自己外发**包的 ack 字段。于是双方只是把各自收到的 ack 值原样弹回,谁都没有把"我收到了你的 sequence N"发给对方 → 任一方的 `reliable_pending` 永远不会因对端 ack 而清除;`net_replicator_retry_pending` 每个 retry tick 无限重传最后一个可靠包(仅被下一次 `broadcast` 覆盖 pending 所掩盖)。`reliable_retry` 经 main.c 的 `BREAK_NET_*` 环境变量启用并在主循环调用(L2597/2604),故 demo 可达。
+  - 既有 `reliable_retry_pending` 测试**手工** `send_rep.last_peer_ack = pending.seq` 模拟 ack 到达,绕过了真实接收→回显路径,掩盖了缺陷。
+- 修复（手术式，保持两种 ack 语义分离）：
+  - `net_replication.h` 新增 `u32 ack_to_send`(我方收到的最高 RELIABLE seq,作为外发 ack 回显);`last_peer_ack` 注释澄清为"对端对我方的确认"。
+  - `net_replicator_process`:收到带 `PACKET_RELIABLE` 的包时按回绕安全 `(hdr.sequence - rep->ack_to_send) < 0x80000000u` 单调推进 `ack_to_send = hdr.sequence`(心跳恒 unreliable,故只落在 transform 通道的序号空间)。
+  - `broadcast`/`send_heartbeat`/`send_heartbeat_ack` 三处 `packet_finish(&buf, seq, …)` 的 ack 参数由 `last_peer_ack` 改为 `ack_to_send`;`last_peer_ack` 仍供 `retry_pending`(L407)自检与 L147/246 的 pending 清除(均消费对端 `hdr.ack`,语义正确,未改)。
+- 验证：新增 `reliable_ack_echoes_received_sequence`(喂 seq=7/ack=99 → `ack_to_send==7`、`last_peer_ack==99`,区分两字段)与 `reliable_pending_cleared_via_peer_ack`(B 收 seq=5 → `ack_to_send==5`;把携带该 ack 的包回传 A,A 的 `reliable_pending` 被清除——旧代码 B 会回显 last_peer_ack=0,A 永不清除)。双后端各 30/30(排除环境性 flaky 的 test_async_loader),`test_net_replication` 21/21。
+- 结论：可靠 ack 往返修复,`reliable_pending` 可正常确认清除,消除无限重传。总计 **663** 处修复。
+
 ## R322：角色控制器 滑动解算/step-up/grounded 状态机深审——法线约定/连跳守卫/退化处理/台阶接受判定均正确，无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/physics/character.c`）：

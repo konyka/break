@@ -296,6 +296,86 @@ TEST(reliable_ordered_combined)
     net_shutdown();
 }
 
+/* R323: a packet's `ack` field acknowledges the SENDER's sequence. On receiving a
+ * reliable packet the replicator must record the peer's SEQUENCE as the value it
+ * will echo back (ack_to_send) — NOT the peer's ack field. The old code echoed
+ * last_peer_ack (= the peer's ack of us), so a reliable packet was never actually
+ * acknowledged and retry_pending retransmitted forever. */
+TEST(reliable_ack_echoes_received_sequence)
+{
+    ASSERT_TRUE(net_init());
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    /* Peer's reliable snapshot: header sequence=7, ack=99. */
+    PacketBuffer buf;
+    packet_begin(&buf, (u8)NET_PKT_TRANSFORM_SNAPSHOT, (u8)PACKET_RELIABLE);
+    packet_write_u16(&buf, 1);
+    packet_write_u32(&buf, 5u);
+    packet_write_f32(&buf, 0.0f);
+    packet_write_f32(&buf, 0.0f);
+    packet_write_f32(&buf, 0.0f);
+    u32 len = packet_finish(&buf, 7u, 99u);
+
+    NetTransformSnapshot out[4] = {0};
+    u32 oc = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, buf.data, len, out, 4u, &oc) > 0);
+
+    /* We must acknowledge the peer's sequence (7), not echo its ack (99). */
+    ASSERT_EQ(rep.ack_to_send, 7u);
+    /* last_peer_ack still records the peer's ack of us (99) for retry self-check. */
+    ASSERT_EQ(rep.last_peer_ack, 99u);
+
+    net_replicator_shutdown(&rep);
+    net_shutdown();
+}
+
+/* R323 end-to-end: the ack a receiver produces (from the sequence it received)
+ * must clear the original sender's reliable_pending. Pre-R323 the receiver echoed
+ * its own last_peer_ack (0 here), so this round-trip never cleared the pending. */
+TEST(reliable_pending_cleared_via_peer_ack)
+{
+    ASSERT_TRUE(net_init());
+
+    /* Receiver B gets A's reliable packet with sequence=5. */
+    NetReplicator B = {0};
+    ASSERT_TRUE(net_replicator_init(&B, 0));
+    PacketBuffer bf;
+    packet_begin(&bf, (u8)NET_PKT_TRANSFORM_SNAPSHOT, (u8)PACKET_RELIABLE);
+    packet_write_u16(&bf, 1);
+    packet_write_u32(&bf, 3u);
+    packet_write_f32(&bf, 1.0f);
+    packet_write_f32(&bf, 1.0f);
+    packet_write_f32(&bf, 1.0f);
+    u32 blen = packet_finish(&bf, 5u, 0u);
+    NetTransformSnapshot bout[4] = {0};
+    u32 boc = 0u;
+    ASSERT_TRUE(net_replicator_feed(&B, bf.data, blen, bout, 4u, &boc) > 0);
+    ASSERT_EQ(B.ack_to_send, 5u);
+
+    /* Sender A has an outstanding reliable packet with sequence=5. */
+    NetReplicator A = {0};
+    ASSERT_TRUE(net_replicator_init(&A, 0));
+    A.reliable_retry = true;
+    A.reliable_pending.valid = true;
+    A.reliable_pending.seq = 5u;
+
+    /* B replies with a packet carrying ack = B.ack_to_send (=5). Feeding it to A
+     * must clear A's pending — the acknowledgment round-trip fixed in R323. */
+    PacketBuffer af;
+    packet_begin(&af, (u8)NET_PKT_HEARTBEAT, (u8)PACKET_UNRELIABLE);
+    packet_write_u32(&af, 0u);
+    u32 alen = packet_finish(&af, 0u, B.ack_to_send);
+    NetTransformSnapshot aout[4] = {0};
+    u32 aoc = 0u;
+    net_replicator_feed(&A, af.data, alen, aout, 4u, &aoc);
+    ASSERT_FALSE(A.reliable_pending.valid);
+
+    net_replicator_shutdown(&A);
+    net_replicator_shutdown(&B);
+    net_shutdown();
+}
+
 TEST(dual_channel_sequences)
 {
     ASSERT_TRUE(net_init());
@@ -733,6 +813,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ordered_reorder_out_of_window_no_stall);
     RUN_TEST(ordered_reorder_zero_snapshot_no_stall);
     RUN_TEST(reliable_ordered_combined);
+    RUN_TEST(reliable_ack_echoes_received_sequence);
+    RUN_TEST(reliable_pending_cleared_via_peer_ack);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);
     RUN_TEST(heartbeat_rtt);

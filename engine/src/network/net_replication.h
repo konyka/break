@@ -65,7 +65,8 @@ typedef struct {
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
     NetRepReliablePending    reliable_pending;
-    u32                      last_peer_ack;
+    u32                      last_peer_ack;   /* peer's ack of OUR packets (clears our pending) */
+    u32                      ack_to_send;     /* highest reliable seq WE received (echoed as outgoing ack) */
     bool                     seq_dedup;
     bool                     reliable_retry;
     bool                     ordered_layer;
