@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R324：网络 peer 管理/payload 解析/持久化深审（R323 相邻代码）——除 R323 外无 bug，不修复
+
+- 审计范围与结论（`engine/src/network/net_replication.c`，紧邻 R323 修复的接收/持久化路径）：
+  - `net_repl_peer_apply_line`:`sscanf(peer_line+5, "%255s %u %f %f %u %u %u", host, …)` 用 `%255s` 限制 `host[256]` 读取(≤255+null),`<7` 字段不齐即拒绝;`memcpy(addr.host, host, strlen(host)+1)` 目标 `NetAddress.host` 亦为 `char[256]`(network.h),≤256 字节入 256 缓冲,无溢出。识别 "+ " delta 前缀与 "peer " 头。
+  - `net_repl_parse_payload`(R254):读 `n(u16)`,钳到 `max_count`(调用方 out 容量)与 `avail=(write_pos>read_pos)?(write_pos-read_pos)/16:0`(每条 16B),防截断/伪造长度读越界(packet_can_read 越界返回 0)并虚报 recv_count 产生 (0,0,0) 幽灵实体。
+  - peer LRU/驱逐:`peer_evict_lru` 线性取最小 `last_seen_ms`;`peer_evict_stale` 用 swap-remove(`peers[i]=peers[count-1]; count--`,命中时不前进 i 以重查换入元素),`now_ms-last_seen_ms>evict_ms` u32 差(时钟回拨会触发驱逐,非 demo 相关);`peer_find(create)` 按 `net_address_equal` 去重、满则 LRU 驱逐复用槽、否则 bump。
+  - 持久化:`peer_save/load` `fgets(line,512)` 有界、跳过 `#`/空行;`peer_save_dir` `snprintf(path,512,...)` 有界、写 `.peer` 文件;`peer_load_dir` `readdir` 过滤 `.peer` 后缀、逐行 apply,再叠加 `delta.log`;`peer_save_delta` 追加模式、空文件写头、仅写 `dirty` peer 加 "+ " 前缀并清 dirty。delta 叠加基线时 apply_line 经 `peer_find(create)` 按地址合并,readdir 顺序不确定但同地址去重,delta 最后应用→覆盖基线(预期语义)。
+  - `recv`:`wire[PACKET_MAX_SIZE]` + `net_recvfrom(…, sizeof(wire), …)` → `n<=PACKET_MAX_SIZE`,转 `process`;`feed/feed_from` 直转 `process`(R115-1 `len>PACKET_MAX_SIZE` 拒绝)。
+- 结论：R323 修复的可靠 ack 之外,peer 管理、payload 钳制、文件持久化均边界安全/语义正确,已由 R115-1/R254 加固。记为"评估、无修复"轮。无代码改动;总计 663 处修复。
+
 ## R323：网络可靠层 ack 语义修复——外发 ack 应回显收到的对端 sequence（可靠包无限重传）
 
 - 问题（`engine/src/network/net_replication.c`，correctness，demo 可达）：
