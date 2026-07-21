@@ -98,6 +98,17 @@ void hotreload_pipeline_shutdown(HotReloadPipeline *hr) {
 }
 
 void hotreload_pipeline_poll(HotReloadPipeline *hr) {
+    /* R311 (CORRECTNESS): mirror hotreload_texture_poll's guard. If
+     * hotreload_pipeline_init FAILED (e.g. the initial shader compile errored —
+     * the exact case hot-reload exists to iterate on), it returns false BEFORE
+     * calling filewatch_init, leaving *hr at its memset(0) state: ready=false
+     * and watcher.inotify_fd==0. main.c ignores the init return and still polls
+     * every frame (see main.c hotreload_pipeline_poll call), so without this
+     * guard filewatch_poll would take its `inotify_fd >= 0` branch (0 passes!)
+     * and read(0, ...) — i.e. a BLOCKING read on stdin every frame, hanging the
+     * render loop on a TTY (or silently consuming piped stdin otherwise). Only
+     * poll once init succeeded and the watcher is actually initialized. */
+    if (!hr || !hr->ready) return;
     filewatch_poll(&hr->watcher);
 }
 

@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R311：hotreload_pipeline_poll 缺 ready 守卫 → 初始 shader 编译失败后每帧 read(stdin) 阻塞挂起（已完成）
+
+- 症状：`asset/hotreload.c::hotreload_pipeline_poll` 直接 `filewatch_poll(&hr->watcher)`,而同文件 `hotreload_texture_poll` 有 `if (!hr || !hr->ready) return;` 守卫——非对称,几乎必是遗漏。
+- 根因：`hotreload_pipeline_init` 先 `memset(hr,0)`(R111-2),编译初始管线;若编译失败(shader 语法/文件缺失——**热重载迭代 shader 的常见场景**)在调用 `filewatch_init(&hr->watcher)` **之前**就 `return false`。此时 `hr` 停在零值:`ready=false`、`watcher.inotify_fd==0`(memset 的 0,并非 filewatch_init 设置的真实 inotify fd)。`main.c:1196` 调用 init 时**忽略返回值**、`hotreload={0}`,`main.c:2546` 每帧无条件 `hotreload_pipeline_poll(&hotreload)`。于是 `filewatch_poll` 走 `if (fw->inotify_fd >= 0)` 分支(`0>=0` 成立!)执行 `read(0, buf, 4096)`——对 **fd 0=stdin 的阻塞读**:交互式 TTY 下 read 阻塞→整个渲染循环挂起;stdin 重定向/管道时静默消费本属应用的输入。核心是零值 watcher 的 `inotify_fd==0` 恰是合法 fd,被 `>=0` 判定误当成"已初始化"。
+- 修复：`hotreload_pipeline_poll` 入口加 `if (!hr || !hr->ready) return;`,与 `hotreload_texture_poll` 完全对齐——init 失败(`ready=false`)则轮询为 no-op,绝不触碰未初始化的 watcher。init 成功路径不变(`ready=true`,`filewatch_init` 已建 inotify)。
+- 邻近审计（记录、非高置信非本轮修复）：`filewatch.c` 遗留 `filewatch_poll` 在无 inotify 事件时(read 返回 ≤0)`inotify_ok=false` → 回退 stat 全部 entry(正确但稳态每帧多几次 stat,监视文件少时可忽略);inotify wd 匹配循环 `break` 使"同一路径被两个 entry 监视"时只标记首个 dirty(边缘);mtime 秒级粒度使同秒二次编辑可能漏触发(所有 mtime 型 watcher 的固有限制,R309 测试亦手动重置绕过)。这些均非 demo 可达高置信 bug。
+- 覆盖缺口：hotreload/filewatch **无 test harness**(不在 `engine/CMakeLists.txt` 测试目标),且复现需 RHIDevice+失败编译+TTY stdin,难以确定性单测。按先例(R256 scene_serial)以构建+全套件通过+强推理验证。
+- 验收：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 `test_async_loader`）。
+
 ## R310：Lua 绑定层 + 后处理(SSAO/DoF/Bloom) C 侧多窄线深审——无 demo 可达高置信 bug，不修复
 
 - 窄线 A：`script/script_lua.c` engine.* 绑定。存疑点：`checked_body`（`id<=0 || (u32)id>=pw->count → NULL`）与 `l_apply_impulse`/`l_body_set_ccd`（`id>0 && id<count`）拒绝 id 0，而物理体 id 为 **0-based**（`physics.c:108 u32 id=pw->count++`，首体 id=0）、`l_spawn` 直接返回 0-based id。核对 `test_script_lua.c:103` 注释确认 **"body 0 = sentinel/floor (bindings treat id 0 as 'none')"**——id 0 被绑定层**有意**当作"无"哨兵（`l_spawn` 无 host 亦返回 0=none，`engine_bindings_null_host_safe` 断言 sid==0），约定 0 号体总是预建地板/静态,故 `id<=0` 拒绝是**设计约束非 bug**；上界 `id>=count` 正确（0-based 末位 count-1 被接受）。其余核对：`l_spawn` 因 `physics_body_create` 满时 `return pw->count`（不自增）+ `checked_body` 以 `id>=count` 拒绝该返回值 → 无 `bodies[]` 越界；`l_key_down` 有 `key>=0 && key<512` 守卫；Lua 栈全平衡（`ls_from_state` getfield+touserdata+pop(1)、`l_get_pos/get_vel` push 3 return 3、`l_set_*` return 0、`refresh_hooks`/`lua_script_get_number` getglobal 后 pop(1)）；`lua_script_reload_if_changed` 用 `ls->last_mtime`（按实例，R309 在纯 C `script.c` 的同类 static bug 此处本就不存在）。
