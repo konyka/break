@@ -205,10 +205,23 @@ static u32 file_mtime(const char *path) {
 }
 
 void script_reload_if_changed(ScriptEngine *se, const char *path) {
-    static u32 last_mtime = 0;
+    if (!se) return;
+    /* R309 (CORRECTNESS): track the observed mtime PER ENGINE, not in a
+     * function-local static shared by every ScriptEngine and every path.
+     * The old static broke reload in two ways:
+     *   1. Re-init staleness — script_engine_init() memsets an engine back to
+     *      empty (loaded=false, no funcs), but the shared static kept the old
+     *      mtime, so this call saw mt==last_mtime and skipped script_load(),
+     *      leaving the re-initialized engine permanently empty (every
+     *      script_call a silent no-op) across a level/engine recreate.
+     *   2. Multi-file confusion — alternating two paths (or two engines)
+     *      through one static made each call look "changed" (thrashing reloads)
+     *      or "unchanged" (never reloads) depending on mtime collisions.
+     * se->last_mtime is zeroed by script_engine_init, so a fresh engine always
+     * loads the current file on its first check. */
     u32 mt = file_mtime(path);
-    if (mt != 0 && mt != last_mtime) {
-        last_mtime = mt;
+    if (mt != 0 && mt != se->last_mtime) {
+        se->last_mtime = mt;
         script_load(se, path);
     }
 }

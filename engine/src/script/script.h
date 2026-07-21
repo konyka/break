@@ -38,6 +38,12 @@ typedef struct {
     u32           global_count;
     char         *source;
     bool          loaded;
+    /* R309: last file mtime observed by script_reload_if_changed. Per-engine
+     * (not a function-local static) so hot-reload tracking is isolated between
+     * engine instances and script paths, and is reset to 0 by
+     * script_engine_init's memset — otherwise a freshly re-initialized engine
+     * would never reload an unchanged file and stay permanently empty. */
+    u32           last_mtime;
 } ScriptEngine;
 
 void  script_engine_init(ScriptEngine *se);

@@ -129,6 +129,40 @@ TEST(script_comments_ignored)
     script_engine_shutdown(&se);
 }
 
+TEST(reload_if_changed_is_per_engine)
+{
+    /* R309: script_reload_if_changed must track the last-seen mtime PER ENGINE,
+     * not in a function-local static shared by all engines. Two fresh engines
+     * pointed at the same unchanged file must BOTH load it. Pre-fix the shared
+     * static made the first call record the file's mtime, so the second engine
+     * saw mt==last_mtime, skipped script_load and stayed permanently empty —
+     * exactly the failure a level/engine recreate hits. */
+    FILE *f = fopen("/tmp/test_reload_per_engine.script", "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "var hp = 7\n");
+    fprintf(f, "func boot\n");
+    fprintf(f, "    set hp 3\n");
+    fclose(f);
+
+    ScriptEngine a = {0};
+    script_engine_init(&a);
+    script_reload_if_changed(&a, "/tmp/test_reload_per_engine.script");
+    ASSERT_TRUE(a.loaded);
+    ASSERT_EQ(a.func_count, 1u);
+    script_engine_shutdown(&a);
+
+    /* A distinct, freshly-initialized engine reading the SAME (unchanged) file
+     * must also load it. Pre-fix: b stays empty (shared static == file mtime). */
+    ScriptEngine b = {0};
+    script_engine_init(&b);
+    ASSERT_EQ(b.last_mtime, 0u);        /* init must zero the per-engine tracker */
+    script_reload_if_changed(&b, "/tmp/test_reload_per_engine.script");
+    ASSERT_TRUE(b.loaded);              /* pre-fix FAILs here (never reloaded) */
+    ASSERT_EQ(b.func_count, 1u);
+    ASSERT_TRUE(fabsf(script_get_global(&b, "hp") - 7.0f) < 0.001f);
+    script_engine_shutdown(&b);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Edge Cases                                                              */
 /* ----------------------------------------------------------------------- */
@@ -201,6 +235,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(call_nonexistent_func);
     RUN_TEST(load_nonexistent_file);
     RUN_TEST(script_comments_ignored);
+    RUN_TEST(reload_if_changed_is_per_engine);
     /* Edge cases */
     RUN_TEST(script_empty_file);
     RUN_TEST(script_only_comments);

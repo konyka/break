@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R309：script 热重载 mtime 用函数内 static 跨引擎实例共享 → 重建的引擎永不重载、永久为空（已完成）
+
+- 症状：`script/script.c::script_reload_if_changed` 用 `static u32 last_mtime = 0` 记录上次观察到的文件 mtime。函数内 static 全进程仅一份,被所有 `ScriptEngine` 实例与所有 `path` 共享。
+- 根因/影响：(1) **重建陈旧**——`script_engine_init`（memset 整个引擎）把某引擎复位为空(`loaded=false`、`func_count=0`),但共享 static 仍保留上一引擎观察到的 mtime;下次 `script_reload_if_changed(new_engine, same_path)` 见 `mt==last_mtime` → **跳过 `script_load`** → 重新初始化的引擎永久为空,其后所有 `script_call` 静默失效(关卡切换/引擎重建即触发,demo 可达)。(2) **多文件/多引擎混淆**——交替两个不同 `path`（或两个引擎）经同一 static,依 mtime 是否碰撞而表现为"每次都看似已变"(无谓反复重载)或"永远看似未变"(从不重载)。
+- 修复：把 `last_mtime` 从函数内 static 移入 `ScriptEngine` 结构体（`script.h`,注释说明语义）,由 `script_engine_init` 的 `memset` 归零 → 按引擎实例/路径隔离,新引擎首次检查必加载当前文件;`script_reload_if_changed` 改用 `se->last_mtime`,并补 `!se` 空指针守卫。行为对单引擎单文件不变（首检加载、mtime 变化触发重载）。
+- 覆盖缺口：既有 `test_script.c` 覆盖 load/call/globals/注释/空文件等,但**从不调用 `script_reload_if_changed`**、更不跨实例调用,完全掩盖该 bug。
+- 回归 `reload_if_changed_is_per_engine`：写脚本文件；引擎 A `script_reload_if_changed` 后断言 `a.loaded`/`func_count==1`；再用**全新初始化**的引擎 B 读**同一未改动文件**,断言 `b.last_mtime==0`（init 归零）、`b.loaded`、`func_count==1`、`hp==7`。旧共享 static 下 B 见 `mt==last_mtime` 从不重载 → `b.loaded==false` → **FAIL**；修复后通过。
+- 验收：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 `test_async_loader`），`test_script` 本地 **14/14**（含新用例）。
+
 ## R308：render graph 纹理池重复入池 → 资源别名 + 析构双重释放（已完成）
 
 - 症状：`renderer/render_graph.c` 生命周期别名纹理池累积重复条目。`rg_pool_claim`（464–481 行）认领匹配描述的池纹理时仅置 `e->in_use=true` 返回，**不移除条目**（注释称"the entry is removed"实为原地翻标志）。`rg_reset`（96–131 行）遍历本帧所有 `allocated && !is_imported && !is_buffer && valid` 的资源，**无条件**追加为新池条目 `{tex, w,h,fmt,mip, in_use=false}`。
