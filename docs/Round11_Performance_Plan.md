@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R287：骨骼蒙皮——关节世界矩阵缺失非 joint 祖先（Armature）变换（评估后不修复）
+
+- 窄线：骨骼层级评估 `skel_resolve_world`（`skeleton.c:115–138`）+ 蒙皮 palette `current_pose = world × inverse_bind`（216/239）+ glTF 加载 `joint_parents`/`inverse_bind`（`asset.c:490–524`）。
+- 现象：joint 的 scene 父节点不在 `skin.joints[]` 时（Blender 常见：根骨父为 Armature），`node_to_joint[parent]` 保持 `UINT32_MAX`，`joint_parents[ji]` 与"真根"无法区分，`skel_resolve_world` 把它当根 `world[i]=local[i]`，不含 Armature/祖先变换。
+- **复核结论：主流拓扑下当前行为正确，不应天真修复。** glTF 完整蒙皮矩阵为 `jointMatrix = inverse(meshNodeWorld) × jointWorld × IBM`。引擎**同时省略** `inverse(meshNodeWorld)` 与 Armature 前缀，二者在最常见拓扑（mesh 与骨骼同在 Armature 之下）相互抵消：正确 `inv(Armature)×jointWorld(含Armature)×IBM` = 引擎 `jointWorld(不含Armature)×IBM` → **恰好一致**。
+  - 拓扑 A（mesh 在根、骨骼在非单位 Armature 下）当前会偏移；但只补 Armature 前缀而不同时实现 `inverse(meshNodeWorld)`，会在**主流拓扑 B 下双重计入 Armature → 回退**。
+- 决策：完整修复需把 mesh 节点世界矩阵接入 `skinned.vert`/上传路径（较大、对典型资产收益为负、回归风险高）。按宁缺毋滥/稳定优先，本轮**不改代码**，仅记审计痕迹。相关：`skin.skeleton` 字段未使用、未动画 joint 用 identity local（另属独立简化，均非本轮高置信可安全修复项）。
+- 测试缺口（记录）：`test_animation.c` 无 `skel_resolve_world` 层级/数值、无 glTF 蒙皮端到端回归。
+
 ## R286：ECS 多 chunk 时 swap-remove 只用本 chunk 末行（破坏全局 slot 稠密不变量）（已完成）
 
 ### [x] R286-A archetype-global swap-remove (was chunk-local)
