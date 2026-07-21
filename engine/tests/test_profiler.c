@@ -282,6 +282,63 @@ TEST(profiler_nested_regions)
     ASSERT_EQ(f->region_count, 2u);
 }
 
+TEST(profiler_nested_timing_outer_finalized)
+{
+    /* R304: under nesting, pop must finalize the innermost OPEN region (LIFO),
+     * not the last APPENDED one. The old impl finalized regions[region_count-1]
+     * without decrementing region_count, so the outer pop re-finalized the inner
+     * region and the OUTER region's elapsed_us stayed 0 forever (this is exactly
+     * how main.c nests render > {particles+csm, scene, postfx}). */
+    profiler_reset();
+    profiler_set_enabled(true);
+
+    profiler_begin_frame();
+    profiler_push("outer");           /* regions[0] */
+    time_sleep_us(500);
+    profiler_push("inner");           /* regions[1] */
+    time_sleep_us(1500);
+    profiler_pop();                   /* finalizes inner */
+    profiler_pop();                   /* must finalize OUTER, not inner again */
+    profiler_end_frame();
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(f->region_count, 2u);
+    ASSERT_STR_EQ(f->regions[0].name, "outer");
+    ASSERT_STR_EQ(f->regions[1].name, "inner");
+    /* Outer wraps inner: its elapsed must be non-zero and >= inner's. Pre-fix the
+     * outer stayed 0, so this both catches the stuck-zero and the ordering. */
+    ASSERT_TRUE(f->regions[1].elapsed_us >= 1000u);      /* inner ~1500us */
+    ASSERT_TRUE(f->regions[0].elapsed_us >= f->regions[1].elapsed_us); /* outer wraps inner */
+}
+
+TEST(profiler_sequential_then_nested_indices)
+{
+    /* R304: a flat region followed by a nested pair must each finalize the right
+     * slot. Mirrors main.c: ecs_query (flat) then render(outer) > scene(inner). */
+    profiler_reset();
+    profiler_set_enabled(true);
+
+    profiler_begin_frame();
+    profiler_push("flat");   /* [0] */
+    time_sleep_us(400);
+    profiler_pop();          /* finalizes [0] */
+    profiler_push("outer");  /* [1] */
+    time_sleep_us(300);
+    profiler_push("inner");  /* [2] */
+    time_sleep_us(700);
+    profiler_pop();          /* finalizes [2] */
+    profiler_pop();          /* finalizes [1] */
+    profiler_end_frame();
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(f->region_count, 3u);
+    ASSERT_TRUE(f->regions[0].elapsed_us >= 200u);  /* flat measured */
+    ASSERT_TRUE(f->regions[2].elapsed_us >= 400u);  /* inner measured */
+    ASSERT_TRUE(f->regions[1].elapsed_us >= f->regions[2].elapsed_us); /* outer wraps inner */
+}
+
 TEST(profiler_begin_without_end)
 {
     profiler_reset();
@@ -388,6 +445,8 @@ TEST_MAIN_BEGIN()
     /* Edge cases */
     RUN_TEST(profiler_empty_frame);
     RUN_TEST(profiler_nested_regions);
+    RUN_TEST(profiler_nested_timing_outer_finalized);
+    RUN_TEST(profiler_sequential_then_nested_indices);
     RUN_TEST(profiler_begin_without_end);
     RUN_TEST(profiler_push_null_name);
     RUN_TEST(profiler_export_chrome_trace);

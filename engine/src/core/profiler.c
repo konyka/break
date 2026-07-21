@@ -13,6 +13,7 @@ void profiler_begin_frame(void) {
     if (!g_profiler.enabled) return;
     ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
     f->region_count = 0;
+    g_profiler.open_count = 0; /* R304: reset the open-region stack per frame */
     f->frame_start_us = time_microseconds();
 }
 
@@ -28,17 +29,29 @@ void profiler_push(const char *name) {
     if (!g_profiler.enabled) return;
     ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
     if (f->region_count >= PROFILER_MAX_REGIONS) return;
-    ProfilerRegion *r = &f->regions[f->region_count++];
+    u32 idx = f->region_count++;
+    ProfilerRegion *r = &f->regions[idx];
     r->name = name;
     r->start_us = time_microseconds();
     r->elapsed_us = 0;
+    /* R304: remember this region as open so the matching pop finalizes it.
+     * open_count <= region_count <= PROFILER_MAX_REGIONS, so this can't overrun. */
+    g_profiler.open_stack[g_profiler.open_count++] = idx;
 }
 
 void profiler_pop(void) {
     if (!g_profiler.enabled) return;
     ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
-    if (f->region_count == 0) return;
-    ProfilerRegion *r = &f->regions[f->region_count - 1];
+    /* R304 (CORRECTNESS): finalize the innermost OPEN region (LIFO), not the
+     * last appended one. The old `regions[region_count-1]` was wrong under
+     * nesting: region_count is never decremented (regions are kept for export),
+     * so after an inner push/pop the outer pop re-finalized the same inner
+     * region and the outer region's elapsed_us stayed 0. main.c nests
+     * render > {particles+csm, scene, postfx}, so "render" always reported 0us.
+     * An extra/unbalanced pop is a safe no-op via the empty-stack guard. */
+    if (g_profiler.open_count == 0) return;
+    u32 idx = g_profiler.open_stack[--g_profiler.open_count];
+    ProfilerRegion *r = &f->regions[idx];
     r->elapsed_us = time_microseconds() - r->start_us;
 }
 

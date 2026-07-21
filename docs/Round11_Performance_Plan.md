@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R304：profiler_pop 结束"最后追加"而非"最后打开"的区间 → 嵌套下外层 elapsed 恒为 0（已完成）
+
+### [x] R304-A `profiler_pop` 缺少打开区间栈，嵌套 push/pop 计时错误
+- [x] 症状：`profiler_pop` 用 `regions[region_count-1]` 结束区间，且 `region_count` 从不递减（区间需保留供 chrome trace 导出）。嵌套时（push outer → push inner → pop → pop）：第一次 pop 结束 inner，第二次 pop 又结束 `region_count-1`（仍是 inner）→ inner 被重复 finalize，outer 的 `elapsed_us` 永远为 0。
+- [x] 后果：`main.c` 嵌套 `push("render")` > {particles+csm, scene, postfx}，末尾 pop 本应结束 render，实际重复结束 postfx → profiler HUD / chrome trace 里 "render"（通常最大耗时项）恒报 0µs，性能剖析失真。
+- [x] 修复：在 `Profiler` 单例加打开区间索引栈 `open_stack[PROFILER_MAX_REGIONS]`/`open_count`（仅当前帧有效，`begin_frame` 重置）。`push` 记录新区间下标入栈；`pop` 弹出栈顶（最内层打开区间）并 finalize 之。`region_count` 仍单增以保留导出数据；不平衡的多余 pop 经空栈守卫成安全 no-op。`open_count<=region_count<=MAX` 故栈不溢出。
+- [x] 回归：`test_profiler.c::profiler_nested_timing_outer_finalized`（outer 包 inner，sleep 后断言 `outer.elapsed>=inner.elapsed>=1000us`；旧实现 outer 恒 0 → FAIL）与 `profiler_sequential_then_nested_indices`（flat 后接 outer>inner，验证各槽结束到正确下标）。既有 `profiler_nested_regions` 仅查 `region_count==2`，掩盖了计时错误。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 test_async_loader）；test_profiler 本地 21/21。
+
 ## R303：terrain 编辑象限统计阈值用 scale*0.5（+x/+z 边缘）而非世界中心 0 → 所有编辑误归 NW，heatmap 调试 UI 恒显 NW（已完成）
 
 ### [x] R303-A `edit_quadrant` 象限分类阈值错误

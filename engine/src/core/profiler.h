@@ -22,6 +22,11 @@ typedef struct {
     u32           frame_index;
     u32           frame_count;
     bool          enabled;
+    /* R304: stack of currently-open region indices into the current frame's
+     * regions[]. profiler_pop must finalize the innermost OPEN region (LIFO),
+     * not the last APPENDED one, so nested push/pop produce correct timings. */
+    u32           open_stack[PROFILER_MAX_REGIONS];
+    u32           open_count;
 } Profiler;
 
 /* Singleton profiler — zero-init is fine */
