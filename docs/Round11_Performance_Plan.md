@@ -4420,6 +4420,12 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R306：skeleton 世界矩阵解析 + frustum 剔除 多窄线深审——无 demo 可达高置信 bug，不修复
+
+- 窄线 A：`animation/skeleton.c`。`mat4_trs` 直接组合 T*R*S：旋转元素 r00..r22 与 `mat4_from_quat` 列主序（e[col][row]）逐一核对一致，列 0/1/2 分别乘 sx/sy/sz、列 3 为平移、底行 (0,0,0,1)——正确。`skel_resolve_world`（R240 定点法）对任意 joint 顺序（glTF 不保证父在子前）正确：`p==UINT32_MAX||p>=n||p==i` 视为根，未解析父延后到后续 pass，`pass<=n` 上界足够（最坏逆序链每 pass 解一个），parent-cycle 经 `progressed==0` 退出并把剩余当根。STEP（R252）`frac=(t>=t1)?1:0` 与 blend 路径一致。`skeleton_evaluate` 忽略 `dt` 是设计（main.c:4080 自行推进 `clip.time`）。记录（设计假设、非 bug）：无通道的关节 local 默认单位阵而非其 bind-local TRS，依赖"bind==单位 local"约定，无 glTF bind-local 数据不可确定性测试（precedent R300 潜在限制）。
+- 窄线 B：`renderer/cull.c` `frustum_from_vp` 与 `renderer/frustum_cull.c` `frustum_extract`——Gribb-Hartmann 在列主序矩阵上 `plane.e[i]=vp->e[i][3]±vp->e[i][k]`（R265 修正转置），归一化用 len2>1e-12 守卫，`sign_mask` p-vertex 位掩码（R245 令 extract 也填充）——两函数逐行一致且正确。`cull.h` 的 `frustum_test_aabb`（sign_mask 选 p-vertex，保守无假阴性）、`frustum_test_point`、`frustum_test_sphere`（`d<-radius`）均正确。`frustum_cull_batch` p-vertex 距离测试正确。
+- 决策：无 demo 可达高置信 CORRECTNESS 问题，不改代码（precedent R289/R290/R294/R296/R297/R300/R301）。测试缺口（记录）：无 `skel_resolve_world` 乱序/环父的单测；无 `mat4_trs` 与 `mat4_mul(T,mat4_mul(R,S))` 的等价 golden。
+
 ## R305：additive 混合层用当前输出预填 scratch → 未被叠加 clip 寻址的骨骼被自身姿势重复叠加、姿势损坏（已完成）
 
 ### [x] R305-A `anim_blend_evaluate` additive 层 scratch 种子错误
