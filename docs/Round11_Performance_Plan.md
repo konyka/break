@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R332：音频系统（miniaudio 3D 空间化/逆距离衰减/双层 slot free-list/流式状态机）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/audio/audio.c`、`audio_stream.c`、`audio.h`）：
+  - 分配布局：`audio_system_create` 用单次 `calloc(as_off + sizeof(AudioImpl))`（`as_off` 按 `_Alignof(max_align_t)` 向上对齐），`audio_system_destroy` 以同一公式重算 impl 指针后单次 `free`；`ma_engine_init` 失败清理正确；`sources` 独立 `calloc(source_cap=32)`。
+  - listener：`audio_system_update` 对 pos/forward/up 共 9 分量做精确 dirty-check，未变则跳过 3 次 miniaudio setter；变则更新缓存并 `ma_engine_listener_set_position/direction/world_up`。
+  - slot free-list（AudioSystem）：`audio_acquire_slot` 先 `free_list[--free_count]`、否则 `source_count++`（≤`source_cap`）、耗尽返 `UINT32_MAX`；对外返回 `id+1`（0 表失败）。init 失败与 `audio_stop` 归还都带 `free_count<AUDIO_MAX_SOURCES` 守卫；因索引只有在被 acquire（从 free-list pop 或新 bump）后才可能被 push，故 free-list 不含重复项、无双重分配；`audio_stop` 双次调用被 `if(src->active)` 幂等化。所有 `audio_source_*` getter/setter 统一 `id==0||id>source_count` 越界拒绝 + `active` 门控。
+  - 空间化正确性（R270）：`audio_play` 为 2D（UI/音乐）路径，用 `MA_SOUND_FLAG_NO_SPATIALIZATION`（否则 miniaudio 默认空间化 + 声源固定原点，listener 跟随相机远离后按 inverse 模型把本应满音量的 2D 音衰减，如 listener(10,0,0) → 1/(1+9)=0.1）；`audio_play_3d` 与 spatial 流显式 `ma_sound_set_spatialization_enabled(TRUE)` + `ma_attenuation_model_inverse` + 定位。`audio_attenuation_gain`（header inline，供单测/工具）：`min_dist` 下限 1e-4、`d` clamp 到 `[min,max]`、`g=min/(min+rolloff·(d-min))`、结果 clamp[0,1]，与 miniaudio inverse 模型一致。
+  - 流式（audio_stream.c）：管理器用侧数组 intrusive free-list（`mgr->free_next[]`/`mgr->next_free`，`AudioStream` 的 `memset` 不触碰它）O(1) 分配/归还；`audio_stream_open*` 在 `audio_play_streamed` 失败时把 slot 推回 free-list（R107-1，防耗尽）；R241 `audio_stream_pause`→`audio_source_stop`（仅暂停、保游标/源，可 `audio_stream_play` 续播），`audio_stream_stop`→`audio_stop`（uninit + 归还两级 slot + `stream_count--`）；`audio_stream_update` 仅对 `!looping && audio_source_at_end` 置 `END_OF_FILE`。
+  - 观察（非 bug，非 demo 可达）：播放完毕的非循环一次性/流音效不自动回收 slot，依赖调用方观察终态后手动 `audio_stop`/`audio_stream_stop`（保留查询游标/重播能力，属设计契约）；一次性路径 `audio_play`/`audio_play_3d` 在 engine 源码内无调用点；demo（main.c:1449）只 `audio_stream_open_3d(..., looping=true)` 一个循环流，`audio_stream_update` 的 EOF 分支被 `!s->looping` 守卫恒不触发，故无 slot 泄漏。
+- 结论：分配/释放布局、listener dirty-check、双层 slot free-list 无重复/无泄漏、2D/3D 空间化开关、逆距离衰减、流式暂停/停止/EOF 状态机均正确（R107-1/R241/R270 已加固）。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R331：粒子系统（CPU emit budget 分数进位 + GPU 原子 spawn 认领 + size/alpha fade + cull/render 间接绘制）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/particles.c`、`shaders/particle_update.comp`、`shaders/particle_cull.comp`）：
