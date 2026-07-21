@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R282：字体图集覆盖率在 Alpha、片元采样 Red（字形渲染成实心矩形）（已完成）
+
+### [x] R282-A sample coverage from the alpha channel the atlas actually writes
+- [x] `font.c:155–159`：图集 `R=G=B=255`、覆盖率写入 **A**（`atlas_rgba[i*4+3]=atlas[i]`，自首个提交起）
+- [x] `font.frag`/`font_vk.frag`（自创建起）：`float a = texture(u_atlas, vUV).r` 采 **R** 恒 `255/255=1.0`
+- [x] 手算：AA texel `atlas=128` 期望 a≈0.5 实得 1.0；`O` 空洞 `atlas=0` 期望 0 实得 1.0 → 字形填成 bbox 实心矩形、丧失轮廓与字模空洞
+- [x] 排除 swizzle：`R8G8B8A8_UNORM → GL_RGBA8/GL_RGBA/UNSIGNED_BYTE`（rhi_gl.c:1188/1199/1283）无通道重映射
+- [x] `draw_rect` 4×4 白块 coverage=255 → A=255，采 `.a` 后面板底仍不透明、不受影响
+- [x] 修复：`font.frag` + `font_vk.frag` `.r → .a`（对齐「白 RGB + alpha 覆盖率」约定），图集布局不动
+- [x] 验证：glslangValidator VK 编译通过；`test_vulkan` 运行时经 shaderc 编译 `font_vk.frag`；GPU-only 无 headless 字形单测（`test_font_ui.c` 仅 UTF-8+imgui 逻辑）
+
+**验收**：VK glslang 通过（GL 无 location 为 `-G` OpenGL-SPIRV 既有限制、经典 GLSL330 运行时正常）；GL/VK CTest 各 **31/31**（golden 渲染 test_tex 场景、不含字体，不受影响）。
+
 ## R281：GPU 粒子尺寸淡出复利坍缩（每帧读回已衰减尺寸做基准）（已完成）
 
 ### [x] R281-A fade size from constant spawn base, not the fed-back field
