@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R329：并行渲染器/命令缓冲（双缓冲 swap、submit 线程 condvar、按 key 排序、录制溢出）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/cmd_buffer.c` + `cmd_buffer.h`）：
+  - 双缓冲生命周期：workers 各写自己的 `frames[write_frame].buffers[thread_id]`（单写者、无锁）。`parallel_renderer_swap_and_submit` 顺序为 `wait_submit`→交换 write/read→(线程模式)置 `submit_pending` 并 signal /(非线程模式)直接 `parallel_renderer_submit(read_frame)`。因交换前先 `wait_submit`，submit 线程正在读取的 read 帧永不会被下一 `begin_frame` 重置（begin_frame 重置的是新 write=旧 read=上上帧已提交的缓冲），无 read/reset 冲突。
+  - condvar 正确性：`submit_pending`/`shutdown_requested` 为 `_Atomic`。生产侧 `atomic_store(submit_pending,true)`（锁外）后 `lock; cond_signal(submit_ready); unlock`；消费侧 submit 线程持 `submit_mutex` 在 `while(!submit_pending&&!shutdown) cond_wait` → 谓词在锁下判定、cond_wait 原子释放并等待，无丢失唤醒。`read_frame`（明文 u32）在 signal 前写入，submit 线程从 cond_wait 唤醒后持锁读取，mutex acquire/release 提供 happens-before，无数据竞争。`wait_submit` 用 `while(submit_pending) cond_wait(submit_done)` 防伪唤醒。
+  - 关闭：`stop_submit_thread` 先 `wait_submit`→`atomic_store(shutdown,true)`→signal→`pthread_join`；submit 线程内层循环因 shutdown 退出后 `if(shutdown)break`，无死锁/无悬挂。
+  - 排序与回放：`sort_buffer_indices_by_key` 对非空缓冲下标做稳定插入排序（严格 `>`，≤16 项）；`indices[CMD_BUFFER_MAX_THREADS]` 且 `n≤thread_count≤CMD_BUFFER_MAX_THREADS(16)`，无越界。`replay_command` 按类型映射到 RHI（DRAW/DRAW_INDEXED_BASE/BIND_*/SCISSOR/VIEWPORT 含 min/max depth/PUSH_CONSTANTS→set_uniform_bytes），未知类型仅 WARN；R207-B/R208-B/R223-A/R224-A/R225-A 已补齐此前的 no-op/丢参。
+  - 录制安全：`cmd_buffer_reserve` 在 `count>=CMD_BUFFER_MAX_COMMANDS(4096)` 时返 NULL（静默丢弃，热路径分支轻、无动态分配）；各 `cmd_*` 对 NULL 提前返回；`cmd_push_constants` 先把 `size` clamp 到 `CMD_BUFFER_PUSH_CONST_MAX` 再 `memcpy`，data 缓冲恰为该上限，无溢出。
+  - 观察（非 bug）：`FrameCommands.sort_keys[CMD_BUFFER_MAX_THREADS]` 为遗留未用字段（实际排序键在 `RenderCmdBuffer.sort_key`，用户直接赋值，`test_cmd_buffer.c::cmd_sort_key_assignment` 印证）；`active_recorders` 仅 get_buffer 递增、begin_frame 归零，纯诊断计数不参与正确性。
+- 结论：双缓冲交换、submit 线程 condvar 握手、按 key 稳定排序回放、录制溢出/NULL/推常量钳制均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R328：渲染图 拓扑排序反向邻接表 fan-out 数组过小（误报环、拒绝执行无环图）修复
 
 - 位置：`engine/src/renderer/render_graph.c` `rg_topo_sort`（Kahn 拓扑排序）。
