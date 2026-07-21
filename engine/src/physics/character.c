@@ -120,7 +120,15 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
     cc->velocity.e[0] = move_input.e[0] * move_speed * damping;
     cc->velocity.e[2] = move_input.e[2] * move_speed * damping;
 
-    if (jump && cc->grounded) {
+    /* R280 (CORRECTNESS): also require the character to not already be moving
+     * upward. `cc->grounded` is recomputed each frame as grounded_v||grounded_h,
+     * and for the first few frames after takeoff the capsule still overlaps the
+     * floor AABB (feet below the top face), so grounded stays true. Without the
+     * vy<=0 guard, a held jump button re-applied jump_speed every one of those
+     * frames — re-launching from a higher position and boosting apex height
+     * (effectively a multi-jump). At rest vy is 0 (landing clamp), so the normal
+     * jump is unaffected. */
+    if (jump && cc->grounded && cc->velocity.e[1] <= 0.0f) {
         cc->velocity.e[1] = jump_speed;
         cc->grounded = false;
     }

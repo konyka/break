@@ -91,6 +91,49 @@ TEST(character_jump)
     physics_world_destroy(pw);
 }
 
+TEST(hold_jump_no_apex_boost)
+{
+    /* R280: holding the jump button must not re-apply jump_speed during the
+     * ascent. For the first few frames after takeoff the capsule still overlaps
+     * the floor AABB, so `grounded` (recomputed as grounded_v||grounded_h) stays
+     * true; before the fix a held jump re-launched from a higher position each
+     * of those frames, boosting the apex (multi-jump). A single tap and a held
+     * button must reach the same peak height. */
+    const f32 dt = 1.0f/60.0f;
+
+    /* Single tap: press jump exactly once, then release. */
+    PhysicsWorld *pw1 = physics_world_create(16);
+    physics_body_create(pw1, vec3(0, 0, 0), vec3(10, 0.5f, 10), 0.0f, true, 0);
+    CharacterController tap = character_create(vec3(0, 1.0f, 0), 0.3f, 1.8f);
+    for (int i = 0; i < 120; i++)
+        character_update(&tap, pw1, dt, vec3(0,0,0), false);
+    f32 apex_tap = tap.position.e[1];
+    bool tapped = false;
+    for (int i = 0; i < 180; i++) {
+        bool j = !tapped;
+        character_update(&tap, pw1, dt, vec3(0,0,0), j);
+        tapped = true;
+        if (tap.position.e[1] > apex_tap) apex_tap = tap.position.e[1];
+    }
+    physics_world_destroy(pw1);
+
+    /* Held: jump requested every frame from the same rest state. */
+    PhysicsWorld *pw2 = physics_world_create(16);
+    physics_body_create(pw2, vec3(0, 0, 0), vec3(10, 0.5f, 10), 0.0f, true, 0);
+    CharacterController hold = character_create(vec3(0, 1.0f, 0), 0.3f, 1.8f);
+    for (int i = 0; i < 120; i++)
+        character_update(&hold, pw2, dt, vec3(0,0,0), false);
+    f32 apex_hold = hold.position.e[1];
+    for (int i = 0; i < 180; i++) {
+        character_update(&hold, pw2, dt, vec3(0,0,0), true);
+        if (hold.position.e[1] > apex_hold) apex_hold = hold.position.e[1];
+    }
+    physics_world_destroy(pw2);
+
+    /* No boost: a held button reaches the same apex as a single tap. */
+    ASSERT_TRUE(apex_hold <= apex_tap + 0.1f);
+}
+
 TEST(get_position)
 {
     CharacterController cc = character_create(vec3(1, 2, 3), 0.3f, 1.8f);
@@ -314,6 +357,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(character_movement);
     RUN_TEST(character_ground_collision);
     RUN_TEST(character_jump);
+    RUN_TEST(hold_jump_no_apex_boost);
     RUN_TEST(get_position);
     RUN_TEST(is_grounded_initial);
     RUN_TEST(sweep_test_hit);

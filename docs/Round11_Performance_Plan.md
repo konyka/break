@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R280：角色控制器按住跳跃在上升段重复起跳（拔高/多段跳）（已完成）
+
+### [x] R280-A gate jump on not-already-ascending
+- [x] `character.c` `character_update`：跳跃仅帧初判 `if (jump && cc->grounded)`（122 行），125 行 `cc->grounded=false` 随即被 173 行 `cc->grounded = grounded_v || grounded_h` **完全覆盖**
+- [x] `char_slide_resolve` 走「整段平移目标点 + 最多 6 次最深穿透分离」而非 sweep；起跳后数帧胶囊脚底仍低于地板 AABB 上沿、垂直 resolve 仍报 floor 接触 → `grounded_v=true` → 帧末 `grounded` 仍 true
+- [x] 按住跳跃时下一帧再次满足 `jump && grounded`，把正在上升的 `vy` 重新置回 `jump_speed`，脱离地板接触前重复多帧 → 等效从更高点全速起跳、apex 拔高（多段跳）
+- [x] 手算（floor top y=0.5、r=0.3、height=1.8、dt=1/60、jump_speed=8、g=-20）：静止 feet.y≈0.2；第 1 跳 vy=8→feet.y≈0.33（<0.5 仍重叠）→ 第 2、3 帧再次 vy=8（本应衰减至 7.67/7.33），约 2–3 帧后 feet.y>0.5 才脱离；apex 显著高于单次点按
+- [x] 触发：`jump` 连续为 true（按住）且起跳后数帧仍与地板 AABB 相交（薄地板+高胶囊几乎必现）
+- [x] 修复：跳跃门控增加 `cc->velocity.e[1] <= 0.0f`——落地钳制使静止 vy=0，正常首跳不受影响；上升段 vy>0 阻止重复起跳
+- [x] 回归测试 `hold_jump_no_apex_boost`：单次点按 vs 按住从同一静止态起跳，断言按住 apex ≤ 点按 apex + 0.1（修复前按住拔高约 0.5 → 失败；修复后峰值一致）
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（test_character 含新用例 `hold_jump_no_apex_boost`）。
+
 ## R279：glTF TEXCOORD_0 normalized 整型被当作 2×float（纹理坐标损坏）（已完成）
 
 ### [x] R279-A decode TEXCOORD_0 honouring component_type + normalized
