@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R320：BVH 光线求交遍历 + 自碰撞对偶枚举 + refit 深审——slab/遍历序/早退/对去重均正确，无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/physics/bvh.c`）：
+  - `bvh_raycast`：`inv_dir[i]=|dir[i]|>1e-8 ? 1/dir[i] : (dir>=0?1e8:-1e8)` 兜底轴对齐射线;`best_t=max_dist`、`best_obj=BVH_NULL` 初始化。
+  - `ray_aabb_intersect`(非 SIMD 参考路径):标准 slab,`tmin=0`(射线起点)/`tmax=max_t`,逐轴 `t1/t2` 交换后收敛 `tmin/tmax`,`tmin>tmax` 拒绝,`*out_t=tmin`(入射距离,供遍历排序);SIMD 走 `simd_ray_aabb_intersect_sse2` 同义。
+  - `bvh_raycast_recursive`:入口先用 `*best_t` 作 max 测本节点,不中即返;叶(`object_index!=BVH_NULL`)`t<*best_t` 才更新(t=tmin≤best_t 恒成立,平局保留先到者);内部节点测左右子入射 `t_left/t_right`,`t_right<t_left` 时先右后左——**近子优先**,第二子递归入口用已收缩的 `best_t` 重测实现早退。
+  - `bvh_query_pairs_dual`(O(N log N) 对偶遍历):`nA/nB` bounds 不重叠即剪枝;两叶→按 `a<b`/`a>b` 规范排序后**无条件**回调(两分支都调,仅 `a==b` 跳过,R288 修正:旧 `if(a<b)` 单分支误当去重,静默丢弃 nodeA 叶 object_index 较大的约半数对=漏碰撞);leafA/leafB 单侧下降另一侧;两内部 self-pair(`nodeA==nodeB`)只 LL/RR/LR(省 RL 防重复)、distinct 内部 fan-out LL/LR/RL/RR——每无序对经最近公共祖先恰好一次。
+  - `bvh_refit`:R154 守卫 `nodes/leaf_map` 非空、`root!=NULL`、`object_index<object_count`;经 `leaf_map` 定位叶置 `new_bounds`,沿 `parent` 上溯到根重算 `bvhaabb_union(left,right)`。
+- 结论：光线求交(slab+近子优先+收缩早退)、对偶对枚举(恰好一次+规范排序)、refit 上溯均正确,已由 R154/R288/R302 加固。记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R319：物理窄相闭式几何 + 冲量求解器深审——法线约定/穿透深度/位置速度分离/退化分支均正确，无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/physics/physics.c`）：
