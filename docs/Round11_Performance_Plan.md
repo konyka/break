@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R341：级联阴影 CSM（PSSM 分割 / 光空间基解析构造 / 4 级联 atlas 象限 / 退化回退）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/main.c` 的 CSM 初始化 splits 与每帧 cascade VP 段）：
+  - 分割距离（PSSM/practical split，`cascade_splits[5]`）：`splits[0]=0.1`；`for i∈[1,4]: p=i/4, log=zn·(zf/zn)^p, uni=zn+(zf-zn)·p, splits[i]=λ·log+(1-λ)·uni`，`zn=0.1, zf=100, λ=0.75`。i=4→p=1→log=uni=100→splits[4]=100=zf（完整覆盖）。
+  - 光空间基（4 级联共享，避免 4×normalize+8×cross）：`s=normalize(light_dir×(0,1,0))`，`light_dir×(0,1,0)=(-fz,0,fx)`，`s_len2=fx²+fz²`，`sx=-fz·inv_sl, sz=fx·inv_sl`；`u=normalize(cross(s_unnorm,f))`，`cross((-fz,0,fx),(fx,fy,fz))=(-fx·fy, fx²+fz², -fy·fz)`；对单位 light_dir `u_len2=(fx·fy)²+(fx²+fz²)²+(fy·fz)²=(fx²+fz²)(fy²+fx²+fz²)=s_len2`，故 `inv_ul=inv_sl` 复用（无额外 rsqrt），`ux=-fx·fy·inv_sl, uy=(fx²+fz²)·inv_sl, uz=-fy·fz·inv_sl`。R247 退化：光 ∥ world-up（`sun_elevation≈±π/2` 的存档可达且未 range-clamp）→ `s_len2≈0` → 固定基 `sx=-1,sz=0,ux=0,uy=0,uz=1`，保 lview 可逆（避免 rank-deficient 全黑/无阴影）。
+  - 每级联 VP：`zn=splits[c], zf=splits[c+1], mid=(zn+zf)/2, center=cam_pos+cam_fwd·mid, extent=zf-zn`；eye=`center-light_dir·extent`；`lview` 左手系（row0=-s、row1=u、row2=-f，平移=-dot(basis,eye)，与 camera_view/mat4_lookat 同约定，R335/R336 已验）；`lproj=mat4_ortho(-extent,extent,-extent,extent,0.1,2·extent)`（对角+平移，满足 `mat4_mul_ortho_diag` 的 D 结构前置条件）；`cascade_vp[c]=mat4_mul_ortho_diag(lproj,lview)`（R49 特化，R335 已代数验证）。
+  - Atlas：2048² 单深度图，4 级联各占 1024² 象限，`c→(qx=(c&1)·half, qy=(c>>1)·half)`，`rhi_cmd_set_shadow_viewport` 设象限；注释强调必须与阴影采样 shader 的 atlas remap 一致（c=0→(0,0),1→(1,0),2→(0,1),3→(1,1)）。CPU 回退用 `frustum_from_vp(&cascade_vp[c])` 做每级联剔除（R337 已验）。
+  - 观察（非 bug，画质而非正确性）：未实现 texel snapping（cascade 原点未对齐到阴影图纹素 → 相机平移时阴影边缘 shimmer/swim）；cascade 包围盒用固定 `2·extent` 立方体而非拟合视锥切片八角（分辨率利用偏松、级联间可能略有过覆盖）。二者均为常见画质优化项，缺失不影响阴影正确性（demo 阴影正常显示）。
+- 结论：PSSM 分割、共享光空间基解析构造与退化回退（R247）、左手 lview + ortho lproj + `mat4_mul_ortho_diag` 特化（R49）、atlas 象限布局均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R340：点光源阴影（cubemap 六面 VP 构造 / 线性距离深度 / 最近 N 光选择 / 面绑定）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/point_shadow.c`）：
