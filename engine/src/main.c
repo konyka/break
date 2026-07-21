@@ -2019,6 +2019,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 f64 avg_ms = bench_start / 120.0 * 1000.0;
                 LOG_INFO("Benchmark: avg %.2f ms (%.0f FPS) with all effects OFF", avg_ms, avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0);
                 taa_enabled = bench_saved.taa; fxaa_enabled = bench_saved.fxaa;
+                /* R291: benchmark runs with effects off (TAA history frozen);
+                 * restoring TAA must invalidate the stale history (see key-280
+                 * toggle) so the first restored frame doesn't blend old texels. */
+                if (taa_enabled) { taa.first_frame = true; combined_aa.first_frame = true; }
                 mb_enabled = bench_saved.mb; dof_enabled = bench_saved.dof;
                 ssr_enabled = bench_saved.ssr; ssgi_enabled = bench_saved.ssgi;
                 cs_enabled = bench_saved.cs; vol_enabled = bench_saved.vol;
@@ -2101,6 +2105,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         if (input_key_pressed(platform_input(engine.platform), 280)) {
             taa_enabled = !taa_enabled;
+            /* R291: re-enabling TAA must invalidate the history that was frozen
+             * while TAA was off. While disabled, taa_resolve/combined_aa_apply
+             * are skipped so history_fbo keeps the color from the frame TAA was
+             * turned off, yet prev_view_proj keeps updating. Without resetting
+             * first_frame, the first re-enabled frame reprojects using the
+             * current n-1 VP but samples stale texels from that old frame and
+             * blends ~90% of them (u_taa_blend), causing a ghost/flash. Setting
+             * first_frame=true makes that frame take current color only, exactly
+             * as taa_init does on resize. */
+            if (taa_enabled) { taa.first_frame = true; combined_aa.first_frame = true; }
             LOG_INFO("TAA: %s", taa_enabled ? "on" : "off");
         }
 

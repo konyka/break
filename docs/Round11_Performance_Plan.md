@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R291：运行时关闭再开启 TAA 未失效冻结的 history（拖影/闪烁）（已完成）
+
+### [x] R291-A TAA 热开关未 invalidate history/first_frame
+- [x] 关闭期间 `taa_resolve`/`combined_aa_apply` 跳过 → `history_fbo` 冻结在关闭前一帧；`prev_view_proj` 仍每帧更新
+- [x] 按键 280（`main.c:2102`）仅翻转 `taa_enabled`，未重置 `first_frame`
+- [x] shader `u_taa_first_frame<0.5`（`taa.frag:57`/`combined_taa_fxaa.frag:133`）→ 重开首帧进历史混合，重投影用当前 n-1 VP 却采样陈旧 texel，按 `u_taa_blend`(~90%) 混入 → 鬼影/闪烁
+- [x] 与 resize（`taa_init` 重置 first_frame，`main.c:2352`）行为不一致
+- [x] 修复：off→on 时置 `taa.first_frame=true` + `combined_aa.first_frame=true`（两 AA 路径全覆盖），首帧只取当前色；benchmark 恢复（`main.c:2021`）同样处理
+- [x] 运行时渲染交互，无单测harness（同 R268/R273/R285 主循环类修复），以构建 + 全套回归验证
+
+**验收**：GL/VK 构建通过；GL/VK CTest 各 **30/30**（预先存在、与本改动无关的 `test_async_loader` 挂起已排除——其陈旧实例来自前日/凌晨，早于本次改动）。
+
 ## R290：RHI 句柄池 + 聚簇光照分配（两条窄线深审——均无高置信 bug，不修复）
 
 - 窄线 A：RHI 资源句柄池（`rhi.c` 的 `rhi_alloc_slot`/`rhi_free_slot`/`rhi_get_resource`/`rhi_make_handle`）。
