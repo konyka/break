@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R327：即时模式 GUI（hit-test/press 状态机/slider 拖拽/边沿锁存）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/ui/imgui.c` + `imgui.h`）：
+  - `imui_hit(mx,my,x,y,w,h)`:`mx>=x && mx<x+w && my>=y && my<y+h`——半开区间,无重叠/漏检。
+  - `imui_slider_map(mx,x,w,minv,maxv)`:`t = w>0 ? (mx-x)/w : 0`,clamp[0,1],返回 `minv+t*(maxv-minv)`;`imui_slider_norm(value,minv,maxv)`:`maxv==minv→0`,否则 `(value-minv)/(maxv-minv)` clamp[0,1](逆区间也被 clamp)。
+  - `imui_press_logic`(按钮/复选框状态机):hovered→`*hot_id=id`;`pressed_now=down&&!prev_down`、`released_now=!down&&prev_down`;`*active_id==id` 时 release 且仍 hovered→clicked、`*active_id=0`;否则 `hovered&&pressed_now&&*active_id==0`→捕获 `*active_id=id`(`==0` 守卫防止在别的控件激活时抢占)。
+  - `imui_slider_float`:hovered→hot_id;`active_id==id` 时 mouse_down 则用 `imui_slider_map(mouse_x,...)` 更新 value(离开控件继续拖拽并 clamp,符合滑块预期)、松开清 active;否则 `hovered&&pressed_now&&active_id==0` 起拖。knob:`kx=x+(w-knob_w)*t`、fill `w*t`,始终在轨内。
+  - 帧生命周期:`imui_begin` 设屏幕/鼠标态并每帧清 `hot_id`(标准 IMGUI:每帧由当前 hovered 控件重设);`imui_end` 绘制后锁存 `mouse_prev_down=mouse_down` 供下帧边沿检测;`imui_reset_input`(header)在面板隐藏/交互中断时丢弃 in-progress 交互并重同步输入锁存。
+  - 缓冲安全:`imui_label` `vsnprintf(buf[256],sizeof,fmt,args)` 有界;`imui_slider_float` 值文本 `snprintf(buf[128],sizeof,...)`;`im_rect/im_text/im_text_w` 委托 `font_renderer_*`(顶点缓冲上限与 screen_w/h 零除守卫见 R282/R297)。
+- 结论：hit-test、press/slider 状态机、active/hot id 抢占守卫、鼠标边沿锁存、字符串格式化与渲染委托均正确。唯一 quirk 为 slider knob 中心(按 `w-knob_w` 定位)与点击映射(按全宽 `w`)的微小视觉偏移——R296 已记录为外观问题,非正确性 bug。记为"评估、无修复"轮。无代码改动;总计 663 处修复。
+
 ## R326：异步加载器 优先级最小堆 + Vyukov MPSC 完成队列 + 槽分配/回滚深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/asset/async_loader.c`，R292 仅做 TSan、未逐行审队列/堆语义）：
