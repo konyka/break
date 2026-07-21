@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R294：场景序列化(BSCN) + 视锥剔除（两条窄线深审——均无高置信活跃 bug，不修复）
+
+- 窄线 A：`scene_serial.c` binary/JSON save-load（引擎实际路径：`main.c` 调 `scene_save_binary`/`scene_load_binary`）。
+  - 核对：`bb_reserve` 容量倍增；chunk 表 `base=sizeof(BscnHeader)+5*sizeof(BscnChunkEntry)`、`table[i].offset` 与写入顺序一致、load 直接用作 `buf+offset`；load 侧 `table_end`/`chunk_end` 双重越界校验（R108-1）；`emit/load_components_chunk` 的 saved-index↔`ents[]` 映射自洽、每实例先读 `saved_idx` 再校验 `(end-p)>=size` 后 memcpy、`known=type<MAX && sizes[type]==size`；`emit_hierarchy_chunk` CSR 单块 `calloc(4n+1)` 恰容 `child_count[n]+offsets[n+1]+children[n]+cursor[n]`（`cursor[n-1]` 下标 4n）；scene_nodes emit/load 各 2×Mat4+5×u32 对称、skip 分支同宽；generation 往返（R243 binary+JSON 均恢复，`world_create_entity` 顺序重建 index）。手算 chunk 偏移与组件读写吻合。
+  - 邻近项（记录、非活跃 bug）：① `scene_instantiate_prefab` 的 `position` 仅偏移 scene node，`scene_save_prefab` 只写 ENTITIES+COMPONENTS（无 node）→ 对纯实体 prefab 无效；但 `CTransform`/`COMP_TRANSFORM` 定义在应用层 `main.c`、引擎库无从知晓，无法偏移实体变换——**设计约束非 bug**，且二函数全仓无调用方（死代码）。② 实体 index 仅"无永久空洞"时往返（有空洞则新 index≠原），注释 + `generation_restore_roundtrip` 已记录为设计前提。
+- 窄线 B：`frustum_cull.c` Gribb-Hartmann 平面提取 + p-vertex AABB 批量剔除。
+  - 核对：平面系数 `vp->e[i][3]±vp->e[i][k]`（R265 已修矩阵索引转置、取 VP 行非 VP^T）、6 面内向法向、`sign_mask[p]` 按分量符号选 max/min p-vertex（R245 已修 extract 侧遗漏致全取 min 角）、`frustum_cull_batch` 以 `n·p_vertex+d<0` 剔除、归一化 `len2>1e-12` 守卫。手算平面与角点选择自洽。
+- 决策：两条窄线均无 demo 可达的高置信 CORRECTNESS 问题，按宁缺毋滥**不改代码**。测试缺口（记录）：无 scene 组件**数据值**往返用例（现测试覆盖 resources/generation，未断言组件字节值）；无 `frustum_extract`/`frustum_cull_batch` 已知-VP golden 单测。
+
 ## R293：LOD `lod_update_all` 按 group slot 索引 `current_levels[]`（应按 entity id）致查询恒读陈旧 LOD0（已完成）
 
 ### [x] R293-A lod_update_all 索引维度与 API 契约不一致
