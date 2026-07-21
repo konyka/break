@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R333：地形系统（高度图双线性采样/central-diff 法线/侵蚀邻居访问/编辑区域重建/坐标逆变换）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/terrain.c`）：
+  - `terrain_init`：R161-A 拒绝 `grid_size<2`（`grid_size` 为无符号，`grid_size-1` 在 0 时回绕 0xFFFFFFFF → 索引生成循环约 40 亿次、写穿 24 字节 indices 分配的巨量堆溢出；grid_size=1 则 `(f32)(grid_size-1)` 除零）；`inv_scale=(scale>0)?1/scale:0`。
+  - 坐标系一致性：`t->inv_nm1 = (f32)(grid_size-1)`（存 n-1）。正变换 `terrain_get_height`：`gx=(x*inv_scale+0.5)*inv_nm1`；逆变换 rebuild/modify/flatten/noise_stamp/erode：`inv=1/inv_nm1`、`fx=(gx*inv-0.5)*scale`。二者互为精确逆，且 heightmap 值与坐标命名无关，内部一致。
+  - 双线性采样：`ix=floor(gx)`、`fx=gx-ix`，四角 `h00/h10/h01/h11` 全走 `terrain_sample_height`（gx/gz clamp 到 `[0,grid_size-1]`）；世界边缘处 `ix+1` 被 clamp 同时 `fx=0` 使其权重为 0，无越界、无跳变。
+  - `terrain_rebuild_region`：入参先 clamp；批量路径按行把 `row_width=gx1-gx0+1(≤grid_size)` 个顶点写入持久 `_vert_staging` 再一次 `rhi_buffer_update_region`，偏移 `(gz*grid_size+gx0)*8*sizeof(f32)`（行内顶点连续）；无 staging（测试）则逐顶点回退。法线 central-diff `nx=hl-hr, ny=2*hx(=cell), nz=hd-hu`，平坦地形→(0,+ny,0) 向上，`nl2>1e-7` 才 `fast_rsqrt` 归一。
+  - `terrain_erode`：邻居 `heightmap[gz*n+gx±1]` / `[(gz±1)*n+gx]` **不**经 clamp 直接索引，但循环边界 `gx0<1→1`、`gx1>n-1→n-1`、`gz0<1→1`、`gz1>n-1→n-1` 且内层为严格 `gx<gx1`/`gz<gz1`，故 `gx∈[1,n-2]`、`gz∈[1,n-2]` → `gx±1∈[0,n-1]`、`gz±1∈[0,n-1]`，四邻访问全部在界；侵蚀量 `amount=fminf(max_d,h*0.5)*0.5`，按正坡差 `share[d]=diffs[d]/total_d`（`max_d>0` 才继续、`total_d>0` 才除）分给四邻，质量守恒（扣 amount、四邻补 amount*share，Σshare=1）。
+  - `modify_height`/`flatten`/`noise_stamp`：搜索矩形 clamp 到 `[0,grid_size-1]`，圆形 `d2<r2` + `falloff=1-d2/r2`；`radius=0` 时 `r2=0`、`d2<0` 恒假，循环体跳过（`inv_r2=1/r2=inf` 计算但不参与任何写入，无 NaN 落入 heightmap）；flatten 用合并持久缓冲（`i32 indices[area]` + 对齐后 `f32 dists[area]` 单次 malloc、只增不减）单趟收集后按均值 `*=falloff*0.2` 平滑；R303 编辑热力 `edit_quadrant` 按世界中心 0 划分象限（旧 scale*0.5 阈值恒判 NW）。
+  - 观察（非 bug）：`terrain_generate` 内声明同名局部 `f32 inv_nm1 = 1/(n-1)` 遮蔽结构体字段（其为倒数），作用域内自洽、仅用于生成期坐标归一，不影响后续 `terrain_get_height`（读结构体字段）。
+- 结论：网格校验、坐标正/逆变换一致性、双线性采样与边缘 clamp、central-diff 法线、侵蚀四邻在界访问与质量守恒、编辑圆形 falloff 与 radius=0 无 NaN、flatten 持久缓冲均正确（R97-1/R161-A/R303 已加固）。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R332：音频系统（miniaudio 3D 空间化/逆距离衰减/双层 slot free-list/流式状态机）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/audio/audio.c`、`audio_stream.c`、`audio.h`）：
