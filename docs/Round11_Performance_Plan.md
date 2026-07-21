@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R339：聚簇光照 CPU 剔除（指数深度切分 / froxel 分箱 / 屏幕 AABB 早退 / 光索引溢出防护）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/lighting.c::light_system_cull` + `cluster_depth` + `mat4_vec4`）：
+  - 深度切分：`cluster_depth(z,near,far)=near·(far/near)^(z/CLUSTER_Z)`，指数（对数）分布，z=0→near、z=CLUSTER_Z→far；`_z_depths[0..CLUSTER_Z]` LUT 仅在 `_z_depths_dirty`（首帧/清空后）重算。
+  - 变换：`mat4_vec4` SSE 分支 `col0*v0+col1*v1+col2*v2+col3*v3`（=M·v，列主序，out[i]=Σ_k m->e[k][i]*v[k]），标量回退注释明确须与之一致。每个点光在进入 O(clusters×lights) 分箱前先 O(lights) 预变换 world→view(`view_pos`)→clip(`clip_pos`)，并预算屏幕投影/半径/AABB（`screen_ok` 标记 clip.w>0.001）。
+  - z 切片分离：视空间 z 为负、cluster 占 `[-z_far, -z_near]`（z_far>z_near>0）。跳过条件 `vp_z + r < -z_far`（光球最大 z 仍在簇后方）或 `vp_z - r > -z_near`（光球最小 z 在簇前方）——标准球-slab 分离，正确。
+  - 屏幕 AABB：`screen_x/y=(clip.xy*inv_w*0.5+0.5)*screen_wh`，`screen_r=radius*(1/(-view_z))*screen_w*0.5`（近似投影半径）；tile `[sx,ex]×[sy,ey]` 与光 AABB 不相交（`xmax<sx||xmin>ex||ymax<sy||ymin>ey`）则跳过。光跨近平面（`clip.w<=0.001` → `screen_ok=false`）时跳过屏幕测试，仅由 z 切片决定——保守（宁可多算不漏光）。
+  - 溢出防护（双重 + 优雅降级）：每簇处理前 `if (grid_index_total >= CLUSTER_COUNT*LIGHT_MAX_PER_CLUSTER - LIGHT_MAX_POINT) goto done;`（为当前簇预留 LIGHT_MAX_POINT 槽；单簇实际至多加入 `min(pc, LIGHT_MAX_PER_CLUSTER) <= LIGHT_MAX_POINT` 个，故预留足量）；内层写入前 `if (grid_index_total < CLUSTER_COUNT*LIGHT_MAX_PER_CLUSTER)` 绝对上界 + `if (count >= LIGHT_MAX_PER_CLUSTER) break` 单簇上限。`goto done` 后剩余簇的 `grid_offsets_counts` 保持帧首 `memset` 的 0（count=0，该簇不亮）——预算耗尽时优雅降级而非越界。每帧起 `memset(grid_offsets_counts)` + `grid_index_total=0` 重置。
+  - 静态暂存（`view_pos/clip_pos/screen_*` 为 `LIGHT_MAX_POINT` 大小 static）：注释说明 cull 每帧至多一次、主线程，无并发。
+- 结论：指数簇深度、列主序光变换、球-slab z 分离、屏幕 AABB 早退与近平面保守回退、双重索引溢出防护与降级均正确（R74-3 已加固）。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R338：骨骼评估（TRS 合成 / 不定序世界矩阵定点解析 / 蒙皮矩阵 / STEP 快照）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/animation/skeleton.c`）：
