@@ -152,6 +152,38 @@ TEST(blend_evaluate_two_layers)
     anim_blend_state_destroy(&st);
 }
 
+TEST(additive_layer_leaves_unaddressed_bones_untouched)
+{
+    /* R305: an additive layer must only affect the bones its clip animates.
+     * Bones the additive clip does NOT address must keep the value produced by
+     * the layers below it. The old code seeded the scratch buffer from the
+     * running output for additive layers too, so an unaddressed bone had
+     *   pos += pos*w  (=> doubled at w=1), rot *= frac(rot), scale rescaled,
+     * corrupting every bone outside the additive clip's channels. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+
+    /* Base (OVERRIDE) layer places bone 1 at x=6 and leaves bone 0 at bind. */
+    init_translation_clip(&g_clips[0], 1, 1.0f, 6, 0, 0, 6, 0, 0);
+    /* Additive layer animates ONLY bone 0 (delta +2 on x); never touches bone 1. */
+    init_translation_clip(&g_clips[1], 0, 1.0f, 2, 0, 0, 2, 0, 0);
+
+    anim_layer_play(&st, 0, 0, 1.0f, false);
+    anim_layer_play(&st, 1, 1, 1.0f, false);
+    anim_layer_set_mode(&st, 1, ANIM_BLEND_ADDITIVE);
+    anim_layer_set_weight(&st, 1, 1.0f);
+
+    anim_blend_evaluate(&st, 0.0f, g_clips, 2);
+
+    /* Bone 0: additive delta applied on top of bind (0) → x ≈ 2. */
+    ASSERT_TRUE(fabsf(st.local_positions[0].e[0] - 2.0f) < 0.01f);
+    /* Bone 1: NOT animated by the additive clip → must stay at the base x=6.
+     * Pre-fix it became 6 + 6*1 = 12 (its own transform added back onto itself). */
+    ASSERT_TRUE(fabsf(st.local_positions[1].e[0] - 6.0f) < 0.01f);
+
+    anim_blend_state_destroy(&st);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Crossfade                                                                */
 /* ----------------------------------------------------------------------- */
@@ -551,6 +583,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bone_mask_filters);
     RUN_TEST(blend_evaluate_translation);
     RUN_TEST(blend_evaluate_two_layers);
+    RUN_TEST(additive_layer_leaves_unaddressed_bones_untouched);
     RUN_TEST(crossfade_instant);
     RUN_TEST(crossfade_gradual);
     RUN_TEST(anim_clip_init_basic);

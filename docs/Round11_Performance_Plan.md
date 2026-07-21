@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R305：additive 混合层用当前输出预填 scratch → 未被叠加 clip 寻址的骨骼被自身姿势重复叠加、姿势损坏（已完成）
+
+### [x] R305-A `anim_blend_evaluate` additive 层 scratch 种子错误
+- [x] 症状：每层评估前把 scratch（sample_*）用当前输出 `state->local_*` 预填（`clip_sample` 只写有通道的骨骼，未寻址骨骼保留种子值）。对 OVERRIDE 正确（`lerp(x,x,w)==x` 透传）。但 ADDITIVE 混合是 `pos+=sample*w`、`rot=nlerp(id,sample,w)*rot`、`scale*=1+(sample-1)*w`——未被叠加 clip 寻址的骨骼 sample=当前姿势 → `pos+=pos*w`（w=1 时翻倍）、额外叠加一份当前旋转、scale 再次缩放，凡叠加 clip 未触及的骨骼全被污染。
+- [x] 后果：additive 是公共 API（`anim_layer_set_mode(…, ANIM_BLEND_ADDITIVE)`），用于叠加瞄准偏移/呼吸等只动部分骨骼的场景。任何这样使用的调用方都会看到其余骨骼姿势损坏。additive 路径此前 0 测试覆盖。
+- [x] 修复：种子按模式区分——ADDITIVE 用 `fill_bind_pose`（叠加中性：pos 0/rot identity/scale 1）预填 scratch，使未寻址骨骼贡献中性 delta；OVERRIDE 仍用当前输出预填以透传。
+- [x] 回归：`test_animation.c::additive_layer_leaves_unaddressed_bones_untouched`——base(OVERRIDE) 把 bone1 置 x=6、bone0 留 bind；additive 层只动 bone0(+2)。断言 bone0.x≈2、bone1.x 保持 6。旧代码 bone1 变 6+6·1=12（自身叠回自身）→ FAIL；修复后为 6。
+
+**验收**：双后端构建通过；VK/GL CTest 各 **30/30**（排除环境相关 test_async_loader）；test_animation 本地 28/28。
+
 ## R304：profiler_pop 结束"最后追加"而非"最后打开"的区间 → 嵌套下外层 elapsed 恒为 0（已完成）
 
 ### [x] R304-A `profiler_pop` 缺少打开区间栈，嵌套 push/pop 计时错误

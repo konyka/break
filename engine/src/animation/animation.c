@@ -281,14 +281,29 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
             }
         }
 
-        /* Copy current output to sample buffer instead of fill_bind_pose.
-         * clip_sample only writes bones with animation channels; unaddressed
-         * bones retain the output value (bind pose or accumulated result),
-         * which is the correct default for blending. */
+        /* Seed the scratch buffer for bones the clip won't address.
+         * clip_sample only writes bones that have animation channels. */
         u32 bc = state->bone_count;
-        memcpy(sample_pos, state->local_positions, bc * sizeof(Vec3));
-        memcpy(sample_rot, state->local_rotations, bc * sizeof(Quat));
-        memcpy(sample_scl, state->local_scales,    bc * sizeof(Vec3));
+        if (L->mode == ANIM_BLEND_ADDITIVE) {
+            /* R305 (CORRECTNESS): an additive layer must seed unaddressed bones
+             * with the additive-neutral pose (pos 0, identity rot, scale 1) — NOT
+             * the running output. The additive mix below computes
+             *   pos   += sample_pos * w
+             *   rot    = nlerp(identity, sample_rot, w) * rot
+             *   scale *= 1 + (sample_scl - 1) * w
+             * so any bone the additive clip does NOT animate must contribute the
+             * neutral delta. Seeding from state->local_* (as the OVERRIDE path
+             * does) made every such bone add its own current transform back onto
+             * itself (pos->pos*(1+w), an extra fractional rotation, scale scaled
+             * again), corrupting all bones outside the additive clip's channels. */
+            fill_bind_pose(sample_pos, sample_rot, sample_scl, bc);
+        } else {
+            /* OVERRIDE: seed from current output so unaddressed bones pass through
+             * unchanged (lerp(x, x, w) == x) rather than snapping to bind pose. */
+            memcpy(sample_pos, state->local_positions, bc * sizeof(Vec3));
+            memcpy(sample_rot, state->local_rotations, bc * sizeof(Quat));
+            memcpy(sample_scl, state->local_scales,    bc * sizeof(Vec3));
+        }
         if (clip) clip_sample(clip, L->time, sample_pos, sample_rot,
                               sample_scl, state->bone_count);
 
