@@ -131,6 +131,35 @@ TEST(key_full_cycle)
     ASSERT_EQ(s.keys[0], 0);       /* up */
 }
 
+TEST(key_repeat_while_held_does_not_refire_pressed)
+{
+    /* R295: OS key auto-repeat (Win32 WM_KEYDOWN / Cocoa keyDown:) forwards a
+     * held key as repeated `pressed` events. A held key must stay held(2) and
+     * NOT re-latch the just-pressed edge(3), else one-shot actions bound to
+     * input_key_pressed re-fire every repeat tick. Mirrors the gamepad contract
+     * verified by pad_button_press_release. */
+    InputState s;
+    input_init(&s);
+
+    input_set_key(&s, 'a', true);   /* fresh press: 3 */
+    input_new_frame(&s);            /* 3 -> 2 (held) */
+    ASSERT_EQ(s.keys['a'], 2);
+    ASSERT_TRUE(input_key_down(&s, 'a'));
+    ASSERT_TRUE(!input_key_pressed(&s, 'a'));
+
+    /* Auto-repeat delivers another pressed event while physically held. */
+    input_set_key(&s, 'a', true);
+    ASSERT_EQ(s.keys['a'], 2);                 /* stays held, NOT re-latched to 3 */
+    ASSERT_TRUE(input_key_down(&s, 'a'));      /* hold unaffected */
+    ASSERT_TRUE(!input_key_pressed(&s, 'a'));  /* must not re-fire just-pressed */
+
+    /* A genuine re-press only after a release still latches a new edge. */
+    input_set_key(&s, 'a', false);  /* 2 -> 1 (released) */
+    input_set_key(&s, 'a', true);   /* 1 -> 3 (fresh press edge) */
+    ASSERT_EQ(s.keys['a'], 3);
+    ASSERT_TRUE(input_key_pressed(&s, 'a'));
+}
+
 TEST(key_release_from_just_pressed)
 {
     /* Release immediately after press (state=3 → 1) */
@@ -480,6 +509,7 @@ int main(void) {
     RUN_TEST(key_release_sets_state_1);
     RUN_TEST(key_up_after_release_frame);
     RUN_TEST(key_full_cycle);
+    RUN_TEST(key_repeat_while_held_does_not_refire_pressed);
     RUN_TEST(key_release_from_just_pressed);
     RUN_TEST(new_frame_increments_counter);
     RUN_TEST(new_frame_clears_mouse_delta);

@@ -30,7 +30,16 @@ void input_new_frame(InputState *s) {
 void input_set_key(InputState *s, i32 key, bool pressed) {
     if (key < 0 || key >= INPUT_MAX_KEYS) return;
     if (pressed) {
-        if (s->keys[key] != 3) s->keys[key] = 3;  /* only set to just-pressed if not already pressed */
+        /* R295 (CORRECTNESS): latch the just-pressed edge (3) only from up(0) or
+         * just-released(1). A key already held(2) must NOT be reset to 3, else
+         * OS key auto-repeat — which the Win32 (WM_KEYDOWN, no repeat-bit filter)
+         * and Cocoa (keyDown:, isARepeat ignored) backends forward verbatim as
+         * repeated `pressed` events — re-fires input_key_pressed() every repeat
+         * tick while the key is held, so one-shot actions bound to the
+         * just-pressed edge (jump, toggle) mis-trigger repeatedly. The old guard
+         * `!= 3` allowed 2→3; mirror input_set_pad_button's correct `!= 2` guard
+         * (input_key_down stays true for both 2 and 3, so hold is unaffected). */
+        if (s->keys[key] != 2 && s->keys[key] != 3) s->keys[key] = 3;
     } else {
         if (s->keys[key] == 3 || s->keys[key] == 2) s->keys[key] = 1;
     }

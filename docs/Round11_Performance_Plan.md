@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R295：`input_set_key` 按键 held 态被 OS 自动重复重置为 just-pressed → 一次性动作随重复率误触发（已完成）
+
+### [x] R295-A input_set_key 的 just-pressed 边沿守卫与 gamepad 版不一致
+- [x] `keys[]` 语义 0=up/1=just-released/2=held/3=just-pressed；`input_key_pressed`==3 用作"本帧刚按下"边沿。旧 `input_set_key(pressed)` 守卫 `if (s->keys[key] != 3)` 允许 **2(held)→3**：Win32 后端 `WM_KEYDOWN`(未过滤 lParam bit30 重复位)与 Cocoa `keyDown:`(未看 `isARepeat`)把 OS 自动重复原样转发为重复 `pressed` 事件 → 按住键时 `input_key_pressed` 随重复率反复置真,绑定到 just-pressed 边沿的一次性动作(跳跃/切换)误触发多次。
+- [x] 同文件 gamepad 版 `input_set_pad_button` 用 `if (*slot != 2)` 正确规避;键盘版改为 `if (s->keys[key] != 2 && s->keys[key] != 3)`——仅从 up(0)/just-released(1) 锁存新边沿,held/pressed 不重置。`input_key_down`(2 或 3 均为 down)不受影响,按住语义不变；释放路径与合法"释放后再按"边沿保持。
+- [x] Wayland 后端由合成器不发重复 key 事件(客户端侧合成),故 Linux 不触发,但引擎函数本身仍需与 gamepad 契约一致。
+
+**验收**:新增回归 `key_repeat_while_held_does_not_refire_pressed`——press→new_frame(held)→再 press(模拟重复) 断言 `keys=2`/`!pressed`,再 release→press 断言重新锁存 3。旧 `!=3` guard 下该测试 FAIL(`s.keys['a'] != 2`),修复后 PASS。双后端构建通过；VK/GL CTest 各 **31/31**。
+
 ## R294：场景序列化(BSCN) + 视锥剔除（两条窄线深审——均无高置信活跃 bug，不修复）
 
 - 窄线 A：`scene_serial.c` binary/JSON save-load（引擎实际路径：`main.c` 调 `scene_save_binary`/`scene_load_binary`）。
