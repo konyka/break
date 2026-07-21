@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R278：glTF WEIGHTS_0 normalized 整型被当作 4×float（蒙皮权重解析错误）（已完成）
+
+### [x] R278-A decode WEIGHTS_0 honouring component_type + normalized
+- [x] `asset.c` 用 cgltf 解析 glTF，顶点/索引为手动 `cgltf_buffer_data` + stride 步进；JOINTS_0 已按 `r_8u/r_16u/r_32u` 整型分支读取（334–346，R249）
+- [x] 但 WEIGHTS_0（358 行）恒 `memcpy(weights, wd + vi*stride, sizeof(f32)*4)`，假定 buffer 已是 4×IEEE754，**不看** `component_type`/`normalized`
+- [x] glTF 2.0 允许 `WEIGHTS_0` 为 `VEC4` + `UNSIGNED_BYTE(5121)`/`UNSIGNED_SHORT(5123)` + `normalized:true`（Blender 等导出蒙皮网格极常见）；手算：紧凑字节 `FF 00 00 00` 期望 `[1,0,0,0]`，实际把 4 字节当一个 float 得位型 `0x000000FF≈1.4e-45`（且 4 字节紧凑时按 16 字节读越界）→ 权重全垃圾、`wsum` 近 0 归一化失效 → 蒙皮完全错误
+- [x] 触发：任一带 `JOINTS_0`+`WEIGHTS_0` 且 WEIGHTS 为 normalized u8/u16（非 5126 FLOAT）的 glTF；FLOAT 权重资产暂不可见但与规范/常见导出不符
+- [x] 修复：改用 `cgltf_accessor_read_float(wgt_acc, vi, weights, 4)`（自动处理 component_type/normalized/stride/sparse，与整型 JOINTS 分支对称），失败回退原 memcpy；FLOAT 权重结果不变
+- [x] 无法加针对性单测（`asset.c` 依赖 cgltf+RHI，且需带整型权重的 glTF 资产；同 R256 因重依赖不便加测），以 cgltf 成熟 `read_float` + 双后端构建 + 全量套件 + 手算论证为验证；仓库 `test.glb` 为 FLOAT 权重、行为不变
+
+**验收**：双后端构建通过（`cgltf_accessor_read_float` 链接正常）；GL/VK CTest 各 **31/31**（`test.glb` 无整型权重/skin，套件行为不变）。
+
 ## R277：CCD 胶囊扫掠保守半径漏算 half_height（胶囊可穿薄静态体）（已完成）
 
 ### [x] R277-A capsule CCD bound radius must include half_height

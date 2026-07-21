@@ -355,7 +355,17 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                         if (sverts[vi].joints[k] >= (u32)SKELETON_MAX_JOINTS)
                             sverts[vi].joints[k] = (u32)SKELETON_MAX_JOINTS - 1u;
                     }
-                    memcpy(sverts[vi].weights, wd + vi * wgt_stride, sizeof(f32) * 4);
+                    /* R278 (CORRECTNESS): WEIGHTS_0 is commonly exported as
+                     * normalized UNSIGNED_BYTE/UNSIGNED_SHORT (e.g. Blender), not
+                     * FLOAT. The previous raw 16-byte memcpy reinterpreted those
+                     * 4/8 bytes as IEEE754 floats, producing garbage weights
+                     * (0xFF00_0000 -> ~1.4e-45) and breaking skinning. Use cgltf's
+                     * accessor reader, which honours component_type + normalized +
+                     * stride + sparse (mirrors the integer JOINTS branch above).
+                     * FLOAT weights are unchanged. */
+                    if (!cgltf_accessor_read_float(wgt_acc, vi, sverts[vi].weights, 4)) {
+                        memcpy(sverts[vi].weights, wd + vi * wgt_stride, sizeof(f32) * 4);
+                    }
                     f32 wsum = sverts[vi].weights[0] + sverts[vi].weights[1] + sverts[vi].weights[2] + sverts[vi].weights[3];
                     if (wsum > 0.0f) {
                         f32 inv = 1.0f / wsum;
