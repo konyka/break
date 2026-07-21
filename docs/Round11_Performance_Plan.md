@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R286：ECS 多 chunk 时 swap-remove 只用本 chunk 末行（破坏全局 slot 稠密不变量）（已完成）
+
+### [x] R286-A archetype-global swap-remove (was chunk-local)
+- [x] 分配 tail 追加、chunk 稠密顺序填充（除末尾外各 chunk 必满），`entity_index`=全局线性 slot
+- [x] 三处 swap-remove（destroy 281–293 / add 440–453 / remove 587–601）用含被删实体那个 chunk 的末行 `c->count-1` 并递减该 chunk
+- [x] archetype 跨 ≥2 chunk 且删/迁出非全局末实体时 → 非 tail chunk under-full → 后续 chunk 实体全局 slot 走查错位 → `world_get_component` 读错行/NULL（静默损坏）
+- [x] 手算（cap=2：A,B∈chunk0，C∈chunk1）：destroy A → chunk0.count→1 但 C 仍 entity_index=2 → 走查落空 → C 组件丢失（应为 slot 1）
+- [x] 修复：`archetype_swap_remove(w,a,global_slot)` 用 total_count-1 定位全局末、跨 chunk 搬运列+entity id、回填 entity_index、仅减持有全局末的 chunk 的 count 与 total_count；三处统一调用
+- [x] 回归测试 `ecs_swap_remove_across_chunks`（516B 组件→cap~31，70 实体跨 3 chunk，destroy 首 chunk 中段 + remove 中段，断言幸存者值不错位）
+- [x] 单 chunk（chunk 末=全局末）行为不变，既有测试此前偶然全过
+
+**验收**：GL/VK 构建通过；GL/VK CTest 各 **31/31**（test_ecs 含新用例）。
+
 ## R285：imgui 面板隐藏期间交互状态冻结→重开误触发 release-click（已完成）
 
 ### [x] R285-A reset imgui interaction state while the panel is hidden

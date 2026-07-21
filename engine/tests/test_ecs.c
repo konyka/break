@@ -10,6 +10,13 @@ typedef struct { float x, y, z; } Position;
 typedef struct { float vx, vy, vz; } Velocity;
 typedef struct { int hp; } Health;
 
+/* R286: a large component shrinks an archetype's chunk_capacity
+ * (=(ECS_CHUNK_SIZE-64)/(4+sizeof)), so a modest entity count forces the
+ * archetype to span multiple chunks — the case where a chunk-local swap-remove
+ * corrupts global-slot addressing. */
+#define COMP_BIG 5
+typedef struct { u32 value; char pad[512]; } BigComp;
+
 /* ---- World Create/Destroy ---- */
 
 TEST(ecs_world_create_destroy) {
@@ -856,11 +863,57 @@ TEST(ecs_query_exclude_optional_combined) {
     world_destroy(w);
 }
 
+TEST(ecs_swap_remove_across_chunks) {
+    /* R286: destroy/remove-component must swap with the ARCHETYPE-GLOBAL last
+     * entity, not the removed entity's chunk-local last. With a multi-chunk
+     * archetype and a non-global-last removal, the old chunk-local logic left a
+     * non-tail chunk under-full and mis-addressed every entity in later chunks. */
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, COMP_BIG, sizeof(BigComp));
+
+    const u32 N = 70; /* > chunk_capacity (~31 for a 516B component) → 3 chunks */
+    Entity ents[70];
+    for (u32 i = 0; i < N; i++) {
+        ents[i] = world_create_entity(w);
+        BigComp *b = (BigComp *)world_add_component(w, ents[i], COMP_BIG);
+        ASSERT_NOT_NULL(b);
+        b->value = 1000u + i;
+    }
+    for (u32 i = 0; i < N; i++) {
+        BigComp *b = (BigComp *)world_get_component(w, ents[i], COMP_BIG);
+        ASSERT_NOT_NULL(b);
+        ASSERT_EQ(b->value, 1000u + i);
+    }
+
+    /* Destroy an entity in the FIRST chunk (not the global last). */
+    world_destroy_entity(w, ents[5]);
+    for (u32 i = 0; i < N; i++) {
+        if (i == 5) continue;
+        BigComp *b = (BigComp *)world_get_component(w, ents[i], COMP_BIG);
+        ASSERT_NOT_NULL(b);
+        ASSERT_EQ(b->value, 1000u + i);
+    }
+
+    /* Remove-component migration out of the (still multi-chunk) archetype. */
+    world_remove_component(w, ents[40], COMP_BIG);
+    ASSERT_TRUE(world_get_component(w, ents[40], COMP_BIG) == NULL);
+    for (u32 i = 0; i < N; i++) {
+        if (i == 5 || i == 40) continue;
+        BigComp *b = (BigComp *)world_get_component(w, ents[i], COMP_BIG);
+        ASSERT_NOT_NULL(b);
+        ASSERT_EQ(b->value, 1000u + i);
+    }
+
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_entity_create);
     RUN_TEST(ecs_entity_create_multiple);
     RUN_TEST(ecs_entity_destroy);
+    RUN_TEST(ecs_swap_remove_across_chunks);
     RUN_TEST(ecs_component_add_get);
     RUN_TEST(ecs_component_multiple);
     RUN_TEST(ecs_component_remove);

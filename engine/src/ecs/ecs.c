@@ -263,6 +263,55 @@ Entity world_create_entity(World *w) {
     return w->entities[idx];
 }
 
+/* R286 (CORRECTNESS): archetype-global swap-remove.
+ *
+ * Removes the entity occupying dense global slot `global_slot` by moving the
+ * archetype's LAST entity (global slot total_count-1) into the freed slot and
+ * decrementing the chunk that actually held that last entity. This preserves
+ * the packing invariant "every chunk before the last occupied one is full", so
+ * entity_index (a dense global slot) keeps resolving correctly through the
+ * count-walk used by world_get_component / the migration paths.
+ *
+ * The previous per-site logic swapped the removed entity with the last row of
+ * *its own* chunk and decremented THAT chunk. When an archetype spans more than
+ * one chunk and the removed entity is not the global-last, this left a non-tail
+ * chunk under-full: the global-slot walk (which subtracts each chunk's current
+ * count) then mis-addressed every entity living in later chunks, silently
+ * corrupting their component lookups (world_get_component could even return the
+ * wrong row or NULL). */
+static void archetype_swap_remove(World *w, Archetype *a, u32 global_slot) {
+    if (a->total_count == 0) return;
+    u32 last_slot = a->total_count - 1;
+
+    /* Locate the removed slot's (chunk, local row). */
+    Chunk *rc = a->chunks; u32 roff = 0;
+    while (rc && global_slot >= roff + rc->count) { roff += rc->count; rc = rc->next; }
+    if (!rc) return;
+    u32 rlocal = global_slot - roff;
+
+    /* Locate the archetype-global last entity's (chunk, local row). Walking by
+     * total_count-1 is robust even if the tail chunk was previously emptied. */
+    Chunk *lc = a->chunks; u32 loff = 0;
+    while (lc && last_slot >= loff + lc->count) { loff += lc->count; lc = lc->next; }
+    if (!lc) return;
+    u32 llocal = last_slot - loff;
+
+    if (rc != lc || rlocal != llocal) {
+        for (u32 ci = 0; ci < a->key.count; ci++) {
+            u8 *rcol = (u8 *)rc + a->offsets[ci];
+            u8 *lcol = (u8 *)lc + a->offsets[ci];
+            u32 sz = w->component_sizes[a->key.ids[ci]];
+            memcpy(rcol + (usize)rlocal * sz, lcol + (usize)llocal * sz, sz);
+        }
+        u32 *rents = (u32 *)((u8 *)rc + a->entity_offset);
+        u32 *lents = (u32 *)((u8 *)lc + a->entity_offset);
+        rents[rlocal] = lents[llocal];
+        w->entity_index[rents[rlocal]] = global_slot;
+    }
+    lc->count--;
+    a->total_count--;
+}
+
 void world_destroy_entity(World *w, Entity e) {
     if (e.index >= w->entity_count) return;
     if (w->entities[e.index].generation != e.generation) return;
@@ -270,33 +319,11 @@ void world_destroy_entity(World *w, Entity e) {
     u32 arch_idx = w->entity_archetype[e.index];
     Archetype *a = &w->archetypes[arch_idx];
 
-    /* Use entity_index (global slot) to skip directly to the right chunk
-     * instead of linearly scanning all entities in all chunks. */
-    u32 global_idx = w->entity_index[e.index];
-    Chunk *c = a->chunks;
-    u32 chunk_offset = 0;
-    while (c) {
-        if (global_idx < chunk_offset + c->count) {
-            u32 i = global_idx - chunk_offset;
-            u32 last = c->count - 1;
-            u32 *entities = (u32 *)((u8 *)c + a->entity_offset);
-            if (i != last) {
-                for (u32 ci = 0; ci < a->key.count; ci++) {
-                    u8 *col = (u8 *)c + a->offsets[ci];
-                    u32 sz = w->component_sizes[a->key.ids[ci]];
-                    memcpy(col + i * sz, col + last * sz, sz);
-                }
-                entities[i] = entities[last];
-                w->entity_index[entities[i]] = chunk_offset + i;
-            }
-            c->count--;
-            a->total_count--;
-            goto done;
-        }
-        chunk_offset += c->count;
-        c = c->next;
-    }
-done:
+    /* R286: archetype-global swap-remove (see archetype_swap_remove). Using the
+     * removed entity's dense global slot keeps entity_index consistent even when
+     * the archetype spans multiple chunks. */
+    archetype_swap_remove(w, a, w->entity_index[e.index]);
+
     w->free_stack[w->free_stack_top++] = e.index;
     w->entities[e.index].generation++;
     /* Clear entity bitmap */
@@ -437,21 +464,11 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
         free(old_data);
     }
 
-    if (old_chunk && old_chunk->count > 0) {
-        u32 last = old_chunk->count - 1;
-        if (local_old < last) {
-            for (u32 ci = 0; ci < old->key.count; ci++) {
-                u8 *col = (u8 *)old_chunk + old->offsets[ci];
-                u32 sz = w->component_sizes[old->key.ids[ci]];
-                memcpy(col + local_old * sz, col + last * sz, sz);
-            }
-            u32 *old_entities = (u32 *)((u8 *)old_chunk + old->entity_offset);
-            old_entities[local_old] = old_entities[last];
-            w->entity_index[old_entities[local_old]] = chunk_offset + local_old;
-        }
-        old_chunk->count--;
-        old->total_count--;
-    }
+    /* R286: remove the migrated entity from the old archetype via an
+     * archetype-global swap-remove (old_slot is its dense global slot in `old`).
+     * The intersection component data was already copied to `dest` above, so
+     * overwriting old's row here is safe. */
+    archetype_swap_remove(w, old, old_slot);
 
     w->entity_archetype[e.index] = (u32)(dest - w->archetypes);
     w->entity_index[e.index] = new_global_slot;
@@ -584,22 +601,11 @@ void world_remove_component(World *w, Entity e, ComponentType id) {
         free(old_data);
     }
 
-    /* swap-remove：把旧 chunk 的最后一行搬到被移除位置以填补空洞 */
-    if (old_chunk->count > 0) {
-        u32 last = old_chunk->count - 1;
-        if (local_old < last) {
-            for (u32 ci = 0; ci < old->key.count; ci++) {
-                u8 *col = (u8 *)old_chunk + old->offsets[ci];
-                u32 sz = w->component_sizes[old->key.ids[ci]];
-                memcpy(col + local_old * sz, col + last * sz, sz);
-            }
-            u32 *old_entities = (u32 *)((u8 *)old_chunk + old->entity_offset);
-            old_entities[local_old] = old_entities[last];
-            w->entity_index[old_entities[local_old]] = chunk_offset + local_old;
-        }
-        old_chunk->count--;
-        old->total_count--;
-    }
+    /* R286: archetype-global swap-remove of the migrated entity from `old`
+     * (old_slot is its dense global slot). The kept-component data was already
+     * copied to `dest` above; a chunk-local swap here corrupted addressing when
+     * `old` spanned multiple chunks. */
+    archetype_swap_remove(w, old, old_slot);
 
     w->entity_archetype[e.index] = (u32)(dest - w->archetypes);
     w->entity_index[e.index] = new_global_slot;
