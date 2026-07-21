@@ -4420,6 +4420,13 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R301：RHI 句柄池 + Mipmap 流式 + 日志 多窄线深审——无 demo 可达高置信 bug，不修复
+
+- 窄线 A：`rhi/rhi.c` 句柄池（generation + free-list）。`rhi_init_freelist` 侵入式空闲链、`rhi_alloc_slot` 的 `free_count==0` abort（R157，避免返 0 覆盖 slot0）、`generation++` 跳 0、`rhi_get_resource` 校验 `generation==h.gen && alive`、`rhi_free_slot` 经 `alive` 防双重释放（gen 不变、realloc 时才 ++ 使陈旧句柄失效）——均正确。调用方（rhi_gl.c 各 create）用 `dev->slots[idx].generation` 直接构造句柄，非 `next_slot`，无覆盖；多资源 FBO（MRT/cubemap depth）部分失败返回部分句柄为有意设计。
+- 窄线 B：`asset/mipmap_stream.c`。`coverage_to_level` IEEE754 指数技巧（`level=(127-exp)>>1`，含 NaN→0、subnormal/负→clamp、`>=1→0`）正确；`mipmap_level_size` 的 `width>>level` 因 `MIPMAP_STREAM_MAX_LEVELS=16`（level<16）无移位 UB、`>UINT32_MAX→0` 溢出拒绝（R167-E）；预算 `total_resident_bytes` reserve/decrement 在 request/fail/evict/invalidate 各路径平衡；`mip_free_req` 池内指针区间判定正确（池为一次性 bump、shutdown 回收，非 bug）；R167-D `request_id` 拒绝陈旧完成、R172 shutdown 取消在途。
+- 窄线 C：`core/log.c`。`basename` 提取、颜色/级别数组按 `level` 索引——`level<min_level` 提前返回；越界仅当传入非法 level（LOG_* 宏不可达）。
+- 决策：无 demo 可达高置信 CORRECTNESS 问题，不改代码（precedent R289/R290/R294/R296/R297/R300）。测试缺口（记录）：无 rhi 句柄 alloc/free/generation-mismatch 单测；无 coverage_to_level 已知值 golden。
+
 ## R300：core 分配器/字符串 + VFS 多窄线深审——无 demo 可达高置信 bug，不修复（记录 1 处潜在限制）
 
 - 窄线 A：`core/pool.c` 定长池。free-list 前后向线程化（升序分发）、`pool_init` 的 pad/usable/count、`pool_init_alloc` 的 `block_count>SIZE_MAX/bs` 溢出守卫（R158）、`pool_owns` 的 `<buffer`/`off>=count*bs`/`off%bs==0` 边界与对齐检查、`pool_release` 的 `used>0` 下溢守卫——均正确；不检测双重释放属常见快路径设计（调用方契约）。
