@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R342：GPU 间接绘制压缩（visible 压缩 / 原子计数 / 双缓冲可见性 / fill 屏障）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/indirect_draw.c` + `rhi_cmd_fill_buffer` VK 实现）：
+  - 缓冲布局：`all_draws_buf`（STORAGE，`max_draws×DrawIndexedIndirectCmd`，CPU 上传一次，R186 DEVICE_LOCAL）；`visible_draws_buf`（STORAGE|INDIRECT，compute 写 + graphics 作为绘制命令源读，R185）；`draw_count_buf`（STORAGE|INDIRECT，单 u32 atomicAdd 目标 + count 源）；`visibility_buf[0/1]`（STORAGE，host 更新的双 slot）。全部 init 用零初始化，任一 handle 无效 → `indirect_draw_destroy` 全清 + false。
+  - 双缓冲可见性（R182）：`indirect_draw_visibility_slot=visibility_buf[rhi_frame_index(dev)&1]`；`upload_visibility`（host `rhi_buffer_update_region` 写本帧将读的 slot）；`upload_visibility_cmd`（R183，CB 序 `rhi_cmd_update_buffer`，同 slot 每级联重写安全）。均把 count 钳到 max_draws。
+  - compact（`indirect_draw_compact_no_barrier`）：`current_draw_count==0` 早退；R175 `rhi_cmd_fill_buffer(draw_count_buf,0)`（GPU 侧清零，与本 CB 的 compact 有序——host update 对后续录制的 GPU 工作不可见）；R234-B `rhi_cmd_fill_buffer(visible_draws_buf, 0..current)`（清零 visible 前缀，避免 VK 无 drawIndirectCount 回退绘制 maxDrawCount 时复活上帧残留命令，对齐 gpucull R171）；绑 4 storage（all=0 / visibility slot=1 / visible=2 / count=3）；`set_uniform_i32(total_draws)`；`dispatch((current+63)/64)`；R76-3 屏障移交调用方（`indirect_draw_compact` 末尾补 `rhi_cmd_memory_barrier`），便于批量多组 compact。
+  - **并发正确性关键点**：fill（transfer 写）与紧随的 compute dispatch（shader 写）都写 `visible_draws_buf`，构成 WAW。审 `rhi_cmd_fill_buffer`（VK, rhi_vk.c:5614）确认：fill 前插 barrier `src=SHADER_WRITE|TRANSFER_WRITE|INDIRECT_COMMAND_READ|SHADER_READ → dst=TRANSFER_WRITE`（stage COMPUTE|TRANSFER|DRAW_INDIRECT→TRANSFER，R185 兼顾跨级联复用），fill 后插 barrier `src=TRANSFER_WRITE → dst=SHADER_READ|SHADER_WRITE|INDIRECT_COMMAND_READ`。故 fill 与前序 shader/indirect、以及后序 compute 之间均正确排序，dispatch 的写不会被 fill 清零、也能读到 fill 的零值。
+  - execute：`rhi_cmd_draw_indexed_indirect_count(visible_draws_buf, off=0, draw_count_buf, off=0, maxDrawCount=current_draw_count, stride=sizeof(DrawIndexedIndirectCmd))`；`current_draw_count==0` 早退。
+- 结论：缓冲用途/用法位、双缓冲可见性 slot、compact 的 GPU 清零 + 压缩 dispatch、fill_buffer 双向屏障保障的 WAW 排序、indirect-count 执行与 count 钳制均正确（R175/R182/R183/R185/R186/R234-B/R76-3 已加固）。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R341：级联阴影 CSM（PSSM 分割 / 光空间基解析构造 / 4 级联 atlas 象限 / 退化回退）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/main.c` 的 CSM 初始化 splits 与每帧 cascade VP 段）：
