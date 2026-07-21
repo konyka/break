@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R316：音频子系统（3D 空间化/槽位管理/衰减模型）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论：
+  - `audio.c` 分配/生命周期：`audio_system_create` 单块 `calloc(as_off + sizeof(AudioImpl))`(as_off 按 `_Alignof(max_align_t)` 对齐),`destroy` 用同一公式重算 impl 偏移;`ma_engine_init`/sources 分配失败均 `free(as)`(=整块)且先 `ma_engine_uninit`——正确无泄漏/无重复释放。
+  - 槽位管理：`source_cap=32`、`AUDIO_MAX_SOURCES=32`、`free_list[32]` 三者一致。`audio_acquire_slot` free-list 优先再 bump(≤cap);`audio_play` 失败把 `id` 推回 free-list(`free_count<AUDIO_MAX_SOURCES` 守卫)。bump 后失败会使 `source_count` 高水位虚增 1,但该槽 `active=false` 且经 free-list 复用/重初始化,setter 均查 `active`,故无功能缺陷(仅计数上界略高)。
+  - 空间化语义（R270）：`audio_play` 以 `MA_SOUND_FLAG_NO_SPATIALIZATION` 初始化(2D 声不再被监听者距离误衰减);`audio_play_3d` 显式 `set_spatialization_enabled(TRUE)+inverse 模型+set_position`;`audio_play_streamed` 按 `spatial` 分支一致。
+  - `audio_stream.c`：侵入式 free-list(`free_next[]`+`next_free`,`stream_alloc_slot` pop / `stop` push,O(1));`audio_stream_pause` 用 `audio_source_stop`(R241 pause-only,源不 uninit、槽不回收→`play` 可从原游标 resume),`audio_stream_stop` 用 `audio_stop`(uninit+回收 audio.c 槽);`stream_idx_valid` 三重守卫(ready/范围/active);`update` 仅对非循环流检测自然 EOF。
+  - `audio_attenuation_gain`（inline，可单测）：精确复刻 miniaudio inverse 模型 `gain=min/(min+rolloff·(clamp(d,min,max)-min))`,`min` 下限 0.0001、`max≥min`、`gain` 夹到 [0,1];`audio_stream_attenuation` 对非空间源返回 1.0、空间源按监听者距离计算。
+- 结论：均正确/已加固(R107/R241/R270),记为"评估、无修复"轮。无代码改动;总计 662 处修复。
+
 ## R315：屏幕空间光效（镜头光晕/TSR 上采样/God Rays/调试可视化）多窄线深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论：
