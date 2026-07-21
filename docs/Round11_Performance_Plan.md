@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R279：glTF TEXCOORD_0 normalized 整型被当作 2×float（纹理坐标损坏）（已完成）
+
+### [x] R279-A decode TEXCOORD_0 honouring component_type + normalized
+- [x] 延续 R278：`asset.c` 手动读顶点属性；TEXCOORD_0 在**骨骼**（325 行）与**非骨骼**（414 行）两条路径均 `memcpy(uv, ud+vi*us, sizeof(f32)*2)`，仅 `cgltf_accessor_is_type(vec2)` 类型检查，**不看** `component_type`/`normalized`
+- [x] glTF 2.0 允许 `TEXCOORD_n` 为 `VEC2` + `UNSIGNED_BYTE(5121)`/`UNSIGNED_SHORT(5123)` + `normalized:true`（UV 量化/压缩常用，meshopt/手动量化导出）；裸 memcpy 当 float 会把整型字节误读成 IEEE754 → UV 全乱、贴图完全错位
+- [x] 影响面比 R278 更广：命中**默认渲染路径的任意带此类 UV 的贴图网格**（不限骨骼）；POSITION/NORMAL 规范强制 FLOAT 无需改，`Vertex` 无 COLOR 字段故无 COLOR 同类项
+- [x] 修复：两处 UV 读取改用 `cgltf_accessor_read_float(uv_acc, vi, uv, 2)`（自动处理 component_type/normalized/stride/sparse），失败回退原 memcpy；FLOAT UV 结果逐字节不变
+- [x] 同 R278/R256：asset.c 依赖 cgltf+RHI 且需带 normalized-int UV 的 glTF 资产，不便加针对性单测；以 cgltf 成熟 `read_float` + 双后端构建 + 全量套件 + 手算论证为验证；`test.glb` 为 FLOAT UV、行为不变
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（`test.glb` 为 FLOAT VEC2 UV，套件行为不变）。
+
 ## R278：glTF WEIGHTS_0 normalized 整型被当作 4×float（蒙皮权重解析错误）（已完成）
 
 ### [x] R278-A decode WEIGHTS_0 honouring component_type + normalized

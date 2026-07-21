@@ -322,7 +322,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     const u8 *ud = cgltf_buffer_data(uv_acc);
                     usize us = cgltf_accessor_stride(uv_acc);
                     for (u32 vi = 0; ud && vi < vert_count; vi++) {
-                        memcpy(sverts[vi].uv, ud + vi * us, sizeof(f32) * 2);
+                        /* R279 (CORRECTNESS): TEXCOORD_0 may be normalized
+                         * UNSIGNED_BYTE/UNSIGNED_SHORT (glTF permits it for UV
+                         * compression), not just FLOAT. A raw memcpy-as-float
+                         * reinterprets those bytes and corrupts texture coords.
+                         * cgltf_accessor_read_float honours component_type +
+                         * normalized + stride; FLOAT UVs are unchanged. */
+                        if (!cgltf_accessor_read_float(uv_acc, vi, sverts[vi].uv, 2))
+                            memcpy(sverts[vi].uv, ud + vi * us, sizeof(f32) * 2);
                     }
                 }
 
@@ -411,7 +418,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     const u8 *ud = cgltf_buffer_data(uv_acc);
                     usize us = cgltf_accessor_stride(uv_acc);
                     for (u32 vi = 0; ud && vi < vert_count; vi++) {
-                        memcpy(verts[vi].uv, ud + vi * us, sizeof(f32) * 2);
+                        /* R279 (CORRECTNESS): TEXCOORD_0 may be normalized
+                         * UNSIGNED_BYTE/UNSIGNED_SHORT (glTF permits it for UV
+                         * compression), not just FLOAT. A raw memcpy-as-float
+                         * reinterprets those bytes and corrupts texture coords.
+                         * cgltf_accessor_read_float honours component_type +
+                         * normalized + stride; FLOAT UVs are unchanged. */
+                        if (!cgltf_accessor_read_float(uv_acc, vi, verts[vi].uv, 2))
+                            memcpy(verts[vi].uv, ud + vi * us, sizeof(f32) * 2);
                     }
                 }
 
