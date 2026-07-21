@@ -143,6 +143,36 @@ TEST(overflow_protection)
     ASSERT_EQ(buf.write_pos, pos_before);
 }
 
+TEST(write_bytes_size_overflow_rejected)
+{
+    /* R298: a size that makes `write_pos + size` wrap u32 to a small value must
+     * be rejected. The old additive check `write_pos + size <= PACKET_MAX_SIZE`
+     * accepted it and then memcpy'd ~4GB past the 1400-byte buffer (OOB read of
+     * src + OOB write of data[]). The fix compares against remaining capacity,
+     * so the write is refused and the cursor stays put. This test crashes
+     * against the pre-fix code and passes with the fix. */
+    PacketBuffer wb;
+    packet_begin(&wb, 7, 0);
+    u32 before = wb.write_pos;                 /* PACKET_HEADER_SIZE */
+    u32 wrap_size = (u32)(0u - wb.write_pos);  /* write_pos + wrap_size == 0 (mod 2^32) */
+    static const char one_byte[1] = {0};
+    packet_write_bytes(&wb, one_byte, wrap_size);
+    ASSERT_EQ(wb.write_pos, before);           /* rejected: no advance, no OOB memcpy */
+
+    /* A read whose size wraps must likewise fail the bound rather than OOB-read
+     * buf->data. Exercised safely via the fixed-size read path exhausting the
+     * payload (packet_read_bytes with a wrapped size is unsafe to call because
+     * its failure path memsets `size` bytes of the caller's buffer). */
+    PacketBuffer rb;
+    packet_write_u32(&wb, 0xCAFEBABEu);
+    u32 total = packet_finish(&wb, 1, 0);
+    packet_read_begin(&rb, wb.data, total);
+    ASSERT_EQ(packet_read_u32(&rb), 0xCAFEBABEu);
+    u32 rp = rb.read_pos;
+    ASSERT_EQ(packet_read_u32(&rb), 0u);       /* no bytes left → rejected */
+    ASSERT_EQ(rb.read_pos, rp);                /* cursor unchanged on rejection */
+}
+
 TEST(parse_header_too_small)
 {
     u8 tiny[5] = {0};
@@ -288,6 +318,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(roundtrip_bytes);
     RUN_TEST(mixed_types);
     RUN_TEST(overflow_protection);
+    RUN_TEST(write_bytes_size_overflow_rejected);
     RUN_TEST(parse_header_too_small);
     RUN_TEST(parse_header_null);
     RUN_TEST(empty_payload);

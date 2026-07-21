@@ -4420,6 +4420,14 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R298：`packet_can_write`/`packet_can_read` 边界检查整数溢出 → 巨大 size 绕过导致 memcpy 越界（已完成）
+
+### [x] R298-A packet 边界检查用加法 `pos+n` 在 u32 回绕
+- [x] `packet_can_write` 用 `(write_pos+n) <= PACKET_MAX_SIZE`、`packet_can_read` 用 `(read_pos+n) <= write_pos`。当 `n` 接近 `UINT32_MAX`（如 `packet_write_bytes`/`packet_read_bytes` 传入巨大或从包内派生的长度）时，`pos+n` 在 u32 上**回绕**成小值滑过边界 → `packet_write_bytes` 的 `memcpy(&data[pos], src, n)` 冲出 1400 字节 `data[]`（越界读 src + 越界写 data），`packet_read_bytes` 越过真实 payload 读 `data[]`（信息泄露/崩溃）。与 R254 加固 `packet_can_read`（读边界）为同一安全脉络的自然后续。
+- [x] 改为**溢出安全**：`packet_can_write` 先判 `write_pos<=PACKET_MAX_SIZE`（不变量）再 `n <= PACKET_MAX_SIZE - write_pos`；`packet_can_read` 先判 `read_pos<=write_pos`（亦覆盖截断包 read_begin 后 read_pos 停在 header 偏移的情形）再 `n <= write_pos - read_pos`。合法输入行为不变；仅回绕病态输入由"误通过"改为"正确拒绝"。
+
+**验收**：新增回归 `write_bytes_size_overflow_rejected`——`packet_begin` 后以 `wrap_size=0u-write_pos`（使 `write_pos+wrap_size≡0 mod 2^32`）调 `packet_write_bytes`，断言 `write_pos` 不前进；并含 read 侧定长读边界断言。旧代码运行该用例 **SIGSEGV(signal 11)**（~4GB memcpy 越界），修复后 GL/VK 各 CTest **31/31**（test_packet 19/19）。
+
 ## R297：数学库(四元数/矩阵) + UTF-8 解码 + 字体布局 + ECS swap-remove + 粒子发射多窄线深审——均无高置信活跃 bug，不修复
 
 - 窄线 A：`math.h`/`math.c` 四元数与矩阵。`quat_mul` 逐项核对为正确 Hamilton 积（(x,y,z,w) 布局）；`quat_rotate_vec3` 为标准 `v+2s(q×v)+2q×(q×v)`；`quat_from_axis_angle`、slerp/nlerp（带 `dot<0` 最短路取反）正确；`mat4_from_quat`（列主序 `e[col][row]`）逐元素对标准 `R[r][c]=m.e[c][r]` 全部吻合、无转置错误；`mat4_ortho`/`mat4_perspective` 系数与除零守卫（R142）正确。

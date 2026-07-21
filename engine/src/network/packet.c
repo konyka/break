@@ -45,7 +45,14 @@ static u32 le_read_u32(const u8 *src)
 static bool packet_can_write(const PacketBuffer *buf, u32 n)
 {
     if (!buf) return false;
-    return (buf->write_pos + n) <= PACKET_MAX_SIZE;
+    /* R298 (CORRECTNESS/安全): compare against remaining capacity instead of
+     * `write_pos + n <= PACKET_MAX_SIZE`. The additive form wraps in u32 when a
+     * caller (e.g. packet_write_bytes with a large/forged length) passes an `n`
+     * near UINT32_MAX: write_pos + n overflows to a small value that slips under
+     * the bound, and the subsequent memcpy then blows past the 1400-byte data[].
+     * write_pos is invariantly <= PACKET_MAX_SIZE, so this cannot underflow. */
+    if (buf->write_pos > PACKET_MAX_SIZE) return false;
+    return n <= (u32)PACKET_MAX_SIZE - buf->write_pos;
 }
 
 static bool packet_can_read(const PacketBuffer *buf, u32 n)
@@ -59,7 +66,14 @@ static bool packet_can_read(const PacketBuffer *buf, u32 n)
      * parser would fabricate the rest. This also makes read_truncated_packet /
      * empty-payload reads deterministically return 0 rather than relying on the
      * buffer tail happening to be zero. */
-    return (buf->read_pos + n) <= buf->write_pos;
+    /* R298 (CORRECTNESS/安全): overflow-safe form. `read_pos + n <= write_pos`
+     * wraps in u32 for a forged huge `n` (e.g. packet_read_bytes with an
+     * attacker-derived length), letting the read slip under the bound and
+     * memcpy past the real payload. Compare against remaining readable bytes
+     * instead; the read_pos>write_pos guard also covers truncated datagrams
+     * where read_begin left read_pos at the header offset past a short copy. */
+    if (buf->read_pos > buf->write_pos) return false;
+    return n <= buf->write_pos - buf->read_pos;
 }
 
 /* ---- Serialization ---- */
