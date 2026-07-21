@@ -4420,6 +4420,20 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R288：物理宽相 BVH `bvh_query_pairs` 用 `if(a<b)` 丢弃约半数碰撞对（已完成）
+
+### [x] R288-A dual-traversal 叶-叶回调漏报
+- [x] `bvh.c:399–403` `if (a < b) callback(a,b)`，注释"去重"，实为漏报
+- [x] 证明每无序叶对恰好枚举一次：自 `(root,root)`；自配对 P 做 LL/RR/LR（省 RL）、异节点 (P,Q) 做全 4 组合；LCA 唯一、cross 项仅 (left,right) → nodeA/nodeB 顺序由树结构固定、与 object_index 无关
+- [x] `a<b` 在"左子树叶 index > 右子树叶"时整对丢弃（~半数）→ `physics_collision_callback` 零触发 → 漏碰撞
+- [x] `physics.c:696` `bvh_query_pairs` 为唯一宽相配对源，无暴力回退
+- [x] 手算：两盒共享 x∈[0,1] 全重叠，高 index 盒经 SAH 入 left → a>b → 丢对
+- [x] 修复：规范序无条件上报、仅排除同叶 a==b（`a<b→cb(a,b)`、`a>b→cb(b,a)`）；每对一次不重复解算
+- [x] 回归测试 `bvh_query_pairs_reports_all_overlaps`（6 盒全重叠 + 逆向 index/位置相关性；断言对数==暴力真值 15、规范序、无重复）
+- [x] 附带确认（不在本轮修复）：宽相 BVH 积分前更新、积分后查对，存在"步初分离→步末相交"的 1 帧离散延迟，属离散步进权衡且 CCD 覆盖高速体，非本轮高置信项
+
+**验收**：GL/VK 构建通过；GL/VK CTest 各 **31/31**（test_physics 含新用例）。
+
 ## R287：骨骼蒙皮——关节世界矩阵缺失非 joint 祖先（Armature）变换（评估后不修复）
 
 - 窄线：骨骼层级评估 `skel_resolve_world`（`skeleton.c:115–138`）+ 蒙皮 palette `current_pose = world × inverse_bind`（216/239）+ glTF 加载 `joint_parents`/`inverse_bind`（`asset.c:490–524`）。

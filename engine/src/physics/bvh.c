@@ -397,9 +397,21 @@ static void bvh_query_pairs_dual(const BVH *bvh, u32 nodeA, u32 nodeB,
     bool leafB = (nB->object_index != BVH_NULL);
 
     if (leafA && leafB) {
-        /* Both leaves: report pair (enforce a < b to avoid duplicates) */
+        /* Both leaves: report the pair in canonical (min,max) order.
+         *
+         * R288: the dual traversal reaches every unordered pair of distinct
+         * leaves EXACTLY ONCE — at their lowest common ancestor's self-pair, the
+         * cross term is descended only as (left,right) (never (right,left)), and
+         * distinct-node pairs fan out to all four child combos. Which leaf lands
+         * on nodeA vs nodeB is therefore fixed by the tree's left/right layout,
+         * NOT by object_index. The old `if (a < b)` guard was meant to dedup but
+         * — since there is no duplication — it instead SILENTLY DROPPED every
+         * pair whose nodeA leaf had a larger object_index than its nodeB leaf
+         * (~half of all pairs), i.e. missed collisions. Report unconditionally,
+         * only skipping a == b (same leaf reached via a self-pair descent). */
         u32 a = nA->object_index, b = nB->object_index;
-        if (a < b) callback(a, b, ctx);
+        if (a < b)      callback(a, b, ctx);
+        else if (a > b) callback(b, a, ctx);
         return;
     }
 

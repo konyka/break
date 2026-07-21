@@ -214,6 +214,64 @@ TEST(bvh_build_query)
     bvh_destroy(&bvh);
 }
 
+/* R288: bvh_query_pairs must report EVERY overlapping pair regardless of how
+ * the tree places the two bodies (left vs right child) relative to their
+ * object indices. The old `if (a < b)` guard dropped any pair whose nodeA leaf
+ * had the larger index. */
+typedef struct { u32 count; u32 a[64], b[64]; } PairRec;
+static void pairrec_cb(u32 a, u32 b, void *ctx) {
+    PairRec *r = (PairRec *)ctx;
+    if (r->count < 64) { r->a[r->count] = a; r->b[r->count] = b; r->count++; }
+}
+static bool test_aabb_overlap(BVHAABB a, BVHAABB b) {
+    for (int k = 0; k < 3; k++)
+        if (a.max.e[k] < b.min.e[k] || b.max.e[k] < a.min.e[k]) return false;
+    return true;
+}
+
+TEST(bvh_query_pairs_reports_all_overlaps)
+{
+    enum { N = 6 };
+    BVH bvh;
+    bvh_init(&bvh, N);
+
+    /* Reversed position/index correlation: higher index sits at LOWER x, so a
+     * centroid-split BVH tends to place higher-index bodies in the left child.
+     * All six boxes share the region x in [0,1], so every pair overlaps. */
+    BVHAABB aabbs[N];
+    for (u32 i = 0; i < N; i++) {
+        f32 cx = (f32)(N - 1 - i) * 0.2f; /* i=0 -> 1.0, i=5 -> 0.0 */
+        aabbs[i] = (BVHAABB){ .min = vec3(cx - 1.0f, 0.0f, 0.0f),
+                              .max = vec3(cx + 1.0f, 1.0f, 1.0f) };
+    }
+    bvh_build(&bvh, aabbs, N);
+
+    /* Ground truth via brute-force AABB overlap. */
+    u32 expected = 0;
+    for (u32 i = 0; i < N; i++)
+        for (u32 j = i + 1; j < N; j++)
+            if (test_aabb_overlap(aabbs[i], aabbs[j])) expected++;
+    ASSERT_EQ(expected, (u32)(N * (N - 1) / 2)); /* all 15 overlap */
+
+    PairRec rec = {0};
+    bvh_query_pairs(&bvh, pairrec_cb, &rec);
+
+    /* No dropped pairs, no duplicates. */
+    ASSERT_EQ(rec.count, expected);
+
+    /* Every reported pair is canonical (a < b) and each unordered pair unique. */
+    bool seen[N][N];
+    for (u32 i = 0; i < N; i++) for (u32 j = 0; j < N; j++) seen[i][j] = false;
+    for (u32 k = 0; k < rec.count; k++) {
+        ASSERT_TRUE(rec.a[k] < rec.b[k]);
+        ASSERT_TRUE(rec.b[k] < N);
+        ASSERT_TRUE(!seen[rec.a[k]][rec.b[k]]);
+        seen[rec.a[k]][rec.b[k]] = true;
+    }
+
+    bvh_destroy(&bvh);
+}
+
 TEST(bvh_raycast_test)
 {
     BVH bvh;
@@ -521,6 +579,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(raycast_hit);
     RUN_TEST(raycast_miss);
     RUN_TEST(bvh_build_query);
+    RUN_TEST(bvh_query_pairs_reports_all_overlaps);
     RUN_TEST(bvh_raycast_test);
     /* Edge cases */
     RUN_TEST(physics_empty_world_raycast);
