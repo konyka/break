@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R275：IBL 镜面 split-sum 误用 F_env 而非 F0（与 BRDF LUT 积分约定不符）（已完成）
+
+### [x] R275-A pair the split-sum specular with F0 (not F_Schlick(NdotV,F0))
+- [x] `brdf_lut.comp` 头注释与积分实现（66–88）明确：LUT 对 Schlick 的 `Fc=(1-VdotH)^5` 做 `A=∫(1-Fc)·G_Vis`、`B=∫Fc·G_Vis` 分离预积分，运行时应为 `specular = prefiltered * (F0*A + B)`（Karis/Epic split-sum）
+- [x] 4 个 IBL frag（`pbr_clustered(.frag/_vk)`、`deferred_light(.frag/_vk)`）HAS_IBL 分支却写 `specular_ibl = prefiltered * (F_env*brdf.x + brdf.y)`，`F_env = F_Schlick(max(NdotV,0), F0)` → 在 LUT 已含 Fresnel 的基础上**再乘一次** Fresnel（双重施加）
+- [x] 手算：F0=0.04（非金属）、NdotV=0（掠射，LUT u=0）→ `F_env=0.04+0.96·1=1.0` vs 期望 `F0=0.04`，A 项放大 `1.0/0.04≈25×`；NdotV=1 时 `F_Schlick=F0` 两者相等（正视差异小），故掠射非金属环境高光偏亮最明显；roughness 越大 prefilter 越糊、错误权重越显眼
+- [x] 触发：HAS_IBL（默认 clustered/延迟 IBL 路径）+ 非金属 + 低 NdotV（大平面掠视、圆柱侧面等）
+- [x] 修复：4 个 shader 的 HAS_IBL 镜面项改 `F_env → F0`（`prefiltered * (F0*brdf.x + brdf.y)`），与 LUT 推导一致；保留 `kD_env = (1-F_env)*(1-metallic)` 做**漫反射**能量分配（视相关 Fresnel，标准做法）；`#else` 非 IBL 回退（用假 `brdf=(0.8,0.2)`、非真 LUT）不动
+- [x] glslangValidator 校验：VK 两变体 ±HAS_IBL 编译成 SPIR-V 通过；GL 两变体 HAS_IBL 路径无错误
+
+**验收**：双后端构建通过（shader 运行时编译，另经 glslangValidator 离线校验 4 shader）；GL/VK CTest 各 **31/31**（golden 只渲前向三角形、test_vulkan 不走 IBL 合成，故套件无覆盖差异；以 glslang 校验补足）。
+
 ## R273：延迟渲染路径光源冻结（光源填充被前向 guard 独占）（已完成）
 
 ### [x] R273-A populate lights every frame for BOTH render paths

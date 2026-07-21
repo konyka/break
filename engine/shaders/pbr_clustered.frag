@@ -374,7 +374,12 @@ void main() {
     float lod = roughness * 4.0; // 5 mip levels (0-4)
     vec3 prefiltered  = textureLod(u_prefilter_map, R, lod).rgb;
     vec2 brdf         = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), roughness)).rg;
-    vec3 specular_ibl = prefiltered * (F_env * brdf.x + brdf.y);
+    /* R275: split-sum LUT integrates the (1-Fc)/Fc factorization of Schlick
+     * (Fc=(1-VdotH)^5), so the runtime pairing is `F0*scale + bias` (see
+     * brdf_lut.comp header). Using F_env=F_Schlick(NdotV,F0) here double-applies
+     * Fresnel — at grazing (NdotV→0) F_env→1 vs F0=0.04, over-brightening
+     * dielectric env specular ~25x. */
+    vec3 specular_ibl = prefiltered * (F0 * brdf.x + brdf.y);
 #else
     vec3 irradiance = irradiance_hemisphere(N);
     vec3 diffuse_ibl = irradiance * albedo * kD_env;

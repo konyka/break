@@ -386,7 +386,10 @@ void main() {
     float lod = roughness * 4.0; // 5 mip levels (0-4)
     vec3 prefiltered  = textureLod(u_prefilter_map, R, lod).rgb;
     vec2 brdf         = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), roughness)).rg;
-    vec3 specular_ibl = prefiltered * (F_env * brdf.x + brdf.y);
+    /* R275: split-sum LUT is derived for `F0*scale + bias` (brdf_lut.comp).
+     * Using F_env=F_Schlick(NdotV,F0) double-applies Fresnel and over-brightens
+     * grazing dielectric env specular (F_env→1 vs F0=0.04 at NdotV→0). */
+    vec3 specular_ibl = prefiltered * (F0 * brdf.x + brdf.y);
 #else
     vec3 irradiance = irradiance_hemisphere(N);
     vec3 diffuse_ibl = irradiance * albedo * kD_env;

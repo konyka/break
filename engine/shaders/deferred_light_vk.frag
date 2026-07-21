@@ -250,7 +250,10 @@ void main() {
     float lod = rough * 4.0;
     vec3 prefiltered  = textureLod(u_prefilter_map, R, lod).rgb;
     vec2 brdf         = texture(u_brdf_lut, vec2(max(dot(N, V), 0.0), rough)).rg;
-    vec3 specular_ibl = prefiltered * (F_env * brdf.x + brdf.y);
+    /* R275: split-sum LUT is derived for `F0*scale + bias` (brdf_lut.comp).
+     * Using F_env=fresnel_schlick(NdotV,F0) double-applies Fresnel and
+     * over-brightens grazing dielectric env specular (F_env→1 vs F0 at NdotV→0). */
+    vec3 specular_ibl = prefiltered * (F0 * brdf.x + brdf.y);
 #else
     vec3 diffuse_ibl = vec3(0.0);
     vec3 specular_ibl = vec3(0.0);
