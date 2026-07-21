@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R331：粒子系统（CPU emit budget 分数进位 + GPU 原子 spawn 认领 + size/alpha fade + cull/render 间接绘制）深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论（`engine/src/renderer/particles.c`、`shaders/particle_update.comp`、`shaders/particle_cull.comp`）：
+  - CPU 发射预算（R174，`particles_compute`）：`emit_accum += emit_rate*dt`；`if(emit_accum>=1.0)` 时 `budget=(u32)emit_accum`、`emit_accum-=(f32)budget`（保留 [0,1) 分数进位使长期平均发射率精确），随后 `if(budget>PARTICLES_MAX)budget=PARTICLES_MAX`（超大 dt 时钳到上限、丢弃无处安放的超额，accum 已按完整 budget 扣减不残留）。每帧 `rhi_cmd_fill_buffer(spawn_buf,0,sizeof(u32),0u)` 清零 `claimed` 后再 dispatch → 认领计数逐帧重置。
+  - Push/uniform：VK 走 80 字节 push_constant blob（`push_data[20]`，R179 从 live `ps->*` 现算而非陈旧模板，一次上传），GL 走 loose uniforms；`budget` 以 float 传（`P_EMIT_BUDGET=uint(...)`，注释注明 uint() 截断语义）。
+  - GPU update（`particle_update.comp`，local_size_x=256）：`idx>=particles.length()` 守卫；死粒子 `budget==0` 早退，否则 `ticket=atomicAdd(claimed,1u)`、`ticket>=budget` 早退 → 精确认领恰好 budget 个（死粒子少于 budget 时全部复活但绝不超发，无概率性抖动）；spawn 用 hash(idx,ticket) 生成速度/寿命。alive 分支：`vel.y-=gravity*dt`、`pos+=vel*dt`、`life-=dt`；`t=clamp(life/max(max_life,0.001),0,1)`、`size=mix(0.1,1.0,t)`、`size_color.w=t` —— R281 修复了曾从上帧已衰减的 `size_color.x` 自反馈插值导致的复利式塌陷（现从常量基 1.0 重算，与 alpha 线一致）。
+  - cull/render：`cull_buf` 布局 = 4×u32 draw-indirect 头 + `PARTICLES_MAX` u32 索引表（`cull_bytes=4*4+PARTICLES_MAX*4`）；`particles_cull` 仅 `fill_buffer(cull_buf, offset=4, 4, 0)` GPU 清 instanceCount（R175：HOST_VISIBLE STORAGE|INDIRECT 上主机 memcpy 会与在途 draw_indirect/上一次 cull 竞争）；`cull_ready` 时 render 走 `draw_indirect`，GPU 决定实例数，避免 8192 个空 VS 早退（R167）。R180：compute/cull 不 `end/begin_render_pass`，保持 offscreen pass 的 suspend/resume。
+  - 观察（非 bug）：`particles_compute` dispatch `PARTICLES_MAX/256`，`particles_cull` dispatch `(PARTICLES_MAX+255)/256`。因 `PARTICLES_MAX=8192=32×256` 两者当前都为 32 组、覆盖恰好 8192 次调用，且两 shader 均有 `idx>=length()`/`idx>=PARTICLES_MAX` 守卫，无 OOB；仅当把 `PARTICLES_MAX` 改成非 256 倍数时 compute 会漏掉尾部残余（向下取整），属潜在健壮性而非当前正确性 bug。
+- 结论：分数进位预算、原子精确认领、fade 重算、间接绘制 cull 与渲染路径、pass suspend/resume 均正确（R167/R174/R175/R179/R180/R281 已加固）。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
+
 ## R330：线程化解码流水线（stb 解码/box mip 链/优先级输入队列/worker 生命周期/所有权契约）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/asset/decode_pipeline.c`）：
