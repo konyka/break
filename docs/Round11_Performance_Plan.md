@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R284：滚轮缩放把「度」量级作用于弧度 FOV（首次滚轮即破坏投影）（已完成）
+
+### [x] R284-A scroll-wheel FOV zoom in radians (was degree magnitudes on radian fov)
+- [x] `main.c:2509`：`camera.fov = fmaxf(20.0f, fminf(camera.fov - scroll_dy*5.0f, 120.0f))`——20/120 边界与步长 5 是度，但 `Camera.fov` 为弧度（`camera_init`=1.047≈60°，`mat4_perspective` 要弧度）
+- [x] 手算：初始 fov=1.047，任一格上滚 → `fmaxf(20, fminf(-3.953,120))=20.0`（rad≈1146°）；下滚 `fmaxf(20,fminf(6.047,120))=20.0`——`fov±5<20` 即任意一格立即钳到 20 rad
+- [x] `tan(20/2)=tan(10)≈2.18e4` → 投影/视锥/裁剪彻底错乱、画面崩坏；触发：滚轮缩放
+- [x] 修复：`deg2rad=π/180`，步长 5° 与钳制 20°..120° 均换算到弧度；上滚 scroll_dy>0 → fov 变小 → 拉近（方向正确）
+- [x] 同源 HUD 修复：`main.c:3342` debug 文本 `fov=%.0f°` 直接打印弧度（显示 1° 而非 60°），改 `camera.fov*57.2958f`（与同行 yaw/pitch 一致）
+- [x] 核对自洽（未再报）：yaw/pitch 解析式、LH 基、pitch 钳制 89°(rad)、WASD、鼠标 delta 未乘 dt；无独立 orbit 相机
+- [x] 验证：main.c 内联输入路径无 headless 单测（同 R268/R272/R273）；双后端构建 + 全量套件 + 手算；`test_camera_frustum.c` 固定 fov 投影不受影响
+
+**验收**：GL/VK 构建通过；GL/VK CTest 各 **31/31**。
+
 ## R282：字体图集覆盖率在 Alpha、片元采样 Red（字形渲染成实心矩形）（已完成）
 
 ### [x] R282-A sample coverage from the alpha channel the atlas actually writes

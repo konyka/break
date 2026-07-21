@@ -2506,7 +2506,17 @@ u32 culled_count = 0;
         {
             InputState *iscroll = platform_input(engine.platform);
             if (iscroll->scroll_dy != 0.0f) {
-                camera.fov = fmaxf(20.0f, fminf(camera.fov - iscroll->scroll_dy * 5.0f, 120.0f));
+                /* R284 (CORRECTNESS): camera.fov is in RADIANS (camera_init gets
+                 * 1.047≈60°, camera_projection→mat4_perspective expects radians).
+                 * The old clamp/step used degree magnitudes (20/120 bound, 5 step)
+                 * directly on the radian value, so the very first scroll snapped
+                 * fov to 20 rad (~1146°): tan(fov/2) exploded and the projection /
+                 * frustum broke. Apply the 20°..120° range and 5°/notch step in
+                 * radians. Up-scroll (scroll_dy>0) narrows fov → zooms in. */
+                const f32 deg2rad = 3.14159265f / 180.0f;
+                camera.fov = fmaxf(20.0f * deg2rad,
+                                   fminf(camera.fov - iscroll->scroll_dy * 5.0f * deg2rad,
+                                         120.0f * deg2rad));
             }
         }
 
@@ -3339,7 +3349,7 @@ u32 culled_count = 0;
               f32 grad_bearing = atan2f(cached_chdx, cached_chdz) * 57.2958f;
               if (grad_bearing < 0) grad_bearing += 360.0f;
               const char *gdir = (grad_bearing < 22.5f || grad_bearing >= 337.5f) ? "N" : grad_bearing < 67.5f ? "NE" : grad_bearing < 112.5f ? "E" : grad_bearing < 157.5f ? "SE" : grad_bearing < 202.5f ? "S" : grad_bearing < 247.5f ? "SW" : grad_bearing < 292.5f ? "W" : "NW";
-              debug_ui_text(&ui, "Camera: yaw=%.1f° pitch=%.1f° fov=%.0f°  AGL=%.1f  slope=%.1f° ↓%s  [%s h=%.1f]", camera.yaw * 57.2958f, camera.pitch * 57.2958f, camera.fov, cagl, atanf(cached_cslope) * 57.2958f, gdir, biome, ch);
+              debug_ui_text(&ui, "Camera: yaw=%.1f° pitch=%.1f° fov=%.0f°  AGL=%.1f  slope=%.1f° ↓%s  [%s h=%.1f]", camera.yaw * 57.2958f, camera.pitch * 57.2958f, camera.fov * 57.2958f, cagl, atanf(cached_cslope) * 57.2958f, gdir, biome, ch);
               { static f32 prev_yaw=0,prev_pitch=0; f32 yr=(camera.yaw-prev_yaw)/engine.delta_time*57.2958f; f32 pr=(camera.pitch-prev_pitch)/engine.delta_time*57.2958f; debug_ui_text(&ui, "Angular v: yaw=%.0f°/s pitch=%.0f°/s", yr, pr); prev_yaw=camera.yaw; prev_pitch=camera.pitch; }
             }
             { debug_ui_text(&ui, "Forward: (%.2f,%.2f,%.2f)  Mouse: (%.0f,%.0f)  Traveled: %.0f m  Speed: %.1f m/s", cam_fwd.e[0], cam_fwd.e[1], cam_fwd.e[2], inp->mouse_x, inp->mouse_y, camera_distance_traveled, engine.delta_time > 0.0001f ? camera_frame_dist / engine.delta_time : 0.0f); }
