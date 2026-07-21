@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R312：间接绘制/TAA/IBL/体积雾/场景世界变换/后处理合并链多窄线深审——无 demo 可达高置信 bug，不修复
+
+- 审计范围与结论：
+  - `indirect_draw.c`：GPU 驱动 compact 计数/execute 与双槽可见性(R76/R171/R175/R182/R183/R185/R186/R234-B 加固)。`indirect_draw_visibility_slot = visibility_buf[rhi_frame_index & 1]`,`upload_visibility` 与本帧 `compact` 均在调用点取同一帧号→读写同槽一致;`compact` 前 GPU 端 `fill_buffer` 清零 `draw_count_buf` 与 `visible_draws_buf`(避免 VK IndirectCount fallback 复活陈旧命令);`execute` 以 `current_draw_count` 作 maxDrawCount 上界、真实计数取自 `draw_count_buf`。正确。
+  - `taa.c`：历史 ping-pong `write_idx=history_idx`、`read_idx=1-history_idx`,帧末 `history_idx=read_idx`;`taa_get_output=fbo[1-history_idx]=write_idx`(本帧刚写入槽)。逐帧推演 F0/F1/F2 均正确;首帧 `first_frame` 用 current_color 作历史。正确。
+  - `ibl.c`：预滤波 `mip_size=IBL_PREFILTER_SIZE>>mip`(0 时夹 1)、`roughness=mip/(MIP_COUNT-1)`、`groups=ceil(mip_size/16)`;BRDF/辐照度 dispatch=SIZE/16(常量为 16 倍数);逐面/逐 mip 写后 `transition_to_read`。正确。
+  - `volumetric.c`：C 侧薄封装,仅 CPU 端一次 `mat4_inverse(view)`(R224-B,替代逐片元 GLSL inverse)。数学在着色器。正确。
+  - `scene_compute_world_transforms`（asset.c）：R256 迭代定点、节点数组序无关、按 node_count 上界终止(环视作根)。正确。
+  - `combined_post_process.c`：主 `use_combined` 路径 AA ping-pong 与 CombinedColor 单绘制正确;fallback 下 `fxaa_apply` 内部绑定自有 `fxaa_fbo`(覆盖调用方所绑 output_fbo),故 `combined_aa_get_output` 返回 `fxaa_get_texture()` 自洽。fallback 前对 output_fbo 的绑定冗余且 AA fallback 下 output_fbo 未使用(死资源),但 combined shader 随 demo 提供→fallback 非 demo 可达,非正确性 bug。
+- 结论：均正确/已加固/非 demo 可达,记为"评估、无修复"轮。无代码改动;总计 661 处修复。
+
 ## R311：hotreload_pipeline_poll 缺 ready 守卫 → 初始 shader 编译失败后每帧 read(stdin) 阻塞挂起（已完成）
 
 - 症状：`asset/hotreload.c::hotreload_pipeline_poll` 直接 `filewatch_poll(&hr->watcher)`,而同文件 `hotreload_texture_poll` 有 `if (!hr || !hr->ready) return;` 守卫——非对称,几乎必是遗漏。
