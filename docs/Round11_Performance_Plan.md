@@ -4420,6 +4420,12 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R310：Lua 绑定层 + 后处理(SSAO/DoF/Bloom) C 侧多窄线深审——无 demo 可达高置信 bug，不修复
+
+- 窄线 A：`script/script_lua.c` engine.* 绑定。存疑点：`checked_body`（`id<=0 || (u32)id>=pw->count → NULL`）与 `l_apply_impulse`/`l_body_set_ccd`（`id>0 && id<count`）拒绝 id 0，而物理体 id 为 **0-based**（`physics.c:108 u32 id=pw->count++`，首体 id=0）、`l_spawn` 直接返回 0-based id。核对 `test_script_lua.c:103` 注释确认 **"body 0 = sentinel/floor (bindings treat id 0 as 'none')"**——id 0 被绑定层**有意**当作"无"哨兵（`l_spawn` 无 host 亦返回 0=none，`engine_bindings_null_host_safe` 断言 sid==0），约定 0 号体总是预建地板/静态,故 `id<=0` 拒绝是**设计约束非 bug**；上界 `id>=count` 正确（0-based 末位 count-1 被接受）。其余核对：`l_spawn` 因 `physics_body_create` 满时 `return pw->count`（不自增）+ `checked_body` 以 `id>=count` 拒绝该返回值 → 无 `bodies[]` 越界；`l_key_down` 有 `key>=0 && key<512` 守卫；Lua 栈全平衡（`ls_from_state` getfield+touserdata+pop(1)、`l_get_pos/get_vel` push 3 return 3、`l_set_*` return 0、`refresh_hooks`/`lua_script_get_number` getglobal 后 pop(1)）；`lua_script_reload_if_changed` 用 `ls->last_mtime`（按实例，R309 在纯 C `script.c` 的同类 static bug 此处本就不存在）。
+- 窄线 B：`renderer/ssao.c`/`dof.c`/`post_process.c`(bloom)。三者 C 侧均为「读 shader 文件→建管线→建半分辨率 FBO(width/2×height/2)→绑纹理+传 uniform→draw(3,1) 全屏三角」；AO 半球核采样/DoF CoC 与深度线性化/bloom 提取+高斯模糊数学全在片元着色器,C 侧无可测算术。资源销毁顺序对称、句柄有效性守卫齐备。记录（非高置信、非 bug）：`dof_apply` 硬编码 `u_dof_near=0.1f/u_dof_far=100.0f`,与 demo 相机 `mat4_perspective` 的 near/far 一致；若相机参数变动需同步这两常量,但当前一致故不构成活跃 bug（且 DoF 无 test harness、无法确定性回归）。
+- 决策：两条窄线均无 demo 可达高置信 CORRECTNESS 问题,按宁缺毋滥不改代码（precedent R289/R290/R294/R296/R297/R300/R301/R306/R307）。测试缺口（记录）：无 SSAO/DoF 的 C 侧单测（纯 GPU 效果）；`script_lua` 未覆盖"id 0 被视为 none"的显式断言。编译/测试未触及（纯审计）。总计仍 660 处修复。
+
 ## R309：script 热重载 mtime 用函数内 static 跨引擎实例共享 → 重建的引擎永不重载、永久为空（已完成）
 
 - 症状：`script/script.c::script_reload_if_changed` 用 `static u32 last_mtime = 0` 记录上次观察到的文件 mtime。函数内 static 全进程仅一份,被所有 `ScriptEngine` 实例与所有 `path` 共享。
