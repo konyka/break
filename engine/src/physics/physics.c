@@ -484,8 +484,17 @@ static void physics_collision_callback(u32 i, u32 j, void *ctx) {
 static f32 body_bound_radius(const RigidBody *b) {
     switch (b->shape) {
         case SHAPE_SPHERE:
-        case SHAPE_CAPSULE:
             return b->radius;
+        case SHAPE_CAPSULE:
+            /* R277 (CORRECTNESS): CCD sweeps the body as a sphere of this radius
+             * (static AABBs are expanded by it). A capsule's farthest point from
+             * its center is the cap tip at half_height + radius along the axis,
+             * matching aabb_from_body's Y extent. Returning only `radius` here
+             * under-expanded the swept volume by half_height, so a fast CCD
+             * capsule could tunnel through thin static geometry along its axis.
+             * A conservative (possibly slightly early) bound is the correct
+             * behavior for a tunneling-prevention safety net. */
+            return b->half_height + b->radius;
         case SHAPE_BOX:
         default: {
             f32 m = b->half_extent.e[0];

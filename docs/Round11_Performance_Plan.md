@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R277：CCD 胶囊扫掠保守半径漏算 half_height（胶囊可穿薄静态体）（已完成）
+
+### [x] R277-A capsule CCD bound radius must include half_height
+- [x] `physics.c` CCD 把移动体当作 `body_bound_radius(b)` 的球来扫掠（`ccd_sweep_static` 用该半径膨胀静态 AABB）
+- [x] `body_bound_radius`（486–488）对 `SHAPE_CAPSULE` 只返回 `b->radius`，漏掉 `half_height`；而胶囊中心到最远点（帽尖）沿轴为 `half_height + radius`（与 `aabb_from_body` 的 Y 半宽 `half_height+radius` 一致）
+- [x] 后果：扫掠球比真实胶囊少扩 `half_height`，快速沿轴运动 + 启用 CCD 的胶囊可穿过厚度 < 漏算量的薄静态几何
+- [x] 手算：`half_height=1、radius=0.5`（帽尖在中心上方 1.5m）直立胶囊从 y=0 以 1000 上冲、薄天花板 y∈[9.9,10.1]、单步 dt=0.1。旧 bound=0.5：中心停在 `9.9-0.5-ε≈9.3`，帽尖 `≈10.8` **穿过** 天花板顶 10.1；修复 bound=1.5：中心停在 `9.9-1.5-ε≈8.3`，帽尖 `≈9.8` 停在天花板下 ✓（少扩量 = `half_height` = 1.0m）
+- [x] 触发：`physics_body_set_ccd(true)` + `SHAPE_CAPSULE` + 大步长/高速沿轴 + 薄静态障碍
+- [x] 修复：`body_bound_radius` 拆分 `SHAPE_SPHERE`（仍 `radius`）与 `SHAPE_CAPSULE`（`half_height + radius`）；保守（可能略早停）对防穿透安全网是**正确**行为，精确解析仍由离散 narrowphase 处理
+- [x] 新增回归 `ccd_capsule_axis_no_tunnel`：直立胶囊沿轴撞薄天花板，断言帽尖 `< 10.0`（旧代码帽尖 ~10.8 会失败，修复后 ~9.8 通过）
+
+**验收**：双后端构建通过；GL/VK CTest 各 **31/31**（新增胶囊 CCD 回归；手算确认判别性：旧 bound 该测试失败、新 bound 通过）。
+
 ## R275：IBL 镜面 split-sum 误用 F_env 而非 F0（与 BRDF LUT 积分约定不符）（已完成）
 
 ### [x] R275-A pair the split-sum specular with F0 (not F_Schlick(NdotV,F0))

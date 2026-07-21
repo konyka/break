@@ -478,6 +478,30 @@ TEST(no_ccd_tunnels)
     physics_world_destroy(pw);
 }
 
+TEST(ccd_capsule_axis_no_tunnel)
+{
+    /* R277: CCD sweeps the body as a sphere of body_bound_radius. A capsule's
+     * farthest point from its center is the cap tip at half_height + radius, so
+     * the pre-R277 bound (radius only) under-expanded the swept volume and let a
+     * fast capsule tunnel along its own axis. */
+    PhysicsWorld *pw = physics_world_create(64);
+    /* Thin horizontal static ceiling spanning y in [9.9, 10.1]. */
+    physics_body_create(pw, vec3(0, 10, 0), vec3(5, 0.1f, 5), 0.0f, true, 0);
+    /* Upright capsule: half_height 1.0, radius 0.5 -> cap tip 1.5 above center. */
+    u32 id = physics_body_create_capsule(pw, vec3(0, 0, 0), 0.5f, 1.0f, 1.0f, false, 0);
+    physics_body_set_ccd(pw, id, true);
+    pw->bodies[id].velocity = vec3(0, 1000, 0); /* ~100 units up in one step */
+
+    physics_step(pw, 0.1f);
+
+    /* Cap tip must stay below the ceiling. With the old radius-only bound the
+     * center stopped at ~9.3 and the tip reached ~10.8 (through the ceiling);
+     * with half_height+radius it stops at ~8.3 and the tip rests near 9.8. */
+    f32 tip = pw->bodies[id].position.e[1] + 1.0f + 0.5f;
+    ASSERT_TRUE(tip < 10.0f);
+    physics_world_destroy(pw);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -518,4 +542,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(contact_callback_fires);
     RUN_TEST(ccd_prevents_tunnel);
     RUN_TEST(no_ccd_tunnels);
+    RUN_TEST(ccd_capsule_axis_no_tunnel);
 TEST_MAIN_END()
