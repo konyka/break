@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R297：数学库(四元数/矩阵) + UTF-8 解码 + 字体布局 + ECS swap-remove + 粒子发射多窄线深审——均无高置信活跃 bug，不修复
+
+- 窄线 A：`math.h`/`math.c` 四元数与矩阵。`quat_mul` 逐项核对为正确 Hamilton 积（(x,y,z,w) 布局）；`quat_rotate_vec3` 为标准 `v+2s(q×v)+2q×(q×v)`；`quat_from_axis_angle`、slerp/nlerp（带 `dot<0` 最短路取反）正确；`mat4_from_quat`（列主序 `e[col][row]`）逐元素对标准 `R[r][c]=m.e[c][r]` 全部吻合、无转置错误；`mat4_ortho`/`mat4_perspective` 系数与除零守卫（R142）正确。
+- 窄线 B：`ui/utf8.c` `utf8_decode`。因 NUL(0x00) 永非合法续字节且各续字节检查 `||` 短路，**对 NUL 结尾串永不越过终止符读取**（内存安全）；overlong（2 字节<0x80、3<0x800、4<0x10000）、代理区 D800–DFFF、>0x10FFFF、lead/续字节掩码范围全部符合 Unicode。
+- 窄线 C：`ui/font.c` 布局。atlas 打包换行、`quad_count>=capacity` 写前守卫、newline 行高 `ascent-descent+line_gap`（与 `line_height` 一致）、`text_width` 多行取 max、NDC 除零守卫（R244）均正确。仅记录一处**非 demo 可达**的理论鲁棒性缺口：换行后不复检水平是否容纳，若单字形宽度 ≥ 图集宽度会水平越界（正常字体/尺寸下 `gw≪ATLAS_SIZE`，不触发）。
+- 窄线 D：`ecs.c` `archetype_swap_remove`(R286)/`world_destroy_entity`。全局 slot swap-remove 维持"尾块前均满"打包不变量、`entity_index[moved]=global_slot` 正确更新、销毁全局尾实体走 skip 分支、空尾块由下次 `archetype_alloc_slot` 复用——正确。
+- 窄线 E：`renderer/particles.c` 发射预算(R174)。`emit_accum += rate*dt` → 取整 budget、分数进位 `accum-=budget`、`>PARTICLES_MAX` 钳制（超载丢弃不累积），逻辑正确。
+- 决策：多条窄线均无 demo 可达高置信 CORRECTNESS 问题，按宁缺毋滥**不改代码**（precedent R289/R290/R294/R296）。测试缺口(记录)：无 `quat_mul`/`mat4_from_quat` 已知值 golden 单测；无 utf8 截断/overlong/代理区拒绝单测；无 font 单字形超宽鲁棒性用例。
+
 ## R296：相机(fly camera) + 角色控制器 + UI slider 三条窄线深审——均无高置信活跃 bug，不修复
 
 - 窄线 A：`camera.c` `camera_view`/`camera_inv_view`/`camera_update`。
