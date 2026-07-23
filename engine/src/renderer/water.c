@@ -28,7 +28,8 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     w->time = 0.0f;
     w->time_scale = 1.0f;
     w->color = vec3(0.1f, 0.3f, 0.5f);
-    w->enabled = true;
+    /* R360: enabled only after full init — underwater clear must not arm on failure. */
+    w->enabled = false;
     w->render_above = false;
     w->sampler = RHI_HANDLE_NULL;
 
@@ -85,7 +86,6 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     if (!rhi_handle_valid(w->sampler)) {
         LOG_WARN("Water: sampler creation failed");
         water_shutdown(w);
-        w->enabled = false;
         return false;
     }
 
@@ -120,6 +120,7 @@ w->loc_model = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_model");
         return false;
     }
 
+    w->enabled = true;
     LOG_INFO("Water plane initialized at y=%.1f (%.0fx%.0f)", water_y, size, size);
     return true;
 }
@@ -130,6 +131,11 @@ void water_shutdown(WaterPlane *w) {
     if (rhi_handle_valid(w->vbo))      rhi_buffer_destroy(w->device, w->vbo);
     if (rhi_handle_valid(w->sampler))  rhi_sampler_destroy(w->device, w->sampler);
     if (rhi_handle_valid(w->pipeline)) rhi_pipeline_destroy(w->device, w->pipeline);
+    w->ibo = RHI_HANDLE_NULL;
+    w->vbo = RHI_HANDLE_NULL;
+    w->sampler = RHI_HANDLE_NULL;
+    w->pipeline = RHI_HANDLE_NULL;
+    w->enabled = false;
 }
 
 void water_update(WaterPlane *w, f32 dt) {

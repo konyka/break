@@ -94,6 +94,11 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_End)       return 286;
     if (ks == XKB_KEY_Insert)    return 287;
     if (ks == XKB_KEY_Delete)    return 288;
+    /* R360: disambiguate End/Insert dual-binds in main (reset/DOF). */
+    if (ks == XKB_KEY_Pause)       return 291;
+    if (ks == XKB_KEY_Scroll_Lock) return 292;
+    if (ks == XKB_KEY_Num_Lock)    return 293;
+    if (ks == XKB_KEY_Caps_Lock)   return 294;
     if (ks == XKB_KEY_minus || ks == XKB_KEY_underscore)      return (i32)'-';
     if (ks == XKB_KEY_plus || ks == XKB_KEY_equal)            return (i32)'=';
     if (ks == XKB_KEY_parenleft || ks == XKB_KEY_braceleft)   return (i32)'(';

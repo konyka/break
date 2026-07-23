@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R360：MRT 半成品 + 热键双重绑定消歧 + water.enabled 对齐（已完成）
+
+### [x] R360-A/B GL+VK MRT create：calloc fail → destroy, return null
+### [x] R360-C deferred init/resize require 4×color + depth
+### [x] R360-D End≠reset：reset → Pause(291)
+### [x] R360-E Insert≠DOF：DOF → ScrollLock(292)
+### [x] R360-F `=`≠water：water → NumLock(293) + pipeline gate
+### [x] R360-G PageUp≠auto-exposure：auto-exposure → CapsLock(294)
+### [x] R360-H water.enabled only after successful init；shutdown clears
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **756** 处修复。
+
 ## R359：offscreen/cubemap FBO 半成品发布 + render_init 早退泄漏 + UNIFIED env 门控（已完成）
 
 ### [x] R359-A GL offscreen create：calloc fail → destroy, return null（no partial fb）

@@ -6478,7 +6478,12 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     /* Register each color texture as a separate texture handle. */
     for (u32 i = 0; i < attachment_count; i++) {
         VKTextureData *td = calloc(1, sizeof(VKTextureData));
-        if (!td) return fbo;
+        if (!td) {
+            /* R360: never publish fb with missing color/depth handles. */
+            LOG_WARN("VK: MRT color slot alloc failed (%u/%u)", i, attachment_count);
+            rhi_mrt_fbo_destroy(dev, &fbo);
+            return (RHIMRTFBO){0};
+        }
         u32 cidx = rhi_alloc_slot(dev);
         td->image = md->color_images[i];
         td->view = md->color_views[i];
@@ -6493,7 +6498,11 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     /* Register depth as a texture handle. */
     {
         VKTextureData *dd = calloc(1, sizeof(VKTextureData));
-        if (!dd) return fbo;
+        if (!dd) {
+            LOG_WARN("VK: MRT depth slot alloc failed");
+            rhi_mrt_fbo_destroy(dev, &fbo);
+            return (RHIMRTFBO){0};
+        }
         u32 didx = rhi_alloc_slot(dev);
         dd->image = md->depth_image;
         dd->view = md->depth_view;

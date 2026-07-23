@@ -75,6 +75,11 @@ static i32 win_vk_to_index(i32 vk_code) {
     case VK_RSHIFT:   return 289;
     case VK_LCONTROL: return 290;
     case VK_RCONTROL: return 290;
+    /* R360: disambiguate End/Insert dual-binds in main (reset/DOF/water). */
+    case VK_PAUSE:    return 291;
+    case VK_SCROLL:   return 292;
+    case VK_NUMLOCK:  return 293;
+    case VK_CAPITAL:  return 294;
     case VK_OEM_MINUS:  return 45;
     case VK_OEM_PLUS:   return 61;
     case VK_OEM_4:      return 91;

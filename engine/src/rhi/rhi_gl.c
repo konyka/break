@@ -2244,7 +2244,12 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     /* Register each color texture as a separate texture handle. */
     for (u32 i = 0; i < attachment_count; i++) {
         GLTextureData *td = calloc(1, sizeof(GLTextureData));
-        if (!td) return fbo;
+        if (!td) {
+            /* R360: never publish fb with missing color/depth handles. */
+            LOG_WARN("GL: MRT color slot alloc failed (%u/%u)", i, attachment_count);
+            rhi_mrt_fbo_destroy(dev, &fbo);
+            return (RHIMRTFBO){0};
+        }
         u32 cidx = rhi_alloc_slot(dev);
         td->gl_tex            = md->color_tex[i];
         td->width             = width;
@@ -2259,7 +2264,11 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     /* Register depth as a texture handle (readable for deferred lighting). */
     if (md->depth_tex) {
         GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
-        if (!dtd) return fbo;
+        if (!dtd) {
+            LOG_WARN("GL: MRT depth slot alloc failed");
+            rhi_mrt_fbo_destroy(dev, &fbo);
+            return (RHIMRTFBO){0};
+        }
         u32 didx = rhi_alloc_slot(dev);
         dtd->gl_tex            = md->depth_tex;
         dtd->width             = width;

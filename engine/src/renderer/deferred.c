@@ -267,8 +267,15 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         return;
     }
 
-    /* R348: MRT/sampler failure must not leave initialized=true (empty GBuffer bind). */
-    if (!rhi_handle_valid(sys->_mrt_fbo.fb) || !rhi_handle_valid(sys->_gbuf_sampler) ||
+    /* R348/R360: MRT/sampler failure must not leave initialized=true (empty GBuffer bind).
+     * Require all 4 color attachments + depth — partial MRT used to publish valid fb only. */
+    if (!rhi_handle_valid(sys->_mrt_fbo.fb) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[0]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[1]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[2]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[3]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.depth_tex) ||
+        !rhi_handle_valid(sys->_gbuf_sampler) ||
         !rhi_handle_valid(sys->_linear_sampler)) {
         LOG_WARN("deferred: MRT/sampler creation failed -- system disabled");
         deferred_destroy(sys, dev);
@@ -316,8 +323,13 @@ void deferred_resize(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height)
 
     defrd_release_targets(sys, dev);
     defrd_alloc_targets(sys, dev, width, height);
-    /* R349: R348 validated MRT on init; resize must not leave initialized with empty MRT. */
-    if (!rhi_handle_valid(sys->_mrt_fbo.fb)) {
+    /* R349/R360: resize must not leave initialized with empty/partial MRT. */
+    if (!rhi_handle_valid(sys->_mrt_fbo.fb) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[0]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[1]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[2]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[3]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.depth_tex)) {
         LOG_WARN("deferred: MRT recreate failed on resize -- system disabled");
         deferred_destroy(sys, dev);
         return;

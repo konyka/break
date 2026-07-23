@@ -49,6 +49,11 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_End)       return 286;
     if (ks == XK_Insert)    return 287;
     if (ks == XK_Delete)    return 288;
+    /* R360: disambiguate End/Insert dual-binds in main (reset/DOF). */
+    if (ks == XK_Pause)       return 291;
+    if (ks == XK_Scroll_Lock) return 292;
+    if (ks == XK_Num_Lock)    return 293;
+    if (ks == XK_Caps_Lock)   return 294;
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';

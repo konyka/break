@@ -1183,7 +1183,9 @@ int main(int argc, char **argv) {
     terrain_init(&terrain, render.device, 64, 40.0f, 1.5f);
 
     WaterPlane water = {0};
-    water_init(&water, render.device, -1.0f, 80.0f);
+    if (!water_init(&water, render.device, -1.0f, 80.0f)) {
+        LOG_WARN("Water init failed; underwater tint / water draws disabled");
+    }
 
     LightSystem lights = {0};
     light_system_init(&lights, render.device);
@@ -2228,7 +2230,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
         }
 
-        /* F11: export Chrome profiler trace (also set PROFILER_TRACE=1 on exit) */
+        /* Page_Up: export Chrome profiler trace (also set PROFILER_TRACE=1 on exit).
+         * R360: was also bound to auto-exposure — that moved to CapsLock (294). */
         if (input_key_pressed(platform_input(engine.platform), 283)) {
             export_profiler_chrome_trace(gpu_shadow_timer, gpu_forward_timer,
                                          gpu_scene_timer, gpu_postfx_timer,
@@ -2328,7 +2331,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             LOG_INFO("Preset: %s", pnames[effect_preset]);
         }
 
-        if (input_key_pressed(platform_input(engine.platform), 286)) {
+        /* R360: Pause (291) — was End, which also toggled GPU Indirect. */
+        if (input_key_pressed(platform_input(engine.platform), 291)) {
             effect_preset = 0;
             render_scale = render_scale_options[1]; render_scale_idx = 1;
             ssao.radius = 0.5f; ssao_preset = 2;
@@ -2344,7 +2348,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             LOG_INFO("All effects reset to defaults");
         }
 
-        if (input_key_pressed(platform_input(engine.platform), 287)) {
+        /* R360: ScrollLock (292) — was Insert, which also toggled GPU Cull. */
+        if (input_key_pressed(platform_input(engine.platform), 292)) {
             dof_enabled = !dof_enabled;
             LOG_INFO("DOF: %s", dof_enabled ? "on" : "off");
         }
@@ -2364,8 +2369,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             cs_enabled = !cs_enabled;
             LOG_INFO("Contact shadow: %s", cs_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 61)) {
-            if (!water.enabled) {
+        /* R360: NumLock (293) — was '=' which also bumped tonemap exposure. */
+        if (input_key_pressed(platform_input(engine.platform), 293)) {
+            if (!rhi_handle_valid(water.pipeline)) {
+                LOG_WARN("Water: cannot enable (init failed)");
+            } else if (!water.enabled) {
                 water.enabled = true;
                 water.time_scale = 1.0f;
                 LOG_INFO("Water: on");
@@ -2423,7 +2431,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             InputState *inp = platform_input(engine.platform);
             if (input_key_pressed(inp, '=')) tonemap.exposure = fminf(tonemap.exposure + 0.2f, 8.0f);
             if (input_key_pressed(inp, '-')) tonemap.exposure = fmaxf(tonemap.exposure - 0.2f, 0.1f);
-            if (input_key_pressed(inp, 283)) { tonemap.auto_exposure = !tonemap.auto_exposure; LOG_INFO("Auto-exposure: %s", tonemap.auto_exposure ? "on" : "off"); }
+            /* R360: CapsLock (294) — was Page_Up, which also exports the profiler trace. */
+            if (input_key_pressed(inp, 294)) {
+                tonemap.auto_exposure = !tonemap.auto_exposure;
+                LOG_INFO("Auto-exposure: %s", tonemap.auto_exposure ? "on" : "off");
+            }
         }
 
         bool need_rebuild = false;
