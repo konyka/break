@@ -267,8 +267,14 @@ static void pointer_motion(void *data, struct wl_pointer *ptr, u32 time,
     f64 nx = wl_fixed_to_double(sx);
     f64 ny = wl_fixed_to_double(sy);
 
-    p->input.mouse_dx += (f32)(nx - p->pointer_x);
-    p->input.mouse_dy += (f32)(ny - p->pointer_y);
+    /* R346: when zwp_relative_pointer is active (relative/capture), deltas
+     * come from relative_pointer_motion. Also accumulating surface Δ here
+     * double-counts — especially if pointer-constraints lock is missing and
+     * the cursor still moves on the surface. */
+    if (!p->rel_pointer) {
+        p->input.mouse_dx += (f32)(nx - p->pointer_x);
+        p->input.mouse_dy += (f32)(ny - p->pointer_y);
+    }
     p->pointer_x = nx;
     p->pointer_y = ny;
     p->input.mouse_x = (f32)nx;

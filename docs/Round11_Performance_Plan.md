@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R346：Wayland 相对指针 `pointer_motion` 与 `relative_pointer` 双加 dx/dy（已完成）
+
+### [x] R346-A pointer_motion must not accumulate dx/dy while zwp_relative_pointer is active
+- [x] `window_wayland.c::pointer_motion`：`rel_pointer` 非空时跳过 surface Δ 累加（仍更新 `pointer_x/y`/`mouse_x/y`）
+- [x] 覆盖 `set_relative` 与 `mouse_capture` 两条启用 relative-pointer 的路径；无协议时保持原 surface 差分
+
+**附带审计（无修复）**：`water.c` + `water*.vert/frag` — 水位抬升/VK Z remap/阴影 atlas·binding/失败清理正确；`u_model` static 缓存对 VK 为死代码。
+
+**验收**：Wayland 构建通过（`window_wayland.c` 重编链接）。总计 **669** 处修复。
+
 ## R345：ECS `ENTITY_NULL` 别名 slot 0 + add_component dest NULL + gpucull unified 失败泄漏（已完成）
 
 ### [x] R345-A ENTITY_NULL must not alias empty-archetype slot 0
