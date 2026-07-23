@@ -5941,7 +5941,21 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     }
 
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
-    if (!td) return fbo;
+    if (!td) {
+        /* R359: GPU FBO already live in fd — tear down before returning null. */
+        LOG_WARN("VK: offscreen color texture slot alloc failed");
+        if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
+        vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
+        vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
+        vkDestroyImageView(vk->device, fd->depth_view, NULL);
+        vkFreeMemory(vk->device, fd->depth_memory, NULL);
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        vkDestroyImageView(vk->device, fd->color_view, NULL);
+        vkFreeMemory(vk->device, fd->color_memory, NULL);
+        vkDestroyImage(vk->device, fd->color_image, NULL);
+        free(fd);
+        return (RHIOffscreenFBO){0};
+    }
     u32 idx = rhi_alloc_slot(dev);
     td->image = fd->color_image;
     td->view = fd->color_view;
@@ -5957,7 +5971,19 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     fbo.color_tex = rhi_make_handle(idx, dev->slots[idx].generation);
 
     VKTextureData *dd = calloc(1, sizeof(VKTextureData));
-    if (!dd) return fbo;
+    if (!dd) {
+        LOG_WARN("VK: offscreen depth texture slot alloc failed");
+        /* Framebuffer before image views; color image owned by color_tex slot. */
+        if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
+        vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
+        vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
+        rhi_texture_destroy(dev, fbo.color_tex);
+        vkDestroyImageView(vk->device, fd->depth_view, NULL);
+        vkFreeMemory(vk->device, fd->depth_memory, NULL);
+        vkDestroyImage(vk->device, fd->depth_image, NULL);
+        free(fd);
+        return (RHIOffscreenFBO){0};
+    }
     u32 didx = rhi_alloc_slot(dev);
     dd->image = fd->depth_image;
     dd->view = fd->depth_view;
@@ -6758,7 +6784,21 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
 
     /* Register depth texture handle (cubemap). */
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
-    if (!td) return fbo;
+    if (!td) {
+        /* R359: face FBOs/views + depth image already live — tear down. */
+        LOG_WARN("VK: cubemap depth texture slot alloc failed");
+        for (u32 j = 0; j < 6; j++) {
+            if (cd->face_fbos[j]) vkDestroyFramebuffer(vk->device, cd->face_fbos[j], NULL);
+            if (cd->face_views[j]) vkDestroyImageView(vk->device, cd->face_views[j], NULL);
+        }
+        if (cd->render_pass_load) vkDestroyRenderPass(vk->device, cd->render_pass_load, NULL);
+        if (cd->render_pass) vkDestroyRenderPass(vk->device, cd->render_pass, NULL);
+        if (cd->depth_view) vkDestroyImageView(vk->device, cd->depth_view, NULL);
+        if (cd->depth_memory) vkFreeMemory(vk->device, cd->depth_memory, NULL);
+        if (cd->depth_image) vkDestroyImage(vk->device, cd->depth_image, NULL);
+        free(cd);
+        return (RHICubemapDepthFBO){0};
+    }
     u32 tidx = rhi_alloc_slot(dev);
     td->image = cd->depth_image;
     td->view = cd->depth_view;

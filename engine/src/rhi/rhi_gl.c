@@ -1918,8 +1918,15 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
      * of color_tex (field 1); FBO/texture names are different namespaces. */
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
     if (!td) {
-        fbo.fb = rhi_make_handle(tidx, dev->slots[tidx].generation);
-        return fbo;
+        /* R359: never publish fb without color/depth handles — callers gate on fb. */
+        LOG_WARN("GL: offscreen color slot alloc failed");
+        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
+        glDeleteFramebuffers(1, &fd->gl_fbo);
+        glDeleteTextures(1, &fd->color_tex);
+        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+        free(fd);
+        rhi_free_slot(dev, rhi_make_handle(tidx, dev->slots[tidx].generation));
+        return (RHIOffscreenFBO){0};
     }
     u32 cidx = rhi_alloc_slot(dev);
     td->gl_tex             = fd->color_tex;
@@ -1932,9 +1939,16 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
 
     GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
     if (!dtd) {
-        fbo.fb = rhi_make_handle(tidx, dev->slots[tidx].generation);
-        fbo.color_tex = rhi_make_handle(cidx, dev->slots[cidx].generation);
-        return fbo;
+        LOG_WARN("GL: offscreen depth slot alloc failed");
+        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
+        glDeleteFramebuffers(1, &fd->gl_fbo);
+        glDeleteTextures(1, &fd->color_tex);
+        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+        free(td);
+        free(fd);
+        rhi_free_slot(dev, rhi_make_handle(cidx, dev->slots[cidx].generation));
+        rhi_free_slot(dev, rhi_make_handle(tidx, dev->slots[tidx].generation));
+        return (RHIOffscreenFBO){0};
     }
     u32 didx = rhi_alloc_slot(dev);
     dtd->gl_tex             = fd->depth_tex;
@@ -2367,7 +2381,15 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
 
     /* Register depth texture handle. */
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
-    if (!td) return fbo;
+    if (!td) {
+        /* R359: cd already owns GL texture + FBO — tear down before return. */
+        LOG_WARN("GL: cubemap depth texture slot alloc failed");
+        if (g_gl_bound_fbo == cd->gl_fbo) g_gl_bound_fbo = 0;
+        if (cd->gl_fbo) glDeleteFramebuffers(1, &cd->gl_fbo);
+        if (cd->depth_tex) glDeleteTextures(1, &cd->depth_tex);
+        free(cd);
+        return (RHICubemapDepthFBO){0};
+    }
     u32 tidx = rhi_alloc_slot(dev);
     td->gl_tex            = cd->depth_tex;
     td->width             = size;

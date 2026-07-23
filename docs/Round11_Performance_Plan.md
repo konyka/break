@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R359：offscreen/cubemap FBO 半成品发布 + render_init 早退泄漏 + UNIFIED env 门控（已完成）
+
+### [x] R359-A GL offscreen create：calloc fail → destroy, return null（no partial fb）
+### [x] R359-B GL cubemap depth create：td calloc fail tears down GL objects
+### [x] R359-C VK offscreen create：td/dd calloc fail tears down GPU FBO
+### [x] R359-D VK cubemap depth create：td calloc fail tears down face FBOs
+### [x] R359-E render_init early fail → render_shutdown（no device leak）
+### [x] R359-F scene_fbo create/resize requires fb+color+depth
+### [x] R359-G BREAK_UNIFIED_* requires gpucull_sys.unified_ready
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **748** 处修复。
+
 ## R358：阴影 atlas bind 清错 FBO + DEFERRED 切换/resize 黑屏 + 相关门控（已完成）
 
 ### [x] R358-A GL bind_shadow_map gates on valid fbo（no clear wrong target）

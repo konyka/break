@@ -223,6 +223,8 @@ typedef struct {
     IBLSystem       ibl;
 } RenderState;
 
+static void render_shutdown(RenderState *rs);
+
 static bool render_init(RenderState *rs, Platform *platform) {
 #ifdef ENGINE_VULKAN
     void *window = platform_surface_native(platform);
@@ -252,7 +254,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
 #endif
     if (!vs_src || !fs_src) {
         LOG_FATAL("Failed to load shaders");
-        return false;
+        free(vs_src);
+        free(fs_src);
+        goto fail; /* R359: device already live */
     }
 
     RHIShader vs = rhi_shader_create(rs->device, vs_src, vs_len, false);
@@ -260,7 +264,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
     free(vs_src);
     free(fs_src);
 
-    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) return false;
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(rs->device, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(rs->device, fs);
+        goto fail;
+    }
 
     /* Scene geometry renders into the HDR offscreen FBO (R16F); pipelines must
      * be created render-pass-compatible with that color format. */
@@ -272,7 +280,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rhi_shader_destroy(rs->device, vs);
     rhi_shader_destroy(rs->device, fs);
 
-    if (!rhi_handle_valid(rs->pipeline)) return false;
+    if (!rhi_handle_valid(rs->pipeline)) goto fail;
 
     rs->loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_model");
     rs->loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_view");
@@ -538,7 +546,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
         usize vb_bytes = (usize)vcount * 64;
         /* Single alloc: vdata (24*64B) + idata (36*4B) */
         u8 *geo_buf = (u8 *)calloc(1, vb_bytes + (usize)icount * 4);
-        if (!geo_buf) return false;
+        if (!geo_buf) goto fail;
         u8 *vdata   = geo_buf;
         u32 *idata  = (u32 *)(geo_buf + vb_bytes);
         u32 vi = 0;
@@ -602,9 +610,14 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
 
     return true;
+fail:
+    /* R359: early returns used to leak the RHI device and partial GPU objects. */
+    render_shutdown(rs);
+    return false;
 }
 
 static void render_shutdown(RenderState *rs) {
+    if (!rs || !rs->device) return;
     ibl_destroy(&rs->ibl, rs->device);
     deferred_destroy(&rs->deferred, rs->device);
     rhi_shadow_map_destroy(rs->device, &rs->shadow_map);
@@ -629,6 +642,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->pipeline)) rhi_pipeline_destroy(rs->device, rs->pipeline);
     if (rhi_handle_valid(rs->wire_pipeline)) rhi_pipeline_destroy(rs->device, rs->wire_pipeline);
     rhi_device_destroy(rs->device);
+    rs->device = NULL;
 }
 
 /* Frame-level point shadow cache — gathered once per frame, consumed by
@@ -1492,9 +1506,13 @@ int main(int argc, char **argv) {
     u32 rh = (u32)(h * render_scale); if (rh < 1) rh = 1;
 
     RHIOffscreenFBO scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw > 0 ? rw : 1, rh > 0 ? rh : 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    /* R356: forward/post sample scene_fbo color/depth — reject empty handle early. */
-    if (!rhi_handle_valid(scene_fbo.fb)) {
+    /* R356/R359: forward/post sample color+depth — reject partial FBO (fb without tex). */
+    if (!rhi_handle_valid(scene_fbo.fb) ||
+        !rhi_handle_valid(scene_fbo.color_tex) ||
+        !rhi_handle_valid(scene_fbo.depth_tex)) {
         LOG_ERROR("Scene FBO creation failed (%ux%u)", rw > 0 ? rw : 1u, rh > 0 ? rh : 1u);
+        if (rhi_handle_valid(scene_fbo.fb))
+            rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
     }
     PostProcess postfx = {0};
     SSAOSystem ssao = {0};
@@ -2030,13 +2048,23 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
       } }
     { const char *e = getenv("BREAK_UNIFIED_FORWARD");
       if (e && !atoi(e)) unified_forward_enabled = false;
-      else if (e && atoi(e)) unified_forward_enabled = true; }
+      else if (e && atoi(e)) {
+          /* R359: env must not enable when unified cull path is unavailable. */
+          if (gpucull_sys.unified_ready) unified_forward_enabled = true;
+          else LOG_WARN("BREAK_UNIFIED_FORWARD=1 ignored: unified GPUCull not ready");
+      } }
     { const char *e = getenv("BREAK_UNIFIED_DEFERRED");
       if (e && !atoi(e)) unified_deferred_enabled = false;
-      else if (e && atoi(e)) unified_deferred_enabled = true; }
+      else if (e && atoi(e)) {
+          if (gpucull_sys.unified_ready) unified_deferred_enabled = true;
+          else LOG_WARN("BREAK_UNIFIED_DEFERRED=1 ignored: unified GPUCull not ready");
+      } }
     { const char *e = getenv("BREAK_UNIFIED_SHADOW");
       if (e && !atoi(e)) unified_shadow_enabled = false;
-      else if (e && atoi(e)) unified_shadow_enabled = true; }
+      else if (e && atoi(e)) {
+          if (gpucull_sys.unified_ready) unified_shadow_enabled = true;
+          else LOG_WARN("BREAK_UNIFIED_SHADOW=1 ignored: unified GPUCull not ready");
+      } }
     { const char *e = getenv("BREAK_OCCLUSION"); if (e && !atoi(e)) occ_cull_enabled = false; }
     { const char *e = getenv("BREAK_DRAW_BENCH"); if (e && atoi(e)) draw_bench_enabled = true; }
     if (gpucull_enabled) LOG_INFO("GPU Frustum Cull: on (default with mega-buffer)");
@@ -2413,8 +2441,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rh = new_rh;
             if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
             scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw, rh, RHI_FORMAT_R16G16B16A16_SFLOAT);
-            if (!rhi_handle_valid(scene_fbo.fb)) {
+            if (!rhi_handle_valid(scene_fbo.fb) ||
+                !rhi_handle_valid(scene_fbo.color_tex) ||
+                !rhi_handle_valid(scene_fbo.depth_tex)) {
                 LOG_ERROR("Scene FBO recreate failed (%ux%u)", rw, rh);
+                if (rhi_handle_valid(scene_fbo.fb))
+                    rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
             }
             post_process_shutdown(&postfx);
             ssao_shutdown(&ssao);
