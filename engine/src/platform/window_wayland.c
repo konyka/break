@@ -257,7 +257,17 @@ static void pointer_enter(void *data, struct wl_pointer *ptr, u32 serial,
 
 static void pointer_leave(void *data, struct wl_pointer *ptr, u32 serial,
                           struct wl_surface *surface) {
-    (void)data; (void)ptr; (void)serial; (void)surface;
+    (void)ptr; (void)serial; (void)surface;
+    /* R354: compositor may omit ButtonRelease when the pointer leaves the
+     * surface; release mouse keys so drag/click cannot stick (keyboard_leave
+     * already calls input_release_all for focus loss). */
+    Platform *p = data;
+    if (!p) return;
+    input_set_key(&p->input, INPUT_MOUSE_LEFT, false);
+    input_set_key(&p->input, INPUT_MOUSE_MIDDLE, false);
+    input_set_key(&p->input, INPUT_MOUSE_RIGHT, false);
+    input_set_key(&p->input, INPUT_MOUSE_4, false);
+    input_set_key(&p->input, INPUT_MOUSE_5, false);
 }
 
 static void pointer_motion(void *data, struct wl_pointer *ptr, u32 time,

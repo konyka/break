@@ -81,6 +81,8 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
 #endif
     if (!rhi_handle_valid(pp->blur_pipe)) {
         LOG_WARN("PostProcess: blur pipeline failed");
+        /* R354: extract_pipe already live — mirror FBO failure shutdown. */
+        post_process_shutdown(pp);
         return false;
     }
 
@@ -92,6 +94,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
 #endif
     if (!rhi_handle_valid(pp->tex_pipe)) {
         LOG_WARN("PostProcess: tex pipeline failed");
+        post_process_shutdown(pp);
         return false;
     }
 
@@ -103,6 +106,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
 #endif
     if (!rhi_handle_valid(pp->composite_pipe)) {
         LOG_WARN("PostProcess: composite pipeline failed");
+        post_process_shutdown(pp);
         return false;
     }
 
@@ -116,6 +120,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     pp->sampler = rhi_sampler_create(dev, &sdesc);
     if (!rhi_handle_valid(pp->sampler)) {
         LOG_WARN("PostProcess: sampler failed");
+        post_process_shutdown(pp);
         return false;
     }
 

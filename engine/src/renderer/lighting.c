@@ -74,6 +74,14 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
     ls->light_grid_buf[1] = rhi_buffer_create(dev, &grid_desc);
     free(grid_zero);
 
+    /* R354: reject half-created light/grid buffers (upload would skip silently). */
+    if (!rhi_handle_valid(ls->light_data_buf[0]) || !rhi_handle_valid(ls->light_data_buf[1]) ||
+        !rhi_handle_valid(ls->light_grid_buf[0]) || !rhi_handle_valid(ls->light_grid_buf[1])) {
+        LOG_ERROR("Lighting: buffer creation failed");
+        light_system_shutdown(ls);
+        return;
+    }
+
     ls->cluster_cull_pipeline = RHI_HANDLE_NULL;
     ls->gpu_cull = false;
 
@@ -84,7 +92,11 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
     usize gb_off   = (ub_bytes + 3u) & ~(usize)3u;
     usize gb_bytes = ls->_grid_buf_size * sizeof(u32);
     u8 *staging_block = (u8 *)calloc(1, gb_off + gb_bytes);
-    if (!staging_block) { LOG_ERROR("Lighting: staging allocation failed"); return; }
+    if (!staging_block) {
+        LOG_ERROR("Lighting: staging allocation failed");
+        light_system_shutdown(ls);
+        return;
+    }
     ls->_upload_buf = staging_block;
     ls->_grid_buf   = (u32 *)(staging_block + gb_off);
 

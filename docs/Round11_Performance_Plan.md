@@ -4420,6 +4420,20 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R354：Lua body 1-based 对齐 + postfx blit 门控 + init 失败清理 + Wayland pointer_leave（已完成）
+
+### [x] R354-A Lua physics body ids are 1-based
+- [x] `checked_body` / impulse / ccd：`idx = id - 1`；`spawn` 返回 `id + 1`
+- [x] 回归 `engine_spawn_first_body_is_lua_id_1`
+
+### [x] R354-B main final blit gated on postfx.ready
+### [x] R354-C post_process_init pipeline/sampler fail → shutdown
+### [x] R354-D/E SSGI/SSAO dual-pipeline fail → shutdown
+### [x] R354-F Wayland pointer_leave releases mouse buttons
+### [x] R354-G light_system_init buffer/staging fail → shutdown
+
+**验收**：双后端 `engine`/`engine_demo`；`test_script_lua` **16/16**。总计 **721** 处修复。
+
 ## R353：VFS 路径穿越 + 场景加载失败回滚 + glTF/terrain OOM 清理（已完成）
 
 ### [x] R353-A/B vfs_open path safety + vfs_read_all size on malloc fail

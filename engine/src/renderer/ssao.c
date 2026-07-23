@@ -71,6 +71,8 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
 
     if (!rhi_handle_valid(ssao->ssao_pipe) || !rhi_handle_valid(ssao->blur_pipe)) {
         LOG_WARN("SSAO: pipeline creation failed");
+        /* R354: one pipe may have succeeded — free before soft-fail. */
+        ssao_shutdown(ssao);
         return false;
     }
 

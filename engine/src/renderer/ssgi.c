@@ -80,6 +80,8 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
 
     if (!rhi_handle_valid(ssgi->ssgi_pipe) || !rhi_handle_valid(ssgi->ssgi_blur_pipe)) {
         LOG_WARN("SSGI: pipeline creation failed");
+        /* R354: one pipe may have succeeded — free before soft-fail. */
+        ssgi_shutdown(ssgi);
         return false;
     }
 

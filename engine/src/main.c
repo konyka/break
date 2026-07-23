@@ -5569,9 +5569,12 @@ u32 culled_count = 0;
             case 10: insp_tex = sharpen_sys.ready ? sharpen_sys.fbo.color_tex : scene_fbo.color_tex; break;
             }
             rhi_offscreen_fbo_unbind(cmd, w, h);
-            rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
-            rhi_cmd_bind_texture(cmd, insp_tex, postfx.sampler, 0);
-            rhi_cmd_draw(cmd, 3, 1);
+            /* R354: post_process_init may fail while main still blits via tex_pipe. */
+            if (postfx.ready && rhi_handle_valid(postfx.tex_pipe)) {
+                rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
+                rhi_cmd_bind_texture(cmd, insp_tex, postfx.sampler, 0);
+                rhi_cmd_draw(cmd, 3, 1);
+            }
             debug_ui_render(&ui, cmd, w, h);
             rhi_gpu_timer_end(gpu_postfx_timer);
             rhi_frame_end(render.device);
@@ -5592,14 +5595,18 @@ u32 culled_count = 0;
                           &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
                           0.3f, rw, rh, w, h);
             rhi_offscreen_fbo_unbind(cmd, w, h);
-            rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
-            rhi_cmd_bind_texture(cmd, upscale_sys.fbo.color_tex, postfx.sampler, 0);
-            rhi_cmd_draw(cmd, 3, 1);
+            if (postfx.ready && rhi_handle_valid(postfx.tex_pipe)) {
+                rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
+                rhi_cmd_bind_texture(cmd, upscale_sys.fbo.color_tex, postfx.sampler, 0);
+                rhi_cmd_draw(cmd, 3, 1);
+            }
         } else {
             rhi_offscreen_fbo_unbind(cmd, w, h);
-            rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
-            rhi_cmd_bind_texture(cmd, tonemap_input, postfx.sampler, 0);
-            rhi_cmd_draw(cmd, 3, 1);
+            if (postfx.ready && rhi_handle_valid(postfx.tex_pipe)) {
+                rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
+                rhi_cmd_bind_texture(cmd, tonemap_input, postfx.sampler, 0);
+                rhi_cmd_draw(cmd, 3, 1);
+            }
         }
 
         debug_ui_render(&ui, cmd, w, h);

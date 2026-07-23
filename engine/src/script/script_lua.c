@@ -23,13 +23,17 @@ static LuaScript *ls_from_state(lua_State *L) {
     return ls;
 }
 
-/* Validate a 1-based body id argument against the physics world. Returns NULL
- * (without raising) when out of range or no physics world is bound. */
+/* Validate a 1-based Lua body id (C index = id-1). Returns NULL without
+ * raising when out of range or no physics world is bound. R354: previously
+ * treated id as a C index while rejecting id<=0, so bodies[0] was unreachable
+ * and spawn's 0-based return conflicted with "0 = invalid". */
 static RigidBody *checked_body(lua_State *L, PhysicsWorld *pw, int arg) {
     if (!pw) return NULL;
     lua_Integer id = luaL_checkinteger(L, arg);
-    if (id <= 0 || (u32)id >= pw->count) return NULL;
-    return &pw->bodies[(u32)id];
+    if (id <= 0) return NULL;
+    u32 idx = (u32)id - 1u;
+    if (idx >= pw->count) return NULL;
+    return &pw->bodies[idx];
 }
 
 /* -------------------------------------------------------------------------
@@ -101,11 +105,13 @@ static int l_apply_impulse(lua_State *L) {
     PhysicsWorld *pw = ls ? (PhysicsWorld *)ls->physics : NULL;
     if (!pw) return 0;
     lua_Integer id = luaL_checkinteger(L, 1);
-    if (id <= 0 || (u32)id >= pw->count) return 0;
+    if (id <= 0) return 0;
+    u32 idx = (u32)id - 1u;
+    if (idx >= pw->count) return 0;
     Vec3 imp = vec3((f32)luaL_checknumber(L, 2),
                     (f32)luaL_checknumber(L, 3),
                     (f32)luaL_checknumber(L, 4));
-    physics_body_apply_impulse(pw, (u32)id, imp);
+    physics_body_apply_impulse(pw, idx, imp);
     return 0;
 }
 
@@ -118,8 +124,8 @@ static int l_spawn(lua_State *L) {
                     (f32)luaL_checknumber(L, 3));
     f32 mass = (f32)luaL_optnumber(L, 4, 1.0);
     u32 id = physics_body_create(pw, pos, vec3(0.5f, 0.5f, 0.5f), mass, false, 0);
-    /* R352: create returns UINT32_MAX when full; Lua treats 0 as invalid. */
-    lua_pushinteger(L, (id == UINT32_MAX) ? 0 : (lua_Integer)id);
+    /* R352/R354: UINT32_MAX → 0 (invalid); else 1-based Lua id = C index + 1. */
+    lua_pushinteger(L, (id == UINT32_MAX) ? 0 : (lua_Integer)(id + 1u));
     return 1;
 }
 
@@ -129,7 +135,9 @@ static int l_body_set_ccd(lua_State *L) {
     if (!pw) return 0;
     lua_Integer id = luaL_checkinteger(L, 1);
     bool on = lua_toboolean(L, 2);
-    if (id > 0 && (u32)id < pw->count) physics_body_set_ccd(pw, (u32)id, on);
+    if (id <= 0) return 0;
+    u32 idx = (u32)id - 1u;
+    if (idx < pw->count) physics_body_set_ccd(pw, idx, on);
     return 0;
 }
 

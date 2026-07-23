@@ -100,7 +100,7 @@ TEST(call_void_missing_is_safe)
 TEST(engine_body_count_and_spawn)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    /* body 0 = sentinel/floor (bindings treat id 0 as "none"), body 1 dynamic */
+    /* C indices 0/1 → Lua ids 1/2; spawn returns 1-based id. */
     physics_body_create(pw, vec3(0, -1, 0), vec3(10, 1, 10), 0.0f, true, 0);
     physics_body_create(pw, vec3(0, 5, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
 
@@ -118,8 +118,29 @@ TEST(engine_body_count_and_spawn)
 
     ASSERT_TRUE(fabs(lua_script_get_number(&ls, "before", -1) - 2.0) < 1e-9);
     ASSERT_TRUE(fabs(lua_script_get_number(&ls, "after", -1) - 3.0) < 1e-9);
-    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "new_id", -1) - 2.0) < 1e-9);
+    /* R354: C id 2 → Lua id 3 */
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "new_id", -1) - 3.0) < 1e-9);
     ASSERT_EQ(pw->count, 3u);
+
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
+TEST(engine_spawn_first_body_is_lua_id_1)
+{
+    /* R354: first spawn must return 1 and address bodies[0]. */
+    PhysicsWorld *pw = physics_world_create(64);
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+
+    ASSERT_TRUE(lua_script_load_string(&ls,
+        "id = engine.spawn(1, 2, 3, 1.0)\n"
+        "px, py, pz = engine.get_pos(id)\n", "t"));
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "id", -1) - 1.0) < 1e-9);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "px", 0) - 1.0) < 1e-5);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "py", 0) - 2.0) < 1e-5);
+    ASSERT_TRUE(fabs(pw->bodies[0].position.e[1] - 2.0f) < 1e-5f);
 
     lua_script_shutdown(&ls);
     physics_world_destroy(pw);
@@ -128,18 +149,18 @@ TEST(engine_body_count_and_spawn)
 TEST(engine_pos_vel_impulse)
 {
     PhysicsWorld *pw = physics_world_create(64);
-    physics_body_create(pw, vec3(0, -1, 0), vec3(10, 1, 10), 0.0f, true, 0); /* id 0 */
-    physics_body_create(pw, vec3(0, 5, 0), vec3(0.5f, 0.5f, 0.5f), 2.0f, false, 0); /* id 1 */
+    physics_body_create(pw, vec3(0, -1, 0), vec3(10, 1, 10), 0.0f, true, 0); /* Lua 1 */
+    physics_body_create(pw, vec3(0, 5, 0), vec3(0.5f, 0.5f, 0.5f), 2.0f, false, 0); /* Lua 2 */
 
     LuaScript ls;
     ASSERT_TRUE(lua_script_init(&ls));
     lua_script_bind_host(&ls, NULL, pw, NULL);
 
     ASSERT_TRUE(lua_script_load_string(&ls,
-        "engine.set_pos(1, 3, 4, 5)\n"
-        "px, py, pz = engine.get_pos(1)\n"
-        "engine.apply_impulse(1, 0, 20, 0)\n"   /* mass 2 -> +10 vel.y */
-        "vx, vy, vz = engine.get_vel(1)\n", "t"));
+        "engine.set_pos(2, 3, 4, 5)\n"
+        "px, py, pz = engine.get_pos(2)\n"
+        "engine.apply_impulse(2, 0, 20, 0)\n"   /* mass 2 -> +10 vel.y */
+        "vx, vy, vz = engine.get_vel(2)\n", "t"));
 
     ASSERT_TRUE(fabs(lua_script_get_number(&ls, "px", 0) - 3.0) < 1e-5);
     ASSERT_TRUE(fabs(lua_script_get_number(&ls, "py", 0) - 4.0) < 1e-5);
@@ -265,6 +286,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(on_update_receives_dt);
     RUN_TEST(call_void_missing_is_safe);
     RUN_TEST(engine_body_count_and_spawn);
+    RUN_TEST(engine_spawn_first_body_is_lua_id_1);
     RUN_TEST(engine_pos_vel_impulse);
     RUN_TEST(engine_entity_count_binding);
     RUN_TEST(engine_bindings_null_host_safe);
