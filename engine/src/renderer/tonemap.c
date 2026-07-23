@@ -108,6 +108,15 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
         tm->loc_lum_prev  = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_prev");
     }
 
+    /* R349: align R348 — sampler required; lum FBOs required when lum_pipe exists. */
+    if (!rhi_handle_valid(tm->sampler) ||
+        (rhi_handle_valid(tm->lum_pipe) &&
+         (!rhi_handle_valid(tm->lum_fbo[0].fb) || !rhi_handle_valid(tm->lum_fbo[1].fb)))) {
+        LOG_WARN("Tonemap: sampler/lum FBO creation failed");
+        tonemap_shutdown(tm);
+        return false;
+    }
+
     tm->ready = true;
     LOG_INFO("Tonemap: initialized (ACES + auto-exposure, exposure=%.2f, gamma=%.2f)", tm->exposure, tm->gamma);
     return true;

@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R348 后处理/延迟渲染 FBO·sampler 失败仍 ready/initialized — 修复 11 处** — **R348-A..K**（CORRECTNESS/ROBUSTNESS）：R347 已钳半分辨率并校验 SSR/DOF/SSAO/volumetric；默认开/必经路径仍有同族洞——FBO/sampler 创建失败（VK 空句柄/OOM）仍置 `ready`/`initialized`，`main` 把无效 `color_tex` 接进主链（upscale 无开关、sharpen/MB/SSS/FXAA/TAA/color_grade 默认开，deferred 绑空 MRT）。修复：对齐 R347，创建后校验句柄，失败则 shutdown/destroy 半成品并拒绝 ready——覆盖 `sharpen`/`motion_blur`/`sss`/`fxaa`/`upscale`/`color_grade`/`taa`/`god_rays`/`ssgi`/`contact_shadow`/`deferred`(MRT+双 sampler)。总计 **684** 处修复。
+最近更新：**R349 合并后处理/tonemap/lens/bloom/deferred_resize 仍漏 FBO 校验 — 修复 7 处** — **R349-A..G**（CORRECTNESS/ROBUSTNESS）：R348 修了独立 TAA/FXAA/color_grade 等，但默认 `use_combined` 路径的 CombinedAA/CombinedColor、tonemap（auto-exposure lum FBO）、lens_effects、bloom `fbo_composite`、`deferred_resize` 仍可能在空句柄上标 ready/保持 initialized。修复：CombinedAA/CombinedColor（合并+fallback）校验 history/output+sampler；tonemap 校验 sampler 与双 lum FBO；lens_effects/lens_flare 对齐 R348；bloom 把 composite 纳入失败门并 shutdown；`deferred_resize` 在 MRT 重建失败时 `deferred_destroy`。总计 **691** 处修复。
+
+此前：**R348 后处理/延迟渲染 FBO·sampler 失败仍 ready/initialized — 修复 11 处** — **R348-A..K**（CORRECTNESS/ROBUSTNESS）：R347 已钳半分辨率并校验 SSR/DOF/SSAO/volumetric；默认开/必经路径仍有同族洞——FBO/sampler 创建失败（VK 空句柄/OOM）仍置 `ready`/`initialized`，`main` 把无效 `color_tex` 接进主链（upscale 无开关、sharpen/MB/SSS/FXAA/TAA/color_grade 默认开，deferred 绑空 MRT）。修复：对齐 R347，创建后校验句柄，失败则 shutdown/destroy 半成品并拒绝 ready——覆盖 `sharpen`/`motion_blur`/`sss`/`fxaa`/`upscale`/`color_grade`/`taa`/`god_rays`/`ssgi`/`contact_shadow`/`deferred`(MRT+双 sampler)。总计 **684** 处修复。
 
 此前：**R347 半分辨率后处理 SSR/DOF/SSAO/Volumetric `width/2==0` 仍 ready + FBO 失败未校验 — 修复 4 处** — **R347-A..D**（CORRECTNESS/ROBUSTNESS）：`main` 把渲染尺寸钳到 ≥1，但 SSR/DOF/SSAO/volumetric 仍用 `width/2` 建 FBO；当 `rw=1`（极小窗/低 scale）时 `1/2=0`，VK `VkImageCreateInfo.extent` 不允许 0 → FBO 空句柄，旧码仍 `ready=true`，DOF 默认开启时 `dof_apply` 绑无效目标。同族 SSGI/bloom/contact_shadow/occlusion 已钳 ≥1。修复（四文件对齐 SSGI）：`pw/ph=max(width/2,1)`；创建后校验 `fbo.fb`+sampler，失败则 shutdown 半成品并 `return false`。附带：X11 相对鼠标无 R346 式双加（warp 滤零事件）。总计 **673** 处修复。
 

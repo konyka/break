@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R349：合并后处理 / tonemap / lens / bloom composite / deferred_resize FBO 校验（已完成）
+
+### [x] R349-A..G seal remaining ready holes after R348
+- [x] `combined_aa_init` / `combined_color_init`（合并路径 + fallback output FBO）
+- [x] `tonemap_init`：sampler + `lum_fbo[0/1]`（当 `lum_pipe` 存在）
+- [x] `lens_effects_init` / `lens_flare_init`
+- [x] `post_process_init`：校验 `fbo_composite`，失败 `post_process_shutdown`
+- [x] `deferred_resize`：MRT 重建失败 → `deferred_destroy`
+
+**验收**：双后端 `engine` 构建通过。总计 **691** 处修复。
+
 ## R348：后处理/延迟渲染 FBO·sampler 失败仍 ready/initialized（已完成）
 
 ### [x] R348-A..K validate FBO/sampler (MRT) before ready/initialized

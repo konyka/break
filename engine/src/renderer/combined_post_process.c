@@ -115,6 +115,14 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
         caa->loc_fxaa_threshold = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_fxaa_threshold");
         caa->loc_use_velocity   = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_use_velocity");
 
+        /* R349: align R348 — reject empty history FBO/sampler on default AA path. */
+        if (!rhi_handle_valid(caa->history_fbo[0].fb) || !rhi_handle_valid(caa->history_fbo[1].fb) ||
+            !rhi_handle_valid(caa->sampler)) {
+            LOG_WARN("CombinedAA: FBO/sampler creation failed");
+            combined_aa_shutdown(caa);
+            return false;
+        }
+
         caa->ready = true;
         LOG_INFO("CombinedAA: combined TAA+FXAA pipeline active (%ux%u)", width, height);
         return true;
@@ -133,9 +141,18 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     caa->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
         RHI_FORMAT_R16G16B16A16_SFLOAT);
 
-    caa->ready = ok;
-    if (ok) LOG_INFO("CombinedAA: fallback chain initialized (%ux%u)", width, height);
-    return ok;
+    if (ok && (!rhi_handle_valid(caa->output_fbo.fb) || !rhi_handle_valid(caa->sampler))) {
+        LOG_WARN("CombinedAA: fallback FBO/sampler creation failed");
+        ok = false;
+    }
+    if (!ok) {
+        combined_aa_shutdown(caa);
+        return false;
+    }
+
+    caa->ready = true;
+    LOG_INFO("CombinedAA: fallback chain initialized (%ux%u)", width, height);
+    return true;
 }
 
 void combined_aa_shutdown(CombinedAA *caa) {
@@ -274,6 +291,13 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
         cc->loc_screen_w    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_screen_w");
         cc->loc_screen_h    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_screen_h");
 
+        /* R349: align R348 — reject empty output FBO/sampler on default color path. */
+        if (!rhi_handle_valid(cc->output_fbo.fb) || !rhi_handle_valid(cc->sampler)) {
+            LOG_WARN("CombinedColor: FBO/sampler creation failed");
+            combined_color_shutdown(cc);
+            return false;
+        }
+
         cc->ready = true;
         LOG_INFO("CombinedColor: combined tonemap+colorgrade+cinematic pipeline active (%ux%u)", width, height);
         return true;
@@ -292,9 +316,18 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
     cc->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
         RHI_FORMAT_R16G16B16A16_SFLOAT);
 
-    cc->ready = ok;
-    if (ok) LOG_INFO("CombinedColor: fallback chain initialized (%ux%u)", width, height);
-    return ok;
+    if (ok && (!rhi_handle_valid(cc->output_fbo.fb) || !rhi_handle_valid(cc->sampler))) {
+        LOG_WARN("CombinedColor: fallback FBO/sampler creation failed");
+        ok = false;
+    }
+    if (!ok) {
+        combined_color_shutdown(cc);
+        return false;
+    }
+
+    cc->ready = true;
+    LOG_INFO("CombinedColor: fallback chain initialized (%ux%u)", width, height);
+    return true;
 }
 
 void combined_color_shutdown(CombinedColor *cc) {

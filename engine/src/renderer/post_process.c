@@ -127,8 +127,11 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     pp->fbo_ping = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
     pp->fbo_pong = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
     pp->fbo_composite = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    if (!rhi_handle_valid(pp->fbo_ping.fb) || !rhi_handle_valid(pp->fbo_pong.fb)) {
+    /* R349: composite is the apply target — include it in the readiness gate. */
+    if (!rhi_handle_valid(pp->fbo_ping.fb) || !rhi_handle_valid(pp->fbo_pong.fb) ||
+        !rhi_handle_valid(pp->fbo_composite.fb)) {
         LOG_WARN("PostProcess: FBO creation failed");
+        post_process_shutdown(pp);
         return false;
     }
 

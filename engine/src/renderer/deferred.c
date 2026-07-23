@@ -316,6 +316,12 @@ void deferred_resize(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height)
 
     defrd_release_targets(sys, dev);
     defrd_alloc_targets(sys, dev, width, height);
+    /* R349: R348 validated MRT on init; resize must not leave initialized with empty MRT. */
+    if (!rhi_handle_valid(sys->_mrt_fbo.fb)) {
+        LOG_WARN("deferred: MRT recreate failed on resize -- system disabled");
+        deferred_destroy(sys, dev);
+        return;
+    }
     LOG_INFO("deferred: resized to %ux%u", width, height);
 }
 

@@ -90,6 +90,13 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
     };
     lf->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R349: align R348 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(lf->lf_fbo.fb) || !rhi_handle_valid(lf->sampler)) {
+        LOG_WARN("LensFlare: FBO/sampler creation failed");
+        lens_flare_shutdown(lf);
+        return false;
+    }
+
     lf->loc_light_x  = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_light_x");
     lf->loc_light_y  = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_light_y");
     lf->loc_intensity = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_intensity");

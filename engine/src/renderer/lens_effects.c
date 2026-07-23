@@ -83,6 +83,13 @@ bool lens_effects_init(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R349: align R348 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("LensEffects: FBO/sampler creation failed");
+        lens_effects_shutdown(s);
+        return false;
+    }
+
     s->loc_ca_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ca_strength");
     s->loc_vignette_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_vignette_strength");
     s->loc_vignette_softness = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_vignette_softness");
