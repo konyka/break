@@ -74,8 +74,13 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    ssao->ssao_fbo = rhi_offscreen_fbo_create(dev, width / 2, height / 2);
-    ssao->blur_fbo = rhi_offscreen_fbo_create(dev, width / 2, height / 2);
+    /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
+    u32 pw = width / 2, ph = height / 2;
+    if (pw < 1) pw = 1;
+    if (ph < 1) ph = 1;
+
+    ssao->ssao_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
+    ssao->blur_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -86,6 +91,13 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
     };
     ssao->sampler = rhi_sampler_create(dev, &sdesc);
 
+    if (!rhi_handle_valid(ssao->ssao_fbo.fb) || !rhi_handle_valid(ssao->blur_fbo.fb) ||
+        !rhi_handle_valid(ssao->sampler)) {
+        LOG_WARN("SSAO: FBO/sampler creation failed");
+        ssao_shutdown(ssao);
+        return false;
+    }
+
     ssao->loc_proj = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_proj");
     ssao->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_inv_proj");
     ssao->loc_screen_w = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_sw");
@@ -94,7 +106,7 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
     ssao->loc_bias = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_bias");
 
     ssao->ready = true;
-    LOG_INFO("SSAO: initialized (%ux%u, radius=%.2f)", width / 2, height / 2, ssao->radius);
+    LOG_INFO("SSAO: initialized (%ux%u, radius=%.2f)", pw, ph, ssao->radius);
     return true;
 }
 

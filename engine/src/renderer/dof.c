@@ -72,7 +72,12 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    dof->dof_fbo = rhi_offscreen_fbo_create_fmt(dev, width / 2, height / 2, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
+    u32 pw = width / 2, ph = height / 2;
+    if (pw < 1) pw = 1;
+    if (ph < 1) ph = 1;
+
+    dof->dof_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -83,6 +88,12 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     };
     dof->sampler = rhi_sampler_create(dev, &sdesc);
 
+    if (!rhi_handle_valid(dof->dof_fbo.fb) || !rhi_handle_valid(dof->sampler)) {
+        LOG_WARN("DOF: FBO/sampler creation failed");
+        dof_shutdown(dof);
+        return false;
+    }
+
     dof->loc_focus_dist = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_focus");
     dof->loc_focus_range = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_range");
     dof->loc_near = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_near");
@@ -91,7 +102,7 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     dof->loc_screen_h = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_sh");
 
     dof->ready = true;
-    LOG_INFO("DOF: initialized (%ux%u, focus=%.1f range=%.1f)", width / 2, height / 2, dof->focus_dist, dof->focus_range);
+    LOG_INFO("DOF: initialized (%ux%u, focus=%.1f range=%.1f)", pw, ph, dof->focus_dist, dof->focus_range);
     return true;
 }
 

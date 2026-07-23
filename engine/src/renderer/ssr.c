@@ -70,7 +70,12 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    ssr->ssr_fbo = rhi_offscreen_fbo_create_fmt(dev, width / 2, height / 2, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
+    u32 pw = width / 2, ph = height / 2;
+    if (pw < 1) pw = 1;
+    if (ph < 1) ph = 1;
+
+    ssr->ssr_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -80,6 +85,12 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
         .wrap_w = RHI_WRAP_CLAMP_TO_EDGE,
     };
     ssr->sampler = rhi_sampler_create(dev, &sdesc);
+
+    if (!rhi_handle_valid(ssr->ssr_fbo.fb) || !rhi_handle_valid(ssr->sampler)) {
+        LOG_WARN("SSR: FBO/sampler creation failed");
+        ssr_shutdown(ssr);
+        return false;
+    }
 
     ssr->loc_proj       = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_proj");
     ssr->loc_inv_proj   = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_inv_proj");
@@ -91,7 +102,7 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
     ssr->loc_thickness  = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_thickness");
 
     ssr->ready = true;
-    LOG_INFO("SSR: initialized (%ux%u)", width / 2, height / 2);
+    LOG_INFO("SSR: initialized (%ux%u)", pw, ph);
     return true;
 }
 

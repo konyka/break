@@ -76,7 +76,12 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
         return false;
     }
 
-    vol->vol_fbo = rhi_offscreen_fbo_create(dev, width / 2, height / 2);
+    /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
+    u32 pw = width / 2, ph = height / 2;
+    if (pw < 1) pw = 1;
+    if (ph < 1) ph = 1;
+
+    vol->vol_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -86,6 +91,12 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
         .wrap_w = RHI_WRAP_CLAMP_TO_EDGE,
     };
     vol->sampler = rhi_sampler_create(dev, &sdesc);
+
+    if (!rhi_handle_valid(vol->vol_fbo.fb) || !rhi_handle_valid(vol->sampler)) {
+        LOG_WARN("Volumetric: FBO/sampler creation failed");
+        volumetric_shutdown(vol);
+        return false;
+    }
 
     vol->loc_inv_proj     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_inv_proj");
     vol->loc_view         = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_view");
@@ -104,7 +115,7 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
     vol->loc_screen_h     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_sh");
 
     vol->ready = true;
-    LOG_INFO("Volumetric: initialized (%ux%u, density=%.4f)", width / 2, height / 2, vol->fog_density);
+    LOG_INFO("Volumetric: initialized (%ux%u, density=%.4f)", pw, ph, vol->fog_density);
     return true;
 }
 

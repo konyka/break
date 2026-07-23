@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R347：半分辨率后处理 SSR/DOF/SSAO/Volumetric `width/2==0` + FBO 失败仍 ready（已完成）
+
+### [x] R347-A..D clamp half-res ≥1 and validate FBO/sampler before ready
+- [x] `ssr.c` / `dof.c` / `ssao.c` / `volumetric.c`：`pw/ph = max(dim/2, 1)`（对齐 SSGI/bloom）
+- [x] FBO/sampler 无效 → shutdown 半成品、`return false`，勿置 `ready`
+
+**附带**：X11 相对鼠标对照 R346 — 无对称双加（中心 warp + 滤零事件）。
+
+**验收**：双后端 `engine` 构建通过。总计 **673** 处修复。
+
 ## R346：Wayland 相对指针 `pointer_motion` 与 `relative_pointer` 双加 dx/dy（已完成）
 
 ### [x] R346-A pointer_motion must not accumulate dx/dy while zwp_relative_pointer is active
