@@ -4071,7 +4071,8 @@ u32 culled_count = 0;
                     }};
                     anim_ik_set_target(&anim_ik, 0, 0u, 1u, 2u, ik_target, ik_pole);
                     anim_ik_solve(&anim_ik, anim_blend.local_positions,
-                                   anim_blend.local_rotations, ik_world);
+                                   anim_blend.local_rotations, ik_world,
+                                   anim_blend.bone_count);
                 }
                 skeleton_apply_local_trs(&render.skeleton,
                     anim_blend.local_positions, anim_blend.local_rotations,

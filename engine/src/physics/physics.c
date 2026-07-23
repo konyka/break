@@ -103,7 +103,9 @@ void physics_world_destroy(PhysicsWorld *pw) {
 u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     if (pw->count >= pw->capacity) {
         LOG_WARN("Physics body limit reached");
-        return pw->count;
+        /* R352: returning count looked like a valid id (0..count-1 is live);
+         * UINT32_MAX fails id < count checks in create_sphere/capsule/Lua. */
+        return UINT32_MAX;
     }
     u32 id = pw->count++;
     RigidBody *b = &pw->bodies[id];

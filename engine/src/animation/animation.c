@@ -176,6 +176,15 @@ void anim_layer_stop(AnimBlendState *state, u32 layer) {
 
 void anim_crossfade(AnimBlendState *state, u32 layer, u32 new_clip, f32 duration) {
     if (!state || layer >= ANIM_MAX_LAYERS) return;
+    /* R352: one global crossfade slot — commit any in-flight fade on another
+     * layer before overwrite, else that layer stays mid-transition forever. */
+    if (state->crossfade.active && state->crossfade.layer_index != layer) {
+        AnimationLayer *prev = &state->layers[state->crossfade.layer_index];
+        prev->clip_index = state->crossfade.to_clip;
+        if (!prev->looping)
+            prev->time = 0.0f;
+        state->crossfade.active = false;
+    }
     AnimationLayer *L = &state->layers[layer];
     if (duration <= 0.0f) {
         /* Instant switch. */
@@ -215,6 +224,10 @@ static void advance_layer_time(AnimationLayer *L, f32 dt, f32 duration) {
             if (L->time < 0.0f) L->time += duration;
         } else if (L->time > duration) {
             L->time = duration;
+        } else if (L->time < 0.0f) {
+            /* R352: negative speed on non-looping layers must clamp to origin
+             * (symmetric with the duration clamp above). */
+            L->time = 0.0f;
         }
     }
 }
@@ -516,13 +529,17 @@ void anim_ik_two_bone(Vec3 root_pos, Vec3 mid_pos, Vec3 tip_pos,
 }
 
 void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
-                   const Mat4 *world_transforms) {
+                   const Mat4 *world_transforms, u32 bone_count) {
     (void)positions;
-    if (!ik || !rotations || !world_transforms) return;
+    if (!ik || !rotations || !world_transforms || bone_count == 0u) return;
 
     for (u32 i = 0; i < ik->target_count && i < ANIM_MAX_IK_TARGETS; i++) {
         IKTarget *T = &ik->targets[i];
         if (!T->active || T->weight <= 0.0f) continue;
+        /* R352: set_target does not know the caller's bone array length. */
+        if (T->chain_root >= bone_count || T->chain_mid >= bone_count ||
+            T->chain_tip >= bone_count)
+            continue;
 
         Vec3 root_pos = mat4_get_translation(&world_transforms[T->chain_root]);
         Vec3 mid_pos  = mat4_get_translation(&world_transforms[T->chain_mid]);

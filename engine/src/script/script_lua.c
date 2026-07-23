@@ -118,7 +118,8 @@ static int l_spawn(lua_State *L) {
                     (f32)luaL_checknumber(L, 3));
     f32 mass = (f32)luaL_optnumber(L, 4, 1.0);
     u32 id = physics_body_create(pw, pos, vec3(0.5f, 0.5f, 0.5f), mass, false, 0);
-    lua_pushinteger(L, (lua_Integer)id);
+    /* R352: create returns UINT32_MAX when full; Lua treats 0 as invalid. */
+    lua_pushinteger(L, (id == UINT32_MAX) ? 0 : (lua_Integer)id);
     return 1;
 }
 

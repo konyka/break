@@ -124,6 +124,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     void *particle_zero = calloc(1, particle_bytes);
     if (!particle_zero) {
         LOG_WARN("Particle: particle zero alloc failed");
+        /* R352: pipelines already created — mirror cull-alloc failure path. */
+        particles_shutdown(ps);
         return false;
     }
     RHIBufferDesc bdesc = {

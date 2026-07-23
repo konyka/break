@@ -304,6 +304,70 @@ TEST(play_cancels_active_crossfade)
     anim_blend_state_destroy(&st);
 }
 
+TEST(crossfade_other_layer_commits_previous)
+{
+    /* R352: starting a crossfade on layer B must commit layer A's pending fade. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    init_translation_clip(&g_clips[1], 0, 1.0f, 0, 0, 0, 20, 0, 0);
+    init_translation_clip(&g_clips[2], 0, 1.0f, 0, 0, 0, 30, 0, 0);
+
+    anim_layer_play(&st, 0, 0, 1.0f, false);
+    anim_layer_play(&st, 1, 0, 1.0f, false);
+    anim_crossfade(&st, 0, 1, 1.0f);
+    ASSERT_TRUE(st.crossfade.active);
+    ASSERT_EQ(st.crossfade.layer_index, 0u);
+
+    anim_crossfade(&st, 1, 2, 1.0f);
+    ASSERT_EQ(st.layers[0].clip_index, 1u); /* committed to_clip */
+    ASSERT_FLOAT_EQ(st.layers[0].time, 0.0f, 1e-5f);
+    ASSERT_TRUE(st.crossfade.active);
+    ASSERT_EQ(st.crossfade.layer_index, 1u);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(nonloop_negative_speed_clamps_to_origin)
+{
+    /* R352: non-looping negative speed must clamp time to 0, not go negative. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+
+    anim_layer_play(&st, 0, 0, -1.0f, false);
+    st.layers[0].time = 0.25f;
+    anim_blend_evaluate(&st, 0.5f, g_clips, 1);
+    ASSERT_FLOAT_EQ(st.layers[0].time, 0.0f, 1e-5f);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(ik_solve_skips_out_of_range_bones)
+{
+    /* R352: out-of-range chain indices must not touch rotations[]. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 2);
+    Quat before0 = st.local_rotations[0];
+    Quat before1 = st.local_rotations[1];
+    Mat4 world[2];
+    world[0] = mat4_identity();
+    world[1] = mat4_identity();
+
+    IKSystem ik;
+    anim_ik_init(&ik);
+    anim_ik_set_target(&ik, 0, 0, 1, 99, (Vec3){{0, 1, 0}}, (Vec3){{1, 0, 0}});
+    anim_ik_set_weight(&ik, 0, 1.0f);
+    anim_ik_solve(&ik, st.local_positions, st.local_rotations, world, 2);
+
+    ASSERT_TRUE(fabsf(st.local_rotations[0].e[0] - before0.e[0]) < 1e-6f);
+    ASSERT_TRUE(fabsf(st.local_rotations[0].e[3] - before0.e[3]) < 1e-6f);
+    ASSERT_TRUE(fabsf(st.local_rotations[1].e[0] - before1.e[0]) < 1e-6f);
+    ASSERT_TRUE(fabsf(st.local_rotations[1].e[3] - before1.e[3]) < 1e-6f);
+
+    anim_blend_state_destroy(&st);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  AnimClip                                                                 */
 /* ----------------------------------------------------------------------- */
@@ -663,6 +727,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(crossfade_gradual);
     RUN_TEST(crossfade_gradual_nonloop_restarts_at_origin);
     RUN_TEST(play_cancels_active_crossfade);
+    RUN_TEST(crossfade_other_layer_commits_previous);
+    RUN_TEST(nonloop_negative_speed_clamps_to_origin);
+    RUN_TEST(ik_solve_skips_out_of_range_bones);
     RUN_TEST(anim_clip_init_basic);
     RUN_TEST(blend_evaluate_step_holds_keyframe);
     RUN_TEST(skeleton_evaluate_step_holds_keyframe);

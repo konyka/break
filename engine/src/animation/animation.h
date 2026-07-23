@@ -115,7 +115,7 @@ void anim_ik_set_active(IKSystem *ik, u32 index, bool active);
  * to be modified in place.
  */
 void anim_ik_solve(IKSystem *ik, Vec3 *positions, Quat *rotations,
-                   const Mat4 *world_transforms);
+                   const Mat4 *world_transforms, u32 bone_count);
 
 /*
  * Two-Bone IK analytic solver. Outputs world-space rotation deltas to

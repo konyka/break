@@ -213,12 +213,32 @@ void world_register_component(World *w, ComponentType id, u32 size) {
     w->component_sizes[id] = size;
 }
 
+/* R352: undo a partially committed create when empty-archetype chunk_alloc
+ * fails. Without this, entity_bitmap marks the slot live with entity_index=0
+ * → world_get_component aliases empty-archetype global slot 0. */
+static void create_entity_rollback(World *w, u32 idx, bool from_free_stack) {
+    w->entity_bitmap[idx / 64] &= ~((u64)1 << (idx % 64));
+    w->entity_archetype[idx] = 0;
+    w->entity_index[idx] = 0;
+    if (from_free_stack) {
+        if (w->free_stack_top < ECS_MAX_ENTITIES)
+            w->free_stack[w->free_stack_top++] = idx;
+    } else if (w->entity_count == idx + 1u) {
+        w->entity_count--;
+        w->entities[idx].index = 0;
+        w->entities[idx].generation = 0;
+    }
+    w->cache_version++;
+}
+
 Entity world_create_entity(World *w) {
     u32 idx;
+    bool from_free_stack = false;
     if (w->free_stack_top > 0) {
         idx = w->free_stack[--w->free_stack_top];
         w->entities[idx].generation++;
         if (w->entities[idx].generation == 0) w->entities[idx].generation = 1;
+        from_free_stack = true;
     } else {
         if (w->entity_count >= ECS_MAX_ENTITIES) {
             LOG_FATAL("ECS entity limit reached");
@@ -240,14 +260,20 @@ Entity world_create_entity(World *w) {
     Archetype *empty = &w->archetypes[0];
     if (!empty->chunks) {
         empty->chunks = chunk_alloc(ECS_CHUNK_SIZE);
-        if (!empty->chunks) return ENTITY_NULL;
+        if (!empty->chunks) {
+            create_entity_rollback(w, idx, from_free_stack);
+            return ENTITY_NULL;
+        }
         empty->chunks->capacity = empty->chunk_capacity;
         empty->chunk_tail = empty->chunks;
     }
     Chunk *c = empty->chunk_tail;
     if (c->count >= c->capacity) {
         Chunk *nc = chunk_alloc(ECS_CHUNK_SIZE);
-        if (!nc) return ENTITY_NULL;
+        if (!nc) {
+            create_entity_rollback(w, idx, from_free_stack);
+            return ENTITY_NULL;
+        }
         nc->capacity = empty->chunk_capacity;
         c->next = nc;
         empty->chunk_tail = nc;

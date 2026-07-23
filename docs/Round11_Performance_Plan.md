@@ -4420,6 +4420,22 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R352：unified Hi-Z 门控 + ECS create OOM 回滚 + 动画/物理边界（已完成）
+
+### [x] R352-A gpucull unified requires hi_z sampler+fallback
+- [x] `gpucull_init_unified`：二者无效则清理 unified 资源、软退 legacy
+
+### [x] R352-B world_create_entity rollback on chunk_alloc failure
+- [x] 清 bitmap / 还 free_stack 或减 entity_count，避免 slot0 组件串线
+
+### [x] R352-C particles_init calloc failure calls shutdown
+### [x] R352-D physics_body_create full → UINT32_MAX（Lua→0）
+### [x] R352-E crossfade on other layer commits previous fade
+### [x] R352-F non-looping negative speed clamps time to 0
+### [x] R352-G anim_ik_solve(bone_count) skips OOB chains
+
+**验收**：双后端 `engine`；`test_animation` **34/34**、`test_physics` **39/39**。总计 **707** 处修复。
+
 ## R351：渐进 crossfade 结束后非循环层 time 未复位 + play/stop 未取消 crossfade + IBL ready 过宽（已完成）
 
 ### [x] R351-A gradual fade_done must restart non-looping layer time

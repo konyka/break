@@ -70,6 +70,17 @@ TEST(body_create)
     physics_world_destroy(pw);
 }
 
+TEST(body_create_full_returns_invalid)
+{
+    /* R352: capacity exhausted must return UINT32_MAX, not pw->count. */
+    PhysicsWorld *pw = physics_world_create(2);
+    ASSERT_EQ(physics_body_create(pw, vec3(0,0,0), vec3(1,1,1), 1.0f, false, 0), 0u);
+    ASSERT_EQ(physics_body_create(pw, vec3(1,0,0), vec3(1,1,1), 1.0f, false, 0), 1u);
+    ASSERT_EQ(physics_body_create(pw, vec3(2,0,0), vec3(1,1,1), 1.0f, false, 0), UINT32_MAX);
+    ASSERT_EQ(pw->count, 2u);
+    physics_world_destroy(pw);
+}
+
 TEST(body_static)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -605,6 +616,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aabb_overlap_touching);
     RUN_TEST(world_create_destroy);
     RUN_TEST(body_create);
+    RUN_TEST(body_create_full_returns_invalid);
     RUN_TEST(body_static);
     RUN_TEST(gravity_fall);
     RUN_TEST(impulse);
