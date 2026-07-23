@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R344：LOD `lod_unregister` 未注册 entity 与「组索引 0」混同（已完成）
+
+### [x] R344-A lod_unregister must reject unregistered entities that alias group 0
+- [x] `lod.c::lod_unregister`：R260 已修 `lod_select`/`lod_get_mesh` 的 `entity_to_group[]==0` 别名洞，但 unregister 仍只判 `idx >= count` → 未注册 entity 误 swap-remove slot 0
+- [x] 对齐 R260：增加 `groups[idx].entity_id != entity` 早退；合法注销路径不变
+- [x] 回归 `lod_unregister_unregistered_when_group0_exists`（注册 entity0 后 unregister(999)，断言 count 仍为 1 且 groups[0].entity_id==0）
+
+**验收**：双后端构建通过；`test_lod` 含新用例通过。总计 **665** 处修复。
+
 ## R343：GPU 遮挡剔除（Hi-Z 金字塔生成 / AABB 投影可见性 / 双缓冲回读）深审——无 demo 可达高置信 bug，不修复
 
 - 审计范围与结论（`engine/src/renderer/occlusion_cull.c` + `shaders/hi_z_generate.comp` + `shaders/occlusion_cull.comp`）：

@@ -170,7 +170,10 @@ void lod_unregister(LODSystem *sys, u32 entity) {
     if (entity >= LOD_MAX_GROUPS) return;
 
     u32 idx = sys->entity_to_group[entity];
-    if (idx >= sys->count) return;
+    /* R344 (CORRECTNESS): same group-0 aliasing hole as R260 on select/get_mesh.
+     * Unregistered entities keep entity_to_group[]==0; once any group exists,
+     * idx=0 passes "idx >= count" and swap-removes the real occupant of slot 0. */
+    if (idx >= sys->count || sys->groups[idx].entity_id != entity) return;
 
     /* Swap-remove: move last group into the removed slot */
     u32 last = sys->count - 1;
