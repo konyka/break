@@ -341,7 +341,19 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
         rhi_cubemap_transition_to_read(dev, sys->prefilter_map);
     }
 
-    sys->ready = rhi_handle_valid(sys->brdf_lut)
-              && rhi_handle_valid(sys->irradiance_map)
-              && rhi_handle_valid(sys->prefilter_map);
+    /* R351: textures alone are not success — env convolution needs sampler +
+     * pipelines (otherwise ready=true with unbound cubemap reads). */
+    bool ok = rhi_handle_valid(sys->brdf_lut)
+           && rhi_handle_valid(sys->irradiance_map)
+           && rhi_handle_valid(sys->prefilter_map)
+           && rhi_handle_valid(sys->brdf_lut_pipeline);
+    if (ok && rhi_handle_valid(env_map)) {
+        if (!rhi_handle_valid(sys->cubemap_sampler) ||
+            !rhi_handle_valid(sys->irradiance_pipeline) ||
+            !rhi_handle_valid(sys->prefilter_pipeline)) {
+            LOG_WARN("IBL: env convolution resources incomplete");
+            ok = false;
+        }
+    }
+    sys->ready = ok;
 }

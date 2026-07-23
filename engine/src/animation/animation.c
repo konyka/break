@@ -140,6 +140,10 @@ void anim_layer_play(AnimBlendState *state, u32 layer, u32 clip_index,
     L->active     = true;
     if (L->weight <= 0.0f) L->weight = 1.0f;
     if (layer >= state->layer_count) state->layer_count = layer + 1;
+    /* R351: cancel in-flight crossfade on this layer so fade_done cannot
+     * overwrite the clip_index/time we just set. */
+    if (state->crossfade.active && state->crossfade.layer_index == layer)
+        state->crossfade.active = false;
 }
 
 void anim_layer_set_weight(AnimBlendState *state, u32 layer, f32 weight) {
@@ -161,6 +165,9 @@ void anim_layer_stop(AnimBlendState *state, u32 layer) {
     if (!state || layer >= ANIM_MAX_LAYERS) return;
     state->layers[layer].active = false;
     state->layers[layer].weight = 0.0f;
+    /* R351: stop must cancel crossfade or fade_done would revive clip_index. */
+    if (state->crossfade.active && state->crossfade.layer_index == layer)
+        state->crossfade.active = false;
 }
 
 /* ----------------------------------------------------------------- */
@@ -381,6 +388,17 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
     if (fade_done) {
         AnimationLayer *L = &state->layers[state->crossfade.layer_index];
         L->clip_index = state->crossfade.to_clip;
+        /* R351: align instant crossfade — non-looping layers restart at the
+         * to-clip origin. Leaving the from-clip clock made the next
+         * advance_layer_time clamp time to to_duration (hard cut to end pose).
+         * Looping layers keep phase via fmod into the to-clip duration. */
+        if (!L->looping) {
+            L->time = 0.0f;
+        } else {
+            const AnimClip *to = clip_at(clips, clip_count, L->clip_index);
+            if (to && to->duration > 0.0f)
+                L->time = fmodf(L->time, to->duration);
+        }
         state->crossfade.active = false;
     }
 }

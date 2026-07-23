@@ -4420,6 +4420,21 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R351：渐进 crossfade 结束后非循环层 time 未复位 + play/stop 未取消 crossfade + IBL ready 过宽（已完成）
+
+### [x] R351-A gradual fade_done must restart non-looping layer time
+- [x] `animation.c`：`fade_done` 时非循环 `L->time=0`（对齐 instant），循环 `fmod` 到 to-duration
+- [x] 回归 `crossfade_gradual_nonloop_restarts_at_origin`
+
+### [x] R351-B/C play/stop cancel in-flight crossfade on same layer
+- [x] `anim_layer_play` / `anim_layer_stop`：同层 `crossfade.active=false`
+- [x] 回归 `play_cancels_active_crossfade`
+
+### [x] R351-D ibl_generate ready requires convolution resources
+- [x] 要求 `brdf_lut_pipeline`；有 env 时再要求 sampler + irradiance/prefilter pipelines
+
+**验收**：双后端 `engine` + `test_animation` **31/31** 通过。总计 **700** 处修复。
+
 ## R350：残余 ready 空洞 + ADDITIVE crossfade 种子错用 OVERRIDE 语义（已完成）
 
 ### [x] R350-A..D seal leftover ready holes

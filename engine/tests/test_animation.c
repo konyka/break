@@ -256,6 +256,54 @@ TEST(crossfade_gradual)
     anim_blend_state_destroy(&st);
 }
 
+TEST(crossfade_gradual_nonloop_restarts_at_origin)
+{
+    /* R351: after a gradual crossfade completes on a non-looping layer, time
+     * must reset to 0 (like instant crossfade). Leaving the from-clip clock
+     * made the next evaluate clamp to to_duration and snap to the end pose. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    init_translation_clip(&g_clips[1], 0, 1.0f, 0, 0, 0, 20, 0, 0);
+
+    anim_layer_play(&st, 0, 0, 1.0f, false);
+    anim_crossfade(&st, 0, 1, 1.0f);
+    anim_blend_evaluate(&st, 0.5f, g_clips, 2);
+    anim_blend_evaluate(&st, 0.6f, g_clips, 2);
+    ASSERT_TRUE(!st.crossfade.active);
+    ASSERT_EQ(st.layers[0].clip_index, 1u);
+    ASSERT_FLOAT_EQ(st.layers[0].time, 0.0f, 1e-5f);
+
+    /* Sample at the restarted origin — to-clip key0 is x=0, not end x=20. */
+    anim_blend_evaluate(&st, 0.0f, g_clips, 2);
+    ASSERT_FLOAT_EQ(st.local_positions[0].e[0], 0.0f, 0.01f);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(play_cancels_active_crossfade)
+{
+    /* R351: play/stop must clear crossfade or fade_done overwrites clip_index. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    init_translation_clip(&g_clips[1], 0, 1.0f, 0, 0, 0, 20, 0, 0);
+
+    anim_layer_play(&st, 0, 0, 1.0f, true);
+    anim_crossfade(&st, 0, 1, 1.0f);
+    ASSERT_TRUE(st.crossfade.active);
+    anim_layer_play(&st, 0, 0, 1.0f, true);
+    ASSERT_TRUE(!st.crossfade.active);
+    ASSERT_EQ(st.layers[0].clip_index, 0u);
+
+    anim_crossfade(&st, 0, 1, 1.0f);
+    ASSERT_TRUE(st.crossfade.active);
+    anim_layer_stop(&st, 0);
+    ASSERT_TRUE(!st.crossfade.active);
+
+    anim_blend_state_destroy(&st);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  AnimClip                                                                 */
 /* ----------------------------------------------------------------------- */
@@ -613,6 +661,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(additive_crossfade_leaves_unaddressed_bones_untouched);
     RUN_TEST(crossfade_instant);
     RUN_TEST(crossfade_gradual);
+    RUN_TEST(crossfade_gradual_nonloop_restarts_at_origin);
+    RUN_TEST(play_cancels_active_crossfade);
     RUN_TEST(anim_clip_init_basic);
     RUN_TEST(blend_evaluate_step_holds_keyframe);
     RUN_TEST(skeleton_evaluate_step_holds_keyframe);
