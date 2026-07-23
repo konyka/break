@@ -85,7 +85,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     if (!vs_src || !fs_src) {
         free(vs_src); free(fs_src);
         LOG_WARN("Particle render shaders not found");
-        rhi_pipeline_destroy(dev, ps->compute_pipeline);
+        /* R355: cull_pipeline may already exist — use full shutdown. */
+        particles_shutdown(ps);
         return false;
     }
 
@@ -96,8 +97,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
         if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
-        rhi_pipeline_destroy(dev, ps->compute_pipeline);
         LOG_WARN("Particle render shader compile failed");
+        particles_shutdown(ps);
         return false;
     }
 
@@ -114,8 +115,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     rhi_shader_destroy(dev, fs);
 
     if (!rhi_handle_valid(ps->render_pipeline)) {
-        rhi_pipeline_destroy(dev, ps->compute_pipeline);
         LOG_WARN("Particle render pipeline creation failed");
+        particles_shutdown(ps);
         return false;
     }
 

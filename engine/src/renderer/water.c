@@ -68,7 +68,10 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
 
-    if (!rhi_handle_valid(w->pipeline)) return false;
+    if (!rhi_handle_valid(w->pipeline)) {
+        water_shutdown(w);
+        return false;
+    }
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -78,6 +81,13 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
         .wrap_w = RHI_WRAP_CLAMP_TO_EDGE,
     };
     w->sampler = rhi_sampler_create(dev, &sdesc);
+    /* R355: align R348 postfx — invalid sampler must not leave water "inited". */
+    if (!rhi_handle_valid(w->sampler)) {
+        LOG_WARN("Water: sampler creation failed");
+        water_shutdown(w);
+        w->enabled = false;
+        return false;
+    }
 
     w->loc_view = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_view");
     w->loc_proj = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_proj");

@@ -80,6 +80,8 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
 
     if (!rhi_handle_valid(tm->tm_pipe)) {
         LOG_WARN("Tonemap: pipeline creation failed");
+        /* R355: lum_pipe may already be live — free via shutdown. */
+        tonemap_shutdown(tm);
         return false;
     }
 

@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R355：SSS/tonemap/water/particles init 失败泄漏（已完成）
+
+### [x] R355-A sss dual-pipeline fail → sss_shutdown
+### [x] R355-B tonemap tm_pipe fail frees lum_pipe via shutdown
+### [x] R355-C water_init validates sampler（fail → shutdown + enabled=false）
+### [x] R355-D particles render-fail path uses particles_shutdown（含 cull_pipeline）
+
+**验收**：双后端 `engine`/`engine_demo` + Wayland `engine` 构建通过。总计 **725** 处修复。
+
 ## R354：Lua body 1-based 对齐 + postfx blit 门控 + init 失败清理 + Wayland pointer_leave（已完成）
 
 ### [x] R354-A Lua physics body ids are 1-based

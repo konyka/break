@@ -71,6 +71,8 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     if (!rhi_handle_valid(s->h_pipe) || !rhi_handle_valid(s->v_pipe)) {
         LOG_WARN("SSS: pipeline creation failed");
+        /* R355: align R354 SSAO/SSGI — free the pipe that succeeded. */
+        sss_shutdown(s);
         return false;
     }
 
