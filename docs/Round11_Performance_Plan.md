@@ -4420,6 +4420,15 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R357：MegaBuffer VBO/IBO 失败仍 valid + mat-group indirect 忽略返回值（已完成）
+
+### [x] R357-A mega_buf.valid requires bindable VBO+IBO
+### [x] R357-B per-material indirect_draw_init checked（fail → skip upload）
+### [x] R357-C unified paths only if all mat-group systems ready
+### [x] R357-D occlusion_cull_init fail clears occ_cull_enabled
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **732** 处修复。
+
 ## R356：mega indirect/gpucull 失败仍强制开启 + scene_fbo 未校验（已完成）
 
 ### [x] R356-A gpu_indirect_enabled follows indirect_draw_init

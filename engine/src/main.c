@@ -1685,7 +1685,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
     }
     lod_init(&lod_sys);
-    occlusion_cull_init(&occ_sys, render.device, rw, rh);
+    /* R357: default occ_cull_enabled=true must not outlive a failed init. */
+    if (!occlusion_cull_init(&occ_sys, render.device, rw, rh)) {
+        occ_cull_enabled = false;
+        LOG_WARN("OcclusionCull: init failed; Hi-Z cull disabled");
+    }
 
     /* Register scene meshes as LOD groups for distance-based culling. */
     for (u32 ni = 0; ni < scene.node_count && ni < LOD_MAX_GROUPS; ni++) {
@@ -1803,29 +1807,47 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                  .initial_data = idata };
             mega_buf.ibo = rhi_buffer_create(render.device, &id);
 
+            /* R357: valid must mean bindable geometry — otherwise shadow/forward
+             * still bind VBO/IBO under mega_buf.valid && gpu_indirect_enabled. */
+            bool mega_geom_ok = rhi_handle_valid(mega_buf.vbo) && rhi_handle_valid(mega_buf.ibo);
+            if (!mega_geom_ok) {
+                LOG_WARN("MegaBuffer: VBO/IBO creation failed; mega GPU path disabled");
+                if (rhi_handle_valid(mega_buf.vbo)) {
+                    rhi_buffer_destroy(render.device, mega_buf.vbo);
+                    mega_buf.vbo = RHI_HANDLE_NULL;
+                }
+                if (rhi_handle_valid(mega_buf.ibo)) {
+                    rhi_buffer_destroy(render.device, mega_buf.ibo);
+                    mega_buf.ibo = RHI_HANDLE_NULL;
+                }
+            }
+
             /* Initialize indirect draw system */
             /* R356: do not force gpu_indirect_enabled when init fails — compact/execute
              * no-op with count=0 would drop mega shadow draws while still bumping draw_calls. */
-            bool indirect_ok = indirect_draw_init(&indirect_sys, render.device, mesh_cmd_count);
-            if (indirect_ok) {
-                indirect_draw_upload(&indirect_sys, render.device, cmds, mesh_cmd_count);
-            } else {
-                LOG_WARN("IndirectDraw: init failed; mega GPU indirect disabled");
-            }
+            bool indirect_ok = false;
+            bool gpucull_ok = false;
+            if (mega_geom_ok) {
+                indirect_ok = indirect_draw_init(&indirect_sys, render.device, mesh_cmd_count);
+                if (indirect_ok) {
+                    indirect_draw_upload(&indirect_sys, render.device, cmds, mesh_cmd_count);
+                } else {
+                    LOG_WARN("IndirectDraw: init failed; mega GPU indirect disabled");
+                }
 
-            /* Initialize GPU frustum culling */
-            bool gpucull_ok = gpucull_init(&gpucull_sys, render.device);
-            if (!gpucull_ok) {
-                LOG_WARN("GPUCull: init failed; GPU frustum cull toggle disabled");
-            } else {
-                gpucull_init_unified(&gpucull_sys, render.device);
+                gpucull_ok = gpucull_init(&gpucull_sys, render.device);
+                if (!gpucull_ok) {
+                    LOG_WARN("GPUCull: init failed; GPU frustum cull toggle disabled");
+                } else {
+                    gpucull_init_unified(&gpucull_sys, render.device);
+                }
             }
 
             mega_buf.draw_cmd_count    = mesh_cmd_count;
             mega_buf.total_index_count = total_idxs;
-            mega_buf.valid = true;
-            gpu_indirect_enabled = indirect_ok;
-            gpucull_enabled = gpucull_ok;
+            mega_buf.valid = mega_geom_ok;
+            gpu_indirect_enabled = mega_geom_ok && indirect_ok;
+            gpucull_enabled = mega_geom_ok && gpucull_ok;
 
             /* Build per-material groups for G-Buffer/forward batched indirect draw */
             memset(mega_buf.cmd_mat_group, -1, sizeof(mega_buf.cmd_mat_group));
@@ -1885,7 +1907,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     u32 gi = 0;
                     for (u32 ci = mega_buf.group_cmd_offsets[g]; ci < mega_buf.group_cmd_offsets[g + 1]; ci++)
                         gcmds_scratch[gi++] = cmds[mega_buf.group_cmd_list[ci]];
-                    indirect_draw_init(&mega_buf.mat_systems[g], render.device, gcount);
+                    /* R357: skip upload when init fails — avoid silent empty mat batches. */
+                    if (!indirect_draw_init(&mega_buf.mat_systems[g], render.device, gcount)) {
+                        LOG_WARN("MegaBuffer: mat group %u indirect init failed", g);
+                        continue;
+                    }
                     indirect_draw_upload(&mega_buf.mat_systems[g], render.device, gcmds_scratch, gcount);
                 }
                 free(gcmds_scratch);
@@ -1955,9 +1981,21 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                          unified_udc_buf, unified_uobj_buf);
 
             if (mega_buf.mat_group_count > 0u && gpucull_sys.unified_ready) {
-                unified_shadow_enabled = true;
-                unified_forward_enabled = true;
-                unified_deferred_enabled = true;
+                /* R357: only auto-enable unified paths when every non-empty mat
+                 * group's IndirectDrawSystem is ready (partial init → silent miss). */
+                bool all_mat_ready = true;
+                for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
+                    u32 gcount = mega_buf.group_cmd_offsets[g + 1] - mega_buf.group_cmd_offsets[g];
+                    if (gcount == 0) continue;
+                    if (!mega_buf.mat_systems[g].ready) { all_mat_ready = false; break; }
+                }
+                if (all_mat_ready) {
+                    unified_shadow_enabled = true;
+                    unified_forward_enabled = true;
+                    unified_deferred_enabled = true;
+                } else {
+                    LOG_WARN("Unified mega paths disabled: not all mat-group indirect systems ready");
+                }
             }
 
             LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds",
