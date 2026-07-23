@@ -1488,6 +1488,10 @@ int main(int argc, char **argv) {
     u32 rh = (u32)(h * render_scale); if (rh < 1) rh = 1;
 
     RHIOffscreenFBO scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw > 0 ? rw : 1, rh > 0 ? rh : 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    /* R356: forward/post sample scene_fbo color/depth — reject empty handle early. */
+    if (!rhi_handle_valid(scene_fbo.fb)) {
+        LOG_ERROR("Scene FBO creation failed (%ux%u)", rw > 0 ? rw : 1u, rh > 0 ? rh : 1u);
+    }
     PostProcess postfx = {0};
     SSAOSystem ssao = {0};
     TAASystem taa = {0};
@@ -1800,11 +1804,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             mega_buf.ibo = rhi_buffer_create(render.device, &id);
 
             /* Initialize indirect draw system */
-            indirect_draw_init(&indirect_sys, render.device, mesh_cmd_count);
-            indirect_draw_upload(&indirect_sys, render.device, cmds, mesh_cmd_count);
+            /* R356: do not force gpu_indirect_enabled when init fails — compact/execute
+             * no-op with count=0 would drop mega shadow draws while still bumping draw_calls. */
+            bool indirect_ok = indirect_draw_init(&indirect_sys, render.device, mesh_cmd_count);
+            if (indirect_ok) {
+                indirect_draw_upload(&indirect_sys, render.device, cmds, mesh_cmd_count);
+            } else {
+                LOG_WARN("IndirectDraw: init failed; mega GPU indirect disabled");
+            }
 
             /* Initialize GPU frustum culling */
-            if (!gpucull_init(&gpucull_sys, render.device)) {
+            bool gpucull_ok = gpucull_init(&gpucull_sys, render.device);
+            if (!gpucull_ok) {
                 LOG_WARN("GPUCull: init failed; GPU frustum cull toggle disabled");
             } else {
                 gpucull_init_unified(&gpucull_sys, render.device);
@@ -1813,8 +1824,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             mega_buf.draw_cmd_count    = mesh_cmd_count;
             mega_buf.total_index_count = total_idxs;
             mega_buf.valid = true;
-            gpu_indirect_enabled = true;
-            gpucull_enabled = true;
+            gpu_indirect_enabled = indirect_ok;
+            gpucull_enabled = gpucull_ok;
 
             /* Build per-material groups for G-Buffer/forward batched indirect draw */
             memset(mega_buf.cmd_mat_group, -1, sizeof(mega_buf.cmd_mat_group));
@@ -1962,7 +1973,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
      *   BREAK_GPUCULL=1  start with GPU frustom culling enabled */
     i64 auto_exit_frames = 0;
     { const char *e = getenv("BREAK_FRAMES");    if (e) auto_exit_frames = atoll(e); }
-    { const char *e = getenv("BREAK_GPUCULL");   if (e && atoi(e)) gpucull_enabled = true; }
+    { const char *e = getenv("BREAK_GPUCULL");
+      if (e && atoi(e)) {
+          /* R356: env must not enable cull when gpucull_init failed. */
+          if (gpucull_sys.ready) gpucull_enabled = true;
+          else LOG_WARN("BREAK_GPUCULL=1 ignored: GPUCull not ready");
+      } }
     { const char *e = getenv("BREAK_UNIFIED_FORWARD");
       if (e && !atoi(e)) unified_forward_enabled = false;
       else if (e && atoi(e)) unified_forward_enabled = true; }
@@ -2157,13 +2173,21 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (input_key_pressed(platform_input(engine.platform), 286)) {
-            gpu_indirect_enabled = !gpu_indirect_enabled;
-            LOG_INFO("GPU Indirect Draw: %s", gpu_indirect_enabled ? "on" : "off");
+            if (!gpu_indirect_enabled && !indirect_sys.ready) {
+                LOG_WARN("GPU Indirect Draw: cannot enable (init failed)");
+            } else {
+                gpu_indirect_enabled = !gpu_indirect_enabled;
+                LOG_INFO("GPU Indirect Draw: %s", gpu_indirect_enabled ? "on" : "off");
+            }
         }
 
         if (input_key_pressed(platform_input(engine.platform), 287)) {
-            gpucull_enabled = !gpucull_enabled;
-            LOG_INFO("GPU Frustum Cull: %s", gpucull_enabled ? "on" : "off");
+            if (!gpucull_enabled && !gpucull_sys.ready) {
+                LOG_WARN("GPU Frustum Cull: cannot enable (init failed)");
+            } else {
+                gpucull_enabled = !gpucull_enabled;
+                LOG_INFO("GPU Frustum Cull: %s", gpucull_enabled ? "on" : "off");
+            }
         }
 
         if (input_key_pressed(platform_input(engine.platform), 285)) {
@@ -2340,6 +2364,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rh = new_rh;
             if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
             scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw, rh, RHI_FORMAT_R16G16B16A16_SFLOAT);
+            if (!rhi_handle_valid(scene_fbo.fb)) {
+                LOG_ERROR("Scene FBO recreate failed (%ux%u)", rw, rh);
+            }
             post_process_shutdown(&postfx);
             ssao_shutdown(&ssao);
             taa_shutdown(&taa);

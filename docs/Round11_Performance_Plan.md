@@ -4420,6 +4420,18 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R356：mega indirect/gpucull 失败仍强制开启 + scene_fbo 未校验（已完成）
+
+### [x] R356-A gpu_indirect_enabled follows indirect_draw_init
+- [x] 失败不强制 true；热键仅 `indirect_sys.ready` 时可开
+
+### [x] R356-B gpucull_enabled follows gpucull_init
+- [x] `BREAK_GPUCULL` / 热键需 `gpucull_sys.ready`
+
+### [x] R356-C scene_fbo create/resize validate handle
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **728** 处修复。
+
 ## R355：SSS/tonemap/water/particles init 失败泄漏（已完成）
 
 ### [x] R355-A sss dual-pipeline fail → sss_shutdown

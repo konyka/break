@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R355 SSS/tonemap/water/particles init 失败泄漏 — 修复 4 处** — **R355-A**（LEAK）：`sss_init` 双 pipeline（h/v）一侧失败直接 return，未 `sss_shutdown`（R354 已修 SSAO/SSGI 同族）。**R355-B**：`tonemap_init` 仅查 `tm_pipe`；失败时已创建的 `lum_pipe` 泄漏。**R355-C**：`water_init` 未校验 sampler 仍返回 true（pipeline 成功后）；失败 `water_shutdown` + `enabled=false`。**R355-D**：`particles_init` 渲染 shader/pipeline 失败只毁 compute，漏毁可选 `cull_pipeline`；改 `particles_shutdown`。总计 **725** 处修复。
+最近更新：**R356 mega indirect/gpucull 失败仍强制开启 + scene_fbo 未校验 — 修复 3 处** — **R356-A**（CORRECTNESS）：`indirect_draw_init` 失败仍 `gpu_indirect_enabled=true`；compact/execute no-op → mega 阴影 0 draw 且 `draw_calls` 虚高。改为 `gpu_indirect_enabled = init 结果`；热键/仅在 `ready` 时可开。**R356-B**：`gpucull_init` 失败仍 `gpucull_enabled=true`；`BREAK_GPUCULL=1` 亦强制开。改为跟随 init，env/热键需 `gpucull_sys.ready`。**R356-C**：`scene_fbo` 创建/resize 未校验句柄（forward/post 采 color/depth）。失败 `LOG_ERROR`。总计 **728** 处修复。
+
+此前：**R355 SSS/tonemap/water/particles init 失败泄漏 — 修复 4 处** — **R355-A**（LEAK）：`sss_init` 双 pipeline（h/v）一侧失败直接 return，未 `sss_shutdown`（R354 已修 SSAO/SSGI 同族）。**R355-B**：`tonemap_init` 仅查 `tm_pipe`；失败时已创建的 `lum_pipe` 泄漏。**R355-C**：`water_init` 未校验 sampler 仍返回 true（pipeline 成功后）；失败 `water_shutdown` + `enabled=false`。**R355-D**：`particles_init` 渲染 shader/pipeline 失败只毁 compute，漏毁可选 `cull_pipeline`；改 `particles_shutdown`。总计 **725** 处修复。
 
 此前：**R354 Lua body 1-based 对齐 + postfx blit 门控 + init 失败清理 + Wayland pointer_leave — 修复 7 处** — **R354-A**（CORRECTNESS）：Lua 注释写 1-based，却把 id 当 C 下标且拒 `id<=0` → `bodies[0]` 不可达，`spawn` 返回 0 与「0=无效」冲突。统一 `idx=id-1`，`spawn` 返回 `id+1`。回归 `engine_spawn_first_body_is_lua_id_1`。**R354-B**：`main` 最终 blit 无条件绑 `postfx.tex_pipe`（init 失败仍绑）。加 `postfx.ready` 门控。**R354-C**：`post_process_init` blur/tex/composite/sampler 失败未 shutdown（仅 FBO 路径有）。**R354-D/E**：SSGI/SSAO 双 pipeline 一条失败泄漏。**R354-F**：Wayland `pointer_leave` 不释放鼠标键 → 拖拽卡住。**R354-G**：`light_system_init` buffer/staging 失败未 shutdown。总计 **721** 处修复。
 
