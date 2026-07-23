@@ -479,20 +479,37 @@ static bool load_resources_chunk(Scene *s, Reader *r) {
     return true;
 }
 
+/* R353: undo entities created by a failed load so World is not left polluted. */
+static void rollback_entities(World *w, Entity *ents, u32 count) {
+    if (!w || !ents) return;
+    for (u32 i = 0; i < count; i++) {
+        if (entity_valid(ents[i]))
+            world_destroy_entity(w, ents[i]);
+    }
+}
+
+#define BSCN_MAX_LOAD_ENTITIES ECS_MAX_ENTITIES
+#define BSCN_MAX_LOAD_NODES    (64u * 1024u)
+
 static bool load_entities_chunk(World *w, Reader *r,
                                 Entity **out_entities, u32 *out_count) {
     u32 n = 0;
     if (!rd_u32(r, &n)) return false;
+    if (n > BSCN_MAX_LOAD_ENTITIES) return false;
     Entity *ents = (Entity *)calloc(n ? n : 1, sizeof(Entity));
     if (!ents) return false;
 
     for (u32 i = 0; i < n; i++) {
         u32 saved_gen = 0, comp_count = 0;
         if (!rd_u32(r, &saved_gen) || !rd_u32(r, &comp_count)) {
+            rollback_entities(w, ents, i);
             free(ents); return false;
         }
         Entity e = world_create_entity(w);
-        if (!entity_valid(e)) { free(ents); return false; }
+        if (!entity_valid(e)) {
+            rollback_entities(w, ents, i);
+            free(ents); return false;
+        }
         /* Restore the saved generation so (index, generation) identity — the
          * stable "unified ID" shared with the scene — round-trips intact. */
         if (saved_gen != 0) {
@@ -502,7 +519,10 @@ static bool load_entities_chunk(World *w, Reader *r,
         ents[i] = e;
         for (u32 k = 0; k < comp_count; k++) {
             u32 type = 0;
-            if (!rd_u32(r, &type)) { free(ents); return false; }
+            if (!rd_u32(r, &type)) {
+                rollback_entities(w, ents, i + 1u);
+                free(ents); return false;
+            }
             if (type < ECS_MAX_COMPONENTS && w->component_sizes[type]) {
                 world_add_component(w, e, type);
             }
@@ -539,6 +559,7 @@ static bool load_components_chunk(World *w, Reader *r,
 static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
     u32 n = 0;
     if (!rd_u32(r, &n)) return false;
+    if (n > BSCN_MAX_LOAD_NODES) return false;
     if (!s) {
         /* skip the chunk */
         for (u32 i = 0; i < n; i++) {
@@ -636,6 +657,9 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         }
     }
 
+    /* R353: COMPONENTS/NODES/RESOURCES failure must not leave orphan entities. */
+    if (!ok)
+        rollback_entities(w, ents, ent_count);
     free(ents);
     free(buf);
     return ok;
@@ -917,6 +941,9 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
     r.p = buf;
     r.end = buf + fsz;
 
+    Entity *created = NULL;
+    u32 created_count = 0, created_cap = 0;
+
     bool ok = js_match(&r, '{');
     while (ok && !js_peek(&r, '}')) {
         if (js_key(&r, "version")) {
@@ -928,6 +955,19 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                 do {
                     if (!js_match(&r, '{')) { ok = false; break; }
                     Entity e = world_create_entity(w);
+                    if (!entity_valid(e)) { ok = false; break; }
+                    /* R353: track for rollback if later parse/nodes fail. */
+                    if (created_count >= created_cap) {
+                        u32 nc = created_cap ? created_cap * 2u : 16u;
+                        Entity *tmp = (Entity *)realloc(created, nc * sizeof(Entity));
+                        if (!tmp) {
+                            world_destroy_entity(w, e);
+                            ok = false; break;
+                        }
+                        created = tmp;
+                        created_cap = nc;
+                    }
+                    created[created_count++] = e;
                     while (ok && !js_peek(&r, '}')) {
                         if (js_key(&r, "gen")) {
                             /* R243: JSON save emits "gen" but load previously
@@ -940,6 +980,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                             if (ok && g != 0) {
                                 w->entities[e.index].generation = g;
                                 e.generation = g;
+                                created[created_count - 1u] = e;
                             }
                         } else if (js_key(&r, "components")) {
                             ok = json_load_components(w, &r, e);
@@ -1018,6 +1059,9 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
         (void)js_match(&r, ',');
     }
     ok = ok && js_match(&r, '}');
+    if (!ok)
+        rollback_entities(w, created, created_count);
+    free(created);
     free(buf);
     return ok;
 }

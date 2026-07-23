@@ -216,7 +216,11 @@ t->loc_time        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_time
     usize vert_bytes = (usize)vert_count * 8 * sizeof(f32);
     usize idx_bytes  = (usize)idx_count * sizeof(u32);
     u8 *geom_block = (u8 *)calloc(1, vert_bytes + idx_bytes);
-    if (!geom_block) return false;
+    if (!geom_block) {
+        /* R353: heightmap + pipeline already live — mirror R244 shutdown. */
+        terrain_shutdown(t);
+        return false;
+    }
     f32 *verts   = (f32 *)geom_block;
     u32 *indices = (u32 *)(geom_block + vert_bytes);
 

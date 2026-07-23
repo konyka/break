@@ -84,8 +84,28 @@ static bool cgltf_accessor_is_type(cgltf_accessor *acc, cgltf_type type) {
     return acc && acc->type == type;
 }
 
+static bool gltf_uri_safe(const char *uri) {
+    if (!uri || !*uri) return false;
+    if (uri[0] == '/' || uri[0] == '\\') return false;
+    const char *p = uri;
+    for (;;) {
+        if (p[0] == '.' && p[1] == '.' &&
+            (p[2] == '/' || p[2] == '\\' || p[2] == '\0'))
+            return false;
+        const char *slash = strpbrk(p, "/\\");
+        if (!slash) break;
+        p = slash + 1;
+    }
+    return true;
+}
+
 static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_texture *tex) {
     if (!tex || !tex->image || !tex->image->uri) return RHI_HANDLE_NULL;
+    /* R353: reject path escape in image.uri (pairs with vfs_rel_path_safe). */
+    if (!gltf_uri_safe(tex->image->uri)) {
+        LOG_WARN("glTF: rejecting unsafe texture uri '%s'", tex->image->uri);
+        return RHI_HANDLE_NULL;
+    }
     char tex_path[512];
     const char *last_slash = strrchr(gltf_path, '/');
     if (last_slash) {
@@ -482,6 +502,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         if (!skin_buf) {
             LOG_ERROR("glTF: skin allocation failed");
             cgltf_free(data);
+            /* R353: meshes/materials may already be on out_scene. */
+            asset_scene_free(ctx, out_scene);
             return false;
         }
         out_scene->joint_parents = (u32 *)skin_buf;
@@ -492,6 +514,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         if (!node_to_joint) {
             LOG_ERROR("glTF: node_to_joint allocation failed");
             cgltf_free(data);
+            /* R353: joint_parents already owned by out_scene — free via scene. */
+            asset_scene_free(ctx, out_scene);
             return false;
         }
         for (u32 ni2 = 0; ni2 < data->nodes_count; ni2++) node_to_joint[ni2] = UINT32_MAX;

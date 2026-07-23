@@ -4420,6 +4420,21 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R353：VFS 路径穿越 + 场景加载失败回滚 + glTF/terrain OOM 清理（已完成）
+
+### [x] R353-A/B vfs_open path safety + vfs_read_all size on malloc fail
+- [x] 拒 NULL / 空 / 绝对路径 / `..` 段；malloc 失败清 `*out_size`
+- [x] 回归 `vfs_rejects_path_traversal`
+
+### [x] R353-C/D scene_load_binary/json rollback orphan entities
+- [x] `rollback_entities`；binary 加 ENTITIES/NODES `n` 上限
+- [x] 回归 `load_binary_rollback_orphans_on_bad_components`
+
+### [x] R353-E/F glTF OOM → asset_scene_free；reject unsafe image.uri
+### [x] R353-G terrain geom calloc fail → terrain_shutdown
+
+**验收**：双后端 `engine`；`test_vfs` **23/23**、`test_scene_serial` **25/25**。总计 **714** 处修复。
+
 ## R352：unified Hi-Z 门控 + ECS create OOM 回滚 + 动画/物理边界（已完成）
 
 ### [x] R352-A gpucull unified requires hi_z sampler+fallback

@@ -205,6 +205,55 @@ TEST(load_binary_zero_chunks)
     remove(path);
 }
 
+TEST(load_binary_rollback_orphans_on_bad_components)
+{
+    /* R353: ENTITIES succeed then COMPONENTS fail → destroy created entities. */
+    const char *path = "/tmp/test_rollback_orphans.bscn";
+    {
+        u32 ent_chunk[3] = {1u, 1u, 0u}; /* n, gen, comp_count */
+        u32 comp_chunk[1] = {1u};        /* type_count only → truncated */
+
+        BscnHeader h = {0};
+        h.magic = BSCN_MAGIC;
+        h.version = BSCN_VERSION;
+        h.chunk_count = 2;
+        BscnChunkEntry table[2];
+        u32 base = (u32)sizeof(h) + 2u * (u32)sizeof(BscnChunkEntry);
+        table[0].type = BSCN_CHUNK_ENTITIES;
+        table[0].offset = base;
+        table[0].size = (u32)sizeof(ent_chunk);
+        table[1].type = BSCN_CHUNK_COMPONENTS;
+        table[1].offset = base + (u32)sizeof(ent_chunk);
+        table[1].size = (u32)sizeof(comp_chunk);
+
+        FILE *fp = fopen(path, "wb");
+        ASSERT_TRUE(fp != NULL);
+        fwrite(&h, sizeof(h), 1, fp);
+        fwrite(table, sizeof(table), 1, fp);
+        fwrite(ent_chunk, sizeof(ent_chunk), 1, fp);
+        fwrite(comp_chunk, sizeof(comp_chunk), 1, fp);
+        fclose(fp);
+    }
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    u32 live_before = 0;
+    for (u32 i = 0; i < w->entity_count; i++) {
+        if (world_entity_exists(w, w->entities[i])) live_before++;
+    }
+
+    ASSERT_TRUE(!scene_load_binary(w, NULL, path));
+
+    u32 live_after = 0;
+    for (u32 i = 0; i < w->entity_count; i++) {
+        if (world_entity_exists(w, w->entities[i])) live_after++;
+    }
+    ASSERT_EQ(live_before, live_after);
+
+    world_destroy(w);
+    remove(path);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Round 8: RESOURCES chunk + include_resources + generation restore       */
 /* ----------------------------------------------------------------------- */
@@ -442,6 +491,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_empty_path);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
+    RUN_TEST(load_binary_rollback_orphans_on_bad_components);
     /* Round 8: resources + generation */
     RUN_TEST(resources_roundtrip_include);
     RUN_TEST(resources_roundtrip_refs_only);

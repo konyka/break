@@ -369,9 +369,30 @@ TEST(vfs_open_empty_path)
     VFS *vfs = vfs_create();
     vfs_mount_dir(vfs, TMP_DIR);
 
-    /* Empty path may match a directory - just verify no crash */
+    /* R353: empty path is rejected (not a safe relative path). */
     VFSFile *f = vfs_open(vfs, "");
-    if (f) vfs_close(f);
+    ASSERT_TRUE(f == NULL);
+
+    vfs_destroy(vfs);
+}
+
+TEST(vfs_rejects_path_traversal)
+{
+    /* R353: DIR mount must not fopen outside mount via ".." or absolute paths. */
+    ensure_dir(TMP_DIR);
+    make_tmp_file(TMP_FILE, "hello vfs");
+
+    VFS *vfs = vfs_create();
+    ASSERT_TRUE(vfs_mount_dir(vfs, TMP_DIR));
+
+    ASSERT_TRUE(vfs_open(vfs, NULL) == NULL);
+    ASSERT_TRUE(vfs_open(vfs, "/etc/passwd") == NULL);
+    ASSERT_TRUE(vfs_open(vfs, "../test_vfs_dir/hello.txt") == NULL);
+    ASSERT_TRUE(vfs_open(vfs, "foo/../../etc/passwd") == NULL);
+
+    VFSFile *ok = vfs_open(vfs, "hello.txt");
+    ASSERT_TRUE(ok != NULL);
+    vfs_close(ok);
 
     vfs_destroy(vfs);
 }
@@ -406,4 +427,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_getc_null);
     RUN_TEST(vfs_read_all_null_vfs);
     RUN_TEST(vfs_open_empty_path);
+    RUN_TEST(vfs_rejects_path_traversal);
 TEST_MAIN_END()

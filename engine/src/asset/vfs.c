@@ -135,8 +135,25 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     return true;
 }
 
+/* R353: DIR mounts join mount_path/path and fopen — reject absolute paths and
+ * ".." segments so a glTF uri / asset path cannot escape the mount root. */
+static bool vfs_rel_path_safe(const char *path) {
+    if (!path || !*path) return false;
+    if (path[0] == '/') return false;
+    const char *p = path;
+    for (;;) {
+        if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0'))
+            return false;
+        const char *slash = strchr(p, '/');
+        if (!slash) break;
+        p = slash + 1;
+    }
+    return true;
+}
+
 VFSFile *vfs_open(VFS *vfs, const char *path) {
-    if (!vfs) return NULL;
+    if (!vfs || !path) return NULL;
+    if (!vfs_rel_path_safe(path)) return NULL;
 
     u32 hash = fnv1a(path);
 
@@ -242,11 +259,19 @@ usize vfs_size(VFSFile *f) {
 
 u8 *vfs_read_all(VFS *vfs, const char *path, usize *out_size) {
     VFSFile *f = vfs_open(vfs, path);
-    if (!f) return NULL;
+    if (!f) {
+        if (out_size) *out_size = 0;
+        return NULL;
+    }
     /* Copy data out: in single-alloc layout, data is freed with vfs_close */
     u8 *data = (u8 *)malloc(f->size);
-    if (data) memcpy(data, f->data, f->size);
-    if (out_size) *out_size = f->size;
+    if (data) {
+        memcpy(data, f->data, f->size);
+        if (out_size) *out_size = f->size;
+    } else {
+        /* R353: malloc fail must not leave a stale non-zero *out_size. */
+        if (out_size) *out_size = 0;
+    }
     vfs_close(f);
     return data;
 }
