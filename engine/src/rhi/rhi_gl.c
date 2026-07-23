@@ -1518,10 +1518,27 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, td->gl_tex, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
+    /* R358: incomplete atlas must not be published — bind_shadow_map would
+     * glClear depth on whatever FBO is still bound. */
+    GLenum fbo_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     gl_bind_fbo_cached(0);
+    if (fbo_status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_WARN("GL: shadow atlas FBO incomplete (0x%x)", (unsigned)fbo_status);
+        glDeleteFramebuffers(1, &gl_fbo);
+        rhi_texture_destroy(dev, sm.depth_tex);
+        sm.depth_tex = RHI_HANDLE_NULL;
+        sm.fbo = RHI_HANDLE_NULL;
+        return sm;
+    }
 
     GLFBOData *fd = calloc(1, sizeof(GLFBOData));
-    if (!fd) { glDeleteFramebuffers(1, &gl_fbo); sm.fbo = RHI_HANDLE_NULL; return sm; }
+    if (!fd) {
+        glDeleteFramebuffers(1, &gl_fbo);
+        rhi_texture_destroy(dev, sm.depth_tex);
+        sm.depth_tex = RHI_HANDLE_NULL;
+        sm.fbo = RHI_HANDLE_NULL;
+        return sm;
+    }
     u32 idx = rhi_alloc_slot(dev);
     fd->gl_fbo = gl_fbo;
     dev->slots[idx].ptr  = fd;
@@ -1550,8 +1567,11 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
 
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     (void)cmd;
+    /* R358: never clear depth on the previously-bound FBO when atlas is missing. */
+    if (!sm || !rhi_handle_valid(sm->fbo)) return;
     GLFBOData *fd = (GLFBOData *)rhi_get_resource(g_current_device, sm->fbo);
-    if (fd) gl_bind_fbo_cached(fd->gl_fbo);
+    if (!fd) return;
+    gl_bind_fbo_cached(fd->gl_fbo);
     /* Clear the whole atlas once with scissor disabled; per-cascade quadrant
      * scissoring is applied afterwards via rhi_cmd_set_shadow_viewport. */
     if (g_gl_scissor_enabled) { glDisable(GL_SCISSOR_TEST); g_gl_scissor_enabled = false; g_gl_scissor_rect_valid = false; }

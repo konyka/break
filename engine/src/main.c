@@ -372,6 +372,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
     /* Single 2048x2048 depth atlas; the 4 CSM cascades render into its four
      * 1024x1024 quadrants (replacing 4 separate maps + 3 wasted shadow passes). */
     rs->shadow_map = rhi_shadow_map_create(rs->device, 2048, 2048);
+    /* R358: CSM pass / bind_shadow_map require a valid atlas FBO. */
+    if (!rhi_handle_valid(rs->shadow_map.fbo)) {
+        LOG_WARN("Shadow atlas creation failed; CSM depth pass disabled");
+    }
 
     rs->cascade_splits[0] = 0.1f;
     {
@@ -1657,11 +1661,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     cinematic_init(&cine_sys, render.device);
     combined_aa_init(&combined_aa, render.device, rw, rh);
     combined_color_init(&combined_color, render.device, rw, rh);
-    forward_velocity_init(&forward_vel, render.device, rw, rh);
+    if (!forward_velocity_init(&forward_vel, render.device, rw, rh)) {
+        LOG_WARN("Forward velocity: init failed");
+    }
     { const char *e = getenv("BREAK_FORWARD_VEL");
       if (e && atoi(e)) {
-          forward_vel_enabled = true;
-          LOG_INFO("Forward velocity: on (BREAK_FORWARD_VEL=1, camera motion for TAA)");
+          /* R358: env must not enable when init failed. */
+          if (forward_vel.ready) {
+              forward_vel_enabled = true;
+              LOG_INFO("Forward velocity: on (BREAK_FORWARD_VEL=1, camera motion for TAA)");
+          } else {
+              LOG_WARN("BREAK_FORWARD_VEL=1 ignored: forward_velocity not ready");
+          }
       } }
     if (scene.joint_count > 0u && scene.anim_clip_count > 0u) {
         const char *blend_e = getenv("BREAK_ANIM_BLEND");
@@ -2451,6 +2462,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             forward_velocity_init(&forward_vel, render.device, rw, rh);
             occlusion_cull_resize(&occ_sys, rw, rh);
             deferred_resize(&render.deferred, render.device, rw, rh);
+            /* R358: resize may destroy deferred — fall back so 'p' path stays drawable. */
+            if (render.render_path == RENDER_PATH_DEFERRED && !render.deferred.initialized) {
+                render.render_path = RENDER_PATH_FORWARD;
+                LOG_WARN("Deferred resize failed; switched to FORWARD");
+            }
             frame_w = w;
             frame_h = h;
         }
@@ -3733,7 +3749,8 @@ u32 culled_count = 0;
         particles_compute(&particles, cmd, (f32)engine.delta_time);
 
         /* CSM: compute cascade VP matrices and render depth passes */
-        if (rhi_handle_valid(render.depth_pipeline)) {
+        /* R358: skip when atlas FBO missing — GL bind used to glClear the wrong target. */
+        if (rhi_handle_valid(render.depth_pipeline) && rhi_handle_valid(render.shadow_map.fbo)) {
             rhi_gpu_timer_begin(gpu_shadow_timer);
             Vec3 light_dir = sun_dir_vec;
 
@@ -4059,9 +4076,11 @@ u32 culled_count = 0;
 
         /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
         if (render.render_path == RENDER_PATH_FORWARD) {
-        if (rhi_handle_valid(scene_fbo.fb)) {
-            rhi_offscreen_fbo_bind(cmd, &scene_fbo);
-        }
+        /* R358: do not clear/draw into the previous target when scene_fbo is dead. */
+        if (!rhi_handle_valid(scene_fbo.fb)) {
+            LOG_ERROR("Scene FBO invalid; skipping forward pass");
+        } else {
+        rhi_offscreen_fbo_bind(cmd, &scene_fbo);
         rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
         /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
         rhi_cmd_clear_depth(cmd);
@@ -4273,8 +4292,16 @@ u32 culled_count = 0;
                     LOG_INFO("Wireframe: %s", wireframe_mode ? "ON" : "OFF");
                 }
                 if (input_key_pressed(inp, (i32)'p')) {
-                    render.render_path = (render.render_path == RENDER_PATH_FORWARD)
-                        ? RENDER_PATH_DEFERRED : RENDER_PATH_FORWARD;
+                    /* R358: DEFERRED without initialized MRT skips forward AND deferred → blank. */
+                    if (render.render_path == RENDER_PATH_FORWARD) {
+                        if (!render.deferred.initialized) {
+                            LOG_WARN("Deferred path unavailable (init/resize failed)");
+                        } else {
+                            render.render_path = RENDER_PATH_DEFERRED;
+                        }
+                    } else {
+                        render.render_path = RENDER_PATH_FORWARD;
+                    }
                     LOG_INFO("Render path: %s",
                              render.render_path == RENDER_PATH_DEFERRED ? "DEFERRED" : "FORWARD");
                 }
@@ -5163,6 +5190,7 @@ u32 culled_count = 0;
                 physics->bodies[gi].velocity.e[2] += gd.e[2] * scale;
             }
         }
+        } /* end scene_fbo valid */
          }
         } /* end forward path guard */
 
@@ -5572,7 +5600,8 @@ u32 culled_count = 0;
         }
 
         /* Cinematic post-process when combined color path did not already apply it. */
-        if (cine_sys.ready && cine_enabled && !used_combined_color) {
+        if (cine_sys.ready && cine_enabled && !used_combined_color &&
+            rhi_handle_valid(scene_fbo.fb)) {
             rhi_offscreen_fbo_bind_load(cmd, &scene_fbo);
             cinematic_apply(&cine_sys, cmd, tonemap_input, rw, rh, (f32)total_time);
             tonemap_input = scene_fbo.color_tex;

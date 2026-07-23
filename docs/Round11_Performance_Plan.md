@@ -4420,6 +4420,20 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R358：阴影 atlas bind 清错 FBO + DEFERRED 切换/resize 黑屏 + 相关门控（已完成）
+
+### [x] R358-A GL bind_shadow_map gates on valid fbo（no clear wrong target）
+### [x] R358-B GL shadow create：incomplete FBO / calloc → destroy depth_tex
+### [x] R358-C CSM requires shadow_map.fbo
+### [x] R358-D `p` rejects DEFERRED when !deferred.initialized
+### [x] R358-E deferred_resize fail → FORCE FORWARD
+### [x] R358-F VK shadow VKTextureData calloc fail tears down GPU objects
+### [x] R358-G forward skips clear/draw when scene_fbo invalid
+### [x] R358-H cinematic binds scene_fbo only if fb valid
+### [x] R358-I BREAK_FORWARD_VEL requires forward_vel.ready
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **741** 处修复。
+
 ## R357：MegaBuffer VBO/IBO 失败仍 valid + mat-group indirect 忽略返回值（已完成）
 
 ### [x] R357-A mega_buf.valid requires bindable VBO+IBO

@@ -4902,7 +4902,20 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     }
 
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
-    if (!td) return sm;
+    if (!td) {
+        /* R358: GPU objects already live in sd — tear down before returning null. */
+        LOG_WARN("VK: shadow texture slot alloc failed");
+        if (sd->render_pass_load) vkDestroyRenderPass(vk->device, sd->render_pass_load, NULL);
+        if (vk->shadow_render_pass == sd->render_pass)
+            vk->shadow_render_pass = VK_NULL_HANDLE;
+        vkDestroyFramebuffer(vk->device, sd->framebuffer, NULL);
+        vkDestroyRenderPass(vk->device, sd->render_pass, NULL);
+        vkDestroyImageView(vk->device, sd->depth_view, NULL);
+        vkFreeMemory(vk->device, sd->depth_memory, NULL);
+        vkDestroyImage(vk->device, sd->depth_image, NULL);
+        free(sd);
+        return sm;
+    }
     u32 tidx = rhi_alloc_slot(dev);
     td->image = sd->depth_image;
     td->view = sd->depth_view;
