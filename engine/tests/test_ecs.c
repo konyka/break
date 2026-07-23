@@ -527,6 +527,40 @@ TEST(ecs_null_entity) {
     world_destroy(w);
 }
 
+TEST(ecs_null_entity_does_not_alias_slot0) {
+    /* R345: ENTITY_NULL shares generation 0 with reserved entities[0]. Before
+     * the fix, destroy/add/remove treated it as empty-archetype slot 0. */
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+
+    /* Case A: live entity still in empty archetype (occupies global slot 0). */
+    Entity e = world_create_entity(w);
+    ASSERT_TRUE(world_entity_exists(w, e));
+    world_destroy_entity(w, ENTITY_NULL);
+    ASSERT_TRUE(world_entity_exists(w, e));
+    ASSERT_EQ(w->free_stack_top, 0u); /* must not recycle reserved index 0 */
+
+    /* Case B: after migration, null ops must not steal the live entity. */
+    Position *p = (Position *)world_add_component(w, e, COMP_POSITION);
+    ASSERT_NOT_NULL(p);
+    p->x = 42.0f;
+
+    void *stolen = world_add_component(w, ENTITY_NULL, COMP_POSITION);
+    ASSERT_TRUE(stolen == NULL);
+    world_remove_component(w, ENTITY_NULL, COMP_POSITION);
+    world_destroy_entity(w, ENTITY_NULL);
+
+    ASSERT_TRUE(world_entity_exists(w, e));
+    Position *p2 = (Position *)world_get_component(w, e, COMP_POSITION);
+    ASSERT_NOT_NULL(p2);
+    ASSERT_FLOAT_EQ(p2->x, 42.0f, 1e-5f);
+    ASSERT_EQ(w->free_stack_top, 0u);
+
+    world_destroy(w);
+}
+
 /* -----------------------------------------------------------------------
  *  Edge Cases
  * ----------------------------------------------------------------------- */
@@ -927,6 +961,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_component_add_remove_cycle);
     RUN_TEST(ecs_destroy_and_verify_survivors);
     RUN_TEST(ecs_null_entity);
+    RUN_TEST(ecs_null_entity_does_not_alias_slot0);
     /* Edge cases */
     RUN_TEST(ecs_remove_nonexistent_component);
     RUN_TEST(ecs_get_unregistered_component);

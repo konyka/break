@@ -4420,6 +4420,21 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R345：ECS `ENTITY_NULL` 别名 slot 0 + add_component dest NULL + gpucull unified 失败泄漏（已完成）
+
+### [x] R345-A ENTITY_NULL must not alias empty-archetype slot 0
+- [x] `world_destroy_entity` / `world_add_component` / `world_get_component` / `world_remove_component`：对齐 `world_entity_exists`，拒 `e.index==0`
+- [x] 回归 `ecs_null_entity_does_not_alias_slot0`（create 后 destroy/add/remove NULL，断言实体仍在且 free_stack 不含 0）
+
+### [x] R345-B world_add_component must null-check create_archetype failure
+- [x] `create_archetype` 失败时 `if (!dest) return NULL`（对齐 remove 路径）
+
+### [x] R345-C gpucull_init_unified soft-fail must not leak half-created buffers
+- [x] 缓冲创建失败路径立即 destroy 半成品并清 NULL
+- [x] `gpucull_shutdown` 按 handle 销毁 unified 资源，不再门控 `unified_ready`
+
+**验收**：双后端构建通过；`test_ecs` 含新用例通过。总计 **668** 处修复。
+
 ## R344：LOD `lod_unregister` 未注册 entity 与「组索引 0」混同（已完成）
 
 ### [x] R344-A lod_unregister must reject unregistered entities that alias group 0

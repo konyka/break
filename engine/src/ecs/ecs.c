@@ -313,7 +313,9 @@ static void archetype_swap_remove(World *w, Archetype *a, u32 global_slot) {
 }
 
 void world_destroy_entity(World *w, Entity e) {
-    if (e.index >= w->entity_count) return;
+    /* R345: index 0 is ENTITY_NULL sentinel (world_create reserves it). Same
+     * aliasing hole as R260/R344 — generation 0 matches calloc'd entities[0]. */
+    if (e.index == 0 || e.index >= w->entity_count) return;
     if (w->entities[e.index].generation != e.generation) return;
 
     u32 arch_idx = w->entity_archetype[e.index];
@@ -356,7 +358,8 @@ static void *archetype_alloc_slot(World *w, Archetype *a, u32 *out_global_index)
 }
 
 void *world_add_component(World *w, Entity e, ComponentType id) {
-    if (e.index >= w->entity_count) return NULL;
+    /* R345: reject ENTITY_NULL / reserved index 0 (see world_destroy_entity). */
+    if (e.index == 0 || e.index >= w->entity_count) return NULL;
     if (w->entities[e.index].generation != e.generation) return NULL;
 
     u32 arch_idx = w->entity_archetype[e.index];
@@ -402,6 +405,8 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
             dest = create_archetype(w, new_types, new_count);
         }
         if (new_types != stack_types) free(new_types);
+        /* R345-B: create_archetype can fail (cap/OOM); remove path already guards. */
+        if (!dest) return NULL;
 
         edge_cache_add(old, id, dest);
     }
@@ -482,7 +487,8 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
 }
 
 void *world_get_component(World *w, Entity e, ComponentType id) {
-    if (e.index >= w->entity_count) return NULL;
+    /* R345: reject ENTITY_NULL / reserved index 0 (see world_destroy_entity). */
+    if (e.index == 0 || e.index >= w->entity_count) return NULL;
     if (w->entities[e.index].generation != e.generation) return NULL;
 
     u32 arch_idx = w->entity_archetype[e.index];
@@ -503,7 +509,8 @@ void *world_get_component(World *w, Entity e, ComponentType id) {
 }
 
 void world_remove_component(World *w, Entity e, ComponentType id) {
-    if (e.index >= w->entity_count) return;
+    /* R345: reject ENTITY_NULL / reserved index 0 (see world_destroy_entity). */
+    if (e.index == 0 || e.index >= w->entity_count) return;
     if (w->entities[e.index].generation != e.generation) return;
 
     u32 arch_idx = w->entity_archetype[e.index];

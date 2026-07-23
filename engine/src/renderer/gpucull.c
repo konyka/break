@@ -127,18 +127,18 @@ void gpucull_shutdown(GPUCullSystem *gc) {
     if (gc->_pack_buf)  { free(gc->_pack_buf);  gc->_pack_buf  = NULL; gc->_pack_buf_cap  = 0; gc->_zero_buf = NULL; gc->_zero_buf_cap = 0; }
     if (gc->_zero_draws) { free(gc->_zero_draws); gc->_zero_draws = NULL; }
 
-    /* Destroy unified pipeline resources */
-    if (gc->unified_ready) {
-        if (rhi_handle_valid(gc->unified_cull_pipe)) rhi_pipeline_destroy(gc->device, gc->unified_cull_pipe);
-        if (rhi_handle_valid(gc->draw_cmds_ssbo)) rhi_buffer_destroy(gc->device, gc->draw_cmds_ssbo);
-        if (rhi_handle_valid(gc->visible_draws_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_draws_ssbo);
-        if (rhi_handle_valid(gc->draw_count_buf)) rhi_buffer_destroy(gc->device, gc->draw_count_buf);
-        if (rhi_handle_valid(gc->visible_flags_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_flags_ssbo);
-        if (rhi_handle_valid(gc->vis_flags_staging[0])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[0]);
-        if (rhi_handle_valid(gc->vis_flags_staging[1])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
-        if (rhi_handle_valid(gc->hi_z_sampler)) rhi_sampler_destroy(gc->device, gc->hi_z_sampler);
-        if (rhi_handle_valid(gc->hi_z_fallback)) rhi_texture_destroy(gc->device, gc->hi_z_fallback);
-    }
+    /* R345: destroy unified resources by handle validity, not unified_ready.
+     * init_unified soft-fail used to leave half-created buffers with
+     * unified_ready=false, making this gate skip cleanup permanently. */
+    if (rhi_handle_valid(gc->unified_cull_pipe)) rhi_pipeline_destroy(gc->device, gc->unified_cull_pipe);
+    if (rhi_handle_valid(gc->draw_cmds_ssbo)) rhi_buffer_destroy(gc->device, gc->draw_cmds_ssbo);
+    if (rhi_handle_valid(gc->visible_draws_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_draws_ssbo);
+    if (rhi_handle_valid(gc->draw_count_buf)) rhi_buffer_destroy(gc->device, gc->draw_count_buf);
+    if (rhi_handle_valid(gc->visible_flags_ssbo)) rhi_buffer_destroy(gc->device, gc->visible_flags_ssbo);
+    if (rhi_handle_valid(gc->vis_flags_staging[0])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[0]);
+    if (rhi_handle_valid(gc->vis_flags_staging[1])) rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
+    if (rhi_handle_valid(gc->hi_z_sampler)) rhi_sampler_destroy(gc->device, gc->hi_z_sampler);
+    if (rhi_handle_valid(gc->hi_z_fallback)) rhi_texture_destroy(gc->device, gc->hi_z_fallback);
     
     /* Destroy legacy pipeline resources */
     if (rhi_handle_valid(gc->count_buf)) rhi_buffer_destroy(gc->device, gc->count_buf);
@@ -320,7 +320,37 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
         !rhi_handle_valid(gc->vis_flags_staging[0]) ||
         !rhi_handle_valid(gc->vis_flags_staging[1])) {
         LOG_WARN("UnifiedCull: buffer creation failed");
+        /* R345: drop half-created unified handles now (soft-fail → legacy).
+         * gpucull_shutdown destroys unified resources without unified_ready. */
         gc->unified_ready = false;
+        if (rhi_handle_valid(gc->unified_cull_pipe)) {
+            rhi_pipeline_destroy(gc->device, gc->unified_cull_pipe);
+            gc->unified_cull_pipe = RHI_HANDLE_NULL;
+        }
+        if (rhi_handle_valid(gc->draw_cmds_ssbo)) {
+            rhi_buffer_destroy(gc->device, gc->draw_cmds_ssbo);
+            gc->draw_cmds_ssbo = RHI_HANDLE_NULL;
+        }
+        if (rhi_handle_valid(gc->visible_draws_ssbo)) {
+            rhi_buffer_destroy(gc->device, gc->visible_draws_ssbo);
+            gc->visible_draws_ssbo = RHI_HANDLE_NULL;
+        }
+        if (rhi_handle_valid(gc->draw_count_buf)) {
+            rhi_buffer_destroy(gc->device, gc->draw_count_buf);
+            gc->draw_count_buf = RHI_HANDLE_NULL;
+        }
+        if (rhi_handle_valid(gc->visible_flags_ssbo)) {
+            rhi_buffer_destroy(gc->device, gc->visible_flags_ssbo);
+            gc->visible_flags_ssbo = RHI_HANDLE_NULL;
+        }
+        if (rhi_handle_valid(gc->vis_flags_staging[0])) {
+            rhi_buffer_destroy(gc->device, gc->vis_flags_staging[0]);
+            gc->vis_flags_staging[0] = RHI_HANDLE_NULL;
+        }
+        if (rhi_handle_valid(gc->vis_flags_staging[1])) {
+            rhi_buffer_destroy(gc->device, gc->vis_flags_staging[1]);
+            gc->vis_flags_staging[1] = RHI_HANDLE_NULL;
+        }
         return true;
     }
 
