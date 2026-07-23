@@ -83,6 +83,13 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("Sharpen: FBO/sampler creation failed");
+        sharpen_shutdown(s);
+        return false;
+    }
+
     s->loc_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sharp_strength");
     s->loc_sw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sharp_sw");
     s->loc_sh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sharp_sh");

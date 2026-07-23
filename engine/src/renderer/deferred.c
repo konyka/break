@@ -267,6 +267,14 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         return;
     }
 
+    /* R348: MRT/sampler failure must not leave initialized=true (empty GBuffer bind). */
+    if (!rhi_handle_valid(sys->_mrt_fbo.fb) || !rhi_handle_valid(sys->_gbuf_sampler) ||
+        !rhi_handle_valid(sys->_linear_sampler)) {
+        LOG_WARN("deferred: MRT/sampler creation failed -- system disabled");
+        deferred_destroy(sys, dev);
+        return;
+    }
+
     defrd_cache_uniform_locations(sys, dev);
 
     sys->initialized = true;

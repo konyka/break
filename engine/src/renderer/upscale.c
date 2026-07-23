@@ -88,6 +88,14 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — present path uses upscale when ready; reject empty FBOs. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->history[0].fb) ||
+        !rhi_handle_valid(s->history[1].fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("Upscale: FBO/sampler creation failed");
+        upscale_shutdown(s);
+        return false;
+    }
+
     s->loc_rw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_rw");
     s->loc_rh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_rh");
     s->loc_dw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_dw");

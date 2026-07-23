@@ -86,6 +86,14 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->blur_fbo.fb) ||
+        !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("SSS: FBO/sampler creation failed");
+        sss_shutdown(s);
+        return false;
+    }
+
     s->loc_strength  = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_strength");
     s->loc_sw        = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_sw");
     s->loc_sh        = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_sh");

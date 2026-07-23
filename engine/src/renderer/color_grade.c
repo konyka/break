@@ -83,6 +83,13 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("ColorGrade: FBO/sampler creation failed");
+        color_grade_shutdown(s);
+        return false;
+    }
+
     s->loc_saturation  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_saturation");
     s->loc_contrast    = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_contrast");
     s->loc_brightness  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_brightness");

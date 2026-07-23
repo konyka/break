@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R348：后处理/延迟渲染 FBO·sampler 失败仍 ready/initialized（已完成）
+
+### [x] R348-A..K validate FBO/sampler (MRT) before ready/initialized
+- [x] 默认链：`sharpen` / `motion_blur` / `sss` / `fxaa` / `upscale` / `color_grade` / `taa` / `god_rays`
+- [x] 同族：`ssgi` / `contact_shadow`
+- [x] `deferred_init`：校验 `_mrt_fbo.fb` + `_gbuf_sampler` + `_linear_sampler`，失败 `deferred_destroy`
+- [x] 失败路径：shutdown 半成品、`return false` / 不置 `initialized`（对齐 R347）
+
+**验收**：双后端 `engine` 构建通过。总计 **684** 处修复。
+
 ## R347：半分辨率后处理 SSR/DOF/SSAO/Volumetric `width/2==0` + FBO 失败仍 ready（已完成）
 
 ### [x] R347-A..D clamp half-res ≥1 and validate FBO/sampler before ready

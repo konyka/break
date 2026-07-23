@@ -81,6 +81,13 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     };
     fxaa->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(fxaa->fxaa_fbo.fb) || !rhi_handle_valid(fxaa->sampler)) {
+        LOG_WARN("FXAA: FBO/sampler creation failed");
+        fxaa_shutdown(fxaa);
+        return false;
+    }
+
     fxaa->loc_screen_w = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_sw");
     fxaa->loc_screen_h = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_sh");
     fxaa->loc_threshold = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_threshold");

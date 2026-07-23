@@ -83,6 +83,13 @@ bool god_rays_init(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("GodRays: FBO/sampler creation failed");
+        god_rays_shutdown(s);
+        return false;
+    }
+
     s->loc_sun_x    = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_gr_sun_x");
     s->loc_sun_y    = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_gr_sun_y");
     s->loc_intensity = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_gr_intensity");

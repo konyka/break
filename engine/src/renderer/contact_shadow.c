@@ -86,6 +86,13 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("ContactShadow: FBO/sampler creation failed");
+        contact_shadow_shutdown(s);
+        return false;
+    }
+
     s->loc_light_x = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cs_light_x");
     s->loc_light_y = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cs_light_y");
     s->loc_light_z = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cs_light_z");

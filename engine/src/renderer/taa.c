@@ -84,6 +84,14 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
     };
     taa->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty history FBO/sampler. */
+    if (!rhi_handle_valid(taa->history_fbo[0].fb) || !rhi_handle_valid(taa->history_fbo[1].fb) ||
+        !rhi_handle_valid(taa->sampler)) {
+        LOG_WARN("TAA: FBO/sampler creation failed");
+        taa_shutdown(taa);
+        return false;
+    }
+
     taa->loc_curr_tex = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_curr_tex");
     taa->loc_hist_tex = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_hist_tex");
     taa->loc_depth_tex = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_depth");

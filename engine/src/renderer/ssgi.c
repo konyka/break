@@ -95,6 +95,14 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
     };
     ssgi->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(ssgi->ssgi_fbo.fb) || !rhi_handle_valid(ssgi->ssgi_blur_fbo.fb) ||
+        !rhi_handle_valid(ssgi->sampler)) {
+        LOG_WARN("SSGI: FBO/sampler creation failed");
+        ssgi_shutdown(ssgi);
+        return false;
+    }
+
     ssgi->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_inv_proj");
     ssgi->loc_proj     = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_proj");
     ssgi->loc_radius   = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_radius");

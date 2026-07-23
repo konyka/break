@@ -83,6 +83,13 @@ bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R348: align R347 — do not mark ready with empty FBO/sampler handles. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("MotionBlur: FBO/sampler creation failed");
+        motion_blur_shutdown(s);
+        return false;
+    }
+
     s->loc_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_strength");
     s->loc_sw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_sw");
     s->loc_sh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_sh");
