@@ -80,6 +80,13 @@ bool forward_velocity_init(ForwardVelocitySystem *sys, RHIDevice *dev, u32 w, u3
     };
     sys->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R350: align R348 — do not mark ready with empty FBO/sampler. */
+    if (!rhi_handle_valid(sys->fbo.fb) || !rhi_handle_valid(sys->sampler)) {
+        LOG_WARN("ForwardVelocity: FBO/sampler creation failed");
+        forward_velocity_shutdown(sys);
+        return false;
+    }
+
     sys->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, sys->pipe, "u_inv_proj");
     sys->loc_curr_vp  = rhi_pipeline_get_uniform_location(dev, sys->pipe, "u_curr_vp");
     sys->loc_prev_vp  = rhi_pipeline_get_uniform_location(dev, sys->pipe, "u_prev_vp");

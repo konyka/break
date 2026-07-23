@@ -83,6 +83,13 @@ bool debug_viz_init(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
     };
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R350: align R348 — do not mark ready with empty FBO/sampler. */
+    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->sampler)) {
+        LOG_WARN("DebugViz: FBO/sampler creation failed");
+        debug_viz_shutdown(s);
+        return false;
+    }
+
     s->loc_mode = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_dv_mode");
     s->loc_near = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_dv_near");
     s->loc_far  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_dv_far");

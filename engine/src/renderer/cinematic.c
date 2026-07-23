@@ -82,6 +82,13 @@ bool cinematic_init(CinematicSystem *cine, RHIDevice *dev) {
     };
     cine->sampler = rhi_sampler_create(dev, &sdesc);
 
+    /* R350: align R348 — do not mark ready with empty sampler. */
+    if (!rhi_handle_valid(cine->sampler)) {
+        LOG_WARN("Cinematic: sampler creation failed");
+        cinematic_shutdown(cine);
+        return false;
+    }
+
     cine->loc_aberration = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_aberration");
     cine->loc_vignette   = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_vignette");
     cine->loc_grain      = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_grain");

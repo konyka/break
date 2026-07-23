@@ -323,12 +323,17 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
                 static Quat to_rot[ANIM_BLEND_MAX_BONES];
                 static Vec3 to_scl[ANIM_BLEND_MAX_BONES];
                 u32 bc2 = state->bone_count;
-                /* Seed unaddressed bones from the layer's base, matching the
-                 * main sample path (bones the to-clip doesn't animate keep the
-                 * current output rather than snapping to bind pose). */
-                memcpy(to_pos, state->local_positions, bc2 * sizeof(Vec3));
-                memcpy(to_rot, state->local_rotations, bc2 * sizeof(Quat));
-                memcpy(to_scl, state->local_scales,    bc2 * sizeof(Vec3));
+                /* R350: match the main sample-path seed by mode. OVERRIDE keeps
+                 * unaddressed bones as current output; ADDITIVE must seed the
+                 * neutral delta (bind) — seeding from local_* made unaddressed
+                 * bones lerp toward the running pose and then add that delta. */
+                if (L->mode == ANIM_BLEND_ADDITIVE) {
+                    fill_bind_pose(to_pos, to_rot, to_scl, bc2);
+                } else {
+                    memcpy(to_pos, state->local_positions, bc2 * sizeof(Vec3));
+                    memcpy(to_rot, state->local_rotations, bc2 * sizeof(Quat));
+                    memcpy(to_scl, state->local_scales,    bc2 * sizeof(Vec3));
+                }
                 /* No separate to-clip time is tracked; wrap the layer time (same
                  * approximation the from side used previously). */
                 f32 tt = L->time;

@@ -171,6 +171,21 @@ void point_shadow_init(PointShadowSystem *sys, RHIDevice *dev, u32 resolution) {
     };
     sys->sampler = rhi_sampler_create(dev, &sd);
 
+    /* R350: align R348 — do not mark ready when pipeline/cubemap/sampler failed. */
+    bool cubemaps_ok = true;
+    for (u32 i = 0u; i < POINT_SHADOW_MAX_LIGHTS; ++i) {
+        if (!rhi_handle_valid(sys->cubemap_fbos[i].fb)) {
+            cubemaps_ok = false;
+            break;
+        }
+    }
+    if (!rhi_handle_valid(sys->depth_pipeline) || !cubemaps_ok ||
+        !rhi_handle_valid(sys->sampler)) {
+        LOG_WARN("PointShadow: resource creation failed -- system disabled");
+        point_shadow_destroy(sys, dev);
+        return;
+    }
+
     sys->ready = true;
     LOG_INFO("PointShadow: initialized (%u lights x 6 faces @ %ux%u)",
              POINT_SHADOW_MAX_LIGHTS, sys->resolution, sys->resolution);

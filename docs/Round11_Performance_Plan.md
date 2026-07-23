@@ -4420,6 +4420,19 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R350：残余 ready 空洞 + ADDITIVE crossfade 种子错用 OVERRIDE 语义（已完成）
+
+### [x] R350-A..D seal leftover ready holes
+- [x] `cinematic_init`：校验 sampler
+- [x] `forward_velocity_init` / `debug_viz_init`：校验 FBO+sampler
+- [x] `point_shadow_init`：校验 depth_pipeline + 全部 cubemap FBO + sampler；失败 `point_shadow_destroy`
+
+### [x] R350-E additive crossfade TO-clip seed must use bind pose
+- [x] `animation.c` crossfade：`L->mode == ADDITIVE` → `fill_bind_pose(to_*)`（对齐主采样/R305）
+- [x] 回归 `additive_crossfade_leaves_unaddressed_bones_untouched`
+
+**验收**：双后端 `engine` + `test_animation` 通过。总计 **696** 处修复。
+
 ## R349：合并后处理 / tonemap / lens / bloom composite / deferred_resize FBO 校验（已完成）
 
 ### [x] R349-A..G seal remaining ready holes after R348
