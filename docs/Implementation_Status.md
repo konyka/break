@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R362 GL FBO 完整性 + scene resize 失败不提交 + 热键/calloc 门闩 — 修复 8 处** — **R362-A/B**：GL offscreen/MRT 缺 `glCheckFramebufferStatus`（阴影 atlas 已有）；incomplete 仍发布。对齐 shadow 检查并销毁。**R362-C**：scene FBO resize 先 destroy 再 create，失败仍提交 `rw/rh` → 同尺寸永不重试、画面空。改为 temp create 成功才替换并提交尺寸。**R362-D**：`p` 同时 deferred 与粒子 boom；boom 改 KP_0(300)。**R362-E**：PageUp/Down 在选中实体/custom gravity 时与 MoveY 冲突；profiler/cinematic 仅无选中且非 mode3。**R362-F..H**：lighting/gpucull/occlusion/indirect 的 zero-init `calloc` 失败仍建“有效”缓冲；失败则 shutdown/return。总计 **773** 处修复。
+最近更新：**R363 KP_0≠鼠标左键 + Space/路径回放修复 + 字母热键消歧 — 修复 10 处** — **R363-A**（CORRECTNESS/回归）：R362 将 boom 绑到 `300`，但 `INPUT_MOUSE_LEFT=300` → 左键即爆炸；KP_0 改 **305**。**R363-B**：Space 冲量块被错误嵌进 `k` layout 的破损大括号内，单独 Space 不触发；解开并外提。**R363-C**：`,` 相机路径停录后 `playing_path` 从未置 true，回放不可达；停录臂播放、`,` 开播。**R363-D**：`t`/`h`/`j`/`k` 仍双绑；tornado/AA/trail/layout → KP_1..4 (306–309)。**R363-E**：scene load 可把 `water.enabled=true` 写回失败 init；无 pipeline 则强制 false。**R363-F**：Cocoa 补 291–309（Pause/locks/Menu/KP）。**R363-G**：Help 文案对齐 R360–R363。总计 **783** 处修复。
+
+此前：**R362 GL FBO 完整性 + scene resize 失败不提交 + 热键/calloc 门闩 — 修复 8 处** — **R362-A/B**：GL offscreen/MRT 缺 `glCheckFramebufferStatus`（阴影 atlas 已有）；incomplete 仍发布。对齐 shadow 检查并销毁。**R362-C**：scene FBO resize 先 destroy 再 create，失败仍提交 `rw/rh` → 同尺寸永不重试、画面空。改为 temp create 成功才替换并提交尺寸。**R362-D**：`p` 同时 deferred 与粒子 boom；boom 改 KP_0(300)。**R362-E**：PageUp/Down 在选中实体/custom gravity 时与 MoveY 冲突；profiler/cinematic 仅无选中且非 mode3。**R362-F..H**：lighting/gpucull/occlusion/indirect 的 zero-init `calloc` 失败仍建“有效”缓冲；失败则 shutdown/return。总计 **773** 处修复。
 
 此前：**R361 热键双重绑定续消歧 + terrain pipeline 门控 — 修复 9 处** — **R361-A**：Delete 同时 SSR 与删实体；无选中才 toggle SSR。**R361-B**：`]` 同时 Volumetric 与复制实体；无选中才 toggle Vol。**R361-C**：`[` 同时 SSGI 与相机模式；SSGI 改 Menu(295)。**R361-D**：Tab 同时 debug UI 与实体轮选；轮选改 Enter(257)。**R361-E..H**：`'`/`,`/`.`/`;` 分别与粒子速率/路径录制/时段/地形预设冲突；SSS/LF/Sharpen/ContactShadow 改 KP_*/÷/−/+ (296–299)。**R361-I**：`terrain_render` 在 pipeline 无效时仍 bind；补门控，shutdown 清 `index_count`/句柄。总计 **765** 处修复。
 

@@ -4428,6 +4428,16 @@ if (!ok) return false;
 ### [x] R362-E PageUp/Down：profiler/cinematic only when no entity MoveY / gravity edit
 ### [x] R362-F..H lighting/gpucull/occlusion/indirect：calloc NULL → shutdown
 
+## R363：KP_0≠MOUSE_LEFT + Space/路径回放 + 字母热键消歧（已完成）
+
+### [x] R363-A KP_0 boom：300→305（避开 INPUT_MOUSE_LEFT）
+### [x] R363-B Space impulse：移出破损 `k` layout 大括号
+### [x] R363-C `,` cam path：停录臂播放；`,` 置 `playing_path=true`
+### [x] R363-D tornado/AA/trail/layout → KP_1..4 (306–309)；`t`/`h`/`j`/`k` 保留 filter/terrain/sun
+### [x] R363-E water load：无 pipeline 则 `enabled=false`
+### [x] R363-F Cocoa：补 291–309 键位
+### [x] R363-G Help 文案对齐
+
 **验收**：双后端 `engine_demo` 构建通过。总计 **773** 处修复。
 
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）

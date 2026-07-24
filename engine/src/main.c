@@ -2896,6 +2896,9 @@ u32 culled_count = 0;
                     if (ld_ok && !feof(lf)) {
                         ld_ok &= fread(&water.water_y, sizeof(f32), 1, lf) == 1;
                         ld_ok &= fread(&water.enabled, sizeof(bool), 1, lf) == 1;
+                        /* R363: init-failed water has no pipeline; ignore saved enabled. */
+                        if (!rhi_handle_valid(water.pipeline))
+                            water.enabled = false;
                     }
                     if (!ld_ok) LOG_WARN("Scene state load: partial read failure");
                     LOG_INFO("Runtime state restored (%u bodies)", pc);
@@ -3721,15 +3724,15 @@ u32 culled_count = 0;
 
         if (show_help && ui.visible) {
             debug_ui_text(&ui, "=== CONTROLS (U to toggle) ===");
-            debug_ui_text(&ui, "F1:DebugViz  F3:Inspector  F:Wireframe  H:AA  V:VSync  T:Filter  G:Fullscreen");
+            debug_ui_text(&ui, "F1:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G:Fullscreen");
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
             debug_ui_text(&ui, "WASD:Move  Mouse:Look  Scroll:FOV  9:Gravity  0:WaterColor  R:Reset  E:Spawn+Push");
-            debug_ui_text(&ui, "B:Save  N:Load  C:Background  Home:Presets  End:ResetAll  F12:Screenshot  M:Bench");
-            debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  K:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
+            debug_ui_text(&ui, "B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  F12:Screenshot  M:Bench");
+            debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
             debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Impulse");
-            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  J:Trail  ':Particles  (:WaterUp  ):WaterDown");
+            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  (:WaterUp  ):WaterDown");
             debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
-            debug_ui_text(&ui, "A:BrushMode(4)  D:Mass  S:Ambient  W:EntityToCam  Backspace:SwapPos  Q:HeightLock  Space:Impulse/StopAll");
+            debug_ui_text(&ui, "Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  KP*/÷/−/+:SSS/LF/Sharpen/CS");
         }
 
         {
@@ -4369,7 +4372,8 @@ u32 culled_count = 0;
                     LOG_INFO("Render path: %s",
                              render.render_path == RENDER_PATH_DEFERRED ? "DEFERRED" : "FORWARD");
                 }
-                if (input_key_pressed(inp, (i32)'h')) {
+                /* R363: AA was on 'h' (also terrain dig). Moved to KP_4 (309). */
+                if (input_key_pressed(inp, 309)) {
                     static i32 aa_mode = 3;
                     aa_mode = (aa_mode + 1) % 4;
                     fxaa_enabled = (aa_mode == 1 || aa_mode == 3);
@@ -4628,15 +4632,24 @@ u32 culled_count = 0;
                     LOG_INFO("Water color: %s", wcn[water_color_preset]);
                 }
                 if (input_key_pressed(inp, (i32)',')) {
-                    if (!recording_path && !playing_path) {
-                        recording_path = true; path_count = 0;
-                        LOG_INFO("Path recording STARTED (max %d frames)", MAX_PATH);
-                    } else if (recording_path) {
+                    /* R363: record→stop arms playback; , plays; stop play; idle/empty → new record. */
+                    static bool path_offer_playback = false;
+                    if (recording_path) {
                         recording_path = false;
+                        path_offer_playback = (path_count > 0);
                         LOG_INFO("Path recording STOPPED (%u frames). Press , to playback.", path_count);
-                    } else {
+                    } else if (playing_path) {
                         playing_path = false; path_idx = 0;
+                        path_offer_playback = false;
                         LOG_INFO("Path playback STOPPED");
+                    } else if (path_offer_playback && path_count > 0) {
+                        playing_path = true; path_idx = 0;
+                        path_offer_playback = false;
+                        LOG_INFO("Path playback STARTED (%u frames)", path_count);
+                    } else {
+                        recording_path = true; path_count = 0;
+                        path_offer_playback = false;
+                        LOG_INFO("Path recording STARTED (max %d frames)", MAX_PATH);
                     }
                 }
                 if (input_key_pressed(inp, (i32)'/')) {
@@ -4651,7 +4664,8 @@ u32 culled_count = 0;
                     engine.target_fps = fps_limits[fps_limit_idx];
                     LOG_INFO("FPS limit: %.0f%s", engine.target_fps, engine.target_fps == 0.0f ? " (unlimited)" : "");
                 }
-                if (input_key_pressed(inp, (i32)'k')) {
+                /* R363: layout was on 'k' (sun elevation); moved to KP_3 (308). */
+                if (input_key_pressed(inp, 308)) {
                     layout_mode = (layout_mode + 1) % 4;
                     static const char *layout_names[] = { "grid", "circle", "spiral", "wave" };
                     ComponentType lq_types[] = { COMP_TRANSFORM };
@@ -4718,7 +4732,19 @@ u32 culled_count = 0;
                                             idx++;
                                         }
                                         rc = rc->next;
+                                    }
+                                }
+                                query_done(rq);
+                            }
+                            if (rt) {
+                                physics->bodies[ri].position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
+                                physics->bodies[ri].velocity = vec3(0, 0, 0);
+                            }
+                        }
+                    }
+                    LOG_INFO("Layout: %s (%u entities)", layout_names[layout_mode], li);
                 }
+                /* R363: Space impulse was nested inside the broken 'k' layout braces. */
                 if (input_key_pressed(inp, 32)) {
                     if (selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
@@ -4743,17 +4769,6 @@ u32 culled_count = 0;
                         }
                         if (stopped > 0) LOG_INFO("ALL STOP: %u bodies", stopped);
                     }
-                }
-            }
-                            }
-                            query_done(rq);
-                            if (rt) {
-                                physics->bodies[ri].position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
-                                physics->bodies[ri].velocity = vec3(0, 0, 0);
-                            }
-                        }
-                    }
-                    LOG_INFO("Layout: %s (%u entities)", layout_names[layout_mode], li);
                 }
                 if (input_key_pressed(inp, (i32)'m') && bench_frames == 0) {
                     bench_saved.taa = taa_enabled; bench_saved.fxaa = fxaa_enabled;
@@ -4787,8 +4802,8 @@ u32 culled_count = 0;
                     LOG_INFO("Scene reset: %u bodies + terrain regenerated", physics->count > 1 ? (physics->count - 1 < 10 ? physics->count - 1 : 10) : 0);
                     terrain_generate(&terrain, terrain_preset);
                 }
-                /* R362: 'p' also toggles deferred path — boom moved to KP_0 (300). */
-                if (input_key_pressed(inp, 300)) {
+                /* R363: KP_0 must not be 300 — that slot is INPUT_MOUSE_LEFT. */
+                if (input_key_pressed(inp, 305)) {
                     particles.emit_pos[0] = camera.position.e[0];
                     particles.emit_pos[1] = camera.position.e[1];
                     particles.emit_pos[2] = camera.position.e[2];
@@ -4799,17 +4814,18 @@ u32 culled_count = 0;
                     LOG_INFO("Boom! Particles + impulse at camera");
                     screen_shake = 1.0f;
                 }
-                if (input_key_released(inp, 300)) {
+                if (input_key_released(inp, 305)) {
                     particles.emit_pos[0] = 0.0f;
                     particles.emit_pos[1] = 2.0f;
                     particles.emit_pos[2] = 0.0f;
                     particles.emit_rate = 200.0f;
                 }
-                if (input_key_pressed(inp, (i32)'j')) {
+                /* R363: trail was on 'j' (sun azimuth); tornado was on 't' (tex filter). */
+                if (input_key_pressed(inp, 307)) {
                     particle_trail = !particle_trail;
                     LOG_INFO("Particle trail: %s", particle_trail ? "ON (follows selected entity)" : "OFF");
                 }
-                if (input_key_pressed(inp, (i32)'t')) {
+                if (input_key_pressed(inp, 306)) {
                     tornado_mode = !tornado_mode;
                     LOG_INFO("Tornado mode: %s", tornado_mode ? "ON" : "OFF");
                 }

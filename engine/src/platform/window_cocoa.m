@@ -65,6 +65,21 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 109: return 280; /* F10 */
         case 103: return 281; /* F11 */
         case 111: return 282; /* F12 */
+        /* R363: align Pause/locks/Menu/KP with X11/WL/Win32 (291–309) */
+        case 113: return 291; /* Pause / F15 */
+        case 107: return 292; /* Scroll Lock / F14 */
+        case 71:  return 293; /* Clear ≈ NumLock */
+        case 57:  return 294; /* Caps Lock */
+        case 110: return 295; /* Application / Menu */
+        case 67:  return 296; /* KP Multiply — SSS */
+        case 75:  return 297; /* KP Divide — lens flare */
+        case 78:  return 298; /* KP Minus — sharpen */
+        case 69:  return 299; /* KP Plus — contact shadow */
+        case 82:  return 305; /* KP 0 — particle boom (not 300=MOUSE_LEFT) */
+        case 83:  return 306; /* KP 1 — tornado */
+        case 84:  return 307; /* KP 2 — particle trail */
+        case 85:  return 308; /* KP 3 — layout */
+        case 86:  return 309; /* KP 4 — AA cycle */
         default:  return -1;
     }
 }

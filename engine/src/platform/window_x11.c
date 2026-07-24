@@ -59,7 +59,12 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_Divide)   return 297; /* R361: lens flare */
     if (ks == XK_KP_Subtract) return 298; /* R361: sharpen */
     if (ks == XK_KP_Add)      return 299; /* R361: contact shadow */
-    if (ks == XK_KP_0 || ks == XK_KP_Insert) return 300; /* R362: particle boom */
+    /* R363: boom was 300 (=INPUT_MOUSE_LEFT); KP_* live at 305+ */
+    if (ks == XK_KP_0 || ks == XK_KP_Insert) return 305; /* particle boom */
+    if (ks == XK_KP_1 || ks == XK_KP_End)    return 306; /* tornado */
+    if (ks == XK_KP_2 || ks == XK_KP_Down)   return 307; /* particle trail */
+    if (ks == XK_KP_3 || ks == XK_KP_Next)   return 308; /* layout */
+    if (ks == XK_KP_4 || ks == XK_KP_Left)   return 309; /* AA cycle */
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';

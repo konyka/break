@@ -85,7 +85,12 @@ static i32 win_vk_to_index(i32 vk_code) {
     case VK_DIVIDE:   return 297; /* R361: lens flare */
     case VK_SUBTRACT: return 298; /* R361: sharpen */
     case VK_ADD:      return 299; /* R361: contact shadow */
-    case VK_NUMPAD0:  return 300; /* R362: particle boom */
+    /* R363: boom was 300 (=INPUT_MOUSE_LEFT); KP_* live at 305+ */
+    case VK_NUMPAD0:  return 305; /* particle boom */
+    case VK_NUMPAD1:  return 306; /* tornado */
+    case VK_NUMPAD2:  return 307; /* particle trail */
+    case VK_NUMPAD3:  return 308; /* layout */
+    case VK_NUMPAD4:  return 309; /* AA cycle */
     case VK_OEM_MINUS:  return 45;
     case VK_OEM_PLUS:   return 61;
     case VK_OEM_4:      return 91;
