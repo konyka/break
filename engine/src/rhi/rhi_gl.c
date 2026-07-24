@@ -1907,7 +1907,18 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
                            GL_TEXTURE_2D, fd->depth_tex, 0);
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
+    /* R362: align shadow atlas — incomplete FBO must not be published. */
+    GLenum off_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     gl_bind_fbo_cached(0);
+    if (off_status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_WARN("GL: offscreen FBO incomplete (0x%x)", (unsigned)off_status);
+        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
+        glDeleteFramebuffers(1, &fd->gl_fbo);
+        glDeleteTextures(1, &fd->color_tex);
+        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+        free(fd);
+        return (RHIOffscreenFBO){0};
+    }
 
     u32 tidx = rhi_alloc_slot(dev);
     dev->slots[tidx].ptr = fd;
@@ -2233,7 +2244,20 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     /* R190-A: create bypasses gl_bind_tex_unit. */
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 
+    /* R362: incomplete MRT must not be published (deferred would bind empty GBuffer). */
+    GLenum mrt_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     gl_bind_fbo_cached(0);
+    if (mrt_status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_WARN("GL: MRT FBO incomplete (0x%x)", (unsigned)mrt_status);
+        if (g_gl_bound_fbo == md->gl_fbo) g_gl_bound_fbo = 0;
+        glDeleteFramebuffers(1, &md->gl_fbo);
+        for (u32 i = 0; i < attachment_count; i++) {
+            if (md->color_tex[i]) glDeleteTextures(1, &md->color_tex[i]);
+        }
+        if (md->depth_tex) glDeleteTextures(1, &md->depth_tex);
+        free(md);
+        return (RHIMRTFBO){0};
+    }
 
     /* Register FBO handle. */
     u32 fidx = rhi_alloc_slot(dev);

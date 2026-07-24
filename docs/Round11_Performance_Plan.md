@@ -4420,6 +4420,16 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R362：GL FBO 完整性 + scene resize 失败不提交 + 热键/calloc 门闩（已完成）
+
+### [x] R362-A/B GL offscreen/MRT：glCheckFramebufferStatus → destroy on incomplete
+### [x] R362-C scene FBO resize：temp create；fail keeps old FBO + size
+### [x] R362-D `p`≠boom：boom → KP_0(300)
+### [x] R362-E PageUp/Down：profiler/cinematic only when no entity MoveY / gravity edit
+### [x] R362-F..H lighting/gpucull/occlusion/indirect：calloc NULL → shutdown
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **773** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

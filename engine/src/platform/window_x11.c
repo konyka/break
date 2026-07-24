@@ -59,6 +59,7 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_Divide)   return 297; /* R361: lens flare */
     if (ks == XK_KP_Subtract) return 298; /* R361: sharpen */
     if (ks == XK_KP_Add)      return 299; /* R361: contact shadow */
+    if (ks == XK_KP_0 || ks == XK_KP_Insert) return 300; /* R362: particle boom */
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';

@@ -104,6 +104,7 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_KP_Divide)   return 297; /* R361: lens flare */
     if (ks == XKB_KEY_KP_Subtract) return 298; /* R361: sharpen */
     if (ks == XKB_KEY_KP_Add)      return 299; /* R361: contact shadow */
+    if (ks == XKB_KEY_KP_0 || ks == XKB_KEY_KP_Insert) return 300; /* R362: particle boom */
     if (ks == XKB_KEY_minus || ks == XKB_KEY_underscore)      return (i32)'-';
     if (ks == XKB_KEY_plus || ks == XKB_KEY_equal)            return (i32)'=';
     if (ks == XKB_KEY_parenleft || ks == XKB_KEY_braceleft)   return (i32)'(';

@@ -98,6 +98,12 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
     /* Create AABB SSBO (uploaded once). R186: DEVICE_LOCAL. */
     usize aabb_bytes = OCCLUSION_MAX_OBJECTS * sizeof(ObjectAABB);
     void *aabb_zero = calloc(1, aabb_bytes);
+    /* R362: NULL initial_data skips DEVICE_LOCAL zero-init but handle may still validate. */
+    if (!aabb_zero) {
+        LOG_WARN("OcclusionCull: AABB zero-init alloc failed");
+        occlusion_cull_shutdown(sys);
+        return false;
+    }
     RHIBufferDesc aabb_desc = {
         .size  = aabb_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
@@ -114,6 +120,11 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
     /* Create visibility SSBO (R185: DEVICE_LOCAL via zero init). */
     usize vis_bytes = OCCLUSION_MAX_OBJECTS * sizeof(u32);
     void *vis_zero = calloc(1, vis_bytes);
+    if (!vis_zero) {
+        LOG_WARN("OcclusionCull: visibility zero-init alloc failed");
+        occlusion_cull_shutdown(sys);
+        return false;
+    }
     RHIBufferDesc vis_desc = {
         .size  = vis_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,

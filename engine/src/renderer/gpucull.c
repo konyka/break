@@ -56,6 +56,12 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
      * zero-init → DEVICE_LOCAL so CS does not read HOST_VISIBLE every frame. */
     usize obj_bytes = GPUCULL_MAX_OBJECTS * sizeof(f32) * 4;
     void *obj_zero = calloc(1, obj_bytes);
+    /* R362: NULL initial_data skips DEVICE_LOCAL zero-init but handle may still validate. */
+    if (!obj_zero) {
+        LOG_WARN("GPUCull: object zero-init alloc failed");
+        gpucull_shutdown(gc);
+        return false;
+    }
     RHIBufferDesc obj_desc = {
         .size = obj_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
@@ -67,6 +73,11 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     /* R185: GPU-only STORAGE → DEVICE_LOCAL via zeroed initial_data. */
     usize vis_bytes = GPUCULL_MAX_OBJECTS * sizeof(u32);
     void *vis_zero = calloc(1, vis_bytes);
+    if (!vis_zero) {
+        LOG_WARN("GPUCull: visibility zero-init alloc failed");
+        gpucull_shutdown(gc);
+        return false;
+    }
     RHIBufferDesc vis_desc = {
         .size = vis_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,

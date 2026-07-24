@@ -65,6 +65,13 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
     /* R192-B: grid is GPU-written (cluster cull) / FS texelFetch — zero-init
      * → DEVICE_LOCAL. light_data stays HOST_VISIBLE (per-frame host upload). */
     void *grid_zero = calloc(1, grid_data_size);
+    /* R362: NULL initial_data makes VK skip DEVICE_LOCAL zero-init; handle still
+     * looks valid so R354 checks pass while the grid holds garbage. */
+    if (!grid_zero) {
+        LOG_ERROR("Lighting: grid zero-init alloc failed");
+        light_system_shutdown(ls);
+        return;
+    }
     RHIBufferDesc grid_desc = {
         .usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE,
         .size = grid_data_size,

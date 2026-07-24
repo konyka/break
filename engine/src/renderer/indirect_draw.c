@@ -65,6 +65,11 @@ bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws) 
     /* All draw commands - storage buffer (CPU-uploaded once). R186: DEVICE_LOCAL. */
     usize all_bytes = (usize)max_draws * sizeof(DrawIndexedIndirectCmd);
     void *all_zero = calloc(1, all_bytes);
+    /* R362: NULL initial_data skips DEVICE_LOCAL zero-init but handle may still validate. */
+    if (!all_zero) {
+        LOG_WARN("IndirectDraw: all_draws zero-init alloc failed");
+        return false;
+    }
     RHIBufferDesc all_desc = {
         .size  = all_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
@@ -77,6 +82,11 @@ bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws) 
      * (graphics reads as draw command source). R185: DEVICE_LOCAL. */
     usize visible_bytes = (usize)max_draws * sizeof(DrawIndexedIndirectCmd);
     void *visible_zero = calloc(1, visible_bytes);
+    if (!visible_zero) {
+        LOG_WARN("IndirectDraw: visible_draws zero-init alloc failed");
+        indirect_draw_destroy(sys, dev);
+        return false;
+    }
     RHIBufferDesc visible_desc = {
         .size  = visible_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,

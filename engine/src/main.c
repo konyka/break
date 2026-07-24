@@ -2231,14 +2231,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         /* Page_Up: export Chrome profiler trace (also set PROFILER_TRACE=1 on exit).
-         * R360: was also bound to auto-exposure — that moved to CapsLock (294). */
-        if (input_key_pressed(platform_input(engine.platform), 283)) {
+         * R360: was also bound to auto-exposure — that moved to CapsLock (294).
+         * R362: skip when entity MoveY / custom-gravity also own PageUp. */
+        if (input_key_pressed(platform_input(engine.platform), 283) &&
+            selected_entity_id == 0 && physics_mode != 3) {
             export_profiler_chrome_trace(gpu_shadow_timer, gpu_forward_timer,
                                          gpu_scene_timer, gpu_postfx_timer,
                                          "profile_trace.json");
         }
 
-        if (input_key_pressed(platform_input(engine.platform), 284)) {
+        /* R362: PageDown also moves selected entity / custom gravity Y. */
+        if (input_key_pressed(platform_input(engine.platform), 284) &&
+            selected_entity_id == 0 && physics_mode != 3) {
             cine_enabled = !cine_enabled;
             LOG_INFO("Cinematic: %s", cine_enabled ? "on" : "off");
         }
@@ -2456,17 +2460,24 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         if (new_rw != rw || new_rh != rh) need_rebuild = true;
 
         if (need_rebuild) {
+            /* R362: create into temp first — never destroy the live FBO until the
+             * replacement is valid, and do not commit rw/rh/frame_* on failure
+             * (otherwise same-size rebuild never retries → permanent blank). */
+            RHIOffscreenFBO new_scene = rhi_offscreen_fbo_create_fmt(
+                render.device, new_rw, new_rh, RHI_FORMAT_R16G16B16A16_SFLOAT);
+            if (!rhi_handle_valid(new_scene.fb) ||
+                !rhi_handle_valid(new_scene.color_tex) ||
+                !rhi_handle_valid(new_scene.depth_tex)) {
+                LOG_ERROR("Scene FBO recreate failed (%ux%u); keeping previous",
+                          new_rw, new_rh);
+                if (rhi_handle_valid(new_scene.fb))
+                    rhi_offscreen_fbo_destroy(render.device, &new_scene);
+            } else {
+            if (rhi_handle_valid(scene_fbo.fb))
+                rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
+            scene_fbo = new_scene;
             rw = new_rw;
             rh = new_rh;
-            if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
-            scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw, rh, RHI_FORMAT_R16G16B16A16_SFLOAT);
-            if (!rhi_handle_valid(scene_fbo.fb) ||
-                !rhi_handle_valid(scene_fbo.color_tex) ||
-                !rhi_handle_valid(scene_fbo.depth_tex)) {
-                LOG_ERROR("Scene FBO recreate failed (%ux%u)", rw, rh);
-                if (rhi_handle_valid(scene_fbo.fb))
-                    rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
-            }
             post_process_shutdown(&postfx);
             ssao_shutdown(&ssao);
             taa_shutdown(&taa);
@@ -2520,6 +2531,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
             frame_w = w;
             frame_h = h;
+            } /* end successful scene_fbo recreate */
         }
 
 u32 draw_calls = 0;
@@ -3713,8 +3725,8 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
             debug_ui_text(&ui, "WASD:Move  Mouse:Look  Scroll:FOV  9:Gravity  0:WaterColor  R:Reset  E:Spawn+Push");
             debug_ui_text(&ui, "B:Save  N:Load  C:Background  Home:Presets  End:ResetAll  F12:Screenshot  M:Bench");
-            debug_ui_text(&ui, "P:Burst  Y/H:Terrain(3:BrushSize)  K:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  =:WaterOn");
-            debug_ui_text(&ui, "Tab:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Impulse");
+            debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  K:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
+            debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Impulse");
             debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  J:Trail  ':Particles  (:WaterUp  ):WaterDown");
             debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
             debug_ui_text(&ui, "A:BrushMode(4)  D:Mass  S:Ambient  W:EntityToCam  Backspace:SwapPos  Q:HeightLock  Space:Impulse/StopAll");
@@ -4775,7 +4787,8 @@ u32 culled_count = 0;
                     LOG_INFO("Scene reset: %u bodies + terrain regenerated", physics->count > 1 ? (physics->count - 1 < 10 ? physics->count - 1 : 10) : 0);
                     terrain_generate(&terrain, terrain_preset);
                 }
-                if (input_key_pressed(inp, (i32)'p')) {
+                /* R362: 'p' also toggles deferred path — boom moved to KP_0 (300). */
+                if (input_key_pressed(inp, 300)) {
                     particles.emit_pos[0] = camera.position.e[0];
                     particles.emit_pos[1] = camera.position.e[1];
                     particles.emit_pos[2] = camera.position.e[2];
@@ -4786,7 +4799,7 @@ u32 culled_count = 0;
                     LOG_INFO("Boom! Particles + impulse at camera");
                     screen_shake = 1.0f;
                 }
-                if (input_key_released(inp, (i32)'p')) {
+                if (input_key_released(inp, 300)) {
                     particles.emit_pos[0] = 0.0f;
                     particles.emit_pos[1] = 2.0f;
                     particles.emit_pos[2] = 0.0f;
