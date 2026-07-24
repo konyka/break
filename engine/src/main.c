@@ -2353,19 +2353,23 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             dof_enabled = !dof_enabled;
             LOG_INFO("DOF: %s", dof_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 288)) {
+        /* R361: Delete also destroys the selected entity — only toggle SSR when none. */
+        if (input_key_pressed(platform_input(engine.platform), 288) && selected_entity_id == 0) {
             ssr_enabled = !ssr_enabled;
             LOG_INFO("SSR: %s", ssr_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 91)) {
+        /* R361: '[' also cycles camera mode — SSGI moved to Menu (295). */
+        if (input_key_pressed(platform_input(engine.platform), 295)) {
             ssgi_enabled = !ssgi_enabled;
             LOG_INFO("SSGI: %s", ssgi_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 93)) {
+        /* R361: ']' also duplicates the selected entity — only toggle vol when none. */
+        if (input_key_pressed(platform_input(engine.platform), 93) && selected_entity_id == 0) {
             vol_enabled = !vol_enabled;
             LOG_INFO("Volumetric: %s", vol_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 59)) {
+        /* R361: ';' also cycles terrain presets — contact shadow → KP_Add (299). */
+        if (input_key_pressed(platform_input(engine.platform), 299)) {
             cs_enabled = !cs_enabled;
             LOG_INFO("Contact shadow: %s", cs_enabled ? "on" : "off");
         }
@@ -2397,15 +2401,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             water.water_y += 0.5f;
             LOG_INFO("Water level: %.1f", water.water_y);
         }
-        if (input_key_pressed(platform_input(engine.platform), 39)) {
+        /* R361: ''' also cycles particle rate — SSS → KP_Multiply (296). */
+        if (input_key_pressed(platform_input(engine.platform), 296)) {
             sss_enabled = !sss_enabled;
             LOG_INFO("SSS: %s", sss_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 44)) {
+        /* R361: ',' also starts path recording — LF → KP_Divide (297). */
+        if (input_key_pressed(platform_input(engine.platform), 297)) {
             lf_enabled = !lf_enabled;
             LOG_INFO("Lens flare: %s", lf_enabled ? "on" : "off");
         }
-        if (input_key_pressed(platform_input(engine.platform), 46)) {
+        /* R361: '.' also cycles time-of-day — sharpen → KP_Subtract (298). */
+        if (input_key_pressed(platform_input(engine.platform), 298)) {
             sharpen_enabled = !sharpen_enabled;
             LOG_INFO("Sharpen: %s", sharpen_enabled ? "on" : "off");
         }
@@ -2659,6 +2666,7 @@ u32 culled_count = 0;
             }
         }
 
+        /* R361: Tab also cycled selected entities — entity cycle moved to Enter (257). */
         if (input_key_pressed(platform_input(engine.platform), 259)) {
             debug_ui_toggle(&ui);
         }
@@ -3544,7 +3552,7 @@ u32 culled_count = 0;
             if (brush_mode == 3) debug_ui_text(&ui, "[NOISE] Brush mode: noise stamp");
             if (cam_height_lock) debug_ui_text(&ui, "[LOCK-Y] Camera height: %.1f", cam_locked_y);
             if (selected_entity_count > 0) {
-                debug_ui_text(&ui, "Selected: %u/%u (Tab cycle)", selected_entity_idx, selected_entity_count);
+                debug_ui_text(&ui, "Selected: %u/%u (Enter cycle)", selected_entity_idx, selected_entity_count);
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
                 CMeshRef *sm_comp = world_get_component(world, se, COMP_MESH_REF);
@@ -4813,7 +4821,8 @@ u32 culled_count = 0;
                     static const char *tnames[] = {"Rolling Hills", "Volcano", "Waves", "Ridged", "Craters"};
                     LOG_INFO("Terrain preset: %s", tnames[terrain_preset]);
                 }
-                if (input_key_pressed(inp, 259)) {
+                /* R361: Enter (257) — was Tab, which also toggled the debug UI overlay. */
+                if (input_key_pressed(inp, 257)) {
                     ComponentType sel_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
                     Query *sq = world_query(world, sel_types, 2);
                     u32 total = 0;

@@ -54,6 +54,11 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_Scroll_Lock) return 292;
     if (ks == XK_Num_Lock)    return 293;
     if (ks == XK_Caps_Lock)   return 294;
+    if (ks == XK_Menu)        return 295; /* R361: SSGI (was '[') */
+    if (ks == XK_KP_Multiply) return 296; /* R361: SSS */
+    if (ks == XK_KP_Divide)   return 297; /* R361: lens flare */
+    if (ks == XK_KP_Subtract) return 298; /* R361: sharpen */
+    if (ks == XK_KP_Add)      return 299; /* R361: contact shadow */
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';

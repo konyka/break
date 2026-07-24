@@ -305,6 +305,10 @@ void terrain_shutdown(Terrain *t) {
     if (rhi_handle_valid(t->ibo))      rhi_buffer_destroy(t->device, t->ibo);
     if (rhi_handle_valid(t->vbo))      rhi_buffer_destroy(t->device, t->vbo);
     if (rhi_handle_valid(t->pipeline)) rhi_pipeline_destroy(t->device, t->pipeline);
+    t->ibo = RHI_HANDLE_NULL;
+    t->vbo = RHI_HANDLE_NULL;
+    t->pipeline = RHI_HANDLE_NULL;
+    t->index_count = 0;
 }
 
 void terrain_render(Terrain *t, RHICmdBuffer *cmd,
@@ -313,7 +317,8 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
                     RHITexture fallback_tex, RHISampler sampler,
                     RHITexture shadow_map, const f32 *light_vp,
                     f32 shadow_bias, f32 water_y, f32 time, f32 fog_strength) {
-    if (t->index_count == 0) return;
+    /* R361: init failure leaves index_count>0 possible via partial paths — gate pipeline. */
+    if (t->index_count == 0 || !rhi_handle_valid(t->pipeline)) return;
 
     static const Mat4 identity_model = { .e = {
         {1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}

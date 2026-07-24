@@ -99,6 +99,11 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_Scroll_Lock) return 292;
     if (ks == XKB_KEY_Num_Lock)    return 293;
     if (ks == XKB_KEY_Caps_Lock)   return 294;
+    if (ks == XKB_KEY_Menu)        return 295; /* R361: SSGI (was '[') */
+    if (ks == XKB_KEY_KP_Multiply) return 296; /* R361: SSS */
+    if (ks == XKB_KEY_KP_Divide)   return 297; /* R361: lens flare */
+    if (ks == XKB_KEY_KP_Subtract) return 298; /* R361: sharpen */
+    if (ks == XKB_KEY_KP_Add)      return 299; /* R361: contact shadow */
     if (ks == XKB_KEY_minus || ks == XKB_KEY_underscore)      return (i32)'-';
     if (ks == XKB_KEY_plus || ks == XKB_KEY_equal)            return (i32)'=';
     if (ks == XKB_KEY_parenleft || ks == XKB_KEY_braceleft)   return (i32)'(';

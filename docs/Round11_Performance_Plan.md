@@ -4420,6 +4420,17 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（含 golden-image 回归）。
 
+## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
+
+### [x] R361-A Delete：SSR only when no selected entity
+### [x] R361-B `]`：Volumetric only when no selected entity
+### [x] R361-C `[`≠SSGI：SSGI → Menu(295)
+### [x] R361-D Tab≠entity cycle：cycle → Enter(257)
+### [x] R361-E..H `'`, `,`, `.`, `;` effects → KP */÷/−/+ (296–299)
+### [x] R361-I terrain_render gates invalid pipeline；shutdown clears counts
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **765** 处修复。
+
 ## R360：MRT 半成品 + 热键双重绑定消歧 + water.enabled 对齐（已完成）
 
 ### [x] R360-A/B GL+VK MRT create：calloc fail → destroy, return null
