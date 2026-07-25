@@ -125,6 +125,11 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         p->should_close = true;
         return 0;
 
+    /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
+    case WM_KILLFOCUS:
+        input_release_all(&p->input);
+        return 0;
+
     case WM_SIZE:
         p->width  = (u32)LOWORD(lParam);
         p->height = (u32)HIWORD(lParam);

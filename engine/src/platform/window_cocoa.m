@@ -200,6 +200,11 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
     p->height = (u32)sz.height;
     p->layer.drawableSize = CGSizeMake(sz.width, sz.height);
 }
+/* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
+- (void)windowDidResignKey:(NSNotification *)n {
+    (void)n;
+    input_release_all(&self.platform->input);
+}
 @end
 
 /* ---- Platform API ---- */

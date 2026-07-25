@@ -4485,6 +4485,15 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **811** 处修复。
 
+## R368：Win32/Cocoa 失焦释键 + Shift+Space ALL STOP（已完成）
+
+### [x] R368-A Win32：WM_KILLFOCUS → input_release_all
+### [x] R368-B Cocoa：windowDidResignKey → input_release_all
+### [x] R368-C Shift+Space：优先 ALL STOP（即使有选中）
+### [x] R368-D Help：补回 KP1/KP2
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **815** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

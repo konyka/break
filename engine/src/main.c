@@ -3752,8 +3752,8 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
             debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
             debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
-            debug_ui_text(&ui, "Shift+Space:AllStop  Ins:GPUCull  End:Indirect  [:3rdPerson  ,:CamPath  `:ImUI  Shift+`:FPS");
-            debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
+            debug_ui_text(&ui, "Shift+Space:AllStop  Ins:GPUCull  End:Indirect  KP1:Tornado  KP2:Trail  `:ImUI  Shift+`:FPS");
+            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
             debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  Ctrl:AnimCrossfade");
             debug_ui_text(&ui, "Shift+B:ExportJSON  Shift+9/0:CamSpeed  Shift+-/=:WaterY  +/-:Exposure  KP*/÷/−/+:SSS/LF/Sharpen/CS");
         }
@@ -4767,9 +4767,18 @@ u32 culled_count = 0;
                     }
                     LOG_INFO("Layout: %s (%u entities)", layout_names[layout_mode], li);
                 }
-                /* R364: Space = jump when idle; impulse when entity selected; Shift+Space = ALL STOP. */
+                /* R364/R368: Shift+Space = ALL STOP (even with selection); else entity impulse; else jump. */
                 if (input_key_pressed(inp, 32)) {
-                    if (selected_entity_id > 0) {
+                    if (input_key_down(inp, 289)) {
+                        u32 stopped = 0;
+                        for (u32 bi = 1; bi < physics->count; bi++) {
+                            if (!physics->bodies[bi].is_static && vec3_len(physics->bodies[bi].velocity) > 0.1f) {
+                                physics->bodies[bi].velocity = vec3(0, 0, 0);
+                                stopped++;
+                            }
+                        }
+                        if (stopped > 0) LOG_INFO("ALL STOP: %u bodies", stopped);
+                    } else if (selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
                         if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
@@ -4782,15 +4791,6 @@ u32 culled_count = 0;
                                 physics_body_apply_impulse(physics, sr->physics_id, vec3(0, 8.0f, 0));
                             }
                         }
-                    } else if (input_key_down(inp, 289)) {
-                        u32 stopped = 0;
-                        for (u32 bi = 1; bi < physics->count; bi++) {
-                            if (!physics->bodies[bi].is_static && vec3_len(physics->bodies[bi].velocity) > 0.1f) {
-                                physics->bodies[bi].velocity = vec3(0, 0, 0);
-                                stopped++;
-                            }
-                        }
-                        if (stopped > 0) LOG_INFO("ALL STOP: %u bodies", stopped);
                     }
                 }
                 if (input_key_pressed(inp, (i32)'m') && bench_frames == 0) {
