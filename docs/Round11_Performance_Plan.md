@@ -4546,6 +4546,13 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **837** 处修复。
 
+## R375：静息动态体传送 BVH + Home render_scale_idx（已完成）
+
+### [x] R375-A 箭头/Backspace/Shift+W/坠落重生：`rest_frames=0` + `bvh_dirty`（含 resting dynamic）
+### [x] R375-B Home 预设：同步 `render_scale_idx`
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **840** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

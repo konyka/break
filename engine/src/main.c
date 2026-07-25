@@ -150,6 +150,9 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
                 xs[i].pos[0] = 0.0f; xs[i].pos[1] = 5.0f; xs[i].pos[2] = 0.0f;
                 physics->bodies[pid].position = vec3(0.0f, 5.0f, 0.0f);
                 physics->bodies[pid].velocity = vec3(0.0f, 0.0f, 0.0f);
+                /* R375: resting/static skip BVH refit after fall-respawn teleport. */
+                physics->bodies[pid].rest_frames = 0;
+                physics->bvh_dirty = true;
             }
         }
     }
@@ -2283,7 +2286,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             const char *pnames[] = { "full", "balanced", "performance", "minimal" };
             switch (effect_preset) {
             case 0:
-                render_scale = render_scale_options[1];
+                render_scale = render_scale_options[1]; render_scale_idx = 1;
                 ssao.radius = 0.5f; ssao_preset = 2;
                 god_rays_intensity = 0.3f; gr_preset = 2;
                 postfx.bloom_strength = 0.4f; bloom_preset = 2;
@@ -2297,7 +2300,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             lensfx_enabled = true; lens_ca = 0.003f; lens_vignette = 0.45f; lens_grain = 0.015f;
                 break;
             case 1:
-                render_scale = render_scale_options[1];
+                render_scale = render_scale_options[1]; render_scale_idx = 1;
                 ssao.radius = 0.3f; ssao_preset = 1;
                 god_rays_intensity = 0.15f; gr_preset = 1;
                 postfx.bloom_strength = 0.2f; bloom_preset = 1;
@@ -2310,7 +2313,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 lensfx_enabled = false;
                 break;
             case 2:
-                render_scale = render_scale_options[2];
+                render_scale = render_scale_options[2]; render_scale_idx = 2;
                 ssao.radius = 0.0f; ssao_preset = 0;
                 god_rays_intensity = 0.0f; gr_preset = 0;
                 postfx.bloom_strength = 0.0f; bloom_preset = 0;
@@ -2323,7 +2326,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 lensfx_enabled = false;
                 break;
             case 3:
-                render_scale = render_scale_options[3];
+                render_scale = render_scale_options[3]; render_scale_idx = 3;
                 ssao.radius = 0.0f; ssao_preset = 0;
                 god_rays_intensity = 0.0f; gr_preset = 0;
                 postfx.bloom_strength = 0.0f; bloom_preset = 0;
@@ -4569,10 +4572,12 @@ u32 culled_count = 0;
                             st->pos[1] = old_cam.e[1];
                             st->pos[2] = old_cam.e[2];
                             if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                                physics->bodies[sr->physics_id].position = old_cam;
-                                physics->bodies[sr->physics_id].velocity = vec3(0,0,0);
-                                if (physics->bodies[sr->physics_id].is_static)
-                                    physics->bvh_dirty = true;
+                                RigidBody *sb = &physics->bodies[sr->physics_id];
+                                sb->position = old_cam;
+                                sb->velocity = vec3(0, 0, 0);
+                                /* R375: resting dynamic also skips BVH refit — not only static. */
+                                sb->rest_frames = 0;
+                                physics->bvh_dirty = true;
                             }
                             LOG_INFO("SWAPPED positions with entity %u", selected_entity_id);
                         }
@@ -4614,10 +4619,12 @@ u32 culled_count = 0;
                             st->pos[2] = camera.position.e[2];
                         }
                         if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            physics->bodies[sr->physics_id].position = camera.position;
-                            physics->bodies[sr->physics_id].velocity = vec3(0,0,0);
-                            if (physics->bodies[sr->physics_id].is_static)
-                                physics->bvh_dirty = true;
+                            RigidBody *tb = &physics->bodies[sr->physics_id];
+                            tb->position = camera.position;
+                            tb->velocity = vec3(0, 0, 0);
+                            /* R375: resting dynamic also skips BVH refit — not only static. */
+                            tb->rest_frames = 0;
+                            physics->bvh_dirty = true;
                         }
                         LOG_INFO("Entity %u teleported to camera", selected_entity_id);
                     }
@@ -5016,8 +5023,9 @@ u32 culled_count = 0;
                             RigidBody *mb = &physics->bodies[sr->physics_id];
                             mb->position = vec3(st->pos[0], st->pos[1], st->pos[2]);
                             mb->velocity = vec3(0, 0, 0);
-                            /* R373: static bodies skip BVH refit — mark dirty on nudge. */
-                            if (mb->is_static) physics->bvh_dirty = true;
+                            /* R375: resting dynamic also skips BVH refit — not only static. */
+                            mb->rest_frames = 0;
+                            physics->bvh_dirty = true;
                         }
                     }
                 }
