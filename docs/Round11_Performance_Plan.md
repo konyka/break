@@ -4660,6 +4660,29 @@ if (!ok) return false;
 **验收**：ASan+UBSan / GL / VK 三套 CTest 各 **31/31**，零泄漏零 UB。
 总计 **864** 处修复。
 
+## R385：Chase-Lev 工作窃取队列槽位数据竞争（已完成）
+
+本轮换用 TSan 压测线程相关测试（gcc 的 libtsan 在本机缺失，改用 clang 构建）。
+单次跑全绿，但 `test_task` 反复跑 60 轮复现 13 次数据竞争——正是历史上那类
+间歇性问题需要压测才能暴露的例子。
+
+### [x] R385-A deque 环形缓冲槽位改为 `_Atomic(Task *)`
+
+TSan 报告：`deque_steal`（task.c:170 读）与 `deque_push`（task.c:130 写）竞争同一槽位。
+
+`WorkStealDeque` 只把 `top`/`bottom` 声明成 `_Atomic`，槽位仍是裸 `Task **`。
+Chase-Lev 算法里 owner 的 push 与 thief 的 steal **本就允许**并发碰同一个槽位，
+归属由 `top` 上的 CAS 裁决、允许 thief 读到陈旧值；但裸指针访问在 C11 下仍是
+数据竞争（UB），编译器可以撕裂或重复该读。按 Lê et al. 2013 的正确实现改为
+`_Atomic(Task *) *buffer`，push/pop/steal 三处用 **relaxed** 原子读写即可——
+排序已由既有的 `atomic_thread_fence` 与 CAS 完整提供，因此不引入额外内存屏障开销。
+
+在 x86 上原先多半能跑对，但在 ARM 等弱内存序目标上是真实风险。
+
+**验收**：TSan 下 `test_task` 200 轮 + `test_task`/`test_async_loader`/
+`test_mipmap_stream` 各 60 轮，**零竞争零失败零挂起**（修复前 13/60 竞争）；
+ASan+UBSan / GL / VK 三套 CTest 各 **31/31**。总计 **865** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

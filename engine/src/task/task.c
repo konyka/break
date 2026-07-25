@@ -99,7 +99,7 @@ static _Thread_local i32 tls_worker_id = -1;
 
 static bool deque_init(WorkStealDeque *dq, u32 capacity) {
     dq->capacity = capacity;
-    dq->buffer = (Task **)calloc(capacity, sizeof(Task *));
+    dq->buffer = (_Atomic(Task *) *)calloc(capacity, sizeof(_Atomic(Task *)));
     /* R166-A: calloc failure leaves buffer NULL — subsequent push/steal/pop
      * operations dereference NULL, causing crash. */
     if (!dq->buffer) {
@@ -127,7 +127,8 @@ static bool deque_push(WorkStealDeque *dq, Task *task) {
         return false; /* full */
     }
 
-    dq->buffer[b & (i64)(dq->capacity - 1)] = task;
+    atomic_store_explicit(&dq->buffer[b & (i64)(dq->capacity - 1)], task,
+                          memory_order_relaxed);
     atomic_thread_fence(memory_order_release);
     atomic_store_explicit(&dq->bottom, b + 1, memory_order_relaxed);
     return true;
@@ -141,7 +142,8 @@ static Task *deque_pop(WorkStealDeque *dq) {
     i64 t = atomic_load_explicit(&dq->top, memory_order_relaxed);
 
     if (t <= b) {
-        Task *task = dq->buffer[b & (i64)(dq->capacity - 1)];
+        Task *task = atomic_load_explicit(
+            &dq->buffer[b & (i64)(dq->capacity - 1)], memory_order_relaxed);
         if (t == b) {
             /* Last element — race with steal */
             if (!atomic_compare_exchange_strong_explicit(
@@ -167,7 +169,8 @@ static Task *deque_steal(WorkStealDeque *dq) {
 
     if (t >= b) return NULL; /* empty */
 
-    Task *task = dq->buffer[t & (i64)(dq->capacity - 1)];
+    Task *task = atomic_load_explicit(
+        &dq->buffer[t & (i64)(dq->capacity - 1)], memory_order_relaxed);
 
     if (!atomic_compare_exchange_strong_explicit(
             &dq->top, &t, t + 1,

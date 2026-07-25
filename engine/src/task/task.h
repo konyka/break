@@ -41,7 +41,12 @@ typedef struct Task {
 typedef struct {
     _Atomic i64   top;
     _Atomic i64   bottom;
-    Task        **buffer;       /* circular buffer of task pointers */
+    /* R385: slots must be atomic, not just top/bottom. The owner's push and a
+     * thief's steal legitimately touch the same slot concurrently — the CAS on
+     * `top` decides who keeps the value, but the access itself is still a data
+     * race unless the slot is atomic. Relaxed is sufficient: the surrounding
+     * fences and the CAS provide all the ordering (Lê et al. 2013). */
+    _Atomic(Task *) *buffer;    /* circular buffer of task pointers */
     u32           capacity;
 } WorkStealDeque;
 
