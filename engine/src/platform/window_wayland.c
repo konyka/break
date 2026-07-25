@@ -110,7 +110,7 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_KP_2 || ks == XKB_KEY_KP_Down)   return 307; /* particle trail */
     if (ks == XKB_KEY_KP_3 || ks == XKB_KEY_KP_Next)   return 308; /* layout */
     if (ks == XKB_KEY_KP_4 || ks == XKB_KEY_KP_Left)   return 309; /* AA cycle */
-    /* R364: CG/lens off digit row; FPS on KP_Enter */
+    /* R364: CG/lens off digit row (FPS is Shift+`) */
     if (ks == XKB_KEY_KP_5 || ks == XKB_KEY_KP_Begin)  return 310; /* temp- */
     if (ks == XKB_KEY_KP_6 || ks == XKB_KEY_KP_Right)  return 311; /* temp+ */
     if (ks == XKB_KEY_KP_7 || ks == XKB_KEY_KP_Home)   return 312; /* tint- */

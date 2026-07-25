@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R364 数字/WASD/Space/反引号热键消歧 — 修复 8 处** — **R364-A**：`1`–`8` 同时 CG/lens 与爆炸等玩法；CG/lens → KP_5..9 + Decimal 循环。**R364-B**：`` ` `` 同时 ImUI 与 FPS；裸键 ImUI，Shift+` 轮转 FPS。**R364-C/D**：`9`/`0` 同时相机速度与重力/水色；相机速度改 Shift+9/0。**R364-E**：WASD 移动与笔刷/环境光/传送/质量冲突；后者需 Shift。**R364-F**：Space 同时跳跃与 impulse/ALL STOP；无选中时跳跃，有选中时 impulse，Shift+Space=ALL STOP。**R364-G**：Help `(`/`)` 水位方向纠正；平台补 Shift(289) 与 KP_5..Decimal。总计 **791** 处修复。
+最近更新：**R365 Shift+B JSON + Wayland Shift+9/0 + Cocoa 键位 — 修复 8 处** — **R365-A**：Shift+B 仍查 GLFW `340/344`，JSON 导出死码；改 `289`。**R365-B**：Wayland Shift+9/0 产出 `'('`/`')'`，相机速度不触发且误调水位；cam speed 兼收括号，水位在 Shift 时跳过。**R365-C**：Cocoa KP 被字符 `'0'..'9'` 抢先映射；KP keyCode 优先。**R365-D**：Cocoa Shift 走 `flagsChanged` 未实现；补 flags→289/294。**R365-E**：Cocoa 缺 grave→96。**R365-F**：Help 漏 ScrollLock:DOF。**R365-G**：箭头 CG sat/contrast 与实体移动冲突；无选中且非 custom-gravity 才调 CG。总计 **799** 处修复。
+
+此前：**R364 数字/WASD/Space/反引号热键消歧 — 修复 8 处** — **R364-A**：`1`–`8` 同时 CG/lens 与爆炸等玩法；CG/lens → KP_5..9 + Decimal 循环。**R364-B**：`` ` `` 同时 ImUI 与 FPS；裸键 ImUI，Shift+` 轮转 FPS。**R364-C/D**：`9`/`0` 同时相机速度与重力/水色；相机速度改 Shift+9/0。**R364-E**：WASD 移动与笔刷/环境光/传送/质量冲突；后者需 Shift。**R364-F**：Space 同时跳跃与 impulse/ALL STOP；无选中时跳跃，有选中时 impulse，Shift+Space=ALL STOP。**R364-G**：Help `(`/`)` 水位方向纠正；平台补 Shift(289) 与 KP_5..Decimal。总计 **791** 处修复。
 
 此前：**R363 KP_0≠鼠标左键 + Space/路径回放修复 + 字母热键消歧 — 修复 10 处** — **R363-A**（CORRECTNESS/回归）：R362 将 boom 绑到 `300`，但 `INPUT_MOUSE_LEFT=300` → 左键即爆炸；KP_0 改 **305**。**R363-B**：Space 冲量块被错误嵌进 `k` layout 的破损大括号内，单独 Space 不触发；解开并外提。**R363-C**：`,` 相机路径停录后 `playing_path` 从未置 true，回放不可达；停录臂播放、`,` 开播。**R363-D**：`t`/`h`/`j`/`k` 仍双绑；tornado/AA/trail/layout → KP_1..4 (306–309)。**R363-E**：scene load 可把 `water.enabled=true` 写回失败 init；无 pipeline 则强制 false。**R363-F**：Cocoa 补 291–309（Pause/locks/Menu/KP）。**R363-G**：Help 文案对齐 R360–R363。总计 **783** 处修复。
 

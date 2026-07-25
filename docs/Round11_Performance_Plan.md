@@ -4453,6 +4453,18 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **791** 处修复。
 
+## R365：Shift+B JSON + Wayland Shift+9/0 + Cocoa 键位（已完成）
+
+### [x] R365-A Shift+B JSON：GLFW 340/344 → 289
+### [x] R365-B Wayland Shift+9/0：cam speed 兼收 `()`；水位跳过 Shift
+### [x] R365-C Cocoa：KP keyCode 优先于 `'0'..'9'` 字符
+### [x] R365-D Cocoa：`flagsChanged` → Shift(289)/Caps(294)
+### [x] R365-E Cocoa：grave → 96
+### [x] R365-F Help：补 ScrollLock:DOF
+### [x] R365-G 箭头 CG：仅无选中且非 custom-gravity
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **799** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

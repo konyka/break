@@ -65,7 +65,7 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_2 || ks == XK_KP_Down)   return 307; /* particle trail */
     if (ks == XK_KP_3 || ks == XK_KP_Next)   return 308; /* layout */
     if (ks == XK_KP_4 || ks == XK_KP_Left)   return 309; /* AA cycle */
-    /* R364: CG/lens off digit row; FPS on KP_Enter */
+    /* R364: CG/lens off digit row (FPS is Shift+`) */
     if (ks == XK_KP_5 || ks == XK_KP_Begin)  return 310; /* temp- */
     if (ks == XK_KP_6 || ks == XK_KP_Right)  return 311; /* temp+ */
     if (ks == XK_KP_7 || ks == XK_KP_Home)   return 312; /* tint- */

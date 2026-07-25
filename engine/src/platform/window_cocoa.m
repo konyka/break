@@ -36,6 +36,27 @@ struct Platform {
 /* ---- Key mapping (Carbon virtual key codes) ---- */
 
 static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
+    /* R365: KP keyCodes first — charsIgnoringModifiers often yields '0'..'9'
+     * for the keypad and would steal boom/tornado/CG bindings. */
+    switch (kc) {
+        case 82:  return 305; /* KP 0 — particle boom */
+        case 83:  return 306; /* KP 1 — tornado */
+        case 84:  return 307; /* KP 2 — particle trail */
+        case 85:  return 308; /* KP 3 — layout */
+        case 86:  return 309; /* KP 4 — AA cycle */
+        case 87:  return 310; /* KP 5 — temp- */
+        case 88:  return 311; /* KP 6 — temp+ */
+        case 89:  return 312; /* KP 7 — tint- */
+        case 91:  return 313; /* KP 8 — tint+ */
+        case 92:  return 314; /* KP 9 — color grade */
+        case 65:  return 315; /* KP Decimal — lensfx cycle */
+        case 67:  return 296; /* KP Multiply — SSS */
+        case 75:  return 297; /* KP Divide — lens flare */
+        case 78:  return 298; /* KP Minus — sharpen */
+        case 69:  return 299; /* KP Plus — contact shadow */
+        case 50:  return 96;  /* Grave / backtick — ImUI */
+        default:  break;
+    }
     /* Letters/digits: derive from the produced character when available. */
     if (chars && [chars length] > 0) {
         unichar c = [chars characterAtIndex:0];
@@ -65,29 +86,11 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 109: return 280; /* F10 */
         case 103: return 281; /* F11 */
         case 111: return 282; /* F12 */
-        /* R363: align Pause/locks/Menu/KP with X11/WL/Win32 (291–309) */
         case 113: return 291; /* Pause / F15 */
         case 107: return 292; /* Scroll Lock / F14 */
         case 71:  return 293; /* Clear ≈ NumLock */
         case 57:  return 294; /* Caps Lock */
         case 110: return 295; /* Application / Menu */
-        case 67:  return 296; /* KP Multiply — SSS */
-        case 75:  return 297; /* KP Divide — lens flare */
-        case 78:  return 298; /* KP Minus — sharpen */
-        case 69:  return 299; /* KP Plus — contact shadow */
-        case 82:  return 305; /* KP 0 — particle boom (not 300=MOUSE_LEFT) */
-        case 83:  return 306; /* KP 1 — tornado */
-        case 84:  return 307; /* KP 2 — particle trail */
-        case 85:  return 308; /* KP 3 — layout */
-        case 86:  return 309; /* KP 4 — AA cycle */
-        case 87:  return 310; /* KP 5 — temp- */
-        case 88:  return 311; /* KP 6 — temp+ */
-        case 89:  return 312; /* KP 7 — tint- */
-        case 91:  return 313; /* KP 8 — tint+ */
-        case 92:  return 314; /* KP 9 — color grade */
-        case 65:  return 315; /* KP Decimal — lensfx cycle */
-        case 56:  return 289; /* Shift */
-        case 60:  return 289; /* Right Shift */
         default:  return -1;
     }
 }
@@ -115,6 +118,15 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
 - (void)keyUp:(NSEvent *)e {
     i32 idx = cocoa_keycode_to_index(e.keyCode, e.charactersIgnoringModifiers);
     if (idx >= 0) input_set_key(&self.platform->input, idx, false);
+}
+/* R365: Shift/Caps/etc. arrive via flagsChanged, not keyDown/keyUp. */
+- (void)flagsChanged:(NSEvent *)e {
+    NSUInteger flags = e.modifierFlags;
+    bool shift = (flags & NSEventModifierFlagShift) != 0;
+    input_set_key(&self.platform->input, 289, shift);
+    bool caps = (flags & NSEventModifierFlagCapsLock) != 0;
+    input_set_key(&self.platform->input, 294, caps);
+    (void)e;
 }
 
 - (void)mouseMovedCommon:(NSEvent *)e {

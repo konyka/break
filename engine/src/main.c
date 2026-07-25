@@ -2397,13 +2397,20 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
             }
         }
-        if (input_key_pressed(platform_input(engine.platform), (i32)'(')) {
-            water.water_y -= 0.5f;
-            LOG_INFO("Water level: %.1f", water.water_y);
-        }
-        if (input_key_pressed(platform_input(engine.platform), (i32)')')) {
-            water.water_y += 0.5f;
-            LOG_INFO("Water level: %.1f", water.water_y);
+        /* R365: on Wayland Shift+9/0 produce '(' / ')' — skip water while Shift held
+         * so those chords can adjust camera speed instead. */
+        {
+            InputState *w_inp = platform_input(engine.platform);
+            if (!input_key_down(w_inp, 289)) {
+                if (input_key_pressed(w_inp, (i32)'(')) {
+                    water.water_y -= 0.5f;
+                    LOG_INFO("Water level: %.1f", water.water_y);
+                }
+                if (input_key_pressed(w_inp, (i32)')')) {
+                    water.water_y += 0.5f;
+                    LOG_INFO("Water level: %.1f", water.water_y);
+                }
+            }
         }
         /* R361: ''' also cycles particle rate — SSS → KP_Multiply (296). */
         if (input_key_pressed(platform_input(engine.platform), 296)) {
@@ -2834,7 +2841,8 @@ u32 culled_count = 0;
         /* B: Save scene (BSCN binary)  N: Load scene  Shift+B: Export JSON */
         if (input_key_pressed(platform_input(engine.platform), (i32)'b')) {
             InputState *bs_inp = platform_input(engine.platform);
-            bool shift_held = input_key_down(bs_inp, 340) || input_key_down(bs_inp, 344);
+            /* R365: Shift is 289 on all platforms (was dead GLFW 340/344). */
+            bool shift_held = input_key_down(bs_inp, 289);
             if (shift_held) {
                 /* Export as JSON for debugging / interoperability. */
                 SerializeOptions opts = { .pretty_json = true };
@@ -3741,7 +3749,8 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
             debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  (:WaterDown  ):WaterUp  `:ImUI  Shift+`:FPS");
             debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
-            debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  CapsLock:AutoExp  KP*/÷/−/+:SSS/LF/Sharpen/CS");
+            debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  KP*/÷/−/+:SSS/LF/Sharpen/CS");
+            debug_ui_text(&ui, "Shift+B:ExportJSON  (Wayland: Shift+9/0 = CamSpeed, not water)");
         }
 
         {
@@ -4334,12 +4343,14 @@ u32 culled_count = 0;
 
             {
                 InputState *inp = platform_input(engine.platform);
-                /* R364: bare 9/0 are gravity/water — cam speed needs Shift (289). */
-                if (input_key_down(inp, 289) && input_key_pressed(inp, 57)) {
+                /* R364/R365: cam speed = Shift+9/0. Wayland yields '(' / ')' for that chord. */
+                if (input_key_down(inp, 289) &&
+                    (input_key_pressed(inp, 57) || input_key_pressed(inp, (i32)'('))) {
                     camera.move_speed = fminf(camera.move_speed + 1.0f, 20.0f);
                     LOG_INFO("Camera speed: %.1f", camera.move_speed);
                 }
-                if (input_key_down(inp, 289) && input_key_pressed(inp, 48)) {
+                if (input_key_down(inp, 289) &&
+                    (input_key_pressed(inp, 48) || input_key_pressed(inp, (i32)')'))) {
                     camera.move_speed = fmaxf(camera.move_speed - 1.0f, 0.5f);
                     LOG_INFO("Camera speed: %.1f", camera.move_speed);
                 }
@@ -5678,11 +5689,14 @@ u32 culled_count = 0;
             }
 
             if (cg_sys.ready && cg_enabled) {
+                /* R365: arrows also move entity / custom gravity — only tweak CG when free. */
                 InputState *cg_inp = platform_input(engine.platform);
-                if (input_key_pressed(cg_inp, 263)) cg_saturation = fminf(cg_saturation + 0.05f, 2.0f);
-                if (input_key_pressed(cg_inp, 264)) cg_saturation = fmaxf(cg_saturation - 0.05f, 0.0f);
-                if (input_key_pressed(cg_inp, 262)) cg_contrast = fminf(cg_contrast + 0.05f, 2.0f);
-                if (input_key_pressed(cg_inp, 261)) cg_contrast = fmaxf(cg_contrast - 0.05f, 0.5f);
+                if (selected_entity_id == 0 && physics_mode != 3) {
+                    if (input_key_pressed(cg_inp, 263)) cg_saturation = fminf(cg_saturation + 0.05f, 2.0f);
+                    if (input_key_pressed(cg_inp, 264)) cg_saturation = fmaxf(cg_saturation - 0.05f, 0.0f);
+                    if (input_key_pressed(cg_inp, 262)) cg_contrast = fminf(cg_contrast + 0.05f, 2.0f);
+                    if (input_key_pressed(cg_inp, 261)) cg_contrast = fmaxf(cg_contrast - 0.05f, 0.5f);
+                }
                 color_grade_apply(&cg_sys, cmd, tonemap_input,
                                   cg_saturation, cg_contrast, cg_brightness, cg_temperature, cg_tint, rw, rh);
                 tonemap_input = cg_sys.fbo.color_tex;
