@@ -4800,6 +4800,64 @@ A 补回归测试 `vfs_pak_name_table_size_overflow_rejected` 并反向验证（
 ASan+UBSan / GL / VK / TSan 四套 CTest 各 **31/31**（`test_vfs` 23 → 26）。
 总计 **873** 处修复。
 
+## R389：字体加载两处越界读（空文件 + 非字体文件野指针）（已完成）
+
+本轮先按计划把模糊测试扩展到网络复制接收路径（远程输入，攻击面比本地文件宽），
+新增 `engine/tests/fuzz_net_packet.c`。两个刻意的设计选择，都是为了抓住手写测试
+用栈数组会掩盖的问题：调用方快照数组按 `max_count` **精确尺寸堆分配**（越界立即
+被 ASan 报出，而不是悄悄写进栈上余量）；replicator 跨多个包保持存活再重置，让重排
+缓冲、序号去重、peer 状态像面对真实对端那样累积——有序路径的缺陷需要这段历史。
+`len` 本身也作为独立变异维度（截断包）。
+
+**结果：100 种子 × 200000 轮 = 2000 万轮，零缺陷。** 这是有价值的负面结果：
+R115（`len` 上界）、R250（重排窗口别名）、R254（按 `write_pos` 设界）、
+R298（溢出安全的可读字节比较）、R299（空帧不中断 drain）那一系列加固确实到位，
+`net_repl_type_index` 有界、槽位缓冲固定、`out_count` 有 clamp。此处不做改动。
+
+真正的缺陷出现在按"外部输入驱动分配"这条线索复查其余文件读取点时——`font.c`
+的三行里有两处越界读，且该文件此前**完全没有测试覆盖**（R386 的 init 失败泄漏也
+出在这里，同样没被测到）。
+
+### [x] R389-A 零字节字体文件越界读
+
+`long sz = ftell(f); if (sz < 0) ...` 只排除了负数，`sz == 0` 放行：`malloc(0)`
+返回最小块，`stbtt_GetFontOffsetForIndex` 随即去读 sfnt tag。ASan 实录：
+`READ of size 1` 落在 `1-byte region` 内偏移 0 之后，栈顶 `stbtt__isfont`。
+磁盘上一个空文件或截断下载就够触发。新增 `FONT_TTF_MIN_BYTES = 12`
+（sfnt offset table：sfntVersion 4 + numTables 2 + searchRange 2 +
+entrySelector 2 + rangeShift 2），小于它的不可能是字体。
+
+### [x] R389-B 非字体文件导致野指针读（硬崩溃）
+
+比 A 严重得多。`stbtt_GetFontOffsetForIndex` 在输入不是字体时返回 **-1**，而这个
+返回值被直接塞进 `stbtt_InitFont`。后者的 `fontstart` 形参类型是
+`stbtt_uint32`，-1 转成 `0xFFFFFFFF`，于是 `stbtt__find_table` 去读
+`data + 0xFFFFFFFF + 4`——野指针。ASan 实录 SEGV，寄存器 `rbx = 0x100000003`
+正是该提升结果。**任何** ≥12 字节的非字体文件都会触发：路径写错、误传文本文件、
+资产损坏或下载截断。改为先检查 `font_offset < 0 || font_offset >= sz` 再解析。
+
+**残留风险如实记录**：以上只封住空文件与非字体文件。stb_truetype 在此之外并不做
+边界检查——一个声称 `numTables` 为 0xFFFF 的畸形字体仍会把表目录走出 EOF。彻底
+加固需要给第三方解析器补边界检查或改用受检解析，而这条路径 CI 无法覆盖（字体加载
+需要 RHI 设备），在没有测试网的情况下改第三方格式解析代码风险大于收益。因此本轮
+**不动**，结论是：字体文件必须作为可信资产对待。
+
+### [x] R389-C 为 `font.c` 建立无头测试覆盖
+
+`font.c` 在 TTF 解析完成前不碰任何 `rhi_*`（解析在 46–92 行，首个 RHI 调用在
+164 行），因此所有拒绝路径都能以 `dev = NULL` 无头运行。新增
+`engine/tests/test_font_load.c`，自带 17 个仅供链接的 RHI 桩（测试不会走到绘制
+路径）。若 `font.c` 将来引用新的 `rhi_*`，该目标会链接失败——这是有意保留的提示
+信号。覆盖：文件缺失、零字节、小于 offset table、以及非字体文件四条。
+
+**验收**：网络 2000 万轮零缺陷（无改动）。font 两条均补回归测试并反向验证：回退
+`font.c` 后 `font_init_rejects_empty_file` 立刻触发 ASan 堆越界读（因此后两条来不及
+执行，B 的 SEGV 另以独立复现程序单独证明）。另单独验证引擎自带的
+`LiberationSans-Regular.ttf`（410712 字节、offset 0、vmetrics 正常）**不被误拒**，
+这一步必须做——新检查所在的路径 CI 覆盖不到成功分支。
+ASan+UBSan / GL / VK / TSan 四套 CTest 各 **32/32**（新增 `test_font_load`）。
+总计 **875** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

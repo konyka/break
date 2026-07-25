@@ -434,6 +434,20 @@ if(ENGINE_BUILD_TESTS)
     endif()
     add_test(NAME test_net_replication COMMAND test_net_replication)
 
+    # R389: mutation fuzzer for the replication receive path (remote input).
+    # Same usage as fuzz_scene_serial / fuzz_vfs_pak: EXCLUDE_FROM_ALL, build
+    # explicitly and run by hand under ASan/UBSan.
+    add_executable(fuzz_net_packet EXCLUDE_FROM_ALL tests/fuzz_net_packet.c
+        src/network/net_replication.c src/network/packet.c src/network/network.c
+        src/platform/time.c src/core/log.c)
+    target_include_directories(fuzz_net_packet PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(fuzz_net_packet PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(fuzz_net_packet PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(fuzz_net_packet PRIVATE ws2_32)
+    endif()
+
     # test_string: needs string.c (no other deps)
     add_executable(test_string tests/test_string.c src/core/string.c)
     target_include_directories(test_string PRIVATE ${TEST_INCLUDE_DIRS})
@@ -457,6 +471,15 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_font_ui PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_font_ui PRIVATE m)
     add_test(NAME test_font_ui COMMAND test_font_ui)
+
+    # R389: font_renderer_init input validation. font.c parses the TTF before its
+    # first rhi_* call, so the rejection paths run headlessly with dev = NULL; the
+    # test provides link-only RHI stubs.
+    add_executable(test_font_load tests/test_font_load.c
+        src/ui/font.c src/ui/utf8.c src/core/log.c src/math/math.c)
+    target_include_directories(test_font_load PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_font_load PRIVATE m)
+    add_test(NAME test_font_load COMMAND test_font_load)
 
     # test_mipmap_stream: streaming residency/eviction over async loader + VFS
     add_executable(test_mipmap_stream tests/test_mipmap_stream.c

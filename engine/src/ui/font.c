@@ -19,6 +19,9 @@ static const GlyphRange FONT_RANGES[] = {
 };
 #define FONT_RANGE_COUNT (sizeof(FONT_RANGES) / sizeof(FONT_RANGES[0]))
 
+/* R389: sfnt offset table size — the smallest a font file can possibly be. */
+#define FONT_TTF_MIN_BYTES 12L
+
 static const GlyphInfo *font_lookup_glyph(const FontRenderer *fr, u32 cp) {
     if (cp < FONT_CPMAP_SIZE) {
         i16 gi = fr->cp_map[cp];
@@ -50,7 +53,24 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
     long sz = ftell(f);
-    if (sz < 0) { fclose(f); return false; }
+    /* R389: `sz < 0` let a zero-byte file through: malloc(0) returns a minimal
+     * block and stbtt then reads the sfnt tag straight out of bounds (ASan:
+     * 1-byte READ in stbtt__isfont, reached before any RHI call). An empty or
+     * truncated font file on disk is enough to trigger it.
+     *
+     * FONT_TTF_MIN_BYTES is the sfnt offset table: sfntVersion(4) +
+     * numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2). Nothing
+     * smaller can be a font.
+     *
+     * This bounds the empty/truncated case only. stb_truetype does not bounds
+     * check the input beyond it — a font declaring a bogus numTables still walks
+     * its table directory past EOF — so font files must remain trusted assets.
+     * See docs/Round11_Performance_Plan.md (R389) for why that is left alone. */
+    if (sz < FONT_TTF_MIN_BYTES) {
+        LOG_WARN("Font: %s is too small to be a font (%ld bytes)", ttf_path, sz);
+        fclose(f);
+        return false;
+    }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
     u8 *ttf_buf = malloc((usize)sz);
     if (!ttf_buf) { fclose(f); return false; }
@@ -60,8 +80,22 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     }
     fclose(f);
 
+    /* R389: stbtt_GetFontOffsetForIndex returns -1 for "not a font", and that was
+     * fed straight into stbtt_InitFont. Its `fontstart` parameter is
+     * stbtt_uint32, so -1 became 0xFFFFFFFF and stbtt__find_table read at
+     * `data + 0xFFFFFFFF + 4` — a wild pointer, hard SEGV (ASan: READ at
+     * data+0x100000003). Any file that is not a font triggers it: a mistyped
+     * path, a stray text file, a corrupted or truncated asset. Reject the
+     * sentinel before parsing. */
+    int font_offset = stbtt_GetFontOffsetForIndex(ttf_buf, 0);
+    if (font_offset < 0 || (long)font_offset >= sz) {
+        LOG_WARN("Font: %s is not a font file", ttf_path);
+        free(ttf_buf);
+        return false;
+    }
+
     stbtt_fontinfo fi;
-    if (!stbtt_InitFont(&fi, ttf_buf, stbtt_GetFontOffsetForIndex(ttf_buf, 0))) {
+    if (!stbtt_InitFont(&fi, ttf_buf, font_offset)) {
         LOG_WARN("Font: stbtt_InitFont failed");
         free(ttf_buf);
         return false;
