@@ -146,7 +146,8 @@ static void physics_body_park(PhysicsWorld *pw, u32 pid) {
 }
 
 #define SCENE_STATE_MAGIC_V1 0x534E4547u /* GENE: pos/vel */
-#define SCENE_STATE_MAGIC_V2 0x32454E47u /* GEN2: pos/vel/mass/is_static */
+#define SCENE_STATE_MAGIC_V2 0x32454E47u /* GEN2: +mass/is_static */
+#define SCENE_STATE_MAGIC_V3 0x33454E47u /* GEN3: +half_extent/restitution */
 
 static void physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame) {
     if (!rb) return;
@@ -2897,7 +2898,7 @@ u32 culled_count = 0;
                 FILE *sf = fopen("scene_state.bin", "wb");
                 if (sf) {
                     bool sv_ok = true;
-                    u32 magic = SCENE_STATE_MAGIC_V2;
+                    u32 magic = SCENE_STATE_MAGIC_V3;
                     sv_ok &= fwrite(&magic, 4, 1, sf) == 1;
                     sv_ok &= fwrite(&camera.position, sizeof(Camera), 1, sf) == 1;
                     sv_ok &= fwrite(&sun_azimuth, sizeof(f32), 1, sf) == 1;
@@ -2911,7 +2912,9 @@ u32 culled_count = 0;
                         RigidBody *sb = &physics->bodies[si];
                         Vec3 pos = sb->position;
                         Vec3 vel = sb->velocity;
+                        Vec3 hext = sb->half_extent;
                         f32 mass = sb->mass > 0.0f ? sb->mass : 1.0f;
+                        f32 rest = sb->restitution;
                         u8 is_st = sb->is_static ? 1u : 0u;
                         if (physics_body_is_parked(sb)) {
                             pos = sb->spawn_pos;
@@ -2921,9 +2924,11 @@ u32 culled_count = 0;
                         }
                         sv_ok &= fwrite(&pos, sizeof(Vec3), 1, sf) == 1;
                         sv_ok &= fwrite(&vel, sizeof(Vec3), 1, sf) == 1;
-                        /* R380: persist mass/static so N revive keeps freeze + Shift+D. */
+                        /* R380/R382: mass/static + half_extent/restitution for Del→E→N size. */
                         sv_ok &= fwrite(&mass, sizeof(f32), 1, sf) == 1;
                         sv_ok &= fwrite(&is_st, sizeof(u8), 1, sf) == 1;
+                        sv_ok &= fwrite(&hext, sizeof(Vec3), 1, sf) == 1;
+                        sv_ok &= fwrite(&rest, sizeof(f32), 1, sf) == 1;
                     }
                     sv_ok &= fwrite(&water.water_y, sizeof(f32), 1, sf) == 1;
                     sv_ok &= fwrite(&water.enabled, sizeof(bool), 1, sf) == 1;
@@ -2978,10 +2983,43 @@ u32 culled_count = 0;
                 } else {
                     LOG_WARN("BSCN load failed or file not found");
                 }
+                /* R382: load_scene_nodes_chunk calloc's nodes; resources_free alone leaks them. */
+                free(bscn_scene.nodes);
+                bscn_scene.nodes = NULL;
+                bscn_scene.node_count = 0;
                 scene_resources_free(&bscn_scene);
                 if (tmp_world) world_destroy(tmp_world);
             }
             if (bscn_ok) {
+            /* R382: recreate bodies for dangling physics_id (restart / shrunk count). */
+            {
+                ComponentType fx_types[] = { COMP_TRANSFORM, COMP_RIGID_BODY };
+                Query *fq = world_query(world, fx_types, 2);
+                if (fq) {
+                    for (u32 qi = 0; qi < fq->match_count; qi++) {
+                        Archetype *a = fq->matching[qi];
+                        Chunk *c = a->chunks;
+                        while (c) {
+                            u32 *ents = (u32 *)((u8 *)c + a->entity_offset);
+                            for (u32 ci = 0; ci < c->count; ci++) {
+                                Entity re = world->entities[ents[ci]];
+                                CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
+                                CTransform *rt = world_get_component(world, re, COMP_TRANSFORM);
+                                if (!rr || !rt) continue;
+                                if (rr->physics_id > 0 && rr->physics_id < physics->count)
+                                    continue;
+                                u32 nid = physics_body_create(physics,
+                                    vec3(rt->pos[0], rt->pos[1], rt->pos[2]),
+                                    vec3(0.5f, 0.5f, 0.5f), 1.0f, false,
+                                    (u32)engine.frame_count);
+                                if (nid != UINT32_MAX) rr->physics_id = nid;
+                            }
+                            c = c->next;
+                        }
+                    }
+                    query_done(fq);
+                }
+            }
             /* Build live physics_id set after BSCN (stack-sized; demo cap 256). */
             bool body_live[256];
             memset(body_live, 0, sizeof(body_live));
@@ -3012,19 +3050,27 @@ u32 culled_count = 0;
             if (lf) {
                 u32 magic = 0;
                 bool ld_ok = fread(&magic, 4, 1, lf) == 1;
-                bool v2 = (magic == SCENE_STATE_MAGIC_V2);
+                bool v3 = (magic == SCENE_STATE_MAGIC_V3);
+                bool v2 = (magic == SCENE_STATE_MAGIC_V2) || v3;
                 if (ld_ok && (magic == SCENE_STATE_MAGIC_V1 || v2)) {
                     ld_ok &= fread(&camera.position, sizeof(Camera), 1, lf) == 1;
                     ld_ok &= fread(&sun_azimuth, sizeof(f32), 1, lf) == 1;
                     ld_ok &= fread(&sun_elevation, sizeof(f32), 1, lf) == 1;
                     ld_ok &= fread(&tonemap.exposure, sizeof(f32), 1, lf) == 1;
                     ld_ok &= fread(&render_scale, sizeof(f32), 1, lf) == 1;
+                    /* R382: keep F1 cycle in sync with restored scale. */
+                    for (i32 rsi = 0; rsi < 4; rsi++) {
+                        if (fabsf(render_scale - render_scale_options[rsi]) < 1e-4f) {
+                            render_scale_idx = rsi;
+                            break;
+                        }
+                    }
                     u32 pc = 0;
                     ld_ok &= fread(&pc, sizeof(u32), 1, lf) == 1;
                     for (u32 si = 0; si < pc && si < physics->capacity && ld_ok; si++) {
                         if (si < physics->count) {
-                            Vec3 pos, vel;
-                            f32 mass = 1.0f;
+                            Vec3 pos, vel, hext = vec3(0.5f, 0.5f, 0.5f);
+                            f32 mass = 1.0f, rest = 0.3f;
                             u8 is_st = 0;
                             ld_ok &= fread(&pos, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&vel, sizeof(Vec3), 1, lf) == 1;
@@ -3032,29 +3078,37 @@ u32 culled_count = 0;
                                 ld_ok &= fread(&mass, sizeof(f32), 1, lf) == 1;
                                 ld_ok &= fread(&is_st, sizeof(u8), 1, lf) == 1;
                             }
+                            if (v3) {
+                                ld_ok &= fread(&hext, sizeof(Vec3), 1, lf) == 1;
+                                ld_ok &= fread(&rest, sizeof(f32), 1, lf) == 1;
+                            }
                             bool live = (si < 256) && body_live[si];
-                            /* R379/R380: revive only live-referenced; restore mass/static. */
+                            /* R379/R380/R382: revive live-referenced; restore mass/static/size. */
                             if (ld_ok && live && pos.e[1] > -999.0f) {
                                 RigidBody *rb = &physics->bodies[si];
                                 if (!v2 && rb->mass > 0.0f) mass = rb->mass;
                                 physics_body_revive(rb, mass, is_st != 0, (u32)engine.frame_count);
                                 rb->position = pos;
                                 rb->velocity = vel;
+                                if (v3) {
+                                    rb->half_extent = hext;
+                                    rb->restitution = rest;
+                                }
                             } else if (ld_ok && !live && si > 0 &&
                                        !physics_body_is_parked(&physics->bodies[si])) {
                                 physics_body_park(physics, si);
-                            } else if (ld_ok && v2 && !live && si > 0) {
-                                /* Consume already read; keep park. */
-                                (void)mass; (void)is_st;
                             }
                         } else {
-                            Vec3 skip;
-                            f32 sm; u8 ss;
+                            Vec3 skip; f32 sm, sr; u8 ss;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                             if (v2) {
                                 ld_ok &= fread(&sm, sizeof(f32), 1, lf) == 1;
                                 ld_ok &= fread(&ss, sizeof(u8), 1, lf) == 1;
+                            }
+                            if (v3) {
+                                ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
+                                ld_ok &= fread(&sr, sizeof(f32), 1, lf) == 1;
                             }
                         }
                     }
@@ -3100,6 +3154,9 @@ u32 culled_count = 0;
                     query_done(rq);
                 }
             }
+            if (lua_ready)
+                lua_script_bind_host(&lua_script, world, physics,
+                                     platform_input(engine.platform));
             } /* bscn_ok */
         }
 

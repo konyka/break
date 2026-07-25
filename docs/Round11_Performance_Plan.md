@@ -4596,6 +4596,16 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **852** 处修复。
 
+## R382：scene_state V3 尺寸/弹性 + 悬空 physics_id 重建 + Scene.nodes 泄漏（已完成）
+
+### [x] R382-A scene_state 升 V3：存 `half_extent`/`restitution`，V1/V2 向后兼容
+### [x] R382-B N 路径显式释放 `Scene.nodes`（`scene_resources_free` 不覆盖）
+### [x] R382-C BSCN 后为悬空 `physics_id` 重建 physics body
+### [x] R382-D `render_scale_idx` 按恢复的 `render_scale` 反查同步
+### [x] R382-E world swap 后重新 `lua_script_bind_host`
+
+**验收**：GL/VK 双后端构建通过；GL/VK CTest 各 **31/31**。总计 **857** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

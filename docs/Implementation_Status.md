@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R381 N 先 temp 加载再 swap + 仅成功后恢复 state — 修复 2 处** — **R381-A**：`scene_probe_binary` 假阳性仍会 clear 后 load 失败致空场景；改为 temp World 加载成功再 park/swap。**R381-B**：无 BSCN 时 N 仍套用 `scene_state` 改当前世界；仅 `bscn_ok` 后读 companion。总计 **852** 处修复。
+最近更新：**R382 scene_state V3 尺寸/弹性 + 悬空 physics_id 重建 + Scene.nodes 泄漏 — 修复 5 处** — **R382-A**：scene_state 只存 pos/vel/mass/is_static，`7` 改尺寸与 `5` 改弹性存盘后 N 恢复丢失；升 V3 存 `half_extent`/`restitution`（V1/V2 仍可读）。**R382-B**：`scene_resources_free` 只释放 `resources`，`load_scene_nodes_chunk` calloc 的 `nodes` 每次 N 泄漏；显式释放。**R382-C**：BSCN 逐字节还原 `CRigidBody.physics_id`，重启后 `physics->count` 变小则 id 悬空、实体无 body；N 后为悬空 id 重建 body。**R382-D**：`render_scale` 从盘恢复但 `render_scale_idx` 未同步，F1 循环跳回旧档位；按值反查索引。**R382-E**：`lua_script_bind_host` 缓存的 `World*` 在 N 交换 world 后成为悬空指针；swap 成功后重新绑定。总计 **857** 处修复。
+
+此前：**R381 N 先 temp 加载再 swap + 仅成功后恢复 state — 修复 2 处** — **R381-A**：`scene_probe_binary` 假阳性仍会 clear 后 load 失败致空场景；改为 temp World 加载成功再 park/swap。**R381-B**：无 BSCN 时 N 仍套用 `scene_state` 改当前世界；仅 `bscn_ok` 后读 companion。总计 **852** 处修复。
 
 此前：**R380 N 保留冻结/质量 + BSCN probe — 修复 2 处** — **R380-A**：N park+revive 强制 dynamic/mass=1，丢掉 `6` 冻结与 Shift+D 质量；park 保留 mass，scene_state V2 存 mass/is_static。**R380-B**：仅 fopen 成功就 clear，损坏 BSCN 清空场景；`scene_probe_binary` 校验后再 clear。总计 **850** 处修复。
 
