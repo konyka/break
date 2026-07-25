@@ -4,7 +4,7 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R375 静息动态体传送 BVH + Home render_scale_idx — 修复 3 处** — **R375-A**：箭头/Backspace/Shift+W 只对 static 置 `bvh_dirty`，`rest_frames>2` 动态体传送后 AABB 停旧位；一律清 `rest_frames`+`bvh_dirty`（含坠落重生）。**R375-B**：Home 预设改 `render_scale` 未同步 `render_scale_idx`，F1 空转一档。总计 **840** 处修复。
+最近更新：**R375 静息动态体传送 BVH + Home render_scale_idx — 修复 2 处** — **R375-A**：箭头/Backspace/Shift+W 只对 static 置 `bvh_dirty`，`rest_frames>2` 动态体传送后 AABB 停旧位；一律清 `rest_frames`+`bvh_dirty`（含坠落重生）。**R375-B**：Home 预设改 `render_scale` 未同步 `render_scale_idx`，F1 空转一档。总计 **839** 处修复。
 
 此前：**R374 KP3/R/N BVH 同步 + `]` 克隆属性 + Enter query_done — 修复 4 处** — **R374-A**：KP3 layout 挪 body 未 `bvh_dirty`/`rest_frames`（冻结/静止幽灵碰撞）。**R374-B**：`]` 克隆硬编码 0.5³/mass1；改拷贝源 half_extent/mass/static/restitution，拒 `UINT32_MAX`。**R374-C**：`R`/`N` 批量写 position 不刷 BVH。**R374-D**：Enter 选中缺 `query_done(sq)`。总计 **837** 处修复。
 
