@@ -1625,6 +1625,9 @@ Vec3 prev_com = {.e={0,0,0}};
 f32 com_drift = 0.0f;
 u32 brush_mode = 0;
 #define ENTITY_SPAWN_CAP 64
+/* R373: entity_count is high-water; destroy only pushes free_stack. */
+#define entity_spawn_allowed(w) \
+    ((w)->free_stack_top > 0 || (w)->entity_count < ENTITY_SPAWN_CAP)
 Vec3 custom_gravity = {.e={0, -9.81f, 0}};
 u32 physics_mode = 0;
 f32 terrain_hmin = 0, terrain_hmax = 0, terrain_havg = 0, terrain_hstd = 0;
@@ -4450,12 +4453,14 @@ u32 culled_count = 0;
                     LOG_INFO("Shadow bias: %.4f", shadow_bias);
                 }
                 if (input_key_pressed(inp, (i32)'e')) {
-                    if (world->entity_count >= ENTITY_SPAWN_CAP) {
-                        LOG_INFO("Entity cap reached (%u/%u)", world->entity_count, ENTITY_SPAWN_CAP);
+                    if (!entity_spawn_allowed(world)) {
+                        LOG_INFO("Entity cap reached (%u/%u)",
+                                 world->entity_count - world->free_stack_top, ENTITY_SPAWN_CAP);
                     } else {
                     Vec3 ecam_fwd = vec3(cam_cp * cam_sy, cam_sp, -cam_cp * cam_cy);
                     Vec3 ecam_right = vec3(-cam_cy, 0, -cam_sy);
                     for (i32 ei = 0; ei < 3; ei++) {
+                        if (!entity_spawn_allowed(world)) break;
                         Vec3 offset = vec3_scale(ecam_right, (f32)(ei - 1) * 1.5f);
                         Vec3 spawn_pos = vec3_add(vec3_add(camera.position, vec3_scale(ecam_fwd, 2.0f)), offset);
                         Vec3 half_ext = vec3(0.5f, 0.5f, 0.5f);
@@ -4563,6 +4568,8 @@ u32 culled_count = 0;
                             if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
                                 physics->bodies[sr->physics_id].position = old_cam;
                                 physics->bodies[sr->physics_id].velocity = vec3(0,0,0);
+                                if (physics->bodies[sr->physics_id].is_static)
+                                    physics->bvh_dirty = true;
                             }
                             LOG_INFO("SWAPPED positions with entity %u", selected_entity_id);
                         }
@@ -4577,7 +4584,10 @@ u32 culled_count = 0;
                             static const char *mn[] = {"light","normal","heavy","very heavy","immovable"};
                             static u32 mi = 1;
                             mi = (mi + 1) % 5;
-                            physics->bodies[sr->physics_id].mass = masses[mi];
+                            RigidBody *mb = &physics->bodies[sr->physics_id];
+                            mb->mass = masses[mi];
+                            /* R373: impulse uses inv_mass — keep in sync with create path. */
+                            mb->inv_mass = (mb->is_static || mb->mass <= 0.0f) ? 0.0f : (1.0f / mb->mass);
                             LOG_INFO("Mass: %s (%.1f)", mn[mi], masses[mi]);
                         }
                     }
@@ -4603,6 +4613,8 @@ u32 culled_count = 0;
                         if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
                             physics->bodies[sr->physics_id].position = camera.position;
                             physics->bodies[sr->physics_id].velocity = vec3(0,0,0);
+                            if (physics->bodies[sr->physics_id].is_static)
+                                physics->bvh_dirty = true;
                         }
                         LOG_INFO("Entity %u teleported to camera", selected_entity_id);
                     }
@@ -4632,11 +4644,18 @@ u32 culled_count = 0;
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
                         if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            physics->bodies[sr->physics_id].is_static = !physics->bodies[sr->physics_id].is_static;
-                            if (!physics->bodies[sr->physics_id].is_static) {
-                                physics->bodies[sr->physics_id].velocity = vec3(0,0,0);
+                            RigidBody *fb = &physics->bodies[sr->physics_id];
+                            fb->is_static = !fb->is_static;
+                            /* R373: resolve_contact uses inv_mass; static BVH skips refit. */
+                            if (fb->is_static) {
+                                fb->inv_mass = 0.0f;
+                                fb->velocity = vec3(0, 0, 0);
+                            } else {
+                                fb->inv_mass = (fb->mass <= 0.0f) ? 0.0f : (1.0f / fb->mass);
+                                fb->velocity = vec3(0, 0, 0);
                             }
-                            LOG_INFO("Entity %u: %s", selected_entity_id, physics->bodies[sr->physics_id].is_static ? "FROZEN" : "UNFROZEN");
+                            physics->bvh_dirty = true;
+                            LOG_INFO("Entity %u: %s", selected_entity_id, fb->is_static ? "FROZEN" : "UNFROZEN");
                         }
                     }
                 }
@@ -4649,7 +4668,11 @@ u32 culled_count = 0;
                             static const char *sn[] = {"tiny","small","normal","large","huge"};
                             static u32 si = 1;
                             si = (si + 1) % 5;
-                            physics->bodies[sr->physics_id].half_extent = vec3(sizes[si], sizes[si], sizes[si]);
+                            RigidBody *sb = &physics->bodies[sr->physics_id];
+                            sb->half_extent = vec3(sizes[si], sizes[si], sizes[si]);
+                            /* R373: resting bodies skip BVH refit — force rebuild on size change. */
+                            sb->rest_frames = 0;
+                            physics->bvh_dirty = true;
                             LOG_INFO("Entity %u scale: %s (%.1f)", selected_entity_id, sn[si], sizes[si]);
                         }
                     }
@@ -4907,6 +4930,7 @@ u32 culled_count = 0;
                     pb->mass = 0.0f;
                     pb->velocity = vec3(0, 0, 0);
                     pb->position = vec3(0, -1000.0f, 0);
+                    physics->bvh_dirty = true;
                 }
                 world_destroy_entity(world, se);
                 LOG_INFO("Deleted entity %u (was %u/%u)", selected_entity_id, selected_entity_idx, selected_entity_count);
@@ -4916,8 +4940,9 @@ u32 culled_count = 0;
             }
 
             if (input_key_pressed(inp, (i32)']') && selected_entity_id > 0) {
-                if (world->entity_count >= ENTITY_SPAWN_CAP) {
-                    LOG_INFO("Entity cap reached (%u/%u)", world->entity_count, ENTITY_SPAWN_CAP);
+                if (!entity_spawn_allowed(world)) {
+                    LOG_INFO("Entity cap reached (%u/%u)",
+                             world->entity_count - world->free_stack_top, ENTITY_SPAWN_CAP);
                 } else {
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
@@ -4967,9 +4992,11 @@ u32 culled_count = 0;
                         if (input_key_down(inp, 284)) st->pos[1] -= ms;
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
                         if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                            physics->bodies[sr->physics_id].position =
-                                vec3(st->pos[0], st->pos[1], st->pos[2]);
-                            physics->bodies[sr->physics_id].velocity = vec3(0, 0, 0);
+                            RigidBody *mb = &physics->bodies[sr->physics_id];
+                            mb->position = vec3(st->pos[0], st->pos[1], st->pos[2]);
+                            mb->velocity = vec3(0, 0, 0);
+                            /* R373: static bodies skip BVH refit — mark dirty on nudge. */
+                            if (mb->is_static) physics->bvh_dirty = true;
                         }
                     }
                 }

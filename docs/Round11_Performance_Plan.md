@@ -4527,6 +4527,16 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **828** 处修复。
 
+## R373：冻结/质量/缩放物理一致性 + 生成上限（已完成）
+
+### [x] R373-A `6` Freeze：同步 `inv_mass` + `bvh_dirty`
+### [x] R373-B `Shift+D` Mass：写 `mass` 后重算 `inv_mass`
+### [x] R373-C `7` Scale：`rest_frames=0` + `bvh_dirty`
+### [x] R373-D `E`/`]` cap：`free_stack_top>0 || entity_count<CAP`
+### [x] R373-E Del/箭头/传送：static 位移后 `bvh_dirty`
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **833** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

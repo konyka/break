@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R372 KP2 拖尾 Entity generation + Del 幽灵刚体 + KP3 layout 同步 — 修复 3 处** — **R372-A**：粒子拖尾用 `Entity{selected_id,0}`，generation=0 永远 miss；改 `world->entities[id]`。**R372-B**：Del 只 `world_destroy_entity`，物理 body 仍碰撞；销毁前 static+清速度+移场外。**R372-C**：KP3 layout 只同步 body 1..10；改经 `physics_id` 同步全部。总计 **828** 处修复。
+最近更新：**R373 冻结/质量/缩放物理一致性 + 生成上限 — 修复 5 处** — **R373-A**：`6` 冻结只翻 `is_static`，`inv_mass` 仍 1 → 仍被推开；同步 `inv_mass` + `bvh_dirty`。**R373-B**：`Shift+D` 改 `mass` 未更新 `inv_mass`；冲量脱节。**R373-C**：`7` 改 `half_extent` 不刷 BVH（静止跳过 refit）→ 穿透。**R373-D**：`E`/`]` 用高水位 `entity_count` 当存活数，删后永久触顶；允许 `free_stack` 复用。**R373-E**：Del/箭头/传送在 static 位移后置 `bvh_dirty`。总计 **833** 处修复。
+
+此前：**R372 KP2 拖尾 Entity generation + Del 幽灵刚体 + KP3 layout 同步 — 修复 3 处** — **R372-A**：粒子拖尾用 `Entity{selected_id,0}`，generation=0 永远 miss；改 `world->entities[id]`。**R372-B**：Del 只 `world_destroy_entity`，物理 body 仍碰撞；销毁前 static+清速度+移场外。**R372-C**：KP3 layout 只同步 body 1..10；改经 `physics_id` 同步全部。总计 **828** 处修复。
 
 此前：**R371 箭头选中冻实体回归 + KP Enter — 修复 3 处** — **R371-A**（回归）：R370 在有选中时每帧清零 velocity，Space/`4` 冲量当帧失效；仅在箭头/PgUp/PgDn 按下时才同步。**R371-B**：X11/WL/Cocoa 缺 `KP_Enter`→257（Select）。**R371-C**：Help 补 E/F5/Backspace/KPEnter，去掉重复 CamSpeed 行。总计 **825** 处修复。
 
