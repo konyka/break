@@ -3792,7 +3792,9 @@ u32 culled_count = 0;
         debug_ui_end(&ui);
 
         if (particle_trail && selected_entity_count > 0 && selected_entity_id > 0) {
-            CTransform *xt = world_get_component(world, (Entity){selected_entity_id, 0}, COMP_TRANSFORM);
+            /* R372: must use live generation — Entity{id,0} always misses world_get_component. */
+            Entity te = world->entities[selected_entity_id];
+            CTransform *xt = world_get_component(world, te, COMP_TRANSFORM);
             if (xt) {
                 particles.emit_pos[0] = xt->pos[0];
                 particles.emit_pos[1] = xt->pos[1];
@@ -4731,6 +4733,13 @@ u32 culled_count = 0;
                                         lt->pos[2] = (f32)(li / 5) * 2.0f - 1.0f;
                                         break;
                                     }
+                                    /* R372: sync via physics_id — old path only wrote bodies 1..10. */
+                                    CRigidBody *lr = world_get_component(world, le, COMP_RIGID_BODY);
+                                    if (lr && lr->physics_id > 0 && lr->physics_id < physics->count) {
+                                        physics->bodies[lr->physics_id].position =
+                                            vec3(lt->pos[0], lt->pos[1], lt->pos[2]);
+                                        physics->bodies[lr->physics_id].velocity = vec3(0, 0, 0);
+                                    }
                                     li++;
                                 }
                                 lc = lc->next;
@@ -4738,37 +4747,6 @@ u32 culled_count = 0;
                         }
                     }
                     query_done(lq);
-                    for (u32 ri = 1; ri < physics->count && ri <= 10; ri++) {
-                        if (ri - 1 < li) {
-                            CTransform *rt = NULL;
-                            ComponentType rq_types[] = { COMP_TRANSFORM };
-                            Query *rq = world_query(world, rq_types, 1);
-                            if (rq) {
-                                u32 idx = 0;
-                                for (u32 rmi = 0; rmi < rq->match_count && !rt; rmi++) {
-                                    Archetype *ra = rq->matching[rmi];
-                                    Chunk *rc = ra->chunks;
-                                    while (rc && !rt) {
-                                        u32 *rents = (u32 *)((u8 *)rc + ra->entity_offset);
-                                        for (u32 rci = 0; rci < rc->count; rci++) {
-                                            if (idx == ri - 1) {
-                                                Entity re = world->entities[rents[rci]];
-                                                rt = world_get_component(world, re, COMP_TRANSFORM);
-                                                break;
-                                            }
-                                            idx++;
-                                        }
-                                        rc = rc->next;
-                                    }
-                                }
-                                query_done(rq);
-                            }
-                            if (rt) {
-                                physics->bodies[ri].position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
-                                physics->bodies[ri].velocity = vec3(0, 0, 0);
-                            }
-                        }
-                    }
                     LOG_INFO("Layout: %s (%u entities)", layout_names[layout_mode], li);
                 }
                 /* R364/R368: Shift+Space = ALL STOP (even with selection); else entity impulse; else jump. */
@@ -4920,6 +4898,16 @@ u32 culled_count = 0;
 
             if (input_key_pressed(inp, 288) && selected_entity_id > 0) {
                 Entity se = world->entities[selected_entity_id];
+                /* R372: no physics_body_destroy — disable body so it stops colliding as a ghost. */
+                CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
+                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
+                    RigidBody *pb = &physics->bodies[sr->physics_id];
+                    pb->is_static = true;
+                    pb->inv_mass = 0.0f;
+                    pb->mass = 0.0f;
+                    pb->velocity = vec3(0, 0, 0);
+                    pb->position = vec3(0, -1000.0f, 0);
+                }
                 world_destroy_entity(world, se);
                 LOG_INFO("Deleted entity %u (was %u/%u)", selected_entity_id, selected_entity_idx, selected_entity_count);
                 selected_entity_id = 0;

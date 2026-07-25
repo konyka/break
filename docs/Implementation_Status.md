@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R371 箭头选中冻实体回归 + KP Enter — 修复 3 处** — **R371-A**（回归）：R370 在有选中时每帧清零 velocity，Space/`4` 冲量当帧失效；仅在箭头/PgUp/PgDn 按下时才同步。**R371-B**：X11/WL/Cocoa 缺 `KP_Enter`→257（Select）。**R371-C**：Help 补 E/F5/Backspace/KPEnter，去掉重复 CamSpeed 行。总计 **825** 处修复。
+最近更新：**R372 KP2 拖尾 Entity generation + Del 幽灵刚体 + KP3 layout 同步 — 修复 3 处** — **R372-A**：粒子拖尾用 `Entity{selected_id,0}`，generation=0 永远 miss；改 `world->entities[id]`。**R372-B**：Del 只 `world_destroy_entity`，物理 body 仍碰撞；销毁前 static+清速度+移场外。**R372-C**：KP3 layout 只同步 body 1..10；改经 `physics_id` 同步全部。总计 **828** 处修复。
+
+此前：**R371 箭头选中冻实体回归 + KP Enter — 修复 3 处** — **R371-A**（回归）：R370 在有选中时每帧清零 velocity，Space/`4` 冲量当帧失效；仅在箭头/PgUp/PgDn 按下时才同步。**R371-B**：X11/WL/Cocoa 缺 `KP_Enter`→257（Select）。**R371-C**：Help 补 E/F5/Backspace/KPEnter，去掉重复 CamSpeed 行。总计 **825** 处修复。
 
 此前：**R370 路径满录回放 + 箭头同步物理 + Pause 复位 — 修复 4 处** — **R370-A**：路径录满 `MAX_PATH` 自动停录未置 `path_offer_playback`，下一击 `,` 清空路径；提升为文件作用域并在 FULL 分支置位。**R370-B**：箭头只改 Transform，物理同步每帧覆盖；同步 body position/velocity。**R370-C**：Pause ResetAll 漏 sharpen/SSS/CG/lens/cs/vol/lf；对齐 Home full。**R370-D**：Help Shift+WASD 文案顺序。总计 **822** 处修复。
 

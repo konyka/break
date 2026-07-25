@@ -4519,6 +4519,14 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **825** 处修复。
 
+## R372：KP2 拖尾 Entity generation + Del 幽灵刚体 + KP3 layout（已完成）
+
+### [x] R372-A KP2 trail：`world->entities[selected_id]`（禁止 generation=0）
+### [x] R372-B Del：销毁实体前 disable physics body（static/零速/移场外）
+### [x] R372-C KP3 layout：经 `CRigidBody.physics_id` 同步全部刚体
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **828** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
