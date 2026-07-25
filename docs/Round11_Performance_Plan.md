@@ -4858,6 +4858,66 @@ entrySelector 2 + rangeShift 2），小于它的不可能是字体。
 ASan+UBSan / GL / VK / TSan 四套 CTest 各 **32/32**（新增 `test_font_load`）。
 总计 **875** 处修复。
 
+## R390：glTF 加载缺少 `cgltf_validate` 导致越界读（已完成）
+
+R388/R389 连续两轮都栽在"第三方库的信任边界"上（PAK 头部自述尺寸、stb_truetype
+完全不校验输入），所以本轮系统排查 `engine/external/` 全部库的**调用点**，看还有
+多少地方把未校验的外部数据直接交给不做边界检查的第三方解析器。
+
+### [x] R390-A `asset_load_gltf` 从未调用 `cgltf_validate`
+
+cgltf 的 API 分三步：`cgltf_parse`（只解析 JSON 结构）、`cgltf_load_buffers`
+（取回 buffer 字节）、`cgltf_validate`（**校验数据一致性**）。`asset.c` 只做了
+前两步，第三步从未调用——而 `cgltf.h` 第 52 行的注释和第 1597 行的实现说得很清楚，
+它建立的两条不变量正是后续每一次读取所依赖的：
+
+- 第 1610–1612 行：accessor 跨度 `offset + stride * (count - 1) + element_size`
+  必须装得进它的 bufferView；
+- 第 1641–1643 行：bufferView 的 `offset + size` 必须装得进它的 buffer。
+
+而 `cgltf_buffer_data`（asset.c:126）返回
+`buffer->data + view->offset + accessor->offset`，属性循环随后从该指针步进
+`accessor->count` 个元素——`count`、两个 `offset`、`stride` **四个值全部直接来自
+文件**，无一经过校验。仓库里有 16 处 `cgltf_buffer_data` 调用。
+
+实证：构造一个 accessor 声明 `count = 200000`、bufferView 仅 36 字节的模型，
+`cgltf_parse_file` 成功、`cgltf_load_buffers` 成功、`cgltf_validate`
+**本会返回 1**（`data_too_short`），而属性循环从 36 字节的堆块里读了 240 万字节
+（ASan：`READ of size 12`，落在 36-byte region 之后，asset.c:448）。索引循环是
+另一条路径，单次 `memcpy` 就读了 40 万字节（asset.c:332）。恶意模型文件即可触发：
+崩溃，或把相邻堆内容拷进顶点缓冲进而进入 GPU 内存。
+
+修法是补上库的标准用法——`cgltf_load_buffers` 之后调用 `cgltf_validate`，失败即
+拒绝。一行，不把 glTF 格式知识复制进引擎代码，与 R387/R388 "外部计数必须先对账"
+的既有约定一致。
+
+### [x] R390-B 为 `asset.c` 建立无头测试覆盖
+
+`asset.c` 此前**零测试**（与 R389 的 `font.c` 同一情形）。所有属性循环都在首个
+`rhi_buffer_create` 之前执行，因此畸形模型的越界读能以桩 RHI + `dev = NULL` 无头
+复现。新增 `engine/tests/test_asset_gltf.c`，5 个用例：accessor count 越界、
+accessor byteOffset 越界、bufferView 越出 buffer、索引 accessor count 越界，
+外加**一个合法模型必须仍能加载**。畸形模型在运行时生成而非提交二进制样本，
+这样每个用例攻击的是什么一目了然。
+
+### 本轮排查结论（完整清单，其余四处均无需改动）
+
+| 库 | 引擎侧调用点 | 结论 |
+|---|---|---|
+| `cgltf.h` | `asset.c`，16 处 `cgltf_buffer_data` + 手工指针步进 | **缺陷（本轮修复）** |
+| `stb_truetype.h` | `font.c` | R389 已修 2 处 |
+| `stb_image.h` | `asset.c` / `decode_pipeline.c` / `hotreload.c` | 干净：`>2GB` 已拒（R144）、mip 层数封顶 16（R153）、`usize` 防截断（R160-B）；另核对 `downsample_rgba8_box` 的减半约定（`src_w > 1 ? src_w / 2 : 1`）与偏移预留循环**完全一致**，不存在长度错配 |
+| `miniaudio.h` | `audio.c`，仅 `ma_sound_init_from_file` | 干净：文件解析与分配全在库内完成，引擎侧不对其结果做指针运算，返回值已检查 |
+| `lua` | `script.c` | 干净：`sz < 0` 已拒，`malloc(sz + 1)` 配 `source[rd] = '\0'`（`rd <= sz`）在界内。执行不可信脚本本身等价于代码执行，属设计属性而非边界缺陷 |
+
+**验收**：两条越界读均反向验证——回退 `asset.c` 后属性循环用例在 asset.c:448
+触发 `READ of size 12`，索引循环用例在 asset.c:332 触发 `READ of size 400000`
+（两条不同代码路径各自单独确认）。另单独验证仓库自带 `engine/assets/test.glb`
+（1 mesh / 4 accessors / 1 node）**`cgltf_validate` 返回 0，不被误拒**，并在测试里
+钉住"合法模型仍加载"这条，因为收紧校验最大的风险就是静默拒掉真实资产。
+ASan+UBSan / GL / VK / TSan 四套 CTest 各 **33/33**（新增 `test_asset_gltf`）。
+总计 **876** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

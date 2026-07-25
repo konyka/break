@@ -179,6 +179,25 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         return false;
     }
 
+    /* R390: neither cgltf_parse nor cgltf_load_buffers bounds check the data —
+     * that is what cgltf_validate is for, and it was never called. The two
+     * invariants it establishes are exactly the ones every read below assumes:
+     * an accessor's span (offset + stride * (count - 1) + element_size) fits in
+     * its bufferView, and a bufferView (offset + size) fits in its buffer.
+     *
+     * Without it, cgltf_buffer_data returns buffer->data + view->offset +
+     * accessor->offset and the attribute loops walk accessor->count elements
+     * from there, all four values straight from the file. A model declaring
+     * count = 200000 against a 36-byte bufferView read 2.4 MB past a 36-byte
+     * heap block (ASan: READ of size 12 after a 36-byte region) — a crash, or
+     * adjacent heap contents copied into vertex buffers. */
+    result = cgltf_validate(data);
+    if (result != cgltf_result_success) {
+        LOG_ERROR("cgltf validation failed (%d): %s", result, path);
+        cgltf_free(data);
+        return false;
+    }
+
     u32 total_meshes = 0;
     u32 total_skinned = 0;
 

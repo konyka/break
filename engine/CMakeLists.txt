@@ -568,6 +568,16 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_vfs PRIVATE m)
     add_test(NAME test_vfs COMMAND test_vfs)
 
+    # R390: glTF loader input validation. Every attribute loop runs before the
+    # first rhi_buffer_create, so the malformed-model cases reproduce headlessly
+    # with the test's link-only RHI stubs.
+    add_executable(test_asset_gltf tests/test_asset_gltf.c
+        src/asset/asset.c src/asset/vfs.c src/animation/skeleton.c
+        src/core/log.c src/math/math.c)
+    target_include_directories(test_asset_gltf PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_asset_gltf PRIVATE m)
+    add_test(NAME test_asset_gltf COMMAND test_asset_gltf)
+
     # R388: mutation fuzzer for the PAK mount path. Same usage as
     # fuzz_scene_serial: build explicitly and run by hand under ASan/UBSan.
     add_executable(fuzz_vfs_pak EXCLUDE_FROM_ALL tests/fuzz_vfs_pak.c
