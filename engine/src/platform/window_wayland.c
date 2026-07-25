@@ -80,7 +80,7 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks >= XKB_KEY_0 && ks <= XKB_KEY_9) return (i32)ks;
     if (ks == XKB_KEY_Escape)    return 256;
     if (ks == XKB_KEY_space)     return 32;
-    if (ks == XKB_KEY_Return)    return 257;
+    if (ks == XKB_KEY_Return || ks == XKB_KEY_KP_Enter) return 257; /* R371: keypad Enter = Select */
     if (ks == XKB_KEY_Tab)       return 259;
     if (ks == XKB_KEY_BackSpace) return 260;
     if (ks == XKB_KEY_Left)      return 261;

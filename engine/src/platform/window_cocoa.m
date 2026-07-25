@@ -70,6 +70,7 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 53:  return 256; /* Escape */
         case 49:  return 32;  /* Space  */
         case 36:  return 257; /* Return */
+        case 76:  return 257; /* KP Enter — Select (R371) */
         case 48:  return 259; /* Tab    */
         case 51:  return 260; /* Delete/Backspace */
         case 117: return 288; /* Forward Delete */

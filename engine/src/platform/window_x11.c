@@ -36,7 +36,7 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks >= XK_0 && ks <= XK_9) return (i32)ks;
     if (ks == XK_Escape)    return 256;
     if (ks == XK_space)     return 32;
-    if (ks == XK_Return)    return 257;
+    if (ks == XK_Return || ks == XK_KP_Enter) return 257; /* R371: keypad Enter = Select */
     if (ks == XK_Tab)       return 259;
     if (ks == XK_BackSpace) return 260;
     if (ks == XK_Left)      return 261;

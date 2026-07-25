@@ -4511,6 +4511,14 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **822** 处修复。
 
+## R371：箭头选中冻实体回归 + KP Enter（已完成）
+
+### [x] R371-A 箭头物理同步：仅 move key 按下时写 body/清 velocity
+### [x] R371-B X11/WL/Cocoa：KP_Enter → 257（Select）
+### [x] R371-C Help：补 E/F5/Backspace/KPEnter；去重 CamSpeed
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **825** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

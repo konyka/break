@@ -3756,11 +3756,11 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "WASD:Move  Shift+A/W/S/D:Brush/Teleport/Amb/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
             debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
-            debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
-            debug_ui_text(&ui, "Shift+Space:AllStop  Ins:GPUCull  End:Indirect  KP1:Tornado  KP2:Trail  `:ImUI  Shift+`:FPS");
-            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
+            debug_ui_text(&ui, "Enter/KPEnter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
+            debug_ui_text(&ui, "Shift+Space:AllStop  Ins:GPUCull  End:Indirect  KP1:Tornado  KP2:Trail  E:Spawn  F5:GravWell");
+            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  Backspace:Swap  1:Explosion  2:Magnet  3:Brush  4:Throw  5-8:Phys");
             debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  Ctrl:AnimCrossfade");
-            debug_ui_text(&ui, "Shift+B:ExportJSON  Shift+9/0:CamSpeed  Shift+-/=:WaterY  +/-:Exposure  KP*/÷/−/+:SSS/LF/Sharpen/CS");
+            debug_ui_text(&ui, "Shift+B:ExportJSON  Shift+-/=:WaterY  +/-:Exposure  `:ImUI  Shift+`:FPS  KP*/÷/−/+:SSS/LF/Sharpen/CS");
         }
 
         {
@@ -4964,19 +4964,25 @@ u32 culled_count = 0;
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
                 if (st) {
-                    f32 ms = 5.0f * (f32)engine.delta_time;
-                    if (input_key_down(inp, 261)) st->pos[0] -= ms;
-                    if (input_key_down(inp, 262)) st->pos[0] += ms;
-                    if (input_key_down(inp, 263)) st->pos[2] -= ms;
-                    if (input_key_down(inp, 264)) st->pos[2] += ms;
-                    if (input_key_down(inp, 283)) st->pos[1] += ms;
-                    if (input_key_down(inp, 284)) st->pos[1] -= ms;
-                    /* R370: physics sync overwrites Transform each frame — keep body in sync. */
-                    CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                    if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                        physics->bodies[sr->physics_id].position =
-                            vec3(st->pos[0], st->pos[1], st->pos[2]);
-                        physics->bodies[sr->physics_id].velocity = vec3(0, 0, 0);
+                    /* R371: only move+sync while a move key is held — R370 cleared
+                     * velocity every frame and killed Space/4 impulses. */
+                    bool moving = input_key_down(inp, 261) || input_key_down(inp, 262) ||
+                                  input_key_down(inp, 263) || input_key_down(inp, 264) ||
+                                  input_key_down(inp, 283) || input_key_down(inp, 284);
+                    if (moving) {
+                        f32 ms = 5.0f * (f32)engine.delta_time;
+                        if (input_key_down(inp, 261)) st->pos[0] -= ms;
+                        if (input_key_down(inp, 262)) st->pos[0] += ms;
+                        if (input_key_down(inp, 263)) st->pos[2] -= ms;
+                        if (input_key_down(inp, 264)) st->pos[2] += ms;
+                        if (input_key_down(inp, 283)) st->pos[1] += ms;
+                        if (input_key_down(inp, 284)) st->pos[1] -= ms;
+                        CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
+                        if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
+                            physics->bodies[sr->physics_id].position =
+                                vec3(st->pos[0], st->pos[1], st->pos[2]);
+                            physics->bodies[sr->physics_id].velocity = vec3(0, 0, 0);
+                        }
                     }
                 }
             }
