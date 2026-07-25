@@ -103,12 +103,11 @@ void physics_world_destroy(PhysicsWorld *pw) {
 u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     u32 id;
     RigidBody *b;
-    /* R376: Del parks bodies at y=-1000 with mass=0 (no destroy/free_stack).
+    /* R376/R377: Del parks with spawn_frame=UINT32_MAX (no destroy/free_stack).
      * Reuse those slots so E/] cannot permanently exhaust capacity. Skip 0 (ground). */
     for (id = 1; id < pw->count; id++) {
         RigidBody *cand = &pw->bodies[id];
-        if (cand->is_static && cand->mass <= 0.0f && cand->inv_mass <= 0.0f &&
-            cand->position.e[1] <= -999.0f) {
+        if (physics_body_is_parked(cand)) {
             b = cand;
             goto init;
         }

@@ -2913,9 +2913,15 @@ u32 culled_count = 0;
                     ld_ok &= fread(&pc, sizeof(u32), 1, lf) == 1;
                     for (u32 si = 0; si < pc && si < physics->capacity && ld_ok; si++) {
                         if (si < physics->count) {
-                            ld_ok &= fread(&physics->bodies[si].position, sizeof(Vec3), 1, lf) == 1;
-                            ld_ok &= fread(&physics->bodies[si].velocity, sizeof(Vec3), 1, lf) == 1;
-                            physics->bodies[si].rest_frames = 0;
+                            Vec3 pos, vel;
+                            ld_ok &= fread(&pos, sizeof(Vec3), 1, lf) == 1;
+                            ld_ok &= fread(&vel, sizeof(Vec3), 1, lf) == 1;
+                            /* R377: keep Del-parked slots parked (pose restore would ghost + break reuse). */
+                            if (ld_ok && !physics_body_is_parked(&physics->bodies[si])) {
+                                physics->bodies[si].position = pos;
+                                physics->bodies[si].velocity = vel;
+                                physics->bodies[si].rest_frames = 0;
+                            }
                         } else {
                             Vec3 skip;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
@@ -4485,6 +4491,7 @@ u32 culled_count = 0;
                             ob->mass = 0.0f;
                             ob->velocity = vec3(0, 0, 0);
                             ob->position = vec3(0, -1000.0f, 0);
+                            ob->spawn_frame = UINT32_MAX;
                             physics->bvh_dirty = true;
                             break;
                         }
@@ -4850,6 +4857,8 @@ u32 culled_count = 0;
                 }
                 if (input_key_pressed(inp, (i32)'r')) {
                     for (u32 ri = 1; ri <= 10 && ri < physics->count; ri++) {
+                        /* R377: do not unpark Del slots — would create ghost static colliders. */
+                        if (physics_body_is_parked(&physics->bodies[ri])) continue;
                         physics->bodies[ri].position.e[0] = (f32)((ri - 1) % 5) * 2.0f - 4.0f;
                         physics->bodies[ri].position.e[1] = 8.0f + (f32)((ri - 1) / 5) * 3.0f;
                         physics->bodies[ri].position.e[2] = 0.0f;
@@ -4953,7 +4962,7 @@ u32 culled_count = 0;
 
             if (input_key_pressed(inp, 288) && selected_entity_id > 0) {
                 Entity se = world->entities[selected_entity_id];
-                /* R372/R376: park body for physics_body_create reuse (no destroy API). */
+                /* R372/R376/R377: park body (spawn_frame tombstone) for create reuse. */
                 CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
                 if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
                     RigidBody *pb = &physics->bodies[sr->physics_id];
@@ -4962,6 +4971,7 @@ u32 culled_count = 0;
                     pb->mass = 0.0f;
                     pb->velocity = vec3(0, 0, 0);
                     pb->position = vec3(0, -1000.0f, 0);
+                    pb->spawn_frame = UINT32_MAX;
                     physics->bvh_dirty = true;
                 }
                 world_destroy_entity(world, se);

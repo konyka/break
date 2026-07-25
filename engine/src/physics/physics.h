@@ -70,6 +70,11 @@ typedef struct {
     u32             _bvh_staging_cap;
 } PhysicsWorld;
 
+/* R376/R377: Del parks with spawn_frame=UINT32_MAX (tombstone for create reuse). */
+static inline bool physics_body_is_parked(const RigidBody *b) {
+    return b && b->spawn_frame == UINT32_MAX;
+}
+
 PhysicsWorld *physics_world_create(u32 max_bodies);
 void          physics_world_destroy(PhysicsWorld *pw);
 u32           physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame);

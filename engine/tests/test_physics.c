@@ -83,7 +83,7 @@ TEST(body_create_full_returns_invalid)
 
 TEST(body_create_reuses_del_parked_slot)
 {
-    /* R376: Del parks mass=0 static at y=-1000; create must reuse instead of failing. */
+    /* R376/R377: Del parks with spawn_frame=UINT32_MAX; create must reuse. */
     PhysicsWorld *pw = physics_world_create(2);
     ASSERT_EQ(physics_body_create(pw, vec3(0,-2,0), vec3(20,0.5f,20), 0.0f, true, 0), 0u);
     ASSERT_EQ(physics_body_create(pw, vec3(1,5,0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0), 1u);
@@ -92,12 +92,15 @@ TEST(body_create_reuses_del_parked_slot)
     park->mass = 0.0f;
     park->inv_mass = 0.0f;
     park->position = vec3(0, -1000.0f, 0);
+    park->spawn_frame = UINT32_MAX;
+    ASSERT_TRUE(physics_body_is_parked(park));
     u32 id = physics_body_create(pw, vec3(2, 8, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 1);
     ASSERT_EQ(id, 1u);
     ASSERT_EQ(pw->count, 2u);
     ASSERT_TRUE(!pw->bodies[1].is_static);
     ASSERT_TRUE(pw->bodies[1].mass == 1.0f);
     ASSERT_TRUE(pw->bodies[1].position.e[1] == 8.0f);
+    ASSERT_TRUE(!physics_body_is_parked(&pw->bodies[1]));
     physics_world_destroy(pw);
 }
 

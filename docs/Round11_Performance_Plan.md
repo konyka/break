@@ -4559,6 +4559,13 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **840** 处修复。
 
+## R377：R/N 勿打穿 Del park（已完成）
+
+### [x] R377-A `R` reset：跳过 `physics_body_is_parked`
+### [x] R377-B `N` restore：保留 park 槽 pose；哨兵改 `spawn_frame=UINT32_MAX`
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **842** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
