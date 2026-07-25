@@ -65,6 +65,14 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_2 || ks == XK_KP_Down)   return 307; /* particle trail */
     if (ks == XK_KP_3 || ks == XK_KP_Next)   return 308; /* layout */
     if (ks == XK_KP_4 || ks == XK_KP_Left)   return 309; /* AA cycle */
+    /* R364: CG/lens off digit row; FPS on KP_Enter */
+    if (ks == XK_KP_5 || ks == XK_KP_Begin)  return 310; /* temp- */
+    if (ks == XK_KP_6 || ks == XK_KP_Right)  return 311; /* temp+ */
+    if (ks == XK_KP_7 || ks == XK_KP_Home)   return 312; /* tint- */
+    if (ks == XK_KP_8 || ks == XK_KP_Up)     return 313; /* tint+ */
+    if (ks == XK_KP_9 || ks == XK_KP_Prior)  return 314; /* color grade */
+    if (ks == XK_KP_Decimal || ks == XK_KP_Delete) return 315; /* lensfx / CA / vig cycle */
+    if (ks == XK_Shift_L || ks == XK_Shift_R) return 289;
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';

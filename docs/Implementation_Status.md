@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R363 KP_0≠鼠标左键 + Space/路径回放修复 + 字母热键消歧 — 修复 10 处** — **R363-A**（CORRECTNESS/回归）：R362 将 boom 绑到 `300`，但 `INPUT_MOUSE_LEFT=300` → 左键即爆炸；KP_0 改 **305**。**R363-B**：Space 冲量块被错误嵌进 `k` layout 的破损大括号内，单独 Space 不触发；解开并外提。**R363-C**：`,` 相机路径停录后 `playing_path` 从未置 true，回放不可达；停录臂播放、`,` 开播。**R363-D**：`t`/`h`/`j`/`k` 仍双绑；tornado/AA/trail/layout → KP_1..4 (306–309)。**R363-E**：scene load 可把 `water.enabled=true` 写回失败 init；无 pipeline 则强制 false。**R363-F**：Cocoa 补 291–309（Pause/locks/Menu/KP）。**R363-G**：Help 文案对齐 R360–R363。总计 **783** 处修复。
+最近更新：**R364 数字/WASD/Space/反引号热键消歧 — 修复 8 处** — **R364-A**：`1`–`8` 同时 CG/lens 与爆炸等玩法；CG/lens → KP_5..9 + Decimal 循环。**R364-B**：`` ` `` 同时 ImUI 与 FPS；裸键 ImUI，Shift+` 轮转 FPS。**R364-C/D**：`9`/`0` 同时相机速度与重力/水色；相机速度改 Shift+9/0。**R364-E**：WASD 移动与笔刷/环境光/传送/质量冲突；后者需 Shift。**R364-F**：Space 同时跳跃与 impulse/ALL STOP；无选中时跳跃，有选中时 impulse，Shift+Space=ALL STOP。**R364-G**：Help `(`/`)` 水位方向纠正；平台补 Shift(289) 与 KP_5..Decimal。总计 **791** 处修复。
+
+此前：**R363 KP_0≠鼠标左键 + Space/路径回放修复 + 字母热键消歧 — 修复 10 处** — **R363-A**（CORRECTNESS/回归）：R362 将 boom 绑到 `300`，但 `INPUT_MOUSE_LEFT=300` → 左键即爆炸；KP_0 改 **305**。**R363-B**：Space 冲量块被错误嵌进 `k` layout 的破损大括号内，单独 Space 不触发；解开并外提。**R363-C**：`,` 相机路径停录后 `playing_path` 从未置 true，回放不可达；停录臂播放、`,` 开播。**R363-D**：`t`/`h`/`j`/`k` 仍双绑；tornado/AA/trail/layout → KP_1..4 (306–309)。**R363-E**：scene load 可把 `water.enabled=true` 写回失败 init；无 pipeline 则强制 false。**R363-F**：Cocoa 补 291–309（Pause/locks/Menu/KP）。**R363-G**：Help 文案对齐 R360–R363。总计 **783** 处修复。
 
 此前：**R362 GL FBO 完整性 + scene resize 失败不提交 + 热键/calloc 门闩 — 修复 8 处** — **R362-A/B**：GL offscreen/MRT 缺 `glCheckFramebufferStatus`（阴影 atlas 已有）；incomplete 仍发布。对齐 shadow 检查并销毁。**R362-C**：scene FBO resize 先 destroy 再 create，失败仍提交 `rw/rh` → 同尺寸永不重试、画面空。改为 temp create 成功才替换并提交尺寸。**R362-D**：`p` 同时 deferred 与粒子 boom；boom 改 KP_0(300)。**R362-E**：PageUp/Down 在选中实体/custom gravity 时与 MoveY 冲突；profiler/cinematic 仅无选中且非 mode3。**R362-F..H**：lighting/gpucull/occlusion/indirect 的 zero-init `calloc` 失败仍建“有效”缓冲；失败则 shutdown/return。总计 **773** 处修复。
 

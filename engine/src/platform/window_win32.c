@@ -91,6 +91,13 @@ static i32 win_vk_to_index(i32 vk_code) {
     case VK_NUMPAD2:  return 307; /* particle trail */
     case VK_NUMPAD3:  return 308; /* layout */
     case VK_NUMPAD4:  return 309; /* AA cycle */
+    /* R364: CG/lens off digit row (1–8 stay gameplay) */
+    case VK_NUMPAD5:  return 310; /* temp- */
+    case VK_NUMPAD6:  return 311; /* temp+ */
+    case VK_NUMPAD7:  return 312; /* tint- */
+    case VK_NUMPAD8:  return 313; /* tint+ */
+    case VK_NUMPAD9:  return 314; /* color grade */
+    case VK_DECIMAL:  return 315; /* lensfx / CA / vig cycle */
     case VK_OEM_MINUS:  return 45;
     case VK_OEM_PLUS:   return 61;
     case VK_OEM_4:      return 91;

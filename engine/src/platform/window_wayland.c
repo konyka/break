@@ -110,6 +110,14 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_KP_2 || ks == XKB_KEY_KP_Down)   return 307; /* particle trail */
     if (ks == XKB_KEY_KP_3 || ks == XKB_KEY_KP_Next)   return 308; /* layout */
     if (ks == XKB_KEY_KP_4 || ks == XKB_KEY_KP_Left)   return 309; /* AA cycle */
+    /* R364: CG/lens off digit row; FPS on KP_Enter */
+    if (ks == XKB_KEY_KP_5 || ks == XKB_KEY_KP_Begin)  return 310; /* temp- */
+    if (ks == XKB_KEY_KP_6 || ks == XKB_KEY_KP_Right)  return 311; /* temp+ */
+    if (ks == XKB_KEY_KP_7 || ks == XKB_KEY_KP_Home)   return 312; /* tint- */
+    if (ks == XKB_KEY_KP_8 || ks == XKB_KEY_KP_Up)     return 313; /* tint+ */
+    if (ks == XKB_KEY_KP_9 || ks == XKB_KEY_KP_Prior)  return 314; /* color grade */
+    if (ks == XKB_KEY_KP_Decimal || ks == XKB_KEY_KP_Delete) return 315; /* lensfx / CA / vig cycle */
+    if (ks == XKB_KEY_Shift_L || ks == XKB_KEY_Shift_R) return 289;
     if (ks == XKB_KEY_minus || ks == XKB_KEY_underscore)      return (i32)'-';
     if (ks == XKB_KEY_plus || ks == XKB_KEY_equal)            return (i32)'=';
     if (ks == XKB_KEY_parenleft || ks == XKB_KEY_braceleft)   return (i32)'(';

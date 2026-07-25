@@ -80,6 +80,14 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 84:  return 307; /* KP 2 — particle trail */
         case 85:  return 308; /* KP 3 — layout */
         case 86:  return 309; /* KP 4 — AA cycle */
+        case 87:  return 310; /* KP 5 — temp- */
+        case 88:  return 311; /* KP 6 — temp+ */
+        case 89:  return 312; /* KP 7 — tint- */
+        case 91:  return 313; /* KP 8 — tint+ */
+        case 92:  return 314; /* KP 9 — color grade */
+        case 65:  return 315; /* KP Decimal — lensfx cycle */
+        case 56:  return 289; /* Shift */
+        case 60:  return 289; /* Right Shift */
         default:  return -1;
     }
 }

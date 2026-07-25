@@ -1483,7 +1483,7 @@ int main(int argc, char **argv) {
 
     LOG_INFO("Phase 4 running — ECS: %u entities, Physics: %u bodies, Script: %s",
              world->entity_count - 1, physics->count, script.loaded ? "yes" : "no");
-    LOG_INFO("WASD+mouse | ESC quit | Tab UI | F1-F12 | Home/End | Ins/Del/[/]/;/',/./ 1-2 temp 3-4 tint 5 cg 6 lens 7 ca 8 vig | +/- exp | PgUp autoexp | Arrows sat/con");
+    LOG_INFO("WASD+mouse | ESC quit | Tab UI | F1-F12 | KP5-9/Dec:CG/lens | 1-8 gameplay | 9 gravity 0 water | Shift+` FPS | +/- exp | CapsLock autoexp");
 
     RHIGPUTimer *gpu_scene_timer = NULL;
     RHIGPUTimer *gpu_postfx_timer = NULL;
@@ -2420,21 +2420,22 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             sharpen_enabled = !sharpen_enabled;
             LOG_INFO("Sharpen: %s", sharpen_enabled ? "on" : "off");
         }
+        /* R364: digits 1–8 are gameplay (explosion/magnet/…). CG/lens → KP_5..9 + Decimal. */
         {
             InputState *inp = platform_input(engine.platform);
-            if (input_key_pressed(inp, 49)) { cg_temperature -= 0.05f; LOG_INFO("Temperature: %.2f", cg_temperature); }
-            if (input_key_pressed(inp, 50)) { cg_temperature += 0.05f; LOG_INFO("Temperature: %.2f", cg_temperature); }
-            if (input_key_pressed(inp, 51)) { cg_tint -= 0.05f; LOG_INFO("Tint: %.2f", cg_tint); }
-            if (input_key_pressed(inp, 52)) { cg_tint += 0.05f; LOG_INFO("Tint: %.2f", cg_tint); }
-            if (input_key_pressed(inp, 53)) { cg_enabled = !cg_enabled; LOG_INFO("Color grade: %s", cg_enabled ? "on" : "off"); }
-            if (input_key_pressed(inp, 54)) { lensfx_enabled = !lensfx_enabled; LOG_INFO("Lens effects: %s", lensfx_enabled ? "on" : "off"); }
-            if (input_key_pressed(inp, 55)) {
-                lens_ca = lens_ca > 0.001f ? 0.0f : lens_ca + 0.001f;
-                LOG_INFO("CA strength: %.3f", lens_ca);
-            }
-            if (input_key_pressed(inp, 56)) {
-                lens_vignette = lens_vignette > 0.1f ? 0.0f : lens_vignette + 0.15f;
-                LOG_INFO("Vignette: %.2f", lens_vignette);
+            if (input_key_pressed(inp, 310)) { cg_temperature -= 0.05f; LOG_INFO("Temperature: %.2f", cg_temperature); }
+            if (input_key_pressed(inp, 311)) { cg_temperature += 0.05f; LOG_INFO("Temperature: %.2f", cg_temperature); }
+            if (input_key_pressed(inp, 312)) { cg_tint -= 0.05f; LOG_INFO("Tint: %.2f", cg_tint); }
+            if (input_key_pressed(inp, 313)) { cg_tint += 0.05f; LOG_INFO("Tint: %.2f", cg_tint); }
+            if (input_key_pressed(inp, 314)) { cg_enabled = !cg_enabled; LOG_INFO("Color grade: %s", cg_enabled ? "on" : "off"); }
+            if (input_key_pressed(inp, 315)) {
+                static i32 lens_cycle = 0;
+                lens_cycle = (lens_cycle + 1) % 4;
+                lensfx_enabled = (lens_cycle != 0);
+                lens_ca = (lens_cycle >= 2) ? 0.002f : 0.0f;
+                lens_vignette = (lens_cycle >= 3) ? 0.3f : 0.0f;
+                static const char *ln[] = { "off", "lensfx", "lensfx+CA", "lensfx+CA+vig" };
+                LOG_INFO("Lens: %s", ln[lens_cycle]);
             }
         }
 
@@ -2683,9 +2684,16 @@ u32 culled_count = 0;
             debug_ui_toggle(&ui);
         }
 
-        /* Backtick (`) toggles the immediate-mode settings panel. */
-        if (imui_font_ready && input_key_pressed(platform_input(engine.platform), 96)) {
-            imui_visible = !imui_visible;
+        /* R364: bare ` toggles ImUI; Shift+` cycles FPS (was dual-bound on `). */
+        if (input_key_pressed(platform_input(engine.platform), 96)) {
+            InputState *bt_inp = platform_input(engine.platform);
+            if (input_key_down(bt_inp, 289)) {
+                fps_limit_idx = (fps_limit_idx + 1) % 6;
+                engine.target_fps = fps_limits[fps_limit_idx];
+                LOG_INFO("FPS limit: %.0f%s", engine.target_fps, engine.target_fps == 0.0f ? " (unlimited)" : "");
+            } else if (imui_font_ready) {
+                imui_visible = !imui_visible;
+            }
         }
 
         hotreload_pipeline_poll(&hotreload);
@@ -2944,8 +2952,9 @@ u32 culled_count = 0;
         if (input_key_down(inp, 100)) move_input.e[0] += 1;
         if (input_key_down(inp, 119)) move_input.e[2] -= 1;
         if (input_key_down(inp, 115)) move_input.e[2] += 1;
+        /* R364: Space jump only when no entity impulse claim (selected == 0). */
         character_update(&character, physics, (f32)engine.delta_time, move_input,
-                          input_key_pressed(inp, 32));
+                          input_key_pressed(inp, 32) && selected_entity_id == 0);
         profiler_pop();
 
         profiler_pop();
@@ -3724,15 +3733,15 @@ u32 culled_count = 0;
 
         if (show_help && ui.visible) {
             debug_ui_text(&ui, "=== CONTROLS (U to toggle) ===");
-            debug_ui_text(&ui, "F1:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G:Fullscreen");
+            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G:Fullscreen");
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
-            debug_ui_text(&ui, "WASD:Move  Mouse:Look  Scroll:FOV  9:Gravity  0:WaterColor  R:Reset  E:Spawn+Push");
-            debug_ui_text(&ui, "B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  F12:Screenshot  M:Bench");
+            debug_ui_text(&ui, "WASD:Move  Shift+WASD:Brush/Amb/Teleport/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
+            debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
             debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
-            debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Impulse");
-            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  (:WaterUp  ):WaterDown");
+            debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
+            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  (:WaterDown  ):WaterUp  `:ImUI  Shift+`:FPS");
             debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
-            debug_ui_text(&ui, "Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  KP*/÷/−/+:SSS/LF/Sharpen/CS");
+            debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  CapsLock:AutoExp  KP*/÷/−/+:SSS/LF/Sharpen/CS");
         }
 
         {
@@ -4325,11 +4334,12 @@ u32 culled_count = 0;
 
             {
                 InputState *inp = platform_input(engine.platform);
-                if (input_key_pressed(inp, 57)) {
+                /* R364: bare 9/0 are gravity/water — cam speed needs Shift (289). */
+                if (input_key_down(inp, 289) && input_key_pressed(inp, 57)) {
                     camera.move_speed = fminf(camera.move_speed + 1.0f, 20.0f);
                     LOG_INFO("Camera speed: %.1f", camera.move_speed);
                 }
-                if (input_key_pressed(inp, 48)) {
+                if (input_key_down(inp, 289) && input_key_pressed(inp, 48)) {
                     camera.move_speed = fmaxf(camera.move_speed - 1.0f, 0.5f);
                     LOG_INFO("Camera speed: %.1f", camera.move_speed);
                 }
@@ -4507,7 +4517,8 @@ u32 culled_count = 0;
                      brush_radius = radii[ri];
                      LOG_INFO("Brush: %s (%.0f)%s", rn[ri], brush_radius, brush_flatten ? " FLAT" : "");
                  }
-                 if (input_key_pressed(inp, (i32)'a')) {
+                 /* R364: bare WASD moves — brush/ambient/teleport/mass need Shift. */
+                 if (input_key_down(inp, 289) && input_key_pressed(inp, (i32)'a')) {
                      brush_mode = (brush_mode + 1) % 4;
                      brush_flatten = (brush_mode == 1);
                      static const char *bm[] = {"raise/lower", "flatten", "erode", "noise stamp"};
@@ -4534,7 +4545,7 @@ u32 culled_count = 0;
                         }
                     }
                 }
-                if (input_key_pressed(inp, (i32)'d')) {
+                if (input_key_down(inp, 289) && input_key_pressed(inp, (i32)'d')) {
                     if (selected_entity_count > 0 && selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
@@ -4548,7 +4559,7 @@ u32 culled_count = 0;
                         }
                     }
                 }
-                if (input_key_pressed(inp, (i32)'s')) {
+                if (input_key_down(inp, 289) && input_key_pressed(inp, (i32)'s')) {
                     static const f32 am[] = {0.3f, 0.5f, 1.0f, 2.0f, 4.0f};
                     static const char *an[] = {"dark","dim","normal","bright","overlit"};
                     static u32 ai = 2;
@@ -4556,7 +4567,7 @@ u32 culled_count = 0;
                     ambient_mult = am[ai];
                     LOG_INFO("Ambient: %s (%.1fx)", an[ai], ambient_mult);
                 }
-                if (input_key_pressed(inp, (i32)'w')) {
+                if (input_key_down(inp, 289) && input_key_pressed(inp, (i32)'w')) {
                     if (selected_entity_count > 0 && selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
                         CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
@@ -4624,7 +4635,7 @@ u32 culled_count = 0;
                     slow_motion = !slow_motion;
                     LOG_INFO("Slow-mo: %s", slow_motion ? "ON (0.25x)" : "OFF");
                 }
-                if (input_key_pressed(inp, (i32)'0')) {
+                if (input_key_pressed(inp, (i32)'0') && !input_key_down(inp, 289)) {
                     static const Vec3 wcolors[] = {{.e={0.1f,0.3f,0.5f}},{.e={0.0f,0.15f,0.3f}},{.e={0.05f,0.4f,0.3f}},{.e={0.3f,0.2f,0.1f}},{.e={0.15f,0.15f,0.25f}}};
                     static const char *wcn[] = {"ocean blue","deep sea","tropical","murky","twilight"};
                     water_color_preset = (water_color_preset + 1) % 5;
@@ -4659,11 +4670,7 @@ u32 culled_count = 0;
                 if (fog_enabled) {
                     if (input_key_pressed(inp, (i32)'\\')) { fog_far = fminf(fog_far + 5.0f, 200.0f); LOG_INFO("Fog far: %.0f", fog_far); }
                 }
-                if (input_key_pressed(inp, (i32)'`')) {
-                    fps_limit_idx = (fps_limit_idx + 1) % 6;
-                    engine.target_fps = fps_limits[fps_limit_idx];
-                    LOG_INFO("FPS limit: %.0f%s", engine.target_fps, engine.target_fps == 0.0f ? " (unlimited)" : "");
-                }
+                /* R364: FPS moved to Shift+` (handled with ImUI toggle above). */
                 /* R363: layout was on 'k' (sun elevation); moved to KP_3 (308). */
                 if (input_key_pressed(inp, 308)) {
                     layout_mode = (layout_mode + 1) % 4;
@@ -4744,7 +4751,7 @@ u32 culled_count = 0;
                     }
                     LOG_INFO("Layout: %s (%u entities)", layout_names[layout_mode], li);
                 }
-                /* R363: Space impulse was nested inside the broken 'k' layout braces. */
+                /* R364: Space = jump when idle; impulse when entity selected; Shift+Space = ALL STOP. */
                 if (input_key_pressed(inp, 32)) {
                     if (selected_entity_id > 0) {
                         Entity se = world->entities[selected_entity_id];
@@ -4759,7 +4766,7 @@ u32 culled_count = 0;
                                 physics_body_apply_impulse(physics, sr->physics_id, vec3(0, 8.0f, 0));
                             }
                         }
-                    } else {
+                    } else if (input_key_down(inp, 289)) {
                         u32 stopped = 0;
                         for (u32 bi = 1; bi < physics->count; bi++) {
                             if (!physics->bodies[bi].is_static && vec3_len(physics->bodies[bi].velocity) > 0.1f) {
@@ -4947,7 +4954,8 @@ u32 culled_count = 0;
                 }
             }
 
-            if (input_key_pressed(inp, (i32)'9')) {
+            /* R364: Shift+9 is cam speed — skip gravity mode while Shift held. */
+            if (input_key_pressed(inp, (i32)'9') && !input_key_down(inp, 289)) {
                 physics_mode = (physics_mode + 1) % 4;
                 gravity_enabled = (physics_mode == 0);
                 velocity_damping = (physics_mode == 2);

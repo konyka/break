@@ -4442,6 +4442,17 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **783** 处修复。
 
+## R364：数字/WASD/Space/反引号热键消歧（已完成）
+
+### [x] R364-A `1`–`8`≠CG：CG/lens → KP_5..9 + Decimal cycle
+### [x] R364-B `` ` ``≠FPS：ImUI 裸键；FPS → Shift+`
+### [x] R364-C/D `9`/`0`≠cam speed：cam speed → Shift+9/0
+### [x] R364-E WASD≠brush/ambient/teleport/mass：后者需 Shift
+### [x] R364-F Space：jump / entity impulse / Shift+ALL STOP 门控
+### [x] R364-G Help 水位方向 + 平台 Shift/KP_5..Decimal
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **791** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
