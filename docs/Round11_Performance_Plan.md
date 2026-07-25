@@ -4582,6 +4582,13 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **848** 处修复。
 
+## R380：N 保留冻结/质量 + BSCN probe（已完成）
+
+### [x] R380-A park 保留 mass；scene_state V2 存 mass/is_static；revive 按保存恢复
+### [x] R380-B `scene_probe_binary` 通过后再 clear+load
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **850** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

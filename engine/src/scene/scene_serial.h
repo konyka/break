@@ -58,6 +58,8 @@ typedef struct {
 bool scene_save_binary(const World *w, const Scene *s,
                        const char *path, const SerializeOptions *opts);
 bool scene_load_binary(World *w, Scene *s, const char *path);
+/* R380: validate BSCN without mutating World — use before clear-on-load. */
+bool scene_probe_binary(const char *path);
 
 /* Free the RESOURCES manifest owned by a Scene (safe on NULL / empty). Called
  * automatically by asset_scene_free; exposed for tests / standalone scenes. */

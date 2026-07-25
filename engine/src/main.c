@@ -132,17 +132,29 @@ typedef struct { f32 pos[3]; } CTransform;
 typedef struct { u32 physics_id; } CRigidBody;
 typedef struct { u32 mesh_index; } CMeshRef;
 
-/* R376/R379: Del/N-clear park tombstone for create reuse (spawn_frame=UINT32_MAX). */
+/* R376/R379/R380: Del/N-clear park tombstone (spawn_frame=UINT32_MAX).
+ * Keep mass so B/N can restore Shift+D / freeze mass after revive. */
 static void physics_body_park(PhysicsWorld *pw, u32 pid) {
     if (!pw || pid == 0 || pid >= pw->count) return;
     RigidBody *pb = &pw->bodies[pid];
     pb->is_static = true;
     pb->inv_mass = 0.0f;
-    pb->mass = 0.0f;
     pb->velocity = vec3(0, 0, 0);
     pb->position = vec3(0, -1000.0f, 0);
     pb->spawn_frame = UINT32_MAX;
     pw->bvh_dirty = true;
+}
+
+#define SCENE_STATE_MAGIC_V1 0x534E4547u /* GENE: pos/vel */
+#define SCENE_STATE_MAGIC_V2 0x32454E47u /* GEN2: pos/vel/mass/is_static */
+
+static void physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame) {
+    if (!rb) return;
+    rb->mass = (mass > 0.0f) ? mass : 1.0f;
+    rb->is_static = is_static;
+    rb->inv_mass = (is_static || rb->mass <= 0.0f) ? 0.0f : (1.0f / rb->mass);
+    rb->spawn_frame = frame;
+    rb->rest_frames = 0;
 }
 
 /* ECS system: copy simulated rigid-body positions back into transforms and
@@ -2885,7 +2897,7 @@ u32 culled_count = 0;
                 FILE *sf = fopen("scene_state.bin", "wb");
                 if (sf) {
                     bool sv_ok = true;
-                    u32 magic = 0x534E4547u;
+                    u32 magic = SCENE_STATE_MAGIC_V2;
                     sv_ok &= fwrite(&magic, 4, 1, sf) == 1;
                     sv_ok &= fwrite(&camera.position, sizeof(Camera), 1, sf) == 1;
                     sv_ok &= fwrite(&sun_azimuth, sizeof(f32), 1, sf) == 1;
@@ -2896,14 +2908,22 @@ u32 culled_count = 0;
                     sv_ok &= fwrite(&pc, sizeof(u32), 1, sf) == 1;
                     for (u32 si = 0; si < pc && sv_ok; si++) {
                         /* R378: do not persist Del tombstone poses — restore would nuke reused slots. */
-                        Vec3 pos = physics->bodies[si].position;
-                        Vec3 vel = physics->bodies[si].velocity;
-                        if (physics_body_is_parked(&physics->bodies[si])) {
-                            pos = physics->bodies[si].spawn_pos;
+                        RigidBody *sb = &physics->bodies[si];
+                        Vec3 pos = sb->position;
+                        Vec3 vel = sb->velocity;
+                        f32 mass = sb->mass > 0.0f ? sb->mass : 1.0f;
+                        u8 is_st = sb->is_static ? 1u : 0u;
+                        if (physics_body_is_parked(sb)) {
+                            pos = sb->spawn_pos;
                             vel = vec3(0, 0, 0);
+                            /* Parked by Del: treat as dynamic for future revive. */
+                            is_st = 0u;
                         }
                         sv_ok &= fwrite(&pos, sizeof(Vec3), 1, sf) == 1;
                         sv_ok &= fwrite(&vel, sizeof(Vec3), 1, sf) == 1;
+                        /* R380: persist mass/static so N revive keeps freeze + Shift+D. */
+                        sv_ok &= fwrite(&mass, sizeof(f32), 1, sf) == 1;
+                        sv_ok &= fwrite(&is_st, sizeof(u8), 1, sf) == 1;
                     }
                     sv_ok &= fwrite(&water.water_y, sizeof(f32), 1, sf) == 1;
                     sv_ok &= fwrite(&water.enabled, sizeof(bool), 1, sf) == 1;
@@ -2913,10 +2933,8 @@ u32 culled_count = 0;
             }
         }
         if (input_key_pressed(platform_input(engine.platform), (i32)'n')) {
-            /* R379: only clear when BSCN exists — bare N must not empty the world. */
-            FILE *bscn_probe = fopen("scene_save.bscn", "rb");
-            bool have_bscn = bscn_probe != NULL;
-            if (bscn_probe) fclose(bscn_probe);
+            /* R380: probe BSCN before clear — corrupt file must not empty the world. */
+            bool have_bscn = scene_probe_binary("scene_save.bscn");
             if (have_bscn) {
                 /* R379: park rigid bodies like Del before destroy — avoid ghost colliders. */
                 for (u32 ei = 1; ei < world->entity_count; ei++) {
@@ -2934,7 +2952,7 @@ u32 culled_count = 0;
                 if (scene_load_binary(world, &scene, "scene_save.bscn"))
                     LOG_INFO("Scene loaded (BSCN binary)");
                 else
-                    LOG_WARN("BSCN load failed");
+                    LOG_WARN("BSCN load failed after probe");
                 if (netrep_enabled) {
                     Entity ge = world_create_entity(world);
                     CTransform *gt = world_add_component(world, ge, COMP_TRANSFORM);
@@ -2982,7 +3000,8 @@ u32 culled_count = 0;
             if (lf) {
                 u32 magic = 0;
                 bool ld_ok = fread(&magic, 4, 1, lf) == 1;
-                if (ld_ok && magic == 0x534E4547u) {
+                bool v2 = (magic == SCENE_STATE_MAGIC_V2);
+                if (ld_ok && (magic == SCENE_STATE_MAGIC_V1 || v2)) {
                     ld_ok &= fread(&camera.position, sizeof(Camera), 1, lf) == 1;
                     ld_ok &= fread(&sun_azimuth, sizeof(f32), 1, lf) == 1;
                     ld_ok &= fread(&sun_elevation, sizeof(f32), 1, lf) == 1;
@@ -2993,29 +3012,38 @@ u32 culled_count = 0;
                     for (u32 si = 0; si < pc && si < physics->capacity && ld_ok; si++) {
                         if (si < physics->count) {
                             Vec3 pos, vel;
+                            f32 mass = 1.0f;
+                            u8 is_st = 0;
                             ld_ok &= fread(&pos, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&vel, sizeof(Vec3), 1, lf) == 1;
+                            if (v2) {
+                                ld_ok &= fread(&mass, sizeof(f32), 1, lf) == 1;
+                                ld_ok &= fread(&is_st, sizeof(u8), 1, lf) == 1;
+                            }
                             bool live = (si < 256) && body_live[si];
-                            /* R379: never revive/unpark bodies with no live entity. */
+                            /* R379/R380: revive only live-referenced; restore mass/static. */
                             if (ld_ok && live && pos.e[1] > -999.0f) {
                                 RigidBody *rb = &physics->bodies[si];
-                                if (physics_body_is_parked(rb)) {
-                                    rb->is_static = false;
-                                    if (rb->mass <= 0.0f) rb->mass = 1.0f;
-                                    rb->inv_mass = 1.0f / rb->mass;
-                                    rb->spawn_frame = (u32)engine.frame_count;
-                                }
+                                if (!v2 && rb->mass > 0.0f) mass = rb->mass;
+                                physics_body_revive(rb, mass, is_st != 0, (u32)engine.frame_count);
                                 rb->position = pos;
                                 rb->velocity = vel;
-                                rb->rest_frames = 0;
                             } else if (ld_ok && !live && si > 0 &&
                                        !physics_body_is_parked(&physics->bodies[si])) {
                                 physics_body_park(physics, si);
+                            } else if (ld_ok && v2 && !live && si > 0) {
+                                /* Consume already read; keep park. */
+                                (void)mass; (void)is_st;
                             }
                         } else {
                             Vec3 skip;
+                            f32 sm; u8 ss;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
+                            if (v2) {
+                                ld_ok &= fread(&sm, sizeof(f32), 1, lf) == 1;
+                                ld_ok &= fread(&ss, sizeof(u8), 1, lf) == 1;
+                            }
                         }
                     }
                     if (ld_ok && pc > 0) physics->bvh_dirty = true;
@@ -3048,13 +3076,10 @@ u32 culled_count = 0;
                                     continue;
                                 RigidBody *rb = &physics->bodies[rr->physics_id];
                                 if (!physics_body_is_parked(rb)) continue;
-                                rb->is_static = false;
-                                if (rb->mass <= 0.0f) rb->mass = 1.0f;
-                                rb->inv_mass = 1.0f / rb->mass;
+                                /* Fallback when no V2 state: keep mass, default dynamic. */
+                                physics_body_revive(rb, rb->mass, false, (u32)engine.frame_count);
                                 rb->position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
                                 rb->velocity = vec3(0, 0, 0);
-                                rb->rest_frames = 0;
-                                rb->spawn_frame = (u32)engine.frame_count;
                                 physics->bvh_dirty = true;
                             }
                             c = c->next;

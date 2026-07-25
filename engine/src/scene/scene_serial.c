@@ -595,6 +595,35 @@ static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
     return true;
 }
 
+bool scene_probe_binary(const char *path) {
+    if (!path) return false;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    long fsz = ftell(fp);
+    if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
+    if (fsz < (long)sizeof(BscnHeader)) { fclose(fp); return false; }
+    u8 *buf = (u8 *)malloc((size_t)fsz);
+    if (!buf) { fclose(fp); return false; }
+    if (fread(buf, 1, (size_t)fsz, fp) != (size_t)fsz) { fclose(fp); free(buf); return false; }
+    fclose(fp);
+    BscnHeader h;
+    memcpy(&h, buf, sizeof(h));
+    if (h.magic != BSCN_MAGIC || h.version != BSCN_VERSION) { free(buf); return false; }
+    if (h.chunk_count > 64) { free(buf); return false; }
+    u32 table_off = (u32)sizeof(BscnHeader);
+    u64 table_end = (u64)table_off + (u64)h.chunk_count * (u64)sizeof(BscnChunkEntry);
+    if (table_end > (u64)fsz) { free(buf); return false; }
+    BscnChunkEntry *table = (BscnChunkEntry *)(buf + table_off);
+    bool ok = true;
+    for (u32 i = 0; i < h.chunk_count && ok; i++) {
+        u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
+        if (table[i].offset < table_end || chunk_end > (u64)fsz) ok = false;
+    }
+    free(buf);
+    return ok;
+}
+
 bool scene_load_binary(World *w, Scene *s, const char *path) {
     if (!w || !path) return false;
     FILE *fp = fopen(path, "rb");
