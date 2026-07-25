@@ -2912,12 +2912,15 @@ u32 culled_count = 0;
                         if (si < physics->count) {
                             ld_ok &= fread(&physics->bodies[si].position, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&physics->bodies[si].velocity, sizeof(Vec3), 1, lf) == 1;
+                            physics->bodies[si].rest_frames = 0;
                         } else {
                             Vec3 skip;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                         }
                     }
+                    /* R374: restored poses must rebuild BVH (static/resting skip refit). */
+                    if (ld_ok && pc > 0) physics->bvh_dirty = true;
                     if (ld_ok && !feof(lf)) {
                         ld_ok &= fread(&water.water_y, sizeof(f32), 1, lf) == 1;
                         ld_ok &= fread(&water.enabled, sizeof(bool), 1, lf) == 1;
@@ -4759,9 +4762,10 @@ u32 culled_count = 0;
                                     /* R372: sync via physics_id — old path only wrote bodies 1..10. */
                                     CRigidBody *lr = world_get_component(world, le, COMP_RIGID_BODY);
                                     if (lr && lr->physics_id > 0 && lr->physics_id < physics->count) {
-                                        physics->bodies[lr->physics_id].position =
-                                            vec3(lt->pos[0], lt->pos[1], lt->pos[2]);
-                                        physics->bodies[lr->physics_id].velocity = vec3(0, 0, 0);
+                                        RigidBody *lb = &physics->bodies[lr->physics_id];
+                                        lb->position = vec3(lt->pos[0], lt->pos[1], lt->pos[2]);
+                                        lb->velocity = vec3(0, 0, 0);
+                                        lb->rest_frames = 0;
                                     }
                                     li++;
                                 }
@@ -4770,6 +4774,8 @@ u32 culled_count = 0;
                         }
                     }
                     query_done(lq);
+                    /* R374: static/resting bodies skip BVH refit — force rebuild after layout. */
+                    if (li > 0) physics->bvh_dirty = true;
                     LOG_INFO("Layout: %s (%u entities)", layout_names[layout_mode], li);
                 }
                 /* R364/R368: Shift+Space = ALL STOP (even with selection); else entity impulse; else jump. */
@@ -4826,7 +4832,10 @@ u32 culled_count = 0;
                         physics->bodies[ri].position.e[1] = 8.0f + (f32)((ri - 1) / 5) * 3.0f;
                         physics->bodies[ri].position.e[2] = 0.0f;
                         physics->bodies[ri].velocity = vec3(0, 0, 0);
+                        physics->bodies[ri].rest_frames = 0;
                     }
+                    /* R374: resting/static skip BVH refit after teleport-home. */
+                    if (physics->count > 1) physics->bvh_dirty = true;
                     LOG_INFO("Scene reset: %u bodies + terrain regenerated", physics->count > 1 ? (physics->count - 1 < 10 ? physics->count - 1 : 10) : 0);
                     terrain_generate(&terrain, terrain_preset);
                 }
@@ -4916,6 +4925,7 @@ u32 culled_count = 0;
                             }
                         }
                     }
+                    query_done(sq);
                 }
             }
 
@@ -4952,9 +4962,20 @@ u32 culled_count = 0;
                 CTransform *nt = world_add_component(world, ne, COMP_TRANSFORM);
                 if (nt && st) { nt->pos[0] = st->pos[0] + 1.5f; nt->pos[1] = st->pos[1]; nt->pos[2] = st->pos[2]; }
                 if (sm) { CMeshRef *nm = world_add_component(world, ne, COMP_MESH_REF); if (nm) *nm = *sm; }
-                if (sr) {
-                    CRigidBody *nr = world_add_component(world, ne, COMP_RIGID_BODY);
-                    if (nr) nr->physics_id = physics_body_create(physics, vec3(st->pos[0]+1.5f, st->pos[1], st->pos[2]), vec3(0.5f,0.5f,0.5f), 1.0f, false, (u32)engine.frame_count);
+                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count &&
+                    physics->count < physics->capacity) {
+                    RigidBody *src = &physics->bodies[sr->physics_id];
+                    Vec3 dpos = vec3(st ? st->pos[0] + 1.5f : src->position.e[0] + 1.5f,
+                                     st ? st->pos[1] : src->position.e[1],
+                                     st ? st->pos[2] : src->position.e[2]);
+                    /* R374: copy half_extent/mass/static — was hardcoded 0.5³ / mass 1. */
+                    u32 nid = physics_body_create(physics, dpos, src->half_extent, src->mass,
+                                                  src->is_static, (u32)engine.frame_count);
+                    if (nid != UINT32_MAX) {
+                        physics->bodies[nid].restitution = src->restitution;
+                        CRigidBody *nr = world_add_component(world, ne, COMP_RIGID_BODY);
+                        if (nr) nr->physics_id = nid;
+                    }
                 }
                 selected_entity_count++;
                 LOG_INFO("Duplicated entity %u -> new %u (])", selected_entity_id, ne.index);

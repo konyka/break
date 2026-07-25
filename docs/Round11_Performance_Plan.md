@@ -4537,6 +4537,15 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **833** 处修复。
 
+## R374：KP3/R/N BVH 同步 + `]` 克隆属性（已完成）
+
+### [x] R374-A KP3 layout：`rest_frames=0` + `bvh_dirty`
+### [x] R374-B `]` Duplicate：拷贝源 half_extent/mass/static/restitution；拒满容量
+### [x] R374-C `R` reset / `N` restore：批量位移后 `bvh_dirty` + 清 rest
+### [x] R374-D Enter select：`query_done(sq)`
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **837** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
