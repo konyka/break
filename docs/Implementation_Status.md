@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R377 R/N 勿打穿 Del park — 修复 2 处** — **R377-A**：`R` 把 park 槽挪回出生格仍 static/mass0 → 隐形碰撞且破坏 R376 复用；跳过 `physics_body_is_parked`。**R377-B**：`N` 按 index 写回 pose 同洞；恢复时保留 park。Park 哨兵改为 `spawn_frame=UINT32_MAX`。总计 **842** 处修复。
+最近更新：**R378 B/N park 复用安全 + BSCN 清空 + 冻体克隆质量 — 修复 3 处** — **R378-A**：B 把 Del tombstone 位姿写入 `scene_state`，槽复用后 N 打穿活体；存盘写 `spawn_pos`，恢复拒 `y≤-999`，必要时 revive。**R378-B**：N 的 BSCN 只追加致重复实体/共享 `physics_id`；加载前销毁全部 live 实体。**R378-C**：`]` 克隆冻体 `create(is_static)` 清零 mass，解冻永久不动；保留 mass。总计 **845** 处修复。
+
+此前：**R377 R/N 勿打穿 Del park — 修复 2 处** — **R377-A**：`R` 把 park 槽挪回出生格仍 static/mass0 → 隐形碰撞且破坏 R376 复用；跳过 `physics_body_is_parked`。**R377-B**：`N` 按 index 写回 pose 同洞；恢复时保留 park。Park 哨兵改为 `spawn_frame=UINT32_MAX`。总计 **842** 处修复。
 
 此前：**R376 Del 停放刚体复用 — 修复 1 处** — **R376-A**：Del 只 park 到 y=-1000、不减 `physics->count`，反复 E/Del 耗尽 capacity；`physics_body_create` 优先复用 park 槽，E 拒 `UINT32_MAX`/`ENTITY_NULL` 孤儿。总计 **840** 处修复。
 

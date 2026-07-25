@@ -2882,8 +2882,15 @@ u32 culled_count = 0;
                     u32 pc = physics->count;
                     sv_ok &= fwrite(&pc, sizeof(u32), 1, sf) == 1;
                     for (u32 si = 0; si < pc && sv_ok; si++) {
-                        sv_ok &= fwrite(&physics->bodies[si].position, sizeof(Vec3), 1, sf) == 1;
-                        sv_ok &= fwrite(&physics->bodies[si].velocity, sizeof(Vec3), 1, sf) == 1;
+                        /* R378: do not persist Del tombstone poses — restore would nuke reused slots. */
+                        Vec3 pos = physics->bodies[si].position;
+                        Vec3 vel = physics->bodies[si].velocity;
+                        if (physics_body_is_parked(&physics->bodies[si])) {
+                            pos = physics->bodies[si].spawn_pos;
+                            vel = vec3(0, 0, 0);
+                        }
+                        sv_ok &= fwrite(&pos, sizeof(Vec3), 1, sf) == 1;
+                        sv_ok &= fwrite(&vel, sizeof(Vec3), 1, sf) == 1;
                     }
                     sv_ok &= fwrite(&water.water_y, sizeof(f32), 1, sf) == 1;
                     sv_ok &= fwrite(&water.enabled, sizeof(bool), 1, sf) == 1;
@@ -2893,6 +2900,15 @@ u32 culled_count = 0;
             }
         }
         if (input_key_pressed(platform_input(engine.platform), (i32)'n')) {
+            /* R378: BSCN load appends — clear live entities first (no park; bodies rebind by id). */
+            for (u32 ei = 1; ei < world->entity_count; ei++) {
+                Entity ce = world->entities[ei];
+                if (world_entity_exists(world, ce))
+                    world_destroy_entity(world, ce);
+            }
+            selected_entity_id = 0;
+            selected_entity_count = 0;
+            selected_entity_idx = 0;
             /* Load BSCN binary (ECS entities + scene graph). */
             if (scene_load_binary(world, &scene, "scene_save.bscn"))
                 LOG_INFO("Scene loaded (BSCN binary)");
@@ -2916,11 +2932,19 @@ u32 culled_count = 0;
                             Vec3 pos, vel;
                             ld_ok &= fread(&pos, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&vel, sizeof(Vec3), 1, lf) == 1;
-                            /* R377: keep Del-parked slots parked (pose restore would ghost + break reuse). */
-                            if (ld_ok && !physics_body_is_parked(&physics->bodies[si])) {
-                                physics->bodies[si].position = pos;
-                                physics->bodies[si].velocity = vel;
-                                physics->bodies[si].rest_frames = 0;
+                            /* R378: reject legacy tombstone poses (y<=-999) even on reused slots. */
+                            if (ld_ok && pos.e[1] > -999.0f) {
+                                RigidBody *rb = &physics->bodies[si];
+                                if (physics_body_is_parked(rb)) {
+                                    /* Del→B→N: BSCN rebinds entity to parked slot — revive. */
+                                    rb->is_static = false;
+                                    if (rb->mass <= 0.0f) rb->mass = 1.0f;
+                                    rb->inv_mass = 1.0f / rb->mass;
+                                    rb->spawn_frame = (u32)engine.frame_count;
+                                }
+                                rb->position = pos;
+                                rb->velocity = vel;
+                                rb->rest_frames = 0;
                             }
                         } else {
                             Vec3 skip;
@@ -2941,6 +2965,39 @@ u32 culled_count = 0;
                     LOG_INFO("Runtime state restored (%u bodies)", pc);
                 }
                 fclose(lf);
+            }
+            /* R378: BSCN may rebind entities to still-parked bodies — revive from transform. */
+            {
+                ComponentType rv_types[] = { COMP_TRANSFORM, COMP_RIGID_BODY };
+                Query *rq = world_query(world, rv_types, 2);
+                if (rq) {
+                    for (u32 qi = 0; qi < rq->match_count; qi++) {
+                        Archetype *a = rq->matching[qi];
+                        Chunk *c = a->chunks;
+                        while (c) {
+                            u32 *ents = (u32 *)((u8 *)c + a->entity_offset);
+                            for (u32 ci = 0; ci < c->count; ci++) {
+                                Entity re = world->entities[ents[ci]];
+                                CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
+                                CTransform *rt = world_get_component(world, re, COMP_TRANSFORM);
+                                if (!rr || !rt || rr->physics_id == 0 || rr->physics_id >= physics->count)
+                                    continue;
+                                RigidBody *rb = &physics->bodies[rr->physics_id];
+                                if (!physics_body_is_parked(rb)) continue;
+                                rb->is_static = false;
+                                if (rb->mass <= 0.0f) rb->mass = 1.0f;
+                                rb->inv_mass = 1.0f / rb->mass;
+                                rb->position = vec3(rt->pos[0], rt->pos[1], rt->pos[2]);
+                                rb->velocity = vec3(0, 0, 0);
+                                rb->rest_frames = 0;
+                                rb->spawn_frame = (u32)engine.frame_count;
+                                physics->bvh_dirty = true;
+                            }
+                            c = c->next;
+                        }
+                    }
+                    query_done(rq);
+                }
             }
         }
 
@@ -5001,10 +5058,16 @@ u32 culled_count = 0;
                                      st ? st->pos[2] : src->position.e[2]);
                     /* R374: copy half_extent/mass/static — was hardcoded 0.5³ / mass 1. */
                     /* R376: create reuses Del-parked slots when count==capacity. */
-                    u32 nid = physics_body_create(physics, dpos, src->half_extent, src->mass,
+                    f32 clone_mass = src->mass > 0.0f ? src->mass : 1.0f;
+                    u32 nid = physics_body_create(physics, dpos, src->half_extent, clone_mass,
                                                   src->is_static, (u32)engine.frame_count);
                     if (nid != UINT32_MAX) {
                         physics->bodies[nid].restitution = src->restitution;
+                        /* R378: create(is_static) zeroes mass — keep mass for later `6` unfreeze. */
+                        if (src->is_static) {
+                            physics->bodies[nid].mass = clone_mass;
+                            physics->bodies[nid].inv_mass = 0.0f;
+                        }
                         CRigidBody *nr = world_add_component(world, ne, COMP_RIGID_BODY);
                         if (nr) nr->physics_id = nid;
                     } else {

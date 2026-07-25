@@ -4566,6 +4566,14 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **842** 处修复。
 
+## R378：B/N park 复用安全 + BSCN 清空（已完成）
+
+### [x] R378-A B save：park 写 spawn_pos；N restore 拒 tombstone y；revive parked rebind
+### [x] R378-B N：加载 BSCN 前销毁全部 live 实体（防追加重复）
+### [x] R378-C `]` 冻体克隆：保留 mass 供 `6` 解冻
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **845** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
