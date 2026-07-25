@@ -299,12 +299,19 @@ t->loc_time        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_time
 }
 
 void terrain_shutdown(Terrain *t) {
-    if (!t->device) return;
+    if (!t) return;
+    /* R383: only the RHI handles need a device — the CPU blocks must be freed
+     * either way, or a device-less Terrain (headless edit/test, or init that
+     * never reached pipeline creation) leaks heightmap + flatten scratch. */
     free(t->heightmap); t->heightmap = NULL; t->_vert_staging = NULL; /* single alloc */
+    t->_vert_staging_cap = 0;
     free(t->_flatten_indices); t->_flatten_indices = NULL; t->_flatten_dists = NULL; /* single alloc */
-    if (rhi_handle_valid(t->ibo))      rhi_buffer_destroy(t->device, t->ibo);
-    if (rhi_handle_valid(t->vbo))      rhi_buffer_destroy(t->device, t->vbo);
-    if (rhi_handle_valid(t->pipeline)) rhi_pipeline_destroy(t->device, t->pipeline);
+    t->_flatten_cap = 0;
+    if (t->device) {
+        if (rhi_handle_valid(t->ibo))      rhi_buffer_destroy(t->device, t->ibo);
+        if (rhi_handle_valid(t->vbo))      rhi_buffer_destroy(t->device, t->vbo);
+        if (rhi_handle_valid(t->pipeline)) rhi_pipeline_destroy(t->device, t->pipeline);
+    }
     t->ibo = RHI_HANDLE_NULL;
     t->vbo = RHI_HANDLE_NULL;
     t->pipeline = RHI_HANDLE_NULL;

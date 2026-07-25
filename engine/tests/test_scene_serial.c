@@ -286,7 +286,9 @@ static void make_scene(Scene *s) {
 static void free_scene_src(Scene *s) {
     free(s->meshes);
     free(s->materials);
-    scene_resources_free(s);
+    /* R383: scene_load_binary also allocates `nodes` — and does so even for a
+     * zero-node scene, so node_count==0 is no proof there is nothing to free. */
+    scene_serial_free(s);
     memset(s, 0, sizeof(*s));
 }
 

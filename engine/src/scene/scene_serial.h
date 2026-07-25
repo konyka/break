@@ -61,9 +61,15 @@ bool scene_load_binary(World *w, Scene *s, const char *path);
 /* R380: validate BSCN without mutating World — use before clear-on-load. */
 bool scene_probe_binary(const char *path);
 
-/* Free the RESOURCES manifest owned by a Scene (safe on NULL / empty). Called
- * automatically by asset_scene_free; exposed for tests / standalone scenes. */
+/* Free the RESOURCES manifest owned by a Scene (safe on NULL / empty). */
 void scene_resources_free(Scene *s);
+
+/* R383: teardown for a Scene populated by scene_load_binary / scene_load_json
+ * outside the asset pipeline. Those loaders allocate both `nodes` and
+ * `resources`, but asset_scene_free needs an AssetContext + RHI device, so a
+ * standalone caller (BSCN reload, tests) had no way to release `nodes`.
+ * Safe on NULL and on repeated calls. */
+void scene_serial_free(Scene *s);
 
 /* ---- JSON text format (debug/editor) ---- */
 bool scene_save_json(const World *w, const Scene *s,

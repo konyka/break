@@ -434,6 +434,14 @@ void scene_resources_free(Scene *s) {
     s->resource_count = 0;
 }
 
+void scene_serial_free(Scene *s) {
+    if (!s) return;
+    free(s->nodes);
+    s->nodes = NULL;
+    s->node_count = 0;
+    scene_resources_free(s);
+}
+
 static bool load_resources_chunk(Scene *s, Reader *r) {
     u32 n = 0;
     if (!rd_u32(r, &n)) return false;
@@ -572,8 +580,14 @@ static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
         }
         return true;
     }
-    SceneNode *nodes = (SceneNode *)calloc(n ? n : 1, sizeof(SceneNode));
-    if (!nodes) return false;
+    /* R383: n==0 used to still take a 1-element block (calloc(0) may return NULL,
+     * which the OOM check would misread). Skip the alloc instead — matches
+     * load_resources_chunk and leaves node_count==0 with nodes==NULL. */
+    SceneNode *nodes = NULL;
+    if (n) {
+        nodes = (SceneNode *)calloc(n, sizeof(SceneNode));
+        if (!nodes) return false;
+    }
     for (u32 i = 0; i < n; i++) {
         SceneNode *nd = &nodes[i];
         u32 flags = 0;

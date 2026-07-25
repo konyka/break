@@ -2983,11 +2983,8 @@ u32 culled_count = 0;
                 } else {
                     LOG_WARN("BSCN load failed or file not found");
                 }
-                /* R382: load_scene_nodes_chunk calloc's nodes; resources_free alone leaks them. */
-                free(bscn_scene.nodes);
-                bscn_scene.nodes = NULL;
-                bscn_scene.node_count = 0;
-                scene_resources_free(&bscn_scene);
+                /* R382/R383: nodes + resources both come from the loader. */
+                scene_serial_free(&bscn_scene);
                 if (tmp_world) world_destroy(tmp_world);
             }
             if (bscn_ok) {

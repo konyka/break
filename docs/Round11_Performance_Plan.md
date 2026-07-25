@@ -4606,6 +4606,27 @@ if (!ok) return false;
 
 **验收**：GL/VK 双后端构建通过；GL/VK CTest 各 **31/31**。总计 **857** 处修复。
 
+## R383：ASan 实测泄漏 — terrain_shutdown 提前返回 + Scene.nodes 无释放入口（已完成）
+
+本轮用 `-fsanitize=address,undefined` 重建全套测试后跑 CTest，实测暴露 2 个测试泄漏
+（`test_terrain` 2048B、`test_scene_serial` 592B/4 处），根因均在引擎侧而非测试侧。
+
+### [x] R383-A `terrain_shutdown`：CPU 块无条件释放，仅 RHI 销毁受 `t->device` 门控
+
+原先首行 `if (!t->device) return;` 让无设备的 Terrain 泄漏 `heightmap` 与
+`terrain_flatten` 惰性分配的 `_flatten_indices`。释放这两块并不需要 device。
+
+### [x] R383-B 新增 `scene_serial_free()`：统一释放 `nodes` + `resources`
+
+`asset_scene_free` 需要 AssetContext + RHI device，BSCN 重载与测试都用不上；
+`scene_resources_free` 按名字只管 `resources`。R382-B 曾在 main.c 手写 `free(nodes)`，
+现收敛到库内单一入口，测试同步改用。
+
+### [x] R383-C `load_scene_nodes_chunk`：`n==0` 不再分配 1 元素块
+
+**验收**：ASan+UBSan CTest **31/31**、零泄漏零 UB（修复前 29/31）；GL/VK 双后端
+构建通过，各 **31/31**。总计 **860** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

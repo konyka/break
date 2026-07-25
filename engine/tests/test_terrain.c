@@ -34,7 +34,9 @@ static Terrain *make_terrain(u32 grid, f32 scale, f32 height_scale) {
 }
 
 static void free_terrain(Terrain *t) {
-    free(t->heightmap);
+    /* R383: terrain_flatten lazily allocates _flatten_indices; only
+     * terrain_shutdown knows how to release it. */
+    terrain_shutdown(t);
     free(t);
 }
 
