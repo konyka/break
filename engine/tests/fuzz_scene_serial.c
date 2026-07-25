@@ -73,10 +73,26 @@ static void make_seed_scene(World *w, Scene *s) {
     s->materials = (Material *)calloc(2, sizeof(Material));
 }
 
+/* R388: boundary values for the u32 count/offset/size fields. Byte-level flips
+ * essentially never produce these, yet wraparound and overflow bugs live exactly
+ * there — this is how the PAK name-table overflow surfaced. */
+static const unsigned interesting_u32[] = {
+    0u, 1u, 2u,
+    0x7FFFFFFFu, 0x80000000u,
+    0xFFFFFFFDu, 0xFFFFFFFEu, 0xFFFFFFFFu,
+    0x40000000u, 0x00010000u, 0x0000FFFFu,
+};
+
 /* Random byte flips / splices, biased toward the header+table region where
- * offsets and counts live. */
+ * offsets and counts live, mixed with word-level writes of boundary values. */
 static void mutate(unsigned char *buf, long n, unsigned nmut) {
     for (unsigned m = 0; m < nmut; m++) {
+        /* Word-level boundary write into the header+chunk-table region. */
+        if (n > 128 && rnd() % 2 == 0) {
+            unsigned v = interesting_u32[rnd() % (sizeof(interesting_u32) / sizeof(interesting_u32[0]))];
+            memcpy(buf + (size_t)(rnd() % 32u) * 4u, &v, sizeof(v));
+            continue;
+        }
         long pos;
         if (rnd() % 3 == 0 && n > 64) pos = (long)(rnd() % 64);
         else pos = (long)(rnd() % (unsigned)n);

@@ -67,9 +67,42 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
         return false;
     }
 
+    /* R388: measure the file up front so the header's self-declared region sizes
+     * can be validated against reality before any of them drives an allocation. */
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    long file_size = ftell(fp);
+    if (file_size < 0 || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
+
     PakHeader hdr;
     if (fread(&hdr, sizeof(hdr), 1, fp) != 1 || hdr.magic != VFS_PAK_MAGIC) {
         LOG_ERROR("VFS: invalid pak format '%s'", pak_path);
+        fclose(fp);
+        return false;
+    }
+
+    /* R388: entry_count and name_table_size are attacker-controlled. The entry
+     * table and name table must both fit in the bytes that actually follow the
+     * header, which caps each allocation below at the file size.
+     *
+     * Without this bound, name_table_size == UINT32_MAX made the
+     * `name_table_size + 1` below wrap to 0 in u32 arithmetic; calloc then
+     * returned a minimal block and the fread overflowed it with up to 4 GiB of
+     * attacker-supplied file bytes.
+     *
+     * R157: this also subsumes the old entry_count > 2^30 bound, which existed
+     * to keep next_pow2(entry_count * 2) from overflowing into a tiny hash table
+     * and hanging the probe loop. Kept explicitly as it does not follow from the
+     * file size alone for a sufficiently large archive. */
+    if ((u64)file_size < (u64)sizeof(PakHeader) || hdr.entry_count > (1u << 30)) {
+        LOG_ERROR("VFS: pak header out of bounds '%s'", pak_path);
+        fclose(fp);
+        return false;
+    }
+    u64 after_header = (u64)file_size - (u64)sizeof(PakHeader);
+    u64 table_bytes = (u64)hdr.entry_count * (u64)sizeof(PakEntry);
+    if (table_bytes > after_header ||
+        (u64)hdr.name_table_size > after_header - table_bytes) {
+        LOG_ERROR("VFS: pak header out of bounds '%s'", pak_path);
         fclose(fp);
         return false;
     }
@@ -83,21 +116,15 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
 
     /* R160-A: Allocate name_table_size + 1 to guarantee a null terminator at the
      * end of the buffer.  Without this, a PAK whose name table lacks a trailing
-     * '\0' would cause strcmp in vfs_open to read one byte past the allocation. */
-    char *names = calloc(hdr.name_table_size + 1, 1);
+     * '\0' would cause strcmp in vfs_open to read one byte past the allocation.
+     * R388: widened to size_t so the +1 cannot wrap. */
+    char *names = calloc((size_t)hdr.name_table_size + 1u, 1);
     if (!names) { free(entries); fclose(fp); return false; }
     if (fseek(fp, sizeof(PakHeader) + hdr.entry_count * sizeof(PakEntry), SEEK_SET) != 0) {
         free(names); free(entries); fclose(fp); return false;
     }
     if (fread(names, 1, hdr.name_table_size, fp) != hdr.name_table_size) {
         /* R143: Check fread return — truncated PAK name table */
-        free(names); free(entries); fclose(fp); return false;
-    }
-
-    /* R157: Validate entry_count before multiplication to prevent u32 overflow
-     * in next_pow2(entry_count * 2) — a malicious PAK with entry_count > 2^30
-     * would overflow, producing a tiny hash table and infinite loop in probing. */
-    if (hdr.entry_count > (1u << 30)) {
         free(names); free(entries); fclose(fp); return false;
     }
 
@@ -113,6 +140,11 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
          * A malicious PAK could set name_offset >= name_table_size, causing an
          * out-of-bounds read in vfs_open when computing the name pointer. */
         if (entries[e].name_offset >= hdr.name_table_size) continue;
+        /* R388: an entry's data range must lie inside the file. vfs_open sizes
+         * its allocation from entry->size, so an entry claiming ~4 GiB would
+         * make every open of that name attempt a 4 GiB calloc before the read
+         * failed. Skipping the entry here makes the lie a lookup miss instead. */
+        if ((u64)entries[e].data_offset + (u64)entries[e].size > (u64)file_size) continue;
         u32 slot = entries[e].name_hash & mask;
         while (table[slot] != UINT32_MAX) {
             slot = (slot + 1) & mask;

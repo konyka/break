@@ -265,6 +265,73 @@ TEST(vfs_pak_format)
     vfs_destroy(vfs);
 }
 
+/* R388: writes a one-entry PAK whose header/entry fields can be overridden, so
+ * the bounds checks in vfs_mount_pak can be driven directly. Layout matches
+ * vfs_pak_format above. */
+static void write_pak_with(u32 entry_count, u32 name_table_size,
+                           u32 entry_data_offset, u32 entry_size)
+{
+    const char *fname   = "greet.txt";
+    const char *content = "PAK DATA!";
+    u32 fname_len       = (u32)strlen(fname) + 1;
+    u32 content_len     = (u32)strlen(content);
+
+    PakHeader hdr = { .magic = VFS_PAK_MAGIC, .version = VFS_PAK_VERSION,
+                      .entry_count = entry_count, .name_table_size = name_table_size };
+    PakEntry entry = { .name_hash = test_fnv1a(fname), .name_offset = 0,
+                       .data_offset = entry_data_offset, .size = entry_size };
+
+    FILE *fp = fopen(TMP_PAK, "wb");
+    if (!fp) return;
+    fwrite(&hdr,    sizeof(hdr),   1, fp);
+    fwrite(&entry,  sizeof(entry), 1, fp);
+    fwrite(fname,   1, fname_len,    fp);
+    fwrite(content, 1, content_len,  fp);
+    fclose(fp);
+}
+
+/* R388: name_table_size == UINT32_MAX made `name_table_size + 1` wrap to 0 in
+ * u32, so calloc handed back a minimal block and the following fread wrote the
+ * rest of the file into it — a heap buffer overflow with attacker-controlled
+ * bytes. Found by fuzz_vfs_pak. */
+TEST(vfs_pak_name_table_size_overflow_rejected)
+{
+    write_pak_with(1, UINT32_MAX, (u32)(sizeof(PakHeader) + sizeof(PakEntry)) + 10u, 9);
+
+    VFS *vfs = vfs_create();
+    ASSERT_TRUE(!vfs_mount_pak(vfs, TMP_PAK));
+    vfs_destroy(vfs);
+}
+
+/* R388: the entry table must fit in the bytes following the header. Pre-fix this
+ * was also rejected, but only after a multi-gigabyte calloc that entry_count
+ * alone sized; this pins the cheap rejection so the bound cannot be dropped. */
+TEST(vfs_pak_entry_count_bounded_by_file_size)
+{
+    write_pak_with(0x10000000u, 10, (u32)(sizeof(PakHeader) + sizeof(PakEntry)) + 10u, 9);
+
+    VFS *vfs = vfs_create();
+    ASSERT_TRUE(!vfs_mount_pak(vfs, TMP_PAK));
+    vfs_destroy(vfs);
+}
+
+/* R388: an entry claiming data past EOF must not be openable. As above the
+ * pre-fix result was also NULL, but only after vfs_open sized a ~4 GiB calloc
+ * from entry->size; this pins the miss so the range check cannot be dropped. */
+TEST(vfs_pak_entry_data_past_eof_is_miss)
+{
+    u32 name_len = (u32)strlen("greet.txt") + 1u;
+    write_pak_with(1, name_len, (u32)(sizeof(PakHeader) + sizeof(PakEntry)) + name_len,
+                   0xFFFFFF00u);
+
+    VFS *vfs = vfs_create();
+    /* The header itself is consistent, so the mount succeeds; the lying entry is
+     * simply not reachable. */
+    ASSERT_TRUE(vfs_mount_pak(vfs, TMP_PAK));
+    ASSERT_TRUE(vfs_open(vfs, "greet.txt") == NULL);
+    vfs_destroy(vfs);
+}
+
 TEST(vfs_pak_bad_magic)
 {
     PakHeader hdr = { .magic = 0xDEADBEEF, .version = 1, .entry_count = 0, .name_table_size = 0 };
@@ -417,6 +484,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_read_null_file);
     RUN_TEST(vfs_mount_priority);
     RUN_TEST(vfs_pak_format);
+    RUN_TEST(vfs_pak_name_table_size_overflow_rejected);
+    RUN_TEST(vfs_pak_entry_count_bounded_by_file_size);
+    RUN_TEST(vfs_pak_entry_data_past_eof_is_miss);
     RUN_TEST(vfs_pak_bad_magic);
     RUN_TEST(vfs_pak_nonexistent);
     RUN_TEST(vfs_mount_limit);

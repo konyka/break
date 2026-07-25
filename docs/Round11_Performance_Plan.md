@@ -4750,6 +4750,56 @@ init 会累积泄漏。照搬 `terrain_init`（R244）的既有写法。
 并反向验证。ASan+UBSan / GL / VK / TSan 四套 CTest 各 **31/31**。
 总计 **870** 处修复。
 
+## R388：PAK 挂载堆溢出 — `name_table_size + 1` u32 回绕（已完成）
+
+把 R387 的模糊测试手段扩展到第二个吃不可信输入的路径：新增
+`engine/tests/fuzz_vfs_pak.c`，构造合法多条目 PAK 后随机变异，喂回
+`vfs_mount_pak` → `vfs_open` → `vfs_read`。同样 `EXCLUDE_FROM_ALL`。
+
+**关键教训：变异粒度决定能找到什么。** 头 3000 轮纯字节翻转全清，因为要触发的
+缺陷需要某个 u32 字段整体等于 `0xFFFFFFFF`——逐字节随机几乎撞不上。改为一半概率
+做**字级**写入（从 `0`/`1`/`0x7FFFFFFF`/`0x80000000`/`0xFFFFFFFF`/`0x40000000`
+等边界值里取），立刻在同样 3000 轮内命中。已把同样的字级变异补回
+`fuzz_scene_serial.c`（R387 的字节翻转有同一盲点）；补后 20 种子 × 8000 轮
+= 16 万轮 BSCN/JSON 仍全清，说明 R387 的修复在更强变异下站得住。
+
+### [x] R388-A `name_table_size == UINT32_MAX` 导致堆缓冲溢出
+
+真缺陷，攻击者可控内容写堆。`calloc(hdr.name_table_size + 1, 1)`：两侧都是
+`u32`，`0xFFFFFFFF + 1` 在 u32 里回绕成 **0**，calloc 拿到 0 尺寸请求返回一个
+最小块；紧接着 `fread(names, 1, hdr.name_table_size, fp)` 按 4GiB 去读，实际写入
+量只受文件剩余字节数限制，全部灌进那个最小块。ASan 实录：`WRITE of size 69`
+落在 `1-byte region` 之后（vfs.c:92 写、vfs.c:87 分配）。恶意 PAK 即可触发，
+写入内容完全由文件控制。
+
+修法不止是把 `+1` 加宽到 `size_t`（那只是止血）：在读 header 前先测出文件实际
+大小，然后校验 header 自述的两个区域（条目表、名字表）确实装得进 header 之后的
+字节数。这一步在**任何分配之前**完成，从根上掐掉这一类。
+
+### [x] R388-B 头部区域尺寸在分配前按文件大小设界
+
+与 A 同一处校验块。原代码里 R157 的 `entry_count > 2^30` 检查位置在两次
+`calloc`/`fread` **之后**，起不到保护分配的作用；现在连同文件大小上界一起前移到
+分配之前。R157 那条予以保留（对足够大的归档，它不由文件大小推出）。
+
+注意如实记录：`entry_count` 撒谎在修复前也会被拒，只是要先白花一次数 GB 的
+`calloc`；对调用者可观测行为不变。这是加固，不是崩溃修复。
+
+### [x] R388-C 条目数据范围必须落在文件内
+
+`vfs_open` 用 `entry->size` 定分配尺寸，条目声明约 4GiB 时每次 open 都会先试一次
+约 4GiB 的 `calloc`，然后才因读失败而放弃。在建哈希表那一遍顺手校验
+`data_offset + size <= file_size`，越界条目跳过不入表——沿用 R160-A 对
+`name_offset` 的既有约定（撒谎变成查不到，而非挂载失败）。同 B，属加固。
+
+**验收**：PAK 40 种子 × 15000 轮 = **60 万轮**，零崩溃零泄漏零 UB。
+A 补回归测试 `vfs_pak_name_table_size_overflow_rejected` 并反向验证（回退
+`vfs.c` 后该测试立刻触发 ASan 堆溢出）；B/C 补
+`vfs_pak_entry_count_bounded_by_file_size`、`vfs_pak_entry_data_past_eof_is_miss`
+钉住拒绝行为——如实说明这两条在修复前也会通过，仅用于防止上界被后续改动删掉。
+ASan+UBSan / GL / VK / TSan 四套 CTest 各 **31/31**（`test_vfs` 23 → 26）。
+总计 **873** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

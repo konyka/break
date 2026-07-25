@@ -545,6 +545,13 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_vfs PRIVATE m)
     add_test(NAME test_vfs COMMAND test_vfs)
 
+    # R388: mutation fuzzer for the PAK mount path. Same usage as
+    # fuzz_scene_serial: build explicitly and run by hand under ASan/UBSan.
+    add_executable(fuzz_vfs_pak EXCLUDE_FROM_ALL tests/fuzz_vfs_pak.c
+        src/asset/vfs.c src/core/log.c)
+    target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_vfs_pak PRIVATE m)
+
     # test_camera_frustum: needs camera.c + cull.c + frustum_cull.c + math.c
     add_executable(test_camera_frustum tests/test_camera_frustum.c
         src/renderer/camera.c src/renderer/cull.c src/renderer/frustum_cull.c src/math/math.c)
