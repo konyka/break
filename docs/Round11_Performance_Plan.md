@@ -4589,6 +4589,13 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **850** 处修复。
 
+## R381：N temp-World swap + 仅成功后恢复 state（已完成）
+
+### [x] R381-A N：`scene_load_binary` 进临时 World，成功后再 park/swap
+### [x] R381-B companion `scene_state` 仅在 `bscn_ok` 后应用
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **852** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

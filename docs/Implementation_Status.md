@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R380 N 保留冻结/质量 + BSCN probe — 修复 2 处** — **R380-A**：N park+revive 强制 dynamic/mass=1，丢掉 `6` 冻结与 Shift+D 质量；park 保留 mass，scene_state V2 存 mass/is_static。**R380-B**：仅 fopen 成功就 clear，损坏 BSCN 清空场景；`scene_probe_binary` 校验后再 clear。总计 **850** 处修复。
+最近更新：**R381 N 先 temp 加载再 swap + 仅成功后恢复 state — 修复 2 处** — **R381-A**：`scene_probe_binary` 假阳性仍会 clear 后 load 失败致空场景；改为 temp World 加载成功再 park/swap。**R381-B**：无 BSCN 时 N 仍套用 `scene_state` 改当前世界；仅 `bscn_ok` 后读 companion。总计 **852** 处修复。
+
+此前：**R380 N 保留冻结/质量 + BSCN probe — 修复 2 处** — **R380-A**：N park+revive 强制 dynamic/mass=1，丢掉 `6` 冻结与 Shift+D 质量；park 保留 mass，scene_state V2 存 mass/is_static。**R380-B**：仅 fopen 成功就 clear，损坏 BSCN 清空场景；`scene_probe_binary` 校验后再 clear。总计 **850** 处修复。
 
 此前：**R379 N 清空 park + 仅 revive 有实体槽 + netrep ghost — 修复 3 处** — **R379-A**：N 销毁实体不 park → 无 BSCN/多余 body 幽灵碰撞；有 BSCN 才 clear，且 Del 式 park。**R379-B**：scene_state 对无实体 park 槽仍 unpark；仅 `body_live` 才 revive，孤儿 park。**R379-C**：N 后 `netrep_ghost_valid` 过期；清标志并重建 ghost。总计 **848** 处修复。
 

@@ -2933,43 +2933,55 @@ u32 culled_count = 0;
             }
         }
         if (input_key_pressed(platform_input(engine.platform), (i32)'n')) {
-            /* R380: probe BSCN before clear — corrupt file must not empty the world. */
-            bool have_bscn = scene_probe_binary("scene_save.bscn");
-            if (have_bscn) {
-                /* R379: park rigid bodies like Del before destroy — avoid ghost colliders. */
-                for (u32 ei = 1; ei < world->entity_count; ei++) {
-                    Entity ce = world->entities[ei];
-                    if (!world_entity_exists(world, ce)) continue;
-                    CRigidBody *cr = world_get_component(world, ce, COMP_RIGID_BODY);
-                    if (cr) physics_body_park(physics, cr->physics_id);
-                    world_destroy_entity(world, ce);
-                }
-                selected_entity_id = 0;
-                selected_entity_count = 0;
-                selected_entity_idx = 0;
-                netrep_ghost_valid = false;
-                netrep_ghost = (Entity){0};
-                if (scene_load_binary(world, &scene, "scene_save.bscn"))
-                    LOG_INFO("Scene loaded (BSCN binary)");
-                else
-                    LOG_WARN("BSCN load failed after probe");
-                if (netrep_enabled) {
-                    Entity ge = world_create_entity(world);
-                    CTransform *gt = world_add_component(world, ge, COMP_TRANSFORM);
-                    CMeshRef *gm = world_add_component(world, ge, COMP_MESH_REF);
-                    if (gt && gm) {
-                        gm->mesh_index = 0;
-                        gt->pos[0] = 0.0f; gt->pos[1] = 5.0f; gt->pos[2] = 0.0f;
-                        netrep_ghost_target[0] = 0.0f;
-                        netrep_ghost_target[1] = 5.0f;
-                        netrep_ghost_target[2] = 0.0f;
-                        netrep_ghost = ge;
-                        netrep_ghost_valid = true;
+            /* R381: load into a temp World first — only swap after success so a
+             * corrupt BSCN cannot empty the live scene. Companion state runs
+             * only after a successful swap (bare N must not rewrite pose/camera). */
+            bool bscn_ok = false;
+            World *tmp_world = world_create();
+            if (tmp_world) {
+                world_register_component(tmp_world, COMP_TRANSFORM, sizeof(CTransform));
+                world_register_component(tmp_world, COMP_RIGID_BODY, sizeof(CRigidBody));
+                world_register_component(tmp_world, COMP_MESH_REF, sizeof(CMeshRef));
+                Scene bscn_scene = {0};
+                if (scene_load_binary(tmp_world, &bscn_scene, "scene_save.bscn")) {
+                    for (u32 ei = 1; ei < world->entity_count; ei++) {
+                        Entity ce = world->entities[ei];
+                        if (!world_entity_exists(world, ce)) continue;
+                        CRigidBody *cr = world_get_component(world, ce, COMP_RIGID_BODY);
+                        if (cr) physics_body_park(physics, cr->physics_id);
                     }
+                    World *old_world = world;
+                    world = tmp_world;
+                    tmp_world = NULL;
+                    world_destroy(old_world);
+                    selected_entity_id = 0;
+                    selected_entity_count = 0;
+                    selected_entity_idx = 0;
+                    netrep_ghost_valid = false;
+                    netrep_ghost = (Entity){0};
+                    bscn_ok = true;
+                    LOG_INFO("Scene loaded (BSCN binary)");
+                    if (netrep_enabled) {
+                        Entity ge = world_create_entity(world);
+                        CTransform *gt = world_add_component(world, ge, COMP_TRANSFORM);
+                        CMeshRef *gm = world_add_component(world, ge, COMP_MESH_REF);
+                        if (gt && gm) {
+                            gm->mesh_index = 0;
+                            gt->pos[0] = 0.0f; gt->pos[1] = 5.0f; gt->pos[2] = 0.0f;
+                            netrep_ghost_target[0] = 0.0f;
+                            netrep_ghost_target[1] = 5.0f;
+                            netrep_ghost_target[2] = 0.0f;
+                            netrep_ghost = ge;
+                            netrep_ghost_valid = true;
+                        }
+                    }
+                } else {
+                    LOG_WARN("BSCN load failed or file not found");
                 }
-            } else {
-                LOG_WARN("BSCN load failed or file not found");
+                scene_resources_free(&bscn_scene);
+                if (tmp_world) world_destroy(tmp_world);
             }
+            if (bscn_ok) {
             /* Build live physics_id set after BSCN (stack-sized; demo cap 256). */
             bool body_live[256];
             memset(body_live, 0, sizeof(body_live));
@@ -3088,6 +3100,7 @@ u32 culled_count = 0;
                     query_done(rq);
                 }
             }
+            } /* bscn_ok */
         }
 
         profiler_push("physics");
