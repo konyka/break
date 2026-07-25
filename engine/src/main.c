@@ -4470,12 +4470,27 @@ u32 culled_count = 0;
                         Vec3 offset = vec3_scale(ecam_right, (f32)(ei - 1) * 1.5f);
                         Vec3 spawn_pos = vec3_add(vec3_add(camera.position, vec3_scale(ecam_fwd, 2.0f)), offset);
                         Vec3 half_ext = vec3(0.5f, 0.5f, 0.5f);
-                        if (physics->count >= physics->capacity) break;
+                        /* R376: create may reuse Del-parked slots even when count==capacity. */
                         u32 new_body = physics_body_create(physics, spawn_pos, half_ext, 1.0f, false, (u32)engine.frame_count);
+                        if (new_body == UINT32_MAX) {
+                            LOG_INFO("Physics body cap reached (%u)", physics->capacity);
+                            break;
+                        }
+                        Entity se = world_create_entity(world);
+                        if (se.index == 0) {
+                            /* Orphan body → re-park for later reuse. */
+                            RigidBody *ob = &physics->bodies[new_body];
+                            ob->is_static = true;
+                            ob->inv_mass = 0.0f;
+                            ob->mass = 0.0f;
+                            ob->velocity = vec3(0, 0, 0);
+                            ob->position = vec3(0, -1000.0f, 0);
+                            physics->bvh_dirty = true;
+                            break;
+                        }
                         Vec3 impulse = vec3_scale(ecam_fwd, 15.0f);
                         impulse.e[1] += 5.0f;
                         physics_body_apply_impulse(physics, new_body, impulse);
-                        Entity se = world_create_entity(world);
                         CTransform *st = world_add_component(world, se, COMP_TRANSFORM);
                         if (st) { st->pos[0] = spawn_pos.e[0]; st->pos[1] = spawn_pos.e[1]; st->pos[2] = spawn_pos.e[2]; }
                         CRigidBody *srb = world_add_component(world, se, COMP_RIGID_BODY);
@@ -4938,7 +4953,7 @@ u32 culled_count = 0;
 
             if (input_key_pressed(inp, 288) && selected_entity_id > 0) {
                 Entity se = world->entities[selected_entity_id];
-                /* R372: no physics_body_destroy — disable body so it stops colliding as a ghost. */
+                /* R372/R376: park body for physics_body_create reuse (no destroy API). */
                 CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
                 if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
                     RigidBody *pb = &physics->bodies[sr->physics_id];
@@ -4969,19 +4984,21 @@ u32 culled_count = 0;
                 CTransform *nt = world_add_component(world, ne, COMP_TRANSFORM);
                 if (nt && st) { nt->pos[0] = st->pos[0] + 1.5f; nt->pos[1] = st->pos[1]; nt->pos[2] = st->pos[2]; }
                 if (sm) { CMeshRef *nm = world_add_component(world, ne, COMP_MESH_REF); if (nm) *nm = *sm; }
-                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count &&
-                    physics->count < physics->capacity) {
+                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
                     RigidBody *src = &physics->bodies[sr->physics_id];
                     Vec3 dpos = vec3(st ? st->pos[0] + 1.5f : src->position.e[0] + 1.5f,
                                      st ? st->pos[1] : src->position.e[1],
                                      st ? st->pos[2] : src->position.e[2]);
                     /* R374: copy half_extent/mass/static — was hardcoded 0.5³ / mass 1. */
+                    /* R376: create reuses Del-parked slots when count==capacity. */
                     u32 nid = physics_body_create(physics, dpos, src->half_extent, src->mass,
                                                   src->is_static, (u32)engine.frame_count);
                     if (nid != UINT32_MAX) {
                         physics->bodies[nid].restitution = src->restitution;
                         CRigidBody *nr = world_add_component(world, ne, COMP_RIGID_BODY);
                         if (nr) nr->physics_id = nid;
+                    } else {
+                        LOG_INFO("Physics body cap reached — clone has no rigid body");
                     }
                 }
                 selected_entity_count++;

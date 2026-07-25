@@ -101,14 +101,27 @@ void physics_world_destroy(PhysicsWorld *pw) {
 }
 
 u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
+    u32 id;
+    RigidBody *b;
+    /* R376: Del parks bodies at y=-1000 with mass=0 (no destroy/free_stack).
+     * Reuse those slots so E/] cannot permanently exhaust capacity. Skip 0 (ground). */
+    for (id = 1; id < pw->count; id++) {
+        RigidBody *cand = &pw->bodies[id];
+        if (cand->is_static && cand->mass <= 0.0f && cand->inv_mass <= 0.0f &&
+            cand->position.e[1] <= -999.0f) {
+            b = cand;
+            goto init;
+        }
+    }
     if (pw->count >= pw->capacity) {
         LOG_WARN("Physics body limit reached");
         /* R352: returning count looked like a valid id (0..count-1 is live);
          * UINT32_MAX fails id < count checks in create_sphere/capsule/Lua. */
         return UINT32_MAX;
     }
-    u32 id = pw->count++;
-    RigidBody *b = &pw->bodies[id];
+    id = pw->count++;
+    b = &pw->bodies[id];
+init:
     b->position = pos;
     b->velocity = vec3(0, 0, 0);
     b->acceleration = vec3(0, -9.81f, 0);
@@ -121,6 +134,10 @@ u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, boo
     b->spawn_pos = pos;
     b->rest_frames = 0;
     b->collision_count = 0;
+    b->shape = SHAPE_BOX;
+    b->radius = 0.0f;
+    b->half_height = 0.0f;
+    b->ccd = false;
     pw->bvh_dirty = true;
     return id;
 }

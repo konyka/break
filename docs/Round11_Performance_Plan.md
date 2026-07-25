@@ -4553,6 +4553,12 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **839** 处修复。
 
+## R376：Del 停放刚体复用（已完成）
+
+### [x] R376-A `physics_body_create`：复用 Del park 槽（y≤-999, mass=0, static）；E/] 对齐
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **840** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

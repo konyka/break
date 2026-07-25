@@ -81,6 +81,26 @@ TEST(body_create_full_returns_invalid)
     physics_world_destroy(pw);
 }
 
+TEST(body_create_reuses_del_parked_slot)
+{
+    /* R376: Del parks mass=0 static at y=-1000; create must reuse instead of failing. */
+    PhysicsWorld *pw = physics_world_create(2);
+    ASSERT_EQ(physics_body_create(pw, vec3(0,-2,0), vec3(20,0.5f,20), 0.0f, true, 0), 0u);
+    ASSERT_EQ(physics_body_create(pw, vec3(1,5,0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0), 1u);
+    RigidBody *park = &pw->bodies[1];
+    park->is_static = true;
+    park->mass = 0.0f;
+    park->inv_mass = 0.0f;
+    park->position = vec3(0, -1000.0f, 0);
+    u32 id = physics_body_create(pw, vec3(2, 8, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 1);
+    ASSERT_EQ(id, 1u);
+    ASSERT_EQ(pw->count, 2u);
+    ASSERT_TRUE(!pw->bodies[1].is_static);
+    ASSERT_TRUE(pw->bodies[1].mass == 1.0f);
+    ASSERT_TRUE(pw->bodies[1].position.e[1] == 8.0f);
+    physics_world_destroy(pw);
+}
+
 TEST(body_static)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -617,6 +637,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(world_create_destroy);
     RUN_TEST(body_create);
     RUN_TEST(body_create_full_returns_invalid);
+    RUN_TEST(body_create_reuses_del_parked_slot);
     RUN_TEST(body_static);
     RUN_TEST(gravity_fall);
     RUN_TEST(impulse);
