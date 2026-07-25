@@ -39,9 +39,13 @@ struct Platform {
 
 /* ---- Key mapping ---- */
 
-static i32 win_vk_to_index(i32 vk_code) {
+/* R369: lParam bit24 distinguishes main-board nav (extended) from keypad
+ * when NumLock is off (non-extended VK_INSERT/END/… → KP 305–315). */
+static i32 win_vk_to_index(i32 vk_code, LPARAM lParam) {
     if (vk_code >= 'A' && vk_code <= 'Z') return vk_code - 'A' + 'a';
     if (vk_code >= '0' && vk_code <= '9') return vk_code;
+
+    bool extended = (lParam & (1 << 24)) != 0;
 
     switch (vk_code) {
     case VK_ESCAPE:   return 256;
@@ -49,10 +53,10 @@ static i32 win_vk_to_index(i32 vk_code) {
     case VK_RETURN:   return 257;
     case VK_TAB:      return 259;
     case VK_BACK:     return 260;
-    case VK_LEFT:     return 261;
-    case VK_RIGHT:    return 262;
-    case VK_UP:       return 263;
-    case VK_DOWN:     return 264;
+    case VK_LEFT:     return extended ? 261 : 309; /* KP_4 */
+    case VK_RIGHT:    return extended ? 262 : 311; /* KP_6 */
+    case VK_UP:       return extended ? 263 : 313; /* KP_8 */
+    case VK_DOWN:     return extended ? 264 : 307; /* KP_2 */
     case VK_F1:       return 271;
     case VK_F2:       return 272;
     case VK_F3:       return 273;
@@ -65,12 +69,16 @@ static i32 win_vk_to_index(i32 vk_code) {
     case VK_F10:      return 280;
     case VK_F11:      return 281;
     case VK_F12:      return 282;
-    case VK_PRIOR:    return 283;
-    case VK_NEXT:     return 284;
-    case VK_HOME:     return 285;
-    case VK_END:      return 286;
-    case VK_INSERT:   return 287;
-    case VK_DELETE:   return 288;
+    case VK_PRIOR:    return extended ? 283 : 314; /* KP_9 */
+    case VK_NEXT:     return extended ? 284 : 308; /* KP_3 */
+    case VK_HOME:     return extended ? 285 : 312; /* KP_7 */
+    case VK_END:      return extended ? 286 : 306; /* KP_1 */
+    case VK_INSERT:   return extended ? 287 : 305; /* KP_0 */
+    case VK_DELETE:   return extended ? 288 : 315; /* KP_Decimal */
+    case VK_CLEAR:    return 310; /* KP_5 when NumLock off */
+    /* R369: WM_KEY* delivers VK_SHIFT/VK_CONTROL, not L/R variants. */
+    case VK_SHIFT:    return 289;
+    case VK_CONTROL:  return 290;
     case VK_LSHIFT:   return 289;
     case VK_RSHIFT:   return 289;
     case VK_LCONTROL: return 290;
@@ -137,13 +145,13 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
-        i32 idx = win_vk_to_index((i32)wParam);
+        i32 idx = win_vk_to_index((i32)wParam, lParam);
         if (idx >= 0) input_set_key(&p->input, idx, true);
         return 0;
     }
     case WM_KEYUP:
     case WM_SYSKEYUP: {
-        i32 idx = win_vk_to_index((i32)wParam);
+        i32 idx = win_vk_to_index((i32)wParam, lParam);
         if (idx >= 0) input_set_key(&p->input, idx, false);
         return 0;
     }

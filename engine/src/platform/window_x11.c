@@ -4,6 +4,7 @@
 #include "gamepad_linux.h"
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <X11/XKBlib.h>
 #include <X11/extensions/Xrandr.h>
 #include <string.h>
 #include <stdlib.h>
@@ -180,6 +181,14 @@ Platform *platform_create(const PlatformConfig *cfg) {
         return NULL;
     }
 
+    /* R369: without detectable auto-repeat, X11 emits fake KeyRelease+KeyPress
+     * pairs that retrigger input_key_pressed one-shots while a key is held. */
+    {
+        Bool supported = False;
+        XkbSetDetectableAutoRepeat(p->display, True, &supported);
+        (void)supported;
+    }
+
     i32 screen = DefaultScreen(p->display);
     p->width  = cfg->width;
     p->height = cfg->height;
@@ -254,6 +263,17 @@ PlatformEventResult platform_poll(Platform *p) {
             break;
         }
         case KeyRelease: {
+            /* Fallback if detectable auto-repeat is unavailable: ignore the
+             * synthetic release that immediately precedes a same-keycode press. */
+            if (XEventsQueued(p->display, QueuedAfterReading) > 0) {
+                XEvent next;
+                XPeekEvent(p->display, &next);
+                if (next.type == KeyPress &&
+                    next.xkey.time == ev.xkey.time &&
+                    next.xkey.keycode == ev.xkey.keycode) {
+                    break;
+                }
+            }
             KeySym ks = XLookupKeysym(&ev.xkey, 0);
             i32 idx = x11_key_to_index(ks);
             if (idx >= 0) input_set_key(&p->input, idx, false);

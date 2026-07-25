@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R368 Win32/Cocoa 失焦释键 + Shift+Space ALL STOP — 修复 4 处** — **R368-A/B**：Win32/Cocoa 失焦未 `input_release_all`（R263 仅 Linux）→ Alt-Tab 粘键；补 `WM_KILLFOCUS` / `windowDidResignKey`。**R368-C**：有选中时 Shift+Space 走实体 impulse 而非 ALL STOP；Shift 优先。**R368-D**：Help 补回 KP1/KP2。总计 **815** 处修复。
+最近更新：**R369 Win32 Shift/Ctrl/KP + X11 auto-repeat — 修复 3 处** — **R369-A**：Win32 只映射 `VK_LSHIFT`/`VK_LCONTROL`，消息实际为 `VK_SHIFT`/`VK_CONTROL` → 全部 Shift/Ctrl 热键失效；补映射。**R369-B**：X11 auto-repeat 假 KeyRelease 重触发 one-shot；`XkbSetDetectableAutoRepeat` + peek 回退。**R369-C**：Win32 NumLock 关时小键盘落入 Insert/End…；按 lParam extended 位分流到 KP 305–315。总计 **818** 处修复。
+
+此前：**R368 Win32/Cocoa 失焦释键 + Shift+Space ALL STOP — 修复 4 处** — **R368-A/B**：Win32/Cocoa 失焦未 `input_release_all`（R263 仅 Linux）→ Alt-Tab 粘键；补 `WM_KILLFOCUS` / `windowDidResignKey`。**R368-C**：有选中时 Shift+Space 走实体 impulse 而非 ALL STOP；Shift 优先。**R368-D**：Help 补回 KP1/KP2。总计 **815** 处修复。
 
 此前：**R367 Shift+WASD/Space 门控 + Win32/Cocoa 键位 — 修复 5 处** — **R367-A**：Shift+WASD 仍驱动 camera/character 移动；Shift 时跳过 WASD 移动。**R367-B**：Shift+Space ALL STOP 仍跳跃；jump 排除 Shift。**R367-C**：Cocoa CapsLock 粘滞态致 AutoExp 隔次触发；flagsChanged 边沿脉冲。**R367-D**：Win32 缺 `\\`（FogFar）。**R367-E**：Cocoa 缺 Insert→287。总计 **811** 处修复。
 

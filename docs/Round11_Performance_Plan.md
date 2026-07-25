@@ -4494,6 +4494,14 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **815** 处修复。
 
+## R369：Win32 Shift/Ctrl/KP + X11 auto-repeat（已完成）
+
+### [x] R369-A Win32：VK_SHIFT / VK_CONTROL → 289/290
+### [x] R369-B X11：XkbSetDetectableAutoRepeat + KeyRelease peek 回退
+### [x] R369-C Win32：NumLock 关时非 extended nav → KP 305–315
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **818** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
