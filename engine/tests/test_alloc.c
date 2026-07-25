@@ -48,6 +48,37 @@ TEST(heap_realloc)
     heap_alloc_destroy(h);
 }
 
+/* R386: the payload offset is recomputed from the new base after realloc. When
+ * the requested alignment is coarser than malloc's own, that offset can change
+ * and the payload has to be relocated. Grow repeatedly with align=64 so at
+ * least one realloc lands on a base with a different residue. */
+TEST(heap_realloc_over_aligned_preserves_payload)
+{
+    Alloc *h = heap_alloc_create();
+    const usize align = 64;
+
+    for (int trial = 0; trial < 64; trial++) {
+        usize size = 32;
+        u8 *p = (u8 *)h->alloc(h, size, align);
+        ASSERT_NOT_NULL(p);
+        ASSERT_EQ((usize)p & (align - 1), 0u);
+        for (usize i = 0; i < size; i++) p[i] = (u8)(i & 0xFF);
+
+        for (int step = 0; step < 6; step++) {
+            usize new_size = size * 2;
+            u8 *np = (u8 *)h->realloc(h, p, size, new_size, align);
+            ASSERT_NOT_NULL(np);
+            ASSERT_EQ((usize)np & (align - 1), 0u);
+            for (usize i = 0; i < size; i++) ASSERT_EQ(np[i], (u8)(i & 0xFF));
+            for (usize i = size; i < new_size; i++) np[i] = (u8)(i & 0xFF);
+            p = np;
+            size = new_size;
+        }
+        h->free(h, p, size);
+    }
+    heap_alloc_destroy(h);
+}
+
 TEST(heap_alignment)
 {
     Alloc *h = heap_alloc_create();
@@ -283,6 +314,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(heap_alloc_free);
     RUN_TEST(heap_alloc_array);
     RUN_TEST(heap_realloc);
+    RUN_TEST(heap_realloc_over_aligned_preserves_payload);
     RUN_TEST(heap_alignment);
     RUN_TEST(arena_basic);
     RUN_TEST(arena_multiple_allocs);

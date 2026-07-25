@@ -4683,6 +4683,38 @@ Chase-Lev 算法里 owner 的 push 与 thief 的 steal **本就允许**并发碰
 `test_mipmap_stream` 各 60 轮，**零竞争零失败零挂起**（修复前 13/60 竞争）；
 ASan+UBSan / GL / VK 三套 CTest 各 **31/31**。总计 **865** 处修复。
 
+## R386：heap realloc 对齐搬迁数据损坏 + font init 失败泄漏（已完成）
+
+本轮排查 network / task / core / ui / script 这几个此前未覆盖的模块。
+network、packet、pool、string、profiler、imgui、utf8、script 均未发现真实缺陷
+（长度校验、UTF-8 截断、Lua 参数校验等可疑点都已有保护），命中在 alloc 与 font。
+
+### [x] R386-A `heap_realloc_fn`：偏移变化时搬迁载荷
+
+布局是 `raw → [backptr] → aligned`，载荷位于 `aligned - raw` 处。`realloc` 保留的是
+从 `raw` 起的字节，但代码按**新基址**重算 `aligned`。当请求对齐粗于 malloc 自身
+对齐时两个偏移会不同：align=64、glibc 堆 16 字节对齐，旧基址 ≡0 (mod 64) 得偏移 64，
+新基址 ≡16 得偏移 16 —— 返回的指针指到了被保留数据之前 16 字节处，静默损坏。
+
+align ≤ 16 时两个偏移恒等，所以既有的 `heap_realloc`（align=1）测试测不出来。
+修复：realloc 前记下 `old_off = ptr - raw`，之后偏移变化就 `memmove` 搬迁
+`min(old_size, new_size)` 字节（`old_size` 此前是 `(void)` 掉的）。
+
+回归测试 `heap_realloc_over_aligned_preserves_payload`：align=64 反复扩容 64 组 × 6 级，
+保证至少有一次落在残数不同的基址上。反向验证：还原本修复后该测试失败。
+
+### [x] R386-B `font_renderer_init`：失败前先 `font_renderer_shutdown`
+
+`atlas_tex` 建成之后还有 6 处 `return false`（sampler / shader 缺失 / shader 编译 /
+pipeline / quad_data / VBO）。调用方按约定不会对失败的 init 调 shutdown，于是重复
+init 会累积泄漏。照搬 `terrain_init`（R244）的既有写法。
+
+### [x] R386-C `font_renderer_shutdown`：CPU 块无条件释放
+
+与 R383 的 `terrain_shutdown` 完全同型的问题，一并修掉。
+
+**验收**：ASan+UBSan / GL / VK / TSan 四套 CTest 各 **31/31**。总计 **868** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

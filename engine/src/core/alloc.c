@@ -29,9 +29,16 @@ static void heap_free_fn(Alloc *self, void *ptr, usize size) {
 
 static void *heap_realloc_fn(Alloc *self, void *ptr, usize old_size,
                               usize new_size, usize align) {
-    (void)self; (void)old_size;
+    (void)self;
     if (!ptr) return heap_alloc_fn(self, new_size, align);
     void *raw = ((void **)ptr)[-1];
+    /* R386: realloc preserves bytes relative to `raw`, but the payload sits at
+     * a padded offset that is recomputed from the *new* base. When malloc's
+     * own alignment is coarser than `align` those two offsets can differ (e.g.
+     * align=32 with a 16-byte-aligned heap: old base ≡0 gives offset 32, new
+     * base ≡16 gives offset 16), so the returned pointer no longer points at
+     * the preserved bytes. Remember the old offset and relocate if it moved. */
+    usize old_off = (usize)ptr - (usize)raw;
     usize extra = align - 1;
     usize total = new_size + extra + sizeof(void *);
     /* R158: Guard against usize overflow. */
@@ -40,6 +47,11 @@ static void *heap_realloc_fn(Alloc *self, void *ptr, usize old_size,
     if (!new_raw) return NULL;
     usize addr = (usize)new_raw + sizeof(void *);
     usize aligned = (addr + extra) & ~(align - 1);
+    usize new_off = aligned - (usize)new_raw;
+    if (new_off != old_off) {
+        usize keep = old_size < new_size ? old_size : new_size;
+        if (keep) memmove((void *)aligned, (u8 *)new_raw + old_off, keep);
+    }
     ((void **)aligned)[-1] = new_raw;
     return (void *)aligned;
 }

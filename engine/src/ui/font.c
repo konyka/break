@@ -165,6 +165,9 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     free(atlas_rgba);
     if (!rhi_handle_valid(fr->atlas_tex)) {
         LOG_WARN("Font: atlas texture creation failed");
+        /* R386: every bail below this point must release what init already
+         * created — callers treat `false` as "nothing to shut down". */
+        font_renderer_shutdown(fr);
         return false;
     }
 
@@ -178,6 +181,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     fr->sampler = rhi_sampler_create(dev, &sdesc);
     if (!rhi_handle_valid(fr->sampler)) {
         LOG_WARN("Font: sampler creation failed");
+        font_renderer_shutdown(fr);
         return false;
     }
 
@@ -232,6 +236,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     if (!vs_src || !fs_src) {
         LOG_WARN("Font: shaders not found (%s / %s)", vert_path, frag_path);
         free(vs_src); free(fs_src);
+        font_renderer_shutdown(fr);
         return false;
     }
 
@@ -243,6 +248,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
         LOG_WARN("Font: shader compile failed");
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
         if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        font_renderer_shutdown(fr);
         return false;
     }
 
@@ -262,6 +268,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
 
     if (!rhi_handle_valid(fr->pipeline)) {
         LOG_WARN("Font: pipeline creation failed");
+        font_renderer_shutdown(fr);
         return false;
     }
 
@@ -269,6 +276,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     fr->quad_data = malloc(fr->quad_capacity * 6 * sizeof(FontVertex));
     if (!fr->quad_data) {
         LOG_WARN("Font: quad data allocation failed");
+        font_renderer_shutdown(fr);
         return false;
     }
     fr->quad_count = 0;
@@ -281,6 +289,7 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
     fr->vbo[1] = rhi_buffer_create(dev, &bdesc);
     if (!rhi_handle_valid(fr->vbo[0]) || !rhi_handle_valid(fr->vbo[1])) {
         LOG_WARN("Font: VBO creation failed");
+        font_renderer_shutdown(fr);
         return false;
     }
 
@@ -290,12 +299,16 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
 }
 
 void font_renderer_shutdown(FontRenderer *fr) {
-    if (!fr->device) return;
-    if (rhi_handle_valid(fr->vbo[0])) rhi_buffer_destroy(fr->device, fr->vbo[0]);
-    if (rhi_handle_valid(fr->vbo[1])) rhi_buffer_destroy(fr->device, fr->vbo[1]);
-    if (rhi_handle_valid(fr->sampler)) rhi_sampler_destroy(fr->device, fr->sampler);
-    if (rhi_handle_valid(fr->atlas_tex)) rhi_texture_destroy(fr->device, fr->atlas_tex);
-    if (rhi_handle_valid(fr->pipeline)) rhi_pipeline_destroy(fr->device, fr->pipeline);
+    if (!fr) return;
+    /* R386: mirrors R383's terrain_shutdown — quad_data does not need a device,
+     * so a device-less FontRenderer must not skip straight past the free. */
+    if (fr->device) {
+        if (rhi_handle_valid(fr->vbo[0])) rhi_buffer_destroy(fr->device, fr->vbo[0]);
+        if (rhi_handle_valid(fr->vbo[1])) rhi_buffer_destroy(fr->device, fr->vbo[1]);
+        if (rhi_handle_valid(fr->sampler)) rhi_sampler_destroy(fr->device, fr->sampler);
+        if (rhi_handle_valid(fr->atlas_tex)) rhi_texture_destroy(fr->device, fr->atlas_tex);
+        if (rhi_handle_valid(fr->pipeline)) rhi_pipeline_destroy(fr->device, fr->pipeline);
+    }
     free(fr->quad_data);
     memset(fr, 0, sizeof(*fr));
 }
