@@ -118,6 +118,7 @@ static i32 wayland_keysym_to_engine(xkb_keysym_t ks) {
     if (ks == XKB_KEY_KP_9 || ks == XKB_KEY_KP_Prior)  return 314; /* color grade */
     if (ks == XKB_KEY_KP_Decimal || ks == XKB_KEY_KP_Delete) return 315; /* lensfx / CA / vig cycle */
     if (ks == XKB_KEY_Shift_L || ks == XKB_KEY_Shift_R) return 289;
+    if (ks == XKB_KEY_Control_L || ks == XKB_KEY_Control_R) return 290; /* R366: anim crossfade */
     if (ks == XKB_KEY_minus || ks == XKB_KEY_underscore)      return (i32)'-';
     if (ks == XKB_KEY_plus || ks == XKB_KEY_equal)            return (i32)'=';
     if (ks == XKB_KEY_parenleft || ks == XKB_KEY_braceleft)   return (i32)'(';

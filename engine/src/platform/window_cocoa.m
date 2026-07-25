@@ -57,12 +57,13 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 50:  return 96;  /* Grave / backtick — ImUI */
         default:  break;
     }
-    /* Letters/digits: derive from the produced character when available. */
+    /* R366: letters/digits/printable punctuation from characters when available. */
     if (chars && [chars length] > 0) {
         unichar c = [chars characterAtIndex:0];
         if (c >= 'A' && c <= 'Z') return (i32)(c - 'A' + 'a');
         if (c >= 'a' && c <= 'z') return (i32)c;
         if (c >= '0' && c <= '9') return (i32)c;
+        if (c >= 33 && c <= 126) return (i32)c; /* punctuation used by Help hotkeys */
     }
     switch (kc) {
         case 53:  return 256; /* Escape */
@@ -70,10 +71,25 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 36:  return 257; /* Return */
         case 48:  return 259; /* Tab    */
         case 51:  return 260; /* Delete/Backspace */
+        case 117: return 288; /* Forward Delete */
+        case 115: return 285; /* Home */
+        case 119: return 286; /* End */
+        case 116: return 283; /* Page Up */
+        case 121: return 284; /* Page Down */
         case 123: return 261; /* Left   */
         case 124: return 262; /* Right  */
         case 126: return 263; /* Up     */
         case 125: return 264; /* Down   */
+        case 27:  return (i32)'-';
+        case 24:  return (i32)'=';
+        case 33:  return (i32)'[';
+        case 30:  return (i32)']';
+        case 41:  return (i32)';';
+        case 39:  return (i32)'\'';
+        case 43:  return (i32)',';
+        case 47:  return (i32)'.';
+        case 44:  return (i32)'/';
+        case 42:  return (i32)'\\';
         case 122: return 271; /* F1 */
         case 120: return 272; /* F2 */
         case 99:  return 273; /* F3 */
@@ -119,13 +135,15 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
     i32 idx = cocoa_keycode_to_index(e.keyCode, e.charactersIgnoringModifiers);
     if (idx >= 0) input_set_key(&self.platform->input, idx, false);
 }
-/* R365: Shift/Caps/etc. arrive via flagsChanged, not keyDown/keyUp. */
+/* R365/R366: modifiers arrive via flagsChanged, not keyDown/keyUp. */
 - (void)flagsChanged:(NSEvent *)e {
     NSUInteger flags = e.modifierFlags;
-    bool shift = (flags & NSEventModifierFlagShift) != 0;
-    input_set_key(&self.platform->input, 289, shift);
-    bool caps = (flags & NSEventModifierFlagCapsLock) != 0;
-    input_set_key(&self.platform->input, 294, caps);
+    input_set_key(&self.platform->input, 289,
+                  (flags & NSEventModifierFlagShift) != 0);
+    input_set_key(&self.platform->input, 290,
+                  (flags & NSEventModifierFlagControl) != 0);
+    input_set_key(&self.platform->input, 294,
+                  (flags & NSEventModifierFlagCapsLock) != 0);
     (void)e;
 }
 

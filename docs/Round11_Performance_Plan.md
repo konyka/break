@@ -4465,6 +4465,16 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **799** 处修复。
 
+## R366：Ctrl/水位/Cocoa 标点导航 + unified calloc（已完成）
+
+### [x] R366-A Ctrl(290) 全平台映射；crossfade 文案 F12→Ctrl
+### [x] R366-B 水位：Shift+-/=；裸 +/- 仍 exposure
+### [x] R366-C Cocoa：printable 标点 + keyCode 回退
+### [x] R366-D Cocoa：PgUp/Dn/Home/End/FwdDel
+### [x] R366-E gpucull_init_unified：calloc NULL → soft-fail legacy
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **806** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

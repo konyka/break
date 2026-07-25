@@ -1704,7 +1704,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             anim_layer_play(&anim_blend, 0, 0u, 1.0f, true);
             anim_blend_ready = true;
             if (want_blend)
-                LOG_INFO("Anim blend: on (F12 crossfade, BREAK_ANIM_BLEND=1)");
+                LOG_INFO("Anim blend: on (Ctrl crossfade, BREAK_ANIM_BLEND=1)");
         }
         if (want_ik && scene.joint_count >= 3u) {
             anim_ik_init(&anim_ik);
@@ -2397,19 +2397,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
             }
         }
-        /* R365: on Wayland Shift+9/0 produce '(' / ')' — skip water while Shift held
-         * so those chords can adjust camera speed instead. */
+        /* R366: water level on Shift+- / Shift+= (bare +/- stay exposure).
+         * Wayland cannot type bare '(' / ')' on US layouts after R365 cam-speed. */
         {
             InputState *w_inp = platform_input(engine.platform);
-            if (!input_key_down(w_inp, 289)) {
-                if (input_key_pressed(w_inp, (i32)'(')) {
-                    water.water_y -= 0.5f;
-                    LOG_INFO("Water level: %.1f", water.water_y);
-                }
-                if (input_key_pressed(w_inp, (i32)')')) {
-                    water.water_y += 0.5f;
-                    LOG_INFO("Water level: %.1f", water.water_y);
-                }
+            if (input_key_down(w_inp, 289) && input_key_pressed(w_inp, (i32)'-')) {
+                water.water_y -= 0.5f;
+                LOG_INFO("Water level: %.1f", water.water_y);
+            }
+            if (input_key_down(w_inp, 289) && input_key_pressed(w_inp, (i32)'=')) {
+                water.water_y += 0.5f;
+                LOG_INFO("Water level: %.1f", water.water_y);
             }
         }
         /* R361: ''' also cycles particle rate — SSS → KP_Multiply (296). */
@@ -2448,8 +2446,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         {
             InputState *inp = platform_input(engine.platform);
-            if (input_key_pressed(inp, '=')) tonemap.exposure = fminf(tonemap.exposure + 0.2f, 8.0f);
-            if (input_key_pressed(inp, '-')) tonemap.exposure = fmaxf(tonemap.exposure - 0.2f, 0.1f);
+            /* R366: bare +/- exposure; Shift+/- is water level. */
+            if (!input_key_down(inp, 289) && input_key_pressed(inp, '='))
+                tonemap.exposure = fminf(tonemap.exposure + 0.2f, 8.0f);
+            if (!input_key_down(inp, 289) && input_key_pressed(inp, '-'))
+                tonemap.exposure = fmaxf(tonemap.exposure - 0.2f, 0.1f);
             /* R360: CapsLock (294) — was Page_Up, which also exports the profiler trace. */
             if (input_key_pressed(inp, 294)) {
                 tonemap.auto_exposure = !tonemap.auto_exposure;
@@ -3540,7 +3541,7 @@ u32 culled_count = 0;
             if (playing_path) debug_ui_text(&ui, "[PLAY] Path: %u/%u", path_idx, path_count);
             if (particle_trail) debug_ui_text(&ui, "[TRAIL] Particles follow entity");
             if (anim_blend_ready)
-                debug_ui_text(&ui, "AnimBlend: clip %u/%u (F12 crossfade)",
+                debug_ui_text(&ui, "AnimBlend: clip %u/%u (Ctrl crossfade)",
                               anim_blend_clip_idx, scene.anim_clip_count);
             if (anim_ik_ready)
                 debug_ui_text(&ui, "AnimIK: chain 0-1-2 (BREAK_ANIM_IK=1)");
@@ -3747,10 +3748,10 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
             debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
             debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
-            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  (:WaterDown  ):WaterUp  `:ImUI  Shift+`:FPS");
+            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  Shift+-/=:WaterY  `:ImUI  Shift+`:FPS");
             debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
-            debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  KP*/÷/−/+:SSS/LF/Sharpen/CS");
-            debug_ui_text(&ui, "Shift+B:ExportJSON  (Wayland: Shift+9/0 = CamSpeed, not water)");
+            debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  Ctrl:AnimCrossfade");
+            debug_ui_text(&ui, "Shift+B:ExportJSON  Shift+9/0:CamSpeed  +/-:Exposure  KP*/÷/−/+:SSS/LF/Sharpen/CS");
         }
 
         {

@@ -273,9 +273,26 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
         return true;
     }
     
-    /* Create draw commands SSBO (input, uploaded once). R186: DEVICE_LOCAL. */
+    /* Create draw commands SSBO (input, uploaded once). R186: DEVICE_LOCAL.
+     * R366: NULL initial_data skips DEVICE_LOCAL zero-init but handle may still validate. */
     usize draw_bytes = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd);
+    usize vis_draws_bytes = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd);
+    usize vis_flags_bytes = GPUCULL_MAX_OBJECTS * sizeof(u32);
     void *draw_zero = calloc(1, draw_bytes);
+    void *vis_draws_zero = calloc(1, vis_draws_bytes);
+    void *vis_flags_zero = calloc(1, vis_flags_bytes);
+    if (!draw_zero || !vis_draws_zero || !vis_flags_zero) {
+        LOG_WARN("UnifiedCull: zero-init alloc failed");
+        free(draw_zero);
+        free(vis_draws_zero);
+        free(vis_flags_zero);
+        gc->unified_ready = false;
+        if (rhi_handle_valid(gc->unified_cull_pipe)) {
+            rhi_pipeline_destroy(gc->device, gc->unified_cull_pipe);
+            gc->unified_cull_pipe = RHI_HANDLE_NULL;
+        }
+        return true;
+    }
     RHIBufferDesc draw_desc = {
         .size = draw_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,
@@ -283,10 +300,8 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     };
     gc->draw_cmds_ssbo = rhi_buffer_create(dev, &draw_desc);
     free(draw_zero);
-    
+
     /* Create visible draws SSBO (output, also used for indirect draw) */
-    usize vis_draws_bytes = GPUCULL_MAX_DRAWS * sizeof(GPUCullDrawCmd);
-    void *vis_draws_zero = calloc(1, vis_draws_bytes);
     RHIBufferDesc vis_draws_desc = {
         .size = vis_draws_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
@@ -294,7 +309,7 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     };
     gc->visible_draws_ssbo = rhi_buffer_create(dev, &vis_draws_desc);
     free(vis_draws_zero);
-    
+
     /* Create draw count buffer (atomic counter) */
     u32 draw_count_zero = 0u;
     RHIBufferDesc draw_count_desc = {
@@ -304,8 +319,6 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     };
     gc->draw_count_buf = rhi_buffer_create(dev, &draw_count_desc);
 
-    usize vis_flags_bytes = GPUCULL_MAX_OBJECTS * sizeof(u32);
-    void *vis_flags_zero = calloc(1, vis_flags_bytes);
     RHIBufferDesc vis_flags_desc = {
         .size = vis_flags_bytes,
         .usage = RHI_BUFFER_USAGE_STORAGE,

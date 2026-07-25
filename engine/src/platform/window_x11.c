@@ -73,6 +73,7 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_9 || ks == XK_KP_Prior)  return 314; /* color grade */
     if (ks == XK_KP_Decimal || ks == XK_KP_Delete) return 315; /* lensfx / CA / vig cycle */
     if (ks == XK_Shift_L || ks == XK_Shift_R) return 289;
+    if (ks == XK_Control_L || ks == XK_Control_R) return 290; /* R366: anim crossfade */
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';
