@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R366 Ctrl/水位/Cocoa 标点导航 + unified calloc — 修复 7 处** — **R366-A**：anim crossfade 绑 Ctrl(290)，X11/WL/Cocoa 未映射且文案误写 F12；补 Control→290，文案改 Ctrl。**R366-B**：R365 后门控使 Wayland US 布局水位 `( )` 不可达；水位改 Shift+-/=，裸 +/- 仍 exposure。**R366-C**：Cocoa 标点仅字母数字；扩 printable + keyCode。**R366-D**：Cocoa 缺 PgUp/Dn/Home/End/FwdDel。**R366-E**：`gpucull_init_unified` calloc NULL 仍可能 unified_ready；失败软退 legacy。总计 **806** 处修复。
+最近更新：**R367 Shift+WASD/Space 门控 + Win32/Cocoa 键位 — 修复 5 处** — **R367-A**：Shift+WASD 仍驱动 camera/character 移动；Shift 时跳过 WASD 移动。**R367-B**：Shift+Space ALL STOP 仍跳跃；jump 排除 Shift。**R367-C**：Cocoa CapsLock 粘滞态致 AutoExp 隔次触发；flagsChanged 边沿脉冲。**R367-D**：Win32 缺 `\\`（FogFar）。**R367-E**：Cocoa 缺 Insert→287。总计 **811** 处修复。
+
+此前：**R366 Ctrl/水位/Cocoa 标点导航 + unified calloc — 修复 7 处** — **R366-A**：anim crossfade 绑 Ctrl(290)，X11/WL/Cocoa 未映射且文案误写 F12；补 Control→290，文案改 Ctrl。**R366-B**：R365 后门控使 Wayland US 布局水位 `( )` 不可达；水位改 Shift+-/=，裸 +/- 仍 exposure。**R366-C**：Cocoa 标点仅字母数字；扩 printable + keyCode。**R366-D**：Cocoa 缺 PgUp/Dn/Home/End/FwdDel。**R366-E**：`gpucull_init_unified` calloc NULL 仍可能 unified_ready；失败软退 legacy。总计 **806** 处修复。
 
 此前：**R365 Shift+B JSON + Wayland Shift+9/0 + Cocoa 键位 — 修复 8 处** — **R365-A**：Shift+B 仍查 GLFW `340/344`，JSON 导出死码；改 `289`。**R365-B**：Wayland Shift+9/0 产出 `'('`/`')'`，相机速度不触发且误调水位；cam speed 兼收括号，水位在 Shift 时跳过。**R365-C**：Cocoa KP 被字符 `'0'..'9'` 抢先映射；KP keyCode 优先。**R365-D**：Cocoa Shift 走 `flagsChanged` 未实现；补 flags→289/294。**R365-E**：Cocoa 缺 grave→96。**R365-F**：Help 漏 ScrollLock:DOF。**R365-G**：箭头 CG sat/contrast 与实体移动冲突；无选中且非 custom-gravity 才调 CG。总计 **799** 处修复。
 

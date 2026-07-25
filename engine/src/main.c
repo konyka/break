@@ -2957,13 +2957,17 @@ u32 culled_count = 0;
 
         InputState *inp = platform_input(engine.platform);
         Vec3 move_input = vec3(0, 0, 0);
-        if (input_key_down(inp, 97))  move_input.e[0] -= 1;
-        if (input_key_down(inp, 100)) move_input.e[0] += 1;
-        if (input_key_down(inp, 119)) move_input.e[2] -= 1;
-        if (input_key_down(inp, 115)) move_input.e[2] += 1;
-        /* R364: Space jump only when no entity impulse claim (selected == 0). */
+        /* R367: Shift+WASD is tool chords — character move only without Shift. */
+        if (!input_key_down(inp, 289)) {
+            if (input_key_down(inp, 97))  move_input.e[0] -= 1;
+            if (input_key_down(inp, 100)) move_input.e[0] += 1;
+            if (input_key_down(inp, 119)) move_input.e[2] -= 1;
+            if (input_key_down(inp, 115)) move_input.e[2] += 1;
+        }
+        /* R364/R367: jump when free; Shift+Space is ALL STOP, selected Space is impulse. */
         character_update(&character, physics, (f32)engine.delta_time, move_input,
-                          input_key_pressed(inp, 32) && selected_entity_id == 0);
+                          input_key_pressed(inp, 32) && selected_entity_id == 0 &&
+                          !input_key_down(inp, 289));
         profiler_pop();
 
         profiler_pop();
@@ -3748,10 +3752,10 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
             debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
             debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
-            debug_ui_text(&ui, "[:3rdPerson  ,:CamPath  KP2:Trail  KP1:Tornado  Shift+-/=:WaterY  `:ImUI  Shift+`:FPS");
+            debug_ui_text(&ui, "Shift+Space:AllStop  Ins:GPUCull  End:Indirect  [:3rdPerson  ,:CamPath  `:ImUI  Shift+`:FPS");
             debug_ui_text(&ui, "1:Explosion  2:Magnet  3:BrushSize  4:Throw  5:Bounce  6:Freeze  7:Scale  8:SlowMo");
             debug_ui_text(&ui, "KP5-9:Temp/Tint/CG  KP.:LensCycle  Menu:SSGI  ScrollLock:DOF  CapsLock:AutoExp  Ctrl:AnimCrossfade");
-            debug_ui_text(&ui, "Shift+B:ExportJSON  Shift+9/0:CamSpeed  +/-:Exposure  KP*/÷/−/+:SSS/LF/Sharpen/CS");
+            debug_ui_text(&ui, "Shift+B:ExportJSON  Shift+9/0:CamSpeed  Shift+-/=:WaterY  +/-:Exposure  KP*/÷/−/+:SSS/LF/Sharpen/CS");
         }
 
         {

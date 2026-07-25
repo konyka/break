@@ -31,6 +31,7 @@ struct Platform {
     bool        is_fullscreen;
     bool        mouse_relative;
     bool        mouse_visible;
+    bool        caps_lock_latched; /* R367: track CapsLock LED for press pulses */
 };
 
 /* ---- Key mapping (Carbon virtual key codes) ---- */
@@ -72,6 +73,7 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
         case 48:  return 259; /* Tab    */
         case 51:  return 260; /* Delete/Backspace */
         case 117: return 288; /* Forward Delete */
+        case 114: return 287; /* Insert — GPU frustum cull */
         case 115: return 285; /* Home */
         case 119: return 286; /* End */
         case 116: return 283; /* Page Up */
@@ -135,15 +137,22 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
     i32 idx = cocoa_keycode_to_index(e.keyCode, e.charactersIgnoringModifiers);
     if (idx >= 0) input_set_key(&self.platform->input, idx, false);
 }
-/* R365/R366: modifiers arrive via flagsChanged, not keyDown/keyUp. */
+/* R365/R366/R367: modifiers arrive via flagsChanged, not keyDown/keyUp. */
 - (void)flagsChanged:(NSEvent *)e {
     NSUInteger flags = e.modifierFlags;
-    input_set_key(&self.platform->input, 289,
+    Platform *p = self.platform;
+    input_set_key(&p->input, 289,
                   (flags & NSEventModifierFlagShift) != 0);
-    input_set_key(&self.platform->input, 290,
+    input_set_key(&p->input, 290,
                   (flags & NSEventModifierFlagControl) != 0);
-    input_set_key(&self.platform->input, 294,
-                  (flags & NSEventModifierFlagCapsLock) != 0);
+    /* CapsLock is sticky LED state — pulse a press edge on every polarity change
+     * so CapsLock:AutoExp toggles once per keypress (not every other). */
+    bool caps = (flags & NSEventModifierFlagCapsLock) != 0;
+    if (caps != p->caps_lock_latched) {
+        input_set_key(&p->input, 294, false);
+        input_set_key(&p->input, 294, true);
+        p->caps_lock_latched = caps;
+    }
     (void)e;
 }
 

@@ -92,17 +92,20 @@ void camera_update(Camera *cam, const InputState *input, f32 dt) {
     Vec3 fwd = {{cp * sy, sp, -cp * cy}};
     Vec3 right = {{-cy, 0.0f, -sy}};
 
-    if (input_key_down(input, 'w')) {
-        cam->position = vec3_add(cam->position, vec3_scale(fwd, cam->move_speed * dt));
-    }
-    if (input_key_down(input, 's')) {
-        cam->position = vec3_sub(cam->position, vec3_scale(fwd, cam->move_speed * dt));
-    }
-    if (input_key_down(input, 'd')) {
-        cam->position = vec3_add(cam->position, vec3_scale(right, cam->move_speed * dt));
-    }
-    if (input_key_down(input, 'a')) {
-        cam->position = vec3_sub(cam->position, vec3_scale(right, cam->move_speed * dt));
+    /* R367: Shift+WASD is brush/ambient/teleport/mass — skip move while Shift held. */
+    if (!input_key_down(input, 289)) {
+        if (input_key_down(input, 'w')) {
+            cam->position = vec3_add(cam->position, vec3_scale(fwd, cam->move_speed * dt));
+        }
+        if (input_key_down(input, 's')) {
+            cam->position = vec3_sub(cam->position, vec3_scale(fwd, cam->move_speed * dt));
+        }
+        if (input_key_down(input, 'd')) {
+            cam->position = vec3_add(cam->position, vec3_scale(right, cam->move_speed * dt));
+        }
+        if (input_key_down(input, 'a')) {
+            cam->position = vec3_sub(cam->position, vec3_scale(right, cam->move_speed * dt));
+        }
     }
 
     /* Update orientation from mouse input. */

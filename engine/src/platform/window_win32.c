@@ -108,6 +108,7 @@ static i32 win_vk_to_index(i32 vk_code) {
     case VK_OEM_PERIOD: return 46;
     case VK_OEM_2:      return 47;
     case VK_OEM_3:      return 96;
+    case VK_OEM_5:      return (i32)'\\'; /* R367: FogFar */
     default:            return -1;
     }
 }

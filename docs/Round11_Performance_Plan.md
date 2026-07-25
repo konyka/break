@@ -4475,6 +4475,16 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **806** 处修复。
 
+## R367：Shift+WASD/Space 门控 + Win32/Cocoa 键位（已完成）
+
+### [x] R367-A Shift+WASD：camera/character 跳过移动
+### [x] R367-B Shift+Space：jump 排除 Shift（ALL STOP）
+### [x] R367-C Cocoa CapsLock：边沿脉冲 → AutoExp 每次可切
+### [x] R367-D Win32：`VK_OEM_5` → `\\`（FogFar）
+### [x] R367-E Cocoa：Insert → 287
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **811** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
