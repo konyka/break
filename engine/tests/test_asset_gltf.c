@@ -173,6 +173,95 @@ TEST(gltf_rejects_index_count_past_buffer_view)
     remove(TMP_GLTF);
 }
 
+/* A 40-byte buffer: large enough that a 3xVEC3 span still fits after being
+ * nudged off alignment, so the misaligned cases below pass cgltf_validate's size
+ * checks and reach the actual load. */
+static const char *BUF40 =
+    "\"buffers\":[{\"byteLength\":40,\"uri\":\"data:application/octet-stream;base64,"
+    "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAA==\"}]";
+
+/* R391-A: accessor byteOffset of 2 is not a multiple of the 4-byte component
+ * size. The span still fits the view, so pre-fix this passed cgltf_validate and
+ * the POSITION loop then did a misaligned f32 load (UBSan: "load of misaligned
+ * address ... requires 4 byte alignment"). */
+TEST(gltf_rejects_misaligned_accessor_offset)
+{
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+             "\"accessors\":[{\"bufferView\":0,\"byteOffset\":2,\"componentType\":5126,"
+             "\"count\":3,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":40}],"
+             "%s}", BUF40);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(!asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    remove(TMP_GLTF);
+}
+
+/* R391-A: the misalignment can equally come from the bufferView, so the check
+ * has to look at the sum rather than the accessor's own offset. */
+TEST(gltf_rejects_misaligned_buffer_view_offset)
+{
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+             "\"count\":3,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":2,\"byteLength\":38}],"
+             "%s}", BUF40);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(!asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    remove(TMP_GLTF);
+}
+
+/* R391-A: an index accessor's misalignment is read by cgltf_calc_index_bound
+ * inside cgltf_validate, which is why the alignment check has to run first.
+ * Pre-fix this was a misaligned unsigned short load reached from validate. */
+TEST(gltf_rejects_misaligned_index_accessor)
+{
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+             "\"indices\":1}]}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+             "\"count\":3,\"type\":\"VEC3\"},"
+             "{\"bufferView\":1,\"byteOffset\":1,\"componentType\":5123,"
+             "\"count\":3,\"type\":\"SCALAR\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":40}],"
+             "%s}", BUF40);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(!asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    remove(TMP_GLTF);
+}
+
 /* A well-formed model must still load, or the guard above would be a silent
  * regression in model loading — the success branch is otherwise untested. */
 TEST(gltf_accepts_well_formed_model)
@@ -208,5 +297,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
     RUN_TEST(gltf_rejects_buffer_view_past_buffer);
     RUN_TEST(gltf_rejects_index_count_past_buffer_view);
+    RUN_TEST(gltf_rejects_misaligned_accessor_offset);
+    RUN_TEST(gltf_rejects_misaligned_buffer_view_offset);
+    RUN_TEST(gltf_rejects_misaligned_index_accessor);
     RUN_TEST(gltf_accepts_well_formed_model);
 TEST_MAIN_END()

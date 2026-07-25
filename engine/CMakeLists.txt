@@ -578,6 +578,15 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_asset_gltf PRIVATE m)
     add_test(NAME test_asset_gltf COMMAND test_asset_gltf)
 
+    # R391: mutation fuzzer for the glTF loader. Same usage as the other fuzz_*
+    # targets: EXCLUDE_FROM_ALL, run by hand under ASan/UBSan. Takes an optional
+    # GLB seed path (default engine/assets/test.glb, relative to the repo root).
+    add_executable(fuzz_asset_gltf EXCLUDE_FROM_ALL tests/fuzz_asset_gltf.c
+        src/asset/asset.c src/asset/vfs.c src/animation/skeleton.c
+        src/core/log.c src/math/math.c)
+    target_include_directories(fuzz_asset_gltf PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_asset_gltf PRIVATE m)
+
     # R388: mutation fuzzer for the PAK mount path. Same usage as
     # fuzz_scene_serial: build explicitly and run by hand under ASan/UBSan.
     add_executable(fuzz_vfs_pak EXCLUDE_FROM_ALL tests/fuzz_vfs_pak.c

@@ -145,6 +145,60 @@ static usize cgltf_accessor_stride(cgltf_accessor *acc) {
     return component_size * cgltf_num_components(acc->type);
 }
 
+/* R391: glTF 2.0 §3.6.2.4 requires an accessor's offset into its buffer
+ * (bufferView.byteOffset + accessor.byteOffset) and its byteStride to both be
+ * multiples of the component size. cgltf_validate checks sizes, not alignment.
+ *
+ * Nothing enforced it, and every reader dereferences a typed pointer built from
+ * those file-controlled offsets — ours in the attribute and animation loops, and
+ * cgltf's own cgltf_component_read_float (*(const float *)in) and
+ * cgltf_calc_index_bound (((unsigned short *)data)[i]). A non-conforming file
+ * therefore produces misaligned loads (UBSan: "load of misaligned address ...
+ * which requires 4 byte alignment", found by fuzz_asset_gltf). That is UB in C
+ * and a SIGBUS on strict-alignment targets such as ARM.
+ *
+ * Checked against the resolved pointer rather than the offset sum alone, because
+ * buffer->data for a GLB points into the binary chunk: a file whose JSON chunk
+ * length is not the spec-mandated multiple of 4 lands the chunk itself at an odd
+ * address, and then a perfectly conforming offset is still misaligned.
+ *
+ * Runs before cgltf_validate, not after: validate calls cgltf_calc_index_bound,
+ * so by the time it returns the misaligned read has already happened. Only
+ * integer arithmetic on uintptr_t is used, never a computed pointer, since an
+ * out-of-range offset would make forming one UB in its own right. */
+static bool gltf_span_aligned(const cgltf_buffer_view *view, cgltf_size offset,
+                              cgltf_size stride, cgltf_size cs) {
+    if (!view || !view->buffer || cs == 0) return true;
+    uintptr_t base = (uintptr_t)view->buffer->data + (uintptr_t)view->offset + (uintptr_t)offset;
+    return (base % (uintptr_t)cs) == 0 && (stride % cs) == 0;
+}
+
+static bool gltf_accessors_aligned(const cgltf_data *data, const char *path) {
+    for (cgltf_size i = 0; i < data->accessors_count; i++) {
+        const cgltf_accessor *acc = &data->accessors[i];
+        cgltf_size cs = cgltf_component_size(acc->component_type);
+
+        if (!gltf_span_aligned(acc->buffer_view, acc->offset, acc->stride, cs)) {
+            LOG_ERROR("glTF accessor %u misaligned (component size %u): %s",
+                      (u32)i, (u32)cs, path);
+            return false;
+        }
+        /* Sparse indices and values carry their own views, offsets and component
+         * type, and are read by the same unaligned-unsafe helpers. */
+        if (acc->is_sparse) {
+            cgltf_size ics = cgltf_component_size(acc->sparse.indices_component_type);
+            if (!gltf_span_aligned(acc->sparse.indices_buffer_view,
+                                   acc->sparse.indices_byte_offset, ics, ics) ||
+                !gltf_span_aligned(acc->sparse.values_buffer_view,
+                                   acc->sparse.values_byte_offset, cs, cs)) {
+                LOG_ERROR("glTF accessor %u sparse data misaligned: %s", (u32)i, path);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     cgltf_options opts = {0};
     cgltf_data *data = NULL;
@@ -191,6 +245,12 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
      * count = 200000 against a 36-byte bufferView read 2.4 MB past a 36-byte
      * heap block (ASan: READ of size 12 after a 36-byte region) — a crash, or
      * adjacent heap contents copied into vertex buffers. */
+    /* R391: must precede cgltf_validate — see gltf_accessors_aligned. */
+    if (!gltf_accessors_aligned(data, path)) {
+        cgltf_free(data);
+        return false;
+    }
+
     result = cgltf_validate(data);
     if (result != cgltf_result_success) {
         LOG_ERROR("cgltf validation failed (%d): %s", result, path);

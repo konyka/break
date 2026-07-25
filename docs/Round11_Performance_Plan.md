@@ -4918,6 +4918,106 @@ accessor byteOffset 越界、bufferView 越出 buffer、索引 accessor count �
 ASan+UBSan / GL / VK / TSan 四套 CTest 各 **33/33**（新增 `test_asset_gltf`）。
 总计 **876** 处修复。
 
+## R391：glTF accessor 未强制对齐导致未定义行为（已完成）
+
+本轮先做了一次**测试覆盖普查**（见文末表格），结论是 `engine/src/` 下 86 个源文件
+有 47 个完全无测试覆盖，但按"是否解析外部输入"加权后，排在前面的候选逐一核查
+**都没有发现缺陷**：
+
+- `main.c:3053` 的 `fread(&camera.position, sizeof(Camera), 1, lf)` 从成员地址写入
+  整个结构体大小，写法脆弱，但 `position` 确是 `Camera` 首成员（`camera.h:7`），
+  读取在界内——这条是核实过的，不是假设。
+- `filewatch.c` 两处 inotify 步进（328、423 行）只判 `ptr < buf + len` 就解引用 16
+  字节的 `struct inotify_event`。但生产者是内核，而内核保证 `read()` 不返回部分
+  事件（缓冲不足时返回 EINVAL），因此属加固范畴而非实际缺陷，**不改**。
+- 顶点关节索引已由 R253 钳到 `SKELETON_MAX_JOINTS`；`asset.c:562` 那个
+  `node_to_joint[skin->joints[jj] - data->nodes] = jj` **写**操作，其索引由
+  `CGLTF_PTRFIXUP_REQ`（cgltf.h:6808）在 fixup 阶段限界于 `nodes_count`，安全。
+
+真正的缺陷是把 R390 刚落地的 glTF 路径拿去做规模化模糊测试时暴露的。
+
+### [x] R391-A accessor 偏移/步长从未强制对齐 → 未对齐加载（UB）
+
+glTF 2.0 §3.6.2.4 要求 accessor 相对 buffer 的偏移
+（`bufferView.byteOffset + accessor.byteOffset`）与 `byteStride` 都必须是组件大小的
+整数倍。**`cgltf_validate` 只校验尺寸，不校验对齐**，而所有读取方都是拿这些
+文件可控的偏移构造出带类型的指针再解引用：引擎侧属性循环与动画循环
+（`asset.c:600/603/632/645`、`skeleton.c:287`），以及 cgltf 库内部的
+`cgltf_component_read_float`（`*(const float *)in`，cgltf.h:2255）和
+`cgltf_calc_index_bound`（`((unsigned short *)data)[i]`，cgltf.h:1571）。
+
+因此一个不合规文件就能产生未对齐加载：UBSan 报
+`load of misaligned address ... which requires 4 byte alignment`。这在 C 里是 UB，
+在 ARM 等严格对齐平台上是 SIGBUS 硬崩。
+
+修复为在入口处一次性拒掉不合规对齐（`gltf_accessors_aligned`），三个设计要点：
+
+1. **必须放在 `cgltf_validate` 之前**。第一版放在其后，模糊测试仍稳定报
+   cgltf.h:1571 的 u16 未对齐加载——因为 `cgltf_validate` 自己会调
+   `cgltf_calc_index_bound`，等它返回时越界读早就发生了。
+2. **校验解析后的真实指针，而非仅偏移之和**。GLB 的 `buffer->data` 指向二进制块
+   内部，若 JSON 块长度不是规范要求的 4 的倍数，块本身就落在奇地址上，此时哪怕
+   偏移完全合规也仍然未对齐。
+3. **只做 `uintptr_t` 整数运算，绝不构造指针**。偏移越界时构造指针本身即是 UB。
+
+覆盖范围包含 sparse accessor 的 `indices_buffer_view` / `values_buffer_view`——
+它们各自带独立的偏移与组件类型，且被同一批不安全读取函数消费。
+
+一处拒绝即覆盖全部 accessor（顶点、索引、动画、逆绑定矩阵），**连 cgltf 库内部的
+读取也一并保护**，这是改我们自己的解引用做不到的。合规文件不受影响，因为这是规范
+的硬性要求而非我们自定的策略。
+
+### [x] R391-B 新增 `fuzz_asset_gltf` 模糊测试器
+
+`fuzz_asset_gltf.c` 同时变异两种输入：真实 GLB 容器（顺带覆盖二进制块头解析）与一份
+自带 skin/animation/索引图元的 JSON 种子——动画与蒙皮恰是 `cgltf_validate` 保证最少
+的部分。JSON 变异**偏向改数字**而非随机字节：随机字节绝大多数只产生 JSON 语法错误，
+根本到不了读取路径，而数字才驱动那些决定边界的 count/offset/index。
+
+程序启动时先断言未变异的 JSON 种子能加载成功，否则模糊测试只会覆盖拒绝路径——这个
+自检是有意加的。
+
+### 测试覆盖普查（本轮附带产出，供后续轮次定位目标）
+
+按"外部输入解析特征"（`fread`/`read`、按流内长度字段步进、由解析值驱动的分配）对
+**无测试覆盖**的文件打分，前几名：
+
+| 分数 | 行数 | 文件 | 本轮核查结论 |
+|---|---|---|---|
+| 32 | 6255 | `src/main.c` | `scene_state.bin` 读取路径已核（见上），无缺陷；模块与应用状态深度耦合，抽出来测属大改动 |
+| 15 | 6904 | `src/rhi/rhi_vk.c` | 分配与 memcpy 的尺寸源自引擎自身描述符，非外部文件 |
+| 4 | 496 | `src/platform/filewatch.c` | inotify 由内核喂数据，属加固范畴（见上） |
+| 4 | 420 | `src/platform/gamepad_linux.c` | 同上，`/dev/input` 事件由内核产生 |
+| 3 | 187 | `src/asset/hotreload.c` | 走 `stb_image`，已由 R144/R153/R160-B 封住 |
+
+**另记录（未改）**：动画采样器的读取（`asset.c:603` 的 `times_data[time_count-1]`、
+645 行的 `values[k * comp + c]`）假设紧密排列，忽略 `acc->stride`，与 R249 为顶点
+属性修掉的正是同一类问题。但规范禁止在动画采样器与索引所用的 bufferView 上定义
+`byteStride`，且 `cgltf_validate` 是按 `stride` 界定跨度的，紧密读取必然落在该跨度
+之内——即不存在内存安全问题，只在不合规文件上读到错误数据。在没有实证失败的情况下
+不动动画读取路径，本轮改动保持最小。
+
+**验收**：反向验证的结果比预期更有力——停用该检查后，5 个种子 × 2000 轮**各自**
+稳定复现**六个不同位置**的未对齐加载，恰好覆盖论证里提到的全部读取方：
+
+| 位置 | 读取方 |
+|---|---|
+| `asset.c:409` | 索引/属性循环 |
+| `asset.c:663` | 动画 `times` |
+| `asset.c:705` | 动画 `values` |
+| `skeleton.c:287` | 骨骼消费动画值 |
+| `cgltf.h:1571` | `cgltf_calc_index_bound`（**在 `cgltf_validate` 内部**） |
+| `cgltf.h:2255` | `cgltf_component_read_float`（**cgltf 自己的读取器**） |
+
+后两条实证了"改我们自己的解引用不够、必须在入口拒绝"这个判断：它们在库内部，
+引擎侧无从下手。修复后同样 5 个种子 × 2000 轮全部干净，再扩到 25 个种子 × 4000 轮
+（**10 万轮**）零缺陷、零泄漏。三条新回归测试
+（accessor 偏移、bufferView 偏移、索引 accessor）经日志确认是**因正确原因**被拒
+（组件大小分别为 4、4、2）。另单独验证 `engine/assets/test.glb` 与 JSON 种子
+**不被误拒**——收紧校验最大的风险始终是静默拒掉真实资产。
+ASan+UBSan / GL / VK / TSan 四套 CTest 各 **33/33**（`test_asset_gltf` 由 5 条增至 8 条）。
+总计 **877** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
