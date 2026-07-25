@@ -4574,6 +4574,14 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **845** 处修复。
 
+## R379：N 清空 park + 仅 revive 有实体槽（已完成）
+
+### [x] R379-A N：有 BSCN 才 clear；destroy 前 `physics_body_park`
+### [x] R379-B scene_state：仅 `body_live[si]` 才 unpark/写 pose；孤儿 park
+### [x] R379-C netrep：N 清 `netrep_ghost_valid` 并重建 ghost
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **848** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

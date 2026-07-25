@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R378 B/N park 复用安全 + BSCN 清空 + 冻体克隆质量 — 修复 3 处** — **R378-A**：B 把 Del tombstone 位姿写入 `scene_state`，槽复用后 N 打穿活体；存盘写 `spawn_pos`，恢复拒 `y≤-999`，必要时 revive。**R378-B**：N 的 BSCN 只追加致重复实体/共享 `physics_id`；加载前销毁全部 live 实体。**R378-C**：`]` 克隆冻体 `create(is_static)` 清零 mass，解冻永久不动；保留 mass。总计 **845** 处修复。
+最近更新：**R379 N 清空 park + 仅 revive 有实体槽 + netrep ghost — 修复 3 处** — **R379-A**：N 销毁实体不 park → 无 BSCN/多余 body 幽灵碰撞；有 BSCN 才 clear，且 Del 式 park。**R379-B**：scene_state 对无实体 park 槽仍 unpark；仅 `body_live` 才 revive，孤儿 park。**R379-C**：N 后 `netrep_ghost_valid` 过期；清标志并重建 ghost。总计 **848** 处修复。
+
+此前：**R378 B/N park 复用安全 + BSCN 清空 + 冻体克隆质量 — 修复 3 处** — **R378-A**：B 把 Del tombstone 位姿写入 `scene_state`，槽复用后 N 打穿活体；存盘写 `spawn_pos`，恢复拒 `y≤-999`，必要时 revive。**R378-B**：N 的 BSCN 只追加致重复实体/共享 `physics_id`；加载前销毁全部 live 实体。**R378-C**：`]` 克隆冻体 `create(is_static)` 清零 mass，解冻永久不动；保留 mass。总计 **845** 处修复。
 
 此前：**R377 R/N 勿打穿 Del park — 修复 2 处** — **R377-A**：`R` 把 park 槽挪回出生格仍 static/mass0 → 隐形碰撞且破坏 R376 复用；跳过 `physics_body_is_parked`。**R377-B**：`N` 按 index 写回 pose 同洞；恢复时保留 park。Park 哨兵改为 `spawn_frame=UINT32_MAX`。总计 **842** 处修复。
 

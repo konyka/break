@@ -132,6 +132,19 @@ typedef struct { f32 pos[3]; } CTransform;
 typedef struct { u32 physics_id; } CRigidBody;
 typedef struct { u32 mesh_index; } CMeshRef;
 
+/* R376/R379: Del/N-clear park tombstone for create reuse (spawn_frame=UINT32_MAX). */
+static void physics_body_park(PhysicsWorld *pw, u32 pid) {
+    if (!pw || pid == 0 || pid >= pw->count) return;
+    RigidBody *pb = &pw->bodies[pid];
+    pb->is_static = true;
+    pb->inv_mass = 0.0f;
+    pb->mass = 0.0f;
+    pb->velocity = vec3(0, 0, 0);
+    pb->position = vec3(0, -1000.0f, 0);
+    pb->spawn_frame = UINT32_MAX;
+    pw->bvh_dirty = true;
+}
+
 /* ECS system: copy simulated rigid-body positions back into transforms and
  * respawn anything that fell out of the world. Each entity touches only its own
  * physics body (unique physics_id), so chunks dispatch safely across workers. */
@@ -2900,20 +2913,70 @@ u32 culled_count = 0;
             }
         }
         if (input_key_pressed(platform_input(engine.platform), (i32)'n')) {
-            /* R378: BSCN load appends — clear live entities first (no park; bodies rebind by id). */
-            for (u32 ei = 1; ei < world->entity_count; ei++) {
-                Entity ce = world->entities[ei];
-                if (world_entity_exists(world, ce))
+            /* R379: only clear when BSCN exists — bare N must not empty the world. */
+            FILE *bscn_probe = fopen("scene_save.bscn", "rb");
+            bool have_bscn = bscn_probe != NULL;
+            if (bscn_probe) fclose(bscn_probe);
+            if (have_bscn) {
+                /* R379: park rigid bodies like Del before destroy — avoid ghost colliders. */
+                for (u32 ei = 1; ei < world->entity_count; ei++) {
+                    Entity ce = world->entities[ei];
+                    if (!world_entity_exists(world, ce)) continue;
+                    CRigidBody *cr = world_get_component(world, ce, COMP_RIGID_BODY);
+                    if (cr) physics_body_park(physics, cr->physics_id);
                     world_destroy_entity(world, ce);
-            }
-            selected_entity_id = 0;
-            selected_entity_count = 0;
-            selected_entity_idx = 0;
-            /* Load BSCN binary (ECS entities + scene graph). */
-            if (scene_load_binary(world, &scene, "scene_save.bscn"))
-                LOG_INFO("Scene loaded (BSCN binary)");
-            else
+                }
+                selected_entity_id = 0;
+                selected_entity_count = 0;
+                selected_entity_idx = 0;
+                netrep_ghost_valid = false;
+                netrep_ghost = (Entity){0};
+                if (scene_load_binary(world, &scene, "scene_save.bscn"))
+                    LOG_INFO("Scene loaded (BSCN binary)");
+                else
+                    LOG_WARN("BSCN load failed");
+                if (netrep_enabled) {
+                    Entity ge = world_create_entity(world);
+                    CTransform *gt = world_add_component(world, ge, COMP_TRANSFORM);
+                    CMeshRef *gm = world_add_component(world, ge, COMP_MESH_REF);
+                    if (gt && gm) {
+                        gm->mesh_index = 0;
+                        gt->pos[0] = 0.0f; gt->pos[1] = 5.0f; gt->pos[2] = 0.0f;
+                        netrep_ghost_target[0] = 0.0f;
+                        netrep_ghost_target[1] = 5.0f;
+                        netrep_ghost_target[2] = 0.0f;
+                        netrep_ghost = ge;
+                        netrep_ghost_valid = true;
+                    }
+                }
+            } else {
                 LOG_WARN("BSCN load failed or file not found");
+            }
+            /* Build live physics_id set after BSCN (stack-sized; demo cap 256). */
+            bool body_live[256];
+            memset(body_live, 0, sizeof(body_live));
+            {
+                ComponentType rv_types[] = { COMP_RIGID_BODY };
+                Query *rq = world_query(world, rv_types, 1);
+                if (rq) {
+                    for (u32 qi = 0; qi < rq->match_count; qi++) {
+                        Archetype *a = rq->matching[qi];
+                        Chunk *c = a->chunks;
+                        while (c) {
+                            u32 *ents = (u32 *)((u8 *)c + a->entity_offset);
+                            for (u32 ci = 0; ci < c->count; ci++) {
+                                Entity re = world->entities[ents[ci]];
+                                CRigidBody *rr = world_get_component(world, re, COMP_RIGID_BODY);
+                                if (rr && rr->physics_id > 0 && rr->physics_id < 256 &&
+                                    rr->physics_id < physics->count)
+                                    body_live[rr->physics_id] = true;
+                            }
+                            c = c->next;
+                        }
+                    }
+                    query_done(rq);
+                }
+            }
             /* Restore companion runtime state. */
             FILE *lf = fopen("scene_state.bin", "rb");
             if (lf) {
@@ -2932,11 +2995,11 @@ u32 culled_count = 0;
                             Vec3 pos, vel;
                             ld_ok &= fread(&pos, sizeof(Vec3), 1, lf) == 1;
                             ld_ok &= fread(&vel, sizeof(Vec3), 1, lf) == 1;
-                            /* R378: reject legacy tombstone poses (y<=-999) even on reused slots. */
-                            if (ld_ok && pos.e[1] > -999.0f) {
+                            bool live = (si < 256) && body_live[si];
+                            /* R379: never revive/unpark bodies with no live entity. */
+                            if (ld_ok && live && pos.e[1] > -999.0f) {
                                 RigidBody *rb = &physics->bodies[si];
                                 if (physics_body_is_parked(rb)) {
-                                    /* Del→B→N: BSCN rebinds entity to parked slot — revive. */
                                     rb->is_static = false;
                                     if (rb->mass <= 0.0f) rb->mass = 1.0f;
                                     rb->inv_mass = 1.0f / rb->mass;
@@ -2945,6 +3008,9 @@ u32 culled_count = 0;
                                 rb->position = pos;
                                 rb->velocity = vel;
                                 rb->rest_frames = 0;
+                            } else if (ld_ok && !live && si > 0 &&
+                                       !physics_body_is_parked(&physics->bodies[si])) {
+                                physics_body_park(physics, si);
                             }
                         } else {
                             Vec3 skip;
@@ -2952,12 +3018,10 @@ u32 culled_count = 0;
                             ld_ok &= fread(&skip, sizeof(Vec3), 1, lf) == 1;
                         }
                     }
-                    /* R374: restored poses must rebuild BVH (static/resting skip refit). */
                     if (ld_ok && pc > 0) physics->bvh_dirty = true;
                     if (ld_ok && !feof(lf)) {
                         ld_ok &= fread(&water.water_y, sizeof(f32), 1, lf) == 1;
                         ld_ok &= fread(&water.enabled, sizeof(bool), 1, lf) == 1;
-                        /* R363: init-failed water has no pipeline; ignore saved enabled. */
                         if (!rhi_handle_valid(water.pipeline))
                             water.enabled = false;
                     }
@@ -2966,7 +3030,7 @@ u32 culled_count = 0;
                 }
                 fclose(lf);
             }
-            /* R378: BSCN may rebind entities to still-parked bodies — revive from transform. */
+            /* R379: rebind parked slots only when a live entity still references them. */
             {
                 ComponentType rv_types[] = { COMP_TRANSFORM, COMP_RIGID_BODY };
                 Query *rq = world_query(world, rv_types, 2);
@@ -4541,15 +4605,7 @@ u32 culled_count = 0;
                         }
                         Entity se = world_create_entity(world);
                         if (se.index == 0) {
-                            /* Orphan body → re-park for later reuse. */
-                            RigidBody *ob = &physics->bodies[new_body];
-                            ob->is_static = true;
-                            ob->inv_mass = 0.0f;
-                            ob->mass = 0.0f;
-                            ob->velocity = vec3(0, 0, 0);
-                            ob->position = vec3(0, -1000.0f, 0);
-                            ob->spawn_frame = UINT32_MAX;
-                            physics->bvh_dirty = true;
+                            physics_body_park(physics, new_body);
                             break;
                         }
                         Vec3 impulse = vec3_scale(ecam_fwd, 15.0f);
@@ -5019,18 +5075,9 @@ u32 culled_count = 0;
 
             if (input_key_pressed(inp, 288) && selected_entity_id > 0) {
                 Entity se = world->entities[selected_entity_id];
-                /* R372/R376/R377: park body (spawn_frame tombstone) for create reuse. */
+                /* R372/R376/R379: park body for create reuse. */
                 CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
-                if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
-                    RigidBody *pb = &physics->bodies[sr->physics_id];
-                    pb->is_static = true;
-                    pb->inv_mass = 0.0f;
-                    pb->mass = 0.0f;
-                    pb->velocity = vec3(0, 0, 0);
-                    pb->position = vec3(0, -1000.0f, 0);
-                    pb->spawn_frame = UINT32_MAX;
-                    physics->bvh_dirty = true;
-                }
+                if (sr) physics_body_park(physics, sr->physics_id);
                 world_destroy_entity(world, se);
                 LOG_INFO("Deleted entity %u (was %u/%u)", selected_entity_id, selected_entity_idx, selected_entity_count);
                 selected_entity_id = 0;
