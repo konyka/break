@@ -1642,6 +1642,7 @@ u32 last_collision_frame = 0;
 Vec3 prev_entity_pos = {.e={0,0,0}};
 bool recording_path = false;
 bool playing_path = false;
+bool path_offer_playback = false; /* R370: also set when path hits MAX_PATH */
 u32 path_count = 0;
 u32 path_idx = 0;
 #define MAX_PATH 600
@@ -2335,7 +2336,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             LOG_INFO("Preset: %s", pnames[effect_preset]);
         }
 
-        /* R360: Pause (291) — was End, which also toggled GPU Indirect. */
+        /* R360/R370: Pause (291) — align with Home "full" (was missing sharpen/SSS/CG/…). */
         if (input_key_pressed(platform_input(engine.platform), 291)) {
             effect_preset = 0;
             render_scale = render_scale_options[1]; render_scale_idx = 1;
@@ -2349,6 +2350,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             debug_viz_mode = 0; tonemap.mode = 0;
             camera.move_speed = 3.0f; inspector_mode = 0; sun_azimuth = 1.03f; sun_elevation = 0.93f; wireframe_mode = false; fxaa_enabled = true; taa_enabled = true; shadow_bias = 0.002f; tod_cycle = false; terrain_follow = false;
             dof_enabled = true; ssr_enabled = true; ssgi_enabled = true;
+            cs_enabled = true; vol_enabled = true; lf_enabled = true;
+            sharpen_enabled = true; sss_enabled = true; cg_enabled = true;
+            lensfx_enabled = true; lens_ca = 0.003f; lens_vignette = 0.45f; lens_grain = 0.015f;
             LOG_INFO("All effects reset to defaults");
         }
 
@@ -2578,6 +2582,7 @@ u32 culled_count = 0;
         }
         if (recording_path && path_count >= MAX_PATH) {
             recording_path = false;
+            path_offer_playback = true; /* R370: was only set on manual ',' stop */
             LOG_INFO("Path recording FULL (%u frames). Press , to playback.", path_count);
         }
         if (cam_height_lock) {
@@ -3748,7 +3753,7 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "=== CONTROLS (U to toggle) ===");
             debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G:Fullscreen");
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
-            debug_ui_text(&ui, "WASD:Move  Shift+WASD:Brush/Amb/Teleport/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
+            debug_ui_text(&ui, "WASD:Move  Shift+A/W/S/D:Brush/Teleport/Amb/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
             debug_ui_text(&ui, "KP0:Burst  Y/H:Terrain(3:BrushSize)  KP3:Layout  /:Fog  \\:FogFar  Q:TerrainFollow  NumLock:Water");
             debug_ui_text(&ui, "Enter:Select  ]:Duplicate  Del:Delete  Arrows:Move  PgUp/PgDn:MoveY  Space:Jump/Impulse");
@@ -4659,8 +4664,7 @@ u32 culled_count = 0;
                     LOG_INFO("Water color: %s", wcn[water_color_preset]);
                 }
                 if (input_key_pressed(inp, (i32)',')) {
-                    /* R363: record→stop arms playback; , plays; stop play; idle/empty → new record. */
-                    static bool path_offer_playback = false;
+                    /* R363/R370: record→stop arms playback (manual or MAX_PATH); , plays. */
                     if (recording_path) {
                         recording_path = false;
                         path_offer_playback = (path_count > 0);
@@ -4967,6 +4971,13 @@ u32 culled_count = 0;
                     if (input_key_down(inp, 264)) st->pos[2] += ms;
                     if (input_key_down(inp, 283)) st->pos[1] += ms;
                     if (input_key_down(inp, 284)) st->pos[1] -= ms;
+                    /* R370: physics sync overwrites Transform each frame — keep body in sync. */
+                    CRigidBody *sr = world_get_component(world, se, COMP_RIGID_BODY);
+                    if (sr && sr->physics_id > 0 && sr->physics_id < physics->count) {
+                        physics->bodies[sr->physics_id].position =
+                            vec3(st->pos[0], st->pos[1], st->pos[2]);
+                        physics->bodies[sr->physics_id].velocity = vec3(0, 0, 0);
+                    }
                 }
             }
 

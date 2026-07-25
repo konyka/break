@@ -4502,6 +4502,15 @@ if (!ok) return false;
 
 **验收**：双后端 `engine_demo` 构建通过。总计 **818** 处修复。
 
+## R370：路径满录回放 + 箭头同步物理 + Pause 复位（已完成）
+
+### [x] R370-A path FULL：置 path_offer_playback（文件作用域）
+### [x] R370-B Arrows:Move：同步 physics body position/velocity
+### [x] R370-C Pause ResetAll：对齐 Home full 效果开关
+### [x] R370-D Help：Shift+A/W/S/D 文案顺序
+
+**验收**：双后端 `engine_demo` 构建通过。总计 **822** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
