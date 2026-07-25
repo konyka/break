@@ -4715,6 +4715,41 @@ init 会累积泄漏。照搬 `terrain_init`（R244）的既有写法。
 
 **验收**：ASan+UBSan / GL / VK / TSan 四套 CTest 各 **31/31**。总计 **868** 处修复。
 
+## R387：变异模糊测试 — RESOURCES 计数无上界 + 重复 ENTITIES chunk 泄漏（已完成）
+
+前置：本轮先系统扫了一遍全部 26 个带 `if (!x->device) return;` 的 `*_shutdown`，
+验证 R383/R386 那个模式是否还有第三处。结论是**没有**：只有 `gpucull`、
+`occlusion_cull`、`lighting` 三处在 guard 之后释放 CPU 内存，而这三处的
+`device = dev` 都在 init 首行赋值、CPU 缓冲在其后分配，device 为 NULL 时缓冲
+不可能存在，因此不可达，不做改动。
+
+随后改用静态审查做不到的手段：新增 `engine/tests/fuzz_scene_serial.c`，构造合法
+场景后反复随机字节变异（偏向 header + chunk 表区域），把结果喂回
+`scene_load_binary` / `scene_load_json` / `scene_probe_binary`，在 ASan+UBSan 下
+跑。加载器可以拒绝任何输入，但不允许崩溃、越界或泄漏。该目标标记为
+`EXCLUDE_FROM_ALL`，不进 CTest（随机且耗时），按需手工构建运行。
+
+### [x] R387-A `load_resources_chunk`：条目数按 chunk 大小设界
+
+`ENTITIES`（`BSCN_MAX_LOAD_ENTITIES`）和 `SCENE_NODES`（`BSCN_MAX_LOAD_NODES`）
+都在分配前校验计数，唯独 RESOURCES 把文件里的 `n` 直接送进
+`calloc(n, sizeof(SceneResource))`（每项约 300B），`n=0xFFFFFFFF` 索要约 1.2TB。
+条目最小在盘字节数为 24（guid 8 + type 4 + ref_index 4 + flags 4 + path_len 4），
+据此用 `(r->end - r->p)` 推导上界——精确且不会误拒合法文件。
+
+### [x] R387-B 拒绝重复的 ENTITIES chunk
+
+第一遍循环扫描全部 chunk 找 ENTITIES 却不 break。声明两个 ENTITIES chunk 时
+`load_entities_chunk` 被调用两次，第二次直接覆盖 `ents`，泄漏第一次的分配。
+合法 BSCN 只有一个；两个还会让 COMPONENTS 的实体索引产生歧义，所以拒绝而非任选。
+（第二遍的 SCENE_NODES / RESOURCES 重复不泄漏，它们都是 `free(旧); 装新`。）
+
+**验收**：8 个随机种子 × 25000 轮 = **20 万轮**变异，零崩溃零泄漏零 UB
+（修复前 8/8 种子全部命中）。两条均补回归测试
+（`resources_count_bounded_by_chunk_size`、`duplicate_entities_chunk_rejected`）
+并反向验证。ASan+UBSan / GL / VK / TSan 四套 CTest 各 **31/31**。
+总计 **870** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

@@ -442,9 +442,19 @@ void scene_serial_free(Scene *s) {
     scene_resources_free(s);
 }
 
+/* Smallest on-disk RESOURCES entry: guid(8) + type(4) + ref_index(4) +
+ * flags(4) + path_len(4). Anything the header claims beyond what the chunk can
+ * physically hold is bogus. */
+#define BSCN_RESOURCE_MIN_BYTES 24u
+
 static bool load_resources_chunk(Scene *s, Reader *r) {
     u32 n = 0;
     if (!rd_u32(r, &n)) return false;
+    /* R387: ENTITIES and SCENE_NODES bound their counts before allocating; this
+     * chunk did not, so a mutated count sent `n * sizeof(SceneResource)` (~300B
+     * each) straight into calloc — 0xFFFFFFFF asks for ~1.2TB. Derive the bound
+     * from the chunk's own size so no valid file can be rejected. */
+    if ((u64)n * (u64)BSCN_RESOURCE_MIN_BYTES > (u64)(r->end - r->p)) return false;
     SceneResource *arr = NULL;
     if (s && n) {
         arr = (SceneResource *)calloc(n, sizeof(SceneResource));
@@ -671,8 +681,16 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     Scene *dst = s ? &staged : NULL;
 
     /* First pass: ENTITIES (must precede COMPONENTS). */
+    /* R387: this scanned every chunk without stopping, so a file declaring two
+     * ENTITIES chunks called load_entities_chunk twice — the second overwrote
+     * `ents` and leaked the first allocation. A well-formed BSCN has exactly
+     * one, and picking arbitrarily between two would leave the COMPONENTS
+     * chunk's entity indices ambiguous, so reject the duplicate outright. */
+    bool seen_entities = false;
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
         if (table[i].type != BSCN_CHUNK_ENTITIES) continue;
+        if (seen_entities) { ok = false; break; }
+        seen_entities = true;
         /* R108-1: validate chunk data bounds */
         u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
         if (chunk_end > (u64)fsz) { ok = false; break; }

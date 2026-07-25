@@ -316,6 +316,90 @@ static bool corrupt_scene_nodes_count(const char *path)
     return done;
 }
 
+/* R387: overwrite the RESOURCES chunk's entry count. Found by mutation fuzzing:
+ * the count went straight into calloc(n, sizeof(SceneResource)). */
+static bool set_resources_count(const char *path, u32 value)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return false; }
+    bool done = false;
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long ent_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, ent_off, SEEK_SET) != 0) break;
+        if (fread(&e, sizeof(e), 1, f) != 1) break;
+        if (e.type != BSCN_CHUNK_RESOURCES) continue;
+        if (fseek(f, (long)e.offset, SEEK_SET) != 0) break;
+        done = fwrite(&value, sizeof(value), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
+TEST(resources_count_bounded_by_chunk_size)
+{
+    const char *path = "/tmp/test_bscn_rescount.bscn";
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    World *w = world_create();
+    Scene src; make_scene(&src);
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    /* A count no chunk this small could hold must be rejected before it
+     * reaches calloc, not turned into a ~1.2TB request. */
+    ASSERT_TRUE(set_resources_count(path, 0xFFFFFFFFu));
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(!scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.resource_count, 0u);
+
+    free_scene_src(&dst); free_scene_src(&src);
+    world_destroy(w); world_destroy(w2);
+    remove(path);
+}
+
+/* R387: two ENTITIES chunks made the first pass call load_entities_chunk twice,
+ * overwriting (and leaking) the first allocation. */
+TEST(duplicate_entities_chunk_rejected)
+{
+    const char *path = "/tmp/test_bscn_dupents.bscn";
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    World *w = world_create();
+    Scene src; make_scene(&src);
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    /* Retype a second table slot to ENTITIES, pointing at the real one. */
+    FILE *f = fopen(path, "r+b");
+    ASSERT_NOT_NULL(f);
+    BscnHeader h;
+    ASSERT_TRUE(fread(&h, sizeof(h), 1, f) == 1);
+    ASSERT_TRUE(h.chunk_count >= 2u);
+    BscnChunkEntry ents_entry;
+    memset(&ents_entry, 0, sizeof(ents_entry));
+    bool found = false;
+    for (u32 i = 0; i < h.chunk_count && !found; i++) {
+        BscnChunkEntry e;
+        fseek(f, (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry)), SEEK_SET);
+        if (fread(&e, sizeof(e), 1, f) != 1) break;
+        if (e.type == BSCN_CHUNK_ENTITIES) { ents_entry = e; found = true; }
+    }
+    ASSERT_TRUE(found);
+    /* Slot 2 is HIERARCHY in the writer's fixed order; alias it to ENTITIES. */
+    fseek(f, (long)(sizeof(BscnHeader) + 2u * sizeof(BscnChunkEntry)), SEEK_SET);
+    ASSERT_TRUE(fwrite(&ents_entry, sizeof(ents_entry), 1, f) == 1);
+    fclose(f);
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(!scene_load_binary(w2, &dst, path));
+
+    free_scene_src(&dst); free_scene_src(&src);
+    world_destroy(w); world_destroy(w2);
+    remove(path);
+}
+
 /* R384: a chunk that fails after RESOURCES was applied must not leave the
  * caller's Scene half-overwritten — scene_load_binary now stages and commits. */
 TEST(failed_load_keeps_previous_scene)
@@ -558,6 +642,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
     RUN_TEST(failed_load_keeps_previous_scene);
+    RUN_TEST(resources_count_bounded_by_chunk_size);
+    RUN_TEST(duplicate_entities_chunk_rejected);
     /* Round 8: resources + generation */
     RUN_TEST(resources_roundtrip_include);
     RUN_TEST(resources_roundtrip_refs_only);

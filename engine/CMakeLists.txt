@@ -531,6 +531,14 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_scene_serial PRIVATE m)
     add_test(NAME test_scene_serial COMMAND test_scene_serial)
 
+    # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
+    # (it is long-running and randomized); build it and run by hand under
+    # ASan/UBSan, e.g. `./fuzz_scene_serial 25000 <seed>`.
+    add_executable(fuzz_scene_serial EXCLUDE_FROM_ALL tests/fuzz_scene_serial.c
+        src/scene/scene_serial.c src/ecs/ecs.c src/math/math.c src/core/log.c)
+    target_include_directories(fuzz_scene_serial PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(fuzz_scene_serial PRIVATE m)
+
     # test_vfs: needs vfs.c + log.c
     add_executable(test_vfs tests/test_vfs.c src/asset/vfs.c src/core/log.c)
     target_include_directories(test_vfs PRIVATE ${TEST_INCLUDE_DIRS})
