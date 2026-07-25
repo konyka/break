@@ -665,6 +665,10 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
 
     Entity *ents = NULL; u32 ent_count = 0;
     bool ok = true;
+    /* R384: stage Scene chunks so a later failing chunk cannot clobber the
+     * caller's scene graph. NULL `s` still means "parse and discard". */
+    Scene staged = {0};
+    Scene *dst = s ? &staged : NULL;
 
     /* First pass: ENTITIES (must precede COMPONENTS). */
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
@@ -690,9 +694,9 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         case BSCN_CHUNK_COMPONENTS:
             ok = load_components_chunk(w, &r, ents, ent_count); break;
         case BSCN_CHUNK_SCENE_NODES:
-            ok = load_scene_nodes_chunk(s, &r); break;
+            ok = load_scene_nodes_chunk(dst, &r); break;
         case BSCN_CHUNK_RESOURCES:
-            ok = load_resources_chunk(s, &r); break;
+            ok = load_resources_chunk(dst, &r); break;
         case BSCN_CHUNK_HIERARCHY:
         default:
             /* Hierarchy is implicit in SceneNode.parent_index. Skip silently. */
@@ -703,6 +707,22 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     /* R353: COMPONENTS/NODES/RESOURCES failure must not leave orphan entities. */
     if (!ok)
         rollback_entities(w, ents, ent_count);
+    /* R384: same reasoning for the Scene. Chunks are applied in table order, so
+     * a valid SCENE_NODES followed by a corrupt COMPONENTS used to free the
+     * caller's old nodes and install the new ones, then return false — losing
+     * the previous scene graph on a failed load. Commit only on success. */
+    if (s) {
+        if (ok) {
+            free(s->nodes);
+            s->nodes = staged.nodes;
+            s->node_count = staged.node_count;
+            free(s->resources);
+            s->resources = staged.resources;
+            s->resource_count = staged.resource_count;
+        } else {
+            scene_serial_free(&staged);
+        }
+    }
     free(ents);
     free(buf);
     return ok;
@@ -931,6 +951,11 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
             if (js_key(r, "type")) { if (!js_u32(r, &type)) goto fail; }
             else if (js_key(r, "size")) { if (!js_u32(r, &size)) goto fail; }
             else if (js_key(r, "data")) {
+                /* R384: `size` is attacker-controlled and was passed straight to
+                 * malloc — a bogus "size": 4000000000 forced a 4GB request. Hex
+                 * needs 2 chars per byte, so bound it by the remaining input the
+                 * way load_components_chunk bounds itself by (r->end - r->p). */
+                if ((u64)size * 2u > (u64)(r->end - r->p)) goto fail;
                 data_size = size;
                 if (size > sizeof(stack_buf)) {
                     data = (u8 *)malloc(size);

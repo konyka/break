@@ -292,6 +292,69 @@ static void free_scene_src(Scene *s) {
     memset(s, 0, sizeof(*s));
 }
 
+/* Reject the SCENE_NODES chunk by making its node count exceed the loader cap.
+ * SCENE_NODES is written last, so RESOURCES has already been applied by then. */
+static bool corrupt_scene_nodes_count(const char *path)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return false; }
+    bool done = false;
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long ent_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, ent_off, SEEK_SET) != 0) break;
+        if (fread(&e, sizeof(e), 1, f) != 1) break;
+        if (e.type != BSCN_CHUNK_SCENE_NODES) continue;
+        u32 bogus = 0xFFFFFFFFu;
+        if (fseek(f, (long)e.offset, SEEK_SET) != 0) break;
+        done = fwrite(&bogus, sizeof(bogus), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
+/* R384: a chunk that fails after RESOURCES was applied must not leave the
+ * caller's Scene half-overwritten — scene_load_binary now stages and commits. */
+TEST(failed_load_keeps_previous_scene)
+{
+    const char *pa = "/tmp/test_bscn_keep_a.bscn";
+    const char *pb = "/tmp/test_bscn_keep_b.bscn";
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+
+    /* A: 2 meshes + 2 materials → 4 resources. */
+    World *wa = world_create();
+    Scene a; make_scene(&a);
+    ASSERT_TRUE(scene_save_binary(wa, &a, pa, &opts));
+
+    /* B: 1 mesh only → 1 resource, then corrupt its trailing SCENE_NODES. */
+    World *wb = world_create();
+    Scene b; memset(&b, 0, sizeof(b));
+    b.mesh_count = 1;
+    b.meshes = (Mesh *)calloc(1, sizeof(Mesh));
+    ASSERT_TRUE(scene_save_binary(wb, &b, pb, &opts));
+    ASSERT_TRUE(corrupt_scene_nodes_count(pb));
+
+    World *wd = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(wd, &dst, pa));
+    ASSERT_EQ(dst.resource_count, 4u);
+
+    /* Loading B fails; A's manifest must survive intact rather than be swapped
+     * for B's single entry. */
+    World *wd2 = world_create();
+    ASSERT_TRUE(!scene_load_binary(wd2, &dst, pb));
+    ASSERT_EQ(dst.resource_count, 4u);
+    ASSERT_TRUE(dst.resources != NULL);
+
+    free_scene_src(&dst); free_scene_src(&a); free_scene_src(&b);
+    world_destroy(wa); world_destroy(wb);
+    world_destroy(wd); world_destroy(wd2);
+    remove(pa); remove(pb);
+}
+
 TEST(resources_roundtrip_include)
 {
     const char *path = "/tmp/test_res_include.bscn";
@@ -494,6 +557,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
+    RUN_TEST(failed_load_keeps_previous_scene);
     /* Round 8: resources + generation */
     RUN_TEST(resources_roundtrip_include);
     RUN_TEST(resources_roundtrip_refs_only);

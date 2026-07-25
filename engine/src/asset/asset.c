@@ -184,6 +184,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
     out_scene->nodes = calloc(data->nodes_count > 0 ? data->nodes_count : 1, sizeof(SceneNode));
     out_scene->node_count = 0;
+    /* R384: the node loop below writes nodes[ni] unconditionally — mirror the
+     * skin path (below) and bail on OOM instead of faulting. */
+    if (!out_scene->nodes) {
+        LOG_ERROR("glTF: node allocation failed");
+        cgltf_free(data);
+        asset_scene_free(ctx, out_scene);
+        return false;
+    }
 
     for (u32 ni = 0; ni < data->nodes_count; ni++) {
         cgltf_node *node = &data->nodes[ni];
@@ -205,10 +213,22 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     out_scene->skinned_meshes = calloc(total_skinned > 0 ? total_skinned : 1, sizeof(SkinnedMesh));
     out_scene->mesh_count = 0;
     out_scene->skinned_mesh_count = 0;
+    if (!out_scene->meshes || !out_scene->skinned_meshes) {
+        LOG_ERROR("glTF: mesh allocation failed");
+        cgltf_free(data);
+        asset_scene_free(ctx, out_scene);
+        return false;
+    }
 
     /* Pre-build materials from cgltf data for O(1) lookup by pointer diff */
     if (data->materials_count > 0) {
         out_scene->materials = calloc(data->materials_count, sizeof(Material));
+        if (!out_scene->materials) {
+            LOG_ERROR("glTF: material allocation failed");
+            cgltf_free(data);
+            asset_scene_free(ctx, out_scene);
+            return false;
+        }
         out_scene->material_count = (u32)data->materials_count;
         for (u32 mi = 0; mi < data->materials_count; mi++) {
             cgltf_material *cm = &data->materials[mi];

@@ -4627,6 +4627,39 @@ if (!ok) return false;
 **验收**：ASan+UBSan CTest **31/31**、零泄漏零 UB（修复前 29/31）；GL/VK 双后端
 构建通过，各 **31/31**。总计 **860** 处修复。
 
+## R384：加载路径健壮性 — glTF OOM + BSCN 失败回滚 + 两处越界解析（已完成）
+
+本轮由一次全库定向排查驱动，4 条均逐一复核了上下文、确认无既有保护后才动手。
+
+### [x] R384-A `asset_load_gltf`：4 处 `calloc` 补齐失败检查
+
+`nodes`（185）、`meshes`/`skinned_meshes`（204-205）、`materials`（211）都未检查便
+写入 `nodes[ni]`（242）、`materials[mi]`（215）。按同函数 skin 路径（502-508）的既有
+写法失败退出：`LOG_ERROR` + `cgltf_free(data)` + `asset_scene_free(ctx, out_scene)`。
+
+### [x] R384-B `scene_load_binary`：暂存 Scene chunk，仅成功时提交
+
+写入顺序为 ENTITIES→COMPONENTS→HIERARCHY→RESOURCES→SCENE_NODES，而第二遍按表序
+应用。损坏末尾 SCENE_NODES 时，RESOURCES 已 `free(s->resources)` 并换成新数组，
+函数却返回 `false`——调用方拿到失败结果，原清单已丢。改为 `Scene staged = {0}`
+承接，成功才提交（`s == NULL` 仍保持"解析并丢弃"语义）。
+
+回归测试 `failed_load_keeps_previous_scene`：dst 先载入 4 条 resource 的场景 A，
+再载入 SCENE_NODES 被改坏的场景 B（1 条 resource），断言加载失败且 dst 仍为 4 条。
+反向验证：还原本修复后该测试失败，应用后通过。
+
+### [x] R384-C `scene_state.bin`：去掉 `si < physics->capacity` 上界
+
+`pc` 超过本构建 `capacity`（256）时剩余记录不被 `fread` 消费，紧随其后的
+`water.water_y`/`water.enabled` 就从下一条 body 记录中间读出。已有的
+`si >= physics->count` 分支本就会跳过整条记录，改为遍历完整 `pc` 即可；
+短读会清掉 `ld_ok` 使循环自行终止，不存在超长循环。
+
+### [x] R384-D JSON 组件 `size` 按剩余输入长度设界
+
+**验收**：ASan+UBSan / GL / VK 三套 CTest 各 **31/31**，零泄漏零 UB。
+总计 **864** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

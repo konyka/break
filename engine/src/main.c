@@ -3064,7 +3064,13 @@ u32 culled_count = 0;
                     }
                     u32 pc = 0;
                     ld_ok &= fread(&pc, sizeof(u32), 1, lf) == 1;
-                    for (u32 si = 0; si < pc && si < physics->capacity && ld_ok; si++) {
+                    /* R384: the old `si < physics->capacity` bound left records
+                     * 256..pc-1 unconsumed when a file records more bodies than
+                     * this build holds, so the water fields below were read out
+                     * of the middle of a body record. The else-branch already
+                     * skips a full record, so iterate all of pc and let a short
+                     * read clear ld_ok. */
+                    for (u32 si = 0; si < pc && ld_ok; si++) {
                         if (si < physics->count) {
                             Vec3 pos, vel, hext = vec3(0.5f, 0.5f, 0.5f);
                             f32 mass = 1.0f, rest = 0.3f;
