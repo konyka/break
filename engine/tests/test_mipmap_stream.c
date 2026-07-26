@@ -250,9 +250,21 @@ TEST(mipmap_rejects_truncated_level_file)
     remove(TMP_PATH);
 }
 
+/* R405: mip chains larger than VFS_MAX_FILE_BYTES must fail at register. */
+TEST(mipmap_register_rejects_chain_over_vfs_cap)
+{
+    MipmapStreamManager mgr;
+    ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
+    /* Level 0 alone is 8192²×4 = 256 MiB > VFS_MAX_FILE_BYTES (128 MiB). */
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, 8192u, 8192u, 4u, 4u);
+    ASSERT_EQ(idx, -1);
+    mipmap_stream_shutdown(&mgr);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_residency_and_upload);
     RUN_TEST(mipmap_eviction_under_budget);
     RUN_TEST(mipmap_invalidate_clears_residency);
     RUN_TEST(mipmap_rejects_truncated_level_file);
+    RUN_TEST(mipmap_register_rejects_chain_over_vfs_cap);
 TEST_MAIN_END()

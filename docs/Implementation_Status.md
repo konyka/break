@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R404 scene_state_load 失败不回滚 — 修复 1 处 + 回归测试** — R393/R401 加了 `pc` 与文件大小 cap，但 **`scene_state_load` 仍边读边写 live 对象**，任意 `fread`/EOF/`pc` 校验失败时返回 `false` 却保留已写入的相机、太阳角、刚体等（`main.c` 还 `(void)` 丢弃返回值）。**R404-A**：magic 校验通过后快照 `Camera`/标量/physics bodies，失败路径 `restore` 再返回。**R404-B**：`scene_state_load_failure_preserves_runtime`（篡改 `pc` 超限 → 加载失败且相机/刚体保持加载前值）。**验证**：5/5 test_scene_state（4 → 5）；36/36 CTest。总计 **893** 处修复。
+最近更新：**R405 mipmap_stream 偏移累加溢出 + 超 VFS 链拒收 — 修复 1 处 + 回归测试** — R167-E 拒单级 `sz==0`，但 **`offset += sz` 仍可能 usize 回绕**，错误 `level_offset` 会令区间读指向文件错误位置；且注册时可声明超过 `VFS_MAX_FILE_BYTES`（128MiB）的 mip 链，async 加载经 VFS 必失败却仍会发起请求。**R405-A**：累加前查 `offset+sz` 回绕，并用 `chain_end > VFS_MAX_FILE_BYTES` 拒收整条链。**R405-B**：`mipmap_register_rejects_chain_over_vfs_cap`（8192²×4=256MiB level0 → register 返回 -1）。**验证**：5/5 test_mipmap_stream（4 → 5）；36/36 CTest。总计 **894** 处修复。
+
+此前：**R404 scene_state_load 失败不回滚 — 修复 1 处 + 回归测试** — R393/R401 加了 `pc` 与文件大小 cap，但 **`scene_state_load` 仍边读边写 live 对象**，任意 `fread`/EOF/`pc` 校验失败时返回 `false` 却保留已写入的相机、太阳角、刚体等（`main.c` 还 `(void)` 丢弃返回值）。**R404-A**：magic 校验通过后快照 `Camera`/标量/physics bodies，失败路径 `restore` 再返回。**R404-B**：`scene_state_load_failure_preserves_runtime`（篡改 `pc` 超限 → 加载失败且相机/刚体保持加载前值）。**验证**：5/5 test_scene_state（4 → 5）；36/36 CTest。总计 **893** 处修复。
 
 此前：**R403 decode_pipeline mip 链字节累加溢出 + task_submit_dep 依赖回归 — 修复 1 处 + 3 条回归测试** — R160-B 只在累加后查 `hdr_sz+total_pix>UINT32_MAX`，但循环内 `(usize)tw*th*4` 或 `total_pix+=` 若 usize 回绕会先得到很小的 `total_pix`，检查通过后再 `malloc` 小缓冲、对大纹理 `memcpy` 堆溢出（32 位或极端尺寸）。**R403-A**：每级先算 `level_bytes`，拒收乘法/加法回绕及 `total_pix>UINT32_MAX-level_bytes`。**R403-B**：`test_task.c` 新增 `submit_dep_waits_for_parent`、`submit_dep_runs_when_dep_already_done`、`submit_dep_waits_for_two_parents`（此前 `task_submit_dep` 零单测）。**验证**：9/9 test_task（6 → 9）；36/36 CTest。总计 **892** 处修复。
 

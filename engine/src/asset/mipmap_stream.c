@@ -1,4 +1,5 @@
 #include "mipmap_stream.h"
+#include <asset/vfs.h>
 #include <core/log.h>
 #include <stdlib.h>
 #include <string.h>
@@ -241,6 +242,22 @@ i32 mipmap_stream_register(MipmapStreamManager *mgr, const char *path,
                       l, path, width, height, bytes_per_pixel);
             mgr->texture_count--;
             return -1;
+        }
+        /* R405: Guard offset accumulation wrap and reject chains larger than VFS
+         * can ever serve (async loads go through vfs_open). */
+        if (offset + (usize)sz < offset) {
+            LOG_ERROR("MipmapStream: mip chain offset overflow for '%s'", path);
+            mgr->texture_count--;
+            return -1;
+        }
+        {
+            u64 chain_end = (u64)offset + (u64)sz;
+            if (chain_end > (u64)VFS_MAX_FILE_BYTES) {
+                LOG_ERROR("MipmapStream: mip chain %llu bytes exceeds VFS max for '%s'",
+                          (unsigned long long)chain_end, path);
+                mgr->texture_count--;
+                return -1;
+            }
         }
         tex->level_offset[l] = (u64)offset;
         tex->level_size[l] = sz;
