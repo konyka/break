@@ -5110,6 +5110,35 @@ fread**（DoS），而引擎保存时 `pc` 从不超过 `physics->count`（256�
 `test_hotreload`）。
 总计 **882** 处修复。
 
+## R394：async_loader 区间读截断误报 SUCCESS（已完成）
+
+R393 普查结论：`fuzz_scene_state` 边际收益低（已有 targeted test），下一处真实
+缺陷在 **io_worker 区间读 + mipmap_stream** 路径。
+
+### [x] R394-A `io_worker_run` 截断区间仍 finalize READY
+
+`async_loader.c:240–262` 的 range 分支：当文件比请求的 `range_length` 短时，
+`to_read = min(range_length, avail)` 仍调用 `async_finalize(ASSET_READY)`。
+`mipmap_stream` 的 `mipmap_load_callback`（`mipmap_stream.c:125`）只检查
+`size==0`，不校验 `size == level_size[l]`，于是：
+
+- GPU upload 用错误字节数（花屏或 OOB 读风险）
+- `total_resident_bytes` 按完整 `level_size` 预留，实际只存短缓冲 → 预算失真
+
+修法：在 `async_finalize(READY)` 前拒收 `to_read < range_length`（`ASSET_FAILED`，
+`data=NULL`）。`mipmap_stream` 侧加纵深：`size != level_size[l]` 时 free 并回退
+为 UNLOADED。
+
+### [x] R394-B 回归测试
+
+`test_async_loader.c` 新增 `async_loader_range_truncated_fails`：64 字节文件请求
+256 字节区间 → 回调 `data==NULL`（日志 `truncated (64 < 256)`）。
+
+**验收**：反向验证——回退 `async_loader.c` 检查后该用例回调收到非 NULL 短缓冲。
+修复后 11/11 `test_async_loader` 通过；`test_mipmap_stream` 3/3 仍通过。四套
+CTest 各 **35/35**（`test_async_loader` 10 → 11 条）。
+总计 **883** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

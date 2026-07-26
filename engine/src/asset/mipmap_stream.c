@@ -130,6 +130,18 @@ static void mipmap_load_callback(void *user_data, void *data, u32 size) {
         return;
     }
 
+    /* R394: defense in depth — reject short reads even if the loader regresses. */
+    if (size != tex->level_size[l]) {
+        free(data);
+        tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
+        tex->level_request_id[l] = 0;
+        if (mgr->total_resident_bytes >= tex->level_size[l])
+            mgr->total_resident_bytes -= tex->level_size[l];
+        LOG_WARN("MipmapStream: level %u size mismatch (%u != %u) for tex %u",
+                 l, size, tex->level_size[l], t);
+        return;
+    }
+
     /* Take ownership of the loaded bytes as the resident cache copy. */
     if (tex->level_data[l]) free(tex->level_data[l]);
     tex->level_data[l] = data;

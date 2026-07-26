@@ -341,6 +341,53 @@ TEST(async_loader_decode_non_blocking) {
     remove("async_decode_test.tga");
 }
 
+/* R394: range reads used to succeed with to_read < range_length, feeding short
+ * buffers into mipmap_stream. A 64-byte file requested as 256 bytes must fail. */
+static _Atomic int g_range_cb_called;
+static _Atomic int g_range_cb_null;
+
+static void range_trunc_cb(void *user, void *data, u32 size) {
+    (void)user; (void)size;
+    atomic_store(&g_range_cb_called, 1);
+    if (!data) atomic_store(&g_range_cb_null, 1);
+    if (data) free(data);
+}
+
+TEST(async_loader_range_truncated_fails)
+{
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, ".");
+
+    FILE *f = fopen("async_range_short.bin", "wb");
+    ASSERT_NOT_NULL(f);
+    u8 blob[64];
+    memset(blob, 0xAB, sizeof(blob));
+    fwrite(blob, 1, sizeof(blob), f);
+    fclose(f);
+
+    async_loader_init(1, vfs);
+    atomic_store(&g_range_cb_called, 0);
+    atomic_store(&g_range_cb_null, 0);
+
+    u64 id = async_loader_request_range("async_range_short.bin", 0, 256,
+                                        range_trunc_cb, NULL);
+    ASSERT_NEQ(id, (u64)0);
+
+    for (int i = 0; i < 200; i++) {
+        async_loader_tick();
+        if (atomic_load(&g_range_cb_called)) break;
+        for (volatile int j = 0; j < 50000; j++) { (void)j; }
+    }
+
+    ASSERT_EQ(atomic_load(&g_range_cb_called), 1);
+    ASSERT_EQ(atomic_load(&g_range_cb_null), 1);
+
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    remove("async_range_short.bin");
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_init_shutdown);
     RUN_TEST(async_loader_pending_zero);
@@ -353,4 +400,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_cancel_invalid_id);
     RUN_TEST(async_loader_priority_ordering);
     RUN_TEST(async_loader_decode_non_blocking);
+    RUN_TEST(async_loader_range_truncated_fails);
 TEST_MAIN_END()

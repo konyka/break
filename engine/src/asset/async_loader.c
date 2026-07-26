@@ -256,6 +256,20 @@ static void io_worker_run(void) {
                 if (data) {
                     /* VFS data is a contiguous in-memory buffer — direct memcpy */
                     memcpy(data, f->data + req->range_offset, to_read);
+                    /* R394: a range request promises exactly range_length bytes.
+                     * Truncated files (to_read < range_length) used to finalize as
+                     * READY with a short buffer — mipmap_stream then uploaded
+                     * partial/corrupt texels and kept wrong resident-byte accounting. */
+                    if (to_read < req->range_length) {
+                        free(data);
+                        req->data = NULL;
+                        req->size = 0;
+                        vfs_close(f);
+                        async_finalize(slot_idx, ASSET_FAILED);
+                        LOG_WARN("Async range load: truncated (%zu < %zu): %s",
+                                 to_read, req->range_length, req->path);
+                        continue;
+                    }
                     req->data = data;
                     req->size = (u32)to_read;
                     vfs_close(f);
