@@ -152,7 +152,17 @@ static bool decode_generate_mipchain(const u8 *raw, u32 raw_size, DecodeResult *
         widths[i] = tw;
         heights[i] = th;
         offsets[i] = total_pix;
-        total_pix += (usize)tw * th * 4u;
+        usize level_pix = (usize)tw * (usize)th;
+        usize level_bytes = level_pix * 4u;
+        /* R403: Per-level mul/add overflow guard — a wrapped total_pix can pass
+         * the UINT32_MAX check below and malloc a tiny buffer for a huge mip chain. */
+        if (level_bytes / 4u != level_pix ||
+            total_pix + level_bytes < total_pix ||
+            total_pix > (usize)UINT32_MAX - level_bytes) {
+            stbi_image_free(base);
+            return false;
+        }
+        total_pix += level_bytes;
         tw = tw > 1 ? tw / 2 : 1;
         th = th > 1 ? th / 2 : 1;
     }

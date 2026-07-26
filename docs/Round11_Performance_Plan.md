@@ -5281,6 +5281,43 @@ R399 后 **`test_vulkan.c` 仍有无 cap 的 `file_read` 副本**。
 **验收**：4/4 `test_scene_state`；35/35 CTest（除 GPU `test_vulkan`）。
 总计 **890** 处修复。
 
+## R402：async_loader 完成队列 ring 覆写（已完成）
+
+R165-A 对齐 `ASYNC_QUEUE_SIZE` 与 `ASYNC_MAX_REQUESTS`，但 **`enqueue_completion`
+仍无 backpressure** — 主线程稀疏 `async_loader_tick` 时 worker 覆写未消费 slot，
+`sequences[qi] != tail+1` → tail 停滞、回调丢失。
+
+### [x] R402-A `enqueue_completion` 背压
+
+`head - tail >= ASYNC_QUEUE_SIZE` 时 CAS 预留 head 并 yield，直至 consumer drain。
+
+### [x] R402-B 回归测试
+
+`async_loader_completion_burst`：8 worker、1200 次快速失败请求、每 32 次才 tick
+一次 → 全部回调必须触发。
+
+**验收**：12/12 `test_async_loader`（11 → 12 条）；35/35 CTest。
+总计 **891** 处修复。
+
+## R403：decode_pipeline mip 链字节累加溢出 + task_submit_dep 依赖回归（已完成）
+
+R160-B 在累加完成后才查 `hdr_sz+total_pix>UINT32_MAX`；循环内
+`total_pix += (usize)tw*th*4` 若乘法或加法 usize 回绕，会得到很小的
+`total_pix` 并通过检查 → `malloc` 小缓冲 + 大纹理 `memcpy` 堆溢出。
+
+### [x] R403-A 逐级溢出守卫
+
+每级先算 `level_bytes`，拒收 `level_pix*4` 乘法回绕、`total_pix` 加法回绕、
+及 `total_pix > UINT32_MAX - level_bytes`（与 R160-B 互补）。
+
+### [x] R403-B `task_submit_dep` 回归测试
+
+`test_task.c` 新增单父依赖、依赖已完成后立即入队、双父 fan-in 三条用例
+（此前 R177 OOM 回滚等路径零单测）。
+
+**验收**：9/9 `test_task`（6 → 9 条）；36/36 CTest。
+总计 **892** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

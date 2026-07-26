@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R402 async_loader 完成队列 ring 覆写 — 修复 1 处 + 回归测试** — R165-A 将 `ASYNC_QUEUE_SIZE` 扩至 1024 但未做 backpressure；主线程未及时 `async_loader_tick` 时 I/O worker 连续 `enqueue_completion` 会 **覆写未消费的 slot**（`sequences[qi] != tail+1` → tail 停滞、回调丢失）。**R402-A**：`enqueue_completion` 在 `head - tail >= ASYNC_QUEUE_SIZE` 时 CAS 预留 head 并 yield，直至主线程 drain。**R402-B**：`test_async_loader.c` 新增 `async_loader_completion_burst`（8 worker、1200 次快速失败请求、稀疏 tick → 全部回调）。**验证**：12/12 test_async_loader（11 → 12）；35/35 CTest。总计 **891** 处修复。
+最近更新：**R403 decode_pipeline mip 链字节累加溢出 + task_submit_dep 依赖回归 — 修复 1 处 + 3 条回归测试** — R160-B 只在累加后查 `hdr_sz+total_pix>UINT32_MAX`，但循环内 `(usize)tw*th*4` 或 `total_pix+=` 若 usize 回绕会先得到很小的 `total_pix`，检查通过后再 `malloc` 小缓冲、对大纹理 `memcpy` 堆溢出（32 位或极端尺寸）。**R403-A**：每级先算 `level_bytes`，拒收乘法/加法回绕及 `total_pix>UINT32_MAX-level_bytes`。**R403-B**：`test_task.c` 新增 `submit_dep_waits_for_parent`、`submit_dep_runs_when_dep_already_done`、`submit_dep_waits_for_two_parents`（此前 `task_submit_dep` 零单测）。**验证**：9/9 test_task（6 → 9）；36/36 CTest。总计 **892** 处修复。
+
+此前：**R402 async_loader 完成队列 ring 覆写 — 修复 1 处 + 回归测试** — R165-A 将 `ASYNC_QUEUE_SIZE` 扩至 1024 但未做 backpressure；主线程未及时 `async_loader_tick` 时 I/O worker 连续 `enqueue_completion` 会 **覆写未消费的 slot**（`sequences[qi] != tail+1` → tail 停滞、回调丢失）。**R402-A**：`enqueue_completion` 在 `head - tail >= ASYNC_QUEUE_SIZE` 时 CAS 预留 head 并 yield，直至主线程 drain。**R402-B**：`test_async_loader.c` 新增 `async_loader_completion_burst`（8 worker、1200 次快速失败请求、稀疏 tick → 全部回调）。**验证**：12/12 test_async_loader（11 → 12）；35/35 CTest。总计 **891** 处修复。
 
 此前：**R401 外部输入普查收尾 — scene_state 文件大小上限 + test_vulkan 着色器读取补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R393 已 cap `pc`，但 **`scene_state_load` 仍接受 multi-MiB 文件**；R399/R400 后 **`test_vulkan.c` 仍保留无 cap 的 `file_read` 副本**。**R401-A**：`SCENE_STATE_MAX_FILE_BYTES=4MiB`。**R401-B**：`test_vulkan.c` → `shader_read_file()`。**R401-C**：`scene_state_rejects_oversized_file`（4/4 test_scene_state）。**普查结论**：引擎 `src/` 外部字节流入口均已 cap 或 chunk-bound。**验证**：35/35 CTest。总计 **890** 处修复。
 

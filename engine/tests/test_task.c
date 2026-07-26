@@ -27,6 +27,12 @@ static void add_value_fn(void *ctx)
     atomic_fetch_add(&g_counter, val);
 }
 
+static void set_counter_fn(void *ctx)
+{
+    i32 val = *(i32 *)ctx;
+    atomic_store(&g_counter, val);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST(single_task)
@@ -85,6 +91,45 @@ TEST(worker_count_query)
     ASSERT_EQ(task_worker_count(g_ts), 2u);
 }
 
+TEST(submit_dep_waits_for_parent)
+{
+    i32 final_value = 100;
+    atomic_store(&g_counter, 0);
+    TaskHandle parent = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
+    TaskHandle deps[] = { parent };
+    TaskHandle child = task_submit_dep(g_ts, set_counter_fn, &final_value, deps, 1);
+    ASSERT_NEQ(child, TASK_HANDLE_INVALID);
+    task_wait_handle(g_ts, child);
+    ASSERT_EQ(atomic_load(&g_counter), 100);
+}
+
+TEST(submit_dep_runs_when_dep_already_done)
+{
+    i32 final_value = 200;
+    atomic_store(&g_counter, 0);
+    TaskHandle parent = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
+    task_wait_handle(g_ts, parent);
+    ASSERT_EQ(atomic_load(&g_counter), 1);
+    TaskHandle deps[] = { parent };
+    TaskHandle child = task_submit_dep(g_ts, set_counter_fn, &final_value, deps, 1);
+    ASSERT_NEQ(child, TASK_HANDLE_INVALID);
+    task_wait_handle(g_ts, child);
+    ASSERT_EQ(atomic_load(&g_counter), 200);
+}
+
+TEST(submit_dep_waits_for_two_parents)
+{
+    i32 final_value = 300;
+    atomic_store(&g_counter, 0);
+    TaskHandle a = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
+    TaskHandle b = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
+    TaskHandle deps[] = { a, b };
+    TaskHandle child = task_submit_dep(g_ts, set_counter_fn, &final_value, deps, 2);
+    ASSERT_NEQ(child, TASK_HANDLE_INVALID);
+    task_wait_handle(g_ts, child);
+    ASSERT_EQ(atomic_load(&g_counter), 300);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -100,6 +145,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(handle_based_submit);
     RUN_TEST(priority_levels);
     RUN_TEST(worker_count_query);
+    RUN_TEST(submit_dep_waits_for_parent);
+    RUN_TEST(submit_dep_runs_when_dep_already_done);
+    RUN_TEST(submit_dep_waits_for_two_parents);
 
     task_system_destroy(g_ts);
 
