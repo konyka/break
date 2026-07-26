@@ -80,7 +80,13 @@ static u8 *downsample_rgba8_box(const u8 *src, u32 src_w, u32 src_h,
     u32 dst_w = src_w > 1 ? src_w / 2 : 1;
     u32 dst_h = src_h > 1 ? src_h / 2 : 1;
 
-    u8 *dst = (u8 *)malloc((usize)dst_w * dst_h * 4u);
+    usize dst_pix = (usize)dst_w * (usize)dst_h;
+    usize dst_bytes = dst_pix * 4u;
+    /* R406: Same mul guard as decode_generate_mipchain (R403) — a wrapped size
+     * allocates a tiny buffer then fills it in the loop below. */
+    if (dst_bytes / 4u != dst_pix) return NULL;
+
+    u8 *dst = (u8 *)malloc(dst_bytes);
     if (!dst) return NULL;
 
     for (u32 y = 0; y < dst_h; y++) {

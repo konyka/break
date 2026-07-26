@@ -5353,6 +5353,22 @@ R167-E 拒单级 `mipmap_level_size==0`，但 `offset += sz` 仍可能 usize 回
 **验收**：5/5 `test_mipmap_stream`（4 → 5 条）；36/36 CTest。
 总计 **894** 处修复。
 
+## R406：decode downsample malloc 溢出 + scene_state 失败可观测（已完成）
+
+R403 守卫 mip 链累加，但 `downsample_rgba8_box` 仍裸 `(usize)dst_w*dst_h*4`
+malloc；`main.c` 在 R404 回滚后仍 `(void)scene_state_load`。
+
+### [x] R406-A `downsample_rgba8_box` 乘法溢出守卫
+
+`dst_pix/dst_bytes` 回绕检查，失败返回 NULL（`decode_generate_mipchain` 释 packed）。
+
+### [x] R406-B `main.c` 加载失败 LOG_WARN
+
+失败时提示 companion `scene_state.bin` 被忽略（状态已由 R404 restore）。
+
+**验收**：36/36 CTest（decode + scene_state 回归仍绿）。
+总计 **896** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

@@ -2992,7 +2992,8 @@ u32 culled_count = 0;
                     .water_enabled = &water.enabled,
                     .water_pipeline_valid = rhi_handle_valid(water.pipeline),
                 };
-                (void)scene_state_load("scene_state.bin", &lctx);
+                if (!scene_state_load("scene_state.bin", &lctx))
+                    LOG_WARN("Scene state: failed to load scene_state.bin (companion ignored)");
             }
             /* R379: rebind parked slots only when a live entity still references them. */
             {
