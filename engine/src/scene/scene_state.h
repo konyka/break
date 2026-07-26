@@ -14,6 +14,9 @@
  * cannot force millions of freads; forward-compat files with pc > capacity bulk-
  * skip the excess in one fseek. */
 #define SCENE_STATE_MAX_PC 65536u
+/* R401: reject absurd file sizes before streaming parse (pc cap alone allows
+ * multi-MiB files with valid pc but junk that still burns CPU on freads). */
+#define SCENE_STATE_MAX_FILE_BYTES (4u << 20)  /* 4 MiB */
 
 typedef struct {
     Camera        *camera;

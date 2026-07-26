@@ -11,6 +11,7 @@
 #include <ecs/ecs.h>
 #include <physics/physics.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -22,23 +23,6 @@
 #include <sys/stat.h>
 #define tv_mkdir(p) mkdir(p, 0755)
 #endif
-
-static char *file_read(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    /* R112-1: Guard against ftell failure (returns -1) and malloc OOM. */
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 /* Insert `#define <name> 1` right after the first (`#version`) line. */
 static char *tv_inject_define(const char *src, usize len, const char *name, usize *out_len) {
@@ -228,8 +212,8 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     LOG_INFO("PASS: RHI device created (backend=%d)", (int)TV_BACKEND);
 
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = file_read(TV_VS_BLINN, &vs_len);
-    char *fs_src = file_read(TV_FS_BLINN, &fs_len);
+    char *vs_src = shader_read_file(TV_VS_BLINN, &vs_len);
+    char *fs_src = shader_read_file(TV_FS_BLINN, &fs_len);
     if (!vs_src || !fs_src) { LOG_ERROR("FAIL: shader load"); return false; }
 
     RHIShader vs = rhi_shader_create(rs->device, vs_src, vs_len, false);
@@ -630,8 +614,8 @@ int main(int argc, char **argv) {
     typedef struct { f32 pos[3]; } TestTransform;
 
     usize ivs_len = 0, ifs_len = 0;
-    char *ivs_src = file_read(TV_VS_INSTANCED, &ivs_len);
-    char *ifs_src = file_read(TV_FS_INSTANCED, &ifs_len);
+    char *ivs_src = shader_read_file(TV_VS_INSTANCED, &ivs_len);
+    char *ifs_src = shader_read_file(TV_FS_INSTANCED, &ifs_len);
     RHIPipeline inst_pipeline = RHI_HANDLE_NULL;
     RHIBuffer instance_tbo = RHI_HANDLE_NULL;
 
@@ -956,8 +940,8 @@ int main(int argc, char **argv) {
         RHIPipeline cl_pipe = RHI_HANDLE_NULL;
         {
             usize vl = 0, fl = 0;
-            char *vsrc = file_read(TV_VS_PBR, &vl);
-            char *fsrc = file_read(TV_FS_PBR, &fl);
+            char *vsrc = shader_read_file(TV_VS_PBR, &vl);
+            char *fsrc = shader_read_file(TV_FS_PBR, &fl);
             if (vsrc && fsrc) {
                 usize fl_ibl = 0;
                 char *fsrc_ibl = tv_inject_define(fsrc, fl, "HAS_IBL", &fl_ibl);

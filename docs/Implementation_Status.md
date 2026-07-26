@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R400 font TTF 读取无大小上限 + 着色器路径补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R389 为 TTF 加了最小 12 字节下限，但 **`font_renderer_init` 仍 `malloc(整文件)` 无 max**；另 R399 遗漏 `font.c` 内联着色器读取。**R400-A**：`FONT_TTF_MAX_BYTES=32MiB`（大 CJK 字体仍可用），分配前拒收。**R400-B**：font 着色器改调 `shader_read_file()`。**R400-C**：`test_font_load.c` 新增 `font_init_rejects_oversized_file`（5/5）。**验证**：35/35 CTest；engine 构建通过。总计 **889** 处修复。
+最近更新：**R401 外部输入普查收尾 — scene_state 文件大小上限 + test_vulkan 着色器读取补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R393 已 cap `pc`，但 **`scene_state_load` 仍接受 multi-MiB 文件**（streaming 无整文件 malloc，但恶意文件仍可迫使大量 fread）；R399/R400 后 **`test_vulkan.c` 仍保留无 cap 的 `file_read` 副本**。**R401-A**：`SCENE_STATE_MAX_FILE_BYTES=4MiB`，`measure_file` 后立即拒收。**R401-B**：`test_vulkan.c` 改调 `shader_read_file()`。**R401-C**：`test_scene_state.c` 新增 `scene_state_rejects_oversized_file`（4/4）。**普查结论**：引擎 `src/` 外部字节流入口均已 cap 或 chunk-bound（VFS/BSCN/script/Lua/shader/font/scene_state）；`verify_pak`/fuzz 种子读取为工具/测试路径，不在 demo 攻击面。**验证**：35/35 CTest（除 GPU `test_vulkan`）。总计 **890** 处修复。
+
+此前：**R400 font TTF 读取无大小上限 + 着色器路径补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R389 为 TTF 加了最小 12 字节下限，但 **`font_renderer_init` 仍 `malloc(整文件)` 无 max**；另 R399 遗漏 `font.c` 内联着色器读取。**R400-A**：`FONT_TTF_MAX_BYTES=32MiB`（大 CJK 字体仍可用），分配前拒收。**R400-B**：font 着色器改调 `shader_read_file()`。**R400-C**：`test_font_load.c` 新增 `font_init_rejects_oversized_file`（5/5）。**验证**：35/35 CTest；engine 构建通过。总计 **889** 处修复。
 
 此前：**R399 着色器 read_file 重复实现无大小上限 — 抽取 1 处 + 迁移 33 处 + 单测** — R393 只 cap 了 `hotreload.c`，但 **`main.c` 与 30+ 个 renderer 模块各自复制 `ftell → malloc(整文件)`**，均无 `SHADER_MAX_FILE_BYTES`。**R399-A**：新增 `core/shader_io.c` 统一 `shader_read_file()`（4 MiB，与 hotreload 一致）；`hotreload.c`、`main.c` 及全部 renderer 着色器加载路径改调共享实现。**R399-B**：`test_shader_io.c` 新增 `shader_read_rejects_oversized_file`；`test_hotreload` 改用 `SHADER_MAX_FILE_BYTES` 常量。**验证**：35/35 CTest（新增 `test_shader_io`，34 → 35）；engine + demo 构建通过。总计 **888** 处修复。
 

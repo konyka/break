@@ -80,6 +80,11 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
         fclose(lf);
         return false;
     }
+    if ((u64)file_size > (u64)SCENE_STATE_MAX_FILE_BYTES) {
+        LOG_WARN("Scene state: file too large (%ld bytes)", file_size);
+        fclose(lf);
+        return false;
+    }
 
     u32 magic = 0;
     bool ld_ok = fread(&magic, 4, 1, lf) == 1;

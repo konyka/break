@@ -4,6 +4,8 @@
 #include <renderer/camera.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 #define TMP_STATE "/tmp/test_scene_state.bin"
 
@@ -120,8 +122,33 @@ TEST(scene_state_rejects_pc_past_eof)
     remove(TMP_STATE);
 }
 
+TEST(scene_state_rejects_oversized_file)
+{
+    FILE *f = fopen(TMP_STATE, "wb");
+    ASSERT_NOT_NULL(f);
+#if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    ASSERT_TRUE(ftruncate(fileno(f), (off_t)SCENE_STATE_MAX_FILE_BYTES + 1) == 0);
+#else
+    if (fseek(f, (long)SCENE_STATE_MAX_FILE_BYTES, SEEK_SET) == 0) fputc('x', f);
+#endif
+    fclose(f);
+
+    Camera cam = {0};
+    f32 sun_a = 0, sun_e = 0, exp = 1, scale = 1, wy = 0;
+    bool wen = false;
+    PhysicsWorld *pw = physics_world_create(4);
+    ASSERT_NOT_NULL(pw);
+
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(!scene_state_load(TMP_STATE, &lctx));
+
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_rejects_excessive_pc);
     RUN_TEST(scene_state_rejects_pc_past_eof);
+    RUN_TEST(scene_state_rejects_oversized_file);
 TEST_MAIN_END()

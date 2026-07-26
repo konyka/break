@@ -5259,6 +5259,28 @@ R389 为 TTF 加了 12 字节下限；**整文件 malloc 仍无 max**。R399 遗
 **验收**：5/5 `test_font_load`；35/35 CTest。
 总计 **889** 处修复。
 
+## R401：外部输入普查收尾 — scene_state 文件大小 + test_vulkan 补全（已完成）
+
+R393 cap 了 `pc`；**multi-MiB scene_state 文件**仍可迫使大量 fread。
+R399 后 **`test_vulkan.c` 仍有无 cap 的 `file_read` 副本**。
+
+### [x] R401-A `SCENE_STATE_MAX_FILE_BYTES`
+
+`scene_state.h`：`4MiB`。`scene_state_load` 在 `measure_file` 后立即拒收。
+
+### [x] R401-B `test_vulkan.c` → `shader_read_file()`
+
+补全着色器读取迁移的最后一处副本。
+
+### [x] R401-C 回归 + 普查结论
+
+`test_scene_state.c` 新增 `scene_state_rejects_oversized_file`（3 → 4 条）。
+引擎 `src/` 外部字节流入口均已 cap 或 chunk-bound；`verify_pak`/fuzz
+为工具/测试路径，不在 demo 攻击面。
+
+**验收**：4/4 `test_scene_state`；35/35 CTest（除 GPU `test_vulkan`）。
+总计 **890** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
