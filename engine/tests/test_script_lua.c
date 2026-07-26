@@ -8,6 +8,7 @@
 #include <physics/physics.h>
 #include <math.h>
 #include <stdio.h>
+#include <unistd.h>
 
 /* ----------------------------------------------------------------------- */
 
@@ -274,6 +275,27 @@ TEST(load_nonexistent_file)
     lua_script_shutdown(&ls);
 }
 
+/* R395: luaL_loadfile reads the whole file; cap size before calling it. */
+TEST(lua_load_rejects_oversized_file)
+{
+    const char *path = "/tmp/test_lua_huge.lua";
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+#if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    ASSERT_TRUE(ftruncate(fileno(f), (off_t)LUA_SCRIPT_MAX_FILE_BYTES + 1) == 0);
+#else
+    if (fseek(f, (long)LUA_SCRIPT_MAX_FILE_BYTES, SEEK_SET) == 0) fputc('x', f);
+#endif
+    fclose(f);
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    ASSERT_TRUE(!lua_script_load(&ls, path));
+    ASSERT_TRUE(!ls.loaded);
+    lua_script_shutdown(&ls);
+    remove(path);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -293,4 +315,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_runs_new_chunk);
     RUN_TEST(hot_reload_no_change_no_run);
     RUN_TEST(load_nonexistent_file);
+    RUN_TEST(lua_load_rejects_oversized_file);
 TEST_MAIN_END()

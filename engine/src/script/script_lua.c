@@ -237,8 +237,22 @@ static u32 file_mtime(const char *path) {
     return (u32)st.st_mtime;
 }
 
+static bool lua_script_file_size_ok(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long sz = ftell(f);
+    fclose(f);
+    if (sz < 0 || (u64)sz > (u64)LUA_SCRIPT_MAX_FILE_BYTES) {
+        LOG_WARN("Lua script: %s too large (%ld bytes)", path, sz);
+        return false;
+    }
+    return true;
+}
+
 bool lua_script_load(LuaScript *ls, const char *path) {
     if (!ls || !ls->L || !path) return false;
+    if (!lua_script_file_size_ok(path)) return false;
     if (luaL_loadfile(ls->L, path) != LUA_OK) {
         LOG_ERROR("Lua load error: %s", lua_tostring(ls->L, -1));
         lua_pop(ls->L, 1);
@@ -257,6 +271,7 @@ void lua_script_reload_if_changed(LuaScript *ls) {
     u32 mt = file_mtime(ls->path);
     if (mt != 0 && mt != ls->last_mtime) {
         ls->last_mtime = mt;
+        if (!lua_script_file_size_ok(ls->path)) return;
         if (luaL_loadfile(ls->L, ls->path) != LUA_OK) {
             LOG_ERROR("Lua reload error: %s", lua_tostring(ls->L, -1));
             lua_pop(ls->L, 1);

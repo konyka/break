@@ -5139,6 +5139,30 @@ R393 普查结论：`fuzz_scene_state` 边际收益低（已有 targeted test）
 CTest 各 **35/35**（`test_async_loader` 10 → 11 条）。
 总计 **883** 处修复。
 
+## R395：mipmap 截断端到端回归 + Lua 脚本文件大小上限（已完成）
+
+R394 修了 loader/mipmap 截断路径；本轮补集成测试，并把 R392 脚本 DoS 上限扩展到
+Lua 后端。
+
+### [x] R395-A `test_mipmap_stream` 截断 level0 集成测试
+
+`mipmap_rejects_truncated_level_file`：16×16 RGBA8 level0 只写 512/1024 字节 →
+async range 读 `truncated (512 < 1024)`、回调 `data==NULL`、GPU upload hook 零调用、
+`invalidate` 后 `resident_bytes==0`。streaming 对 UNLOADED 会重试加载，测试以
+`load_requests>0` 且 `upload_calls==0` 断言，而非在 LOADING 阶段误判为已 settled。
+
+### [x] R395-B Lua `luaL_loadfile` 无文件大小上限
+
+R392 给自研 `script.c` 加了 `SCRIPT_MAX_FILE_BYTES`，但 `script_lua.c` 的
+`luaL_loadfile` 仍 `stat` 后直接读入——多 GB `.lua` 可在编译第一行前 OOM。
+`LUA_SCRIPT_MAX_FILE_BYTES=1MiB`，在 `lua_script_load` 与
+`lua_script_reload_if_changed` 入口拒收；`test_script_lua.c` 新增
+`lua_load_rejects_oversized_file`。
+
+**验收**：4/4 `test_mipmap_stream`、17/17 `test_script_lua`；四套 CTest 各
+**34/34**（`test_vulkan` 无 GPU 跳过）。`test_mipmap_stream` 3 → 4 条。
+总计 **884** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

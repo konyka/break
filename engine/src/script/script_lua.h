@@ -16,6 +16,9 @@
 
 typedef struct lua_State lua_State;
 
+/* R395: same trust-boundary cap as SCRIPT_MAX_FILE_BYTES in script.c. */
+#define LUA_SCRIPT_MAX_FILE_BYTES (1u << 20)
+
 typedef struct {
     lua_State *L;
     char       path[256];
