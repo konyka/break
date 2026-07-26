@@ -179,6 +179,7 @@ cmake --build build-gl
 | ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合） |
 | ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
 | ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
+| ENGINE_ENABLE_IPO | ON | Release 构建中在工具链支持时启用 IPO/LTO，仅作用于 `engine` 静态库 |
 | CMAKE_C_STANDARD | 11 | C 语言标准 |
 | CMAKE_C_COMPILER | (自动) | 指定 C 编译器（`gcc` / `clang` / `cl`） |
 | CMAKE_CXX_COMPILER | (自动) | 指定 C++ 编译器（`g++` / `clang++` / `cl`） |
@@ -212,7 +213,7 @@ cmake --build build-gl
 | libengine.a | build-*/libengine.a | 引擎静态库 |
 | libglad.a | build-*/libglad.a | OpenGL 加载库 |
 | engine_demo | build-*/engine_demo | 渲染演示程序 |
-| test_vulkan | build-*/test_vulkan | 测试程序 |
+| test_vulkan | build-*/test_vulkan | Vulkan 后端集成 + golden 回归测试程序 |
 | packer | build-*/packer | 资源打包工具 |
 | empty | build-gl/empty/empty | 最小化应用示例 |
 
@@ -287,8 +288,15 @@ glslangValidator -V shader.frag -o shader.frag.spv
 
 ### 6.3 测试
 ```bash
-cd engine/build-vk  # 或 build-gl
-./test_vulkan       # 运行 17 项单元测试
+cd engine
+cmake -B build-verify-x11-gl
+cmake --build build-verify-x11-gl
+ctest --test-dir build-verify-x11-gl -E '^test_vulkan$' --output-on-failure
+
+# Vulkan 后端集成测试（需要 -DENGINE_VULKAN=ON）
+cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON
+cmake --build build-verify-x11-vk
+ctest --test-dir build-verify-x11-vk --output-on-failure
 ```
 
 ## 7. 项目结构与两套构建

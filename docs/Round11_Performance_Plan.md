@@ -5399,6 +5399,25 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 **验收**：6/6 `test_mipmap_stream`（5 → 6）；`engine_demo` 构建。
 总计 **898** 处修复。
 
+## R410：外部输入内存峰值 + 容量回绕收尾（已完成）
+
+本轮按“性能最优先”复核当前仓库，优先处理输入文件和场景/物理容量路径的内存峰值与整数回绕。
+
+### [x] R410-A `verify_pak` 分块流式比对
+
+`verify_file` 原先同时分配 disk/pak 两份完整内容，验证大包资源时瞬时内存约为 `2 * file_size`。改为固定 64KiB disk/pak 缓冲循环 `fread` + `vfs_read` + `memcmp`，保持早停语义，内存峰值降为 O(1)。
+
+### [x] R410-B Scene ByteBuf 容量回绕守卫
+
+`bb_reserve` 先拒绝 `size + extra` u32 回绕，再按 `need` 扩容；倍增即将溢出时直接扩到精确需求，避免保存超大场景时小缓冲写越界。
+
+### [x] R410-C BVH 极端容量守卫
+
+`bvh_init`、`bvh_alloc_node`、`bvh_build` 增加 `count * 2`、`new_cap * sizeof(BVHNode)` 与 build-index 乘法守卫；无法安全分配时保持 `root=BVH_NULL`，查询/销毁路径仍安全。
+
+**验收**：待本轮最终验证记录；新增 `bytebuf_reserve_rejects_u32_wrap`、`bvh_rejects_oversized_capacity`。
+总计 **902** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
