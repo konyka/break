@@ -3,6 +3,11 @@
 
 #define SCRIPT_MAX_CALLBACKS 64
 #define SCRIPT_MAX_GLOBALS   128
+/* R392: cap per-function op count and file size — without these a hostile
+ * .script can grow fn->ops without bound (realloc doubling) or malloc the
+ * entire file before a single line is parsed. */
+#define SCRIPT_MAX_OPS         4096u
+#define SCRIPT_MAX_FILE_BYTES  (1u << 20)  /* 1 MiB */
 
 typedef struct {
     char name[64];

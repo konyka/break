@@ -5,6 +5,8 @@
 #include "test_framework.h"
 #include <script/script.h>
 #include <math.h>
+#include <stdio.h>
+#include <unistd.h>
 
 /* ----------------------------------------------------------------------- */
 
@@ -213,6 +215,54 @@ TEST(script_negative_values)
     script_engine_shutdown(&se);
 }
 
+/* R392: op_count had no cap — a million-line `set x 1` file doubled ops forever. */
+TEST(script_rejects_excessive_ops)
+{
+    FILE *f = fopen("/tmp/test_ops_cap.script", "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "func spam\n");
+    for (u32 i = 0; i < SCRIPT_MAX_OPS + 64u; i++)
+        fprintf(f, "set x %u\n", i);
+    fclose(f);
+
+    ScriptEngine se = {0};
+    script_engine_init(&se);
+    bool ok = script_load(&se, "/tmp/test_ops_cap.script");
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(se.func_count, 1u);
+    ASSERT_EQ(se.funcs[0].op_count, SCRIPT_MAX_OPS);
+
+    script_engine_shutdown(&se);
+    remove("/tmp/test_ops_cap.script");
+}
+
+/* R392: file size had no cap — ftell -> malloc(sz+1) on a multi-GB file. */
+TEST(script_rejects_oversized_file)
+{
+    const char *path = "/tmp/test_script_huge.script";
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }
+    /* Sparse extend past SCRIPT_MAX_FILE_BYTES without writing every byte. */
+#if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    if (ftruncate(fileno(f), (off_t)SCRIPT_MAX_FILE_BYTES + 1) != 0) {
+        fclose(f);
+        return;
+    }
+#else
+    /* Fallback: write a byte at the end position. */
+    if (fseek(f, (long)SCRIPT_MAX_FILE_BYTES, SEEK_SET) != 0) { fclose(f); return; }
+    fputc('x', f);
+#endif
+    fclose(f);
+
+    ScriptEngine se = {0};
+    script_engine_init(&se);
+    ASSERT_TRUE(!script_load(&se, path));
+    script_engine_shutdown(&se);
+    remove(path);
+}
+
 TEST(script_large_values)
 {
     ScriptEngine se = {0};
@@ -240,5 +290,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(script_empty_file);
     RUN_TEST(script_only_comments);
     RUN_TEST(script_negative_values);
+    RUN_TEST(script_rejects_excessive_ops);
+    RUN_TEST(script_rejects_oversized_file);
     RUN_TEST(script_large_values);
 TEST_MAIN_END()

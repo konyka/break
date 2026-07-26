@@ -459,3 +459,9 @@ u32 decode_pipeline_queue_count(void) {
     async_mutex_unlock(&g_decode_input_mutex);
     return count;
 }
+
+bool decode_pipeline_decode_sync(const u8 *raw, u32 raw_size, DecodeResult *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    return decode_generate_mipchain(raw, raw_size, out);
+}

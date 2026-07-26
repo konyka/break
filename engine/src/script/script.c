@@ -43,6 +43,10 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
     }
 
     ScriptFunc *fn = &se->funcs[se->func_count - 1];
+    /* R392: SCRIPT_MAX_CALLBACKS limits func count but not op count — a file
+     * with millions of `set x 1` lines previously doubled fn->ops forever. */
+    if (fn->op_count >= SCRIPT_MAX_OPS)
+        return;
     /* Capacity-based growth: initial 16, double when full (avoids per-op realloc) */
     if (fn->op_count >= fn->op_capacity) {
         u32 new_cap = fn->op_capacity == 0 ? 16 : fn->op_capacity * 2;
@@ -94,6 +98,13 @@ bool script_load(ScriptEngine *se, const char *path) {
     long sz = ftell(f);
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
     if (sz < 0) { fclose(f); return false; }
+    /* R392: reject oversized scripts before malloc — same trust-boundary pattern
+     * as R144 (stbi len) and R388 (PAK file size). */
+    if ((u64)sz > (u64)SCRIPT_MAX_FILE_BYTES) {
+        LOG_WARN("Script: %s too large (%ld bytes)", path, sz);
+        fclose(f);
+        return false;
+    }
 
     free(se->source);
     se->source = malloc((usize)sz + 1);

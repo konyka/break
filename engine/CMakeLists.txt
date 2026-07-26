@@ -587,6 +587,19 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(fuzz_asset_gltf PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_asset_gltf PRIVATE m)
 
+    # R392: mutation fuzzer for decode_pipeline (stbi + mip chain). Same usage
+    # as the other fuzz_* targets: EXCLUDE_FROM_ALL, run by hand under ASan/UBSan.
+    add_executable(fuzz_decode_image EXCLUDE_FROM_ALL tests/fuzz_decode_image.c
+        src/asset/decode_pipeline.c src/core/log.c external/stb_image_impl.c)
+    target_include_directories(fuzz_decode_image PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(fuzz_decode_image PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(fuzz_decode_image PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(fuzz_decode_image PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(fuzz_decode_image PRIVATE kernel32)
+    endif()
+
     # R388: mutation fuzzer for the PAK mount path. Same usage as
     # fuzz_scene_serial: build explicitly and run by hand under ASan/UBSan.
     add_executable(fuzz_vfs_pak EXCLUDE_FROM_ALL tests/fuzz_vfs_pak.c

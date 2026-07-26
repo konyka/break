@@ -36,3 +36,7 @@ bool decode_pipeline_poll(DecodeResult *out_result);
 /* Number of jobs waiting in the decode input queue (does not include jobs
  * currently being decoded). */
 u32 decode_pipeline_queue_count(void);
+
+/* Synchronous decode for unit tests and fuzz harnesses. Invokes the same
+ * stbi + mip-chain path as the worker pool, without touching it. */
+bool decode_pipeline_decode_sync(const u8 *raw, u32 raw_size, DecodeResult *out);

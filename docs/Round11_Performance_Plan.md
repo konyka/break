@@ -5018,6 +5018,56 @@ glTF 2.0 §3.6.2.4 要求 accessor 相对 buffer 的偏移
 ASan+UBSan / GL / VK / TSan 四套 CTest 各 **33/33**（`test_asset_gltf` 由 5 条增至 8 条）。
 总计 **877** 处修复。
 
+## R392：脚本引擎无界分配 DoS + 图像解码管线模糊测试（已完成）
+
+R391 的覆盖普查把下一批目标按"外部输入 → 驱动分配 → 指针步进"排了序。本轮先按表
+核查 `main.c` / `filewatch.c` / 关节索引写路径（结论与 R391 一致，无新缺陷），然后
+处理普查表里排首的 **`decode_pipeline.c`** 和 **`script.c`**。
+
+### [x] R392-A `script.c` 指令数与文件大小均无上限 → DoS
+
+`SCRIPT_MAX_CALLBACKS`（64）只限函数个数，不限每个函数内的指令数。`script_parse_line`
+（`script.c:47`）在 `fn->op_count >= fn->op_capacity` 时 `realloc` 翻倍——一条
+`set x 1` 占一行，百万行文件即可把 `fn->ops` 扩到数百 MB 且永不停止。
+
+`script_load`（`script.c:99`）同样没有文件大小上限：`ftell` → `malloc(sz + 1)`，
+多 GB 的 `.script` 在解析第一行之前就会 OOM。
+
+修法：`SCRIPT_MAX_OPS = 4096`（`script.h`），在 `realloc` 前拒收；`SCRIPT_MAX_FILE_BYTES
+= 1 MiB`，在 `malloc` 前拒收。脚本文件在引擎里本就是小型文本资产，两个上限都宽于
+任何真实用法。
+
+### [x] R392-B 新增 `fuzz_decode_image` 模糊测试器
+
+`decode_pipeline.c` 是 VFS → async_loader → **decode_pipeline** 路径上唯一吃原始图像
+字节的模块（`stbi_load_from_memory` + 自研 mip 链 `downsample_rgba8_box`）。现有
+`test_async_loader` 只覆盖 2×2 TGA 快乐路径，零 mutation fuzz。
+
+新增 `tests/fuzz_decode_image.c`，交替变异 TGA 与 PNG 形种子（字级边界写入命中
+宽/高/ch 字段）。为消除 worker 池时序噪声，暴露
+`decode_pipeline_decode_sync`（`decode_pipeline.h`）——与 worker 调用的
+`decode_generate_mipchain` 同一路径，供 fuzz/单测同步调用。
+
+**结果**：5 种子 × 2000 轮 + 5000 轮 = **13000+ 轮**零崩溃、零泄漏、零 UB——有价值的
+负面结果，说明 R144/R153/R160-B 的尺寸/ mip 层数/总字节 guards 与 stbi 自身的
+`STBI_MAX_DIMENSIONS` 共同守住了这条路径，此处不做改动。
+
+### 覆盖普查续（本轮候选核查摘要）
+
+| 候选 | 结论 |
+|---|---|
+| `decode_pipeline.c` | **13000+ 轮 fuzz 全清**（本轮建 fuzz，无代码改动） |
+| `script.c` | **DoS 缺陷（本轮修复）** |
+| `hotreload.c` | 同类 stbi 面，但仅监听本地开发路径，暴露低于 decode pipeline |
+| `physics.c` / `bvh.c` | 无外部字节流解析 |
+| `async_loader.c` | 调度层；真正解析在 decode_pipeline |
+
+**验收**：`script_rejects_excessive_ops` 确认 `op_count` 停在 4096；
+`script_rejects_oversized_file` 确认 1 MiB + 1 字节文件被拒（日志：
+`Script: ... too large`）。decode fuzz 13000+ 轮全清。四套 CTest 各 **33/33**
+（`test_script` 14 → 16 条）。
+总计 **879** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
