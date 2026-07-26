@@ -16,6 +16,12 @@
 #include <string.h>
 #include <ctype.h>
 
+static bool scene_file_size_ok(long fsz, long min_bytes) {
+    if (fsz < min_bytes) return false;
+    if ((u64)fsz > (u64)BSCN_MAX_FILE_BYTES) return false;
+    return true;
+}
+
 /* ---------------------------------------------------------------- */
 /* Dynamic byte buffer                                              */
 /* ---------------------------------------------------------------- */
@@ -642,7 +648,7 @@ bool scene_probe_binary(const char *path) {
     if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
     long fsz = ftell(fp);
     if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
-    if (fsz < (long)sizeof(BscnHeader)) { fclose(fp); return false; }
+    if (!scene_file_size_ok(fsz, (long)sizeof(BscnHeader))) { fclose(fp); return false; }
     u8 *buf = (u8 *)malloc((size_t)fsz);
     if (!buf) { fclose(fp); return false; }
     if (fread(buf, 1, (size_t)fsz, fp) != (size_t)fsz) { fclose(fp); free(buf); return false; }
@@ -671,7 +677,7 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
     long fsz = ftell(fp);
     if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
-    if (fsz < (long)sizeof(BscnHeader)) { fclose(fp); return false; }
+    if (!scene_file_size_ok(fsz, (long)sizeof(BscnHeader))) { fclose(fp); return false; }
 
     u8 *buf = (u8 *)malloc((size_t)fsz);
     if (!buf) { fclose(fp); return false; }
@@ -1031,7 +1037,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
     if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
     long fsz = ftell(fp);
     if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
-    if (fsz <= 0) { fclose(fp); return false; }
+    if (!scene_file_size_ok(fsz, 1)) { fclose(fp); return false; }
     char *buf = (char *)malloc((size_t)fsz);
     if (!buf) { fclose(fp); return false; }
     if (fread(buf, 1, (size_t)fsz, fp) != (size_t)fsz) {

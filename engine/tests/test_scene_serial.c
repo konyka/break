@@ -10,6 +10,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 /* ----------------------------------------------------------------------- */
 /*  Header format validation                                                */
@@ -410,6 +412,46 @@ TEST(entities_comp_count_bounded)
     remove(path);
 }
 
+/* R398: scene_load_* read the entire file — reject before malloc. */
+static bool write_sparse_file(const char *path, off_t size)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+#if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    bool ok = ftruncate(fileno(f), size) == 0;
+#else
+    bool ok = false;
+    if (fseek(f, (long)size - 1, SEEK_SET) == 0) ok = fputc('x', f) != EOF;
+#endif
+    fclose(f);
+    return ok;
+}
+
+TEST(load_binary_rejects_oversized_file)
+{
+    const char *path = "/tmp/test_bscn_huge.bscn";
+    ASSERT_TRUE(write_sparse_file(path, (off_t)BSCN_MAX_FILE_BYTES + 1));
+
+    World *w = world_create();
+    ASSERT_TRUE(!scene_load_binary(w, NULL, path));
+    ASSERT_TRUE(!scene_probe_binary(path));
+
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(load_json_rejects_oversized_file)
+{
+    const char *path = "/tmp/test_bscn_huge.json";
+    ASSERT_TRUE(write_sparse_file(path, (off_t)BSCN_MAX_FILE_BYTES + 1));
+
+    World *w = world_create();
+    ASSERT_TRUE(!scene_load_json(w, NULL, path));
+
+    world_destroy(w);
+    remove(path);
+}
+
 /* R387: two ENTITIES chunks made the first pass call load_entities_chunk twice,
  * overwriting (and leaking) the first allocation. */
 TEST(duplicate_entities_chunk_rejected)
@@ -693,6 +735,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
     RUN_TEST(failed_load_keeps_previous_scene);
     RUN_TEST(resources_count_bounded_by_chunk_size);
+    RUN_TEST(load_binary_rejects_oversized_file);
+    RUN_TEST(load_json_rejects_oversized_file);
     RUN_TEST(entities_comp_count_bounded);
     RUN_TEST(duplicate_entities_chunk_rejected);
     /* Round 8: resources + generation */

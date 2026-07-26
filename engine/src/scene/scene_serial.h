@@ -18,6 +18,8 @@
 
 #define BSCN_MAGIC   0x4E534342u   /* "BSCN" little-endian */
 #define BSCN_VERSION 1u
+/* R398: load paths read the whole file into memory; cap before malloc. */
+#define BSCN_MAX_FILE_BYTES (64u << 20)  /* 64 MiB */
 
 typedef enum {
     BSCN_CHUNK_ENTITIES    = 1,

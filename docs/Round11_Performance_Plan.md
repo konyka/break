@@ -5202,6 +5202,24 @@ R388 在 mount 时 bound PAK header/entry 表，但 **每次 `vfs_open` 仍按�
 **验收**：27/27 `test_vfs`（26 → 27 条）；四套 CTest 各 **34/34**。
 总计 **886** 处修复。
 
+## R398：BSCN/JSON 场景加载整文件无大小上限（已完成）
+
+R396/R397 bound chunk 计数与 VFS 打开；`scene_serial.c` 的 **`scene_load_binary`、
+`scene_load_json`、`scene_probe_binary` 仍一次性 malloc 整个文件**，入口无 cap。
+
+### [x] R398-A `BSCN_MAX_FILE_BYTES` 分配前拒收
+
+`scene_serial.h`：`BSCN_MAX_FILE_BYTES = 64MiB`。`scene_file_size_ok()` 在三条
+读文件路径的 `malloc` 前拒收超大/sparse 文件。
+
+### [x] R398-B 回归测试
+
+`test_scene_serial.c` 新增 `load_binary_rejects_oversized_file`（含 probe）、
+`load_json_rejects_oversized_file`（sparse `64MiB+1`）。
+
+**验收**：31/31 `test_scene_serial`（29 → 31 条）；四套 CTest 各 **34/34**。
+总计 **887** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
