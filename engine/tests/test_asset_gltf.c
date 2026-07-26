@@ -173,6 +173,32 @@ TEST(gltf_rejects_index_count_past_buffer_view)
     remove(TMP_GLTF);
 }
 
+/* R411: cgltf_size counts are file-controlled but the loader stores counts in
+ * u32 and allocates count*sizeof(Vertex/Index). Reject extreme declarations
+ * before casts or allocations, even if cgltf_validate accepts the JSON shape. */
+TEST(gltf_rejects_extreme_accessor_count_before_alloc)
+{
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+             "\"count\":10000001,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+             "%s}", BUF36);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(!asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    remove(TMP_GLTF);
+}
+
 /* A 40-byte buffer: large enough that a 3xVEC3 span still fits after being
  * nudged off alignment, so the misaligned cases below pass cgltf_validate's size
  * checks and reach the actual load. */
@@ -297,6 +323,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
     RUN_TEST(gltf_rejects_buffer_view_past_buffer);
     RUN_TEST(gltf_rejects_index_count_past_buffer_view);
+    RUN_TEST(gltf_rejects_extreme_accessor_count_before_alloc);
     RUN_TEST(gltf_rejects_misaligned_accessor_offset);
     RUN_TEST(gltf_rejects_misaligned_buffer_view_offset);
     RUN_TEST(gltf_rejects_misaligned_index_accessor);

@@ -80,6 +80,26 @@ typedef struct {
     f32 weights[4];
 } SkinnedVertex;
 
+#define GLTF_MAX_SCENE_ITEMS     100000u
+#define GLTF_MAX_VERTEX_COUNT    10000000u
+#define GLTF_MAX_INDEX_COUNT     30000000u
+#define GLTF_MAX_KEYFRAME_COUNT  1000000u
+
+static bool gltf_count_fits_u32(cgltf_size count) {
+    return count <= (cgltf_size)UINT32_MAX;
+}
+
+static bool gltf_count_fits_size(cgltf_size count, usize elem_size) {
+    if (elem_size == 0) return false;
+    return (usize)count <= SIZE_MAX / elem_size;
+}
+
+static bool gltf_count_bounded(cgltf_size count, u32 max_count, usize elem_size) {
+    return gltf_count_fits_u32(count) &&
+           count <= (cgltf_size)max_count &&
+           gltf_count_fits_size(count, elem_size);
+}
+
 static bool cgltf_accessor_is_type(cgltf_accessor *acc, cgltf_type type) {
     return acc && acc->type == type;
 }
@@ -199,6 +219,50 @@ static bool gltf_accessors_aligned(const cgltf_data *data, const char *path) {
     return true;
 }
 
+static bool gltf_counts_bounded(const cgltf_data *data, const char *path) {
+    if (!gltf_count_bounded(data->nodes_count, GLTF_MAX_SCENE_ITEMS, sizeof(SceneNode)) ||
+        !gltf_count_bounded(data->meshes_count, GLTF_MAX_SCENE_ITEMS, sizeof(Mesh)) ||
+        !gltf_count_bounded(data->materials_count, GLTF_MAX_SCENE_ITEMS, sizeof(Material))) {
+        LOG_ERROR("glTF scene count exceeds loader limits: %s", path);
+        return false;
+    }
+
+    for (cgltf_size i = 0; i < data->accessors_count; i++) {
+        const cgltf_accessor *acc = &data->accessors[i];
+        usize elem_size = cgltf_component_size(acc->component_type) * cgltf_num_components(acc->type);
+        u32 max_count = acc->type == cgltf_type_scalar ? GLTF_MAX_INDEX_COUNT : GLTF_MAX_VERTEX_COUNT;
+        if (!gltf_count_bounded(acc->count, max_count, elem_size ? elem_size : 1u)) {
+            LOG_ERROR("glTF accessor %u count exceeds loader limits: %s", (u32)i, path);
+            return false;
+        }
+    }
+
+    for (cgltf_size i = 0; i < data->skins_count; i++) {
+        if (!gltf_count_bounded(data->skins[i].joints_count, GLTF_MAX_SCENE_ITEMS, sizeof(Mat4))) {
+            LOG_ERROR("glTF skin %u joint count exceeds loader limits: %s", (u32)i, path);
+            return false;
+        }
+    }
+
+    for (cgltf_size ai = 0; ai < data->animations_count; ai++) {
+        const cgltf_animation *anim = &data->animations[ai];
+        if (!gltf_count_bounded(anim->channels_count, GLTF_MAX_SCENE_ITEMS, sizeof(cgltf_animation_channel)) ||
+            !gltf_count_bounded(anim->samplers_count, GLTF_MAX_SCENE_ITEMS, sizeof(cgltf_animation_sampler))) {
+            LOG_ERROR("glTF animation %u count exceeds loader limits: %s", (u32)ai, path);
+            return false;
+        }
+        for (cgltf_size si = 0; si < anim->samplers_count; si++) {
+            const cgltf_animation_sampler *samp = &anim->samplers[si];
+            if (samp->input && !gltf_count_bounded(samp->input->count, GLTF_MAX_KEYFRAME_COUNT, sizeof(f32))) {
+                LOG_ERROR("glTF animation %u sampler %u has too many keyframes: %s", (u32)ai, (u32)si, path);
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     cgltf_options opts = {0};
     cgltf_data *data = NULL;
@@ -251,6 +315,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         return false;
     }
 
+    if (!gltf_counts_bounded(data, path)) {
+        cgltf_free(data);
+        return false;
+    }
+
     result = cgltf_validate(data);
     if (result != cgltf_result_success) {
         LOG_ERROR("cgltf validation failed (%d): %s", result, path);
@@ -283,8 +352,23 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     if (prim->attributes[ai].type == cgltf_attribute_type_joints) has_skin = true;
                 }
             }
-            if (has_skin) total_skinned++;
-            else total_meshes++;
+            if (has_skin) {
+                if (total_skinned == GLTF_MAX_SCENE_ITEMS) {
+                    LOG_ERROR("glTF: too many skinned mesh primitives: %s", path);
+                    cgltf_free(data);
+                    asset_scene_free(ctx, out_scene);
+                    return false;
+                }
+                total_skinned++;
+            } else {
+                if (total_meshes == GLTF_MAX_SCENE_ITEMS) {
+                    LOG_ERROR("glTF: too many mesh primitives: %s", path);
+                    cgltf_free(data);
+                    asset_scene_free(ctx, out_scene);
+                    return false;
+                }
+                total_meshes++;
+            }
         }
     }
 
