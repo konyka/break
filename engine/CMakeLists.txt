@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Platform detection
 option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
+option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
 
 if(UNIX)
     if(APPLE)
@@ -172,6 +173,16 @@ else()
 endif()
 
 target_link_libraries(engine PRIVATE glad lua)
+
+if(ENGINE_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ENGINE_IPO_SUPPORTED OUTPUT ENGINE_IPO_ERROR)
+    if(ENGINE_IPO_SUPPORTED)
+        set_property(TARGET engine PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    else()
+        message(STATUS "IPO/LTO disabled: ${ENGINE_IPO_ERROR}")
+    endif()
+endif()
 
 target_include_directories(engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
