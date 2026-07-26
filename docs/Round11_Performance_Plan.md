@@ -5163,6 +5163,25 @@ R392 给自研 `script.c` 加了 `SCRIPT_MAX_FILE_BYTES`，但 `script_lua.c` �
 **34/34**（`test_vulkan` 无 GPU 跳过）。`test_mipmap_stream` 3 → 4 条。
 总计 **884** 处修复。
 
+## R396：BSCN ENTITIES `comp_count` 无界循环 DoS（已完成）
+
+R387 bound RESOURCES 的 `n` 与 ENTITIES 实体数；同一 chunk 内每条实体的 **`comp_count`**
+仍无上限，内层 `for (k < comp_count)` 可驱动 `world_add_component` 百万次。
+
+### [x] R396-A `load_entities_chunk` 拒收超大 `comp_count`
+
+`scene_serial.c:521–547`：保存路径只 emit `a->key.count`（≤ `ECS_MAX_COMPONENTS`）。
+加载前拒收 `comp_count > ECS_MAX_COMPONENTS`，并用 chunk 剩余字节推导上界
+（`comp_count×4 + (n-i-1)×8`），与 R387 RESOURCES 推导模式一致。
+
+### [x] R396-B 回归测试
+
+`test_scene_serial.c` 新增 `entities_comp_count_bounded`：合法单实体 BSCN 篡改
+`comp_count=1000` → `scene_load_binary` 失败、World 无 orphan entity。
+
+**验收**：29/29 `test_scene_serial`（28 → 29 条）；四套 CTest 各 **34/34**。
+总计 **885** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

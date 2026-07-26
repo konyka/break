@@ -523,6 +523,22 @@ static bool load_entities_chunk(World *w, Reader *r,
             rollback_entities(w, ents, i);
             free(ents); return false;
         }
+        /* R396: comp_count drives an unbounded inner loop + world_add_component.
+         * Saves only emit a->key.count (<= ECS_MAX_COMPONENTS). Also derive a
+         * bound from bytes left so mutated/truncated chunks fail before work. */
+        if (comp_count > ECS_MAX_COMPONENTS) {
+            rollback_entities(w, ents, i);
+            free(ents); return false;
+        }
+        {
+            u64 rem = (u64)(r->end - r->p);
+            u64 need = (u64)comp_count * 4u;
+            u64 min_tail = (u64)(n - i - 1u) * 8u;
+            if (need + min_tail > rem) {
+                rollback_entities(w, ents, i);
+                free(ents); return false;
+            }
+        }
         Entity e = world_create_entity(w);
         if (!entity_valid(e)) {
             rollback_entities(w, ents, i);

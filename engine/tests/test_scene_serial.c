@@ -339,6 +339,28 @@ static bool set_resources_count(const char *path, u32 value)
     return done;
 }
 
+/* R396: overwrite the first entity's comp_count in the ENTITIES chunk. */
+static bool set_first_entity_comp_count(const char *path, u32 value)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    if (fread(&h, sizeof(h), 1, f) != 1) { fclose(f); return false; }
+    bool done = false;
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long ent_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, ent_off, SEEK_SET) != 0) break;
+        if (fread(&e, sizeof(e), 1, f) != 1) break;
+        if (e.type != BSCN_CHUNK_ENTITIES) continue;
+        if (fseek(f, (long)e.offset + 8, SEEK_SET) != 0) break;
+        done = fwrite(&value, sizeof(value), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
 TEST(resources_count_bounded_by_chunk_size)
 {
     const char *path = "/tmp/test_bscn_rescount.bscn";
@@ -357,6 +379,34 @@ TEST(resources_count_bounded_by_chunk_size)
 
     free_scene_src(&dst); free_scene_src(&src);
     world_destroy(w); world_destroy(w2);
+    remove(path);
+}
+
+TEST(entities_comp_count_bounded)
+{
+    const char *path = "/tmp/test_bscn_compcount.bscn";
+    World *w = world_create();
+    world_register_component(w, 1, sizeof(u32));
+    Entity e = world_create_entity(w);
+    world_add_component(w, e, 1);
+    ASSERT_TRUE(scene_save_binary(w, NULL, path, NULL));
+    ASSERT_TRUE(set_first_entity_comp_count(path, 1000u));
+
+    World *w2 = world_create();
+    world_register_component(w2, 1, sizeof(u32));
+    u32 live_before = 0;
+    for (u32 i = 0; i < w2->entity_count; i++) {
+        if (world_entity_exists(w2, w2->entities[i])) live_before++;
+    }
+    ASSERT_TRUE(!scene_load_binary(w2, NULL, path));
+    u32 live_after = 0;
+    for (u32 i = 0; i < w2->entity_count; i++) {
+        if (world_entity_exists(w2, w2->entities[i])) live_after++;
+    }
+    ASSERT_EQ(live_before, live_after);
+
+    world_destroy(w);
+    world_destroy(w2);
     remove(path);
 }
 
@@ -643,6 +693,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
     RUN_TEST(failed_load_keeps_previous_scene);
     RUN_TEST(resources_count_bounded_by_chunk_size);
+    RUN_TEST(entities_comp_count_bounded);
     RUN_TEST(duplicate_entities_chunk_rejected);
     /* Round 8: resources + generation */
     RUN_TEST(resources_roundtrip_include);
