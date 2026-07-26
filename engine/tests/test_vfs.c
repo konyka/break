@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -210,6 +211,33 @@ TEST(vfs_mount_priority)
 
     vfs_close(f);
     vfs_destroy(vfs);
+}
+
+/* R397: DIR mount had no max file size — ftell → calloc entire file. */
+TEST(vfs_dir_rejects_oversized_file)
+{
+    ensure_dir(TMP_DIR);
+    const char *big_path = "/tmp/test_vfs_dir/huge.bin";
+    FILE *f = fopen(big_path, "wb");
+    ASSERT_NOT_NULL(f);
+#if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    ASSERT_TRUE(ftruncate(fileno(f), (off_t)VFS_MAX_FILE_BYTES + 1) == 0);
+#else
+    if (fseek(f, (long)VFS_MAX_FILE_BYTES, SEEK_SET) == 0) fputc('x', f);
+#endif
+    fclose(f);
+
+    VFS *vfs = vfs_create();
+    ASSERT_TRUE(vfs_mount_dir(vfs, TMP_DIR));
+    ASSERT_TRUE(vfs_open(vfs, "huge.bin") == NULL);
+
+    usize sz = 99;
+    u8 *data = vfs_read_all(vfs, "huge.bin", &sz);
+    ASSERT_TRUE(data == NULL);
+    ASSERT_EQ(sz, (usize)0);
+
+    vfs_destroy(vfs);
+    remove(big_path);
 }
 
 TEST(vfs_pak_format)
@@ -483,6 +511,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_read_all_nonexistent);
     RUN_TEST(vfs_read_null_file);
     RUN_TEST(vfs_mount_priority);
+    RUN_TEST(vfs_dir_rejects_oversized_file);
     RUN_TEST(vfs_pak_format);
     RUN_TEST(vfs_pak_name_table_size_overflow_rejected);
     RUN_TEST(vfs_pak_entry_count_bounded_by_file_size);

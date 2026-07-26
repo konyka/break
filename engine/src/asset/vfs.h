@@ -6,6 +6,9 @@
 #define VFS_MAX_PATH    260
 #define VFS_PAK_MAGIC   0x54415045 /* 'EPAT' little-endian = 'TAPE' */
 #define VFS_PAK_VERSION 1
+/* R397: DIR mounts read the whole file into memory; cap before calloc like
+ * SCRIPT/HOTRELOAD paths so sparse multi-GB files cannot OOM the process. */
+#define VFS_MAX_FILE_BYTES (128u << 20)  /* 128 MiB — fits 4K RGBA8 mip chains */
 
 typedef struct VFS VFS;
 typedef struct VFSFile VFSFile;

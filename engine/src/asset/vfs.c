@@ -205,6 +205,13 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                         const char *name = vfs->mounts[mi].pak_names + vfs->mounts[mi].pak_entries[e].name_offset;
                         if (strcmp(name, path) == 0) {
                             PakEntry *pe = &vfs->mounts[mi].pak_entries[e];
+                            /* R397: pe->size is file-controlled; reject before the
+                             * single-block calloc even when R388 kept it in-range. */
+                            if ((u64)pe->size > (u64)VFS_MAX_FILE_BYTES) {
+                                LOG_WARN("VFS: pak entry too large (%u bytes): %s",
+                                         pe->size, path);
+                                return NULL;
+                            }
                             /* Single alloc: VFSFile + data */
                             u8 *vfs_block = (u8 *)calloc(1, sizeof(VFSFile) + pe->size);
                             if (!vfs_block) return NULL;
@@ -241,6 +248,11 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
                 if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
                 long fsz = ftell(fp);
                 if (fsz < 0) { fclose(fp); return NULL; }
+                if ((u64)fsz > (u64)VFS_MAX_FILE_BYTES) {
+                    LOG_WARN("VFS: file too large (%ld bytes): %s", fsz, path);
+                    fclose(fp);
+                    return NULL;
+                }
                 usize sz = (usize)fsz;
                 if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return NULL; }
                 /* Single alloc: VFSFile + data */
