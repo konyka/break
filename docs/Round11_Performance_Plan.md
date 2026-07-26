@@ -5337,6 +5337,22 @@ restore 后再返回。
 **验收**：5/5 `test_scene_state`（4 → 5 条）；36/36 CTest。
 总计 **893** 处修复。
 
+## R405：mipmap_stream 偏移累加溢出 + 超 VFS 链拒收（已完成）
+
+R167-E 拒单级 `mipmap_level_size==0`，但 `offset += sz` 仍可能 usize 回绕，
+`level_offset` 错误 → 区间读错位；注册也可声明超过 `VFS_MAX_FILE_BYTES` 的链。
+
+### [x] R405-A 累加守卫 + VFS 链上限
+
+`offset + sz` 回绕检查；`chain_end > VFS_MAX_FILE_BYTES` 拒收（async 经 VFS）。
+
+### [x] R405-B 回归测试
+
+`mipmap_register_rejects_chain_over_vfs_cap`：8192²×4 level0 → `register` 返回 -1。
+
+**验收**：5/5 `test_mipmap_stream`（4 → 5 条）；36/36 CTest。
+总计 **894** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
