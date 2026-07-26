@@ -291,7 +291,7 @@ glslangValidator -V shader.frag -o shader.frag.spv
 cd engine
 cmake -B build-verify-x11-gl
 cmake --build build-verify-x11-gl
-ctest --test-dir build-verify-x11-gl -E '^test_vulkan$' --output-on-failure
+ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
 
 # Vulkan 后端集成测试（需要 -DENGINE_VULKAN=ON）
 cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON

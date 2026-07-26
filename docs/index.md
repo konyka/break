@@ -4,7 +4,7 @@
 
 从零构建的纯 C (C11-C23) 游戏引擎，支持 Vulkan 和 OpenGL 双后端渲染。
 
-**当前进度**: Phase 0-8Y 全部完成，~188 FPS (Intel UHD TGL GT1)，17/17 测试通过。
+**当前进度**: Phase 0-8Y 全部完成，~188 FPS (Intel UHD TGL GT1)，CTest 主套件持续扩充。
 
 ## 渲染管线
 
@@ -86,8 +86,11 @@ cd engine && cmake -B build-gl && cmake --build build-gl
 # 运行
 ./build/engine_demo
 
-# 测试
-./build/test_vulkan
+# OpenGL 主套件（Vulkan 集成测试需 Vulkan 构建）
+ctest --test-dir build-gl -LE graphics --output-on-failure
+
+# Vulkan 集成测试
+ctest --test-dir build --output-on-failure
 ```
 
 ## 性能
@@ -97,7 +100,7 @@ cd engine && cmake -B build-gl && cmake --build build-gl
 | GPU | Intel UHD Graphics (TGL GT1) |
 | 分辨率 | 1280×720 |
 | FPS | ~188 |
-| 测试 | 17/17 通过 |
+| 测试 | CTest 主套件 + Vulkan 集成套件 |
 | Push Constants | 最大 256 字节 |
 | 编译警告 | -Wall -Wextra -Werror -pedantic |
 
@@ -136,7 +139,7 @@ engine/
 ├── src/
 │   ├── main.c                  # 入口 + 完整渲染管线
 │   ├── engine.c                # 引擎生命周期
-│   ├── test_vulkan.c           # 17 项单元测试
+│   ├── test_vulkan.c           # 图形后端集成 + golden 回归
 │   ├── rhi/                    # 渲染硬件接口
 │   ├── renderer/               # 26 个渲染子系统
 │   ├── math/                   # 数学库

@@ -518,7 +518,7 @@ if(ENGINE_BUILD_TESTS)
     # Runs from the source dir so it can find shaders/ and committed golden images.
     add_test(NAME test_vulkan COMMAND test_vulkan
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180)
+    set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180 LABELS graphics)
 
     # test_physics: needs physics.c + bvh.c + math.c + log.c
     add_executable(test_physics tests/test_physics.c

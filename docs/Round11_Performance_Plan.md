@@ -6671,5 +6671,5 @@ cd engine/build-vk && ctest --output-on-failure
 # OpenGL
 cmake -S engine -B engine/build-gl -DENGINE_VULKAN=OFF -DENGINE_BUILD_TESTS=ON
 cmake --build engine/build-gl -j8
-cd engine/build-gl && ctest --output-on-failure
+ctest --test-dir engine/build-gl -LE graphics --output-on-failure
 ```

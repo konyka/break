@@ -8,7 +8,7 @@ Pure C/C11 3D render framework and engine playground.
 cd engine
 cmake -S . -B build-verify-x11-gl -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-verify-x11-gl
-ctest --test-dir build-verify-x11-gl -E '^test_vulkan$' --output-on-failure
+ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
 ```
 
 `test_vulkan` exercises the Vulkan backend path. Run the full graphics integration
