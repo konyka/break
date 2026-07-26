@@ -5382,6 +5382,23 @@ malloc；`main.c` 在 R404 回滚后仍 `(void)scene_state_load`。
 **验收**：`engine_demo` 构建；`test_mipmap_stream` 5/5、`test_async_loader` 12/12。
 总计 **897** 处修复。
 
+## R408：MegaBuffer 顶点累加溢出 + coverage→mip golden（已完成）
+
+mega-buffer 烘焙 `total_verts`/`total_idxs` u32 累加与 `malloc(c_off+c_bytes)`
+无回绕检查；Round11 记录的 `coverage_to_level` 测试缺口。
+
+### [x] R408-A MegaBuffer 尺寸守卫
+
+u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕检查，
+失败跳过 mega GPU 路径。
+
+### [x] R408-B `mipmap_stream_coverage_to_level` golden
+
+导出 API；`coverage_to_level_known_values`（1.0→0、0.25→1、0.0625→2）。
+
+**验收**：6/6 `test_mipmap_stream`（5 → 6）；`engine_demo` 构建。
+总计 **898** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

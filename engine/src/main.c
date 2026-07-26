@@ -1801,11 +1801,21 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 u32 vbase = voff;
 
                 /* R186: Read DEVICE_LOCAL mesh via staging (map fails on dGPU). */
-                MegaVert *src_v = (MegaVert *)malloc((usize)vc * sizeof(MegaVert));
-                u32 *src_i = (u32 *)malloc((usize)m->index_count * sizeof(u32));
+                usize sv_bytes = (usize)vc * sizeof(MegaVert);
+                usize si_bytes = (usize)m->index_count * sizeof(u32);
+                if (sv_bytes / sizeof(MegaVert) != (usize)vc ||
+                    si_bytes / sizeof(u32) != (usize)m->index_count) {
+                    LOG_WARN("Mega: mesh %u staging size overflow; aborting mega bake",
+                             nd->mesh_index);
+                    free(mega_block);
+                    mega_block = NULL;
+                    break;
+                }
+                MegaVert *src_v = (MegaVert *)malloc(sv_bytes);
+                u32 *src_i = (u32 *)malloc(si_bytes);
                 if (!src_v || !src_i ||
-                    !rhi_buffer_read(render.device, m->vertex_buf, src_v, 0, (usize)vc * sizeof(MegaVert)) ||
-                    !rhi_buffer_read(render.device, m->index_buf, src_i, 0, (usize)m->index_count * sizeof(u32))) {
+                    !rhi_buffer_read(render.device, m->vertex_buf, src_v, 0, sv_bytes) ||
+                    !rhi_buffer_read(render.device, m->index_buf, src_i, 0, si_bytes)) {
                     LOG_WARN("Mega: failed to read mesh %u; aborting mega bake", nd->mesh_index);
                     free(src_v); free(src_i); free(mega_block);
                     mega_block = NULL;

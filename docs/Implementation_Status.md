@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R408 MegaBuffer 顶点累加溢出 + coverage→mip golden 测试 — 修复 1 处 + 导出 API + 回归测试** — mega-buffer 烘焙路径 **`total_verts`/`total_idxs` u32 累加与 `malloc(c_off+c_bytes)` 无乘法/加法回绕检查**，恶意/损坏 glTF 超大 mesh 计数可 usize 回绕 → 小缓冲堆溢出。**R408-A**：累加前拒 u32 溢出；分配前验 `v_bytes`/`i_bytes`/`block_bytes` 乘法与加法守卫，失败跳过 mega GPU 路径。**R408-B**：导出 `mipmap_stream_coverage_to_level`；`coverage_to_level_known_values`（1.0→0、0.25→1、0.0625→2、0→mip_count-1，钉住 R325 IEEE754 快路径）。**验证**：6/6 test_mipmap_stream（5 → 6）；`engine_demo` 构建通过。总计 **898** 处修复。
+最近更新：**R409 MegaBuffer 逐 mesh staging 溢出 + Lua id 0 哨兵测试 — 修复 1 处 + 回归测试** — R408 守卫了 mega 总分配，但循环内 **`malloc(vc*sizeof(MegaVert))` / `malloc(index_count*sizeof(u32))` 仍无乘法回绕检查**，单 mesh 极大 `vertex_count` 可绕过总 cap 触发 staging 堆溢出。**R409-A**：逐 mesh 验证 `sv_bytes`/`si_bytes` 再分配，`rhi_buffer_read` 用同一长度。**R409-B**：`engine_id_zero_is_invalid`（`set_pos(0,...)` / `get_pos(0)` 不改动 `bodies[0]`，Round11 记录的 id 0=none 缺口）。**验证**：18/18 test_script_lua（17 → 18）；`engine_demo` 构建通过。总计 **899** 处修复。
+
+此前：**R408 MegaBuffer 顶点累加溢出 + coverage→mip golden 测试 — 修复 1 处 + 导出 API + 回归测试** — mega-buffer 烘焙路径 **`total_verts`/`total_idxs` u32 累加与 `malloc(c_off+c_bytes)` 无乘法/加法回绕检查**，恶意/损坏 glTF 超大 mesh 计数可 usize 回绕 → 小缓冲堆溢出。**R408-A**：累加前拒 u32 溢出；分配前验 `v_bytes`/`i_bytes`/`block_bytes` 乘法与加法守卫，失败跳过 mega GPU 路径。**R408-B**：导出 `mipmap_stream_coverage_to_level`；`coverage_to_level_known_values`（1.0→0、0.25→1、0.0625→2、0→mip_count-1，钉住 R325 IEEE754 快路径）。**验证**：6/6 test_mipmap_stream（5 → 6）；`engine_demo` 构建通过。总计 **898** 处修复。
 
 此前：**R407 demo 流式纹理生成无界 malloc — 修复 1 处** — `demo_write_stream_texture`（`main.c`）按 `size` 逐级 `malloc(s²×4)` 写入 `stream_texture.bin`，**无尺寸上限、无乘法/链总长守卫**；若 `MIP_STREAM_SIZE` 被误改极大或复用该 helper，可 usize 回绕后分配小缓冲再写满堆，或写出超过 `VFS_MAX_FILE_BYTES` 的文件与 R405 注册/加载路径冲突。**R407-A**：`DEMO_STREAM_TEX_MAX_SIZE=4096`（现用 256）；每级 `wbytes` 乘法回绕检查；累加链 `chain_bytes` 拒收回绕及超 VFS 128MiB；部分 `fwrite` 失败改返 0（不留下半写文件仍报成功 mips）。**验证**：`engine_demo` 构建通过；`test_mipmap_stream` 5/5、`test_async_loader` 12/12。总计 **897** 处修复。
 

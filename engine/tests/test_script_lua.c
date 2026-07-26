@@ -147,6 +147,31 @@ TEST(engine_spawn_first_body_is_lua_id_1)
     physics_world_destroy(pw);
 }
 
+/* R409: Lua body id 0 is invalid (floor/none sentinel); must not touch bodies[0]. */
+TEST(engine_id_zero_is_invalid)
+{
+    PhysicsWorld *pw = physics_world_create(64);
+    physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+
+    ASSERT_TRUE(lua_script_load_string(&ls,
+        "engine.set_pos(0, 9, 9, 9)\n"
+        "n = engine.get_pos(0)\n"
+        "px, py, pz = engine.get_pos(1)\n", "t"));
+
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "px", -99) - 1.0) < 1e-5);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "py", -99) - 2.0) < 1e-5);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "pz", -99) - 3.0) < 1e-5);
+    ASSERT_TRUE(fabs(pw->bodies[0].position.e[0] - 1.0f) < 1e-5f);
+    ASSERT_TRUE(fabs(pw->bodies[0].position.e[1] - 2.0f) < 1e-5f);
+
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
 TEST(engine_pos_vel_impulse)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -309,6 +334,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(call_void_missing_is_safe);
     RUN_TEST(engine_body_count_and_spawn);
     RUN_TEST(engine_spawn_first_body_is_lua_id_1);
+    RUN_TEST(engine_id_zero_is_invalid);
     RUN_TEST(engine_pos_vel_impulse);
     RUN_TEST(engine_entity_count_binding);
     RUN_TEST(engine_bindings_null_host_safe);
