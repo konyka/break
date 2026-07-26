@@ -36,9 +36,17 @@ static void bb_init(ByteBuf *b) { b->data = NULL; b->size = 0; b->cap = 0; }
 static void bb_free(ByteBuf *b) { free(b->data); b->data = NULL; b->size = 0; b->cap = 0; }
 
 static bool bb_reserve(ByteBuf *b, u32 extra) {
-    if (b->size + extra <= b->cap) return true;
+    if (extra > UINT32_MAX - b->size) return false;
+    u32 need = b->size + extra;
+    if (need <= b->cap) return true;
     u32 nc = b->cap ? b->cap : 256;
-    while (nc < b->size + extra) nc *= 2;
+    while (nc < need) {
+        if (nc > UINT32_MAX / 2u) {
+            nc = need;
+            break;
+        }
+        nc *= 2u;
+    }
     u8 *nd = (u8 *)realloc(b->data, nc);
     if (!nd) return false;
     b->data = nd;
@@ -51,6 +59,14 @@ static bool bb_write(ByteBuf *b, const void *src, u32 n) {
     memcpy(b->data + b->size, src, n);
     b->size += n;
     return true;
+}
+
+bool scene_serial_test_bytebuf_rejects_wrap(void) {
+    ByteBuf b;
+    bb_init(&b);
+    b.size = 16u;
+    b.cap = 16u;
+    return !bb_reserve(&b, UINT32_MAX);
 }
 
 static bool bb_u32(ByteBuf *b, u32 v) { return bb_write(b, &v, sizeof(v)); }
@@ -72,11 +88,21 @@ static void emap_free(EntityMap *m) {
     m->count = 0;
 }
 
+static bool emap_block_fits_size(u32 count) {
+#if UINTPTR_MAX <= UINT32_MAX
+    return (usize)count <= SIZE_MAX / sizeof(u32) / 2u;
+#else
+    (void)count;
+    return true;
+#endif
+}
+
 static bool emap_build(const World *w, EntityMap *m) {
     /* Single allocation: entity_to_saved[N] + saved_to_entity[N].
      * 2 mallocs + 1 calloc → 1 malloc, 2 free → 1 free. */
     u32 n = w->entity_count;
-    u8 *block = (u8 *)malloc(sizeof(u32) * n * 2);
+    if (!emap_block_fits_size(n)) return false;
+    u8 *block = (u8 *)malloc(sizeof(u32) * (usize)n * 2u);
     if (!block) return false;
     m->entity_to_saved = (u32 *)block;
     m->saved_to_entity = (u32 *)(block + sizeof(u32) * n);
