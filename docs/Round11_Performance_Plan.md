@@ -5182,6 +5182,26 @@ R387 bound RESOURCES 的 `n` 与 ENTITIES 实体数；同一 chunk 内每条实�
 **验收**：29/29 `test_scene_serial`（28 → 29 条）；四套 CTest 各 **34/34**。
 总计 **885** 处修复。
 
+## R397：VFS DIR/PAK 打开无文件大小上限（已完成）
+
+R388 在 mount 时 bound PAK header/entry 表，但 **每次 `vfs_open` 仍按声明大小整文件
+读入内存**；DIR 挂载此前无任何 max-bytes 拒绝（R392 script、R393 hotreload 已 cap
+同类路径）。
+
+### [x] R397-A `VFS_MAX_FILE_BYTES` 分配前拒收
+
+`vfs.h`：`VFS_MAX_FILE_BYTES = 128MiB`（宽于 4K RGBA8 原始 mip chain）。
+`vfs.c`：DIR 分支 `ftell` 后、`calloc` 前拒收；PAK 命中条目 `pe->size` 超 cap 时
+返回 NULL（纵深，防 mount 边界被绕过）。
+
+### [x] R397-B 回归测试
+
+`test_vfs.c` 新增 `vfs_dir_rejects_oversized_file`：sparse `128MiB+1` 字节文件 →
+`vfs_open` 与 `vfs_read_all` 均失败。
+
+**验收**：27/27 `test_vfs`（26 → 27 条）；四套 CTest 各 **34/34**。
+总计 **886** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
