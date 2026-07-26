@@ -5220,6 +5220,24 @@ R396/R397 bound chunk 计数与 VFS 打开；`scene_serial.c` 的 **`scene_load_
 **验收**：31/31 `test_scene_serial`（29 → 31 条）；四套 CTest 各 **34/34**。
 总计 **887** 处修复。
 
+## R399：着色器 read_file 重复实现无大小上限（已完成）
+
+R393 只 cap 了 `hotreload.c`；**`main.c` 与 30+ renderer 模块**各自复制
+`ftell → malloc(整文件)`，均无上限。
+
+### [x] R399-A 抽取 `shader_read_file()`
+
+`core/shader_io.c/h`：`SHADER_MAX_FILE_BYTES = 4MiB`（与 hotreload 一致）。
+迁移 `hotreload.c`、`main.c` 及全部 renderer 着色器加载路径。
+
+### [x] R399-B 回归测试
+
+`test_shader_io.c` 新增 `shader_read_rejects_oversized_file`；`test_hotreload`
+改用 `SHADER_MAX_FILE_BYTES` 常量。
+
+**验收**：35/35 CTest（新增 `test_shader_io`）；engine + demo 构建通过。
+总计 **888** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

@@ -3,30 +3,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <core/shader_io.h>
 
 /* ========================================================================
  * Helpers
  * ======================================================================== */
 
-static char *id_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = (char *)malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 static RHIPipeline id_load_compute(RHIDevice *dev, const char *path) {
     usize src_len = 0;
-    char *src = id_read_file(path, &src_len);
+    char *src = shader_read_file(path, &src_len);
     if (!src) {
         LOG_WARN("IndirectDraw: shader not found: %s", path);
         return RHI_HANDLE_NULL;

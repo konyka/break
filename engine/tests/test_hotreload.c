@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <asset/hotreload.h>
+#include <core/shader_io.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,7 +38,7 @@ static bool write_file(const char *path, long size, char fill) {
 /* R393: read_file had no size cap — multi-GB shader path could malloc before compile. */
 TEST(hotreload_rejects_oversized_shader)
 {
-    ASSERT_TRUE(write_file(TMP_VERT, (long)(4u << 20) + 1, 'x'));
+    ASSERT_TRUE(write_file(TMP_VERT, (long)SHADER_MAX_FILE_BYTES + 1, 'x'));
     ASSERT_TRUE(write_file(TMP_FRAG, 16, '#'));
 
     HotReloadPipeline hr;

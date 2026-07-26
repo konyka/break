@@ -1,6 +1,7 @@
 #include <renderer/terrain.h>
 #include <core/log.h>
 #include <math/math.h>
+#include <core/shader_io.h>
 #ifndef ENGINE_VULKAN
 #include <glad.h>
 #endif
@@ -86,21 +87,6 @@ static void terrain_rebuild_region(Terrain *t, i32 gx0, i32 gz0, i32 gx1, i32 gz
 }
 
 /* Read a whole file into a malloc'd buffer; returns length via *out_len. */
-static char *terrain_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    if (sz <= 0) { fclose(f); return NULL; }
-    char *buf = (char *)malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale) {
     /* R161-A: Validate grid_size to prevent unsigned underflow in (grid_size - 1)
@@ -142,11 +128,11 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     char *fs_src = NULL;
 
 #ifdef ENGINE_VULKAN
-    vs_src = terrain_read_file("shaders/terrain_vk.vert", &vs_len);
-    fs_src = terrain_read_file("shaders/terrain_vk.frag", &fs_len);
+    vs_src = shader_read_file("shaders/terrain_vk.vert", &vs_len);
+    fs_src = shader_read_file("shaders/terrain_vk.frag", &fs_len);
 #else
-    vs_src = terrain_read_file("shaders/terrain.vert", &vs_len);
-    fs_src = terrain_read_file("shaders/terrain.frag", &fs_len);
+    vs_src = shader_read_file("shaders/terrain.vert", &vs_len);
+    fs_src = shader_read_file("shaders/terrain.frag", &fs_len);
 #endif
 
     if (!vs_src || !fs_src) {
@@ -166,11 +152,11 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
         char *bl_vs = NULL;
         char *bl_fs = NULL;
 #ifdef ENGINE_VULKAN
-        bl_vs = terrain_read_file("shaders/blinn_phong_vk.vert", &bl_vs_len);
-        bl_fs = terrain_read_file("shaders/blinn_phong_vk.frag", &bl_fs_len);
+        bl_vs = shader_read_file("shaders/blinn_phong_vk.vert", &bl_vs_len);
+        bl_fs = shader_read_file("shaders/blinn_phong_vk.frag", &bl_fs_len);
 #else
-        bl_vs = terrain_read_file("shaders/blinn_phong.vert", &bl_vs_len);
-        bl_fs = terrain_read_file("shaders/blinn_phong.frag", &bl_fs_len);
+        bl_vs = shader_read_file("shaders/blinn_phong.vert", &bl_vs_len);
+        bl_fs = shader_read_file("shaders/blinn_phong.frag", &bl_fs_len);
 #endif
         vs = rhi_shader_create(dev, bl_vs, bl_vs_len, false);
         fs = rhi_shader_create(dev, bl_fs, bl_fs_len, true);

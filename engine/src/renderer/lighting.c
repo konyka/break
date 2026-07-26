@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <core/shader_io.h>
 
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
     #include <immintrin.h>
@@ -317,28 +318,13 @@ void light_system_set_point_shadow_indices(LightSystem *ls, const PointShadowSys
     }
 }
 
-static char *ls_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    rewind(f);
-    char *buf = (char *)malloc((usize)sz + 1u);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 bool light_system_init_gpu_cull(LightSystem *ls) {
     if (!ls || !ls->device) return false;
     if (rhi_handle_valid(ls->cluster_cull_pipeline)) { ls->gpu_cull = true; return true; }
 
     usize len = 0;
-    char *src = ls_read_file("shaders/cluster_cull.comp", &len);
+    char *src = shader_read_file("shaders/cluster_cull.comp", &len);
     if (!src) { LOG_WARN("Lighting: cluster_cull.comp not found; using CPU binning"); return false; }
     RHIShader cs = rhi_shader_create_compute(ls->device, src, len);
     free(src);

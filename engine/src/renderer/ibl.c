@@ -20,6 +20,7 @@
 
 #include <renderer/ibl.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,25 +28,10 @@
 
 /* ===== Helpers ============================================================ */
 
-static char *ibl_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    rewind(f);
-    char *buf = (char *)malloc((usize)sz + 1u);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 static RHIPipeline ibl_load_compute(RHIDevice *dev, const char *path) {
     usize len = 0;
-    char *src = ibl_read_file(path, &len);
+    char *src = shader_read_file(path, &len);
     if (!src) {
         LOG_WARN("IBL: compute shader not found: %s", path);
         return RHI_HANDLE_NULL;

@@ -1,26 +1,12 @@
 #include <renderer/skybox.h>
 #include <core/log.h>
 #include <math/math.h>
+#include <core/shader_io.h>
 /* R81-2: Removed #include <glad.h> — no more direct GL calls in this file. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *skybox_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 bool skybox_init(Skybox *sb, RHIDevice *dev) {
     sb->device = dev;
@@ -28,11 +14,11 @@ bool skybox_init(Skybox *sb, RHIDevice *dev) {
 
     usize vs_len = 0, fs_len = 0;
 #ifdef ENGINE_VULKAN
-    char *vs_src = skybox_read_file("shaders/skybox_vk.vert", &vs_len);
-    char *fs_src = skybox_read_file("shaders/skybox_vk.frag", &fs_len);
+    char *vs_src = shader_read_file("shaders/skybox_vk.vert", &vs_len);
+    char *fs_src = shader_read_file("shaders/skybox_vk.frag", &fs_len);
 #else
-    char *vs_src = skybox_read_file("shaders/skybox.vert", &vs_len);
-    char *fs_src = skybox_read_file("shaders/skybox.frag", &fs_len);
+    char *vs_src = shader_read_file("shaders/skybox.vert", &vs_len);
+    char *fs_src = shader_read_file("shaders/skybox.frag", &fs_len);
 #endif
     if (!vs_src || !fs_src) {
         LOG_WARN("Skybox shaders not found");

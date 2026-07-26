@@ -4,23 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <emmintrin.h>  /* SSE2 for visibility count */
+#include <core/shader_io.h>
 
 /* ---- Helper: file read ---- */
-static char *oc_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 /* ---- Helper: calculate mip levels for given resolution ---- */
 static u32 oc_calc_mip_levels(u32 width, u32 height) {
@@ -36,7 +22,7 @@ static u32 oc_calc_mip_levels(u32 width, u32 height) {
 /* ---- Helper: load compute pipeline from shader file ---- */
 static RHIPipeline oc_load_compute_pipeline(RHIDevice *dev, const char *shader_path) {
     usize src_len = 0;
-    char *src = oc_read_file(shader_path, &src_len);
+    char *src = shader_read_file(shader_path, &src_len);
     if (!src) {
         LOG_WARN("OcclusionCull: shader not found: %s", shader_path);
         return RHI_HANDLE_NULL;

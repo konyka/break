@@ -4,22 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <emmintrin.h>  /* SSE2 for SoA→AoS pack */
+#include <core/shader_io.h>
 
-static char *gc_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     memset(gc, 0, sizeof(*gc));
@@ -27,7 +13,7 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     gc->unified_ready = false;
 
     usize cs_len = 0;
-    char *cs_src = gc_read_file("shaders/cull.comp", &cs_len);
+    char *cs_src = shader_read_file("shaders/cull.comp", &cs_len);
     if (!cs_src) {
         LOG_WARN("GPUCull: compute shader not found");
         return false;
@@ -242,7 +228,7 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     
     /* Load unified culling compute shader */
     usize cs_len = 0;
-    char *cs_src = gc_read_file("shaders/unified_cull.comp", &cs_len);
+    char *cs_src = shader_read_file("shaders/unified_cull.comp", &cs_len);
     if (!cs_src) {
         LOG_WARN("UnifiedCull: compute shader not found, using fallback");
         /* Create a minimal inline shader as fallback */

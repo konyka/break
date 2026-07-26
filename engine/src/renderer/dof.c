@@ -3,28 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <core/shader_io.h>
 
-static char *dof_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 static RHIPipeline dof_create_pipe(RHIDevice *dev,
                                     const char *vert_path, const char *frag_path) {
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = dof_read_file(vert_path, &vs_len);
-    char *fs_src = dof_read_file(frag_path, &fs_len);
+    char *vs_src = shader_read_file(vert_path, &vs_len);
+    char *fs_src = shader_read_file(frag_path, &fs_len);
     if (!vs_src || !fs_src) {
         LOG_WARN("DOF: shaders not found (%s)", frag_path);
         free(vs_src); free(fs_src);

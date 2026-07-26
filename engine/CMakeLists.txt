@@ -70,6 +70,7 @@ endif()
 # Engine library
 add_library(engine STATIC
     src/core/log.c
+    src/core/shader_io.c
     src/core/alloc.c
     src/core/pool.c
     src/core/string.c
@@ -565,7 +566,7 @@ if(ENGINE_BUILD_TESTS)
 
     # R393: hotreload shader read_file bounds (RHI stubs in test).
     add_executable(test_hotreload tests/test_hotreload.c
-        src/asset/hotreload.c src/platform/filewatch.c src/core/log.c
+        src/asset/hotreload.c src/core/shader_io.c src/platform/filewatch.c src/core/log.c
         external/stb_image_impl.c)
     target_include_directories(test_hotreload PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -573,6 +574,11 @@ if(ENGINE_BUILD_TESTS)
     endif()
     target_link_libraries(test_hotreload PRIVATE m)
     add_test(NAME test_hotreload COMMAND test_hotreload)
+
+    add_executable(test_shader_io tests/test_shader_io.c src/core/shader_io.c src/core/log.c)
+    target_include_directories(test_shader_io PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_shader_io PRIVATE m)
+    add_test(NAME test_shader_io COMMAND test_shader_io)
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under
@@ -651,21 +657,21 @@ if(ENGINE_BUILD_TESTS)
 
     # test_lighting: needs lighting.c + math.c + log.c + RHI stubs
     add_executable(test_lighting tests/test_lighting.c
-        src/renderer/lighting.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
+        src/renderer/lighting.c src/core/shader_io.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
     target_include_directories(test_lighting PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_lighting PRIVATE m)
     add_test(NAME test_lighting COMMAND test_lighting)
 
     # test_occlusion_visibility: needs occlusion_cull.c + log.c + RHI stubs
     add_executable(test_occlusion_visibility tests/test_occlusion_visibility.c
-        src/renderer/occlusion_cull.c src/core/log.c tests/rhi_stubs.c)
+        src/renderer/occlusion_cull.c src/core/shader_io.c src/core/log.c tests/rhi_stubs.c)
     target_include_directories(test_occlusion_visibility PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_occlusion_visibility PRIVATE m)
     add_test(NAME test_occlusion_visibility COMMAND test_occlusion_visibility)
 
     # test_terrain: CPU-side terrain height sampling/modify/erode
     add_executable(test_terrain tests/test_terrain.c
-        src/renderer/terrain.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
+        src/renderer/terrain.c src/core/shader_io.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
     target_include_directories(test_terrain PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_terrain PRIVATE ENGINE_VULKAN=1)
     target_link_libraries(test_terrain PRIVATE m)

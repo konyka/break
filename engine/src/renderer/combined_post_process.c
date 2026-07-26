@@ -3,32 +3,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <core/shader_io.h>
 
 /* ========================================================================
  * Helper: read shader file
  * ======================================================================== */
-static char *cpp_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 static RHIPipeline cpp_create_pipe(RHIDevice *dev,
                                     const char *vert_path, const char *frag_path,
                                     bool combined_aa, bool combined_color) {
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = cpp_read_file(vert_path, &vs_len);
-    char *fs_src = cpp_read_file(frag_path, &fs_len);
+    char *vs_src = shader_read_file(vert_path, &vs_len);
+    char *fs_src = shader_read_file(frag_path, &fs_len);
     if (!vs_src || !fs_src) {
         free(vs_src); free(fs_src);
         return RHI_HANDLE_NULL;

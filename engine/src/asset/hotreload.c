@@ -4,43 +4,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <core/shader_io.h>
 
-/* R393: shader sources are small text; cap before malloc like SCRIPT_MAX_FILE_BYTES. */
-#define HOTRELOAD_MAX_FILE_BYTES (4u << 20)
 /* Dev-only texture reload: reject absurd dimensions before stbi_load allocates. */
 #define HOTRELOAD_MAX_TEX_DIM 8192u
-
-static char *read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if ((u64)sz > (u64)HOTRELOAD_MAX_FILE_BYTES) {
-        LOG_WARN("Hot reload: %s too large (%ld bytes)", path, sz);
-        fclose(f);
-        return NULL;
-    }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    if (fread(buf, 1, (usize)sz, f) != (usize)sz) {
-        free(buf);
-        fclose(f);
-        return NULL;
-    }
-    buf[sz] = '\0';
-    fclose(f);
-    if (out_len) *out_len = (usize)sz;
-    return buf;
-}
 
 static RHIPipeline hotreload_compile_pipeline(RHIDevice *dev,
                                                const char *vert_path,
                                                const char *frag_path) {
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = read_file(vert_path, &vs_len);
-    char *fs_src = read_file(frag_path, &fs_len);
+    char *vs_src = shader_read_file(vert_path, &vs_len);
+    char *fs_src = shader_read_file(frag_path, &fs_len);
     if (!vs_src || !fs_src) {
         free(vs_src);
         free(fs_src);

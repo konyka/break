@@ -3,22 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <core/shader_io.h>
 
-static char *read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize len = fread(buf, 1, (usize)sz, f);
-    buf[len] = '\0';
-    fclose(f);
-    if (out_len) *out_len = len;
-    return buf;
-}
 
 bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     memset(ps, 0, sizeof(*ps));
@@ -35,7 +21,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
 
     /* ---- Compute pipeline (particle update) ---- */
     usize cs_len = 0;
-    char *cs_src = read_file("shaders/particle_update.comp", &cs_len);
+    char *cs_src = shader_read_file("shaders/particle_update.comp", &cs_len);
     if (!cs_src) {
         LOG_WARN("Particle compute shader not found — particles disabled");
         return false;
@@ -61,7 +47,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
 
     /* ---- GPU alive-particle cull (Round 12) ---- */
     usize cull_len = 0;
-    char *cull_src = read_file("shaders/particle_cull.comp", &cull_len);
+    char *cull_src = shader_read_file("shaders/particle_cull.comp", &cull_len);
     if (cull_src) {
         RHIShader cull_cs = rhi_shader_create_compute(dev, cull_src, cull_len);
         free(cull_src);
@@ -80,8 +66,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
 
     /* ---- Graphics pipeline (particle render) ---- */
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = read_file("shaders/particle.vert", &vs_len);
-    char *fs_src = read_file("shaders/particle.frag", &fs_len);
+    char *vs_src = shader_read_file("shaders/particle.vert", &vs_len);
+    char *fs_src = shader_read_file("shaders/particle.frag", &fs_len);
     if (!vs_src || !fs_src) {
         free(vs_src); free(fs_src);
         LOG_WARN("Particle render shaders not found");

@@ -4,23 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-
-static char *file_read(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
+#include <core/shader_io.h>
 
 bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     w->device = dev;
@@ -37,11 +21,11 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     char *vs_src = NULL, *fs_src = NULL;
 
 #ifdef ENGINE_VULKAN
-    vs_src = file_read("shaders/water_vk.vert", &vs_len);
-    fs_src = file_read("shaders/water_vk.frag", &fs_len);
+    vs_src = shader_read_file("shaders/water_vk.vert", &vs_len);
+    fs_src = shader_read_file("shaders/water_vk.frag", &fs_len);
 #else
-    vs_src = file_read("shaders/water.vert", &vs_len);
-    fs_src = file_read("shaders/water.frag", &fs_len);
+    vs_src = shader_read_file("shaders/water.vert", &vs_len);
+    fs_src = shader_read_file("shaders/water.frag", &fs_len);
 #endif
 
     if (!vs_src || !fs_src) {

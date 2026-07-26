@@ -18,6 +18,7 @@
 
 #include <renderer/deferred.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,30 +46,14 @@ static char *defrd_inject_define(const char *src, usize len, const char *name, u
     return out;
 }
 
-static char *defrd_read_file(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-
-    char *buf = (char *)malloc((usize)sz + 1u);
-    if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
-    fclose(f);
-    if (out_len) *out_len = rd;
-    return buf;
-}
 
 static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
                                           const char *vert_path,
                                           const char *frag_path,
                                           const RHIPipelineDesc *base_desc) {
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = defrd_read_file(vert_path, &vs_len);
-    char *fs_src = defrd_read_file(frag_path, &fs_len);
+    char *vs_src = shader_read_file(vert_path, &vs_len);
+    char *fs_src = shader_read_file(frag_path, &fs_len);
     if (!vs_src || !fs_src) {
         LOG_WARN("deferred: shader source missing (%s | %s)",
                  vert_path ? vert_path : "(null)",

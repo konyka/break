@@ -36,6 +36,7 @@
 #include <renderer/occlusion_cull.h>
 #include <scene/scene_serial.h>
 #include <scene/scene_state.h>
+#include <core/shader_io.h>
 #include <renderer/indirect_draw.h>
 #include <renderer/gpucull.h>
 #include <asset/asset.h>
@@ -159,21 +160,6 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
     }
 }
 
-static char *file_read_full(const char *path, usize *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    char *buf = malloc((usize)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    usize read = fread(buf, 1, (usize)sz, f);
-    buf[read] = '\0';
-    fclose(f);
-    if (out_len) *out_len = read;
-    return buf;
-}
 
 #include <renderer/lighting.h>
 #include <renderer/ibl.h>
@@ -250,11 +236,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
 
     usize vs_len = 0, fs_len = 0;
 #ifdef ENGINE_VULKAN
-    char *vs_src = file_read_full("shaders/blinn_phong_vk.vert", &vs_len);
-    char *fs_src = file_read_full("shaders/blinn_phong_vk.frag", &fs_len);
+    char *vs_src = shader_read_file("shaders/blinn_phong_vk.vert", &vs_len);
+    char *fs_src = shader_read_file("shaders/blinn_phong_vk.frag", &fs_len);
 #else
-    char *vs_src = file_read_full("shaders/blinn_phong.vert", &vs_len);
-    char *fs_src = file_read_full("shaders/blinn_phong.frag", &fs_len);
+    char *vs_src = shader_read_file("shaders/blinn_phong.vert", &vs_len);
+    char *fs_src = shader_read_file("shaders/blinn_phong.frag", &fs_len);
 #endif
     if (!vs_src || !fs_src) {
         LOG_FATAL("Failed to load shaders");
@@ -300,11 +286,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
         usize cvl = 0, cfl = 0;
         char *cv = NULL, *cf = NULL;
 #ifdef ENGINE_VULKAN
-        cv = file_read_full("shaders/pbr_clustered_vk.vert", &cvl);
-        cf = file_read_full("shaders/pbr_clustered_vk.frag", &cfl);
+        cv = shader_read_file("shaders/pbr_clustered_vk.vert", &cvl);
+        cf = shader_read_file("shaders/pbr_clustered_vk.frag", &cfl);
 #else
-        cv = file_read_full("shaders/pbr_clustered.vert", &cvl);
-        cf = file_read_full("shaders/pbr_clustered.frag", &cfl);
+        cv = shader_read_file("shaders/pbr_clustered.vert", &cvl);
+        cf = shader_read_file("shaders/pbr_clustered.frag", &cfl);
 #endif
         if (cv && cf) {
             /* Enable the split-sum IBL path and point-light shadows for the
@@ -403,8 +389,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
 
     {
         usize dvl = 0, dfl = 0;
-        char *dv = file_read_full("shaders/depth_only.vert", &dvl);
-        char *df = file_read_full("shaders/depth_only.frag", &dfl);
+        char *dv = shader_read_file("shaders/depth_only.vert", &dvl);
+        char *df = shader_read_file("shaders/depth_only.frag", &dfl);
         if (dv && df) {
             RHIShader dvs = rhi_shader_create(rs->device, dv, dvl, false);
             RHIShader dfs = rhi_shader_create(rs->device, df, dfl, true);
@@ -428,11 +414,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
         usize ivl = 0, ifl = 0;
         char *iv = NULL, *ifl_src = NULL;
 #ifdef ENGINE_VULKAN
-        iv = file_read_full("shaders/instanced_vk.vert", &ivl);
-        ifl_src = file_read_full("shaders/instanced_vk.frag", &ifl);
+        iv = shader_read_file("shaders/instanced_vk.vert", &ivl);
+        ifl_src = shader_read_file("shaders/instanced_vk.frag", &ifl);
 #else
-        iv = file_read_full("shaders/instanced.vert", &ivl);
-        ifl_src = file_read_full("shaders/instanced.frag", &ifl);
+        iv = shader_read_file("shaders/instanced.vert", &ivl);
+        ifl_src = shader_read_file("shaders/instanced.frag", &ifl);
 #endif
         if (iv && ifl_src) {
             RHIShader ivs = rhi_shader_create(rs->device, iv, ivl, false);
@@ -475,11 +461,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
         usize svl = 0, sfl = 0;
         char *sv = NULL, *sf = NULL;
 #ifdef ENGINE_VULKAN
-        sv = file_read_full("shaders/skinned_vk.vert", &svl);
-        sf = file_read_full("shaders/skinned_vk.frag", &sfl);
+        sv = shader_read_file("shaders/skinned_vk.vert", &svl);
+        sf = shader_read_file("shaders/skinned_vk.frag", &sfl);
 #else
-        sv = file_read_full("shaders/skinned.vert", &svl);
-        sf = file_read_full("shaders/skinned.frag", &sfl);
+        sv = shader_read_file("shaders/skinned.vert", &svl);
+        sf = shader_read_file("shaders/skinned.frag", &sfl);
 #endif
         if (sv && sf) {
             RHIShader svs = rhi_shader_create(rs->device, sv, svl, false);
