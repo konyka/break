@@ -5238,6 +5238,27 @@ R393 只 cap 了 `hotreload.c`；**`main.c` 与 30+ renderer 模块**各自复�
 **验收**：35/35 CTest（新增 `test_shader_io`）；engine + demo 构建通过。
 总计 **888** 处修复。
 
+## R400：font TTF 读取无大小上限 + 着色器路径补全（已完成）
+
+R389 为 TTF 加了 12 字节下限；**整文件 malloc 仍无 max**。R399 遗漏 `font.c`
+内联着色器读取。
+
+### [x] R400-A `FONT_TTF_MAX_BYTES` 分配前拒收
+
+`font.h`：`FONT_TTF_MAX_BYTES = 32MiB`（大 CJK 字体仍可用）。`font_renderer_init`
+在 `malloc` 前拒收超大/sparse 文件。
+
+### [x] R400-B font 着色器改调 `shader_read_file()`
+
+补全 R399 迁移遗漏的内联 `fopen/ftell/malloc` 块。
+
+### [x] R400-C 回归测试
+
+`test_font_load.c` 新增 `font_init_rejects_oversized_file`（4 → 5 条）。
+
+**验收**：5/5 `test_font_load`；35/35 CTest。
+总计 **889** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
