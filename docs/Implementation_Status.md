@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R399 着色器 read_file 重复实现无大小上限 — 抽取 1 处 + 迁移 33 处 + 单测** — R393 只 cap 了 `hotreload.c`，但 **`main.c` 与 30+ 个 renderer 模块各自复制 `ftell → malloc(整文件)`**，均无 `SHADER_MAX_FILE_BYTES`。**R399-A**：新增 `core/shader_io.c` 统一 `shader_read_file()`（4 MiB，与 hotreload 一致）；`hotreload.c`、`main.c` 及全部 renderer 着色器加载路径改调共享实现。**R399-B**：`test_shader_io.c` 新增 `shader_read_rejects_oversized_file`；`test_hotreload` 改用 `SHADER_MAX_FILE_BYTES` 常量。**验证**：35/35 CTest（新增 `test_shader_io`，34 → 35）；engine + demo 构建通过。总计 **888** 处修复。
+最近更新：**R400 font TTF 读取无大小上限 + 着色器路径补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R389 为 TTF 加了最小 12 字节下限，但 **`font_renderer_init` 仍 `malloc(整文件)` 无 max**；另 R399 遗漏 `font.c` 内联着色器读取。**R400-A**：`FONT_TTF_MAX_BYTES=32MiB`（大 CJK 字体仍可用），分配前拒收。**R400-B**：font 着色器改调 `shader_read_file()`。**R400-C**：`test_font_load.c` 新增 `font_init_rejects_oversized_file`（5/5）。**验证**：35/35 CTest；engine 构建通过。总计 **889** 处修复。
+
+此前：**R399 着色器 read_file 重复实现无大小上限 — 抽取 1 处 + 迁移 33 处 + 单测** — R393 只 cap 了 `hotreload.c`，但 **`main.c` 与 30+ 个 renderer 模块各自复制 `ftell → malloc(整文件)`**，均无 `SHADER_MAX_FILE_BYTES`。**R399-A**：新增 `core/shader_io.c` 统一 `shader_read_file()`（4 MiB，与 hotreload 一致）；`hotreload.c`、`main.c` 及全部 renderer 着色器加载路径改调共享实现。**R399-B**：`test_shader_io.c` 新增 `shader_read_rejects_oversized_file`；`test_hotreload` 改用 `SHADER_MAX_FILE_BYTES` 常量。**验证**：35/35 CTest（新增 `test_shader_io`，34 → 35）；engine + demo 构建通过。总计 **888** 处修复。
 
 此前：**R398 BSCN/JSON 场景加载整文件无大小上限 — 修复 1 处 + 回归测试** — R396/R397 已 bound chunk 内计数与 VFS 打开，`scene_serial.c` 三条入口 **`scene_load_binary`/`scene_load_json`/`scene_probe_binary` 仍 `ftell → malloc(整文件)` 无 cap**，恶意 `.bscn`/`.json` 可在解析第一字节前 OOM。**R398-A**：`BSCN_MAX_FILE_BYTES=64MiB`，`scene_file_size_ok()` 在三条路径分配前拒收。**R398-B**：`test_scene_serial.c` 新增 `load_binary_rejects_oversized_file`（含 `scene_probe_binary`）、`load_json_rejects_oversized_file`（sparse `64MiB+1`）。**验证**：31/31 test_scene_serial（29 → 31 条）；四套 CTest 各 **34/34**。总计 **887** 处修复。
 

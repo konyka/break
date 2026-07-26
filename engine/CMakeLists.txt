@@ -478,7 +478,7 @@ if(ENGINE_BUILD_TESTS)
     # first rhi_* call, so the rejection paths run headlessly with dev = NULL; the
     # test provides link-only RHI stubs.
     add_executable(test_font_load tests/test_font_load.c
-        src/ui/font.c src/ui/utf8.c src/core/log.c src/math/math.c)
+        src/ui/font.c src/ui/utf8.c src/core/shader_io.c src/core/log.c src/math/math.c)
     target_include_directories(test_font_load PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_font_load PRIVATE m)
     add_test(NAME test_font_load COMMAND test_font_load)

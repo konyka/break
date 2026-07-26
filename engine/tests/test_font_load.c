@@ -21,6 +21,8 @@
 #include <rhi/rhi.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 /* ---- RHI stubs (link-only; the tests below never reach a draw path) ---- */
 
@@ -133,9 +135,27 @@ TEST(font_init_rejects_non_font_file)
     remove(TMP_FONT);
 }
 
+/* R400: TTF read had min-bytes floor (R389) but no max — sparse multi-GB OOM. */
+TEST(font_init_rejects_oversized_file)
+{
+    FILE *f = fopen(TMP_FONT, "wb");
+    ASSERT_NOT_NULL(f);
+#if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+    ASSERT_TRUE(ftruncate(fileno(f), (off_t)FONT_TTF_MAX_BYTES + 1) == 0);
+#else
+    if (fseek(f, (long)FONT_TTF_MAX_BYTES, SEEK_SET) == 0) fputc('x', f);
+#endif
+    fclose(f);
+
+    FontRenderer fr;
+    ASSERT_TRUE(!font_renderer_init(&fr, NULL, TMP_FONT, 16.0f));
+    remove(TMP_FONT);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(font_init_rejects_missing_file);
     RUN_TEST(font_init_rejects_empty_file);
     RUN_TEST(font_init_rejects_file_below_offset_table);
     RUN_TEST(font_init_rejects_non_font_file);
+    RUN_TEST(font_init_rejects_oversized_file);
 TEST_MAIN_END()

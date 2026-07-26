@@ -1,6 +1,7 @@
 #include <ui/font.h>
 #include <ui/utf8.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 #include <math/math.h>
 #include <rhi/rhi.h>
 #include <stdlib.h>
@@ -68,6 +69,11 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
      * See docs/Round11_Performance_Plan.md (R389) for why that is left alone. */
     if (sz < FONT_TTF_MIN_BYTES) {
         LOG_WARN("Font: %s is too small to be a font (%ld bytes)", ttf_path, sz);
+        fclose(f);
+        return false;
+    }
+    if ((u64)sz > (u64)FONT_TTF_MAX_BYTES) {
+        LOG_WARN("Font: %s too large (%ld bytes)", ttf_path, sz);
         fclose(f);
         return false;
     }
@@ -233,40 +239,8 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
 #endif
 
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = NULL, *fs_src = NULL;
-    FILE *vf = fopen(vert_path, "rb");
-    if (vf) {
-        long vsz = 0;
-        if (fseek(vf, 0, SEEK_END) == 0) vsz = ftell(vf);
-        if (vsz < 0 || fseek(vf, 0, SEEK_SET) != 0) { fclose(vf); }
-        else {
-            vs_len = (usize)vsz;
-            vs_src = malloc(vs_len + 1);
-            if (!vs_src) { fclose(vf); vs_len = 0; }
-            else {
-                vs_len = fread(vs_src, 1, vs_len, vf);
-                vs_src[vs_len] = '\0';
-                fclose(vf);
-            }
-        }
-    }
-    FILE *ff = fopen(frag_path, "rb");
-    if (ff) {
-        long fsz = 0;
-        if (fseek(ff, 0, SEEK_END) == 0) fsz = ftell(ff);
-        if (fsz < 0 || fseek(ff, 0, SEEK_SET) != 0) { fclose(ff); }
-        else {
-            fs_len = (usize)fsz;
-            fs_src = malloc(fs_len + 1);
-            if (!fs_src) { fclose(ff); fs_len = 0; }
-            else {
-                fs_len = fread(fs_src, 1, fs_len, ff);
-                fs_src[fs_len] = '\0';
-                fclose(ff);
-            }
-        }
-    }
-
+    char *vs_src = shader_read_file(vert_path, &vs_len);
+    char *fs_src = shader_read_file(frag_path, &fs_len);
     if (!vs_src || !fs_src) {
         LOG_WARN("Font: shaders not found (%s / %s)", vert_path, frag_path);
         free(vs_src); free(fs_src);

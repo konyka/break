@@ -7,6 +7,8 @@
  * Codepoints are looked up through cp_map[] so UTF-8 text renders correctly. */
 #define FONT_MAX_GLYPHS  256
 #define FONT_CPMAP_SIZE  256
+/* R400: TTF is read whole into memory for stbtt; cap before malloc. */
+#define FONT_TTF_MAX_BYTES (32u << 20)  /* 32 MiB — large CJK fonts fit */
 
 typedef struct {
     f32 x0, y0, x1, y1;
