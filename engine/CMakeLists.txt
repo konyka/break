@@ -144,6 +144,7 @@ src/renderer/lens_effects.c
     src/network/packet.c
     src/network/net_replication.c
     src/scene/scene_serial.c
+    src/scene/scene_state.c
     src/engine.c
 )
 
@@ -553,6 +554,25 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_scene_serial PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_scene_serial PRIVATE m)
     add_test(NAME test_scene_serial COMMAND test_scene_serial)
+
+    # R393: companion scene_state.bin save/load (extracted from main.c).
+    add_executable(test_scene_state tests/test_scene_state.c
+        src/scene/scene_state.c src/physics/physics.c src/physics/bvh.c
+        src/math/math.c src/core/log.c)
+    target_include_directories(test_scene_state PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_scene_state PRIVATE m)
+    add_test(NAME test_scene_state COMMAND test_scene_state)
+
+    # R393: hotreload shader read_file bounds (RHI stubs in test).
+    add_executable(test_hotreload tests/test_hotreload.c
+        src/asset/hotreload.c src/platform/filewatch.c src/core/log.c
+        external/stb_image_impl.c)
+    target_include_directories(test_hotreload PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_LINUX=1)
+    endif()
+    target_link_libraries(test_hotreload PRIVATE m)
+    add_test(NAME test_hotreload COMMAND test_hotreload)
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under

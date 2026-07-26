@@ -82,6 +82,9 @@ u32           physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius,
 u32           physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame);
 void          physics_body_set_ccd(PhysicsWorld *pw, u32 body_id, bool enable);
 void          physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse);
+/* R376/R379/R380: park/revive tombstone slots (Del/N-clear). Used by main and scene_state. */
+void          physics_body_park(PhysicsWorld *pw, u32 pid);
+void          physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame);
 void          physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *user);
 void          physics_step(PhysicsWorld *pw, f32 dt);
 bool          physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, u32 *out_body, f32 *out_t);

@@ -5,19 +5,33 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* R393: shader sources are small text; cap before malloc like SCRIPT_MAX_FILE_BYTES. */
+#define HOTRELOAD_MAX_FILE_BYTES (4u << 20)
+/* Dev-only texture reload: reject absurd dimensions before stbi_load allocates. */
+#define HOTRELOAD_MAX_TEX_DIM 8192u
+
 static char *read_file(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return NULL; }
+    if ((u64)sz > (u64)HOTRELOAD_MAX_FILE_BYTES) {
+        LOG_WARN("Hot reload: %s too large (%ld bytes)", path, sz);
+        fclose(f);
+        return NULL;
+    }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
     char *buf = malloc((usize)sz + 1);
     if (!buf) { fclose(f); return NULL; }
-    usize rd = fread(buf, 1, (usize)sz, f);
-    buf[rd] = '\0';
+    if (fread(buf, 1, (usize)sz, f) != (usize)sz) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    buf[sz] = '\0';
     fclose(f);
-    if (out_len) *out_len = rd;
+    if (out_len) *out_len = (usize)sz;
     return buf;
 }
 
@@ -116,6 +130,15 @@ static bool hotreload_reload_texture(HotReloadTexture *hr) {
     if (!hr || !hr->device || !hr->target) return false;
 
     int w = 0, h = 0, ch = 0;
+    if (!stbi_info(hr->path, &w, &h, &ch)) {
+        LOG_WARN("Hot reload texture: cannot read info for %s", hr->path);
+        return false;
+    }
+    if (w <= 0 || h <= 0 ||
+        (u32)w > HOTRELOAD_MAX_TEX_DIM || (u32)h > HOTRELOAD_MAX_TEX_DIM) {
+        LOG_WARN("Hot reload texture: dimensions out of range %dx%d for %s", w, h, hr->path);
+        return false;
+    }
     u8 *data = stbi_load(hr->path, &w, &h, &ch, 4);
     if (!data || w <= 0 || h <= 0) {
         if (data) stbi_image_free(data);

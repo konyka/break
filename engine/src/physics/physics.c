@@ -100,6 +100,26 @@ void physics_world_destroy(PhysicsWorld *pw) {
     free(pw);
 }
 
+void physics_body_park(PhysicsWorld *pw, u32 pid) {
+    if (!pw || pid == 0 || pid >= pw->count) return;
+    RigidBody *pb = &pw->bodies[pid];
+    pb->is_static = true;
+    pb->inv_mass = 0.0f;
+    pb->velocity = vec3(0, 0, 0);
+    pb->position = vec3(0, -1000.0f, 0);
+    pb->spawn_frame = UINT32_MAX;
+    pw->bvh_dirty = true;
+}
+
+void physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame) {
+    if (!rb) return;
+    rb->mass = (mass > 0.0f) ? mass : 1.0f;
+    rb->is_static = is_static;
+    rb->inv_mass = (is_static || rb->mass <= 0.0f) ? 0.0f : (1.0f / rb->mass);
+    rb->spawn_frame = frame;
+    rb->rest_frames = 0;
+}
+
 u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     u32 id;
     RigidBody *b;

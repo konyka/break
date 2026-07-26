@@ -5068,6 +5068,48 @@ R391 的覆盖普查把下一批目标按"外部输入 → 驱动分配 → 指�
 （`test_script` 14 → 16 条）。
 总计 **879** 处修复。
 
+## R393：`scene_state.bin` DoS + 热重载读取边界 + 模块抽取（已完成）
+
+R392 普查的下一批目标：`hotreload.c`（stbi/读取路径）与 `main.c` 内嵌的
+`scene_state.bin` 加载器。
+
+### [x] R393-A 从 `main.c` 抽取 `scene_state.c` 并加固 `pc`
+
+`scene_state.bin` 的保存/加载原先嵌在 `main.c`（~90 行），零单测覆盖。
+`pc`（刚体记录数）来自文件且**无上限**：R384 修复了"读不完就错位"，但合法
+forward-compat 文件（`pc > physics->capacity`）仍须逐条 `fread` 跳过才能到达
+末尾的 water 字段——一条 `pc = 65537`、每记录 45 字节的文件就要 **65537 次
+fread**（DoS），而引擎保存时 `pc` 从不超过 `physics->count`（256）。
+
+修法：
+1. 抽取为 `scene/scene_state.c` + `scene_state.h`，`main.c` 改调
+   `scene_state_save` / `scene_state_load`。
+2. 加载前测文件大小，拒绝 `pc > SCENE_STATE_MAX_PC`（65536）或
+   `pc * record_bytes > 剩余字节`。
+3. 当 `si >= physics->count` 时，**一次 `fseek` 跳过剩余记录**，不再逐条 fread。
+
+同时将 `physics_body_park` / `physics_body_revive` 从 `main.c` 的 static 函数
+移入 `physics.c`（原先 scene_state 无法链接）。
+
+### [x] R393-B `hotreload.c` `read_file` 与纹理尺寸边界
+
+`read_file`（着色器热重载）与 R392 修复前的 `script_load` 同类：`ftell` →
+`malloc(sz+1)` 无上限，且 `fread` 返回值未校验。
+
+修法：`HOTRELOAD_MAX_FILE_BYTES = 4 MiB`；`fread` 必须读满 `sz` 否则 `free` 返回；
+纹理重载前调 `stbi_info` 并拒收 `> 8192` 的宽/高（在 `stbi_load` 分配之前）。
+
+### [x] R393-C 无头测试覆盖
+
+- `test_scene_state.c`：roundtrip、`pc > MAX` 拒绝、`pc` 越 EOF 拒绝。
+- `test_hotreload.c`：4 MiB + 1 字节着色器文件被拒（RHI 桩）。
+
+**验收**：`scene_state_rejects_excessive_pc` / `scene_state_rejects_pc_past_eof`
+日志确认**因正确原因**被拒；`hotreload_rejects_oversized_shader` 日志
+`too large (4194305 bytes)`。四套 CTest 各 **35/35**（新增 `test_scene_state`、
+`test_hotreload`）。
+总计 **882** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity
