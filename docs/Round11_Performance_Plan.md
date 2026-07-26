@@ -5318,6 +5318,25 @@ R160-B 在累加完成后才查 `hdr_sz+total_pix>UINT32_MAX`；循环内
 **验收**：9/9 `test_task`（6 → 9 条）；36/36 CTest。
 总计 **892** 处修复。
 
+## R404：scene_state_load 失败不回滚（已完成）
+
+R393/R401 加了 `pc` 与文件大小 cap，但 `scene_state_load` 边读边写 live
+对象；`fread`/EOF/`pc` 校验失败时返回 `false` 却保留已改相机/物理状态
+（`main.c` `(void)scene_state_load(...)`）。
+
+### [x] R404-A 快照 + 失败 restore
+
+magic 校验通过后备份 `Camera`/标量/`physics->bodies[]`，任意失败路径
+restore 后再返回。
+
+### [x] R404-B 回归测试
+
+`scene_state_load_failure_preserves_runtime`：篡改 `pc` 超限 → 加载失败且
+相机/刚体保持加载前值。
+
+**验收**：5/5 `test_scene_state`（4 → 5 条）；36/36 CTest。
+总计 **893** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

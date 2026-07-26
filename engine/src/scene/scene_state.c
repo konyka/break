@@ -2,7 +2,68 @@
 #include <core/log.h>
 #include <math/math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+typedef struct {
+    Camera  camera;
+    f32     sun_azimuth;
+    f32     sun_elevation;
+    f32     exposure;
+    f32     render_scale;
+    i32     render_scale_idx;
+    bool    have_render_scale_idx;
+    f32     water_y;
+    bool    water_enabled;
+    bool    bvh_dirty;
+    RigidBody *bodies;
+    u32     body_count;
+} SceneStateBackup;
+
+static bool scene_state_backup(const SceneStateCtx *ctx, SceneStateBackup *bk) {
+    bk->camera = *ctx->camera;
+    bk->sun_azimuth = *ctx->sun_azimuth;
+    bk->sun_elevation = *ctx->sun_elevation;
+    bk->exposure = *ctx->exposure;
+    bk->render_scale = *ctx->render_scale;
+    bk->have_render_scale_idx = ctx->render_scale_idx != NULL;
+    if (bk->have_render_scale_idx)
+        bk->render_scale_idx = *ctx->render_scale_idx;
+    bk->water_y = *ctx->water_y;
+    bk->water_enabled = *ctx->water_enabled;
+    bk->bvh_dirty = ctx->physics->bvh_dirty;
+    bk->body_count = ctx->physics->count;
+    bk->bodies = NULL;
+    if (bk->body_count > 0u) {
+        bk->bodies = (RigidBody *)malloc((usize)bk->body_count * sizeof(RigidBody));
+        if (!bk->bodies) return false;
+        memcpy(bk->bodies, ctx->physics->bodies,
+               (usize)bk->body_count * sizeof(RigidBody));
+    }
+    return true;
+}
+
+static void scene_state_backup_free(SceneStateBackup *bk) {
+    free(bk->bodies);
+    bk->bodies = NULL;
+    bk->body_count = 0u;
+}
+
+static void scene_state_restore(const SceneStateCtx *ctx, const SceneStateBackup *bk) {
+    *ctx->camera = bk->camera;
+    *ctx->sun_azimuth = bk->sun_azimuth;
+    *ctx->sun_elevation = bk->sun_elevation;
+    *ctx->exposure = bk->exposure;
+    *ctx->render_scale = bk->render_scale;
+    if (bk->have_render_scale_idx)
+        *ctx->render_scale_idx = bk->render_scale_idx;
+    *ctx->water_y = bk->water_y;
+    *ctx->water_enabled = bk->water_enabled;
+    if (bk->body_count > 0u)
+        memcpy(ctx->physics->bodies, bk->bodies,
+               (usize)bk->body_count * sizeof(RigidBody));
+    ctx->physics->bvh_dirty = bk->bvh_dirty;
+}
 
 static usize scene_state_record_bytes(bool v2, bool v3) {
     usize n = sizeof(Vec3) * 2u;
@@ -95,6 +156,13 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
         return false;
     }
 
+    SceneStateBackup backup;
+    memset(&backup, 0, sizeof(backup));
+    if (!scene_state_backup(ctx, &backup)) {
+        fclose(lf);
+        return false;
+    }
+
     ld_ok &= fread(&ctx->camera->position, sizeof(Camera), 1, lf) == 1;
     ld_ok &= fread(ctx->sun_azimuth, sizeof(f32), 1, lf) == 1;
     ld_ok &= fread(ctx->sun_elevation, sizeof(f32), 1, lf) == 1;
@@ -177,6 +245,10 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
     }
     if (!ld_ok) LOG_WARN("Scene state load: partial read failure");
     else LOG_INFO("Runtime state restored (%u bodies)", pc);
+
+    if (!ld_ok)
+        scene_state_restore(ctx, &backup);
+    scene_state_backup_free(&backup);
 
     fclose(lf);
     return ld_ok;

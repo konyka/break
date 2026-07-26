@@ -122,6 +122,57 @@ TEST(scene_state_rejects_pc_past_eof)
     remove(TMP_STATE);
 }
 
+/* R404: partial load must not leave camera/physics mutated on failure. */
+TEST(scene_state_load_failure_preserves_runtime)
+{
+    Camera cam = {0};
+    cam.position = vec3(9, 9, 9);
+    f32 sun_a = 1.0f, sun_e = 2.0f, exp = 3.0f, scale = 4.0f;
+    f32 wy = 5.0f;
+    bool wen = true;
+
+    PhysicsWorld *pw = physics_world_create(4);
+    ASSERT_NOT_NULL(pw);
+    pw->count = 1;
+    pw->bodies[0].position = vec3(10, 11, 12);
+    pw->bodies[0].velocity = vec3(0, 0, 0);
+
+    SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    cam.position = vec3(1, 2, 3);
+    sun_a = 0.5f;
+    wy = -1.0f;
+    ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
+
+    cam.position = vec3(9, 9, 9);
+    sun_a = 1.0f;
+    sun_e = 2.0f;
+    exp = 3.0f;
+    scale = 4.0f;
+    wy = 5.0f;
+    wen = true;
+
+    FILE *f = fopen(TMP_STATE, "r+b");
+    ASSERT_NOT_NULL(f);
+    u32 pc = SCENE_STATE_MAX_PC + 1u;
+    fseek(f, (long)(4 + sizeof(Camera) + 4 * sizeof(f32)), SEEK_SET);
+    fwrite(&pc, sizeof(pc), 1, f);
+    fclose(f);
+
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(!scene_state_load(TMP_STATE, &lctx));
+
+    ASSERT_TRUE(fabsf(cam.position.e[0] - 9.0f) < 1e-4f);
+    ASSERT_TRUE(fabsf(cam.position.e[1] - 9.0f) < 1e-4f);
+    ASSERT_TRUE(fabsf(cam.position.e[2] - 9.0f) < 1e-4f);
+    ASSERT_TRUE(fabsf(sun_a - 1.0f) < 1e-4f);
+    ASSERT_TRUE(fabsf(wy - 5.0f) < 1e-4f);
+    ASSERT_TRUE(wen);
+    ASSERT_TRUE(fabsf(pw->bodies[0].position.e[0] - 10.0f) < 1e-4f);
+
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST(scene_state_rejects_oversized_file)
 {
     FILE *f = fopen(TMP_STATE, "wb");
@@ -150,5 +201,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_rejects_excessive_pc);
     RUN_TEST(scene_state_rejects_pc_past_eof);
+    RUN_TEST(scene_state_load_failure_preserves_runtime);
     RUN_TEST(scene_state_rejects_oversized_file);
 TEST_MAIN_END()
