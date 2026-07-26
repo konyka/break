@@ -5369,6 +5369,19 @@ malloc；`main.c` 在 R404 回滚后仍 `(void)scene_state_load`。
 **验收**：36/36 CTest（decode + scene_state 回归仍绿）。
 总计 **896** 处修复。
 
+## R407：demo 流式纹理生成无界 malloc（已完成）
+
+`demo_write_stream_texture` 按 `size` 逐级 `malloc(s²×4)` 无 cap；误用极大
+`size` 可乘法回绕或写出超 VFS 128MiB 链。
+
+### [x] R407-A 尺寸 cap + 逐级/链总长守卫
+
+`DEMO_STREAM_TEX_MAX_SIZE=4096`（demo 现用 256）；`wbytes` 回绕检查；
+`chain_bytes` 拒收回绕及 `> VFS_MAX_FILE_BYTES`；部分 fwrite 失败返 0。
+
+**验收**：`engine_demo` 构建；`test_mipmap_stream` 5/5、`test_async_loader` 12/12。
+总计 **897** 处修复。
+
 ## R361：热键双重绑定续消歧 + terrain pipeline 门控（已完成）
 
 ### [x] R361-A Delete：SSR only when no selected entity

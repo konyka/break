@@ -717,15 +717,29 @@ static void demo_mip_upload(void *ctx, i32 tex_idx, u32 level, u32 w, u32 h,
     rhi_texture_upload_mip(c->dev, c->tex, level, w, h, data, size);
 }
 
+/* R407: cap procedural stream texture dimension (demo uses 256; guard against
+ * accidental huge `size` or future call sites). */
+#define DEMO_STREAM_TEX_MAX_SIZE 4096u
+
 /* Writes a procedural RGBA8 texture as a raw, sequential mip chain so the
  * streaming system has a real file to stream level ranges out of. Returns the
  * number of mip levels written, or 0 on failure. */
 static u32 demo_write_stream_texture(const char *path, u32 size) {
+    if (!path || size == 0u || size > DEMO_STREAM_TEX_MAX_SIZE) return 0;
     FILE *f = fopen(path, "wb");
     if (!f) return 0;
     u32 mips = 0;
+    usize chain_bytes = 0;
     for (u32 s = size; s >= 1; s >>= 1) {
-        u8 *buf = (u8 *)malloc((usize)s * s * 4u);
+        usize level_pix = (usize)s * (usize)s;
+        usize wbytes = level_pix * 4u;
+        if (wbytes / 4u != level_pix ||
+            chain_bytes + wbytes < chain_bytes ||
+            chain_bytes + wbytes > (usize)VFS_MAX_FILE_BYTES) {
+            fclose(f);
+            return 0;
+        }
+        u8 *buf = (u8 *)malloc(wbytes);
         if (!buf) { fclose(f); return 0; }
         for (u32 y = 0; y < s; y++) {
             for (u32 x = 0; x < s; x++) {
@@ -738,13 +752,13 @@ static u32 demo_write_stream_texture(const char *path, u32 size) {
                 p[3] = 255;
             }
         }
-        usize wbytes = (usize)s * s * 4u;
         if (fwrite(buf, 1, wbytes, f) != wbytes) {
             free(buf); fclose(f);
             LOG_WARN("Stream texture write: partial write failure for %s", path);
-            return mips;
+            return 0;
         }
         free(buf);
+        chain_bytes += wbytes;
         mips++;
         if (s == 1) break;
     }
