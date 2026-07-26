@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define VERIFY_CHUNK_BYTES (64u * 1024u)
+
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
     #define WIN32_LEAN_AND_MEAN
@@ -53,50 +55,46 @@ static int verify_file(VFS *vfs, const char *pak_name,
         return 0;
     }
 
-    /* Compare content */
-    u8 *disk_buf = malloc((usize)disk_size);
-    if (!disk_buf && disk_size > 0) {
-        fprintf(stderr, "FAIL: malloc failed for '%s' (%ld bytes)\n", disk_path, disk_size);
-        fclose(fp);
-        vfs_close(f);
-        return 0;
-    }
-    /* R164: Check fread return value to detect I/O errors. */
-    if (fread(disk_buf, 1, (usize)disk_size, fp) != (usize)disk_size) {
-        fprintf(stderr, "FAIL: short read on disk for '%s'\n", disk_path);
-        free(disk_buf);
-        fclose(fp);
-        vfs_close(f);
-        return 0;
-    }
-    fclose(fp);
-
-    u8 *pak_buf = malloc(pak_size);
-    if (!pak_buf && pak_size > 0) {
-        fprintf(stderr, "FAIL: malloc failed for pak '%s' (%zu bytes)\n", pak_name, pak_size);
-        free(disk_buf);
-        vfs_close(f);
-        return 0;
-    }
-    usize nread = vfs_read(f, pak_buf, pak_size);
-    if (nread != pak_size) {
-        fprintf(stderr, "FAIL: short read for '%s' (%zu/%zu)\n",
-                pak_name, nread, pak_size);
+    u8 *disk_buf = malloc(VERIFY_CHUNK_BYTES);
+    u8 *pak_buf = malloc(VERIFY_CHUNK_BYTES);
+    if (!disk_buf || !pak_buf) {
+        fprintf(stderr, "FAIL: chunk buffer malloc failed for '%s'\n", pak_name);
         free(disk_buf);
         free(pak_buf);
+        fclose(fp);
         vfs_close(f);
         return 0;
     }
 
-    int match = memcmp(disk_buf, pak_buf, pak_size) == 0;
-    if (!match) {
-        fprintf(stderr, "FAIL: content mismatch for '%s'\n", pak_name);
-    } else {
-        printf("OK: '%s' (%zu bytes) matches\n", pak_name, pak_size);
+    int match = 1;
+    usize remaining = pak_size;
+    while (remaining > 0) {
+        usize chunk = remaining < VERIFY_CHUNK_BYTES ? remaining : VERIFY_CHUNK_BYTES;
+        if (fread(disk_buf, 1, chunk, fp) != chunk) {
+            fprintf(stderr, "FAIL: short read on disk for '%s'\n", disk_path);
+            match = 0;
+            break;
+        }
+        usize nread = vfs_read(f, pak_buf, chunk);
+        if (nread != chunk) {
+            fprintf(stderr, "FAIL: short read for '%s' (%zu/%zu)\n",
+                    pak_name, nread, chunk);
+            match = 0;
+            break;
+        }
+        if (memcmp(disk_buf, pak_buf, chunk) != 0) {
+            fprintf(stderr, "FAIL: content mismatch for '%s'\n", pak_name);
+            match = 0;
+            break;
+        }
+        remaining -= chunk;
     }
+
+    if (match) printf("OK: '%s' (%zu bytes) matches\n", pak_name, pak_size);
 
     free(disk_buf);
     free(pak_buf);
+    fclose(fp);
     vfs_close(f);
     return match;
 }
