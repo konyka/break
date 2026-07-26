@@ -261,10 +261,21 @@ TEST(mipmap_register_rejects_chain_over_vfs_cap)
     mipmap_stream_shutdown(&mgr);
 }
 
+/* R408: golden values from Round11 R325 audit (IEEE754 exponent fast path). */
+TEST(coverage_to_level_known_values)
+{
+    const u32 mips = 5u;
+    ASSERT_EQ(mipmap_stream_coverage_to_level(1.0f, mips, 16u, 16u), 0u);
+    ASSERT_EQ(mipmap_stream_coverage_to_level(0.25f, mips, 16u, 16u), 1u);
+    ASSERT_EQ(mipmap_stream_coverage_to_level(0.0625f, mips, 16u, 16u), 2u);
+    ASSERT_EQ(mipmap_stream_coverage_to_level(0.0f, mips, 16u, 16u), mips - 1u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_residency_and_upload);
     RUN_TEST(mipmap_eviction_under_budget);
     RUN_TEST(mipmap_invalidate_clears_residency);
     RUN_TEST(mipmap_rejects_truncated_level_file);
     RUN_TEST(mipmap_register_rejects_chain_over_vfs_cap);
+    RUN_TEST(coverage_to_level_known_values);
 TEST_MAIN_END()

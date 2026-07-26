@@ -1755,25 +1755,37 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     {
         typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } MegaVert;
         u32 total_verts = 0, total_idxs = 0, mesh_cmd_count = 0;
+        bool mega_sizes_ok = true;
 
         for (u32 ni = 0; ni < scene.node_count; ni++) {
             SceneNode *nd = &scene.nodes[ni];
             if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene.mesh_count) continue;
             Mesh *m = &scene.meshes[nd->mesh_index];
             if (m->vertex_count == 0 || m->index_count == 0) continue;
+            if (total_verts > UINT32_MAX - m->vertex_count ||
+                total_idxs > UINT32_MAX - m->index_count) {
+                mega_sizes_ok = false;
+                break;
+            }
             total_verts += m->vertex_count;
             total_idxs  += m->index_count;
             mesh_cmd_count++;
         }
 
-        if (mesh_cmd_count > 0 && mesh_cmd_count <= 16384) {
+        if (mega_sizes_ok && mesh_cmd_count > 0 && mesh_cmd_count <= 16384) {
             /* Single alloc: vdata + idata + cmds */
             usize v_bytes = (usize)total_verts * sizeof(MegaVert);
             usize i_off   = (v_bytes + 3u) & ~(usize)3u;
             usize i_bytes = (usize)total_idxs * sizeof(u32);
             usize c_off   = (i_off + i_bytes + 3u) & ~(usize)3u;
             usize c_bytes = (usize)mesh_cmd_count * sizeof(DrawIndexedIndirectCmd);
-            u8 *mega_block = (u8 *)malloc(c_off + c_bytes);
+            usize block_bytes = c_off + c_bytes;
+            if (v_bytes / sizeof(MegaVert) != (usize)total_verts ||
+                i_bytes / sizeof(u32) != (usize)total_idxs ||
+                block_bytes < c_off) {
+                LOG_WARN("MegaBuffer: vertex/index totals overflow; mega GPU path disabled");
+            } else {
+            u8 *mega_block = (u8 *)malloc(block_bytes);
             if (!mega_block) { LOG_FATAL("OOM mega_block"); return 1; }
             MegaVert *vdata = (MegaVert *)mega_block;
             u32      *idata = (u32 *)(mega_block + i_off);
@@ -2042,6 +2054,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
             free(mega_block); /* single free: vdata + idata + cmds */
             } /* else mega bake succeeded */
+            } /* R408: overflow-safe mega_block alloc */
         }
     }
 

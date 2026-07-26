@@ -69,7 +69,7 @@ static u32 mipmap_level_size(u32 width, u32 height, u32 level, u32 bpp) {
  * For IEEE 754 floats, log2(x) ≈ exponent_bits - 127.
  * 1/coverage inverts: log2(1/c) = -log2(c) = -(exp_c - 127) = 127 - exp_c.
  * level = (127 - exp_c) >> 1. */
-static u32 coverage_to_level(f32 coverage, u32 mip_count, u32 width, u32 height) {
+u32 mipmap_stream_coverage_to_level(f32 coverage, u32 mip_count, u32 width, u32 height) {
     (void)width; (void)height;
     if (mip_count == 0) return 0;
     if (coverage >= 1.0f) return 0;
@@ -277,8 +277,8 @@ void mipmap_stream_update_visibility(MipmapStreamManager *mgr, i32 tex_idx,
     if (!tex->active) return;
 
     tex->screen_coverage = screen_coverage;
-    tex->desired_level = coverage_to_level(screen_coverage, tex->mip_count,
-                                           tex->width, tex->height);
+    tex->desired_level = mipmap_stream_coverage_to_level(screen_coverage, tex->mip_count,
+                                                         tex->width, tex->height);
     if (screen_coverage > 0.0f) {
         tex->last_visible_frame = frame_number;
     }

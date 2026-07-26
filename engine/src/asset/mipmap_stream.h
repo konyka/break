@@ -13,6 +13,9 @@
  * - Supports priority-based streaming (closer objects get higher priority)
  */
 
+/* R408: exposed for unit tests — maps screen coverage to desired mip level. */
+u32 mipmap_stream_coverage_to_level(f32 coverage, u32 mip_count, u32 width, u32 height);
+
 #define MIPMAP_STREAM_MAX_TEXTURES  1024
 #define MIPMAP_STREAM_MAX_LEVELS    16
 #define MIPMAP_STREAM_REQ_POOL_SIZE 64  /* preallocated request context slots */
