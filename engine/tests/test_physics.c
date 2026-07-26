@@ -5,6 +5,7 @@
 #include "test_framework.h"
 #include <physics/physics.h>
 #include <math.h>
+#include <stdint.h>
 
 /* ----------------------------------------------------------------------- */
 /*  AABB utilities                                                          */
@@ -461,6 +462,18 @@ TEST(bvh_empty_build)
     bvh_destroy(&bvh);
 }
 
+TEST(bvh_rejects_oversized_capacity)
+{
+    BVH bvh;
+    bvh_init(&bvh, UINT32_MAX);
+
+    ASSERT_TRUE(bvh.nodes == NULL);
+    ASSERT_EQ(bvh.capacity, 0u);
+    ASSERT_EQ(bvh.root, BVH_NULL);
+
+    bvh_destroy(&bvh);
+}
+
 TEST(aabb_contained)
 {
     /* One AABB fully contained within another */
@@ -662,6 +675,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(physics_zero_length_raycast);
     RUN_TEST(physics_very_large_mass);
     RUN_TEST(bvh_empty_build);
+    RUN_TEST(bvh_rejects_oversized_capacity);
     RUN_TEST(aabb_contained);
     /* Round 6: shapes / narrowphase / CCD / contacts */
     RUN_TEST(aabb_from_sphere);

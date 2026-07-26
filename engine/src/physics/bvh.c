@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <stdint.h>
 
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
     #include <immintrin.h>
@@ -74,10 +75,38 @@ static bool bvhaabb_overlap(BVHAABB a, BVHAABB b) {
 #endif
 }
 
+static bool bvh_node_count_fits_size(u32 count) {
+#if UINTPTR_MAX <= UINT32_MAX
+    return (usize)count <= SIZE_MAX / sizeof(BVHNode);
+#else
+    (void)count;
+    return true;
+#endif
+}
+
+static bool bvh_u32_count_fits_size(u32 count) {
+#if UINTPTR_MAX <= UINT32_MAX
+    return (usize)count <= SIZE_MAX / sizeof(u32);
+#else
+    (void)count;
+    return true;
+#endif
+}
+
 /* ---- Lifecycle ---- */
 void bvh_init(BVH *bvh, u32 initial_capacity) {
     u32 cap = initial_capacity < 4 ? 4 : initial_capacity;
+    if (cap > UINT32_MAX / 2u) {
+        memset(bvh, 0, sizeof(*bvh));
+        bvh->root = BVH_NULL;
+        return;
+    }
     u32 node_cap = cap * 2;
+    if (!bvh_node_count_fits_size(node_cap)) {
+        memset(bvh, 0, sizeof(*bvh));
+        bvh->root = BVH_NULL;
+        return;
+    }
     bvh->nodes = (BVHNode *)calloc(node_cap, sizeof(BVHNode));
     if (!bvh->nodes) { bvh->capacity = 0; bvh->node_count = 0; bvh->root = BVH_NULL; return; }
     bvh->capacity = node_cap;
@@ -104,7 +133,9 @@ void bvh_destroy(BVH *bvh) {
 
 static u32 bvh_alloc_node(BVH *bvh) {
     if (bvh->node_count >= bvh->capacity) {
+        if (bvh->capacity == 0 || bvh->capacity > UINT32_MAX / 2u) return BVH_NULL;
         u32 new_cap = bvh->capacity * 2;
+        if (!bvh_node_count_fits_size(new_cap)) return BVH_NULL;
         BVHNode *new_nodes = (BVHNode *)realloc(bvh->nodes, new_cap * sizeof(BVHNode));
         if (!new_nodes) return BVH_NULL;
         bvh->nodes = new_nodes;
@@ -312,13 +343,23 @@ void bvh_build(BVH *bvh, const BVHAABB *aabbs, u32 count) {
     bvh->node_count = 0;
     bvh->object_count = count;
     free(bvh->leaf_map);
-    bvh->leaf_map = (u32 *)calloc(count, sizeof(u32));
-    if (!bvh->leaf_map) { bvh->root = BVH_NULL; bvh->object_count = 0; return; }
+    bvh->leaf_map = NULL;
 
     if (count == 0) {
         bvh->root = BVH_NULL;
         return;
     }
+
+    if (count > UINT32_MAX / 2u ||
+        !bvh_u32_count_fits_size(count) ||
+        !bvh_node_count_fits_size(count * 2u)) {
+        bvh->root = BVH_NULL;
+        bvh->object_count = 0;
+        return;
+    }
+
+    bvh->leaf_map = (u32 *)calloc(count, sizeof(u32));
+    if (!bvh->leaf_map) { bvh->root = BVH_NULL; bvh->object_count = 0; return; }
 
     /* Ensure capacity */
     u32 max_nodes = count * 2;
