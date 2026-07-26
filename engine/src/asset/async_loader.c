@@ -8,6 +8,9 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(ASYNC_PLATFORM_POSIX)
+#include <sched.h>
+#endif
 
 /* ---- Constants ---- */
 #define ASYNC_HEAP_SIZE        256   /* Pending request heap capacity */
@@ -160,10 +163,30 @@ static bool heap_pop(RequestHeap *heap, u64 *out_slot) {
 }
 
 static void enqueue_completion(u64 slot_idx) {
-    /* R170: Claim index with relaxed fetch_add, write payload, then publish
-     * sequence with release so poll cannot read a stale/empty slot. */
-    u64 comp_slot = atomic_fetch_add_explicit(
-        &g_loader.completion_queue.head, 1, memory_order_relaxed);
+    /* R402: Block when head - tail == ASYNC_QUEUE_SIZE. R165-A sized the ring to
+     * ASYNC_MAX_REQUESTS but fetch_add still wrapped indices and overwrote slots
+     * the consumer had not reached — sequences[qi] != tail+1, tail stuck, callbacks
+     * lost. Reserve head with CAS so producers wait for async_loader_tick(). */
+    u64 comp_slot;
+    for (;;) {
+        u64 tail = atomic_load_explicit(&g_loader.completion_queue.tail,
+                                        memory_order_acquire);
+        u64 head = atomic_load_explicit(&g_loader.completion_queue.head,
+                                        memory_order_relaxed);
+        if (head - tail >= (u64)ASYNC_QUEUE_SIZE) {
+#if defined(ASYNC_PLATFORM_WIN32)
+            SwitchToThread();
+#else
+            sched_yield();
+#endif
+            continue;
+        }
+        comp_slot = head;
+        if (atomic_compare_exchange_weak_explicit(
+                &g_loader.completion_queue.head, &comp_slot, comp_slot + 1u,
+                memory_order_relaxed, memory_order_relaxed))
+            break;
+    }
     u32 i = (u32)(comp_slot & ASYNC_QUEUE_MASK);
     g_loader.completion_queue.indices[i] = slot_idx;
     atomic_store_explicit(&g_loader.completion_queue.sequences[i],

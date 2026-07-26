@@ -2,6 +2,7 @@
 #include <asset/async_loader.h>
 #include <asset/vfs.h>
 #include <stdatomic.h>
+#include <stdio.h>
 
 /* ---- Init/Shutdown ---- */
 
@@ -388,6 +389,49 @@ TEST(async_loader_range_truncated_fails)
     remove("async_range_short.bin");
 }
 
+/* R402: completion ring must not overwrite when main thread drains slowly. */
+static _Atomic int g_burst_cb_count;
+
+static void burst_cb(void *user, void *data, u32 size) {
+    (void)user; (void)size;
+    atomic_fetch_add(&g_burst_cb_count, 1);
+    if (data) free(data);
+}
+
+TEST(async_loader_completion_burst)
+{
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, "/tmp");
+
+    async_loader_init(8, vfs);
+    atomic_store(&g_burst_cb_count, 0);
+
+    const int N = 1200;
+    char path[64];
+    for (int i = 0; i < N; i++) {
+        snprintf(path, sizeof(path), "async_burst_%d.bin", i);
+        while (async_loader_request(path, burst_cb, NULL) == 0) {
+            async_loader_tick();
+            for (volatile int j = 0; j < 1000; j++) { (void)j; }
+        }
+        if ((i & 31) == 0) async_loader_tick();
+    }
+
+    for (int i = 0; i < 200000; i++) {
+        async_loader_tick();
+        if (atomic_load(&g_burst_cb_count) >= N &&
+            async_loader_pending_count() == 0)
+            break;
+        for (volatile int j = 0; j < 5000; j++) { (void)j; }
+    }
+
+    ASSERT_EQ(atomic_load(&g_burst_cb_count), N);
+
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_init_shutdown);
     RUN_TEST(async_loader_pending_zero);
@@ -401,4 +445,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_priority_ordering);
     RUN_TEST(async_loader_decode_non_blocking);
     RUN_TEST(async_loader_range_truncated_fails);
+    RUN_TEST(async_loader_completion_burst);
 TEST_MAIN_END()

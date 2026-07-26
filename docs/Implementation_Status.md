@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R401 外部输入普查收尾 — scene_state 文件大小上限 + test_vulkan 着色器读取补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R393 已 cap `pc`，但 **`scene_state_load` 仍接受 multi-MiB 文件**（streaming 无整文件 malloc，但恶意文件仍可迫使大量 fread）；R399/R400 后 **`test_vulkan.c` 仍保留无 cap 的 `file_read` 副本**。**R401-A**：`SCENE_STATE_MAX_FILE_BYTES=4MiB`，`measure_file` 后立即拒收。**R401-B**：`test_vulkan.c` 改调 `shader_read_file()`。**R401-C**：`test_scene_state.c` 新增 `scene_state_rejects_oversized_file`（4/4）。**普查结论**：引擎 `src/` 外部字节流入口均已 cap 或 chunk-bound（VFS/BSCN/script/Lua/shader/font/scene_state）；`verify_pak`/fuzz 种子读取为工具/测试路径，不在 demo 攻击面。**验证**：35/35 CTest（除 GPU `test_vulkan`）。总计 **890** 处修复。
+最近更新：**R402 async_loader 完成队列 ring 覆写 — 修复 1 处 + 回归测试** — R165-A 将 `ASYNC_QUEUE_SIZE` 扩至 1024 但未做 backpressure；主线程未及时 `async_loader_tick` 时 I/O worker 连续 `enqueue_completion` 会 **覆写未消费的 slot**（`sequences[qi] != tail+1` → tail 停滞、回调丢失）。**R402-A**：`enqueue_completion` 在 `head - tail >= ASYNC_QUEUE_SIZE` 时 CAS 预留 head 并 yield，直至主线程 drain。**R402-B**：`test_async_loader.c` 新增 `async_loader_completion_burst`（8 worker、1200 次快速失败请求、稀疏 tick → 全部回调）。**验证**：12/12 test_async_loader（11 → 12）；35/35 CTest。总计 **891** 处修复。
+
+此前：**R401 外部输入普查收尾 — scene_state 文件大小上限 + test_vulkan 着色器读取补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R393 已 cap `pc`，但 **`scene_state_load` 仍接受 multi-MiB 文件**；R399/R400 后 **`test_vulkan.c` 仍保留无 cap 的 `file_read` 副本**。**R401-A**：`SCENE_STATE_MAX_FILE_BYTES=4MiB`。**R401-B**：`test_vulkan.c` → `shader_read_file()`。**R401-C**：`scene_state_rejects_oversized_file`（4/4 test_scene_state）。**普查结论**：引擎 `src/` 外部字节流入口均已 cap 或 chunk-bound。**验证**：35/35 CTest。总计 **890** 处修复。
 
 此前：**R400 font TTF 读取无大小上限 + 着色器路径补全 — 修复 1 处 + 迁移 1 处 + 回归测试** — R389 为 TTF 加了最小 12 字节下限，但 **`font_renderer_init` 仍 `malloc(整文件)` 无 max**；另 R399 遗漏 `font.c` 内联着色器读取。**R400-A**：`FONT_TTF_MAX_BYTES=32MiB`（大 CJK 字体仍可用），分配前拒收。**R400-B**：font 着色器改调 `shader_read_file()`。**R400-C**：`test_font_load.c` 新增 `font_init_rejects_oversized_file`（5/5）。**验证**：35/35 CTest；engine 构建通过。总计 **889** 处修复。
 
