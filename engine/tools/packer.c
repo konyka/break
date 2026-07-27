@@ -19,7 +19,7 @@ typedef unsigned int       u32;
 typedef unsigned long long u64;
 typedef unsigned char      u8;
 
-#define MAX_ENTRIES   4096
+#define MAX_ENTRIES   4096  /* Keep in sync with VFS_MAX_PAK_ENTRIES. */
 #define MAX_PATH_LEN  260
 #define PAK_MAGIC     0x54415045
 

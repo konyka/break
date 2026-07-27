@@ -89,11 +89,11 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
      * returned a minimal block and the fread overflowed it with up to 4 GiB of
      * attacker-supplied file bytes.
      *
-     * R157: this also subsumes the old entry_count > 2^30 bound, which existed
-     * to keep next_pow2(entry_count * 2) from overflowing into a tiny hash table
-     * and hanging the probe loop. Kept explicitly as it does not follow from the
-     * file size alone for a sufficiently large archive. */
-    if ((u64)file_size < (u64)sizeof(PakHeader) || hdr.entry_count > (1u << 30)) {
+     * R412: accepted PAKs are produced by tools/packer.c, whose MAX_ENTRIES is
+     * 4096. Reject larger headers before calloc(entry_count) and hash-table
+     * construction so sparse or very large archives cannot force huge metadata
+     * allocations just to mount. */
+    if ((u64)file_size < (u64)sizeof(PakHeader) || hdr.entry_count > VFS_MAX_PAK_ENTRIES) {
         LOG_ERROR("VFS: pak header out of bounds '%s'", pak_path);
         fclose(fp);
         return false;
