@@ -22,6 +22,7 @@
 #define BSCN_MAX_FILE_BYTES (64u << 20)  /* 64 MiB */
 
 bool scene_serial_test_bytebuf_rejects_wrap(void);
+bool scene_serial_test_prefab_block_rejects_wrap(void);
 
 typedef enum {
     BSCN_CHUNK_ENTITIES    = 1,

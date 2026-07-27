@@ -139,6 +139,11 @@ TEST(bytebuf_reserve_rejects_u32_wrap)
     ASSERT_TRUE(scene_serial_test_bytebuf_rejects_wrap());
 }
 
+TEST(prefab_block_rejects_u32_wrap)
+{
+    ASSERT_TRUE(scene_serial_test_prefab_block_rejects_wrap());
+}
+
 TEST(save_binary_null_path)
 {
     World w = {0};
@@ -729,6 +734,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_too_many_chunks);
     RUN_TEST(save_binary_null_world);
     RUN_TEST(bytebuf_reserve_rejects_u32_wrap);
+    RUN_TEST(prefab_block_rejects_u32_wrap);
     RUN_TEST(save_binary_null_path);
     RUN_TEST(load_json_nonexistent);
     RUN_TEST(save_json_null_world);

@@ -69,6 +69,21 @@ bool scene_serial_test_bytebuf_rejects_wrap(void) {
     return !bb_reserve(&b, UINT32_MAX);
 }
 
+static bool scene_u32_pair_block_fits_size(u32 a, u32 b) {
+    if (a > UINT32_MAX - b) return false;
+#if UINTPTR_MAX <= UINT32_MAX
+    return (usize)(a + b) <= SIZE_MAX / sizeof(u32);
+#else
+    (void)a;
+    (void)b;
+    return true;
+#endif
+}
+
+bool scene_serial_test_prefab_block_rejects_wrap(void) {
+    return !scene_u32_pair_block_fits_size(UINT32_MAX, 1u);
+}
+
 static bool bb_u32(ByteBuf *b, u32 v) { return bb_write(b, &v, sizeof(v)); }
 
 /* ---------------------------------------------------------------- */
@@ -1212,8 +1227,9 @@ bool scene_save_prefab(const World *w, const Entity *entities,
     EntityMap m;
     u32 ec = w->entity_count;
     u32 sc = count ? count : 1;
+    if (!scene_u32_pair_block_fits_size(ec, sc)) return false;
     /* Single allocation: entity_to_saved[ec] + saved_to_entity[sc] */
-    u8 *prefab_block = (u8 *)malloc(sizeof(u32) * (ec + sc));
+    u8 *prefab_block = (u8 *)malloc(sizeof(u32) * (usize)(ec + sc));
     if (!prefab_block) return false;
     m.entity_to_saved = (u32 *)prefab_block;
     m.saved_to_entity = (u32 *)(prefab_block + sizeof(u32) * ec);
