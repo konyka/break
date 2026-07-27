@@ -296,7 +296,7 @@ ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
 # Vulkan 后端集成测试（需要 -DENGINE_VULKAN=ON）
 cmake -B build-verify-x11-vk -DENGINE_VULKAN=ON
 cmake --build build-verify-x11-vk
-ctest --test-dir build-verify-x11-vk --output-on-failure
+ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
 ```
 
 ## 7. 项目结构与两套构建

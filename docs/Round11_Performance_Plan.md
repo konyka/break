@@ -6666,7 +6666,7 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 # Vulkan
 cmake -S engine -B engine/build-vk -DENGINE_VULKAN=ON -DENGINE_BUILD_TESTS=ON
 cmake --build engine/build-vk -j8
-cd engine/build-vk && ctest --output-on-failure
+ctest --test-dir engine/build-vk -L graphics --output-on-failure
 
 # OpenGL
 cmake -S engine -B engine/build-gl -DENGINE_VULKAN=OFF -DENGINE_BUILD_TESTS=ON

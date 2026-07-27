@@ -17,7 +17,7 @@ suite from a Vulkan build:
 ```bash
 cmake -S engine -B engine/build-verify-x11-vk -DENGINE_VULKAN=ON
 cmake --build engine/build-verify-x11-vk
-ctest --test-dir engine/build-verify-x11-vk --output-on-failure
+ctest --test-dir engine/build-verify-x11-vk -L graphics --output-on-failure
 ```
 
 Release builds enable IPO/LTO for the `engine` static library when the active
