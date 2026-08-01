@@ -95,7 +95,9 @@ static int cmp_f32(const void *a, const void *b) {
     return (fa > fb) - (fa < fb);
 }
 
-static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgb) {
+/* R428: input is now RGBA (rhi_screenshot outputs 4 bytes/pixel in both
+ * backends); alpha is dropped when writing the 24-bit BMP. */
+static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgba) {
     u32 row_sz = w * 3;
     u32 pad = (4 - (row_sz % 4)) % 4;
     u32 stride = row_sz + pad;
@@ -113,13 +115,16 @@ static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgb) {
     memcpy(hdr + 42, &(u32){2835}, 4);
     FILE *f = fopen(path, "wb");
     if (!f) return;
-    bool bmp_ok = fwrite(hdr, 1, 54, f) == 54;
+    u8 *row_buf = (u8 *)malloc(row_sz > 0 ? row_sz : 1);
+    bool bmp_ok = fwrite(hdr, 1, 54, f) == 54 && row_buf != NULL;
     u8 padding[3] = {0};
     for (u32 y = 0; y < h && bmp_ok; y++) {
-        const u8 *row = rgb + (h - 1 - y) * row_sz;
-        bmp_ok = fwrite(row, 1, row_sz, f) == row_sz;
+        const u8 *row = rgba + (usize)(h - 1 - y) * w * 4u;
+        for (u32 x = 0; x < w; x++) memcpy(row_buf + x * 3, row + x * 4, 3);
+        bmp_ok = fwrite(row_buf, 1, row_sz, f) == row_sz;
         if (bmp_ok && pad) bmp_ok = fwrite(padding, 1, pad, f) == (usize)pad;
     }
+    free(row_buf);
     fclose(f);
     if (!bmp_ok) LOG_WARN("BMP write: partial write failure for %s", path);
 }
@@ -1731,6 +1736,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     }
 
     /* Register scene meshes as LOD groups for distance-based culling. */
+    /* R428: bounding_radius now depends on world_transform (node scale), and
+     * asset_load_gltf does not compute it — compute before the loop. The call
+     * below at the mega-buffer build is idempotent. */
+    scene_compute_world_transforms(&scene);
     for (u32 ni = 0; ni < scene.node_count && ni < LOD_MAX_GROUPS; ni++) {
         SceneNode *nd = &scene.nodes[ni];
         if (!nd->has_mesh || nd->mesh_index >= scene.mesh_count) continue;
@@ -1742,8 +1751,15 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         grp.meshes[0].vertex_count = 0;
         grp.level_count = 1;
         grp.thresholds[0] = 80.0f;
+        /* R428: scale-aware radius — half the local AABB diagonal times the
+         * largest basis-column length of world_transform (was local-only). */
         Vec3 ext = vec3_sub(m->aabb_max, m->aabb_min);
-        grp.bounding_radius = vec3_len(ext) * 0.5f;
+        const Mat4 *wt = &nd->world_transform;
+        f32 sx = sqrtf(wt->e[0][0]*wt->e[0][0] + wt->e[0][1]*wt->e[0][1] + wt->e[0][2]*wt->e[0][2]);
+        f32 sy = sqrtf(wt->e[1][0]*wt->e[1][0] + wt->e[1][1]*wt->e[1][1] + wt->e[1][2]*wt->e[1][2]);
+        f32 sz = sqrtf(wt->e[2][0]*wt->e[2][0] + wt->e[2][1]*wt->e[2][1] + wt->e[2][2]*wt->e[2][2]);
+        f32 smax = fmaxf(sx, fmaxf(sy, sz));
+        grp.bounding_radius = vec3_len(ext) * 0.5f * smax;
         lod_register(&lod_sys, ni, &grp);
     }
 
@@ -1993,11 +2009,23 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     mega_buf.node_spheres[ni].r = -1.0f;
                     continue;
                 }
+                /* R428: match the CPU fallback (transforms all 8 AABB corners).
+                 * Old code used translation-only center and half the LOCAL AABB
+                 * diagonal, ignoring node scale and off-center mesh pivots, so
+                 * GPU cull / vis_task_fn / LOD disagreed with the CPU path.
+                 * center = world_transform * local AABB center;
+                 * radius = half local diagonal * max basis-column length. */
                 Vec3 ext = vec3_sub(m->aabb_max, m->aabb_min);
-                mega_buf.node_spheres[ni].cx = nd->world_transform.e[3][0];
-                mega_buf.node_spheres[ni].cy = nd->world_transform.e[3][1];
-                mega_buf.node_spheres[ni].cz = nd->world_transform.e[3][2];
-                mega_buf.node_spheres[ni].r = vec3_len(ext) * 0.5f;
+                Vec3 ctr = vec3_scale(vec3_add(m->aabb_min, m->aabb_max), 0.5f);
+                const Mat4 *wt = &nd->world_transform;
+                f32 sx = sqrtf(wt->e[0][0]*wt->e[0][0] + wt->e[0][1]*wt->e[0][1] + wt->e[0][2]*wt->e[0][2]);
+                f32 sy = sqrtf(wt->e[1][0]*wt->e[1][0] + wt->e[1][1]*wt->e[1][1] + wt->e[1][2]*wt->e[1][2]);
+                f32 sz = sqrtf(wt->e[2][0]*wt->e[2][0] + wt->e[2][1]*wt->e[2][1] + wt->e[2][2]*wt->e[2][2]);
+                f32 smax = fmaxf(sx, fmaxf(sy, sz));
+                mega_buf.node_spheres[ni].cx = wt->e[0][0]*ctr.e[0] + wt->e[1][0]*ctr.e[1] + wt->e[2][0]*ctr.e[2] + wt->e[3][0];
+                mega_buf.node_spheres[ni].cy = wt->e[0][1]*ctr.e[0] + wt->e[1][1]*ctr.e[1] + wt->e[2][1]*ctr.e[2] + wt->e[3][1];
+                mega_buf.node_spheres[ni].cz = wt->e[0][2]*ctr.e[0] + wt->e[1][2]*ctr.e[1] + wt->e[2][2]*ctr.e[2] + wt->e[3][2];
+                mega_buf.node_spheres[ni].r = vec3_len(ext) * 0.5f * smax;
                 mega_buf.sphere_count++;
             }
             LOG_INFO("Sphere cache: %u valid nodes", mega_buf.sphere_count);
@@ -2250,14 +2278,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (input_key_pressed(platform_input(engine.platform), 282)) {
-            usize pix_bytes = (usize)w * (usize)h * 3u;
-            u8 *pixels = (u8 *)arena_alloc(&frame_arena.base, pix_bytes, alignof(u8));
+            /* R428: (a) w*h*3 (~2.7MB at 720p) never fit the 256KB frame_arena,
+             * so arena_alloc returned NULL and F12 silently did nothing — malloc
+             * instead; (b) backends now output RGBA, so size for 4 bytes/pixel. */
+            usize pix_bytes = (usize)w * (usize)h * 4u;
+            u8 *pixels = (u8 *)malloc(pix_bytes);
             if (pixels) {
                 rhi_screenshot(render.device, 0, 0, w, h, pixels);
                 char spath[64];
                 snprintf(spath, sizeof(spath), "screenshot_%d.bmp", screenshot_id++);
                 save_bmp(spath, w, h, pixels);
                 LOG_INFO("Screenshot saved: %s (%ux%u)", spath, w, h);
+                free(pixels);
             }
         }
 
@@ -3170,8 +3202,15 @@ u32 culled_count = 0;
                 {  0.875000f, -0.481481f}, { -0.937500f,  0.185185f}
             };
             u32 idx = taa_frame % 16;
-            proj.e[2][0] += halton_jitter[idx][0] / (f32)w;
-            proj.e[2][1] += halton_jitter[idx][1] / (f32)h;
+            /* R428: the scene renders into the rw x rh offscreen target
+             * (render_scale 0.5 default), so jitter must be normalized by
+             * rw/rh, not the window w/h — using w/h doubled the amplitude,
+             * and a minimized window (w==0) injected inf/NaN into proj.
+             * Guard against zero regardless. */
+            if (rw > 0 && rh > 0) {
+                proj.e[2][0] += halton_jitter[idx][0] / (f32)rw;
+                proj.e[2][1] += halton_jitter[idx][1] / (f32)rh;
+            }
         }
         if (screen_shake > 0.001f) {
             /* R57-fix: Hash-based pseudo-random shake — avoids 2× sinf/cosf per frame.
@@ -3219,6 +3258,10 @@ u32 culled_count = 0;
             debug_ui_text(&ui, "FPS: %.0f (%.2f ms)  Pos: (%.1f,%.1f,%.1f)  Speed: %.0f  Sun: %.1f/%.1f (%.0f°/%.0f°)  VSync: %s%s", engine.fps, engine.delta_time * 1000.0, camera.position.e[0], camera.position.e[1], camera.position.e[2], camera.move_speed, sun_azimuth, sun_elevation, sun_azimuth * 57.2958f, sun_elevation * 57.2958f, vsync_on ? "on" : "off", tod_cycle ? "  [TOD]" : "");
             {
                 f32 tod_hours = fmodf(sun_azimuth / (2.0f * 3.14159265f) * 24.0f + 12.0f, 24.0f);
+                /* R428: fmodf keeps the sign of its dividend, so a negative
+                 * sun_azimuth yields tod_hours < 0 and (u32)tod_hours is UB.
+                 * Clamp in float to [0,24) before converting. */
+                tod_hours = fminf(fmaxf(tod_hours, 0.0f), 23.9999f);
                 u32 hh = (u32)tod_hours;
                 u32 mm = (u32)((tod_hours - (f32)hh) * 60.0f);
                 static const char *daynight[] = {"Night", "Dawn", "Morning", "Noon", "Afternoon", "Dusk", "Evening", "Night"};
@@ -3911,8 +3954,10 @@ u32 culled_count = 0;
                     u32 gx = (mx * (gs - 1)) / 7;
                     u32 gz = (mz * (gs - 1)) / 7;
                     f32 h = terrain.heightmap ? terrain.heightmap[gz * gs + gx] : 0;
-                    u32 lvl = (u32)(h / terrain.height_scale * 6.0f);
-                    if (lvl > 6) lvl = 6;
+                    /* R428: heightmap values can be negative (crater presets) —
+                     * float->u32 of a negative is UB. Clamp in float first. */
+                    f32 hv = fminf(fmaxf(h / terrain.height_scale * 6.0f, 0.0f), 6.0f);
+                    u32 lvl = (u32)hv;
                     line[mx] = hm[lvl];
                 }
                 line[8] = '\0';
@@ -5990,6 +6035,11 @@ u32 culled_count = 0;
             profiler_pop();
             profiler_push("end_frame");
             profiler_pop();
+            /* R428: the inspector path continued past profiler_end_frame() below,
+             * leaving frame times/histogram and trace export stale while
+             * inspector_mode > 0. Finalize here; this path never reaches the
+             * end_frame call at the bottom of the loop, so no double-finalize. */
+            profiler_end_frame();
             continue;
         }
 

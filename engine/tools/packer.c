@@ -44,6 +44,20 @@ static u32     g_name_size;
 static PakEntry g_entries[MAX_ENTRIES];
 static u32     g_entry_count;
 static char    g_paths[MAX_ENTRIES][MAX_PATH_LEN];
+static int     g_path_error; /* R428: set on any path truncation; main aborts. */
+
+/* R428: pattern/rel/full were fixed 1024-byte buffers — deep trees silently
+ * truncated, skipping files or packing them under truncated names. Check
+ * every snprintf return and fail loudly instead. Returns 0 on truncation. */
+static int check_path_len(int ret, size_t bufsize, const char *what) {
+    if (ret < 0 || (size_t)ret >= bufsize) {
+        fprintf(stderr, "ERROR: %s path exceeds %zu bytes (truncation would corrupt the pak)\n",
+                what, bufsize - 1);
+        g_path_error = 1;
+        return 0;
+    }
+    return 1;
+}
 
 /* Query file size (64-bit safe). Returns 0 on failure. */
 static int get_file_size(const char *path, u64 *out_size) {
@@ -105,9 +119,19 @@ static void add_file(const char *rel_path, const char *abs_path) {
         return;
     }
 
+    /* R428: g_paths is MAX_PATH_LEN (260) — a longer abs path was silently
+     * truncated by strncpy, so the packed entry later read the wrong file.
+     * Fail loudly instead. */
+    size_t abs_len = strlen(abs_path);
+    if (abs_len >= MAX_PATH_LEN) {
+        fprintf(stderr, "ERROR: absolute path exceeds %d bytes: '%s'\n",
+                MAX_PATH_LEN, abs_path);
+        g_path_error = 1;
+        return;
+    }
+
     u32 idx = g_entry_count++;
-    strncpy(g_paths[idx], abs_path, MAX_PATH_LEN - 1);
-    g_paths[idx][MAX_PATH_LEN - 1] = '\0';
+    memcpy(g_paths[idx], abs_path, abs_len + 1);
 
     u32 name_off = g_name_size;
     memcpy(g_names + g_name_size, rel_path, name_len);
@@ -122,10 +146,12 @@ static void add_file(const char *rel_path, const char *abs_path) {
 static void scan_dir(const char *base_dir, const char *rel_prefix) {
 #ifdef _WIN32
     char pattern[1024];
+    int ret;
     if (rel_prefix[0])
-        snprintf(pattern, sizeof(pattern), "%s/%s/*", base_dir, rel_prefix);
+        ret = snprintf(pattern, sizeof(pattern), "%s/%s/*", base_dir, rel_prefix);
     else
-        snprintf(pattern, sizeof(pattern), "%s/*", base_dir);
+        ret = snprintf(pattern, sizeof(pattern), "%s/*", base_dir);
+    if (!check_path_len(ret, sizeof(pattern), "search pattern")) return;
 
     WIN32_FIND_DATAA fd;
     HANDLE hFind = FindFirstFileA(pattern, &fd);
@@ -136,12 +162,14 @@ static void scan_dir(const char *base_dir, const char *rel_prefix) {
 
         char rel[1024];
         if (rel_prefix[0])
-            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, fd.cFileName);
+            ret = snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, fd.cFileName);
         else
-            snprintf(rel, sizeof(rel), "%s", fd.cFileName);
+            ret = snprintf(rel, sizeof(rel), "%s", fd.cFileName);
+        if (!check_path_len(ret, sizeof(rel), "relative")) continue;
 
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        ret = snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        if (!check_path_len(ret, sizeof(full), "full")) continue;
 
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             scan_dir(base_dir, rel);
@@ -153,7 +181,8 @@ static void scan_dir(const char *base_dir, const char *rel_prefix) {
     FindClose(hFind);
 #else
     char path[1024];
-    snprintf(path, sizeof(path), "%s/%s", base_dir, rel_prefix);
+    int ret = snprintf(path, sizeof(path), "%s/%s", base_dir, rel_prefix);
+    if (!check_path_len(ret, sizeof(path), "directory")) return;
 
     DIR *d = opendir(path);
     if (!d) return;
@@ -164,12 +193,14 @@ static void scan_dir(const char *base_dir, const char *rel_prefix) {
 
         char rel[1024];
         if (rel_prefix[0])
-            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ent->d_name);
+            ret = snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ent->d_name);
         else
-            snprintf(rel, sizeof(rel), "%s", ent->d_name);
+            ret = snprintf(rel, sizeof(rel), "%s", ent->d_name);
+        if (!check_path_len(ret, sizeof(rel), "relative")) continue;
 
         char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        ret = snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        if (!check_path_len(ret, sizeof(full), "full")) continue;
 
         struct stat st;
         if (stat(full, &st) == 0) {
@@ -284,6 +315,13 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr, "WARN: skipping '%s' (not found)\n", argv[i]);
         }
+    }
+
+    /* R428: any path truncation during scanning means the pak would be
+     * incomplete or corrupt — abort instead of writing it. */
+    if (g_path_error) {
+        fprintf(stderr, "ERROR: aborting due to path truncation errors above\n");
+        return 1;
     }
 
     if (g_entry_count == 0) {

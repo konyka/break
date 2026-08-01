@@ -99,6 +99,95 @@ static int verify_file(VFS *vfs, const char *pak_name,
     return match;
 }
 
+/* R428: mirror packer.c's recursive scan_dir. The old code only scanned
+ * top-level files of src_dir, but the packer recurses and stores names like
+ * "sub/file" — nested entries were never verified yet the tool printed
+ * success. Returns 1 when every file under base_dir/rel_prefix matches. */
+static int verify_dir(VFS *vfs, const char *base_dir, const char *rel_prefix) {
+    int all_ok = 1;
+#ifdef _WIN32
+    char pattern[1024];
+    if (rel_prefix[0])
+        snprintf(pattern, sizeof(pattern), "%s/%s/*", base_dir, rel_prefix);
+    else
+        snprintf(pattern, sizeof(pattern), "%s/*", base_dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(pattern, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "FAIL: cannot scan '%s/%s'\n", base_dir, rel_prefix);
+        return 0;
+    }
+    do {
+        if (fd.cFileName[0] == '.') continue;
+
+        char rel[1024];
+        if (rel_prefix[0])
+            snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, fd.cFileName);
+        else
+            snprintf(rel, sizeof(rel), "%s", fd.cFileName);
+
+        char full[1024];
+        snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!verify_dir(vfs, base_dir, rel))
+                all_ok = 0;
+        } else {
+            if (!verify_file(vfs, rel, full))
+                all_ok = 0;
+        }
+    } while (FindNextFileA(hFind, &fd));
+    FindClose(hFind);
+#else
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", base_dir, rel_prefix);
+
+    DIR *d = opendir(path);
+    if (!d) {
+        fprintf(stderr, "FAIL: cannot scan '%s'\n", path);
+        return 0;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+
+        /* R428: check snprintf returns — fail loudly on truncation instead of
+         * silently skipping (also silences -Wformat-truncation). */
+        char rel[1024];
+        int ret;
+        if (rel_prefix[0])
+            ret = snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ent->d_name);
+        else
+            ret = snprintf(rel, sizeof(rel), "%s", ent->d_name);
+        if (ret < 0 || (size_t)ret >= sizeof(rel)) {
+            fprintf(stderr, "FAIL: path too long under '%s'\n", base_dir);
+            all_ok = 0;
+            continue;
+        }
+
+        char full[1024];
+        ret = snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
+        if (ret < 0 || (size_t)ret >= sizeof(full)) {
+            fprintf(stderr, "FAIL: path too long under '%s'\n", base_dir);
+            all_ok = 0;
+            continue;
+        }
+
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (!verify_dir(vfs, base_dir, rel))
+                all_ok = 0;
+        } else if (S_ISREG(st.st_mode)) {
+            if (!verify_file(vfs, rel, full))
+                all_ok = 0;
+        }
+    }
+    closedir(d);
+#endif
+    return all_ok;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <file.pak> <source_dir>\n", argv[0]);
@@ -115,50 +204,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int all_ok = 1;
-
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", src_dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(pattern, &fd);
-    if (hFind == INVALID_HANDLE_VALUE) {
-        fprintf(stderr, "FAIL: cannot scan '%s'\n", src_dir);
-        vfs_destroy(vfs);
-        return 1;
-    }
-    do {
-        if (fd.cFileName[0] == '.') continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-
-        char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", src_dir, fd.cFileName);
-        if (!verify_file(vfs, fd.cFileName, full))
-            all_ok = 0;
-    } while (FindNextFileA(hFind, &fd));
-    FindClose(hFind);
-#else
-    DIR *d = opendir(src_dir);
-    if (!d) {
-        fprintf(stderr, "FAIL: cannot scan '%s'\n", src_dir);
-        vfs_destroy(vfs);
-        return 1;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-
-        char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", src_dir, ent->d_name);
-
-        struct stat st;
-        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-
-        if (!verify_file(vfs, ent->d_name, full))
-            all_ok = 0;
-    }
-    closedir(d);
-#endif
+    int all_ok = verify_dir(vfs, src_dir, "");
 
     vfs_destroy(vfs);
 
