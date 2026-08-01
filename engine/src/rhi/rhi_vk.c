@@ -1257,6 +1257,11 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vk->shaderc_compiler = shaderc_compiler_initialize();
     if (!vk->shaderc_compiler) {
         LOG_FATAL("Vulkan: shaderc_compiler_initialize failed");
+        /* R425: treat as init failure — returning true with a NULL compiler
+         * makes the first rhi_shader_create crash in shaderc_compile_into_spv. */
+        dev->backend_data = NULL;
+        free(vk);
+        return false;
     }
 
     LOG_INFO("Vulkan initialized");
@@ -1979,7 +1984,11 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
 
     VkRenderPass rp = VK_NULL_HANDLE;
     if (vkCreateRenderPass(vk->device, &ci, NULL, &rp) != VK_SUCCESS) {
-        return vk->render_pass;
+        /* R425: propagate failure instead of falling back to the swapchain
+         * render pass — a pipeline built against it is render-pass
+         * incompatible with the target FBO and misrenders. */
+        LOG_WARN("VK: vk_pipeline_render_pass_fmt: vkCreateRenderPass failed");
+        return VK_NULL_HANDLE;
     }
     vk->pipe_rp_formats[vk->pipe_rp_count] = vkfmt;
     vk->pipe_rp_cache[vk->pipe_rp_count] = rp;
@@ -2009,6 +2018,9 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
                                              VkPipelineLayout layout, VkShaderModule vs_mod,
                                              VkShaderModule fs_mod, VkRenderPass rp,
                                              u32 *out_stride) {
+    /* R425: a NULL render pass means vk_pipeline_render_pass_fmt failed;
+     * report failure instead of building an incompatible pipeline. */
+    if (rp == VK_NULL_HANDLE) return VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo stages[2] = {0};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -4987,6 +4999,14 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     vkDestroyImage(vk->device, sd->depth_image, NULL);
     vkFreeMemory(vk->device, sd->depth_memory, NULL);
     free(sd);
+    /* R425: free the VKTextureData behind the depth_tex slot (calloc'd at
+     * create) — the old code freed only the slot, leaking the struct. */
+    if (rhi_handle_valid(sm->depth_tex)) {
+        VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, sm->depth_tex);
+        if (td) free(td);
+        if (dev->slots[sm->depth_tex.index].ptr == td)
+            dev->slots[sm->depth_tex.index].ptr = NULL;
+    }
     rhi_free_slot(dev, sm->fbo);
     rhi_free_slot(dev, sm->depth_tex);
     sm->fbo = RHI_HANDLE_NULL;
@@ -5614,6 +5634,11 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
     VKBufferData *src_bd = (VKBufferData *)rhi_get_resource(g_current_device, src);
     VKBufferData *dst_bd = (VKBufferData *)rhi_get_resource(g_current_device, dst);
     if (!src_bd || !dst_bd) return;
+    /* R425: clamp against both buffer sizes like rhi_cmd_update_buffer —
+     * an oversized copy would read/write past the smaller buffer. */
+    if (size > src_bd->size) size = src_bd->size;
+    if (size > dst_bd->size) size = dst_bd->size;
+    if (size == 0u) return;
     /* R177: Copy is invalid inside a render pass; also barrier compute→transfer
      * so callers cannot forget (vis-flags / occlusion staging paths). */
     vk_suspend_pass_for_compute(vk);
@@ -5671,6 +5696,11 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     VKBackend *vk = vk_backend(g_current_device);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
     if (!bd) return;
+    /* R425: clamp offset+size against the buffer like rhi_cmd_update_buffer. */
+    if (offset + size > bd->size) {
+        if (offset >= bd->size) return;
+        size = bd->size - offset;
+    }
     /* vkCmdFillBuffer requires 4-byte alignment. */
     if ((offset & 3u) || (size & 3u)) {
         LOG_WARN("VK: rhi_cmd_fill_buffer requires 4-byte aligned offset/size");
@@ -6068,6 +6098,21 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     vkDestroyImage(vk->device, fd->depth_image, NULL);
     vkFreeMemory(vk->device, fd->depth_memory, NULL);
     free(fd);
+    /* R425: free the VKTextureData structs behind the color/depth texture
+     * slots (calloc'd at create) — the old code freed only the slots,
+     * leaking 2 structs per destroy (resize recreates all post FBOs). */
+    if (rhi_handle_valid(fbo->color_tex)) {
+        VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, fbo->color_tex);
+        if (td) free(td);
+        if (dev->slots[fbo->color_tex.index].ptr == td)
+            dev->slots[fbo->color_tex.index].ptr = NULL;
+    }
+    if (rhi_handle_valid(fbo->depth_tex)) {
+        VKTextureData *dd = (VKTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        if (dd) free(dd);
+        if (dev->slots[fbo->depth_tex.index].ptr == dd)
+            dev->slots[fbo->depth_tex.index].ptr = NULL;
+    }
     rhi_free_slot(dev, fbo->fb);
     rhi_free_slot(dev, fbo->color_tex);
     rhi_free_slot(dev, fbo->depth_tex);

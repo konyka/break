@@ -369,6 +369,10 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
 
 f32 terrain_get_height(const Terrain *t, f32 x, f32 z) {
     if (!t->heightmap) return 0.0f;
+    /* R425: clamp x/z — absurd world coords (|w| ≳ 2^31·cell, inf, NaN)
+     * hit f32→i32 UB in the floorf casts below. !(w >= -s) maps NaN to -s. */
+    if (!(x >= -t->scale)) x = -t->scale; else if (x > t->scale) x = t->scale;
+    if (!(z >= -t->scale)) z = -t->scale; else if (z > t->scale) z = t->scale;
     f32 gx = (x * t->inv_scale + 0.5f) * t->inv_nm1;
     f32 gz = (z * t->inv_scale + 0.5f) * t->inv_nm1;
     i32 ix = (i32)floorf(gx); i32 iz = (i32)floorf(gz);
@@ -398,6 +402,11 @@ void terrain_modify_height(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength)
      * nothing; !(r > 0) also maps NaN to 0. */
     if (!(radius > 0.0f)) radius = 0.0f;
     else if (radius > t->scale) radius = t->scale;
+    /* R425: clamp wx/wz too — R421 clamped only radius, but absurd world
+     * coords (|w| ≳ 2^31·cell, inf, NaN) still hit f32→i32 UB in the
+     * floorf/ceilf casts of cgx/cgz below. !(w >= -s) maps NaN to -s. */
+    if (!(wx >= -t->scale)) wx = -t->scale; else if (wx > t->scale) wx = t->scale;
+    if (!(wz >= -t->scale)) wz = -t->scale; else if (wz > t->scale) wz = t->scale;
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
@@ -441,6 +450,9 @@ void terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius) {
     /* R421: clamp radius before the (i32) cast below — see terrain_modify_height. */
     if (!(radius > 0.0f)) radius = 0.0f;
     else if (radius > t->scale) radius = t->scale;
+    /* R425: clamp wx/wz too — see terrain_modify_height. */
+    if (!(wx >= -t->scale)) wx = -t->scale; else if (wx > t->scale) wx = t->scale;
+    if (!(wz >= -t->scale)) wz = -t->scale; else if (wz > t->scale) wz = t->scale;
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
@@ -516,6 +528,9 @@ void terrain_erode(Terrain *t, f32 wx, f32 wz, f32 radius, i32 iterations) {
      * float (huge/inf/NaN) makes the f32→i32 conversion below UB. */
     if (!(radius > 0.0f)) radius = 0.0f;
     else if (radius > t->scale) radius = t->scale;
+    /* R425: clamp wx/wz too — see terrain_modify_height. */
+    if (!(wx >= -t->scale)) wx = -t->scale; else if (wx > t->scale) wx = t->scale;
+    if (!(wz >= -t->scale)) wz = -t->scale; else if (wz > t->scale) wz = t->scale;
     i32 n = (i32)t->grid_size;
     f32 inv = 1.0f / t->inv_nm1;
 
@@ -583,6 +598,9 @@ void terrain_noise_stamp(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength, f
     /* R421: clamp radius before the (i32) cast below — see terrain_modify_height. */
     if (!(radius > 0.0f)) radius = 0.0f;
     else if (radius > t->scale) radius = t->scale;
+    /* R425: clamp wx/wz too — see terrain_modify_height. */
+    if (!(wx >= -t->scale)) wx = -t->scale; else if (wx > t->scale) wx = t->scale;
+    if (!(wz >= -t->scale)) wz = -t->scale; else if (wz > t->scale) wz = t->scale;
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;

@@ -214,7 +214,7 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     usize vs_len = 0, fs_len = 0;
     char *vs_src = shader_read_file(TV_VS_BLINN, &vs_len);
     char *fs_src = shader_read_file(TV_FS_BLINN, &fs_len);
-    if (!vs_src || !fs_src) { LOG_ERROR("FAIL: shader load"); return false; }
+    if (!vs_src || !fs_src) { LOG_ERROR("FAIL: shader load"); free(vs_src); free(fs_src); rhi_device_destroy(rs->device); rs->device = NULL; return false; }
 
     RHIShader vs = rhi_shader_create(rs->device, vs_src, vs_len, false);
     RHIShader fs = rhi_shader_create(rs->device, fs_src, fs_len, true);
@@ -222,6 +222,12 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_ERROR("FAIL: shader compile");
+        /* R425: destroy on the way out — the valid handle and the device
+         * used to leak when only one shader compiled. */
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(rs->device, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(rs->device, fs);
+        rhi_device_destroy(rs->device);
+        rs->device = NULL;
         return false;
     }
     LOG_INFO("PASS: Shaders compiled (GLSL->SPIR-V)");
@@ -233,6 +239,9 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
 
     if (!rhi_handle_valid(rs->pipeline)) {
         LOG_ERROR("FAIL: pipeline create");
+        /* R425: destroy the device on the way out. */
+        rhi_device_destroy(rs->device);
+        rs->device = NULL;
         return false;
     }
     LOG_INFO("PASS: Pipeline created");
@@ -247,6 +256,11 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
 
     if (rs->loc_model < 0 || rs->loc_view < 0 || rs->loc_proj < 0) {
         LOG_ERROR("FAIL: uniform locations invalid (model=%d view=%d proj=%d)", rs->loc_model, rs->loc_view, rs->loc_proj);
+        /* R425: destroy pipeline + device on the way out. */
+        rhi_pipeline_destroy(rs->device, rs->pipeline);
+        rs->pipeline = RHI_HANDLE_NULL;
+        rhi_device_destroy(rs->device);
+        rs->device = NULL;
         return false;
     }
     LOG_INFO("PASS: Uniform locations (model=%d view=%d proj=%d light_dir=%d)",
@@ -660,11 +674,14 @@ int main(int argc, char **argv) {
     LOG_INFO("ECS: %u entities created", inst_world->entity_count - 1);
 
     f32 *instance_data = malloc(ENTITY_COUNT * 64);
+    /* R425: NULL-check — the instanced frame loop below writes into it. */
+    if (!instance_data) LOG_ERROR("FAIL: instance_data allocation");
     u32 inst_frame_count = 0;
     u32 inst_errors = 0;
 
     ComponentType qtypes[] = { TEST_COMP_TRANSFORM };
-    bool inst_test_active = rhi_handle_valid(inst_pipeline) && rhi_handle_valid(instance_tbo);
+    bool inst_test_active = rhi_handle_valid(inst_pipeline) && rhi_handle_valid(instance_tbo)
+                            && instance_data != NULL;
 
     while (engine_frame(&engine) && inst_frame_count < INST_FRAMES && inst_test_active) {
         inst_frame_count++;

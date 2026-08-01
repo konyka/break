@@ -333,6 +333,8 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex);
 void*       rhi_buffer_map(RHIDevice *dev, RHIBuffer buf);
 void        rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf);
 void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size);
+/* Reads back the framebuffer into `pixels` as RGBA8, 4 bytes per pixel —
+ * the caller must provide w*h*4 bytes (both backends, unified in R425). */
 void        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels);
 
 typedef struct RHIGPUTimer RHIGPUTimer;

@@ -484,6 +484,48 @@ TEST(noise_stamp_absurd_radius_clamped)
     free_terrain(t);
 }
 
+/* R425: R421 clamped only radius; wx/wz were still cast f32→i32 unclamped.
+ * Absurd world coords (1e30, -1e30, inf, NaN) on the edit APIs and
+ * terrain_get_height must stay finite and in-grid — no UB. */
+TEST(absurd_world_coords_clamped)
+{
+    static const f32 bad[] = { 1e30f, -1e30f, INFINITY, -INFINITY, NAN };
+    for (u32 b = 0; b < sizeof(bad) / sizeof(bad[0]); b++) {
+        Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+        fill_uniform(t, 1.0f);
+        f32 w = bad[b];
+
+        terrain_modify_height(t, w, w, 2.0f, 1.0f);
+        terrain_flatten(t, w, w, 2.0f);
+        terrain_erode(t, w, w, 2.0f, 2);
+        terrain_noise_stamp(t, w, w, 2.0f, 1.0f, 3.0f);
+        f32 h = terrain_get_height(t, w, w);
+
+        ASSERT_TRUE(isfinite(h));
+        for (u32 i = 0; i < GRID * GRID; i++) {
+            ASSERT_TRUE(isfinite(t->heightmap[i]));
+        }
+        free_terrain(t);
+    }
+}
+
+TEST(get_height_absurd_coords_clamp_to_edge)
+{
+    /* Clamped to [-scale, scale]: +inf samples the same as +scale,
+     * NaN maps to -scale. */
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    for (u32 i = 0; i < GRID * GRID; i++)
+        t->heightmap[i] = (f32)(i % 7);
+
+    ASSERT_FLOAT_EQ(terrain_get_height(t, INFINITY, INFINITY),
+                    terrain_get_height(t, 10.0f, 10.0f), EPS);
+    ASSERT_FLOAT_EQ(terrain_get_height(t, 1e30f, -1e30f),
+                    terrain_get_height(t, 10.0f, -10.0f), EPS);
+    ASSERT_FLOAT_EQ(terrain_get_height(t, NAN, NAN),
+                    terrain_get_height(t, -10.0f, -10.0f), EPS);
+    free_terrain(t);
+}
+
 TEST(erode_zero_iterations)
 {
     Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
@@ -567,6 +609,9 @@ int main(void) {
     RUN_TEST(modify_height_absurd_radius_clamped);
     RUN_TEST(flatten_absurd_radius_clamped);
     RUN_TEST(noise_stamp_absurd_radius_clamped);
+    /* R425: wx/wz clamp */
+    RUN_TEST(absurd_world_coords_clamped);
+    RUN_TEST(get_height_absurd_coords_clamp_to_edge);
     RUN_TEST(erode_zero_iterations);
     RUN_TEST(generate_invalid_preset);
     /* terrain_init guards (R417) */

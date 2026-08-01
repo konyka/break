@@ -218,7 +218,10 @@ void gpucull_get_results(GPUCullSystem *gc, u32 *out_visible_count) {
 
 bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     if (!gc || !dev) return false;
-    
+    /* R425: already initialized — a second call would leak the pipeline,
+     * SSBOs, sampler and texture (same guard as light_system_init_gpu_cull). */
+    if (gc->unified_ready) return true;
+
     /* Initialize base system if not already done */
     if (!gc->ready) {
         if (!gpucull_init(gc, dev)) return false;
