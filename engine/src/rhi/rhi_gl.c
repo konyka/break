@@ -1273,9 +1273,16 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
 
 void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
                             u32 width, u32 height, const void *data, usize size) {
-    (void)size;
     GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
     if (!td || !data) return;
+    /* R417: validate level, dims and size — glTexImage2D reads w*h*4 bytes
+     * from data (RGBA8 streaming, matching the VK backend), so a mismatched
+     * extent or short buffer is a host OOB read. */
+    if (mip_level >= td->mip_levels) return;
+    u32 mip_w = td->width >> mip_level;  if (mip_w == 0) mip_w = 1;
+    u32 mip_h = td->height >> mip_level; if (mip_h == 0) mip_h = 1;
+    if (width != mip_w || height != mip_h) return;
+    if (size < (usize)width * height * 4u) return;
     /* R79-2: Bind for upload — invalidate g_tex_cache afterward since both
      * binds bypass the cache (same class of bug as R77-1/R78-1). */
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);

@@ -458,6 +458,31 @@ TEST(generate_invalid_preset)
 }
 
 /* ------------------------------------------------------------------ */
+/* terrain_init guard tests (R417)                                     */
+/* ------------------------------------------------------------------ */
+
+TEST(init_rejects_oversized_grid)
+{
+    /* R417: grid_size above the 16384 cap must fail cleanly — grid_size²
+     * would overflow u32 vert_count/idx_count and overflow the heap in the
+     * fill loops. The guard fires before any device/GPU use, so a NULL
+     * device is fine here. */
+    Terrain t;
+    memset(&t, 0, sizeof(t));
+    ASSERT_FALSE(terrain_init(&t, NULL, 16385u, 1.0f, 1.0f));
+    ASSERT_FALSE(terrain_init(&t, NULL, 100000u, 1.0f, 1.0f));
+}
+
+TEST(init_rejects_tiny_grid)
+{
+    /* R161-A guard still applies: grid_size < 2 must fail cleanly. */
+    Terrain t;
+    memset(&t, 0, sizeof(t));
+    ASSERT_FALSE(terrain_init(&t, NULL, 0u, 1.0f, 1.0f));
+    ASSERT_FALSE(terrain_init(&t, NULL, 1u, 1.0f, 1.0f));
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(void) {
     RUN_TEST(get_height_null_heightmap);
@@ -485,6 +510,9 @@ int main(void) {
     RUN_TEST(modify_height_negative_strength);
     RUN_TEST(erode_zero_iterations);
     RUN_TEST(generate_invalid_preset);
+    /* terrain_init guards (R417) */
+    RUN_TEST(init_rejects_oversized_grid);
+    RUN_TEST(init_rejects_tiny_grid);
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

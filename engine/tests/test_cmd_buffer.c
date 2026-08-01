@@ -449,6 +449,46 @@ TEST(cmd_multiple_frames_reset) {
     free_pr(pr);
 }
 
+/* ---- R417: submit thread uses the latched rhi_cmd snapshot ---- */
+
+TEST(cmd_swap_latches_rhi_cmd) {
+    ParallelRenderer *pr = alloc_pr();
+    ASSERT_NOT_NULL(pr);
+    parallel_renderer_init(pr, 1);
+    ASSERT_TRUE(parallel_renderer_start_submit_thread(pr));
+
+    /* Record an empty frame so the submit thread's replay never touches the
+     * fake cmd pointer (zero commands -> no RHI calls). */
+    parallel_renderer_begin_frame(pr);
+    parallel_renderer_end_frame(pr);
+
+    RHICmdBuffer *fake_cmd = (RHICmdBuffer *)(void *)0x1;
+    parallel_renderer_set_rhi_cmd(pr, fake_cmd);
+    parallel_renderer_swap_and_submit(pr);
+    parallel_renderer_wait_submit(pr);
+
+    /* swap_and_submit must have latched rhi_cmd under the mutex */
+    ASSERT_TRUE(pr->pending_rhi_cmd == fake_cmd);
+
+    /* A next-frame set_rhi_cmd updates rhi_cmd but must NOT touch the
+     * latched snapshot a previous submission may still be reading. */
+    RHICmdBuffer *fake_cmd2 = (RHICmdBuffer *)(void *)0x2;
+    parallel_renderer_set_rhi_cmd(pr, fake_cmd2);
+    ASSERT_TRUE(pr->rhi_cmd == fake_cmd2);
+    ASSERT_TRUE(pr->pending_rhi_cmd == fake_cmd);
+
+    /* Next swap re-latches the new pointer. */
+    parallel_renderer_begin_frame(pr);
+    parallel_renderer_end_frame(pr);
+    parallel_renderer_swap_and_submit(pr);
+    parallel_renderer_wait_submit(pr);
+    ASSERT_TRUE(pr->pending_rhi_cmd == fake_cmd2);
+
+    parallel_renderer_stop_submit_thread(pr);
+    parallel_renderer_shutdown(pr);
+    free_pr(pr);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(cmd_lifecycle);
     RUN_TEST(cmd_init_clamps_thread_count);
@@ -476,4 +516,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cmd_push_constants_zero_size);
     RUN_TEST(cmd_draw_zero_vertices);
     RUN_TEST(cmd_multiple_frames_reset);
+    RUN_TEST(cmd_swap_latches_rhi_cmd);
 TEST_MAIN_END()

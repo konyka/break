@@ -122,13 +122,12 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     ok = fxaa_init(&caa->fxaa, dev, width, height) && ok;
     ok = taa_init(&caa->taa, dev, width, height) && ok;
 
-    /* Create shared output FBO for chaining without extra FBO switches */
+    /* R417: no shared output FBO in fallback mode — fxaa_apply binds its own
+     * FBO, so output_fbo was allocated but never read. */
     caa->sampler = cpp_create_sampler(dev);
-    caa->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
-        RHI_FORMAT_R16G16B16A16_SFLOAT);
 
-    if (ok && (!rhi_handle_valid(caa->output_fbo.fb) || !rhi_handle_valid(caa->sampler))) {
-        LOG_WARN("CombinedAA: fallback FBO/sampler creation failed");
+    if (ok && !rhi_handle_valid(caa->sampler)) {
+        LOG_WARN("CombinedAA: fallback sampler creation failed");
         ok = false;
     }
     if (!ok) {
@@ -152,8 +151,7 @@ void combined_aa_shutdown(CombinedAA *caa) {
     } else {
         fxaa_shutdown(&caa->fxaa);
         taa_shutdown(&caa->taa);
-        if (rhi_handle_valid(caa->output_fbo.fb))
-            rhi_offscreen_fbo_destroy(caa->device, &caa->output_fbo);
+        /* R417: output_fbo is no longer allocated in fallback mode. */
     }
     if (rhi_handle_valid(caa->sampler)) rhi_sampler_destroy(caa->device, caa->sampler);
     caa->ready = false;
@@ -216,16 +214,16 @@ void combined_aa_apply(CombinedAA *caa, RHICmdBuffer *cmd,
      *
      * Optimized flow:
      *   TAA:  end_render_pass -> bind FBO -> bind pipe -> draw (keep pass open)
-     *   FXAA: bind output FBO -> bind pipe -> draw
+     *   FXAA: bind its own FBO -> bind pipe -> draw
      *
      * Saves: 1 FBO unbind + 1 render pass end/start cycle
      */
     taa_resolve(&caa->taa, cmd, current_color, depth_tex, velocity_tex,
                 curr_vp, prev_vp, inv_proj, screen_w, screen_h);
 
-    /* TAA output is in history_fbo, feed it to FXAA writing to our output FBO */
+    /* TAA output is in history_fbo, feed it to FXAA — fxaa_apply binds its own
+     * FBO (R417: the extra output_fbo bind here was redundant). */
     RHITexture taa_out = taa_get_output(&caa->taa);
-    rhi_offscreen_fbo_bind(cmd, &caa->output_fbo);
     fxaa_apply(&caa->fxaa, cmd, taa_out, screen_w, screen_h);
 }
 

@@ -90,9 +90,10 @@ static void *submit_thread_func(void *arg) {
             break;
         }
         
-        /* Perform submission on read frame */
-        if (pr->rhi_cmd) {
-            parallel_renderer_submit(pr, pr->rhi_cmd);
+        /* Perform submission on read frame (R417: use the latched snapshot,
+         * never the live pr->rhi_cmd the main thread may already be updating) */
+        if (pr->pending_rhi_cmd) {
+            parallel_renderer_submit(pr, pr->pending_rhi_cmd);
         }
         
         atomic_store(&pr->submit_pending, false);
@@ -474,8 +475,11 @@ void parallel_renderer_swap_and_submit(ParallelRenderer *pr) {
     
     /* Signal submit thread if running */
     if (pr->submit_thread_running) {
-        atomic_store(&pr->submit_pending, true);
         pthread_mutex_lock(&pr->submit_mutex);
+        /* R417: latch rhi_cmd while holding the mutex — the submit thread
+         * reads this snapshot, so a next-frame set_rhi_cmd can't race it. */
+        pr->pending_rhi_cmd = pr->rhi_cmd;
+        atomic_store(&pr->submit_pending, true);
         pthread_cond_signal(&pr->submit_ready);
         pthread_mutex_unlock(&pr->submit_mutex);
     } else {

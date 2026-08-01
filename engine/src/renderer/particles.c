@@ -244,6 +244,9 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
 
     /* R174: Integer emit budget from rate*dt with fractional carry. */
     ps->emit_accum += ps->emit_rate * dt;
+    /* R417: clamp the accumulator — after a long pause an unbounded accum
+     * keeps emitting at max rate for many frames. */
+    if (ps->emit_accum > (f32)PARTICLES_MAX) ps->emit_accum = (f32)PARTICLES_MAX;
     u32 budget = 0u;
     if (ps->emit_accum >= 1.0f) {
         budget = (u32)ps->emit_accum;

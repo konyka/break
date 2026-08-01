@@ -119,6 +119,10 @@ typedef struct {
     
     /* RHI command buffer for submission (set before begin_frame) */
     RHICmdBuffer   *rhi_cmd;
+    /* R417: rhi_cmd latched under submit_mutex at swap time. The submit
+     * thread reads only this snapshot, so a set_rhi_cmd for the next frame
+     * can't race an in-flight submission. */
+    RHICmdBuffer   *pending_rhi_cmd;
     
     /* State */
     u32             thread_count;

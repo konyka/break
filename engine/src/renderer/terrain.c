@@ -98,6 +98,13 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
         LOG_ERROR("Terrain: grid_size must be >= 2 (got %u)", grid_size);
         return false;
     }
+    /* R417: grid_size² overflows u32 vert_count/idx_count above ~26.7k while
+     * the fill loops below run on unclamped values → heap overflow. 16384²
+     * verts and 16383²*6 indices both still fit u32. */
+    if (grid_size > 16384u) {
+        LOG_ERROR("Terrain: grid_size too large (got %u, max 16384)", grid_size);
+        return false;
+    }
     t->device = dev;
     t->grid_size = grid_size;
     t->scale = scale;

@@ -43,6 +43,9 @@ typedef struct {
     bool              no_vertex_input;
     u32               push_range_count;
     VkPushConstantRange push_ranges[8];
+    /* R417: clamped graphics push-constant range size from layout creation
+     * (min(256, maxPushConstantsSize)); the flush clamps dirty ranges to it. */
+    u32               push_range_size;
     u32               uniform_offsets[VK_MAX_UNIFORMS];
     u32               uniform_sizes[VK_MAX_UNIFORMS];
     u32               uniform_count;
@@ -1328,6 +1331,15 @@ static VkFormat vk_format_from_rhi(RHIFormat fmt) {
     }
 }
 
+/* R417: bytes-per-pixel for staging-size computation (texture create assumed
+ * 4 bpp, halving the staging buffer for R16G16B16A16_SFLOAT → GPU OOB read). */
+static u32 rhi_format_bpp(RHIFormat fmt) {
+    switch (fmt) {
+    case RHI_FORMAT_R16G16B16A16_SFLOAT: return 8;
+    default:                             return 4;
+    }
+}
+
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     (void)backend;
     RHIDevice *dev = calloc(1, sizeof(RHIDevice));
@@ -2312,6 +2324,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->layout = layout;
     pd->pipeline = pipeline;
     pd->vertex_stride = stride;
+    pd->push_range_size = push_range.size; /* R417: clamped at layout creation */
     pd->no_vertex_input = desc->no_vertex_input;
     pd->uses_texel_buffer = desc->uses_texel_buffer;
     pd->is_instanced = desc->is_instanced;
@@ -2751,7 +2764,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     if (desc->data) {
         VkBuffer staging;
         VkDeviceMemory staging_mem;
-        VkDeviceSize data_size = desc->width * desc->height * 4;
+        /* R417: bpp from desc->format + 64-bit math — the old 32-bit w*h*4
+         * wrapped past 4GB and under-allocated 2x for 8-bpp formats. */
+        VkDeviceSize data_size = (VkDeviceSize)desc->width * desc->height
+                               * rhi_format_bpp(desc->format);
 
         VkBufferCreateInfo bci = {0};
         bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -3040,6 +3056,14 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
     if (!td || !data || size == 0) return;
     if (mip_level >= td->mip_levels) return;
+
+    /* R417: reject uploads whose dims don't match the actual mip extent or
+     * whose size can't cover w*h*4 bytes (RGBA8 streaming, matching the GL
+     * backend) — otherwise the copy extent can exceed the staging buffer. */
+    u32 mip_w = td->width >> mip_level;  if (mip_w == 0) mip_w = 1;
+    u32 mip_h = td->height >> mip_level; if (mip_h == 0) mip_h = 1;
+    if (width != mip_w || height != mip_h) return;
+    if (size < (usize)width * height * 4u) return;
 
     /* R175: Reclaim previous fire-and-forget upload before allocating a new one. */
     vk_mip_upload_reclaim(vk);
@@ -3997,7 +4021,11 @@ static void vk_flush_push_constants(VKBackend *vk) {
     if (!vk->push_dirty || !vk->current_pipeline_data) return;
     /* R96-1: Clamp dirty range to the pipeline's push constant range.
      * Compute pipelines declare 128 bytes; graphics declare 256. */
-    u32 max_pc = vk->current_pipeline_data->is_compute ? 128 : 256;
+    /* R417: graphics uses the clamped size stored at creation — the layout
+     * range is min(256, maxPushConstantsSize), so a hard-coded 256 is invalid
+     * on 128-byte-limit devices. */
+    u32 max_pc = vk->current_pipeline_data->is_compute ? 128
+                 : vk->current_pipeline_data->push_range_size;
     if (vk->push_dirty_max > max_pc) vk->push_dirty_max = max_pc;
     if (vk->push_dirty_min >= vk->push_dirty_max) { vk->push_dirty = false; return; }
     VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -5440,11 +5468,13 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
     VKBackend *vk = vk_backend(dev);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
     if (!bd || !data || size == 0u) return;
+    /* R417: clamp to buffer size on all paths — the persistent-mapped memcpy
+     * below was unclamped (OOB write past the mapped allocation). */
+    if (size > bd->size) size = bd->size;
     if (bd->mapped) {
         memcpy(bd->mapped, data, size);
     } else if (bd->device_local) {
         /* R181: rare updates to static DEVICE_LOCAL meshes (e.g. terrain flatten). */
-        if (size > bd->size) size = bd->size;
         if (!vk_buffer_staging_upload(vk, bd->buffer, 0, data, size))
             LOG_WARN("VK: rhi_buffer_update staging failed");
     } else {
