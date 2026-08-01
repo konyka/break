@@ -942,12 +942,63 @@ TEST(ecs_swap_remove_across_chunks) {
     world_destroy(w);
 }
 
+/* R416: a single component larger than ECS_CHUNK_SIZE clamps chunk_capacity
+ * to 1; the chunk must be sized for the actual column layout, not blindly
+ * ECS_CHUNK_SIZE, or the first component write overflows the allocation. */
+#define COMP_HUGE 6
+typedef struct { u32 value; char pad[24 * 1024]; } HugeComp; /* ~24KB > 16KB chunk */
+
+TEST(ecs_oversized_component) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, COMP_HUGE, sizeof(HugeComp));
+
+    /* chunk_capacity is 1 → each entity lands in its own oversized chunk. */
+    Entity ents[4];
+    for (u32 i = 0; i < 4; i++) {
+        ents[i] = world_create_entity(w);
+        HugeComp *h = (HugeComp *)world_add_component(w, ents[i], COMP_HUGE);
+        ASSERT_NOT_NULL(h);
+        h->value = 5000u + i;
+        h->pad[0] = (char)i;
+        h->pad[sizeof(h->pad) - 1] = (char)(i + 1); /* touch the column tail */
+    }
+    for (u32 i = 0; i < 4; i++) {
+        HugeComp *h = (HugeComp *)world_get_component(w, ents[i], COMP_HUGE);
+        ASSERT_NOT_NULL(h);
+        ASSERT_EQ(h->value, 5000u + i);
+        ASSERT_EQ((u32)(u8)h->pad[0], i);
+        ASSERT_EQ((u32)(u8)h->pad[sizeof(h->pad) - 1], i + 1u);
+    }
+
+    /* Migration out of / into oversized archetypes must keep data intact. */
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    Position *p = (Position *)world_add_component(w, ents[0], COMP_POSITION);
+    ASSERT_NOT_NULL(p);
+    p->x = 7.0f;
+    HugeComp *h0 = (HugeComp *)world_get_component(w, ents[0], COMP_HUGE);
+    ASSERT_NOT_NULL(h0);
+    ASSERT_EQ(h0->value, 5000u);
+    ASSERT_EQ((u32)(u8)h0->pad[sizeof(h0->pad) - 1], 1u);
+
+    world_remove_component(w, ents[1], COMP_HUGE);
+    ASSERT_TRUE(world_get_component(w, ents[1], COMP_HUGE) == NULL);
+    for (u32 i = 2; i < 4; i++) {
+        HugeComp *h = (HugeComp *)world_get_component(w, ents[i], COMP_HUGE);
+        ASSERT_NOT_NULL(h);
+        ASSERT_EQ(h->value, 5000u + i);
+    }
+
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_entity_create);
     RUN_TEST(ecs_entity_create_multiple);
     RUN_TEST(ecs_entity_destroy);
     RUN_TEST(ecs_swap_remove_across_chunks);
+    RUN_TEST(ecs_oversized_component);
     RUN_TEST(ecs_component_add_get);
     RUN_TEST(ecs_component_multiple);
     RUN_TEST(ecs_component_remove);

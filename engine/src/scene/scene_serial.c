@@ -529,8 +529,10 @@ static bool load_resources_chunk(Scene *s, Reader *r) {
         if (plen >= sizeof(tmp.path)) { /* clamp; read+truncate */
             u32 keep = (u32)sizeof(tmp.path) - 1u;
             if (!rd_bytes(r, tmp.path, keep)) { free(arr); return false; }
+            /* R416: validate the skip BEFORE advancing r->p — advancing past
+             * r->end and checking afterwards is UB (pointer out of range). */
+            if ((u64)(plen - keep) > (u64)(r->end - r->p)) { free(arr); return false; }
             r->p += (plen - keep);
-            if (r->p > r->end) { free(arr); return false; }
         } else if (plen) {
             if (!rd_bytes(r, tmp.path, plen)) { free(arr); return false; }
         }
@@ -1286,13 +1288,14 @@ bool scene_save_prefab(const World *w, const Entity *entities,
 
 bool scene_instantiate_prefab(World *w, Scene *s,
                               const char *path, Vec3 position) {
-    u32 old_node_count = s ? s->node_count : 0u;
     bool ok = scene_load_binary(w, s, path);
-    if (ok && s && s->node_count > old_node_count) {
-        /* Apply position offset to newly loaded scene nodes. */
+    if (ok && s && s->node_count > 0) {
+        /* R416: scene_load_binary REPLACES s->nodes wholesale (frees the old
+         * array and commits the staged one), so there is no "newly appended"
+         * tail — offset ALL loaded nodes, not nodes [old_count..count). */
         f32 px = position.e[0], py = position.e[1], pz = position.e[2];
         if (px != 0.0f || py != 0.0f || pz != 0.0f) {
-            for (u32 i = old_node_count; i < s->node_count; i++) {
+            for (u32 i = 0; i < s->node_count; i++) {
                 SceneNode *nd = &s->nodes[i];
                 nd->local_transform.e[3][0] += px;
                 nd->local_transform.e[3][1] += py;

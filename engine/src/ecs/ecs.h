@@ -44,6 +44,7 @@ struct Archetype {
     Chunk          *chunk_tail;
     u32            *offsets;
     u32             chunk_capacity;
+    u32             chunk_bytes;   /* R416: allocation size per chunk (>= ECS_CHUNK_SIZE) */
     u32             entity_offset;
     u32             total_count;
     u32             stride;

@@ -84,6 +84,10 @@ bool scene_load_json(World *w, Scene *s, const char *path);
 /* ---- Prefab: subgraph save + instantiate ---- */
 bool scene_save_prefab(const World *w, const Entity *entities,
                        u32 count, const char *path);
+/* R416: instantiate loads via scene_load_binary, which has REPLACE semantics —
+ * the scene's existing nodes/resources are freed and swapped for the loaded
+ * ones (it does not append). The position offset is applied to every loaded
+ * node's local transform. */
 bool scene_instantiate_prefab(World *w, Scene *s,
                               const char *path, Vec3 position);
 

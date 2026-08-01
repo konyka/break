@@ -134,6 +134,13 @@ static Archetype *create_archetype(World *w, const ComponentType *types, u32 cou
         offset += w->component_sizes[types[i]] * a->chunk_capacity;
     }
 
+    /* R416: size chunk for oversized components. A component larger than
+     * ~ECS_CHUNK_SIZE clamps chunk_capacity to 1, so the entity array +
+     * column layout can exceed ECS_CHUNK_SIZE; allocate the actual
+     * required bytes instead of blindly calloc'ing ECS_CHUNK_SIZE. */
+    u32 required = (offset + 15u) & ~15u;
+    a->chunk_bytes = required > ECS_CHUNK_SIZE ? required : ECS_CHUNK_SIZE;
+
     return a;
 }
 
@@ -170,6 +177,7 @@ World *world_create(void) {
     w->archetypes[0].chunk_tail = NULL;
     w->archetypes[0].offsets = NULL;
     w->archetypes[0].chunk_capacity = 128;
+    w->archetypes[0].chunk_bytes = ECS_CHUNK_SIZE;
     w->archetypes[0].entity_offset = sizeof(Chunk);
     w->archetypes[0].total_count = 0;
     w->archetype_hash[0] = archetype_key_hash(NULL, 0);
@@ -259,7 +267,7 @@ Entity world_create_entity(World *w) {
 
     Archetype *empty = &w->archetypes[0];
     if (!empty->chunks) {
-        empty->chunks = chunk_alloc(ECS_CHUNK_SIZE);
+        empty->chunks = chunk_alloc(empty->chunk_bytes);
         if (!empty->chunks) {
             create_entity_rollback(w, idx, from_free_stack);
             return ENTITY_NULL;
@@ -269,7 +277,7 @@ Entity world_create_entity(World *w) {
     }
     Chunk *c = empty->chunk_tail;
     if (c->count >= c->capacity) {
-        Chunk *nc = chunk_alloc(ECS_CHUNK_SIZE);
+        Chunk *nc = chunk_alloc(empty->chunk_bytes);
         if (!nc) {
             create_entity_rollback(w, idx, from_free_stack);
             return ENTITY_NULL;
@@ -363,14 +371,14 @@ void world_destroy_entity(World *w, Entity e) {
 static void *archetype_alloc_slot(World *w, Archetype *a, u32 *out_global_index) {
     (void)w;
     if (!a->chunks) {
-        a->chunks = chunk_alloc(ECS_CHUNK_SIZE);
+        a->chunks = chunk_alloc(a->chunk_bytes);
         if (!a->chunks) return NULL;
         a->chunks->capacity = a->chunk_capacity;
         a->chunk_tail = a->chunks;
     }
     Chunk *c = a->chunk_tail;
     if (c->count >= c->capacity) {
-        Chunk *nc = chunk_alloc(ECS_CHUNK_SIZE);
+        Chunk *nc = chunk_alloc(a->chunk_bytes);
         if (!nc) return NULL;
         nc->capacity = a->chunk_capacity;
         c->next = nc;
@@ -652,6 +660,10 @@ void *chunk_get_component(Chunk *c, u32 index, u32 component_offset, u32 compone
 
 Entity chunk_get_entity(Chunk *c, u32 index, u32 entity_offset) {
     u32 *entities = (u32 *)((u8 *)c + entity_offset);
+    /* R416: generation is filled with 0 — the signature has no World access,
+     * so the real generation cannot be looked up. The returned handle is
+     * NOT validity-checked (entity_valid fails on it); use the raw index
+     * only, or resolve the generation via the World if you need a handle. */
     Entity e = {entities[index], 0};
     return e;
 }

@@ -721,6 +721,52 @@ TEST(generation_restore_roundtrip_json)
 
 /* ----------------------------------------------------------------------- */
 
+TEST(instantiate_prefab_offsets_all_loaded_nodes)
+{
+    /* R416: scene_load_binary replaces s->nodes wholesale, so the position
+     * offset must apply to ALL loaded nodes — not a tail slice starting at
+     * the pre-load node count. */
+    const char *path = "/tmp/test_prefab_offset.bscn";
+
+    /* Prefab: 2 nodes at distinct translations. */
+    World *ws = world_create();
+    Scene src; memset(&src, 0, sizeof(src));
+    src.node_count = 2;
+    src.nodes = (SceneNode *)calloc(2, sizeof(SceneNode));
+    ASSERT_NOT_NULL(src.nodes);
+    src.nodes[0].local_transform = mat4_identity();
+    src.nodes[0].local_transform.e[3][0] = 1.0f;
+    src.nodes[1].local_transform = mat4_identity();
+    src.nodes[1].local_transform.e[3][1] = 2.0f;
+    ASSERT_TRUE(scene_save_binary(ws, &src, path, NULL));
+
+    /* Destination already holds 3 nodes (more than the prefab's 2): with the
+     * old tail-slice loop, nodes [3..2) — nothing — would have been offset. */
+    World *wd = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    dst.node_count = 3;
+    dst.nodes = (SceneNode *)calloc(3, sizeof(SceneNode));
+    ASSERT_NOT_NULL(dst.nodes);
+
+    Vec3 offset = vec3(10.0f, 20.0f, 30.0f);
+    ASSERT_TRUE(scene_instantiate_prefab(wd, &dst, path, offset));
+
+    /* Replace semantics: the scene now holds exactly the prefab's nodes. */
+    ASSERT_EQ(dst.node_count, 2u);
+    ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][0], 1.0f + 10.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][1], 0.0f + 20.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][2], 0.0f + 30.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][0], 0.0f + 10.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][1], 2.0f + 20.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][2], 0.0f + 30.0f, 1e-5f);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(ws);
+    world_destroy(wd);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(bscn_magic_value);
     RUN_TEST(bscn_version);
@@ -757,4 +803,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_guid_deterministic);
     RUN_TEST(generation_restore_roundtrip);
     RUN_TEST(generation_restore_roundtrip_json);
+    RUN_TEST(instantiate_prefab_offsets_all_loaded_nodes);
 TEST_MAIN_END()
