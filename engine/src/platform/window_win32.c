@@ -34,6 +34,7 @@ struct Platform {
     bool        should_close;
     bool        is_fullscreen;
     bool        mouse_relative;
+    bool        mouse_visible;  /* R427: desired cursor visibility (ShowCursor is counter-based) */
     RECT        windowed_rect;
     DWORD       windowed_style;
 };
@@ -254,6 +255,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->hinstance = GetModuleHandleA(NULL);
     p->width  = cfg->width;
     p->height = cfg->height;
+    p->mouse_visible = true;  /* R427: cursor starts visible */
 
     /* ---- Enable Per-Monitor DPI Awareness V2 (Windows 10 1703+) ----
      * Use dynamic loading so we degrade gracefully on older systems
@@ -511,8 +513,13 @@ void platform_mouse_capture(Platform *p, bool capture) {
 }
 
 void platform_mouse_set_visible(Platform *p, bool visible) {
-    (void)p;
+    if (!p) return;
+    /* R427: ShowCursor is counter-based, not idempotent — calling it for every
+     * set_visible(true) drifts the counter until the cursor is stuck hidden.
+     * Track the desired state and only call ShowCursor on transitions. */
+    if (visible == p->mouse_visible) return;
     ShowCursor(visible ? TRUE : FALSE);
+    p->mouse_visible = visible;
 }
 
 void platform_mouse_set_relative(Platform *p, bool relative) {
@@ -528,8 +535,9 @@ void platform_mouse_set_relative(Platform *p, bool relative) {
         rid.hwndTarget  = p->hwnd;
         RegisterRawInputDevices(&rid, 1, sizeof(rid));
 
-        /* Hide cursor and capture */
-        ShowCursor(FALSE);
+        /* Hide cursor and capture (R427: go through set_visible so the
+         * ShowCursor counter stays consistent with mouse_visible) */
+        platform_mouse_set_visible(p, false);
         SetCapture(p->hwnd);
 
         /* Clip cursor to client area */
@@ -553,7 +561,7 @@ void platform_mouse_set_relative(Platform *p, bool relative) {
         rid.hwndTarget  = NULL;
         RegisterRawInputDevices(&rid, 1, sizeof(rid));
 
-        ShowCursor(TRUE);
+        platform_mouse_set_visible(p, true);  /* R427: see above */
         ReleaseCapture();
         ClipCursor(NULL);
 

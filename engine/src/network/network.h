@@ -20,8 +20,8 @@ typedef enum {
 typedef struct {
     char host[256];
     u16 port;
-    bool resolved;        /* true when _sa holds a valid cached sockaddr_in */
-    u8   _sa[28];         /* cached struct sockaddr_in (16 bytes on Linux, up to 28 with padding) */
+    /* R427: removed the pre-R418 `resolved`/`_sa` sockaddr cache fields — dead
+     * since net_sendto stopped caching resolutions (R418), no references left. */
 } NetAddress;
 
 /* System init / shutdown (Windows needs WSAStartup) */

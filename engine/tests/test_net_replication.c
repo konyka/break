@@ -249,6 +249,41 @@ TEST(ordered_reorder_zero_snapshot_no_stall)
     net_replicator_shutdown(&rep);
 }
 
+TEST(ordered_resync_after_large_seq_jump)
+{
+    /* R427: a >= NET_REORDER_SLOTS forward jump with an empty reorder window
+     * must resync next_ordered_seq and deliver, not drop — otherwise the
+     * channel stalled permanently (next_ordered_seq only advances on exact-seq
+     * delivery). Trigger: a >=32-packet loss burst, or an R423 peer-channel
+     * eviction resetting an active peer's channel mid-stream. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.ordered_layer = true;
+
+    u8 w_far[PACKET_MAX_SIZE], w_next[PACKET_MAX_SIZE];
+    u32 seq_far = 1u + NET_REORDER_SLOTS + 5u;
+    u32 lfar  = build_ordered_snap_wire(w_far,  seq_far,      10u, 1.0f, 2.0f, 3.0f);
+    u32 lnext = build_ordered_snap_wire(w_next, seq_far + 1u, 10u, 4.0f, 5.0f, 6.0f);
+
+    NetTransformSnapshot out[4] = {0};
+    u32 out_count = 0u;
+
+    /* The jump packet is delivered immediately and resyncs the channel. */
+    ASSERT_TRUE(net_replicator_feed(&rep, w_far, lfar, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 1.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, seq_far + 1u);
+
+    /* The stream continues normally from the resynced sequence — no stall. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w_next, lnext, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 4.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, seq_far + 2u);
+
+    net_replicator_shutdown(&rep);
+}
+
 TEST(reliable_ordered_combined)
 {
     ASSERT_TRUE(net_init());
@@ -549,6 +584,37 @@ TEST(heartbeat_ack_feed)
     ASSERT_TRUE(ps != NULL);
     ASSERT_TRUE(net_address_equal(&ps->addr, &peer));
     ASSERT_EQ(ps->hb_rt_recv, 1u);
+
+    net_replicator_shutdown(&rep);
+}
+
+TEST(heartbeat_header_only_rejected)
+{
+    /* R427: a header-only (12-byte) HEARTBEAT has no send_time_ms payload —
+     * packet_read_u32 then yields 0 and hb_last_rtt_ms becomes `now_ms`
+     * garbage, poisoning the peer RTT stats. It must be rejected entirely. */
+    time_init();
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    u8 wire[PACKET_MAX_SIZE];
+    PacketBuffer buf;
+    packet_begin(&buf, (u8)NET_PKT_HEARTBEAT, (u8)PACKET_UNRELIABLE);
+    u32 len = packet_finish(&buf, 1u, 0);   /* header only, no payload */
+    ASSERT_EQ(len, (u32)PACKET_HEADER_SIZE);
+    memcpy(wire, buf.data, len);
+
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    NetAddress peer = {0};
+    strncpy(peer.host, "127.0.0.1", sizeof(peer.host) - 1u);
+    peer.port = 20002u;
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wire, len, &peer, out, 1u, &out_count) > 0);
+    ASSERT_EQ(out_count, 0u);
+    /* RTT stats untouched: no hb count, no peer registered, no rtt written. */
+    ASSERT_EQ(rep.hb_recv, 0u);
+    ASSERT_EQ(rep.hb_last_rtt_ms, 0.0f);
+    ASSERT_EQ(net_replicator_peer_count(&rep), 0u);
 
     net_replicator_shutdown(&rep);
 }
@@ -954,6 +1020,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ordered_reorder_buffer);
     RUN_TEST(ordered_reorder_out_of_window_no_stall);
     RUN_TEST(ordered_reorder_zero_snapshot_no_stall);
+    RUN_TEST(ordered_resync_after_large_seq_jump);
     RUN_TEST(reliable_ordered_combined);
     RUN_TEST(reliable_ack_echoes_received_sequence);
     RUN_TEST(reliable_pending_cleared_via_peer_ack);
@@ -962,6 +1029,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(heartbeat_rtt);
     RUN_TEST(heartbeat_roundtrip_echo);
     RUN_TEST(heartbeat_ack_feed);
+    RUN_TEST(heartbeat_header_only_rejected);
     RUN_TEST(peer_rtt_table);
     RUN_TEST(peer_evict_stale);
     RUN_TEST(peer_lru_full);

@@ -289,16 +289,40 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
         /* R101: Fire events that fall in the time interval crossed this frame.
          * For looping clips that wrapped, fire two ranges: [prev, dur) + [0, now). */
         if (state->event_callback && clip && clip->event_count > 0) {
-            if (L->time > prev_time) {
-                /* R246: include the endpoint only when a non-looping clip has
-                 * just been clamped to its duration this frame, so an event at
-                 * et == duration fires exactly once (subsequent frames no longer
-                 * advance past prev_time == duration). */
-                bool at_end = (!L->looping && dur > 0.0f && L->time >= dur);
-                fire_events_in_range(clip, prev_time, L->time, at_end, state);
-            } else if (L->time < prev_time && L->looping && dur > 0.0f) {
-                fire_events_in_range(clip, prev_time, dur, false, state);
-                fire_events_in_range(clip, 0.0f, L->time, false, state);
+            /* R427: key the ranges off the direction of travel (dt*speed), not
+             * just time order — with negative speed a looping wrap made
+             * L->time < prev_time look like a forward wrap and fired nearly the
+             * whole timeline ([prev, dur) + [0, time)) backwards. */
+            f32 adv = dt * L->speed;
+            if (adv >= 0.0f) {
+                if (L->time > prev_time) {
+                    /* R246: include the endpoint only when a non-looping clip has
+                     * just been clamped to its duration this frame, so an event at
+                     * et == duration fires exactly once (subsequent frames no longer
+                     * advance past prev_time == duration). */
+                    bool at_end = (!L->looping && dur > 0.0f && L->time >= dur);
+                    fire_events_in_range(clip, prev_time, L->time, at_end, state);
+                } else if (L->time < prev_time && L->looping && dur > 0.0f) {
+                    /* Forward wrap. R427: the tail range is end-inclusive so an
+                     * event at exactly et == duration fires (once per loop; the
+                     * [0, time) head range can never reach it). */
+                    fire_events_in_range(clip, prev_time, dur, true, state);
+                    fire_events_in_range(clip, 0.0f, L->time, false, state);
+                }
+            } else {
+                /* R427: reverse playback — fire the events crossed going down. */
+                if (L->time < prev_time) {
+                    /* No wrap: crossed (time, prev] backwards. End-exclusive at
+                     * `prev` (that event fired when crossed into this interval),
+                     * inclusive at `time` (the next frame's range starts below). */
+                    fire_events_in_range(clip, L->time, prev_time, false, state);
+                } else if (L->time > prev_time && L->looping && dur > 0.0f) {
+                    /* Backward wrap through 0/dur: crossed [0, prev) before the
+                     * wrap and [time, dur] after it (end-inclusive so an event
+                     * at et == duration fires; the [0, prev) range can't). */
+                    fire_events_in_range(clip, 0.0f, prev_time, false, state);
+                    fire_events_in_range(clip, L->time, dur, true, state);
+                }
             }
         }
 

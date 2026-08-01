@@ -490,6 +490,12 @@ static void physics_collision_callback(u32 i, u32 j, void *ctx) {
     RigidBody *a = &pw->bodies[i];
     RigidBody *b = &pw->bodies[j];
 
+    /* R427: skip static-static pairs — parked (deleted) bodies all sit at the
+     * same park position and overlap pairwise, so k parked bodies cost O(k^2)
+     * narrowphase per step and inflate the collision stats; no consumer
+     * (on_contact is engine/test-only) relies on static-static contacts. */
+    if (a->is_static && b->is_static) return;
+
     Contact contact;
     if (!physics_collide(a, b, &contact)) return;
     contact.body_a = i;

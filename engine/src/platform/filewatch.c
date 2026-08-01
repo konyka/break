@@ -373,14 +373,21 @@ static void fw_add_dir_recursive(FileWatch *fw, const char *path, u32 depth) {
     /* R419: cap recursion depth — a symlink to an ancestor directory would
      * otherwise recurse forever (stack overflow). */
     if (depth >= 32) return;
-    if (fw->watch_count >= FW_MAX_WATCHES) return;
+    /* R427: reclaim a slot retired by IN_IGNORED (watch_fds[i] == -1) before
+     * appending — watch_count only ever grew, so sustained dir churn exhausted
+     * FW_MAX_WATCHES and new dirs were silently never watched. */
+    u32 slot = fw->watch_count;
+    for (u32 i = 0; i < fw->watch_count; i++) {
+        if (fw->watch_fds[i] == -1) { slot = i; break; }
+    }
+    if (slot >= FW_MAX_WATCHES) return;
     int wd = inotify_add_watch(fw->inotify_fd, path,
         IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_TO);
     if (wd >= 0) {
-        fw->watch_fds[fw->watch_count] = wd;
-        strncpy(fw->watch_paths[fw->watch_count], path, 255);
-        fw->watch_paths[fw->watch_count][255] = '\0';
-        fw->watch_count++;
+        fw->watch_fds[slot] = wd;
+        strncpy(fw->watch_paths[slot], path, 255);
+        fw->watch_paths[slot][255] = '\0';
+        if (slot == fw->watch_count) fw->watch_count++;
     } else {
         LOG_WARN("filewatch: inotify_add_watch failed for %s", path);
     }

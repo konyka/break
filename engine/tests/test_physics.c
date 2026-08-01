@@ -618,6 +618,27 @@ TEST(contact_callback_fires)
     physics_world_destroy(pw);
 }
 
+TEST(static_static_pair_no_contact)
+{
+    /* R427: static-static pairs must be skipped entirely — parked (deleted)
+     * bodies all overlap at the park position, so k parked bodies otherwise
+     * cost O(k^2) narrowphase per step and fire spurious contacts. */
+    PhysicsWorld *pw = physics_world_create(64);
+    physics_set_contact_callback(pw, test_on_contact, NULL);
+    /* Two overlapping static boxes — would collide if not skipped. */
+    physics_body_create(pw, vec3(0, 0, 0), vec3(1,1,1), 0.0f, true, 0);
+    physics_body_create(pw, vec3(0.5f, 0, 0), vec3(1,1,1), 0.0f, true, 0);
+    g_contact_hits = 0;
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_EQ(g_contact_hits, 0);
+    ASSERT_EQ(pw->collision_count, 0u);
+    /* A dynamic body overlapping a static one still produces a contact. */
+    physics_body_create(pw, vec3(0.25f, 0, 0), vec3(1,1,1), 1.0f, false, 0);
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_TRUE(g_contact_hits > 0);
+    physics_world_destroy(pw);
+}
+
 TEST(ccd_prevents_tunnel)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -714,6 +735,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(collide_capsule_on_box_floor);
     RUN_TEST(collide_sphere_box_swapped_normal);
     RUN_TEST(contact_callback_fires);
+    RUN_TEST(static_static_pair_no_contact);
     RUN_TEST(ccd_prevents_tunnel);
     RUN_TEST(no_ccd_tunnels);
     RUN_TEST(ccd_capsule_axis_no_tunnel);

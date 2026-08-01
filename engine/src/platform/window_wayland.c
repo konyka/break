@@ -509,6 +509,24 @@ static const struct wl_registry_listener registry_listener = {
 
 /* ---- Platform API ---- */
 
+/* R427: bail-out cleanup for platform_create — destroys whatever was created
+ * so far (every member NULL-checked), mirroring platform_destroy. The old
+ * failure paths only disconnected the display, leaking the registry and the
+ * xkb context (and any bound globals). */
+static void wayland_create_fail(Platform *p) {
+    if (p->toplevel)     xdg_toplevel_destroy(p->toplevel);
+    if (p->xdg_surface)  xdg_surface_destroy(p->xdg_surface);
+    if (p->surface)      wl_surface_destroy(p->surface);
+    if (p->xdg_wm_base)  xdg_wm_base_destroy(p->xdg_wm_base);
+    if (p->seat)         wl_seat_destroy(p->seat);
+    if (p->output)       wl_output_destroy(p->output);
+    if (p->compositor)   wl_compositor_destroy(p->compositor);
+    if (p->registry)     wl_registry_destroy(p->registry);
+    if (p->xkb_ctx)      xkb_context_unref(p->xkb_ctx);
+    if (p->display)      wl_display_disconnect(p->display);
+    free(p);
+}
+
 Platform *platform_create(const PlatformConfig *cfg) {
     Platform *p = calloc(1, sizeof(Platform));
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
@@ -539,14 +557,12 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
     if (!p->compositor) {
         LOG_FATAL("Missing wl_compositor interface");
-        wl_display_disconnect(p->display);
-        free(p);
+        wayland_create_fail(p);
         return NULL;
     }
     if (!p->xdg_wm_base) {
         LOG_FATAL("Missing xdg_wm_base interface");
-        wl_display_disconnect(p->display);
-        free(p);
+        wayland_create_fail(p);
         return NULL;
     }
 
@@ -556,8 +572,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->surface = wl_compositor_create_surface(p->compositor);
     if (!p->surface) {
         LOG_FATAL("Failed to create wl_surface");
-        wl_display_disconnect(p->display);
-        free(p);
+        wayland_create_fail(p);
         return NULL;
     }
 
@@ -572,6 +587,12 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
     /* Create EGL window (used by RHI for EGL/Vulkan surface) */
     p->egl_window = wl_egl_window_create(p->surface, (i32)cfg->width, (i32)cfg->height);
+    /* R427: NULL-check — a failed egl window would crash the RHI init later. */
+    if (!p->egl_window) {
+        LOG_FATAL("Failed to create wl_egl_window");
+        wayland_create_fail(p);
+        return NULL;
+    }
 
     /* Commit surface and wait for initial configure */
     wl_surface_commit(p->surface);

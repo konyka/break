@@ -680,6 +680,76 @@ TEST(event_looping_wrap)
     anim_blend_state_destroy(&st);
 }
 
+TEST(event_negative_speed_wrap)
+{
+    /* R427: with negative speed a looping wrap made time < prev look like a
+     * forward wrap, firing nearly the whole timeline backwards. Reverse
+     * playback must fire exactly the events crossed going down. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    anim_clip_add_event(&g_clips[0], 0.3f, "low");
+    anim_clip_add_event(&g_clips[0], 0.7f, "high");
+
+    g_evt_count = 0;
+    anim_set_event_callback(&st, test_event_cb, NULL);
+    anim_layer_play(&st, 0, 0, -1.0f, true);  /* looping, reverse */
+
+    /* dt=0.5: time 0 -> 0.5 (backward wrap through 0/dur). Only the events in
+     * [0.5, dur] were crossed: "high" fires, "low" must NOT. */
+    anim_blend_evaluate(&st, 0.5f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+    ASSERT_STR_EQ(g_evt_name, "high");
+    ASSERT_FLOAT_EQ(g_evt_time, 0.7f, 0.001f);
+
+    /* dt=0.3: time 0.5 -> 0.2 (no wrap): only "low" crossed going down. */
+    anim_blend_evaluate(&st, 0.3f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 2);
+    ASSERT_STR_EQ(g_evt_name, "low");
+    ASSERT_FLOAT_EQ(g_evt_time, 0.3f, 0.001f);
+
+    /* dt=0.1: time 0.2 -> 0.1, nothing crossed. */
+    anim_blend_evaluate(&st, 0.1f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 2);
+
+    anim_blend_state_destroy(&st);
+}
+
+TEST(event_looping_at_duration_fires)
+{
+    /* R427: an event at exactly et == duration on a looping clip used to fall
+     * between the wrap ranges ([prev, dur) + [0, time)) and never fired; the
+     * loop-tail range is now end-inclusive, firing it once per loop. */
+    AnimBlendState st;
+    anim_blend_state_init(&st, 4);
+    init_translation_clip(&g_clips[0], 0, 1.0f, 0, 0, 0, 10, 0, 0);
+    anim_clip_add_event(&g_clips[0], 1.0f, "loop_end");  /* et == duration */
+
+    g_evt_count = 0;
+    anim_set_event_callback(&st, test_event_cb, NULL);
+    anim_layer_play(&st, 0, 0, 1.0f, true);  /* looping */
+
+    /* dt=0.6: time 0 -> 0.6, not crossed yet */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 0);
+
+    /* dt=0.6: time 0.6 -> 0.2 (wrap), et == duration crossed (1st) */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+    ASSERT_STR_EQ(g_evt_name, "loop_end");
+    ASSERT_FLOAT_EQ(g_evt_time, 1.0f, 0.001f);
+
+    /* dt=0.6: time 0.2 -> 0.8, no fire */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 1);
+
+    /* dt=0.6: time 0.8 -> 0.4 (wrap), fires again — exactly once per loop */
+    anim_blend_evaluate(&st, 0.6f, g_clips, 1);
+    ASSERT_EQ(g_evt_count, 2);
+
+    anim_blend_state_destroy(&st);
+}
+
 TEST(event_no_callback_safe)
 {
     AnimBlendState st;
@@ -748,6 +818,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_fires_when_crossed);
     RUN_TEST(event_at_duration_nonlooping_fires);
     RUN_TEST(event_looping_wrap);
+    RUN_TEST(event_negative_speed_wrap);
+    RUN_TEST(event_looping_at_duration_fires);
     RUN_TEST(event_no_callback_safe);
     RUN_TEST(event_add_max_clamped);
 TEST_MAIN_END()

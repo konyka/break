@@ -56,7 +56,10 @@ static NetRepPeerChannel *net_repl_peer_channel_find(NetReplicator *rep,
         }
         if (!pc->valid) {
             if (!free_slot) free_slot = pc;
-        } else if (!stalest || pc->last_seen_ms < stalest_seen) {
+        /* R427: wrap-safe delta compare — a raw `<` on u32 ms stamps treats
+         * pre-wrap stamps as newest at the ~49.7-day wrap, evicting the wrong
+         * peer (same form net_replicator_peer_evict_stale already uses). */
+        } else if (!stalest || (i32)(pc->last_seen_ms - stalest_seen) < 0) {
             stalest = pc;
             stalest_seen = pc->last_seen_ms;
         }
@@ -79,7 +82,8 @@ static NetRepPeerStats *net_repl_peer_evict_lru(NetReplicator *rep) {
     u32 oldest_i = 0u;
     u32 oldest_t = rep->peers[0].last_seen_ms;
     for (u32 i = 1u; i < rep->peer_count; i++) {
-        if (rep->peers[i].last_seen_ms < oldest_t) {
+        /* R427: wrap-safe delta compare (see peer_channel_find above). */
+        if ((i32)(rep->peers[i].last_seen_ms - oldest_t) < 0) {
             oldest_t = rep->peers[i].last_seen_ms;
             oldest_i = i;
         }
@@ -210,7 +214,11 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc
     ch->last_recv_seq = hdr.sequence;
 
     if (type != (u8)NET_PKT_TRANSFORM_SNAPSHOT) {
-        if (type == (u8)NET_PKT_HEARTBEAT) {
+        /* R427: require the payload to actually be present before reading it —
+         * a header-only (12-byte) HEARTBEAT/ACK made packet_read_u32 return 0,
+         * so send_ms = 0 turned hb_last_rtt_ms into `now_ms` garbage and
+         * poisoned the peer's RTT stats. */
+        if (type == (u8)NET_PKT_HEARTBEAT && len >= PACKET_HEADER_SIZE + 4u) {
             PacketBuffer buf;
             packet_read_begin(&buf, wire, len);
             u32 send_ms = packet_read_u32(&buf);
@@ -221,7 +229,7 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc
                 net_repl_peer_update_rtt(rep, reply_to, rep->hb_last_rtt_ms, -1.0f, now_ms);
             if (reply_to && rep->hb_echo_reply && rep->socket)
                 net_replicator_send_heartbeat_ack(rep, reply_to, send_ms, hdr.sequence);
-        } else if (type == (u8)NET_PKT_HEARTBEAT_ACK) {
+        } else if (type == (u8)NET_PKT_HEARTBEAT_ACK && len >= PACKET_HEADER_SIZE + 8u) {
             PacketBuffer buf;
             packet_read_begin(&buf, wire, len);
             u32 send_ms = packet_read_u32(&buf);
@@ -241,7 +249,10 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc
     return (i32)len;
 }
 
-static void net_reorder_store(NetReplicator *rep, NetRepPeerChannel *pc,
+/* R427: returns false when it resynced next_ordered_seq to `seq` (caller must
+ * then deliver the packet immediately); true when the packet was handled here
+ * (buffered or dropped). */
+static bool net_reorder_store(NetReplicator *rep, NetRepPeerChannel *pc,
                               u8 type, u32 seq, const u8 *wire, u32 len) {
     NetRepOrderedChannel *ch = net_ord_ch(rep, pc, type);
     /* R250: only buffer packets inside the [next, next+NET_REORDER_SLOTS) window.
@@ -255,8 +266,21 @@ static void net_reorder_store(NetReplicator *rep, NetRepPeerChannel *pc,
      * (seq - next_ordered_seq) is a valid forward distance here. */
     u32 ahead = seq - ch->next_ordered_seq;
     if (ahead >= (u32)NET_REORDER_SLOTS) {
+        /* R427: with a completely empty window the drop is unrecoverable —
+         * next_ordered_seq only advances on exact-seq delivery, so a >=SLOTS
+         * jump (>=32-packet loss burst, or an R423 eviction resetting an active
+         * peer's channel mid-stream) stalled the channel permanently. Resync to
+         * the new seq and let the caller deliver this packet now. */
+        bool any_valid = false;
+        for (u32 i = 0u; i < (u32)NET_REORDER_SLOTS; i++) {
+            if (ch->slots[i].valid) { any_valid = true; break; }
+        }
+        if (!any_valid) {
+            ch->next_ordered_seq = seq;
+            return false;
+        }
         ch->reorder_stale++;   /* out-of-window: buffer too small, drop (no overwrite) */
-        return;
+        return true;
     }
     u32 idx = seq % NET_REORDER_SLOTS;
     NetReorderSlot *slot = &ch->slots[idx];
@@ -269,6 +293,7 @@ static void net_reorder_store(NetReplicator *rep, NetRepPeerChannel *pc,
     slot->wire_len = len;
     memcpy(slot->wire, wire, len);
     slot->valid = true;
+    return true;
 }
 
 static i32 net_reorder_drain(NetReplicator *rep, NetRepPeerChannel *pc,
@@ -313,8 +338,11 @@ static i32 net_repl_deliver_ordered(NetReplicator *rep, NetRepPeerChannel *pc,
                 ch->reorder_duplicate++;
             return (i32)len;
         }
-        net_reorder_store(rep, pc, type, hdr.sequence, wire, len);
-        return (i32)len;
+        /* R427: on an empty-window resync net_reorder_store sets
+         * next_ordered_seq = hdr.sequence and returns false — fall through and
+         * deliver this packet immediately instead of dropping it. */
+        if (net_reorder_store(rep, pc, type, hdr.sequence, wire, len))
+            return (i32)len;
     }
 
     i32 n = net_repl_deliver_unreliable(rep, pc, type, wire, len, reply_to, out, max_count, out_count, now_ms);
