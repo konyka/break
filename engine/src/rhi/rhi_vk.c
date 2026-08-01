@@ -1543,6 +1543,14 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
     VKBackend *vk = vk_backend(dev);
     if (!vk) return;
 
+    /* R421: clamp the requested rect to the swapchain extent — an
+     * out-of-range x/y/w/h made vkCmdCopyImageToBuffer read outside the
+     * swapchain image. Reject rects fully outside; shrink partial ones. */
+    if (x >= vk->swap_extent.width || y >= vk->swap_extent.height) return;
+    if (w > vk->swap_extent.width - x) w = vk->swap_extent.width - x;
+    if (h > vk->swap_extent.height - y) h = vk->swap_extent.height - y;
+    if (w == 0u || h == 0u) return;
+
     /* Wait for all frames to complete before reading back. */
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in screenshot");
@@ -1680,7 +1688,10 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         return;
     }
     const u8 *src = (const u8 *)mapped;
-    for (u32 i = 0; i < w * h; ++i) {
+    /* R421: iterate in usize — the old 32-bit w*h overflowed for large
+     * rects while buf_size was computed in 64-bit. */
+    const usize pixel_count = (usize)w * (usize)h;
+    for (usize i = 0; i < pixel_count; ++i) {
         pixels[i * 4u + 0u] = src[i * 4u + 2u]; /* R <- B */
         pixels[i * 4u + 1u] = src[i * 4u + 1u]; /* G <- G */
         pixels[i * 4u + 2u] = src[i * 4u + 0u]; /* B <- R */

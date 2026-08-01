@@ -82,6 +82,13 @@ void rg_destroy(RenderGraph *rg)
                 rhi_handle_valid(info->physical_texture)) {
                 rhi_texture_destroy(rg->device, info->physical_texture);
             }
+            /* R421: owned physical buffers leaked — this loop explicitly
+             * skipped is_buffer and rg_reset never destroyed them either, so
+             * the RHIBuffer handle was lost when resource_count reset. */
+            if (info->allocated && !info->is_imported && info->is_buffer &&
+                rhi_handle_valid(info->physical_buffer)) {
+                rhi_buffer_destroy(rg->device, info->physical_buffer);
+            }
         }
         for (u32 i = 0; i < rg->pool_count; i++) {
             if (rhi_handle_valid(rg->texture_pool[i].tex)) {
@@ -101,6 +108,14 @@ void rg_reset(RenderGraph *rg)
        them rather than reallocate. */
     for (u32 i = 0; i < rg->resource_count; i++) {
         RGResourceInfo *info = &rg->resources[i];
+        /* R421: buffers are not pooled — destroy owned physical buffers
+         * outright (mirrors rg_destroy). Previously only textures were
+         * handled, so the buffer handle was lost on resource_count reset. */
+        if (info->allocated && !info->is_imported && info->is_buffer &&
+            rhi_handle_valid(info->physical_buffer)) {
+            if (rg->device) rhi_buffer_destroy(rg->device, info->physical_buffer);
+            continue;
+        }
         if (info->allocated && !info->is_imported && !info->is_buffer &&
             rhi_handle_valid(info->physical_texture)) {
             /* R308 (CORRECTNESS): a texture claimed from the pool this frame is

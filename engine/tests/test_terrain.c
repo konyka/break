@@ -429,6 +429,61 @@ TEST(modify_height_negative_strength)
     free_terrain(t);
 }
 
+/* R421: radius was cast f32→i32 unclamped; huge/inf/NaN radius is UB.
+ * The clamp to [0, scale] must keep every edit finite and in-grid. */
+TEST(modify_height_absurd_radius_clamped)
+{
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    fill_uniform(t, 0.0f);
+
+    terrain_modify_height(t, 0.0f, 0.0f, 1e30f, 1.0f);
+    terrain_modify_height(t, 0.0f, 0.0f, INFINITY, 1.0f);
+    terrain_modify_height(t, 0.0f, 0.0f, NAN, 1.0f);
+    terrain_modify_height(t, 0.0f, 0.0f, -5.0f, 1.0f);
+
+    for (u32 i = 0; i < GRID * GRID; i++) {
+        ASSERT_TRUE(isfinite(t->heightmap[i]));
+    }
+    /* A clamped-to-scale radius covers the whole grid from the center,
+     * so the edit must have raised every cell (none left at exactly 0). */
+    ASSERT_TRUE(t->heightmap[0] > 0.0f);
+    free_terrain(t);
+}
+
+TEST(flatten_absurd_radius_clamped)
+{
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    for (u32 i = 0; i < GRID * GRID; i++)
+        t->heightmap[i] = (f32)(i % 5) * 2.0f;
+
+    /* Must not crash or produce garbage; pre-fix the gr cast was UB. */
+    terrain_flatten(t, 0.0f, 0.0f, 1e30f);
+    terrain_flatten(t, 0.0f, 0.0f, INFINITY);
+    terrain_flatten(t, 0.0f, 0.0f, NAN);
+
+    for (u32 i = 0; i < GRID * GRID; i++) {
+        ASSERT_TRUE(isfinite(t->heightmap[i]));
+    }
+    ASSERT_TRUE(t->modify_count == 3);
+    free_terrain(t);
+}
+
+TEST(noise_stamp_absurd_radius_clamped)
+{
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    fill_uniform(t, 0.0f);
+
+    terrain_noise_stamp(t, 0.0f, 0.0f, 1e30f, 1.0f, 7.0f);
+    terrain_noise_stamp(t, 0.0f, 0.0f, INFINITY, 1.0f, 7.0f);
+    terrain_noise_stamp(t, 0.0f, 0.0f, NAN, 1.0f, 7.0f);
+
+    for (u32 i = 0; i < GRID * GRID; i++) {
+        ASSERT_TRUE(isfinite(t->heightmap[i]));
+    }
+    ASSERT_TRUE(t->modify_count == 3);
+    free_terrain(t);
+}
+
 TEST(erode_zero_iterations)
 {
     Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
@@ -508,6 +563,10 @@ int main(void) {
     /* Edge cases */
     RUN_TEST(modify_height_zero_radius);
     RUN_TEST(modify_height_negative_strength);
+    /* R421: radius clamp */
+    RUN_TEST(modify_height_absurd_radius_clamped);
+    RUN_TEST(flatten_absurd_radius_clamped);
+    RUN_TEST(noise_stamp_absurd_radius_clamped);
     RUN_TEST(erode_zero_iterations);
     RUN_TEST(generate_invalid_preset);
     /* terrain_init guards (R417) */

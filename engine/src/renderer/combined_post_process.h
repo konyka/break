@@ -23,7 +23,8 @@ typedef struct {
     /* Combined pipeline: TAA resolve -> FXAA in one render pass */
     RHIPipeline      combined_pipe;
     RHISampler       sampler;
-    RHIOffscreenFBO  output_fbo;       /* fallback chain only */
+    /* R421: output_fbo removed — dead since R417 dropped the fallback
+     * allocation; nothing references it (CombinedColor keeps its own). */
     RHIOffscreenFBO  history_fbo[2]; /* combined path ping-pong */
     i32              history_idx;
     bool             first_frame;

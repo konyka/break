@@ -24,6 +24,13 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     return b;
 }
 
+/* R421: track buffer destroys so tests can assert the owned-buffer path. */
+static int g_buffers_destroyed = 0;
+void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
+    (void)dev; (void)buf;
+    g_buffers_destroyed++;
+}
+
 /* -----------------------------------------------------------------------
  *  Execute callback helpers
  * ----------------------------------------------------------------------- */
@@ -354,6 +361,64 @@ TEST(reset_does_not_duplicate_pool_textures)
     rg_destroy(rg);
 }
 
+/* R421: an owned (non-imported) buffer resource must not leak across
+ * rg_reset — buffers are not pooled, so reset must destroy the physical
+ * RHIBuffer before resource_count resets and the handle is lost. */
+TEST(reset_destroys_owned_buffer)
+{
+    RenderGraph *rg = rg_create();
+    int dummy_dev = 0;
+    rg_set_device(rg, (RHIDevice *)&dummy_dev); /* non-NULL → buffers allocate */
+
+    RHITexture bb_handle = {.index = 5, .generation = 1};
+    RGResource bb = rg_import_texture(rg, "bb", bb_handle);
+
+    RGBufferDesc bd = { .size = 1024, .name = "data" };
+    RGResource buf = rg_create_buffer(rg, "data", &bd);
+
+    RGPass *p = rg_add_pass(rg, "main", RG_PASS_COMPUTE);
+    rg_pass_write(p, buf, RG_USAGE_SHADER_WRITE);
+    rg_pass_write(p, bb,  RG_USAGE_PRESENT);
+    ASSERT_TRUE(rg_compile(rg));
+    ASSERT_TRUE(rg->resources[buf].allocated);
+
+    g_buffers_destroyed = 0;
+    rg_reset(rg);
+    /* Pre-fix this was 0: the buffer handle was silently leaked. */
+    ASSERT_EQ(g_buffers_destroyed, 1);
+
+    rg_destroy(rg);
+}
+
+/* R421: rg_destroy must also destroy owned buffers still live at teardown,
+ * and must NOT destroy imported buffers (lifetime owned by the caller). */
+TEST(destroy_destroys_owned_buffer_not_imported)
+{
+    RenderGraph *rg = rg_create();
+    int dummy_dev = 0;
+    rg_set_device(rg, (RHIDevice *)&dummy_dev);
+
+    RHITexture bb_handle = {.index = 5, .generation = 1};
+    RGResource bb = rg_import_texture(rg, "bb", bb_handle);
+
+    RGBufferDesc bd = { .size = 1024, .name = "owned" };
+    RGResource owned = rg_create_buffer(rg, "owned", &bd);
+
+    RHIBuffer ext_buf = {.index = 9, .generation = 1};
+    RGResource imported = rg_import_buffer(rg, "imported", ext_buf);
+
+    RGPass *p = rg_add_pass(rg, "main", RG_PASS_COMPUTE);
+    rg_pass_write(p, owned,    RG_USAGE_SHADER_WRITE);
+    rg_pass_read(p,  imported, RG_USAGE_SHADER_READ);
+    rg_pass_write(p, bb,       RG_USAGE_PRESENT);
+    ASSERT_TRUE(rg_compile(rg));
+
+    g_buffers_destroyed = 0;
+    rg_destroy(rg);
+    /* Exactly the one owned buffer; the imported handle is left alone. */
+    ASSERT_EQ(g_buffers_destroyed, 1);
+}
+
 TEST(resource_lookup)
 {
     RenderGraph *rg = rg_create();
@@ -514,6 +579,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(execute_skips_dead);
     RUN_TEST(reset_and_reuse);
     RUN_TEST(reset_does_not_duplicate_pool_textures);
+    RUN_TEST(reset_destroys_owned_buffer);
+    RUN_TEST(destroy_destroys_owned_buffer_not_imported);
     RUN_TEST(resource_lookup);
     RUN_TEST(stats);
     /* Edge cases */

@@ -392,6 +392,12 @@ void terrain_modify_height(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength)
      * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
      * regardless of where the user actually edited. */
     { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
+    /* R421: clamp radius before the (i32) cast below — an unbounded user
+     * float (huge/inf/NaN) makes the f32→i32 conversion UB. A radius beyond
+     * the world span covers the whole grid anyway, so [0, scale] loses
+     * nothing; !(r > 0) also maps NaN to 0. */
+    if (!(radius > 0.0f)) radius = 0.0f;
+    else if (radius > t->scale) radius = t->scale;
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
@@ -432,6 +438,9 @@ void terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius) {
      * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
      * regardless of where the user actually edited. */
     { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
+    /* R421: clamp radius before the (i32) cast below — see terrain_modify_height. */
+    if (!(radius > 0.0f)) radius = 0.0f;
+    else if (radius > t->scale) radius = t->scale;
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;
@@ -503,6 +512,10 @@ void terrain_erode(Terrain *t, f32 wx, f32 wz, f32 radius, i32 iterations) {
      * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
      * regardless of where the user actually edited. */
     { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
+    /* R421: same radius clamp as terrain_modify_height — an unbounded user
+     * float (huge/inf/NaN) makes the f32→i32 conversion below UB. */
+    if (!(radius > 0.0f)) radius = 0.0f;
+    else if (radius > t->scale) radius = t->scale;
     i32 n = (i32)t->grid_size;
     f32 inv = 1.0f / t->inv_nm1;
 
@@ -567,6 +580,9 @@ void terrain_noise_stamp(Terrain *t, f32 wx, f32 wz, f32 radius, f32 strength, f
      * main.c "Edit heatmap … hottest" debug UI therefore always reported NW
      * regardless of where the user actually edited. */
     { t->edit_quadrant[(wx<0.0f?0:1)+(wz<0.0f?0:2)]++; }
+    /* R421: clamp radius before the (i32) cast below — see terrain_modify_height. */
+    if (!(radius > 0.0f)) radius = 0.0f;
+    else if (radius > t->scale) radius = t->scale;
     f32 inv = 1.0f / t->inv_nm1;
     i32 gr = (i32)(radius * t->inv_scale * (f32)t->grid_size) + 1;
     f32 cgx = (wx * t->inv_scale + 0.5f) * t->inv_nm1;

@@ -1754,6 +1754,10 @@ static inline void gl_bind_array_buffer_cached(GLuint buf) {
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return;
+    /* R421: clamp like the VK backend (and rhi_cmd_update_buffer below) —
+     * oversized size made glBufferSubData raise GL_INVALID_VALUE and the
+     * update was silently dropped. */
+    if (size > bd->size) size = bd->size;
     gl_bind_array_buffer_cached(bd->gl_buf);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)size, data);
 }
@@ -1761,6 +1765,10 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(dev, buf);
     if (!bd) return;
+    /* R421: same clamp as VK — reject out-of-range offset, shrink an
+     * oversized region instead of feeding GL_INVALID_VALUE to the driver. */
+    if (offset >= bd->size) return;
+    if (offset + size > bd->size) size = bd->size - offset;
     gl_bind_array_buffer_cached(bd->gl_buf);
     glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 }
