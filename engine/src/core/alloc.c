@@ -75,6 +75,11 @@ static void *heap_realloc_fn(Alloc *self, void *ptr, usize old_size,
     usize new_off = aligned - (usize)new_raw;
     if (new_off != old_off) {
         usize keep = old_size < new_size ? old_size : new_size;
+        /* R424: the source sits at old_off (the ORIGINAL alignment's offset)
+         * but `total` was sized with the NEW alignment — reallocating with a
+         * smaller align than the original can put old_off + keep past the end
+         * of the new buffer. Clamp the copy to what the buffer actually holds. */
+        if (old_off + keep > total) keep = total > old_off ? total - old_off : 0;
         if (keep) memmove((void *)aligned, (u8 *)new_raw + old_off, keep);
     }
     ((void **)aligned)[-1] = new_raw;

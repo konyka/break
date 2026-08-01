@@ -150,6 +150,26 @@ TEST(submit_n_null_ctxs_ignored)
     ASSERT_EQ(atomic_load(&g_counter), 0);
 }
 
+TEST(submit_null_fn_rejected)
+{
+    /* R424: a NULL fn would crash a worker in execute_task — every submit
+     * path must reject it. */
+    atomic_store(&g_counter, 0);
+    void *ctxs[1] = { NULL };
+
+    task_submit(g_ts, NULL, NULL);                          /* void path */
+    task_submit_n(g_ts, NULL, ctxs, 1);                     /* batch path */
+
+    TaskHandle h = task_submit_ex(g_ts, NULL, NULL, TASK_PRIORITY_NORMAL);
+    ASSERT_EQ(h, TASK_HANDLE_INVALID);                      /* handle path */
+
+    TaskHandle hd = task_submit_dep(g_ts, NULL, NULL, NULL, 0);
+    ASSERT_EQ(hd, TASK_HANDLE_INVALID);                     /* dep path */
+
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), 0);  /* nothing may have run */
+}
+
 /* ----------------------------------------------------------------------- */
 /* R414 regression tests.
  * NOTE: these must run LAST — pushing the shared g_ts past the 4096-entry
@@ -217,6 +237,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(submit_dep_waits_for_two_parents);
     RUN_TEST(submit_dep_null_deps_rejected);
     RUN_TEST(submit_n_null_ctxs_ignored);
+    RUN_TEST(submit_null_fn_rejected);
     /* R414: these exhaust the shared task pool — keep them last. */
     RUN_TEST(out_of_range_priority_is_clamped);
     RUN_TEST(beyond_pool_capacity_all_execute);

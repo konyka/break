@@ -227,7 +227,7 @@ static inline f32 simd_vec3_dot_sse2(const f32 *a, const f32 *b)
  */
 static inline u32 simd_aabb_overlap_batch_sse2(
     const f32 *query_min, const f32 *query_max,
-    const f32 *aabb_mins, const f32 *aabb_maxs)  /* 4 AABBs, interleaved */
+    const f32 *aabb_mins, const f32 *aabb_maxs)  /* 4 AABBs, SoA: 3 runs of 4 (x[4], y[4], z[4]) */
 {
     __m128 qmin_x = _mm_set1_ps(query_min[0]);
     __m128 qmin_y = _mm_set1_ps(query_min[1]);

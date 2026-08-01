@@ -23,6 +23,8 @@ Str str_slice(Str s, usize start, usize end) {
 }
 
 i32 str_find_char(Str s, char c) {
+    /* R424: memchr(NULL, c, 0) is strict UB — bail on a NULL data pointer. */
+    if (!s.data) return -1;
     const void *p = memchr(s.data, c, s.len);
     if (!p) return -1;
     return (i32)((const char *)p - s.data);

@@ -80,6 +80,42 @@ TEST(heap_realloc_over_aligned_preserves_payload)
     heap_alloc_destroy(h);
 }
 
+TEST(heap_realloc_different_alignment_shrink)
+{
+    /* R424: reallocating with a SMALLER alignment than the original (64 -> 8)
+     * while shrinking made the relocation memmove read past the new buffer:
+     * old_off was sized by the original alignment but `total` by the new one,
+     * so old_off + keep could exceed total. The copy must be clamped to what
+     * the new buffer holds — no OOB read, and every payload byte that still
+     * fits inside the new raw block must be preserved. */
+    Alloc *h = heap_alloc_create();
+    for (int trial = 0; trial < 64; trial++) {
+        usize old_size = 128;
+        u8 *p = (u8 *)h->alloc(h, old_size, 64);
+        ASSERT_NOT_NULL(p);
+        ASSERT_EQ((uintptr_t)p % 64, (uintptr_t)0);
+        for (usize i = 0; i < old_size; i++) p[i] = (u8)(i & 0xFF);
+
+        /* Payload offset within the raw block (back-pointer convention). */
+        usize old_off = (usize)p - (usize)((void **)p)[-1];
+
+        usize new_size = 96;
+        u8 *np = (u8 *)h->realloc(h, p, old_size, new_size, 8);
+        ASSERT_NOT_NULL(np);
+        ASSERT_EQ((uintptr_t)np % 8, (uintptr_t)0);
+
+        /* realloc preserves bytes relative to the raw base, so the payload
+         * prefix beyond the new raw block is gone by construction; everything
+         * up to that point must survive. */
+        usize total = new_size + 7 + sizeof(void *);
+        usize preserved = total > old_off ? total - old_off : 0;
+        if (preserved > new_size) preserved = new_size;
+        for (usize i = 0; i < preserved; i++) ASSERT_EQ(np[i], (u8)(i & 0xFF));
+        h->free(h, np, new_size);
+    }
+    heap_alloc_destroy(h);
+}
+
 TEST(heap_alignment)
 {
     Alloc *h = heap_alloc_create();
@@ -390,6 +426,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(heap_alloc_array);
     RUN_TEST(heap_realloc);
     RUN_TEST(heap_realloc_over_aligned_preserves_payload);
+    RUN_TEST(heap_realloc_different_alignment_shrink);
     RUN_TEST(heap_alignment);
     RUN_TEST(heap_zero_alignment_clamped);
     RUN_TEST(arena_basic);

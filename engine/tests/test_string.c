@@ -111,6 +111,14 @@ TEST(str_find_char_first)
     ASSERT_EQ(idx, 0);
 }
 
+TEST(str_find_char_null_data)
+{
+    /* R424: memchr(NULL, c, 0) is strict UB — a NULL data slice must
+     * return -1 without touching memchr. */
+    Str s = {NULL, 0};
+    ASSERT_EQ(str_find_char(s, 'a'), -1);
+}
+
 TEST(str_hash_deterministic)
 {
     Str s = STR("test_key");
@@ -230,6 +238,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(str_find_char_found);
     RUN_TEST(str_find_char_not_found);
     RUN_TEST(str_find_char_first);
+    RUN_TEST(str_find_char_null_data);
     RUN_TEST(str_hash_deterministic);
     RUN_TEST(str_hash_different);
     RUN_TEST(str_copy_basic);

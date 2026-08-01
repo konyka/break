@@ -710,6 +710,8 @@ static void submit_to_system(TaskSystem *ts, Task *t) {
 }
 
 void task_submit(TaskSystem *ts, TaskFn fn, void *ctx) {
+    /* R424: a NULL fn would crash a worker in execute_task — reject it. */
+    if (!fn) return;
     Task *t = task_alloc(ts, fn, ctx, TASK_PRIORITY_NORMAL);
     if (!t) return;  /* R156: calloc failure */
     submit_to_system(ts, t);
@@ -719,6 +721,8 @@ void task_submit_n(TaskSystem *ts, TaskFn fn, void **ctxs, i32 count) {
     /* R420: ctxs==NULL with count>0 dereferenced NULL — validate like the
      * other submit paths. */
     if (count > 0 && !ctxs) return;
+    /* R424: a NULL fn would crash a worker in execute_task — reject it. */
+    if (!fn) return;
     for (i32 i = 0; i < count; i++) {
         Task *t = task_alloc(ts, fn, ctxs[i], TASK_PRIORITY_NORMAL);
         if (!t) continue;  /* R156: calloc failure */
@@ -730,6 +734,8 @@ TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority pri
     /* R414: prio indexes Worker.queues[TASK_PRIORITY_COUNT] — clamp garbage
      * values (e.g. from a bad cast) before they cause an OOB deque access. */
     if ((u32)prio >= TASK_PRIORITY_COUNT) prio = TASK_PRIORITY_NORMAL;
+    /* R424: a NULL fn would crash a worker in execute_task — reject it. */
+    if (!fn) return TASK_HANDLE_INVALID;
     Task *t = task_alloc(ts, fn, ctx, prio);
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
@@ -742,6 +748,8 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
     /* R420: deps==NULL with dep_count>0 dereferenced NULL below — fail the
      * submission instead of segfaulting. */
     if (dep_count > 0 && !deps) return TASK_HANDLE_INVALID;
+    /* R424: a NULL fn would crash a worker in execute_task — reject it. */
+    if (!fn) return TASK_HANDLE_INVALID;
     Task *t = task_alloc(ts, fn, ctx, TASK_PRIORITY_NORMAL);
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
