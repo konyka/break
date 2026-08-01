@@ -321,6 +321,45 @@ TEST(lua_load_rejects_oversized_file)
     remove(path);
 }
 
+TEST(engine_set_pos_wakes_resting_body)
+{
+    /* R423: set_pos teleports a body. It must reset rest_frames and mark the
+     * BVH dirty — a resting body (rest_frames > 2) is skipped by the BVH
+     * refit, so without the reset it keeps its stale AABB at the old location
+     * and collisions at the new location are missed (mirrors R374/R375). */
+    PhysicsWorld *pw = physics_world_create(64);
+    physics_body_create(pw, vec3(0, -1, 0), vec3(10, 1, 10), 0.0f, true, 0);   /* Lua 1: ground, top y=0 */
+    physics_body_create(pw, vec3(50, 5, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0); /* Lua 2: far away */
+
+    /* Simulate a body that has gone to rest with a settled BVH (as after many
+     * idle frames: rest_frames > 2 excludes it from the refit). */
+    pw->bodies[1].rest_frames = 100u;
+    pw->bodies[1].velocity = vec3(0, 0, 0);
+    pw->bvh_dirty = false;
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    /* Teleport the resting body so it overlaps the ground. */
+    ASSERT_TRUE(lua_script_load_string(&ls, "engine.set_pos(2, 0, 0.25, 0)", "t"));
+
+    /* The teleport must wake the body and force a BVH refit. */
+    ASSERT_TRUE(fabs(pw->bodies[1].position.e[1] - 0.25f) < 1e-5f);
+    ASSERT_EQ(pw->bodies[1].rest_frames, 0u);
+    ASSERT_TRUE(pw->bvh_dirty);
+
+    /* With the refit forced, the overlap at the new location is detected. */
+    u32 collided = 0u;
+    for (int i = 0; i < 30 && !collided; i++) {
+        physics_step(pw, 1.0f / 60.0f);
+        collided = pw->collision_count;
+    }
+    ASSERT_TRUE(collided > 0u);
+
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -342,4 +381,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_no_change_no_run);
     RUN_TEST(load_nonexistent_file);
     RUN_TEST(lua_load_rejects_oversized_file);
+    RUN_TEST(engine_set_pos_wakes_resting_body);
 TEST_MAIN_END()

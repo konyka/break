@@ -10,7 +10,12 @@ static u64 time_base_ns(void) {
         QueryPerformanceFrequency(&freq);
     }
     QueryPerformanceCounter(&counter);
-    return (u64)((counter.QuadPart * 1000000000ULL) / freq.QuadPart);
+    /* R423: divide before multiplying — (counter * 1e9) overflows u64 after
+     * ~15 min uptime at a 10 MHz QPC (counter * 1e9 needs 74 bits). Splitting
+     * into whole seconds + remainder keeps every intermediate in range. */
+    u64 c = (u64)counter.QuadPart;
+    u64 f = (u64)freq.QuadPart;
+    return (c / f) * 1000000000ULL + ((c % f) * 1000000000ULL) / f;
 }
 
 void time_init(void) {

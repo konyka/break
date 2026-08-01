@@ -69,6 +69,7 @@ typedef struct {
 typedef struct {
     NetAddress               addr;
     bool                     valid;
+    u32                      last_seen_ms;  /* R423: activity stamp for LRU eviction */
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
 } NetRepPeerChannel;

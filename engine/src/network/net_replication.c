@@ -34,23 +34,44 @@ static NetRepOrderedChannel *net_ord_ch(NetReplicator *rep, NetRepPeerChannel *p
 }
 
 /* R418: find (or create) the per-peer channel state for a sender address.
- * Returns NULL when the table is missing or full; callers then fall back to
- * the shared channels (pre-R418 behavior, only reachable past 8 senders). */
+ * Returns NULL only when the table is missing.
+ * R423: UDP source addresses are trivially spoofable — without eviction a
+ * flood of forged senders filled all NET_REP_MAX_PEERS slots and every
+ * further (legit) peer silently fell back to the SHARED channels forever,
+ * reintroducing the cross-peer seq-collision R418 fixed. Track a last-seen
+ * stamp per slot and evict the stalest when the table is full (same LRU
+ * policy net_repl_peer_find already uses for the stats table). */
 static NetRepPeerChannel *net_repl_peer_channel_find(NetReplicator *rep,
                                                      const NetAddress *addr,
-                                                     bool create) {
+                                                     bool create, u32 now_ms) {
     if (!rep || !addr || !rep->peer_channels) return NULL;
     NetRepPeerChannel *free_slot = NULL;
+    NetRepPeerChannel *stalest = NULL;
+    u32 stalest_seen = 0u;
     for (u32 i = 0; i < NET_REP_MAX_PEERS; i++) {
         NetRepPeerChannel *pc = &rep->peer_channels[i];
-        if (pc->valid && net_address_equal(&pc->addr, addr)) return pc;
-        if (!pc->valid && !free_slot) free_slot = pc;
+        if (pc->valid && net_address_equal(&pc->addr, addr)) {
+            pc->last_seen_ms = now_ms;
+            return pc;
+        }
+        if (!pc->valid) {
+            if (!free_slot) free_slot = pc;
+        } else if (!stalest || pc->last_seen_ms < stalest_seen) {
+            stalest = pc;
+            stalest_seen = pc->last_seen_ms;
+        }
     }
-    if (!create || !free_slot) return NULL;
-    memset(free_slot, 0, sizeof(*free_slot));
-    free_slot->addr = *addr;
-    free_slot->valid = true;
-    return free_slot;
+    if (!create) return NULL;
+    /* R423: prefer an unused slot; when full, reuse the stalest (its old
+     * owner's channel state is reset below — acceptable collateral vs. the
+     * spoofed-sender denial of the per-peer isolation). */
+    NetRepPeerChannel *slot = free_slot ? free_slot : stalest;
+    if (!slot) return NULL;
+    memset(slot, 0, sizeof(*slot));
+    slot->addr = *addr;
+    slot->valid = true;
+    slot->last_seen_ms = now_ms;
+    return slot;
 }
 
 static NetRepPeerStats *net_repl_peer_evict_lru(NetReplicator *rep) {
@@ -366,9 +387,10 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
     /* R418: key channel state per sender address so two peers' ordered /
      * seq-deduped packets no longer collide in the shared sequence space and
      * get dropped as stale. Address-less packets (net_replicator_feed) keep
-     * the legacy shared channels. */
+     * the legacy shared channels. R423: find() now evicts the stalest slot
+     * when full, so a spoofed-address flood can't force the shared fallback. */
     NetRepPeerChannel *pc = reply_to
-        ? net_repl_peer_channel_find(rep, reply_to, true) : NULL;
+        ? net_repl_peer_channel_find(rep, reply_to, true, now_ms) : NULL;
     if (ordered)
         return net_repl_deliver_ordered(rep, pc, hdr.type, wire, len, reply_to,
                                         out, max_count, out_count, now_ms);

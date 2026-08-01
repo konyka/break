@@ -215,6 +215,51 @@ TEST(sendto_const_address)
     net_shutdown();
 }
 
+TEST(sendto_repeated_sends_with_cache)
+{
+    /* R423: net_sendto caches the resolved sockaddr on the socket, keyed by
+     * (host,port). The cache must be externally invisible: repeated sends to
+     * the same destination (cache hit) and a send to a different destination
+     * (key differs → re-resolve) must all arrive intact. */
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_a = net_udp_create(19879);
+    ASSERT_NOT_NULL(recv_a);
+    net_set_nonblocking(recv_a, true);
+    NetSocket *recv_b = net_udp_create(19880);
+    ASSERT_NOT_NULL(recv_b);
+    net_set_nonblocking(recv_b, true);
+    NetSocket *send_s = net_udp_create(0);
+    ASSERT_NOT_NULL(send_s);
+
+    NetAddress dst_a, dst_b;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", 19879, &dst_a));
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", 19880, &dst_b));
+
+    const char *m1 = "first";
+    const char *m2 = "second";
+    const char *m3 = "third-b";
+    ASSERT_TRUE(net_sendto(send_s, m1, (u32)strlen(m1) + 1, &dst_a) > 0);
+    /* Second send to the same (host,port) — the cache-hit path. */
+    ASSERT_TRUE(net_sendto(send_s, m2, (u32)strlen(m2) + 1, &dst_a) > 0);
+    /* Different port — cache key differs, must re-resolve, not reuse. */
+    ASSERT_TRUE(net_sendto(send_s, m3, (u32)strlen(m3) + 1, &dst_b) > 0);
+
+    char buf[64] = {0};
+    ASSERT_TRUE(net_recvfrom(recv_a, buf, sizeof(buf), NULL) > 0);
+    ASSERT_STR_EQ(buf, "first");
+    memset(buf, 0, sizeof(buf));
+    ASSERT_TRUE(net_recvfrom(recv_a, buf, sizeof(buf), NULL) > 0);
+    ASSERT_STR_EQ(buf, "second");
+    memset(buf, 0, sizeof(buf));
+    ASSERT_TRUE(net_recvfrom(recv_b, buf, sizeof(buf), NULL) > 0);
+    ASSERT_STR_EQ(buf, "third-b");
+
+    net_close(send_s);
+    net_close(recv_b);
+    net_close(recv_a);
+    net_shutdown();
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -232,4 +277,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(udp_create_zero_port);
     RUN_TEST(sendto_empty_buffer);
     RUN_TEST(sendto_const_address);
+    RUN_TEST(sendto_repeated_sends_with_cache);
 TEST_MAIN_END()

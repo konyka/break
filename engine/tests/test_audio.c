@@ -106,6 +106,33 @@ TEST(handle_generation_rejects_stale)
         (as.sources[0].generation << AUDIO_HANDLE_GEN_SHIFT) | 5u) == NULL);
 }
 
+TEST(handle_generation_wraps_at_24_bits)
+{
+    /* R423: audio_stop bumps the generation with & 0xFFFFFFu. Pre-fix, the
+     * raw increment let generation reach 2^24, where audio_make_handle's
+     * generation<<8 truncated to 0 — audio_resolve then rejected the very
+     * next handle issued for the slot (sound unstoppable, slot leaked).
+     * At the wrap boundary a freshly issued handle must resolve. */
+    AudioSystem as;
+    AudioSource srcs[1];
+    memset(&as, 0, sizeof(as));
+    memset(srcs, 0, sizeof(srcs));
+    as.sources      = srcs;
+    as.source_count = 1;
+    as.source_cap   = 1;
+
+    srcs[0].generation = 0xFFFFFFu;
+    u32 h_old = audio_make_handle(&srcs[0], 0);
+
+    /* The audio_stop bump ((gen + 1) & 0xFFFFFFu) wraps to 0. */
+    srcs[0].generation = (srcs[0].generation + 1u) & 0xFFFFFFu;
+    ASSERT_EQ(srcs[0].generation, 0u);
+
+    u32 h_new = audio_make_handle(&srcs[0], 0);
+    ASSERT_TRUE(audio_resolve(&as, h_new) == &srcs[0]); /* pre-fix: NULL */
+    ASSERT_TRUE(audio_resolve(&as, h_old) == NULL);     /* stale stays stale */
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -114,4 +141,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(atten_zero_rolloff_is_full);
     RUN_TEST(handle_first_generation_matches_legacy_scheme);
     RUN_TEST(handle_generation_rejects_stale);
+    RUN_TEST(handle_generation_wraps_at_24_bits);
 TEST_MAIN_END()

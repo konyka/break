@@ -838,6 +838,59 @@ TEST(ordered_channels_per_peer)
     net_replicator_shutdown(&rep);
 }
 
+TEST(peer_channels_evict_stalest)
+{
+    /* R423: the per-peer channel table (NET_REP_MAX_PEERS slots) had no
+     * eviction — once 8 distinct sender addresses were seen, every further
+     * peer fell back to the shared channels FOREVER, reintroducing the
+     * cross-peer seq-collision R418 fixed (trivially triggerable: UDP source
+     * addresses are spoofable). The table must evict the stalest slot when
+     * full so the 9th peer still gets isolated channels. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.ordered_layer = true;
+
+    NetTransformSnapshot out[4] = {0};
+    u32 out_count = 0u;
+
+    NetAddress peers[NET_REP_MAX_PEERS + 1u];
+    for (u32 i = 0u; i <= NET_REP_MAX_PEERS; i++) {
+        memset(&peers[i], 0, sizeof(peers[i]));
+        strncpy(peers[i].host, "127.0.0.1", sizeof(peers[i].host) - 1u);
+        peers[i].port = (u16)(20800u + i);
+        u8 wire[PACKET_MAX_SIZE];
+        u32 len = build_ordered_snap_wire(wire, 1u, 10u + i, (f32)i, 0.0f, 0.0f);
+        out_count = 0u;
+        ASSERT_TRUE(net_replicator_feed_from(&rep, wire, len, &peers[i],
+                                             out, 4u, &out_count) > 0);
+        /* Every peer's seq 1 must be delivered — including the 9th, which
+         * pre-fix fell back to the shared channel and was dropped as stale. */
+        ASSERT_EQ(out_count, 1u);
+        ASSERT_EQ(out[0].entity_id, 10u + i);
+        ASSERT_FLOAT_EQ(out[0].position[0], (f32)i, 0.001f);
+    }
+
+    /* All slots occupied; the newest peer is present, the stalest (first fed)
+     * was evicted to make room, and its channel advanced past seq 1. */
+    u32 valid = 0u, found_first = 0u, found_last = 0u;
+    for (u32 i = 0u; i < NET_REP_MAX_PEERS; i++) {
+        const NetRepPeerChannel *pc = &rep.peer_channels[i];
+        if (!pc->valid) continue;
+        valid++;
+        if (net_address_equal(&pc->addr, &peers[0])) found_first = 1u;
+        if (net_address_equal(&pc->addr, &peers[NET_REP_MAX_PEERS])) {
+            found_last = 1u;
+            ASSERT_EQ(pc->ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, 2u);
+            ASSERT_EQ(pc->ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_stale, 0u);
+        }
+    }
+    ASSERT_EQ(valid, NET_REP_MAX_PEERS);
+    ASSERT_EQ(found_first, 0u);
+    ASSERT_EQ(found_last, 1u);
+
+    net_replicator_shutdown(&rep);
+}
+
 TEST(peer_load_rejects_port_overflow)
 {
     /* R418: a peer line with port > 65535 used to truncate into u16
@@ -916,5 +969,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_delta);
     RUN_TEST(ordered_channels_per_peer);
+    RUN_TEST(peer_channels_evict_stalest);
     RUN_TEST(peer_load_rejects_port_overflow);
 TEST_MAIN_END()

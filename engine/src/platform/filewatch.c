@@ -440,6 +440,41 @@ bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
     for (char *ptr = buf; ptr < buf + len; ) {
         struct inotify_event *event = (struct inotify_event *)ptr;
 
+        /* R423: IN_Q_OVERFLOW (wd == -1) matches no watch and was silently
+         * dropped, losing every queued event. Surface it as a MODIFIED event
+         * on the watched root so the caller knows its event stream is
+         * incomplete and can rescan. */
+        if (event->mask & IN_Q_OVERFLOW) {
+            LOG_WARN("filewatch: inotify queue overflow for %s — events lost, rescan advised",
+                     fw->base_path);
+            FileWatchEvent ov;
+            memset(&ov, 0, sizeof(ov));
+            snprintf(ov.path, sizeof(ov.path), "%s", fw->base_path);
+            ov.type = FW_EVENT_MODIFIED;
+            u32 next = (fw->event_head + 1) % FW_EVENT_QUEUE_SIZE;
+            if (next != fw->event_tail) {
+                fw->events[fw->event_head] = ov;
+                fw->event_head = next;
+            }
+            ptr += sizeof(struct inotify_event) + event->len;
+            continue;
+        }
+
+        /* R423: IN_IGNORED means the kernel removed this watch (dir deleted /
+         * unmounted). Retire the entry — a later inotify_add_watch may reuse
+         * the same wd and a stale entry would alias events to this path. */
+        if (event->mask & IN_IGNORED) {
+            for (u32 i = 0; i < fw->watch_count; i++) {
+                if (fw->watch_fds[i] == event->wd) {
+                    fw->watch_fds[i] = -1;
+                    fw->watch_paths[i][0] = '\0';
+                    break;
+                }
+            }
+            ptr += sizeof(struct inotify_event) + event->len;
+            continue;
+        }
+
         const char *dir_path = "";
         for (u32 i = 0; i < fw->watch_count; i++) {
             if (fw->watch_fds[i] == event->wd) {
@@ -452,18 +487,25 @@ bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
         memset(&ev, 0, sizeof(ev));
         /* Format into an oversized temp buffer first, then bounded-copy into
          * ev.path to avoid GCC -Wformat-truncation when dir_path + name may
-         * exceed sizeof(ev.path). */
+         * exceed sizeof(ev.path). R423: track whether the copy truncated. */
+        bool path_truncated = false;
         if (event->len > 0) {
             char tmp[FILEWATCH_MAX_PATH * 2 + 4];
             int n = snprintf(tmp, sizeof(tmp), "%s/%s", dir_path, event->name);
             if (n < 0) n = 0;
             size_t copy = (size_t)n;
-            if (copy >= sizeof(ev.path)) copy = sizeof(ev.path) - 1;
+            if (copy >= sizeof(ev.path)) {
+                copy = sizeof(ev.path) - 1;
+                path_truncated = true;
+            }
             memcpy(ev.path, tmp, copy);
             ev.path[copy] = '\0';
         } else {
             size_t dl = strlen(dir_path);
-            if (dl >= sizeof(ev.path)) dl = sizeof(ev.path) - 1;
+            if (dl >= sizeof(ev.path)) {
+                dl = sizeof(ev.path) - 1;
+                path_truncated = true;
+            }
             memcpy(ev.path, dir_path, dl);
             ev.path[dl] = '\0';
         }
@@ -475,9 +517,14 @@ bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
         else if (event->mask & IN_MOVED_TO) ev.type = FW_EVENT_CREATED;
         else keep = false;
 
-        /* Auto-watch newly created subdirectories */
+        /* Auto-watch newly created subdirectories. R423: skip when the path
+         * was truncated — the capped path can point at the wrong directory. */
         if ((event->mask & IN_CREATE) && (event->mask & IN_ISDIR)) {
-            fw_add_dir_recursive(fw, ev.path, 0);
+            if (!path_truncated) {
+                fw_add_dir_recursive(fw, ev.path, 0);
+            } else {
+                LOG_WARN("filewatch: not auto-watching truncated path (>255 bytes)");
+            }
         }
 
         if (keep) {

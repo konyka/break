@@ -68,6 +68,15 @@ struct NetSocket {
     NetProtocol  proto;
     bool         nonblocking;
     bool         connected;
+    /* R423: net_sendto resolver cache, owned by the socket (mutable), keyed by
+     * (host,port). R418 removed the old cache because it wrote into the
+     * caller's const NetAddress; caching on the socket keeps the const-address
+     * contract while avoiding a getaddrinfo (malloc + NSS, possibly blocking
+     * DNS) per datagram. */
+    bool                 sendto_cache_valid;
+    char                 sendto_cache_host[256];
+    u16                  sendto_cache_port;
+    struct sockaddr_in   sendto_cache_sa;
 };
 
 /* ---------- helpers ---------- */
@@ -297,11 +306,21 @@ i32 net_sendto(NetSocket *s, const void *data, u32 size, const NetAddress *addr)
     if (!s || !data || !addr) return NET_ERROR;
 
     struct sockaddr_in dst;
-    /* R418: dropped the resolved-sockaddr cache — it cast away const to write
-     * into the caller's NetAddress (UB for const storage, data race when an
-     * address is shared between threads). Resolve fresh on every call instead. */
-    if (!net__resolve_to_sockaddr(addr->host, addr->port, &dst)) {
-        return NET_ERROR;
+    /* R418: the cache must NOT live in the caller's NetAddress (const). R423:
+     * it lives on the socket instead — a per-socket last-destination cache
+     * keyed by (host,port), invalidated when the key differs. */
+    if (s->sendto_cache_valid &&
+        s->sendto_cache_port == addr->port &&
+        strcmp(s->sendto_cache_host, addr->host) == 0) {
+        dst = s->sendto_cache_sa;
+    } else {
+        if (!net__resolve_to_sockaddr(addr->host, addr->port, &dst)) {
+            return NET_ERROR;
+        }
+        memcpy(s->sendto_cache_host, addr->host, sizeof(s->sendto_cache_host));
+        s->sendto_cache_port  = addr->port;
+        s->sendto_cache_sa    = dst;
+        s->sendto_cache_valid = true;
     }
 
 #if defined(ENGINE_PLATFORM_WINDOWS)

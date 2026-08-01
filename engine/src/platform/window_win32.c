@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <windowsx.h>  /* R423: GET_X_LPARAM / GET_Y_LPARAM */
 
 /* ---- High-DPI compatibility shims (for older Windows SDKs) ---- */
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
@@ -174,7 +175,10 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     case WM_MOUSEMOVE:
-        input_set_mouse(&p->input, (f32)LOWORD(lParam), (f32)HIWORD(lParam));
+        /* R423: GET_*_LPARAM sign-extends — LOWORD/HIWORD are unsigned, so
+         * negative coords (secondary monitor left of / above the primary)
+         * wrapped to huge positive values. */
+        input_set_mouse(&p->input, (f32)GET_X_LPARAM(lParam), (f32)GET_Y_LPARAM(lParam));
         return 0;
 
     case WM_MOUSEWHEEL: {
@@ -328,6 +332,12 @@ PlatformEventResult platform_poll(Platform *p) {
 
     MSG msg;
     while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+        /* R423: WM_QUIT never reaches the window proc (it's a thread-queue
+         * message) — handle it here like the WM_CLOSE path. */
+        if (msg.message == WM_QUIT) {
+            p->should_close = true;
+            break;
+        }
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }

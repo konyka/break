@@ -135,7 +135,8 @@ static u32 audio_acquire_slot(AudioSystem *as) {
 }
 
 u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
-    if (!as || !as->engine) return 0;
+    /* R423: NULL path guard (audio_play_streamed already has one). */
+    if (!as || !as->engine || !path) return 0;
 
     u32 id = audio_acquire_slot(as);
     if (id == UINT32_MAX) return 0;
@@ -195,8 +196,13 @@ void audio_stop(AudioSystem *as, u32 source_id) {
         ma_sound_stop(&src->sound);
         ma_sound_uninit(&src->sound);
         src->active = false;
-        /* R419: invalidate outstanding handles before recycling the slot. */
-        src->generation++;
+        /* R419: invalidate outstanding handles before recycling the slot.
+         * R423: wrap at 24 bits — at generation 2^24 the raw increment made
+         * generation<<8 truncate to 0, so audio_resolve rejected the very next
+         * handle issued for this slot (sound unstoppable, slot leaked). The
+         * wrap accepts a theoretical ABA (stale gen-0 handle resolving after
+         * exactly 2^24 recycles) over that breakage. */
+        src->generation = (src->generation + 1u) & 0xFFFFFFu;
         u32 idx = (source_id & AUDIO_HANDLE_SLOT_MASK) - 1u;
         /* Return slot to free-list for reuse */
         if (as->free_count < AUDIO_MAX_SOURCES) {

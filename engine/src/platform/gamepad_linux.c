@@ -217,6 +217,26 @@ static void close_device(i32 slot) {
 /*  Public API                                                      */
 /* ---------------------------------------------------------------- */
 
+/* Full scan of /dev/input for gamepad event devices. Used at init and to
+ * recover from an inotify queue overflow (events may have been lost). */
+static void scan_input_dir(void) {
+    DIR *dir = opendir(DEV_INPUT_DIR);
+    if (!dir) {
+        LOG_WARN("gamepad: opendir(%s) failed: %s — no gamepads available",
+                 DEV_INPUT_DIR, strerror(errno));
+        return;
+    }
+
+    struct dirent *e;
+    while ((e = readdir(dir))) {
+        if (strncmp(e->d_name, "event", 5) != 0) continue;
+        char path[288];
+        snprintf(path, sizeof(path), "%s/%s", DEV_INPUT_DIR, e->d_name);
+        try_open_device(path);
+    }
+    closedir(dir);
+}
+
 void gamepad_init(void) {
     memset(&g_gamepad_sys, 0, sizeof(g_gamepad_sys));
     for (i32 i = 0; i < INPUT_MAX_GAMEPADS; i++) {
@@ -242,22 +262,7 @@ void gamepad_init(void) {
     }
 
     /* Initial scan. */
-    DIR *dir = opendir(DEV_INPUT_DIR);
-    if (!dir) {
-        LOG_WARN("gamepad: opendir(%s) failed: %s — no gamepads available",
-                 DEV_INPUT_DIR, strerror(errno));
-        g_gamepad_sys.initialized = true;
-        return;
-    }
-
-    struct dirent *e;
-    while ((e = readdir(dir))) {
-        if (strncmp(e->d_name, "event", 5) != 0) continue;
-        char path[288];
-        snprintf(path, sizeof(path), "%s/%s", DEV_INPUT_DIR, e->d_name);
-        try_open_device(path);
-    }
-    closedir(dir);
+    scan_input_dir();
 
     g_gamepad_sys.initialized = true;
 }
@@ -277,6 +282,16 @@ static void process_inotify_events(void) {
         }
         for (char *p = buf; p < buf + len; ) {
             struct inotify_event *ev = (struct inotify_event *)p;
+            /* R423: IN_Q_OVERFLOW means the kernel dropped events — a pad
+             * plugged during the burst would never be opened. Re-scan the
+             * whole directory to recover (try_open_device dedups by path). */
+            if (ev->mask & IN_Q_OVERFLOW) {
+                LOG_WARN("gamepad: inotify queue overflow — re-scanning %s",
+                         DEV_INPUT_DIR);
+                scan_input_dir();
+                p += sizeof(struct inotify_event) + ev->len;
+                continue;
+            }
             if (ev->len > 0 && strncmp(ev->name, "event", 5) == 0) {
                 char path[288];
                 snprintf(path, sizeof(path), "%s/%s", DEV_INPUT_DIR, ev->name);

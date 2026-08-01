@@ -72,11 +72,18 @@ static int l_get_pos(lua_State *L) {
 
 static int l_set_pos(lua_State *L) {
     LuaScript *ls = ls_from_state(L);
-    RigidBody *b = checked_body(L, ls ? (PhysicsWorld *)ls->physics : NULL, 1);
+    PhysicsWorld *pw = ls ? (PhysicsWorld *)ls->physics : NULL;
+    RigidBody *b = checked_body(L, pw, 1);
     if (!b) return 0;
     b->position.e[0] = (f32)luaL_checknumber(L, 2);
     b->position.e[1] = (f32)luaL_checknumber(L, 3);
     b->position.e[2] = (f32)luaL_checknumber(L, 4);
+    /* R423: teleporting must wake the body and force a BVH refit — a resting
+     * body otherwise keeps its stale AABB at the old location and collisions
+     * at the new one are missed. Mirrors the engine's own teleports (R374/
+     * R375 in main.c). */
+    b->rest_frames = 0;
+    pw->bvh_dirty = true;
     return 0;
 }
 
