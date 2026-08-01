@@ -47,7 +47,9 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
     f32 hh = cc->height * 0.5f;
 
     /* Query BVH for nearby candidates; fall back to all bodies if BVH not built */
-    static u32 candidates[64];
+    /* R418: stack buffer, not static — a function-local static made this
+     * non-reentrant (same pattern as physics_sweep_test below). */
+    u32 candidates[64];
     u32 nc = 0;
     bool use_bvh = (pw->bvh.node_count > 0);
     if (use_bvh) {

@@ -2,6 +2,7 @@
 
 #include <platform/time.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
@@ -19,12 +20,37 @@ static u8 net_repl_type_index(u8 type) {
     return (type > 0u && type < NET_PKT_MAX) ? type : 0u;
 }
 
-static NetRepUnreliableChannel *net_unre_ch(NetReplicator *rep, u8 type) {
+/* R418: channel state comes from the sender's per-peer slot when the packet
+ * carried a sender address (pc != NULL); otherwise the legacy shared channels
+ * keep single-peer / address-less (net_replicator_feed) behavior unchanged. */
+static NetRepUnreliableChannel *net_unre_ch(NetReplicator *rep, NetRepPeerChannel *pc, u8 type) {
+    if (pc) return &pc->unreliable[net_repl_type_index(type)];
     return &rep->unreliable[net_repl_type_index(type)];
 }
 
-static NetRepOrderedChannel *net_ord_ch(NetReplicator *rep, u8 type) {
+static NetRepOrderedChannel *net_ord_ch(NetReplicator *rep, NetRepPeerChannel *pc, u8 type) {
+    if (pc) return &pc->ordered[net_repl_type_index(type)];
     return &rep->ordered[net_repl_type_index(type)];
+}
+
+/* R418: find (or create) the per-peer channel state for a sender address.
+ * Returns NULL when the table is missing or full; callers then fall back to
+ * the shared channels (pre-R418 behavior, only reachable past 8 senders). */
+static NetRepPeerChannel *net_repl_peer_channel_find(NetReplicator *rep,
+                                                     const NetAddress *addr,
+                                                     bool create) {
+    if (!rep || !addr || !rep->peer_channels) return NULL;
+    NetRepPeerChannel *free_slot = NULL;
+    for (u32 i = 0; i < NET_REP_MAX_PEERS; i++) {
+        NetRepPeerChannel *pc = &rep->peer_channels[i];
+        if (pc->valid && net_address_equal(&pc->addr, addr)) return pc;
+        if (!pc->valid && !free_slot) free_slot = pc;
+    }
+    if (!create || !free_slot) return NULL;
+    memset(free_slot, 0, sizeof(*free_slot));
+    free_slot->addr = *addr;
+    free_slot->valid = true;
+    return free_slot;
 }
 
 static NetRepPeerStats *net_repl_peer_evict_lru(NetReplicator *rep) {
@@ -99,6 +125,10 @@ static bool net_repl_peer_apply_line(NetReplicator *rep, const char *line) {
     if (sscanf(peer_line + 5, "%255s %u %f %f %u %u %u",
                host, &port, &rtt, &rt, &hb, &hb_rt, &seen) < 7)
         return false;
+    /* R418: reject out-of-range ports instead of truncating into u16
+     * (70000 silently wrapped to 4464, registering the wrong peer address). */
+    if (port > 65535u)
+        return false;
 
     NetAddress addr = {0};
     memcpy(addr.host, host, strlen(host) + 1);
@@ -127,7 +157,8 @@ static bool net_repl_mkdir_p(const char *dir) {
 #endif
 }
 
-static i32 net_repl_deliver_unreliable(NetReplicator *rep, u8 type, const u8 *wire, u32 len,
+static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc,
+                                       u8 type, const u8 *wire, u32 len,
                                        const NetAddress *reply_to,
                                        NetTransformSnapshot *out, u32 max_count, u32 *out_count,
                                        u32 now_ms) {
@@ -138,7 +169,7 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, u8 type, const u8 *wi
         return (i32)len;
     }
 
-    NetRepUnreliableChannel *ch = net_unre_ch(rep, type);
+    NetRepUnreliableChannel *ch = net_unre_ch(rep, pc, type);
 
     /* R245: wraparound-safe "ack has reached pending.seq" (ack at-or-after seq),
      * matching the seq-dedup convention (delta > 0x80000000u) used below. A naive
@@ -189,8 +220,9 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, u8 type, const u8 *wi
     return (i32)len;
 }
 
-static void net_reorder_store(NetReplicator *rep, u8 type, u32 seq, const u8 *wire, u32 len) {
-    NetRepOrderedChannel *ch = net_ord_ch(rep, type);
+static void net_reorder_store(NetReplicator *rep, NetRepPeerChannel *pc,
+                              u8 type, u32 seq, const u8 *wire, u32 len) {
+    NetRepOrderedChannel *ch = net_ord_ch(rep, pc, type);
     /* R250: only buffer packets inside the [next, next+NET_REORDER_SLOTS) window.
      * The slot index is seq % NET_REORDER_SLOTS, so a packet >= next+SLOTS aliases
      * onto a slot that may already hold a distinct, still-needed in-window seq;
@@ -218,10 +250,11 @@ static void net_reorder_store(NetReplicator *rep, u8 type, u32 seq, const u8 *wi
     slot->valid = true;
 }
 
-static i32 net_reorder_drain(NetReplicator *rep, u8 type, const NetAddress *reply_to,
+static i32 net_reorder_drain(NetReplicator *rep, NetRepPeerChannel *pc,
+                             u8 type, const NetAddress *reply_to,
                              NetTransformSnapshot *out, u32 max_count, u32 *out_count,
                              u32 now_ms) {
-    NetRepOrderedChannel *ch = net_ord_ch(rep, type);
+    NetRepOrderedChannel *ch = net_ord_ch(rep, pc, type);
     u32 idx = ch->next_ordered_seq % NET_REORDER_SLOTS;
     NetReorderSlot *slot = &ch->slots[idx];
     if (!slot->valid || slot->seq != ch->next_ordered_seq)
@@ -231,18 +264,19 @@ static i32 net_reorder_drain(NetReplicator *rep, u8 type, const NetAddress *repl
     if (ch->reorder_pending > 0u) ch->reorder_pending--;
     ch->next_ordered_seq++;
     ch->reorder_delivered++;
-    return net_repl_deliver_unreliable(rep, type, slot->wire, slot->wire_len, reply_to,
+    return net_repl_deliver_unreliable(rep, pc, type, slot->wire, slot->wire_len, reply_to,
                                        out, max_count, out_count, now_ms);
 }
 
-static i32 net_repl_deliver_ordered(NetReplicator *rep, u8 type, const u8 *wire, u32 len,
+static i32 net_repl_deliver_ordered(NetReplicator *rep, NetRepPeerChannel *pc,
+                                    u8 type, const u8 *wire, u32 len,
                                     const NetAddress *reply_to,
                                     NetTransformSnapshot *out, u32 max_count, u32 *out_count,
                                     u32 now_ms) {
     PacketHeader hdr;
     if (!packet_parse_header(wire, len, &hdr)) return NET_ERROR;
 
-    NetRepOrderedChannel *ch = net_ord_ch(rep, type);
+    NetRepOrderedChannel *ch = net_ord_ch(rep, pc, type);
     if ((hdr.ack - rep->reliable_pending.seq) < 0x80000000u) /* R245: wraparound-safe ack */
         rep->reliable_pending.valid = false;
     rep->last_peer_ack = hdr.ack;
@@ -258,18 +292,18 @@ static i32 net_repl_deliver_ordered(NetReplicator *rep, u8 type, const u8 *wire,
                 ch->reorder_duplicate++;
             return (i32)len;
         }
-        net_reorder_store(rep, type, hdr.sequence, wire, len);
+        net_reorder_store(rep, pc, type, hdr.sequence, wire, len);
         return (i32)len;
     }
 
-    i32 n = net_repl_deliver_unreliable(rep, type, wire, len, reply_to, out, max_count, out_count, now_ms);
+    i32 n = net_repl_deliver_unreliable(rep, pc, type, wire, len, reply_to, out, max_count, out_count, now_ms);
     if (n <= 0) return n;
 
     ch->last_recv_seq = hdr.sequence;
     ch->next_ordered_seq++;
     for (;;) {
         u32 late_count = 0u;
-        i32 late = net_reorder_drain(rep, type, reply_to, out, max_count, &late_count, now_ms);
+        i32 late = net_reorder_drain(rep, pc, type, reply_to, out, max_count, &late_count, now_ms);
         /* R299 (CORRECTNESS): break only when the next slot isn't ready or the
          * drained packet failed to parse (late <= 0). The old `|| late_count == 0u`
          * also broke on a successfully-drained ordered packet that legitimately
@@ -329,10 +363,16 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
     }
 
     bool ordered = (hdr.flags & (u8)PACKET_ORDERED) != 0u;
+    /* R418: key channel state per sender address so two peers' ordered /
+     * seq-deduped packets no longer collide in the shared sequence space and
+     * get dropped as stale. Address-less packets (net_replicator_feed) keep
+     * the legacy shared channels. */
+    NetRepPeerChannel *pc = reply_to
+        ? net_repl_peer_channel_find(rep, reply_to, true) : NULL;
     if (ordered)
-        return net_repl_deliver_ordered(rep, hdr.type, wire, len, reply_to,
+        return net_repl_deliver_ordered(rep, pc, hdr.type, wire, len, reply_to,
                                         out, max_count, out_count, now_ms);
-    return net_repl_deliver_unreliable(rep, hdr.type, wire, len, reply_to,
+    return net_repl_deliver_unreliable(rep, pc, hdr.type, wire, len, reply_to,
                                        out, max_count, out_count, now_ms);
 }
 
@@ -346,6 +386,13 @@ bool net_replicator_init(NetReplicator *rep, u16 bind_port) {
         rep->unreliable[i].send_seq = 1u;
         rep->ordered[i].send_seq = 1u;
     }
+    /* R418: per-peer receive channel state (see net_replication.h). */
+    rep->peer_channels = calloc(NET_REP_MAX_PEERS, sizeof(*rep->peer_channels));
+    if (!rep->peer_channels) {
+        net_close(rep->socket);
+        memset(rep, 0, sizeof(*rep));
+        return false;
+    }
     rep->peer_evict_ms = 60000u;
     return true;
 }
@@ -355,6 +402,7 @@ void net_replicator_shutdown(NetReplicator *rep) {
     if (rep->owns_socket && rep->socket) {
         net_close(rep->socket);
     }
+    free(rep->peer_channels); /* R418 */
     memset(rep, 0, sizeof(*rep));
 }
 

@@ -146,12 +146,15 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
         return;
     }
 
-    static Vec3 translations[SKELETON_MAX_JOINTS];
-    static Quat rotations[SKELETON_MAX_JOINTS];
-    static Vec3 scales[SKELETON_MAX_JOINTS];
+    /* R418: stack buffers, not static — function-local statics made this
+     * non-reentrant. Bounded and modest: 3 * SKELETON_MAX_JOINTS(128) * ~16B
+     * is about 5KB. */
+    Vec3 translations[SKELETON_MAX_JOINTS];
+    Quat rotations[SKELETON_MAX_JOINTS];
+    Vec3 scales[SKELETON_MAX_JOINTS];
 
     /* Initialize with identity transforms.
-     * memset for translations (all-zero Vec3), static constants for others. */
+     * memset for translations (all-zero Vec3), constants for others. */
     memset(translations, 0, sk->joint_count * sizeof(Vec3));
     {
         static const Quat identity_rot = {{0, 0, 0, 1}};

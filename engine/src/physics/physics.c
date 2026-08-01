@@ -571,7 +571,9 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
      * blocker is among the dropped candidates, CCD reports no hit and the body
      * tunnels through it. Mirror R239 (char_slide_resolve): use the BVH only when it
      * is built AND the query did not saturate; otherwise fall back to a full scan. */
-    static u32 candidates[64];
+    /* R418: stack buffer, not static — a function-local static made this
+     * non-reentrant (same pattern as physics_sweep_test in character.c). */
+    u32 candidates[64];
     bool use_bvh = (pw->bvh.node_count > 0);
     u32 nc = 0;
     if (use_bvh) {
@@ -729,6 +731,24 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         else b->rest_frames = 0;
     }
 #endif
+
+    /* R418: refit moved bodies again AFTER integration, before the pair query.
+     * The tree was built/refit pre-integration (kept above so integrate_body_ccd
+     * can sweep against it), so without this pass bvh_query_pairs tested pairs
+     * against last frame's AABBs: a contact that begins during this frame's
+     * motion was never pair-tested, letting fast non-CCD bodies tunnel and
+     * resolving ordinary contacts a frame late. Same skip policy as the
+     * pre-integration refit (statics never move; resting bodies' AABBs are
+     * unchanged). bvh_refit is a no-op on an unbuilt tree. */
+    for (u32 i = 0; i < pw->count; i++) {
+        if (pw->bodies[i].is_static) continue;
+        if (pw->bodies[i].rest_frames > 2) continue;
+        AABB box = aabb_from_body(&pw->bodies[i]);
+        BVHAABB bvh_box;
+        bvh_box.min = box.min;
+        bvh_box.max = box.max;
+        bvh_refit(&pw->bvh, i, bvh_box);
+    }
 
     /* BVH broadphase collision pair query */
     bvh_query_pairs(&pw->bvh, physics_collision_callback, pw);

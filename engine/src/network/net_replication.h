@@ -60,10 +60,24 @@ typedef struct {
     NetReorderSlot slots[NET_REORDER_SLOTS];
 } NetRepOrderedChannel;
 
+/* R418: receive-side channel state keyed per peer address. Without it, all
+ * senders shared rep->unreliable[]/rep->ordered[], so two peers' ordered /
+ * seq-deduped packets collided in one sequence space and were dropped as
+ * stale. Only the receive fields are used here; outgoing send_seq stays in
+ * the shared channels below. Heap-allocated in net_replicator_init (one block
+ * of NET_REP_MAX_PEERS slots) so NetReplicator doesn't grow by ~1.4MB inline. */
+typedef struct {
+    NetAddress               addr;
+    bool                     valid;
+    NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
+    NetRepOrderedChannel     ordered[NET_PKT_MAX];
+} NetRepPeerChannel;
+
 typedef struct {
     NetSocket                *socket;
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
+    NetRepPeerChannel        *peer_channels;  /* R418: per-sender recv state (calloc'd in init) */
     NetRepReliablePending    reliable_pending;
     u32                      last_peer_ack;   /* peer's ack of OUR packets (clears our pending) */
     u32                      ack_to_send;     /* highest reliable seq WE received (echoed as outgoing ack) */

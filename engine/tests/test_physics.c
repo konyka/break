@@ -183,6 +183,33 @@ TEST(collision_resolves_approach_velocity)
     physics_world_destroy(pw);
 }
 
+TEST(same_frame_contact_no_tunnel)
+{
+    /* R418: the broadphase pair query must run against post-integration AABBs.
+     * Two boxes closing at moderate (non-CCD) speed first overlap during this
+     * frame's motion; pre-fix the pair query used the pre-integration tree and
+     * registered the contact a frame late. */
+    PhysicsWorld *pw = physics_world_create(64);
+    u32 a = physics_body_create(pw, vec3(-1.0f, 0, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3( 1.0f, 0, 0), vec3(0.5f,0.5f,0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    pw->bodies[a].velocity = vec3( 12, 0, 0);  /* A moving +X toward B */
+    pw->bodies[b].velocity = vec3(-12, 0, 0);  /* B moving -X toward A */
+
+    /* ~0.19 m/frame each: frames 1-2 still leave a gap, frame 3 carries the
+     * boxes into overlap and must register the contact in that same step. */
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_EQ(pw->collision_count, 0u);
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_EQ(pw->collision_count, 0u);
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_TRUE(pw->collision_count > 0);
+    /* Contact resolved same-frame — the boxes did not pass through each other. */
+    ASSERT_TRUE(pw->bodies[a].position.e[0] < pw->bodies[b].position.e[0]);
+    physics_world_destroy(pw);
+}
+
 TEST(ground_respawn)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -660,6 +687,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(impulse_static_ignored);
     RUN_TEST(collision_detection);
     RUN_TEST(collision_resolves_approach_velocity);
+    RUN_TEST(same_frame_contact_no_tunnel);
     RUN_TEST(ground_respawn);
     RUN_TEST(raycast_hit);
     RUN_TEST(raycast_miss);

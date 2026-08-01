@@ -5,6 +5,7 @@
 #include "test_framework.h"
 #include <network/net_replication.h>
 #include <platform/time.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -774,6 +775,94 @@ TEST(peer_save_delta)
 #endif
 }
 
+TEST(ordered_channels_per_peer)
+{
+    /* R418: channel state is keyed per peer address. Two peers each starting
+     * their ordered stream at seq 1 must both be delivered; with the old shared
+     * channel the second peer's seq 1 fell behind the shared next_ordered_seq
+     * and was dropped as stale. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.ordered_layer = true;
+
+    NetAddress peer_a = {0}, peer_b = {0};
+    strncpy(peer_a.host, "127.0.0.1", sizeof(peer_a.host) - 1u);
+    peer_a.port = 20700u;
+    strncpy(peer_b.host, "127.0.0.1", sizeof(peer_b.host) - 1u);
+    peer_b.port = 20701u;
+
+    u8 wa1[PACKET_MAX_SIZE], wb1[PACKET_MAX_SIZE], wa2[PACKET_MAX_SIZE], wb2[PACKET_MAX_SIZE];
+    u32 la1 = build_ordered_snap_wire(wa1, 1u, 10u, 1.0f, 0.0f, 0.0f);
+    u32 lb1 = build_ordered_snap_wire(wb1, 1u, 20u, 2.0f, 0.0f, 0.0f);
+    u32 la2 = build_ordered_snap_wire(wa2, 2u, 10u, 3.0f, 0.0f, 0.0f);
+    u32 lb2 = build_ordered_snap_wire(wb2, 2u, 20u, 4.0f, 0.0f, 0.0f);
+
+    NetTransformSnapshot out[4] = {0};
+    u32 out_count = 0u;
+
+    /* Interleave both peers' streams; every packet is in-order for its peer. */
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wa1, la1, &peer_a, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 1u);
+    ASSERT_EQ(out[0].entity_id, 10u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 1.0f, 0.001f);
+
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wb1, lb1, &peer_b, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 1u);   /* pre-fix: dropped as stale (shared seq space) */
+    ASSERT_EQ(out[0].entity_id, 20u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 2.0f, 0.001f);
+
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wa2, la2, &peer_a, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 3.0f, 0.001f);
+
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wb2, lb2, &peer_b, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 4.0f, 0.001f);
+
+    /* Each peer advanced its own ordered stream; the legacy shared channel was
+     * not touched by addressed packets. */
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, 0u);
+    u32 peers_with_channels = 0u;
+    for (u32 i = 0u; i < NET_REP_MAX_PEERS; i++) {
+        const NetRepPeerChannel *pc = &rep.peer_channels[i];
+        if (!pc->valid) continue;
+        peers_with_channels++;
+        ASSERT_EQ(pc->ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, 3u);
+        ASSERT_EQ(pc->ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_stale, 0u);
+    }
+    ASSERT_EQ(peers_with_channels, 2u);
+
+    net_replicator_shutdown(&rep);
+}
+
+TEST(peer_load_rejects_port_overflow)
+{
+    /* R418: a peer line with port > 65535 used to truncate into u16
+     * (70000 -> 4464) and register the wrong address; it must be rejected. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    const char *path = "test_netrep_badport.txt";
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "# break netrep peers v1\n");
+    fprintf(f, "peer 127.0.0.1 70000 1.000 2.000 3 4 5\n");
+    fprintf(f, "peer 127.0.0.1 20710 1.000 2.000 3 4 5\n");
+    fclose(f);
+
+    ASSERT_TRUE(net_replicator_peer_load(&rep, path));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
+    const NetRepPeerStats *ps = net_replicator_peer_at(&rep, 0u);
+    ASSERT_TRUE(ps != NULL);
+    ASSERT_EQ((u32)ps->addr.port, 20710u);
+
+    remove(path);
+    net_replicator_shutdown(&rep);
+}
+
 TEST(parse_payload_clamps_forged_count)
 {
     /* R254: a packet declaring more snapshots than its byte length can hold must
@@ -826,4 +915,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_delta);
+    RUN_TEST(ordered_channels_per_peer);
+    RUN_TEST(peer_load_rejects_port_overflow);
 TEST_MAIN_END()

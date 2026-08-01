@@ -271,10 +271,11 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
         }
     }
 
-    /* Per-layer scratch buffers (static — avoids ~5KB per-frame stack). */
-    static Vec3 sample_pos[ANIM_BLEND_MAX_BONES];
-    static Quat sample_rot[ANIM_BLEND_MAX_BONES];
-    static Vec3 sample_scl[ANIM_BLEND_MAX_BONES];
+    /* Per-layer scratch buffers. R418: stack (~5KB), not static — function-local
+     * statics made this non-reentrant. */
+    Vec3 sample_pos[ANIM_BLEND_MAX_BONES];
+    Quat sample_rot[ANIM_BLEND_MAX_BONES];
+    Vec3 sample_scl[ANIM_BLEND_MAX_BONES];
 
     for (u32 li = 0; li < state->layer_count && li < ANIM_MAX_LAYERS; li++) {
         AnimationLayer *L = &state->layers[li];
@@ -339,9 +340,10 @@ void anim_blend_evaluate(AnimBlendState *state, f32 dt,
             const AnimClip *to_clip = clip_at(clips, clip_count,
                                               state->crossfade.to_clip);
             if (to_clip) {
-                static Vec3 to_pos[ANIM_BLEND_MAX_BONES];
-                static Quat to_rot[ANIM_BLEND_MAX_BONES];
-                static Vec3 to_scl[ANIM_BLEND_MAX_BONES];
+                /* R418: stack, not static (non-reentrant) — see sample_* above. */
+                Vec3 to_pos[ANIM_BLEND_MAX_BONES];
+                Quat to_rot[ANIM_BLEND_MAX_BONES];
+                Vec3 to_scl[ANIM_BLEND_MAX_BONES];
                 u32 bc2 = state->bone_count;
                 /* R350: match the main sample-path seed by mode. OVERRIDE keeps
                  * unaddressed bones as current output; ADDITIVE must seed the

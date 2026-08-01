@@ -297,18 +297,11 @@ i32 net_sendto(NetSocket *s, const void *data, u32 size, const NetAddress *addr)
     if (!s || !data || !addr) return NET_ERROR;
 
     struct sockaddr_in dst;
-    /* Use cached sockaddr_in if available, otherwise resolve and cache */
-    NetAddress *mut_addr = (NetAddress *)addr; /* safe: we only write cache fields */
-    if (mut_addr->resolved && sizeof(dst) <= sizeof(mut_addr->_sa)) {
-        memcpy(&dst, mut_addr->_sa, sizeof(dst));
-    } else {
-        if (!net__resolve_to_sockaddr(addr->host, addr->port, &dst)) {
-            return NET_ERROR;
-        }
-        if (sizeof(dst) <= sizeof(mut_addr->_sa)) {
-            memcpy(mut_addr->_sa, &dst, sizeof(dst));
-            mut_addr->resolved = true;
-        }
+    /* R418: dropped the resolved-sockaddr cache — it cast away const to write
+     * into the caller's NetAddress (UB for const storage, data race when an
+     * address is shared between threads). Resolve fresh on every call instead. */
+    if (!net__resolve_to_sockaddr(addr->host, addr->port, &dst)) {
+        return NET_ERROR;
     }
 
 #if defined(ENGINE_PLATFORM_WINDOWS)

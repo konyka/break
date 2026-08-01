@@ -188,6 +188,33 @@ TEST(sendto_empty_buffer)
     net_shutdown();
 }
 
+TEST(sendto_const_address)
+{
+    /* R418: net_sendto must not write a resolver cache into the caller's
+     * address (it previously cast away const). A genuinely const NetAddress
+     * in read-only storage must work. */
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = net_udp_create(19878);
+    ASSERT_NOT_NULL(recv_s);
+    net_set_nonblocking(recv_s, true);
+    NetSocket *send_s = net_udp_create(0);
+    ASSERT_NOT_NULL(send_s);
+
+    static const NetAddress dst = { .host = "127.0.0.1", .port = 19878 };
+    const char *msg = "const addr";
+    i32 sent = net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
+    ASSERT_TRUE(sent > 0);
+
+    char buf[64] = {0};
+    i32 received = net_recvfrom(recv_s, buf, sizeof(buf), NULL);
+    ASSERT_TRUE(received > 0);
+    ASSERT_STR_EQ(buf, "const addr");
+
+    net_close(send_s);
+    net_close(recv_s);
+    net_shutdown();
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -204,4 +231,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(address_resolve_invalid);
     RUN_TEST(udp_create_zero_port);
     RUN_TEST(sendto_empty_buffer);
+    RUN_TEST(sendto_const_address);
 TEST_MAIN_END()
