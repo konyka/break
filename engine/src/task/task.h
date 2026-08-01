@@ -51,6 +51,9 @@ typedef struct {
 } WorkStealDeque;
 
 /* ---- Worker Thread ---- */
+/* R414: pad/align to a cache line — adjacent Workers in the workers[] array
+ * otherwise share lines and false-share on their hot deque atomics. The
+ * matching allocation alignment is handled in task_system_create(). */
 typedef struct {
     WorkStealDeque queues[TASK_PRIORITY_COUNT]; /* one deque per priority */
     u32            id;
@@ -62,7 +65,7 @@ typedef struct {
 #else
     u64            thread_storage[8]; /* enough for pthread_t */
 #endif
-} Worker;
+} ENGINE_ALIGN(64) Worker;
 
 /* ---- Task System ---- */
 #define SUBMIT_QUEUE_CAPACITY 256

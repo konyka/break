@@ -192,6 +192,7 @@ static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio)
      * pool_idx without mutex contention. Each caller writes to a distinct
      * task_pool[pool_idx] slot, so no data race occurs. */
     Task *t = NULL;
+    bool heap = false;
     u32 pool_idx = atomic_fetch_add_explicit(&ts->task_pool_count, 1, memory_order_acq_rel);
     if (pool_idx < ts->task_pool_capacity) {
         t = &ts->_task_block[pool_idx];
@@ -203,21 +204,14 @@ static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio)
         t = (Task *)calloc(1, sizeof(Task));
         /* R156: calloc failure leaves t NULL — memset below would crash. */
         if (!t) return NULL;
-        /* Best-effort registration: mutex only needed for this rare path */
-        platform_mutex_lock(ts->pool_mutex_storage);
-        u32 cur = atomic_load(&ts->task_pool_count);
-        if (cur <= ts->task_pool_capacity) {
-            pool_idx = cur - 1;
-            if (pool_idx < ts->task_pool_capacity) {
-                ts->task_pool[pool_idx] = t;
-            }
-        } else {
-            /* R156: Pool exhausted and can't register — mark handle as
-             * invalid so task_wait_handle / task_submit_dep reject it
-             * instead of reading task_pool[] out of bounds. */
-            pool_idx = 0xFFFFFFFF;
-        }
-        platform_mutex_unlock(ts->pool_mutex_storage);
+        /* R414: task_pool_count is monotonic, so the old "best-effort
+         * registration" branch was dead code and pool_idx always ended up
+         * 0xFFFFFFFF here. Drop it: heap tasks are never registered in
+         * task_pool. Their handle encodes idx 0xFFFFFFFF, which
+         * task_wait_handle / task_submit_dep explicitly reject, and they get
+         * ref_count 1 (exec ref only) so task_release() frees them. */
+        pool_idx = 0xFFFFFFFF;
+        heap = true;
     }
 
     memset(t, 0, sizeof(Task));
@@ -225,7 +219,9 @@ static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio)
     t->ctx = ctx;
     t->priority = prio;
     atomic_store_explicit(&t->dep_count, 0, memory_order_relaxed);
-    atomic_store_explicit(&t->ref_count, 2, memory_order_relaxed); /* exec ref + pool ref */
+    /* R414: pool tasks keep exec ref + pool ref (2); heap-fallback tasks have
+     * no pool ref (1) so the exec-ref drop in execute_task frees them. */
+    atomic_store_explicit(&t->ref_count, heap ? 1u : 2u, memory_order_relaxed);
     t->waiters = NULL;
 
     /* Assign handle: encode pool index for O(1) lookup in wait_handle */
@@ -242,8 +238,15 @@ static void task_release(Task *t) {
          * Detect by checking if t falls outside the block range. We store the
          * block pointer in a static accessible via g_task_system. */
         TaskSystem *ts = g_task_system;
-        bool is_block = ts && t >= ts->_task_block &&
-                        t < ts->_task_block + ts->task_pool_capacity;
+        /* R414: compare as integers — relational comparison between a heap
+         * pointer and the unrelated _task_block array is UB in C11. */
+        bool is_block = false;
+        if (ts) {
+            uintptr_t addr = (uintptr_t)t;
+            uintptr_t lo   = (uintptr_t)ts->_task_block;
+            uintptr_t hi   = lo + (uintptr_t)ts->task_pool_capacity * sizeof(Task);
+            is_block = addr >= lo && addr < hi;
+        }
         if (!is_block) free(t);
     }
 }
@@ -421,10 +424,12 @@ static unsigned __stdcall worker_entry(void *arg) {
             self->steal_attempts++;
             if (self->steal_attempts > ts->worker_count * 2) {
                 platform_sleep_ns(self->backoff_ns);
-                if (self->backoff_ns < 1000000) {
+                /* R414: cap backoff at 50us — workers are never woken on
+                 * submit, so a 1ms cap added up to ~1ms of submit latency. */
+                if (self->backoff_ns < 50000) {
                     self->backoff_ns *= 2;
                 } else {
-                    self->backoff_ns = 1000000;
+                    self->backoff_ns = 50000;
                 }
             }
         }
@@ -477,10 +482,11 @@ static void *worker_entry(void *arg) {
             self->steal_attempts++;
             if (self->steal_attempts > ts->worker_count * 2) {
                 platform_sleep_ns(self->backoff_ns);
-                if (self->backoff_ns < 1000000) {
+                /* R414: cap backoff at 50us (was 1ms) — see Windows path. */
+                if (self->backoff_ns < 50000) {
                     self->backoff_ns *= 2;
                 } else {
-                    self->backoff_ns = 1000000; /* max 1ms */
+                    self->backoff_ns = 50000; /* max 50us */
                 }
             }
         }
@@ -508,7 +514,10 @@ TaskSystem *task_system_create(i32 worker_count) {
     usize pool_bytes   = (usize)cap * sizeof(Task *);
     usize block_bytes  = (usize)cap * sizeof(Task);
     usize worker_bytes = (usize)worker_count * sizeof(Worker);
-    u8 *mem = (u8 *)calloc(1, ts_bytes + pool_bytes + block_bytes + worker_bytes);
+    usize worker_off   = ts_bytes + pool_bytes + block_bytes;
+    /* R414: Worker is ENGINE_ALIGN(64) but calloc only guarantees max_align —
+     * over-allocate and round the workers pointer up to a 64-byte boundary. */
+    u8 *mem = (u8 *)calloc(1, worker_off + 64 + worker_bytes);
     if (!mem) return NULL;
 
     TaskSystem *ts = (TaskSystem *)mem;
@@ -516,7 +525,7 @@ TaskSystem *task_system_create(i32 worker_count) {
     ts->task_pool_capacity = cap;
     ts->task_pool    = (Task **)(mem + ts_bytes);
     ts->_task_block  = (Task *)(mem + ts_bytes + pool_bytes);
-    ts->workers      = (Worker *)(mem + ts_bytes + pool_bytes + block_bytes);
+    ts->workers      = (Worker *)(((uintptr_t)mem + worker_off + 63u) & ~(uintptr_t)63u);
 
     atomic_store_explicit(&ts->running, true, memory_order_relaxed);
     atomic_store_explicit(&ts->total_tasks_completed, 0, memory_order_relaxed);
@@ -704,6 +713,9 @@ void task_submit_n(TaskSystem *ts, TaskFn fn, void **ctxs, i32 count) {
 }
 
 TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio) {
+    /* R414: prio indexes Worker.queues[TASK_PRIORITY_COUNT] — clamp garbage
+     * values (e.g. from a bad cast) before they cause an OOB deque access. */
+    if ((u32)prio >= TASK_PRIORITY_COUNT) prio = TASK_PRIORITY_NORMAL;
     Task *t = task_alloc(ts, fn, ctx, prio);
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;
@@ -727,6 +739,10 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
     platform_mutex_lock(ts->pool_mutex_storage);
     for (u32 d = 0; d < dep_count; d++) {
         u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
+        /* R414: a heap-fallback task handle (idx 0xFFFFFFFF) cannot be
+         * resolved through task_pool — fail the submission instead of
+         * silently dropping the dependency. Reuses the oom unwind path. */
+        if (idx == 0xFFFFFFFFu) { oom = true; break; }
         if (idx >= ts->task_pool_capacity) continue;
         Task *dep = ts->task_pool[idx];
         if (!dep || dep->handle != deps[d]) continue;
@@ -764,7 +780,9 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
         atomic_store_explicit(&t->completed, true, memory_order_release);
         platform_mutex_unlock(ts->pool_mutex_storage);
         atomic_fetch_sub_explicit(&ts->total_tasks_submitted, 1, memory_order_relaxed);
-        task_release(t); /* drop exec ref; pool ref retained */
+        /* Drop exec ref — frees heap-fallback tasks; pool ref retained for
+         * pool tasks. */
+        task_release(t);
         return TASK_HANDLE_INVALID;
     }
 
@@ -820,6 +838,20 @@ void task_wait(TaskSystem *ts) {
             continue;
         }
 
+        /* R414: steal from worker deques before sleeping — deque_steal is
+         * CAS-based and safe for any thief thread, and it cuts wait latency
+         * when work is stuck in a sleeping worker's deque. */
+        Task *stolen = NULL;
+        for (u32 v = 0; v < ts->worker_count && !stolen; v++) {
+            for (int prio = 0; prio < TASK_PRIORITY_COUNT && !stolen; prio++) {
+                stolen = deque_steal(&ts->workers[v].queues[prio]);
+            }
+        }
+        if (stolen) {
+            execute_task(ts, NULL, stolen);
+            continue;
+        }
+
         platform_sleep_ns(100000); /* 100us */
     }
 }
@@ -831,6 +863,10 @@ void task_wait_handle(TaskSystem *ts, TaskHandle handle) {
 
     /* R156: Check against task_pool_capacity, not task_pool_count —
      * pool_count can exceed capacity when pool is exhausted. */
+    /* R414: heap-fallback tasks are never registered in task_pool, so their
+     * handles (idx 0xFFFFFFFF) cannot be resolved — reject explicitly rather
+     * than falling through to the capacity check by accident. */
+    if (idx == 0xFFFFFFFFu) return;
     if (idx >= ts->task_pool_capacity) return;  /* handle not found — already done */
 
     Task *t = ts->task_pool[idx];

@@ -131,6 +131,53 @@ TEST(submit_dep_waits_for_two_parents)
 }
 
 /* ----------------------------------------------------------------------- */
+/* R414 regression tests.
+ * NOTE: these must run LAST — pushing the shared g_ts past the 4096-entry
+ * static task pool (heap fallback) is irreversible for its lifetime. */
+
+TEST(out_of_range_priority_is_clamped)
+{
+    atomic_store(&g_counter, 0);
+    /* R414: garbage priority must be clamped, not index queues[] OOB. */
+    TaskHandle h = task_submit_ex(g_ts, increment_fn, NULL, (TaskPriority)99);
+    ASSERT_NEQ(h, TASK_HANDLE_INVALID);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), 1);
+}
+
+TEST(beyond_pool_capacity_all_execute)
+{
+    atomic_store(&g_counter, 0);
+    /* Push total submissions past the 4096-entry static pool so the tail
+     * takes the R414 heap-fallback path. All must still execute exactly
+     * once (ref_count 1 freed via task_release — no crash, no hang). */
+    const i32 N = 4096 + 512;
+    TaskHandle last = TASK_HANDLE_INVALID;
+    for (i32 i = 0; i < N; i++) {
+        last = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
+        ASSERT_NEQ(last, TASK_HANDLE_INVALID);
+    }
+    /* `last` is a heap-fallback handle (idx 0xFFFFFFFF): task_wait_handle
+     * explicitly rejects it and must return immediately, not hang. */
+    task_wait_handle(g_ts, last);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), N);
+}
+
+TEST(submit_dep_on_heap_handle_fails)
+{
+    /* Pool is exhausted by now, so this parent is a heap-fallback task. */
+    TaskHandle parent = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
+    ASSERT_NEQ(parent, TASK_HANDLE_INVALID);
+    TaskHandle deps[] = { parent };
+    /* R414: depending on an unresolvable heap handle must fail loudly, not
+     * silently drop the dependency. */
+    TaskHandle child = task_submit_dep(g_ts, increment_fn, NULL, deps, 1);
+    ASSERT_EQ(child, TASK_HANDLE_INVALID);
+    task_wait(g_ts);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     g_ts = task_system_create(2);
@@ -148,6 +195,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(submit_dep_waits_for_parent);
     RUN_TEST(submit_dep_runs_when_dep_already_done);
     RUN_TEST(submit_dep_waits_for_two_parents);
+    /* R414: these exhaust the shared task pool — keep them last. */
+    RUN_TEST(out_of_range_priority_is_clamped);
+    RUN_TEST(beyond_pool_capacity_all_execute);
+    RUN_TEST(submit_dep_on_heap_handle_fails);
 
     task_system_destroy(g_ts);
 
