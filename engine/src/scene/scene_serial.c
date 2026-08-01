@@ -870,12 +870,17 @@ bool scene_save_json(const World *w, const Scene *s,
              sb_u32_dec(&b, w->entities[ei].generation) && sb_putc(&b, ',');
         ok = ok && sb_indent(&b, pretty, 3) && sb_puts(&b, "\"components\":[");
 
+        /* R426: comma placement tracked by an emitted counter, not the
+         * archetype slot k — a NULL first component (skipped below) would
+         * otherwise emit a leading comma. */
+        u32 emitted = 0;
         for (u32 k = 0; k < a->key.count && ok; k++) {
             ComponentType t = a->key.ids[k];
             u32 sz = 0;
             const u8 *p = entity_component_ptr(w, ei, t, &sz);
             if (!p) continue;
-            if (k) ok = ok && sb_putc(&b, ',');
+            if (emitted) ok = ok && sb_putc(&b, ',');
+            emitted++;
             ok = ok && sb_indent(&b, pretty, 4) && sb_putc(&b, '{');
             ok = ok && sb_puts(&b, "\"type\":") && sb_u32_dec(&b, t) && sb_putc(&b, ',');
             ok = ok && sb_puts(&b, "\"size\":") && sb_u32_dec(&b, sz) && sb_putc(&b, ',');
@@ -947,7 +952,10 @@ static bool js_u32(JsonR *r, u32 *out) {
     if (r->p >= r->end || !isdigit((unsigned char)*r->p)) return false;
     u32 v = 0;
     while (r->p < r->end && isdigit((unsigned char)*r->p)) {
-        v = v * 10u + (u32)(*r->p - '0');
+        u32 d = (u32)(*r->p - '0');
+        /* R426: reject literals > UINT32_MAX — v*10+d wrapped silently. */
+        if (v > (UINT32_MAX - d) / 10u) return false;
+        v = v * 10u + d;
         r->p++;
     }
     *out = v;
@@ -1176,6 +1184,11 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         }
                         SceneNode *nd = &nodes[node_count++];
                         memset(nd, 0, sizeof(*nd));
+                        /* R426: a node missing the "parent" key must default to
+                         * root, not to parent 0 (memset left parent_index == 0,
+                         * silently parenting it to node 0). Binary/glTF paths
+                         * use UINT32_MAX for root. */
+                        nd->parent_index = UINT32_MAX;
                         u32 flags = 0;
                         while (ok && !js_peek(&r, '}')) {
                             if (js_key(&r, "parent")) {

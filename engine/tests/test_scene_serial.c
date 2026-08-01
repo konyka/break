@@ -840,6 +840,72 @@ TEST(load_json_failure_preserves_old_graph)
     remove(path);
 }
 
+/* R426: JSON nodes were memset to 0, so a node missing the "parent" key got
+ * parent_index == 0 — silently parented to node 0 instead of being a root.
+ * The default is now UINT32_MAX, matching the binary/glTF paths. */
+TEST(load_json_node_without_parent_is_root)
+{
+    const char *path = "/tmp/test_json_noparent.json";
+    const char *doc =
+        "{\"version\":1,"
+        "\"nodes\":[{\"mesh\":0,\"flags\":0},"
+        "{\"parent\":0,\"mesh\":0,\"flags\":0}]}";
+    {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+        fclose(fp);
+    }
+
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_json(w, &dst, path));
+    ASSERT_EQ(dst.node_count, 2u);
+    ASSERT_EQ(dst.nodes[0].parent_index, UINT32_MAX); /* missing key -> root */
+    ASSERT_EQ(dst.nodes[1].parent_index, 0u);         /* explicit parent kept */
+
+    scene_serial_free(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
+/* R426: js_u32 wrapped silently on literals > UINT32_MAX (v*10+d). They are
+ * now rejected, failing the whole parse instead of loading a wrapped value. */
+TEST(load_json_rejects_oversized_u32_literal)
+{
+    const char *path = "/tmp/test_json_biglit.json";
+    /* 4294967296 = UINT32_MAX + 1. */
+    const char *doc = "{\"version\":4294967296,\"entities\":[]}";
+    {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+        fclose(fp);
+    }
+
+    World *w = world_create();
+    ASSERT_TRUE(!scene_load_json(w, NULL, path));
+
+    /* The largest in-range literal must still parse. */
+    const char *ok_doc =
+        "{\"version\":1,"
+        "\"nodes\":[{\"parent\":4294967295,\"mesh\":0,\"flags\":0}]}";
+    {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(ok_doc, 1, strlen(ok_doc), fp) == strlen(ok_doc));
+        fclose(fp);
+    }
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_json(w, &dst, path));
+    ASSERT_EQ(dst.node_count, 1u);
+    ASSERT_EQ(dst.nodes[0].parent_index, UINT32_MAX);
+
+    scene_serial_free(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(bscn_magic_value);
     RUN_TEST(bscn_version);
@@ -878,4 +944,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(generation_restore_roundtrip_json);
     RUN_TEST(instantiate_prefab_offsets_root_nodes_only);
     RUN_TEST(load_json_failure_preserves_old_graph);
+    RUN_TEST(load_json_node_without_parent_is_root);
+    RUN_TEST(load_json_rejects_oversized_u32_literal);
 TEST_MAIN_END()

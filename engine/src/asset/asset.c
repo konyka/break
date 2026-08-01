@@ -143,6 +143,50 @@ static bool gltf_buffer_uris_safe(const cgltf_data *data, const char *path) {
     return true;
 }
 
+/* R426: in VFS mode cgltf_load_buffers resolves external buffer URIs with its
+ * own fopen, bypassing the VFS — a pak-mounted .gltf would read same-named
+ * files from disk. Load external buffers through the VFS here and hand cgltf
+ * the bytes; cgltf_load_buffers skips buffers whose data is already set, so it
+ * still handles the GLB binary chunk and data: URIs (neither touches the
+ * filesystem). Runs after gltf_buffer_uris_safe, so uri is a safe relative
+ * path with no percent-encoding. */
+static cgltf_result gltf_load_buffers_vfs(VFS *vfs, cgltf_data *data, const char *gltf_path) {
+    for (cgltf_size bi = 0; bi < data->buffers_count; bi++) {
+        cgltf_buffer *buf = &data->buffers[bi];
+        if (buf->data || !buf->uri || strncmp(buf->uri, "data:", 5) == 0) continue;
+
+        /* Mirror cgltf_combine_paths: gltf directory + uri. */
+        char full[1024];
+        const char *slash = strrchr(gltf_path, '/');
+        usize dir_len = slash ? (usize)(slash - gltf_path + 1) : 0;
+        if (dir_len >= sizeof(full) || strlen(buf->uri) >= sizeof(full) - dir_len) {
+            LOG_ERROR("glTF: buffer uri path too long: %s", gltf_path);
+            return cgltf_result_invalid_options;
+        }
+        memcpy(full, gltf_path, dir_len);
+        strcpy(full + dir_len, buf->uri);
+
+        usize sz = 0;
+        u8 *raw = vfs_read_all(vfs, full, &sz);
+        if (!raw) {
+            LOG_ERROR("VFS: glTF buffer not found: %s", full);
+            return cgltf_result_file_not_found;
+        }
+        /* cgltf_validate bounds bufferViews against the DECLARED byteLength,
+         * so the VFS bytes must cover it in full. */
+        if (sz < (usize)buf->size) {
+            LOG_ERROR("VFS: glTF buffer too short (%zu < %llu): %s",
+                      sz, (unsigned long long)buf->size, full);
+            free(raw);
+            return cgltf_result_data_too_short;
+        }
+        /* vfs_read_all mallocs; cgltf_free releases via memory_free (free). */
+        buf->data = raw;
+        buf->data_free_method = cgltf_data_free_method_memory_free;
+    }
+    return cgltf_result_success;
+}
+
 static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_texture *tex) {
     if (!tex || !tex->image || !tex->image->uri) return RHI_HANDLE_NULL;
     /* R353: reject path escape in image.uri (pairs with vfs_rel_path_safe). */
@@ -165,6 +209,26 @@ static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_
         tex_path[sizeof(tex_path) - 1] = '\0';
     }
     return asset_load_texture(ctx, tex_path);
+}
+
+/* R426: load_gltf_texture is called per material texture slot with no dedup,
+ * so N materials sharing one cgltf_image uploaded N identical GPU textures.
+ * During the material loop, cache the loaded handle by image index (cgltf
+ * images are a contiguous array, pointer diff = index). The shared handle is
+ * safe to store in several materials: RHI handles are generational, so the
+ * duplicate rhi_texture_destroy in asset_scene_free is a no-op. */
+static RHITexture load_gltf_texture_cached(AssetCtx *ctx, const char *gltf_path,
+                                           cgltf_texture *tex, const cgltf_data *data,
+                                           RHITexture *cache, u8 *tried) {
+    if (!tex || !tex->image) return RHI_HANDLE_NULL;
+    if (!cache || !tried) return load_gltf_texture(ctx, gltf_path, tex); /* OOM: no dedup */
+    usize idx = (usize)(tex->image - data->images);
+    if (idx >= data->images_count) return load_gltf_texture(ctx, gltf_path, tex);
+    if (!tried[idx]) {
+        tried[idx] = 1;
+        cache[idx] = load_gltf_texture(ctx, gltf_path, tex);
+    }
+    return cache[idx];
 }
 
 static const u8 *cgltf_buffer_data(cgltf_accessor *acc) {
@@ -335,7 +399,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             cgltf_free(data);
             return false;
         }
-        result = cgltf_load_buffers(&opts, data, path);
+        /* R426: external buffers via the VFS (see gltf_load_buffers_vfs);
+         * cgltf_load_buffers then only handles GLB/data: buffers. */
+        result = gltf_load_buffers_vfs(ctx->vfs, data, path);
+        if (result == cgltf_result_success)
+            result = cgltf_load_buffers(&opts, data, path);
     } else {
         result = cgltf_parse_file(&opts, path, &data);
         if (result != cgltf_result_success) {
@@ -462,6 +530,13 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             return false;
         }
         out_scene->material_count = (u32)data->materials_count;
+        /* R426: per-load texture dedup cache (see load_gltf_texture_cached). */
+        RHITexture *image_tex_cache = NULL;
+        u8 *image_tex_tried = NULL;
+        if (data->images_count > 0) {
+            image_tex_cache = (RHITexture *)calloc(data->images_count, sizeof(RHITexture));
+            image_tex_tried = (u8 *)calloc(data->images_count, 1);
+        }
         for (u32 mi = 0; mi < data->materials_count; mi++) {
             cgltf_material *cm = &data->materials[mi];
             Material *mat = &out_scene->materials[mi];
@@ -478,15 +553,21 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             else mat->alpha_mode = ALPHA_BLEND;
             mat->alpha_cutoff = cm->alpha_cutoff;
 
-            mat->albedo = load_gltf_texture(ctx, path,
-                cm->pbr_metallic_roughness.base_color_texture.texture);
-            mat->metallic_roughness = load_gltf_texture(ctx, path,
-                cm->pbr_metallic_roughness.metallic_roughness_texture.texture);
-            mat->normal_map = load_gltf_texture(ctx, path,
-                cm->normal_texture.texture);
-            mat->emissive = load_gltf_texture(ctx, path,
-                cm->emissive_texture.texture);
+            mat->albedo = load_gltf_texture_cached(ctx, path,
+                cm->pbr_metallic_roughness.base_color_texture.texture,
+                data, image_tex_cache, image_tex_tried);
+            mat->metallic_roughness = load_gltf_texture_cached(ctx, path,
+                cm->pbr_metallic_roughness.metallic_roughness_texture.texture,
+                data, image_tex_cache, image_tex_tried);
+            mat->normal_map = load_gltf_texture_cached(ctx, path,
+                cm->normal_texture.texture,
+                data, image_tex_cache, image_tex_tried);
+            mat->emissive = load_gltf_texture_cached(ctx, path,
+                cm->emissive_texture.texture,
+                data, image_tex_cache, image_tex_tried);
         }
+        free(image_tex_cache);
+        free(image_tex_tried);
     }
 
     for (u32 ni = 0; ni < data->nodes_count; ni++) {
@@ -556,8 +637,19 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                  * NULL dereference on malformed glTF files with missing buffers. */
                 u32 *indices = calloc(idx_count, sizeof(u32));
                 const u8 *idx_data = cgltf_buffer_data(idx_acc);
-                if (indices && idx_data) {
-                    if (idx_acc->component_type == cgltf_component_type_r_16u) {
+                /* R426: a sparse index accessor may have no base bufferView at
+                 * all (indices live only in the sparse views), so a NULL base
+                 * pointer is not fatal for sparse accessors. */
+                if (indices && (idx_data || idx_acc->is_sparse)) {
+                    /* R426: the raw typed reads below only see the BASE data —
+                     * sparse overrides in their separate views would be silently
+                     * dropped, changing topology. Route sparse accessors through
+                     * cgltf_accessor_read_index (sparse-aware); keep the raw
+                     * fast paths for non-sparse. */
+                    if (idx_acc->is_sparse) {
+                        for (u32 ii = 0; ii < idx_count; ii++)
+                            indices[ii] = (u32)cgltf_accessor_read_index(idx_acc, ii);
+                    } else if (idx_acc->component_type == cgltf_component_type_r_16u) {
                         const u16 *src = (const u16 *)idx_data;
                         for (u32 ii = 0; ii < idx_count; ii++) indices[ii] = (u32)src[ii];
                     } else if (idx_acc->component_type == cgltf_component_type_r_32u) {
@@ -581,7 +673,6 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
                     continue;
                 }
-                sn->skinned = true;
                 SkinnedVertex *sverts = calloc(vert_count, sizeof(SkinnedVertex));
                 /* R115-2/R115-3: Skip primitive if allocation or buffer data fails.
                  * R422: destroy the index buffer already created above before
@@ -596,6 +687,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
                     continue;
                 }
+                /* R426: flag the node skinned only AFTER the bail paths above —
+                 * a skipped primitive otherwise left sn->skinned set with
+                 * skin_mesh_index == UINT32_MAX. */
+                sn->skinned = true;
                 /* R415: validated component type inside (raw f32 memcpy only
                  * for actual float VEC3 data; converted otherwise). */
                 gltf_read_vec3_attr(pos_acc, vert_count, (u8 *)&sverts[0].pos, sizeof(SkinnedVertex));
@@ -624,8 +719,21 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 const u8 *jd = cgltf_buffer_data(jnt_acc);
                 usize wgt_stride = cgltf_accessor_stride(wgt_acc);
                 const u8 *wd = cgltf_buffer_data(wgt_acc);
-                for (u32 vi = 0; jd && wd && vi < vert_count; vi++) {
-                    if (jnt_acc->component_type == cgltf_component_type_r_8u) {
+                /* R426: a sparse JOINTS_0/WEIGHTS_0 may have no base bufferView
+                 * (data only in the sparse views), so accept a NULL base pointer
+                 * for sparse accessors instead of skipping the vertex loop. */
+                for (u32 vi = 0; (jd || jnt_acc->is_sparse) &&
+                                 (wd || wgt_acc->is_sparse) && vi < vert_count; vi++) {
+                    /* R426: the raw typed reads below only see the BASE data —
+                     * sparse overrides would be silently dropped. Route sparse
+                     * JOINTS_0 through cgltf (sparse-aware); joint indices are
+                     * small ints, exactly representable as f32. Keep the raw
+                     * fast paths for non-sparse. */
+                    if (jnt_acc->is_sparse) {
+                        f32 jf[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                        cgltf_accessor_read_float(jnt_acc, vi, jf, 4);
+                        for (u32 k = 0; k < 4; k++) sverts[vi].joints[k] = (u32)jf[k];
+                    } else if (jnt_acc->component_type == cgltf_component_type_r_8u) {
                         const u8 *j = jd + vi * jnt_stride;
                         for (u32 k = 0; k < 4; k++) sverts[vi].joints[k] = (u32)j[k];
                     } else if (jnt_acc->component_type == cgltf_component_type_r_16u) {
@@ -658,10 +766,13 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                      * stride + sparse (mirrors the integer JOINTS branch above).
                      * FLOAT weights are unchanged. */
                     if (!cgltf_accessor_read_float(wgt_acc, vi, sverts[vi].weights, 4) &&
-                        wgt_acc->component_type == cgltf_component_type_r_32f) {
+                        wgt_acc->component_type == cgltf_component_type_r_32f &&
+                        !wgt_acc->is_sparse) {
                         /* R422: fallback memcpy only when the accessor is
                          * actually float (same guard the R415 UV fallback
-                         * has) — never reinterpret other component types. */
+                         * has) — never reinterpret other component types.
+                         * R426: never raw-copy a sparse accessor either —
+                         * its overrides live outside the base data. */
                         memcpy(sverts[vi].weights, wd + vi * wgt_stride, sizeof(f32) * 4);
                     }
                     f32 wsum = sverts[vi].weights[0] + sverts[vi].weights[1] + sverts[vi].weights[2] + sverts[vi].weights[3];
@@ -832,7 +943,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
              * (4× over-read of the accessor's real bytes). Convert through
              * cgltf for anything that is not actually float MAT4. */
             if (ibm->component_type == cgltf_component_type_r_32f &&
-                cgltf_accessor_is_type(ibm, cgltf_type_mat4)) {
+                cgltf_accessor_is_type(ibm, cgltf_type_mat4) &&
+                !ibm->is_sparse /* R426: raw memcpy skips sparse overrides */) {
                 const f32 *ibm_data = (const f32 *)cgltf_buffer_data(ibm);
                 usize ibm_count = (usize)ibm->count;
                 /* R115-3: Check ibm_data for NULL (cgltf_buffer_data may return NULL). */
@@ -877,8 +989,17 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
              * skip non-float inputs instead of reinterpreting them. */
             if (ch->sampler->input->component_type != cgltf_component_type_r_32f ||
                 ch->sampler->input->type != cgltf_type_scalar) continue;
-            f32 *times_data = (f32 *)cgltf_buffer_data(ch->sampler->input);
             usize time_count = (usize)ch->sampler->input->count;
+            /* R426: sparse input times — the raw f32 read below only sees the
+             * base data, so read the last key through cgltf (sparse-aware). */
+            if (ch->sampler->input->is_sparse) {
+                f32 last = 0.0f;
+                if (time_count > 0 &&
+                    cgltf_accessor_read_float(ch->sampler->input, time_count - 1, &last, 1) &&
+                    last > max_time) max_time = last;
+                continue;
+            }
+            f32 *times_data = (f32 *)cgltf_buffer_data(ch->sampler->input);
             if (time_count > 0 && times_data) {
                 f32 last = times_data[time_count - 1];
                 if (last > max_time) max_time = last;
@@ -914,10 +1035,26 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             f32 *times = (f32 *)cgltf_buffer_data(samp->input);
             f32 *values = (f32 *)cgltf_buffer_data(samp->output);
             usize kf_count = (usize)samp->input->count;
-            if (!times || !values || kf_count == 0) continue;
+            /* R426: a sparse accessor may have no base bufferView (all data in
+             * the sparse views), so a NULL base pointer is only fatal for
+             * non-sparse accessors. */
+            if ((!times && !samp->input->is_sparse) ||
+                (!values && !samp->output->is_sparse) || kf_count == 0) continue;
 
             u32 n = (u32)kf_count;
             if (n > SKELETON_MAX_KEYFRAMES) n = SKELETON_MAX_KEYFRAMES;
+
+            /* R426: sparse input times are read key-by-key through cgltf
+             * (sparse-aware) into a local array; non-sparse keeps the raw f32
+             * base pointer above. */
+            f32 sparse_times[SKELETON_MAX_KEYFRAMES];
+            if (samp->input->is_sparse) {
+                for (u32 k = 0; k < n; k++) {
+                    if (!cgltf_accessor_read_float(samp->input, k, &sparse_times[k], 1))
+                        sparse_times[k] = 0.0f;
+                }
+                times = sparse_times;
+            }
 
             f32 packed_values[SKELETON_MAX_KEYFRAMES][4];
             usize comp = cgltf_num_components(samp->output->type);
@@ -925,8 +1062,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             /* R415: sampler output may legally be normalized BYTE/SHORT
              * (quantized animation) — reading it as raw f32 reinterpreted and
              * over-read the data. Convert per-key through cgltf unless the
-             * accessor is actually float. */
-            bool output_float = samp->output->component_type == cgltf_component_type_r_32f;
+             * accessor is actually float.
+             * R426: also convert when the accessor is sparse — the raw
+             * values[k*comp+c] reads skip the override views. */
+            bool output_float = samp->output->component_type == cgltf_component_type_r_32f &&
+                                !samp->output->is_sparse;
             for (u32 k = 0; k < n; k++) {
                 if (output_float) {
                     for (usize c = 0; c < comp && c < 4; c++) {

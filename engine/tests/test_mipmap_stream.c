@@ -308,6 +308,56 @@ TEST(mipmap_request_pool_reuse_after_free)
     remove(TMP_PATH);
 }
 
+/* R426: a permanently failing load used to finish as MIPMAP_LEVEL_UNLOADED,
+ * so the next mipmap_stream_update re-issued the async request — one failing
+ * request per frame forever. The per-level failure latch stops the retry loop
+ * until mipmap_stream_invalidate re-arms it. */
+TEST(mipmap_failed_load_not_rerequested)
+{
+    VFS *vfs = vfs_create();
+    vfs_mount_dir(vfs, ".");
+    async_loader_init(1, vfs);
+
+    MipmapStreamManager mgr;
+    ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
+
+    /* Nonexistent path: every load fails asynchronously. */
+    i32 idx = mipmap_stream_register(&mgr, "test_mipmap_missing.bin",
+                                     TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    ASSERT_TRUE(idx >= 0);
+
+    mipmap_stream_update_visibility(&mgr, idx, 1.0f, 1);
+    mipmap_stream_update(&mgr);
+    ASSERT_EQ(mipmap_stream_load_requests(&mgr), 1u);
+
+    /* Pump until the async failure lands in the callback. */
+    bool failed = false;
+    for (u32 i = 0; i < 2000; i++) {
+        async_loader_tick();
+        if (mgr.textures[idx].level_failed[0]) { failed = true; break; }
+        time_sleep_us(500);
+    }
+    ASSERT_TRUE(failed);
+
+    /* Further updates must not re-issue the request. */
+    for (u32 i = 0; i < 8; i++) {
+        async_loader_tick();
+        mipmap_stream_update(&mgr);
+    }
+    ASSERT_EQ(mipmap_stream_load_requests(&mgr), 1u);
+    ASSERT_TRUE(mipmap_stream_get_level(&mgr, idx, 0) == NULL);
+
+    /* invalidate clears the latch: the next update retries exactly once. */
+    mipmap_stream_invalidate(&mgr, idx);
+    ASSERT_TRUE(!mgr.textures[idx].level_failed[0]);
+    mipmap_stream_update(&mgr);
+    ASSERT_EQ(mipmap_stream_load_requests(&mgr), 2u);
+
+    mipmap_stream_shutdown(&mgr);
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_residency_and_upload);
     RUN_TEST(mipmap_eviction_under_budget);
@@ -316,4 +366,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_register_rejects_chain_over_vfs_cap);
     RUN_TEST(coverage_to_level_known_values);
     RUN_TEST(mipmap_request_pool_reuse_after_free);
+    RUN_TEST(mipmap_failed_load_not_rerequested);
 TEST_MAIN_END()

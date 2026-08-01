@@ -39,6 +39,9 @@ typedef struct {
     void              *level_data[MIPMAP_STREAM_MAX_LEVELS];
     u32                level_size[MIPMAP_STREAM_MAX_LEVELS];
     u64                level_offset[MIPMAP_STREAM_MAX_LEVELS];  /* byte offset in file — R166-B: u64 to prevent truncation >4GB */
+    /* R426: per-level load-failure latch — a failed load is not re-requested
+     * every frame; cleared by mipmap_stream_invalidate. */
+    bool               level_failed[MIPMAP_STREAM_MAX_LEVELS];
     /* Visibility tracking */
     f32                screen_coverage;   /* 0.0 - 1.0, fraction of screen */
     u32                desired_level;     /* computed from coverage */

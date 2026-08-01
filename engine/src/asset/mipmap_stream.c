@@ -133,10 +133,14 @@ static void mipmap_load_callback(void *user_data, void *data, u32 size) {
         return;
     }
 
-    /* Load failure / cancel: release the byte reservation made at request time. */
+    /* Load failure / cancel: release the byte reservation made at request time.
+     * R426: latch the failure so mipmap_stream_update does not re-issue the
+     * same request (and its log spam) every frame; invalidate clears it.
+     * Cancel via invalidate/shutdown already resets the flag there. */
     if (!data || size == 0) {
         tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
         tex->level_request_id[l] = 0;
+        tex->level_failed[l] = true;
         if (mgr->total_resident_bytes >= tex->level_size[l])
             mgr->total_resident_bytes -= tex->level_size[l];
         return;
@@ -147,6 +151,7 @@ static void mipmap_load_callback(void *user_data, void *data, u32 size) {
         free(data);
         tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
         tex->level_request_id[l] = 0;
+        tex->level_failed[l] = true; /* R426: latch — see above */
         if (mgr->total_resident_bytes >= tex->level_size[l])
             mgr->total_resident_bytes -= tex->level_size[l];
         LOG_WARN("MipmapStream: level %u size mismatch (%u != %u) for tex %u",
@@ -317,7 +322,11 @@ void mipmap_stream_update(MipmapStreamManager *mgr) {
         u32 desired = tex->desired_level;
         if (desired >= tex->mip_count) desired = tex->mip_count - 1;
 
-        if (tex->level_state[desired] == MIPMAP_LEVEL_UNLOADED) {
+        /* R426: a level whose load already failed is not re-requested every
+         * frame (was: failing request + LOG_WARN per frame forever). The
+         * failure latch is cleared by mipmap_stream_invalidate. */
+        if (tex->level_state[desired] == MIPMAP_LEVEL_UNLOADED &&
+            !tex->level_failed[desired]) {
             u32 needed = tex->level_size[desired];
             /* R171: If over budget, evict this texture's finer resident levels
              * first so desired mip can load (previously skipped forever). */
@@ -408,8 +417,12 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
     /* Already resident */
     if (tex->level_state[level] == MIPMAP_LEVEL_RESIDENT) return true;
 
-    /* Issue the load if it isn't already in flight. */
-    if (tex->level_state[level] == MIPMAP_LEVEL_UNLOADED) {
+    /* Issue the load if it isn't already in flight.
+     * R426: skip levels whose load already failed (latch cleared by
+     * mipmap_stream_invalidate); the wait loop below then sees UNLOADED and
+     * returns false immediately instead of re-requesting a known-bad read. */
+    if (tex->level_state[level] == MIPMAP_LEVEL_UNLOADED &&
+        !tex->level_failed[level]) {
         u32 needed = tex->level_size[level];
         /* R172: Evict finer levels then respect budget (same as update path). */
         if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
@@ -519,6 +532,7 @@ void mipmap_stream_invalidate(MipmapStreamManager *mgr, i32 tex_idx) {
         }
         tex->level_state[l] = MIPMAP_LEVEL_UNLOADED;
         tex->level_request_id[l] = 0;
+        tex->level_failed[l] = false; /* R426: invalidate re-arms failed loads */
     }
     tex->resident_level = tex->mip_count;
     LOG_INFO("MipmapStream: invalidated '%s'", tex->path);
