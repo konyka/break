@@ -90,6 +90,25 @@ TEST(heap_alignment)
     heap_alloc_destroy(h);
 }
 
+TEST(heap_zero_alignment_clamped)
+{
+    /* R419: align==0 underflowed extra to SIZE_MAX, slipped past the overflow
+     * guard and computed aligned==0 (wild write). It must be clamped to
+     * pointer alignment, matching pool_init. */
+    Alloc *h = heap_alloc_create();
+    u8 *p = (u8 *)h->alloc(h, 64, 0);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ((uintptr_t)p % sizeof(void *), (uintptr_t)0);
+    memset(p, 0xAB, 64);
+    /* realloc with align==0 must be clamped too, and preserve the payload */
+    u8 *p2 = (u8 *)h->realloc(h, p, 64, 128, 0);
+    ASSERT_NOT_NULL(p2);
+    ASSERT_EQ((uintptr_t)p2 % sizeof(void *), (uintptr_t)0);
+    for (int i = 0; i < 64; i++) ASSERT_EQ(p2[i], (u8)0xAB);
+    h->free(h, p2, 128);
+    heap_alloc_destroy(h);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Arena Allocator                                                         */
 /* ----------------------------------------------------------------------- */
@@ -316,6 +335,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(heap_realloc);
     RUN_TEST(heap_realloc_over_aligned_preserves_payload);
     RUN_TEST(heap_alignment);
+    RUN_TEST(heap_zero_alignment_clamped);
     RUN_TEST(arena_basic);
     RUN_TEST(arena_multiple_allocs);
     RUN_TEST(arena_free_all);

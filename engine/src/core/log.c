@@ -19,6 +19,11 @@ void log_set_level(LogLevel level) {
 
 void log_write(LogLevel level, const char *file, int line,
                const char *fmt, ...) {
+    /* R419: clamp level into the valid enum range — level_colors[] and
+     * level_strings[] have exactly 6 entries; an out-of-range level (e.g. from
+     * a cast or corrupt value) was an out-of-bounds read. */
+    if (level < LOG_TRACE) level = LOG_TRACE;
+    if (level > LOG_FATAL) level = LOG_FATAL;
     if (level < min_level) return;
 
     /* strrchr is SIMD-optimized in glibc, faster than manual linear scan */

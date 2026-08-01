@@ -200,6 +200,38 @@ TEST(profiler_pop_empty_is_safe)
     ASSERT_EQ(f->region_count, 0u);
 }
 
+TEST(profiler_nesting_correct_beyond_max_regions)
+{
+    /* R419: pushes past PROFILER_MAX_REGIONS are dropped, but their matching
+     * pops must stay balanced — pre-fix each such pop finalized an outer
+     * region with the dropped region's timestamp, corrupting nesting. */
+    profiler_reset();
+    profiler_set_enabled(true);
+
+    profiler_begin_frame();
+    profiler_push("outer");                         /* regions[0] */
+    for (int i = 1; i < PROFILER_MAX_REGIONS; i++)
+        profiler_push("fill");                      /* regions[1..63] */
+    for (int i = 0; i < 10; i++)
+        profiler_push("dropped");                   /* beyond capacity */
+    for (int i = 0; i < 10; i++)
+        profiler_pop();                             /* pops the dropped pushes */
+    for (int i = 1; i < PROFILER_MAX_REGIONS; i++)
+        profiler_pop();                             /* pops the fills */
+    time_sleep_us(500);
+    profiler_pop();                                 /* must finalize outer HERE */
+    profiler_end_frame();
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(f->region_count, (u32)PROFILER_MAX_REGIONS);
+    ASSERT_STR_EQ(f->regions[0].name, "outer");
+    /* Pre-fix the outer region was finalized early by one of the fill pops
+     * above (before the sleep), so its elapsed stayed below 500us. */
+    ASSERT_TRUE(f->regions[0].elapsed_us >= 500u);
+    ASSERT_EQ(g_profiler.open_count, 0u);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Disabled profiler is no-op                                              */
 /* ----------------------------------------------------------------------- */
@@ -440,6 +472,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_multiple_regions);
     RUN_TEST(profiler_region_overflow_clamped);
     RUN_TEST(profiler_pop_empty_is_safe);
+    RUN_TEST(profiler_nesting_correct_beyond_max_regions);
     RUN_TEST(profiler_disabled_is_noop);
     RUN_TEST(profiler_region_timing_nonzero);
     /* Edge cases */

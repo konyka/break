@@ -183,6 +183,25 @@ TEST(str_copy_zero_buffer)
     ASSERT_TRUE(true);
 }
 
+TEST(str_eq_null_empty_slices)
+{
+    /* R419: memcmp(NULL, NULL, 0) is UB — empty slices must short-circuit
+     * before touching memcmp. */
+    Str a = {NULL, 0};
+    Str b = {NULL, 0};
+    ASSERT_TRUE(str_eq(a, b));
+}
+
+TEST(str_copy_null_data_zero_len)
+{
+    /* R419: memcpy(buf, NULL, 0) is UB — nothing may be copied. */
+    Str s = {NULL, 0};
+    char buf[8] = {(char)0x7F, 0, 0, 0, 0, 0, 0, 0};
+    Str copied = str_copy(s, buf, sizeof(buf));
+    ASSERT_EQ(copied.len, (usize)0);
+    ASSERT_EQ(buf[0], '\0');
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -210,4 +229,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(str_slice_start_beyond_len);
     RUN_TEST(str_find_char_empty_string);
     RUN_TEST(str_copy_zero_buffer);
+    RUN_TEST(str_eq_null_empty_slices);
+    RUN_TEST(str_copy_null_data_zero_len);
 TEST_MAIN_END()

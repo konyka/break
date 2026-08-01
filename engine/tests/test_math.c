@@ -389,6 +389,18 @@ TEST(mat4_inverse_singular) {
     (void)inv;
 }
 
+TEST(mat4_inverse_near_singular_returns_identity) {
+    /* R419: exact det == 0.0f missed near-singular matrices — 1/det exploded
+     * into garbage. |det| < 1e-20 must return identity (same epsilon as the
+     * R142 guards). det of scaling(1e-7 x3) = 1e-21. */
+    Mat4 m = mat4_scaling(1e-7f, 1e-7f, 1e-7f);
+    Mat4 inv = mat4_inverse(m);
+    Mat4 id = mat4_identity();
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++)
+            ASSERT_FLOAT_EQ(inv.e[r][c], id.e[r][c], EPS);
+}
+
 TEST(quat_from_axis_angle_zero_angle) {
     /* Zero angle should give identity */
     Quat q = quat_from_axis_angle(vec3(1.0f, 0.0f, 0.0f), 0.0f);
@@ -558,6 +570,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vec3_normalize_zero_length);
     RUN_TEST(vec3_scale_zero);
     RUN_TEST(mat4_inverse_singular);
+    RUN_TEST(mat4_inverse_near_singular_returns_identity);
     RUN_TEST(quat_from_axis_angle_zero_angle);
     RUN_TEST(quat_slerp_same_quat);
     RUN_TEST(quat_normalize_zero);

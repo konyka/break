@@ -144,6 +144,17 @@ TEST(tiny_buffer_zero_capacity)
     ASSERT_TRUE(pool_acquire(&p) == NULL);
 }
 
+TEST(init_alloc_rejects_align_overflow)
+{
+    /* R419: bs * block_count could pass the SIZE_MAX / bs guard yet overflow
+     * when `+ align` was added, wrapping the malloc size. Must be rejected.
+     * bs=16, block_count=SIZE_MAX/16 → product = SIZE_MAX-15; +16 wraps. */
+    Pool p;
+    ASSERT_TRUE(!pool_init_alloc(&p, 16, SIZE_MAX / 16, 16));
+    /* And the plain multiplication guard still holds. */
+    ASSERT_TRUE(!pool_init_alloc(&p, 16, SIZE_MAX / 16 + 1, 16));
+}
+
 int main(void)
 {
     RUN_TEST(init_over_buffer_reports_capacity);
@@ -154,6 +165,7 @@ int main(void)
     RUN_TEST(blocks_are_aligned);
     RUN_TEST(vtable_alloc_interface);
     RUN_TEST(tiny_buffer_zero_capacity);
+    RUN_TEST(init_alloc_rejects_align_overflow);
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

@@ -5,6 +5,16 @@
 
 Profiler g_profiler = {0};
 
+/* R419: sentinel pushed on open_stack for a region dropped because the frame
+ * hit PROFILER_MAX_REGIONS — keeps the matching pop balanced. */
+#define PROFILER_REGION_DROPPED 0xFFFFFFFFu
+
+/* R419: dropped pushes that no longer fit on open_stack itself (it is only
+ * PROFILER_MAX_REGIONS deep). Dropped pushes are always the most recent opens
+ * (recorded pushes all precede them within a frame), so pops consume this
+ * count before touching the stack. Reset per frame in profiler_begin_frame. */
+static u32 g_dropped_overflow;
+
 void profiler_set_enabled(bool enabled) {
     g_profiler.enabled = enabled;
 }
@@ -14,6 +24,7 @@ void profiler_begin_frame(void) {
     ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
     f->region_count = 0;
     g_profiler.open_count = 0; /* R304: reset the open-region stack per frame */
+    g_dropped_overflow = 0;    /* R419 */
     f->frame_start_us = time_microseconds();
 }
 
@@ -28,7 +39,16 @@ void profiler_end_frame(void) {
 void profiler_push(const char *name) {
     if (!g_profiler.enabled) return;
     ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
-    if (f->region_count >= PROFILER_MAX_REGIONS) return;
+    /* R419: when the frame is full, push a sentinel so the matching pop stays
+     * balanced — otherwise the pop would finalize an outer region with this
+     * (unrecorded) region's timing and corrupt nesting. */
+    if (f->region_count >= PROFILER_MAX_REGIONS) {
+        if (g_profiler.open_count < PROFILER_MAX_REGIONS)
+            g_profiler.open_stack[g_profiler.open_count++] = PROFILER_REGION_DROPPED;
+        else
+            g_dropped_overflow++;
+        return;
+    }
     u32 idx = f->region_count++;
     ProfilerRegion *r = &f->regions[idx];
     r->name = name;
@@ -49,8 +69,13 @@ void profiler_pop(void) {
      * region and the outer region's elapsed_us stayed 0. main.c nests
      * render > {particles+csm, scene, postfx}, so "render" always reported 0us.
      * An extra/unbalanced pop is a safe no-op via the empty-stack guard. */
+    /* R419: excess dropped pushes sit above every stacked entry, consume them
+     * first so the stack below stays correctly nested. */
+    if (g_dropped_overflow > 0) { g_dropped_overflow--; return; }
     if (g_profiler.open_count == 0) return;
     u32 idx = g_profiler.open_stack[--g_profiler.open_count];
+    /* R419: skip sentinels left by pushes that exceeded PROFILER_MAX_REGIONS. */
+    if (idx == PROFILER_REGION_DROPPED) return;
     ProfilerRegion *r = &f->regions[idx];
     r->elapsed_us = time_microseconds() - r->start_us;
 }

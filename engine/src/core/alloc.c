@@ -7,6 +7,11 @@
 
 static void *heap_alloc_fn(Alloc *self, usize size, usize align) {
     (void)self;
+    /* R419: clamp align like pool_init does — align==0 makes extra=SIZE_MAX,
+     * which slips past the overflow guard and computes aligned==0 (wild write).
+     * The mask trick below also requires a power-of-two align >= pointer size
+     * so the back-pointer slot ((void**)aligned)[-1] stays aligned. */
+    if (align < sizeof(void *)) align = sizeof(void *);
     usize extra = align - 1;
     usize total = size + extra + sizeof(void *);
     /* R158: Guard against usize overflow — without this, a very large size
@@ -39,6 +44,8 @@ static void *heap_realloc_fn(Alloc *self, void *ptr, usize old_size,
      * base ≡16 gives offset 16), so the returned pointer no longer points at
      * the preserved bytes. Remember the old offset and relocate if it moved. */
     usize old_off = (usize)ptr - (usize)raw;
+    /* R419: same align clamp as heap_alloc_fn (align==0 → extra=SIZE_MAX). */
+    if (align < sizeof(void *)) align = sizeof(void *);
     usize extra = align - 1;
     usize total = new_size + extra + sizeof(void *);
     /* R158: Guard against usize overflow. */

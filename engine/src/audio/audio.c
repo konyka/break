@@ -10,7 +10,31 @@
 struct AudioSource {
     ma_sound  sound;
     bool      active;
+    u32       generation; /* R419: ABA guard, bumped each time the slot is freed */
 };
+
+/* R419 (HANDLE ABA): source handles were bare slot indices (id+1) recycled via
+ * the free-list, so a stale handle silently aliased a new sound on the same
+ * slot. Handles now pack a per-slot generation in the upper 24 bits and the
+ * slot+1 in the low 8 bits (AUDIO_MAX_SOURCES=32, so slot+1 always fits).
+ * The public handle type (u32) is unchanged; generation 0 keeps the first
+ * handle for a slot numerically identical to the old scheme. */
+#define AUDIO_HANDLE_GEN_SHIFT 8u
+#define AUDIO_HANDLE_SLOT_MASK 0xFFu
+
+static u32 audio_make_handle(const AudioSource *src, u32 slot) {
+    return (src->generation << AUDIO_HANDLE_GEN_SHIFT) | (slot + 1u);
+}
+
+/* Resolve a handle to its source, or NULL if the handle is stale/invalid. */
+static AudioSource *audio_resolve(AudioSystem *as, u32 handle) {
+    if (!as) return NULL;
+    u32 slot = handle & AUDIO_HANDLE_SLOT_MASK;
+    if (slot == 0 || slot > as->source_count) return NULL;
+    AudioSource *src = &as->sources[slot - 1u];
+    if ((handle >> AUDIO_HANDLE_GEN_SHIFT) != src->generation) return NULL;
+    return src;
+}
 
 struct AudioImpl {
     ma_engine engine;
@@ -147,13 +171,14 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
     ma_sound_set_looping(&src->sound, looping);
     ma_sound_start(&src->sound);
     src->active = true;
-    return id + 1;
+    return audio_make_handle(src, id);
 }
 
 void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume, bool looping) {
-    u32 id = audio_play(as, path, volume, looping);
-    if (id == 0) return;
-    AudioSource *src = &as->sources[id - 1];
+    u32 handle = audio_play(as, path, volume, looping);
+    if (handle == 0) return;
+    AudioSource *src = audio_resolve(as, handle);
+    if (!src) return;
     /* R270 (CORRECTNESS): audio_play() now inits with NO_SPATIALIZATION, so a
      * 3D sound must re-enable it (and pick the same inverse-distance model the
      * streaming 3D path uses) before positioning it. */
@@ -163,13 +188,16 @@ void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume,
 }
 
 void audio_stop(AudioSystem *as, u32 source_id) {
-    if (!as || source_id == 0 || source_id > as->source_count) return;
-    u32 idx = source_id - 1;
-    AudioSource *src = &as->sources[idx];
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale or out-of-range handle — no-op */
     if (src->active) {
         ma_sound_stop(&src->sound);
         ma_sound_uninit(&src->sound);
         src->active = false;
+        /* R419: invalidate outstanding handles before recycling the slot. */
+        src->generation++;
+        u32 idx = (source_id & AUDIO_HANDLE_SLOT_MASK) - 1u;
         /* Return slot to free-list for reuse */
         if (as->free_count < AUDIO_MAX_SOURCES) {
             as->free_list[as->free_count++] = idx;
@@ -210,12 +238,13 @@ u32 audio_play_streamed(AudioSystem *as, const char *path, f32 volume,
     src->active = true;
     LOG_INFO("Audio: streaming '%s' (source %u, %s)", path, id + 1,
              spatial ? "3D" : "2D");
-    return id + 1;
+    return audio_make_handle(src, id);
 }
 
 void audio_source_set_position(AudioSystem *as, u32 source_id, Vec3 position) {
-    if (!as || source_id == 0 || source_id > as->source_count) return;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale handle — no-op */
     if (src->active) {
         ma_sound_set_position(&src->sound, position.e[0], position.e[1], position.e[2]);
     }
@@ -223,8 +252,9 @@ void audio_source_set_position(AudioSystem *as, u32 source_id, Vec3 position) {
 
 void audio_source_set_attenuation(AudioSystem *as, u32 source_id,
                                   f32 min_dist, f32 max_dist, f32 rolloff) {
-    if (!as || source_id == 0 || source_id > as->source_count) return;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale handle — no-op */
     if (!src->active) return;
     ma_sound_set_attenuation_model(&src->sound, ma_attenuation_model_inverse);
     ma_sound_set_min_distance(&src->sound, min_dist);
@@ -233,20 +263,23 @@ void audio_source_set_attenuation(AudioSystem *as, u32 source_id,
 }
 
 void audio_source_set_volume(AudioSystem *as, u32 source_id, f32 volume) {
-    if (!as || source_id == 0 || source_id > as->source_count) return;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale handle — no-op */
     if (src->active) ma_sound_set_volume(&src->sound, volume);
 }
 
 void audio_source_start(AudioSystem *as, u32 source_id) {
-    if (!as || source_id == 0 || source_id > as->source_count) return;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale handle — no-op */
     if (src->active) ma_sound_start(&src->sound);
 }
 
 void audio_source_stop(AudioSystem *as, u32 source_id) {
-    if (!as || source_id == 0 || source_id > as->source_count) return;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale handle — no-op */
     /* R241: Pause only — ma_sound_stop halts playback but preserves the cursor
      * and keeps the sound initialized and its slot allocated (unlike audio_stop,
      * which uninits the sound and returns the slot to the free-list). This lets
@@ -255,15 +288,17 @@ void audio_source_stop(AudioSystem *as, u32 source_id) {
 }
 
 bool audio_source_at_end(AudioSystem *as, u32 source_id) {
-    if (!as || source_id == 0 || source_id > as->source_count) return true;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return true;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return true; /* R419: stale handle — treat as ended */
     if (!src->active) return true;
     return ma_sound_at_end(&src->sound) == MA_TRUE;
 }
 
 f32 audio_source_cursor_seconds(AudioSystem *as, u32 source_id) {
-    if (!as || source_id == 0 || source_id > as->source_count) return 0.0f;
-    AudioSource *src = &as->sources[source_id - 1];
+    if (!as || source_id == 0) return 0.0f;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return 0.0f; /* R419: stale handle */
     if (!src->active) return 0.0f;
     float cursor = 0.0f;
     ma_sound_get_cursor_in_seconds(&src->sound, &cursor);

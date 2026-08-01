@@ -90,7 +90,9 @@ Mat4 mat4_inverse(Mat4 m) {
     inv[15] =  e[0]*e[5]*e[10]  - e[0]*e[6]*e[9]   - e[4]*e[1]*e[10] + e[4]*e[2]*e[9]  + e[8]*e[1]*e[6]   - e[8]*e[2]*e[5];
 
     f32 det = e[0]*inv[0] + e[1]*inv[4] + e[2]*inv[8] + e[3]*inv[12];
-    if (det == 0.0f) return mat4_identity();
+    /* R419: exact det == 0.0f misses near-singular matrices — 1/det explodes
+     * and the result is garbage. Use the same epsilon as the R142 guards. */
+    if (fabsf(det) < 1e-20f) return mat4_identity();
 
     f32 idet = 1.0f / det;
     Mat4 out;

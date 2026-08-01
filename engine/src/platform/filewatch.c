@@ -1,3 +1,8 @@
+/* R419: the engine pins _POSIX_C_SOURCE=199309L, which hides lstat() on glibc
+ * (needed below for symlink-safe directory recursion). _DEFAULT_SOURCE
+ * restores it; inert on other platforms. Must precede all system includes. */
+#define _DEFAULT_SOURCE
+
 #include <platform/filewatch.h>
 #include <core/log.h>
 #include <string.h>
@@ -327,6 +332,13 @@ void filewatch_poll(FileWatcher *fw) {
             const char *ptr = buf;
             while (ptr < buf + len) {
                 const struct inotify_event *ev = (const struct inotify_event *)ptr;
+                /* R419: IN_Q_OVERFLOW (wd == -1) means the kernel dropped
+                 * events — the dirty set is incomplete, so fall back to
+                 * stat-ing every watched file this cycle. */
+                if (ev->mask & IN_Q_OVERFLOW) {
+                    inotify_ok = false;
+                    break;
+                }
                 /* Mark the entry matching this wd as dirty */
                 for (u32 i = 0; i < fw->count; i++) {
                     if (fw->entries[i].inotify_wd == ev->wd) {
@@ -357,7 +369,10 @@ void filewatch_poll(FileWatcher *fw) {
  * ------------------------------------------------------------------ */
 #include <dirent.h>
 
-static void fw_add_dir_recursive(FileWatch *fw, const char *path) {
+static void fw_add_dir_recursive(FileWatch *fw, const char *path, u32 depth) {
+    /* R419: cap recursion depth — a symlink to an ancestor directory would
+     * otherwise recurse forever (stack overflow). */
+    if (depth >= 32) return;
     if (fw->watch_count >= FW_MAX_WATCHES) return;
     int wd = inotify_add_watch(fw->inotify_fd, path,
         IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_TO);
@@ -381,8 +396,10 @@ static void fw_add_dir_recursive(FileWatch *fw, const char *path) {
         int n = snprintf(sub, sizeof(sub), "%s/%s", path, entry->d_name);
         if (n < 0 || (size_t)n >= sizeof(sub)) continue;
         struct stat st;
-        if (stat(sub, &st) == 0 && S_ISDIR(st.st_mode)) {
-            fw_add_dir_recursive(fw, sub);
+        /* R419: lstat (not stat) and skip symlinks — stat() follows links, so
+         * a symlink to an ancestor dir caused unbounded recursion. */
+        if (lstat(sub, &st) == 0 && S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+            fw_add_dir_recursive(fw, sub, depth + 1);
         }
     }
     closedir(dir);
@@ -400,7 +417,7 @@ FileWatch *filewatch_create_dir(const char *dir_path) {
     }
     strncpy(fw->base_path, dir_path, sizeof(fw->base_path) - 1);
     fw->base_path[sizeof(fw->base_path) - 1] = '\0';
-    fw_add_dir_recursive(fw, dir_path);
+    fw_add_dir_recursive(fw, dir_path, 0);
     return fw;
 }
 
@@ -460,7 +477,7 @@ bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
 
         /* Auto-watch newly created subdirectories */
         if ((event->mask & IN_CREATE) && (event->mask & IN_ISDIR)) {
-            fw_add_dir_recursive(fw, ev.path);
+            fw_add_dir_recursive(fw, ev.path, 0);
         }
 
         if (keep) {

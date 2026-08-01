@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <poll.h> /* R419: non-blocking socket check in platform_poll */
 #include <sys/mman.h>
 #include <linux/input-event-codes.h>
 
@@ -627,10 +628,31 @@ PlatformEventResult platform_poll(Platform *p) {
         return PLATFORM_EVENT_QUIT;
     }
 
-    /* Flush and read events (non-blocking via roundtrip) */
+    /* R419 (PERF): wl_display_roundtrip() blocked on a full compositor
+     * round-trip every frame. Use the prepare_read pattern with a zero-timeout
+     * poll instead: flush outgoing requests, read whatever is already buffered
+     * on the socket (non-blocking), then dispatch — all pending events are
+     * still processed each call, but we never wait on the compositor. */
+    while (wl_display_prepare_read(p->display) != 0) {
+        if (wl_display_dispatch_pending(p->display) < 0) {
+            LOG_ERROR("Wayland display error");
+            p->should_close = true;
+            return PLATFORM_EVENT_QUIT;
+        }
+    }
     wl_display_flush(p->display);
-    if (wl_display_roundtrip(p->display) < 0) {
-        LOG_ERROR("Wayland roundtrip failed");
+    struct pollfd pfd = { wl_display_get_fd(p->display), POLLIN, 0 };
+    if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+        if (wl_display_read_events(p->display) < 0) {
+            LOG_ERROR("Wayland read failed");
+            p->should_close = true;
+            return PLATFORM_EVENT_QUIT;
+        }
+    } else {
+        wl_display_cancel_read(p->display);
+    }
+    if (wl_display_dispatch_pending(p->display) < 0) {
+        LOG_ERROR("Wayland dispatch failed");
         p->should_close = true;
         return PLATFORM_EVENT_QUIT;
     }

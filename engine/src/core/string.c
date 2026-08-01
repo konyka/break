@@ -3,6 +3,9 @@
 
 bool str_eq(Str a, Str b) {
     if (a.len != b.len) return false;
+    /* R419: memcmp with NULL data is UB even when len==0 — equal-length empty
+     * slices are trivially equal (pointer-equal case kept for clarity). */
+    if (a.len == 0) return true;
     return a.data == b.data || memcmp(a.data, b.data, a.len) == 0;
 }
 
@@ -36,7 +39,8 @@ Str str_copy(Str s, char *buf, usize buf_size) {
      * buf_size - 1 would wrap to SIZE_MAX and bypass the length clamp. */
     if (buf_size == 0) return (Str){buf, 0};
     usize len = s.len < buf_size - 1 ? s.len : buf_size - 1;
-    memcpy(buf, s.data, len);
+    /* R419: memcpy with NULL s.data is UB even when len==0. */
+    if (len > 0) memcpy(buf, s.data, len);
     buf[len] = '\0';
     return (Str){buf, len};
 }
