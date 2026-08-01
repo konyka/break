@@ -6661,6 +6661,18 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 
 **验收**：`ctest --test-dir build-verify-x11-gl -LE graphics` 35/35；VK 构建同绿；task/ecs 修复 ASan 验证。
 
+## R420–R423 第二轮审查（性能相关项）
+
+二审验证 R414–R419 全部修复正确，并新增 31 处修复（详见 `Implementation_Status.md`），其中性能项：
+
+- [x] `engine_frame` 帧限制器计时修正：`delta_time`/FPS 统计现为真实帧周期（R420）
+- [x] `task_alloc` pool 计数器改 CAS 饱和（同时消除理论回绕）（R420）
+- [x] `NetSocket` 目的地址解析缓存：发送热路径不再每包 `getaddrinfo`（R423）
+- [x] render_graph 非导入 buffer 及时销毁，避免显存/内存驻留（R421）
+- [x] GL/VK buffer update clamp 对齐，消除后端行为分歧带来的重试成本（R421）
+
+**验收**：GL/VK 双构建 `ctest -LE graphics` 各 35/35。
+
 ## 构建与回归命令
 
 
