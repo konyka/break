@@ -5,13 +5,29 @@
 
 /* ---- Heap Allocator ---- */
 
+/* R420: the &(align - 1) mask trick in heap_alloc_fn / heap_realloc_fn only
+ * works for power-of-two alignments. Round a non-pow2 align (e.g. 24) up to
+ * the next power of two after the small-align clamp. Returns 0 when the next
+ * power of two would overflow usize. */
+static usize align_up_pow2(usize align) {
+    if (align < sizeof(void *)) return sizeof(void *);
+    if ((align & (align - 1)) == 0) return align;
+    usize p = sizeof(void *);
+    while (p < align) {
+        if (p > SIZE_MAX / 2) return 0;
+        p <<= 1;
+    }
+    return p;
+}
+
 static void *heap_alloc_fn(Alloc *self, usize size, usize align) {
     (void)self;
     /* R419: clamp align like pool_init does — align==0 makes extra=SIZE_MAX,
      * which slips past the overflow guard and computes aligned==0 (wild write).
      * The mask trick below also requires a power-of-two align >= pointer size
      * so the back-pointer slot ((void**)aligned)[-1] stays aligned. */
-    if (align < sizeof(void *)) align = sizeof(void *);
+    align = align_up_pow2(align);  /* R420: also rounds non-pow2 up */
+    if (align == 0) return NULL;   /* R420: next pow2 overflowed usize */
     usize extra = align - 1;
     usize total = size + extra + sizeof(void *);
     /* R158: Guard against usize overflow — without this, a very large size
@@ -44,8 +60,10 @@ static void *heap_realloc_fn(Alloc *self, void *ptr, usize old_size,
      * base ≡16 gives offset 16), so the returned pointer no longer points at
      * the preserved bytes. Remember the old offset and relocate if it moved. */
     usize old_off = (usize)ptr - (usize)raw;
-    /* R419: same align clamp as heap_alloc_fn (align==0 → extra=SIZE_MAX). */
-    if (align < sizeof(void *)) align = sizeof(void *);
+    /* R419: same align clamp as heap_alloc_fn (align==0 → extra=SIZE_MAX).
+     * R420: also round non-pow2 aligns up — the mask below needs pow2. */
+    align = align_up_pow2(align);
+    if (align == 0) return NULL;
     usize extra = align - 1;
     usize total = new_size + extra + sizeof(void *);
     /* R158: Guard against usize overflow. */
@@ -125,7 +143,10 @@ static void *debug_realloc_fn(Alloc *self, void *ptr, usize old_size,
     DebugAlloc *d = (DebugAlloc *)self;
     void *new_ptr = d->inner->realloc(d->inner, ptr, old_size, new_size, align);
     if (new_ptr) {
-        d->total_allocated += new_size - old_size;
+        /* R420: `total_allocated += new_size - old_size` underflows usize on
+         * shrink — add the delta or subtract the difference explicitly. */
+        if (new_size >= old_size) d->total_allocated += new_size - old_size;
+        else                      d->total_allocated -= old_size - new_size;
         if (d->total_allocated > d->peak_allocated)
             d->peak_allocated = d->total_allocated;
     }

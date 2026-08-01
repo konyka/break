@@ -130,6 +130,26 @@ TEST(submit_dep_waits_for_two_parents)
     ASSERT_EQ(atomic_load(&g_counter), 300);
 }
 
+TEST(submit_dep_null_deps_rejected)
+{
+    /* R420: deps == NULL with dep_count > 0 dereferenced NULL — the
+     * submission must fail with TASK_HANDLE_INVALID, not segfault. */
+    atomic_store(&g_counter, 0);
+    TaskHandle h = task_submit_dep(g_ts, increment_fn, NULL, NULL, 1);
+    ASSERT_EQ(h, TASK_HANDLE_INVALID);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), 0);  /* rejected task must not run */
+}
+
+TEST(submit_n_null_ctxs_ignored)
+{
+    /* R420: ctxs == NULL with count > 0 dereferenced NULL — must be a no-op. */
+    atomic_store(&g_counter, 0);
+    task_submit_n(g_ts, increment_fn, NULL, 3);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), 0);
+}
+
 /* ----------------------------------------------------------------------- */
 /* R414 regression tests.
  * NOTE: these must run LAST — pushing the shared g_ts past the 4096-entry
@@ -195,6 +215,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(submit_dep_waits_for_parent);
     RUN_TEST(submit_dep_runs_when_dep_already_done);
     RUN_TEST(submit_dep_waits_for_two_parents);
+    RUN_TEST(submit_dep_null_deps_rejected);
+    RUN_TEST(submit_n_null_ctxs_ignored);
     /* R414: these exhaust the shared task pool — keep them last. */
     RUN_TEST(out_of_range_priority_is_clamped);
     RUN_TEST(beyond_pool_capacity_all_execute);

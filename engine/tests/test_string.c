@@ -202,6 +202,16 @@ TEST(str_copy_null_data_zero_len)
     ASSERT_EQ(buf[0], '\0');
 }
 
+TEST(str_slice_null_data)
+{
+    /* R420: s.data + start on NULL data is pointer arithmetic on NULL (UB)
+     * even when start == 0 — must return the empty slice. */
+    Str s = {NULL, 0};
+    Str sub = str_slice(s, 0, 0);
+    ASSERT_EQ(sub.len, (usize)0);
+    ASSERT_TRUE(sub.data == NULL);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -231,4 +241,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(str_copy_zero_buffer);
     RUN_TEST(str_eq_null_empty_slices);
     RUN_TEST(str_copy_null_data_zero_len);
+    RUN_TEST(str_slice_null_data);
 TEST_MAIN_END()

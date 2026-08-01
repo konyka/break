@@ -269,8 +269,11 @@ static inline u32 simd_aabb_overlap_batch_sse2(
     for (int i = 0; i < 4; i++) {
         int overlap = 1;
         for (int j = 0; j < 3; j++) {
-            if (query_max[j] < aabb_mins[i * 4 + j] || 
-                aabb_maxs[i * 4 + j] < query_min[j]) {
+            /* R420: match the SSE2 path's SoA layout (axis-major:
+             * mins = [x0..x3][y0..y3][z0..z3]) — the old i*4+j indexing
+             * read AoS and disagreed with the vector path. */
+            if (query_max[j] < aabb_mins[j * 4 + i] ||
+                aabb_maxs[j * 4 + i] < query_min[j]) {
                 overlap = 0;
                 break;
             }

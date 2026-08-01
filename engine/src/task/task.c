@@ -190,10 +190,21 @@ static TaskSystem *g_task_system;
 static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio) {
     /* Lock-free bump allocation: atomic_fetch_add gives each caller a unique
      * pool_idx without mutex contention. Each caller writes to a distinct
-     * task_pool[pool_idx] slot, so no data race occurs. */
+     * task_pool[pool_idx] slot, so no data race occurs.
+     * R420: saturate the counter at capacity instead of a plain fetch_add —
+     * a monotonic u32 wraps past 2^32 submissions, and a wrapped count would
+     * hand out a live pool slot to be memset. The count only matters versus
+     * capacity, so stopping at capacity loses nothing. */
     Task *t = NULL;
     bool heap = false;
-    u32 pool_idx = atomic_fetch_add_explicit(&ts->task_pool_count, 1, memory_order_acq_rel);
+    u32 pool_idx = atomic_load_explicit(&ts->task_pool_count, memory_order_relaxed);
+    for (;;) {
+        if (pool_idx >= ts->task_pool_capacity) break;
+        if (atomic_compare_exchange_weak_explicit(&ts->task_pool_count, &pool_idx,
+                                                  pool_idx + 1,
+                                                  memory_order_acq_rel,
+                                                  memory_order_relaxed)) break;
+    }
     if (pool_idx < ts->task_pool_capacity) {
         t = &ts->_task_block[pool_idx];
         ts->task_pool[pool_idx] = t;
@@ -705,6 +716,9 @@ void task_submit(TaskSystem *ts, TaskFn fn, void *ctx) {
 }
 
 void task_submit_n(TaskSystem *ts, TaskFn fn, void **ctxs, i32 count) {
+    /* R420: ctxs==NULL with count>0 dereferenced NULL — validate like the
+     * other submit paths. */
+    if (count > 0 && !ctxs) return;
     for (i32 i = 0; i < count; i++) {
         Task *t = task_alloc(ts, fn, ctxs[i], TASK_PRIORITY_NORMAL);
         if (!t) continue;  /* R156: calloc failure */
@@ -725,6 +739,9 @@ TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority pri
 
 TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
                            TaskHandle *deps, u32 dep_count) {
+    /* R420: deps==NULL with dep_count>0 dereferenced NULL below — fail the
+     * submission instead of segfaulting. */
+    if (dep_count > 0 && !deps) return TASK_HANDLE_INVALID;
     Task *t = task_alloc(ts, fn, ctx, TASK_PRIORITY_NORMAL);
     if (!t) return TASK_HANDLE_INVALID;  /* R156: calloc failure */
     TaskHandle h = t->handle;

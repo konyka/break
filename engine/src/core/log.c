@@ -14,6 +14,10 @@ static const char *level_colors[] = {
 };
 
 void log_set_level(LogLevel level) {
+    /* R420: clamp like log_write does — an out-of-range level (e.g.
+     * log_set_level((LogLevel)99)) otherwise silently disables all logging. */
+    if (level < LOG_TRACE) level = LOG_TRACE;
+    if (level > LOG_FATAL) level = LOG_FATAL;
     min_level = level;
 }
 

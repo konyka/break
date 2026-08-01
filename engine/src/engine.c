@@ -55,6 +55,22 @@ bool engine_frame(Engine *e) {
     }
 
     u64 now_us = time_microseconds();
+
+    /* R420: sleep BEFORE touching last_frame_us. The old code stamped
+     * last_frame_us at frame start and recomputed delta_time after the sleep,
+     * so the game-visible delta_time was only the sleep duration (excluding
+     * frame work) and fps_accum summed pre-sleep deltas, over-reporting fps.
+     * delta_time is now the full frame period (work + sleep), computed once. */
+    if (e->target_fps > 0.0) {
+        f64 target_ms = 1.0 / e->target_fps;
+        f64 elapsed_ms = (f64)(now_us - e->last_frame_us) / 1e6;
+        if (elapsed_ms < target_ms) {
+            u64 sleep_us = (u64)((target_ms - elapsed_ms) * 1e6);
+            time_sleep_us(sleep_us);
+            now_us = time_microseconds();
+        }
+    }
+
     e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
     /* R147: Clamp delta_time to prevent physics tunneling / animation jumps
      * when the process is paused (debugger, system sleep, window minimized). */
@@ -71,19 +87,6 @@ bool engine_frame(Engine *e) {
                  e->fps_accum * 1000.0 / (f64)e->fps_frames);
         e->fps_accum = 0.0;
         e->fps_frames = 0;
-    }
-
-    if (e->target_fps > 0.0) {
-        f64 target_ms = 1.0 / e->target_fps;
-        f64 elapsed_ms = e->delta_time;
-        if (elapsed_ms < target_ms) {
-            u64 sleep_us = (u64)((target_ms - elapsed_ms) * 1e6);
-            time_sleep_us(sleep_us);
-            now_us = time_microseconds();
-            e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
-            if (e->delta_time > 0.1) e->delta_time = 0.1;  /* R147: clamp */
-            e->last_frame_us = now_us;
-        }
     }
 
     return true;

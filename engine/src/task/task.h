@@ -79,11 +79,11 @@ typedef struct {
     _Atomic u64   next_handle;
 
     /* Global submit queue (for external thread submissions) */
-#ifdef ENGINE_PLATFORM_WINDOWS
-    void         *submit_cs;    /* CRITICAL_SECTION pointer */
-#else
-    u64           submit_mutex_storage[8]; /* enough for pthread_mutex_t */
-#endif
+    /* R420: same fixed-size embedded mutex storage on both platforms —
+     * task.c passes &ts->submit_mutex_storage to platform_mutex_* everywhere
+     * (Windows helpers cast it to CRITICAL_SECTION *, ~40B; a void* field was
+     * both the wrong type and too small). */
+    u64           submit_mutex_storage[8]; /* CRITICAL_SECTION / pthread_mutex_t */
     Task         *submit_queue[SUBMIT_QUEUE_CAPACITY];
     _Atomic u32   submit_count;
 
@@ -93,11 +93,8 @@ typedef struct {
     _Atomic u32   task_pool_count;
     /* Pre-allocated contiguous Task block (bump allocator) */
     Task         *_task_block;
-#ifdef ENGINE_PLATFORM_WINDOWS
-    void         *pool_cs;
-#else
+    /* R420: embedded storage on Windows too — see submit_mutex_storage. */
     u64           pool_mutex_storage[8];
-#endif
 } TaskSystem;
 
 /* ---- Legacy compatible type alias ---- */

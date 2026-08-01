@@ -14,6 +14,9 @@ bool str_eq_c(Str a, const char *b) {
 }
 
 Str str_slice(Str s, usize start, usize end) {
+    /* R420: s.data + start is pointer arithmetic on NULL (UB) even with
+     * start==0 — return the empty slice without touching the pointer. */
+    if (!s.data || s.len == 0) return (Str){NULL, 0};
     if (end > s.len) end = s.len;
     if (start > end) start = end;
     return (Str){s.data + start, end - start};

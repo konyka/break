@@ -4,6 +4,7 @@
 
 #include "test_framework.h"
 #include <core/alloc.h>
+#include <core/log.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -327,6 +328,61 @@ TEST(debug_realloc_tracking)
     heap_alloc_destroy(heap);
 }
 
+TEST(debug_realloc_shrink_stats)
+{
+    /* R420: `total_allocated += new_size - old_size` underflowed usize on
+     * shrink, wrapping total_allocated to a huge value. */
+    Alloc *heap = heap_alloc_create();
+    Alloc *dbg = debug_alloc_create(heap);
+
+    void *p = dbg->alloc(dbg, 128, 8);
+    ASSERT_NOT_NULL(p);
+
+    DebugAlloc *d = (DebugAlloc *)dbg;
+    ASSERT_EQ(d->total_allocated, (usize)128);
+
+    void *p2 = dbg->realloc(dbg, p, 128, 32, 8);
+    ASSERT_NOT_NULL(p2);
+    ASSERT_EQ(d->total_allocated, (usize)32);
+    ASSERT_EQ(d->peak_allocated, (usize)128);
+
+    dbg->free(dbg, p2, 32);
+    ASSERT_EQ(d->total_allocated, (usize)0);
+
+    debug_alloc_destroy(dbg);
+    heap_alloc_destroy(heap);
+}
+
+TEST(heap_non_pow2_alignment_rounded)
+{
+    /* R420: a non-power-of-two align (24) silently broke the &(align-1) mask
+     * trick — it must round up to the next power of two (32). */
+    Alloc *h = heap_alloc_create();
+    u8 *p = (u8 *)h->alloc(h, 64, 24);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ((uintptr_t)p % 32, (uintptr_t)0);
+    memset(p, 0xAB, 64);
+
+    u8 *p2 = (u8 *)h->realloc(h, p, 64, 128, 24);
+    ASSERT_NOT_NULL(p2);
+    ASSERT_EQ((uintptr_t)p2 % 32, (uintptr_t)0);
+    for (int i = 0; i < 64; i++) ASSERT_EQ(p2[i], (u8)0xAB);
+
+    h->free(h, p2, 128);
+    heap_alloc_destroy(h);
+}
+
+TEST(log_set_level_out_of_range_clamped)
+{
+    /* R420: log_set_level((LogLevel)99) stored the raw value and silently
+     * disabled all logging — it must clamp into [LOG_TRACE, LOG_FATAL].
+     * After clamping to LOG_FATAL, INFO is suppressed but FATAL still logs;
+     * with the bug, even FATAL would be suppressed. */
+    log_set_level((LogLevel)99);
+    log_write(LOG_FATAL, __FILE__, __LINE__, "R420 clamp test: FATAL visible");
+    log_set_level(LOG_INFO);  /* restore default for other tests */
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -349,4 +405,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(heap_realloc_null);
     RUN_TEST(arena_zero_size);
     RUN_TEST(debug_realloc_tracking);
+    RUN_TEST(debug_realloc_shrink_stats);
+    RUN_TEST(heap_non_pow2_alignment_rounded);
+    RUN_TEST(log_set_level_out_of_range_clamped);
 TEST_MAIN_END()
