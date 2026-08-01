@@ -47,7 +47,6 @@ struct Archetype {
     u32             chunk_bytes;   /* R416: allocation size per chunk (>= ECS_CHUNK_SIZE) */
     u32             entity_offset;
     u32             total_count;
-    u32             stride;
     ArchetypeEdge  *edges_add;
     u32             edges_add_count;
     ArchetypeEdge  *edges_remove;

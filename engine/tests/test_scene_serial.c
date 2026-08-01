@@ -721,49 +721,122 @@ TEST(generation_restore_roundtrip_json)
 
 /* ----------------------------------------------------------------------- */
 
-TEST(instantiate_prefab_offsets_all_loaded_nodes)
+TEST(instantiate_prefab_offsets_root_nodes_only)
 {
     /* R416: scene_load_binary replaces s->nodes wholesale, so the position
-     * offset must apply to ALL loaded nodes — not a tail slice starting at
-     * the pre-load node count. */
+     * offset must apply to the loaded nodes — not a tail slice starting at
+     * the pre-load node count.
+     * R422: but only to ROOT nodes — children inherit the root's translation
+     * through world-transform composition, so offsetting every node displaced
+     * a depth-d node by (d+1)x the position. */
     const char *path = "/tmp/test_prefab_offset.bscn";
 
-    /* Prefab: 2 nodes at distinct translations. */
+    /* Prefab: depth-2 hierarchy — root at (1,0,0), child at (0,2,0),
+     * grandchild at (0,0,3). */
     World *ws = world_create();
     Scene src; memset(&src, 0, sizeof(src));
-    src.node_count = 2;
-    src.nodes = (SceneNode *)calloc(2, sizeof(SceneNode));
+    src.node_count = 3;
+    src.nodes = (SceneNode *)calloc(3, sizeof(SceneNode));
     ASSERT_NOT_NULL(src.nodes);
+    src.nodes[0].parent_index = UINT32_MAX;
     src.nodes[0].local_transform = mat4_identity();
     src.nodes[0].local_transform.e[3][0] = 1.0f;
+    src.nodes[1].parent_index = 0;
     src.nodes[1].local_transform = mat4_identity();
     src.nodes[1].local_transform.e[3][1] = 2.0f;
+    src.nodes[2].parent_index = 1;
+    src.nodes[2].local_transform = mat4_identity();
+    src.nodes[2].local_transform.e[3][2] = 3.0f;
     ASSERT_TRUE(scene_save_binary(ws, &src, path, NULL));
 
-    /* Destination already holds 3 nodes (more than the prefab's 2): with the
-     * old tail-slice loop, nodes [3..2) — nothing — would have been offset. */
+    /* Destination already holds 4 nodes (more than the prefab's 3): with the
+     * old tail-slice loop, nodes [4..3) — nothing — would have been offset. */
     World *wd = world_create();
     Scene dst; memset(&dst, 0, sizeof(dst));
-    dst.node_count = 3;
-    dst.nodes = (SceneNode *)calloc(3, sizeof(SceneNode));
+    dst.node_count = 4;
+    dst.nodes = (SceneNode *)calloc(4, sizeof(SceneNode));
     ASSERT_NOT_NULL(dst.nodes);
 
     Vec3 offset = vec3(10.0f, 20.0f, 30.0f);
     ASSERT_TRUE(scene_instantiate_prefab(wd, &dst, path, offset));
 
     /* Replace semantics: the scene now holds exactly the prefab's nodes. */
-    ASSERT_EQ(dst.node_count, 2u);
+    ASSERT_EQ(dst.node_count, 3u);
+    ASSERT_EQ(dst.nodes[1].parent_index, 0u);
+    ASSERT_EQ(dst.nodes[2].parent_index, 1u);
+
+    /* Root: offset applied. */
     ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][0], 1.0f + 10.0f, 1e-5f);
     ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][1], 0.0f + 20.0f, 1e-5f);
     ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][2], 0.0f + 30.0f, 1e-5f);
-    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][0], 0.0f + 10.0f, 1e-5f);
-    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][1], 2.0f + 20.0f, 1e-5f);
-    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][2], 0.0f + 30.0f, 1e-5f);
+    /* Children: local transforms untouched — they inherit the root's move. */
+    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][0], 0.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][1], 2.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[1].local_transform.e[3][2], 0.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[2].local_transform.e[3][0], 0.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[2].local_transform.e[3][1], 0.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(dst.nodes[2].local_transform.e[3][2], 3.0f, 1e-5f);
 
     free_scene_src(&dst);
     free_scene_src(&src);
     world_destroy(ws);
     world_destroy(wd);
+    remove(path);
+}
+
+/* R422: the JSON loader committed s->nodes (freeing the caller's old graph)
+ * the moment the "nodes" array parsed — BEFORE the rest of the document. A
+ * later top-level failure returned false with the old scene destroyed. Nodes
+ * are now staged and committed only on full success (the binary path's R384
+ * pattern). */
+TEST(load_json_failure_preserves_old_graph)
+{
+    const char *path = "/tmp/test_json_partial.json";
+
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    dst.node_count = 2;
+    dst.nodes = (SceneNode *)calloc(2, sizeof(SceneNode));
+    ASSERT_NOT_NULL(dst.nodes);
+    dst.nodes[0].local_transform = mat4_identity();
+    dst.nodes[0].local_transform.e[3][0] = 5.0f;
+    dst.nodes[1].local_transform = mat4_identity();
+    SceneNode *old_nodes = dst.nodes;
+
+    /* Valid "nodes" array, then a top-level failure AFTER it. */
+    const char *bad =
+        "{\"version\":1,"
+        "\"nodes\":[{\"parent\":4294967295,\"mesh\":0,\"flags\":0}],"
+        "\"entities\":garbage}";
+    {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(bad, 1, strlen(bad), fp) == strlen(bad));
+        fclose(fp);
+    }
+
+    ASSERT_TRUE(!scene_load_json(w, &dst, path));
+    /* Old graph must survive untouched — same pointer, same contents. */
+    ASSERT_TRUE(dst.nodes == old_nodes);
+    ASSERT_EQ(dst.node_count, 2u);
+    ASSERT_FLOAT_EQ(dst.nodes[0].local_transform.e[3][0], 5.0f, 1e-6f);
+
+    /* A fully valid document still replaces the old graph. */
+    const char *good =
+        "{\"version\":1,"
+        "\"nodes\":[{\"parent\":4294967295,\"mesh\":0,\"flags\":0}]}";
+    {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(good, 1, strlen(good), fp) == strlen(good));
+        fclose(fp);
+    }
+    ASSERT_TRUE(scene_load_json(w, &dst, path));
+    ASSERT_EQ(dst.node_count, 1u);
+    ASSERT_NOT_NULL(dst.nodes);
+
+    scene_serial_free(&dst);
+    world_destroy(w);
     remove(path);
 }
 
@@ -803,5 +876,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_guid_deterministic);
     RUN_TEST(generation_restore_roundtrip);
     RUN_TEST(generation_restore_roundtrip_json);
-    RUN_TEST(instantiate_prefab_offsets_all_loaded_nodes);
+    RUN_TEST(instantiate_prefab_offsets_root_nodes_only);
+    RUN_TEST(load_json_failure_preserves_old_graph);
 TEST_MAIN_END()

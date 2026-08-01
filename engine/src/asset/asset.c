@@ -107,6 +107,14 @@ static bool cgltf_accessor_is_type(cgltf_accessor *acc, cgltf_type type) {
 static bool gltf_uri_safe(const char *uri) {
     if (!uri || !*uri) return false;
     if (uri[0] == '/' || uri[0] == '\\') return false;
+    /* R422: cgltf percent-decodes the uri AFTER combining it with the gltf
+     * directory (cgltf_decode_uri in cgltf_load_buffer_file), so "%2e%2e/"
+     * decodes to "../" only after this raw-text check has run — a traversal
+     * that no literal ".." scan can see. Reject percent-encoding outright;
+     * legitimate relative asset paths never need it. (Images are combined
+     * and loaded engine-side via asset_load_texture, never through cgltf's
+     * decode, but sharing this guard keeps both paths uniformly strict.) */
+    if (strchr(uri, '%')) return false;
     const char *p = uri;
     for (;;) {
         if (p[0] == '.' && p[1] == '.' &&
@@ -286,8 +294,13 @@ static bool gltf_counts_bounded(const cgltf_data *data, const char *path) {
  * over-read (12 bytes/vertex out of a 3-byte/vertex span). Convert through
  * cgltf in that case, mirroring the R278/R279 weights/UV handling. */
 static void gltf_read_vec3_attr(cgltf_accessor *acc, u32 count, u8 *dst, usize dst_stride) {
+    /* R422: a sparse float VEC3 accessor's buffer data is only the BASE — the
+     * sparse overrides live in separate views that the memcpy fast path never
+     * applies, silently producing wrong geometry. Take cgltf's conversion
+     * path (which honours sparse) for any sparse accessor. */
     if (acc->component_type == cgltf_component_type_r_32f &&
-        cgltf_accessor_is_type(acc, cgltf_type_vec3)) {
+        cgltf_accessor_is_type(acc, cgltf_type_vec3) &&
+        !acc->is_sparse) {
         const u8 *d = cgltf_buffer_data(acc);
         usize s = cgltf_accessor_stride(acc);
         for (u32 vi = 0; d && vi < count; vi++) {
@@ -570,10 +583,19 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 }
                 sn->skinned = true;
                 SkinnedVertex *sverts = calloc(vert_count, sizeof(SkinnedVertex));
-                /* R115-2/R115-3: Skip primitive if allocation or buffer data fails. */
-                if (!sverts) continue;
+                /* R115-2/R115-3: Skip primitive if allocation or buffer data fails.
+                 * R422: destroy the index buffer already created above before
+                 * bailing, mirroring the R415 clamp branches. */
+                if (!sverts) {
+                    if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
+                    continue;
+                }
                 const u8 *pd = cgltf_buffer_data(pos_acc);
-                if (!pd) { free(sverts); continue; }
+                if (!pd) {
+                    free(sverts);
+                    if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
+                    continue;
+                }
                 /* R415: validated component type inside (raw f32 memcpy only
                  * for actual float VEC3 data; converted otherwise). */
                 gltf_read_vec3_attr(pos_acc, vert_count, (u8 *)&sverts[0].pos, sizeof(SkinnedVertex));
@@ -635,7 +657,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                      * accessor reader, which honours component_type + normalized +
                      * stride + sparse (mirrors the integer JOINTS branch above).
                      * FLOAT weights are unchanged. */
-                    if (!cgltf_accessor_read_float(wgt_acc, vi, sverts[vi].weights, 4)) {
+                    if (!cgltf_accessor_read_float(wgt_acc, vi, sverts[vi].weights, 4) &&
+                        wgt_acc->component_type == cgltf_component_type_r_32f) {
+                        /* R422: fallback memcpy only when the accessor is
+                         * actually float (same guard the R415 UV fallback
+                         * has) — never reinterpret other component types. */
                         memcpy(sverts[vi].weights, wd + vi * wgt_stride, sizeof(f32) * 4);
                     }
                     f32 wsum = sverts[vi].weights[0] + sverts[vi].weights[1] + sverts[vi].weights[2] + sverts[vi].weights[3];
@@ -670,10 +696,19 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     continue;
                 }
                 Vertex *verts = calloc(vert_count, sizeof(Vertex));
-                /* R115-2/R115-3: Skip primitive if allocation or buffer data fails. */
-                if (!verts) continue;
+                /* R115-2/R115-3: Skip primitive if allocation or buffer data fails.
+                 * R422: destroy the index buffer already created above before
+                 * bailing, mirroring the R415 clamp branches. */
+                if (!verts) {
+                    if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
+                    continue;
+                }
                 const u8 *pd = cgltf_buffer_data(pos_acc);
-                if (!pd) { free(verts); continue; }
+                if (!pd) {
+                    free(verts);
+                    if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
+                    continue;
+                }
                 /* R415: validated component type inside (raw f32 memcpy only
                  * for actual float VEC3 data; converted otherwise). */
                 gltf_read_vec3_attr(pos_acc, vert_count, (u8 *)&verts[0].pos, sizeof(Vertex));
@@ -820,6 +855,17 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         cgltf_animation *anim = &data->animations[0];
         out_scene->anim_clip_count = 1;
         out_scene->anim_clips = calloc(1, sizeof(AnimClip));
+        /* R422: OOM bail — anim_clip_init below dereferences the allocation.
+         * Mirror the surrounding failure paths: free node_to_joint (kept
+         * alive from the skin block) and unwind the partial scene. */
+        if (!out_scene->anim_clips) {
+            LOG_ERROR("glTF: anim clip allocation failed");
+            out_scene->anim_clip_count = 0;
+            free(node_to_joint);
+            cgltf_free(data);
+            asset_scene_free(ctx, out_scene);
+            return false;
+        }
         AnimClip *clip = &out_scene->anim_clips[0];
 
         f32 max_time = 0;

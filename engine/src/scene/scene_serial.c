@@ -1095,6 +1095,14 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
     Entity *created = NULL;
     u32 created_count = 0, created_cap = 0;
 
+    /* R422: stage parsed nodes locally and commit only after the WHOLE
+     * document parses — the binary path does the same via its R384 temp
+     * Scene. Committing mid-parse freed the caller's old scene graph before
+     * a later top-level failure returned false. */
+    SceneNode *staged_nodes = NULL;
+    u32 staged_node_count = 0;
+    bool nodes_staged = false;
+
     bool ok = js_match(&r, '{');
     while (ok && !js_peek(&r, '}')) {
         if (js_key(&r, "version")) {
@@ -1192,9 +1200,12 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         (void)js_match(&r, ',');
                     }
                     if (ok) {
-                        free(s->nodes);
-                        s->nodes = nodes;
-                        s->node_count = node_count;
+                        /* R422: stage only — s->nodes is committed below once
+                         * the entire document has parsed successfully. */
+                        free(staged_nodes);
+                        staged_nodes = nodes;
+                        staged_node_count = node_count;
+                        nodes_staged = true;
                     } else {
                         free(nodes);
                     }
@@ -1210,6 +1221,15 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
         (void)js_match(&r, ',');
     }
     ok = ok && js_match(&r, '}');
+    /* R422: commit the staged nodes only on full success; otherwise drop the
+     * staging buffer and leave the caller's old scene graph intact. */
+    if (s && ok && nodes_staged) {
+        free(s->nodes);
+        s->nodes = staged_nodes;
+        s->node_count = staged_node_count;
+    } else {
+        free(staged_nodes);
+    }
     if (!ok)
         rollback_entities(w, created, created_count);
     free(created);
@@ -1297,6 +1317,14 @@ bool scene_instantiate_prefab(World *w, Scene *s,
         if (px != 0.0f || py != 0.0f || pz != 0.0f) {
             for (u32 i = 0; i < s->node_count; i++) {
                 SceneNode *nd = &s->nodes[i];
+                /* R422: offset ROOT nodes only. Children inherit their
+                 * parent's translation through world-transform composition,
+                 * so adding the offset to every node displaced a node at
+                 * depth d by (d+1)x position. (parent_index >= node_count is
+                 * treated as a root, matching scene_compute_world_transforms'
+                 * R151 malformed-parent guard.) */
+                if (nd->parent_index != UINT32_MAX && nd->parent_index < s->node_count)
+                    continue;
                 nd->local_transform.e[3][0] += px;
                 nd->local_transform.e[3][1] += py;
                 nd->local_transform.e[3][2] += pz;
