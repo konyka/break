@@ -119,6 +119,22 @@ static bool gltf_uri_safe(const char *uri) {
     return true;
 }
 
+/* R415: external buffer URIs went straight to cgltf_load_buffers with no path
+ * check — the R353 gltf_uri_safe guard only covered image URIs, so a file
+ * could point a buffer at "../../etc/..." and have cgltf read it. NULL (GLB
+ * binary chunk) and data: URIs are loaded inline and need no check. */
+static bool gltf_buffer_uris_safe(const cgltf_data *data, const char *path) {
+    for (cgltf_size bi = 0; bi < data->buffers_count; bi++) {
+        const char *uri = data->buffers[bi].uri;
+        if (!uri || strncmp(uri, "data:", 5) == 0) continue;
+        if (!gltf_uri_safe(uri)) {
+            LOG_ERROR("glTF: rejecting unsafe buffer uri '%s': %s", uri, path);
+            return false;
+        }
+    }
+    return true;
+}
+
 static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_texture *tex) {
     if (!tex || !tex->image || !tex->image->uri) return RHI_HANDLE_NULL;
     /* R353: reject path escape in image.uri (pairs with vfs_rel_path_safe). */
@@ -263,6 +279,27 @@ static bool gltf_counts_bounded(const cgltf_data *data, const char *path) {
     return true;
 }
 
+/* R415: read a VEC3 float attribute (POSITION/NORMAL) into a strided
+ * destination. The raw memcpy fast path is only valid when the accessor is
+ * actually float VEC3 — cgltf_validate does not check component types, so a
+ * file declaring e.g. POSITION as UNSIGNED_BYTE was reinterpreted as f32 and
+ * over-read (12 bytes/vertex out of a 3-byte/vertex span). Convert through
+ * cgltf in that case, mirroring the R278/R279 weights/UV handling. */
+static void gltf_read_vec3_attr(cgltf_accessor *acc, u32 count, u8 *dst, usize dst_stride) {
+    if (acc->component_type == cgltf_component_type_r_32f &&
+        cgltf_accessor_is_type(acc, cgltf_type_vec3)) {
+        const u8 *d = cgltf_buffer_data(acc);
+        usize s = cgltf_accessor_stride(acc);
+        for (u32 vi = 0; d && vi < count; vi++) {
+            memcpy(dst + vi * dst_stride, d + vi * s, sizeof(f32) * 3);
+        }
+    } else {
+        for (u32 vi = 0; vi < count; vi++) {
+            cgltf_accessor_read_float(acc, vi, (f32 *)(dst + vi * dst_stride), 3);
+        }
+    }
+}
+
 bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     cgltf_options opts = {0};
     cgltf_data *data = NULL;
@@ -281,11 +318,19 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             LOG_ERROR("cgltf parse failed (%d): %s", result, path);
             return false;
         }
+        if (!gltf_buffer_uris_safe(data, path)) {
+            cgltf_free(data);
+            return false;
+        }
         result = cgltf_load_buffers(&opts, data, path);
     } else {
         result = cgltf_parse_file(&opts, path, &data);
         if (result != cgltf_result_success) {
             LOG_ERROR("cgltf parse failed (%d): %s", result, path);
+            return false;
+        }
+        if (!gltf_buffer_uris_safe(data, path)) {
+            cgltf_free(data);
             return false;
         }
         result = cgltf_load_buffers(&opts, data, path);
@@ -346,11 +391,22 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         if (!node->mesh) continue;
         for (u32 pi = 0; pi < node->mesh->primitives_count; pi++) {
             cgltf_primitive *prim = &node->mesh->primitives[pi];
-            bool has_skin = node->skin != NULL;
-            if (!has_skin) {
+            /* R415: this predicate MUST be identical to the fill passes below
+             * (node->skin && JOINTS_0 && WEIGHTS_0). The old version counted a
+             * primitive as skinned when node->skin was set OR any JOINTS
+             * attribute existed, while the fill pass only took the skinned
+             * branch when both JOINTS_0 and WEIGHTS_0 were present — such a
+             * primitive was counted as skinned but written into
+             * meshes[mesh_count++] with no room allocated (heap overflow). */
+            bool has_skin = false;
+            if (node->skin) {
+                bool has_joints = false, has_weights = false;
                 for (u32 ai = 0; ai < prim->attributes_count; ai++) {
-                    if (prim->attributes[ai].type == cgltf_attribute_type_joints) has_skin = true;
+                    cgltf_attribute *attr = &prim->attributes[ai];
+                    if (attr->type == cgltf_attribute_type_joints  && attr->index == 0) has_joints = true;
+                    if (attr->type == cgltf_attribute_type_weights && attr->index == 0) has_weights = true;
                 }
+                has_skin = has_joints && has_weights;
             }
             if (has_skin) {
                 if (total_skinned == GLTF_MAX_SCENE_ITEMS) {
@@ -503,23 +559,26 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 free(indices);
             }
 
-            if (jnt_acc && wgt_acc) {
+            /* R415: identical to the counting-pass predicate (node->skin &&
+             * JOINTS_0 && WEIGHTS_0) so the allocated totals always match. */
+            if (node->skin && jnt_acc && wgt_acc) {
+                /* R415: defensive clamp — never write past the allocated
+                 * skinned_meshes array even if the predicates ever diverge. */
+                if (out_scene->skinned_mesh_count >= total_skinned) {
+                    if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
+                    continue;
+                }
                 sn->skinned = true;
                 SkinnedVertex *sverts = calloc(vert_count, sizeof(SkinnedVertex));
                 /* R115-2/R115-3: Skip primitive if allocation or buffer data fails. */
                 if (!sverts) continue;
                 const u8 *pd = cgltf_buffer_data(pos_acc);
                 if (!pd) { free(sverts); continue; }
-                usize ps = cgltf_accessor_stride(pos_acc);
-                for (u32 vi = 0; vi < vert_count; vi++) {
-                    memcpy(sverts[vi].pos, pd + vi * ps, sizeof(f32) * 3);
-                }
+                /* R415: validated component type inside (raw f32 memcpy only
+                 * for actual float VEC3 data; converted otherwise). */
+                gltf_read_vec3_attr(pos_acc, vert_count, (u8 *)&sverts[0].pos, sizeof(SkinnedVertex));
                 if (nrm_acc) {
-                    const u8 *nd = cgltf_buffer_data(nrm_acc);
-                    usize ns = cgltf_accessor_stride(nrm_acc);
-                    for (u32 vi = 0; nd && vi < vert_count; vi++) {
-                        memcpy(sverts[vi].normal, nd + vi * ns, sizeof(f32) * 3);
-                    }
+                    gltf_read_vec3_attr(nrm_acc, vert_count, (u8 *)&sverts[0].normal, sizeof(SkinnedVertex));
                 }
                 if (uv_acc && cgltf_accessor_is_type(uv_acc, cgltf_type_vec2)) {
                     const u8 *ud = cgltf_buffer_data(uv_acc);
@@ -531,7 +590,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                          * reinterprets those bytes and corrupts texture coords.
                          * cgltf_accessor_read_float honours component_type +
                          * normalized + stride; FLOAT UVs are unchanged. */
-                        if (!cgltf_accessor_read_float(uv_acc, vi, sverts[vi].uv, 2))
+                        if (!cgltf_accessor_read_float(uv_acc, vi, sverts[vi].uv, 2) &&
+                            uv_acc->component_type == cgltf_component_type_r_32f)
+                            /* R415: fallback memcpy only when the accessor is
+                             * actually float — never reinterpret other types. */
                             memcpy(sverts[vi].uv, ud + vi * us, sizeof(f32) * 2);
                     }
                 }
@@ -601,21 +663,22 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     sn->material_idx = mat_idx;
                 }
             } else {
+                /* R415: defensive clamp — never write past the allocated
+                 * meshes array even if the predicates ever diverge. */
+                if (out_scene->mesh_count >= total_meshes) {
+                    if (rhi_handle_valid(ibuf)) rhi_buffer_destroy(ctx->device, ibuf);
+                    continue;
+                }
                 Vertex *verts = calloc(vert_count, sizeof(Vertex));
                 /* R115-2/R115-3: Skip primitive if allocation or buffer data fails. */
                 if (!verts) continue;
                 const u8 *pd = cgltf_buffer_data(pos_acc);
                 if (!pd) { free(verts); continue; }
-                usize ps = cgltf_accessor_stride(pos_acc);
-                for (u32 vi = 0; vi < vert_count; vi++) {
-                    memcpy(verts[vi].pos, pd + vi * ps, sizeof(f32) * 3);
-                }
+                /* R415: validated component type inside (raw f32 memcpy only
+                 * for actual float VEC3 data; converted otherwise). */
+                gltf_read_vec3_attr(pos_acc, vert_count, (u8 *)&verts[0].pos, sizeof(Vertex));
                 if (nrm_acc) {
-                    const u8 *nd = cgltf_buffer_data(nrm_acc);
-                    usize ns = cgltf_accessor_stride(nrm_acc);
-                    for (u32 vi = 0; nd && vi < vert_count; vi++) {
-                        memcpy(verts[vi].normal, nd + vi * ns, sizeof(f32) * 3);
-                    }
+                    gltf_read_vec3_attr(nrm_acc, vert_count, (u8 *)&verts[0].normal, sizeof(Vertex));
                 }
                 if (uv_acc && cgltf_accessor_is_type(uv_acc, cgltf_type_vec2)) {
                     const u8 *ud = cgltf_buffer_data(uv_acc);
@@ -627,7 +690,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                          * reinterprets those bytes and corrupts texture coords.
                          * cgltf_accessor_read_float honours component_type +
                          * normalized + stride; FLOAT UVs are unchanged. */
-                        if (!cgltf_accessor_read_float(uv_acc, vi, verts[vi].uv, 2))
+                        if (!cgltf_accessor_read_float(uv_acc, vi, verts[vi].uv, 2) &&
+                            uv_acc->component_type == cgltf_component_type_r_32f)
+                            /* R415: fallback memcpy only when the accessor is
+                             * actually float — never reinterpret other types. */
                             memcpy(verts[vi].uv, ud + vi * us, sizeof(f32) * 2);
                     }
                 }
@@ -666,6 +732,12 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
     out_scene->node_count = (u32)data->nodes_count;
 
+    /* R415: node_index → joint_index map. Previously built and freed inside
+     * the skin block, then the animation loop linearly rescanned skin->joints
+     * per channel (O(channels × joints)). Kept alive through animation
+     * parsing now and freed just before cgltf_free. */
+    u32 *node_to_joint = NULL;
+
     if (data->skins_count > 0) {
         cgltf_skin *skin = &data->skins[0];
         /* R253: skeleton_set_joints clamps to SKELETON_MAX_JOINTS and the GPU joint
@@ -693,7 +765,7 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         out_scene->inverse_bind  = (Mat4 *)(skin_buf + ib_off);
 
         /* Build node_index → joint_index mapping for O(1) parent lookup */
-        u32 *node_to_joint = (u32 *)malloc(data->nodes_count * sizeof(u32));
+        node_to_joint = (u32 *)malloc(data->nodes_count * sizeof(u32));
         if (!node_to_joint) {
             LOG_ERROR("glTF: node_to_joint allocation failed");
             cgltf_free(data);
@@ -715,14 +787,27 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 out_scene->joint_parents[ji] = UINT32_MAX;
             }
         }
-        free(node_to_joint);
+        /* R415: node_to_joint NOT freed here — reused by the animation loop. */
 
         if (skin->inverse_bind_matrices) {
-            const f32 *ibm_data = (const f32 *)cgltf_buffer_data(skin->inverse_bind_matrices);
-            usize ibm_count = (usize)skin->inverse_bind_matrices->count;
-            /* R115-3: Check ibm_data for NULL (cgltf_buffer_data may return NULL). */
-            for (u32 ji = 0; ibm_data && ji < ibm_count && ji < skin->joints_count; ji++) {
-                memcpy(out_scene->inverse_bind[ji].e, ibm_data + ji * 16, sizeof(f32) * 16);
+            cgltf_accessor *ibm = skin->inverse_bind_matrices;
+            /* R415: the raw f32 cast below requires float MAT4 data, but
+             * cgltf_validate does not check component_type — a file declaring
+             * MAT4/UNSIGNED_BYTE passed validation and was then read as f32
+             * (4× over-read of the accessor's real bytes). Convert through
+             * cgltf for anything that is not actually float MAT4. */
+            if (ibm->component_type == cgltf_component_type_r_32f &&
+                cgltf_accessor_is_type(ibm, cgltf_type_mat4)) {
+                const f32 *ibm_data = (const f32 *)cgltf_buffer_data(ibm);
+                usize ibm_count = (usize)ibm->count;
+                /* R115-3: Check ibm_data for NULL (cgltf_buffer_data may return NULL). */
+                for (u32 ji = 0; ibm_data && ji < ibm_count && ji < skin->joints_count; ji++) {
+                    memcpy(out_scene->inverse_bind[ji].e, ibm_data + ji * 16, sizeof(f32) * 16);
+                }
+            } else {
+                for (u32 ji = 0; ji < ibm->count && ji < skin->joints_count; ji++) {
+                    cgltf_accessor_read_float(ibm, ji, &out_scene->inverse_bind[ji].e[0][0], 16);
+                }
             }
         } else {
             for (u32 ji = 0; ji < skin->joints_count; ji++) {
@@ -741,6 +826,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         for (u32 ci = 0; ci < anim->channels_count; ci++) {
             cgltf_animation_channel *ch = &anim->channels[ci];
             if (!ch->sampler || !ch->sampler->input) continue;
+            /* R415: times are read as raw f32 below. The spec mandates float
+             * scalar sampler input, but cgltf_validate does not enforce it —
+             * skip non-float inputs instead of reinterpreting them. */
+            if (ch->sampler->input->component_type != cgltf_component_type_r_32f ||
+                ch->sampler->input->type != cgltf_type_scalar) continue;
             f32 *times_data = (f32 *)cgltf_buffer_data(ch->sampler->input);
             usize time_count = (usize)ch->sampler->input->count;
             if (time_count > 0 && times_data) {
@@ -754,15 +844,12 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             cgltf_animation_channel *ch = &anim->channels[ci];
             if (!ch->target_node || !ch->sampler) continue;
 
+            /* R415: O(1) lookup via the node→joint map (kept alive from the
+             * skin block) instead of a linear scan over skin->joints for every
+             * channel — was O(channels × joints). */
             u32 joint_idx = UINT32_MAX;
-            if (data->skins_count > 0) {
-                cgltf_skin *skin = &data->skins[0];
-                for (u32 ji = 0; ji < skin->joints_count; ji++) {
-                    if (skin->joints[ji] == ch->target_node) {
-                        joint_idx = ji;
-                        break;
-                    }
-                }
+            if (node_to_joint) {
+                joint_idx = node_to_joint[(u32)(ch->target_node - data->nodes)];
             }
             if (joint_idx == UINT32_MAX) continue;
 
@@ -773,6 +860,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             else continue;
 
             cgltf_animation_sampler *samp = ch->sampler;
+            /* R415: times are read as raw f32 below — require the spec-mandated
+             * float scalar input (cgltf_validate does not check this). */
+            if (!samp->input || !samp->output ||
+                samp->input->component_type != cgltf_component_type_r_32f ||
+                samp->input->type != cgltf_type_scalar) continue;
             f32 *times = (f32 *)cgltf_buffer_data(samp->input);
             f32 *values = (f32 *)cgltf_buffer_data(samp->output);
             usize kf_count = (usize)samp->input->count;
@@ -784,9 +876,19 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             f32 packed_values[SKELETON_MAX_KEYFRAMES][4];
             usize comp = cgltf_num_components(samp->output->type);
             memset(packed_values, 0, sizeof(packed_values));
+            /* R415: sampler output may legally be normalized BYTE/SHORT
+             * (quantized animation) — reading it as raw f32 reinterpreted and
+             * over-read the data. Convert per-key through cgltf unless the
+             * accessor is actually float. */
+            bool output_float = samp->output->component_type == cgltf_component_type_r_32f;
             for (u32 k = 0; k < n; k++) {
-                for (usize c = 0; c < comp && c < 4; c++) {
-                    packed_values[k][c] = values[k * comp + c];
+                if (output_float) {
+                    for (usize c = 0; c < comp && c < 4; c++) {
+                        packed_values[k][c] = values[k * comp + c];
+                    }
+                } else {
+                    cgltf_accessor_read_float(samp->output, k, packed_values[k],
+                                              comp < 4 ? comp : 4);
                 }
                 if (path == ANIM_PATH_ROTATION && comp == 4) {
                     f32 len = 0;
@@ -810,6 +912,7 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         }
     }
 
+    free(node_to_joint); /* R415: kept alive through animation parsing */
     cgltf_free(data);
     LOG_INFO("Loaded glTF: %s (%u meshes, %u skinned, %u nodes, %u joints, %u anims)", path,
         out_scene->mesh_count, out_scene->skinned_mesh_count,
@@ -846,38 +949,69 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
 }
 
 void scene_compute_world_transforms(Scene *scene) {
-    /* R256 (CORRECTNESS): resolve world transforms independent of node array
-     * order. glTF does NOT require a parent to precede its children in nodes[]
-     * (cgltf preserves file order; JSON scenes append in file order too), so a
-     * child can sit at a lower index than its parent. The old single forward pass
-     * then multiplied by the parent's not-yet-computed world_transform, placing
-     * that subtree's meshes at the wrong world position/orientation (mega-buffer
-     * pre-transform at main.c uses world_transform). This mirrors R240, which made
-     * the analogous skeleton joint resolution order-independent. Iterate until a
-     * pass changes nothing: the common already-ordered case converges in one
-     * productive pass plus a confirm pass; bounded by node_count to terminate on
-     * cycles (treated as roots via the parent-index guards below). */
+    /* R415: memoized DFS over parent_index — O(n) instead of the previous
+     * iterate-until-stable loop (O(n × depth), O(n²) worst case). Results are
+     * identical for valid scenes (the R256 order-independence is preserved:
+     * a child at a lower index than its parent still resolves through the
+     * parent's world transform). The visited-state array also breaks parent
+     * cycles deterministically. R151's guards for malformed/self parent_index
+     * are kept. */
     u32 n = scene->node_count;
-    for (u32 pass = 0; pass < n; pass++) {
-        bool changed = false;
+    if (n == 0 || !scene->nodes) return;
+
+    u8 *state = (u8 *)calloc(n, 1); /* 0 = unseen, 1 = on current chain, 2 = done */
+    u32 *stack = (u32 *)malloc(n * sizeof(u32));
+    if (!state || !stack) {
+        free(state);
+        free(stack);
+        /* OOM fallback: at least leave valid (root) transforms behind. */
         for (u32 i = 0; i < n; i++) {
-            SceneNode *node = &scene->nodes[i];
-            Mat4 w;
-            /* R151: guard malformed/self parent_index (out-of-bounds read). */
-            if (node->parent_index == UINT32_MAX || node->parent_index >= n
-                || node->parent_index == i) {
-                w = node->local_transform;
-            } else {
-                SceneNode *parent = &scene->nodes[node->parent_index];
-                w = mat4_mul(parent->world_transform, node->local_transform);
-            }
-            if (pass == 0 || memcmp(&node->world_transform, &w, sizeof(Mat4)) != 0) {
-                node->world_transform = w;
-                changed = true;
-            }
+            scene->nodes[i].world_transform = scene->nodes[i].local_transform;
         }
-        if (!changed) break;
+        return;
     }
+
+    for (u32 i = 0; i < n; i++) {
+        if (state[i] != 0) continue;
+
+        /* Walk up the parent chain, pushing unresolved nodes, until a root,
+         * an already-resolved node, or a cycle is reached. */
+        u32 top = 0;
+        u32 cur = i;
+        while (state[cur] == 0) {
+            SceneNode *node = &scene->nodes[cur];
+            u32 p = node->parent_index;
+            /* R151: guard malformed/self parent_index (out-of-bounds read). */
+            if (p == UINT32_MAX || p >= n || p == cur) {
+                node->world_transform = node->local_transform;
+                state[cur] = 2;
+                break;
+            }
+            stack[top++] = cur;
+            state[cur] = 1;
+            cur = p;
+        }
+        if (state[cur] == 1) {
+            /* Parent cycle: treat the re-entered node as its own root so the
+             * chain below it resolves deterministically. */
+            scene->nodes[cur].world_transform = scene->nodes[cur].local_transform;
+            state[cur] = 2;
+        }
+        /* Resolve the pushed chain deepest-first; every parent is done. The
+         * cycle entry point `cur` is on the stack too — it was already
+         * resolved as a root above, so skip it to avoid double composition. */
+        while (top > 0) {
+            u32 idx = stack[--top];
+            if (idx == cur) continue;
+            SceneNode *node = &scene->nodes[idx];
+            node->world_transform = mat4_mul(scene->nodes[node->parent_index].world_transform,
+                                             node->local_transform);
+            state[idx] = 2;
+        }
+    }
+
+    free(state);
+    free(stack);
 }
 
 /* ---- Async loading wrappers ---- */

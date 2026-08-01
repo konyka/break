@@ -271,6 +271,43 @@ TEST(coverage_to_level_known_values)
     ASSERT_EQ(mipmap_stream_coverage_to_level(0.0f, mips, 16u, 16u), mips - 1u);
 }
 
+/* R415: the request pool was a one-shot bump allocator — after
+ * MIPMAP_STREAM_REQ_POOL_SIZE (64) requests every allocation fell back to
+ * malloc forever. With the free list, repeated force_level + invalidate
+ * cycles keep reusing pool slots and the pool never exhausts. */
+TEST(mipmap_request_pool_reuse_after_free)
+{
+    ASSERT_TRUE(write_mip_file());
+
+    VFS *vfs = vfs_create();
+    vfs_mount_dir(vfs, ".");
+    async_loader_init(1, vfs);
+
+    MipmapStreamManager mgr;
+    ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
+
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    ASSERT_TRUE(idx >= 0);
+
+    /* Far more requests than the 64-slot pool: with the old bump allocator
+     * req_pool_next would have pinned at the pool size and every request past
+     * the 64th silently fell back to malloc. */
+    u32 cycles = MIPMAP_STREAM_REQ_POOL_SIZE * 3u;
+    for (u32 i = 0; i < cycles; i++) {
+        ASSERT_TRUE(mipmap_stream_force_level(&mgr, idx, 0));
+        mipmap_stream_invalidate(&mgr, idx);
+    }
+    ASSERT_EQ(mipmap_stream_load_requests(&mgr), cycles);
+    /* A free slot was available for every single request (head never empty). */
+    ASSERT_NEQ(mgr.req_pool_next, 0xFFFFFFFFu);
+    ASSERT_TRUE(mgr.req_pool_next < MIPMAP_STREAM_REQ_POOL_SIZE);
+
+    mipmap_stream_shutdown(&mgr);
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    remove(TMP_PATH);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_residency_and_upload);
     RUN_TEST(mipmap_eviction_under_budget);
@@ -278,4 +315,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_rejects_truncated_level_file);
     RUN_TEST(mipmap_register_rejects_chain_over_vfs_cap);
     RUN_TEST(coverage_to_level_known_values);
+    RUN_TEST(mipmap_request_pool_reuse_after_free);
 TEST_MAIN_END()

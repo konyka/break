@@ -318,6 +318,201 @@ TEST(gltf_accepts_well_formed_model)
     remove(TMP_GLTF);
 }
 
+/* R415: node with a skin and JOINTS_0 but NO WEIGHTS_0, followed by a plain
+ * mesh. The old counting pass classified the first primitive as skinned
+ * (total_skinned=1, total_meshes=1) while the fill pass took the Mesh branch
+ * for it (jnt && wgt required) — the second mesh then wrote meshes[1] past a
+ * 1-element allocation (heap overflow). Post-fix both primitives classify as
+ * plain meshes and mesh_count fits the allocation exactly. */
+TEST(gltf_skinned_node_without_weights_no_overflow)
+{
+    char b64[113];
+    memset(b64, 'A', 112); /* 84 zero bytes -> 112 base64 chars, no padding */
+    b64[112] = '\0';
+    char json[2048];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0,1]}],"
+             "\"nodes\":[{\"mesh\":0,\"skin\":0},{\"mesh\":1},{}],"
+             "\"skins\":[{\"joints\":[2]}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1}}]},"
+             "{\"primitives\":[{\"attributes\":{\"POSITION\":2}}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+             "{\"bufferView\":1,\"componentType\":5121,\"count\":3,\"type\":\"VEC4\"},"
+             "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":["
+             "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12},"
+             "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":36}],"
+             "\"buffers\":[{\"byteLength\":84,\"uri\":\"data:application/octet-stream;base64,%s\"}]}",
+             b64);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.mesh_count, 2u);
+    ASSERT_EQ(scene.skinned_mesh_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
+/* R415: cgltf_validate does not check accessor component_type, so a MAT4
+ * inverse-bind accessor declared as UNSIGNED_BYTE passed validation and was
+ * then memcpy'd as 16 f32 per joint — a 4x over-read of the real bytes.
+ * Post-fix the loader converts non-float data through cgltf instead. */
+TEST(gltf_non_float_inverse_bind_converted)
+{
+    char b64[25];
+    memset(b64, 'A', 24); /* 18 zero bytes -> 24 base64 chars, no padding */
+    b64[24] = '\0';
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{}],"
+             "\"skins\":[{\"joints\":[0],\"inverseBindMatrices\":0}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5121,"
+             "\"count\":1,\"type\":\"MAT4\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":16}],"
+             "\"buffers\":[{\"byteLength\":18,\"uri\":\"data:application/octet-stream;base64,%s\"}]}",
+             b64);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.joint_count, 1u);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
+/* R415: same class of bug in the vertex path — POSITION declared as
+ * UNSIGNED_BYTE was memcpy'd as 12 bytes/vertex out of a 3-byte/vertex span.
+ * Post-fix it is converted through cgltf_accessor_read_float. */
+TEST(gltf_non_float_position_converted)
+{
+    char b64[17];
+    memset(b64, 'A', 16); /* 12 zero bytes -> 16 base64 chars, no padding */
+    b64[16] = '\0';
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5121,"
+             "\"count\":3,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":9}],"
+             "\"buffers\":[{\"byteLength\":12,\"uri\":\"data:application/octet-stream;base64,%s\"}]}",
+             b64);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.mesh_count, 1u);
+    ASSERT_EQ(scene.meshes[0].vertex_count, 3u);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
+/* R415: external buffer URIs went to cgltf_load_buffers unchecked (the R353
+ * gltf_uri_safe guard only covered image URIs). A "../" escape must be
+ * rejected before any file outside the asset directory is read. */
+TEST(gltf_rejects_traversal_buffer_uri)
+{
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+             "\"count\":3,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+             "\"buffers\":[{\"byteLength\":36,\"uri\":\"../r415_evil.bin\"}]}");
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(!asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    remove(TMP_GLTF);
+}
+
+/* R415: the memoized-DFS rewrite of scene_compute_world_transforms must give
+ * the same results as the old iterate-until-stable loop when children precede
+ * their parents in nodes[] (glTF does not guarantee parent-first order). */
+TEST(scene_world_transforms_child_before_parent)
+{
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+    SceneNode nodes[3];
+    memset(nodes, 0, sizeof(nodes));
+    scene.nodes = nodes;
+    scene.node_count = 3;
+    nodes[0].parent_index = 1; /* grandchild sits at the lowest index */
+    nodes[0].local_transform = mat4_translation(1.0f, 0.0f, 0.0f);
+    nodes[1].parent_index = 2;
+    nodes[1].local_transform = mat4_translation(0.0f, 2.0f, 0.0f);
+    nodes[2].parent_index = UINT32_MAX;
+    nodes[2].local_transform = mat4_translation(0.0f, 0.0f, 3.0f);
+
+    scene_compute_world_transforms(&scene);
+
+    /* Translations compose additively; translation lives in e[3][0..2]. */
+    ASSERT_FLOAT_EQ(nodes[2].world_transform.e[3][0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[2].world_transform.e[3][1], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[2].world_transform.e[3][2], 3.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[1].world_transform.e[3][0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[1].world_transform.e[3][1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[1].world_transform.e[3][2], 3.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[0].world_transform.e[3][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[0].world_transform.e[3][1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[0].world_transform.e[3][2], 3.0f, 1e-6f);
+}
+
+/* R415: a parent cycle (malformed scene) must terminate deterministically —
+ * the visited-state DFS breaks the cycle by treating the re-entered node as
+ * its own root. */
+TEST(scene_world_transforms_parent_cycle_terminates)
+{
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+    SceneNode nodes[2];
+    memset(nodes, 0, sizeof(nodes));
+    scene.nodes = nodes;
+    scene.node_count = 2;
+    nodes[0].parent_index = 1;
+    nodes[0].local_transform = mat4_translation(1.0f, 0.0f, 0.0f);
+    nodes[1].parent_index = 0;
+    nodes[1].local_transform = mat4_translation(0.0f, 1.0f, 0.0f);
+
+    scene_compute_world_transforms(&scene); /* must not hang */
+
+    ASSERT_FLOAT_EQ(nodes[0].world_transform.e[3][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[0].world_transform.e[3][1], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[1].world_transform.e[3][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(nodes[1].world_transform.e[3][1], 1.0f, 1e-6f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
@@ -328,4 +523,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gltf_rejects_misaligned_buffer_view_offset);
     RUN_TEST(gltf_rejects_misaligned_index_accessor);
     RUN_TEST(gltf_accepts_well_formed_model);
+    RUN_TEST(gltf_skinned_node_without_weights_no_overflow);
+    RUN_TEST(gltf_non_float_inverse_bind_converted);
+    RUN_TEST(gltf_non_float_position_converted);
+    RUN_TEST(gltf_rejects_traversal_buffer_uri);
+    RUN_TEST(scene_world_transforms_child_before_parent);
+    RUN_TEST(scene_world_transforms_parent_cycle_terminates);
 TEST_MAIN_END()
