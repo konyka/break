@@ -6673,6 +6673,19 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 
 **验收**：GL/VK 双构建 `ctest -LE graphics` 各 35/35。
 
+## R424–R428 第三轮审查（性能相关项）
+
+三审验证前两轮修复全部正确，新增 37 处修复（详见 `Implementation_Status.md`），其中性能项：
+
+- [x] glTF 纹理按 `cgltf_image` 去重上传（N 材质共享贴图只传一次 GPU）（R426）
+- [x] mipmap 加载失败按级闩锁，消除每帧重试 + LOG_WARN（R426）
+- [x] 静态-静态碰撞对跳过，k 个驻留 body 的 O(k²) narrowphase 归零（R427）
+- [x] VK offscreen FBO/shadow map destroy 泄漏修复，窗口 resize 不再累积泄漏（R425）
+- [x] F12 截图从 256KB arena 改 malloc，720p+ 真正可用（R428）
+- [x] 静态-静态对不再虚增 `collision_count`，碰撞统计与热对追踪更准确（R427）
+
+**验收**：GL/VK 双构建 `ctest -LE graphics` 各 35/35；verify_pak 嵌套核对功能往返通过。
+
 ## 构建与回归命令
 
 
