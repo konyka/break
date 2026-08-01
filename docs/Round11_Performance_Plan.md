@@ -6646,6 +6646,21 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 
 **验收**：双后端构建通过；VK/GL CTest 各 **31/31**（现有资产紧凑布局，字节等价）。
 
+## R414–R419 全仓库审查（性能相关项）
+
+本轮为全模块深度审查（38 处修复，详见 `Implementation_Status.md`），其中性能项：
+
+- [x] task worker 空闲退避上限 1ms → 50µs，`task_wait` 睡眠前可跨 worker 窃取（R414）
+- [x] `Worker` 64 字节对齐，消除 work-stealing deque 伪共享（R414）
+- [x] glTF 关节查找 O(channels×joints) → O(1)（复用 `node_to_joint` 映射）（R415）
+- [x] `scene_compute_world_transforms` 迭代收敛 O(n²) → 记忆化 DFS O(n)（R415）
+- [x] mipmap 请求池 bump allocator → free-list 回收（64 并发内零 malloc）（R415）
+- [x] 物理 broadphase 积分后二次 refit，接触同帧解决（正确性兼省一帧穿透修正）（R418）
+- [x] fallback AA 链删除未使用的全分辨率 RGBA16F FBO 及多余 pass 切换（R417）
+- [x] wayland 每帧阻塞 `wl_display_roundtrip` → 非阻塞事件泵（R419）
+
+**验收**：`ctest --test-dir build-verify-x11-gl -LE graphics` 35/35；VK 构建同绿；task/ecs 修复 ASan 验证。
+
 ## 构建与回归命令
 
 
