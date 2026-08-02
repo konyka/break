@@ -193,6 +193,85 @@ void physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn, void *u
     pw->contact_user = user;
 }
 
+/* ---- R435: distance constraints (position projection) ---- */
+
+u32 physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length) {
+    if (!pw) return UINT32_MAX;
+    /* R352 convention: invalid ids / full capacity return UINT32_MAX, which
+     * fails the id < count style checks instead of looking like a live slot. */
+    if (body_a >= pw->count || body_b >= pw->count) return UINT32_MAX;
+    if (body_a == body_b) return UINT32_MAX;      /* self-constraint is a no-op */
+    if (!(rest_length >= 0.0f)) return UINT32_MAX; /* rejects negative and NaN */
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (!pw->constraints[i].active) {
+            pw->constraints[i].body_a = body_a;
+            pw->constraints[i].body_b = body_b;
+            pw->constraints[i].rest_length = rest_length;
+            pw->constraints[i].active = true;
+            pw->constraint_count++;
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+void physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id) {
+    if (!pw || constraint_id >= PHYSICS_MAX_CONSTRAINTS) return;
+    if (pw->constraints[constraint_id].active) {
+        pw->constraints[constraint_id].active = false;
+        pw->constraint_count--;
+    }
+}
+
+u32 physics_constraint_count(const PhysicsWorld *pw) {
+    return pw ? pw->constraint_count : 0u;
+}
+
+/* R435: Gauss-Seidel position projection with a small fixed iteration count.
+ * The correction is split by inverse mass exactly like resolve_contact, so
+ * static bodies (inv_mass 0) never move. Velocities are deliberately
+ * untouched — this is a position-only constraint, no velocity solver. */
+static void solve_distance_constraints(PhysicsWorld *pw) {
+    if (pw->constraint_count == 0) return;
+    for (int iter = 0; iter < 4; iter++) {
+        for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
+            DistanceConstraint *c = &pw->constraints[ci];
+            if (!c->active) continue;
+            /* Body slots outlive their occupants (R376/R377 park/revive
+             * tombstones): a parked body sits at (0,-1000,0) with inv_mass 0
+             * and would drag its partner into the void, so skip pairs that
+             * touch a tombstone. If a parked slot is later REUSED, the
+             * constraint binds to the new occupant — callers despawn bodies
+             * with physics_body_park and should remove their constraints
+             * first (matching the engine's "no destroy" slot semantics). */
+            if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
+            RigidBody *a = &pw->bodies[c->body_a];
+            RigidBody *b = &pw->bodies[c->body_b];
+            if (physics_body_is_parked(a) || physics_body_is_parked(b)) continue;
+            f32 inv_a = a->inv_mass;
+            f32 inv_b = b->inv_mass;
+            f32 inv_total = inv_a + inv_b;
+            if (inv_total <= 0.0f) continue; /* both static: nothing can move */
+            Vec3 d = vec3_sub(b->position, a->position);
+            f32 len2 = vec3_dot(d, d);
+            if (len2 < 1e-12f) continue;     /* coincident: no defined axis */
+            f32 len = sqrtf(len2);
+            f32 err = len - c->rest_length;
+            Vec3 n = vec3_scale(d, 1.0f / len);
+            f32 corr = err / inv_total;
+            if (inv_a > 0.0f) {
+                a->position = vec3_add(a->position, vec3_scale(n, corr * inv_a));
+                a->rest_frames = 0; /* R432 pattern: we moved it, so the BVH
+                                     * refit passes must not skip its AABB. */
+            }
+            if (inv_b > 0.0f) {
+                b->position = vec3_sub(b->position, vec3_scale(n, corr * inv_b));
+                b->rest_frames = 0;
+            }
+        }
+    }
+}
+
 void physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse) {
     if (body_id >= pw->count) return;
     RigidBody *b = &pw->bodies[body_id];
@@ -530,7 +609,7 @@ static void physics_collision_callback(u32 i, u32 j, void *ctx) {
     pw->collision_center_count++;
 }
 
-/* ---- Continuous collision detection (swept sphere vs static AABBs) ---- */
+/* ---- Continuous collision detection (swept sphere vs AABBs; R435: statics + dynamics) ---- */
 
 static f32 body_bound_radius(const RigidBody *b) {
     switch (b->shape) {
@@ -556,12 +635,45 @@ static f32 body_bound_radius(const RigidBody *b) {
     }
 }
 
+/* R435: slab-method time-of-impact of a point (body radius already folded
+ * into `box`) moving from `origin` along `delta` (t in [0,1]). Only counts
+ * hits strictly before `t_limit`. Extracted verbatim from the pre-R435
+ * ccd_sweep_static inner loop so statics and dynamics share one code path;
+ * static-path numerics are unchanged. */
+static bool sweep_box_toi(Vec3 origin, Vec3 delta, const f32 inv_dir[3],
+                          AABB box, f32 t_limit, f32 *out_t, Vec3 *out_n) {
+    f32 tmin = 0.0f, tmax = t_limit;
+    int hit_axis = -1; f32 hit_sign = 0.0f;
+    for (int a = 0; a < 3; a++) {
+        if (fabsf(delta.e[a]) < 1e-8f) {
+            if (origin.e[a] < box.min.e[a] || origin.e[a] > box.max.e[a]) return false;
+        } else {
+            f32 inv = inv_dir[a];
+            f32 t1 = (box.min.e[a] - origin.e[a]) * inv;
+            f32 t2 = (box.max.e[a] - origin.e[a]) * inv;
+            f32 sgn = -1.0f;
+            if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; sgn = 1.0f; }
+            if (t1 > tmin) { tmin = t1; hit_axis = a; hit_sign = sgn; }
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax) return false;
+        }
+    }
+    if (tmin >= 0.0f && tmin < t_limit && hit_axis >= 0) {
+        Vec3 n = {{0, 0, 0}};
+        n.e[hit_axis] = hit_sign;
+        *out_t = tmin;
+        *out_n = n;
+        return true;
+    }
+    return false;
+}
+
 /* Sweep a point of radius `radius` from `origin` along `delta` (t in [0,1])
- * against every static body. Returns earliest time-of-impact and face normal
- * (pointing out of the box toward the mover).
- * Uses BVH broadphase to avoid O(N) linear scan. */
-static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta,
-                             f32 radius, f32 *out_t, Vec3 *out_n) {
+ * against every static body (BVH broadphase) and every dynamic body
+ * (conservative linear pass). Returns earliest time-of-impact and face normal
+ * (pointing out of the obstacle toward the mover). */
+static bool ccd_sweep(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta,
+                      f32 radius, f32 dt, f32 *out_t, Vec3 *out_n) {
     if (vec3_dot(delta, delta) < 1e-10f) return false;
     f32 best_t = 1.0f;
     bool hit = false;
@@ -601,6 +713,7 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
         inv_dir[a] = (fabsf(delta.e[a]) > 1e-8f) ? (1.0f / delta.e[a]) : 1e30f;
     }
 
+    /* Pass 1: static bodies (BVH broadphase, or full scan on saturation). */
     for (u32 ci = 0; ci < total; ci++) {
         u32 k = use_bvh ? candidates[ci] : ci;
         if (k == self) continue;
@@ -611,28 +724,66 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
         box.min = vec3_sub(box.min, vec3(radius, radius, radius));
         box.max = vec3_add(box.max, vec3(radius, radius, radius));
 
-        f32 tmin = 0.0f, tmax = best_t;
-        int hit_axis = -1; f32 hit_sign = 0.0f;
-        bool valid = true;
-        for (int a = 0; a < 3; a++) {
-            if (fabsf(delta.e[a]) < 1e-8f) {
-                if (origin.e[a] < box.min.e[a] || origin.e[a] > box.max.e[a]) { valid = false; break; }
-            } else {
-                f32 inv = inv_dir[a];
-                f32 t1 = (box.min.e[a] - origin.e[a]) * inv;
-                f32 t2 = (box.max.e[a] - origin.e[a]) * inv;
-                f32 sgn = -1.0f;
-                if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; sgn = 1.0f; }
-                if (t1 > tmin) { tmin = t1; hit_axis = a; hit_sign = sgn; }
-                if (t2 < tmax) tmax = t2;
-                if (tmin > tmax) { valid = false; break; }
-            }
-        }
-        if (valid && tmin >= 0.0f && tmin < best_t && hit_axis >= 0) {
-            best_t = tmin;
+        f32 t; Vec3 n;
+        if (sweep_box_toi(origin, delta, inv_dir, box, best_t, &t, &n)) {
+            best_t = t;
             hit = true;
-            Vec3 n = {{0, 0, 0}};
-            n.e[hit_axis] = hit_sign;
+            best_n = n;
+        }
+    }
+
+    /* R435 — Pass 2: dynamic-vs-dynamic. The pre-integration BVH cannot be
+     * queried here (opponents move this frame and the expansion below is
+     * velocity-dependent), so dynamic bodies are scanned linearly — CCD bodies
+     * are rare and this is a tunneling safety net, not the primary broadphase.
+     *
+     * Semantics (CONSERVATIVE): the opponent is treated as occupying, for the
+     * WHOLE frame, its current AABB swept along its frame displacement
+     * (velocity * dt). Real relative motion would let the mover slip past
+     * before the opponent arrives, so this can clamp slightly early — but it
+     * can never let the mover through. The opponent velocity used is its
+     * current value (already-integrated for lower indices, last frame's for
+     * later ones); that approximation stays conservative because integration
+     * only damps (0.98) and gravity is negligible at CCD speeds.
+     *
+     * If the mover's ORIGIN is already inside the opponent's swept volume
+     * (common in fast head-on pairs), the pair counts as touching at t=0 with
+     * the normal opposing the dominant motion axis: the mover holds position
+     * this frame and the ordinary contact solver takes over. */
+    for (u32 k = 0; k < pw->count; k++) {
+        if (k == self) continue;
+        RigidBody *s = &pw->bodies[k];
+        if (s->is_static) continue;
+
+        AABB box = aabb_from_body(s);
+        Vec3 sd = vec3_scale(s->velocity, dt);
+        for (int a = 0; a < 3; a++) {
+            if (sd.e[a] < 0.0f) box.min.e[a] += sd.e[a];
+            else                box.max.e[a] += sd.e[a];
+        }
+        box.min = vec3_sub(box.min, vec3(radius, radius, radius));
+        box.max = vec3_add(box.max, vec3(radius, radius, radius));
+
+        if (origin.e[0] >= box.min.e[0] && origin.e[0] <= box.max.e[0] &&
+            origin.e[1] >= box.min.e[1] && origin.e[1] <= box.max.e[1] &&
+            origin.e[2] >= box.min.e[2] && origin.e[2] <= box.max.e[2]) {
+            if (best_t > 0.0f) {
+                best_t = 0.0f;
+                hit = true;
+                int dom = 0;
+                if (fabsf(delta.e[1]) > fabsf(delta.e[dom])) dom = 1;
+                if (fabsf(delta.e[2]) > fabsf(delta.e[dom])) dom = 2;
+                Vec3 n = {{0, 0, 0}};
+                n.e[dom] = delta.e[dom] > 0.0f ? -1.0f : 1.0f;
+                best_n = n;
+            }
+            continue;
+        }
+
+        f32 t; Vec3 n;
+        if (sweep_box_toi(origin, delta, inv_dir, box, best_t, &t, &n)) {
+            best_t = t;
+            hit = true;
             best_n = n;
         }
     }
@@ -643,7 +794,8 @@ static bool ccd_sweep_static(PhysicsWorld *pw, u32 self, Vec3 origin, Vec3 delta
     return hit;
 }
 
-/* Integrate a single CCD body, clamping motion at the first static hit. */
+/* Integrate a single CCD body, clamping motion at the first hit — static
+ * (exact) or dynamic (R435 conservative, see ccd_sweep pass 2). */
 static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
     RigidBody *b = &pw->bodies[idx];
     Vec3 oldp = b->position;
@@ -654,7 +806,7 @@ static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
     Vec3 delta = vec3_sub(newp, oldp);
 
     f32 t; Vec3 n;
-    if (ccd_sweep_static(pw, idx, oldp, delta, body_bound_radius(b), &t, &n)) {
+    if (ccd_sweep(pw, idx, oldp, delta, body_bound_radius(b), dt, &t, &n)) {
         f32 tc = t - 0.001f;
         if (tc < 0.0f) tc = 0.0f;
         newp = vec3_add(oldp, vec3_scale(delta, tc));
@@ -765,6 +917,11 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
 
     /* BVH broadphase collision pair query */
     bvh_query_pairs(&pw->bvh, physics_collision_callback, pw);
+
+    /* R435: distance-constraint position projection runs after contact
+     * resolution (contacts see a consistent pre-constraint state) and before
+     * the kill-floor (which reads final positions). */
+    solve_distance_constraints(pw);
 
     for (u32 i = 0; i < pw->count; i++) {
         RigidBody *b = &pw->bodies[i];

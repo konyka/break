@@ -5,7 +5,19 @@
 #define AUDIO_MAX_DEVICES 16
 #define AUDIO_MAX_SOURCES 32
 
+/* R435: fixed-size mixing bus table. Slot 0 is the master bus and always
+ * exists; AUDIO_BUS_INVALID is the error sentinel for audio_bus_create
+ * (same UINT32_MAX convention as audio_acquire_slot). */
+#define AUDIO_MAX_BUSES   8
+#define AUDIO_BUS_MASTER  0u
+#define AUDIO_BUS_INVALID UINT32_MAX
+
 typedef struct AudioSource AudioSource;
+
+typedef struct {
+    char name[32];
+    f32  gain; /* >= 0; 0 mutes the bus, >1 amplifies */
+} AudioBus;
 
 typedef struct {
     char name[128];
@@ -31,6 +43,11 @@ typedef struct {
     u32             device_count;
     bool            devices_enumerated;  /* true after first enumeration */
     char            current_device[128];
+
+    /* R435: mixing bus table; lives and dies with the AudioSystem
+     * (reset in audio_system_create). buses[0] is the master bus. */
+    AudioBus        buses[AUDIO_MAX_BUSES];
+    u32             bus_count;
 } AudioSystem;
 
 AudioSystem *audio_system_create(void);
@@ -74,6 +91,32 @@ static inline f32 audio_attenuation_gain(f32 dist, f32 min_dist,
     if (g < 0.0f) g = 0.0f;
     return g;
 }
+
+/* R435: pure effective-gain composition for the mixing bus chain:
+ * source volume x bus gain x master gain. Every factor is clamped to be
+ * non-negative (a negative gain is meaningless; 0 mutes). No upper clamp —
+ * amplification is allowed, matching the existing volume policy. Exposed as
+ * a static inline so it can be unit tested headless. */
+static inline f32 audio_effective_gain(f32 volume, f32 bus_gain,
+                                       f32 master_gain) {
+    if (volume < 0.0f) volume = 0.0f;
+    if (bus_gain < 0.0f) bus_gain = 0.0f;
+    if (master_gain < 0.0f) master_gain = 0.0f;
+    return volume * bus_gain * master_gain;
+}
+
+/* ---- R435: mixing buses ----
+ * Create a named bus; returns its id (>= 1) or AUDIO_BUS_INVALID when the
+ * table is full / args are invalid. Bus 0 (master) always exists. */
+u32          audio_bus_create(AudioSystem *as, const char *name);
+/* Set a bus fader; gain is clamped to >= 0. Invalid bus id: no-op.
+ * Re-applies the effective gain on every active source routed to the bus. */
+void         audio_bus_set_gain(AudioSystem *as, u32 bus, f32 gain);
+/* Query a bus fader; an invalid bus id falls back to the master gain. */
+f32          audio_bus_gain(AudioSystem *as, u32 bus);
+/* Route a source through a bus; an invalid bus id falls back to master.
+ * Re-applies the effective gain immediately. */
+void         audio_source_set_bus(AudioSystem *as, u32 source_id, u32 bus);
 
 /* Device enumeration */
 u32          audio_get_device_count(AudioSystem *sys);

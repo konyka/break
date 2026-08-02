@@ -733,6 +733,37 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
 #endif
 }
 
+/* R435: live delta.log rotation threshold (see net_replication.h). */
+size_t netrep_delta_max_bytes = NETREP_DELTA_MAX_BYTES;
+
+/* R435: rotate an oversized delta.log. The full peer set is rewritten as the
+ * new baseline (.peer files next to delta.log, same writer as save_dir), then
+ * a fresh header-only delta.log is swapped in via temp-file + rename. On any
+ * failure the existing delta.log is left untouched and fully readable. */
+static bool net_repl_delta_rotate(NetReplicator *rep, const char *path) {
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0';
+    else snprintf(dir, sizeof(dir), ".");
+    if (!net_replicator_peer_save_dir(rep, dir)) return false;
+
+    char tmp[520];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return false;
+    fprintf(f, "# break netrep delta v1\n");
+    if (fclose(f) != 0) {
+        remove(tmp);
+        return false;
+    }
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        return false;
+    }
+    return true;
+}
+
 bool net_replicator_peer_save_delta(NetReplicator *rep, const char *path) {
     if (!rep || !path) return false;
     FILE *f = fopen(path, "a");
@@ -749,7 +780,12 @@ bool net_replicator_peer_save_delta(NetReplicator *rep, const char *path) {
         p->dirty = false;
         wrote++;
     }
+    /* R435: size check before close; rotate once over the threshold. A failed
+     * rotation keeps the appended log readable, so the save result stands. */
+    long size = ftell(f);
     fclose(f);
+    if (size >= 0 && (size_t)size >= netrep_delta_max_bytes)
+        net_repl_delta_rotate(rep, path);
     return wrote > 0u;
 }
 

@@ -744,6 +744,138 @@ TEST(ccd_capsule_axis_no_tunnel)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R435: dynamic-vs-dynamic CCD + distance constraints                     */
+/* ----------------------------------------------------------------------- */
+
+TEST(ccd_dynamic_no_tunnel)
+{
+    /* R435: CCD must also protect against DYNAMIC bodies. Mirrors
+     * ccd_prevents_tunnel with the static wall replaced by a free (currently
+     * stationary) dynamic thin box. */
+    PhysicsWorld *pw = physics_world_create(64);
+    u32 wall = physics_body_create(pw, vec3(5, 0, 0), vec3(0.1f, 5, 5), 1.0f, false, 0);
+    pw->bodies[wall].acceleration = vec3(0, 0, 0);
+    u32 id = physics_body_create_sphere(pw, vec3(0, 0, 0), 0.5f, 1.0f, false, 0);
+    pw->bodies[id].acceleration = vec3(0, 0, 0);
+    physics_body_set_ccd(pw, id, true);
+    pw->bodies[id].velocity = vec3(1000, 0, 0);
+
+    physics_step(pw, 0.1f); /* would advance ~98 units without CCD */
+    ASSERT_TRUE(pw->bodies[id].position.e[0] < 5.0f);
+    physics_world_destroy(pw);
+}
+
+TEST(ccd_dynamic_head_on_no_tunnel)
+{
+    /* R435: two fast dynamics that would swap positions (tunnel) in one step.
+     * The conservative swept-volume expansion of the opponent must catch the
+     * crossing even though the mover starts INSIDE the opponent's swept AABB
+     * (handled as a t=0 touch: the mover holds position this frame). */
+    PhysicsWorld *pw = physics_world_create(64);
+    u32 a = physics_body_create_sphere(pw, vec3(-10, 0, 0), 0.5f, 1.0f, false, 0);
+    u32 b = physics_body_create_sphere(pw, vec3(10, 0, 0), 0.5f, 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    physics_body_set_ccd(pw, a, true);
+    pw->bodies[a].velocity = vec3(200, 0, 0);
+    pw->bodies[b].velocity = vec3(-200, 0, 0);
+
+    physics_step(pw, 0.1f); /* without CCD they swap: a -> ~9.6, b -> ~-9.6 */
+    ASSERT_TRUE(pw->bodies[a].position.e[0] < 5.0f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_distance_pulls_to_rest)
+{
+    /* R435: two free bodies pulled apart are position-projected back to the
+     * constraint's rest length (split by inverse mass). */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(c != UINT32_MAX);
+    ASSERT_EQ(physics_constraint_count(pw), 1u);
+
+    /* Pull apart to distance 10. */
+    pw->bodies[b].position = vec3(10, 0, 0);
+    physics_step(pw, 1.0f / 60.0f);
+
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    ASSERT_FLOAT_EQ(vec3_len(d), 2.0f, 0.05f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_static_end_stays_put)
+{
+    /* R435: with one static end (inv_mass 0) only the free end moves. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(c != UINT32_MAX);
+
+    pw->bodies[b].position = vec3(10, 0, 0);
+    physics_step(pw, 1.0f / 60.0f);
+
+    ASSERT_FLOAT_EQ(pw->bodies[a].position.e[0], 0.0f, 1e-6f);
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    ASSERT_FLOAT_EQ(vec3_len(d), 2.0f, 0.05f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_remove_disables)
+{
+    /* R435: a removed constraint no longer projects. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(c != UINT32_MAX);
+    ASSERT_EQ(physics_constraint_count(pw), 1u);
+    physics_constraint_remove(pw, c);
+    ASSERT_EQ(physics_constraint_count(pw), 0u);
+
+    pw->bodies[b].position = vec3(10, 0, 0);
+    physics_step(pw, 1.0f / 60.0f);
+
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    ASSERT_TRUE(vec3_len(d) > 9.5f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_full_returns_invalid)
+{
+    /* R435/R352: the fixed array holds PHYSICS_MAX_CONSTRAINTS; the next add
+     * must fail with UINT32_MAX (not a plausible-looking valid id). */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    for (int i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        ASSERT_TRUE(physics_constraint_add_distance(pw, a, b, 1.0f) != UINT32_MAX);
+    }
+    ASSERT_EQ(physics_constraint_add_distance(pw, a, b, 1.0f), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_count(pw), (u32)PHYSICS_MAX_CONSTRAINTS);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_invalid_body_rejected)
+{
+    /* R435: out-of-range body ids are rejected with UINT32_MAX and consume
+     * no slot. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    ASSERT_EQ(physics_constraint_add_distance(pw, a, 999u, 1.0f), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_add_distance(pw, 999u, a, 1.0f), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_count(pw), 0u);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(aabb_from_body_basic);
@@ -792,4 +924,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ccd_prevents_tunnel);
     RUN_TEST(no_ccd_tunnels);
     RUN_TEST(ccd_capsule_axis_no_tunnel);
+    /* R435: dynamic CCD + distance constraints */
+    RUN_TEST(ccd_dynamic_no_tunnel);
+    RUN_TEST(ccd_dynamic_head_on_no_tunnel);
+    RUN_TEST(constraint_distance_pulls_to_rest);
+    RUN_TEST(constraint_static_end_stays_put);
+    RUN_TEST(constraint_remove_disables);
+    RUN_TEST(constraint_full_returns_invalid);
+    RUN_TEST(constraint_invalid_body_rejected);
 TEST_MAIN_END()

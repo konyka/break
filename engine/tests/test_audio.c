@@ -133,6 +133,152 @@ TEST(handle_generation_wraps_at_24_bits)
     ASSERT_TRUE(audio_resolve(&as, h_old) == NULL);     /* stale stays stale */
 }
 
+/* ----------------------------------------------------------------------- */
+/*  R435: mixing buses (headless — table logic + pure gain composition)     */
+/* ----------------------------------------------------------------------- */
+
+/* Zeroed AudioSystem with the bus table reset the way audio_system_create
+ * does (headless tests can't call create — no audio device). */
+static void test_sys_init(AudioSystem *as, AudioSource *srcs, u32 cap) {
+    memset(as, 0, sizeof(*as));
+    if (srcs) memset(srcs, 0, sizeof(*srcs) * cap);
+    as->sources     = srcs;
+    as->source_cap  = cap;
+    as->source_count = 0;
+    audio_bus_table_reset(as);
+}
+
+TEST(bus_master_always_present)
+{
+    /* The master bus (id 0) exists from reset with unity gain. */
+    AudioSystem as;
+    test_sys_init(&as, NULL, 0);
+    ASSERT_EQ(as.bus_count, 1u);
+    ASSERT_EQ(AUDIO_BUS_MASTER, 0u);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, AUDIO_BUS_MASTER), 1.0f, 1e-6);
+    ASSERT_STR_EQ(as.buses[AUDIO_BUS_MASTER].name, "master");
+}
+
+TEST(bus_create_assigns_sequential_ids)
+{
+    AudioSystem as;
+    test_sys_init(&as, NULL, 0);
+    u32 sfx   = audio_bus_create(&as, "sfx");
+    u32 music = audio_bus_create(&as, "music");
+    ASSERT_EQ(sfx, 1u);
+    ASSERT_EQ(music, 2u);
+    ASSERT_EQ(as.bus_count, 3u);
+    /* New buses start at unity gain, master untouched */
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, sfx), 1.0f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, music), 1.0f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, AUDIO_BUS_MASTER), 1.0f, 1e-6);
+}
+
+TEST(bus_create_full_table_returns_invalid)
+{
+    AudioSystem as;
+    test_sys_init(&as, NULL, 0);
+    for (u32 i = 1; i < AUDIO_MAX_BUSES; i++) {
+        ASSERT_EQ(audio_bus_create(&as, "x"), i);
+    }
+    ASSERT_EQ(as.bus_count, (u32)AUDIO_MAX_BUSES);
+    /* Table full: error sentinel follows the UINT32_MAX convention. */
+    ASSERT_EQ(audio_bus_create(&as, "overflow"), AUDIO_BUS_INVALID);
+    ASSERT_EQ(as.bus_count, (u32)AUDIO_MAX_BUSES);
+    ASSERT_EQ(audio_bus_create(NULL, "x"), AUDIO_BUS_INVALID);
+    ASSERT_EQ(audio_bus_create(&as, NULL), AUDIO_BUS_INVALID);
+}
+
+TEST(bus_set_gain_clamps_negative)
+{
+    AudioSystem as;
+    test_sys_init(&as, NULL, 0);
+    u32 sfx = audio_bus_create(&as, "sfx");
+    audio_bus_set_gain(&as, sfx, 0.5f);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, sfx), 0.5f, 1e-6);
+    /* R435: gains clamp to non-negative (mute at 0, never phase-flip). */
+    audio_bus_set_gain(&as, sfx, -2.0f);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, sfx), 0.0f, 1e-6);
+    /* Unity restore; >1 amplification allowed (matches volume policy). */
+    audio_bus_set_gain(&as, sfx, 2.0f);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, sfx), 2.0f, 1e-6);
+}
+
+TEST(bus_invalid_id_rejected_falls_back_master)
+{
+    AudioSystem as;
+    test_sys_init(&as, NULL, 0);
+    audio_bus_set_gain(&as, AUDIO_BUS_MASTER, 0.7f);
+    /* set on an invalid id is a no-op: nothing changes. */
+    audio_bus_set_gain(&as, 999u, 0.1f);
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, AUDIO_BUS_MASTER), 0.7f, 1e-6);
+    ASSERT_EQ(as.bus_count, 1u);
+    /* query on an invalid id falls back to the master gain. */
+    ASSERT_FLOAT_EQ(audio_bus_gain(&as, 999u), 0.7f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_bus_gain(NULL, 999u), 1.0f, 1e-6);
+}
+
+TEST(effective_gain_pure_composition)
+{
+    /* effective = volume x bus gain x master gain */
+    ASSERT_FLOAT_EQ(audio_effective_gain(0.8f, 0.5f, 1.0f), 0.4f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_effective_gain(1.0f, 1.0f, 1.0f), 1.0f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_effective_gain(0.5f, 0.5f, 0.5f), 0.125f, 1e-6);
+    /* any negative factor clamps to 0 (mute) */
+    ASSERT_FLOAT_EQ(audio_effective_gain(-1.0f, 1.0f, 1.0f), 0.0f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_effective_gain(1.0f, -1.0f, 1.0f), 0.0f, 1e-6);
+    ASSERT_FLOAT_EQ(audio_effective_gain(1.0f, 1.0f, -1.0f), 0.0f, 1e-6);
+    /* no upper clamp — amplification is allowed, matching volume policy */
+    ASSERT_FLOAT_EQ(audio_effective_gain(2.0f, 1.0f, 1.0f), 2.0f, 1e-6);
+}
+
+TEST(source_bus_volume_compose_and_fallback)
+{
+    /* Source routed through a bus: set_volume / set_bus / set_gain all
+     * re-compose volume x bus x master. Sources stay inactive so no
+     * miniaudio call happens (headless). */
+    AudioSystem as;
+    AudioSource srcs[1];
+    test_sys_init(&as, srcs, 1);
+    as.source_count = 1;
+
+    u32 sfx = audio_bus_create(&as, "sfx");
+    u32 h = audio_make_handle(&as.sources[0], 0);
+
+    audio_source_set_volume(&as, h, 0.8f);
+    audio_source_set_bus(&as, h, sfx);
+    ASSERT_EQ(as.sources[0].bus, sfx);
+    ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.8f, 1e-6);
+
+    /* Bus fader moves the composed gain... */
+    audio_bus_set_gain(&as, sfx, 0.5f);
+    ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.4f, 1e-6);
+    /* ...and so does the master fader. */
+    audio_bus_set_gain(&as, AUDIO_BUS_MASTER, 0.5f);
+    ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.2f, 1e-6);
+
+    /* Invalid bus id in set_bus falls back to master routing. */
+    audio_source_set_bus(&as, h, 999u);
+    ASSERT_EQ(as.sources[0].bus, AUDIO_BUS_MASTER);
+    ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.4f, 1e-6);
+}
+
+TEST(source_on_master_bus_not_double_counted)
+{
+    /* The master bus IS the master fader: a source routed to bus 0 must get
+     * volume x master, NOT volume x master x master. */
+    AudioSystem as;
+    AudioSource srcs[1];
+    test_sys_init(&as, srcs, 1);
+    as.source_count = 1;
+
+    u32 h = audio_make_handle(&as.sources[0], 0);
+    audio_source_set_volume(&as, h, 1.0f);
+    audio_source_set_bus(&as, h, AUDIO_BUS_MASTER);
+    audio_bus_set_gain(&as, AUDIO_BUS_MASTER, 0.5f);
+    ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.5f, 1e-6);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(atten_inside_min_is_full);
     RUN_TEST(atten_inverse_known_values);
@@ -142,4 +288,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(handle_first_generation_matches_legacy_scheme);
     RUN_TEST(handle_generation_rejects_stale);
     RUN_TEST(handle_generation_wraps_at_24_bits);
+    RUN_TEST(bus_master_always_present);
+    RUN_TEST(bus_create_assigns_sequential_ids);
+    RUN_TEST(bus_create_full_table_returns_invalid);
+    RUN_TEST(bus_set_gain_clamps_negative);
+    RUN_TEST(bus_invalid_id_rejected_falls_back_master);
+    RUN_TEST(effective_gain_pure_composition);
+    RUN_TEST(source_bus_volume_compose_and_fallback);
+    RUN_TEST(source_on_master_bus_not_double_counted);
 TEST_MAIN_END()

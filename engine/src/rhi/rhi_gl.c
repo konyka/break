@@ -465,6 +465,24 @@ static int g_gl_cmd_sentinel = 0;
 
 static void *gl_frame_begin(RHIDevice *dev) {
     (void)dev;
+    /* R435: Match the VK swapchain render pass, whose depth attachment has
+     * loadOp=CLEAR (vk_create_render_pass): every frame starts with a fresh
+     * depth buffer.  GL previously never cleared default-framebuffer depth
+     * unless the caller did it explicitly, so a caller that omits
+     * rhi_cmd_clear_depth (the golden-image loop in test_vulkan) depth-tested
+     * against an uninitialized, zero-filled depth buffer and silently
+     * rasterized nothing — GL_LESS rejects every fragment at NDC z >= 0.
+     * The R434 sentinel exposed this by making those frames actually execute.
+     * Bind FBO 0 first: the clear targets the default framebuffer (VK parity:
+     * frame_begin starts the swapchain pass), not an FBO left over from the
+     * previous frame.  Depth writes must be enabled or GL ignores the clear
+     * (same pattern as rhi_cmd_clear_depth). */
+    gl_bind_fbo_cached(0);
+    if (!g_gl_depth_mask) {
+        glDepthMask(GL_TRUE);
+        g_gl_depth_mask = true;
+    }
+    glClear(GL_DEPTH_BUFFER_BIT);
     return &g_gl_cmd_sentinel;
 }
 

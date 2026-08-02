@@ -11,7 +11,44 @@ struct AudioSource {
     ma_sound  sound;
     bool      active;
     u32       generation; /* R419: ABA guard, bumped each time the slot is freed */
+    f32       volume;     /* R435: last set source volume (bus recomposition) */
+    u32       bus;        /* R435: routing bus; AUDIO_BUS_MASTER by default */
 };
+
+/* ---- R435: mixing buses ----
+ * The bus table lives inside AudioSystem: reset on audio_system_create,
+ * gone after audio_system_destroy. Slot 0 is the master bus. */
+
+static void audio_bus_table_reset(AudioSystem *as) {
+    memset(as->buses, 0, sizeof(as->buses));
+    as->bus_count = 1;
+    as->buses[AUDIO_BUS_MASTER].gain = 1.0f;
+    strncpy(as->buses[AUDIO_BUS_MASTER].name, "master",
+            sizeof(as->buses[AUDIO_BUS_MASTER].name) - 1);
+}
+
+static bool audio_bus_valid(const AudioSystem *as, u32 bus) {
+    return as && bus < as->bus_count;
+}
+
+/* Effective gain pushed to miniaudio: volume x bus gain x master gain.
+ * The master bus IS the master fader, so a source routed to bus 0 skips the
+ * separate bus factor (otherwise master gain would be applied twice). */
+static f32 audio_source_effective_gain(const AudioSystem *as,
+                                       const AudioSource *src) {
+    f32 bus_gain = 1.0f;
+    if (src->bus != AUDIO_BUS_MASTER && audio_bus_valid(as, src->bus)) {
+        bus_gain = as->buses[src->bus].gain;
+    }
+    return audio_effective_gain(src->volume, bus_gain,
+                                as->buses[AUDIO_BUS_MASTER].gain);
+}
+
+static void audio_source_apply_gain(AudioSystem *as, AudioSource *src) {
+    if (src->active) {
+        ma_sound_set_volume(&src->sound, audio_source_effective_gain(as, src));
+    }
+}
 
 /* R419 (HANDLE ABA): source handles were bare slot indices (id+1) recycled via
  * the free-list, so a stale handle silently aliased a new sound on the same
@@ -72,6 +109,7 @@ AudioSystem *audio_system_create(void) {
     as->source_count = 0;
     as->listener_forward = vec3(0, 0, -1);
     as->listener_up = vec3(0, 1, 0);
+    audio_bus_table_reset(as); /* R435: master bus exists from birth */
 
     LOG_INFO("Audio system initialized");
     return as;
@@ -168,7 +206,9 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
         return 0;
     }
 
-    ma_sound_set_volume(&src->sound, volume);
+    src->volume = volume;             /* R435: remember for bus recomposition */
+    src->bus = AUDIO_BUS_MASTER;      /* R435: recycled slots re-route to master */
+    ma_sound_set_volume(&src->sound, audio_source_effective_gain(as, src));
     ma_sound_set_looping(&src->sound, looping);
     ma_sound_start(&src->sound);
     src->active = true;
@@ -233,7 +273,9 @@ u32 audio_play_streamed(AudioSystem *as, const char *path, f32 volume,
         return 0;
     }
 
-    ma_sound_set_volume(&src->sound, volume);
+    src->volume = volume;             /* R435 */
+    src->bus = AUDIO_BUS_MASTER;      /* R435 */
+    ma_sound_set_volume(&src->sound, audio_source_effective_gain(as, src));
     ma_sound_set_looping(&src->sound, looping);
     if (spatial) {
         ma_sound_set_spatialization_enabled(&src->sound, MA_TRUE);
@@ -272,7 +314,55 @@ void audio_source_set_volume(AudioSystem *as, u32 source_id, f32 volume) {
     if (!as || source_id == 0) return;
     AudioSource *src = audio_resolve(as, source_id);
     if (!src) return; /* R419: stale handle — no-op */
-    if (src->active) ma_sound_set_volume(&src->sound, volume);
+    src->volume = volume; /* R435: keep raw (no clamp, existing policy); the
+                           * effective gain clamps negatives at compose time */
+    audio_source_apply_gain(as, src);
+}
+
+/* ---- R435: mixing buses (public API) ---- */
+
+u32 audio_bus_create(AudioSystem *as, const char *name) {
+    if (!as || !name) return AUDIO_BUS_INVALID;
+    if (as->bus_count >= AUDIO_MAX_BUSES) {
+        LOG_WARN("Audio: bus table full (%u buses)", (u32)AUDIO_MAX_BUSES);
+        return AUDIO_BUS_INVALID;
+    }
+    u32 id = as->bus_count++;
+    AudioBus *b = &as->buses[id];
+    strncpy(b->name, name, sizeof(b->name) - 1);
+    b->name[sizeof(b->name) - 1] = '\0';
+    b->gain = 1.0f;
+    return id;
+}
+
+void audio_bus_set_gain(AudioSystem *as, u32 bus, f32 gain) {
+    if (!audio_bus_valid(as, bus)) return; /* R435: invalid id — refuse */
+    if (gain < 0.0f) gain = 0.0f;          /* R435: clamp non-negative */
+    as->buses[bus].gain = gain;
+    /* Re-apply the composed gain on every source routed through this bus. */
+    for (u32 i = 0; i < as->source_count; i++) {
+        AudioSource *src = &as->sources[i];
+        if (src->bus == bus) audio_source_apply_gain(as, src);
+    }
+}
+
+f32 audio_bus_gain(AudioSystem *as, u32 bus) {
+    if (!as) return 1.0f;
+    if (!audio_bus_valid(as, bus)) {
+        return as->buses[AUDIO_BUS_MASTER].gain; /* R435: fall back to master */
+    }
+    return as->buses[bus].gain;
+}
+
+void audio_source_set_bus(AudioSystem *as, u32 source_id, u32 bus) {
+    if (!as || source_id == 0) return;
+    AudioSource *src = audio_resolve(as, source_id);
+    if (!src) return; /* R419: stale handle — no-op */
+    if (!audio_bus_valid(as, bus)) {
+        bus = AUDIO_BUS_MASTER; /* R435: invalid id — fall back to master */
+    }
+    src->bus = bus;
+    audio_source_apply_gain(as, src);
 }
 
 void audio_source_start(AudioSystem *as, u32 source_id) {

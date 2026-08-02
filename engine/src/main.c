@@ -1497,6 +1497,17 @@ int main(int argc, char **argv) {
             LOG_INFO("Audio stream demo: %s (id=%d)",
                      audio_stream_id >= 0 ? "playing 3D tone" : "open FAILED",
                      audio_stream_id);
+            /* R435: route the demo tone through a "music" mixing bus (an
+             * "sfx" bus is created alongside for future one-shot effects;
+             * the demo currently has no second source to attach). */
+            u32 audio_sfx_bus   = audio_bus_create(audio, "sfx");
+            u32 audio_music_bus = audio_bus_create(audio, "music");
+            (void)audio_sfx_bus;
+            if (audio_stream_id >= 0 && audio_music_bus != AUDIO_BUS_INVALID) {
+                audio_source_set_bus(audio,
+                    audio_stream_mgr.streams[audio_stream_id].source_id,
+                    audio_music_bus);
+            }
         }
     }
 

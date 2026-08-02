@@ -899,6 +899,150 @@ TEST(peer_save_delta)
 #endif
 }
 
+TEST(peer_delta_rotate)
+{
+    /* R435: once delta.log outgrows netrep_delta_max_bytes, peer_save_delta
+     * rewrites the full baseline (.peer files) and rebuilds delta.log from
+     * just the header; load_dir must still recover the full latest state. */
+#if defined(ENGINE_PLATFORM_WINDOWS)
+#else
+    time_init();
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    NetAddress a = {0}, b = {0};
+    strncpy(a.host, "127.0.0.1", sizeof(a.host) - 1u);
+    a.port = 20800u;
+    strncpy(b.host, "127.0.0.1", sizeof(b.host) - 1u);
+    b.port = 20801u;
+
+    u8 wire[PACKET_MAX_SIZE];
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    u32 t = (u32)(time_microseconds() / 1000ull);
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wire, build_heartbeat_wire(wire, 1u, t),
+                                        &a, out, 1u, &out_count) > 0);
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wire, build_heartbeat_wire(wire, 2u, t),
+                                        &b, out, 1u, &out_count) > 0);
+    ASSERT_EQ(net_replicator_peer_count(&rep), 2u);
+
+    char dir[64];
+    snprintf(dir, sizeof(dir), "/tmp/netrep_rot_%d", (int)getpid());
+    ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
+    char delta[128];
+    snprintf(delta, sizeof(delta), "%s/delta.log", dir);
+
+    size_t old_max = netrep_delta_max_bytes;
+    netrep_delta_max_bytes = 96u;   /* ~2 peer lines overflow this */
+
+    for (u32 round = 0u; round < 6u; round++) {
+        rep.peers[0].roundtrip_ms = 10.0f + (f32)round;
+        rep.peers[1].roundtrip_ms = 20.0f + (f32)round;
+        rep.peers[0].dirty = true;
+        rep.peers[1].dirty = true;
+        ASSERT_TRUE(net_replicator_peer_save_delta(&rep, delta));
+    }
+    netrep_delta_max_bytes = old_max;
+
+    /* Rotated log: header line intact, size back to header-only. */
+    FILE *f = fopen(delta, "r");
+    ASSERT_TRUE(f != NULL);
+    char line[512];
+    ASSERT_TRUE(fgets(line, sizeof(line), f) != NULL);
+    ASSERT_TRUE(strncmp(line, "# break netrep delta v1", 23u) == 0);
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fclose(f);
+    ASSERT_TRUE(sz < 128);
+
+    /* Baseline was rewritten: load_dir recovers both peers' latest state. */
+    NetReplicator loaded = {0};
+    ASSERT_TRUE(net_replicator_init(&loaded, 0));
+    ASSERT_TRUE(net_replicator_peer_load_dir(&loaded, dir));
+    ASSERT_EQ(net_replicator_peer_count(&loaded), 2u);
+    bool found_a = false, found_b = false;
+    for (u32 i = 0u; i < 2u; i++) {
+        const NetRepPeerStats *ps = net_replicator_peer_at(&loaded, i);
+        ASSERT_TRUE(ps != NULL);
+        if (ps->addr.port == 20800u) {
+            ASSERT_FLOAT_EQ(ps->roundtrip_ms, 15.0f, 0.01f);
+            found_a = true;
+        } else if (ps->addr.port == 20801u) {
+            ASSERT_FLOAT_EQ(ps->roundtrip_ms, 25.0f, 0.01f);
+            found_b = true;
+        }
+    }
+    ASSERT_TRUE(found_a && found_b);
+
+    char p0[160], p1[160];
+    snprintf(p0, sizeof(p0), "%s/peer_000_127.0.0.1_20800.peer", dir);
+    snprintf(p1, sizeof(p1), "%s/peer_001_127.0.0.1_20801.peer", dir);
+    remove(delta);
+    remove(p0);
+    remove(p1);
+    rmdir(dir);
+    net_replicator_shutdown(&rep);
+    net_replicator_shutdown(&loaded);
+#endif
+}
+
+TEST(peer_delta_no_rotate_below_threshold)
+{
+    /* R435: below the threshold nothing changes — pure append, no rewrite. */
+#if defined(ENGINE_PLATFORM_WINDOWS)
+#else
+    time_init();
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    NetAddress peer = {0};
+    strncpy(peer.host, "127.0.0.1", sizeof(peer.host) - 1u);
+    peer.port = 20810u;
+
+    u8 wire[PACKET_MAX_SIZE];
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    u32 len = build_heartbeat_wire(wire, 1u, (u32)(time_microseconds() / 1000ull));
+    ASSERT_TRUE(net_replicator_feed_from(&rep, wire, len, &peer, out, 1u, &out_count) > 0);
+
+    char dir[64];
+    snprintf(dir, sizeof(dir), "/tmp/netrep_norot_%d", (int)getpid());
+    ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
+    char delta[128];
+    snprintf(delta, sizeof(delta), "%s/delta.log", dir);
+
+    size_t old_max = netrep_delta_max_bytes;
+    netrep_delta_max_bytes = 1u << 20;  /* far above anything this test writes */
+
+    for (u32 round = 0u; round < 3u; round++) {
+        rep.peers[0].roundtrip_ms = 30.0f + (f32)round;
+        rep.peers[0].dirty = true;
+        ASSERT_TRUE(net_replicator_peer_save_delta(&rep, delta));
+    }
+    netrep_delta_max_bytes = old_max;
+
+    /* One header + one "+ peer" line per round, all appended, nothing cut. */
+    FILE *f = fopen(delta, "r");
+    ASSERT_TRUE(f != NULL);
+    char line[512];
+    u32 headers = 0u, appends = 0u;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "# break netrep delta v1", 23u) == 0) headers++;
+        else if (strncmp(line, "+ peer", 6u) == 0) appends++;
+    }
+    fclose(f);
+    ASSERT_EQ(headers, 1u);
+    ASSERT_EQ(appends, 3u);
+
+    char p0[160];
+    snprintf(p0, sizeof(p0), "%s/peer_000_127.0.0.1_20810.peer", dir);
+    remove(delta);
+    remove(p0);
+    rmdir(dir);
+    net_replicator_shutdown(&rep);
+#endif
+}
+
 TEST(ordered_channels_per_peer)
 {
     /* R418: channel state is keyed per peer address. Two peers each starting
@@ -1305,6 +1449,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_delta);
+    RUN_TEST(peer_delta_rotate);
+    RUN_TEST(peer_delta_no_rotate_below_threshold);
     RUN_TEST(ordered_channels_per_peer);
     RUN_TEST(peer_channels_evict_stalest);
     RUN_TEST(peer_load_rejects_port_overflow);

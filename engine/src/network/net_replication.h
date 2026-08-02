@@ -5,6 +5,8 @@
 #include "network.h"
 #include "packet.h"
 
+#include <stddef.h>
+
 #define NET_PKT_TRANSFORM_SNAPSHOT 1u
 #define NET_PKT_HEARTBEAT          2u
 #define NET_PKT_HEARTBEAT_ACK      3u
@@ -14,6 +16,13 @@
 #define NET_REP_MAX_PEERS          8u
 /* R434: max reliable packets in flight per replicator (sliding window). */
 #define NET_RELIABLE_WINDOW        8u
+/* R435: delta.log rotation threshold (bytes); compile-time overridable. */
+#ifndef NETREP_DELTA_MAX_BYTES
+#define NETREP_DELTA_MAX_BYTES (1024u * 1024u)
+#endif
+/* R435: live rotation threshold, starts at NETREP_DELTA_MAX_BYTES. Exposed so
+ * tests can lower it (save/restore around the test); not a stable API. */
+extern size_t netrep_delta_max_bytes;
 
 typedef struct {
     u32 entity_id;
