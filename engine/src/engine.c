@@ -6,6 +6,10 @@
 #include <stdio.h>
 
 bool engine_init(Engine *e, const EngineConfig *cfg) {
+    /* R429: cfg was dereferenced unconditionally — engine_init(e, NULL)
+     * segfaulted. Reject bad args up front. */
+    if (!e || !cfg) return false;
+
     LOG_INFO("Engine initializing...");
 
     time_init();

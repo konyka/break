@@ -5,20 +5,8 @@
 
 /* ---- Heap Allocator ---- */
 
-/* R420: the &(align - 1) mask trick in heap_alloc_fn / heap_realloc_fn only
- * works for power-of-two alignments. Round a non-pow2 align (e.g. 24) up to
- * the next power of two after the small-align clamp. Returns 0 when the next
- * power of two would overflow usize. */
-static usize align_up_pow2(usize align) {
-    if (align < sizeof(void *)) return sizeof(void *);
-    if ((align & (align - 1)) == 0) return align;
-    usize p = sizeof(void *);
-    while (p < align) {
-        if (p > SIZE_MAX / 2) return 0;
-        p <<= 1;
-    }
-    return p;
-}
+/* R429: align_up_pow2 moved to alloc.h as a static inline so pool.c and
+ * arena_alloc can share it (same non-pow2 rounding as R420 introduced). */
 
 static void *heap_alloc_fn(Alloc *self, usize size, usize align) {
     (void)self;

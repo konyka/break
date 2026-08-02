@@ -389,11 +389,30 @@ TEST(mat4_inverse_singular) {
     (void)inv;
 }
 
-TEST(mat4_inverse_near_singular_returns_identity) {
-    /* R419: exact det == 0.0f missed near-singular matrices — 1/det exploded
-     * into garbage. |det| < 1e-20 must return identity (same epsilon as the
-     * R142 guards). det of scaling(1e-7 x3) = 1e-21. */
+TEST(mat4_inverse_small_scale_invertible) {
+    /* R429: the absolute |det| < 1e-20 epsilon (R419) wrongly rejected
+     * scaling(1e-7 x3) (det = 1e-21) even though its inverse (scale 1e7) is
+     * perfectly representable — det scales with the CUBE of matrix scale, so
+     * the singularity test must be scale-relative. Inverse must be scale 1e7,
+     * NOT the identity fallback. */
     Mat4 m = mat4_scaling(1e-7f, 1e-7f, 1e-7f);
+    Mat4 inv = mat4_inverse(m);
+    ASSERT_FLOAT_EQ(inv.e[0][0], 1e7f, 1e7f * EPS);
+    ASSERT_FLOAT_EQ(inv.e[1][1], 1e7f, 1e7f * EPS);
+    ASSERT_FLOAT_EQ(inv.e[2][2], 1e7f, 1e7f * EPS);
+    ASSERT_FLOAT_EQ(inv.e[3][3], 1.0f, EPS);
+    /* Round-trip: m * inv = identity. */
+    Mat4 result = mat4_mul(m, inv);
+    ASSERT_FLOAT_EQ(result.e[0][0], 1.0f, EPS);
+    ASSERT_FLOAT_EQ(result.e[1][1], 1.0f, EPS);
+    ASSERT_FLOAT_EQ(result.e[2][2], 1.0f, EPS);
+    ASSERT_FLOAT_EQ(result.e[3][3], 1.0f, EPS);
+}
+
+TEST(mat4_inverse_truly_singular_returns_identity) {
+    /* R429: the identity fallback must stay for genuinely singular matrices —
+     * here a zero scale axis (zero 3x3 column, det exactly 0). */
+    Mat4 m = mat4_scaling(2.0f, 3.0f, 0.0f);
     Mat4 inv = mat4_inverse(m);
     Mat4 id = mat4_identity();
     for (int r = 0; r < 4; r++)
@@ -570,7 +589,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vec3_normalize_zero_length);
     RUN_TEST(vec3_scale_zero);
     RUN_TEST(mat4_inverse_singular);
-    RUN_TEST(mat4_inverse_near_singular_returns_identity);
+    RUN_TEST(mat4_inverse_small_scale_invertible);
+    RUN_TEST(mat4_inverse_truly_singular_returns_identity);
     RUN_TEST(quat_from_axis_angle_zero_angle);
     RUN_TEST(quat_slerp_same_quat);
     RUN_TEST(quat_normalize_zero);

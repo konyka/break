@@ -419,6 +419,26 @@ TEST(log_set_level_out_of_range_clamped)
     log_set_level(LOG_INFO);  /* restore default for other tests */
 }
 
+TEST(arena_non_pow2_alignment_rounded)
+{
+    /* R429: arena_alloc with a non-power-of-two align (24) silently
+     * misaligned — the mask trick needs pow2. Must round up to 32, matching
+     * heap_alloc_fn (R420). */
+    u8 buf[1024];
+    Arena arena;
+    arena_init(&arena, buf, sizeof(buf));
+    Alloc *a = &arena.base;
+
+    /* Offset the arena by 1 byte so the alignment actually has to move. */
+    u8 *x = (u8 *)a->alloc(a, 1, 1);
+    ASSERT_NOT_NULL(x);
+
+    u8 *p = (u8 *)a->alloc(a, 64, 24);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ((uintptr_t)p % 32, (uintptr_t)0);
+    memset(p, 0xAB, 64);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -444,5 +464,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(debug_realloc_tracking);
     RUN_TEST(debug_realloc_shrink_stats);
     RUN_TEST(heap_non_pow2_alignment_rounded);
+    RUN_TEST(arena_non_pow2_alignment_rounded);
     RUN_TEST(log_set_level_out_of_range_clamped);
 TEST_MAIN_END()

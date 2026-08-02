@@ -91,8 +91,19 @@ Mat4 mat4_inverse(Mat4 m) {
 
     f32 det = e[0]*inv[0] + e[1]*inv[4] + e[2]*inv[8] + e[3]*inv[12];
     /* R419: exact det == 0.0f misses near-singular matrices — 1/det explodes
-     * and the result is garbage. Use the same epsilon as the R142 guards. */
-    if (fabsf(det) < 1e-20f) return mat4_identity();
+     * and the result is garbage.
+     * R429: an absolute epsilon is wrong because det scales with the CUBE of
+     * the matrix scale — mat4_scaling(1e-7,…) (det=1e-21) is invertible
+     * (inverse scale 1e7, representable) yet failed the old 1e-20 test.
+     * Compare |det| against the product of the 3x3 column norms instead
+     * (column-major: columns are e[0..2], e[4..6], e[8..10]). A zero product
+     * means a zero column → genuinely singular. */
+    f32 n0 = sqrtf(e[0]*e[0] + e[1]*e[1] + e[2]*e[2]);
+    f32 n1 = sqrtf(e[4]*e[4] + e[5]*e[5] + e[6]*e[6]);
+    f32 n2 = sqrtf(e[8]*e[8] + e[9]*e[9] + e[10]*e[10]);
+    f32 det_scale = n0 * n1 * n2;
+    if (det_scale == 0.0f || fabsf(det) < 1e-20f * det_scale)
+        return mat4_identity();
 
     f32 idet = 1.0f / det;
     Mat4 out;

@@ -877,7 +877,7 @@ void task_wait(TaskSystem *ts) {
             continue;
         }
 
-        platform_sleep_ns(100000); /* 100us */
+        platform_sleep_ns(50000); /* R429: 50us, matching R414 worker backoff */
     }
 }
 
@@ -921,7 +921,7 @@ void task_wait_handle(TaskSystem *ts, TaskHandle handle) {
         } else if (drain_submitted_inline(ts)) {
             continue;
         }
-        platform_sleep_ns(100000);  /* 100us */
+        platform_sleep_ns(50000);  /* R429: 50us, matching R414 worker backoff */
     }
 }
 

@@ -26,6 +26,22 @@ struct Alloc {
 Alloc *heap_alloc_create(void);
 void   heap_alloc_destroy(Alloc *a);
 
+/* R429: shared alignment rounding. The `(v + align - 1) & ~(align - 1)` mask
+ * trick used by every allocator here only works for power-of-two alignments.
+ * Round a non-pow2 align (e.g. 24) up to the next power of two after the
+ * small-align clamp (align==0 and align < pointer size become pointer align).
+ * Returns 0 when the next power of two would overflow usize. */
+static inline usize align_up_pow2(usize align) {
+    if (align < sizeof(void *)) return sizeof(void *);
+    if ((align & (align - 1)) == 0) return align;
+    usize p = sizeof(void *);
+    while (p < align) {
+        if (p > SIZE_MAX / 2) return 0;
+        p <<= 1;
+    }
+    return p;
+}
+
 /* ---- Arena Allocator (inline, zero-overhead) ---- */
 typedef struct {
     Alloc   base;
@@ -51,6 +67,10 @@ static inline void arena_init(Arena *a, void *buffer, usize capacity) {
 
 static inline void *arena_alloc(Alloc *self, usize size, usize align) {
     Arena *a = (Arena *)self;
+    /* R429: round align to pow2 (like heap_alloc_fn in R420) — the mask below
+     * silently misaligns for non-pow2 aligns such as 24. */
+    align = align_up_pow2(align);
+    if (align == 0) return NULL;
     usize current = (usize)(a->buffer + a->offset);
     usize aligned = (current + align - 1) & ~(align - 1);
     usize used    = aligned - (usize)a->buffer;

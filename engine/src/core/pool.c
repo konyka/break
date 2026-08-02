@@ -59,6 +59,11 @@ usize pool_init(Pool *p, void *buffer, usize buffer_size, usize block_size, usiz
     /* A block must hold at least a free-list pointer, and be pointer-aligned so
      * the threaded *(void**) writes are well defined. */
     if (align < sizeof(void *)) align = sizeof(void *);
+    /* R429: round non-pow2 align (e.g. 24) up to the next power of two — the
+     * align_up mask trick below silently misaligns otherwise (same fix as the
+     * heap allocator got in R420). */
+    align = align_up_pow2(align);
+    if (align == 0) return 0;  /* next pow2 overflowed usize */
     usize bs = align_up(block_size, align);
     if (bs < sizeof(void *)) bs = sizeof(void *);
 
@@ -85,6 +90,10 @@ bool pool_init_alloc(Pool *p, usize block_size, usize block_count, usize align) 
     if (!p || block_size == 0 || block_count == 0) return false;
     if (align == 0) align = sizeof(void *);
     if (align < sizeof(void *)) align = sizeof(void *);
+    /* R429: same pow2 rounding as pool_init — bs is computed with the mask
+     * trick below, which needs a power-of-two align. */
+    align = align_up_pow2(align);
+    if (align == 0) return false;
     usize bs = align_up(block_size, align);
 
     /* Over-allocate by `align` so pool_init can align the start within it. */

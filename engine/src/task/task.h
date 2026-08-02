@@ -106,6 +106,10 @@ typedef struct { void *_opaque; } TaskQueue;
 /**
  * Create task system.
  * @param worker_count Number of worker threads. 0 = auto-detect (cores - 1).
+ *
+ * R429: single-instance only — create at most ONE TaskSystem per process.
+ * task_release() uses the global g_task_system for heap-vs-block decisions,
+ * so a second live system would release tasks against the wrong pool.
  */
 TaskSystem *task_system_create(i32 worker_count);
 

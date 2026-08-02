@@ -155,6 +155,32 @@ TEST(init_alloc_rejects_align_overflow)
     ASSERT_TRUE(!pool_init_alloc(&p, 16, SIZE_MAX / 16 + 1, 16));
 }
 
+TEST(non_pow2_align_rounded)
+{
+    /* R429: pool_init with a non-power-of-two align (24) silently misaligned
+     * blocks — the align_up mask trick needs pow2. It must round up to the
+     * next power of two (32), like the heap allocator (R420). */
+    u8 buf[1024];
+    Pool p;
+    usize n = pool_init(&p, buf, sizeof(buf), 16, 24);
+    ASSERT_TRUE(n > 0);
+    for (usize i = 0; i < n; i++) {
+        void *blk = pool_acquire(&p);
+        ASSERT_TRUE(blk != NULL);
+        ASSERT_EQ(((usize)blk) % 32u, (usize)0);
+    }
+    pool_destroy(&p);
+
+    /* pool_init_alloc takes the same rounding path. */
+    ASSERT_TRUE(pool_init_alloc(&p, 16, 4, 24));
+    for (int i = 0; i < 4; i++) {
+        void *blk = pool_acquire(&p);
+        ASSERT_TRUE(blk != NULL);
+        ASSERT_EQ(((usize)blk) % 32u, (usize)0);
+    }
+    pool_destroy(&p);
+}
+
 int main(void)
 {
     RUN_TEST(init_over_buffer_reports_capacity);
@@ -166,6 +192,7 @@ int main(void)
     RUN_TEST(vtable_alloc_interface);
     RUN_TEST(tiny_buffer_zero_capacity);
     RUN_TEST(init_alloc_rejects_align_overflow);
+    RUN_TEST(non_pow2_align_rounded);
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
