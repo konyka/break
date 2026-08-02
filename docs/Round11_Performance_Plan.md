@@ -6686,6 +6686,19 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 
 **验收**：GL/VK 双构建 `ctest -LE graphics` 各 35/35；verify_pak 嵌套核对功能往返通过。
 
+## R429–R433 第四轮审查（性能相关项）
+
+四审验证第三轮修复全部正确，新增 39 处修复（详见 `Implementation_Status.md`），其中性能项：
+
+- [x] `task_wait`/`task_wait_handle` 睡眠量 100µs→50µs，帧尾等待延迟减半（R429）
+- [x] occlusion/gpucull 回读按 staged 计数 clamp，消除对象数增长时的错误剔除帧（R430）
+- [x] glTF 多 primitive 网格完整渲染（原丢弃第 2 个起的 primitive，也减少了无效加载）（R431）
+- [x] 被接触推动的静态休眠体正确唤醒，避免 broadphase 漏判后的错误穿透修正（R432）
+- [x] draw_bench 摘要改会话累计，基准数据不再只反映最后一帧（R433）
+- [x] CMake：framework 增加 `-Wall -Wextra`/`/W4` 警告覆盖（R433）
+
+**验收**：GL/VK 双构建 `ctest -LE graphics` 各 35/35；wayland 构建编译验证。
+
 ## 构建与回归命令
 
 
