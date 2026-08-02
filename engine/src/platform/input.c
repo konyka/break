@@ -56,8 +56,15 @@ void input_release_all(InputState *s) {
 }
 
 void input_set_mouse(InputState *s, f32 x, f32 y) {
-    s->mouse_dx += x - s->mouse_x;
-    s->mouse_dy += y - s->mouse_y;
+    /* R432: the first absolute sample must seed the position without a delta —
+     * the state starts zeroed, so `dx += x - 0` produced a one-time spike up
+     * to the window size that snapped the camera on first mouse move. */
+    if (!s->has_mouse_pos) {
+        s->has_mouse_pos = true;
+    } else {
+        s->mouse_dx += x - s->mouse_x;
+        s->mouse_dy += y - s->mouse_y;
+    }
     s->mouse_x = x;
     s->mouse_y = y;
 }

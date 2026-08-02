@@ -373,23 +373,40 @@ static void fw_add_dir_recursive(FileWatch *fw, const char *path, u32 depth) {
     /* R419: cap recursion depth — a symlink to an ancestor directory would
      * otherwise recurse forever (stack overflow). */
     if (depth >= 32) return;
+    /* R432: skip the add when this path is already watched — a subdir created
+     * after its parent's inotify_add_watch but before recursion reached it is
+     * re-added when its queued IN_CREATE fires; inotify_add_watch returns the
+     * SAME wd, which was then stored in two slots, and IN_IGNORED retires only
+     * the first match, leaving a stale slot that aliases events to the old
+     * path when the kernel reuses the wd. Recursion below still runs so any
+     * not-yet-watched children are picked up. */
+    bool already_watched = false;
+    for (u32 i = 0; i < fw->watch_count; i++) {
+        if (fw->watch_fds[i] != -1 && strcmp(fw->watch_paths[i], path) == 0) {
+            already_watched = true;
+            break;
+        }
+    }
     /* R427: reclaim a slot retired by IN_IGNORED (watch_fds[i] == -1) before
      * appending — watch_count only ever grew, so sustained dir churn exhausted
      * FW_MAX_WATCHES and new dirs were silently never watched. */
     u32 slot = fw->watch_count;
-    for (u32 i = 0; i < fw->watch_count; i++) {
-        if (fw->watch_fds[i] == -1) { slot = i; break; }
+    if (!already_watched) {
+        for (u32 i = 0; i < fw->watch_count; i++) {
+            if (fw->watch_fds[i] == -1) { slot = i; break; }
+        }
     }
-    if (slot >= FW_MAX_WATCHES) return;
-    int wd = inotify_add_watch(fw->inotify_fd, path,
-        IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_TO);
-    if (wd >= 0) {
-        fw->watch_fds[slot] = wd;
-        strncpy(fw->watch_paths[slot], path, 255);
-        fw->watch_paths[slot][255] = '\0';
-        if (slot == fw->watch_count) fw->watch_count++;
-    } else {
-        LOG_WARN("filewatch: inotify_add_watch failed for %s", path);
+    if (!already_watched && slot < FW_MAX_WATCHES) {
+        int wd = inotify_add_watch(fw->inotify_fd, path,
+            IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_TO);
+        if (wd >= 0) {
+            fw->watch_fds[slot] = wd;
+            strncpy(fw->watch_paths[slot], path, 255);
+            fw->watch_paths[slot][255] = '\0';
+            if (slot == fw->watch_count) fw->watch_count++;
+        } else {
+            LOG_WARN("filewatch: inotify_add_watch failed for %s", path);
+        }
     }
 
     DIR *dir = opendir(path);

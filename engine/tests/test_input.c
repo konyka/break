@@ -194,7 +194,8 @@ TEST(new_frame_clears_mouse_delta)
     InputState s;
     input_init(&s);
 
-    input_set_mouse(&s, 100.0f, 200.0f);
+    input_set_mouse(&s, 100.0f, 200.0f); /* R432: first sample only seeds */
+    input_set_mouse(&s, 110.0f, 220.0f);
     ASSERT_TRUE(s.mouse_dx > 0.0f);
 
     input_new_frame(&s);
@@ -224,17 +225,44 @@ TEST(mouse_position_and_delta)
     InputState s;
     input_init(&s);
 
+    /* R432: the first sample seeds the position and emits zero delta. */
     input_set_mouse(&s, 50.0f, 60.0f);
     ASSERT_FLOAT_EQ(s.mouse_x, 50.0f, 1e-6f);
     ASSERT_FLOAT_EQ(s.mouse_y, 60.0f, 1e-6f);
-    ASSERT_FLOAT_EQ(s.mouse_dx, 50.0f, 1e-6f);
-    ASSERT_FLOAT_EQ(s.mouse_dy, 60.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_dx, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_dy, 0.0f, 1e-6f);
 
     input_set_mouse(&s, 70.0f, 80.0f);
     ASSERT_FLOAT_EQ(s.mouse_x, 70.0f, 1e-6f);
     ASSERT_FLOAT_EQ(s.mouse_y, 80.0f, 1e-6f);
-    ASSERT_FLOAT_EQ(s.mouse_dx, 70.0f, 1e-6f); /* 50 + 20 */
-    ASSERT_FLOAT_EQ(s.mouse_dy, 80.0f, 1e-6f); /* 60 + 20 */
+    ASSERT_FLOAT_EQ(s.mouse_dx, 20.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_dy, 20.0f, 1e-6f);
+
+    input_set_mouse(&s, 90.0f, 100.0f);
+    ASSERT_FLOAT_EQ(s.mouse_dx, 40.0f, 1e-6f); /* 20 + 20 */
+    ASSERT_FLOAT_EQ(s.mouse_dy, 40.0f, 1e-6f);
+}
+
+TEST(mouse_first_sample_zero_delta)
+{
+    /* R432: the state is zero-initialized, so the first absolute mouse event
+     * used to compute dx += x - 0 — a one-time delta spike up to the window
+     * size that snapped the camera (camera.c consumes mouse_dx
+     * unconditionally). The first sample must seed only; deltas start from
+     * the second sample. */
+    InputState s;
+    input_init(&s);
+
+    input_set_mouse(&s, 800.0f, 450.0f);
+    ASSERT_FLOAT_EQ(s.mouse_dx, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_dy, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_x, 800.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_y, 450.0f, 1e-6f);
+    ASSERT_TRUE(s.has_mouse_pos);
+
+    input_set_mouse(&s, 805.0f, 448.0f);
+    ASSERT_FLOAT_EQ(s.mouse_dx, 5.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s.mouse_dy, -2.0f, 1e-6f);
 }
 
 TEST(scroll_accumulates)
@@ -515,6 +543,7 @@ int main(void) {
     RUN_TEST(new_frame_clears_mouse_delta);
     RUN_TEST(new_frame_clears_scroll);
     RUN_TEST(mouse_position_and_delta);
+    RUN_TEST(mouse_first_sample_zero_delta);
     RUN_TEST(scroll_accumulates);
     RUN_TEST(key_out_of_bounds_negative);
     RUN_TEST(key_out_of_bounds_too_large);

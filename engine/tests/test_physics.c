@@ -639,6 +639,58 @@ TEST(static_static_pair_no_contact)
     physics_world_destroy(pw);
 }
 
+static u32 g_pair_a = 0, g_pair_b = 0, g_pair_hits = 0;
+static void test_on_contact_pair(const Contact *c, void *user) {
+    (void)user;
+    if ((c->body_a == g_pair_a && c->body_b == g_pair_b) ||
+        (c->body_a == g_pair_b && c->body_b == g_pair_a))
+        g_pair_hits++;
+}
+
+TEST(contact_shove_resets_rest_frames)
+{
+    /* R432: resolve_contact moved a resting body's position without clearing
+     * rest_frames, and both BVH-refit passes skip rest_frames > 2 — a resting
+     * body shoved below the 0.0025 rest threshold kept its stale BVH AABB
+     * indefinitely, so broadphase missed pairs at the new position. The shove
+     * must reset rest_frames so the refit tracks the new spot. */
+    PhysicsWorld *pw = physics_world_create(8);
+    physics_set_contact_callback(pw, test_on_contact_pair, NULL);
+
+    /* A: dynamic, no gravity, starts at rest away from everything. */
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    /* B: static shover, parked far away until the shove. */
+    u32 b = physics_body_create(pw, vec3(50, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    /* C: dynamic probe, no gravity, parked far away. */
+    u32 c = physics_body_create(pw, vec3(60, 0, 0), vec3(0.25f, 0.25f, 0.25f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[c].acceleration = vec3(0, 0, 0);
+
+    /* Let A (and C) settle into deep rest: rest_frames > 2. */
+    for (int i = 0; i < 4; i++) physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[a].rest_frames > 2);
+
+    /* Shove: teleport static B into A (overlap depth 0.4) and rebuild so B's
+     * own AABB is current. The contact position-corrects A out of the way. */
+    pw->bodies[b].position = vec3(0.6f, 0, 0);
+    pw->bvh_dirty = true;
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(pw->bodies[a].position.e[0] < -0.1f);  /* actually moved */
+    ASSERT_EQ(pw->bodies[a].rest_frames, 0u);           /* the R432 fix */
+
+    /* Probe at A's NEW position: C's box [-1.05,-0.55] overlaps A's new box
+     * [-0.9,0.1] but not A's stale box [-0.5,0.5] — the pair is only detected
+     * if the refit pass tracked A to its new spot. */
+    pw->bodies[c].position = vec3(-0.8f, 0, 0);
+    pw->bodies[c].velocity = vec3(0, 0, 0);
+    pw->bodies[c].rest_frames = 0; /* teleported: let the refit track C */
+    g_pair_a = a; g_pair_b = c; g_pair_hits = 0;
+    physics_step(pw, 1.0f / 60.0f);
+    ASSERT_TRUE(g_pair_hits > 0);
+
+    physics_world_destroy(pw);
+}
+
 TEST(ccd_prevents_tunnel)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -736,6 +788,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(collide_sphere_box_swapped_normal);
     RUN_TEST(contact_callback_fires);
     RUN_TEST(static_static_pair_no_contact);
+    RUN_TEST(contact_shove_resets_rest_frames);
     RUN_TEST(ccd_prevents_tunnel);
     RUN_TEST(no_ccd_tunnels);
     RUN_TEST(ccd_capsule_axis_no_tunnel);

@@ -51,6 +51,10 @@ typedef struct {
     f32 mouse_x, mouse_y;
     f32 mouse_dx, mouse_dy;
     f32 scroll_dx, scroll_dy;
+    /* R432: false until the first absolute mouse sample arrives — the first
+     * sample seeds mouse_x/mouse_y without emitting a delta (the state is
+     * zero-initialized, so dx = x - 0 spiked up to the window size). */
+    bool has_mouse_pos;
     u64 frame_number;
     GamepadState gamepads[INPUT_MAX_GAMEPADS];
 } InputState;

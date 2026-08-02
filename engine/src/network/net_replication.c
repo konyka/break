@@ -275,7 +275,17 @@ static bool net_reorder_store(NetReplicator *rep, NetRepPeerChannel *pc,
         for (u32 i = 0u; i < (u32)NET_REORDER_SLOTS; i++) {
             if (ch->slots[i].valid) { any_valid = true; break; }
         }
-        if (!any_valid) {
+        /* R432: also resync when the window is non-empty but the head seq's
+         * slot is invalid — the head (next_ordered_seq) was lost while later
+         * packets stayed buffered, and with the sender already >=SLOTS ahead
+         * the head can never re-arrive, so every further packet would be
+         * dropped here and the channel would stall permanently. Accept the
+         * loss of the buffered window: clear the stale slots so they cannot
+         * alias onto seqs in the new window, then resync. */
+        if (!any_valid || !ch->slots[ch->next_ordered_seq % NET_REORDER_SLOTS].valid) {
+            for (u32 i = 0u; i < (u32)NET_REORDER_SLOTS; i++)
+                ch->slots[i].valid = false;
+            ch->reorder_pending = 0u;
             ch->next_ordered_seq = seq;
             return false;
         }

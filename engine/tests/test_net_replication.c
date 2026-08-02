@@ -167,16 +167,23 @@ TEST(ordered_reorder_out_of_window_no_stall)
 {
     /* R250: a future packet >= next+NET_REORDER_SLOTS aliases (seq%SLOTS) onto an
      * occupied in-window slot. The old code overwrote it, losing a still-needed
-     * packet and stalling the ordered stream. It must instead be dropped. */
+     * packet and stalling the ordered stream.
+     * R432: with the head seq lost and the window non-empty, simply dropping
+     * the out-of-window packet stalled the channel permanently (the head could
+     * never re-arrive once the sender was >=SLOTS ahead). The packet now
+     * triggers a resync instead: the buffered window is discarded (never
+     * aliased/overwritten as in the pre-R250 bug) and the packet is delivered
+     * immediately; the stream continues from the resynced sequence. */
     NetReplicator rep = {0};
     ASSERT_TRUE(net_replicator_init(&rep, 0));
     rep.ordered_layer = true;
 
-    u8 w2[PACKET_MAX_SIZE], w_far[PACKET_MAX_SIZE], w1[PACKET_MAX_SIZE];
+    u8 w2[PACKET_MAX_SIZE], w_far[PACKET_MAX_SIZE], w1[PACKET_MAX_SIZE], w_next[PACKET_MAX_SIZE];
     u32 l2   = build_ordered_snap_wire(w2,   2u,               10u, 4.0f, 5.0f, 6.0f);
     /* seq 2 + NET_REORDER_SLOTS aliases the same slot as seq 2 (2 % 32). */
     u32 lfar = build_ordered_snap_wire(w_far, 2u + NET_REORDER_SLOTS, 10u, 9.0f, 9.0f, 9.0f);
     u32 l1   = build_ordered_snap_wire(w1,   1u,               10u, 1.0f, 2.0f, 3.0f);
+    u32 lnext = build_ordered_snap_wire(w_next, 2u + NET_REORDER_SLOTS + 1u, 10u, 7.0f, 8.0f, 9.0f);
 
     NetTransformSnapshot out[4] = {0};
     u32 out_count = 0u;
@@ -186,25 +193,30 @@ TEST(ordered_reorder_out_of_window_no_stall)
     ASSERT_EQ(out_count, 0u);
     ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 1u);
 
-    /* Out-of-window seq must be dropped, NOT overwrite the buffered seq 2. */
+    /* R432: the out-of-window seq resyncs (discarding the buffered window —
+     * NOT overwriting seq 2's slot via aliasing) and is delivered at once. */
     out_count = 0u;
     ASSERT_TRUE(net_replicator_feed(&rep, w_far, lfar, out, 4u, &out_count) > 0);
-    ASSERT_EQ(out_count, 0u);
-    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 1u);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 9.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, 2u + NET_REORDER_SLOTS + 1u);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 0u);
 
-    /* seq 1 arrives → delivers 1, then drains the preserved seq 2. The drain
-     * reuses out[0] (matching ordered_reorder_buffer), so out[0] ends as seq 2's
-     * payload (4,5,6) and the buffer is fully drained (pending 0). Before the fix
-     * seq 2 would have been overwritten by the out-of-window packet and the drain
-     * would stall with reorder_pending stuck at 1. */
+    /* A belated seq 1 is now stale and must be dropped without disturbing the
+     * resynced stream. */
     out_count = 0u;
     ASSERT_TRUE(net_replicator_feed(&rep, w1, l1, out, 4u, &out_count) > 0);
+    ASSERT_EQ(out_count, 0u);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, 2u + NET_REORDER_SLOTS + 1u);
+
+    /* The stream continues normally from the resynced sequence — no stall. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w_next, lnext, out, 4u, &out_count) > 0);
     ASSERT_TRUE(out_count >= 1u);
-    ASSERT_FLOAT_EQ(out[0].position[0], 4.0f, 0.001f);
-    ASSERT_FLOAT_EQ(out[0].position[1], 5.0f, 0.001f);
-    ASSERT_FLOAT_EQ(out[0].position[2], 6.0f, 0.001f);
-    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_delivered, 1u);
-    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 0u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 7.0f, 0.001f);
+    ASSERT_FLOAT_EQ(out[0].position[1], 8.0f, 0.001f);
+    ASSERT_FLOAT_EQ(out[0].position[2], 9.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, 2u + NET_REORDER_SLOTS + 2u);
 
     net_replicator_shutdown(&rep);
 }
@@ -273,6 +285,52 @@ TEST(ordered_resync_after_large_seq_jump)
     ASSERT_TRUE(out_count >= 1u);
     ASSERT_FLOAT_EQ(out[0].position[0], 1.0f, 0.001f);
     ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, seq_far + 1u);
+
+    /* The stream continues normally from the resynced sequence — no stall. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w_next, lnext, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 4.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, seq_far + 2u);
+
+    net_replicator_shutdown(&rep);
+}
+
+TEST(ordered_resync_nonempty_window_head_loss)
+{
+    /* R432: the R427 resync only fired on a completely empty window. If the
+     * head seq (next_ordered_seq) is lost while later packets stay buffered
+     * and the sender keeps sending, every subsequent packet lands >= SLOTS
+     * ahead and was dropped as stale — the head never re-arrives, so the
+     * channel stalled permanently. The >=SLOTS packet must now resync
+     * (accepting loss of the buffered window) and be delivered. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.ordered_layer = true;
+
+    u8 w2[PACKET_MAX_SIZE], w3[PACKET_MAX_SIZE], w_far[PACKET_MAX_SIZE], w_next[PACKET_MAX_SIZE];
+    u32 l2 = build_ordered_snap_wire(w2, 2u, 10u, 7.0f, 8.0f, 9.0f);
+    u32 l3 = build_ordered_snap_wire(w3, 3u, 10u, 7.0f, 8.0f, 9.0f);
+    u32 seq_far = 1u + NET_REORDER_SLOTS + 5u;
+    u32 lfar  = build_ordered_snap_wire(w_far,  seq_far,      10u, 1.0f, 2.0f, 3.0f);
+    u32 lnext = build_ordered_snap_wire(w_next, seq_far + 1u, 10u, 4.0f, 5.0f, 6.0f);
+
+    NetTransformSnapshot out[4] = {0};
+    u32 out_count = 0u;
+
+    /* Buffer seqs 2 and 3; the head seq 1 is lost and never arrives. */
+    ASSERT_TRUE(net_replicator_feed(&rep, w2, l2, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(net_replicator_feed(&rep, w3, l3, out, 4u, &out_count) > 0);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 2u);
+
+    /* The sender is now >= SLOTS ahead: must resync and deliver, not drop. */
+    out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(&rep, w_far, lfar, out, 4u, &out_count) > 0);
+    ASSERT_TRUE(out_count >= 1u);
+    ASSERT_FLOAT_EQ(out[0].position[0], 1.0f, 0.001f);
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].next_ordered_seq, seq_far + 1u);
+    /* The stale buffered window was discarded by the resync. */
+    ASSERT_EQ(rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].reorder_pending, 0u);
 
     /* The stream continues normally from the resynced sequence — no stall. */
     out_count = 0u;
@@ -1021,6 +1079,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ordered_reorder_out_of_window_no_stall);
     RUN_TEST(ordered_reorder_zero_snapshot_no_stall);
     RUN_TEST(ordered_resync_after_large_seq_jump);
+    RUN_TEST(ordered_resync_nonempty_window_head_loss);
     RUN_TEST(reliable_ordered_combined);
     RUN_TEST(reliable_ack_echoes_received_sequence);
     RUN_TEST(reliable_pending_cleared_via_peer_ack);

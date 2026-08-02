@@ -217,12 +217,19 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
         a->position.e[0] -= normal.e[0] * depth * ratio;
         a->position.e[1] -= normal.e[1] * depth * ratio;
         a->position.e[2] -= normal.e[2] * depth * ratio;
+        /* R432: the contact just shoved this body — clear its rest counter so
+         * the BVH refit passes (which skip rest_frames > 2) update its AABB at
+         * the new position. A resting body pushed below the 0.0025 rest
+         * threshold otherwise kept its stale BVH AABB indefinitely and
+         * broadphase missed it at the new spot. */
+        a->rest_frames = 0;
     }
     if (inv_b > 0.0f) {
         f32 ratio = inv_b * inv_total;
         b->position.e[0] += normal.e[0] * depth * ratio;
         b->position.e[1] += normal.e[1] * depth * ratio;
         b->position.e[2] += normal.e[2] * depth * ratio;
+        b->rest_frames = 0; /* R432: see above */
     }
 
     Vec3 rel_vel = vec3_sub(a->velocity, b->velocity);

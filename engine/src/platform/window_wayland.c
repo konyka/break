@@ -308,8 +308,15 @@ static void pointer_motion(void *data, struct wl_pointer *ptr, u32 time,
      * double-counts — especially if pointer-constraints lock is missing and
      * the cursor still moves on the surface. */
     if (!p->rel_pointer) {
-        p->input.mouse_dx += (f32)(nx - p->pointer_x);
-        p->input.mouse_dy += (f32)(ny - p->pointer_y);
+        /* R432: seed on the first sample — pointer_x/pointer_y start zeroed,
+         * so the first motion event otherwise emitted a delta spike up to the
+         * window size (same fix as input_set_mouse's has_mouse_pos). */
+        if (p->input.has_mouse_pos) {
+            p->input.mouse_dx += (f32)(nx - p->pointer_x);
+            p->input.mouse_dy += (f32)(ny - p->pointer_y);
+        } else {
+            p->input.has_mouse_pos = true;
+        }
     }
     p->pointer_x = nx;
     p->pointer_y = ny;
