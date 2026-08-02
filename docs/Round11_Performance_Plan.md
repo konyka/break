@@ -423,7 +423,7 @@
 | 项 | 说明 | 优先级 |
 |----|------|--------|
 | DrawBench CI 集成 | CTest 或脚本纳入回归 | P3 |
-| NetRep peer 压缩 | delta.log 轮转 / 压缩 | P3 |
+| NetRep peer 压缩 | delta.log 轮转 / 压缩；**R435 已做轮转**（NETREP_DELTA_MAX_BYTES 默认 1MiB，重写基线+原子替换；压缩未做） | P3 |
 
 ---
 
