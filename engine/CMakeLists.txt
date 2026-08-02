@@ -68,6 +68,23 @@ if(ENGINE_USE_ASAN)
     endif()
 endif()
 
+# R433: MSVC has no libm — provide an empty interface target so the many
+# `target_link_libraries(... m)` below resolve to a no-op on Windows.
+if(WIN32)
+    add_library(m INTERFACE)
+endif()
+
+# R433: shaderc_shared ships no CMake package config; locate it explicitly
+# instead of linking the bare name (which fails with unhelpful -l errors).
+if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+    find_library(SHADERC_LIB NAMES shaderc_shared)
+    if(NOT SHADERC_LIB)
+        message(FATAL_ERROR
+            "shaderc_shared not found — install shaderc (e.g. libshaderc-dev / shaderc) "
+            "or configure without -DENGINE_VULKAN=ON")
+    endif()
+endif()
+
 # Engine library
 add_library(engine STATIC
     src/core/log.c
@@ -198,8 +215,15 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         execute_process(
             COMMAND pkg-config --variable=pkgdatadir wayland-protocols
             OUTPUT_VARIABLE WAYLAND_PROTOCOLS_DIR
+            RESULT_VARIABLE WAYLAND_PROTOCOLS_PKG_CONFIG_RESULT
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
+        # R433: fail configure with a clear message instead of generating
+        # bindings from an empty WAYLAND_PROTOCOLS_DIR.
+        if(NOT WAYLAND_PROTOCOLS_PKG_CONFIG_RESULT EQUAL 0 OR NOT WAYLAND_PROTOCOLS_DIR)
+            message(FATAL_ERROR
+                "wayland-protocols not found via pkg-config (required for ENGINE_ENABLE_WAYLAND)")
+        endif()
         set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
         set(REL_PTR_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/relative-pointer/relative-pointer-unstable-v1.xml")
         set(PTR_CONSTRAINTS_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml")
@@ -262,9 +286,9 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         find_package(Vulkan REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
         if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES} shaderc_shared dl pthread)
+            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
         else()
-            target_link_libraries(engine PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES} shaderc_shared dl pthread)
+            target_link_libraries(engine PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
         endif()
     else()
         if(ENGINE_ENABLE_WAYLAND)
@@ -310,7 +334,7 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
 
     target_link_libraries(engine PRIVATE
         ${Vulkan_LIBRARIES}
-        shaderc_shared
+        ${SHADERC_LIB}
         "-framework Cocoa"
         "-framework QuartzCore"
         "-framework Metal"
@@ -580,8 +604,12 @@ if(ENGINE_BUILD_TESTS)
         src/asset/hotreload.c src/core/shader_io.c src/platform/filewatch.c src/core/log.c
         external/stb_image_impl.c)
     target_include_directories(test_hotreload PRIVATE ${TEST_INCLUDE_DIRS})
+    # R433: filewatch.c compiles the Win32 backend only under
+    # ENGINE_PLATFORM_WINDOWS; without it the #else pulls in <sys/inotify.h>.
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     endif()
     target_link_libraries(test_hotreload PRIVATE m)
     add_test(NAME test_hotreload COMMAND test_hotreload)
@@ -662,7 +690,13 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_profiler tests/test_profiler.c
         src/core/profiler.c src/platform/time.c)
     target_include_directories(test_profiler PRIVATE ${TEST_INCLUDE_DIRS})
-    target_compile_definitions(test_profiler PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    # R433: was unconditional ENGINE_PLATFORM_LINUX/_POSIX_C_SOURCE — broke
+    # Windows/macOS builds; mirror the per-platform pattern used by test_task.
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_profiler PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_profiler PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
     target_link_libraries(test_profiler PRIVATE m)
     add_test(NAME test_profiler COMMAND test_profiler)
 
@@ -684,7 +718,11 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_terrain tests/test_terrain.c
         src/renderer/terrain.c src/core/shader_io.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
     target_include_directories(test_terrain PRIVATE ${TEST_INCLUDE_DIRS})
-    target_compile_definitions(test_terrain PRIVATE ENGINE_VULKAN=1)
+    # R433: was unconditionally ENGINE_VULKAN=1 regardless of the configured
+    # backend; the test is CPU-side (RHI stubs), so follow the option instead.
+    if(ENGINE_VULKAN)
+        target_compile_definitions(test_terrain PRIVATE ENGINE_VULKAN=1)
+    endif()
     target_link_libraries(test_terrain PRIVATE m)
     add_test(NAME test_terrain COMMAND test_terrain)
 

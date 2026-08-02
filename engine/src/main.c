@@ -553,8 +553,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
                 memcpy(vp + 3, box_norm[fi], 12);
                 memcpy(vp + 6, box_uvs[fj], 8);
                 u32 *joints = (u32 *)(vdata + vi * 64 + 32);
-                joints[0] = oi < 4 ? 0 : 0;
-                joints[1] = (oi >= 2 && oi <= 5) ? 1 : 0;
+                /* R433: verts 2,3,6,7 have weights {0.5,0.5} and must reference
+                 * joint 1 via joints[1]; verts 0,1,4,5 skin fully to joint 0. */
+                joints[0] = 0;
+                joints[1] = (oi >= 2) ? 1 : 0;
                 joints[2] = 0; joints[3] = 0;
                 f32 *w = (f32 *)(vdata + vi * 64 + 48);
                 memcpy(w, box_weights[oi], 16);
@@ -802,7 +804,7 @@ static bool demo_write_sine_wav(const char *path, u32 sample_rate, f32 seconds, 
     }
     fclose(f);
     if (!wav_ok) LOG_WARN("WAV write: partial write failure for %s", path);
-    return true;
+    return wav_ok; /* R433: don't hand a corrupt WAV to audio_stream_open_3d */
 }
 
 /* Occlusion: node map + helpers (file scope). */
@@ -992,6 +994,10 @@ static u32 mega_count_visible_node_vis(const MegaBuffer *mb, const u8 *node_vis)
 
 static u32 draw_bench_mega = 0u;
 static u32 draw_bench_legacy_est = 0u;
+/* R433: per-frame counters above are reset every frame (draw_bench_reset);
+ * the CSV summary / trace meta need true session totals accumulated separately. */
+static u64 draw_bench_mega_total = 0u;
+static u64 draw_bench_legacy_total = 0u;
 static bool draw_bench_enabled = false;
 static bool bench_frame_unified = false;
 static bool bench_frame_legacy = false;
@@ -1034,6 +1040,8 @@ static void draw_bench_add(u32 mega_calls, u32 legacy_est) {
     if (!draw_bench_enabled || mega_calls == 0u) return;
     draw_bench_mega += mega_calls;
     draw_bench_legacy_est += legacy_est;
+    draw_bench_mega_total += mega_calls;   /* R433 */
+    draw_bench_legacy_total += legacy_est; /* R433 */
 }
 
 static void draw_bench_sample_gpu(f64 mega_gpu_ms) {
@@ -1080,10 +1088,12 @@ static bool draw_bench_export_csv(const char *path) {
         draw_bench_gpu_uni_sum / (f64)draw_bench_gpu_uni_frames : 0.0;
     f64 avg_l = draw_bench_gpu_leg_frames > 0u ?
         draw_bench_gpu_leg_sum / (f64)draw_bench_gpu_leg_frames : 0.0;
-    f32 ratio = draw_bench_mega > 0u ?
-        (f32)draw_bench_legacy_est / (f32)draw_bench_mega : 0.0f;
-    fprintf(f, "# summary mega=%u legacy=%u ratio=%.1f gpu_u=%.3f(%u) gpu_l=%.3f(%u)\n",
-            draw_bench_mega, draw_bench_legacy_est, ratio,
+    /* R433: summary uses session totals, not the last frame's per-frame values. */
+    f32 ratio = draw_bench_mega_total > 0u ?
+        (f32)draw_bench_legacy_total / (f32)draw_bench_mega_total : 0.0f;
+    fprintf(f, "# summary mega=%llu legacy=%llu ratio=%.1f gpu_u=%.3f(%u) gpu_l=%.3f(%u)\n",
+            (unsigned long long)draw_bench_mega_total,
+            (unsigned long long)draw_bench_legacy_total, ratio,
             avg_u, draw_bench_gpu_uni_frames, avg_l, draw_bench_gpu_leg_frames);
     fclose(f);
     return true;
@@ -1160,8 +1170,9 @@ static void export_profiler_chrome_trace(RHIGPUTimer *gpu_shadow, RHIGPUTimer *g
             draw_bench_gpu_uni_sum / (f64)draw_bench_gpu_uni_frames : 0.0;
         f64 avg_l = draw_bench_gpu_leg_frames > 0u ?
             draw_bench_gpu_leg_sum / (f64)draw_bench_gpu_leg_frames : 0.0;
-        snprintf(meta_mega, sizeof(meta_mega), "%u", draw_bench_mega);
-        snprintf(meta_legacy, sizeof(meta_legacy), "%u", draw_bench_legacy_est);
+        /* R433: trace meta uses session totals, not per-frame values. */
+        snprintf(meta_mega, sizeof(meta_mega), "%llu", (unsigned long long)draw_bench_mega_total);
+        snprintf(meta_legacy, sizeof(meta_legacy), "%llu", (unsigned long long)draw_bench_legacy_total);
         snprintf(meta_gpu_u, sizeof(meta_gpu_u), "%.2f", avg_u);
         snprintf(meta_gpu_l, sizeof(meta_gpu_l), "%.2f", avg_l);
         meta[meta_count++] = (ProfilerMetaInstant){ "draw_bench_mega", meta_mega };
@@ -1334,6 +1345,7 @@ int main(int argc, char **argv) {
     RHITexture mip_stream_tex = {0};
     MipUploadCtx mip_upload_ctx = {0};
     i32 mip_stream_idx = -1;
+    bool mip_stream_inited = false; /* R433: gate shutdown on init, not register */
     const u32 MIP_STREAM_SIZE = 256;
     const char *mip_stream_path = "stream_texture.bin";
     u32 mip_stream_levels = demo_write_stream_texture(mip_stream_path, MIP_STREAM_SIZE);
@@ -1349,6 +1361,7 @@ int main(int argc, char **argv) {
         mip_upload_ctx.tex = mip_stream_tex;
         /* 96 KB budget: fits a few coarse levels, forces eviction of fine ones. */
         if (mipmap_stream_init(&mip_stream, 96 * 1024)) {
+            mip_stream_inited = true; /* R433 */
             mipmap_stream_set_upload(&mip_stream, demo_mip_upload, &mip_upload_ctx);
             mip_stream_idx = mipmap_stream_register(&mip_stream, mip_stream_path,
                 MIP_STREAM_SIZE, MIP_STREAM_SIZE, mip_stream_levels, 4);
@@ -1471,10 +1484,12 @@ int main(int argc, char **argv) {
      * actually plays audio with real distance attenuation. */
     AudioStreamManager audio_stream_mgr = {0};
     i32 audio_stream_id = -1;
+    bool audio_stream_inited = false; /* R433: gate shutdown on init, not open */
     const char *audio_stream_path = "stream_tone.wav";
     Vec3 audio_emitter_pos = vec3(8.0f, 1.5f, 0.0f);
     if (audio && demo_write_sine_wav(audio_stream_path, 44100, 4.0f, 220.0f)) {
         if (audio_stream_init(&audio_stream_mgr, audio)) {
+            audio_stream_inited = true; /* R433 */
             audio_stream_id = audio_stream_open_3d(&audio_stream_mgr, audio_stream_path,
                 audio_emitter_pos, 1.0f, /*looping*/ true,
                 /*min*/ 2.0f, /*max*/ 40.0f, /*rolloff*/ 1.0f);
@@ -1670,7 +1685,9 @@ f32 tod_speed = 0.3f;
 i32 bench_frames = 0;
 f64 bench_start = 0;
 i32 bench_result_show = 0;
-struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx; } bench_saved;
+/* R433: also save the actual f32 values + preset indices so restore is exact. */
+struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
+         f32 bloom_val, gr_val; i32 bloom_preset_idx, gr_preset_idx; } bench_saved;
 
     post_process_init(&postfx, render.device, rw, rh);
     ssao_init(&ssao, render.device, rw, rh);
@@ -2181,8 +2198,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 ssr_enabled = bench_saved.ssr; ssgi_enabled = bench_saved.ssgi;
                 cs_enabled = bench_saved.cs; vol_enabled = bench_saved.vol;
                 lf_enabled = bench_saved.lf;
-                if (bench_saved.bloom) postfx.bloom_strength = 0.8f;
-                if (bench_saved.gr) god_rays_intensity = 0.5f;
+                /* R433: restore actual values + preset indices, not hardcoded
+                 * 0.8f/0.5f (which are not even F7/F9 preset values). */
+                postfx.bloom_strength = bench_saved.bloom_val;
+                bloom_preset = bench_saved.bloom_preset_idx;
+                god_rays_intensity = bench_saved.gr_val;
+                gr_preset = bench_saved.gr_preset_idx;
                 sss_enabled = bench_saved.sss; sharpen_enabled = bench_saved.sharpen;
                 cg_enabled = bench_saved.cg; lensfx_enabled = bench_saved.lensfx;
                 bench_result_show = 180;
@@ -2445,14 +2466,15 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
         /* R360: NumLock (293) — was '=' which also bumped tonemap exposure. */
         if (input_key_pressed(platform_input(engine.platform), 293)) {
+            static u32 ws = 0; /* R433: hoisted so re-enable can reset the cycle */
             if (!rhi_handle_valid(water.pipeline)) {
                 LOG_WARN("Water: cannot enable (init failed)");
             } else if (!water.enabled) {
                 water.enabled = true;
                 water.time_scale = 1.0f;
+                ws = 0; /* R433: restart speed cycle from "normal" on re-enable */
                 LOG_INFO("Water: on");
             } else {
-                static u32 ws = 0;
                 ws = (ws + 1) % 4;
                 if (ws == 3) { water.enabled = false; LOG_INFO("Water: off"); }
                 else {
@@ -4164,6 +4186,10 @@ u32 culled_count = 0;
                             g_vis_flags[obj_idx] = frustum_test_sphere(&shadow_frustum, ctr, mega_buf.node_spheres[ni].r) ? 1u : 0u;
                             obj_idx++;
                         }
+                        /* R433: node_count > 16384 (or invalid spheres) leaves
+                         * obj_idx < vis_count; zero the tail so it doesn't keep
+                         * stale flags from the previous cascade. */
+                        for (u32 ti = obj_idx; ti < vis_count; ti++) g_vis_flags[ti] = 0u;
                         indirect_draw_upload_visibility_cmd(&indirect_sys, render.device, cmd, g_vis_flags, vis_count);
                     }
                     indirect_draw_compact(&indirect_sys, render.device, cmd);
@@ -5001,6 +5027,11 @@ u32 culled_count = 0;
                     bench_saved.cs = cs_enabled; bench_saved.vol = vol_enabled;
                     bench_saved.lf = lf_enabled; bench_saved.bloom = (postfx.bloom_strength > 0.0f);
                     bench_saved.gr = (god_rays_intensity > 0.0f); bench_saved.sss = sss_enabled;
+                    /* R433: save exact values + preset indices for restore. */
+                    bench_saved.bloom_val = postfx.bloom_strength;
+                    bench_saved.bloom_preset_idx = bloom_preset;
+                    bench_saved.gr_val = god_rays_intensity;
+                    bench_saved.gr_preset_idx = gr_preset;
                     bench_saved.sharpen = sharpen_enabled; bench_saved.cg = cg_enabled;
                     bench_saved.lensfx = lensfx_enabled;
                     taa_enabled = false; fxaa_enabled = false; mb_enabled = false;
@@ -5376,6 +5407,7 @@ u32 culled_count = 0;
                         memset(g_node_vis, 0, nc);
                         u32 wc = task_worker_count(tasks);
                         if (wc < 1) wc = 1;
+                        if (wc > 8) wc = 8; /* R433: vctxs[8] upper bound */
                         u32 chunk = (nc + wc - 1) / wc;
                         static VisTaskCtx vctxs[8];
                         for (u32 wi = 0; wi < wc; wi++) {
@@ -5621,6 +5653,7 @@ u32 culled_count = 0;
                     Frustum gbuf_frustum = frame_frustum;
                     u32 wc = task_worker_count(tasks);
                     if (wc < 1) wc = 1;
+                    if (wc > 8) wc = 8; /* R433: vctxs[8] upper bound */
                     u32 chunk = (nc + wc - 1) / wc;
                     static VisTaskCtx vctxs[8];
                     for (u32 wi = 0; wi < wc; wi++) {
@@ -6010,8 +6043,14 @@ u32 culled_count = 0;
             case 2: insp_tex = scene_depth; break;
             case 3: insp_tex = rhi_handle_valid(ssao.ssao_fbo.fb) ? ssao.ssao_fbo.color_tex : scene_fbo.color_tex; break;
             case 4: insp_tex = rhi_handle_valid(ssao.blur_fbo.fb) ? ssao.blur_fbo.color_tex : scene_fbo.color_tex; break;
-            case 5: insp_tex = taa_enabled && taa.ready ? taa_get_output(&taa) : scene_fbo.color_tex; break;
-            case 6: insp_tex = fxaa_sys.ready ? fxaa_get_texture(&fxaa_sys) : scene_fbo.color_tex; break;
+            /* R433: when the combined TAA+FXAA path ran, taa/fxaa outputs are
+             * stale — prefer combined_aa_get_output for modes 5/6. */
+            case 5: insp_tex = (taa_enabled && fxaa_enabled && combined_aa.ready && combined_aa.use_combined)
+                        ? combined_aa_get_output(&combined_aa)
+                        : (taa_enabled && taa.ready ? taa_get_output(&taa) : scene_fbo.color_tex); break;
+            case 6: insp_tex = (taa_enabled && fxaa_enabled && combined_aa.ready && combined_aa.use_combined)
+                        ? combined_aa_get_output(&combined_aa)
+                        : (fxaa_sys.ready ? fxaa_get_texture(&fxaa_sys) : scene_fbo.color_tex); break;
             case 7: insp_tex = dof_sys.ready ? dof_get_texture(&dof_sys) : scene_fbo.color_tex; break;
             case 8: insp_tex = post_process_get_bloom_texture(&postfx); break;
             case 9: insp_tex = rhi_handle_valid(gr_sys.fbo.fb) ? gr_sys.fbo.color_tex : scene_fbo.color_tex; break;
@@ -6109,7 +6148,7 @@ u32 culled_count = 0;
     free(render_buf); /* single free: instance_data + unified_udc_buf + unified_uobj_buf */
     free(cull_node_map_buf); /* single free: cull_node_map + cull_aabbs + cull_visible */
     LOG_INFO("  tasks done");
-    if (audio_stream_id >= 0) {
+    if (audio_stream_inited) { /* R433: was audio_stream_id >= 0 — leaked when open failed after init */
         audio_stream_shutdown(&audio_stream_mgr);
         remove(audio_stream_path);
         LOG_INFO("  audio stream done");
@@ -6171,7 +6210,7 @@ u32 culled_count = 0;
         net_shutdown();
     }
     LOG_INFO("  hotreload done");
-    if (mip_stream_idx >= 0) {
+    if (mip_stream_inited) { /* R433: was mip_stream_idx >= 0 — leaked when register failed after init */
         async_loader_tick(); /* flush any completed streaming callbacks */
         mipmap_stream_shutdown(&mip_stream);
         if (rhi_handle_valid(mip_stream_tex)) rhi_texture_destroy(render.device, mip_stream_tex);
