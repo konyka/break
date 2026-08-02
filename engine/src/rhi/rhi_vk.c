@@ -154,6 +154,7 @@ typedef struct {
     VkSurfaceKHR            surface;
     VkSwapchainKHR          swapchain;
     VkFormat                swap_format;
+    bool                    swap_bgra; /* R430: screenshot swizzles BGRA->RGBA only when set */
     VkExtent2D              swap_extent;
     VkImage                *swap_images;
     VkImageView            *swap_views;
@@ -477,9 +478,47 @@ static VkShaderModule vk_compile_glsl(VKBackend *vk, const char *source, usize l
 
 /* ---- Swapchain ---- */
 
-static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
+static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk->physical, vk->surface, &caps);
+
+    /* R430: validate the preferred format against the surface — the old
+     * hardcoded B8G8R8A8_SRGB made vkCreateSwapchainKHR fail on surfaces
+     * without it, and init carried on with a NULL swapchain. */
+    VkColorSpaceKHR swap_colorspace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    {
+        u32 fmt_count = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface, &fmt_count, NULL);
+        VkSurfaceFormatKHR *formats = calloc(fmt_count ? fmt_count : 1u, sizeof(VkSurfaceFormatKHR));
+        if (!formats) { LOG_FATAL("VK: OOM surface formats"); return false; }
+        vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface, &fmt_count, formats);
+        VkFormat chosen = VK_FORMAT_UNDEFINED;
+        if (fmt_count == 1u && formats[0].format == VK_FORMAT_UNDEFINED) {
+            chosen = VK_FORMAT_B8G8R8A8_SRGB; /* "any format" sentinel */
+            swap_colorspace = formats[0].colorSpace;
+        } else {
+            for (u32 i = 0; i < fmt_count; i++) {
+                if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB) {
+                    chosen = formats[i].format;
+                    swap_colorspace = formats[i].colorSpace;
+                    break;
+                }
+            }
+            if (chosen == VK_FORMAT_UNDEFINED && fmt_count > 0u) {
+                chosen = formats[0].format;
+                swap_colorspace = formats[0].colorSpace;
+                LOG_WARN("VK: B8G8R8A8_SRGB unsupported, falling back to surface format %d", (int)chosen);
+            }
+        }
+        free(formats);
+        if (chosen == VK_FORMAT_UNDEFINED) {
+            LOG_FATAL("VK: surface reports no formats");
+            return false;
+        }
+        vk->swap_format = chosen;
+        /* Screenshot readback swizzles BGRA->RGBA; RGBA-order formats need none. */
+        vk->swap_bgra = (chosen == VK_FORMAT_B8G8R8A8_SRGB || chosen == VK_FORMAT_B8G8R8A8_UNORM);
+    }
 
     VkExtent2D extent;
     if (caps.currentExtent.width != UINT32_MAX) {
@@ -498,10 +537,12 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     sci.surface = vk->surface;
     sci.minImageCount = img_count;
     sci.imageFormat = vk->swap_format;
-    sci.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    sci.imageColorSpace = swap_colorspace; /* R430: matches the chosen format */
     sci.imageExtent = extent;
     sci.imageArrayLayers = 1;
-    sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    /* R430: TRANSFER_SRC — rhi_screenshot vkCmdCopyImageToBuffer reads a
+     * swapchain image (VUID-00126). */
+    sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -510,7 +551,7 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         u32 mode_count = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface, &mode_count, NULL);
         VkPresentModeKHR *modes = calloc(mode_count, sizeof(VkPresentModeKHR));
-        if (!modes) { LOG_FATAL("VK: OOM present modes"); return; }
+        if (!modes) { LOG_FATAL("VK: OOM present modes"); return false; }
         vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface, &mode_count, modes);
         if (!vk->vsync) {
             for (u32 i = 0; i < mode_count; i++) {
@@ -528,22 +569,23 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
 
     VkResult res = vkCreateSwapchainKHR(vk->device, &sci, NULL, &vk->swapchain);
     if (res != VK_SUCCESS) {
+        /* R430: propagate — init must not continue with a NULL swapchain. */
         LOG_FATAL("Failed to create swapchain: %d", res);
-        return;
+        return false;
     }
 
     if (vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, NULL) != VK_SUCCESS) {
         LOG_FATAL("VK: vkGetSwapchainImagesKHR count query failed");
-        return;
+        return false;
     }
     vk->swap_images = calloc(vk->swap_count, sizeof(VkImage));
-    if (!vk->swap_images) { LOG_FATAL("VK: OOM swap images"); return; }
+    if (!vk->swap_images) { LOG_FATAL("VK: OOM swap images"); return false; }
     vk->swap_views = calloc(vk->swap_count, sizeof(VkImageView));
-    if (!vk->swap_views) { LOG_FATAL("VK: OOM swap views"); return; }
+    if (!vk->swap_views) { LOG_FATAL("VK: OOM swap views"); return false; }
     if (vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, vk->swap_images) != VK_SUCCESS) {
         LOG_FATAL("VK: vkGetSwapchainImagesKHR image query failed");
         free(vk->swap_images);
-        return;
+        return false;
     }
 
     for (u32 i = 0; i < vk->swap_count; i++) {
@@ -557,20 +599,21 @@ static void vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         vci.subresourceRange.layerCount = 1;
         if (vkCreateImageView(vk->device, &vci, NULL, &vk->swap_views[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create swapchain image view %u", i);
-            return;
+            return false;
         }
     }
 
     vk->render_semaphores = calloc(vk->swap_count, sizeof(VkSemaphore));
-    if (!vk->render_semaphores) { LOG_FATAL("VK: OOM render semaphores"); return; }
+    if (!vk->render_semaphores) { LOG_FATAL("VK: OOM render semaphores"); return false; }
     for (u32 i = 0; i < vk->swap_count; i++) {
         VkSemaphoreCreateInfo sci2 = {0};
         sci2.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         if (vkCreateSemaphore(vk->device, &sci2, NULL, &vk->render_semaphores[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create render semaphore %u", i);
-            return;
+            return false;
         }
     }
+    return true;
 }
 
 static void vk_create_depth(VKBackend *vk) {
@@ -736,7 +779,11 @@ static void vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in recreate_swapchain");
     vk_cleanup_swapchain(vk);
-    vk_create_swapchain(vk, w, h);
+    if (!vk_create_swapchain(vk, w, h)) {
+        /* R430: cannot recover mid-run; do not continue with NULL swapchain. */
+        LOG_FATAL("VK: swapchain recreation failed");
+        return;
+    }
     vk_create_depth(vk);
     vk_create_framebuffers(vk);
 }
@@ -760,7 +807,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vk->display = (Display *)display_native;
     vk->window = (Window)(uintptr_t)window_native;
 #endif
-    vk->swap_format = VK_FORMAT_B8G8R8A8_SRGB;
+    /* R430: swap_format is chosen from the surface's supported formats in
+     * vk_create_swapchain (after surface + physical device exist). */
 
     VkApplicationInfo app = {0};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -975,7 +1023,11 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vkGetDeviceQueue(vk->device, vk->graphics_family, 0, &vk->graphics_queue);
     vkGetDeviceQueue(vk->device, vk->present_family, 0, &vk->present_queue);
 
-    vk_create_swapchain(vk, w, h);
+    if (!vk_create_swapchain(vk, w, h)) {
+        /* R430: fail init instead of running with a NULL swapchain. */
+        free(vk);
+        return false;
+    }
     vk_create_render_pass(vk);
     vk_create_depth(vk);
     vk_create_framebuffers(vk);
@@ -1696,11 +1748,17 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
     /* R421: iterate in usize — the old 32-bit w*h overflowed for large
      * rects while buf_size was computed in 64-bit. */
     const usize pixel_count = (usize)w * (usize)h;
-    for (usize i = 0; i < pixel_count; ++i) {
-        pixels[i * 4u + 0u] = src[i * 4u + 2u]; /* R <- B */
-        pixels[i * 4u + 1u] = src[i * 4u + 1u]; /* G <- G */
-        pixels[i * 4u + 2u] = src[i * 4u + 0u]; /* B <- R */
-        pixels[i * 4u + 3u] = src[i * 4u + 3u]; /* A <- A */
+    /* R430: swap_format is now validated against the surface and may fall
+     * back to an RGBA-order format — only swizzle for BGRA-order. */
+    if (vk->swap_bgra) {
+        for (usize i = 0; i < pixel_count; ++i) {
+            pixels[i * 4u + 0u] = src[i * 4u + 2u]; /* R <- B */
+            pixels[i * 4u + 1u] = src[i * 4u + 1u]; /* G <- G */
+            pixels[i * 4u + 2u] = src[i * 4u + 0u]; /* B <- R */
+            pixels[i * 4u + 3u] = src[i * 4u + 3u]; /* A <- A */
+        }
+    } else {
+        memcpy(pixels, src, pixel_count * 4u);
     }
     vkUnmapMemory(vk->device, staging_mem);
 
@@ -1760,13 +1818,19 @@ void rhi_gpu_timer_end(RHIGPUTimer *t) {
 
 f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
     if (!t || !t->result_ready) return 0.0;
-    u64 results[2] = {0};
+    /* R430: drop VK_QUERY_RESULT_WAIT_BIT — the draw-bench path queries
+     * timestamps recorded into the current, not-yet-submitted command
+     * buffer, so waiting never completes (deadlock under BREAK_DRAW_BENCH=1).
+     * Poll availability instead and report 0 until both timestamps land;
+     * the previous-frame path still gets real values. */
+    u64 results[4] = {0};
     VkResult r = vkGetQueryPoolResults(t->vkdev, t->query_pool, 0, 2,
-        sizeof(results), results, sizeof(u64),
-        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    t->result_ready = false;
+        sizeof(results), results, 2 * sizeof(u64),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     if (r != VK_SUCCESS) return 0.0;
-    return (f64)(results[1] - results[0]) * t->timestamp_period / 1e6;
+    if (results[1] == 0 || results[3] == 0) return 0.0; /* not ready yet */
+    t->result_ready = false;
+    return (f64)(results[2] - results[0]) * t->timestamp_period / 1e6;
 }
 
 
@@ -2880,7 +2944,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.levelCount = 1;
+        /* R430: transition the full mip chain — the view spans ci.mipLevels
+         * and mips 1+ would otherwise stay UNDEFINED. */
+        barrier.subresourceRange.levelCount = ci.mipLevels;
         barrier.subresourceRange.layerCount = 1;
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -2906,7 +2972,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier2.image = image;
         barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier2.subresourceRange.levelCount = 1;
+        barrier2.subresourceRange.levelCount = ci.mipLevels; /* R430: full chain */
         barrier2.subresourceRange.layerCount = 1;
         barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -4993,6 +5059,10 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shadow_map_destroy");
     vkDestroyFramebuffer(vk->device, sd->framebuffer, NULL);
+    /* R430: clear the cached default shadow pass like the create-failure
+     * path does — it aliases sd->render_pass destroyed just below. */
+    if (vk->shadow_render_pass == sd->render_pass)
+        vk->shadow_render_pass = VK_NULL_HANDLE;
     vkDestroyRenderPass(vk->device, sd->render_pass, NULL);
     if (sd->render_pass_load) vkDestroyRenderPass(vk->device, sd->render_pass_load, NULL);
     vkDestroyImageView(vk->device, sd->depth_view, NULL);

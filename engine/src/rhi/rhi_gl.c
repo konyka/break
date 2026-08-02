@@ -1809,6 +1809,10 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
     GLBufferData *src_bd = (GLBufferData *)rhi_get_resource(g_current_device, src);
     GLBufferData *dst_bd = (GLBufferData *)rhi_get_resource(g_current_device, dst);
     if (!src_bd || !dst_bd) return;
+    /* R430: clamp against both buffer sizes like the VK backend (R425). */
+    if (size > src_bd->size) size = src_bd->size;
+    if (size > dst_bd->size) size = dst_bd->size;
+    if (size == 0u) return;
     /* R177: Ensure prior SSBO writes are visible to COPY_READ. */
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
     glBindBuffer(GL_COPY_READ_BUFFER, src_bd->gl_buf);
@@ -1823,6 +1827,11 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     extern RHIDevice *g_current_device;
     GLBufferData *bd = (GLBufferData *)rhi_get_resource(g_current_device, buf);
     if (!bd) return;
+    /* R430: clamp offset+size against the buffer like the VK backend (R425). */
+    if (offset + size > bd->size) {
+        if (offset >= bd->size) return;
+        size = bd->size - offset;
+    }
     /* R185: Wait prior indirect/SSBO reads before clearing (cascade reuse). */
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT
                     | GL_BUFFER_UPDATE_BARRIER_BIT);

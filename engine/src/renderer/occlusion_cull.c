@@ -183,6 +183,8 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
     sys->enabled = true;
     sys->staging_valid[0] = false;
     sys->staging_valid[1] = false;
+    sys->staged_count[0] = 0; /* R430 */
+    sys->staged_count[1] = 0;
 
     LOG_INFO("OcclusionCull: initialized (%ux%u, %u mip levels, max %u objects)",
              sys->hi_z_width, sys->hi_z_height, sys->hi_z_levels, OCCLUSION_MAX_OBJECTS);
@@ -340,10 +342,16 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
     /* ---- Readback from staging (R172: current frame slot after fence wait) ---- */
     u32 fi = rhi_frame_index(sys->device) & 1u;
     if (sys->staging_valid[fi]) {
-        void *mapped = rhi_buffer_map(sys->device, sys->readback_staging[fi]);
-        if (mapped) {
-            memcpy(sys->visibility_readback, mapped, count * sizeof(u32));
-            rhi_buffer_unmap(sys->device, sys->readback_staging[fi]);
+        /* R430: clamp to the count actually staged into this slot — it may
+         * hold an older frame's smaller result set; reading `count` entries
+         * would copy uninitialized tail data (spurious cull/pop). */
+        u32 staged = count < sys->staged_count[fi] ? count : sys->staged_count[fi];
+        if (staged > 0u) {
+            void *mapped = rhi_buffer_map(sys->device, sys->readback_staging[fi]);
+            if (mapped) {
+                memcpy(sys->visibility_readback, mapped, staged * sizeof(u32));
+                rhi_buffer_unmap(sys->device, sys->readback_staging[fi]);
+            }
         }
     }
 
@@ -386,6 +394,7 @@ void occlusion_cull_dispatch(OcclusionCullSystem *sys, RHICmdBuffer *cmd, const 
     /* R87-1 / R172: GPU copy into current in-flight staging slot. */
     rhi_cmd_copy_buffer(cmd, sys->visibility_buffer, sys->readback_staging[fi], count * sizeof(u32));
     sys->staging_valid[fi] = true;
+    sys->staged_count[fi] = count; /* R430: readback clamps to this */
 
     sys->object_count = count;
 }

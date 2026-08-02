@@ -49,6 +49,8 @@ typedef struct {
     u32        *visibility_readback;
     /* R167-F / R172: Per-slot staging validity after fence wait. */
     bool        staging_valid[2];
+    /* R430: entry count actually staged into each slot (may lag object_count). */
+    u32         staged_count[2];
 } OcclusionCullSystem;
 
 bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u32 height);

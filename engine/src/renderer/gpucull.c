@@ -324,6 +324,8 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     gc->vis_flags_staging[1] = rhi_buffer_create(dev, &vis_flags_staging_desc);
     gc->vis_flags_staging_valid[0] = false;
     gc->vis_flags_staging_valid[1] = false;
+    gc->vis_flags_staged_count[0] = 0; /* R430 */
+    gc->vis_flags_staged_count[1] = 0;
     gc->_zero_draws = NULL; /* R171: GPU fill replaces CPU zero-draws buffer */
     
     if (!rhi_handle_valid(gc->draw_cmds_ssbo) ||
@@ -550,6 +552,7 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
         if (rhi_handle_valid(gc->vis_flags_staging[fi])) {
             rhi_cmd_copy_buffer(cmd, flags_buf, gc->vis_flags_staging[fi], n * sizeof(u32));
             gc->vis_flags_staging_valid[fi] = true;
+            gc->vis_flags_staged_count[fi] = n; /* R430: for readback clamp */
         }
     }
 }
@@ -562,6 +565,11 @@ bool gpucull_read_vis_flags(GPUCullSystem *gc, u32 count, u32 *out_flags) {
     u32 fi = rhi_frame_index(gc->device) & 1u;
     if (!rhi_handle_valid(gc->vis_flags_staging[fi])) return false;
     if (!gc->vis_flags_staging_valid[fi]) return false;
+
+    /* R430: clamp to the count actually staged into this slot — it may hold
+     * an older frame's smaller result set; the tail would be uninitialized. */
+    if (count > gc->vis_flags_staged_count[fi]) count = gc->vis_flags_staged_count[fi];
+    if (count == 0u) return false;
 
     void *mapped = rhi_buffer_map(gc->device, gc->vis_flags_staging[fi]);
     if (!mapped) return false;

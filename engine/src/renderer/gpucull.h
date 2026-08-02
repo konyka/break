@@ -45,6 +45,7 @@ typedef struct {
     bool            unified_ready;       /* Unified pipeline initialized */
     bool            objects_uploaded;    /* R193-B: skip redundant DL object_ssbo staging */
     bool            vis_flags_staging_valid[2]; /* R172: per-slot completed GPU copy */
+    u32             vis_flags_staged_count[2];  /* R430: entries staged per slot */
 
     /* Cached uniform locations (legacy pipeline) */
     i32             _loc_cull_vp;
