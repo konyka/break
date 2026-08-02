@@ -463,6 +463,28 @@ void async_loader_shutdown(void) {
      * (a future init reuses them; destroying risks a lingering worker touching a
      * dead object). See declaration comment. */
 
+    /* R431: requests still sitting in the request heap (state LOADING, never
+     * picked up by a worker — or handed to the decode pipeline and never
+     * polled back) were dropped silently here, leaking their user_data. The
+     * workers are joined, so nothing else can touch these slots: notify the
+     * owner with (NULL, 0) exactly like async_loader_cancel (R167-D) and
+     * release the slot. */
+    for (u32 i = 0; i < ASYNC_MAX_REQUESTS; i++) {
+        AsyncRequest *req = &g_loader.requests[i];
+        if (atomic_load(&req->state) == (u32)ASSET_LOADING) {
+            if (req->callback) {
+                req->callback(req->user_data, NULL, 0);
+                req->callback = NULL;
+                req->user_data = NULL;
+            }
+            atomic_store_explicit(&req->state, (u32)ASSET_UNLOADED,
+                                  memory_order_release);
+            atomic_fetch_sub_explicit(&g_loader.pending_count, 1,
+                                      memory_order_relaxed);
+        }
+    }
+    g_loader.request_heap.count = 0;
+
     /* Free any undelivered loaded data */
     for (u32 i = 0; i < ASYNC_MAX_REQUESTS; i++) {
         u32 st = atomic_load(&g_loader.requests[i].state);

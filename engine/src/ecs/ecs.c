@@ -218,6 +218,17 @@ void world_destroy(World *w) {
 
 void world_register_component(World *w, ComponentType id, u32 size) {
     if (id >= ECS_MAX_COMPONENTS) return;
+    /* R431: re-registering an id with a DIFFERENT size used to silently
+     * overwrite component_sizes[id], invalidating the offsets/capacity baked
+     * into existing archetype chunk layouts (heap corruption on next access).
+     * Same-size re-registration is a harmless no-op; a size change is a bug —
+     * refuse it and keep the original size. */
+    if (w->component_sizes[id] != 0 && w->component_sizes[id] != size) {
+        LOG_ERROR("ECS: component %u already registered with size %u, "
+                  "ignoring re-registration with size %u",
+                  (u32)id, w->component_sizes[id], size);
+        return;
+    }
     w->component_sizes[id] = size;
 }
 

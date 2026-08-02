@@ -80,6 +80,11 @@ bool hotreload_pipeline_init(HotReloadPipeline *hr, RHIDevice *dev,
 }
 
 void hotreload_pipeline_shutdown(HotReloadPipeline *hr) {
+    /* R431 (CORRECTNESS): mirror the R311 poll guard. main.c calls shutdown
+     * unconditionally even when init failed (initial shader compile error) —
+     * in that case *hr is all-zero, so watcher.inotify_fd == 0 passes
+     * filewatch_shutdown's `fd >= 0` check and close(0) CLOSES STDIN. */
+    if (!hr || !hr->ready) return;
     filewatch_shutdown(&hr->watcher);
     if (rhi_handle_valid(hr->pipeline)) rhi_pipeline_destroy(hr->device, hr->pipeline);
     hr->ready = false;
@@ -114,7 +119,11 @@ static bool hotreload_reload_texture(HotReloadTexture *hr) {
         return false;
     }
     u8 *data = stbi_load(hr->path, &w, &h, &ch, 4);
-    if (!data || w <= 0 || h <= 0) {
+    /* R431 (TOCTOU): the file can be swapped between stbi_info and stbi_load,
+     * so the decoded w/h are NOT the validated ones — re-check the dimension
+     * cap here before rhi_texture_create sizes its allocation from them. */
+    if (!data || w <= 0 || h <= 0 ||
+        (u32)w > HOTRELOAD_MAX_TEX_DIM || (u32)h > HOTRELOAD_MAX_TEX_DIM) {
         if (data) stbi_image_free(data);
         LOG_WARN("Hot reload texture: failed to decode %s", hr->path);
         return false;

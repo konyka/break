@@ -171,12 +171,16 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
  * ".." segments so a glTF uri / asset path cannot escape the mount root. */
 static bool vfs_rel_path_safe(const char *path) {
     if (!path || !*path) return false;
-    if (path[0] == '/') return false;
+    /* R431: on Windows '\\' is a path separator too, so a leading backslash
+     * is absolute and "..\\foo" escapes the mount root via fopen. Match '\\'
+     * everywhere '/' is matched (mirrors gltf_uri_safe in asset.c). */
+    if (path[0] == '/' || path[0] == '\\') return false;
     const char *p = path;
     for (;;) {
-        if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0'))
+        if (p[0] == '.' && p[1] == '.' &&
+            (p[2] == '/' || p[2] == '\\' || p[2] == '\0'))
             return false;
-        const char *slash = strchr(p, '/');
+        const char *slash = strpbrk(p, "/\\");
         if (!slash) break;
         p = slash + 1;
     }

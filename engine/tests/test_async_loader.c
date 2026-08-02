@@ -432,9 +432,61 @@ TEST(async_loader_completion_burst)
     vfs_destroy(vfs);
 }
 
+/* R431: shutdown used to drop requests still sitting in the request heap
+ * (state LOADING, never picked up by a worker) without firing their
+ * callback, leaking their user_data. Shutdown must notify them with
+ * (NULL, 0), exactly like async_loader_cancel. */
+static _Atomic int g_sd_cb_count;
+static _Atomic int g_sd_cb_null;
+
+static void shutdown_pending_cb(void *user, void *data, u32 size) {
+    (void)user; (void)size;
+    atomic_fetch_add(&g_sd_cb_count, 1);
+    if (!data) atomic_fetch_add(&g_sd_cb_null, 1);
+    if (data) free(data);
+}
+
+TEST(async_loader_shutdown_fires_pending_callbacks)
+{
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, ".");
+
+    /* One shared 1 MiB file keeps the single worker busy long enough that
+     * most requests are still queued when shutdown runs. */
+    FILE *f = fopen("async_shutdown_pending.bin", "wb");
+    ASSERT_NOT_NULL(f);
+    u8 blob[4096];
+    memset(blob, 0x5A, sizeof(blob));
+    for (int i = 0; i < 256; i++) fwrite(blob, 1, sizeof(blob), f);
+    fclose(f);
+
+    async_loader_init(1, vfs);
+    atomic_store(&g_sd_cb_count, 0);
+    atomic_store(&g_sd_cb_null, 0);
+
+    const int N = 64;
+    int submitted = 0;
+    for (int i = 0; i < N; i++) {
+        if (async_loader_request("async_shutdown_pending.bin",
+                                 shutdown_pending_cb, NULL) != 0)
+            submitted++;
+    }
+    ASSERT_EQ(submitted, N);
+
+    /* No tick: finished requests sit in the completion queue, queued ones
+     * stay LOADING. Shutdown must fire the queued ones with NULL data. */
+    async_loader_shutdown();
+
+    ASSERT_TRUE(atomic_load(&g_sd_cb_count) >= 1);
+    ASSERT_EQ(atomic_load(&g_sd_cb_count), atomic_load(&g_sd_cb_null));
+
+    vfs_destroy(vfs);
+    remove("async_shutdown_pending.bin");
+}
+
 TEST_MAIN_BEGIN()
-    RUN_TEST(async_loader_init_shutdown);
-    RUN_TEST(async_loader_pending_zero);
+    RUN_TEST(async_loader_init_shutdown);    RUN_TEST(async_loader_pending_zero);
     RUN_TEST(async_loader_load_nonexistent);
     RUN_TEST(async_loader_status_loading);
     RUN_TEST(async_loader_cancel_request);
@@ -446,4 +498,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_decode_non_blocking);
     RUN_TEST(async_loader_range_truncated_fails);
     RUN_TEST(async_loader_completion_burst);
+    RUN_TEST(async_loader_shutdown_fires_pending_callbacks);
 TEST_MAIN_END()

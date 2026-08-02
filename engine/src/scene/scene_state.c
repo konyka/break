@@ -237,7 +237,14 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
     }
 
     if (ld_ok && pc > 0) ctx->physics->bvh_dirty = true;
-    if (ld_ok && !feof(lf)) {
+    /* R431: the R393 "optional tail" guard used !feof(lf), but feof only sets
+     * AFTER a read past EOF — a short file never had it set here, so the tail
+     * was effectively mandatory (fread failed, ld_ok went false, full restore
+     * rejected). Check the remaining bytes instead: read the water tail only
+     * when it is actually present. */
+    long tail_off = ftell(lf);
+    if (ld_ok && tail_off >= 0 &&
+        (u64)(file_size - tail_off) >= (u64)(sizeof(f32) + sizeof(bool))) {
         ld_ok &= fread(ctx->water_y, sizeof(f32), 1, lf) == 1;
         ld_ok &= fread(ctx->water_enabled, sizeof(bool), 1, lf) == 1;
         if (!ctx->water_pipeline_valid)

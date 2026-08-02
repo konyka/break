@@ -197,10 +197,63 @@ TEST(scene_state_rejects_oversized_file)
     remove(TMP_STATE);
 }
 
+/* R431: the water tail is optional, but the old `!feof(lf)` guard made it
+ * mandatory — feof only sets after a read PAST EOF, so a tail-less file
+ * failed the water fread, flipped ld_ok, and triggered a full restore. A
+ * file without the tail must load successfully and leave the water state
+ * untouched. */
+TEST(scene_state_load_without_water_tail)
+{
+    Camera cam = {0};
+    cam.position = vec3(1, 2, 3);
+    f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.5f, scale = 1.0f;
+    f32 wy = -2.0f;
+    bool wen = true;
+
+    PhysicsWorld *pw = physics_world_create(4);
+    ASSERT_NOT_NULL(pw);
+    pw->count = 1;
+    pw->bodies[0].position = vec3(3, 4, 5);
+    pw->bodies[0].velocity = vec3(0, 0, 0);
+    pw->bodies[0].mass = 1.0f;
+
+    SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
+
+    /* Rewrite the file without the optional water tail (f32 + bool). */
+    FILE *f = fopen(TMP_STATE, "rb");
+    ASSERT_NOT_NULL(f);
+    u8 bytes[4096];
+    usize n = fread(bytes, 1, sizeof(bytes), f);
+    fclose(f);
+    ASSERT_TRUE(n > sizeof(f32) + sizeof(bool));
+    n -= sizeof(f32) + sizeof(bool);
+    f = fopen(TMP_STATE, "wb");
+    ASSERT_NOT_NULL(f);
+    ASSERT_TRUE(fwrite(bytes, 1, n, f) == n);
+    fclose(f);
+
+    cam.position = vec3(0, 0, 0);
+    wy = 7.0f;
+    wen = false;
+
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(scene_state_load(TMP_STATE, &lctx));
+
+    ASSERT_TRUE(fabsf(cam.position.e[0] - 1.0f) < 1e-4f);
+    /* No tail was present, so the water state stays as the app left it. */
+    ASSERT_TRUE(fabsf(wy - 7.0f) < 1e-4f);
+    ASSERT_TRUE(!wen);
+
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_rejects_excessive_pc);
     RUN_TEST(scene_state_rejects_pc_past_eof);
     RUN_TEST(scene_state_load_failure_preserves_runtime);
     RUN_TEST(scene_state_rejects_oversized_file);
+    RUN_TEST(scene_state_load_without_water_tail);
 TEST_MAIN_END()

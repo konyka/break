@@ -377,6 +377,27 @@ static void gltf_read_vec3_attr(cgltf_accessor *acc, u32 count, u8 *dst, usize d
     }
 }
 
+/* R431 (CONTENT LOSS): a glTF mesh with MULTIPLE PRIMITIVES (common: one
+ * mesh, several materials) produces one Mesh/SkinnedMesh per primitive, but
+ * the node used to keep only the FIRST — primitives 2..N were loaded yet
+ * never rendered. Emit one SceneNode PER PRIMITIVE: once the original node
+ * already references a mesh, each further primitive gets a duplicate of it
+ * (same transform/parent/skin flags) appended after the cgltf node range,
+ * pointing at its own mesh index. Original node indices are unchanged, so
+ * parent_index needs no remap; consumers simply see more nodes. */
+static SceneNode *gltf_primitive_node(Scene *scene, SceneNode *sn,
+                                      u32 *extra_next, u32 node_cap) {
+    if (sn->mesh_index == UINT32_MAX && sn->skin_mesh_index == UINT32_MAX)
+        return sn;
+    if (*extra_next >= node_cap) return NULL; /* R415-style defensive clamp */
+    SceneNode *dup = &scene->nodes[*extra_next];
+    *dup = *sn;
+    dup->mesh_index = UINT32_MAX;
+    dup->skin_mesh_index = UINT32_MAX;
+    (*extra_next)++;
+    return dup;
+}
+
 bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
     cgltf_options opts = {0};
     cgltf_data *data = NULL;
@@ -455,21 +476,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
     u32 total_meshes = 0;
     u32 total_skinned = 0;
-
-    out_scene->nodes = calloc(data->nodes_count > 0 ? data->nodes_count : 1, sizeof(SceneNode));
-    out_scene->node_count = 0;
-    /* R384: the node loop below writes nodes[ni] unconditionally — mirror the
-     * skin path (below) and bail on OOM instead of faulting. */
-    if (!out_scene->nodes) {
-        LOG_ERROR("glTF: node allocation failed");
-        cgltf_free(data);
-        asset_scene_free(ctx, out_scene);
-        return false;
-    }
+    /* R431: extra SceneNodes for meshes with multiple primitives (see
+     * gltf_primitive_node) — one duplicate per primitive past the first. */
+    u32 total_extra_nodes = 0;
 
     for (u32 ni = 0; ni < data->nodes_count; ni++) {
         cgltf_node *node = &data->nodes[ni];
         if (!node->mesh) continue;
+        u32 node_prims = 0;
         for (u32 pi = 0; pi < node->mesh->primitives_count; pi++) {
             cgltf_primitive *prim = &node->mesh->primitives[pi];
             /* R415: this predicate MUST be identical to the fill passes below
@@ -489,6 +503,15 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 }
                 has_skin = has_joints && has_weights;
             }
+            /* R431: the fill pass only emits a mesh record for primitives
+             * with a POSITION attribute (`if (!pos_acc) continue`), so count
+             * exactly those towards the per-primitive duplicate nodes. */
+            for (u32 ai = 0; ai < prim->attributes_count; ai++) {
+                if (prim->attributes[ai].type == cgltf_attribute_type_position) {
+                    node_prims++;
+                    break;
+                }
+            }
             if (has_skin) {
                 if (total_skinned == GLTF_MAX_SCENE_ITEMS) {
                     LOG_ERROR("glTF: too many skinned mesh primitives: %s", path);
@@ -507,6 +530,21 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 total_meshes++;
             }
         }
+        if (node_prims > 1) total_extra_nodes += node_prims - 1;
+    }
+
+    /* R431: the node array holds the cgltf nodes PLUS one duplicate per
+     * additional mesh primitive (filled by gltf_primitive_node below). */
+    u32 node_cap = (u32)data->nodes_count + total_extra_nodes;
+    out_scene->nodes = calloc(node_cap > 0 ? node_cap : 1, sizeof(SceneNode));
+    out_scene->node_count = 0;
+    /* R384: the node loop below writes nodes[ni] unconditionally — mirror the
+     * skin path (below) and bail on OOM instead of faulting. */
+    if (!out_scene->nodes) {
+        LOG_ERROR("glTF: node allocation failed");
+        cgltf_free(data);
+        asset_scene_free(ctx, out_scene);
+        return false;
     }
 
     out_scene->meshes = calloc(total_meshes > 0 ? total_meshes : 1, sizeof(Mesh));
@@ -569,6 +607,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         free(image_tex_cache);
         free(image_tex_tried);
     }
+
+    /* R431: next free slot in the appended duplicate-node range (after the
+     * cgltf nodes); see gltf_primitive_node. */
+    u32 extra_next = (u32)data->nodes_count;
 
     for (u32 ni = 0; ni < data->nodes_count; ni++) {
         cgltf_node *node = &data->nodes[ni];
@@ -795,9 +837,13 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 sm->index_count = idx_count;
                 sm->material_idx = mat_idx;
                 sm->skinned = true;
-                if (!sn->has_mesh || sn->skin_mesh_index == UINT32_MAX) {
-                    sn->skin_mesh_index = out_scene->skinned_mesh_count - 1;
-                    sn->material_idx = mat_idx;
+                /* R431: one node per primitive — duplicates for primitives
+                 * past the first (see gltf_primitive_node). */
+                SceneNode *psn = gltf_primitive_node(out_scene, sn, &extra_next, node_cap);
+                if (psn) {
+                    psn->skin_mesh_index = out_scene->skinned_mesh_count - 1;
+                    psn->material_idx = mat_idx;
+                    psn->skinned = true;
                 }
             } else {
                 /* R415: defensive clamp — never write past the allocated
@@ -868,15 +914,20 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 }
                 }
                 free(verts);
-                if (sn->mesh_index == UINT32_MAX) {
-                    sn->mesh_index = out_scene->mesh_count - 1;
-                    sn->material_idx = mat_idx;
+                /* R431: one node per primitive — duplicates for primitives
+                 * past the first (see gltf_primitive_node). */
+                SceneNode *psn = gltf_primitive_node(out_scene, sn, &extra_next, node_cap);
+                if (psn) {
+                    psn->mesh_index = out_scene->mesh_count - 1;
+                    psn->material_idx = mat_idx;
                 }
             }
         }
     }
 
-    out_scene->node_count = (u32)data->nodes_count;
+    /* R431: include the appended duplicate nodes (extra_next advanced once
+     * per duplicate created). */
+    out_scene->node_count = extra_next;
 
     /* R415: node_index → joint_index map. Previously built and freed inside
      * the skin block, then the animation loop linearly rescanned skin->joints

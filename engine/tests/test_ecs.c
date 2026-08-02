@@ -25,6 +25,28 @@ TEST(ecs_world_create_destroy) {
     world_destroy(w);
 }
 
+/* R431: re-registering a component id with a DIFFERENT size used to silently
+ * overwrite component_sizes[id], invalidating offsets/capacity of archetype
+ * chunk layouts already built from the old size (heap corruption on next
+ * access). The size change must be rejected, keeping the original size. */
+TEST(ecs_register_component_size_change_rejected) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    ASSERT_EQ(w->component_sizes[COMP_POSITION], (u32)sizeof(Position));
+
+    /* Same-size re-registration is a harmless no-op. */
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    ASSERT_EQ(w->component_sizes[COMP_POSITION], (u32)sizeof(Position));
+
+    /* A different size must be refused; the original size stays. */
+    world_register_component(w, COMP_POSITION, (u32)sizeof(Position) + 8u);
+    ASSERT_EQ(w->component_sizes[COMP_POSITION], (u32)sizeof(Position));
+
+    world_destroy(w);
+}
+
 /* ---- Entity Create ---- */
 
 TEST(ecs_entity_create) {
@@ -994,6 +1016,7 @@ TEST(ecs_oversized_component) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
+    RUN_TEST(ecs_register_component_size_change_rejected);
     RUN_TEST(ecs_entity_create);
     RUN_TEST(ecs_entity_create_multiple);
     RUN_TEST(ecs_entity_destroy);

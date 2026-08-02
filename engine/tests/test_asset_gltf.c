@@ -855,6 +855,87 @@ TEST(gltf_vfs_external_buffer_loads_via_vfs)
     rmdir(root);
 }
 
+/* R431 (CONTENT LOSS): a mesh with MULTIPLE primitives (common: one mesh,
+ * two materials) used to store only the FIRST primitive's mesh on the node —
+ * primitives 2..N loaded but were never rendered. Each additional primitive
+ * now gets a duplicate SceneNode (same transform/parent) pointing at its own
+ * mesh index. */
+TEST(gltf_multi_primitive_mesh_emits_node_per_primitive)
+{
+    char b64[97];
+    memset(b64, 'A', 96); /* 72 zero bytes -> 96 base64 chars, no padding */
+    b64[96] = '\0';
+    char json[2048];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[1]}],"
+             "\"nodes\":[{\"mesh\":0,\"translation\":[1,2,3]},{\"children\":[0]}],"
+             "\"meshes\":[{\"primitives\":["
+             "{\"attributes\":{\"POSITION\":0},\"material\":0},"
+             "{\"attributes\":{\"POSITION\":1},\"material\":1}]}],"
+             "\"materials\":[{},{}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+             "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36}],"
+             "\"buffers\":[{\"byteLength\":72,\"uri\":\"data:application/octet-stream;base64,%s\"}]}",
+             b64);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.mesh_count, 2u);
+    /* 2 cgltf nodes + 1 duplicate for the second primitive. */
+    ASSERT_EQ(scene.node_count, 3u);
+    ASSERT_EQ(scene.nodes[0].mesh_index, 0u);
+    ASSERT_EQ(scene.nodes[0].material_idx, 0u);
+    /* The duplicate mirrors the original node's transform and parent. */
+    ASSERT_EQ(scene.nodes[2].mesh_index, 1u);
+    ASSERT_EQ(scene.nodes[2].material_idx, 1u);
+    ASSERT_EQ(scene.nodes[0].parent_index, 1u);
+    ASSERT_EQ(scene.nodes[2].parent_index, scene.nodes[0].parent_index);
+    ASSERT_FLOAT_EQ(scene.nodes[2].local_transform.e[3][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(scene.nodes[2].local_transform.e[3][1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(scene.nodes[2].local_transform.e[3][2], 3.0f, 1e-6f);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+}
+
+/* R431: vfs_rel_path_safe only scanned for '/' separators, so "..\\foo"
+ * passed and a DIR mount's fopen("mount/..\\foo") escapes the mount root on
+ * Windows. Backslash segments are now rejected too (mirrors gltf_uri_safe). */
+TEST(vfs_rejects_backslash_traversal)
+{
+    const char *root = "/tmp/r431_vfs_root";
+    char disk[128];
+    snprintf(disk, sizeof(disk), "%s/ok.bin", root);
+    mkdir(root, 0755);
+    u8 byte = 0x42;
+    ASSERT_TRUE(write_bin(disk, &byte, sizeof(byte)));
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_dir(vfs, root));
+
+    ASSERT_TRUE(vfs_open(vfs, "..\\escape.bin") == NULL);
+    ASSERT_TRUE(vfs_open(vfs, "sub\\..\\escape.bin") == NULL);
+    /* A plain relative path still opens. */
+    VFSFile *f = vfs_open(vfs, "ok.bin");
+    ASSERT_NOT_NULL(f);
+    vfs_close(f);
+
+    vfs_destroy(vfs);
+    remove(disk);
+    rmdir(root);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
@@ -877,4 +958,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gltf_vfs_external_buffer_loads_via_vfs);
     RUN_TEST(scene_world_transforms_child_before_parent);
     RUN_TEST(scene_world_transforms_parent_cycle_terminates);
+    RUN_TEST(gltf_multi_primitive_mesh_emits_node_per_primitive);
+    RUN_TEST(vfs_rejects_backslash_traversal);
 TEST_MAIN_END()
