@@ -12,6 +12,8 @@
 #define NET_REPL_MAX_SNAPSHOTS     64u
 #define NET_REORDER_SLOTS          32u
 #define NET_REP_MAX_PEERS          8u
+/* R434: max reliable packets in flight per replicator (sliding window). */
+#define NET_RELIABLE_WINDOW        8u
 
 typedef struct {
     u32 entity_id;
@@ -79,7 +81,8 @@ typedef struct {
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
     NetRepPeerChannel        *peer_channels;  /* R418: per-sender recv state (calloc'd in init) */
-    NetRepReliablePending    reliable_pending;
+    NetRepReliablePending    reliable_window[NET_RELIABLE_WINDOW]; /* R434: in-flight reliable slots */
+    u32                      reliable_dropped;  /* R434: reliable sends rejected (window full) */
     u32                      last_peer_ack;   /* peer's ack of OUR packets (clears our pending) */
     u32                      ack_to_send;     /* highest reliable seq WE received (echoed as outgoing ack) */
     bool                     seq_dedup;

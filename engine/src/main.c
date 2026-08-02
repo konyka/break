@@ -2,6 +2,7 @@
 #include <rhi/rhi.h>
 #include <renderer/camera.h>
 #include <renderer/cull.h>
+#include <renderer/csm.h>
 #include <renderer/frustum_cull.h>
 #include <renderer/skybox.h>
 #include <renderer/particles.h>
@@ -4133,6 +4134,10 @@ u32 culled_count = 0;
                 lview.e[1][0] = ux;   lview.e[1][1] = uy;   lview.e[1][2] = uz;   lview.e[1][3] = -(ux*ex + uy*ey + uz*ez);
                 lview.e[2][0] = -fx;  lview.e[2][1] = -fy;  lview.e[2][2] = -fz;  lview.e[2][3] = fx*ex + fy*ey + fz*ez;
                 lview.e[3][0] = 0.0f; lview.e[3][1] = 0.0f; lview.e[3][2] = 0.0f; lview.e[3][3] = 1.0f;
+                /* R434: texel snapping — quantize the cascade center to the
+                 * per-cascade shadow quadrant texel grid (atlas_half x atlas_half)
+                 * so camera motion no longer causes sub-texel shadow shimmer. */
+                shadow_snap_lview_to_texel(&lview, extent, atlas_half);
                 Mat4 lproj = mat4_ortho(-extent, extent, -extent, extent, 0.1f, extent * 2.0f);
                 render.cascade_vp[c] = mat4_mul_ortho_diag(lproj, lview);
 

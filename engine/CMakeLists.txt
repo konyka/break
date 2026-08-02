@@ -381,6 +381,12 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_math PRIVATE m)
     add_test(NAME test_math COMMAND test_math)
 
+    # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c
+    add_executable(test_shadow tests/test_shadow.c src/math/math.c)
+    target_include_directories(test_shadow PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_shadow PRIVATE m)
+    add_test(NAME test_shadow COMMAND test_shadow)
+
     # test_task: needs task.c + log.c
     add_executable(test_task tests/test_task.c src/task/task.c src/core/log.c)
     target_include_directories(test_task PRIVATE ${TEST_INCLUDE_DIRS})
@@ -713,6 +719,13 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_occlusion_visibility PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_occlusion_visibility PRIVATE m)
     add_test(NAME test_occlusion_visibility COMMAND test_occlusion_visibility)
+
+    # R434: test_ibl — logic-level IBL bake-chain tests; ibl.c only, the fake
+    # backend (RHI stubs + log capture) lives inside the test file itself.
+    add_executable(test_ibl tests/test_ibl.c src/renderer/ibl.c)
+    target_include_directories(test_ibl PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_ibl PRIVATE m)
+    add_test(NAME test_ibl COMMAND test_ibl)
 
     # test_terrain: CPU-side terrain height sampling/modify/erode
     add_executable(test_terrain tests/test_terrain.c

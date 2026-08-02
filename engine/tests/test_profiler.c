@@ -8,6 +8,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* R434: thread-track tests spawn real threads; the CMake target only wires up
+ * pthread/platform macros for linux (see R433), so guard them accordingly. */
+#ifdef ENGINE_PLATFORM_LINUX
+#include <pthread.h>
+#endif
+
 /* Helper: reset the global profiler to a clean state */
 static void profiler_reset(void) {
     memset(&g_profiler, 0, sizeof(g_profiler));
@@ -457,6 +463,153 @@ TEST(profiler_export_chrome_meta)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R434: per-thread sampling (Chrome trace thread tracks)                  */
+/* ----------------------------------------------------------------------- */
+
+#ifdef ENGINE_PLATFORM_LINUX
+
+/* Helper: read a whole (small) text file, NUL-terminate, return length. */
+static size_t read_text_file(const char *path, char *buf, size_t cap) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    size_t n = fread(buf, 1, cap - 1u, fp);
+    buf[n] = '\0';
+    fclose(fp);
+    return n;
+}
+
+typedef struct {
+    const char *name;
+    u32         tid;
+} ThreadRecordArg;
+
+static void *thread_register_and_record(void *p) {
+    ThreadRecordArg *a = (ThreadRecordArg *)p;
+    a->tid = profiler_register_thread(a->name);
+    profiler_push(a->name);
+    time_sleep_us(50);
+    profiler_pop();
+    return NULL;
+}
+
+TEST(profiler_threads_distinct_tids_and_names)
+{
+    /* R434: two worker threads register explicitly and record zones; the
+     * exported Chrome trace must put their events on two distinct tids and
+     * carry thread_name metadata for both. */
+    profiler_reset();
+    profiler_set_enabled(true);
+
+    profiler_begin_frame();
+    profiler_push("main_zone");
+    profiler_pop();
+
+    ThreadRecordArg a = { "worker_a", 0 };
+    ThreadRecordArg b = { "worker_b", 0 };
+    pthread_t ta, tb;
+    ASSERT_EQ(pthread_create(&ta, NULL, thread_register_and_record, &a), 0);
+    ASSERT_EQ(pthread_create(&tb, NULL, thread_register_and_record, &b), 0);
+    pthread_join(ta, NULL);
+    pthread_join(tb, NULL);
+    profiler_end_frame();
+
+    ASSERT_TRUE(a.tid != 0u);
+    ASSERT_TRUE(b.tid != 0u);
+    ASSERT_NEQ(a.tid, b.tid);
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(f->region_count, 3u);
+    /* The main-thread zone keeps the main track. */
+    ASSERT_EQ(f->regions[0].tid, profiler_current_tid());
+
+    const char *path = "profiler_test_threads.json";
+    ASSERT_TRUE(profiler_export_chrome_trace(path, f, NULL, 0, NULL, 0));
+
+    static char buf[16384];
+    size_t n = read_text_file(path, buf, sizeof(buf));
+    remove(path);
+    ASSERT_TRUE(n > 0u);
+    ASSERT_NOT_NULL(strstr(buf, "\"thread_name\""));
+    ASSERT_NOT_NULL(strstr(buf, "worker_a"));
+    ASSERT_NOT_NULL(strstr(buf, "worker_b"));
+
+    char needle[32];
+    snprintf(needle, sizeof(needle), "\"tid\":%u", a.tid);
+    ASSERT_NOT_NULL(strstr(buf, needle));
+    snprintf(needle, sizeof(needle), "\"tid\":%u", b.tid);
+    ASSERT_NOT_NULL(strstr(buf, needle));
+}
+
+static void *thread_lazy_record(void *p) {
+    ThreadRecordArg *a = (ThreadRecordArg *)p;
+    profiler_push("lazy_zone");
+    a->tid = profiler_current_tid();
+    profiler_pop();
+    return NULL;
+}
+
+TEST(profiler_thread_lazy_auto_assign)
+{
+    /* R434: an unregistered thread must be assigned a tid automatically on
+     * first use, and its zones must be tagged with that tid. */
+    profiler_reset();
+    profiler_set_enabled(true);
+
+    profiler_begin_frame();
+    ThreadRecordArg a = { NULL, 0 };
+    pthread_t t;
+    ASSERT_EQ(pthread_create(&t, NULL, thread_lazy_record, &a), 0);
+    pthread_join(t, NULL);
+    profiler_end_frame();
+
+    ASSERT_TRUE(a.tid != 0u);
+    ASSERT_NEQ(a.tid, 1u); /* not folded onto the main track */
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(f->region_count, 1u);
+    ASSERT_STR_EQ(f->regions[0].name, "lazy_zone");
+    ASSERT_EQ(f->regions[0].tid, a.tid);
+}
+
+#define CONC_THREADS 4
+#define CONC_ZONES   8
+
+static void *thread_record_many(void *p) {
+    (void)p;
+    for (int i = 0; i < CONC_ZONES; i++) {
+        profiler_push("conc");
+        profiler_pop();
+    }
+    return NULL;
+}
+
+TEST(profiler_threads_concurrent_record)
+{
+    /* R434: concurrent recording from several threads must not crash or lose
+     * zones — every recorded region carries a valid thread id. */
+    profiler_reset();
+    profiler_set_enabled(true);
+
+    profiler_begin_frame();
+    pthread_t th[CONC_THREADS];
+    for (int i = 0; i < CONC_THREADS; i++)
+        ASSERT_EQ(pthread_create(&th[i], NULL, thread_record_many, NULL), 0);
+    for (int i = 0; i < CONC_THREADS; i++)
+        pthread_join(th[i], NULL);
+    profiler_end_frame();
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_EQ(f->region_count, (u32)(CONC_THREADS * CONC_ZONES));
+    for (u32 i = 0; i < f->region_count; i++)
+        ASSERT_TRUE(f->regions[i].tid != 0u);
+}
+
+#endif /* ENGINE_PLATFORM_LINUX */
+
+/* ----------------------------------------------------------------------- */
 /*  Main                                                                    */
 /* ----------------------------------------------------------------------- */
 
@@ -484,4 +637,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_push_null_name);
     RUN_TEST(profiler_export_chrome_trace);
     RUN_TEST(profiler_export_chrome_meta);
+    /* R434: per-thread sampling */
+#ifdef ENGINE_PLATFORM_LINUX
+    RUN_TEST(profiler_threads_distinct_tids_and_names);
+    RUN_TEST(profiler_thread_lazy_auto_assign);
+    RUN_TEST(profiler_threads_concurrent_record);
+#endif
 TEST_MAIN_END()

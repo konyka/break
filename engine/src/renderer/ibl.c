@@ -199,7 +199,12 @@ void ibl_capture_env_sky(IBLSystem *sys, RHIDevice *dev,
     const u32 groups = (IBL_ENV_SIZE + 15u) / 16u;
     for (u32 face = 0u; face < 6u; ++face) {
         RHICmdBuffer *cmd = rhi_frame_begin(dev);
-        if (!cmd) break;
+        /* R434: explicit degradation — a NULL command handle used to break
+         * out silently here, leaving the env map black with no trace. */
+        if (!cmd) {
+            LOG_WARN("IBL: sky capture skipped — backend returned no command buffer");
+            break;
+        }
         rhi_cmd_bind_pipeline(cmd, sys->sky_capture_pipeline);
         rhi_cmd_bind_image_cubemap_face(cmd, sys->env_map, face, 0u, 0u, true);
         if (loc_face >= 0) rhi_cmd_set_uniform_i32(cmd, loc_face, (i32)face);
@@ -239,6 +244,9 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
     /* ---- Pass 1: BRDF LUT ------------------------------------------------
      * Pure analytic integration of GGX importance sampling; no env input.
      * 16x16 workgroups -> 32x32 dispatch for a 512x512 LUT.            */
+    /* R434: track command-handle failures so a skipped stage flips ready to
+     * false instead of silently reporting success with black maps. */
+    bool cmd_failed = false;
     if (rhi_handle_valid(sys->brdf_lut_pipeline) && rhi_handle_valid(sys->brdf_lut)) {
         RHICmdBuffer *cmd = rhi_frame_begin(dev);
         if (cmd) {
@@ -254,6 +262,9 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
             /* The LUT was written as a storage image (GENERAL); transition it to
              * a shader-readable layout so the PBR pass can sample it. */
             rhi_texture_transition_to_read(dev, sys->brdf_lut);
+        } else {
+            LOG_WARN("IBL: BRDF LUT pass skipped — backend returned no command buffer");
+            cmd_failed = true;
         }
     }
 
@@ -279,7 +290,12 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
         const u32 irr_groups = IBL_IRRADIANCE_SIZE / 16u;
         for (u32 face = 0u; face < 6u; ++face) {
             RHICmdBuffer *cmd = rhi_frame_begin(dev);
-            if (!cmd) break;
+            if (!cmd) {
+                /* R434: explicit degradation instead of a silent break. */
+                LOG_WARN("IBL: irradiance pass skipped — backend returned no command buffer");
+                cmd_failed = true;
+                break;
+            }
             rhi_cmd_bind_pipeline(cmd, sys->irradiance_pipeline);
             /* binding 0: output (storage image, single face, mip 0) */
             rhi_cmd_bind_image_cubemap_face(cmd, sys->irradiance_map, face, 0u, 0u, true);
@@ -309,7 +325,12 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
             f32 roughness = (f32)mip / (f32)(IBL_PREFILTER_MIP_COUNT - 1u);
             for (u32 face = 0u; face < 6u; ++face) {
                 RHICmdBuffer *cmd = rhi_frame_begin(dev);
-                if (!cmd) break;
+                if (!cmd) {
+                    /* R434: explicit degradation instead of a silent break. */
+                    LOG_WARN("IBL: prefilter pass skipped — backend returned no command buffer");
+                    cmd_failed = true;
+                    break;
+                }
                 rhi_cmd_bind_pipeline(cmd, sys->prefilter_pipeline);
                 /* binding 0: output storage image = this face at this mip. */
                 rhi_cmd_bind_image_cubemap_face(cmd, sys->prefilter_map, face, mip, 0u, true);
@@ -340,6 +361,11 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
             LOG_WARN("IBL: env convolution resources incomplete");
             ok = false;
         }
+    }
+    /* R434: a stage skipped for lack of a command handle is not success. */
+    if (cmd_failed) {
+        LOG_WARN("IBL: precompute incomplete — command buffer unavailable");
+        ok = false;
     }
     sys->ready = ok;
 }

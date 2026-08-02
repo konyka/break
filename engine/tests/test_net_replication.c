@@ -74,14 +74,14 @@ TEST(reliable_retry_pending)
 
     NetTransformSnapshot snap = { .entity_id = 7u, .position = { 0.0f, 1.0f, 2.0f } };
     ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
-    ASSERT_TRUE(send_rep.reliable_pending.valid);
+    ASSERT_TRUE(send_rep.reliable_window[0].valid);
 
     ASSERT_TRUE(net_replicator_retry_pending(&send_rep) > 0);
     ASSERT_EQ(send_rep.retry_count, 1u);
 
-    send_rep.last_peer_ack = send_rep.reliable_pending.seq;
+    send_rep.last_peer_ack = send_rep.reliable_window[0].seq;
     ASSERT_TRUE(net_replicator_retry_pending(&send_rep) == 0);
-    ASSERT_FALSE(send_rep.reliable_pending.valid);
+    ASSERT_FALSE(send_rep.reliable_window[0].valid);
 
     net_replicator_shutdown(&send_rep);
     net_shutdown();
@@ -356,8 +356,8 @@ TEST(reliable_ordered_combined)
 
     NetTransformSnapshot snap = { .entity_id = 3u, .position = { 9.0f, 8.0f, 7.0f } };
     ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
-    ASSERT_TRUE(send_rep.reliable_pending.valid);
-    ASSERT_EQ(send_rep.reliable_pending.data[11], (u8)(PACKET_RELIABLE | PACKET_ORDERED));
+    ASSERT_TRUE(send_rep.reliable_window[0].valid);
+    ASSERT_EQ(send_rep.reliable_window[0].data[11], (u8)(PACKET_RELIABLE | PACKET_ORDERED));
     ASSERT_EQ(send_rep.ordered[NET_PKT_TRANSFORM_SNAPSHOT].send_seq, 2u);
 
     NetReplicator recv_rep = {0};
@@ -451,8 +451,8 @@ TEST(reliable_pending_cleared_via_peer_ack)
     NetReplicator A = {0};
     ASSERT_TRUE(net_replicator_init(&A, 0));
     A.reliable_retry = true;
-    A.reliable_pending.valid = true;
-    A.reliable_pending.seq = 5u;
+    A.reliable_window[0].valid = true;
+    A.reliable_window[0].seq = 5u;
 
     /* B replies with a packet carrying ack = B.ack_to_send (=5). Feeding it to A
      * must clear A's pending — the acknowledgment round-trip fixed in R323. */
@@ -463,7 +463,7 @@ TEST(reliable_pending_cleared_via_peer_ack)
     NetTransformSnapshot aout[4] = {0};
     u32 aoc = 0u;
     net_replicator_feed(&A, af.data, alen, aout, 4u, &aoc);
-    ASSERT_FALSE(A.reliable_pending.valid);
+    ASSERT_FALSE(A.reliable_window[0].valid);
 
     net_replicator_shutdown(&A);
     net_replicator_shutdown(&B);
@@ -1070,6 +1070,216 @@ TEST(parse_payload_clamps_forged_count)
     net_replicator_shutdown(&rep);
 }
 
+/* R434: reliable sliding-window tests ------------------------------------ */
+
+static u32 reliable_window_valid_count(const NetReplicator *rep) {
+    u32 n = 0u;
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++)
+        if (rep->reliable_window[i].valid) n++;
+    return n;
+}
+
+/* Heartbeat frame carrying a chosen header ack (acks the peer's sequences). */
+static u32 build_ack_wire(u8 *out, u32 seq, u32 ack) {
+    PacketBuffer buf;
+    packet_begin(&buf, (u8)NET_PKT_HEARTBEAT, (u8)PACKET_UNRELIABLE);
+    packet_write_u32(&buf, 0u);
+    u32 len = packet_finish(&buf, seq, ack);
+    memcpy(out, buf.data, len);
+    return len;
+}
+
+static void feed_ack(NetReplicator *rep, u32 ack) {
+    u8 wire[PACKET_MAX_SIZE];
+    u32 len = build_ack_wire(wire, 1u, ack);
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed(rep, wire, len, out, 1u, &out_count) > 0);
+}
+
+TEST(reliable_window_multiple_inflight)
+{
+    /* R434: up to NET_RELIABLE_WINDOW reliable packets may be in flight at
+     * once; each claims its own slot with its own sequence. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator send_rep = {0};
+    ASSERT_TRUE(net_replicator_init(&send_rep, 0));
+    send_rep.reliable_retry = true;
+
+    NetAddress dst;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 6u), &dst));
+
+    NetTransformSnapshot snap = { .entity_id = 1u, .position = { 0.0f, 0.0f, 0.0f } };
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++)
+        ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
+
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), (u32)NET_RELIABLE_WINDOW);
+    /* All slots hold distinct sequences (1..NET_RELIABLE_WINDOW on this channel). */
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
+        ASSERT_TRUE(send_rep.reliable_window[i].valid);
+        for (u32 j = i + 1u; j < (u32)NET_RELIABLE_WINDOW; j++)
+            ASSERT_NEQ(send_rep.reliable_window[i].seq, send_rep.reliable_window[j].seq);
+    }
+
+    net_replicator_shutdown(&send_rep);
+    net_shutdown();
+}
+
+TEST(reliable_window_ack_per_slot)
+{
+    /* R434: the header ack is cumulative — every slot whose seq it has
+     * reached is cleared, later slots stay in flight; a duplicate ack is a
+     * no-op. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator send_rep = {0};
+    ASSERT_TRUE(net_replicator_init(&send_rep, 0));
+    send_rep.reliable_retry = true;
+
+    NetAddress dst;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 7u), &dst));
+
+    NetTransformSnapshot snap = { .entity_id = 1u, .position = { 0.0f, 0.0f, 0.0f } };
+    for (u32 i = 0u; i < 5u; i++)   /* seqs 1..5 */
+        ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 5u);
+
+    feed_ack(&send_rep, 3u);        /* acks seqs 1..3 */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
+        const NetRepReliablePending *s = &send_rep.reliable_window[i];
+        if (s->valid) ASSERT_TRUE(s->seq == 4u || s->seq == 5u);
+    }
+
+    feed_ack(&send_rep, 3u);        /* duplicate ack: harmless */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
+
+    net_replicator_shutdown(&send_rep);
+    net_shutdown();
+}
+
+TEST(reliable_window_full_rejected)
+{
+    /* R434: with every slot occupied a further reliable send is rejected
+     * (NET_ERROR, the function's failure convention) and counted, instead of
+     * silently overwriting an unacked packet as the single slot did. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator send_rep = {0};
+    ASSERT_TRUE(net_replicator_init(&send_rep, 0));
+    send_rep.reliable_retry = true;
+
+    NetAddress dst;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 8u), &dst));
+
+    NetTransformSnapshot snap = { .entity_id = 1u, .position = { 0.0f, 0.0f, 0.0f } };
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++)
+        ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), (u32)NET_RELIABLE_WINDOW);
+
+    ASSERT_EQ(net_replicator_broadcast(&send_rep, &snap, 1u, &dst), NET_ERROR);
+    ASSERT_EQ(send_rep.reliable_dropped, 1u);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), (u32)NET_RELIABLE_WINDOW);
+
+    /* A freed slot can be claimed again. */
+    feed_ack(&send_rep, 1u);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), (u32)NET_RELIABLE_WINDOW - 1u);
+    ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), (u32)NET_RELIABLE_WINDOW);
+
+    net_replicator_shutdown(&send_rep);
+    net_shutdown();
+}
+
+TEST(reliable_window_seq_wraparound)
+{
+    /* R434: the per-slot ack compare must stay wraparound-safe (R245 form):
+     * slots at seq 0xFFFFFFFE/0xFFFFFFFF/0 are all acked by ack=1 after the
+     * 32-bit wrap, while a slot at seq 2 is not. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+
+    rep.reliable_window[0].valid = true; rep.reliable_window[0].seq = 0xFFFFFFFEu;
+    rep.reliable_window[1].valid = true; rep.reliable_window[1].seq = 0xFFFFFFFFu;
+    rep.reliable_window[2].valid = true; rep.reliable_window[2].seq = 0u;
+    rep.reliable_window[3].valid = true; rep.reliable_window[3].seq = 2u;
+
+    feed_ack(&rep, 1u);
+    ASSERT_EQ(reliable_window_valid_count(&rep), 1u);
+    ASSERT_TRUE(rep.reliable_window[3].valid);
+    ASSERT_EQ(rep.reliable_window[3].seq, 2u);
+
+    net_replicator_shutdown(&rep);
+}
+
+TEST(reliable_window_out_of_order_acks)
+{
+    /* R434: acks arriving out of order (a newer cumulative ack followed by a
+     * stale older one) must never resurrect cleared slots or drop newer
+     * state. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator send_rep = {0};
+    ASSERT_TRUE(net_replicator_init(&send_rep, 0));
+    send_rep.reliable_retry = true;
+
+    NetAddress dst;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 9u), &dst));
+
+    NetTransformSnapshot snap = { .entity_id = 1u, .position = { 0.0f, 0.0f, 0.0f } };
+    for (u32 i = 0u; i < 6u; i++)   /* seqs 1..6 */
+        ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 6u);
+
+    feed_ack(&send_rep, 4u);        /* clears seqs 1..4 */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
+
+    feed_ack(&send_rep, 2u);        /* stale, older ack: no effect on the window */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
+
+    feed_ack(&send_rep, 6u);        /* catches up: window empty */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 0u);
+
+    net_replicator_shutdown(&send_rep);
+    net_shutdown();
+}
+
+TEST(reliable_window_retry_per_slot)
+{
+    /* R434: retry retransmits each still-unacked slot independently — acked
+     * slots are skipped; a late ack arriving after a retransmit still clears
+     * its slot. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator send_rep = {0};
+    ASSERT_TRUE(net_replicator_init(&send_rep, 0));
+    send_rep.reliable_retry = true;
+
+    NetAddress dst;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 10u), &dst));
+
+    NetTransformSnapshot snap = { .entity_id = 1u, .position = { 0.0f, 0.0f, 0.0f } };
+    for (u32 i = 0u; i < 4u; i++)   /* seqs 1..4 */
+        ASSERT_TRUE(net_replicator_broadcast(&send_rep, &snap, 1u, &dst) > 0);
+
+    feed_ack(&send_rep, 2u);        /* seqs 1..2 acked; 3..4 outstanding */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
+
+    ASSERT_TRUE(net_replicator_retry_pending(&send_rep) > 0);
+    ASSERT_EQ(send_rep.retry_count, 2u);        /* only the 2 unacked slots resent */
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
+
+    /* Late ack for a retransmitted packet clears its slot normally. */
+    feed_ack(&send_rep, 4u);
+    ASSERT_EQ(reliable_window_valid_count(&send_rep), 0u);
+    ASSERT_TRUE(net_replicator_retry_pending(&send_rep) == 0);
+    ASSERT_EQ(send_rep.retry_count, 2u);        /* nothing left to retransmit */
+
+    net_replicator_shutdown(&send_rep);
+    net_shutdown();
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(replicator_init_shutdown);
     RUN_TEST(transform_snapshot_loopback);
@@ -1098,4 +1308,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ordered_channels_per_peer);
     RUN_TEST(peer_channels_evict_stalest);
     RUN_TEST(peer_load_rejects_port_overflow);
+    RUN_TEST(reliable_window_multiple_inflight);
+    RUN_TEST(reliable_window_ack_per_slot);
+    RUN_TEST(reliable_window_full_rejected);
+    RUN_TEST(reliable_window_seq_wraparound);
+    RUN_TEST(reliable_window_out_of_order_acks);
+    RUN_TEST(reliable_window_retry_per_slot);
 TEST_MAIN_END()

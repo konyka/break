@@ -457,9 +457,15 @@ static void gl_resize(RHIDevice *dev, u32 w, u32 h) {
 
 static u32 g_gl_frame_index = 0;
 
+/* R434: Non-NULL sentinel command handle.  GL rhi_cmd_* operate on immediate
+ * global state and ignore the handle, but callers (notably the IBL bake chain
+ * in ibl.c) guard on `if (!cmd)` — the previous NULL return silently skipped
+ * every compute dispatch and left the environment maps black. */
+static int g_gl_cmd_sentinel = 0;
+
 static void *gl_frame_begin(RHIDevice *dev) {
     (void)dev;
-    return NULL;
+    return &g_gl_cmd_sentinel;
 }
 
 static void gl_frame_end(RHIDevice *dev) {

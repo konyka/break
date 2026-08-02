@@ -182,6 +182,16 @@ static bool net_repl_mkdir_p(const char *dir) {
 #endif
 }
 
+/* R434: cumulative, wraparound-safe ack of the reliable window — clear every
+ * in-flight slot whose sequence `ack` has reached (same R245 delta form). */
+static void net_reliable_window_ack(NetReplicator *rep, u32 ack) {
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
+        NetRepReliablePending *slot = &rep->reliable_window[i];
+        if (slot->valid && (ack - slot->seq) < 0x80000000u)
+            slot->valid = false;
+    }
+}
+
 static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc,
                                        u8 type, const u8 *wire, u32 len,
                                        const NetAddress *reply_to,
@@ -199,9 +209,9 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc
     /* R245: wraparound-safe "ack has reached pending.seq" (ack at-or-after seq),
      * matching the seq-dedup convention (delta > 0x80000000u) used below. A naive
      * `ack >= seq` fails once the 32-bit sequence wraps (e.g. seq=0xFFFFFFF0,
-     * ack=5), leaving reliable_pending stuck valid → endless retransmit. */
-    if ((hdr.ack - rep->reliable_pending.seq) < 0x80000000u)
-        rep->reliable_pending.valid = false;
+     * ack=5), leaving reliable slots stuck valid → endless retransmit.
+     * R434: the ack is cumulative — every window slot it has reached is cleared. */
+    net_reliable_window_ack(rep, hdr.ack);
     rep->last_peer_ack = hdr.ack;
 
     if (rep->seq_dedup && ch->last_recv_seq != 0u) {
@@ -333,8 +343,7 @@ static i32 net_repl_deliver_ordered(NetReplicator *rep, NetRepPeerChannel *pc,
     if (!packet_parse_header(wire, len, &hdr)) return NET_ERROR;
 
     NetRepOrderedChannel *ch = net_ord_ch(rep, pc, type);
-    if ((hdr.ack - rep->reliable_pending.seq) < 0x80000000u) /* R245: wraparound-safe ack */
-        rep->reliable_pending.valid = false;
+    net_reliable_window_ack(rep, hdr.ack); /* R245/R434: wraparound-safe cumulative ack */
     rep->last_peer_ack = hdr.ack;
 
     if (ch->next_ordered_seq == 0u)
@@ -403,19 +412,20 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
     u32 now_ms = (u32)(time_microseconds() / 1000ull);
 
     /* R323 (CORRECTNESS): a packet's header `ack` field means "the sequence I am
-     * acknowledging from you" (see packet.h; the sender clears reliable_pending
-     * when an incoming ack reaches pending.seq, at deliver_* above). To actually
-     * acknowledge a peer's RELIABLE packet, our own outgoing `ack` field must
-     * therefore echo the peer's SEQUENCE — not the peer's ack field. The send
-     * path previously wrote `last_peer_ack` (which we set to hdr.ack = the peer's
-     * ack of US) into the outgoing ack, so we never acknowledged the peer's
-     * sequence: both ends bounced their own ack values back and forth, their
-     * reliable_pending never cleared via ack, and net_replicator_retry_pending
-     * retransmitted the last reliable packet forever. Track the highest reliable
-     * sequence we have received (wraparound-safe, same convention as seq-dedup)
-     * and echo THAT as our outgoing ack; `last_peer_ack` still records hdr.ack
-     * for our own retry self-check. Only RELIABLE packets need acking; heartbeats
-     * are always unreliable, so this stays within the transform channel's space. */
+     * acknowledging from you" (see packet.h; the sender clears its reliable
+     * window slots when an incoming ack reaches their seq, at deliver_* above).
+     * To actually acknowledge a peer's RELIABLE packet, our own outgoing `ack`
+     * field must therefore echo the peer's SEQUENCE — not the peer's ack field.
+     * The send path previously wrote `last_peer_ack` (which we set to hdr.ack =
+     * the peer's ack of US) into the outgoing ack, so we never acknowledged the
+     * peer's sequence: both ends bounced their own ack values back and forth,
+     * their reliable pendings never cleared via ack, and
+     * net_replicator_retry_pending retransmitted the last reliable packet
+     * forever. Track the highest reliable sequence we have received
+     * (wraparound-safe, same convention as seq-dedup) and echo THAT as our
+     * outgoing ack; `last_peer_ack` still records hdr.ack for our own retry
+     * self-check. Only RELIABLE packets need acking; heartbeats are always
+     * unreliable, so this stays within the transform channel's space. */
     if ((hdr.flags & (u8)PACKET_RELIABLE) != 0u &&
         (hdr.sequence - rep->ack_to_send) < 0x80000000u) {
         rep->ack_to_send = hdr.sequence;
@@ -486,15 +496,31 @@ i32 net_replicator_broadcast(NetReplicator *rep,
         packet_write_f32(&buf, snapshots[i].position[2]);
     }
 
+    /* R434: claim a free reliable-window slot BEFORE consuming a sequence
+     * number, so a window-full rejection neither silently overwrites an
+     * unacked packet (the old single slot did) nor leaves a gap in the
+     * send sequence. Rejection follows the function's failure convention
+     * (NET_ERROR) and is counted. */
+    NetRepReliablePending *rslot = NULL;
+    if (rep->reliable_retry) {
+        for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
+            if (!rep->reliable_window[i].valid) { rslot = &rep->reliable_window[i]; break; }
+        }
+        if (!rslot) {
+            rep->reliable_dropped++;
+            return NET_ERROR;
+        }
+    }
+
     u32 seq = rep->ordered_layer ? rep->ordered[pkt].send_seq++ : rep->unreliable[pkt].send_seq++;
     /* R323: echo the highest reliable seq WE received as our ack (see process). */
     u32 plen = packet_finish(&buf, seq, rep->ack_to_send);
-    if (rep->reliable_retry) {
-        memcpy(rep->reliable_pending.data, buf.data, plen);
-        rep->reliable_pending.len = plen;
-        rep->reliable_pending.seq = seq;
-        rep->reliable_pending.dst = *dst;
-        rep->reliable_pending.valid = true;
+    if (rslot) {
+        memcpy(rslot->data, buf.data, plen);
+        rslot->len = plen;
+        rslot->seq = seq;
+        rslot->dst = *dst;
+        rslot->valid = true;
     }
     return net_sendto(rep->socket, buf.data, plen, dst);
 }
@@ -530,15 +556,26 @@ i32 net_replicator_send_heartbeat_ack(NetReplicator *rep, const NetAddress *dst,
 }
 
 i32 net_replicator_retry_pending(NetReplicator *rep) {
-    if (!rep || !rep->socket || !rep->reliable_retry || !rep->reliable_pending.valid) return 0;
-    /* R245: wraparound-safe "last_peer_ack has reached pending.seq" (see deliver). */
-    if ((rep->last_peer_ack - rep->reliable_pending.seq) < 0x80000000u) {
-        rep->reliable_pending.valid = false;
-        return 0;
+    if (!rep || !rep->socket || !rep->reliable_retry) return 0;
+    /* R434: retransmit each still-unacked window slot independently. A slot
+     * the peer's ack has since reached is retired without a resend (R245
+     * wraparound-safe self-check on last_peer_ack). Returns the total bytes
+     * retransmitted (0 when nothing was outstanding). */
+    i32 sent_total = 0;
+    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
+        NetRepReliablePending *slot = &rep->reliable_window[i];
+        if (!slot->valid) continue;
+        if ((rep->last_peer_ack - slot->seq) < 0x80000000u) {
+            slot->valid = false;
+            continue;
+        }
+        i32 n = net_sendto(rep->socket, slot->data, slot->len, &slot->dst);
+        if (n > 0) {
+            rep->retry_count++;
+            sent_total += n;
+        }
     }
-    rep->retry_count++;
-    return net_sendto(rep->socket, rep->reliable_pending.data, rep->reliable_pending.len,
-                      &rep->reliable_pending.dst);
+    return sent_total;
 }
 
 static bool net_repl_parse_payload(const PacketBuffer *buf, NetTransformSnapshot *out,
