@@ -152,10 +152,134 @@ TEST(font_init_rejects_oversized_file)
     remove(TMP_FONT);
 }
 
+/* ---- R436: kerning -------------------------------------------------------
+ *
+ * The RHI-less init paths above can never reach a baked pair table (init
+ * bails at texture creation with dev = NULL), so the kerning logic is
+ * exercised against a synthetic FontRenderer instead: two glyphs 'A' and 'V'
+ * with 10px advances, one kern pair A->V of -2px. Pure lookup plus both
+ * layout paths (text_width, draw) are covered; draw emits into quad_data
+ * without touching the RHI, so it runs headlessly too. */
+
+static void make_kern_fr(FontRenderer *fr) {
+    memset(fr, 0, sizeof(*fr));
+    for (u32 i = 0; i < FONT_CPMAP_SIZE; i++) fr->cp_map[i] = -1;
+    fr->glyphs[0].codepoint = 'A';
+    fr->glyphs[0].advance   = 10.0f;
+    fr->glyphs[0].width     = 8.0f;
+    fr->glyphs[0].height    = 8.0f;
+    fr->cp_map['A'] = 0;
+    fr->glyphs[1].codepoint = 'V';
+    fr->glyphs[1].advance   = 10.0f;
+    fr->glyphs[1].width     = 8.0f;
+    fr->glyphs[1].height    = 8.0f;
+    fr->cp_map['V'] = 1;
+    fr->glyph_count = 2;
+    /* -2.0 px in the fixed-point 1/64px storage used by the pair table. */
+    fr->kern_pairs[0] = (FontKernPair){ 0, 1, -128 };
+    fr->kern_count = 1;
+}
+
+TEST(font_kern_lookup_hit)
+{
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    ASSERT_FLOAT_EQ(font_kern_advance(&fr, 'A', 'V'), -2.0f, 1e-4f);
+}
+
+TEST(font_kern_lookup_miss)
+{
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    /* reversed pair not in table */
+    ASSERT_FLOAT_EQ(font_kern_advance(&fr, 'V', 'A'), 0.0f, 1e-4f);
+    /* codepoint without a baked glyph */
+    ASSERT_FLOAT_EQ(font_kern_advance(&fr, 'A', 'Z'), 0.0f, 1e-4f);
+    /* codepoint outside the cp_map range */
+    ASSERT_FLOAT_EQ(font_kern_advance(&fr, 'A', 0x20ACu), 0.0f, 1e-4f);
+    /* no previous glyph (line start) */
+    ASSERT_FLOAT_EQ(font_kern_advance(&fr, 0, 'V'), 0.0f, 1e-4f);
+}
+
+TEST(font_kern_width_applies_pair)
+{
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    f32 w_a  = font_renderer_text_width(&fr, "A");
+    f32 w_v  = font_renderer_text_width(&fr, "V");
+    f32 w_av = font_renderer_text_width(&fr, "AV");
+    ASSERT_TRUE(w_av < w_a + w_v);
+    ASSERT_FLOAT_EQ(w_av, w_a + w_v - 2.0f, 1e-4f);
+}
+
+TEST(font_kern_width_empty_table_unchanged)
+{
+    /* Behavior compat: with no kern pairs, width is pure advance accumulation. */
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    fr.kern_count = 0;
+    ASSERT_FLOAT_EQ(font_renderer_text_width(&fr, "AV"), 20.0f, 1e-4f);
+}
+
+TEST(font_kern_width_not_across_newline)
+{
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    /* Add A->A = -3px so a leaked prev across '\n' changes the result:
+     * correct  "A\nAA" = max(10, 10 + 10 - 3) = 17
+     * leaked   "A\nAA" = max(10, -3 + 10 - 3 + 10) = 14 */
+    fr.kern_pairs[1] = (FontKernPair){ 0, 0, -192 };
+    fr.kern_count = 2;
+    ASSERT_FLOAT_EQ(font_renderer_text_width(&fr, "A\nAA"), 17.0f, 1e-4f);
+}
+
+TEST(font_kern_width_unknown_cp_falls_back_for_pair)
+{
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    /* '?' must exist for the fallback glyph; give it idx 2, advance 10. */
+    fr.glyphs[2] = fr.glyphs[0];
+    fr.glyphs[2].codepoint = '?';
+    fr.cp_map['?'] = 2;
+    fr.glyph_count = 3;
+    /* kern A->? = -2px: a codepoint with no glyph (here 'Z') renders as '?',
+     * so "AZ" must pick up the A->? pair, not A->Z. */
+    fr.kern_pairs[1] = (FontKernPair){ 0, 2, -128 };
+    fr.kern_count = 2;
+    ASSERT_FLOAT_EQ(font_renderer_text_width(&fr, "AZ"), 18.0f, 1e-4f);
+}
+
+TEST(font_kern_draw_offsets_second_glyph)
+{
+    /* Mirror of font.c's internal FontVertex (32-byte stride, x first). */
+    typedef struct { f32 x, y, u, v, r, g, b, a; } TestFontVertex;
+    FontRenderer fr;
+    make_kern_fr(&fr);
+    TestFontVertex quad_buf[6 * 2];
+    fr.quad_data = (u8 *)quad_buf;
+    fr.quad_capacity = 2;
+    fr.quad_count = 0;
+
+    font_renderer_draw(&fr, "AV", 0.0f, 0.0f, 100.0f, 100.0f,
+                       1.0f, 1.0f, 1.0f, 1.0f);
+    ASSERT_EQ(fr.quad_count, 2u);
+    /* Second glyph's left edge (NDC): x_cursor = adv(A) + kern(A,V) + x_off(V)
+     * with x_off(V) = 0 -> (10 - 2) * (2/100) - 1 = -0.84 */
+    const TestFontVertex *v1 = &quad_buf[6];
+    ASSERT_FLOAT_EQ(v1[0].x, -0.84f, 1e-4f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(font_init_rejects_missing_file);
     RUN_TEST(font_init_rejects_empty_file);
     RUN_TEST(font_init_rejects_file_below_offset_table);
     RUN_TEST(font_init_rejects_non_font_file);
     RUN_TEST(font_init_rejects_oversized_file);
+    RUN_TEST(font_kern_lookup_hit);
+    RUN_TEST(font_kern_lookup_miss);
+    RUN_TEST(font_kern_width_applies_pair);
+    RUN_TEST(font_kern_width_empty_table_unchanged);
+    RUN_TEST(font_kern_width_not_across_newline);
+    RUN_TEST(font_kern_width_unknown_cp_falls_back_for_pair);
+    RUN_TEST(font_kern_draw_offsets_second_glyph);
 TEST_MAIN_END()

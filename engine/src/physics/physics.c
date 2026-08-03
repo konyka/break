@@ -282,6 +282,21 @@ void physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse) {
     pw->total_impulse_applied += vec3_len(impulse);
 }
 
+void physics_push_body(PhysicsWorld *pw, u32 body_id, Vec3 normal, f32 depth) {
+    /* R436: position-only shove for an immovable pusher (character capsule,
+     * inv_mass 0). Mirrors resolve_contact's "all separation on the movable
+     * side" split: the body moves by the full normal*depth. */
+    if (!pw || body_id >= pw->count) return;
+    RigidBody *b = &pw->bodies[body_id];
+    if (b->inv_mass <= 0.0f || physics_body_is_parked(b)) return;
+    b->position.e[0] += normal.e[0] * depth;
+    b->position.e[1] += normal.e[1] * depth;
+    b->position.e[2] += normal.e[2] * depth;
+    /* R432 contract: we moved it, so the BVH refit passes (which skip
+     * rest_frames > 2) must not keep its stale AABB. */
+    b->rest_frames = 0;
+}
+
 static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) {
     f32 inv_a = a->inv_mass;
     f32 inv_b = b->inv_mass;

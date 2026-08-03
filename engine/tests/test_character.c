@@ -350,6 +350,83 @@ TEST(character_high_step_blocks)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R436: character controller vs dynamic bodies                            */
+/* ----------------------------------------------------------------------- */
+
+/* Walking into a dynamic box shoves it aside; the character (infinite-mass
+ * KCC) is not blocked the way a static wall blocks it. */
+TEST(character_pushes_dynamic_box)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    /* Floor, top at y=0 */
+    physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
+    /* Dynamic box directly ahead: x in [2.5, 3.5], resting on the floor */
+    u32 box = physics_body_create(pw, vec3(3.0f, 0.5f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+
+    CharacterController cc = character_create(vec3(0, 0.0f, 0), 0.4f, 1.8f);
+    for (int i = 0; i < 200; i++) {
+        character_update(&cc, pw, 1.0f/60.0f, vec3(1, 0, 0), false);
+    }
+    /* The box must have been pushed away from its spawn position. */
+    ASSERT_TRUE(pw->bodies[box].position.e[0] > 3.5f);
+    /* Infinite-mass semantics: the character kept walking past the box's
+     * original left face (2.5) instead of stopping in front of it. */
+    ASSERT_TRUE(cc.position.e[0] > 2.5f);
+    physics_world_destroy(pw);
+}
+
+/* Dropping onto a dynamic box: its top face is walkable, so the character is
+ * supported and reports grounded (same rule as static geometry). */
+TEST(character_grounded_on_dynamic_box)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
+    /* Dynamic platform with its top at y=1.0 */
+    physics_body_create(pw, vec3(0, 0.5f, 0), vec3(1.0f, 0.5f, 1.0f), 1.0f, false, 0);
+
+    CharacterController cc = character_create(vec3(0, 3.0f, 0), 0.4f, 1.8f);
+    bool was_grounded = false;
+    for (int i = 0; i < 300; i++) {
+        character_update(&cc, pw, 1.0f/60.0f, vec3(0,0,0), false);
+        if (cc.grounded) was_grounded = true;
+    }
+    ASSERT_TRUE(was_grounded);
+    /* Feet rest on the box top (y=1.0), not sunk to the floor (y=0). */
+    ASSERT_TRUE(cc.position.e[1] > 0.9f);
+    ASSERT_TRUE(cc.position.e[1] < 1.2f);
+    physics_world_destroy(pw);
+}
+
+/* physics_push_body: invalid ids, static bodies and parked tombstones are
+ * safe no-ops; a valid push moves the body by normal*depth and clears
+ * rest_frames (R432 contract). */
+TEST(physics_push_body_invalid_safe)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    u32 stat = physics_body_create(pw, vec3(0, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
+    u32 dyn  = physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
+
+    /* Out-of-range id: no crash, no effect. */
+    physics_push_body(pw, 999, vec3(1, 0, 0), 1.0f);
+    /* Static body: not movable. */
+    physics_push_body(pw, stat, vec3(1, 0, 0), 1.0f);
+    ASSERT_TRUE(pw->bodies[stat].position.e[0] == 0.0f);
+    /* Parked tombstone (moved to (0,-1000,0) by park): push must not move it. */
+    physics_body_park(pw, dyn);
+    physics_push_body(pw, dyn, vec3(1, 0, 0), 1.0f);
+    ASSERT_TRUE(pw->bodies[dyn].position.e[1] == -1000.0f);
+
+    /* Valid push: full normal*depth separation (capsule side is immovable),
+     * rest_frames cleared so the BVH refit cannot skip the stale AABB. */
+    u32 dyn2 = physics_body_create(pw, vec3(9, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
+    pw->bodies[dyn2].rest_frames = 5;
+    physics_push_body(pw, dyn2, vec3(1, 0, 0), 0.5f);
+    ASSERT_TRUE(fabsf(pw->bodies[dyn2].position.e[0] - 9.5f) < 1e-4f);
+    ASSERT_TRUE(pw->bodies[dyn2].rest_frames == 0);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(character_create_basic);
@@ -375,4 +452,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(character_wall_block);
     RUN_TEST(character_step_up);
     RUN_TEST(character_high_step_blocks);
+    /* R436: character vs dynamic bodies */
+    RUN_TEST(character_pushes_dynamic_box);
+    RUN_TEST(character_grounded_on_dynamic_box);
+    RUN_TEST(physics_push_body_invalid_safe);
 TEST_MAIN_END()

@@ -214,6 +214,14 @@ typedef struct {
      * the previously bound one, leaving bindings 0..2 unwritten -> 08114). */
     VkDescriptorSet storage_set;
     bool            storage_set_valid;
+    /* R436: Storage-image binds accumulate into ONE descriptor set per
+     * pipeline bind, mirroring storage_set above. Previously every
+     * rhi_cmd_bind_image_texture allocated+bound a fresh single-binding set,
+     * clobbering the previous one — so at most ONE image unit was valid per
+     * dispatch (hit as VUID-vkCmdDispatch-None-08114 when the segmented Hi-Z
+     * chain bound 4 mip images). Single-bind call sites are unaffected. */
+    VkDescriptorSet image_set;
+    bool            image_set_valid;
     bool       depth_lequal;
     bool       render_pass_active;
     /* Render-pass suspend/resume: Vulkan forbids vkCmdDispatch/barriers inside
@@ -1587,6 +1595,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     vk->current_pipeline = VK_NULL_HANDLE;
     vk->current_pipeline_data = NULL;  /* R106-1: reset stale pointer — desc pool was just reset, so storage_set is dangling */
     vk->storage_set_valid = false;     /* R106-1: force re-alloc on next bind_storage_buffer */
+    vk->image_set_valid = false;       /* R436: same for the storage-image set */
     vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset for swapchain pass */
     vk->depth_lequal = false;
 
@@ -3441,6 +3450,8 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     vk->current_pipeline_data = pd;
     /* Start a fresh storage-buffer descriptor set for this pipeline binding. */
     vk->storage_set_valid = false;
+    /* R436: same for the storage-image descriptor set. */
+    vk->image_set_valid = false;
 }
 
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
@@ -3735,15 +3746,23 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
             return;
     }
 
+    /* R436: Accumulate all of this pipeline's storage-image binds into ONE
+     * set (mirrors the storage-buffer R90-1 pattern) so a shader using image
+     * units 0..3 sees every bound mip. The set is bound once per pipeline;
+     * updating an as-yet-unused set before the dispatch consumes it is valid. */
     VkDescriptorSetLayout layout = vk->storage_image_layout;
-    VkDescriptorSetAllocateInfo dsai = {0};
-    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool = vk->desc_pools[vk->current_frame];
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts = &layout;
-
-    VkDescriptorSet ds;
-    if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
+    bool need_bind = !vk->image_set_valid;
+    if (!vk->image_set_valid) {
+        VkDescriptorSetAllocateInfo dsai = {0};
+        dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool = vk->desc_pools[vk->current_frame];
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &layout;
+        if (vkAllocateDescriptorSets(vk->device, &dsai, &vk->image_set) != VK_SUCCESS)
+            return;
+        vk->image_set_valid = true;
+    }
+    VkDescriptorSet ds = vk->image_set;
 
     VkDescriptorImageInfo img_info = {0};
     img_info.sampler = VK_NULL_HANDLE;
@@ -3760,11 +3779,13 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
     write.pImageInfo = &img_info;
 
     vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
-    VkPipelineBindPoint bp = cpd->is_compute ?
-        VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
-        bp, cpd->layout,
-        cpd->storage_image_set, 1, &ds, 0, NULL);
+    if (need_bind) {
+        VkPipelineBindPoint bp = cpd->is_compute ?
+            VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+            bp, cpd->layout,
+            cpd->storage_image_set, 1, &ds, 0, NULL);
+    }
 }
 
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face, u32 mip, u32 unit, bool write_only) {

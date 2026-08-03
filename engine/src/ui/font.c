@@ -34,6 +34,20 @@ static const GlyphInfo *font_lookup_glyph(const FontRenderer *fr, u32 cp) {
     return NULL;
 }
 
+/* R436: pure pair-table lookup. Linear scan over at most FONT_MAX_KERN_PAIRS
+ * entries (96 for the shipped font) — negligible against glyph raster cost. */
+f32 font_kern_advance(const FontRenderer *fr, u32 cp_a, u32 cp_b) {
+    if (cp_a >= FONT_CPMAP_SIZE || cp_b >= FONT_CPMAP_SIZE) return 0.0f;
+    i16 a = fr->cp_map[cp_a];
+    i16 b = fr->cp_map[cp_b];
+    if (a < 0 || b < 0) return 0.0f;
+    for (u32 i = 0; i < fr->kern_count; i++) {
+        if (fr->kern_pairs[i].a_idx == (u8)a && fr->kern_pairs[i].b_idx == (u8)b)
+            return (f32)fr->kern_pairs[i].kern * (1.0f / 64.0f);
+    }
+    return 0.0f;
+}
+
 extern RHIDevice *g_current_device;
 
 typedef struct {
@@ -177,6 +191,33 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
 
             px += (u32)gw + 1;
             if ((u32)gh + 1 > row_height) row_height = (u32)gh + 1;
+        }
+    }
+
+    /* R436: harvest kerning pairs while the stbtt handle is still alive (it
+     * borrows ttf_buf, so this must precede the free below). stb_truetype only
+     * reads the legacy 'kern' table (format 0); fonts that kern exclusively
+     * through GPOS yield an empty table and layout falls back to pure advance
+     * accumulation — identical to pre-R436 behavior.
+     *
+     * Only non-zero pairs are stored. Capacity policy is first-come-first-
+     * served: pairs are visited in codepoint order, so if the table fills, the
+     * dropped pairs are the high-codepoint ones rather than the largest — with
+     * 512 slots versus 96 pairs in the shipped font this is not a practical
+     * concern, and it keeps baking O(glyphs^2) with no sorting. */
+    fr->kern_count = 0;
+    for (u32 i = 0; i < fr->glyph_count && fr->kern_count < FONT_MAX_KERN_PAIRS; i++) {
+        for (u32 j = 0; j < fr->glyph_count && fr->kern_count < FONT_MAX_KERN_PAIRS; j++) {
+            int k = stbtt_GetCodepointKernAdvance(&fi,
+                (int)fr->glyphs[i].codepoint, (int)fr->glyphs[j].codepoint);
+            if (k == 0) continue;
+            f32 kf = (f32)k * scale * 64.0f; /* fixed-point 1/64 px */
+            i32 k64 = (i32)(kf >= 0.0f ? kf + 0.5f : kf - 0.5f);
+            if (k64 == 0) continue;         /* rounds away to nothing */
+            if (k64 > 32767) k64 = 32767;   /* i16 storage clamp */
+            if (k64 < -32768) k64 = -32768;
+            fr->kern_pairs[fr->kern_count++] =
+                (FontKernPair){ (u8)i, (u8)j, (i16)k64 };
         }
     }
 
@@ -336,17 +377,23 @@ void font_renderer_draw(FontRenderer *fr, const char *text, f32 x, f32 y,
     f32 inv_sw = 2.0f / screen_w;
 
     const char *s = text;
+    u32 prev_cp = 0; /* R436: effective codepoint of the previous glyph, 0 = none */
     while (*s) {
         u32 cp;
         s += utf8_decode(s, &cp);
         if (cp == '\n') {
             cursor_x = x;
             cursor_y += fr->ascent - fr->descent + fr->line_gap;
+            prev_cp = 0; /* R436: kerning never crosses a line break */
             continue;
         }
 
         const GlyphInfo *gi = font_lookup_glyph(fr, cp);
-        if (!gi) continue;
+        if (!gi) { prev_cp = 0; continue; }
+        /* R436: kern against the previous glyph before advancing. gi->codepoint
+         * is the effective codepoint, so '?' fallback pairs kern correctly. */
+        cursor_x += font_kern_advance(fr, prev_cp, gi->codepoint);
+        prev_cp = gi->codepoint;
         if (gi->width <= 0 || gi->height <= 0) {
             cursor_x += gi->advance;
             continue;
@@ -404,6 +451,7 @@ void font_renderer_draw_rect(FontRenderer *fr, f32 x, f32 y, f32 w, f32 h,
 
 f32 font_renderer_text_width(const FontRenderer *fr, const char *text) {
     f32 w = 0.0f, line_w = 0.0f;
+    u32 prev_cp = 0; /* R436: effective codepoint of the previous glyph, 0 = none */
     const char *s = text;
     while (*s) {
         u32 cp;
@@ -411,10 +459,16 @@ f32 font_renderer_text_width(const FontRenderer *fr, const char *text) {
         if (cp == '\n') {
             if (line_w > w) w = line_w;
             line_w = 0.0f;
+            prev_cp = 0; /* R436: kerning never crosses a line break */
             continue;
         }
         const GlyphInfo *gi = font_lookup_glyph(fr, cp);
-        if (gi) line_w += gi->advance;
+        if (!gi) { prev_cp = 0; continue; }
+        /* R436: keep in lockstep with font_renderer_draw — same kern, same
+         * effective codepoint — or UI alignment drifts from what is rendered. */
+        line_w += font_kern_advance(fr, prev_cp, gi->codepoint);
+        prev_cp = gi->codepoint;
+        line_w += gi->advance;
     }
     return line_w > w ? line_w : w;
 }

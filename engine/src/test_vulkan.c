@@ -7,6 +7,7 @@
 #include <renderer/combined_post_process.h>
 #include <renderer/gpucull.h>
 #include <renderer/ibl.h>
+#include <renderer/occlusion_cull.h> /* R436: TEST 9 Hi-Z occlusion assertions */
 #include <asset/asset.h>
 #include <ecs/ecs.h>
 #include <physics/physics.h>
@@ -1104,6 +1105,122 @@ int main(int argc, char **argv) {
             } else {
                 LOG_ERROR("FAIL: unified cull dispatch_ok=%u", dispatch_ok);
             }
+
+            /* ---- R436: real Hi-Z pyramid occlusion assertions --------------
+             * Previous TEST 9 only smoked the fallback path (hi_z = NULL), so
+             * the Hi-Z consumption chain had zero coverage. Here we:
+             *   1. render a near fullscreen triangle into a 64x64 offscreen
+             *      depth target (window depth 0.1 everywhere),
+             *   2. run occlusion_cull_generate_hi_z on it,
+             *   3. dispatch unified cull against the REAL pyramid with two
+             *      spheres at screen center: near (closest_z 0.05, visible)
+             *      and far (closest_z 0.90, must be culled),
+             *   4. read back vis flags (1-frame pipelined staging) and assert
+             *      {1,0}; the fallback control (hi_z = NULL) must give {1,1}.
+             * Also asserts the segmented generation chain issued the expected
+             * (reduced) number of compute dispatches. */
+            bool hiz_occ_ok = false;
+            {
+                const u32 HW = 64, HH = 64;          /* -> Hi-Z 32x32, 6 levels */
+                OcclusionCullSystem occ;
+                memset(&occ, 0, sizeof(occ));
+                bool occ_ok = occlusion_cull_init(&occ, render.device, HW, HH);
+                RHIOffscreenFBO hz_fbo = rhi_offscreen_fbo_create(render.device, HW, HH);
+
+                /* Two spheres at screen center; identity vp keeps NDC == world. */
+                GPUCullDrawCmd dcmd2[2];
+                dcmd2[0] = dcmd; dcmd2[1] = dcmd;
+                GPUCullObject objs[2];
+                memset(objs, 0, sizeof(objs));
+                objs[0].position[2] = -0.85f; objs[0].position[3] = 0.05f; /* near: visible */
+                objs[1].position[2] =  0.85f; objs[1].position[3] = 0.05f; /* far: occluded */
+                gpucull_upload_draw_cmds(&uc, dcmd2, 2);
+                gpucull_upload_objects_unified(&uc, objs, 2);
+
+                /* Fullscreen near triangle (scaled x3 to cover all pixels) at
+                 * NDC z=-0.8 -> window depth 0.1 across the whole pyramid. */
+                Mat4 quad = mat4_identity();
+                quad.e[0][0] = 3.0f;
+                quad.e[1][1] = 3.0f;
+                quad.e[3][2] = -0.8f;
+                Mat4 vp_id = mat4_identity();
+
+                bool fallback_ok = false, real_ok = false, count_ok = false;
+                if (occ_ok && occ.enabled && rhi_handle_valid(hz_fbo.depth_tex)) {
+                    /* Control phase: hi_z = NULL -> 1x1 fallback -> all visible. */
+                    u32 flags[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+                    for (u32 f = 0; f < 4; f++) {
+                        RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                        if (!cmd) break;
+                        rhi_cmd_end_render_pass(cmd);
+                        gpucull_dispatch_unified(&uc, cmd, &vp_id.e[0][0], NULL,
+                                                 RHI_HANDLE_NULL, 0, 0,
+                                                 RHI_HANDLE_NULL, true, true);
+                        rhi_frame_end(render.device);
+                        rhi_present(render.device);
+                    }
+                    if (gpucull_read_vis_flags(&uc, 2, flags))
+                        fallback_ok = (flags[0] == 1u && flags[1] == 1u);
+                    if (!fallback_ok)
+                        LOG_ERROR("FAIL: fallback vis flags {%u,%u}, want {1,1}",
+                                  flags[0], flags[1]);
+
+                    /* Real pyramid phase. */
+                    flags[0] = flags[1] = 0xFFFFFFFFu;
+                    u32 hiz_dispatches = 0;
+                    for (u32 f = 0; f < 4; f++) {
+                        RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                        if (!cmd) break;
+                        rhi_offscreen_fbo_bind(cmd, &hz_fbo);
+                        rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                        rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &quad.e[0][0]);
+                        rhi_cmd_set_uniform_mat4(cmd, render.loc_view,  &vp_id.e[0][0]);
+                        rhi_cmd_set_uniform_mat4(cmd, render.loc_proj,  &vp_id.e[0][0]);
+                        rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
+                        rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
+                        rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
+                        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+                        rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
+                        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                        rhi_cmd_draw_indexed(cmd, 3, 1);
+                        rhi_offscreen_fbo_unbind(cmd, HW, HH);
+                        rhi_cmd_end_render_pass(cmd);
+                        occlusion_cull_generate_hi_z(&occ, cmd, hz_fbo.depth_tex);
+                        hiz_dispatches = occlusion_cull_hiz_dispatch_count(&occ);
+                        gpucull_dispatch_unified(&uc, cmd, &vp_id.e[0][0], NULL,
+                                                 occ.hi_z_texture,
+                                                 occ.hi_z_width, occ.hi_z_height,
+                                                 RHI_HANDLE_NULL, true, true);
+                        rhi_frame_end(render.device);
+                        rhi_present(render.device);
+                    }
+                    if (gpucull_read_vis_flags(&uc, 2, flags))
+                        real_ok = (flags[0] == 1u && flags[1] == 0u);
+                    if (!real_ok)
+                        LOG_ERROR("FAIL: Hi-Z vis flags {%u,%u}, want {1,0}",
+                                  flags[0], flags[1]);
+
+                    /* 6 levels -> ceil(6/4) = 2 chunked dispatches (was 6). */
+                    u32 want_dispatches = (occ.hi_z_levels + 3u) / 4u;
+                    count_ok = (hiz_dispatches == want_dispatches);
+                    if (!count_ok)
+                        LOG_ERROR("FAIL: Hi-Z dispatches=%u, want %u (segmented chain)",
+                                  hiz_dispatches, want_dispatches);
+
+                    hiz_occ_ok = fallback_ok && real_ok && count_ok;
+                } else {
+                    LOG_ERROR("FAIL: Hi-Z occlusion setup (occ=%d fbo=%d)",
+                              (int)occ_ok, (int)rhi_handle_valid(hz_fbo.depth_tex));
+                }
+                if (hiz_occ_ok) {
+                    LOG_INFO("PASS: Hi-Z occlusion (fallback {1,1}, pyramid {1,0}, dispatches=%u)",
+                             count_ok ? (occ.hi_z_levels + 3u) / 4u : 0u);
+                }
+                rhi_offscreen_fbo_destroy(render.device, &hz_fbo);
+                if (occ_ok) occlusion_cull_shutdown(&occ);
+            }
+            unified_pass = unified_pass && hiz_occ_ok;
         } else {
             LOG_ERROR("FAIL: unified cull init unavailable");
         }

@@ -39,7 +39,7 @@ typedef struct {
     bool        enabled;
 
     /* Cached uniform locations (populated at init, avoids per-frame lookup). */
-    i32         _loc_hi_z_output_size;    /* hi_z_pipeline: pc.output_size */
+    i32         _loc_hi_z_output_size;    /* hi_z_pipeline: pc.output_size (R436: vec4: first-mip size + chunk mip count) */
     i32         _loc_cull_view_proj;      /* cull_pipeline: pc.view_proj   */
     i32         _loc_cull_object_count;   /* cull_pipeline: pc.object_count */
     i32         _loc_cull_hi_z_width;     /* cull_pipeline: pc.hi_z_width  */
@@ -51,6 +51,10 @@ typedef struct {
     bool        staging_valid[2];
     /* R430: entry count actually staged into each slot (may lag object_count). */
     u32         staged_count[2];
+
+    /* R436: compute dispatches issued by the last occlusion_cull_generate_hi_z
+     * call (perf observability for the segmented single-pass chain). */
+    u32         hi_z_dispatch_count;
 } OcclusionCullSystem;
 
 bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u32 height);
@@ -65,3 +69,5 @@ bool occlusion_cull_is_visible(const OcclusionCullSystem *sys, u32 object_index)
 
 /* Statistics */
 u32  occlusion_cull_visible_count(const OcclusionCullSystem *sys);
+/* R436: dispatches issued by the last Hi-Z generation call (see field above). */
+u32  occlusion_cull_hiz_dispatch_count(const OcclusionCullSystem *sys);

@@ -74,7 +74,29 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
             for (u32 ci = 0; ci < nc; ci++) {
                 u32 i = candidates[ci];
                 RigidBody *b = &pw->bodies[i];
-                if (!b->is_static) continue;
+                if (!b->is_static) {
+                    /* R436: see the identical branch in the full-scan loop below. */
+                    if (b->inv_mass <= 0.0f || physics_body_is_parked(b)) continue;
+                    Contact ct;
+                    if (!physics_collide(&cap, b, &ct)) continue;
+                    if (-ct.normal.e[1] > cc->slope_limit) {
+                        /* Walkable top face: support the character exactly
+                         * like static geometry (stand on dynamic bodies). */
+                        if (ct.depth > best_depth) {
+                            best_depth = ct.depth;
+                            best_n = ct.normal;
+                            any = true;
+                        }
+                    } else {
+                        /* Side/bottom contact: the character is an
+                         * infinite-mass KCC and never yields — shove the
+                         * body out instead. The push fully separates the
+                         * pair, so the body does not feed this iteration
+                         * loop (no re-detection, no jitter). */
+                        physics_push_body(pw, i, ct.normal, ct.depth);
+                    }
+                    continue;
+                }
                 Contact ct;
                 if (!physics_collide(&cap, b, &ct)) continue;
                 if (ct.depth > best_depth) {
@@ -86,7 +108,23 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
         } else {
             for (u32 i = 0; i < pw->count; i++) {
                 RigidBody *b = &pw->bodies[i];
-                if (!b->is_static) continue;
+                if (!b->is_static) {
+                    /* R436: dynamic body. Parked tombstones sit at
+                     * (0,-1000,0) with inv_mass 0 — never touch them. */
+                    if (b->inv_mass <= 0.0f || physics_body_is_parked(b)) continue;
+                    Contact ct;
+                    if (!physics_collide(&cap, b, &ct)) continue;
+                    if (-ct.normal.e[1] > cc->slope_limit) {
+                        if (ct.depth > best_depth) {
+                            best_depth = ct.depth;
+                            best_n = ct.normal;
+                            any = true;
+                        }
+                    } else {
+                        physics_push_body(pw, i, ct.normal, ct.depth);
+                    }
+                    continue;
+                }
                 Contact ct;
                 if (!physics_collide(&cap, b, &ct)) continue;
                 if (ct.depth > best_depth) {
