@@ -124,8 +124,12 @@ void taa_resolve(TAASystem *taa, RHICmdBuffer *cmd,
 
     RHITexture hist_tex = taa->first_frame ? current_color : taa->history_fbo[read_idx].color_tex;
     bool use_vel = rhi_handle_valid(velocity_tex);
-    RHITexture tex[4] = { current_color, hist_tex, depth_tex, velocity_tex };
-    rhi_cmd_bind_textures_multi(cmd, tex, use_vel ? 4 : 3, taa->sampler);
+    /* R437: always update all 4 descriptors — the shader statically declares
+       binding 3 (u_taa_velocity), so an unupdated descriptor trips
+       VUID-vkCmdDraw-None-08114 even when u_taa_use_velocity gates it off. */
+    RHITexture vel_tex = use_vel ? velocity_tex : current_color;
+    RHITexture tex[4] = { current_color, hist_tex, depth_tex, vel_tex };
+    rhi_cmd_bind_textures_multi(cmd, tex, 4, taa->sampler);
 
     if (taa->loc_curr_vp >= 0) rhi_cmd_set_uniform_mat4(cmd, taa->loc_curr_vp, curr_vp);
     if (taa->loc_prev_vp >= 0) rhi_cmd_set_uniform_mat4(cmd, taa->loc_prev_vp, prev_vp);

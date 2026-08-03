@@ -13,6 +13,7 @@ CharacterController character_create(Vec3 pos, f32 radius, f32 height) {
     cc.step_height = 0.3f;
     cc.grounded = false;
     cc.jump_requested = false;
+    cc.ground_body = UINT32_MAX;  /* R437: unsupported until first update */
     return cc;
 }
 
@@ -37,10 +38,16 @@ static RigidBody char_capsule(const CharacterController *cc, Vec3 feet) {
 
 /* Push the capsule (feet at `pos`) out of all static geometry. Reports whether
  * a walkable (slope_limit-passing) surface was contacted. Does not touch
- * velocity. */
+ * velocity.
+ * R437: `out_ground_body` (nullable) receives the id of the body whose
+ * walkable contact last supported the capsule, UINT32_MAX when unsupported.
+ * Static supports are recorded too — callers distinguish via
+ * pw->bodies[id].is_static (simpler than a second out-flag). */
 static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
-                               Vec3 pos, bool *out_grounded) {
+                               Vec3 pos, bool *out_grounded,
+                               u32 *out_ground_body) {
     bool grounded = false;
+    u32 ground_body = UINT32_MAX;
     const int MAX_ITERS = 6;
 
     f32 r = cc->radius;
@@ -69,6 +76,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
         RigidBody cap = char_capsule(cc, pos);
         f32 best_depth = 0.0f;
         Vec3 best_n = vec3(0, 0, 0);
+        u32 best_id = UINT32_MAX;  /* R437: body behind the best contact */
         bool any = false;
         if (use_bvh) {
             for (u32 ci = 0; ci < nc; ci++) {
@@ -85,6 +93,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                         if (ct.depth > best_depth) {
                             best_depth = ct.depth;
                             best_n = ct.normal;
+                            best_id = i;  /* R437 */
                             any = true;
                         }
                     } else {
@@ -102,6 +111,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                 if (ct.depth > best_depth) {
                     best_depth = ct.depth;
                     best_n = ct.normal;
+                    best_id = i;  /* R437 */
                     any = true;
                 }
             }
@@ -118,6 +128,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                         if (ct.depth > best_depth) {
                             best_depth = ct.depth;
                             best_n = ct.normal;
+                            best_id = i;  /* R437 */
                             any = true;
                         }
                     } else {
@@ -130,6 +141,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                 if (ct.depth > best_depth) {
                     best_depth = ct.depth;
                     best_n = ct.normal;
+                    best_id = i;  /* R437 */
                     any = true;
                 }
             }
@@ -137,9 +149,13 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
         if (!any) break;
         Vec3 sep = vec3_scale(best_n, -1.0f);
         pos = vec3_add(pos, vec3_scale(sep, best_depth));
-        if (sep.e[1] > cc->slope_limit) grounded = true;
+        if (sep.e[1] > cc->slope_limit) {
+            grounded = true;
+            ground_body = best_id;  /* R437: remember the supporting body */
+        }
     }
     if (out_grounded) *out_grounded = grounded;
+    if (out_ground_body) *out_ground_body = ground_body;
     return pos;
 }
 
@@ -176,12 +192,35 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
 
     Vec3 start = cc->position;
 
-    /* 1) Vertical move (gravity / jump) + landing resolve. */
+    /* R437: platform velocity inheritance. If a dynamic body supported the
+     * character last frame, move with it (all 3 components: horizontal carry
+     * + vertical lift/descent) before integrating this frame's motion; the
+     * resolves below still run afterwards, so a platform shoving the
+     * character into a wall is handled by the horizontal resolve as before.
+     * Gated on the PREVIOUS frame's support on purpose: a descending
+     * platform loses capsule contact within the frame it moves (the
+     * character is left behind in free-fall), so this-frame grounding could
+     * never track it — and a downward carry applied after the vertical
+     * resolve would be undone by the horizontal resolve pushing the capsule
+     * back out of the platform top. Parked tombstones are doubly excluded:
+     * char_slide_resolve never records them as support, and parking sets
+     * is_static, which this check rejects. */
     Vec3 pos = start;
+    if (cc->grounded && cc->ground_body != UINT32_MAX &&
+        !pw->bodies[cc->ground_body].is_static) {
+        pos = vec3_add(pos, vec3_scale(pw->bodies[cc->ground_body].velocity, dt));
+    }
+
+    /* 1) Vertical move (gravity / jump) + landing resolve. */
     pos.e[1] += cc->velocity.e[1] * dt;
     bool grounded_v = false;
-    pos = char_slide_resolve(cc, pw, pos, &grounded_v);
+    u32 ground_body = UINT32_MAX;
+    pos = char_slide_resolve(cc, pw, pos, &grounded_v, &ground_body);
     if (grounded_v && cc->velocity.e[1] < 0.0f) cc->velocity.e[1] = 0.0f;
+    /* R437: record this frame's support for next frame's inheritance.
+     * Static supports are recorded too; the inheritance check above
+     * excludes them via is_static. */
+    cc->ground_body = grounded_v ? ground_body : UINT32_MAX;
 
     /* 2) Horizontal move + wall slide.
      * Compute horiz_len and inv_len together: avoids redundant fast_rsqrt call. */
@@ -191,7 +230,7 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
     f32  horiz_len = horiz_l2 * horiz_inv;
     Vec3 flat_target = vec3_add(pos, horiz);
     bool grounded_h = false;
-    Vec3 flat = char_slide_resolve(cc, pw, flat_target, &grounded_h);
+    Vec3 flat = char_slide_resolve(cc, pw, flat_target, &grounded_h, NULL);
 
     bool grounded = grounded_v || grounded_h;
 
@@ -201,11 +240,11 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
 
         Vec3 up = vec3_add(pos, vec3(0.0f, cc->step_height, 0.0f));
         bool gtmp;
-        up = char_slide_resolve(cc, pw, up, &gtmp);
-        Vec3 stepped = char_slide_resolve(cc, pw, vec3_add(up, horiz), &gtmp);
+        up = char_slide_resolve(cc, pw, up, &gtmp, NULL);
+        Vec3 stepped = char_slide_resolve(cc, pw, vec3_add(up, horiz), &gtmp, NULL);
         bool grounded_d = false;
         Vec3 down = char_slide_resolve(cc, pw,
-            vec3_add(stepped, vec3(0.0f, -cc->step_height, 0.0f)), &grounded_d);
+            vec3_add(stepped, vec3(0.0f, -cc->step_height, 0.0f)), &grounded_d, NULL);
 
         if (grounded_d &&
             horiz_progress(start, down, dir) > horiz_progress(start, flat, dir) + 1e-4f) {

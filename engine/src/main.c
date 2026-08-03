@@ -856,7 +856,12 @@ typedef struct {
     u32       total_index_count;
     bool      valid;
 
-    IndirectDrawSystem mat_systems[MEGA_MAX_MAT_GROUPS];
+    /* R437: single merged system holding ALL groups' cmds (group-sorted).
+     * One compact dispatch per pass replaces the old G per-group
+     * IndirectDrawSystem compacts; execute still loops groups (material
+     * binds), with per-group offsets from group_cmd_offsets. */
+    IndirectDrawSystem group_system;
+    bool      group_system_ready;
     u32       mat_indices[MEGA_MAX_MAT_GROUPS];
     u32       mat_group_count;
     i32       cmd_mat_group[16384];
@@ -942,20 +947,17 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
                                 const u32 *draw_vis,
                                 RHIPipeline restore_pipe) {
     u32 calls = 0u;
-    if (!mb || !mb->valid) return 0u;
-    /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
-    for (u32 g = 0; g < mb->mat_group_count; g++) {
-        u32 gcount = mb->mat_systems[g].current_draw_count;
-        memset(g_vis_flags, 0, gcount * sizeof(u32));
-        u32 start = mb->group_cmd_offsets[g];
-        u32 end   = mb->group_cmd_offsets[g + 1];
-        for (u32 gi = 0; gi < end - start; gi++) {
-            u32 ci = mb->group_cmd_list[start + gi];
-            g_vis_flags[gi] = draw_vis ? draw_vis[ci] : 1u;
-        }
-        indirect_draw_upload_visibility(&mb->mat_systems[g], render->device, g_vis_flags, gcount);
-        indirect_draw_compact_no_barrier(&mb->mat_systems[g], render->device, cmd);
+    if (!mb || !mb->valid || !mb->group_system_ready) return 0u;
+    /* R437: ONE merged compact for all groups (was G per-group compacts).
+     * Visibility is uploaded in group-sorted order, matching the grouped cmd
+     * upload at bake time. R76-3's single-barrier batching is preserved —
+     * trivially, since there is only one compact left. */
+    u32 total = mb->group_cmd_offsets[mb->mat_group_count];
+    for (u32 ci = 0; ci < total; ci++) {
+        g_vis_flags[ci] = draw_vis ? draw_vis[mb->group_cmd_list[ci]] : 1u;
     }
+    indirect_draw_upload_visibility(&mb->group_system, render->device, g_vis_flags, total);
+    indirect_draw_compact_no_barrier(&mb->group_system, render->device, cmd);
     rhi_cmd_memory_barrier(cmd);
     /* R234-A: GL compute glUseProgram replaces the graphics program; bind_material
      * only binds textures. Rebind before indirect execute (VK cache hit is cheap). */
@@ -965,7 +967,7 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
         u32 mat_idx = mb->mat_indices[g];
         Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
         bind_material(cmd, render, mat, scene);
-        indirect_draw_execute(&mb->mat_systems[g], render->device);
+        indirect_draw_execute_group(&mb->group_system, render->device, g);
         calls++;
     }
     return calls;
@@ -1231,6 +1233,11 @@ int main(int argc, char **argv) {
                                               "assets/LiberationSans-Regular.ttf", 18.0f);
     if (imui_font_ready) imui_init(&imui_ctx, &imui_font);
     bool imui_visible = false;
+    /* R437: collapsing-header open state for the settings panel groups.
+     * Caller-owned (the widgets take a bool*), so it lives here next to
+     * imui_visible and persists across frames. */
+    bool imui_sec_general = true;
+    bool imui_sec_quality = true;
 
     HotReloadPipeline hotreload = {0};
 #ifdef ENGINE_VULKAN
@@ -2003,22 +2010,32 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     }
                 }
 
-                /* Create per-material IndirectDrawSystems (single pre-alloc scratch buffer) */
+                /* R437: ONE merged IndirectDrawSystem for all material groups.
+                 * Cmds are uploaded in group_cmd_list (group-sorted) order with
+                 * per-group sizes; group_cmd_offsets doubles as the capacity
+                 * interval layout the compact shader scatters into. Replaces
+                 * the old per-group systems (G compacts -> 1 per pass). */
                 DrawIndexedIndirectCmd *gcmds_scratch = malloc((usize)mesh_cmd_count * sizeof(DrawIndexedIndirectCmd));
                 if (!gcmds_scratch) { LOG_FATAL("OOM gcmds_scratch"); free(mega_block); return 1; }
-                for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                    u32 gcount = mega_buf.group_cmd_offsets[g + 1] - mega_buf.group_cmd_offsets[g];
-                    if (gcount == 0) continue;
-
-                    u32 gi = 0;
-                    for (u32 ci = mega_buf.group_cmd_offsets[g]; ci < mega_buf.group_cmd_offsets[g + 1]; ci++)
-                        gcmds_scratch[gi++] = cmds[mega_buf.group_cmd_list[ci]];
+                {
+                    u32 group_sizes[MEGA_MAX_MAT_GROUPS] = {0};
+                    for (u32 g = 0; g < mega_buf.mat_group_count; g++)
+                        group_sizes[g] = mega_buf.group_cmd_offsets[g + 1] - mega_buf.group_cmd_offsets[g];
+                    u32 total_grouped = mega_buf.group_cmd_offsets[mega_buf.mat_group_count];
+                    for (u32 ci = 0; ci < total_grouped; ci++)
+                        gcmds_scratch[ci] = cmds[mega_buf.group_cmd_list[ci]];
                     /* R357: skip upload when init fails — avoid silent empty mat batches. */
-                    if (!indirect_draw_init(&mega_buf.mat_systems[g], render.device, gcount)) {
-                        LOG_WARN("MegaBuffer: mat group %u indirect init failed", g);
-                        continue;
+                    mega_buf.group_system_ready =
+                        mega_buf.mat_group_count > 0 && total_grouped > 0 &&
+                        indirect_draw_init_grouped(&mega_buf.group_system, render.device,
+                                                   total_grouped, mega_buf.mat_group_count);
+                    if (mega_buf.group_system_ready) {
+                        indirect_draw_upload_grouped(&mega_buf.group_system, render.device,
+                                                     gcmds_scratch, group_sizes,
+                                                     mega_buf.mat_group_count);
+                    } else {
+                        LOG_WARN("MegaBuffer: merged group indirect init failed");
                     }
-                    indirect_draw_upload(&mega_buf.mat_systems[g], render.device, gcmds_scratch, gcount);
                 }
                 free(gcmds_scratch);
 
@@ -2099,20 +2116,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                          unified_udc_buf, unified_uobj_buf);
 
             if (mega_buf.mat_group_count > 0u && gpucull_sys.unified_ready) {
-                /* R357: only auto-enable unified paths when every non-empty mat
-                 * group's IndirectDrawSystem is ready (partial init → silent miss). */
-                bool all_mat_ready = true;
-                for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                    u32 gcount = mega_buf.group_cmd_offsets[g + 1] - mega_buf.group_cmd_offsets[g];
-                    if (gcount == 0) continue;
-                    if (!mega_buf.mat_systems[g].ready) { all_mat_ready = false; break; }
-                }
-                if (all_mat_ready) {
+                /* R357: only auto-enable unified paths when the merged mat-group
+                 * IndirectDrawSystem is ready (R437: single system, was per-group). */
+                if (mega_buf.group_system_ready) {
                     unified_shadow_enabled = true;
                     unified_forward_enabled = true;
                     unified_deferred_enabled = true;
                 } else {
-                    LOG_WARN("Unified mega paths disabled: not all mat-group indirect systems ready");
+                    LOG_WARN("Unified mega paths disabled: merged mat-group indirect system not ready");
                 }
             }
 
@@ -5440,22 +5451,18 @@ u32 culled_count = 0;
                         task_wait(tasks);
                     }
 
-                    /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
-                    for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                        u32 gcount = mega_buf.mat_systems[g].current_draw_count;
-                        memset(g_vis_flags, 0, gcount * sizeof(u32));
-                        /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
-                        u32 start = mega_buf.group_cmd_offsets[g];
-                        u32 end   = mega_buf.group_cmd_offsets[g + 1];
-                        for (u32 gi = 0; gi < end - start; gi++) {
-                            u32 ci = mega_buf.group_cmd_list[start + gi];
-                            u32 ni = mega_buf.cmd_node_index[ci];
+                    /* R437: ONE merged compact for all groups (was G per-group
+                     * compacts batched under R76-3's single barrier). */
+                    if (mega_buf.group_system_ready) {
+                        u32 total = mega_buf.group_cmd_offsets[mega_buf.mat_group_count];
+                        for (u32 ci = 0; ci < total; ci++) {
+                            u32 ni = mega_buf.cmd_node_index[mega_buf.group_cmd_list[ci]];
                             /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
-                            g_vis_flags[gi] = (ni < 16384) ? g_node_vis[ni] : 1;
-                            if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
+                            g_vis_flags[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
+                            if (!node_occ_visible(ni)) g_vis_flags[ci] = 0;
                         }
-                        indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
-                        indirect_draw_compact_no_barrier(&mega_buf.mat_systems[g], render.device, cmd);
+                        indirect_draw_upload_visibility(&mega_buf.group_system, render.device, g_vis_flags, total);
+                        indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
                     }
                     rhi_cmd_memory_barrier(cmd);
                     /* R234-A: restore graphics pipeline after compact compute. */
@@ -5465,7 +5472,8 @@ u32 culled_count = 0;
                         u32 mat_idx = mega_buf.mat_indices[g];
                         Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
                         bind_material(cmd, &render, mat, &scene);
-                        indirect_draw_execute(&mega_buf.mat_systems[g], render.device);
+                        if (mega_buf.group_system_ready)
+                            indirect_draw_execute_group(&mega_buf.group_system, render.device, g);
                         draw_calls++;
                     }
                     draw_bench_add(mega_buf.mat_group_count,
@@ -5686,23 +5694,19 @@ u32 culled_count = 0;
                     task_wait(tasks);
                 }
 
-                /* R76-3: Batch all compacts before a single barrier — reduces G barriers to 1. */
-                for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-                    /* Build visibility for this material group's draw cmds */
-                    u32 gcount = mega_buf.mat_systems[g].current_draw_count;
-                    memset(g_vis_flags, 0, gcount * sizeof(u32));
+                /* R437: ONE merged compact for all groups (was G per-group
+                 * compacts batched under R76-3's single barrier). */
+                if (mega_buf.group_system_ready) {
+                    u32 total = mega_buf.group_cmd_offsets[mega_buf.mat_group_count];
                     /* R75-2: Use pre-built inverse index — O(N) total, not O(N×G). */
-                    u32 start = mega_buf.group_cmd_offsets[g];
-                    u32 end   = mega_buf.group_cmd_offsets[g + 1];
-                    for (u32 gi = 0; gi < end - start; gi++) {
-                        u32 ci = mega_buf.group_cmd_list[start + gi];
-                        u32 ni = mega_buf.cmd_node_index[ci];
+                    for (u32 ci = 0; ci < total; ci++) {
+                        u32 ni = mega_buf.cmd_node_index[mega_buf.group_cmd_list[ci]];
                         /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
-                        g_vis_flags[gi] = (ni < 16384) ? g_node_vis[ni] : 1;
-                        if (!node_occ_visible(ni)) g_vis_flags[gi] = 0;
+                        g_vis_flags[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
+                        if (!node_occ_visible(ni)) g_vis_flags[ci] = 0;
                     }
-                    indirect_draw_upload_visibility(&mega_buf.mat_systems[g], render.device, g_vis_flags, gcount);
-                    indirect_draw_compact_no_barrier(&mega_buf.mat_systems[g], render.device, cmd);
+                    indirect_draw_upload_visibility(&mega_buf.group_system, render.device, g_vis_flags, total);
+                    indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
                 }
                 rhi_cmd_memory_barrier(cmd);
                 /* R234-A: restore gbuffer pipeline after compact compute. */
@@ -5712,7 +5716,8 @@ u32 culled_count = 0;
                     u32 mat_idx = mega_buf.mat_indices[g];
                     Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
                     bind_material(cmd, &render, mat, &scene);
-                    indirect_draw_execute(&mega_buf.mat_systems[g], render.device);
+                    if (mega_buf.group_system_ready)
+                        indirect_draw_execute_group(&mega_buf.group_system, render.device, g);
                     draw_calls++;
                 }
                 draw_bench_add(mega_buf.mat_group_count,
@@ -5799,6 +5804,12 @@ u32 culled_count = 0;
             draw_bench_sample_gpu(mega_gpu);
             draw_bench_record_frame((u32)engine.frame_count, mega_gpu);
         }
+        /* R437: per-frame compact dispatch observability — the merged
+         * per-material path must cost exactly 1 compact per executed pass
+         * (was G per pass before the merge). */
+        LOG_DEBUG("R437: compact dispatches this frame: %u (mat groups: %u)",
+                  indirect_draw_debug_compact_count(), mega_buf.mat_group_count);
+        indirect_draw_debug_reset_compact_count();
 
         /* R236 (CORRECTNESS): On the deferred path scene_fbo.depth is never
          * written — the forward scene pass is skipped (guarded above) and the
@@ -6124,13 +6135,34 @@ u32 culled_count = 0;
             InputState *imin = platform_input(engine.platform);
             bool mdown = input_key_down(imin, INPUT_MOUSE_LEFT);
             imui_begin(&imui_ctx, (f32)w, (f32)h, imin->mouse_x, imin->mouse_y, mdown);
-            imui_panel(&imui_ctx, 16.0f, 96.0f, 260.0f, 8.0f + 5.0f * imui_ctx.row_h);
+            /* R437: rows = label + 2 headers + visible group contents. Height
+             * uses the open flags from before this frame's widgets run — a
+             * click that folds a group resizes the backdrop next frame. */
+            f32 rows = 3.0f
+                     + (imui_sec_general ? 4.0f : 0.0f)
+                     + (imui_sec_quality ? 3.0f : 0.0f);
+            imui_panel(&imui_ctx, 16.0f, 96.0f, 260.0f, 8.0f + rows * imui_ctx.row_h);
             imui_label(&imui_ctx, "Settings  (` to close)");
-            if (imui_checkbox(&imui_ctx, 1, "VSync", &vsync_on))
-                rhi_set_vsync(render.device, vsync_on);
-            imui_checkbox(&imui_ctx, 2, "Wireframe", &wireframe_mode);
-            imui_slider_float(&imui_ctx, 3, "Sun azimuth", &sun_azimuth, 0.0f, 6.2831853f);
-            imui_slider_float(&imui_ctx, 4, "Sun elevation", &sun_elevation, -1.4f, 1.4f);
+            /* R437: settings grouped under collapsing headers. */
+            if (imui_collapsing_header(&imui_ctx, 10, "General", &imui_sec_general)) {
+                if (imui_checkbox(&imui_ctx, 1, "VSync", &vsync_on))
+                    rhi_set_vsync(render.device, vsync_on);
+                imui_checkbox(&imui_ctx, 2, "Wireframe", &wireframe_mode);
+                imui_slider_float(&imui_ctx, 3, "Sun azimuth", &sun_azimuth, 0.0f, 6.2831853f);
+                imui_slider_float(&imui_ctx, 4, "Sun elevation", &sun_elevation, -1.4f, 1.4f);
+            }
+            if (imui_collapsing_header(&imui_ctx, 11, "Quality", &imui_sec_quality)) {
+                /* R437: FXAA quality as a radio group bound to fxaa_preset
+                 * (same mapping as the F6 key cycler above). */
+                bool fxaa_changed = false;
+                fxaa_changed |= imui_radio(&imui_ctx, 12, "FXAA low",    &fxaa_preset, 0);
+                fxaa_changed |= imui_radio(&imui_ctx, 13, "FXAA medium", &fxaa_preset, 1);
+                fxaa_changed |= imui_radio(&imui_ctx, 14, "FXAA high",   &fxaa_preset, 2);
+                if (fxaa_changed) {
+                    const float thresholds[] = { 0.0832f, 0.0312f, 0.0125f };
+                    fxaa_sys.threshold = thresholds[fxaa_preset];
+                }
+            }
             imui_end(&imui_ctx, cmd);
         } else if (imui_font_ready) {
             /* R285 (CORRECTNESS): while the panel is hidden, imui_begin/end don't
@@ -6205,9 +6237,9 @@ u32 culled_count = 0;
         occlusion_cull_shutdown(&occ_sys);
         indirect_draw_destroy(&indirect_sys, render.device);
         gpucull_shutdown(&gpucull_sys);
-        for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
-            indirect_draw_destroy(&mega_buf.mat_systems[g], render.device);
-        }
+        /* R437: single merged group system (was G per-group systems). */
+        if (mega_buf.group_system_ready)
+            indirect_draw_destroy(&mega_buf.group_system, render.device);
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);

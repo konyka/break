@@ -240,6 +240,239 @@ TEST(imui_hidden_reset_no_stale_click)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R437: collapsing header + radio button                                   */
+/* ----------------------------------------------------------------------- */
+
+TEST(imui_toggle_logic_click_flips)
+{
+    bool open = false;
+
+    /* no click -> state and return unchanged */
+    ASSERT_FALSE(imui_toggle_logic(false, &open));
+    ASSERT_FALSE(open);
+
+    /* click -> flips and reports the new state */
+    ASSERT_TRUE(imui_toggle_logic(true, &open));
+    ASSERT_TRUE(open);
+
+    /* held/no-click frames keep the state */
+    ASSERT_TRUE(imui_toggle_logic(false, &open));
+    ASSERT_TRUE(open);
+
+    /* second click flips back */
+    ASSERT_FALSE(imui_toggle_logic(true, &open));
+    ASSERT_FALSE(open);
+
+    /* NULL open pointer is a safe no-op reporting "collapsed" */
+    ASSERT_FALSE(imui_toggle_logic(true, NULL));
+    ASSERT_FALSE(imui_toggle_logic(false, NULL));
+}
+
+TEST(imui_radio_logic_writes_option)
+{
+    i32 value = 0;
+
+    /* no click -> value untouched, selected reflects current value */
+    ASSERT_TRUE(imui_radio_logic(false, &value, 0));
+    ASSERT_FALSE(imui_radio_logic(false, &value, 2));
+    ASSERT_EQ(value, 0);
+
+    /* click -> writes the option */
+    ASSERT_TRUE(imui_radio_logic(true, &value, 2));
+    ASSERT_EQ(value, 2);
+
+    /* repeated click on the same option is idempotent */
+    ASSERT_TRUE(imui_radio_logic(true, &value, 2));
+    ASSERT_EQ(value, 2);
+
+    /* selecting another option overwrites */
+    ASSERT_TRUE(imui_radio_logic(true, &value, 1));
+    ASSERT_EQ(value, 1);
+
+    /* NULL value pointer is a safe no-op */
+    ASSERT_FALSE(imui_radio_logic(true, NULL, 3));
+    ASSERT_EQ(value, 1);
+}
+
+/* Drive a headless frame the way the widgets do: the test links no imgui.c
+ * (it would drag in the GPU font renderer), so we replicate each widget's
+ * exact call sequence — hit test, imui_press_logic, then the R437 helper —
+ * against the ImUI state fields directly, matching the imui_press_* tests. */
+static void r437_begin(ImUI *ui, f32 mx, f32 my, bool down)
+{
+    ui->mouse_x = mx;
+    ui->mouse_y = my;
+    ui->mouse_down = down;
+    ui->hot_id = 0;
+}
+static void r437_end(ImUI *ui) { ui->mouse_prev_down = ui->mouse_down; }
+
+/* Row geometry mirrors imgui.c: panel pad 6, row_h 22, widget height 18. */
+#define R437_ROW_Y(row) (6.0f + (f32)(row) * 22.0f)
+#define R437_ROW_H 18.0f
+
+/* exact logic of imui_collapsing_header (imgui.c) minus rendering */
+static bool r437_header(ImUI *ui, u32 id, int row, bool *open)
+{
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, R437_ROW_H);
+    bool clicked = imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
+                                    &ui->hot_id, &ui->active_id);
+    return imui_toggle_logic(clicked, open);
+}
+
+/* exact logic of imui_radio (imgui.c) minus rendering */
+static bool r437_radio(ImUI *ui, u32 id, int row, i32 *value, i32 option)
+{
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, 14.0f);
+    bool clicked = imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
+                                    &ui->hot_id, &ui->active_id);
+    imui_radio_logic(clicked, value, option);
+    return clicked;
+}
+
+/* exact logic of imui_button (imgui.c) minus rendering */
+static bool r437_button(ImUI *ui, u32 id, int row)
+{
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, R437_ROW_H);
+    return imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
+                            &ui->hot_id, &ui->active_id);
+}
+
+#define R437_MID(row) (R437_ROW_Y(row) + 4.0f) /* a point inside the row */
+
+TEST(imui_collapsing_header_click_toggles)
+{
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    bool open = false;
+
+    /* hover + press down over the header (row 0) */
+    r437_begin(&ui, 10.0f, R437_MID(0), false);
+    ASSERT_FALSE(r437_header(&ui, 1, 0, &open));
+    r437_end(&ui);
+    r437_begin(&ui, 10.0f, R437_MID(0), true);
+    ASSERT_FALSE(r437_header(&ui, 1, 0, &open));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 1u);
+    ASSERT_FALSE(open);
+
+    /* release over it -> click -> opens */
+    r437_begin(&ui, 10.0f, R437_MID(0), false);
+    ASSERT_TRUE(r437_header(&ui, 1, 0, &open));
+    r437_end(&ui);
+    ASSERT_TRUE(open);
+    ASSERT_EQ(ui.active_id, 0u);
+
+    /* full second click collapses again */
+    r437_begin(&ui, 10.0f, R437_MID(0), true);
+    r437_header(&ui, 1, 0, &open);
+    r437_end(&ui);
+    r437_begin(&ui, 10.0f, R437_MID(0), false);
+    ASSERT_FALSE(r437_header(&ui, 1, 0, &open));
+    r437_end(&ui);
+    ASSERT_FALSE(open);
+}
+
+TEST(imui_radio_widget_selects_option)
+{
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    i32 value = 0;
+
+    /* click the second radio (row 1, option 1) */
+    r437_begin(&ui, 10.0f, R437_MID(1), true);
+    r437_radio(&ui, 10, 0, &value, 0);
+    bool c1 = r437_radio(&ui, 11, 1, &value, 1);
+    r437_end(&ui);
+    ASSERT_FALSE(c1);
+    ASSERT_EQ(ui.active_id, 11u);
+
+    r437_begin(&ui, 10.0f, R437_MID(1), false);
+    r437_radio(&ui, 10, 0, &value, 0);
+    c1 = r437_radio(&ui, 11, 1, &value, 1);
+    r437_end(&ui);
+    ASSERT_TRUE(c1);
+    ASSERT_EQ(value, 1);
+
+    /* NULL value pointer: widget still reports the click, nothing written */
+    r437_begin(&ui, 10.0f, R437_MID(0), true);
+    r437_radio(&ui, 10, 0, NULL, 0);
+    r437_end(&ui);
+    r437_begin(&ui, 10.0f, R437_MID(0), false);
+    ASSERT_TRUE(r437_radio(&ui, 10, 0, NULL, 0));
+    r437_end(&ui);
+    ASSERT_EQ(value, 1);
+}
+
+TEST(imui_header_radio_button_no_crosstalk)
+{
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    bool open = false;
+    i32 value = 0;
+
+    /* press on the header (row 0) */
+    r437_begin(&ui, 10.0f, R437_MID(0), true);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    r437_button(&ui, 3, 2);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 1u);
+
+    /* drag onto the radio (row 1) while holding: radio must not steal active */
+    r437_begin(&ui, 10.0f, R437_MID(1), true);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    r437_button(&ui, 3, 2);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 1u);
+    ASSERT_EQ(ui.hot_id, 2u);
+    ASSERT_EQ(value, 0);
+
+    /* release over the radio: header press dies outside, radio not clicked */
+    r437_begin(&ui, 10.0f, R437_MID(1), false);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    r437_button(&ui, 3, 2);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_FALSE(open);
+    ASSERT_EQ(value, 0);
+
+    /* a fresh full click on the radio selects its option */
+    r437_begin(&ui, 10.0f, R437_MID(1), true);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    r437_button(&ui, 3, 2);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 2u);
+    r437_begin(&ui, 10.0f, R437_MID(1), false);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    r437_button(&ui, 3, 2);
+    r437_end(&ui);
+    ASSERT_EQ(value, 7);
+    ASSERT_FALSE(open);
+
+    /* press the button (row 2), drag outside all rows, release: no click,
+     * and neither the header state nor the radio value is disturbed */
+    r437_begin(&ui, 10.0f, R437_MID(2), true);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    r437_button(&ui, 3, 2);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 3u);
+    r437_begin(&ui, 10.0f, 300.0f, false);
+    r437_header(&ui, 1, 0, &open);
+    r437_radio(&ui, 2, 1, &value, 7);
+    ASSERT_FALSE(r437_button(&ui, 3, 2));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_EQ(value, 7);
+    ASSERT_FALSE(open);
+}
+
+/* ----------------------------------------------------------------------- */
 /*  Main                                                                    */
 /* ----------------------------------------------------------------------- */
 
@@ -262,4 +495,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(imui_press_started_outside_no_click);
     RUN_TEST(imui_press_ids_independent);
     RUN_TEST(imui_hidden_reset_no_stale_click);
+    RUN_TEST(imui_toggle_logic_click_flips);
+    RUN_TEST(imui_radio_logic_writes_option);
+    RUN_TEST(imui_collapsing_header_click_toggles);
+    RUN_TEST(imui_radio_widget_selects_option);
+    RUN_TEST(imui_header_radio_button_no_crosstalk);
 TEST_MAIN_END()

@@ -95,6 +95,22 @@ static inline void imui_reset_input(ImUI *ui, bool mouse_down) {
     ui->mouse_prev_down = mouse_down;
 }
 
+/* R437: collapsing-header toggle. Flips *open on a completed click; a NULL
+ * open pointer is a safe no-op. Returns the (possibly new) open state so the
+ * caller can skip collapsed content. */
+static inline bool imui_toggle_logic(bool clicked, bool *open) {
+    if (clicked && open) *open = !*open;
+    return open && *open;
+}
+
+/* R437: radio-button write. Stores `option` into *value on a completed click
+ * (idempotent for repeated clicks); a NULL value pointer is a safe no-op.
+ * Returns true when `option` is the currently selected one. */
+static inline bool imui_radio_logic(bool clicked, i32 *value, i32 option) {
+    if (clicked && value) *value = option;
+    return value && *value == option;
+}
+
 /* ---- context lifecycle ------------------------------------------------ */
 
 void imui_init(ImUI *ui, FontRenderer *font);
@@ -117,3 +133,10 @@ bool imui_button(ImUI *ui, u32 id, const char *label);
 bool imui_checkbox(ImUI *ui, u32 id, const char *label, bool *value);
 bool imui_slider_float(ImUI *ui, u32 id, const char *label,
                        f32 *value, f32 minv, f32 maxv);
+/* R437: collapsing header — click toggles *open (caller-owned storage, same
+ * semantics as the checkbox value). Returns the open state so the caller can
+ * skip the group's content when collapsed. NULL open renders collapsed. */
+bool imui_collapsing_header(ImUI *ui, u32 id, const char *label, bool *open);
+/* R437: radio button — click stores `option` into *value; renders the
+ * selected state from *value == option. Returns true on a completed click. */
+bool imui_radio(ImUI *ui, u32 id, const char *label, i32 *value, i32 option);

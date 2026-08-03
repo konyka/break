@@ -175,8 +175,12 @@ void combined_aa_apply(CombinedAA *caa, RHICmdBuffer *cmd,
         bool use_vel = rhi_handle_valid(velocity_tex);
         RHITexture hist_tex = caa->first_frame ? current_color
                                                : caa->history_fbo[read_idx].color_tex;
-        RHITexture tex[4] = { current_color, hist_tex, depth_tex, velocity_tex };
-        rhi_cmd_bind_textures_multi(cmd, tex, use_vel ? 4 : 3, caa->sampler);
+        /* R437: always update all 4 descriptors — the shader statically declares
+           binding 3 (u_taa_velocity), so an unupdated descriptor trips
+           VUID-vkCmdDraw-None-08114 even when u_taa_use_velocity gates it off. */
+        RHITexture vel_tex = use_vel ? velocity_tex : current_color;
+        RHITexture tex[4] = { current_color, hist_tex, depth_tex, vel_tex };
+        rhi_cmd_bind_textures_multi(cmd, tex, 4, caa->sampler);
 
         /* Set all uniforms in batch */
         if (caa->loc_curr_vp >= 0 && curr_vp)

@@ -12,6 +12,10 @@ typedef struct {
     f32   step_height;
     bool  grounded;
     bool  jump_requested;
+    /* R437: body that supported the character in the last character_update
+     * vertical resolve (static supports reported too — check
+     * pw->bodies[ground_body].is_static), UINT32_MAX when unsupported. */
+    u32   ground_body;
 } CharacterController;
 
 CharacterController character_create(Vec3 pos, f32 radius, f32 height);

@@ -9,9 +9,19 @@ layout(local_size_x = 64) in;
  * Reads:
  *   - all_draws       : N DrawIndexedIndirectCommand entries (5 * uint32 each)
  *   - visibility      : N visibility flags (1 = visible, 0 = culled)
+ *   - mat_ids         : N per-cmd material group indices (R437)
+ *   - group_bases     : N per-cmd group capacity base slots (R437)
  * Writes:
- *   - visible_draws   : visible commands appended at slots [0 .. count-1]
+ *   - visible_draws   : visible cmds scattered into their group's capacity
+ *                       interval [base, base+count) (R437)
  *   - draw_count.count: total number of visible draws (atomic counter)
+ *   - group_counts    : per-group visible counts / scatter cursors (R437)
+ *
+ * R437: groups are scattered into CPU-known capacity intervals (prefix sums
+ * of group sizes), not packed by visible-count prefix sums — the per-group
+ * execute consumes the cmd-buffer offset as a CPU-side value, so a GPU-side
+ * packing prefix would require a readback stall. A single dispatch covers
+ * all material groups (was: one dispatch per group).
  *
  * The single shader file targets both Vulkan (push_constant) and OpenGL
  * (regular uniform) - shaderc auto-defines VULKAN when compiling for Vulkan.
@@ -33,6 +43,18 @@ layout(std430, binding = 3) buffer DrawCount {
     uint count;
 } draw_count;
 
+layout(std430, binding = 4) readonly buffer MatIds {
+    uint mat[];
+} mat_ids;
+
+layout(std430, binding = 5) buffer GroupCounts {
+    uint counts[];
+} group_counts;
+
+layout(std430, binding = 6) readonly buffer GroupBases {
+    uint base[];
+} group_bases;
+
 #ifdef VULKAN
 layout(push_constant) uniform PushConstants {
     uint total_draws;
@@ -48,7 +70,12 @@ void main() {
     if (idx >= TOTAL_DRAWS) return;
 
     if (visibility.flags[idx] != 0u) {
-        uint slot = atomicAdd(draw_count.count, 1u);
+        /* R437: intra-group slot via the group's atomic cursor; the old value
+         * doubles as this group's running visible count. Ungrouped uploads
+         * have mat=0/base=0, reducing to the legacy global append. */
+        uint g = mat_ids.mat[idx];
+        uint slot = group_bases.base[idx] + atomicAdd(group_counts.counts[g], 1u);
+        atomicAdd(draw_count.count, 1u);
         uint src_offset = idx  * 5u;
         uint dst_offset = slot * 5u;
         /* Copy DrawIndexedIndirectCommand: index_count, instance_count,

@@ -168,3 +168,73 @@ bool imui_slider_float(ImUI *ui, u32 id, const char *label,
     ui->widget_count++;
     return changed;
 }
+
+/* R437: draw a small open/closed triangle marker with rects. The font atlas
+ * (font.c FONT_RANGES) only bakes 0x20-0x7E and 0xA0-0xFF, so the ▶/▼ text
+ * glyphs (U+25B6/U+25BC) would fall back to '?' — vector it instead. */
+static void im_fold_marker(ImUI *ui, f32 x, f32 y, bool open) {
+    const f32 r = 0.85f, g = 0.88f, b = 0.95f;
+    if (open) { /* ▼ pointing down */
+        im_rect(ui, x,     y,     8.0f, 2.0f, r, g, b, 1.0f);
+        im_rect(ui, x + 2, y + 2, 4.0f, 2.0f, r, g, b, 1.0f);
+        im_rect(ui, x + 3, y + 4, 2.0f, 2.0f, r, g, b, 1.0f);
+    } else {    /* ▶ pointing right */
+        im_rect(ui, x,     y,     2.0f, 8.0f, r, g, b, 1.0f);
+        im_rect(ui, x + 2, y + 2, 2.0f, 4.0f, r, g, b, 1.0f);
+        im_rect(ui, x + 4, y + 3, 2.0f, 2.0f, r, g, b, 1.0f);
+    }
+}
+
+/* R437: collapsing header — full-width row with a fold triangle marker.
+ * Interaction reuses imui_press_logic (identical hot/active semantics as
+ * button) and the toggle itself is imui_toggle_logic; returns the open
+ * state so the caller can skip collapsed content. */
+bool imui_collapsing_header(ImUI *ui, u32 id, const char *label, bool *open) {
+    f32 x = ui->origin_x + ui->pad;
+    f32 y = ui->cursor_y;
+    f32 w = ui->panel_w - ui->pad * 2.0f;
+    f32 h = ui->row_h - 4.0f;
+
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, x, y, w, h);
+    bool clicked = imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
+                                    &ui->hot_id, &ui->active_id);
+    bool is_open = imui_toggle_logic(clicked, open);
+
+    f32 r = 0.16f, g = 0.17f, b = 0.20f;
+    if (ui->active_id == id)      { r = 0.14f; g = 0.30f; b = 0.48f; }
+    else if (ui->hot_id == id)    { r = 0.24f; g = 0.26f; b = 0.32f; }
+
+    im_rect(ui, x, y, w, h, r, g, b, 1.0f);
+    im_fold_marker(ui, x + 5.0f, y + (h - 8.0f) * 0.5f, is_open);
+    im_text(ui, x + 20.0f, y + 2.0f, label, 0.95f, 0.95f, 0.95f, 1.0f);
+
+    ui->cursor_y += ui->row_h;
+    ui->widget_count++;
+    return is_open;
+}
+
+/* R437: radio button — checkbox-style square with a filled dot when
+ * *value == option. Interaction reuses imui_press_logic; the option write is
+ * imui_radio_logic. Returns true on a completed click. */
+bool imui_radio(ImUI *ui, u32 id, const char *label, i32 *value, i32 option) {
+    f32 x = ui->origin_x + ui->pad;
+    f32 y = ui->cursor_y;
+    f32 box = ui->row_h - 8.0f;
+
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, x, y, ui->panel_w - ui->pad * 2.0f, box);
+    bool clicked = imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
+                                    &ui->hot_id, &ui->active_id);
+    bool selected = imui_radio_logic(clicked, value, option);
+
+    f32 r = 0.20f, g = 0.22f, b = 0.26f;
+    if (ui->hot_id == id) { r = 0.28f; g = 0.30f; b = 0.36f; }
+    im_rect(ui, x, y, box, box, r, g, b, 1.0f);
+    if (selected)
+        im_rect(ui, x + 3.0f, y + 3.0f, box - 6.0f, box - 6.0f, 0.30f, 0.72f, 0.95f, 1.0f);
+
+    im_text(ui, x + box + 6.0f, y + 1.0f, label, 0.9f, 0.9f, 0.9f, 1.0f);
+
+    ui->cursor_y += ui->row_h;
+    ui->widget_count++;
+    return clicked;
+}

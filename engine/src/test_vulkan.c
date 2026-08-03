@@ -7,6 +7,7 @@
 #include <renderer/combined_post_process.h>
 #include <renderer/gpucull.h>
 #include <renderer/ibl.h>
+#include <renderer/indirect_draw.h> /* R437: TEST 10 grouped compact gate */
 #include <renderer/occlusion_cull.h> /* R436: TEST 9 Hi-Z occlusion assertions */
 #include <asset/asset.h>
 #include <ecs/ecs.h>
@@ -1237,13 +1238,128 @@ int main(int argc, char **argv) {
         LOG_ERROR("RESULT: UNIFIED GPU CULL TEST FAILED");
     }
 
+    /* ---- TEST 10: R437 grouped indirect_draw compact gate ---- */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST 10: INDIRECT DRAW GROUPED COMPACT");
+    LOG_INFO("============================================");
+
+    bool idraw_pass = false;
+#ifdef ENGINE_VULKAN
+    {
+        /* R437: regression gate for the merged per-material compact. 3 material
+         * groups {3,3,2} = 8 cmds with mixed visibility; a single merged compact
+         * must (a) report per-group visible counts {2,2,1} + total 5,
+         * (b) scatter each group's visible cmds inside its CPU-known capacity
+         * interval, (c) keep surplus slots zeroed (R234-B fallback safety),
+         * (d) cost exactly 1 compact dispatch per frame for all groups. */
+        IndirectDrawSystem ids;
+        if (indirect_draw_init_grouped(&ids, render.device, 8, 3)) {
+            DrawIndexedIndirectCmd cmds[8];
+            for (u32 i = 0; i < 8; i++) {
+                cmds[i].index_count    = 3;
+                cmds[i].instance_count = 1;
+                cmds[i].first_index    = 0;
+                cmds[i].vertex_offset  = 0;
+                cmds[i].first_instance = 100u + i; /* marker identifying the cmd */
+            }
+            const u32 gsizes[3] = {3u, 3u, 2u};
+            indirect_draw_upload_grouped(&ids, render.device, cmds, gsizes, 3);
+            /* group-sorted visibility: g0 {1,0,1} g1 {1,1,0} g2 {0,1} */
+            const u32 vis[8] = {1u, 0u, 1u,  1u, 1u, 0u,  0u, 1u};
+
+            indirect_draw_debug_reset_compact_count();
+            u32 frames_ok = 0;
+            for (u32 f = 0; f < 3; f++) {
+                RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                if (!cmd) break;
+                rhi_cmd_end_render_pass(cmd);
+                indirect_draw_upload_visibility(&ids, render.device, vis, 8);
+                indirect_draw_compact_no_barrier(&ids, render.device, cmd);
+                rhi_cmd_memory_barrier(cmd);
+                rhi_frame_end(render.device);
+                rhi_present(render.device);
+                frames_ok++;
+            }
+            u32 dispatches = indirect_draw_debug_compact_count();
+
+            u32 counts[3] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+            u32 total = 0xFFFFFFFFu;
+            DrawIndexedIndirectCmd out[8];
+            memset(out, 0xFF, sizeof(out));
+            bool rd_ok =
+                rhi_buffer_read(render.device, ids.group_counts_buf, counts, 0, sizeof(counts)) &&
+                rhi_buffer_read(render.device, ids.draw_count_buf, &total, 0, sizeof(u32)) &&
+                rhi_buffer_read(render.device, ids.visible_draws_buf, out, 0, sizeof(out));
+
+            bool counts_ok = rd_ok && counts[0] == 2u && counts[1] == 2u &&
+                             counts[2] == 1u && total == 5u;
+            if (!counts_ok)
+                LOG_ERROR("FAIL: group counts {%u,%u,%u} total %u, want {2,2,1} total 5",
+                          counts[0], counts[1], counts[2], total);
+
+            /* Capacity intervals: visible markers must match the expected sets
+             * (intra-group order is atomic-nondeterministic); surplus slots
+             * must stay zeroed so the R234-B fallback cannot resurrect them. */
+            bool intervals_ok = rd_ok;
+            const u32 want[3][3] = { {100u, 102u, 0u}, {103u, 104u, 0u}, {107u, 0u, 0u} };
+            const u32 bases[3]   = {0u, 3u, 6u};
+            const u32 visn[3]    = {2u, 2u, 1u};
+            const u32 caps[3]    = {3u, 3u, 2u};
+            for (u32 g = 0; g < 3 && intervals_ok; g++) {
+                u32 seen[3] = {0u, 0u, 0u};
+                for (u32 s = 0; s < visn[g]; s++) {
+                    const DrawIndexedIndirectCmd *c = &out[bases[g] + s];
+                    if (c->index_count != 3u) { intervals_ok = false; break; }
+                    bool match = false;
+                    for (u32 w = 0; w < visn[g]; w++) {
+                        if (c->first_instance == want[g][w] && !seen[w]) {
+                            seen[w] = 1u; match = true; break;
+                        }
+                    }
+                    if (!match) break;
+                }
+                for (u32 s = 0; s < visn[g]; s++)
+                    if (!seen[s]) intervals_ok = false;
+                for (u32 s = visn[g]; s < caps[g]; s++) {
+                    const DrawIndexedIndirectCmd *c = &out[bases[g] + s];
+                    if (c->index_count != 0u || c->instance_count != 0u) intervals_ok = false;
+                }
+            }
+            if (!intervals_ok)
+                LOG_ERROR("FAIL: visible_draws intervals wrong (group packing / zero-fill)");
+
+            bool dispatch_ok = (frames_ok == 3u) && (dispatches == frames_ok);
+            if (!dispatch_ok)
+                LOG_ERROR("FAIL: compact dispatches=%u over %u frames, want 1/frame (merged)",
+                          dispatches, frames_ok);
+
+            idraw_pass = counts_ok && intervals_ok && dispatch_ok;
+            if (idraw_pass)
+                LOG_INFO("PASS: grouped compact ({2,2,1}/5, intervals packed+zeroed, 1 dispatch/frame)");
+            indirect_draw_destroy(&ids, render.device);
+        } else {
+            LOG_ERROR("FAIL: indirect_draw_init_grouped unavailable");
+        }
+    }
+#else
+    idraw_pass = true;
+    LOG_INFO("SKIP: grouped indirect draw compact (Vulkan-only compute path)");
+#endif
+
+    if (idraw_pass) {
+        LOG_INFO("RESULT: INDIRECT DRAW GROUPED COMPACT TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: INDIRECT DRAW GROUPED COMPACT TEST FAILED");
+    }
+
     /* ---- TEST 8: Golden image regression ---- */
     u32 gw2, gh2;
     platform_get_size(engine.platform, &gw2, &gh2);
     bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw2, gh2);
 
     bool all_pass = stress_pass && draw_pass && inst_pass && fbo_pass &&
-                    compute_pass && combined_pass && ibl_pass && unified_pass && golden_pass;
+                    compute_pass && combined_pass && ibl_pass && unified_pass &&
+                    idraw_pass && golden_pass;
 
     LOG_INFO("============================================");
     LOG_INFO("FINAL RESULT: %s", all_pass ? "ALL PASSED ✓" : "FAILED");

@@ -427,6 +427,104 @@ TEST(physics_push_body_invalid_safe)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R437: platform velocity inheritance (ride moving dynamic platforms)     */
+/* ----------------------------------------------------------------------- */
+
+/* Tests do not run physics_step, so a "kinematic" platform is moved by
+ * integrating position manually and clearing rest_frames (BVH-refit contract),
+ * with velocity set for the controller to inherit. */
+static void r437_move_platform(PhysicsWorld *pw, u32 plat, Vec3 v, f32 dt) {
+    pw->bodies[plat].velocity = v;
+    pw->bodies[plat].position = vec3_add(pw->bodies[plat].position,
+                                         vec3_scale(v, dt));
+    pw->bodies[plat].rest_frames = 0;
+}
+
+/* A character standing on a horizontally moving dynamic platform is carried
+ * with it: zero input, Δx == Σ v*dt. Without inheritance the platform slides
+ * out from under the character, which drops to the floor and stays behind. */
+TEST(character_rides_moving_platform)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    /* Floor, top at y=0 */
+    physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
+    /* Dynamic platform, top at y=1.0, 4x4 m so the character stays aboard */
+    u32 plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
+
+    CharacterController cc = character_create(vec3(0, 1.2f, 0), 0.4f, 1.8f);
+    const f32 dt = 1.0f/60.0f;
+    for (int i = 0; i < 60; i++)
+        character_update(&cc, pw, dt, vec3(0,0,0), false);
+    ASSERT_TRUE(cc.grounded);
+    const f32 start_x = cc.position.e[0];
+
+    const f32 vx = 2.0f;
+    const int frames = 120;
+    for (int i = 0; i < frames; i++) {
+        r437_move_platform(pw, plat, vec3(vx, 0, 0), dt);
+        character_update(&cc, pw, dt, vec3(0,0,0), false);
+    }
+    /* Carried the full Σ v*dt and still standing on the platform top. */
+    ASSERT_TRUE(fabsf(cc.position.e[0] - (start_x + vx * dt * (f32)frames)) < 0.05f);
+    ASSERT_TRUE(fabsf(cc.position.e[1] - 1.0f) < 0.1f);
+    ASSERT_TRUE(cc.grounded);
+    physics_world_destroy(pw);
+}
+
+/* Vertical inheritance: a descending platform carries the character down so
+ * the feet keep tracking its top face (free-fall alone cannot keep up).
+ * The platform moves before character_update, mirroring the real game loop
+ * (physics_step advances bodies, then the character inherits velocity from
+ * the support recorded on the previous contact frame). */
+TEST(character_rides_descending_platform)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    /* No floor: the platform is the only support. Top at y=1.0. */
+    u32 plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
+
+    CharacterController cc = character_create(vec3(0, 1.2f, 0), 0.4f, 1.8f);
+    const f32 dt = 1.0f/60.0f;
+    for (int i = 0; i < 60; i++)
+        character_update(&cc, pw, dt, vec3(0,0,0), false);
+    ASSERT_TRUE(cc.grounded);
+
+    const f32 vy = -8.0f;
+    for (int i = 0; i < 30; i++) {
+        r437_move_platform(pw, plat, vec3(0, vy, 0), dt);
+        character_update(&cc, pw, dt, vec3(0,0,0), false);
+    }
+    const f32 top = pw->bodies[plat].position.e[1] + 0.5f;
+    ASSERT_TRUE(fabsf(cc.position.e[1] - top) < 0.05f);
+    ASSERT_TRUE(cc.grounded);
+    physics_world_destroy(pw);
+}
+
+/* Boundary: a stationary dynamic platform (velocity 0) imparts no motion;
+ * the character stays put (also guarded by character_zero_input_still). */
+TEST(character_stationary_platform_no_carry)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
+    u32 plat = physics_body_create(pw, vec3(0, 0.5f, 0), vec3(2.0f, 0.5f, 2.0f), 1.0f, false, 0);
+
+    CharacterController cc = character_create(vec3(0, 1.2f, 0), 0.4f, 1.8f);
+    const f32 dt = 1.0f/60.0f;
+    for (int i = 0; i < 60; i++)
+        character_update(&cc, pw, dt, vec3(0,0,0), false);
+    ASSERT_TRUE(cc.grounded);
+    const f32 x0 = cc.position.e[0];
+    const f32 y0 = cc.position.e[1];
+
+    for (int i = 0; i < 120; i++) {
+        r437_move_platform(pw, plat, vec3(0, 0, 0), dt);
+        character_update(&cc, pw, dt, vec3(0,0,0), false);
+    }
+    ASSERT_TRUE(fabsf(cc.position.e[0] - x0) < 1e-4f);
+    ASSERT_TRUE(fabsf(cc.position.e[1] - y0) < 1e-4f);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(character_create_basic);
@@ -456,4 +554,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(character_pushes_dynamic_box);
     RUN_TEST(character_grounded_on_dynamic_box);
     RUN_TEST(physics_push_body_invalid_safe);
+    /* R437: platform velocity inheritance */
+    RUN_TEST(character_rides_moving_platform);
+    RUN_TEST(character_rides_descending_platform);
+    RUN_TEST(character_stationary_platform_no_carry);
 TEST_MAIN_END()
