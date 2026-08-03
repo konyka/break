@@ -10,7 +10,7 @@
 | P0 | 遮挡剔除 Hi-Z | ~~compute 跑通但结果未驱动 draw~~ **R11 已接线**，默认开 | — |
 | P0 | GPU 间接绘制默认路径 | ~~mega-buffer 有但 gpucull 默认关~~ **R11 mega-buffer 就绪时默认开** | — |
 | P0 | 合并后处理 | ~~demo 仍多 pass~~ **R11 demo 默认 combined 路径**(auto-exp/cine 除外) | — |
-| P1 | unified_cull | ~~单 pass 压缩已实现，main 未用~~ **R12 阴影/点光阴影默认 unified** | 前向仍 per-mat compact |
+| P1 | unified_cull | ~~单 pass 压缩已实现，main 未用~~ **R12 阴影/点光阴影默认 unified** | ~~前向仍 per-mat compact~~ **R437 已做**（容量区间单遍 scatter，G→1；execute 仍按材质 G 次） |
 | P1 | 粒子 GPU cull | ~~`particle_cull.comp` 未接线~~ **R12 已接线** | draw 随 alive 数而非 max |
 | P1 | 延迟渲染 | light_data 忽略、环境光硬编码 | deferred 路径光照质量/一致性差 |
 | P2 | TAA motion vector | 无 per-object / 相机 MV | TAA 质量差、重影 |
