@@ -42,6 +42,62 @@ TEST(camera_view_lookat)
     ASSERT_TRUE(fabsf(v.e[3][3] - 1.0f) < EPS);
 }
 
+/* R438: column-vector M*v for a point (w=1) under the canonical
+ * column-major convention: r_i = sum_j e[j][i] * v_j. */
+static void cam_apply_point(const Mat4 *m, Vec3 p, f32 out[4]) {
+    f32 v[4] = { p.e[0], p.e[1], p.e[2], 1.0f };
+    for (int i = 0; i < 4; i++)
+        out[i] = m->e[0][i]*v[0] + m->e[1][i]*v[1] + m->e[2][i]*v[2] + m->e[3][i]*v[3];
+}
+
+/* R438 characterization: camera translation must actually move geometry in
+ * view space (it was silently dead while the layout was transposed). */
+TEST(camera_view_translation_moves_points)
+{
+    Camera cam;
+    camera_init(&cam, 1.047f, 16.0f/9.0f, 0.1f, 1000.0f); /* eye (0,2,8), yaw=pitch=0 */
+    f32 o[4];
+
+    Mat4 v0 = camera_view(&cam);
+    cam_apply_point(&v0, vec3(0.0f, 2.0f, 0.0f), o);
+    ASSERT_FLOAT_EQ(o[0],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(o[1],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
+    ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
+
+    /* Left-handed basis: camera right = (-1,0,0), so a point 3 units in
+     * world -X from the eye lands at view x = +3. */
+    cam.position = vec3(3.0f, 2.0f, 8.0f);
+    Mat4 v1 = camera_view(&cam);
+    cam_apply_point(&v1, vec3(0.0f, 2.0f, 0.0f), o);
+    ASSERT_FLOAT_EQ(o[0],  3.0f, EPS);
+    ASSERT_FLOAT_EQ(o[1],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
+    ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
+}
+
+/* R438 characterization: VP ground truth for the default camera. */
+TEST(camera_vp_ground_truth)
+{
+    Camera cam;
+    camera_init(&cam, 1.047f, 16.0f/9.0f, 0.1f, 1000.0f); /* pos (0,2,8) facing -Z */
+    Mat4 v = camera_view(&cam);
+    Mat4 p = camera_projection(&cam);
+    Mat4 vp = mat4_mul(p, v);
+    f32 clip[4];
+
+    /* Point 8 units in front on the view axis: clip w = 8, ndc ≈ (0,0,0.975). */
+    cam_apply_point(&vp, vec3(0.0f, 2.0f, 0.0f), clip);
+    ASSERT_FLOAT_EQ(clip[3], 8.0f, 1e-2f);
+    ASSERT_FLOAT_EQ(clip[0] / clip[3], 0.0f, EPS);
+    ASSERT_FLOAT_EQ(clip[1] / clip[3], 0.0f, EPS);
+    ASSERT_FLOAT_EQ(clip[2] / clip[3], 0.9752f, 1e-3f);
+
+    /* Point behind the camera: w must be negative. */
+    cam_apply_point(&vp, vec3(0.0f, 2.0f, 20.0f), clip);
+    ASSERT_TRUE(clip[3] < 0.0f);
+}
+
 TEST(camera_view_matches_lookat)
 {
     /* Verify camera_view output matches mat4_lookat for the same parameters.
@@ -478,19 +534,21 @@ TEST(camera_inv_vp_third_person) {
     f32 tp = 5.0f;
     /* cam_fwd with new convention: (cp*sy, sp, -cp*cy) */
     Vec3 fwd = {{cam._cp * cam._sy, cam._sp, -cam._cp * cam._cy}};
-    /* Apply third-person offset to view: t_new = t + R*fwd*tp */
-    view.e[0][3] += (view.e[0][0]*fwd.e[0] + view.e[0][1]*fwd.e[1] + view.e[0][2]*fwd.e[2]) * tp;
-    view.e[1][3] += (view.e[1][0]*fwd.e[0] + view.e[1][1]*fwd.e[1] + view.e[1][2]*fwd.e[2]) * tp;
-    view.e[2][3] += (view.e[2][0]*fwd.e[0] + view.e[2][1]*fwd.e[1] + view.e[2][2]*fwd.e[2]) * tp;
+    /* Apply third-person offset to view: t_new = t + R*fwd*tp.
+     * R438 canonical layout: translation in e[3][i], row i = e[0..2][i]. */
+    view.e[3][0] += (view.e[0][0]*fwd.e[0] + view.e[1][0]*fwd.e[1] + view.e[2][0]*fwd.e[2]) * tp;
+    view.e[3][1] += (view.e[0][1]*fwd.e[0] + view.e[1][1]*fwd.e[1] + view.e[2][1]*fwd.e[2]) * tp;
+    view.e[3][2] += (view.e[0][2]*fwd.e[0] + view.e[1][2]*fwd.e[1] + view.e[2][2]*fwd.e[2]) * tp;
 
     Mat4 proj = camera_projection(&cam);
     Mat4 vp = mat4_mul(proj, view);
 
-    /* Analytical: inv(V) with eye adjusted by -fwd*tp, then * inv(P) */
+    /* Analytical: inv(V) with eye adjusted by -fwd*tp, then * inv(P).
+     * R438 canonical layout: eye in e[3][0..2]. */
     Mat4 iv = camera_inv_view(&cam);
-    iv.e[0][3] -= fwd.e[0] * tp;
-    iv.e[1][3] -= fwd.e[1] * tp;
-    iv.e[2][3] -= fwd.e[2] * tp;
+    iv.e[3][0] -= fwd.e[0] * tp;
+    iv.e[3][1] -= fwd.e[1] * tp;
+    iv.e[3][2] -= fwd.e[2] * tp;
     Mat4 inv_vp_fast = mat4_mul(iv, mat4_inv_perspective(proj));
 
     /* Reference: generic inverse */
@@ -508,6 +566,8 @@ TEST(camera_inv_vp_third_person) {
 TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_lookat);
+    RUN_TEST(camera_view_translation_moves_points);
+    RUN_TEST(camera_vp_ground_truth);
     RUN_TEST(camera_view_matches_lookat);
     RUN_TEST(camera_projection_perspective);
     RUN_TEST(camera_projection_aspect);

@@ -33,43 +33,45 @@ Mat4 camera_view(const Camera *cam) {
      *        | u.x   u.y   u.z   -dot(u,eye) |
      *        |-f.x  -f.y  -f.z    dot(f,eye) |
      *        |  0     0     0          1      |
-     */
+     *
+     * R438: stored canonical column-major (e[col][row]) — each row of the
+     * math matrix above is written across e[0..3][row], translation lands in
+     * e[3][0..2] (same layout as mat4_translation; uploaded untransposed). */
     f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
     f32 ex = cam->position.e[0], ey = cam->position.e[1], ez = cam->position.e[2];
 
     Mat4 m;
     /* Row 0: right s = (-cy, 0, -sy) */
-    m.e[0][0] = -cy;  m.e[0][1] = 0.0f; m.e[0][2] = -sy;
-    m.e[0][3] = cy * ex + sy * ez;
+    m.e[0][0] = -cy;      m.e[1][0] = 0.0f; m.e[2][0] = -sy;
+    m.e[3][0] = cy * ex + sy * ez;
     /* Row 1: up u = (-sy*sp, cp, cy*sp) */
-    m.e[1][0] = -sy * sp;  m.e[1][1] = cp;  m.e[1][2] = cy * sp;
-    m.e[1][3] = sy * sp * ex - cp * ey - cy * sp * ez;
+    m.e[0][1] = -sy * sp; m.e[1][1] = cp;   m.e[2][1] = cy * sp;
+    m.e[3][1] = sy * sp * ex - cp * ey - cy * sp * ez;
     /* Row 2: -forward = (-cp*sy, -sp, cp*cy) */
-    m.e[2][0] = -cp * sy;  m.e[2][1] = -sp;  m.e[2][2] = cp * cy;
-    m.e[2][3] = cp * sy * ex + sp * ey - cp * cy * ez;
-    /* Row 3 */
-    m.e[3][0] = 0.0f;  m.e[3][1] = 0.0f;  m.e[3][2] = 0.0f;  m.e[3][3] = 1.0f;
+    m.e[0][2] = -cp * sy; m.e[1][2] = -sp;  m.e[2][2] = cp * cy;
+    m.e[3][2] = cp * sy * ex + sp * ey - cp * cy * ez;
+    /* Column 3 padding / bottom row */
+    m.e[0][3] = 0.0f;     m.e[1][3] = 0.0f; m.e[2][3] = 0.0f; m.e[3][3] = 1.0f;
     return m;
 }
 
 Mat4 camera_inv_view(const Camera *cam) {
     /* R52-fix: Analytical inverse view using cached trig — zero extra trig calls.
      * V = [R|t] with R orthonormal → V_inv = [R^T | eye; 0 0 0 1].
-     * In e[col][row] column-major storage, R^T columns = rows of V's rotation block.
-     * V row0 = R_row0 = (s.x, u.x, -f.x, 0) = (-cy, -sy*sp, -cp*sy, 0)
-     * V row1 = R_row1 = (s.y, u.y, -f.y, 0) = (0, cp, -sp, 0)
-     * V row2 = R_row2 = (s.z, u.z, -f.z, 0) = (-sy, cy*sp, cp*cy, 0) */
+     * R438: canonical column-major storage — column-major R^T is the
+     * transpose of column-major R, so storage col j of the rotation block is
+     * basis row j of the view matrix: col0 = s, col1 = u, col2 = -f. */
     f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
     f32 ex = cam->position.e[0], ey = cam->position.e[1], ez = cam->position.e[2];
     Mat4 m;
-    /* R^T col0 = R row0 */
-    m.e[0][0] = -cy;      m.e[0][1] = -sy * sp;  m.e[0][2] = -cp * sy;  m.e[0][3] = ex;
-    /* R^T col1 = R row1 */
-    m.e[1][0] = 0.0f;     m.e[1][1] = cp;         m.e[1][2] = -sp;        m.e[1][3] = ey;
-    /* R^T col2 = R row2 */
-    m.e[2][0] = -sy;      m.e[2][1] = cy * sp;    m.e[2][2] = cp * cy;    m.e[2][3] = ez;
-    /* Row 3 */
-    m.e[3][0] = 0.0f;     m.e[3][1] = 0.0f;       m.e[3][2] = 0.0f;       m.e[3][3] = 1.0f;
+    /* col0 = s = (-cy, 0, -sy) */
+    m.e[0][0] = -cy;      m.e[0][1] = 0.0f;      m.e[0][2] = -sy;      m.e[0][3] = 0.0f;
+    /* col1 = u = (-sy*sp, cp, cy*sp) */
+    m.e[1][0] = -sy * sp; m.e[1][1] = cp;        m.e[1][2] = cy * sp;  m.e[1][3] = 0.0f;
+    /* col2 = -f = (-cp*sy, -sp, cp*cy) */
+    m.e[2][0] = -cp * sy; m.e[2][1] = -sp;       m.e[2][2] = cp * cy;  m.e[2][3] = 0.0f;
+    /* Translation column = eye */
+    m.e[3][0] = ex;       m.e[3][1] = ey;        m.e[3][2] = ez;       m.e[3][3] = 1.0f;
     return m;
 }
 

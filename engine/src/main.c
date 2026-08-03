@@ -821,6 +821,9 @@ bool occ_cull_enabled = true;
 static u32 g_vis_flags[16384];   /* 64KB: used by mega_mat_groups_* and CPU cull */
 static u32 g_draw_vis[16384];    /* 64KB: used by unified vis paths */
 static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
+/* R438: per-frame count of forward mega-branch executions — logged next to
+ * the R437 compact-dispatch log, then reset. */
+static u32 g_fwd_mega_taken;
 static f32 g_cull_positions[GPUCULL_MAX_OBJECTS * 3]; /* 48KB: gpucull positions */
 static f32 g_cull_radii[GPUCULL_MAX_OBJECTS];         /* 16KB: gpucull radii */
 static ObjectAABB g_occ_aabbs[OCCLUSION_MAX_OBJECTS]; /* 512KB: occlusion AABB upload */
@@ -3214,15 +3217,15 @@ u32 culled_count = 0;
         Mat4 view = camera_view(&camera);
         if (third_person) {
             /* Third-person: move effective eye back by fwd*tp.
-             * In row-major view matrix V = [R | t], translation is in e[i][3] (col 3).
-             * New translation = t + R*fwd*tp. Since R*cam_fwd is the view-space offset,
-             * modify translation column e[i][3] for i=0,1,2. */
+             * R438: canonical column-major view V = [R | t], translation is
+             * in e[3][i] (row 3). New translation = t + R*fwd*tp; R*fwd is
+             * the view-space offset, so add (R row i)·fwd*tp to e[3][i]. */
             f32 tp = third_person_dist;
             f32 dx = cam_fwd.e[0], dy = cam_fwd.e[1], dz = cam_fwd.e[2];
-            /* R*cam_fwd: row i of R dotted with cam_fwd */
-            view.e[0][3] += (view.e[0][0]*dx + view.e[0][1]*dy + view.e[0][2]*dz) * tp;
-            view.e[1][3] += (view.e[1][0]*dx + view.e[1][1]*dy + view.e[1][2]*dz) * tp;
-            view.e[2][3] += (view.e[2][0]*dx + view.e[2][1]*dy + view.e[2][2]*dz) * tp;
+            /* R*cam_fwd: row i of R dotted with cam_fwd (row i = e[0..2][i]) */
+            view.e[3][0] += (view.e[0][0]*dx + view.e[1][0]*dy + view.e[2][0]*dz) * tp;
+            view.e[3][1] += (view.e[0][1]*dx + view.e[1][1]*dy + view.e[2][1]*dz) * tp;
+            view.e[3][2] += (view.e[0][2]*dx + view.e[1][2]*dy + view.e[2][2]*dz) * tp;
         } else if (top_down_view) {
             /* top_down replaces view entirely; not combinable with third_person */
             view = mat4_lookat(
@@ -4080,33 +4083,9 @@ u32 culled_count = 0;
             rhi_gpu_timer_begin(gpu_shadow_timer);
             Vec3 light_dir = sun_dir_vec;
 
-            /* Pre-compute shadow lookat basis once for all 4 cascades
-             * (eliminates 4× normalize + 8× cross + 4× mat4_identity). */
-            f32 fx = light_dir.e[0], fy = light_dir.e[1], fz = light_dir.e[2];
-            f32 s_len2 = fx * fx + fz * fz;
-            f32 sx, sz, ux, uy, uz;
-            if (s_len2 > 1e-12f) {
-                f32 inv_sl = fast_rsqrt(s_len2);
-                /* s = normalize(light_dir × (0,1,0)) = (-fz, 0, fx) / len */
-                sx = -fz * inv_sl;
-                sz =  fx * inv_sl;
-                /* u = normalize(cross(s_unnorm, f)) = cross(s_unnorm, f) * inv_sl
-                 * cross(s_unnorm, f) = (-fy*fx, fx²+fz², -fy*fz).
-                 * For unit light_dir: u_len2 = s_len2, so inv_ul = inv_sl (no extra rsqrt). */
-                ux = -fy * fx * inv_sl;
-                uy = (fx * fx + fz * fz) * inv_sl;
-                uz = -fy * fz * inv_sl;
-            } else {
-                /* R247: sun_dir ∥ world up (zenith sun — reachable via a loaded
-                 * save whose sun_elevation ≈ ±π/2, which is not range-clamped).
-                 * light_dir × (0,1,0) collapses to zero, so inv_sl would be 0 and
-                 * the whole CSM view basis (sx,sz,ux,uy,uz) degenerates to a
-                 * rank-deficient matrix → broken/absent shadows. Fall back to a
-                 * fixed orthonormal basis in the XZ plane (row2 = -f stays valid
-                 * for f = (0,±1,0); this keeps lview invertible). */
-                sx = -1.0f; sz = 0.0f;
-                ux =  0.0f; uy = 0.0f; uz = 1.0f;
-            }
+            /* R438: cascade light view construction (incl. R247 zenith
+             * fallback basis) extracted to renderer/csm.h so tests reuse the
+             * exact production code path. */
 
             /* Bind the 2048x2048 shadow atlas once (clears the whole texture),
              * then render each of the 4 cascades into its own 1024x1024 quadrant
@@ -4146,16 +4125,9 @@ u32 culled_count = 0;
                 Vec3 center = vec3_add(camera.position, vec3_scale(cam_fwd, mid));
 
                 f32 extent = zf - zn;
-                /* Direct view matrix from pre-computed basis (avoids mat4_lookat: 2 normalize + 2 cross + identity).
-                 * Left-handed convention matching camera_view: right = -cross(f,up). */
-                f32 ex = center.e[0] - light_dir.e[0] * extent;
-                f32 ey = center.e[1] - light_dir.e[1] * extent;
-                f32 ez = center.e[2] - light_dir.e[2] * extent;
-                Mat4 lview;
-                lview.e[0][0] = -sx;  lview.e[0][1] = 0.0f; lview.e[0][2] = -sz;  lview.e[0][3] = sx*ex + sz*ez;
-                lview.e[1][0] = ux;   lview.e[1][1] = uy;   lview.e[1][2] = uz;   lview.e[1][3] = -(ux*ex + uy*ey + uz*ez);
-                lview.e[2][0] = -fx;  lview.e[2][1] = -fy;  lview.e[2][2] = -fz;  lview.e[2][3] = fx*ex + fy*ey + fz*ez;
-                lview.e[3][0] = 0.0f; lview.e[3][1] = 0.0f; lview.e[3][2] = 0.0f; lview.e[3][3] = 1.0f;
+                /* R438: canonical column-major light view from the shared
+                 * csm.h helper (same construction as before, layout fixed). */
+                Mat4 lview = shadow_cascade_lview(center, light_dir, extent);
                 /* R434: texel snapping — quantize the cascade center to the
                  * per-cascade shadow quadrant texel grid (atlas_half x atlas_half)
                  * so camera motion no longer causes sub-texel shadow shimmer. */
@@ -4553,6 +4525,10 @@ u32 culled_count = 0;
 
         Frustum frustum = frame_frustum;
 
+        /* R438: hoisted above the instanced/per-entity split — entity and
+         * static glTF scene draws are no longer mutually exclusive; drew_any
+         * now only gates the identity-mesh fallback below. */
+        bool drew_any = false;
         if (scene.mesh_count > 0 && rhi_handle_valid(render.instanced_pipeline)) {
             ComponentType mesh_query_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
             Query *mq = world_query_cached(world, mesh_query_types, 2);
@@ -5290,6 +5266,7 @@ u32 culled_count = 0;
                 LOG_INFO("Physics mode: %s (%.1f,%.1f,%.1f)", gn[physics_mode], custom_gravity.e[0], custom_gravity.e[1], custom_gravity.e[2]);
             }
 
+            /* R438: drew_any hoisted above the instanced/per-entity split. */
             if (instance_count > 0) {
                 RHIBuffer inst_slot = render.instance_buf[rhi_frame_index(render.device) & 1u];
                 rhi_buffer_update(render.device, inst_slot, instance_data, instance_count * 64);
@@ -5316,12 +5293,13 @@ u32 culled_count = 0;
                     }
                     draw_calls++; tri_count += (m->index_count / 3) * instance_count;
                 }
+                /* R438: instanced entity draw suppresses the identity fallback. */
+                drew_any = true;
             }
             /* instance_data is persistent — no free here */
         } else if (scene.mesh_count > 0) {
             ComponentType mesh_query_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
             Query *mq = world_query_cached(world, mesh_query_types, 2);
-            bool drew_any = false;
 
             if (mq && mq->match_count > 0) {
                 for (u32 mi = 0; mi < mq->match_count; mi++) {
@@ -5410,10 +5388,39 @@ u32 culled_count = 0;
                 }
             }
 
-            if (!drew_any && scene.node_count > 0) {
+            if (gravity_well) {
+                for (u32 gi = 0; gi < physics->count; gi++) {
+                    if (physics->bodies[gi].is_static) continue;
+                    Vec3 gp = physics->bodies[gi].position;
+                    Vec3 gd = vec3_sub(camera.position, gp);
+                    /* R51: fast_rsqrt replaces sqrtf + division in gravity loop. */
+                    f32 gd2 = gd.e[0]*gd.e[0] + gd.e[1]*gd.e[1] + gd.e[2]*gd.e[2];
+                    if (gd2 < 0.25f) continue;  /* 0.5^2 */
+                    f32 inv_gdist = fast_rsqrt(gd2);
+                    f32 gdist = gd2 * inv_gdist;
+                    f32 gforce = 20.0f / (1.0f + gdist);
+                    f32 scale = inv_gdist * gforce * (f32)engine.delta_time;
+                    physics->bodies[gi].velocity.e[0] += gd.e[0] * scale;
+                    physics->bodies[gi].velocity.e[1] += gd.e[1] * scale;
+                    physics->bodies[gi].velocity.e[2] += gd.e[2] * scale;
+                }
+            }
+        }
+
+        /* R438: static glTF scene draw decoupled from ECS entity draws — was
+         * mutually exclusive (`!drew_any` here + the whole block living in the
+         * `else if` fallback of the instanced-pipeline branch above), a
+         * skeleton leftover from initial commit 43359af that predates the mega
+         * path. With the instanced pipeline valid and the 10 physics cubes
+         * always in-frustum, the forward mega/scene path never ran (test.glb
+         * only rendered in the shadow pass). Now overlaid after instanced /
+         * per-entity drawing: mega first, CPU batch cull fallback — same
+         * internal semantics as before, just no longer gated. */
+        if (scene.node_count > 0) {
                 scene_compute_world_transforms(&scene);
 
                 if (mega_buf.valid && gpu_indirect_enabled && mega_buf.mat_group_count > 0) {
+                    g_fwd_mega_taken++;  /* R438: observability — see per-frame log near R437 compact count */
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
@@ -5562,7 +5569,8 @@ u32 culled_count = 0;
 
                 /* cull buffers are persistent — no free needed */
                 }
-            } else if (!drew_any) {
+        /* R438: node_count==0 now explicit (was implied by the old gate). */
+        } else if (!drew_any && scene.node_count == 0) {
                 for (u32 i = 0; i < scene.mesh_count; i++) {
                     Mesh *m = &scene.meshes[i];
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
@@ -5580,32 +5588,13 @@ u32 culled_count = 0;
                     draw_calls++; tri_count += m->index_count > 0 ? m->index_count / 3 : 1;
             }
         }
-
-        if (gravity_well) {
-            for (u32 gi = 0; gi < physics->count; gi++) {
-                if (physics->bodies[gi].is_static) continue;
-                Vec3 gp = physics->bodies[gi].position;
-                Vec3 gd = vec3_sub(camera.position, gp);
-                /* R51: fast_rsqrt replaces sqrtf + division in gravity loop. */
-                f32 gd2 = gd.e[0]*gd.e[0] + gd.e[1]*gd.e[1] + gd.e[2]*gd.e[2];
-                if (gd2 < 0.25f) continue;  /* 0.5^2 */
-                f32 inv_gdist = fast_rsqrt(gd2);
-                f32 gdist = gd2 * inv_gdist;
-                f32 gforce = 20.0f / (1.0f + gdist);
-                f32 scale = inv_gdist * gforce * (f32)engine.delta_time;
-                physics->bodies[gi].velocity.e[0] += gd.e[0] * scale;
-                physics->bodies[gi].velocity.e[1] += gd.e[1] * scale;
-                physics->bodies[gi].velocity.e[2] += gd.e[2] * scale;
-            }
-        }
         } /* end scene_fbo valid */
-         }
         } /* end forward path guard */
 
         /* R53-fix: Compute inv(VP) = inv(V) * inv(P) analytically.
          * (AB)^{-1} = B^{-1}A^{-1}, so (V*P)^{-1} = P^{-1}*V^{-1}.
-         * But in engine's row-major convention mat4_mul(P,V) = P*V,
-         * and (P*V)^{-1} = V^{-1}*P^{-1} → mat4_mul(iv, frame_inv_proj).
+         * R438: canonical column-major convention — mat4_mul(A,B) = A*B, so
+         * (P*V)^{-1} = V^{-1}*P^{-1} → mat4_mul(iv, frame_inv_proj).
          * frame_inv_proj already includes TAA jitter / screen shake (R47+R53-fix above).
          * inv(V) uses cached trig + adjusted eye for third-person.
          * Falls back to generic inverse for top-down (completely different view matrix). */
@@ -5615,12 +5604,13 @@ u32 culled_count = 0;
         } else {
             f32 tp = third_person ? third_person_dist : 0.0f;
             /* R60-fix: Use camera_inv_view + adjust eye for third-person offset.
-             * camera_inv_view gives [R^T | eye]; subtract fwd*tp for third-person. */
+             * camera_inv_view gives [R^T | eye]; subtract fwd*tp for third-person.
+             * R438: canonical column-major — eye lives in e[3][0..2]. */
             Mat4 iv = camera_inv_view(&camera);
             if (third_person) {
-                iv.e[0][3] -= cam_fwd.e[0] * tp;
-                iv.e[1][3] -= cam_fwd.e[1] * tp;
-                iv.e[2][3] -= cam_fwd.e[2] * tp;
+                iv.e[3][0] -= cam_fwd.e[0] * tp;
+                iv.e[3][1] -= cam_fwd.e[1] * tp;
+                iv.e[3][2] -= cam_fwd.e[2] * tp;
             }
             frame_inv_vp = mat4_mul(iv, frame_inv_proj);
         }
@@ -5810,6 +5800,10 @@ u32 culled_count = 0;
         LOG_DEBUG("R437: compact dispatches this frame: %u (mat groups: %u)",
                   indirect_draw_debug_compact_count(), mega_buf.mat_group_count);
         indirect_draw_debug_reset_compact_count();
+        /* R438: forward mega branch observability — must be >=1 per frame now
+         * that the static scene draw is decoupled from ECS entity draws. */
+        LOG_DEBUG("R438: forward mega branch taken this frame: %u", g_fwd_mega_taken);
+        g_fwd_mega_taken = 0;
 
         /* R236 (CORRECTNESS): On the deferred path scene_fbo.depth is never
          * written — the forward scene pass is skipped (guarded above) and the

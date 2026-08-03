@@ -337,6 +337,15 @@ void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
  * the caller must provide w*h*4 bytes (both backends, unified in R425). */
 void        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels);
 
+/* R438: Vulkan validation-message gate (defined only by the VK backend).
+ * Debug builds with the validation layer register a debug messenger and
+ * count severity>=warning messages in-process so the integration suite can
+ * hard-gate on zero. The gate is inactive when the messenger could not be
+ * created (missing layer/extension) — callers should then skip the assert. */
+u32  rhi_vk_validation_message_count(void);
+void rhi_vk_validation_message_count_reset(void);
+bool rhi_vk_validation_gate_active(void);
+
 typedef struct RHIGPUTimer RHIGPUTimer;
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev);
 void         rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t);

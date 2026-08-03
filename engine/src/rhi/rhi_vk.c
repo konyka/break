@@ -18,9 +18,41 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 #define VK_MAX_FRAMES 2
 #define VK_MAX_UNIFORMS 64
+
+/* R438: in-process Vulkan validation message accounting (R437 follow-up).
+ * The debug messenger callback counts severity>=warning messages so the
+ * integration suite can hard-gate on zero; messages are still mirrored to
+ * stderr to keep the previous layer-default observability. */
+static _Atomic u32 g_validation_msg_count = 0;
+static bool        g_validation_gate_active = false;
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+vk_debug_utils_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                        VkDebugUtilsMessageTypeFlagsEXT type,
+                        const VkDebugUtilsMessengerCallbackDataEXT *data,
+                        void *user_data) {
+    (void)type; (void)user_data;
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        atomic_fetch_add_explicit(&g_validation_msg_count, 1u, memory_order_relaxed);
+        fprintf(stderr, "VK VALIDATION: %s\n",
+                (data && data->pMessage) ? data->pMessage : "(null)");
+    }
+    return VK_FALSE;
+}
+
+u32 rhi_vk_validation_message_count(void) {
+    return atomic_load_explicit(&g_validation_msg_count, memory_order_relaxed);
+}
+void rhi_vk_validation_message_count_reset(void) {
+    atomic_store_explicit(&g_validation_msg_count, 0u, memory_order_relaxed);
+}
+bool rhi_vk_validation_gate_active(void) {
+    return g_validation_gate_active;
+}
 
 /* ---- Internal types ---- */
 
@@ -140,6 +172,7 @@ typedef struct {
 
 typedef struct {
     VkInstance       instance;
+    VkDebugUtilsMessengerEXT debug_messenger; /* R438: VK_NULL_HANDLE unless debug build w/ ext */
     VkPhysicalDevice         physical;
     VkPhysicalDeviceProperties device_props;
     bool             feat_fill_mode_non_solid; /* wireframe (polygonMode=LINE) usable */
@@ -829,25 +862,44 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 #ifndef NDEBUG
     const char *layers[] = { "VK_LAYER_KHRONOS_validation" };
 #endif
-    const char *extensions[] = {
-        VK_KHR_SURFACE_EXTENSION_NAME,
+    const char *extensions[8];
+    u32 ext_count = 0;
+    extensions[ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
 #ifdef ENGINE_PLATFORM_WINDOWS
-        VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+    extensions[ext_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
 #elif defined(ENGINE_PLATFORM_MACOS)
-        VK_EXT_METAL_SURFACE_EXTENSION_NAME,
-        VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+    extensions[ext_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
+    extensions[ext_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+    extensions[ext_count++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
 #elif defined(ENGINE_PLATFORM_WAYLAND)
-        VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
+    extensions[ext_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
 #else
-        VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+    extensions[ext_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #endif
-    };
+#ifndef NDEBUG
+    /* R438: enable VK_EXT_debug_utils when present so validation messages can
+     * be counted in-process (test gate). Absence only disables the gate. */
+    {
+        u32 avail_count = 0;
+        vkEnumerateInstanceExtensionProperties(NULL, &avail_count, NULL);
+        VkExtensionProperties *avail = calloc(avail_count, sizeof(*avail));
+        if (avail) {
+            vkEnumerateInstanceExtensionProperties(NULL, &avail_count, avail);
+            for (u32 i = 0; i < avail_count; i++) {
+                if (strcmp(avail[i].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
+                    extensions[ext_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+                    break;
+                }
+            }
+            free(avail);
+        }
+    }
+#endif
 
     VkInstanceCreateInfo ici = {0};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
-    ici.enabledExtensionCount = (u32)(sizeof(extensions) / sizeof(extensions[0]));
+    ici.enabledExtensionCount = ext_count;
     ici.ppEnabledExtensionNames = extensions;
 #ifdef ENGINE_PLATFORM_MACOS
     /* MoltenVK is a portability driver — must opt in to enumeration. */
@@ -879,6 +931,35 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         free(vk);
         return false;
     }
+
+#ifndef NDEBUG
+    /* R438: register a debug messenger so validation messages are counted
+     * in-process (test gate). Failure (missing layer/ext) degrades to no
+     * gate with a warning — init must still succeed. */
+    {
+        PFN_vkCreateDebugUtilsMessengerEXT create_dbg =
+            (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                vk->instance, "vkCreateDebugUtilsMessengerEXT");
+        if (create_dbg) {
+            VkDebugUtilsMessengerCreateInfoEXT dci = {0};
+            dci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            dci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                  VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            dci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                              VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                              VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            dci.pfnUserCallback = vk_debug_utils_callback;
+            if (create_dbg(vk->instance, &dci, NULL, &vk->debug_messenger) == VK_SUCCESS) {
+                g_validation_gate_active = true;
+            } else {
+                vk->debug_messenger = VK_NULL_HANDLE;
+                LOG_WARN("VK: debug messenger creation failed — validation gate disabled");
+            }
+        } else {
+            LOG_WARN("VK: vkCreateDebugUtilsMessengerEXT unavailable — validation gate disabled");
+        }
+    }
+#endif
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     VkWin32SurfaceCreateInfoKHR sci = {0};
@@ -1378,6 +1459,16 @@ static void vk_shutdown(RHIDevice *dev) {
     }
     vkDestroyDevice(vk->device, NULL);
     vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
+#ifndef NDEBUG
+    /* R438: symmetric cleanup of the validation-gate debug messenger. */
+    if (vk->debug_messenger) {
+        PFN_vkDestroyDebugUtilsMessengerEXT destroy_dbg =
+            (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                vk->instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (destroy_dbg) destroy_dbg(vk->instance, vk->debug_messenger, NULL);
+        vk->debug_messenger = VK_NULL_HANDLE;
+    }
+#endif
     vkDestroyInstance(vk->instance, NULL);
     free(vk);
     dev->backend_data = NULL;

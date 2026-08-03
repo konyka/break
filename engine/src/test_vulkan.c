@@ -51,6 +51,7 @@ static char *tv_inject_define(const char *src, usize len, const char *name, usiz
 #define GOLDEN_GH 15
 #ifdef ENGINE_VULKAN
 #define GOLDEN_PATH "tests/golden/test_vulkan_vk.ppm"
+#define GOLDEN_CAM_PATH "tests/golden/test_vulkan_vk_cam.ppm"
 #define TV_BACKEND        RHI_BACKEND_VULKAN
 #define TV_VS_BLINN       "shaders/blinn_phong_vk.vert"
 #define TV_FS_BLINN       "shaders/blinn_phong_vk.frag"
@@ -62,6 +63,7 @@ static char *tv_inject_define(const char *src, usize len, const char *name, usiz
 #define TV_WINDOW_TITLE   "Vulkan Test"
 #else
 #define GOLDEN_PATH "tests/golden/test_vulkan_gl.ppm"
+#define GOLDEN_CAM_PATH "tests/golden/test_vulkan_gl_cam.ppm"
 #define TV_BACKEND        RHI_BACKEND_OPENGL
 #define TV_VS_BLINN       "shaders/blinn_phong.vert"
 #define TV_FS_BLINN       "shaders/blinn_phong.frag"
@@ -139,6 +141,56 @@ typedef struct {
     i32 loc_light_dir, loc_light_color, loc_ambient, loc_camera_pos;
 } TestRenderState;
 
+/* Capture the presented frame, downsample, and compare against (or, with
+ * GOLDEN_UPDATE=1, write) the reference PPM at `path`.
+ * `reject_blank`: fail when the captured grid is a single flat color —
+ * a blank reference/compare is layout-insensitive and silently useless
+ * (R438: the camera golden was blank for exactly this reason). */
+static bool golden_capture_compare(RHIDevice *device, const char *path, u32 w, u32 h,
+                                   bool reject_blank) {
+    bool golden_pass = false;
+    u8 *shot = (u8 *)malloc((usize)w * h * 4u);
+    if (shot) {
+        rhi_screenshot(device, 0, 0, w, h, shot);
+        u8 grid[GOLDEN_GW * GOLDEN_GH * 3];
+        golden_downsample(shot, w, h, grid);
+        free(shot);
+
+        if (reject_blank) {
+            bool varied = false;
+            for (usize i = 3; i < sizeof(grid) && !varied; i += 3)
+                if (grid[i] != grid[0] || grid[i+1] != grid[1] || grid[i+2] != grid[2])
+                    varied = true;
+            if (!varied) {
+                LOG_ERROR("GOLDEN: %s captured a single flat color — blank image "
+                          "cannot detect layout regressions", path);
+                return false;
+            }
+        }
+
+        bool update = (getenv("GOLDEN_UPDATE") != NULL);
+        f64 mae = 0.0;
+        u32 maxd = 0;
+        int cmp = update ? -1 : golden_compare_ppm(path, grid, &mae, &maxd);
+        if (cmp == -1) {
+            if (golden_write_ppm(path, grid)) {
+                LOG_WARN("GOLDEN: wrote reference %s (%dx%d) — rerun to compare",
+                         path, GOLDEN_GW, GOLDEN_GH);
+                golden_pass = true;
+            } else {
+                LOG_ERROR("GOLDEN: failed to write reference %s", path);
+            }
+        } else if (cmp == 0) {
+            golden_pass = (mae <= 8.0 && maxd <= 56);
+            LOG_INFO("GOLDEN: %s MAE=%.2f max=%u (tol MAE<=8.0 max<=56) -> %s",
+                     path, mae, maxd, golden_pass ? "OK" : "DRIFT");
+        } else {
+            LOG_ERROR("GOLDEN: format/size mismatch in %s", path);
+        }
+    }
+    return golden_pass;
+}
+
 static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vbo, RHIBuffer ibo,
                                      u32 w, u32 h) {
     LOG_INFO("============================================");
@@ -166,39 +218,68 @@ static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vb
         rhi_present(render->device);
     }
 
-    bool golden_pass = false;
-    u8 *shot = (u8 *)malloc((usize)w * h * 4u);
-    if (shot) {
-        rhi_screenshot(render->device, 0, 0, w, h, shot);
-        u8 grid[GOLDEN_GW * GOLDEN_GH * 3];
-        golden_downsample(shot, w, h, grid);
-        free(shot);
-
-        bool update = (getenv("GOLDEN_UPDATE") != NULL);
-        f64 mae = 0.0;
-        u32 maxd = 0;
-        int cmp = update ? -1 : golden_compare_ppm(GOLDEN_PATH, grid, &mae, &maxd);
-        if (cmp == -1) {
-            if (golden_write_ppm(GOLDEN_PATH, grid)) {
-                LOG_WARN("GOLDEN: wrote reference %s (%dx%d) — rerun to compare",
-                         GOLDEN_PATH, GOLDEN_GW, GOLDEN_GH);
-                golden_pass = true;
-            } else {
-                LOG_ERROR("GOLDEN: failed to write reference %s", GOLDEN_PATH);
-            }
-        } else if (cmp == 0) {
-            golden_pass = (mae <= 8.0 && maxd <= 56);
-            LOG_INFO("GOLDEN: MAE=%.2f max=%u (tol MAE<=8.0 max<=56) -> %s",
-                     mae, maxd, golden_pass ? "OK" : "DRIFT");
-        } else {
-            LOG_ERROR("GOLDEN: format/size mismatch in %s", GOLDEN_PATH);
-        }
-    }
-
+    bool golden_pass = golden_capture_compare(render->device, GOLDEN_PATH, w, h, false);
     if (golden_pass) {
         LOG_INFO("RESULT: GOLDEN IMAGE TEST PASSED ✓");
     } else {
         LOG_ERROR("RESULT: GOLDEN IMAGE TEST FAILED");
+    }
+    return golden_pass;
+}
+
+/* R438: golden variant with a fixed NON-IDENTITY camera. The identity
+ * golden above is transpose-invariant (I == I^T) and can never catch a
+ * view-matrix layout regression; this one renders the same triangle through
+ * camera_view() + camera_projection() at a fixed off-axis pose, so any
+ * layout/chirality change in the view matrix shifts the image and fails
+ * the compare. */
+static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBuffer vbo, RHIBuffer ibo,
+                                            u32 w, u32 h) {
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: GOLDEN IMAGE REGRESSION (NON-IDENTITY CAMERA)");
+    LOG_INFO("============================================");
+
+    Camera cam;
+    camera_init(&cam, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f);
+    /* Eye (2,1.5,4) looking back at the origin-centered triangle:
+     * dir = normalize(-2,-1.5,-4) -> yaw = atan2(-0.438, 0.877) = -0.463,
+     * pitch = asin(-0.312) = -0.317. The triangle must be ON-SCREEN —
+     * a blank reference is layout-insensitive (verified R438). */
+    cam.position = vec3(2.0f, 1.5f, 4.0f);
+    cam.yaw = -0.463f;
+    cam.pitch = -0.317f;
+    InputState dummy = {0};
+    camera_update(&cam, &dummy, 0.0f); /* cache trig for camera_view */
+    Mat4 model = mat4_identity();
+    Mat4 view = camera_view(&cam);
+    Mat4 proj = camera_projection(&cam);
+
+    for (u32 f = 0; f < 3; f++) {
+        RHICmdBuffer *cmd = rhi_frame_begin(render->device);
+        if (!cmd) continue;
+        rhi_cmd_clear_color(cmd, 0.10f, 0.10f, 0.15f, 1.0f);
+        rhi_cmd_bind_pipeline(cmd, render->pipeline);
+        rhi_cmd_set_uniform_mat4(cmd, render->loc_model, &model.e[0][0]);
+        rhi_cmd_set_uniform_mat4(cmd, render->loc_view, &view.e[0][0]);
+        rhi_cmd_set_uniform_mat4(cmd, render->loc_proj, &proj.e[0][0]);
+        rhi_cmd_set_uniform_vec3(cmd, render->loc_light_dir, 0.5f, -0.8f, 0.3f);
+        rhi_cmd_set_uniform_vec3(cmd, render->loc_light_color, 1.0f, 0.95f, 0.9f);
+        rhi_cmd_set_uniform_vec3(cmd, render->loc_ambient, 0.35f, 0.35f, 0.40f);
+        rhi_cmd_set_uniform_vec3(cmd, render->loc_camera_pos,
+                                 cam.position.e[0], cam.position.e[1], cam.position.e[2]);
+        rhi_cmd_bind_texture(cmd, render->test_tex, render->sampler, 0);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+        rhi_cmd_draw_indexed(cmd, 3, 1);
+        rhi_frame_end(render->device);
+        rhi_present(render->device);
+    }
+
+    bool golden_pass = golden_capture_compare(render->device, GOLDEN_CAM_PATH, w, h, true);
+    if (golden_pass) {
+        LOG_INFO("RESULT: GOLDEN CAMERA IMAGE TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: GOLDEN CAMERA IMAGE TEST FAILED");
     }
     return golden_pass;
 }
@@ -234,7 +315,11 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     }
     LOG_INFO("PASS: Shaders compiled (GLSL->SPIR-V)");
 
-    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true};
+    /* R438: disable_culling — the golden camera variant uses the engine's
+     * left-handed view basis (det=-1), which flips triangle winding; with
+     * culling on, the golden triangle is culled and the reference is blank
+     * (layout-insensitive). Main pipeline already runs with culling off. */
+    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true, .disable_culling = true};
     rs->pipeline = rhi_pipeline_create(rs->device, &pdesc);
     rhi_shader_destroy(rs->device, vs);
     rhi_shader_destroy(rs->device, fs);
@@ -346,6 +431,9 @@ int main(int argc, char **argv) {
         platform_get_size(engine.platform, &gw, &gh);
         LOG_INFO("OpenGL build: skipping Vulkan integration suite");
         bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw, gh);
+        /* R438: non-identity camera variant (transpose-sensitive). */
+        bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw, gh);
+        golden_pass = golden_pass && golden_cam_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -353,6 +441,12 @@ int main(int argc, char **argv) {
         LOG_INFO("FINAL RESULT: %s", golden_pass ? "ALL PASSED ✓" : "FAILED");
         return golden_pass ? 0 : 1;
     }
+#endif
+
+#ifdef ENGINE_VULKAN
+    /* R438: reset the validation gate — only messages emitted during the
+     * suite body count (init-time chatter is excluded). */
+    rhi_vk_validation_message_count_reset();
 #endif
 
     /* Test: Skybox */
@@ -1356,10 +1450,30 @@ int main(int argc, char **argv) {
     u32 gw2, gh2;
     platform_get_size(engine.platform, &gw2, &gh2);
     bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw2, gh2);
+    /* R438: non-identity camera variant (transpose-sensitive). */
+    bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw2, gh2);
+    golden_pass = golden_pass && golden_cam_pass;
+
+    /* R438: hard gate — any validation warning/error during the suite fails
+     * it. Skipped when the debug messenger is inactive (no layer/ext). */
+    bool validation_pass = true;
+#ifdef ENGINE_VULKAN
+    if (rhi_vk_validation_gate_active()) {
+        u32 val_msgs = rhi_vk_validation_message_count();
+        validation_pass = (val_msgs == 0);
+        if (!validation_pass) {
+            LOG_ERROR("VALIDATION GATE: %u Vulkan validation message(s) — FAIL", val_msgs);
+        } else {
+            LOG_INFO("VALIDATION GATE: 0 Vulkan validation messages ✓");
+        }
+    } else {
+        LOG_WARN("VALIDATION GATE: debug messenger inactive — gate skipped");
+    }
+#endif
 
     bool all_pass = stress_pass && draw_pass && inst_pass && fbo_pass &&
                     compute_pass && combined_pass && ibl_pass && unified_pass &&
-                    idraw_pass && golden_pass;
+                    idraw_pass && golden_pass && validation_pass;
 
     LOG_INFO("============================================");
     LOG_INFO("FINAL RESULT: %s", all_pass ? "ALL PASSED ✓" : "FAILED");

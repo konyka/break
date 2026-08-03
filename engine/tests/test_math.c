@@ -493,6 +493,52 @@ TEST(mat4_mul_proj_view_matches_generic) {
             ASSERT_FLOAT_EQ(fast.e[c][r], ref.e[c][r], 1e-4f);
 }
 
+/* ---- R438: characterization tests — canonical column-major layout ----
+ * These pin mat4_lookat to the canonical convention shared by
+ * mat4_translation / mat4_ortho / mat4_perspective: translation in
+ * e[3][0..2], last column (0,0,0,1), column-vector M*v semantics. */
+
+/* Column-vector M*v for a point (w=1): r_i = sum_j e[j][i] * v_j. */
+static void mat4_apply_point(const Mat4 *m, Vec3 p, f32 out[4]) {
+    f32 v[4] = { p.e[0], p.e[1], p.e[2], 1.0f };
+    for (int i = 0; i < 4; i++)
+        out[i] = m->e[0][i]*v[0] + m->e[1][i]*v[1] + m->e[2][i]*v[2] + m->e[3][i]*v[3];
+}
+
+TEST(mat4_lookat_canonical_layout) {
+    /* R438: eye=(0,2,8), target=(0,2,0) -> f=(0,0,-1); left-handed basis
+     * s_L=(-1,0,0), u=(0,1,0). Translation must be in e[3][0..2]:
+     * -dot(s_L,eye)=0, -dot(u,eye)=-2, dot(f,eye)=-8. */
+    Mat4 m = mat4_lookat(vec3(0.0f, 2.0f, 8.0f), vec3(0.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    ASSERT_FLOAT_EQ(m.e[3][0],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[3][1], -2.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[3][2], -8.0f, EPS);
+    /* Last column must be exactly (0,0,0,1). */
+    ASSERT_FLOAT_EQ(m.e[0][3], 0.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[1][3], 0.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[2][3], 0.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[3][3], 1.0f, EPS);
+}
+
+TEST(mat4_lookat_translation_moves_points) {
+    /* R438: translating the eye must change the view-space result.
+     * Left-handed basis: camera right = (-1,0,0), so a point 3 units in
+     * world -X from the eye lands at view x = +3. */
+    Mat4 m0 = mat4_lookat(vec3(0.0f, 2.0f, 8.0f), vec3(0.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    Mat4 m1 = mat4_lookat(vec3(3.0f, 2.0f, 8.0f), vec3(3.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    f32 o[4];
+    mat4_apply_point(&m0, vec3(0.0f, 2.0f, 0.0f), o);
+    ASSERT_FLOAT_EQ(o[0],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(o[1],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
+    ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
+    mat4_apply_point(&m1, vec3(0.0f, 2.0f, 0.0f), o);
+    ASSERT_FLOAT_EQ(o[0],  3.0f, EPS);
+    ASSERT_FLOAT_EQ(o[1],  0.0f, EPS);
+    ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
+    ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
+}
+
 TEST(mat4_mul_ortho_diag_off_center) {
     /* R49: non-symmetric ortho (d3x,d3y,d3z all non-zero) must match generic mat4_mul. */
     Mat4 ortho = mat4_ortho(0.0f, 10.0f, 0.0f, 10.0f, 0.1f, 100.0f);
@@ -543,6 +589,9 @@ TEST(mat4_inv_perspective_extreme_fov) {
 }
 
 TEST_MAIN_BEGIN()
+    /* R438: layout characterization */
+    RUN_TEST(mat4_lookat_canonical_layout);
+    RUN_TEST(mat4_lookat_translation_moves_points);
     /* Vec3 */
     RUN_TEST(vec3_add);
     RUN_TEST(vec3_sub);

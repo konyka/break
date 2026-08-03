@@ -18,6 +18,7 @@ void main() {
     vec4 ray_clip = vec4(p, 1.0, 1.0);
     vec4 ray_eye = u_inv_proj * ray_clip;
     ray_eye = vec4(ray_eye.xy, -1.0, 0.0);
-    vec3 ray_world = mat3(u_view) * ray_eye.xyz;
+    // R438: view is now canonical (rows = basis); eye->world needs R^T.
+    vec3 ray_world = transpose(mat3(u_view)) * ray_eye.xyz;
     v_ray_dir = normalize(ray_world);
 }
