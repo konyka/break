@@ -6198,6 +6198,7 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
   4. GL 上传 `glUniformMatrix4fv(..., GL_FALSE, ...)` + 着色器 `u_proj*u_view*world`；R265 已验证 `frustum_from_vp` 用 `vp->e[i][3]±vp->e[i][k]` 提取平面且 `clip_inside` 真值测试通过——整链自洽。
 - 决策：`mat4_lookat` 在引擎实际约定下**正确**；若按报告改到 `e[3][0..2]` 反而与 `camera_view` 不一致、破坏 `top_down_view`（`main.c:2823`）与相机 → 引入 bug。故**不改代码**。`mat4_inverse`（`M*M⁻¹=I`）、`quat_slerp/mul`、`mat4_from_quat`、`perspective/ortho`、`vec3_cross` 复核均正确。
 - 测试缺口（记录）：`test_math.c` 无 `mat4_lookat` 的几何 oracle 用例（如"光轴点→(0,0,z_view)"），仅有 fast/generic 一致性与 `P*inv=I`；`camera_view_matches_lookat` 只比矩阵相等。建议补几何断言以文档化该约定。
+- **R438 更正**：上述"复核证伪"结论错误——它以行主序消费假设自证；GPU 实证（eye.x=0 vs +3 像素级相同、CSM 级联盒塌缩）确认 view 家族转置布局为真实 bug（R62 引入），已于 R438 统一 canonical 列主序修复，详见 Implementation_Status.md R438 段。
 
 ## R288：物理宽相 BVH `bvh_query_pairs` 用 `if(a<b)` 丢弃约半数碰撞对（已完成）
 
