@@ -52,7 +52,7 @@
 - [x] mega-buffer 构建后 `mega_upload_unified_cull` 上传 `GPUCullDrawCmd` + `GPUCullObject`
 - [x] CSM 阴影 + 点光 cubemap 面：默认 `gpucull_dispatch_unified` + `gpucull_execute_indirect_draws`（1 compute pass）
 - [x] 前向/G-Buffer 仍走 CPU frustum+LOD+occ + per-material compact（材质切换需分组 bind）
-- [ ] Hi-Z 并入 unified（占位参数保留，→R13+）
+- [x] Hi-Z 并入 unified（**R436**：剔除侧 R16 起内联采样；生成链 chunk 化 10→3 dispatch——非全 SPD 单 dispatch，原因：RHI 单 dispatch 多 storage image 受限 + 跨 workgroup 自旋死锁风险）
 
 ### [x] R12-2 粒子 `particle_cull.comp` 接线
 - [x] `particles_cull` compute 写 alive index + draw_count
