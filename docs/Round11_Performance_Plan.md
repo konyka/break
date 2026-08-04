@@ -4258,6 +4258,8 @@ if (!ok) return false;
 
 **验收**：双后端构建通过；VK/GL CTest 各 **30/30**。
 
+**R445 更正**：该改动使全屏 blit（z=1.0、write_disable、compare=LESS）在带深度附件的 pass 恒被丢弃——demo 合成链黑屏的根因之一，R445 已按 write_disable && !lequal 关 depth test 修复。
+
 
 ## R233：cull 近平面 + GL shadow compute 后重绑（已完成）
 
