@@ -77,7 +77,7 @@ void point_shadow_compute_face_vp(Vec3 light_pos, f32 radius,
     Mat4 proj = mat4_perspective((f32)(M_PI * 0.5), 1.0f, 0.1f, far_plane);
 
     /* Per-face orthonormal basis (right s, up u, forward f) with s×u = f.
-     * Right-handed (differs from camera_view's left-handed convention); this is
+     * Right-handed — same convention as camera_view after R439; this is
      * self-consistent because the same VP is used for rendering and the shader
      * samples the cubemap by direction with a length()-based depth. */
     static const Vec3 s_axis[POINT_SHADOW_FACES] = {  /* right  */

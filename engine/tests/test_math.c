@@ -506,13 +506,18 @@ static void mat4_apply_point(const Mat4 *m, Vec3 p, f32 out[4]) {
 }
 
 TEST(mat4_lookat_canonical_layout) {
-    /* R438: eye=(0,2,8), target=(0,2,0) -> f=(0,0,-1); left-handed basis
-     * s_L=(-1,0,0), u=(0,1,0). Translation must be in e[3][0..2]:
-     * -dot(s_L,eye)=0, -dot(u,eye)=-2, dot(f,eye)=-8. */
+    /* R438: eye=(0,2,8), target=(0,2,0) -> f=(0,0,-1); right-handed basis
+     * s=cross(f,up)=(1,0,0), u=(0,1,0). Translation must be in e[3][0..2]:
+     * -dot(s,eye)=0, -dot(u,eye)=-2, dot(f,eye)=-8. */
     Mat4 m = mat4_lookat(vec3(0.0f, 2.0f, 8.0f), vec3(0.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
     ASSERT_FLOAT_EQ(m.e[3][0],  0.0f, EPS);
     ASSERT_FLOAT_EQ(m.e[3][1], -2.0f, EPS);
     ASSERT_FLOAT_EQ(m.e[3][2], -8.0f, EPS);
+    /* Basis row 0 must be the right-handed right vector +X (was -X under the
+     * pre-R439 left-handed basis). */
+    ASSERT_FLOAT_EQ(m.e[0][0], 1.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[1][0], 0.0f, EPS);
+    ASSERT_FLOAT_EQ(m.e[2][0], 0.0f, EPS);
     /* Last column must be exactly (0,0,0,1). */
     ASSERT_FLOAT_EQ(m.e[0][3], 0.0f, EPS);
     ASSERT_FLOAT_EQ(m.e[1][3], 0.0f, EPS);
@@ -522,8 +527,8 @@ TEST(mat4_lookat_canonical_layout) {
 
 TEST(mat4_lookat_translation_moves_points) {
     /* R438: translating the eye must change the view-space result.
-     * Left-handed basis: camera right = (-1,0,0), so a point 3 units in
-     * world -X from the eye lands at view x = +3. */
+     * Right-handed basis (R439): camera right = (+1,0,0), so a point 3 units
+     * in world -X from the eye lands at view x = -3. */
     Mat4 m0 = mat4_lookat(vec3(0.0f, 2.0f, 8.0f), vec3(0.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
     Mat4 m1 = mat4_lookat(vec3(3.0f, 2.0f, 8.0f), vec3(3.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
     f32 o[4];
@@ -533,10 +538,38 @@ TEST(mat4_lookat_translation_moves_points) {
     ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
     ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
     mat4_apply_point(&m1, vec3(0.0f, 2.0f, 0.0f), o);
-    ASSERT_FLOAT_EQ(o[0],  3.0f, EPS);
+    ASSERT_FLOAT_EQ(o[0], -3.0f, EPS);
     ASSERT_FLOAT_EQ(o[1],  0.0f, EPS);
     ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
     ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
+}
+
+/* Determinant of the 3x3 rotation block (rows = basis vectors). */
+static f32 rot_block_det(const Mat4 *m) {
+    f32 r0[3] = { m->e[0][0], m->e[1][0], m->e[2][0] };
+    f32 r1[3] = { m->e[0][1], m->e[1][1], m->e[2][1] };
+    f32 r2[3] = { m->e[0][2], m->e[1][2], m->e[2][2] };
+    f32 c[3] = { r1[1]*r2[2] - r1[2]*r2[1],
+                 r1[2]*r2[0] - r1[0]*r2[2],
+                 r1[0]*r2[1] - r1[1]*r2[0] };
+    return r0[0]*c[0] + r0[1]*c[1] + r0[2]*c[2];
+}
+
+TEST(mat4_lookat_right_handed_det) {
+    /* R439: the view basis must be right-handed (det = +1). A left-handed
+     * basis (det = -1) mirrors the image and flips triangle winding.
+     * General off-axis orientation, not the axis-aligned degenerate case. */
+    Mat4 m = mat4_lookat(vec3(3.0f, 2.0f, 5.0f), vec3(-1.0f, 0.5f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    ASSERT_FLOAT_EQ(rot_block_det(&m), 1.0f, 1e-4f);
+
+    /* Screen-space orientation: a point offset along world +X (which has a
+     * positive component along camera right for this pose) must land at
+     * view x > 0 — pinpoints mirroring, not just determinant magnitude. */
+    Vec3 eye = vec3(0.0f, 2.0f, 8.0f);
+    Mat4 v = mat4_lookat(eye, vec3(0.0f, 2.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    f32 o[4];
+    mat4_apply_point(&v, vec3(1.0f, 2.0f, 0.0f), o);
+    ASSERT_TRUE(o[0] > 0.9f && o[0] < 1.1f); /* world +X appears view-right */
 }
 
 TEST(mat4_mul_ortho_diag_off_center) {
@@ -592,6 +625,8 @@ TEST_MAIN_BEGIN()
     /* R438: layout characterization */
     RUN_TEST(mat4_lookat_canonical_layout);
     RUN_TEST(mat4_lookat_translation_moves_points);
+    /* R439: right-handed basis */
+    RUN_TEST(mat4_lookat_right_handed_det);
     /* Vec3 */
     RUN_TEST(vec3_add);
     RUN_TEST(vec3_sub);

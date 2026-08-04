@@ -161,10 +161,10 @@ static inline Vec3 quat_rotate_vec3(Quat q, Vec3 v) {
 Mat4 mat4_identity(void);
 Mat4 mat4_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far);
 Mat4 mat4_perspective(f32 fov_rad, f32 aspect, f32 near, f32 far);
-/* Left-handed view matrix matching camera_view convention.
- * right = -normalize(cross(f,up)), translation in e[3][0..2] (canonical
- * column-major, same as mat4_translation). s_L x u = f (not -f).
- * See camera_view() for the same basis. */
+/* Right-handed view matrix matching camera_view convention (R439).
+ * right = normalize(cross(f,up)), up = cross(s,f), rows [s; u; -f] (det=+1),
+ * translation in e[3][0..2] (canonical column-major, same as
+ * mat4_translation). See camera_view() for the same basis. */
 Mat4 mat4_lookat(Vec3 eye, Vec3 target, Vec3 up);
 /* R73-4: static inline mat4_mul — enables inlining in skeleton/animation hot paths.
  * Saves 128B per-call stack copy (two Mat4 by-value) + eliminates cross-TU call overhead. */

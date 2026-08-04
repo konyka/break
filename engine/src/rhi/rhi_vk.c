@@ -30,6 +30,10 @@
 static _Atomic u32 g_validation_msg_count = 0;
 static bool        g_validation_gate_active = false;
 
+/* R439: guard with NDEBUG — the only consumer (messenger registration in
+ * rhi_vk_init) is itself #ifndef NDEBUG, so Release builds would otherwise
+ * trip -Werror=unused-function on this static. */
+#ifndef NDEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 vk_debug_utils_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                         VkDebugUtilsMessageTypeFlagsEXT type,
@@ -43,6 +47,7 @@ vk_debug_utils_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     }
     return VK_FALSE;
 }
+#endif
 
 u32 rhi_vk_validation_message_count(void) {
     return atomic_load_explicit(&g_validation_msg_count, memory_order_relaxed);

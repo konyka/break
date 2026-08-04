@@ -13,6 +13,37 @@
  * has 96 non-zero pairs in the baked ranges; 512 leaves ample headroom for
  * kern-heavy fonts at ~2 KB per FontRenderer. */
 #define FONT_MAX_KERN_PAIRS 512
+/* R439: SDF bake parameters for stbtt_GetCodepointSDF (stb convention).
+ * FONT_SDF_PADDING: transparent margin around each glyph so the distance
+ * field has room to fall off; quad geometry grows by 2*padding per axis and
+ * stbtt's xoff/yoff already include it, so layout math is untouched.
+ * FONT_SDF_ONEDGE / FONT_SDF_DIST_SCALE: the glyph outline maps to
+ * onedge_value, rising pixel_dist_scale per pixel inward. Only crisp filled
+ * glyphs are needed (no outline/shadow effects), so the field is steep —
+ * 64/255 per px, saturating 2px from the edge — to keep the edge region
+ * linear and maximize bilinear precision; the shader antialiases via fwidth.
+ * FONT_SDF_EDGE: normalized threshold matching onedge_value/255 (~0.502,
+ * 0.5f is within the sub-LSB error of the 8-bit field). */
+#define FONT_SDF_PADDING 4
+#define FONT_SDF_ONEDGE 128
+#define FONT_SDF_DIST_SCALE 64.0f
+#define FONT_SDF_EDGE 0.5f
+
+/* R439: map a sampled SDF distance to coverage — C mirror of the smoothstep
+ * in shaders/font.frag and shaders/font_vk.frag (keep them in lockstep;
+ * test_font_load.c pins both sides). smoothing is the half-width of the
+ * antialiased transition band around FONT_SDF_EDGE; the shaders feed it
+ * fwidth(dist)*0.5, clamped away from 0. A zero width degenerates to a hard
+ * threshold instead of dividing by zero. */
+static inline f32 font_sdf_coverage(f32 dist, f32 smoothing) {
+    f32 lo = FONT_SDF_EDGE - smoothing;
+    f32 hi = FONT_SDF_EDGE + smoothing;
+    if (hi <= lo) return dist >= FONT_SDF_EDGE ? 1.0f : 0.0f;
+    f32 t = (dist - lo) / (hi - lo);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
 
 typedef struct {
     f32 x0, y0, x1, y1;

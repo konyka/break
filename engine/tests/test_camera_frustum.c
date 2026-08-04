@@ -65,15 +65,92 @@ TEST(camera_view_translation_moves_points)
     ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
     ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
 
-    /* Left-handed basis: camera right = (-1,0,0), so a point 3 units in
-     * world -X from the eye lands at view x = +3. */
+    /* Left-handed basis was: camera right = (-1,0,0), view x = +3.
+     * Right-handed basis (R439): camera right = (+1,0,0), so a point 3 units
+     * in world -X from the eye lands at view x = -3. */
     cam.position = vec3(3.0f, 2.0f, 8.0f);
     Mat4 v1 = camera_view(&cam);
     cam_apply_point(&v1, vec3(0.0f, 2.0f, 0.0f), o);
-    ASSERT_FLOAT_EQ(o[0],  3.0f, EPS);
+    ASSERT_FLOAT_EQ(o[0], -3.0f, EPS);
     ASSERT_FLOAT_EQ(o[1],  0.0f, EPS);
     ASSERT_FLOAT_EQ(o[2], -8.0f, EPS);
     ASSERT_FLOAT_EQ(o[3],  1.0f, EPS);
+}
+
+/* Determinant of the 3x3 rotation block (rows = basis vectors). */
+static f32 cam_rot_block_det(const Mat4 *m) {
+    f32 r0[3] = { m->e[0][0], m->e[1][0], m->e[2][0] };
+    f32 r1[3] = { m->e[0][1], m->e[1][1], m->e[2][1] };
+    f32 r2[3] = { m->e[0][2], m->e[1][2], m->e[2][2] };
+    f32 c[3] = { r1[1]*r2[2] - r1[2]*r2[1],
+                 r1[2]*r2[0] - r1[0]*r2[2],
+                 r1[0]*r2[1] - r1[1]*r2[0] };
+    return r0[0]*c[0] + r0[1]*c[1] + r0[2]*c[2];
+}
+
+/* R439: the camera view basis must be right-handed (det = +1). The old
+ * left-handed basis (det = -1) mirrored the image and flipped winding. */
+TEST(camera_view_right_handed_basis)
+{
+    Camera cam;
+    camera_init(&cam, 1.047f, 16.0f/9.0f, 0.1f, 1000.0f); /* eye (0,2,8), yaw=pitch=0 */
+    Mat4 v = camera_view(&cam);
+    ASSERT_FLOAT_EQ(cam_rot_block_det(&v), 1.0f, 1e-4f);
+
+    /* Screen-space orientation at yaw=0 (facing -Z): world +X must appear
+     * view-right (view x > 0). Under the mirrored basis it was view x < 0. */
+    f32 o[4];
+    cam_apply_point(&v, vec3(1.0f, 2.0f, 0.0f), o);
+    ASSERT_TRUE(o[0] > 0.9f && o[0] < 1.1f);
+
+    /* A general pose: still exactly right-handed, and inv_view's rotation
+     * block (the inverse rotation) is right-handed too. */
+    InputState dummy = {0};
+    cam.yaw = 0.8f; cam.pitch = 0.25f;
+    camera_update(&cam, &dummy, 0.016f);
+    Mat4 vg = camera_view(&cam);
+    ASSERT_FLOAT_EQ(cam_rot_block_det(&vg), 1.0f, 1e-4f);
+    Mat4 iv = camera_inv_view(&cam);
+    ASSERT_FLOAT_EQ(cam_rot_block_det(&iv), 1.0f, 1e-4f);
+}
+
+/* R439: WASD strafe must track the (now right-handed) view right vector —
+ * D moves along screen-right, A along screen-left. With the basis flip the
+ * right vector changed sign; camera_update must use the new one or strafing
+ * inverts. */
+TEST(camera_update_strafe_matches_view_right)
+{
+    Camera cam;
+    camera_init(&cam, 1.047f, 16.0f/9.0f, 0.1f, 1000.0f);
+    cam.yaw = 0.7f; cam.pitch = 0.1f;
+    InputState inp = {0};
+    camera_update(&cam, &inp, 0.016f); /* cache trig */
+
+    /* View right (row 0 of camera_view) at this pose. */
+    Mat4 v = camera_view(&cam);
+    Vec3 vright = vec3(v.e[0][0], v.e[1][0], v.e[2][0]);
+
+    Vec3 p0 = cam.position;
+    inp.keys['d'] = 2; /* held */
+    camera_update(&cam, &inp, 0.1f);
+    inp.keys['d'] = 0;
+    Vec3 dp = vec3_sub(cam.position, p0);
+    ASSERT_TRUE(vec3_dot(dp, vright) > 0.2f); /* D = screen-right */
+
+    p0 = cam.position;
+    inp.keys['a'] = 2;
+    camera_update(&cam, &inp, 0.1f);
+    inp.keys['a'] = 0;
+    dp = vec3_sub(cam.position, p0);
+    ASSERT_TRUE(vec3_dot(dp, vright) < -0.2f); /* A = screen-left */
+
+    /* Mouse right (dx > 0) must turn the view toward screen-right:
+     * forward gains a positive component along the pre-turn right vector. */
+    Vec3 f0 = vec3(cam._cp * cam._sy, cam._sp, -cam._cp * cam._cy);
+    inp.mouse_dx = 100.0f;
+    camera_update(&cam, &inp, 0.016f);
+    Vec3 f1 = vec3(cam._cp * cam._sy, cam._sp, -cam._cp * cam._cy);
+    ASSERT_TRUE(vec3_dot(vec3_sub(f1, f0), vright) > 0.0f);
 }
 
 /* R438 characterization: VP ground truth for the default camera. */
@@ -567,6 +644,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(camera_init_defaults);
     RUN_TEST(camera_view_lookat);
     RUN_TEST(camera_view_translation_moves_points);
+    RUN_TEST(camera_view_right_handed_basis);
+    RUN_TEST(camera_update_strafe_matches_view_right);
     RUN_TEST(camera_vp_ground_truth);
     RUN_TEST(camera_view_matches_lookat);
     RUN_TEST(camera_projection_perspective);

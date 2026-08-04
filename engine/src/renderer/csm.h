@@ -6,14 +6,15 @@
 #include <math/math.h>
 
 /* R438: build the cascade light view matrix (canonical column-major layout,
- * left-handed basis matching camera_view). Extracted from main.c so tests
- * can reuse the exact production construction.
+ * R439: right-handed basis matching camera_view — rows [s; u; -f] with
+ * s = normalize(light_dir × (0,1,0)), u = s × f, det = +1). Extracted from
+ * main.c so tests can reuse the exact production construction.
  * `center` is the cascade slice center in world space, `light_dir` the
  * normalized sun direction (unit, pointing from sun toward scene), `extent`
  * the cascade half-extent (eye = center - light_dir*extent).
  * R247: zenith fallback — when light_dir ∥ world up, light_dir × (0,1,0)
  * collapses; fall back to a fixed orthonormal basis in the XZ plane so the
- * matrix stays invertible. */
+ * matrix stays invertible (and right-handed, R439). */
 static inline Mat4 shadow_cascade_lview(Vec3 center, Vec3 light_dir, f32 extent) {
     f32 fx = light_dir.e[0], fy = light_dir.e[1], fz = light_dir.e[2];
     f32 s_len2 = fx * fx + fz * fz;
@@ -33,17 +34,21 @@ static inline Mat4 shadow_cascade_lview(Vec3 center, Vec3 light_dir, f32 extent)
         /* R247: sun_dir ∥ world up (zenith sun — reachable via a loaded
          * save whose sun_elevation ≈ ±π/2, which is not range-clamped).
          * Fall back to a fixed orthonormal basis in the XZ plane (row2 = -f
-         * stays valid for f = (0,±1,0); this keeps lview invertible). */
-        sx = -1.0f; sz = 0.0f;
-        ux =  0.0f; uy = 0.0f; uz = 1.0f;
+         * stays valid for f = (0,±1,0); this keeps lview invertible).
+         * R439: u_z = ±1 with the sign of fy keeps det = +1 for both zenith
+         * directions: rows [(1,0,0); (0,0,±1); (0,∓1,0)] are right-handed. */
+        sx =  1.0f; sz = 0.0f;
+        ux =  0.0f; uy = 0.0f; uz = fy >= 0.0f ? 1.0f : -1.0f;
     }
     f32 ex = center.e[0] - fx * extent;
     f32 ey = center.e[1] - fy * extent;
     f32 ez = center.e[2] - fz * extent;
     Mat4 lview;
     /* Canonical column-major (e[col][row]): basis in rows 0..2, translation
-     * in e[3][0..2] — same layout as camera_view/mat4_lookat after R438. */
-    lview.e[0][0] = -sx;  lview.e[1][0] = 0.0f; lview.e[2][0] = -sz;  lview.e[3][0] = sx*ex + sz*ez;
+     * in e[3][0..2] — same layout as camera_view/mat4_lookat after R438.
+     * R439: row 0 stores +s with translation -dot(s,eye) (right-handed;
+     * pre-flip stored -s / +dot(s,eye)). */
+    lview.e[0][0] = sx;   lview.e[1][0] = 0.0f; lview.e[2][0] = sz;   lview.e[3][0] = -(sx*ex + sz*ez);
     lview.e[0][1] = ux;   lview.e[1][1] = uy;   lview.e[2][1] = uz;   lview.e[3][1] = -(ux*ex + uy*ey + uz*ez);
     lview.e[0][2] = -fx;  lview.e[1][2] = -fy;  lview.e[2][2] = -fz;  lview.e[3][2] = fx*ex + fy*ey + fz*ez;
     lview.e[0][3] = 0.0f; lview.e[1][3] = 0.0f; lview.e[2][3] = 0.0f; lview.e[3][3] = 1.0f;

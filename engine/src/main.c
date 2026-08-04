@@ -2713,6 +2713,10 @@ u32 culled_count = 0;
             static u32 terrain_stats_frame = 0;
             if (engine.frame_count - terrain_stats_frame >= 10 || terrain_stats_frame == 0) {
                 terrain_stats_frame = (u32)engine.frame_count;
+                /* R439: terrain_init failure (e.g. VK terrain shader compile
+                 * error) frees heightmap but leaves grid_size set — the loop
+                 * below would dereference NULL heightmap[0..nn). Skip stats. */
+                if (terrain.heightmap) {
                 f32 hmin = 1e9f, hmax = -1e9f;
                 f32 hsum = 0.0f, hsum2 = 0.0f;
                 u32 n = terrain.grid_size;
@@ -2777,6 +2781,7 @@ u32 culled_count = 0;
                         debug_ui_text(&ui, "Terrain max slope: %.1f° at (%.0f, %.0f)", ms_deg, ms_gx, ms_gz);
                     }
                 }
+                } /* R439: end heightmap NULL guard */
             }
         }
         } /* end terrain stats ui.visible gate */
@@ -4668,7 +4673,9 @@ u32 culled_count = 0;
                                  world->entity_count - world->free_stack_top, ENTITY_SPAWN_CAP);
                     } else {
                     Vec3 ecam_fwd = vec3(cam_cp * cam_sy, cam_sp, -cam_cp * cam_cy);
-                    Vec3 ecam_right = vec3(-cam_cy, 0, -cam_sy);
+                    /* R439: right vector follows the right-handed view basis
+                     * (was (-cy,0,-sy) under the left-handed one). */
+                    Vec3 ecam_right = vec3(cam_cy, 0, cam_sy);
                     for (i32 ei = 0; ei < 3; ei++) {
                         if (!entity_spawn_allowed(world)) break;
                         Vec3 offset = vec3_scale(ecam_right, (f32)(ei - 1) * 1.5f);

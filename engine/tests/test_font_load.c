@@ -269,6 +269,109 @@ TEST(font_kern_draw_offsets_second_glyph)
     ASSERT_FLOAT_EQ(v1[0].x, -0.84f, 1e-4f);
 }
 
+/* ---- R439: SDF coverage mapping ------------------------------------------
+ *
+ * The bake switched from coverage bitmaps to stbtt_GetCodepointSDF; the
+ * fragment shader maps the sampled distance to alpha with a smoothstep whose
+ * transition width comes from fwidth. font_sdf_coverage() is the C mirror of
+ * that mapping (font.h keeps them in lockstep) so the semantics are testable
+ * headlessly. A plain threshold (step) implementation fails
+ * font_sdf_coverage_smooth_transition — that is the regression tripwire for
+ * "someone reverted the SDF path to bitmap sampling". */
+
+TEST(font_sdf_coverage_endpoints)
+{
+    /* far outside / far inside saturate regardless of smoothing width */
+    ASSERT_FLOAT_EQ(font_sdf_coverage(0.0f, 0.05f), 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(font_sdf_coverage(1.0f, 0.05f), 1.0f, 1e-6f);
+    /* the on-edge value maps to half coverage */
+    ASSERT_FLOAT_EQ(font_sdf_coverage(FONT_SDF_EDGE, 0.05f), 0.5f, 1e-6f);
+}
+
+TEST(font_sdf_coverage_smooth_transition)
+{
+    /* half a smoothing width below the edge a step() gives exactly 0; the SDF
+     * mapping must be strictly inside (0, 1) — that is what makes edges
+     * antialiased instead of binary. */
+    f32 a = font_sdf_coverage(FONT_SDF_EDGE - 0.025f, 0.05f);
+    ASSERT_TRUE(a > 0.0f && a < 1.0f);
+    /* monotonic across the edge */
+    ASSERT_TRUE(font_sdf_coverage(0.48f, 0.05f) < font_sdf_coverage(0.52f, 0.05f));
+}
+
+TEST(font_sdf_coverage_zero_smoothing_degenerates_to_step)
+{
+    /* smoothing == 0 must not divide by zero; it collapses to a hard edge
+     * (white patch / constant regions where fwidth is 0 hit this path in the
+     * shader, which clamps the width instead). */
+    ASSERT_FLOAT_EQ(font_sdf_coverage(0.0f, 0.0f), 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(font_sdf_coverage(1.0f, 0.0f), 1.0f, 1e-6f);
+}
+
+/* ---- R439: shader contract ------------------------------------------------
+ *
+ * The CPU cannot assert rendered pixels headlessly, but it can assert that
+ * both backend font fragment shaders actually implement the SDF sampling
+ * path. Reverting either shader to plain alpha sampling (step at 0.5) turns
+ * this test red. Shader files are located relative to this source file so
+ * the test is independent of the ctest working directory. */
+
+static bool read_shader_source(const char *name, char *buf, usize cap) {
+    const char *candidates[3];
+    char rel[1024];
+    const char *slash = strrchr(__FILE__, '/');
+    if (slash) {
+        snprintf(rel, sizeof(rel), "%.*s/../shaders/%s",
+                 (int)(slash - __FILE__), __FILE__, name);
+        candidates[0] = rel;
+        candidates[1] = NULL;
+    } else {
+        candidates[0] = NULL;
+    }
+    candidates[1] = name; /* last-resort: bare name in cwd */
+    candidates[2] = NULL;
+    for (usize i = 0; i < 2 && candidates[i]; i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f) continue;
+        usize n = fread(buf, 1, cap - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        if (n > 0) return true;
+    }
+    return false;
+}
+
+/* R439: strip block and line comments in place so keyword scans below match
+ * code, not prose — the shader's own R439 comment mentions smoothstep/fwidth
+ * and defeated a naive strstr during reverse verification. */
+static void strip_glsl_comments(char *s) {
+    for (char *p = s; *p;) {
+        if (p[0] == '/' && p[1] == '/') {
+            while (*p && *p != '\n') *p++ = ' ';
+        } else if (p[0] == '/' && p[1] == '*') {
+            *p++ = ' '; *p++ = ' ';
+            while (*p && !(p[0] == '*' && p[1] == '/')) *p++ = ' ';
+            if (*p) { *p++ = ' '; *p++ = ' '; }
+        } else {
+            p++;
+        }
+    }
+}
+
+TEST(font_shaders_use_sdf_sampling)
+{
+    const char *frags[] = { "font.frag", "font_vk.frag" };
+    for (usize i = 0; i < sizeof(frags) / sizeof(frags[0]); i++) {
+        char src[4096];
+        ASSERT_TRUE(read_shader_source(frags[i], src, sizeof(src)));
+        strip_glsl_comments(src);
+        /* smoothstep( = antialiased threshold call; fwidth( = screen-space
+         * transition width. Plain bitmap sampling calls neither. */
+        ASSERT_NOT_NULL(strstr(src, "smoothstep("));
+        ASSERT_NOT_NULL(strstr(src, "fwidth("));
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(font_init_rejects_missing_file);
     RUN_TEST(font_init_rejects_empty_file);
@@ -282,4 +385,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(font_kern_width_not_across_newline);
     RUN_TEST(font_kern_width_unknown_cp_falls_back_for_pair);
     RUN_TEST(font_kern_draw_offsets_second_glyph);
+    RUN_TEST(font_sdf_coverage_endpoints);
+    RUN_TEST(font_sdf_coverage_smooth_transition);
+    RUN_TEST(font_sdf_coverage_zero_smoothing_degenerates_to_step);
+    RUN_TEST(font_shaders_use_sdf_sampling);
 TEST_MAIN_END()

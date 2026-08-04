@@ -179,6 +179,20 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     }
 
     RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true,
+                             /* R439: culling re-audit — kept OFF deliberately.
+                              * Winding analysis says enabling would be safe:
+                              * index gen emits (tl,bl,tr)/(tr,bl,br) whose
+                              * geometric normal is +Y (CCW-front seen from
+                              * above, GL convention; VK matches via negative
+                              * viewport height + VK_FRONT_FACE_CLOCKWISE), and
+                              * R439 validated that convention with culling ON
+                              * on the main pipeline. But a heightfield viewed
+                              * from above is ~100% front-facing, so back-face
+                              * culling culls nothing and buys no perf, while a
+                              * wrong call would blank the terrain in BOTH
+                              * backends with no pixel-level gate covering it
+                              * (test_vulkan does not screenshot terrain).
+                              * Zero benefit, non-zero unverifiable risk → keep. */
                              .disable_culling = true,
                              .terrain_layout = used_terrain_shaders,
                              .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};

@@ -155,11 +155,16 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
             int advance, lsb;
             stbtt_GetCodepointHMetrics(&fi, (int)cp, &advance, &lsb);
 
-            int x0, y0, x1, y1;
-            stbtt_GetCodepointBitmapBox(&fi, (int)cp, scale, scale, &x0, &y0, &x1, &y1);
-
-            int gw = x1 - x0;
-            int gh = y1 - y0;
+            /* R439: bake a signed distance field instead of a coverage bitmap
+             * — the atlas stays single-channel and layout (advance) is
+             * unchanged, but magnification no longer pixelates.
+             * stbtt_GetCodepointSDF returns NULL for outline-less glyphs
+             * (space etc.) leaving gw/gh at 0; on success its x0/y0 already
+             * include FONT_SDF_PADDING, so quad geometry below just works. */
+            int x0 = 0, y0 = 0, gw = 0, gh = 0;
+            unsigned char *sdf = stbtt_GetCodepointSDF(&fi, scale, (int)cp,
+                FONT_SDF_PADDING, FONT_SDF_ONEDGE, FONT_SDF_DIST_SCALE,
+                &gw, &gh, &x0, &y0);
 
             if (px + (u32)gw + 1 >= FONT_ATLAS_SIZE) {
                 px = 1;
@@ -168,12 +173,15 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
             }
             if (py + (u32)gh + 1 >= FONT_ATLAS_SIZE) {
                 LOG_WARN("Font: atlas overflow at codepoint U+%04X", cp);
+                stbtt_FreeSDF(sdf, NULL);
                 break;
             }
 
-            if (gw > 0 && gh > 0) {
-                stbtt_MakeCodepointBitmap(&fi, atlas + py * FONT_ATLAS_SIZE + px,
-                    gw, gh, FONT_ATLAS_SIZE, scale, scale, (int)cp);
+            if (sdf) {
+                for (int row = 0; row < gh; row++)
+                    memcpy(atlas + (usize)(py + (u32)row) * FONT_ATLAS_SIZE + px,
+                           sdf + (usize)row * (usize)gw, (usize)gw);
+                stbtt_FreeSDF(sdf, NULL);
             }
 
             u32 gi = fr->glyph_count++;

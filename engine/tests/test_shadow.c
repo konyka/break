@@ -221,8 +221,37 @@ TEST(cascade_vp_corners_fill_unit_cube) {
     ASSERT_TRUE(max_z - min_z > 0.5f);
 }
 
+/* Determinant of the 3x3 rotation block (rows = basis vectors). */
+static f32 lview_rot_det(const Mat4 *m) {
+    f32 r0[3] = { m->e[0][0], m->e[1][0], m->e[2][0] };
+    f32 r1[3] = { m->e[0][1], m->e[1][1], m->e[2][1] };
+    f32 r2[3] = { m->e[0][2], m->e[1][2], m->e[2][2] };
+    f32 c[3] = { r1[1]*r2[2] - r1[2]*r2[1],
+                 r1[2]*r2[0] - r1[0]*r2[2],
+                 r1[0]*r2[1] - r1[1]*r2[0] };
+    return r0[0]*c[0] + r0[1]*c[1] + r0[2]*c[2];
+}
+
+/* R439: the cascade light view must use the same right-handed basis as
+ * camera_view (det = +1) — including the zenith fallback. The old
+ * left-handed lview mirrored the shadow-map parameterization; depth render
+ * and sampling shared it so shadows stayed self-consistent, but the basis
+ * flip must carry CSM along. */
+TEST(cascade_lview_right_handed_det) {
+    Mat4 lv = build_lview(vec3(10.0f, 5.0f, -7.0f),
+                          vec3_normalize(vec3(0.3f, -1.0f, 0.2f)), 50.0f);
+    ASSERT_FLOAT_EQ(lview_rot_det(&lv), 1.0f, 1e-4f);
+
+    /* Zenith fallback (light_dir ∥ world up), both signs. */
+    Mat4 lz_down = build_lview(vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, -1.0f, 0.0f), 50.0f);
+    ASSERT_FLOAT_EQ(lview_rot_det(&lz_down), 1.0f, 1e-4f);
+    Mat4 lz_up = build_lview(vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f), 50.0f);
+    ASSERT_FLOAT_EQ(lview_rot_det(&lz_up), 1.0f, 1e-4f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(cascade_vp_corners_fill_unit_cube);
+    RUN_TEST(cascade_lview_right_handed_det);
     RUN_TEST(shadow_snap_stable_under_subtexel_camera_move);
     RUN_TEST(shadow_snap_shifts_only_whole_texels);
     RUN_TEST(shadow_snap_idempotent);

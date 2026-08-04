@@ -315,11 +315,12 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     }
     LOG_INFO("PASS: Shaders compiled (GLSL->SPIR-V)");
 
-    /* R438: disable_culling — the golden camera variant uses the engine's
-     * left-handed view basis (det=-1), which flips triangle winding; with
-     * culling on, the golden triangle is culled and the reference is blank
-     * (layout-insensitive). Main pipeline already runs with culling off. */
-    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true, .disable_culling = true};
+    /* R439: culling re-enabled — the view basis is now right-handed (det=+1),
+     * so the golden triangle's CCW winding is front-facing again (under the
+     * pre-flip left-handed basis it appeared CW and was culled, forcing
+     * disable_culling). The reject_blank golden guard now double-duties as a
+     * winding regression check: wrong chirality -> triangle culled -> blank. */
+    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true};
     rs->pipeline = rhi_pipeline_create(rs->device, &pdesc);
     rhi_shader_destroy(rs->device, vs);
     rhi_shader_destroy(rs->device, fs);
@@ -1062,8 +1063,10 @@ int main(int argc, char **argv) {
                 RHIShader fs = fsrc_ibl ? rhi_shader_create(render.device, fsrc_ibl, fl_ibl, true)
                                         : rhi_shader_create(render.device, fsrc, fl, true);
                 if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
+                    /* R439: culling on — right-handed view basis keeps the
+                     * test triangle front-facing (identity view, CCW). */
                     RHIPipelineDesc d = {.vert = vs, .frag = fs, .uses_textures = true,
-                                         .uses_texel_buffer = true, .disable_culling = true,
+                                         .uses_texel_buffer = true,
                                          .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
                     cl_pipe = rhi_pipeline_create(render.device, &d);
                 }

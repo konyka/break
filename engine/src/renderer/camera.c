@@ -26,7 +26,7 @@ Mat4 camera_view(const Camera *cam) {
      * (2 vec3_normalize + 2 vec3_cross + mat4_identity) and 4 redundant trig calls.
      *
      * forward  f = (cp*sy, sp, -cp*cy)     — analytically unit length
-     * right    s = (-cy, 0, -sy)            — analytically unit length
+     * right    s = (cy, 0, sy)             — analytically unit length
      * up       u = s × f = (-sy*sp, cp, cy*sp) — analytically unit length
      *
      * view = | s.x   s.y   s.z   -dot(s,eye) |
@@ -34,6 +34,10 @@ Mat4 camera_view(const Camera *cam) {
      *        |-f.x  -f.y  -f.z    dot(f,eye) |
      *        |  0     0     0          1      |
      *
+     * R439: right-handed basis — s = cross(f, world_up) gives det = +1 (the
+     * pre-R439 s = (-cy,0,-sy) was left-handed: mirrored image, flipped
+     * winding). Stored row 1 is unchanged by the flip: the old basis kept
+     * u = f × s_L, which equals s × f for the new s = -s_L.
      * R438: stored canonical column-major (e[col][row]) — each row of the
      * math matrix above is written across e[0..3][row], translation lands in
      * e[3][0..2] (same layout as mat4_translation; uploaded untransposed). */
@@ -41,9 +45,9 @@ Mat4 camera_view(const Camera *cam) {
     f32 ex = cam->position.e[0], ey = cam->position.e[1], ez = cam->position.e[2];
 
     Mat4 m;
-    /* Row 0: right s = (-cy, 0, -sy) */
-    m.e[0][0] = -cy;      m.e[1][0] = 0.0f; m.e[2][0] = -sy;
-    m.e[3][0] = cy * ex + sy * ez;
+    /* Row 0: right s = (cy, 0, sy) */
+    m.e[0][0] = cy;       m.e[1][0] = 0.0f; m.e[2][0] = sy;
+    m.e[3][0] = -(cy * ex + sy * ez);
     /* Row 1: up u = (-sy*sp, cp, cy*sp) */
     m.e[0][1] = -sy * sp; m.e[1][1] = cp;   m.e[2][1] = cy * sp;
     m.e[3][1] = sy * sp * ex - cp * ey - cy * sp * ez;
@@ -64,8 +68,8 @@ Mat4 camera_inv_view(const Camera *cam) {
     f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
     f32 ex = cam->position.e[0], ey = cam->position.e[1], ez = cam->position.e[2];
     Mat4 m;
-    /* col0 = s = (-cy, 0, -sy) */
-    m.e[0][0] = -cy;      m.e[0][1] = 0.0f;      m.e[0][2] = -sy;      m.e[0][3] = 0.0f;
+    /* col0 = s = (cy, 0, sy) — R439 right-handed right vector */
+    m.e[0][0] = cy;       m.e[0][1] = 0.0f;      m.e[0][2] = sy;       m.e[0][3] = 0.0f;
     /* col1 = u = (-sy*sp, cp, cy*sp) */
     m.e[1][0] = -sy * sp; m.e[1][1] = cp;        m.e[1][2] = cy * sp;  m.e[1][3] = 0.0f;
     /* col2 = -f = (-cp*sy, -sp, cp*cy) */
@@ -92,7 +96,9 @@ void camera_update(Camera *cam, const InputState *input, f32 dt) {
     /* Save pre-update cached trig for WASD movement (move where you were looking). */
     f32 cy = cam->_cy, sy = cam->_sy, cp = cam->_cp, sp = cam->_sp;
     Vec3 fwd = {{cp * sy, sp, -cp * cy}};
-    Vec3 right = {{-cy, 0.0f, -sy}};
+    /* R439: right vector follows the right-handed view basis — (cy,0,sy),
+     * the negation of the pre-flip left-handed right. Keeps D = screen-right. */
+    Vec3 right = {{cy, 0.0f, sy}};
 
     /* R367: Shift+WASD is brush/ambient/teleport/mass — skip move while Shift held. */
     if (!input_key_down(input, 289)) {

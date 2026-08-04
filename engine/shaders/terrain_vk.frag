@@ -12,7 +12,13 @@ layout(push_constant) uniform PushConstants {
     vec4 u_light_dir_bias;    /* 192 */
     vec4 u_light_color_watery;/* 208 */
     vec4 u_ambient_time;      /* 224 */
-    vec4 u_camera_pos;        /* 240 */
+    /* R439: member renamed u_camera_pos -> u_cam_pos. The u_fog_strength macro
+     * below must expand to pc.<member>.w, but with the old name its body
+     * contained the token u_camera_pos, which the preprocessor then expanded
+     * recursively (u_camera_pos is itself a macro): pc.(pc.u_cam_pos.xyz).w —
+     * "syntax error, unexpected LEFT_PAREN" at the fog mix line. Member names
+     * are shader-local (push block layout is by offset), so the rename is free. */
+    vec4 u_cam_pos;           /* 240 */
 } pc;
 
 #define u_light_dir   (pc.u_light_dir_bias.xyz)
@@ -21,8 +27,8 @@ layout(push_constant) uniform PushConstants {
 #define u_water_y     (pc.u_light_color_watery.w)
 #define u_ambient     (pc.u_ambient_time.xyz)
 #define u_time        (pc.u_ambient_time.w)
-#define u_camera_pos  (pc.u_camera_pos.xyz)
-#define u_fog_strength (pc.u_camera_pos.w) /* R225-B: packed; push block full @256 */
+#define u_camera_pos  (pc.u_cam_pos.xyz)
+#define u_fog_strength (pc.u_cam_pos.w) /* R225-B: packed; push block full @256 */
 #define u_light_vp    (pc.u_light_vp)
 
 layout(binding = 0) uniform sampler2D u_albedo;
