@@ -422,7 +422,7 @@
 
 | 项 | 说明 | 优先级 |
 |----|------|--------|
-| DrawBench CI 集成 | CTest 或脚本纳入回归 | P3 |
+| DrawBench CI 集成 | CTest 或脚本纳入回归；**R440 已做**（ci.yml gl/vk 双 job 无头套件；DrawBench 本身需真 GPU 不入 CI，理由见 Build_Guide §6.4） | P3 |
 | NetRep peer 压缩 | delta.log 轮转 / 压缩；**R435 已做轮转**（NETREP_DELTA_MAX_BYTES 默认 1MiB，重写基线+原子替换；压缩未做） | P3 |
 
 ---
