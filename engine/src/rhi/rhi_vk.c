@@ -2242,12 +2242,28 @@ static VkRenderPass vk_mrt_pipeline_render_pass(VKBackend *vk, const RHIFormat *
     sp.pColorAttachments = color_refs;
     sp.pDepthStencilAttachment = &depth_ref;
 
+    /* R442: must match rhi_mrt_fbo_create's pass exactly — render-pass
+     * compatibility (VUID-vkCmdDrawIndexedIndirectCount-renderPass-02684)
+     * compares dependencyCount; the FBO pass has 1, this had 0, so the R440
+     * MRT pipeline was never actually compatible with the G-buffer pass. */
+    VkSubpassDependency dep = {0};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     ci.attachmentCount = attachment_count + 1;
     ci.pAttachments = atts;
     ci.subpassCount = 1;
     ci.pSubpasses = &sp;
+    ci.dependencyCount = 1;
+    ci.pDependencies = &dep;
 
     VkRenderPass rp = VK_NULL_HANDLE;
     if (vkCreateRenderPass(vk->device, &ci, NULL, &rp) != VK_SUCCESS) {
@@ -6962,7 +6978,10 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    /* R442: +TRANSFER_SRC so the G-buffer attachments can be read back via
+     * rhi_texture_read_pixels (TEST 12 pixel gate). */
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(vk->device, &ci, NULL, out_img) != VK_SUCCESS) {

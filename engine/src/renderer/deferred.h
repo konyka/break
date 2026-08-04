@@ -46,6 +46,10 @@ typedef struct {
     /* Pipelines. */
     RHIPipeline gbuffer_pipeline;     /* G-Buffer write (geometry pass).       */
     RHIPipeline lighting_pipeline;    /* Full-screen quad: G-Buffer -> shaded. */
+    /* R442: texture-array G-Buffer variant (gbuffer_arr*) for the
+     * material-indirect single-execute mega draw. Invalid handle disables
+     * that path (the caller falls back to the per-group loop). */
+    RHIPipeline gbuffer_arr_pipeline;
 
     u32  width;
     u32  height;
@@ -61,6 +65,12 @@ typedef struct {
     i32 _loc_gbuf_view;
     i32 _loc_gbuf_proj;
     i32 _loc_gbuf_prev_vp;
+
+    /* R442: cached uniform locations of gbuffer_arr_pipeline (-1 if absent). */
+    i32 _loc_gbuf_arr_model;
+    i32 _loc_gbuf_arr_view;
+    i32 _loc_gbuf_arr_proj;
+    i32 _loc_gbuf_arr_prev_vp;
 
     /* Cached lighting-pass uniform locations (-1 if absent). */
     i32 _loc_inv_vp;

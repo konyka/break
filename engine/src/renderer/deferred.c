@@ -136,6 +136,15 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
     sys->_loc_gbuf_proj  = rhi_pipeline_get_uniform_location(dev, gp, "u_proj");
     sys->_loc_gbuf_prev_vp = rhi_pipeline_get_uniform_location(dev, gp, "u_prev_vp");
 
+    /* R442: array-variant G-Buffer pass pipeline uniforms. */
+    if (rhi_handle_valid(sys->gbuffer_arr_pipeline)) {
+        RHIPipeline ap = sys->gbuffer_arr_pipeline;
+        sys->_loc_gbuf_arr_model = rhi_pipeline_get_uniform_location(dev, ap, "u_model");
+        sys->_loc_gbuf_arr_view  = rhi_pipeline_get_uniform_location(dev, ap, "u_view");
+        sys->_loc_gbuf_arr_proj  = rhi_pipeline_get_uniform_location(dev, ap, "u_proj");
+        sys->_loc_gbuf_arr_prev_vp = rhi_pipeline_get_uniform_location(dev, ap, "u_prev_vp");
+    }
+
     /* Lighting pass pipeline uniforms. */
     RHIPipeline p = sys->lighting_pipeline;
     sys->_loc_inv_vp       = rhi_pipeline_get_uniform_location(dev, p, "u_inv_vp");
@@ -174,6 +183,10 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_gbuf_view       = -1;
     sys->_loc_gbuf_proj       = -1;
     sys->_loc_gbuf_prev_vp    = -1;
+    sys->_loc_gbuf_arr_model  = -1;
+    sys->_loc_gbuf_arr_view   = -1;
+    sys->_loc_gbuf_arr_proj   = -1;
+    sys->_loc_gbuf_arr_prev_vp = -1;
 
     if (width == 0u || height == 0u) {
         LOG_WARN("deferred: zero-size init (%ux%u) -- skipping", width, height);
@@ -207,6 +220,20 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         sys->gbuffer_pipeline = defrd_compile_pipeline(
             dev, "shaders/gbuffer.vert", "shaders/gbuffer.frag", &gbuf_desc);
 #endif
+
+        /* R442: texture-array variant for the material-indirect single-
+         * execute mega draw (same MRT render-pass compat via mrt_formats).
+         * Optional: a missing/failed shader leaves the handle invalid and the
+         * caller keeps the per-group path — not fatal for deferred_init. */
+#ifdef ENGINE_VULKAN
+        sys->gbuffer_arr_pipeline = defrd_compile_pipeline(
+            dev, "shaders/gbuffer_arr_vk.vert", "shaders/gbuffer_arr_vk.frag", &gbuf_desc);
+#else
+        sys->gbuffer_arr_pipeline = defrd_compile_pipeline(
+            dev, "shaders/gbuffer_arr.vert", "shaders/gbuffer_arr.frag", &gbuf_desc);
+#endif
+        if (!rhi_handle_valid(sys->gbuffer_arr_pipeline))
+            LOG_WARN("deferred: gbuffer_arr pipeline unavailable -- array path disabled");
     }
 
     /* Lighting pipeline: full-screen triangle, no vertex input, no depth. */
@@ -300,6 +327,11 @@ void deferred_destroy(DeferredSystem *sys, RHIDevice *dev) {
     if (rhi_handle_valid(sys->gbuffer_pipeline)) {
         rhi_pipeline_destroy(dev, sys->gbuffer_pipeline);
         sys->gbuffer_pipeline = RHI_HANDLE_NULL;
+    }
+    /* R442 */
+    if (rhi_handle_valid(sys->gbuffer_arr_pipeline)) {
+        rhi_pipeline_destroy(dev, sys->gbuffer_arr_pipeline);
+        sys->gbuffer_arr_pipeline = RHI_HANDLE_NULL;
     }
 
     defrd_release_targets(sys, dev);

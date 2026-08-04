@@ -48,6 +48,202 @@ f32 font_kern_advance(const FontRenderer *fr, u32 cp_a, u32 cp_b) {
     return 0.0f;
 }
 
+/* ---- R442: minimal GPOS PairPos extractor ---------------------------------
+ *
+ * stb_truetype only reads the legacy 'kern' table (format 0); fonts that kern
+ * exclusively through GPOS (very common in modern fonts) bake an empty pair
+ * table. This is a self-contained byte parser for the GPOS 'kern' feature's
+ * Pair Adjustment Positioning subtables (OpenType spec: GPOS header ->
+ * FeatureList ('kern') -> LookupList -> LookupType 2 -> PairPos Format 1).
+ * PairPos Format 2 (class-based) subtables are skipped — see the Format-2
+ * note below.
+ *
+ * This parses untrusted input, so the rule is: no byte is dereferenced until
+ * a range check against the GPOS table length has proven it in bounds. All
+ * multi-byte reads are explicit big-endian; counts and offsets are u16/u32
+ * from the file and never trusted. Any inconsistency truncates the result,
+ * never the process. */
+
+/* Overflow-safe: [off, off+len) lies inside [0, n). */
+static bool gpos_range_ok(usize n, usize off, usize len) {
+    return off <= n && len <= n - off;
+}
+/* Callers must have proven p+2/p+4 in bounds via gpos_range_ok. */
+static u16 gpos_u16(const u8 *p) { return (u16)(((u16)p[0] << 8) | p[1]); }
+static u32 gpos_u32(const u8 *p) {
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+}
+static u32 gpos_popcount(u16 v) {
+    u32 c = 0;
+    while (v) { c += v & 1u; v >>= 1; }
+    return c;
+}
+
+/* Coverage table: glyph id at coverage index `idx` (coverage indices are what
+ * PairPos Format 1 pair sets key on). Returns false when idx is past the
+ * covered glyphs or the table is malformed/unsupported. Format 2 range walks
+ * are O(ranges) per call but callers visit indices ascending, so a cursor is
+ * threaded through *cur_r / *cur_base to keep the total walk linear. */
+static bool gpos_coverage_glyph(const u8 *g, usize gn, usize cov_off, u32 idx,
+                                u32 *cur_r, u32 *cur_base, u16 *out) {
+    if (!gpos_range_ok(gn, cov_off, 4)) return false;
+    u16 fmt = gpos_u16(g + cov_off);
+    if (fmt == 1) {
+        u32 count = gpos_u16(g + cov_off + 2);
+        if (idx >= count) return false;
+        if (!gpos_range_ok(gn, cov_off + 4, (usize)count * 2)) return false;
+        *out = gpos_u16(g + cov_off + 4 + (usize)idx * 2);
+        return true;
+    }
+    if (fmt == 2) {
+        u32 ranges = gpos_u16(g + cov_off + 2);
+        if (!gpos_range_ok(gn, cov_off + 4, (usize)ranges * 6)) return false;
+        /* Ranges are sorted and non-overlapping per spec, but a hostile file
+         * could violate that; the walk still terminates and stays in bounds. */
+        while (*cur_r < ranges) {
+            const u8 *r = g + cov_off + 4 + (usize)(*cur_r) * 6;
+            u32 start = gpos_u16(r), end = gpos_u16(r + 2);
+            u32 cnt = end >= start ? end - start + 1 : 0;
+            if (idx < *cur_base + cnt) {
+                *out = (u16)(start + (idx - *cur_base));
+                return true;
+            }
+            *cur_base += cnt;
+            (*cur_r)++;
+        }
+        return false;
+    }
+    return false; /* unknown coverage format */
+}
+
+/* One PairPos Format 1 subtable: pair sets keyed by coverage index, each
+ * record { secondGlyph, valueRecord1, valueRecord2 }. Only valueRecord1's
+ * XAdvance is harvested (kerning is horizontal advance adjustment). */
+static u32 gpos_pairpos_fmt1(const u8 *g, usize gn, usize st,
+                             FontGposKern *out, u32 capacity, u32 count) {
+    if (!gpos_range_ok(gn, st, 10)) return count;
+    /* st+0 posFormat (==1, checked by caller), st+2 coverage, st+4/6 value
+     * formats, st+8 pairSetCount. */
+    usize cov_off = st + gpos_u16(g + st + 2);
+    u16 vf1 = gpos_u16(g + st + 4);
+    u16 vf2 = gpos_u16(g + st + 6);
+    u32 psc = gpos_u16(g + st + 8);
+    if (!gpos_range_ok(gn, st + 10, (usize)psc * 2)) return count;
+
+    /* Value record stride: 2 bytes per set bit (x/y placement, x/y advance,
+     * and the device/variation offset slots all occupy one field each).
+     * XAdvance (bit 0x4) sits after XPlacement/YPlacement within record 1. */
+    u32 rec = 2 + 2 * gpos_popcount(vf1) + 2 * gpos_popcount(vf2);
+    bool has_xa = (vf1 & 0x4u) != 0;
+    u32 xa_off = 2 + 2 * gpos_popcount((u16)(vf1 & 0x3u));
+
+    u32 cur_r = 0, cur_base = 0; /* coverage format 2 cursor */
+    for (u32 p = 0; p < psc && count < capacity; p++) {
+        u16 g1;
+        if (!gpos_coverage_glyph(g, gn, cov_off, p, &cur_r, &cur_base, &g1))
+            break; /* fewer pair sets than covered glyphs: nothing more to do */
+        usize ps = st + gpos_u16(g + st + 10 + (usize)p * 2);
+        if (!gpos_range_ok(gn, ps, 2)) continue;
+        u32 pvc = gpos_u16(g + ps);
+        if (!gpos_range_ok(gn, ps + 2, (usize)pvc * rec)) continue;
+        for (u32 q = 0; q < pvc && count < capacity; q++) {
+            const u8 *rp = g + ps + 2 + (usize)q * rec;
+            u16 g2 = gpos_u16(rp);
+            i16 xa = has_xa ? (i16)gpos_u16(rp + xa_off) : 0;
+            if (xa == 0) continue; /* only non-zero pairs are stored (R436) */
+            out[count++] = (FontGposKern){ g1, g2, xa };
+        }
+    }
+    return count;
+}
+
+u32 font_gpos_kern_extract(const u8 *ttf, usize ttf_size,
+                           FontGposKern *out, u32 capacity) {
+    if (!ttf || !out || capacity == 0) return 0;
+    u32 count = 0;
+
+    /* sfnt offset table + directory: locate 'GPOS' (stbtt__find_table is
+     * stb-internal, hence this walk). TTC files are not handled — the bake
+     * path rejects them before here via stbtt_GetFontOffsetForIndex. */
+    if (!gpos_range_ok(ttf_size, 0, 12)) return 0;
+    u32 num_tables = gpos_u16(ttf + 4);
+    if (!gpos_range_ok(ttf_size, 12, (usize)num_tables * 16)) return 0;
+    usize gpos_off = 0, gpos_len = 0;
+    bool found = false;
+    for (u32 i = 0; i < num_tables; i++) {
+        const u8 *r = ttf + 12 + (usize)i * 16;
+        if (memcmp(r, "GPOS", 4) == 0) {
+            gpos_off = gpos_u32(r + 8);
+            gpos_len = gpos_u32(r + 12);
+            found = gpos_range_ok(ttf_size, gpos_off, gpos_len);
+            break;
+        }
+    }
+    if (!found) return 0;
+    const u8 *g = ttf + gpos_off;
+    const usize gn = gpos_len; /* every check below is against the table end */
+
+    /* GPOS header: version(4), scriptList, featureList, lookupList offsets.
+     * Version 1.1 appends a featureVariations offset we do not need. */
+    if (!gpos_range_ok(gn, 0, 10)) return 0;
+    usize fl = gpos_u16(g + 6);
+    usize ll = gpos_u16(g + 8);
+
+    /* FeatureList: collect lookup indices of every 'kern' feature. All
+     * scripts/langsystems are taken together — kerning pairs are glyph-level
+     * and the bake only ever queries glyphs it has, so a superset is safe
+     * (e.g. LiberationSans has one Latin lookup and one Hebrew lookup). */
+    if (!gpos_range_ok(gn, fl, 2)) return 0;
+    u32 fcount = gpos_u16(g + fl);
+    if (!gpos_range_ok(gn, fl + 2, (usize)fcount * 6)) return 0;
+    u16 lookup_idx[64]; /* dedupe: the same lookup can serve many features */
+    u32 n_lookups = 0;
+    for (u32 i = 0; i < fcount; i++) {
+        const u8 *rec = g + fl + 2 + (usize)i * 6;
+        if (memcmp(rec, "kern", 4) != 0) continue;
+        usize ft = fl + gpos_u16(rec + 4);
+        if (!gpos_range_ok(gn, ft, 4)) continue;
+        u32 lc = gpos_u16(g + ft + 2);
+        if (!gpos_range_ok(gn, ft + 4, (usize)lc * 2)) continue;
+        for (u32 j = 0; j < lc; j++) {
+            u16 li = gpos_u16(g + ft + 4 + (usize)j * 2);
+            bool seen = false;
+            for (u32 k = 0; k < n_lookups; k++)
+                if (lookup_idx[k] == li) { seen = true; break; }
+            if (!seen && n_lookups < 64) lookup_idx[n_lookups++] = li;
+        }
+    }
+    if (n_lookups == 0) return 0;
+
+    /* LookupList: walk the collected lookups, harvest PairPos subtables. */
+    if (!gpos_range_ok(gn, ll, 2)) return 0;
+    u32 lcount = gpos_u16(g + ll);
+    if (!gpos_range_ok(gn, ll + 2, (usize)lcount * 2)) return 0;
+    for (u32 i = 0; i < n_lookups && count < capacity; i++) {
+        if (lookup_idx[i] >= lcount) continue;
+        usize lo = ll + gpos_u16(g + ll + 2 + (usize)lookup_idx[i] * 2);
+        if (!gpos_range_ok(gn, lo, 6)) continue;
+        if (gpos_u16(g + lo) != 2) continue; /* LookupType 2 = Pair Adjustment */
+        u32 stc = gpos_u16(g + lo + 4);
+        if (!gpos_range_ok(gn, lo + 6, (usize)stc * 2)) continue;
+        for (u32 s = 0; s < stc && count < capacity; s++) {
+            usize st = lo + gpos_u16(g + lo + 6 + (usize)s * 2);
+            if (!gpos_range_ok(gn, st, 2)) continue;
+            u16 fmt = gpos_u16(g + st);
+            if (fmt == 1) {
+                count = gpos_pairpos_fmt1(g, gn, st, out, capacity, count);
+            }
+            /* R442: PairPos Format 2 (class-based) is skipped. LiberationSans
+             * — the shipped font and cross-validation oracle — kerns entirely
+             * through Format 1, so Format 2 is untestable here, and an
+             * untested binary parser is worse than a documented gap: fonts
+             * whose kerning lives only in Format 2 simply get no GPOS
+             * fallback, exactly the pre-R442 behavior. */
+        }
+    }
+    return count;
+}
+
 extern RHIDevice *g_current_device;
 
 typedef struct {
@@ -226,6 +422,43 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
             if (k64 < -32768) k64 = -32768;
             fr->kern_pairs[fr->kern_count++] =
                 (FontKernPair){ (u8)i, (u8)j, (i16)k64 };
+        }
+    }
+
+    /* R442: the legacy harvest above comes out empty for GPOS-only fonts.
+     * Fall back to the GPOS PairPos extractor, filling the same sparse table
+     * with the same fixed-point scaling, so font_kern_advance and everything
+     * downstream stay untouched. GPOS pairs are glyph-id keyed, so a reverse
+     * map (ttf glyph id -> baked glyph index) bridges them into the baked
+     * ranges; pairs involving unbaked glyphs are dropped. */
+    if (fr->kern_count == 0) {
+        #define FONT_GPOS_EXTRACT_CAP 4096 /* recon: 2015 pairs in LiberationSans */
+        FontGposKern *gp = malloc(sizeof(FontGposKern) * FONT_GPOS_EXTRACT_CAP);
+        if (gp) {
+            u32 gn = font_gpos_kern_extract(ttf_buf, (usize)sz, gp,
+                                            FONT_GPOS_EXTRACT_CAP);
+            i32 gid[FONT_MAX_GLYPHS];
+            for (u32 i = 0; i < fr->glyph_count; i++)
+                gid[i] = stbtt_FindGlyphIndex(&fi, (int)fr->glyphs[i].codepoint);
+            for (u32 p = 0; p < gn && fr->kern_count < FONT_MAX_KERN_PAIRS; p++) {
+                i32 ia = -1, ib = -1;
+                for (u32 i = 0; i < fr->glyph_count; i++) {
+                    if (gid[i] == gp[p].glyph_a) ia = (i32)i;
+                    if (gid[i] == gp[p].glyph_b) ib = (i32)i;
+                }
+                if (ia < 0 || ib < 0) continue;
+                f32 kf = (f32)gp[p].x_advance * scale * 64.0f;
+                i32 k64 = (i32)(kf >= 0.0f ? kf + 0.5f : kf - 0.5f);
+                if (k64 == 0) continue;
+                if (k64 > 32767) k64 = 32767;
+                if (k64 < -32768) k64 = -32768;
+                fr->kern_pairs[fr->kern_count++] =
+                    (FontKernPair){ (u8)ia, (u8)ib, (i16)k64 };
+            }
+            free(gp);
+            if (gn > 0)
+                LOG_INFO("Font: legacy kern table empty, baked %u GPOS pairs",
+                         fr->kern_count);
         }
     }
 

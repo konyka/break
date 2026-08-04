@@ -629,6 +629,13 @@ static bool render_init(RenderState *rs, Platform *platform) {
     /* Deferred rendering path (off by default; forward is the engine's primary path). */
     rs->render_path = RENDER_PATH_FORWARD;
     deferred_init(&rs->deferred, rs->device, w, h);
+    /* R442: scripted deferred selection for headless smoke runs (the 'p' key
+     * toggle isn't reachable without input). Ignored when deferred init failed. */
+    { const char *e = getenv("BREAK_RENDER_PATH");
+      if (e && strcmp(e, "deferred") == 0) {
+          if (rs->deferred.initialized) rs->render_path = RENDER_PATH_DEFERRED;
+          else LOG_WARN("BREAK_RENDER_PATH=deferred ignored: deferred init failed");
+      } }
 
     /* IBL precomputation system (BRDF LUT + irradiance + prefilter).
      * Capture the procedural sky into the environment cubemap using the demo's
@@ -872,6 +879,9 @@ static u32 g_fwd_mega_taken;
 /* R441: indirect executes issued by the forward mega scene block this frame
  * (1 = material-array single-execute path; G = R437 per-group loop). */
 static u32 g_fwd_exec_draws;
+/* R442: indirect executes issued by the deferred G-Buffer mega block this
+ * frame (same semantics as g_fwd_exec_draws). */
+static u32 g_def_exec_draws;
 static f32 g_cull_positions[GPUCULL_MAX_OBJECTS * 3]; /* 48KB: gpucull positions */
 static f32 g_cull_radii[GPUCULL_MAX_OBJECTS];         /* 16KB: gpucull radii */
 static ObjectAABB g_occ_aabbs[OCCLUSION_MAX_OBJECTS]; /* 512KB: occlusion AABB upload */
@@ -904,15 +914,30 @@ static bool node_occ_visible(u32 ni) {
  * per-group texture binds, so the whole forward mega draw costs 1 execute.
  * Layer 0 is a white fallback (materials without a readable albedo texture);
  * material albedos are read back once at bake, nearest-resampled to the array
- * extent, and deduplicated by handle. */
+ * extent, and deduplicated by handle.
+ * R442: mr_array added for the deferred G-Buffer path — one layer carries BOTH
+ * the albedo and the metallic-roughness texture of a material (a single
+ * gl_BaseInstance layer index drives both sampler2DArrays), so dedup is by
+ * (albedo, MR) handle pair. MR layer 0 is the neutral {255,128,0,255} —
+ * matching fallback_mr (gbuffer shaders sample .bg: b=0 → metallic 0,
+ * g=128 → roughness ~0.5), the same neutral the forward path binds for
+ * materials without an MR texture. */
 #define MAT_ARR_MAX_LAYERS 64u
 #define MAT_ARR_MAX_SIZE   2048u
 
 typedef struct {
     RHITexture albedo_array;
+    RHITexture mr_array;     /* R442 */
     u32        width, height, layers;
     bool       ready;
 } MatArraySet;
+
+/* R442: handle equality treating invalid==invalid as equal. */
+static bool mat_arr_tex_same(RHITexture a, RHITexture b) {
+    bool va = rhi_handle_valid(a), vb = rhi_handle_valid(b);
+    if (va != vb) return false;
+    return !va || (a.index == b.index && a.generation == b.generation);
+}
 
 /* CPU nearest-neighbour RGBA8 resample (small/fallback textures are blown up
  * to the array extent; oversized ones shrink). */
@@ -926,7 +951,35 @@ static void mat_arr_resample_rgba8(const u8 *src, u32 sw, u32 sh, u8 *dst, u32 d
     }
 }
 
-/* Build the array from the bake-time material groups. Fills
+/* R442: fill one array layer from a texture (readback + nearest resample) or,
+ * when the handle is invalid, with a solid RGBA8 color. */
+static bool mat_arr_fill_layer(RHIDevice *dev, RHITexture tex, const u8 solid[4],
+                               u8 *layer_buf, u32 arr_w, u32 arr_h) {
+    usize layer_bytes = (usize)arr_w * arr_h * 4u;
+    u32 sw = 0, sh = 0;
+    if (rhi_handle_valid(tex) &&
+        rhi_texture_get_size(dev, tex, &sw, &sh) && sw > 0 && sh > 0) {
+        usize src_bytes = (usize)sw * sh * 4u;
+        u8 *src = (u8 *)malloc(src_bytes);
+        if (!src) return false;
+        bool ok = rhi_texture_read_pixels(dev, tex, src, src_bytes);
+        if (!ok) {
+            LOG_WARN("MatArray: texture readback failed (%u:%u)",
+                     tex.index, tex.generation);
+        } else if (sw == arr_w && sh == arr_h) {
+            memcpy(layer_buf, src, layer_bytes);
+        } else {
+            mat_arr_resample_rgba8(src, sw, sh, layer_buf, arr_w, arr_h);
+        }
+        free(src);
+        return ok;
+    }
+    for (u32 p = 0; p < arr_w * arr_h; p++)
+        memcpy(layer_buf + (usize)p * 4u, solid, 4u);
+    return true;
+}
+
+/* Build the arrays from the bake-time material groups. Fills
  * out_group_layer[g] with the array layer for group g (0 = fallback).
  * Returns false (and leaves set->ready false) on any failure — callers fall
  * back to the R437 per-group path. */
@@ -937,32 +990,63 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     for (u32 g = 0; g < group_count; g++) out_group_layer[g] = 0u;
     if (!dev || !scene || group_count == 0) return false;
 
-    /* Collect unique readable albedo textures (handle dedup). */
-    RHITexture uniq[MAT_ARR_MAX_LAYERS - 1u];
+    /* Collect unique readable (albedo, MR) texture pairs (handle dedup). A
+     * texture that fails the size query degrades to "absent" for that channel
+     * (the layer then carries the channel's neutral fill). */
+    RHITexture uniq_alb[MAT_ARR_MAX_LAYERS - 1u];
+    RHITexture uniq_mr[MAT_ARR_MAX_LAYERS - 1u];
     u32 ntex = 0;
     u32 arr_w = 1u, arr_h = 1u;
     for (u32 g = 0; g < group_count && ntex < MAT_ARR_MAX_LAYERS - 1u; g++) {
         u32 mi = mat_indices[g];
         if (mi >= scene->material_count) continue;
         RHITexture alb = scene->materials[mi].albedo;
-        if (!rhi_handle_valid(alb)) continue;
+        RHITexture mr  = scene->materials[mi].metallic_roughness;
+        u32 tw = 0, th = 0;
+        if (rhi_handle_valid(alb) &&
+            (!rhi_texture_get_size(dev, alb, &tw, &th) || tw == 0 || th == 0))
+            alb = RHI_HANDLE_NULL;
+        if (rhi_handle_valid(alb)) {
+            if (tw > MAT_ARR_MAX_SIZE) tw = MAT_ARR_MAX_SIZE;
+            if (th > MAT_ARR_MAX_SIZE) th = MAT_ARR_MAX_SIZE;
+            if (tw > arr_w) arr_w = tw;
+            if (th > arr_h) arr_h = th;
+        }
+        tw = th = 0;
+        if (rhi_handle_valid(mr) &&
+            (!rhi_texture_get_size(dev, mr, &tw, &th) || tw == 0 || th == 0))
+            mr = RHI_HANDLE_NULL;
+        if (rhi_handle_valid(mr)) {
+            if (tw > MAT_ARR_MAX_SIZE) tw = MAT_ARR_MAX_SIZE;
+            if (th > MAT_ARR_MAX_SIZE) th = MAT_ARR_MAX_SIZE;
+            if (tw > arr_w) arr_w = tw;
+            if (th > arr_h) arr_h = th;
+        }
+        if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr)) continue; /* layer 0 */
         bool dup = false;
         for (u32 i = 0; i < ntex; i++)
-            if (uniq[i].index == alb.index && uniq[i].generation == alb.generation) { dup = true; break; }
+            if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr)) {
+                dup = true;
+                break;
+            }
         if (dup) continue;
-        u32 tw = 0, th = 0;
-        if (!rhi_texture_get_size(dev, alb, &tw, &th) || tw == 0 || th == 0) continue;
-        if (tw > MAT_ARR_MAX_SIZE) tw = MAT_ARR_MAX_SIZE;
-        if (th > MAT_ARR_MAX_SIZE) th = MAT_ARR_MAX_SIZE;
-        uniq[ntex++] = alb;
-        if (tw > arr_w) arr_w = tw;
-        if (th > arr_h) arr_h = th;
+        uniq_alb[ntex] = alb;
+        uniq_mr[ntex]  = mr;
+        ntex++;
     }
 
     set->albedo_array = rhi_texture_array_create(dev, arr_w, arr_h, ntex + 1u,
                                                  RHI_FORMAT_R8G8B8A8_UNORM);
-    if (!rhi_handle_valid(set->albedo_array)) {
+    set->mr_array     = rhi_texture_array_create(dev, arr_w, arr_h, ntex + 1u,
+                                                 RHI_FORMAT_R8G8B8A8_UNORM);
+    if (!rhi_handle_valid(set->albedo_array) || !rhi_handle_valid(set->mr_array)) {
         LOG_WARN("MatArray: array create failed (%ux%ux%u)", arr_w, arr_h, ntex + 1u);
+        if (rhi_handle_valid(set->albedo_array))
+            rhi_texture_destroy(dev, set->albedo_array);
+        if (rhi_handle_valid(set->mr_array))
+            rhi_texture_destroy(dev, set->mr_array);
+        set->albedo_array = RHI_HANDLE_NULL;
+        set->mr_array     = RHI_HANDLE_NULL;
         return false;
     }
 
@@ -970,52 +1054,59 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     u8 *layer_buf = (u8 *)malloc(layer_bytes);
     if (!layer_buf) {
         rhi_texture_destroy(dev, set->albedo_array);
+        rhi_texture_destroy(dev, set->mr_array);
         set->albedo_array = RHI_HANDLE_NULL;
+        set->mr_array     = RHI_HANDLE_NULL;
         return false;
     }
 
-    /* Layer 0: white fallback (bind_material uses a 1x1 white; here it must
-     * fill the whole layer). */
-    memset(layer_buf, 0xFF, layer_bytes);
-    rhi_texture_array_upload_layer(dev, set->albedo_array, 0u, layer_buf, layer_bytes);
+    /* Layer 0: white albedo fallback (bind_material uses a 1x1 white; here it
+     * must fill the whole layer) + neutral MR {255,128,0,255} (R442: the
+     * fallback_mr neutral — metallic 0, roughness ~0.5). */
+    static const u8 white_rgba[4]   = {255u, 255u, 255u, 255u};
+    static const u8 neutral_mr[4]   = {255u, 128u, 0u, 255u};
+    bool ok = mat_arr_fill_layer(dev, RHI_HANDLE_NULL, white_rgba,
+                                 layer_buf, arr_w, arr_h);
+    if (ok) rhi_texture_array_upload_layer(dev, set->albedo_array, 0u, layer_buf, layer_bytes);
+    if (ok) ok = mat_arr_fill_layer(dev, RHI_HANDLE_NULL, neutral_mr,
+                                    layer_buf, arr_w, arr_h);
+    if (ok) rhi_texture_array_upload_layer(dev, set->mr_array, 0u, layer_buf, layer_bytes);
 
-    bool ok = true;
     for (u32 i = 0; i < ntex && ok; i++) {
-        u32 sw = 0, sh = 0;
-        rhi_texture_get_size(dev, uniq[i], &sw, &sh);
-        usize src_bytes = (usize)sw * sh * 4u;
-        u8 *src = (u8 *)malloc(src_bytes);
-        if (!src || !rhi_texture_read_pixels(dev, uniq[i], src, src_bytes)) {
-            LOG_WARN("MatArray: albedo readback failed (texture %u:%u)",
-                     uniq[i].index, uniq[i].generation);
-            free(src);
-            ok = false;
-            break;
-        }
-        if (sw == arr_w && sh == arr_h) {
-            memcpy(layer_buf, src, layer_bytes);
-        } else {
-            mat_arr_resample_rgba8(src, sw, sh, layer_buf, arr_w, arr_h);
-        }
-        free(src);
-        rhi_texture_array_upload_layer(dev, set->albedo_array, i + 1u, layer_buf, layer_bytes);
+        ok = mat_arr_fill_layer(dev, uniq_alb[i], white_rgba, layer_buf, arr_w, arr_h);
+        if (ok) rhi_texture_array_upload_layer(dev, set->albedo_array, i + 1u, layer_buf, layer_bytes);
+        if (ok) ok = mat_arr_fill_layer(dev, uniq_mr[i], neutral_mr, layer_buf, arr_w, arr_h);
+        if (ok) rhi_texture_array_upload_layer(dev, set->mr_array, i + 1u, layer_buf, layer_bytes);
     }
     free(layer_buf);
 
     if (!ok) {
         rhi_texture_destroy(dev, set->albedo_array);
+        rhi_texture_destroy(dev, set->mr_array);
         set->albedo_array = RHI_HANDLE_NULL;
+        set->mr_array     = RHI_HANDLE_NULL;
         return false;
     }
 
-    /* Group -> layer mapping (materials without a unique texture stay 0). */
+    /* Group -> layer mapping (materials without a unique pair stay 0). */
     for (u32 g = 0; g < group_count; g++) {
         u32 mi = mat_indices[g];
         if (mi >= scene->material_count) continue;
         RHITexture alb = scene->materials[mi].albedo;
-        if (!rhi_handle_valid(alb)) continue;
+        RHITexture mr  = scene->materials[mi].metallic_roughness;
+        /* R442: same degradation as the collect pass — a texture that fails
+         * the size query counts as absent so the pair key matches. */
+        u32 qw = 0, qh = 0;
+        if (rhi_handle_valid(alb) &&
+            (!rhi_texture_get_size(dev, alb, &qw, &qh) || qw == 0 || qh == 0))
+            alb = RHI_HANDLE_NULL;
+        qw = qh = 0;
+        if (rhi_handle_valid(mr) &&
+            (!rhi_texture_get_size(dev, mr, &qw, &qh) || qw == 0 || qh == 0))
+            mr = RHI_HANDLE_NULL;
+        if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr)) continue;
         for (u32 i = 0; i < ntex; i++) {
-            if (uniq[i].index == alb.index && uniq[i].generation == alb.generation) {
+            if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr)) {
                 out_group_layer[g] = i + 1u;
                 break;
             }
@@ -1205,6 +1296,51 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
      * fallback/shadow/SSAO/IBL slots bind_material would use. */
     rhi_cmd_bind_material_textures_ibl(cmd,
         mb->mats.albedo_array, render->fallback_mr, render->fallback_normal,
+        render->fallback_emissive, render->shadow_map.depth_tex, render->ssao_tex,
+        render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
+        render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+
+    indirect_draw_execute(&mb->array_system, render->device);
+    return 1u;
+}
+
+/* R442: single-execute material-array G-Buffer draw — the deferred counterpart
+ * of mega_mat_arrays_draw. Reuses the same ungrouped array_system (bake-order
+ * cmds, first_instance = array layer); one bind puts the albedo array on slot
+ * 0 and the MR array on slot 2 (the only two samplers gbuffer_arr reads), one
+ * indirect execute writes all 4 MRT attachments. draw_vis is bake-ordered. */
+static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
+                                        DeferredSystem *dsys, MegaBuffer *mb,
+                                        const u32 *draw_vis,
+                                        const Mat4 *view, const Mat4 *proj,
+                                        const Mat4 *prev_vp) {
+    if (!mb || !mb->valid || !mb->array_system_ready || !mb->mats.ready) return 0u;
+    if (!dsys || !rhi_handle_valid(dsys->gbuffer_arr_pipeline)) return 0u;
+
+    u32 total = mb->draw_cmd_count;
+    for (u32 ci = 0; ci < total; ci++)
+        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : 1u;
+    indirect_draw_upload_visibility(&mb->array_system, render->device, g_vis_flags, total);
+    indirect_draw_compact_no_barrier(&mb->array_system, render->device, cmd);
+    rhi_cmd_memory_barrier(cmd);
+
+    /* R234-A: GL compute clobbers the graphics program — rebind, then push. */
+    rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_arr_pipeline);
+    Mat4 idm = mat4_identity(); /* mega verts are pre-transformed to world space */
+    if (dsys->_loc_gbuf_arr_model >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_model, &idm.e[0][0]);
+    if (dsys->_loc_gbuf_arr_view >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_view, &view->e[0][0]);
+    if (dsys->_loc_gbuf_arr_proj >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_proj, &proj->e[0][0]);
+    if (dsys->_loc_gbuf_arr_prev_vp >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_vp, &prev_vp->e[0][0]);
+
+    /* One bind for the whole pass: slot 0 = albedo array, slot 2 = MR array;
+     * the rest reuse the shared fallback/shadow/SSAO/IBL slots (unsampled by
+     * the gbuffer_arr shaders). */
+    rhi_cmd_bind_material_textures_ibl(cmd,
+        mb->mats.albedo_array, mb->mats.mr_array, render->fallback_normal,
         render->fallback_emissive, render->shadow_map.depth_tex, render->ssao_tex,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
         render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
@@ -2318,8 +2454,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                                      cmds, mesh_cmd_count);
                             } else {
                                 LOG_WARN("MatArray: array indirect system init failed");
+                                /* R442: both arrays go — ready is shared. */
                                 rhi_texture_destroy(render.device, mega_buf.mats.albedo_array);
+                                rhi_texture_destroy(render.device, mega_buf.mats.mr_array);
                                 mega_buf.mats.albedo_array = RHI_HANDLE_NULL;
+                                mega_buf.mats.mr_array     = RHI_HANDLE_NULL;
                                 mega_buf.mats.ready = false;
                             }
                         }
@@ -5981,16 +6120,81 @@ u32 culled_count = 0;
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
 
+                /* R442: deferred material-array single-execute path — the
+                 * G-Buffer counterpart of the R441 forward branch (1 compact +
+                 * 1 bind + 1 execute for the whole pass). Requires the bake to
+                 * have built the array set + ungrouped system and deferred to
+                 * have the gbuffer_arr pipeline; otherwise the R437 per-group
+                 * loop below runs unchanged. */
+                bool def_mat_arr = mat_indirect_enabled &&
+                                   mega_buf.array_system_ready &&
+                                   mega_buf.mats.ready &&
+                                   rhi_handle_valid(dsys->gbuffer_arr_pipeline);
+                /* R442: snapshot for the deferred mega execute-delta log. */
+                u32 def_exec_before = indirect_draw_debug_execute_count();
+
                 /* Pre-compute per-node visibility using camera frustum + LOD — parallel */
                 if (mega_use_unified_vis(true) &&
                     mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                            mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
-                    u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
-                                                  &mega_buf, g_draw_vis,
-                                                  dsys->gbuffer_pipeline);
+                    /* g_draw_vis is bake-ordered — the array system consumes it
+                     * directly; the grouped path re-sorts internally. */
+                    u32 mc = def_mat_arr
+                        ? mega_mat_arrays_draw_gbuffer(cmd, &render, dsys, &mega_buf,
+                                                       g_draw_vis, &view, &proj,
+                                                       &prev_view_proj)
+                        : mega_mat_groups_draw(cmd, &render, &scene,
+                                               &mega_buf, g_draw_vis,
+                                               dsys->gbuffer_pipeline);
                     draw_calls += mc;
                     draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                     draw_bench_mark_unified();
+                } else if (def_mat_arr) {
+                /* R442: legacy-vis variant of the array path — bake-ordered
+                 * per-cmd flags (node vis + Hi-Z occ), then 1 compact + 1 bind
+                 * + 1 execute. Mirrors the R441 forward fallback branch. */
+                {
+                    u32 nc = scene.node_count < 16384 ? scene.node_count : 16384;
+                    memset(g_node_vis, 0, nc);
+                    Frustum gbuf_frustum = frame_frustum;
+                    u32 wc = task_worker_count(tasks);
+                    if (wc < 1) wc = 1;
+                    if (wc > 8) wc = 8; /* R433: vctxs[8] upper bound */
+                    u32 chunk = (nc + wc - 1) / wc;
+                    static VisTaskCtx vctxs[8];
+                    for (u32 wi = 0; wi < wc; wi++) {
+                        vctxs[wi].node_vis = g_node_vis;
+                        vctxs[wi].spheres  = mega_buf.node_spheres;
+                        vctxs[wi].start    = wi * chunk;
+                        vctxs[wi].end      = (wi + 1) * chunk;
+                        if (vctxs[wi].end > nc) vctxs[wi].end = nc;
+                        vctxs[wi].frustum  = gbuf_frustum;
+                        vctxs[wi].cam_pos  = camera.position;
+                        vctxs[wi].lod      = &lod_sys;
+                        task_submit(tasks, vis_task_fn, &vctxs[wi]);
+                    }
+                    task_wait(tasks);
+                }
+
+                /* R442: bake-ordered per-cmd flags (node vis + Hi-Z occ). */
+                {
+                    u32 total = mega_buf.draw_cmd_count;
+                    for (u32 ci = 0; ci < total; ci++) {
+                        u32 ni = mega_buf.cmd_node_index[ci];
+                        /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
+                        g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
+                        if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
+                    }
+                }
+                {
+                    u32 mc = mega_mat_arrays_draw_gbuffer(cmd, &render, dsys, &mega_buf,
+                                                          g_draw_vis, &view, &proj,
+                                                          &prev_view_proj);
+                    draw_calls += mc;
+                    draw_bench_add(mc,
+                                   draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
+                    draw_bench_mark_legacy();
+                }
                 } else {
                 {
                     u32 nc = scene.node_count < 16384 ? scene.node_count : 16384;
@@ -6045,6 +6249,10 @@ u32 culled_count = 0;
                                draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
                 draw_bench_mark_legacy();
                 }
+                /* R442: deferred mega execute delta (the G-Buffer pass runs
+                 * after the forward block's snapshot, so this isolates the
+                 * deferred mega executes: 1 = array path, G = R437 loop). */
+                g_def_exec_draws = indirect_draw_debug_execute_count() - def_exec_before;
             } else {
             for (u32 ni = 0; ni < scene.node_count; ni++) {
                 SceneNode *node = &scene.nodes[ni];
@@ -6140,6 +6348,10 @@ u32 culled_count = 0;
         LOG_DEBUG("R441: execute draws this frame: %u (total indirect executes: %u)",
                   g_fwd_exec_draws, indirect_draw_debug_execute_count());
         g_fwd_exec_draws = 0;
+        /* R442: deferred G-Buffer mega execute draws — 1 when the material-array
+         * single-execute path ran, mat_group_count for the R437 loop. */
+        LOG_DEBUG("R442: deferred gbuffer execute draws this frame: %u", g_def_exec_draws);
+        g_def_exec_draws = 0;
         indirect_draw_debug_reset_execute_count();
 
         /* R236 (CORRECTNESS): On the deferred path scene_fbo.depth is never
@@ -6582,6 +6794,9 @@ u32 culled_count = 0;
             indirect_draw_destroy(&mega_buf.array_system, render.device);
         if (rhi_handle_valid(mega_buf.mats.albedo_array))
             rhi_texture_destroy(render.device, mega_buf.mats.albedo_array);
+        /* R442: MR array shares the MatArraySet lifetime. */
+        if (rhi_handle_valid(mega_buf.mats.mr_array))
+            rhi_texture_destroy(render.device, mega_buf.mats.mr_array);
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);

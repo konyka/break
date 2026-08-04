@@ -105,6 +105,26 @@ f32  font_renderer_text_width(const FontRenderer *fr, const char *text);
  * Callers pass the *effective* codepoint (after '?' fallback, i.e.
  * GlyphInfo.codepoint) so substituted glyphs kern like the real thing. */
 f32  font_kern_advance(const FontRenderer *fr, u32 cp_a, u32 cp_b);
+
+/* R442: one kerning pair extracted from the GPOS table, in unscaled font
+ * units (glyph ids, not codepoints). x_advance is the PairPos valueRecord1
+ * XAdvance — the horizontal advance adjustment applied after glyph a. */
+typedef struct {
+    u16 glyph_a;
+    u16 glyph_b;
+    i16 x_advance;
+} FontGposKern;
+
+/* R442: minimal GPOS 'kern'-feature PairPos extractor (stb_truetype only reads
+ * the legacy 'kern' table format 0, so GPOS-only fonts otherwise get no
+ * kerning at all). Pure big-endian byte parsing of the ttf buffer; every
+ * offset/count is bounds-checked before dereference, so truncated or
+ * malicious buffers degrade to "fewer pairs", never to out-of-bounds reads.
+ * Covers PairPos Format 1 (pair sets); Format 2 (class-based) subtables are
+ * skipped. Writes up to `capacity` non-zero pairs into `out` and returns the
+ * number written (0 when the font has no usable GPOS kerning). */
+u32  font_gpos_kern_extract(const u8 *ttf, usize ttf_size,
+                            FontGposKern *out, u32 capacity);
 /* Line advance in pixels (ascent - descent + line_gap). */
 f32  font_renderer_line_height(const FontRenderer *fr);
 void font_renderer_end(FontRenderer *fr, RHICmdBuffer *cmd, f32 screen_w, f32 screen_h);

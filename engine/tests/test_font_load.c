@@ -19,6 +19,10 @@
 #include "test_framework.h"
 #include <ui/font.h>
 #include <rhi/rhi.h>
+/* R442: declarations only — font.c carries STB_TRUETYPE_IMPLEMENTATION and
+ * this target links against it. Used as the kern-table oracle for the GPOS
+ * cross-validation. */
+#include <stb_truetype.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -372,6 +376,248 @@ TEST(font_shaders_use_sdf_sampling)
     }
 }
 
+/* ---- R442: GPOS kerning ----------------------------------------------------
+ *
+ * stb_truetype only reads the legacy 'kern' table (format 0); GPOS-only fonts
+ * bake an empty pair table. font_gpos_kern_extract() is the pure byte-level
+ * GPOS PairPos extractor that closes that gap. LiberationSans carries BOTH a
+ * kern table and a GPOS table, and recon (R442) showed the two agree exactly
+ * on all 908 kern-table pairs — so the shipped font is its own oracle: the
+ * GPOS parse is cross-validated pair-by-pair against stbtt's kern-table
+ * results below. Both values are unscaled font units, so equality is exact
+ * (no tolerance); if a future font swap breaks exact agreement the tolerance
+ * debate can happen then, with data.
+ *
+ * The ttf is located relative to this source file, like the R439 shader
+ * contract test, so ctest working directory does not matter. */
+
+static u8 *read_asset_ttf(usize *out_size) {
+    const char *candidates[3];
+    char rel[1024];
+    const char *slash = strrchr(__FILE__, '/');
+    if (slash) {
+        snprintf(rel, sizeof(rel), "%.*s/../assets/LiberationSans-Regular.ttf",
+                 (int)(slash - __FILE__), __FILE__);
+        candidates[0] = rel;
+        candidates[1] = NULL;
+    } else {
+        candidates[0] = NULL;
+    }
+    candidates[1] = "assets/LiberationSans-Regular.ttf"; /* cwd = engine/ */
+    candidates[2] = NULL;
+    for (usize i = 0; i < 2 && candidates[i]; i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f) continue;
+        if (fseek(f, 0, SEEK_END) != 0) { fclose(f); continue; }
+        long sz = ftell(f);
+        if (sz <= 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); continue; }
+        u8 *buf = malloc((usize)sz);
+        if (!buf) { fclose(f); continue; }
+        bool ok = fread(buf, 1, (usize)sz, f) == (usize)sz;
+        fclose(f);
+        if (!ok) { free(buf); continue; }
+        *out_size = (usize)sz;
+        return buf;
+    }
+    return NULL;
+}
+
+/* GPOS table location within a well-formed sfnt directory (test-local copy of
+ * the directory walk; the parser under test does its own). */
+static bool find_gpos_table(const u8 *d, usize n, usize *off, usize *len) {
+    if (n < 12) return false;
+    u32 num = ((u32)d[4] << 8) | d[5];
+    if (12 + (usize)num * 16 > n) return false;
+    for (u32 i = 0; i < num; i++) {
+        const u8 *r = d + 12 + (usize)i * 16;
+        if (r[0] == 'G' && r[1] == 'P' && r[2] == 'O' && r[3] == 'S') {
+            *off = ((usize)r[8] << 24) | ((usize)r[9] << 16) | ((usize)r[10] << 8) | r[11];
+            *len = ((usize)r[12] << 24) | ((usize)r[13] << 16) | ((usize)r[14] << 8) | r[15];
+            return *off <= n && *len <= n - *off;
+        }
+    }
+    return false;
+}
+
+#define TEST_GPOS_CAP 4096
+
+static int gpos_kern_cmp(const void *pa, const void *pb) {
+    const FontGposKern *a = pa, *b = pb;
+    u32 ka = ((u32)a->glyph_a << 16) | a->glyph_b;
+    u32 kb = ((u32)b->glyph_a << 16) | b->glyph_b;
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+}
+
+/* x_advance for (ga, gb) in a sorted extract result, 0 when absent. */
+static i32 gpos_lookup(const FontGposKern *pairs, u32 count, u16 ga, u16 gb) {
+    FontGposKern key = { ga, gb, 0 };
+    const FontGposKern *hit = bsearch(&key, pairs, count, sizeof(*pairs), gpos_kern_cmp);
+    return hit ? hit->x_advance : 0;
+}
+
+TEST(font_gpos_extract_finds_known_pair)
+{
+    usize sz = 0;
+    u8 *ttf = read_asset_ttf(&sz);
+    ASSERT_NOT_NULL(ttf);
+
+    FontGposKern *pairs = malloc(sizeof(FontGposKern) * TEST_GPOS_CAP);
+    ASSERT_NOT_NULL(pairs);
+    u32 count = font_gpos_kern_extract(ttf, sz, pairs, TEST_GPOS_CAP);
+    /* R442 recon: 2015 non-zero GPOS pairs total (908 Latin + 1107 Hebrew). */
+    ASSERT_TRUE(count > 0);
+    ASSERT_TRUE(count <= TEST_GPOS_CAP);
+
+    /* Known value: R436 measured A->V = -152 font units in the kern table;
+     * recon showed GPOS carries the identical value. */
+    stbtt_fontinfo fi;
+    ASSERT_TRUE(stbtt_InitFont(&fi, ttf, stbtt_GetFontOffsetForIndex(ttf, 0)) != 0);
+    u16 ga = (u16)stbtt_FindGlyphIndex(&fi, 'A');
+    u16 gv = (u16)stbtt_FindGlyphIndex(&fi, 'V');
+    qsort(pairs, count, sizeof(*pairs), gpos_kern_cmp);
+    ASSERT_EQ(gpos_lookup(pairs, count, ga, gv), -152);
+
+    free(pairs);
+    free(ttf);
+}
+
+TEST(font_gpos_cross_validates_kern_table)
+{
+    usize sz = 0;
+    u8 *ttf = read_asset_ttf(&sz);
+    ASSERT_NOT_NULL(ttf);
+    stbtt_fontinfo fi;
+    ASSERT_TRUE(stbtt_InitFont(&fi, ttf, stbtt_GetFontOffsetForIndex(ttf, 0)) != 0);
+
+    FontGposKern *pairs = malloc(sizeof(FontGposKern) * TEST_GPOS_CAP);
+    ASSERT_NOT_NULL(pairs);
+    u32 count = font_gpos_kern_extract(ttf, sz, pairs, TEST_GPOS_CAP);
+    ASSERT_TRUE(count > 0);
+    qsort(pairs, count, sizeof(*pairs), gpos_kern_cmp);
+
+    /* Every baked-range codepoint pair: the kern-table value (via stbtt) and
+     * the GPOS value must agree exactly — both are unscaled font units and
+     * LiberationSans ships the same kerning in both tables (R442 recon:
+     * 908/908 match, 0 mismatch, the 1107 GPOS-only pairs are Hebrew glyphs
+     * outside these ranges). */
+    const u32 ranges[2][2] = { { 0x20, 0x7E }, { 0xA0, 0xFF } };
+    u32 compared = 0;
+    for (u32 ri = 0; ri < 2; ri++) {
+        for (u32 a = ranges[ri][0]; a <= ranges[ri][1]; a++) {
+            int ga = stbtt_FindGlyphIndex(&fi, (int)a);
+            if (ga <= 0) continue;
+            for (u32 b = ranges[ri][0]; b <= ranges[ri][1]; b++) {
+                int gb = stbtt_FindGlyphIndex(&fi, (int)b);
+                if (gb <= 0) continue;
+                i32 k = stbtt_GetCodepointKernAdvance(&fi, (int)a, (int)b);
+                i32 g = gpos_lookup(pairs, count, (u16)ga, (u16)gb);
+                if (k != g) {
+                    printf("  FAIL: %s:%d: pair U+%04X/U+%04X kern=%d gpos=%d\n",
+                           __FILE__, __LINE__, a, b, (int)k, (int)g);
+                    g_test_fail++;
+                    free(pairs); free(ttf);
+                    return;
+                }
+                if (k != 0) compared++;
+            }
+        }
+    }
+    /* Sanity: the cross-check must actually exercise a meaningful number of
+     * pairs, not vacuously pass on an empty intersection (96 in baked ranges
+     * per R436; leave margin for font updates). */
+    ASSERT_TRUE(compared >= 64);
+
+    free(pairs);
+    free(ttf);
+}
+
+/* Defense: a well-formed sfnt directory without a GPOS table yields 0 pairs. */
+TEST(font_gpos_no_gpos_table_returns_zero)
+{
+    u8 fake[12 + 16];
+    memset(fake, 0, sizeof(fake));
+    fake[0] = 0x00; fake[1] = 0x01; fake[2] = 0x00; fake[3] = 0x00; /* sfnt v1 */
+    fake[5] = 1;                                                    /* 1 table */
+    memcpy(fake + 12, "cmap", 4);
+    FontGposKern out[4];
+    ASSERT_EQ(font_gpos_kern_extract(fake, sizeof(fake), out, 4), 0u);
+}
+
+/* Defense: corrupted directory fields must degrade to 0, never to a wild
+ * read. (a) numTables far beyond the buffer; (b) GPOS length far beyond EOF. */
+TEST(font_gpos_corrupt_directory_returns_zero)
+{
+    usize sz = 0;
+    u8 *ttf = read_asset_ttf(&sz);
+    ASSERT_NOT_NULL(ttf);
+
+    ttf[5] = 0xFF; /* numTables = 255+ with a ~400KB file: 12+255*16 < sz,
+                    * so also push it to the u16 max to blow past EOF */
+    ttf[4] = 0xFF;
+    FontGposKern out[4];
+    ASSERT_EQ(font_gpos_kern_extract(ttf, sz, out, 4), 0u);
+    free(ttf);
+
+    ttf = read_asset_ttf(&sz);
+    ASSERT_NOT_NULL(ttf);
+    usize goff = 0, glen = 0;
+    ASSERT_TRUE(find_gpos_table(ttf, sz, &goff, &glen));
+    /* rewrite the GPOS directory length to 0xFFFFFFFF */
+    u32 num = ((u32)ttf[4] << 8) | ttf[5];
+    for (u32 i = 0; i < num; i++) {
+        u8 *r = ttf + 12 + (usize)i * 16;
+        if (memcmp(r, "GPOS", 4) == 0) { r[12] = r[13] = r[14] = r[15] = 0xFF; }
+    }
+    ASSERT_EQ(font_gpos_kern_extract(ttf, sz, out, 4), 0u);
+    free(ttf);
+}
+
+/* Defense: truncating the real font at any point — inside the directory,
+ * inside the GPOS header, mid-PairSet — must never read out of bounds.
+ * The assertion is trivially weak on purpose; ASan is the real judge. */
+TEST(font_gpos_truncated_never_crashes)
+{
+    usize sz = 0;
+    u8 *ttf = read_asset_ttf(&sz);
+    ASSERT_NOT_NULL(ttf);
+    usize goff = 0, glen = 0;
+    ASSERT_TRUE(find_gpos_table(ttf, sz, &goff, &glen));
+
+    FontGposKern out[64];
+    const usize cuts[] = {
+        0, 1, 11, 12, 13, 64, 256, 4096,
+        334020,              /* GPOS table start (dir entry stays) */
+        334020 + 10,         /* just past the GPOS header */
+        334020 + 300,        /* inside ScriptList/FeatureList */
+        334020 + 2000,       /* inside lookup/pairset data */
+        334036, 335020, 340020,
+        410663,              /* GPOS end - 1 (mid-pair data) */
+    };
+    for (usize i = 0; i < sizeof(cuts) / sizeof(cuts[0]); i++) {
+        usize n = cuts[i] < sz ? cuts[i] : sz;
+        (void)font_gpos_kern_extract(ttf, n, out, 64);
+    }
+    ASSERT_TRUE(true);
+    free(ttf);
+}
+
+/* Defense: GPOS payload turned into garbage (counts and offsets all 0xFF)
+ * with the directory intact — every internal offset is now maximal. */
+TEST(font_gpos_garbage_payload_never_crashes)
+{
+    usize sz = 0;
+    u8 *ttf = read_asset_ttf(&sz);
+    ASSERT_NOT_NULL(ttf);
+    usize goff = 0, glen = 0;
+    ASSERT_TRUE(find_gpos_table(ttf, sz, &goff, &glen));
+    memset(ttf + goff, 0xFF, glen);
+
+    FontGposKern out[64];
+    u32 n = font_gpos_kern_extract(ttf, sz, out, 64);
+    ASSERT_TRUE(n <= 64); /* capacity respected; value otherwise arbitrary */
+    free(ttf);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(font_init_rejects_missing_file);
     RUN_TEST(font_init_rejects_empty_file);
@@ -389,4 +635,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(font_sdf_coverage_smooth_transition);
     RUN_TEST(font_sdf_coverage_zero_smoothing_degenerates_to_step);
     RUN_TEST(font_shaders_use_sdf_sampling);
+    RUN_TEST(font_gpos_extract_finds_known_pair);
+    RUN_TEST(font_gpos_cross_validates_kern_table);
+    RUN_TEST(font_gpos_no_gpos_table_returns_zero);
+    RUN_TEST(font_gpos_corrupt_directory_returns_zero);
+    RUN_TEST(font_gpos_truncated_never_crashes);
+    RUN_TEST(font_gpos_garbage_payload_never_crashes);
 TEST_MAIN_END()
