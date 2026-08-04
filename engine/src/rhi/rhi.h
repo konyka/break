@@ -210,7 +210,21 @@ void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y);
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w);
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v);
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v);
-/* R179: Raw push-constant / uniform blob (VK byte offset; GL no-op). */
+/* R444: Push-constant upload, semantics aligned with
+ * vkCmdPushConstants(offset, size): [offset, offset+size) must fit inside the
+ * bound pipeline's declared push range (compute 128B / graphics clamped
+ * range); an out-of-range write is dropped with a warning instead of being
+ * silently truncated at flush. GL has no push-constant equivalent, so this is
+ * a documented no-op there — use the per-uniform setters above for
+ * GL-visible state. */
+void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size);
+/* R444: Shared bounds rule for the contract above, kept pure so it is
+ * unit-testable headless and reused by backend validation. */
+static inline bool rhi_push_range_fits(u32 offset, u32 size, u32 range_size) {
+    return size > 0u && offset <= range_size && size <= range_size - offset;
+}
+/* R179/R444: Deprecated alias of rhi_cmd_push_constants (location == byte
+ * offset). Kept for compatibility; new code should call rhi_cmd_push_constants. */
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size);
 i32  rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name);
 

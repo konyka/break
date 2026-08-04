@@ -1578,8 +1578,16 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     if (location >= 0) glUniform1f(location, v);
 }
 
+void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size) {
+    /* R444: GL has no push-constant equivalent — documented no-op, mirroring
+     * vkCmdPushConstants(offset, size) semantics on VK. Callers needing
+     * GL-visible state use the per-uniform setters (see particles.c). */
+    (void)cmd; (void)offset; (void)data; (void)size;
+}
+
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
-    /* GL uses per-uniform locations; raw push blobs are Vulkan-only. */
+    /* GL uses per-uniform locations; raw push blobs are Vulkan-only.
+     * R444: deprecated alias of rhi_cmd_push_constants. */
     (void)cmd; (void)location; (void)data; (void)size;
 }
 

@@ -262,7 +262,8 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
 #ifdef ENGINE_VULKAN
     if (ps->_loc_push_dt >= 0) {
         /* R179: Build full 80-byte Push from live ps->* (not stale template),
-         * and upload in one blob — mat4 helper only copies 64 bytes. */
+         * and upload in one blob — mat4 helper only copies 64 bytes.
+         * R444: first-class rhi_cmd_push_constants (was the uniform-bytes alias). */
         f32 push_data[20];
         memset(push_data, 0, sizeof(push_data));
         push_data[0]  = dt;
@@ -280,7 +281,7 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
         push_data[14] = ps->emit_vel_max[2];
         push_data[15] = ps->lifetime_min;
         push_data[19] = ps->lifetime_range;
-        rhi_cmd_set_uniform_bytes(cmd, ps->_loc_push_dt, push_data, (u32)sizeof(push_data));
+        rhi_cmd_push_constants(cmd, (u32)ps->_loc_push_dt, push_data, (u32)sizeof(push_data));
     }
 #else
     if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);

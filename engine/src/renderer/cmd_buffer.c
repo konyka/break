@@ -343,8 +343,9 @@ static void sort_buffer_indices_by_key(const FrameCommands *frame,
  *
  * NOTE: Some logical operations in the high-level command stream do not have
  * 1:1 RHI primitives yet (e.g. viewport min/max depth). For those we map to the
- * closest available RHI call. PUSH_CONSTANTS → rhi_cmd_set_uniform_bytes;
- * DRAW_INDEXED → rhi_cmd_draw_indexed_base (first_index / vertex_offset).
+ * closest available RHI call. R444: PUSH_CONSTANTS → rhi_cmd_push_constants is
+ * now 1:1 (offset/size/data); DRAW_INDEXED → rhi_cmd_draw_indexed_base
+ * (first_index / vertex_offset).
  */
 static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
     switch (cmd->type) {
@@ -418,12 +419,13 @@ static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
         break;
 
     case RENDER_CMD_PUSH_CONSTANTS:
-        /* R207-B: Replay into RHI push/uniform path (was a silent no-op). */
+        /* R207-B: Replay into the RHI push-constant path (was a silent no-op).
+         * R444: 1:1 rhi_cmd_push_constants instead of the uniform-bytes alias. */
         if (cmd->push_constants.size > 0u) {
-            rhi_cmd_set_uniform_bytes(rhi_cmd,
-                                      (i32)cmd->push_constants.offset,
-                                      cmd->push_constants.data,
-                                      cmd->push_constants.size);
+            rhi_cmd_push_constants(rhi_cmd,
+                                   cmd->push_constants.offset,
+                                   cmd->push_constants.data,
+                                   cmd->push_constants.size);
         }
         break;
 

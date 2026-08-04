@@ -54,6 +54,22 @@ static inline i32 wl_out_add(WaylandOutputList *l, u32 global_name) {
     return (i32)l->count++;
 }
 
+/* Remove the slot for a withdrawn registry global (hot-unplug). Compacts the
+ * array (tail shifts down by one) rather than leaving a tombstone, so the
+ * fixed slot budget never wears out under repeated plug/unplug cycles and the
+ * append-dedup semantics of wl_out_add stay consistent. Returns false when
+ * the global is not present. */
+static inline bool wl_out_remove(WaylandOutputList *l, u32 global_name) {
+    i32 slot = wl_out_find(l, global_name);
+    if (slot < 0) return false;
+    u32 i = (u32)slot;
+    if (i + 1 < l->count)
+        memmove(&l->items[i], &l->items[i + 1],
+                (l->count - i - 1) * sizeof(l->items[0]));
+    l->count--;
+    return true;
+}
+
 /* Fold one wl_output.mode event into the slot's selected mode.
  * Rule: a mode flagged current always wins and sticks; without a current
  * mode keep the largest area, ties broken by higher refresh.

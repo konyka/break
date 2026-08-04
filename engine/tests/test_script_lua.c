@@ -242,7 +242,7 @@ TEST(engine_bindings_null_host_safe)
 
 TEST(hot_reload_runs_new_chunk)
 {
-    const char *path = "/tmp/test_break_reload.lua";
+    char path[64]; test_tmp(path, sizeof path, "test_break_reload.lua"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "version = 1\nfunction on_update(dt) result = 10 end\n");
@@ -273,7 +273,7 @@ TEST(hot_reload_runs_new_chunk)
 
 TEST(hot_reload_no_change_no_run)
 {
-    const char *path = "/tmp/test_break_noreload.lua";
+    char path[64]; test_tmp(path, sizeof path, "test_break_noreload.lua"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "counter = (counter or 0) + 1\n");
@@ -303,7 +303,7 @@ TEST(load_nonexistent_file)
 /* R395: luaL_loadfile reads the whole file; cap size before calling it. */
 TEST(lua_load_rejects_oversized_file)
 {
-    const char *path = "/tmp/test_lua_huge.lua";
+    char path[64]; test_tmp(path, sizeof path, "test_lua_huge.lua"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     FILE *f = fopen(path, "wb");
     ASSERT_NOT_NULL(f);
 #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L

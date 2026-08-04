@@ -6,6 +6,23 @@
 #include <string.h>
 #include <math.h>
 
+/* R444: several suites used fixed /tmp paths, so parallel ctest runs from
+ * different build trees wrote the same files and failed intermittently.
+ * test_tmp() builds a per-process path; every fixed-name user passes a
+ * stack buffer through it. */
+#if defined(_WIN32)
+#include <process.h>
+#define TEST_GETPID() _getpid()
+#else
+#include <unistd.h>
+#define TEST_GETPID() getpid()
+#endif
+
+static inline const char *test_tmp(char *buf, size_t cap, const char *name) {
+    snprintf(buf, cap, "/tmp/break_%s_%d", name, (int)TEST_GETPID());
+    return buf;
+}
+
 static int g_test_count = 0;
 static int g_test_pass = 0;
 static int g_test_fail = 0;

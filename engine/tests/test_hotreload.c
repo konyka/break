@@ -4,9 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TMP_VERT "/tmp/test_hotreload.vert"
-#define TMP_FRAG "/tmp/test_hotreload.frag"
-
 static RHIShader  s_shader  = {1, 1};
 static RHIPipeline s_pipe   = {1, 1};
 static RHITexture s_tex     = {1, 1};
@@ -38,6 +35,11 @@ static bool write_file(const char *path, long size, char fill) {
 /* R393: read_file had no size cap — multi-GB shader path could malloc before compile. */
 TEST(hotreload_rejects_oversized_shader)
 {
+    /* R444: per-pid paths — parallel ctest trees raced on the fixed names. */
+    char TMP_VERT[64], TMP_FRAG[64];
+    test_tmp(TMP_VERT, sizeof TMP_VERT, "test_hotreload.vert");
+    test_tmp(TMP_FRAG, sizeof TMP_FRAG, "test_hotreload.frag");
+
     ASSERT_TRUE(write_file(TMP_VERT, (long)SHADER_MAX_FILE_BYTES + 1, 'x'));
     ASSERT_TRUE(write_file(TMP_FRAG, 16, '#'));
 

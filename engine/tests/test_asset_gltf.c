@@ -65,7 +65,14 @@ u64 async_loader_request_texture(const char *path, AsyncLoadCallback callback,
 
 /* ---- helpers ---- */
 
-static const char *TMP_GLTF = "/tmp/test_asset_gltf.gltf";
+/* R444: per-pid path — parallel ctest trees raced on the fixed name.
+ * Function-backed macro keeps every use site unchanged (static buffer). */
+static const char *gltf_tmp_path(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_asset_gltf.gltf");
+}
+#define TMP_GLTF gltf_tmp_path()
 
 static bool write_text(const char *path, const char *text) {
     FILE *f = fopen(path, "wb");
@@ -518,7 +525,7 @@ static void put_u8v(u8 *dst, u8 a, u8 b, u8 c, u8 d) {
  * applies them), so the mesh AABB must reflect the override, not the base. */
 TEST(gltf_sparse_position_applies_overrides)
 {
-    const char *bin_path = "/tmp/test_r422_sparse.bin";
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_r422_sparse.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     /* [0..36)  base POSITION: (1,0,0),(0,1,0),(0,0,1)
      * [36..38) sparse index u16: 0        [38..40) pad
      * [40..52) sparse value VEC3 f32: (9,9,9) */
@@ -545,7 +552,9 @@ TEST(gltf_sparse_position_applies_overrides)
              "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
              "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":4},"
              "{\"buffer\":0,\"byteOffset\":40,\"byteLength\":12}],"
-             "\"buffers\":[{\"byteLength\":52,\"uri\":\"test_r422_sparse.bin\"}]}");
+             "\"buffers\":[{\"byteLength\":52,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
     ASSERT_TRUE(write_text(TMP_GLTF, json));
 
     AssetCtx ctx;
@@ -573,7 +582,7 @@ TEST(gltf_sparse_position_applies_overrides)
  * exactly one skinned mesh and no reinterpretation of the weight bytes. */
 TEST(gltf_normalized_u8_weights_load_safely)
 {
-    const char *bin_path = "/tmp/test_r422_weights.bin";
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_r422_weights.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     /* [0..36)  POSITION 3xVEC3 f32: (1,0,0),(0,1,0),(0,0,1)
      * [36..48) JOINTS_0 3xVEC4 u8: {0,0,0,0} each
      * [48..60) WEIGHTS_0 3xVEC4 u8 normalized: {255,0,0,0} each */
@@ -604,7 +613,9 @@ TEST(gltf_normalized_u8_weights_load_safely)
              "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
              "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12},"
              "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":12}],"
-             "\"buffers\":[{\"byteLength\":60,\"uri\":\"test_r422_weights.bin\"}]}");
+             "\"buffers\":[{\"byteLength\":60,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
     ASSERT_TRUE(write_text(TMP_GLTF, json));
 
     AssetCtx ctx;
@@ -684,7 +695,7 @@ TEST(scene_world_transforms_parent_cycle_terminates)
  * indices are (0,1,2); the sparse override rewrites index 2 to 0. */
 TEST(gltf_sparse_indices_change_topology)
 {
-    const char *bin_path = "/tmp/test_r426_sparse_idx.bin";
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_r426_sparse_idx.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     /* [0..36)  POSITION 3xVEC3 f32: (1,0,0),(0,1,0),(0,0,1)
      * [36..42) base indices 3xu16: 0,1,2
      * [42..44) sparse index u16: 2
@@ -716,7 +727,9 @@ TEST(gltf_sparse_indices_change_topology)
              "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},"
              "{\"buffer\":0,\"byteOffset\":42,\"byteLength\":2},"
              "{\"buffer\":0,\"byteOffset\":44,\"byteLength\":2}],"
-             "\"buffers\":[{\"byteLength\":46,\"uri\":\"test_r426_sparse_idx.bin\"}]}");
+             "\"buffers\":[{\"byteLength\":46,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
     ASSERT_TRUE(write_text(TMP_GLTF, json));
 
     AssetCtx ctx;
@@ -745,7 +758,7 @@ TEST(gltf_sparse_indices_change_topology)
  * Base outputs are zero; the sparse override rewrites key 1 to (7,8,9). */
 TEST(gltf_sparse_animation_output_applies_overrides)
 {
-    const char *bin_path = "/tmp/test_r426_sparse_anim.bin";
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_r426_sparse_anim.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     /* [0..8)   input times 2xf32: 0.0, 1.0
      * [8..32)  output base 2xVEC3 f32: zeros
      * [32..34) sparse index u16: 1        [34..36) pad
@@ -776,7 +789,9 @@ TEST(gltf_sparse_animation_output_applies_overrides)
              "{\"buffer\":0,\"byteOffset\":8,\"byteLength\":24},"
              "{\"buffer\":0,\"byteOffset\":32,\"byteLength\":2},"
              "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":12}],"
-             "\"buffers\":[{\"byteLength\":48,\"uri\":\"test_r426_sparse_anim.bin\"}]}");
+             "\"buffers\":[{\"byteLength\":48,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
     ASSERT_TRUE(write_text(TMP_GLTF, json));
 
     AssetCtx ctx;
@@ -809,7 +824,7 @@ TEST(gltf_sparse_animation_output_applies_overrides)
  * successful load proves the buffer came through the VFS, not cgltf's fopen. */
 TEST(gltf_vfs_external_buffer_loads_via_vfs)
 {
-    const char *root = "/tmp/r426_vfs_root";
+    char root[64];  test_tmp(root, sizeof root, "r426_vfs_root"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     char gltf_disk[128], bin_disk[128];
     snprintf(gltf_disk, sizeof(gltf_disk), "%s/scene.gltf", root);
     snprintf(bin_disk, sizeof(bin_disk), "%s/scene.bin", root);
@@ -913,7 +928,7 @@ TEST(gltf_multi_primitive_mesh_emits_node_per_primitive)
  * Windows. Backslash segments are now rejected too (mirrors gltf_uri_safe). */
 TEST(vfs_rejects_backslash_traversal)
 {
-    const char *root = "/tmp/r431_vfs_root";
+    char root[64];  test_tmp(root, sizeof root, "r431_vfs_root"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     char disk[128];
     snprintf(disk, sizeof(disk), "%s/ok.bin", root);
     mkdir(root, 0755);

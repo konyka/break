@@ -272,6 +272,52 @@ TEST(cmd_null_buffer_drops) {
     ASSERT_TRUE(true);
 }
 
+/* ---- R444: push-constant replay routes to rhi_cmd_push_constants ---- */
+
+extern u32 g_stub_push_constants_calls;
+extern u32 g_stub_push_constants_last_offset;
+extern u32 g_stub_push_constants_last_size;
+extern u8  g_stub_push_constants_last_data[256];
+
+TEST(cmd_push_constants_replay_routes_to_rhi) {
+    ParallelRenderer *pr = alloc_pr();
+    ASSERT_NOT_NULL(pr);
+    parallel_renderer_init(pr, 1);
+    parallel_renderer_begin_frame(pr);
+
+    RenderCmdBuffer *buf = parallel_renderer_get_buffer(pr, 0);
+    ASSERT_NOT_NULL(buf);
+    f32 data[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+    cmd_push_constants(buf, 32, sizeof(data), data);
+    parallel_renderer_end_frame(pr);
+
+    /* No submit thread -> swap_and_submit replays directly on the latched
+     * rhi_cmd (any non-NULL pointer; the stub ignores it). */
+    g_stub_push_constants_calls = 0;
+    parallel_renderer_set_rhi_cmd(pr, (RHICmdBuffer *)(void *)0x1);
+    parallel_renderer_swap_and_submit(pr);
+
+    ASSERT_EQ(g_stub_push_constants_calls, 1u);
+    ASSERT_EQ(g_stub_push_constants_last_offset, 32u);
+    ASSERT_EQ(g_stub_push_constants_last_size, (u32)sizeof(data));
+    ASSERT_TRUE(memcmp(g_stub_push_constants_last_data, data, sizeof(data)) == 0);
+
+    parallel_renderer_shutdown(pr);
+    free_pr(pr);
+}
+
+TEST(rhi_push_range_fits_validation) {
+    /* R444: a push-constant write must fit the pipeline's declared range —
+     * writes into [range_size, 256) were silently truncated at flush. */
+    ASSERT_TRUE(rhi_push_range_fits(0, 80, 128));        /* particles compute blob */
+    ASSERT_TRUE(rhi_push_range_fits(48, 80, 128));       /* exact end of range */
+    ASSERT_TRUE(rhi_push_range_fits(0, 256, 256));       /* full graphics range */
+    ASSERT_FALSE(rhi_push_range_fits(49, 80, 128));      /* 129 > 128: dropped */
+    ASSERT_FALSE(rhi_push_range_fits(200, 64, 128));     /* 128B-limit device */
+    ASSERT_FALSE(rhi_push_range_fits(0, 0, 128));        /* empty write */
+    ASSERT_FALSE(rhi_push_range_fits(0xFFFFFFF0u, 64u, 256u)); /* no u32 wrap bypass */
+}
+
 /* ---- Statistics ---- */
 
 TEST(cmd_total_commands) {
@@ -506,6 +552,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cmd_push_constants_size_clamp);
     RUN_TEST(cmd_overflow_drops_commands);
     RUN_TEST(cmd_null_buffer_drops);
+    RUN_TEST(cmd_push_constants_replay_routes_to_rhi);
+    RUN_TEST(rhi_push_range_fits_validation);
     RUN_TEST(cmd_total_commands);
     RUN_TEST(cmd_frame_reset);
     RUN_TEST(cmd_mixed_command_sequence);

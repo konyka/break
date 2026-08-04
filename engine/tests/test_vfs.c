@@ -22,9 +22,29 @@
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-static const char *TMP_DIR  = "/tmp/test_vfs_dir";
-static const char *TMP_FILE = "/tmp/test_vfs_dir/hello.txt";
-static const char *TMP_PAK  = "/tmp/test_vfs.pak";
+/* R444: per-pid /tmp paths — parallel ctest trees raced on the fixed names.
+ * Function-backed so the macros below keep working at every use site;
+ * static buffers, single-threaded tests only. */
+static const char *vfs_tmp_dir(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_vfs_dir");
+}
+static const char *vfs_tmp_file(void)
+{
+    static char b[160];
+    snprintf(b, sizeof b, "%s/hello.txt", vfs_tmp_dir());
+    return b;
+}
+static const char *vfs_tmp_pak(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_vfs.pak");
+}
+
+#define TMP_DIR  vfs_tmp_dir()
+#define TMP_FILE vfs_tmp_file()
+#define TMP_PAK  vfs_tmp_pak()
 
 static void make_tmp_file(const char *path, const char *content)
 {
@@ -189,13 +209,19 @@ TEST(vfs_read_null_file)
 TEST(vfs_mount_priority)
 {
     /* Two directories: second mount overrides first for same filename */
-    const char *DIR_A = "/tmp/test_vfs_a";
-    const char *DIR_B = "/tmp/test_vfs_b";
+    char dir_a[128], dir_b[128]; /* R444: per-pid paths */
+    char file_a[160], file_b[160];
+    test_tmp(dir_a, sizeof dir_a, "test_vfs_a");
+    test_tmp(dir_b, sizeof dir_b, "test_vfs_b");
+    snprintf(file_a, sizeof file_a, "%s/data.txt", dir_a);
+    snprintf(file_b, sizeof file_b, "%s/data.txt", dir_b);
+    const char *DIR_A = dir_a;
+    const char *DIR_B = dir_b;
     ensure_dir(DIR_A);
     ensure_dir(DIR_B);
 
-    make_tmp_file("/tmp/test_vfs_a/data.txt", "from_A");
-    make_tmp_file("/tmp/test_vfs_b/data.txt", "from_B");
+    make_tmp_file(file_a, "from_A");
+    make_tmp_file(file_b, "from_B");
 
     VFS *vfs = vfs_create();
     vfs_mount_dir(vfs, DIR_A);
@@ -217,7 +243,8 @@ TEST(vfs_mount_priority)
 TEST(vfs_dir_rejects_oversized_file)
 {
     ensure_dir(TMP_DIR);
-    const char *big_path = "/tmp/test_vfs_dir/huge.bin";
+    char big_path[160]; /* R444: per-pid path */
+    snprintf(big_path, sizeof big_path, "%s/huge.bin", TMP_DIR);
     FILE *f = fopen(big_path, "wb");
     ASSERT_NOT_NULL(f);
 #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L

@@ -4,7 +4,13 @@
 #include <unistd.h>
 #include <sys/types.h>
 
-#define TMP_SHADER "/tmp/test_shader_io.glsl"
+/* R444: per-pid path — parallel ctest trees raced on the fixed name. */
+static const char *shader_io_tmp_path(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_shader_io.glsl");
+}
+#define TMP_SHADER shader_io_tmp_path()
 
 TEST(shader_read_rejects_oversized_file)
 {

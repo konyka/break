@@ -419,7 +419,7 @@ TEST(profiler_export_chrome_trace)
     ASSERT_NOT_NULL(f);
 
     ProfilerGpuRegion gpu[1] = { { "gpu_test", 1.25 } };
-    const char *path = "profiler_test_trace.json";
+    char path[64]; test_tmp(path, sizeof path, "profiler_test_trace.json"); /* R444: per-pid path — same-tree parallel ctest shared the cwd-relative file */
     ASSERT_TRUE(profiler_export_chrome_trace(path, f, gpu, 1, NULL, 0));
 
     FILE *fp = fopen(path, "rb");
@@ -448,7 +448,7 @@ TEST(profiler_export_chrome_meta)
         { "draw_bench_mega", "12" },
         { "draw_bench_legacy", "240" },
     };
-    const char *path = "profiler_test_meta.json";
+    char path[64]; test_tmp(path, sizeof path, "profiler_test_meta.json"); /* R444: per-pid path — same-tree parallel ctest shared the cwd-relative file */
     ASSERT_TRUE(profiler_export_chrome_trace(path, f, NULL, 0, meta, 2));
 
     FILE *fp = fopen(path, "rb");
@@ -523,7 +523,7 @@ TEST(profiler_threads_distinct_tids_and_names)
     /* The main-thread zone keeps the main track. */
     ASSERT_EQ(f->regions[0].tid, profiler_current_tid());
 
-    const char *path = "profiler_test_threads.json";
+    char path[64]; test_tmp(path, sizeof path, "profiler_test_threads.json"); /* R444: per-pid path — same-tree parallel ctest shared the cwd-relative file */
     ASSERT_TRUE(profiler_export_chrome_trace(path, f, NULL, 0, NULL, 0));
 
     static char buf[16384];

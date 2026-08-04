@@ -591,9 +591,33 @@ static void registry_global(void *data, struct wl_registry *reg, u32 name,
 }
 
 static void registry_global_remove(void *data, struct wl_registry *reg, u32 name) {
-    (void)data; (void)reg; (void)name;
-    /* R443: output hot-unplug is not handled this round; bound wl_output
-     * objects are kept until platform_destroy (same lifetime as before). */
+    (void)reg;
+    Platform *p = data;
+    /* R444: output hot-unplug. Tombstones would exhaust the fixed 8-slot
+     * budget under repeated plug/unplug and fight wl_out_add's append-dedup
+     * semantics, so removal compacts all parallel arrays instead. */
+    i32 slot = wl_out_find(&p->output_list, name);
+    if (slot < 0) return; /* not an output we bound (seat, compositor...) */
+    u32 i = (u32)slot;
+    /* zxdg_output_v1 wraps the wl_output, so it must go first. */
+    if (p->xdg_outputs[i]) zxdg_output_v1_destroy(p->xdg_outputs[i]);
+    if (p->outputs[i])     wl_output_destroy(p->outputs[i]);
+    wl_out_remove(&p->output_list, name);
+    /* Shift the pointer arrays down over the removed slot. output_ctx is NOT
+     * moved: listeners hold the addresses of its members, so the structs must
+     * stay put — only their .slot numbers shift with the compaction. */
+    u32 tail = p->output_list.count - i;
+    if (tail > 0) {
+        memmove(&p->outputs[i], &p->outputs[i + 1], tail * sizeof(p->outputs[0]));
+        memmove(&p->xdg_outputs[i], &p->xdg_outputs[i + 1], tail * sizeof(p->xdg_outputs[0]));
+    }
+    p->outputs[p->output_list.count] = NULL;
+    p->xdg_outputs[p->output_list.count] = NULL;
+    for (u32 k = i; k < p->output_list.count; k++)
+        p->output_ctx[k].slot = k;
+    /* If slot 0 was unplugged, p->scale/p->dpi keep the old primary's values
+     * until the new slot-0 output delivers its next done event — an accepted
+     * brief staleness (the values remain plausible for the same session). */
 }
 
 static const struct wl_registry_listener registry_listener = {

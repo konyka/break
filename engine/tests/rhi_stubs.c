@@ -81,6 +81,21 @@ void rhi_cmd_set_uniform_mat4(RHICmdBuffer *c, i32 loc, const f32 *m)  { (void)c
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *c, i32 loc, const void *data, u32 size) {
     (void)c; (void)loc; (void)data; (void)size;
 }
+/* R444: record rhi_cmd_push_constants calls so replay tests can assert the
+ * RHI contract (offset/size/data) without a device. */
+u32 g_stub_push_constants_calls = 0;
+u32 g_stub_push_constants_last_offset = 0;
+u32 g_stub_push_constants_last_size = 0;
+u8  g_stub_push_constants_last_data[256];
+void rhi_cmd_push_constants(RHICmdBuffer *c, u32 offset, const void *data, u32 size) {
+    (void)c;
+    g_stub_push_constants_calls++;
+    g_stub_push_constants_last_offset = offset;
+    g_stub_push_constants_last_size = size;
+    if (data && size > 0u && size <= sizeof(g_stub_push_constants_last_data)) {
+        memcpy(g_stub_push_constants_last_data, data, size);
+    }
+}
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *c, i32 loc, f32 a, f32 b, f32 d, f32 e) { (void)c; (void)loc; (void)a; (void)b; (void)d; (void)e; }
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *c, RHIBuffer b, u32 bind) { (void)c; (void)b; (void)bind; }
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *c, RHITexture t, RHISampler s, u32 u, u32 mip) { (void)c; (void)t; (void)s; (void)u; (void)mip; }

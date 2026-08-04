@@ -100,6 +100,64 @@ TEST(refresh_mhz_rounds_to_hz) {
     ASSERT_EQ(o.refresh_rate, 75u);
 }
 
+/* R444: hot-unplug removal (compaction semantics) */
+
+TEST(remove_middle_slot_compacts_tail) {
+    WaylandOutputList l;
+    wl_out_list_init(&l);
+    wl_out_add(&l, 10);
+    wl_out_add(&l, 20);
+    wl_out_add(&l, 30);
+    wl_out_add(&l, 40);
+    ASSERT_TRUE(wl_out_remove(&l, 20));
+    ASSERT_EQ(l.count, 3u);
+    /* Tail slots shift down in order; no tombstones. */
+    ASSERT_EQ(l.items[0].global_name, 10u);
+    ASSERT_EQ(l.items[1].global_name, 30u);
+    ASSERT_EQ(l.items[2].global_name, 40u);
+    ASSERT_EQ(wl_out_find(&l, 20), -1);
+    ASSERT_EQ(wl_out_find(&l, 30), 1);
+    ASSERT_EQ(wl_out_find(&l, 40), 2);
+}
+
+TEST(remove_last_slot) {
+    WaylandOutputList l;
+    wl_out_list_init(&l);
+    wl_out_add(&l, 10);
+    wl_out_add(&l, 20);
+    ASSERT_TRUE(wl_out_remove(&l, 20));
+    ASSERT_EQ(l.count, 1u);
+    ASSERT_EQ(l.items[0].global_name, 10u);
+}
+
+TEST(remove_unknown_global_returns_false) {
+    WaylandOutputList l;
+    wl_out_list_init(&l);
+    wl_out_add(&l, 10);
+    ASSERT_FALSE(wl_out_remove(&l, 999));
+    ASSERT_EQ(l.count, 1u);
+    ASSERT_EQ(l.items[0].global_name, 10u);
+    /* Removing from an empty list is also a clean miss. */
+    wl_out_remove(&l, 10);
+    ASSERT_FALSE(wl_out_remove(&l, 10));
+    ASSERT_EQ(l.count, 0u);
+}
+
+TEST(add_after_remove_reuses_capacity) {
+    WaylandOutputList l;
+    wl_out_list_init(&l);
+    wl_out_add(&l, 10);
+    wl_out_add(&l, 20);
+    /* Unplug 10, replug the same name: append-dedup gives it a fresh tail
+     * slot rather than resurrecting a tombstone — 8 slots never wear out
+     * under repeated hot-plug. */
+    ASSERT_TRUE(wl_out_remove(&l, 10));
+    ASSERT_EQ(wl_out_add(&l, 10), 1);
+    ASSERT_EQ(l.count, 2u);
+    ASSERT_EQ(l.items[0].global_name, 20u);
+    ASSERT_EQ(l.items[1].global_name, 10u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(add_up_to_capacity_then_full);
     RUN_TEST(add_dedups_same_global_name);
@@ -109,4 +167,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mode_tie_area_picks_higher_refresh);
     RUN_TEST(mode_current_flag_wins_and_sticks);
     RUN_TEST(refresh_mhz_rounds_to_hz);
+    RUN_TEST(remove_middle_slot_compacts_tail);
+    RUN_TEST(remove_last_slot);
+    RUN_TEST(remove_unknown_global_returns_false);
+    RUN_TEST(add_after_remove_reuses_capacity);
 TEST_MAIN_END()

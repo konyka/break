@@ -11,7 +11,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define TMP_PATH "test_mipmap_tmp.bin"
+/* R444: the cwd-relative temp file raced under same-tree parallel ctest
+ * (ctest -j / overlapping runs share the build dir). Write it to a per-pid
+ * /tmp path instead; the VFS mount shifts from "." to "/tmp" so the manager
+ * keeps seeing a plain basename (absolute paths are rejected by the R353
+ * DIR-mount guard). */
+static const char *mip_tmp_full(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_mipmap_tmp.bin");
+}
+static const char *mip_tmp_base(void)
+{
+    static char b[128];
+    snprintf(b, sizeof b, "break_test_mipmap_tmp.bin_%d", (int)TEST_GETPID());
+    return b;
+}
+#define TMP_PATH      mip_tmp_full()   /* fopen/remove: absolute per-pid path */
+#define TMP_PATH_BASE mip_tmp_base()   /* VFS register: basename inside /tmp */
 
 #define TEX_W   16u
 #define TEX_H   16u
@@ -91,14 +108,14 @@ TEST(mipmap_residency_and_upload)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp");
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
     ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20)); /* 1 MB budget */
     mipmap_stream_set_upload(&mgr, test_upload, NULL);
 
-    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
     ASSERT_TRUE(idx >= 0);
 
     g_upload_calls = 0;
@@ -140,13 +157,13 @@ TEST(mipmap_eviction_under_budget)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp");
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
     ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
 
-    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
     ASSERT_TRUE(idx >= 0);
 
     /* Load full-res level 0 first. */
@@ -182,14 +199,14 @@ TEST(mipmap_invalidate_clears_residency)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp");
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
     ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
     mipmap_stream_set_upload(&mgr, test_upload, NULL);
 
-    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
     ASSERT_TRUE(idx >= 0);
 
     mipmap_stream_update_visibility(&mgr, idx, 1.0f, 1);
@@ -213,14 +230,14 @@ TEST(mipmap_rejects_truncated_level_file)
     ASSERT_TRUE(write_truncated_level0_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp");
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
     ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
     mipmap_stream_set_upload(&mgr, test_upload, NULL);
 
-    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
     ASSERT_TRUE(idx >= 0);
 
     g_upload_calls = 0;
@@ -256,7 +273,7 @@ TEST(mipmap_register_rejects_chain_over_vfs_cap)
     MipmapStreamManager mgr;
     ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
     /* Level 0 alone is 8192²×4 = 256 MiB > VFS_MAX_FILE_BYTES (128 MiB). */
-    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, 8192u, 8192u, 4u, 4u);
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, 8192u, 8192u, 4u, 4u);
     ASSERT_EQ(idx, -1);
     mipmap_stream_shutdown(&mgr);
 }
@@ -280,13 +297,13 @@ TEST(mipmap_request_pool_reuse_after_free)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp");
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
     ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
 
-    i32 idx = mipmap_stream_register(&mgr, TMP_PATH, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
     ASSERT_TRUE(idx >= 0);
 
     /* Far more requests than the 64-slot pool: with the old bump allocator
@@ -315,7 +332,7 @@ TEST(mipmap_request_pool_reuse_after_free)
 TEST(mipmap_failed_load_not_rerequested)
 {
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp");
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;

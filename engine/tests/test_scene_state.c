@@ -7,7 +7,13 @@
 #include <unistd.h>
 #include <sys/types.h>
 
-#define TMP_STATE "/tmp/test_scene_state.bin"
+/* R444: per-pid path — parallel ctest trees raced on the fixed name. */
+static const char *scene_state_tmp_path(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_scene_state.bin");
+}
+#define TMP_STATE scene_state_tmp_path()
 
 static SceneStateCtx make_ctx(Camera *cam, PhysicsWorld *pw, f32 *sun_a, f32 *sun_e,
                               f32 *exp, f32 *scale, f32 *wy, bool *wen) {

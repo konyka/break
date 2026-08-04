@@ -6,6 +6,12 @@
 #include <network/network.h>
 #include <string.h>
 
+/* R444: fixed loopback ports (19876..19880) collided across parallel ctest
+ * processes — bind failed and the loopback tests fell over. Per-pid 16-port
+ * block, same scheme as test_net_replication.c; the five users take +0..+4.
+ * Range check: 23000 + 2599*16 = 64584, +4 < 65535. */
+#define TEST_PORT_BASE ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
+
 /* ----------------------------------------------------------------------- */
 
 TEST(init_shutdown)
@@ -71,8 +77,8 @@ TEST(udp_loopback)
     net_close(recv_s);
     net_close(send_s);
 
-    /* Use a fixed high port for loopback test */
-    recv_s = net_udp_create(19876);
+    /* R444: per-pid block port (was fixed 19876) */
+    recv_s = net_udp_create((u16)(TEST_PORT_BASE + 0u));
     ASSERT_NOT_NULL(recv_s);
     net_set_nonblocking(recv_s, true);
 
@@ -81,7 +87,7 @@ TEST(udp_loopback)
 
     /* Send a message */
     NetAddress dst;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", 19876, &dst));
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 0u), &dst));
     const char *msg = "Hello, loopback!";
     i32 sent = net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
     ASSERT_TRUE(sent > 0);
@@ -117,13 +123,13 @@ TEST(poll_timeout)
 TEST(poll_readable)
 {
     ASSERT_TRUE(net_init());
-    NetSocket *recv_s = net_udp_create(19877);
+    NetSocket *recv_s = net_udp_create((u16)(TEST_PORT_BASE + 1u)); /* R444: per-pid block port (was fixed 19877) */
     ASSERT_NOT_NULL(recv_s);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
     NetAddress dst;
-    net_address_resolve("127.0.0.1", 19877, &dst);
+    net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 1u), &dst);
     const char *msg = "poll test";
     net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
 
@@ -194,13 +200,14 @@ TEST(sendto_const_address)
      * address (it previously cast away const). A genuinely const NetAddress
      * in read-only storage must work. */
     ASSERT_TRUE(net_init());
-    NetSocket *recv_s = net_udp_create(19878);
+    NetSocket *recv_s = net_udp_create((u16)(TEST_PORT_BASE + 2u)); /* R444: per-pid block port (was fixed 19878) */
     ASSERT_NOT_NULL(recv_s);
     net_set_nonblocking(recv_s, true);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
-    static const NetAddress dst = { .host = "127.0.0.1", .port = 19878 };
+    /* R444: port is runtime now (per-pid block); the address stays const. */
+    const NetAddress dst = { .host = "127.0.0.1", .port = (u16)(TEST_PORT_BASE + 2u) };
     const char *msg = "const addr";
     i32 sent = net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
     ASSERT_TRUE(sent > 0);
@@ -222,18 +229,18 @@ TEST(sendto_repeated_sends_with_cache)
      * the same destination (cache hit) and a send to a different destination
      * (key differs → re-resolve) must all arrive intact. */
     ASSERT_TRUE(net_init());
-    NetSocket *recv_a = net_udp_create(19879);
+    NetSocket *recv_a = net_udp_create((u16)(TEST_PORT_BASE + 3u)); /* R444: per-pid block port (was fixed 19879) */
     ASSERT_NOT_NULL(recv_a);
     net_set_nonblocking(recv_a, true);
-    NetSocket *recv_b = net_udp_create(19880);
+    NetSocket *recv_b = net_udp_create((u16)(TEST_PORT_BASE + 4u)); /* R444: per-pid block port (was fixed 19880) */
     ASSERT_NOT_NULL(recv_b);
     net_set_nonblocking(recv_b, true);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
     NetAddress dst_a, dst_b;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", 19879, &dst_a));
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", 19880, &dst_b));
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 3u), &dst_a));
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 4u), &dst_b));
 
     const char *m1 = "first";
     const char *m2 = "second";

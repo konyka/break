@@ -9,7 +9,13 @@
 #include <string.h>
 #include <unistd.h>
 
-#define TEST_PORT 19877u
+/* R444: a fixed UDP TEST_PORT collided across parallel ctest processes
+ * (same-tree -j and cross-tree alike) — bind failed and every loopback test
+ * fell over. Derive a per-process 16-port block from the pid (tests add
+ * +0..+10 offsets on top of TEST_PORT, so the block must be wider than the
+ * max offset or consecutive pids overlap each other's ports). Range check:
+ * 23000 + 2599*16 = 64584, +10 < 65535. */
+#define TEST_PORT ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
 
 TEST(replicator_init_shutdown)
 {
@@ -800,7 +806,7 @@ TEST(peer_save_load)
     rep.peers[0].roundtrip_ms = 9.5f;
     rep.peers[0].hb_rt_recv = 2u;
 
-    const char *path = "test_netrep_peers.txt";
+    char path[64]; test_tmp(path, sizeof path, "test_netrep_peers.txt"); /* R444: per-pid path — same-tree parallel ctest shared the cwd-relative file */
     ASSERT_TRUE(net_replicator_peer_save(&rep, path));
 
     NetReplicator loaded = {0};
@@ -1166,7 +1172,7 @@ TEST(peer_load_rejects_port_overflow)
     NetReplicator rep = {0};
     ASSERT_TRUE(net_replicator_init(&rep, 0));
 
-    const char *path = "test_netrep_badport.txt";
+    char path[64]; test_tmp(path, sizeof path, "test_netrep_badport.txt"); /* R444: per-pid path */
     FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "# break netrep peers v1\n");

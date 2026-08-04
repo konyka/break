@@ -65,7 +65,9 @@ TEST(multiple_globals)
 TEST(load_from_file)
 {
     /* Write a temp script file */
-    FILE *f = fopen("/tmp/test_script.script", "w");
+    char path[64]; /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    test_tmp(path, sizeof path, "test_script.script");
+    FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "var health = 100\n");
     fprintf(f, "var speed = 5.5\n");
@@ -76,7 +78,7 @@ TEST(load_from_file)
 
     ScriptEngine se = {0};
     script_engine_init(&se);
-    bool ok = script_load(&se, "/tmp/test_script.script");
+    bool ok = script_load(&se, path);
     ASSERT_TRUE(ok);
     ASSERT_TRUE(se.loaded);
     ASSERT_EQ(se.global_count, 2u);
@@ -92,6 +94,7 @@ TEST(load_from_file)
     ASSERT_TRUE(fabsf(script_get_global(&se, "speed") - 6.5f) < 0.001f);
 
     script_engine_shutdown(&se);
+    remove(path); /* R444: was never removed; stale mtime made runs order-dependent */
 }
 
 TEST(call_nonexistent_func)
@@ -115,7 +118,9 @@ TEST(load_nonexistent_file)
 
 TEST(script_comments_ignored)
 {
-    FILE *f = fopen("/tmp/test_comment.script", "w");
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_comment.script");
+    FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "# This is a comment\n");
     fprintf(f, "var x = 42\n");
@@ -124,11 +129,12 @@ TEST(script_comments_ignored)
 
     ScriptEngine se = {0};
     script_engine_init(&se);
-    bool ok = script_load(&se, "/tmp/test_comment.script");
+    bool ok = script_load(&se, path);
     ASSERT_TRUE(ok);
     ASSERT_EQ(se.global_count, 1u);
     ASSERT_TRUE(fabsf(script_get_global(&se, "x") - 42.0f) < 0.001f);
     script_engine_shutdown(&se);
+    remove(path); /* R444: was never removed */
 }
 
 TEST(reload_if_changed_is_per_engine)
@@ -139,7 +145,9 @@ TEST(reload_if_changed_is_per_engine)
      * static made the first call record the file's mtime, so the second engine
      * saw mt==last_mtime, skipped script_load and stayed permanently empty —
      * exactly the failure a level/engine recreate hits. */
-    FILE *f = fopen("/tmp/test_reload_per_engine.script", "w");
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_reload_per_engine.script");
+    FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "var hp = 7\n");
     fprintf(f, "func boot\n");
@@ -148,7 +156,7 @@ TEST(reload_if_changed_is_per_engine)
 
     ScriptEngine a = {0};
     script_engine_init(&a);
-    script_reload_if_changed(&a, "/tmp/test_reload_per_engine.script");
+    script_reload_if_changed(&a, path);
     ASSERT_TRUE(a.loaded);
     ASSERT_EQ(a.func_count, 1u);
     script_engine_shutdown(&a);
@@ -158,11 +166,12 @@ TEST(reload_if_changed_is_per_engine)
     ScriptEngine b = {0};
     script_engine_init(&b);
     ASSERT_EQ(b.last_mtime, 0u);        /* init must zero the per-engine tracker */
-    script_reload_if_changed(&b, "/tmp/test_reload_per_engine.script");
+    script_reload_if_changed(&b, path);
     ASSERT_TRUE(b.loaded);              /* pre-fix FAILs here (never reloaded) */
     ASSERT_EQ(b.func_count, 1u);
     ASSERT_TRUE(fabsf(script_get_global(&b, "hp") - 7.0f) < 0.001f);
     script_engine_shutdown(&b);
+    remove(path); /* R444: was never removed; stale mtime broke this mtime test */
 }
 
 /* ----------------------------------------------------------------------- */
@@ -171,7 +180,9 @@ TEST(reload_if_changed_is_per_engine)
 
 TEST(script_empty_file)
 {
-    FILE *f = fopen("/tmp/test_empty.script", "w");
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_empty.script");
+    FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     /* Write a single space to avoid format-zero-length warning */
     fputc(' ', f);
@@ -179,17 +190,20 @@ TEST(script_empty_file)
 
     ScriptEngine se = {0};
     script_engine_init(&se);
-    bool ok = script_load(&se, "/tmp/test_empty.script");
+    bool ok = script_load(&se, path);
     /* Empty file should load successfully with zero globals/funcs */
     ASSERT_TRUE(ok);
     ASSERT_EQ(se.global_count, 0u);
     ASSERT_EQ(se.func_count, 0u);
     script_engine_shutdown(&se);
+    remove(path); /* R444: was never removed */
 }
 
 TEST(script_only_comments)
 {
-    FILE *f = fopen("/tmp/test_only_comments.script", "w");
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_only_comments.script");
+    FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "# Comment 1\n");
     fprintf(f, "# Comment 2\n");
@@ -198,11 +212,12 @@ TEST(script_only_comments)
 
     ScriptEngine se = {0};
     script_engine_init(&se);
-    bool ok = script_load(&se, "/tmp/test_only_comments.script");
+    bool ok = script_load(&se, path);
     ASSERT_TRUE(ok);
     ASSERT_EQ(se.global_count, 0u);
     ASSERT_EQ(se.func_count, 0u);
     script_engine_shutdown(&se);
+    remove(path); /* R444: was never removed */
 }
 
 TEST(script_negative_values)
@@ -218,7 +233,9 @@ TEST(script_negative_values)
 /* R392: op_count had no cap — a million-line `set x 1` file doubled ops forever. */
 TEST(script_rejects_excessive_ops)
 {
-    FILE *f = fopen("/tmp/test_ops_cap.script", "w");
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_ops_cap.script");
+    FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f, "func spam\n");
     for (u32 i = 0; i < SCRIPT_MAX_OPS + 64u; i++)
@@ -227,19 +244,20 @@ TEST(script_rejects_excessive_ops)
 
     ScriptEngine se = {0};
     script_engine_init(&se);
-    bool ok = script_load(&se, "/tmp/test_ops_cap.script");
+    bool ok = script_load(&se, path);
     ASSERT_TRUE(ok);
     ASSERT_EQ(se.func_count, 1u);
     ASSERT_EQ(se.funcs[0].op_count, SCRIPT_MAX_OPS);
 
     script_engine_shutdown(&se);
-    remove("/tmp/test_ops_cap.script");
+    remove(path);
 }
 
 /* R392: file size had no cap — ftell -> malloc(sz+1) on a multi-GB file. */
 TEST(script_rejects_oversized_file)
 {
-    const char *path = "/tmp/test_script_huge.script";
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_script_huge.script");
     FILE *f = fopen(path, "wb");
     ASSERT_NOT_NULL(f);
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }

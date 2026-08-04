@@ -63,7 +63,7 @@ TEST(load_binary_nonexistent_file)
 TEST(load_binary_bad_magic)
 {
     /* Write a file with wrong magic */
-    const char *path = "/tmp/test_bad_magic.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_bad_magic.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     {
         BscnHeader h = {0};
         h.magic = 0xDEADBEEF;
@@ -80,7 +80,7 @@ TEST(load_binary_bad_magic)
 TEST(load_binary_bad_version)
 {
     /* Write a file with wrong version */
-    const char *path = "/tmp/test_bad_version.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_bad_version.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     {
         BscnHeader h = {0};
         h.magic = BSCN_MAGIC;
@@ -97,7 +97,7 @@ TEST(load_binary_bad_version)
 TEST(load_binary_truncated)
 {
     /* Write a file smaller than header */
-    const char *path = "/tmp/test_truncated.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_truncated.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     {
         u8 data[4] = {0};
         FILE *fp = fopen(path, "wb");
@@ -111,7 +111,7 @@ TEST(load_binary_truncated)
 TEST(load_binary_too_many_chunks)
 {
     /* chunk_count > 64 should be rejected */
-    const char *path = "/tmp/test_many_chunks.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_many_chunks.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     {
         BscnHeader h = {0};
         h.magic = BSCN_MAGIC;
@@ -200,7 +200,7 @@ TEST(save_json_empty_path)
 TEST(load_binary_zero_chunks)
 {
     /* Valid file with zero chunks */
-    const char *path = "/tmp/test_zero_chunks.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_zero_chunks.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     {
         BscnHeader h = {0};
         h.magic = BSCN_MAGIC;
@@ -220,7 +220,7 @@ TEST(load_binary_zero_chunks)
 TEST(load_binary_rollback_orphans_on_bad_components)
 {
     /* R353: ENTITIES succeed then COMPONENTS fail → destroy created entities. */
-    const char *path = "/tmp/test_rollback_orphans.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_rollback_orphans.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     {
         u32 ent_chunk[3] = {1u, 1u, 0u}; /* n, gen, comp_count */
         u32 comp_chunk[1] = {1u};        /* type_count only → truncated */
@@ -375,7 +375,7 @@ static bool set_first_entity_comp_count(const char *path, u32 value)
 
 TEST(resources_count_bounded_by_chunk_size)
 {
-    const char *path = "/tmp/test_bscn_rescount.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_bscn_rescount.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
     World *w = world_create();
     Scene src; make_scene(&src);
@@ -396,7 +396,7 @@ TEST(resources_count_bounded_by_chunk_size)
 
 TEST(entities_comp_count_bounded)
 {
-    const char *path = "/tmp/test_bscn_compcount.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_bscn_compcount.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     World *w = world_create();
     world_register_component(w, 1, sizeof(u32));
     Entity e = world_create_entity(w);
@@ -439,7 +439,7 @@ static bool write_sparse_file(const char *path, off_t size)
 
 TEST(load_binary_rejects_oversized_file)
 {
-    const char *path = "/tmp/test_bscn_huge.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_bscn_huge.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     ASSERT_TRUE(write_sparse_file(path, (off_t)BSCN_MAX_FILE_BYTES + 1));
 
     World *w = world_create();
@@ -452,7 +452,7 @@ TEST(load_binary_rejects_oversized_file)
 
 TEST(load_json_rejects_oversized_file)
 {
-    const char *path = "/tmp/test_bscn_huge.json";
+    char path[64]; test_tmp(path, sizeof path, "test_bscn_huge.json"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     ASSERT_TRUE(write_sparse_file(path, (off_t)BSCN_MAX_FILE_BYTES + 1));
 
     World *w = world_create();
@@ -466,7 +466,7 @@ TEST(load_json_rejects_oversized_file)
  * overwriting (and leaking) the first allocation. */
 TEST(duplicate_entities_chunk_rejected)
 {
-    const char *path = "/tmp/test_bscn_dupents.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_bscn_dupents.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
     World *w = world_create();
     Scene src; make_scene(&src);
@@ -506,8 +506,8 @@ TEST(duplicate_entities_chunk_rejected)
  * caller's Scene half-overwritten — scene_load_binary now stages and commits. */
 TEST(failed_load_keeps_previous_scene)
 {
-    const char *pa = "/tmp/test_bscn_keep_a.bscn";
-    const char *pb = "/tmp/test_bscn_keep_b.bscn";
+    char pa[64]; test_tmp(pa, sizeof pa, "test_bscn_keep_a.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    char pb[64]; test_tmp(pb, sizeof pb, "test_bscn_keep_b.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
 
     /* A: 2 meshes + 2 materials → 4 resources. */
@@ -543,7 +543,7 @@ TEST(failed_load_keeps_previous_scene)
 
 TEST(resources_roundtrip_include)
 {
-    const char *path = "/tmp/test_res_include.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_res_include.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     World *w = world_create();
     Scene src; make_scene(&src);
 
@@ -586,7 +586,7 @@ TEST(resources_roundtrip_include)
 
 TEST(resources_roundtrip_refs_only)
 {
-    const char *path = "/tmp/test_res_refs.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_res_refs.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     World *w = world_create();
     Scene src; make_scene(&src);
 
@@ -616,8 +616,8 @@ TEST(resources_roundtrip_refs_only)
 
 TEST(resources_guid_deterministic)
 {
-    const char *p1 = "/tmp/test_res_g1.bscn";
-    const char *p2 = "/tmp/test_res_g2.bscn";
+    char p1[64]; test_tmp(p1, sizeof p1, "test_res_g1.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    char p2[64]; test_tmp(p2, sizeof p2, "test_res_g2.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     World *w = world_create();
     Scene src; make_scene(&src);
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
@@ -643,7 +643,7 @@ TEST(resources_guid_deterministic)
 
 TEST(generation_restore_roundtrip)
 {
-    const char *path = "/tmp/test_gen_restore.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_gen_restore.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     World *w = world_create();
     world_register_component(w, 1, sizeof(u32));
 
@@ -685,7 +685,7 @@ TEST(generation_restore_roundtrip)
  * JSON round-trips. */
 TEST(generation_restore_roundtrip_json)
 {
-    const char *path = "/tmp/test_gen_restore.json";
+    char path[64]; test_tmp(path, sizeof path, "test_gen_restore.json"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     World *w = world_create();
     world_register_component(w, 1, sizeof(u32));
 
@@ -729,7 +729,7 @@ TEST(instantiate_prefab_offsets_root_nodes_only)
      * R422: but only to ROOT nodes — children inherit the root's translation
      * through world-transform composition, so offsetting every node displaced
      * a depth-d node by (d+1)x the position. */
-    const char *path = "/tmp/test_prefab_offset.bscn";
+    char path[64]; test_tmp(path, sizeof path, "test_prefab_offset.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
 
     /* Prefab: depth-2 hierarchy — root at (1,0,0), child at (0,2,0),
      * grandchild at (0,0,3). */
@@ -791,7 +791,7 @@ TEST(instantiate_prefab_offsets_root_nodes_only)
  * pattern). */
 TEST(load_json_failure_preserves_old_graph)
 {
-    const char *path = "/tmp/test_json_partial.json";
+    char path[64]; test_tmp(path, sizeof path, "test_json_partial.json"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
 
     World *w = world_create();
     Scene dst; memset(&dst, 0, sizeof(dst));
@@ -845,7 +845,7 @@ TEST(load_json_failure_preserves_old_graph)
  * The default is now UINT32_MAX, matching the binary/glTF paths. */
 TEST(load_json_node_without_parent_is_root)
 {
-    const char *path = "/tmp/test_json_noparent.json";
+    char path[64]; test_tmp(path, sizeof path, "test_json_noparent.json"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     const char *doc =
         "{\"version\":1,"
         "\"nodes\":[{\"mesh\":0,\"flags\":0},"
@@ -873,7 +873,7 @@ TEST(load_json_node_without_parent_is_root)
  * now rejected, failing the whole parse instead of loading a wrapped value. */
 TEST(load_json_rejects_oversized_u32_literal)
 {
-    const char *path = "/tmp/test_json_biglit.json";
+    char path[64]; test_tmp(path, sizeof path, "test_json_biglit.json"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     /* 4294967296 = UINT32_MAX + 1. */
     const char *doc = "{\"version\":4294967296,\"entities\":[]}";
     {

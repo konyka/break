@@ -209,12 +209,17 @@ static void pri_cb_high(void *user, void *data, u32 size) {
 TEST(async_loader_priority_ordering) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid files now live in /tmp */
 
     /* Two low-priority files queued before a high-priority file. */
-    FILE *fa = fopen("async_pri_low_a.bin", "wb");
-    FILE *fb = fopen("async_pri_low_b.bin", "wb");
-    FILE *fc = fopen("async_pri_high.bin", "wb");
+    /* R444: per-pid paths — same-tree parallel ctest shared the cwd-relative files. */
+    char pa[128], pb[128], pc[128];
+    test_tmp(pa, sizeof pa, "async_pri_low_a.bin");
+    test_tmp(pb, sizeof pb, "async_pri_low_b.bin");
+    test_tmp(pc, sizeof pc, "async_pri_high.bin");
+    FILE *fa = fopen(pa, "wb");
+    FILE *fb = fopen(pb, "wb");
+    FILE *fc = fopen(pc, "wb");
     ASSERT_NOT_NULL(fa);
     ASSERT_NOT_NULL(fb);
     ASSERT_NOT_NULL(fc);
@@ -237,9 +242,10 @@ TEST(async_loader_priority_ordering) {
     async_loader_init(1, vfs);
     atomic_store(&g_pri_order_count, 0);
 
-    u64 id_low_a = async_loader_request_priority("async_pri_low_a.bin", pri_cb_low, NULL, 100);
-    u64 id_low_b = async_loader_request_priority("async_pri_low_b.bin", pri_cb_low, NULL, 100);
-    u64 id_high  = async_loader_request_priority("async_pri_high.bin",  pri_cb_high, NULL, 0);
+    /* Basenames: the /tmp mount resolves them to the per-pid files above. */
+    u64 id_low_a = async_loader_request_priority(strrchr(pa, '/') + 1, pri_cb_low, NULL, 100);
+    u64 id_low_b = async_loader_request_priority(strrchr(pb, '/') + 1, pri_cb_low, NULL, 100);
+    u64 id_high  = async_loader_request_priority(strrchr(pc, '/') + 1, pri_cb_high, NULL, 0);
     ASSERT_NEQ(id_low_a, (u64)0);
     ASSERT_NEQ(id_low_b, (u64)0);
     ASSERT_NEQ(id_high, (u64)0);
@@ -267,9 +273,9 @@ TEST(async_loader_priority_ordering) {
 
     async_loader_shutdown();
     vfs_destroy(vfs);
-    remove("async_pri_low_a.bin");
-    remove("async_pri_low_b.bin");
-    remove("async_pri_high.bin");
+    remove(pa);
+    remove(pb);
+    remove(pc);
 }
 
 /* Texture decode should happen off the main thread; the main thread must stay responsive. */
@@ -293,10 +299,12 @@ static void decode_cb(void *user, void *data, u32 size) {
 TEST(async_loader_decode_non_blocking) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid file now lives in /tmp */
 
     /* Write a minimal 2x2 32-bit uncompressed TGA file. */
-    FILE *f = fopen("async_decode_test.tga", "wb");
+    char pt[128]; /* R444: per-pid path */
+    test_tmp(pt, sizeof pt, "async_decode_test.tga");
+    FILE *f = fopen(pt, "wb");
     ASSERT_NOT_NULL(f);
     u8 header[18] = {0};
     header[2] = 2;      /* uncompressed true-color */
@@ -320,7 +328,7 @@ TEST(async_loader_decode_non_blocking) {
     atomic_store(&g_decode_success, 0);
     atomic_store(&g_decode_mip_count, 0);
 
-    u64 id = async_loader_request_texture("async_decode_test.tga", decode_cb, NULL, 0);
+    u64 id = async_loader_request_texture(strrchr(pt, '/') + 1, decode_cb, NULL, 0);
     ASSERT_NEQ(id, (u64)0);
 
     /* Main thread pumps ticks without blocking on decode. */
@@ -339,7 +347,7 @@ TEST(async_loader_decode_non_blocking) {
 
     async_loader_shutdown();
     vfs_destroy(vfs);
-    remove("async_decode_test.tga");
+    remove(pt);
 }
 
 /* R394: range reads used to succeed with to_read < range_length, feeding short
@@ -358,9 +366,11 @@ TEST(async_loader_range_truncated_fails)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid file now lives in /tmp */
 
-    FILE *f = fopen("async_range_short.bin", "wb");
+    char pr[128]; /* R444: per-pid path */
+    test_tmp(pr, sizeof pr, "async_range_short.bin");
+    FILE *f = fopen(pr, "wb");
     ASSERT_NOT_NULL(f);
     u8 blob[64];
     memset(blob, 0xAB, sizeof(blob));
@@ -371,7 +381,7 @@ TEST(async_loader_range_truncated_fails)
     atomic_store(&g_range_cb_called, 0);
     atomic_store(&g_range_cb_null, 0);
 
-    u64 id = async_loader_request_range("async_range_short.bin", 0, 256,
+    u64 id = async_loader_request_range(strrchr(pr, '/') + 1, 0, 256,
                                         range_trunc_cb, NULL);
     ASSERT_NEQ(id, (u64)0);
 
@@ -386,7 +396,7 @@ TEST(async_loader_range_truncated_fails)
 
     async_loader_shutdown();
     vfs_destroy(vfs);
-    remove("async_range_short.bin");
+    remove(pr);
 }
 
 /* R402: completion ring must not overwrite when main thread drains slowly. */
@@ -450,11 +460,13 @@ TEST(async_loader_shutdown_fires_pending_callbacks)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, ".");
+    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid file now lives in /tmp */
 
     /* One shared 1 MiB file keeps the single worker busy long enough that
      * most requests are still queued when shutdown runs. */
-    FILE *f = fopen("async_shutdown_pending.bin", "wb");
+    char ps[128]; /* R444: per-pid path */
+    test_tmp(ps, sizeof ps, "async_shutdown_pending.bin");
+    FILE *f = fopen(ps, "wb");
     ASSERT_NOT_NULL(f);
     u8 blob[4096];
     memset(blob, 0x5A, sizeof(blob));
@@ -468,7 +480,7 @@ TEST(async_loader_shutdown_fires_pending_callbacks)
     const int N = 64;
     int submitted = 0;
     for (int i = 0; i < N; i++) {
-        if (async_loader_request("async_shutdown_pending.bin",
+        if (async_loader_request(strrchr(ps, '/') + 1,
                                  shutdown_pending_cb, NULL) != 0)
             submitted++;
     }
@@ -482,7 +494,7 @@ TEST(async_loader_shutdown_fires_pending_callbacks)
     ASSERT_EQ(atomic_load(&g_sd_cb_count), atomic_load(&g_sd_cb_null));
 
     vfs_destroy(vfs);
-    remove("async_shutdown_pending.bin");
+    remove(ps);
 }
 
 TEST_MAIN_BEGIN()

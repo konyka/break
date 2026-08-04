@@ -4783,16 +4783,30 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     vk->push_dirty = true;
 }
 
-/* R179: Upload an arbitrary push-constant range in one mark (avoids mat4 64B truncation). */
-void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
+/* R444: Push-constant upload with vkCmdPushConstants(offset, size) semantics.
+ * Validates against the pipeline's declared push range (was: hard 256, which
+ * silently truncated writes into [push_range_size, 256) at flush). */
+void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size) {
     (void)cmd;
     if (!data || size == 0u) return;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + size > 256u) return;
-    memcpy(vk->push_staging + location, data, size);
-    VK_PUSH_MARK(vk, location, size);
+    VKPipelineData *pd = vk->current_pipeline_data;
+    if (!pd) return;
+    u32 range = pd->is_compute ? 128u : pd->push_range_size;
+    if (!rhi_push_range_fits(offset, size, range)) {
+        LOG_WARN("VK: push constants [%u, +%u) exceed declared range %u — write dropped",
+                 offset, size, range);
+        return;
+    }
+    memcpy(vk->push_staging + offset, data, size);
+    VK_PUSH_MARK(vk, offset, size);
     vk->push_dirty = true;
+}
+
+/* R179/R444: Deprecated alias of rhi_cmd_push_constants (location == byte offset). */
+void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
+    if (location < 0) return;
+    rhi_cmd_push_constants(cmd, (u32)location, data, size);
 }
 
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {

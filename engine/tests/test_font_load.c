@@ -84,7 +84,14 @@ void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
 
 /* ---- helpers ---- */
 
-static const char *TMP_FONT = "/tmp/test_font_load.bin";
+/* R444: per-pid path — parallel ctest trees raced on the fixed name.
+ * Function-backed macro keeps every use site unchanged (static buffer). */
+static const char *font_tmp_path(void)
+{
+    static char b[128];
+    return test_tmp(b, sizeof b, "test_font_load.bin");
+}
+#define TMP_FONT font_tmp_path()
 
 static bool write_bytes(const char *path, const void *data, usize n) {
     FILE *f = fopen(path, "wb");
