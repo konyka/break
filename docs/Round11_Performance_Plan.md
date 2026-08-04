@@ -10,7 +10,7 @@
 | P0 | 遮挡剔除 Hi-Z | ~~compute 跑通但结果未驱动 draw~~ **R11 已接线**，默认开 | — |
 | P0 | GPU 间接绘制默认路径 | ~~mega-buffer 有但 gpucull 默认关~~ **R11 mega-buffer 就绪时默认开** | — |
 | P0 | 合并后处理 | ~~demo 仍多 pass~~ **R11 demo 默认 combined 路径**(auto-exp/cine 除外) | — |
-| P1 | unified_cull | ~~单 pass 压缩已实现，main 未用~~ **R12 阴影/点光阴影默认 unified** | ~~前向仍 per-mat compact~~ **R437 已做**（容量区间单遍 scatter，G→1；execute 仍按材质 G 次） |
+| P1 | unified_cull | ~~单 pass 压缩已实现，main 未用~~ **R12 阴影/点光阴影默认 unified** | ~~前向仍 per-mat compact~~ **R437 已做**（容量区间单遍 scatter，G→1；~~execute 仍按材质 G 次~~ **R441 已解决**：纹理数组 + first_instance 层号 + ungrouped 紧排，前向 execute G→1，`BREAK_MAT_INDIRECT` 默认开） |
 | P1 | 粒子 GPU cull | ~~`particle_cull.comp` 未接线~~ **R12 已接线** | draw 随 alive 数而非 max |
 | P1 | 延迟渲染 | light_data 忽略、环境光硬编码 | deferred 路径光照质量/一致性差 |
 | P2 | TAA motion vector | 无 per-object / 相机 MV | TAA 质量差、重影 |
@@ -19,7 +19,7 @@
 | P3 | Network 复制 | socket 有、无游戏同步 | 非渲染热点 |
 | P3 | Animation blend/IK demo | 代码有、demo 未接 | 非帧预算热点 |
 | P3 | 字体 SDF / UI 完善 | Latin-1 atlas | 非 GPU 瓶颈 |
-| P3 | RHI bindless / push API | 部分缺失 | 大场景材质切换 |
+| P3 | RHI bindless / push API | ~~部分缺失~~ **R441 纹理数组路线已落地**（前向材质间接单 execute，`BREAK_MAT_INDIRECT` 默认开；GL 实测无 ARB_bindless_texture，数组为唯一双后端通道） | 大场景材质切换——前向已解决；真 bindless（VK descriptor indexing）留作 VK-only 后续选项 |
 
 ---
 
@@ -51,7 +51,7 @@
 ### [x] R12-1 unified_cull 替换 shadow/forward 的 flags+compact
 - [x] mega-buffer 构建后 `mega_upload_unified_cull` 上传 `GPUCullDrawCmd` + `GPUCullObject`
 - [x] CSM 阴影 + 点光 cubemap 面：默认 `gpucull_dispatch_unified` + `gpucull_execute_indirect_draws`（1 compute pass）
-- [x] 前向/G-Buffer 仍走 CPU frustum+LOD+occ + per-material compact（材质切换需分组 bind）
+- [x] 前向/G-Buffer 仍走 CPU frustum+LOD+occ + per-material compact（材质切换需分组 bind）——**R441**：前向经纹理数组 + `mega_mat_arrays_draw` 单 bind 单 execute（`BREAK_MAT_INDIRECT` 默认开）；G-Buffer array 化列为第二阶段
 - [x] Hi-Z 并入 unified（**R436**：剔除侧 R16 起内联采样；生成链 chunk 化 10→3 dispatch——非全 SPD 单 dispatch，原因：RHI 单 dispatch 多 storage image 受限 + 跨 workgroup 自旋死锁风险）
 
 ### [x] R12-2 粒子 `particle_cull.comp` 接线
