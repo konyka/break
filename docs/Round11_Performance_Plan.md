@@ -510,6 +510,7 @@
 - 旧代码：right = cross(f,up) 右手约定 + 平移在行3 — 与 camera_view 不兼容
 - 新代码：right = -cross(f,up) 左手约定 + 平移在列3 — 与 camera_view 一致
 - 效果：top_down_view 路径矩阵约定与主渲染路径统一
+- **R439 更新**：本轮确立的左手约定已于 R439 统一回右手基（`cross(f,up)`，det=+1）——det=-1 镜像基在 culling ON 管线（主场景/instanced/skinned/shadow）下实际剔正面、渲染模型内壁（既往隐蔽 bug，翻基顺带修复）；WASD/鼠标手感经新表征用例锁定不变
 
 ### [x] R62-3 camera_view_matches_lookat 等价性测试
 - 新增测试：验证 camera_view 与 mat4_lookat 逐元素一致
@@ -526,6 +527,7 @@
 - 新行0：(-sx, 0, -sz, sx*ex+sz*ez) — 左手叉积 right = -cross(f,up)
 - 与 camera_view 行0 模式一致：(-s_RH, dot(s_RH, eye))
 - 阴影渲染+采样使用同一 VP，约定统一不影响正确性
+- **R439 更新**：lview 已随 R439 右手基统一翻转为 `cross(f,up)`（det=+1），zenith 退化回退（R247）双向同步修正为 det=+1
 
 ### [x] R63-2 math.h mat4_lookat API 契约文档化
 - 声明上方添加左手约定注释：right=-normalize(cross(f,up))、平移在 e[i][3]
@@ -6110,6 +6112,7 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
 - 窄线 A：`camera.c` `camera_view`/`camera_inv_view`/`camera_update`。
   - 存疑点核对：yaw=0 时 right `s=(-cy,0,-sy)=(-1,0,0)` 指向世界 -X，视图旋转块行列式 **det=-1**（看似镜像）。经 `math.c:52-60` `mat4_lookat` 注释确认——**"Left-handed view matrix matching camera_view convention … camera_view uses this same left-handed basis: s×u=f, not -f"**：这是跨 `camera_view`/`camera_inv_view`/`mat4_lookat` 一致且有文档的**左手约定**，投影(`mat4_perspective`)/剔除/golden 全据此构建，移动('d'→世界-X 但屏幕右)与之自洽——**非 bug**。
   - `camera_inv_view` 验证为 view 的正确逆：view 平移 `-s·eye`/`-u·eye`/`f·eye` 与 inv 的 `R^T|eye` 手算吻合。yaw 单次 `±2π` wrap 即便大 `mouse_dx` 溢出也只影响 yaw 数值、经 `cosf/sinf` 周期性无害；pitch 夹取 `±1.5533`(≈89°)双向正确。
+  - **R439 更正**：上述"det=-1 左手约定自洽、非 bug"结论已被推翻——det=-1 镜像基使主场景/instanced/skinned/shadow 管线在 culling ON 下剔正面、渲染模型内壁（既往隐蔽 bug，此前靠 clustered/terrain/water 的 disable_culling 掩盖）；R439 已将 `camera_view`/`camera_inv_view`/`mat4_lookat`/CSM `lview` 统一右手基（det=+1），`camera_update` right/strafe 同步翻转，WASD/鼠标手感不变并由新用例 `camera_update_strafe_matches_view_right` 锁定。
 - 窄线 B：`character.c` `char_slide_resolve`/`character_update`（滑动/地面/台阶/跳跃）。已由 R239(BVH 饱和回退)、R251(sweep 饱和回退)、R254(sweep tmin≥0)、R280(跳跃 vy≤0 守卫)覆盖；本轮复核 grounded 判定 `sep.y>slope_limit`、迭代分离(MAX_ITERS=6)多接触收敛、`horiz_len` 在零水平位移时 `>1e-5` 分支安全(0 或 NaN 均取 false)、step-up up→forward→down 与 `horiz_progress` 比较——**无新高置信 bug**。
 - 窄线 C：`imgui.c`/`imgui.h` `imui_slider_map`/`imui_slider_norm`。映射 `t=(mx-x)/w` 钳 [0,1] 后 `minv+t*(maxv-minv)`、norm 的 `maxv==minv→0` 与钳制均正确；knob 位置用 `(w-knob_w)*t` 而值映射用 `w` 仅视觉细节非功能 bug。
 - 决策：三条窄线均无 demo 可达的高置信 CORRECTNESS 问题，按宁缺毋滥**不改代码**（precedent R289/R290/R294）。测试缺口(记录)：无 camera view/inv_view 互逆 golden 单测、无 character step-up 场景单测。
