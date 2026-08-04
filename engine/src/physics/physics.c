@@ -207,6 +207,40 @@ u32 physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f3
             pw->constraints[i].body_a = body_a;
             pw->constraints[i].body_b = body_b;
             pw->constraints[i].rest_length = rest_length;
+            /* R443: a distance constraint is the zero-offset, 1-axis special
+             * case of the generalized constraint slot. */
+            pw->constraints[i].offset_a = vec3(0, 0, 0);
+            pw->constraints[i].offset_b = vec3(0, 0, 0);
+            pw->constraints[i].is_ball = false;
+            pw->constraints[i].active = true;
+            pw->constraint_count++;
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+/* R443: ball (point-to-point) joint — rest_length 0 with anchors offset from
+ * the centroids. Reuses the same fixed-capacity slot array as distance
+ * constraints (same R352/R435 rejection conventions). */
+u32 physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 anchor_a, Vec3 anchor_b) {
+    if (!pw) return UINT32_MAX;
+    if (body_a >= pw->count || body_b >= pw->count) return UINT32_MAX;
+    if (body_a == body_b) return UINT32_MAX;      /* self-constraint is a no-op */
+    /* Reject NaN anchor components the same way add_distance rejects NaN
+     * rest_length (x == x is false only for NaN). */
+    for (int i = 0; i < 3; i++) {
+        if (!(anchor_a.e[i] == anchor_a.e[i])) return UINT32_MAX;
+        if (!(anchor_b.e[i] == anchor_b.e[i])) return UINT32_MAX;
+    }
+    for (u32 i = 0; i < PHYSICS_MAX_CONSTRAINTS; i++) {
+        if (!pw->constraints[i].active) {
+            pw->constraints[i].body_a = body_a;
+            pw->constraints[i].body_b = body_b;
+            pw->constraints[i].rest_length = 0.0f; /* anchors coincide */
+            pw->constraints[i].offset_a = anchor_a;
+            pw->constraints[i].offset_b = anchor_b;
+            pw->constraints[i].is_ball = true;
             pw->constraints[i].active = true;
             pw->constraint_count++;
             return i;
@@ -253,7 +287,32 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
             f32 inv_b = b->inv_mass;
             f32 inv_total = inv_a + inv_b;
             if (inv_total <= 0.0f) continue; /* both static: nothing can move */
-            Vec3 d = vec3_sub(b->position, a->position);
+            /* R443: constraints bind at anchor points, not centroids. For
+             * distance constraints the offsets are zero, so pa/pb ARE the
+             * centroids and the math below is unchanged from R435. */
+            Vec3 pa = vec3_add(a->position, c->offset_a);
+            Vec3 pb = vec3_add(b->position, c->offset_b);
+            if (c->is_ball) {
+                /* R443: ball joint — pull the anchors to coincidence with a
+                 * full 3-axis vector correction (no axis normalization, so
+                 * coincident anchors are not a degenerate case). The
+                 * correction is split by inverse mass and applied to the
+                 * CENTROIDS: RigidBody has no orientation/angular velocity,
+                 * so an offset anchor creates no lever arm and no torque —
+                 * the entire correction is linear. */
+                Vec3 err = vec3_sub(pb, pa);
+                Vec3 corr = vec3_scale(err, 1.0f / inv_total);
+                if (inv_a > 0.0f) {
+                    a->position = vec3_add(a->position, vec3_scale(corr, inv_a));
+                    a->rest_frames = 0;
+                }
+                if (inv_b > 0.0f) {
+                    b->position = vec3_sub(b->position, vec3_scale(corr, inv_b));
+                    b->rest_frames = 0;
+                }
+                continue;
+            }
+            Vec3 d = vec3_sub(pb, pa);
             f32 len2 = vec3_dot(d, d);
             if (len2 < 1e-12f) continue;     /* coincident: no defined axis */
             f32 len = sqrtf(len2);
@@ -311,6 +370,23 @@ static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
         f32 inv_b = b->inv_mass;
         f32 inv_total = inv_a + inv_b;
         if (inv_total <= 0.0f) continue; /* both static: nothing can move */
+        if (c->is_ball) {
+            /* R443: a ball joint pins two POINTS together, so it constrains
+             * all 3 translational axes — unlike the distance constraint,
+             * which only removes the relative velocity along its single axis
+             * and leaves swinging (tangential) motion alone. Here the FULL
+             * relative velocity vector rel = vb - va must vanish, split by
+             * inverse mass exactly like the axial impulse above:
+             *     va += rel * inv_a / inv_total;  vb -= rel * inv_b / inv_total
+             * gives vb - va = rel - rel = 0. No anchor positions are needed:
+             * with no angular velocity in the body model, an anchor's
+             * velocity equals its centroid's velocity. */
+            Vec3 rel = vec3_sub(b->velocity, a->velocity);
+            Vec3 j = vec3_scale(rel, 1.0f / inv_total);
+            if (inv_a > 0.0f) a->velocity = vec3_add(a->velocity, vec3_scale(j, inv_a));
+            if (inv_b > 0.0f) b->velocity = vec3_sub(b->velocity, vec3_scale(j, inv_b));
+            continue;
+        }
         Vec3 d = vec3_sub(b->position, a->position);
         f32 len2 = vec3_dot(d, d);
         if (len2 < 1e-12f) continue;     /* coincident: no defined axis */

@@ -56,6 +56,15 @@ typedef struct {
     u32  body_b;
     f32  rest_length;
     bool active;      /* slot occupied (world calloc zero-init = free) */
+    /* R443: generalized to cover ball (point-to-point) joints. The solver
+     * attaches at anchor points pa = pos_a + offset_a, pb = pos_b + offset_b
+     * instead of the centroids. RigidBody has no orientation, so the offsets
+     * are fixed world-space vectors (no local->world transform). Distance
+     * constraints are the zero-offset special case; a ball joint is
+     * rest_length = 0 with a full 3-axis solve. */
+    Vec3 offset_a;
+    Vec3 offset_b;
+    bool is_ball;     /* false: 1-axis distance solve; true: 3-axis ball solve */
 } DistanceConstraint;
 
 typedef struct {
@@ -109,6 +118,14 @@ void          physics_set_contact_callback(PhysicsWorld *pw, PhysicsContactFn fn
 /* R435: distance constraints. add returns UINT32_MAX when the fixed array is
  * full or a body id is invalid (R352 convention); remove is idempotent. */
 u32           physics_constraint_add_distance(PhysicsWorld *pw, u32 body_a, u32 body_b, f32 rest_length);
+/* R443: ball (point-to-point) joint. anchor_a/anchor_b are world-space
+ * offsets from each body's centroid (RigidBody has no orientation, so a
+ * "local" anchor is a fixed offset). The solver pulls the two anchor points
+ * to coincidence — equivalent to a rest_length=0 distance constraint whose
+ * attachment points may be offset from the centroids. Same R352/R435
+ * rejection conventions as add_distance (full array / invalid ids /
+ * self-constraint / NaN anchor component -> UINT32_MAX). */
+u32           physics_constraint_add_ball(PhysicsWorld *pw, u32 body_a, u32 body_b, Vec3 anchor_a, Vec3 anchor_b);
 void          physics_constraint_remove(PhysicsWorld *pw, u32 constraint_id);
 u32           physics_constraint_count(const PhysicsWorld *pw);
 void          physics_step(PhysicsWorld *pw, f32 dt);

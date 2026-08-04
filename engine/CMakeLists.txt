@@ -227,6 +227,8 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
         set(REL_PTR_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/relative-pointer/relative-pointer-unstable-v1.xml")
         set(PTR_CONSTRAINTS_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml")
+        # R443: xdg-output for logical position / human-readable output names.
+        set(XDG_OUTPUT_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-output/xdg-output-unstable-v1.xml")
 
         add_custom_command(
             OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h
@@ -261,12 +263,25 @@ if(ENGINE_PLATFORM STREQUAL "linux")
             COMMENT "Generating pointer-constraints-unstable-v1 Wayland protocol bindings"
         )
 
+        # R443: xdg-output-unstable-v1 bindings (multi-output enumeration).
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-client-protocol.h
+                   ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-protocol.c
+            COMMAND ${WAYLAND_SCANNER} client-header ${XDG_OUTPUT_XML}
+                    ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-client-protocol.h
+            COMMAND ${WAYLAND_SCANNER} private-code ${XDG_OUTPUT_XML}
+                    ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-protocol.c
+            DEPENDS ${XDG_OUTPUT_XML}
+            COMMENT "Generating xdg-output-unstable-v1 Wayland protocol bindings"
+        )
+
         target_sources(engine PRIVATE
             src/platform/window_wayland.c
             src/platform/gamepad_linux.c
             ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/relative-pointer-unstable-v1-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/pointer-constraints-unstable-v1-protocol.c
+            ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-protocol.c
         )
         target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_WAYLAND=1)
         target_include_directories(engine PRIVATE
@@ -745,4 +760,11 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_input PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_input PRIVATE m)
     add_test(NAME test_input COMMAND test_input)
+
+    # R443: test_wayland — pure wl_output enumeration logic (wayland_output.h
+    # is header-only and wayland-free), runs headless on any platform.
+    add_executable(test_wayland tests/test_wayland.c)
+    target_include_directories(test_wayland PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_wayland PRIVATE m)
+    add_test(NAME test_wayland COMMAND test_wayland)
 endif()

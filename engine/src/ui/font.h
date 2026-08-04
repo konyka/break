@@ -115,16 +115,22 @@ typedef struct {
     i16 x_advance;
 } FontGposKern;
 
-/* R442: minimal GPOS 'kern'-feature PairPos extractor (stb_truetype only reads
- * the legacy 'kern' table format 0, so GPOS-only fonts otherwise get no
+/* R442/R443: minimal GPOS 'kern'-feature PairPos extractor (stb_truetype only
+ * reads the legacy 'kern' table format 0, so GPOS-only fonts otherwise get no
  * kerning at all). Pure big-endian byte parsing of the ttf buffer; every
  * offset/count is bounds-checked before dereference, so truncated or
  * malicious buffers degrade to "fewer pairs", never to out-of-bounds reads.
- * Covers PairPos Format 1 (pair sets); Format 2 (class-based) subtables are
- * skipped. Writes up to `capacity` non-zero pairs into `out` and returns the
- * number written (0 when the font has no usable GPOS kerning). */
+ * Covers PairPos Format 1 (pair sets, R442) and Format 2 (class-based,
+ * R443). `glyph_filter` is an optional 8192-byte bitmap (bit g = ttf glyph id
+ * g is wanted, e.g. the baked glyph set); only pairs with both glyphs in the
+ * set are emitted, NULL disables filtering. The filter also bounds the
+ * Format-2 class-matrix expansion and makes class-0 columns enumerable —
+ * pass the baked set whenever one exists. Writes up to `capacity` non-zero
+ * pairs into `out` and returns the number written (0 when the font has no
+ * usable GPOS kerning). */
 u32  font_gpos_kern_extract(const u8 *ttf, usize ttf_size,
-                            FontGposKern *out, u32 capacity);
+                            FontGposKern *out, u32 capacity,
+                            const u8 *glyph_filter);
 /* Line advance in pixels (ascent - descent + line_gap). */
 f32  font_renderer_line_height(const FontRenderer *fr);
 void font_renderer_end(FontRenderer *fr, RHICmdBuffer *cmd, f32 screen_w, f32 screen_h);

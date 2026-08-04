@@ -48,15 +48,14 @@ f32 font_kern_advance(const FontRenderer *fr, u32 cp_a, u32 cp_b) {
     return 0.0f;
 }
 
-/* ---- R442: minimal GPOS PairPos extractor ---------------------------------
+/* ---- R442/R443: minimal GPOS PairPos extractor -----------------------------
  *
  * stb_truetype only reads the legacy 'kern' table (format 0); fonts that kern
  * exclusively through GPOS (very common in modern fonts) bake an empty pair
  * table. This is a self-contained byte parser for the GPOS 'kern' feature's
  * Pair Adjustment Positioning subtables (OpenType spec: GPOS header ->
- * FeatureList ('kern') -> LookupList -> LookupType 2 -> PairPos Format 1).
- * PairPos Format 2 (class-based) subtables are skipped — see the Format-2
- * note below.
+ * FeatureList ('kern') -> LookupList -> LookupType 2 -> PairPos Format 1
+ * (pair sets, R442) and Format 2 (class-based, R443)).
  *
  * This parses untrusted input, so the rule is: no byte is dereferenced until
  * a range check against the GPOS table length has proven it in bounds. All
@@ -116,11 +115,20 @@ static bool gpos_coverage_glyph(const u8 *g, usize gn, usize cov_off, u32 idx,
     return false; /* unknown coverage format */
 }
 
+/* R443: optional glyph filter — an 8192-byte bitmap (65536 glyph ids / 8),
+ * bit g set = glyph id g is wanted (e.g. the baked glyph set). NULL disables
+ * filtering. Only pairs whose BOTH glyphs pass are emitted; for PairPos
+ * Format 2 this also bounds the class-matrix expansion (see below). */
+static bool gpos_filter_has(const u8 *f, u16 glyph) {
+    return !f || (f[glyph >> 3] & (u8)(1u << (glyph & 7))) != 0;
+}
+
 /* One PairPos Format 1 subtable: pair sets keyed by coverage index, each
  * record { secondGlyph, valueRecord1, valueRecord2 }. Only valueRecord1's
  * XAdvance is harvested (kerning is horizontal advance adjustment). */
 static u32 gpos_pairpos_fmt1(const u8 *g, usize gn, usize st,
-                             FontGposKern *out, u32 capacity, u32 count) {
+                             FontGposKern *out, u32 capacity, u32 count,
+                             const u8 *glyph_filter) {
     if (!gpos_range_ok(gn, st, 10)) return count;
     /* st+0 posFormat (==1, checked by caller), st+2 coverage, st+4/6 value
      * formats, st+8 pairSetCount. */
@@ -142,6 +150,7 @@ static u32 gpos_pairpos_fmt1(const u8 *g, usize gn, usize st,
         u16 g1;
         if (!gpos_coverage_glyph(g, gn, cov_off, p, &cur_r, &cur_base, &g1))
             break; /* fewer pair sets than covered glyphs: nothing more to do */
+        if (!gpos_filter_has(glyph_filter, g1)) continue; /* R443 */
         usize ps = st + gpos_u16(g + st + 10 + (usize)p * 2);
         if (!gpos_range_ok(gn, ps, 2)) continue;
         u32 pvc = gpos_u16(g + ps);
@@ -151,14 +160,152 @@ static u32 gpos_pairpos_fmt1(const u8 *g, usize gn, usize st,
             u16 g2 = gpos_u16(rp);
             i16 xa = has_xa ? (i16)gpos_u16(rp + xa_off) : 0;
             if (xa == 0) continue; /* only non-zero pairs are stored (R436) */
+            if (!gpos_filter_has(glyph_filter, g2)) continue; /* R443 */
             out[count++] = (FontGposKern){ g1, g2, xa };
         }
     }
     return count;
 }
 
+/* R443: bounds-check a ClassDef table once (both formats), so the per-glyph
+ * lookup below can read without re-checking. */
+static bool gpos_classdef_ok(const u8 *g, usize gn, usize cd) {
+    if (!gpos_range_ok(gn, cd, 4)) return false;
+    u16 fmt = gpos_u16(g + cd);
+    if (fmt == 1) { /* startGlyphID + classValueArray[glyphCount] */
+        if (!gpos_range_ok(gn, cd, 6)) return false;
+        u32 cnt = gpos_u16(g + cd + 4);
+        return gpos_range_ok(gn, cd + 6, (usize)cnt * 2);
+    }
+    if (fmt == 2) { /* classRangeRecord[classRangeCount] */
+        u32 ranges = gpos_u16(g + cd + 2);
+        return gpos_range_ok(gn, cd + 4, (usize)ranges * 6);
+    }
+    return false;
+}
+
+/* R443: class of `glyph` per a ClassDef table validated by gpos_classdef_ok.
+ * Glyphs the table does not mention are class 0 ("everything else"). */
+static u16 gpos_classdef_class(const u8 *g, usize gn, usize cd, u16 glyph) {
+    (void)gn; /* bounds already proven by gpos_classdef_ok */
+    u16 fmt = gpos_u16(g + cd);
+    if (fmt == 1) {
+        u32 start = gpos_u16(g + cd + 2);
+        u32 cnt = gpos_u16(g + cd + 4);
+        if ((u32)glyph < start || (u32)glyph >= start + cnt) return 0;
+        return gpos_u16(g + cd + 6 + ((usize)glyph - start) * 2);
+    }
+    /* format 2: range walk (class ranges are few in practice) */
+    u32 ranges = gpos_u16(g + cd + 2);
+    for (u32 i = 0; i < ranges; i++) {
+        const u8 *r = g + cd + 4 + (usize)i * 6;
+        u16 start = gpos_u16(r), end = gpos_u16(r + 2);
+        if (glyph >= start && glyph <= end) return gpos_u16(r + 4);
+    }
+    return 0;
+}
+
+/* R443: roster of (glyph, classDef2 class) used to expand the Format-2 class
+ * matrix. 4096 entries (16 KB stack) far exceed any real classDef2; the bake
+ * filter set is FONT_MAX_GLYPHS (256) at most. Overflowing entries are
+ * dropped — output capacity truncates first in practice. */
+typedef struct { u16 glyph; u16 cls; } GposClassRoster;
+#define GPOS_ROSTER_CAP 4096
+
+/* One PairPos Format 2 subtable (class-based): coverage selects the adjusted
+ * first glyphs, classDef1 maps each to a class1 row, and each non-zero
+ * class1Record[c1][c2].valueRecord1.XAdvance expands to one pair per class-2
+ * member glyph. Only valueRecord1's XAdvance is harvested.
+ *
+ * Roster construction decides what class 0 of classDef2 means:
+ *  - with a glyph filter: the roster is every filtered glyph with its
+ *    classDef2 class, so class 0 ("every glyph classDef2 does not mention")
+ *    is enumerable and the expansion stays bounded by the baked set;
+ *  - without a filter: only glyphs classDef2 explicitly lists can be
+ *    enumerated, so non-zero entries in the class-0 column are skipped —
+ *    expanding "all other glyphs" without a glyph universe would be
+ *    unbounded (and the caller could not map them to codepoints anyway). */
+static u32 gpos_pairpos_fmt2(const u8 *g, usize gn, usize st,
+                             FontGposKern *out, u32 capacity, u32 count,
+                             const u8 *glyph_filter) {
+    /* st+0 posFormat (==2, checked by caller), st+2 coverage, st+4/6 value
+     * formats, st+8/10 classDef offsets, st+12/14 class counts, st+16 matrix. */
+    if (!gpos_range_ok(gn, st, 16)) return count;
+    usize cov_off = st + gpos_u16(g + st + 2);
+    u16 vf1 = gpos_u16(g + st + 4);
+    u16 vf2 = gpos_u16(g + st + 6);
+    usize cd1 = st + gpos_u16(g + st + 8);
+    usize cd2 = st + gpos_u16(g + st + 10);
+    u32 c1cnt = gpos_u16(g + st + 12);
+    u32 c2cnt = gpos_u16(g + st + 14);
+
+    /* Value record strides: 2 bytes per set bit, as in Format 1. */
+    u32 stride = 2 * gpos_popcount(vf1) + 2 * gpos_popcount(vf2);
+    bool has_xa = (vf1 & 0x4u) != 0;
+    u32 xa_off = 2 * gpos_popcount((u16)(vf1 & 0x3u));
+
+    /* Whole class1Record matrix must lie inside the table. The u64 product
+     * (counts and stride are u16-derived) cannot wrap; the > gn guard also
+     * keeps the usize cast exact on 32-bit targets. */
+    u64 matrix = (u64)c1cnt * c2cnt * stride;
+    if (c1cnt == 0 || c2cnt == 0 || matrix > gn) return count;
+    if (!gpos_range_ok(gn, st + 16, (usize)matrix)) return count;
+    if (!gpos_classdef_ok(g, gn, cd1) || !gpos_classdef_ok(g, gn, cd2))
+        return count;
+
+    /* Build the class-2 roster (see the header comment for the two modes). */
+    GposClassRoster roster[GPOS_ROSTER_CAP];
+    u32 rn = 0;
+    if (glyph_filter) {
+        for (u32 gl = 0; gl < 65536 && rn < GPOS_ROSTER_CAP; gl++) {
+            if (!gpos_filter_has(glyph_filter, (u16)gl)) continue;
+            roster[rn++] = (GposClassRoster){
+                (u16)gl, gpos_classdef_class(g, gn, cd2, (u16)gl) };
+        }
+    } else if (gpos_u16(g + cd2) == 1) {
+        u32 start = gpos_u16(g + cd2 + 2);
+        u32 cnt = gpos_u16(g + cd2 + 4);
+        for (u32 i = 0; i < cnt && rn < GPOS_ROSTER_CAP; i++) {
+            if (start + i > 0xFFFF) break; /* hostile count: no id wrap */
+            u16 cls = gpos_u16(g + cd2 + 6 + (usize)i * 2);
+            roster[rn++] = (GposClassRoster){ (u16)(start + i), cls };
+        }
+    } else { /* classDef2 format 2 */
+        u32 ranges = gpos_u16(g + cd2 + 2);
+        for (u32 i = 0; i < ranges && rn < GPOS_ROSTER_CAP; i++) {
+            const u8 *r = g + cd2 + 4 + (usize)i * 6;
+            u32 start = gpos_u16(r), end = gpos_u16(r + 2);
+            u16 cls = gpos_u16(r + 4);
+            for (u32 gl = start; gl <= end && gl < 65536 && rn < GPOS_ROSTER_CAP; gl++)
+                roster[rn++] = (GposClassRoster){ (u16)gl, cls };
+        }
+    }
+
+    u32 cur_r = 0, cur_base = 0; /* coverage format 2 cursor */
+    for (u32 p = 0; count < capacity; p++) {
+        u16 g1;
+        if (!gpos_coverage_glyph(g, gn, cov_off, p, &cur_r, &cur_base, &g1))
+            break; /* coverage exhausted (or malformed): nothing more to do */
+        if (!gpos_filter_has(glyph_filter, g1)) continue;
+        u32 c1 = gpos_classdef_class(g, gn, cd1, g1);
+        if (c1 >= c1cnt) continue; /* classDef names a class the matrix lacks */
+        const u8 *row = g + st + 16 + (usize)(c1 * c2cnt) * stride;
+        for (u32 c2 = 0; c2 < c2cnt && count < capacity; c2++) {
+            const u8 *rec = row + (usize)c2 * stride;
+            i16 xa = has_xa ? (i16)gpos_u16(rec + xa_off) : 0;
+            if (xa == 0) continue; /* only non-zero pairs are stored (R436) */
+            for (u32 r = 0; r < rn && count < capacity; r++) {
+                if (roster[r].cls != c2) continue;
+                out[count++] = (FontGposKern){ g1, roster[r].glyph, xa };
+            }
+        }
+    }
+    return count;
+}
+
 u32 font_gpos_kern_extract(const u8 *ttf, usize ttf_size,
-                           FontGposKern *out, u32 capacity) {
+                           FontGposKern *out, u32 capacity,
+                           const u8 *glyph_filter) {
     if (!ttf || !out || capacity == 0) return 0;
     u32 count = 0;
 
@@ -231,14 +378,14 @@ u32 font_gpos_kern_extract(const u8 *ttf, usize ttf_size,
             if (!gpos_range_ok(gn, st, 2)) continue;
             u16 fmt = gpos_u16(g + st);
             if (fmt == 1) {
-                count = gpos_pairpos_fmt1(g, gn, st, out, capacity, count);
+                count = gpos_pairpos_fmt1(g, gn, st, out, capacity, count,
+                                          glyph_filter);
+            } else if (fmt == 2) {
+                /* R443: class-based PairPos — the gap R442 documented. Modern
+                 * fonts frequently kern exclusively this way. */
+                count = gpos_pairpos_fmt2(g, gn, st, out, capacity, count,
+                                          glyph_filter);
             }
-            /* R442: PairPos Format 2 (class-based) is skipped. LiberationSans
-             * — the shipped font and cross-validation oracle — kerns entirely
-             * through Format 1, so Format 2 is untestable here, and an
-             * untested binary parser is worse than a documented gap: fonts
-             * whose kerning lives only in Format 2 simply get no GPOS
-             * fallback, exactly the pre-R442 behavior. */
         }
     }
     return count;
@@ -430,16 +577,27 @@ bool font_renderer_init(FontRenderer *fr, RHIDevice *dev, const char *ttf_path, 
      * with the same fixed-point scaling, so font_kern_advance and everything
      * downstream stay untouched. GPOS pairs are glyph-id keyed, so a reverse
      * map (ttf glyph id -> baked glyph index) bridges them into the baked
-     * ranges; pairs involving unbaked glyphs are dropped. */
+     * ranges; pairs involving unbaked glyphs are dropped.
+     *
+     * R443: the extractor now also takes a glyph filter — a bitmap of the
+     * baked glyph ids. Besides skipping pairs the reverse map would drop
+     * anyway (LiberationSans: 1107 Hebrew pairs), it is what bounds the
+     * Format 2 class-matrix expansion and makes class-0 columns enumerable
+     * at all (see gpos_pairpos_fmt2). */
     if (fr->kern_count == 0) {
         #define FONT_GPOS_EXTRACT_CAP 4096 /* recon: 2015 pairs in LiberationSans */
         FontGposKern *gp = malloc(sizeof(FontGposKern) * FONT_GPOS_EXTRACT_CAP);
         if (gp) {
-            u32 gn = font_gpos_kern_extract(ttf_buf, (usize)sz, gp,
-                                            FONT_GPOS_EXTRACT_CAP);
             i32 gid[FONT_MAX_GLYPHS];
-            for (u32 i = 0; i < fr->glyph_count; i++)
+            u8 gfilter[65536 / 8]; /* R443: bit g = ttf glyph id g is baked */
+            memset(gfilter, 0, sizeof(gfilter));
+            for (u32 i = 0; i < fr->glyph_count; i++) {
                 gid[i] = stbtt_FindGlyphIndex(&fi, (int)fr->glyphs[i].codepoint);
+                if (gid[i] > 0 && gid[i] <= 0xFFFF)
+                    gfilter[gid[i] >> 3] |= (u8)(1u << (gid[i] & 7));
+            }
+            u32 gn = font_gpos_kern_extract(ttf_buf, (usize)sz, gp,
+                                            FONT_GPOS_EXTRACT_CAP, gfilter);
             for (u32 p = 0; p < gn && fr->kern_count < FONT_MAX_KERN_PAIRS; p++) {
                 i32 ia = -1, ib = -1;
                 for (u32 i = 0; i < fr->glyph_count; i++) {

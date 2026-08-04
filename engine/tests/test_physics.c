@@ -969,6 +969,100 @@ TEST(constraint_velocity_static_anchor)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R443: ball (point-to-point) joints — offset anchors + 3-axis solve      */
+/* ----------------------------------------------------------------------- */
+
+TEST(constraint_ball_anchors_coincide)
+{
+    /* R443: a ball joint pulls the two ANCHORS (centroid + offset) to
+     * coincidence — the centroids themselves stay apart by the offset
+     * difference, which is what distinguishes a ball joint from a
+     * rest_length=0 distance constraint. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(5, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_ball(pw, a, b, vec3(1, 0, 0), vec3(-1, 0, 0));
+    ASSERT_TRUE(c != UINT32_MAX);
+    ASSERT_EQ(physics_constraint_count(pw), 1u);
+
+    physics_step(pw, 1.0f / 60.0f);
+
+    Vec3 pa = vec3_add(pw->bodies[a].position, vec3(1, 0, 0));
+    Vec3 pb = vec3_add(pw->bodies[b].position, vec3(-1, 0, 0));
+    ASSERT_FLOAT_EQ(vec3_len(vec3_sub(pb, pa)), 0.0f, 1e-3f);
+    /* Centroids are NOT coincident: the offset difference (2 along x) is
+     * preserved exactly. A centroid-to-centroid projection would fail this. */
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    ASSERT_FLOAT_EQ(d.e[0], 2.0f, 0.05f);
+    ASSERT_FLOAT_EQ(d.e[1], 0.0f, 1e-3f);
+    ASSERT_FLOAT_EQ(d.e[2], 0.0f, 1e-3f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_ball_static_end_stays_put)
+{
+    /* R443: with one static end (inv_mass 0) only the free body's centroid
+     * moves, until its anchor coincides with the static anchor. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    u32 b = physics_body_create(pw, vec3(5, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_ball(pw, a, b, vec3(1, 0, 0), vec3(-1, 0, 0));
+    ASSERT_TRUE(c != UINT32_MAX);
+
+    physics_step(pw, 1.0f / 60.0f);
+
+    ASSERT_FLOAT_EQ(pw->bodies[a].position.e[0], 0.0f, 1e-6f);
+    /* Free centroid ends at (2,0,0) so both anchors sit at world (1,0,0). */
+    Vec3 pa = vec3_add(pw->bodies[a].position, vec3(1, 0, 0));
+    Vec3 pb = vec3_add(pw->bodies[b].position, vec3(-1, 0, 0));
+    ASSERT_FLOAT_EQ(vec3_len(vec3_sub(pb, pa)), 0.0f, 1e-3f);
+    ASSERT_FLOAT_EQ(pw->bodies[b].position.e[0], 2.0f, 0.05f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_ball_velocity_full_vector)
+{
+    /* R443: a ball joint constrains ALL 3 axes (point coincidence), unlike
+     * the 1-axis distance constraint — a velocity PERPENDICULAR to the body
+     * axis (which constraint_velocity_allows_perp_motion proves a distance
+     * constraint leaves untouched) must be fully eliminated here. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_ball(pw, a, b, vec3(0, 0, 0), vec3(0, 0, 0));
+    ASSERT_TRUE(c != UINT32_MAX);
+
+    pw->bodies[b].velocity = vec3(0, 3, 0); /* perpendicular to the +x axis */
+    physics_step(pw, 1.0f / 60.0f);
+
+    Vec3 dv = vec3_sub(pw->bodies[b].velocity, pw->bodies[a].velocity);
+    ASSERT_FLOAT_EQ(vec3_len(dv), 0.0f, 1e-3f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_ball_invalid_rejected)
+{
+    /* R443: same R435/R352 conventions — out-of-range ids, self-constraint
+     * and NaN anchor components are rejected with UINT32_MAX and consume no
+     * slot. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    ASSERT_EQ(physics_constraint_add_ball(pw, a, 999u, vec3(0, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_add_ball(pw, 999u, a, vec3(0, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_add_ball(pw, a, a, vec3(0, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_add_ball(pw, a, b, vec3(NAN, 0, 0), vec3(0, 0, 0)), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_add_ball(pw, a, b, vec3(0, 0, 0), vec3(0, NAN, 0)), UINT32_MAX);
+    ASSERT_EQ(physics_constraint_count(pw), 0u);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(aabb_from_body_basic);
@@ -1029,4 +1123,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(constraint_velocity_removes_separating_speed);
     RUN_TEST(constraint_velocity_allows_perp_motion);
     RUN_TEST(constraint_velocity_static_anchor);
+    /* R443: ball (point-to-point) joints */
+    RUN_TEST(constraint_ball_anchors_coincide);
+    RUN_TEST(constraint_ball_static_end_stays_put);
+    RUN_TEST(constraint_ball_velocity_full_vector);
+    RUN_TEST(constraint_ball_invalid_rejected);
 TEST_MAIN_END()

@@ -18,8 +18,17 @@
 #include "xdg-shell-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
+#include "xdg-output-unstable-v1-client-protocol.h" /* R443 */
+#include "wayland_output.h"                         /* R443: pure output-list logic */
 
 /* ---- Platform state ---- */
+
+/* R443: per-output listener context — wl_output events for different outputs
+ * may interleave on the wire, so handlers must not share a "current" slot. */
+typedef struct {
+    struct Platform *p;
+    u32              slot; /* index into p->output_list.items / p->outputs */
+} WaylandOutputCtx;
 
 struct Platform {
     struct wl_display    *display;
@@ -29,10 +38,18 @@ struct Platform {
     struct wl_seat       *seat;
     struct wl_keyboard   *keyboard;
     struct wl_pointer    *pointer;
-    struct wl_output     *output;
     struct xdg_wm_base   *xdg_wm_base;
     struct xdg_surface   *xdg_surface;
     struct xdg_toplevel  *toplevel;
+
+    /* R443: multi-output enumeration — one slot per bound wl_output global
+     * (was a single struct wl_output *, which leaked every binding past the
+     * first and mixed all outputs' events into monitors[monitor_count]). */
+    struct wl_output               *outputs[WAYLAND_OUTPUT_MAX];
+    struct zxdg_output_manager_v1  *xdg_output_mgr;   /* optional */
+    struct zxdg_output_v1          *xdg_outputs[WAYLAND_OUTPUT_MAX];
+    WaylandOutputList               output_list;
+    WaylandOutputCtx                output_ctx[WAYLAND_OUTPUT_MAX];
 
     /* Relative pointer + pointer constraints (unstable v1) */
     struct zwp_relative_pointer_manager_v1 *rel_pointer_mgr;
@@ -62,10 +79,9 @@ struct Platform {
     f64 pointer_x, pointer_y;
     u32 pointer_enter_serial;   /* needed for wl_pointer_set_cursor */
 
-    /* DPI / Monitor */
+    /* DPI / Monitor — R443: per-output data lives in output_list (converted
+     * to MonitorInfo on query); dpi/scale mirror the primary (slot 0) output. */
     f32 dpi;
-    MonitorInfo monitors[PLATFORM_MAX_MONITORS];
-    u32 monitor_count;
 };
 
 /* Forward decls for relative-pointer wiring. */
@@ -425,53 +441,48 @@ static const struct wl_seat_listener seat_listener = {
     .name         = seat_name,
 };
 
-/* ---- wl_output listener ---- */
+/* ---- wl_output listener (R443: per-output via WaylandOutputCtx) ---- */
 
 static void output_geometry(void *data, struct wl_output *output,
     i32 x, i32 y, i32 phys_w, i32 phys_h, i32 subpixel,
     const char *make, const char *model, i32 transform) {
     (void)output; (void)phys_w; (void)phys_h; (void)subpixel; (void)make; (void)transform;
-    Platform *p = data;
-    if (p->monitor_count < PLATFORM_MAX_MONITORS) {
-        MonitorInfo *m = &p->monitors[p->monitor_count];
-        m->x = x;
-        m->y = y;
-        strncpy(m->name, model ? model : "unknown", 63);
-        m->name[63] = '\0';
+    WaylandOutputCtx *ctx = data;
+    WaylandOutputInfo *o = &ctx->p->output_list.items[ctx->slot];
+    o->x = x;
+    o->y = y;
+    if (o->name[0] == '\0') {
+        strncpy(o->name, model ? model : "unknown", 63);
+        o->name[63] = '\0';
     }
 }
 
 static void output_mode(void *data, struct wl_output *output,
     u32 flags, i32 w, i32 h, i32 refresh) {
     (void)output;
-    Platform *p = data;
-    if ((flags & WL_OUTPUT_MODE_CURRENT) && p->monitor_count < PLATFORM_MAX_MONITORS) {
-        MonitorInfo *m = &p->monitors[p->monitor_count];
-        m->width = (u32)w;
-        m->height = (u32)h;
-        m->refresh_rate = (u32)(refresh / 1000);  /* mHz -> Hz */
-    }
+    WaylandOutputCtx *ctx = data;
+    wl_out_accumulate_mode(&ctx->p->output_list.items[ctx->slot],
+        (flags & WL_OUTPUT_MODE_CURRENT) != 0, w, h, refresh);
 }
 
 static void output_scale(void *data, struct wl_output *output, i32 factor) {
     (void)output;
-    Platform *p = data;
-    p->scale = factor;
-    if (p->monitor_count < PLATFORM_MAX_MONITORS) {
-        p->monitors[p->monitor_count].scale = factor;
-    }
+    WaylandOutputCtx *ctx = data;
+    ctx->p->output_list.items[ctx->slot].scale = factor;
 }
 
 static void output_done(void *data, struct wl_output *output) {
     (void)output;
-    Platform *p = data;
-    if (p->monitor_count < PLATFORM_MAX_MONITORS) {
-        MonitorInfo *m = &p->monitors[p->monitor_count];
-        m->dpi = 96.0f * (f32)m->scale;
-        m->primary = (p->monitor_count == 0);
-        p->monitor_count++;
+    WaylandOutputCtx *ctx = data;
+    Platform *p = ctx->p;
+    WaylandOutputInfo *o = &p->output_list.items[ctx->slot];
+    o->done = true;
+    /* Slot 0 is the primary output; keep the global dpi/scale mirroring it
+     * (single-output behavior unchanged from the pre-R443 implementation). */
+    if (ctx->slot == 0) {
+        p->scale = o->scale;
+        p->dpi = 96.0f * (f32)o->scale;
     }
-    p->dpi = 96.0f * (f32)p->scale;
 }
 
 static const struct wl_output_listener output_listener = {
@@ -480,6 +491,63 @@ static const struct wl_output_listener output_listener = {
     .done     = output_done,
     .scale    = output_scale,
 };
+
+/* ---- zxdg_output_v1 listener (R443: logical position + readable name) ---- */
+
+static void xdg_output_logical_position(void *data, struct zxdg_output_v1 *xo,
+                                        i32 x, i32 y) {
+    (void)xo;
+    WaylandOutputCtx *ctx = data;
+    WaylandOutputInfo *o = &ctx->p->output_list.items[ctx->slot];
+    /* More authoritative than wl_output.geometry (often 0,0 on wlroots). */
+    o->x = x;
+    o->y = y;
+}
+
+static void xdg_output_logical_size(void *data, struct zxdg_output_v1 *xo,
+                                    i32 w, i32 h) {
+    (void)data; (void)xo; (void)w; (void)h;
+    /* MonitorInfo.width/height stay pixel-resolution (X11 parity); the
+     * logical size is scale-derived and not part of the public shape. */
+}
+
+static void xdg_output_done(void *data, struct zxdg_output_v1 *xo) {
+    (void)data; (void)xo;
+}
+
+static void xdg_output_name(void *data, struct zxdg_output_v1 *xo,
+                            const char *name) {
+    (void)xo;
+    WaylandOutputCtx *ctx = data;
+    WaylandOutputInfo *o = &ctx->p->output_list.items[ctx->slot];
+    strncpy(o->name, name ? name : "unknown", 63);
+    o->name[63] = '\0';
+}
+
+static void xdg_output_description(void *data, struct zxdg_output_v1 *xo,
+                                   const char *description) {
+    (void)data; (void)xo; (void)description;
+}
+
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+    .logical_position = xdg_output_logical_position,
+    .logical_size     = xdg_output_logical_size,
+    .done             = xdg_output_done,
+    .name             = xdg_output_name,
+    .description      = xdg_output_description,
+};
+
+/* R443: bind zxdg_output_v1 for a slot when the manager is available. Called
+ * from both registry branches because global advertisement order between
+ * wl_output and zxdg_output_manager_v1 is not guaranteed. */
+static void wayland_bind_xdg_output(Platform *p, u32 slot) {
+    if (!p->xdg_output_mgr || !p->outputs[slot] || p->xdg_outputs[slot]) return;
+    p->xdg_outputs[slot] = zxdg_output_manager_v1_get_xdg_output(
+        p->xdg_output_mgr, p->outputs[slot]);
+    if (p->xdg_outputs[slot])
+        zxdg_output_v1_add_listener(p->xdg_outputs[slot],
+            &xdg_output_listener, &p->output_ctx[slot]);
+}
 
 /* ---- Registry listener ---- */
 
@@ -494,8 +562,25 @@ static void registry_global(void *data, struct wl_registry *reg, u32 name,
     else if (strcmp(interface, wl_seat_interface.name) == 0)
         p->seat = wl_registry_bind(reg, name, &wl_seat_interface, 5);
     else if (strcmp(interface, wl_output_interface.name) == 0) {
-        p->output = wl_registry_bind(reg, name, &wl_output_interface, 3);
-        wl_output_add_listener(p->output, &output_listener, p);
+        /* R443: bind every advertised output (was: single p->output). */
+        i32 slot = wl_out_add(&p->output_list, name);
+        if (slot >= 0 && !p->outputs[slot]) {
+            p->output_ctx[slot] = (WaylandOutputCtx){ p, (u32)slot };
+            /* v3: geometry/mode/done/scale (name/description need v4, which
+             * xdg-output covers instead). */
+            p->outputs[slot] = wl_registry_bind(reg, name, &wl_output_interface, 3);
+            wl_output_add_listener(p->outputs[slot], &output_listener,
+                &p->output_ctx[slot]);
+            wayland_bind_xdg_output(p, (u32)slot);
+        }
+    }
+    else if (strcmp(interface, zxdg_output_manager_v1_interface.name) == 0) {
+        /* R443: optional — logical position/names; degrade to wl_output-only
+         * data when the compositor lacks it. */
+        p->xdg_output_mgr = wl_registry_bind(reg, name,
+            &zxdg_output_manager_v1_interface, 3);
+        for (u32 i = 0; i < p->output_list.count; i++)
+            wayland_bind_xdg_output(p, i);
     }
     else if (strcmp(interface, zwp_relative_pointer_manager_v1_interface.name) == 0)
         p->rel_pointer_mgr = wl_registry_bind(reg, name,
@@ -507,6 +592,8 @@ static void registry_global(void *data, struct wl_registry *reg, u32 name,
 
 static void registry_global_remove(void *data, struct wl_registry *reg, u32 name) {
     (void)data; (void)reg; (void)name;
+    /* R443: output hot-unplug is not handled this round; bound wl_output
+     * objects are kept until platform_destroy (same lifetime as before). */
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -526,7 +613,12 @@ static void wayland_create_fail(Platform *p) {
     if (p->surface)      wl_surface_destroy(p->surface);
     if (p->xdg_wm_base)  xdg_wm_base_destroy(p->xdg_wm_base);
     if (p->seat)         wl_seat_destroy(p->seat);
-    if (p->output)       wl_output_destroy(p->output);
+    /* R443: multi-output */
+    for (u32 i = 0; i < WAYLAND_OUTPUT_MAX; i++) {
+        if (p->xdg_outputs[i]) zxdg_output_v1_destroy(p->xdg_outputs[i]);
+        if (p->outputs[i])     wl_output_destroy(p->outputs[i]);
+    }
+    if (p->xdg_output_mgr) zxdg_output_manager_v1_destroy(p->xdg_output_mgr);
     if (p->compositor)   wl_compositor_destroy(p->compositor);
     if (p->registry)     wl_registry_destroy(p->registry);
     if (p->xkb_ctx)      xkb_context_unref(p->xkb_ctx);
@@ -575,7 +667,9 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
     xdg_wm_base_add_listener(p->xdg_wm_base, &xdg_wm_base_listener, p);
 
-    /* Create surface */
+    /* Create surface. R443: the window is still created on whichever output
+     * the compositor picks — per-output window placement is out of scope for
+     * this round (enumeration/query only). */
     p->surface = wl_compositor_create_surface(p->compositor);
     if (!p->surface) {
         LOG_FATAL("Failed to create wl_surface");
@@ -614,7 +708,13 @@ Platform *platform_create(const PlatformConfig *cfg) {
     input_init(&p->input);
     gamepad_init();
 
-    LOG_INFO("Platform initialized (Wayland): %ux%u \"%s\"", cfg->width, cfg->height, cfg->title);
+    /* R443: extra roundtrip so wl_output/xdg-output initial events (bound
+     * during the first roundtrip's dispatch) have arrived before queries. */
+    wl_display_roundtrip(p->display);
+
+    LOG_INFO("Platform initialized (Wayland): %ux%u \"%s\" (DPI=%.1f scale=%d monitors=%u)",
+             cfg->width, cfg->height, cfg->title, p->dpi, p->scale,
+             platform_get_monitor_count(p));
     return p;
 }
 
@@ -635,7 +735,12 @@ void platform_destroy(Platform *p) {
     if (p->surface)      wl_surface_destroy(p->surface);
     if (p->xdg_wm_base)  xdg_wm_base_destroy(p->xdg_wm_base);
     if (p->seat)         wl_seat_destroy(p->seat);
-    if (p->output)       wl_output_destroy(p->output);
+    /* R443: multi-output */
+    for (u32 i = 0; i < WAYLAND_OUTPUT_MAX; i++) {
+        if (p->xdg_outputs[i]) zxdg_output_v1_destroy(p->xdg_outputs[i]);
+        if (p->outputs[i])     wl_output_destroy(p->outputs[i]);
+    }
+    if (p->xdg_output_mgr) zxdg_output_manager_v1_destroy(p->xdg_output_mgr);
     if (p->compositor)   wl_compositor_destroy(p->compositor);
     if (p->registry)     wl_registry_destroy(p->registry);
     if (p->xkb_state)   xkb_state_unref(p->xkb_state);
@@ -722,13 +827,33 @@ i32 platform_get_scale_factor(Platform *p) {
 }
 
 u32 platform_get_monitor_count(Platform *p) {
-    return p->monitor_count;
+    /* R443: count outputs whose initial event burst completed (done). */
+    u32 n = 0;
+    for (u32 i = 0; i < p->output_list.count; i++)
+        if (p->output_list.items[i].done) n++;
+    return n;
 }
 
 bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
-    if (index >= p->monitor_count || !out) return false;
-    *out = p->monitors[index];
-    return true;
+    if (!out) return false;
+    /* R443: map the public packed index onto the nth completed output slot. */
+    for (u32 i = 0; i < p->output_list.count; i++) {
+        const WaylandOutputInfo *o = &p->output_list.items[i];
+        if (!o->done) continue;
+        if (index-- > 0) continue;
+        memset(out, 0, sizeof(*out));
+        memcpy(out->name, o->name, sizeof(out->name));
+        out->x = o->x;
+        out->y = o->y;
+        out->width = o->width;
+        out->height = o->height;
+        out->refresh_rate = o->refresh_rate;
+        out->scale = o->scale;
+        out->dpi = 96.0f * (f32)o->scale;
+        out->primary = (i == 0);
+        return true;
+    }
+    return false;
 }
 
 void platform_toggle_fullscreen(Platform *p) {

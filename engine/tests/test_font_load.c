@@ -463,7 +463,7 @@ TEST(font_gpos_extract_finds_known_pair)
 
     FontGposKern *pairs = malloc(sizeof(FontGposKern) * TEST_GPOS_CAP);
     ASSERT_NOT_NULL(pairs);
-    u32 count = font_gpos_kern_extract(ttf, sz, pairs, TEST_GPOS_CAP);
+    u32 count = font_gpos_kern_extract(ttf, sz, pairs, TEST_GPOS_CAP, NULL);
     /* R442 recon: 2015 non-zero GPOS pairs total (908 Latin + 1107 Hebrew). */
     ASSERT_TRUE(count > 0);
     ASSERT_TRUE(count <= TEST_GPOS_CAP);
@@ -491,7 +491,7 @@ TEST(font_gpos_cross_validates_kern_table)
 
     FontGposKern *pairs = malloc(sizeof(FontGposKern) * TEST_GPOS_CAP);
     ASSERT_NOT_NULL(pairs);
-    u32 count = font_gpos_kern_extract(ttf, sz, pairs, TEST_GPOS_CAP);
+    u32 count = font_gpos_kern_extract(ttf, sz, pairs, TEST_GPOS_CAP, NULL);
     ASSERT_TRUE(count > 0);
     qsort(pairs, count, sizeof(*pairs), gpos_kern_cmp);
 
@@ -540,7 +540,7 @@ TEST(font_gpos_no_gpos_table_returns_zero)
     fake[5] = 1;                                                    /* 1 table */
     memcpy(fake + 12, "cmap", 4);
     FontGposKern out[4];
-    ASSERT_EQ(font_gpos_kern_extract(fake, sizeof(fake), out, 4), 0u);
+    ASSERT_EQ(font_gpos_kern_extract(fake, sizeof(fake), out, 4, NULL), 0u);
 }
 
 /* Defense: corrupted directory fields must degrade to 0, never to a wild
@@ -555,7 +555,7 @@ TEST(font_gpos_corrupt_directory_returns_zero)
                     * so also push it to the u16 max to blow past EOF */
     ttf[4] = 0xFF;
     FontGposKern out[4];
-    ASSERT_EQ(font_gpos_kern_extract(ttf, sz, out, 4), 0u);
+    ASSERT_EQ(font_gpos_kern_extract(ttf, sz, out, 4, NULL), 0u);
     free(ttf);
 
     ttf = read_asset_ttf(&sz);
@@ -568,7 +568,7 @@ TEST(font_gpos_corrupt_directory_returns_zero)
         u8 *r = ttf + 12 + (usize)i * 16;
         if (memcmp(r, "GPOS", 4) == 0) { r[12] = r[13] = r[14] = r[15] = 0xFF; }
     }
-    ASSERT_EQ(font_gpos_kern_extract(ttf, sz, out, 4), 0u);
+    ASSERT_EQ(font_gpos_kern_extract(ttf, sz, out, 4, NULL), 0u);
     free(ttf);
 }
 
@@ -595,7 +595,7 @@ TEST(font_gpos_truncated_never_crashes)
     };
     for (usize i = 0; i < sizeof(cuts) / sizeof(cuts[0]); i++) {
         usize n = cuts[i] < sz ? cuts[i] : sz;
-        (void)font_gpos_kern_extract(ttf, n, out, 64);
+        (void)font_gpos_kern_extract(ttf, n, out, 64, NULL);
     }
     ASSERT_TRUE(true);
     free(ttf);
@@ -613,9 +613,290 @@ TEST(font_gpos_garbage_payload_never_crashes)
     memset(ttf + goff, 0xFF, glen);
 
     FontGposKern out[64];
-    u32 n = font_gpos_kern_extract(ttf, sz, out, 64);
+    u32 n = font_gpos_kern_extract(ttf, sz, out, 64, NULL);
     ASSERT_TRUE(n <= 64); /* capacity respected; value otherwise arbitrary */
     free(ttf);
+}
+
+/* ---- R443: GPOS PairPos Format 2 (class-based) -----------------------------
+ *
+ * No shipped/real font at hand kerns exclusively through class-based PairPos
+ * (LiberationSans is all Format 1), so the Format-2 oracle is synthetic: a
+ * minimal but spec-shaped sfnt + GPOS table is assembled byte-by-byte below.
+ * Every builder field is annotated with its OpenType-spec meaning. Layout:
+ *
+ *   sfnt offset table (1 table) -> TableRecord 'GPOS'
+ *   GPOS header v1.0 -> ScriptList(DFLT -> default LangSys -> feature 0)
+ *                    -> FeatureList('kern' -> lookup 0)
+ *                    -> LookupList(lookup 0, type 2 PairPos, N subtables)
+ *   PairPos Format 2 subtable: coverage {glyph 10},
+ *     classDef1 (format 1): glyph 10 -> class 1
+ *     classDef2 (format 2): glyphs 20..21 -> class 1
+ *     class1Count = class2Count = 2, matrix[1][1].XAdvance = -80
+ *   Optionally a leading Format 1 subtable: coverage {glyph 5},
+ *     pair set (5,6) -> XAdvance -40 (mixed-format coexistence test). */
+
+typedef struct {
+    u8    data[2048];
+    usize len;
+    usize off_gpos; /* GPOS table start (absolute)              */
+    usize off_fmt2; /* PairPos Format 2 subtable start (absolute) */
+    usize off_cd1;  /* classDef1 table start (absolute)           */
+} SynthFont;
+
+static void sf_put(SynthFont *b, u8 v) { b->data[b->len++] = v; }
+static void sf_u16(SynthFont *b, u16 v) { /* big-endian, like the sfnt spec */
+    sf_put(b, (u8)(v >> 8)); sf_put(b, (u8)v);
+}
+static void sf_u32(SynthFont *b, u32 v) { sf_u16(b, (u16)(v >> 16)); sf_u16(b, (u16)v); }
+static void sf_tag(SynthFont *b, const char t[4]) {
+    for (int i = 0; i < 4; i++) sf_put(b, (u8)t[i]);
+}
+static void sf_patch_u16(SynthFont *b, usize at, u16 v) {
+    b->data[at] = (u8)(v >> 8); b->data[at + 1] = (u8)v;
+}
+static void sf_patch_u32(SynthFont *b, usize at, u32 v) {
+    sf_patch_u16(b, at, (u16)(v >> 16)); sf_patch_u16(b, at + 2, (u16)v);
+}
+
+/* m10: XAdvance of matrix cell [class 1][class 0] (the class-0 column is only
+ * enumerable through the glyph filter — see the filter test). */
+static void build_synth_gpos_fmt2(SynthFont *b, bool with_fmt1, i16 m10) {
+    memset(b, 0, sizeof(*b));
+    /* sfnt offset table (spec: "Offset Table") */
+    sf_u32(b, 0x00010000);      /* sfntVersion = TrueType outlines */
+    sf_u16(b, 1);               /* numTables */
+    sf_u16(b, 16);              /* searchRange */
+    sf_u16(b, 0);               /* entrySelector */
+    sf_u16(b, 0);               /* rangeShift */
+    /* single TableRecord */
+    sf_tag(b, "GPOS");
+    sf_u32(b, 0);               /* checksum (parser ignores it) */
+    usize dir_off = b->len; sf_u32(b, 0);  /* table offset -> patched below */
+    usize dir_len = b->len; sf_u32(b, 0);  /* table length -> patched below */
+    b->off_gpos = b->len;
+    const usize gpos = b->off_gpos;
+    sf_patch_u32(b, dir_off, (u32)gpos);
+
+    /* GPOS header v1.0: version, scriptList/featureList/lookupList offsets
+     * (all offsets from here on are relative to the GPOS table start). */
+    sf_u32(b, 0x00010000);
+    usize off_script  = b->len; sf_u16(b, 0);
+    usize off_feature = b->len; sf_u16(b, 0);
+    usize off_lookup  = b->len; sf_u16(b, 0);
+
+    /* ScriptList: one 'DFLT' script whose default LangSys references feature
+     * index 0. (The extractor gathers 'kern' features from the FeatureList
+     * directly and never walks this, but a spec-shaped ScriptList keeps the
+     * oracle honest for any future script-aware parsing.) */
+    sf_patch_u16(b, off_script, (u16)(b->len - gpos));
+    sf_u16(b, 1);               /* scriptCount */
+    sf_tag(b, "DFLT");
+    sf_u16(b, 8);               /* Script offset: past count + one 6-byte record */
+    /* Script table */
+    sf_u16(b, 4);               /* defaultLangSysOffset: past this field + langSysCount */
+    sf_u16(b, 0);               /* langSysCount */
+    /* LangSys table */
+    sf_u16(b, 0);               /* lookupOrder offset (NULL) */
+    sf_u16(b, 0xFFFF);          /* reqFeatureIndex (none required) */
+    sf_u16(b, 1);               /* featureIndexCount */
+    sf_u16(b, 0);               /* featureIndex[0] -> FeatureList[0] ('kern') */
+
+    /* FeatureList: one 'kern' feature referencing lookup 0. */
+    sf_patch_u16(b, off_feature, (u16)(b->len - gpos));
+    sf_u16(b, 1);               /* featureCount */
+    sf_tag(b, "kern");
+    sf_u16(b, 8);               /* Feature offset: past count + one 6-byte record */
+    /* Feature table */
+    sf_u16(b, 0);               /* featureParams (NULL) */
+    sf_u16(b, 1);               /* lookupIndexCount */
+    sf_u16(b, 0);               /* lookupListIndex[0] */
+
+    /* LookupList: one lookup, type 2 = Pair Adjustment Positioning. */
+    sf_patch_u16(b, off_lookup, (u16)(b->len - gpos));
+    const usize ll = b->len;
+    sf_u16(b, 1);               /* lookupCount */
+    sf_u16(b, 4);               /* lookupOffset[0]: past count + one offset */
+    const usize lookup = ll + 4;
+    /* Lookup table (subtable offsets are relative to `lookup`) */
+    sf_u16(b, 2);               /* lookupType = PairPos */
+    sf_u16(b, 0);               /* lookupFlag */
+    sf_u16(b, with_fmt1 ? 2 : 1); /* subTableCount */
+    usize sub_off0 = b->len; sf_u16(b, 0);
+    usize sub_off1 = 0;
+    if (with_fmt1) { sub_off1 = b->len; sf_u16(b, 0); }
+
+    if (with_fmt1) {
+        /* PairPos Format 1: coverage {glyph 5}, one pair (5, 6) -> -40. */
+        sf_patch_u16(b, sub_off0, (u16)(b->len - lookup));
+        const usize st1 = b->len;
+        sf_u16(b, 1);           /* posFormat = 1 */
+        usize c1o = b->len; sf_u16(b, 0);   /* coverageOffset */
+        sf_u16(b, 0x0004);      /* valueFormat1 = XAdvance */
+        sf_u16(b, 0);           /* valueFormat2 */
+        sf_u16(b, 1);           /* pairSetCount */
+        usize pso = b->len; sf_u16(b, 0);   /* pairSetOffset[0] */
+        sf_patch_u16(b, c1o, (u16)(b->len - st1));
+        sf_u16(b, 1);           /* coverage format 1 (glyph array) */
+        sf_u16(b, 1);           /* glyphCount */
+        sf_u16(b, 5);           /* glyph 5 */
+        sf_patch_u16(b, pso, (u16)(b->len - st1));
+        sf_u16(b, 1);           /* pairValueCount */
+        sf_u16(b, 6);           /* secondGlyph */
+        sf_u16(b, (u16)-40);    /* valueRecord1.XAdvance */
+    }
+
+    /* PairPos Format 2 (spec: "Pair Adjustment Positioning Format 2:
+     * Class Pair Adjustment"). valueFormat1 = XAdvance only, so each
+     * Class2Record is exactly one 2-byte valueRecord1. */
+    sf_patch_u16(b, with_fmt1 ? sub_off1 : sub_off0, (u16)(b->len - lookup));
+    b->off_fmt2 = b->len;
+    const usize st2 = b->off_fmt2;
+    sf_u16(b, 2);               /* posFormat = 2 */
+    usize cov  = b->len; sf_u16(b, 0);  /* coverageOffset */
+    sf_u16(b, 0x0004);          /* valueFormat1 = XAdvance */
+    sf_u16(b, 0);               /* valueFormat2 */
+    usize cd1o = b->len; sf_u16(b, 0);  /* classDef1Offset */
+    usize cd2o = b->len; sf_u16(b, 0);  /* classDef2Offset */
+    sf_u16(b, 2);               /* class1Count */
+    sf_u16(b, 2);               /* class2Count */
+    /* class1Record matrix [class1][class2], one u16 XAdvance per cell */
+    sf_u16(b, 0);               /* [0][0] */
+    sf_u16(b, 0);               /* [0][1] */
+    sf_u16(b, (u16)m10);        /* [1][0] — class-0 column of classDef2 */
+    sf_u16(b, (u16)-80);        /* [1][1] — the pair under test */
+    /* Coverage: glyph 10 (the only first glyph getting adjusted). */
+    sf_patch_u16(b, cov, (u16)(b->len - st2));
+    sf_u16(b, 1);               /* coverage format 1 */
+    sf_u16(b, 1);               /* glyphCount */
+    sf_u16(b, 10);
+    /* ClassDef1 format 1: glyph 10 -> class 1. */
+    sf_patch_u16(b, cd1o, (u16)(b->len - st2));
+    b->off_cd1 = b->len;
+    sf_u16(b, 1);               /* classDef format 1 (startGlyph + array) */
+    sf_u16(b, 10);              /* startGlyphID */
+    sf_u16(b, 1);               /* glyphCount */
+    sf_u16(b, 1);               /* classValueArray[0] */
+    /* ClassDef2 format 2: glyphs 20..21 -> class 1. */
+    sf_patch_u16(b, cd2o, (u16)(b->len - st2));
+    sf_u16(b, 2);               /* classDef format 2 (range records) */
+    sf_u16(b, 1);               /* classRangeCount */
+    sf_u16(b, 20);              /* range[0].startGlyphID */
+    sf_u16(b, 21);              /* range[0].endGlyphID */
+    sf_u16(b, 1);               /* range[0].class */
+
+    sf_patch_u32(b, dir_len, (u32)(b->len - gpos));
+}
+
+/* Oracle: the synthetic Format-2-only font must yield exactly the two class
+ * pairs (10,20,-80) and (10,21,-80). */
+TEST(font_gpos_fmt2_synthetic_extracts_class_pairs)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, false, 0);
+    FontGposKern out[8];
+    u32 count = font_gpos_kern_extract(b.data, b.len, out, 8, NULL);
+    ASSERT_EQ(count, 2u);
+    qsort(out, count, sizeof(*out), gpos_kern_cmp);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 20), -80);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 21), -80);
+}
+
+/* The glyph filter (bitmap of wanted glyph ids, e.g. the baked set) bounds
+ * the class-matrix expansion — and makes classDef2's class 0 enumerable at
+ * all: without a filter "every other glyph" is unbounded and stays skipped. */
+TEST(font_gpos_fmt2_glyph_filter_limits_expansion)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, false, -50); /* live class-0 column */
+    u8 filter[8192]; /* 65536 glyphs / 8 */
+    memset(filter, 0, sizeof(filter));
+    /* stand-in baked set: glyphs 10, 21, 30 (20 deliberately absent) */
+    filter[10 >> 3] |= (u8)(1u << (10 & 7));
+    filter[21 >> 3] |= (u8)(1u << (21 & 7));
+    filter[30 >> 3] |= (u8)(1u << (30 & 7));
+
+    FontGposKern out[8];
+    u32 count = font_gpos_kern_extract(b.data, b.len, out, 8, filter);
+    /* (10,20) filtered out; (10,21) via class 1; (10,10) and (10,30) via the
+     * class-0 column because both are filtered-in and classDef2 never
+     * mentions them (the filter applies to both sides uniformly). */
+    ASSERT_EQ(count, 3u);
+    qsort(out, count, sizeof(*out), gpos_kern_cmp);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 21), -80);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 30), -50);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 10), -50);
+
+    /* No filter: class 0 is unenumerable, only the explicit class-1 pairs. */
+    count = font_gpos_kern_extract(b.data, b.len, out, 8, NULL);
+    ASSERT_EQ(count, 2u);
+    qsort(out, count, sizeof(*out), gpos_kern_cmp);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 20), -80);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 21), -80);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 30), 0);
+}
+
+/* Format 1 and Format 2 subtables under one lookup must both be harvested. */
+TEST(font_gpos_fmt1_fmt2_mixed_lookup_coexist)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, true, 0);
+    FontGposKern out[8];
+    u32 count = font_gpos_kern_extract(b.data, b.len, out, 8, NULL);
+    ASSERT_EQ(count, 3u);
+    qsort(out, count, sizeof(*out), gpos_kern_cmp);
+    ASSERT_EQ(gpos_lookup(out, count, 5, 6), -40);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 20), -80);
+    ASSERT_EQ(gpos_lookup(out, count, 10, 21), -80);
+}
+
+/* Defense: a classDef offset pointing outside the GPOS table must degrade to
+ * 0 pairs, never to a wild read. classDef2Offset lives at fmt2 + 10. */
+TEST(font_gpos_fmt2_classdef_out_of_bounds)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, false, 0);
+    sf_patch_u16(&b, b.off_fmt2 + 10, 0x7FF0);
+    FontGposKern out[8];
+    ASSERT_EQ(font_gpos_kern_extract(b.data, b.len, out, 8, NULL), 0u);
+}
+
+/* Defense: an absurd class1Count makes the declared class1Record matrix run
+ * past the table end; the size check must reject the subtable wholesale. */
+TEST(font_gpos_fmt2_matrix_count_overflow)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, false, 0);
+    sf_patch_u16(&b, b.off_fmt2 + 12, 0xFFFF); /* class1Count */
+    FontGposKern out[8];
+    ASSERT_EQ(font_gpos_kern_extract(b.data, b.len, out, 8, NULL), 0u);
+}
+
+/* Defense: a classDef1 class beyond class1Count has no matrix row; the glyph
+ * must be skipped (no out-of-bounds matrix read, 0 pairs). */
+TEST(font_gpos_fmt2_class_beyond_matrix_skipped)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, false, 0);
+    sf_patch_u16(&b, b.off_cd1 + 6, 5); /* glyph 10 -> class 5 (matrix has 2) */
+    FontGposKern out[8];
+    ASSERT_EQ(font_gpos_kern_extract(b.data, b.len, out, 8, NULL), 0u);
+}
+
+/* Defense: cutting the synthetic font at EVERY byte length — mid-matrix,
+ * mid-classDef, mid-directory — must never read out of bounds. ASan judges. */
+TEST(font_gpos_fmt2_truncated_never_crashes)
+{
+    SynthFont b;
+    build_synth_gpos_fmt2(&b, true, -50);
+    u8 filter[8192];
+    memset(filter, 0xFF, sizeof(filter)); /* worst case: everything wanted */
+    FontGposKern out[8];
+    for (usize n = 0; n <= b.len; n++) {
+        (void)font_gpos_kern_extract(b.data, n, out, 8, NULL);
+        (void)font_gpos_kern_extract(b.data, n, out, 8, filter);
+    }
+    ASSERT_TRUE(true);
 }
 
 TEST_MAIN_BEGIN()
@@ -641,4 +922,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(font_gpos_corrupt_directory_returns_zero);
     RUN_TEST(font_gpos_truncated_never_crashes);
     RUN_TEST(font_gpos_garbage_payload_never_crashes);
+    RUN_TEST(font_gpos_fmt2_synthetic_extracts_class_pairs);
+    RUN_TEST(font_gpos_fmt2_glyph_filter_limits_expansion);
+    RUN_TEST(font_gpos_fmt1_fmt2_mixed_lookup_coexist);
+    RUN_TEST(font_gpos_fmt2_classdef_out_of_bounds);
+    RUN_TEST(font_gpos_fmt2_matrix_count_overflow);
+    RUN_TEST(font_gpos_fmt2_class_beyond_matrix_skipped);
+    RUN_TEST(font_gpos_fmt2_truncated_never_crashes);
 TEST_MAIN_END()
