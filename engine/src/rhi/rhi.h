@@ -149,6 +149,21 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);
 void        rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe);
 RHITexture  rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc);
 void        rhi_texture_destroy(RHIDevice *dev, RHITexture tex);
+/* R441: 2D texture array (single mip, RGBA8/BGRA8) for the material-indirect
+ * single-execute forward path — the only dual-backend bindless substitute
+ * (GL here has no ARB_bindless_texture; VK needs zero new features). The
+ * shared sampler descriptor layout accepts a 2D_ARRAY view for
+ * sampler2DArray without any layout change. */
+RHITexture  rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
+                                     u32 layers, RHIFormat fmt);
+/* Upload one full layer (RGBA8, size >= w*h*4 of the array extent). */
+void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
+                                           u32 layer, const void *rgba8, usize size);
+/* R441: size query + synchronous RGBA8 readback of mip 0 — used once at bake
+ * time to pack material albedos into a texture array (staging on VK,
+ * glGetTexImage on GL; not a per-frame API). */
+bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
+bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.
  * Used by the mipmap streaming system to push individual levels to the GPU. */
 void        rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,

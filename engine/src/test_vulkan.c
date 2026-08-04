@@ -42,6 +42,22 @@ static char *tv_inject_define(const char *src, usize len, const char *name, usiz
     return out;
 }
 
+#ifdef ENGINE_VULKAN
+/* R441: CPU nearest-neighbour RGBA8 resample (texture-array layer baking —
+ * mirrors the MatArraySet layer resample in main.c). Only the Vulkan suite
+ * body (TEST 11) uses it. */
+static void tv_resample_nearest_rgba8(const u8 *src, u32 sw, u32 sh,
+                                      u8 *dst, u32 dw, u32 dh) {
+    for (u32 y = 0; y < dh; y++) {
+        u32 sy = y * sh / dh;
+        for (u32 x = 0; x < dw; x++) {
+            u32 sx = x * sw / dw;
+            memcpy(dst + ((usize)y * dw + x) * 4u, src + ((usize)sy * sw + sx) * 4u, 4u);
+        }
+    }
+}
+#endif
+
 /* ---- Golden image regression helpers ------------------------------------
  * The presented frame is read back via rhi_screenshot, box-downsampled to a
  * tiny grid (robust against single-pixel driver noise) and compared against a
@@ -1449,6 +1465,261 @@ int main(int argc, char **argv) {
         LOG_ERROR("RESULT: INDIRECT DRAW GROUPED COMPACT TEST FAILED");
     }
 
+    /* ---- TEST 11: R441 material texture-array single-execute forward ---- */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST 11: MATERIAL ARRAY SINGLE-EXECUTE DRAW");
+    LOG_INFO("============================================");
+
+    bool matarr_pass = false;
+#ifdef ENGINE_VULKAN
+    {
+        /* R441: end-to-end gate for the texture-array material-indirect path.
+         * 4 quads (one per screen quadrant) draw through ONE indirect execute;
+         * each cmd's first_instance carries the sampler2DArray layer:
+         *   quad0 red 64x64 (upsampled to 128), quad1 green 128x128 native,
+         *   quad2 blue 64x64 (upsampled, CULLED by visibility), quad3 layer 0
+         * white fallback (no texture). Each texture is two-tone (left half
+         * bright, right half dark) so a broken nearest-upsample shifts the
+         * hue/intensity split and fails the per-quadrant pixel assertions. */
+        bool setup_ok = false;
+        RHIPipeline arr_pipe = RHI_HANDLE_NULL;
+        RHITexture  arr_tex  = RHI_HANDLE_NULL;
+        RHIBuffer   arr_vbo  = RHI_HANDLE_NULL, arr_ibo = RHI_HANDLE_NULL;
+        IndirectDrawSystem ids;
+        memset(&ids, 0, sizeof(ids));
+        bool ids_ok = false;
+
+        /* Two-tone 64x64 / 128x128 sources (left bright, right dark). */
+        const u32 ARR_SZ = 128u; /* array layer size = max source size */
+        u8 *tex_red   = malloc((usize)64 * 64 * 4u);
+        u8 *tex_green = malloc((usize)128 * 128 * 4u);
+        u8 *tex_blue  = malloc((usize)64 * 64 * 4u);
+        u8 *layer_buf = malloc((usize)ARR_SZ * ARR_SZ * 4u);
+        if (tex_red && tex_green && tex_blue && layer_buf) {
+            for (u32 y = 0; y < 64; y++)
+                for (u32 x = 0; x < 64; x++) {
+                    u8 *pr = &tex_red[((usize)y * 64 + x) * 4u];
+                    u8 *pb = &tex_blue[((usize)y * 64 + x) * 4u];
+                    bool left = x < 32u;
+                    pr[0] = left ? 255 : 76; pr[1] = 0; pr[2] = 0; pr[3] = 255;
+                    pb[0] = 0; pb[1] = 0; pb[2] = left ? 255 : 76; pb[3] = 255;
+                }
+            for (u32 y = 0; y < 128; y++)
+                for (u32 x = 0; x < 128; x++) {
+                    u8 *pg = &tex_green[((usize)y * 128 + x) * 4u];
+                    pg[0] = 0; pg[1] = (x < 64u) ? 255 : 76; pg[2] = 0; pg[3] = 255;
+                }
+
+            arr_tex = rhi_texture_array_create(render.device, ARR_SZ, ARR_SZ, 4u,
+                                               RHI_FORMAT_R8G8B8A8_UNORM);
+            if (rhi_handle_valid(arr_tex)) {
+                /* Layer 0: white fallback (no-texture materials). */
+                memset(layer_buf, 0xFF, (usize)ARR_SZ * ARR_SZ * 4u);
+                rhi_texture_array_upload_layer(render.device, arr_tex, 0u,
+                                               layer_buf, (usize)ARR_SZ * ARR_SZ * 4u);
+                /* Layers 1/3: 64x64 -> 128 nearest upsample; layer 2 native. */
+                tv_resample_nearest_rgba8(tex_red, 64, 64, layer_buf, ARR_SZ, ARR_SZ);
+                rhi_texture_array_upload_layer(render.device, arr_tex, 1u,
+                                               layer_buf, (usize)ARR_SZ * ARR_SZ * 4u);
+                rhi_texture_array_upload_layer(render.device, arr_tex, 2u,
+                                               tex_green, (usize)128 * 128 * 4u);
+                tv_resample_nearest_rgba8(tex_blue, 64, 64, layer_buf, ARR_SZ, ARR_SZ);
+                rhi_texture_array_upload_layer(render.device, arr_tex, 3u,
+                                               layer_buf, (usize)ARR_SZ * ARR_SZ * 4u);
+
+                /* 4 quads, one per NDC quadrant (pos3+nrm3+uv2, 32B stride).
+                 * Indices are LOCAL to each quad — vertex_offset in the cmd
+                 * applies the per-quad shift (mega-buffer convention). */
+                f32 qv[4 * 4 * 8];
+                u32 qi[4 * 6];
+                const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
+                const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };
+                for (u32 k = 0; k < 4; k++) {
+                    f32 x0 = qcx[k] - 0.45f, x1 = qcx[k] + 0.45f;
+                    f32 y0 = qcy[k] - 0.45f, y1 = qcy[k] + 0.45f;
+                    const f32 qpos[4][2] = { {x0, y0}, {x1, y0}, {x1, y1}, {x0, y1} };
+                    const f32 quv[4][2]  = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+                    for (u32 v = 0; v < 4; v++) {
+                        f32 *d = &qv[(k * 4 + v) * 8];
+                        d[0] = qpos[v][0]; d[1] = qpos[v][1]; d[2] = 0.0f;
+                        d[3] = 0.0f; d[4] = 0.0f; d[5] = 1.0f;
+                        d[6] = quv[v][0]; d[7] = quv[v][1];
+                    }
+                    u32 *di = &qi[k * 6];
+                    di[0] = 0; di[1] = 1; di[2] = 2;
+                    di[3] = 0; di[4] = 2; di[5] = 3;
+                }
+                RHIBufferDesc qvb = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                                      .size = sizeof(qv), .initial_data = qv };
+                RHIBufferDesc qib = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                      .size = sizeof(qi), .initial_data = qi };
+                arr_vbo = rhi_buffer_create(render.device, &qvb);
+                arr_ibo = rhi_buffer_create(render.device, &qib);
+
+                usize avl = 0, afl = 0;
+                char *avs = shader_read_file("shaders/blinn_phong_arr_vk.vert", &avl);
+                char *afs = shader_read_file("shaders/blinn_phong_arr_vk.frag", &afl);
+                if (avs && afs) {
+                    RHIShader svs = rhi_shader_create(render.device, avs, avl, false);
+                    RHIShader sfs = rhi_shader_create(render.device, afs, afl, true);
+                    if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+                        RHIPipelineDesc apd = { .vert = svs, .frag = sfs,
+                                                .uses_textures = true };
+                        arr_pipe = rhi_pipeline_create(render.device, &apd);
+                    }
+                    if (rhi_handle_valid(svs)) rhi_shader_destroy(render.device, svs);
+                    if (rhi_handle_valid(sfs)) rhi_shader_destroy(render.device, sfs);
+                }
+                free(avs); free(afs);
+
+                /* Ungrouped bake-order upload; first_instance = array layer.
+                 * quad2 (blue) gets layer 3 but is culled by visibility. */
+                DrawIndexedIndirectCmd acmds[4];
+                const u32 layers_of_quad[4] = { 1u, 2u, 3u, 0u };
+                for (u32 k = 0; k < 4; k++) {
+                    acmds[k].index_count    = 6;
+                    acmds[k].instance_count = 1;
+                    acmds[k].first_index    = k * 6u;
+                    acmds[k].vertex_offset  = (i32)(k * 4u);
+                    acmds[k].first_instance = layers_of_quad[k];
+                }
+                ids_ok = indirect_draw_init(&ids, render.device, 4);
+                if (ids_ok) indirect_draw_upload(&ids, render.device, acmds, 4);
+
+                setup_ok = rhi_handle_valid(arr_pipe) && rhi_handle_valid(arr_vbo) &&
+                           rhi_handle_valid(arr_ibo) && ids_ok;
+            }
+        }
+        if (!setup_ok) {
+            LOG_ERROR("FAIL: material-array setup (pipe=%d tex=%d vbo=%d ibo=%d ids=%d)",
+                      (int)rhi_handle_valid(arr_pipe), (int)rhi_handle_valid(arr_tex),
+                      (int)rhi_handle_valid(arr_vbo), (int)rhi_handle_valid(arr_ibo),
+                      (int)ids_ok);
+        }
+
+        u32 exec_count = 0xFFFFFFFFu, frames_ok = 0;
+        if (setup_ok) {
+            i32 l_model = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_model");
+            i32 l_view  = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_view");
+            i32 l_proj  = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_proj");
+            i32 l_ldir  = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_light_dir");
+            i32 l_lcol  = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_light_color");
+            i32 l_amb   = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_ambient");
+            i32 l_cam   = rhi_pipeline_get_uniform_location(render.device, arr_pipe, "u_camera_pos");
+            Mat4 idm = mat4_identity();
+            const u32 vis[4] = { 1u, 1u, 0u, 1u }; /* blue quad culled */
+
+            indirect_draw_debug_reset_execute_count();
+            for (u32 f = 0; f < 3; f++) {
+                RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                if (!cmd) break;
+                rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+                indirect_draw_upload_visibility(&ids, render.device, vis, 4);
+                indirect_draw_compact_no_barrier(&ids, render.device, cmd);
+                rhi_cmd_memory_barrier(cmd);
+                /* R234-A: rebind graphics pipeline after compact compute, and
+                 * only THEN set the push constants — a set before the compact
+                 * would be flushed (and consumed) by the compute dispatch. */
+                rhi_cmd_bind_pipeline(cmd, arr_pipe);
+                rhi_cmd_set_uniform_mat4(cmd, l_model, &idm.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_view,  &idm.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_proj,  &idm.e[0][0]);
+                rhi_cmd_set_uniform_vec3(cmd, l_ldir, 0.0f, 0.0f, -1.0f);
+                rhi_cmd_set_uniform_vec3(cmd, l_lcol, 1.0f, 1.0f, 1.0f);
+                rhi_cmd_set_uniform_vec3(cmd, l_amb, 0.35f, 0.35f, 0.35f);
+                rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
+                rhi_cmd_bind_material_textures_ibl(cmd,
+                    arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex,
+                    render.sampler,
+                    RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+                rhi_cmd_bind_vertex_buffer(cmd, arr_vbo, 0);
+                rhi_cmd_bind_index_buffer(cmd, arr_ibo, 0, true);
+                indirect_draw_execute(&ids, render.device);
+                rhi_frame_end(render.device);
+                rhi_present(render.device);
+                frames_ok++;
+            }
+            exec_count = indirect_draw_debug_execute_count();
+        }
+
+        /* Readback: 4 quadrant samples (uv 0.25 / 0.75 per quad for the
+         * two-tone split). VK viewport is non-flipped: NDC +y maps down. */
+        bool pixels_ok = false;
+        if (setup_ok && frames_ok == 3u) {
+            u32 pw = 0, ph = 0;
+            platform_get_size(engine.platform, &pw, &ph);
+            u8 *shot = malloc((usize)pw * ph * 4u);
+            if (shot) {
+                rhi_screenshot(render.device, 0, 0, pw, ph, shot);
+                /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (y+1)/2*h */
+                const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
+                const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };
+                u8 rgb[4][2][3]; /* [quad][left/right sample][rgb] */
+                for (u32 k = 0; k < 4; k++) {
+                    u32 by = (u32)((qcy[k] + 1.0f) * 0.5f * (f32)ph);
+                    /* uv 0.25 / 0.75 within the 0.9-NDC-wide quad. */
+                    u32 xl = (u32)((qcx[k] - 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);
+                    u32 xr = (u32)((qcx[k] + 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);
+                    if (by >= ph) by = ph - 1;
+                    if (xl >= pw) xl = pw - 1;
+                    if (xr >= pw) xr = pw - 1;
+                    const u8 *pl = &shot[((usize)by * pw + xl) * 4u];
+                    const u8 *pr = &shot[((usize)by * pw + xr) * 4u];
+                    rgb[k][0][0] = pl[0]; rgb[k][0][1] = pl[1]; rgb[k][0][2] = pl[2];
+                    rgb[k][1][0] = pr[0]; rgb[k][1][1] = pr[1]; rgb[k][1][2] = pr[2];
+                }
+                free(shot);
+
+                /* Hue assertions, sRGB-aware (the swapchain encodes on write):
+                 * bright two-tone half clamps to 255; the dark half (76/255
+                 * albedo, lit) lands ~170-200; the culled quad keeps the black
+                 * clear; the fallback layer is white. */
+                bool q0 = rgb[0][0][0] > 230 && rgb[0][0][1] < 140 && rgb[0][0][2] < 140 &&
+                          rgb[0][1][0] > 120 && rgb[0][1][0] < 230 &&
+                          rgb[0][1][0] + 40 < rgb[0][0][0];          /* red */
+                bool q1 = rgb[1][0][1] > 230 && rgb[1][0][0] < 140 && rgb[1][0][2] < 140 &&
+                          rgb[1][1][1] > 120 && rgb[1][1][1] < 230 &&
+                          rgb[1][1][1] + 40 < rgb[1][0][1];          /* green */
+                bool q2 = rgb[2][0][0] < 40 && rgb[2][0][1] < 40 && rgb[2][0][2] < 40 &&
+                          rgb[2][1][0] < 40 && rgb[2][1][2] < 40;     /* culled = clear */
+                bool q3 = rgb[3][0][0] > 230 && rgb[3][0][1] > 230 && rgb[3][0][2] > 230; /* white */
+                pixels_ok = q0 && q1 && q2 && q3;
+                if (!pixels_ok)
+                    LOG_ERROR("FAIL: quadrant pixels red{%u,%u} green{%u,%u} culled{%u,%u,%u} white{%u} "
+                              "(want bright/dark split, black culled, white bright)",
+                              rgb[0][0][0], rgb[0][1][0], rgb[1][0][1], rgb[1][1][1],
+                              rgb[2][0][0], rgb[2][0][1], rgb[2][0][2], rgb[3][0][0]);
+            }
+        }
+
+        bool exec_ok = (frames_ok == 3u) && (exec_count == frames_ok);
+        if (!exec_ok)
+            LOG_ERROR("FAIL: execute draws=%u over %u frames, want exactly 1/frame",
+                      exec_count, frames_ok);
+
+        matarr_pass = setup_ok && pixels_ok && exec_ok;
+        if (matarr_pass)
+            LOG_INFO("PASS: material-array single execute (4 layers incl. fallback, "
+                     "1 execute/frame, quadrant pixels + two-tone upsample verified)");
+
+        if (ids_ok) indirect_draw_destroy(&ids, render.device);
+        if (rhi_handle_valid(arr_pipe)) rhi_pipeline_destroy(render.device, arr_pipe);
+        if (rhi_handle_valid(arr_tex))  rhi_texture_destroy(render.device, arr_tex);
+        if (rhi_handle_valid(arr_ibo))  rhi_buffer_destroy(render.device, arr_ibo);
+        if (rhi_handle_valid(arr_vbo))  rhi_buffer_destroy(render.device, arr_vbo);
+        free(tex_red); free(tex_green); free(tex_blue); free(layer_buf);
+    }
+#else
+    matarr_pass = true;
+    LOG_INFO("SKIP: material-array single-execute draw (Vulkan-only compute path)");
+#endif
+
+    if (matarr_pass) {
+        LOG_INFO("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST FAILED");
+    }
+
     /* ---- TEST 8: Golden image regression ---- */
     u32 gw2, gh2;
     platform_get_size(engine.platform, &gw2, &gh2);
@@ -1476,7 +1747,7 @@ int main(int argc, char **argv) {
 
     bool all_pass = stress_pass && draw_pass && inst_pass && fbo_pass &&
                     compute_pass && combined_pass && ibl_pass && unified_pass &&
-                    idraw_pass && golden_pass && validation_pass;
+                    idraw_pass && matarr_pass && golden_pass && validation_pass;
 
     LOG_INFO("============================================");
     LOG_INFO("FINAL RESULT: %s", all_pass ? "ALL PASSED ✓" : "FAILED");

@@ -111,6 +111,16 @@ static inline bool imui_radio_logic(bool clicked, i32 *value, i32 option) {
     return value && *value == option;
 }
 
+/* R441: int-slider value mapping. Takes the float produced by
+ * imui_slider_map over [minv, maxv], rounds half away from zero to the
+ * nearest integer and clamps into [minv, maxv]. */
+static inline i32 imui_slider_int_logic(f32 mapped, i32 minv, i32 maxv) {
+    i32 v = (i32)(mapped + (mapped >= 0.0f ? 0.5f : -0.5f));
+    if (v < minv) v = minv;
+    if (v > maxv) v = maxv;
+    return v;
+}
+
 /* ---- context lifecycle ------------------------------------------------ */
 
 void imui_init(ImUI *ui, FontRenderer *font);
@@ -140,3 +150,9 @@ bool imui_collapsing_header(ImUI *ui, u32 id, const char *label, bool *open);
 /* R437: radio button — click stores `option` into *value; renders the
  * selected state from *value == option. Returns true on a completed click. */
 bool imui_radio(ImUI *ui, u32 id, const char *label, i32 *value, i32 option);
+/* R441: int slider — thin shell over the slider_float drag interaction; the
+ * mapped float is rounded + clamped via imui_slider_int_logic. A NULL value
+ * pointer or an inverted range (minv > maxv) is a safe reject: the widget
+ * renders nothing, touches no interaction state and returns false. */
+bool imui_slider_int(ImUI *ui, u32 id, const char *label,
+                     i32 *value, i32 minv, i32 maxv);

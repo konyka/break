@@ -307,6 +307,13 @@ static u32 g_id_compact_count = 0u;
 u32 indirect_draw_debug_compact_count(void) { return g_id_compact_count; }
 void indirect_draw_debug_reset_compact_count(void) { g_id_compact_count = 0u; }
 
+/* R441: execute counter (observability for the material-array path: the whole
+ * forward mega draw must cost exactly 1 indirect execute per frame). */
+static u32 g_id_execute_count = 0u;
+
+u32 indirect_draw_debug_execute_count(void) { return g_id_execute_count; }
+void indirect_draw_debug_reset_execute_count(void) { g_id_execute_count = 0u; }
+
 void indirect_draw_compact(IndirectDrawSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd) {
     indirect_draw_compact_no_barrier(sys, dev, cmd);
     rhi_cmd_memory_barrier(cmd);
@@ -376,4 +383,5 @@ void indirect_draw_execute_group(IndirectDrawSystem *sys, RHIDevice *dev, u32 gr
         sys->group_counts_buf,  group * (u32)sizeof(u32),
         cap,
         (u32)sizeof(DrawIndexedIndirectCmd));
+    g_id_execute_count++; /* R441 */
 }

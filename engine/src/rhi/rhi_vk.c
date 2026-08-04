@@ -152,6 +152,10 @@ typedef struct {
      * attachment and a sampled texture (scene depth read by post-fx).  0 ==
      * VK_IMAGE_LAYOUT_UNDEFINED means "unknown / not yet tracked". */
     VkImageLayout  cur_layout;
+    /* R441: >1 for 2D texture arrays (material-indirect path); the view is
+     * VK_IMAGE_VIEW_TYPE_2D_ARRAY covering all layers, mip_layout[0] tracks
+     * the whole-array layout (layer-granular transitions are not tracked). */
+    u32            layers;
 } VKTextureData;
 
 /* Forward declaration — full definition in the Cubemap section below. */
@@ -1063,11 +1067,14 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     /* Enable only features we actually use and that the device supports.
      * drawIndirectCount is a Vulkan 1.2 feature queried via the feature2 chain;
      * the GPU-driven indirect pipeline calls vkCmdDrawIndexedIndirectCount. */
+    VkPhysicalDeviceVulkan11Features supported_vk11 = {0};
+    supported_vk11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     VkPhysicalDeviceVulkan12Features supported_vk12 = {0};
     supported_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    supported_vk11.pNext = &supported_vk12;
     VkPhysicalDeviceFeatures2 supported_features2 = {0};
     supported_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    supported_features2.pNext = &supported_vk12;
+    supported_features2.pNext = &supported_vk11;
     vkGetPhysicalDeviceFeatures2(vk->physical, &supported_features2);
 
     VkPhysicalDeviceFeatures enabled_features = {0};
@@ -1085,6 +1092,16 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     if (supported_vk12.drawIndirectCount) {
         enabled_vk12.drawIndirectCount = VK_TRUE;
         vk->feat_draw_indirect_count = true;
+    }
+    /* R441: gl_BaseInstance(ARB) in the material-array forward shaders declares
+     * the SPIR-V DrawParameters capability — needs the 1.1 feature enabled.
+     * If the driver lacks it, shader-module creation fails and the array
+     * pipeline stays invalid, auto-disabling the path (R437 fallback). */
+    VkPhysicalDeviceVulkan11Features enabled_vk11 = {0};
+    enabled_vk11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    enabled_vk11.pNext = &enabled_vk12;
+    if (supported_vk11.shaderDrawParameters) {
+        enabled_vk11.shaderDrawParameters = VK_TRUE;
     }
     /* Partially-bound descriptors let one shared material layout serve both the
      * forward shaders (binding 5 = single u_ssao) and deferred_light_vk.frag
@@ -1105,7 +1122,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     };
     VkDeviceCreateInfo dci = {0};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.pNext = &enabled_vk12;
+    dci.pNext = &enabled_vk11; /* R441: 1.1 chain head (-> 1.2 features) */
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = (u32)(sizeof(dev_extensions) / sizeof(dev_extensions[0]));
@@ -3505,6 +3522,352 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
      * subsequent uses either wait via reclaim or go through frame fences. */
     if (mip_level < VK_MAX_MIP_VIEWS)
         td->mip_layout[mip_level] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+/* R441: record callback for vk_texture_sync_submit — pre barrier into
+ * mid_layout, optional buffer<->image copy, post barrier back to old_layout
+ * (copies only; barrier-only transitions end in mid_layout). */
+typedef struct {
+    VkImage       image;
+    VkBuffer      staging;
+    u32           width, height;
+    u32           base_layer, layer_count;
+    VkImageLayout old_layout, mid_layout;
+    bool          copy;
+} VKArrayTransferCtx;
+
+static void vk_array_transfer_record(VkCommandBuffer cb, void *p) {
+    VKArrayTransferCtx *c = (VKArrayTransferCtx *)p;
+    bool to_image = (c->mid_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    VkImageMemoryBarrier pre = {0};
+    pre.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    pre.oldLayout = c->old_layout;
+    pre.newLayout = c->mid_layout;
+    pre.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pre.image = c->image;
+    pre.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pre.subresourceRange.levelCount = 1;
+    pre.subresourceRange.baseArrayLayer = c->base_layer;
+    pre.subresourceRange.layerCount = c->layer_count;
+    pre.srcAccessMask = (c->old_layout == VK_IMAGE_LAYOUT_UNDEFINED) ? 0
+                      : VK_ACCESS_SHADER_READ_BIT;
+    pre.dstAccessMask = to_image ? VK_ACCESS_TRANSFER_WRITE_BIT
+                                 : VK_ACCESS_TRANSFER_READ_BIT;
+    VkPipelineStageFlags src_stage = (c->old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+        ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (!c->copy) {
+        /* Barrier-only (create-time layout transition). */
+        pre.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cb, src_stage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &pre);
+        return;
+    }
+    vkCmdPipelineBarrier(cb, src_stage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &pre);
+
+    VkBufferImageCopy region = {0};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = c->base_layer;
+    region.imageSubresource.layerCount = c->layer_count;
+    region.imageExtent = (VkExtent3D){c->width, c->height, 1};
+    if (to_image) {
+        vkCmdCopyBufferToImage(cb, c->staging, c->image, c->mid_layout, 1, &region);
+    } else {
+        vkCmdCopyImageToBuffer(cb, c->image, c->mid_layout, c->staging, 1, &region);
+    }
+
+    VkImageMemoryBarrier post = pre;
+    post.oldLayout = c->mid_layout;
+    post.newLayout = c->old_layout;
+    post.srcAccessMask = pre.dstAccessMask;
+    post.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &post);
+}
+
+/* R441: one-shot synchronous staging submit (bake-time texture-array paths).
+ * Returns false on any failure; on success the GPU work has completed. */
+static bool vk_texture_sync_submit(VKBackend *vk, VkBuffer staging,
+                                   VkDeviceMemory staging_mem,
+                                   void (*record)(VkCommandBuffer, void *), void *record_ctx) {
+    VkCommandBufferAllocateInfo cbai = {0};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandPool = vk->cmd_pool;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    if (vkAllocateCommandBuffers(vk->device, &cbai, &cb) != VK_SUCCESS) return false;
+    VkCommandBufferBeginInfo cbi = {0};
+    cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(cb, &cbi) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return false;
+    }
+    record(cb, record_ctx);
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return false;
+    }
+    VkFence fence;
+    VkFenceCreateInfo fci = {0};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return false;
+    }
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cb;
+    bool ok = vkQueueSubmit(vk->graphics_queue, 1, &si, fence) == VK_SUCCESS &&
+              vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+    vkDestroyFence(vk->device, fence, NULL);
+    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+    if (staging) vkDestroyBuffer(vk->device, staging, NULL);
+    if (staging_mem) vkFreeMemory(vk->device, staging_mem, NULL);
+    return ok;
+}
+
+/* Host-visible staging buffer + memcpy of `size` bytes from `src` (NULL src
+ * leaves it mapped-out/unwritten). */
+static bool vk_texture_staging_alloc(VKBackend *vk, VkDeviceSize size, const void *src,
+                                     VkBuffer *out_buf, VkDeviceMemory *out_mem) {
+    VkBufferCreateInfo bci = {0};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->device, &bci, NULL, out_buf) != VK_SUCCESS) return false;
+    VkMemoryRequirements smr;
+    vkGetBufferMemoryRequirements(vk->device, *out_buf, &smr);
+    VkMemoryAllocateInfo smi = {0};
+    smi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    smi.allocationSize = smr.size;
+    smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(vk->device, &smi, NULL, out_mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, *out_buf, NULL);
+        return false;
+    }
+    if (vkBindBufferMemory(vk->device, *out_buf, *out_mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, *out_mem, NULL);
+        vkDestroyBuffer(vk->device, *out_buf, NULL);
+        return false;
+    }
+    if (src) {
+        void *mapped;
+        if (vkMapMemory(vk->device, *out_mem, 0, size, 0, &mapped) != VK_SUCCESS) {
+            vkFreeMemory(vk->device, *out_mem, NULL);
+            vkDestroyBuffer(vk->device, *out_buf, NULL);
+            return false;
+        }
+        memcpy(mapped, src, (size_t)size);
+        vkUnmapMemory(vk->device, *out_mem);
+    }
+    return true;
+}
+
+/* R441: 2D texture array — all layers start in SHADER_READ_ONLY (zero
+ * content), per-layer uploads transition individual layers. */
+RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
+                                    u32 layers, RHIFormat fmt) {
+    VKBackend *vk = vk_backend(dev);
+    if (!vk || width == 0 || height == 0 || layers == 0) return RHI_HANDLE_NULL;
+    if (fmt != RHI_FORMAT_R8G8B8A8_UNORM && fmt != RHI_FORMAT_B8G8R8A8_UNORM) {
+        LOG_WARN("VK: texture array only supports 8-bit RGBA formats");
+        return RHI_HANDLE_NULL;
+    }
+    VkFormat vkfmt = vk_format_from_rhi(fmt);
+
+    VkImageCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = vkfmt;
+    ci.extent = (VkExtent3D){width, height, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = layers;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image;
+    if (vkCreateImage(vk->device, &ci, NULL, &image) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to create texture array image");
+        return RHI_HANDLE_NULL;
+    }
+    VkMemoryRequirements mem_req;
+    vkGetImageMemoryRequirements(vk->device, image, &mem_req);
+    VkMemoryAllocateInfo ai = {0};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mem_req.size;
+    ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory mem;
+    if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS ||
+        vkBindImageMemory(vk->device, image, mem, 0) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to allocate/bind texture array memory");
+        vkDestroyImage(vk->device, image, NULL);
+        return RHI_HANDLE_NULL;
+    }
+
+    VkImageViewCreateInfo vci = {0};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    vci.format = vkfmt;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = layers;
+    VkImageView view;
+    if (vkCreateImageView(vk->device, &vci, NULL, &view) != VK_SUCCESS) {
+        LOG_WARN("VK: failed to create texture array view");
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyImage(vk->device, image, NULL);
+        return RHI_HANDLE_NULL;
+    }
+
+    VKTextureData *td = calloc(1, sizeof(VKTextureData));
+    if (!td) {
+        vkDestroyImageView(vk->device, view, NULL);
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyImage(vk->device, image, NULL);
+        return RHI_HANDLE_NULL;
+    }
+    td->image = image;
+    td->view = view;
+    td->memory = mem;
+    td->width = width;
+    td->height = height;
+    td->format = vkfmt;
+    td->mip_levels = 1;
+    td->layers = layers;
+
+    /* All layers UNDEFINED -> SHADER_READ_ONLY (upload_layer transitions the
+     * single layer it writes through TRANSFER_DST and back). */
+    VKArrayTransferCtx ctx = {0};
+    ctx.image = image;
+    ctx.width = width;
+    ctx.height = height;
+    ctx.base_layer = 0;
+    ctx.layer_count = layers;
+    ctx.old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ctx.mid_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    ctx.copy = false;
+    if (!vk_texture_sync_submit(vk, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                vk_array_transfer_record, &ctx)) {
+        LOG_WARN("VK: texture array layout transition failed");
+        vkDestroyImageView(vk->device, view, NULL);
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyImage(vk->device, image, NULL);
+        free(td);
+        return RHI_HANDLE_NULL;
+    }
+    td->mip_layout[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    u32 idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = td;
+    dev->slots[idx].type = RHI_RES_TEXTURE;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+
+void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
+                                    u32 layer, const void *rgba8, usize size) {
+    VKBackend *vk = vk_backend(dev);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    if (!vk || !td || td->layers == 0 || !rgba8) return;
+    if (layer >= td->layers) return;
+    /* R441: same host-OOB guard class as R417 — the copy reads w*h*4 bytes. */
+    VkDeviceSize data_size = (VkDeviceSize)td->width * td->height * 4u;
+    if (size < (usize)data_size) return;
+
+    VkBuffer staging;
+    VkDeviceMemory staging_mem;
+    if (!vk_texture_staging_alloc(vk, data_size, rgba8, &staging, &staging_mem)) {
+        LOG_WARN("VK: texture array layer staging alloc failed");
+        return;
+    }
+
+    VKArrayTransferCtx ctx = {0};
+    ctx.image = td->image;
+    ctx.staging = staging;
+    ctx.width = td->width;
+    ctx.height = td->height;
+    ctx.base_layer = layer;
+    ctx.layer_count = 1;
+    ctx.old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    ctx.copy = true;
+    if (!vk_texture_sync_submit(vk, staging, staging_mem,
+                                vk_array_transfer_record, &ctx)) {
+        LOG_WARN("VK: texture array layer upload failed");
+    }
+}
+
+bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
+    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    if (!td || !out_w || !out_h) return false;
+    *out_w = td->width;
+    *out_h = td->height;
+    return true;
+}
+
+bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
+    VKBackend *vk = vk_backend(dev);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    if (!vk || !td || !dst_rgba8 || td->layers > 1) return false;
+    VkDeviceSize data_size = (VkDeviceSize)td->width * td->height * 4u;
+    if (size < (usize)data_size) return false;
+
+    /* Bake-time sync readback — in-flight frames must not race the barrier. */
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        LOG_WARN("VK: vkDeviceWaitIdle failed in texture readback");
+
+    VkBuffer staging;
+    VkDeviceMemory staging_mem;
+    if (!vk_texture_staging_alloc(vk, data_size, NULL, &staging, &staging_mem)) {
+        LOG_WARN("VK: texture readback staging alloc failed");
+        return false;
+    }
+
+    VkImageLayout old_layout = td->mip_layout[0];
+    if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+        old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VKArrayTransferCtx ctx = {0};
+    ctx.image = td->image;
+    ctx.staging = staging;
+    ctx.width = td->width;
+    ctx.height = td->height;
+    ctx.base_layer = 0;
+    ctx.layer_count = 1;
+    ctx.old_layout = old_layout;
+    ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    ctx.copy = true;
+    /* NULL staging args: the caller still needs the mapped memory afterwards,
+     * so sync_submit must not free it here. */
+    if (!vk_texture_sync_submit(vk, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                vk_array_transfer_record, &ctx)) {
+        LOG_WARN("VK: texture readback submit failed");
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return false;
+    }
+
+    void *mapped;
+    if (vkMapMemory(vk->device, staging_mem, 0, data_size, 0, &mapped) != VK_SUCCESS)
+        return false;
+    memcpy(dst_rgba8, mapped, (size_t)data_size);
+    vkUnmapMemory(vk->device, staging_mem);
+    vkDestroyBuffer(vk->device, staging, NULL);
+    vkFreeMemory(vk->device, staging_mem, NULL);
+    return true;
 }
 
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {

@@ -69,6 +69,10 @@ typedef struct {
     u32    height;
     u32    mip_levels;          /* R194-A: for MAX_LEVEL / incomplete-texture guard */
     GLenum gl_internal_format;  /* GL internal format for image binding */
+    /* R441: GL_TEXTURE_2D_ARRAY (material-indirect path). Arrays bind to a
+     * different GL target than 2D, so gl_bind_tex_unit must know. */
+    bool   is_array;
+    u32    layers;
 } GLTextureData;
 
 typedef struct {
@@ -1295,6 +1299,79 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     rhi_free_slot(dev, tex);
 }
 
+/* R441: 2D texture array — one mip, RGBA8/BGRA8 only (material albedo packing). */
+RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
+                                    u32 layers, RHIFormat fmt) {
+    if (!dev || width == 0 || height == 0 || layers == 0) return RHI_HANDLE_NULL;
+    if (fmt != RHI_FORMAT_R8G8B8A8_UNORM && fmt != RHI_FORMAT_B8G8R8A8_UNORM) {
+        LOG_WARN("GL: texture array only supports 8-bit RGBA formats");
+        return RHI_HANDLE_NULL;
+    }
+    GLuint gl_tex = 0;
+    glGenTextures(1, &gl_tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, gl_tex);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, rhi_format_to_gl_internal(fmt),
+                 (GLsizei)width, (GLsizei)height, (GLsizei)layers, 0,
+                 rhi_format_to_gl_format(fmt), GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    /* Bypasses gl_bind_tex_unit — invalidate active-unit cache (R190-A). */
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
+
+    GLTextureData *td = calloc(1, sizeof(GLTextureData));
+    if (!td) { glDeleteTextures(1, &gl_tex); return RHI_HANDLE_NULL; }
+    u32 idx = rhi_alloc_slot(dev);
+    td->gl_tex            = gl_tex;
+    td->width             = width;
+    td->height            = height;
+    td->mip_levels        = 1;
+    td->gl_internal_format = rhi_format_to_gl_internal(fmt);
+    td->is_array          = true;
+    td->layers            = layers;
+    dev->slots[idx].ptr  = td;
+    dev->slots[idx].type = RHI_RES_TEXTURE;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+
+void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
+                                    u32 layer, const void *rgba8, usize size) {
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
+    if (!td || !td->is_array || !rgba8) return;
+    if (layer >= td->layers) return;
+    /* R441: same host-OOB guard class as R417 — the copy reads w*h*4 bytes. */
+    if (size < (usize)td->width * td->height * 4u) return;
+    glBindTexture(GL_TEXTURE_2D_ARRAY, td->gl_tex);
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, (GLint)layer,
+                    (GLsizei)td->width, (GLsizei)td->height, 1,
+                    GL_RGBA, GL_UNSIGNED_BYTE, rgba8);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
+}
+
+bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
+    if (!td || !out_w || !out_h) return false;
+    *out_w = td->width;
+    *out_h = td->height;
+    return true;
+}
+
+bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
+    GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
+    if (!td || !dst_rgba8 || td->is_array) return false;
+    if (size < (usize)td->width * td->height * 4u) return false;
+    glBindTexture(GL_TEXTURE_2D, td->gl_tex);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst_rgba8);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
+    return true;
+}
+
 void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
                             u32 width, u32 height, const void *data, usize size) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
@@ -1372,8 +1449,9 @@ static void gl_bind_tex_unit(u32 unit, RHITexture tex, RHISampler sampler) {
     if (td) {
         /* Choose the GL target from the resource type: cubemaps (including
          * point-shadow depth cubes) must bind to GL_TEXTURE_CUBE_MAP, never
-         * GL_TEXTURE_2D, otherwise sampling reads garbage / GL errors. */
-        GLenum target = GL_TEXTURE_2D;
+         * GL_TEXTURE_2D, otherwise sampling reads garbage / GL errors.
+         * R441: texture arrays bind to GL_TEXTURE_2D_ARRAY. */
+        GLenum target = td->is_array ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
         bool depth_cube = false;
         if (tex.index < RHI_MAX_RESOURCES) {
             RHIResourceType t = g_current_device->slots[tex.index].type;

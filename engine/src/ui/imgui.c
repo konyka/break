@@ -238,3 +238,55 @@ bool imui_radio(ImUI *ui, u32 id, const char *label, i32 *value, i32 option) {
     ui->widget_count++;
     return clicked;
 }
+
+/* R441: int slider — identical geometry, interaction state machine and
+ * track/fill/knob rendering as imui_slider_float; only the value mapping
+ * (round + clamp via imui_slider_int_logic) and the "%d" readout differ. */
+bool imui_slider_int(ImUI *ui, u32 id, const char *label,
+                     i32 *value, i32 minv, i32 maxv) {
+    /* safe reject: NULL value or inverted range renders nothing and leaves
+     * the interaction state untouched */
+    if (!value || minv > maxv) return false;
+
+    f32 x = ui->origin_x + ui->pad;
+    f32 y = ui->cursor_y;
+    f32 w = ui->panel_w - ui->pad * 2.0f;
+    f32 h = ui->row_h - 6.0f;
+
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, x, y, w, h);
+    bool changed = false;
+
+    bool pressed_now = ui->mouse_down && !ui->mouse_prev_down;
+    if (hovered) ui->hot_id = id;
+    if (ui->active_id == id) {
+        if (ui->mouse_down) {
+            f32 mapped = imui_slider_map(ui->mouse_x, x, w, (f32)minv, (f32)maxv);
+            i32 nv = imui_slider_int_logic(mapped, minv, maxv);
+            if (nv != *value) { *value = nv; changed = true; }
+        } else {
+            ui->active_id = 0;
+        }
+    } else if (hovered && pressed_now && ui->active_id == 0) {
+        ui->active_id = id;
+        f32 mapped = imui_slider_map(ui->mouse_x, x, w, (f32)minv, (f32)maxv);
+        i32 nv = imui_slider_int_logic(mapped, minv, maxv);
+        if (nv != *value) { *value = nv; changed = true; }
+    }
+
+    /* track */
+    im_rect(ui, x, y, w, h, 0.16f, 0.17f, 0.20f, 1.0f);
+    /* fill + knob */
+    f32 t = imui_slider_norm((f32)*value, (f32)minv, (f32)maxv);
+    im_rect(ui, x, y, w * t, h, 0.18f, 0.46f, 0.66f, 1.0f);
+    f32 knob_w = 6.0f;
+    f32 kx = x + (w - knob_w) * t;
+    im_rect(ui, kx, y - 1.0f, knob_w, h + 2.0f, 0.85f, 0.88f, 0.95f, 1.0f);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s: %d", label, *value);
+    im_text(ui, x + 4.0f, y - 1.0f, buf, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    ui->cursor_y += ui->row_h;
+    ui->widget_count++;
+    return changed;
+}

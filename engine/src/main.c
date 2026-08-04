@@ -179,6 +179,12 @@ typedef struct {
     RHIPipeline   wire_pipeline;
     RHIPipeline   wire_instanced_pipeline;
     RHIPipeline   wire_skinned_pipeline;
+    /* R441: material texture-array forward variant (blinn_phong_arr*), bound
+     * once for the single-execute material-indirect mega draw. An invalid
+     * handle disables that path (falls back to the R437 per-group loop). */
+    RHIPipeline   arr_pipeline;
+    i32 arr_loc_model, arr_loc_view, arr_loc_proj;
+    i32 arr_loc_light_dir, arr_loc_light_color, arr_loc_ambient, arr_loc_camera_pos;
     RHIBuffer     instance_buf[2]; /* R183: dual-slot vs in-flight instanced VS */
     RHISampler    sampler;
     RHISampler    nearest_sampler;
@@ -277,6 +283,44 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rhi_shader_destroy(rs->device, fs);
 
     if (!rhi_handle_valid(rs->pipeline)) goto fail;
+
+    /* R441: material texture-array forward variant. Same uniforms/push layout
+     * as blinn_phong, but u_albedo is a sampler2DArray and the vertex stage
+     * forwards gl_BaseInstance(ARB) as the array layer. */
+    {
+        usize avl = 0, afl = 0;
+#ifdef ENGINE_VULKAN
+        char *avs = shader_read_file("shaders/blinn_phong_arr_vk.vert", &avl);
+        char *afs = shader_read_file("shaders/blinn_phong_arr_vk.frag", &afl);
+#else
+        char *avs = shader_read_file("shaders/blinn_phong_arr.vert", &avl);
+        char *afs = shader_read_file("shaders/blinn_phong_arr.frag", &afl);
+#endif
+        if (avs && afs) {
+            RHIShader svs = rhi_shader_create(rs->device, avs, avl, false);
+            RHIShader sfs = rhi_shader_create(rs->device, afs, afl, true);
+            if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+                RHIPipelineDesc apd = {.vert = svs, .frag = sfs, .uses_textures = true,
+                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+                rs->arr_pipeline = rhi_pipeline_create(rs->device, &apd);
+            }
+            if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
+            if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
+        } else {
+            LOG_WARN("MatIndirect: array shaders missing; single-execute path disabled");
+        }
+        free(avs);
+        free(afs);
+    }
+    if (rhi_handle_valid(rs->arr_pipeline)) {
+        rs->arr_loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_model");
+        rs->arr_loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_view");
+        rs->arr_loc_proj        = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_proj");
+        rs->arr_loc_light_dir   = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_light_dir");
+        rs->arr_loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_light_color");
+        rs->arr_loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_ambient");
+        rs->arr_loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_camera_pos");
+    }
 
     rs->loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_model");
     rs->loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_view");
@@ -639,6 +683,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->nearest_sampler)) rhi_sampler_destroy(rs->device, rs->nearest_sampler);
     if (rhi_handle_valid(rs->pipeline)) rhi_pipeline_destroy(rs->device, rs->pipeline);
     if (rhi_handle_valid(rs->wire_pipeline)) rhi_pipeline_destroy(rs->device, rs->wire_pipeline);
+    if (rhi_handle_valid(rs->arr_pipeline)) rhi_pipeline_destroy(rs->device, rs->arr_pipeline); /* R441 */
     rhi_device_destroy(rs->device);
     rs->device = NULL;
 }
@@ -824,6 +869,9 @@ static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
 /* R438: per-frame count of forward mega-branch executions — logged next to
  * the R437 compact-dispatch log, then reset. */
 static u32 g_fwd_mega_taken;
+/* R441: indirect executes issued by the forward mega scene block this frame
+ * (1 = material-array single-execute path; G = R437 per-group loop). */
+static u32 g_fwd_exec_draws;
 static f32 g_cull_positions[GPUCULL_MAX_OBJECTS * 3]; /* 48KB: gpucull positions */
 static f32 g_cull_radii[GPUCULL_MAX_OBJECTS];         /* 16KB: gpucull radii */
 static ObjectAABB g_occ_aabbs[OCCLUSION_MAX_OBJECTS]; /* 512KB: occlusion AABB upload */
@@ -852,6 +900,137 @@ static bool node_occ_visible(u32 ni) {
 /* Round 12: unified GPU cull + compact (single dispatch). */
 #define MEGA_MAX_MAT_GROUPS 64
 
+/* R441: material texture-array set — one albedo sampler2DArray replacing the
+ * per-group texture binds, so the whole forward mega draw costs 1 execute.
+ * Layer 0 is a white fallback (materials without a readable albedo texture);
+ * material albedos are read back once at bake, nearest-resampled to the array
+ * extent, and deduplicated by handle. */
+#define MAT_ARR_MAX_LAYERS 64u
+#define MAT_ARR_MAX_SIZE   2048u
+
+typedef struct {
+    RHITexture albedo_array;
+    u32        width, height, layers;
+    bool       ready;
+} MatArraySet;
+
+/* CPU nearest-neighbour RGBA8 resample (small/fallback textures are blown up
+ * to the array extent; oversized ones shrink). */
+static void mat_arr_resample_rgba8(const u8 *src, u32 sw, u32 sh, u8 *dst, u32 dw, u32 dh) {
+    for (u32 y = 0; y < dh; y++) {
+        u32 sy = y * sh / dh;
+        for (u32 x = 0; x < dw; x++) {
+            u32 sx = x * sw / dw;
+            memcpy(dst + ((usize)y * dw + x) * 4u, src + ((usize)sy * sw + sx) * 4u, 4u);
+        }
+    }
+}
+
+/* Build the array from the bake-time material groups. Fills
+ * out_group_layer[g] with the array layer for group g (0 = fallback).
+ * Returns false (and leaves set->ready false) on any failure — callers fall
+ * back to the R437 per-group path. */
+static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *scene,
+                                const u32 *mat_indices, u32 group_count,
+                                u32 *out_group_layer) {
+    memset(set, 0, sizeof(*set));
+    for (u32 g = 0; g < group_count; g++) out_group_layer[g] = 0u;
+    if (!dev || !scene || group_count == 0) return false;
+
+    /* Collect unique readable albedo textures (handle dedup). */
+    RHITexture uniq[MAT_ARR_MAX_LAYERS - 1u];
+    u32 ntex = 0;
+    u32 arr_w = 1u, arr_h = 1u;
+    for (u32 g = 0; g < group_count && ntex < MAT_ARR_MAX_LAYERS - 1u; g++) {
+        u32 mi = mat_indices[g];
+        if (mi >= scene->material_count) continue;
+        RHITexture alb = scene->materials[mi].albedo;
+        if (!rhi_handle_valid(alb)) continue;
+        bool dup = false;
+        for (u32 i = 0; i < ntex; i++)
+            if (uniq[i].index == alb.index && uniq[i].generation == alb.generation) { dup = true; break; }
+        if (dup) continue;
+        u32 tw = 0, th = 0;
+        if (!rhi_texture_get_size(dev, alb, &tw, &th) || tw == 0 || th == 0) continue;
+        if (tw > MAT_ARR_MAX_SIZE) tw = MAT_ARR_MAX_SIZE;
+        if (th > MAT_ARR_MAX_SIZE) th = MAT_ARR_MAX_SIZE;
+        uniq[ntex++] = alb;
+        if (tw > arr_w) arr_w = tw;
+        if (th > arr_h) arr_h = th;
+    }
+
+    set->albedo_array = rhi_texture_array_create(dev, arr_w, arr_h, ntex + 1u,
+                                                 RHI_FORMAT_R8G8B8A8_UNORM);
+    if (!rhi_handle_valid(set->albedo_array)) {
+        LOG_WARN("MatArray: array create failed (%ux%ux%u)", arr_w, arr_h, ntex + 1u);
+        return false;
+    }
+
+    usize layer_bytes = (usize)arr_w * arr_h * 4u;
+    u8 *layer_buf = (u8 *)malloc(layer_bytes);
+    if (!layer_buf) {
+        rhi_texture_destroy(dev, set->albedo_array);
+        set->albedo_array = RHI_HANDLE_NULL;
+        return false;
+    }
+
+    /* Layer 0: white fallback (bind_material uses a 1x1 white; here it must
+     * fill the whole layer). */
+    memset(layer_buf, 0xFF, layer_bytes);
+    rhi_texture_array_upload_layer(dev, set->albedo_array, 0u, layer_buf, layer_bytes);
+
+    bool ok = true;
+    for (u32 i = 0; i < ntex && ok; i++) {
+        u32 sw = 0, sh = 0;
+        rhi_texture_get_size(dev, uniq[i], &sw, &sh);
+        usize src_bytes = (usize)sw * sh * 4u;
+        u8 *src = (u8 *)malloc(src_bytes);
+        if (!src || !rhi_texture_read_pixels(dev, uniq[i], src, src_bytes)) {
+            LOG_WARN("MatArray: albedo readback failed (texture %u:%u)",
+                     uniq[i].index, uniq[i].generation);
+            free(src);
+            ok = false;
+            break;
+        }
+        if (sw == arr_w && sh == arr_h) {
+            memcpy(layer_buf, src, layer_bytes);
+        } else {
+            mat_arr_resample_rgba8(src, sw, sh, layer_buf, arr_w, arr_h);
+        }
+        free(src);
+        rhi_texture_array_upload_layer(dev, set->albedo_array, i + 1u, layer_buf, layer_bytes);
+    }
+    free(layer_buf);
+
+    if (!ok) {
+        rhi_texture_destroy(dev, set->albedo_array);
+        set->albedo_array = RHI_HANDLE_NULL;
+        return false;
+    }
+
+    /* Group -> layer mapping (materials without a unique texture stay 0). */
+    for (u32 g = 0; g < group_count; g++) {
+        u32 mi = mat_indices[g];
+        if (mi >= scene->material_count) continue;
+        RHITexture alb = scene->materials[mi].albedo;
+        if (!rhi_handle_valid(alb)) continue;
+        for (u32 i = 0; i < ntex; i++) {
+            if (uniq[i].index == alb.index && uniq[i].generation == alb.generation) {
+                out_group_layer[g] = i + 1u;
+                break;
+            }
+        }
+    }
+
+    set->width = arr_w;
+    set->height = arr_h;
+    set->layers = ntex + 1u;
+    set->ready = true;
+    LOG_INFO("MatArray: %u layers (%ux%u) for %u material groups",
+             set->layers, arr_w, arr_h, group_count);
+    return true;
+}
+
 typedef struct {
     RHIBuffer vbo;
     RHIBuffer ibo;
@@ -865,6 +1044,13 @@ typedef struct {
      * binds), with per-group offsets from group_cmd_offsets. */
     IndirectDrawSystem group_system;
     bool      group_system_ready;
+    /* R441: separate ungrouped system for the material-array forward path —
+     * cmds in bake order with first_instance = array layer. Kept apart from
+     * group_system so the R437 grouped mechanism stays byte-identical as the
+     * fallback (and keeps serving the deferred path). */
+    IndirectDrawSystem array_system;
+    bool      array_system_ready;
+    MatArraySet mats;
     u32       mat_indices[MEGA_MAX_MAT_GROUPS];
     u32       mat_group_count;
     i32       cmd_mat_group[16384];
@@ -882,6 +1068,9 @@ bool unified_forward_enabled = false;
 bool unified_deferred_enabled = false;
 bool unified_shadow_enabled = false;
 bool gpucull_enabled = false;
+/* R441: material-indirect single-execute forward (texture array). Default on;
+ * BREAK_MAT_INDIRECT=0 falls back to the R437 per-group loop. */
+bool mat_indirect_enabled = true;
 
 static bool mega_use_unified_shadow(const MegaBuffer *mb) {
     return unified_shadow_enabled && gpucull_enabled && mb && mb->valid &&
@@ -974,6 +1163,54 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
         calls++;
     }
     return calls;
+}
+
+/* R441: single-execute material-array forward draw. One ungrouped compact
+ * (bake-order cmds, first_instance = array layer), one material bind (array +
+ * shared shadow/SSAO/IBL slots), one indirect execute — replaces the R437
+ * per-group bind+execute loop when mat_indirect_enabled. draw_vis is indexed
+ * in bake (cmd) order, unlike the grouped path's group-sorted order. */
+static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuffer *mb,
+                                const u32 *draw_vis,
+                                const Mat4 *view, const Mat4 *proj,
+                                const Vec3 *light_dir, const Vec3 *light_color,
+                                const Vec3 *ambient, const Vec3 *cam_pos) {
+    if (!mb || !mb->valid || !mb->array_system_ready || !mb->mats.ready) return 0u;
+    if (!rhi_handle_valid(render->arr_pipeline)) return 0u;
+
+    u32 total = mb->draw_cmd_count;
+    for (u32 ci = 0; ci < total; ci++)
+        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : 1u;
+    indirect_draw_upload_visibility(&mb->array_system, render->device, g_vis_flags, total);
+    indirect_draw_compact_no_barrier(&mb->array_system, render->device, cmd);
+    rhi_cmd_memory_barrier(cmd);
+
+    /* R234-A: GL compute clobbers the graphics program — rebind, then push
+     * the same lighting uniforms the blinn path set (arr pipeline locations). */
+    rhi_cmd_bind_pipeline(cmd, render->arr_pipeline);
+    Mat4 idm = mat4_identity(); /* mega verts are pre-transformed to world space */
+    rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_model, &idm.e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_view, &view->e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_proj, &proj->e[0][0]);
+    rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_light_dir,
+                             light_dir->e[0], light_dir->e[1], light_dir->e[2]);
+    rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_light_color,
+                             light_color->e[0], light_color->e[1], light_color->e[2]);
+    rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_ambient,
+                             ambient->e[0], ambient->e[1], ambient->e[2]);
+    rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_camera_pos,
+                             cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
+
+    /* One bind for the whole pass: slot 0 = array, the rest reuse the same
+     * fallback/shadow/SSAO/IBL slots bind_material would use. */
+    rhi_cmd_bind_material_textures_ibl(cmd,
+        mb->mats.albedo_array, render->fallback_mr, render->fallback_normal,
+        render->fallback_emissive, render->shadow_map.depth_tex, render->ssao_tex,
+        render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
+        render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+
+    indirect_draw_execute(&mb->array_system, render->device);
+    return 1u;
 }
 
 static u32 mega_count_visible_draws(const MegaBuffer *mb, const u32 *draw_vis) {
@@ -1807,6 +2044,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
      * can be used for shadow / forward passes.  Enables IndirectDraw to
      * issue all mesh draws in a single GPU call. */
     scene_compute_world_transforms(&scene);
+    /* R441: parsed before the mega bake — the bake builds (or skips) the
+     * material texture array. Default on; 0 keeps the R437 per-group path. */
+    { const char *e = getenv("BREAK_MAT_INDIRECT"); if (e && !atoi(e)) mat_indirect_enabled = false; }
     {
         typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } MegaVert;
         u32 total_verts = 0, total_idxs = 0, mesh_cmd_count = 0;
@@ -2043,6 +2283,48 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 free(gcmds_scratch);
 
                 LOG_INFO("MegaBuffer: %u material groups", mega_buf.mat_group_count);
+
+                /* R441: material texture-array set + ungrouped single-execute
+                 * system. first_instance was 0 for the shadow path upload above
+                 * (depth shaders ignore it); here the cmds get their array
+                 * layer before the array system uploads them. The grouped
+                 * upload above already happened with first_instance=0 — the
+                 * R437 fallback path never reads it. */
+                mega_buf.array_system_ready = false;
+                mega_buf.mats.ready = false;
+                if (mat_indirect_enabled && mega_buf.mat_group_count > 0 &&
+                    rhi_handle_valid(render.arr_pipeline)) {
+                    if (hotreload_tex_ready) {
+                        /* Texture hot reload replaces texture handles at
+                         * runtime; the baked array layers would go stale.
+                         * Simple + reliable: keep the R437 path then. */
+                        LOG_WARN("MatArray: disabled (BREAK_HOTRELOAD_TEX replaces texture handles)");
+                    } else {
+                        u32 group_layer[MEGA_MAX_MAT_GROUPS];
+                        if (mat_array_set_build(&mega_buf.mats, render.device, &scene,
+                                                mega_buf.mat_indices,
+                                                mega_buf.mat_group_count, group_layer)) {
+                            for (u32 ci = 0; ci < mesh_cmd_count; ci++) {
+                                i32 mg = mega_buf.cmd_mat_group[ci];
+                                cmds[ci].first_instance =
+                                    (mg >= 0 && (u32)mg < mega_buf.mat_group_count)
+                                        ? group_layer[mg] : 0u;
+                            }
+                            mega_buf.array_system_ready =
+                                indirect_draw_init(&mega_buf.array_system, render.device,
+                                                   mesh_cmd_count);
+                            if (mega_buf.array_system_ready) {
+                                indirect_draw_upload(&mega_buf.array_system, render.device,
+                                                     cmds, mesh_cmd_count);
+                            } else {
+                                LOG_WARN("MatArray: array indirect system init failed");
+                                rhi_texture_destroy(render.device, mega_buf.mats.albedo_array);
+                                mega_buf.mats.albedo_array = RHI_HANDLE_NULL;
+                                mega_buf.mats.ready = false;
+                            }
+                        }
+                    }
+                }
             }
 
             /* Precompute per-node bounding sphere cache for fast visibility tests */
@@ -2186,7 +2468,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         LOG_INFO("Unified shadow draw: on (%s)", sh ? "BREAK_UNIFIED_SHADOW=1" : "default mega-buffer");
     }
     if (occ_cull_enabled) LOG_INFO("Hi-Z Occlusion Cull: on (1-frame latency, opt-out BREAK_OCCLUSION=0)");
-    if (draw_bench_enabled) LOG_INFO("DrawBench: on (BREAK_DRAW_BENCH=1, mega vs legacy draw est)");
+    /* R441: report the material-array single-execute path state at startup. */
+    if (mat_indirect_enabled && mega_buf.array_system_ready && mega_buf.mats.ready) {
+        const char *mi = getenv("BREAK_MAT_INDIRECT");
+        LOG_INFO("Material indirect: on (%u array layers, %s)",
+                 mega_buf.mats.layers, mi ? "BREAK_MAT_INDIRECT=1" : "default");
+    } else if (!mat_indirect_enabled) {
+        LOG_INFO("Material indirect: off (BREAK_MAT_INDIRECT=0) — R437 per-group path");
+    }    if (draw_bench_enabled) LOG_INFO("DrawBench: on (BREAK_DRAW_BENCH=1, mega vs legacy draw est)");
 
     /* Pre-compute orbit light base angles and static colors (avoids 64 trig + 96 int ops per frame). */
     f32 orbit_cos[32], orbit_sin[32];
@@ -5425,6 +5714,8 @@ u32 culled_count = 0;
          * internal semantics as before, just no longer gated. */
         if (scene.node_count > 0) {
                 scene_compute_world_transforms(&scene);
+                /* R441: snapshot for the forward mega execute-delta log. */
+                u32 fwd_exec_before = indirect_draw_debug_execute_count();
 
                 if (mega_buf.valid && gpu_indirect_enabled && mega_buf.mat_group_count > 0) {
                     g_fwd_mega_taken++;  /* R438: observability — see per-frame log near R437 compact count */
@@ -5432,12 +5723,25 @@ u32 culled_count = 0;
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
 
+                    /* R441: material-array single-execute path (1 bind + 1
+                     * execute for the whole pass). Ready only when the bake
+                     * built the array + ungrouped system. Wireframe debug mode
+                     * keeps the R437 path (the arr pipeline is solid-fill). */
+                    bool mat_arr = mat_indirect_enabled && !wireframe_mode &&
+                                   mega_buf.array_system_ready &&
+                                   mega_buf.mats.ready && rhi_handle_valid(render.arr_pipeline);
                     if (mega_use_unified_vis(false) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                                mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
-                        u32 mc = mega_mat_groups_draw(cmd, &render, &scene,
-                                                      &mega_buf, g_draw_vis,
-                                                      active_pipeline);
+                        /* g_draw_vis is bake-ordered — the array system consumes
+                         * it directly; the grouped path re-sorts internally. */
+                        u32 mc = mat_arr
+                            ? mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
+                                                   &view, &proj, &sun_dir_vec, &sun_color,
+                                                   &ambient_col, &camera.position)
+                            : mega_mat_groups_draw(cmd, &render, &scene,
+                                                   &mega_buf, g_draw_vis,
+                                                   active_pipeline);
                         draw_calls += mc;
                         draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                         draw_bench_mark_unified();
@@ -5465,6 +5769,23 @@ u32 culled_count = 0;
                         task_wait(tasks);
                     }
 
+                    if (mat_arr) {
+                        /* R441: bake-ordered per-cmd flags (node vis + Hi-Z occ). */
+                        u32 total = mega_buf.draw_cmd_count;
+                        for (u32 ci = 0; ci < total; ci++) {
+                            u32 ni = mega_buf.cmd_node_index[ci];
+                            /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
+                            g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
+                            if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
+                        }
+                        u32 mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
+                                                      &view, &proj, &sun_dir_vec, &sun_color,
+                                                      &ambient_col, &camera.position);
+                        draw_calls += mc;
+                        draw_bench_add(mc,
+                                       draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
+                        draw_bench_mark_legacy();
+                    } else {
                     /* R437: ONE merged compact for all groups (was G per-group
                      * compacts batched under R76-3's single barrier). */
                     if (mega_buf.group_system_ready) {
@@ -5493,6 +5814,7 @@ u32 culled_count = 0;
                     draw_bench_add(mega_buf.mat_group_count,
                                    draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);
                     draw_bench_mark_legacy();
+                    }
                     }
                 } else {
                 /* Batch frustum cull: build world AABBs, cull in one pass */
@@ -5576,9 +5898,11 @@ u32 culled_count = 0;
 
                 /* cull buffers are persistent — no free needed */
                 }
+        /* R441: forward mega execute delta (shadow/point-shadow executes are
+         * recorded earlier in the frame and excluded by the snapshot above). */
+        g_fwd_exec_draws = indirect_draw_debug_execute_count() - fwd_exec_before;
         /* R438: node_count==0 now explicit (was implied by the old gate). */
-        } else if (!drew_any && scene.node_count == 0) {
-                for (u32 i = 0; i < scene.mesh_count; i++) {
+        } else if (!drew_any && scene.node_count == 0) {                for (u32 i = 0; i < scene.mesh_count; i++) {
                     Mesh *m = &scene.meshes[i];
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
 
@@ -5811,6 +6135,12 @@ u32 culled_count = 0;
          * that the static scene draw is decoupled from ECS entity draws. */
         LOG_DEBUG("R438: forward mega branch taken this frame: %u", g_fwd_mega_taken);
         g_fwd_mega_taken = 0;
+        /* R441: execute draws this frame — 1 when the material-array
+         * single-execute path ran, mat_group_count for the R437 loop. */
+        LOG_DEBUG("R441: execute draws this frame: %u (total indirect executes: %u)",
+                  g_fwd_exec_draws, indirect_draw_debug_execute_count());
+        g_fwd_exec_draws = 0;
+        indirect_draw_debug_reset_execute_count();
 
         /* R236 (CORRECTNESS): On the deferred path scene_fbo.depth is never
          * written — the forward scene pass is skipped (guarded above) and the
@@ -6141,7 +6471,7 @@ u32 culled_count = 0;
              * click that folds a group resizes the backdrop next frame. */
             f32 rows = 3.0f
                      + (imui_sec_general ? 4.0f : 0.0f)
-                     + (imui_sec_quality ? 3.0f : 0.0f);
+                     + (imui_sec_quality ? 4.0f : 0.0f); /* R441: +1 SSAO slider */
             imui_panel(&imui_ctx, 16.0f, 96.0f, 260.0f, 8.0f + rows * imui_ctx.row_h);
             imui_label(&imui_ctx, "Settings  (` to close)");
             /* R437: settings grouped under collapsing headers. */
@@ -6162,6 +6492,12 @@ u32 culled_count = 0;
                 if (fxaa_changed) {
                     const float thresholds[] = { 0.0832f, 0.0312f, 0.0125f };
                     fxaa_sys.threshold = thresholds[fxaa_preset];
+                }
+                /* R441: SSAO intensity as an int slider bound to ssao_preset
+                 * (same off/low/med/high mapping as the F8 key cycler). */
+                if (imui_slider_int(&imui_ctx, 15, "SSAO", &ssao_preset, 0, 3)) {
+                    const float radii[] = { 0.0f, 0.3f, 0.5f, 0.8f };
+                    ssao.radius = radii[ssao_preset];
                 }
             }
             imui_end(&imui_ctx, cmd);
@@ -6241,6 +6577,11 @@ u32 culled_count = 0;
         /* R437: single merged group system (was G per-group systems). */
         if (mega_buf.group_system_ready)
             indirect_draw_destroy(&mega_buf.group_system, render.device);
+        /* R441: material-array system + texture array. */
+        if (mega_buf.array_system_ready)
+            indirect_draw_destroy(&mega_buf.array_system, render.device);
+        if (rhi_handle_valid(mega_buf.mats.albedo_array))
+            rhi_texture_destroy(render.device, mega_buf.mats.albedo_array);
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);

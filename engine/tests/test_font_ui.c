@@ -473,6 +473,190 @@ TEST(imui_header_radio_button_no_crosstalk)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R441: int slider                                                         */
+/* ----------------------------------------------------------------------- */
+
+TEST(imui_slider_int_logic_rounds_and_clamps)
+{
+    /* round half away from zero around each step boundary */
+    ASSERT_EQ(imui_slider_int_logic(0.0f,  0, 3), 0);
+    ASSERT_EQ(imui_slider_int_logic(0.49f, 0, 3), 0);
+    ASSERT_EQ(imui_slider_int_logic(0.5f,  0, 3), 1);
+    ASSERT_EQ(imui_slider_int_logic(1.49f, 0, 3), 1);
+    ASSERT_EQ(imui_slider_int_logic(1.5f,  0, 3), 2);
+    ASSERT_EQ(imui_slider_int_logic(2.49f, 0, 3), 2);
+    ASSERT_EQ(imui_slider_int_logic(2.5f,  0, 3), 3);
+    ASSERT_EQ(imui_slider_int_logic(3.0f,  0, 3), 3);
+
+    /* clamp beyond the range on both sides */
+    ASSERT_EQ(imui_slider_int_logic(-5.0f, 0, 3), 0);
+    ASSERT_EQ(imui_slider_int_logic(99.0f, 0, 3), 3);
+
+    /* negative ranges round away from zero too */
+    ASSERT_EQ(imui_slider_int_logic(-0.4f, -2, 2), 0);
+    ASSERT_EQ(imui_slider_int_logic(-0.5f, -2, 2), -1);
+    ASSERT_EQ(imui_slider_int_logic(-1.5f, -2, 2), -2);
+    ASSERT_EQ(imui_slider_int_logic(-9.0f, -2, 2), -2);
+    ASSERT_EQ(imui_slider_int_logic( 9.0f, -2, 2), 2);
+
+    /* degenerate range min == max collapses to that value */
+    ASSERT_EQ(imui_slider_int_logic(0.7f, 2, 2), 2);
+}
+
+/* exact logic of imui_slider_int (imgui.c) minus rendering — track width and
+ * row geometry mirror the widget (pad 6, panel_w 200 -> w 188, h 16) */
+static bool r441_slider_int(ImUI *ui, u32 id, int row, i32 *value, i32 minv, i32 maxv)
+{
+    if (!value || minv > maxv) return false; /* R441: safe reject */
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, 16.0f);
+    bool changed = false;
+    bool pressed_now = ui->mouse_down && !ui->mouse_prev_down;
+    if (hovered) ui->hot_id = id;
+    if (ui->active_id == id) {
+        if (ui->mouse_down) {
+            f32 mapped = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, (f32)minv, (f32)maxv);
+            i32 nv = imui_slider_int_logic(mapped, minv, maxv);
+            if (nv != *value) { *value = nv; changed = true; }
+        } else {
+            ui->active_id = 0;
+        }
+    } else if (hovered && pressed_now && ui->active_id == 0) {
+        ui->active_id = id;
+        f32 mapped = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, (f32)minv, (f32)maxv);
+        i32 nv = imui_slider_int_logic(mapped, minv, maxv);
+        if (nv != *value) { *value = nv; changed = true; }
+    }
+    return changed;
+}
+
+/* exact logic of imui_slider_float (imgui.c) minus rendering */
+static bool r441_slider_float(ImUI *ui, u32 id, int row, f32 *value, f32 minv, f32 maxv)
+{
+    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, 16.0f);
+    bool changed = false;
+    bool pressed_now = ui->mouse_down && !ui->mouse_prev_down;
+    if (hovered) ui->hot_id = id;
+    if (ui->active_id == id) {
+        if (ui->mouse_down) {
+            if (value) {
+                f32 nv = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, minv, maxv);
+                if (nv != *value) { *value = nv; changed = true; }
+            }
+        } else {
+            ui->active_id = 0;
+        }
+    } else if (hovered && pressed_now && ui->active_id == 0) {
+        ui->active_id = id;
+        if (value) {
+            f32 nv = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, minv, maxv);
+            if (nv != *value) { *value = nv; changed = true; }
+        }
+    }
+    return changed;
+}
+
+TEST(imui_slider_int_widget_drag_maps_steps)
+{
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    i32 value = 1;
+
+    /* press near the "2" position: mapped = (131-6)/188*3 ~= 1.996 -> 2 */
+    r437_begin(&ui, 131.0f, R437_MID(0), true);
+    ASSERT_TRUE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 20u);
+    ASSERT_EQ(value, 2);
+
+    /* drag to the far left edge -> 0 */
+    r437_begin(&ui, 6.0f, R437_MID(0), true);
+    ASSERT_TRUE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
+    r437_end(&ui);
+    ASSERT_EQ(value, 0);
+
+    /* drag past the right end of the track -> clamped to max */
+    r437_begin(&ui, 400.0f, R437_MID(0), true);
+    ASSERT_TRUE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
+    r437_end(&ui);
+    ASSERT_EQ(value, 3);
+
+    /* holding without moving reports no change */
+    r437_begin(&ui, 400.0f, R437_MID(0), true);
+    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
+    r437_end(&ui);
+
+    /* release (anywhere) clears active */
+    r437_begin(&ui, 400.0f, R437_MID(0), false);
+    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_EQ(value, 3);
+}
+
+TEST(imui_slider_int_safe_reject)
+{
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    i32 value = 2;
+
+    /* NULL value pointer: refuse, no interaction state touched */
+    r437_begin(&ui, 100.0f, R437_MID(0), true);
+    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, NULL, 0, 3));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_EQ(ui.hot_id, 0u);
+    ASSERT_EQ(value, 2);
+
+    /* inverted range: refuse, value untouched */
+    r437_begin(&ui, 100.0f, R437_MID(0), true);
+    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, &value, 3, 0));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_EQ(value, 2);
+}
+
+TEST(imui_slider_int_float_no_crosstalk)
+{
+    ImUI ui;
+    memset(&ui, 0, sizeof(ui));
+    i32 ivalue = 1;
+    f32 fvalue = 5.0f;
+
+    /* press the int slider (row 0), drag down onto the float slider (row 1):
+     * the float slider must not steal active and its value stays put */
+    r437_begin(&ui, 131.0f, R437_MID(0), true);
+    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
+    r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 20u);
+    ASSERT_EQ(ivalue, 2);
+
+    r437_begin(&ui, 131.0f, R437_MID(1), true);
+    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
+    r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 20u);
+    ASSERT_FLOAT_EQ(fvalue, 5.0f, 1e-4f);
+
+    /* release over the float slider: int drag ends, float still untouched */
+    r437_begin(&ui, 131.0f, R437_MID(1), false);
+    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
+    r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f);
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 0u);
+    ASSERT_FLOAT_EQ(fvalue, 5.0f, 1e-4f);
+
+    /* a fresh press-drag on the float slider works and leaves ivalue alone */
+    r437_begin(&ui, 6.0f, R437_MID(1), true);
+    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
+    ASSERT_TRUE(r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f));
+    r437_end(&ui);
+    ASSERT_EQ(ui.active_id, 21u);
+    ASSERT_FLOAT_EQ(fvalue, 0.0f, 1e-4f);
+    ASSERT_EQ(ivalue, 2);
+}
+
+/* ----------------------------------------------------------------------- */
 /*  Main                                                                    */
 /* ----------------------------------------------------------------------- */
 
@@ -500,4 +684,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(imui_collapsing_header_click_toggles);
     RUN_TEST(imui_radio_widget_selects_option);
     RUN_TEST(imui_header_radio_button_no_crosstalk);
+    RUN_TEST(imui_slider_int_logic_rounds_and_clamps);
+    RUN_TEST(imui_slider_int_widget_drag_maps_steps);
+    RUN_TEST(imui_slider_int_safe_reject);
+    RUN_TEST(imui_slider_int_float_no_crosstalk);
 TEST_MAIN_END()

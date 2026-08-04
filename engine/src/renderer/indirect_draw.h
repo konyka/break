@@ -122,4 +122,9 @@ void indirect_draw_execute_group(IndirectDrawSystem *sys, RHIDevice *dev, u32 gr
 u32  indirect_draw_debug_compact_count(void);
 void indirect_draw_debug_reset_compact_count(void);
 
+/* R441: observability — number of indirect executes issued since the last
+ * reset. The material-array forward path must cost exactly 1 per frame. */
+u32  indirect_draw_debug_execute_count(void);
+void indirect_draw_debug_reset_execute_count(void);
+
 #endif /* INDIRECT_DRAW_H */
