@@ -19,7 +19,7 @@
 | P3 | Network 复制 | socket 有、无游戏同步 | 非渲染热点 |
 | P3 | Animation blend/IK demo | 代码有、demo 未接 | 非帧预算热点 |
 | P3 | 字体 SDF / UI 完善 | Latin-1 atlas | 非 GPU 瓶颈 |
-| P3 | RHI bindless / push API | ~~部分缺失~~ **R441 纹理数组路线已落地**（前向材质间接单 execute，`BREAK_MAT_INDIRECT` 默认开；GL 实测无 ARB_bindless_texture，数组为唯一双后端通道） | 大场景材质切换——前向已解决、deferred/gbuffer **R442 已完成**（gbuffer array 化单 execute）；真 bindless（VK descriptor indexing）留作 VK-only 后续选项 |
+| P3 | RHI bindless / push API | ~~部分缺失~~ **R441 纹理数组路线已落地**（前向材质间接单 execute，`BREAK_MAT_INDIRECT` 默认开；GL 实测无 ARB_bindless_texture，数组为唯一双后端通道） | 大场景材质切换——前向已解决、deferred/gbuffer **R442 已完成**（gbuffer array 化单 execute）；真 bindless（VK descriptor indexing）留作 VK-only 后续选项；**R444**：push-constant 公开 API 落地（`rhi_cmd_push_constants`，校验按声明 range，修 `[push_range_size,256)` flush 静默截断；GL 文档化空操作），缺口仅剩真 bindless |
 
 ---
 
@@ -1446,6 +1446,8 @@ VK 版 `gbuffer_vk.frag` 使用 push constant offset 256-268，同样从未设�
 **修复**：
 1. 帧起始改为 clean state：`push_dirty = false; push_dirty_min = 256; push_dirty_max = 0;`，让每个 `rhi_cmd_set_uniform_*` 自行标记 dirty 范围
 2. 在 `vk_flush_push_constants` 中添加防御性截断：按 `is_compute` 标志将 dirty 范围限制在 128/256 字节内
+
+> **R444 更新**：校验由硬编码 256 升级为按声明 range（`is_compute ? 128 : push_range_size`，纯函数 `rhi_push_range_fits` 防回绕），并新增公开 API `rhi_cmd_push_constants`（复用本 staging/flush 路径）；`[push_range_size,256)` 写入 flush 静默截断随之修复。
 
 **影响文件**：rhi_vk.c
 
@@ -5798,7 +5800,7 @@ u32 累加溢出拒收；`v_bytes`/`i_bytes`/`block_bytes` 乘法与加法回绕
   - 双缓冲生命周期：workers 各写自己的 `frames[write_frame].buffers[thread_id]`（单写者、无锁）。`parallel_renderer_swap_and_submit` 顺序为 `wait_submit`→交换 write/read→(线程模式)置 `submit_pending` 并 signal /(非线程模式)直接 `parallel_renderer_submit(read_frame)`。因交换前先 `wait_submit`，submit 线程正在读取的 read 帧永不会被下一 `begin_frame` 重置（begin_frame 重置的是新 write=旧 read=上上帧已提交的缓冲），无 read/reset 冲突。
   - condvar 正确性：`submit_pending`/`shutdown_requested` 为 `_Atomic`。生产侧 `atomic_store(submit_pending,true)`（锁外）后 `lock; cond_signal(submit_ready); unlock`；消费侧 submit 线程持 `submit_mutex` 在 `while(!submit_pending&&!shutdown) cond_wait` → 谓词在锁下判定、cond_wait 原子释放并等待，无丢失唤醒。`read_frame`（明文 u32）在 signal 前写入，submit 线程从 cond_wait 唤醒后持锁读取，mutex acquire/release 提供 happens-before，无数据竞争。`wait_submit` 用 `while(submit_pending) cond_wait(submit_done)` 防伪唤醒。
   - 关闭：`stop_submit_thread` 先 `wait_submit`→`atomic_store(shutdown,true)`→signal→`pthread_join`；submit 线程内层循环因 shutdown 退出后 `if(shutdown)break`，无死锁/无悬挂。
-  - 排序与回放：`sort_buffer_indices_by_key` 对非空缓冲下标做稳定插入排序（严格 `>`，≤16 项）；`indices[CMD_BUFFER_MAX_THREADS]` 且 `n≤thread_count≤CMD_BUFFER_MAX_THREADS(16)`，无越界。`replay_command` 按类型映射到 RHI（DRAW/DRAW_INDEXED_BASE/BIND_*/SCISSOR/VIEWPORT 含 min/max depth/PUSH_CONSTANTS→set_uniform_bytes），未知类型仅 WARN；R207-B/R208-B/R223-A/R224-A/R225-A 已补齐此前的 no-op/丢参。
+  - 排序与回放：`sort_buffer_indices_by_key` 对非空缓冲下标做稳定插入排序（严格 `>`，≤16 项）；`indices[CMD_BUFFER_MAX_THREADS]` 且 `n≤thread_count≤CMD_BUFFER_MAX_THREADS(16)`，无越界。`replay_command` 按类型映射到 RHI（DRAW/DRAW_INDEXED_BASE/BIND_*/SCISSOR/VIEWPORT 含 min/max depth/PUSH_CONSTANTS→set_uniform_bytes——**R444 起改路由 `rhi_cmd_push_constants` 公开 API**，消掉 "map to closest available" 语义绕道），未知类型仅 WARN；R207-B/R208-B/R223-A/R224-A/R225-A 已补齐此前的 no-op/丢参。
   - 录制安全：`cmd_buffer_reserve` 在 `count>=CMD_BUFFER_MAX_COMMANDS(4096)` 时返 NULL（静默丢弃，热路径分支轻、无动态分配）；各 `cmd_*` 对 NULL 提前返回；`cmd_push_constants` 先把 `size` clamp 到 `CMD_BUFFER_PUSH_CONST_MAX` 再 `memcpy`，data 缓冲恰为该上限，无溢出。
   - 观察（非 bug）：`FrameCommands.sort_keys[CMD_BUFFER_MAX_THREADS]` 为遗留未用字段（实际排序键在 `RenderCmdBuffer.sort_key`，用户直接赋值，`test_cmd_buffer.c::cmd_sort_key_assignment` 印证）；`active_recorders` 仅 get_buffer 递增、begin_frame 归零，纯诊断计数不参与正确性。
 - 结论：双缓冲交换、submit 线程 condvar 握手、按 key 稳定排序回放、录制溢出/NULL/推常量钳制均正确。记为“评估、无修复”轮。无代码改动；总计 664 处修复。
