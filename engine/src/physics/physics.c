@@ -229,8 +229,9 @@ u32 physics_constraint_count(const PhysicsWorld *pw) {
 
 /* R435: Gauss-Seidel position projection with a small fixed iteration count.
  * The correction is split by inverse mass exactly like resolve_contact, so
- * static bodies (inv_mass 0) never move. Velocities are deliberately
- * untouched — this is a position-only constraint, no velocity solver. */
+ * static bodies (inv_mass 0) never move. This pass touches positions only;
+ * the matching velocity-level pass is solve_distance_constraint_velocities
+ * (R440), called once per step right after this one. */
 static void solve_distance_constraints(PhysicsWorld *pw) {
     if (pw->constraint_count == 0) return;
     for (int iter = 0; iter < 4; iter++) {
@@ -269,6 +270,55 @@ static void solve_distance_constraints(PhysicsWorld *pw) {
                 b->rest_frames = 0;
             }
         }
+    }
+}
+
+/* R440: velocity-level pass for distance constraints, run ONCE per step
+ * after the position projection above (R435 left velocities untouched, so a
+ * taut constraint kept its axial relative velocity and jittered as the
+ * position pass dragged the bodies back every frame).
+ *
+ * For each constraint with axis n = normalize(pb - pa) we remove the axial
+ * relative velocity rel = dot(vb - va, n) with an impulse split by inverse
+ * mass, exactly like the position split (and resolve_contact):
+ *     j  = -rel / (inv_a + inv_b)
+ *     va -= j * inv_a * n;  vb += j * inv_b * n
+ * Static ends (inv_mass 0) absorb nothing, so a free end anchored to a
+ * static body loses ALL of its axial velocity. Tangential components are
+ * untouched, so swinging motion is undamped.
+ *
+ * Softening: we eliminate rel fully (factor 1.0) rather than scaling by a
+ * 0..1 coefficient. The constraint is bilateral (rope AND rod), the impulse
+ * is unconditionally stable (it can only remove energy along the axis), and
+ * partial elimination would just re-introduce the R435 drift over more
+ * frames. Velocities produced by THIS step's integration (gravity along the
+ * axis etc.) are removed here; external forces re-enter on the next step's
+ * integration, which is the standard sequential-impulse semantic.
+ *
+ * Only velocities change, so rest_frames is not touched (no BVH refit
+ * concern). Same defensive skips as the position pass: parked tombstones,
+ * out-of-range ids, both-static pairs, coincident bodies. */
+static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
+    if (pw->constraint_count == 0) return;
+    for (u32 ci = 0; ci < PHYSICS_MAX_CONSTRAINTS; ci++) {
+        DistanceConstraint *c = &pw->constraints[ci];
+        if (!c->active) continue;
+        if (c->body_a >= pw->count || c->body_b >= pw->count) continue;
+        RigidBody *a = &pw->bodies[c->body_a];
+        RigidBody *b = &pw->bodies[c->body_b];
+        if (physics_body_is_parked(a) || physics_body_is_parked(b)) continue;
+        f32 inv_a = a->inv_mass;
+        f32 inv_b = b->inv_mass;
+        f32 inv_total = inv_a + inv_b;
+        if (inv_total <= 0.0f) continue; /* both static: nothing can move */
+        Vec3 d = vec3_sub(b->position, a->position);
+        f32 len2 = vec3_dot(d, d);
+        if (len2 < 1e-12f) continue;     /* coincident: no defined axis */
+        Vec3 n = vec3_scale(d, 1.0f / sqrtf(len2));
+        f32 rel = vec3_dot(vec3_sub(b->velocity, a->velocity), n);
+        f32 j = -rel / inv_total;
+        if (inv_a > 0.0f) a->velocity = vec3_sub(a->velocity, vec3_scale(n, j * inv_a));
+        if (inv_b > 0.0f) b->velocity = vec3_add(b->velocity, vec3_scale(n, j * inv_b));
     }
 }
 
@@ -937,6 +987,10 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
      * resolution (contacts see a consistent pre-constraint state) and before
      * the kill-floor (which reads final positions). */
     solve_distance_constraints(pw);
+    /* R440: velocity-level solve runs once per step, AFTER the position
+     * projection so the axis is computed from the corrected (taut)
+     * positions. */
+    solve_distance_constraint_velocities(pw);
 
     for (u32 i = 0; i < pw->count; i++) {
         RigidBody *b = &pw->bodies[i];

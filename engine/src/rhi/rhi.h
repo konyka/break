@@ -50,6 +50,10 @@ typedef enum {
 } RHIWrapMode;
 
 /* ---- Descriptors ---- */
+/* R440: moved above RHIPipelineDesc so the desc can carry per-pipeline MRT
+ * attachment formats (still bounds RHIMRTFBO below). */
+#define RHI_MRT_MAX_ATTACHMENTS 4
+
 typedef struct {
     RHIBufferUsage usage;
     usize          size;
@@ -88,6 +92,13 @@ typedef struct {
      * swapchain pass; set RHI_FORMAT_R16G16B16A16_SFLOAT for the HDR scene FBO.
      * Ignored by the GL backend. */
     RHIFormat color_format;
+    /* R440: MRT (G-buffer) target description. When mrt_attachment_count > 1 the
+     * Vulkan backend builds the pipeline against a render pass with these color
+     * attachment formats (+ D32F depth), render-pass-compatible with the pass
+     * rhi_mrt_fbo_create builds for the same formats — so every fragment output
+     * the shader writes has a real attachment. Ignored by the GL backend. */
+    u32       mrt_attachment_count;
+    RHIFormat mrt_formats[RHI_MRT_MAX_ATTACHMENTS];
 } RHIPipelineDesc;
 
 typedef struct {
@@ -282,7 +293,6 @@ void            rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *
 void            rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
 
 /* ---- MRT (Multiple Render Targets) framebuffer ---- */
-#define RHI_MRT_MAX_ATTACHMENTS 4
 
 typedef struct {
     RHIFramebuffer fb;

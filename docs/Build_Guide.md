@@ -299,6 +299,21 @@ cmake --build build-verify-x11-vk
 ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
 ```
 
+### 6.4 持续集成（CI）
+
+[![CI](https://github.com/konyka/break/actions/workflows/ci.yml/badge.svg)](https://github.com/konyka/break/actions/workflows/ci.yml)
+
+GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触发，`ubuntu-latest` 上两个独立 job：
+
+| Job | 配置 | 依赖（apt） | 测试 |
+|-----|------|-------------|------|
+| `gl` | X11 + OpenGL，Debug | `libx11-dev libxrandr-dev libgl1-mesa-dev` | `ctest -LE graphics`（37 项无头套件） |
+| `vk` | X11 + Vulkan，Debug | `libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev` | `ctest -LE graphics`（37 项无头套件） |
+
+CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`。
+
+**graphics 标签为何不在主门禁**：`test_vulkan`（唯一的 graphics 测试）需要真实显示与 GPU，并做 golden-image 逐像素 MAE 比对；参考图在本机 Intel Mesa 驱动上生成，换用 lavapipe/llvmpipe 软件渲染必然产生像素差导致确定性失败。GitHub 托管 runner 无 GPU/显示，因此 graphics 套件只在有 GPU 的环境手工跑。DrawBench（`BREAK_DRAW_BENCH=1`）同理——性能数据只在真实 GPU 上有意义，不进 CI。
+
 ## 7. 项目结构与两套构建
 
 ### 7.1 独立引擎构建 (engine/CMakeLists.txt)

@@ -6290,6 +6290,12 @@ u32 culled_count = 0;
     rhi_gpu_timer_destroy(render.device, gpu_postfx_timer);
     rhi_gpu_timer_destroy(render.device, gpu_shadow_timer);
     rhi_gpu_timer_destroy(render.device, gpu_forward_timer);
+    /* R440: surface VK validation messages observed during this demo run so
+     * manual/scripted runs (BREAK_FRAMES=...) can eyeball the count. Not an
+     * exit-code gate — the demo is an interactive program. */
+#ifdef ENGINE_VULKAN
+    LOG_INFO("VK validation messages this run: %u", rhi_vk_validation_message_count());
+#endif
     render_shutdown(&render);
     LOG_INFO("  render done");
     engine_shutdown(&engine);

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  gl:
+    name: Linux X11 + OpenGL (GCC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libx11-dev libxrandr-dev libgl1-mesa-dev
+
+      - name: Configure
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: ctest --test-dir build -LE graphics --output-on-failure
+
+  vk:
+    name: Linux X11 + Vulkan (GCC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev
+
+      - name: Configure
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: ctest --test-dir build -LE graphics --output-on-failure

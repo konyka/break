@@ -48,6 +48,12 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
     RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true,
                              .disable_culling = true, .alpha_blend = true,
                              .water_layout = true,
+                             /* R440: water VBO is packed vec3 (below) — declare
+                              * the real stride so both backends bind a
+                              * position-only layout (the default 3-attr stride-32
+                              * layout was both unconsumed-attribute noise on VK
+                              * and an out-of-bounds vertex fetch). */
+                             .vertex_stride = 3u * sizeof(f32),
                              .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
     w->pipeline = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);

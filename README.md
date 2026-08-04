@@ -1,5 +1,7 @@
 # break
 
+[![CI](https://github.com/konyka/break/actions/workflows/ci.yml/badge.svg)](https://github.com/konyka/break/actions/workflows/ci.yml)
+
 Pure C/C11 3D render framework and engine playground.
 
 ## Quick Start

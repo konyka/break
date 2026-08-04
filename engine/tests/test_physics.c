@@ -876,6 +876,99 @@ TEST(constraint_invalid_body_rejected)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R440: distance-constraint velocity-level solve                          */
+/* ----------------------------------------------------------------------- */
+
+TEST(constraint_velocity_removes_separating_speed)
+{
+    /* R440: after the constraint pulls two bodies taut, their relative
+     * velocity ALONG the constraint axis must be eliminated — position
+     * projection alone leaves it intact (R435 leftover drift/jitter). */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(c != UINT32_MAX);
+
+    /* Separating along the axis (a -> -x, b -> +x). */
+    pw->bodies[a].velocity = vec3(-5, 0, 0);
+    pw->bodies[b].velocity = vec3(5, 0, 0);
+    physics_step(pw, 1.0f / 60.0f);
+
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    f32 len = vec3_len(d);
+    ASSERT_TRUE(len > 1e-6f);
+    Vec3 n = vec3_scale(d, 1.0f / len);
+    Vec3 dv = vec3_sub(pw->bodies[b].velocity, pw->bodies[a].velocity);
+    ASSERT_FLOAT_EQ(vec3_dot(dv, n), 0.0f, 1e-3f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_velocity_allows_perp_motion)
+{
+    /* R440: velocity PERPENDICULAR to the constraint axis is unconstrained —
+     * the solve must not damp swinging/tangential motion. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[a].acceleration = vec3(0, 0, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(c != UINT32_MAX);
+
+    /* Purely perpendicular velocity on b; the pair starts exactly at rest
+     * length so no axial impulse is needed at t=0. */
+    pw->bodies[b].velocity = vec3(0, 3, 0);
+    physics_step(pw, 1.0f / 60.0f);
+
+    /* Integration applies the global 0.98 damping; the constraint solve must
+     * leave the tangential component alone (any coupling through the axis
+     * tilted by this step's swing is second-order, < 1e-3 here). */
+    ASSERT_FLOAT_EQ(pw->bodies[b].velocity.e[1], 3.0f * 0.98f, 2e-3f);
+    /* The swing stretches the rod slightly during integration; the velocity
+     * pass removes exactly the axial relative velocity that creates — and
+     * must not remove more. */
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    f32 len = vec3_len(d);
+    ASSERT_TRUE(len > 1e-6f);
+    Vec3 n = vec3_scale(d, 1.0f / len);
+    Vec3 dv = vec3_sub(pw->bodies[b].velocity, pw->bodies[a].velocity);
+    ASSERT_FLOAT_EQ(vec3_dot(dv, n), 0.0f, 1e-3f);
+    physics_world_destroy(pw);
+}
+
+TEST(constraint_velocity_static_anchor)
+{
+    /* R440: with a static anchor (inv_mass 0) the free end's axial velocity
+     * is zeroed while its tangential velocity survives. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 a = physics_body_create(pw, vec3(0, 0, 0), vec3(0.5f, 0.5f, 0.5f), 0.0f, true, 0);
+    u32 b = physics_body_create(pw, vec3(2, 0, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    u32 c = physics_constraint_add_distance(pw, a, b, 2.0f);
+    ASSERT_TRUE(c != UINT32_MAX);
+
+    pw->bodies[b].velocity = vec3(4, 2, 0); /* axial + tangential */
+    physics_step(pw, 1.0f / 60.0f);
+
+    /* Axis stays ~+x (position projection pulls b back to rest length). */
+    Vec3 d = vec3_sub(pw->bodies[b].position, pw->bodies[a].position);
+    f32 len = vec3_len(d);
+    ASSERT_TRUE(len > 1e-6f);
+    Vec3 n = vec3_scale(d, 1.0f / len);
+    /* Free end's axial velocity is fully absorbed (anchor has inv_mass 0). */
+    ASSERT_FLOAT_EQ(vec3_dot(pw->bodies[b].velocity, n), 0.0f, 1e-3f);
+    /* Tangential velocity survives. The impulse acts along the axis tilted
+     * by this step's motion, so a second-order fraction
+     * (~v_axial * v_tan * dt / len ~= 0.067) of vy is legitimately removed;
+     * the bound below is loose on purpose, the point is "not damped out". */
+    ASSERT_FLOAT_EQ(pw->bodies[b].velocity.e[1], 2.0f * 0.98f, 0.1f);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(aabb_from_body_basic);
@@ -932,4 +1025,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(constraint_remove_disables);
     RUN_TEST(constraint_full_returns_invalid);
     RUN_TEST(constraint_invalid_body_rejected);
+    /* R440: velocity-level constraint solve */
+    RUN_TEST(constraint_velocity_removes_separating_speed);
+    RUN_TEST(constraint_velocity_allows_perp_motion);
+    RUN_TEST(constraint_velocity_static_anchor);
 TEST_MAIN_END()

@@ -109,6 +109,10 @@ typedef struct {
      * VK_FORMAT_UNDEFINED marks depth-only/compute/MRT pipelines that are never
      * variant-ed. The SPIR-V copies + desc snapshot let us rebuild variants. */
     VkFormat          base_color_fmt;
+    /* R440: MRT pipelines (desc->mrt_attachment_count > 1) are built against
+     * this per-pipeline render pass (formats match rhi_mrt_fbo_create's pass,
+     * so the two are render-pass-compatible); VK_NULL_HANDLE otherwise. */
+    VkRenderPass      mrt_render_pass;
     VkFormat          variant_fmt[8];
     VkPipeline        variant_pipe[8];
     u32               variant_count;
@@ -2178,6 +2182,64 @@ static VkRenderPass vk_pipeline_render_pass(VKBackend *vk, RHIFormat fmt) {
                                           ? vk->swap_format : vk_format_from_rhi(fmt));
 }
 
+/* R440: build a render pass for an MRT pipeline's base pipeline, with the same
+ * color attachment formats (+ D32F depth, 1 sample) as the pass
+ * rhi_mrt_fbo_create builds for the G-buffer FBO. Per the render-pass
+ * compatibility rules (formats + sample counts), a pipeline created against
+ * this pass may be bound inside the FBO's pass. The caller owns the returned
+ * pass (destroyed with the pipeline). */
+static VkRenderPass vk_mrt_pipeline_render_pass(VKBackend *vk, const RHIFormat *formats,
+                                                u32 attachment_count) {
+    if (!formats || attachment_count < 2 || attachment_count > RHI_MRT_MAX_ATTACHMENTS)
+        return VK_NULL_HANDLE;
+
+    VkAttachmentDescription atts[RHI_MRT_MAX_ATTACHMENTS + 1];
+    VkAttachmentReference color_refs[RHI_MRT_MAX_ATTACHMENTS];
+    memset(atts, 0, sizeof(atts));
+    for (u32 i = 0; i < attachment_count; i++) {
+        atts[i].format = vk_format_from_rhi(formats[i]);
+        atts[i].samples = VK_SAMPLE_COUNT_1_BIT;
+        atts[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        atts[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        atts[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        atts[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        color_refs[i].attachment = i;
+        color_refs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    atts[attachment_count].format = VK_FORMAT_D32_SFLOAT;
+    atts[attachment_count].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[attachment_count].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    atts[attachment_count].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    atts[attachment_count].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    atts[attachment_count].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[attachment_count].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    atts[attachment_count].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    VkAttachmentReference depth_ref = { attachment_count,
+                                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+    VkSubpassDescription sp = {0};
+    sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sp.colorAttachmentCount = attachment_count;
+    sp.pColorAttachments = color_refs;
+    sp.pDepthStencilAttachment = &depth_ref;
+
+    VkRenderPassCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    ci.attachmentCount = attachment_count + 1;
+    ci.pAttachments = atts;
+    ci.subpassCount = 1;
+    ci.pSubpasses = &sp;
+
+    VkRenderPass rp = VK_NULL_HANDLE;
+    if (vkCreateRenderPass(vk->device, &ci, NULL, &rp) != VK_SUCCESS) {
+        LOG_WARN("VK: vk_mrt_pipeline_render_pass: vkCreateRenderPass failed");
+        return VK_NULL_HANDLE;
+    }
+    return rp;
+}
+
 /* Build a graphics VkPipeline from `desc` against render pass `rp`, using the
  * supplied (already-created, render-pass-independent) pipeline layout and shader
  * modules. Factored out of rhi_pipeline_create so the base pipeline and any
@@ -2230,6 +2292,20 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
         vertex_input.vertexBindingDescriptionCount = 1;
         vertex_input.pVertexBindingDescriptions = &binding;
         vertex_input.vertexAttributeDescriptionCount = 5;
+        vertex_input.pVertexAttributeDescriptions = attrs;
+    } else if (desc->is_shadow_depth) {
+        /* R440: shadow-depth vertex shaders (depth_only.vert,
+         * point_shadow_depth_vk.vert) consume only location 0. Declaring the
+         * full pos+normal+uv layout tripped validation performance warnings
+         * ("vertex attribute not consumed"); declare position only. The
+         * binding stride stays the mesh stride (default 32) — the same VBOs
+         * are bound as before, only the attribute list shrinks. */
+        stride = stride > 0 ? stride : 32;
+        binding = vk_binding(stride);
+        attrs[0] = vk_attr(0, 0, VK_FORMAT_R32G32B32_SFLOAT);
+        vertex_input.vertexBindingDescriptionCount = 1;
+        vertex_input.pVertexBindingDescriptions = &binding;
+        vertex_input.vertexAttributeDescriptionCount = 1;
         vertex_input.pVertexAttributeDescriptions = attrs;
     } else if (stride == 12) {
         binding = vk_binding(12);
@@ -2296,8 +2372,16 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
     VkPipelineColorBlendStateCreateInfo blend = {0};
     blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     blend.logicOpEnable = VK_FALSE;
-    blend.attachmentCount = 1;
-    blend.pAttachments = &blend_att;
+    /* R440: an MRT pipeline's subpass has mrt_attachment_count color
+     * attachments — the blend state must cover all of them (same per-attachment
+     * state replicated). */
+    VkPipelineColorBlendAttachmentState blend_atts[RHI_MRT_MAX_ATTACHMENTS];
+    u32 blend_count = (desc->mrt_attachment_count > 1)
+                    ? desc->mrt_attachment_count : 1;
+    if (blend_count > RHI_MRT_MAX_ATTACHMENTS) blend_count = RHI_MRT_MAX_ATTACHMENTS;
+    for (u32 i = 0; i < blend_count; i++) blend_atts[i] = blend_att;
+    blend.attachmentCount = blend_count;
+    blend.pAttachments = blend_atts;
 
     VkPipelineDepthStencilStateCreateInfo depth = {0};
     depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -2500,18 +2584,31 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         return RHI_HANDLE_NULL;
     }
 
-    VkRenderPass base_rp = desc->is_shadow_depth ? vk->shadow_render_pass
-                         : vk_pipeline_render_pass(vk, desc->color_format);
+    /* R440: MRT pipelines (G-buffer) build their base pipeline against a pass
+     * compatible with the MRT FBO's pass, not the single-attachment swapchain
+     * pass — the fragment shader's outputs 1..N then have real attachments. */
+    VkRenderPass mrt_rp = VK_NULL_HANDLE;
+    VkRenderPass base_rp;
+    if (desc->is_shadow_depth) {
+        base_rp = vk->shadow_render_pass;
+    } else if (desc->mrt_attachment_count > 1) {
+        mrt_rp = vk_mrt_pipeline_render_pass(vk, desc->mrt_formats,
+                                             desc->mrt_attachment_count);
+        base_rp = mrt_rp;
+    } else {
+        base_rp = vk_pipeline_render_pass(vk, desc->color_format);
+    }
     u32 stride = 0;
     VkPipeline pipeline = vk_build_graphics_pipeline(vk, desc, layout, vs_data->module,
                                                      fs_data->module, base_rp, &stride);
     if (pipeline == VK_NULL_HANDLE) {
+        if (mrt_rp) vkDestroyRenderPass(vk->device, mrt_rp, NULL);
         vkDestroyPipelineLayout(vk->device, layout, NULL);
         return RHI_HANDLE_NULL;
     }
 
     VKPipelineData *pd = calloc(1, sizeof(VKPipelineData));
-    if (!pd) { vkDestroyPipeline(vk->device, pipeline, NULL); vkDestroyPipelineLayout(vk->device, layout, NULL); return RHI_HANDLE_NULL; }
+    if (!pd) { vkDestroyPipeline(vk->device, pipeline, NULL); if (mrt_rp) vkDestroyRenderPass(vk->device, mrt_rp, NULL); vkDestroyPipelineLayout(vk->device, layout, NULL); return RHI_HANDLE_NULL; }
     u32 idx = rhi_alloc_slot(dev);
     pd->layout = layout;
     pd->pipeline = pipeline;
@@ -2534,7 +2631,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->build_desc = *desc;
     pd->build_desc.vert = RHI_HANDLE_NULL;
     pd->build_desc.frag = RHI_HANDLE_NULL;
-    if (desc->is_shadow_depth) {
+    pd->mrt_render_pass = mrt_rp;
+    /* R440: MRT pipelines bind only inside their (compatible) MRT pass — never
+     * build single-color-format variants for them. */
+    if (desc->is_shadow_depth || desc->mrt_attachment_count > 1) {
         pd->base_color_fmt = VK_FORMAT_UNDEFINED;
     } else {
         pd->base_color_fmt = vk_desc_base_color_fmt(vk, desc);
@@ -2565,6 +2665,7 @@ static void vk_pipeline_data_free(VKBackend *vk, VKPipelineData *pd) {
     for (u32 i = 0; i < pd->variant_count; i++) {
         vkDestroyPipeline(vk->device, pd->variant_pipe[i], NULL);
     }
+    if (pd->mrt_render_pass) vkDestroyRenderPass(vk->device, pd->mrt_render_pass, NULL); /* R440 */
     vkDestroyPipelineLayout(vk->device, pd->layout, NULL);
     free(pd->vs_spirv);
     free(pd->fs_spirv);

@@ -190,6 +190,15 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         gbuf_desc.vertex_stride        = 8u * sizeof(f32); /* pos3 + normal3 + uv2 */
         gbuf_desc.uses_textures        = true;
         gbuf_desc.depth_compare_lequal = true;
+        /* R440: this pipeline only ever draws into the 4-attachment G-buffer
+         * MRT above — tell the backend so the pipeline is built against a
+         * compatible multi-attachment render pass (formats must match
+         * defrd_alloc_targets). */
+        gbuf_desc.mrt_attachment_count = 4;
+        gbuf_desc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+        gbuf_desc.mrt_formats[1] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        gbuf_desc.mrt_formats[2] = RHI_FORMAT_R8G8B8A8_UNORM;
+        gbuf_desc.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
 
 #ifdef ENGINE_VULKAN
         sys->gbuffer_pipeline = defrd_compile_pipeline(
