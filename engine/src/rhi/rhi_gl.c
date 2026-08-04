@@ -225,6 +225,8 @@ static bool g_gl_depth_mask = true;    /* GL default after gl_init */
 static bool g_gl_cull_enabled = true;  /* GL default after gl_init */
 /* R78-2 / R232-B: Cached GL depth function (default LESS after gl_init). */
 static GLenum g_gl_depth_func = GL_LESS;
+/* R445: Cached GL_DEPTH_TEST enable (enabled once at gl_init). */
+static bool g_gl_depth_test_enabled = true;
 
 static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     GLBackend *gl = calloc(1, sizeof(GLBackend));
@@ -592,6 +594,24 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
         if (g_gl_depth_func != want_func) {
             glDepthFunc(want_func);
             g_gl_depth_func = want_func;
+        }
+    }
+    /* R445: fullscreen blit pipelines (depth_write_disable without
+     * depth_compare_lequal) want NO depth test at all — VK gets this for free
+     * because the composite/postfx render passes have no depth attachment.
+     * GL keeps GL_DEPTH_TEST globally enabled and every FBO (incl. the default
+     * framebuffer) carries a depth buffer, so the z=1.0 fullscreen triangle was
+     * tested against it: LESS vs cleared 1.0 discards every fragment, which
+     * blacked out the ENTIRE postfx/composite chain (scene FBO content was
+     * verified present via direct FBO readback; only the blits were lost).
+     * Skybox (write-disable + LEQUAL) still needs the test, hence the lequal
+     * carve-out; particles keep testing via depth_compare_lequal=true. */
+    {
+        bool want_test = !(pd->depth_write_disable && !pd->depth_compare_lequal);
+        if (g_gl_depth_test_enabled != want_test) {
+            if (want_test) glEnable(GL_DEPTH_TEST);
+            else           glDisable(GL_DEPTH_TEST);
+            g_gl_depth_test_enabled = want_test;
         }
     }
     /* R235-A: Apply cull from pipeline (VK bakes cullMode into PSO). */

@@ -95,6 +95,10 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     rpdesc.uses_storage = true;
     rpdesc.alpha_blend = true;
     rpdesc.depth_write_disable = true;
+    /* R445: keep depth TESTING (vs scene depth) under the GL backend's new
+     * "no-write && no-compare ⇒ no depth test" rule for fullscreen blits;
+     * LEQUAL is equivalent to LESS here except exact z ties. */
+    rpdesc.depth_compare_lequal = true;
     rpdesc.point_list = true; /* R168-C: POINT_LIST + gl_PointSize / PointCoord */
     ps->render_pipeline = rhi_pipeline_create(dev, &rpdesc);
     rhi_shader_destroy(dev, vs);

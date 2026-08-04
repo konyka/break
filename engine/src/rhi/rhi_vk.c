@@ -2418,7 +2418,17 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
 
     VkPipelineDepthStencilStateCreateInfo depth = {0};
     depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth.depthTestEnable = VK_TRUE;
+    /* R445: fullscreen blit pipelines (depth_write_disable without
+     * depth_compare_lequal) must not depth-test at all. The composite/postfx
+     * render passes DO carry a D32 attachment (unlike assumed when this was
+     * written), so the z=1.0 fullscreen triangle was tested against the
+     * cleared 1.0 depth and LESS discarded every fragment — the entire
+     * composite chain (tonemap/inspector/UI-underlay) never reached the
+     * swapchain, leaving the pass clear color + UI text only. The scene
+     * itself rendered fine (verified by direct scene-FBO readback), which is
+     * why golden tests missed it. Mirrors the GL backend's R445 rule. */
+    depth.depthTestEnable =
+        (desc->depth_write_disable && !desc->depth_compare_lequal) ? VK_FALSE : VK_TRUE;
     depth.depthWriteEnable = desc->depth_write_disable ? VK_FALSE : VK_TRUE;
     depth.depthCompareOp = desc->depth_compare_lequal ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
     depth.depthBoundsTestEnable = VK_FALSE;
@@ -3838,7 +3848,11 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     VKBackend *vk = vk_backend(dev);
     VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
     if (!vk || !td || !dst_rgba8 || td->layers > 1) return false;
-    VkDeviceSize data_size = (VkDeviceSize)td->width * td->height * 4u;
+    /* R445: bytes-per-pixel must follow the image format — the old hard-coded
+     * 4B/px read back only half of an RGBA16F texel stream (and the copy
+     * itself overflowed the w*h*4 staging buffer with w*h*8 bytes). */
+    u32 bpp = (td->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 8u : 4u;
+    VkDeviceSize data_size = (VkDeviceSize)td->width * td->height * bpp;
     if (size < (usize)data_size) return false;
 
     /* Bake-time sync readback — in-flight frames must not race the barrier. */
@@ -5156,6 +5170,15 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_camera_pos") == 0) return 64;
         if (strcmp(name, "u_screen_w") == 0)    return 80;
         if (strcmp(name, "u_screen_h") == 0)    return 84;
+        /* R445: the skybox is also a no_vertex_input fullscreen pipeline and
+         * lands in this branch — its push block (skybox_vk.vert/.frag) is
+         * u_inv_proj@0 u_view@64 u_sun_dir@128 u_sun_color@144. u_inv_proj
+         * resolved below (shared return 0); without these, u_view/sun stayed
+         * at -1 and the VK sky sampled uninitialized push-constant garbage
+         * (static, sun-preset-immune haze). */
+        if (strcmp(name, "u_view") == 0)       return 64;
+        if (strcmp(name, "u_sun_dir") == 0)    return 128;
+        if (strcmp(name, "u_sun_color") == 0)  return 144;
     } else {
         if (strcmp(name, "u_light_dir") == 0)   return 192;
         if (strcmp(name, "u_light_color") == 0) return 208;

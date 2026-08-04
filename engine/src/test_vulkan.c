@@ -1709,7 +1709,45 @@ int main(int argc, char **argv) {
                 rhi_present(render.device);
             }
 
-            combined_pass = (cerr == 0);
+            /* R445: pixel-level guard for the fullscreen-blit depth-test fix.
+             * The combined AA/color passes are fullscreen z=1.0 blits with
+             * depth_write_disable pipelines; both backends previously
+             * depth-tested them against the (cleared 1.0) depth attachment,
+             * discarding every fragment — and TEST 6 passed vacuously because
+             * it only checked init + frame completion. Read back the combined
+             * color output and require non-flat content (the HDR source draws
+             * a lit triangle over the dark clear, so a working chain cannot
+             * be a single flat color). */
+            bool pixels_ok = false;
+            {
+                RHITexture cc_out = combined_color_get_output(&cc);
+                u32 ow = 0, oh = 0;
+                bool dims_ok = rhi_handle_valid(cc_out) &&
+                               rhi_texture_get_size(render.device, cc_out, &ow, &oh) &&
+                               ow > 0 && oh > 0;
+                usize psz = (usize)(ow > 0 ? ow : 1) * (oh > 0 ? oh : 1) * 8u;
+                u8 *pix = (u8 *)malloc(psz);
+                if (dims_ok && pix && rhi_texture_read_pixels(render.device, cc_out, pix, psz)) {
+                    /* 4-byte units over the first w*h*4 bytes: full image for
+                     * RGBA8, top half for RGBA16F — either way plenty of
+                     * coverage for a flat-color check. */
+                    u32 units = ow * oh;
+                    bool varied = false;
+                    for (u32 i = 1; i < units && !varied; i++)
+                        if (memcmp(pix + (usize)i * 4u, pix, 4u) != 0) varied = true;
+                    pixels_ok = varied;
+                    if (!varied)
+                        LOG_ERROR("FAIL: combined color output is one flat color "
+                                  "(fullscreen blits discarded, R445 regression)");
+                } else {
+                    LOG_ERROR("FAIL: combined color output readback failed "
+                              "(dims_ok=%d valid=%d %ux%u)",
+                              (int)dims_ok, (int)rhi_handle_valid(cc_out), ow, oh);
+                }
+                free(pix);
+            }
+
+            combined_pass = (cerr == 0) && pixels_ok;
             rhi_offscreen_fbo_destroy(render.device, &src);
         } else {
             LOG_ERROR("FAIL: combined post fell back (aa_ok=%d aa_combined=%d cc_ok=%d cc_combined=%d)",

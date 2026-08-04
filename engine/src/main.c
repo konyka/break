@@ -130,6 +130,55 @@ static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgba) {
     if (!bmp_ok) LOG_WARN("BMP write: partial write failure for %s", path);
 }
 
+/* R445: screenshot helper shared by the F12 key and BREAK_SCREENSHOT. The file
+ * counter scans for existing screenshot_N.bmp on first use so repeated runs
+ * never overwrite earlier captures. */
+static void demo_save_screenshot(RHIDevice *dev, u32 w, u32 h) {
+    if (!dev || w == 0 || h == 0) return;
+    /* R428: (a) w*h*4 (~3.7MB at 720p RGBA) never fits the 256KB frame_arena —
+     * malloc; (b) backends output RGBA, so size for 4 bytes/pixel. */
+    usize pix_bytes = (usize)w * (usize)h * 4u;
+    u8 *pixels = (u8 *)malloc(pix_bytes);
+    if (!pixels) return;
+    rhi_screenshot(dev, 0, 0, w, h, pixels);
+#ifndef ENGINE_VULKAN
+    /* R445: GL glReadPixels returns BOTTOM-UP rows while save_bmp expects
+     * top-down input (VK swapchain copies already are). Flip in place — this
+     * also corrects the F12 capture on the GL backend. */
+    {
+        usize row = (usize)w * 4u;
+        u8 *tmp = (u8 *)malloc(row);
+        if (tmp) {
+            for (u32 y = 0; y < h / 2u; y++) {
+                u8 *ra = pixels + (usize)y * row;
+                u8 *rb = pixels + (usize)(h - 1u - y) * row;
+                memcpy(tmp, ra, row);
+                memcpy(ra, rb, row);
+                memcpy(rb, tmp, row);
+            }
+            free(tmp);
+        }
+    }
+#endif
+    static i32 next_id = -1;
+    if (next_id < 0) {
+        next_id = 0;
+        char probe[64];
+        for (;;) {
+            snprintf(probe, sizeof(probe), "screenshot_%d.bmp", next_id);
+            FILE *f = fopen(probe, "rb");
+            if (!f) break;
+            fclose(f);
+            next_id++;
+        }
+    }
+    char spath[64];
+    snprintf(spath, sizeof(spath), "screenshot_%d.bmp", next_id++);
+    save_bmp(spath, w, h, pixels);
+    LOG_INFO("Screenshot saved: %s (%ux%u)", spath, w, h);
+    free(pixels);
+}
+
 enum {
     COMP_TRANSFORM   = 1,
     COMP_RIGID_BODY  = 2,
@@ -201,6 +250,7 @@ typedef struct {
     f32           cascade_offset[4];
     Skeleton      skeleton;
     AnimClip      anim_clip;
+    AnimClip      anim_clip2;   /* R445: second procedural clip for the blend demo */
     RHIBuffer     skinned_vbo;
     RHIBuffer     skinned_ibo;
     u32           skinned_index_count;
@@ -548,64 +598,144 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
 
     {
+        /* R445: 4-joint procedural "arm" (base joint + 3 segments, 1m each)
+         * instead of the old 2-joint swinging box, so the animation blend
+         * and two-bone IK paths have a real >=3-joint skeleton to drive
+         * with the default asset (test.glb has no joints). The arm stands
+         * at (3.5, 1.4, -3), just right of the multi-material array — the
+         * base y matches the default-seed terrain height there (~1.17m;
+         * terrain_init runs AFTER render_init so it cannot be sampled
+         * here). The root joint's local translation carries the offset so
+         * joint world transforms (and therefore the IK solver) stay
+         * coherent. */
         skeleton_init(&rs->skeleton, rs->device);
-        u32 parents[] = {UINT32_MAX, 0};
-        Mat4 inv_bind[] = {mat4_identity(), mat4_translation(0, 1, 0)};
-        skeleton_set_joints(&rs->skeleton, 2, parents, inv_bind);
+        u32 parents[] = {UINT32_MAX, 0, 1, 2};
+        Mat4 inv_bind[] = {
+            mat4_translation(-3.5f, -1.4f,  3.0f),
+            mat4_translation(-3.5f, -2.4f,  3.0f),
+            mat4_translation(-3.5f, -3.4f,  3.0f),
+            mat4_translation(-3.5f, -4.4f,  3.0f),
+        };
+        skeleton_set_joints(&rs->skeleton, 4, parents, inv_bind);
 
+        /* Rest-pose local translations (single keyframe): root carries the
+         * world offset, joints 1-3 stack 1m above their parent. BOTH clips
+         * share these channels — anim_blend_evaluate resets unanimated
+         * bones to a zero-translation bind pose, which would collapse the
+         * chain. */
+        f32 rest_t[] = {0.0f};
+        f32 rest_pos[4][4] = {
+            {3.5f, 1.4f, -3.0f, 0},
+            {0.0f, 1.0f,  0.0f, 0},
+            {0.0f, 1.0f,  0.0f, 0},
+            {0.0f, 1.0f,  0.0f, 0},
+        };
+
+        /* Clip A: lateral swing around Z on joints 1-2 (counter-phased). */
         anim_clip_init(&rs->anim_clip, 2.0f, true);
+        for (u32 j = 0; j < 4; j++)
+            anim_clip_add_channel(&rs->anim_clip, j, ANIM_PATH_TRANSLATION, 1, rest_t, rest_pos[j]);
         f32 times[] = {0, 0.5f, 1.0f, 1.5f, 2.0f};
-        f32 rot_values[][4] = {
+        f32 rot_z1[][4] = {
             {0, 0, 0, 1},
             {0, 0, 0.383f, 0.924f},
             {0, 0, 0, 1},
             {0, 0, -0.383f, 0.924f},
             {0, 0, 0, 1},
         };
-        anim_clip_add_channel(&rs->anim_clip, 1, ANIM_PATH_ROTATION, 5, times, &rot_values[0][0]);
-
-        f32 box_pos[8][3] = {
-            {-0.5f, 0, -0.5f}, {0.5f, 0, -0.5f}, {0.5f, 1, -0.5f}, {-0.5f, 1, -0.5f},
-            {-0.5f, 0,  0.5f}, {0.5f, 0,  0.5f}, {0.5f, 1,  0.5f}, {-0.5f, 1,  0.5f},
+        f32 rot_z2[][4] = {
+            {0, 0, 0, 1},
+            {0, 0, -0.259f, 0.966f},
+            {0, 0, 0, 1},
+            {0, 0, 0.259f, 0.966f},
+            {0, 0, 0, 1},
         };
+        anim_clip_add_channel(&rs->anim_clip, 1, ANIM_PATH_ROTATION, 5, times, &rot_z1[0][0]);
+        anim_clip_add_channel(&rs->anim_clip, 2, ANIM_PATH_ROTATION, 5, times, &rot_z2[0][0]);
+
+        /* R445: clip B — forward/back bend around X on a slower 3s cycle.
+         * Different axis, period and joint set from clip A so the default
+         * sinusoidal crossfade between the two is plainly visible. */
+        anim_clip_init(&rs->anim_clip2, 3.0f, true);
+        for (u32 j = 0; j < 4; j++)
+            anim_clip_add_channel(&rs->anim_clip2, j, ANIM_PATH_TRANSLATION, 1, rest_t, rest_pos[j]);
+        f32 times_b[] = {0, 0.75f, 1.5f, 2.25f, 3.0f};
+        f32 rot_x1[][4] = {
+            {0, 0, 0, 1},
+            {0.342f, 0, 0, 0.940f},
+            {0, 0, 0, 1},
+            {-0.342f, 0, 0, 0.940f},
+            {0, 0, 0, 1},
+        };
+        f32 rot_x2[][4] = {
+            {0, 0, 0, 1},
+            {0.259f, 0, 0, 0.966f},
+            {0, 0, 0, 1},
+            {-0.259f, 0, 0, 0.966f},
+            {0, 0, 0, 1},
+        };
+        f32 rot_x3[][4] = {
+            {0, 0, 0, 1},
+            {0.174f, 0, 0, 0.985f},
+            {0, 0, 0, 1},
+            {-0.174f, 0, 0, 0.985f},
+            {0, 0, 0, 1},
+        };
+        anim_clip_add_channel(&rs->anim_clip2, 1, ANIM_PATH_ROTATION, 5, times_b, &rot_x1[0][0]);
+        anim_clip_add_channel(&rs->anim_clip2, 2, ANIM_PATH_ROTATION, 5, times_b, &rot_x2[0][0]);
+        anim_clip_add_channel(&rs->anim_clip2, 3, ANIM_PATH_ROTATION, 5, times_b, &rot_x3[0][0]);
+
+        /* R445: geometry — 4 stacked segments (0.4m square section, 1m
+         * tall), segment i skinned to joint i with its top edge blended
+         * 50/50 into joint i+1 so bends distribute across the joint. */
         f32 box_norm[6][3] = {{0,0,-1},{0,0,1},{-1,0,0},{1,0,0},{0,1,0},{0,-1,0}};
         u32 box_idx[] = {
             0,1,2, 0,2,3,  5,4,7, 5,7,6,
             4,0,3, 4,3,7,  1,5,6, 1,6,2,
             3,2,6, 3,6,7,  4,5,1, 4,1,0,
         };
-
         f32 box_uvs[8][2] = {{0,0},{1,0},{1,1},{0,1},{0,0},{1,0},{1,1},{0,1}};
-        f32 box_weights[8][4] = {
-            {1,0,0,0},{1,0,0,0},{0.5f,0.5f,0,0},{0.5f,0.5f,0,0},
-            {1,0,0,0},{1,0,0,0},{0.5f,0.5f,0,0},{0.5f,0.5f,0,0},
-        };
 
-        u32 vcount = 24;
-        u32 icount = 36;
+        const u32 seg_count = 4;
+        u32 vcount = 24 * seg_count;
+        u32 icount = 36 * seg_count;
         usize vb_bytes = (usize)vcount * 64;
-        /* Single alloc: vdata (24*64B) + idata (36*4B) */
+        /* Single alloc: vdata (96*64B) + idata (144*4B) */
         u8 *geo_buf = (u8 *)calloc(1, vb_bytes + (usize)icount * 4);
         if (!geo_buf) goto fail;
         u8 *vdata   = geo_buf;
         u32 *idata  = (u32 *)(geo_buf + vb_bytes);
         u32 vi = 0;
-        for (u32 fi = 0; fi < 6; fi++) {
-            for (u32 fj = 0; fj < 4; fj++) {
-                u32 oi = box_idx[fi * 6 + fj];
-                f32 *vp = (f32 *)(vdata + vi * 64);
-                memcpy(vp, box_pos[oi], 12);
-                memcpy(vp + 3, box_norm[fi], 12);
-                memcpy(vp + 6, box_uvs[fj], 8);
-                u32 *joints = (u32 *)(vdata + vi * 64 + 32);
-                /* R433: verts 2,3,6,7 have weights {0.5,0.5} and must reference
-                 * joint 1 via joints[1]; verts 0,1,4,5 skin fully to joint 0. */
-                joints[0] = 0;
-                joints[1] = (oi >= 2) ? 1 : 0;
-                joints[2] = 0; joints[3] = 0;
-                f32 *w = (f32 *)(vdata + vi * 64 + 48);
-                memcpy(w, box_weights[oi], 16);
-                vi++;
+        for (u32 s = 0; s < seg_count; s++) {
+            f32 y0 = 1.4f + (f32)s;
+            f32 seg_pos[8][3] = {
+                {3.3f, y0, -3.2f}, {3.7f, y0, -3.2f}, {3.7f, y0 + 1.0f, -3.2f}, {3.3f, y0 + 1.0f, -3.2f},
+                {3.3f, y0, -2.8f}, {3.7f, y0, -2.8f}, {3.7f, y0 + 1.0f, -2.8f}, {3.3f, y0 + 1.0f, -2.8f},
+            };
+            u32 ja = s;
+            u32 jb = (s + 1 < seg_count) ? s + 1 : s;
+            for (u32 fi = 0; fi < 6; fi++) {
+                for (u32 fj = 0; fj < 4; fj++) {
+                    u32 oi = box_idx[fi * 6 + fj];
+                    f32 *vp = (f32 *)(vdata + vi * 64);
+                    memcpy(vp, seg_pos[oi], 12);
+                    memcpy(vp + 3, box_norm[fi], 12);
+                    memcpy(vp + 6, box_uvs[fj], 8);
+                    u32 *joints = (u32 *)(vdata + vi * 64 + 32);
+                    /* R445: bottom-edge verts (oi 0,1,4,5) skin fully to
+                     * joint s; top-edge verts (oi 2,3,6,7) blend into the
+                     * next joint up (clamped at the tip segment). */
+                    bool top = (oi == 2 || oi == 3 || oi == 6 || oi == 7);
+                    bool blend = top && jb != ja;
+                    joints[0] = ja;
+                    joints[1] = blend ? jb : ja;
+                    joints[2] = 0; joints[3] = 0;
+                    f32 *w = (f32 *)(vdata + vi * 64 + 48);
+                    w[0] = blend ? 0.5f : 1.0f;
+                    w[1] = blend ? 0.5f : 0.0f;
+                    w[2] = 0; w[3] = 0;
+                    vi++;
+                }
             }
         }
 
@@ -851,7 +981,16 @@ static bool demo_write_sine_wav(const char *path, u32 sample_rate, f32 seconds, 
     for (u32 i = 0; i < frames && wav_ok; i++) {
         f32 t = (f32)i / (f32)sample_rate;
         f32 env = 0.6f * (0.5f + 0.5f * sinf(t * 1.5f)); /* gentle tremolo */
-        f32 s = env * sinf(6.2831853f * freq * t);
+        /* R445: 5% attack / 15% release so short one-shots (the 0.2s sfx
+         * blip) don't click at the endpoints. */
+        f32 fade = 1.0f;
+        u32 attack = frames / 20, release = frames / 7;
+        if (attack > 0 && i < attack) fade = (f32)i / (f32)attack;
+        if (release > 0 && i > frames - release) {
+            f32 r = (f32)(frames - i) / (f32)release;
+            if (r < fade) fade = r;
+        }
+        f32 s = fade * env * sinf(6.2831853f * freq * t);
         i16 sample = (i16)(s * 32000.0f);
         wav_ok = fwrite(&sample, 2, 1, f) == 1;
     }
@@ -1565,6 +1704,353 @@ static void export_profiler_chrome_trace(RHIGPUTimer *gpu_shadow, RHIGPUTimer *g
     draw_bench_export_all();
 }
 
+/* ================= R445: showcase scene =================
+ * Multi-material display array (baked into the mega buffer, exercising the
+ * R441 material texture-array path) + physics playground (ball-joint chain,
+ * CCD wall, velocity-driven elevator platform). Appended to the glTF scene
+ * after asset_load_gltf and BEFORE the one-shot mega bake. */
+
+/* R445: 32B vertex layout — identical to asset Vertex / bake MegaVert
+ * (pos3 + nrm3 + uv2), so meshes can feed both the mega bake and the
+ * instanced ECS draw unchanged. */
+typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } DemoVert;
+
+/* R445: upload a DemoVert mesh; fills GPU buffers + counts + local AABB. */
+static Mesh demo_mesh_upload(RHIDevice *dev, const DemoVert *verts, u32 vcount,
+                             const u32 *indices, u32 icount) {
+    Mesh m;
+    memset(&m, 0, sizeof(m));
+    RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                         .size = (usize)vcount * sizeof(DemoVert),
+                         .initial_data = verts };
+    m.vertex_buf = rhi_buffer_create(dev, &vd);
+    RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                         .size = (usize)icount * sizeof(u32),
+                         .initial_data = indices };
+    m.index_buf = rhi_buffer_create(dev, &id);
+    m.index_count = icount;
+    m.vertex_count = vcount;
+    m.aabb_min = vec3(1e30f, 1e30f, 1e30f);
+    m.aabb_max = vec3(-1e30f, -1e30f, -1e30f);
+    for (u32 i = 0; i < vcount; i++) {
+        for (u32 c = 0; c < 3; c++) {
+            if (verts[i].pos[c] < m.aabb_min.e[c]) m.aabb_min.e[c] = verts[i].pos[c];
+            if (verts[i].pos[c] > m.aabb_max.e[c]) m.aabb_max.e[c] = verts[i].pos[c];
+        }
+    }
+    return m;
+}
+
+/* R445: axis-aligned box from half extents — 24 verts / 36 indices, same
+ * corner/winding scheme as the skinned demo box above. */
+static void demo_box_geometry(f32 hx, f32 hy, f32 hz, DemoVert out_v[24], u32 out_i[36]) {
+    static const f32 norm[6][3] = {{0,0,-1},{0,0,1},{-1,0,0},{1,0,0},{0,1,0},{0,-1,0}};
+    static const u8 corner[6][4] = {
+        {0,1,2,3}, {5,4,7,6}, {4,0,3,7}, {1,5,6,2}, {3,2,6,7}, {4,5,1,0},
+    };
+    static const f32 uv[4][2] = {{0,0},{1,0},{1,1},{0,1}};
+    const f32 pos[8][3] = {
+        {-hx,-hy,-hz}, {hx,-hy,-hz}, {hx,hy,-hz}, {-hx,hy,-hz},
+        {-hx,-hy, hz}, {hx,-hy, hz}, {hx,hy, hz}, {-hx,hy, hz},
+    };
+    for (u32 f = 0; f < 6; f++) {
+        for (u32 j = 0; j < 4; j++) {
+            DemoVert *dv = &out_v[f * 4 + j];
+            memcpy(dv->pos, pos[corner[f][j]], 12);
+            memcpy(dv->nrm, norm[f], 12);
+            memcpy(dv->uv, uv[j], 8);
+        }
+        u32 b = f * 4;
+        out_i[f * 6 + 0] = b + 0; out_i[f * 6 + 1] = b + 1; out_i[f * 6 + 2] = b + 2;
+        out_i[f * 6 + 3] = b + 0; out_i[f * 6 + 4] = b + 2; out_i[f * 6 + 5] = b + 3;
+    }
+}
+
+/* R445: UV sphere, 16x12 segments -> 221 verts / 1152 indices. out_v must hold
+ * (rings+1)*(sectors+1) verts, out_i rings*sectors*6 indices; returns index count. */
+static u32 demo_sphere_geometry(f32 r, u32 sectors, u32 rings,
+                                DemoVert *out_v, u32 *out_i) {
+    u32 vi = 0;
+    for (u32 ri = 0; ri <= rings; ri++) {
+        f32 v = (f32)ri / (f32)rings;
+        f32 phi = v * 3.14159265f; /* 0..pi, pole to pole */
+        f32 sp = sinf(phi), cp = cosf(phi);
+        for (u32 si = 0; si <= sectors; si++) {
+            f32 u = (f32)si / (f32)sectors;
+            f32 theta = u * 6.2831853f;
+            f32 nx = sp * cosf(theta), ny = cp, nz = sp * sinf(theta);
+            DemoVert *dv = &out_v[vi++];
+            dv->pos[0] = nx * r; dv->pos[1] = ny * r; dv->pos[2] = nz * r;
+            dv->nrm[0] = nx;     dv->nrm[1] = ny;     dv->nrm[2] = nz;
+            dv->uv[0] = u; dv->uv[1] = v;
+        }
+    }
+    u32 ii = 0;
+    for (u32 ri = 0; ri < rings; ri++) {
+        for (u32 si = 0; si < sectors; si++) {
+            u32 a = ri * (sectors + 1u) + si;
+            u32 b = a + sectors + 1u;
+            out_i[ii++] = a;     out_i[ii++] = b;     out_i[ii++] = a + 1u;
+            out_i[ii++] = a + 1u; out_i[ii++] = b;    out_i[ii++] = b + 1u;
+        }
+    }
+    return ii;
+}
+
+/* R445: procedural 64^2 RGBA8 albedo patterns (MatArray resamples them to the
+ * array extent). kind: 0 = 8px checker, 1 = 8px vertical stripes,
+ * 2 = vertical gradient ca->cb, 3 = solid ca. */
+#define DEMO_TEX_SIZE 64u
+static RHITexture demo_tex_pattern(RHIDevice *dev, u32 kind, const u8 ca[4], const u8 cb[4]) {
+    u8 *px = (u8 *)malloc((usize)DEMO_TEX_SIZE * DEMO_TEX_SIZE * 4u);
+    if (!px) return RHI_HANDLE_NULL;
+    for (u32 y = 0; y < DEMO_TEX_SIZE; y++) {
+        for (u32 x = 0; x < DEMO_TEX_SIZE; x++) {
+            u8 *p = &px[((usize)y * DEMO_TEX_SIZE + x) * 4u];
+            switch (kind) {
+            case 0: memcpy(p, (((x / 8u) ^ (y / 8u)) & 1u) ? ca : cb, 4); break;
+            case 1: memcpy(p, ((x / 8u) & 1u) ? ca : cb, 4); break;
+            case 2: {
+                f32 t = (f32)y / (f32)(DEMO_TEX_SIZE - 1u);
+                for (u32 c = 0; c < 4; c++)
+                    p[c] = (u8)((f32)ca[c] + ((f32)cb[c] - (f32)ca[c]) * t + 0.5f);
+                break;
+            }
+            default: memcpy(p, ca, 4); break;
+            }
+        }
+    }
+    RHITextureDesc td = { .width = DEMO_TEX_SIZE, .height = DEMO_TEX_SIZE,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 1, .data = px };
+    RHITexture tex = rhi_texture_create(dev, &td);
+    free(px);
+    return tex;
+}
+
+/* R445: 1x1 metallic-roughness texture in glTF packing (G=roughness, B=metallic;
+ * matches the {255,128,0,255} fallback_mr convention). */
+static RHITexture demo_tex_mr(RHIDevice *dev, f32 metallic, f32 roughness) {
+    u8 px[4] = { 0,
+                 (u8)(roughness * 255.0f + 0.5f),
+                 (u8)(metallic * 255.0f + 0.5f),
+                 255 };
+    RHITextureDesc td = { .width = 1, .height = 1,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 1, .data = px };
+    return rhi_texture_create(dev, &td);
+}
+
+/* R445: scene append helpers (arrays are calloc'd by the glTF loader;
+ * asset_scene_free releases whatever is attached at shutdown). Returns the new
+ * index, UINT32_MAX on OOM. Every material gets its OWN texture handles —
+ * asset_scene_free frees per-material textures unconditionally, so two
+ * materials sharing one handle would double-free. */
+static u32 demo_scene_push_material(Scene *s, RHITexture albedo, RHITexture mr) {
+    Material *nm = (Material *)realloc(s->materials,
+                                       (usize)(s->material_count + 1u) * sizeof(Material));
+    if (!nm) { LOG_WARN("R445: material append OOM"); return UINT32_MAX; }
+    s->materials = nm;
+    Material *m = &nm[s->material_count];
+    memset(m, 0, sizeof(*m));
+    m->albedo = albedo;
+    m->metallic_roughness = mr;
+    m->base_color[0] = m->base_color[1] = m->base_color[2] = m->base_color[3] = 1.0f;
+    m->metallic_factor = 1.0f;
+    m->roughness_factor = 1.0f;
+    return s->material_count++;
+}
+
+static u32 demo_scene_push_mesh(Scene *s, Mesh m) {
+    Mesh *nm = (Mesh *)realloc(s->meshes, (usize)(s->mesh_count + 1u) * sizeof(Mesh));
+    if (!nm) { LOG_WARN("R445: mesh append OOM"); return UINT32_MAX; }
+    s->meshes = nm;
+    nm[s->mesh_count] = m;
+    return s->mesh_count++;
+}
+
+static bool demo_scene_push_node(Scene *s, u32 mesh_idx, u32 mat_idx,
+                                 f32 x, f32 y, f32 z) {
+    SceneNode *nn = (SceneNode *)realloc(s->nodes,
+                                         (usize)(s->node_count + 1u) * sizeof(SceneNode));
+    if (!nn) { LOG_WARN("R445: node append OOM"); return false; }
+    s->nodes = nn;
+    SceneNode *nd = &nn[s->node_count];
+    memset(nd, 0, sizeof(*nd));
+    nd->local_transform = mat4_translation(x, y, z);
+    nd->world_transform = nd->local_transform; /* root node; bake pre-transforms */
+    nd->parent_index = UINT32_MAX;
+    nd->mesh_index = mesh_idx;
+    nd->material_idx = mat_idx;
+    nd->has_mesh = true;
+    s->node_count++;
+    return true;
+}
+
+/* R445: one ECS-rendered dynamic body (CTransform + CRigidBody + CMeshRef);
+ * the physics->transform sync system animates it every frame. */
+static void demo_showcase_entity(World *world, u32 mesh_index, u32 physics_id,
+                                 f32 x, f32 y, f32 z) {
+    Entity e = world_create_entity(world);
+    CTransform *t = world_add_component(world, e, COMP_TRANSFORM);
+    if (t) { t->pos[0] = x; t->pos[1] = y; t->pos[2] = z; }
+    CRigidBody *rb = world_add_component(world, e, COMP_RIGID_BODY);
+    if (rb) rb->physics_id = physics_id;
+    CMeshRef *mr = world_add_component(world, e, COMP_MESH_REF);
+    if (mr) mr->mesh_index = mesh_index;
+}
+
+static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *physics,
+                                World *world, const Terrain *terrain,
+                                u32 *out_elevator_body) {
+    *out_elevator_body = UINT32_MAX;
+    if (!dev || !scene || !physics || !world) return;
+
+    /* ---- meshes (shared geometry; the bake duplicates per node) ---- */
+    DemoVert sv[(12u + 1u) * (16u + 1u)];
+    u32 si[12u * 16u * 6u];
+    u32 sic = demo_sphere_geometry(0.5f, 16, 12, sv, si);
+    u32 mesh_sphere = demo_scene_push_mesh(scene,
+        demo_mesh_upload(dev, sv, (16u + 1u) * (12u + 1u), si, sic));
+
+    DemoVert bv[24];
+    u32 bi[36];
+    demo_box_geometry(0.5f, 0.5f, 0.5f, bv, bi);
+    u32 mesh_box = demo_scene_push_mesh(scene, demo_mesh_upload(dev, bv, 24, bi, 36));
+    demo_box_geometry(0.25f, 0.25f, 0.25f, bv, bi);
+    u32 mesh_chain = demo_scene_push_mesh(scene, demo_mesh_upload(dev, bv, 24, bi, 36));
+    demo_box_geometry(1.2f, 0.15f, 1.2f, bv, bi);
+    u32 mesh_platform = demo_scene_push_mesh(scene, demo_mesh_upload(dev, bv, 24, bi, 36));
+    demo_box_geometry(0.4f, 0.1f, 0.4f, bv, bi);
+    u32 mesh_anchor = demo_scene_push_mesh(scene, demo_mesh_upload(dev, bv, 24, bi, 36));
+    demo_box_geometry(0.75f, 1.0f, 0.05f, bv, bi);
+    u32 mesh_wall = demo_scene_push_mesh(scene, demo_mesh_upload(dev, bv, 24, bi, 36));
+    if (mesh_sphere == UINT32_MAX || mesh_box == UINT32_MAX ||
+        mesh_chain == UINT32_MAX || mesh_platform == UINT32_MAX ||
+        mesh_anchor == UINT32_MAX || mesh_wall == UINT32_MAX) return;
+
+    /* ---- materials ---- */
+    /* Row 1: metallic-gradient spheres (metallic 0/0.33/0.66/1.0, roughness
+     * 0.2). Each sphere gets its OWN albedo + MR texture (shared handles would
+     * double-free in asset_scene_free); the distinct (albedo, MR) pairs also
+     * force distinct MatArray layers. */
+    u32 mat_sphere[4];
+    {
+        const f32 metals[4] = { 0.0f, 0.33f, 0.66f, 1.0f };
+        const u8 gray[4] = { 190, 190, 200, 255 };
+        for (u32 i = 0; i < 4; i++)
+            mat_sphere[i] = demo_scene_push_material(scene,
+                demo_tex_pattern(dev, 3, gray, gray),
+                demo_tex_mr(dev, metals[i], 0.2f));
+    }
+    /* Row 2: textured boxes — checker / stripes / gradient / solid albedos,
+     * each with its own MR (dielectric, rough). */
+    u32 mat_box[4];
+    {
+        static const u8 c0[4] = { 230, 120,  30, 255 }, c1[4] = {  30,  60, 200, 255 };
+        static const u8 s0[4] = {  40, 180,  80, 255 }, s1[4] = { 240, 240, 240, 255 };
+        static const u8 g0[4] = { 220,  40,  40, 255 }, g1[4] = { 250, 220,  60, 255 };
+        static const u8 p0[4] = { 150,  60, 200, 255 };
+        mat_box[0] = demo_scene_push_material(scene, demo_tex_pattern(dev, 0, c0, c1), demo_tex_mr(dev, 0.0f, 0.8f));
+        mat_box[1] = demo_scene_push_material(scene, demo_tex_pattern(dev, 1, s0, s1), demo_tex_mr(dev, 0.0f, 0.8f));
+        mat_box[2] = demo_scene_push_material(scene, demo_tex_pattern(dev, 2, g0, g1), demo_tex_mr(dev, 0.0f, 0.8f));
+        mat_box[3] = demo_scene_push_material(scene, demo_tex_pattern(dev, 3, p0, p0), demo_tex_mr(dev, 0.0f, 0.8f));
+    }
+    /* Physics playground static props. */
+    const u8 dark[4]  = {  90,  90,  95, 255 };
+    const u8 light[4] = { 200, 200, 200, 255 };
+    u32 mat_anchor = demo_scene_push_material(scene, demo_tex_pattern(dev, 3, dark, dark),  demo_tex_mr(dev, 0.0f, 0.9f));
+    u32 mat_wall   = demo_scene_push_material(scene, demo_tex_pattern(dev, 3, light, light), demo_tex_mr(dev, 0.0f, 0.6f));
+    for (u32 i = 0; i < 4; i++)
+        if (mat_sphere[i] == UINT32_MAX || mat_box[i] == UINT32_MAX) return;
+    if (mat_anchor == UINT32_MAX || mat_wall == UINT32_MAX) return;
+    /* Sensible material for instanced draws of the shared meshes (CCD ball /
+     * chain links / elevator render through the ECS instanced path, which keys
+     * the material off the mesh, not the node). */
+    scene->meshes[mesh_sphere].material_idx   = mat_sphere[3];
+    scene->meshes[mesh_box].material_idx      = mat_box[0];
+    scene->meshes[mesh_chain].material_idx    = mat_box[1];
+    scene->meshes[mesh_platform].material_idx = mat_box[2];
+
+    /* ---- multi-material display array (static; baked into the mega buffer) ----
+     * Two rows in the default camera view (camera at (0,2,8) facing -Z):
+     * spheres at z=-2, boxes at z=-4, 1.5m spacing, resting on the terrain. */
+    {
+        const f32 xs[4] = { -2.25f, -0.75f, 0.75f, 2.25f };
+        for (u32 i = 0; i < 4; i++) {
+            f32 y = terrain ? terrain_get_height(terrain, xs[i], -2.0f) + 0.55f : 0.55f;
+            demo_scene_push_node(scene, mesh_sphere, mat_sphere[i], xs[i], y, -2.0f);
+        }
+        for (u32 i = 0; i < 4; i++) {
+            f32 y = terrain ? terrain_get_height(terrain, xs[i], -4.0f) + 0.55f : 0.55f;
+            demo_scene_push_node(scene, mesh_box, mat_box[i], xs[i], y, -4.0f);
+        }
+    }
+
+    /* ---- physics playground ---- */
+    /* (1) Ball-joint chain at x=-5: static anchor box + 3 dynamic links
+     * connected by R443 ball constraints at adjacent-face anchors; the last
+     * link is a heavy end weight. */
+    {
+        f32 cx = -5.0f, cz = -3.0f;
+        f32 ty = terrain ? terrain_get_height(terrain, cx, cz) : 0.0f;
+        f32 ya = ty + 3.6f;
+        u32 anchor = physics_body_create(physics, vec3(cx, ya, cz),
+                                         vec3(0.4f, 0.1f, 0.4f), 0.0f, true, 0);
+        demo_scene_push_node(scene, mesh_anchor, mat_anchor, cx, ya, cz);
+        u32 prev = anchor;
+        f32 ly = ya - 0.1f - 0.25f; /* first link hangs from the anchor's bottom face */
+        for (u32 i = 0; i < 3; i++) {
+            f32 mass = (i == 2) ? 4.0f : 1.0f; /* heavy end weight */
+            u32 link = physics_body_create(physics, vec3(cx, ly, cz),
+                                           vec3(0.25f, 0.25f, 0.25f), mass, false, 0);
+            demo_showcase_entity(world, mesh_chain, link, cx, ly, cz);
+            f32 top_off = (i == 0) ? -0.1f : -0.25f;
+            u32 jc = physics_constraint_add_ball(physics, prev, link,
+                                                 vec3(0, top_off, 0), vec3(0, 0.25f, 0));
+            if (jc == UINT32_MAX) LOG_WARN("R445: chain joint %u rejected", i);
+            prev = link;
+            ly -= 0.5f;
+        }
+    }
+
+    /* (2) CCD demo at x=5: 0.1m-thin static wall + a 60 m/s sphere aimed
+     * straight at it. At 60 Hz the ball crosses ~1 m per step — ten times the
+     * wall thickness — so discrete sampling would tunnel right through; the
+     * swept CCD test (ccd=true) catches the crossing. Control semantics:
+     * the same ball without physics_body_set_ccd would pass through. */
+    {
+        f32 wx = 5.0f, wz = -3.0f;
+        f32 wy = (terrain ? terrain_get_height(terrain, wx, wz) : 0.0f) + 1.0f;
+        u32 wall = physics_body_create(physics, vec3(wx, wy, wz),
+                                       vec3(0.75f, 1.0f, 0.05f), 0.0f, true, 0);
+        (void)wall;
+        demo_scene_push_node(scene, mesh_wall, mat_wall, wx, wy, wz);
+        u32 ball = physics_body_create_sphere(physics, vec3(wx, wy, wz + 4.5f),
+                                              0.5f, 1.0f, false, 0);
+        physics_body_set_ccd(physics, ball, true);
+        if (ball < physics->count)
+            physics->bodies[ball].velocity = vec3(0, 0, -60.0f);
+        demo_showcase_entity(world, mesh_sphere, ball, wx, wy, wz + 4.5f);
+    }
+
+    /* (3) Elevator platform at (0, z=-6): dynamic box (inv_mass > 0) whose
+     * velocity is re-scripted every frame to sin(t) on Y (gravity zeroed).
+     * R437 carrying: a character standing on it rides via the support body's
+     * velocity — watch the debug UI "grounded" line while standing on it. */
+    {
+        f32 ex = 0.0f, ez = -6.0f;
+        f32 ey = (terrain ? terrain_get_height(terrain, ex, ez) : 0.0f) + 1.5f;
+        u32 elev = physics_body_create(physics, vec3(ex, ey, ez),
+                                       vec3(1.2f, 0.15f, 1.2f), 8.0f, false, 0);
+        *out_elevator_body = elev;
+        demo_showcase_entity(world, mesh_platform, elev, ex, ey, ez);
+    }
+
+    LOG_INFO("R445 showcase: %u meshes, %u materials, %u nodes total",
+             scene->mesh_count, scene->material_count, scene->node_count);
+}
+
 int main(int argc, char **argv) {
     log_set_level(LOG_DEBUG);
 
@@ -1798,6 +2284,14 @@ int main(int argc, char **argv) {
         (void)ground;
     }
 
+    /* R445: showcase — multi-material display array (appended to the scene
+     * before the one-shot mega bake) + physics playground (ball-joint chain,
+     * CCD wall, scripted-velocity elevator). Must run after asset_load_gltf
+     * and before scene_compute_world_transforms / the bake. */
+    u32 showcase_elevator_body = UINT32_MAX;
+    demo_build_showcase(render.device, &scene, physics, world, &terrain,
+                        &showcase_elevator_body);
+
     if (netrep_enabled) {
         Entity ge = world_create_entity(world);
         CTransform *gt = world_add_component(world, ge, COMP_TRANSFORM);
@@ -1840,6 +2334,11 @@ int main(int argc, char **argv) {
     f32              *instance_data    = (f32 *)render_buf;
     GPUCullDrawCmd   *unified_udc_buf  = (GPUCullDrawCmd *)(render_buf + udc_off);
     GPUCullObject    *unified_uobj_buf = (GPUCullObject *)(render_buf + uobj_off);
+    /* R445: per-instance mesh index + per-mesh compaction scratch for the
+     * mesh-grouped instanced draw below. */
+    u32 *inst_mesh_idx = (u32 *)malloc((usize)INSTANCE_DATA_CAP * sizeof(u32));
+    f32 *instance_draw = (f32 *)malloc(id_bytes);
+    if (!inst_mesh_idx || !instance_draw) { LOG_FATAL("OOM instance buffers"); return 1; }
     /* Single alloc: cull_node_map + cull_aabbs + cull_visible */
     #define CULL_BUF_CAP 16384
     u32      *cull_node_map_buf;
@@ -1871,6 +2370,15 @@ int main(int argc, char **argv) {
     bool audio_stream_inited = false; /* R433: gate shutdown on init, not open */
     const char *audio_stream_path = "stream_tone.wav";
     Vec3 audio_emitter_pos = vec3(8.0f, 1.5f, 0.0f);
+    /* R445: sfx bus one-shot state (collision blips). Function scope so the
+     * main loop's collision handler can reach it. */
+    u32 audio_sfx_bus = AUDIO_BUS_INVALID;
+    const char *sfx_clip_path = "sfx_blip.wav";
+    bool sfx_clip_ready = false;
+    u32 sfx_handle = 0;
+    u32 sfx_play_count = 0;
+    f32 sfx_cooldown = 0.0f;
+    f32 sfx_prev_col_speed = 0.0f;
     if (audio && demo_write_sine_wav(audio_stream_path, 44100, 4.0f, 220.0f)) {
         if (audio_stream_init(&audio_stream_mgr, audio)) {
             audio_stream_inited = true; /* R433 */
@@ -1880,12 +2388,13 @@ int main(int argc, char **argv) {
             LOG_INFO("Audio stream demo: %s (id=%d)",
                      audio_stream_id >= 0 ? "playing 3D tone" : "open FAILED",
                      audio_stream_id);
-            /* R435: route the demo tone through a "music" mixing bus (an
-             * "sfx" bus is created alongside for future one-shot effects;
-             * the demo currently has no second source to attach). */
-            u32 audio_sfx_bus   = audio_bus_create(audio, "sfx");
+            /* R435: route the demo tone through a "music" mixing bus.
+             * R445: the "sfx" bus is no longer empty — it carries the
+             * collision one-shot blips (see the collision delta hook). */
+            audio_sfx_bus          = audio_bus_create(audio, "sfx");
             u32 audio_music_bus = audio_bus_create(audio, "music");
-            (void)audio_sfx_bus;
+            /* R445: short 880Hz blip for collision one-shots. */
+            sfx_clip_ready = demo_write_sine_wav(sfx_clip_path, 44100, 0.2f, 880.0f);
             if (audio_stream_id >= 0 && audio_music_bus != AUDIO_BUS_INVALID) {
                 audio_source_set_bus(audio,
                     audio_stream_mgr.streams[audio_stream_id].source_id,
@@ -1899,6 +2408,26 @@ int main(int argc, char **argv) {
     platform_get_size(engine.platform, &w, &h);
     /* R142: Guard against h==0 (window minimized) producing Inf/NaN aspect */
     camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f);
+    /* R445: BREAK_CAM=x,y,z[,yaw_deg,pitch_deg] — scripted camera placement for
+     * headless screenshot verification. The terrain heightfield can bury the
+     * default (0,2,8) eye point (AGL < 0) on some seeds; opt-in, default
+     * behavior unchanged. */
+    { const char *e = getenv("BREAK_CAM");
+      if (e && e[0]) {
+          float cx = 0, cy = 0, cz = 0, cyaw = 0, cpitch = 0;
+          int n = sscanf(e, "%f,%f,%f,%f,%f", &cx, &cy, &cz, &cyaw, &cpitch);
+          if (n >= 3) {
+              camera.position = vec3(cx, cy, cz);
+              if (n >= 5) {
+                  camera.yaw   = cyaw   * (3.14159265f / 180.0f);
+                  camera.pitch = cpitch * (3.14159265f / 180.0f);
+              }
+              LOG_INFO("BREAK_CAM: pos=(%.1f,%.1f,%.1f) yaw=%.1f pitch=%.1f",
+                       cx, cy, cz, camera.yaw * 57.2958f, camera.pitch * 57.2958f);
+          } else {
+              LOG_WARN("BREAK_CAM: malformed '%s' (want x,y,z[,yaw,pitch])", e);
+          }
+      } }
 
     LOG_INFO("Phase 4 running — ECS: %u entities, Physics: %u bodies, Script: %s",
              world->entity_count - 1, physics->count, script.loaded ? "yes" : "no");
@@ -1961,6 +2490,13 @@ bool anim_blend_ready = false;
 u32 anim_blend_clip_idx = 0;
 IKSystem anim_ik = {0};
 bool anim_ik_ready = false;
+/* R445: blend source indirection — glTF clips (scene path, env-gated) or the
+ * procedural arm's two clips (default path). blend_procedural selects the
+ * per-frame weight oscillation and the arm-local IK target. */
+const AnimClip *blend_clips = NULL;
+u32 blend_clip_count = 0;
+bool blend_procedural = false;
+f32 anim_blend_weight = 0.0f;
 CombinedAA combined_aa = {0};
 CombinedColor combined_color = {0};
 ForwardVelocitySystem forward_vel = {0};
@@ -1999,7 +2535,6 @@ f32 lens_ca = 0.003f;
 f32 lens_vignette = 0.45f;
 f32 lens_grain = 0.015f;
 i32 inspector_mode = 0;
-i32 screenshot_id = 0;
 i32 effect_preset = 0;
 f32 sun_azimuth = 1.03f;
 f32 sun_elevation = 0.93f;
@@ -2128,6 +2663,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             anim_blend_state_init(&anim_blend, scene.joint_count);
             anim_layer_play(&anim_blend, 0, 0u, 1.0f, true);
             anim_blend_ready = true;
+            blend_clips = scene.anim_clips;
+            blend_clip_count = scene.anim_clip_count;
             if (want_blend)
                 LOG_INFO("Anim blend: on (Ctrl crossfade, BREAK_ANIM_BLEND=1)");
         }
@@ -2138,6 +2675,40 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             anim_ik_set_weight(&anim_ik, 0, 1.0f);
             anim_ik_ready = true;
             LOG_INFO("Anim IK: on (BREAK_ANIM_IK=1, chain 0-1-2)");
+        }
+    } else if (render.skeleton.joint_count >= 3u && rhi_handle_valid(render.skinned_vbo)) {
+        /* R445: default asset (test.glb) has no joints, so the glTF branch
+         * above is dead code out of the box. Drive the render_init
+         * procedural arm (4 joints, 2 clips) with blend + IK by DEFAULT so
+         * both features are visible without env vars. Opt out with
+         * BREAK_ANIM_BLEND=0 / BREAK_ANIM_IK=0 — blend off implies IK off,
+         * because the solver runs on the blend output. */
+        const char *blend_e = getenv("BREAK_ANIM_BLEND");
+        const char *ik_e = getenv("BREAK_ANIM_IK");
+        bool want_blend = !blend_e || !blend_e[0] || atoi(blend_e) != 0;
+        bool want_ik = !ik_e || !ik_e[0] || atoi(ik_e) != 0;
+        if (want_blend) {
+            /* AnimClip is ~330KB (64 channels x 256 keys) — static, not
+             * stack; populated once here. */
+            static AnimClip proc_clips[2];
+            proc_clips[0] = render.anim_clip;
+            proc_clips[1] = render.anim_clip2;
+            anim_blend_state_init(&anim_blend, render.skeleton.joint_count);
+            anim_layer_play(&anim_blend, 0, 0u, 1.0f, true);
+            anim_layer_play(&anim_blend, 1, 1u, 1.0f, true);
+            blend_clips = proc_clips;
+            blend_clip_count = 2;
+            blend_procedural = true;
+            anim_blend_ready = true;
+            LOG_INFO("Anim blend: on (procedural arm, 2 clips, default; BREAK_ANIM_BLEND=0 disables)");
+        }
+        if (want_ik && anim_blend_ready) {
+            anim_ik_init(&anim_ik);
+            anim_ik_set_target(&anim_ik, 0, 1u, 2u, 3u,
+                (Vec3){{3.5f, 3.0f, -2.3f}}, (Vec3){{3.5f, 2.2f, 0.0f}});
+            anim_ik_set_weight(&anim_ik, 0, 1.0f);
+            anim_ik_ready = true;
+            LOG_INFO("Anim IK: on (procedural arm chain 1-2-3, default; BREAK_ANIM_IK=0 disables)");
         }
     }
     lod_init(&lod_sys);
@@ -2565,6 +3136,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
      *   BREAK_GPUCULL=1  start with GPU frustom culling enabled */
     i64 auto_exit_frames = 0;
     { const char *e = getenv("BREAK_FRAMES");    if (e) auto_exit_frames = atoll(e); }
+    /* R445: BREAK_SCREENSHOT=N saves one screenshot after frame N completes
+     * (same readback path as F12). A bare/0 value falls back to the
+     * BREAK_FRAMES exit frame. Independent of and composable with
+     * BREAK_FRAMES. */
+    i64 screenshot_frame = 0;
+    { const char *e = getenv("BREAK_SCREENSHOT");
+      if (e) {
+          screenshot_frame = atoll(e);
+          if (screenshot_frame <= 0) screenshot_frame = auto_exit_frames;
+      } }
+    bool screenshot_taken = false;
     { const char *e = getenv("BREAK_GPUCULL");
       if (e && atoi(e)) {
           /* R356: env must not enable cull when gpucull_init failed. */
@@ -2631,6 +3213,15 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     /* Cached sun direction: only recompute when elevation/azimuth change (avoids 4 trig/normalize per frame). */
     f32 cached_sun_az = 1e9f, cached_sun_el = 1e9f;
     Vec3 cached_sun_dir = {{0.0f, 1.0f, 0.0f}};
+
+    /* R445: draw counters persist across frames — declared inside the loop
+     * they reset before the debug UI (which reads them at the top of the
+     * frame) ever saw a nonzero value, so the HUD permanently showed
+     * "Draws: 0 Tris: 0" even while the scene rendered. The per-frame reset
+     * lives further below (before the shadow/scene passes accumulate). */
+    u32 draw_calls = 0;
+    u32 tri_count = 0;
+    u32 culled_count = 0;
 
     while (engine_frame(&engine)) {
         arena_free_all(&frame_arena);
@@ -2753,19 +3344,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (input_key_pressed(platform_input(engine.platform), 282)) {
-            /* R428: (a) w*h*3 (~2.7MB at 720p) never fit the 256KB frame_arena,
-             * so arena_alloc returned NULL and F12 silently did nothing — malloc
-             * instead; (b) backends now output RGBA, so size for 4 bytes/pixel. */
-            usize pix_bytes = (usize)w * (usize)h * 4u;
-            u8 *pixels = (u8 *)malloc(pix_bytes);
-            if (pixels) {
-                rhi_screenshot(render.device, 0, 0, w, h, pixels);
-                char spath[64];
-                snprintf(spath, sizeof(spath), "screenshot_%d.bmp", screenshot_id++);
-                save_bmp(spath, w, h, pixels);
-                LOG_INFO("Screenshot saved: %s (%ux%u)", spath, w, h);
-                free(pixels);
-            }
+            /* R445: extracted to demo_save_screenshot, shared with the
+             * BREAK_SCREENSHOT env hook below. */
+            demo_save_screenshot(render.device, w, h);
         }
 
         /* Page_Up: export Chrome profiler trace (also set PROFILER_TRACE=1 on exit).
@@ -3085,9 +3666,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             } /* end successful scene_fbo recreate */
         }
 
-u32 draw_calls = 0;
-u32 tri_count = 0;
-u32 culled_count = 0;
         draw_bench_reset();
         if (playing_path && path_count > 0) {
             camera.position.e[0] = cam_path[path_idx].px;
@@ -3582,7 +4160,17 @@ u32 culled_count = 0;
         }
 
         profiler_push("physics");
+        /* R445: elevator platform — re-scripted every frame before the step:
+         * gravity zeroed, velocity = 1.5*sin(1.2t) on Y. The R437 platform
+         * carrying reads the support body's velocity, so a character standing
+         * on the platform rides it up and down. */
+        if (showcase_elevator_body < physics->count) {
+            RigidBody *eb = &physics->bodies[showcase_elevator_body];
+            eb->acceleration = vec3(0, 0, 0);
+            eb->velocity = vec3(0, 1.5f * sinf((f32)total_time * 1.2f), 0);
+        }
         physics_step(physics, slow_motion ? (f32)engine.delta_time * 0.25f : (f32)engine.delta_time);
+        if (sfx_cooldown > 0.0f) sfx_cooldown -= (f32)engine.delta_time;
         if (physics->collision_count > prev_collision_count) {
             u32 new_cols = physics->collision_count - prev_collision_count;
             screen_shake += 0.15f * (f32)new_cols;
@@ -3591,9 +4179,40 @@ u32 culled_count = 0;
             collision_flash = 1.0f;
             last_collision_pos = physics->last_collision_pos;
             last_collision_frame = engine.frame_count;
+            /* R445: sfx bus one-shot — a short blip per collision burst,
+             * finally giving the R435 "sfx" bus a real source. Volume scales
+             * with the burst's mean impact speed (total_collision_speed
+             * accumulates v^2 per contact). Throttled to 10 Hz and
+             * single-slot: a still-playing blip finishes; its slot goes back
+             * to the free list once it ends (audio sources are NOT
+             * auto-recycled, so skipping this leaks all 32 slots). */
+            if (audio && sfx_clip_ready && sfx_cooldown <= 0.0f) {
+                if (sfx_handle != 0 && audio_source_at_end(audio, sfx_handle)) {
+                    audio_stop(audio, sfx_handle);
+                    sfx_handle = 0;
+                }
+                if (sfx_handle == 0) {
+                    f32 dv2 = physics->total_collision_speed - sfx_prev_col_speed;
+                    f32 v_avg = dv2 > 0.0f ? sqrtf(dv2 / (f32)new_cols) : 0.0f;
+                    f32 vol = 0.3f + v_avg * 0.07f;
+                    if (vol > 1.0f) vol = 1.0f;
+                    sfx_handle = audio_play(audio, sfx_clip_path, vol, false);
+                    if (sfx_handle != 0) {
+                        audio_source_set_bus(audio, sfx_handle, audio_sfx_bus);
+                        sfx_play_count++;
+                    }
+                }
+                sfx_cooldown = 0.1f;
+            }
         }
+        sfx_prev_col_speed = physics->total_collision_speed;
         prev_collision_count = physics->collision_count;
         if (collision_flash > 0.0f) collision_flash -= (f32)engine.delta_time * 3.0f;
+
+        /* R445: periodic sfx/blend observability for headless runs. */
+        if (engine.frame_count % 60 == 0)
+            LOG_DEBUG("sfx played %u (cooldown %.2f)  anim blend w=%.2f",
+                      sfx_play_count, sfx_cooldown, anim_blend_weight);
 
         if (tornado_mode) {
             for (u32 ti = 0; ti < physics->count; ti++) {
@@ -3737,6 +4356,10 @@ u32 culled_count = 0;
 
         if (ui.visible) {
             debug_ui_text(&ui, "FPS: %.0f (%.2f ms)  Pos: (%.1f,%.1f,%.1f)  Speed: %.0f  Sun: %.1f/%.1f (%.0f°/%.0f°)  VSync: %s%s", engine.fps, engine.delta_time * 1000.0, camera.position.e[0], camera.position.e[1], camera.position.e[2], camera.move_speed, sun_azimuth, sun_elevation, sun_azimuth * 57.2958f, sun_elevation * 57.2958f, vsync_on ? "on" : "off", tod_cycle ? "  [TOD]" : "");
+            /* R445: character ground state for the physics showcase — the
+             * elevator platform carrying (R437 ground_body) is observable here
+             * while standing on it. UINT32_MAX body = unsupported. */
+            debug_ui_text(&ui, "grounded: %d (body %u)", character.grounded ? 1 : 0, character.ground_body);
             {
                 f32 tod_hours = fmodf(sun_azimuth / (2.0f * 3.14159265f) * 24.0f + 12.0f, 24.0f);
                 /* R428: fmodf keeps the sign of its dividend, so a negative
@@ -4212,11 +4835,20 @@ u32 culled_count = 0;
             if (recording_path) debug_ui_text(&ui, "[REC] Path: %u/%d frames", path_count, MAX_PATH);
             if (playing_path) debug_ui_text(&ui, "[PLAY] Path: %u/%u", path_idx, path_count);
             if (particle_trail) debug_ui_text(&ui, "[TRAIL] Particles follow entity");
-            if (anim_blend_ready)
-                debug_ui_text(&ui, "AnimBlend: clip %u/%u (Ctrl crossfade)",
-                              anim_blend_clip_idx, scene.anim_clip_count);
+            if (anim_blend_ready) {
+                if (blend_procedural)
+                    /* R445: read-only observability for the default-on
+                     * procedural blend + the sfx bus load. */
+                    debug_ui_text(&ui, "AnimBlend: arm A<->B w=%.2f (default on)  sfx played=%u",
+                                  anim_blend_weight, sfx_play_count);
+                else
+                    debug_ui_text(&ui, "AnimBlend: clip %u/%u (Ctrl crossfade)",
+                                  anim_blend_clip_idx, scene.anim_clip_count);
+            }
             if (anim_ik_ready)
-                debug_ui_text(&ui, "AnimIK: chain 0-1-2 (BREAK_ANIM_IK=1)");
+                debug_ui_text(&ui, blend_procedural
+                              ? "AnimIK: chain 1-2-3 (procedural arm, default on)"
+                              : "AnimIK: chain 0-1-2 (BREAK_ANIM_IK=1)");
             if (netrep_enabled)
                 debug_ui_text(&ui, "NetRep: sent=%u recv=%u stale=%u retry=%u reord=%u dup=%u hb=%u/%u echo=%u rtt=%.1f rt=%.1fms last=%u snaps%s",
                               netrep_sent, netrep_recv, netrep_stale, netrep_retries, netrep_reordered,
@@ -4506,6 +5138,7 @@ u32 culled_count = 0;
 
         draw_calls = 0;
         culled_count = 0;
+        tri_count = 0; /* R445: matches the old loop-local redeclaration cadence */
 
         profiler_push("particles+csm");
         particles_compute(&particles, cmd, (f32)engine.delta_time);
@@ -4826,6 +5459,7 @@ u32 culled_count = 0;
 
         skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
 
+
         /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
          * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
          * It runs unconditionally — the clustered terrain draw below was always
@@ -4847,9 +5481,20 @@ u32 culled_count = 0;
         particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0]);
 
         if (rhi_handle_valid(render.skinned_pipeline)) {
-            if (anim_blend_ready && scene.anim_clip_count > 0u) {
+            if (anim_blend_ready && blend_clip_count > 0u) {
+                /* R445: procedural arm — slow sinusoidal crossfade. Layer 0
+                 * (clip A) stays at weight 1 as the base; layer 1 (clip B)
+                 * sweeps 0..1. OVERRIDE layers lerp from the previous
+                 * layer's output, so this ordering blends A->B without the
+                 * bind-pose bleed a w/(1-w) pair would cause (lerping toward
+                 * the zero-translation bind pose would compress the chain). */
+                if (blend_procedural) {
+                    anim_blend_weight = 0.5f + 0.5f * sinf((f32)total_time * 0.3f);
+                    anim_layer_set_weight(&anim_blend, 0, 1.0f);
+                    anim_layer_set_weight(&anim_blend, 1, anim_blend_weight);
+                }
                 anim_blend_evaluate(&anim_blend, (f32)engine.delta_time,
-                                    scene.anim_clips, scene.anim_clip_count);
+                                    blend_clips, blend_clip_count);
                 if (anim_ik_ready && render.skeleton.joint_count >= 3u) {
                     static Mat4 ik_world[SKELETON_MAX_JOINTS];
                     skeleton_compute_world_transforms(&render.skeleton,
@@ -4882,17 +5527,32 @@ u32 culled_count = 0;
                         ik_cos = cosf(phase); ik_sin = sinf(phase);
                     }
                     } /* end else (normal dt) */
-                    Vec3 ik_target = {{
-                        camera.position.e[0] + ik_sin * 2.0f,
-                        camera.position.e[1] + 1.2f,
-                        camera.position.e[2] + ik_cos * 2.0f - 2.5f
-                    }};
-                    Vec3 ik_pole = {{
-                        camera.position.e[0],
-                        camera.position.e[1] + 2.0f,
-                        camera.position.e[2]
-                    }};
-                    anim_ik_set_target(&anim_ik, 0, 0u, 1u, 2u, ik_target, ik_pole);
+                    Vec3 ik_target, ik_pole;
+                    if (blend_procedural) {
+                        /* R445: slow ellipse in front of the arm (base
+                         * (3.5,1.4,-3), chain 1-2-3 rooted at y=2.4 with a
+                         * 2m reach — the target stays well inside it), so
+                         * the tip visibly tracks a moving point. */
+                        ik_target = (Vec3){{
+                            3.5f + ik_sin * 0.7f,
+                            3.0f + ik_cos * 0.2f,
+                            -2.3f + ik_cos * 0.7f
+                        }};
+                        ik_pole = (Vec3){{3.5f, 2.2f, 0.0f}};
+                        anim_ik_set_target(&anim_ik, 0, 1u, 2u, 3u, ik_target, ik_pole);
+                    } else {
+                        ik_target = (Vec3){{
+                            camera.position.e[0] + ik_sin * 2.0f,
+                            camera.position.e[1] + 1.2f,
+                            camera.position.e[2] + ik_cos * 2.0f - 2.5f
+                        }};
+                        ik_pole = (Vec3){{
+                            camera.position.e[0],
+                            camera.position.e[1] + 2.0f,
+                            camera.position.e[2]
+                        }};
+                        anim_ik_set_target(&anim_ik, 0, 0u, 1u, 2u, ik_target, ik_pole);
+                    }
                     anim_ik_solve(&anim_ik, anim_blend.local_positions,
                                    anim_blend.local_rotations, ik_world,
                                    anim_blend.bone_count);
@@ -4936,7 +5596,10 @@ u32 culled_count = 0;
                     }
                     draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
                 }
-            } else if (rhi_handle_valid(render.skinned_vbo)) {
+            } else if (rhi_handle_valid(render.skinned_vbo) && render.skeleton.joint_count >= 4u) {
+                /* R445: the procedural arm geometry references joints 0-3 —
+                 * skip it if a glTF with fewer joints overrode the skeleton
+                 * (joint index 3 would read past the uploaded pose set). */
                 bind_material(cmd, &render, NULL, &scene);
                 rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                 rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
@@ -4971,12 +5634,14 @@ u32 culled_count = 0;
                 for (u32 mi = 0; mi < mq->match_count; mi++) {
                     Archetype *a = mq->matching[mi];
                     /* Find COMP_TRANSFORM column index in archetype key */
-                    u32 transform_col = UINT32_MAX;
+                    u32 transform_col = UINT32_MAX, meshref_col = UINT32_MAX;
                     for (u32 ki = 0; ki < a->key.count; ki++) {
-                        if (a->key.ids[ki] == COMP_TRANSFORM) { transform_col = ki; break; }
+                        if (a->key.ids[ki] == COMP_TRANSFORM) transform_col = ki;
+                        if (a->key.ids[ki] == COMP_MESH_REF)  meshref_col = ki;
                     }
                     if (transform_col == UINT32_MAX) continue;
                     u32 t_offset = a->offsets[transform_col];
+                    u32 m_offset = (meshref_col != UINT32_MAX) ? a->offsets[meshref_col] : 0;
                     Chunk *c = a->chunks;
                     while (c) {
                         for (u32 ci = 0; ci < c->count; ci++) {
@@ -4990,6 +5655,15 @@ u32 culled_count = 0;
                                 md[4]=0; md[5]=1; md[6]=0; md[7]=0;
                                 md[8]=0; md[9]=0; md[10]=1; md[11]=0;
                                 md[12]=et->pos[0]; md[13]=et->pos[1]; md[14]=et->pos[2]; md[15]=1;
+                                /* R445: remember the entity's mesh for the
+                                 * per-mesh grouped draw below. */
+                                if (meshref_col != UINT32_MAX) {
+                                    CMeshRef *em = (CMeshRef *)((u8 *)c + m_offset + ci * sizeof(CMeshRef));
+                                    inst_mesh_idx[instance_count] =
+                                        (em->mesh_index < scene.mesh_count) ? em->mesh_index : 0;
+                                } else {
+                                    inst_mesh_idx[instance_count] = 0;
+                                }
                                 instance_count++;
                             }
                         }
@@ -5704,7 +6378,6 @@ u32 culled_count = 0;
             /* R438: drew_any hoisted above the instanced/per-entity split. */
             if (instance_count > 0) {
                 RHIBuffer inst_slot = render.instance_buf[rhi_frame_index(render.device) & 1u];
-                rhi_buffer_update(render.device, inst_slot, instance_data, instance_count * 64);
                 rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ? render.wire_instanced_pipeline : render.instanced_pipeline);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_view, &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_proj, &proj.e[0][0]);
@@ -5714,7 +6387,20 @@ u32 culled_count = 0;
                 rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
                     camera.position.e[0], camera.position.e[1], camera.position.e[2]);
 
+                /* R445: group instances by MeshRef.mesh_index — previously every
+                 * scene mesh was drawn at EVERY entity transform, so adding the
+                 * showcase meshes stacked all scene geometry onto all entities.
+                 * Entities are few (<100), so an O(meshes x instances)
+                 * compaction per frame is negligible. */
                 for (u32 i = 0; i < scene.mesh_count; i++) {
+                    u32 cnt = 0;
+                    for (u32 k = 0; k < instance_count; k++) {
+                        if (inst_mesh_idx[k] != i) continue;
+                        memcpy(instance_draw + (usize)cnt * 16, instance_data + (usize)k * 16, 64);
+                        cnt++;
+                    }
+                    if (cnt == 0) continue;
+                    rhi_buffer_update(render.device, inst_slot, instance_draw, cnt * 64);
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
                     bind_material(cmd, &render, mat, &scene);
@@ -5722,11 +6408,11 @@ u32 culled_count = 0;
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
                         rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
-                        rhi_cmd_draw_indexed(cmd, m->index_count, instance_count);
+                        rhi_cmd_draw_indexed(cmd, m->index_count, cnt);
                     } else {
-                        rhi_cmd_draw(cmd, 3, instance_count);
+                        rhi_cmd_draw(cmd, 3, cnt);
                     }
-                    draw_calls++; tri_count += (m->index_count / 3) * instance_count;
+                    draw_calls++; tri_count += (m->index_count / 3) * cnt;
                 }
                 /* R438: instanced entity draw suppresses the identity fallback. */
                 drew_any = true;
@@ -6060,6 +6746,7 @@ u32 culled_count = 0;
         }
         } /* end scene_fbo valid */
         } /* end forward path guard */
+
 
         /* R53-fix: Compute inv(VP) = inv(V) * inv(P) analytically.
          * (AB)^{-1} = B^{-1}A^{-1}, so (V*P)^{-1} = P^{-1}*V^{-1}.
@@ -6636,6 +7323,16 @@ u32 culled_count = 0;
             debug_ui_render(&ui, cmd, w, h);
             rhi_gpu_timer_end(gpu_postfx_timer);
             rhi_frame_end(render.device);
+            /* R445: BREAK_SCREENSHOT hook (inspector path) — read the
+             * completed frame BEFORE present. The original post-present
+             * point reads GL_BACK after the swap, whose contents are
+             * undefined (reads as pure black on Mesa/DRI3), so the hook
+             * could never capture anything on the GL backend. */
+            if (screenshot_frame > 0 && !screenshot_taken &&
+                (i64)engine.frame_count >= screenshot_frame) {
+                demo_save_screenshot(render.device, w, h);
+                screenshot_taken = true;
+            }
             rhi_present(render.device);
             prev_view_proj = curr_view_proj;
             taa_frame++;
@@ -6725,6 +7422,14 @@ u32 culled_count = 0;
 
         rhi_gpu_timer_end(gpu_postfx_timer);
         rhi_frame_end(render.device);
+        /* R445: BREAK_SCREENSHOT hook — read the completed frame BEFORE
+         * present (see the inspector-path note above; post-present GL_BACK
+         * is undefined on Mesa/DRI3 and read back pure black). */
+        if (screenshot_frame > 0 && !screenshot_taken &&
+            (i64)engine.frame_count >= screenshot_frame) {
+            demo_save_screenshot(render.device, w, h);
+            screenshot_taken = true;
+        }
         rhi_present(render.device);
         prev_view_proj = curr_view_proj;
         taa_frame++;
@@ -6743,6 +7448,8 @@ u32 culled_count = 0;
     LOG_INFO("  world done");
     task_system_destroy(tasks);
     free(render_buf); /* single free: instance_data + unified_udc_buf + unified_uobj_buf */
+    free(inst_mesh_idx); /* R445 */
+    free(instance_draw); /* R445 */
     free(cull_node_map_buf); /* single free: cull_node_map + cull_aabbs + cull_visible */
     LOG_INFO("  tasks done");
     if (audio_stream_inited) { /* R433: was audio_stream_id >= 0 — leaked when open failed after init */
