@@ -2136,6 +2136,10 @@ window_win32.c 518 行）、手柄输入（gamepad_linux.c 421 行 / gamepad_win
    zwp_relative_pointer_v1 + zwp_pointer_constraints_v1（正确 Wayland 方法）。
    输出监听器 4 回调（geometry/mode/scale/done），monitor_count 仅在 done 中
    递增。platform_destroy 逐个检查释放所有 Wayland 资源。
+   **（R443 更新**：上述单 output 设计已由多 output 枚举取代——`wl_output`
+   槽位数组 outputs[8] + 每 output 监听上下文 + `zxdg_output_manager_v1`
+   逻辑坐标/名称；线上行为未经真实 compositor 验证，热拔出
+   `registry_global_remove` 仍为 stub。）
 3. **window_win32.c**：calloc + NULL 检查。RegisterClassExA/CreateWindowExA
    检查 + 清理。动态 DPI 函数加载（SetProcessDpiAwarenessContext/
    GetDpiForWindow/GetDpiForMonitor）。Raw Input 64 字节栈缓冲区 + size 检查。
