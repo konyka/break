@@ -15,6 +15,13 @@ const float RAYLEIGH_SCALE = 8.4e3;
 const float MIE_SCALE = 1.25e3;
 const float G_MIE = 0.758;
 const float SUN_INTENSITY = 20.0;
+/* R446: linearization removed the gamma lift that used to make the ~1e-4
+ * scattering base visible. Rayleigh gain brings the linear sky base to
+ * ~0.05-0.2 so it survives the single engine tonemap as a proper afternoon
+ * blue; Mie gets a much smaller gain — its forward-peak is ~20x stronger
+ * than Rayleigh near the sun and a shared gain washes the sunward sky out. */
+const float SKY_RAYLEIGH_GAIN = 1500.0;
+const float SKY_MIE_GAIN = 50.0;
 
 float phase_rayleigh(float cos_theta) {
     return (3.0 / (16.0 * PI)) * (1.0 + cos_theta * cos_theta);
@@ -79,7 +86,8 @@ void main() {
     vec3 rayleigh_scat = RAYLEIGH_COEFF * rayleigh_phase * density;
     float mie_scat = MIE_COEFF * mie_phase * density;
 
-    vec3 scattering = (rayleigh_scat + vec3(mie_scat)) * SUN_INTENSITY;
+    vec3 scattering = rayleigh_scat * (SUN_INTENSITY * SKY_RAYLEIGH_GAIN)
+                    + vec3(mie_scat) * (SUN_INTENSITY * SKY_MIE_GAIN);
 
     float optical_depth = density * 0.5;
     vec3 extinction = exp(-(RAYLEIGH_COEFF + vec3(MIE_COEFF * 0.1)) * optical_depth * 6371.0 * 0.01);
@@ -88,7 +96,10 @@ void main() {
 
     float sun_disc = smoothstep(0.9995, 0.9999, cos_sun);
     float sun_halo = smoothstep(0.993, 0.999, cos_sun);
-    sky += u_sun_color * SUN_INTENSITY * 0.05 * sun_disc * extinction;
+    /* R446: the disc is a real HDR emitter (~10x the 1.0 bloom threshold) so
+     * bloom isolates the sun instead of the whole sky; was 0.05 which left the
+     * sun dimmer than lit snow. Halo stays modest. */
+    sky += u_sun_color * SUN_INTENSITY * 0.5 * sun_disc * extinction;
     sky += u_sun_color * SUN_INTENSITY * 0.008 * sun_halo * extinction;
 
     float horizon_fog = 1.0 - abs(ray.y);
@@ -144,8 +155,10 @@ void main() {
         cloud_color = accumulated + sky * transmittance;
     }
 
-    cloud_color = cloud_color / (cloud_color + vec3(1.0));
-    cloud_color = exp2(log2(max(cloud_color, vec3(0.0))) * (1.0 / 2.2));  /* R94-1: exp2 replaces pow */
-
-    frag_color = vec4(cloud_color, 1.0);
+    /* R446: output LINEAR HDR. The scene pass renders into an HDR float buffer
+     * that the combined_color pass tonemaps + gamma-encodes exactly once; the
+     * old Reinhard + gamma here double-processed the sky (blown-out white sky,
+     * hue shift) and fed display-encoded values to the bloom threshold and the
+     * auto-exposure luminance average. Matches the sky_to_cube.comp contract. */
+    frag_color = vec4(max(cloud_color, vec3(0.0)), 1.0);
 }

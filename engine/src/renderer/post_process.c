@@ -45,7 +45,7 @@ static RHIPipeline pp_create_pipe(RHIDevice *dev,
 bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     memset(pp, 0, sizeof(*pp));
     pp->device = dev;
-    pp->bloom_strength = 0.4f;
+    pp->bloom_strength = 0.15f; /* R446: default tuned down -- the composite chain only became visible in R445, 0.4 haze-washed the whole frame */
     pp->threshold = 1.0f;
 
     pp->extract_pipe = pp_create_pipe(dev,

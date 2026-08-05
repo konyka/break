@@ -141,10 +141,11 @@ static void demo_save_screenshot(RHIDevice *dev, u32 w, u32 h) {
     u8 *pixels = (u8 *)malloc(pix_bytes);
     if (!pixels) return;
     rhi_screenshot(dev, 0, 0, w, h, pixels);
-#ifndef ENGINE_VULKAN
     /* R445: GL glReadPixels returns BOTTOM-UP rows while save_bmp expects
-     * top-down input (VK swapchain copies already are). Flip in place — this
-     * also corrects the F12 capture on the GL backend. */
+     * top-down input. Flip in place — this also corrects the F12 capture.
+     * R446: the VK readback is bottom-up too on X11/Intel (BREAK_SCREENSHOT
+     * captures came out vertically flipped), so the flip now runs on both
+     * backends. */
     {
         usize row = (usize)w * 4u;
         u8 *tmp = (u8 *)malloc(row);
@@ -159,7 +160,16 @@ static void demo_save_screenshot(RHIDevice *dev, u32 w, u32 h) {
             free(tmp);
         }
     }
-#endif
+    /* R446: swap R/B on both backends — rhi_screenshot delivers RGBA byte
+     * order (GL glReadPixels GL_RGBA; VK explicitly swizzles BGRA->RGBA per
+     * the R425 contract) while 24-bit BMP stores B,G,R. Every GL and VK
+     * screenshot before this had red/blue swapped; a pure-red shader probe
+     * proved it (came out blue in the BMP). */
+    for (usize i = 0; i < (usize)w * (usize)h * 4u; i += 4u) {
+        u8 t = pixels[i];
+        pixels[i] = pixels[i + 2u];
+        pixels[i + 2u] = t;
+    }
     static i32 next_id = -1;
     if (next_id < 0) {
         next_id = 0;
@@ -2531,12 +2541,17 @@ i32 gr_preset = 2;
 bool taa_enabled = true;
 bool fxaa_enabled = true;
 bool mb_enabled = true;
-bool dof_enabled = true;
+bool dof_enabled = false; /* R446: default off -- DOF focus behavior was never visually validated pre-R445 (post chain was dead); toggle key keeps it available */
 /* R446: BREAK_TAA=0 / BREAK_MB=0 — scripted effect kill-switches for headless
  * A/B measurement (TAA-off reference frames at identical scripted camera
  * angles). Default behavior unchanged. */
 { const char *e = getenv("BREAK_TAA"); if (e && !atoi(e)) taa_enabled = false; }
 { const char *e = getenv("BREAK_MB");  if (e && !atoi(e)) mb_enabled = false; }
+{ const char *e = getenv("BREAK_DOF"); if (e && !atoi(e)) dof_enabled = false; }
+{ const char *e = getenv("BREAK_BLOOM"); if (e && !atoi(e)) postfx.bloom_strength = 0.0f; }
+/* R446: BREAK_UI=0 — hide the debug HUD for clean scripted captures (HUD text
+ * is drawn post-tonemap and polluted pixel-diff A/B measurements). */
+{ const char *e = getenv("BREAK_UI"); if (e && !atoi(e)) ui.visible = false; }
 bool ssr_enabled = false;  /* R210-B: ssr_apply writes FBO but result never composited */
 bool ssgi_enabled = false; /* R210-B: same — skip default GPU cost until wired */
 bool cs_enabled = false;  /* R212-B: FBO never composited into frame */
@@ -5501,7 +5516,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
         rhi_cmd_clear_depth(cmd);
 
-        skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+        /* R446: pass the TO-SUN direction (-light dir). sun_dir_vec is the
+         * light travel direction (y = -sin(el), downward); the sky shader
+         * treats u_sun_dir as the sun's position in the sky, so the sun disc,
+         * halo and Mie forward peak were mirrored below the horizon and never
+         * visible. The disc is the bloom chain's primary HDR target. */
+        skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], -sun_dir_vec.e[0], -sun_dir_vec.e[1], -sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
 
 
         /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
