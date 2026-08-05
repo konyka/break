@@ -217,6 +217,11 @@ cmake --build build-gl
 | packer | build-*/packer | 资源打包工具 |
 | empty | build-gl/empty/empty | 最小化应用示例 |
 
+### 3.1 运行 engine_demo（Linux 桌面）
+
+- **Wayland/XWayland 节流**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。
+- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）。
+
 ## 4. 编译选项与标准
 
 ### 4.1 编译器警告

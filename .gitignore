@@ -62,4 +62,5 @@ engine/build-*/
 frag.spv
 *.bin
 *.wav
-.qoder/screenshot_*.bmp
+.qoder/
+screenshot_*.bmp

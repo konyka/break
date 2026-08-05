@@ -16,6 +16,11 @@ typedef struct {
     i32 loc_copy_only;
     i32 loc_inv_proj;
     i32 loc_prev_vp;
+    /* R446: no first-frame guard existed — Pass 1 blended 85% of the
+     * uninitialized history texture for the first ~18 frames after init/resize
+     * (mix weight 0.15, 0.85^n decay). Bind the current input as its own
+     * history on the first frame, same contract as taa_resolve. */
+    bool first_frame;
     bool ready;
 } UpscaleSystem;
 

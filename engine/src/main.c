@@ -2428,6 +2428,17 @@ int main(int argc, char **argv) {
               LOG_WARN("BREAK_CAM: malformed '%s' (want x,y,z[,yaw,pitch])", e);
           }
       } }
+    /* R446: BREAK_CAM_SPIN=deg — scripted per-frame yaw increment for
+     * headless reproduction of camera-motion artifacts (TAA reprojection /
+     * velocity stress). Composes with BREAK_CAM initial placement; 0/absent
+     * keeps default behavior. */
+    f32 cam_spin_deg = 0.0f;
+    { const char *e = getenv("BREAK_CAM_SPIN");
+      if (e && e[0]) {
+          cam_spin_deg = (f32)atof(e);
+          if (cam_spin_deg != 0.0f)
+              LOG_INFO("BREAK_CAM_SPIN: %.2f deg/frame", cam_spin_deg);
+      } }
 
     LOG_INFO("Phase 4 running — ECS: %u entities, Physics: %u bodies, Script: %s",
              world->entity_count - 1, physics->count, script.loaded ? "yes" : "no");
@@ -2521,6 +2532,11 @@ bool taa_enabled = true;
 bool fxaa_enabled = true;
 bool mb_enabled = true;
 bool dof_enabled = true;
+/* R446: BREAK_TAA=0 / BREAK_MB=0 — scripted effect kill-switches for headless
+ * A/B measurement (TAA-off reference frames at identical scripted camera
+ * angles). Default behavior unchanged. */
+{ const char *e = getenv("BREAK_TAA"); if (e && !atoi(e)) taa_enabled = false; }
+{ const char *e = getenv("BREAK_MB");  if (e && !atoi(e)) mb_enabled = false; }
 bool ssr_enabled = false;  /* R210-B: ssr_apply writes FBO but result never composited */
 bool ssgi_enabled = false; /* R210-B: same — skip default GPU cost until wired */
 bool cs_enabled = false;  /* R212-B: FBO never composited into frame */
@@ -3133,20 +3149,32 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
     /* Headless / CI smoke-test hooks (no effect unless env vars are set):
      *   BREAK_FRAMES=N   auto-exit after N frames
-     *   BREAK_GPUCULL=1  start with GPU frustom culling enabled */
+     *   BREAK_GPUCULL=1  start with GPU frustom culling enabled
+     *   BREAK_CAM_SPIN=deg  scripted per-frame camera yaw increment (R446) */
     i64 auto_exit_frames = 0;
     { const char *e = getenv("BREAK_FRAMES");    if (e) auto_exit_frames = atoll(e); }
     /* R445: BREAK_SCREENSHOT=N saves one screenshot after frame N completes
      * (same readback path as F12). A bare/0 value falls back to the
      * BREAK_FRAMES exit frame. Independent of and composable with
      * BREAK_FRAMES. */
-    i64 screenshot_frame = 0;
+    /* R446: BREAK_SCREENSHOT extended to a comma-separated frame list
+     * ("30,31,32") so one run can capture a burst of consecutive frames for
+     * temporal-artifact measurement. A single value behaves as before; a
+     * bare/0 value still falls back to the BREAK_FRAMES exit frame. */
+    i64 screenshot_frames[64];
+    int screenshot_count = 0;
+    int screenshot_next = 0;
     { const char *e = getenv("BREAK_SCREENSHOT");
       if (e) {
-          screenshot_frame = atoll(e);
-          if (screenshot_frame <= 0) screenshot_frame = auto_exit_frames;
+          const char *p = e;
+          while (*p && screenshot_count < 64) {
+              i64 v = strtoll(p, (char **)&p, 10);
+              if (v > 0) screenshot_frames[screenshot_count++] = v;
+              if (*p == ',') p++; else break;
+          }
+          if (screenshot_count == 0 && auto_exit_frames > 0)
+              screenshot_frames[screenshot_count++] = auto_exit_frames;
       } }
-    bool screenshot_taken = false;
     { const char *e = getenv("BREAK_GPUCULL");
       if (e && atoi(e)) {
           /* R356: env must not enable cull when gpucull_init failed. */
@@ -3687,6 +3715,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 camera_frame_dist = cdist;
             }
             camera_prev_pos = camera.position;
+        }
+        /* R446: scripted yaw spin (BREAK_CAM_SPIN). Runs after camera_update
+         * so scripted and input motion compose; refresh the cached yaw trig
+         * exactly like the path-playback branch above. */
+        if (cam_spin_deg != 0.0f) {
+            camera.yaw += cam_spin_deg * (3.14159265f / 180.0f);
+            camera._cy = cosf(camera.yaw); camera._sy = sinf(camera.yaw);
         }
         if (recording_path && path_count < MAX_PATH) {
             cam_path[path_count].px = camera.position.e[0];
@@ -4438,10 +4473,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             debug_ui_text(&ui, "Gravity: (%.1f,%.1f,%.1f) mode=%u", eff_grav.e[0], eff_grav.e[1], eff_grav.e[2], physics_mode);
         }
         {
-            /* Throttle physics debug stats to every 10 frames (7+ O(n) loops incl. one O(n²)). */
+            /* Throttle physics debug stats to every 10 frames (7+ O(n) loops incl. one O(n²)).
+             * R446: the debug_ui_text calls used to live inside the throttle
+             * gate, so this whole block vanished 9 frames out of 10 and every
+             * UI line below it jumped up/down each frame — the reported "debug
+             * text flicker". Sticky section: recompute + re-emit only on
+             * throttle frames, replay the cached lines in between. Same value
+             * cadence as before, but a stable layout. */
             static u32 phys_stats_frame = 0;
-            if (engine.frame_count - phys_stats_frame >= 10 || phys_stats_frame == 0) {
-            phys_stats_frame = (u32)engine.frame_count;
+            bool phys_refresh = engine.frame_count - phys_stats_frame >= 10 || phys_stats_frame == 0;
+            if (phys_refresh) phys_stats_frame = (u32)engine.frame_count;
+            debug_ui_sticky_begin(&ui, phys_refresh);
+            if (phys_refresh) {
             f32 max_speed = 0.0f;
             u32 fastest_id = 0;
             static f32 speed_record = 0.0f;
@@ -4769,6 +4812,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     }
             }
             } /* end physics debug stats throttle */
+            debug_ui_sticky_end(&ui);
         }
         if (debug_viz_mode > 0) {
             const char *viz_names[] = { "off", "depth", "normals", "AO", "cascades" };
@@ -7328,10 +7372,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * point reads GL_BACK after the swap, whose contents are
              * undefined (reads as pure black on Mesa/DRI3), so the hook
              * could never capture anything on the GL backend. */
-            if (screenshot_frame > 0 && !screenshot_taken &&
-                (i64)engine.frame_count >= screenshot_frame) {
+            if (screenshot_next < screenshot_count &&
+                (i64)engine.frame_count >= screenshot_frames[screenshot_next]) {
                 demo_save_screenshot(render.device, w, h);
-                screenshot_taken = true;
+                screenshot_next++;
             }
             rhi_present(render.device);
             prev_view_proj = curr_view_proj;
@@ -7425,10 +7469,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* R445: BREAK_SCREENSHOT hook — read the completed frame BEFORE
          * present (see the inspector-path note above; post-present GL_BACK
          * is undefined on Mesa/DRI3 and read back pure black). */
-        if (screenshot_frame > 0 && !screenshot_taken &&
-            (i64)engine.frame_count >= screenshot_frame) {
+        if (screenshot_next < screenshot_count &&
+            (i64)engine.frame_count >= screenshot_frames[screenshot_next]) {
             demo_save_screenshot(render.device, w, h);
-            screenshot_taken = true;
+            screenshot_next++;
         }
         rhi_present(render.device);
         prev_view_proj = curr_view_proj;

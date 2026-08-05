@@ -64,6 +64,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     s->history[0] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history[1] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history_idx = 0;
+    s->first_frame = true; /* R446: invalidate stale/uninitialized history */
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -126,7 +127,11 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
      * overwrites the previous, so only the last texture (history) would be visible.
      * rhi_cmd_bind_material_textures correctly assigns albedo->binding 0 (u_ups_src),
      * shadow->binding 1 (u_ups_depth), mr->binding 2 (u_ups_history) in one call. */
-    rhi_cmd_bind_material_textures(cmd, input_tex, s->history[read_idx].color_tex,
+    /* R446: on the first frame after init/resize the history texture is
+     * uninitialized — bind the current input as its own history (reprojection
+     * of the current frame onto itself is a no-op), same as taa_resolve. */
+    RHITexture hist_tex = s->first_frame ? input_tex : s->history[read_idx].color_tex;
+    rhi_cmd_bind_material_textures(cmd, input_tex, hist_tex,
                                    input_tex, input_tex, depth_tex, input_tex, s->sampler);
 
     if (s->loc_rw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
@@ -160,4 +165,5 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     rhi_cmd_draw(cmd, 3, 1);
 
     s->history_idx = write_idx;
+    s->first_frame = false; /* R446 */
 }

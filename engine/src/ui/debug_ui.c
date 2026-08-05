@@ -9,6 +9,7 @@
 void debug_ui_init(DebugUI *ui) {
     memset(ui, 0, sizeof(DebugUI));
     ui->visible = true;
+    ui->sticky_start = -1;
 }
 
 void debug_ui_init_renderer(DebugUI *ui, RHIDevice *dev) {
@@ -34,6 +35,30 @@ void debug_ui_text(DebugUI *ui, const char *fmt, ...) {
 
 void debug_ui_end(DebugUI *ui) {
     (void)ui;
+}
+
+/* R446: see header. Keeps a throttle-gated text block at a fixed line offset
+ * every frame instead of letting it appear/disappear (the R446 "debug text
+ * flicker" — all lines below the block shifted vertically each frame). */
+void debug_ui_sticky_begin(DebugUI *ui, bool refresh) {
+    ui->sticky_start = (i32)ui->line_count;
+    ui->sticky_refresh = refresh;
+    if (!refresh) {
+        for (u32 i = 0; i < ui->sticky_count && ui->line_count < 32; i++) {
+            memcpy(ui->lines[ui->line_count], ui->sticky_lines[i], sizeof(ui->lines[0]));
+            ui->line_count++;
+        }
+    }
+}
+
+void debug_ui_sticky_end(DebugUI *ui) {
+    if (ui->sticky_start < 0) return;
+    if (ui->sticky_refresh) {
+        ui->sticky_count = ui->line_count - (u32)ui->sticky_start;
+        for (u32 i = 0; i < ui->sticky_count; i++)
+            memcpy(ui->sticky_lines[i], ui->lines[(u32)ui->sticky_start + i], sizeof(ui->lines[0]));
+    }
+    ui->sticky_start = -1;
 }
 
 void debug_ui_render(DebugUI *ui, RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
