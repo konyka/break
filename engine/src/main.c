@@ -2468,6 +2468,9 @@ int main(int argc, char **argv) {
     f64 total_time = 0.0;
     u32 taa_frame = 0;
     Mat4 prev_view_proj = mat4_identity();
+    /* R446: jitter-free twin of prev_view_proj — see the unjittered-pair
+     * comment at curr_view_proj_unjit below. */
+    Mat4 prev_view_proj_unjit = mat4_identity();
     RHIPipeline last_hr_pipeline = RHI_HANDLE_NULL;
 
     const f32 render_scale_options[] = { 0.3f, 0.5f, 0.75f, 1.0f };
@@ -2560,6 +2563,11 @@ bool lf_enabled = false;  /* R212-B: same */
 bool sharpen_enabled = true;
 bool sss_enabled = true;
 bool cg_enabled = true;
+/* R446: same kill-switch family for the remaining post-chain passes — needed
+ * to bisect which pass amplifies jitter-phase alternation at depth edges. */
+{ const char *e = getenv("BREAK_SHARPEN"); if (e && !atoi(e)) sharpen_enabled = false; }
+{ const char *e = getenv("BREAK_SSS"); if (e && !atoi(e)) sss_enabled = false; }
+{ const char *e = getenv("BREAK_GR"); if (e && !atoi(e)) god_rays_intensity = 0.0f; }
 bool lensfx_enabled = true;
 bool cine_enabled = false;
 f32 lens_ca = 0.003f;
@@ -3190,6 +3198,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
           if (screenshot_count == 0 && auto_exit_frames > 0)
               screenshot_frames[screenshot_count++] = auto_exit_frames;
       } }
+    /* R446: BREAK_INSPECT=N — preset the F3 inspector mode (1..10) for headless
+     * intermediate-buffer captures (composes with BREAK_SCREENSHOT; the
+     * inspector present path already has its own pre-present hook). */
+    { const char *e = getenv("BREAK_INSPECT");
+      if (e) { int v = atoi(e); if (v >= 1 && v <= 10) inspector_mode = v; } }
     { const char *e = getenv("BREAK_GPUCULL");
       if (e && atoi(e)) {
           /* R356: env must not enable cull when gpucull_init failed. */
@@ -4337,6 +4350,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             );
         }
         Mat4 proj = camera_projection(&camera);
+        /* R446: jitter-free projection twin. TAA resolve accumulates the Halton
+         * jitter into an (approximately) unjittered image, so temporal passes
+         * that consume POST-TAA content (motion blur, TSR upscale) must
+         * reproject with the unjittered VP pair — feeding them the jittered
+         * pair double-compensates: the history fetch shifts by
+         * (jitter_prev - jitter_curr) every frame, alternating up to ±1
+         * texel, and the 0.85/0.90 history blends amplify that into
+         * full-screen shimmer (measured mean|Δ| 1.15 -> 0.57 when the TSR
+         * history mix was bypassed). Screen shake stays in both: it is real
+         * image motion that TAA does not remove. */
+        Mat4 proj_unjit = proj;
 
         {
             /* R48: Precomputed Halton(2,3) jitter offsets for 16 TAA samples.
@@ -4358,8 +4382,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * and a minimized window (w==0) injected inf/NaN into proj.
              * Guard against zero regardless. */
             if (rw > 0 && rh > 0) {
-                proj.e[2][0] += halton_jitter[idx][0] / (f32)rw;
-                proj.e[2][1] += halton_jitter[idx][1] / (f32)rh;
+                /* R446: BREAK_JITTER=0 kill-switch for temporal-artifact
+                 * diagnosis (jitter feeds TAA *and* TSR history chains). */
+                const char *je = getenv("BREAK_JITTER");
+                if (!je || atoi(je)) {
+                    proj.e[2][0] += halton_jitter[idx][0] / (f32)rw;
+                    proj.e[2][1] += halton_jitter[idx][1] / (f32)rh;
+                }
             }
         }
         if (screen_shake > 0.001f) {
@@ -4372,16 +4401,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             f32 shy = (f32)((h >> 16) & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;
             proj.e[2][0] += (shx * 0.02f) * screen_shake;
             proj.e[2][1] += (shy * 0.02f) * screen_shake;
+            /* R446: shake is real image motion — keep it in the jitter-free
+             * twin too (only the Halton TAA jitter is excluded). */
+            proj_unjit.e[2][0] += (shx * 0.02f) * screen_shake;
+            proj_unjit.e[2][1] += (shy * 0.02f) * screen_shake;
             screen_shake *= 0.92f;
         } else {
             screen_shake = 0.0f;
         }
         Mat4 curr_view_proj = mat4_mul_proj_view(proj, view);
+        Mat4 curr_view_proj_unjit = mat4_mul_proj_view(proj_unjit, view);
         Frustum frame_frustum = frustum_from_vp(&curr_view_proj);
         /* Pre-compute inverse projection once for skybox + all post-effects.
          * R47+R53-fix: Analytical inv(proj) includes TAA jitter / screen shake.
          * Only 3 divisions + 6 muls vs generic mat4_inverse (~120 muls + 1 div). */
         Mat4 frame_inv_proj = mat4_inv_perspective(proj);
+        /* R446: analytic inverse of the jitter-free twin — same code path as
+         * frame_inv_proj, and more accurate than a generic mat4_inverse at
+         * far depth (near/far 1e4). */
+        Mat4 frame_inv_proj_unjit = mat4_inv_perspective(proj_unjit);
 
         bool underwater = water.enabled && camera.position.e[1] < water.water_y;
         debug_ui_begin(&ui);
@@ -6820,8 +6858,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * inv(V) uses cached trig + adjusted eye for third-person.
          * Falls back to generic inverse for top-down (completely different view matrix). */
         Mat4 frame_inv_vp;
+        /* R446: jitter-free twin for post-TAA reprojection (see proj_unjit).
+         * Uses the same analytic inverse path as frame_inv_vp. */
+        Mat4 frame_inv_vp_unjit;
         if (top_down_view) {
             frame_inv_vp = mat4_inverse(curr_view_proj);
+            frame_inv_vp_unjit = mat4_inverse(curr_view_proj_unjit);
         } else {
             f32 tp = third_person ? third_person_dist : 0.0f;
             /* R60-fix: Use camera_inv_view + adjust eye for third-person offset.
@@ -6834,6 +6876,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 iv.e[3][2] -= cam_fwd.e[2] * tp;
             }
             frame_inv_vp = mat4_mul(iv, frame_inv_proj);
+            frame_inv_vp_unjit = mat4_mul(iv, frame_inv_proj_unjit);
         }
 
         /* ---- Deferred rendering path (RenderPath branch) ----
@@ -7212,18 +7255,24 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             if (!rhi_handle_valid(render.deferred.gbuf_velocity))
                 taa_velocity = forward_velocity_get_texture(&forward_vel);
         }
+        /* R446: track whether TAA actually resolved this frame — post-TAA
+         * temporal passes (motion blur, TSR upscale) then reproject with the
+         * jitter-free VP pair (see proj_unjit above). */
+        bool taa_resolved = false;
         if (rhi_handle_valid(scene_fbo.fb) && taa_enabled && fxaa_enabled &&
             combined_aa.ready && combined_aa.use_combined) {
             combined_aa_apply(&combined_aa, cmd, scene_fbo.color_tex, scene_depth,
                                taa_velocity, &curr_view_proj.e[0][0], &prev_view_proj.e[0][0],
                                &frame_inv_vp.e[0][0], rw, rh);
             taa_output = combined_aa_get_output(&combined_aa);
+            taa_resolved = true;
         } else {
             if (rhi_handle_valid(scene_fbo.fb) && taa.ready && taa_enabled) {
                 taa_resolve(&taa, cmd, scene_fbo.color_tex, scene_depth, taa_velocity,
                             &curr_view_proj.e[0][0], &prev_view_proj.e[0][0],
                             &frame_inv_vp.e[0][0], rw, rh);
                 taa_output = taa_get_output(&taa);
+                taa_resolved = true;
             }
 
             if (fxaa_enabled && fxaa_sys.ready && rhi_handle_valid(scene_fbo.fb)) {
@@ -7238,10 +7287,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (motion_blur.ready && rhi_handle_valid(scene_fbo.fb) && mb_enabled) {
-            /* R205-B: Same inv(VP)+prev_vp contract as TAA / forward_velocity. */
+            /* R205-B: Same inv(VP)+prev_vp contract as TAA / forward_velocity.
+             * R446: MB blurs POST-TAA content — use the jitter-free pair once
+             * TAA has resolved, or the alternating jitter delta is read as
+             * camera motion and smeared back and forth every frame. */
+            const f32 *mb_inv  = taa_resolved ? &frame_inv_vp_unjit.e[0][0]
+                                              : &frame_inv_vp.e[0][0];
+            const f32 *mb_prev = taa_resolved ? &prev_view_proj_unjit.e[0][0]
+                                              : &prev_view_proj.e[0][0];
             motion_blur_apply(&motion_blur, cmd, taa_output, scene_depth,
-                              &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
-                              1.0f, rw, rh);
+                              mb_inv, mb_prev, 1.0f, rw, rh);
             taa_output = motion_blur.fbo.color_tex;
         }
 
@@ -7399,6 +7454,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
             rhi_present(render.device);
             prev_view_proj = curr_view_proj;
+            prev_view_proj_unjit = curr_view_proj_unjit;
             taa_frame++;
             total_time += engine.delta_time;
             profiler_pop();
@@ -7414,10 +7470,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (upscale_sys.ready) {
-            /* R205-B: History reprojection needs inv(VP), not inv(P). */
+            /* R205-B: History reprojection needs inv(VP), not inv(P).
+             * R446: TSR accumulates POST-TAA content — reproject with the
+             * jitter-free pair once TAA has resolved, otherwise the Halton
+             * jitter delta is subtracted a second time and the 0.85 history
+             * blend turns the ±1 texel phase error into full-screen shimmer. */
+            const f32 *ups_inv  = taa_resolved ? &frame_inv_vp_unjit.e[0][0]
+                                               : &frame_inv_vp.e[0][0];
+            const f32 *ups_prev = taa_resolved ? &prev_view_proj_unjit.e[0][0]
+                                               : &prev_view_proj.e[0][0];
             upscale_apply(&upscale_sys, cmd, tonemap_input, scene_depth,
-                          &frame_inv_vp.e[0][0], &prev_view_proj.e[0][0],
-                          0.3f, rw, rh, w, h);
+                          ups_inv, ups_prev, 0.3f, rw, rh, w, h);
             rhi_offscreen_fbo_unbind(cmd, w, h);
             if (postfx.ready && rhi_handle_valid(postfx.tex_pipe)) {
                 rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
@@ -7496,6 +7559,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
         rhi_present(render.device);
         prev_view_proj = curr_view_proj;
+        prev_view_proj_unjit = curr_view_proj_unjit;
         taa_frame++;
         total_time += engine.delta_time;
         profiler_pop();
