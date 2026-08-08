@@ -184,6 +184,41 @@ TEST(load_binary_rejects_component_instance_without_entity)
     remove(path);
 }
 
+/* The writer emits at most one instance of a component type per saved entity. */
+TEST(load_binary_rejects_excessive_component_instances)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_many_component_instances.bscn");
+    const u32 entity_chunk[] = { 1u, 1u, 0u };
+    const u32 component_chunk[] = {
+        1u, 1u, sizeof(u32), 2u,
+        0u, 0x11111111u,
+        0u, 0x22222222u
+    };
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_ENTITIES, .offset = base, .size = sizeof(entity_chunk) },
+        { .type = BSCN_CHUNK_COMPONENTS, .offset = base + sizeof(entity_chunk),
+          .size = sizeof(component_chunk) }
+    };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(entity_chunk, sizeof(entity_chunk), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(component_chunk, sizeof(component_chunk), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, 1u, sizeof(u32));
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* The writer emits at most one record per registered component type.  A
  * larger count is malformed rather than a forward-compatible empty payload. */
 TEST(load_binary_rejects_excessive_component_type_count)
@@ -1185,6 +1220,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_too_many_chunks);
     RUN_TEST(load_binary_rejects_chunk_overlapping_table);
     RUN_TEST(load_binary_rejects_component_instance_without_entity);
+    RUN_TEST(load_binary_rejects_excessive_component_instances);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
     RUN_TEST(save_binary_null_world);
     RUN_TEST(bytebuf_reserve_rejects_u32_wrap);

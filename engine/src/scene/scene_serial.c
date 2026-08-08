@@ -648,6 +648,13 @@ static bool load_components_chunk(World *w, Reader *r,
     for (u32 t = 0; t < type_count; t++) {
         u32 type = 0, size = 0, instances = 0;
         if (!rd_u32(r, &type) || !rd_u32(r, &size) || !rd_u32(r, &instances)) return false;
+        /* A writer emits at most one instance per saved entity for each type.
+         * Reject an impossible count and its minimum record bytes before the
+         * file-controlled loop can perform component migrations. */
+        if (instances > ent_count ||
+            (u64)instances * ((u64)sizeof(u32) + (u64)size) >
+                (u64)(r->end - r->p))
+            return false;
         bool known = (type < ECS_MAX_COMPONENTS) && (w->component_sizes[type] == size);
         for (u32 i = 0; i < instances; i++) {
             u32 saved_idx = 0;
