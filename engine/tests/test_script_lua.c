@@ -360,6 +360,37 @@ TEST(hot_reload_retries_after_failed_candidate)
     remove(path);
 }
 
+/* A candidate can assign globals before it reports a runtime error. Its
+ * partial hook replacement must not escape into the running script. */
+TEST(hot_reload_runtime_failure_preserves_previous_hooks)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_break_atomic_reload.lua");
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "version = 1\nfunction on_update(dt) result = 10 end\n");
+    fclose(f);
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    ASSERT_TRUE(lua_script_load(&ls, path));
+    ls.last_mtime = 0u;
+
+    f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "version = 2\ncandidate_only = 99\nfunction on_update(dt) result = 20 end\nerror('boom')\n");
+    fclose(f);
+    lua_script_reload_if_changed(&ls);
+
+    ASSERT_EQ(ls.last_mtime, 0u);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "version", -1) - 1.0) < 1e-9);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "candidate_only", -1) - (-1.0)) < 1e-9);
+    lua_script_call_update(&ls, 0.0f);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "result", -1) - 10.0) < 1e-9);
+
+    lua_script_shutdown(&ls);
+    remove(path);
+}
+
 TEST(load_nonexistent_file)
 {
     LuaScript ls;
@@ -485,6 +516,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_runs_new_chunk);
     RUN_TEST(hot_reload_no_change_no_run);
     RUN_TEST(hot_reload_retries_after_failed_candidate);
+    RUN_TEST(hot_reload_runtime_failure_preserves_previous_hooks);
     RUN_TEST(load_nonexistent_file);
     RUN_TEST(lua_load_rejects_path_truncation);
     RUN_TEST(lua_load_rejects_oversized_file);

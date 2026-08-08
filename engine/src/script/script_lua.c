@@ -217,6 +217,76 @@ static void refresh_hooks(LuaScript *ls) {
     lua_getglobal(L, "on_spawn");  ls->has_spawn  = lua_isfunction(L, -1); lua_pop(L, 1);
 }
 
+static bool run_loaded_chunk(LuaScript *ls, const char *what);
+
+/* Snapshot the global table in a registry-held Lua table. This is only used
+ * around script loading/reloading, so the temporary Lua allocation stays off
+ * the per-frame hook path. */
+static int snapshot_globals(lua_State *L) {
+    lua_pushglobaltable(L);
+    int globals = lua_absindex(L, -1);
+    lua_newtable(L);
+    int snapshot = lua_absindex(L, -1);
+
+    lua_pushnil(L);
+    while (lua_next(L, globals) != 0) {
+        lua_pushvalue(L, -2); /* key */
+        lua_pushvalue(L, -2); /* value */
+        lua_settable(L, snapshot);
+        lua_pop(L, 1); /* value; retain key for lua_next */
+    }
+    lua_remove(L, globals); /* retain snapshot for the registry ref */
+    return luaL_ref(L, LUA_REGISTRYINDEX);
+}
+
+static void restore_globals(lua_State *L, int snapshot_ref) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, snapshot_ref);
+    int snapshot = lua_absindex(L, -1);
+    lua_pushglobaltable(L);
+    int globals = lua_absindex(L, -1);
+    lua_newtable(L);
+    int removals = lua_absindex(L, -1);
+    u32 removal_count = 0u;
+
+    /* Collect candidate-created keys before mutating the global table. */
+    lua_pushnil(L);
+    while (lua_next(L, globals) != 0) {
+        lua_pushvalue(L, -2);
+        lua_gettable(L, snapshot);
+        bool existed = !lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (!existed) {
+            lua_pushvalue(L, -2);
+            lua_rawseti(L, removals, (lua_Integer)++removal_count);
+        }
+        lua_pop(L, 1); /* value; retain key for lua_next */
+    }
+
+    for (u32 i = 1u; i <= removal_count; i++) {
+        lua_rawgeti(L, removals, (lua_Integer)i);
+        lua_pushnil(L);
+        lua_settable(L, globals);
+    }
+
+    lua_pushnil(L);
+    while (lua_next(L, snapshot) != 0) {
+        lua_pushvalue(L, -2); /* key */
+        lua_pushvalue(L, -2); /* value */
+        lua_settable(L, globals);
+        lua_pop(L, 1); /* value; retain key for lua_next */
+    }
+
+    lua_pop(L, 3); /* removals, globals, snapshot */
+}
+
+static bool run_loaded_chunk_transactional(LuaScript *ls, const char *what) {
+    int snapshot_ref = snapshot_globals(ls->L);
+    bool ok = run_loaded_chunk(ls, what);
+    if (!ok) restore_globals(ls->L, snapshot_ref);
+    luaL_unref(ls->L, LUA_REGISTRYINDEX, snapshot_ref);
+    return ok;
+}
+
 /* Run the chunk currently on top of the stack (a loaded function). Pops it.
  * Logs and returns false on runtime error. */
 static bool run_loaded_chunk(LuaScript *ls, const char *what) {
@@ -238,7 +308,7 @@ bool lua_script_load_string(LuaScript *ls, const char *code, const char *chunk_n
         lua_pop(ls->L, 1);
         return false;
     }
-    return run_loaded_chunk(ls, chunk_name ? chunk_name : "chunk");
+    return run_loaded_chunk_transactional(ls, chunk_name ? chunk_name : "chunk");
 }
 
 static u32 file_mtime(const char *path) {
@@ -273,7 +343,7 @@ bool lua_script_load(LuaScript *ls, const char *path) {
     }
     snprintf(ls->path, sizeof(ls->path), "%s", path);
     ls->last_mtime = file_mtime(path);
-    bool ok = run_loaded_chunk(ls, path);
+    bool ok = run_loaded_chunk_transactional(ls, path);
     if (ok) LOG_INFO("Lua script loaded: %s (start=%d update=%d spawn=%d)",
                      path, ls->has_start, ls->has_update, ls->has_spawn);
     return ok;
@@ -289,7 +359,7 @@ void lua_script_reload_if_changed(LuaScript *ls) {
             lua_pop(ls->L, 1);
             return;
         }
-        if (run_loaded_chunk(ls, ls->path)) {
+        if (run_loaded_chunk_transactional(ls, ls->path)) {
             ls->last_mtime = mt;
             LOG_INFO("Lua script reloaded: %s", ls->path);
         }

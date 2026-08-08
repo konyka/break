@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R488 NetRep 目录读取失败状态保持审查（TDD）** — `net_replicator_peer_load_dir()` 先前在 `opendir()` 前清空 peer 表；不存在或暂时不可访问的目录令 API 返回 `false`，却同时丢失已有运行时 peer 基线，后续无法重试或继续使用。现仅在目录成功打开后才开始以目录快照替换 peer 表；成功读取空目录仍按原语义得到空快照。变更只在显式持久化读取路径执行，不影响网络热路径、无分配。TDD：`peer_load_dir_failure_preserves_existing_peers` 预置有效 peer 后读取不存在目录，旧码错误清零，修复后保留该 peer；模块文档同步。验证：`test_net_replication` 定向回归 46/46 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R489 Lua 热重载运行失败原子性审查（TDD）** — `lua_script_reload_if_changed()` 虽然会在候选执行失败时保留 mtime 以便重试，但候选 chunk 可在 `error()` 前已经覆盖 `on_update`、标量或新增全局变量；API 报失败后，下一帧却运行了半套新逻辑。现仅在显式字符串加载、文件加载与热重载时快照 Lua 全局表；候选运行失败就移除新增键并恢复快照值，原 hooks 与顶层全局保持完整，成功路径按原语义提交。快照只发生在低频加载路径，不影响帧内 hook 调用；失败路径的临时 Lua 表会随即释放，无常驻分配。TDD：`hot_reload_runtime_failure_preserves_previous_hooks` 让候选先覆写 version/hook、新增变量再抛错，旧码泄露 `version=2` 和新 hook，修复后仍为版本 1、旧 hook 返回 10、候选变量不存在；模块文档同步。验证：`test_script_lua` 定向回归 23/23 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R488 NetRep 目录读取失败状态保持审查（TDD）** — `net_replicator_peer_load_dir()` 先前在 `opendir()` 前清空 peer 表；不存在或暂时不可访问的目录令 API 返回 `false`，却同时丢失已有运行时 peer 基线，后续无法重试或继续使用。现仅在目录成功打开后才开始以目录快照替换 peer 表；成功读取空目录仍按原语义得到空快照。变更只在显式持久化读取路径执行，不影响网络热路径、无分配。TDD：`peer_load_dir_failure_preserves_existing_peers` 预置有效 peer 后读取不存在目录，旧码错误清零，修复后保留该 peer；模块文档同步。验证：`test_net_replication` 定向回归 46/46 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R487 纹理热重载失败初始化关闭审查（TDD）** — `hotreload_texture_shutdown()` 先前无条件关闭 watcher；若 `hotreload_texture_init()` 在 `filewatch_init()` 前失败，零初始化 watcher 的 Linux fd 为 0，会错误关闭 stdin。现 shutdown 与 pipeline 路径一致，仅在对象 ready 后释放 watcher；正常成功初始化/关闭路径不变，无轮询热路径成本、无分配。TDD：`hotreload_texture_failed_init_keeps_stdin` 将 `/dev/null` 映射至 stdin 后关闭失败初始化对象，旧码关闭该 fd，修复后仍保持可用；模块文档同步。验证：`test_hotreload` 定向回归 5/5 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
