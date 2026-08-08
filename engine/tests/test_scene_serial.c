@@ -1489,6 +1489,30 @@ TEST(load_binary_rejects_nonfinite_scene_values)
     remove(path);
 }
 
+TEST(save_rejects_nonfinite_scene_values)
+{
+    char binary_path[64], json_path[64];
+    test_tmp(binary_path, sizeof binary_path, "test_save_nonfinite.bscn");
+    test_tmp(json_path, sizeof json_path, "test_save_nonfinite.json");
+    World *w = world_create();
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_NOT_NULL(w);
+    scene.node_count = 1u;
+    scene.nodes = (SceneNode *)calloc(1, sizeof(SceneNode));
+    ASSERT_NOT_NULL(scene.nodes);
+    scene.nodes[0].local_transform = mat4_identity();
+    scene.nodes[0].world_transform = mat4_identity();
+    scene.nodes[0].local_transform.e[0][0] = NAN;
+
+    ASSERT_FALSE(scene_save_binary(w, &scene, binary_path, NULL));
+    ASSERT_FALSE(scene_save_json(w, &scene, json_path, NULL));
+
+    scene_serial_free(&scene);
+    world_destroy(w);
+    remove(binary_path);
+    remove(json_path);
+}
+
 /* R396: overwrite the first entity's comp_count in the ENTITIES chunk. */
 static bool set_first_entity_comp_count(const char *path, u32 value)
 {
@@ -2302,6 +2326,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(failed_load_keeps_previous_scene);
     RUN_TEST(resources_count_bounded_by_chunk_size);
     RUN_TEST(load_binary_rejects_nonfinite_scene_values);
+    RUN_TEST(save_rejects_nonfinite_scene_values);
     RUN_TEST(load_binary_rejects_oversized_file);
     RUN_TEST(load_json_rejects_oversized_file);
     RUN_TEST(entities_comp_count_bounded);

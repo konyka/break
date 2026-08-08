@@ -102,6 +102,9 @@ bool scene_serial_test_prefab_block_rejects_wrap(void) {
 
 static bool bb_u32(ByteBuf *b, u32 v) { return bb_write(b, &v, sizeof(v)); }
 
+static bool scene_mat4_finite(const Mat4 *m);
+static bool scene_resource_finite(const SceneResource *res);
+
 /* ---------------------------------------------------------------- */
 /* Live-entity enumeration                                          */
 /* ---------------------------------------------------------------- */
@@ -247,6 +250,8 @@ static bool emit_scene_nodes_chunk(const Scene *s, ByteBuf *out) {
     if (!bb_u32(out, n)) return false;
     for (u32 i = 0; i < n; i++) {
         const SceneNode *nd = &s->nodes[i];
+        if (!scene_mat4_finite(&nd->local_transform) ||
+            !scene_mat4_finite(&nd->world_transform)) return false;
         if (!bb_write(out, nd->local_transform.e, sizeof(nd->local_transform))) return false;
         if (!bb_write(out, nd->world_transform.e, sizeof(nd->world_transform))) return false;
         if (!bb_u32(out, nd->parent_index)) return false;
@@ -324,6 +329,7 @@ static u64 resource_guid(u32 type, u32 ref_index, const void *desc, u32 desc_siz
 }
 
 static bool emit_one_resource(ByteBuf *out, const SceneResource *res, bool inline_desc) {
+    if (!scene_resource_finite(res)) return false;
     if (!bb_u64(out, res->guid)) return false;
     if (!bb_u32(out, res->type)) return false;
     if (!bb_u32(out, res->ref_index)) return false;
@@ -1061,6 +1067,7 @@ bool scene_save_json(const World *w, const Scene *s,
         ok = ok && sb_indent(&b, pretty, 1) && sb_puts(&b, "\"nodes\":[");
         for (u32 i = 0; i < s->node_count && ok; i++) {
             const SceneNode *nd = &s->nodes[i];
+            if (!scene_mat4_finite(&nd->local_transform)) { ok = false; break; }
             if (i) ok = ok && sb_putc(&b, ',');
             ok = ok && sb_indent(&b, pretty, 2) && sb_putc(&b, '{');
             ok = ok && sb_puts(&b, "\"parent\":") && sb_u32_dec(&b, nd->parent_index) && sb_putc(&b, ',');
