@@ -248,14 +248,14 @@ TEST(scene_state_load_without_water_tail)
     SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
     ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
 
-    /* Rewrite the file without the optional water tail (f32 + bool). */
+    /* Rewrite the file without the optional water tail (f32 + u8 flag). */
     FILE *f = fopen(TMP_STATE, "rb");
     ASSERT_NOT_NULL(f);
     u8 bytes[4096];
     usize n = fread(bytes, 1, sizeof(bytes), f);
     fclose(f);
-    ASSERT_TRUE(n > sizeof(f32) + sizeof(bool));
-    n -= sizeof(f32) + sizeof(bool);
+    ASSERT_TRUE(n > sizeof(f32) + sizeof(u8));
+    n -= sizeof(f32) + sizeof(u8);
     f = fopen(TMP_STATE, "wb");
     ASSERT_NOT_NULL(f);
     ASSERT_TRUE(fwrite(bytes, 1, n, f) == n);
@@ -406,6 +406,40 @@ TEST(scene_state_save_rejects_nonfinite_values)
     remove(TMP_STATE);
 }
 
+/* The on-disk water flag is a canonical byte, not an arbitrary C bool object
+ * representation. Invalid input must fail without changing live state. */
+TEST(scene_state_rejects_noncanonical_water_flag)
+{
+    Camera cam = {0};
+    cam.position = vec3(1, 2, 3);
+    f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.5f, scale = 1.0f;
+    f32 wy = -2.0f;
+    bool wen = true;
+    PhysicsWorld *pw = physics_world_create(1);
+    ASSERT_NOT_NULL(pw);
+
+    SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
+
+    FILE *f = fopen(TMP_STATE, "r+b");
+    ASSERT_NOT_NULL(f);
+    ASSERT_TRUE(fseek(f, -1L, SEEK_END) == 0);
+    const u8 invalid_flag = 2u;
+    ASSERT_EQ(fwrite(&invalid_flag, 1, 1, f), (usize)1);
+    ASSERT_EQ(fclose(f), 0);
+
+    wy = 9.0f;
+    wen = true;
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    lctx.water_pipeline_valid = true;
+    ASSERT_FALSE(scene_state_load(TMP_STATE, &lctx));
+    ASSERT_FLOAT_EQ(wy, 9.0f, 1e-6f);
+    ASSERT_TRUE(wen);
+
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_save_reports_close_failure);
@@ -416,4 +450,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_load_without_water_tail);
     RUN_TEST(scene_state_rejects_nonfinite_values);
     RUN_TEST(scene_state_save_rejects_nonfinite_values);
+    RUN_TEST(scene_state_rejects_noncanonical_water_flag);
 TEST_MAIN_END()

@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R500 场景状态保存非有限值审查（TDD）** — `scene_state_load()` 已拒绝 NaN/Inf，但 `scene_state_save()` 先前仍会把同类非法运行时值写入存档，成功返回后留下该加载器必然拒绝的检查点，并覆盖原有可恢复状态。现保存前验证将实际序列化的完整 `Camera`、顶层浮点、刚体位置/速度/有效质量/半尺寸/弹性及水位均有限；检测发生在打开目标文件之前，失败不会触碰原存档。检查仅在显式保存期按刚体数线性执行，无帧内成本或分配。TDD：`scene_state_save_rejects_nonfinite_values` 依次注入相机、全局、刚体和水位 NaN，旧码错误保存，修复后返回 false 且逐字节保留原有效检查点。验证：定向 `test_scene_state` 9/9 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R501 场景状态布尔编码审查（TDD）** — `scene_state.bin` 的可选水位尾部此前以 `fread(..., sizeof(bool))` 直接写入 C `bool`；任意非零磁盘字节（如 `2`）都被接受，既令二进制格式依赖实现表示，也把不受信任的非规范对象表示带入运行时。现格式明确使用单字节 `u8`，保存端规范化为 `0/1`，加载端只接受这两个值后才转换为 `bool`；非法值沿用既有快照恢复。布局仍为一个字节，既有有效存档兼容。检查只在可选尾部加载时常数执行，无帧内成本或分配。TDD：`scene_state_rejects_noncanonical_water_flag` 把有效存档最后一字节改为 `2`，旧码错误成功，修复后拒绝且水位状态保持。验证：定向 `test_scene_state` 10/10 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R500 场景状态保存非有限值审查（TDD）** — `scene_state_load()` 已拒绝 NaN/Inf，但 `scene_state_save()` 先前仍会把同类非法运行时值写入存档，成功返回后留下该加载器必然拒绝的检查点，并覆盖原有可恢复状态。现保存前验证将实际序列化的完整 `Camera`、顶层浮点、刚体位置/速度/有效质量/半尺寸/弹性及水位均有限；检测发生在打开目标文件之前，失败不会触碰原存档。检查仅在显式保存期按刚体数线性执行，无帧内成本或分配。TDD：`scene_state_save_rejects_nonfinite_values` 依次注入相机、全局、刚体和水位 NaN，旧码错误保存，修复后返回 false 且逐字节保留原有效检查点。验证：定向 `test_scene_state` 9/9 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R499 PAK 名称表终止完整性审查（TDD）** — `vfs_mount_pak()` 原先为名称表额外分配一个零字节以保护 `strcmp` 免于越界，却没有验证每个 `PakEntry.name_offset` 所指字符串在声明的 `name_table_size` 范围内终止；恶意归档可省略末尾 NUL，令分配哨兵把不完整的表项伪装成可打开的真实路径。现仅在挂载期构建哈希索引时单次扫描名称表的最后一个表内 NUL，再以常数比较验证每个有效 offset；未终止或越界/data-range 损坏条目统一成为 lookup miss，容器仍可挂载。`vfs_open()` 热路径、常驻内存和分配不变。TDD：`vfs_pak_unterminated_name_is_miss` 写入名称表恰好缺少末尾 NUL 的 PAK，旧码错误打开 `greet.txt`，修复后挂载成功但查找返回 NULL。验证：定向 `test_vfs` 32/32 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

@@ -174,7 +174,10 @@ bool scene_state_save(const char *path, const SceneStateCtx *ctx) {
         sv_ok &= fwrite(&rest, sizeof(f32), 1, sf) == 1;
     }
     sv_ok &= fwrite(ctx->water_y, sizeof(f32), 1, sf) == 1;
-    sv_ok &= fwrite(ctx->water_enabled, sizeof(bool), 1, sf) == 1;
+    /* The persistent format uses a canonical byte instead of the platform's
+     * in-memory bool representation. */
+    u8 water_enabled = *ctx->water_enabled ? 1u : 0u;
+    sv_ok &= fwrite(&water_enabled, sizeof(water_enabled), 1, sf) == 1;
     if (ferror(sf)) sv_ok = false;
     if (fclose(sf) != 0) sv_ok = false;
     if (!sv_ok) LOG_WARN("Scene state save: partial write failure");
@@ -306,11 +309,14 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
      * when it is actually present. */
     long tail_off = ftell(lf);
     if (ld_ok && tail_off >= 0 &&
-        (u64)(file_size - tail_off) >= (u64)(sizeof(f32) + sizeof(bool))) {
+        (u64)(file_size - tail_off) >= (u64)(sizeof(f32) + sizeof(u8))) {
+        u8 water_enabled = 0;
         ld_ok &= fread(ctx->water_y, sizeof(f32), 1, lf) == 1;
-        ld_ok &= fread(ctx->water_enabled, sizeof(bool), 1, lf) == 1;
-        if (ld_ok && !isfinite(*ctx->water_y)) ld_ok = false;
-        if (!ctx->water_pipeline_valid)
+        ld_ok &= fread(&water_enabled, sizeof(water_enabled), 1, lf) == 1;
+        if (ld_ok && (!isfinite(*ctx->water_y) || water_enabled > 1u)) ld_ok = false;
+        if (ld_ok)
+            *ctx->water_enabled = water_enabled != 0u;
+        if (ld_ok && !ctx->water_pipeline_valid)
             *ctx->water_enabled = false;
     }
     if (!ld_ok) LOG_WARN("Scene state load: partial read failure");
