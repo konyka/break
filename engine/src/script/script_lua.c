@@ -341,11 +341,13 @@ bool lua_script_load(LuaScript *ls, const char *path) {
         lua_pop(ls->L, 1);
         return false;
     }
-    snprintf(ls->path, sizeof(ls->path), "%s", path);
-    ls->last_mtime = file_mtime(path);
     bool ok = run_loaded_chunk_transactional(ls, path);
-    if (ok) LOG_INFO("Lua script loaded: %s (start=%d update=%d spawn=%d)",
-                     path, ls->has_start, ls->has_update, ls->has_spawn);
+    if (ok) {
+        snprintf(ls->path, sizeof(ls->path), "%s", path);
+        ls->last_mtime = file_mtime(path);
+        LOG_INFO("Lua script loaded: %s (start=%d update=%d spawn=%d)",
+                 path, ls->has_start, ls->has_update, ls->has_spawn);
+    }
     return ok;
 }
 

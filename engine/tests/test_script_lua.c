@@ -391,6 +391,37 @@ TEST(hot_reload_runtime_failure_preserves_previous_hooks)
     remove(path);
 }
 
+/* An explicit replacement that reaches a runtime error must leave the last
+ * successfully loaded file as the hot-reload identity. */
+TEST(load_runtime_failure_preserves_previous_reload_identity)
+{
+    char old_path[64], bad_path[64];
+    test_tmp(old_path, sizeof old_path, "test_break_old_identity.lua");
+    test_tmp(bad_path, sizeof bad_path, "test_break_bad_identity.lua");
+    FILE *f = fopen(old_path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "version = 1\nfunction on_update(dt) result = 10 end\n");
+    fclose(f);
+    f = fopen(bad_path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "version = 2\nerror('boom')\n");
+    fclose(f);
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    ASSERT_TRUE(lua_script_load(&ls, old_path));
+    u32 old_mtime = ls.last_mtime;
+    ASSERT_FALSE(lua_script_load(&ls, bad_path));
+    ASSERT_STR_EQ(ls.path, old_path);
+    ASSERT_EQ(ls.last_mtime, old_mtime);
+    lua_script_call_update(&ls, 0.0f);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "result", -1) - 10.0) < 1e-9);
+
+    lua_script_shutdown(&ls);
+    remove(old_path);
+    remove(bad_path);
+}
+
 TEST(load_nonexistent_file)
 {
     LuaScript ls;
@@ -517,6 +548,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_no_change_no_run);
     RUN_TEST(hot_reload_retries_after_failed_candidate);
     RUN_TEST(hot_reload_runtime_failure_preserves_previous_hooks);
+    RUN_TEST(load_runtime_failure_preserves_previous_reload_identity);
     RUN_TEST(load_nonexistent_file);
     RUN_TEST(lua_load_rejects_path_truncation);
     RUN_TEST(lua_load_rejects_oversized_file);
