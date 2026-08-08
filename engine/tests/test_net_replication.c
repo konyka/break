@@ -17,6 +17,8 @@
  * 23000 + 2599*16 = 64584, +10 < 65535. */
 #define TEST_PORT ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
 
+static void feed_ack(NetReplicator *rep, u32 ack);
+
 TEST(replicator_init_shutdown)
 {
     ASSERT_TRUE(net_init());
@@ -85,7 +87,7 @@ TEST(reliable_retry_pending)
     ASSERT_TRUE(net_replicator_retry_pending(&send_rep) > 0);
     ASSERT_EQ(send_rep.retry_count, 1u);
 
-    send_rep.last_peer_ack = send_rep.reliable_window[0].seq;
+    feed_ack(&send_rep, send_rep.reliable_window[0].seq);
     ASSERT_TRUE(net_replicator_retry_pending(&send_rep) == 0);
     ASSERT_FALSE(send_rep.reliable_window[0].valid);
 
@@ -1247,6 +1249,14 @@ static void feed_ack(NetReplicator *rep, u32 ack) {
     ASSERT_TRUE(net_replicator_feed(rep, wire, len, out, 1u, &out_count) > 0);
 }
 
+static void feed_ack_from(NetReplicator *rep, u32 ack, const NetAddress *from) {
+    u8 wire[PACKET_MAX_SIZE];
+    u32 len = build_ack_wire(wire, 1u, ack);
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed_from(rep, wire, len, from, out, 1u, &out_count) > 0);
+}
+
 TEST(reliable_window_multiple_inflight)
 {
     /* R434: up to NET_RELIABLE_WINDOW reliable packets may be in flight at
@@ -1306,6 +1316,37 @@ TEST(reliable_window_ack_per_slot)
     ASSERT_EQ(reliable_window_valid_count(&send_rep), 2u);
 
     net_replicator_shutdown(&send_rep);
+    net_shutdown();
+}
+
+TEST(reliable_window_ack_is_scoped_to_sender)
+{
+    /* R453: reliable sends to two peers share one fixed window, but each ack
+     * only proves delivery to its source peer. An ack from A must never retire
+     * an equally-numbered packet sent to B. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    rep.reliable_retry = true;
+
+    NetAddress peer_a, peer_b;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 11u), &peer_a));
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 12u), &peer_b));
+    NetTransformSnapshot snap = { .entity_id = 1u, .position = {0} };
+
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0); /* seq 1 */
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_b) > 0); /* seq 2 */
+    ASSERT_EQ(reliable_window_valid_count(&rep), 2u);
+
+    feed_ack_from(&rep, 2u, &peer_a);
+
+    ASSERT_EQ(reliable_window_valid_count(&rep), 1u);
+    ASSERT_TRUE(rep.reliable_window[1].valid);
+    ASSERT_TRUE(net_address_equal(&rep.reliable_window[1].dst, &peer_b));
+    ASSERT_EQ(rep.reliable_window[1].seq, 2u);
+
+    net_replicator_shutdown(&rep);
     net_shutdown();
 }
 
@@ -1462,6 +1503,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_load_rejects_port_overflow);
     RUN_TEST(reliable_window_multiple_inflight);
     RUN_TEST(reliable_window_ack_per_slot);
+    RUN_TEST(reliable_window_ack_is_scoped_to_sender);
     RUN_TEST(reliable_window_full_rejected);
     RUN_TEST(reliable_window_seq_wraparound);
     RUN_TEST(reliable_window_out_of_order_acks);

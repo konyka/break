@@ -182,12 +182,16 @@ static bool net_repl_mkdir_p(const char *dir) {
 #endif
 }
 
-/* R434: cumulative, wraparound-safe ack of the reliable window — clear every
- * in-flight slot whose sequence `ack` has reached (same R245 delta form). */
-static void net_reliable_window_ack(NetReplicator *rep, u32 ack) {
+/* R434/R453: cumulative, wraparound-safe ack of the reliable window. For
+ * socket receives, only slots addressed to the ack sender are eligible; the
+ * address-less feed API intentionally retains its legacy single-peer behavior. */
+static void net_reliable_window_ack(NetReplicator *rep, u32 ack,
+                                    const NetAddress *from) {
     for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
         NetRepReliablePending *slot = &rep->reliable_window[i];
-        if (slot->valid && (ack - slot->seq) < 0x80000000u)
+        if (slot->valid &&
+            (!from || net_address_equal(&slot->dst, from)) &&
+            (ack - slot->seq) < 0x80000000u)
             slot->valid = false;
     }
 }
@@ -211,7 +215,7 @@ static i32 net_repl_deliver_unreliable(NetReplicator *rep, NetRepPeerChannel *pc
      * `ack >= seq` fails once the 32-bit sequence wraps (e.g. seq=0xFFFFFFF0,
      * ack=5), leaving reliable slots stuck valid → endless retransmit.
      * R434: the ack is cumulative — every window slot it has reached is cleared. */
-    net_reliable_window_ack(rep, hdr.ack);
+    net_reliable_window_ack(rep, hdr.ack, reply_to);
     rep->last_peer_ack = hdr.ack;
 
     if (rep->seq_dedup && ch->last_recv_seq != 0u) {
@@ -343,7 +347,7 @@ static i32 net_repl_deliver_ordered(NetReplicator *rep, NetRepPeerChannel *pc,
     if (!packet_parse_header(wire, len, &hdr)) return NET_ERROR;
 
     NetRepOrderedChannel *ch = net_ord_ch(rep, pc, type);
-    net_reliable_window_ack(rep, hdr.ack); /* R245/R434: wraparound-safe cumulative ack */
+    net_reliable_window_ack(rep, hdr.ack, reply_to); /* R245/R434: wraparound-safe cumulative ack */
     rep->last_peer_ack = hdr.ack;
 
     if (ch->next_ordered_seq == 0u)
@@ -557,18 +561,14 @@ i32 net_replicator_send_heartbeat_ack(NetReplicator *rep, const NetAddress *dst,
 
 i32 net_replicator_retry_pending(NetReplicator *rep) {
     if (!rep || !rep->socket || !rep->reliable_retry) return 0;
-    /* R434: retransmit each still-unacked window slot independently. A slot
-     * the peer's ack has since reached is retired without a resend (R245
-     * wraparound-safe self-check on last_peer_ack). Returns the total bytes
-     * retransmitted (0 when nothing was outstanding). */
+    /* R434/R453: retransmit each still-unacked window slot independently.
+     * Ack processing retires a slot immediately and is scoped to its source
+     * address; do not use the global last_peer_ack here because an ack from
+     * peer A can be numerically ahead of a packet sent to peer B. */
     i32 sent_total = 0;
     for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
         NetRepReliablePending *slot = &rep->reliable_window[i];
         if (!slot->valid) continue;
-        if ((rep->last_peer_ack - slot->seq) < 0x80000000u) {
-            slot->valid = false;
-            continue;
-        }
         i32 n = net_sendto(rep->socket, slot->data, slot->len, &slot->dst);
         if (n > 0) {
             rep->retry_count++;
