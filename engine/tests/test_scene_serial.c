@@ -864,6 +864,46 @@ TEST(load_json_rejects_duplicate_entity_components)
     remove(path);
 }
 
+/* A JSON save has one entities array.  Repeating it silently appends another
+ * batch of entities, making the loaded world depend on duplicate key order. */
+TEST(load_json_rejects_duplicate_entities_key)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_duplicate_entities_key.json");
+    const char *doc =
+        "{\"version\":1,\"entities\":[],\"entities\":[]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(load_json_rejects_duplicate_nodes_key)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_duplicate_nodes_key.json");
+    const char *doc =
+        "{\"version\":1,\"entities\":[],\"nodes\":[],\"nodes\":[]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, &scene, path));
+    scene_serial_free(&scene);
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -1763,6 +1803,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_duplicate_component_type);
     RUN_TEST(load_json_rejects_duplicate_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_entity_components);
+    RUN_TEST(load_json_rejects_duplicate_entities_key);
+    RUN_TEST(load_json_rejects_duplicate_nodes_key);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);

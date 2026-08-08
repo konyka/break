@@ -1278,12 +1278,19 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
     u32 staged_node_count = 0;
     bool nodes_staged = false;
 
+    bool seen_version = false;
+    bool seen_entities = false;
+    bool seen_nodes = false;
     bool ok = js_match(&r, '{');
     while (ok && !js_peek(&r, '}')) {
         if (js_key(&r, "version")) {
+            if (seen_version) { ok = false; break; }
+            seen_version = true;
             u32 v = 0;
             ok = js_u32(&r, &v) && (v == BSCN_VERSION);
         } else if (js_key(&r, "entities")) {
+            if (seen_entities) { ok = false; break; }
+            seen_entities = true;
             ok = js_match(&r, '[');
             if (ok && !js_match(&r, ']')) {
                 do {
@@ -1337,6 +1344,8 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                 ok = ok && js_match(&r, ']');
             }
         } else if (js_key(&r, "nodes")) {
+            if (seen_nodes) { ok = false; break; }
+            seen_nodes = true;
             if (!s) {
                 /* skip nodes array if no Scene provided */
                 ok = js_skip_value(&r);
