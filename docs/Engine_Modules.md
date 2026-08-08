@@ -759,7 +759,7 @@ bool scene_instantiate_prefab(World *w, Scene *s, const char *path, Vec3 positio
 - `scene_instantiate_prefab` 加载后自动对新节点应用 `position` 偏移（修改 `local_transform` 平移列）
 - 二进制格式与 JSON 格式数据对称，保证 save/load 往返一致性
 - 二进制与 JSON 导入都限制为最多 64K `SceneNode`；JSON 在扩容 staging 数组前拒绝超额节点，避免紧凑恶意文档造成无界堆增长
-- BSCN 资源内联描述符与场景节点矩阵的全部浮点均在加载时要求有限；二进制或 JSON 节点矩阵中出现 NaN/Inf 会拒绝整个候选并保留既有 `Scene`，避免污染渲染变换与资源边界计算。`COMPONENTS` chunk 的类型记录数最多为 `ECS_MAX_COMPONENTS`，并在进入记录循环前校验固定头部字节数，拒绝不可能由写入端产生的膨胀计数。检查只在显式导入时线性执行，不增加帧内成本或分配
+- BSCN 资源内联描述符与场景节点矩阵的全部浮点均在加载时要求有限；二进制或 JSON 节点矩阵中出现 NaN/Inf 会拒绝整个候选并保留既有 `Scene`，避免污染渲染变换与资源边界计算。BSCN 加载在任何解析前校验全部 chunk payload 均位于 chunk table 之后且不越过文件结尾，连为前向兼容而跳过的未知/HIERARCHY chunk 也不能重解释表字节。`COMPONENTS` chunk 的类型记录数最多为 `ECS_MAX_COMPONENTS`，并在进入记录循环前校验固定头部字节数，拒绝不可能由写入端产生的膨胀计数。检查只在显式导入时线性执行，不增加帧内成本或分配
 
 ### 6.4 VFS 虚拟文件系统 (`vfs.h` / `vfs.c`)
 

@@ -766,6 +766,15 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     u64 table_end = (u64)table_off + (u64)h.chunk_count * (u64)sizeof(BscnChunkEntry);
     if (table_end > (u64)fsz) { free(buf); return false; }
     BscnChunkEntry *table = (BscnChunkEntry *)(buf + table_off);
+    /* Validate the complete layout before parsing.  Ignored forward-compatible
+     * chunks still must not reinterpret the chunk table as payload data. */
+    for (u32 i = 0; i < h.chunk_count; i++) {
+        u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
+        if ((u64)table[i].offset < table_end || chunk_end > (u64)fsz) {
+            free(buf);
+            return false;
+        }
+    }
 
     Entity *ents = NULL; u32 ent_count = 0;
     bool ok = true;

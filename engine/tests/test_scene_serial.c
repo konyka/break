@@ -125,6 +125,31 @@ TEST(load_binary_too_many_chunks)
     remove(path);
 }
 
+/* Chunk payloads must follow the chunk table, including chunks the loader
+ * intentionally ignores for forward compatibility. */
+TEST(load_binary_rejects_chunk_overlapping_table)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_table_overlap.bscn");
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 1 };
+    BscnChunkEntry entry = { .type = BSCN_CHUNK_HIERARCHY,
+                             .offset = (u32)sizeof(BscnHeader),
+                             .size = (u32)sizeof(BscnChunkEntry) };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_probe_binary(path));
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* The writer emits at most one record per registered component type.  A
  * larger count is malformed rather than a forward-compatible empty payload. */
 TEST(load_binary_rejects_excessive_component_type_count)
@@ -1124,6 +1149,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_bad_version);
     RUN_TEST(load_binary_truncated);
     RUN_TEST(load_binary_too_many_chunks);
+    RUN_TEST(load_binary_rejects_chunk_overlapping_table);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
     RUN_TEST(save_binary_null_world);
     RUN_TEST(bytebuf_reserve_rejects_u32_wrap);

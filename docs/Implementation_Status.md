@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R502 BSCN 组件类型计数审查（TDD）** — 二进制 `COMPONENTS` chunk 的 `type_count` 原先直接控制加载循环，既没有写入端可产生的 `ECS_MAX_COMPONENTS` 上限，也未先验证每条类型记录所需的固定 12-byte 头部；畸形归档可用任意大量空记录消耗加载期工作并被错误当作成功格式。现读取计数后、进入循环前拒绝超过引擎组件容量或连固定头部都放不下的 chunk；未知但数量有效的类型仍按既有兼容逻辑跳过。仅在显式导入时常数检查，无帧内成本或分配。TDD：`load_binary_rejects_excessive_component_type_count` 写入 129 条空类型记录，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 44/44 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R503 BSCN chunk table 布局审查（TDD）** — `scene_probe_binary()` 原本会拒绝 payload 起点落在 chunk table 内的 BSCN，但 `scene_load_binary()` 仅验证 payload 结尾不越过文件；因此被前向兼容逻辑跳过的 `HIERARCHY` 或未知 chunk 能把表字节错误当作 payload 并让加载 API 成功，形成同一格式的探测/加载判定分裂。现加载器在任何解析或状态变更前扫描至多 64 条表项，要求每个 payload 均从 table 之后开始且位于文件范围内；检查只在显式导入时 O(chunk_count) 执行，无帧内成本或分配。TDD：`load_binary_rejects_chunk_overlapping_table` 构造 payload 指向唯一 table entry 的 HIERARCHY chunk，旧码探测拒绝而加载错误成功，修复后两者均拒绝。验证：定向 `test_scene_serial` 45/45 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R502 BSCN 组件类型计数审查（TDD）** — 二进制 `COMPONENTS` chunk 的 `type_count` 原先直接控制加载循环，既没有写入端可产生的 `ECS_MAX_COMPONENTS` 上限，也未先验证每条类型记录所需的固定 12-byte 头部；畸形归档可用任意大量空记录消耗加载期工作并被错误当作成功格式。现读取计数后、进入循环前拒绝超过引擎组件容量或连固定头部都放不下的 chunk；未知但数量有效的类型仍按既有兼容逻辑跳过。仅在显式导入时常数检查，无帧内成本或分配。TDD：`load_binary_rejects_excessive_component_type_count` 写入 129 条空类型记录，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 44/44 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R501 场景状态布尔编码审查（TDD）** — `scene_state.bin` 的可选水位尾部此前以 `fread(..., sizeof(bool))` 直接写入 C `bool`；任意非零磁盘字节（如 `2`）都被接受，既令二进制格式依赖实现表示，也把不受信任的非规范对象表示带入运行时。现格式明确使用单字节 `u8`，保存端规范化为 `0/1`，加载端只接受这两个值后才转换为 `bool`；非法值沿用既有快照恢复。布局仍为一个字节，既有有效存档兼容。检查只在可选尾部加载时常数执行，无帧内成本或分配。TDD：`scene_state_rejects_noncanonical_water_flag` 把有效存档最后一字节改为 `2`，旧码错误成功，修复后拒绝且水位状态保持。验证：定向 `test_scene_state` 10/10 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
