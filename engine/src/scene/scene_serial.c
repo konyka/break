@@ -527,6 +527,7 @@ void scene_serial_free(Scene *s) {
  * flags(4) + path_len(4). Anything the header claims beyond what the chunk can
  * physically hold is bogus. */
 #define BSCN_RESOURCE_MIN_BYTES 24u
+#define SCENE_RESOURCE_FLAG_MASK 1u
 
 static bool load_resources_chunk(Scene *s, Reader *r) {
     u32 n = 0;
@@ -549,6 +550,7 @@ static bool load_resources_chunk(Scene *s, Reader *r) {
             !rd_u32(r, &tmp.ref_index) || !rd_u32(r, &flags)) {
             free(arr); return false;
         }
+        if (flags & ~SCENE_RESOURCE_FLAG_MASK) { free(arr); return false; }
         tmp.flags = flags;
         if (flags & 1u) {
             if (!rd_u32(r, &tmp.u0) || !rd_u32(r, &tmp.u1) || !rd_u32(r, &tmp.u2)) {

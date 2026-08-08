@@ -655,6 +655,42 @@ TEST(load_binary_rejects_duplicate_resources_chunk)
     remove(path);
 }
 
+/* v1 resource flags only encode whether a descriptor is inlined (bit 0). */
+TEST(load_binary_rejects_unknown_resource_flags)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_unknown_resource_flags.bscn");
+    const u32 base = (u32)sizeof(BscnHeader) + (u32)sizeof(BscnChunkEntry);
+    const u32 count = 1u, type = BSCN_RES_MESH, ref_index = 0u;
+    const u32 flags = 2u, path_len = 0u;
+    const u64 guid = 1u;
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 1 };
+    BscnChunkEntry entry = {
+        .type = BSCN_CHUNK_RESOURCES,
+        .offset = base,
+        .size = (u32)sizeof(count) + (u32)sizeof(guid) +
+                (u32)sizeof(type) + (u32)sizeof(ref_index) +
+                (u32)sizeof(flags) + (u32)sizeof(path_len)
+    };
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&count, sizeof(count), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&guid, sizeof(guid), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&type, sizeof(type), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&ref_index, sizeof(ref_index), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&flags, sizeof(flags), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&path_len, sizeof(path_len), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* Chunk payloads are distinct regions in writer output.  Overlap gives one
  * byte range multiple logical meanings, even when both chunks are skipped. */
 TEST(load_binary_rejects_overlapping_chunk_payloads)
@@ -2120,6 +2156,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_duplicate_scene_nodes_chunk);
     RUN_TEST(load_binary_rejects_unknown_node_flags);
     RUN_TEST(load_binary_rejects_duplicate_resources_chunk);
+    RUN_TEST(load_binary_rejects_unknown_resource_flags);
     RUN_TEST(load_binary_rejects_overlapping_chunk_payloads);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
     RUN_TEST(save_binary_null_world);
