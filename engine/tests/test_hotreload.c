@@ -87,8 +87,24 @@ TEST(hotreload_pipeline_rejects_path_truncation)
     remove(frag);
 }
 
+/* R473: FileWatcher polls the persisted entry path, so it must not retain a
+ * truncated source path as a live entry. */
+TEST(filewatch_rejects_path_truncation)
+{
+    FileWatcher watcher;
+    char path[FILEWATCH_MAX_PATH + 1u];
+    memset(path, 'x', sizeof(path) - 1u);
+    path[sizeof(path) - 1u] = '\0';
+
+    filewatch_init(&watcher);
+    filewatch_add(&watcher, path, NULL, NULL);
+    ASSERT_EQ(watcher.count, 0u);
+    filewatch_shutdown(&watcher);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(hotreload_rejects_oversized_shader);
     RUN_TEST(hotreload_texture_rejects_path_truncation);
     RUN_TEST(hotreload_pipeline_rejects_path_truncation);
+    RUN_TEST(filewatch_rejects_path_truncation);
 TEST_MAIN_END()

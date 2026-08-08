@@ -282,6 +282,7 @@ bool filewatch_poll_event(FileWatcher *fw, FileWatchEvent *out);
 - **Windows**: 基于 `ReadDirectoryChangesW`（`bWatchSubtree=TRUE`），递归监视目录树
 - **用途**: 驱动 Shader/纹理/脚本热重载
 - **兼容性**: 增强 API 与原有回调 API 共存，已有调用方零改动
+- **路径契约**: 回调式单文件监视仅接收能完整保存于 `FILEWATCH_MAX_PATH`（256 字节含终止符）的路径；超长请求不会占用条目或创建内核监视，避免轮询截断后的其他文件
 
 ### 2.5 窗口后端实现
 

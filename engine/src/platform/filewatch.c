@@ -54,6 +54,7 @@ void filewatch_shutdown(FileWatcher *fw) {
 
 void filewatch_add(FileWatcher *fw, const char *path,
                    void (*callback)(const char *path, void *user), void *user) {
+    if (!fw || !path || strlen(path) >= FILEWATCH_MAX_PATH) return;
     if (fw->count >= FILEWATCH_MAX_ENTRIES) return;
     FileWatchEntry *e = &fw->entries[fw->count++];
     strncpy(e->path, path, FILEWATCH_MAX_PATH - 1);
@@ -303,6 +304,7 @@ static u32 file_mtime(const char *path) {
 
 void filewatch_add(FileWatcher *fw, const char *path,
                    void (*callback)(const char *path, void *user), void *user) {
+    if (!fw || !path || strlen(path) >= FILEWATCH_MAX_PATH) return;
     if (fw->count >= FILEWATCH_MAX_ENTRIES) return;
     FileWatchEntry *e = &fw->entries[fw->count++];
     strncpy(e->path, path, FILEWATCH_MAX_PATH - 1);
