@@ -22,8 +22,12 @@ typedef struct {
 /* Initialize the decode pipeline with 2 worker threads. */
 bool decode_pipeline_init(void);
 
-/* Shut down the pipeline, joining workers and freeing queued jobs. */
+/* Shut down the pipeline, joining workers and freeing queued jobs/results. */
 void decode_pipeline_shutdown(void);
+
+/* Loader-only shutdown variant: joins workers and drops unstarted jobs while
+ * retaining completed results for async_loader_shutdown() to deliver. */
+void decode_pipeline_shutdown_preserve_ready(void);
 
 /* Submit raw encoded image bytes for decoding. Ownership of raw_data is
  * transferred; the caller must not access it after this call. */
@@ -36,6 +40,9 @@ bool decode_pipeline_poll(DecodeResult *out_result);
 /* Number of jobs waiting in the decode input queue (does not include jobs
  * currently being decoded). */
 u32 decode_pipeline_queue_count(void);
+
+/* Number of completed results awaiting a poll. Useful for loader diagnostics. */
+u32 decode_pipeline_ready_count(void);
 
 /* Synchronous decode for unit tests and fuzz harnesses. Invokes the same
  * stbi + mip-chain path as the worker pool, without touching it. */

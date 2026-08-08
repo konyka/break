@@ -100,6 +100,8 @@ static AsyncMutex g_queue_mutex; /* protects request_heap and g_wake_cond */
 static AsyncCond  g_wake_cond;
 static bool       g_sync_inited = false;
 
+static void async_loader_drain_decoded_results(bool enqueue_completions);
+
 /* ---- Heap helpers ---- */
 
 static bool heap_item_higher(const HeapItem *a, const HeapItem *b) {
@@ -456,8 +458,11 @@ void async_loader_shutdown(void) {
         async_thread_join(g_loader.threads[i]);
     }
 
-    /* Decode pipeline must shut down after I/O threads have stopped submitting. */
-    decode_pipeline_shutdown();
+    /* Decode workers may have completed texture data that no frame tick has
+     * consumed yet. Join them without discarding their ready queue, then move
+     * each result into its owning request before final callback delivery. */
+    decode_pipeline_shutdown_preserve_ready();
+    async_loader_drain_decoded_results(false);
 
     /* R292: g_queue_mutex / g_wake_cond are process-stable — do NOT destroy them
      * (a future init reuses them; destroying risks a lingering worker touching a
@@ -577,7 +582,7 @@ u64 async_loader_request(const char *path, AsyncLoadCallback callback, void *use
                                 ASYNC_PRIORITY_DEFAULT, false);
 }
 
-void async_loader_tick(void) {
+static void async_loader_drain_decoded_results(bool enqueue_completions) {
     /* Drain decoded texture results from the decode pipeline and move them to
      * the completion queue. */
     DecodeResult result;
@@ -612,9 +617,18 @@ void async_loader_tick(void) {
         atomic_store_explicit(&req->state,
                               result.success ? (u32)ASSET_READY : (u32)ASSET_FAILED,
                               memory_order_release);
-        enqueue_completion(slot);
+        /* Shutdown has no tick consumer. Writing a preserved decode result
+         * directly to its slot lets the final slot scan deliver it without
+         * spinning on a completion ring that may already be full. */
+        if (enqueue_completions) {
+            enqueue_completion(slot);
+        }
         atomic_fetch_sub_explicit(&g_loader.pending_count, 1, memory_order_relaxed);
     }
+}
+
+void async_loader_tick(void) {
+    async_loader_drain_decoded_results(true);
 
     /* Dispatch completion callbacks on the main thread. */
     u64 tail = atomic_load_explicit(&g_loader.completion_queue.tail, memory_order_acquire);

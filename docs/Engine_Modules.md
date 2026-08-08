@@ -1682,7 +1682,7 @@ typedef struct {
 - 高优先级请求（如 mipmap level 0）优先出队，低优先级（如远距离 mipmap）延后
 - 堆操作 O(log N) 入队/出队，与 FIFO 的 O(1) 入队相比增加少量开销，但保证关键资源优先加载
 
-**解码管线 (R103/R104)：**
+**解码管线 (R103/R104/R450)：**
 
 新增 `decode_pipeline.c/h`，2-worker 解码线程池：
 - `decode_pipeline_init(worker_count)` — 初始化解码线程池
@@ -1700,9 +1700,9 @@ typedef struct {
 **生命周期：**
 1. 启动时创建 VFS 并初始化 loader（2 个 I/O 线程）+ 解码管线（2 个解码 worker）
 2. 主循环每帧 `tick()` 处理 I/O 完成回调 + `decode_pipeline_tick()` 处理解码完成回调
-3. 关闭时 `shutdown()` 等待 I/O/解码线程退出，并同步交付尚未由 `tick()` 分发的最终回调：READY 请求保留数据所有权转交，未完成请求以 `(NULL, 0)` 通知；每个已接受请求至多回调一次
+3. 关闭时 `shutdown()` 等待 I/O/解码线程退出，并同步交付尚未由 `tick()` 分发的最终回调：普通 READY 请求和已完成纹理解码请求均保留数据所有权转交，未完成请求以 `(NULL, 0)` 通知；每个已接受请求至多回调一次
 
-**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/优先级出队顺序/解码管线端到端、关闭时 queued 与 READY completion 的一次性回调交付)
+**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/优先级出队顺序/解码管线端到端、关闭时 queued/READY/decode-ready completion 的一次性回调交付)
 
 ---
 

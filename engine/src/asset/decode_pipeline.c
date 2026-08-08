@@ -45,6 +45,7 @@ typedef struct {
 typedef struct {
     DecodeResultNode *head;
     DecodeResultNode *tail;
+    u32               count;
     /* R292: mutex moved to process-stable g_decode_ready_mutex. */
 } DecodeReadyQueue;
 
@@ -273,6 +274,7 @@ static void ready_queue_push(DecodeResultNode *node) {
         g_decode.ready.head = node;
     }
     g_decode.ready.tail = node;
+    g_decode.ready.count++;
     async_mutex_unlock(&g_decode_ready_mutex);
 }
 
@@ -382,7 +384,7 @@ bool decode_pipeline_init(void) {
     return true;
 }
 
-void decode_pipeline_shutdown(void) {
+static void decode_pipeline_shutdown_impl(bool preserve_ready) {
     /* R292: publish running=false UNDER input.mutex (the lock decode_worker_run
      * holds across its predicate test + cond_wait in input_queue_pop), then
      * broadcast — canonical condvar teardown. The primary lifecycle fix is the
@@ -410,22 +412,35 @@ void decode_pipeline_shutdown(void) {
     g_decode.input.count = 0;
     async_mutex_unlock(&g_decode_input_mutex);
 
-    /* Free any completed results that were not polled (node is DecodeJob). */
-    async_mutex_lock(&g_decode_ready_mutex);
-    DecodeResultNode *node = g_decode.ready.head;
-    while (node) {
-        DecodeResultNode *next = node->next;
-        if (node->result.data) free(node->result.data);
-        free((DecodeJob *)node);
-        node = next;
+    /* The async loader must drain completed texture data before it releases
+     * request callbacks during shutdown. Standalone users retain the original
+     * shutdown contract and discard these results. */
+    if (!preserve_ready) {
+        async_mutex_lock(&g_decode_ready_mutex);
+        DecodeResultNode *node = g_decode.ready.head;
+        while (node) {
+            DecodeResultNode *next = node->next;
+            if (node->result.data) free(node->result.data);
+            free((DecodeJob *)node);
+            node = next;
+        }
+        g_decode.ready.head = NULL;
+        g_decode.ready.tail = NULL;
+        g_decode.ready.count = 0;
+        async_mutex_unlock(&g_decode_ready_mutex);
     }
-    g_decode.ready.head = NULL;
-    g_decode.ready.tail = NULL;
-    async_mutex_unlock(&g_decode_ready_mutex);
 
     /* R292: primitives are process-stable — do not destroy (see decl comment). */
 
     LOG_INFO("Decode pipeline shut down");
+}
+
+void decode_pipeline_shutdown(void) {
+    decode_pipeline_shutdown_impl(false);
+}
+
+void decode_pipeline_shutdown_preserve_ready(void) {
+    decode_pipeline_shutdown_impl(true);
 }
 
 bool decode_pipeline_submit(void *raw_data, u32 raw_size, u64 slot, u64 request_id, i32 priority) {
@@ -459,6 +474,7 @@ bool decode_pipeline_poll(DecodeResult *out_result) {
     if (node) {
         g_decode.ready.head = node->next;
         if (!g_decode.ready.head) g_decode.ready.tail = NULL;
+        g_decode.ready.count--;
         *out_result = node->result;
         /* node is first field of DecodeJob — free the whole job. */
         free((DecodeJob *)node);
@@ -473,6 +489,14 @@ u32 decode_pipeline_queue_count(void) {
     async_mutex_lock(&g_decode_input_mutex);
     count = g_decode.input.count;
     async_mutex_unlock(&g_decode_input_mutex);
+    return count;
+}
+
+u32 decode_pipeline_ready_count(void) {
+    u32 count = 0;
+    async_mutex_lock(&g_decode_ready_mutex);
+    count = g_decode.ready.count;
+    async_mutex_unlock(&g_decode_ready_mutex);
     return count;
 }
 

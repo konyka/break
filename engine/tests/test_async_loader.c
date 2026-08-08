@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <asset/async_loader.h>
+#include <asset/decode_pipeline.h>
 #include <asset/vfs.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -564,6 +565,69 @@ TEST(async_loader_shutdown_drains_ready_completion)
     remove(path);
 }
 
+/* R450: decoded textures use a second completion queue. A shutdown between
+ * decode completion and async_loader_tick() must retain that result too. */
+static _Atomic int g_shutdown_decode_cb_count;
+static _Atomic int g_shutdown_decode_cb_valid;
+
+static void shutdown_decode_cb(void *user, void *data, u32 size)
+{
+    (void)user;
+    atomic_fetch_add(&g_shutdown_decode_cb_count, 1);
+    if (data && size >= sizeof(AsyncTextureHeader)) {
+        AsyncTextureHeader *hdr = (AsyncTextureHeader *)data;
+        if (hdr->width == 2 && hdr->height == 2 && hdr->pixel_bytes == 4)
+            atomic_store(&g_shutdown_decode_cb_valid, 1);
+    }
+    free(data);
+}
+
+TEST(async_loader_shutdown_drains_decoded_completion)
+{
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, "/tmp");
+
+    char path[128];
+    test_tmp(path, sizeof path, "async_shutdown_decode.tga");
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    u8 header[18] = {0};
+    header[2] = 2;
+    header[12] = 2;
+    header[14] = 2;
+    header[16] = 32;
+    header[17] = 0x28;
+    const u8 pixels[16] = {
+        0, 0, 255, 255, 0, 255, 0, 255,
+        255, 0, 0, 255, 255, 255, 255, 255
+    };
+    fwrite(header, 1, sizeof(header), f);
+    fwrite(pixels, 1, sizeof(pixels), f);
+    fclose(f);
+
+    async_loader_init(1, vfs);
+    atomic_store(&g_shutdown_decode_cb_count, 0);
+    atomic_store(&g_shutdown_decode_cb_valid, 0);
+    u64 id = async_loader_request_texture(strrchr(path, '/') + 1,
+                                          shutdown_decode_cb, NULL, 0);
+    ASSERT_NEQ(id, (u64)0);
+
+    for (int i = 0; i < 200; i++) {
+        if (decode_pipeline_ready_count() > 0) break;
+        for (volatile int j = 0; j < 50000; j++) { (void)j; }
+    }
+    ASSERT_TRUE(decode_pipeline_ready_count() > 0);
+    ASSERT_EQ(atomic_load(&g_shutdown_decode_cb_count), 0);
+
+    async_loader_shutdown();
+
+    ASSERT_EQ(atomic_load(&g_shutdown_decode_cb_count), 1);
+    ASSERT_EQ(atomic_load(&g_shutdown_decode_cb_valid), 1);
+    vfs_destroy(vfs);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_init_shutdown);    RUN_TEST(async_loader_pending_zero);
     RUN_TEST(async_loader_load_nonexistent);
@@ -579,4 +643,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_completion_burst);
     RUN_TEST(async_loader_shutdown_fires_pending_callbacks);
     RUN_TEST(async_loader_shutdown_drains_ready_completion);
+    RUN_TEST(async_loader_shutdown_drains_decoded_completion);
 TEST_MAIN_END()
