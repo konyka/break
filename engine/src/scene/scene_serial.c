@@ -1176,6 +1176,14 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                     if (!nodes) { ok = false; }
                     while (ok && !js_peek(&r, ']')) {
                         if (!js_match(&r, '{')) { ok = false; break; }
+                        /* Keep JSON import bounded by the same SceneNode cap
+                         * as BSCN. Check before growing the staging array so
+                         * a compact hostile document cannot force an unbounded
+                         * realloc chain or partially commit a huge graph. */
+                        if (node_count >= BSCN_MAX_LOAD_NODES) {
+                            ok = false;
+                            break;
+                        }
                         if (node_count >= node_cap) {
                             node_cap *= 2;
                             SceneNode *tmp = (SceneNode *)realloc(nodes, node_cap * sizeof(SceneNode));

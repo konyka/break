@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R460 ECS 查询缓存哈希碰撞审查（TDD）** — `world_query_cached()` 以 32 位 FNV-1a 哈希作为查询身份，虽注释称处理碰撞却没有保留原始组件集合；不同查询碰撞时会直接返回另一查询的匹配 archetype，导致实体被错误枚举。现保留哈希作 O(1) bucket 选择，并以两个 `u64` 的精确 128 组件集合键确认命中；碰撞安全地退化为一次正常 archetype 重建，无额外常驻分配。TDD：`ecs_cached_query_hash_collision_does_not_alias` 使用真实碰撞集合 `{9,29,69,101,117}` 与 `{21,28,50,83,91}`，旧码错误令第二查询返回一个实体，修复后正确为零；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_ecs`/`test_ecs_system` 定向回归通过，`git diff --check` 通过。
+最近更新：**R461 JSON 场景节点容量审查（TDD）** — 二进制 `SCENE_NODES` 导入限制为 64K，但 JSON `nodes` 数组缺少同一边界，会在 16 起始容量上持续倍增 `realloc`；紧凑的 `{}` 节点文档就能制造远超场景模型的堆分配。现 JSON 在扩容/写入 staging 前拒绝第 65,537 个节点，与 BSCN 共享 64K 约束，失败时不会提交部分 Scene。TDD：`load_json_rejects_too_many_nodes` 构造 65,537 个紧凑节点，旧码错误成功，修复后返回 false 且目标节点图保持为空；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_scene_serial` 定向回归通过，`git diff --check` 通过。
+
+此前：**R460 ECS 查询缓存哈希碰撞审查（TDD）** — `world_query_cached()` 以 32 位 FNV-1a 哈希作为查询身份，虽注释称处理碰撞却没有保留原始组件集合；不同查询碰撞时会直接返回另一查询的匹配 archetype，导致实体被错误枚举。现保留哈希作 O(1) bucket 选择，并以两个 `u64` 的精确 128 组件集合键确认命中；碰撞安全地退化为一次正常 archetype 重建，无额外常驻分配。TDD：`ecs_cached_query_hash_collision_does_not_alias` 使用真实碰撞集合 `{9,29,69,101,117}` 与 `{21,28,50,83,91}`，旧码错误令第二查询返回一个实体，修复后正确为零；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_ecs`/`test_ecs_system` 定向回归通过，`git diff --check` 通过。
 
 此前：**R459 ECS 组件 ID 边界审查（TDD）** — `world_register_component` 已拒绝 `id >= ECS_MAX_COMPONENTS`，但 `world_add_component`/`world_get_component`/`world_remove_component` 没有同一守卫；无效 add 会继续把 ID 用作固定 `component_sizes[128]` 的索引，并可能以越界尺寸构造 archetype，造成未定义行为。现三条公开操作在任何表访问前统一拒绝越界 ID；有效热路径仅增加一次常量边界比较，无分配、无锁。TDD：`ecs_rejects_out_of_range_component_id` 证明旧码错误接受 ID=128，修复后增/取为空、删为无操作且随后正常组件迁移仍可用；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_ecs` 定向回归通过，`git diff --check` 通过。
 

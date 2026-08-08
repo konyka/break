@@ -745,6 +745,7 @@ bool scene_instantiate_prefab(World *w, Scene *s, const char *path, Vec3 positio
 - JSON 反序列化支持 materials、meshes、skinned_meshes、nodes、anim_clips 全字段解析
 - `scene_instantiate_prefab` 加载后自动对新节点应用 `position` 偏移（修改 `local_transform` 平移列）
 - 二进制格式与 JSON 格式数据对称，保证 save/load 往返一致性
+- 二进制与 JSON 导入都限制为最多 64K `SceneNode`；JSON 在扩容 staging 数组前拒绝超额节点，避免紧凑恶意文档造成无界堆增长
 
 ### 6.4 VFS 虚拟文件系统 (`vfs.h` / `vfs.c`)
 

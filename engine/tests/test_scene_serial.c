@@ -869,6 +869,32 @@ TEST(load_json_node_without_parent_is_root)
     remove(path);
 }
 
+/* JSON and binary scene imports share the same bounded SceneNode model. A
+ * compact nodes array must not make JSON grow an unbounded staging buffer. */
+TEST(load_json_rejects_too_many_nodes)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_json_nodecap.json");
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fputs("{\"version\":1,\"nodes\":[", fp) >= 0);
+    for (u32 i = 0; i < 64u * 1024u + 1u; i++) {
+        if (i > 0) ASSERT_TRUE(fputc(',', fp) != EOF);
+        ASSERT_TRUE(fputs("{}", fp) >= 0);
+    }
+    ASSERT_TRUE(fputs("]}", fp) >= 0);
+    ASSERT_TRUE(fclose(fp) == 0);
+
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(!scene_load_json(w, &dst, path));
+    ASSERT_TRUE(dst.nodes == NULL);
+    ASSERT_EQ(dst.node_count, 0u);
+
+    scene_serial_free(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
 /* R426: js_u32 wrapped silently on literals > UINT32_MAX (v*10+d). They are
  * now rejected, failing the whole parse instead of loading a wrapped value. */
 TEST(load_json_rejects_oversized_u32_literal)
@@ -945,5 +971,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(instantiate_prefab_offsets_root_nodes_only);
     RUN_TEST(load_json_failure_preserves_old_graph);
     RUN_TEST(load_json_node_without_parent_is_root);
+    RUN_TEST(load_json_rejects_too_many_nodes);
     RUN_TEST(load_json_rejects_oversized_u32_literal);
 TEST_MAIN_END()
