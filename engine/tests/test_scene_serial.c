@@ -1971,6 +1971,9 @@ TEST(load_json_rejects_nonfinite_node_matrix)
     ASSERT_EQ(dst.node_count, 1u);
     ASSERT_TRUE(fabsf(dst.nodes[0].local_transform.e[3][1] - 9.0f) < 1e-6f);
 
+    /* Discarding graph output must not make the same malformed node valid. */
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+
     scene_serial_free(&dst);
     world_destroy(w);
     remove(path);

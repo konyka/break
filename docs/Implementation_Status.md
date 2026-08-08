@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R529 BSCN 丢弃节点时矩阵有限性审查（TDD）** — `scene_load_binary()` 以 `Scene *s == NULL` 只丢弃节点时，此前读取节点矩阵却未验证有限性，导致带 NaN/Inf 的同一 BSCN 因输出目标不同而被接受；提供 `Scene` 时则正确拒绝。现无 Scene 路径同样验证 local/world 两个矩阵，文件有效性不再依赖调用参数。检查仅在显式 BSCN 加载时每节点额外 32 次有限性判断，无分配或帧内成本。TDD：扩展 `load_binary_rejects_nonfinite_scene_values`，旧代码在无 Scene 路径错误成功，修复后拒绝。验证：定向 `test_scene_serial` 76/76 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R530 JSON 丢弃节点时格式校验审查（TDD）** — `scene_load_json()` 以 `Scene *s == NULL` 只丢弃节点时，此前将整个 `nodes` 数组按未知值跳过，绕过节点 schema、容量和 local 矩阵有限性校验，使带 NaN 的同一 JSON 因输出目标不同而被接受。现无 Scene 路径仍逐节点解析到栈上临时结构，仅省去节点 staging 分配；文件有效性不再依赖调用参数。检查仅在显式 JSON 加载时每节点 O(1)，无堆分配或帧内成本。TDD：扩展 `load_json_rejects_nonfinite_node_matrix`，旧代码在无 Scene 路径错误成功，修复后拒绝。验证：定向 `test_scene_serial` 76/76 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R529 BSCN 丢弃节点时矩阵有限性审查（TDD）** — `scene_load_binary()` 以 `Scene *s == NULL` 只丢弃节点时，此前读取节点矩阵却未验证有限性，导致带 NaN/Inf 的同一 BSCN 因输出目标不同而被接受；提供 `Scene` 时则正确拒绝。现无 Scene 路径同样验证 local/world 两个矩阵，文件有效性不再依赖调用参数。检查仅在显式 BSCN 加载时每节点额外 32 次有限性判断，无分配或帧内成本。TDD：扩展 `load_binary_rejects_nonfinite_scene_values`，旧代码在无 Scene 路径错误成功，修复后拒绝。验证：定向 `test_scene_serial` 76/76 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R528 JSON 未知字符串语法审查（TDD）** — 未知字段字符串此前只寻找下一个引号，未校验反斜杠转义或未转义控制字符，令 `"future":"\\q"` 等无效 JSON 被静默接受。现跳过器只接受 JSON 定义的单字符转义或四位十六进制 `\\u` 转义，并拒绝未转义 U+0000..U+001F；合法转义字符串的前向兼容不变。检查仅在显式 JSON 加载时按未知字符串长度线性执行，无分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_strings` 覆盖非法转义、非法 Unicode 转义和控制字符，旧代码错误成功，修复后拒绝；同测保留合法转义兼容。验证：定向 `test_scene_serial` 76/76 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

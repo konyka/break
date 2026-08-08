@@ -1476,16 +1476,14 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
         } else if (js_key(&r, "nodes")) {
             if (seen_nodes) { ok = false; break; }
             seen_nodes = true;
-            if (!s) {
-                /* skip nodes array if no Scene provided */
-                ok = js_skip_value(&r);
-            } else {
-                ok = js_match(&r, '[');
-                if (ok && !js_match(&r, ']')) {
+            /* A NULL Scene discards graph output, but still parses every node
+             * so format validation is identical to a retained graph. */
+            ok = js_match(&r, '[');
+            if (ok && !js_match(&r, ']')) {
                     u32 node_cap = 16;
-                    SceneNode *nodes = (SceneNode *)calloc(node_cap, sizeof(SceneNode));
+                    SceneNode *nodes = s ? (SceneNode *)calloc(node_cap, sizeof(SceneNode)) : NULL;
                     u32 node_count = 0;
-                    if (!nodes) { ok = false; }
+                    if (s && !nodes) { ok = false; }
                     while (ok && !js_peek(&r, ']')) {
                         if (!js_match(&r, '{')) { ok = false; break; }
                         /* Keep JSON import bounded by the same SceneNode cap
@@ -1496,13 +1494,15 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                             ok = false;
                             break;
                         }
-                        if (node_count >= node_cap) {
+                        if (s && node_count >= node_cap) {
                             node_cap *= 2;
                             SceneNode *tmp = (SceneNode *)realloc(nodes, node_cap * sizeof(SceneNode));
                             if (!tmp) { ok = false; break; }
                             nodes = tmp;
                         }
-                        SceneNode *nd = &nodes[node_count++];
+                        SceneNode discarded_node;
+                        SceneNode *nd = s ? &nodes[node_count] : &discarded_node;
+                        node_count++;
                         memset(nd, 0, sizeof(*nd));
                         /* R426: a node missing the "parent" key must default to
                          * root, not to parent 0 (memset left parent_index == 0,
@@ -1545,7 +1545,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         if (!js_match(&r, '}')) { ok = false; break; }
                         if (!js_node_array_separator(&r)) { ok = false; break; }
                     }
-                    if (ok) {
+                    if (ok && s) {
                         /* R422: stage only — s->nodes is committed below once
                          * the entire document has parsed successfully. */
                         free(staged_nodes);
@@ -1556,7 +1556,6 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         free(nodes);
                     }
                     ok = ok && js_match(&r, ']');
-                }
             }
         } else {
             /* unknown top-level key */
