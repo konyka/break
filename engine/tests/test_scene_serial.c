@@ -150,6 +150,45 @@ TEST(save_binary_null_path)
     ASSERT_TRUE(!scene_save_binary(&w, NULL, NULL, NULL));
 }
 
+/* R482: stdio can defer a write error until fclose (for example /dev/full). */
+TEST(save_binary_reports_close_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection facility. */
+#else
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_save_binary(w, NULL, "/dev/full", NULL));
+    world_destroy(w);
+#endif
+}
+
+TEST(save_json_reports_close_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection facility. */
+#else
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_save_json(w, NULL, "/dev/full", NULL));
+    world_destroy(w);
+#endif
+}
+
+TEST(save_prefab_reports_close_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection facility. */
+#else
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Entity entity = world_create_entity(w);
+    ASSERT_TRUE(entity_valid(entity));
+    ASSERT_FALSE(scene_save_prefab(w, &entity, 1u, "/dev/full"));
+    world_destroy(w);
+#endif
+}
+
 /* ----------------------------------------------------------------------- */
 /*  JSON format validation                                                  */
 /* ----------------------------------------------------------------------- */
@@ -947,6 +986,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bytebuf_reserve_rejects_u32_wrap);
     RUN_TEST(prefab_block_rejects_u32_wrap);
     RUN_TEST(save_binary_null_path);
+    RUN_TEST(save_binary_reports_close_failure);
+    RUN_TEST(save_json_reports_close_failure);
+    RUN_TEST(save_prefab_reports_close_failure);
     RUN_TEST(load_json_nonexistent);
     RUN_TEST(save_json_null_world);
     /* Edge cases */

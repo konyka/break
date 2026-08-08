@@ -752,6 +752,8 @@ bool scene_load_json(World *w, Scene *s, const char *path);
 bool scene_instantiate_prefab(World *w, Scene *s, const char *path, Vec3 position);
 ```
 
+二进制、JSON 与 prefab 保存仅在全部写入且 `fclose` 成功后返回成功；缓冲区延迟报告的 I/O 错误会向调用者返回失败，避免将不完整场景当作已持久化数据。
+
 **特性**：
 - JSON 反序列化支持 materials、meshes、skinned_meshes、nodes、anim_clips 全字段解析
 - `scene_instantiate_prefab` 加载后自动对新节点应用 `position` 偏移（修改 `local_transform` 平移列）

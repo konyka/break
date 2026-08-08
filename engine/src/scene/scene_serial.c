@@ -426,7 +426,7 @@ bool scene_save_binary(const World *w, const Scene *s,
     h.magic = BSCN_MAGIC;
     h.version = BSCN_VERSION;
     h.chunk_count = 5;
-    if (fwrite(&h, sizeof(h), 1, fp) != 1) { fclose(fp); goto fail; }
+    bool write_ok = fwrite(&h, sizeof(h), 1, fp) == 1;
 
     u32 base = (u32)sizeof(BscnHeader) + 5u * (u32)sizeof(BscnChunkEntry);
     BscnChunkEntry table[5];
@@ -437,14 +437,16 @@ bool scene_save_binary(const World *w, const Scene *s,
         table[i].size = chunks[i].size;
         cursor += chunks[i].size;
     }
-    if (fwrite(table, sizeof(table), 1, fp) != 1) { fclose(fp); goto fail; }
+    if (write_ok && fwrite(table, sizeof(table), 1, fp) != 1) write_ok = false;
 
-    for (u32 i = 0; i < 5; i++) {
+    for (u32 i = 0; i < 5 && write_ok; i++) {
         if (chunks[i].size && fwrite(chunks[i].data, 1, chunks[i].size, fp) != chunks[i].size) {
-            fclose(fp); goto fail;
+            write_ok = false;
         }
     }
-    fclose(fp);
+    if (ferror(fp)) write_ok = false;
+    if (fclose(fp) != 0) write_ok = false;
+    if (!write_ok) goto fail;
 
     for (u32 i = 0; i < 5; i++) bb_free(&chunks[i]);
     emap_free(&m);
@@ -918,7 +920,8 @@ bool scene_save_json(const World *w, const Scene *s,
         if (!fp) ok = false;
         else {
             if (b.size && fwrite(b.data, 1, b.size, fp) != b.size) ok = false;
-            fclose(fp);
+            if (ferror(fp)) ok = false;
+            if (fclose(fp) != 0) ok = false;
         }
     }
     bb_free(&b);
@@ -1321,7 +1324,10 @@ bool scene_save_prefab(const World *w, const Entity *entities,
             }
         }
     }
-    if (fp) fclose(fp);
+    if (fp) {
+        if (ferror(fp)) ok = false;
+        if (fclose(fp) != 0) ok = false;
+    }
     bb_free(&chunks[0]); bb_free(&chunks[1]);
     emap_free(&m);
     return ok;
