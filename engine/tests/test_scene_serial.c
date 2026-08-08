@@ -974,6 +974,50 @@ TEST(load_json_rejects_incomplete_component_record)
     remove(path);
 }
 
+TEST(load_json_rejects_component_when_archetypes_are_exhausted)
+{
+    char path[64], binary_path[64];
+    test_tmp(path, sizeof path, "test_json_component_archetype_limit.json");
+    test_tmp(binary_path, sizeof binary_path, "test_bscn_component_archetype_limit.bscn");
+    const char *doc =
+        "{\"version\":1,\"entities\":[{\"gen\":1,\"components\":["
+        "{\"type\":10,\"size\":4,\"data\":\"01000000\"}]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *source = world_create();
+    ASSERT_NOT_NULL(source);
+    world_register_component(source, 10u, sizeof(u32));
+    Entity source_entity = world_create_entity(source);
+    ASSERT_TRUE(entity_valid(source_entity));
+    u32 *source_value = (u32 *)world_add_component(source, source_entity, 10u);
+    ASSERT_NOT_NULL(source_value);
+    *source_value = 1u;
+    ASSERT_TRUE(scene_save_binary(source, NULL, binary_path, NULL));
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 type = 0; type <= 10u; type++)
+        world_register_component(w, type, sizeof(u32));
+    for (u32 mask = 1; mask < ECS_MAX_ARCHETYPES; mask++) {
+        Entity e = world_create_entity(w);
+        ASSERT_TRUE(entity_valid(e));
+        for (u32 bit = 0; bit < 10u; bit++) {
+            if (mask & ((u32)1 << bit))
+                ASSERT_NOT_NULL(world_add_component(w, e, bit));
+        }
+    }
+
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    ASSERT_FALSE(scene_load_binary(w, NULL, binary_path));
+    world_destroy(w);
+    world_destroy(source);
+    remove(path);
+    remove(binary_path);
+}
+
 /* An entity has one serialized generation.  Repeating it lets input order
  * select the final unified ID instead of describing one canonical handle. */
 TEST(load_json_rejects_duplicate_entity_generation)
@@ -2366,6 +2410,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_duplicate_component_fields);
     RUN_TEST(load_json_rejects_component_data_before_size);
     RUN_TEST(load_json_rejects_incomplete_component_record);
+    RUN_TEST(load_json_rejects_component_when_archetypes_are_exhausted);
     RUN_TEST(load_json_rejects_duplicate_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_entity_components);
     RUN_TEST(load_json_rejects_duplicate_entities_key);

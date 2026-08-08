@@ -688,7 +688,11 @@ static bool load_entities_chunk(World *w, Reader *r,
             }
             if (type < ECS_MAX_COMPONENTS && w->component_sizes[type]) {
                 declared_known[type]++;
-                world_add_component(w, e, type);
+                if (!world_add_component(w, e, type)) {
+                    rollback_entities(w, ents, i + 1u);
+                    free(ents);
+                    return false;
+                }
             }
         }
     }
@@ -1437,7 +1441,8 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
         if (got_data && type < ECS_MAX_COMPONENTS &&
             w->component_sizes[type] == size) {
             void *dst = world_add_component(w, ent, type);
-            if (dst) memcpy(dst, data, size);
+            if (!dst) goto fail;
+            memcpy(dst, data, size);
         }
         if (data != stack_buf) free(data);
         data = stack_buf;
