@@ -1,6 +1,7 @@
 #include "net_replication.h"
 
 #include <platform/time.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -248,7 +249,7 @@ static bool net_repl_peer_apply_line(NetReplicator *rep, const char *line) {
         return false;
     /* R418: reject out-of-range ports instead of truncating into u16
      * (70000 silently wrapped to 4464, registering the wrong peer address). */
-    if (port > 65535u)
+    if (port > 65535u || !isfinite(rtt) || !isfinite(rt))
         return false;
 
     NetAddress addr = {0};

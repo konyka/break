@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R493 NetRep 增量日志读取错误状态保持审查（TDD）** — `net_replicator_peer_load_delta()` 设计为缺失可选日志返回成功，但先前把已成功打开后的 `fgets` 读错误与 `fclose` 错误也误作“无日志”成功；若错误发生在部分 delta 应用后，运行时 peer 表还会保留部分新状态。现缺失文件仍保持可选成功语义，已打开日志则要求读取和关闭成功；否则恢复固定 peer 表快照及计数并返回 false。修改仅在显式持久化导入路径，不影响网络热路径、无堆分配。TDD：`peer_load_delta_reports_read_failure_preserves_existing_peers` 将已有 peer 传给目录路径注入真实读错误，旧码错误成功，修复后返回 false 且 peer 保持；模块文档同步。验证：`test_net_replication` 定向回归 49/49 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R494 NetRep 持久化 RTT 非有限值审查（TDD）** — peer 基线和增量文本通过 `%f` 读取 RTT，但先前未验证有限性；`nan`/`inf` 可登记为 peer 的 RTT 状态，并直接传播到诊断/UI 或后续计算。现共享行解析器在建 peer 前要求两个 RTT 值均为有限数，非法记录与端口溢出记录同样跳过，单文件、目录基线和 delta 导入一致受保护。该检查仅在显式持久化导入执行，不影响网络热路径、无分配。TDD：`peer_load_rejects_nonfinite_rtt` 写入一条 `nan inf` 记录和一条合法记录，旧码错误注册两条，修复后只保留合法 peer 且 RTT 有限；模块文档同步。验证：`test_net_replication` 定向回归 50/50 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R493 NetRep 增量日志读取错误状态保持审查（TDD）** — `net_replicator_peer_load_delta()` 设计为缺失可选日志返回成功，但先前把已成功打开后的 `fgets` 读错误与 `fclose` 错误也误作“无日志”成功；若错误发生在部分 delta 应用后，运行时 peer 表还会保留部分新状态。现缺失文件仍保持可选成功语义，已打开日志则要求读取和关闭成功；否则恢复固定 peer 表快照及计数并返回 false。修改仅在显式持久化导入路径，不影响网络热路径、无堆分配。TDD：`peer_load_delta_reports_read_failure_preserves_existing_peers` 将已有 peer 传给目录路径注入真实读错误，旧码错误成功，修复后返回 false 且 peer 保持；模块文档同步。验证：`test_net_replication` 定向回归 49/49 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R492 NetRep 目录条目读取错误状态保持审查（TDD）** — `net_replicator_peer_load_dir()` 先前只要目录成功打开就清空 peer 表，并忽略已打开 `.peer` 的 `ferror()` 与 `fclose()`；POSIX 下名为 `bad.peer` 的目录可通过 `fopen`，读取失败却会被当作成功空文件，API 错报成功并提交空/部分基线。现目录扫描对枚举后无法打开的条目仍保持原有跳过语义，但任一已打开 `.peer` 的读取或关闭失败都会关闭目录、恢复固定 peer 表快照及计数并返回 false；仅影响显式持久化导入，不影响网络热路径、无堆分配。TDD：`peer_load_dir_reports_entry_read_failure_preserves_existing_peers` 创建 `.peer` 目录注入真实读错误，旧码错误成功，修复后返回 false 且已有 peer 保持；模块文档同步。验证：`test_net_replication` 定向回归 48/48 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
