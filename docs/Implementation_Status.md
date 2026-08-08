@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R462 音频 master 总线重合成审查（TDD）** — `audio_bus_set_gain()` 原先仅重算 `src->bus == bus` 的源；master（bus 0）实际参与每条路由的乘法，但调节它不会把新增益提交给已路由至 music/sfx 等子总线的活跃 source，直到该 source 或子总线再次改变才会修正。现 master 变更扫描固定 32 槽并重算所有已分配 source，普通 bus 继续只更新自己的成员；无分配、无锁、没有新增音频热路径开销。TDD：`master_gain_reapplies_to_sub_bus_sources` 在旧码下确认 music 源的已应用增益错误保持 0.8，修复后 master=0.5 立即为 0.4；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_audio` 定向回归通过，`git diff --check` 通过。
+最近更新：**R463 BVH 射线可选输出审查（TDD）** — 高层 `physics_raycast()` 已允许只查询布尔命中（两个输出指针均可为 NULL），但底层 `bvh_raycast()` 在真实命中后无条件写 `hit->object_index/t`；直接调用者只想判定遮挡时传 NULL 会崩溃。现仅在 `hit != NULL` 时写回最近命中记录，遍历、裁剪与最近命中计算均不变。TDD：`bvh_raycast_allows_null_hit_output` 对真实单 AABB 命中传 NULL，旧码在命中处崩溃，修复后安全返回 true；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_physics` 定向回归通过，`git diff --check` 通过。
+
+此前：**R462 音频 master 总线重合成审查（TDD）** — `audio_bus_set_gain()` 原先仅重算 `src->bus == bus` 的源；master（bus 0）实际参与每条路由的乘法，但调节它不会把新增益提交给已路由至 music/sfx 等子总线的活跃 source，直到该 source 或子总线再次改变才会修正。现 master 变更扫描固定 32 槽并重算所有已分配 source，普通 bus 继续只更新自己的成员；无分配、无锁、没有新增音频热路径开销。TDD：`master_gain_reapplies_to_sub_bus_sources` 在旧码下确认 music 源的已应用增益错误保持 0.8，修复后 master=0.5 立即为 0.4；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_audio` 定向回归通过，`git diff --check` 通过。
 
 此前：**R461 JSON 场景节点容量审查（TDD）** — 二进制 `SCENE_NODES` 导入限制为 64K，但 JSON `nodes` 数组缺少同一边界，会在 16 起始容量上持续倍增 `realloc`；紧凑的 `{}` 节点文档就能制造远超场景模型的堆分配。现 JSON 在扩容/写入 staging 前拒绝第 65,537 个节点，与 BSCN 共享 64K 约束，失败时不会提交部分 Scene。TDD：`load_json_rejects_too_many_nodes` 构造 65,537 个紧凑节点，旧码错误成功，修复后返回 false 且目标节点图保持为空；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_scene_serial` 定向回归通过，`git diff --check` 通过。
 

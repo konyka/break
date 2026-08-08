@@ -49,6 +49,8 @@ typedef struct {
     f32 t;         /* hit distance */
 } BVHRayHit;
 
+/* `hit` is optional when the caller only needs to know whether any object
+ * intersects the ray. */
 bool bvh_raycast(const BVH *bvh, Vec3 origin, Vec3 dir, f32 max_dist, BVHRayHit *hit);
 
 /* Single-object query: find all objects overlapping a given AABB */

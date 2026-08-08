@@ -956,7 +956,7 @@ Vec3  aabb_overlap_depth(AABB a, AABB b);
 
 - **宽相**: AABB-AABB 重叠检测
 - **窄相**: 接触约束求解
-- **射线检测**: `physics_raycast()` 支持最大距离与命中体返回
+- **射线检测**: `physics_raycast()` 支持最大距离与命中体返回；底层 `bvh_raycast()` 的命中记录为可选输出，调用方可只查询是否命中
 
 ### 8.3 物理世界
 

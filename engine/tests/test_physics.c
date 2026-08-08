@@ -388,6 +388,21 @@ TEST(bvh_raycast_test)
     bvh_destroy(&bvh);
 }
 
+TEST(bvh_raycast_allows_null_hit_output)
+{
+    /* R463: callers may only need the boolean query result. The PhysicsWorld
+     * wrapper already permits NULL output pointers, so direct BVH queries
+     * must not dereference a missing hit record after finding an object. */
+    BVH bvh;
+    bvh_init(&bvh, 1);
+    BVHAABB aabb = { .min = vec3(4, -1, -1), .max = vec3(6, 1, 1) };
+    bvh_build(&bvh, &aabb, 1);
+
+    ASSERT_TRUE(bvh_raycast(&bvh, vec3(0, 0, 0), vec3(1, 0, 0),
+                            10.0f, NULL));
+    bvh_destroy(&bvh);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Edge Cases                                                              */
 /* ----------------------------------------------------------------------- */
@@ -1087,6 +1102,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bvh_query_pairs_reports_all_overlaps);
     RUN_TEST(bvh_coincident_objects_not_dropped);
     RUN_TEST(bvh_raycast_test);
+    RUN_TEST(bvh_raycast_allows_null_hit_output);
     /* Edge cases */
     RUN_TEST(physics_empty_world_raycast);
     RUN_TEST(physics_zero_velocity_body);

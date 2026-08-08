@@ -575,8 +575,10 @@ bool bvh_raycast(const BVH *bvh, Vec3 origin, Vec3 dir, f32 max_dist, BVHRayHit 
     bvh_raycast_recursive(bvh, bvh->root, origin, inv_dir, &best_t, &best_obj);
 
     if (best_obj != BVH_NULL) {
-        hit->object_index = best_obj;
-        hit->t = best_t;
+        if (hit) {
+            hit->object_index = best_obj;
+            hit->t = best_t;
+        }
         return true;
     }
     return false;
