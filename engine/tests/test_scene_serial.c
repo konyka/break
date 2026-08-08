@@ -309,6 +309,32 @@ TEST(load_binary_rejects_duplicate_entity_component_type)
     remove(path);
 }
 
+/* Saved entities are live handles, whose generations are never zero.  Loading
+ * zero as the newly-created generation instead silently changes the identity. */
+TEST(load_binary_rejects_zero_entity_generation)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_zero_entity_generation.bscn");
+    const u32 entity_chunk[] = { 1u, 0u, 0u };
+    const u32 base = (u32)sizeof(BscnHeader) + (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 1 };
+    BscnChunkEntry entry = { .type = BSCN_CHUNK_ENTITIES,
+                             .offset = base, .size = sizeof(entity_chunk) };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(entity_chunk, sizeof(entity_chunk), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* COMPONENTS must agree with the archetype declared by ENTITIES. */
 TEST(load_binary_rejects_component_not_declared_by_entity)
 {
@@ -723,6 +749,23 @@ TEST(load_json_empty_path)
     World w = {0};
     /* Empty path should fail gracefully */
     ASSERT_TRUE(!scene_load_json(&w, NULL, ""));
+}
+
+TEST(load_json_rejects_zero_entity_generation)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_zero_entity_generation.json");
+    const char *doc = "{\"version\":1,\"entities\":[{\"gen\":0,\"components\":[]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
 }
 
 TEST(save_json_empty_path)
@@ -1595,6 +1638,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_duplicate_component_type);
     RUN_TEST(load_binary_rejects_known_chunk_trailing_bytes);
     RUN_TEST(load_binary_rejects_duplicate_entity_component_type);
+    RUN_TEST(load_binary_rejects_zero_entity_generation);
     RUN_TEST(load_binary_rejects_component_not_declared_by_entity);
     RUN_TEST(load_binary_rejects_declared_component_without_instance);
     RUN_TEST(load_binary_rejects_declared_component_without_type_record);
@@ -1618,6 +1662,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_empty_path);
     RUN_TEST(save_binary_empty_path);
     RUN_TEST(load_json_empty_path);
+    RUN_TEST(load_json_rejects_zero_entity_generation);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);

@@ -609,6 +609,12 @@ static bool load_entities_chunk(World *w, Reader *r,
             rollback_entities(w, ents, i);
             free(ents); return false;
         }
+        /* Live entity handles always have a nonzero generation.  Retaining
+         * world_create_entity's generation for a zero disk value changes ID. */
+        if (saved_gen == 0) {
+            rollback_entities(w, ents, i);
+            free(ents); return false;
+        }
         /* R396: comp_count drives an unbounded inner loop + world_add_component.
          * Saves only emit a->key.count (<= ECS_MAX_COMPONENTS). Also derive a
          * bound from bytes left so mutated/truncated chunks fail before work. */
@@ -632,10 +638,8 @@ static bool load_entities_chunk(World *w, Reader *r,
         }
         /* Restore the saved generation so (index, generation) identity — the
          * stable "unified ID" shared with the scene — round-trips intact. */
-        if (saved_gen != 0) {
-            w->entities[e.index].generation = saved_gen;
-            e.generation = saved_gen;
-        }
+        w->entities[e.index].generation = saved_gen;
+        e.generation = saved_gen;
         ents[i] = e;
         u64 seen_types_lo = 0;
         u64 seen_types_hi = 0;
@@ -1291,8 +1295,8 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                              * and asserted by generation_restore_roundtrip — was
                              * lost on JSON round-trips. Restore it identically. */
                             u32 g = 0;
-                            ok = js_u32(&r, &g);
-                            if (ok && g != 0) {
+                            ok = js_u32(&r, &g) && g != 0;
+                            if (ok) {
                                 w->entities[e.index].generation = g;
                                 e.generation = g;
                                 created[created_count - 1u] = e;
