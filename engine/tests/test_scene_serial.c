@@ -594,6 +594,39 @@ TEST(load_binary_rejects_duplicate_scene_nodes_chunk)
     remove(path);
 }
 
+/* v1 node flags only encode has_mesh (bit 0) and skinned (bit 1).  Unknown
+ * bits cannot be produced by the writer and must not be silently discarded. */
+TEST(load_binary_rejects_unknown_node_flags)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_unknown_node_flags.bscn");
+    const u32 base = (u32)sizeof(BscnHeader) + (u32)sizeof(BscnChunkEntry);
+    const u32 count = 1u;
+    Mat4 identity = mat4_identity();
+    const u32 fields[] = { UINT32_MAX, 0u, 0u, 0u, 4u };
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 1 };
+    BscnChunkEntry entry = {
+        .type = BSCN_CHUNK_SCENE_NODES,
+        .offset = base,
+        .size = (u32)sizeof(count) + 2u * (u32)sizeof(identity) + (u32)sizeof(fields)
+    };
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&count, sizeof(count), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&identity, sizeof(identity), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&identity, sizeof(identity), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(fields, sizeof(fields), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(load_binary_rejects_duplicate_resources_chunk)
 {
     char path[64];
@@ -1940,6 +1973,23 @@ TEST(load_json_rejects_duplicate_node_fields)
     remove(path);
 }
 
+TEST(load_json_rejects_unknown_node_flags)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_unknown_node_flags.json");
+    const char *doc = "{\"version\":1,\"nodes\":[{\"flags\":4}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_TRUE(fclose(fp) == 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(load_json_rejects_nonfinite_node_matrix)
 {
     char path[64]; test_tmp(path, sizeof path, "test_json_nonfinite_matrix.json");
@@ -2068,6 +2118,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_duplicate_unknown_component_type);
     RUN_TEST(load_binary_rejects_duplicate_components_chunk);
     RUN_TEST(load_binary_rejects_duplicate_scene_nodes_chunk);
+    RUN_TEST(load_binary_rejects_unknown_node_flags);
     RUN_TEST(load_binary_rejects_duplicate_resources_chunk);
     RUN_TEST(load_binary_rejects_overlapping_chunk_payloads);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
@@ -2118,6 +2169,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_failure_preserves_old_graph);
     RUN_TEST(load_json_node_without_parent_is_root);
     RUN_TEST(load_json_rejects_duplicate_node_fields);
+    RUN_TEST(load_json_rejects_unknown_node_flags);
     RUN_TEST(load_json_rejects_nonfinite_node_matrix);
     RUN_TEST(load_json_rejects_too_many_nodes);
     RUN_TEST(load_json_rejects_oversized_u32_literal);

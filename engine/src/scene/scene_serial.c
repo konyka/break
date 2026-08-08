@@ -592,6 +592,7 @@ static void rollback_entities(World *w, Entity *ents, u32 count) {
 
 #define BSCN_MAX_LOAD_ENTITIES ECS_MAX_ENTITIES
 #define BSCN_MAX_LOAD_NODES    (64u * 1024u)
+#define SCENE_NODE_FLAG_MASK   3u
 
 static bool load_entities_chunk(World *w, Reader *r,
                                 Entity **out_entities, u32 *out_count,
@@ -778,14 +779,15 @@ static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
     if (!s) {
         /* Discarding nodes must not weaken validation of their transforms. */
         for (u32 i = 0; i < n; i++) {
-            Mat4 local, world; u32 dummy;
+            Mat4 local, world; u32 dummy, flags;
             if (!rd_bytes(r, local.e, sizeof(local)) ||
                 !rd_bytes(r, world.e, sizeof(world)) ||
                 !rd_u32(r, &dummy) || !rd_u32(r, &dummy) ||
                 !rd_u32(r, &dummy) || !rd_u32(r, &dummy) ||
-                !rd_u32(r, &dummy)) return false;
+                !rd_u32(r, &flags)) return false;
             if (!scene_mat4_finite(&local) || !scene_mat4_finite(&world))
                 return false;
+            if (flags & ~SCENE_NODE_FLAG_MASK) return false;
         }
         return true;
     }
@@ -809,6 +811,7 @@ static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
             !rd_u32(r, &flags)) {
             free(nodes); return false;
         }
+        if (flags & ~SCENE_NODE_FLAG_MASK) { free(nodes); return false; }
         nd->has_mesh = (flags & 1u) != 0;
         nd->skinned  = (flags & 2u) != 0;
         if (!scene_mat4_finite(&nd->local_transform) ||
@@ -1541,6 +1544,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         }
                         nd->has_mesh = (flags & 1u) != 0;
                         nd->skinned  = (flags & 2u) != 0;
+                        if (flags & ~SCENE_NODE_FLAG_MASK) { ok = false; break; }
                         if (!ok) break;
                         if (!js_match(&r, '}')) { ok = false; break; }
                         if (!js_node_array_separator(&r)) { ok = false; break; }
