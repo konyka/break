@@ -1449,6 +1449,12 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
         (void)js_match(&r, ',');
     }
     ok = ok && js_match(&r, '}');
+    /* A valid scene occupies the whole document; permit only trailing JSON
+     * whitespace after the root object, never an ignored second value. */
+    if (ok) {
+        js_skip_ws(&r);
+        ok = r.p == r.end;
+    }
     /* R422: commit the staged nodes only on full success; otherwise drop the
      * staging buffer and leave the caller's old scene graph intact. */
     if (s && ok && nodes_staged) {

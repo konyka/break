@@ -931,6 +931,25 @@ TEST(load_json_rejects_duplicate_nodes_key)
     remove(path);
 }
 
+/* A scene document must consume the complete file.  Ignoring a trailing value
+ * makes a valid prefix hide appended, unparsed scene data. */
+TEST(load_json_rejects_trailing_content)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_trailing_content.json");
+    const char *doc = "{\"version\":1,\"entities\":[]}{}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_TRUE(fclose(fp) == 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -1879,6 +1898,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_duplicate_entity_components);
     RUN_TEST(load_json_rejects_duplicate_entities_key);
     RUN_TEST(load_json_rejects_duplicate_nodes_key);
+    RUN_TEST(load_json_rejects_trailing_content);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
