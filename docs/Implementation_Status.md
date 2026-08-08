@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R516 BSCN 未知组件类型记录唯一性审查（TDD）** — v1 写入端按类型分组且每个类型只发一条记录，但加载器此前仅对当前 0..127 范围去重；高 ID 的重复记录会被两次跳过并报告成功，使未来类型定义出现顺序相关的歧义。现保留未知 payload 的前向兼容跳过，却在读取每个类型头时以固定 128 项完整 ID 列表检查先前记录，任何 `u32` 类型重复均拒绝。最多 128 条记录，额外至多 8,128 次比较，仅显式加载、无堆分配或帧内成本。TDD：`load_binary_rejects_duplicate_unknown_component_type` 写入两条 type 128 记录，旧加载器错误成功，修复后拒绝。验证：定向 `test_scene_serial` 62/62 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R517 JSON 重复组件对象审查（TDD）** — JSON 写入端对每个实体每种组件只输出一个完整对象，但读取端此前允许数组中同一 type 重复，后对象静默覆盖前值。现 `json_load_components()` 使用固定 128 项类型列表，限制每个实体的组件对象数并拒绝任意完整 `u32` type（包括未知 type）重复；未知类型仍仅跳过、不要求本地注册，保持前向兼容。检查仅在显式 JSON 加载中执行，最多 8,128 次比较，无堆分配或帧内成本。TDD：`load_json_rejects_duplicate_component_type` 为 type 1 写入两个不同值，旧加载器错误成功，修复后拒绝。验证：定向 `test_scene_serial` 63/63 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R516 BSCN 未知组件类型记录唯一性审查（TDD）** — v1 写入端按类型分组且每个类型只发一条记录，但加载器此前仅对当前 0..127 范围去重；高 ID 的重复记录会被两次跳过并报告成功，使未来类型定义出现顺序相关的歧义。现保留未知 payload 的前向兼容跳过，却在读取每个类型头时以固定 128 项完整 ID 列表检查先前记录，任何 `u32` 类型重复均拒绝。最多 128 条记录，额外至多 8,128 次比较，仅显式加载、无堆分配或帧内成本。TDD：`load_binary_rejects_duplicate_unknown_component_type` 写入两条 type 128 记录，旧加载器错误成功，修复后拒绝。验证：定向 `test_scene_serial` 62/62 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R515 实体 generation 非零句柄审查（TDD）** — BSCN 写入端只枚举存活实体，generation 必为非零；但读取端此前将磁盘零值保留为 `world_create_entity()` 的 generation 1，加载虽成功却静默改变统一 `(index,generation)` ID。JSON 的显式 `"gen":0` 也有同一不对称。现 BSCN `ENTITIES` 在创建实体前拒绝零 generation；JSON 显式 `gen` 同样要求非零，而缺失旧字段继续沿用新建 generation 以保持兼容。检查只在显式加载时每实体或每个 `gen` 字段 O(1)，无分配或帧内成本。TDD：`load_binary_rejects_zero_entity_generation` 与 `load_json_rejects_zero_entity_generation` 均在旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 61/61 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

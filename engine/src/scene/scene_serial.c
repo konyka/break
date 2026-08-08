@@ -1187,7 +1187,10 @@ static bool js_skip_value(JsonR *r) {
 static bool json_load_components(World *w, JsonR *r, Entity ent) {
     if (!js_match(r, '[')) return false;
     if (js_match(r, ']')) return true;
+    ComponentType seen_types[ECS_MAX_COMPONENTS];
+    u32 type_count = 0;
     do {
+        if (type_count >= ECS_MAX_COMPONENTS) return false;
         if (!js_match(r, '{')) return false;
         u32 type = 0, size = 0;
         bool got_data = false;
@@ -1220,6 +1223,13 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
             (void)js_match(r, ',');
         }
         if (!js_match(r, '}')) goto fail;
+
+        /* JSON output, like BSCN, groups one object per component type.  Keep
+         * unknown IDs skippable but reject duplicate definitions by full ID. */
+        for (u32 prev = 0; prev < type_count; prev++) {
+            if (seen_types[prev] == type) goto fail;
+        }
+        seen_types[type_count++] = type;
 
         if (got_data && type < ECS_MAX_COMPONENTS &&
             w->component_sizes[type] == size) {

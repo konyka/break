@@ -803,6 +803,29 @@ TEST(load_json_rejects_zero_entity_generation)
     remove(path);
 }
 
+/* JSON saves contain one complete object for each entity component.  Duplicate
+ * type objects otherwise make the final value depend on input order. */
+TEST(load_json_rejects_duplicate_component_type)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_duplicate_component_type.json");
+    const char *doc =
+        "{\"version\":1,\"entities\":[{\"gen\":1,\"components\":["
+        "{\"type\":1,\"size\":4,\"data\":\"11111111\"},"
+        "{\"type\":1,\"size\":4,\"data\":\"22222222\"}]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, 1u, sizeof(u32));
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -1699,6 +1722,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(save_binary_empty_path);
     RUN_TEST(load_json_empty_path);
     RUN_TEST(load_json_rejects_zero_entity_generation);
+    RUN_TEST(load_json_rejects_duplicate_component_type);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
