@@ -72,6 +72,25 @@ TEST(scene_state_roundtrip)
     remove(TMP_STATE);
 }
 
+/* R484: stdio may report state-save write errors only during fclose. */
+TEST(scene_state_save_reports_close_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection facility. */
+#else
+    Camera cam = {0};
+    f32 sun_a = 0, sun_e = 0, exp = 1, scale = 1, wy = 0;
+    bool wen = false;
+    PhysicsWorld *pw = physics_world_create(1);
+    ASSERT_NOT_NULL(pw);
+
+    SceneStateCtx ctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_FALSE(scene_state_save("/dev/full", &ctx));
+
+    physics_world_destroy(pw);
+#endif
+}
+
 /* R393: pc had no cap — UINT32_MAX against a padded file could loop forever on
  * skip-record freads (DoS). */
 TEST(scene_state_rejects_excessive_pc)
@@ -257,6 +276,7 @@ TEST(scene_state_load_without_water_tail)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
+    RUN_TEST(scene_state_save_reports_close_failure);
     RUN_TEST(scene_state_rejects_excessive_pc);
     RUN_TEST(scene_state_rejects_pc_past_eof);
     RUN_TEST(scene_state_load_failure_preserves_runtime);

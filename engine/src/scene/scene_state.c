@@ -122,7 +122,8 @@ bool scene_state_save(const char *path, const SceneStateCtx *ctx) {
     }
     sv_ok &= fwrite(ctx->water_y, sizeof(f32), 1, sf) == 1;
     sv_ok &= fwrite(ctx->water_enabled, sizeof(bool), 1, sf) == 1;
-    fclose(sf);
+    if (ferror(sf)) sv_ok = false;
+    if (fclose(sf) != 0) sv_ok = false;
     if (!sv_ok) LOG_WARN("Scene state save: partial write failure");
     return sv_ok;
 }

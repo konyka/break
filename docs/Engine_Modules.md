@@ -1399,6 +1399,8 @@ bool scene_instantiate_prefab(World *w, Scene *s,
 | `scene_save.bscn` | BSCN 二进制 | ECS 实体 + 组件 + 场景图 |
 | `scene_state.bin` | 原始二进制 | 相机/太阳/曝光/物理体状态 |
 
+`scene_state_save()` 仅在完整写入且关闭文件成功后返回成功，关闭阶段才发现的缓冲 I/O 错误会返回给调用方，避免将未持久化的运行时状态当作有效存档。
+
 快捷键：`B` 保存 / `N` 加载 / `Shift+B` 导出 JSON
 
 **单元测试：** `tests/test_scene_serial.c` (14 测试用例，覆盖 BSCN 魔数/版本验证、加载错误处理、截断/溢出边界条件、JSON 格式)
