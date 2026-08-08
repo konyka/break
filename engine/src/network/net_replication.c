@@ -822,6 +822,12 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
 #if !defined(ENGINE_PLATFORM_WINDOWS)
     DIR *d = opendir(dir);
     if (!d) return false;
+    /* Directory scans tolerate entries that disappear before fopen, but once
+     * an entry is open, a read/close error invalidates the whole snapshot. */
+    NetRepPeerStats saved_peers[NET_REP_MAX_PEERS];
+    memcpy(saved_peers, rep->peers, sizeof(saved_peers));
+    u32 saved_count = rep->peer_count;
+    u32 saved_evicted = rep->peer_evicted;
     rep->peer_count = 0u;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
@@ -835,7 +841,15 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
         char line[512];
         while (fgets(line, sizeof(line), f))
             net_repl_peer_apply_line(rep, line);
-        fclose(f);
+        bool read_ok = !ferror(f);
+        if (fclose(f) != 0) read_ok = false;
+        if (!read_ok) {
+            closedir(d);
+            memcpy(rep->peers, saved_peers, sizeof(saved_peers));
+            rep->peer_count = saved_count;
+            rep->peer_evicted = saved_evicted;
+            return false;
+        }
     }
     closedir(d);
 

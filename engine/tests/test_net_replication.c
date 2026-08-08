@@ -1248,6 +1248,37 @@ TEST(peer_load_dir_failure_preserves_existing_peers)
 #endif
 }
 
+/* An entry can look like a peer file and open successfully while failing on
+ * read (a directory named *.peer on POSIX). Do not commit that partial scan. */
+TEST(peer_load_dir_reports_entry_read_failure_preserves_existing_peers)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* Opening a directory as a stream is POSIX-specific error injection. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20980u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    char dir[128], bad_entry[256];
+    test_tmp(dir, sizeof(dir), "r492_netrep_dir_read_error");
+    ASSERT_EQ(mkdir(dir, 0755), 0);
+    int n = snprintf(bad_entry, sizeof(bad_entry), "%s/bad.peer", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(bad_entry));
+    ASSERT_EQ(mkdir(bad_entry, 0755), 0);
+
+    ASSERT_FALSE(net_replicator_peer_load_dir(&rep, dir));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
+    ASSERT_TRUE(net_address_equal(&rep.peers[0].addr, &peer.addr));
+
+    ASSERT_EQ(rmdir(bad_entry), 0);
+    ASSERT_EQ(rmdir(dir), 0);
+#endif
+}
+
 TEST(peer_save_delta)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1908,6 +1939,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_dir_rejects_path_truncation);
     RUN_TEST(peer_load_dir_skips_truncated_entry_path);
     RUN_TEST(peer_load_dir_failure_preserves_existing_peers);
+    RUN_TEST(peer_load_dir_reports_entry_read_failure_preserves_existing_peers);
     RUN_TEST(peer_save_delta);
     RUN_TEST(peer_save_delta_keeps_dirty_on_write_failure);
     RUN_TEST(peer_delta_rotate);
