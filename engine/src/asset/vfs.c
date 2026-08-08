@@ -49,6 +49,7 @@ void vfs_destroy(VFS *vfs) {
 bool vfs_mount_dir(VFS *vfs, const char *dir_path) {
     /* R105-1: NULL check prevents strncpy UB and LOG_INFO %s NULL crash */
     if (!vfs || !dir_path || vfs->mount_count >= VFS_MAX_MOUNTS) return false;
+    if (strlen(dir_path) >= VFS_MAX_PATH) return false;
     u32 idx = vfs->mount_count++;
     vfs->mounts[idx].type = VFS_MOUNT_DIR;
     strncpy(vfs->mounts[idx].path, dir_path, VFS_MAX_PATH - 1);

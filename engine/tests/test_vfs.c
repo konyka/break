@@ -105,6 +105,21 @@ TEST(vfs_mount_dir_null_vfs)
     ASSERT_TRUE(!vfs_mount_dir(NULL, "/tmp"));
 }
 
+/* R475: the mount root is persisted in VFS_MAX_PATH bytes; accepting a
+ * longer value would redirect every later relative lookup to its prefix. */
+TEST(vfs_mount_dir_rejects_path_truncation)
+{
+    char path[VFS_MAX_PATH + 1u];
+    memset(path, 'x', sizeof(path) - 1u);
+    path[sizeof(path) - 1u] = '\0';
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_FALSE(vfs_mount_dir(vfs, path));
+    ASSERT_EQ(vfs->mount_count, 0u);
+    vfs_destroy(vfs);
+}
+
 TEST(vfs_open_read_dir)
 {
     ensure_dir(TMP_DIR);
@@ -545,6 +560,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_destroy_null);
     RUN_TEST(vfs_mount_dir_basic);
     RUN_TEST(vfs_mount_dir_null_vfs);
+    RUN_TEST(vfs_mount_dir_rejects_path_truncation);
     RUN_TEST(vfs_open_read_dir);
     RUN_TEST(vfs_open_nonexistent);
     RUN_TEST(vfs_open_null_vfs);
