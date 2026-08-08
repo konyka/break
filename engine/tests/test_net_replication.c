@@ -1118,6 +1118,33 @@ TEST(peer_save_dir)
 #endif
 }
 
+/* R481: each directory baseline file must propagate flush/close failures.
+ * A peer filename symlinked to /dev/full makes fopen succeed but close fail. */
+TEST(peer_save_dir_reports_write_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* symlink and /dev/full are POSIX error-injection facilities. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20950u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    char dir[128], path[256];
+    test_tmp(dir, sizeof(dir), "r481_netrep_write");
+    ASSERT_EQ(mkdir(dir, 0755), 0);
+    int n = snprintf(path, sizeof(path), "%s/peer_000_127.0.0.1_20950.peer", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(path));
+    ASSERT_EQ(symlink("/dev/full", path), 0);
+    ASSERT_FALSE(net_replicator_peer_save_dir(&rep, dir));
+    ASSERT_EQ(unlink(path), 0);
+    ASSERT_EQ(rmdir(dir), 0);
+#endif
+}
+
 /* R477: peer_save_dir formats each output filename in path[512]. A directory
  * that leaves no room must not silently save a peer under a truncated name. */
 TEST(peer_save_dir_rejects_path_truncation)
@@ -1827,6 +1854,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_reports_write_failure);
     RUN_TEST(peer_save_dir);
+    RUN_TEST(peer_save_dir_reports_write_failure);
     RUN_TEST(peer_save_dir_rejects_path_truncation);
     RUN_TEST(peer_load_dir_skips_truncated_entry_path);
     RUN_TEST(peer_save_delta);

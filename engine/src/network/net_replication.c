@@ -762,7 +762,8 @@ bool net_replicator_peer_save(const NetReplicator *rep, const char *path) {
     fprintf(f, "count %u\n", rep->peer_count);
     for (u32 i = 0u; i < rep->peer_count; i++)
         net_repl_peer_write_line(f, &rep->peers[i]);
-    bool write_ok = !ferror(f) && fclose(f) == 0;
+    bool write_ok = !ferror(f);
+    if (fclose(f) != 0) write_ok = false;
     return write_ok;
 }
 
@@ -795,7 +796,9 @@ bool net_replicator_peer_save_dir(const NetReplicator *rep, const char *dir) {
         if (!f) return false;
         fprintf(f, "# break netrep peer v1\n");
         net_repl_peer_write_line(f, p);
-        fclose(f);
+        bool write_ok = !ferror(f);
+        if (fclose(f) != 0) write_ok = false;
+        if (!write_ok) return false;
     }
     return true;
 }
@@ -883,7 +886,8 @@ bool net_replicator_peer_save_delta(NetReplicator *rep, const char *path) {
     /* R435: size check before close; rotate once over the threshold. A failed
      * rotation keeps the appended log readable, so the save result stands. */
     long size = ftell(f);
-    bool write_ok = !ferror(f) && fclose(f) == 0;
+    bool write_ok = !ferror(f);
+    if (fclose(f) != 0) write_ok = false;
     if (!write_ok) return false;
     for (u32 i = 0u; i < rep->peer_count; i++) {
         if (rep->peers[i].dirty) rep->peers[i].dirty = false;

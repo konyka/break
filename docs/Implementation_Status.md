@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R480 NetRep 全量 peer 保存写失败审查（TDD）** — `net_replicator_peer_save()` 先前只检查 `fopen`，忽略缓冲写入与 `fclose` 错误；写入 `/dev/full` 仍报告 checkpoint 成功，调用方会误以为状态已持久化。现返回值要求 `ferror` 为假且 `fclose` 成功，失败如实返回 false；只发生在显式持久化操作，无网络热路径成本、无分配。TDD：`peer_save_reports_write_failure` 用 `/dev/full` 注入真实关闭失败，旧码错误成功，修复后返回 false；模块文档同步。验证：`test_net_replication` 定向回归 44/44 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R481 NetRep 目录基线写失败审查（TDD）** — `net_replicator_peer_save_dir()` 对每个 `.peer` 文件先前只检查 `fopen`，忽略 `fprintf` 缓冲错误与 `fclose`；已打开的失败目标仍令 API 报告成功，调用方会把缺失/损坏基线当作完整快照。现每个文件均要求 `ferror` 为假且关闭成功，任一失败返回 false；只发生在显式持久化操作，无网络热路径成本、无分配。TDD：`peer_save_dir_reports_write_failure` 将预期 peer 文件名链接到 `/dev/full`，旧码错误成功，修复后返回 false；模块文档同步。验证：`test_net_replication` 定向回归 45/45 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R480 NetRep 全量 peer 保存写失败审查（TDD）** — `net_replicator_peer_save()` 先前只检查 `fopen`，忽略缓冲写入与 `fclose` 错误；写入 `/dev/full` 仍报告 checkpoint 成功，调用方会误以为状态已持久化。现返回值要求 `ferror` 为假且 `fclose` 成功，失败如实返回 false；只发生在显式持久化操作，无网络热路径成本、无分配。TDD：`peer_save_reports_write_failure` 用 `/dev/full` 注入真实关闭失败，旧码错误成功，修复后返回 false；模块文档同步。验证：`test_net_replication` 定向回归 44/44 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R479 NetRep 增量日志写失败状态审查（TDD）** — `net_replicator_peer_save_delta()` 先前在 `fprintf` 尚未由 stdio 落盘时就清除 peer 的 dirty 标志，且忽略 `ferror`/`fclose`；写入 `/dev/full` 仍返回成功，更新永远丢失。现仅在全部缓冲写入与关闭均成功后确认并清除 dirty，任一失败返回 false 且保留待保存状态供重试；只影响显式持久化操作，无网络热路径成本、无分配。TDD：`peer_save_delta_keeps_dirty_on_write_failure` 用 `/dev/full` 注入真实失败，旧码错误成功，修复后返回 false 且 dirty 保持 true；模块文档同步。验证：`test_net_replication` 定向回归 43/43 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
