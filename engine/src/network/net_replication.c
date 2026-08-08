@@ -772,13 +772,26 @@ bool net_replicator_peer_load(NetReplicator *rep, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return false;
 
+    /* Retain the small peer table so a read/close error cannot replace a
+     * usable runtime baseline with a partial snapshot. */
+    NetRepPeerStats saved_peers[NET_REP_MAX_PEERS];
+    memcpy(saved_peers, rep->peers, sizeof(saved_peers));
+    u32 saved_count = rep->peer_count;
+    u32 saved_evicted = rep->peer_evicted;
     rep->peer_count = 0u;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         net_repl_peer_apply_line(rep, line);
     }
-    fclose(f);
+    bool read_ok = !ferror(f);
+    if (fclose(f) != 0) read_ok = false;
+    if (!read_ok) {
+        memcpy(rep->peers, saved_peers, sizeof(saved_peers));
+        rep->peer_count = saved_count;
+        rep->peer_evicted = saved_evicted;
+        return false;
+    }
     return true;
 }
 

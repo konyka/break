@@ -1079,6 +1079,31 @@ TEST(peer_save_reports_write_failure)
 #endif
 }
 
+/* A path can open successfully yet fail on read (a directory on POSIX). The
+ * failed snapshot must neither report success nor discard a live peer table. */
+TEST(peer_load_reports_read_failure_preserves_existing_peers)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* Opening a directory as a stream is POSIX-specific error injection. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20970u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    char dir[128];
+    test_tmp(dir, sizeof(dir), "r491_netrep_read_error");
+    ASSERT_EQ(mkdir(dir, 0755), 0);
+    ASSERT_FALSE(net_replicator_peer_load(&rep, dir));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
+    ASSERT_TRUE(net_address_equal(&rep.peers[0].addr, &peer.addr));
+    ASSERT_EQ(rmdir(dir), 0);
+#endif
+}
+
 TEST(peer_save_dir)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1877,6 +1902,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_lru_full);
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_reports_write_failure);
+    RUN_TEST(peer_load_reports_read_failure_preserves_existing_peers);
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_dir_reports_write_failure);
     RUN_TEST(peer_save_dir_rejects_path_truncation);

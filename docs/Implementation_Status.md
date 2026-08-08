@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R490 Lua 显式替换失败身份保持审查（TDD）** — `lua_script_load()` 先前在候选 chunk 运行前即写入 `path` 和 `last_mtime`；候选在运行时失败后，虽然 R489 会恢复全局和 hook，却仍让热重载改盯失败文件，失去对上一份有效脚本的自动更新。现仅在候选完整执行成功后提交新路径与 mtime；失败替换保留原有效脚本的执行逻辑和热重载身份。修改只位于低频加载路径，不影响帧内 hook 调用、无额外分配。TDD：`load_runtime_failure_preserves_previous_reload_identity` 先载入有效脚本再显式替换为运行时报错候选，旧码把 path 改为候选，修复后保持旧 path、mtime 和 `on_update`；模块文档同步。验证：`test_script_lua` 定向回归 24/24 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R491 NetRep 单文件读取错误状态保持审查（TDD）** — `net_replicator_peer_load()` 先前在读取前清空 peer 表，却忽略 `fgets` 终止后的 `ferror()` 与 `fclose()`；POSIX 目录可被 `fopen` 成功打开但读取失败，API 仍错误返回成功并丢失已有 peer 基线。现读取期间仅保留固定大小 peer 表快照，要求流读取和关闭均成功；失败恢复 peer 表、数量与驱逐计数，成功才提交新快照。修改只发生在显式持久化导入路径，不影响网络热路径、无堆分配。TDD：`peer_load_reports_read_failure_preserves_existing_peers` 将已有 peer 传给目录路径，旧码错误报告成功，修复后返回 false 且 peer 保持；模块文档同步。验证：`test_net_replication` 定向回归 47/47 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R490 Lua 显式替换失败身份保持审查（TDD）** — `lua_script_load()` 先前在候选 chunk 运行前即写入 `path` 和 `last_mtime`；候选在运行时失败后，虽然 R489 会恢复全局和 hook，却仍让热重载改盯失败文件，失去对上一份有效脚本的自动更新。现仅在候选完整执行成功后提交新路径与 mtime；失败替换保留原有效脚本的执行逻辑和热重载身份。修改只位于低频加载路径，不影响帧内 hook 调用、无额外分配。TDD：`load_runtime_failure_preserves_previous_reload_identity` 先载入有效脚本再显式替换为运行时报错候选，旧码把 path 改为候选，修复后保持旧 path、mtime 和 `on_update`；模块文档同步。验证：`test_script_lua` 定向回归 24/24 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R489 Lua 热重载运行失败原子性审查（TDD）** — `lua_script_reload_if_changed()` 虽然会在候选执行失败时保留 mtime 以便重试，但候选 chunk 可在 `error()` 前已经覆盖 `on_update`、标量或新增全局变量；API 报失败后，下一帧却运行了半套新逻辑。现仅在显式字符串加载、文件加载与热重载时快照 Lua 全局表；候选运行失败就移除新增键并恢复快照值，原 hooks 与顶层全局保持完整，成功路径按原语义提交。快照只发生在低频加载路径，不影响帧内 hook 调用；失败路径的临时 Lua 表会随即释放，无常驻分配。TDD：`hot_reload_runtime_failure_preserves_previous_hooks` 让候选先覆写 version/hook、新增变量再抛错，旧码泄露 `version=2` 和新 hook，修复后仍为版本 1、旧 hook 返回 10、候选变量不存在；模块文档同步。验证：`test_script_lua` 定向回归 23/23 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
