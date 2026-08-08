@@ -136,12 +136,26 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     u32 *table = (u32 *)malloc(table_size * sizeof(u32));
     if (!table) { free(names); free(entries); fclose(fp); return false; }
     memset(table, 0xFF, table_size * sizeof(u32)); /* UINT32_MAX = empty */
+
+    /* R499: one forward scan finds the final in-table terminator. Every offset
+     * at or before it is terminated; later offsets could only reach calloc's
+     * sentinel and must not become valid names. */
+    u32 last_name_nul = 0;
+    bool has_name_nul = false;
+    for (u32 n = 0; n < hdr.name_table_size; n++) {
+        if (names[n] == '\0') {
+            last_name_nul = n;
+            has_name_nul = true;
+        }
+    }
+
     u32 mask = table_size - 1;
     for (u32 e = 0; e < hdr.entry_count; e++) {
         /* R160-A: Validate name_offset before inserting into hash table.
          * A malicious PAK could set name_offset >= name_table_size, causing an
          * out-of-bounds read in vfs_open when computing the name pointer. */
         if (entries[e].name_offset >= hdr.name_table_size) continue;
+        if (!has_name_nul || entries[e].name_offset > last_name_nul) continue;
         /* R388: an entry's data range must lie inside the file. vfs_open sizes
          * its allocation from entry->size, so an entry claiming ~4 GiB would
          * make every open of that name attempt a 4 GiB calloc before the read

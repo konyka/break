@@ -407,6 +407,36 @@ TEST(vfs_pak_format)
     vfs_destroy(vfs);
 }
 
+/* The allocation sentinel must prevent an overread, not turn a truncated name
+ * table entry into a valid path.  Malformed entries remain lookup misses. */
+TEST(vfs_pak_unterminated_name_is_miss)
+{
+    const char *fname = "greet.txt";
+    const char *content = "PAK DATA!";
+    u32 fname_len = (u32)strlen(fname);  /* deliberately excludes NUL */
+    u32 content_len = (u32)strlen(content);
+    u32 data_off = (u32)(sizeof(PakHeader) + sizeof(PakEntry)) + fname_len;
+
+    PakHeader hdr = { .magic = VFS_PAK_MAGIC, .version = VFS_PAK_VERSION,
+                      .entry_count = 1, .name_table_size = fname_len };
+    PakEntry entry = { .name_hash = test_fnv1a(fname), .name_offset = 0,
+                       .data_offset = data_off, .size = content_len };
+
+    FILE *fp = fopen(TMP_PAK, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&hdr, sizeof(hdr), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(fname, 1, fname_len, fp), (usize)fname_len);
+    ASSERT_EQ(fwrite(content, 1, content_len, fp), (usize)content_len);
+    ASSERT_EQ(fclose(fp), 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_pak(vfs, TMP_PAK));
+    ASSERT_TRUE(vfs_open(vfs, fname) == NULL);
+    vfs_destroy(vfs);
+}
+
 /* R388: writes a one-entry PAK whose header/entry fields can be overridden, so
  * the bounds checks in vfs_mount_pak can be driven directly. Layout matches
  * vfs_pak_format above. */
@@ -662,6 +692,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_mount_priority);
     RUN_TEST(vfs_dir_rejects_oversized_file);
     RUN_TEST(vfs_pak_format);
+    RUN_TEST(vfs_pak_unterminated_name_is_miss);
     RUN_TEST(vfs_pak_name_table_size_overflow_rejected);
     RUN_TEST(vfs_pak_entry_count_bounded_by_file_size);
     RUN_TEST(vfs_pak_entry_data_past_eof_is_miss);

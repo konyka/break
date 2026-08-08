@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R498 BSCN 场景非有限浮点审查（TDD）** — BSCN 加载器此前将内联资源描述符的 8 个 `f32` 以及 `SceneNode` 局部/世界矩阵直接恢复到 `Scene`；损坏或恶意文件中的 NaN/Inf 可传播进渲染变换和资源边界计算，JSON 的十六进制局部矩阵也有同一问题。现二进制加载逐项验证资源描述符和两份矩阵全部有限，JSON 节点局部矩阵复用相同检查；任一非法值令候选失败，既有 staged 场景原子性保证旧 `Scene` 保持。验证仅发生在低频导入期，按已读字段线性执行，无帧内成本或额外常驻分配。TDD：`load_binary_rejects_nonfinite_scene_values` 分别注入资源、局部矩阵和世界矩阵 NaN，`load_json_rejects_nonfinite_node_matrix` 覆盖 JSON 十六进制矩阵；旧码错误接受，修复后均拒绝并保持既有场景；模块文档同步。验证：定向 `test_scene_serial` 43/43 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R499 PAK 名称表终止完整性审查（TDD）** — `vfs_mount_pak()` 原先为名称表额外分配一个零字节以保护 `strcmp` 免于越界，却没有验证每个 `PakEntry.name_offset` 所指字符串在声明的 `name_table_size` 范围内终止；恶意归档可省略末尾 NUL，令分配哨兵把不完整的表项伪装成可打开的真实路径。现仅在挂载期构建哈希索引时单次扫描名称表的最后一个表内 NUL，再以常数比较验证每个有效 offset；未终止或越界/data-range 损坏条目统一成为 lookup miss，容器仍可挂载。`vfs_open()` 热路径、常驻内存和分配不变。TDD：`vfs_pak_unterminated_name_is_miss` 写入名称表恰好缺少末尾 NUL 的 PAK，旧码错误打开 `greet.txt`，修复后挂载成功但查找返回 NULL。验证：定向 `test_vfs` 32/32 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R498 BSCN 场景非有限浮点审查（TDD）** — BSCN 加载器此前将内联资源描述符的 8 个 `f32` 以及 `SceneNode` 局部/世界矩阵直接恢复到 `Scene`；损坏或恶意文件中的 NaN/Inf 可传播进渲染变换和资源边界计算，JSON 的十六进制局部矩阵也有同一问题。现二进制加载逐项验证资源描述符和两份矩阵全部有限，JSON 节点局部矩阵复用相同检查；任一非法值令候选失败，既有 staged 场景原子性保证旧 `Scene` 保持。验证仅发生在低频导入期，按已读字段线性执行，无帧内成本或额外常驻分配。TDD：`load_binary_rejects_nonfinite_scene_values` 分别注入资源、局部矩阵和世界矩阵 NaN，`load_json_rejects_nonfinite_node_matrix` 覆盖 JSON 十六进制矩阵；旧码错误接受，修复后均拒绝并保持既有场景；模块文档同步。验证：定向 `test_scene_serial` 43/43 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R497 VFS PAK 格式版本审查（TDD）** — `vfs_mount_pak()` 原先只检查 PAK magic，却忽略声明的格式版本；带有同一 magic 但不同条目布局的旧版或未来归档会被按当前 `PakEntry` 结构错误解析并挂载。现 mount 在任何条目读取、元数据分配或 mount 槽位占用前要求 `hdr.version == VFS_PAK_VERSION`，不匹配直接返回 false。检查为挂载期一次常数时间比较，文件打开热路径与分配不变。TDD：`vfs_pak_version_mismatch_rejected` 写入 magic 正确但版本递增的最小 PAK，旧码错误挂载，修复后拒绝且 `mount_count` 保持 0；模块文档同步。验证：定向 `test_vfs` 31/31 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
