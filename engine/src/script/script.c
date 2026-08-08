@@ -1,5 +1,6 @@
 #include <script/script.h>
 #include <core/log.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +29,7 @@ static void script_engine_clear_content(ScriptEngine *se) {
     se->loaded = false;
 }
 
-static void script_parse_line(ScriptEngine *se, const char *line) {
+static bool script_parse_line(ScriptEngine *se, const char *line) {
     char func_name[64] = {0};
     if (sscanf(line, "func %63s", func_name) == 1) {
         if (se->func_count < SCRIPT_MAX_CALLBACKS) {
@@ -37,32 +38,33 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
             se->funcs[se->func_count].op_count = 0;
             se->func_count++;
         }
-        return;
+        return true;
     }
 
     if (se->func_count == 0) {
         char var_name[64];
         f32 val;
         if (sscanf(line, "var %63s = %f", var_name, &val) == 2) {
+            if (!isfinite(val)) return false;
             if (se->global_count < SCRIPT_MAX_GLOBALS) {
                 snprintf(se->globals[se->global_count].name, sizeof(se->globals[se->global_count].name), "%s", var_name);
                 se->globals[se->global_count].value = val;
                 se->global_count++;
             }
         }
-        return;
+        return true;
     }
 
     ScriptFunc *fn = &se->funcs[se->func_count - 1];
     /* R392: SCRIPT_MAX_CALLBACKS limits func count but not op count — a file
      * with millions of `set x 1` lines previously doubled fn->ops forever. */
     if (fn->op_count >= SCRIPT_MAX_OPS)
-        return;
+        return true;
     /* Capacity-based growth: initial 16, double when full (avoids per-op realloc) */
     if (fn->op_count >= fn->op_capacity) {
         u32 new_cap = fn->op_capacity == 0 ? 16 : fn->op_capacity * 2;
         ScriptOp *new_ops = realloc(fn->ops, new_cap * sizeof(ScriptOp));
-        if (!new_ops) return;
+        if (!new_ops) return true;
         fn->ops = new_ops;
         fn->op_capacity = new_cap;
     }
@@ -75,20 +77,25 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
     char target[64] = {0};
     f32 val = 0;
     if (sscanf(line, "set %63s %f", target, &val) == 2) {
+        if (!isfinite(val)) return false;
         op->type = SCRIPT_OP_SET;
         snprintf(op->target, sizeof(op->target), "%s", target);
         op->value = val;
     } else if (sscanf(line, "add %63s %f", target, &val) == 2) {
+        if (!isfinite(val)) return false;
         op->type = SCRIPT_OP_ADD;
         snprintf(op->target, sizeof(op->target), "%s", target);
         op->value = val;
     } else if (sscanf(line, "spawn %f %f %f", &op->args[0], &op->args[1], &op->args[2]) == 3) {
+        if (!isfinite(op->args[0]) || !isfinite(op->args[1]) || !isfinite(op->args[2]))
+            return false;
         op->type = SCRIPT_OP_SPAWN;
     } else if (strncmp(line, "print", 5) == 0) {
         op->type = SCRIPT_OP_PRINT;
     } else {
         fn->op_count--;
     }
+    return true;
 }
 
 static bool script_load_into(ScriptEngine *se, const char *path) {
@@ -125,7 +132,10 @@ static bool script_load_into(ScriptEngine *se, const char *path) {
 
         while (*line == ' ' || *line == '\t') line++;
         if (*line != '#' && *line != '\0') {
-            script_parse_line(se, line);
+            if (!script_parse_line(se, line)) {
+                LOG_WARN("Script: %s contains a nonfinite value", path);
+                return false;
+            }
         }
 
         if (nl) line = nl + 1;

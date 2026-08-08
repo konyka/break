@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R495 场景运行时状态非有限值审查（TDD）** — `scene_state_load()` 先前把二进制存档的 `Camera`、太阳/曝光/渲染倍率、V1/V2/V3 刚体与水位浮点直接写入运行时；攻击者或损坏文件中的 NaN/Inf 可污染渲染、物理和后续计算。现加载时验证完整 `Camera`（含缓存投影矩阵）、顶层浮点、刚体位置/速度/质量/半尺寸/弹性以及可选水位均有限，任一非法值都沿用既有快照恢复完整运行时状态。检查仅发生在显式加载路径，按已读字段线性执行，不增加帧内成本或分配。TDD：`scene_state_rejects_nonfinite_values` 逐个把相机、顶层、刚体与水位记录改为 NaN，旧码错误接受首个损坏存档，修复后每种记录均拒绝且相机、全局值和刚体保持加载前状态；模块文档同步。验证：定向 `test_scene_state` 8/8 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R496 轻量脚本非有限值审查（TDD）** — 轻量脚本解析器通过 `%f` 读取 `var`、`set`、`add` 和 `spawn` 参数，却未检查有限性；`nan`/`inf` 文件可被接受并把非法数值置入全局或操作参数，后续帧传播到游戏逻辑。现解析器在候选加载阶段拒绝任一非有限数值，`script_load()` 沿用事务式替换，失败时释放候选并保留上一份有效脚本。检查只在加载/热重载的低频路径执行，`script_call()` 热路径无新增操作或分配。TDD：`load_rejects_nonfinite_values_preserves_previous_script` 依次注入四类非法数值脚本，旧码接受第一个候选，修复后全部拒绝且原回调仍可执行；模块文档同步。验证：定向 `test_script` 18/18 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R495 场景运行时状态非有限值审查（TDD）** — `scene_state_load()` 先前把二进制存档的 `Camera`、太阳/曝光/渲染倍率、V1/V2/V3 刚体与水位浮点直接写入运行时；攻击者或损坏文件中的 NaN/Inf 可污染渲染、物理和后续计算。现加载时验证完整 `Camera`（含缓存投影矩阵）、顶层浮点、刚体位置/速度/质量/半尺寸/弹性以及可选水位均有限，任一非法值都沿用既有快照恢复完整运行时状态。检查仅发生在显式加载路径，按已读字段线性执行，不增加帧内成本或分配。TDD：`scene_state_rejects_nonfinite_values` 逐个把相机、顶层、刚体与水位记录改为 NaN，旧码错误接受首个损坏存档，修复后每种记录均拒绝且相机、全局值和刚体保持加载前状态；模块文档同步。验证：定向 `test_scene_state` 8/8 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R494 NetRep 持久化 RTT 非有限值审查（TDD）** — peer 基线和增量文本通过 `%f` 读取 RTT，但先前未验证有限性；`nan`/`inf` 可登记为 peer 的 RTT 状态，并直接传播到诊断/UI 或后续计算。现共享行解析器在建 peer 前要求两个 RTT 值均为有限数，非法记录与端口溢出记录同样跳过，单文件、目录基线和 delta 导入一致受保护。该检查仅在显式持久化导入执行，不影响网络热路径、无分配。TDD：`peer_load_rejects_nonfinite_rtt` 写入一条 `nan inf` 记录和一条合法记录，旧码错误注册两条，修复后只保留合法 peer 且 RTT 有限；模块文档同步。验证：`test_net_replication` 定向回归 50/50 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

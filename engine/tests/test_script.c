@@ -141,6 +141,48 @@ TEST(load_failure_preserves_previous_script)
     remove(path);
 }
 
+/* Script text is untrusted at load time: sscanf accepts nan/inf, which must
+ * not replace an executable script or enter its globals and operation args. */
+TEST(load_rejects_nonfinite_values_preserves_previous_script)
+{
+    char good_path[64], bad_path[64];
+    test_tmp(good_path, sizeof good_path, "test_script_finite_good.script");
+    test_tmp(bad_path, sizeof bad_path, "test_script_finite_bad.script");
+    FILE *f = fopen(good_path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "var hp = 7\n");
+    fprintf(f, "func damage\n");
+    fprintf(f, "    add hp -2\n");
+    fclose(f);
+
+    const char *bad_scripts[] = {
+        "var value = nan\n",
+        "func run\n    set value inf\n",
+        "func run\n    add value nan\n",
+        "func run\n    spawn 1 inf nan\n",
+    };
+    ScriptEngine se = {0};
+    script_engine_init(&se);
+    ASSERT_TRUE(script_load(&se, good_path));
+
+    for (usize i = 0; i < sizeof(bad_scripts) / sizeof(bad_scripts[0]); i++) {
+        f = fopen(bad_path, "w");
+        ASSERT_NOT_NULL(f);
+        fputs(bad_scripts[i], f);
+        fclose(f);
+
+        ASSERT_FALSE(script_load(&se, bad_path));
+        ASSERT_TRUE(se.loaded);
+        ASSERT_EQ(se.func_count, 1u);
+        script_call(&se, "damage");
+        ASSERT_TRUE(fabsf(script_get_global(&se, "hp") - (5.0f - 2.0f * (f32)i)) < 0.001f);
+    }
+
+    script_engine_shutdown(&se);
+    remove(good_path);
+    remove(bad_path);
+}
+
 TEST(script_comments_ignored)
 {
     char path[64]; /* R444: per-pid path */
@@ -328,6 +370,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(call_nonexistent_func);
     RUN_TEST(load_nonexistent_file);
     RUN_TEST(load_failure_preserves_previous_script);
+    RUN_TEST(load_rejects_nonfinite_values_preserves_previous_script);
     RUN_TEST(script_comments_ignored);
     RUN_TEST(reload_if_changed_is_per_engine);
     /* Edge cases */
