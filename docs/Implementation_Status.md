@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R510 BSCN 重复组件块审查（TDD）** — 写入端固定发出唯一 `COMPONENTS` chunk，但加载器此前仅拒绝重复 `ENTITIES`，允许多个组件块依 table 顺序累计或覆盖数据，令无法由写入端生成的归档具有顺序相关的最终状态。现第二遍在处理第一个 `COMPONENTS` 后设置局部标记，第二个出现即失败并触发既有实体回滚；可选 `RESOURCES`/`SCENE_NODES` 与未知块的既有语义不变。检查只在显式导入时每 chunk O(1) 执行，无帧内成本或分配。TDD：`load_binary_rejects_duplicate_components_chunk` 写入一个空 `ENTITIES` 和两个各自合法的空组件块，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 52/52 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R511 BSCN payload 重叠布局审查（TDD）** — `scene_probe_binary()` 和 `scene_load_binary()` 先前分别验证每个 chunk 不在 table 内且不越过 EOF，却没有验证不同 payload 彼此分离；恶意归档可让两个 chunk 映射同一物理字节区（包括被跳过的未知/HIERARCHY），产生一个字节域多个逻辑含义并使两条 API 错报格式有效。现共享表布局验证先检查范围，再以半开区间交集拒绝任意两个 payload 重叠；相邻边界仍合法。最多 64 个 chunk，检查仅在显式 probe/load 时 O(n^2)（最多 2016 对）执行，无帧内成本或分配。TDD：`load_binary_rejects_overlapping_chunk_payloads` 写入指向同一 4-byte payload 的 HIERARCHY 与未知 chunk，旧 probe/load 均错误成功，修复后均拒绝。验证：定向 `test_scene_serial` 53/53 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R510 BSCN 重复组件块审查（TDD）** — 写入端固定发出唯一 `COMPONENTS` chunk，但加载器此前仅拒绝重复 `ENTITIES`，允许多个组件块依 table 顺序累计或覆盖数据，令无法由写入端生成的归档具有顺序相关的最终状态。现第二遍在处理第一个 `COMPONENTS` 后设置局部标记，第二个出现即失败并触发既有实体回滚；可选 `RESOURCES`/`SCENE_NODES` 与未知块的既有语义不变。检查只在显式导入时每 chunk O(1) 执行，无帧内成本或分配。TDD：`load_binary_rejects_duplicate_components_chunk` 写入一个空 `ENTITIES` 和两个各自合法的空组件块，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 52/52 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R509 BSCN 组件声明一致性审查（TDD）** — `COMPONENTS` 记录此前可为实体隐式添加一个 `ENTITIES` archetype 未声明的已知组件；两个 chunk 内容矛盾时加载仍成功，且会执行额外 archetype 迁移。现对已知且尺寸匹配的每条实例，在拷贝前以 O(archetype component count) 检查实体是否声明该组件，并要求现有存储可取；不匹配立即失败并触发既有实体回滚。未知或尺寸不符类型仍按前向兼容跳过。检查仅在显式导入时执行，无帧内成本或堆分配。TDD：`load_binary_rejects_component_not_declared_by_entity` 构造实体声明空 archetype 却在 `COMPONENTS` 提供 type 1 实例，旧码错误成功并隐式添加，修复后拒绝。验证：定向 `test_scene_serial` 51/51 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

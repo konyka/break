@@ -22,6 +22,22 @@ static bool scene_file_size_ok(long fsz, long min_bytes) {
     return true;
 }
 
+static bool bscn_chunk_layout_valid(const BscnChunkEntry *table, u32 count,
+                                    u64 table_end, u64 file_size) {
+    for (u32 i = 0; i < count; i++) {
+        u64 begin = (u64)table[i].offset;
+        u64 end = begin + (u64)table[i].size;
+        if (begin < table_end || end > file_size) return false;
+        for (u32 j = 0; j < i; j++) {
+            u64 other_begin = (u64)table[j].offset;
+            u64 other_end = other_begin + (u64)table[j].size;
+            /* Half-open payload ranges may touch, but cannot share bytes. */
+            if (begin < other_end && other_begin < end) return false;
+        }
+    }
+    return true;
+}
+
 /* ---------------------------------------------------------------- */
 /* Dynamic byte buffer                                              */
 /* ---------------------------------------------------------------- */
@@ -790,11 +806,7 @@ bool scene_probe_binary(const char *path) {
     u64 table_end = (u64)table_off + (u64)h.chunk_count * (u64)sizeof(BscnChunkEntry);
     if (table_end > (u64)fsz) { free(buf); return false; }
     BscnChunkEntry *table = (BscnChunkEntry *)(buf + table_off);
-    bool ok = true;
-    for (u32 i = 0; i < h.chunk_count && ok; i++) {
-        u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
-        if (table[i].offset < table_end || chunk_end > (u64)fsz) ok = false;
-    }
+    bool ok = bscn_chunk_layout_valid(table, h.chunk_count, table_end, (u64)fsz);
     free(buf);
     return ok;
 }
@@ -823,14 +835,10 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     u64 table_end = (u64)table_off + (u64)h.chunk_count * (u64)sizeof(BscnChunkEntry);
     if (table_end > (u64)fsz) { free(buf); return false; }
     BscnChunkEntry *table = (BscnChunkEntry *)(buf + table_off);
-    /* Validate the complete layout before parsing.  Ignored forward-compatible
-     * chunks still must not reinterpret the chunk table as payload data. */
-    for (u32 i = 0; i < h.chunk_count; i++) {
-        u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
-        if ((u64)table[i].offset < table_end || chunk_end > (u64)fsz) {
-            free(buf);
-            return false;
-        }
+    /* Validate complete, non-overlapping payload layout before parsing. */
+    if (!bscn_chunk_layout_valid(table, h.chunk_count, table_end, (u64)fsz)) {
+        free(buf);
+        return false;
     }
 
     Entity *ents = NULL; u32 ent_count = 0;

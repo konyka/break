@@ -374,6 +374,35 @@ TEST(load_binary_rejects_duplicate_components_chunk)
     remove(path);
 }
 
+/* Chunk payloads are distinct regions in writer output.  Overlap gives one
+ * byte range multiple logical meanings, even when both chunks are skipped. */
+TEST(load_binary_rejects_overlapping_chunk_payloads)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_overlapping_payloads.bscn");
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    const u32 payload = 0u;
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_HIERARCHY, .offset = base, .size = sizeof(payload) },
+        { .type = 0xF00Du, .offset = base, .size = sizeof(payload) }
+    };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(&payload, sizeof(payload), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_probe_binary(path));
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* The writer emits at most one record per registered component type.  A
  * larger count is malformed rather than a forward-compatible empty payload. */
 TEST(load_binary_rejects_excessive_component_type_count)
@@ -1381,6 +1410,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_duplicate_entity_component_type);
     RUN_TEST(load_binary_rejects_component_not_declared_by_entity);
     RUN_TEST(load_binary_rejects_duplicate_components_chunk);
+    RUN_TEST(load_binary_rejects_overlapping_chunk_payloads);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
     RUN_TEST(save_binary_null_world);
     RUN_TEST(bytebuf_reserve_rejects_u32_wrap);
