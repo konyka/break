@@ -594,8 +594,10 @@ static void rollback_entities(World *w, Entity *ents, u32 count) {
 #define BSCN_MAX_LOAD_NODES    (64u * 1024u)
 
 static bool load_entities_chunk(World *w, Reader *r,
-                                Entity **out_entities, u32 *out_count) {
+                                Entity **out_entities, u32 *out_count,
+                                u32 declared_known[ECS_MAX_COMPONENTS]) {
     u32 n = 0;
+    memset(declared_known, 0, ECS_MAX_COMPONENTS * sizeof(*declared_known));
     if (!rd_u32(r, &n)) return false;
     if (n > BSCN_MAX_LOAD_ENTITIES) return false;
     Entity *ents = (Entity *)calloc(n ? n : 1, sizeof(Entity));
@@ -662,6 +664,7 @@ static bool load_entities_chunk(World *w, Reader *r,
                 seen_types_hi |= bit;
             }
             if (type < ECS_MAX_COMPONENTS && w->component_sizes[type]) {
+                declared_known[type]++;
                 world_add_component(w, e, type);
             }
         }
@@ -684,7 +687,8 @@ static bool entity_declares_component(const World *w, Entity e,
 }
 
 static bool load_components_chunk(World *w, Reader *r,
-                                  const Entity *ents, u32 ent_count) {
+                                  const Entity *ents, u32 ent_count,
+                                  const u32 declared_known[ECS_MAX_COMPONENTS]) {
     u32 type_count = 0;
     if (!rd_u32(r, &type_count)) return false;
     /* A save writes at most one record for every registered engine component.
@@ -695,6 +699,7 @@ static bool load_components_chunk(World *w, Reader *r,
         return false;
     u64 seen_types_lo = 0;
     u64 seen_types_hi = 0;
+    u64 seen_instances[ECS_ENTITY_BITMAP_WORDS];
     for (u32 t = 0; t < type_count; t++) {
         u32 type = 0, size = 0, instances = 0;
         if (!rd_u32(r, &type) || !rd_u32(r, &size) || !rd_u32(r, &instances)) return false;
@@ -718,6 +723,13 @@ static bool load_components_chunk(World *w, Reader *r,
                 (u64)(r->end - r->p))
             return false;
         bool known = (type < ECS_MAX_COMPONENTS) && (w->component_sizes[type] == size);
+        if (known) {
+            /* A v1 writer emits exactly one payload for every locally declared
+             * compatible component.  Count plus per-entity bits makes this a
+             * bijection without rescanning archetypes or allocating memory. */
+            if (instances != declared_known[type]) return false;
+            memset(seen_instances, 0, sizeof(seen_instances));
+        }
         for (u32 i = 0; i < instances; i++) {
             u32 saved_idx = 0;
             if (!rd_u32(r, &saved_idx)) return false;
@@ -726,6 +738,10 @@ static bool load_components_chunk(World *w, Reader *r,
              * but every instance still needs a real saved entity owner. */
             if (saved_idx >= ent_count) return false;
             if (known) {
+                u32 word = saved_idx / 64u;
+                u64 bit = (u64)1 << (saved_idx % 64u);
+                if (seen_instances[word] & bit) return false;
+                seen_instances[word] |= bit;
                 if (!entity_declares_component(w, ents[saved_idx], type)) return false;
                 void *dst = world_get_component(w, ents[saved_idx], type);
                 if (!dst) return false;
@@ -733,6 +749,13 @@ static bool load_components_chunk(World *w, Reader *r,
             }
             r->p += size;
         }
+    }
+    /* A compatible local declaration requires its own type record.  A record
+     * with a different size remains a forward-compatible skip. */
+    for (u32 type = 0; type < ECS_MAX_COMPONENTS; type++) {
+        bool seen = type < 64u ? (seen_types_lo & ((u64)1 << type)) != 0 :
+                                 (seen_types_hi & ((u64)1 << (type - 64u))) != 0;
+        if (declared_known[type] && !seen) return false;
     }
     return true;
 }
@@ -842,6 +865,8 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     }
 
     Entity *ents = NULL; u32 ent_count = 0;
+    u32 declared_known[ECS_MAX_COMPONENTS];
+    memset(declared_known, 0, sizeof(declared_known));
     bool ok = true;
     /* R384: stage Scene chunks so a later failing chunk cannot clobber the
      * caller's scene graph. NULL `s` still means "parse and discard". */
@@ -865,7 +890,7 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         Reader r;
         r.p = buf + table[i].offset;
         r.end = r.p + table[i].size;
-        ok = load_entities_chunk(w, &r, &ents, &ent_count) && r.p == r.end;
+        ok = load_entities_chunk(w, &r, &ents, &ent_count, declared_known) && r.p == r.end;
     }
     /* Second pass: remaining chunks. */
     bool seen_components = false;
@@ -881,7 +906,7 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         case BSCN_CHUNK_COMPONENTS:
             if (seen_components) { ok = false; break; }
             seen_components = true;
-            ok = load_components_chunk(w, &r, ents, ent_count) && r.p == r.end; break;
+            ok = load_components_chunk(w, &r, ents, ent_count, declared_known) && r.p == r.end; break;
         case BSCN_CHUNK_SCENE_NODES:
             ok = load_scene_nodes_chunk(dst, &r) && r.p == r.end; break;
         case BSCN_CHUNK_RESOURCES:
@@ -890,6 +915,14 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         default:
             /* Hierarchy is implicit in SceneNode.parent_index. Skip silently. */
             break;
+        }
+    }
+
+    /* If no COMPONENTS chunk exists, local declarations cannot have payloads.
+     * Empty legacy scenes remain loadable because they declare no local type. */
+    if (ok && !seen_components) {
+        for (u32 type = 0; type < ECS_MAX_COMPONENTS; type++) {
+            if (declared_known[type]) { ok = false; break; }
         }
     }
 
