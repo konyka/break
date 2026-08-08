@@ -449,7 +449,7 @@ TEST(reliable_ack_is_scoped_to_destination)
     ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 13u), &peer_b));
 
     u8 reliable_from_a[PACKET_MAX_SIZE];
-    u32 reliable_len = build_snap_wire(reliable_from_a, 7u, (u8)PACKET_RELIABLE,
+    u32 reliable_len = build_snap_wire(reliable_from_a, 1u, (u8)PACKET_RELIABLE,
                                        (u8)NET_PKT_TRANSFORM_SNAPSHOT,
                                        1u, 0.0f, 0.0f, 0.0f);
     NetTransformSnapshot out[1] = {0};
@@ -472,10 +472,65 @@ TEST(reliable_ack_is_scoped_to_destination)
     sent_len = net_recvfrom(receiver_a.socket, sent, sizeof(sent), &from);
     ASSERT_TRUE(sent_len > 0);
     ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
-    ASSERT_EQ(header.ack, 7u); /* The reliable sequence is echoed only to A. */
+    ASSERT_EQ(header.ack, 1u); /* The reliable sequence is echoed only to A. */
 
     net_replicator_shutdown(&receiver_b);
     net_replicator_shutdown(&receiver_a);
+    net_replicator_shutdown(&rep);
+    net_shutdown();
+}
+
+TEST(reliable_ack_waits_for_contiguous_sequence)
+{
+    /* R455: header ACK is cumulative. After seq 1, seeing reliable seq 3
+     * before seq 2 cannot acknowledge 3, otherwise a lost seq 2 is silently
+     * retired by the sender and never retried. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator rep = {0}, receiver = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 12u)));
+
+    NetAddress peer_a;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 12u), &peer_a));
+
+    u8 seq1[PACKET_MAX_SIZE], seq2[PACKET_MAX_SIZE], seq3[PACKET_MAX_SIZE];
+    u32 len1 = build_snap_wire(seq1, 1u, (u8)PACKET_RELIABLE,
+                               (u8)NET_PKT_TRANSFORM_SNAPSHOT,
+                               1u, 0.0f, 0.0f, 0.0f);
+    u32 len2 = build_snap_wire(seq2, 2u, (u8)PACKET_RELIABLE,
+                               (u8)NET_PKT_TRANSFORM_SNAPSHOT,
+                               2u, 0.0f, 0.0f, 0.0f);
+    u32 len3 = build_snap_wire(seq3, 3u, (u8)PACKET_RELIABLE,
+                               (u8)NET_PKT_TRANSFORM_SNAPSHOT,
+                               3u, 0.0f, 0.0f, 0.0f);
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed_from(&rep, seq1, len1, &peer_a,
+                                         out, 1u, &out_count) > 0);
+    ASSERT_TRUE(net_replicator_feed_from(&rep, seq3, len3, &peer_a,
+                                         out, 1u, &out_count) > 0);
+
+    NetTransformSnapshot snap = { .entity_id = 3u, .position = {0} };
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+
+    u8 sent[PACKET_MAX_SIZE];
+    NetAddress from = {0};
+    i32 sent_len = net_recvfrom(receiver.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    PacketHeader header;
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.ack, 1u); /* seq 2 is still missing. */
+
+    ASSERT_TRUE(net_replicator_feed_from(&rep, seq2, len2, &peer_a,
+                                         out, 1u, &out_count) > 0);
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+    sent_len = net_recvfrom(receiver.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.ack, 3u); /* Now seqs 1 through 3 are contiguous. */
+
+    net_replicator_shutdown(&receiver);
     net_replicator_shutdown(&rep);
     net_shutdown();
 }
@@ -1383,16 +1438,16 @@ TEST(reliable_window_ack_is_scoped_to_sender)
     ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 12u), &peer_b));
     NetTransformSnapshot snap = { .entity_id = 1u, .position = {0} };
 
-    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0); /* seq 1 */
-    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_b) > 0); /* seq 2 */
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0); /* A seq 1 */
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_b) > 0); /* B seq 1 */
     ASSERT_EQ(reliable_window_valid_count(&rep), 2u);
 
-    feed_ack_from(&rep, 2u, &peer_a);
+    feed_ack_from(&rep, 1u, &peer_a);
 
     ASSERT_EQ(reliable_window_valid_count(&rep), 1u);
     ASSERT_TRUE(rep.reliable_window[1].valid);
     ASSERT_TRUE(net_address_equal(&rep.reliable_window[1].dst, &peer_b));
-    ASSERT_EQ(rep.reliable_window[1].seq, 2u);
+    ASSERT_EQ(rep.reliable_window[1].seq, 1u);
 
     net_replicator_shutdown(&rep);
     net_shutdown();
@@ -1532,6 +1587,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reliable_ordered_combined);
     RUN_TEST(reliable_ack_echoes_received_sequence);
     RUN_TEST(reliable_ack_is_scoped_to_destination);
+    RUN_TEST(reliable_ack_waits_for_contiguous_sequence);
     RUN_TEST(reliable_pending_cleared_via_peer_ack);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);

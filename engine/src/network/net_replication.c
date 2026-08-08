@@ -33,19 +33,42 @@ static NetRepOrderedChannel *net_ord_ch(NetReplicator *rep, NetRepPeerChannel *p
     return &rep->ordered[net_repl_type_index(type)];
 }
 
-/* R454: ACK numbers are per-peer because each peer owns an independent
- * sequence space. Sending to a known peer therefore uses that peer's latest
- * reliable sequence; address-less feed() retains the legacy shared value. */
-static u32 net_repl_ack_for_destination(const NetReplicator *rep,
-                                        const NetAddress *dst) {
-    if (rep && dst && rep->peer_channels) {
-        for (u32 i = 0u; i < NET_REP_MAX_PEERS; i++) {
-            const NetRepPeerChannel *pc = &rep->peer_channels[i];
-            if (pc->valid && net_address_equal(&pc->addr, dst))
-                return pc->ack_to_send;
-        }
+/* R455: a header ACK is cumulative, so it can advance only across a contiguous
+ * run of reliable sequences. The sender's fixed reliable window bounds useful
+ * reordering to eight packets; a compact bitset records arrivals ahead of the
+ * missing sequence without allocating or scanning packet buffers. */
+static void net_repl_note_reliable_sequence(NetReplicator *rep,
+                                            NetRepPeerChannel *pc, u32 sequence) {
+    if (!pc) {
+        /* Preserve address-less feed()'s original single-peer behavior. */
+        if ((sequence - rep->ack_to_send) < 0x80000000u)
+            rep->ack_to_send = sequence;
+        return;
     }
-    return rep ? rep->ack_to_send : 0u;
+    u32 *ack = pc ? &pc->ack_to_send : &rep->ack_to_send;
+    u32 *next = pc ? &pc->ack_next_seq : &rep->ack_next_seq;
+    u8 *pending = pc ? &pc->ack_pending : &rep->ack_pending;
+    bool *initialized = pc ? &pc->ack_initialized : &rep->ack_initialized;
+
+    /* Addressed streams begin at seq 1, so a newly discovered peer must not
+     * ACK a later first arrival over a lost seq 1. */
+    if (!*initialized) {
+        *ack = 0u;
+        *next = 1u;
+        *pending = 0u;
+        *initialized = true;
+    }
+
+    u32 ahead = sequence - *next;
+    if (ahead >= 0x80000000u || ahead >= (u32)NET_RELIABLE_WINDOW)
+        return; /* stale/duplicate or too far ahead for the sender's window */
+
+    *pending |= (u8)(1u << ahead);
+    while ((*pending & 1u) != 0u) {
+        *ack = *next;
+        (*next)++;
+        *pending >>= 1u;
+    }
 }
 
 /* R418: find (or create) the per-peer channel state for a sender address.
@@ -90,6 +113,33 @@ static NetRepPeerChannel *net_repl_peer_channel_find(NetReplicator *rep,
     slot->valid = true;
     slot->last_seen_ms = now_ms;
     return slot;
+}
+
+/* R454/R455: sender and receiver must use the same per-peer sequence space
+ * for a cumulative ACK to be meaningful. The table is fixed at eight entries,
+ * so each addressed send does one bounded lookup and no allocation. */
+static void net_repl_prepare_outgoing(NetReplicator *rep, const NetAddress *dst,
+                                      u8 type, bool ordered, u32 *out_seq,
+                                      u32 *out_ack) {
+    NetRepPeerChannel *pc = dst
+        ? net_repl_peer_channel_find(rep, dst, true,
+                                     (u32)(time_microseconds() / 1000ull)) : NULL;
+    NetRepUnreliableChannel *global_unre = &rep->unreliable[net_repl_type_index(type)];
+    NetRepOrderedChannel *global_ord = &rep->ordered[net_repl_type_index(type)];
+    u32 *global_send_seq = ordered ? &global_ord->send_seq : &global_unre->send_seq;
+    if (*global_send_seq == 0u) *global_send_seq = 1u;
+
+    if (pc) {
+        NetRepUnreliableChannel *unre = net_unre_ch(rep, pc, type);
+        NetRepOrderedChannel *ord = net_ord_ch(rep, pc, type);
+        u32 *peer_send_seq = ordered ? &ord->send_seq : &unre->send_seq;
+        if (*peer_send_seq == 0u) *peer_send_seq = 1u;
+        *out_seq = (*peer_send_seq)++;
+        (*global_send_seq)++; /* retain legacy aggregate send sequence state */
+    } else {
+        *out_seq = (*global_send_seq)++;
+    }
+    *out_ack = pc ? pc->ack_to_send : rep->ack_to_send;
 }
 
 static NetRepPeerStats *net_repl_peer_evict_lru(NetReplicator *rep) {
@@ -452,11 +502,8 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
      * when full, so a spoofed-address flood can't force the shared fallback. */
     NetRepPeerChannel *pc = reply_to
         ? net_repl_peer_channel_find(rep, reply_to, true, now_ms) : NULL;
-    if ((hdr.flags & (u8)PACKET_RELIABLE) != 0u &&
-        (hdr.sequence - (pc ? pc->ack_to_send : rep->ack_to_send)) < 0x80000000u) {
-        if (pc) pc->ack_to_send = hdr.sequence;
-        else rep->ack_to_send = hdr.sequence;
-    }
+    if ((hdr.flags & (u8)PACKET_RELIABLE) != 0u)
+        net_repl_note_reliable_sequence(rep, pc, hdr.sequence);
 
     if (ordered)
         return net_repl_deliver_ordered(rep, pc, hdr.type, wire, len, reply_to,
@@ -531,8 +578,9 @@ i32 net_replicator_broadcast(NetReplicator *rep,
         }
     }
 
-    u32 seq = rep->ordered_layer ? rep->ordered[pkt].send_seq++ : rep->unreliable[pkt].send_seq++;
-    u32 plen = packet_finish(&buf, seq, net_repl_ack_for_destination(rep, dst));
+    u32 seq, ack;
+    net_repl_prepare_outgoing(rep, dst, pkt, rep->ordered_layer, &seq, &ack);
+    u32 plen = packet_finish(&buf, seq, ack);
     if (rslot) {
         memcpy(rslot->data, buf.data, plen);
         rslot->len = plen;
@@ -551,8 +599,9 @@ i32 net_replicator_send_heartbeat(NetReplicator *rep, const NetAddress *dst, u32
     packet_begin(&buf, pkt, (u8)PACKET_UNRELIABLE);
     packet_write_u32(&buf, send_time_ms);
 
-    u32 seq = rep->unreliable[pkt].send_seq++;
-    u32 plen = packet_finish(&buf, seq, net_repl_ack_for_destination(rep, dst));
+    u32 seq, ack;
+    net_repl_prepare_outgoing(rep, dst, pkt, false, &seq, &ack);
+    u32 plen = packet_finish(&buf, seq, ack);
     rep->hb_sent++;
     return net_sendto(rep->socket, buf.data, plen, dst);
 }
@@ -567,8 +616,9 @@ i32 net_replicator_send_heartbeat_ack(NetReplicator *rep, const NetAddress *dst,
     packet_write_u32(&buf, send_time_ms);
     packet_write_u32(&buf, echo_seq);
 
-    u32 seq = rep->unreliable[pkt].send_seq++;
-    u32 plen = packet_finish(&buf, seq, net_repl_ack_for_destination(rep, dst));
+    u32 seq, ack;
+    net_repl_prepare_outgoing(rep, dst, pkt, false, &seq, &ack);
+    u32 plen = packet_finish(&buf, seq, ack);
     rep->hb_echo_sent++;
     return net_sendto(rep->socket, buf.data, plen, dst);
 }

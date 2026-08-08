@@ -81,7 +81,10 @@ typedef struct {
     NetAddress               addr;
     bool                     valid;
     u32                      last_seen_ms;  /* R423: activity stamp for LRU eviction */
-    u32                      ack_to_send;   /* highest reliable sequence received from this peer */
+    u32                      ack_to_send;   /* highest contiguous reliable sequence from this peer */
+    u32                      ack_next_seq;  /* next sequence needed to advance cumulative ACK */
+    u8                       ack_pending;   /* R455: received bits for [ack_next_seq, +8) */
+    bool                     ack_initialized;
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
 } NetRepPeerChannel;
@@ -94,7 +97,10 @@ typedef struct {
     NetRepReliablePending    reliable_window[NET_RELIABLE_WINDOW]; /* R434: in-flight reliable slots */
     u32                      reliable_dropped;  /* R434: reliable sends rejected (window full) */
     u32                      last_peer_ack;   /* peer's ack of OUR packets (clears our pending) */
-    u32                      ack_to_send;     /* legacy address-less feed() ack state */
+    u32                      ack_to_send;     /* legacy address-less feed() cumulative ACK */
+    u32                      ack_next_seq;
+    u8                       ack_pending;
+    bool                     ack_initialized;
     bool                     seq_dedup;
     bool                     reliable_retry;
     bool                     ordered_layer;
