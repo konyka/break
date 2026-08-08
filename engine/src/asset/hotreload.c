@@ -57,6 +57,9 @@ bool hotreload_pipeline_init(HotReloadPipeline *hr, RHIDevice *dev,
                               const char *vert_path, const char *frag_path,
                               RHIPipelineDesc *out_desc) {
     (void)out_desc;
+    if (!hr || !dev || !vert_path || !frag_path) return false;
+    if (strlen(vert_path) >= sizeof(hr->vert_path) ||
+        strlen(frag_path) >= sizeof(hr->frag_path)) return false;
     /* R111-2: Zero the struct first so strncpy-truncated paths are guaranteed
      * null-terminated.  hotreload_texture_init already does this. */
     memset(hr, 0, sizeof(*hr));
@@ -72,8 +75,8 @@ bool hotreload_pipeline_init(HotReloadPipeline *hr, RHIDevice *dev,
     if (!rhi_handle_valid(hr->pipeline)) return false;
 
     filewatch_init(&hr->watcher);
-    filewatch_add(&hr->watcher, vert_path, hotreload_shader_callback, hr);
-    filewatch_add(&hr->watcher, frag_path, hotreload_shader_callback, hr);
+    filewatch_add(&hr->watcher, hr->vert_path, hotreload_shader_callback, hr);
+    filewatch_add(&hr->watcher, hr->frag_path, hotreload_shader_callback, hr);
 
     hr->ready = true;
     return true;

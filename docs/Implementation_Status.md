@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R471 纹理热重载路径截断审查（TDD）** — `hotreload_texture_init()` 将源路径保存到 `HotReloadTexture.path[256]` 并以此路径创建 file watcher；先前长路径静默截断但仍返回成功、标记 ready，后续变更会对截断后的不同文件重载。现于写入对象与创建 watcher 前拒绝不能完整保存的路径，失败不改变已零初始化对象状态；只在开发期初始化执行一次长度检查，轮询和重载热路径不变、无分配。TDD：`hotreload_texture_rejects_path_truncation` 传入 256-byte 路径，旧码错误成功，修复后返回 false 且 `ready` 保持 false；模块文档同步。验证：`test_hotreload` 定向回归 2/2 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R472 着色器热重载路径截断审查（TDD）** — `hotreload_pipeline_init()` 先前把顶点和片段 shader 路径静默截断到 `HotReloadPipeline` 的 256-byte 字段，却仍以完整路径完成首次编译；后续 watcher 回调改用截断路径重编译，可能命中其他文件。现于对象写入、编译和 watcher 创建前拒绝不能完整保存的任一路径，并让 watcher 使用已校验的内部副本；初始化失败不改变零初始化对象状态，只执行一次长度检查，不增加轮询/重载热路径成本。TDD：`hotreload_pipeline_rejects_path_truncation` 传入真实 256-byte 顶点/片段路径，旧码错误成功，修复后返回 false 且 `ready` 保持 false；模块文档同步。验证：`test_hotreload` 定向回归 3/3 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R471 纹理热重载路径截断审查（TDD）** — `hotreload_texture_init()` 将源路径保存到 `HotReloadTexture.path[256]` 并以此路径创建 file watcher；先前长路径静默截断但仍返回成功、标记 ready，后续变更会对截断后的不同文件重载。现于写入对象与创建 watcher 前拒绝不能完整保存的路径，失败不改变已零初始化对象状态；只在开发期初始化执行一次长度检查，轮询和重载热路径不变、无分配。TDD：`hotreload_texture_rejects_path_truncation` 传入 256-byte 路径，旧码错误成功，修复后返回 false 且 `ready` 保持 false；模块文档同步。验证：`test_hotreload` 定向回归 2/2 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R470 异步资源请求路径截断审查（TDD）** — 所有 `async_loader_request*` 入口最终把调用者路径复制到 worker 持有的 `AsyncRequest.path[256]`，但原先先 CAS 占用槽位并静默截断；后台 I/O 会读取另一文件，且错误请求消耗有限的异步队列容量。现于共享提交函数中、任何 CAS/排队前拒绝无法完整保存的路径，因而普通、range、priority 与纹理解码入口统一安全；只在提交时执行一次有界长度检查，worker 与每帧热路径不变、无分配。TDD：`async_loader_rejects_path_truncation` 传入 256-byte 路径，旧码错误返回非零 ID，修复后返回 0 且 pending 计数保持 0；模块文档同步。验证：`test_async_loader` 定向回归 16/16 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

@@ -63,7 +63,32 @@ TEST(hotreload_texture_rejects_path_truncation)
     ASSERT_FALSE(hr.ready);
 }
 
+/* R472: callbacks recompile from the paths persisted in HotReloadPipeline.
+ * A successful initial compile must not leave them as truncated identities. */
+TEST(hotreload_pipeline_rejects_path_truncation)
+{
+    char vert[257], frag[257];
+    memcpy(vert, "/tmp/", 5);
+    memset(vert + 5, 'v', 251);
+    vert[256] = '\0';
+    memcpy(frag, "/tmp/", 5);
+    memset(frag + 5, 'f', 251);
+    frag[256] = '\0';
+    ASSERT_TRUE(write_file(vert, 16, '#'));
+    ASSERT_TRUE(write_file(frag, 16, '#'));
+
+    HotReloadPipeline hr = {0};
+    bool initialized = hotreload_pipeline_init(&hr, (RHIDevice *)(usize)1,
+                                               vert, frag, NULL);
+    if (initialized) hotreload_pipeline_shutdown(&hr);
+    ASSERT_FALSE(initialized);
+    ASSERT_FALSE(hr.ready);
+    remove(vert);
+    remove(frag);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(hotreload_rejects_oversized_shader);
     RUN_TEST(hotreload_texture_rejects_path_truncation);
+    RUN_TEST(hotreload_pipeline_rejects_path_truncation);
 TEST_MAIN_END()
