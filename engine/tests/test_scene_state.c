@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -343,6 +344,68 @@ TEST(scene_state_rejects_nonfinite_values)
     remove(TMP_STATE);
 }
 
+/* Saving a value which the loader rejects produces an unusable checkpoint.
+ * Validate before opening the destination so a failed save keeps the last
+ * recoverable state intact. */
+TEST(scene_state_save_rejects_nonfinite_values)
+{
+    Camera cam = {0};
+    cam.position = vec3(1, 2, 3);
+    cam.yaw = 0.1f;
+    cam._proj.e[2][1] = 1.0f;
+    f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.5f, scale = 1.0f;
+    f32 wy = -2.0f;
+    bool wen = true;
+    PhysicsWorld *pw = physics_world_create(1);
+    ASSERT_NOT_NULL(pw);
+    pw->count = 1;
+    pw->bodies[0].position = vec3(3, 4, 5);
+    pw->bodies[0].velocity = vec3(6, 7, 8);
+    pw->bodies[0].mass = 2.0f;
+    pw->bodies[0].half_extent = vec3(0.5f, 0.75f, 1.0f);
+    pw->bodies[0].restitution = 0.3f;
+
+    SceneStateCtx ctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    ASSERT_TRUE(scene_state_save(TMP_STATE, &ctx));
+
+    FILE *f = fopen(TMP_STATE, "rb");
+    ASSERT_NOT_NULL(f);
+    ASSERT_TRUE(fseek(f, 0, SEEK_END) == 0);
+    long saved_size = ftell(f);
+    ASSERT_TRUE(saved_size > 0);
+    ASSERT_TRUE(fseek(f, 0, SEEK_SET) == 0);
+    u8 *saved = (u8 *)malloc((usize)saved_size);
+    ASSERT_NOT_NULL(saved);
+    ASSERT_EQ(fread(saved, 1, (usize)saved_size, f), (usize)saved_size);
+    ASSERT_EQ(fclose(f), 0);
+
+    f32 *values[] = {
+        &cam.yaw,
+        &sun_e,
+        &pw->bodies[0].velocity.e[2],
+        &pw->bodies[0].half_extent.e[1],
+        &pw->bodies[0].restitution,
+        &wy,
+    };
+    for (usize i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        *values[i] = NAN;
+        ASSERT_FALSE(scene_state_save(TMP_STATE, &ctx));
+
+        f = fopen(TMP_STATE, "rb");
+        ASSERT_NOT_NULL(f);
+        u8 current[4096];
+        ASSERT_TRUE((usize)saved_size <= sizeof(current));
+        ASSERT_EQ(fread(current, 1, (usize)saved_size, f), (usize)saved_size);
+        ASSERT_EQ(fclose(f), 0);
+        ASSERT_TRUE(memcmp(current, saved, (usize)saved_size) == 0);
+        *values[i] = 1.0f;
+    }
+
+    free(saved);
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_save_reports_close_failure);
@@ -352,4 +415,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_rejects_oversized_file);
     RUN_TEST(scene_state_load_without_water_tail);
     RUN_TEST(scene_state_rejects_nonfinite_values);
+    RUN_TEST(scene_state_save_rejects_nonfinite_values);
 TEST_MAIN_END()

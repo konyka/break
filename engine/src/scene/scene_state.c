@@ -104,11 +104,41 @@ static bool scene_state_measure_file(FILE *f, long *out_size) {
     return true;
 }
 
+/* Keep save output within the same finite-value contract as load.  This runs
+ * before fopen so an invalid runtime state cannot replace a usable checkpoint. */
+static bool scene_state_savable(const SceneStateCtx *ctx) {
+    if (!scene_state_camera_finite(ctx->camera) ||
+        !isfinite(*ctx->sun_azimuth) || !isfinite(*ctx->sun_elevation) ||
+        !isfinite(*ctx->exposure) || !isfinite(*ctx->render_scale) ||
+        !isfinite(*ctx->water_y))
+        return false;
+
+    for (u32 si = 0; si < ctx->physics->count; si++) {
+        const RigidBody *body = &ctx->physics->bodies[si];
+        Vec3 pos = body->position;
+        Vec3 vel = body->velocity;
+        f32 mass = body->mass > 0.0f ? body->mass : 1.0f;
+        if (physics_body_is_parked(body)) {
+            pos = body->spawn_pos;
+            vel = vec3(0, 0, 0);
+        }
+        if (!scene_state_vec3_finite(pos) || !scene_state_vec3_finite(vel) ||
+            !isfinite(mass) || !scene_state_vec3_finite(body->half_extent) ||
+            !isfinite(body->restitution))
+            return false;
+    }
+    return true;
+}
+
 bool scene_state_save(const char *path, const SceneStateCtx *ctx) {
     if (!path || !ctx || !ctx->camera || !ctx->physics ||
         !ctx->sun_azimuth || !ctx->sun_elevation || !ctx->exposure ||
         !ctx->render_scale || !ctx->water_y || !ctx->water_enabled)
         return false;
+    if (!scene_state_savable(ctx)) {
+        LOG_WARN("Scene state save: nonfinite runtime value");
+        return false;
+    }
 
     FILE *sf = fopen(path, "wb");
     if (!sf) return false;
