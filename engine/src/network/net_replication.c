@@ -762,8 +762,8 @@ bool net_replicator_peer_save(const NetReplicator *rep, const char *path) {
     fprintf(f, "count %u\n", rep->peer_count);
     for (u32 i = 0u; i < rep->peer_count; i++)
         net_repl_peer_write_line(f, &rep->peers[i]);
-    fclose(f);
-    return true;
+    bool write_ok = !ferror(f) && fclose(f) == 0;
+    return write_ok;
 }
 
 bool net_replicator_peer_load(NetReplicator *rep, const char *path) {

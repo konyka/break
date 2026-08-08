@@ -1060,6 +1060,25 @@ TEST(peer_save_load)
     net_replicator_shutdown(&loaded);
 }
 
+/* R480: a failed full-state save must report failure instead of claiming a
+ * checkpoint exists; /dev/full reliably fails at stdio flush/close time. */
+TEST(peer_save_reports_write_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection device. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20940u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    ASSERT_FALSE(net_replicator_peer_save(&rep, "/dev/full"));
+#endif
+}
+
 TEST(peer_save_dir)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1806,6 +1825,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_evict_stale);
     RUN_TEST(peer_lru_full);
     RUN_TEST(peer_save_load);
+    RUN_TEST(peer_save_reports_write_failure);
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_dir_rejects_path_truncation);
     RUN_TEST(peer_load_dir_skips_truncated_entry_path);
