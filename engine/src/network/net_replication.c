@@ -805,11 +805,11 @@ bool net_replicator_peer_save_dir(const NetReplicator *rep, const char *dir) {
 
 bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
     if (!rep || !dir || !dir[0]) return false;
-    rep->peer_count = 0u;
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
     DIR *d = opendir(dir);
     if (!d) return false;
+    rep->peer_count = 0u;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         size_t nlen = strlen(ent->d_name);

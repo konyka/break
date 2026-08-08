@@ -1199,6 +1199,30 @@ TEST(peer_load_dir_skips_truncated_entry_path)
 #endif
 }
 
+/* A failed directory open is not a successful empty snapshot: callers need
+ * their current peer baseline to remain available for a later retry. */
+TEST(peer_load_dir_failure_preserves_existing_peers)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20960u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    char missing_dir[128];
+    test_tmp(missing_dir, sizeof(missing_dir), "r488_missing_netrep_dir");
+    remove(missing_dir);
+    ASSERT_FALSE(net_replicator_peer_load_dir(&rep, missing_dir));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
+    ASSERT_TRUE(net_address_equal(&rep.peers[0].addr, &peer.addr));
+#endif
+}
+
 TEST(peer_save_delta)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1857,6 +1881,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_dir_reports_write_failure);
     RUN_TEST(peer_save_dir_rejects_path_truncation);
     RUN_TEST(peer_load_dir_skips_truncated_entry_path);
+    RUN_TEST(peer_load_dir_failure_preserves_existing_peers);
     RUN_TEST(peer_save_delta);
     RUN_TEST(peer_save_delta_keeps_dirty_on_write_failure);
     RUN_TEST(peer_delta_rotate);

@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R487 纹理热重载失败初始化关闭审查（TDD）** — `hotreload_texture_shutdown()` 先前无条件关闭 watcher；若 `hotreload_texture_init()` 在 `filewatch_init()` 前失败，零初始化 watcher 的 Linux fd 为 0，会错误关闭 stdin。现 shutdown 与 pipeline 路径一致，仅在对象 ready 后释放 watcher；正常成功初始化/关闭路径不变，无轮询热路径成本、无分配。TDD：`hotreload_texture_failed_init_keeps_stdin` 将 `/dev/null` 映射至 stdin 后关闭失败初始化对象，旧码关闭该 fd，修复后仍保持可用；模块文档同步。验证：`test_hotreload` 定向回归 5/5 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R488 NetRep 目录读取失败状态保持审查（TDD）** — `net_replicator_peer_load_dir()` 先前在 `opendir()` 前清空 peer 表；不存在或暂时不可访问的目录令 API 返回 `false`，却同时丢失已有运行时 peer 基线，后续无法重试或继续使用。现仅在目录成功打开后才开始以目录快照替换 peer 表；成功读取空目录仍按原语义得到空快照。变更只在显式持久化读取路径执行，不影响网络热路径、无分配。TDD：`peer_load_dir_failure_preserves_existing_peers` 预置有效 peer 后读取不存在目录，旧码错误清零，修复后保留该 peer；模块文档同步。验证：`test_net_replication` 定向回归 46/46 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R487 纹理热重载失败初始化关闭审查（TDD）** — `hotreload_texture_shutdown()` 先前无条件关闭 watcher；若 `hotreload_texture_init()` 在 `filewatch_init()` 前失败，零初始化 watcher 的 Linux fd 为 0，会错误关闭 stdin。现 shutdown 与 pipeline 路径一致，仅在对象 ready 后释放 watcher；正常成功初始化/关闭路径不变，无轮询热路径成本、无分配。TDD：`hotreload_texture_failed_init_keeps_stdin` 将 `/dev/null` 映射至 stdin 后关闭失败初始化对象，旧码关闭该 fd，修复后仍保持可用；模块文档同步。验证：`test_hotreload` 定向回归 5/5 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R486 Lua 热重载失败重试审查（TDD）** — `lua_script_reload_if_changed()` 先前在编译或执行候选脚本前就写入 `last_mtime`；语法/运行时失败会吞掉该版本，文件随后被修正但 mtime 未跨秒时仍永久保留旧回调。现仅在候选 chunk 成功运行后提交 mtime，失败候选继续可重试；只影响低频热重载检查，`on_update` 调用热路径不变、无分配。TDD：`hot_reload_retries_after_failed_candidate` 先载入有效回调、注入错误脚本、再在同一观察 mtime 下写入修正版本；旧码卡在旧逻辑，修复后更新为新回调；模块文档同步。验证：`test_script_lua` 定向回归 22/22 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
