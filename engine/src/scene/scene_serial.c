@@ -1194,14 +1194,26 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
         if (!js_match(r, '{')) return false;
         u32 type = 0, size = 0;
         bool got_data = false;
+        bool seen_type = false;
+        bool seen_size = false;
+        bool seen_data = false;
         u8 stack_buf[1024];
         u8 *data = stack_buf;
         u32 data_size = 0;
         while (!js_peek(r, '}')) {
             js_skip_ws(r);
-            if (js_key(r, "type")) { if (!js_u32(r, &type)) goto fail; }
-            else if (js_key(r, "size")) { if (!js_u32(r, &size)) goto fail; }
+            if (js_key(r, "type")) {
+                if (seen_type) goto fail;
+                seen_type = true;
+                if (!js_u32(r, &type)) goto fail;
+            } else if (js_key(r, "size")) {
+                if (seen_size) goto fail;
+                seen_size = true;
+                if (!js_u32(r, &size)) goto fail;
+            }
             else if (js_key(r, "data")) {
+                if (seen_data) goto fail;
+                seen_data = true;
                 /* R384: `size` is attacker-controlled and was passed straight to
                  * malloc — a bogus "size": 4000000000 forced a 4GB request. Hex
                  * needs 2 chars per byte, so bound it by the remaining input the

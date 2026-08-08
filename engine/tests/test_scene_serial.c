@@ -826,6 +826,33 @@ TEST(load_json_rejects_duplicate_component_type)
     remove(path);
 }
 
+/* A JSON component record has one type, size and payload.  Repeating any
+ * field lets key order select the resulting component definition. */
+TEST(load_json_rejects_duplicate_component_fields)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_duplicate_component_field.json");
+    const char *docs[] = {
+        "{\"version\":1,\"entities\":[{\"components\":[{\"type\":1,\"type\":2,\"size\":4,\"data\":\"01000000\"}]}]}",
+        "{\"version\":1,\"entities\":[{\"components\":[{\"type\":1,\"size\":4,\"size\":8,\"data\":\"0100000002000000\"}]}]}",
+        "{\"version\":1,\"entities\":[{\"components\":[{\"type\":1,\"size\":4,\"data\":\"01000000\",\"data\":\"02000000\"}]}]}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, 1u, sizeof(u32));
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+        ASSERT_FALSE(scene_load_json(w, NULL, path));
+    }
+
+    world_destroy(w);
+    remove(path);
+}
+
 /* An entity has one serialized generation.  Repeating it lets input order
  * select the final unified ID instead of describing one canonical handle. */
 TEST(load_json_rejects_duplicate_entity_generation)
@@ -1847,6 +1874,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_empty_path);
     RUN_TEST(load_json_rejects_zero_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_component_type);
+    RUN_TEST(load_json_rejects_duplicate_component_fields);
     RUN_TEST(load_json_rejects_duplicate_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_entity_components);
     RUN_TEST(load_json_rejects_duplicate_entities_key);
