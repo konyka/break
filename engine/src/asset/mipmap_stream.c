@@ -108,6 +108,13 @@ static void mipmap_recompute_resident(StreamedTexture *tex) {
     }
 }
 
+/* Compare against remaining budget instead of `used + needed`: the additive
+ * form wraps near SIZE_MAX and can admit a load beyond the configured cap. */
+static bool mipmap_budget_can_reserve(const MipmapStreamManager *mgr, usize needed) {
+    return mgr && mgr->total_resident_bytes <= mgr->memory_budget &&
+           needed <= mgr->memory_budget - mgr->total_resident_bytes;
+}
+
 /* Async completion callback. Runs on the main thread via async_loader_tick.
  * Ownership of `data` is transferred to us, so we either keep it (resident
  * cache) or free it. This is also where the real GPU upload is triggered.
@@ -330,7 +337,7 @@ void mipmap_stream_update(MipmapStreamManager *mgr) {
             u32 needed = tex->level_size[desired];
             /* R171: If over budget, evict this texture's finer resident levels
              * first so desired mip can load (previously skipped forever). */
-            if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+            if (!mipmap_budget_can_reserve(mgr, needed)) {
                 for (u32 l = 0; l < desired && l < tex->mip_count; l++) {
                     if (tex->level_state[l] != MIPMAP_LEVEL_RESIDENT) continue;
                     if (tex->level_data[l]) {
@@ -344,7 +351,7 @@ void mipmap_stream_update(MipmapStreamManager *mgr) {
                 }
                 mipmap_recompute_resident(tex);
             }
-            if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+            if (!mipmap_budget_can_reserve(mgr, needed)) {
                 continue;
             }
 
@@ -425,7 +432,7 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
         !tex->level_failed[level]) {
         u32 needed = tex->level_size[level];
         /* R172: Evict finer levels then respect budget (same as update path). */
-        if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+        if (!mipmap_budget_can_reserve(mgr, needed)) {
             for (u32 l = 0; l < level && l < tex->mip_count; l++) {
                 if (tex->level_state[l] != MIPMAP_LEVEL_RESIDENT) continue;
                 if (tex->level_data[l]) {
@@ -439,7 +446,7 @@ bool mipmap_stream_force_level(MipmapStreamManager *mgr, i32 tex_idx, u32 level)
             }
             mipmap_recompute_resident(tex);
         }
-        if (mgr->total_resident_bytes + needed > mgr->memory_budget) {
+        if (!mipmap_budget_can_reserve(mgr, needed)) {
             return false;
         }
 

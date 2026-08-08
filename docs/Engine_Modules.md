@@ -1682,6 +1682,7 @@ typedef struct {
 - 请求队列从 FIFO 改为最小堆（min-heap），按 `priority` 字段排序
 - 高优先级请求（如 mipmap level 0）优先出队，低优先级（如远距离 mipmap）延后
 - 堆操作 O(log N) 入队/出队，与 FIFO 的 O(1) 入队相比增加少量开销，但保证关键资源优先加载
+- Mipmap 内存预算准入以剩余容量比较，避免 `resident_bytes + level_size` 在 `usize` 极值回绕后错误超额保留；异步 update 与同步 force 路径采用同一 O(1) 检查
 
 **解码管线 (R103/R104/R450)：**
 

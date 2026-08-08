@@ -375,6 +375,35 @@ TEST(mipmap_failed_load_not_rerequested)
     vfs_destroy(vfs);
 }
 
+TEST(mipmap_budget_addition_does_not_wrap)
+{
+    /* R458: total + needed can wrap usize near SIZE_MAX, making an already
+     * full cache look empty and issuing a request that violates its budget. */
+    ASSERT_TRUE(write_mip_file());
+
+    VFS *vfs = vfs_create();
+    vfs_mount_dir(vfs, "/tmp");
+    async_loader_init(1, vfs);
+
+    MipmapStreamManager mgr;
+    ASSERT_TRUE(mipmap_stream_init(&mgr, SIZE_MAX));
+    i32 idx = mipmap_stream_register(&mgr, TMP_PATH_BASE, TEX_W, TEX_H, TEX_MIPS, TEX_BPP);
+    ASSERT_TRUE(idx >= 0);
+
+    mgr.total_resident_bytes = SIZE_MAX - 1u;
+    mipmap_stream_update_visibility(&mgr, idx, 1.0f, 1u);
+    mipmap_stream_update(&mgr);
+
+    ASSERT_EQ(mipmap_stream_load_requests(&mgr), 0u);
+    ASSERT_EQ(mgr.textures[idx].level_state[0], MIPMAP_LEVEL_UNLOADED);
+    ASSERT_EQ(mipmap_stream_resident_bytes(&mgr), SIZE_MAX - 1u);
+
+    mipmap_stream_shutdown(&mgr);
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    remove(TMP_PATH);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_residency_and_upload);
     RUN_TEST(mipmap_eviction_under_budget);
@@ -384,4 +413,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(coverage_to_level_known_values);
     RUN_TEST(mipmap_request_pool_reuse_after_free);
     RUN_TEST(mipmap_failed_load_not_rerequested);
+    RUN_TEST(mipmap_budget_addition_does_not_wrap);
 TEST_MAIN_END()
