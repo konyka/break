@@ -340,6 +340,40 @@ TEST(load_binary_rejects_component_not_declared_by_entity)
     remove(path);
 }
 
+/* The writer emits exactly one COMPONENTS chunk; multiple chunks make the
+ * final component state depend on table order. */
+TEST(load_binary_rejects_duplicate_components_chunk)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_duplicate_components_chunk.bscn");
+    const u32 empty_entities[] = { 0u };
+    const u32 empty_components[] = { 0u };
+    const u32 base = (u32)sizeof(BscnHeader) + 3u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 3 };
+    BscnChunkEntry table[3] = {
+        { .type = BSCN_CHUNK_ENTITIES, .offset = base, .size = sizeof(empty_entities) },
+        { .type = BSCN_CHUNK_COMPONENTS, .offset = base + sizeof(empty_entities),
+          .size = sizeof(empty_components) },
+        { .type = BSCN_CHUNK_COMPONENTS, .offset = base + sizeof(empty_entities) + sizeof(empty_components),
+          .size = sizeof(empty_components) }
+    };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_entities, sizeof(empty_entities), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_components, sizeof(empty_components), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_components, sizeof(empty_components), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* The writer emits at most one record per registered component type.  A
  * larger count is malformed rather than a forward-compatible empty payload. */
 TEST(load_binary_rejects_excessive_component_type_count)
@@ -1346,6 +1380,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_known_chunk_trailing_bytes);
     RUN_TEST(load_binary_rejects_duplicate_entity_component_type);
     RUN_TEST(load_binary_rejects_component_not_declared_by_entity);
+    RUN_TEST(load_binary_rejects_duplicate_components_chunk);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
     RUN_TEST(save_binary_null_world);
     RUN_TEST(bytebuf_reserve_rejects_u32_wrap);
