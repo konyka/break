@@ -639,6 +639,12 @@ static bool load_components_chunk(World *w, Reader *r,
                                   const Entity *ents, u32 ent_count) {
     u32 type_count = 0;
     if (!rd_u32(r, &type_count)) return false;
+    /* A save writes at most one record for every registered engine component.
+     * Reject impossible counts before their file-controlled loop can burn CPU;
+     * each record also needs its fixed type/size/instance header. */
+    if (type_count > ECS_MAX_COMPONENTS ||
+        (u64)type_count * 3u * sizeof(u32) > (u64)(r->end - r->p))
+        return false;
     for (u32 t = 0; t < type_count; t++) {
         u32 type = 0, size = 0, instances = 0;
         if (!rd_u32(r, &type) || !rd_u32(r, &size) || !rd_u32(r, &instances)) return false;

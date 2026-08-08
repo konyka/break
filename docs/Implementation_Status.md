@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R501 场景状态布尔编码审查（TDD）** — `scene_state.bin` 的可选水位尾部此前以 `fread(..., sizeof(bool))` 直接写入 C `bool`；任意非零磁盘字节（如 `2`）都被接受，既令二进制格式依赖实现表示，也把不受信任的非规范对象表示带入运行时。现格式明确使用单字节 `u8`，保存端规范化为 `0/1`，加载端只接受这两个值后才转换为 `bool`；非法值沿用既有快照恢复。布局仍为一个字节，既有有效存档兼容。检查只在可选尾部加载时常数执行，无帧内成本或分配。TDD：`scene_state_rejects_noncanonical_water_flag` 把有效存档最后一字节改为 `2`，旧码错误成功，修复后拒绝且水位状态保持。验证：定向 `test_scene_state` 10/10 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R502 BSCN 组件类型计数审查（TDD）** — 二进制 `COMPONENTS` chunk 的 `type_count` 原先直接控制加载循环，既没有写入端可产生的 `ECS_MAX_COMPONENTS` 上限，也未先验证每条类型记录所需的固定 12-byte 头部；畸形归档可用任意大量空记录消耗加载期工作并被错误当作成功格式。现读取计数后、进入循环前拒绝超过引擎组件容量或连固定头部都放不下的 chunk；未知但数量有效的类型仍按既有兼容逻辑跳过。仅在显式导入时常数检查，无帧内成本或分配。TDD：`load_binary_rejects_excessive_component_type_count` 写入 129 条空类型记录，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 44/44 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R501 场景状态布尔编码审查（TDD）** — `scene_state.bin` 的可选水位尾部此前以 `fread(..., sizeof(bool))` 直接写入 C `bool`；任意非零磁盘字节（如 `2`）都被接受，既令二进制格式依赖实现表示，也把不受信任的非规范对象表示带入运行时。现格式明确使用单字节 `u8`，保存端规范化为 `0/1`，加载端只接受这两个值后才转换为 `bool`；非法值沿用既有快照恢复。布局仍为一个字节，既有有效存档兼容。检查只在可选尾部加载时常数执行，无帧内成本或分配。TDD：`scene_state_rejects_noncanonical_water_flag` 把有效存档最后一字节改为 `2`，旧码错误成功，修复后拒绝且水位状态保持。验证：定向 `test_scene_state` 10/10 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R500 场景状态保存非有限值审查（TDD）** — `scene_state_load()` 已拒绝 NaN/Inf，但 `scene_state_save()` 先前仍会把同类非法运行时值写入存档，成功返回后留下该加载器必然拒绝的检查点，并覆盖原有可恢复状态。现保存前验证将实际序列化的完整 `Camera`、顶层浮点、刚体位置/速度/有效质量/半尺寸/弹性及水位均有限；检测发生在打开目标文件之前，失败不会触碰原存档。检查仅在显式保存期按刚体数线性执行，无帧内成本或分配。TDD：`scene_state_save_rejects_nonfinite_values` 依次注入相机、全局、刚体和水位 NaN，旧码错误保存，修复后返回 false 且逐字节保留原有效检查点。验证：定向 `test_scene_state` 9/9 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
