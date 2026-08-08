@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R524 JSON 节点数组分隔符审查（TDD）** — 节点数组使用了不同于实体/组件数组的手写循环，节点对象后此前可选地消费逗号，错误接受 `nodes:[{},]`。现每个节点后只能紧接 `]`，或以一个逗号分隔且逗号后必须是下一节点对象；也一并拒绝节点之间缺失逗号。检查仅在显式 JSON 加载时每个节点 O(1)，无分配或帧内成本。TDD：`load_json_rejects_trailing_nodes_array_comma` 旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 72/72 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R525 JSON 未知字段标量语法审查（TDD）** — 为保持前向兼容，加载器会跳过未知字段；但此前跳过器把任意裸 token 当作 primitive，令 `"future":garbage` 等无效 JSON 静默通过。现未知标量只接受严格的 JSON number、`true`、`false` 或 `null`；字符串、数组与对象的兼容跳过语义不变。检查仅在显式 JSON 加载时按未知标量长度线性执行，无分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_primitive` 覆盖顶层、实体、组件和节点未知字段，旧代码错误成功，修复后拒绝；同测保留合法 number/boolean/null 兼容。验证：定向 `test_scene_serial` 73/73 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R524 JSON 节点数组分隔符审查（TDD）** — 节点数组使用了不同于实体/组件数组的手写循环，节点对象后此前可选地消费逗号，错误接受 `nodes:[{},]`。现每个节点后只能紧接 `]`，或以一个逗号分隔且逗号后必须是下一节点对象；也一并拒绝节点之间缺失逗号。检查仅在显式 JSON 加载时每个节点 O(1)，无分配或帧内成本。TDD：`load_json_rejects_trailing_nodes_array_comma` 旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 72/72 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R523 JSON 对象成员分隔符审查（TDD）** — 加载器此前把对象成员后的逗号当作可选，错误接受相邻字段缺失逗号或对象尾逗号；这使格式解析与标准 JSON 和写入器不一致。现统一要求已读取的对象字段后只能紧接 `}`，或以一个逗号分隔且逗号后必须有下一字段，覆盖顶层、实体、组件与节点对象。检查仅在显式 JSON 加载时每个对象成员 O(1)，无分配或帧内成本。TDD：`load_json_rejects_invalid_object_member_separators` 覆盖四类对象的缺失及尾随逗号，旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 71/71 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

@@ -1169,6 +1169,37 @@ static bool js_skip_string(JsonR *r) {
     }
     return js_match(r, '"');
 }
+static bool js_skip_number(JsonR *r) {
+    const char *p = r->p;
+    if (p < r->end && *p == '-') p++;
+    if (p >= r->end) return false;
+    if (*p == '0') {
+        p++;
+    } else if (*p >= '1' && *p <= '9') {
+        do { p++; } while (p < r->end && isdigit((unsigned char)*p));
+    } else {
+        return false;
+    }
+    if (p < r->end && *p == '.') {
+        p++;
+        if (p >= r->end || !isdigit((unsigned char)*p)) return false;
+        do { p++; } while (p < r->end && isdigit((unsigned char)*p));
+    }
+    if (p < r->end && (*p == 'e' || *p == 'E')) {
+        p++;
+        if (p < r->end && (*p == '+' || *p == '-')) p++;
+        if (p >= r->end || !isdigit((unsigned char)*p)) return false;
+        do { p++; } while (p < r->end && isdigit((unsigned char)*p));
+    }
+    r->p = p;
+    return true;
+}
+static bool js_skip_literal(JsonR *r, const char *literal, usize len) {
+    if ((usize)(r->end - r->p) < len || memcmp(r->p, literal, len) != 0)
+        return false;
+    r->p += len;
+    return true;
+}
 static bool js_skip_value(JsonR *r) {
     js_skip_ws(r);
     if (r->p >= r->end) return false;
@@ -1190,10 +1221,11 @@ static bool js_skip_value(JsonR *r) {
         (void)close_c;
         return depth == 0;
     }
-    /* number / true / false / null */
-    while (r->p < r->end && *r->p != ',' && *r->p != '}' && *r->p != ']' &&
-           !isspace((unsigned char)*r->p)) r->p++;
-    return true;
+    if (c == '-' || isdigit((unsigned char)c)) return js_skip_number(r);
+    if (c == 't') return js_skip_literal(r, "true", 4u);
+    if (c == 'f') return js_skip_literal(r, "false", 5u);
+    if (c == 'n') return js_skip_literal(r, "null", 4u);
+    return false;
 }
 
 static bool json_load_components(World *w, JsonR *r, Entity ent) {

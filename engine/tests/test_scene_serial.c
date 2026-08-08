@@ -979,6 +979,14 @@ TEST(load_json_rejects_invalid_object_member_separators)
         scene_serial_free(&dst);
     }
 
+    const char *valid =
+        "{\"version\":1,\"future_number\":-1.5e+2,\"future_bool\":true,\"future_null\":null}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(valid, 1, strlen(valid), fp) == strlen(valid));
+    ASSERT_TRUE(fclose(fp) == 0);
+    ASSERT_TRUE(scene_load_json(w, NULL, path));
+
     world_destroy(w);
     remove(path);
 }
@@ -998,6 +1006,35 @@ TEST(load_json_rejects_trailing_nodes_array_comma)
     ASSERT_NOT_NULL(w);
     ASSERT_FALSE(scene_load_json(w, &dst, path));
     scene_serial_free(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
+/* Unknown fields remain forward-compatible, but their values must still be
+ * valid JSON values rather than arbitrary bare tokens. */
+TEST(load_json_rejects_invalid_unknown_primitive)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_invalid_unknown_primitive.json");
+    const char *docs[] = {
+        "{\"version\":1,\"future\":garbage}",
+        "{\"version\":1,\"entities\":[{\"future\":garbage}]}",
+        "{\"version\":1,\"entities\":[{\"components\":[{\"future\":garbage}]}]}",
+        "{\"version\":1,\"nodes\":[{\"future\":garbage}]}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_json(w, &dst, path));
+        scene_serial_free(&dst);
+    }
+
     world_destroy(w);
     remove(path);
 }
@@ -1953,6 +1990,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_trailing_content);
     RUN_TEST(load_json_rejects_invalid_object_member_separators);
     RUN_TEST(load_json_rejects_trailing_nodes_array_comma);
+    RUN_TEST(load_json_rejects_invalid_unknown_primitive);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
