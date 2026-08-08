@@ -1658,6 +1658,52 @@ TEST(load_json_node_without_parent_is_root)
     remove(path);
 }
 
+/* JSON output describes each SceneNode with one value per known field.  A
+ * duplicate field makes the final graph depend on key order. */
+TEST(load_json_rejects_duplicate_node_fields)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_json_duplicate_node_field.json");
+    const char *docs[] = {
+        "{\"version\":1,\"entities\":[],\"nodes\":[{\"parent\":4294967295,\"parent\":0}]}",
+        "{\"version\":1,\"entities\":[],\"nodes\":[{\"mesh\":0,\"mesh\":1}]}",
+        "{\"version\":1,\"entities\":[],\"nodes\":[{\"flags\":0,\"flags\":1}]}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_json(w, &dst, path));
+        scene_serial_free(&dst);
+    }
+
+    Mat4 matrix = mat4_identity();
+    char hex[sizeof(matrix) * 2u + 1u];
+    const u8 *bytes = (const u8 *)matrix.e;
+    for (usize i = 0; i < sizeof(matrix); i++)
+        snprintf(hex + i * 2u, sizeof(hex) - i * 2u, "%02x", bytes[i]);
+    char local_doc[512];
+    int n = snprintf(local_doc, sizeof(local_doc),
+                     "{\"version\":1,\"entities\":[],\"nodes\":[{\"local\":\"%s\",\"local\":\"%s\"}]}",
+                     hex, hex);
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(local_doc));
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(local_doc, 1, (usize)n, fp) == (usize)n);
+    ASSERT_TRUE(fclose(fp) == 0);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_FALSE(scene_load_json(w, &dst, path));
+    scene_serial_free(&dst);
+
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(load_json_rejects_nonfinite_node_matrix)
 {
     char path[64]; test_tmp(path, sizeof path, "test_json_nonfinite_matrix.json");
@@ -1824,6 +1870,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(instantiate_prefab_offsets_root_nodes_only);
     RUN_TEST(load_json_failure_preserves_old_graph);
     RUN_TEST(load_json_node_without_parent_is_root);
+    RUN_TEST(load_json_rejects_duplicate_node_fields);
     RUN_TEST(load_json_rejects_nonfinite_node_matrix);
     RUN_TEST(load_json_rejects_too_many_nodes);
     RUN_TEST(load_json_rejects_oversized_u32_literal);

@@ -1380,14 +1380,26 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                          * use UINT32_MAX for root. */
                         nd->parent_index = UINT32_MAX;
                         u32 flags = 0;
+                        bool seen_parent = false;
+                        bool seen_mesh = false;
+                        bool seen_flags = false;
+                        bool seen_local = false;
                         while (ok && !js_peek(&r, '}')) {
                             if (js_key(&r, "parent")) {
+                                if (seen_parent) { ok = false; break; }
+                                seen_parent = true;
                                 ok = js_u32(&r, &nd->parent_index);
                             } else if (js_key(&r, "mesh")) {
+                                if (seen_mesh) { ok = false; break; }
+                                seen_mesh = true;
                                 ok = js_u32(&r, &nd->mesh_index);
                             } else if (js_key(&r, "flags")) {
+                                if (seen_flags) { ok = false; break; }
+                                seen_flags = true;
                                 ok = js_u32(&r, &flags);
                             } else if (js_key(&r, "local")) {
+                                if (seen_local) { ok = false; break; }
+                                seen_local = true;
                                 ok = js_hex(&r, (u8 *)nd->local_transform.e,
                                              (u32)sizeof(nd->local_transform));
                                 if (ok) ok = scene_mat4_finite(&nd->local_transform);
