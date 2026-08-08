@@ -1700,9 +1700,9 @@ typedef struct {
 **生命周期：**
 1. 启动时创建 VFS 并初始化 loader（2 个 I/O 线程）+ 解码管线（2 个解码 worker）
 2. 主循环每帧 `tick()` 处理 I/O 完成回调 + `decode_pipeline_tick()` 处理解码完成回调
-3. 关闭时 `shutdown()` 等待所有请求完成并回收线程
+3. 关闭时 `shutdown()` 等待 I/O/解码线程退出，并同步交付尚未由 `tick()` 分发的最终回调：READY 请求保留数据所有权转交，未完成请求以 `(NULL, 0)` 通知；每个已接受请求至多回调一次
 
-**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/优先级出队顺序/解码管线端到端)
+**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/优先级出队顺序/解码管线端到端、关闭时 queued 与 READY completion 的一次性回调交付)
 
 ---
 

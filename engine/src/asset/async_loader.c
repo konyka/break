@@ -463,36 +463,39 @@ void async_loader_shutdown(void) {
      * (a future init reuses them; destroying risks a lingering worker touching a
      * dead object). See declaration comment. */
 
-    /* R431: requests still sitting in the request heap (state LOADING, never
-     * picked up by a worker — or handed to the decode pipeline and never
-     * polled back) were dropped silently here, leaking their user_data. The
-     * workers are joined, so nothing else can touch these slots: notify the
-     * owner with (NULL, 0) exactly like async_loader_cancel (R167-D) and
-     * release the slot. */
+    /* R431/R449: all loader-owned slots are quiescent after the joins. Drain
+     * each final completion here instead of only freeing READY data: a caller
+     * can legitimately shut down between the worker publishing completion and
+     * the next main-thread tick. In that case the callback must still receive
+     * its data exactly once. LOADING requests have no result to deliver, so
+     * they retain the cancellation-style NULL callback. */
     for (u32 i = 0; i < ASYNC_MAX_REQUESTS; i++) {
         AsyncRequest *req = &g_loader.requests[i];
-        if (atomic_load(&req->state) == (u32)ASSET_LOADING) {
+        u32 state = atomic_load_explicit(&req->state, memory_order_acquire);
+        if (state == (u32)ASSET_LOADING ||
+            state == (u32)ASSET_READY ||
+            state == (u32)ASSET_FAILED) {
+            void *data = state == (u32)ASSET_READY ? req->data : NULL;
+            u32 size = state == (u32)ASSET_READY ? req->size : 0u;
             if (req->callback) {
-                req->callback(req->user_data, NULL, 0);
-                req->callback = NULL;
-                req->user_data = NULL;
+                req->callback(req->user_data, data, size);
+            } else if (data) {
+                free(data);
             }
+            /* A successful callback owns data; no-callback data was freed. */
+            req->data = NULL;
+            req->size = 0;
+            req->callback = NULL;
+            req->user_data = NULL;
             atomic_store_explicit(&req->state, (u32)ASSET_UNLOADED,
                                   memory_order_release);
-            atomic_fetch_sub_explicit(&g_loader.pending_count, 1,
-                                      memory_order_relaxed);
+            if (state == (u32)ASSET_LOADING) {
+                atomic_fetch_sub_explicit(&g_loader.pending_count, 1,
+                                          memory_order_relaxed);
+            }
         }
     }
     g_loader.request_heap.count = 0;
-
-    /* Free any undelivered loaded data */
-    for (u32 i = 0; i < ASYNC_MAX_REQUESTS; i++) {
-        u32 st = atomic_load(&g_loader.requests[i].state);
-        if (st == (u32)ASSET_READY && g_loader.requests[i].data) {
-            free(g_loader.requests[i].data);
-            g_loader.requests[i].data = NULL;
-        }
-    }
 
     LOG_INFO("Async loader shut down");
 }

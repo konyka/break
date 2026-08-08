@@ -448,12 +448,16 @@ TEST(async_loader_completion_burst)
  * (NULL, 0), exactly like async_loader_cancel. */
 static _Atomic int g_sd_cb_count;
 static _Atomic int g_sd_cb_null;
+static _Atomic int g_sd_cb_data;
 
 static void shutdown_pending_cb(void *user, void *data, u32 size) {
     (void)user; (void)size;
     atomic_fetch_add(&g_sd_cb_count, 1);
     if (!data) atomic_fetch_add(&g_sd_cb_null, 1);
-    if (data) free(data);
+    if (data) {
+        atomic_fetch_add(&g_sd_cb_data, 1);
+        free(data);
+    }
 }
 
 TEST(async_loader_shutdown_fires_pending_callbacks)
@@ -476,6 +480,7 @@ TEST(async_loader_shutdown_fires_pending_callbacks)
     async_loader_init(1, vfs);
     atomic_store(&g_sd_cb_count, 0);
     atomic_store(&g_sd_cb_null, 0);
+    atomic_store(&g_sd_cb_data, 0);
 
     const int N = 64;
     int submitted = 0;
@@ -486,15 +491,77 @@ TEST(async_loader_shutdown_fires_pending_callbacks)
     }
     ASSERT_EQ(submitted, N);
 
-    /* No tick: finished requests sit in the completion queue, queued ones
-     * stay LOADING. Shutdown must fire the queued ones with NULL data. */
+    /* No tick: queued requests remain LOADING while an early request may
+     * already be READY. Shutdown must notify every accepted request exactly
+     * once, preserving data for READY entries and using NULL for LOADING. */
     async_loader_shutdown();
 
-    ASSERT_TRUE(atomic_load(&g_sd_cb_count) >= 1);
-    ASSERT_EQ(atomic_load(&g_sd_cb_count), atomic_load(&g_sd_cb_null));
+    ASSERT_EQ(atomic_load(&g_sd_cb_count), submitted);
+    ASSERT_TRUE(atomic_load(&g_sd_cb_null) >= 1);
+    ASSERT_EQ(atomic_load(&g_sd_cb_count),
+              atomic_load(&g_sd_cb_null) + atomic_load(&g_sd_cb_data));
 
     vfs_destroy(vfs);
     remove(ps);
+}
+
+/* R449: shutdown must drain completions that reached READY/FAILED but were
+ * not yet dispatched by the main-thread tick. Dropping these entries leaks
+ * callback-owned user data and silently loses successful loads. */
+static _Atomic int g_shutdown_ready_cb_count;
+static _Atomic int g_shutdown_ready_cb_data;
+static _Atomic int g_shutdown_ready_cb_size;
+
+static void shutdown_ready_cb(void *user, void *data, u32 size)
+{
+    (void)user;
+    atomic_fetch_add(&g_shutdown_ready_cb_count, 1);
+    if (data) {
+        atomic_store(&g_shutdown_ready_cb_data, 1);
+        atomic_store(&g_shutdown_ready_cb_size, (int)size);
+        free(data);
+    }
+}
+
+TEST(async_loader_shutdown_drains_ready_completion)
+{
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, "/tmp");
+
+    char path[128];
+    test_tmp(path, sizeof path, "async_shutdown_ready.bin");
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    const u8 payload[] = { 1, 2, 3, 4 };
+    ASSERT_EQ(fwrite(payload, 1, sizeof(payload), f), sizeof(payload));
+    fclose(f);
+
+    async_loader_init(1, vfs);
+    atomic_store(&g_shutdown_ready_cb_count, 0);
+    atomic_store(&g_shutdown_ready_cb_data, 0);
+    atomic_store(&g_shutdown_ready_cb_size, 0);
+
+    u64 id = async_loader_request(strrchr(path, '/') + 1,
+                                  shutdown_ready_cb, NULL);
+    ASSERT_NEQ(id, (u64)0);
+
+    /* Observe completion without draining the main-thread queue. */
+    for (int i = 0; i < 200; i++) {
+        if (async_loader_status(id) == ASSET_READY) break;
+        for (volatile int j = 0; j < 50000; j++) { (void)j; }
+    }
+    ASSERT_EQ(async_loader_status(id), ASSET_READY);
+    ASSERT_EQ(atomic_load(&g_shutdown_ready_cb_count), 0);
+
+    async_loader_shutdown();
+
+    ASSERT_EQ(atomic_load(&g_shutdown_ready_cb_count), 1);
+    ASSERT_EQ(atomic_load(&g_shutdown_ready_cb_data), 1);
+    ASSERT_EQ(atomic_load(&g_shutdown_ready_cb_size), (int)sizeof(payload));
+
+    vfs_destroy(vfs);
+    remove(path);
 }
 
 TEST_MAIN_BEGIN()
@@ -511,4 +578,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_range_truncated_fails);
     RUN_TEST(async_loader_completion_burst);
     RUN_TEST(async_loader_shutdown_fires_pending_callbacks);
+    RUN_TEST(async_loader_shutdown_drains_ready_completion);
 TEST_MAIN_END()
