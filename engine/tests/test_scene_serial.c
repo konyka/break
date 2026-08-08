@@ -826,6 +826,44 @@ TEST(load_json_rejects_duplicate_component_type)
     remove(path);
 }
 
+/* An entity has one serialized generation.  Repeating it lets input order
+ * select the final unified ID instead of describing one canonical handle. */
+TEST(load_json_rejects_duplicate_entity_generation)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_duplicate_entity_generation.json");
+    const char *doc =
+        "{\"version\":1,\"entities\":[{\"gen\":1,\"gen\":2,\"components\":[]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(load_json_rejects_duplicate_entity_components)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_duplicate_entity_components.json");
+    const char *doc =
+        "{\"version\":1,\"entities\":[{\"gen\":1,\"components\":[],\"components\":[]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -1723,6 +1761,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_empty_path);
     RUN_TEST(load_json_rejects_zero_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_component_type);
+    RUN_TEST(load_json_rejects_duplicate_entity_generation);
+    RUN_TEST(load_json_rejects_duplicate_entity_components);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);

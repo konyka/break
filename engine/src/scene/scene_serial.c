@@ -1302,8 +1302,12 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         created_cap = nc;
                     }
                     created[created_count++] = e;
+                    bool seen_gen = false;
+                    bool seen_components = false;
                     while (ok && !js_peek(&r, '}')) {
                         if (js_key(&r, "gen")) {
+                            if (seen_gen) { ok = false; break; }
+                            seen_gen = true;
                             /* R243: JSON save emits "gen" but load previously
                              * skipped it, so the (index, generation) identity —
                              * restored on the binary path (see load_entities_chunk)
@@ -1317,6 +1321,8 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                                 created[created_count - 1u] = e;
                             }
                         } else if (js_key(&r, "components")) {
+                            if (seen_components) { ok = false; break; }
+                            seen_components = true;
                             ok = json_load_components(w, &r, e);
                         } else {
                             /* skip key:value */
