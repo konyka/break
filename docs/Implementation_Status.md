@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R525 JSON 未知字段标量语法审查（TDD）** — 为保持前向兼容，加载器会跳过未知字段；但此前跳过器把任意裸 token 当作 primitive，令 `"future":garbage` 等无效 JSON 静默通过。现未知标量只接受严格的 JSON number、`true`、`false` 或 `null`；字符串、数组与对象的兼容跳过语义不变。检查仅在显式 JSON 加载时按未知标量长度线性执行，无分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_primitive` 覆盖顶层、实体、组件和节点未知字段，旧代码错误成功，修复后拒绝；同测保留合法 number/boolean/null 兼容。验证：定向 `test_scene_serial` 73/73 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R526 JSON 未知复合值定界符匹配审查（TDD）** — 未知对象/数组的兼容跳过器此前只计嵌套深度，未匹配花括号与方括号的种类，令 `"future":[}` 等错配输入被静默接受。现跳过器以固定 256 项闭合符栈逐层匹配 `{}`/`[]`，过深值直接拒绝而不递归或分配；正确嵌套的未知扩展值继续兼容跳过。检查仅在显式 JSON 加载时按未知复合值长度线性执行，无堆分配或帧内成本。TDD：`load_json_rejects_mismatched_unknown_compound_delimiters` 旧代码错误成功，修复后拒绝；同测保留合法嵌套扩展值。验证：定向 `test_scene_serial` 74/74 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R525 JSON 未知字段标量语法审查（TDD）** — 为保持前向兼容，加载器会跳过未知字段；但此前跳过器把任意裸 token 当作 primitive，令 `"future":garbage` 等无效 JSON 静默通过。现未知标量只接受严格的 JSON number、`true`、`false` 或 `null`；字符串、数组与对象的兼容跳过语义不变。检查仅在显式 JSON 加载时按未知标量长度线性执行，无分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_primitive` 覆盖顶层、实体、组件和节点未知字段，旧代码错误成功，修复后拒绝；同测保留合法 number/boolean/null 兼容。验证：定向 `test_scene_serial` 73/73 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R524 JSON 节点数组分隔符审查（TDD）** — 节点数组使用了不同于实体/组件数组的手写循环，节点对象后此前可选地消费逗号，错误接受 `nodes:[{},]`。现每个节点后只能紧接 `]`，或以一个逗号分隔且逗号后必须是下一节点对象；也一并拒绝节点之间缺失逗号。检查仅在显式 JSON 加载时每个节点 O(1)，无分配或帧内成本。TDD：`load_json_rejects_trailing_nodes_array_comma` 旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 72/72 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

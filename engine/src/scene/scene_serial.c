@@ -1206,19 +1206,31 @@ static bool js_skip_value(JsonR *r) {
     char c = *r->p;
     if (c == '"') return js_skip_string(r);
     if (c == '{' || c == '[') {
-        char close_c = (c == '{') ? '}' : ']';
+        /* Keep extension-value skipping non-recursive and bounded while still
+         * matching each nested object's or array's own closing delimiter. */
+        char closers[256];
+        u32 depth = 0;
+        closers[depth++] = (c == '{') ? '}' : ']';
         r->p++;
-        int depth = 1;
         while (r->p < r->end && depth > 0) {
             js_skip_ws(r);
             if (r->p >= r->end) return false;
             char k = *r->p;
             if (k == '"') { if (!js_skip_string(r)) return false; continue; }
-            if (k == '{' || k == '[') { depth++; r->p++; continue; }
-            if (k == '}' || k == ']') { depth--; r->p++; continue; }
+            if (k == '{' || k == '[') {
+                if (depth >= (u32)sizeof(closers)) return false;
+                closers[depth++] = (k == '{') ? '}' : ']';
+                r->p++;
+                continue;
+            }
+            if (k == '}' || k == ']') {
+                if (k != closers[depth - 1u]) return false;
+                depth--;
+                r->p++;
+                continue;
+            }
             r->p++;
         }
-        (void)close_c;
         return depth == 0;
     }
     if (c == '-' || isdigit((unsigned char)c)) return js_skip_number(r);

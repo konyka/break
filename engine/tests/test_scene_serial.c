@@ -849,6 +849,14 @@ TEST(load_json_rejects_duplicate_component_fields)
         ASSERT_FALSE(scene_load_json(w, NULL, path));
     }
 
+    const char *valid =
+        "{\"version\":1,\"future\":[{\"nested\":[true,null]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(valid, 1, strlen(valid), fp) == strlen(valid));
+    ASSERT_TRUE(fclose(fp) == 0);
+    ASSERT_TRUE(scene_load_json(w, NULL, path));
+
     world_destroy(w);
     remove(path);
 }
@@ -1033,6 +1041,31 @@ TEST(load_json_rejects_invalid_unknown_primitive)
         Scene dst; memset(&dst, 0, sizeof(dst));
         ASSERT_FALSE(scene_load_json(w, &dst, path));
         scene_serial_free(&dst);
+    }
+
+    world_destroy(w);
+    remove(path);
+}
+
+/* Forward-compatible unknown compound values still need properly matched
+ * object and array delimiters. */
+TEST(load_json_rejects_mismatched_unknown_compound_delimiters)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_bad_unknown_compound.json");
+    const char *docs[] = {
+        "{\"version\":1,\"future\":[}}",
+        "{\"version\":1,\"future\":{]}}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+        ASSERT_FALSE(scene_load_json(w, NULL, path));
     }
 
     world_destroy(w);
@@ -1991,6 +2024,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_invalid_object_member_separators);
     RUN_TEST(load_json_rejects_trailing_nodes_array_comma);
     RUN_TEST(load_json_rejects_invalid_unknown_primitive);
+    RUN_TEST(load_json_rejects_mismatched_unknown_compound_delimiters);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
