@@ -788,8 +788,9 @@ bool net_replicator_peer_save_dir(const NetReplicator *rep, const char *dir) {
     for (u32 i = 0u; i < rep->peer_count; i++) {
         char path[512];
         const NetRepPeerStats *p = &rep->peers[i];
-        snprintf(path, sizeof(path), "%s/peer_%03u_%s_%u.peer",
-                 dir, i, p->addr.host, (u32)p->addr.port);
+        int n = snprintf(path, sizeof(path), "%s/peer_%03u_%s_%u.peer",
+                         dir, i, p->addr.host, (u32)p->addr.port);
+        if (n < 0 || (usize)n >= sizeof(path)) return false;
         FILE *f = fopen(path, "w");
         if (!f) return false;
         fprintf(f, "# break netrep peer v1\n");

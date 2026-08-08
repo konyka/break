@@ -9,6 +9,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#if !defined(ENGINE_PLATFORM_WINDOWS)
+#include <sys/stat.h>
+#endif
+
 /* R444: a fixed UDP TEST_PORT collided across parallel ctest processes
  * (same-tree -j and cross-tree alike) — bind failed and every loopback test
  * fell over. Derive a per-process 16-port block from the pid (tests add
@@ -19,6 +23,38 @@
 
 static void feed_ack(NetReplicator *rep, u32 ack);
 static void feed_ack_from(NetReplicator *rep, u32 ack, const NetAddress *from);
+
+#if !defined(ENGINE_PLATFORM_WINDOWS)
+static bool make_deep_dir(char *dir, usize cap, char *base, usize base_cap,
+                          usize target_len) {
+    test_tmp(base, base_cap, "r477_netrep_dir");
+    if (mkdir(base, 0755) != 0) return false;
+    int n = snprintf(dir, cap, "%s", base);
+    if (n < 0 || (usize)n >= cap || (usize)n > target_len) return false;
+    while ((usize)n < target_len) {
+        usize remaining = target_len - (usize)n;
+        if (remaining < 2) return false;
+        usize part_len = remaining - 1u;
+        if (part_len > 80u) part_len = 80u;
+        dir[n++] = '/';
+        memset(dir + n, 'a', part_len);
+        n += (int)part_len;
+        dir[n] = '\0';
+        if (mkdir(dir, 0755) != 0) return false;
+    }
+    return true;
+}
+
+static void remove_deep_dir(char *dir, const char *base) {
+    for (;;) {
+        rmdir(dir);
+        if (strcmp(dir, base) == 0) break;
+        char *slash = strrchr(dir, '/');
+        if (!slash) break;
+        *slash = '\0';
+    }
+}
+#endif
 
 TEST(replicator_init_shutdown)
 {
@@ -1063,6 +1099,28 @@ TEST(peer_save_dir)
 #endif
 }
 
+/* R477: peer_save_dir formats each output filename in path[512]. A directory
+ * that leaves no room must not silently save a peer under a truncated name. */
+TEST(peer_save_dir_rejects_path_truncation)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20900u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    char base[128], dir[512];
+    ASSERT_TRUE(make_deep_dir(dir, sizeof(dir), base, sizeof(base), 500u));
+    ASSERT_FALSE(net_replicator_peer_save_dir(&rep, dir));
+    remove_deep_dir(dir, base);
+#endif
+}
+
 TEST(peer_save_delta)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1696,6 +1754,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_lru_full);
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_dir);
+    RUN_TEST(peer_save_dir_rejects_path_truncation);
     RUN_TEST(peer_save_delta);
     RUN_TEST(peer_delta_rotate);
     RUN_TEST(peer_delta_no_rotate_below_threshold);
