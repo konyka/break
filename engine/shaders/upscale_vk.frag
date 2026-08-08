@@ -14,6 +14,7 @@ layout(push_constant) uniform UpscaleParams {
     layout(offset = 12)  float u_ups_dh;
     layout(offset = 16)  float u_ups_sharp;
     layout(offset = 20)  float u_ups_copy_only; /* R197-A: Pass 2 blit, skip TSR */
+    layout(offset = 24)  float u_ups_first_frame;
     layout(offset = 32)  mat4 u_ups_inv_proj;
     layout(offset = 96)  mat4 u_ups_prev_vp;
 };
@@ -82,7 +83,7 @@ void main() {
     }
 
     float depth = texture(u_ups_depth, render_uv).r;
-    if (depth < 1.0) {
+    if (depth < 1.0 && u_ups_first_frame < 0.5) {
         vec2 ndc = render_uv * 2.0 - 1.0;
         vec4 clip_pos = vec4(ndc.x, ndc.y, depth * 2.0 - 1.0, 1.0);
         vec4 view_pos = u_ups_inv_proj * clip_pos;

@@ -3,7 +3,7 @@
 ## 1. 环境要求
 
 ### 1.1 编译器
-- GCC 11+ 或 Clang 14+（C11 支持）
+- GCC 11+ 或 Clang 14+（C11 支持；Linux Clang Release 的默认 IPO/LTO 构建还需要 `lld`）
 - CMake 3.20+（engine）/ CMake 3.25+（framework）
 
 #### 编译器支持矩阵
@@ -11,7 +11,7 @@
 | 平台 | 编译器 | 状态 | 工具链文件 | 备注 |
 |------|--------|------|-----------|------|
 | Linux | GCC 7+ | 完整支持 | (默认) | 推荐，CI 主线 |
-| Linux | Clang 10+ | 完整支持 | `toolchain-clang-linux.cmake` | 零警告通过 |
+| Linux | Clang 10+ + lld | 完整支持 | `toolchain-clang-linux.cmake` | 零警告通过 |
 | Windows | MSVC (cl) | 支持 | `toolchain-msvc.cmake` | 原生 Windows 开发 |
 | Windows | Clang | 支持 | `toolchain-clang-win.cmake` | clang + lld-link |
 | Windows | MinGW GCC | 支持 | `toolchain-mingw.cmake` | Linux 交叉编译 |
@@ -220,7 +220,7 @@ cmake --build build-gl
 ### 3.1 运行 engine_demo（Linux 桌面）
 
 - **Wayland/XWayland 节流**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。
-- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）。
+- 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
 
 ## 4. 编译选项与标准
 

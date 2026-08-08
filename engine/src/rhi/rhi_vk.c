@@ -5082,6 +5082,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_ups_dh") == 0)             return 12;
     if (strcmp(name, "u_ups_sharp") == 0)          return 16;
     if (strcmp(name, "u_ups_copy_only") == 0)      return 20;
+    if (strcmp(name, "u_ups_first_frame") == 0)    return 24;
     if (strcmp(name, "u_ups_inv_proj") == 0)       return 32;
     if (strcmp(name, "u_ups_prev_vp") == 0)        return 96;
     /* R198-A: luminance_vk.frag auto-exposure — missing map froze adaptation. */

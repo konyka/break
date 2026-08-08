@@ -89,6 +89,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     s->loc_dh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_dh");
     s->loc_sharp     = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_sharp");
     s->loc_copy_only = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_copy_only");
+    s->loc_first_frame = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_first_frame");
     s->loc_inv_proj  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_inv_proj");
     s->loc_prev_vp   = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_prev_vp");
 
@@ -127,9 +128,8 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
      * overwrites the previous, so only the last texture (history) would be visible.
      * rhi_cmd_bind_material_textures correctly assigns albedo->binding 0 (u_ups_src),
      * shadow->binding 1 (u_ups_depth), mr->binding 2 (u_ups_history) in one call. */
-    /* R446: on the first frame after init/resize the history texture is
-     * uninitialized — bind the current input as its own history (reprojection
-     * of the current frame onto itself is a no-op), same as taa_resolve. */
+    /* The shader also skips reprojection on this frame. Binding current input
+     * keeps every declared descriptor valid on both backends. */
     RHITexture hist_tex = s->first_frame ? input_tex : s->history[read_idx].color_tex;
     rhi_cmd_bind_material_textures(cmd, input_tex, hist_tex,
                                    input_tex, input_tex, depth_tex, input_tex, s->sampler);
@@ -140,6 +140,8 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     if (s->loc_dh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
     if (s->loc_sharp >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, sharpness);
     if (s->loc_copy_only >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_copy_only, 0.0f);
+    if (s->loc_first_frame >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_first_frame,
+                                                          s->first_frame ? 1.0f : 0.0f);
     if (s->loc_inv_proj >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
     if (s->loc_prev_vp >= 0)   rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
 
@@ -159,6 +161,7 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     if (s->loc_dh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
     if (s->loc_sharp >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, 0.0f);
     if (s->loc_copy_only >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_copy_only, 1.0f);
+    if (s->loc_first_frame >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_first_frame, 0.0f);
     if (s->loc_inv_proj >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
     if (s->loc_prev_vp >= 0)   rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
 

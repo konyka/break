@@ -23,8 +23,9 @@ ctest --test-dir engine/build-verify-x11-vk -L graphics --output-on-failure
 ```
 
 Release builds enable IPO/LTO for the `engine` static library when the active
-toolchain supports it. Disable it with `-DENGINE_ENABLE_IPO=OFF` if a platform
-linker does not support interprocedural optimization.
+toolchain supports it. The Linux Clang toolchain selects `lld` explicitly so
+the final link can consume LLVM bitcode; disable IPO with
+`-DENGINE_ENABLE_IPO=OFF` if a platform linker does not support it.
 
 ## Documentation
 
