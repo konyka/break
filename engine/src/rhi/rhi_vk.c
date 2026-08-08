@@ -4118,11 +4118,17 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
 static void vk_flush_push_constants(VKBackend *vk);
 
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
+    rhi_cmd_draw_base(cmd, vertex_count, instance_count, 0u);
+}
+
+void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
+                       u32 first_vertex) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
-    vkCmdDraw(vk->cmd_buffers[vk->current_frame], vertex_count, instance_count, 0, 0);
+    vkCmdDraw(vk->cmd_buffers[vk->current_frame], vertex_count, instance_count,
+              first_vertex, 0);
 }
 
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count) {

@@ -632,9 +632,11 @@ static void gl_cmd_set_viewport(void *cmd, f32 x, f32 y, f32 w, f32 h) {
     gl_set_viewport_cached((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
 }
 
-static void gl_cmd_draw(void *cmd, u32 vertex_count, u32 instance_count) {
+static void gl_cmd_draw_base(void *cmd, u32 vertex_count, u32 instance_count,
+                             u32 first_vertex) {
     (void)cmd;
-    glDrawArraysInstanced(g_gl_draw_mode, 0, (GLsizei)vertex_count, (GLsizei)instance_count);
+    glDrawArraysInstanced(g_gl_draw_mode, (GLint)first_vertex,
+                          (GLsizei)vertex_count, (GLsizei)instance_count);
 }
 
 static void gl_cmd_draw_indexed(void *cmd, u32 index_count, u32 instance_count) {
@@ -1135,7 +1137,12 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
 }
 
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
-    gl_cmd_draw(cmd, vertex_count, instance_count);
+    rhi_cmd_draw_base(cmd, vertex_count, instance_count, 0u);
+}
+
+void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
+                       u32 first_vertex) {
+    gl_cmd_draw_base(cmd, vertex_count, instance_count, first_vertex);
 }
 
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count) {

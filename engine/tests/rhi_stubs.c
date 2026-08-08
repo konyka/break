@@ -7,7 +7,18 @@
 #include <rhi/rhi.h>
 #include <string.h>
 
+u32 g_stub_draw_base_calls = 0;
+u32 g_stub_draw_base_last_vertex_count = 0;
+u32 g_stub_draw_base_last_instance_count = 0;
+u32 g_stub_draw_base_last_first_vertex = 0;
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vc, u32 ic) { (void)cmd; (void)vc; (void)ic; }
+void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vc, u32 ic, u32 fv) {
+    (void)cmd;
+    g_stub_draw_base_calls++;
+    g_stub_draw_base_last_vertex_count = vc;
+    g_stub_draw_base_last_instance_count = ic;
+    g_stub_draw_base_last_first_vertex = fv;
+}
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 ic, u32 inst) { (void)cmd; (void)ic; (void)inst; }
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 ic, u32 inst, u32 fi, i32 vo) {
     (void)cmd; (void)ic; (void)inst; (void)fi; (void)vo;

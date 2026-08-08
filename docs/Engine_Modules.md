@@ -1658,10 +1658,11 @@ typedef struct {
 **设计要点：**
 - 每线程独立的 `CmdBuffer`，无锁录制
 - 命令使用 `sort_key` 排序（插入排序），保证透明对象正确顺序
+- `cmd_draw` 的 `first_vertex` 与 indexed draw 的 `first_index`/`vertex_offset` 均在 replay 时 1:1 转交 RHI；非零顶点基址支持 mega-buffer 子网格
 - 溢出时静默丢弃（`CMD_BUFFER_MAX_COMMANDS = 4096`）
 - `ParallelRenderer` 约 9MB，必须堆分配（栈分配会溢出）
 
-**单元测试：** `tests/test_cmd_buffer.c` (20 测试用例，覆盖生命周期、init 参数钳制、null 安全、draw/draw_indexed/bind_pipeline/bind_buffers/bind_uniform_and_texture 录制、scissor/viewport、push_constants、溢出丢弃、混合命令序列、sort_key 分配)
+**单元测试：** `tests/test_cmd_buffer.c` (覆盖生命周期、init 参数钳制、null 安全、draw/draw_indexed/bind_pipeline/bind_buffers/bind_uniform_and_texture 录制、非零 `first_vertex` replay、scissor/viewport、push_constants、溢出丢弃、混合命令序列、sort_key 分配)
 
 ---
 

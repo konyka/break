@@ -278,6 +278,34 @@ extern u32 g_stub_push_constants_calls;
 extern u32 g_stub_push_constants_last_offset;
 extern u32 g_stub_push_constants_last_size;
 extern u8  g_stub_push_constants_last_data[256];
+extern u32 g_stub_draw_base_calls;
+extern u32 g_stub_draw_base_last_vertex_count;
+extern u32 g_stub_draw_base_last_instance_count;
+extern u32 g_stub_draw_base_last_first_vertex;
+
+TEST(cmd_draw_replay_preserves_first_vertex) {
+    ParallelRenderer *pr = alloc_pr();
+    ASSERT_NOT_NULL(pr);
+    parallel_renderer_init(pr, 1);
+    parallel_renderer_begin_frame(pr);
+
+    RenderCmdBuffer *buf = parallel_renderer_get_buffer(pr, 0);
+    ASSERT_NOT_NULL(buf);
+    cmd_draw(buf, 12, 3, 27);
+    parallel_renderer_end_frame(pr);
+
+    g_stub_draw_base_calls = 0;
+    parallel_renderer_set_rhi_cmd(pr, (RHICmdBuffer *)(void *)0x1);
+    parallel_renderer_swap_and_submit(pr);
+
+    ASSERT_EQ(g_stub_draw_base_calls, 1u);
+    ASSERT_EQ(g_stub_draw_base_last_vertex_count, 12u);
+    ASSERT_EQ(g_stub_draw_base_last_instance_count, 3u);
+    ASSERT_EQ(g_stub_draw_base_last_first_vertex, 27u);
+
+    parallel_renderer_shutdown(pr);
+    free_pr(pr);
+}
 
 TEST(cmd_push_constants_replay_routes_to_rhi) {
     ParallelRenderer *pr = alloc_pr();
@@ -552,6 +580,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cmd_push_constants_size_clamp);
     RUN_TEST(cmd_overflow_drops_commands);
     RUN_TEST(cmd_null_buffer_drops);
+    RUN_TEST(cmd_draw_replay_preserves_first_vertex);
     RUN_TEST(cmd_push_constants_replay_routes_to_rhi);
     RUN_TEST(rhi_push_range_fits_validation);
     RUN_TEST(cmd_total_commands);

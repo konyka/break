@@ -350,9 +350,10 @@ static void sort_buffer_indices_by_key(const FrameCommands *frame,
 static void replay_command(RHICmdBuffer *rhi_cmd, const RenderCmd *cmd) {
     switch (cmd->type) {
     case RENDER_CMD_DRAW:
-        rhi_cmd_draw(rhi_cmd,
-                     cmd->draw.vertex_count,
-                     cmd->draw.instance_count);
+        rhi_cmd_draw_base(rhi_cmd,
+                          cmd->draw.vertex_count,
+                          cmd->draw.instance_count,
+                          cmd->draw.first_vertex);
         break;
 
     case RENDER_CMD_DRAW_INDEXED:

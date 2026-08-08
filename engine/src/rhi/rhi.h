@@ -187,6 +187,9 @@ void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h);
  * cascaded-shadow quadrants into a single shadow-atlas texture. */
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h);
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count);
+/* Non-indexed draw with a vertex-buffer-relative first vertex. */
+void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
+                       u32 first_vertex);
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count);
 /* Like draw_indexed, with base index and vertex offset (mega-buffer / cmd replay). */
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count,
