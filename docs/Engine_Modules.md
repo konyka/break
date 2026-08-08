@@ -1710,6 +1710,11 @@ typedef struct {
 
 TaskSystem 提供 Chase-Lev work-stealing 线程池，支持任务依赖和优先级。主循环集成了并行可见性计算：
 
+**生命周期约束 (R451)：**
+- 进程中同时只能存在一个 `TaskSystem`；创建操作以原子 compare-and-exchange 取得所有权，第二个 live instance 返回 `NULL`
+- `task_system_destroy()` 在所有 worker 退出且任务池释放后归还该所有权，因此后续 engine 生命周期可以重新创建 task system
+- 此约束避免全局 task-lifetime registry 指向错误 task pool；只影响创建/销毁边界，不增加提交、窃取或等待热路径开销
+
 **NodeSphere 缓存：**
 - 启动时预计算每个场景节点的包围球 `(cx, cy, cz, r)`
 - 无效节点标记 `r = -1.0f`，跳过计算

@@ -185,7 +185,7 @@ static Task *deque_steal(WorkStealDeque *dq) {
  * ============================================================ */
 
 /* Forward declaration — defined below in worker section */
-static TaskSystem *g_task_system;
+static _Atomic(TaskSystem *) g_task_system = NULL;
 
 static Task *task_alloc(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority prio) {
     /* Lock-free bump allocation: atomic_fetch_add gives each caller a unique
@@ -248,7 +248,7 @@ static void task_release(Task *t) {
         /* Only free heap-allocated tasks. Block tasks are freed with the block.
          * Detect by checking if t falls outside the block range. We store the
          * block pointer in a static accessible via g_task_system. */
-        TaskSystem *ts = g_task_system;
+        TaskSystem *ts = atomic_load_explicit(&g_task_system, memory_order_acquire);
         /* R414: compare as integers — relational comparison between a heap
          * pointer and the unrelated _task_block array is UB in C11. */
         bool is_block = false;
@@ -398,7 +398,7 @@ static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
 #ifdef ENGINE_PLATFORM_WINDOWS
 static unsigned __stdcall worker_entry(void *arg) {
     Worker *self = (Worker *)arg;
-    TaskSystem *ts = g_task_system;
+    TaskSystem *ts = atomic_load_explicit(&g_task_system, memory_order_acquire);
     tls_worker_id = (i32)self->id;
     atomic_store_explicit(&self->active, true, memory_order_release);
 
@@ -452,7 +452,7 @@ static unsigned __stdcall worker_entry(void *arg) {
 #else
 static void *worker_entry(void *arg) {
     Worker *self = (Worker *)arg;
-    TaskSystem *ts = g_task_system;
+    TaskSystem *ts = atomic_load_explicit(&g_task_system, memory_order_acquire);
     tls_worker_id = (i32)self->id;
     atomic_store_explicit(&self->active, true, memory_order_release);
 
@@ -572,13 +572,29 @@ TaskSystem *task_system_create(i32 worker_count) {
                 platform_mutex_destroy(ts->submit_mutex_storage);
                 platform_mutex_destroy(ts->pool_mutex_storage);
                 free(ts);
-                g_task_system = NULL;
                 return NULL;
             }
         }
     }
 
-    g_task_system = ts;
+    /* Task lifetime accounting uses a process-wide ownership pointer. Claim it
+     * before starting workers so concurrent creators cannot install a second
+     * live system and make task_release() inspect the wrong pool. */
+    TaskSystem *expected_system = NULL;
+    if (!atomic_compare_exchange_strong_explicit(&g_task_system, &expected_system, ts,
+                                                 memory_order_release,
+                                                 memory_order_acquire)) {
+        LOG_ERROR("Task system: only one live instance is supported");
+        for (i32 i = 0; i < worker_count; i++) {
+            for (int p = 0; p < TASK_PRIORITY_COUNT; p++) {
+                deque_destroy(&ts->workers[i].queues[p]);
+            }
+        }
+        platform_mutex_destroy(ts->submit_mutex_storage);
+        platform_mutex_destroy(ts->pool_mutex_storage);
+        free(ts);
+        return NULL;
+    }
 
     /* Start worker threads */
     for (i32 i = 0; i < worker_count; i++) {
@@ -606,7 +622,7 @@ TaskSystem *task_system_create(i32 worker_count) {
                 platform_mutex_destroy(ts->submit_mutex_storage);
                 platform_mutex_destroy(ts->pool_mutex_storage);
                 free(ts);
-                g_task_system = NULL;
+                atomic_store_explicit(&g_task_system, NULL, memory_order_release);
                 return NULL;
             }
             break;
@@ -686,7 +702,7 @@ void task_system_destroy(TaskSystem *ts) {
     /* Single free: task_pool, _task_block, and workers are within the same block */
     free(ts);
 
-    g_task_system = NULL;
+    atomic_store_explicit(&g_task_system, NULL, memory_order_release);
 }
 
 /* ============================================================

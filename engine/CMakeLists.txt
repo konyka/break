@@ -414,6 +414,18 @@ if(ENGINE_BUILD_TESTS)
     endif()
     add_test(NAME test_task COMMAND test_task)
 
+    # test_task_singleton: validates the documented process-wide TaskSystem ownership.
+    add_executable(test_task_singleton tests/test_task_singleton.c src/task/task.c src/core/log.c)
+    target_include_directories(test_task_singleton PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_task_singleton PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_task_singleton PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_task_singleton PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_task_singleton PRIVATE kernel32)
+    endif()
+    add_test(NAME test_task_singleton COMMAND test_task_singleton)
+
     # test_lod: needs lod.c + math.c
     add_executable(test_lod tests/test_lod.c src/renderer/lod.c src/math/math.c)
     target_include_directories(test_lod PRIVATE ${TEST_INCLUDE_DIRS})
