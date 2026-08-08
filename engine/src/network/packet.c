@@ -154,9 +154,15 @@ bool packet_parse_header(const void *data, u32 size, PacketHeader *out_header)
 {
     if (!data || !out_header || size < PACKET_HEADER_SIZE) return false;
     const u8 *p = (const u8 *)data;
+    u16 payload_size = le_read_u16(&p[8]);
+    /* The UDP datagram has one packet and no extension trailer. Accepting a
+     * mismatched declaration lets forged bytes reach protocol state machines
+     * or makes a truncation look well-formed. `size` is already at least the
+     * header length, so the subtraction cannot wrap. */
+    if ((u32)payload_size != size - (u32)PACKET_HEADER_SIZE) return false;
     out_header->sequence = le_read_u32(&p[0]);
     out_header->ack      = le_read_u32(&p[4]);
-    out_header->size     = le_read_u16(&p[8]);
+    out_header->size     = payload_size;
     out_header->type     = p[10];
     out_header->flags    = p[11];
     return true;

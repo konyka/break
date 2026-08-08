@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R463 BVH 射线可选输出审查（TDD）** — 高层 `physics_raycast()` 已允许只查询布尔命中（两个输出指针均可为 NULL），但底层 `bvh_raycast()` 在真实命中后无条件写 `hit->object_index/t`；直接调用者只想判定遮挡时传 NULL 会崩溃。现仅在 `hit != NULL` 时写回最近命中记录，遍历、裁剪与最近命中计算均不变。TDD：`bvh_raycast_allows_null_hit_output` 对真实单 AABB 命中传 NULL，旧码在命中处崩溃，修复后安全返回 true；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_physics` 定向回归通过，`git diff --check` 通过。
+最近更新：**R464 网络包头 payload 长度审查（TDD）** — `packet_parse_header()` 读取 `size` 字段却从未与实际 datagram 长度比对；声明空 payload 的包可携带隐藏字节进入复制状态机，声明超长的截断包也会被当作结构正确的包处理。现要求 `header.size == datagram_len - PACKET_HEADER_SIZE`，在 ACK、去重和重排前拒绝任何不一致包；比较使用已验证 header 长度后的减法，无回绕与额外分配。TDD：`parse_header_rejects_declared_payload_length_mismatch` 覆盖隐藏 4-byte 尾随和声明比实际长 1 byte 两种情况，旧码均错误接受，修复后拒绝；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_packet`/`test_net_replication` 定向回归通过，`git diff --check` 通过。
+
+此前：**R463 BVH 射线可选输出审查（TDD）** — 高层 `physics_raycast()` 已允许只查询布尔命中（两个输出指针均可为 NULL），但底层 `bvh_raycast()` 在真实命中后无条件写 `hit->object_index/t`；直接调用者只想判定遮挡时传 NULL 会崩溃。现仅在 `hit != NULL` 时写回最近命中记录，遍历、裁剪与最近命中计算均不变。TDD：`bvh_raycast_allows_null_hit_output` 对真实单 AABB 命中传 NULL，旧码在命中处崩溃，修复后安全返回 true；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_physics` 定向回归通过，`git diff --check` 通过。
 
 此前：**R462 音频 master 总线重合成审查（TDD）** — `audio_bus_set_gain()` 原先仅重算 `src->bus == bus` 的源；master（bus 0）实际参与每条路由的乘法，但调节它不会把新增益提交给已路由至 music/sfx 等子总线的活跃 source，直到该 source 或子总线再次改变才会修正。现 master 变更扫描固定 32 槽并重算所有已分配 source，普通 bus 继续只更新自己的成员；无分配、无锁、没有新增音频热路径开销。TDD：`master_gain_reapplies_to_sub_bus_sources` 在旧码下确认 music 源的已应用增益错误保持 0.8，修复后 master=0.5 立即为 0.4；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_audio` 定向回归通过，`git diff --check` 通过。
 

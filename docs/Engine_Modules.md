@@ -1758,6 +1758,7 @@ TaskSystem 提供 Chase-Lev work-stealing 线程池，支持任务依赖和优�
 **特性：**
 - 显式小端编码（主机字节序无关）
 - 写边界检查（溢出保护）
+- 解析时严格校验 header 声明的 payload 长度与实际 datagram 一致，拒绝截断与隐藏尾随字节
 - `PACKET_RELIABLE | PACKET_ORDERED` 标志位
 - MTU 安全载荷（最大 1400 字节）
 - 可靠窗口的发送序列、累计 ACK 与待回传 ACK 均按 UDP peer 隔离：来自 peer A 的 ACK 只确认发往 A 的 in-flight packet；接收端仅在可靠序列连续时推进 cumulative ACK。发送序列使用独立固定状态表，不受接收重排槽 LRU 回收影响；该表在 replicator 生命周期内不重置已分配目标，第 9 个目标被显式拒绝以避免无 generation 的序列空间歧义

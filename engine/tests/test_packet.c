@@ -186,6 +186,30 @@ TEST(parse_header_null)
     ASSERT_FALSE(packet_parse_header(NULL, 12, &hdr));
 }
 
+TEST(parse_header_rejects_declared_payload_length_mismatch)
+{
+    /* R464: the on-wire size is a payload-length contract, not advisory
+     * metadata. A receiver must reject both hidden trailing bytes and a
+     * declaration that extends beyond the actual datagram. */
+    PacketBuffer buf;
+    packet_begin(&buf, 1, 0);
+    packet_write_u32(&buf, 0x12345678u);
+    u32 total = packet_finish(&buf, 1u, 0u);
+
+    PacketHeader hdr;
+    ASSERT_TRUE(packet_parse_header(buf.data, total, &hdr));
+
+    /* Claim no payload despite the four payload bytes on the wire. */
+    buf.data[8] = 0u;
+    buf.data[9] = 0u;
+    ASSERT_FALSE(packet_parse_header(buf.data, total, &hdr));
+
+    /* Claim five bytes when only four are present. */
+    buf.data[8] = 5u;
+    buf.data[9] = 0u;
+    ASSERT_FALSE(packet_parse_header(buf.data, total, &hdr));
+}
+
 TEST(empty_payload)
 {
     PacketBuffer wb, rb;
@@ -321,6 +345,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(write_bytes_size_overflow_rejected);
     RUN_TEST(parse_header_too_small);
     RUN_TEST(parse_header_null);
+    RUN_TEST(parse_header_rejects_declared_payload_length_mismatch);
     RUN_TEST(empty_payload);
     /* Edge cases */
     RUN_TEST(read_beyond_buffer);
