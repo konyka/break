@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R469 Lua 热重载路径截断审查（TDD）** — `lua_script_load()` 会先以调用者完整路径执行文件，再把该路径格式化到 `LuaScript.path[256]` 供 `lua_script_reload_if_changed()` 使用；256-byte 路径首次加载成功却保存为截断名称，后续重载会错误地查询/执行另一文件。现于任何文件 I/O 与代码执行前拒绝不能完整保存的路径，失败不改变脚本状态；只在显式加载路径执行一次长度检查，不影响脚本调用或每帧重载热路径、无分配。TDD：`lua_load_rejects_path_truncation` 创建真实 256-byte 路径，旧码首次加载成功而失败断言，修复后返回 false、`loaded` 为 false 且记录路径为空；模块文档同步。验证：`test_script_lua` 定向回归 21/21 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R470 异步资源请求路径截断审查（TDD）** — 所有 `async_loader_request*` 入口最终把调用者路径复制到 worker 持有的 `AsyncRequest.path[256]`，但原先先 CAS 占用槽位并静默截断；后台 I/O 会读取另一文件，且错误请求消耗有限的异步队列容量。现于共享提交函数中、任何 CAS/排队前拒绝无法完整保存的路径，因而普通、range、priority 与纹理解码入口统一安全；只在提交时执行一次有界长度检查，worker 与每帧热路径不变、无分配。TDD：`async_loader_rejects_path_truncation` 传入 256-byte 路径，旧码错误返回非零 ID，修复后返回 0 且 pending 计数保持 0；模块文档同步。验证：`test_async_loader` 定向回归 16/16 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R469 Lua 热重载路径截断审查（TDD）** — `lua_script_load()` 会先以调用者完整路径执行文件，再把该路径格式化到 `LuaScript.path[256]` 供 `lua_script_reload_if_changed()` 使用；256-byte 路径首次加载成功却保存为截断名称，后续重载会错误地查询/执行另一文件。现于任何文件 I/O 与代码执行前拒绝不能完整保存的路径，失败不改变脚本状态；只在显式加载路径执行一次长度检查，不影响脚本调用或每帧重载热路径、无分配。TDD：`lua_load_rejects_path_truncation` 创建真实 256-byte 路径，旧码首次加载成功而失败断言，修复后返回 false、`loaded` 为 false 且记录路径为空；模块文档同步。验证：`test_script_lua` 定向回归 21/21 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R468 UDP 非阻塞回环测试同步修正（TDD）** — 干净 Clang/LLD Release 的全套 CTest 揭示 `test_network` 偶发失败：测试在 `net_sendto()` 返回后立刻对 non-blocking 接收 socket 调用 `net_recvfrom()`，但发送完成不保证数据报已经进入对端接收队列，因而会误判 `NET_WOULD_BLOCK` 为生产错误。现新增 `recvfrom_wait_readable()`，在三个发送后即时接收的用例中先以 `net_poll(..., 1000)` 等待可读再消费数据报；生产网络热路径不变。TDD：修复前隔离 Release 的 `sendto_const_address` 真实失败，修复后 Debug 和隔离 Release 各重复 20 次 `test_network` 均 14/14 通过；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

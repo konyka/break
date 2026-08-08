@@ -189,6 +189,24 @@ TEST(async_loader_cancel_invalid_id) {
     vfs_destroy(vfs);
 }
 
+/* R470: every public request entry stores its path in AsyncRequest.path[256].
+ * Accepting a longer string used to queue an I/O request for its truncation. */
+TEST(async_loader_rejects_path_truncation) {
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    async_loader_init(1, vfs);
+
+    char path[257];
+    memset(path, 'x', sizeof(path) - 1u);
+    path[sizeof(path) - 1u] = '\0';
+
+    ASSERT_EQ(async_loader_request(path, test_load_callback, NULL), (u64)0);
+    ASSERT_EQ(async_loader_pending_count(), 0u);
+
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+}
+
 /* High-priority requests should complete before lower-priority ones queued earlier. */
 static _Atomic int g_pri_order[4];
 static _Atomic int g_pri_order_count;
@@ -637,6 +655,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_status_invalid_id);
     RUN_TEST(async_loader_multiple_requests);
     RUN_TEST(async_loader_cancel_invalid_id);
+    RUN_TEST(async_loader_rejects_path_truncation);
     RUN_TEST(async_loader_priority_ordering);
     RUN_TEST(async_loader_decode_non_blocking);
     RUN_TEST(async_loader_range_truncated_fails);

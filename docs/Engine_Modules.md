@@ -678,6 +678,8 @@ bool       asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene);
 
 Mipmap 流注册会保留完整的源路径；超过内部 255 字节存储上限的路径会在登记前被拒绝，不会截断后异步读取其他文件。
 
+异步资源加载的全部提交入口同样要求路径完整容纳于内部 256-byte（含终止符）请求记录；超长路径不会占用异步槽位或排队。
+
 **支持格式**：
 - **模型**: glTF 2.0（通过 cgltf 解析）
 - **纹理**: PNG / JPG（通过 stb_image 解码）

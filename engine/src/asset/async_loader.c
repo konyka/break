@@ -509,6 +509,9 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
                                  usize range_offset, usize range_length,
                                  i32 priority, bool decode_texture) {
     if (!path || !callback) return 0;
+    /* Workers read this fixed-size copy after submission; never queue a
+     * request whose full source identity cannot be retained. */
+    if (strlen(path) >= sizeof(g_loader.requests[0].path)) return 0;
     if (range_length == 0 && decode_texture == false && range_offset > 0) return 0;
 
     /* R242: Scan for a free slot and claim it atomically (CAS UNLOADED->LOADING).
