@@ -1169,11 +1169,23 @@ typedef struct {
 static bool js_skip_value(JsonR *r);
 static bool js_skip_string(JsonR *r) {
     if (!js_match(r, '"')) return false;
-    while (r->p < r->end && *r->p != '"') {
-        if (*r->p == '\\' && r->p + 1 < r->end) r->p += 2;
-        else r->p++;
+    while (r->p < r->end) {
+        unsigned char c = (unsigned char)*r->p++;
+        if (c == '"') return true;
+        if (c < 0x20u) return false;
+        if (c != '\\') continue;
+        if (r->p >= r->end) return false;
+        char escape = *r->p++;
+        if (escape == '"' || escape == '\\' || escape == '/' ||
+            escape == 'b' || escape == 'f' || escape == 'n' ||
+            escape == 'r' || escape == 't') continue;
+        if (escape != 'u' || r->end - r->p < 4) return false;
+        for (u32 i = 0; i < 4; i++) {
+            if (hex_digit(r->p[i]) < 0) return false;
+        }
+        r->p += 4;
     }
-    return js_match(r, '"');
+    return false;
 }
 static bool js_skip_number(JsonR *r) {
     const char *p = r->p;

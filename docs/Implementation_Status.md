@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R527 JSON 未知复合值语法审查（TDD）** — 未知对象/数组跳过器虽已匹配定界符，但此前仍逐字跳过内部内容，接受无效嵌套 primitive、缺少对象冒号/逗号及数组尾逗号。现以固定 256 层非递归状态机实际验证每层对象键、冒号、成员/元素分隔符及所有嵌套值；超深输入拒绝，未知扩展值的正确 JSON 兼容语义不变。检查仅在显式 JSON 加载时按未知复合值长度线性执行，无堆分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_compound_syntax` 覆盖四种内部语法错误，旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 75/75 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R528 JSON 未知字符串语法审查（TDD）** — 未知字段字符串此前只寻找下一个引号，未校验反斜杠转义或未转义控制字符，令 `"future":"\\q"` 等无效 JSON 被静默接受。现跳过器只接受 JSON 定义的单字符转义或四位十六进制 `\\u` 转义，并拒绝未转义 U+0000..U+001F；合法转义字符串的前向兼容不变。检查仅在显式 JSON 加载时按未知字符串长度线性执行，无分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_strings` 覆盖非法转义、非法 Unicode 转义和控制字符，旧代码错误成功，修复后拒绝；同测保留合法转义兼容。验证：定向 `test_scene_serial` 76/76 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R527 JSON 未知复合值语法审查（TDD）** — 未知对象/数组跳过器虽已匹配定界符，但此前仍逐字跳过内部内容，接受无效嵌套 primitive、缺少对象冒号/逗号及数组尾逗号。现以固定 256 层非递归状态机实际验证每层对象键、冒号、成员/元素分隔符及所有嵌套值；超深输入拒绝，未知扩展值的正确 JSON 兼容语义不变。检查仅在显式 JSON 加载时按未知复合值长度线性执行，无堆分配或帧内成本。TDD：`load_json_rejects_invalid_unknown_compound_syntax` 覆盖四种内部语法错误，旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 75/75 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R526 JSON 未知复合值定界符匹配审查（TDD）** — 未知对象/数组的兼容跳过器此前只计嵌套深度，未匹配花括号与方括号的种类，令 `"future":[}` 等错配输入被静默接受。现跳过器以固定 256 项闭合符栈逐层匹配 `{}`/`[]`，过深值直接拒绝而不递归或分配；正确嵌套的未知扩展值继续兼容跳过。检查仅在显式 JSON 加载时按未知复合值长度线性执行，无堆分配或帧内成本。TDD：`load_json_rejects_mismatched_unknown_compound_delimiters` 旧代码错误成功，修复后拒绝；同测保留合法嵌套扩展值。验证：定向 `test_scene_serial` 74/74 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

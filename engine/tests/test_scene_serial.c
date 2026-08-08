@@ -1068,6 +1068,14 @@ TEST(load_json_rejects_mismatched_unknown_compound_delimiters)
         ASSERT_FALSE(scene_load_json(w, NULL, path));
     }
 
+    const char *valid =
+        "{\"version\":1,\"future\":\"quote:\\\" slash:\\\\ unicode:\\u4e2d\"}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(valid, 1, strlen(valid), fp) == strlen(valid));
+    ASSERT_TRUE(fclose(fp) == 0);
+    ASSERT_TRUE(scene_load_json(w, NULL, path));
+
     world_destroy(w);
     remove(path);
 }
@@ -1083,6 +1091,30 @@ TEST(load_json_rejects_invalid_unknown_compound_syntax)
         "{\"version\":1,\"future\":{\"key\" 1}}",
         "{\"version\":1,\"future\":[1,]}",
         "{\"version\":1,\"future\":{\"key\":1 \"next\":2}}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+        ASSERT_FALSE(scene_load_json(w, NULL, path));
+    }
+
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(load_json_rejects_invalid_unknown_strings)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_invalid_unknown_string.json");
+    const char *docs[] = {
+        "{\"version\":1,\"future\":\"\\q\"}",
+        "{\"version\":1,\"future\":\"\\u12G4\"}",
+        "{\"version\":1,\"future\":\"line\nfeed\"}"
     };
 
     World *w = world_create();
@@ -2053,6 +2085,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_invalid_unknown_primitive);
     RUN_TEST(load_json_rejects_mismatched_unknown_compound_delimiters);
     RUN_TEST(load_json_rejects_invalid_unknown_compound_syntax);
+    RUN_TEST(load_json_rejects_invalid_unknown_strings);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
