@@ -1160,6 +1160,12 @@ static bool js_hex(JsonR *r, u8 *dst, u32 expected) {
     }
     return js_match(r, '"');
 }
+typedef struct {
+    char close;
+    u8 phase;
+    bool allow_close;
+} JsonSkipFrame;
+
 static bool js_skip_value(JsonR *r);
 static bool js_skip_string(JsonR *r) {
     if (!js_match(r, '"')) return false;
@@ -1200,44 +1206,86 @@ static bool js_skip_literal(JsonR *r, const char *literal, usize len) {
     r->p += len;
     return true;
 }
-static bool js_skip_value(JsonR *r) {
+static bool js_skip_value_start(JsonR *r, JsonSkipFrame *frames, u32 *depth) {
     js_skip_ws(r);
     if (r->p >= r->end) return false;
     char c = *r->p;
     if (c == '"') return js_skip_string(r);
     if (c == '{' || c == '[') {
-        /* Keep extension-value skipping non-recursive and bounded while still
-         * matching each nested object's or array's own closing delimiter. */
-        char closers[256];
-        u32 depth = 0;
-        closers[depth++] = (c == '{') ? '}' : ']';
+        if (*depth >= 256u) return false;
+        frames[*depth].close = (c == '{') ? '}' : ']';
+        frames[*depth].phase = 0;
+        frames[*depth].allow_close = true;
+        (*depth)++;
         r->p++;
-        while (r->p < r->end && depth > 0) {
-            js_skip_ws(r);
-            if (r->p >= r->end) return false;
-            char k = *r->p;
-            if (k == '"') { if (!js_skip_string(r)) return false; continue; }
-            if (k == '{' || k == '[') {
-                if (depth >= (u32)sizeof(closers)) return false;
-                closers[depth++] = (k == '{') ? '}' : ']';
-                r->p++;
-                continue;
-            }
-            if (k == '}' || k == ']') {
-                if (k != closers[depth - 1u]) return false;
-                depth--;
-                r->p++;
-                continue;
-            }
-            r->p++;
-        }
-        return depth == 0;
+        return true;
     }
     if (c == '-' || isdigit((unsigned char)c)) return js_skip_number(r);
     if (c == 't') return js_skip_literal(r, "true", 4u);
     if (c == 'f') return js_skip_literal(r, "false", 5u);
     if (c == 'n') return js_skip_literal(r, "null", 4u);
     return false;
+}
+static bool js_skip_value(JsonR *r) {
+    /* Validate unknown extension values without recursion or heap allocation.
+     * Frames parse each nested object/array's local member/element grammar. */
+    JsonSkipFrame frames[256];
+    u32 depth = 0;
+    if (!js_skip_value_start(r, frames, &depth)) return false;
+    while (depth > 0) {
+        JsonSkipFrame *f = &frames[depth - 1u];
+        if (f->close == '}') {
+            if (f->phase == 0) { /* key or (only for a fresh object) close */
+                if (js_peek(r, '}')) {
+                    if (!f->allow_close) return false;
+                    r->p++;
+                    depth--;
+                } else if (js_skip_string(r)) {
+                    f->phase = 1;
+                } else {
+                    return false;
+                }
+            } else if (f->phase == 1) { /* colon */
+                if (!js_match(r, ':')) return false;
+                f->phase = 2;
+            } else if (f->phase == 2) { /* member value */
+                if (!js_skip_value_start(r, frames, &depth)) return false;
+                f->phase = 3;
+            } else { /* comma or close */
+                if (js_peek(r, '}')) {
+                    r->p++;
+                    depth--;
+                } else if (js_match(r, ',')) {
+                    f->phase = 0;
+                    f->allow_close = false;
+                } else {
+                    return false;
+                }
+            }
+        } else {
+            if (f->phase == 0) { /* element or (only for a fresh array) close */
+                if (js_peek(r, ']')) {
+                    if (!f->allow_close) return false;
+                    r->p++;
+                    depth--;
+                } else {
+                    if (!js_skip_value_start(r, frames, &depth)) return false;
+                    f->phase = 1;
+                }
+            } else { /* comma or close */
+                if (js_peek(r, ']')) {
+                    r->p++;
+                    depth--;
+                } else if (js_match(r, ',')) {
+                    f->phase = 0;
+                    f->allow_close = false;
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
 }
 
 static bool json_load_components(World *w, JsonR *r, Entity ent) {

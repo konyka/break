@@ -1072,6 +1072,33 @@ TEST(load_json_rejects_mismatched_unknown_compound_delimiters)
     remove(path);
 }
 
+/* Skipping a future object or array must validate its own nested JSON grammar,
+ * not merely find matching delimiters. */
+TEST(load_json_rejects_invalid_unknown_compound_syntax)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_invalid_unknown_compound_syntax.json");
+    const char *docs[] = {
+        "{\"version\":1,\"future\":[garbage]}",
+        "{\"version\":1,\"future\":{\"key\" 1}}",
+        "{\"version\":1,\"future\":[1,]}",
+        "{\"version\":1,\"future\":{\"key\":1 \"next\":2}}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+        ASSERT_FALSE(scene_load_json(w, NULL, path));
+    }
+
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -2025,6 +2052,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_trailing_nodes_array_comma);
     RUN_TEST(load_json_rejects_invalid_unknown_primitive);
     RUN_TEST(load_json_rejects_mismatched_unknown_compound_delimiters);
+    RUN_TEST(load_json_rejects_invalid_unknown_compound_syntax);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
