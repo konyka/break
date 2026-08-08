@@ -896,6 +896,8 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     }
     /* Second pass: remaining chunks. */
     bool seen_components = false;
+    bool seen_scene_nodes = false;
+    bool seen_resources = false;
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
         /* R108-1: validate chunk data bounds */
         u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
@@ -910,8 +912,12 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
             seen_components = true;
             ok = load_components_chunk(w, &r, ents, ent_count, declared_known) && r.p == r.end; break;
         case BSCN_CHUNK_SCENE_NODES:
+            if (seen_scene_nodes) { ok = false; break; }
+            seen_scene_nodes = true;
             ok = load_scene_nodes_chunk(dst, &r) && r.p == r.end; break;
         case BSCN_CHUNK_RESOURCES:
+            if (seen_resources) { ok = false; break; }
+            seen_resources = true;
             ok = load_resources_chunk(dst, &r) && r.p == r.end; break;
         case BSCN_CHUNK_HIERARCHY:
         default:

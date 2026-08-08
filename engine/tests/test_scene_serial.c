@@ -503,6 +503,64 @@ TEST(load_binary_rejects_duplicate_components_chunk)
     remove(path);
 }
 
+/* v1 writer output contains one optional SCENE_NODES and RESOURCES payload
+ * each.  Repeated payloads make the result depend on chunk-table ordering. */
+TEST(load_binary_rejects_duplicate_scene_nodes_chunk)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_duplicate_scene_nodes.bscn");
+    const u32 empty_nodes[] = { 0u };
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_SCENE_NODES, .offset = base, .size = sizeof(empty_nodes) },
+        { .type = BSCN_CHUNK_SCENE_NODES, .offset = base + sizeof(empty_nodes),
+          .size = sizeof(empty_nodes) }
+    };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_nodes, sizeof(empty_nodes), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_nodes, sizeof(empty_nodes), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(load_binary_rejects_duplicate_resources_chunk)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_duplicate_resources.bscn");
+    const u32 empty_resources[] = { 0u };
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_RESOURCES, .offset = base, .size = sizeof(empty_resources) },
+        { .type = BSCN_CHUNK_RESOURCES, .offset = base + sizeof(empty_resources),
+          .size = sizeof(empty_resources) }
+    };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_resources, sizeof(empty_resources), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty_resources, sizeof(empty_resources), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* Chunk payloads are distinct regions in writer output.  Overlap gives one
  * byte range multiple logical meanings, even when both chunks are skipped. */
 TEST(load_binary_rejects_overlapping_chunk_payloads)
@@ -1543,6 +1601,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_duplicate_component_instance_owner);
     RUN_TEST(load_binary_rejects_duplicate_unknown_component_instance_owner);
     RUN_TEST(load_binary_rejects_duplicate_components_chunk);
+    RUN_TEST(load_binary_rejects_duplicate_scene_nodes_chunk);
+    RUN_TEST(load_binary_rejects_duplicate_resources_chunk);
     RUN_TEST(load_binary_rejects_overlapping_chunk_payloads);
     RUN_TEST(load_binary_rejects_excessive_component_type_count);
     RUN_TEST(save_binary_null_world);
