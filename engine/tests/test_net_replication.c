@@ -1104,6 +1104,31 @@ TEST(peer_load_reports_read_failure_preserves_existing_peers)
 #endif
 }
 
+/* A missing delta log is optional, but an existing path that opens and fails
+ * on read is not equivalent to no log and must not report success. */
+TEST(peer_load_delta_reports_read_failure_preserves_existing_peers)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* Opening a directory as a stream is POSIX-specific error injection. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20975u;
+    peer.valid = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    char dir[128];
+    test_tmp(dir, sizeof(dir), "r493_netrep_delta_read_error");
+    ASSERT_EQ(mkdir(dir, 0755), 0);
+    ASSERT_FALSE(net_replicator_peer_load_delta(&rep, dir));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
+    ASSERT_TRUE(net_address_equal(&rep.peers[0].addr, &peer.addr));
+    ASSERT_EQ(rmdir(dir), 0);
+#endif
+}
+
 TEST(peer_save_dir)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1934,6 +1959,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_reports_write_failure);
     RUN_TEST(peer_load_reports_read_failure_preserves_existing_peers);
+    RUN_TEST(peer_load_delta_reports_read_failure_preserves_existing_peers);
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_dir_reports_write_failure);
     RUN_TEST(peer_save_dir_rejects_path_truncation);
