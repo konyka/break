@@ -1139,22 +1139,61 @@ static bool js_u32(JsonR *r, u32 *out) {
     *out = v;
     return true;
 }
-static bool js_key(JsonR *r, const char *key) {
-    js_skip_ws(r);
-    if (r->p >= r->end || *r->p != '"') return false;
-    const char *s = r->p + 1;
-    const char *e = (const char *)memchr(s, '"', (size_t)(r->end - s));
-    if (!e) return false;
-    size_t kl = strlen(key);
-    if ((size_t)(e - s) != kl || memcmp(s, key, kl) != 0) return false;
-    r->p = e + 1;
-    return js_match(r, ':');
-}
 static int hex_digit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
+}
+static bool js_key(JsonR *r, const char *key) {
+    JsonR trial = *r;
+    js_skip_ws(&trial);
+    if (trial.p >= trial.end || *trial.p++ != '"') return false;
+
+    size_t key_len = strlen(key);
+    size_t key_pos = 0;
+    bool matches = true;
+    while (trial.p < trial.end) {
+        unsigned char c = (unsigned char)*trial.p++;
+        if (c == '"') {
+            if (!matches || key_pos != key_len || !js_match(&trial, ':'))
+                return false;
+            *r = trial;
+            return true;
+        }
+        if (c < 0x20u) return false;
+        if (c == '\\') {
+            if (trial.p >= trial.end) return false;
+            char escape = *trial.p++;
+            if (escape == '"' || escape == '\\' || escape == '/' ||
+                escape == 'b' || escape == 'f' || escape == 'n' ||
+                escape == 'r' || escape == 't') {
+                c = (escape == '"') ? '"' :
+                    (escape == '\\') ? '\\' :
+                    (escape == '/') ? '/' :
+                    (escape == 'b') ? '\b' :
+                    (escape == 'f') ? '\f' :
+                    (escape == 'n') ? '\n' :
+                    (escape == 'r') ? '\r' : '\t';
+            } else if (escape == 'u' && trial.end - trial.p >= 4) {
+                u32 codepoint = 0;
+                for (u32 i = 0; i < 4; i++) {
+                    int digit = hex_digit(trial.p[i]);
+                    if (digit < 0) return false;
+                    codepoint = (codepoint << 4u) | (u32)digit;
+                }
+                trial.p += 4;
+                if (codepoint > 0x7fu) matches = false;
+                c = (unsigned char)codepoint;
+            } else {
+                return false;
+            }
+        }
+        if (key_pos >= key_len || c != (unsigned char)key[key_pos])
+            matches = false;
+        key_pos++;
+    }
+    return false;
 }
 /* Parse hex-encoded byte string "abcd..." into dst (returns bytes read). */
 static bool js_hex(JsonR *r, u8 *dst, u32 expected) {

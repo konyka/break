@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R534 JSON 空场景替换语义审查（TDD）** — `scene_save_json()` 对非空但零节点的 `Scene` 此前省略 `nodes`；`scene_load_json()` 因而无法区分显式空图与未提供图，在已有目标上 JSON 往返会错误保留旧节点，而 BSCN 会替换为空。现保存显式 `"nodes":[]`，加载器把该数组提交为零节点；完全缺失 `nodes` 仍保留既有兼容语义。仅影响显式 JSON I/O，无额外分配或帧内成本。TDD：`empty_scene_replaces_nodes_roundtrip_json` 在旧代码保留旧节点，修复后清空。验证：定向 `test_scene_serial` 81/81 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R535 JSON 转义键语义审查（TDD）** — 已知 JSON 字段此前按原始字节匹配键名，等价的 Unicode 转义形式会被误作未知字段，从而绕过重复已知字段拒绝（如 `flags` 与 `fl\\u0061gs`）。现键名匹配按 JSON 解码后的字符进行，已知 ASCII 键的标准转义与 `\\uXXXX` 形式同样进入 schema 校验；未知键仍走既有完整 JSON 值验证。检查仅在显式 JSON 加载时单次扫描键名，使用栈上游标、无分配或帧内成本。TDD：扩展 `load_json_rejects_duplicate_node_fields`，旧代码错误接受语义重复 flags，修复后拒绝。验证：定向 `test_scene_serial` 81/81 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R534 JSON 空场景替换语义审查（TDD）** — `scene_save_json()` 对非空但零节点的 `Scene` 此前省略 `nodes`；`scene_load_json()` 因而无法区分显式空图与未提供图，在已有目标上 JSON 往返会错误保留旧节点，而 BSCN 会替换为空。现保存显式 `"nodes":[]`，加载器把该数组提交为零节点；完全缺失 `nodes` 仍保留既有兼容语义。仅影响显式 JSON I/O，无额外分配或帧内成本。TDD：`empty_scene_replaces_nodes_roundtrip_json` 在旧代码保留旧节点，修复后清空。验证：定向 `test_scene_serial` 81/81 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R533 JSON 节点索引往返审查（TDD）** — BSCN 会保存 `SceneNode.material_idx` 与 `skin_mesh_index`，JSON 节点此前却未输出或解析它们，JSON 往返会把非零值静默重置为零。现 JSON 对称保存并解析 `material` 与 `skin_mesh`，并同其他节点字段一样拒绝重复键；缺失新字段仍保留旧 JSON 的零值兼容。仅影响显式 JSON I/O，无额外分配或帧内成本。TDD：`scene_node_indices_roundtrip_json` 在旧代码将 material 7 丢为 0，修复后完整保留两个索引。验证：定向 `test_scene_serial` 80/80 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

@@ -2034,7 +2034,8 @@ TEST(load_json_rejects_duplicate_node_fields)
     const char *docs[] = {
         "{\"version\":1,\"entities\":[],\"nodes\":[{\"parent\":4294967295,\"parent\":0}]}",
         "{\"version\":1,\"entities\":[],\"nodes\":[{\"mesh\":0,\"mesh\":1}]}",
-        "{\"version\":1,\"entities\":[],\"nodes\":[{\"flags\":0,\"flags\":1}]}"
+        "{\"version\":1,\"entities\":[],\"nodes\":[{\"flags\":0,\"flags\":1}]}",
+        "{\"version\":1,\"entities\":[],\"nodes\":[{\"flags\":0,\"fl\\u0061gs\":1}]}"
     };
 
     World *w = world_create();
