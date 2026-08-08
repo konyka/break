@@ -878,13 +878,16 @@ bool net_replicator_peer_save_delta(NetReplicator *rep, const char *path) {
         if (!p->dirty) continue;
         fprintf(f, "+ ");
         net_repl_peer_write_line(f, p);
-        p->dirty = false;
         wrote++;
     }
     /* R435: size check before close; rotate once over the threshold. A failed
      * rotation keeps the appended log readable, so the save result stands. */
     long size = ftell(f);
-    fclose(f);
+    bool write_ok = !ferror(f) && fclose(f) == 0;
+    if (!write_ok) return false;
+    for (u32 i = 0u; i < rep->peer_count; i++) {
+        if (rep->peers[i].dirty) rep->peers[i].dirty = false;
+    }
     if (size >= 0 && (size_t)size >= netrep_delta_max_bytes)
         net_repl_delta_rotate(rep, path);
     return wrote > 0u;

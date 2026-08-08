@@ -1194,6 +1194,27 @@ TEST(peer_save_delta)
 #endif
 }
 
+/* R479: a failed append must leave dirty state intact so the peer update can
+ * be retried; /dev/full makes the write fail without filesystem cleanup. */
+TEST(peer_save_delta_keeps_dirty_on_write_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection device. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats peer = {0};
+    strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
+    peer.addr.port = 20930u;
+    peer.valid = true;
+    peer.dirty = true;
+    rep.peers[0] = peer;
+    rep.peer_count = 1u;
+
+    ASSERT_FALSE(net_replicator_peer_save_delta(&rep, "/dev/full"));
+    ASSERT_TRUE(rep.peers[0].dirty);
+#endif
+}
+
 TEST(peer_delta_rotate)
 {
     /* R435: once delta.log outgrows netrep_delta_max_bytes, peer_save_delta
@@ -1789,6 +1810,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_dir_rejects_path_truncation);
     RUN_TEST(peer_load_dir_skips_truncated_entry_path);
     RUN_TEST(peer_save_delta);
+    RUN_TEST(peer_save_delta_keeps_dirty_on_write_failure);
     RUN_TEST(peer_delta_rotate);
     RUN_TEST(peer_delta_no_rotate_below_threshold);
     RUN_TEST(ordered_channels_per_peer);
