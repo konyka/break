@@ -12,6 +12,7 @@ struct AudioSource {
     bool      active;
     u32       generation; /* R419: ABA guard, bumped each time the slot is freed */
     f32       volume;     /* R435: last set source volume (bus recomposition) */
+    f32       applied_gain; /* Last gain submitted to miniaudio (or pending activation). */
     u32       bus;        /* R435: routing bus; AUDIO_BUS_MASTER by default */
 };
 
@@ -45,8 +46,9 @@ static f32 audio_source_effective_gain(const AudioSystem *as,
 }
 
 static void audio_source_apply_gain(AudioSystem *as, AudioSource *src) {
+    src->applied_gain = audio_source_effective_gain(as, src);
     if (src->active) {
-        ma_sound_set_volume(&src->sound, audio_source_effective_gain(as, src));
+        ma_sound_set_volume(&src->sound, src->applied_gain);
     }
 }
 
@@ -208,7 +210,8 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
 
     src->volume = volume;             /* R435: remember for bus recomposition */
     src->bus = AUDIO_BUS_MASTER;      /* R435: recycled slots re-route to master */
-    ma_sound_set_volume(&src->sound, audio_source_effective_gain(as, src));
+    src->applied_gain = audio_source_effective_gain(as, src);
+    ma_sound_set_volume(&src->sound, src->applied_gain);
     ma_sound_set_looping(&src->sound, looping);
     ma_sound_start(&src->sound);
     src->active = true;
@@ -275,7 +278,8 @@ u32 audio_play_streamed(AudioSystem *as, const char *path, f32 volume,
 
     src->volume = volume;             /* R435 */
     src->bus = AUDIO_BUS_MASTER;      /* R435 */
-    ma_sound_set_volume(&src->sound, audio_source_effective_gain(as, src));
+    src->applied_gain = audio_source_effective_gain(as, src);
+    ma_sound_set_volume(&src->sound, src->applied_gain);
     ma_sound_set_looping(&src->sound, looping);
     if (spatial) {
         ma_sound_set_spatialization_enabled(&src->sound, MA_TRUE);
@@ -339,10 +343,12 @@ void audio_bus_set_gain(AudioSystem *as, u32 bus, f32 gain) {
     if (!audio_bus_valid(as, bus)) return; /* R435: invalid id — refuse */
     if (gain < 0.0f) gain = 0.0f;          /* R435: clamp non-negative */
     as->buses[bus].gain = gain;
-    /* Re-apply the composed gain on every source routed through this bus. */
+    /* Master participates in every route; regular buses only affect members. */
     for (u32 i = 0; i < as->source_count; i++) {
         AudioSource *src = &as->sources[i];
-        if (src->bus == bus) audio_source_apply_gain(as, src);
+        if (bus == AUDIO_BUS_MASTER || src->bus == bus) {
+            audio_source_apply_gain(as, src);
+        }
     }
 }
 

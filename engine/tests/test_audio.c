@@ -263,6 +263,25 @@ TEST(source_bus_volume_compose_and_fallback)
     ASSERT_FLOAT_EQ(audio_source_effective_gain(&as, &as.sources[0]), 0.4f, 1e-6);
 }
 
+TEST(master_gain_reapplies_to_sub_bus_sources)
+{
+    /* R462: changing the master fader must also update sources routed through
+     * a non-master bus. applied_gain mirrors the value sent to miniaudio. */
+    AudioSystem as;
+    AudioSource srcs[1];
+    test_sys_init(&as, srcs, 1);
+    as.source_count = 1;
+
+    u32 music = audio_bus_create(&as, "music");
+    u32 h = audio_make_handle(&as.sources[0], 0);
+    audio_source_set_volume(&as, h, 0.8f);
+    audio_source_set_bus(&as, h, music);
+    ASSERT_FLOAT_EQ(as.sources[0].applied_gain, 0.8f, 1e-6);
+
+    audio_bus_set_gain(&as, AUDIO_BUS_MASTER, 0.5f);
+    ASSERT_FLOAT_EQ(as.sources[0].applied_gain, 0.4f, 1e-6);
+}
+
 TEST(source_on_master_bus_not_double_counted)
 {
     /* The master bus IS the master fader: a source routed to bus 0 must get
@@ -295,5 +314,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bus_invalid_id_rejected_falls_back_master);
     RUN_TEST(effective_gain_pure_composition);
     RUN_TEST(source_bus_volume_compose_and_fallback);
+    RUN_TEST(master_gain_reapplies_to_sub_bus_sources);
     RUN_TEST(source_on_master_bus_not_double_counted);
 TEST_MAIN_END()

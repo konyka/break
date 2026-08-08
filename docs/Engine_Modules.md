@@ -1058,6 +1058,7 @@ void         audio_set_listener(AudioSystem *as, Vec3 pos, Vec3 forward, Vec3 up
 - 2D 播放（背景音乐、UI 音效）
 - 3D 空间音效（基于监听器位置的距离衰减与声像定位）
 - 支持循环播放
+- 固定 8 槽混音总线：源音量、路由总线与 master 增益合成；调整 master 会立即重算所有路由（包括 sfx/music 等子总线）的活跃音源增益
 
 ### 9.3 设备枚举与选择
 
