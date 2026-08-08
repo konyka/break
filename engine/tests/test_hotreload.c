@@ -3,6 +3,10 @@
 #include <core/shader_io.h>
 #include <stdio.h>
 #include <string.h>
+#if !defined(ENGINE_PLATFORM_WINDOWS)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 static RHIShader  s_shader  = {1, 1};
 static RHIPipeline s_pipe   = {1, 1};
@@ -63,6 +67,29 @@ TEST(hotreload_texture_rejects_path_truncation)
     ASSERT_FALSE(hr.ready);
 }
 
+/* R487: a failed texture init leaves the watcher zeroed; shutdown must not
+ * treat that zero as an inotify descriptor and close the caller's stdin. */
+TEST(hotreload_texture_failed_init_keeps_stdin)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* Linux filewatchers use an integer descriptor; Windows uses handles. */
+#else
+    int saved_stdin = dup(STDIN_FILENO);
+    ASSERT_TRUE(saved_stdin >= 0);
+    int probe = open("/dev/null", O_RDONLY);
+    ASSERT_TRUE(probe >= 0);
+    ASSERT_EQ(dup2(probe, STDIN_FILENO), STDIN_FILENO);
+    close(probe);
+
+    HotReloadTexture hr = {0};
+    hotreload_texture_shutdown(&hr);
+    ASSERT_TRUE(fcntl(STDIN_FILENO, F_GETFD) >= 0);
+
+    ASSERT_EQ(dup2(saved_stdin, STDIN_FILENO), STDIN_FILENO);
+    close(saved_stdin);
+#endif
+}
+
 /* R472: callbacks recompile from the paths persisted in HotReloadPipeline.
  * A successful initial compile must not leave them as truncated identities. */
 TEST(hotreload_pipeline_rejects_path_truncation)
@@ -105,6 +132,7 @@ TEST(filewatch_rejects_path_truncation)
 TEST_MAIN_BEGIN()
     RUN_TEST(hotreload_rejects_oversized_shader);
     RUN_TEST(hotreload_texture_rejects_path_truncation);
+    RUN_TEST(hotreload_texture_failed_init_keeps_stdin);
     RUN_TEST(hotreload_pipeline_rejects_path_truncation);
     RUN_TEST(filewatch_rejects_path_truncation);
 TEST_MAIN_END()

@@ -191,7 +191,9 @@ void hotreload_texture_poll(HotReloadTexture *hr) {
 }
 
 void hotreload_texture_shutdown(HotReloadTexture *hr) {
-    if (!hr) return;
+    /* A failed init returns before filewatch_init(), leaving the zero value
+     * descriptor at 0 on Linux; only shut down a watcher that was started. */
+    if (!hr || !hr->ready) return;
     filewatch_shutdown(&hr->watcher);
     hr->ready = false;
 }
