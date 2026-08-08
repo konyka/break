@@ -1065,6 +1065,8 @@ bool scene_save_json(const World *w, const Scene *s,
             ok = ok && sb_indent(&b, pretty, 2) && sb_putc(&b, '{');
             ok = ok && sb_puts(&b, "\"parent\":") && sb_u32_dec(&b, nd->parent_index) && sb_putc(&b, ',');
             ok = ok && sb_puts(&b, "\"mesh\":") && sb_u32_dec(&b, nd->mesh_index) && sb_putc(&b, ',');
+            ok = ok && sb_puts(&b, "\"material\":") && sb_u32_dec(&b, nd->material_idx) && sb_putc(&b, ',');
+            ok = ok && sb_puts(&b, "\"skin_mesh\":") && sb_u32_dec(&b, nd->skin_mesh_index) && sb_putc(&b, ',');
             ok = ok && sb_puts(&b, "\"flags\":") &&
                  sb_u32_dec(&b, (nd->has_mesh ? 1u : 0u) | (nd->skinned ? 2u : 0u)) && sb_putc(&b, ',');
             ok = ok && sb_puts(&b, "\"local\":") &&
@@ -1517,6 +1519,8 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         u32 flags = 0;
                         bool seen_parent = false;
                         bool seen_mesh = false;
+                        bool seen_material = false;
+                        bool seen_skin_mesh = false;
                         bool seen_flags = false;
                         bool seen_local = false;
                         while (ok && !js_peek(&r, '}')) {
@@ -1528,6 +1532,14 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                                 if (seen_mesh) { ok = false; break; }
                                 seen_mesh = true;
                                 ok = js_u32(&r, &nd->mesh_index);
+                            } else if (js_key(&r, "material")) {
+                                if (seen_material) { ok = false; break; }
+                                seen_material = true;
+                                ok = js_u32(&r, &nd->material_idx);
+                            } else if (js_key(&r, "skin_mesh")) {
+                                if (seen_skin_mesh) { ok = false; break; }
+                                seen_skin_mesh = true;
+                                ok = js_u32(&r, &nd->skin_mesh_index);
                             } else if (js_key(&r, "flags")) {
                                 if (seen_flags) { ok = false; break; }
                                 seen_flags = true;

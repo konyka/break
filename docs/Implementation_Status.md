@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R532 BSCN 资源 flags 保留位审查（TDD）** — v1 写入器只用 `RESOURCES` 条目 `flags` 的 bit 0 表示内联描述符，但加载器此前接受并保留其他位，使格式语义可携带写入端不能产生的状态。现加载器在资源保留与丢弃路径均拒绝 `flags & ~0x1`。检查仅在显式 BSCN 加载时每资源 O(1)，无分配或帧内成本。TDD：`load_binary_rejects_unknown_resource_flags` 在旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 79/79 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R533 JSON 节点索引往返审查（TDD）** — BSCN 会保存 `SceneNode.material_idx` 与 `skin_mesh_index`，JSON 节点此前却未输出或解析它们，JSON 往返会把非零值静默重置为零。现 JSON 对称保存并解析 `material` 与 `skin_mesh`，并同其他节点字段一样拒绝重复键；缺失新字段仍保留旧 JSON 的零值兼容。仅影响显式 JSON I/O，无额外分配或帧内成本。TDD：`scene_node_indices_roundtrip_json` 在旧代码将 material 7 丢为 0，修复后完整保留两个索引。验证：定向 `test_scene_serial` 80/80 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R532 BSCN 资源 flags 保留位审查（TDD）** — v1 写入器只用 `RESOURCES` 条目 `flags` 的 bit 0 表示内联描述符，但加载器此前接受并保留其他位，使格式语义可携带写入端不能产生的状态。现加载器在资源保留与丢弃路径均拒绝 `flags & ~0x1`。检查仅在显式 BSCN 加载时每资源 O(1)，无分配或帧内成本。TDD：`load_binary_rejects_unknown_resource_flags` 在旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 79/79 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R531 v1 节点 flags 保留位审查（TDD）** — BSCN 和 JSON 写入器仅定义节点 `flags` 的 bit 0（`has_mesh`）与 bit 1（`skinned`），但加载器此前接受其它位并静默丢弃，使同一 v1 文档的语义不规范。现 BSCN 的保留/丢弃节点路径与 JSON 节点路径均拒绝 `flags & ~0x3`；格式结果不再依赖静默掩码。检查仅在显式加载时每节点 O(1)，无分配或帧内成本。TDD：`load_binary_rejects_unknown_node_flags` 与 `load_json_rejects_unknown_node_flags` 均在旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 78/78 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
