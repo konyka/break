@@ -759,6 +759,7 @@ bool scene_instantiate_prefab(World *w, Scene *s, const char *path, Vec3 positio
 - `scene_instantiate_prefab` 加载后自动对新节点应用 `position` 偏移（修改 `local_transform` 平移列）
 - 二进制格式与 JSON 格式数据对称，保证 save/load 往返一致性
 - 二进制与 JSON 导入都限制为最多 64K `SceneNode`；JSON 在扩容 staging 数组前拒绝超额节点，避免紧凑恶意文档造成无界堆增长
+- BSCN 资源内联描述符与场景节点矩阵的全部浮点均在加载时要求有限；二进制或 JSON 节点矩阵中出现 NaN/Inf 会拒绝整个候选并保留既有 `Scene`，避免污染渲染变换与资源边界计算。检查只在显式导入时线性执行，不增加帧内成本或分配
 
 ### 6.4 VFS 虚拟文件系统 (`vfs.h` / `vfs.c`)
 
@@ -1409,7 +1410,7 @@ bool scene_instantiate_prefab(World *w, Scene *s,
 
 快捷键：`B` 保存 / `N` 加载 / `Shift+B` 导出 JSON
 
-**单元测试：** `tests/test_scene_serial.c` (14 测试用例，覆盖 BSCN 魔数/版本验证、加载错误处理、截断/溢出边界条件、JSON 格式)
+**单元测试：** `tests/test_scene_serial.c` (43 测试用例，覆盖 BSCN 魔数/版本、加载回滚、截断/溢出与非有限浮点边界、资源清单、prefab、JSON 格式)
 
 ---
 

@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R497 VFS PAK 格式版本审查（TDD）** — `vfs_mount_pak()` 原先只检查 PAK magic，却忽略声明的格式版本；带有同一 magic 但不同条目布局的旧版或未来归档会被按当前 `PakEntry` 结构错误解析并挂载。现 mount 在任何条目读取、元数据分配或 mount 槽位占用前要求 `hdr.version == VFS_PAK_VERSION`，不匹配直接返回 false。检查为挂载期一次常数时间比较，文件打开热路径与分配不变。TDD：`vfs_pak_version_mismatch_rejected` 写入 magic 正确但版本递增的最小 PAK，旧码错误挂载，修复后拒绝且 `mount_count` 保持 0；模块文档同步。验证：定向 `test_vfs` 31/31 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R498 BSCN 场景非有限浮点审查（TDD）** — BSCN 加载器此前将内联资源描述符的 8 个 `f32` 以及 `SceneNode` 局部/世界矩阵直接恢复到 `Scene`；损坏或恶意文件中的 NaN/Inf 可传播进渲染变换和资源边界计算，JSON 的十六进制局部矩阵也有同一问题。现二进制加载逐项验证资源描述符和两份矩阵全部有限，JSON 节点局部矩阵复用相同检查；任一非法值令候选失败，既有 staged 场景原子性保证旧 `Scene` 保持。验证仅发生在低频导入期，按已读字段线性执行，无帧内成本或额外常驻分配。TDD：`load_binary_rejects_nonfinite_scene_values` 分别注入资源、局部矩阵和世界矩阵 NaN，`load_json_rejects_nonfinite_node_matrix` 覆盖 JSON 十六进制矩阵；旧码错误接受，修复后均拒绝并保持既有场景；模块文档同步。验证：定向 `test_scene_serial` 43/43 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R497 VFS PAK 格式版本审查（TDD）** — `vfs_mount_pak()` 原先只检查 PAK magic，却忽略声明的格式版本；带有同一 magic 但不同条目布局的旧版或未来归档会被按当前 `PakEntry` 结构错误解析并挂载。现 mount 在任何条目读取、元数据分配或 mount 槽位占用前要求 `hdr.version == VFS_PAK_VERSION`，不匹配直接返回 false。检查为挂载期一次常数时间比较，文件打开热路径与分配不变。TDD：`vfs_pak_version_mismatch_rejected` 写入 magic 正确但版本递增的最小 PAK，旧码错误挂载，修复后拒绝且 `mount_count` 保持 0；模块文档同步。验证：定向 `test_vfs` 31/31 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R496 轻量脚本非有限值审查（TDD）** — 轻量脚本解析器通过 `%f` 读取 `var`、`set`、`add` 和 `spawn` 参数，却未检查有限性；`nan`/`inf` 文件可被接受并把非法数值置入全局或操作参数，后续帧传播到游戏逻辑。现解析器在候选加载阶段拒绝任一非有限数值，`script_load()` 沿用事务式替换，失败时释放候选并保留上一份有效脚本。检查只在加载/热重载的低频路径执行，`script_call()` 热路径无新增操作或分配。TDD：`load_rejects_nonfinite_values_preserves_previous_script` 依次注入四类非法数值脚本，旧码接受第一个候选，修复后全部拒绝且原回调仍可执行；模块文档同步。验证：定向 `test_script` 18/18 通过；Debug GNU 与隔离 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

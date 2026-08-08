@@ -476,6 +476,22 @@ static bool rd_bytes(Reader *r, void *dst, u32 n) {
 static bool rd_u32(Reader *r, u32 *v) { return rd_bytes(r, v, sizeof(*v)); }
 static bool rd_u64(Reader *r, u64 *v) { return rd_bytes(r, v, sizeof(*v)); }
 
+static bool scene_mat4_finite(const Mat4 *m) {
+    for (u32 col = 0; col < 4u; col++) {
+        for (u32 row = 0; row < 4u; row++) {
+            if (!isfinite(m->e[col][row])) return false;
+        }
+    }
+    return true;
+}
+
+static bool scene_resource_finite(const SceneResource *res) {
+    for (u32 i = 0; i < 8u; i++) {
+        if (!isfinite(res->f[i])) return false;
+    }
+    return true;
+}
+
 void scene_resources_free(Scene *s) {
     if (!s) return;
     free(s->resources);
@@ -538,6 +554,7 @@ static bool load_resources_chunk(Scene *s, Reader *r) {
         } else if (plen) {
             if (!rd_bytes(r, tmp.path, plen)) { free(arr); return false; }
         }
+        if (!scene_resource_finite(&tmp)) { free(arr); return false; }
         if (arr) arr[i] = tmp;
     }
     if (s) {
@@ -679,6 +696,10 @@ static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
         }
         nd->has_mesh = (flags & 1u) != 0;
         nd->skinned  = (flags & 2u) != 0;
+        if (!scene_mat4_finite(&nd->local_transform) ||
+            !scene_mat4_finite(&nd->world_transform)) {
+            free(nodes); return false;
+        }
     }
     free(s->nodes);
     s->nodes = nodes;
@@ -1211,6 +1232,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                             } else if (js_key(&r, "local")) {
                                 ok = js_hex(&r, (u8 *)nd->local_transform.e,
                                              (u32)sizeof(nd->local_transform));
+                                if (ok) ok = scene_mat4_finite(&nd->local_transform);
                             } else {
                                 if (!js_skip_string(&r) || !js_match(&r, ':') ||
                                     !js_skip_value(&r)) { ok = false; break; }

@@ -390,6 +390,81 @@ static bool set_resources_count(const char *path, u32 value)
     return done;
 }
 
+static bool patch_chunk_f32(const char *path, u32 chunk_type, u32 relative_offset)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    bool done = fread(&h, sizeof(h), 1, f) == 1;
+    for (u32 i = 0; done && i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long entry_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, entry_off, SEEK_SET) != 0 || fread(&e, sizeof(e), 1, f) != 1)
+            break;
+        if (e.type != chunk_type || e.size < sizeof(f32) ||
+            relative_offset > e.size - sizeof(f32)) continue;
+        const f32 nonfinite = NAN;
+        if (fseek(f, (long)e.offset + relative_offset, SEEK_SET) != 0)
+            break;
+        done = fwrite(&nonfinite, sizeof(nonfinite), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
+/* BSCN resource descriptors and node matrices contain file-controlled floats.
+ * Reject NaN before committing the staged Scene so rendering never observes it. */
+TEST(load_binary_rejects_nonfinite_scene_values)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_bscn_nonfinite.bscn");
+    World *src_world = world_create();
+    ASSERT_NOT_NULL(src_world);
+    Scene src; make_scene(&src);
+    src.node_count = 1;
+    src.nodes = (SceneNode *)calloc(1, sizeof(SceneNode));
+    ASSERT_NOT_NULL(src.nodes);
+    src.nodes[0].parent_index = UINT32_MAX;
+    src.nodes[0].local_transform = mat4_identity();
+    src.nodes[0].world_transform = mat4_identity();
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    const struct { u32 type; u32 relative_offset; } patches[] = {
+        { BSCN_CHUNK_RESOURCES, 36u }, /* count + entry header + u0/u1/u2 + f[0] */
+        { BSCN_CHUNK_SCENE_NODES, 4u }, /* count + local_transform[0][0] */
+        { BSCN_CHUNK_SCENE_NODES, 4u + (u32)sizeof(Mat4) },
+    };
+
+    for (usize i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+        ASSERT_TRUE(scene_save_binary(src_world, &src, path, &opts));
+        ASSERT_TRUE(patch_chunk_f32(path, patches[i].type, patches[i].relative_offset));
+
+        World *dst_world = world_create();
+        ASSERT_NOT_NULL(dst_world);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        dst.node_count = 1;
+        dst.nodes = (SceneNode *)calloc(1, sizeof(SceneNode));
+        dst.resources = (SceneResource *)calloc(1, sizeof(SceneResource));
+        ASSERT_NOT_NULL(dst.nodes);
+        ASSERT_NOT_NULL(dst.resources);
+        dst.resources[0].f[0] = 9.0f;
+        dst.nodes[0].local_transform = mat4_identity();
+        dst.nodes[0].local_transform.e[3][0] = 9.0f;
+
+        ASSERT_FALSE(scene_load_binary(dst_world, &dst, path));
+        ASSERT_EQ(dst.node_count, 1u);
+        ASSERT_EQ(dst.resource_count, 0u);
+        ASSERT_TRUE(fabsf(dst.resources[0].f[0] - 9.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(dst.nodes[0].local_transform.e[3][0] - 9.0f) < 1e-6f);
+
+        scene_serial_free(&dst);
+        world_destroy(dst_world);
+    }
+
+    free_scene_src(&src);
+    world_destroy(src_world);
+    remove(path);
+}
+
 /* R396: overwrite the first entity's comp_count in the ENTITIES chunk. */
 static bool set_first_entity_comp_count(const char *path, u32 value)
 {
@@ -908,6 +983,42 @@ TEST(load_json_node_without_parent_is_root)
     remove(path);
 }
 
+TEST(load_json_rejects_nonfinite_node_matrix)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_json_nonfinite_matrix.json");
+    Mat4 matrix = mat4_identity();
+    matrix.e[0][0] = NAN;
+    char hex[sizeof(matrix) * 2u + 1u];
+    const u8 *bytes = (const u8 *)matrix.e;
+    for (usize i = 0; i < sizeof(matrix); i++)
+        snprintf(hex + i * 2u, sizeof(hex) - i * 2u, "%02x", bytes[i]);
+    char doc[512];
+    int n = snprintf(doc, sizeof(doc),
+                     "{\"version\":1,\"nodes\":[{\"local\":\"%s\"}]}", hex);
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(doc));
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, (usize)n, fp) == (usize)n);
+    ASSERT_TRUE(fclose(fp) == 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    dst.node_count = 1;
+    dst.nodes = (SceneNode *)calloc(1, sizeof(SceneNode));
+    ASSERT_NOT_NULL(dst.nodes);
+    dst.nodes[0].local_transform = mat4_identity();
+    dst.nodes[0].local_transform.e[3][1] = 9.0f;
+
+    ASSERT_FALSE(scene_load_json(w, &dst, path));
+    ASSERT_EQ(dst.node_count, 1u);
+    ASSERT_TRUE(fabsf(dst.nodes[0].local_transform.e[3][1] - 9.0f) < 1e-6f);
+
+    scene_serial_free(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
 /* JSON and binary scene imports share the same bounded SceneNode model. A
  * compact nodes array must not make JSON grow an unbounded staging buffer. */
 TEST(load_json_rejects_too_many_nodes)
@@ -1000,6 +1111,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
     RUN_TEST(failed_load_keeps_previous_scene);
     RUN_TEST(resources_count_bounded_by_chunk_size);
+    RUN_TEST(load_binary_rejects_nonfinite_scene_values);
     RUN_TEST(load_binary_rejects_oversized_file);
     RUN_TEST(load_json_rejects_oversized_file);
     RUN_TEST(entities_comp_count_bounded);
@@ -1013,6 +1125,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(instantiate_prefab_offsets_root_nodes_only);
     RUN_TEST(load_json_failure_preserves_old_graph);
     RUN_TEST(load_json_node_without_parent_is_root);
+    RUN_TEST(load_json_rejects_nonfinite_node_matrix);
     RUN_TEST(load_json_rejects_too_many_nodes);
     RUN_TEST(load_json_rejects_oversized_u32_literal);
 TEST_MAIN_END()
