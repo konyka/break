@@ -1877,6 +1877,28 @@ TEST(resources_roundtrip_refs_only)
     remove(path);
 }
 
+TEST(save_binary_rejects_more_than_256_distinct_material_textures)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_res_texture_limit.bscn");
+    World *w = world_create();
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_NOT_NULL(w);
+    scene.material_count = 257u;
+    scene.materials = (Material *)calloc(scene.material_count, sizeof(Material));
+    ASSERT_NOT_NULL(scene.materials);
+    for (u32 i = 0; i < scene.material_count; i++) {
+        scene.materials[i].albedo.index = i + 1u;
+        scene.materials[i].albedo.generation = 1u;
+    }
+
+    ASSERT_FALSE(scene_save_binary(w, &scene, path, NULL));
+
+    free_scene_src(&scene);
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(resources_guid_deterministic)
 {
     char p1[64]; test_tmp(p1, sizeof p1, "test_res_g1.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
@@ -2439,6 +2461,7 @@ TEST_MAIN_BEGIN()
     /* Round 8: resources + generation */
     RUN_TEST(resources_roundtrip_include);
     RUN_TEST(resources_roundtrip_refs_only);
+    RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(resources_guid_deterministic);
     RUN_TEST(generation_restore_roundtrip);
     RUN_TEST(generation_restore_roundtrip_json);

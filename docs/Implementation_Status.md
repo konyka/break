@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R541 组件安装失败审查（TDD）** — JSON 加载器此前在本地兼容组件的 `world_add_component()` 失败时静默跳过 payload 并报告整体成功，例如 ECS archetype 容量已用尽时导致已声明组件被丢失；BSCN 实体安装路径也忽略同一失败。现 JSON 及 BSCN 路径都将该失败传播为整个候选失败并沿用既有实体回滚，格式结果不再依赖资源压力。TDD：`load_json_rejects_component_when_archetypes_are_exhausted` 用 1023 个真实 archetype 填满 `ECS_MAX_ARCHETYPES`，并覆盖两种载入格式；旧代码 JSON 错误成功，修复后二者均拒绝。检查仅在显式加载时的既有组件迁移结果判断，无额外分配或帧内成本。验证：定向 `test_scene_serial` 88/88 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R542 BSCN 纹理资源清单边界审查（TDD）** — 资源写入器以固定 256 项栈表去重材质纹理句柄，但此前满表后静默停止收集，仍报告保存成功且丢失后续纹理资源引用。现第 257 个不同有效句柄会使整个保存失败；同时资源总数的 mesh/material/texture 加法在写 header 前检查 `u32` 溢出。TDD：`save_binary_rejects_more_than_256_distinct_material_textures` 在旧代码错误成功，修复后拒绝。检查仅在显式 BSCN 保存时运行，保留固定栈表、无额外分配或帧内成本。验证：定向 `test_scene_serial` 89/89 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R541 组件安装失败审查（TDD）** — JSON 加载器此前在本地兼容组件的 `world_add_component()` 失败时静默跳过 payload 并报告整体成功，例如 ECS archetype 容量已用尽时导致已声明组件被丢失；BSCN 实体安装路径也忽略同一失败。现 JSON 及 BSCN 路径都将该失败传播为整个候选失败并沿用既有实体回滚，格式结果不再依赖资源压力。TDD：`load_json_rejects_component_when_archetypes_are_exhausted` 用 1023 个真实 archetype 填满 `ECS_MAX_ARCHETYPES`，并覆盖两种载入格式；旧代码 JSON 错误成功，修复后二者均拒绝。检查仅在显式加载时的既有组件迁移结果判断，无额外分配或帧内成本。验证：定向 `test_scene_serial` 88/88 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R540 场景保存存储一致性审查（TDD）** — 保存入口此前只检查 `Scene *`，当 `node_count`、`mesh_count` 或 `material_count` 非零而对应数组为空时，BSCN/JSON 路径可能解引用空指针并崩溃；BSCN 节点上限也仅由加载器执行。现两个保存入口以 O(1) 检查拒绝节点计数与 `nodes` 不一致，BSCN 资源清单拒绝 mesh/material 计数与数组不一致，并复用 64K 节点上限，避免崩溃及不可加载输出。TDD：`save_rejects_missing_scene_node_storage` 与 `save_binary_rejects_missing_resource_storage` 覆盖旧实现失败路径；另有 `save_rejects_nodes_above_load_limit` 覆盖格式上限对称性。验证：定向 `test_scene_serial` 87/87 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

@@ -365,22 +365,31 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
         (s->material_count && !s->materials)) return false;
 
     /* Collect distinct texture handle indices referenced by materials. */
-    u32 tex_handles[256];
+#define BSCN_MAX_RESOURCE_TEXTURES 256u
+    u32 tex_handles[BSCN_MAX_RESOURCE_TEXTURES];
     u32 tex_count = 0;
-    for (u32 i = 0; i < s->material_count && tex_count < 256; i++) {
+    for (u32 i = 0; i < s->material_count; i++) {
         const Material *mat = &s->materials[i];
         const RHITexture cand[4] = { mat->albedo, mat->metallic_roughness,
                                      mat->normal_map, mat->emissive };
-        for (u32 c = 0; c < 4 && tex_count < 256; c++) {
+        for (u32 c = 0; c < 4; c++) {
             if (!rhi_handle_valid(cand[c])) continue;
             u32 hidx = cand[c].index;
             bool seen = false;
             for (u32 k = 0; k < tex_count; k++) if (tex_handles[k] == hidx) { seen = true; break; }
-            if (!seen) tex_handles[tex_count++] = hidx;
+            /* The fixed table keeps this cold save path allocation-free. Do
+             * not silently omit later resource references when it fills. */
+            if (!seen) {
+                if (tex_count == BSCN_MAX_RESOURCE_TEXTURES) return false;
+                tex_handles[tex_count++] = hidx;
+            }
         }
     }
 
-    u32 total = s->mesh_count + s->material_count + tex_count;
+    if (s->mesh_count > UINT32_MAX - s->material_count) return false;
+    u32 total = s->mesh_count + s->material_count;
+    if (total > UINT32_MAX - tex_count) return false;
+    total += tex_count;
     if (!bb_u32(out, total)) return false;
 
     /* Meshes */
