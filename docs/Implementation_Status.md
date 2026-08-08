@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R468 UDP 非阻塞回环测试同步修正（TDD）** — 干净 Clang/LLD Release 的全套 CTest 揭示 `test_network` 偶发失败：测试在 `net_sendto()` 返回后立刻对 non-blocking 接收 socket 调用 `net_recvfrom()`，但发送完成不保证数据报已经进入对端接收队列，因而会误判 `NET_WOULD_BLOCK` 为生产错误。现新增 `recvfrom_wait_readable()`，在三个发送后即时接收的用例中先以 `net_poll(..., 1000)` 等待可读再消费数据报；生产网络热路径不变。TDD：修复前隔离 Release 的 `sendto_const_address` 真实失败，修复后 Debug 和隔离 Release 各重复 20 次 `test_network` 均 14/14 通过；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R469 Lua 热重载路径截断审查（TDD）** — `lua_script_load()` 会先以调用者完整路径执行文件，再把该路径格式化到 `LuaScript.path[256]` 供 `lua_script_reload_if_changed()` 使用；256-byte 路径首次加载成功却保存为截断名称，后续重载会错误地查询/执行另一文件。现于任何文件 I/O 与代码执行前拒绝不能完整保存的路径，失败不改变脚本状态；只在显式加载路径执行一次长度检查，不影响脚本调用或每帧重载热路径、无分配。TDD：`lua_load_rejects_path_truncation` 创建真实 256-byte 路径，旧码首次加载成功而失败断言，修复后返回 false、`loaded` 为 false 且记录路径为空；模块文档同步。验证：`test_script_lua` 定向回归 21/21 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R468 UDP 非阻塞回环测试同步修正（TDD）** — 干净 Clang/LLD Release 的全套 CTest 揭示 `test_network` 偶发失败：测试在 `net_sendto()` 返回后立刻对 non-blocking 接收 socket 调用 `net_recvfrom()`，但发送完成不保证数据报已经进入对端接收队列，因而会误判 `NET_WOULD_BLOCK` 为生产错误。现新增 `recvfrom_wait_readable()`，在三个发送后即时接收的用例中先以 `net_poll(..., 1000)` 等待可读再消费数据报；生产网络热路径不变。TDD：修复前隔离 Release 的 `sendto_const_address` 真实失败，修复后 Debug 和隔离 Release 各重复 20 次 `test_network` 均 14/14 通过；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R467 Mipmap 源路径截断审查（TDD）** — `mipmap_stream_register()` 将调用者路径写入固定 256-byte 字段，却先前静默 `strncpy` 截断并仍返回有效纹理索引；后续异步 range 请求会读取被截短的不同路径，造成难以诊断的错误资源加载。现登记前以固定字段容量检查完整路径，超长值直接失败且不占用纹理槽；仅在注册路径执行一次有界长度检查，不影响每帧 streaming 热路径、无分配。TDD：`mipmap_register_rejects_path_truncation` 传入 256 字节路径，旧码错误成功并增加计数，修复后返回 -1 且计数保持 0；模块文档同步。验证：`test_mipmap_stream` 定向回归 10/10 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

@@ -262,6 +262,9 @@ static bool lua_script_file_size_ok(const char *path) {
 
 bool lua_script_load(LuaScript *ls, const char *path) {
     if (!ls || !ls->L || !path) return false;
+    /* Hot reload uses this fixed-size path field, so never retain a truncated
+     * identity after successfully executing a different full path. */
+    if (strlen(path) >= sizeof(ls->path)) return false;
     if (!lua_script_file_size_ok(path)) return false;
     if (luaL_loadfile(ls->L, path) != LUA_OK) {
         LOG_ERROR("Lua load error: %s", lua_tostring(ls->L, -1));

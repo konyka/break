@@ -8,6 +8,7 @@
 #include <physics/physics.h>
 #include <math.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* ----------------------------------------------------------------------- */
@@ -331,6 +332,41 @@ TEST(load_nonexistent_file)
     lua_script_shutdown(&ls);
 }
 
+/* R469: LuaScript keeps the hot-reload identity in a 256-byte path field.
+ * A file whose full path is exactly that size used to load once, then retain a
+ * truncated path for future reloads. Reject it before executing the chunk. */
+TEST(lua_load_rejects_path_truncation)
+{
+    char dir[220];
+    int n = snprintf(dir, sizeof(dir), "/tmp/break_lua_long_%d_", (int)TEST_GETPID());
+    ASSERT_TRUE(n > 0 && (usize)n < sizeof(dir));
+    memset(dir + n, 'd', 180u - (usize)n);
+    dir[180] = '\0';
+    ASSERT_TRUE(mkdir(dir, 0755) == 0);
+
+    char name[76];
+    memset(name, 's', sizeof(name) - 5u);
+    memcpy(name + sizeof(name) - 5u, ".lua", 5u);
+
+    char path[257];
+    n = snprintf(path, sizeof(path), "%s/%s", dir, name);
+    ASSERT_EQ(n, 256);
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fputs("loaded = true\n", f);
+    fclose(f);
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    ASSERT_TRUE(!lua_script_load(&ls, path));
+    ASSERT_TRUE(!ls.loaded);
+    ASSERT_EQ(ls.path[0], '\0');
+    lua_script_shutdown(&ls);
+
+    remove(path);
+    rmdir(dir);
+}
+
 /* R395: luaL_loadfile reads the whole file; cap size before calling it. */
 TEST(lua_load_rejects_oversized_file)
 {
@@ -412,6 +448,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_runs_new_chunk);
     RUN_TEST(hot_reload_no_change_no_run);
     RUN_TEST(load_nonexistent_file);
+    RUN_TEST(lua_load_rejects_path_truncation);
     RUN_TEST(lua_load_rejects_oversized_file);
     RUN_TEST(engine_set_pos_wakes_resting_body);
 TEST_MAIN_END()
