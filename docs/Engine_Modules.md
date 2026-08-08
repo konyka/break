@@ -676,6 +676,8 @@ bool       asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene);
 
 `asset_ctx_init()` 会初始化全部字段；未显式绑定 VFS 时 `vfs == NULL`，资源加载将使用普通文件路径，调用方不需要也不应预先清零 `AssetCtx`。
 
+Mipmap 流注册会保留完整的源路径；超过内部 255 字节存储上限的路径会在登记前被拒绝，不会截断后异步读取其他文件。
+
 **支持格式**：
 - **模型**: glTF 2.0（通过 cgltf 解析）
 - **纹理**: PNG / JPG（通过 stb_image 解码）

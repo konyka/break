@@ -4,7 +4,11 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R466 AssetCtx 完整初始化审查（TDD）** — `asset_ctx_init()` 先前只写入 `device`，而 `AssetCtx` 常由调用方在栈上创建；遗留的未初始化 `vfs` 指针会使后续纹理或 glTF 加载错误地进入 VFS 分支并解引用无效地址。现初始化时明确将 `vfs` 置为 NULL，未绑定 VFS 的上下文可靠地使用磁盘加载路径；仅增加一次初始化赋值，不影响资源加载热路径、无分配。TDD：`asset_ctx_init_clears_vfs` 以非 NULL 哨兵填充两个字段，旧码保留 `vfs` 并失败，修复后两字段均符合初始化契约；模块文档同步。验证：`test_asset_gltf` 定向回归 24/24 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R468 UDP 非阻塞回环测试同步修正（TDD）** — 干净 Clang/LLD Release 的全套 CTest 揭示 `test_network` 偶发失败：测试在 `net_sendto()` 返回后立刻对 non-blocking 接收 socket 调用 `net_recvfrom()`，但发送完成不保证数据报已经进入对端接收队列，因而会误判 `NET_WOULD_BLOCK` 为生产错误。现新增 `recvfrom_wait_readable()`，在三个发送后即时接收的用例中先以 `net_poll(..., 1000)` 等待可读再消费数据报；生产网络热路径不变。TDD：修复前隔离 Release 的 `sendto_const_address` 真实失败，修复后 Debug 和隔离 Release 各重复 20 次 `test_network` 均 14/14 通过；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R467 Mipmap 源路径截断审查（TDD）** — `mipmap_stream_register()` 将调用者路径写入固定 256-byte 字段，却先前静默 `strncpy` 截断并仍返回有效纹理索引；后续异步 range 请求会读取被截短的不同路径，造成难以诊断的错误资源加载。现登记前以固定字段容量检查完整路径，超长值直接失败且不占用纹理槽；仅在注册路径执行一次有界长度检查，不影响每帧 streaming 热路径、无分配。TDD：`mipmap_register_rejects_path_truncation` 传入 256 字节路径，旧码错误成功并增加计数，修复后返回 -1 且计数保持 0；模块文档同步。验证：`test_mipmap_stream` 定向回归 10/10 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R466 AssetCtx 完整初始化审查（TDD）** — `asset_ctx_init()` 先前只写入 `device`，而 `AssetCtx` 常由调用方在栈上创建；遗留的未初始化 `vfs` 指针会使后续纹理或 glTF 加载错误地进入 VFS 分支并解引用无效地址。现初始化时明确将 `vfs` 置为 NULL，未绑定 VFS 的上下文可靠地使用磁盘加载路径；仅增加一次初始化赋值，不影响资源加载热路径、无分配。TDD：`asset_ctx_init_clears_vfs` 以非 NULL 哨兵填充两个字段，旧码保留 `vfs` 并失败，修复后两字段均符合初始化契约；模块文档同步。验证：`test_asset_gltf` 定向回归 24/24 通过；Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R465 Lua 物理 body id 窄化审查（TDD）** — Lua `lua_Integer` 宽于引擎 `u32`，原绑定只拒绝 `id <= 0` 就转换为 `u32`；`4294967297` 截断为 1，减为 C index 0，因而 `set_pos`、`set_vel`、`apply_impulse` 与 `body_set_ccd` 均可能修改错误刚体。现四个入口共享 1-based ID 的范围验证，在任何窄化前拒绝超过 `UINT32_MAX` 的整数；常数时间、无分配。TDD：`engine_out_of_range_body_id_is_invalid` 对第一个刚体依次调用四个绑定并确认位置、速度、CCD 状态保持，同时 `get_pos` 不返回值；旧码首先改写位置而失败，修复后通过；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_script_lua` 定向回归通过，`git diff --check` 通过。
 

@@ -12,6 +12,17 @@
  * Range check: 23000 + 2599*16 = 64584, +4 < 65535. */
 #define TEST_PORT_BASE ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
 
+/* UDP send completion does not guarantee the peer's non-blocking receive
+ * queue has been populated yet. Wait for readiness before consuming a packet. */
+static i32 recvfrom_wait_readable(NetSocket *socket, void *buf, u32 size,
+                                  NetAddress *out_addr)
+{
+    NetPollFd pfd = { .socket = socket, .events = NET_POLL_READ, .revents = 0 };
+    if (net_poll(&pfd, 1, 1000) <= 0 || (pfd.revents & NET_POLL_READ) == 0)
+        return NET_ERROR;
+    return net_recvfrom(socket, buf, size, out_addr);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST(init_shutdown)
@@ -95,7 +106,7 @@ TEST(udp_loopback)
     /* Receive */
     char buf[64] = {0};
     NetAddress src;
-    i32 received = net_recvfrom(recv_s, buf, sizeof(buf), &src);
+    i32 received = recvfrom_wait_readable(recv_s, buf, sizeof(buf), &src);
     ASSERT_TRUE(received > 0);
     ASSERT_STR_EQ(buf, "Hello, loopback!");
 
@@ -213,7 +224,7 @@ TEST(sendto_const_address)
     ASSERT_TRUE(sent > 0);
 
     char buf[64] = {0};
-    i32 received = net_recvfrom(recv_s, buf, sizeof(buf), NULL);
+    i32 received = recvfrom_wait_readable(recv_s, buf, sizeof(buf), NULL);
     ASSERT_TRUE(received > 0);
     ASSERT_STR_EQ(buf, "const addr");
 
@@ -252,13 +263,13 @@ TEST(sendto_repeated_sends_with_cache)
     ASSERT_TRUE(net_sendto(send_s, m3, (u32)strlen(m3) + 1, &dst_b) > 0);
 
     char buf[64] = {0};
-    ASSERT_TRUE(net_recvfrom(recv_a, buf, sizeof(buf), NULL) > 0);
+    ASSERT_TRUE(recvfrom_wait_readable(recv_a, buf, sizeof(buf), NULL) > 0);
     ASSERT_STR_EQ(buf, "first");
     memset(buf, 0, sizeof(buf));
-    ASSERT_TRUE(net_recvfrom(recv_a, buf, sizeof(buf), NULL) > 0);
+    ASSERT_TRUE(recvfrom_wait_readable(recv_a, buf, sizeof(buf), NULL) > 0);
     ASSERT_STR_EQ(buf, "second");
     memset(buf, 0, sizeof(buf));
-    ASSERT_TRUE(net_recvfrom(recv_b, buf, sizeof(buf), NULL) > 0);
+    ASSERT_TRUE(recvfrom_wait_readable(recv_b, buf, sizeof(buf), NULL) > 0);
     ASSERT_STR_EQ(buf, "third-b");
 
     net_close(send_s);

@@ -278,6 +278,23 @@ TEST(mipmap_register_rejects_chain_over_vfs_cap)
     mipmap_stream_shutdown(&mgr);
 }
 
+/* R467: registration must not silently truncate the source path stored in the
+ * fixed-size StreamedTexture record; truncation would request another file. */
+TEST(mipmap_register_rejects_path_truncation)
+{
+    MipmapStreamManager mgr;
+    ASSERT_TRUE(mipmap_stream_init(&mgr, 1u << 20));
+
+    char path[sizeof(mgr.textures[0].path) + 1u];
+    memset(path, 'x', sizeof(path) - 1u);
+    path[sizeof(path) - 1u] = '\0';
+
+    ASSERT_EQ(mipmap_stream_register(&mgr, path, TEX_W, TEX_H, TEX_MIPS, TEX_BPP), -1);
+    ASSERT_EQ(mgr.texture_count, 0u);
+
+    mipmap_stream_shutdown(&mgr);
+}
+
 /* R408: golden values from Round11 R325 audit (IEEE754 exponent fast path). */
 TEST(coverage_to_level_known_values)
 {
@@ -410,6 +427,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mipmap_invalidate_clears_residency);
     RUN_TEST(mipmap_rejects_truncated_level_file);
     RUN_TEST(mipmap_register_rejects_chain_over_vfs_cap);
+    RUN_TEST(mipmap_register_rejects_path_truncation);
     RUN_TEST(coverage_to_level_known_values);
     RUN_TEST(mipmap_request_pool_reuse_after_free);
     RUN_TEST(mipmap_failed_load_not_rerequested);
