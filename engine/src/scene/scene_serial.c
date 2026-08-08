@@ -456,6 +456,13 @@ bool scene_save_binary(const World *w, const Scene *s,
         emit_scene_nodes_chunk(s, &chunks[4]);
     if (!ok) goto fail;
 
+    u64 file_size = (u64)sizeof(BscnHeader) +
+                    5u * (u64)sizeof(BscnChunkEntry);
+    for (u32 i = 0; i < 5u; i++) file_size += chunks[i].size;
+    /* Readers reject files above this bound before allocating their input
+     * buffer, so never report a successful save for an unloadable BSCN. */
+    if (file_size > BSCN_MAX_FILE_BYTES) goto fail;
+
     static const u32 ctypes[5] = {
         BSCN_CHUNK_ENTITIES, BSCN_CHUNK_COMPONENTS, BSCN_CHUNK_HIERARCHY,
         BSCN_CHUNK_RESOURCES, BSCN_CHUNK_SCENE_NODES
