@@ -2,7 +2,9 @@
 #include <scene/scene_state.h>
 #include <physics/physics.h>
 #include <renderer/camera.h>
+#include <math.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -274,6 +276,73 @@ TEST(scene_state_load_without_water_tail)
     remove(TMP_STATE);
 }
 
+/* Persisted floating-point data is untrusted: reject NaN in every loaded
+ * value family and restore the runtime state rather than propagating it. */
+TEST(scene_state_rejects_nonfinite_values)
+{
+    Camera cam = {0};
+    cam.position = vec3(1, 2, 3);
+    cam.yaw = 0.1f;
+    cam._proj.e[2][1] = 1.0f;
+    f32 sun_a = 0.5f, sun_e = 0.25f, exp = 1.5f, scale = 1.0f;
+    f32 wy = -2.0f;
+    bool wen = true;
+    PhysicsWorld *pw = physics_world_create(2);
+    ASSERT_NOT_NULL(pw);
+    pw->count = 1;
+    pw->bodies[0].position = vec3(3, 4, 5);
+    pw->bodies[0].velocity = vec3(6, 7, 8);
+    pw->bodies[0].mass = 2.0f;
+    pw->bodies[0].half_extent = vec3(0.5f, 0.75f, 1.0f);
+    pw->bodies[0].restitution = 0.3f;
+
+    SceneStateCtx sctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    const long body_off = (long)(4 + sizeof(Camera) + 4 * sizeof(f32) + sizeof(u32));
+    const long offsets[] = {
+        4 + (long)offsetof(Camera, position) + 2 * (long)sizeof(f32),
+        4 + (long)offsetof(Camera, yaw),
+        4 + (long)offsetof(Camera, _proj) + 9 * (long)sizeof(f32),
+        4 + (long)sizeof(Camera) + (long)sizeof(f32),
+        body_off + (long)sizeof(Vec3) - (long)sizeof(f32),
+        body_off + (long)sizeof(Vec3) + (long)sizeof(Vec3) - (long)sizeof(f32),
+        body_off + 2 * (long)sizeof(Vec3),
+        body_off + 2 * (long)sizeof(Vec3) + (long)sizeof(f32) + sizeof(u8) +
+            (long)sizeof(Vec3) - (long)sizeof(f32),
+        body_off + 3 * (long)sizeof(Vec3) + (long)sizeof(f32) + sizeof(u8),
+        body_off + 3 * (long)sizeof(Vec3) + 2 * (long)sizeof(f32) + sizeof(u8),
+    };
+
+    bool live[SCENE_STATE_BODY_LIVE_MAX] = {0};
+    live[0] = true;
+    SceneStateCtx lctx = make_ctx(&cam, pw, &sun_a, &sun_e, &exp, &scale, &wy, &wen);
+    lctx.body_live = live;
+    lctx.water_pipeline_valid = true;
+
+    for (usize oi = 0; oi < sizeof(offsets) / sizeof(offsets[0]); oi++) {
+        ASSERT_TRUE(scene_state_save(TMP_STATE, &sctx));
+        FILE *f = fopen(TMP_STATE, "r+b");
+        ASSERT_NOT_NULL(f);
+        const f32 nonfinite = NAN;
+        ASSERT_TRUE(fseek(f, offsets[oi], SEEK_SET) == 0);
+        ASSERT_TRUE(fwrite(&nonfinite, sizeof(nonfinite), 1, f) == 1);
+        ASSERT_TRUE(fclose(f) == 0);
+
+        cam.position = vec3(9, 9, 9);
+        sun_a = 9.0f;
+        wy = 9.0f;
+        pw->bodies[0].position = vec3(9, 9, 9);
+
+        ASSERT_FALSE(scene_state_load(TMP_STATE, &lctx));
+        ASSERT_TRUE(fabsf(cam.position.e[0] - 9.0f) < 1e-4f);
+        ASSERT_TRUE(fabsf(sun_a - 9.0f) < 1e-4f);
+        ASSERT_TRUE(fabsf(wy - 9.0f) < 1e-4f);
+        ASSERT_TRUE(fabsf(pw->bodies[0].position.e[0] - 9.0f) < 1e-4f);
+    }
+
+    physics_world_destroy(pw);
+    remove(TMP_STATE);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_roundtrip);
     RUN_TEST(scene_state_save_reports_close_failure);
@@ -282,4 +351,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_state_load_failure_preserves_runtime);
     RUN_TEST(scene_state_rejects_oversized_file);
     RUN_TEST(scene_state_load_without_water_tail);
+    RUN_TEST(scene_state_rejects_nonfinite_values);
 TEST_MAIN_END()

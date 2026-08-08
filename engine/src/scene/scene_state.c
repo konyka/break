@@ -72,6 +72,29 @@ static usize scene_state_record_bytes(bool v2, bool v3) {
     return n;
 }
 
+static bool scene_state_vec3_finite(Vec3 v) {
+    return isfinite(v.e[0]) && isfinite(v.e[1]) && isfinite(v.e[2]);
+}
+
+static bool scene_state_camera_finite(const Camera *camera) {
+    if (!scene_state_vec3_finite(camera->position) ||
+        !isfinite(camera->yaw) || !isfinite(camera->pitch) ||
+        !isfinite(camera->fov) || !isfinite(camera->aspect) ||
+        !isfinite(camera->near_plane) || !isfinite(camera->far_plane) ||
+        !isfinite(camera->move_speed) || !isfinite(camera->mouse_sensitivity) ||
+        !isfinite(camera->_cy) || !isfinite(camera->_sy) ||
+        !isfinite(camera->_cp) || !isfinite(camera->_sp) ||
+        !isfinite(camera->_proj_fov) || !isfinite(camera->_proj_aspect) ||
+        !isfinite(camera->_proj_near) || !isfinite(camera->_proj_far))
+        return false;
+    for (u32 col = 0; col < 4u; col++) {
+        for (u32 row = 0; row < 4u; row++) {
+            if (!isfinite(camera->_proj.e[col][row])) return false;
+        }
+    }
+    return true;
+}
+
 static bool scene_state_measure_file(FILE *f, long *out_size) {
     if (fseek(f, 0, SEEK_END) != 0) return false;
     long sz = ftell(f);
@@ -169,6 +192,10 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
     ld_ok &= fread(ctx->sun_elevation, sizeof(f32), 1, lf) == 1;
     ld_ok &= fread(ctx->exposure, sizeof(f32), 1, lf) == 1;
     ld_ok &= fread(ctx->render_scale, sizeof(f32), 1, lf) == 1;
+    if (ld_ok && (!scene_state_camera_finite(ctx->camera) ||
+                  !isfinite(*ctx->sun_azimuth) || !isfinite(*ctx->sun_elevation) ||
+                  !isfinite(*ctx->exposure) || !isfinite(*ctx->render_scale)))
+        ld_ok = false;
     if (ctx->render_scale_idx && ctx->render_scale_options) {
         for (i32 rsi = 0; rsi < 4; rsi++) {
             if (fabsf(*ctx->render_scale - ctx->render_scale_options[rsi]) < 1e-4f) {
@@ -220,6 +247,10 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
             ld_ok &= fread(&hext, sizeof(Vec3), 1, lf) == 1;
             ld_ok &= fread(&rest, sizeof(f32), 1, lf) == 1;
         }
+        if (ld_ok && (!scene_state_vec3_finite(pos) || !scene_state_vec3_finite(vel) ||
+                      !isfinite(mass) || !scene_state_vec3_finite(hext) ||
+                      !isfinite(rest)))
+            ld_ok = false;
         bool live = ctx->body_live && si < SCENE_STATE_BODY_LIVE_MAX && ctx->body_live[si];
         if (ld_ok && live && pos.e[1] > -999.0f) {
             RigidBody *rb = &ctx->physics->bodies[si];
@@ -248,6 +279,7 @@ bool scene_state_load(const char *path, SceneStateCtx *ctx) {
         (u64)(file_size - tail_off) >= (u64)(sizeof(f32) + sizeof(bool))) {
         ld_ok &= fread(ctx->water_y, sizeof(f32), 1, lf) == 1;
         ld_ok &= fread(ctx->water_enabled, sizeof(bool), 1, lf) == 1;
+        if (ld_ok && !isfinite(*ctx->water_y)) ld_ok = false;
         if (!ctx->water_pipeline_valid)
             *ctx->water_enabled = false;
     }
