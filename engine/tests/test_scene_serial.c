@@ -930,6 +930,26 @@ TEST(load_json_rejects_duplicate_component_fields)
     remove(path);
 }
 
+TEST(load_json_rejects_component_data_before_size)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_component_data_before_size.json");
+    const char *doc =
+        "{\"version\":1,\"entities\":[{\"components\":[{"
+        "\"type\":1,\"data\":\"\",\"size\":4}]}]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, 1u, sizeof(u32));
+    ASSERT_FALSE(scene_load_json(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* An entity has one serialized generation.  Repeating it lets input order
  * select the final unified ID instead of describing one canonical handle. */
 TEST(load_json_rejects_duplicate_entity_generation)
@@ -2239,6 +2259,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_zero_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_component_type);
     RUN_TEST(load_json_rejects_duplicate_component_fields);
+    RUN_TEST(load_json_rejects_component_data_before_size);
     RUN_TEST(load_json_rejects_duplicate_entity_generation);
     RUN_TEST(load_json_rejects_duplicate_entity_components);
     RUN_TEST(load_json_rejects_duplicate_entities_key);

@@ -1378,6 +1378,10 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
             else if (js_key(r, "data")) {
                 if (seen_data) goto fail;
                 seen_data = true;
+                /* The hex payload length is controlled by `size`; accepting
+                 * data first would parse zero bytes then copy uninitialized
+                 * stack storage after a later size field. */
+                if (!seen_size) goto fail;
                 /* R384: `size` is attacker-controlled and was passed straight to
                  * malloc — a bogus "size": 4000000000 forced a 4GB request. Hex
                  * needs 2 chars per byte, so bound it by the remaining input the
