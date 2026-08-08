@@ -18,6 +18,7 @@
 #define TEST_PORT ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
 
 static void feed_ack(NetReplicator *rep, u32 ack);
+static void feed_ack_from(NetReplicator *rep, u32 ack, const NetAddress *from);
 
 TEST(replicator_init_shutdown)
 {
@@ -575,6 +576,51 @@ TEST(reliable_send_sequence_survives_receive_peer_eviction)
     ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
     sent_len = net_recvfrom(receiver.socket, sent, sizeof(sent), &from);
     ASSERT_TRUE(sent_len > 0);
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.sequence, 2u);
+
+    net_replicator_shutdown(&receiver);
+    net_replicator_shutdown(&rep);
+    net_shutdown();
+}
+
+TEST(reliable_send_state_is_not_recycled_after_ack)
+{
+    /* R457: even an ACKed destination cannot have its sequence slot recycled:
+     * the remote receiver can still retain its old sequence state. At fixed
+     * capacity the ninth destination must fail, while A remains seq 2. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator rep = {0}, receiver = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 15u)));
+    rep.reliable_retry = true;
+
+    NetAddress peer_a;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 15u), &peer_a));
+    NetTransformSnapshot snap = { .entity_id = 5u, .position = {0} };
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+    u8 sent[PACKET_MAX_SIZE];
+    NetAddress from = {0};
+    ASSERT_TRUE(net_recvfrom(receiver.socket, sent, sizeof(sent), &from) > 0);
+    feed_ack_from(&rep, 1u, &peer_a);
+
+    for (u32 i = 1u; i < NET_REP_MAX_PEERS; i++) {
+        NetAddress peer = {0};
+        strncpy(peer.host, "127.0.0.1", sizeof(peer.host) - 1u);
+        peer.port = (u16)(22100u + i);
+        ASSERT_TRUE(net_replicator_send_heartbeat(&rep, &peer, 0u) > 0);
+    }
+
+    NetAddress ninth = {0};
+    strncpy(ninth.host, "127.0.0.1", sizeof(ninth.host) - 1u);
+    ninth.port = 22200u;
+    ASSERT_EQ(net_replicator_send_heartbeat(&rep, &ninth, 0u), NET_ERROR);
+
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+    i32 sent_len = net_recvfrom(receiver.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    PacketHeader header;
     ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
     ASSERT_EQ(header.sequence, 2u);
 
@@ -1637,6 +1683,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reliable_ack_is_scoped_to_destination);
     RUN_TEST(reliable_ack_waits_for_contiguous_sequence);
     RUN_TEST(reliable_send_sequence_survives_receive_peer_eviction);
+    RUN_TEST(reliable_send_state_is_not_recycled_after_ack);
     RUN_TEST(reliable_pending_cleared_via_peer_ack);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);

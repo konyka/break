@@ -115,25 +115,16 @@ static NetRepPeerChannel *net_repl_peer_channel_find(NetReplicator *rep,
     return slot;
 }
 
-static bool net_repl_reliable_pending_for(const NetReplicator *rep,
-                                          const NetAddress *dst) {
-    for (u32 i = 0u; i < (u32)NET_RELIABLE_WINDOW; i++) {
-        const NetRepReliablePending *slot = &rep->reliable_window[i];
-        if (slot->valid && net_address_equal(&slot->dst, dst)) return true;
-    }
-    return false;
-}
-
-/* R456: find a stable per-destination send sequence slot. On pressure, never
- * recycle an address that still owns reliable in-flight packets; rejecting a
- * new destination is safer than restarting a live stream's sequence. */
+/* R456/R457: sender sequence spaces persist for the replicator lifetime. A
+ * recycled slot would restart at sequence 1 while the remote peer may still
+ * remember a much newer sequence; without an on-wire generation field that
+ * reset is ambiguous with delayed packets. Keep the fixed eight destinations
+ * stable and reject a ninth instead of violating reliable ordering. */
 static NetRepPeerSendState *net_repl_send_peer_find(NetReplicator *rep,
                                                      const NetAddress *addr,
                                                      bool create, u32 now_ms) {
     if (!rep || !addr) return NULL;
     NetRepPeerSendState *free_slot = NULL;
-    NetRepPeerSendState *stalest = NULL;
-    u32 stalest_seen = 0u;
     for (u32 i = 0u; i < NET_REP_MAX_PEERS; i++) {
         NetRepPeerSendState *peer = &rep->send_peers[i];
         if (peer->valid && net_address_equal(&peer->addr, addr)) {
@@ -142,25 +133,20 @@ static NetRepPeerSendState *net_repl_send_peer_find(NetReplicator *rep,
         }
         if (!peer->valid) {
             if (!free_slot) free_slot = peer;
-        } else if (!net_repl_reliable_pending_for(rep, &peer->addr) &&
-                   (!stalest || (i32)(peer->last_seen_ms - stalest_seen) < 0)) {
-            stalest = peer;
-            stalest_seen = peer->last_seen_ms;
         }
     }
     if (!create) return NULL;
-    NetRepPeerSendState *slot = free_slot ? free_slot : stalest;
-    if (!slot) return NULL;
-    memset(slot, 0, sizeof(*slot));
-    slot->addr = *addr;
-    slot->valid = true;
-    slot->last_seen_ms = now_ms;
-    return slot;
+    if (!free_slot) return NULL;
+    memset(free_slot, 0, sizeof(*free_slot));
+    free_slot->addr = *addr;
+    free_slot->valid = true;
+    free_slot->last_seen_ms = now_ms;
+    return free_slot;
 }
 
-/* R454-R456: sender and receiver use the same per-peer sequence space for a
+/* R454-R457: sender and receiver use the same per-peer sequence space for a
  * cumulative ACK. The compact fixed send table is independent of evictable
- * receive/reorder state, so source-address churn cannot restart a live send. */
+ * receive/reorder state and never recycles a sequence space mid-lifetime. */
 static bool net_repl_prepare_outgoing(NetReplicator *rep, const NetAddress *dst,
                                       u8 type, bool ordered, u32 *out_seq,
                                       u32 *out_ack) {

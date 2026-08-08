@@ -105,7 +105,7 @@ typedef struct {
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
     NetRepPeerChannel        *peer_channels;  /* R418: per-sender recv state (calloc'd in init) */
-    NetRepPeerSendState      send_peers[NET_REP_MAX_PEERS]; /* R456: bounded per-destination wire sequences */
+    NetRepPeerSendState      send_peers[NET_REP_MAX_PEERS]; /* R456/R457: stable per-destination wire sequences */
     NetRepReliablePending    reliable_window[NET_RELIABLE_WINDOW]; /* R434: in-flight reliable slots */
     u32                      reliable_dropped;  /* R434: reliable sends rejected (window full) */
     u32                      last_peer_ack;   /* peer's ack of OUR packets (clears our pending) */
