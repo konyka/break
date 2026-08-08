@@ -653,7 +653,10 @@ static bool load_components_chunk(World *w, Reader *r,
             u32 saved_idx = 0;
             if (!rd_u32(r, &saved_idx)) return false;
             if ((u32)(r->end - r->p) < size) return false;
-            if (known && saved_idx < ent_count) {
+            /* Component type data can be skipped for forward compatibility,
+             * but every instance still needs a real saved entity owner. */
+            if (saved_idx >= ent_count) return false;
+            if (known) {
                 void *dst = world_get_component(w, ents[saved_idx], type);
                 if (!dst) dst = world_add_component(w, ents[saved_idx], type);
                 if (dst) memcpy(dst, r->p, size);

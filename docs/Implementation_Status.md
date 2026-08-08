@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R503 BSCN chunk table 布局审查（TDD）** — `scene_probe_binary()` 原本会拒绝 payload 起点落在 chunk table 内的 BSCN，但 `scene_load_binary()` 仅验证 payload 结尾不越过文件；因此被前向兼容逻辑跳过的 `HIERARCHY` 或未知 chunk 能把表字节错误当作 payload 并让加载 API 成功，形成同一格式的探测/加载判定分裂。现加载器在任何解析或状态变更前扫描至多 64 条表项，要求每个 payload 均从 table 之后开始且位于文件范围内；检查只在显式导入时 O(chunk_count) 执行，无帧内成本或分配。TDD：`load_binary_rejects_chunk_overlapping_table` 构造 payload 指向唯一 table entry 的 HIERARCHY chunk，旧码探测拒绝而加载错误成功，修复后两者均拒绝。验证：定向 `test_scene_serial` 45/45 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R504 BSCN 组件实例实体引用审查（TDD）** — `COMPONENTS` 的每条实例都含有指向 `ENTITIES` 的保存索引，但加载器此前仅在类型已注册且大小匹配时才检查索引；越界索引会被静默跳过并仍报告加载成功。写入端绝不会产生悬空实例，且前向兼容只能允许跳过未知类型数据，不能允许其绕过实体关系完整性。现每条实例读完索引和 payload 边界后均要求索引小于实体数，再按既有逻辑恢复已知类型。检查仅在显式导入时每实例 O(1) 执行，无帧内成本或分配。TDD：`load_binary_rejects_component_instance_without_entity` 构造一实体、却由已知组件实例引用索引 1 的 BSCN；旧码错误成功，修复后拒绝并触发既有实体回滚。验证：定向 `test_scene_serial` 46/46 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R503 BSCN chunk table 布局审查（TDD）** — `scene_probe_binary()` 原本会拒绝 payload 起点落在 chunk table 内的 BSCN，但 `scene_load_binary()` 仅验证 payload 结尾不越过文件；因此被前向兼容逻辑跳过的 `HIERARCHY` 或未知 chunk 能把表字节错误当作 payload 并让加载 API 成功，形成同一格式的探测/加载判定分裂。现加载器在任何解析或状态变更前扫描至多 64 条表项，要求每个 payload 均从 table 之后开始且位于文件范围内；检查只在显式导入时 O(chunk_count) 执行，无帧内成本或分配。TDD：`load_binary_rejects_chunk_overlapping_table` 构造 payload 指向唯一 table entry 的 HIERARCHY chunk，旧码探测拒绝而加载错误成功，修复后两者均拒绝。验证：定向 `test_scene_serial` 45/45 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R502 BSCN 组件类型计数审查（TDD）** — 二进制 `COMPONENTS` chunk 的 `type_count` 原先直接控制加载循环，既没有写入端可产生的 `ECS_MAX_COMPONENTS` 上限，也未先验证每条类型记录所需的固定 12-byte 头部；畸形归档可用任意大量空记录消耗加载期工作并被错误当作成功格式。现读取计数后、进入循环前拒绝超过引擎组件容量或连固定头部都放不下的 chunk；未知但数量有效的类型仍按既有兼容逻辑跳过。仅在显式导入时常数检查，无帧内成本或分配。TDD：`load_binary_rejects_excessive_component_type_count` 写入 129 条空类型记录，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 44/44 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
