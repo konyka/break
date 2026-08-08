@@ -197,17 +197,17 @@ static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_
     }
     char tex_path[512];
     const char *last_slash = strrchr(gltf_path, '/');
+    usize dir_len = last_slash ? (usize)(last_slash - gltf_path + 1) : 0;
+    usize uri_len = strlen(tex->image->uri);
+    if (dir_len >= sizeof(tex_path) || uri_len >= sizeof(tex_path) - dir_len) {
+        LOG_WARN("glTF: texture uri path too long: %s", gltf_path);
+        return RHI_HANDLE_NULL;
+    }
     if (last_slash) {
-        usize dir_len = (usize)(last_slash - gltf_path + 1);
-        /* R109-3: Clamp dir_len to prevent stack buffer overflow when
-         * gltf_path exceeds tex_path capacity. */
-        if (dir_len >= sizeof(tex_path)) dir_len = sizeof(tex_path) - 1;
         memcpy(tex_path, gltf_path, dir_len);
-        strncpy(tex_path + dir_len, tex->image->uri, sizeof(tex_path) - dir_len - 1);
-        tex_path[sizeof(tex_path) - 1] = '\0';
+        memcpy(tex_path + dir_len, tex->image->uri, uri_len + 1);
     } else {
-        strncpy(tex_path, tex->image->uri, sizeof(tex_path) - 1);
-        tex_path[sizeof(tex_path) - 1] = '\0';
+        memcpy(tex_path, tex->image->uri, uri_len + 1);
     }
     return asset_load_texture(ctx, tex_path);
 }

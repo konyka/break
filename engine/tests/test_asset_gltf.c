@@ -28,6 +28,7 @@ RHIDevice *g_current_device = NULL;
 
 static RHIBuffer  s_null_buffer  = {0};
 static RHITexture s_null_texture = {0};
+static u32 g_texture_create_count = 0;
 
 /* R426: capture the last index-buffer payload so sparse-index tests can
  * verify topology without a real GPU. */
@@ -49,7 +50,9 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
 }
 u32 rhi_frame_index(RHIDevice *dev) { (void)dev; return 0u; }
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
-    (void)dev; (void)desc; return s_null_texture;
+    (void)dev; (void)desc;
+    g_texture_create_count++;
+    return s_null_texture;
 }
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) { (void)dev; (void)tex; }
 
@@ -527,6 +530,38 @@ static bool write_bin(const char *path, const void *data, usize n) {
     return ok;
 }
 
+static bool make_deep_dir(char *dir, usize cap, char *base, usize base_cap,
+                          usize target_len) {
+    test_tmp(base, base_cap, "r474_gltf_tex");
+    if (mkdir(base, 0755) != 0) return false;
+    int n = snprintf(dir, cap, "%s/", base);
+    if (n < 0 || (usize)n >= cap || (usize)n > target_len) return false;
+    while ((usize)n < target_len) {
+        usize remaining = target_len - (usize)n;
+        if (remaining < 2) return false;
+        usize part_len = remaining - 1;
+        if (part_len > 100) part_len = 100;
+        memset(dir + n, 'a', part_len);
+        n += (int)part_len;
+        dir[n++] = '/';
+        dir[n] = '\0';
+        if (mkdir(dir, 0755) != 0) return false;
+    }
+    return true;
+}
+
+static void remove_deep_dir(char *dir, const char *base) {
+    usize len = strlen(dir);
+    if (len > 0 && dir[len - 1] == '/') dir[len - 1] = '\0';
+    for (;;) {
+        rmdir(dir);
+        if (strcmp(dir, base) == 0) break;
+        char *slash = strrchr(dir, '/');
+        if (!slash) break;
+        *slash = '\0';
+    }
+}
+
 static void put_f32(u8 *dst, f32 v) { memcpy(dst, &v, sizeof(v)); }
 static void put_u16(u8 *dst, u16 v) { memcpy(dst, &v, sizeof(v)); }
 static void put_u8v(u8 *dst, u8 a, u8 b, u8 c, u8 d) {
@@ -884,6 +919,54 @@ TEST(gltf_vfs_external_buffer_loads_via_vfs)
     rmdir(root);
 }
 
+/* R474: image URIs are joined to the glTF directory in a fixed 512-byte
+ * buffer. An overlong join previously loaded a valid file named by the
+ * truncated URI instead of reporting that the intended image cannot fit. */
+TEST(gltf_texture_path_truncation_does_not_load_prefix_file)
+{
+    char base[128], dir[1024];
+    ASSERT_TRUE(make_deep_dir(dir, sizeof(dir), base, sizeof(base), 510));
+    char gltf_path[1024], prefix_image[1024];
+    usize dir_len = strlen(dir);
+    ASSERT_TRUE(dir_len + sizeof("scene.gltf") <= sizeof(gltf_path));
+    ASSERT_TRUE(dir_len + sizeof("x") <= sizeof(prefix_image));
+    memcpy(gltf_path, dir, dir_len);
+    memcpy(gltf_path + dir_len, "scene.gltf", sizeof("scene.gltf"));
+    memcpy(prefix_image, dir, dir_len);
+    memcpy(prefix_image + dir_len, "x", sizeof("x"));
+    static const u8 ppm_1x1[] = {
+        'P', '6', '\n', '1', ' ', '1', '\n', '2', '5', '5', '\n', 255, 0, 0
+    };
+    ASSERT_TRUE(write_bin(prefix_image, ppm_1x1, sizeof(ppm_1x1)));
+
+    const char *json =
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+        "\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+        "\"material\":0}]}],\"materials\":[{\"pbrMetallicRoughness\":{"
+        "\"baseColorTexture\":{\"index\":0}}}],\"textures\":[{\"source\":0}],"
+        "\"images\":[{\"uri\":\"x_real.png\"}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+        "\"count\":3,\"type\":\"VEC3\"}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+        "\"buffers\":[{\"byteLength\":36,\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA\"}]}";
+    ASSERT_TRUE(write_text(gltf_path, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+    g_texture_create_count = 0;
+    ASSERT_TRUE(asset_load_gltf(&ctx, gltf_path, &scene));
+    ASSERT_EQ(g_texture_create_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+    remove(gltf_path);
+    remove(prefix_image);
+    remove_deep_dir(dir, base);
+}
+
 /* R431 (CONTENT LOSS): a mesh with MULTIPLE primitives (common: one mesh,
  * two materials) used to store only the FIRST primitive's mesh on the node —
  * primitives 2..N loaded but were never rendered. Each additional primitive
@@ -986,6 +1069,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gltf_sparse_indices_change_topology);
     RUN_TEST(gltf_sparse_animation_output_applies_overrides);
     RUN_TEST(gltf_vfs_external_buffer_loads_via_vfs);
+    RUN_TEST(gltf_texture_path_truncation_does_not_load_prefix_file);
     RUN_TEST(scene_world_transforms_child_before_parent);
     RUN_TEST(scene_world_transforms_parent_cycle_terminates);
     RUN_TEST(gltf_multi_primitive_mesh_emits_node_per_primitive);

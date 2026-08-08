@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R473 FileWatcher 路径截断审查（TDD）** — 回调式 `filewatch_add()` 把任意输入登记为活跃条目，却只在固定 `FileWatchEntry.path[256]` 中保留截断副本；之后 mtime 轮询与回调针对的将是另一文件，且无效请求占用有限条目和可能的内核 watcher。现 Windows 与 Linux 入口均在计数、路径写入和内核监视创建前拒绝不能完整保存的路径；仅注册期一次长度检查，不影响轮询热路径、无分配。TDD：`filewatch_rejects_path_truncation` 传入 256-byte 路径，旧码错误令 `count` 变为 1，修复后保持 0；模块文档同步。验证：`test_hotreload` 定向回归 4/4 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R474 glTF 纹理组合路径截断审查（TDD）** — `load_gltf_texture()` 将模型目录和图片 URI 拼接到 512-byte 临时缓冲，先前超长组合会静默截断；若截断前缀恰为可解码图片，模型会上传与 URI 不同的纹理。现拼接前精确检查目录加 URI 是否可完整保存，超长值只跳过该纹理，不执行错误文件 I/O 或 GPU 上传；这是模型加载期的一次检查，运行时热路径不变、无分配。TDD：`gltf_texture_path_truncation_does_not_load_prefix_file` 在深目录下创建截断名的真实 1x1 图像，旧码错误调用一次纹理创建，修复后为 0；模块文档同步。验证：`test_asset_gltf` 定向回归 25/25 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R473 FileWatcher 路径截断审查（TDD）** — 回调式 `filewatch_add()` 把任意输入登记为活跃条目，却只在固定 `FileWatchEntry.path[256]` 中保留截断副本；之后 mtime 轮询与回调针对的将是另一文件，且无效请求占用有限条目和可能的内核 watcher。现 Windows 与 Linux 入口均在计数、路径写入和内核监视创建前拒绝不能完整保存的路径；仅注册期一次长度检查，不影响轮询热路径、无分配。TDD：`filewatch_rejects_path_truncation` 传入 256-byte 路径，旧码错误令 `count` 变为 1，修复后保持 0；模块文档同步。验证：`test_hotreload` 定向回归 4/4 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R472 着色器热重载路径截断审查（TDD）** — `hotreload_pipeline_init()` 先前把顶点和片段 shader 路径静默截断到 `HotReloadPipeline` 的 256-byte 字段，却仍以完整路径完成首次编译；后续 watcher 回调改用截断路径重编译，可能命中其他文件。现于对象写入、编译和 watcher 创建前拒绝不能完整保存的任一路径，并让 watcher 使用已校验的内部副本；初始化失败不改变零初始化对象状态，只执行一次长度检查，不增加轮询/重载热路径成本。TDD：`hotreload_pipeline_rejects_path_truncation` 传入真实 256-byte 顶点/片段路径，旧码错误成功，修复后返回 false 且 `ready` 保持 false；模块文档同步。验证：`test_hotreload` 定向回归 3/3 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
