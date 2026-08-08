@@ -10,8 +10,10 @@
 #include <string.h>
 
 /* ---- Stub RHI functions for unit-test (no real GPU backend) ---- */
+static int g_textures_created = 0;
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     (void)dev; (void)desc;
+    g_textures_created++;
     RHITexture t = {.index = 1, .generation = 1};
     return t;
 }
@@ -209,6 +211,34 @@ TEST(dead_pass_culling)
     rg_destroy(rg);
 }
 
+/* Dead-pass culling must avoid GPU allocation as well as execution. Allocating
+ * the orphan target every frame wastes memory bandwidth and defeats the render
+ * graph's primary performance benefit. */
+TEST(dead_pass_does_not_allocate_unused_resource)
+{
+    RenderGraph *rg = rg_create();
+    int dummy_dev = 0;
+    rg_set_device(rg, (RHIDevice *)&dummy_dev);
+
+    RHITexture bb_handle = {.index = 1, .generation = 1};
+    RGResource bb = rg_import_texture(rg, "bb", bb_handle);
+    RGTextureDesc td = { .width = 256, .height = 256, .format = 1,
+                          .mip_levels = 1, .name = "orphan" };
+    RGResource orphan = rg_create_texture(rg, "orphan", &td);
+    RGPass *live = rg_add_pass(rg, "live", RG_PASS_GRAPHICS);
+    RGPass *dead = rg_add_pass(rg, "dead", RG_PASS_GRAPHICS);
+    rg_pass_write(live, bb, RG_USAGE_PRESENT);
+    rg_pass_write(dead, orphan, RG_USAGE_COLOR_ATTACHMENT);
+
+    g_textures_created = 0;
+    ASSERT_TRUE(rg_compile(rg));
+    ASSERT_TRUE(dead->culled);
+    ASSERT_EQ(g_textures_created, 0);
+    ASSERT_FALSE(rg->resources[orphan].allocated);
+
+    rg_destroy(rg);
+}
+
 TEST(execute_callbacks)
 {
     /*
@@ -250,6 +280,52 @@ TEST(execute_callbacks)
     ASSERT_EQ(g_exec_order[0], 0);  /* A first */
     ASSERT_EQ(g_exec_order[1], 1);  /* B second */
     ASSERT_EQ(g_exec_order[2], 2);  /* C third */
+    ASSERT_EQ(counter, 3);
+
+    rg_destroy(rg);
+}
+
+/* A post-process pass may read and overwrite the same logical color target.
+ * The final present must depend on that latest writer, not the scene pass that
+ * originally created the target; otherwise the post pass is culled and the
+ * presentation can run with stale scene color. */
+TEST(read_write_chain_keeps_latest_writer_live)
+{
+    RenderGraph *rg = rg_create();
+    RHITexture bb_handle = {.index = 1, .generation = 1};
+    RGResource bb = rg_import_texture(rg, "bb", bb_handle);
+    RGTextureDesc td = { .width = 512, .height = 512, .format = 1,
+                          .mip_levels = 1, .name = "color" };
+    RGResource color = rg_create_texture(rg, "color", &td);
+
+    int counter = 0;
+    RGPass *scene = rg_add_pass(rg, "scene", RG_PASS_GRAPHICS);
+    RGPass *post = rg_add_pass(rg, "post", RG_PASS_GRAPHICS);
+    RGPass *present = rg_add_pass(rg, "present", RG_PASS_GRAPHICS);
+    ASSERT_NOT_NULL(scene);
+    ASSERT_NOT_NULL(post);
+    ASSERT_NOT_NULL(present);
+
+    rg_pass_write(scene, color, RG_USAGE_COLOR_ATTACHMENT);
+    rg_pass_read(post, color, RG_USAGE_SHADER_READ);
+    rg_pass_write(post, color, RG_USAGE_COLOR_ATTACHMENT);
+    rg_pass_read(present, color, RG_USAGE_SHADER_READ);
+    rg_pass_write(present, bb, RG_USAGE_PRESENT);
+    rg_pass_set_execute(scene, exec_pass_a, &counter);
+    rg_pass_set_execute(post, exec_pass_b, &counter);
+    rg_pass_set_execute(present, exec_pass_c, &counter);
+
+    ASSERT_TRUE(rg_compile(rg));
+    ASSERT_FALSE(post->culled);
+    ASSERT_TRUE(scene->execution_order < post->execution_order);
+    ASSERT_TRUE(post->execution_order < present->execution_order);
+
+    g_exec_idx = 0;
+    rg_execute(rg);
+    ASSERT_EQ(g_exec_idx, 3);
+    ASSERT_EQ(g_exec_order[0], 0);
+    ASSERT_EQ(g_exec_order[1], 1);
+    ASSERT_EQ(g_exec_order[2], 2);
     ASSERT_EQ(counter, 3);
 
     rg_destroy(rg);
@@ -575,7 +651,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(dependency_and_order);
     RUN_TEST(topo_high_fanout_producer);
     RUN_TEST(dead_pass_culling);
+    RUN_TEST(dead_pass_does_not_allocate_unused_resource);
     RUN_TEST(execute_callbacks);
+    RUN_TEST(read_write_chain_keeps_latest_writer_live);
     RUN_TEST(execute_skips_dead);
     RUN_TEST(reset_and_reuse);
     RUN_TEST(reset_does_not_duplicate_pool_textures);

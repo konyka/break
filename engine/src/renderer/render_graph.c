@@ -353,35 +353,48 @@ RGResource rg_import_buffer(RenderGraph *rg, const char *name,
 
 /* Helper: derive the dependency list of a single pass (passes that write any
    resource this pass reads). */
-static void rg_derive_dependencies(RenderGraph *rg, u32 p)
+static void rg_add_dependency(RGPass *pass, u32 producer)
 {
-    RGPass *pass = &rg->passes[p];
-    pass->dep_count = 0;
+    if (producer == RG_INVALID_RESOURCE || producer == pass->index) return;
 
-    for (u32 r = 0; r < pass->read_count; r++) {
-        RGResource res = pass->reads[r].resource;
-        if (!rg_resource_index_valid(rg, res)) continue;
+    for (u32 d = 0; d < pass->dep_count; d++) {
+        if (pass->dependencies[d] == producer) return;
+    }
+    if (pass->dep_count >= RG_MAX_PASS_DEPS) {
+        LOG_WARN("rg_compile: dependency slot exhausted on pass '%s'",
+                 pass->name);
+        return;
+    }
+    pass->dependencies[pass->dep_count++] = producer;
+}
 
-        RGResourceInfo *info = &rg->resources[res];
-        if (info->first_write_pass == RG_INVALID_RESOURCE) continue;
-        if (info->first_write_pass == p) continue;
+/* Derive dependencies in declaration order. A logical resource can be
+ * rewritten by post-processing passes, so each access depends on the most
+ * recent earlier writer, not permanently on its first producer. Writes are
+ * declared write-only, so they replace the producer without adding a WAW
+ * edge; a pass that needs prior contents must declare an explicit read. */
+static void rg_derive_dependencies(RenderGraph *rg)
+{
+    u32 last_writer[RG_MAX_RESOURCES];
+    for (u32 r = 0; r < RG_MAX_RESOURCES; r++) {
+        last_writer[r] = RG_INVALID_RESOURCE;
+    }
 
-        /* Dedup against existing deps. */
-        bool already = false;
-        for (u32 d = 0; d < pass->dep_count; d++) {
-            if (pass->dependencies[d] == info->first_write_pass) {
-                already = true;
-                break;
+    for (u32 p = 0; p < rg->pass_count; p++) {
+        RGPass *pass = &rg->passes[p];
+        pass->dep_count = 0;
+
+        for (u32 r = 0; r < pass->read_count; r++) {
+            RGResource res = pass->reads[r].resource;
+            if (rg_resource_index_valid(rg, res)) {
+                rg_add_dependency(pass, last_writer[res]);
             }
         }
-        if (already) continue;
-
-        if (pass->dep_count >= RG_MAX_PASS_DEPS) {
-            LOG_WARN("rg_compile: dependency slot exhausted on pass '%s'",
-                     pass->name);
-            break;
+        for (u32 w = 0; w < pass->write_count; w++) {
+            RGResource res = pass->writes[w].resource;
+            if (!rg_resource_index_valid(rg, res)) continue;
+            last_writer[res] = p;
         }
-        pass->dependencies[pass->dep_count++] = info->first_write_pass;
     }
 }
 
@@ -538,10 +551,25 @@ static bool rg_pool_claim(RenderGraph *rg, const RGTextureDesc *desc,
    actually referenced by at least one live pass. */
 static void rg_allocate_resources(RenderGraph *rg)
 {
+    bool live_resource[RG_MAX_RESOURCES];
+    memset(live_resource, 0, sizeof(live_resource));
+    for (u32 p = 0; p < rg->pass_count; p++) {
+        const RGPass *pass = &rg->passes[p];
+        if (pass->culled) continue;
+        for (u32 r = 0; r < pass->read_count; r++) {
+            RGResource handle = pass->reads[r].resource;
+            if (rg_resource_index_valid(rg, handle)) live_resource[handle] = true;
+        }
+        for (u32 w = 0; w < pass->write_count; w++) {
+            RGResource handle = pass->writes[w].resource;
+            if (rg_resource_index_valid(rg, handle)) live_resource[handle] = true;
+        }
+    }
+
     for (u32 r = 0; r < rg->resource_count; r++) {
         RGResourceInfo *info = &rg->resources[r];
         if (info->is_imported)    continue;
-        if (info->ref_count == 0) continue;
+        if (!live_resource[r])    continue;
         if (info->allocated)      continue;
 
         if (info->is_buffer) {
@@ -593,10 +621,8 @@ bool rg_compile(RenderGraph *rg)
         return true;
     }
 
-    /* 1. Dependency derivation per pass (must precede culling). */
-    for (u32 p = 0; p < rg->pass_count; p++) {
-        rg_derive_dependencies(rg, p);
-    }
+    /* 1. Dependency derivation (must precede culling). */
+    rg_derive_dependencies(rg);
 
     /* 2. Dead pass culling. */
     rg_cull_dead_passes(rg);
