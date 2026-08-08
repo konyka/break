@@ -1110,6 +1110,12 @@ static bool js_object_separator(JsonR *r) {
     if (js_peek(r, '}')) return true;
     return js_match(r, ',') && !js_peek(r, '}');
 }
+/* Array elements follow the same no-trailing-comma rule, but each JSON node
+ * is specifically an object. */
+static bool js_node_array_separator(JsonR *r) {
+    if (js_peek(r, ']')) return true;
+    return js_match(r, ',') && !js_peek(r, ']') && js_peek(r, '{');
+}
 static bool js_u32(JsonR *r, u32 *out) {
     js_skip_ws(r);
     if (r->p >= r->end || !isdigit((unsigned char)*r->p)) return false;
@@ -1431,7 +1437,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         nd->skinned  = (flags & 2u) != 0;
                         if (!ok) break;
                         if (!js_match(&r, '}')) { ok = false; break; }
-                        (void)js_match(&r, ',');
+                        if (!js_node_array_separator(&r)) { ok = false; break; }
                     }
                     if (ok) {
                         /* R422: stage only — s->nodes is committed below once

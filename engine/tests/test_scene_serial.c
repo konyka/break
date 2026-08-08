@@ -983,6 +983,25 @@ TEST(load_json_rejects_invalid_object_member_separators)
     remove(path);
 }
 
+TEST(load_json_rejects_trailing_nodes_array_comma)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_trailing_nodes_comma.json");
+    const char *doc = "{\"version\":1,\"nodes\":[{},]}";
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(doc, 1, strlen(doc), fp) == strlen(doc));
+    ASSERT_TRUE(fclose(fp) == 0);
+
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_json(w, &dst, path));
+    scene_serial_free(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -1933,6 +1952,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_duplicate_nodes_key);
     RUN_TEST(load_json_rejects_trailing_content);
     RUN_TEST(load_json_rejects_invalid_object_member_separators);
+    RUN_TEST(load_json_rejects_trailing_nodes_array_comma);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
