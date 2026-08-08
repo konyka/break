@@ -1917,6 +1917,24 @@ TEST(save_binary_rejects_files_above_load_limit)
     remove(path);
 }
 
+TEST(save_json_rejects_files_above_load_limit)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_save_file_limit.json");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    const u32 component_size = BSCN_MAX_FILE_BYTES / 2u;
+    world_register_component(w, 1u, component_size);
+    Entity entity = world_create_entity(w);
+    ASSERT_TRUE(entity_valid(entity));
+    ASSERT_NOT_NULL(world_add_component(w, entity, 1u));
+
+    ASSERT_FALSE(scene_save_json(w, NULL, path, NULL));
+
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(resources_guid_deterministic)
 {
     char p1[64]; test_tmp(p1, sizeof p1, "test_res_g1.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
@@ -2481,6 +2499,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_roundtrip_refs_only);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
+    RUN_TEST(save_json_rejects_files_above_load_limit);
     RUN_TEST(resources_guid_deterministic);
     RUN_TEST(generation_restore_roundtrip);
     RUN_TEST(generation_restore_roundtrip_json);

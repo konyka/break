@@ -1117,6 +1117,9 @@ bool scene_save_json(const World *w, const Scene *s,
 
     ok = ok && sb_indent(&b, pretty, 0) && sb_putc(&b, '}');
 
+    /* JSON loading applies the same whole-file cap before allocating input. */
+    if (ok && b.size > BSCN_MAX_FILE_BYTES) ok = false;
+
     if (ok) {
         FILE *fp = fopen(path, "wb");
         if (!fp) ok = false;
