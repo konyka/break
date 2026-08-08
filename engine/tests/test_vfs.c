@@ -60,6 +60,55 @@ static void ensure_dir(const char *path)
     mkdir(path, 0755);
 }
 
+static bool make_deep_dir(char *dir, usize cap, char *base, usize base_cap,
+                          usize target_len) {
+    test_tmp(base, base_cap, "r476_vfs_root");
+    if (mkdir(base, 0755) != 0) return false;
+    int n = snprintf(dir, cap, "%s", base);
+    if (n < 0 || (usize)n >= cap || (usize)n > target_len) return false;
+    while ((usize)n < target_len) {
+        usize remaining = target_len - (usize)n;
+        if (remaining < 2) return false;
+        usize part_len = remaining - 1;
+        if (part_len > 80) part_len = 80;
+        dir[n++] = '/';
+        memset(dir + n, 'a', part_len);
+        n += (int)part_len;
+        dir[n] = '\0';
+        if (mkdir(dir, 0755) != 0) return false;
+    }
+    return true;
+}
+
+static void remove_deep_dir(char *dir, const char *base) {
+    for (;;) {
+        rmdir(dir);
+        if (strcmp(dir, base) == 0) break;
+        char *slash = strrchr(dir, '/');
+        if (!slash) break;
+        *slash = '\0';
+    }
+}
+
+static bool make_truncation_prefix(char *rel, usize rel_len,
+                                   const char *root, char *absolute, usize absolute_cap) {
+    usize pos = 0;
+    while (rel_len - pos > 1) {
+        usize part_len = rel_len - pos - 2;
+        if (part_len > 80) part_len = 80;
+        if (part_len == 0) return false;
+        memset(rel + pos, 'b', part_len);
+        pos += part_len;
+        rel[pos++] = '/';
+        int n = snprintf(absolute, absolute_cap, "%s/%.*s", root, (int)(pos - 1), rel);
+        if (n < 0 || (usize)n >= absolute_cap || mkdir(absolute, 0755) != 0) return false;
+    }
+    rel[pos++] = 'x';
+    rel[pos] = '\0';
+    int n = snprintf(absolute, absolute_cap, "%s/%s", root, rel);
+    return n >= 0 && (usize)n < absolute_cap;
+}
+
 /* Replicate fnv1a from vfs.c for PAK hash test */
 static u32 test_fnv1a(const char *str)
 {
@@ -139,6 +188,29 @@ TEST(vfs_open_read_dir)
 
     vfs_close(f);
     vfs_destroy(vfs);
+}
+
+/* R476: vfs_open combines a persisted mount root and caller path in full[512].
+ * A join that truncates must not open an existing file named by that prefix. */
+TEST(vfs_open_rejects_join_path_truncation)
+{
+    char base[128], root[512];
+    ASSERT_TRUE(make_deep_dir(root, sizeof(root), base, sizeof(base), 230));
+    usize prefix_len = 510u - strlen(root);
+    char rel[512], prefix_file[1024], requested[512];
+    ASSERT_TRUE(make_truncation_prefix(rel, prefix_len, root, prefix_file, sizeof(prefix_file)));
+    make_tmp_file(prefix_file, "wrong file");
+    memcpy(requested, rel, prefix_len);
+    memcpy(requested + prefix_len, "_real", sizeof("_real"));
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_TRUE(vfs_mount_dir(vfs, root));
+    ASSERT_TRUE(vfs_open(vfs, requested) == NULL);
+    vfs_destroy(vfs);
+
+    remove(prefix_file);
+    remove_deep_dir(root, base);
 }
 
 TEST(vfs_open_nonexistent)
@@ -562,6 +634,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_mount_dir_null_vfs);
     RUN_TEST(vfs_mount_dir_rejects_path_truncation);
     RUN_TEST(vfs_open_read_dir);
+    RUN_TEST(vfs_open_rejects_join_path_truncation);
     RUN_TEST(vfs_open_nonexistent);
     RUN_TEST(vfs_open_null_vfs);
     RUN_TEST(vfs_getc_eof);

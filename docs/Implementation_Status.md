@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R475 VFS 目录挂载路径截断审查（TDD）** — `vfs_mount_dir()` 将挂载根目录写入 `VFS_MAX_PATH[260]` 时会静默截断，却仍返回成功并占用 mount 槽位；全部后续相对资源读取会针对截断根目录，可能命中其他资源。现于计数和路径写入前拒绝不能完整保存的目录路径；仅挂载期一次长度检查，文件查找热路径不变、无分配。TDD：`vfs_mount_dir_rejects_path_truncation` 传入 260-byte 路径，旧码错误成功且 `mount_count` 变为 1，修复后返回 false 且保持 0；模块文档同步。验证：`test_vfs` 定向回归 29/29 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R476 VFS 打开组合路径截断审查（TDD）** — 目录 mount 的 `vfs_open()` 将根路径与调用者相对路径格式化到 512-byte `full` 缓冲，先前超长组合会静默截断；若该前缀存在文件，调用者会读到错误资源。现每个目录 mount 在 `fopen` 前精确验证完整组合容量，无法容纳的高优先级 mount 会跳过并继续尝试较低优先级 mount；改为有界 `memcpy` 拼接，避免格式化开销、无分配。TDD：`vfs_open_rejects_join_path_truncation` 在深根目录中建立截断前缀文件，旧码错误打开它，修复后返回 NULL；模块文档同步。验证：`test_vfs` 定向回归 30/30 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R475 VFS 目录挂载路径截断审查（TDD）** — `vfs_mount_dir()` 将挂载根目录写入 `VFS_MAX_PATH[260]` 时会静默截断，却仍返回成功并占用 mount 槽位；全部后续相对资源读取会针对截断根目录，可能命中其他资源。现于计数和路径写入前拒绝不能完整保存的目录路径；仅挂载期一次长度检查，文件查找热路径不变、无分配。TDD：`vfs_mount_dir_rejects_path_truncation` 传入 260-byte 路径，旧码错误成功且 `mount_count` 变为 1，修复后返回 false 且保持 0；模块文档同步。验证：`test_vfs` 定向回归 29/29 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R474 glTF 纹理组合路径截断审查（TDD）** — `load_gltf_texture()` 将模型目录和图片 URI 拼接到 512-byte 临时缓冲，先前超长组合会静默截断；若截断前缀恰为可解码图片，模型会上传与 URI 不同的纹理。现拼接前精确检查目录加 URI 是否可完整保存，超长值只跳过该纹理，不执行错误文件 I/O 或 GPU 上传；这是模型加载期的一次检查，运行时热路径不变、无分配。TDD：`gltf_texture_path_truncation_does_not_load_prefix_file` 在深目录下创建截断名的真实 1x1 图像，旧码错误调用一次纹理创建，修复后为 0；模块文档同步。验证：`test_asset_gltf` 定向回归 25/25 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

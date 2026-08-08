@@ -247,7 +247,13 @@ VFSFile *vfs_open(VFS *vfs, const char *path) {
             }
         } else {
             char full[512];
-            snprintf(full, sizeof(full), "%s/%s", vfs->mounts[mi].path, path);
+            usize root_len = strlen(vfs->mounts[mi].path);
+            usize path_len = strlen(path);
+            if (root_len >= sizeof(full) || path_len >= sizeof(full) - root_len - 1u)
+                continue;
+            memcpy(full, vfs->mounts[mi].path, root_len);
+            full[root_len] = '/';
+            memcpy(full + root_len + 1u, path, path_len + 1u);
             FILE *fp = fopen(full, "rb");
             if (fp) {
                 if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
