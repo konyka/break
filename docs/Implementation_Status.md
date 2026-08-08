@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R508 BSCN 实体组件集合审查（TDD）** — `ENTITIES` 的组件 ID 列表来自 ECS archetype key，本应为集合；加载器此前对重复的已注册 ID 只会重复调用幂等 `world_add_component()` 并报告成功，接受无法由写入端生成的畸形实体定义。现加载器对每个实体以两个栈上 `u64` 位图记录 0..127 类型 ID，在创建实体后恢复组件前发现重复即拒绝并沿用既有实体回滚；高于当前容量的未知 ID 仍保持前向兼容跳过。检查只在显式导入时每个 ID O(1) 执行，无帧内成本或堆分配。TDD：`load_binary_rejects_duplicate_entity_component_type` 构造一个带两个 type 1 条目的实体，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 50/50 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R509 BSCN 组件声明一致性审查（TDD）** — `COMPONENTS` 记录此前可为实体隐式添加一个 `ENTITIES` archetype 未声明的已知组件；两个 chunk 内容矛盾时加载仍成功，且会执行额外 archetype 迁移。现对已知且尺寸匹配的每条实例，在拷贝前以 O(archetype component count) 检查实体是否声明该组件，并要求现有存储可取；不匹配立即失败并触发既有实体回滚。未知或尺寸不符类型仍按前向兼容跳过。检查仅在显式导入时执行，无帧内成本或堆分配。TDD：`load_binary_rejects_component_not_declared_by_entity` 构造实体声明空 archetype 却在 `COMPONENTS` 提供 type 1 实例，旧码错误成功并隐式添加，修复后拒绝。验证：定向 `test_scene_serial` 51/51 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R508 BSCN 实体组件集合审查（TDD）** — `ENTITIES` 的组件 ID 列表来自 ECS archetype key，本应为集合；加载器此前对重复的已注册 ID 只会重复调用幂等 `world_add_component()` 并报告成功，接受无法由写入端生成的畸形实体定义。现加载器对每个实体以两个栈上 `u64` 位图记录 0..127 类型 ID，在创建实体后恢复组件前发现重复即拒绝并沿用既有实体回滚；高于当前容量的未知 ID 仍保持前向兼容跳过。检查只在显式导入时每个 ID O(1) 执行，无帧内成本或堆分配。TDD：`load_binary_rejects_duplicate_entity_component_type` 构造一个带两个 type 1 条目的实体，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 50/50 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R507 BSCN 已知 chunk 精确消费审查（TDD）** — BSCN 加载器此前只要已知 chunk 的前缀能被解析就报告成功，没有要求 `Reader` 到达声明 payload 的末尾；`ENTITIES`、`COMPONENTS`、`RESOURCES` 或 `SCENE_NODES` 后附加垃圾会被静默接受，令版本 1 格式边界不确定。现四种实际解析的 v1 chunk 都要求解析成功且精确消费全部声明字节，失败仍触发既有 World/Scene 回滚；`HIERARCHY` 维持历史上由 `SceneNode.parent_index` 隐式表达、整体忽略的语义，未知 chunk 亦保持前向兼容跳过。检查只在显式导入时每 chunk 作一次指针相等比较，无帧内成本或分配。TDD：`load_binary_rejects_known_chunk_trailing_bytes` 在最小合法 `ENTITIES` payload 后加入一个 `u32`，旧码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 49/49 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

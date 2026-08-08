@@ -655,6 +655,18 @@ static bool load_entities_chunk(World *w, Reader *r,
     return true;
 }
 
+static bool entity_declares_component(const World *w, Entity e,
+                                      ComponentType type) {
+    if (!w || e.index == 0 || e.index >= w->entity_count ||
+        w->entities[e.index].generation != e.generation)
+        return false;
+    const Archetype *a = &w->archetypes[w->entity_archetype[e.index]];
+    for (u32 i = 0; i < a->key.count; i++) {
+        if (a->key.ids[i] == type) return true;
+    }
+    return false;
+}
+
 static bool load_components_chunk(World *w, Reader *r,
                                   const Entity *ents, u32 ent_count) {
     u32 type_count = 0;
@@ -698,9 +710,10 @@ static bool load_components_chunk(World *w, Reader *r,
              * but every instance still needs a real saved entity owner. */
             if (saved_idx >= ent_count) return false;
             if (known) {
+                if (!entity_declares_component(w, ents[saved_idx], type)) return false;
                 void *dst = world_get_component(w, ents[saved_idx], type);
-                if (!dst) dst = world_add_component(w, ents[saved_idx], type);
-                if (dst) memcpy(dst, r->p, size);
+                if (!dst) return false;
+                memcpy(dst, r->p, size);
             }
             r->p += size;
         }
