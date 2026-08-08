@@ -1362,6 +1362,15 @@ TEST(load_binary_rejects_nonfinite_scene_values)
         world_destroy(dst_world);
     }
 
+    /* Supplying no Scene only discards the loaded graph; it must not weaken
+     * validation of the same file-controlled node transforms. */
+    ASSERT_TRUE(scene_save_binary(src_world, &src, path, &opts));
+    ASSERT_TRUE(patch_chunk_f32(path, BSCN_CHUNK_SCENE_NODES, 4u));
+    World *discard_world = world_create();
+    ASSERT_NOT_NULL(discard_world);
+    ASSERT_FALSE(scene_load_binary(discard_world, NULL, path));
+    world_destroy(discard_world);
+
     free_scene_src(&src);
     world_destroy(src_world);
     remove(path);

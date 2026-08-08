@@ -776,14 +776,16 @@ static bool load_scene_nodes_chunk(Scene *s, Reader *r) {
     if (!rd_u32(r, &n)) return false;
     if (n > BSCN_MAX_LOAD_NODES) return false;
     if (!s) {
-        /* skip the chunk */
+        /* Discarding nodes must not weaken validation of their transforms. */
         for (u32 i = 0; i < n; i++) {
-            Mat4 tmp; u32 dummy;
-            if (!rd_bytes(r, tmp.e, sizeof(tmp)) ||
-                !rd_bytes(r, tmp.e, sizeof(tmp)) ||
+            Mat4 local, world; u32 dummy;
+            if (!rd_bytes(r, local.e, sizeof(local)) ||
+                !rd_bytes(r, world.e, sizeof(world)) ||
                 !rd_u32(r, &dummy) || !rd_u32(r, &dummy) ||
                 !rd_u32(r, &dummy) || !rd_u32(r, &dummy) ||
                 !rd_u32(r, &dummy)) return false;
+            if (!scene_mat4_finite(&local) || !scene_mat4_finite(&world))
+                return false;
         }
         return true;
     }
