@@ -1403,6 +1403,10 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
             if (!js_object_separator(r)) goto fail;
         }
         if (!js_match(r, '}')) goto fail;
+        /* Every v1 component record has a complete type/size/payload triple.
+         * Missing members otherwise turn into default values and make the
+         * accepted component depend on parser initialization. */
+        if (!seen_type || !seen_size || !seen_data) goto fail;
 
         /* JSON output, like BSCN, groups one object per component type.  Keep
          * unknown IDs skippable but reject duplicate definitions by full ID. */

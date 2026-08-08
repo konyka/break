@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R536 JSON 组件字段顺序审查（TDD）** — 组件解析此前允许 `data` 位于 `size` 前，按默认零长度接受空 hex，随后读取非零 `size` 时把未初始化栈字节复制为已知组件数据。现 `data` 必须在 `size` 后出现，匹配写入器的 `type`、`size`、`data` 顺序，拒绝这种歧义输入。检查仅为显式 JSON 加载的一次布尔判断，无分配或帧内成本。TDD：`load_json_rejects_component_data_before_size` 在旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 82/82 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R537 JSON 组件完整记录审查（TDD）** — 组件解析此前会接受缺少 `type`、`size` 或 `data` 的对象，并把缺失字段默认为零，使输入格式与写入器产生的完整记录不一致。现 v1 组件记录必须含完整的 `type`、`size`、`data` 三元组，未知类型仍可在完整记录下前向跳过。检查仅为显式 JSON 加载的三个既有布尔状态判断，无分配或帧内成本。TDD：`load_json_rejects_incomplete_component_record` 在旧代码错误成功，修复后拒绝三种缺字段情况。验证：定向 `test_scene_serial` 83/83 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R536 JSON 组件字段顺序审查（TDD）** — 组件解析此前允许 `data` 位于 `size` 前，按默认零长度接受空 hex，随后读取非零 `size` 时把未初始化栈字节复制为已知组件数据。现 `data` 必须在 `size` 后出现，匹配写入器的 `type`、`size`、`data` 顺序，拒绝这种歧义输入。检查仅为显式 JSON 加载的一次布尔判断，无分配或帧内成本。TDD：`load_json_rejects_component_data_before_size` 在旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 82/82 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R535 JSON 转义键语义审查（TDD）** — 已知 JSON 字段此前按原始字节匹配键名，等价的 Unicode 转义形式会被误作未知字段，从而绕过重复已知字段拒绝（如 `flags` 与 `fl\\u0061gs`）。现键名匹配按 JSON 解码后的字符进行，已知 ASCII 键的标准转义与 `\\uXXXX` 形式同样进入 schema 校验；未知键仍走既有完整 JSON 值验证。检查仅在显式 JSON 加载时单次扫描键名，使用栈上游标、无分配或帧内成本。TDD：扩展 `load_json_rejects_duplicate_node_fields`，旧代码错误接受语义重复 flags，修复后拒绝。验证：定向 `test_scene_serial` 81/81 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
