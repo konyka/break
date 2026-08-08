@@ -16,6 +16,7 @@
 
 void asset_ctx_init(AssetCtx *ctx, RHIDevice *dev) {
     ctx->device = dev;
+    ctx->vfs = NULL;
 }
 
 RHITexture asset_load_texture(AssetCtx *ctx, const char *path) {

@@ -91,6 +91,20 @@ static const char *BUF36 =
 
 /* ---- tests ---- */
 
+/* R466: callers commonly create AssetCtx on the stack. Initialization must
+ * reset every field so a stale VFS pointer cannot redirect later asset loads. */
+TEST(asset_ctx_init_clears_vfs)
+{
+    AssetCtx ctx;
+    ctx.device = (RHIDevice *)(usize)1;
+    ctx.vfs = (VFS *)(usize)1;
+
+    asset_ctx_init(&ctx, NULL);
+
+    ASSERT_TRUE(ctx.device == NULL);
+    ASSERT_TRUE(ctx.vfs == NULL);
+}
+
 /* R390: accessor count far beyond its bufferView. Pre-fix the POSITION loop read
  * 200000 * 12 bytes out of a 36-byte heap block (ASan: READ of size 12 after a
  * 36-byte region). */
@@ -952,6 +966,7 @@ TEST(vfs_rejects_backslash_traversal)
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(asset_ctx_init_clears_vfs);
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
     RUN_TEST(gltf_rejects_buffer_view_past_buffer);
