@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R458 Mipmap 预算加法回绕审查（TDD）** — 流送 update 与 `force_level` 都以 `total_resident_bytes + needed > memory_budget` 判断准入；当 `usize` 接近 `SIZE_MAX` 时加法回绕，已满的缓存看似有空间而错误提交异步加载，并使预留字节记账失真。现统一改为 `needed <= budget - used`，先拒绝 `used > budget` 的异常状态；普通异步与同步强制加载路径共享该 O(1) 无分配检查。TDD：`mipmap_budget_addition_does_not_wrap` 将 used 置为 `SIZE_MAX-1`，旧码错误发起 level-0 request，修复后请求数为 0、状态和字节数保持不变；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_mipmap_stream` 定向回归通过，`git diff --check` 通过。
+最近更新：**R459 ECS 组件 ID 边界审查（TDD）** — `world_register_component` 已拒绝 `id >= ECS_MAX_COMPONENTS`，但 `world_add_component`/`world_get_component`/`world_remove_component` 没有同一守卫；无效 add 会继续把 ID 用作固定 `component_sizes[128]` 的索引，并可能以越界尺寸构造 archetype，造成未定义行为。现三条公开操作在任何表访问前统一拒绝越界 ID；有效热路径仅增加一次常量边界比较，无分配、无锁。TDD：`ecs_rejects_out_of_range_component_id` 证明旧码错误接受 ID=128，修复后增/取为空、删为无操作且随后正常组件迁移仍可用；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_ecs` 定向回归通过，`git diff --check` 通过。
+
+此前：**R458 Mipmap 预算加法回绕审查（TDD）** — 流送 update 与 `force_level` 都以 `total_resident_bytes + needed > memory_budget` 判断准入；当 `usize` 接近 `SIZE_MAX` 时加法回绕，已满的缓存看似有空间而错误提交异步加载，并使预留字节记账失真。现统一改为 `needed <= budget - used`，先拒绝 `used > budget` 的异常状态；普通异步与同步强制加载路径共享该 O(1) 无分配检查。TDD：`mipmap_budget_addition_does_not_wrap` 将 used 置为 `SIZE_MAX-1`，旧码错误发起 level-0 request，修复后请求数为 0、状态和字节数保持不变；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_mipmap_stream` 定向回归通过，`git diff --check` 通过。
 
 此前：**R457 固定可靠目标序列生命周期审查（TDD）** — R456 仅保护有 in-flight reliable 的 send-state 槽；但即使 A 已 ACK，远端仍保留 A 的接收序列，若该槽被 LRU 回收并分给第 9 个目标，之后 A 的新包又从 seq=1 开始，旧/新包在无 wire generation 字段的协议中不可区分。现在 send-state 采用严格的 lifetime-fixed 8 目标容量：已分配目标直到 replicator shutdown 都不复用，第 9 个目标显式 `NET_ERROR`，从根源维持每目标单调序列；接收侧 LRU 仍独立运行。发送热路径至多扫描 8 个紧凑槽，无分配、无锁、无包格式变更。TDD：`reliable_send_state_is_not_recycled_after_ack` 验证填满 8 个目标后第 9 个被拒绝，同时已确认 A 继续 seq=2；模块文档同步。验证：Debug GNU 与干净 Clang/LLD Release 均完整构建成功，非图形 `ctest` 各 39/39 通过；`test_net_replication` 定向回归通过，`git diff --check` 通过。
 

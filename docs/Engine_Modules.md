@@ -595,6 +595,9 @@ void *world_get_component(World *w, Entity e, ComponentType id);
 void  world_remove_component(World *w, Entity e, ComponentType id);
 ```
 
+组件 ID 必须小于 `ECS_MAX_COMPONENTS`；注册与增、取、删操作都会在访问固定
+`component_sizes[128]` 表之前拒绝越界 ID，避免无效调用破坏 archetype 布局。
+
 ### 5.5 查询迭代接口
 
 ```c

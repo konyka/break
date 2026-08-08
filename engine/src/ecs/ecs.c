@@ -404,7 +404,7 @@ static void *archetype_alloc_slot(World *w, Archetype *a, u32 *out_global_index)
 
 void *world_add_component(World *w, Entity e, ComponentType id) {
     /* R345: reject ENTITY_NULL / reserved index 0 (see world_destroy_entity). */
-    if (e.index == 0 || e.index >= w->entity_count) return NULL;
+    if (id >= ECS_MAX_COMPONENTS || e.index == 0 || e.index >= w->entity_count) return NULL;
     if (w->entities[e.index].generation != e.generation) return NULL;
 
     u32 arch_idx = w->entity_archetype[e.index];
@@ -533,7 +533,7 @@ void *world_add_component(World *w, Entity e, ComponentType id) {
 
 void *world_get_component(World *w, Entity e, ComponentType id) {
     /* R345: reject ENTITY_NULL / reserved index 0 (see world_destroy_entity). */
-    if (e.index == 0 || e.index >= w->entity_count) return NULL;
+    if (id >= ECS_MAX_COMPONENTS || e.index == 0 || e.index >= w->entity_count) return NULL;
     if (w->entities[e.index].generation != e.generation) return NULL;
 
     u32 arch_idx = w->entity_archetype[e.index];
@@ -555,7 +555,7 @@ void *world_get_component(World *w, Entity e, ComponentType id) {
 
 void world_remove_component(World *w, Entity e, ComponentType id) {
     /* R345: reject ENTITY_NULL / reserved index 0 (see world_destroy_entity). */
-    if (e.index == 0 || e.index >= w->entity_count) return;
+    if (id >= ECS_MAX_COMPONENTS || e.index == 0 || e.index >= w->entity_count) return;
     if (w->entities[e.index].generation != e.generation) return;
 
     u32 arch_idx = w->entity_archetype[e.index];

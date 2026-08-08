@@ -47,6 +47,30 @@ TEST(ecs_register_component_size_change_rejected) {
     world_destroy(w);
 }
 
+/* Component IDs index World.component_sizes, whose fixed extent must be
+ * enforced consistently by all public component operations. */
+TEST(ecs_rejects_out_of_range_component_id) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+
+    Entity e = world_create_entity(w);
+    ASSERT_TRUE(entity_valid(e));
+
+    const ComponentType invalid = ECS_MAX_COMPONENTS;
+    ASSERT_TRUE(world_add_component(w, e, invalid) == NULL);
+    ASSERT_TRUE(world_get_component(w, e, invalid) == NULL);
+    world_remove_component(w, e, invalid);
+
+    /* The failed request must leave normal component use unaffected. */
+    world_register_component(w, COMP_POSITION, sizeof(Position));
+    Position *p = (Position *)world_add_component(w, e, COMP_POSITION);
+    ASSERT_NOT_NULL(p);
+    p->x = 3.0f;
+    ASSERT_TRUE(((Position *)world_get_component(w, e, COMP_POSITION))->x == 3.0f);
+
+    world_destroy(w);
+}
+
 /* ---- Entity Create ---- */
 
 TEST(ecs_entity_create) {
@@ -1017,6 +1041,7 @@ TEST(ecs_oversized_component) {
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_register_component_size_change_rejected);
+    RUN_TEST(ecs_rejects_out_of_range_component_id);
     RUN_TEST(ecs_entity_create);
     RUN_TEST(ecs_entity_create_multiple);
     RUN_TEST(ecs_entity_destroy);
