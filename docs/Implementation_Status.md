@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R505 BSCN 组件实例计数审查（TDD）** — `COMPONENTS` 的 `instances` 原先直接控制每类型加载循环；即使单个索引合法，畸形归档仍能为一实体重复写入任意多条同类型实例，让加载器反复迁移/查找并以最后一条悄悄覆盖前值。写入端每种类型至多对每个保存实体发出一条实例。现读取记录头后、进入实例循环前拒绝 `instances > ent_count`，并以宽整数验证所有索引加 payload 的最小总字节数位于 chunk 剩余范围内；检查只在显式导入时常数执行，随后每类型最多线性扫描保存实体数，无帧内成本或分配。TDD：`load_binary_rejects_excessive_component_instances` 为单实体写入两条同类型实例，旧码错误成功，修复后在任何实例迁移前拒绝。验证：定向 `test_scene_serial` 47/47 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R506 BSCN 重复组件类型记录审查（TDD）** — 虽然 `COMPONENTS` 的类型记录总数已受限，加载器此前仍允许同一可表示类型出现两次；后记录按 table 顺序覆盖前记录，让无法由写入端生成的归档悄然改变状态。现加载器以两个栈上 `u64` 位图在读取每条记录头后标记 0..127 类型 ID，并在重复时、处理任何 payload 或组件迁移前拒绝；未能由当前引擎表示的更高 ID 仍按既有前向兼容逻辑跳过。检查仅在显式导入时每记录 O(1) 执行，无帧内成本或堆分配。TDD：`load_binary_rejects_duplicate_component_type` 为同一实体写入两条各自合法的 type 1 记录，旧码错误成功且后值获胜，修复后拒绝。验证：定向 `test_scene_serial` 48/48 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R505 BSCN 组件实例计数审查（TDD）** — `COMPONENTS` 的 `instances` 原先直接控制每类型加载循环；即使单个索引合法，畸形归档仍能为一实体重复写入任意多条同类型实例，让加载器反复迁移/查找并以最后一条悄悄覆盖前值。写入端每种类型至多对每个保存实体发出一条实例。现读取记录头后、进入实例循环前拒绝 `instances > ent_count`，并以宽整数验证所有索引加 payload 的最小总字节数位于 chunk 剩余范围内；检查只在显式导入时常数执行，随后每类型最多线性扫描保存实体数，无帧内成本或分配。TDD：`load_binary_rejects_excessive_component_instances` 为单实体写入两条同类型实例，旧码错误成功，修复后在任何实例迁移前拒绝。验证：定向 `test_scene_serial` 47/47 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R504 BSCN 组件实例实体引用审查（TDD）** — `COMPONENTS` 的每条实例都含有指向 `ENTITIES` 的保存索引，但加载器此前仅在类型已注册且大小匹配时才检查索引；越界索引会被静默跳过并仍报告加载成功。写入端绝不会产生悬空实例，且前向兼容只能允许跳过未知类型数据，不能允许其绕过实体关系完整性。现每条实例读完索引和 payload 边界后均要求索引小于实体数，再按既有逻辑恢复已知类型。检查仅在显式导入时每实例 O(1) 执行，无帧内成本或分配。TDD：`load_binary_rejects_component_instance_without_entity` 构造一实体、却由已知组件实例引用索引 1 的 BSCN；旧码错误成功，修复后拒绝并触发既有实体回滚。验证：定向 `test_scene_serial` 46/46 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
