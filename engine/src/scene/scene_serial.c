@@ -108,6 +108,10 @@ static bool scene_resource_finite(const SceneResource *res);
 /* Both BSCN and JSON loaders use this bound before staging scene nodes. */
 #define BSCN_MAX_LOAD_NODES (64u * 1024u)
 
+static bool scene_nodes_storage_valid(const Scene *s) {
+    return !s || s->node_count == 0 || s->nodes != NULL;
+}
+
 /* ---------------------------------------------------------------- */
 /* Live-entity enumeration                                          */
 /* ---------------------------------------------------------------- */
@@ -250,7 +254,7 @@ static bool emit_components_chunk(const World *w, const EntityMap *m, ByteBuf *o
 
 static bool emit_scene_nodes_chunk(const Scene *s, ByteBuf *out) {
     u32 n = s ? s->node_count : 0;
-    if (n > BSCN_MAX_LOAD_NODES) return false;
+    if (!scene_nodes_storage_valid(s) || n > BSCN_MAX_LOAD_NODES) return false;
     if (!bb_u32(out, n)) return false;
     for (u32 i = 0; i < n; i++) {
         const SceneNode *nd = &s->nodes[i];
@@ -270,6 +274,7 @@ static bool emit_scene_nodes_chunk(const Scene *s, ByteBuf *out) {
 
 static bool emit_hierarchy_chunk(const Scene *s, ByteBuf *out) {
     u32 n = s ? s->node_count : 0;
+    if (!scene_nodes_storage_valid(s)) return false;
     if (!bb_u32(out, n)) return false;
     if (n == 0) return true;
 
@@ -356,6 +361,8 @@ static bool emit_one_resource(ByteBuf *out, const SceneResource *res, bool inlin
  * reference). */
 static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
     if (!s) return bb_u32(out, 0);
+    if ((s->mesh_count && !s->meshes) ||
+        (s->material_count && !s->materials)) return false;
 
     /* Collect distinct texture handle indices referenced by materials. */
     u32 tex_handles[256];
@@ -1018,7 +1025,8 @@ static bool sb_hex_bytes(ByteBuf *b, const u8 *p, u32 n) {
 bool scene_save_json(const World *w, const Scene *s,
                      const char *path, const SerializeOptions *opts) {
     if (!w || !path) return false;
-    if (s && s->node_count > BSCN_MAX_LOAD_NODES) return false;
+    if (!scene_nodes_storage_valid(s) ||
+        (s && s->node_count > BSCN_MAX_LOAD_NODES)) return false;
     bool pretty = (opts && opts->pretty_json);
 
     EntityMap m = {0};

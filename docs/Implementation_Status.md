@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R539 场景节点上限保存对称性审查（TDD）** — BSCN 与 JSON 加载器都限制为最多 64K `SceneNode`，保存器此前却能成功生成 64K 以上、随后必被同一加载器拒绝的文件。现两个保存入口在构造输出前复用该格式上限并拒绝超额场景。检查仅为每次显式保存的一次 O(1) 比较，无分配、无每节点扫描或帧内成本。TDD：`save_rejects_nodes_above_load_limit` 在旧代码二进制保存错误成功，修复后 BSCN 与 JSON 均拒绝。验证：定向 `test_scene_serial` 85/85 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R540 场景保存存储一致性审查（TDD）** — 保存入口此前只检查 `Scene *`，当 `node_count`、`mesh_count` 或 `material_count` 非零而对应数组为空时，BSCN/JSON 路径可能解引用空指针并崩溃；BSCN 节点上限也仅由加载器执行。现两个保存入口以 O(1) 检查拒绝节点计数与 `nodes` 不一致，BSCN 资源清单拒绝 mesh/material 计数与数组不一致，并复用 64K 节点上限，避免崩溃及不可加载输出。TDD：`save_rejects_missing_scene_node_storage` 与 `save_binary_rejects_missing_resource_storage` 覆盖旧实现失败路径；另有 `save_rejects_nodes_above_load_limit` 覆盖格式上限对称性。验证：定向 `test_scene_serial` 87/87 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R539 场景节点上限保存对称性审查（TDD）** — BSCN 与 JSON 加载器都限制为最多 64K `SceneNode`，保存器此前却能成功生成 64K 以上、随后必被同一加载器拒绝的文件。现两个保存入口在构造输出前复用该格式上限并拒绝超额场景。检查仅为每次显式保存的一次 O(1) 比较，无分配、无每节点扫描或帧内成本。TDD：`save_rejects_nodes_above_load_limit` 在旧代码二进制保存错误成功，修复后 BSCN 与 JSON 均拒绝。验证：定向 `test_scene_serial` 85/85 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R538 场景非有限值保存对称性审查（TDD）** — 加载器已拒绝节点矩阵与资源内联描述符中的 NaN/Inf，但保存器此前仍可将这些值写出并报告成功，导致成功保存的文件立即无法加载。现 BSCN/JSON 保存路径在写出前拒绝非有限节点矩阵，BSCN 资源描述符也复用同一有限性约束。检查仅在显式保存时执行，每节点 O(1) 固定次数、每资源 8 次，无堆分配或帧内成本。TDD：`save_rejects_nonfinite_scene_values` 在旧代码二进制保存错误成功，修复后二进制和 JSON 均拒绝。验证：定向 `test_scene_serial` 84/84 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
