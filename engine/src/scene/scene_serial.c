@@ -619,11 +619,31 @@ static bool load_entities_chunk(World *w, Reader *r,
             e.generation = saved_gen;
         }
         ents[i] = e;
+        u64 seen_types_lo = 0;
+        u64 seen_types_hi = 0;
         for (u32 k = 0; k < comp_count; k++) {
             u32 type = 0;
             if (!rd_u32(r, &type)) {
                 rollback_entities(w, ents, i + 1u);
                 free(ents); return false;
+            }
+            /* Archetype component IDs form a set.  Fixed bitsets catch
+             * duplicates without a per-entity allocation; future IDs stay
+             * skippable for forward compatibility. */
+            if (type < 64u) {
+                u64 bit = (u64)1 << type;
+                if (seen_types_lo & bit) {
+                    rollback_entities(w, ents, i + 1u);
+                    free(ents); return false;
+                }
+                seen_types_lo |= bit;
+            } else if (type < ECS_MAX_COMPONENTS) {
+                u64 bit = (u64)1 << (type - 64u);
+                if (seen_types_hi & bit) {
+                    rollback_entities(w, ents, i + 1u);
+                    free(ents); return false;
+                }
+                seen_types_hi |= bit;
             }
             if (type < ECS_MAX_COMPONENTS && w->component_sizes[type]) {
                 world_add_component(w, e, type);
