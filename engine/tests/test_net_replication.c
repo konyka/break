@@ -535,6 +535,54 @@ TEST(reliable_ack_waits_for_contiguous_sequence)
     net_shutdown();
 }
 
+TEST(reliable_send_sequence_survives_receive_peer_eviction)
+{
+    /* R456: outgoing reliable sequence state must outlive the independently
+     * evictable receive-channel slot for the same address. Otherwise a spoofed
+     * sender flood can make the next packet to A restart at seq 1. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator rep = {0}, receiver = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 15u)));
+    rep.reliable_retry = true;
+
+    NetAddress peer_a;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 15u), &peer_a));
+    NetTransformSnapshot snap = { .entity_id = 4u, .position = {0} };
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+
+    u8 sent[PACKET_MAX_SIZE];
+    NetAddress from = {0};
+    i32 sent_len = net_recvfrom(receiver.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    PacketHeader header;
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.sequence, 1u);
+
+    u8 heartbeat[PACKET_MAX_SIZE];
+    u32 heartbeat_len = build_heartbeat_wire(heartbeat, 1u, 0u);
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    for (u32 i = 0u; i < NET_REP_MAX_PEERS; i++) {
+        NetAddress forged = {0};
+        strncpy(forged.host, "127.0.0.1", sizeof(forged.host) - 1u);
+        forged.port = (u16)(22000u + i);
+        ASSERT_TRUE(net_replicator_feed_from(&rep, heartbeat, heartbeat_len, &forged,
+                                             out, 1u, &out_count) > 0);
+    }
+
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+    sent_len = net_recvfrom(receiver.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.sequence, 2u);
+
+    net_replicator_shutdown(&receiver);
+    net_replicator_shutdown(&rep);
+    net_shutdown();
+}
+
 /* R323 end-to-end: the ack a receiver produces (from the sequence it received)
  * must clear the original sender's reliable_pending. Pre-R323 the receiver echoed
  * its own last_peer_ack (0 here), so this round-trip never cleared the pending. */
@@ -1588,6 +1636,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reliable_ack_echoes_received_sequence);
     RUN_TEST(reliable_ack_is_scoped_to_destination);
     RUN_TEST(reliable_ack_waits_for_contiguous_sequence);
+    RUN_TEST(reliable_send_sequence_survives_receive_peer_eviction);
     RUN_TEST(reliable_pending_cleared_via_peer_ack);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);

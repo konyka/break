@@ -89,11 +89,23 @@ typedef struct {
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
 } NetRepPeerChannel;
 
+/* R456: outgoing sequence state cannot share the evictable receive/reorder
+ * table above: a receive-side LRU replacement must never restart an active
+ * reliable destination's sequence space. */
+typedef struct {
+    NetAddress               addr;
+    bool                     valid;
+    u32                      last_seen_ms;
+    u32                      unreliable_send_seq[NET_PKT_MAX];
+    u32                      ordered_send_seq[NET_PKT_MAX];
+} NetRepPeerSendState;
+
 typedef struct {
     NetSocket                *socket;
     NetRepUnreliableChannel  unreliable[NET_PKT_MAX];
     NetRepOrderedChannel     ordered[NET_PKT_MAX];
     NetRepPeerChannel        *peer_channels;  /* R418: per-sender recv state (calloc'd in init) */
+    NetRepPeerSendState      send_peers[NET_REP_MAX_PEERS]; /* R456: bounded per-destination wire sequences */
     NetRepReliablePending    reliable_window[NET_RELIABLE_WINDOW]; /* R434: in-flight reliable slots */
     u32                      reliable_dropped;  /* R434: reliable sends rejected (window full) */
     u32                      last_peer_ack;   /* peer's ack of OUR packets (clears our pending) */
