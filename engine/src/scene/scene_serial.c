@@ -824,7 +824,7 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         Reader r;
         r.p = buf + table[i].offset;
         r.end = r.p + table[i].size;
-        ok = load_entities_chunk(w, &r, &ents, &ent_count);
+        ok = load_entities_chunk(w, &r, &ents, &ent_count) && r.p == r.end;
     }
     /* Second pass: remaining chunks. */
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
@@ -837,11 +837,11 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         switch (table[i].type) {
         case BSCN_CHUNK_ENTITIES: break;
         case BSCN_CHUNK_COMPONENTS:
-            ok = load_components_chunk(w, &r, ents, ent_count); break;
+            ok = load_components_chunk(w, &r, ents, ent_count) && r.p == r.end; break;
         case BSCN_CHUNK_SCENE_NODES:
-            ok = load_scene_nodes_chunk(dst, &r); break;
+            ok = load_scene_nodes_chunk(dst, &r) && r.p == r.end; break;
         case BSCN_CHUNK_RESOURCES:
-            ok = load_resources_chunk(dst, &r); break;
+            ok = load_resources_chunk(dst, &r) && r.p == r.end; break;
         case BSCN_CHUNK_HIERARCHY:
         default:
             /* Hierarchy is implicit in SceneNode.parent_index. Skip silently. */
