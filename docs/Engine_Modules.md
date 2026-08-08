@@ -1190,6 +1190,8 @@ void  script_call(ScriptEngine *se, const char *func_name);
 void  script_reload_if_changed(ScriptEngine *se, const char *path);
 ```
 
+脚本加载采用事务式替换：新文件完整读取和解析成功前，运行中的脚本、全局变量与回调保持不变；热重载的瞬态 I/O 失败不会清空上一份有效逻辑。
+
 ### 11.3 使用示例（脚本文件）
 
 ```

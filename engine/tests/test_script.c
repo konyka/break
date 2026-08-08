@@ -116,6 +116,31 @@ TEST(load_nonexistent_file)
     script_engine_shutdown(&se);
 }
 
+/* R485: a failed replacement must not discard the script currently running. */
+TEST(load_failure_preserves_previous_script)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_script_preserve.script");
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "var hp = 7\n");
+    fprintf(f, "func damage\n");
+    fprintf(f, "    add hp -2\n");
+    fclose(f);
+
+    ScriptEngine se = {0};
+    script_engine_init(&se);
+    ASSERT_TRUE(script_load(&se, path));
+    ASSERT_FALSE(script_load(&se, "/tmp/break_missing_replacement.script"));
+    ASSERT_TRUE(se.loaded);
+    ASSERT_EQ(se.func_count, 1u);
+    script_call(&se, "damage");
+    ASSERT_TRUE(fabsf(script_get_global(&se, "hp") - 5.0f) < 0.001f);
+
+    script_engine_shutdown(&se);
+    remove(path);
+}
+
 TEST(script_comments_ignored)
 {
     char path[64]; /* R444: per-pid path */
@@ -302,6 +327,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_from_file);
     RUN_TEST(call_nonexistent_func);
     RUN_TEST(load_nonexistent_file);
+    RUN_TEST(load_failure_preserves_previous_script);
     RUN_TEST(script_comments_ignored);
     RUN_TEST(reload_if_changed_is_per_engine);
     /* Edge cases */

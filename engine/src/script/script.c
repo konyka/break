@@ -10,11 +10,22 @@ void script_engine_init(ScriptEngine *se) {
 }
 
 void script_engine_shutdown(ScriptEngine *se) {
+    if (!se) return;
     for (u32 i = 0; i < se->func_count; i++) {
         free(se->funcs[i].ops);
     }
     free(se->source);
     memset(se, 0, sizeof(*se));
+}
+
+static void script_engine_clear_content(ScriptEngine *se) {
+    for (u32 i = 0; i < se->func_count; i++)
+        free(se->funcs[i].ops);
+    free(se->source);
+    se->source = NULL;
+    se->func_count = 0u;
+    se->global_count = 0u;
+    se->loaded = false;
 }
 
 static void script_parse_line(ScriptEngine *se, const char *line) {
@@ -80,17 +91,7 @@ static void script_parse_line(ScriptEngine *se, const char *line) {
     }
 }
 
-bool script_load(ScriptEngine *se, const char *path) {
-    for (u32 i = 0; i < se->func_count; i++) {
-        free(se->funcs[i].ops);
-        se->funcs[i].ops = NULL;
-        se->funcs[i].op_count = 0;
-        se->funcs[i].op_capacity = 0;
-    }
-    se->func_count = 0;
-    se->global_count = 0;
-    se->loaded = false;
-
+static bool script_load_into(ScriptEngine *se, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
 
@@ -106,12 +107,16 @@ bool script_load(ScriptEngine *se, const char *path) {
         return false;
     }
 
-    free(se->source);
     se->source = malloc((usize)sz + 1);
     if (!se->source) { fclose(f); return false; }
     usize rd = fread(se->source, 1, (usize)sz, f);
     se->source[rd] = '\0';
     fclose(f);
+    if (rd != (usize)sz) {
+        free(se->source);
+        se->source = NULL;
+        return false;
+    }
 
     char *line = se->source;
     while (*line) {
@@ -129,6 +134,24 @@ bool script_load(ScriptEngine *se, const char *path) {
 
     se->loaded = true;
     LOG_INFO("Script loaded: %s (%u funcs, %u vars)", path, se->func_count, se->global_count);
+    return true;
+}
+
+bool script_load(ScriptEngine *se, const char *path) {
+    if (!se || !path) return false;
+
+    /* Parse in isolation so a transient hot-reload read failure leaves the
+     * last valid script executable instead of replacing it with an empty one. */
+    ScriptEngine next = {0};
+    if (!script_load_into(&next, path)) {
+        script_engine_clear_content(&next);
+        return false;
+    }
+
+    u32 last_mtime = se->last_mtime;
+    script_engine_clear_content(se);
+    *se = next;
+    se->last_mtime = last_mtime;
     return true;
 }
 
@@ -232,7 +255,7 @@ void script_reload_if_changed(ScriptEngine *se, const char *path) {
      * loads the current file on its first check. */
     u32 mt = file_mtime(path);
     if (mt != 0 && mt != se->last_mtime) {
-        se->last_mtime = mt;
-        script_load(se, path);
+        if (script_load(se, path))
+            se->last_mtime = mt;
     }
 }
