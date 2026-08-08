@@ -1797,7 +1797,7 @@ TaskSystem 提供 Chase-Lev work-stealing 线程池，支持任务依赖和优�
 - `net_poll(fds, count, timeout_ms)` — I/O 多路复用
 - `net_address_resolve(hostname, port, out)` — DNS 解析
 
-NetRep peer 目录持久化要求每个 `.peer` 输出文件名完整容纳于内部 512-byte 路径缓冲；无法完整表示的目录/主机组合会在创建文件前报告失败，不会写入截断名称。
+NetRep peer 目录持久化要求每个 `.peer` 输出文件名完整容纳于内部 512-byte 路径缓冲；无法完整表示的目录/主机组合会在创建文件前报告失败，不会写入截断名称。读取目录时同样只打开能完整组合的 `.peer` 与 `delta.log` 路径，避免把截断前缀文件解析为其他 peer。
 
 **特性：**
 - 统一跨平台 API（`NetSocket` 不透明句柄）

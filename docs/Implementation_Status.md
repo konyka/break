@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R477 NetRep peer 保存文件名截断审查（TDD）** — `net_replicator_peer_save_dir()` 将目录、peer 地址与端口格式化到 512-byte `path`，先前忽略 `snprintf` 返回值；超长组合会静默截断却仍返回成功，生成与 peer 身份不一致的文件。现 `fopen` 前要求格式化结果完整容纳，失败立即返回 false，不写入截断名称；只发生在显式持久化操作，无网络热路径成本、无分配。TDD：`peer_save_dir_rejects_path_truncation` 使用 500-byte 深目录，旧码错误成功，修复后返回 false；模块文档同步。验证：`test_net_replication` 定向回归 41/41 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R478 NetRep peer 读取路径截断审查（TDD）** — `net_replicator_peer_load_dir()` 将目录与 `.peer` 目录项、`delta.log` 格式化到 512-byte 路径缓冲，却先前忽略截断；截断前缀若存在，读取会把其内容当作另一 peer 文件解析并注册错误地址。现目录项与 delta 路径均在打开前验证格式化结果完整容纳，超长项跳过；只影响显式持久化读取，无网络热路径成本、无分配。TDD：`peer_load_dir_skips_truncated_entry_path` 在 508-byte 深目录创建 `.peer` 项及其截断前缀，旧码错误注册一个 peer，修复后保持 0；模块文档同步。验证：`test_net_replication` 定向回归 42/42 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R477 NetRep peer 保存文件名截断审查（TDD）** — `net_replicator_peer_save_dir()` 将目录、peer 地址与端口格式化到 512-byte `path`，先前忽略 `snprintf` 返回值；超长组合会静默截断却仍返回成功，生成与 peer 身份不一致的文件。现 `fopen` 前要求格式化结果完整容纳，失败立即返回 false，不写入截断名称；只发生在显式持久化操作，无网络热路径成本、无分配。TDD：`peer_save_dir_rejects_path_truncation` 使用 500-byte 深目录，旧码错误成功，修复后返回 false；模块文档同步。验证：`test_net_replication` 定向回归 41/41 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R476 VFS 打开组合路径截断审查（TDD）** — 目录 mount 的 `vfs_open()` 将根路径与调用者相对路径格式化到 512-byte `full` 缓冲，先前超长组合会静默截断；若该前缀存在文件，调用者会读到错误资源。现每个目录 mount 在 `fopen` 前精确验证完整组合容量，无法容纳的高优先级 mount 会跳过并继续尝试较低优先级 mount；改为有界 `memcpy` 拼接，避免格式化开销、无分配。TDD：`vfs_open_rejects_join_path_truncation` 在深根目录中建立截断前缀文件，旧码错误打开它，修复后返回 NULL；模块文档同步。验证：`test_vfs` 定向回归 30/30 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

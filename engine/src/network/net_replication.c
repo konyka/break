@@ -812,7 +812,8 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
         size_t nlen = strlen(ent->d_name);
         if (nlen < 6u || strcmp(ent->d_name + nlen - 5u, ".peer") != 0) continue;
         char path[512];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        if (n < 0 || (usize)n >= sizeof(path)) continue;
         FILE *f = fopen(path, "r");
         if (!f) continue;
         char line[512];
@@ -823,8 +824,9 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
     closedir(d);
 
     char delta_path[512];
-    snprintf(delta_path, sizeof(delta_path), "%s/delta.log", dir);
-    net_replicator_peer_load_delta(rep, delta_path);
+    int delta_n = snprintf(delta_path, sizeof(delta_path), "%s/delta.log", dir);
+    if (delta_n >= 0 && (usize)delta_n < sizeof(delta_path))
+        net_replicator_peer_load_delta(rep, delta_path);
     return true;
 #else
     (void)rep;

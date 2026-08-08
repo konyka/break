@@ -1121,6 +1121,38 @@ TEST(peer_save_dir_rejects_path_truncation)
 #endif
 }
 
+/* R478: directory loading must not parse a prefix file when dir + d_name
+ * exceeds its path buffer. The actual .peer entry is deliberately distinct. */
+TEST(peer_load_dir_skips_truncated_entry_path)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
+#else
+    char base[128], dir[512], prefix[1024], peer_file[1024];
+    ASSERT_TRUE(make_deep_dir(dir, sizeof(dir), base, sizeof(base), 508u));
+    int n = snprintf(prefix, sizeof(prefix), "%s/xx", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(prefix));
+    n = snprintf(peer_file, sizeof(peer_file), "%s/xxxxx.peer", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(peer_file));
+    FILE *f = fopen(prefix, "w");
+    ASSERT_NOT_NULL(f);
+    ASSERT_TRUE(fputs("peer 127.0.0.1 20910 1.000 2.000 3 4 5\n", f) >= 0);
+    ASSERT_EQ(fclose(f), 0);
+    f = fopen(peer_file, "w");
+    ASSERT_NOT_NULL(f);
+    ASSERT_TRUE(fputs("# actual peer entry\n", f) >= 0);
+    ASSERT_EQ(fclose(f), 0);
+
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_peer_load_dir(&rep, dir));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 0u);
+
+    remove(peer_file);
+    remove(prefix);
+    remove_deep_dir(dir, base);
+#endif
+}
+
 TEST(peer_save_delta)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
@@ -1755,6 +1787,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_load);
     RUN_TEST(peer_save_dir);
     RUN_TEST(peer_save_dir_rejects_path_truncation);
+    RUN_TEST(peer_load_dir_skips_truncated_entry_path);
     RUN_TEST(peer_save_delta);
     RUN_TEST(peer_delta_rotate);
     RUN_TEST(peer_delta_no_rotate_below_threshold);
