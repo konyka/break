@@ -1056,7 +1056,7 @@ bool scene_save_json(const World *w, const Scene *s,
     ok = ok && sb_indent(&b, pretty, 1) && sb_putc(&b, ']');
 
     /* Scene nodes (optional) */
-    if (s && s->node_count) {
+    if (s) {
         ok = ok && sb_putc(&b, ',');
         ok = ok && sb_indent(&b, pretty, 1) && sb_puts(&b, "\"nodes\":[");
         for (u32 i = 0; i < s->node_count && ok; i++) {
@@ -1574,6 +1574,13 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                         free(nodes);
                     }
                     ok = ok && js_match(&r, ']');
+            } else if (ok && s) {
+                /* An explicit empty array replaces an existing graph with an
+                 * empty one; an absent "nodes" key still leaves it intact. */
+                free(staged_nodes);
+                staged_nodes = NULL;
+                staged_node_count = 0;
+                nodes_staged = true;
             }
         } else {
             /* unknown top-level key */

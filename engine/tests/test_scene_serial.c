@@ -1849,6 +1849,33 @@ TEST(scene_node_indices_roundtrip_json)
     remove(path);
 }
 
+TEST(empty_scene_replaces_nodes_roundtrip_json)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_empty_scene.json");
+    World *source_world = world_create();
+    World *dest_world = world_create();
+    Scene source; memset(&source, 0, sizeof(source));
+    Scene dest; memset(&dest, 0, sizeof(dest));
+    ASSERT_NOT_NULL(source_world);
+    ASSERT_NOT_NULL(dest_world);
+
+    dest.node_count = 1u;
+    dest.nodes = (SceneNode *)calloc(1, sizeof(SceneNode));
+    ASSERT_NOT_NULL(dest.nodes);
+    dest.nodes[0].local_transform = mat4_identity();
+
+    ASSERT_TRUE(scene_save_json(source_world, &source, path, NULL));
+    ASSERT_TRUE(scene_load_json(dest_world, &dest, path));
+    ASSERT_EQ(dest.node_count, 0u);
+    ASSERT_TRUE(dest.nodes == NULL);
+
+    scene_serial_free(&dest);
+    world_destroy(source_world);
+    world_destroy(dest_world);
+    remove(path);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST(instantiate_prefab_offsets_root_nodes_only)
@@ -2239,6 +2266,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(generation_restore_roundtrip);
     RUN_TEST(generation_restore_roundtrip_json);
     RUN_TEST(scene_node_indices_roundtrip_json);
+    RUN_TEST(empty_scene_replaces_nodes_roundtrip_json);
     RUN_TEST(instantiate_prefab_offsets_root_nodes_only);
     RUN_TEST(load_json_failure_preserves_old_graph);
     RUN_TEST(load_json_node_without_parent_is_root);
