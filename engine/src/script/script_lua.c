@@ -283,15 +283,16 @@ void lua_script_reload_if_changed(LuaScript *ls) {
     if (!ls || !ls->L || ls->path[0] == '\0') return;
     u32 mt = file_mtime(ls->path);
     if (mt != 0 && mt != ls->last_mtime) {
-        ls->last_mtime = mt;
         if (!lua_script_file_size_ok(ls->path)) return;
         if (luaL_loadfile(ls->L, ls->path) != LUA_OK) {
             LOG_ERROR("Lua reload error: %s", lua_tostring(ls->L, -1));
             lua_pop(ls->L, 1);
             return;
         }
-        if (run_loaded_chunk(ls, ls->path))
+        if (run_loaded_chunk(ls, ls->path)) {
+            ls->last_mtime = mt;
             LOG_INFO("Lua script reloaded: %s", ls->path);
+        }
     }
 }
 

@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R485 脚本热重载失败状态保持审查（TDD）** — `script_load()` 先前在打开新文件前就释放 source、函数和全局变量；热重载遇到瞬态 I/O 错误会令原本正常运行的脚本变为空，所有回调静默失效。现新脚本在独立临时状态完整读取解析后才替换旧内容，读取短缺也失败；重载仅在成功后提交 mtime。失败路径不增加常驻分配，成功装载只保留最终脚本分配，调用热路径不变。TDD：`load_failure_preserves_previous_script` 先载入有效回调再请求不存在替换文件，旧码清空 loaded 状态，修复后原回调仍可执行；模块文档同步。验证：`test_script` 定向回归 17/17 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R486 Lua 热重载失败重试审查（TDD）** — `lua_script_reload_if_changed()` 先前在编译或执行候选脚本前就写入 `last_mtime`；语法/运行时失败会吞掉该版本，文件随后被修正但 mtime 未跨秒时仍永久保留旧回调。现仅在候选 chunk 成功运行后提交 mtime，失败候选继续可重试；只影响低频热重载检查，`on_update` 调用热路径不变、无分配。TDD：`hot_reload_retries_after_failed_candidate` 先载入有效回调、注入错误脚本、再在同一观察 mtime 下写入修正版本；旧码卡在旧逻辑，修复后更新为新回调；模块文档同步。验证：`test_script_lua` 定向回归 22/22 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R485 脚本热重载失败状态保持审查（TDD）** — `script_load()` 先前在打开新文件前就释放 source、函数和全局变量；热重载遇到瞬态 I/O 错误会令原本正常运行的脚本变为空，所有回调静默失效。现新脚本在独立临时状态完整读取解析后才替换旧内容，读取短缺也失败；重载仅在成功后提交 mtime。失败路径不增加常驻分配，成功装载只保留最终脚本分配，调用热路径不变。TDD：`load_failure_preserves_previous_script` 先载入有效回调再请求不存在替换文件，旧码清空 loaded 状态，修复后原回调仍可执行；模块文档同步。验证：`test_script` 定向回归 17/17 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R484 场景运行时状态保存关闭失败审查（TDD）** — `scene_state_save()` 先前忽略 `fclose` 的延迟写错误；写入 `/dev/full` 仍报告运行时状态已保存，调用方会把缺失或不完整的相机、渲染与物理状态当作有效存档。现 API 要求写入无流错误且关闭成功，失败如实返回 false；仅影响显式保存操作，无帧内热路径成本、无分配。TDD：`scene_state_save_reports_close_failure` 用 `/dev/full` 注入真实关闭失败，旧码错误成功，修复后返回 false；模块文档同步。验证：`test_scene_state` 定向回归 7/7 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
