@@ -462,6 +462,23 @@ TEST(profiler_export_chrome_meta)
     ASSERT_NOT_NULL(strstr(buf, "\"ph\":\"i\""));
 }
 
+/* R483: buffered trace writes may fail only when the stream is closed. */
+TEST(profiler_export_reports_close_failure)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* /dev/full is a POSIX error-injection facility. */
+#else
+    profiler_reset();
+    profiler_set_enabled(true);
+    profiler_begin_frame();
+    profiler_end_frame();
+
+    const ProfilerFrame *f = profiler_last_frame();
+    ASSERT_NOT_NULL(f);
+    ASSERT_FALSE(profiler_export_chrome_trace("/dev/full", f, NULL, 0, NULL, 0));
+#endif
+}
+
 /* ----------------------------------------------------------------------- */
 /*  R434: per-thread sampling (Chrome trace thread tracks)                  */
 /* ----------------------------------------------------------------------- */
@@ -637,6 +654,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_push_null_name);
     RUN_TEST(profiler_export_chrome_trace);
     RUN_TEST(profiler_export_chrome_meta);
+    RUN_TEST(profiler_export_reports_close_failure);
     /* R434: per-thread sampling */
 #ifdef ENGINE_PLATFORM_LINUX
     RUN_TEST(profiler_threads_distinct_tids_and_names);

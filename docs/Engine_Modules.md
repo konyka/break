@@ -129,7 +129,7 @@ void log_write(LogLevel level, const char *file, int line, const char *fmt, ...)
 
 | 文件 | 职责 |
 |------|------|
-| `profiler.h/c` | 作用域性能计时器，基于 `time_microseconds()` |
+| `profiler.h/c` | 作用域性能计时器，基于 `time_microseconds()`；Chrome trace 导出仅在写入和关闭均成功后报告成功 |
 
 **单元测试：** `tests/test_profiler.c` (13 测试用例，覆盖初始化状态、启用/禁用、帧环形缓冲区、溢出环绕、region push/pop、region 溢出钳制、空 pop 安全、计时验证)
 | `string.h/c` | 安全字符串操作（copy、format、hash） |

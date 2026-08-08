@@ -268,6 +268,7 @@ bool profiler_export_chrome_trace(const char *path,
     }
 
     fprintf(f, "\n]}\n");
-    fclose(f);
-    return true;
+    bool write_ok = !ferror(f);
+    if (fclose(f) != 0) write_ok = false;
+    return write_ok;
 }
