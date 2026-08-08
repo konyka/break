@@ -162,6 +162,7 @@ static void hotreload_texture_callback(const char *path, void *user) {
 bool hotreload_texture_init(HotReloadTexture *hr, RHIDevice *dev,
                               const char *path, RHITexture *target) {
     if (!hr || !dev || !path || !target) return false;
+    if (strlen(path) >= sizeof(hr->path)) return false;
     memset(hr, 0, sizeof(*hr));
     hr->device = dev;
     hr->target = target;

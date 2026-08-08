@@ -49,6 +49,21 @@ TEST(hotreload_rejects_oversized_shader)
     remove(TMP_FRAG);
 }
 
+/* R471: texture reload persists its source identity in path[256]; accepting
+ * a longer input would watch and reload the truncated, unrelated pathname. */
+TEST(hotreload_texture_rejects_path_truncation)
+{
+    HotReloadTexture hr = {0};
+    RHITexture target = s_tex;
+    char path[257];
+    memset(path, 'x', sizeof(path) - 1u);
+    path[sizeof(path) - 1u] = '\0';
+
+    ASSERT_TRUE(!hotreload_texture_init(&hr, (RHIDevice *)(usize)1, path, &target));
+    ASSERT_FALSE(hr.ready);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(hotreload_rejects_oversized_shader);
+    RUN_TEST(hotreload_texture_rejects_path_truncation);
 TEST_MAIN_END()
