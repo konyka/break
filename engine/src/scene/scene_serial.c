@@ -723,12 +723,14 @@ static bool load_components_chunk(World *w, Reader *r,
                 (u64)(r->end - r->p))
             return false;
         bool known = (type < ECS_MAX_COMPONENTS) && (w->component_sizes[type] == size);
+        /* Every v1 type record, including an unknown one we skip, has at most
+         * one instance per saved entity.  Reuse the fixed bitmap per record. */
+        memset(seen_instances, 0, sizeof(seen_instances));
         if (known) {
             /* A v1 writer emits exactly one payload for every locally declared
              * compatible component.  Count plus per-entity bits makes this a
              * bijection without rescanning archetypes or allocating memory. */
             if (instances != declared_known[type]) return false;
-            memset(seen_instances, 0, sizeof(seen_instances));
         }
         for (u32 i = 0; i < instances; i++) {
             u32 saved_idx = 0;
@@ -737,11 +739,11 @@ static bool load_components_chunk(World *w, Reader *r,
             /* Component type data can be skipped for forward compatibility,
              * but every instance still needs a real saved entity owner. */
             if (saved_idx >= ent_count) return false;
+            u32 word = saved_idx / 64u;
+            u64 bit = (u64)1 << (saved_idx % 64u);
+            if (seen_instances[word] & bit) return false;
+            seen_instances[word] |= bit;
             if (known) {
-                u32 word = saved_idx / 64u;
-                u64 bit = (u64)1 << (saved_idx % 64u);
-                if (seen_instances[word] & bit) return false;
-                seen_instances[word] |= bit;
                 if (!entity_declares_component(w, ents[saved_idx], type)) return false;
                 void *dst = world_get_component(w, ents[saved_idx], type);
                 if (!dst) return false;
