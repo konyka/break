@@ -1751,7 +1751,7 @@ TaskSystem 提供 Chase-Lev work-stealing 线程池，支持任务依赖和优�
 - 写边界检查（溢出保护）
 - `PACKET_RELIABLE | PACKET_ORDERED` 标志位
 - MTU 安全载荷（最大 1400 字节）
-- 可靠窗口的累计 ACK 按 UDP 发送者地址隔离：来自 peer A 的 ACK 只确认发往 A 的 in-flight packet，不会误确认 peer B 的 packet
+- 可靠窗口的累计 ACK 与待回传 ACK 均按 UDP peer 隔离：来自 peer A 的 ACK 只确认发往 A 的 in-flight packet，收到 A 的可靠序号也只会回传给 A，不会误确认 peer B 的 packet
 
 **单元测试：** `tests/test_packet.c` (15 测试用例，覆盖序列化/反序列化、边界检查、NULL 安全、截断处理)
 

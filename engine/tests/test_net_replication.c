@@ -432,6 +432,54 @@ TEST(reliable_ack_echoes_received_sequence)
     net_shutdown();
 }
 
+TEST(reliable_ack_is_scoped_to_destination)
+{
+    /* R454: receiving a reliable frame from A must not put A's sequence into
+     * a later packet sent to B. A cumulative ack is meaningful only to the
+     * peer whose sequence space it acknowledges. */
+    ASSERT_TRUE(net_init());
+
+    NetReplicator rep = {0}, receiver_a = {0}, receiver_b = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&receiver_a, (u16)(TEST_PORT + 12u)));
+    ASSERT_TRUE(net_replicator_init(&receiver_b, (u16)(TEST_PORT + 13u)));
+
+    NetAddress peer_a, peer_b;
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 12u), &peer_a));
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT + 13u), &peer_b));
+
+    u8 reliable_from_a[PACKET_MAX_SIZE];
+    u32 reliable_len = build_snap_wire(reliable_from_a, 7u, (u8)PACKET_RELIABLE,
+                                       (u8)NET_PKT_TRANSFORM_SNAPSHOT,
+                                       1u, 0.0f, 0.0f, 0.0f);
+    NetTransformSnapshot out[1] = {0};
+    u32 out_count = 0u;
+    ASSERT_TRUE(net_replicator_feed_from(&rep, reliable_from_a, reliable_len, &peer_a,
+                                         out, 1u, &out_count) > 0);
+
+    NetTransformSnapshot snap = { .entity_id = 2u, .position = {0} };
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_b) > 0);
+
+    u8 sent[PACKET_MAX_SIZE];
+    NetAddress from = {0};
+    i32 sent_len = net_recvfrom(receiver_b.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    PacketHeader header;
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.ack, 0u); /* B has not sent us a reliable sequence. */
+
+    ASSERT_TRUE(net_replicator_broadcast(&rep, &snap, 1u, &peer_a) > 0);
+    sent_len = net_recvfrom(receiver_a.socket, sent, sizeof(sent), &from);
+    ASSERT_TRUE(sent_len > 0);
+    ASSERT_TRUE(packet_parse_header(sent, (u32)sent_len, &header));
+    ASSERT_EQ(header.ack, 7u); /* The reliable sequence is echoed only to A. */
+
+    net_replicator_shutdown(&receiver_b);
+    net_replicator_shutdown(&receiver_a);
+    net_replicator_shutdown(&rep);
+    net_shutdown();
+}
+
 /* R323 end-to-end: the ack a receiver produces (from the sequence it received)
  * must clear the original sender's reliable_pending. Pre-R323 the receiver echoed
  * its own last_peer_ack (0 here), so this round-trip never cleared the pending. */
@@ -1483,6 +1531,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ordered_resync_nonempty_window_head_loss);
     RUN_TEST(reliable_ordered_combined);
     RUN_TEST(reliable_ack_echoes_received_sequence);
+    RUN_TEST(reliable_ack_is_scoped_to_destination);
     RUN_TEST(reliable_pending_cleared_via_peer_ack);
     RUN_TEST(dual_channel_sequences);
     RUN_TEST(multitype_independent_sequences);

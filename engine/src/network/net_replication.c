@@ -33,6 +33,21 @@ static NetRepOrderedChannel *net_ord_ch(NetReplicator *rep, NetRepPeerChannel *p
     return &rep->ordered[net_repl_type_index(type)];
 }
 
+/* R454: ACK numbers are per-peer because each peer owns an independent
+ * sequence space. Sending to a known peer therefore uses that peer's latest
+ * reliable sequence; address-less feed() retains the legacy shared value. */
+static u32 net_repl_ack_for_destination(const NetReplicator *rep,
+                                        const NetAddress *dst) {
+    if (rep && dst && rep->peer_channels) {
+        for (u32 i = 0u; i < NET_REP_MAX_PEERS; i++) {
+            const NetRepPeerChannel *pc = &rep->peer_channels[i];
+            if (pc->valid && net_address_equal(&pc->addr, dst))
+                return pc->ack_to_send;
+        }
+    }
+    return rep ? rep->ack_to_send : 0u;
+}
+
 /* R418: find (or create) the per-peer channel state for a sender address.
  * Returns NULL only when the table is missing.
  * R423: UDP source addresses are trivially spoofable — without eviction a
@@ -415,7 +430,7 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
     /* Compute timestamp once per packet, pass to all callees (Round 18). */
     u32 now_ms = (u32)(time_microseconds() / 1000ull);
 
-    /* R323 (CORRECTNESS): a packet's header `ack` field means "the sequence I am
+    /* R323/R454 (CORRECTNESS): a packet's header `ack` field means "the sequence I am
      * acknowledging from you" (see packet.h; the sender clears its reliable
      * window slots when an incoming ack reaches their seq, at deliver_* above).
      * To actually acknowledge a peer's RELIABLE packet, our own outgoing `ack`
@@ -425,16 +440,10 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
      * peer's sequence: both ends bounced their own ack values back and forth,
      * their reliable pendings never cleared via ack, and
      * net_replicator_retry_pending retransmitted the last reliable packet
-     * forever. Track the highest reliable sequence we have received
-     * (wraparound-safe, same convention as seq-dedup) and echo THAT as our
-     * outgoing ack; `last_peer_ack` still records hdr.ack for our own retry
-     * self-check. Only RELIABLE packets need acking; heartbeats are always
-     * unreliable, so this stays within the transform channel's space. */
-    if ((hdr.flags & (u8)PACKET_RELIABLE) != 0u &&
-        (hdr.sequence - rep->ack_to_send) < 0x80000000u) {
-        rep->ack_to_send = hdr.sequence;
-    }
-
+     * forever. Track the highest reliable sequence received from each peer
+     * (wraparound-safe, same convention as seq-dedup) and echo it only back
+     * to that peer; the address-less API keeps its legacy shared state.
+     * `last_peer_ack` still records hdr.ack for diagnostics. */
     bool ordered = (hdr.flags & (u8)PACKET_ORDERED) != 0u;
     /* R418: key channel state per sender address so two peers' ordered /
      * seq-deduped packets no longer collide in the shared sequence space and
@@ -443,6 +452,12 @@ static i32 net_replicator_process(NetReplicator *rep, const u8 *wire, u32 len,
      * when full, so a spoofed-address flood can't force the shared fallback. */
     NetRepPeerChannel *pc = reply_to
         ? net_repl_peer_channel_find(rep, reply_to, true, now_ms) : NULL;
+    if ((hdr.flags & (u8)PACKET_RELIABLE) != 0u &&
+        (hdr.sequence - (pc ? pc->ack_to_send : rep->ack_to_send)) < 0x80000000u) {
+        if (pc) pc->ack_to_send = hdr.sequence;
+        else rep->ack_to_send = hdr.sequence;
+    }
+
     if (ordered)
         return net_repl_deliver_ordered(rep, pc, hdr.type, wire, len, reply_to,
                                         out, max_count, out_count, now_ms);
@@ -517,8 +532,7 @@ i32 net_replicator_broadcast(NetReplicator *rep,
     }
 
     u32 seq = rep->ordered_layer ? rep->ordered[pkt].send_seq++ : rep->unreliable[pkt].send_seq++;
-    /* R323: echo the highest reliable seq WE received as our ack (see process). */
-    u32 plen = packet_finish(&buf, seq, rep->ack_to_send);
+    u32 plen = packet_finish(&buf, seq, net_repl_ack_for_destination(rep, dst));
     if (rslot) {
         memcpy(rslot->data, buf.data, plen);
         rslot->len = plen;
@@ -538,7 +552,7 @@ i32 net_replicator_send_heartbeat(NetReplicator *rep, const NetAddress *dst, u32
     packet_write_u32(&buf, send_time_ms);
 
     u32 seq = rep->unreliable[pkt].send_seq++;
-    u32 plen = packet_finish(&buf, seq, rep->ack_to_send); /* R323 */
+    u32 plen = packet_finish(&buf, seq, net_repl_ack_for_destination(rep, dst));
     rep->hb_sent++;
     return net_sendto(rep->socket, buf.data, plen, dst);
 }
@@ -554,7 +568,7 @@ i32 net_replicator_send_heartbeat_ack(NetReplicator *rep, const NetAddress *dst,
     packet_write_u32(&buf, echo_seq);
 
     u32 seq = rep->unreliable[pkt].send_seq++;
-    u32 plen = packet_finish(&buf, seq, rep->ack_to_send); /* R323 */
+    u32 plen = packet_finish(&buf, seq, net_repl_ack_for_destination(rep, dst));
     rep->hb_echo_sent++;
     return net_sendto(rep->socket, buf.data, plen, dst);
 }
