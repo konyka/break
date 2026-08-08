@@ -495,6 +495,41 @@ TEST(load_binary_rejects_duplicate_unknown_component_instance_owner)
     remove(path);
 }
 
+/* A v1 COMPONENTS chunk is grouped by type, so a future type remains a single
+ * record even when this engine skips its payload for compatibility. */
+TEST(load_binary_rejects_duplicate_unknown_component_type)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_bscn_duplicate_unknown_component_type.bscn");
+    const u32 entity_chunk[] = { 1u, 1u, 0u };
+    const u32 component_chunk[] = {
+        2u,
+        ECS_MAX_COMPONENTS, sizeof(u32), 1u, 0u, 0x11111111u,
+        ECS_MAX_COMPONENTS, sizeof(u32), 0u
+    };
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION, .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_ENTITIES, .offset = base, .size = sizeof(entity_chunk) },
+        { .type = BSCN_CHUNK_COMPONENTS, .offset = base + sizeof(entity_chunk),
+          .size = sizeof(component_chunk) }
+    };
+
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(entity_chunk, sizeof(entity_chunk), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(component_chunk, sizeof(component_chunk), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 /* The writer emits exactly one COMPONENTS chunk; multiple chunks make the
  * final component state depend on table order. */
 TEST(load_binary_rejects_duplicate_components_chunk)
@@ -1644,6 +1679,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_rejects_declared_component_without_type_record);
     RUN_TEST(load_binary_rejects_duplicate_component_instance_owner);
     RUN_TEST(load_binary_rejects_duplicate_unknown_component_instance_owner);
+    RUN_TEST(load_binary_rejects_duplicate_unknown_component_type);
     RUN_TEST(load_binary_rejects_duplicate_components_chunk);
     RUN_TEST(load_binary_rejects_duplicate_scene_nodes_chunk);
     RUN_TEST(load_binary_rejects_duplicate_resources_chunk);

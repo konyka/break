@@ -703,13 +703,18 @@ static bool load_components_chunk(World *w, Reader *r,
         return false;
     u64 seen_types_lo = 0;
     u64 seen_types_hi = 0;
+    ComponentType seen_type_ids[ECS_MAX_COMPONENTS];
     u64 seen_instances[ECS_ENTITY_BITMAP_WORDS];
     for (u32 t = 0; t < type_count; t++) {
         u32 type = 0, size = 0, instances = 0;
         if (!rd_u32(r, &type) || !rd_u32(r, &size) || !rd_u32(r, &instances)) return false;
-        /* Current-format component IDs are unique.  Use fixed bitsets rather
-         * than allocating a per-load set; out-of-range future IDs remain
-         * skippable for forward compatibility. */
+        /* Current-format component IDs are unique, including an unknown ID
+         * whose payload we skip.  The small fixed list preserves that v1
+         * invariant without narrowing future ID values or allocating memory. */
+        for (u32 prev = 0; prev < t; prev++) {
+            if (seen_type_ids[prev] == type) return false;
+        }
+        seen_type_ids[t] = type;
         if (type < 64u) {
             u64 bit = (u64)1 << type;
             if (seen_types_lo & bit) return false;
