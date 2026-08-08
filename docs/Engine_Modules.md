@@ -1194,6 +1194,7 @@ on_spawn:
 - **热重载**: `script_reload_if_changed` 检测文件变更并重新解析
 - **事件钩子**: `on_update`, `on_spawn` 等命名函数绑定引擎事件
 - **全局变量**: 引擎与脚本间双向数据传递
+- **Lua 物理句柄**: `engine.*` 的 body id 为 1-based，必须可表示为 `u32`；0、负值和超范围整数均安全拒绝，绝不截断别名到其他刚体
 
 **单元测试：** `tests/test_script.c` (9 测试用例)
 

@@ -172,6 +172,37 @@ TEST(engine_id_zero_is_invalid)
     physics_world_destroy(pw);
 }
 
+TEST(engine_out_of_range_body_id_is_invalid)
+{
+    /* R465: Lua integers are wider than u32 on supported hosts. A body id of
+     * 2^32+1 used to truncate to 1 before the 1-based conversion, mutating
+     * body 0 through every body binding. */
+    PhysicsWorld *pw = physics_world_create(64);
+    physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[0].velocity = vec3(4, 5, 6);
+    pw->bodies[0].ccd = false;
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+    ASSERT_TRUE(lua_script_load_string(&ls,
+        "bad = 4294967297\n"
+        "engine.set_pos(bad, 9, 9, 9)\n"
+        "engine.set_vel(bad, 8, 8, 8)\n"
+        "engine.apply_impulse(bad, 7, 7, 7)\n"
+        "engine.body_set_ccd(bad, true)\n"
+        "n = engine.get_pos(bad)\n", "t"));
+
+    ASSERT_TRUE(fabsf(pw->bodies[0].position.e[0] - 1.0f) < 1e-5f);
+    ASSERT_TRUE(fabsf(pw->bodies[0].velocity.e[0] - 4.0f) < 1e-5f);
+    ASSERT_FALSE(pw->bodies[0].ccd);
+    /* Invalid get_pos returns no Lua values, so assignment leaves n as nil. */
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "n", -1.0) - (-1.0)) < 1e-9);
+
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
 TEST(engine_pos_vel_impulse)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -374,6 +405,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(engine_body_count_and_spawn);
     RUN_TEST(engine_spawn_first_body_is_lua_id_1);
     RUN_TEST(engine_id_zero_is_invalid);
+    RUN_TEST(engine_out_of_range_body_id_is_invalid);
     RUN_TEST(engine_pos_vel_impulse);
     RUN_TEST(engine_entity_count_binding);
     RUN_TEST(engine_bindings_null_host_safe);
