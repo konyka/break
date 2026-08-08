@@ -502,6 +502,24 @@ TEST(vfs_pak_bad_magic)
     vfs_destroy(vfs);
 }
 
+/* A PAK version selects its on-disk layout. Do not parse a future or stale
+ * version as the current PakEntry format merely because its magic matches. */
+TEST(vfs_pak_version_mismatch_rejected)
+{
+    PakHeader hdr = { .magic = VFS_PAK_MAGIC, .version = VFS_PAK_VERSION + 1u,
+                      .entry_count = 0, .name_table_size = 0 };
+    FILE *fp = fopen(TMP_PAK, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fwrite(&hdr, sizeof(hdr), 1, fp) == 1);
+    ASSERT_TRUE(fclose(fp) == 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_FALSE(vfs_mount_pak(vfs, TMP_PAK));
+    ASSERT_EQ(vfs->mount_count, 0u);
+    vfs_destroy(vfs);
+}
+
 TEST(vfs_pak_nonexistent)
 {
     VFS *vfs = vfs_create();
@@ -649,6 +667,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_pak_entry_data_past_eof_is_miss);
     RUN_TEST(vfs_pak_entry_count_above_tool_cap_rejected);
     RUN_TEST(vfs_pak_bad_magic);
+    RUN_TEST(vfs_pak_version_mismatch_rejected);
     RUN_TEST(vfs_pak_nonexistent);
     RUN_TEST(vfs_mount_limit);
     RUN_TEST(vfs_pak_header_constants);

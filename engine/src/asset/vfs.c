@@ -75,7 +75,8 @@ bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     if (file_size < 0 || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return false; }
 
     PakHeader hdr;
-    if (fread(&hdr, sizeof(hdr), 1, fp) != 1 || hdr.magic != VFS_PAK_MAGIC) {
+    if (fread(&hdr, sizeof(hdr), 1, fp) != 1 || hdr.magic != VFS_PAK_MAGIC ||
+        hdr.version != VFS_PAK_VERSION) {
         LOG_ERROR("VFS: invalid pak format '%s'", pak_path);
         fclose(fp);
         return false;
