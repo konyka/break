@@ -105,6 +105,9 @@ static bool bb_u32(ByteBuf *b, u32 v) { return bb_write(b, &v, sizeof(v)); }
 static bool scene_mat4_finite(const Mat4 *m);
 static bool scene_resource_finite(const SceneResource *res);
 
+/* Both BSCN and JSON loaders use this bound before staging scene nodes. */
+#define BSCN_MAX_LOAD_NODES (64u * 1024u)
+
 /* ---------------------------------------------------------------- */
 /* Live-entity enumeration                                          */
 /* ---------------------------------------------------------------- */
@@ -247,6 +250,7 @@ static bool emit_components_chunk(const World *w, const EntityMap *m, ByteBuf *o
 
 static bool emit_scene_nodes_chunk(const Scene *s, ByteBuf *out) {
     u32 n = s ? s->node_count : 0;
+    if (n > BSCN_MAX_LOAD_NODES) return false;
     if (!bb_u32(out, n)) return false;
     for (u32 i = 0; i < n; i++) {
         const SceneNode *nd = &s->nodes[i];
@@ -599,7 +603,6 @@ static void rollback_entities(World *w, Entity *ents, u32 count) {
 }
 
 #define BSCN_MAX_LOAD_ENTITIES ECS_MAX_ENTITIES
-#define BSCN_MAX_LOAD_NODES    (64u * 1024u)
 #define SCENE_NODE_FLAG_MASK   3u
 
 static bool load_entities_chunk(World *w, Reader *r,
@@ -1015,6 +1018,7 @@ static bool sb_hex_bytes(ByteBuf *b, const u8 *p, u32 n) {
 bool scene_save_json(const World *w, const Scene *s,
                      const char *path, const SerializeOptions *opts) {
     if (!w || !path) return false;
+    if (s && s->node_count > BSCN_MAX_LOAD_NODES) return false;
     bool pretty = (opts && opts->pretty_json);
 
     EntityMap m = {0};
