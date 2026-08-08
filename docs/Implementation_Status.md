@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R522 JSON 根文档完整消费审查（TDD）** — 加载器此前在读完根对象后直接报告成功，允许有效场景前缀后追加任意未解析值，使被附加的内容被静默忽略。现根对象闭合后仅允许 JSON 空白并要求指针抵达文件末尾；失败仍沿用既有 World/Scene 回滚。检查只在显式 JSON 加载尾部执行，O(尾部空白长度)，无分配或帧内成本。TDD：`load_json_rejects_trailing_content` 旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 70/70 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R523 JSON 对象成员分隔符审查（TDD）** — 加载器此前把对象成员后的逗号当作可选，错误接受相邻字段缺失逗号或对象尾逗号；这使格式解析与标准 JSON 和写入器不一致。现统一要求已读取的对象字段后只能紧接 `}`，或以一个逗号分隔且逗号后必须有下一字段，覆盖顶层、实体、组件与节点对象。检查仅在显式 JSON 加载时每个对象成员 O(1)，无分配或帧内成本。TDD：`load_json_rejects_invalid_object_member_separators` 覆盖四类对象的缺失及尾随逗号，旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 71/71 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R522 JSON 根文档完整消费审查（TDD）** — 加载器此前在读完根对象后直接报告成功，允许有效场景前缀后追加任意未解析值，使被附加的内容被静默忽略。现根对象闭合后仅允许 JSON 空白并要求指针抵达文件末尾；失败仍沿用既有 World/Scene 回滚。检查只在显式 JSON 加载尾部执行，O(尾部空白长度)，无分配或帧内成本。TDD：`load_json_rejects_trailing_content` 旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 70/70 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R521 JSON 组件 schema 字段唯一性审查（TDD）** — 写入器对每个组件对象仅输出一个 `type`、`size`、`data`，但加载器此前接受重复键并让后值改变类型、payload 尺寸或字节内容。现每条组件记录以三个局部标记拒绝这些已知字段的第二次出现；未知字段和旧字段缺失的兼容语义不变。检查仅在显式 JSON 加载时每个组件字段 O(1)，无新增分配或帧内成本。TDD：`load_json_rejects_duplicate_component_fields` 覆盖三种重复字段，旧代码错误成功，修复后拒绝。验证：定向 `test_scene_serial` 69/69 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

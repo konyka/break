@@ -1104,6 +1104,12 @@ static bool js_peek(JsonR *r, char c) {
     js_skip_ws(r);
     return (r->p < r->end && *r->p == c);
 }
+/* After an object member, require either its closing brace or one comma
+ * followed by another member.  JSON never permits a trailing comma. */
+static bool js_object_separator(JsonR *r) {
+    if (js_peek(r, '}')) return true;
+    return js_match(r, ',') && !js_peek(r, '}');
+}
 static bool js_u32(JsonR *r, u32 *out) {
     js_skip_ws(r);
     if (r->p >= r->end || !isdigit((unsigned char)*r->p)) return false;
@@ -1232,7 +1238,7 @@ static bool json_load_components(World *w, JsonR *r, Entity ent) {
                 if (!js_match(r, ':')) goto fail;
                 if (!js_skip_value(r)) goto fail;
             }
-            (void)js_match(r, ',');
+            if (!js_object_separator(r)) goto fail;
         }
         if (!js_match(r, '}')) goto fail;
 
@@ -1348,7 +1354,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                             if (!js_skip_string(&r) || !js_match(&r, ':') ||
                                 !js_skip_value(&r)) { ok = false; break; }
                         }
-                        (void)js_match(&r, ',');
+                        if (!js_object_separator(&r)) { ok = false; break; }
                     }
                     if (!ok) break;
                     if (!js_match(&r, '}')) { ok = false; break; }
@@ -1419,7 +1425,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                                 if (!js_skip_string(&r) || !js_match(&r, ':') ||
                                     !js_skip_value(&r)) { ok = false; break; }
                             }
-                            (void)js_match(&r, ',');
+                            if (!js_object_separator(&r)) { ok = false; break; }
                         }
                         nd->has_mesh = (flags & 1u) != 0;
                         nd->skinned  = (flags & 2u) != 0;
@@ -1446,7 +1452,7 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
                 ok = false; break;
             }
         }
-        (void)js_match(&r, ',');
+        if (!js_object_separator(&r)) { ok = false; break; }
     }
     ok = ok && js_match(&r, '}');
     /* A valid scene occupies the whole document; permit only trailing JSON

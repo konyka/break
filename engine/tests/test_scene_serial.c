@@ -950,6 +950,39 @@ TEST(load_json_rejects_trailing_content)
     remove(path);
 }
 
+/* JSON object members need exactly one comma between them and never one before
+ * the closing brace.  The tailored parser must not accept malformed syntax. */
+TEST(load_json_rejects_invalid_object_member_separators)
+{
+    char path[64];
+    test_tmp(path, sizeof path, "test_json_bad_object_separator.json");
+    const char *docs[] = {
+        "{\"version\":1 \"entities\":[]}",
+        "{\"version\":1,}",
+        "{\"version\":1,\"entities\":[{\"gen\":1 \"components\":[]}]}",
+        "{\"version\":1,\"entities\":[{\"gen\":1,}]}",
+        "{\"version\":1,\"entities\":[{\"components\":[{\"type\":1 \"size\":0}]}]}",
+        "{\"version\":1,\"entities\":[{\"components\":[{\"type\":1,}]}]}",
+        "{\"version\":1,\"nodes\":[{\"parent\":0 \"mesh\":0}]}",
+        "{\"version\":1,\"nodes\":[{\"parent\":0,}]}"
+    };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < (u32)(sizeof(docs) / sizeof(docs[0])); i++) {
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_TRUE(fwrite(docs[i], 1, strlen(docs[i]), fp) == strlen(docs[i]));
+        ASSERT_TRUE(fclose(fp) == 0);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_json(w, &dst, path));
+        scene_serial_free(&dst);
+    }
+
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_json_empty_path)
 {
     World w = {0};
@@ -1899,6 +1932,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_json_rejects_duplicate_entities_key);
     RUN_TEST(load_json_rejects_duplicate_nodes_key);
     RUN_TEST(load_json_rejects_trailing_content);
+    RUN_TEST(load_json_rejects_invalid_object_member_separators);
     RUN_TEST(save_json_empty_path);
     RUN_TEST(load_binary_zero_chunks);
     RUN_TEST(load_binary_rollback_orphans_on_bad_components);
