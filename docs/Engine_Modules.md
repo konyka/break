@@ -598,6 +598,9 @@ void  world_remove_component(World *w, Entity e, ComponentType id);
 组件 ID 必须小于 `ECS_MAX_COMPONENTS`；注册与增、取、删操作都会在访问固定
 `component_sizes[128]` 表之前拒绝越界 ID，避免无效调用破坏 archetype 布局。
 
+`world_query_cached()` 以 FNV-1a 哈希选择缓存槽，同时保存 128 位组件集合键做精确
+命中确认；不同集合发生哈希碰撞时会重新构建查询，绝不会复用错误的 archetype 列表。
+
 ### 5.5 查询迭代接口
 
 ```c

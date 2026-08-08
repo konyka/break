@@ -64,6 +64,11 @@ typedef struct {
     /* Cache fields */
     u32         cache_signature;  /* hash of component types for cache lookup */
     u32         cache_version;    /* world version when cache was populated */
+    /* R460: exact 128-component query key. The hash selects a cache bucket,
+     * but this mask prevents distinct query sets with a hash collision from
+     * aliasing the same cached result. */
+    u64         cache_type_mask_lo;
+    u64         cache_type_mask_hi;
     bool        cached;           /* true if this query result is cached */
     /* Exclude/Optional masks (component ID must be < 64) */
     u64         exclude_mask;     /* archetypes containing any of these are excluded */

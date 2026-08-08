@@ -799,19 +799,42 @@ static u32 query_signature_hash(const ComponentType *types, u32 count) {
     return hash;
 }
 
+/* Query component IDs are registry indices, so an exact 128-bit inclusion
+ * mask is a compact, O(count) cache key. Values outside that fixed registry
+ * are left uncached: they cannot match a valid archetype and need no slot. */
+static bool query_type_mask(const ComponentType *types, u32 count,
+                            u64 *out_lo, u64 *out_hi) {
+    u64 lo = 0u, hi = 0u;
+    for (u32 i = 0u; i < count; i++) {
+        ComponentType id = types[i];
+        if (id >= ECS_MAX_COMPONENTS) return false;
+        if (id < 64u) lo |= (u64)1u << id;
+        else          hi |= (u64)1u << (id - 64u);
+    }
+    *out_lo = lo;
+    *out_hi = hi;
+    return true;
+}
+
 Query *world_query_cached(World *w, const ComponentType *types, u32 count) {
     if (!w || !types || count == 0) return NULL;
 
     u32 sig = query_signature_hash(types, count);
+    u64 type_mask_lo, type_mask_hi;
+    if (!query_type_mask(types, count, &type_mask_lo, &type_mask_hi))
+        return world_query(w, types, count);
     u32 cache_slot = sig % ECS_QUERY_CACHE_SIZE;
 
     /* Check cache */
     u32 slot_idx = w->query_cache[cache_slot];
     if (slot_idx != 0xFFFFFFFF) {
         Query *q = &w->queries[slot_idx];
-        /* Verify signature match (handle hash collisions) and version */
+        /* A signature narrows the lookup but is not unique. Verify the exact
+         * component set before reusing a cached match list. */
         if (q->cache_signature == sig && q->cached &&
-            q->cache_version == w->cache_version) {
+            q->cache_version == w->cache_version &&
+            q->cache_type_mask_lo == type_mask_lo &&
+            q->cache_type_mask_hi == type_mask_hi) {
             return q; /* Cache hit */
         }
         /* Stale or collision - invalidate this cache entry */
@@ -822,6 +845,8 @@ Query *world_query_cached(World *w, const ComponentType *types, u32 count) {
     Query *q = world_query(w, types, count);
     q->cache_signature = sig;
     q->cache_version = w->cache_version;
+    q->cache_type_mask_lo = type_mask_lo;
+    q->cache_type_mask_hi = type_mask_hi;
     q->cached = true;
 
     /* Store in cache */

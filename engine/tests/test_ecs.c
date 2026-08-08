@@ -71,6 +71,36 @@ TEST(ecs_rejects_out_of_range_component_id) {
     world_destroy(w);
 }
 
+/* These distinct, sorted component sets collide under the query cache's
+ * FNV-1a signature. A cache hit must verify the actual query key too. */
+TEST(ecs_cached_query_hash_collision_does_not_alias) {
+    static const ComponentType first[]  = { 9u, 29u, 69u, 101u, 117u };
+    static const ComponentType second[] = { 21u, 28u, 50u, 83u, 91u };
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    for (u32 i = 0; i < 5u; i++) {
+        world_register_component(w, first[i], sizeof(u32));
+        world_register_component(w, second[i], sizeof(u32));
+    }
+
+    Entity e = world_create_entity(w);
+    ASSERT_TRUE(entity_valid(e));
+    for (u32 i = 0; i < 5u; i++) {
+        ASSERT_NOT_NULL(world_add_component(w, e, first[i]));
+    }
+
+    Query *first_query = world_query_cached(w, first, 5u);
+    ASSERT_NOT_NULL(first_query);
+    ASSERT_EQ(first_query->match_count, 1u);
+
+    Query *second_query = world_query_cached(w, second, 5u);
+    ASSERT_NOT_NULL(second_query);
+    ASSERT_EQ(second_query->match_count, 0u);
+
+    world_destroy(w);
+}
+
 /* ---- Entity Create ---- */
 
 TEST(ecs_entity_create) {
@@ -1042,6 +1072,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_register_component_size_change_rejected);
     RUN_TEST(ecs_rejects_out_of_range_component_id);
+    RUN_TEST(ecs_cached_query_hash_collision_does_not_alias);
     RUN_TEST(ecs_entity_create);
     RUN_TEST(ecs_entity_create_multiple);
     RUN_TEST(ecs_entity_destroy);
