@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R545 Prefab 文件大小保存对称性审查（TDD）** — `scene_save_prefab()` 复用 BSCN 格式及同一加载器的 64 MiB 输入上限，但此前绕过了 R543 主场景保存端检查，仍可成功写出随后必被拒绝的 prefab。现 prefab 在构造两个 chunk 后、打开输出文件前以 `u64` 汇总完整文件大小并拒绝超限。TDD：`save_prefab_rejects_files_above_load_limit` 用一个 64 MiB 合法组件使旧保存器错误成功，修复后拒绝。检查仅在显式 prefab 保存冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 92/92 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R546 GPU 粒子 fallback DrawBuf 契约审查（TDD）** — `particle.vert` 无条件读取带 indirect 命令头的 `DrawBuf`，但原 fallback 在 cull compute 管线不可用时既不绑定该 SSBO，也以普通 draw 驱动，导致未绑定存储缓冲读取和常见的零粒子输出；若 cull 输出缓冲创建失败还可能发布半初始化系统。现初始化始终创建渲染必需的 indirect/索引缓冲，cull 不可用时预填 `vertexCount=1`、`instanceCount=8192`、identity 索引表并仍绑定/执行同一 indirect draw；缓冲创建失败会完整回滚并返回 false。正常 GPU cull 热路径不变，fallback 只在初始化写入 32 KiB 索引表。TDD：新增 `test_particles` 的 `cull_fallback_builds_complete_indirect_command` 和短缓冲不修改用例，旧实现缺少 helper/契约而红，修复后通过；模块文档同步。验证：定向 `test_particles` 2/2；完整 Debug GNU 与全新 Clang 22/LLD Release 非图形 `ctest` 各 40/40 通过；`git diff --check` 通过。
+
+此前：**R545 Prefab 文件大小保存对称性审查（TDD）** — `scene_save_prefab()` 复用 BSCN 格式及同一加载器的 64 MiB 输入上限，但此前绕过了 R543 主场景保存端检查，仍可成功写出随后必被拒绝的 prefab。现 prefab 在构造两个 chunk 后、打开输出文件前以 `u64` 汇总完整文件大小并拒绝超限。TDD：`save_prefab_rejects_files_above_load_limit` 用一个 64 MiB 合法组件使旧保存器错误成功，修复后拒绝。检查仅在显式 prefab 保存冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 92/92 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R544 JSON 文件大小保存对称性审查（TDD）** — JSON 加载器同样在读取前限制输入至 64 MiB，但保存器此前可将组件 hex 编码为更大的文档并报告成功，随后被自身加载器拒绝。现 JSON 内存文档构造完成后、打开输出文件前检查实际字节数并拒绝超限。TDD：`save_json_rejects_files_above_load_limit` 用一个 32 MiB 合法组件（hex 后超过 64 MiB）使旧保存器错误成功，修复后拒绝。检查仅在显式 JSON 保存的冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 91/91 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

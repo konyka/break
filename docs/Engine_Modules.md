@@ -1411,7 +1411,7 @@ bool scene_instantiate_prefab(World *w, Scene *s,
 
 快捷键：`B` 保存 / `N` 加载 / `Shift+B` 导出 JSON
 
-**单元测试：** `tests/test_scene_serial.c` (44 测试用例，覆盖 BSCN 魔数/版本、加载回滚、截断/溢出、组件类型计数与非有限浮点边界、资源清单、prefab、JSON 格式)
+**单元测试：** `tests/test_scene_serial.c` (92 测试用例，覆盖 BSCN 魔数/版本、加载回滚、截断/溢出、组件类型计数与非有限浮点边界、资源清单、prefab、JSON 格式)
 
 ---
 
@@ -1573,7 +1573,21 @@ typedef struct {
 
 **单元测试：** `tests/test_occlusion_visibility.c` (13 测试用例，覆盖可见性查询边界条件：全可见、部分遮挡、全遮挡、越界返回可见、禁用返回可见、NULL readback 返回可见、可见对象计数)
 
-### 12.5 Terrain 地形系统 (`terrain.c` / `terrain.h`)
+### 12.5 GPU 粒子 (`particles.c` / `particles.h`)
+
+粒子更新和存活筛选均在 GPU 上执行。渲染使用一个 `DrawIndirectCommand`
+和紧随其后的存活槽位索引表，正常路径只为存活粒子调度顶点着色器，避免
+8,192 个空槽位的顶点调用。
+
+当 cull compute 管线不可用时，初始化会预填同一缓冲的 identity 索引及完整
+indirect 命令，并继续绑定 `DrawBuf` 后走 indirect draw；因此 fallback 不会
+读取未绑定 SSBO，也不会改变顶点着色器的数据契约。indirect 命令缓冲本身是
+渲染必需资源，创建失败会使粒子系统初始化失败而非发布半初始化状态。
+
+**单元测试：** `tests/test_particles.c` (2 测试用例，覆盖 fallback indirect
+命令头、完整 identity 索引表及短缓冲不修改)
+
+### 12.6 Terrain 地形系统 (`terrain.c` / `terrain.h`)
 
 程序化地形生成、高度查询、编辑与侵蚀系统。
 
@@ -1609,7 +1623,7 @@ typedef struct {
 
 **单元测试：** `tests/test_terrain.c` (18 测试用例，覆盖 NULL 安全、中心采样、均匀高度图、双线性插值、角点铗位、高度修改/衰减、平坦化、侵蚀峰值削减、5 种预设生成、噪声图章、象限跟踪)
 
-### 12.6 Input 输入状态机 (`engine/src/platform/input.c` / `input.h`)
+### 12.7 Input 输入状态机 (`engine/src/platform/input.c` / `input.h`)
 
 跨平台输入状态管理，支持键盘、鼠标、滚轮、手柄的边沿检测（just pressed / just released / held）。
 

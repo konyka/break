@@ -63,3 +63,16 @@ void  particles_shutdown(ParticleSystem *ps);
 void  particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt);
 void  particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd);
 void  particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj);
+
+/* Build a valid DrawIndirectCommand fallback when GPU culling is unavailable. */
+static inline void particles_build_cull_fallback(u32 *words, usize word_count) {
+    const usize required_words = 4u + PARTICLES_MAX;
+    if (!words || word_count < required_words) return;
+
+    /* Draw every slot through the same indexed DrawIndirect layout used by culling. */
+    words[0] = 1u;
+    words[1] = PARTICLES_MAX;
+    words[2] = 0u;
+    words[3] = 0u;
+    for (u32 i = 0; i < PARTICLES_MAX; i++) words[4u + i] = i;
+}

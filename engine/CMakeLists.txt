@@ -766,6 +766,11 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_terrain PRIVATE m)
     add_test(NAME test_terrain COMMAND test_terrain)
 
+    # test_particles: CPU-side fallback command construction for the GPU particle path
+    add_executable(test_particles tests/test_particles.c)
+    target_include_directories(test_particles PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_particles COMMAND test_particles)
+
     # test_input: input state machine & tracking
     add_executable(test_input tests/test_input.c
         src/platform/input.c)

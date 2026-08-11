@@ -5,7 +5,6 @@
 #include <string.h>
 #include <core/shader_io.h>
 
-
 bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     memset(ps, 0, sizeof(*ps));
     ps->device = dev;
@@ -130,14 +129,15 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     /* ---- Cull output: DrawIndirectCommand + alive indices (R167) ----
      * Layout: vertexCount, instanceCount, firstVertex, firstInstance, indices[].
      * STORAGE|INDIRECT so compute can write instanceCount and draw_indirect can read. */
-    usize cull_bytes = 4u * sizeof(u32) + PARTICLES_MAX * sizeof(u32);
+    const usize cull_words = 4u + PARTICLES_MAX;
+    usize cull_bytes = cull_words * sizeof(u32);
     u32 *cull_init = (u32 *)calloc(1, cull_bytes);
     if (!cull_init) {
         LOG_WARN("Particle: cull init alloc failed");
         particles_shutdown(ps);
         return false;
     }
-    cull_init[0] = 1u; /* vertexCount; instanceCount stays 0 */
+    particles_build_cull_fallback(cull_init, cull_words);
     RHIBufferDesc cull_desc_buf = {
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
         .size = cull_bytes,
@@ -145,7 +145,12 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     };
     ps->cull_buf = rhi_buffer_create(dev, &cull_desc_buf);
     free(cull_init);
-    ps->cull_ready = rhi_handle_valid(ps->cull_buf) && rhi_handle_valid(ps->cull_pipeline);
+    if (!rhi_handle_valid(ps->cull_buf)) {
+        LOG_WARN("Particle: indirect command buffer creation failed");
+        particles_shutdown(ps);
+        return false;
+    }
+    ps->cull_ready = rhi_handle_valid(ps->cull_pipeline);
 
     /* R174: Spawn claim counter for exact emit_rate budgeting. */
     u32 spawn_zero = 0u;
@@ -324,20 +329,13 @@ void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, co
 
     rhi_cmd_bind_pipeline(cmd, ps->render_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
-    if (ps->cull_ready)
-        rhi_cmd_bind_storage_buffer(cmd, ps->cull_buf, 1);
+    rhi_cmd_bind_storage_buffer(cmd, ps->cull_buf, 1);
 
     if (ps->_loc_view >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_view, view);
     if (ps->_loc_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_proj, proj);
 
-    if (ps->cull_ready) {
-        /* R167: GPU-driven instance count — only alive particles invoke VS.
-         * Avoids scheduling PARTICLES_MAX (8192) empty early-out invocations.
-         * No CPU readback (R86-2): last_alive_count stays as upper-bound hint. */
-        rhi_cmd_draw_indirect(ps->device, ps->cull_buf, 0, 1, 16);
-        ps->last_alive_count = PARTICLES_MAX; /* upper bound; exact needs readback */
-    } else {
-        rhi_cmd_draw(cmd, 1, PARTICLES_MAX);
-        ps->last_alive_count = PARTICLES_MAX;
-    }
+    /* The cull-unavailable fallback is prefilled with identity indices, so the
+     * vertex shader always receives its declared DrawBuf SSBO. */
+    rhi_cmd_draw_indirect(ps->device, ps->cull_buf, 0, 1, 16);
+    ps->last_alive_count = PARTICLES_MAX; /* upper bound; exact needs readback */
 }
