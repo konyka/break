@@ -1740,6 +1740,11 @@ bool scene_save_prefab(const World *w, const Entity *entities,
     bool ok = emit_entities_chunk(w, &m, &chunks[0]) &&
               emit_components_chunk(w, &m, &chunks[1]);
 
+    u64 file_size = (u64)sizeof(BscnHeader) +
+                    2u * (u64)sizeof(BscnChunkEntry) +
+                    chunks[0].size + chunks[1].size;
+    if (ok && file_size > BSCN_MAX_FILE_BYTES) ok = false;
+
     FILE *fp = NULL;
     if (ok) {
         fp = fopen(path, "wb");

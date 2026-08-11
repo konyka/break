@@ -752,7 +752,7 @@ bool scene_load_json(World *w, Scene *s, const char *path);
 bool scene_instantiate_prefab(World *w, Scene *s, const char *path, Vec3 position);
 ```
 
-二进制、JSON 与 prefab 保存仅在全部写入且 `fclose` 成功后返回成功；缓冲区延迟报告的 I/O 错误会向调用者返回失败，避免将不完整场景当作已持久化数据。
+二进制、JSON 与 prefab 保存仅在全部写入且 `fclose` 成功后返回成功；BSCN 与 prefab 在打开输出前均拒绝超过加载端 64 MiB 限制的完整文件，缓冲区延迟报告的 I/O 错误会向调用者返回失败，避免将不完整或不可重新加载的场景当作已持久化数据。
 
 **特性**：
 - JSON 反序列化支持 materials、meshes、skinned_meshes、nodes、anim_clips 全字段解析

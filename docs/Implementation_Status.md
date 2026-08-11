@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R544 JSON 文件大小保存对称性审查（TDD）** — JSON 加载器同样在读取前限制输入至 64 MiB，但保存器此前可将组件 hex 编码为更大的文档并报告成功，随后被自身加载器拒绝。现 JSON 内存文档构造完成后、打开输出文件前检查实际字节数并拒绝超限。TDD：`save_json_rejects_files_above_load_limit` 用一个 32 MiB 合法组件（hex 后超过 64 MiB）使旧保存器错误成功，修复后拒绝。检查仅在显式 JSON 保存的冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 91/91 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+最近更新：**R545 Prefab 文件大小保存对称性审查（TDD）** — `scene_save_prefab()` 复用 BSCN 格式及同一加载器的 64 MiB 输入上限，但此前绕过了 R543 主场景保存端检查，仍可成功写出随后必被拒绝的 prefab。现 prefab 在构造两个 chunk 后、打开输出文件前以 `u64` 汇总完整文件大小并拒绝超限。TDD：`save_prefab_rejects_files_above_load_limit` 用一个 64 MiB 合法组件使旧保存器错误成功，修复后拒绝。检查仅在显式 prefab 保存冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 92/92 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
+
+此前：**R544 JSON 文件大小保存对称性审查（TDD）** — JSON 加载器同样在读取前限制输入至 64 MiB，但保存器此前可将组件 hex 编码为更大的文档并报告成功，随后被自身加载器拒绝。现 JSON 内存文档构造完成后、打开输出文件前检查实际字节数并拒绝超限。TDD：`save_json_rejects_files_above_load_limit` 用一个 32 MiB 合法组件（hex 后超过 64 MiB）使旧保存器错误成功，修复后拒绝。检查仅在显式 JSON 保存的冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 91/91 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
 此前：**R543 BSCN 文件大小保存对称性审查（TDD）** — 加载器在读取前限制 BSCN 至 64 MiB，但保存器此前仍可成功写出更大的合法 chunk 流，制造自身必拒绝的文件。现保存器在构造全部 chunk 后、打开输出文件前用 `u64` 汇总 header、table 与 payload，并拒绝超过同一上限的结果。TDD：`save_binary_rejects_files_above_load_limit` 以一个 64 MiB 的合法组件使旧保存器错误成功，修复后拒绝。检查仅在显式 BSCN 保存的冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 90/90 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 
