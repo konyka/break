@@ -1721,7 +1721,8 @@ typedef struct {
 - `async_loader_init(thread_count, vfs)` — 初始化 I/O 线程池
 - `async_loader_request(path, callback, user_data)` — 提交异步加载请求（默认优先级）
 - `async_loader_request_priority(path, callback, user_data, priority)` — 提交带优先级的加载请求（priority 越小越优先）
-- `async_loader_request_range(path, offset, size, callback, user_data, priority)` — 范围加载
+- `async_loader_request_range(path, offset, length, callback, user_data)` — 范围加载；`length == 0` 时从 `offset` 读取至文件末尾
+- `async_loader_request_range_priority(...)` — 带优先级的范围加载
 - `async_loader_tick()` — 主线程回调分发，每帧调用
 - `async_loader_shutdown()` — 关闭线程池
 
@@ -1751,7 +1752,7 @@ typedef struct {
 2. 主循环每帧 `tick()` 处理 I/O 完成回调 + `decode_pipeline_tick()` 处理解码完成回调
 3. 关闭时 `shutdown()` 等待 I/O/解码线程退出，并同步交付尚未由 `tick()` 分发的最终回调：普通 READY 请求和已完成纹理解码请求均保留数据所有权转交，未完成请求以 `(NULL, 0)` 通知；每个已接受请求至多回调一次
 
-**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/优先级出队顺序/解码管线端到端、关闭时 queued/READY/decode-ready completion 的一次性回调交付)
+**单元测试：** `tests/test_async_loader.c` (覆盖基本加载/取消/范围读至文件末尾/优先级出队顺序/解码管线端到端、关闭时 queued/READY/decode-ready completion 的一次性回调交付)
 
 ---
 

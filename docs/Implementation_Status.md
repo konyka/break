@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R547 NetRep 轮转清理陈旧基线 peer（TDD）** — R435 的 `delta.log` 轮转会把当前 peer 集合写回 `.peer` 基线，但此前不会删除已被驱逐的旧 `peer_*.peer` 文件；下一次 `peer_load_dir()` 扫描目录时会将陈旧 peer 复活。现 `peer_save_dir()` 在所有当前基线文件成功写入后清理自身命名空间中的旧 `peer_*.peer` 条目，轮转后的快照与内存 peer 集合一致；清理失败会报告失败。TDD：`peer_delta_rotate_removes_stale_baseline_peers` 先写两 peer 基线，再缩减为一 peer 触发轮转，旧实现加载出 2 个 peer 而红，修复后 51/51 通过。验证：定向 `test_net_replication` 51/51；Debug GNU 与全新 Clang 22/LLD Release 非图形 `ctest` 各 40/40 通过；`git diff --check` 通过。
+最近更新：**R548 异步 range 读至文件末尾契约（TDD）** — `async_loader_request_range()` 的公开 API 约定 `length == 0` 为从 `offset` 读至文件尾，但实现此前直接拒绝该合法请求，且内部以 `range_length > 0` 错把它走成完整文件加载。现请求记录显式区分 range 与完整文件；零长度 range 按可用字节数读取至文件尾，正长度 range 仍严格拒绝短读。TDD：`async_loader_range_zero_reads_to_end` 在 6-byte 文件从 offset 2 请求零长度，旧代码返回 ID 0 而红，修复后回调接收 4 bytes。验证：定向 `test_async_loader` 17/17；双构建非图形全量与 `git diff --check` 待本轮完成。
+
+此前：**R547 NetRep 轮转清理陈旧基线 peer（TDD）** — R435 的 `delta.log` 轮转会把当前 peer 集合写回 `.peer` 基线，但此前不会删除已被驱逐的旧 `peer_*.peer` 文件；下一次 `peer_load_dir()` 扫描目录时会将陈旧 peer 复活。现 `peer_save_dir()` 在所有当前基线文件成功写入后清理自身命名空间中的旧 `peer_*.peer` 条目，轮转后的快照与内存 peer 集合一致；清理失败会报告失败。TDD：`peer_delta_rotate_removes_stale_baseline_peers` 先写两 peer 基线，再缩减为一 peer 触发轮转，旧实现加载出 2 个 peer 而红，修复后 51/51 通过。验证：定向 `test_net_replication` 51/51；Debug GNU 与全新 Clang 22/LLD Release 非图形 `ctest` 各 40/40 通过；`git diff --check` 通过。
 
 此前：**R545 Prefab 文件大小保存对称性审查（TDD）** — `scene_save_prefab()` 复用 BSCN 格式及同一加载器的 64 MiB 输入上限，但此前绕过了 R543 主场景保存端检查，仍可成功写出随后必被拒绝的 prefab。现 prefab 在构造两个 chunk 后、打开输出文件前以 `u64` 汇总完整文件大小并拒绝超限。TDD：`save_prefab_rejects_files_above_load_limit` 用一个 64 MiB 合法组件使旧保存器错误成功，修复后拒绝。检查仅在显式 prefab 保存冷路径执行，无额外分配或帧内成本。验证：定向 `test_scene_serial` 92/92 通过；完整 Debug GNU 与干净 Clang/LLD Release 非图形 `ctest` 各 39/39 通过；`git diff --check` 通过。
 

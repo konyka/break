@@ -36,6 +36,7 @@ typedef struct {
     /* Chunked loading support */
     usize             range_offset;  /* byte offset for partial reads (0 = from start) */
     usize             range_length;  /* bytes to read (0 = entire file) */
+    bool              range_request; /* distinguish range-to-end from full-file load */
     /* Priority (lower = higher priority) */
     i32               priority;
     bool              decode_texture; /* run stbi on a decode worker after full read */
@@ -262,12 +263,13 @@ static void io_worker_run(void) {
         }
 
         /* Perform the actual file read through VFS */
-        if (req->range_length > 0) {
+        if (req->range_request) {
             /* Range-based read (streaming mipmap levels, etc.) */
             VFSFile *f = vfs_open(g_loader.vfs, req->path);
             if (f && f->size > req->range_offset) {
                 usize avail = f->size - req->range_offset;
-                usize to_read = req->range_length < avail ? req->range_length : avail;
+                usize to_read = (req->range_length == 0 || req->range_length > avail)
+                              ? avail : req->range_length;
                 if (to_read > (usize)UINT32_MAX) {
                     /* R140: Range too large for u32 size field — reject */
                     vfs_close(f);
@@ -285,7 +287,7 @@ static void io_worker_run(void) {
                      * Truncated files (to_read < range_length) used to finalize as
                      * READY with a short buffer — mipmap_stream then uploaded
                      * partial/corrupt texels and kept wrong resident-byte accounting. */
-                    if (to_read < req->range_length) {
+                    if (req->range_length > 0 && to_read < req->range_length) {
                         free(data);
                         req->data = NULL;
                         req->size = 0;
@@ -507,12 +509,11 @@ void async_loader_shutdown(void) {
 
 static u64 async_submit_request(const char *path, AsyncLoadCallback callback, void *user_data,
                                  usize range_offset, usize range_length,
-                                 i32 priority, bool decode_texture) {
+                                 i32 priority, bool decode_texture, bool range_request) {
     if (!path || !callback) return 0;
     /* Workers read this fixed-size copy after submission; never queue a
      * request whose full source identity cannot be retained. */
     if (strlen(path) >= sizeof(g_loader.requests[0].path)) return 0;
-    if (range_length == 0 && decode_texture == false && range_offset > 0) return 0;
 
     /* R242: Scan for a free slot and claim it atomically (CAS UNLOADED->LOADING).
      * The old code probed a single round-robin slot and dropped the request if
@@ -553,6 +554,7 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
     req->id = id;
     req->range_offset = range_offset;
     req->range_length = range_length;
+    req->range_request = range_request;
     req->priority = priority;
     req->decode_texture = decode_texture;
     /* R242: state is already ASSET_LOADING (set by the CAS claim above). Field
@@ -582,7 +584,7 @@ static u64 async_submit_request(const char *path, AsyncLoadCallback callback, vo
 
 u64 async_loader_request(const char *path, AsyncLoadCallback callback, void *user_data) {
     return async_submit_request(path, callback, user_data, 0, 0,
-                                ASYNC_PRIORITY_DEFAULT, false);
+                                ASYNC_PRIORITY_DEFAULT, false, false);
 }
 
 static void async_loader_drain_decoded_results(bool enqueue_completions) {
@@ -706,25 +708,23 @@ u32 async_loader_pending_count(void) {
 
 u64 async_loader_request_range(const char *path, usize offset, usize length,
                                 AsyncLoadCallback callback, void *user_data) {
-    if (length == 0) return 0;
     return async_submit_request(path, callback, user_data, offset, length,
-                                ASYNC_PRIORITY_DEFAULT, false);
+                                ASYNC_PRIORITY_DEFAULT, false, true);
 }
 
 u64 async_loader_request_range_priority(const char *path, usize offset, usize length,
                                          AsyncLoadCallback callback, void *user_data,
                                          i32 priority) {
-    if (length == 0) return 0;
     return async_submit_request(path, callback, user_data, offset, length,
-                                priority, false);
+                                priority, false, true);
 }
 
 u64 async_loader_request_priority(const char *path, AsyncLoadCallback callback,
                                    void *user_data, i32 priority) {
-    return async_submit_request(path, callback, user_data, 0, 0, priority, false);
+    return async_submit_request(path, callback, user_data, 0, 0, priority, false, false);
 }
 
 u64 async_loader_request_texture(const char *path, AsyncLoadCallback callback,
                                   void *user_data, i32 priority) {
-    return async_submit_request(path, callback, user_data, 0, 0, priority, true);
+    return async_submit_request(path, callback, user_data, 0, 0, priority, true, false);
 }

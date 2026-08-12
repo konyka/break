@@ -418,6 +418,51 @@ TEST(async_loader_range_truncated_fails)
     remove(pr);
 }
 
+/* The public range API documents length=0 as "read to end". The old wrapper
+ * rejected that request before it reached a worker. */
+static _Atomic int g_range_to_end_called;
+static _Atomic int g_range_to_end_size;
+
+static void range_to_end_cb(void *user, void *data, u32 size) {
+    (void)user;
+    atomic_store(&g_range_to_end_called, 1);
+    atomic_store(&g_range_to_end_size, (int)size);
+    if (data) free(data);
+}
+
+TEST(async_loader_range_zero_reads_to_end)
+{
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    vfs_mount_dir(vfs, "/tmp");
+
+    char path[128];
+    test_tmp(path, sizeof path, "async_range_to_end.bin");
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    const u8 payload[] = { 1, 2, 3, 4, 5, 6 };
+    ASSERT_EQ(fwrite(payload, 1, sizeof payload, f), sizeof payload);
+    ASSERT_EQ(fclose(f), 0);
+
+    async_loader_init(1, vfs);
+    atomic_store(&g_range_to_end_called, 0);
+    atomic_store(&g_range_to_end_size, 0);
+    u64 id = async_loader_request_range(strrchr(path, '/') + 1, 2, 0,
+                                        range_to_end_cb, NULL);
+    ASSERT_NEQ(id, (u64)0);
+    for (int i = 0; i < 200; i++) {
+        async_loader_tick();
+        if (atomic_load(&g_range_to_end_called)) break;
+        for (volatile int j = 0; j < 50000; j++) { (void)j; }
+    }
+    ASSERT_EQ(atomic_load(&g_range_to_end_called), 1);
+    ASSERT_EQ(atomic_load(&g_range_to_end_size), 4);
+
+    async_loader_shutdown();
+    vfs_destroy(vfs);
+    remove(path);
+}
+
 /* R402: completion ring must not overwrite when main thread drains slowly. */
 static _Atomic int g_burst_cb_count;
 
@@ -659,6 +704,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(async_loader_priority_ordering);
     RUN_TEST(async_loader_decode_non_blocking);
     RUN_TEST(async_loader_range_truncated_fails);
+    RUN_TEST(async_loader_range_zero_reads_to_end);
     RUN_TEST(async_loader_completion_burst);
     RUN_TEST(async_loader_shutdown_fires_pending_callbacks);
     RUN_TEST(async_loader_shutdown_drains_ready_completion);
