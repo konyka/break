@@ -558,6 +558,43 @@ TEST(vfs_pak_nonexistent)
     vfs_destroy(vfs);
 }
 
+/* The mounted PAK path is retained in VFS_MAX_PATH bytes just like a
+ * directory mount. Reject a longer source path instead of silently storing a
+ * different truncated identity. */
+TEST(vfs_mount_pak_rejects_path_truncation)
+{
+    char base[128], dir[512], path[1024];
+    test_tmp(base, sizeof(base), "r549_vfs_root");
+    ASSERT_EQ(mkdir(base, 0755), 0);
+    int dn = snprintf(dir, sizeof(dir), "%s", base);
+    ASSERT_TRUE(dn >= 0 && (usize)dn < sizeof(dir));
+    while ((usize)dn < 250u) {
+        usize part = 70u;
+        if ((usize)dn + 1u + part > 250u) part = 250u - (usize)dn - 1u;
+        dir[dn++] = '/';
+        memset(dir + dn, 'q', part);
+        dn += (int)part;
+        dir[dn] = '\0';
+        ASSERT_EQ(mkdir(dir, 0755), 0);
+    }
+    int n = snprintf(path, sizeof(path), "%s/archive.pak", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(path));
+    PakHeader hdr = { .magic = VFS_PAK_MAGIC, .version = VFS_PAK_VERSION,
+                      .entry_count = 0u, .name_table_size = 0u };
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&hdr, sizeof(hdr), 1u, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    VFS *vfs = vfs_create();
+    ASSERT_NOT_NULL(vfs);
+    ASSERT_FALSE(vfs_mount_pak(vfs, path));
+    ASSERT_EQ(vfs->mount_count, 0u);
+    vfs_destroy(vfs);
+    remove(path);
+    remove_deep_dir(dir, base);
+}
+
 TEST(vfs_mount_limit)
 {
     VFS *vfs = vfs_create();
@@ -700,6 +737,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vfs_pak_bad_magic);
     RUN_TEST(vfs_pak_version_mismatch_rejected);
     RUN_TEST(vfs_pak_nonexistent);
+    RUN_TEST(vfs_mount_pak_rejects_path_truncation);
     RUN_TEST(vfs_mount_limit);
     RUN_TEST(vfs_pak_header_constants);
     RUN_TEST(vfs_read_partial);

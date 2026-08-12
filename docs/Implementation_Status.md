@@ -4,7 +4,9 @@
 > 它依据源码逐一核查，纠正 `PureC_Engine_ExecutionPlan.md` 中被高估为"全部完成"的标记。
 > 状态分级：完整 / 部分 / 桩(占位) / 缺失。每轮补全工作完成后更新对应行。
 
-最近更新：**R548 异步 range 读至文件末尾契约（TDD）** — `async_loader_request_range()` 的公开 API 约定 `length == 0` 为从 `offset` 读至文件尾，但实现此前直接拒绝该合法请求，且内部以 `range_length > 0` 错把它走成完整文件加载。现请求记录显式区分 range 与完整文件；零长度 range 按可用字节数读取至文件尾，正长度 range 仍严格拒绝短读。TDD：`async_loader_range_zero_reads_to_end` 在 6-byte 文件从 offset 2 请求零长度，旧代码返回 ID 0 而红，修复后回调接收 4 bytes。验证：定向 `test_async_loader` 17/17；双构建非图形全量与 `git diff --check` 待本轮完成。
+最近更新：**R549 VFS PAK 挂载路径截断契约（TDD）** — 目录挂载已拒绝超过 `VFS_MAX_PATH` 的根路径，但 PAK 挂载此前仍会打开并成功注册超长路径，只把 mount 记录静默截断到 260-byte 缓冲。现 `vfs_mount_pak()` 在打开文件前复用同一长度检查，超长 PAK 路径不占用挂载槽位。TDD：`vfs_mount_pak_rejects_path_truncation` 使用真实超长嵌套路径；旧实现错误成功，修复后 VFS 33/33 通过。验证：定向 `test_vfs` 33/33；Debug GNU 与全新 Clang 22/LLD Release 非图形 `ctest` 各 40/40 通过；`git diff --check` 通过。
+
+此前：**R548 异步 range 读至文件末尾契约（TDD）** — `async_loader_request_range()` 的公开 API 约定 `length == 0` 为从 `offset` 读至文件尾，但实现此前直接拒绝该合法请求，且内部以 `range_length > 0` 错把它走成完整文件加载。现请求记录显式区分 range 与完整文件；零长度 range 按可用字节数读取至文件尾，正长度 range 仍严格拒绝短读。TDD：`async_loader_range_zero_reads_to_end` 在 6-byte 文件从 offset 2 请求零长度，旧代码返回 ID 0 而红，修复后回调接收 4 bytes。验证：定向 `test_async_loader` 17/17；双构建非图形全量与 `git diff --check` 待本轮完成。
 
 此前：**R547 NetRep 轮转清理陈旧基线 peer（TDD）** — R435 的 `delta.log` 轮转会把当前 peer 集合写回 `.peer` 基线，但此前不会删除已被驱逐的旧 `peer_*.peer` 文件；下一次 `peer_load_dir()` 扫描目录时会将陈旧 peer 复活。现 `peer_save_dir()` 在所有当前基线文件成功写入后清理自身命名空间中的旧 `peer_*.peer` 条目，轮转后的快照与内存 peer 集合一致；清理失败会报告失败。TDD：`peer_delta_rotate_removes_stale_baseline_peers` 先写两 peer 基线，再缩减为一 peer 触发轮转，旧实现加载出 2 个 peer 而红，修复后 51/51 通过。验证：定向 `test_net_replication` 51/51；Debug GNU 与全新 Clang 22/LLD Release 非图形 `ctest` 各 40/40 通过；`git diff --check` 通过。
 

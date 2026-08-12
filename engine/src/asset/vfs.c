@@ -61,6 +61,9 @@ bool vfs_mount_dir(VFS *vfs, const char *dir_path) {
 bool vfs_mount_pak(VFS *vfs, const char *pak_path) {
     /* R105-1: NULL check prevents fopen UB and LOG_ERROR %s NULL crash */
     if (!vfs || !pak_path || vfs->mount_count >= VFS_MAX_MOUNTS) return false;
+    /* The source path is retained in the fixed-size mount record; reject it
+     * before opening so a successful mount never stores a truncated identity. */
+    if (strlen(pak_path) >= VFS_MAX_PATH) return false;
 
     FILE *fp = fopen(pak_path, "rb");
     if (!fp) {
