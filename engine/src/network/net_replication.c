@@ -279,6 +279,60 @@ static bool net_repl_mkdir_p(const char *dir) {
 #endif
 }
 
+static bool net_repl_peer_file_path(char *path, usize cap, const char *dir,
+                                    u32 index, const NetRepPeerStats *peer) {
+    int n = snprintf(path, cap, "%s/peer_%03u_%s_%u.peer", dir, index,
+                     peer->addr.host, (u32)peer->addr.port);
+    return n >= 0 && (usize)n < cap;
+}
+
+/* Baseline snapshots own peer_*.peer files. Once a complete replacement has
+ * been written, discard prior snapshot entries so evicted peers cannot return
+ * on the next directory load. */
+static bool net_repl_peer_remove_stale_files(const NetReplicator *rep, const char *dir) {
+#if !defined(ENGINE_PLATFORM_WINDOWS)
+    DIR *d = opendir(dir);
+    if (!d) return false;
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t name_len = strlen(ent->d_name);
+        if (strncmp(ent->d_name, "peer_", 5u) != 0 || name_len < 10u ||
+            strcmp(ent->d_name + name_len - 5u, ".peer") != 0)
+            continue;
+
+        bool current = false;
+        for (u32 i = 0u; i < rep->peer_count; i++) {
+            char current_path[512];
+            if (!net_repl_peer_file_path(current_path, sizeof(current_path), dir,
+                                         i, &rep->peers[i])) {
+                closedir(d);
+                return false;
+            }
+            const char *current_name = strrchr(current_path, '/');
+            current_name = current_name ? current_name + 1 : current_path;
+            if (strcmp(ent->d_name, current_name) == 0) {
+                current = true;
+                break;
+            }
+        }
+        if (current) continue;
+
+        char stale_path[512];
+        int n = snprintf(stale_path, sizeof(stale_path), "%s/%s", dir, ent->d_name);
+        if (n < 0 || (usize)n >= sizeof(stale_path) || remove(stale_path) != 0) {
+            closedir(d);
+            return false;
+        }
+    }
+    return closedir(d) == 0;
+#else
+    (void)rep;
+    (void)dir;
+    return false;
+#endif
+}
+
 /* R434/R453: cumulative, wraparound-safe ack of the reliable window. For
  * socket receives, only slots addressed to the ack sender are eligible; the
  * address-less feed API intentionally retains its legacy single-peer behavior. */
@@ -803,9 +857,7 @@ bool net_replicator_peer_save_dir(const NetReplicator *rep, const char *dir) {
     for (u32 i = 0u; i < rep->peer_count; i++) {
         char path[512];
         const NetRepPeerStats *p = &rep->peers[i];
-        int n = snprintf(path, sizeof(path), "%s/peer_%03u_%s_%u.peer",
-                         dir, i, p->addr.host, (u32)p->addr.port);
-        if (n < 0 || (usize)n >= sizeof(path)) return false;
+        if (!net_repl_peer_file_path(path, sizeof(path), dir, i, p)) return false;
         FILE *f = fopen(path, "w");
         if (!f) return false;
         fprintf(f, "# break netrep peer v1\n");
@@ -814,7 +866,7 @@ bool net_replicator_peer_save_dir(const NetReplicator *rep, const char *dir) {
         if (fclose(f) != 0) write_ok = false;
         if (!write_ok) return false;
     }
-    return true;
+    return net_repl_peer_remove_stale_files(rep, dir);
 }
 
 bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {

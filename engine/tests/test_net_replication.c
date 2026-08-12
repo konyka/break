@@ -1454,6 +1454,57 @@ TEST(peer_delta_rotate)
 #endif
 }
 
+/* A rotation rewrites a snapshot, so peer files absent from that snapshot
+ * must not survive and resurrect peers which have since been evicted. */
+TEST(peer_delta_rotate_removes_stale_baseline_peers)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
+#else
+    NetReplicator rep = {0};
+    NetRepPeerStats a = {0}, b = {0};
+    strncpy(a.addr.host, "127.0.0.1", sizeof(a.addr.host) - 1u);
+    a.addr.port = 20820u;
+    a.valid = true;
+    strncpy(b.addr.host, "127.0.0.1", sizeof(b.addr.host) - 1u);
+    b.addr.port = 20821u;
+    b.valid = true;
+    rep.peers[0] = a;
+    rep.peers[1] = b;
+    rep.peer_count = 2u;
+
+    char dir[128], delta[160], stale[192];
+    test_tmp(dir, sizeof(dir), "r547_netrep_rotate_stale_peer");
+    ASSERT_EQ(mkdir(dir, 0755), 0);
+    ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
+    int n = snprintf(delta, sizeof(delta), "%s/delta.log", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(delta));
+    n = snprintf(stale, sizeof(stale), "%s/peer_001_127.0.0.1_20821.peer", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(stale));
+
+    /* Simulate an LRU/stale eviction before the next compaction. */
+    rep.peer_count = 1u;
+    rep.peers[0].dirty = true;
+    size_t old_max = netrep_delta_max_bytes;
+    netrep_delta_max_bytes = 1u;
+    ASSERT_TRUE(net_replicator_peer_save_delta(&rep, delta));
+    netrep_delta_max_bytes = old_max;
+
+    NetReplicator loaded = {0};
+    ASSERT_TRUE(net_replicator_peer_load_dir(&loaded, dir));
+    ASSERT_EQ(net_replicator_peer_count(&loaded), 1u);
+    ASSERT_TRUE(net_address_equal(&loaded.peers[0].addr, &a.addr));
+
+    char current[192];
+    n = snprintf(current, sizeof(current), "%s/peer_000_127.0.0.1_20820.peer", dir);
+    ASSERT_TRUE(n >= 0 && (usize)n < sizeof(current));
+    remove(delta);
+    remove(current);
+    remove(stale);
+    ASSERT_EQ(rmdir(dir), 0);
+#endif
+}
+
 TEST(peer_delta_no_rotate_below_threshold)
 {
     /* R435: below the threshold nothing changes — pure append, no rewrite. */
@@ -1997,6 +2048,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_save_delta);
     RUN_TEST(peer_save_delta_keeps_dirty_on_write_failure);
     RUN_TEST(peer_delta_rotate);
+    RUN_TEST(peer_delta_rotate_removes_stale_baseline_peers);
     RUN_TEST(peer_delta_no_rotate_below_threshold);
     RUN_TEST(ordered_channels_per_peer);
     RUN_TEST(peer_channels_evict_stalest);
