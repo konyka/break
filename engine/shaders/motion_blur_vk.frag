@@ -61,10 +61,14 @@ void main() {
         return;
     }
 
+    /* R550-C: scale the tap step by the pixel velocity magnitude. The old
+     * step (dir * strength / sample_count) made the total blur span
+     * step*sample_count == strength (~1px) regardless of speed — a near
+     * no-op. Span is now max_vel * strength px, clamped to 200px. */
     float max_vel = min(vel_len, 200.0);
     float sample_count = min(max_vel * u_mb_strength, 16.0);
     vec2 dir = velocity / max(vel_len, 0.001);
-    vec2 step_size = dir * u_mb_strength / max(sample_count, 1.0);
+    vec2 step_size = dir * max_vel * u_mb_strength / max(sample_count, 1.0);
 
     float jitter = interleaved_gradient_noise(gl_FragCoord.xy) - 0.5;
 
