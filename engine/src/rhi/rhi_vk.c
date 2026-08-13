@@ -30,10 +30,28 @@
 static _Atomic u32 g_validation_msg_count = 0;
 static bool        g_validation_gate_active = false;
 
-/* R439: guard with NDEBUG — the only consumer (messenger registration in
- * rhi_vk_init) is itself #ifndef NDEBUG, so Release builds would otherwise
- * trip -Werror=unused-function on this static. */
-#ifndef NDEBUG
+/* R550-E: explicit gate control replacing the R439 NDEBUG guard (whose
+ * Release behavior left the test_vulkan VALIDATION GATE permanently
+ * skipped). Activation rules, evaluated once at instance creation:
+ *  - Debug builds (!NDEBUG): enabled, as before;
+ *  - any build compiled with ENGINE_VK_VALIDATION: enabled;
+ *  - otherwise: enabled only when the embedder calls
+ *    rhi_vk_validation_set_enabled(true) before rhi init (test_vulkan does
+ *    this; engine_demo does not, so Release demos keep zero messenger
+ *    overhead).
+ * The callback and counters stay compiled in every configuration so the
+ * public API always links; the messenger is only registered when enabled. */
+static int g_validation_enable_override = -1; /* -1: follow build default */
+
+static bool vk_validation_enabled(void) {
+    if (g_validation_enable_override >= 0) return g_validation_enable_override != 0;
+#if defined(ENGINE_VK_VALIDATION) || !defined(NDEBUG)
+    return true;
+#else
+    return false;
+#endif
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 vk_debug_utils_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                         VkDebugUtilsMessageTypeFlagsEXT type,
@@ -47,7 +65,6 @@ vk_debug_utils_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     }
     return VK_FALSE;
 }
-#endif
 
 u32 rhi_vk_validation_message_count(void) {
     return atomic_load_explicit(&g_validation_msg_count, memory_order_relaxed);
@@ -57,6 +74,9 @@ void rhi_vk_validation_message_count_reset(void) {
 }
 bool rhi_vk_validation_gate_active(void) {
     return g_validation_gate_active;
+}
+void rhi_vk_validation_set_enabled(bool enabled) {
+    g_validation_enable_override = enabled ? 1 : 0;
 }
 
 /* ---- Internal types ---- */
@@ -872,9 +892,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     app.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     app.apiVersion = VK_API_VERSION_1_2;
 
-#ifndef NDEBUG
     const char *layers[] = { "VK_LAYER_KHRONOS_validation" };
-#endif
+    const bool validation_on = vk_validation_enabled();
     const char *extensions[8];
     u32 ext_count = 0;
     extensions[ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
@@ -889,10 +908,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 #else
     extensions[ext_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #endif
-#ifndef NDEBUG
-    /* R438: enable VK_EXT_debug_utils when present so validation messages can
-     * be counted in-process (test gate). Absence only disables the gate. */
-    {
+    if (validation_on) {
+        /* R438: enable VK_EXT_debug_utils when present so validation messages
+         * can be counted in-process (test gate). Absence only disables the
+         * gate. */
         u32 avail_count = 0;
         vkEnumerateInstanceExtensionProperties(NULL, &avail_count, NULL);
         VkExtensionProperties *avail = calloc(avail_count, sizeof(*avail));
@@ -907,7 +926,6 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             free(avail);
         }
     }
-#endif
 
     VkInstanceCreateInfo ici = {0};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -918,10 +936,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     /* MoltenVK is a portability driver — must opt in to enumeration. */
     ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 #endif
-#ifdef NDEBUG
-    ici.enabledLayerCount = 0;
-#else
-    {
+    if (validation_on) {
         u32 layer_count = 0;
         vkEnumerateInstanceLayerProperties(&layer_count, NULL);
         VkLayerProperties *props = calloc(layer_count, sizeof(VkLayerProperties));
@@ -937,7 +952,6 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             ici.ppEnabledLayerNames = layers;
         }
     }
-#endif
 
     if (vkCreateInstance(&ici, NULL, &vk->instance) != VK_SUCCESS) {
         LOG_FATAL("Vulkan: failed to create instance");
@@ -945,11 +959,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         return false;
     }
 
-#ifndef NDEBUG
-    /* R438: register a debug messenger so validation messages are counted
-     * in-process (test gate). Failure (missing layer/ext) degrades to no
-     * gate with a warning — init must still succeed. */
-    {
+    if (validation_on) {
+        /* R438: register a debug messenger so validation messages are counted
+         * in-process (test gate). Failure (missing layer/ext) degrades to no
+         * gate with a warning — init must still succeed. */
         PFN_vkCreateDebugUtilsMessengerEXT create_dbg =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
                 vk->instance, "vkCreateDebugUtilsMessengerEXT");
@@ -972,7 +985,6 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             LOG_WARN("VK: vkCreateDebugUtilsMessengerEXT unavailable — validation gate disabled");
         }
     }
-#endif
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     VkWin32SurfaceCreateInfoKHR sci = {0};
@@ -1485,8 +1497,8 @@ static void vk_shutdown(RHIDevice *dev) {
     }
     vkDestroyDevice(vk->device, NULL);
     vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
-#ifndef NDEBUG
-    /* R438: symmetric cleanup of the validation-gate debug messenger. */
+    /* R438: symmetric cleanup of the validation-gate debug messenger (only
+     * ever non-NULL when the gate was enabled at init). */
     if (vk->debug_messenger) {
         PFN_vkDestroyDebugUtilsMessengerEXT destroy_dbg =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
@@ -1494,7 +1506,6 @@ static void vk_shutdown(RHIDevice *dev) {
         if (destroy_dbg) destroy_dbg(vk->instance, vk->debug_messenger, NULL);
         vk->debug_messenger = VK_NULL_HANDLE;
     }
-#endif
     vkDestroyInstance(vk->instance, NULL);
     free(vk);
     dev->backend_data = NULL;
@@ -6545,7 +6556,13 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    /* R550-E: +TRANSFER_SRC so the color target can be read back via
+     * rhi_texture_read_pixels (same class of fix as R442 for the MRT
+     * helper; the combined-color output readback in test_vulkan tripped
+     * VUID-vkCmdCopyImageToBuffer-srcImage-00186 /
+     * VUID-VkImageMemoryBarrier-oldLayout-01212 without it). */
+    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(vk->device, &ci, NULL, &fd->color_image) != VK_SUCCESS) {

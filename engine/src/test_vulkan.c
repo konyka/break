@@ -1068,6 +1068,13 @@ int main(int argc, char **argv) {
     LOG_INFO("%s", TV_SUITE_NAME);
     LOG_INFO("============================================");
 
+#if defined(ENGINE_VULKAN) && defined(ENGINE_VK_VALIDATION)
+    /* R550-E: opt this process into the VK validation gate in every build
+     * type (the engine library default keeps Release demos messenger-free;
+     * CMake defines ENGINE_VK_VALIDATION on this target unconditionally). */
+    rhi_vk_validation_set_enabled(true);
+#endif
+
     EngineConfig cfg = { .width = 800, .height = 600, .title = TV_WINDOW_TITLE, .target_fps = 60.0 };
     Engine engine = {0};
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }

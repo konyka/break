@@ -380,13 +380,19 @@ void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
 void        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels);
 
 /* R438: Vulkan validation-message gate (defined only by the VK backend).
- * Debug builds with the validation layer register a debug messenger and
- * count severity>=warning messages in-process so the integration suite can
- * hard-gate on zero. The gate is inactive when the messenger could not be
- * created (missing layer/extension) — callers should then skip the assert. */
+ * When enabled, the backend requests the validation layer, registers a
+ * debug messenger and counts severity>=warning messages in-process so the
+ * integration suite can hard-gate on zero. R550-E: enablement is explicit —
+ * on by default in Debug builds and whenever the TU is compiled with
+ * ENGINE_VK_VALIDATION; otherwise an embedder can opt in via
+ * rhi_vk_validation_set_enabled(true) before device creation (test_vulkan
+ * does). The gate is inactive when the messenger could not be created
+ * (missing layer/extension) — callers should then skip the assert. The
+ * counters link and stay inert (0 / no-op) when the gate was never enabled. */
 u32  rhi_vk_validation_message_count(void);
 void rhi_vk_validation_message_count_reset(void);
 bool rhi_vk_validation_gate_active(void);
+void rhi_vk_validation_set_enabled(bool enabled);
 
 typedef struct RHIGPUTimer RHIGPUTimer;
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev);

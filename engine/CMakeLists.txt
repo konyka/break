@@ -363,6 +363,11 @@ target_link_libraries(engine_demo PRIVATE engine m)
 
 # Vulkan test executable
 add_executable(test_vulkan src/test_vulkan.c)
+# R550-E: keep the VK validation gate live for the integration test in every
+# build type. rhi_vk.c is compiled into the engine static lib, so the define
+# cannot reach the backend from here; instead it arms the explicit
+# rhi_vk_validation_set_enabled(true) call at the top of test_vulkan's main.
+target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
 target_link_libraries(test_vulkan PRIVATE engine m)
 
 add_executable(packer tools/packer.c)
