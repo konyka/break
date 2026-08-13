@@ -887,7 +887,6 @@ void font_renderer_end(FontRenderer *fr, RHICmdBuffer *cmd, f32 screen_w, f32 sc
 
     rhi_cmd_bind_pipeline(cmd, fr->pipeline);
     rhi_cmd_bind_texture(cmd, fr->atlas_tex, fr->sampler, 0);
-    rhi_cmd_set_uniform_vec4(cmd, 0, 1.0f, 1.0f, 1.0f, 1.0f);
     rhi_cmd_bind_vertex_buffer(cmd, slot, 0);
     rhi_cmd_draw(cmd, fr->quad_count * 6, 1);
 }
