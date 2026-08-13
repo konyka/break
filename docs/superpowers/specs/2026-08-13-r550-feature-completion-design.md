@@ -99,3 +99,10 @@
 - `9fe1c97` fix(R551-E)：skybox 顶点级 normalize 致太阳圆盘偏 26°（删之）；lens flare 改传 -sun_dir_vec（原锚反日点）。三锚点像素级重合。
 - R551-F 核查：spin0 伪速度证伪（上采样插值带经 tonemap 放大），非缺陷不改代码。
 - `2478f3f` test(R551-G)：test_font_ui 真链接 imgui.c（关 R437 遗留）；IK tip 到达断言 + 超程用例（关 R317 遗留）。
+
+## R552 追加轮（验证与接口收口，回填）
+
+- `026fd5a` fix(R552-A)：`rhi_texture_create` color usage 补 TRANSFER_SRC——demo bake 材质回读的 20 条 validation（R445 存量）清零。
+- `012725b` fix(R552-B)：旧 set_uniform_* helper 按声明 push range 校验（R444 同类静默截断残留关闭），test_cmd_buffer 30 项。
+- R552-C：IBL image-unit 绑定核查，双端无缺陷（R435 观察项关闭），不改代码。
+- `a83c03b` docs(R552-D)：lens_flare.h light_dir 语义注释。
