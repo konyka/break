@@ -24,5 +24,11 @@ void main() {
     ray_eye = vec4(ray_eye.xy, -1.0, 0.0);
     // R438: view is now canonical (rows = basis); eye->world needs R^T.
     vec3 ray_world = transpose(mat3(pc.u_view)) * ray_eye.xyz;
-    v_ray_dir = normalize(ray_world);
+    /* R551-E: do NOT normalize here — the fragment shader normalizes.
+     * Normalizing per-vertex makes the interpolated direction field a
+     * distorted (barycentric-on-the-sphere) remap of the true ray field:
+     * across the huge fullscreen triangle it shifted the sun disc ~26
+     * degrees in azimuth away from its projected position. The raw ray is
+     * linear in NDC (w=1), so interpolation reproduces it exactly. */
+    v_ray_dir = ray_world;
 }

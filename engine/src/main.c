@@ -7254,7 +7254,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (lens_flare.ready && rhi_handle_valid(scene_fbo.fb) && lf_enabled) {
-            f32 ld[] = { sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2] };
+            /* R551-E: pass the TO-SUN direction, matching god_rays (below) and
+             * the skybox (R446). sun_dir_vec is the light TRAVEL direction;
+             * passing it unnegated inverted the behind-camera test in
+             * lens_flare_apply (flare fired only with the sun behind the
+             * camera) and anchored the flare at the anti-sun point. */
+            f32 ld[] = { -sun_dir_vec.e[0], -sun_dir_vec.e[1], -sun_dir_vec.e[2] };
             lens_flare_apply(&lens_flare, cmd, scene_depth, scene_color,
                              &view.e[0][0], &proj.e[0][0], ld,
                              sun_color.e[0], sun_color.e[1], sun_color.e[2], rw, rh);
