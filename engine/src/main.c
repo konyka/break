@@ -1428,6 +1428,13 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
     /* R234-A: GL compute clobbers the graphics program — rebind, then push
      * the same lighting uniforms the blinn path set (arr pipeline locations). */
     rhi_cmd_bind_pipeline(cmd, render->arr_pipeline);
+    /* R551-B: GL element/vertex buffer bindings are VAO state — the mega
+     * VBO/IBO binds at the call site landed on the previous pipeline's VAO,
+     * so the arr VAO has no element buffer and the indirect-count draw below
+     * raises GL_INVALID_OPERATION (and would read a stale VBO). Rebind onto
+     * this pipeline's VAO; VK binds are global so this is a no-op there. */
+    rhi_cmd_bind_vertex_buffer(cmd, mb->vbo, 0);
+    rhi_cmd_bind_index_buffer(cmd, mb->ibo, 0, true);
     Mat4 idm = mat4_identity(); /* mega verts are pre-transformed to world space */
     rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_model, &idm.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_view, &view->e[0][0]);
@@ -1475,6 +1482,10 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
 
     /* R234-A: GL compute clobbers the graphics program — rebind, then push. */
     rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_arr_pipeline);
+    /* R551-B: same VAO-state rebind as mega_mat_arrays_draw — the gbuffer_arr
+     * VAO otherwise has no element buffer for the indirect-count draw. */
+    rhi_cmd_bind_vertex_buffer(cmd, mb->vbo, 0);
+    rhi_cmd_bind_index_buffer(cmd, mb->ibo, 0, true);
     Mat4 idm = mat4_identity(); /* mega verts are pre-transformed to world space */
     if (dsys->_loc_gbuf_arr_model >= 0)
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_model, &idm.e[0][0]);
