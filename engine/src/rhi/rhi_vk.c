@@ -4766,12 +4766,28 @@ static void vk_flush_push_constants(VKBackend *vk) {
     if ((u32)(offset) + (u32)(size) > (vk)->push_dirty_max) (vk)->push_dirty_max = (u32)(offset) + (u32)(size); \
 } while(0)
 
+/* R552-B: Bounds rule for the legacy set_uniform_* helpers below. Validates
+ * the byte offset against the pipeline's declared push range (compute 128B /
+ * graphics clamped push_range_size) instead of the hard 256 staging size —
+ * writes into [declared_range, 256) were silently truncated at flush. A
+ * negative location (absent uniform) stays silent, matching GL semantics. */
+#define VK_PUSH_HELPER_CHECK(vk, location, size) do { \
+    VKPipelineData *pd_ = (vk)->current_pipeline_data; \
+    if (!pd_) return; \
+    u32 range_ = pd_->is_compute ? 128u : pd_->push_range_size; \
+    if (!rhi_push_helper_range_ok((location), (size), range_)) { \
+        if ((location) >= 0) \
+            LOG_WARN("VK: set_uniform offset %d+%u exceeds declared push range %u — write dropped", \
+                     (location), (u32)(size), range_); \
+        return; \
+    } \
+} while(0)
+
 /* Push constants map to rhi_cmd_set_uniform_*. Location is used as byte offset. */
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + 64 > 256) return;  /* R146: bounds check push_staging[256] */
+    VK_PUSH_HELPER_CHECK(vk, location, 64u);
     memcpy(vk->push_staging + location, m, 64);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 64);
     vk->push_dirty = true;
@@ -4780,8 +4796,7 @@ void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + 12 > 256) return;  /* R146: bounds check push_staging[256] */
+    VK_PUSH_HELPER_CHECK(vk, location, 12u);
     f32 v[3] = {x, y, z};
     memcpy(vk->push_staging + location, v, 12);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 12);
@@ -4791,8 +4806,7 @@ void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + 8 > 256) return;  /* R146: bounds check push_staging[256] */
+    VK_PUSH_HELPER_CHECK(vk, location, 8u);
     f32 v[2] = {x, y};
     memcpy(vk->push_staging + location, v, 8);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 8);
@@ -4802,8 +4816,7 @@ void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + 16 > 256) return;  /* R146: bounds check push_staging[256] */
+    VK_PUSH_HELPER_CHECK(vk, location, 16u);
     f32 v[4] = {x, y, z, w};
     memcpy(vk->push_staging + location, v, 16);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 16);
@@ -4813,8 +4826,7 @@ void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + 4 > 256) return;  /* R146: bounds check push_staging[256] */
+    VK_PUSH_HELPER_CHECK(vk, location, 4u);
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
     vk->push_dirty = true;
@@ -4849,8 +4861,7 @@ void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     (void)cmd;
     VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data) return;
-    if (location < 0 || (u32)location + 4 > 256) return;  /* R146: bounds check push_staging[256] */
+    VK_PUSH_HELPER_CHECK(vk, location, 4u);
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
     vk->push_dirty = true;

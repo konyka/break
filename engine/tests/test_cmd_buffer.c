@@ -346,6 +346,19 @@ TEST(rhi_push_range_fits_validation) {
     ASSERT_FALSE(rhi_push_range_fits(0xFFFFFFF0u, 64u, 256u)); /* no u32 wrap bypass */
 }
 
+TEST(rhi_push_helper_range_ok_validation) {
+    /* R552-B: legacy set_uniform_* helpers must validate the byte offset
+     * against the pipeline's declared push range, not the 256B staging size —
+     * writes into [range, 256) were silently truncated at flush. */
+    ASSERT_TRUE(rhi_push_helper_range_ok(0, 64, 256));      /* mat4 at offset 0 */
+    ASSERT_TRUE(rhi_push_helper_range_ok(192, 64, 256));    /* mat4 ending at 256 */
+    ASSERT_TRUE(rhi_push_helper_range_ok(80, 16, 128));     /* compute tail fit (u_cc_params1) */
+    ASSERT_FALSE(rhi_push_helper_range_ok(96, 64, 128));    /* mat4 over compute range */
+    ASSERT_FALSE(rhi_push_helper_range_ok(240, 16, 128));   /* [240,256) was silently dropped */
+    ASSERT_FALSE(rhi_push_helper_range_ok(-1, 16, 256));    /* GL-style absent location */
+    ASSERT_FALSE(rhi_push_helper_range_ok(252, 16, 256));   /* 268 > 256 staging too */
+}
+
 /* ---- Statistics ---- */
 
 TEST(cmd_total_commands) {
@@ -583,6 +596,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cmd_draw_replay_preserves_first_vertex);
     RUN_TEST(cmd_push_constants_replay_routes_to_rhi);
     RUN_TEST(rhi_push_range_fits_validation);
+    RUN_TEST(rhi_push_helper_range_ok_validation);
     RUN_TEST(cmd_total_commands);
     RUN_TEST(cmd_frame_reset);
     RUN_TEST(cmd_mixed_command_sequence);

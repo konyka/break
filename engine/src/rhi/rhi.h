@@ -226,6 +226,13 @@ void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32
 static inline bool rhi_push_range_fits(u32 offset, u32 size, u32 range_size) {
     return size > 0u && offset <= range_size && size <= range_size - offset;
 }
+/* R552-B: Bounds rule for the legacy set_uniform_* helpers on VK, where
+ * `location` is a byte offset into the push-constant block. The check is
+ * against the pipeline's declared push range, not the 256B staging buffer —
+ * writes into [declared_range, 256) used to be silently truncated at flush. */
+static inline bool rhi_push_helper_range_ok(i32 location, u32 size, u32 range_size) {
+    return location >= 0 && rhi_push_range_fits((u32)location, size, range_size);
+}
 /* R179/R444: Deprecated alias of rhi_cmd_push_constants (location == byte
  * offset). Kept for compatibility; new code should call rhi_cmd_push_constants. */
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size);
