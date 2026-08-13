@@ -73,6 +73,11 @@ typedef struct {
      * different GL target than 2D, so gl_bind_tex_unit must know. */
     bool   is_array;
     u32    layers;
+    /* R550-B: lazily-created single-mip texture views (glTextureView), used by
+     * rhi_cmd_bind_texture_mip so a mip can be sampled while sibling mips of
+     * the same texture are bound as images (Hi-Z chunk chain). 0 = not yet
+     * created / creation failed. 16 levels cover any texture this RHI makes. */
+    GLuint mip_views[16];
 } GLTextureData;
 
 typedef struct {
@@ -1272,16 +1277,19 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
                   || desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
                   || desc->format == RHI_FORMAT_R32_FLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
-    /* Allocate every requested level so MIPMAP min filters stay complete. */
-    for (u32 m = 0; m < mips; m++) {
-        u32 mw = desc->width >> m; if (mw == 0u) mw = 1u;
-        u32 mh = desc->height >> m; if (mh == 0u) mh = 1u;
-        const void *level_data = (m == 0u) ? desc->data : NULL;
-        glTexImage2D(GL_TEXTURE_2D, (GLint)m, internal,
-                     (GLsizei)mw, (GLsizei)mh, 0, fmt, typ, level_data);
-    }
-    if (desc->data && mips > 1u) {
-        glGenerateMipmap(GL_TEXTURE_2D);
+    /* R550-B: immutable storage (glTexStorage2D) so rhi_cmd_bind_texture_mip
+     * can carve single-mip glTextureViews — views require immutable storage.
+     * Level sizes follow the same floor-shift rule as the old per-level
+     * glTexImage2D loop, so MIPMAP min filters stay complete. */
+    glTexStorage2D(GL_TEXTURE_2D, (GLsizei)mips, internal,
+                   (GLsizei)desc->width, (GLsizei)desc->height);
+    if (desc->data) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                        (GLsizei)desc->width, (GLsizei)desc->height,
+                        fmt, typ, desc->data);
+        if (mips > 1u) {
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)(mips - 1u));
@@ -1316,6 +1324,16 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
      * that reuses the same GL name would falsely skip the bind. */
     for (u32 i = 0; i < 16; i++) {
         if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
+    }
+    /* R550-B: destroy the single-mip views first — they alias this texture's
+     * storage, and their names may sit in the texture-unit cache. */
+    for (u32 i = 0; i < 16; i++) {
+        if (td->mip_views[i]) {
+            for (u32 u = 0; u < 16; u++)
+                if (g_tex_cache[u] == td->mip_views[i]) g_tex_cache[u] = 0;
+            glDeleteTextures(1, &td->mip_views[i]);
+            td->mip_views[i] = 0;
+        }
     }
     if (g_mip_clamp_tex == td->gl_tex) {
         g_mip_clamp_tex = 0;
@@ -1403,7 +1421,7 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
                             u32 width, u32 height, const void *data, usize size) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, tex);
     if (!td || !data) return;
-    /* R417: validate level, dims and size — glTexImage2D reads w*h*4 bytes
+    /* R417: validate level, dims and size — the upload reads w*h*4 bytes
      * from data (RGBA8 streaming, matching the VK backend), so a mismatched
      * extent or short buffer is a host OOB read. */
     if (mip_level >= td->mip_levels) return;
@@ -1414,10 +1432,11 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     /* R79-2: Bind for upload — invalidate g_tex_cache afterward since both
      * binds bypass the cache (same class of bug as R77-1/R78-1). */
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
-    /* Define + upload the requested level (mutable storage). RGBA8 streaming. */
-    glTexImage2D(GL_TEXTURE_2D, (GLint)mip_level, GL_RGBA8,
-                 (GLsizei)width, (GLsizei)height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, data);
+    /* Upload into the pre-allocated level (immutable storage since R550-B).
+     * RGBA8 streaming. Dims already validated against the level above. */
+    glTexSubImage2D(GL_TEXTURE_2D, (GLint)mip_level, 0, 0,
+                    (GLsizei)width, (GLsizei)height,
+                    GL_RGBA, GL_UNSIGNED_BYTE, data);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
 }
@@ -2261,10 +2280,60 @@ void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler s
     rhi_cmd_bind_cubemap(cmd, cm, sampler, unit);
 }
 
+/* R550-B: get-or-create a single-mip view of a 2D texture (immutable storage
+ * since R550-B, so glTextureView is legal). Returns 0 on failure — caller
+ * falls back to the BASE/MAX clamp path. */
+static GLuint gl_mip_view_get(GLTextureData *td, u32 mip_level) {
+    if (!td || td->is_array || mip_level >= td->mip_levels || mip_level >= 16u)
+        return 0;
+    if (!td->mip_views[mip_level] && td->gl_internal_format) {
+        GLuint view = 0;
+        glGenTextures(1, &view);
+        glTextureView(view, GL_TEXTURE_2D, td->gl_tex, td->gl_internal_format,
+                      mip_level, 1u, 0u, 1u);
+        /* glIsTexture (not glGetError) — the frame may carry an unrelated
+         * pending error flag that would falsely read as a view failure. */
+        if (!glIsTexture(view)) {
+            glDeleteTextures(1, &view);
+            return 0;
+        }
+        td->mip_views[mip_level] = view;
+    }
+    return td->mip_views[mip_level];
+}
+
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit, u32 mip_level) {
     (void)cmd;
     GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
     if (!td) return;
+    /* R550-B: bind a single-mip VIEW instead of clamping BASE/MAX on the
+     * original texture. The Hi-Z chunk chain (occlusion_cull_generate_hi_z)
+     * samples mip first-1 while writing later mips of the SAME texture through
+     * image units; with the clamp path the texture is bound as sampler and
+     * image in one dispatch, and the driver's image/sampler feedback guard
+     * (observed on Mesa iris) zeroes the sampler reads — every chunk after the
+     * first produced a zero pyramid level, so unified cull's Hi-Z test
+     * rejected all objects. A view is a distinct texture object, so the reads
+     * stay valid; view lod 0 == the requested mip, matching the shader
+     * contract (and VK's single-mip view) exactly. */
+    GLuint view = gl_mip_view_get(td, mip_level);
+    if (view) {
+        extern RHIDevice *g_current_device;
+        GLSamplerData *sd = (GLSamplerData *)rhi_get_resource(g_current_device, sampler);
+        if (!(unit < 16 && g_tex_cache[unit] == view && g_active_unit == unit)) {
+            if (g_active_unit != unit) {
+                glActiveTexture(GL_TEXTURE0 + unit);
+                g_active_unit = unit;
+            }
+            if (unit < 16) g_tex_cache[unit] = view;
+            glBindTexture(GL_TEXTURE_2D, view);
+        }
+        if (sd && !(unit < 16 && g_sam_cache[unit] == sd->gl_sampler)) {
+            glBindSampler(unit, sd->gl_sampler);
+            if (unit < 16) g_sam_cache[unit] = sd->gl_sampler;
+        }
+        return;
+    }
     /* R77-1: Use gl_bind_tex_unit for texture/sampler binding (updates cache).
      * Previously called glActiveTexture + glBindTexture directly, leaving
      * g_active_unit and g_tex_cache[unit] stale. */
@@ -2282,8 +2351,9 @@ void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler 
     (void)cmd;
     GLTextureData *td = (GLTextureData *)rhi_get_resource(g_current_device, tex);
     gl_bind_tex_unit(unit, tex, sampler);
-    /* R191-B: bind_texture_mip left BASE/MAX clamped (Hi-Z gen); restore full
-     * chain so unified/occlusion compute can sample the pyramid. */
+    /* R191-B: the bind_texture_mip clamp fallback (R550-B: single-mip views
+     * are the primary path) may leave BASE/MAX clamped; restore the full chain
+     * so unified/occlusion compute can sample the pyramid. */
     if (td && g_mip_clamp_tex == td->gl_tex) {
         GLint max_level = (td->mip_levels > 0u) ? (GLint)(td->mip_levels - 1u) : 0;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
