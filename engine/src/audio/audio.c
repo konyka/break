@@ -29,7 +29,12 @@ static void audio_bus_table_reset(AudioSystem *as) {
 }
 
 static bool audio_bus_valid(const AudioSystem *as, u32 bus) {
-    return as && bus < as->bus_count;
+    /* R550-F: bus_count never exceeds AUDIO_MAX_BUSES (audio_bus_create
+     * enforces it), so the extra capacity comparison is runtime-redundant —
+     * but it keeps every buses[] subscript downstream provably in-bounds for
+     * the compiler (Release GCC -Warray-bounds fired on the inlined
+     * invalid-id test paths with a constant 999 id). */
+    return as && bus < as->bus_count && bus < AUDIO_MAX_BUSES;
 }
 
 /* Effective gain pushed to miniaudio: volume x bus gain x master gain.
