@@ -35,7 +35,8 @@ static RHIPipeline vol_create_pipe(RHIDevice *dev,
         .uses_textures = true,
         .depth_write_disable = true,
         .disable_culling = true,
-        .alpha_blend = true,
+        /* R550-A: no alpha_blend — the shader self-composites the chain
+         * color and writes an opaque final pixel. */
     };
     RHIPipeline pipe = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
@@ -62,10 +63,10 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
         return false;
     }
 
-    /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
-    u32 pw = width / 2, ph = height / 2;
-    if (pw < 1) pw = 1;
-    if (ph < 1) ph = 1;
+    /* R550-A: full-res FBO — the pass now self-composites the frame-chain
+     * color (god_rays idiom), so the output must not lose scene detail.
+     * Pass stays opt-in (vol_enabled default off), so no default cost. */
+    u32 pw = width, ph = height;
 
     vol->vol_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
 
@@ -115,6 +116,7 @@ void volumetric_shutdown(VolumetricSystem *vol) {
 
 void volumetric_apply(VolumetricSystem *vol, RHICmdBuffer *cmd,
                       RHITexture depth_tex, RHITexture shadow_tex,
+                      RHITexture scene_tex,
                       const f32 *inv_proj, const f32 *view,
                       const f32 *light_dir, const f32 *light_color,
                       u32 screen_w, u32 screen_h) {
@@ -126,8 +128,9 @@ void volumetric_apply(VolumetricSystem *vol, RHICmdBuffer *cmd,
 
     rhi_cmd_bind_pipeline(cmd, vol->vol_pipe);
 
-    RHITexture tex[2] = { depth_tex, shadow_tex };
-    rhi_cmd_bind_textures_multi(cmd, tex, 2, vol->sampler);
+    /* R550-A: chain color at binding 2 (consecutive bindings on VK). */
+    RHITexture tex[3] = { depth_tex, shadow_tex, scene_tex };
+    rhi_cmd_bind_textures_multi(cmd, tex, 3, vol->sampler);
 
     if (vol->loc_inv_proj >= 0)     rhi_cmd_set_uniform_mat4(cmd, vol->loc_inv_proj, inv_proj);
     if (vol->loc_view >= 0)         rhi_cmd_set_uniform_mat4(cmd, vol->loc_view, view);

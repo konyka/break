@@ -3,7 +3,10 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_lf_depth;
+/* R550-A: explicit bindings match bind_textures_multi {depth, scene} and
+ * lens_flare_vk.frag. */
+layout(binding = 0) uniform sampler2D u_lf_depth;
+layout(binding = 1) uniform sampler2D u_lf_scene;
 
 uniform float u_lf_light_x;
 uniform float u_lf_light_y;
@@ -48,5 +51,8 @@ void main() {
 
     flare *= u_lf_intensity;
 
-    fragColor = vec4(flare, 1.0);
+    /* R550-A: self-composite — additive light contribution over the
+     * incoming frame-chain color. */
+    vec3 scene = texture(u_lf_scene, vUV).rgb;
+    fragColor = vec4(scene + flare, 1.0);
 }

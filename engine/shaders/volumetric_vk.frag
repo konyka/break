@@ -5,6 +5,7 @@ layout(location = 0) out vec4 fragColor;
 
 layout(binding = 0) uniform sampler2D u_vol_depth;
 layout(binding = 1) uniform sampler2D u_vol_shadow;
+layout(binding = 2) uniform sampler2D u_vol_scene; /* R550-A: frame-chain color */
 
 layout(push_constant) uniform VolParams {
     layout(offset = 0)   mat4 u_vol_inv_proj;
@@ -80,5 +81,8 @@ void main() {
         transmittance = max(transmittance, 0.0);
     }
 
-    fragColor = vec4(accum, 1.0 - transmittance);
+    /* R550-A: self-composite — fog scatters light in and extincts the scene
+     * behind it: out = scene * transmittance + in-scattered accum. */
+    vec3 scene = texture(u_vol_scene, vUV).rgb;
+    fragColor = vec4(scene * transmittance + accum, 1.0);
 }

@@ -3,7 +3,10 @@
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 fragColor;
 
-uniform sampler2D u_cs_depth;
+/* R550-A: explicit bindings match bind_textures_multi {depth, scene} and
+ * contact_shadow_vk.frag. */
+layout(binding = 0) uniform sampler2D u_cs_depth;
+layout(binding = 1) uniform sampler2D u_cs_scene;
 
 uniform float u_cs_light_x;
 uniform float u_cs_light_y;
@@ -13,9 +16,13 @@ uniform float u_cs_sw;
 uniform float u_cs_sh;
 
 void main() {
+    /* R550-A: self-composite — multiply the incoming frame-chain color by the
+     * shadow mask.  Approximation: this darkens ambient/indirect terms too,
+     * not just direct sun; accepted for a screen-space contact hint. */
+    vec3 scene = texture(u_cs_scene, vUV).rgb;
     float depth = texture(u_cs_depth, vUV).r;
     if (depth >= 1.0) {
-        fragColor = vec4(1.0);
+        fragColor = vec4(scene, 1.0);
         return;
     }
 
@@ -62,5 +69,5 @@ void main() {
 
     shadow = max(shadow, 0.0);
 
-    fragColor = vec4(vec3(shadow), 1.0);
+    fragColor = vec4(scene * shadow, 1.0);
 }

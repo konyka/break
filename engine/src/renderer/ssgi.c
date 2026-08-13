@@ -58,10 +58,12 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
 
 #ifdef ENGINE_VULKAN
     ssgi->ssgi_pipe = ssgi_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssgi_vk.frag", false);
-    ssgi->ssgi_blur_pipe = ssgi_create_pipe(dev, "shaders/post_vk.vert", "shaders/bloom_blur_vk.frag", false);
+    /* R550-A: dedicated final-stage shader — bloom_blur is shared with bloom
+     * and cannot gain a chain-color sampler; ssgi_blur self-composites. */
+    ssgi->ssgi_blur_pipe = ssgi_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssgi_blur_vk.frag", false);
 #else
     ssgi->ssgi_pipe = ssgi_create_pipe(dev, "shaders/post.vert", "shaders/ssgi.frag", false);
-    ssgi->ssgi_blur_pipe = ssgi_create_pipe(dev, "shaders/post.vert", "shaders/bloom_blur.frag", false);
+    ssgi->ssgi_blur_pipe = ssgi_create_pipe(dev, "shaders/post.vert", "shaders/ssgi_blur.frag", false);
 #endif
 
     if (!rhi_handle_valid(ssgi->ssgi_pipe) || !rhi_handle_valid(ssgi->ssgi_blur_pipe)) {
@@ -72,7 +74,10 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
     }
 
     ssgi->ssgi_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    ssgi->ssgi_blur_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    /* R550-A: the blur stage is the compositor — its output becomes the
+     * frame-chain color, so it must be full-res (input GI stays half-res;
+     * linear filtering upsamples the low-frequency GI). */
+    ssgi->ssgi_blur_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -143,7 +148,10 @@ void ssgi_apply(SSGISystem *ssgi, RHICmdBuffer *cmd,
 
     rhi_offscreen_fbo_bind(cmd, &ssgi->ssgi_blur_fbo);
     rhi_cmd_bind_pipeline(cmd, ssgi->ssgi_blur_pipe);
-    rhi_cmd_bind_texture(cmd, ssgi->ssgi_fbo.color_tex, ssgi->sampler, 0);
+    /* R550-A: GI@0 + chain color@1 — the blur stage composites
+     * scene + blurred GI (consecutive bindings on VK). */
+    RHITexture blur_texs[] = { ssgi->ssgi_fbo.color_tex, color_tex };
+    rhi_cmd_bind_textures_multi(cmd, blur_texs, 2, ssgi->sampler);
     if (ssgi->loc_blur_dir_x >= 0) rhi_cmd_set_uniform_vec2(cmd, ssgi->loc_blur_dir_x, 1.0f, 0.0f);
     rhi_cmd_draw(cmd, 3, 1);
 }

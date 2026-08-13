@@ -29,8 +29,12 @@ typedef struct {
 
 bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 height);
 void volumetric_shutdown(VolumetricSystem *vol);
+/* R550-A: self-compositing (god_rays idiom) — scene_tex is the incoming
+ * frame-chain color; the shader outputs scene*transmittance + fog and the
+ * result in vol->vol_fbo.color_tex becomes the new chain tail. */
 void volumetric_apply(VolumetricSystem *vol, RHICmdBuffer *cmd,
                       RHITexture depth_tex, RHITexture shadow_tex,
+                      RHITexture scene_tex,
                       const f32 *inv_proj, const f32 *view,
                       const f32 *light_dir, const f32 *light_color,
                       u32 screen_w, u32 screen_h);

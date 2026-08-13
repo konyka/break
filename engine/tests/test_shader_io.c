@@ -66,7 +66,36 @@ TEST(upscale_shaders_guard_first_temporal_frame)
     }
 }
 
+/* R550-A: the five previously dead-end post passes (SSR/SSGI/volumetric/
+ * lens flare/contact shadow) self-composite the incoming frame-chain color
+ * like god_rays does.  Assert the contract on BOTH backends: each shader
+ * must declare the chain-color sampler (SSR reuses u_ssr_color — it already
+ * samples the chain) and must blend its effect into it. */
+TEST(postfx_passes_composite_chain_color)
+{
+    struct { const char *file; const char *sampler; const char *blend; } cases[] = {
+        { "contact_shadow.frag",    "u_cs_scene",  "scene * shadow" },
+        { "contact_shadow_vk.frag", "u_cs_scene",  "scene * shadow" },
+        { "volumetric.frag",        "u_vol_scene", "scene * transmittance + accum" },
+        { "volumetric_vk.frag",     "u_vol_scene", "scene * transmittance + accum" },
+        { "lens_flare.frag",        "u_lf_scene",  "scene + flare" },
+        { "lens_flare_vk.frag",     "u_lf_scene",  "scene + flare" },
+        { "ssr.frag",               NULL,          "mix(scene, ssr_color, fade)" },
+        { "ssr_vk.frag",            NULL,          "mix(scene, ssr_color, fade)" },
+        { "ssgi_blur.frag",         "u_ssgi_scene", "scene + result" },
+        { "ssgi_blur_vk.frag",      "u_ssgi_scene", "scene + result" },
+    };
+    for (usize i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source(cases[i].file, src, sizeof(src)));
+        if (cases[i].sampler)
+            ASSERT_NOT_NULL(strstr(src, cases[i].sampler));
+        ASSERT_NOT_NULL(strstr(src, cases[i].blend));
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
+    RUN_TEST(postfx_passes_composite_chain_color);
 TEST_MAIN_END()

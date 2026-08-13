@@ -36,7 +36,8 @@ static RHIPipeline lf_create_pipe(RHIDevice *dev,
         .uses_textures = true,
         .depth_write_disable = true,
         .disable_culling = true,
-        .alpha_blend = true,
+        /* R550-A: no alpha_blend — the shader self-composites the chain
+         * color and writes an opaque final pixel. */
     };
     RHIPipeline pipe = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
@@ -61,10 +62,11 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
         return false;
     }
 
-    u32 pw = width / 2;
-    u32 ph = height / 2;
-    if (pw < 1) pw = 1;
-    if (ph < 1) ph = 1;
+    /* R550-A: full-res FBO — the pass now self-composites the frame-chain
+     * color (god_rays idiom), so the output must not lose scene detail.
+     * Pass stays opt-in (lf_enabled default off), so no default cost. */
+    u32 pw = width;
+    u32 ph = height;
     lf->lf_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
@@ -106,7 +108,7 @@ void lens_flare_shutdown(LensFlareSystem *lf) {
 }
 
 void lens_flare_apply(LensFlareSystem *lf, RHICmdBuffer *cmd,
-                      RHITexture depth_tex,
+                      RHITexture depth_tex, RHITexture scene_tex,
                       const f32 *view, const f32 *proj,
                       const f32 *light_dir,
                       f32 lc_r, f32 lc_g, f32 lc_b,
@@ -116,39 +118,41 @@ void lens_flare_apply(LensFlareSystem *lf, RHICmdBuffer *cmd,
     f32 lx = light_dir[0], ly = light_dir[1], lz = light_dir[2];
     f32 light_view_z = view[2] * lx + view[6] * ly + view[10] * lz;
 
+    f32 screen_x = 0.5f, screen_y = 0.5f;
+    f32 intensity = lf->intensity;
+
+    /* R550-A: the pass self-composites now, so the sun-behind-camera /
+     * behind-near-plane early-outs cannot just clear to black — draw the
+     * same pass with intensity 0 (shader outputs the chain color unchanged). */
     if (light_view_z > 0.0f) {
-        rhi_offscreen_fbo_bind(cmd, &lf->lf_fbo);
-        rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
-        return;
+        intensity = 0.0f;
+    } else {
+        f32 vx = view[0] * lx + view[4] * ly + view[8]  * lz;
+        f32 vy = view[1] * lx + view[5] * ly + view[9]  * lz;
+        f32 vz = view[2] * lx + view[6] * ly + view[10] * lz;
+
+        f32 clip_x = proj[0] * vx + proj[4] * vy + proj[8]  * vz;
+        f32 clip_y = proj[1] * vx + proj[5] * vy + proj[9]  * vz;
+        f32 clip_w = proj[3] * vx + proj[7] * vy + proj[11] * vz;
+
+        if (clip_w <= 0.001f) {
+            intensity = 0.0f;
+        } else {
+            screen_x = (clip_x / clip_w) * 0.5f + 0.5f;
+            screen_y = (clip_y / clip_w) * 0.5f + 0.5f;
+        }
     }
-
-    f32 vx = view[0] * lx + view[4] * ly + view[8]  * lz;
-    f32 vy = view[1] * lx + view[5] * ly + view[9]  * lz;
-    f32 vz = view[2] * lx + view[6] * ly + view[10] * lz;
-
-    f32 clip_x = proj[0] * vx + proj[4] * vy + proj[8]  * vz;
-    f32 clip_y = proj[1] * vx + proj[5] * vy + proj[9]  * vz;
-    f32 clip_w = proj[3] * vx + proj[7] * vy + proj[11] * vz;
-
-    if (clip_w <= 0.001f) {
-        rhi_offscreen_fbo_bind(cmd, &lf->lf_fbo);
-        rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
-        return;
-    }
-
-    f32 ndc_x = clip_x / clip_w;
-    f32 ndc_y = clip_y / clip_w;
-    f32 screen_x = ndc_x * 0.5f + 0.5f;
-    f32 screen_y = ndc_y * 0.5f + 0.5f;
 
     rhi_offscreen_fbo_bind(cmd, &lf->lf_fbo);
 
     rhi_cmd_bind_pipeline(cmd, lf->lf_pipe);
-    rhi_cmd_bind_texture(cmd, depth_tex, lf->sampler, 0);
+    /* R550-A: depth@0 + chain color@1 (consecutive bindings on VK). */
+    RHITexture tex[2] = { depth_tex, scene_tex };
+    rhi_cmd_bind_textures_multi(cmd, tex, 2, lf->sampler);
 
     if (lf->loc_light_x >= 0)  rhi_cmd_set_uniform_f32(cmd, lf->loc_light_x, screen_x);
     if (lf->loc_light_y >= 0)  rhi_cmd_set_uniform_f32(cmd, lf->loc_light_y, screen_y);
-    if (lf->loc_intensity >= 0) rhi_cmd_set_uniform_f32(cmd, lf->loc_intensity, lf->intensity);
+    if (lf->loc_intensity >= 0) rhi_cmd_set_uniform_f32(cmd, lf->loc_intensity, intensity);
     if (lf->loc_screen_w >= 0)  rhi_cmd_set_uniform_f32(cmd, lf->loc_screen_w, (f32)screen_w);
     if (lf->loc_screen_h >= 0)  rhi_cmd_set_uniform_f32(cmd, lf->loc_screen_h, (f32)screen_h);
     if (lf->loc_lc_r >= 0)      rhi_cmd_set_uniform_f32(cmd, lf->loc_lc_r, lc_r);

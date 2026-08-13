@@ -56,10 +56,10 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
-    u32 pw = width / 2, ph = height / 2;
-    if (pw < 1) pw = 1;
-    if (ph < 1) ph = 1;
+    /* R550-A: full-res FBO — the pass now self-composites the frame-chain
+     * color (god_rays idiom), so the output must not lose scene detail.
+     * Pass stays opt-in (ssr_enabled default off), so no default cost. */
+    u32 pw = width, ph = height;
 
     ssr->ssr_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
 

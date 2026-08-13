@@ -2555,11 +2555,23 @@ bool dof_enabled = false; /* R446: default off -- DOF focus behavior was never v
 /* R446: BREAK_UI=0 — hide the debug HUD for clean scripted captures (HUD text
  * is drawn post-tonemap and polluted pixel-diff A/B measurements). */
 { const char *e = getenv("BREAK_UI"); if (e && !atoi(e)) ui.visible = false; }
-bool ssr_enabled = false;  /* R210-B: ssr_apply writes FBO but result never composited */
-bool ssgi_enabled = false; /* R210-B: same — skip default GPU cost until wired */
-bool cs_enabled = false;  /* R212-B: FBO never composited into frame */
-bool vol_enabled = false; /* R212-B: same */
-bool lf_enabled = false;  /* R212-B: same */
+/* R550-A: all five now self-composite into the frame chain (god_rays idiom)
+ * — enabling them visibly affects the frame.  Defaults stay off: the GPU
+ * cost trade-off is unchanged (full-res ray marching is opt-in). */
+bool ssr_enabled = false;
+bool ssgi_enabled = false;
+bool cs_enabled = false;
+bool vol_enabled = false;
+bool lf_enabled = false;
+/* R550-A: BREAK_SSR=1 / BREAK_SSGI=1 / BREAK_CS=1 / BREAK_VOL=1 / BREAK_LF=1
+ * — scripted effect enable-switches for headless A/B captures (keyboard
+ * toggles exist but are not scriptable), mirroring the R446 kill-switch
+ * family.  Default behavior unchanged. */
+{ const char *e = getenv("BREAK_SSR");  if (e && atoi(e)) ssr_enabled = true; }
+{ const char *e = getenv("BREAK_SSGI"); if (e && atoi(e)) ssgi_enabled = true; }
+{ const char *e = getenv("BREAK_CS");   if (e && atoi(e)) cs_enabled = true; }
+{ const char *e = getenv("BREAK_VOL");  if (e && atoi(e)) vol_enabled = true; }
+{ const char *e = getenv("BREAK_LF");   if (e && atoi(e)) lf_enabled = true; }
 bool sharpen_enabled = true;
 bool sss_enabled = true;
 bool cg_enabled = true;
@@ -7200,41 +7212,54 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             render.ssao_tex = ssao_get_texture(&ssao);
         }
 
+        /* R550-A: frame-chain color.  Each enabled pass below self-composites
+         * the incoming chain color into its own FBO (god_rays idiom) and the
+         * chain tail advances to that FBO; TAA/AA below then consume the tail
+         * instead of scene_fbo.color_tex directly.  Depth/velocity references
+         * are untouched. */
+        RHITexture scene_color = scene_fbo.color_tex;
+
         if (contact_shadow.ready && rhi_handle_valid(scene_fbo.fb) && cs_enabled) {
             /* R208-A: Match GPU/mat4_vec4 (column-major M*v). R207 used the
              * transposed 3x3, so light dir disagreed with inv_proj view positions. */
             f32 cs_lx = view.e[0][0]*sun_dir_vec.e[0] + view.e[1][0]*sun_dir_vec.e[1] + view.e[2][0]*sun_dir_vec.e[2];
             f32 cs_ly = view.e[0][1]*sun_dir_vec.e[0] + view.e[1][1]*sun_dir_vec.e[1] + view.e[2][1]*sun_dir_vec.e[2];
             f32 cs_lz = view.e[0][2]*sun_dir_vec.e[0] + view.e[1][2]*sun_dir_vec.e[1] + view.e[2][2]*sun_dir_vec.e[2];
-            contact_shadow_apply(&contact_shadow, cmd, scene_depth,
+            contact_shadow_apply(&contact_shadow, cmd, scene_depth, scene_color,
                                  &frame_inv_proj.e[0][0], cs_lx, cs_ly, cs_lz, rw, rh);
+            scene_color = contact_shadow.fbo.color_tex;
         }
 
         if (rhi_handle_valid(scene_fbo.fb) && vol.ready && vol_enabled) {
             f32 light_dir[] = { sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2] };
             f32 light_color[] = { sun_color.e[0], sun_color.e[1], sun_color.e[2] };
             volumetric_apply(&vol, cmd, scene_depth, render.shadow_map.depth_tex,
+                             scene_color,
                              &frame_inv_proj.e[0][0], &view.e[0][0], light_dir, light_color, rw, rh);
+            scene_color = vol.vol_fbo.color_tex;
         }
 
         if (lens_flare.ready && rhi_handle_valid(scene_fbo.fb) && lf_enabled) {
             f32 ld[] = { sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2] };
-            lens_flare_apply(&lens_flare, cmd, scene_depth,
+            lens_flare_apply(&lens_flare, cmd, scene_depth, scene_color,
                              &view.e[0][0], &proj.e[0][0], ld,
                              sun_color.e[0], sun_color.e[1], sun_color.e[2], rw, rh);
+            scene_color = lens_flare.lf_fbo.color_tex;
         }
 
         if (rhi_handle_valid(scene_fbo.fb) && ssr_sys.ready && ssr_enabled) {
-            ssr_apply(&ssr_sys, cmd, scene_fbo.color_tex, scene_depth,
+            ssr_apply(&ssr_sys, cmd, scene_color, scene_depth,
                       &proj.e[0][0], &frame_inv_proj.e[0][0], &view.e[0][0], rw, rh);
+            scene_color = ssr_sys.ssr_fbo.color_tex;
         }
 
         if (ssgi_sys.ready && rhi_handle_valid(scene_fbo.fb) && ssgi_enabled) {
-            ssgi_apply(&ssgi_sys, cmd, scene_depth, scene_fbo.color_tex,
+            ssgi_apply(&ssgi_sys, cmd, scene_depth, scene_color,
                        &frame_inv_proj.e[0][0], &proj.e[0][0], rw, rh);
+            scene_color = ssgi_get_texture(&ssgi_sys);
         }
 
-        RHITexture taa_output = scene_fbo.color_tex;
+        RHITexture taa_output = scene_color;
         RHITexture taa_velocity = RHI_HANDLE_NULL;
         if (render.render_path == RENDER_PATH_DEFERRED && render.deferred.initialized &&
             rhi_handle_valid(render.deferred.gbuf_velocity)) {
@@ -7261,14 +7286,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         bool taa_resolved = false;
         if (rhi_handle_valid(scene_fbo.fb) && taa_enabled && fxaa_enabled &&
             combined_aa.ready && combined_aa.use_combined) {
-            combined_aa_apply(&combined_aa, cmd, scene_fbo.color_tex, scene_depth,
+            combined_aa_apply(&combined_aa, cmd, scene_color, scene_depth,
                                taa_velocity, &curr_view_proj.e[0][0], &prev_view_proj.e[0][0],
                                &frame_inv_vp.e[0][0], rw, rh);
             taa_output = combined_aa_get_output(&combined_aa);
             taa_resolved = true;
         } else {
             if (rhi_handle_valid(scene_fbo.fb) && taa.ready && taa_enabled) {
-                taa_resolve(&taa, cmd, scene_fbo.color_tex, scene_depth, taa_velocity,
+                taa_resolve(&taa, cmd, scene_color, scene_depth, taa_velocity,
                             &curr_view_proj.e[0][0], &prev_view_proj.e[0][0],
                             &frame_inv_vp.e[0][0], rw, rh);
                 taa_output = taa_get_output(&taa);

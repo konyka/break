@@ -24,6 +24,9 @@ typedef struct {
 
 bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height);
 void ssgi_shutdown(SSGISystem *ssgi);
+/* R550-A: color_tex is both the GI source and the incoming frame-chain
+ * color; the final blur stage self-composites (scene + blurred GI) into
+ * ssgi_blur_fbo, which becomes the new chain tail (god_rays idiom). */
 void ssgi_apply(SSGISystem *ssgi, RHICmdBuffer *cmd,
                 RHITexture depth_tex, RHITexture color_tex,
                 const f32 *inv_proj, const f32 *proj,

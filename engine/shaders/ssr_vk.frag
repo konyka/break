@@ -31,10 +31,13 @@ bool ray_intersect(vec3 ray, float thickness) {
 }
 
 void main() {
+    /* R550-A: self-composite — u_ssr_color is both the reflection source and
+     * the incoming frame-chain color; lerp by the reflection confidence. */
+    vec3 scene = texture(u_ssr_color, vUV).rgb;
     float depth = texture(u_ssr_depth, vUV).r;
 
     if (depth >= 1.0) {
-        fragColor = vec4(0.0);
+        fragColor = vec4(scene, 1.0);
         return;
     }
 
@@ -45,7 +48,7 @@ void main() {
     vec3 refl_dir = reflect(-view_dir, normal_vs);
 
     if (refl_dir.z > 0.0) {
-        fragColor = vec4(0.0);
+        fragColor = vec4(scene, 1.0);
         return;
     }
 
@@ -107,5 +110,5 @@ void main() {
         fade *= fresnel;
     }
 
-    fragColor = vec4(ssr_color, fade);
+    fragColor = vec4(mix(scene, ssr_color, fade), 1.0);
 }

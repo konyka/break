@@ -58,9 +58,10 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
-    u32 hw = w / 2, hh = h / 2;
-    if (hw < 1) hw = 1;
-    if (hh < 1) hh = 1;
+    /* R550-A: full-res FBO — the pass now self-composites the frame-chain
+     * color (god_rays idiom), so the output must not lose scene detail.
+     * Pass stays opt-in (cs_enabled default off), so no default cost. */
+    u32 hw = w, hh = h;
     s->fbo = rhi_offscreen_fbo_create_fmt(dev, hw, hh, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
@@ -100,14 +101,18 @@ void contact_shadow_shutdown(ContactShadowSystem *s) {
 }
 
 void contact_shadow_apply(ContactShadowSystem *s, RHICmdBuffer *cmd,
-                          RHITexture depth_tex, const f32 *inv_proj,
+                          RHITexture depth_tex, RHITexture scene_tex,
+                          const f32 *inv_proj,
                           f32 lx, f32 ly, f32 lz, u32 w, u32 h) {
     if (!s->ready) return;
 
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    rhi_cmd_bind_texture(cmd, depth_tex, s->sampler, 0);
+    /* R550-A: depth@0 + chain color@1 (multi writes consecutive bindings on
+     * VK; rhi_cmd_bind_texture would replicate depth over every slot). */
+    RHITexture tex[2] = { depth_tex, scene_tex };
+    rhi_cmd_bind_textures_multi(cmd, tex, 2, s->sampler);
 
     if (s->loc_light_x >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_light_x, lx);
     if (s->loc_light_y >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_light_y, ly);

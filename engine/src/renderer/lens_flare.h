@@ -21,8 +21,11 @@ typedef struct {
 
 bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height);
 void lens_flare_shutdown(LensFlareSystem *lf);
+/* R550-A: self-compositing (god_rays idiom) — scene_tex is the incoming
+ * frame-chain color; the shader outputs scene + flare and the result in
+ * lf->lf_fbo.color_tex becomes the new chain tail. */
 void lens_flare_apply(LensFlareSystem *lf, RHICmdBuffer *cmd,
-                      RHITexture depth_tex,
+                      RHITexture depth_tex, RHITexture scene_tex,
                       const f32 *view, const f32 *proj,
                       const f32 *light_dir,
                       f32 lc_r, f32 lc_g, f32 lc_b,
