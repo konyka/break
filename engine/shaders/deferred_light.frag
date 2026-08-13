@@ -32,9 +32,14 @@ uniform float u_screen_h;
 uniform float u_near;
 uniform float u_far;
 uniform float u_shadow_bias;
-uniform uint  u_point_count;
-uniform uint  u_dir_count;
-uniform float u_point_shadow_far_planes[4];
+/* R551-C: GL uniform uploads use glUniform1i/glUniform4f (see deferred.c and
+ * rhi_gl.c, which has no glUniform1ui/float-array path), so declare these as
+ * int/vec4 to match the CPU-side types. Semantics unchanged: counts are
+ * non-negative small ints; vec4 .xyzw map to far_planes[0..3] in order.
+ * The _vk variant keeps uint/float[4] push constants and is unaffected. */
+uniform int  u_point_count;
+uniform int  u_dir_count;
+uniform vec4 u_point_shadow_far_planes;
 
 const float PI = 3.14159265359;
 
@@ -262,13 +267,13 @@ void main() {
 
     /* R84-3: shadow_test doesn't depend on loop variable */
     float dir_shadow = shadow_test(wpos);
-    for (uint di = 0u; di < u_dir_count; di++) {
-        DirLight dl = read_dir_light(int(di));
+    for (int di = 0; di < u_dir_count; di++) {
+        DirLight dl = read_dir_light(di);
         color += cook_torrance(albedo, metal, rough, N, V, (-dl.dir)  /* R96-3: dl.dir pre-normalized in light_system_add_dir */,
                                dl.color * dir_shadow);
     }
 
-    if (u_point_count > 0u && u_screen_w > 0.0) {
+    if (u_point_count > 0 && u_screen_w > 0.0) {
         vec4 vp = u_view * vec4(wpos, 1.0);
         float ld = -vp.z;
         uint cx = min(uint(gl_FragCoord.x / (u_screen_w / 16.0)), 15u);
