@@ -89,3 +89,13 @@
 - `38d27c2` fix(R550-F)：`audio_bus_valid` 容量守卫，GNU Release 构建恢复。
 
 遗留（如实记录，见 Implementation_Status.md R550 条目）：GL 粒子 compute `GL_INVALID_OPERATION` 与每帧一条 0x502（另立案）；VK lens flare 静态视角 Y 方向疑点；VK 首帧 unified 全 0 瞬态；spin0 伪速度（楔形物体 depth 疑点）。
+
+## R551 追加轮（渲染正确性收口，回填）
+
+- `777a84a` fix(R551-A)：font 死 uniform 撞 sampler u_atlas（每帧 0x502），删 1 行。
+- `3021664` fix(R551-B)：mega 单 execute 路径 GL VAO 切换后 mega VBO/IBO 未重绑——mdic 每帧报错且整 draw 被跳过（真渲染 bug）。
+- `2d6fe26` fix(R551-C)：deferred_light.frag uniform 声明对齐 CPU 上传类型——GL deferred 方向光/点光此前从未生效。
+- R551-D 核查：VK lens flare Y 翻转疑点证伪（探针 GL=VK=(638,212)），非缺陷不改代码。
+- `9fe1c97` fix(R551-E)：skybox 顶点级 normalize 致太阳圆盘偏 26°（删之）；lens flare 改传 -sun_dir_vec（原锚反日点）。三锚点像素级重合。
+- R551-F 核查：spin0 伪速度证伪（上采样插值带经 tonemap 放大），非缺陷不改代码。
+- `2478f3f` test(R551-G)：test_font_ui 真链接 imgui.c（关 R437 遗留）；IK tip 到达断言 + 超程用例（关 R317 遗留）。
