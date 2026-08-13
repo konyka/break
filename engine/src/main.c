@@ -7108,6 +7108,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * unshadowed or wrongly shadowed. The cascade_vp[] were computed earlier this
              * frame in the CSM depth pass; publish the same pointer before the upload. */
             light_system_set_cascade_vp(&lights, render.cascade_vp);
+            /* R550-D: slice cluster depth by the camera near/far instead of
+             * the historical hardcoded 0.1/100 (no-op while they match). */
+            light_system_set_depth_range(&lights, camera.near_plane, camera.far_plane);
             if (lights.gpu_cull) {
                 light_system_upload_lights(&lights);
                 light_system_cull_gpu(&lights, cmd, &curr_view_proj.e[0][0], rw, rh);

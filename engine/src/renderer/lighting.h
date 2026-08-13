@@ -72,6 +72,12 @@ void light_system_add_point(LightSystem *ls, f32 x, f32 y, f32 z, f32 r, f32 cr,
 void light_system_add_dir(LightSystem *ls, f32 dx, f32 dy, f32 dz, f32 cr, f32 cg, f32 cb);
 void light_system_clear(LightSystem *ls);
 void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 screen_w, u32 screen_h);
+
+/* R550-D: bind cluster depth slicing to the camera near/far planes. Marks the
+ * z_depths LUT dirty only when the range actually changes, so per-frame calls
+ * with a static camera cost nothing. Invalid ranges (near<=0, far<=near) are
+ * ignored; never calling this keeps the historical 0.1/100 defaults. */
+void light_system_set_depth_range(LightSystem *ls, f32 near, f32 far);
 void light_system_upload(LightSystem *ls);
 
 /* Uploads only the light_data buffer (point/dir lights + cascade matrices),

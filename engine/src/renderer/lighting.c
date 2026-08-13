@@ -108,7 +108,10 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
     ls->_upload_buf = staging_block;
     ls->_grid_buf   = (u32 *)(staging_block + gb_off);
 
-    /* Pre-compute cluster depth LUT (near=0.1, far=100.0 are hardcoded constants). */
+    /* Pre-compute cluster depth LUT on first cull (default range 0.1/100;
+     * light_system_set_depth_range re-dirties it when the camera range changes). */
+    ls->near_plane = 0.1f;
+    ls->far_plane = 100.0f;
     ls->_z_depths_dirty = true;
 }
 
@@ -147,13 +150,26 @@ void light_system_clear(LightSystem *ls) {
     ls->dir_count = 0;
 }
 
+/* R550-D: camera-driven cluster depth range. Re-dirties the z_depths LUT only
+ * on an actual change, so a static camera never retriggers the powf loop. */
+void light_system_set_depth_range(LightSystem *ls, f32 near, f32 far) {
+    if (!ls || !(near > 0.0f) || !(far > near)) return;
+    if (ls->near_plane == near && ls->far_plane == far) return;
+    ls->near_plane = near;
+    ls->far_plane = far;
+    ls->_z_depths_dirty = true;
+}
+
 void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 screen_w, u32 screen_h) {
     ls->screen_w = screen_w;
     ls->screen_h = screen_h;
 
     /* R74-3: Pass view/proj pointers directly to mat4_vec4 — no local copies. */
 
-    f32 near = 0.1f, far = 100.0f;
+    /* R550-D: configured range (camera near/far), falling back to the
+     * historical 0.1/100 when never set (e.g. zero-initialized struct). */
+    f32 near = ls->near_plane > 0.0f ? ls->near_plane : 0.1f;
+    f32 far  = ls->far_plane > near ? ls->far_plane : 100.0f;
     ls->near_plane = near;
     ls->far_plane = far;
 
@@ -355,8 +371,9 @@ void light_system_cull_gpu(LightSystem *ls, RHICmdBuffer *cmd,
 
     ls->screen_w = screen_w;
     ls->screen_h = screen_h;
-    ls->near_plane = 0.1f;
-    ls->far_plane = 100.0f;
+    /* R550-D: same configured-range fallback as the CPU cull path. */
+    if (!(ls->near_plane > 0.0f)) ls->near_plane = 0.1f;
+    if (!(ls->far_plane > ls->near_plane)) ls->far_plane = 100.0f;
 
     rhi_cmd_bind_pipeline(cmd, ls->cluster_cull_pipeline);
     rhi_cmd_bind_storage_buffer(cmd, light_system_data_slot(ls), 0);

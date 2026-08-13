@@ -272,6 +272,87 @@ TEST(light_clear_null_system)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  R550-D: camera-driven cluster depth range                                */
+/* ----------------------------------------------------------------------- */
+
+TEST(light_depth_range_default)
+{
+    LightSystem *ls = alloc_ls();
+
+    Mat4 view = mat4_identity();
+    Mat4 proj = mat4_identity();
+    light_system_cull(ls, &view, &proj, 1920, 1080);
+
+    /* Never calling set_depth_range keeps the historical 0.1/100 defaults. */
+    ASSERT_FLOAT_EQ(ls->near_plane, 0.1f, 1e-5f);
+    ASSERT_FLOAT_EQ(ls->far_plane, 100.0f, 1e-5f);
+
+    free_ls(ls);
+}
+
+TEST(light_depth_range_updates_lut)
+{
+    LightSystem *ls = alloc_ls();
+
+    light_system_set_depth_range(ls, 1.0f, 1000.0f);
+    ASSERT_FLOAT_EQ(ls->near_plane, 1.0f, 1e-5f);
+    ASSERT_FLOAT_EQ(ls->far_plane, 1000.0f, 1e-5f);
+    ASSERT_TRUE(ls->_z_depths_dirty);
+
+    Mat4 view = mat4_identity();
+    Mat4 proj = mat4_perspective(1.0472f, 16.0f / 9.0f, 1.0f, 1000.0f);
+    light_system_cull(ls, &view, &proj, 1920, 1080);
+
+    /* LUT bounds must track the configured range: z_depths[0] == near,
+     * z_depths[CLUSTER_Z] == far (cluster_depth(z) = near * (far/near)^(z/Z)). */
+    ASSERT_FLOAT_EQ(ls->_z_depths[0], 1.0f, 1e-3f);
+    ASSERT_FLOAT_EQ(ls->_z_depths[CLUSTER_Z], 1000.0f, 1e-1f);
+    ASSERT_FALSE(ls->_z_depths_dirty);
+
+    free_ls(ls);
+}
+
+TEST(light_depth_range_unchanged_keeps_lut)
+{
+    LightSystem *ls = alloc_ls();
+
+    light_system_set_depth_range(ls, 0.5f, 250.0f);
+    Mat4 view = mat4_identity();
+    Mat4 proj = mat4_perspective(1.0472f, 16.0f / 9.0f, 0.5f, 250.0f);
+    light_system_cull(ls, &view, &proj, 1920, 1080);
+    ASSERT_FALSE(ls->_z_depths_dirty);
+
+    /* Same range again: no LUT recompute (per-frame calls must stay cheap). */
+    light_system_set_depth_range(ls, 0.5f, 250.0f);
+    ASSERT_FALSE(ls->_z_depths_dirty);
+
+    /* Changed range: recompute. */
+    light_system_set_depth_range(ls, 0.5f, 500.0f);
+    ASSERT_TRUE(ls->_z_depths_dirty);
+
+    free_ls(ls);
+}
+
+TEST(light_depth_range_invalid_ignored)
+{
+    LightSystem *ls = alloc_ls();
+
+    light_system_set_depth_range(ls, -1.0f, 100.0f);
+    light_system_set_depth_range(ls, 10.0f, 5.0f);
+    light_system_set_depth_range(ls, 0.0f, 50.0f);
+
+    Mat4 view = mat4_identity();
+    Mat4 proj = mat4_identity();
+    light_system_cull(ls, &view, &proj, 1920, 1080);
+
+    /* Invalid ranges leave the defaults untouched. */
+    ASSERT_FLOAT_EQ(ls->near_plane, 0.1f, 1e-5f);
+    ASSERT_FLOAT_EQ(ls->far_plane, 100.0f, 1e-5f);
+
+    free_ls(ls);
+}
+
+/* ----------------------------------------------------------------------- */
 /*  Main                                                                    */
 /* ----------------------------------------------------------------------- */
 
@@ -292,4 +373,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(light_negative_radius);
     RUN_TEST(light_cull_null_system);
     RUN_TEST(light_clear_null_system);
+    /* R550-D: camera-driven depth range */
+    RUN_TEST(light_depth_range_default);
+    RUN_TEST(light_depth_range_updates_lut);
+    RUN_TEST(light_depth_range_unchanged_keeps_lut);
+    RUN_TEST(light_depth_range_invalid_ignored);
 TEST_MAIN_END()
