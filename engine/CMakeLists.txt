@@ -541,8 +541,11 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_pool PRIVATE m)
     add_test(NAME test_pool COMMAND test_pool)
 
-    # test_font_ui: UTF-8 decoding + immediate-mode UI logic (headless, no RHI)
-    add_executable(test_font_ui tests/test_font_ui.c src/ui/utf8.c src/core/log.c)
+    # test_font_ui: UTF-8 decoding + immediate-mode UI logic (headless).
+    # Links the real imgui.c; the test drives it with a NULL FontRenderer
+    # (every draw call no-ops) and stubs the font symbols for the link.
+    add_executable(test_font_ui tests/test_font_ui.c
+        src/ui/utf8.c src/ui/imgui.c src/core/log.c)
     target_include_directories(test_font_ui PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_font_ui PRIVATE m)
     add_test(NAME test_font_ui COMMAND test_font_ui)

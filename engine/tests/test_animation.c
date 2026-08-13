@@ -450,6 +450,22 @@ TEST(anim_clip_add_channel)
 /*  IK system                                                                */
 /* ----------------------------------------------------------------------- */
 
+/* Apply the world-space delta rotations from anim_ik_two_bone to the chain
+ * and return the resulting tip position: the root delta swings the whole
+ * chain about root_pos, then the mid delta bends the tip about the already
+ * rotated mid joint. The mid delta is expressed in the (rotated) root frame
+ * — anim_ik_solve pre-multiplies each bone's local rotation by its delta —
+ * so the tip vector is rotated by root_rot * mid_rot. */
+static Vec3 ik_solved_tip(Vec3 root_pos, Vec3 mid_pos, Vec3 tip_pos,
+                          Quat root_rot, Quat mid_rot)
+{
+    Vec3 mid2 = vec3_add(root_pos,
+        quat_rotate_vec3(root_rot, vec3_sub(mid_pos, root_pos)));
+    Quat tip_rot = quat_mul(root_rot, mid_rot);
+    return vec3_add(mid2,
+        quat_rotate_vec3(tip_rot, vec3_sub(tip_pos, mid_pos)));
+}
+
 TEST(ik_init)
 {
     IKSystem ik;
@@ -503,6 +519,36 @@ TEST(ik_two_bone_solver)
     f32 mid_angle  = fabsf(mid_rot.e[0]) + fabsf(mid_rot.e[1]) +
                      fabsf(mid_rot.e[2]);
     ASSERT_TRUE(root_angle > 0.01f || mid_angle > 0.01f);
+
+    /* R551-G: the solved chain tip must actually reach the target. */
+    Vec3 tip = ik_solved_tip(root_pos, mid_pos, tip_pos, root_rot, mid_rot);
+    ASSERT_FLOAT_EQ(tip.e[0], target.e[0], 1e-3f);
+    ASSERT_FLOAT_EQ(tip.e[1], target.e[1], 1e-3f);
+    ASSERT_FLOAT_EQ(tip.e[2], target.e[2], 1e-3f);
+}
+
+TEST(ik_two_bone_unreachable_target)
+{
+    /* Target beyond full extension: |(3,3,0)| ~= 4.24 > lab+lcb = 2.
+     * anim_ik_two_bone clamps the reach to lab+lcb-0.001 and extends the
+     * chain straight at the target, so the tip must land on the nearest
+     * reachable point along the target direction. */
+    Vec3 root_pos = {{0, 0, 0}};
+    Vec3 mid_pos  = {{0, 1, 0}};
+    Vec3 tip_pos  = {{0, 2, 0}};
+    Vec3 target   = {{3, 3, 0}};
+    Vec3 pole     = {{0, 0, 1}};
+
+    Quat root_rot, mid_rot;
+    anim_ik_two_bone(root_pos, mid_pos, tip_pos, target, pole,
+                     &root_rot, &mid_rot);
+
+    Vec3 tip = ik_solved_tip(root_pos, mid_pos, tip_pos, root_rot, mid_rot);
+    Vec3 dir = vec3_normalize(vec3_sub(target, root_pos));
+    Vec3 expected = vec3_add(root_pos, vec3_scale(dir, 2.0f - 0.001f));
+    ASSERT_FLOAT_EQ(tip.e[0], expected.e[0], 1e-3f);
+    ASSERT_FLOAT_EQ(tip.e[1], expected.e[1], 1e-3f);
+    ASSERT_FLOAT_EQ(tip.e[2], expected.e[2], 1e-3f);
 }
 
 TEST(ik_two_bone_zero_length)
@@ -808,6 +854,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ik_set_target);
     RUN_TEST(ik_weight_clamped);
     RUN_TEST(ik_two_bone_solver);
+    RUN_TEST(ik_two_bone_unreachable_target);
     RUN_TEST(ik_two_bone_zero_length);
     /* Edge cases */
     RUN_TEST(blend_evaluate_zero_layers);

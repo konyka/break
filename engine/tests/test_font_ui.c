@@ -1,14 +1,37 @@
 /* ==========================================================================
  *  test_font_ui.c — UTF-8 decoding + immediate-mode UI logic (headless).
  *
- *  Only the pure pieces are exercised here: the UTF-8 decoder and the inline
- *  hit-testing / state-machine helpers from imgui.h. The rendering paths need
- *  a GPU device and are validated by the demo build, not by this unit test.
+ *  Links the real imgui.c: the widgets run with a NULL FontRenderer, which
+ *  makes every draw call a no-op, so the genuine interaction logic (hit
+ *  testing, hot/active state machine, value writes) is exercised without a
+ *  GPU device. The font_renderer_* symbols imgui.c references are stubbed
+ *  below for the link only — they are never called with font == NULL. The
+ *  rendering paths themselves are validated by the demo build.
  * ========================================================================== */
 
 #include "test_framework.h"
 #include <ui/utf8.h>
 #include <ui/imgui.h>
+
+/* Link-only font renderer stubs (never called: ImUI runs with font == NULL) */
+void font_renderer_begin(FontRenderer *fr) { (void)fr; }
+void font_renderer_draw(FontRenderer *fr, const char *text, f32 x, f32 y,
+                        f32 screen_w, f32 screen_h, f32 r, f32 g, f32 b, f32 a) {
+    (void)fr; (void)text; (void)x; (void)y; (void)screen_w; (void)screen_h;
+    (void)r; (void)g; (void)b; (void)a;
+}
+void font_renderer_draw_rect(FontRenderer *fr, f32 x, f32 y, f32 w, f32 h,
+                             f32 screen_w, f32 screen_h, f32 r, f32 g, f32 b, f32 a) {
+    (void)fr; (void)x; (void)y; (void)w; (void)h; (void)screen_w; (void)screen_h;
+    (void)r; (void)g; (void)b; (void)a;
+}
+f32  font_renderer_text_width(const FontRenderer *fr, const char *text) {
+    (void)fr; (void)text; return 0.0f;
+}
+f32  font_renderer_line_height(const FontRenderer *fr) { (void)fr; return 16.0f; }
+void font_renderer_end(FontRenderer *fr, RHICmdBuffer *cmd, f32 screen_w, f32 screen_h) {
+    (void)fr; (void)cmd; (void)screen_w; (void)screen_h;
+}
 
 /* ----------------------------------------------------------------------- */
 /*  UTF-8 decoding                                                          */
@@ -294,179 +317,147 @@ TEST(imui_radio_logic_writes_option)
     ASSERT_EQ(value, 1);
 }
 
-/* Drive a headless frame the way the widgets do: the test links no imgui.c
- * (it would drag in the GPU font renderer), so we replicate each widget's
- * exact call sequence — hit test, imui_press_logic, then the R437 helper —
- * against the ImUI state fields directly, matching the imui_press_* tests. */
-static void r437_begin(ImUI *ui, f32 mx, f32 my, bool down)
+/* Drive a real headless frame through the linked imgui.c: the NULL font makes
+ * every draw call a no-op, so the genuine widget logic runs. imui_init(NULL)
+ * gives pad 6 / row_h 22; the panel is 200 wide at (0,0), so successive
+ * widgets land on rows at y = 6 + row*22 with width 188 — call the widgets
+ * in row order within each frame, exactly as the demo panel does. */
+static void frame_begin(ImUI *ui, f32 mx, f32 my, bool down)
 {
-    ui->mouse_x = mx;
-    ui->mouse_y = my;
-    ui->mouse_down = down;
-    ui->hot_id = 0;
+    imui_begin(ui, 800.0f, 600.0f, mx, my, down);
+    imui_panel(ui, 0.0f, 0.0f, 200.0f, 400.0f);
 }
-static void r437_end(ImUI *ui) { ui->mouse_prev_down = ui->mouse_down; }
+static void frame_end(ImUI *ui) { imui_end(ui, NULL); }
 
-/* Row geometry mirrors imgui.c: panel pad 6, row_h 22, widget height 18. */
-#define R437_ROW_Y(row) (6.0f + (f32)(row) * 22.0f)
-#define R437_ROW_H 18.0f
-
-/* exact logic of imui_collapsing_header (imgui.c) minus rendering */
-static bool r437_header(ImUI *ui, u32 id, int row, bool *open)
-{
-    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, R437_ROW_H);
-    bool clicked = imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
-                                    &ui->hot_id, &ui->active_id);
-    return imui_toggle_logic(clicked, open);
-}
-
-/* exact logic of imui_radio (imgui.c) minus rendering */
-static bool r437_radio(ImUI *ui, u32 id, int row, i32 *value, i32 option)
-{
-    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, 14.0f);
-    bool clicked = imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
-                                    &ui->hot_id, &ui->active_id);
-    imui_radio_logic(clicked, value, option);
-    return clicked;
-}
-
-/* exact logic of imui_button (imgui.c) minus rendering */
-static bool r437_button(ImUI *ui, u32 id, int row)
-{
-    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, R437_ROW_H);
-    return imui_press_logic(id, hovered, ui->mouse_down, ui->mouse_prev_down,
-                            &ui->hot_id, &ui->active_id);
-}
-
-#define R437_MID(row) (R437_ROW_Y(row) + 4.0f) /* a point inside the row */
+#define UI_ROW_MID(row) (6.0f + (f32)(row) * 22.0f + 4.0f) /* inside row */
 
 TEST(imui_collapsing_header_click_toggles)
 {
     ImUI ui;
-    memset(&ui, 0, sizeof(ui));
+    imui_init(&ui, NULL);
     bool open = false;
 
     /* hover + press down over the header (row 0) */
-    r437_begin(&ui, 10.0f, R437_MID(0), false);
-    ASSERT_FALSE(r437_header(&ui, 1, 0, &open));
-    r437_end(&ui);
-    r437_begin(&ui, 10.0f, R437_MID(0), true);
-    ASSERT_FALSE(r437_header(&ui, 1, 0, &open));
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), false);
+    ASSERT_FALSE(imui_collapsing_header(&ui, 1, "hdr", &open));
+    frame_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), true);
+    ASSERT_FALSE(imui_collapsing_header(&ui, 1, "hdr", &open));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 1u);
     ASSERT_FALSE(open);
 
     /* release over it -> click -> opens */
-    r437_begin(&ui, 10.0f, R437_MID(0), false);
-    ASSERT_TRUE(r437_header(&ui, 1, 0, &open));
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), false);
+    ASSERT_TRUE(imui_collapsing_header(&ui, 1, "hdr", &open));
+    frame_end(&ui);
     ASSERT_TRUE(open);
     ASSERT_EQ(ui.active_id, 0u);
 
     /* full second click collapses again */
-    r437_begin(&ui, 10.0f, R437_MID(0), true);
-    r437_header(&ui, 1, 0, &open);
-    r437_end(&ui);
-    r437_begin(&ui, 10.0f, R437_MID(0), false);
-    ASSERT_FALSE(r437_header(&ui, 1, 0, &open));
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), true);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    frame_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), false);
+    ASSERT_FALSE(imui_collapsing_header(&ui, 1, "hdr", &open));
+    frame_end(&ui);
     ASSERT_FALSE(open);
 }
 
 TEST(imui_radio_widget_selects_option)
 {
     ImUI ui;
-    memset(&ui, 0, sizeof(ui));
+    imui_init(&ui, NULL);
     i32 value = 0;
 
     /* click the second radio (row 1, option 1) */
-    r437_begin(&ui, 10.0f, R437_MID(1), true);
-    r437_radio(&ui, 10, 0, &value, 0);
-    bool c1 = r437_radio(&ui, 11, 1, &value, 1);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(1), true);
+    imui_radio(&ui, 10, "a", &value, 0);
+    bool c1 = imui_radio(&ui, 11, "b", &value, 1);
+    frame_end(&ui);
     ASSERT_FALSE(c1);
     ASSERT_EQ(ui.active_id, 11u);
 
-    r437_begin(&ui, 10.0f, R437_MID(1), false);
-    r437_radio(&ui, 10, 0, &value, 0);
-    c1 = r437_radio(&ui, 11, 1, &value, 1);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(1), false);
+    imui_radio(&ui, 10, "a", &value, 0);
+    c1 = imui_radio(&ui, 11, "b", &value, 1);
+    frame_end(&ui);
     ASSERT_TRUE(c1);
     ASSERT_EQ(value, 1);
 
     /* NULL value pointer: widget still reports the click, nothing written */
-    r437_begin(&ui, 10.0f, R437_MID(0), true);
-    r437_radio(&ui, 10, 0, NULL, 0);
-    r437_end(&ui);
-    r437_begin(&ui, 10.0f, R437_MID(0), false);
-    ASSERT_TRUE(r437_radio(&ui, 10, 0, NULL, 0));
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), true);
+    imui_radio(&ui, 10, "a", NULL, 0);
+    frame_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), false);
+    ASSERT_TRUE(imui_radio(&ui, 10, "a", NULL, 0));
+    frame_end(&ui);
     ASSERT_EQ(value, 1);
 }
 
 TEST(imui_header_radio_button_no_crosstalk)
 {
     ImUI ui;
-    memset(&ui, 0, sizeof(ui));
+    imui_init(&ui, NULL);
     bool open = false;
     i32 value = 0;
 
     /* press on the header (row 0) */
-    r437_begin(&ui, 10.0f, R437_MID(0), true);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    r437_button(&ui, 3, 2);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(0), true);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    imui_button(&ui, 3, "btn");
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 1u);
 
     /* drag onto the radio (row 1) while holding: radio must not steal active */
-    r437_begin(&ui, 10.0f, R437_MID(1), true);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    r437_button(&ui, 3, 2);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(1), true);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    imui_button(&ui, 3, "btn");
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 1u);
     ASSERT_EQ(ui.hot_id, 2u);
     ASSERT_EQ(value, 0);
 
     /* release over the radio: header press dies outside, radio not clicked */
-    r437_begin(&ui, 10.0f, R437_MID(1), false);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    r437_button(&ui, 3, 2);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(1), false);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    imui_button(&ui, 3, "btn");
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 0u);
     ASSERT_FALSE(open);
     ASSERT_EQ(value, 0);
 
     /* a fresh full click on the radio selects its option */
-    r437_begin(&ui, 10.0f, R437_MID(1), true);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    r437_button(&ui, 3, 2);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(1), true);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    imui_button(&ui, 3, "btn");
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 2u);
-    r437_begin(&ui, 10.0f, R437_MID(1), false);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    r437_button(&ui, 3, 2);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(1), false);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    imui_button(&ui, 3, "btn");
+    frame_end(&ui);
     ASSERT_EQ(value, 7);
     ASSERT_FALSE(open);
 
     /* press the button (row 2), drag outside all rows, release: no click,
      * and neither the header state nor the radio value is disturbed */
-    r437_begin(&ui, 10.0f, R437_MID(2), true);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    r437_button(&ui, 3, 2);
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, UI_ROW_MID(2), true);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    imui_button(&ui, 3, "btn");
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 3u);
-    r437_begin(&ui, 10.0f, 300.0f, false);
-    r437_header(&ui, 1, 0, &open);
-    r437_radio(&ui, 2, 1, &value, 7);
-    ASSERT_FALSE(r437_button(&ui, 3, 2));
-    r437_end(&ui);
+    frame_begin(&ui, 10.0f, 300.0f, false);
+    imui_collapsing_header(&ui, 1, "hdr", &open);
+    imui_radio(&ui, 2, "opt", &value, 7);
+    ASSERT_FALSE(imui_button(&ui, 3, "btn"));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 0u);
     ASSERT_EQ(value, 7);
     ASSERT_FALSE(open);
@@ -503,92 +494,40 @@ TEST(imui_slider_int_logic_rounds_and_clamps)
     ASSERT_EQ(imui_slider_int_logic(0.7f, 2, 2), 2);
 }
 
-/* exact logic of imui_slider_int (imgui.c) minus rendering — track width and
- * row geometry mirror the widget (pad 6, panel_w 200 -> w 188, h 16) */
-static bool r441_slider_int(ImUI *ui, u32 id, int row, i32 *value, i32 minv, i32 maxv)
-{
-    if (!value || minv > maxv) return false; /* R441: safe reject */
-    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, 16.0f);
-    bool changed = false;
-    bool pressed_now = ui->mouse_down && !ui->mouse_prev_down;
-    if (hovered) ui->hot_id = id;
-    if (ui->active_id == id) {
-        if (ui->mouse_down) {
-            f32 mapped = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, (f32)minv, (f32)maxv);
-            i32 nv = imui_slider_int_logic(mapped, minv, maxv);
-            if (nv != *value) { *value = nv; changed = true; }
-        } else {
-            ui->active_id = 0;
-        }
-    } else if (hovered && pressed_now && ui->active_id == 0) {
-        ui->active_id = id;
-        f32 mapped = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, (f32)minv, (f32)maxv);
-        i32 nv = imui_slider_int_logic(mapped, minv, maxv);
-        if (nv != *value) { *value = nv; changed = true; }
-    }
-    return changed;
-}
-
-/* exact logic of imui_slider_float (imgui.c) minus rendering */
-static bool r441_slider_float(ImUI *ui, u32 id, int row, f32 *value, f32 minv, f32 maxv)
-{
-    bool hovered = imui_hit(ui->mouse_x, ui->mouse_y, 6.0f, R437_ROW_Y(row), 188.0f, 16.0f);
-    bool changed = false;
-    bool pressed_now = ui->mouse_down && !ui->mouse_prev_down;
-    if (hovered) ui->hot_id = id;
-    if (ui->active_id == id) {
-        if (ui->mouse_down) {
-            if (value) {
-                f32 nv = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, minv, maxv);
-                if (nv != *value) { *value = nv; changed = true; }
-            }
-        } else {
-            ui->active_id = 0;
-        }
-    } else if (hovered && pressed_now && ui->active_id == 0) {
-        ui->active_id = id;
-        if (value) {
-            f32 nv = imui_slider_map(ui->mouse_x, 6.0f, 188.0f, minv, maxv);
-            if (nv != *value) { *value = nv; changed = true; }
-        }
-    }
-    return changed;
-}
-
 TEST(imui_slider_int_widget_drag_maps_steps)
 {
     ImUI ui;
-    memset(&ui, 0, sizeof(ui));
+    imui_init(&ui, NULL);
     i32 value = 1;
 
     /* press near the "2" position: mapped = (131-6)/188*3 ~= 1.996 -> 2 */
-    r437_begin(&ui, 131.0f, R437_MID(0), true);
-    ASSERT_TRUE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
-    r437_end(&ui);
+    frame_begin(&ui, 131.0f, UI_ROW_MID(0), true);
+    ASSERT_TRUE(imui_slider_int(&ui, 20, "s", &value, 0, 3));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 20u);
     ASSERT_EQ(value, 2);
 
     /* drag to the far left edge -> 0 */
-    r437_begin(&ui, 6.0f, R437_MID(0), true);
-    ASSERT_TRUE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
-    r437_end(&ui);
+    frame_begin(&ui, 6.0f, UI_ROW_MID(0), true);
+    ASSERT_TRUE(imui_slider_int(&ui, 20, "s", &value, 0, 3));
+    frame_end(&ui);
     ASSERT_EQ(value, 0);
 
     /* drag past the right end of the track -> clamped to max */
-    r437_begin(&ui, 400.0f, R437_MID(0), true);
-    ASSERT_TRUE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
-    r437_end(&ui);
+    frame_begin(&ui, 400.0f, UI_ROW_MID(0), true);
+    ASSERT_TRUE(imui_slider_int(&ui, 20, "s", &value, 0, 3));
+    frame_end(&ui);
     ASSERT_EQ(value, 3);
 
     /* holding without moving reports no change */
-    r437_begin(&ui, 400.0f, R437_MID(0), true);
-    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
-    r437_end(&ui);
+    frame_begin(&ui, 400.0f, UI_ROW_MID(0), true);
+    ASSERT_FALSE(imui_slider_int(&ui, 20, "s", &value, 0, 3));
+    frame_end(&ui);
 
     /* release (anywhere) clears active */
-    r437_begin(&ui, 400.0f, R437_MID(0), false);
-    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, &value, 0, 3));
-    r437_end(&ui);
+    frame_begin(&ui, 400.0f, UI_ROW_MID(0), false);
+    ASSERT_FALSE(imui_slider_int(&ui, 20, "s", &value, 0, 3));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 0u);
     ASSERT_EQ(value, 3);
 }
@@ -596,21 +535,21 @@ TEST(imui_slider_int_widget_drag_maps_steps)
 TEST(imui_slider_int_safe_reject)
 {
     ImUI ui;
-    memset(&ui, 0, sizeof(ui));
+    imui_init(&ui, NULL);
     i32 value = 2;
 
     /* NULL value pointer: refuse, no interaction state touched */
-    r437_begin(&ui, 100.0f, R437_MID(0), true);
-    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, NULL, 0, 3));
-    r437_end(&ui);
+    frame_begin(&ui, 100.0f, UI_ROW_MID(0), true);
+    ASSERT_FALSE(imui_slider_int(&ui, 20, "s", NULL, 0, 3));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 0u);
     ASSERT_EQ(ui.hot_id, 0u);
     ASSERT_EQ(value, 2);
 
     /* inverted range: refuse, value untouched */
-    r437_begin(&ui, 100.0f, R437_MID(0), true);
-    ASSERT_FALSE(r441_slider_int(&ui, 20, 0, &value, 3, 0));
-    r437_end(&ui);
+    frame_begin(&ui, 100.0f, UI_ROW_MID(0), true);
+    ASSERT_FALSE(imui_slider_int(&ui, 20, "s", &value, 3, 0));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 0u);
     ASSERT_EQ(value, 2);
 }
@@ -618,39 +557,39 @@ TEST(imui_slider_int_safe_reject)
 TEST(imui_slider_int_float_no_crosstalk)
 {
     ImUI ui;
-    memset(&ui, 0, sizeof(ui));
+    imui_init(&ui, NULL);
     i32 ivalue = 1;
     f32 fvalue = 5.0f;
 
     /* press the int slider (row 0), drag down onto the float slider (row 1):
      * the float slider must not steal active and its value stays put */
-    r437_begin(&ui, 131.0f, R437_MID(0), true);
-    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
-    r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f);
-    r437_end(&ui);
+    frame_begin(&ui, 131.0f, UI_ROW_MID(0), true);
+    imui_slider_int(&ui, 20, "i", &ivalue, 0, 3);
+    imui_slider_float(&ui, 21, "f", &fvalue, 0.0f, 10.0f);
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 20u);
     ASSERT_EQ(ivalue, 2);
 
-    r437_begin(&ui, 131.0f, R437_MID(1), true);
-    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
-    r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f);
-    r437_end(&ui);
+    frame_begin(&ui, 131.0f, UI_ROW_MID(1), true);
+    imui_slider_int(&ui, 20, "i", &ivalue, 0, 3);
+    imui_slider_float(&ui, 21, "f", &fvalue, 0.0f, 10.0f);
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 20u);
     ASSERT_FLOAT_EQ(fvalue, 5.0f, 1e-4f);
 
     /* release over the float slider: int drag ends, float still untouched */
-    r437_begin(&ui, 131.0f, R437_MID(1), false);
-    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
-    r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f);
-    r437_end(&ui);
+    frame_begin(&ui, 131.0f, UI_ROW_MID(1), false);
+    imui_slider_int(&ui, 20, "i", &ivalue, 0, 3);
+    imui_slider_float(&ui, 21, "f", &fvalue, 0.0f, 10.0f);
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 0u);
     ASSERT_FLOAT_EQ(fvalue, 5.0f, 1e-4f);
 
     /* a fresh press-drag on the float slider works and leaves ivalue alone */
-    r437_begin(&ui, 6.0f, R437_MID(1), true);
-    r441_slider_int(&ui, 20, 0, &ivalue, 0, 3);
-    ASSERT_TRUE(r441_slider_float(&ui, 21, 1, &fvalue, 0.0f, 10.0f));
-    r437_end(&ui);
+    frame_begin(&ui, 6.0f, UI_ROW_MID(1), true);
+    imui_slider_int(&ui, 20, "i", &ivalue, 0, 3);
+    ASSERT_TRUE(imui_slider_float(&ui, 21, "f", &fvalue, 0.0f, 10.0f));
+    frame_end(&ui);
     ASSERT_EQ(ui.active_id, 21u);
     ASSERT_FLOAT_EQ(fvalue, 0.0f, 1e-4f);
     ASSERT_EQ(ivalue, 2);
