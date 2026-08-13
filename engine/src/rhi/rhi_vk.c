@@ -3057,9 +3057,15 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     /* Non-depth color formats may be bound as a storage image (e.g.
      * Hi-Z mip generation writes via imageStore).  Add STORAGE usage
      * unconditionally for color textures so any mip can later be
-     * exposed through a STORAGE_IMAGE descriptor. */
+     * exposed through a STORAGE_IMAGE descriptor.
+     * R552-A: +TRANSFER_SRC so color textures can be read back via
+     * rhi_texture_read_pixels (same class of fix as R442/R550-E; the
+     * bake-time material texture-array build in the demo reads back
+     * albedo/MR textures and tripped
+     * VUID-vkCmdCopyImageToBuffer-srcImage-00186 /
+     * VUID-VkImageMemoryBarrier-oldLayout-01212 without it). */
     if (!is_depth) {
-        ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
