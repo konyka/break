@@ -156,6 +156,26 @@ TEST(ibl_capture_uses_to_sun_direction)
     ASSERT_NOT_NULL(strstr(shader, "float cos_sun = max(dot(ray, sun), -1.0)"));
 }
 
+/* The static IBL cannot re-converge every frame. Keep a bounded, time-driven
+ * re-capture that is opt-out with BREAK_IBL_STATIC=1, uses the frame's cached
+ * to-sun direction, and emits only one standalone GPU dispatch per frame. */
+TEST(ibl_runtime_recapture_contract)
+{
+    char src[1048576];
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "bool ibl_static = false"));
+    ASSERT_NOT_NULL(strstr(src, "BREAK_IBL_STATIC"));
+    ASSERT_NOT_NULL(strstr(src, "BREAK_IBL_REBAKE_FRAMES"));
+    ASSERT_NOT_NULL(strstr(src, "ibl_recapture_accum"));
+    ASSERT_NOT_NULL(strstr(src, "ibl_recapture_interval"));
+    ASSERT_NOT_NULL(strstr(src, "if (ibl_recapture_accum >= ibl_recapture_interval)"));
+    ASSERT_NOT_NULL(strstr(src, "render.ibl.rebake_active"));
+    ASSERT_NOT_NULL(strstr(src, "ibl_rebake_step(&render.ibl, render.device)"));
+    ASSERT_NOT_NULL(strstr(src, "ibl_rebake_begin(&render.ibl, render.device,"));
+    ASSERT_NOT_NULL(strstr(src, "-sun_dir_vec.e[0], -sun_dir_vec.e[1], -sun_dir_vec.e[2]"));
+    ASSERT_NOT_NULL(strstr(src, "continue;"));
+}
+
 TEST(gl_ibl_graphics_gate_runs_real_shared_test)
 {
     char src[131072];
@@ -266,6 +286,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(per_object_velocity_contract_is_not_camera_only);
     RUN_TEST(gl_ibl_test_contract_is_documented);
     RUN_TEST(ibl_capture_uses_to_sun_direction);
+    RUN_TEST(ibl_runtime_recapture_contract);
     RUN_TEST(gl_ibl_graphics_gate_runs_real_shared_test);
     RUN_TEST(forward_velocity_uses_single_pass_mrt_contract);
     RUN_TEST(vulkan_ibl_gate_uses_compatible_vertex_contract);

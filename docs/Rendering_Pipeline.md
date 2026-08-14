@@ -367,6 +367,10 @@ IBL 纹理通过 `rhi_cmd_bind_material_textures_ibl` 与材质纹理一起绑�
 1. `render_init` 中调用 `ibl_init`，将 sun-to-scene 光线方向转换为 to-sun 方向后执行 sky capture，再由 `ibl_generate` 生成 BRDF LUT、irradiance 和 prefilter；方向转换使预烘焙反射与 raster skybox 的太阳位置一致
 2. 每帧 PBR 渲染时，`rhi_cmd_bind_material_textures_ibl` 将材质纹理 (0-5) 和 IBL 纹理 (7-9) 一起绑定
 3. 如果有环境 cubemap，调用 `ibl_generate(dev, env_map)` 会额外生成 irradiance + prefilter cubemap
+4. 运行时按帧距检测太阳方向；默认每 36000 帧启动一次 rebake。任务拆成 42 个跨帧单 dispatch，
+   先更新 env，再生成 irradiance/prefilter 临时 cubemap，全部完成后原子交换，避免 Vulkan FIFO
+   swapchain image 池耗尽并保持旧 IBL 始终可采样。`BREAK_IBL_STATIC=1` 禁用，
+   `BREAK_IBL_REBAKE_FRAMES=N` 覆盖周期。
 
 **VK 后端**：描述符集布局 (`desc_layout`) 已扩展为 9 个绑定 (0-8)，材质和 IBL 在同一个 descriptor set 中，避免多次绑定替换。
 

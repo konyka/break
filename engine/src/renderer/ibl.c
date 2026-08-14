@@ -67,6 +67,79 @@ static RHICubemap ibl_create_hdr_cube(RHIDevice *dev, u32 size, u32 mips) {
     return rhi_cubemap_create(dev, &d);
 }
 
+static bool ibl_ensure_rebake_pipelines(IBLSystem *sys, RHIDevice *dev) {
+    if (!rhi_handle_valid(sys->sky_capture_pipeline))
+        sys->sky_capture_pipeline = ibl_load_compute(dev, "shaders/sky_to_cube.comp");
+    if (!rhi_handle_valid(sys->irradiance_pipeline))
+        sys->irradiance_pipeline = ibl_load_compute(dev, "shaders/irradiance_env.comp");
+    if (!rhi_handle_valid(sys->prefilter_pipeline))
+        sys->prefilter_pipeline = ibl_load_compute(dev, "shaders/prefilter_env.comp");
+    return rhi_handle_valid(sys->sky_capture_pipeline) &&
+           rhi_handle_valid(sys->irradiance_pipeline) &&
+           rhi_handle_valid(sys->prefilter_pipeline);
+}
+
+static bool ibl_rebake_dispatch_sky(IBLSystem *sys, RHIDevice *dev) {
+    RHICmdBuffer *cmd = rhi_frame_begin(dev);
+    if (!cmd) return false;
+    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_face");
+    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_face_size");
+    i32 loc_sdir = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_sun_dir");
+    i32 loc_scol = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_sun_color");
+    const u32 groups = (IBL_ENV_SIZE + 15u) / 16u;
+    rhi_cmd_bind_pipeline(cmd, sys->sky_capture_pipeline);
+    rhi_cmd_bind_image_cubemap_face(cmd, sys->env_map, sys->rebake_face, 0u, 0u, true);
+    if (loc_face >= 0) rhi_cmd_set_uniform_i32(cmd, loc_face, (i32)sys->rebake_face);
+    if (loc_size >= 0) rhi_cmd_set_uniform_i32(cmd, loc_size, (i32)IBL_ENV_SIZE);
+    if (loc_sdir >= 0) rhi_cmd_set_uniform_vec3(cmd, loc_sdir, sys->rebake_sun_dir[0], sys->rebake_sun_dir[1], sys->rebake_sun_dir[2]);
+    if (loc_scol >= 0) rhi_cmd_set_uniform_vec3(cmd, loc_scol, sys->rebake_sun_color[0], sys->rebake_sun_color[1], sys->rebake_sun_color[2]);
+    rhi_cmd_dispatch(cmd, groups, groups, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    rhi_frame_end(dev);
+    rhi_present(dev);
+    return true;
+}
+
+static bool ibl_rebake_dispatch_irradiance(IBLSystem *sys, RHIDevice *dev) {
+    RHICmdBuffer *cmd = rhi_frame_begin(dev);
+    if (!cmd) return false;
+    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->irradiance_pipeline, "u_face");
+    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->irradiance_pipeline, "u_face_size");
+    rhi_cmd_bind_pipeline(cmd, sys->irradiance_pipeline);
+    rhi_cmd_bind_image_cubemap_face(cmd, sys->rebake_irradiance, sys->rebake_face, 0u, 0u, true);
+    rhi_cmd_bind_cubemap_sampler(cmd, sys->env_map, sys->cubemap_sampler, 1u);
+    if (loc_face >= 0) rhi_cmd_set_uniform_i32(cmd, loc_face, (i32)sys->rebake_face);
+    if (loc_size >= 0) rhi_cmd_set_uniform_i32(cmd, loc_size, (i32)IBL_IRRADIANCE_SIZE);
+    rhi_cmd_dispatch(cmd, IBL_IRRADIANCE_SIZE / 16u, IBL_IRRADIANCE_SIZE / 16u, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    rhi_frame_end(dev);
+    rhi_present(dev);
+    return true;
+}
+
+static bool ibl_rebake_dispatch_prefilter(IBLSystem *sys, RHIDevice *dev) {
+    RHICmdBuffer *cmd = rhi_frame_begin(dev);
+    if (!cmd) return false;
+    u32 mip_size = IBL_PREFILTER_SIZE >> sys->rebake_mip;
+    if (mip_size == 0u) mip_size = 1u;
+    u32 groups = (mip_size + 15u) / 16u;
+    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_face");
+    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_mip_size");
+    i32 loc_roughness = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_roughness");
+    rhi_cmd_bind_pipeline(cmd, sys->prefilter_pipeline);
+    rhi_cmd_bind_image_cubemap_face(cmd, sys->rebake_prefilter, sys->rebake_face, sys->rebake_mip, 0u, true);
+    rhi_cmd_bind_cubemap_sampler(cmd, sys->env_map, sys->cubemap_sampler, 1u);
+    if (loc_face >= 0) rhi_cmd_set_uniform_i32(cmd, loc_face, (i32)sys->rebake_face);
+    if (loc_size >= 0) rhi_cmd_set_uniform_i32(cmd, loc_size, (i32)mip_size);
+    if (loc_roughness >= 0) rhi_cmd_set_uniform_f32(cmd, loc_roughness,
+        (f32)sys->rebake_mip / (f32)(IBL_PREFILTER_MIP_COUNT - 1u));
+    rhi_cmd_dispatch(cmd, groups, groups, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    rhi_frame_end(dev);
+    rhi_present(dev);
+    return true;
+}
+
 /* ===== Public API ========================================================= */
 
 void ibl_init(IBLSystem *sys, RHIDevice *dev) {
@@ -81,6 +154,8 @@ void ibl_init(IBLSystem *sys, RHIDevice *dev) {
     sys->brdf_lut_pipeline    = RHI_HANDLE_NULL;
     sys->irradiance_pipeline  = RHI_HANDLE_NULL;
     sys->prefilter_pipeline   = RHI_HANDLE_NULL;
+    sys->rebake_irradiance    = RHI_HANDLE_NULL;
+    sys->rebake_prefilter     = RHI_HANDLE_NULL;
     sys->ready = false;
 
     if (!dev) {
@@ -163,6 +238,14 @@ void ibl_destroy(IBLSystem *sys, RHIDevice *dev) {
     if (rhi_handle_valid(sys->prefilter_map)) {
         rhi_cubemap_destroy(dev, sys->prefilter_map);
         sys->prefilter_map = RHI_HANDLE_NULL;
+    }
+    if (rhi_handle_valid(sys->rebake_irradiance)) {
+        rhi_cubemap_destroy(dev, sys->rebake_irradiance);
+        sys->rebake_irradiance = RHI_HANDLE_NULL;
+    }
+    if (rhi_handle_valid(sys->rebake_prefilter)) {
+        rhi_cubemap_destroy(dev, sys->rebake_prefilter);
+        sys->rebake_prefilter = RHI_HANDLE_NULL;
     }
 
     if (rhi_handle_valid(sys->cubemap_sampler)) {
@@ -368,4 +451,77 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
         ok = false;
     }
     sys->ready = ok;
+}
+
+bool ibl_rebake_begin(IBLSystem *sys, RHIDevice *dev,
+                      const f32 sun_dir[3], const f32 sun_color[3]) {
+    if (!sys || !dev || sys->rebake_active || !rhi_handle_valid(sys->env_map) ||
+        !rhi_handle_valid(sys->cubemap_sampler) || !ibl_ensure_rebake_pipelines(sys, dev))
+        return false;
+
+    if (!rhi_handle_valid(sys->rebake_irradiance))
+        sys->rebake_irradiance = ibl_create_hdr_cube(dev, IBL_IRRADIANCE_SIZE, 1u);
+    if (!rhi_handle_valid(sys->rebake_prefilter))
+        sys->rebake_prefilter = ibl_create_hdr_cube(dev, IBL_PREFILTER_SIZE, IBL_PREFILTER_MIP_COUNT);
+    if (!rhi_handle_valid(sys->rebake_irradiance) || !rhi_handle_valid(sys->rebake_prefilter)) {
+        LOG_WARN("IBL: runtime rebake targets unavailable");
+        return false;
+    }
+
+    const f32 default_dir[3] = { 0.0f, 1.0f, 0.0f };
+    const f32 default_color[3] = { 1.0f, 1.0f, 1.0f };
+    const f32 *dir = sun_dir ? sun_dir : default_dir;
+    const f32 *color = sun_color ? sun_color : default_color;
+    memcpy(sys->rebake_sun_dir, dir, sizeof(sys->rebake_sun_dir));
+    memcpy(sys->rebake_sun_color, color, sizeof(sys->rebake_sun_color));
+    sys->rebake_active = true;
+    sys->rebake_stage = 0u;
+    sys->rebake_face = 0u;
+    sys->rebake_mip = 0u;
+    return true;
+}
+
+bool ibl_rebake_step(IBLSystem *sys, RHIDevice *dev) {
+    if (!sys || !dev || !sys->rebake_active) return false;
+
+    bool dispatched = false;
+    if (sys->rebake_stage == 0u) {
+        dispatched = ibl_rebake_dispatch_sky(sys, dev);
+        if (dispatched && ++sys->rebake_face == 6u) {
+            /* The completed sky must be readable before convolution starts. */
+            rhi_cubemap_transition_to_read(dev, sys->env_map);
+            sys->rebake_stage = 1u;
+            sys->rebake_face = 0u;
+        }
+    } else if (sys->rebake_stage == 1u) {
+        dispatched = ibl_rebake_dispatch_irradiance(sys, dev);
+        if (dispatched && ++sys->rebake_face == 6u) {
+            rhi_cubemap_transition_to_read(dev, sys->rebake_irradiance);
+            sys->rebake_stage = 2u;
+            sys->rebake_face = 0u;
+        }
+    } else {
+        dispatched = ibl_rebake_dispatch_prefilter(sys, dev);
+        if (dispatched && ++sys->rebake_face == 6u) {
+            sys->rebake_face = 0u;
+            sys->rebake_mip++;
+            if (sys->rebake_mip == IBL_PREFILTER_MIP_COUNT) {
+                rhi_cubemap_transition_to_read(dev, sys->rebake_prefilter);
+                RHICubemap old_irradiance = sys->irradiance_map;
+                RHICubemap old_prefilter = sys->prefilter_map;
+                sys->irradiance_map = sys->rebake_irradiance;
+                sys->prefilter_map = sys->rebake_prefilter;
+                sys->rebake_irradiance = old_irradiance;
+                sys->rebake_prefilter = old_prefilter;
+                sys->rebake_active = false;
+                return false;
+            }
+        }
+    }
+
+    if (!dispatched) {
+        LOG_WARN("IBL: runtime rebake aborted — backend returned no command buffer");
+        sys->rebake_active = false;
+    }
+    return sys->rebake_active;
 }

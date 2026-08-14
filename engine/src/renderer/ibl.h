@@ -40,6 +40,19 @@ typedef struct {
     RHIPipeline irradiance_pipeline;
     RHIPipeline prefilter_pipeline;
 
+    /* Runtime rebake state. Work is deliberately split into one dispatch per
+     * frame so Vulkan FIFO swapchains never exhaust their image pool. The
+     * temporary convolution maps are swapped in only after all faces/mips
+     * are complete, keeping the previous IBL sampleable during the job. */
+    RHICubemap rebake_irradiance;
+    RHICubemap rebake_prefilter;
+    bool rebake_active;
+    u32 rebake_stage;
+    u32 rebake_face;
+    u32 rebake_mip;
+    f32 rebake_sun_dir[3];
+    f32 rebake_sun_color[3];
+
     bool ready;
 } IBLSystem;
 
@@ -62,5 +75,11 @@ void ibl_capture_env_sky(IBLSystem *sys, RHIDevice *dev,
  * the BRDF LUT (which is purely analytical) is required; pass sys->env_map after
  * ibl_capture_env_sky to convolve the captured environment. */
 void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map);
+
+/* Start and advance a dynamic rebake. `ibl_rebake_step` performs at most one
+ * compute dispatch and one present, returning true while work remains. */
+bool ibl_rebake_begin(IBLSystem *sys, RHIDevice *dev,
+                      const f32 sun_dir[3], const f32 sun_color[3]);
+bool ibl_rebake_step(IBLSystem *sys, RHIDevice *dev);
 
 #endif /* IBL_H */

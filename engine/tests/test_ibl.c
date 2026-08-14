@@ -31,6 +31,7 @@ static unsigned g_frame_begin_calls;
 static unsigned g_dispatch_calls;
 static unsigned g_cube_transition_calls;
 static unsigned g_tex_transition_calls;
+static unsigned g_present_calls;
 
 static unsigned g_warn_count;
 static char     g_last_warn[256];
@@ -41,6 +42,7 @@ static void fake_reset(void) {
     g_dispatch_calls           = 0;
     g_cube_transition_calls    = 0;
     g_tex_transition_calls     = 0;
+    g_present_calls            = 0;
     g_warn_count               = 0;
     g_last_warn[0]             = '\0';
 }
@@ -74,7 +76,8 @@ char *shader_read_file(const char *path, usize *out_len) {
 /* ---- RHI stubs ---------------------------------------------------------- */
 
 static RHIHandle fake_handle(void) {
-    RHIHandle h = { 0u, 1u }; /* generation != 0 -> rhi_handle_valid */
+    static u32 next_index = 1u;
+    RHIHandle h = { next_index++, 1u }; /* generation != 0 -> rhi_handle_valid */
     return h;
 }
 
@@ -112,7 +115,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     return g_frame_begin_returns_null ? NULL : (RHICmdBuffer *)&g_cmd_sentinel;
 }
 void rhi_frame_end(RHIDevice *dev) { (void)dev; }
-void rhi_present(RHIDevice *dev)  { (void)dev; }
+void rhi_present(RHIDevice *dev)  { (void)dev; g_present_calls++; }
 
 void rhi_cubemap_transition_to_read(RHIDevice *d, RHICubemap cm) {
     (void)d; (void)cm; g_cube_transition_calls++;
@@ -222,9 +225,44 @@ TEST(ibl_null_cmd_degrades_explicitly)
     ibl_destroy(&sys, dev);
 }
 
+/* Runtime work must be limited to one dispatch/present per caller frame.
+ * The final maps swap only after all 42 sky/convolution dispatches finish. */
+TEST(ibl_runtime_rebake_is_sliced_and_atomic)
+{
+    fake_reset();
+    IBLSystem sys;
+    RHIDevice *dev = (RHIDevice *)&g_cmd_sentinel;
+    ibl_init(&sys, dev);
+    ibl_generate(&sys, dev, sys.env_map);
+    unsigned baseline_dispatches = g_dispatch_calls;
+    RHICubemap old_irradiance = sys.irradiance_map;
+    RHICubemap old_prefilter = sys.prefilter_map;
+
+    ASSERT_TRUE(ibl_rebake_begin(&sys, dev, NULL, NULL));
+    ASSERT_TRUE(sys.rebake_active);
+    for (u32 step = 0u; step < 41u; step++) {
+        unsigned before = g_dispatch_calls;
+        ASSERT_TRUE(ibl_rebake_step(&sys, dev));
+        ASSERT_EQ(g_dispatch_calls, before + 1u);
+        ASSERT_EQ(sys.irradiance_map.index, old_irradiance.index);
+        ASSERT_EQ(sys.irradiance_map.generation, old_irradiance.generation);
+        ASSERT_EQ(sys.prefilter_map.index, old_prefilter.index);
+        ASSERT_EQ(sys.prefilter_map.generation, old_prefilter.generation);
+    }
+    ASSERT_FALSE(ibl_rebake_step(&sys, dev));
+    ASSERT_FALSE(sys.rebake_active);
+    ASSERT_EQ(g_dispatch_calls, baseline_dispatches + 42u);
+    ASSERT_EQ(g_present_calls, 79u); /* initial bake 37 + runtime 42 */
+    ASSERT_NEQ(sys.irradiance_map.index, old_irradiance.index);
+    ASSERT_NEQ(sys.prefilter_map.index, old_prefilter.index);
+
+    ibl_destroy(&sys, dev);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ibl_capture_env_sky_dispatches_all_faces);
     RUN_TEST(ibl_generate_runs_all_three_stages);
     RUN_TEST(ibl_generate_brdf_only_without_env);
     RUN_TEST(ibl_null_cmd_degrades_explicitly);
+    RUN_TEST(ibl_runtime_rebake_is_sliced_and_atomic);
 TEST_MAIN_END()

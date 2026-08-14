@@ -1,6 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
-最近更新：**R558 IBL 天空方向一致性（TDD）**：审计确认 raster skybox 已在 R446 修正为将
+最近更新：**R559 动态 IBL 跨帧重烘焙（TDD）**：静态 IBL 在实时太阳（L/J/I/K、TOD）变化后
+会与可见 skybox 漂移。新增默认 36000 帧（约 10 分钟@60 FPS）触发的运行时 rebake，并提供
+`BREAK_IBL_STATIC=1` 静态 opt-out 与 `BREAK_IBL_REBAKE_FRAMES=N` 无头验证覆盖。重烘焙不再一次性
+提交 43 个 FIFO swapchain frame，而是拆成 42 个跨帧单 dispatch（sky 6 + irradiance 6 + prefilter
+30）；旧 irradiance/prefilter 直到新资源全部完成才原子交换，始终可采样且不会耗尽 Vulkan image
+池。TDD 新增 `test_ibl` 原子交换/每步一个 present 断言及 `test_shader_io` 主循环契约；GL/VK
+强制重烘焙 120 帧分别无 Mesa API error、Vulkan validation 0。仍未完成的大项只有需要真实目标
+环境的 Windows WGL/Win32 runtime 验证，以及预烘焙 static mega geometry 的逐节点动态变换（后者
+需要 GPU-driven transform indirection 重构，当前静态 megabuffer 设计下不具性能收益，保持明确限制）。
+
+此前：**R558 IBL 天空方向一致性（TDD）**：审计确认 raster skybox 已在 R446 修正为将
 sun-to-scene 的光线传播方向取反后交给太阳位置/散射计算，但静态 IBL capture 仍直接传入传播
 方向，导致金属反射和环境光中的太阳与可见天空相反。`render_init` 现仅在 IBL 启动预烘焙时
 转换为 to-sun 方向；不新增运行时 pass、纹理、CPU 回读或带宽。`test_shader_io` 先锁定 host

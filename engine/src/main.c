@@ -2651,6 +2651,17 @@ bool cg_enabled = true;
 { const char *e = getenv("BREAK_SHARPEN"); if (e && !atoi(e)) sharpen_enabled = false; }
 { const char *e = getenv("BREAK_SSS"); if (e && !atoi(e)) sss_enabled = false; }
 { const char *e = getenv("BREAK_GR"); if (e && !atoi(e)) god_rays_intensity = 0.0f; }
+/* R559: dynamic IBL re-capture. The skybox responds to the live sun while the
+ * pre-baked IBL stays at its launch direction, so metallic/environment
+ * lighting drifts from the visible sky during TOD cycles or L/J/I/K edits.
+ * A re-capture starts at this interval, then advances one compute dispatch per
+ * frame. BREAK_IBL_STATIC=1 keeps the old static behavior;
+ * BREAK_IBL_REBAKE_FRAMES=N overrides the interval for headless validation. */
+bool ibl_static = false;
+{ const char *e = getenv("BREAK_IBL_STATIC"); if (e && atoi(e)) ibl_static = true; }
+u32 ibl_recapture_interval = 36000u;
+{ const char *e = getenv("BREAK_IBL_REBAKE_FRAMES");
+  if (e) { i32 v = atoi(e); if (v > 0) ibl_recapture_interval = (u32)v; } }
 bool lensfx_enabled = true;
 bool cine_enabled = false;
 f32 lens_ca = 0.003f;
@@ -5277,7 +5288,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         profiler_push("render");
-        RHICmdBuffer *cmd = rhi_frame_begin(render.device);
 
         /* Capture render transforms once before any geometry pass. The dense
          * node index is stable for the loaded scene; generation 1 is reset by
@@ -5323,6 +5333,34 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         Vec3 sun_color = cached_sun_color;
         Vec3 ambient_col = cached_ambient_col;
 
+        /* R559: a rebake is sliced into 42 one-dispatch frames (sky 6,
+         * irradiance 6, prefilter 30). This adds a bounded background cost
+         * only while active and avoids exhausting Vulkan's FIFO swapchain.
+         * The previous convolution maps remain bound until the replacement
+         * pair is complete, so PBR never samples a partially baked map. */
+        if (!ibl_static && render.ibl.ready) {
+            static u32 ibl_recapture_accum = 0u;
+            if (render.ibl.rebake_active) {
+                ibl_rebake_step(&render.ibl, render.device);
+                /* This frame was consumed by the standalone compute dispatch. */
+                continue;
+            }
+            ibl_recapture_accum++;
+            if (ibl_recapture_accum >= ibl_recapture_interval) {
+                ibl_recapture_accum = 0u;
+                f32 sky_sun_dir[3] = {
+                    -sun_dir_vec.e[0], -sun_dir_vec.e[1], -sun_dir_vec.e[2]
+                };
+                if (ibl_rebake_begin(&render.ibl, render.device,
+                                     sky_sun_dir, &sun_color.e[0])) {
+                    ibl_rebake_step(&render.ibl, render.device);
+                    /* As above, do not also record a scene frame this iteration. */
+                    continue;
+                }
+            }
+        }
+
+        RHICmdBuffer *cmd = rhi_frame_begin(render.device);
         draw_calls = 0;
         culled_count = 0;
         tri_count = 0; /* R445: matches the old loop-local redeclaration cadence */
