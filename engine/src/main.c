@@ -816,7 +816,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
      * Capture the procedural sky into the environment cubemap using the demo's
      * default sun, then convolve it into real irradiance/prefilter maps so the
      * PBR HAS_IBL path samples a true environment instead of a per-pixel
-     * approximation.  (The IBL is static; a moving sun won't re-converge.) */
+     * approximation.  The light vector travels sun-to-scene, whereas the sky
+     * capture expects a to-sun direction; convert once here. The IBL remains
+     * static, so a moving sun won't re-converge. */
     ibl_init(&rs->ibl, rs->device);
     {
         const f32 init_sun_az = 1.03f, init_sun_el = 0.93f;
@@ -829,7 +831,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
         if (sl > 0.0f) { sdir[0] /= sl; sdir[1] /= sl; sdir[2] /= sl; }
         f32 st = fmaxf(0.0f, fminf(init_sun_el, 1.0f));
         f32 scol[3] = { 0.8f + 0.2f*st, 0.4f + 0.55f*st, 0.2f + 0.7f*st };
-        ibl_capture_env_sky(&rs->ibl, rs->device, sdir, scol);
+        f32 sky_sun_dir[3] = { -sdir[0], -sdir[1], -sdir[2] };
+        ibl_capture_env_sky(&rs->ibl, rs->device, sky_sun_dir, scol);
         ibl_generate(&rs->ibl, rs->device, rs->ibl.env_map);
     }
 

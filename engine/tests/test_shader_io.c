@@ -139,6 +139,23 @@ TEST(gl_ibl_test_contract_is_documented)
     ASSERT_NOT_NULL(strstr(src, "image2D"));
 }
 
+/* The directional light vector points from the sun toward the scene, while
+ * sky_to_cube uses u_sun_dir as the sun's position. Keep IBL reflections
+ * aligned with the raster sky without adding a runtime rebake. */
+TEST(ibl_capture_uses_to_sun_direction)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "ibl_capture_env_sky(&rs->ibl"));
+    ASSERT_NOT_NULL(strstr(src, "f32 sky_sun_dir[3] = { -sdir[0], -sdir[1], -sdir[2] }"));
+    ASSERT_NOT_NULL(strstr(src, "ibl_capture_env_sky(&rs->ibl, rs->device, sky_sun_dir, scol)"));
+
+    char shader[16384];
+    ASSERT_TRUE(read_shader_source("sky_to_cube.comp", shader, sizeof(shader)));
+    ASSERT_NOT_NULL(strstr(shader, "vec3 sun = normalize(SUN_DIR)"));
+    ASSERT_NOT_NULL(strstr(shader, "float cos_sun = max(dot(ray, sun), -1.0)"));
+}
+
 TEST(gl_ibl_graphics_gate_runs_real_shared_test)
 {
     char src[131072];
@@ -248,6 +265,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(postfx_passes_composite_chain_color);
     RUN_TEST(per_object_velocity_contract_is_not_camera_only);
     RUN_TEST(gl_ibl_test_contract_is_documented);
+    RUN_TEST(ibl_capture_uses_to_sun_direction);
     RUN_TEST(gl_ibl_graphics_gate_runs_real_shared_test);
     RUN_TEST(forward_velocity_uses_single_pass_mrt_contract);
     RUN_TEST(vulkan_ibl_gate_uses_compatible_vertex_contract);

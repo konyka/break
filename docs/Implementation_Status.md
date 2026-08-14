@@ -1,6 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
-最近更新：**R556 temporal 消费统一（TDD）— motion blur 逐对象速度**：审计确认 forward
+最近更新：**R558 IBL 天空方向一致性（TDD）**：审计确认 raster skybox 已在 R446 修正为将
+sun-to-scene 的光线传播方向取反后交给太阳位置/散射计算，但静态 IBL capture 仍直接传入传播
+方向，导致金属反射和环境光中的太阳与可见天空相反。`render_init` 现仅在 IBL 启动预烘焙时
+转换为 to-sun 方向；不新增运行时 pass、纹理、CPU 回读或带宽。`test_shader_io` 先锁定 host
+方向转换和 shader 的太阳位置语义；GL/VK shared IBL graphics gate 继续验证真实 cubemap
+capture/convolution/sample。仍未完成的大项只有需要真实目标环境的 Windows WGL/Win32 runtime
+验证，以及预烘焙 static mega geometry 的逐节点动态变换（后者需要 GPU-driven transform
+indirection 重构，当前静态 megabuffer 设计下不具性能收益，保持明确限制）。
+
+此前：**R556 temporal 消费统一（TDD）— motion blur 逐对象速度**：审计确认 forward
 TAA 已消费 RT1，但 motion blur 仍使用 depth + previous VP 的 camera-only 重建，动态物体
 会在 blur 阶段退化。现 motion blur 的第三个 sampler 直接读取已有 RG16F velocity；RT1
 存在时按 NDC delta 转像素速度，不存在时才保留旧重建回退。该方案零新增 pass、纹理、CPU

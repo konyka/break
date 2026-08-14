@@ -364,7 +364,7 @@ IBL 纹理通过 `rhi_cmd_bind_material_textures_ibl` 与材质纹理一起绑�
 | 9 | 8 | `prefilter_map` | samplerCube |
 
 **流程**：
-1. `render_init` 中调用 `ibl_init` + `ibl_generate(dev, RHI_HANDLE_NULL)` 生成 BRDF LUT（纯解析，无环境贴图依赖）
+1. `render_init` 中调用 `ibl_init`，将 sun-to-scene 光线方向转换为 to-sun 方向后执行 sky capture，再由 `ibl_generate` 生成 BRDF LUT、irradiance 和 prefilter；方向转换使预烘焙反射与 raster skybox 的太阳位置一致
 2. 每帧 PBR 渲染时，`rhi_cmd_bind_material_textures_ibl` 将材质纹理 (0-5) 和 IBL 纹理 (7-9) 一起绑定
 3. 如果有环境 cubemap，调用 `ibl_generate(dev, env_map)` 会额外生成 irradiance + prefilter cubemap
 
