@@ -3,6 +3,9 @@
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
+#ifdef FORWARD_MRT
+layout(location = 3) in vec2 v_velocity;
+#endif
 
 /* Shared push block (must match terrain_vk.vert and the terrain offset map). */
 layout(push_constant) uniform PushConstants {
@@ -35,6 +38,9 @@ layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 1) uniform sampler2D u_shadow_map;
 
 layout(location = 0) out vec4 FragColor;
+#ifdef FORWARD_MRT
+layout(location = 1) out vec2 out_velocity;
+#endif
 
 float terrain_shadow(vec3 world_pos) {
     vec4 clip = u_light_vp * vec4(world_pos, 1.0);
@@ -119,4 +125,7 @@ void main() {
     color = mix(color, u_ambient * 1.5, fog * u_fog_strength);
 
     FragColor = vec4(color, 1.0);
+#ifdef FORWARD_MRT
+    out_velocity = v_velocity;
+#endif
 }

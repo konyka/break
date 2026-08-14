@@ -1,6 +1,9 @@
 #version 450 core
 
 in vec3 vWorldPos;
+#ifdef FORWARD_MRT
+in vec2 v_velocity;
+#endif
 
 uniform float u_time;
 uniform vec3 u_camera_pos;
@@ -12,7 +15,10 @@ layout(binding = 1) uniform sampler2D u_shadow_map;
 uniform float u_shadow_bias;
 uniform float u_water_y;
 
-out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
+#ifdef FORWARD_MRT
+layout(location = 1) out vec2 out_velocity;
+#endif
 
 float water_shadow(vec3 wp) {
     vec4 clip = u_light_vp * vec4(wp, 1.0);
@@ -56,4 +62,7 @@ void main() {
 
     float alpha = mix(0.5, 0.85, fresnel) * fade;
     FragColor = vec4(color, alpha);
+#ifdef FORWARD_MRT
+    out_velocity = v_velocity;
+#endif
 }

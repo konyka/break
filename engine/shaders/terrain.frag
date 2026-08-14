@@ -3,8 +3,14 @@
 in vec3 vWorldPos;
 in vec3 vNormal;
 in vec2 vUV;
+#ifdef FORWARD_MRT
+in vec2 v_velocity;
+#endif
 
 layout(location = 0) out vec4 FragColor;
+#ifdef FORWARD_MRT
+layout(location = 1) out vec2 out_velocity;
+#endif
 
 /* R88-2: Pre-normalized (length=0.98995) — avoids per-fragment normalize() */
 const vec3 u_light_dir = vec3(0.5050763, -0.8081220, 0.3030458);
@@ -104,4 +110,7 @@ void main() {
     color = mix(color, u_ambient * 1.5, fog * u_fog_strength);
 
     FragColor = vec4(color, 1.0);
+#ifdef FORWARD_MRT
+    out_velocity = v_velocity;
+#endif
 }

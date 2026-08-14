@@ -134,7 +134,7 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
     sys->_loc_gbuf_model = rhi_pipeline_get_uniform_location(dev, gp, "u_model");
     sys->_loc_gbuf_view  = rhi_pipeline_get_uniform_location(dev, gp, "u_view");
     sys->_loc_gbuf_proj  = rhi_pipeline_get_uniform_location(dev, gp, "u_proj");
-    sys->_loc_gbuf_prev_vp = rhi_pipeline_get_uniform_location(dev, gp, "u_prev_vp");
+    sys->_loc_gbuf_prev_mvp = rhi_pipeline_get_uniform_location(dev, gp, "u_prev_mvp");
 
     /* R442: array-variant G-Buffer pass pipeline uniforms. */
     if (rhi_handle_valid(sys->gbuffer_arr_pipeline)) {
@@ -142,7 +142,7 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
         sys->_loc_gbuf_arr_model = rhi_pipeline_get_uniform_location(dev, ap, "u_model");
         sys->_loc_gbuf_arr_view  = rhi_pipeline_get_uniform_location(dev, ap, "u_view");
         sys->_loc_gbuf_arr_proj  = rhi_pipeline_get_uniform_location(dev, ap, "u_proj");
-        sys->_loc_gbuf_arr_prev_vp = rhi_pipeline_get_uniform_location(dev, ap, "u_prev_vp");
+        sys->_loc_gbuf_arr_prev_mvp = rhi_pipeline_get_uniform_location(dev, ap, "u_prev_mvp");
     }
 
     /* Lighting pass pipeline uniforms. */
@@ -182,11 +182,11 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_gbuf_model      = -1;
     sys->_loc_gbuf_view       = -1;
     sys->_loc_gbuf_proj       = -1;
-    sys->_loc_gbuf_prev_vp    = -1;
+    sys->_loc_gbuf_prev_mvp   = -1;
     sys->_loc_gbuf_arr_model  = -1;
     sys->_loc_gbuf_arr_view   = -1;
     sys->_loc_gbuf_arr_proj   = -1;
-    sys->_loc_gbuf_arr_prev_vp = -1;
+    sys->_loc_gbuf_arr_prev_mvp = -1;
 
     if (width == 0u || height == 0u) {
         LOG_WARN("deferred: zero-size init (%ux%u) -- skipping", width, height);

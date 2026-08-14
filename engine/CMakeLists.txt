@@ -122,7 +122,7 @@ src/renderer/water.c
     src/renderer/lens_flare.c
     src/renderer/sharpen.c
     src/renderer/motion_blur.c
-    src/renderer/forward_velocity.c
+    src/renderer/motion_history.c
     src/renderer/contact_shadow.c
     src/renderer/point_shadow.c
     src/renderer/sss.c
@@ -761,6 +761,14 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_ibl PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_ibl PRIVATE m)
     add_test(NAME test_ibl COMMAND test_ibl)
+
+    # Per-object motion history contract: dense slot lookup, first-frame
+    # invalidation, and generation-safe ID reuse.
+    add_executable(test_motion_history tests/test_motion_history.c
+        src/renderer/motion_history.c src/math/math.c)
+    target_include_directories(test_motion_history PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_motion_history PRIVATE m)
+    add_test(NAME test_motion_history COMMAND test_motion_history)
 
     # test_terrain: CPU-side terrain height sampling/modify/erode
     add_executable(test_terrain tests/test_terrain.c

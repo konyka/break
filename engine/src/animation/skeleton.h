@@ -14,11 +14,15 @@ typedef struct {
     u32   joint_parents[SKELETON_MAX_JOINTS];
     Mat4  inverse_bind[SKELETON_MAX_JOINTS];
     Mat4  current_pose[SKELETON_MAX_JOINTS];
+    Mat4  previous_pose[SKELETON_MAX_JOINTS];
+    bool  history_valid;
     /* Persistent scratch buffers for local/world pose computation
      * (avoids ~16KB stack allocation per evaluate call). */
     Mat4  _local_poses[SKELETON_MAX_JOINTS];
     Mat4  _world_poses[SKELETON_MAX_JOINTS];
-    RHIBuffer joint_buf[2]; /* R183: dual-slot vs in-flight skinned VS read */
+    /* Each slot packs current then previous pose; slots still alternate for
+     * in-flight safety while the vertex shader fetches both generations. */
+    RHIBuffer joint_buf[2];
     RHIDevice *device;
 } Skeleton;
 

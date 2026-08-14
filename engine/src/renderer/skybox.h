@@ -12,7 +12,7 @@ typedef struct {
     bool        ready;
 } Skybox;
 
-bool skybox_init(Skybox *sb, RHIDevice *dev);
+bool skybox_init(Skybox *sb, RHIDevice *dev, bool forward_mrt);
 void skybox_shutdown(Skybox *sb);
 void skybox_render(Skybox *sb, RHICmdBuffer *cmd, const f32 *view, const f32 *inv_proj,
                    f32 sun_dx, f32 sun_dy, f32 sun_dz,

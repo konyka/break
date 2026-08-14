@@ -3,6 +3,9 @@
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
+#ifdef FORWARD_MRT
+layout(location = 3) in vec2 v_velocity;
+#endif
 
 layout(push_constant) uniform PushConstants {
     mat4 u_model;
@@ -21,6 +24,9 @@ layout(push_constant) uniform PushConstants {
 layout(binding = 0) uniform sampler2D u_albedo;
 
 layout(location = 0) out vec4 FragColor;
+#ifdef FORWARD_MRT
+layout(location = 1) out vec2 out_velocity;
+#endif
 
 void main() {
     vec3 N = normalize(vNormal);
@@ -34,4 +40,7 @@ void main() {
     vec3 albedo = texture(u_albedo, vUV).rgb;
     vec3 color = albedo * (pc.u_ambient + pc.u_light_color * diff) + pc.u_light_color * spec * 0.15;
     FragColor = vec4(color, 1.0);
+#ifdef FORWARD_MRT
+    out_velocity = v_velocity;
+#endif
 }

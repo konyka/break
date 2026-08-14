@@ -25,6 +25,7 @@ typedef enum {
     RHI_FORMAT_R8G8B8A8_UNORM,
     RHI_FORMAT_B8G8R8A8_UNORM,
     RHI_FORMAT_R16G16B16A16_SFLOAT,
+    RHI_FORMAT_R16G16_SFLOAT,
     RHI_FORMAT_R32_FLOAT,
     RHI_FORMAT_D32_FLOAT,
     RHI_FORMAT_UNDEFINED,
@@ -71,6 +72,9 @@ typedef struct {
     bool disable_culling;
     bool uses_texel_buffer;
     bool alpha_blend;
+    /* Keep motion-vector MRT writes unblended while RT0 uses alpha blending.
+     * This avoids accumulating transparent velocities across layers. */
+    bool alpha_blend_color_only;
     bool font_vertex;
     bool is_instanced;
     bool skinned_vertex;
@@ -204,6 +208,7 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
                                          RHIBuffer count_buf, u32 count_offset,
                                          u32 max_draws, u32 stride);
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a);
+void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f32 g, f32 b, f32 a);
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit);
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISampler sampler);
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding);
@@ -346,6 +351,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
                               const RHIFormat *formats, u32 attachment_count);
 void      rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo);
 void      rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo);
+void      rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo);
 void      rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
 
 /* ---- Depth cubemap FBO (point-light shadow maps) ---- */

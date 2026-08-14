@@ -566,8 +566,8 @@ TEST(init_rejects_oversized_grid)
      * device is fine here. */
     Terrain t;
     memset(&t, 0, sizeof(t));
-    ASSERT_FALSE(terrain_init(&t, NULL, 16385u, 1.0f, 1.0f));
-    ASSERT_FALSE(terrain_init(&t, NULL, 100000u, 1.0f, 1.0f));
+    ASSERT_FALSE(terrain_init(&t, NULL, 16385u, 1.0f, 1.0f, false));
+    ASSERT_FALSE(terrain_init(&t, NULL, 100000u, 1.0f, 1.0f, false));
 }
 
 TEST(init_rejects_tiny_grid)
@@ -575,8 +575,8 @@ TEST(init_rejects_tiny_grid)
     /* R161-A guard still applies: grid_size < 2 must fail cleanly. */
     Terrain t;
     memset(&t, 0, sizeof(t));
-    ASSERT_FALSE(terrain_init(&t, NULL, 0u, 1.0f, 1.0f));
-    ASSERT_FALSE(terrain_init(&t, NULL, 1u, 1.0f, 1.0f));
+    ASSERT_FALSE(terrain_init(&t, NULL, 0u, 1.0f, 1.0f, false));
+    ASSERT_FALSE(terrain_init(&t, NULL, 1u, 1.0f, 1.0f, false));
 }
 
 /* ------------------------------------------------------------------ */

@@ -88,7 +88,8 @@ static void terrain_rebuild_region(Terrain *t, i32 gx0, i32 gz0, i32 gx1, i32 gz
 
 /* Read a whole file into a malloc'd buffer; returns length via *out_len. */
 
-bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale) {
+bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale,
+                  bool forward_mrt) {
     /* R161-A: Validate grid_size to prevent unsigned underflow in (grid_size - 1)
      * expressions.  grid_size=0 causes (grid_size-1) to wrap to 0xFFFFFFFF,
      * making the index-generation loop run ~4 billion iterations and write far
@@ -150,8 +151,14 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     RHIShader vs, fs;
     bool used_terrain_shaders = false;
     if (vs_src && fs_src) {
-        vs = rhi_shader_create(dev, vs_src, vs_len, false);
-        fs = rhi_shader_create(dev, fs_src, fs_len, true);
+        usize vs_mrt_len = 0, fs_mrt_len = 0;
+        char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
+        char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
+        vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
+                               vs_mrt ? vs_mrt_len : vs_len, false);
+        fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                               fs_mrt ? fs_mrt_len : fs_len, true);
+        free(vs_mrt); free(fs_mrt);
         free(vs_src); free(fs_src);
         used_terrain_shaders = true;
     } else {
@@ -196,6 +203,11 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
                              .disable_culling = true,
                              .terrain_layout = used_terrain_shaders,
                              .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+    if (forward_mrt) {
+        pdesc.mrt_attachment_count = 2u;
+        pdesc.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    }
     t->pipeline = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);

@@ -16,7 +16,7 @@ layout(location = 3) out vec2 v_velocity;
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
-uniform mat4 u_prev_vp;
+uniform mat4 u_prev_mvp;
 
 void main() {
     vec4 wp     = u_model * vec4(a_position, 1.0);
@@ -24,7 +24,7 @@ void main() {
     v_normal    = mat3(u_model) * a_normal;
     v_texcoord  = a_texcoord;
     vec4 curr_clip = u_proj * u_view * wp;
-    vec4 prev_clip = u_prev_vp * wp;
+    vec4 prev_clip = u_prev_mvp * vec4(a_position, 1.0);
     vec2 curr_ndc = curr_clip.xy / curr_clip.w;
     vec2 prev_ndc = prev_clip.xy / prev_clip.w;
     v_velocity  = curr_ndc - prev_ndc;

@@ -3,6 +3,9 @@
 layout(location = 0) in vec3 v_ray_dir;
 
 layout(location = 0) out vec4 frag_color;
+#ifdef FORWARD_MRT
+layout(location = 1) out vec2 out_velocity;
+#endif
 
 layout(push_constant) uniform PushConstants {
     layout(offset = 0)   mat4 u_inv_proj;
@@ -166,4 +169,7 @@ void main() {
      * hue shift) and fed display-encoded values to the bloom threshold and the
      * auto-exposure luminance average. Matches the sky_to_cube.comp contract. */
     frag_color = vec4(max(cloud_color, vec3(0.0)), 1.0);
+#ifdef FORWARD_MRT
+    out_velocity = vec2(0.0);
+#endif
 }

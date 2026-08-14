@@ -48,6 +48,10 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) { (void)dev; (void)buf; }
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
     (void)dev; (void)buf; (void)data; (void)size;
 }
+void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
+                              const void *data, usize size) {
+    (void)dev; (void)buf; (void)offset; (void)data; (void)size;
+}
 u32 rhi_frame_index(RHIDevice *dev) { (void)dev; return 0u; }
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     (void)dev; (void)desc;

@@ -25,6 +25,21 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
     return false;
 }
 
+static bool read_engine_source(const char *name, char *buf, usize cap)
+{
+    char rel[1024];
+    const char *slash = strrchr(__FILE__, '/');
+    if (!slash) return false;
+    snprintf(rel, sizeof(rel), "%.*s/../src/%s",
+             (int)(slash - __FILE__), __FILE__, name);
+    FILE *f = fopen(rel, "rb");
+    if (!f) return false;
+    usize n = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return n > 0;
+}
+
 /* R444: per-pid path — parallel ctest trees raced on the fixed name. */
 static const char *shader_io_tmp_path(void)
 {
@@ -94,8 +109,122 @@ TEST(postfx_passes_composite_chain_color)
     }
 }
 
+TEST(per_object_velocity_contract_is_not_camera_only)
+{
+    const char *files[] = {
+        "gbuffer.vert", "gbuffer_vk.vert",
+        "gbuffer_arr.vert", "gbuffer_arr_vk.vert"
+    };
+    for (usize i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source(files[i], src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "u_prev_mvp"));
+        ASSERT_NOT_NULL(strstr(src, "v_velocity"));
+        /* The deferred path already computes velocity from the geometry pass;
+         * keep this contract explicit while forward MRT is being migrated. */
+        ASSERT_NOT_NULL(strstr(src, "curr_ndc"));
+        ASSERT_NOT_NULL(strstr(src, "prev_ndc"));
+        ASSERT_NOT_NULL(strstr(src, "u_prev_mvp * vec4"));
+    }
+}
+
+TEST(gl_ibl_test_contract_is_documented)
+{
+    char src[32768];
+    ASSERT_TRUE(read_shader_source("brdf_lut.comp", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "#version"));
+    ASSERT_TRUE(read_shader_source("irradiance_env.comp", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "image2D"));
+    ASSERT_TRUE(read_shader_source("prefilter_env.comp", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "image2D"));
+}
+
+TEST(gl_ibl_graphics_gate_runs_real_shared_test)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "static bool tv_test_ibl"));
+    ASSERT_NOT_NULL(strstr(src, "bool ibl_pass = tv_test_ibl(&render"));
+    ASSERT_NOT_NULL(strstr(src, "golden_pass && ibl_pass && idraw_pass"));
+}
+
+TEST(forward_velocity_uses_single_pass_mrt_contract)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "FORWARD_MRT"));
+    ASSERT_NOT_NULL(strstr(src, "RHI_FORMAT_R16G16_SFLOAT"));
+    ASSERT_NOT_NULL(strstr(src, "rhi_mrt_fbo_create"));
+    ASSERT_NOT_NULL(strstr(src, "forward_scene.color_tex[1]"));
+
+    const char *files[] = {
+        "blinn_phong.vert", "blinn_phong_vk.vert",
+        "instanced.vert", "instanced_vk.vert",
+        "skinned.vert", "skinned_vk.vert"
+    };
+    for (usize i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char shader[16384];
+        ASSERT_TRUE(read_shader_source(files[i], shader, sizeof(shader)));
+        ASSERT_NOT_NULL(strstr(shader, "FORWARD_MRT"));
+        ASSERT_NOT_NULL(strstr(shader, "v_velocity"));
+    }
+
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "bound_ubo"));
+    ASSERT_NOT_NULL(strstr(src, "vk_rebind_uniform_buffers"));
+    ASSERT_TRUE(read_engine_source("rhi/rhi.h", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "rhi_cmd_clear_color_attachment"));
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "rhi_cmd_clear_color_attachment(cmd, 1u"));
+    ASSERT_NOT_NULL(strstr(src, "rhi_offscreen_fbo_bind_load(cmd, &scene_fbo)"));
+}
+
+TEST(vulkan_ibl_gate_uses_compatible_vertex_contract)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "pbr_ibl_test_vk.vert"));
+    ASSERT_TRUE(read_shader_source("pbr_ibl_test_vk.vert", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "gl_Position = vec4(aPos, 1.0)"));
+}
+
+TEST(transparent_motion_vectors_do_not_alpha_blend_rt1)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "alpha_blend_color_only"));
+    ASSERT_NOT_NULL(strstr(src, "enabled_features.independentBlend = VK_TRUE"));
+    ASSERT_NOT_NULL(strstr(src, "vk->feat_independent_blend"));
+    ASSERT_NOT_NULL(strstr(src, "blend_atts[1].blendEnable = VK_FALSE"));
+    ASSERT_TRUE(read_engine_source("rhi/rhi_gl.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "glBlendFunci(1, GL_ONE, GL_ZERO)"));
+    ASSERT_TRUE(read_shader_source("particle.vert", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "previous_pos"));
+    ASSERT_NOT_NULL(strstr(src, "v_velocity"));
+    ASSERT_TRUE(read_shader_source("particle_update.comp", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "p.previous_pos"));
+}
+
+TEST(vulkan_command_buffer_updates_have_transfer_dst_usage)
+{
+    char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    /* rhi_cmd_update_buffer records vkCmdUpdateBuffer, whose target must
+     * advertise TRANSFER_DST even when it is a UBO or uniform texel buffer. */
+    ASSERT_NOT_NULL(strstr(src, "RHI_BUFFER_USAGE_UNIFORM"));
+    ASSERT_NOT_NULL(strstr(src, "RHI_BUFFER_USAGE_TEXEL"));
+    ASSERT_NOT_NULL(strstr(src, "ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
     RUN_TEST(postfx_passes_composite_chain_color);
+    RUN_TEST(per_object_velocity_contract_is_not_camera_only);
+    RUN_TEST(gl_ibl_test_contract_is_documented);
+    RUN_TEST(gl_ibl_graphics_gate_runs_real_shared_test);
+    RUN_TEST(forward_velocity_uses_single_pass_mrt_contract);
+    RUN_TEST(vulkan_ibl_gate_uses_compatible_vertex_contract);
+    RUN_TEST(transparent_motion_vectors_do_not_alpha_blend_rt1);
+    RUN_TEST(vulkan_command_buffer_updates_have_transfer_dst_usage);
 TEST_MAIN_END()

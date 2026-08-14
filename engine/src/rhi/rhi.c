@@ -89,6 +89,9 @@ void rhi_free_slot(RHIDevice *dev, RHIHandle h) {
 }
 
 #ifdef ENGINE_VULKAN
+/* The Vulkan backend is included as a unity translation unit.  Keep this
+ * include's owner current when backend contracts change so incremental builds
+ * rebuild the engine even on generators without header dependency scanning. */
 #include <rhi/rhi_vk.c>
 #else
 #include <rhi/rhi_gl.c>

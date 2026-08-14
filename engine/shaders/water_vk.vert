@@ -14,12 +14,24 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(location = 0) out vec3 vWorldPos;
+#ifdef FORWARD_MRT
+layout(location = 1) out vec2 v_velocity;
+layout(std140, set = 1, binding = 0) uniform ForwardTemporal {
+    mat4 u_prev_vp;
+    mat4 u_prev_model_unused;
+} temporal;
+#endif
 
 void main() {
     /* R235-B: Mesh verts sit at y=0; lift to logical water plane. */
     vec3 wp = vec3(aPos.x, pc.u_watery.x, aPos.z);
     vWorldPos = wp;
-    gl_Position = pc.u_proj * pc.u_view * vec4(wp, 1.0);
+    vec4 curr_clip = pc.u_proj * pc.u_view * vec4(wp, 1.0);
+#ifdef FORWARD_MRT
+    vec4 prev_clip = temporal.u_prev_vp * vec4(wp, 1.0);
+    v_velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
+#endif
+    gl_Position = curr_clip;
     /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
     gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

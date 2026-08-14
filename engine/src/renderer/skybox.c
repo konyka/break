@@ -8,7 +8,7 @@
 #include <string.h>
 
 
-bool skybox_init(Skybox *sb, RHIDevice *dev) {
+bool skybox_init(Skybox *sb, RHIDevice *dev, bool forward_mrt) {
     sb->device = dev;
     sb->ready = false;
 
@@ -27,10 +27,14 @@ bool skybox_init(Skybox *sb, RHIDevice *dev) {
         return false;
     }
 
+    usize fs_mrt_len = 0;
+    char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
     RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
+    RHIShader fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                                     fs_mrt ? fs_mrt_len : fs_len, true);
     free(vs_src);
     free(fs_src);
+    free(fs_mrt);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Skybox shader compile failed");
@@ -41,6 +45,11 @@ bool skybox_init(Skybox *sb, RHIDevice *dev) {
 
     RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .no_vertex_input = true, .depth_compare_lequal = true, .depth_write_disable = true,
                              .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+    if (forward_mrt) {
+        pdesc.mrt_attachment_count = 2u;
+        pdesc.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    }
     sb->pipeline = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);

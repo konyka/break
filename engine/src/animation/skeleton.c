@@ -26,12 +26,13 @@ void skeleton_set_joints(Skeleton *sk, u32 count, const u32 *parents, const Mat4
         sk->joint_parents[i] = parents[i];
         sk->inverse_bind[i] = inv_bind[i];
         sk->current_pose[i] = mat4_identity();
+        sk->previous_pose[i] = mat4_identity();
     }
 
     if (!rhi_handle_valid(sk->joint_buf[0])) {
         RHIBufferDesc desc = {0};
         desc.usage = RHI_BUFFER_USAGE_TEXEL;
-        desc.size = SKELETON_MAX_JOINTS * sizeof(Mat4);
+        desc.size = 2u * SKELETON_MAX_JOINTS * sizeof(Mat4);
         sk->joint_buf[0] = rhi_buffer_create(sk->device, &desc);
         sk->joint_buf[1] = rhi_buffer_create(sk->device, &desc);
     }
@@ -262,8 +263,14 @@ void skeleton_compute_world_transforms(Skeleton *sk,
 void skeleton_upload(Skeleton *sk) {
     RHIBuffer slot = skeleton_joint_slot(sk);
     if (!rhi_handle_valid(slot)) return;
-    rhi_buffer_update(sk->device, slot, sk->current_pose,
-        sk->joint_count * sizeof(Mat4));
+    usize pose_bytes = (usize)sk->joint_count * sizeof(Mat4);
+    if (!sk->history_valid)
+        memcpy(sk->previous_pose, sk->current_pose, pose_bytes);
+    rhi_buffer_update_region(sk->device, slot, 0u, sk->current_pose, pose_bytes);
+    rhi_buffer_update_region(sk->device, slot,
+        (usize)SKELETON_MAX_JOINTS * sizeof(Mat4), sk->previous_pose, pose_bytes);
+    memcpy(sk->previous_pose, sk->current_pose, pose_bytes);
+    sk->history_valid = true;
 }
 
 RHIBuffer skeleton_joint_slot(const Skeleton *sk) {

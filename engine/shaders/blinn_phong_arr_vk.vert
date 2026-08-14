@@ -28,6 +28,13 @@ layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
 layout(location = 3) flat out uint vLayer;
+#ifdef FORWARD_MRT
+layout(location = 4) out vec2 v_velocity;
+layout(std140, set = 1, binding = 0) uniform ForwardTemporal {
+    mat4 u_prev_vp;
+    mat4 u_prev_model;
+} temporal;
+#endif
 
 void main() {
     vec4 world_pos = pc.u_model * vec4(aPos, 1.0);
@@ -35,7 +42,12 @@ void main() {
     vNormal = mat3(pc.u_model) * aNormal;
     vUV = aUV;
     vLayer = uint(gl_BaseInstanceARB);
-    gl_Position = pc.u_proj * pc.u_view * world_pos;
+    vec4 curr_clip = pc.u_proj * pc.u_view * world_pos;
+#ifdef FORWARD_MRT
+    vec4 prev_clip = temporal.u_prev_vp * temporal.u_prev_model * vec4(aPos, 1.0);
+    v_velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
+#endif
+    gl_Position = curr_clip;
     /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
     gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

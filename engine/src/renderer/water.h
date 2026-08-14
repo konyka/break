@@ -21,7 +21,7 @@ typedef struct {
     RHISampler sampler;
 } WaterPlane;
 
-bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size);
+bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forward_mrt);
 void water_shutdown(WaterPlane *w);
 void water_update(WaterPlane *w, f32 dt);
 void water_render(WaterPlane *w, RHICmdBuffer *cmd,

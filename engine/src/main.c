@@ -33,7 +33,7 @@
 #include <renderer/cinematic.h>
 #include <renderer/lod.h>
 #include <renderer/combined_post_process.h>
-#include <renderer/forward_velocity.h>
+#include <renderer/motion_history.h>
 #include <renderer/occlusion_cull.h>
 #include <scene/scene_serial.h>
 #include <scene/scene_state.h>
@@ -69,27 +69,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-
-/* Returns a newly-allocated copy of `src` with `#define <name> 1` inserted
- * immediately after the first line (the `#version` directive, which must remain
- * first).  Caller frees the result.  On allocation failure returns NULL. */
-static char *shader_inject_define(const char *src, usize len, const char *name, usize *out_len) {
-    if (!src || !name) return NULL;
-    const char *nl = memchr(src, '\n', len);
-    usize head = nl ? (usize)(nl - src) + 1u : len; /* include the newline */
-    int def_raw = snprintf(NULL, 0, "#define %s 1\n", name);
-    if (def_raw < 0) return NULL;
-    usize def_len = (usize)def_raw;
-    char *out = (char *)malloc(len + def_len + 1u);
-    if (!out) return NULL;
-    memcpy(out, src, head);
-    int n = snprintf(out + head, def_len + 1u, "#define %s 1\n", name);
-    if (n < 0) { free(out); return NULL; }
-    memcpy(out + head + (usize)n, src + head, len - head);
-    out[head + (usize)n + (len - head)] = '\0';
-    if (out_len) *out_len = head + (usize)n + (len - head);
-    return out;
-}
 
 static int cmp_f32(const void *a, const void *b) {
     f32 fa = *(const f32 *)a, fb = *(const f32 *)b;
@@ -283,9 +262,24 @@ typedef struct {
     DeferredSystem  deferred;
     RenderPath      render_path;
     IBLSystem       ibl;
+    RHIBuffer       temporal_buf[2];
 } RenderState;
 
 static void render_shutdown(RenderState *rs);
+
+static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
+                                  const Mat4 *previous_vp, const Mat4 *previous_model) {
+    /* Forward MRT contract: clear attachment 1 with
+     * rhi_cmd_clear_color_attachment(cmd, 1u, ...); postfx must use
+     * rhi_offscreen_fbo_bind_load(cmd, &scene_fbo) when render_path is forward,
+     * because single-output postfx pipelines are not MRT-compatible. */
+    if (!render || !previous_vp || !previous_model) return;
+    RHIBuffer slot = render->temporal_buf[rhi_frame_index(render->device) & 1u];
+    if (!rhi_handle_valid(slot)) return;
+    Mat4 data[2] = {*previous_vp, *previous_model};
+    rhi_cmd_update_buffer(cmd, slot, 0u, data, sizeof(data));
+    rhi_cmd_bind_uniform_buffer(cmd, slot, 0u);
+}
 
 static bool render_init(RenderState *rs, Platform *platform) {
 #ifdef ENGINE_VULKAN
@@ -321,8 +315,14 @@ static bool render_init(RenderState *rs, Platform *platform) {
         goto fail; /* R359: device already live */
     }
 
-    RHIShader vs = rhi_shader_create(rs->device, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(rs->device, fs_src, fs_len, true);
+    usize vs_mrt_len = 0, fs_mrt_len = 0;
+    char *vs_mrt = shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len);
+    char *fs_mrt = shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len);
+    RHIShader vs = rhi_shader_create(rs->device, vs_mrt ? vs_mrt : vs_src,
+                                     vs_mrt ? vs_mrt_len : vs_len, false);
+    RHIShader fs = rhi_shader_create(rs->device, fs_mrt ? fs_mrt : fs_src,
+                                     fs_mrt ? fs_mrt_len : fs_len, true);
+    free(vs_mrt); free(fs_mrt);
     free(vs_src);
     free(fs_src);
 
@@ -335,7 +335,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
     /* Scene geometry renders into the HDR offscreen FBO (R16F); pipelines must
      * be created render-pass-compatible with that color format. */
     RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true,
-                             .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+                             .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                             .mrt_attachment_count = 2u,
+                             .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
     rs->pipeline = rhi_pipeline_create(rs->device, &pdesc);
     pdesc.wireframe = true;
     rs->wire_pipeline = rhi_pipeline_create(rs->device, &pdesc);
@@ -357,11 +359,19 @@ static bool render_init(RenderState *rs, Platform *platform) {
         char *afs = shader_read_file("shaders/blinn_phong_arr.frag", &afl);
 #endif
         if (avs && afs) {
-            RHIShader svs = rhi_shader_create(rs->device, avs, avl, false);
-            RHIShader sfs = rhi_shader_create(rs->device, afs, afl, true);
+            usize avm_len = 0, afm_len = 0;
+            char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
+            char *afm = shader_inject_define(afs, afl, "FORWARD_MRT", &afm_len);
+            RHIShader svs = rhi_shader_create(rs->device, avm ? avm : avs,
+                                               avm ? avm_len : avl, false);
+            RHIShader sfs = rhi_shader_create(rs->device, afm ? afm : afs,
+                                               afm ? afm_len : afl, true);
+            free(avm); free(afm);
             if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
                 RHIPipelineDesc apd = {.vert = svs, .frag = sfs, .uses_textures = true,
-                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                       .mrt_attachment_count = 2u,
+                                       .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
                 rs->arr_pipeline = rhi_pipeline_create(rs->device, &apd);
             }
             if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
@@ -531,8 +541,14 @@ static bool render_init(RenderState *rs, Platform *platform) {
         ifl_src = shader_read_file("shaders/instanced.frag", &ifl);
 #endif
         if (iv && ifl_src) {
-            RHIShader ivs = rhi_shader_create(rs->device, iv, ivl, false);
-            RHIShader ifs = rhi_shader_create(rs->device, ifl_src, ifl, true);
+            usize ivm_len = 0, ifm_len = 0;
+            char *ivm = shader_inject_define(iv, ivl, "FORWARD_MRT", &ivm_len);
+            char *ifm = shader_inject_define(ifl_src, ifl, "FORWARD_MRT", &ifm_len);
+            RHIShader ivs = rhi_shader_create(rs->device, ivm ? ivm : iv,
+                                               ivm ? ivm_len : ivl, false);
+            RHIShader ifs = rhi_shader_create(rs->device, ifm ? ifm : ifl_src,
+                                               ifm ? ifm_len : ifl, true);
+            free(ivm); free(ifm);
             free(iv); free(ifl_src);
             if (rhi_handle_valid(ivs) && rhi_handle_valid(ifs)) {
                 RHIPipelineDesc ipd = {
@@ -541,6 +557,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     .uses_texel_buffer = true,
                     .is_instanced = true,
                     .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                    .mrt_attachment_count = 2u,
+                    .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT},
                 };
                 rs->instanced_pipeline = rhi_pipeline_create(rs->device, &ipd);
                 ipd.wireframe = true;
@@ -562,7 +580,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         RHIBufferDesc bdesc = {0};
         bdesc.usage = RHI_BUFFER_USAGE_TEXEL;
-        bdesc.size = 10000 * 4 * 4 * sizeof(f32);
+        bdesc.size = 10000 * 8 * 4 * sizeof(f32);
         rs->instance_buf[0] = rhi_buffer_create(rs->device, &bdesc);
         rs->instance_buf[1] = rhi_buffer_create(rs->device, &bdesc);
     }
@@ -578,8 +596,14 @@ static bool render_init(RenderState *rs, Platform *platform) {
         sf = shader_read_file("shaders/skinned.frag", &sfl);
 #endif
         if (sv && sf) {
-            RHIShader svs = rhi_shader_create(rs->device, sv, svl, false);
-            RHIShader sfs = rhi_shader_create(rs->device, sf, sfl, true);
+            usize svm_len = 0, sfm_len = 0;
+            char *svm = shader_inject_define(sv, svl, "FORWARD_MRT", &svm_len);
+            char *sfm = shader_inject_define(sf, sfl, "FORWARD_MRT", &sfm_len);
+            RHIShader svs = rhi_shader_create(rs->device, svm ? svm : sv,
+                                               svm ? svm_len : svl, false);
+            RHIShader sfs = rhi_shader_create(rs->device, sfm ? sfm : sf,
+                                               sfm ? sfm_len : sfl, true);
+            free(svm); free(sfm);
             free(sv); free(sf);
             if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
                 RHIPipelineDesc spd = {
@@ -589,6 +613,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     .skinned_vertex = true,
                     .is_instanced = true,
                     .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                    .mrt_attachment_count = 2u,
+                    .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT},
                 };
                 rs->skinned_pipeline = rhi_pipeline_create(rs->device, &spd);
                 spd.wireframe = true;
@@ -605,6 +631,15 @@ static bool render_init(RenderState *rs, Platform *platform) {
         rs->sk_loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_light_color");
         rs->sk_loc_ambient    = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_ambient");
         rs->sk_loc_camera_pos = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_camera_pos");
+    }
+
+    RHIBufferDesc temporal_desc = {
+        .usage = RHI_BUFFER_USAGE_UNIFORM,
+        .size = sizeof(Mat4) * 2u,
+    };
+    for (u32 i = 0; i < 2u; i++) {
+        rs->temporal_buf[i] = rhi_buffer_create(rs->device, &temporal_desc);
+        if (!rhi_handle_valid(rs->temporal_buf[i])) goto fail;
     }
 
     {
@@ -831,6 +866,8 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->pipeline)) rhi_pipeline_destroy(rs->device, rs->pipeline);
     if (rhi_handle_valid(rs->wire_pipeline)) rhi_pipeline_destroy(rs->device, rs->wire_pipeline);
     if (rhi_handle_valid(rs->arr_pipeline)) rhi_pipeline_destroy(rs->device, rs->arr_pipeline); /* R441 */
+    for (u32 i = 0; i < 2u; i++)
+        if (rhi_handle_valid(rs->temporal_buf[i])) rhi_buffer_destroy(rs->device, rs->temporal_buf[i]);
     rhi_device_destroy(rs->device);
     rs->device = NULL;
 }
@@ -1469,7 +1506,7 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
                                         DeferredSystem *dsys, MegaBuffer *mb,
                                         const u32 *draw_vis,
                                         const Mat4 *view, const Mat4 *proj,
-                                        const Mat4 *prev_vp) {
+                                        const Mat4 *prev_mvp) {
     if (!mb || !mb->valid || !mb->array_system_ready || !mb->mats.ready) return 0u;
     if (!dsys || !rhi_handle_valid(dsys->gbuffer_arr_pipeline)) return 0u;
 
@@ -1493,8 +1530,8 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_view, &view->e[0][0]);
     if (dsys->_loc_gbuf_arr_proj >= 0)
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_proj, &proj->e[0][0]);
-    if (dsys->_loc_gbuf_arr_prev_vp >= 0)
-        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_vp, &prev_vp->e[0][0]);
+    if (dsys->_loc_gbuf_arr_prev_mvp >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_mvp, &prev_mvp->e[0][0]);
 
     /* One bind for the whole pass: slot 0 = albedo array, slot 2 = MR array;
      * the rest reuse the shared fallback/shadow/SSAO/IBL slots (unsampled by
@@ -2083,13 +2120,13 @@ int main(int argc, char **argv) {
     if (!render_init(&render, engine.platform)) { LOG_FATAL("Render init failed"); engine_shutdown(&engine); return 1; }
 
     Skybox skybox = {0};
-    skybox_init(&skybox, render.device);
+    skybox_init(&skybox, render.device, true);
 
     Terrain terrain = {0};
-    terrain_init(&terrain, render.device, 64, 40.0f, 1.5f);
+    terrain_init(&terrain, render.device, 64, 40.0f, 1.5f, true);
 
     WaterPlane water = {0};
-    if (!water_init(&water, render.device, -1.0f, 80.0f)) {
+    if (!water_init(&water, render.device, -1.0f, 80.0f, true)) {
         LOG_WARN("Water init failed; underwater tint / water draws disabled");
     }
 
@@ -2101,7 +2138,7 @@ int main(int argc, char **argv) {
     point_shadow_init(&pt_shadows, render.device, POINT_SHADOW_DEFAULT_RES);
 
     ParticleSystem particles = {0};
-    particles_init(&particles, render.device);
+    particles_init(&particles, render.device, true);
 
     DebugUI ui = {0};
     debug_ui_init(&ui);
@@ -2345,7 +2382,7 @@ int main(int argc, char **argv) {
     TaskSystem *tasks = task_system_create(2);
     /* Single alloc: instance_data (f32[]) + unified_udc_buf (GPUCullDrawCmd[]) + unified_uobj_buf (GPUCullObject[]) */
     #define INSTANCE_DATA_CAP 10000
-    usize id_bytes = (usize)INSTANCE_DATA_CAP * 16 * sizeof(f32);
+    usize id_bytes = (usize)INSTANCE_DATA_CAP * 32 * sizeof(f32);
     usize udc_off  = (id_bytes + 3u) & ~(usize)3u;
     usize udc_bytes = (usize)GPUCULL_MAX_OBJECTS * sizeof(GPUCullDrawCmd);
     usize uobj_off  = (udc_off + udc_bytes + _Alignof(GPUCullObject) - 1) & ~(_Alignof(GPUCullObject) - 1);
@@ -2482,6 +2519,14 @@ int main(int argc, char **argv) {
     /* R446: jitter-free twin of prev_view_proj — see the unjittered-pair
      * comment at curr_view_proj_unjit below. */
     Mat4 prev_view_proj_unjit = mat4_identity();
+    MotionHistory node_motion_history = {0};
+    if (scene.node_count > 0u &&
+        !motion_history_init(&node_motion_history, scene.node_count)) {
+        LOG_WARN("Node motion history allocation failed; object velocity starts at zero");
+    }
+    MotionHistory entity_motion_history = {0};
+    if (!motion_history_init(&entity_motion_history, ECS_MAX_ENTITIES))
+        LOG_WARN("Entity motion history allocation failed; instance velocity starts at zero");
     RHIPipeline last_hr_pipeline = RHI_HANDLE_NULL;
 
     const f32 render_scale_options[] = { 0.3f, 0.5f, 0.75f, 1.0f };
@@ -2490,14 +2535,28 @@ int main(int argc, char **argv) {
     u32 rw = (u32)(w * render_scale); if (rw < 1) rw = 1;
     u32 rh = (u32)(h * render_scale); if (rh < 1) rh = 1;
 
-    RHIOffscreenFBO scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw > 0 ? rw : 1, rh > 0 ? rh : 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    const RHIFormat forward_formats[2] = {
+        RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT
+    };
+    /* Forward MRT: color is forward_scene.color_tex[0], velocity is
+     * forward_scene.color_tex[1] (RG16F), both sharing forward_scene.depth_tex. */
+    RHIMRTFBO forward_scene = rhi_mrt_fbo_create(render.device, rw > 0 ? rw : 1,
+                                                   rh > 0 ? rh : 1, forward_formats, 2u);
+    RHIOffscreenFBO scene_fbo = rhi_offscreen_fbo_create_fmt(render.device, rw > 0 ? rw : 1,
+                                                              rh > 0 ? rh : 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
     /* R356/R359: forward/post sample color+depth — reject partial FBO (fb without tex). */
     if (!rhi_handle_valid(scene_fbo.fb) ||
         !rhi_handle_valid(scene_fbo.color_tex) ||
-        !rhi_handle_valid(scene_fbo.depth_tex)) {
+        !rhi_handle_valid(scene_fbo.depth_tex) ||
+        !rhi_handle_valid(forward_scene.fb) ||
+        !rhi_handle_valid(forward_scene.color_tex[0]) ||
+        !rhi_handle_valid(forward_scene.color_tex[1]) ||
+        !rhi_handle_valid(forward_scene.depth_tex)) {
         LOG_ERROR("Scene FBO creation failed (%ux%u)", rw > 0 ? rw : 1u, rh > 0 ? rh : 1u);
         if (rhi_handle_valid(scene_fbo.fb))
             rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
+        if (rhi_handle_valid(forward_scene.fb))
+            rhi_mrt_fbo_destroy(render.device, &forward_scene);
     }
     PostProcess postfx = {0};
     SSAOSystem ssao = {0};
@@ -2534,8 +2593,6 @@ bool blend_procedural = false;
 f32 anim_blend_weight = 0.0f;
 CombinedAA combined_aa = {0};
 CombinedColor combined_color = {0};
-ForwardVelocitySystem forward_vel = {0};
-bool forward_vel_enabled = false;
 LODSystem lod_sys = {0};
 
 MegaBuffer mega_buf = {0};
@@ -2703,19 +2760,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     cinematic_init(&cine_sys, render.device);
     combined_aa_init(&combined_aa, render.device, rw, rh);
     combined_color_init(&combined_color, render.device, rw, rh);
-    if (!forward_velocity_init(&forward_vel, render.device, rw, rh)) {
-        LOG_WARN("Forward velocity: init failed");
-    }
-    { const char *e = getenv("BREAK_FORWARD_VEL");
-      if (e && atoi(e)) {
-          /* R358: env must not enable when init failed. */
-          if (forward_vel.ready) {
-              forward_vel_enabled = true;
-              LOG_INFO("Forward velocity: on (BREAK_FORWARD_VEL=1, camera motion for TAA)");
-          } else {
-              LOG_WARN("BREAK_FORWARD_VEL=1 ignored: forward_velocity not ready");
-          }
-      } }
     if (scene.joint_count > 0u && scene.anim_clip_count > 0u) {
         const char *blend_e = getenv("BREAK_ANIM_BLEND");
         const char *ik_e = getenv("BREAK_ANIM_IK");
@@ -3676,17 +3720,28 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * (otherwise same-size rebuild never retries → permanent blank). */
             RHIOffscreenFBO new_scene = rhi_offscreen_fbo_create_fmt(
                 render.device, new_rw, new_rh, RHI_FORMAT_R16G16B16A16_SFLOAT);
+            RHIMRTFBO new_forward = rhi_mrt_fbo_create(render.device, new_rw, new_rh,
+                                                       forward_formats, 2u);
             if (!rhi_handle_valid(new_scene.fb) ||
                 !rhi_handle_valid(new_scene.color_tex) ||
-                !rhi_handle_valid(new_scene.depth_tex)) {
+                !rhi_handle_valid(new_scene.depth_tex) ||
+                !rhi_handle_valid(new_forward.fb) ||
+                !rhi_handle_valid(new_forward.color_tex[0]) ||
+                !rhi_handle_valid(new_forward.color_tex[1]) ||
+                !rhi_handle_valid(new_forward.depth_tex)) {
                 LOG_ERROR("Scene FBO recreate failed (%ux%u); keeping previous",
                           new_rw, new_rh);
                 if (rhi_handle_valid(new_scene.fb))
                     rhi_offscreen_fbo_destroy(render.device, &new_scene);
+                if (rhi_handle_valid(new_forward.fb))
+                    rhi_mrt_fbo_destroy(render.device, &new_forward);
             } else {
             if (rhi_handle_valid(scene_fbo.fb))
                 rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
+            if (rhi_handle_valid(forward_scene.fb))
+                rhi_mrt_fbo_destroy(render.device, &forward_scene);
             scene_fbo = new_scene;
+            forward_scene = new_forward;
             rw = new_rw;
             rh = new_rh;
             post_process_shutdown(&postfx);
@@ -3731,8 +3786,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             lens_effects_init(&lens_fx, render.device, rw, rh);
             combined_aa_init(&combined_aa, render.device, rw, rh);
             combined_color_init(&combined_color, render.device, rw, rh);
-            forward_velocity_shutdown(&forward_vel);
-            forward_velocity_init(&forward_vel, render.device, rw, rh);
             occlusion_cull_resize(&occ_sys, rw, rh);
             deferred_resize(&render.deferred, render.device, rw, rh);
             /* R358: resize may destroy deferred — fall back so 'p' path stays drawable. */
@@ -4029,7 +4082,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         /* Use hot-reloaded pipeline as active pipeline when available */
         RHIPipeline active_pipeline = wireframe_mode && rhi_handle_valid(render.wire_pipeline) ? render.wire_pipeline : render.pipeline;
-        if (hotreload.ready && rhi_handle_valid(hotreload.pipeline)) {
+        /* Hot-reloaded shaders are single-attachment variants; keep them out
+         * of the forward MRT pass until hotreload preserves the MRT contract. */
+        if (render.render_path != RENDER_PATH_FORWARD &&
+            hotreload.ready && rhi_handle_valid(hotreload.pipeline)) {
             active_pipeline = hotreload.pipeline;
             if (hotreload.pipeline.index != last_hr_pipeline.index ||
                 hotreload.pipeline.generation != last_hr_pipeline.generation) {
@@ -5103,8 +5159,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                               avg_u, draw_bench_gpu_uni_frames,
                               avg_l, draw_bench_gpu_leg_frames);
             }
-            if (forward_vel_enabled && forward_vel.ready)
-                debug_ui_text(&ui, "ForwardVel: on (BREAK_FORWARD_VEL=1)");
             if (combined_aa.use_combined || combined_color.use_combined) {
                 debug_ui_text(&ui, "--- CombinedPost ---");
                 debug_ui_text(&ui, "  TAA+FXAA=%s Tonemap+CG=%s",
@@ -5221,6 +5275,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         profiler_push("render");
         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+
+        /* Capture render transforms once before any geometry pass. The dense
+         * node index is stable for the loaded scene; generation 1 is reset by
+         * destroying/reinitializing this history when the scene changes. */
+        scene_compute_world_transforms(&scene);
+        motion_history_begin_frame(&node_motion_history);
+        motion_history_begin_frame(&entity_motion_history);
+        for (u32 ni = 0; ni < scene.node_count; ni++)
+            motion_history_set_current(&node_motion_history, ni, 1u,
+                                       &scene.nodes[ni].world_transform);
 
         RHISampler active_sampler = nearest_filter && rhi_handle_valid(render.nearest_sampler) ? render.nearest_sampler : render.sampler;
 
@@ -5568,12 +5632,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
         if (render.render_path == RENDER_PATH_FORWARD) {
-        /* R358: do not clear/draw into the previous target when scene_fbo is dead. */
-        if (!rhi_handle_valid(scene_fbo.fb)) {
+        /* R358: do not clear/draw into the previous target when forward MRT is dead. */
+        if (!rhi_handle_valid(forward_scene.fb)) {
             LOG_ERROR("Scene FBO invalid; skipping forward pass");
         } else {
-        rhi_offscreen_fbo_bind(cmd, &scene_fbo);
+        bind_forward_temporal(&render, cmd, &prev_view_proj, &frame_identity);
+        rhi_mrt_fbo_bind(cmd, &forward_scene);
         rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
+        rhi_cmd_clear_color_attachment(cmd, 1u, 0.0f, 0.0f, 0.0f, 0.0f);
         /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
         rhi_cmd_clear_depth(cmd);
 
@@ -5775,11 +5841,22 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             if (!frustum_test_sphere(&frustum, epos, 1.0f)) continue;
                             if (instance_count < INSTANCE_DATA_CAP) {
                                 /* Direct-write translation matrix (avoids mat4_identity + mat4_translation overhead). */
-                                f32 *md = instance_data + instance_count * 16;
+                                f32 *md = instance_data + instance_count * 32;
                                 md[0]=1; md[1]=0; md[2]=0; md[3]=0;
                                 md[4]=0; md[5]=1; md[6]=0; md[7]=0;
                                 md[8]=0; md[9]=0; md[10]=1; md[11]=0;
                                 md[12]=et->pos[0]; md[13]=et->pos[1]; md[14]=et->pos[2]; md[15]=1;
+                                Entity entity = world->entities[((u32 *)((u8 *)c + a->entity_offset))[ci]];
+                                Mat4 current_model = mat4_identity();
+                                current_model.e[3][0] = et->pos[0];
+                                current_model.e[3][1] = et->pos[1];
+                                current_model.e[3][2] = et->pos[2];
+                                Mat4 previous_model = current_model;
+                                motion_history_set_current(&entity_motion_history, entity.index,
+                                                           entity.generation, &current_model);
+                                motion_history_get_pair(&entity_motion_history, entity.index,
+                                                        entity.generation, &previous_model, NULL);
+                                memcpy(md + 16, &previous_model, sizeof(previous_model));
                                 /* R445: remember the entity's mesh for the
                                  * per-mesh grouped draw below. */
                                 if (meshref_col != UINT32_MAX) {
@@ -6521,11 +6598,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     u32 cnt = 0;
                     for (u32 k = 0; k < instance_count; k++) {
                         if (inst_mesh_idx[k] != i) continue;
-                        memcpy(instance_draw + (usize)cnt * 16, instance_data + (usize)k * 16, 64);
+                        memcpy(instance_draw + (usize)cnt * 32, instance_data + (usize)k * 32, 128);
                         cnt++;
                     }
                     if (cnt == 0) continue;
-                    rhi_buffer_update(render.device, inst_slot, instance_draw, cnt * 64);
+                    rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
                     bind_material(cmd, &render, mat, &scene);
@@ -6663,7 +6740,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * per-entity drawing: mega first, CPU batch cull fallback — same
          * internal semantics as before, just no longer gated. */
         if (scene.node_count > 0) {
-                scene_compute_world_transforms(&scene);
                 /* R441: snapshot for the forward mega execute-delta log. */
                 u32 fwd_exec_before = indirect_draw_debug_execute_count();
 
@@ -6916,8 +6992,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_view, &view.e[0][0]);
             if (dsys->_loc_gbuf_proj >= 0)
                 rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj.e[0][0]);
-            if (dsys->_loc_gbuf_prev_vp >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_vp, &prev_view_proj.e[0][0]);
+            if (dsys->_loc_gbuf_prev_mvp >= 0)
+                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj.e[0][0]);
 
             /* Render terrain. */
             if (rhi_handle_valid(terrain.vbo)) {
@@ -7080,6 +7156,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 bind_material(cmd, &render, mat, &scene);
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &node->world_transform.e[0][0]);
+                if (dsys->_loc_gbuf_prev_mvp >= 0) {
+                    Mat4 previous_model = node->world_transform;
+                    motion_history_get_pair(&node_motion_history, ni, 1u,
+                                            &previous_model, NULL);
+                    Mat4 previous_mvp = mat4_mul(prev_view_proj, previous_model);
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp,
+                                             &previous_mvp.e[0][0]);
+                }
                 rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                 if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
                     rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
@@ -7184,7 +7268,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             (render.render_path == RENDER_PATH_DEFERRED && render.deferred.initialized &&
              rhi_handle_valid(render.deferred.gbuf_depth))
                 ? render.deferred.gbuf_depth
-                : scene_fbo.depth_tex;
+                : (render.render_path == RENDER_PATH_FORWARD ? forward_scene.depth_tex : scene_fbo.depth_tex);
 
         /* GPU Occlusion Culling: generate Hi-Z pyramid from depth buffer,
          * then dispatch compute to determine per-object visibility.
@@ -7220,7 +7304,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         profiler_push("postfx");
         rhi_gpu_timer_begin(gpu_postfx_timer);
 
-        if (rhi_handle_valid(scene_fbo.fb) && ssao.ready && ssao.radius > 0.0f) {
+        if ((rhi_handle_valid(scene_fbo.fb) || rhi_handle_valid(forward_scene.fb)) && ssao.ready && ssao.radius > 0.0f) {
             ssao_apply(&ssao, cmd, scene_depth,
                        &proj.e[0][0], &frame_inv_proj.e[0][0], rw, rh);
             render.ssao_tex = ssao_get_texture(&ssao);
@@ -7231,7 +7315,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * chain tail advances to that FBO; TAA/AA below then consume the tail
          * instead of scene_fbo.color_tex directly.  Depth/velocity references
          * are untouched. */
-        RHITexture scene_color = scene_fbo.color_tex;
+        RHITexture scene_color = (render.render_path == RENDER_PATH_FORWARD)
+                               ? forward_scene.color_tex[0] : scene_fbo.color_tex;
 
         if (contact_shadow.ready && rhi_handle_valid(scene_fbo.fb) && cs_enabled) {
             /* R208-A: Match GPU/mat4_vec4 (column-major M*v). R207 used the
@@ -7283,21 +7368,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         if (render.render_path == RENDER_PATH_DEFERRED && render.deferred.initialized &&
             rhi_handle_valid(render.deferred.gbuf_velocity)) {
             taa_velocity = render.deferred.gbuf_velocity;
-        } else if (forward_vel_enabled && forward_vel.ready &&
-                   rhi_handle_valid(forward_velocity_get_texture(&forward_vel))) {
-            taa_velocity = forward_velocity_get_texture(&forward_vel);
-        }
-        if (forward_vel_enabled && forward_vel.ready &&
-            render.render_path != RENDER_PATH_DEFERRED &&
-            rhi_handle_valid(scene_fbo.depth_tex) && taa_enabled) {
-            /* R205-A: Must pass inv(VP), not inv(P). Shader reconstructs a
-             * position then multiplies by curr/prev view-proj; inv_proj alone
-             * yields view-space coords and double-applies the view matrix. */
-            forward_velocity_apply(&forward_vel, cmd, scene_fbo.depth_tex,
-                                   &frame_inv_vp.e[0][0], &curr_view_proj.e[0][0],
-                                   &prev_view_proj.e[0][0], rw, rh);
-            if (!rhi_handle_valid(render.deferred.gbuf_velocity))
-                taa_velocity = forward_velocity_get_texture(&forward_vel);
+        } else if (render.render_path == RENDER_PATH_FORWARD &&
+                   rhi_handle_valid(forward_scene.color_tex[1])) {
+            taa_velocity = forward_scene.color_tex[1];
         }
         /* R446: track whether TAA actually resolved this frame — post-TAA
          * temporal passes (motion blur, TSR upscale) then reproject with the
@@ -7457,7 +7530,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         if (inspector_mode > 0) {
-            RHITexture insp_tex = scene_fbo.color_tex;
+            RHITexture insp_tex = (render.render_path == RENDER_PATH_FORWARD)
+                                ? forward_scene.color_tex[0] : scene_fbo.color_tex;
             switch (inspector_mode) {
             case 1: insp_tex = scene_fbo.color_tex; break;
             case 2: insp_tex = scene_depth; break;
@@ -7497,6 +7571,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 screenshot_next++;
             }
             rhi_present(render.device);
+            motion_history_commit(&node_motion_history);
+            motion_history_commit(&entity_motion_history);
             prev_view_proj = curr_view_proj;
             prev_view_proj_unjit = curr_view_proj_unjit;
             taa_frame++;
@@ -7602,6 +7678,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             screenshot_next++;
         }
         rhi_present(render.device);
+        motion_history_commit(&node_motion_history);
+        motion_history_commit(&entity_motion_history);
         prev_view_proj = curr_view_proj;
         prev_view_proj_unjit = curr_view_proj_unjit;
         taa_frame++;
@@ -7617,6 +7695,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
     LOG_INFO("Shutting down...");
     world_destroy(world);
+    motion_history_destroy(&node_motion_history);
+    motion_history_destroy(&entity_motion_history);
     LOG_INFO("  world done");
     task_system_destroy(tasks);
     free(render_buf); /* single free: instance_data + unified_udc_buf + unified_uobj_buf */
@@ -7660,7 +7740,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         cinematic_shutdown(&cine_sys);
         combined_aa_shutdown(&combined_aa);
         combined_color_shutdown(&combined_color);
-        forward_velocity_shutdown(&forward_vel);
         lod_shutdown(&lod_sys);
         occlusion_cull_shutdown(&occ_sys);
         indirect_draw_destroy(&indirect_sys, render.device);
@@ -7679,6 +7758,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
+        if (rhi_handle_valid(forward_scene.fb)) rhi_mrt_fbo_destroy(render.device, &forward_scene);
     LOG_INFO("  postfx done");
     terrain_shutdown(&terrain);
     water_shutdown(&water);

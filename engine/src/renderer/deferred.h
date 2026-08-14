@@ -64,13 +64,13 @@ typedef struct {
     i32 _loc_gbuf_model;
     i32 _loc_gbuf_view;
     i32 _loc_gbuf_proj;
-    i32 _loc_gbuf_prev_vp;
+    i32 _loc_gbuf_prev_mvp;
 
     /* R442: cached uniform locations of gbuffer_arr_pipeline (-1 if absent). */
     i32 _loc_gbuf_arr_model;
     i32 _loc_gbuf_arr_view;
     i32 _loc_gbuf_arr_proj;
-    i32 _loc_gbuf_arr_prev_vp;
+    i32 _loc_gbuf_arr_prev_mvp;
 
     /* Cached lighting-pass uniform locations (-1 if absent). */
     i32 _loc_inv_vp;

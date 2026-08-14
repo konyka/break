@@ -22,7 +22,7 @@ layout(push_constant) uniform Push {
     mat4 u_model;
     mat4 u_view;
     mat4 u_proj;
-    mat4 u_prev_vp;
+    mat4 u_prev_mvp;
 } pc;
 
 void main() {
@@ -32,7 +32,7 @@ void main() {
     v_texcoord  = a_texcoord;
     v_layer     = uint(gl_BaseInstanceARB);
     vec4 curr_clip = pc.u_proj * pc.u_view * wp;
-    vec4 prev_clip = pc.u_prev_vp * wp;
+    vec4 prev_clip = pc.u_prev_mvp * vec4(a_position, 1.0);
     vec2 curr_ndc = curr_clip.xy / curr_clip.w;
     vec2 prev_ndc = prev_clip.xy / prev_clip.w;
     v_velocity  = curr_ndc - prev_ndc;

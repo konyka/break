@@ -30,7 +30,8 @@ typedef struct {
     u32         _flatten_cap;
 } Terrain;
 
-bool  terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale);
+bool  terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale,
+                   bool forward_mrt);
 void  terrain_shutdown(Terrain *t);
 void  terrain_render(Terrain *t, RHICmdBuffer *cmd,
                      const f32 *view, const f32 *proj,

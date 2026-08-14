@@ -46,6 +46,7 @@ typedef struct {
     u32    vertex_stride;
     bool   has_index;
     bool   alpha_blend;
+    bool   alpha_blend_color_only;
     bool   wireframe;
     bool   point_list;   /* R168-C: GL_POINTS + PROGRAM_POINT_SIZE */
     bool   depth_write_disable;  /* R232-A: parity with VK depthWriteEnable */
@@ -57,6 +58,7 @@ typedef struct {
     GLuint gl_buf;
     GLuint tbo_tex;
     usize  size;
+    bool   uniform_buffer;
 } GLBufferData;
 
 typedef struct {
@@ -551,6 +553,7 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
     /* Cached GL state: only issue state-change calls when pipeline differs
      * from the last bound pipeline. Eliminates redundant driver validation. */
     static bool g_gl_blend_enabled = false;
+    static bool g_gl_blend_color_only = false;
     static bool g_gl_wireframe     = false;
     /* R188: g_gl_program moved to file scope — shared with rhi_pipeline_destroy. */
 
@@ -565,14 +568,26 @@ static void gl_cmd_bind_pipeline(void *cmd, GLPipelineData *pd) {
         g_gl_bound_vbo = 0; g_gl_bound_vbo_offset = 0;
         g_gl_bound_ibo = 0; g_gl_index_offset = 0;
     }
-    if (pd->alpha_blend != g_gl_blend_enabled) {
+    bool blend_changed = pd->alpha_blend != g_gl_blend_enabled;
+    if (blend_changed) {
         if (pd->alpha_blend) {
             glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         } else {
             glDisable(GL_BLEND);
         }
         g_gl_blend_enabled = pd->alpha_blend;
+    }
+    /* Transparent MRT passes blend HDR color only. RT1 must retain the
+     * front-most particle/water velocity rather than blend vector values. */
+    if (pd->alpha_blend &&
+        (blend_changed || pd->alpha_blend_color_only != g_gl_blend_color_only)) {
+        if (pd->alpha_blend_color_only) {
+            glBlendFunci(0, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glBlendFunci(1, GL_ONE, GL_ZERO);
+        } else {
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        g_gl_blend_color_only = pd->alpha_blend_color_only;
     }
     if (pd->wireframe != g_gl_wireframe) {
         glPolygonMode(GL_FRONT_AND_BACK, pd->wireframe ? GL_LINE : GL_FILL);
@@ -962,6 +977,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->gl_vao         = vao;
     pd->vertex_stride  = stride;
     pd->alpha_blend    = desc->alpha_blend;
+    pd->alpha_blend_color_only = desc->alpha_blend_color_only;
     pd->wireframe      = desc->wireframe;
     pd->point_list     = desc->point_list;
     pd->depth_write_disable  = desc->depth_write_disable;
@@ -1031,6 +1047,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     bd->gl_buf  = gl_buf;
     bd->tbo_tex = tbo_tex;
     bd->size    = desc->size;
+    bd->uniform_buffer = (desc->usage & RHI_BUFFER_USAGE_UNIFORM) != 0;
     dev->slots[idx].ptr  = bd;
     dev->slots[idx].type = RHI_RES_BUFFER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1243,11 +1260,19 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
     gl_cmd_clear_color(cmd, r, g, b, a);
 }
 
+void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment,
+                                    f32 r, f32 g, f32 b, f32 a) {
+    (void)cmd;
+    f32 value[4] = {r, g, b, a};
+    glClearBufferfv(GL_COLOR, (GLint)attachment, value);
+}
+
 static GLenum rhi_format_to_gl_internal(RHIFormat fmt) {
     switch (fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return GL_RGBA8;
     case RHI_FORMAT_B8G8R8A8_UNORM: return GL_RGBA8;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return GL_RGBA16F;
+    case RHI_FORMAT_R16G16_SFLOAT: return GL_RG16F;
     case RHI_FORMAT_R32_FLOAT:      return GL_R32F;
     case RHI_FORMAT_D32_FLOAT:      return GL_DEPTH_COMPONENT32F;
     default: return GL_RGBA8;
@@ -1259,6 +1284,7 @@ static GLenum rhi_format_to_gl_format(RHIFormat fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return GL_RGBA;
     case RHI_FORMAT_B8G8R8A8_UNORM: return GL_BGRA;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return GL_RGBA;
+    case RHI_FORMAT_R16G16_SFLOAT: return GL_RG;
     case RHI_FORMAT_R32_FLOAT:      return GL_RED;
     case RHI_FORMAT_D32_FLOAT:      return GL_DEPTH_COMPONENT;
     default: return GL_RGBA;
@@ -1275,6 +1301,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     GLenum fmt = rhi_format_to_gl_format(desc->format);
     GLenum typ = (desc->format == RHI_FORMAT_D32_FLOAT
                   || desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
+                  || desc->format == RHI_FORMAT_R16G16_SFLOAT
                   || desc->format == RHI_FORMAT_R32_FLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
     /* R550-B: immutable storage (glTexStorage2D) so rhi_cmd_bind_texture_mip
@@ -2011,10 +2038,12 @@ void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
         if (offset >= bd->size) return;
         size = bd->size - offset;
     }
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT
-                    | GL_BUFFER_UPDATE_BARRIER_BIT);
+    GLenum target = bd->uniform_buffer ? GL_UNIFORM_BUFFER : GL_SHADER_STORAGE_BUFFER;
+    glBindBuffer(target, bd->gl_buf);
+    glBufferSubData(target, (GLintptr)offset, (GLsizeiptr)size, data);
+    glMemoryBarrier(bd->uniform_buffer ? GL_UNIFORM_BARRIER_BIT
+                                       : (GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT)
+                                       | GL_BUFFER_UPDATE_BARRIER_BIT);
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
@@ -2054,7 +2083,9 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
 
     GLenum gl_internal = rhi_format_to_gl_internal(color_fmt);
     GLenum gl_format = rhi_format_to_gl_format(color_fmt);
-    GLenum gl_type = (color_fmt == RHI_FORMAT_D32_FLOAT || color_fmt == RHI_FORMAT_R16G16B16A16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    GLenum gl_type = (color_fmt == RHI_FORMAT_D32_FLOAT ||
+                      color_fmt == RHI_FORMAT_R16G16B16A16_SFLOAT ||
+                      color_fmt == RHI_FORMAT_R16G16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
     glGenFramebuffers(1, &fd->gl_fbo);
     gl_bind_fbo_cached(fd->gl_fbo);
@@ -2444,7 +2475,8 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     for (u32 i = 0; i < attachment_count; i++) {
         GLenum internal_fmt = rhi_format_to_gl_internal(formats[i]);
         GLenum gl_fmt       = rhi_format_to_gl_format(formats[i]);
-        GLenum gl_type       = (formats[i] == RHI_FORMAT_R16G16B16A16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
+        GLenum gl_type       = (formats[i] == RHI_FORMAT_R16G16B16A16_SFLOAT ||
+                                formats[i] == RHI_FORMAT_R16G16_SFLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
         glGenTextures(1, &md->color_tex[i]);
         glBindTexture(GL_TEXTURE_2D, md->color_tex[i]);
@@ -2598,6 +2630,10 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     gl_bind_fbo_cached(md->gl_fbo);
     /* R230-B: Same as offscreen — full MRT rect scissor + depth 0..1. */
     gl_set_fbo_pass_state(fbo->width, fbo->height);
+}
+
+void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
+    rhi_mrt_fbo_bind(cmd, fbo);
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {

@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 char *shader_read_file(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
@@ -27,4 +28,26 @@ char *shader_read_file(const char *path, usize *out_len) {
     fclose(f);
     if (out_len) *out_len = (usize)sz;
     return buf;
+}
+
+char *shader_inject_define(const char *src, usize len, const char *name, usize *out_len) {
+    if (!src || !name) return NULL;
+    const char *nl = memchr(src, '\n', len);
+    usize head = nl ? (usize)(nl - src) + 1u : len;
+    int def_raw = snprintf(NULL, 0, "#define %s 1\n", name);
+    if (def_raw < 0) return NULL;
+    usize def_len = (usize)def_raw;
+    char *out = malloc(len + def_len + 1u);
+    if (!out) return NULL;
+    memcpy(out, src, head);
+    int written = snprintf(out + head, def_len + 1u, "#define %s 1\n", name);
+    if (written < 0) {
+        free(out);
+        return NULL;
+    }
+    usize total = head + (usize)written + (len - head);
+    memcpy(out + head + (usize)written, src + head, len - head);
+    out[total] = '\0';
+    if (out_len) *out_len = total;
+    return out;
 }

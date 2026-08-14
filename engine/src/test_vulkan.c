@@ -1060,6 +1060,162 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     return defarr_pass;
 }
 
+/* TEST 7 is backend-neutral: both GL and Vulkan generate the same procedural
+ * sky cubemap, convolve it, then sample it through the clustered PBR path. */
+static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
+                        u32 iw, u32 ih) {
+    IBLSystem ibl = {0};
+    ibl_init(&ibl, rs->device);
+    f32 sdir[3] = { 0.3f, -0.7f, 0.5f };
+    f32 scol[3] = { 1.0f, 0.95f, 0.85f };
+    ibl_capture_env_sky(&ibl, rs->device, sdir, scol);
+    ibl_generate(&ibl, rs->device, ibl.env_map);
+
+    bool gen_ok = ibl.ready
+               && rhi_handle_valid(ibl.brdf_lut)
+               && rhi_handle_valid(ibl.env_map)
+               && rhi_handle_valid(ibl.irradiance_map)
+               && rhi_handle_valid(ibl.prefilter_map);
+    if (gen_ok)
+        LOG_INFO("PASS: IBL generated (env+irradiance+prefilter+BRDF LUT)");
+    else
+        LOG_ERROR("FAIL: IBL generation incomplete (ready=%d)", ibl.ready);
+
+    RHIPipeline cl_pipe = RHI_HANDLE_NULL;
+    usize vl = 0, fl = 0;
+    const char *ibl_vs_path =
+#ifdef ENGINE_VULKAN
+        "shaders/pbr_ibl_test_vk.vert";
+#else
+        TV_VS_PBR;
+#endif
+    char *vsrc = shader_read_file(ibl_vs_path, &vl);
+    char *fsrc = shader_read_file(TV_FS_PBR, &fl);
+    if (vsrc && fsrc) {
+        usize fl_ibl = 0;
+        char *fsrc_ibl = tv_inject_define(fsrc, fl, "HAS_IBL", &fl_ibl);
+        RHIShader vs = rhi_shader_create(rs->device, vsrc, vl, false);
+        RHIShader fs = fsrc_ibl ? rhi_shader_create(rs->device, fsrc_ibl, fl_ibl, true)
+                                : rhi_shader_create(rs->device, fsrc, fl, true);
+        if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
+            RHIPipelineDesc d = {.vert = vs, .frag = fs, .uses_textures = true,
+                                 .uses_texel_buffer = true,
+                                 .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+            cl_pipe = rhi_pipeline_create(rs->device, &d);
+        }
+        rhi_shader_destroy(rs->device, vs);
+        rhi_shader_destroy(rs->device, fs);
+        free(fsrc_ibl);
+    }
+    free(vsrc);
+    free(fsrc);
+
+    LightSystem ls;
+    light_system_init(&ls, rs->device);
+    bool gpu_cull_ok = light_system_init_gpu_cull(&ls);
+    light_system_add_dir(&ls, 0.3f, -0.7f, 0.5f, 1.0f, 0.95f, 0.85f);
+    light_system_add_point(&ls, 0.0f, 1.0f, 2.0f, 8.0f, 1.0f, 0.6f, 0.3f);
+
+    bool sample_ok = false;
+    RHIOffscreenFBO scene = {0};
+    if (gen_ok && rhi_handle_valid(cl_pipe) && iw > 0u && ih > 0u) {
+        scene = rhi_offscreen_fbo_create_fmt(
+            rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
+        bool scene_ok = rhi_handle_valid(scene.fb) &&
+                        rhi_handle_valid(scene.color_tex) &&
+                        rhi_handle_valid(scene.depth_tex);
+
+        Mat4 model = mat4_identity();
+        Mat4 view  = mat4_identity();
+        Mat4 proj  = mat4_identity();
+        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_model");
+        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_view");
+        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_proj");
+        i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_camera_pos");
+        i32 l_amb   = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_ambient");
+        i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_screen_w");
+        i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_screen_h");
+        i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_near");
+        i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_far");
+        i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_point_count");
+        i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_dir_count");
+
+        u32 ierr = scene_ok ? 0u : 1u;
+        for (u32 f = 0; scene_ok && f < 8u; f++) {
+            if (gpu_cull_ok) {
+                light_system_upload_lights(&ls);
+            } else {
+                light_system_cull(&ls, &view, &proj, iw, ih);
+                light_system_upload(&ls);
+            }
+
+            RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+            if (!cmd) { ierr++; continue; }
+            rhi_offscreen_fbo_bind(cmd, &scene);
+            rhi_cmd_clear_color(cmd, 0.01f, 0.02f, 0.03f, 1.0f);
+            rhi_cmd_clear_depth(cmd);
+            if (gpu_cull_ok) {
+                Mat4 vp = mat4_mul(proj, view);
+                light_system_cull_gpu(&ls, cmd, &vp.e[0][0], iw, ih);
+            }
+            rhi_cmd_bind_pipeline(cmd, cl_pipe);
+            rhi_cmd_set_uniform_mat4(cmd, l_model, &model.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
+            rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
+            rhi_cmd_set_uniform_vec3(cmd, l_amb, 0.08f, 0.08f, 0.10f);
+            rhi_cmd_set_uniform_f32(cmd, l_sw, (f32)iw);
+            rhi_cmd_set_uniform_f32(cmd, l_sh, (f32)ih);
+            rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
+            rhi_cmd_set_uniform_f32(cmd, l_far, 100.0f);
+            rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls.point_count);
+            rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls.dir_count);
+            rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls),
+                                       light_system_grid_slot(&ls));
+            rhi_cmd_bind_material_textures_ibl(cmd,
+                rs->test_tex, rs->test_tex, rs->test_tex, rs->test_tex,
+                rs->test_tex, rs->test_tex, rs->sampler,
+                ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 3, 1);
+            rhi_offscreen_fbo_unbind(cmd, iw, ih);
+            rhi_frame_end(rs->device);
+            rhi_present(rs->device);
+        }
+
+        bool pixels_ok = false;
+        usize bytes = (usize)iw * ih * 8u;
+        u8 *pixels = malloc(bytes);
+        if (ierr == 0u && pixels &&
+            rhi_texture_read_pixels(rs->device, scene.color_tex, pixels, bytes)) {
+            const usize pixel_stride = 8u;
+            const usize pixel_count = (usize)iw * ih;
+            bool varied = false;
+            bool nonzero = false;
+            for (usize i = 0; i < pixel_count && (!varied || !nonzero); i++) {
+                const u8 *p = pixels + i * pixel_stride;
+                if (memcmp(p, pixels, pixel_stride) != 0) varied = true;
+                for (usize b = 0; b < pixel_stride; b++)
+                    if (p[b] != 0u) nonzero = true;
+            }
+            pixels_ok = varied && nonzero;
+            if (!pixels_ok)
+                LOG_ERROR("FAIL: IBL PBR output is blank or flat");
+        } else if (ierr == 0u) {
+            LOG_ERROR("FAIL: IBL PBR output readback failed");
+        }
+        free(pixels);
+        sample_ok = (ierr == 0u) && pixels_ok;
+    }
+
+    if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
+    if (rhi_handle_valid(cl_pipe)) rhi_pipeline_destroy(rs->device, cl_pipe);
+    light_system_shutdown(&ls);
+    ibl_destroy(&ibl, rs->device);
+    return gen_ok && sample_ok;
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     log_set_level(LOG_DEBUG);
@@ -1112,9 +1268,9 @@ int main(int argc, char **argv) {
     else { LOG_INFO("PASS: Index buffer created"); }
 
 #ifndef ENGINE_VULKAN
-    /* OpenGL CTest: golden-image regression + the R437/R441/R442 material-
-     * indirect pixel gates (TEST 10/11/12). The remaining integration suite
-     * (TESTS 1-9) stays Vulkan-only — no GL-side demand so far. */
+    /* OpenGL CTest: golden-image regression, real IBL, and the material-
+     * indirect pixel gates. The expensive backend-specific stress body stays
+     * Vulkan-only, while TEST 7 uses the same helper on both backends. */
     {
         u32 gw, gh;
         platform_get_size(engine.platform, &gw, &gh);
@@ -1123,6 +1279,13 @@ int main(int argc, char **argv) {
         /* R438: non-identity camera variant (transpose-sensitive). */
         bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw, gh);
         golden_pass = golden_pass && golden_cam_pass;
+
+        LOG_INFO("============================================");
+        LOG_INFO("TEST 7: IMAGE-BASED LIGHTING (REAL CUBEMAP)");
+        LOG_INFO("============================================");
+        bool ibl_pass = tv_test_ibl(&render, vbo, ibo, gw, gh);
+        LOG_INFO("RESULT: IBL TEST %s",
+                 ibl_pass ? "PASSED ✓" : "FAILED");
 
         LOG_INFO("============================================");
         LOG_INFO("TEST 10: INDIRECT DRAW GROUPED COMPACT");
@@ -1147,7 +1310,7 @@ int main(int argc, char **argv) {
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = golden_pass && idraw_pass && matarr_pass && defarr_pass;
+        bool all_pass = golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -1165,13 +1328,13 @@ int main(int argc, char **argv) {
 
     /* Test: Skybox */
     Skybox skybox = {0};
-    bool sky_ok = skybox_init(&skybox, render.device);
+    bool sky_ok = skybox_init(&skybox, render.device, false);
     if (sky_ok) { LOG_INFO("PASS: Skybox initialized"); }
     else { LOG_WARN("WARN: Skybox init failed (non-fatal)"); }
 
     /* Test: Terrain */
     Terrain terrain = {0};
-    bool terr_ok = terrain_init(&terrain, render.device, 32, 20.0f, 1.0f);
+    bool terr_ok = terrain_init(&terrain, render.device, 32, 20.0f, 1.0f, false);
     if (terr_ok) { LOG_INFO("PASS: Terrain created (%u indices)", terrain.index_count); }
     else { LOG_WARN("WARN: Terrain init failed"); }
 
@@ -1776,135 +1939,9 @@ int main(int argc, char **argv) {
     LOG_INFO("TEST 7: IMAGE-BASED LIGHTING (REAL CUBEMAP)");
     LOG_INFO("============================================");
 
-    bool ibl_pass = false;
-    {
-        u32 iw, ih;
-        platform_get_size(engine.platform, &iw, &ih);
-
-        /* Generate a real environment: procedural sky -> env cubemap ->
-         * irradiance + prefilter convolution + analytic BRDF LUT. */
-        IBLSystem ibl = {0};
-        ibl_init(&ibl, render.device);
-        f32 sdir[3] = { 0.3f, -0.7f, 0.5f };
-        f32 scol[3] = { 1.0f, 0.95f, 0.85f };
-        ibl_capture_env_sky(&ibl, render.device, sdir, scol);
-        ibl_generate(&ibl, render.device, ibl.env_map);
-
-        bool gen_ok = ibl.ready
-                   && rhi_handle_valid(ibl.brdf_lut)
-                   && rhi_handle_valid(ibl.env_map)
-                   && rhi_handle_valid(ibl.irradiance_map)
-                   && rhi_handle_valid(ibl.prefilter_map);
-        if (gen_ok)
-            LOG_INFO("PASS: IBL generated (env+irradiance+prefilter+BRDF LUT)");
-        else
-            LOG_ERROR("FAIL: IBL generation incomplete (ready=%d)", ibl.ready);
-
-        /* Build the clustered PBR pipeline with the HAS_IBL path enabled so we
-         * actually sample the generated cubemaps (samplerCube at bindings 7/8). */
-        RHIPipeline cl_pipe = RHI_HANDLE_NULL;
-        {
-            usize vl = 0, fl = 0;
-            char *vsrc = shader_read_file(TV_VS_PBR, &vl);
-            char *fsrc = shader_read_file(TV_FS_PBR, &fl);
-            if (vsrc && fsrc) {
-                usize fl_ibl = 0;
-                char *fsrc_ibl = tv_inject_define(fsrc, fl, "HAS_IBL", &fl_ibl);
-                RHIShader vs = rhi_shader_create(render.device, vsrc, vl, false);
-                RHIShader fs = fsrc_ibl ? rhi_shader_create(render.device, fsrc_ibl, fl_ibl, true)
-                                        : rhi_shader_create(render.device, fsrc, fl, true);
-                if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
-                    /* R439: culling on — right-handed view basis keeps the
-                     * test triangle front-facing (identity view, CCW). */
-                    RHIPipelineDesc d = {.vert = vs, .frag = fs, .uses_textures = true,
-                                         .uses_texel_buffer = true,
-                                         .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
-                    cl_pipe = rhi_pipeline_create(render.device, &d);
-                }
-                rhi_shader_destroy(render.device, vs);
-                rhi_shader_destroy(render.device, fs);
-                free(vsrc); free(fsrc); free(fsrc_ibl);
-            } else { free(vsrc); free(fsrc); }
-        }
-
-        /* Minimal light system so the clustered texel buffers are valid; enable
-         * GPU cluster binning so this test also validates cluster_cull.comp. */
-        LightSystem ls; light_system_init(&ls, render.device);
-        bool gpu_cull_ok = light_system_init_gpu_cull(&ls);
-        light_system_add_dir(&ls, 0.3f, -0.7f, 0.5f, 1.0f, 0.95f, 0.85f);
-        light_system_add_point(&ls, 0.0f, 1.0f, 2.0f, 8.0f, 1.0f, 0.6f, 0.3f);
-
-        bool sample_ok = false;
-        if (gen_ok && rhi_handle_valid(cl_pipe)) {
-            RHIOffscreenFBO scene = rhi_offscreen_fbo_create_fmt(
-                render.device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
-
-            Mat4 model = mat4_identity();
-            Mat4 view  = mat4_identity();
-            Mat4 proj  = mat4_identity();
-            i32 l_model = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_model");
-            i32 l_view  = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_view");
-            i32 l_proj  = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_proj");
-            i32 l_cam   = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_camera_pos");
-            i32 l_amb   = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_ambient");
-            i32 l_sw    = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_screen_w");
-            i32 l_sh    = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_screen_h");
-            i32 l_near  = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_near");
-            i32 l_far   = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_far");
-            i32 l_pc    = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_point_count");
-            i32 l_dc    = rhi_pipeline_get_uniform_location(render.device, cl_pipe, "u_dir_count");
-
-            u32 ierr = 0;
-            for (u32 f = 0; f < 8; f++) {
-                if (gpu_cull_ok) {
-                    light_system_upload_lights(&ls);
-                } else {
-                    light_system_cull(&ls, &view, &proj, iw, ih);
-                    light_system_upload(&ls);
-                }
-
-                RHICmdBuffer *cmd = rhi_frame_begin(render.device);
-                if (!cmd) { ierr++; continue; }
-                rhi_offscreen_fbo_bind(cmd, &scene);
-                if (gpu_cull_ok) {
-                    Mat4 vp = mat4_mul(proj, view);
-                    light_system_cull_gpu(&ls, cmd, &vp.e[0][0], iw, ih);
-                }
-                rhi_cmd_bind_pipeline(cmd, cl_pipe);
-                rhi_cmd_set_uniform_mat4(cmd, l_model, &model.e[0][0]);
-                rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
-                rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
-                rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
-                rhi_cmd_set_uniform_vec3(cmd, l_amb, 0.08f, 0.08f, 0.10f);
-                rhi_cmd_set_uniform_f32(cmd, l_sw, (f32)iw);
-                rhi_cmd_set_uniform_f32(cmd, l_sh, (f32)ih);
-                rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
-                rhi_cmd_set_uniform_f32(cmd, l_far, 100.0f);
-                rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls.point_count);
-                rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls.dir_count);
-                rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls), light_system_grid_slot(&ls));
-                /* Bind material + the real IBL cubemaps (bindings 6/7/8). */
-                rhi_cmd_bind_material_textures_ibl(cmd,
-                    render.test_tex, render.test_tex, render.test_tex, render.test_tex,
-                    render.test_tex, render.test_tex, render.sampler,
-                    ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
-                rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
-                rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
-                rhi_cmd_draw_indexed(cmd, 3, 1);
-                rhi_offscreen_fbo_unbind(cmd, iw, ih);
-                rhi_frame_end(render.device);
-                rhi_present(render.device);
-            }
-            sample_ok = (ierr == 0);
-            rhi_offscreen_fbo_destroy(render.device, &scene);
-        }
-
-        if (rhi_handle_valid(cl_pipe)) rhi_pipeline_destroy(render.device, cl_pipe);
-        light_system_shutdown(&ls);
-        ibl_destroy(&ibl, render.device);
-
-        ibl_pass = gen_ok && sample_ok;
-    }
+    u32 iw, ih;
+    platform_get_size(engine.platform, &iw, &ih);
+    bool ibl_pass = tv_test_ibl(&render, vbo, ibo, iw, ih);
 
     if (ibl_pass) {
         LOG_INFO("RESULT: IBL TEST PASSED ✓ (cubemap RGBA16F+mips, sampled in clustered PBR)");

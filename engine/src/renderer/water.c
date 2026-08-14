@@ -6,7 +6,7 @@
 #include <string.h>
 #include <core/shader_io.h>
 
-bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
+bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forward_mrt) {
     w->device = dev;
     w->water_y = water_y;
     w->time = 0.0f;
@@ -34,9 +34,15 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
         return false;
     }
 
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
+    usize vs_mrt_len = 0, fs_mrt_len = 0;
+    char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
+    char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
+    RHIShader vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
+                                     vs_mrt ? vs_mrt_len : vs_len, false);
+    RHIShader fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                                     fs_mrt ? fs_mrt_len : fs_len, true);
     free(vs_src); free(fs_src);
+    free(vs_mrt); free(fs_mrt);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Water shader compile failed");
@@ -47,6 +53,7 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
 
     RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true,
                              .disable_culling = true, .alpha_blend = true,
+                             .alpha_blend_color_only = forward_mrt,
                              .water_layout = true,
                              /* R440: water VBO is packed vec3 (below) — declare
                               * the real stride so both backends bind a
@@ -55,6 +62,11 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size) {
                               * and an out-of-bounds vertex fetch). */
                              .vertex_stride = 3u * sizeof(f32),
                              .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+    if (forward_mrt) {
+        pdesc.mrt_attachment_count = 2u;
+        pdesc.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    }
     w->pipeline = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);

@@ -114,6 +114,7 @@ typedef struct {
     bool              water_layout;
     bool              combined_aa_layout;
     bool              combined_color_layout;
+    bool              mrt_pipeline;
     /* Set indices for the auxiliary descriptor sets that the
      * generic command-stream binding helpers (image_texture,
      * texture_mip, uniform_buffer) target.  VK_INVALID_SET means
@@ -209,6 +210,7 @@ typedef struct {
     VkPhysicalDevice         physical;
     VkPhysicalDeviceProperties device_props;
     bool             feat_fill_mode_non_solid; /* wireframe (polygonMode=LINE) usable */
+    bool             feat_independent_blend;   /* per-MRT-attachment blend state usable */
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
     VkDevice                 device;
@@ -273,6 +275,9 @@ typedef struct {
 
     VkPipeline current_pipeline;
     VKPipelineData *current_pipeline_data;
+    RHIBuffer       bound_ubo;
+    u32             bound_ubo_binding;
+    VKPipelineData *ubo_bound_pipeline_data;
     /* Storage-buffer binds accumulate into ONE descriptor set per pipeline bind:
      * a compute shader (e.g. compact_draws.comp) reads bindings 0..3 from the
      * same set 0, so each rhi_cmd_bind_storage_buffer must write into the shared
@@ -328,6 +333,8 @@ typedef struct {
     shaderc_compiler_t shaderc_compiler;
     bool vsync;
 } VKBackend;
+
+static void vk_rebind_uniform_buffers(VKBackend *vk);
 
 /* ---- Helpers ---- */
 
@@ -1094,6 +1101,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         enabled_features.fillModeNonSolid = VK_TRUE; /* wireframe debug pipelines */
         vk->feat_fill_mode_non_solid = true;
     }
+    if (supported_features2.features.independentBlend) {
+        enabled_features.independentBlend = VK_TRUE;
+        vk->feat_independent_blend = true;
+    }
     /* R169: Allow VS/GS/TS to write PointSize (particle POINT_LIST sprites). */
     if (supported_features2.features.shaderTessellationAndGeometryPointSize) {
         enabled_features.shaderTessellationAndGeometryPointSize = VK_TRUE;
@@ -1518,6 +1529,7 @@ static VkFormat vk_format_from_rhi(RHIFormat fmt) {
     case RHI_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_UNORM;
     case RHI_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_UNORM;
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case RHI_FORMAT_R16G16_SFLOAT: return VK_FORMAT_R16G16_SFLOAT;
     case RHI_FORMAT_R32_FLOAT:      return VK_FORMAT_R32_SFLOAT;
     case RHI_FORMAT_D32_FLOAT:      return VK_FORMAT_D32_SFLOAT;
     default: return VK_FORMAT_R8G8B8A8_UNORM;
@@ -1529,6 +1541,7 @@ static VkFormat vk_format_from_rhi(RHIFormat fmt) {
 static u32 rhi_format_bpp(RHIFormat fmt) {
     switch (fmt) {
     case RHI_FORMAT_R16G16B16A16_SFLOAT: return 8;
+    case RHI_FORMAT_R16G16_SFLOAT: return 4;
     default:                             return 4;
     }
 }
@@ -1722,6 +1735,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     vk->frame_started = true;
     vk->current_pipeline = VK_NULL_HANDLE;
     vk->current_pipeline_data = NULL;  /* R106-1: reset stale pointer — desc pool was just reset, so storage_set is dangling */
+    vk->bound_ubo = RHI_HANDLE_NULL;
+    vk->ubo_bound_pipeline_data = NULL;
     vk->storage_set_valid = false;     /* R106-1: force re-alloc on next bind_storage_buffer */
     vk->image_set_valid = false;       /* R436: same for the storage-image set */
     vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset for swapchain pass */
@@ -2424,6 +2439,11 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
                     ? desc->mrt_attachment_count : 1;
     if (blend_count > RHI_MRT_MAX_ATTACHMENTS) blend_count = RHI_MRT_MAX_ATTACHMENTS;
     for (u32 i = 0; i < blend_count; i++) blend_atts[i] = blend_att;
+    /* Separate RT0 alpha blending from RT1 velocity writes requires the
+     * independentBlend feature.  Devices without it retain the legal,
+     * shared blend state rather than creating an invalid pipeline. */
+    if (desc->alpha_blend_color_only && vk->feat_independent_blend && blend_count > 1u)
+        blend_atts[1].blendEnable = VK_FALSE;
     blend.attachmentCount = blend_count;
     blend.pAttachments = blend_atts;
 
@@ -2676,6 +2696,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->water_layout = desc->water_layout;
     pd->combined_aa_layout = desc->combined_aa_layout;
     pd->combined_color_layout = desc->combined_color_layout;
+    pd->mrt_pipeline = desc->mrt_attachment_count > 1u;
     pd->storage_image_set = (u8)VK_INVALID_SET;
     pd->sampler_mip_set = (u8)VK_INVALID_SET;
     pd->ubo_set = (u8)graphics_ubo_set;
@@ -2929,6 +2950,11 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (desc->usage & RHI_BUFFER_USAGE_STORAGE) {    ci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; ci.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; /* R87-1: enable GPU-side copy */ }
     if (desc->usage & RHI_BUFFER_USAGE_INDIRECT)     ci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
     if (is_texel)                                     ci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+    /* rhi_cmd_update_buffer records vkCmdUpdateBuffer for temporal UBOs and
+     * GPU light texel buffers; Vulkan requires every such target to include
+     * TRANSFER_DST usage. */
+    if (desc->usage & (RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL))
+        ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
     /* R181/R184: DEVICE_LOCAL when initial_data is provided for:
      *  - static VERTEX/INDEX meshes
@@ -4055,6 +4081,9 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
         vk->current_pipeline = bound;
     }
     vk->current_pipeline_data = pd;
+    if (pd->mrt_pipeline && rhi_handle_valid(vk->bound_ubo) &&
+        vk->ubo_bound_pipeline_data != pd)
+        vk_rebind_uniform_buffers(vk);
     /* Start a fresh storage-buffer descriptor set for this pipeline binding. */
     vk->storage_set_valid = false;
     /* R436: same for the storage-image descriptor set. */
@@ -4737,6 +4766,25 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
     vkCmdClearAttachments(vk->cmd_buffers[vk->current_frame], 1, &att, 1, &rect);
 }
 
+void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment,
+                                    f32 r, f32 g, f32 b, f32 a) {
+    (void)cmd;
+    VKBackend *vk = vk_backend(g_current_device);
+    if (!vk || attachment >= RHI_MRT_MAX_ATTACHMENTS) return;
+    vk_resume_pass_if_needed(vk);
+    VkClearAttachment att = {0};
+    att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    att.colorAttachment = attachment;
+    att.clearValue.color.float32[0] = r;
+    att.clearValue.color.float32[1] = g;
+    att.clearValue.color.float32[2] = b;
+    att.clearValue.color.float32[3] = a;
+    VkExtent2D area = (vk->resume_extent.width && vk->resume_extent.height)
+                    ? vk->resume_extent : vk->swap_extent;
+    VkClearRect rect = {{{0, 0}, area}, 0, 1};
+    vkCmdClearAttachments(vk->cmd_buffers[vk->current_frame], 1, &att, 1, &rect);
+}
+
 /* R94-3: Flush pending push constants to the command buffer. Called before
  * every draw/dispatch to batch multiple rhi_cmd_set_uniform_* calls into
  * a single vkCmdPushConstants. */
@@ -5009,6 +5057,8 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     }
     /* R203-A: gbuffer_vk.vert packs prev@192; camera_velocity_vk packs prev@128.
      * An unconditional 192 made the late return 128 dead and broke forward_velocity. */
+    if (strcmp(name, "u_prev_mvp") == 0)
+        return 192;
     if (strcmp(name, "u_prev_vp") == 0)
         return (pd && pd->no_vertex_input) ? 128 : 192;
     if (strcmp(name, "u_model") == 0)       return 0;
@@ -5515,6 +5565,8 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 
     VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
     if (!bd || bd->buffer == VK_NULL_HANDLE) return;
+    vk->bound_ubo = buf;
+    vk->bound_ubo_binding = binding;
 
     VkDescriptorSetLayout layout = vk->ubo_layout;
     VkDescriptorSetAllocateInfo dsai = {0};
@@ -5546,6 +5598,13 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
         bp, cpd->layout,
         cpd->ubo_set, 1, &ds, 0, NULL);
+    vk->ubo_bound_pipeline_data = cpd;
+}
+
+static void vk_rebind_uniform_buffers(VKBackend *vk) {
+    if (!vk || !rhi_handle_valid(vk->bound_ubo)) return;
+    RHICmdBuffer *cmd = NULL;
+    rhi_cmd_bind_uniform_buffer(cmd, vk->bound_ubo, vk->bound_ubo_binding);
 }
 
 /* ---- Shadow map ---- */
@@ -7447,6 +7506,41 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     VkRect2D sc = {{0, 0}, {fbo->width, fbo->height}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
     vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
+}
+
+void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
+    (void)cmd;
+    if (!fbo) return;
+    VKBackend *vk = vk_backend(g_current_device);
+    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
+    if (!md || !md->render_pass_load) {
+        rhi_mrt_fbo_bind(cmd, fbo);
+        return;
+    }
+
+    if (vk->render_pass_active) {
+        vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
+        vk->render_pass_active = false;
+    }
+
+    VkRenderPassBeginInfo rpi = {0};
+    rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpi.renderPass = md->render_pass_load;
+    rpi.framebuffer = md->framebuffer;
+    rpi.renderArea.extent.width = fbo->width;
+    rpi.renderArea.extent.height = fbo->height;
+    vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi,
+                         VK_SUBPASS_CONTENTS_INLINE);
+    vk->render_pass_active = true;
+    vk_record_pass(vk, md->render_pass_load, md->framebuffer,
+                   fbo->width, fbo->height, VK_FORMAT_UNDEFINED);
+
+    VkViewport vp = {0, 0, (f32)fbo->width, (f32)fbo->height, 0, 1};
+    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    VkRect2D sc = {{0, 0}, {fbo->width, fbo->height}};
+    vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
+    vk->vp_valid = false;
+    vk->sc_valid = false;
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
