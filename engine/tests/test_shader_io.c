@@ -216,6 +216,25 @@ TEST(vulkan_command_buffer_updates_have_transfer_dst_usage)
     ASSERT_NOT_NULL(strstr(src, "ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT"));
 }
 
+TEST(motion_blur_prefers_per_object_velocity_texture)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("renderer/motion_blur.h", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "RHITexture velocity_tex"));
+    ASSERT_TRUE(read_engine_source("renderer/motion_blur.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "RHITexture velocity_tex"));
+    ASSERT_NOT_NULL(strstr(src, "rhi_cmd_bind_textures_multi(cmd, tex, 3"));
+
+    const char *files[] = { "motion_blur.frag", "motion_blur_vk.frag" };
+    for (usize i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char shader[16384];
+        ASSERT_TRUE(read_shader_source(files[i], shader, sizeof(shader)));
+        ASSERT_NOT_NULL(strstr(shader, "u_mb_velocity"));
+        ASSERT_NOT_NULL(strstr(shader, "u_mb_use_velocity"));
+        ASSERT_NOT_NULL(strstr(shader, "velocity = texture(u_mb_velocity"));
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -227,4 +246,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vulkan_ibl_gate_uses_compatible_vertex_contract);
     RUN_TEST(transparent_motion_vectors_do_not_alpha_blend_rt1);
     RUN_TEST(vulkan_command_buffer_updates_have_transfer_dst_usage);
+    RUN_TEST(motion_blur_prefers_per_object_velocity_texture);
 TEST_MAIN_END()

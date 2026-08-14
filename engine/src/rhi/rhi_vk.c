@@ -5187,6 +5187,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_mb_sh") == 0)              return 8;
     if (strcmp(name, "u_mb_inv_proj") == 0)        return 12;
     if (strcmp(name, "u_mb_prev_vp") == 0)         return 76;
+    if (strcmp(name, "u_mb_use_velocity") == 0)    return 140;
     /* R199-B: contact_shadow_vk.frag — missing map zeroed light/proj. */
     if (strcmp(name, "u_cs_light_x") == 0)         return 0;
     if (strcmp(name, "u_cs_light_y") == 0)         return 4;

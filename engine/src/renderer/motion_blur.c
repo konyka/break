@@ -81,6 +81,7 @@ bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
     s->loc_sh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_sh");
     s->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_inv_proj");
     s->loc_prev_vp  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_prev_vp");
+    s->loc_use_velocity = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_mb_use_velocity");
 
     s->ready = true;
     LOG_INFO("MotionBlur: initialized (%ux%u)", w, h);
@@ -97,6 +98,7 @@ void motion_blur_shutdown(MotionBlurSystem *s) {
 
 void motion_blur_apply(MotionBlurSystem *s, RHICmdBuffer *cmd,
                        RHITexture color_tex, RHITexture depth_tex,
+                       RHITexture velocity_tex,
                        const f32 *inv_proj, const f32 *prev_vp,
                        f32 strength, u32 w, u32 h) {
     if (!s->ready) return;
@@ -104,16 +106,21 @@ void motion_blur_apply(MotionBlurSystem *s, RHICmdBuffer *cmd,
     rhi_offscreen_fbo_bind(cmd, &s->fbo);
 
     rhi_cmd_bind_pipeline(cmd, s->pipe);
-    /* R99-2: Use rhi_cmd_bind_material_textures to avoid VK texture binding
-     * overwrite bug when binding two textures. */
-    rhi_cmd_bind_material_textures(cmd, color_tex, color_tex, color_tex,
-                                   color_tex, depth_tex, color_tex, s->sampler);
+    bool use_velocity = rhi_handle_valid(velocity_tex);
+    /* Keep the third descriptor valid even when only the depth reconstruction
+     * fallback is available; Vulkan requires all statically declared samplers
+     * to be updated before the fullscreen draw. */
+    RHITexture tex[3] = { color_tex, depth_tex,
+                          use_velocity ? velocity_tex : color_tex };
+    rhi_cmd_bind_textures_multi(cmd, tex, 3, s->sampler);
 
     if (s->loc_strength >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_strength, strength);
     if (s->loc_sw >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_sw, (f32)w);
     if (s->loc_sh >= 0)       rhi_cmd_set_uniform_f32(cmd, s->loc_sh, (f32)h);
     if (s->loc_inv_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
     if (s->loc_prev_vp >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
+    if (s->loc_use_velocity >= 0)
+        rhi_cmd_set_uniform_f32(cmd, s->loc_use_velocity, use_velocity ? 1.0f : 0.0f);
 
     rhi_cmd_draw(cmd, 3, 1);
 }

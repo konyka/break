@@ -6,12 +6,14 @@ layout(location = 0) out vec4 fragColor;
 /* R219-A: Match bind_material_textures (color@0, depth@shadow@1) and VK. */
 layout(binding = 0) uniform sampler2D u_mb_color;
 layout(binding = 1) uniform sampler2D u_mb_depth;
+layout(binding = 2) uniform sampler2D u_mb_velocity;
 
 uniform float u_mb_strength;
 uniform float u_mb_sw;
 uniform float u_mb_sh;
 uniform mat4  u_mb_inv_proj;
 uniform mat4  u_mb_prev_vp;
+uniform float u_mb_use_velocity;
 
 float interleaved_gradient_noise(vec2 p) {
     vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
@@ -27,15 +29,20 @@ void main() {
         return;
     }
 
-    vec2 ndc = vUV * 2.0 - 1.0;
-    vec4 view_pos = u_mb_inv_proj * vec4(ndc, depth * 2.0 - 1.0, 1.0);
-    view_pos.xyz /= view_pos.w;
-
-    vec4 prev_clip = u_mb_prev_vp * vec4(view_pos.xyz, 1.0);
-    vec2 prev_ndc = prev_clip.xy / prev_clip.w;
-    vec2 prev_uv = prev_ndc * 0.5 + 0.5;
-
-    vec2 velocity = (vUV - prev_uv) * res;
+    vec2 velocity;
+    if (u_mb_use_velocity > 0.5) {
+        /* FORWARD_MRT/G-buffer stores NDC delta. Convert it once to pixels,
+         * preserving object and skinned motion that depth cannot reconstruct. */
+        velocity = texture(u_mb_velocity, vUV).rg * (0.5 * res);
+    } else {
+        vec2 ndc = vUV * 2.0 - 1.0;
+        vec4 view_pos = u_mb_inv_proj * vec4(ndc, depth * 2.0 - 1.0, 1.0);
+        view_pos.xyz /= view_pos.w;
+        vec4 prev_clip = u_mb_prev_vp * vec4(view_pos.xyz, 1.0);
+        vec2 prev_ndc = prev_clip.xy / prev_clip.w;
+        vec2 prev_uv = prev_ndc * 0.5 + 0.5;
+        velocity = (vUV - prev_uv) * res;
+    }
 
     float vel_len = length(velocity);
     if (vel_len < 0.5) {

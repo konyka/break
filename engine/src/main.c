@@ -7412,7 +7412,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                               : &frame_inv_vp.e[0][0];
             const f32 *mb_prev = taa_resolved ? &prev_view_proj_unjit.e[0][0]
                                               : &prev_view_proj.e[0][0];
-            motion_blur_apply(&motion_blur, cmd, taa_output, scene_depth,
+            motion_blur_apply(&motion_blur, cmd, taa_output, scene_depth, taa_velocity,
                               mb_inv, mb_prev, 1.0f, rw, rh);
             taa_output = motion_blur.fbo.color_tex;
         }

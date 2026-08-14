@@ -95,7 +95,8 @@ shader 变体和 render-pass attachment 描述。
   previous=current，速度为零。
 
 该设计只增加一个 RG16F 写带宽和少量历史上传，省掉第二次几何/全屏 pass，因而是
-当前 forward TAA 的性能最优路径。限制是预烘焙 mega geometry 的节点变换已烘焙为
+当前 forward temporal 路径的性能最优实现：TAA 与 motion blur 共同消费 RT1，因而不需要
+另一次速度 pass 或用深度重建动态物体的错误速度。限制是预烘焙 mega geometry 的节点变换已烘焙为
 顶点、不会被运行时逐节点历史驱动。transparent water 与 particle pass 对 RT0 使用
 标准 alpha blend、对 RT1 禁用 blend，避免透明颜色的 alpha 将速度与背景错误混合；
 该 per-attachment 优化在 Vulkan 设备未提供 `independentBlend` 时会回退到合法的共享
@@ -412,6 +413,9 @@ GL/Vulkan 的 FBO、render-pass、pipeline attachment 数量和 forward 材质 s
 blend，以保证水面和粒子遮罩不会稀释或叠加背景速度。GL 通过 indexed blend state 实现；
 Vulkan 在启用 `independentBlend` 时使用独立 attachment state。粒子的 SSBO 将 previous
 position 与现有位置/寿命数据同批更新，不增加 CPU 回读、额外 draw 或额外 geometry pass。
+TAA 和 motion blur 都优先采样同一 RG16F 速度附件；motion blur 只在附件不可用时才以
+depth + previous VP 重建相机速度。因此动态对象不会在后续 blur pass 中退化回 camera-only
+运动，且避免维护第二张速度纹理或额外的 fullscreen velocity pass。
 
 后处理系统按固定顺序链式执行，每个效果读取前一阶段的输出作为输入：
 
@@ -470,7 +474,7 @@ HDR Color Buffer
 | Bloom | `post_process.c` (7.2KB) | `bloom_extract.frag` / `bloom_blur.frag` / `bloom_composite.frag` | 亮度提取 + 双 pass 高斯模糊 + 加法合成 | 1/2 |
 | Tonemap | `tonemap.c` (6.5KB) | `tonemap.frag` / `tonemap_vk.frag` | ACES 色调映射 (Academy Color Encoding System) | Full |
 | DOF | `dof.c` (4.9KB) | `dof.frag` / `dof_vk.frag` | Circle of Confusion 散景模拟 | Full |
-| Motion Blur | `motion_blur.c` (4.4KB) | `motion_blur.frag` / `motion_blur_vk.frag` | 深度感知速度重建模糊 | Full |
+| Motion Blur | `motion_blur.c` | `motion_blur.frag` / `motion_blur_vk.frag` | 优先逐对象 RT1 速度；无 RT1 时深度重建回退 | Full |
 | Volumetric | `volumetric.c` (6.7KB) | `volumetric.frag` / `volumetric_vk.frag` | 16步 ray march 体积光散射 | Full |
 | God Rays | `god_rays.c` (4.2KB) | `god_rays.frag` / `god_rays_vk.frag` | 径向模糊（Radial Blur）光束效果 | Full |
 | Color Grade | `color_grade.c` (4.4KB) | `color_grade.frag` / `color_grade_vk.frag` | 色差 + 暗角 + 胶片颗粒 | Full |
