@@ -233,6 +233,10 @@ TEST(motion_blur_prefers_per_object_velocity_texture)
         ASSERT_NOT_NULL(strstr(shader, "u_mb_use_velocity"));
         ASSERT_NOT_NULL(strstr(shader, "velocity = texture(u_mb_velocity"));
     }
+
+    ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "#include <renderer/motion_blur.h>"));
+    ASSERT_NOT_NULL(strstr(src, "motion_blur_apply(&mb, cmd, aa_out, src.depth_tex"));
 }
 
 TEST_MAIN_BEGIN()

@@ -6,7 +6,8 @@ TAA 已消费 RT1，但 motion blur 仍使用 depth + previous VP 的 camera-onl
 存在时按 NDC delta 转像素速度，不存在时才保留旧重建回退。该方案零新增 pass、纹理、CPU
 回读或带宽，只复用已为 TAA 写入的附件。TDD 静态契约覆盖 C API、三纹理绑定和 GL/VK
 shader 分支；GL/VK demo 120 帧分别为零 Mesa API error/零 Vulkan VUID，双端 graphics
-gate 顺序通过。未完成的大项只剩需要真实目标环境的 Windows WGL/Win32 runtime 验证，以及
+gate 顺序通过。`test_vulkan` TEST 6 现以真实第三 sampler 强制走 RT1 motion blur 分支，
+覆盖双后端 descriptor、push constant 和非平坦最终 readback。未完成的大项只剩需要真实目标环境的 Windows WGL/Win32 runtime 验证，以及
 预烘焙 static mega geometry 的逐节点动态变换（后者需要 GPU-driven transform indirection
 重构，当前静态 megabuffer 设计下不具性能收益，保持明确限制）。
 

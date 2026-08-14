@@ -5,6 +5,7 @@
 #include <renderer/terrain.h>
 #include <renderer/lighting.h>
 #include <renderer/combined_post_process.h>
+#include <renderer/motion_blur.h>
 #include <renderer/gpucull.h>
 #include <renderer/ibl.h>
 #include <renderer/indirect_draw.h> /* R437: TEST 10 grouped compact gate */
@@ -1829,11 +1830,13 @@ int main(int argc, char **argv) {
 
         CombinedAA caa = {0};
         CombinedColor cc = {0};
+        MotionBlurSystem mb = {0};
         bool aa_ok = combined_aa_init(&caa, render.device, cw, ch);
         bool cc_ok = combined_color_init(&cc, render.device, cw, ch);
+        bool mb_ok = motion_blur_init(&mb, render.device, cw, ch);
 
-        if (aa_ok && cc_ok && caa.use_combined && cc.use_combined) {
-            LOG_INFO("PASS: combined TAA+FXAA and color pipelines active (no fallback)");
+        if (aa_ok && cc_ok && mb_ok && caa.use_combined && cc.use_combined) {
+            LOG_INFO("PASS: combined TAA+FXAA, velocity motion blur, and color pipelines active");
 
             /* HDR source the combined passes consume. */
             RHIOffscreenFBO src = rhi_offscreen_fbo_create_fmt(
@@ -1868,7 +1871,15 @@ int main(int argc, char **argv) {
                                   &id.e[0][0], &id.e[0][0], &id.e[0][0], cw, ch);
                 RHITexture aa_out = combined_aa_get_output(&caa);
 
-                combined_color_apply(&cc, cmd, aa_out,
+                /* Exercise the RT1 path with a real third texture binding.
+                 * test_tex is an RGBA texture rather than an RG16F velocity
+                 * target, but the sampler contract is identical and its
+                 * nonzero RG data forces the velocity branch on both APIs. */
+                motion_blur_apply(&mb, cmd, aa_out, src.depth_tex,
+                                  render.test_tex, &id.e[0][0], &id.e[0][0],
+                                  0.02f, cw, ch);
+
+                combined_color_apply(&cc, cmd, mb.fbo.color_tex,
                                      RHI_HANDLE_NULL, false,
                                      1.0f, 2.2f, 0,
                                      1.0f, 1.0f, 1.0f, 0.0f, 0.0f,
@@ -1920,16 +1931,17 @@ int main(int argc, char **argv) {
             combined_pass = (cerr == 0) && pixels_ok;
             rhi_offscreen_fbo_destroy(render.device, &src);
         } else {
-            LOG_ERROR("FAIL: combined post fell back (aa_ok=%d aa_combined=%d cc_ok=%d cc_combined=%d)",
-                      aa_ok, caa.use_combined, cc_ok, cc.use_combined);
+            LOG_ERROR("FAIL: temporal post setup failed (aa_ok=%d aa_combined=%d cc_ok=%d cc_combined=%d mb_ok=%d)",
+                      aa_ok, caa.use_combined, cc_ok, cc.use_combined, mb_ok);
         }
 
+        motion_blur_shutdown(&mb);
         combined_aa_shutdown(&caa);
         combined_color_shutdown(&cc);
     }
 
     if (combined_pass) {
-        LOG_INFO("RESULT: COMBINED POST-PROCESS TEST PASSED ✓ (10 frames, single-pass AA + color)");
+        LOG_INFO("RESULT: COMBINED POST-PROCESS TEST PASSED ✓ (10 frames, RT1 velocity blur + single-pass AA/color)");
     } else {
         LOG_ERROR("RESULT: COMBINED POST-PROCESS TEST FAILED");
     }
