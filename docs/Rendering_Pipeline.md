@@ -79,6 +79,28 @@ while (engine_frame(engine)) {
 | Post Processing | HDR 颜色缓冲、深度缓冲、法线缓冲、速度缓冲 | LDR 最终帧缓冲 |
 | Present | 最终帧缓冲 | 屏幕显示 |
 
+### 2.3 Forward 双 MRT 与逐物体速度
+
+Forward 路径使用一次几何 pass 写入共享深度和两个颜色附件：`RT0 = RGBA16F`
+HDR 颜色，`RT1 = RG16F` 屏幕速度。顶点阶段计算
+`velocity = current_ndc - previous_ndc`，TAA 直接采样 `RT1`，不再执行额外的
+全屏 camera-only velocity pass。OpenGL 与 Vulkan 使用相同的 `FORWARD_MRT`
+shader 变体和 render-pass attachment 描述。
+
+- 普通对象的 temporal UBO 保存 `previous_vp` 与 `previous_model`。
+- 实例化对象在一个 texel buffer 中连续保存 current/previous 两个模型矩阵。
+- 蒙皮对象在同一 joint buffer 中保存 current/previous pose；首帧 previous=current。
+- 静态 terrain 与 skybox 输出零速度。water 使用 previous VP 追踪相机相对运动；粒子
+  在 GPU 仿真缓冲中保存 previous position，因此输出真实的逐粒子速度，出生帧
+  previous=current，速度为零。
+
+该设计只增加一个 RG16F 写带宽和少量历史上传，省掉第二次几何/全屏 pass，因而是
+当前 forward TAA 的性能最优路径。限制是预烘焙 mega geometry 的节点变换已烘焙为
+顶点、不会被运行时逐节点历史驱动。transparent water 与 particle pass 对 RT0 使用
+标准 alpha blend、对 RT1 禁用 blend，避免透明颜色的 alpha 将速度与背景错误混合；
+该 per-attachment 优化在 Vulkan 设备未提供 `independentBlend` 时会回退到合法的共享
+blend state，而不会创建无效 pipeline。
+
 ---
 
 ## 3. 阴影系统
@@ -369,6 +391,28 @@ IBL 纹理通过 `rhi_cmd_bind_material_textures_ibl` 与材质纹理一起绑�
 
 ### 7.1 执行顺序
 
+### 7.1.1 Per-object motion vector 约定
+
+延迟 G-buffer 已在一次几何 pass 中输出 RT3 velocity；速度定义为
+`current_ndc - previous_ndc`，不是只由深度重建的相机速度。TAA 在 RT3 有效时优先
+按该速度回投历史，缺少速度时才回退到相机矩阵重建。
+
+forward 路径已采用双 MRT scene target：同一次 forward 主几何 pass 写颜色与 RG16F
+velocity，TAA 直接采样第二附件，不再执行独立 camera-only velocity fullscreen pass。
+GL/Vulkan 的 FBO、render-pass、pipeline attachment 数量和 forward 材质 shader 均使用
+`FORWARD_MRT` 变体同步更新；单输出后处理继续通过 scene FBO 的 LOAD pass 消费 RT0，
+避免 Vulkan render-pass 不兼容。
+
+对象历史采用按渲染对象槽位索引的 dense 双缓冲，generation 用于防止删除后重用 ID
+串用历史；首帧、generation 变化、resize/TAA reset 时速度为零。历史更新在渲染帧提交
+后统一 commit，simulation 到 render frame 的插值在提交前完成。CPU 热路径为 O(1)
+数组访问，避免每个对象的 hash 查找或额外几何遍历。
+
+透明 pass 的 RT0/RT1 具有不同写入语义：颜色按 alpha blend，velocity 不参与 alpha
+blend，以保证水面和粒子遮罩不会稀释或叠加背景速度。GL 通过 indexed blend state 实现；
+Vulkan 在启用 `independentBlend` 时使用独立 attachment state。粒子的 SSBO 将 previous
+position 与现有位置/寿命数据同批更新，不增加 CPU 回读、额外 draw 或额外 geometry pass。
+
 后处理系统按固定顺序链式执行，每个效果读取前一阶段的输出作为输入：
 
 ```
@@ -473,6 +517,7 @@ SSAO 系统包含专用的模糊子 pass：
 | 反射 | 屏幕空间反射 (SSR) |
 | 折射 | 深度感知折射 |
 | 泡沫 | 基于深度的泡沫生成 |
+| 运动向量 | forward MRT 下使用 previous VP 写入 RT1；RT0 alpha blend，RT1 不混合 |
 
 ### 8.3 粒子系统
 
@@ -482,8 +527,9 @@ SSAO 系统包含专用的模糊子 pass：
 | 特性 | 说明 |
 |------|------|
 | 驱动方式 | GPU Compute 驱动 |
-| 更新着色器 | `particle_update.comp` — 物理仿真、生命周期管理 |
+| 更新着色器 | `particle_update.comp` — 物理仿真、生命周期与 previous position 保存 |
 | 剔除着色器 | `particle_cull.comp` — 视锥剔除不可见粒子 |
+| 运动向量 | forward MRT 下 current/previous particle position 写入 RT1；出生帧为零速度 |
 | 排序 | GPU 排序实现透明度正确混合 |
 | 发射器 | 支持点/球/锥/框发射器 |
 

@@ -304,6 +304,27 @@ cmake --build build-verify-x11-vk
 ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
 ```
 
+图形测试会创建真实窗口，GL 与 Vulkan 必须顺序执行，避免 X11 窗口资源竞争。完成构建后，
+推荐按以下完整矩阵验证 forward MRT、真实 IBL 和运行时错误门禁：
+
+```bash
+# 无头单元/集成测试
+ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
+ctest --test-dir build-verify-x11-vk -LE graphics --output-on-failure
+
+# 图形测试：严格顺序，不并行
+ctest --test-dir build-verify-x11-gl -L graphics --output-on-failure
+ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
+
+# 运行时 smoke：GL 检查 Mesa API 错误；VK 检查 validation 层
+MESA_DEBUG=1 BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-x11-gl/engine_demo
+BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-x11-vk/engine_demo
+```
+
+Windows 运行时测试需要真实 Windows、WGL/Win32 surface 和可用 GPU；Linux 交叉构建不能替代
+该验证。本轮 Linux 环境没有安装 MinGW 或 MSVC，因此 Windows 状态保持“待验证”，不把
+Linux 的 GL/Vulkan 通过结果外推为 Windows 运行时通过。
+
 ### 6.4 持续集成（CI）
 
 [![CI](https://github.com/konyka/break/actions/workflows/ci.yml/badge.svg)](https://github.com/konyka/break/actions/workflows/ci.yml)
