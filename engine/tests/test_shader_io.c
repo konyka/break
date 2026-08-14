@@ -236,7 +236,10 @@ TEST(motion_blur_prefers_per_object_velocity_texture)
 
     ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "#include <renderer/motion_blur.h>"));
-    ASSERT_NOT_NULL(strstr(src, "motion_blur_apply(&mb, cmd, aa_out, src.depth_tex"));
+    ASSERT_NOT_NULL(strstr(src, "static bool tv_test_motion_blur_rt1"));
+    ASSERT_NOT_NULL(strstr(src, "bool motion_rt1_pass = tv_test_motion_blur_rt1"));
+    ASSERT_NOT_NULL(strstr(src, "RHI_FORMAT_R16G16_SFLOAT"));
+    ASSERT_NOT_NULL(strstr(src, "motion blur RT1 texture did not affect output"));
 }
 
 TEST_MAIN_BEGIN()

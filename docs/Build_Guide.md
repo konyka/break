@@ -306,7 +306,7 @@ ctest --test-dir build-verify-x11-vk -L graphics --output-on-failure
 
 图形测试会创建真实窗口，GL 与 Vulkan 必须顺序执行，避免 X11 窗口资源竞争。完成构建后，
 推荐按以下完整矩阵验证 forward MRT、真实 IBL、RT1 temporal consumers（TAA/combined AA/
-motion blur）和运行时错误门禁：
+motion blur；GL/Vulkan graphics gate 都使用真实 `RG16F` 输入并检查 blur 输出变化）和运行时错误门禁：
 
 ```bash
 # 无头单元/集成测试

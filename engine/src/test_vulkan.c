@@ -404,6 +404,93 @@ static void test_render_shutdown(TestRenderState *rs) {
     rhi_device_destroy(rs->device);
 }
 
+/* R557: Execute the RT1 motion-vector path on both graphics backends. This is
+ * deliberately separate from Vulkan TEST 6 so the GL suite cannot pass solely
+ * by compiling the Vulkan-only combined-postprocess body. */
+static bool tv_test_motion_blur_rt1(const TestRenderState *rs,
+                                    RHIBuffer vbo, RHIBuffer ibo, u32 w, u32 h) {
+    MotionBlurSystem mb = {0};
+    RHIOffscreenFBO src = {0};
+    RHITexture velocity_tex = RHI_HANDLE_NULL;
+    bool pass = false;
+
+    const f32 velocity_data[] = {0.25f, 0.0f};
+    RHITextureDesc velocity_desc = {
+        .width = 1, .height = 1, .format = RHI_FORMAT_R16G16_SFLOAT,
+        .mip_levels = 1, .data = velocity_data,
+    };
+    velocity_tex = rhi_texture_create(rs->device, &velocity_desc);
+    src = rhi_offscreen_fbo_create_fmt(rs->device, w, h,
+                                        RHI_FORMAT_R16G16B16A16_SFLOAT);
+
+    bool setup_ok = motion_blur_init(&mb, rs->device, w, h) &&
+                    rhi_handle_valid(src.fb) &&
+                    rhi_handle_valid(src.color_tex) &&
+                    rhi_handle_valid(src.depth_tex) &&
+                    rhi_handle_valid(velocity_tex);
+    if (!setup_ok) {
+        LOG_ERROR("FAIL: motion blur RT1 setup failed");
+        goto cleanup;
+    }
+
+    Mat4 id = mat4_identity();
+    RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+    if (!cmd) {
+        LOG_ERROR("FAIL: motion blur RT1 frame begin failed");
+        goto cleanup;
+    }
+
+    rhi_offscreen_fbo_bind(cmd, &src);
+    rhi_cmd_clear_color(cmd, 0.01f, 0.02f, 0.03f, 1.0f);
+    rhi_cmd_clear_depth(cmd);
+    rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+    rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &id.e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &id.e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &id.e[0][0]);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+    rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+    rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+    rhi_cmd_draw_indexed(cmd, 3, 1);
+    rhi_offscreen_fbo_unbind(cmd, w, h);
+    rhi_cmd_transition_depth_to_read(cmd, src.depth_tex);
+
+    motion_blur_apply(&mb, cmd, src.color_tex, src.depth_tex, velocity_tex,
+                      &id.e[0][0], &id.e[0][0], 0.02f, w, h);
+    rhi_frame_end(rs->device);
+    rhi_present(rs->device);
+
+    usize bytes = (usize)w * h * 8u;
+    u8 *src_pixels = (u8 *)malloc(bytes);
+    u8 *mb_pixels = (u8 *)malloc(bytes);
+    if (!src_pixels || !mb_pixels ||
+        !rhi_texture_read_pixels(rs->device, src.color_tex, src_pixels, bytes) ||
+        !rhi_texture_read_pixels(rs->device, mb.fbo.color_tex, mb_pixels, bytes)) {
+        LOG_ERROR("FAIL: motion blur RT1 output readback failed");
+    } else {
+        bool src_varied = false;
+        bool mb_varied = false;
+        for (usize i = 1, count = (usize)w * h; i < count && (!src_varied || !mb_varied); i++) {
+            if (memcmp(src_pixels + i * 8u, src_pixels, 8u) != 0) src_varied = true;
+            if (memcmp(mb_pixels + i * 8u, mb_pixels, 8u) != 0) mb_varied = true;
+        }
+        pass = src_varied && mb_varied && memcmp(src_pixels, mb_pixels, bytes) != 0;
+        if (!pass)
+            LOG_ERROR("FAIL: motion blur RT1 texture did not affect output");
+    }
+    free(src_pixels);
+    free(mb_pixels);
+
+cleanup:
+    if (rhi_handle_valid(velocity_tex)) rhi_texture_destroy(rs->device, velocity_tex);
+    if (rhi_handle_valid(src.fb)) rhi_offscreen_fbo_destroy(rs->device, &src);
+    motion_blur_shutdown(&mb);
+    return pass;
+}
+
 /* ========================================================================
  * R442: backend-neutral bodies of TEST 10/11/12. They were VK-only inline
  * blocks; the GL backend now has every RHI piece they need (texture arrays,
@@ -1268,6 +1355,20 @@ int main(int argc, char **argv) {
     if (!rhi_handle_valid(ibo)) { LOG_ERROR("FAIL: index buffer"); }
     else { LOG_INFO("PASS: Index buffer created"); }
 
+#ifdef ENGINE_VULKAN
+    /* Include the shared RT1 gate in the validation-window measurement. */
+    rhi_vk_validation_message_count_reset();
+#endif
+
+    u32 motion_w, motion_h;
+    platform_get_size(engine.platform, &motion_w, &motion_h);
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: MOTION BLUR RT1 RG16F");
+    LOG_INFO("============================================");
+    bool motion_rt1_pass = tv_test_motion_blur_rt1(&render, vbo, ibo, motion_w, motion_h);
+    LOG_INFO("RESULT: MOTION BLUR RT1 TEST %s",
+             motion_rt1_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -1311,7 +1412,7 @@ int main(int argc, char **argv) {
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass;
+        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -1319,12 +1420,6 @@ int main(int argc, char **argv) {
         LOG_INFO("FINAL RESULT: %s", all_pass ? "ALL PASSED ✓" : "FAILED");
         return all_pass ? 0 : 1;
     }
-#endif
-
-#ifdef ENGINE_VULKAN
-    /* R438: reset the validation gate — only messages emitted during the
-     * suite body count (init-time chatter is excluded). */
-    rhi_vk_validation_message_count_reset();
 #endif
 
     /* Test: Skybox */
@@ -1871,12 +1966,11 @@ int main(int argc, char **argv) {
                                   &id.e[0][0], &id.e[0][0], &id.e[0][0], cw, ch);
                 RHITexture aa_out = combined_aa_get_output(&caa);
 
-                /* Exercise the RT1 path with a real third texture binding.
-                 * test_tex is an RGBA texture rather than an RG16F velocity
-                 * target, but the sampler contract is identical and its
-                 * nonzero RG data forces the velocity branch on both APIs. */
+                /* The cross-backend RT1 gate above covers real RG16F input.
+                 * Keep TEST 6 on the depth reconstruction fallback so both
+                 * motion-blur paths stay covered without a second RT1 setup. */
                 motion_blur_apply(&mb, cmd, aa_out, src.depth_tex,
-                                  render.test_tex, &id.e[0][0], &id.e[0][0],
+                                  RHI_HANDLE_NULL, &id.e[0][0], &id.e[0][0],
                                   0.02f, cw, ch);
 
                 combined_color_apply(&cc, cmd, mb.fbo.color_tex,
@@ -2207,7 +2301,7 @@ int main(int argc, char **argv) {
     }
 #endif
 
-    bool all_pass = stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = motion_rt1_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
                     compute_pass && combined_pass && ibl_pass && unified_pass &&
                     idraw_pass && matarr_pass && defarr_pass && golden_pass &&
                     validation_pass;
