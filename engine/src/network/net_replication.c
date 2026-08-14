@@ -174,14 +174,17 @@ static bool net_repl_prepare_outgoing(NetReplicator *rep, const NetAddress *dst,
     return true;
 }
 
-static NetRepPeerStats *net_repl_peer_evict_lru(NetReplicator *rep) {
+static NetRepPeerStats *net_repl_peer_evict_lru(NetReplicator *rep, u32 now_ms) {
     if (!rep || rep->peer_count == 0u) return NULL;
     u32 oldest_i = 0u;
-    u32 oldest_t = rep->peers[0].last_seen_ms;
+    u32 oldest_age = now_ms - rep->peers[0].last_seen_ms;
     for (u32 i = 1u; i < rep->peer_count; i++) {
-        /* R427: wrap-safe delta compare (see peer_channel_find above). */
-        if ((i32)(rep->peers[i].last_seen_ms - oldest_t) < 0) {
-            oldest_t = rep->peers[i].last_seen_ms;
+        /* LRU is defined relative to this receive timestamp. Comparing ages
+         * avoids treating a manually restored/pre-wrap stamp as newer when
+         * the process has been alive for more than half the u32 range. */
+        u32 age = now_ms - rep->peers[i].last_seen_ms;
+        if (age > oldest_age) {
+            oldest_age = age;
             oldest_i = i;
         }
     }
@@ -202,7 +205,7 @@ static NetRepPeerStats *net_repl_peer_find(NetReplicator *rep, const NetAddress 
 
     NetRepPeerStats *p = NULL;
     if (rep->peer_count >= NET_REP_MAX_PEERS)
-        p = net_repl_peer_evict_lru(rep);
+        p = net_repl_peer_evict_lru(rep, now_ms);
     else
         p = &rep->peers[rep->peer_count++];
 

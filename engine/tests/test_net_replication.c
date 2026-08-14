@@ -998,6 +998,8 @@ TEST(peer_lru_full)
         ASSERT_TRUE(net_replicator_feed_from(&rep, wire, len, &p, out, 1u, &out_count) > 0);
     }
     ASSERT_EQ(net_replicator_peer_count(&rep), NET_REP_MAX_PEERS);
+    /* Make the target unambiguously older than the receive timestamp used by
+     * the next packet; this remains valid across the u32 millisecond wrap. */
     rep.peers[0].last_seen_ms = 1u;
 
     NetAddress extra = {0};
