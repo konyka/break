@@ -5,7 +5,7 @@
 #include <string.h>
 #include <core/shader_io.h>
 
-bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
+bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     memset(ps, 0, sizeof(*ps));
     ps->device = dev;
     ps->initialized = false;
@@ -75,9 +75,16 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
         return false;
     }
 
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
+    usize vs_mrt_len = 0, fs_mrt_len = 0;
+    char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
+    char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
+    RHIShader vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
+                                     vs_mrt ? vs_mrt_len : vs_len, false);
+    RHIShader fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                                     fs_mrt ? fs_mrt_len : fs_len, true);
     free(vs_src); free(fs_src);
+    free(vs_mrt);
+    free(fs_mrt);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
@@ -93,12 +100,18 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev) {
     rpdesc.no_vertex_input = true;
     rpdesc.uses_storage = true;
     rpdesc.alpha_blend = true;
+    rpdesc.alpha_blend_color_only = forward_mrt;
     rpdesc.depth_write_disable = true;
     /* R445: keep depth TESTING (vs scene depth) under the GL backend's new
      * "no-write && no-compare ⇒ no depth test" rule for fullscreen blits;
      * LEQUAL is equivalent to LESS here except exact z ties. */
     rpdesc.depth_compare_lequal = true;
     rpdesc.point_list = true; /* R168-C: POINT_LIST + gl_PointSize / PointCoord */
+    if (forward_mrt) {
+        rpdesc.mrt_attachment_count = 2u;
+        rpdesc.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        rpdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    }
     ps->render_pipeline = rhi_pipeline_create(dev, &rpdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);

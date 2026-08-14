@@ -4,16 +4,16 @@
 
 #define PARTICLES_MAX 8192
 
-/* R237: Must mirror the std430 `Particle` struct in particle_update.comp and
- * particle.vert EXACTLY (3x vec4 = 48 bytes). The SSBO is GPU-only (compute
+/* Must mirror the std430 `Particle` struct in particle_update.comp and
+ * particle.vert EXACTLY (4x vec4 = 64 bytes). The SSBO is GPU-only (compute
  * writes, vertex shader reads); the CPU only uses this to size a zeroed initial
- * buffer. The previous 13-float layout (52 bytes) did not match the shader
- * stride, over-allocating the buffer and risking element misalignment if any
- * CPU-side particle read/write were ever added. */
+ * buffer. previous_pos is initialized on spawn so newborn particles have zero
+ * motion and cannot reproject unrelated history. */
 typedef struct {
     f32 pos_life[4];      /* xyz = position, w = current life        */
     f32 vel_maxlife[4];   /* xyz = velocity, w = max lifetime        */
     f32 size_color[4];    /* x = size, yzw = color (linear RGB)      */
+    f32 previous_pos[4];  /* xyz = position from prior frame          */
 } GPUParticle;
 
 typedef struct {
@@ -58,7 +58,7 @@ typedef struct {
     f32 _push_template[20];
 } ParticleSystem;
 
-bool  particles_init(ParticleSystem *ps, RHIDevice *dev);
+bool  particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt);
 void  particles_shutdown(ParticleSystem *ps);
 void  particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt);
 void  particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd);

@@ -5,6 +5,7 @@ struct Particle {
     vec4 pos_life;      // xyz = position, w = current life
     vec4 vel_maxlife;   // xyz = velocity, w = max lifetime
     vec4 size_color;    // x = size, yzw = color (linear RGB)
+    vec4 previous_pos;  // xyz = position before this simulation step
 };
 
 /* Vulkan drives the parameters through a push-constant block (the host writes
@@ -119,6 +120,7 @@ void main() {
         p.pos_life = vec4(P_EMIT_POS, lifetime);
         p.vel_maxlife = vec4(vel, lifetime);
         p.size_color = vec4(1.0, 1.0, 0.8, 1.0);
+        p.previous_pos = vec4(P_EMIT_POS, 1.0);
     } else {
         /* Update alive particle */
         vec3 pos = p.pos_life.xyz;
@@ -142,6 +144,7 @@ void main() {
         float t = clamp(life / max(max_life, 0.001), 0.0, 1.0);
         float size = mix(0.1, 1.0, t);
 
+        p.previous_pos = vec4(p.pos_life.xyz, 1.0);
         p.pos_life = vec4(pos, life);
         p.vel_maxlife = vec4(vel, max_life);
         p.size_color.x = size;

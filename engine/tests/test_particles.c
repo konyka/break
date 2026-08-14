@@ -30,7 +30,13 @@ TEST(cull_fallback_rejects_short_buffer)
     ASSERT_EQ(buf[3], 9u);
 }
 
+TEST(particle_gpu_layout_keeps_previous_position)
+{
+    ASSERT_EQ(sizeof(GPUParticle), (usize)(4u * 4u * sizeof(f32)));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(cull_fallback_builds_complete_indirect_command);
     RUN_TEST(cull_fallback_rejects_short_buffer);
+    RUN_TEST(particle_gpu_layout_keeps_previous_position);
 TEST_MAIN_END()

@@ -5,6 +5,7 @@ struct Particle {
     vec4 pos_life;
     vec4 vel_maxlife;
     vec4 size_color;
+    vec4 previous_pos;
 };
 
 /* R167: DrawBuf layout matches VkDrawIndirectCommand / DrawArraysIndirect:
