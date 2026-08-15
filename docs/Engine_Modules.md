@@ -1515,7 +1515,10 @@ typedef struct {
 5. 创建组合 GPU 缓冲区 + 初始化 IndirectDraw 系统
 6. **按材质分组：** 相同 `material_idx` 的 draw commands 收集到独立的 `IndirectDrawSystem` 实例（最多 64 个材质组）
 
-**优势：** 消除每对象 `u_model` 矩阵更新，配合间接绘制实现单 draw call 渲染全部场景 mesh。
+**优势：** 消除每对象 `u_model` 矩阵更新，配合间接绘制实现单 draw call 渲染全部静态场景 mesh。
+静态节点在 bake 阶段已预变换到 world space；动态/skinned 节点不进入该批次，继续使用 direct
+路径。当前不为静态批次引入逐节点 transform indirection，避免每顶点矩阵读取和额外的双后端
+descriptor/上传成本。
 
 **Per-Material 批量应用范围：**
 

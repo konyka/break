@@ -8,7 +8,7 @@
 | 优先级 | 模块 | 现状 | 性能损失 |
 |--------|------|------|----------|
 | P0 | 遮挡剔除 Hi-Z | ~~compute 跑通但结果未驱动 draw~~ **R11 已接线**，默认开 | — |
-| P0 | GPU 间接绘制默认路径 | ~~mega-buffer 有但 gpucull 默认关~~ **R11 mega-buffer 就绪时默认开** | — |
+| P0 | GPU 间接绘制默认路径 | ~~mega-buffer 有但 gpucull 默认关~~ **R11 mega-buffer 就绪时默认开**；R561 冻结 static world-space bake + 标准五字段 indirect 契约 | — |
 | P0 | 合并后处理 | ~~demo 仍多 pass~~ **R11 demo 默认 combined 路径**(auto-exp/cine 除外) | — |
 | P1 | unified_cull | ~~单 pass 压缩已实现，main 未用~~ **R12 阴影/点光阴影默认 unified** | ~~前向仍 per-mat compact~~ **R437 已做**（容量区间单遍 scatter，G→1；~~execute 仍按材质 G 次~~ **R441 已解决**：纹理数组 + first_instance 层号 + ungrouped 紧排，前向 execute G→1，`BREAK_MAT_INDIRECT` 默认开；deferred/gbuffer **R442 同样单 execute**（TEST 12 门禁）） |
 | P1 | 粒子 GPU cull | ~~`particle_cull.comp` 未接线~~ **R12 已接线** | draw 随 alive 数而非 max |
@@ -20,6 +20,11 @@
 | P3 | Animation blend/IK demo | 代码有、demo 未接 | 非帧预算热点 |
 | P3 | 字体 SDF / UI 完善 | Latin-1 atlas | 非 GPU 瓶颈 |
 | P3 | RHI bindless / push API | ~~部分缺失~~ **R441 纹理数组路线已落地**（前向材质间接单 execute，`BREAK_MAT_INDIRECT` 默认开；GL 实测无 ARB_bindless_texture，数组为唯一双后端通道） | 大场景材质切换——前向已解决、deferred/gbuffer **R442 已完成**（gbuffer array 化单 execute）；真 bindless（VK descriptor indexing）留作 VK-only 后续选项；**R444**：push-constant 公开 API 落地（`rhi_cmd_push_constants`，校验按声明 range，修 `[push_range_size,256)` flush 静默截断；GL 文档化空操作），缺口仅剩真 bindless |
+
+> **R561 架构决策**：static MegaBuffer 逐节点动态变换暂不实现。当前 bake 已将静态几何预变换到 world space，
+> 继续使用标准 indirect command 可避免每顶点 transform indirection、每帧矩阵/包围体上传及多通道 GL/VK
+> descriptor 改造。动态/skinned 对象继续 direct 分流；`test_shader_io` 契约冻结该边界。未来若要实现
+> GPU-driven transform indirection，必须先提交独立性能模型、跨通道 shader/RHI 设计和运行时 golden 验收。
 
 ---
 

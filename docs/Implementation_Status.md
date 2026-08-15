@@ -10,6 +10,16 @@
 环境的 Windows WGL/Win32 runtime 验证，以及预烘焙 static mega geometry 的逐节点动态变换（后者
 需要 GPU-driven transform indirection 重构，当前静态 megabuffer 设计下不具性能收益，保持明确限制）。
 
+**R561 static mega transform 边界收口（TDD）**：复核确认 MegaBuffer 在 bake 阶段将静态节点的顶点
+位置/法线预变换到 world space，运行时 indirect command 保持 Vulkan/GL 共用的标准五字段布局；
+`unified_cull.comp` 与 `compact_draws.comp` 只消费 world-space bounds、可见性和标准 indirect 命令，
+不引入逐节点 transform SSBO 查找。动态与 skinned 节点继续排除在 static mega 批次外，走 direct
+路径，避免为静态场景增加每顶点矩阵/SSBO 读取、每帧 transform/bounds 上传和双后端 descriptor
+分支。Oracle 架构裁决推荐保持该 static-only 设计，不在本轮引入完整 GPU-driven transform
+indirection 或混合分流。TDD 新增 `test_shader_io` static mega 契约，锁定五字段 command、world-space
+bake、skinned 排除和 cull/compact 无逐节点 transform 读取；验证结果为 16/16。逐节点动态变换仍是
+明确限制，待未来有可证明性能收益的跨通道架构方案后单独立项。
+
 **R560 deferred skinned G-Buffer 收口（TDD）**：deferred G-Buffer 几何 pass 现支持 skinned 几何
 （procedural arm + glTF skinned 图元），用 64B skinned 顶点布局（pos3+normal3+uv2+joints4+weights4）
 写同一组四附件，关节 texel buffer 在偏移 0/512 Mat4s 分别持有当前/上一帧姿态，逐骨骼写 per-object
