@@ -161,6 +161,11 @@ void net_shutdown(void)
 
 NetSocket *net_udp_create(u16 bind_port)
 {
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* Keep UDP creation robust for callers that use the socket API directly
+     * without an explicit net_init() call (the POSIX backend needs no setup). */
+    net_init();
+#endif
     RawSocket fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd == INVALID_RAW_SOCKET) {
         return NULL;

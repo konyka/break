@@ -8,9 +8,9 @@
  * commands while workers record into the next frame's buffers.
  */
 #include <core/types.h>
+#include <core/platform_thread.h>
 #include <rhi/rhi.h>
 #include <stdatomic.h>
-#include <pthread.h>
 #include <stdbool.h>
 
 #define CMD_BUFFER_MAX_COMMANDS 4096
@@ -110,10 +110,10 @@ typedef struct {
     u32             read_frame;       /* Index of frame being submitted */
     
     /* Thread synchronization */
-    pthread_t       submit_thread;
-    pthread_mutex_t submit_mutex;
-    pthread_cond_t  submit_ready;
-    pthread_cond_t  submit_done;
+    PlatformThread  submit_thread;
+    PlatformMutex   submit_mutex;
+    PlatformCond    submit_ready;
+    PlatformCond    submit_done;
     _Atomic bool    submit_pending;
     _Atomic bool    shutdown_requested;
     

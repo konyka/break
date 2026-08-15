@@ -46,9 +46,9 @@ void parallel_renderer_init(ParallelRenderer *pr, u32 thread_count) {
     pr->submit_thread_running = false;
     
     /* Initialize synchronization primitives */
-    pthread_mutex_init(&pr->submit_mutex, NULL);
-    pthread_cond_init(&pr->submit_ready, NULL);
-    pthread_cond_init(&pr->submit_done, NULL);
+    platform_mutex_init(&pr->submit_mutex);
+    platform_cond_init(&pr->submit_ready);
+    platform_cond_init(&pr->submit_done);
     
     /* Initialize frame buffers */
     for (int f = 0; f < 2; f++) {
@@ -65,9 +65,9 @@ void parallel_renderer_shutdown(ParallelRenderer *pr) {
         parallel_renderer_stop_submit_thread(pr);
     }
     /* Destroy synchronization primitives */
-    pthread_mutex_destroy(&pr->submit_mutex);
-    pthread_cond_destroy(&pr->submit_ready);
-    pthread_cond_destroy(&pr->submit_done);
+    platform_mutex_destroy(&pr->submit_mutex);
+    platform_cond_destroy(&pr->submit_ready);
+    platform_cond_destroy(&pr->submit_done);
     /* Zero out so callers see a clean slate. */
     memset(pr, 0, sizeof(*pr));
 }
@@ -76,14 +76,14 @@ void parallel_renderer_shutdown(ParallelRenderer *pr) {
 /*                    Submit Thread                             */
 /* ============================================================ */
 
-static void *submit_thread_func(void *arg) {
+static PLATFORM_THREAD_RET submit_thread_func(PLATFORM_THREAD_ARG arg) {
     ParallelRenderer *pr = (ParallelRenderer *)arg;
     
-    pthread_mutex_lock(&pr->submit_mutex);
+    platform_mutex_lock(&pr->submit_mutex);
     while (!atomic_load(&pr->shutdown_requested)) {
         /* Wait for submission signal */
         while (!atomic_load(&pr->submit_pending) && !atomic_load(&pr->shutdown_requested)) {
-            pthread_cond_wait(&pr->submit_ready, &pr->submit_mutex);
+            platform_cond_wait(&pr->submit_ready, &pr->submit_mutex);
         }
         
         if (atomic_load(&pr->shutdown_requested)) {
@@ -97,11 +97,11 @@ static void *submit_thread_func(void *arg) {
         }
         
         atomic_store(&pr->submit_pending, false);
-        pthread_cond_signal(&pr->submit_done);
+        platform_cond_signal(&pr->submit_done);
     }
-    pthread_mutex_unlock(&pr->submit_mutex);
+    platform_mutex_unlock(&pr->submit_mutex);
     
-    return NULL;
+    return PLATFORM_THREAD_RETURN;
 }
 
 bool parallel_renderer_start_submit_thread(ParallelRenderer *pr) {
@@ -110,7 +110,7 @@ bool parallel_renderer_start_submit_thread(ParallelRenderer *pr) {
     }
     
     atomic_store(&pr->shutdown_requested, false);
-    if (pthread_create(&pr->submit_thread, NULL, submit_thread_func, pr) != 0) {
+    if (!platform_thread_create(&pr->submit_thread, submit_thread_func, pr)) {
         LOG_ERROR("Failed to create submit thread");
         return false;
     }
@@ -129,11 +129,11 @@ void parallel_renderer_stop_submit_thread(ParallelRenderer *pr) {
     
     /* Signal shutdown */
     atomic_store(&pr->shutdown_requested, true);
-    pthread_mutex_lock(&pr->submit_mutex);
-    pthread_cond_signal(&pr->submit_ready);
-    pthread_mutex_unlock(&pr->submit_mutex);
+    platform_mutex_lock(&pr->submit_mutex);
+    platform_cond_signal(&pr->submit_ready);
+    platform_mutex_unlock(&pr->submit_mutex);
     
-    pthread_join(pr->submit_thread, NULL);
+    platform_thread_join(pr->submit_thread);
     pr->submit_thread_running = false;
     LOG_INFO("Render command submit thread stopped");
 }
@@ -478,13 +478,13 @@ void parallel_renderer_swap_and_submit(ParallelRenderer *pr) {
     
     /* Signal submit thread if running */
     if (pr->submit_thread_running) {
-        pthread_mutex_lock(&pr->submit_mutex);
+        platform_mutex_lock(&pr->submit_mutex);
         /* R417: latch rhi_cmd while holding the mutex — the submit thread
          * reads this snapshot, so a next-frame set_rhi_cmd can't race it. */
         pr->pending_rhi_cmd = pr->rhi_cmd;
         atomic_store(&pr->submit_pending, true);
-        pthread_cond_signal(&pr->submit_ready);
-        pthread_mutex_unlock(&pr->submit_mutex);
+        platform_cond_signal(&pr->submit_ready);
+        platform_mutex_unlock(&pr->submit_mutex);
     } else {
         /* Direct submission if no thread */
         if (pr->rhi_cmd) {
@@ -498,11 +498,11 @@ void parallel_renderer_wait_submit(ParallelRenderer *pr) {
         return;
     }
     
-    pthread_mutex_lock(&pr->submit_mutex);
+    platform_mutex_lock(&pr->submit_mutex);
     while (atomic_load(&pr->submit_pending)) {
-        pthread_cond_wait(&pr->submit_done, &pr->submit_mutex);
+        platform_cond_wait(&pr->submit_done, &pr->submit_mutex);
     }
-    pthread_mutex_unlock(&pr->submit_mutex);
+    platform_mutex_unlock(&pr->submit_mutex);
 }
 
 /* ============================================================ */

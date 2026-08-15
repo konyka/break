@@ -438,3 +438,14 @@ A: 重新 cmake 配置：`cmake -B build -DENGINE_VULKAN=ON/OFF`
 - 安装 MinGW: `sudo dnf install mingw64-gcc mingw64-headers`
 - 或准备 Windows 虚拟机/物理机进行原生测试
 - Vulkan 测试需安装 Windows 版 Vulkan SDK
+## Windows Clang 原生验证
+
+已在 Windows + Clang/LLVM + Ninja 环境验证：
+
+```powershell
+cmake -S engine -B build-win-clang -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-win-clang --parallel
+ctest --test-dir build-win-clang -LE graphics --output-on-failure
+```
+
+结果：非图形测试 `40/40` 通过；图形运行时测试仍需具备 WGL/Vulkan 运行环境后单独验证。

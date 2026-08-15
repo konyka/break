@@ -8,8 +8,12 @@
 #include <physics/physics.h>
 #include <math.h>
 #include <stdio.h>
+#if defined(_WIN32)
+#include <direct.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 /* ----------------------------------------------------------------------- */
 
@@ -426,7 +430,9 @@ TEST(load_nonexistent_file)
 {
     LuaScript ls;
     ASSERT_TRUE(lua_script_init(&ls));
-    ASSERT_TRUE(!lua_script_load(&ls, "/tmp/no_such_break_script_xyz.lua"));
+    char path[128];
+    test_tmp(path, sizeof path, "no_such_break_script_xyz.lua");
+    ASSERT_TRUE(!lua_script_load(&ls, path));
     ASSERT_TRUE(!ls.loaded);
     lua_script_shutdown(&ls);
 }
@@ -437,11 +443,15 @@ TEST(load_nonexistent_file)
 TEST(lua_load_rejects_path_truncation)
 {
     char dir[220];
-    int n = snprintf(dir, sizeof(dir), "/tmp/break_lua_long_%d_", (int)TEST_GETPID());
+    char base[64];
+    test_tmp(base, sizeof base, "lua_long");
+    for (char *c = base; *c; c++) if (*c == '\\') *c = '/';
+    int n = snprintf(dir, sizeof(dir), "%s_", base);
     ASSERT_TRUE(n > 0 && (usize)n < sizeof(dir));
     memset(dir + n, 'd', 180u - (usize)n);
+    ASSERT_TRUE(n < 180);
     dir[180] = '\0';
-    ASSERT_TRUE(mkdir(dir, 0755) == 0);
+    ASSERT_TRUE(TEST_MKDIR(dir) == 0);
 
     char name[76];
     memset(name, 's', sizeof(name) - 5u);
@@ -463,7 +473,7 @@ TEST(lua_load_rejects_path_truncation)
     lua_script_shutdown(&ls);
 
     remove(path);
-    rmdir(dir);
+    TEST_RMDIR(dir);
 }
 
 /* R395: luaL_loadfile reads the whole file; cap size before calling it. */

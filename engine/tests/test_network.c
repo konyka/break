@@ -10,7 +10,7 @@
  * processes — bind failed and the loopback tests fell over. Per-pid 16-port
  * block, same scheme as test_net_replication.c; the five users take +0..+4.
  * Range check: 23000 + 2599*16 = 64584, +4 < 65535. */
-#define TEST_PORT_BASE ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
+#define TEST_PORT_BASE ((u16)(23000u + ((u32)TEST_GETPID() % 2600u) * 16u))
 
 /* UDP send completion does not guarantee the peer's non-blocking receive
  * queue has been populated yet. Wait for readiness before consuming a packet. */

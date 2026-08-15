@@ -7,8 +7,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/types.h>
 
 /* R444: per-pid path — parallel ctest trees raced on the fixed name. */
 static const char *scene_state_tmp_path(void)

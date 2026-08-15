@@ -10,8 +10,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include <unistd.h>
-#include <sys/types.h>
 
 /* ----------------------------------------------------------------------- */
 /*  Header format validation                                                */
@@ -1686,15 +1684,15 @@ TEST(entities_comp_count_bounded)
 }
 
 /* R398: scene_load_* read the entire file — reject before malloc. */
-static bool write_sparse_file(const char *path, off_t size)
+static bool write_sparse_file(const char *path, long size)
 {
     FILE *f = fopen(path, "wb");
     if (!f) return false;
 #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
-    bool ok = ftruncate(fileno(f), size) == 0;
+    bool ok = ftruncate(fileno(f), (off_t)size) == 0;
 #else
     bool ok = false;
-    if (fseek(f, (long)size - 1, SEEK_SET) == 0) ok = fputc('x', f) != EOF;
+    if (fseek(f, size - 1, SEEK_SET) == 0) ok = fputc('x', f) != EOF;
 #endif
     fclose(f);
     return ok;
@@ -1703,7 +1701,7 @@ static bool write_sparse_file(const char *path, off_t size)
 TEST(load_binary_rejects_oversized_file)
 {
     char path[64]; test_tmp(path, sizeof path, "test_bscn_huge.bscn"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
-    ASSERT_TRUE(write_sparse_file(path, (off_t)BSCN_MAX_FILE_BYTES + 1));
+    ASSERT_TRUE(write_sparse_file(path, (long)BSCN_MAX_FILE_BYTES + 1));
 
     World *w = world_create();
     ASSERT_TRUE(!scene_load_binary(w, NULL, path));
@@ -1716,7 +1714,7 @@ TEST(load_binary_rejects_oversized_file)
 TEST(load_json_rejects_oversized_file)
 {
     char path[64]; test_tmp(path, sizeof path, "test_bscn_huge.json"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
-    ASSERT_TRUE(write_sparse_file(path, (off_t)BSCN_MAX_FILE_BYTES + 1));
+    ASSERT_TRUE(write_sparse_file(path, (long)BSCN_MAX_FILE_BYTES + 1));
 
     World *w = world_create();
     ASSERT_TRUE(!scene_load_json(w, NULL, path));

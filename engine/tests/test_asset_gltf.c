@@ -19,8 +19,12 @@
 #include <rhi/rhi.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <direct.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 /* ---- RHI stubs (link-only) ---- */
 
@@ -534,13 +538,19 @@ static bool write_bin(const char *path, const void *data, usize n) {
     return ok;
 }
 
+#if !defined(ENGINE_PLATFORM_WINDOWS)
 static bool make_deep_dir(char *dir, usize cap, char *base, usize base_cap,
                           usize target_len) {
     test_tmp(base, base_cap, "r474_gltf_tex");
-    if (mkdir(base, 0755) != 0) return false;
+    for (char *c = base; *c; c++) if (*c == '\\') *c = '/';
+    if (TEST_MKDIR(base) != 0) return false;
     int n = snprintf(dir, cap, "%s/", base);
     if (n < 0 || (usize)n >= cap || (usize)n > target_len) return false;
-    while ((usize)n < target_len) {
+    /* Windows path limit: _mkdir fails past ~260 chars, so keep the deepest
+     * created path comfortably inside the limit. The test still exercises a
+     * 510-char image URI (VFS_MAX_PATH join). */
+    usize win_cap = 240u;
+    while ((usize)n < target_len && (usize)n < win_cap) {
         usize remaining = target_len - (usize)n;
         if (remaining < 2) return false;
         usize part_len = remaining - 1;
@@ -549,7 +559,7 @@ static bool make_deep_dir(char *dir, usize cap, char *base, usize base_cap,
         n += (int)part_len;
         dir[n++] = '/';
         dir[n] = '\0';
-        if (mkdir(dir, 0755) != 0) return false;
+        if (TEST_MKDIR(dir) != 0) return false;
     }
     return true;
 }
@@ -558,13 +568,14 @@ static void remove_deep_dir(char *dir, const char *base) {
     usize len = strlen(dir);
     if (len > 0 && dir[len - 1] == '/') dir[len - 1] = '\0';
     for (;;) {
-        rmdir(dir);
+        TEST_RMDIR(dir);
         if (strcmp(dir, base) == 0) break;
         char *slash = strrchr(dir, '/');
         if (!slash) break;
         *slash = '\0';
     }
 }
+#endif
 
 static void put_f32(u8 *dst, f32 v) { memcpy(dst, &v, sizeof(v)); }
 static void put_u16(u8 *dst, u16 v) { memcpy(dst, &v, sizeof(v)); }
@@ -881,7 +892,7 @@ TEST(gltf_vfs_external_buffer_loads_via_vfs)
     char gltf_disk[128], bin_disk[128];
     snprintf(gltf_disk, sizeof(gltf_disk), "%s/scene.gltf", root);
     snprintf(bin_disk, sizeof(bin_disk), "%s/scene.bin", root);
-    mkdir(root, 0755);
+    TEST_MKDIR(root);
 
     /* 36-byte POSITION buffer: (1,0,0),(0,1,0),(0,0,1). */
     u8 buf[36];
@@ -920,7 +931,7 @@ TEST(gltf_vfs_external_buffer_loads_via_vfs)
     vfs_destroy(vfs);
     remove(gltf_disk);
     remove(bin_disk);
-    rmdir(root);
+    TEST_RMDIR(root);
 }
 
 /* R474: image URIs are joined to the glTF directory in a fixed 512-byte
@@ -928,6 +939,9 @@ TEST(gltf_vfs_external_buffer_loads_via_vfs)
  * truncated URI instead of reporting that the intended image cannot fit. */
 TEST(gltf_texture_path_truncation_does_not_load_prefix_file)
 {
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    return;
+#else
     char base[128], dir[1024];
     ASSERT_TRUE(make_deep_dir(dir, sizeof(dir), base, sizeof(base), 510));
     char gltf_path[1024], prefix_image[1024];
@@ -969,6 +983,7 @@ TEST(gltf_texture_path_truncation_does_not_load_prefix_file)
     remove(gltf_path);
     remove(prefix_image);
     remove_deep_dir(dir, base);
+ #endif
 }
 
 /* R431 (CONTENT LOSS): a mesh with MULTIPLE primitives (common: one mesh,
@@ -1032,7 +1047,7 @@ TEST(vfs_rejects_backslash_traversal)
     char root[64];  test_tmp(root, sizeof root, "r431_vfs_root"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
     char disk[128];
     snprintf(disk, sizeof(disk), "%s/ok.bin", root);
-    mkdir(root, 0755);
+    TEST_MKDIR(root);
     u8 byte = 0x42;
     ASSERT_TRUE(write_bin(disk, &byte, sizeof(byte)));
 
@@ -1049,7 +1064,7 @@ TEST(vfs_rejects_backslash_traversal)
 
     vfs_destroy(vfs);
     remove(disk);
-    rmdir(root);
+    TEST_RMDIR(root);
 }
 
 TEST_MAIN_BEGIN()

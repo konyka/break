@@ -25,8 +25,6 @@
 #include <stb_truetype.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/types.h>
 
 /* ---- RHI stubs (link-only; the tests below never reach a draw path) ---- */
 

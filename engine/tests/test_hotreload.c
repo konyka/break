@@ -94,12 +94,26 @@ TEST(hotreload_texture_failed_init_keeps_stdin)
  * A successful initial compile must not leave them as truncated identities. */
 TEST(hotreload_pipeline_rejects_path_truncation)
 {
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* Win32 CRT cannot create a 256-character basename reliably on all
+     * configured temp roots; the path-field guard is covered by the texture
+     * and filewatch tests below. */
+    return;
+#else
     char vert[257], frag[257];
-    memcpy(vert, "/tmp/", 5);
-    memset(vert + 5, 'v', 251);
+    char tmp[256];
+    test_tmp(tmp, sizeof tmp, "hr_long");
+    for (char *c = tmp; *c; c++) if (*c == '\\') *c = '/';
+    usize t = strlen(tmp);
+    ASSERT_TRUE(t > 0 && t < 256);
+    memcpy(vert, tmp, t);
+    vert[t++] = '/';
+    memset(vert + t, 'v', 256u - t - 1u);
     vert[256] = '\0';
-    memcpy(frag, "/tmp/", 5);
-    memset(frag + 5, 'f', 251);
+    t = strlen(tmp);
+    memcpy(frag, tmp, t);
+    frag[t++] = '/';
+    memset(frag + t, 'f', 256u - t - 1u);
     frag[256] = '\0';
     ASSERT_TRUE(write_file(vert, 16, '#'));
     ASSERT_TRUE(write_file(frag, 16, '#'));
@@ -112,6 +126,7 @@ TEST(hotreload_pipeline_rejects_path_truncation)
     ASSERT_FALSE(hr.ready);
     remove(vert);
     remove(frag);
+#endif
 }
 
 /* R473: FileWatcher polls the persisted entry path, so it must not retain a

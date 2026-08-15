@@ -24,7 +24,9 @@ static const char *mip_tmp_full(void)
 static const char *mip_tmp_base(void)
 {
     static char b[128];
-    snprintf(b, sizeof b, "break_test_mipmap_tmp.bin_%d", (int)TEST_GETPID());
+    const char *full = mip_tmp_full();
+    const char *slash = strrchr(full, '/');
+    snprintf(b, sizeof b, "%s", slash ? slash + 1 : full);
     return b;
 }
 #define TMP_PATH      mip_tmp_full()   /* fopen/remove: absolute per-pid path */
@@ -108,7 +110,10 @@ TEST(mipmap_residency_and_upload)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
+    VFSFile *probe = vfs_open(vfs, TMP_PATH_BASE);
+    ASSERT_NOT_NULL(probe);
+    vfs_close(probe);
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
@@ -157,7 +162,10 @@ TEST(mipmap_eviction_under_budget)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
+    VFSFile *probe = vfs_open(vfs, TMP_PATH_BASE);
+    ASSERT_NOT_NULL(probe);
+    vfs_close(probe);
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
@@ -199,7 +207,10 @@ TEST(mipmap_invalidate_clears_residency)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
+    VFSFile *probe = vfs_open(vfs, TMP_PATH_BASE);
+    ASSERT_NOT_NULL(probe);
+    vfs_close(probe);
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
@@ -230,7 +241,7 @@ TEST(mipmap_rejects_truncated_level_file)
     ASSERT_TRUE(write_truncated_level0_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
@@ -314,7 +325,7 @@ TEST(mipmap_request_pool_reuse_after_free)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
@@ -349,7 +360,7 @@ TEST(mipmap_request_pool_reuse_after_free)
 TEST(mipmap_failed_load_not_rerequested)
 {
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;
@@ -399,7 +410,7 @@ TEST(mipmap_budget_addition_does_not_wrap)
     ASSERT_TRUE(write_mip_file());
 
     VFS *vfs = vfs_create();
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
     async_loader_init(1, vfs);
 
     MipmapStreamManager mgr;

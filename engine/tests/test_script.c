@@ -6,7 +6,6 @@
 #include <script/script.h>
 #include <math.h>
 #include <stdio.h>
-#include <unistd.h>
 
 /* ----------------------------------------------------------------------- */
 
@@ -110,7 +109,9 @@ TEST(load_nonexistent_file)
 {
     ScriptEngine se = {0};
     script_engine_init(&se);
-    bool ok = script_load(&se, "/tmp/nonexistent_script_xyz.script");
+    char path[128];
+    test_tmp(path, sizeof path, "no_such_script_xyz.script");
+    bool ok = script_load(&se, path);
     ASSERT_TRUE(!ok);
     ASSERT_TRUE(!se.loaded);
     script_engine_shutdown(&se);
@@ -131,7 +132,9 @@ TEST(load_failure_preserves_previous_script)
     ScriptEngine se = {0};
     script_engine_init(&se);
     ASSERT_TRUE(script_load(&se, path));
-    ASSERT_FALSE(script_load(&se, "/tmp/break_missing_replacement.script"));
+    char missing[128];
+    test_tmp(missing, sizeof missing, "break_missing_replacement.script");
+    ASSERT_FALSE(script_load(&se, missing));
     ASSERT_TRUE(se.loaded);
     ASSERT_EQ(se.func_count, 1u);
     script_call(&se, "damage");

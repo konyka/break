@@ -54,8 +54,8 @@ TEST(atten_clamped_beyond_max)
 {
     /* Past max distance the gain is clamped to the value at max distance. */
     f32 at_max = audio_attenuation_gain(40.0f, 2.0f, 40.0f, 1.0f);
-    f32 far    = audio_attenuation_gain(1000.0f, 2.0f, 40.0f, 1.0f);
-    ASSERT_FLOAT_EQ(at_max, far, 1e-5);
+    f32 far_gain = audio_attenuation_gain(1000.0f, 2.0f, 40.0f, 1.0f);
+    ASSERT_FLOAT_EQ(at_max, far_gain, 1e-5);
 }
 
 TEST(atten_zero_rolloff_is_full)

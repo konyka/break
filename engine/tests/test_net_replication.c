@@ -8,7 +8,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 #include <sys/stat.h>
@@ -20,7 +19,13 @@
  * +0..+10 offsets on top of TEST_PORT, so the block must be wider than the
  * max offset or consecutive pids overlap each other's ports). Range check:
  * 23000 + 2599*16 = 64584, +10 < 65535. */
-#define TEST_PORT ((u16)(23000u + ((u32)getpid() % 2600u) * 16u))
+#define TEST_PORT ((u16)(23000u + ((u32)TEST_GETPID() % 2600u) * 16u))
+
+static u16 next_test_port(void) {
+    static u16 next = 0;
+    if (next == 0) next = (u16)(TEST_PORT + 14u);
+    return next++;
+}
 
 static void feed_ack(NetReplicator *rep, u32 ack);
 static void feed_ack_from(NetReplicator *rep, u32 ack, const NetAddress *from);
@@ -61,7 +66,7 @@ TEST(replicator_init_shutdown)
 {
     ASSERT_TRUE(net_init());
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     net_replicator_shutdown(&rep);
     net_shutdown();
 }
@@ -184,7 +189,7 @@ static u32 build_heartbeat_ack_wire(u8 *out, u32 seq, u32 send_time_ms, u32 echo
 TEST(ordered_reorder_buffer)
 {
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     u8 wire1[PACKET_MAX_SIZE], wire2[PACKET_MAX_SIZE];
@@ -221,7 +226,7 @@ TEST(ordered_reorder_out_of_window_no_stall)
      * aliased/overwritten as in the pre-R250 bug) and the packet is delivered
      * immediately; the stream continues from the resynced sequence. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     u8 w2[PACKET_MAX_SIZE], w_far[PACKET_MAX_SIZE], w1[PACKET_MAX_SIZE], w_next[PACKET_MAX_SIZE];
@@ -275,7 +280,7 @@ TEST(ordered_reorder_zero_snapshot_no_stall)
      * left later packets stuck (reorder_pending never reaching 0) and the ordered
      * stream stalled forever. A foreign/forged peer can send such a frame. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     u8 w_empty[PACKET_MAX_SIZE], w3[PACKET_MAX_SIZE], w1[PACKET_MAX_SIZE];
@@ -315,7 +320,7 @@ TEST(ordered_resync_after_large_seq_jump)
      * delivery). Trigger: a >=32-packet loss burst, or an R423 peer-channel
      * eviction resetting an active peer's channel mid-stream. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     u8 w_far[PACKET_MAX_SIZE], w_next[PACKET_MAX_SIZE];
@@ -351,7 +356,7 @@ TEST(ordered_resync_nonempty_window_head_loss)
      * channel stalled permanently. The >=SLOTS packet must now resync
      * (accepting loss of the buffered window) and be delivered. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     u8 w2[PACKET_MAX_SIZE], w3[PACKET_MAX_SIZE], w_far[PACKET_MAX_SIZE], w_next[PACKET_MAX_SIZE];
@@ -445,7 +450,7 @@ TEST(reliable_ack_echoes_received_sequence)
 {
     ASSERT_TRUE(net_init());
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     /* Peer's reliable snapshot: header sequence=7, ack=99. */
     PacketBuffer buf;
@@ -478,7 +483,7 @@ TEST(reliable_ack_is_scoped_to_destination)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0}, receiver_a = {0}, receiver_b = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     ASSERT_TRUE(net_replicator_init(&receiver_a, (u16)(TEST_PORT + 12u)));
     ASSERT_TRUE(net_replicator_init(&receiver_b, (u16)(TEST_PORT + 13u)));
 
@@ -526,7 +531,7 @@ TEST(reliable_ack_waits_for_contiguous_sequence)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0}, receiver = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 12u)));
 
     NetAddress peer_a;
@@ -581,7 +586,7 @@ TEST(reliable_send_sequence_survives_receive_peer_eviction)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0}, receiver = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 15u)));
     rep.reliable_retry = true;
 
@@ -629,7 +634,7 @@ TEST(reliable_send_state_is_not_recycled_after_ack)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0}, receiver = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     ASSERT_TRUE(net_replicator_init(&receiver, (u16)(TEST_PORT + 15u)));
     rep.reliable_retry = true;
 
@@ -806,7 +811,7 @@ TEST(heartbeat_rtt)
 {
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     u8 wire[PACKET_MAX_SIZE];
     u32 now_ms = (u32)(time_microseconds() / 1000ull);
@@ -863,7 +868,7 @@ TEST(heartbeat_ack_feed)
 {
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     u8 wire[PACKET_MAX_SIZE];
     u32 now_ms = (u32)(time_microseconds() / 1000ull);
@@ -895,7 +900,7 @@ TEST(heartbeat_header_only_rejected)
      * garbage, poisoning the peer RTT stats. It must be rejected entirely. */
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     u8 wire[PACKET_MAX_SIZE];
     PacketBuffer buf;
@@ -923,7 +928,7 @@ TEST(peer_rtt_table)
 {
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetAddress peer_a = {0}, peer_b = {0};
     strncpy(peer_a.host, "127.0.0.1", sizeof(peer_a.host) - 1u);
@@ -956,7 +961,7 @@ TEST(peer_evict_stale)
 {
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.peer_evict_ms = 1000u;
 
     NetAddress peer = {0};
@@ -982,7 +987,7 @@ TEST(peer_lru_full)
 {
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.peer_evict_ms = 0u;
 
     NetTransformSnapshot out[1] = {0};
@@ -1029,7 +1034,7 @@ TEST(peer_save_load)
 {
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetAddress peer = {0};
     strncpy(peer.host, "127.0.0.1", sizeof(peer.host) - 1u);
@@ -1139,7 +1144,7 @@ TEST(peer_save_dir)
 #else
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetAddress a = {0}, b = {0};
     strncpy(a.host, "127.0.0.1", sizeof(a.host) - 1u);
@@ -1313,7 +1318,7 @@ TEST(peer_save_delta)
 #else
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetAddress peer = {0};
     strncpy(peer.host, "127.0.0.1", sizeof(peer.host) - 1u);
@@ -1378,7 +1383,7 @@ TEST(peer_delta_rotate)
 #else
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetAddress a = {0}, b = {0};
     strncpy(a.host, "127.0.0.1", sizeof(a.host) - 1u);
@@ -1514,7 +1519,7 @@ TEST(peer_delta_no_rotate_below_threshold)
 #else
     time_init();
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetAddress peer = {0};
     strncpy(peer.host, "127.0.0.1", sizeof(peer.host) - 1u);
@@ -1571,7 +1576,7 @@ TEST(ordered_channels_per_peer)
      * channel the second peer's seq 1 fell behind the shared next_ordered_seq
      * and was dropped as stale. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     NetAddress peer_a = {0}, peer_b = {0};
@@ -1636,7 +1641,7 @@ TEST(peer_channels_evict_stalest)
      * addresses are spoofable). The table must evict the stalest slot when
      * full so the 9th peer still gets isolated channels. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.ordered_layer = true;
 
     NetTransformSnapshot out[4] = {0};
@@ -1685,7 +1690,7 @@ TEST(peer_load_rejects_port_overflow)
     /* R418: a peer line with port > 65535 used to truncate into u16
      * (70000 -> 4464) and register the wrong address; it must be rejected. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     char path[64]; test_tmp(path, sizeof path, "test_netrep_badport.txt"); /* R444: per-pid path */
     FILE *f = fopen(path, "w");
@@ -1710,7 +1715,7 @@ TEST(peer_load_rejects_port_overflow)
 TEST(peer_load_rejects_nonfinite_rtt)
 {
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     char path[64]; test_tmp(path, sizeof path, "test_netrep_bad_rtt.txt");
     FILE *f = fopen(path, "w");
@@ -1750,7 +1755,7 @@ TEST(parse_payload_clamps_forged_count)
     memcpy(wire, buf.data, len);
 
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     NetTransformSnapshot out[8] = {0};
     u32 out_count = 99u;
@@ -1867,7 +1872,7 @@ TEST(reliable_window_ack_is_scoped_to_sender)
     ASSERT_TRUE(net_init());
 
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
     rep.reliable_retry = true;
 
     NetAddress peer_a, peer_b;
@@ -1929,7 +1934,7 @@ TEST(reliable_window_seq_wraparound)
      * slots at seq 0xFFFFFFFE/0xFFFFFFFF/0 are all acked by ack=1 after the
      * 32-bit wrap, while a slot at seq 2 is not. */
     NetReplicator rep = {0};
-    ASSERT_TRUE(net_replicator_init(&rep, 0));
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
 
     rep.reliable_window[0].valid = true; rep.reliable_window[0].seq = 0xFFFFFFFEu;
     rep.reliable_window[1].valid = true; rep.reliable_window[1].seq = 0xFFFFFFFFu;

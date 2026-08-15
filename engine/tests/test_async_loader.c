@@ -46,7 +46,7 @@ TEST(async_loader_load_nonexistent) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
     /* Mount a valid directory so VFS is functional */
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     async_loader_init(2, vfs);
     atomic_store(&g_callback_called, 0);
@@ -80,7 +80,7 @@ TEST(async_loader_load_nonexistent) {
 TEST(async_loader_status_loading) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     async_loader_init(1, vfs);
 
@@ -148,7 +148,7 @@ TEST(async_loader_status_invalid_id) {
 TEST(async_loader_multiple_requests) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     async_loader_init(2, vfs);
     atomic_store(&g_callback_called, 0);
@@ -228,7 +228,7 @@ static void pri_cb_high(void *user, void *data, u32 size) {
 TEST(async_loader_priority_ordering) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid files now live in /tmp */
+    vfs_mount_dir(vfs, test_tmp_root());
 
     /* Two low-priority files queued before a high-priority file. */
     /* R444: per-pid paths — same-tree parallel ctest shared the cwd-relative files. */
@@ -318,7 +318,7 @@ static void decode_cb(void *user, void *data, u32 size) {
 TEST(async_loader_decode_non_blocking) {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid file now lives in /tmp */
+    vfs_mount_dir(vfs, test_tmp_root());
 
     /* Write a minimal 2x2 32-bit uncompressed TGA file. */
     char pt[128]; /* R444: per-pid path */
@@ -385,7 +385,7 @@ TEST(async_loader_range_truncated_fails)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid file now lives in /tmp */
+    vfs_mount_dir(vfs, test_tmp_root());
 
     char pr[128]; /* R444: per-pid path */
     test_tmp(pr, sizeof pr, "async_range_short.bin");
@@ -434,7 +434,7 @@ TEST(async_loader_range_zero_reads_to_end)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     char path[128];
     test_tmp(path, sizeof path, "async_range_to_end.bin");
@@ -476,7 +476,7 @@ TEST(async_loader_completion_burst)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     async_loader_init(8, vfs);
     atomic_store(&g_burst_cb_count, 0);
@@ -528,7 +528,7 @@ TEST(async_loader_shutdown_fires_pending_callbacks)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp"); /* R444: was "." — per-pid file now lives in /tmp */
+    vfs_mount_dir(vfs, test_tmp_root());
 
     /* One shared 1 MiB file keeps the single worker busy long enough that
      * most requests are still queued when shutdown runs. */
@@ -591,7 +591,7 @@ TEST(async_loader_shutdown_drains_ready_completion)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     char path[128];
     test_tmp(path, sizeof path, "async_shutdown_ready.bin");
@@ -649,7 +649,7 @@ TEST(async_loader_shutdown_drains_decoded_completion)
 {
     VFS *vfs = vfs_create();
     ASSERT_NOT_NULL(vfs);
-    vfs_mount_dir(vfs, "/tmp");
+    vfs_mount_dir(vfs, test_tmp_root());
 
     char path[128];
     test_tmp(path, sizeof path, "async_shutdown_decode.tga");

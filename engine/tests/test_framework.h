@@ -12,15 +12,52 @@
  * stack buffer through it. */
 #if defined(_WIN32)
 #include <process.h>
+#include <direct.h>
 #define TEST_GETPID() _getpid()
+#define TEST_MKDIR(path) _mkdir(path)
+#define TEST_RMDIR(path) _rmdir(path)
 #else
 #include <unistd.h>
 #define TEST_GETPID() getpid()
+#define TEST_MKDIR(path) mkdir(path, 0755)
+#define TEST_RMDIR(path) rmdir(path)
 #endif
 
 static inline const char *test_tmp(char *buf, size_t cap, const char *name) {
+#if defined(_WIN32)
+    const char *tmp = getenv("TEMP");
+    if (!tmp || !*tmp) {
+        tmp = ".";
+    }
+    /* Always use '/' separators so path-joining helpers (snprintf("%s/%s"),
+     * strrchr('/'), remove_deep_dir) work identically on both platforms.
+     * %TEMP% on Windows is conventionally backslash-separated. */
+    char norm[512];
+    size_t i = 0;
+    for (; tmp[i] && i + 1 < sizeof(norm); i++) {
+        norm[i] = (tmp[i] == '\\') ? '/' : tmp[i];
+    }
+    norm[i] = '\0';
+    snprintf(buf, cap, "%s/break_%s_%d", norm, name, (int)TEST_GETPID());
+#else
     snprintf(buf, cap, "/tmp/break_%s_%d", name, (int)TEST_GETPID());
+#endif
     return buf;
+}
+
+static inline const char *test_tmp_root(void) {
+#if defined(_WIN32)
+    static char root[512];
+    const char *tmp = getenv("TEMP");
+    if (!tmp || !*tmp) tmp = ".";
+    size_t i = 0;
+    for (; tmp[i] && i + 1 < sizeof(root); i++)
+        root[i] = (tmp[i] == '\\') ? '/' : tmp[i];
+    root[i] = '\0';
+    return root;
+#else
+    return "/tmp";
+#endif
 }
 
 static int g_test_count = 0;
