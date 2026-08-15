@@ -279,6 +279,86 @@ TEST(motion_blur_prefers_per_object_velocity_texture)
     ASSERT_NOT_NULL(strstr(src, "motion blur RT1 texture did not affect output"));
 }
 
+TEST(deferred_skinned_gbuffer_contract)
+{
+    const char *files[] = {
+        "gbuffer_skinned.vert", "gbuffer_skinned_vk.vert"
+    };
+    for (usize i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char shader[16384];
+        ASSERT_TRUE(read_shader_source(files[i], shader, sizeof(shader)));
+        ASSERT_NOT_NULL(strstr(shader, "u_joints"));
+        ASSERT_NOT_NULL(strstr(shader, "texelFetch"));
+        ASSERT_NOT_NULL(strstr(shader, "u_model"));
+        ASSERT_NOT_NULL(strstr(shader, "u_view"));
+        ASSERT_NOT_NULL(strstr(shader, "u_proj"));
+        ASSERT_NOT_NULL(strstr(shader, "u_prev_mvp"));
+        ASSERT_NOT_NULL(strstr(shader, "v_world_pos"));
+        ASSERT_NOT_NULL(strstr(shader, "v_normal"));
+        ASSERT_NOT_NULL(strstr(shader, "v_texcoord"));
+        ASSERT_NOT_NULL(strstr(shader, "v_velocity"));
+        ASSERT_NOT_NULL(strstr(shader, "curr_ndc"));
+        ASSERT_NOT_NULL(strstr(shader, "prev_ndc"));
+        ASSERT_NOT_NULL(strstr(shader, "512 +"));
+        ASSERT_NOT_NULL(strstr(shader, "u_prev_mvp *"));
+        ASSERT_NOT_NULL(strstr(shader, "prev_skin"));
+    }
+
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("renderer/deferred.h", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "gbuffer_skinned_pipeline"));
+
+    ASSERT_TRUE(read_engine_source("renderer/deferred.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "gbuffer_skinned_pipeline"));
+    ASSERT_NOT_NULL(strstr(src, "shaders/gbuffer_skinned_vk.vert"));
+    ASSERT_NOT_NULL(strstr(src, "shaders/gbuffer_skinned.vert"));
+    ASSERT_NOT_NULL(strstr(src, "skinned_desc.skinned_vertex"));
+    ASSERT_NOT_NULL(strstr(src, "skinned_desc.uses_texel_buffer"));
+
+    char main_src[1048576];
+    ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
+    ASSERT_NOT_NULL(strstr(main_src, "dsys->gbuffer_skinned_pipeline"));
+    ASSERT_NOT_NULL(strstr(main_src, "skeleton_upload(&render.skeleton)"));
+}
+
+TEST(deferred_skinned_gbuffer_regressions_are_guarded)
+{
+    /* rhi_vk.c is ~350KB; the clustered definition sits ~220KB in, so the
+     * buffer must comfortably cover it (1MB stack buffers are already the
+     * pattern in this suite for main.c). */
+    char vk_src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", vk_src, sizeof(vk_src)));
+
+    /* A texel-buffer skinned G-Buffer still uses the ordinary 256B
+     * model/view/proj/previous-MVP block; it must not enter clustered's
+     * u_proj=-1 mapping. */
+    const char *layout = strstr(vk_src, "if (pd && pd->skinned_gbuffer_layout)");
+    const char *clustered = strstr(vk_src, "bool clustered =");
+    ASSERT_NOT_NULL(layout);
+    ASSERT_NOT_NULL(clustered);
+    ASSERT_TRUE(layout < clustered);
+    const char *layout_end = strstr(layout, "/* Terrain:");
+    ASSERT_NOT_NULL(layout_end);
+    ASSERT_TRUE(strstr(layout, "u_model") < layout_end);
+    ASSERT_TRUE(strstr(layout, "u_view") < layout_end);
+    ASSERT_TRUE(strstr(layout, "u_proj") < layout_end);
+    ASSERT_TRUE(strstr(layout, "u_prev_mvp") < layout_end);
+    ASSERT_NOT_NULL(strstr(layout, "return 128;") );
+    ASSERT_NOT_NULL(strstr(layout, "return 192;") );
+
+    char main_src[1048576];
+    ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
+    const char *skinned = strstr(main_src,
+                                 "rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_skinned_pipeline)");
+    const char *terrain = strstr(main_src, "/* Render terrain. */");
+    const char *restore = skinned ? strstr(skinned,
+                                           "rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_pipeline)") : NULL;
+    ASSERT_NOT_NULL(skinned);
+    ASSERT_NOT_NULL(terrain);
+    ASSERT_NOT_NULL(restore);
+    ASSERT_TRUE(restore < terrain);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -293,4 +373,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(transparent_motion_vectors_do_not_alpha_blend_rt1);
     RUN_TEST(vulkan_command_buffer_updates_have_transfer_dst_usage);
     RUN_TEST(motion_blur_prefers_per_object_velocity_texture);
+    RUN_TEST(deferred_skinned_gbuffer_contract);
+    RUN_TEST(deferred_skinned_gbuffer_regressions_are_guarded);
 TEST_MAIN_END()
