@@ -10,6 +10,21 @@
 环境的 Windows WGL/Win32 runtime 验证，以及预烘焙 static mega geometry 的逐节点动态变换（后者
 需要 GPU-driven transform indirection 重构，当前静态 megabuffer 设计下不具性能收益，保持明确限制）。
 
+**R560 deferred skinned G-Buffer 收口（TDD）**：deferred G-Buffer 几何 pass 现支持 skinned 几何
+（procedural arm + glTF skinned 图元），用 64B skinned 顶点布局（pos3+normal3+uv2+joints4+weights4）
+写同一组四附件，关节 texel buffer 在偏移 0/512 Mat4s 分别持有当前/上一帧姿态，逐骨骼写 per-object
+velocity（RT3），与 forward 路径的 R554/R555 语义一致；skinned 节点被排除在 mega/static 批次外，
+无重复绘制。收口时修复两个阻塞回归：①VK 后端 `rhi_pipeline_get_uniform_location` 把 texel-buffer
+skinned pipeline 误判为 clustered 使 `u_proj` 解析为 -1、VK skinned 顶点读到陈旧 push 数据 —— 新增
+`skinned_gbuffer_layout` 专用 push 布局（u_model@0 u_view@64 u_proj@128 u_prev_mvp@192）并在 clustered
+分类前处理；②deferred skinned 绘制块结束后未恢复 `gbuffer_pipeline`，terrain 误用 skinned vertex
+contract —— 恢复绑定。零新增 pass/纹理/CPU 回读/带宽，只在 RHI 的 location 映射与主循环加两条守卫。
+TDD：`test_shader_io` 新增 `deferred_skinned_gbuffer_regressions_are_guarded` 静态契约，先失败后通过。
+验证：GL/VK 双后端构建零警告（-Wall -Wextra -Werror -pedantic）；GL/VK 非图形 CTest 各 41/41；
+定向 `test_shader_io` 15/15。仍未完成的大项维持不变：Windows WGL/Win32 runtime 验证需真实目标
+环境；预烘焙 static mega geometry 的逐节点动态变换需 GPU-driven transform indirection 重构，当前
+静态 megabuffer 设计下不具性能收益，保持明确限制。
+
 此前：**R558 IBL 天空方向一致性（TDD）**：审计确认 raster skybox 已在 R446 修正为将
 sun-to-scene 的光线传播方向取反后交给太阳位置/散射计算，但静态 IBL capture 仍直接传入传播
 方向，导致金属反射和环境光中的太阳与可见天空相反。`render_init` 现仅在 IBL 启动预烘焙时

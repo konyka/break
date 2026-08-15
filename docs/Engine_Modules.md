@@ -1523,7 +1523,7 @@ typedef struct {
 |------|------|
 | CSM 阴影 | 单次间接绘制（全场景共享深度管线） |
 | 点光源阴影 | 每面单次间接绘制（6L 次 draw call） |
-| Deferred G-Buffer | 每材质单次间接绘制（M 次 draw call） |
+| Deferred G-Buffer | 每材质单次间接绘制（M 次 draw call）；R560 另以 64B skinned 顶点变体覆盖 procedural/glTF 蒙皮，并写 RT3 逐骨骼 NDC velocity |
 | 前向场景 | 每材质单次间接绘制（M 次 draw call） |
 
 ### 12.4 Occlusion Culling 遮挡剔除 (`occlusion_cull.c` / `occlusion_cull.h`)

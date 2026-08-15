@@ -12,8 +12,8 @@
 | P0 | 合并后处理 | ~~demo 仍多 pass~~ **R11 demo 默认 combined 路径**(auto-exp/cine 除外) | — |
 | P1 | unified_cull | ~~单 pass 压缩已实现，main 未用~~ **R12 阴影/点光阴影默认 unified** | ~~前向仍 per-mat compact~~ **R437 已做**（容量区间单遍 scatter，G→1；~~execute 仍按材质 G 次~~ **R441 已解决**：纹理数组 + first_instance 层号 + ungrouped 紧排，前向 execute G→1，`BREAK_MAT_INDIRECT` 默认开；deferred/gbuffer **R442 同样单 execute**（TEST 12 门禁）） |
 | P1 | 粒子 GPU cull | ~~`particle_cull.comp` 未接线~~ **R12 已接线** | draw 随 alive 数而非 max |
-| P1 | 延迟渲染 | light_data 忽略、环境光硬编码 | deferred 路径光照质量/一致性差 |
-| P2 | TAA motion vector | 无 per-object / 相机 MV | TAA 质量差、重影 |
+| P1 | 延迟渲染 | ~~light_data 忽略、环境光硬编码~~ **R13 已接真实 light_data + IBL**；deferred skinned **R560 已收口**（逐骨骼 velocity、GL/VK push 契约对齐） | — |
+| P2 | TAA motion vector | ~~无 per-object / 相机 MV~~ **R554/R555 forward 双 MRT、R560 deferred skinned 已收口**（水/粒子速度、RT3 NDC delta） | — |
 | P2 | 点光阴影(前向) | 仅 deferred cube | 前向 PBR 无点光阴影 |
 | P2 | Async loader 优先级 | 字段未生效 | 流式资源争抢 I/O |
 | P3 | Network 复制 | socket 有、无游戏同步 | 非渲染热点 |
@@ -73,7 +73,7 @@
 
 ### [x] R13-2 TAA 重投影修复（velocity pass 未做）
 - [x] `combined_aa`/`taa_resolve` 使用 `inv(curr_view_proj)` 而非 `inv(proj)`
-- [ ] Motion vector G-buffer / velocity pass（→后续）
+- [x] Motion vector G-buffer / velocity pass（→R16-2 RT3 延迟、R554/R555 forward 双 MRT、R560 deferred skinned 逐骨骼 velocity 收口）
 
 ### [x] R13-3 合并后处理与 auto-exposure 共存
 - [x] `combined_color_apply` 传入真实 `tonemap.exposure`/gamma/mode
