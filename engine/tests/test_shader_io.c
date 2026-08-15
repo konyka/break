@@ -359,6 +359,52 @@ TEST(deferred_skinned_gbuffer_regressions_are_guarded)
     ASSERT_TRUE(restore < terrain);
 }
 
+/* R561: the mega-buffer path bakes static geometry into world space and keeps
+ * the standard five-field indirect command. Per-node dynamic transform
+ * indirection is intentionally NOT implemented (it would add per-vertex SSBO
+ * fetches, per-frame transform/bounds uploads, and shader/descriptor churn
+ * across both backends without a performance win on the static bake). Freeze
+ * that boundary so a future refactor cannot silently change the contract. */
+TEST(static_mega_geometry_contract_is_documented_and_unchanged)
+{
+    char src[131072];
+
+    /* The indirect command must stay the standard five u32 fields used by both
+     * Vulkan VkDrawIndexedIndirectCommand and GL DrawElementsIndirectCommand;
+     * adding a per-draw transform index would change the shared buffer layout. */
+    ASSERT_TRUE(read_engine_source("renderer/indirect_draw.h", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "u32 index_count;"));
+    ASSERT_NOT_NULL(strstr(src, "u32 instance_count;"));
+    ASSERT_NOT_NULL(strstr(src, "u32 first_index;"));
+    ASSERT_NOT_NULL(strstr(src, "i32 vertex_offset;"));
+    ASSERT_NOT_NULL(strstr(src, "u32 first_instance;"));
+
+    /* The bake excludes skinned nodes and pre-transforms positions + normals
+     * into world space so u_model=identity works for the GPU-driven paths. */
+    char main_src[1048576];
+    ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
+    ASSERT_NOT_NULL(strstr(main_src, "Vertices are pre-transformed to world space"));
+    ASSERT_NOT_NULL(strstr(main_src, "nd->skinned"));
+    ASSERT_NOT_NULL(strstr(main_src, "MegaVert"));
+
+    /* Cull/compact shaders must not fetch per-node transforms; they only carry
+     * the view-projection matrix, world-space bounds, and standard indirect
+     * commands. A per-draw transform lookup would appear as an array binding
+     * (mat4 transforms[]) or a per-object model uniform — neither is allowed. */
+    ASSERT_TRUE(read_shader_source("unified_cull.comp", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "CullObject"));
+    ASSERT_NOT_NULL(strstr(src, "DrawIndexedIndirectCommand"));
+    ASSERT_TRUE(strstr(src, "mat4 transforms") == NULL); /* no per-node array */
+    ASSERT_TRUE(strstr(src, "transforms[]") == NULL);
+    ASSERT_TRUE(strstr(src, "u_model") == NULL);
+
+    ASSERT_TRUE(read_shader_source("compact_draws.comp", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "DrawIndexedIndirectCommand"));
+    ASSERT_TRUE(strstr(src, "mat4 transforms") == NULL);
+    ASSERT_TRUE(strstr(src, "transforms[]") == NULL);
+    ASSERT_TRUE(strstr(src, "u_model") == NULL);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -375,4 +421,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(motion_blur_prefers_per_object_velocity_texture);
     RUN_TEST(deferred_skinned_gbuffer_contract);
     RUN_TEST(deferred_skinned_gbuffer_regressions_are_guarded);
+    RUN_TEST(static_mega_geometry_contract_is_documented_and_unchanged);
 TEST_MAIN_END()
