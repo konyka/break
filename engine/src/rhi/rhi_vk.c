@@ -110,6 +110,13 @@ typedef struct {
     bool              is_instanced;
     bool              is_compute;
     bool              uses_storage;
+    /* R560: a skinned G-Buffer pipeline carries the ordinary
+     * model/view/proj/prev-MVP block even though it uses a texel buffer for
+     * joint poses. Without this flag `rhi_pipeline_get_uniform_location`
+     * classifies it as clustered (uses_texel_buffer && !is_instanced) and
+     * reports u_proj=-1, so the Vulkan skinned draw samples stale push data.
+     * Must be checked before the clustered/non_clustered classification. */
+    bool              skinned_gbuffer_layout;
     bool              terrain_layout;
     bool              water_layout;
     bool              combined_aa_layout;
@@ -2692,6 +2699,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->uses_texel_buffer = desc->uses_texel_buffer;
     pd->is_instanced = desc->is_instanced;
     pd->uses_storage = desc->uses_storage;
+    pd->skinned_gbuffer_layout =
+        desc->skinned_vertex && desc->uses_texel_buffer && !desc->is_instanced;
     pd->terrain_layout = desc->terrain_layout;
     pd->water_layout = desc->water_layout;
     pd->combined_aa_layout = desc->combined_aa_layout;
@@ -4918,6 +4927,19 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {
     (void)dev;
     VKPipelineData *pd = (VKPipelineData *)rhi_get_resource(dev, pipe);
+
+    /* R560: skinned G-Buffer vertex stage — same 256B push block as
+     * gbuffer_vk.vert: u_model@0 u_view@64 u_proj@128 u_prev_mvp@192.
+     * Handled before the clustered classification so u_proj does not resolve
+     * to -1 (a texel-buffer pipeline would otherwise be taken as clustered). */
+    if (pd && pd->skinned_gbuffer_layout) {
+        if (strcmp(name, "u_model") == 0)      return 0;
+        if (strcmp(name, "u_view") == 0)       return 64;
+        if (strcmp(name, "u_proj") == 0)       return 128;
+        if (strcmp(name, "u_prev_mvp") == 0)   return 192;
+        return -1;
+    }
+
     bool clustered = pd && pd->uses_texel_buffer && !pd->is_instanced;
     bool non_clustered_tbo = pd && pd->uses_texel_buffer && pd->is_instanced;
 

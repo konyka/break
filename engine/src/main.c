@@ -5671,47 +5671,6 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * consumes the light grid). Deferred DOES cull/upload below. */
         }
 
-        /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
-        if (render.render_path == RENDER_PATH_FORWARD) {
-        /* R358: do not clear/draw into the previous target when forward MRT is dead. */
-        if (!rhi_handle_valid(forward_scene.fb)) {
-            LOG_ERROR("Scene FBO invalid; skipping forward pass");
-        } else {
-        bind_forward_temporal(&render, cmd, &prev_view_proj, &frame_identity);
-        rhi_mrt_fbo_bind(cmd, &forward_scene);
-        rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
-        rhi_cmd_clear_color_attachment(cmd, 1u, 0.0f, 0.0f, 0.0f, 0.0f);
-        /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
-        rhi_cmd_clear_depth(cmd);
-
-        /* R446: pass the TO-SUN direction (-light dir). sun_dir_vec is the
-         * light travel direction (y = -sin(el), downward); the sky shader
-         * treats u_sun_dir as the sun's position in the sky, so the sun disc,
-         * halo and Mie forward peak were mirrored below the horizon and never
-         * visible. The disc is the bloom chain's primary HDR target. */
-        skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], -sun_dir_vec.e[0], -sun_dir_vec.e[1], -sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-
-
-        /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
-         * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
-         * It runs unconditionally — the clustered terrain draw below was always
-         * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
-        terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                       render.terrain_tex, active_sampler,
-                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
-                       water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
-
-        water_update(&water, (f32)engine.delta_time);
-        water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                     render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
-
-        /* R273: light population (clear + add_dir + 32× orbit add_point) moved
-         * above the forward/deferred split so DEFERRED gets fresh lights too.
-         * It used to be forward-only here. */
-
-        particles_cull(&particles, cmd);
-        particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0]);
-
         if (rhi_handle_valid(render.skinned_pipeline)) {
             if (anim_blend_ready && blend_clip_count > 0u) {
                 /* R445: procedural arm — slow sinusoidal crossfade. Layer 0
@@ -5803,6 +5762,52 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * no skinned rendering will occur (no skinned meshes and no fallback VBO). */
             if (scene.skinned_mesh_count > 0 || rhi_handle_valid(render.skinned_vbo)) {
             skeleton_upload(&render.skeleton);
+            }
+        }
+
+        /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
+        if (render.render_path == RENDER_PATH_FORWARD) {
+        /* R358: do not clear/draw into the previous target when forward MRT is dead. */
+        if (!rhi_handle_valid(forward_scene.fb)) {
+            LOG_ERROR("Scene FBO invalid; skipping forward pass");
+        } else {
+        bind_forward_temporal(&render, cmd, &prev_view_proj, &frame_identity);
+        rhi_mrt_fbo_bind(cmd, &forward_scene);
+        rhi_cmd_clear_color(cmd, underwater ? 0.0f : bg_r, underwater ? 0.05f : bg_g, underwater ? 0.15f : bg_b, 1.0f);
+        rhi_cmd_clear_color_attachment(cmd, 1u, 0.0f, 0.0f, 0.0f, 0.0f);
+        /* R231-B: clear_color is color-only; GL previously wiped depth here too. */
+        rhi_cmd_clear_depth(cmd);
+
+        /* R446: pass the TO-SUN direction (-light dir). sun_dir_vec is the
+         * light travel direction (y = -sin(el), downward); the sky shader
+         * treats u_sun_dir as the sun's position in the sky, so the sun disc,
+         * halo and Mie forward peak were mirrored below the horizon and never
+         * visible. The disc is the bloom chain's primary HDR target. */
+        skybox_render(&skybox, cmd, &view.e[0][0], &frame_inv_proj.e[0][0], -sun_dir_vec.e[0], -sun_dir_vec.e[1], -sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+
+
+        /* R74-2: terrain_render draws terrain with hardcoded lighting + water interaction
+         * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
+         * It runs unconditionally — the clustered terrain draw below was always
+         * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
+        terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                       render.terrain_tex, active_sampler,
+                       render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
+                       water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
+
+        water_update(&water, (f32)engine.delta_time);
+        water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                     render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
+
+        /* R273: light population (clear + add_dir + 32× orbit add_point) moved
+         * above the forward/deferred split so DEFERRED gets fresh lights too.
+         * It used to be forward-only here. */
+
+        particles_cull(&particles, cmd);
+        particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0]);
+
+
+        if (rhi_handle_valid(render.skinned_pipeline)) {
 
             rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_skinned_pipeline) ? render.wire_skinned_pipeline : render.skinned_pipeline);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_view, &view.e[0][0]);
@@ -5838,8 +5843,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, render.skinned_index_count, 1);
                 draw_calls++; tri_count += render.skinned_index_count / 3;
-            }
-            }
+        }
         }
 
         rhi_cmd_bind_pipeline(cmd, active_pipeline);
@@ -7035,6 +7039,59 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj.e[0][0]);
             if (dsys->_loc_gbuf_prev_mvp >= 0)
                 rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj.e[0][0]);
+
+            /* R560: skinned geometry -- procedural arm and glTF skinned
+             * primitives write the same four G-Buffer attachments with the
+             * 64B skinned vertex layout and per-skeleton velocity. The joint
+             * texel buffer holds current pose at offset 0 and previous pose
+             * at 512 Mat4s (skeleton_upload runs above the forward guard, so
+             * this pose pair is fresh in both render paths). Skinned nodes
+             * are excluded from the mega/static passes, so no double draw. */
+            if (rhi_handle_valid(dsys->gbuffer_skinned_pipeline)) {
+                rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_skinned_pipeline);
+                if (dsys->_loc_gbuf_skinned_view >= 0)
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_view, &view.e[0][0]);
+                if (dsys->_loc_gbuf_skinned_proj >= 0)
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_proj, &proj.e[0][0]);
+                if (dsys->_loc_gbuf_skinned_prev_mvp >= 0)
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_prev_mvp, &prev_view_proj.e[0][0]);
+                if (dsys->_loc_gbuf_skinned_model >= 0)
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_model, &frame_identity.e[0][0]);
+
+                if (scene.skinned_mesh_count > 0) {
+                    for (u32 si = 0; si < scene.skinned_mesh_count; si++) {
+                        SkinnedMesh *sm = &scene.skinned_meshes[si];
+                        Material *mat = (sm->material_idx < scene.material_count) ? &scene.materials[sm->material_idx] : NULL;
+                        bind_material(cmd, &render, mat, &scene);
+                        rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
+                        rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
+                        if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
+                            rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
+                            rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+                        } else {
+                            rhi_cmd_draw(cmd, 3, 1);
+                        }
+                        draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
+                    }
+                } else if (rhi_handle_valid(render.skinned_vbo) && render.skeleton.joint_count >= 4u) {
+                    /* R445: the procedural arm geometry references joints 0-3 --
+                     * skip it if a glTF with fewer joints overrode the skeleton
+                     * (joint index 3 would read past the uploaded pose set). */
+                    bind_material(cmd, &render, NULL, &scene);
+                    rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
+                    rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
+                    rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0, true);
+                    rhi_cmd_draw_indexed(cmd, render.skinned_index_count, 1);
+                    draw_calls++; tri_count += render.skinned_index_count / 3;
+                }
+            }
+
+            /* R560: restore the ordinary G-Buffer pipeline after skinned
+             * draws. The skinned variant owns the 64B skinned vertex layout
+             * and a joint texel buffer; leaving it bound would make terrain
+             * (and any later geometry) read the wrong vertex contract. */
+            if (rhi_handle_valid(dsys->gbuffer_pipeline))
+                rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_pipeline);
 
             /* Render terrain. */
             if (rhi_handle_valid(terrain.vbo)) {

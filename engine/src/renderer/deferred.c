@@ -136,6 +136,15 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
     sys->_loc_gbuf_proj  = rhi_pipeline_get_uniform_location(dev, gp, "u_proj");
     sys->_loc_gbuf_prev_mvp = rhi_pipeline_get_uniform_location(dev, gp, "u_prev_mvp");
 
+    /* R560: skinned-variant G-Buffer pass pipeline uniforms. */
+    if (rhi_handle_valid(sys->gbuffer_skinned_pipeline)) {
+        RHIPipeline kp = sys->gbuffer_skinned_pipeline;
+        sys->_loc_gbuf_skinned_model = rhi_pipeline_get_uniform_location(dev, kp, "u_model");
+        sys->_loc_gbuf_skinned_view  = rhi_pipeline_get_uniform_location(dev, kp, "u_view");
+        sys->_loc_gbuf_skinned_proj  = rhi_pipeline_get_uniform_location(dev, kp, "u_proj");
+        sys->_loc_gbuf_skinned_prev_mvp = rhi_pipeline_get_uniform_location(dev, kp, "u_prev_mvp");
+    }
+
     /* R442: array-variant G-Buffer pass pipeline uniforms. */
     if (rhi_handle_valid(sys->gbuffer_arr_pipeline)) {
         RHIPipeline ap = sys->gbuffer_arr_pipeline;
@@ -187,6 +196,10 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_gbuf_arr_view   = -1;
     sys->_loc_gbuf_arr_proj   = -1;
     sys->_loc_gbuf_arr_prev_mvp = -1;
+    sys->_loc_gbuf_skinned_model = -1;
+    sys->_loc_gbuf_skinned_view  = -1;
+    sys->_loc_gbuf_skinned_proj  = -1;
+    sys->_loc_gbuf_skinned_prev_mvp = -1;
 
     if (width == 0u || height == 0u) {
         LOG_WARN("deferred: zero-size init (%ux%u) -- skipping", width, height);
@@ -234,6 +247,24 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
 #endif
         if (!rhi_handle_valid(sys->gbuffer_arr_pipeline))
             LOG_WARN("deferred: gbuffer_arr pipeline unavailable -- array path disabled");
+
+        /* R560: skinned G-Buffer pipeline -- same MRT formats, 64B skinned
+         * vertex layout + joint texel buffer. Missing/failed shader leaves
+         * the handle invalid and the caller skips skinned geometry (the
+         * static path above still works) -- not fatal for deferred_init. */
+        RHIPipelineDesc skinned_desc = gbuf_desc;
+        skinned_desc.vertex_stride      = 16u * sizeof(f32); /* pos3+normal3+uv2+joints4+weights4 = 16 floats = 64B */
+        skinned_desc.skinned_vertex     = true;
+        skinned_desc.uses_texel_buffer  = true;
+#ifdef ENGINE_VULKAN
+        sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
+            dev, "shaders/gbuffer_skinned_vk.vert", "shaders/gbuffer_vk.frag", &skinned_desc);
+#else
+        sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
+            dev, "shaders/gbuffer_skinned.vert", "shaders/gbuffer.frag", &skinned_desc);
+#endif
+        if (!rhi_handle_valid(sys->gbuffer_skinned_pipeline))
+            LOG_WARN("deferred: gbuffer_skinned pipeline unavailable -- skinned geometry skipped");
     }
 
     /* Lighting pipeline: full-screen triangle, no vertex input, no depth. */
@@ -333,6 +364,11 @@ void deferred_destroy(DeferredSystem *sys, RHIDevice *dev) {
         rhi_pipeline_destroy(dev, sys->gbuffer_arr_pipeline);
         sys->gbuffer_arr_pipeline = RHI_HANDLE_NULL;
     }
+    /* R560 */
+    if (rhi_handle_valid(sys->gbuffer_skinned_pipeline)) {
+        rhi_pipeline_destroy(dev, sys->gbuffer_skinned_pipeline);
+        sys->gbuffer_skinned_pipeline = RHI_HANDLE_NULL;
+    }
 
     defrd_release_targets(sys, dev);
 
@@ -396,6 +432,16 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             const f32 *view_mat, const f32 *camera_data,
                             RHITexture ssao_tex) {
     if (!sys || !dev || !sys->initialized) return;
+
+#ifdef ENGINE_VULKAN
+    /* R560: the G-Buffer MRT pass ends with the shared depth in
+     * DEPTH_STENCIL_READ_ONLY_OPTIMAL (the MRT FBO's finalLayout), while the
+     * IBL descriptor below declares every image SHADER_READ_ONLY_OPTIMAL.
+     * Vulkan validates the descriptor layout against the tracked layout even
+     * though both are read-only, so re-issue one idempotent transition before
+     * binding the textures. GL has no layout tracking and this is a no-op. */
+    rhi_cmd_transition_depth_to_read(cmd, sys->gbuf_depth);
+#endif
 
     rhi_cmd_bind_pipeline(cmd, sys->lighting_pipeline);
 

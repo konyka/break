@@ -45,6 +45,10 @@ typedef struct {
 
     /* Pipelines. */
     RHIPipeline gbuffer_pipeline;     /* G-Buffer write (geometry pass).       */
+    /* R560: skinned G-Buffer variant -- same MRT outputs as gbuffer_pipeline
+     * but with the 64B skinned vertex layout and per-joint current/previous
+     * pose texel fetch (per-object velocity for skinned geometry). */
+    RHIPipeline gbuffer_skinned_pipeline;
     RHIPipeline lighting_pipeline;    /* Full-screen quad: G-Buffer -> shaded. */
     /* R442: texture-array G-Buffer variant (gbuffer_arr*) for the
      * material-indirect single-execute mega draw. Invalid handle disables
@@ -71,6 +75,12 @@ typedef struct {
     i32 _loc_gbuf_arr_view;
     i32 _loc_gbuf_arr_proj;
     i32 _loc_gbuf_arr_prev_mvp;
+
+    /* R560: cached uniform locations of gbuffer_skinned_pipeline (-1 if absent). */
+    i32 _loc_gbuf_skinned_model;
+    i32 _loc_gbuf_skinned_view;
+    i32 _loc_gbuf_skinned_proj;
+    i32 _loc_gbuf_skinned_prev_mvp;
 
     /* Cached lighting-pass uniform locations (-1 if absent). */
     i32 _loc_inv_vp;
