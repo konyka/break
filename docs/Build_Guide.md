@@ -129,6 +129,16 @@ ctest --test-dir build-win-clang -LE graphics --output-on-failure
 
 `test_shader_io` 在 Windows CTest 中启用，源码路径同时支持 `/` 与 `\\` 分隔符。`test_vulkan` 需要真实 WGL/GPU 环境，因此保留 `graphics` 标签并从 headless CI 中排除。
 
+在具备本机 GPU 的 Windows 环境可额外执行完整 graphics 集成测试：
+
+```powershell
+Push-Location engine
+..\build-win-clang\test_vulkan.exe
+Pop-Location
+```
+
+该测试覆盖 WGL OpenGL 4.5、IBL cubemap capture/convolution/sample，以及 indirect 和 material-array 图形门禁。
+
 #### 使用 MSVC (Visual Studio)
 
 在 Visual Studio Developer Command Prompt 中：

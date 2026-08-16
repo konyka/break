@@ -201,6 +201,18 @@ TEST(gl_ibl_graphics_gate_runs_real_shared_test)
 #endif
 }
 
+/* LightSystem owns the full clustered-light grid (>1 MiB). The Windows main
+ * thread stack cannot hold it as a local in the graphics integration test. */
+TEST(ibl_graphics_gate_keeps_cluster_grid_off_stack)
+{
+    char src[131072];
+    ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
+    const char *ibl = strstr(src, "static bool tv_test_ibl");
+    ASSERT_NOT_NULL(ibl);
+    ASSERT_NOT_NULL(strstr(ibl, "LightSystem *ls = calloc(1, sizeof(*ls))"));
+    ASSERT_TRUE(strstr(ibl, "LightSystem ls;") == NULL);
+}
+
 TEST(forward_velocity_uses_single_pass_mrt_contract)
 {
     char src[131072];
@@ -430,6 +442,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ibl_capture_uses_to_sun_direction);
     RUN_TEST(ibl_runtime_recapture_contract);
     RUN_TEST(gl_ibl_graphics_gate_runs_real_shared_test);
+    RUN_TEST(ibl_graphics_gate_keeps_cluster_grid_off_stack);
     RUN_TEST(forward_velocity_uses_single_pass_mrt_contract);
     RUN_TEST(vulkan_ibl_gate_uses_compatible_vertex_contract);
     RUN_TEST(transparent_motion_vectors_do_not_alpha_blend_rt1);

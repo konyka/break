@@ -1663,3 +1663,7 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - Native WGL OpenGL 4.5 context creation and non-graphics CTest coverage pass.
 - CI adds a Windows Clang headless job; GPU-dependent `test_vulkan` remains under the `graphics` label.
 - `test_shader_io` now validates Windows path separators and bounded source reads.
+- Windows WGL graphics integration is verified end-to-end: TEST 7 IBL and the
+  subsequent indirect/material-array gates pass. The former `0xC00000FD`
+  failure was a test-stack overflow from local `LightSystem` storage; its
+  clustered-light grid is now heap allocated by the integration test.

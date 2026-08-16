@@ -1198,15 +1198,22 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
     free(vsrc);
     free(fsrc);
 
-    LightSystem ls;
-    light_system_init(&ls, rs->device);
-    bool gpu_cull_ok = light_system_init_gpu_cull(&ls);
-    light_system_add_dir(&ls, 0.3f, -0.7f, 0.5f, 1.0f, 0.95f, 0.85f);
-    light_system_add_point(&ls, 0.0f, 1.0f, 2.0f, 8.0f, 1.0f, 0.6f, 0.3f);
+    /* LightSystem contains the full clustered-light grid, which exceeds the
+     * default Windows thread stack when this integration test enters IBL. */
+    LightSystem *ls = calloc(1, sizeof(*ls));
+    bool gpu_cull_ok = false;
+    if (ls) {
+        light_system_init(ls, rs->device);
+        gpu_cull_ok = light_system_init_gpu_cull(ls);
+        light_system_add_dir(ls, 0.3f, -0.7f, 0.5f, 1.0f, 0.95f, 0.85f);
+        light_system_add_point(ls, 0.0f, 1.0f, 2.0f, 8.0f, 1.0f, 0.6f, 0.3f);
+    } else {
+        LOG_ERROR("FAIL: IBL light-system allocation");
+    }
 
     bool sample_ok = false;
     RHIOffscreenFBO scene = {0};
-    if (gen_ok && rhi_handle_valid(cl_pipe) && iw > 0u && ih > 0u) {
+    if (ls && gen_ok && rhi_handle_valid(cl_pipe) && iw > 0u && ih > 0u) {
         scene = rhi_offscreen_fbo_create_fmt(
             rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
         bool scene_ok = rhi_handle_valid(scene.fb) &&
@@ -1231,10 +1238,10 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
         u32 ierr = scene_ok ? 0u : 1u;
         for (u32 f = 0; scene_ok && f < 8u; f++) {
             if (gpu_cull_ok) {
-                light_system_upload_lights(&ls);
+                light_system_upload_lights(ls);
             } else {
-                light_system_cull(&ls, &view, &proj, iw, ih);
-                light_system_upload(&ls);
+                light_system_cull(ls, &view, &proj, iw, ih);
+                light_system_upload(ls);
             }
 
             RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
@@ -1244,7 +1251,7 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
             rhi_cmd_clear_depth(cmd);
             if (gpu_cull_ok) {
                 Mat4 vp = mat4_mul(proj, view);
-                light_system_cull_gpu(&ls, cmd, &vp.e[0][0], iw, ih);
+                light_system_cull_gpu(ls, cmd, &vp.e[0][0], iw, ih);
             }
             rhi_cmd_bind_pipeline(cmd, cl_pipe);
             rhi_cmd_set_uniform_mat4(cmd, l_model, &model.e[0][0]);
@@ -1256,10 +1263,10 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
             rhi_cmd_set_uniform_f32(cmd, l_sh, (f32)ih);
             rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
             rhi_cmd_set_uniform_f32(cmd, l_far, 100.0f);
-            rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls.point_count);
-            rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls.dir_count);
-            rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls),
-                                       light_system_grid_slot(&ls));
+            rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls->point_count);
+            rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls->dir_count);
+            rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                                       light_system_grid_slot(ls));
             rhi_cmd_bind_material_textures_ibl(cmd,
                 rs->test_tex, rs->test_tex, rs->test_tex, rs->test_tex,
                 rs->test_tex, rs->test_tex, rs->sampler,
@@ -1299,7 +1306,10 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
 
     if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
     if (rhi_handle_valid(cl_pipe)) rhi_pipeline_destroy(rs->device, cl_pipe);
-    light_system_shutdown(&ls);
+    if (ls) {
+        light_system_shutdown(ls);
+        free(ls);
+    }
     ibl_destroy(&ibl, rs->device);
     return gen_ok && sample_ok;
 }
