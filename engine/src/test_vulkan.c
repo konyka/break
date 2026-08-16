@@ -19,13 +19,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#ifdef _WIN32
-#include <direct.h>
-#define tv_mkdir(p) _mkdir(p)
-#else
-#include <sys/stat.h>
-#define tv_mkdir(p) mkdir(p, 0755)
-#endif
+#include <platform/file.h>
 
 /* Insert `#define <name> 1` right after the first (`#version`) line. */
 static char *tv_inject_define(const char *src, usize len, const char *name, usize *out_len) {
@@ -118,8 +112,8 @@ static void golden_downsample(const u8 *rgba, u32 w, u32 h, u8 *grid /* GW*GH*3 
 }
 
 static bool golden_write_ppm(const char *path, const u8 *grid) {
-    tv_mkdir("tests");
-    tv_mkdir("tests/golden");
+    platform_mkdir("tests");
+    platform_mkdir("tests/golden");
     FILE *f = fopen(path, "wb");
     if (!f) return false;
     fprintf(f, "P6\n%d %d\n255\n", GOLDEN_GW, GOLDEN_GH);
