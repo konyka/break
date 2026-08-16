@@ -61,12 +61,12 @@ static void test_visitor(const char *rel_path, const char *abs_path,
 }
 
 TEST(dir_foreach_visits_nested_entries) {
-    char dir[256], sub[512], file[512];
+    char dir[256], sub[512], file[1024];
     test_tmp(dir, sizeof(dir), "foreach");
     platform_mkdir(dir);
     snprintf(sub, sizeof(sub), "%s/sub", dir);
     platform_mkdir(sub);
-    snprintf(file, sizeof(file), "%s/sub/inner.txt", sub);
+    snprintf(file, sizeof(file), "%s/inner.txt", sub);
     FILE *f = fopen(file, "wb");
     ASSERT_NOT_NULL(f);
     fwrite("x", 1, 1, f);
@@ -86,8 +86,8 @@ TEST(dir_foreach_visits_nested_entries) {
 }
 
 TEST_MAIN_BEGIN()
-RUN_TEST(mkdir_creates_directory)
-RUN_TEST(file_size_matches_written_bytes)
-RUN_TEST(file_mtime_nonzero_after_write)
-RUN_TEST(dir_foreach_visits_nested_entries)
+    RUN_TEST(mkdir_creates_directory);
+    RUN_TEST(file_size_matches_written_bytes);
+    RUN_TEST(file_mtime_nonzero_after_write);
+    RUN_TEST(dir_foreach_visits_nested_entries);
 TEST_MAIN_END()

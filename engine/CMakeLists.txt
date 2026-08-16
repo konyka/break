@@ -96,6 +96,7 @@ add_library(engine STATIC
     src/platform/input.c
     src/platform/time.c
     src/platform/filewatch.c
+    src/platform/file.c
     src/math/math.c
     src/rhi/rhi.c
     src/renderer/camera.c
@@ -370,7 +371,11 @@ add_executable(test_vulkan src/test_vulkan.c)
 target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
 target_link_libraries(test_vulkan PRIVATE engine m)
 
-add_executable(packer tools/packer.c)
+add_executable(packer tools/packer.c src/platform/file.c)
+target_include_directories(packer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(packer PRIVATE -Wno-format-truncation)
 endif()
@@ -379,7 +384,7 @@ if(ENGINE_PLATFORM STREQUAL "windows")
 endif()
 
 # Verification tool: mounts a .pak via VFS and compares against source files
-add_executable(verify_pak tools/verify_pak.c src/asset/vfs.c src/core/log.c)
+add_executable(verify_pak tools/verify_pak.c src/asset/vfs.c src/core/log.c src/platform/file.c)
 target_include_directories(verify_pak PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/external
