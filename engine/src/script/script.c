@@ -1,10 +1,10 @@
 #include <script/script.h>
 #include <core/log.h>
+#include <platform/file.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 void script_engine_init(ScriptEngine *se) {
     memset(se, 0, sizeof(*se));
@@ -243,9 +243,7 @@ void script_call(ScriptEngine *se, const char *func_name) {
 }
 
 static u32 file_mtime(const char *path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-    return (u32)st.st_mtime;
+    return (u32)platform_file_mtime(path);
 }
 
 void script_reload_if_changed(ScriptEngine *se, const char *path) {
