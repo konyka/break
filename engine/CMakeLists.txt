@@ -675,6 +675,12 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_vfs PRIVATE m)
     add_test(NAME test_vfs COMMAND test_vfs)
 
+    # test_platform_file: platform filesystem abstraction (TDD)
+    add_executable(test_platform_file tests/test_platform_file.c src/platform/file.c)
+    target_include_directories(test_platform_file PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_file PRIVATE m)
+    add_test(NAME test_platform_file COMMAND test_platform_file)
+
     # R390: glTF loader input validation. Every attribute loop runs before the
     # first rhi_buffer_create, so the malformed-model cases reproduce headlessly
     # with the test's link-only RHI stubs.
