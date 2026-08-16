@@ -504,7 +504,7 @@ if(ENGINE_BUILD_TESTS)
     # test_net_replication: transform snapshot broadcast over UDP loopback
     add_executable(test_net_replication tests/test_net_replication.c
         src/network/net_replication.c src/network/packet.c src/network/network.c
-        src/platform/time.c)
+        src/platform/time.c src/platform/file.c)
     target_include_directories(test_net_replication PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_net_replication PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
@@ -519,7 +519,7 @@ if(ENGINE_BUILD_TESTS)
     # explicitly and run by hand under ASan/UBSan.
     add_executable(fuzz_net_packet EXCLUDE_FROM_ALL tests/fuzz_net_packet.c
         src/network/net_replication.c src/network/packet.c src/network/network.c
-        src/platform/time.c src/core/log.c)
+        src/platform/time.c src/platform/file.c src/core/log.c)
     target_include_directories(fuzz_net_packet PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(fuzz_net_packet PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
@@ -597,8 +597,8 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_physics PRIVATE m)
     add_test(NAME test_physics COMMAND test_physics)
 
-    # test_script: needs script.c + log.c
-    add_executable(test_script tests/test_script.c src/script/script.c src/core/log.c)
+    # test_script: needs script.c + log.c + file.c
+    add_executable(test_script tests/test_script.c src/script/script.c src/platform/file.c src/core/log.c)
     target_include_directories(test_script PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_script PRIVATE m)
     add_test(NAME test_script COMMAND test_script)

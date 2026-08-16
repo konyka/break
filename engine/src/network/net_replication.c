@@ -1,15 +1,11 @@
 #include "net_replication.h"
 
+#include <platform/file.h>
 #include <platform/time.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if !defined(ENGINE_PLATFORM_WINDOWS)
-#  include <dirent.h>
-#  include <sys/stat.h>
-#endif
 
 static bool net_repl_parse_payload(const PacketBuffer *buf, NetTransformSnapshot *out,
                                    u32 max_count, u32 *out_count);
@@ -272,14 +268,7 @@ static bool net_repl_peer_apply_line(NetReplicator *rep, const char *line) {
 
 static bool net_repl_mkdir_p(const char *dir) {
     if (!dir || !dir[0]) return false;
-#if !defined(ENGINE_PLATFORM_WINDOWS)
-    struct stat st;
-    if (stat(dir, &st) == 0) return S_ISDIR(st.st_mode);
-    return mkdir(dir, 0755) == 0;
-#else
-    (void)dir;
-    return false;
-#endif
+    return platform_mkdir(dir);
 }
 
 static bool net_repl_peer_file_path(char *path, usize cap, const char *dir,
@@ -292,48 +281,48 @@ static bool net_repl_peer_file_path(char *path, usize cap, const char *dir,
 /* Baseline snapshots own peer_*.peer files. Once a complete replacement has
  * been written, discard prior snapshot entries so evicted peers cannot return
  * on the next directory load. */
-static bool net_repl_peer_remove_stale_files(const NetReplicator *rep, const char *dir) {
-#if !defined(ENGINE_PLATFORM_WINDOWS)
-    DIR *d = opendir(dir);
-    if (!d) return false;
+typedef struct {
+    const NetReplicator *rep;
+    const char *dir;
+    bool ok;
+} NetReplStaleCtx;
 
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t name_len = strlen(ent->d_name);
-        if (strncmp(ent->d_name, "peer_", 5u) != 0 || name_len < 10u ||
-            strcmp(ent->d_name + name_len - 5u, ".peer") != 0)
-            continue;
+static void net_repl_stale_visitor(const char *rel_path, const char *abs_path,
+                                   bool is_directory, void *user) {
+    NetReplStaleCtx *ctx = (NetReplStaleCtx *)user;
+    if (!ctx->ok || is_directory) return;
 
-        bool current = false;
-        for (u32 i = 0u; i < rep->peer_count; i++) {
-            char current_path[512];
-            if (!net_repl_peer_file_path(current_path, sizeof(current_path), dir,
-                                         i, &rep->peers[i])) {
-                closedir(d);
-                return false;
-            }
-            const char *current_name = strrchr(current_path, '/');
-            current_name = current_name ? current_name + 1 : current_path;
-            if (strcmp(ent->d_name, current_name) == 0) {
-                current = true;
-                break;
-            }
+    size_t name_len = strlen(rel_path);
+    if (name_len < 10u || strncmp(rel_path, "peer_", 5u) != 0 ||
+        strcmp(rel_path + name_len - 5u, ".peer") != 0)
+        return;
+
+    bool current = false;
+    for (u32 i = 0u; i < ctx->rep->peer_count; i++) {
+        char current_path[512];
+        if (!net_repl_peer_file_path(current_path, sizeof(current_path), ctx->dir,
+                                     i, &ctx->rep->peers[i])) {
+            ctx->ok = false;
+            return;
         }
-        if (current) continue;
-
-        char stale_path[512];
-        int n = snprintf(stale_path, sizeof(stale_path), "%s/%s", dir, ent->d_name);
-        if (n < 0 || (usize)n >= sizeof(stale_path) || remove(stale_path) != 0) {
-            closedir(d);
-            return false;
+        const char *current_name = strrchr(current_path, '/');
+        current_name = current_name ? current_name + 1 : current_path;
+        if (strcmp(rel_path, current_name) == 0) {
+            current = true;
+            break;
         }
     }
-    return closedir(d) == 0;
-#else
-    (void)rep;
-    (void)dir;
-    return false;
-#endif
+    if (current) return;
+
+    if (!platform_file_remove(abs_path))
+        ctx->ok = false;
+}
+
+static bool net_repl_peer_remove_stale_files(const NetReplicator *rep, const char *dir) {
+    NetReplStaleCtx ctx = { rep, dir, true };
+    if (!platform_dir_foreach(dir, "", net_repl_stale_visitor, &ctx))
+        return false;
+    return ctx.ok;
 }
 
 /* R434/R453: cumulative, wraparound-safe ack of the reliable window. For
@@ -872,12 +861,57 @@ bool net_replicator_peer_save_dir(const NetReplicator *rep, const char *dir) {
     return net_repl_peer_remove_stale_files(rep, dir);
 }
 
+typedef struct {
+    NetReplicator *rep;
+    NetRepPeerStats *saved_peers;
+    u32 saved_count;
+    u32 saved_evicted;
+    bool ok;
+} NetReplLoadCtx;
+
+static void net_repl_load_visitor(const char *rel_path, const char *abs_path,
+                                  bool is_directory, void *user) {
+    NetReplLoadCtx *ctx = (NetReplLoadCtx *)user;
+    if (!ctx->ok) return;
+
+    size_t nlen = strlen(rel_path);
+    bool is_peer = (nlen >= 6u && strcmp(rel_path + nlen - 5u, ".peer") == 0);
+
+    if (is_directory) {
+        if (is_peer) {
+            /* A .peer entry must be a regular file; directories are corrupt. */
+            memcpy(ctx->rep->peers, ctx->saved_peers,
+                   sizeof(NetRepPeerStats) * NET_REP_MAX_PEERS);
+            ctx->rep->peer_count = ctx->saved_count;
+            ctx->rep->peer_evicted = ctx->saved_evicted;
+            ctx->ok = false;
+        }
+        return;
+    }
+
+    if (!is_peer) return;
+
+    FILE *f = fopen(abs_path, "r");
+    if (!f) return;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f))
+        net_repl_peer_apply_line(ctx->rep, line);
+
+    bool read_ok = !ferror(f);
+    if (fclose(f) != 0) read_ok = false;
+    if (!read_ok) {
+        memcpy(ctx->rep->peers, ctx->saved_peers,
+               sizeof(NetRepPeerStats) * NET_REP_MAX_PEERS);
+        ctx->rep->peer_count = ctx->saved_count;
+        ctx->rep->peer_evicted = ctx->saved_evicted;
+        ctx->ok = false;
+    }
+}
+
 bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
     if (!rep || !dir || !dir[0]) return false;
 
-#if !defined(ENGINE_PLATFORM_WINDOWS)
-    DIR *d = opendir(dir);
-    if (!d) return false;
     /* Directory scans tolerate entries that disappear before fopen, but once
      * an entry is open, a read/close error invalidates the whole snapshot. */
     NetRepPeerStats saved_peers[NET_REP_MAX_PEERS];
@@ -885,39 +919,20 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
     u32 saved_count = rep->peer_count;
     u32 saved_evicted = rep->peer_evicted;
     rep->peer_count = 0u;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t nlen = strlen(ent->d_name);
-        if (nlen < 6u || strcmp(ent->d_name + nlen - 5u, ".peer") != 0) continue;
-        char path[512];
-        int n = snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-        if (n < 0 || (usize)n >= sizeof(path)) continue;
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        char line[512];
-        while (fgets(line, sizeof(line), f))
-            net_repl_peer_apply_line(rep, line);
-        bool read_ok = !ferror(f);
-        if (fclose(f) != 0) read_ok = false;
-        if (!read_ok) {
-            closedir(d);
-            memcpy(rep->peers, saved_peers, sizeof(saved_peers));
-            rep->peer_count = saved_count;
-            rep->peer_evicted = saved_evicted;
-            return false;
-        }
+
+    NetReplLoadCtx ctx = { rep, saved_peers, saved_count, saved_evicted, true };
+    if (!platform_dir_foreach(dir, "", net_repl_load_visitor, &ctx)) {
+        rep->peer_count = saved_count;
+        return false;
     }
-    closedir(d);
+    if (!ctx.ok)
+        return false;
 
     char delta_path[512];
     int delta_n = snprintf(delta_path, sizeof(delta_path), "%s/delta.log", dir);
     if (delta_n >= 0 && (usize)delta_n < sizeof(delta_path))
         net_replicator_peer_load_delta(rep, delta_path);
     return true;
-#else
-    (void)rep;
-    return false;
-#endif
 }
 
 /* R435: live delta.log rotation threshold (see net_replication.h). */
