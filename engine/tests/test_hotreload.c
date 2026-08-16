@@ -6,6 +6,7 @@
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 static RHIShader  s_shader  = {1, 1};
@@ -103,17 +104,18 @@ TEST(hotreload_pipeline_rejects_path_truncation)
     char vert[257], frag[257];
     char tmp[256];
     test_tmp(tmp, sizeof tmp, "hr_long");
+    TEST_MKDIR(tmp);
     for (char *c = tmp; *c; c++) if (*c == '\\') *c = '/';
     usize t = strlen(tmp);
     ASSERT_TRUE(t > 0 && t < 256);
     memcpy(vert, tmp, t);
     vert[t++] = '/';
-    memset(vert + t, 'v', 256u - t - 1u);
+    memset(vert + t, 'v', 256u - t);
     vert[256] = '\0';
     t = strlen(tmp);
     memcpy(frag, tmp, t);
     frag[t++] = '/';
-    memset(frag + t, 'f', 256u - t - 1u);
+    memset(frag + t, 'f', 256u - t);
     frag[256] = '\0';
     ASSERT_TRUE(write_file(vert, 16, '#'));
     ASSERT_TRUE(write_file(frag, 16, '#'));

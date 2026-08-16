@@ -234,7 +234,7 @@ TEST(profiler_nesting_correct_beyond_max_regions)
     ASSERT_STR_EQ(f->regions[0].name, "outer");
     /* Pre-fix the outer region was finalized early by one of the fill pops
      * above (before the sleep), so its elapsed stayed below 500us. */
-    ASSERT_TRUE(f->regions[0].elapsed_us >= 0u);
+    (void)f;
     ASSERT_EQ(g_profiler.open_count, 0u);
 }
 
@@ -372,8 +372,6 @@ TEST(profiler_sequential_then_nested_indices)
     const ProfilerFrame *f = profiler_last_frame();
     ASSERT_NOT_NULL(f);
     ASSERT_EQ(f->region_count, 3u);
-    ASSERT_TRUE(f->regions[0].elapsed_us >= 0u);  /* flat measured */
-    ASSERT_TRUE(f->regions[2].elapsed_us >= 0u);  /* inner measured */
     ASSERT_TRUE(f->regions[1].elapsed_us >= f->regions[2].elapsed_us); /* outer wraps inner */
 }
 
