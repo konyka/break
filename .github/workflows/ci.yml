@@ -50,3 +50,19 @@ jobs:
 
       - name: Test (headless suite)
         run: ctest --test-dir build -LE graphics --output-on-failure
+
+  windows-clang:
+    name: Windows + Clang (headless)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: ctest --test-dir build -LE graphics --output-on-failure

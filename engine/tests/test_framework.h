@@ -128,6 +128,7 @@ static int g_test_fail = 0;
     int _fail_before = g_test_fail; \
     g_test_count++; \
     printf("  [%d] %s ... ", g_test_count, #name); \
+    fflush(stdout); \
     test_##name(); \
     if (g_test_fail == _fail_before) { \
         g_test_pass++; \

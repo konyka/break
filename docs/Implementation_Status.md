@@ -1657,3 +1657,9 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - Windows + Clang/LLVM + Ninja 原生构建通过。
 - `ctest -LE graphics` 非图形测试 `40/40` 通过。
 - 图形运行时验证仍需在具备 WGL/Vulkan 驱动的目标机上执行。
+## Windows runtime verification
+
+- Clang 22 + Ninja builds successfully on Windows.
+- Native WGL OpenGL 4.5 context creation and non-graphics CTest coverage pass.
+- CI adds a Windows Clang headless job; GPU-dependent `test_vulkan` remains under the `graphics` label.
+- `test_shader_io` now validates Windows path separators and bounded source reads.

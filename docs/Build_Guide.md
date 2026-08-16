@@ -117,6 +117,18 @@ cmake --build build-asan
 
 ### 2.4 Windows 平台构建
 
+#### Windows + Clang 验证
+
+本机已验证 Clang 22 + Ninja + WGL OpenGL 4.5；无 GPU 的 CI 仅运行非 `graphics` CTest：
+
+```powershell
+cmake -S engine -B build-win-clang -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-win-clang --parallel
+ctest --test-dir build-win-clang -LE graphics --output-on-failure
+```
+
+`test_shader_io` 在 Windows CTest 中启用，源码路径同时支持 `/` 与 `\\` 分隔符。`test_vulkan` 需要真实 WGL/GPU 环境，因此保留 `graphics` 标签并从 headless CI 中排除。
+
 #### 使用 MSVC (Visual Studio)
 
 在 Visual Studio Developer Command Prompt 中：

@@ -659,9 +659,7 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_shader_io tests/test_shader_io.c src/core/shader_io.c src/core/log.c)
     target_include_directories(test_shader_io PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_shader_io PRIVATE m)
-    if(NOT ENGINE_PLATFORM STREQUAL "windows")
-        add_test(NAME test_shader_io COMMAND test_shader_io)
-    endif()
+    add_test(NAME test_shader_io COMMAND test_shader_io)
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under

@@ -6,6 +6,8 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
     const char *slash = strrchr(__FILE__, '/');
+    const char *backslash = strrchr(__FILE__, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
     const char *candidates[3] = { NULL, name, NULL };
     if (slash) {
         snprintf(rel, sizeof(rel), "%.*s/../shaders/%s",
@@ -27,15 +29,27 @@ static bool read_engine_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
     const char *slash = strrchr(__FILE__, '/');
+    const char *backslash = strrchr(__FILE__, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
     if (!slash) return false;
     snprintf(rel, sizeof(rel), "%.*s/../src/%s",
              (int)(slash - __FILE__), __FILE__, name);
     FILE *f = fopen(rel, "rb");
     if (!f) return false;
-    usize n = fread(buf, 1, cap - 1, f);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long size = ftell(f);
+    if (size < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    usize limit = (usize)size < cap - 1u ? (usize)size : cap - 1u;
+    usize n = fread(buf, 1, limit, f);
     fclose(f);
     buf[n] = '\0';
-    return n > 0;
+    return n == limit && n > 0;
 }
 
 /* R444: per-pid path — parallel ctest trees raced on the fixed name. */
@@ -159,7 +173,7 @@ TEST(ibl_capture_uses_to_sun_direction)
  * to-sun direction, and emits only one standalone GPU dispatch per frame. */
 TEST(ibl_runtime_recapture_contract)
 {
-    char src[1048576];
+    static char src[524288];
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "bool ibl_static = false"));
     ASSERT_NOT_NULL(strstr(src, "BREAK_IBL_STATIC"));
@@ -246,7 +260,7 @@ TEST(transparent_motion_vectors_do_not_alpha_blend_rt1)
 
 TEST(vulkan_command_buffer_updates_have_transfer_dst_usage)
 {
-    char src[524288];
+    static char src[524288];
     ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
     /* rhi_cmd_update_buffer records vkCmdUpdateBuffer, whose target must
      * advertise TRANSFER_DST even when it is a UBO or uniform texel buffer. */
@@ -317,7 +331,7 @@ TEST(deferred_skinned_gbuffer_contract)
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.skinned_vertex"));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.uses_texel_buffer"));
 
-    char main_src[1048576];
+    static char main_src[524288];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     ASSERT_NOT_NULL(strstr(main_src, "dsys->gbuffer_skinned_pipeline"));
     ASSERT_NOT_NULL(strstr(main_src, "skeleton_upload(&render.skeleton)"));
@@ -328,7 +342,7 @@ TEST(deferred_skinned_gbuffer_regressions_are_guarded)
     /* rhi_vk.c is ~350KB; the clustered definition sits ~220KB in, so the
      * buffer must comfortably cover it (1MB stack buffers are already the
      * pattern in this suite for main.c). */
-    char vk_src[524288];
+    static char vk_src[524288];
     ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", vk_src, sizeof(vk_src)));
 
     /* A texel-buffer skinned G-Buffer still uses the ordinary 256B
@@ -348,7 +362,7 @@ TEST(deferred_skinned_gbuffer_regressions_are_guarded)
     ASSERT_NOT_NULL(strstr(layout, "return 128;") );
     ASSERT_NOT_NULL(strstr(layout, "return 192;") );
 
-    char main_src[1048576];
+    static char main_src[524288];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     const char *skinned = strstr(main_src,
                                  "rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_skinned_pipeline)");
@@ -383,7 +397,7 @@ TEST(static_mega_geometry_contract_is_documented_and_unchanged)
 
     /* The bake excludes skinned nodes and pre-transforms positions + normals
      * into world space so u_model=identity works for the GPU-driven paths. */
-    char main_src[1048576];
+    static char main_src[524288];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     ASSERT_NOT_NULL(strstr(main_src, "Vertices are pre-transformed to world space"));
     ASSERT_NOT_NULL(strstr(main_src, "nd->skinned"));
