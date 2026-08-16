@@ -1139,9 +1139,6 @@ TEST(peer_load_delta_reports_read_failure_preserves_existing_peers)
 
 TEST(peer_save_dir)
 {
-#if defined(ENGINE_PLATFORM_WINDOWS)
-    /* load_dir uses opendir — Linux-only for now */
-#else
     time_init();
     NetReplicator rep = {0};
     ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
@@ -1162,8 +1159,8 @@ TEST(peer_save_dir)
                                         &b, out, 1u, &out_count) > 0);
     ASSERT_EQ(net_replicator_peer_count(&rep), 2u);
 
-    char dir[64];
-    snprintf(dir, sizeof(dir), "/tmp/netrep_dir_%d", (int)getpid());
+    char dir[160];
+    test_tmp(dir, sizeof(dir), "netrep_dir");
     ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
 
     NetReplicator loaded = {0};
@@ -1171,9 +1168,14 @@ TEST(peer_save_dir)
     ASSERT_TRUE(net_replicator_peer_load_dir(&loaded, dir));
     ASSERT_EQ(net_replicator_peer_count(&loaded), 2u);
 
+    char p0[192], p1[192];
+    snprintf(p0, sizeof(p0), "%s/peer_000_127.0.0.1_20500.peer", dir);
+    snprintf(p1, sizeof(p1), "%s/peer_001_127.0.0.1_20501.peer", dir);
     net_replicator_shutdown(&rep);
     net_replicator_shutdown(&loaded);
-#endif
+    remove(p0);
+    remove(p1);
+    TEST_RMDIR(dir);
 }
 
 /* R481: each directory baseline file must propagate flush/close failures.
@@ -1208,7 +1210,7 @@ TEST(peer_save_dir_reports_write_failure)
 TEST(peer_save_dir_rejects_path_truncation)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
-    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
+    /* The 500-byte deep-dir fixture exceeds the Win32 path limit. */
 #else
     NetReplicator rep = {0};
     NetRepPeerStats peer = {0};
@@ -1230,7 +1232,7 @@ TEST(peer_save_dir_rejects_path_truncation)
 TEST(peer_load_dir_skips_truncated_entry_path)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
-    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
+    /* The 508-byte deep-dir fixture exceeds the Win32 path limit. */
 #else
     char base[128], dir[512], prefix[1024], peer_file[1024];
     ASSERT_TRUE(make_deep_dir(dir, sizeof(dir), base, sizeof(base), 508u));
@@ -1261,9 +1263,6 @@ TEST(peer_load_dir_skips_truncated_entry_path)
  * their current peer baseline to remain available for a later retry. */
 TEST(peer_load_dir_failure_preserves_existing_peers)
 {
-#if defined(ENGINE_PLATFORM_WINDOWS)
-    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
-#else
     NetReplicator rep = {0};
     NetRepPeerStats peer = {0};
     strncpy(peer.addr.host, "127.0.0.1", sizeof(peer.addr.host) - 1u);
@@ -1272,13 +1271,12 @@ TEST(peer_load_dir_failure_preserves_existing_peers)
     rep.peers[0] = peer;
     rep.peer_count = 1u;
 
-    char missing_dir[128];
+    char missing_dir[160];
     test_tmp(missing_dir, sizeof(missing_dir), "r488_missing_netrep_dir");
     remove(missing_dir);
     ASSERT_FALSE(net_replicator_peer_load_dir(&rep, missing_dir));
     ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
     ASSERT_TRUE(net_address_equal(&rep.peers[0].addr, &peer.addr));
-#endif
 }
 
 /* An entry can look like a peer file and open successfully while failing on
@@ -1314,8 +1312,6 @@ TEST(peer_load_dir_reports_entry_read_failure_preserves_existing_peers)
 
 TEST(peer_save_delta)
 {
-#if defined(ENGINE_PLATFORM_WINDOWS)
-#else
     time_init();
     NetReplicator rep = {0};
     ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
@@ -1330,13 +1326,13 @@ TEST(peer_save_delta)
     u32 len = build_heartbeat_wire(wire, 1u, (u32)(time_microseconds() / 1000ull));
     ASSERT_TRUE(net_replicator_feed_from(&rep, wire, len, &peer, out, 1u, &out_count) > 0);
 
-    char dir[64];
-    snprintf(dir, sizeof(dir), "/tmp/netrep_delta_%d", (int)getpid());
+    char dir[160];
+    test_tmp(dir, sizeof(dir), "netrep_delta");
     ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
 
     rep.peers[0].roundtrip_ms = 88.0f;
     rep.peers[0].dirty = true;
-    char delta[128];
+    char delta[192];
     snprintf(delta, sizeof(delta), "%s/delta.log", dir);
     ASSERT_TRUE(net_replicator_peer_save_delta(&rep, delta));
 
@@ -1348,9 +1344,13 @@ TEST(peer_save_delta)
     ASSERT_TRUE(ps != NULL);
     ASSERT_FLOAT_EQ(ps->roundtrip_ms, 88.0f, 0.01f);
 
+    char p0[192];
+    snprintf(p0, sizeof(p0), "%s/peer_000_127.0.0.1_20600.peer", dir);
     net_replicator_shutdown(&rep);
     net_replicator_shutdown(&loaded);
-#endif
+    remove(delta);
+    remove(p0);
+    TEST_RMDIR(dir);
 }
 
 /* R479: a failed append must leave dirty state intact so the peer update can
@@ -1379,8 +1379,6 @@ TEST(peer_delta_rotate)
     /* R435: once delta.log outgrows netrep_delta_max_bytes, peer_save_delta
      * rewrites the full baseline (.peer files) and rebuilds delta.log from
      * just the header; load_dir must still recover the full latest state. */
-#if defined(ENGINE_PLATFORM_WINDOWS)
-#else
     time_init();
     NetReplicator rep = {0};
     ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
@@ -1401,10 +1399,10 @@ TEST(peer_delta_rotate)
                                         &b, out, 1u, &out_count) > 0);
     ASSERT_EQ(net_replicator_peer_count(&rep), 2u);
 
-    char dir[64];
-    snprintf(dir, sizeof(dir), "/tmp/netrep_rot_%d", (int)getpid());
+    char dir[160];
+    test_tmp(dir, sizeof(dir), "netrep_rot");
     ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
-    char delta[128];
+    char delta[192];
     snprintf(delta, sizeof(delta), "%s/delta.log", dir);
 
     size_t old_max = netrep_delta_max_bytes;
@@ -1449,25 +1447,21 @@ TEST(peer_delta_rotate)
     }
     ASSERT_TRUE(found_a && found_b);
 
-    char p0[160], p1[160];
+    char p0[192], p1[192];
     snprintf(p0, sizeof(p0), "%s/peer_000_127.0.0.1_20800.peer", dir);
     snprintf(p1, sizeof(p1), "%s/peer_001_127.0.0.1_20801.peer", dir);
     remove(delta);
     remove(p0);
     remove(p1);
-    rmdir(dir);
+    TEST_RMDIR(dir);
     net_replicator_shutdown(&rep);
     net_replicator_shutdown(&loaded);
-#endif
 }
 
 /* A rotation rewrites a snapshot, so peer files absent from that snapshot
  * must not survive and resurrect peers which have since been evicted. */
 TEST(peer_delta_rotate_removes_stale_baseline_peers)
 {
-#if defined(ENGINE_PLATFORM_WINDOWS)
-    /* peer directory persistence uses POSIX mkdir/opendir in this build. */
-#else
     NetReplicator rep = {0};
     NetRepPeerStats a = {0}, b = {0};
     strncpy(a.addr.host, "127.0.0.1", sizeof(a.addr.host) - 1u);
@@ -1482,7 +1476,7 @@ TEST(peer_delta_rotate_removes_stale_baseline_peers)
 
     char dir[128], delta[160], stale[192];
     test_tmp(dir, sizeof(dir), "r547_netrep_rotate_stale_peer");
-    ASSERT_EQ(mkdir(dir, 0755), 0);
+    ASSERT_EQ(TEST_MKDIR(dir), 0);
     ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
     int n = snprintf(delta, sizeof(delta), "%s/delta.log", dir);
     ASSERT_TRUE(n >= 0 && (usize)n < sizeof(delta));
@@ -1508,15 +1502,12 @@ TEST(peer_delta_rotate_removes_stale_baseline_peers)
     remove(delta);
     remove(current);
     remove(stale);
-    ASSERT_EQ(rmdir(dir), 0);
-#endif
+    ASSERT_EQ(TEST_RMDIR(dir), 0);
 }
 
 TEST(peer_delta_no_rotate_below_threshold)
 {
-    /* R435: below the threshold nothing changes — pure append, no rewrite. */
-#if defined(ENGINE_PLATFORM_WINDOWS)
-#else
+    /* R435: below the threshold nothing changes ? pure append, no rewrite. */
     time_init();
     NetReplicator rep = {0};
     ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
@@ -1531,10 +1522,10 @@ TEST(peer_delta_no_rotate_below_threshold)
     u32 len = build_heartbeat_wire(wire, 1u, (u32)(time_microseconds() / 1000ull));
     ASSERT_TRUE(net_replicator_feed_from(&rep, wire, len, &peer, out, 1u, &out_count) > 0);
 
-    char dir[64];
-    snprintf(dir, sizeof(dir), "/tmp/netrep_norot_%d", (int)getpid());
+    char dir[160];
+    test_tmp(dir, sizeof(dir), "netrep_norot");
     ASSERT_TRUE(net_replicator_peer_save_dir(&rep, dir));
-    char delta[128];
+    char delta[192];
     snprintf(delta, sizeof(delta), "%s/delta.log", dir);
 
     size_t old_max = netrep_delta_max_bytes;
@@ -1560,15 +1551,13 @@ TEST(peer_delta_no_rotate_below_threshold)
     ASSERT_EQ(headers, 1u);
     ASSERT_EQ(appends, 3u);
 
-    char p0[160];
+    char p0[192];
     snprintf(p0, sizeof(p0), "%s/peer_000_127.0.0.1_20810.peer", dir);
     remove(delta);
     remove(p0);
-    rmdir(dir);
+    TEST_RMDIR(dir);
     net_replicator_shutdown(&rep);
-#endif
 }
-
 TEST(ordered_channels_per_peer)
 {
     /* R418: channel state is keyed per peer address. Two peers each starting

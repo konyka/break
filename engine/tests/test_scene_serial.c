@@ -54,8 +54,12 @@ TEST(load_binary_null_args)
 
 TEST(load_binary_nonexistent_file)
 {
+    char path[128];
+    test_tmp(path, sizeof(path), "scene_no_such_file.bscn");
+    remove(path);
+
     World w = {0};
-    ASSERT_TRUE(!scene_load_binary(&w, NULL, "/tmp/absolutely_nonexistent_12345.bscn"));
+    ASSERT_TRUE(!scene_load_binary(&w, NULL, path));
 }
 
 TEST(load_binary_bad_magic)
@@ -819,8 +823,12 @@ TEST(save_prefab_reports_close_failure)
 
 TEST(load_json_nonexistent)
 {
+    char path[128];
+    test_tmp(path, sizeof(path), "scene_no_such_file.json");
+    remove(path);
+
     World w = {0};
-    ASSERT_TRUE(!scene_load_json(&w, NULL, "/tmp/absolutely_nonexistent_67890.json"));
+    ASSERT_TRUE(!scene_load_json(&w, NULL, path));
 }
 
 TEST(save_json_null_world)

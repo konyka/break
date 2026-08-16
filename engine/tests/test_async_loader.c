@@ -230,7 +230,10 @@ TEST(async_loader_priority_ordering) {
     ASSERT_NOT_NULL(vfs);
     vfs_mount_dir(vfs, test_tmp_root());
 
-    /* Two low-priority files queued before a high-priority file. */
+    /* Queue one low-priority file before the high-priority file, then another
+     * low after it. This makes the completion order deterministic with a
+     * single I/O worker: the worker can finish low_a before high is enqueued,
+     * but it cannot also finish low_b before low_b is enqueued. */
     /* R444: per-pid paths — same-tree parallel ctest shared the cwd-relative files. */
     char pa[128], pb[128], pc[128];
     test_tmp(pa, sizeof pa, "async_pri_low_a.bin");
@@ -263,8 +266,8 @@ TEST(async_loader_priority_ordering) {
 
     /* Basenames: the /tmp mount resolves them to the per-pid files above. */
     u64 id_low_a = async_loader_request_priority(strrchr(pa, '/') + 1, pri_cb_low, NULL, 100);
-    u64 id_low_b = async_loader_request_priority(strrchr(pb, '/') + 1, pri_cb_low, NULL, 100);
     u64 id_high  = async_loader_request_priority(strrchr(pc, '/') + 1, pri_cb_high, NULL, 0);
+    u64 id_low_b = async_loader_request_priority(strrchr(pb, '/') + 1, pri_cb_low, NULL, 100);
     ASSERT_NEQ(id_low_a, (u64)0);
     ASSERT_NEQ(id_low_b, (u64)0);
     ASSERT_NEQ(id_high, (u64)0);

@@ -2732,11 +2732,11 @@ u32 last_collision_frame = 0;
 Vec3 prev_entity_pos = {.e={0,0,0}};
 bool recording_path = false;
 bool playing_path = false;
-bool path_offer_playback = false; /* R370: also set when path hits MAX_PATH */
+bool path_offer_playback = false; /* R370: also set when path hits CAM_PATH_CAPACITY */
 u32 path_count = 0;
 u32 path_idx = 0;
-#define MAX_PATH 600
-struct { f32 px,py,pz, yaw,pitch; } cam_path[MAX_PATH];
+#define CAM_PATH_CAPACITY 600
+struct { f32 px,py,pz, yaw,pitch; } cam_path[CAM_PATH_CAPACITY];
 /* FPS limit presets: 30, 60, 120, 144, 240, 0(unlimited) */
 static f32 fps_limits[] = {60.0f, 30.0f, 120.0f, 144.0f, 240.0f, 0.0f};
 static i32 fps_limit_idx = 0;
@@ -3841,7 +3841,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             camera.yaw += cam_spin_deg * (3.14159265f / 180.0f);
             camera._cy = cosf(camera.yaw); camera._sy = sinf(camera.yaw);
         }
-        if (recording_path && path_count < MAX_PATH) {
+        if (recording_path && path_count < CAM_PATH_CAPACITY) {
             cam_path[path_count].px = camera.position.e[0];
             cam_path[path_count].py = camera.position.e[1];
             cam_path[path_count].pz = camera.position.e[2];
@@ -3849,7 +3849,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             cam_path[path_count].pitch = camera.pitch;
             path_count++;
         }
-        if (recording_path && path_count >= MAX_PATH) {
+        if (recording_path && path_count >= CAM_PATH_CAPACITY) {
             recording_path = false;
             path_offer_playback = true; /* R370: was only set on manual ',' stop */
             LOG_INFO("Path recording FULL (%u frames). Press , to playback.", path_count);
@@ -5022,7 +5022,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             if (terrain.modify_count > 0) { u32 mq=0; for(u32 qi=1;qi<4;qi++) if(terrain.edit_quadrant[qi]>terrain.edit_quadrant[mq]) mq=qi; debug_ui_text(&ui, "Edit heatmap: NW:%u NE:%u SW:%u SE:%u  hottest:%s", terrain.edit_quadrant[0],terrain.edit_quadrant[1],terrain.edit_quadrant[2],terrain.edit_quadrant[3], mq==0?"NW":mq==1?"NE":mq==2?"SW":"SE"); }
             if (underwater) debug_ui_text(&ui, "[UNDERWATER] depth: %.1f m", water.water_y - camera.position.e[1]);
             if (water.enabled) debug_ui_text(&ui, "Water: y=%.1f %s coverage: %.1f%%  vol: %.0f m³  depth: avg=%.2f max=%.2f  centroid: (%.1f,%.1f)  shoreline: %u edges", water.water_y, underwater ? "(below)" : "", terrain_water_pct, terrain_water_vol, terrain_water_depth_avg, terrain_water_depth_max, terrain_water_cx, terrain_water_cz, terrain_shoreline);
-            if (recording_path) debug_ui_text(&ui, "[REC] Path: %u/%d frames", path_count, MAX_PATH);
+            if (recording_path) debug_ui_text(&ui, "[REC] Path: %u/%d frames", path_count, CAM_PATH_CAPACITY);
             if (playing_path) debug_ui_text(&ui, "[PLAY] Path: %u/%u", path_idx, path_count);
             if (particle_trail) debug_ui_text(&ui, "[TRAIL] Particles follow entity");
             if (anim_blend_ready) {
@@ -6267,7 +6267,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_INFO("Water color: %s", wcn[water_color_preset]);
                 }
                 if (input_key_pressed(inp, (i32)',')) {
-                    /* R363/R370: record→stop arms playback (manual or MAX_PATH); , plays. */
+                    /* R363/R370: record→stop arms playback (manual or CAM_PATH_CAPACITY); , plays. */
                     if (recording_path) {
                         recording_path = false;
                         path_offer_playback = (path_count > 0);
@@ -6283,7 +6283,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     } else {
                         recording_path = true; path_count = 0;
                         path_offer_playback = false;
-                        LOG_INFO("Path recording STARTED (max %d frames)", MAX_PATH);
+                        LOG_INFO("Path recording STARTED (max %d frames)", CAM_PATH_CAPACITY);
                     }
                 }
                 if (input_key_pressed(inp, (i32)'/')) {

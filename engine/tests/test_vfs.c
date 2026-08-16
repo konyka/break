@@ -65,6 +65,7 @@ static void ensure_dir(const char *path)
     TEST_MKDIR(path);
 }
 
+#if !defined(_WIN32)
 static bool make_deep_dir(char *dir, usize cap, char *base, usize base_cap,
                           usize target_len) {
     test_tmp(base, base_cap, "r476_vfs_root");
@@ -123,6 +124,7 @@ static bool make_truncation_prefix(char *rel, usize rel_len,
     int n = snprintf(absolute, absolute_cap, "%s/%s", root, rel);
     return n >= 0 && (usize)n < absolute_cap;
 }
+#endif
 
 /* Replicate fnv1a from vfs.c for PAK hash test */
 static u32 test_fnv1a(const char *str)
@@ -209,7 +211,9 @@ TEST(vfs_open_read_dir)
  * A join that truncates must not open an existing file named by that prefix. */
 TEST(vfs_open_rejects_join_path_truncation)
 {
+#if defined(_WIN32)
     return;
+#else
     char base[128], root[512];
     ASSERT_TRUE(make_deep_dir(root, sizeof(root), base, sizeof(base), 230));
     usize prefix_len = 510u - strlen(root);
@@ -227,6 +231,7 @@ TEST(vfs_open_rejects_join_path_truncation)
 
     remove(prefix_file);
     remove_deep_dir(root, base);
+#endif
 }
 
 TEST(vfs_open_nonexistent)
@@ -568,8 +573,12 @@ TEST(vfs_pak_version_mismatch_rejected)
 
 TEST(vfs_pak_nonexistent)
 {
+    char path[128];
+    test_tmp(path, sizeof(path), "vfs_no_such_pak.pak");
+    remove(path);
+
     VFS *vfs = vfs_create();
-    bool ok = vfs_mount_pak(vfs, "/tmp/no_such_pak_file_xyz.pak");
+    bool ok = vfs_mount_pak(vfs, path);
     ASSERT_TRUE(!ok);
     vfs_destroy(vfs);
 }
@@ -579,7 +588,9 @@ TEST(vfs_pak_nonexistent)
  * different truncated identity. */
 TEST(vfs_mount_pak_rejects_path_truncation)
 {
+#if defined(_WIN32)
     return;
+#else
     char base[128], dir[512], path[1024];
     test_tmp(base, sizeof(base), "r549_vfs_root");
     for (char *c = base; *c; c++) if (*c == '\\') *c = '/';
@@ -612,6 +623,7 @@ TEST(vfs_mount_pak_rejects_path_truncation)
     vfs_destroy(vfs);
     remove(path);
     remove_deep_dir(dir, base);
+#endif
 }
 
 TEST(vfs_mount_limit)

@@ -32,6 +32,10 @@ void log_write(LogLevel level, const char *file, int line,
 
     /* strrchr is SIMD-optimized in glibc, faster than manual linear scan */
     const char *slash = strrchr(file, '/');
+#if defined(ENGINE_PLATFORM_WINDOWS) || defined(_WIN32)
+    const char *backslash = strrchr(file, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
     const char *basename = slash ? slash + 1 : file;
 
     fprintf(stderr, "%s[%-5s]\033[0m \033[90m%s:%d\033[0m ",

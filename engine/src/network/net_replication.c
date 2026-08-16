@@ -9,6 +9,8 @@
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 #  include <dirent.h>
 #  include <sys/stat.h>
+#else
+#  include <windows.h>
 #endif
 
 static bool net_repl_parse_payload(const PacketBuffer *buf, NetTransformSnapshot *out,
@@ -277,8 +279,10 @@ static bool net_repl_mkdir_p(const char *dir) {
     if (stat(dir, &st) == 0) return S_ISDIR(st.st_mode);
     return mkdir(dir, 0755) == 0;
 #else
-    (void)dir;
-    return false;
+    if (CreateDirectoryA(dir, NULL)) return true;
+    if (GetLastError() != ERROR_ALREADY_EXISTS) return false;
+    DWORD attrs = GetFileAttributesA(dir);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #endif
 }
 
@@ -288,6 +292,16 @@ static bool net_repl_peer_file_path(char *path, usize cap, const char *dir,
                      peer->addr.host, (u32)peer->addr.port);
     return n >= 0 && (usize)n < cap;
 }
+
+#if defined(ENGINE_PLATFORM_WINDOWS)
+static const char *net_repl_path_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char *backslash = strrchr(path, '\\');
+    if (!slash) return backslash ? backslash + 1 : path;
+    if (!backslash) return slash + 1;
+    return backslash > slash ? backslash + 1 : slash + 1;
+}
+#endif
 
 /* Baseline snapshots own peer_*.peer files. Once a complete replacement has
  * been written, discard prior snapshot entries so evicted peers cannot return
@@ -330,9 +344,45 @@ static bool net_repl_peer_remove_stale_files(const NetReplicator *rep, const cha
     }
     return closedir(d) == 0;
 #else
-    (void)rep;
-    (void)dir;
-    return false;
+    char pattern[512];
+    int pattern_len = snprintf(pattern, sizeof(pattern), "%s\\peer_*.peer", dir);
+    if (pattern_len < 0 || (usize)pattern_len >= sizeof(pattern)) return false;
+
+    WIN32_FIND_DATAA fd;
+    HANDLE search = FindFirstFileA(pattern, &fd);
+    if (search == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_FILE_NOT_FOUND;
+
+    bool ok = true;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+
+        bool current = false;
+        for (u32 i = 0u; i < rep->peer_count; i++) {
+            char current_path[512];
+            if (!net_repl_peer_file_path(current_path, sizeof(current_path), dir,
+                                         i, &rep->peers[i])) {
+                ok = false;
+                break;
+            }
+            if (strcmp(fd.cFileName, net_repl_path_basename(current_path)) == 0) {
+                current = true;
+                break;
+            }
+        }
+        if (!ok || current) continue;
+
+        char stale_path[512];
+        int n = snprintf(stale_path, sizeof(stale_path), "%s\\%s", dir, fd.cFileName);
+        if (n < 0 || (usize)n >= sizeof(stale_path) || !DeleteFileA(stale_path)) {
+            ok = false;
+            break;
+        }
+    } while (FindNextFileA(search, &fd));
+
+    if (ok) ok = GetLastError() == ERROR_NO_MORE_FILES;
+    FindClose(search);
+    return ok;
 #endif
 }
 
@@ -915,8 +965,61 @@ bool net_replicator_peer_load_dir(NetReplicator *rep, const char *dir) {
         net_replicator_peer_load_delta(rep, delta_path);
     return true;
 #else
-    (void)rep;
-    return false;
+    char pattern[512];
+    int pattern_len = snprintf(pattern, sizeof(pattern), "%s\\*.peer", dir);
+    if (pattern_len < 0 || (usize)pattern_len >= sizeof(pattern)) return false;
+
+    WIN32_FIND_DATAA fd;
+    HANDLE search = FindFirstFileA(pattern, &fd);
+    if (search == INVALID_HANDLE_VALUE) {
+        if (GetLastError() != ERROR_FILE_NOT_FOUND) return false;
+        rep->peer_count = 0u;
+        char delta_path[512];
+        int delta_n = snprintf(delta_path, sizeof(delta_path), "%s/delta.log", dir);
+        if (delta_n >= 0 && (usize)delta_n < sizeof(delta_path))
+            net_replicator_peer_load_delta(rep, delta_path);
+        return true;
+    }
+
+    NetRepPeerStats saved_peers[NET_REP_MAX_PEERS];
+    memcpy(saved_peers, rep->peers, sizeof(saved_peers));
+    u32 saved_count = rep->peer_count;
+    u32 saved_evicted = rep->peer_evicted;
+    rep->peer_count = 0u;
+
+    bool ok = true;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+        char path[512];
+        int n = snprintf(path, sizeof(path), "%s\\%s", dir, fd.cFileName);
+        if (n < 0 || (usize)n >= sizeof(path)) continue;
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char line[512];
+        while (fgets(line, sizeof(line), f))
+            net_repl_peer_apply_line(rep, line);
+        bool read_ok = !ferror(f);
+        if (fclose(f) != 0) read_ok = false;
+        if (!read_ok) {
+            ok = false;
+            break;
+        }
+    } while (FindNextFileA(search, &fd));
+
+    if (ok) ok = GetLastError() == ERROR_NO_MORE_FILES;
+    FindClose(search);
+    if (!ok) {
+        memcpy(rep->peers, saved_peers, sizeof(saved_peers));
+        rep->peer_count = saved_count;
+        rep->peer_evicted = saved_evicted;
+        return false;
+    }
+
+    char delta_path[512];
+    int delta_n = snprintf(delta_path, sizeof(delta_path), "%s/delta.log", dir);
+    if (delta_n >= 0 && (usize)delta_n < sizeof(delta_path))
+        net_replicator_peer_load_delta(rep, delta_path);
+    return true;
 #endif
 }
 
@@ -931,6 +1034,10 @@ static bool net_repl_delta_rotate(NetReplicator *rep, const char *path) {
     char dir[512];
     snprintf(dir, sizeof(dir), "%s", path);
     char *slash = strrchr(dir, '/');
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    char *backslash = strrchr(dir, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
     if (slash) *slash = '\0';
     else snprintf(dir, sizeof(dir), ".");
     if (!net_replicator_peer_save_dir(rep, dir)) return false;
@@ -944,10 +1051,17 @@ static bool net_repl_delta_rotate(NetReplicator *rep, const char *path) {
         remove(tmp);
         return false;
     }
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) {
+        remove(tmp);
+        return false;
+    }
+#else
     if (rename(tmp, path) != 0) {
         remove(tmp);
         return false;
     }
+#endif
     return true;
 }
 
@@ -955,7 +1069,16 @@ bool net_replicator_peer_save_delta(NetReplicator *rep, const char *path) {
     if (!rep || !path) return false;
     FILE *f = fopen(path, "a");
     if (!f) return false;
-    if (ftell(f) == 0)
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long initial_size = ftell(f);
+    if (initial_size < 0) {
+        fclose(f);
+        return false;
+    }
+    if (initial_size == 0)
         fprintf(f, "# break netrep delta v1\n");
 
     u32 wrote = 0u;

@@ -103,8 +103,12 @@ static bool write_bytes(const char *path, const void *data, usize n) {
 
 TEST(font_init_rejects_missing_file)
 {
+    char path[128];
+    test_tmp(path, sizeof(path), "font_no_such_font.ttf");
+    remove(path);
+
     FontRenderer fr;
-    ASSERT_TRUE(!font_renderer_init(&fr, NULL, "/tmp/no_such_font_xyz.ttf", 16.0f));
+    ASSERT_TRUE(!font_renderer_init(&fr, NULL, path, 16.0f));
 }
 
 /* R389-A: a zero-byte file passed the `sz < 0` guard, so malloc(0) returned a
@@ -329,6 +333,10 @@ static bool read_shader_source(const char *name, char *buf, usize cap) {
     const char *candidates[3];
     char rel[1024];
     const char *slash = strrchr(__FILE__, '/');
+#if defined(_WIN32)
+    const char *backslash = strrchr(__FILE__, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+#endif
     if (slash) {
         snprintf(rel, sizeof(rel), "%.*s/../shaders/%s",
                  (int)(slash - __FILE__), __FILE__, name);
@@ -400,6 +408,10 @@ static u8 *read_asset_ttf(usize *out_size) {
     const char *candidates[3];
     char rel[1024];
     const char *slash = strrchr(__FILE__, '/');
+#if defined(_WIN32)
+    const char *backslash = strrchr(__FILE__, '\\');
+    if (!slash || (backslash && backslash > slash)) slash = backslash;
+#endif
     if (slash) {
         snprintf(rel, sizeof(rel), "%.*s/../assets/LiberationSans-Regular.ttf",
                  (int)(slash - __FILE__), __FILE__);

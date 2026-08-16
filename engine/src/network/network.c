@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #if defined(ENGINE_PLATFORM_WINDOWS)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -78,6 +79,11 @@ struct NetSocket {
     u16                  sendto_cache_port;
     struct sockaddr_in   sendto_cache_sa;
 };
+
+#if defined(ENGINE_PLATFORM_WINDOWS)
+static _Atomic bool g_wsa_ready = false;
+static atomic_flag g_wsa_init_lock = ATOMIC_FLAG_INIT;
+#endif
 
 /* ---------- helpers ---------- */
 
@@ -142,8 +148,26 @@ static bool net__resolve_to_sockaddr(const char *host, u16 port,
 bool net_init(void)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
+    if (atomic_load_explicit(&g_wsa_ready, memory_order_acquire)) return true;
+
+    while (atomic_flag_test_and_set_explicit(&g_wsa_init_lock, memory_order_acquire)) {
+        if (atomic_load_explicit(&g_wsa_ready, memory_order_acquire)) return true;
+        Sleep(0);
+    }
+
+    if (atomic_load_explicit(&g_wsa_ready, memory_order_acquire)) {
+        atomic_flag_clear_explicit(&g_wsa_init_lock, memory_order_release);
+        return true;
+    }
+
     WSADATA wsa;
     int rc = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (rc == 0) {
+        atomic_store_explicit(&g_wsa_ready, true, memory_order_release);
+    } else {
+        atomic_store_explicit(&g_wsa_ready, false, memory_order_release);
+    }
+    atomic_flag_clear_explicit(&g_wsa_init_lock, memory_order_release);
     return rc == 0;
 #else
     return true;
@@ -153,7 +177,9 @@ bool net_init(void)
 void net_shutdown(void)
 {
 #if defined(ENGINE_PLATFORM_WINDOWS)
-    WSACleanup();
+    if (atomic_exchange_explicit(&g_wsa_ready, false, memory_order_acq_rel)) {
+        WSACleanup();
+    }
 #endif
 }
 
@@ -161,11 +187,7 @@ void net_shutdown(void)
 
 NetSocket *net_udp_create(u16 bind_port)
 {
-#if defined(ENGINE_PLATFORM_WINDOWS)
-    /* Keep UDP creation robust for callers that use the socket API directly
-     * without an explicit net_init() call (the POSIX backend needs no setup). */
-    net_init();
-#endif
+    if (!net_init()) return NULL;
     RawSocket fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd == INVALID_RAW_SOCKET) {
         return NULL;
@@ -186,6 +208,7 @@ NetSocket *net_udp_create(u16 bind_port)
 
 NetSocket *net_tcp_connect(const char *host, u16 port)
 {
+    if (!net_init()) return NULL;
     struct sockaddr_in addr;
     if (!host || !net__resolve_to_sockaddr(host, port, &addr)) {
         return NULL;
@@ -212,6 +235,7 @@ NetSocket *net_tcp_connect(const char *host, u16 port)
 
 NetSocket *net_tcp_listen(u16 port, u32 backlog)
 {
+    if (!net_init()) return NULL;
     RawSocket fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_RAW_SOCKET) {
         return NULL;
@@ -242,6 +266,7 @@ NetSocket *net_tcp_listen(u16 port, u32 backlog)
 NetSocket *net_tcp_accept(NetSocket *listener, NetAddress *out_addr)
 {
     if (!listener) return NULL;
+    if (!net_init()) return NULL;
 
     struct sockaddr_in peer;
     socklen_t_compat peer_len = (socklen_t_compat)sizeof(peer);

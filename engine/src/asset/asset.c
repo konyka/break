@@ -14,6 +14,15 @@
 #define CGLTF_NO_STRTOD
 #include <cgltf.h>
 
+static const char *asset_path_last_sep(const char *path) {
+    const char *slash = strrchr(path, '/');
+#if defined(ENGINE_PLATFORM_WINDOWS) || defined(_WIN32)
+    const char *backslash = strrchr(path, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+    return slash;
+}
+
 void asset_ctx_init(AssetCtx *ctx, RHIDevice *dev) {
     ctx->device = dev;
     ctx->vfs = NULL;
@@ -158,7 +167,7 @@ static cgltf_result gltf_load_buffers_vfs(VFS *vfs, cgltf_data *data, const char
 
         /* Mirror cgltf_combine_paths: gltf directory + uri. */
         char full[1024];
-        const char *slash = strrchr(gltf_path, '/');
+        const char *slash = asset_path_last_sep(gltf_path);
         usize dir_len = slash ? (usize)(slash - gltf_path + 1) : 0;
         if (dir_len >= sizeof(full) || strlen(buf->uri) >= sizeof(full) - dir_len) {
             LOG_ERROR("glTF: buffer uri path too long: %s", gltf_path);
@@ -196,7 +205,7 @@ static RHITexture load_gltf_texture(AssetCtx *ctx, const char *gltf_path, cgltf_
         return RHI_HANDLE_NULL;
     }
     char tex_path[512];
-    const char *last_slash = strrchr(gltf_path, '/');
+    const char *last_slash = asset_path_last_sep(gltf_path);
     usize dir_len = last_slash ? (usize)(last_slash - gltf_path + 1) : 0;
     usize uri_len = strlen(tex->image->uri);
     if (dir_len >= sizeof(tex_path) || uri_len >= sizeof(tex_path) - dir_len) {
