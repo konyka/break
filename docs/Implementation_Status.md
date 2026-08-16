@@ -10,6 +10,13 @@
 环境的 Windows WGL/Win32 runtime 验证，以及预烘焙 static mega geometry 的逐节点动态变换（后者
 需要 GPU-driven transform indirection 重构，当前静态 megabuffer 设计下不具性能收益，保持明确限制）。
 
+**R562 平台文件与线程抽象收口（TDD）**：新增 `engine/src/platform/file.h/.c` 统一文件/目录操作，
+替代 `net_replication.c`、`script.c`、`test_vulkan.c`、`packer.c`、`verify_pak.c` 中的 POSIX/Win32 分支；
+`task.c` 改为复用已有的 `platform_thread.h` 头文件封装，删除本地重复的 mutex/thread 包装。
+TDD 新增 `test_platform_file` 覆盖 `mkdir`、`file_size`、`file_mtime`、`dir_foreach`；
+`test_task`、`test_task_singleton`、`test_ecs_system`、`test_net_replication`、`test_script`、
+`packer` / `verify_pak` 构建与运行保持通过。Windows 原生运行时验证仍待真实 Windows 环境。
+
 **R561 static mega transform 边界收口（TDD）**：复核确认 MegaBuffer 在 bake 阶段将静态节点的顶点
 位置/法线预变换到 world space，运行时 indirect command 保持 Vulkan/GL 共用的标准五字段布局；
 `unified_cull.comp` 与 `compact_draws.comp` 只消费 world-space bounds、可见性和标准 indirect 命令，

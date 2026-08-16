@@ -442,6 +442,11 @@ A: 重新 cmake 配置：`cmake -B build -DENGINE_VULKAN=ON/OFF`
 
 ---
 
+## 已完成的平台兼容性收口
+
+- **文件系统抽象** — `engine/src/platform/file.h/.c` 统一封装 `mkdir` / `stat` / `opendir` / `FindFirstFile` / `_mkdir` 等平台差异；`net_replication.c`、`script.c`、`test_vulkan.c`、`packer.c`、`verify_pak.c` 已迁移。
+- **线程原语统一** — `engine/src/task/task.c` 复用 `core/platform_thread.h`，移除本地重复的 CRITICAL_SECTION / pthread 包装。
+
 ## TODO: Windows 平台验证（待环境具备后执行）
 
 > 当前开发环境为 Fedora 44，Windows 功能已实现但尚未在真实 Windows 环境中验证。以下为待验证/待完善事项：
