@@ -64,3 +64,4 @@ frag.spv
 *.wav
 .qoder/
 screenshot_*.bmp
+.worktrees/
