@@ -1,5 +1,6 @@
 #pragma once
 #include <core/types.h>
+#include <core/platform_thread.h>
 #include <stdatomic.h>
 
 /* ---- Task Function Type ---- */
@@ -60,11 +61,7 @@ typedef struct {
     _Atomic bool   active;
     u32            steal_attempts;
     u32            backoff_ns;
-#ifdef ENGINE_PLATFORM_WINDOWS
-    void          *thread_handle;  /* HANDLE */
-#else
-    u64            thread_storage[8]; /* enough for pthread_t */
-#endif
+    PlatformThread thread;
 } ENGINE_ALIGN(64) Worker;
 
 /* ---- Task System ---- */
@@ -79,11 +76,7 @@ typedef struct {
     _Atomic u64   next_handle;
 
     /* Global submit queue (for external thread submissions) */
-    /* R420: same fixed-size embedded mutex storage on both platforms —
-     * task.c passes &ts->submit_mutex_storage to platform_mutex_* everywhere
-     * (Windows helpers cast it to CRITICAL_SECTION *, ~40B; a void* field was
-     * both the wrong type and too small). */
-    u64           submit_mutex_storage[8]; /* CRITICAL_SECTION / pthread_mutex_t */
+    PlatformMutex submit_mutex_storage;
     Task         *submit_queue[SUBMIT_QUEUE_CAPACITY];
     _Atomic u32   submit_count;
 
@@ -93,8 +86,7 @@ typedef struct {
     _Atomic u32   task_pool_count;
     /* Pre-allocated contiguous Task block (bump allocator) */
     Task         *_task_block;
-    /* R420: embedded storage on Windows too — see submit_mutex_storage. */
-    u64           pool_mutex_storage[8];
+    PlatformMutex pool_mutex_storage;
 } TaskSystem;
 
 /* ---- Legacy compatible type alias ---- */

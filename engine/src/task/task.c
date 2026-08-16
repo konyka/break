@@ -1,38 +1,22 @@
 #include <task/task.h>
 #include <core/log.h>
+#include <core/platform_thread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <windows.h>
-    #include <process.h>
 #else
-    #include <pthread.h>
     #include <time.h>
     #include <unistd.h>
 #endif
 
 /* ============================================================
- * Platform Abstraction
+ * Small platform helpers not provided by platform_thread.h
  * ============================================================ */
 
 #ifdef ENGINE_PLATFORM_WINDOWS
-
-static inline void platform_mutex_init(void *storage) {
-    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)storage;
-    InitializeCriticalSection(cs);
-}
-static inline void platform_mutex_destroy(void *storage) {
-    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)storage;
-    DeleteCriticalSection(cs);
-}
-static inline void platform_mutex_lock(void *storage) {
-    EnterCriticalSection((CRITICAL_SECTION *)storage);
-}
-static inline void platform_mutex_unlock(void *storage) {
-    LeaveCriticalSection((CRITICAL_SECTION *)storage);
-}
 static inline void platform_sleep_ns(u32 ns) {
     /* Windows Sleep is in ms; minimum 0 yields timeslice */
     DWORD ms = ns / 1000000;
@@ -44,32 +28,7 @@ static inline u32 platform_cpu_count(void) {
     GetSystemInfo(&si);
     return (u32)si.dwNumberOfProcessors;
 }
-typedef unsigned (__stdcall *win_thread_fn)(void *);
-static inline bool platform_thread_create(void *handle_out, unsigned (__stdcall *fn)(void *), void *arg) {
-    HANDLE h = (HANDLE)_beginthreadex(NULL, 0, fn, arg, 0, NULL);
-    *(HANDLE *)handle_out = h;
-    return h != NULL;
-}
-static inline void platform_thread_join(void *handle_storage) {
-    HANDLE h = *(HANDLE *)handle_storage;
-    WaitForSingleObject(h, INFINITE);
-    CloseHandle(h);
-}
-
-#else /* POSIX */
-
-static inline void platform_mutex_init(void *storage) {
-    pthread_mutex_init((pthread_mutex_t *)storage, NULL);
-}
-static inline void platform_mutex_destroy(void *storage) {
-    pthread_mutex_destroy((pthread_mutex_t *)storage);
-}
-static inline void platform_mutex_lock(void *storage) {
-    pthread_mutex_lock((pthread_mutex_t *)storage);
-}
-static inline void platform_mutex_unlock(void *storage) {
-    pthread_mutex_unlock((pthread_mutex_t *)storage);
-}
+#else
 static inline void platform_sleep_ns(u32 ns) {
     struct timespec ts = { 0, (long)ns };
     nanosleep(&ts, NULL);
@@ -78,13 +37,6 @@ static inline u32 platform_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (u32)n : 1;
 }
-static inline bool platform_thread_create_posix(void *storage, void *(*fn)(void *), void *arg) {
-    return pthread_create((pthread_t *)storage, NULL, fn, arg) == 0;
-}
-static inline void platform_thread_join_posix(void *storage) {
-    pthread_join(*(pthread_t *)storage, NULL);
-}
-
 #endif
 
 /* ============================================================
@@ -281,15 +233,15 @@ static void execute_task(TaskSystem *ts, Worker *self, Task *task);
 /* Enqueue to the mutex-protected global submit queue (used by non-worker
  * submitters and as a fallback when a local deque is full). */
 static void enqueue_global(TaskSystem *ts, Task *t) {
-    platform_mutex_lock(ts->submit_mutex_storage);
+    platform_mutex_lock(&ts->submit_mutex_storage);
     u32 idx = atomic_load_explicit(&ts->submit_count, memory_order_relaxed);
     if (idx < SUBMIT_QUEUE_CAPACITY) {
         ts->submit_queue[idx] = t;
         atomic_store_explicit(&ts->submit_count, idx + 1, memory_order_release);
-        platform_mutex_unlock(ts->submit_mutex_storage);
+        platform_mutex_unlock(&ts->submit_mutex_storage);
     } else {
         /* Queue full (rare) — run inline so the task is never lost. */
-        platform_mutex_unlock(ts->submit_mutex_storage);
+        platform_mutex_unlock(&ts->submit_mutex_storage);
         execute_task(ts, NULL, t);
     }
 }
@@ -306,7 +258,7 @@ static void schedule_ready(TaskSystem *ts, Worker *self, Task *t) {
  * SUBMIT_QUEUE_CAPACITY). */
 static u32 detach_submit_queue(TaskSystem *ts, Task **out) {
     if (atomic_load_explicit(&ts->submit_count, memory_order_acquire) == 0) return 0;
-    platform_mutex_lock(ts->submit_mutex_storage);
+    platform_mutex_lock(&ts->submit_mutex_storage);
     u32 count = atomic_exchange_explicit(&ts->submit_count, 0, memory_order_relaxed);
     u32 n = 0;
     for (u32 i = 0; i < count; i++) {
@@ -314,7 +266,7 @@ static u32 detach_submit_queue(TaskSystem *ts, Task **out) {
         ts->submit_queue[i] = NULL;
         if (t) out[n++] = t;
     }
-    platform_mutex_unlock(ts->submit_mutex_storage);
+    platform_mutex_unlock(&ts->submit_mutex_storage);
     return n;
 }
 
@@ -366,10 +318,10 @@ static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
     atomic_fetch_add_explicit(&ts->total_tasks_completed, 1, memory_order_acq_rel);
 
     /* R173: Detach waiter list under pool lock (fan-out + race-safe). */
-    platform_mutex_lock(ts->pool_mutex_storage);
+    platform_mutex_lock(&ts->pool_mutex_storage);
     TaskWaitLink *waiters = task->waiters;
     task->waiters = NULL;
-    platform_mutex_unlock(ts->pool_mutex_storage);
+    platform_mutex_unlock(&ts->pool_mutex_storage);
 
     while (waiters) {
         TaskWaitLink *link = waiters;
@@ -395,62 +347,7 @@ static void execute_task(TaskSystem *ts, Worker *self, Task *task) {
 
 /* Fixup: workers need access to TaskSystem. We use the global. */
 
-#ifdef ENGINE_PLATFORM_WINDOWS
-static unsigned __stdcall worker_entry(void *arg) {
-    Worker *self = (Worker *)arg;
-    TaskSystem *ts = atomic_load_explicit(&g_task_system, memory_order_acquire);
-    tls_worker_id = (i32)self->id;
-    atomic_store_explicit(&self->active, true, memory_order_release);
-
-    while (atomic_load_explicit(&ts->running, memory_order_acquire)) {
-        Task *task = NULL;
-
-        for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
-            task = deque_pop(&self->queues[prio]);
-        }
-
-        if (!task) {
-            worker_pull_submitted(ts, self);
-            for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
-                task = deque_pop(&self->queues[prio]);
-            }
-        }
-
-        if (!task) {
-            u32 start = (self->id + self->steal_attempts + 1) % ts->worker_count;
-            for (u32 i = 0; i < ts->worker_count - 1 && !task; i++) {
-                u32 victim = (start + i) % ts->worker_count;
-                if (victim == self->id) continue;
-                for (int prio = 0; prio < TASK_PRIORITY_COUNT && !task; prio++) {
-                    task = deque_steal(&ts->workers[victim].queues[prio]);
-                }
-            }
-        }
-
-        if (task) {
-            self->steal_attempts = 0;
-            self->backoff_ns = 100;
-            execute_task(ts, self, task);
-        } else {
-            self->steal_attempts++;
-            if (self->steal_attempts > ts->worker_count * 2) {
-                platform_sleep_ns(self->backoff_ns);
-                /* R414: cap backoff at 50us — workers are never woken on
-                 * submit, so a 1ms cap added up to ~1ms of submit latency. */
-                if (self->backoff_ns < 50000) {
-                    self->backoff_ns *= 2;
-                } else {
-                    self->backoff_ns = 50000;
-                }
-            }
-        }
-    }
-
-    atomic_store_explicit(&self->active, false, memory_order_release);
-    return 0;
-}
-#else
-static void *worker_entry(void *arg) {
+static PLATFORM_THREAD_RET worker_entry(PLATFORM_THREAD_ARG arg) {
     Worker *self = (Worker *)arg;
     TaskSystem *ts = atomic_load_explicit(&g_task_system, memory_order_acquire);
     tls_worker_id = (i32)self->id;
@@ -493,7 +390,7 @@ static void *worker_entry(void *arg) {
             self->steal_attempts++;
             if (self->steal_attempts > ts->worker_count * 2) {
                 platform_sleep_ns(self->backoff_ns);
-                /* R414: cap backoff at 50us (was 1ms) — see Windows path. */
+                /* R414: cap backoff at 50us (was 1ms). */
                 if (self->backoff_ns < 50000) {
                     self->backoff_ns *= 2;
                 } else {
@@ -504,9 +401,8 @@ static void *worker_entry(void *arg) {
     }
 
     atomic_store_explicit(&self->active, false, memory_order_release);
-    return NULL;
+    return PLATFORM_THREAD_RETURN;
 }
-#endif
 
 /* ============================================================
  * Public API: Create / Destroy
@@ -545,11 +441,11 @@ TaskSystem *task_system_create(i32 worker_count) {
     atomic_store_explicit(&ts->submit_count, 0, memory_order_relaxed);
 
     /* Init submit mutex */
-    platform_mutex_init(ts->submit_mutex_storage);
+    platform_mutex_init(&ts->submit_mutex_storage);
 
     /* Init task pool */
     atomic_store_explicit(&ts->task_pool_count, 0, memory_order_relaxed);
-    platform_mutex_init(ts->pool_mutex_storage);
+    platform_mutex_init(&ts->pool_mutex_storage);
 
     /* Init workers */
     for (i32 i = 0; i < worker_count; i++) {
@@ -569,8 +465,8 @@ TaskSystem *task_system_create(i32 worker_count) {
                         deque_destroy(&wj->queues[q]);
                     }
                 }
-                platform_mutex_destroy(ts->submit_mutex_storage);
-                platform_mutex_destroy(ts->pool_mutex_storage);
+                platform_mutex_destroy(&ts->submit_mutex_storage);
+                platform_mutex_destroy(&ts->pool_mutex_storage);
                 free(ts);
                 return NULL;
             }
@@ -590,8 +486,8 @@ TaskSystem *task_system_create(i32 worker_count) {
                 deque_destroy(&ts->workers[i].queues[p]);
             }
         }
-        platform_mutex_destroy(ts->submit_mutex_storage);
-        platform_mutex_destroy(ts->pool_mutex_storage);
+        platform_mutex_destroy(&ts->submit_mutex_storage);
+        platform_mutex_destroy(&ts->pool_mutex_storage);
         free(ts);
         return NULL;
     }
@@ -599,12 +495,7 @@ TaskSystem *task_system_create(i32 worker_count) {
     /* Start worker threads */
     for (i32 i = 0; i < worker_count; i++) {
         Worker *w = &ts->workers[i];
-        bool thread_ok;
-#ifdef ENGINE_PLATFORM_WINDOWS
-        thread_ok = platform_thread_create(&w->thread_handle, worker_entry, w);
-#else
-        thread_ok = platform_thread_create_posix(w->thread_storage, worker_entry, w);
-#endif
+        bool thread_ok = platform_thread_create(&w->thread, worker_entry, w);
         if (!thread_ok) {
             LOG_ERROR("Task system: failed to create worker thread %d", i);
             /* R141: Destroy deques for workers that were initialized but won't get threads */
@@ -619,8 +510,8 @@ TaskSystem *task_system_create(i32 worker_count) {
                 /* R167-G: No workers at all — fail create instead of returning
                  * a degraded handle that silently runs everything on the main thread. */
                 LOG_FATAL("Task system: failed to create any worker threads");
-                platform_mutex_destroy(ts->submit_mutex_storage);
-                platform_mutex_destroy(ts->pool_mutex_storage);
+                platform_mutex_destroy(&ts->submit_mutex_storage);
+                platform_mutex_destroy(&ts->pool_mutex_storage);
                 free(ts);
                 atomic_store_explicit(&g_task_system, NULL, memory_order_release);
                 return NULL;
@@ -638,7 +529,7 @@ void task_system_destroy(TaskSystem *ts) {
      * incomplete graphs, then drain runnable work before stopping workers. */
     u32 pool_count = atomic_load(&ts->task_pool_count);
     if (pool_count > ts->task_pool_capacity) pool_count = ts->task_pool_capacity;
-    platform_mutex_lock(ts->pool_mutex_storage);
+    platform_mutex_lock(&ts->pool_mutex_storage);
     for (u32 i = 0; i < pool_count; i++) {
         Task *t = ts->task_pool[i];
         if (!t) continue;
@@ -650,14 +541,14 @@ void task_system_destroy(TaskSystem *ts) {
             if (!child) continue;
             u32 left = atomic_exchange_explicit(&child->dep_count, 0u, memory_order_acq_rel);
             if (left > 0u) {
-                platform_mutex_unlock(ts->pool_mutex_storage);
+                platform_mutex_unlock(&ts->pool_mutex_storage);
                 schedule_ready(ts, NULL, child);
-                platform_mutex_lock(ts->pool_mutex_storage);
+                platform_mutex_lock(&ts->pool_mutex_storage);
             }
             task_release(child);
         }
     }
-    platform_mutex_unlock(ts->pool_mutex_storage);
+    platform_mutex_unlock(&ts->pool_mutex_storage);
 
     task_wait(ts);
 
@@ -667,11 +558,7 @@ void task_system_destroy(TaskSystem *ts) {
     /* Join all workers */
     for (u32 i = 0; i < ts->worker_count; i++) {
         Worker *w = &ts->workers[i];
-#ifdef ENGINE_PLATFORM_WINDOWS
-        platform_thread_join(&w->thread_handle);
-#else
-        platform_thread_join_posix(w->thread_storage);
-#endif
+        platform_thread_join(w->thread);
     }
 
     /* Cleanup deques */
@@ -696,8 +583,8 @@ void task_system_destroy(TaskSystem *ts) {
         task_release(t);
     }
 
-    platform_mutex_destroy(ts->submit_mutex_storage);
-    platform_mutex_destroy(ts->pool_mutex_storage);
+    platform_mutex_destroy(&ts->submit_mutex_storage);
+    platform_mutex_destroy(&ts->pool_mutex_storage);
 
     /* Single free: task_pool, _task_block, and workers are within the same block */
     free(ts);
@@ -777,7 +664,7 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
     u32 actual_deps = 0u;
     bool oom = false;
 
-    platform_mutex_lock(ts->pool_mutex_storage);
+    platform_mutex_lock(&ts->pool_mutex_storage);
     for (u32 d = 0; d < dep_count; d++) {
         u32 idx = (u32)(deps[d] & 0xFFFFFFFFu);
         /* R414: a heap-fallback task handle (idx 0xFFFFFFFF) cannot be
@@ -819,7 +706,7 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
         }
         atomic_store_explicit(&t->dep_count, 0u, memory_order_release);
         atomic_store_explicit(&t->completed, true, memory_order_release);
-        platform_mutex_unlock(ts->pool_mutex_storage);
+        platform_mutex_unlock(&ts->pool_mutex_storage);
         atomic_fetch_sub_explicit(&ts->total_tasks_submitted, 1, memory_order_relaxed);
         /* Drop exec ref — frees heap-fallback tasks; pool ref retained for
          * pool tasks. */
@@ -828,7 +715,7 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
     }
 
     atomic_store_explicit(&t->dep_count, actual_deps, memory_order_release);
-    platform_mutex_unlock(ts->pool_mutex_storage);
+    platform_mutex_unlock(&ts->pool_mutex_storage);
 
     /* Ready now — enqueue without double-counting submitted. */
     if (actual_deps == 0u) {
