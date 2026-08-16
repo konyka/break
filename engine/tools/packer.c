@@ -1,3 +1,5 @@
+#include <core/types.h>
+#include <platform/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,14 +12,7 @@
     #define NOMINMAX
     #endif
     #include <windows.h>
-#else
-    #include <dirent.h>
-    #include <sys/stat.h>
 #endif
-
-typedef unsigned int       u32;
-typedef unsigned long long u64;
-typedef unsigned char      u8;
 
 #define MAX_ENTRIES   4096  /* Keep in sync with VFS_MAX_PAK_ENTRIES. */
 #define MAX_PATH_LEN  260
@@ -46,65 +41,11 @@ static u32     g_entry_count;
 static char    g_paths[MAX_ENTRIES][MAX_PATH_LEN];
 static int     g_path_error; /* R428: set on any path truncation; main aborts. */
 
-/* R428: pattern/rel/full were fixed 1024-byte buffers — deep trees silently
- * truncated, skipping files or packing them under truncated names. Check
- * every snprintf return and fail loudly instead. Returns 0 on truncation. */
-static int check_path_len(int ret, size_t bufsize, const char *what) {
-    if (ret < 0 || (size_t)ret >= bufsize) {
-        fprintf(stderr, "ERROR: %s path exceeds %zu bytes (truncation would corrupt the pak)\n",
-                what, bufsize - 1);
-        g_path_error = 1;
-        return 0;
-    }
-    return 1;
-}
-
-/* Query file size (64-bit safe). Returns 0 on failure. */
-static int get_file_size(const char *path, u64 *out_size) {
-#ifdef _WIN32
-    WIN32_FILE_ATTRIBUTE_DATA attr;
-    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &attr))
-        return 0;
-    *out_size = ((u64)attr.nFileSizeHigh << 32) | (u64)attr.nFileSizeLow;
-    return 1;
-#else
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return 0;
-    *out_size = (u64)st.st_size;
-    return 1;
-#endif
-}
-
-/* Check whether a path is a directory. */
-static int is_directory(const char *path) {
-#ifdef _WIN32
-    DWORD attr = GetFileAttributesA(path);
-    return attr != INVALID_FILE_ATTRIBUTES &&
-           (attr & FILE_ATTRIBUTE_DIRECTORY);
-#else
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-#endif
-}
-
-/* Check whether a path is a regular file. */
-static int is_regular_file(const char *path) {
-#ifdef _WIN32
-    DWORD attr = GetFileAttributesA(path);
-    return attr != INVALID_FILE_ATTRIBUTES &&
-           !(attr & FILE_ATTRIBUTE_DIRECTORY);
-#else
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
-#endif
-}
-
 static void add_file(const char *rel_path, const char *abs_path) {
     if (g_entry_count >= MAX_ENTRIES) return;
 
     u64 sz;
-    if (!get_file_size(abs_path, &sz)) return;
+    if (!platform_file_size(abs_path, &sz)) return;
 
     if (sz > 0xFFFFFFFFull) {
         fprintf(stderr, "WARN: '%s' exceeds 4 GB limit, skipping\n", abs_path);
@@ -143,76 +84,16 @@ static void add_file(const char *rel_path, const char *abs_path) {
     g_entries[idx].data_offset = 0;
 }
 
+static void packer_visitor(const char *rel_path, const char *abs_path,
+                           bool is_directory, void *user) {
+    (void)user;
+    if (!is_directory)
+        add_file(rel_path, abs_path);
+}
+
 static void scan_dir(const char *base_dir, const char *rel_prefix) {
-#ifdef _WIN32
-    char pattern[1024];
-    int ret;
-    if (rel_prefix[0])
-        ret = snprintf(pattern, sizeof(pattern), "%s/%s/*", base_dir, rel_prefix);
-    else
-        ret = snprintf(pattern, sizeof(pattern), "%s/*", base_dir);
-    if (!check_path_len(ret, sizeof(pattern), "search pattern")) return;
-
-    WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(pattern, &fd);
-    if (hFind == INVALID_HANDLE_VALUE) return;
-
-    do {
-        if (fd.cFileName[0] == '.') continue;
-
-        char rel[1024];
-        if (rel_prefix[0])
-            ret = snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, fd.cFileName);
-        else
-            ret = snprintf(rel, sizeof(rel), "%s", fd.cFileName);
-        if (!check_path_len(ret, sizeof(rel), "relative")) continue;
-
-        char full[1024];
-        ret = snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
-        if (!check_path_len(ret, sizeof(full), "full")) continue;
-
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            scan_dir(base_dir, rel);
-        } else {
-            add_file(rel, full);
-        }
-    } while (FindNextFileA(hFind, &fd));
-
-    FindClose(hFind);
-#else
-    char path[1024];
-    int ret = snprintf(path, sizeof(path), "%s/%s", base_dir, rel_prefix);
-    if (!check_path_len(ret, sizeof(path), "directory")) return;
-
-    DIR *d = opendir(path);
-    if (!d) return;
-
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-
-        char rel[1024];
-        if (rel_prefix[0])
-            ret = snprintf(rel, sizeof(rel), "%s/%s", rel_prefix, ent->d_name);
-        else
-            ret = snprintf(rel, sizeof(rel), "%s", ent->d_name);
-        if (!check_path_len(ret, sizeof(rel), "relative")) continue;
-
-        char full[1024];
-        ret = snprintf(full, sizeof(full), "%s/%s", base_dir, rel);
-        if (!check_path_len(ret, sizeof(full), "full")) continue;
-
-        struct stat st;
-        if (stat(full, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) {
-                scan_dir(base_dir, rel);
-            } else if (S_ISREG(st.st_mode)) {
-                add_file(rel, full);
-            }
-        }
-    }
-    closedir(d);
-#endif
+    (void)rel_prefix;
+    platform_dir_foreach(base_dir, "", packer_visitor, NULL);
 }
 
 /* Write a single file's data to the output stream.
@@ -307,9 +188,9 @@ int main(int argc, char **argv) {
     const char *output = argv[1];
 
     for (int i = 2; i < argc; i++) {
-        if (is_directory(argv[i])) {
+        if (platform_file_is_directory(argv[i])) {
             scan_dir(argv[i], "");
-        } else if (is_regular_file(argv[i])) {
+        } else if (platform_file_is_regular(argv[i])) {
             const char *name = basename_of(argv[i]);
             add_file(name, argv[i]);
         } else {
