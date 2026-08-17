@@ -274,8 +274,13 @@ void filewatch_destroy(FileWatch *fw) {
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <CoreServices/CoreServices.h>
+#include <dispatch/dispatch.h>
+#include <platform/filewatch_backend.h>
 
 #define FW_KQ_MAX_EVENTS 64
+#define FW_CENSUS_MAX_DEPTH 64
 
 static u32 kq_file_mtime(const char *path) {
     struct stat st;
@@ -373,14 +378,22 @@ void filewatch_poll(FileWatcher *fw) {
 }
 
 /* ------------------------------------------------------------------
- * Extended FileWatch API (macOS / BSD kqueue)
+ * Extended FileWatch API (macOS: kqueue for exact small trees,
+ * FSEvents for large/deep trees, with runtime fallback)
  * ------------------------------------------------------------------ */
 typedef struct {
     char path[256];
     u32  mtime;
 } KqWatchSnapshot;
 
+typedef struct {
+    u32 file_count;
+    u32 dir_count;
+    u32 max_depth;
+} FwTreeCensus;
+
 struct FileWatch {
+    FileWatchBackend backend;
     int             kqueue_fd;
     int             watch_fds[FW_MAX_WATCHES];
     char            watch_paths[FW_MAX_WATCHES][256];
@@ -391,6 +404,11 @@ struct FileWatch {
     FileWatchEvent  events[FW_EVENT_QUEUE_SIZE];
     u32             event_head;
     u32             event_tail;
+    FSEventStreamRef fsevent_stream;
+    CFArrayRef       fsevent_paths;
+    dispatch_queue_t fsevent_queue;
+    pthread_mutex_t  fsevent_lock;
+    bool             fsevent_lock_ready;
 };
 
 static void kq_fw_enqueue(FileWatch *fw, const char *path, FileWatchEventType type) {
@@ -524,6 +542,207 @@ static void kq_fw_rescan(FileWatch *fw) {
     }
 }
 
+static bool fw_census_fsevents_needed(const FwTreeCensus *census) {
+    if (!census) return false;
+    if (census->max_depth >= FILEWATCH_FSEVENTS_MIN_DEPTH) return true;
+    if (census->file_count >= FILEWATCH_FSEVENTS_MIN_FILES) return true;
+    if (UINT32_MAX - census->file_count < census->dir_count) return true;
+    return census->file_count + census->dir_count >
+           FILEWATCH_FSEVENTS_MAX_KQUEUE_WATCHES;
+}
+
+static void fw_census_dir(FwTreeCensus *census, const char *path, u32 depth) {
+    if (!census || !path || depth >= FW_CENSUS_MAX_DEPTH) return;
+
+    DIR *dir = opendir(path);
+    if (!dir) return;
+
+    if (census->dir_count < UINT32_MAX) census->dir_count++;
+    if (depth > census->max_depth) census->max_depth = depth;
+    if (fw_census_fsevents_needed(census)) {
+        closedir(dir);
+        return;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+
+        char child[FILEWATCH_MAX_PATH * 2 + 4];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (usize)n >= sizeof(child)) continue;
+
+        struct stat st;
+        if (lstat(child, &st) != 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            fw_census_dir(census, child, depth + 1u);
+        } else if (S_ISREG(st.st_mode)) {
+            if (census->file_count < UINT32_MAX) census->file_count++;
+        }
+
+        if (fw_census_fsevents_needed(census)) {
+            closedir(dir);
+            return;
+        }
+    }
+    closedir(dir);
+}
+
+static void fw_fsevents_enqueue(FileWatch *fw, const char *event_path,
+                                FileWatchEventType type) {
+    if (!fw || !event_path || !fw->fsevent_lock_ready) return;
+
+    char full[FILEWATCH_MAX_PATH * 2 + 4];
+    if (!filewatch_normalize_event_path(full, sizeof(full),
+                                        fw->base_path, event_path)) {
+        return;
+    }
+    if (strlen(full) >= sizeof(fw->events[0].path)) return;
+
+    pthread_mutex_lock(&fw->fsevent_lock);
+    u32 next = (fw->event_head + 1) % FW_EVENT_QUEUE_SIZE;
+    if (next != fw->event_tail) {
+        FileWatchEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        memcpy(ev.path, full, strlen(full) + 1u);
+        ev.type = type;
+        fw->events[fw->event_head] = ev;
+        fw->event_head = next;
+    }
+    pthread_mutex_unlock(&fw->fsevent_lock);
+}
+
+static void fw_fsevents_callback(ConstFSEventStreamRef stream_ref,
+                                 void *client_call_back_info,
+                                 size_t num_events,
+                                 void *event_paths,
+                                 const FSEventStreamEventFlags event_flags[],
+                                 const FSEventStreamEventId event_ids[]) {
+    (void)stream_ref;
+    (void)event_ids;
+
+    FileWatch *fw = (FileWatch *)client_call_back_info;
+    const char **paths = (const char **)event_paths;
+    if (!fw || !paths || !event_flags) return;
+
+    for (size_t i = 0; i < num_events; i++) {
+        FileWatchEventType type;
+        bool needs_rescan = false;
+        if (!filewatch_map_fsevent_flags((u32)event_flags[i], &type,
+                                         &needs_rescan)) {
+            continue;
+        }
+
+        if (needs_rescan) {
+            fw_fsevents_enqueue(fw, "", FW_EVENT_MODIFIED);
+        }
+        if (paths[i]) {
+            fw_fsevents_enqueue(fw, paths[i], type);
+        }
+    }
+}
+
+static void fw_dispatch_noop(void *context) {
+    (void)context;
+}
+
+static void fw_fsevents_stop(FileWatch *fw) {
+    if (!fw) return;
+
+    if (fw->fsevent_stream) {
+        FSEventStreamSetDispatchQueue(fw->fsevent_stream, NULL);
+        FSEventStreamInvalidate(fw->fsevent_stream);
+        FSEventStreamRelease(fw->fsevent_stream);
+        fw->fsevent_stream = NULL;
+    }
+
+    if (fw->fsevent_queue) {
+        dispatch_sync_f(fw->fsevent_queue, NULL, fw_dispatch_noop);
+        dispatch_release(fw->fsevent_queue);
+        fw->fsevent_queue = NULL;
+    }
+
+    if (fw->fsevent_paths) {
+        CFRelease(fw->fsevent_paths);
+        fw->fsevent_paths = NULL;
+    }
+}
+
+static bool fw_fsevents_start(FileWatch *fw) {
+    if (!fw || !fw->base_path[0]) return false;
+
+    CFStringRef root = CFStringCreateWithCString(kCFAllocatorDefault,
+                                                 fw->base_path,
+                                                 kCFStringEncodingUTF8);
+    if (!root) return false;
+
+    CFArrayRef paths = CFArrayCreate(kCFAllocatorDefault,
+                                     (const void **)&root, 1,
+                                     &kCFTypeArrayCallBacks);
+    CFRelease(root);
+    if (!paths) return false;
+
+    FSEventStreamContext context;
+    memset(&context, 0, sizeof(context));
+    context.info = fw;
+
+    FSEventStreamRef stream = FSEventStreamCreate(
+        kCFAllocatorDefault,
+        fw_fsevents_callback,
+        &context,
+        paths,
+        kFSEventStreamEventIdSinceNow,
+        0.05,
+        kFSEventStreamCreateFlagFileEvents);
+    if (!stream) {
+        CFRelease(paths);
+        return false;
+    }
+
+    dispatch_queue_t queue = dispatch_queue_create("engine.filewatch.fsevents", NULL);
+    if (!queue) {
+        FSEventStreamRelease(stream);
+        CFRelease(paths);
+        return false;
+    }
+
+    fw->fsevent_stream = stream;
+    fw->fsevent_paths = paths;
+    fw->fsevent_queue = queue;
+    fw->backend = FILEWATCH_BACKEND_FSEVENTS;
+
+    FSEventStreamSetDispatchQueue(stream, queue);
+    if (!FSEventStreamStart(stream)) {
+        fw_fsevents_stop(fw);
+        return false;
+    }
+    return true;
+}
+
+static bool fw_fsevents_dequeue(FileWatch *fw, FileWatchEvent *out_event) {
+    if (!fw || !out_event) return false;
+    bool got = false;
+
+    pthread_mutex_lock(&fw->fsevent_lock);
+    if (fw->event_head != fw->event_tail) {
+        *out_event = fw->events[fw->event_tail];
+        fw->event_tail = (fw->event_tail + 1) % FW_EVENT_QUEUE_SIZE;
+        got = true;
+    }
+    pthread_mutex_unlock(&fw->fsevent_lock);
+    return got;
+}
+
+static bool fw_kqueue_start(FileWatch *fw) {
+    if (!fw || !fw->base_path[0]) return false;
+    fw->kqueue_fd = kqueue();
+    if (fw->kqueue_fd < 0) return false;
+    fw->backend = FILEWATCH_BACKEND_KQUEUE;
+    kq_fw_scan_dir(fw, fw->base_path, 0);
+    return true;
+}
+
 FileWatch *filewatch_create_dir(const char *dir_path) {
     if (!dir_path || strlen(dir_path) >= FILEWATCH_MAX_PATH) return NULL;
 
@@ -532,18 +751,43 @@ FileWatch *filewatch_create_dir(const char *dir_path) {
 
     strncpy(fw->base_path, dir_path, sizeof(fw->base_path) - 1);
     fw->base_path[sizeof(fw->base_path) - 1] = '\0';
-    fw->kqueue_fd = kqueue();
-    if (fw->kqueue_fd < 0) {
+    fw->kqueue_fd = -1;
+
+    if (pthread_mutex_init(&fw->fsevent_lock, NULL) != 0) {
         free(fw);
         return NULL;
     }
+    fw->fsevent_lock_ready = true;
 
-    kq_fw_scan_dir(fw, dir_path, 0);
-    return fw;
+    FwTreeCensus census;
+    memset(&census, 0, sizeof(census));
+    fw_census_dir(&census, fw->base_path, 0);
+
+    FileWatchBackend selected = filewatch_select_backend(
+        census.file_count, census.dir_count, census.max_depth);
+
+    if (selected == FILEWATCH_BACKEND_FSEVENTS) {
+        if (fw_fsevents_start(fw)) return fw;
+        LOG_WARN("filewatch: FSEvents init failed; falling back to kqueue");
+        if (fw_kqueue_start(fw)) return fw;
+    } else {
+        if (fw_kqueue_start(fw)) return fw;
+        LOG_WARN("filewatch: kqueue init failed; falling back to FSEvents");
+        if (fw_fsevents_start(fw)) return fw;
+    }
+
+    LOG_WARN("filewatch: no macOS watch backend available for %s", dir_path);
+    pthread_mutex_destroy(&fw->fsevent_lock);
+    free(fw);
+    return NULL;
 }
 
 bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
     if (!fw || !out_event) return false;
+
+    if (fw->backend == FILEWATCH_BACKEND_FSEVENTS) {
+        return fw_fsevents_dequeue(fw, out_event);
+    }
 
     if (fw->event_head != fw->event_tail) {
         *out_event = fw->events[fw->event_tail];
@@ -594,9 +838,16 @@ bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
 
 void filewatch_destroy(FileWatch *fw) {
     if (!fw) return;
+
+    if (fw->backend == FILEWATCH_BACKEND_FSEVENTS || fw->fsevent_stream) {
+        fw_fsevents_stop(fw);
+    }
     if (fw->kqueue_fd >= 0) {
         kq_fw_reset(fw);
         close(fw->kqueue_fd);
+    }
+    if (fw->fsevent_lock_ready) {
+        pthread_mutex_destroy(&fw->fsevent_lock);
     }
     free(fw);
 }

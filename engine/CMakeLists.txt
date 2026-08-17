@@ -96,6 +96,7 @@ add_library(engine STATIC
     src/platform/input.c
     src/platform/time.c
     src/platform/filewatch.c
+    src/platform/filewatch_backend.c
     src/math/math.c
     src/rhi/rhi.c
     src/renderer/camera.c
@@ -347,6 +348,11 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
     set_source_files_properties(src/platform/window_cocoa.m PROPERTIES
         COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
 
+    # CoreServices/CoreFoundation and libdispatch headers are system-provided
+    # and can trip the engine's -Werror -pedantic policy on newer SDKs.
+    set_source_files_properties(src/platform/filewatch.c PROPERTIES
+        COMPILE_OPTIONS "-Wno-error;-Wno-pedantic")
+
     target_link_libraries(engine PRIVATE
         ${Vulkan_LIBRARIES}
         ${SHADERC_LIB}
@@ -354,6 +360,8 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
         "-framework QuartzCore"
         "-framework Metal"
         "-framework IOKit"
+        "-framework CoreServices"
+        "-framework CoreFoundation"
     )
 endif()
 
@@ -801,6 +809,13 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_input PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_input PRIVATE m)
     add_test(NAME test_input COMMAND test_input)
+
+    # test_filewatch_backend: platform-agnostic backend selection policy.
+    add_executable(test_filewatch_backend tests/test_filewatch_backend.c
+        src/platform/filewatch_backend.c)
+    target_include_directories(test_filewatch_backend PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_filewatch_backend PRIVATE m)
+    add_test(NAME test_filewatch_backend COMMAND test_filewatch_backend)
 
     # R443: test_wayland — pure wl_output enumeration logic (wayland_output.h
     # is header-only and wayland-free), runs headless on any platform.

@@ -269,7 +269,7 @@ Vulkan:  3-4 周出三角形  (instance/device/swapchain/renderpass/pipeline/fra
 
 | # | 任务 | 产出文件 | 详情 |
 |---|------|----------|------|
-| 4B.1 | Platform: 文件监视 | `src/platform/filewatch.c/h` | inotify (Linux) / ReadDirectoryChangesW (Win) |
+| 4B.1 | Platform: 文件监视 | `src/platform/filewatch.c/h` | kqueue-FSEvents 自适应 (macOS) / inotify (Linux) / ReadDirectoryChangesW (Win) |
 | 4B.2 | Asset: 版本号管理 | `src/asset/asset.c` (扩展) | 资源 generation counter, 脏标记 |
 | 4B.3 | Asset: Shader 热重载 | `src/asset/asset.c` (扩展) | 检测 shader 修改 → 重新编译 → 替换 GPU 程序 |
 | 4B.4 | Asset: 纹理热重载 | `src/asset/asset.c` (扩展) | 检测纹理修改 → 重新上传 GPU |

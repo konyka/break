@@ -243,30 +243,30 @@ void  time_sleep_us(u64 microseconds);  // 高精度休眠
 
 基于 `clock_gettime(CLOCK_MONOTONIC)` 实现，精度达纳秒级。
 
-### 2.4 文件监视 (`filewatch.h` / `filewatch.c`)
+### 2.4 文件监视 (`filewatch.h` / `filewatch.c` / `filewatch_backend.c`)
 
 ```c
 #define FILEWATCH_MAX_PATH    256
 #define FILEWATCH_MAX_ENTRIES 64
 
 typedef enum {
-    FILEWATCH_EVENT_MODIFIED,
-    FILEWATCH_EVENT_CREATED,
-    FILEWATCH_EVENT_DELETED,
+    FW_EVENT_MODIFIED,
+    FW_EVENT_CREATED,
+    FW_EVENT_DELETED
 } FileWatchEventType;
 
 typedef struct {
+    char path[256];
     FileWatchEventType type;
-    char               path[FILEWATCH_MAX_PATH];
 } FileWatchEvent;
 
 typedef struct {
     FileWatchEntry entries[FILEWATCH_MAX_ENTRIES];
     u32            count;
-    i32            inotify_fd;   // Linux: inotify 文件描述符
+    /* 平台句柄按编译平台选择 */
 } FileWatcher;
 
-/* 兼容 API：单文件/单目录监视（回调风格）*/
+/* 兼容 API：单文件/单目录监视（回调风格） */
 void filewatch_init(FileWatcher *fw);
 void filewatch_shutdown(FileWatcher *fw);
 void filewatch_add(FileWatcher *fw, const char *path,
@@ -274,15 +274,17 @@ void filewatch_add(FileWatcher *fw, const char *path,
 void filewatch_poll(FileWatcher *fw);
 
 /* 增强 API：递归目录监视 + 结构化事件 */
-bool filewatch_create_dir(FileWatcher *fw, const char *dir_path, bool recursive);
-bool filewatch_poll_event(FileWatcher *fw, FileWatchEvent *out);
+FileWatch *filewatch_create_dir(const char *dir_path);
+bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event);
+void filewatch_destroy(FileWatch *fw);
 ```
 
-- **Linux**: 基于 `inotify` 内核子系统，支持递归挂载子目录与新建目录的自动追加监视；事件解析为 MODIFIED/CREATED/DELETED 三类，环形队列消费
-- **Windows**: 基于 `ReadDirectoryChangesW`（`bWatchSubtree=TRUE`），递归监视目录树
-- **用途**: 驱动 Shader/纹理/脚本热重载
-- **兼容性**: 增强 API 与原有回调 API 共存，已有调用方零改动
-- **路径契约**: 回调式单文件监视仅接收能完整保存于 `FILEWATCH_MAX_PATH`（256 字节含终止符）的路径；超长请求不会占用条目或创建内核监视，避免轮询截断后的其他文件
+- **Linux**: 基于 `inotify` 内核子系统，支持递归挂载子目录与新建目录的自动追加监视；事件解析为 MODIFIED/CREATED/DELETED 三类，环形队列消费。
+- **Windows**: 基于 `ReadDirectoryChangesW`（`bWatchSubtree=TRUE`），递归监视目录树。
+- **macOS**: 基于 `kqueue` 与 `FSEvents` 自适应。初始化时对目录树做有界统计：小/浅且精确事件更重要的树使用 `kqueue`（默认不超过 256 个 watch）；文件数 ≥512、深度 ≥8 或 watch 数超限时使用 `FSEvents`。任一后端初始化失败会运行期回退到另一后端。FSEvents 使用 dispatch queue 回调、互斥锁保护事件队列，并归一化绝对/相对回调路径；遇到 `MustScanSubDirs`、`UserDropped`、`KernelDropped`、`RootChanged`、`Mount`、`Unmount` 会生成全树重扫事件，避免丢事件。
+- **用途**: 驱动 Shader/纹理/脚本热重载。
+- **兼容性**: 增强 API 与原有回调 API 共存，已有调用方零改动。
+- **路径契约**: 文件监视仅接收能完整保存于 `FILEWATCH_MAX_PATH`（256 字节含终止符）的路径；超长请求不会占用条目或创建内核监视，避免轮询截断后的其他文件。
 
 ### 2.5 窗口后端实现
 

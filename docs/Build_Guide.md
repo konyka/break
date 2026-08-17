@@ -188,14 +188,43 @@ cmake --build build-cross
 - Windows SDK（系统自带）
 - Visual Studio 2019+ 或 MinGW-w64
 
-### 2.5 框架应用
+### 2.5 macOS 平台构建
+
+macOS 使用 Xcode Command Line Tools 提供的系统框架；文件监视模块额外链接 `CoreServices` 与 `CoreFoundation`，无需单独安装第三方依赖。
+
+```bash
+cd engine
+cmake -B build-macos -G Xcode -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-macos --config Debug --parallel
+ctest --test-dir build-macos -C Debug -LE graphics --output-on-failure
+```
+
+使用 Ninja 构建：
+
+```bash
+cd engine
+cmake -B build-macos -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-macos --parallel
+```
+
+#### macOS 依赖
+- Xcode Command Line Tools（Clang、Xcode/Ninja 构建工具）
+- Vulkan SDK（如使用 Vulkan/MoltenVK 后端）
+- Metal、QuartzCore、IOKit、CoreServices、CoreFoundation（系统框架，自动链接）
+
+#### macOS 文件监视
+- 小/浅目录树使用 `kqueue` 以获得精确的单文件事件
+- 大/深目录树使用 `FSEvents` 以降低 watch 数量
+- 任一后端初始化失败时自动回退到另一后端
+
+### 2.6 框架应用
 ```bash
 # 从项目根目录
 cmake -B build-gl
 cmake --build build-gl
 ```
 
-### 2.6 CMake 选项
+### 2.7 CMake 选项
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合） |
@@ -209,7 +238,7 @@ cmake --build build-gl
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
 
-### 2.7 完整构建矩阵
+### 2.8 完整构建矩阵
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|

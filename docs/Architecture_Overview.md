@@ -127,7 +127,7 @@ graph TB
 | 模块 | 位置 | 职责 |
 |------|------|------|
 | **Core** | `engine/src/core/` | 基础设施：日志(log)、内存分配器(alloc)、字符串(string)、性能剖析(profiler)、类型定义(types)、断言(assert) |
-| **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_x11 / window_wayland / window_win32)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归)、高 DPI 与多显示器查询 |
+| **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_x11 / window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询 |
 | **RHI** | `engine/src/rhi/` | 渲染硬件接口：统一的 GPU API 抽象层，后端包括 OpenGL (`rhi_gl.c`) 和 Vulkan (`rhi_vk.c`) |
 | **Math** | `engine/src/math/` | 数学库：向量、矩阵、四元数、变换等 |
 | **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理 |
@@ -259,7 +259,7 @@ Linux 平台已完成全功能支持，覆盖窗口、输入、音频、文件�
 - **窗口系统**：X11（Xlib）与 Wayland（XDG Shell + xkbcommon）双后端，编译时通过 `ENGINE_ENABLE_WAYLAND` 选项互斥切换；Wayland 后端通过 EGL 管理 OpenGL 上下文，并支持 Vulkan `VK_KHR_wayland_surface`。
 - **输入系统**：键盘、鼠标（含侧键、捕获/隐藏/相对模式）、游戏手柄（基于 evdev，支持热插拔、摇杆/扳机归一化、最多 4 个手柄）。
 - **音频设备**：基于 miniaudio 的设备枚举与选择 API（`audio_get_device_count` / `audio_set_device`）。
-- **文件监视**：基于 inotify 的递归目录监视与结构化事件解析，驱动 Shader/资源热重载。
+- **文件监视**：Linux 基于 inotify 的递归目录监视与结构化事件解析，macOS 基于 kqueue/FSEvents 自适应监视，驱动 Shader/资源热重载。
 - **高 DPI / 多显示器**：`platform_get_dpi` / `platform_get_scale_factor` / `platform_get_monitor_info` 统一 API。
 
 ### 构建变体
