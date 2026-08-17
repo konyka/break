@@ -10,7 +10,7 @@ typedef struct {
     u32   last_modified;
     void (*callback)(const char *path, void *user);
     void *user;
-#ifndef ENGINE_PLATFORM_WINDOWS
+#if defined(ENGINE_PLATFORM_LINUX)
     i32   inotify_wd;  /* inotify watch descriptor for this entry */
 #endif
 } FileWatchEntry;
@@ -18,9 +18,9 @@ typedef struct {
 typedef struct {
     FileWatchEntry entries[FILEWATCH_MAX_ENTRIES];
     u32            count;
-#ifdef ENGINE_PLATFORM_WINDOWS
+#if defined(ENGINE_PLATFORM_WINDOWS)
     void          *dir_handle;
-#else
+#elif defined(ENGINE_PLATFORM_LINUX)
     i32            inotify_fd;
 #endif
 } FileWatcher;

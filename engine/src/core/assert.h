@@ -28,6 +28,6 @@
     #define engine_assert(cond, msg) ((void)0)
 #endif
 
-[[noreturn]] void engine_assert_fail(const char *cond, const char *file,
-                                     int line, const char *func,
-                                     const char *msg);
+_Noreturn void engine_assert_fail(const char *cond, const char *file,
+                                  int line, const char *func,
+                                  const char *msg);

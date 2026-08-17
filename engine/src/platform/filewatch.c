@@ -267,7 +267,7 @@ void filewatch_destroy(FileWatch *fw) {
     free(fw);
 }
 
-#else /* Linux / POSIX */
+#elif defined(ENGINE_PLATFORM_LINUX)
 #include <sys/inotify.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -580,6 +580,103 @@ void filewatch_destroy(FileWatch *fw) {
         }
         close(fw->inotify_fd);
     }
+    free(fw);
+}
+
+#else /* portable fallback (macOS and other POSIX without inotify) */
+#include <sys/stat.h>
+
+struct FileWatch {
+    char            base_path[256];
+    u32             last_mtime;
+    FileWatchEvent  events[FW_EVENT_QUEUE_SIZE];
+    u32             event_head;
+    u32             event_tail;
+};
+
+static u32 file_mtime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (u32)st.st_mtime;
+}
+
+static void filewatch_fallback_enqueue(FileWatch *fw, const FileWatchEvent *ev) {
+    u32 next = (fw->event_head + 1) % FW_EVENT_QUEUE_SIZE;
+    if (next == fw->event_tail) return;
+    fw->events[fw->event_head] = *ev;
+    fw->event_head = next;
+}
+
+void filewatch_init(FileWatcher *fw) {
+    memset(fw, 0, sizeof(*fw));
+}
+
+void filewatch_shutdown(FileWatcher *fw) {
+    (void)fw;
+}
+
+void filewatch_add(FileWatcher *fw, const char *path,
+                   void (*callback)(const char *path, void *user), void *user) {
+    if (!fw || !path || strlen(path) >= FILEWATCH_MAX_PATH) return;
+    if (fw->count >= FILEWATCH_MAX_ENTRIES) return;
+    FileWatchEntry *e = &fw->entries[fw->count++];
+    strncpy(e->path, path, FILEWATCH_MAX_PATH - 1);
+    e->path[FILEWATCH_MAX_PATH - 1] = '\0';
+    e->callback = callback;
+    e->user = user;
+    e->last_modified = file_mtime(path);
+}
+
+void filewatch_poll(FileWatcher *fw) {
+    if (!fw) return;
+    for (u32 i = 0; i < fw->count; i++) {
+        FileWatchEntry *e = &fw->entries[i];
+        u32 mt = file_mtime(e->path);
+        if (mt != 0 && mt != e->last_modified) {
+            e->last_modified = mt;
+            if (e->callback) e->callback(e->path, e->user);
+        }
+    }
+}
+
+FileWatch *filewatch_create_dir(const char *dir_path) {
+    if (!dir_path) return NULL;
+    FileWatch *fw = (FileWatch *)calloc(1, sizeof(FileWatch));
+    if (!fw) return NULL;
+    strncpy(fw->base_path, dir_path, sizeof(fw->base_path) - 1);
+    fw->base_path[sizeof(fw->base_path) - 1] = '\0';
+    fw->last_mtime = file_mtime(dir_path);
+    return fw;
+}
+
+bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
+    if (!fw || !out_event) return false;
+
+    if (fw->event_head != fw->event_tail) {
+        *out_event = fw->events[fw->event_tail];
+        fw->event_tail = (fw->event_tail + 1) % FW_EVENT_QUEUE_SIZE;
+        return true;
+    }
+
+    u32 mt = file_mtime(fw->base_path);
+    if (mt != 0 && mt != fw->last_mtime) {
+        fw->last_mtime = mt;
+        FileWatchEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        snprintf(ev.path, sizeof(ev.path), "%s", fw->base_path);
+        ev.type = FW_EVENT_MODIFIED;
+        filewatch_fallback_enqueue(fw, &ev);
+    }
+
+    if (fw->event_head != fw->event_tail) {
+        *out_event = fw->events[fw->event_tail];
+        fw->event_tail = (fw->event_tail + 1) % FW_EVENT_QUEUE_SIZE;
+        return true;
+    }
+    return false;
+}
+
+void filewatch_destroy(FileWatch *fw) {
     free(fw);
 }
 
