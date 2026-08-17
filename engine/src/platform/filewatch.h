@@ -12,6 +12,8 @@ typedef struct {
     void *user;
 #if defined(ENGINE_PLATFORM_LINUX)
     i32   inotify_wd;  /* inotify watch descriptor for this entry */
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(__APPLE__)
+    i32   watch_fd;    /* kqueue vnode watch descriptor for this entry */
 #endif
 } FileWatchEntry;
 
@@ -22,6 +24,8 @@ typedef struct {
     void          *dir_handle;
 #elif defined(ENGINE_PLATFORM_LINUX)
     i32            inotify_fd;
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(__APPLE__)
+    i32            kqueue_fd;
 #endif
 } FileWatcher;
 

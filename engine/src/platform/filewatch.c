@@ -267,6 +267,340 @@ void filewatch_destroy(FileWatch *fw) {
     free(fw);
 }
 
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(__APPLE__)
+#include <sys/event.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
+
+#define FW_KQ_MAX_EVENTS 64
+
+static u32 kq_file_mtime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (u32)st.st_mtime;
+}
+
+static bool kq_register_vnode(int kq, int fd, uintptr_t ident) {
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)fd, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR,
+           NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_ATTRIB, 0,
+           (void *)ident);
+    return kevent(kq, &ev, 1, NULL, 0, NULL) == 0;
+}
+
+/* ------------------------------------------------------------------
+ * Legacy single-file watcher (FileWatcher)
+ * ------------------------------------------------------------------ */
+void filewatch_init(FileWatcher *fw) {
+    memset(fw, 0, sizeof(*fw));
+    fw->kqueue_fd = kqueue();
+    if (fw->kqueue_fd < 0) {
+        LOG_WARN("filewatch: kqueue init failed");
+    }
+}
+
+void filewatch_shutdown(FileWatcher *fw) {
+    if (!fw) return;
+    if (fw->kqueue_fd >= 0) {
+        for (u32 i = 0; i < fw->count; i++) {
+            if (fw->entries[i].watch_fd >= 0) close(fw->entries[i].watch_fd);
+            fw->entries[i].watch_fd = -1;
+        }
+        close(fw->kqueue_fd);
+        fw->kqueue_fd = -1;
+    }
+}
+
+void filewatch_add(FileWatcher *fw, const char *path,
+                   void (*callback)(const char *path, void *user), void *user) {
+    if (!fw || !path || strlen(path) >= FILEWATCH_MAX_PATH) return;
+    if (fw->count >= FILEWATCH_MAX_ENTRIES) return;
+
+    u32 idx = fw->count;
+    FileWatchEntry *e = &fw->entries[idx];
+    strncpy(e->path, path, FILEWATCH_MAX_PATH - 1);
+    e->path[FILEWATCH_MAX_PATH - 1] = '\0';
+    e->callback = callback;
+    e->user = user;
+    e->watch_fd = -1;
+    e->last_modified = kq_file_mtime(path);
+
+    if (fw->kqueue_fd >= 0) {
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd >= 0) {
+            if (kq_register_vnode(fw->kqueue_fd, fd, (uintptr_t)idx)) {
+                e->watch_fd = fd;
+            } else {
+                close(fd);
+            }
+        }
+    }
+    fw->count++;
+}
+
+void filewatch_poll(FileWatcher *fw) {
+    if (!fw) return;
+
+    bool dirty[FILEWATCH_MAX_ENTRIES];
+    bool kq_ok = false;
+    memset(dirty, 0, sizeof(dirty));
+
+    if (fw->kqueue_fd >= 0) {
+        struct kevent events[FW_KQ_MAX_EVENTS];
+        struct timespec ts = { 0, 0 };
+        int n = kevent(fw->kqueue_fd, NULL, 0, events, FW_KQ_MAX_EVENTS, &ts);
+        if (n > 0) {
+            kq_ok = true;
+            for (int i = 0; i < n; i++) {
+                u32 idx = (u32)(uintptr_t)events[i].udata;
+                if (idx < fw->count) dirty[idx] = true;
+            }
+        }
+    }
+
+    for (u32 i = 0; i < fw->count; i++) {
+        if (kq_ok && !dirty[i]) continue;
+        FileWatchEntry *e = &fw->entries[i];
+        u32 mt = kq_file_mtime(e->path);
+        if (mt != 0 && mt != e->last_modified) {
+            e->last_modified = mt;
+            if (e->callback) e->callback(e->path, e->user);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------
+ * Extended FileWatch API (macOS / BSD kqueue)
+ * ------------------------------------------------------------------ */
+typedef struct {
+    char path[256];
+    u32  mtime;
+} KqWatchSnapshot;
+
+struct FileWatch {
+    int             kqueue_fd;
+    int             watch_fds[FW_MAX_WATCHES];
+    char            watch_paths[FW_MAX_WATCHES][256];
+    u32             watch_mtimes[FW_MAX_WATCHES];
+    bool            watch_is_dir[FW_MAX_WATCHES];
+    u32             watch_count;
+    char            base_path[256];
+    FileWatchEvent  events[FW_EVENT_QUEUE_SIZE];
+    u32             event_head;
+    u32             event_tail;
+};
+
+static void kq_fw_enqueue(FileWatch *fw, const char *path, FileWatchEventType type) {
+    if (!fw || !path || strlen(path) >= sizeof(fw->events[0].path)) return;
+    u32 next = (fw->event_head + 1) % FW_EVENT_QUEUE_SIZE;
+    if (next == fw->event_tail) return;
+    FileWatchEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    snprintf(ev.path, sizeof(ev.path), "%s", path);
+    ev.type = type;
+    fw->events[fw->event_head] = ev;
+    fw->event_head = next;
+}
+
+static bool kq_fw_register(FileWatch *fw, const char *path, bool is_dir, u32 mtime) {
+    if (!fw || !path || strlen(path) >= sizeof(fw->watch_paths[0])) return false;
+    if (fw->watch_count >= FW_MAX_WATCHES) return false;
+
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) return false;
+
+    u32 idx = fw->watch_count;
+    if (!kq_register_vnode(fw->kqueue_fd, fd, (uintptr_t)idx)) {
+        close(fd);
+        return false;
+    }
+
+    fw->watch_fds[idx] = fd;
+    strncpy(fw->watch_paths[idx], path, sizeof(fw->watch_paths[idx]) - 1);
+    fw->watch_paths[idx][sizeof(fw->watch_paths[idx]) - 1] = '\0';
+    fw->watch_mtimes[idx] = mtime;
+    fw->watch_is_dir[idx] = is_dir;
+    fw->watch_count++;
+    return true;
+}
+
+static void kq_fw_reset(FileWatch *fw) {
+    if (!fw) return;
+    for (u32 i = 0; i < fw->watch_count; i++) {
+        if (fw->watch_fds[i] >= 0) close(fw->watch_fds[i]);
+        fw->watch_fds[i] = -1;
+        fw->watch_paths[i][0] = '\0';
+        fw->watch_mtimes[i] = 0;
+        fw->watch_is_dir[i] = false;
+    }
+    fw->watch_count = 0;
+}
+
+static void kq_fw_scan_dir(FileWatch *fw, const char *path, u32 depth) {
+    if (!fw || !path || depth >= 32u || fw->watch_count >= FW_MAX_WATCHES) return;
+
+    DIR *dir = opendir(path);
+    if (!dir) return;
+
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        kq_fw_register(fw, path, true, (u32)st.st_mtime);
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL && fw->watch_count < FW_MAX_WATCHES) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+
+        char child[512];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (usize)n >= sizeof(child)) continue;
+
+        struct stat cst;
+        if (lstat(child, &cst) != 0) continue;
+        if (S_ISDIR(cst.st_mode)) {
+            if (depth + 1u < 32u) kq_fw_scan_dir(fw, child, depth + 1u);
+        } else if (S_ISREG(cst.st_mode)) {
+            kq_fw_register(fw, child, false, (u32)cst.st_mtime);
+        }
+    }
+    closedir(dir);
+}
+
+static bool kq_fw_snapshot_find(const KqWatchSnapshot *snap, u32 count,
+                                const char *path, u32 *out_idx) {
+    if (!snap || !path || !out_idx) return false;
+    for (u32 i = 0; i < count; i++) {
+        if (strcmp(snap[i].path, path) == 0) {
+            *out_idx = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool kq_fw_watch_find(const FileWatch *fw, const char *path, u32 *out_idx) {
+    if (!fw || !path || !out_idx) return false;
+    for (u32 i = 0; i < fw->watch_count; i++) {
+        if (strcmp(fw->watch_paths[i], path) == 0) {
+            *out_idx = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void kq_fw_rescan(FileWatch *fw) {
+    if (!fw || !fw->base_path[0]) return;
+
+    KqWatchSnapshot old[FW_MAX_WATCHES];
+    u32 old_count = fw->watch_count;
+    if (old_count > FW_MAX_WATCHES) old_count = FW_MAX_WATCHES;
+    for (u32 i = 0; i < old_count; i++) {
+        strncpy(old[i].path, fw->watch_paths[i], sizeof(old[i].path) - 1);
+        old[i].path[sizeof(old[i].path) - 1] = '\0';
+        old[i].mtime = fw->watch_mtimes[i];
+    }
+
+    kq_fw_reset(fw);
+    kq_fw_scan_dir(fw, fw->base_path, 0);
+
+    for (u32 i = 0; i < fw->watch_count; i++) {
+        u32 old_idx = 0;
+        if (!kq_fw_snapshot_find(old, old_count, fw->watch_paths[i], &old_idx)) {
+            kq_fw_enqueue(fw, fw->watch_paths[i], FW_EVENT_CREATED);
+        } else if (fw->watch_mtimes[i] != old[old_idx].mtime) {
+            kq_fw_enqueue(fw, fw->watch_paths[i], FW_EVENT_MODIFIED);
+        }
+    }
+
+    for (u32 i = 0; i < old_count; i++) {
+        u32 new_idx = 0;
+        if (!kq_fw_watch_find(fw, old[i].path, &new_idx)) {
+            kq_fw_enqueue(fw, old[i].path, FW_EVENT_DELETED);
+        }
+    }
+}
+
+FileWatch *filewatch_create_dir(const char *dir_path) {
+    if (!dir_path || strlen(dir_path) >= FILEWATCH_MAX_PATH) return NULL;
+
+    FileWatch *fw = (FileWatch *)calloc(1, sizeof(FileWatch));
+    if (!fw) return NULL;
+
+    strncpy(fw->base_path, dir_path, sizeof(fw->base_path) - 1);
+    fw->base_path[sizeof(fw->base_path) - 1] = '\0';
+    fw->kqueue_fd = kqueue();
+    if (fw->kqueue_fd < 0) {
+        free(fw);
+        return NULL;
+    }
+
+    kq_fw_scan_dir(fw, dir_path, 0);
+    return fw;
+}
+
+bool filewatch_poll_event(FileWatch *fw, FileWatchEvent *out_event) {
+    if (!fw || !out_event) return false;
+
+    if (fw->event_head != fw->event_tail) {
+        *out_event = fw->events[fw->event_tail];
+        fw->event_tail = (fw->event_tail + 1) % FW_EVENT_QUEUE_SIZE;
+        return true;
+    }
+
+    if (fw->kqueue_fd >= 0) {
+        struct kevent events[FW_KQ_MAX_EVENTS];
+        struct timespec ts = { 0, 0 };
+        int n = kevent(fw->kqueue_fd, NULL, 0, events, FW_KQ_MAX_EVENTS, &ts);
+        bool rescan = false;
+
+        for (int i = 0; i < n; i++) {
+            if (events[i].flags & EV_ERROR) continue;
+            u32 idx = (u32)(uintptr_t)events[i].udata;
+            if (idx >= fw->watch_count) continue;
+
+            if (events[i].fflags & (NOTE_DELETE | NOTE_RENAME)) {
+                rescan = true;
+                continue;
+            }
+            if (fw->watch_is_dir[idx]) {
+                rescan = true;
+                continue;
+            }
+
+            const char *path = fw->watch_paths[idx];
+            u32 mt = kq_file_mtime(path);
+            if (mt == 0) {
+                rescan = true;
+            } else if (mt != fw->watch_mtimes[idx]) {
+                fw->watch_mtimes[idx] = mt;
+                kq_fw_enqueue(fw, path, FW_EVENT_MODIFIED);
+            }
+        }
+
+        if (rescan) kq_fw_rescan(fw);
+    }
+
+    if (fw->event_head != fw->event_tail) {
+        *out_event = fw->events[fw->event_tail];
+        fw->event_tail = (fw->event_tail + 1) % FW_EVENT_QUEUE_SIZE;
+        return true;
+    }
+    return false;
+}
+
+void filewatch_destroy(FileWatch *fw) {
+    if (!fw) return;
+    if (fw->kqueue_fd >= 0) {
+        kq_fw_reset(fw);
+        close(fw->kqueue_fd);
+    }
+    free(fw);
+}
+
 #elif defined(ENGINE_PLATFORM_LINUX)
 #include <sys/inotify.h>
 #include <sys/stat.h>
