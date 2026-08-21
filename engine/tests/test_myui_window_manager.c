@@ -226,6 +226,25 @@ TEST(dynamic_scale_reconfigures_injected_canvas_without_resize)
   my_pal_destroy(pal);
 }
 
+TEST(floating_plain_widget_does_not_crash_hit_test)
+{
+  my_widget_t* root = my_widget_create(NULL, "root");
+  my_widget_t* overlay = my_widget_create(NULL, "overlay");
+
+  ASSERT_NOT_NULL(root);
+  ASSERT_NOT_NULL(overlay);
+  ASSERT_EQ(my_widget_set_rect(root, &(my_rect_t){0, 0, 100, 100}),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(overlay, &(my_rect_t){10, 10, 40, 40}),
+            MY_RET_OK);
+  overlay->floating = true;
+  ASSERT_EQ(my_widget_add_child(root, overlay), MY_RET_OK);
+  ASSERT_TRUE(my_widget_hit_test(root, 20, 20) == root);
+
+  my_widget_unref(overlay);
+  my_widget_unref(root);
+}
+
 TEST(window_manager_refreshes_all_window_scales)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1022,6 +1041,7 @@ TEST(text_widgets_paste_full_clipboard_without_fixed_buffer_limit)
 TEST_MAIN_BEGIN()
     RUN_TEST(injected_canvas_inherits_window_scale);
     RUN_TEST(dynamic_scale_reconfigures_injected_canvas_without_resize);
+    RUN_TEST(floating_plain_widget_does_not_crash_hit_test);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);
     RUN_TEST(software_canvas_recreates_after_surface_resize);

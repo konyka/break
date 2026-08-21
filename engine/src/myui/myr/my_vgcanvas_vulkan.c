@@ -221,6 +221,7 @@ typedef struct vk_tex_t {
 } vk_tex_t;
 
 typedef struct vk_glyph_entry_t {
+  my_font_t* font;
   uint32_t codepoint;
   int32_t size;
   vk_tex_t tex; /* .img == VK_NULL_HANDLE = empty */
@@ -2126,6 +2127,7 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
   /* direct-mapped texture cache: evict on slot collision (same as gles2) */
   slot = (cp ^ (uint32_t)vk_dev_font_size(c)) % VKC_GLYPH_CACHE;
   if (c->glyph_cache[slot].tex.img == VK_NULL_HANDLE ||
+      c->glyph_cache[slot].font != c->state.font ||
       c->glyph_cache[slot].codepoint != cp ||
       c->glyph_cache[slot].size != vk_dev_font_size(c)) {
     if (!vk_tex_retire(c, &c->glyph_cache[slot].tex)) {
@@ -2137,6 +2139,7 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
       *pen_x += (float)g.advance;
       return;
     }
+    c->glyph_cache[slot].font = c->state.font;
     c->glyph_cache[slot].codepoint = cp;
     c->glyph_cache[slot].size = vk_dev_font_size(c);
   }

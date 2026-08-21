@@ -88,6 +88,8 @@ typedef struct my_vgcanvas_vtable_t {
   /**
    * @brief Set the current font and size (M7a). font may be NULL to
    * change only the size; draw_text returns NOT_SUPPORTED without a font.
+   * The canvas borrows font and does not retain or destroy it. The font must
+   * remain alive until the canvas is destroyed or another font is installed.
    */
   my_ret_t (*set_font)(my_vgcanvas_t* vg, my_font_t* font, int32_t size);
 
@@ -99,7 +101,10 @@ typedef struct my_vgcanvas_vtable_t {
    * @brief Blit an RGBA8888 image into dst (user space), nearest-neighbor
    * scaled. When bg != NULL each source pixel is first composited over bg
    * (src * a + bg * (1-a)); the result is written opaquely. May return
-   * MY_RET_NOT_SUPPORTED on backends without image support.
+   * MY_RET_NOT_SUPPORTED on backends without image support. GPU backends may
+   * cache by the bitmap pointer and dimensions, so rgba contents must remain
+   * unchanged while the canvas may reuse that image. Use a new stable buffer
+   * identity after changing pixels.
    */
   my_ret_t (*draw_image)(my_vgcanvas_t* vg, const uint8_t* rgba, int32_t w,
                          int32_t h, const my_rectf_t* dst,

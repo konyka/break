@@ -71,6 +71,7 @@ typedef struct gles_state_t {
 } gles_state_t;
 
 typedef struct gles_tex_entry_t {
+  my_font_t* font;
   uint32_t codepoint;
   int32_t size;
   uint32_t texture; /**< 0 = empty */
@@ -427,13 +428,16 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
   }
   /* direct-mapped texture cache: evict on slot collision */
   slot = (cp ^ (uint32_t)gles_dev_font_size(s)) % GLES_TEX_CACHE_SIZE;
-  if (s->tex_cache[slot].texture == 0 || s->tex_cache[slot].codepoint != cp ||
+  if (s->tex_cache[slot].texture == 0 ||
+      s->tex_cache[slot].font != s->state.font ||
+      s->tex_cache[slot].codepoint != cp ||
       s->tex_cache[slot].size != gles_dev_font_size(s)) {
     if (s->tex_cache[slot].texture != 0) {
       s->gl.delete_texture(s->gl.ctx, s->tex_cache[slot].texture);
     }
     s->tex_cache[slot].texture =
         s->gl.create_texture(s->gl.ctx, g.bitmap, g.w, g.h);
+    s->tex_cache[slot].font = s->state.font;
     s->tex_cache[slot].codepoint = cp;
     s->tex_cache[slot].size = gles_dev_font_size(s);
   }

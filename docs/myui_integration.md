@@ -171,6 +171,10 @@ my_window_t *win = break_ui_get_window(ui);
 - 统一输出 myui font-vertex 布局：`x,y,u,v,r,g,b,a`。
 - `1024x1024` RGBA glyph atlas，仅在脏时上传 mip 0；可容纳完整中文页面的
   千级不同字形，避免滚动后因图集耗尽而丢字。
+- GLES/OpenGL 与 Vulkan 的 direct-mapped glyph cache 均使用
+  `(font_identity, codepoint, device_font_size)` 作为命中条件；切换字体后即使字符和字号
+  相同，也会重新上传字形纹理，不会显示上一字体的字形。canvas 只借用 `my_font_t *`，
+  应用必须保证字体存活到 canvas 销毁或不再使用该字体之后。
 - solid/image 分别使用双缓冲动态 VBO（按 `rhi_frame_index` 选择）。
 - 路径和圆角矩形由共享 `my_vggeometry` CPU 三角化。
 - OpenGL 使用 `font.vert/frag` + `ui_img.vert/frag`。
@@ -191,9 +195,16 @@ Break RHI 路径不会再因创建分支不同而出现字号或坐标不一致�
 
 GPU 图像管线使用固定 sampler，当前不能在单次 widget 绘制间切换采样器；`my_image`
 会保留其 filter 偏好并忽略 `MY_RET_NOT_SUPPORTED`，在所有 GPU 后端维持确定性的固定
-采样结果。`ztpool` 的 PNG 分享导出是显式离屏软件渲染任务，因而保留
+采样结果。GLES/Vulkan 图像纹理缓存按 `(rgba 指针, width, height)` 复用，因此公共
+`my_vgcanvas_draw_image()` 调用方必须在缓存可能命中期间保持 bitmap 内容不变；需要更新
+像素时应提供新的稳定 buffer identity，或主动让 canvas 生命周期结束。`my_image` 解码
+缓存满足该生命周期要求。`ztpool` 的 PNG 分享导出是显式离屏软件渲染任务，因而保留
 `my_vgcanvas_soft_create` 依赖；它不参与窗口的后端选择，也不会把软件 canvas 传给
 GPU 控件路径。
+
+Floating widget 的绘制与命中语义也分离：`floating=true` 且没有 `on_event` 的普通控件
+是 paint-only overlay，不会吞掉其下方控件的 pointer hit-test；带 `on_event` 的浮层仍按
+顶层交互控件处理。普通 `my_widget_create()` 控件允许保持 NULL vtable。
 
 ### 窗口状态机与尺寸边界
 
@@ -282,8 +293,9 @@ DPI/scale 会在后续 Bridge frame 由窗口 scale 刷新契约传递给 canvas
 ## 性能取舍
 
 - **CPU tessellate + 动态 VBO**：避免每帧切换大量 pipeline；GL/VK 行为一致，易调试。
-- **单 1024px atlas + 图像缓存**：减少 texture bind；图集仅新增字形时上传，容量覆盖
-  当前中文页面的千级不同字形，图像按缓存 key 复用。
+- **字体隔离的字形缓存 + 单 1024px atlas**：减少 texture bind；图集仅新增字形时上传，
+  direct-mapped cache 额外隔离字体身份，避免字体切换后的错误复用；容量覆盖当前中文页面
+  的千级不同字形，图像按缓存 key 复用。
 - **双缓冲 VBO**：与 RHI in-flight frame 对应，避免 CPU/GPU 写冲突。
 - **MVVM 列表增量刷新**：`items_changed` 原地更新 `list_view` adapter，保留滚动位置和
   行池；只有模板切换才重新安装 adapter，避免行情等高频数据刷新跳回列表顶部。

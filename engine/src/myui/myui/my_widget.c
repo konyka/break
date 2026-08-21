@@ -447,7 +447,8 @@ static my_widget_t* hit_test_rec(my_widget_t* widget, int32_t x, int32_t y) {
     /* paint-only floating overlays (no on_event, e.g. node_view's
      * minimap/rubber-band layer) must not swallow hits meant for the
      * widgets beneath them; interactive floaters (menus) keep theirs */
-    if (child->floating && child->vtable->on_event == NULL) {
+    if (child->floating &&
+        (child->vtable == NULL || child->vtable->on_event == NULL)) {
       continue;
     }
     hit = hit_test_rec(child, lx, ly);
