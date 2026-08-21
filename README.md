@@ -30,5 +30,9 @@ the final link can consume LLVM bitcode; disable IPO with
 ## Documentation
 
 - Build and platform matrix: `docs/Build_Guide.md`
+- myui integration and Break RHI backend: `docs/myui_integration.md`
+- myui now shares one RHI surface across logical windows and supports IME, cursor,
+  non-blocking clipboard transfer, and OpenGL/Vulkan on X11 and Wayland; see
+  `docs/myui_integration.md` for the platform matrix.
 - Implementation status: `docs/Implementation_Status.md`
 - Performance roadmap: `docs/Round11_Performance_Plan.md`

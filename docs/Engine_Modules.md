@@ -163,9 +163,9 @@ Platform           *platform_create(const PlatformConfig *cfg);
 void                platform_destroy(Platform *p);
 PlatformEventResult platform_poll(Platform *p);
 InputState         *platform_input(Platform *p);
-void               *platform_window_native(Platform *p);   // 返回原生窗口句柄
-void               *platform_display_native(Platform *p);  // 返回原生显示连接
-void               *platform_surface_native(Platform *p);  // Wayland surface / 其他平台 surface
+void               *platform_window_native(Platform *p);   // OpenGL/EGL 目标
+void               *platform_display_native(Platform *p);  // 原生显示连接
+void               *platform_surface_native(Platform *p);  // Vulkan WSI 目标
 void                platform_get_size(Platform *p, u32 *w, u32 *h);
 void                platform_toggle_fullscreen(Platform *p);
 
@@ -181,7 +181,17 @@ u32                 platform_get_monitor_count(Platform *p);
 bool                platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out);
 ```
 
-**设计意图**：`platform_window_native` / `platform_display_native` / `platform_surface_native` 返回 `void*`，由 RHI 后端自行转换为具体类型（如 X11 的 `Window`/`Display*`、Wayland 的 `wl_surface*`/`wl_display*`、Win32 的 `HWND`/`HINSTANCE`）。
+**设计意图**：三个 native 接口返回 `void*`，由对应 RHI 后端转换为具体类型。
+`platform_window_native` 专用于 OpenGL/EGL（Wayland 返回 `wl_egl_window*`），
+`platform_surface_native` 专用于 Vulkan WSI（Wayland 返回 `wl_surface*`）；两者不能
+互换。X11 返回 `Window`/`Display*`，Win32 返回 `HWND`/`HINSTANCE`，Cocoa 的两个
+窗口目标都返回 `CAMetalLayer*`。
+
+IME 文本事件统一从 `platform_poll_text` 取出。常见文本使用 64 字节内联存储，长文本
+由事件拥有动态 UTF-8 缓冲；消费方必须调用 `platform_text_event_destroy`。单事件上限
+为 16 MiB，队列总 payload 上限为 32 MiB、事件数上限为 4096，超限时非阻塞丢弃，
+相邻 preedit 更新合并。Break PAL 的 `run()` 不是阻塞 OS 主循环；嵌入式宿主必须每帧
+先调用 `platform_poll`，再调用 UI pump 和 RHI frame 生命周期。
 
 ### 2.2 输入系统 (`input.h` / `input.c`)
 

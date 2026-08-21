@@ -1,0 +1,25 @@
+#ifndef MY_VGCANVAS_BREAK_RHI_INTERNAL_H
+#define MY_VGCANVAS_BREAK_RHI_INTERNAL_H
+
+#include "myr/my_rect.h"
+
+/* Keep an implicit full-surface clip full after a drawable resize. Explicit
+ * clips stay in device coordinates and are clamped to the new surface. */
+static inline my_rect_t my_vgcanvas_break_rhi_resize_clip(my_rect_t clip,
+                                                          u32 old_width,
+                                                          u32 old_height,
+                                                          u32 new_width,
+                                                          u32 new_height) {
+  my_rect_t surface = my_rect_init(0, 0, (int32_t)new_width,
+                                   (int32_t)new_height);
+  my_rect_t clipped;
+  if (clip.x == 0 && clip.y == 0 && clip.w == (int32_t)old_width &&
+      clip.h == (int32_t)old_height) {
+    return surface;
+  }
+  return my_rect_intersect(&clip, &surface, &clipped)
+             ? clipped
+             : my_rect_init(0, 0, 0, 0);
+}
+
+#endif /* MY_VGCANVAS_BREAK_RHI_INTERNAL_H */

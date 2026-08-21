@@ -132,8 +132,10 @@ typedef struct RHICmdBuffer RHICmdBuffer;
 typedef struct RHIDevice RHIDevice;
 
 /* ---- Device API ---- */
+/* `w` and `h` are physical drawable pixels, never logical UI points. */
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
+/* Resize the default framebuffer/swapchain in physical drawable pixels. */
 void       rhi_device_resize(RHIDevice *dev, u32 w, u32 h);
 
 /* ---- Frame lifecycle ---- */

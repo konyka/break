@@ -1,13 +1,23 @@
 #include <platform/platform.h>
 #include <platform/input.h>
+#include <platform/platform_text.h>
+#include <platform/monitor_selection.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <X11/XKBlib.h>
+#include <X11/Xutil.h>
+#include <X11/Xatom.h>
+#include <X11/cursorfont.h>
 #include <X11/extensions/Xrandr.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
+
+#define X11_CLIPBOARD_MAX_BYTES (16u * 1024u * 1024u)
+#define X11_CLIPBOARD_CHUNK_BYTES (64u * 1024u)
 
 struct Platform {
     Display    *display;
@@ -15,6 +25,12 @@ struct Platform {
     Atom        wm_delete;
     Atom        wm_state;
     Atom        wm_fullscreen;
+    Atom        wm_moveresize;
+    Atom        clipboard;
+    Atom        targets;
+    Atom        utf8_string;
+    Atom        clipboard_property;
+    Atom        incr;
     InputState  input;
     u32         width;
     u32         height;
@@ -24,11 +40,410 @@ struct Platform {
     bool        mouse_visible;
     bool        mouse_relative;
     Cursor      invisible_cursor;
+    Cursor      cursors[3];
+    PlatformCursor cursor;
     f32         dpi;
     i32         scale_factor;
     MonitorInfo monitors[PLATFORM_MAX_MONITORS];
     u32         monitor_count;
+    i32         randr_event_base;
+    PlatformTextQueue text_queue;
+    bool        ime_enabled;
+    bool        has_focus;
+    char       *preedit;
+    XIM         xim;
+    XIC         xic;
+    XIMCallback preedit_start_callback;
+    XIMCallback preedit_done_callback;
+    XIMCallback preedit_draw_callback;
+    char       *clipboard_text;
+    bool        clipboard_cache_valid;
+    bool        clipboard_request_pending;
+    Window      clipboard_cache_owner;
+    bool        clipboard_receive_incremental;
+    char       *clipboard_receive_buffer;
+    usize       clipboard_receive_length;
+    usize       clipboard_receive_capacity;
+    Window      clipboard_send_requestor;
+    Atom        clipboard_send_property;
+    Atom        clipboard_send_target;
+    char       *clipboard_send_text;
+    usize       clipboard_send_length;
+    usize       clipboard_send_offset;
 };
+
+static void x11_apply_cursor(Platform *p) {
+    unsigned int shape;
+    if (p == NULL || p->display == NULL) return;
+    if (!p->mouse_visible) {
+        if (p->invisible_cursor != 0)
+            XDefineCursor(p->display, p->window, p->invisible_cursor);
+        return;
+    }
+    if (p->cursor > PLATFORM_CURSOR_HAND) return;
+    if (p->cursors[p->cursor] == 0) {
+        static const unsigned int shapes[] = {XC_left_ptr, XC_xterm, XC_hand2};
+        shape = shapes[p->cursor];
+        p->cursors[p->cursor] = XCreateFontCursor(p->display, shape);
+    }
+    if (p->cursors[p->cursor] != 0)
+        XDefineCursor(p->display, p->window, p->cursors[p->cursor]);
+}
+
+static bool x11_clipboard_replace(Platform *p, const char *text,
+                                  usize length) {
+    char *copy;
+    if (p == NULL || length > X11_CLIPBOARD_MAX_BYTES) return false;
+    copy = malloc(length + 1);
+    if (copy == NULL) return false;
+    if (length > 0 && text != NULL) memcpy(copy, text, length);
+    copy[length] = '\0';
+    free(p->clipboard_text);
+    p->clipboard_text = copy;
+    p->clipboard_cache_valid = true;
+    return true;
+}
+
+static char *x11_clipboard_duplicate(const char *text) {
+    usize length;
+    char *copy;
+    if (text == NULL) return NULL;
+    length = strlen(text);
+    copy = malloc(length + 1);
+    if (copy != NULL) memcpy(copy, text, length + 1);
+    return copy;
+}
+
+static void x11_clipboard_clear_receive(Platform *p) {
+    free(p->clipboard_receive_buffer);
+    p->clipboard_receive_buffer = NULL;
+    p->clipboard_receive_length = 0;
+    p->clipboard_receive_capacity = 0;
+    p->clipboard_receive_incremental = false;
+}
+
+static bool x11_clipboard_append_receive(Platform *p, const char *text,
+                                         usize length) {
+    char *next;
+    usize capacity;
+    if (length > X11_CLIPBOARD_MAX_BYTES - p->clipboard_receive_length)
+        return false;
+    if (p->clipboard_receive_capacity <= p->clipboard_receive_length + length) {
+        capacity = p->clipboard_receive_capacity == 0 ? 4096
+                                                       : p->clipboard_receive_capacity;
+        while (capacity <= p->clipboard_receive_length + length) {
+            if (capacity > (X11_CLIPBOARD_MAX_BYTES + 1) / 2) {
+                capacity = X11_CLIPBOARD_MAX_BYTES + 1;
+                break;
+            }
+            capacity *= 2;
+        }
+        next = realloc(p->clipboard_receive_buffer, capacity);
+        if (next == NULL) return false;
+        p->clipboard_receive_buffer = next;
+        p->clipboard_receive_capacity = capacity;
+    }
+    if (length > 0) {
+        memcpy(p->clipboard_receive_buffer + p->clipboard_receive_length,
+               text, length);
+        p->clipboard_receive_length += length;
+    }
+    return true;
+}
+
+static void x11_clipboard_clear_send(Platform *p) {
+    free(p->clipboard_send_text);
+    p->clipboard_send_text = NULL;
+    p->clipboard_send_requestor = None;
+    p->clipboard_send_property = None;
+    p->clipboard_send_target = None;
+    p->clipboard_send_length = 0;
+    p->clipboard_send_offset = 0;
+}
+
+static void x11_clipboard_send_next_chunk(Platform *p) {
+    usize length;
+    if (p->clipboard_send_requestor == None ||
+        p->clipboard_send_property == None || p->clipboard_send_text == NULL) {
+        x11_clipboard_clear_send(p);
+        return;
+    }
+    if (p->clipboard_send_offset < p->clipboard_send_length) {
+        length = p->clipboard_send_length - p->clipboard_send_offset;
+        if (length > X11_CLIPBOARD_CHUNK_BYTES) length = X11_CLIPBOARD_CHUNK_BYTES;
+        XChangeProperty(p->display, p->clipboard_send_requestor,
+                        p->clipboard_send_property, p->clipboard_send_target,
+                        8, PropModeReplace,
+                        (const unsigned char *)p->clipboard_send_text +
+                            p->clipboard_send_offset,
+                        (int)length);
+        p->clipboard_send_offset += length;
+    } else {
+        XChangeProperty(p->display, p->clipboard_send_requestor,
+                        p->clipboard_send_property, p->clipboard_send_target,
+                        8, PropModeReplace, NULL, 0);
+        x11_clipboard_clear_send(p);
+    }
+    XFlush(p->display);
+}
+
+static void x11_clipboard_send_selection(Platform *p,
+                                         const XSelectionRequestEvent *request) {
+    XSelectionEvent notify;
+    Atom property = request->property != None ? request->property : request->target;
+    Atom targets[3];
+    memset(&notify, 0, sizeof(notify));
+    notify.type = SelectionNotify;
+    notify.display = request->display;
+    notify.requestor = request->requestor;
+    notify.selection = request->selection;
+    notify.target = request->target;
+    notify.time = request->time;
+    if (request->target == p->targets) {
+        targets[0] = p->targets;
+        targets[1] = p->utf8_string;
+        targets[2] = p->incr;
+        XChangeProperty(p->display, request->requestor, property, XA_ATOM,
+                        32, PropModeReplace, (const unsigned char *)targets, 3);
+        notify.property = property;
+    } else if (request->target == p->utf8_string ||
+               request->target == XA_STRING) {
+        const char *text = p->clipboard_text != NULL ? p->clipboard_text : "";
+        usize length = strlen(text);
+        if (length > X11_CLIPBOARD_CHUNK_BYTES &&
+            p->clipboard_send_requestor == None) {
+            unsigned long total = (unsigned long)length;
+            p->clipboard_send_text = x11_clipboard_duplicate(text);
+            if (p->clipboard_send_text != NULL) {
+                p->clipboard_send_requestor = request->requestor;
+                p->clipboard_send_property = property;
+                p->clipboard_send_target = request->target;
+                p->clipboard_send_length = length;
+                p->clipboard_send_offset = 0;
+                XSelectInput(p->display, request->requestor, PropertyChangeMask);
+                XChangeProperty(p->display, request->requestor, property, p->incr,
+                                32, PropModeReplace,
+                                (const unsigned char *)&total, 1);
+                notify.property = property;
+            }
+        } else if (length <= X11_CLIPBOARD_CHUNK_BYTES) {
+            XChangeProperty(p->display, request->requestor, property,
+                            request->target, 8, PropModeReplace,
+                            (const unsigned char *)text, (int)length);
+            notify.property = property;
+        }
+    }
+    XSendEvent(p->display, request->requestor, False, 0, (XEvent *)&notify);
+    XFlush(p->display);
+}
+
+static void x11_clipboard_receive_selection(Platform *p,
+                                            const XSelectionEvent *selection) {
+    Atom type;
+    int format;
+    unsigned long item_count;
+    unsigned long bytes_after;
+    unsigned char *data = NULL;
+    if (selection->property == None ||
+        selection->property != p->clipboard_property) {
+        p->clipboard_request_pending = false;
+        return;
+    }
+    if (XGetWindowProperty(p->display, p->window, p->clipboard_property, 0,
+                           X11_CLIPBOARD_MAX_BYTES / 4, True, AnyPropertyType,
+                           &type, &format, &item_count, &bytes_after,
+                           &data) == Success) {
+        if (type == p->incr && format == 32) {
+            x11_clipboard_clear_receive(p);
+            p->clipboard_receive_incremental = true;
+            if (data != NULL) XFree(data);
+            return;
+        }
+        if (data != NULL && format == 8 && bytes_after == 0 &&
+            x11_clipboard_replace(p, (const char *)data, (usize)item_count)) {
+            p->clipboard_cache_owner = XGetSelectionOwner(p->display,
+                                                           p->clipboard);
+        }
+    }
+    if (data != NULL) XFree(data);
+    p->clipboard_request_pending = false;
+}
+
+static void x11_clipboard_receive_incremental(Platform *p) {
+    Atom type;
+    int format;
+    unsigned long item_count;
+    unsigned long bytes_after;
+    unsigned char *data = NULL;
+    if (!p->clipboard_receive_incremental ||
+        XGetWindowProperty(p->display, p->window, p->clipboard_property, 0,
+                           X11_CLIPBOARD_MAX_BYTES / 4, True, AnyPropertyType,
+                           &type, &format, &item_count, &bytes_after,
+                           &data) != Success || type == None || format != 8 ||
+        bytes_after != 0 ||
+        !x11_clipboard_append_receive(p, (const char *)data, (usize)item_count)) {
+        if (data != NULL) XFree(data);
+        x11_clipboard_clear_receive(p);
+        p->clipboard_request_pending = false;
+        return;
+    }
+    if (data != NULL) XFree(data);
+    if (item_count == 0) {
+        if (x11_clipboard_replace(p, p->clipboard_receive_buffer,
+                                  p->clipboard_receive_length)) {
+            p->clipboard_cache_owner = XGetSelectionOwner(p->display,
+                                                           p->clipboard);
+        }
+        x11_clipboard_clear_receive(p);
+        p->clipboard_request_pending = false;
+    }
+}
+
+static usize x11_utf8_step(const char *text) {
+    const unsigned char *bytes = (const unsigned char *)text;
+    if (bytes[0] < 0x80u) return 1;
+    if (bytes[0] >= 0xC2u && bytes[0] <= 0xDFu &&
+        bytes[1] >= 0x80u && bytes[1] <= 0xBFu) return 2;
+    if (bytes[0] >= 0xE0u && bytes[0] <= 0xEFu &&
+        bytes[1] >= 0x80u && bytes[1] <= 0xBFu &&
+        bytes[2] >= 0x80u && bytes[2] <= 0xBFu &&
+        !(bytes[0] == 0xE0u && bytes[1] < 0xA0u) &&
+        !(bytes[0] == 0xEDu && bytes[1] >= 0xA0u)) return 3;
+    if (bytes[0] >= 0xF0u && bytes[0] <= 0xF4u &&
+        bytes[1] >= 0x80u && bytes[1] <= 0xBFu &&
+        bytes[2] >= 0x80u && bytes[2] <= 0xBFu &&
+        bytes[3] >= 0x80u && bytes[3] <= 0xBFu &&
+        !(bytes[0] == 0xF0u && bytes[1] < 0x90u) &&
+        !(bytes[0] == 0xF4u && bytes[1] >= 0x90u)) return 4;
+    return 1;
+}
+
+static usize x11_byte_at_codepoint(const char *text, usize codepoint) {
+    usize byte = 0;
+    while (text[byte] != '\0' && codepoint > 0) {
+        byte += x11_utf8_step(text + byte);
+        codepoint--;
+    }
+    return byte;
+}
+
+static char *x11_xim_text_to_utf8(const XIMText *text) {
+    char *out;
+    usize capacity;
+    usize written = 0;
+    if (text == NULL) {
+        out = malloc(1);
+        if (out != NULL) out[0] = '\0';
+        return out;
+    }
+    if (!text->encoding_is_wchar && text->string.multi_byte != NULL) {
+        out = malloc((usize)text->length + 1);
+        if (out == NULL) return NULL;
+        memcpy(out, text->string.multi_byte, text->length);
+        out[text->length] = '\0';
+        return out;
+    } else if (text->encoding_is_wchar && text->string.wide_char != NULL) {
+        capacity = (usize)text->length * 4u + 1u;
+        out = malloc(capacity);
+        if (out == NULL) return NULL;
+        for (unsigned short i = 0; i < text->length; i++) {
+            uint32_t codepoint = (uint32_t)text->string.wide_char[i];
+            if (codepoint <= 0x7Fu && written + 1 < capacity) {
+                out[written++] = (char)codepoint;
+            } else if (codepoint <= 0x7FFu && written + 2 < capacity) {
+                out[written++] = (char)(0xC0u | (codepoint >> 6));
+                out[written++] = (char)(0x80u | (codepoint & 0x3Fu));
+            } else if (codepoint <= 0xFFFFu && written + 3 < capacity) {
+                out[written++] = (char)(0xE0u | (codepoint >> 12));
+                out[written++] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+                out[written++] = (char)(0x80u | (codepoint & 0x3Fu));
+            } else if (codepoint <= 0x10FFFFu && written + 4 < capacity) {
+                out[written++] = (char)(0xF0u | (codepoint >> 18));
+                out[written++] = (char)(0x80u | ((codepoint >> 12) & 0x3Fu));
+                out[written++] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+                out[written++] = (char)(0x80u | (codepoint & 0x3Fu));
+            } else {
+                break;
+            }
+        }
+        out[written] = '\0';
+        return out;
+    }
+    out = malloc(1);
+    if (out != NULL) out[0] = '\0';
+    return out;
+}
+
+static void x11_replace_preedit(Platform *p, int first, int removed,
+                                const char *replacement) {
+    const char *current = p->preedit != NULL ? p->preedit : "";
+    char *next;
+    usize start;
+    usize end;
+    usize current_length;
+    usize replacement_length;
+    usize next_length;
+    if (first < 0) first = 0;
+    if (removed < 0) removed = 0;
+    start = x11_byte_at_codepoint(current, (usize)first);
+    end = x11_byte_at_codepoint(current, (usize)first + (usize)removed);
+    if (end < start) end = start;
+    current_length = strlen(current);
+    replacement_length = replacement != NULL ? strlen(replacement) : 0;
+    if (replacement_length > PLATFORM_TEXT_MAX_BYTES -
+                                 (current_length - (end - start))) {
+        return;
+    }
+    next_length = current_length - (end - start) + replacement_length;
+    next = malloc(next_length + 1);
+    if (next == NULL) return;
+    memcpy(next, current, start);
+    if (replacement_length > 0) memcpy(next + start, replacement, replacement_length);
+    memcpy(next + start + replacement_length, current + end,
+           current_length - end + 1);
+    free(p->preedit);
+    p->preedit = next;
+}
+
+static void x11_preedit_start(XIM im, XPointer client_data,
+                              XPointer call_data) {
+    Platform *p = (Platform *)client_data;
+    (void)im;
+    (void)call_data;
+    if (p != NULL && p->ime_enabled) {
+        free(p->preedit);
+        p->preedit = NULL;
+    }
+}
+
+static void x11_preedit_done(XIM im, XPointer client_data, XPointer call_data) {
+    Platform *p = (Platform *)client_data;
+    (void)im;
+    (void)call_data;
+    if (p != NULL && p->ime_enabled) {
+        free(p->preedit);
+        p->preedit = NULL;
+        (void)platform_text_queue_push(&p->text_queue, PLATFORM_TEXT_PREEDIT,
+                                       "", 0);
+    }
+}
+
+static void x11_preedit_draw(XIM im, XPointer client_data, XPointer call_data) {
+    Platform *p = (Platform *)client_data;
+    XIMPreeditDrawCallbackStruct *draw =
+        (XIMPreeditDrawCallbackStruct *)call_data;
+    char *replacement;
+    (void)im;
+    if (p == NULL || draw == NULL || !p->ime_enabled) return;
+    replacement = x11_xim_text_to_utf8(draw->text);
+    if (replacement == NULL) return;
+    x11_replace_preedit(p, draw->chg_first, draw->chg_length, replacement);
+    free(replacement);
+    (void)platform_text_queue_push(
+        &p->text_queue, PLATFORM_TEXT_PREEDIT,
+        p->preedit != NULL ? p->preedit : "",
+        draw->caret >= 0 ? draw->caret : 0);
+}
 
 static i32 x11_key_to_index(KeySym ks) {
     if (ks >= XK_a && ks <= XK_z) return (i32)ks;
@@ -91,48 +506,80 @@ static i32 x11_key_to_index(KeySym ks) {
     return -1;
 }
 
+static void x11_update_active_monitor(Platform *p) {
+    Window child;
+    int root_x = 0;
+    int root_y = 0;
+    i32 index;
+    if (p == NULL || p->monitor_count == 0) {
+        if (p != NULL) {
+            p->dpi = 96.0f;
+            p->scale_factor = 1;
+        }
+        return;
+    }
+    if (!XTranslateCoordinates(p->display, p->window,
+                               DefaultRootWindow(p->display), 0, 0,
+                               &root_x, &root_y, &child)) {
+        root_x = p->monitors[0].x;
+        root_y = p->monitors[0].y;
+    }
+    index = platform_monitor_select(p->monitors, p->monitor_count,
+                                    root_x, root_y, p->width, p->height);
+    if (index < 0) return;
+    p->dpi = p->monitors[index].dpi;
+    p->scale_factor = p->monitors[index].scale > 0
+                          ? p->monitors[index].scale : 1;
+}
+
 static void x11_query_monitors(Platform *p) {
-    XRRScreenResources *res = XRRGetScreenResources(p->display, DefaultRootWindow(p->display));
+    Window root = DefaultRootWindow(p->display);
+    XRRScreenResources *res = XRRGetScreenResources(p->display, root);
     if (!res) {
+        p->monitor_count = 0;
         p->dpi = 96.0f;
         p->scale_factor = 1;
         return;
     }
 
+    RROutput primary_output = XRRGetOutputPrimary(p->display, root);
+    bool has_primary = false;
     p->monitor_count = 0;
     for (int i = 0; i < res->noutput && p->monitor_count < PLATFORM_MAX_MONITORS; i++) {
         XRROutputInfo *output = XRRGetOutputInfo(p->display, res, res->outputs[i]);
-        if (!output || output->connection != RR_Connected) {
+        if (!output || output->connection != RR_Connected || !output->crtc) {
             if (output) XRRFreeOutputInfo(output);
             continue;
         }
 
-        XRRCrtcInfo *crtc = NULL;
-        if (output->crtc)
-            crtc = XRRGetCrtcInfo(p->display, res, output->crtc);
+        XRRCrtcInfo *crtc = XRRGetCrtcInfo(p->display, res, output->crtc);
+        if (crtc == NULL || crtc->width == 0 || crtc->height == 0) {
+            if (crtc) XRRFreeCrtcInfo(crtc);
+            XRRFreeOutputInfo(output);
+            continue;
+        }
 
         MonitorInfo *m = &p->monitors[p->monitor_count];
         memset(m, 0, sizeof(MonitorInfo));
         strncpy(m->name, output->name, 63);
         m->name[63] = '\0';
 
-        if (crtc) {
-            m->x = crtc->x;
-            m->y = crtc->y;
-            m->width = (u32)crtc->width;
-            m->height = (u32)crtc->height;
+        m->x = crtc->x;
+        m->y = crtc->y;
+        m->width = (u32)crtc->width;
+        m->height = (u32)crtc->height;
 
-            /* Find refresh rate */
-            for (int j = 0; j < res->nmode; j++) {
-                if (res->modes[j].id == crtc->mode) {
-                    XRRModeInfo *mode = &res->modes[j];
-                    if (mode->hTotal && mode->vTotal)
-                        m->refresh_rate = (u32)((f64)mode->dotClock / ((f64)mode->hTotal * (f64)mode->vTotal));
-                    break;
-                }
+        /* Find refresh rate */
+        for (int j = 0; j < res->nmode; j++) {
+            if (res->modes[j].id == crtc->mode) {
+                XRRModeInfo *mode = &res->modes[j];
+                if (mode->hTotal && mode->vTotal)
+                    m->refresh_rate = (u32)((f64)mode->dotClock /
+                        ((f64)mode->hTotal * (f64)mode->vTotal));
+                break;
             }
-            XRRFreeCrtcInfo(crtc);
         }
+        XRRFreeCrtcInfo(crtc);
 
         /* Calculate DPI */
         if (output->mm_width > 0 && m->width > 0)
@@ -144,8 +591,8 @@ static void x11_query_monitors(Platform *p) {
         m->scale = (i32)((m->dpi + 48.0f) / 96.0f);
         if (m->scale < 1) m->scale = 1;
 
-        /* Primary monitor heuristic (first connected or at 0,0) */
-        m->primary = (m->x == 0 && m->y == 0);
+        m->primary = res->outputs[i] == primary_output;
+        has_primary = has_primary || m->primary;
 
         p->monitor_count++;
         XRRFreeOutputInfo(output);
@@ -153,21 +600,8 @@ static void x11_query_monitors(Platform *p) {
 
     XRRFreeScreenResources(res);
 
-    /* Set global DPI from primary monitor */
-    if (p->monitor_count > 0) {
-        for (u32 i = 0; i < p->monitor_count; i++) {
-            if (p->monitors[i].primary) {
-                p->dpi = p->monitors[i].dpi;
-                p->scale_factor = p->monitors[i].scale;
-                return;
-            }
-        }
-        p->dpi = p->monitors[0].dpi;
-        p->scale_factor = p->monitors[0].scale;
-    } else {
-        p->dpi = 96.0f;
-        p->scale_factor = 1;
-    }
+    if (p->monitor_count > 0 && !has_primary) p->monitors[0].primary = true;
+    x11_update_active_monitor(p);
 }
 
 Platform *platform_create(const PlatformConfig *cfg) {
@@ -190,6 +624,18 @@ Platform *platform_create(const PlatformConfig *cfg) {
     }
 
     i32 screen = DefaultScreen(p->display);
+    p->randr_event_base = -1;
+    {
+        int randr_error_base;
+        if (XRRQueryExtension(p->display, &p->randr_event_base,
+                              &randr_error_base)) {
+            XRRSelectInput(p->display, RootWindow(p->display, screen),
+                           RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask |
+                               RROutputChangeNotifyMask);
+        } else {
+            p->randr_event_base = -1;
+        }
+    }
     p->width  = cfg->width;
     p->height = cfg->height;
 
@@ -204,20 +650,58 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->wm_delete = XInternAtom(p->display, "WM_DELETE_WINDOW", False);
     p->wm_state = XInternAtom(p->display, "_NET_WM_STATE", False);
     p->wm_fullscreen = XInternAtom(p->display, "_NET_WM_STATE_FULLSCREEN", False);
+    p->wm_moveresize = XInternAtom(p->display, "_NET_WM_MOVERESIZE", False);
+    p->clipboard = XInternAtom(p->display, "CLIPBOARD", False);
+    p->targets = XInternAtom(p->display, "TARGETS", False);
+    p->utf8_string = XInternAtom(p->display, "UTF8_STRING", False);
+    p->clipboard_property = XInternAtom(p->display,
+                                        "BREAK_CLIPBOARD_SELECTION", False);
+    p->incr = XInternAtom(p->display, "INCR", False);
     XSetWMProtocols(p->display, p->window, &p->wm_delete, 1);
 
     XSelectInput(p->display, p->window,
                  ExposureMask | KeyPressMask | KeyReleaseMask |
                  ButtonPressMask | ButtonReleaseMask |
-                 PointerMotionMask | StructureNotifyMask | FocusChangeMask);
+                 PointerMotionMask | StructureNotifyMask | FocusChangeMask |
+                 PropertyChangeMask);
 
     XMapWindow(p->display, p->window);
     XFlush(p->display);
+
+    p->xim = XOpenIM(p->display, NULL, NULL, NULL);
+    if (p->xim != NULL) {
+        XVaNestedList preedit_attributes;
+        p->preedit_start_callback.client_data = (XPointer)p;
+        p->preedit_start_callback.callback = x11_preedit_start;
+        p->preedit_done_callback.client_data = (XPointer)p;
+        p->preedit_done_callback.callback = x11_preedit_done;
+        p->preedit_draw_callback.client_data = (XPointer)p;
+        p->preedit_draw_callback.callback = x11_preedit_draw;
+        preedit_attributes = XVaCreateNestedList(
+            0, XNPreeditStartCallback, &p->preedit_start_callback,
+            XNPreeditDoneCallback, &p->preedit_done_callback,
+            XNPreeditDrawCallback, &p->preedit_draw_callback, NULL);
+        if (preedit_attributes != NULL) {
+            p->xic = XCreateIC(p->xim, XNInputStyle,
+                               XIMPreeditCallbacks | XIMStatusNothing,
+                               XNClientWindow, p->window,
+                               XNFocusWindow, p->window,
+                               XNPreeditAttributes, preedit_attributes, NULL);
+            XFree(preedit_attributes);
+        }
+        if (p->xic == NULL) {
+            p->xic = XCreateIC(p->xim, XNInputStyle,
+                               XIMPreeditNothing | XIMStatusNothing,
+                               XNClientWindow, p->window,
+                               XNFocusWindow, p->window, NULL);
+        }
+    }
 
     p->mouse_captured = false;
     p->mouse_visible = true;
     p->mouse_relative = false;
     p->invisible_cursor = 0;
+    p->cursor = PLATFORM_CURSOR_ARROW;
 
     input_init(&p->input);
     gamepad_init();
@@ -233,12 +717,60 @@ void platform_destroy(Platform *p) {
     if (!p) return;
     gamepad_shutdown();
     if (p->display) {
+        if (p->xic) XDestroyIC(p->xic);
+        if (p->xim) XCloseIM(p->xim);
         if (p->invisible_cursor) XFreeCursor(p->display, p->invisible_cursor);
+        for (u32 i = 0; i < sizeof(p->cursors) / sizeof(p->cursors[0]); i++) {
+            if (p->cursors[i]) XFreeCursor(p->display, p->cursors[i]);
+        }
+        free(p->clipboard_text);
+        free(p->preedit);
+        x11_clipboard_clear_receive(p);
+        x11_clipboard_clear_send(p);
+        platform_text_queue_destroy(&p->text_queue);
         XDestroyWindow(p->display, p->window);
         XCloseDisplay(p->display);
     }
     free(p);
     LOG_INFO("Platform destroyed");
+}
+
+static void x11_collect_text(Platform *p, XKeyEvent *key) {
+    char inline_text[256];
+    char *utf8 = inline_text;
+    KeySym ks = NoSymbol;
+    Status status = 0;
+    int len = 0;
+    if (p->xic != NULL) {
+        len = Xutf8LookupString(p->xic, key, utf8, (int)sizeof(inline_text) - 1,
+                                &ks,
+                                &status);
+        if (status == XBufferOverflow && len > 0 &&
+            (usize)len <= PLATFORM_TEXT_MAX_BYTES) {
+            utf8 = malloc((usize)len + 1);
+            if (utf8 == NULL) return;
+            len = Xutf8LookupString(p->xic, key, utf8, len, &ks, &status);
+        }
+    } else {
+        len = XLookupString(key, utf8, (int)sizeof(inline_text) - 1, &ks, NULL);
+    }
+    if (len <= 0 || status == XBufferOverflow) {
+        if (utf8 != inline_text) free(utf8);
+        return;
+    }
+    utf8[len] = '\0';
+    if (!p->ime_enabled && len == 1 && (unsigned char)utf8[0] >= 32 &&
+        (unsigned char)utf8[0] <= 126) {
+        if (utf8 != inline_text) free(utf8);
+        return;
+    }
+    if (status == XLookupNone) {
+        if (utf8 != inline_text) free(utf8);
+        return;
+    }
+    (void)platform_text_queue_push(&p->text_queue, PLATFORM_TEXT_COMMIT, utf8,
+                                   0);
+    if (utf8 != inline_text) free(utf8);
 }
 
 PlatformEventResult platform_poll(Platform *p) {
@@ -248,6 +780,15 @@ PlatformEventResult platform_poll(Platform *p) {
         XEvent ev;
         XNextEvent(p->display, &ev);
 
+        if (p->randr_event_base >= 0 &&
+            (ev.type == p->randr_event_base + RRScreenChangeNotify ||
+             ev.type == p->randr_event_base + RRNotify)) {
+            if (ev.type == p->randr_event_base + RRScreenChangeNotify)
+                XRRUpdateConfiguration(&ev);
+            x11_query_monitors(p);
+            continue;
+        }
+
         switch (ev.type) {
         case ClientMessage:
             if ((Atom)ev.xclient.data.l[0] == p->wm_delete) {
@@ -256,10 +797,44 @@ PlatformEventResult platform_poll(Platform *p) {
             }
             break;
 
+        case SelectionRequest:
+            if (ev.xselectionrequest.selection == p->clipboard)
+                x11_clipboard_send_selection(p, &ev.xselectionrequest);
+            break;
+
+        case SelectionNotify:
+            if (ev.xselection.selection == p->clipboard)
+                x11_clipboard_receive_selection(p, &ev.xselection);
+            break;
+
+        case SelectionClear:
+            if (ev.xselectionclear.selection == p->clipboard) {
+                p->clipboard_request_pending = false;
+                p->clipboard_cache_valid = false;
+                p->clipboard_cache_owner = None;
+                x11_clipboard_clear_send(p);
+                free(p->clipboard_text);
+                p->clipboard_text = NULL;
+            }
+            break;
+
+        case PropertyNotify:
+            if (ev.xproperty.window == p->window &&
+                ev.xproperty.atom == p->clipboard_property &&
+                ev.xproperty.state == PropertyNewValue) {
+                x11_clipboard_receive_incremental(p);
+            } else if (ev.xproperty.window == p->clipboard_send_requestor &&
+                       ev.xproperty.atom == p->clipboard_send_property &&
+                       ev.xproperty.state == PropertyDelete) {
+                x11_clipboard_send_next_chunk(p);
+            }
+            break;
+
         case KeyPress: {
             KeySym ks = XLookupKeysym(&ev.xkey, 0);
             i32 idx = x11_key_to_index(ks);
             if (idx >= 0) input_set_key(&p->input, idx, true);
+            x11_collect_text(p, &ev.xkey);
             break;
         }
         case KeyRelease: {
@@ -319,6 +894,7 @@ PlatformEventResult platform_poll(Platform *p) {
         case ConfigureNotify:
             p->width  = (u32)ev.xconfigure.width;
             p->height = (u32)ev.xconfigure.height;
+            x11_update_active_monitor(p);
             break;
 
         case FocusOut:
@@ -327,6 +903,12 @@ PlatformEventResult platform_poll(Platform *p) {
              * KeyRelease to an unfocused window) can't leave a key stuck down
              * and keep driving WASD/camera once focus returns. */
             input_release_all(&p->input);
+            p->has_focus = false;
+            if (p->xic != NULL) XUnsetICFocus(p->xic);
+            break;
+        case FocusIn:
+            p->has_focus = true;
+            if (p->xic != NULL && p->ime_enabled) XSetICFocus(p->xic);
             break;
         }
     }
@@ -335,6 +917,46 @@ PlatformEventResult platform_poll(Platform *p) {
     gamepad_poll(p->input.gamepads);
 
     return PLATFORM_EVENT_NONE;
+}
+
+u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {
+    return p != NULL ? platform_text_queue_pop(&p->text_queue, out, max_events)
+                     : 0;
+}
+
+void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
+    XVaNestedList attrs;
+    XPoint spot;
+    if (p == NULL || p->xic == NULL) return;
+    spot.x = (short)x;
+    spot.y = (short)y;
+    attrs = XVaCreateNestedList(0, XNSpotLocation, &spot, NULL);
+    if (attrs != NULL) {
+        XSetICValues(p->xic, XNPreeditAttributes, attrs, NULL);
+        XFree(attrs);
+    }
+}
+
+void platform_ime_set_enabled(Platform *p, bool enabled) {
+    if (p == NULL || p->ime_enabled == enabled) return;
+    p->ime_enabled = enabled;
+    if (p->xic != NULL && enabled && p->has_focus) {
+        XSetICFocus(p->xic);
+    } else if (p->xic != NULL) {
+        XUnsetICFocus(p->xic);
+    }
+}
+
+bool platform_ime_is_enabled(Platform *p) {
+    return p != NULL && p->ime_enabled;
+}
+
+void platform_ime_set_surrounding(Platform *p, const char *utf8, i32 cursor,
+                                  i32 anchor) {
+    (void)p;
+    (void)utf8;
+    (void)cursor;
+    (void)anchor;
 }
 
 InputState *platform_input(Platform *p) {
@@ -358,6 +980,17 @@ void platform_get_size(Platform *p, u32 *w, u32 *h) {
     if (h) *h = p->height;
 }
 
+void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
+    u32 scale = p != NULL && p->scale_factor > 0 ? (u32)p->scale_factor : 1u;
+    if (w) *w = p != NULL ? (p->width + scale - 1u) / scale : 0;
+    if (h) *h = p != NULL ? (p->height + scale - 1u) / scale : 0;
+}
+
+void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
+    if (w) *w = p != NULL ? p->width : 0;
+    if (h) *h = p != NULL ? p->height : 0;
+}
+
 void platform_mouse_capture(Platform *p, bool capture) {
     if (capture && !p->mouse_captured) {
         XGrabPointer(p->display, p->window, True,
@@ -371,7 +1004,8 @@ void platform_mouse_capture(Platform *p, bool capture) {
 }
 
 void platform_mouse_set_visible(Platform *p, bool visible) {
-    if (!visible && p->mouse_visible) {
+    if (p == NULL || visible == p->mouse_visible) return;
+    if (!visible) {
         if (!p->invisible_cursor) {
             Pixmap blank = XCreatePixmap(p->display, p->window, 1, 1, 1);
             XColor dummy = {0};
@@ -379,11 +1013,101 @@ void platform_mouse_set_visible(Platform *p, bool visible) {
                                                      &dummy, &dummy, 0, 0);
             XFreePixmap(p->display, blank);
         }
-        XDefineCursor(p->display, p->window, p->invisible_cursor);
-    } else if (visible && !p->mouse_visible) {
-        XUndefineCursor(p->display, p->window);
     }
     p->mouse_visible = visible;
+    x11_apply_cursor(p);
+}
+
+bool platform_cursor_set(Platform *p, PlatformCursor cursor) {
+    if (p == NULL || cursor > PLATFORM_CURSOR_HAND) return false;
+    p->cursor = cursor;
+    x11_apply_cursor(p);
+    return true;
+}
+
+bool platform_window_begin_move(Platform *p) {
+    Window root;
+    Window child;
+    int root_x;
+    int root_y;
+    int window_x;
+    int window_y;
+    unsigned int mask;
+    XEvent event;
+    if (p == NULL || p->wm_moveresize == None ||
+        !XQueryPointer(p->display, p->window, &root, &child, &root_x, &root_y,
+                       &window_x, &window_y, &mask)) {
+        return false;
+    }
+    memset(&event, 0, sizeof(event));
+    event.xclient.type = ClientMessage;
+    event.xclient.window = p->window;
+    event.xclient.message_type = p->wm_moveresize;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = root_x;
+    event.xclient.data.l[1] = root_y;
+    event.xclient.data.l[2] = 8; /* _NET_WM_MOVERESIZE_MOVE */
+    event.xclient.data.l[3] = Button1;
+    event.xclient.data.l[4] = 1; /* normal application source */
+    XSendEvent(p->display, DefaultRootWindow(p->display), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    XFlush(p->display);
+    return true;
+}
+
+bool platform_needs_client_decoration(Platform *p) {
+    (void)p;
+    return false;
+}
+
+bool platform_clipboard_set_text(Platform *p, const char *utf8) {
+    if (p == NULL || p->display == NULL || utf8 == NULL) return false;
+    if (!x11_clipboard_replace(p, utf8, strlen(utf8))) return false;
+    XSetSelectionOwner(p->display, p->clipboard, p->window, CurrentTime);
+    XFlush(p->display);
+    p->clipboard_cache_owner = XGetSelectionOwner(p->display, p->clipboard);
+    return p->clipboard_cache_owner == p->window;
+}
+
+bool platform_clipboard_get_text(Platform *p, char *out, usize out_size) {
+    Window owner;
+    if (p == NULL || out == NULL || out_size == 0) return false;
+    owner = XGetSelectionOwner(p->display, p->clipboard);
+    if (p->clipboard_cache_valid && owner == p->clipboard_cache_owner &&
+        p->clipboard_text != NULL) {
+        (void)platform_utf8_copy(out, out_size, p->clipboard_text);
+        return true;
+    }
+    p->clipboard_cache_valid = false;
+    if (owner == None || owner == p->window || p->clipboard_request_pending)
+        return false;
+    XConvertSelection(p->display, p->clipboard, p->utf8_string,
+                      p->clipboard_property, p->window, CurrentTime);
+    XFlush(p->display);
+    p->clipboard_request_pending = true;
+    return false;
+}
+
+PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
+                                                           char **out) {
+    Window owner;
+    if (out == NULL || p == NULL) return PLATFORM_CLIPBOARD_EMPTY;
+    *out = NULL;
+    owner = XGetSelectionOwner(p->display, p->clipboard);
+    if (p->clipboard_cache_valid && owner == p->clipboard_cache_owner &&
+        p->clipboard_text != NULL) {
+        *out = x11_clipboard_duplicate(p->clipboard_text);
+        return *out != NULL ? PLATFORM_CLIPBOARD_READY : PLATFORM_CLIPBOARD_EMPTY;
+    }
+    p->clipboard_cache_valid = false;
+    if (owner == None || owner == p->window) return PLATFORM_CLIPBOARD_EMPTY;
+    if (!p->clipboard_request_pending) {
+        XConvertSelection(p->display, p->clipboard, p->utf8_string,
+                          p->clipboard_property, p->window, CurrentTime);
+        XFlush(p->display);
+        p->clipboard_request_pending = true;
+    }
+    return PLATFORM_CLIPBOARD_PENDING;
 }
 
 void platform_mouse_set_relative(Platform *p, bool relative) {
@@ -402,6 +1126,14 @@ void platform_mouse_set_relative(Platform *p, bool relative) {
 
 f32 platform_get_dpi(Platform *p) {
     return p->dpi;
+}
+
+f32 platform_get_content_scale(Platform *p) {
+    return p != NULL && p->scale_factor > 0 ? (f32)p->scale_factor : 1.0f;
+}
+
+f32 platform_get_input_scale(Platform *p) {
+    return platform_get_content_scale(p);
 }
 
 i32 platform_get_scale_factor(Platform *p) {

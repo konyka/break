@@ -308,10 +308,15 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
 }
 
 static bool test_render_init(TestRenderState *rs, Platform *platform) {
-    void *window = platform_surface_native(platform);
+    void *window;
     void *display = platform_display_native(platform);
     u32 w, h;
-    platform_get_size(platform, &w, &h);
+#ifdef ENGINE_VULKAN
+    window = platform_surface_native(platform);
+#else
+    window = platform_window_native(platform);
+#endif
+    platform_get_drawable_size(platform, &w, &h);
 
     rs->device = rhi_device_create(TV_BACKEND, window, display, w, h);
     if (!rs->device) { LOG_ERROR("FAIL: device create"); return false; }
@@ -1371,7 +1376,7 @@ int main(int argc, char **argv) {
 #endif
 
     u32 motion_w, motion_h;
-    platform_get_size(engine.platform, &motion_w, &motion_h);
+    platform_get_drawable_size(engine.platform, &motion_w, &motion_h);
     LOG_INFO("============================================");
     LOG_INFO("TEST: MOTION BLUR RT1 RG16F");
     LOG_INFO("============================================");
@@ -1385,7 +1390,7 @@ int main(int argc, char **argv) {
      * Vulkan-only, while TEST 7 uses the same helper on both backends. */
     {
         u32 gw, gh;
-        platform_get_size(engine.platform, &gw, &gh);
+        platform_get_drawable_size(engine.platform, &gw, &gh);
         LOG_INFO("OpenGL build: golden + material-indirect gates (suite body is Vulkan-only)");
         bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw, gh);
         /* R438: non-identity camera variant (transpose-sensitive). */
@@ -1447,7 +1452,7 @@ int main(int argc, char **argv) {
     /* Camera */
     Camera camera = {0};
     u32 w, h;
-    platform_get_size(engine.platform, &w, &h);
+    platform_get_drawable_size(engine.platform, &w, &h);
     camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f); /* R142: guard h==0 */
 
     u8 tex2_data[] = {200, 50, 50, 255};
@@ -1538,7 +1543,7 @@ int main(int argc, char **argv) {
 
     while (engine_frame(&engine) && frame_count < target_frames) {
         frame_count++;
-        platform_get_size(engine.platform, &w, &h);
+        platform_get_drawable_size(engine.platform, &w, &h);
         camera_update(&camera, platform_input(engine.platform), (f32)engine.delta_time);
         total_time += engine.delta_time;
         if (engine.delta_time < min_dt) min_dt = engine.delta_time;
@@ -1931,7 +1936,7 @@ int main(int argc, char **argv) {
     bool combined_pass = false;
     {
         u32 cw, ch;
-        platform_get_size(engine.platform, &cw, &ch);
+        platform_get_drawable_size(engine.platform, &cw, &ch);
 
         CombinedAA caa = {0};
         CombinedColor cc = {0};
@@ -2056,7 +2061,7 @@ int main(int argc, char **argv) {
     LOG_INFO("============================================");
 
     u32 iw, ih;
-    platform_get_size(engine.platform, &iw, &ih);
+    platform_get_drawable_size(engine.platform, &iw, &ih);
     bool ibl_pass = tv_test_ibl(&render, vbo, ibo, iw, ih);
 
     if (ibl_pass) {
@@ -2262,7 +2267,7 @@ int main(int argc, char **argv) {
     /* R442: VK/GL share the backend-neutral body (tv_test_material_array);
      * the GL build runs it in its own early-exit branch above. */
     u32 tw = 0, th = 0;
-    platform_get_size(engine.platform, &tw, &th);
+    platform_get_drawable_size(engine.platform, &tw, &th);
     bool matarr_pass = tv_test_material_array(&render, tw, th);
 
     if (matarr_pass) {
@@ -2288,7 +2293,7 @@ int main(int argc, char **argv) {
 
     /* ---- TEST 8: Golden image regression ---- */
     u32 gw2, gh2;
-    platform_get_size(engine.platform, &gw2, &gh2);
+    platform_get_drawable_size(engine.platform, &gw2, &gh2);
     bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw2, gh2);
     /* R438: non-identity camera variant (transpose-sensitive). */
     bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw2, gh2);
