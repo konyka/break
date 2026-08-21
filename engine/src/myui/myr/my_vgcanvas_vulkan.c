@@ -230,6 +230,7 @@ typedef struct vk_glyph_entry_t {
 typedef struct vk_img_entry_t {
   const uint8_t* ptr;
   int32_t w, h;
+  my_scale_filter_t filter;
   vk_tex_t tex;
   uint64_t last_used;
 } vk_img_entry_t;
@@ -244,6 +245,7 @@ typedef struct vk_state_t {
   my_rect_t clip;
   my_font_t* font;
   int32_t font_size;
+  my_scale_filter_t scale_filter;
 } vk_state_t;
 
 typedef struct vk_frame_t {
@@ -288,6 +290,7 @@ typedef struct my_vgcanvas_vulkan_t {
   VkDescriptorSetLayout ds_layout;
   VkDescriptorPool ds_pool;
   VkSampler sampler;
+  VkSampler nearest_sampler;
   VkPipelineLayout pipe_layout;
   VkPipeline pipe_flat, pipe_text, pipe_img;
 
@@ -422,7 +425,7 @@ static void vk_transition(VkCommandBuffer cmd, VkImage img,
 
 static my_ret_t vk_tex_create(my_vgcanvas_vulkan_t* c, vk_tex_t* t,
                               const uint8_t* pixels, int32_t w, int32_t h,
-                              VkFormat fmt) {
+                              VkFormat fmt, VkSampler sampler) {
   VkImageCreateInfo ici;
   VkMemoryRequirements req;
   VkMemoryAllocateInfo mai;
@@ -527,7 +530,7 @@ static my_ret_t vk_tex_create(my_vgcanvas_vulkan_t* c, vk_tex_t* t,
     goto fail;
   }
   memset(&dii, 0, sizeof(dii));
-  dii.sampler = c->sampler;
+  dii.sampler = sampler;
   dii.imageView = t->view;
   dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   memset(&wr, 0, sizeof(wr));
@@ -1216,7 +1219,8 @@ static my_ret_t vk_create_pipelines(my_vgcanvas_vulkan_t* c) {
   VkDescriptorPoolCreateInfo pci;
   VkSamplerCreateInfo sci;
 
-  /* shared linear/clamp sampler */
+  /* Shared clamp samplers; image filtering changes only the sampler bound
+   * in the image descriptor, while glyphs always use linear sampling. */
   memset(&sci, 0, sizeof(sci));
   sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
   sci.magFilter = VK_FILTER_LINEAR;
@@ -1225,6 +1229,12 @@ static my_ret_t vk_create_pipelines(my_vgcanvas_vulkan_t* c) {
   sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   if (vkCreateSampler(g_vk.dev, &sci, NULL, &c->sampler) != VK_SUCCESS) {
+    return MY_RET_FAIL;
+  }
+  sci.magFilter = VK_FILTER_NEAREST;
+  sci.minFilter = VK_FILTER_NEAREST;
+  if (vkCreateSampler(g_vk.dev, &sci, NULL, &c->nearest_sampler) !=
+      VK_SUCCESS) {
     return MY_RET_FAIL;
   }
   /* descriptor set layout: one combined image sampler at binding 0 */
@@ -1960,9 +1970,13 @@ static my_ret_t vk_set_antialias_level_vtable(my_vgcanvas_t* vg, int level) {
 
 static my_ret_t vk_set_scale_filter_vtable(my_vgcanvas_t* vg,
                                            my_scale_filter_t filter) {
-  (void)vg;
-  (void)filter;
-  return MY_RET_NOT_SUPPORTED;
+  my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
+  if (c == NULL || (filter != MY_SCALE_FILTER_NEAREST &&
+                    filter != MY_SCALE_FILTER_BILINEAR)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  c->state.scale_filter = filter;
+  return MY_RET_OK;
 }
 
 /* ---------------- draws ---------------- */
@@ -2135,7 +2149,7 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
       return;
     }
     if (vk_tex_create(c, &c->glyph_cache[slot].tex, g.bitmap, g.w, g.h,
-                      VK_FORMAT_R8_UNORM) != MY_RET_OK) {
+                      VK_FORMAT_R8_UNORM, c->sampler) != MY_RET_OK) {
       *pen_x += (float)g.advance;
       return;
     }
@@ -2232,7 +2246,8 @@ static my_ret_t vk_measure_text(my_vgcanvas_t* vg, const char* text,
 
 /** @brief LRU texture for a caller bitmap (same policy as gles2, M25b). */
 static vk_tex_t* vk_image_texture(my_vgcanvas_vulkan_t* c, const uint8_t* rgba,
-                                  int32_t w, int32_t h) {
+                                  int32_t w, int32_t h,
+                                  my_scale_filter_t filter) {
   size_t i;
   vk_img_entry_t* lru = &c->img_cache[0];
   for (i = 0; i < VKC_IMG_CACHE; i++) {
@@ -2244,7 +2259,7 @@ static vk_tex_t* vk_image_texture(my_vgcanvas_vulkan_t* c, const uint8_t* rgba,
     if (e->last_used < lru->last_used) {
       lru = e;
     }
-    if (e->ptr == rgba && e->w == w && e->h == h) {
+    if (e->ptr == rgba && e->w == w && e->h == h && e->filter == filter) {
       e->last_used = ++c->img_tick;
       return &e->tex;
     }
@@ -2252,13 +2267,16 @@ static vk_tex_t* vk_image_texture(my_vgcanvas_vulkan_t* c, const uint8_t* rgba,
   if (!vk_tex_retire(c, &lru->tex)) {
     return NULL;
   }
-  if (vk_tex_create(c, &lru->tex, rgba, w, h, VK_FORMAT_R8G8B8A8_UNORM) !=
+  if (vk_tex_create(c, &lru->tex, rgba, w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                    filter == MY_SCALE_FILTER_BILINEAR ? c->sampler
+                                                        : c->nearest_sampler) !=
       MY_RET_OK) {
     return NULL;
   }
   lru->ptr = rgba;
   lru->w = w;
   lru->h = h;
+  lru->filter = filter;
   lru->last_used = ++c->img_tick;
   return &lru->tex;
 }
@@ -2278,7 +2296,7 @@ static my_ret_t vk_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
                        dst->y + dst->h);
     vk_draw_flat(c, *bg);
   }
-  tex = vk_image_texture(c, rgba, w, h);
+  tex = vk_image_texture(c, rgba, w, h, c->state.scale_filter);
   if (tex == NULL) {
     return MY_RET_OOM;
   }
@@ -2316,6 +2334,9 @@ static void vk_destroy(my_vgcanvas_t* vg) {
   }
   if (c->sampler != VK_NULL_HANDLE) {
     vkDestroySampler(g_vk.dev, c->sampler, NULL);
+  }
+  if (c->nearest_sampler != VK_NULL_HANDLE) {
+    vkDestroySampler(g_vk.dev, c->nearest_sampler, NULL);
   }
   if (c->ds_pool != VK_NULL_HANDLE) {
     vkDestroyDescriptorPool(g_vk.dev, c->ds_pool, NULL);
@@ -2422,6 +2443,7 @@ static my_vgcanvas_t* vk_create_common(const my_allocator_t* allocator,
   c->state.line_cap = MY_LINE_CAP_BUTT;
   c->state.line_join = MY_LINE_JOIN_MITER;
   c->state.scale = 1.0f;
+  c->state.scale_filter = MY_SCALE_FILTER_BILINEAR;
   c->state.font = NULL;
   c->state.font_size = 16;
   c->state.clip = my_rect_init(0, 0, width, height);

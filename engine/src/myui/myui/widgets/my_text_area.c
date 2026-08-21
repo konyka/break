@@ -369,14 +369,28 @@ static void ta_cursor_to_offset(my_text_area_t* ta, size_t offset) {
 }
 
 static my_ret_t ta_reserve(my_text_area_t* ta, size_t extra) {
-  /* simple: realloc to exact need (capacity doubling is a TODO; edits
-   * are user-typing-rate so this is not hot) */
-  size_t need = ta->text_len + extra + 1;
-  char* p = (char*)my_mem_realloc(ta->allocator, ta->text, need);
-  if (p == NULL) {
+  size_t need;
+  size_t cap;
+  char* p;
+  if (ta->text_len == SIZE_MAX || extra > SIZE_MAX - ta->text_len - 1) {
     return MY_RET_OOM;
   }
+  need = ta->text_len + extra + 1;
+  if (need <= ta->text_cap) {
+    return MY_RET_OK;
+  }
+  cap = ta->text_cap > 0 ? ta->text_cap : 1;
+  while (cap < need) {
+    if (cap > SIZE_MAX / 2) {
+      cap = need;
+      break;
+    }
+    cap *= 2;
+  }
+  p = (char*)my_mem_realloc(ta->allocator, ta->text, cap);
+  if (p == NULL) return MY_RET_OOM;
   ta->text = p;
+  ta->text_cap = cap;
   return MY_RET_OK;
 }
 
@@ -1507,6 +1521,7 @@ my_widget_t* my_text_area_create(const my_allocator_t* allocator) {
     my_object_unref((my_object_t*)ta);
     return NULL;
   }
+  ta->text_cap = 1;
   ta->undo = my_undo_stack_create(allocator, 0);
   if (ta->undo == NULL) {
     my_object_unref((my_object_t*)ta);
@@ -1533,12 +1548,22 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
     my_undo_stack_clear(ta->undo);
   }
   len = text != NULL ? strlen(text) : 0;
-  {
-    char* p = (char*)my_mem_realloc(ta->allocator, ta->text, len + 1);
-    if (p == NULL) {
-      return MY_RET_OOM;
+  if (len == SIZE_MAX) return MY_RET_OOM;
+  if (len + 1 > ta->text_cap) {
+    size_t cap = ta->text_cap > 0 ? ta->text_cap : 1;
+    while (cap < len + 1) {
+      if (cap > SIZE_MAX / 2) {
+        cap = len + 1;
+        break;
+      }
+      cap *= 2;
     }
-    ta->text = p;
+    {
+      char* p = (char*)my_mem_realloc(ta->allocator, ta->text, cap);
+      if (p == NULL) return MY_RET_OOM;
+      ta->text = p;
+      ta->text_cap = cap;
+    }
   }
   if (len > 0) {
     memcpy(ta->text, text, len);

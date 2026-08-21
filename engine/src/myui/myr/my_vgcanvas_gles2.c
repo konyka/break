@@ -68,6 +68,7 @@ typedef struct gles_state_t {
   my_rect_t clip;
   my_font_t* font;   /**< borrowed; NULL = no text */
   int32_t font_size;
+  my_scale_filter_t scale_filter;
 } gles_state_t;
 
 typedef struct gles_tex_entry_t {
@@ -84,6 +85,7 @@ typedef struct gles_img_tex_entry_t {
   const uint8_t* ptr;
   int32_t w;
   int32_t h;
+  my_scale_filter_t filter;
   uint32_t texture; /**< 0 = empty */
   uint64_t last_used;
 } gles_img_tex_entry_t;
@@ -403,9 +405,13 @@ static my_ret_t gles_set_antialias_level_vtable(my_vgcanvas_t* vg,
 
 static my_ret_t gles_set_scale_filter_vtable(my_vgcanvas_t* vg,
                                              my_scale_filter_t filter) {
-  (void)vg;
-  (void)filter;
-  return MY_RET_NOT_SUPPORTED;
+  my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
+  if (s == NULL || (filter != MY_SCALE_FILTER_NEAREST &&
+                    filter != MY_SCALE_FILTER_BILINEAR)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  s->state.scale_filter = filter;
+  return MY_RET_OK;
 }
 
 /** @brief Font size in device pixels (M12c: logical size * scale). */
@@ -525,7 +531,8 @@ static my_ret_t gles_set_font(my_vgcanvas_t* vg, my_font_t* font,
 }
 
 static uint32_t gles_image_texture(my_vgcanvas_gles2_t* s, const uint8_t* rgba,
-                                   int32_t w, int32_t h) {
+                                   int32_t w, int32_t h,
+                                   my_scale_filter_t filter) {
   size_t i;
   gles_img_tex_entry_t* lru = &s->img_tex_cache[0];
   for (i = 0; i < GLES_IMG_TEX_CACHE_SIZE; i++) {
@@ -537,7 +544,7 @@ static uint32_t gles_image_texture(my_vgcanvas_gles2_t* s, const uint8_t* rgba,
     if (e->last_used < lru->last_used) {
       lru = e;
     }
-    if (e->ptr == rgba && e->w == w && e->h == h) {
+    if (e->ptr == rgba && e->w == w && e->h == h && e->filter == filter) {
       e->last_used = ++s->img_tex_tick;
       return e->texture;
     }
@@ -545,10 +552,16 @@ static uint32_t gles_image_texture(my_vgcanvas_gles2_t* s, const uint8_t* rgba,
   if (lru->texture != 0) {
     s->gl.delete_texture(s->gl.ctx, lru->texture);
   }
-  lru->texture = s->gl.create_texture_rgba(s->gl.ctx, rgba, w, h);
+  if (s->gl.create_texture_rgba_filtered != NULL) {
+    lru->texture = s->gl.create_texture_rgba_filtered(
+        s->gl.ctx, rgba, w, h, filter == MY_SCALE_FILTER_BILINEAR);
+  } else {
+    lru->texture = s->gl.create_texture_rgba(s->gl.ctx, rgba, w, h);
+  }
   lru->ptr = rgba;
   lru->w = w;
   lru->h = h;
+  lru->filter = filter;
   lru->last_used = ++s->img_tex_tick;
   return lru->texture;
 }
@@ -562,7 +575,8 @@ static my_ret_t gles_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
   if (rgba == NULL || dst == NULL || w <= 0 || h <= 0) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (s->gl.create_texture_rgba == NULL) {
+  if (s->gl.create_texture_rgba == NULL &&
+      s->gl.create_texture_rgba_filtered == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
   /* bg compositing: paint bg rect first, then blend the textured quad */
@@ -578,7 +592,7 @@ static my_ret_t gles_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
       return MY_RET_FAIL;
     }
   }
-  tex = gles_image_texture(s, rgba, w, h);
+  tex = gles_image_texture(s, rgba, w, h, s->state.scale_filter);
   if (tex == 0) {
     return MY_RET_OOM;
   }
@@ -707,6 +721,7 @@ my_vgcanvas_t* my_vgcanvas_gles2_create_with_gl(const my_allocator_t* allocator,
   s->state.scale = 1.0f; /* HiDPI: my_vgcanvas_gles2_set_scale (M12c) */
   s->state.font = NULL;
   s->state.font_size = 16;
+  s->state.scale_filter = MY_SCALE_FILTER_BILINEAR;
   s->state.clip = my_rect_init(0, 0, width, height);
   return (my_vgcanvas_t*)s;
 }

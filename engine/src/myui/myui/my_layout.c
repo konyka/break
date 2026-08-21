@@ -4,6 +4,8 @@
  */
 #include "myui/my_layout.h"
 
+#include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,6 +27,10 @@ static my_ret_t parse_axis_value(const char* spec, my_layout_mode_t* mode,
   } else if (strcmp(end, "f") == 0) {
     *mode = MY_LAYOUT_FLEX;
   } else {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (!isfinite(v) || v < 0.0f || v >= 2147483648.0f ||
+      (*mode == MY_LAYOUT_PERCENT && v > 100.0f)) {
     return MY_RET_INVALID_PARAMS;
   }
   *value = v;
@@ -382,6 +388,165 @@ my_layouter_t* my_layouter_flow_create(const my_allocator_t* allocator,
   fl->v_spacing = v_spacing;
   fl->align = align;
   return (my_layouter_t*)fl;
+}
+
+/* ---------------- fixed-column grid layouter ---------------- */
+
+typedef struct my_layouter_grid_t {
+  my_layouter_t base;
+  const my_allocator_t* allocator;
+  size_t columns;
+  int32_t h_spacing;
+  int32_t v_spacing;
+  int32_t* row_heights;
+  size_t row_cap;
+} my_layouter_grid_t;
+
+static int32_t grid_child_height(const my_widget_t* child,
+                                 int32_t parent_height) {
+  const my_layout_params_t* params = &child->layout_params;
+  if (params->h_mode == MY_LAYOUT_PX) {
+    return params->h_value > 0.0f ? (int32_t)params->h_value : 0;
+  }
+  if (params->h_mode == MY_LAYOUT_PERCENT) {
+    float height = (float)parent_height * params->h_value / 100.0f;
+    return height > 0.0f ? (int32_t)height : 0;
+  }
+  return child->rect.h > 0 ? child->rect.h : 0;
+}
+
+static size_t grid_visible_count(my_widget_t* parent) {
+  size_t index;
+  size_t count = 0;
+  size_t child_count = my_widget_child_count(parent);
+  for (index = 0; index < child_count; index++) {
+    my_widget_t* child = my_widget_get_child(parent, index);
+    if (child->visible && !child->floating) {
+      count++;
+    }
+  }
+  return count;
+}
+
+static void grid_layout(my_layouter_t* self, my_widget_t* parent) {
+  my_layouter_grid_t* grid = (my_layouter_grid_t*)self;
+  size_t visible_count = grid_visible_count(parent);
+  size_t row_count;
+  int32_t available_width;
+  int32_t base_width;
+  int32_t remainder;
+  int32_t y = 0;
+  size_t row;
+  size_t child_index = 0;
+
+  if (visible_count == 0) {
+    return;
+  }
+  if (grid->columns > (size_t)INT32_MAX ||
+      visible_count > SIZE_MAX - (grid->columns - 1)) {
+    return;
+  }
+  row_count = (visible_count + grid->columns - 1) / grid->columns;
+  if (row_count > SIZE_MAX / sizeof(*grid->row_heights)) {
+    return;
+  }
+  if (row_count > grid->row_cap) {
+    int32_t* resized = (int32_t*)my_mem_realloc(
+        grid->allocator, grid->row_heights,
+        row_count * sizeof(*grid->row_heights));
+    if (resized == NULL) {
+      return;
+    }
+    grid->row_heights = resized;
+    grid->row_cap = row_count;
+  }
+  memset(grid->row_heights, 0, row_count * sizeof(*grid->row_heights));
+  for (size_t source_index = 0; source_index < my_widget_child_count(parent);
+       source_index++) {
+    my_widget_t* child = my_widget_get_child(parent, source_index);
+    size_t row_index;
+    int32_t height;
+    if (!child->visible || child->floating) {
+      continue;
+    }
+    row_index = child_index / grid->columns;
+    height = grid_child_height(child, parent->rect.h);
+    if (height > grid->row_heights[row_index]) {
+      grid->row_heights[row_index] = height;
+    }
+    child_index++;
+  }
+
+  {
+    int64_t width = (int64_t)parent->rect.w -
+                    (int64_t)grid->h_spacing *
+                        (int64_t)(grid->columns - 1);
+    available_width = width > 0 ? (width > INT32_MAX ? INT32_MAX
+                                                     : (int32_t)width)
+                                : 0;
+  }
+  base_width = available_width / (int32_t)grid->columns;
+  remainder = available_width % (int32_t)grid->columns;
+  child_index = 0;
+  row = 0;
+  for (size_t source_index = 0; source_index < my_widget_child_count(parent);
+       source_index++) {
+    my_widget_t* child = my_widget_get_child(parent, source_index);
+    size_t row_index;
+    size_t column;
+    my_rect_t rect;
+    int32_t cell_width;
+    int32_t x;
+    if (!child->visible || child->floating) {
+      continue;
+    }
+    row_index = child_index / grid->columns;
+    while (row < row_index) {
+      int64_t next_y = (int64_t)y + grid->row_heights[row] + grid->v_spacing;
+      y = next_y > INT32_MAX ? INT32_MAX : (int32_t)next_y;
+      row++;
+    }
+    column = child_index % grid->columns;
+    cell_width = base_width + (column < (size_t)remainder ? 1 : 0);
+    {
+      int64_t x64 = (int64_t)column * base_width +
+                    (int64_t)(column < (size_t)remainder
+                                  ? column
+                                  : (size_t)remainder) +
+                    (int64_t)column * grid->h_spacing;
+      x = x64 > INT32_MAX ? INT32_MAX : (int32_t)x64;
+    }
+    rect = my_rect_init(x, y, cell_width, grid->row_heights[row]);
+    (void)my_widget_set_layout_rect(child, &rect);
+    child_index++;
+  }
+}
+
+static void grid_destroy(my_layouter_t* self) {
+  my_layouter_grid_t* grid = (my_layouter_grid_t*)self;
+  my_mem_free(grid->allocator, grid->row_heights);
+  my_mem_free(grid->allocator, grid);
+}
+
+my_layouter_t* my_layouter_grid_create(const my_allocator_t* allocator,
+                                       size_t columns, int32_t h_spacing,
+                                       int32_t v_spacing) {
+  my_layouter_grid_t* grid;
+  if (columns == 0 || columns > (size_t)INT32_MAX || h_spacing < 0 ||
+      v_spacing < 0) {
+    return NULL;
+  }
+  grid = (my_layouter_grid_t*)my_mem_calloc(allocator, 1, sizeof(*grid));
+  if (grid == NULL) {
+    return NULL;
+  }
+  grid->base.layout = grid_layout;
+  grid->base.destroy = grid_destroy;
+  grid->allocator = allocator;
+  grid->columns = columns;
+  grid->h_spacing = h_spacing;
+  grid->v_spacing = v_spacing;
+  return (my_layouter_t*)grid;
 }
 
 int32_t my_layouter_flow_measure(my_widget_t* parent) {

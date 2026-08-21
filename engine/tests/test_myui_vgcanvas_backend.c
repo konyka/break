@@ -15,6 +15,8 @@ typedef struct mock_gl_t {
   uint32_t next_texture;
   const uint8_t* uploaded_alpha[8];
   int32_t uploaded_alpha_count;
+  bool last_image_filter_linear;
+  int32_t image_filter_call_count;
   int32_t viewport_w;
   int32_t viewport_h;
   float resolution_w;
@@ -97,6 +99,19 @@ static uint32_t mock_create_texture_rgba(void* ctx, const uint8_t* rgba,
   return 1;
 }
 
+static uint32_t mock_create_texture_rgba_filtered(void* ctx,
+                                                  const uint8_t* rgba,
+                                                  int32_t w, int32_t h,
+                                                  bool linear) {
+  mock_gl_t* mock = (mock_gl_t*)ctx;
+  (void)rgba;
+  (void)w;
+  (void)h;
+  mock->last_image_filter_linear = linear;
+  mock->image_filter_call_count++;
+  return ++mock->next_texture;
+}
+
 static uint32_t mock_create_texture(void* ctx, const uint8_t* alpha, int32_t w,
                                     int32_t h) {
   mock_gl_t* mock = (mock_gl_t*)ctx;
@@ -139,6 +154,7 @@ static void mock_gl_init(mock_gl_t* mock) {
   mock->gl.draw_arrays_triangles = mock_draw_arrays;
   mock->gl.create_texture = mock_create_texture;
   mock->gl.create_texture_rgba = mock_create_texture_rgba;
+  mock->gl.create_texture_rgba_filtered = mock_create_texture_rgba_filtered;
   mock->gl.delete_texture = mock_delete_texture;
   mock->gl.draw_textured_quads = mock_draw_textured;
   mock->gl.ctx = mock;
@@ -227,7 +243,54 @@ TEST(gles2_image_vertices_apply_canvas_scale)
   ASSERT_FLOAT_EQ(mock.textured_vertices[9], 36.0f, 0.001f);
   ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 0), MY_RET_OK);
   ASSERT_EQ(my_vgcanvas_set_scale_filter(canvas, MY_SCALE_FILTER_BILINEAR),
-            MY_RET_NOT_SUPPORTED);
+            MY_RET_OK);
+
+  my_vgcanvas_destroy(canvas);
+}
+
+TEST(gles2_image_filter_reaches_texture_backend)
+{
+  static const uint8_t image[4] = {255, 255, 255, 255};
+  mock_gl_t mock;
+  my_vgcanvas_t* canvas;
+  my_rectf_t dst = {0, 0, 4, 4};
+
+  mock_gl_init(&mock);
+  canvas = my_vgcanvas_gles2_create_with_gl(NULL, 32, 32, &mock.gl);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(canvas, MY_SCALE_FILTER_NEAREST),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_draw_image(canvas, image, 1, 1, &dst, NULL),
+            MY_RET_OK);
+  ASSERT_EQ(mock.image_filter_call_count, 1);
+  ASSERT_FALSE(mock.last_image_filter_linear);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(canvas, MY_SCALE_FILTER_BILINEAR),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_draw_image(canvas, image, 1, 1, &dst, NULL),
+            MY_RET_OK);
+  ASSERT_EQ(mock.image_filter_call_count, 2);
+  ASSERT_TRUE(mock.last_image_filter_linear);
+
+  my_vgcanvas_destroy(canvas);
+}
+
+TEST(gles2_accepts_filtered_upload_without_legacy_callback)
+{
+  static const uint8_t image[4] = {255, 255, 255, 255};
+  mock_gl_t mock;
+  my_vgcanvas_t* canvas;
+
+  mock_gl_init(&mock);
+  mock.gl.create_texture_rgba = NULL;
+  canvas = my_vgcanvas_gles2_create_with_gl(NULL, 32, 32, &mock.gl);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(canvas, MY_SCALE_FILTER_NEAREST),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_draw_image(canvas, image, 1, 1,
+                                   &(my_rectf_t){0, 0, 4, 4}, NULL),
+            MY_RET_OK);
+  ASSERT_EQ(mock.image_filter_call_count, 1);
+  ASSERT_FALSE(mock.last_image_filter_linear);
 
   my_vgcanvas_destroy(canvas);
 }
@@ -308,6 +371,8 @@ TEST(soft_canvas_public_capabilities_apply_scale)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(gles2_image_vertices_apply_canvas_scale);
+    RUN_TEST(gles2_image_filter_reaches_texture_backend);
+    RUN_TEST(gles2_accepts_filtered_upload_without_legacy_callback);
     RUN_TEST(gles2_resize_uses_drawable_pixels);
     RUN_TEST(gles2_glyph_cache_separates_font_identity);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);

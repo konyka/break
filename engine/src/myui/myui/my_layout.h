@@ -10,7 +10,7 @@
  *   "w:1f"    flex: share of the remaining space, weighted
  * Missing axis = MY_LAYOUT_AUTO (main axis: keep current size; cross
  * axis: fill the parent's content size).
- * Grid layout: TODO (M3b+).
+ * Grid layout: fixed column count, row heights derived from child content.
  */
 #ifndef MY_LAYOUT_H
 #define MY_LAYOUT_H
@@ -70,6 +70,17 @@ my_layouter_t* my_layouter_flow_create(const my_allocator_t* allocator,
  * changed). Returns 0 when parent has no flow layouter attached.
  */
 int32_t my_layouter_flow_measure(my_widget_t* parent);
+
+/**
+ * @brief Grid layouter with fixed columns and content-sized rows.
+ *
+ * Visible, non-floating children are assigned row-major cells. Every cell in
+ * a row shares the row's maximum child height; widths are equal after spacing.
+ * PX/% height parameters override the current child height, AUTO keeps it.
+ */
+my_layouter_t* my_layouter_grid_create(const my_allocator_t* allocator,
+                                       size_t columns, int32_t h_spacing,
+                                       int32_t v_spacing);
 
 /** @brief Attach a layouter (takes ownership; NULL resets to absolute). */
 my_ret_t my_widget_set_layouter(my_widget_t* widget, my_layouter_t* layouter);

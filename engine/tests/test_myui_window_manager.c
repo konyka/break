@@ -245,6 +245,29 @@ TEST(floating_plain_widget_does_not_crash_hit_test)
   my_widget_unref(root);
 }
 
+TEST(text_area_grows_capacity_exponentially)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  char text[257];
+  size_t length;
+  size_t previous_capacity;
+
+  ASSERT_NOT_NULL(area);
+  previous_capacity = ((my_text_area_t*)area)->text_cap;
+  memset(text, 'x', sizeof(text) - 1);
+  text[sizeof(text) - 1] = '\0';
+  for (length = 1; length < sizeof(text); length++) {
+    text[length - 1] = 'x';
+    text[length] = '\0';
+    ASSERT_EQ(my_text_area_set_text(area, text), MY_RET_OK);
+    ASSERT_TRUE(((my_text_area_t*)area)->text_cap >= length + 1);
+    ASSERT_TRUE(((my_text_area_t*)area)->text_cap >= previous_capacity);
+    previous_capacity = ((my_text_area_t*)area)->text_cap;
+  }
+  ASSERT_TRUE(((my_text_area_t*)area)->text_cap > strlen(text) + 1);
+  my_widget_unref(area);
+}
+
 TEST(window_manager_refreshes_all_window_scales)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1042,6 +1065,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(injected_canvas_inherits_window_scale);
     RUN_TEST(dynamic_scale_reconfigures_injected_canvas_without_resize);
     RUN_TEST(floating_plain_widget_does_not_crash_hit_test);
+    RUN_TEST(text_area_grows_capacity_exponentially);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);
     RUN_TEST(software_canvas_recreates_after_surface_resize);

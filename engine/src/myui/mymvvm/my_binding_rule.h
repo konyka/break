@@ -10,8 +10,8 @@
  *   v:on_click={save}                         command
  *   v:on_click={save, Args=btn1}              command with args
  *   v:on_click={close, CloseWindow=true}      command + close window
- * Items/condition rules are recognized but return MY_RET_NOT_SUPPORTED
- * for now (M4b).
+ * Items/condition rules are recognized and handled by their dedicated
+ * binding implementations.
  */
 #ifndef MY_BINDING_RULE_H
 #define MY_BINDING_RULE_H
@@ -57,8 +57,7 @@ typedef struct my_binding_rule_t {
 
 /**
  * @brief Parse a binding rule string.
- * @return MY_RET_OK, MY_RET_INVALID_PARAMS (malformed), or
- * MY_RET_NOT_SUPPORTED (items/condition rules).
+ * @return MY_RET_OK or MY_RET_INVALID_PARAMS (malformed).
  */
 my_ret_t my_binding_rule_parse(const char* str, my_binding_rule_t* rule);
 

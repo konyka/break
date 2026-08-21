@@ -191,16 +191,43 @@ Break RHI 路径不会再因创建分支不同而出现字号或坐标不一致�
 |------|------|-------------|--------|-----------|
 | `my_vgcanvas_set_scale` | 支持 | 支持 | 支持 | 支持 |
 | `my_vgcanvas_set_antialias_level` | 覆盖率 AA（0-2） | 0/非 0 映射 MSAA | `MY_RET_NOT_SUPPORTED` | `MY_RET_NOT_SUPPORTED` |
-| `my_vgcanvas_set_scale_filter` | nearest/bilinear | `MY_RET_NOT_SUPPORTED` | `MY_RET_NOT_SUPPORTED` | `MY_RET_NOT_SUPPORTED` |
+| `my_vgcanvas_set_scale_filter` | nearest/bilinear | nearest/bilinear | nearest/bilinear | nearest/bilinear |
 
-GPU 图像管线使用固定 sampler，当前不能在单次 widget 绘制间切换采样器；`my_image`
-会保留其 filter 偏好并忽略 `MY_RET_NOT_SUPPORTED`，在所有 GPU 后端维持确定性的固定
-采样结果。GLES/Vulkan 图像纹理缓存按 `(rgba 指针, width, height)` 复用，因此公共
+图像过滤是 canvas 状态的一部分，默认值为 bilinear。GLES/OpenGL 的图像纹理缓存键为
+`(rgba 指针, width, height, filter)`，避免同一位图在两种过滤模式间错误复用；没有扩展
+回调的旧 GL 适配仍回退到原始 RGBA 上传接口。Vulkan 使用共享的 linear/nearest sampler，
+并把 sampler 写入对应的 descriptor；字形 atlas 始终使用 linear。Break RHI 同样创建两种
+sampler，并按 `(texture, sampler)` 划分 image batch，避免每个图像 quad 创建资源。公共
 `my_vgcanvas_draw_image()` 调用方必须在缓存可能命中期间保持 bitmap 内容不变；需要更新
 像素时应提供新的稳定 buffer identity，或主动让 canvas 生命周期结束。`my_image` 解码
 缓存满足该生命周期要求。`ztpool` 的 PNG 分享导出是显式离屏软件渲染任务，因而保留
 `my_vgcanvas_soft_create` 依赖；它不参与窗口的后端选择，也不会把软件 canvas 传给
 GPU 控件路径。
+
+### 能力盘点与阶段计划
+
+本轮已经打通并由 TDD 锁定的能力包括：固定列 Grid 布局、文本编辑缓冲区容量倍增、
+软件/GLES/OpenGL/Vulkan/Break RHI 的 nearest/bilinear 图像过滤，以及 MVVM 的 items
+和 condition 绑定。布局参数解析同时拒绝负数、非有限数和超出 `int32_t`/百分比范围的
+输入；Grid 的列数、间距、临时容量和坐标计算也经过溢出保护。
+
+仍未实现或明确保留为后续阶段的能力如下：
+
+| 范围 | 当前边界 | 后续方案 |
+|------|----------|----------|
+| GPU AA | Vulkan 与 Break RHI 的 `set_antialias_level` 仍返回 `MY_RET_NOT_SUPPORTED` | 先扩展 RHI/RenderPass 的样本数能力查询，再以设备能力为准创建 MSAA target；失败时保持旧 target，不静默改变质量 |
+| 复杂 RTL | 混合段落的复杂重排、UBA L4 镜像和完整 Arabic ligature shaping 尚未达到跨后端一致契约 | 在文本布局层增加段落级缓存和 shaping run，先用 golden 字形/视觉顺序测试，再接入所有 canvas |
+| 编辑器 | 行号、代码折叠、增量语法高亮等高级编辑器能力未实现 | 单独的 virtualized line model，限制单帧重排预算，避免把大文档编辑路径耦合到 widget 绘制 |
+| 图像 | Mono dithering 未实现 | 仅在明确的 1/2/4-bit 输出目标启用有界误差扩散；默认保持当前快速 RGBA 路径 |
+| Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
+| Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |
+| CSS/XML | 部分 CSS selector/at-rule 仍未支持，解析器不应把未知语法伪装成成功 | 建立 capability registry 和严格诊断模式；未知规则在加载期报告位置，运行期跳过且不破坏已构建树 |
+| 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
+
+实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、
+验证、一次提交”的状态转换，失败保留旧资源。缓存键必须包含影响结果的状态，输入长度、
+索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
+（缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 Floating widget 的绘制与命中语义也分离：`floating=true` 且没有 `on_event` 的普通控件
 是 paint-only overlay，不会吞掉其下方控件的 pointer hit-test；带 `on_event` 的浮层仍按
@@ -312,6 +339,8 @@ DPI/scale 会在后续 Bridge frame 由窗口 scale 刷新契约传递给 canvas
   重新覆盖整个逻辑窗口栈，避免 retained surface 留下半帧结果。
 - **增量布局路径**：`need_layout` 表示当前 widget 需要运行 measure/layouter/on_layout，
   `subtree_need_layout` 只标记后代路径；窗口帧不会因一个深层 child 变化而遍历无关兄弟子树。
+- **固定列 Grid**：可见、非 floating 子项按行主序执行线性布局阶段；行高取该行最大
+  子项高度，列宽均分并把余数从左到右分配。行高缓存按需增长，稳态帧不重复分配子项临时数组。
 - **非阻塞选择传输**：X11/Wayland 的 clipboard 协议只在事件循环推进，绝不在 render
   frame 等待外部进程；大文本粘贴也维持同一帧时间预算。
 - **有界输入背压**：IME/剪贴板输入均有明确的 16 MiB 单文本上限和有限队列预算，
@@ -336,7 +365,7 @@ surface；它不是独立 Metal RHI。
 
 - X11 OpenGL/Vulkan、Wayland OpenGL/Vulkan 均严格构建 `dxx_break`；四个 Linux 后端
   均完成 8 秒窗口启动烟测且无崩溃。
-- 全量 `ENGINE_BUILD_TESTS=ON` 构建通过，`ctest -LE graphics` 为 `50/50`，且是 CI
+- 全量 `ENGINE_BUILD_TESTS=ON` 构建通过，`ctest -LE graphics` 为 `51/51`，且是 CI
   门禁。
 - `test_break_ui_input`、`test_break_ui_damage`、`test_myui_vggeometry`、
   `test_myui_window_manager`、`test_myui_break_pal`、`test_myui_mvvm`、`test_imgui_compat`、
@@ -382,5 +411,6 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
   `BreakUI` 和 PAL 销毁之后才销毁。Windows/macOS 的原生运行时验证仍由 CI 和对应设备提供。
 - 文本队列到达预算时采用丢弃而不是阻塞或无限增长；如果应用需要可靠的编辑协议，应在
   上层实现 backpressure/重试，而不是直接绕过 `PlatformTextQueue`。
-- `my_vgcanvas` 的 AA 与 sampler 仍是可选能力而非最低公分母语义；调用者必须处理
-  `MY_RET_NOT_SUPPORTED`，不能假设同一画质/过滤策略能无代价映射到全部 GPU 后端。
+- `my_vgcanvas` 的 AA 仍是可选能力而非最低公分母语义；调用者必须处理
+  `MY_RET_NOT_SUPPORTED`。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、Vulkan
+  和 Break RHI 的共同能力，但复杂文本 shaping、Mono dithering、局部 present 等仍按阶段计划处理。

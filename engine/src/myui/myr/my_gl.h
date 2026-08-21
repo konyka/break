@@ -59,6 +59,10 @@ typedef struct my_gl_t {
    */
   const char* shader_header_vs;
   const char* shader_header_fs;
+  /** @brief Optional RGBA upload with an explicit sampling filter. */
+  uint32_t (*create_texture_rgba_filtered)(void* ctx, const uint8_t* rgba,
+                                           int32_t w, int32_t h,
+                                           bool linear);
 } my_gl_t;
 
 /**

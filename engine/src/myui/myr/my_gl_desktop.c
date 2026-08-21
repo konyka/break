@@ -143,19 +143,27 @@ static uint32_t gl_create_texture(void* ctx, const uint8_t* alpha, int32_t w,
   return (uint32_t)tex;
 }
 
-static uint32_t gl_create_texture_rgba(void* ctx, const uint8_t* rgba,
-                                       int32_t w, int32_t h) {
+static uint32_t gl_create_texture_rgba_filtered(void* ctx, const uint8_t* rgba,
+                                                int32_t w, int32_t h,
+                                                bool linear) {
   GLuint tex;
   (void)ctx;
   glGenTextures(1, &tex);
   glBindTexture(GL_TEXTURE_2D, tex);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                  linear ? GL_LINEAR : GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                  linear ? GL_LINEAR : GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA,
                GL_UNSIGNED_BYTE, rgba);
   return (uint32_t)tex;
+}
+
+static uint32_t gl_create_texture_rgba(void* ctx, const uint8_t* rgba,
+                                       int32_t w, int32_t h) {
+  return gl_create_texture_rgba_filtered(ctx, rgba, w, h, true);
 }
 
 static void gl_delete_texture(void* ctx, uint32_t texture) {
@@ -208,7 +216,8 @@ const my_gl_t* my_gl_desktop_default(void) {
                                gl_draw_textured, gl_set_multisample,
                                NULL,
                                "#version 120\n", /* shader_header_vs */
-                               "#version 120\n"  /* shader_header_fs */};
+                               "#version 120\n", /* shader_header_fs */
+                               gl_create_texture_rgba_filtered};
   return &real;
 }
 

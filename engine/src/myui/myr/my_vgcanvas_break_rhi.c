@@ -28,6 +28,7 @@ typedef struct {
   int32_t font_size;
   my_line_cap_t line_cap;
   my_line_join_t line_join;
+  my_scale_filter_t scale_filter;
 } break_rhi_state_t;
 
 typedef struct {
@@ -45,6 +46,7 @@ typedef struct {
 
 typedef struct {
   RHITexture texture;
+  RHISampler sampler;
   u32 offset;
   u32 count;
 } break_rhi_image_batch_t;
@@ -78,6 +80,7 @@ typedef struct my_vgcanvas_break_rhi_t {
   RHIPipeline image_pipeline;
   RHITexture atlas_texture;
   RHISampler sampler;
+  RHISampler nearest_sampler;
   u8 *atlas_pixels;
   u32 atlas_x, atlas_y, atlas_row_h;
   bool atlas_dirty;
@@ -477,6 +480,7 @@ static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
                                const my_color_t *bg) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
   RHITexture tex;
+  RHISampler image_sampler;
   my_rect_t dr;
   float x0, y0, x1, y1;
   if (rgba == NULL || dst == NULL || w <= 0 || h <= 0) {
@@ -493,6 +497,9 @@ static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
   if (!rhi_handle_valid(tex)) {
     return MY_RET_OOM;
   }
+  image_sampler = c->state.scale_filter == MY_SCALE_FILTER_BILINEAR
+                      ? c->sampler
+                      : c->nearest_sampler;
   x0 = (dst->x + c->state.tx) * c->state.scale;
   y0 = (dst->y + c->state.ty) * c->state.scale;
   x1 = x0 + dst->w * c->state.scale;
@@ -500,11 +507,16 @@ static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
   if (c->image_batch_count == 0 ||
       c->image_batches[c->image_batch_count - 1].texture.index != tex.index ||
       c->image_batches[c->image_batch_count - 1].texture.generation !=
-          tex.generation) {
+          tex.generation ||
+      c->image_batches[c->image_batch_count - 1].sampler.index !=
+          image_sampler.index ||
+      c->image_batches[c->image_batch_count - 1].sampler.generation !=
+          image_sampler.generation) {
     if (c->image_batch_count >= BREAK_RHI_MAX_IMAGES) {
       return MY_RET_OOM;
     }
     c->image_batches[c->image_batch_count].texture = tex;
+    c->image_batches[c->image_batch_count].sampler = image_sampler;
     c->image_batches[c->image_batch_count].offset = (u32)c->image_count;
     c->image_batches[c->image_batch_count].count = 0;
     c->image_batch_count++;
@@ -568,7 +580,8 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
     rhi_cmd_bind_pipeline(c->cmd, c->image_pipeline);
     rhi_cmd_bind_vertex_buffer(c->cmd, c->image_vbo[slot], 0);
     for (i = 0; i < c->image_batch_count; i++) {
-      rhi_cmd_bind_texture(c->cmd, c->image_batches[i].texture, c->sampler, 0);
+      rhi_cmd_bind_texture(c->cmd, c->image_batches[i].texture,
+                           c->image_batches[i].sampler, 0);
       rhi_cmd_draw_base(c->cmd, c->image_batches[i].count, 1,
                         c->image_batches[i].offset);
     }
@@ -634,9 +647,13 @@ static my_ret_t rhi_set_antialias_level_vtable(my_vgcanvas_t *vg, int level) {
 
 static my_ret_t rhi_set_scale_filter_vtable(my_vgcanvas_t *vg,
                                             my_scale_filter_t filter) {
-  (void)vg;
-  (void)filter;
-  return MY_RET_NOT_SUPPORTED;
+  my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
+  if (c == NULL || (filter != MY_SCALE_FILTER_NEAREST &&
+                    filter != MY_SCALE_FILTER_BILINEAR)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  c->state.scale_filter = filter;
+  return MY_RET_OK;
 }
 
 static my_ret_t rhi_set_fill_color(my_vgcanvas_t *vg, my_color_t color) {
@@ -771,6 +788,8 @@ static void rhi_destroy(my_vgcanvas_t *vg) {
       rhi_texture_destroy(c->device, c->atlas_texture);
     if (rhi_handle_valid(c->sampler))
       rhi_sampler_destroy(c->device, c->sampler);
+    if (rhi_handle_valid(c->nearest_sampler))
+      rhi_sampler_destroy(c->device, c->nearest_sampler);
     for (i = 0; i < c->image_cache_count; i++) {
       if (rhi_handle_valid(c->images[i].texture)) {
         rhi_texture_destroy(c->device, c->images[i].texture);
@@ -884,6 +903,7 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   c->state.stroke_color = my_color_rgba(0, 0, 0, 255);
   c->state.line_width = 1.0f;
   c->state.scale = 1.0f;
+  c->state.scale_filter = MY_SCALE_FILTER_BILINEAR;
   c->state.font_size = 16;
   c->state.line_cap = MY_LINE_CAP_BUTT;
   c->state.line_join = MY_LINE_JOIN_MITER;
@@ -937,7 +957,13 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   samp_desc.wrap_w = RHI_WRAP_CLAMP_TO_EDGE;
   c->sampler = rhi_sampler_create(device, &samp_desc);
 
-  if (!rhi_handle_valid(c->atlas_texture) || !rhi_handle_valid(c->sampler)) {
+  samp_desc.min_filter = RHI_FILTER_NEAREST;
+  samp_desc.mag_filter = RHI_FILTER_NEAREST;
+  c->nearest_sampler = rhi_sampler_create(device, &samp_desc);
+
+  if (!rhi_handle_valid(c->atlas_texture) ||
+      !rhi_handle_valid(c->sampler) ||
+      !rhi_handle_valid(c->nearest_sampler)) {
     rhi_destroy((my_vgcanvas_t *)c);
     return NULL;
   }

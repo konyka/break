@@ -98,8 +98,8 @@ typedef struct my_vgcanvas_vtable_t {
                            int32_t* h);
 
   /**
-   * @brief Blit an RGBA8888 image into dst (user space), nearest-neighbor
-   * scaled. When bg != NULL each source pixel is first composited over bg
+   * @brief Blit an RGBA8888 image into dst (user space), using the current
+   * image scale filter. When bg != NULL each source pixel is first composited over bg
    * (src * a + bg * (1-a)); the result is written opaquely. May return
    * MY_RET_NOT_SUPPORTED on backends without image support. GPU backends may
    * cache by the bitmap pointer and dimensions, so rgba contents must remain
@@ -138,7 +138,7 @@ typedef struct my_vgcanvas_vtable_t {
   my_ret_t (*set_scale)(my_vgcanvas_t* vg, float scale);
   /** @brief Set AA quality (0 = off, 2 = preferred); may be unsupported. */
   my_ret_t (*set_antialias_level)(my_vgcanvas_t* vg, int level);
-  /** @brief Select image filtering; fixed-sampler backends may reject it. */
+  /** @brief Select image filtering; nearest and bilinear are portable GPU options. */
   my_ret_t (*set_scale_filter)(my_vgcanvas_t* vg, my_scale_filter_t filter);
 } my_vgcanvas_vtable_t;
 

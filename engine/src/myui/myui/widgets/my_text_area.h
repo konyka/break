@@ -10,8 +10,9 @@
  * the PAL clipboard (newlines preserved). Scrolls to keep the cursor
  * visible. Optional word wrap (M10b): a visual-line cache maps each
  * physical line to width-limited segments; greedy break after the last
- * fitting space, hard break otherwise (no UAX#14). NOT done: line
- * numbers, undo/redo (TODO).
+ * fitting space, hard break otherwise (no UAX#14). Undo/redo is supported
+ * through the private or shared undo manager; line numbers are not part of
+ * this widget.
  * Emits "changed" (data = full text). No "activate" (Enter splits lines).
  */
 #ifndef MY_TEXT_AREA_H
@@ -34,6 +35,7 @@ typedef struct my_text_area_t {
   const my_allocator_t* allocator;
   char* text;               /**< owned UTF-8 buffer */
   size_t text_len;          /**< bytes in use */
+  size_t text_cap;          /**< allocated bytes, including trailing NUL */
   my_darray_t* line_offsets;/**< size_t per line start (line 0 = 0) */
   bool wrap;                /**< word wrap on (M10b, default off) */
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
