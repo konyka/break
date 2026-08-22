@@ -90,7 +90,45 @@ TEST(cjk_ttc_face_rasterizes_chinese_glyphs)
 #endif
 }
 
+TEST(optional_opentype_shaping_has_explicit_fallback)
+{
+  my_font_shape_result_t result;
+  my_font_t *font;
+  const char *path = "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  FILE *file = fopen(path, "rb");
+  memset(&result, 0, sizeof(result));
+  if (file == NULL) {
+    printf("  SKIP: no shaping test font\n");
+    return;
+  }
+  fclose(file);
+#ifdef MYUI_FONT_FREETYPE
+  font = my_font_ft_create(NULL, path, 0, 32);
+#else
+  font = my_font_bitmap_create(NULL);
+#endif
+  ASSERT_NOT_NULL(font);
+#ifdef MYUI_FONT_HARFBUZZ
+  ASSERT_EQ(my_font_shape(font, "office", 24, false, NULL, &result),
+            MY_RET_OK);
+  ASSERT_EQ(result.count, 5u);
+  ASSERT_TRUE(result.used_complex_shaping);
+  ASSERT_EQ(result.glyphs[0].cluster, 0u);
+  ASSERT_EQ(result.glyphs[1].cluster, 1u);
+  ASSERT_EQ(result.glyphs[2].cluster, 2u);
+  ASSERT_EQ(result.glyphs[3].cluster, 4u);
+  ASSERT_EQ(result.glyphs[4].cluster, 5u);
+  ASSERT_TRUE(result.glyphs[2].advance_x_26_6 > 0);
+  my_font_shape_destroy(&result);
+#else
+  ASSERT_EQ(my_font_shape(font, "office", 24, false, NULL, &result),
+            MY_RET_NOT_SUPPORTED);
+#endif
+  my_font_destroy(font);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(utf8_decodes_chinese_codepoints);
     RUN_TEST(cjk_ttc_face_rasterizes_chinese_glyphs);
+    RUN_TEST(optional_opentype_shaping_has_explicit_fallback);
 TEST_MAIN_END()

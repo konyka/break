@@ -25,6 +25,27 @@ typedef struct my_glyph_t {
 
 typedef struct my_font_t my_font_t;
 
+typedef struct my_font_shape_glyph_t {
+  uint32_t glyph_id;
+  uint32_t cluster;
+  int32_t advance_x_26_6;
+  int32_t offset_x_26_6;
+  int32_t offset_y_26_6;
+} my_font_shape_glyph_t;
+
+typedef struct my_font_shape_result_t {
+  const my_allocator_t* allocator;
+  my_font_shape_glyph_t* glyphs;
+  size_t count;
+  bool rtl;
+  bool used_complex_shaping;
+} my_font_shape_result_t;
+
+typedef my_ret_t (*my_font_shape_fn)(my_font_t* font, const char* text,
+                                     int32_t size, bool rtl,
+                                     const my_allocator_t* allocator,
+                                     my_font_shape_result_t* result);
+
 /** @brief A font source plus an optional face index for TTC collections. */
 typedef struct my_font_source_t {
   const char* path;
@@ -46,6 +67,7 @@ typedef struct my_font_vtable_t {
   /** @brief Whether the face has a glyph for cp (M16; appended slot,
    * NULL = "assume yes"). Used by the fallback chain. */
   bool (*has_glyph)(my_font_t* font, uint32_t codepoint);
+  my_font_shape_fn shape;
 } my_font_vtable_t;
 
 /** @brief Font base "class". */
@@ -83,6 +105,14 @@ static inline bool my_font_has_glyph(my_font_t* font, uint32_t codepoint) {
   return font->vtable->has_glyph == NULL ||
          font->vtable->has_glyph(font, codepoint);
 }
+
+/** @brief Shape UTF-8 text when the selected font backend supports it. */
+my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
+                       bool rtl, const my_allocator_t* allocator,
+                       my_font_shape_result_t* result);
+
+/** @brief Release a result returned by my_font_shape. */
+void my_font_shape_destroy(my_font_shape_result_t* result);
 
 /**
  * @brief Fallback chain (M14b; backend-neutral since M16): load several

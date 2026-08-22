@@ -7,6 +7,12 @@ drawable resize 与 AA 请求时，resize 的 target 注入会清掉 pending AA 
 renderbuffer、resolve FBO、color/depth texture，避免候选创建失败泄漏 GPU 对象。原有 Vulkan
 2x+ resolve、sample-count pipeline variant、BreakUI 回滚和 validation gate 继续保持通过。
 
+**可选 OpenType shaping 契约（TDD）**：新增字体后端中立的 shape result，携带 glyph id、
+cluster 和 26.6 advance/offset；CMake 可选探测 HarfBuzz，并通过 FreeType face 生成安全的
+glyph run。未启用或缺少依赖时返回 `MY_RET_NOT_SUPPORTED`，保留现有 Arabic presentation-form
+和 SheenBidi 路径。此阶段不接入 canvas 绘制，避免现有 codepoint bitmap cache 将 glyph id
+当作 Unicode codepoint；完整 glyph-run raster/cache/四后端绘制仍列为未完成。
+
 最近更新：**R559 动态 IBL 跨帧重烘焙（TDD）**：静态 IBL 在实时太阳（L/J/I/K、TOD）变化后
 会与可见 skybox 漂移。新增默认 36000 帧（约 10 分钟@60 FPS）触发的运行时 rebake，并提供
 `BREAK_IBL_STATIC=1` 静态 opt-out 与 `BREAK_IBL_REBAKE_FRAMES=N` 无头验证覆盖。重烘焙不再一次性

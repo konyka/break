@@ -131,7 +131,7 @@ static bool bmp_has_glyph(my_font_t* font, uint32_t codepoint) {
 static const my_font_vtable_t s_bitmap_vtable = {bmp_measure, bmp_get_glyph,
                                                  bmp_ascent, bmp_descent,
                                                  bmp_line_height, bmp_destroy,
-                                                 bmp_has_glyph};
+                                                 bmp_has_glyph, NULL};
 
 my_font_t* my_font_bitmap_create(const my_allocator_t* allocator) {
   my_font_bitmap_t* f =
@@ -247,7 +247,27 @@ static void chain_destroy(my_font_t* font) {
 
 static const my_font_vtable_t s_chain_vtable = {
     chain_measure, chain_get_glyph,  chain_ascent,   chain_descent,
-    chain_line_height, chain_destroy, NULL /* per-face has_glyph */};
+    chain_line_height, chain_destroy, NULL /* per-face has_glyph */, NULL};
+
+my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
+                       bool rtl, const my_allocator_t* allocator,
+                       my_font_shape_result_t* result) {
+  if (result == NULL) return MY_RET_INVALID_PARAMS;
+  memset(result, 0, sizeof(*result));
+  result->allocator = allocator;
+  result->rtl = rtl;
+  if (font == NULL || text == NULL || size <= 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (font->vtable->shape == NULL) return MY_RET_NOT_SUPPORTED;
+  return font->vtable->shape(font, text, size, rtl, allocator, result);
+}
+
+void my_font_shape_destroy(my_font_shape_result_t* result) {
+  if (result == NULL) return;
+  my_mem_free(result->allocator, result->glyphs);
+  memset(result, 0, sizeof(*result));
+}
 
 /** @brief Load one face: FreeType preferred (hinted), stb fallback. */
 static my_font_t* chain_load_face(const my_allocator_t* allocator,

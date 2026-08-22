@@ -21,8 +21,8 @@
  * Boundaries: single paragraph (draw_text strings). `len` is the visual
  * item count and `logical_len` is the original decoded codepoint count.
  * A shaped visual item can cover multiple logical codepoints (Lam-Alef).
- * Full OpenType GSUB Arabic shaping and multi-paragraph rebreaking remain
- * outside this layout contract.
+ * Full OpenType GSUB Arabic shaping remains outside this codepoint layout
+ * contract; the font-level glyph-run contract lives in my_font.h.
  */
 #ifndef MY_TEXT_LAYOUT_H
 #define MY_TEXT_LAYOUT_H

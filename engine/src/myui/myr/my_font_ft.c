@@ -12,6 +12,10 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_MULTIPLE_MASTERS_H
+#ifdef MYUI_FONT_HARFBUZZ
+#include <hb.h>
+#include <hb-ft.h>
+#endif
 
 #define MY_FONT_FT_DEFAULT_CACHE 256
 
@@ -182,6 +186,62 @@ static int32_t ft_line_height(my_font_t* font, int32_t size) {
   return (int32_t)(f->face->size->metrics.height >> 6);
 }
 
+static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
+                         bool rtl, const my_allocator_t* allocator,
+                         my_font_shape_result_t* result) {
+#ifdef MYUI_FONT_HARFBUZZ
+  my_font_ft_t* f = (my_font_ft_t*)font;
+  hb_font_t* hb_font;
+  hb_buffer_t* buffer;
+  unsigned int count = 0;
+  const hb_glyph_info_t* infos;
+  const hb_glyph_position_t* positions;
+  unsigned int i;
+  if (text == NULL || size <= 0 || result == NULL) return MY_RET_INVALID_PARAMS;
+  ft_set_size(f, size);
+  hb_font = hb_ft_font_create_referenced(f->face);
+  buffer = hb_buffer_create();
+  if (hb_font == NULL || buffer == NULL ||
+      !hb_buffer_allocation_successful(buffer)) {
+    if (buffer != NULL) hb_buffer_destroy(buffer);
+    if (hb_font != NULL) hb_font_destroy(hb_font);
+    return MY_RET_OOM;
+  }
+  hb_buffer_add_utf8(buffer, text, -1, 0, -1);
+  hb_buffer_set_direction(buffer, rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+  hb_buffer_guess_segment_properties(buffer);
+  hb_shape(hb_font, buffer, NULL, 0);
+  infos = hb_buffer_get_glyph_infos(buffer, &count);
+  positions = hb_buffer_get_glyph_positions(buffer, &count);
+  if (count > 0) {
+    result->glyphs = (my_font_shape_glyph_t*)my_mem_alloc(
+        allocator, (size_t)count * sizeof(*result->glyphs));
+    if (result->glyphs == NULL) {
+      hb_buffer_destroy(buffer);
+      hb_font_destroy(hb_font);
+      return MY_RET_OOM;
+    }
+  }
+  result->allocator = allocator;
+  result->count = count;
+  result->used_complex_shaping = true;
+  for (i = 0; i < count; i++) {
+    result->glyphs[i].glyph_id = infos[i].codepoint;
+    result->glyphs[i].cluster = infos[i].cluster;
+    result->glyphs[i].advance_x_26_6 = positions[i].x_advance;
+    result->glyphs[i].offset_x_26_6 = positions[i].x_offset;
+    result->glyphs[i].offset_y_26_6 = positions[i].y_offset;
+  }
+  hb_buffer_destroy(buffer);
+  hb_font_destroy(hb_font);
+  return MY_RET_OK;
+#else
+  (void)font; (void)text; (void)size; (void)rtl; (void)allocator;
+  (void)result;
+  return MY_RET_NOT_SUPPORTED;
+#endif
+}
+
 static void ft_destroy(my_font_t* font) {
   my_font_ft_t* f = (my_font_ft_t*)font;
   size_t i;
@@ -206,7 +266,7 @@ static bool ft_has_glyph(my_font_t* font, uint32_t codepoint) {
 static const my_font_vtable_t s_ft_vtable = {ft_measure,  ft_get_glyph,
                                              ft_ascent,   ft_descent,
                                              ft_line_height, ft_destroy,
-                                             ft_has_glyph};
+                                             ft_has_glyph, ft_shape};
 
 my_font_t* my_font_ft_create_ex(const my_allocator_t* allocator,
                                 const char* path, int32_t face_index,

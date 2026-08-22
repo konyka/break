@@ -185,7 +185,7 @@ static bool stb_has_glyph(my_font_t* font, uint32_t codepoint) {
 static const my_font_vtable_t s_stb_vtable = {stb_measure, stb_get_glyph,
                                               stb_ascent, stb_descent,
                                               stb_line_height, stb_destroy,
-                                              stb_has_glyph};
+                                              stb_has_glyph, NULL};
 
 my_font_t* my_font_stb_create(const my_allocator_t* allocator, const char* path,
                               size_t cache_capacity) {

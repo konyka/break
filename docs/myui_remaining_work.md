@@ -36,13 +36,17 @@
 - 已修复 resize 与 AA 请求同帧合并时 pending 请求被清除的缺陷；候选 target 激活后仍会
   保留尚未满足的 AA 请求，直到下一次 render 边界成功切换。OpenGL 候选 FBO 的 multisample
   renderbuffer、resolve FBO 和可采样纹理也统一走失败清理路径，避免资源泄漏。
+- 已加入可选 OpenType shaping 契约：启用 `MYUI_HARFBUZZ` 且存在 FreeType/HarfBuzz 时，
+  字体后端输出 glyph id、cluster、26.6 advance/offset；缺少依赖或后端不支持时返回
+  `MY_RET_NOT_SUPPORTED`，不把 glyph id 误送入现有 Unicode bitmap 绘制路径。当前仍未将
+  glyph-run 接入四个 canvas 的 GPU/软件绘制，避免破坏现有 codepoint 缓存语义。
 
 ## 未完成能力
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
 | GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
-| OpenType shaping | Arabic fallback，不含完整 GSUB/GPOS、mark positioning、脚本 shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | HarfBuzz 可选构建；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
+| OpenType shaping | 已有可选 HarfBuzz + FreeType glyph-run 契约（glyph id/cluster/26.6 metrics）和禁用依赖回退；四个 canvas 尚未消费 glyph-run，fallback chain 暂不伪装支持跨 face shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | 四后端按字体 face/run 接入 glyph raster/cache；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
 | 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |

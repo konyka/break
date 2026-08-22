@@ -186,6 +186,13 @@ render 边界创建候选 `RHIOffscreenFBO`，创建成功后再激活并回收�
 depth sample count 与 resolve 时使用 2x；旧 RHI 创建 API 仍固定 1x。
 - Vulkan 使用 `font_vk.vert/frag` + `ui_img_vk.vert/frag`。
 
+可选 OpenType shaping 通过 `my_font_shape()` 暴露为后端中立的 glyph run：每个 glyph 携带
+font glyph id、UTF-8 byte cluster 和 26.6 fixed-point advance/offset。只有启用
+`MYUI_HARFBUZZ`、FreeType 与 HarfBuzz 均可用的直接 FreeType face 支持该接口；bitmap、stb
+以及 fallback chain 返回 `MY_RET_NOT_SUPPORTED`。当前 Break RHI、GLES、Vulkan 和 soft
+canvas 仍使用 Unicode codepoint bitmap 路径，避免将 glyph id 当作 codepoint；因此该接口是
+安全的测量/排版前置契约，完整 glyph raster/cache 接线需按 face/run 单独完成。
+
 ### Canvas 能力契约
 
 控件只能通过 `my_vgcanvas.h` 的公共接口配置 canvas，不得把某个后端的
