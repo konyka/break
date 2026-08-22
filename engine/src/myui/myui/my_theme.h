@@ -24,9 +24,10 @@
 typedef struct my_theme_entry_t {
   char widget_type[MY_THEME_TYPE_LEN]; /**< e.g. "button"; "" = any */
   char name[MY_THEME_NAME_LEN];        /**< CSS #id == widget name; empty = none */
-  char style_class[MY_THEME_NAME_LEN]; /**< CSS .class (one word); empty = none */
+  char style_class[MY_THEME_NAME_LEN]; /**< CSS required classes; empty = none */
   char ancestor_type[MY_THEME_TYPE_LEN]; /**< descendant selector: needs an
                                           * ancestor of this type; empty = none */
+  bool ancestor_direct; /**< direct-child selector instead of any ancestor */
   my_style_t style;
 } my_theme_entry_t;
 
@@ -64,15 +65,22 @@ const my_value_t* my_theme_get(const my_theme_t* theme, const char* widget_type,
                                const char* key);
 
 /**
- * @brief Extended rule write (M18a CSS bridge): class = one class word
- * (word-matched against the widget's style_class), ancestor_type =
- * descendant requirement (the widget needs some ancestor of this
- * type). Same selector rewrites in place (source-order override).
+ * @brief Extended rule write (M18a CSS bridge): style_class is a
+ * space-separated required class set, and ancestor_type is a descendant
+ * requirement (the widget needs some ancestor of this type). Same selector
+ * rewrites in place (source-order override).
  */
 my_ret_t my_theme_set_ex(my_theme_t* theme, const char* widget_type,
                          const char* name, const char* style_class,
                          const char* ancestor_type, my_widget_state_t state,
                          const char* key, const my_value_t* value);
+
+/** @brief Extended selector write with direct-child support. */
+my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const char* ancestor_type, bool ancestor_direct,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value);
 
 struct my_widget_t;
 

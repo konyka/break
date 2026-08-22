@@ -3,8 +3,9 @@
  * @brief In-memory framebuffer lcd backend (test/offscreen rendering).
  *
  * The buffer is a tightly packed row-major array in the lcd's pixel format
- * (MONO rows are byte-aligned: stride = (w + 7) / 8 bytes). No blending:
- * fill_rect/draw_pixels replace destination pixels.
+ * (MONO rows are byte-aligned: stride = w / 8 + (w % 8 != 0) bytes).
+ * Opaque fills and blits replace destination pixels; blend_span and
+ * translucent fills use the format-specific source-over path.
  */
 #ifndef MY_LCD_MEM_H
 #define MY_LCD_MEM_H

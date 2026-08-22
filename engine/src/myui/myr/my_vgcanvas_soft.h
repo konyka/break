@@ -2,10 +2,11 @@
  * @file my_vgcanvas_soft.h
  * @brief Software rasterizer vgcanvas backend, draws onto an my_lcd_t.
  *
- * No anti-aliasing, no alpha blending (colors replace pixels). Path fill
- * uses the even-odd rule; strokes are Bresenham lines with a square
- * line_width brush. The backend records the device-space bounding box of
- * every draw call into a dirty-rect set for the frame (partial redraw).
+ * Coverage AA (levels 0-2), alpha blending, and nearest/bilinear image
+ * filtering are implemented. Path fill uses the even-odd rule; strokes are
+ * Bresenham lines with a square line_width brush. MONO image targets use a
+ * bounded 4x4 ordered dither. The backend records the device-space bounding
+ * box of every draw call into a dirty-rect set for the frame.
  */
 #ifndef MY_VGCANVAS_SOFT_H
 #define MY_VGCANVAS_SOFT_H

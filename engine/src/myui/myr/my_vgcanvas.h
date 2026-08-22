@@ -7,18 +7,15 @@
  * Metal / WebGL implement the same vtable so widget code never changes.
  *
  * Semantics:
- *  - Coordinates are float "user space"; the only transform is translate
- *    (rotate/scale deferred to a later milestone — the vtable does not
- *    rule them out, they will be added as new entries before freeze of
- *    dependent code).
+ *  - Coordinates are float "user space". Translation and device scale are
+ *    part of the portable state; rotation is intentionally not exposed.
  *  - State = fill/stroke color, line width, translate, clip. save/restore
  *    form a stack; clip_rect always intersects with the current clip.
  *  - Path: begin_path/move_to/line_to/close_path build subpaths; fill()
  *    rasterizes with the EVEN-ODD rule, stroke() draws the polyline(s).
- *  - No anti-aliasing and no alpha blending yet (M3+ re-evaluation);
- *    nothing in this interface prevents adding them inside a backend.
- *  - draw_text is a placeholder until the font system lands (M3+):
- *    backends return MY_RET_NOT_SUPPORTED for now.
+ *  - Anti-aliasing, alpha blending, image filtering, and text are backend
+ *    capabilities. Callers must check the return value of optional quality
+ *    controls; unsupported controls return MY_RET_NOT_SUPPORTED.
  */
 #ifndef MY_VGCANVAS_H
 #define MY_VGCANVAS_H
@@ -80,7 +77,7 @@ typedef struct my_vgcanvas_vtable_t {
   /** @brief Stroke current path (polyline with line_width). */
   my_ret_t (*stroke)(my_vgcanvas_t* vg);
 
-  /** @brief Placeholder until the font system (returns NOT_SUPPORTED). */
+  /** @brief Draw text using the installed font and layout backend. */
   my_ret_t (*draw_text)(my_vgcanvas_t* vg, const char* text, float x, float y);
 
   void (*destroy)(my_vgcanvas_t* vg);

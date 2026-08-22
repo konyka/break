@@ -52,15 +52,19 @@ static bool c_failed(css_p_t* p) {
   return p->err != NULL && p->err->msg[0] != '\0';
 }
 
-/** @brief Whitespace + comments. */
-static void c_ws(css_p_t* p) {
+/** @brief Whitespace + comments. Returns true for actual whitespace, which
+ * is significant as the descendant combinator; comments alone are not. */
+static bool c_ws(css_p_t* p) {
+  bool separated = false;
   for (;;) {
     int c = c_peek(p);
     if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+      separated = true;
       c_next(p);
       continue;
     }
     if (c == '/' && p->pos + 1 < p->len && p->s[p->pos + 1] == '*') {
+      separated = true;
       c_next(p);
       c_next(p);
       while (c_peek(p) >= 0 &&
@@ -70,7 +74,7 @@ static void c_ws(css_p_t* p) {
       }
       if (c_peek(p) < 0) {
         css_fail(p, "unterminated comment");
-        return;
+        return separated;
       }
       c_next(p);
       c_next(p);
@@ -78,6 +82,7 @@ static void c_ws(css_p_t* p) {
     }
     break;
   }
+  return separated;
 }
 
 static bool c_ident_char(int c) {
@@ -104,8 +109,14 @@ static bool c_ident(css_p_t* p, char* out, size_t cap) {
 /** @brief One selector item, e.g. `button.primary:hover`. A leading
  * ancestor type (`window button`) is handled by the caller. */
 static bool c_selector(css_p_t* p, my_css_selector_t* out) {
+  bool universal = false;
+
   memset(out, 0, sizeof(*out));
   out->state = -1;
+  if (c_peek(p) == '*') {
+    c_next(p);
+    universal = true;
+  }
   /* type (optional, leading ident) */
   if (c_ident_char(c_peek(p)) && c_peek(p) != '-') {
     /* note: classes start with '.', ids with '#' — plain ident = type */
@@ -118,7 +129,7 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
     css_fail(p, "bad selector");
     return false;
   }
-  /* .class / #id (at most one of each; .c#i without type unsupported).
+  /* .class / #id components; classes are stored as a required set.
    * Components are ADJACENT in CSS — no whitespace allowed (whitespace
    * is the descendant combinator, significant). */
   while (c_peek(p) == '.' || c_peek(p) == '#') {
@@ -129,28 +140,29 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
       return false;
     }
     if (kind == '.') {
-      if (out->style_class[0] != '\0') {
-        css_fail(p, "multiple classes on one selector unsupported");
+      size_t have = strlen(out->style_class);
+      size_t need = strlen(buf);
+      if (have > 0) {
+        if (have + 1 + need >= sizeof(out->style_class)) {
+          css_fail(p, "selector classes too long");
+          return false;
+        }
+        out->style_class[have++] = ' ';
+      } else if (need >= sizeof(out->style_class)) {
+        css_fail(p, "selector class too long");
         return false;
       }
-      snprintf(out->style_class, sizeof(out->style_class), "%s", buf);
+      memcpy(out->style_class + have, buf, need + 1);
     } else {
-      if (out->id[0] != '\0' || out->widget_type[0] == '\0') {
-        /* `.c#i` (id without type) unsupported: too rare to matter */
-        if (out->widget_type[0] == '\0' && out->style_class[0] != '\0') {
-          css_fail(p, "class#id without type unsupported");
-          return false;
-        }
-        if (out->id[0] != '\0') {
-          css_fail(p, "multiple ids on one selector");
-          return false;
-        }
+      if (out->id[0] != '\0') {
+        css_fail(p, "multiple ids on one selector");
+        return false;
       }
       snprintf(out->id, sizeof(out->id), "%s", buf);
     }
   }
   if (out->widget_type[0] == '\0' && out->style_class[0] == '\0' &&
-      out->id[0] == '\0') {
+      out->id[0] == '\0' && c_peek(p) != ':' && !universal) {
     css_fail(p, "empty selector");
     return false;
   }
@@ -173,6 +185,25 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
       return false;
     }
   }
+  return true;
+}
+
+static bool c_ancestor(css_p_t* p, my_css_selector_t* ancestor,
+                       const my_css_selector_t* selector) {
+  size_t type_len = strlen(selector->widget_type);
+  size_t class_len = strlen(selector->style_class);
+  size_t need = type_len + (class_len > 0 ? 1u + class_len : 0u);
+  if (need >= sizeof(ancestor->widget_type)) {
+    css_fail(p, "ancestor selector too long");
+    return false;
+  }
+  memcpy(ancestor->widget_type, selector->widget_type, type_len);
+  if (class_len > 0) {
+    ancestor->widget_type[type_len] = '.';
+    memcpy(ancestor->widget_type + type_len + 1u, selector->style_class,
+           class_len);
+  }
+  ancestor->widget_type[need] = '\0';
   return true;
 }
 
@@ -496,6 +527,7 @@ static my_css_rule_t* css_rule(css_p_t* p) {
   my_css_rule_t* r = css_rule_new(p->allocator);
   my_css_selector_t ancestor;
   bool has_ancestor = false;
+  bool ancestor_direct = false;
   if (r == NULL) {
     css_fail(p, "oom");
     return NULL;
@@ -505,22 +537,34 @@ static my_css_rule_t* css_rule(css_p_t* p) {
   for (;;) {
     my_css_selector_t sel;
     my_css_selector_t* slot;
+    bool separated;
     c_ws(p);
     if (c_failed(p)) {
-      goto fail;
-    }
-    if (c_peek(p) == '*') {
-      css_fail(p, "universal selector unsupported");
       goto fail;
     }
     if (!c_selector(p, &sel)) {
       goto fail;
     }
-    c_ws(p);
+    separated = c_ws(p);
+    if (c_peek(p) == '>') {
+      c_next(p);
+      c_ws(p);
+      if (sel.id[0] != '\0' || sel.ancestor_type[0] != '\0' ||
+          sel.state != -1 || sel.widget_type[0] == '\0' || has_ancestor) {
+        css_fail(p, "child ancestor must be a type");
+        goto fail;
+      }
+      if (!c_ancestor(p, &ancestor, &sel)) {
+        goto fail;
+      }
+      has_ancestor = true;
+      ancestor_direct = true;
+      continue;
+    }
     /* descendant: another selector follows a space (simplified: the
      * first becomes the ancestor condition — bare type, or type.class
      * since M19c; stored as "type.class" in the entry) */
-    if (c_peek(p) != ',' && c_peek(p) != '{') {
+    if (separated && c_peek(p) != ',' && c_peek(p) != '{') {
       if (sel.id[0] != '\0' || sel.ancestor_type[0] != '\0' ||
           sel.state != -1 || sel.widget_type[0] == '\0') {
         css_fail(p, "descendant ancestor must be a type[.class]");
@@ -530,34 +574,21 @@ static my_css_rule_t* css_rule(css_p_t* p) {
         css_fail(p, "only one descendant level supported");
         goto fail;
       }
-      {
-        /* assemble "type.class" bounded (entry field is 24 wide) */
-        size_t tl = strlen(sel.widget_type);
-        size_t cl = strlen(sel.style_class);
-        size_t room = sizeof(ancestor.widget_type) - 1;
-        if (tl > room) {
-          tl = room;
-        }
-        memcpy(ancestor.widget_type, sel.widget_type, tl);
-        ancestor.widget_type[tl] = '\0';
-        if (cl > 0) {
-          size_t avail = room - tl;
-          if (avail > 0) {
-            ancestor.widget_type[tl] = '.';
-            if (cl > avail - 1) {
-              cl = avail - 1;
-            }
-            memcpy(ancestor.widget_type + tl + 1, sel.style_class, cl);
-            ancestor.widget_type[tl + 1 + cl] = '\0';
-          }
-        }
+      if (!c_ancestor(p, &ancestor, &sel)) {
+        goto fail;
       }
       has_ancestor = true;
+      ancestor_direct = false;
       continue; /* parse the actual target selector next */
+    }
+    if (c_peek(p) != ',' && c_peek(p) != '{') {
+      css_fail(p, "unexpected selector token");
+      goto fail;
     }
     if (has_ancestor) {
       snprintf(sel.ancestor_type, sizeof(sel.ancestor_type), "%s",
                ancestor.widget_type);
+      sel.ancestor_direct = ancestor_direct;
       has_ancestor = false; /* consumed by this selector */
     }
     slot = (my_css_selector_t*)my_mem_calloc(p->allocator, 1,
@@ -583,10 +614,6 @@ static my_css_rule_t* css_rule(css_p_t* p) {
     goto fail;
   }
   c_ws(p);
-  if (c_peek(p) == '>') {
-    css_fail(p, "child combinator '>' unsupported");
-    goto fail;
-  }
   if (c_peek(p) != '{') {
     css_fail(p, "expected '{'");
     goto fail;
@@ -810,17 +837,19 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
       for (di = 0; di < my_css_decl_count(rule); di++) {
         const my_css_decl_t* d = my_css_decl(rule, di);
         if (sel->state >= 0) {
-          ret = my_theme_set_ex(theme, sel->widget_type, sel->id,
-                                sel->style_class, sel->ancestor_type,
-                                (my_widget_state_t)sel->state, d->key,
-                                &d->value);
+          ret = my_theme_set_ex2(theme, sel->widget_type, sel->id,
+                                 sel->style_class, sel->ancestor_type,
+                                 sel->ancestor_direct,
+                                 (my_widget_state_t)sel->state, d->key,
+                                 &d->value);
         } else {
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
            * always win regardless of source order (CSS specificity) */
-          ret = my_theme_set_ex(theme, sel->widget_type, sel->id,
-                                sel->style_class, sel->ancestor_type,
-                                MY_STATE_NORMAL, d->key, &d->value);
+          ret = my_theme_set_ex2(theme, sel->widget_type, sel->id,
+                                 sel->style_class, sel->ancestor_type,
+                                 sel->ancestor_direct, MY_STATE_NORMAL,
+                                 d->key, &d->value);
         }
         if (ret != MY_RET_OK) {
           break;

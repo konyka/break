@@ -6,6 +6,8 @@
  * (xy + uv + RGBA) and submits them through the Break RHI. Solid geometry
  * and glyphs share a single atlas-backed pipeline; images use a second
  * RGBA-texture pipeline. Path tessellation is delegated to my_vggeometry.
+ * The public antialias-level control returns MY_RET_NOT_SUPPORTED; the
+ * Break RHI sample-count contract is not yet exposed to myui.
  */
 #ifndef MY_VGCANVAS_BREAK_RHI_H
 #define MY_VGCANVAS_BREAK_RHI_H

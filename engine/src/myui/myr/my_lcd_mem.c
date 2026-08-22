@@ -4,6 +4,7 @@
  */
 #include "myr/my_lcd_mem.h"
 
+#include <stdint.h>
 #include <string.h>
 
 typedef struct my_lcd_mem_t {
@@ -179,17 +180,54 @@ static my_ret_t lcd_mem_fill_rect(my_lcd_t* lcd, const my_rect_t* rect,
 static my_ret_t lcd_mem_draw_pixels(my_lcd_t* lcd, const void* pixels, int32_t x,
                                     int32_t y, uint32_t w, uint32_t h) {
   my_lcd_mem_t* m = (my_lcd_mem_t*)lcd;
-  uint32_t bpp, bytes;
+  uint32_t bpp;
+  size_t bytes;
   int32_t src_x = 0, src_y = 0, row;
   my_rect_t bounds, dst, clipped;
 
   if (pixels == NULL || w == 0 || h == 0) {
     return MY_RET_INVALID_PARAMS;
   }
+  if (w > (uint32_t)INT32_MAX || h > (uint32_t)INT32_MAX) {
+    return MY_RET_INVALID_PARAMS;
+  }
   if (m->format == MY_PIXEL_FORMAT_MONO) {
-    return MY_RET_NOT_SUPPORTED; /* bit-level src clipping: not needed yet */
+    const uint8_t* src = (const uint8_t*)pixels;
+    uint32_t src_stride = w / 8u + (w % 8u != 0u ? 1u : 0u);
+    uint32_t row;
+    if ((size_t)h > SIZE_MAX / src_stride) {
+      return MY_RET_INVALID_PARAMS;
+    }
+    bounds = my_rect_init(0, 0, (int32_t)m->w, (int32_t)m->h);
+    dst = my_rect_init(x, y, (int32_t)w, (int32_t)h);
+    if (!my_rect_intersect(&dst, &bounds, &clipped)) {
+      return MY_RET_OK;
+    }
+    for (row = 0; row < (uint32_t)clipped.h; row++) {
+      uint32_t sy = (uint32_t)(clipped.y - y) + row;
+      int32_t col;
+      for (col = 0; col < clipped.w; col++) {
+        uint32_t sx = (uint32_t)(clipped.x - x) + (uint32_t)col;
+        bool on = (src[(size_t)sy * src_stride + sx / 8u] &
+                   (uint8_t)(0x80u >> (sx % 8u))) != 0;
+        uint8_t* dst_row = m->buffer + (size_t)(clipped.y + (int32_t)row) *
+                           m->stride;
+        uint8_t mask = (uint8_t)(0x80u >>
+                                 ((uint32_t)(clipped.x + col) % 8u));
+        if (on) {
+          dst_row[(uint32_t)(clipped.x + col) / 8u] |= mask;
+        } else {
+          dst_row[(uint32_t)(clipped.x + col) / 8u] &= (uint8_t)~mask;
+        }
+      }
+    }
+    return MY_RET_OK;
   }
   bpp = my_pixel_format_bpp(m->format) / 8;
+  if (bpp == 0u || (size_t)w > SIZE_MAX / bpp ||
+      (size_t)h > SIZE_MAX / ((size_t)w * bpp)) {
+    return MY_RET_INVALID_PARAMS;
+  }
 
   bounds = my_rect_init(0, 0, (int32_t)m->w, (int32_t)m->h);
   dst = my_rect_init(x, y, (int32_t)w, (int32_t)h);
@@ -198,7 +236,7 @@ static my_ret_t lcd_mem_draw_pixels(my_lcd_t* lcd, const void* pixels, int32_t x
   }
   src_x = clipped.x - x;
   src_y = clipped.y - y;
-  bytes = (uint32_t)clipped.w * bpp;
+  bytes = (size_t)clipped.w * bpp;
 
   for (row = 0; row < clipped.h; row++) {
     const uint8_t* src =
@@ -372,10 +410,22 @@ my_lcd_t* my_lcd_mem_create(const my_allocator_t* allocator, uint32_t w, uint32_
   uint32_t stride;
   uint32_t bpp = my_pixel_format_bpp(format);
 
-  if (w == 0 || h == 0 || bpp == 0) {
+  if (w == 0 || h == 0 || w > (uint32_t)INT32_MAX ||
+      h > (uint32_t)INT32_MAX || bpp == 0) {
     return NULL;
   }
-  stride = format == MY_PIXEL_FORMAT_MONO ? (w + 7u) / 8u : w * (bpp / 8u);
+  if (format == MY_PIXEL_FORMAT_MONO) {
+    stride = w / 8u + (w % 8u != 0u ? 1u : 0u);
+  } else {
+    uint32_t bytes_per_pixel = bpp / 8u;
+    if (bytes_per_pixel == 0u || w > UINT32_MAX / bytes_per_pixel) {
+      return NULL;
+    }
+    stride = w * bytes_per_pixel;
+  }
+  if (h > SIZE_MAX / stride) {
+    return NULL;
+  }
 
   m = (my_lcd_mem_t*)my_mem_calloc(allocator, 1, sizeof(my_lcd_mem_t));
   if (m == NULL) {
@@ -419,8 +469,25 @@ my_lcd_t* my_lcd_mem_create_from_buffer(const my_allocator_t* allocator,
                                         uint8_t* buffer, uint32_t stride) {
   my_lcd_mem_t* m;
   if (w == 0 || h == 0 || buffer == NULL ||
+      w > (uint32_t)INT32_MAX || h > (uint32_t)INT32_MAX ||
       my_pixel_format_bpp(format) == 0) {
     return NULL;
+  }
+  {
+    uint32_t bpp = my_pixel_format_bpp(format);
+    uint32_t min_stride;
+    if (format == MY_PIXEL_FORMAT_MONO) {
+      min_stride = w / 8u + (w % 8u != 0u ? 1u : 0u);
+    } else {
+      uint32_t bytes_per_pixel = bpp / 8u;
+      if (bytes_per_pixel == 0u || w > UINT32_MAX / bytes_per_pixel) {
+        return NULL;
+      }
+      min_stride = w * bytes_per_pixel;
+    }
+    if (stride < min_stride) {
+      return NULL;
+    }
   }
   m = (my_lcd_mem_t*)my_mem_calloc(allocator, 1, sizeof(my_lcd_mem_t));
   if (m == NULL) {

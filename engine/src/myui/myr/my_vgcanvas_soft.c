@@ -1234,6 +1234,22 @@ static void pack_native(my_pixel_format_t fmt, const uint8_t* rgba,
   }
 }
 
+static bool mono_dither_on(int32_t x, int32_t y, uint8_t r, uint8_t g,
+                           uint8_t b, uint8_t a, const my_color_t* bg) {
+  static const uint8_t matrix[4][4] = {
+      {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+  uint32_t luma;
+  if (bg != NULL && a < 255) {
+    r = (uint8_t)(((uint32_t)r * a + (uint32_t)bg->r * (255u - a)) / 255u);
+    g = (uint8_t)(((uint32_t)g * a + (uint32_t)bg->g * (255u - a)) / 255u);
+    b = (uint8_t)(((uint32_t)b * a + (uint32_t)bg->b * (255u - a)) / 255u);
+  }
+  luma = ((uint32_t)r * 299u + (uint32_t)g * 587u + (uint32_t)b * 114u) /
+         1000u;
+  return luma * 16u >= (uint32_t)matrix[(uint32_t)y % 4u][(uint32_t)x % 4u] *
+                         255u + 128u;
+}
+
 /** @brief Box pre-downsample tier (M10c): largest power-of-2 factor f in
  * {2,4,8} with dst*f <= src (the remaining scale ratio stays <= 1), and
  * only when downscaling past 0.5x. Returns 1 when no tier applies. */
@@ -1355,7 +1371,49 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
   }
   fmt = my_lcd_get_format(s->lcd);
   if (fmt == MY_PIXEL_FORMAT_MONO) {
-    return MY_RET_NOT_SUPPORTED; /* 1bpp dithering: TODO */
+    int32_t y;
+    uint32_t mono_stride;
+    dev = my_rect_init((int32_t)floorf(SOFT_SX(s, dst->x)),
+                       (int32_t)floorf(SOFT_SY(s, dst->y)),
+                       (int32_t)floorf(dst->w * s->state.scale),
+                       (int32_t)floorf(dst->h * s->state.scale));
+    if (!my_rect_intersect(&dev, &s->state.clip, &clipped)) {
+      return MY_RET_OK;
+    }
+    mono_stride = (uint32_t)clipped.w / 8u +
+                  ((uint32_t)clipped.w % 8u != 0u ? 1u : 0u);
+    row = (uint8_t*)my_mem_alloc(s->allocator, mono_stride);
+    if (row == NULL) {
+      return MY_RET_OOM;
+    }
+    for (y = clipped.y; y < clipped.y + clipped.h; y++) {
+      int32_t x;
+      memset(row, 0, mono_stride);
+      for (x = clipped.x; x < clipped.x + clipped.w; x++) {
+        int32_t sx = (int32_t)((int64_t)(x - dev.x) * w /
+                               (dev.w > 0 ? dev.w : 1));
+        int32_t sy = (int32_t)((int64_t)(y - dev.y) * h /
+                               (dev.h > 0 ? dev.h : 1));
+        const uint8_t* pixel = rgba +
+            ((size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * (size_t)w +
+             (size_t)(sx < 0 ? 0 : sx >= w ? w - 1 : sx)) * 4u;
+        if (mono_dither_on(x, y, pixel[0], pixel[1], pixel[2], pixel[3], bg)) {
+          row[(uint32_t)(x - clipped.x) / 8u] |=
+              (uint8_t)(0x80u >> ((uint32_t)(x - clipped.x) % 8u));
+        }
+      }
+      ret = my_lcd_draw_pixels(s->lcd, row, clipped.x, y,
+                               (uint32_t)clipped.w, 1);
+      if (ret != MY_RET_OK) {
+        break;
+      }
+    }
+    my_mem_free(s->allocator, row);
+    if (ret != MY_RET_OK) {
+      return ret;
+    }
+    my_dirty_rects_add(&s->dirty, &clipped);
+    return MY_RET_OK;
   }
   bpp = my_pixel_format_bpp(fmt) / 8u;
   dev = my_rect_init((int32_t)floorf(SOFT_SX(s, dst->x)),

@@ -46,6 +46,7 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
                                           const char* name,
                                           const char* style_class,
                                           const char* ancestor_type,
+                                          bool ancestor_direct,
                                           bool create) {
   size_t i, n = my_darray_size(theme->entries);
   const char* nm = name != NULL ? name : "";
@@ -54,7 +55,8 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
   for (i = 0; i < n; i++) {
     my_theme_entry_t* e = (my_theme_entry_t*)my_darray_get(theme->entries, i);
     if (my_str_eq(e->widget_type, type) && my_str_eq(e->name, nm) &&
-        my_str_eq(e->style_class, cl) && my_str_eq(e->ancestor_type, an)) {
+        my_str_eq(e->style_class, cl) && my_str_eq(e->ancestor_type, an) &&
+        e->ancestor_direct == ancestor_direct) {
       return e;
     }
   }
@@ -71,6 +73,7 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
     strncpy(e->name, nm, MY_THEME_NAME_LEN - 1);
     strncpy(e->style_class, cl, MY_THEME_NAME_LEN - 1);
     strncpy(e->ancestor_type, an, MY_THEME_TYPE_LEN - 1);
+    e->ancestor_direct = ancestor_direct;
     my_style_init(&e->style, theme->allocator);
     if (my_darray_push(theme->entries, e) != MY_RET_OK) {
       my_mem_free(theme->allocator, e);
@@ -80,10 +83,11 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
   }
 }
 
-my_ret_t my_theme_set_ex(my_theme_t* theme, const char* widget_type,
-                         const char* name, const char* style_class,
-                         const char* ancestor_type, my_widget_state_t state,
-                         const char* key, const my_value_t* value) {
+my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const char* ancestor_type, bool ancestor_direct,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value) {
   my_theme_entry_t* e;
   if (theme == NULL || widget_type == NULL || key == NULL || value == NULL ||
       strlen(widget_type) >= MY_THEME_TYPE_LEN ||
@@ -94,11 +98,19 @@ my_ret_t my_theme_set_ex(my_theme_t* theme, const char* widget_type,
     return MY_RET_INVALID_PARAMS;
   }
   e = theme_find_entry(theme, widget_type, name, style_class, ancestor_type,
-                       true);
+                       ancestor_direct, true);
   if (e == NULL) {
     return MY_RET_OOM;
   }
   return my_style_set(&e->style, state, key, value);
+}
+
+my_ret_t my_theme_set_ex(my_theme_t* theme, const char* widget_type,
+                         const char* name, const char* style_class,
+                         const char* ancestor_type, my_widget_state_t state,
+                         const char* key, const my_value_t* value) {
+  return my_theme_set_ex2(theme, widget_type, name, style_class, ancestor_type,
+                          false, state, key, value);
 }
 
 my_ret_t my_theme_set(my_theme_t* theme, const char* widget_type, const char* name,
@@ -136,7 +148,7 @@ const my_value_t* my_theme_get(const my_theme_t* theme, const char* widget_type,
   }
   if (name != NULL && *name != '\0') {
     e = theme_find_entry((my_theme_t*)theme, widget_type, name, NULL, NULL,
-                         false);
+                         false, false);
     if (e != NULL) {
       v = my_style_get(&e->style, state, key);
       if (v != NULL) {
@@ -144,7 +156,8 @@ const my_value_t* my_theme_get(const my_theme_t* theme, const char* widget_type,
       }
     }
   }
-  e = theme_find_entry((my_theme_t*)theme, widget_type, "", NULL, NULL, false);
+  e = theme_find_entry((my_theme_t*)theme, widget_type, "", NULL, NULL, false,
+                       false);
   if (e != NULL) {
     v = my_style_get(&e->style, state, key);
   }
@@ -156,8 +169,13 @@ const my_value_t* my_theme_get(const my_theme_t* theme, const char* widget_type,
 /** @brief Word-boundary match of `word` in the space-separated class
  * list. */
 static bool class_word_match(const char* list, const char* word) {
-  const char* p = list;
-  size_t wl = strlen(word);
+  const char* p;
+  size_t wl;
+  if (list == NULL || word == NULL || word[0] == '\0') {
+    return false;
+  }
+  p = list;
+  wl = strlen(word);
   while (*p != '\0') {
     while (*p == ' ') {
       p++;
@@ -170,6 +188,37 @@ static bool class_word_match(const char* list, const char* word) {
     }
   }
   return false;
+}
+
+static bool class_set_match(const char* list, const char* required) {
+  const char* p = required;
+  char word[MY_THEME_NAME_LEN];
+  size_t n;
+  if (required == NULL || required[0] == '\0') {
+    return true;
+  }
+  if (list == NULL || list[0] == '\0') {
+    return false;
+  }
+  while (*p != '\0') {
+    while (*p == ' ') {
+      p++;
+    }
+    n = 0;
+    while (p[n] != '\0' && p[n] != ' ') {
+      if (n + 1 >= sizeof(word)) {
+        return false;
+      }
+      word[n] = p[n];
+      n++;
+    }
+    word[n] = '\0';
+    if (n > 0 && !class_word_match(list, word)) {
+      return false;
+    }
+    p += n;
+  }
+  return true;
 }
 
 /** @brief Entry matches at one cascade level (level 0 = id, 1 = class,
@@ -199,10 +248,11 @@ static bool entry_matches_ex(const my_theme_entry_t* e, const char* type,
     }
     while (a != NULL) {
       if (my_str_eq(a->widget_type, atype) &&
-          (aclass == NULL || (a->style_class != NULL &&
-                              class_word_match(a->style_class,
-                                                   aclass)))) {
+          (aclass == NULL || class_set_match(a->style_class, aclass))) {
         found = true;
+        break;
+      }
+      if (e->ancestor_direct) {
         break;
       }
       a = a->parent;
@@ -216,19 +266,24 @@ static bool entry_matches_ex(const my_theme_entry_t* e, const char* type,
       (type == NULL || !my_str_eq(e->widget_type, type))) {
     return false;
   }
+  if (!class_set_match(style_class, e->style_class)) {
+    return false;
+  }
   switch (level) {
     case 0: /* #id */
-      return e->name[0] != '\0' && e->style_class[0] == '\0' &&
-             name != NULL && my_str_eq(e->name, name);
+      return e->name[0] != '\0' && name != NULL && my_str_eq(e->name, name);
     case 1: /* .class (word match in the class list) */
       if (e->style_class[0] == '\0' || e->name[0] != '\0' ||
           style_class == NULL) {
         return false;
       }
-      return class_word_match(style_class, e->style_class);
-    default: /* type-wide */
+      return true;
+    case 2: /* type-wide */
       return e->name[0] == '\0' && e->style_class[0] == '\0' &&
              e->widget_type[0] != '\0' && my_str_eq(e->widget_type, type);
+    default: /* universal */
+      return e->name[0] == '\0' && e->style_class[0] == '\0' &&
+             e->widget_type[0] == '\0';
   }
 }
 
@@ -247,11 +302,11 @@ static const my_value_t* theme_cascade_ex(const my_theme_t* theme,
     return NULL;
   }
   n = my_darray_size(theme->entries);
-  for (level = 0; level < 3; level++) {
+  for (level = 0; level < 4; level++) {
     if (level == 2 && skip_type_wide) {
       continue;
     }
-    for (i = 0; i < n; i++) {
+    for (i = n; i-- > 0;) {
       const my_theme_entry_t* e =
           (const my_theme_entry_t*)my_darray_get(theme->entries, i);
       if (entry_matches_ex(e, type, name, style_class, ancestor_anchor,

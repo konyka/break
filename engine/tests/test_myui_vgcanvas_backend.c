@@ -369,6 +369,61 @@ TEST(soft_canvas_public_capabilities_apply_scale)
   my_lcd_destroy(lcd);
 }
 
+TEST(soft_mono_image_uses_ordered_dither)
+{
+  static const uint8_t image[4 * 4 * 4] = {
+      128, 128, 128, 255, 128, 128, 128, 255,
+      128, 128, 128, 255, 128, 128, 128, 255,
+      128, 128, 128, 255, 128, 128, 128, 255,
+      128, 128, 128, 255, 128, 128, 128, 255,
+  };
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 4, 4, MY_PIXEL_FORMAT_MONO);
+  my_vgcanvas_t* canvas;
+  uint8_t* pixels;
+  uint8_t nonzero = 0;
+  size_t i;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_draw_image(canvas, image, 4, 4,
+                                   &(my_rectf_t){0, 0, 4, 4}, NULL),
+            MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  ASSERT_NOT_NULL(pixels);
+  for (i = 0; i < 4; i++) {
+    if (pixels[i] != 0) {
+      nonzero++;
+    }
+  }
+  ASSERT_TRUE(nonzero > 0);
+  ASSERT_TRUE(nonzero < 4);
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(lcd_rejects_dimension_and_stride_overflow)
+{
+  uint8_t buffer[8] = {0};
+  my_lcd_t* lcd;
+
+  ASSERT_TRUE(my_lcd_mem_create(NULL, UINT32_MAX, 1,
+                                MY_PIXEL_FORMAT_MONO) == NULL);
+  ASSERT_TRUE(my_lcd_mem_create(NULL, (uint32_t)INT32_MAX + 1u, 1,
+                                MY_PIXEL_FORMAT_RGB888) == NULL);
+  ASSERT_TRUE(my_lcd_mem_create_from_buffer(
+                  NULL, 8, 1, MY_PIXEL_FORMAT_MONO, buffer, 0) == NULL);
+  ASSERT_TRUE(my_lcd_mem_create_from_buffer(
+                  NULL, (uint32_t)INT32_MAX, 1, MY_PIXEL_FORMAT_RGB888,
+                  buffer, UINT32_MAX) == NULL);
+  lcd = my_lcd_mem_create(NULL, 1, 1, MY_PIXEL_FORMAT_MONO);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_EQ(my_lcd_draw_pixels(lcd, buffer, 0, 0, UINT32_MAX, 1),
+            MY_RET_INVALID_PARAMS);
+  my_lcd_destroy(lcd);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(gles2_image_vertices_apply_canvas_scale);
     RUN_TEST(gles2_image_filter_reaches_texture_backend);
@@ -376,4 +431,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles2_resize_uses_drawable_pixels);
     RUN_TEST(gles2_glyph_cache_separates_font_identity);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);
+    RUN_TEST(soft_mono_image_uses_ordered_dither);
+    RUN_TEST(lcd_rejects_dimension_and_stride_overflow);
 TEST_MAIN_END()

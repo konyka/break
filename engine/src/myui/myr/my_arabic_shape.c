@@ -4,6 +4,7 @@
  */
 #include "myr/my_arabic_shape.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "myc/my_mem.h"
@@ -96,11 +97,18 @@ uint32_t my_arabic_form_for(uint32_t base, bool join_prev, bool join_next) {
                                      initial/medial forms */
 }
 
-size_t my_arabic_shape(uint32_t* cps, size_t len) {
+size_t my_arabic_shape_with_map(uint32_t* cps, size_t len,
+                                uint32_t* logical_start,
+                                uint32_t* logical_span) {
   uint32_t* orig;
+  uint32_t* orig_start = NULL;
+  uint32_t* orig_span = NULL;
   size_t i, n = 0;
   if (cps == NULL) {
     return 0;
+  }
+  if (len > SIZE_MAX / sizeof(uint32_t)) {
+    return len;
   }
   /* joining decisions need the ORIGINAL logical neighbours: replaced
    * presentation forms have no joining class, so work from a copy */
@@ -108,7 +116,25 @@ size_t my_arabic_shape(uint32_t* cps, size_t len) {
   if (orig == NULL) {
     return len; /* OOM: leave the text unshaped rather than mis-shaped */
   }
+  if (logical_start != NULL && logical_span != NULL) {
+    orig_start = (uint32_t*)my_mem_alloc(
+        NULL, (len > 0 ? len : 1) * sizeof(uint32_t));
+    orig_span = (uint32_t*)my_mem_alloc(
+        NULL, (len > 0 ? len : 1) * sizeof(uint32_t));
+    if (orig_start == NULL || orig_span == NULL) {
+      my_mem_free(NULL, orig_start);
+      my_mem_free(NULL, orig_span);
+      my_mem_free(NULL, orig);
+      return len;
+    }
+  }
   memcpy(orig, cps, len * sizeof(uint32_t));
+  for (i = 0; i < len; i++) {
+    if (orig_start != NULL) {
+      orig_start[i] = (uint32_t)i;
+      orig_span[i] = 1u;
+    }
+  }
 
   /* pass 1 (M12b): mandatory lam+alef ligature merge -- lam (U+0644)
    * followed by an alef variant becomes the lam-alef ligature, final
@@ -128,13 +154,22 @@ size_t my_arabic_shape(uint32_t* cps, size_t len) {
           prev_ok = joins_forward(jc); /* lam (D) always joins backward */
           break;
         }
-        cps[n++] =
-            prev_ok && lig->final_ != 0 ? lig->final_ : lig->isolated;
+        cps[n] = prev_ok && lig->final_ != 0 ? lig->final_ : lig->isolated;
+        if (orig_start != NULL) {
+          logical_start[n] = orig_start[i];
+          logical_span[n] = orig_span[i] + orig_span[i + 1];
+        }
+        n++;
         i++; /* consume the alef */
         continue;
       }
     }
-    cps[n++] = orig[i];
+    cps[n] = orig[i];
+    if (orig_start != NULL) {
+      logical_start[n] = orig_start[i];
+      logical_span[n] = orig_span[i];
+    }
+    n++;
   }
 
   /* pass 2: joining forms over the merged array (neighbour context is
@@ -170,5 +205,11 @@ size_t my_arabic_shape(uint32_t* cps, size_t len) {
     cps[i] = my_arabic_form_for(orig[i], prev_ok, next_ok);
   }
   my_mem_free(NULL, orig);
+  my_mem_free(NULL, orig_start);
+  my_mem_free(NULL, orig_span);
   return n;
+}
+
+size_t my_arabic_shape(uint32_t* cps, size_t len) {
+  return my_arabic_shape_with_map(cps, len, NULL, NULL);
 }

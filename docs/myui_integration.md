@@ -207,27 +207,35 @@ GPU 控件路径。
 ### 能力盘点与阶段计划
 
 本轮已经打通并由 TDD 锁定的能力包括：固定列 Grid 布局、文本编辑缓冲区容量倍增、
-软件/GLES/OpenGL/Vulkan/Break RHI 的 nearest/bilinear 图像过滤，以及 MVVM 的 items
-和 condition 绑定。布局参数解析同时拒绝负数、非有限数和超出 `int32_t`/百分比范围的
-输入；Grid 的列数、间距、临时容量和坐标计算也经过溢出保护。
+软件/GLES/OpenGL/Vulkan/Break RHI 的 nearest/bilinear 图像过滤、Mono 目标的 4x4
+ordered dithering、MVVM 的 items 和 condition 绑定，以及文本布局的 UBA L4 镜像、
+Arabic joining 和 mandatory Lam-Alef 覆盖映射。布局参数解析同时拒绝负数、非有限数和
+超出 `int32_t`/百分比范围的输入；Grid、framebuffer stride、UTF-32/UTF-8 缓冲区和文本
+逻辑/视觉索引的乘法与边界均经过溢出保护。CSS 已支持 universal selector、多 class
+selector 和 typed direct-child selector；结构错误会拒绝加载，不会静默生成错误主题。
 
 仍未实现或明确保留为后续阶段的能力如下：
 
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
 | GPU AA | Vulkan 与 Break RHI 的 `set_antialias_level` 仍返回 `MY_RET_NOT_SUPPORTED` | 先扩展 RHI/RenderPass 的样本数能力查询，再以设备能力为准创建 MSAA target；失败时保持旧 target，不静默改变质量 |
-| 复杂 RTL | 混合段落的复杂重排、UBA L4 镜像和完整 Arabic ligature shaping 尚未达到跨后端一致契约 | 在文本布局层增加段落级缓存和 shaping run，先用 golden 字形/视觉顺序测试，再接入所有 canvas |
+| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；完整 OpenType GSUB shaping、多段落 rebreaking 仍未实现 | 增加 shaping run、段落级缓存和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入所有 canvas |
 | 编辑器 | 行号、代码折叠、增量语法高亮等高级编辑器能力未实现 | 单独的 virtualized line model，限制单帧重排预算，避免把大文档编辑路径耦合到 widget 绘制 |
-| 图像 | Mono dithering 未实现 | 仅在明确的 1/2/4-bit 输出目标启用有界误差扩散；默认保持当前快速 RGBA 路径 |
+| 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |
-| CSS/XML | 部分 CSS selector/at-rule 仍未支持，解析器不应把未知语法伪装成成功 | 建立 capability registry 和严格诊断模式；未知规则在加载期报告位置，运行期跳过且不破坏已构建树 |
+| CSS/XML | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator、完整 specificity 和 at-rule 仍未实现；未知 at-rule 会跳过并告警 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 
 实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、
 验证、一次提交”的状态转换，失败保留旧资源。缓存键必须包含影响结果的状态，输入长度、
 索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
+
+本轮定向 TDD 门禁为：`test_myui_css`（9/9）、`test_myui_text_layout`（3/3）和
+`test_myui_vgcanvas_backend`（8/8）。其中 CSS 用例覆盖 universal、多 class、direct-child
+和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
+backend 用例覆盖缩放、过滤、字体缓存隔离、Mono dither 以及 framebuffer 尺寸/stride 溢出。
 
 Floating widget 的绘制与命中语义也分离：`floating=true` 且没有 `on_event` 的普通控件
 是 paint-only overlay，不会吞掉其下方控件的 pointer hit-test；带 `on_event` 的浮层仍按
@@ -412,5 +420,8 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
 - 文本队列到达预算时采用丢弃而不是阻塞或无限增长；如果应用需要可靠的编辑协议，应在
   上层实现 backpressure/重试，而不是直接绕过 `PlatformTextQueue`。
 - `my_vgcanvas` 的 AA 仍是可选能力而非最低公分母语义；调用者必须处理
-  `MY_RET_NOT_SUPPORTED`。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、Vulkan
-  和 Break RHI 的共同能力，但复杂文本 shaping、Mono dithering、局部 present 等仍按阶段计划处理。
+  `MY_RET_NOT_SUPPORTED`。GLES/OpenGL 的 MSAA 开关依赖已创建 surface 的样本能力；Vulkan
+  内部可选择 MSAA render target，但公共 `set_antialias_level()` 仍不承诺动态协商；Break RHI
+  同样明确返回 `MY_RET_NOT_SUPPORTED`。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、
+  Vulkan 和 Break RHI 的共同能力；Arabic 基础 shaping、L4 mirror 和 Mono ordered dither
+  已落地，完整 OpenType shaping、复杂多段落文本和局部 present 仍按阶段计划处理。

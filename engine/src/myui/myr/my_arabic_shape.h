@@ -6,8 +6,9 @@
  * rules itself: each Arabic letter is replaced by its isolated / final /
  * initial / medial presentation form (Arabic Presentation Forms-A/B)
  * based on the joining class of its logical neighbours (transparent
- * marks are skipped). The mapping is 1:1 and done in place. Lam-Alef
- * ligatures are NOT formed (TODO; fonts normally ligate via GSUB).
+ * marks are skipped). Lam-Alef ligatures are formed in place when the
+ * mandatory pair is present. Full OpenType GSUB remains outside this
+ * module.
  * Data: my_arabic_shape_data.h (generated from the UCD).
  */
 #ifndef MY_ARABIC_SHAPE_H
@@ -27,8 +28,16 @@ my_arabic_join_t my_arabic_join_class(uint32_t cp);
  * itself when no such form exists. */
 uint32_t my_arabic_form_for(uint32_t base, bool join_prev, bool join_next);
 
-/** @brief Shape a logical-order codepoint array in place (1:1 mapping).
- * Returns len. */
+/** @brief Shape a logical-order codepoint array in place. Returns the visual
+ * item count; Lam-Alef may compact two source codepoints into one item. */
 size_t my_arabic_shape(uint32_t* cps, size_t len);
+
+/** @brief Shape in place and preserve source coverage for every output item.
+ * `logical_start` and `logical_span` are optional arrays with at least `len`
+ * entries. On success, each output item covers the source range
+ * [logical_start[i], logical_start[i] + logical_span[i]). */
+size_t my_arabic_shape_with_map(uint32_t* cps, size_t len,
+                                uint32_t* logical_start,
+                                uint32_t* logical_span);
 
 #endif /* MY_ARABIC_SHAPE_H */

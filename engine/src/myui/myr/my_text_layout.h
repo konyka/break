@@ -1,13 +1,14 @@
 /**
  * @file my_text_layout.h
  * @brief Text layout: logical-order UTF-8 -> shaped + visually reordered
- * codepoints (M11a).
+ * codepoints.
  *
  * Pipeline: UTF-8 decode -> pure-LTR fast path (no RTL/Arabic codepoint:
  * identity, SheenBidi untouched) -> Arabic joining (my_arabic_shape,
- * presentation forms) -> SheenBidi paragraph direction + UBA reorder.
- * The result is a visual-order codepoint array plus a visual->logical
- * index map and a re-encoded visual UTF-8 string (for font-vtable
+ * presentation forms, including mandatory Lam-Alef ligatures) -> SheenBidi
+ * paragraph direction + UBA reorder and UBA L4 mirroring.
+ * The result is a visual-order codepoint array plus visual coverage maps
+ * and a re-encoded visual UTF-8 string (for font-vtable
  * measure, which is order-insensitive but shaping-sensitive).
  *
  * Results are cached in a process-global LRU (64 entries, key = text;
@@ -17,8 +18,11 @@
  * Built with MYUI_BIDI=OFF: shaping/reorder compile out, process always
  * returns the identity layout (still cached).
  *
- * Boundaries: single paragraph (draw_text strings); mirroring (UBA rule
- * L4) not applied (TODO); editing widgets' RTL cursor mapping is a TODO.
+ * Boundaries: single paragraph (draw_text strings). `len` is the visual
+ * item count and `logical_len` is the original decoded codepoint count.
+ * A shaped visual item can cover multiple logical codepoints (Lam-Alef).
+ * Full OpenType GSUB Arabic shaping and multi-paragraph rebreaking remain
+ * outside this layout contract.
  */
 #ifndef MY_TEXT_LAYOUT_H
 #define MY_TEXT_LAYOUT_H
@@ -33,10 +37,12 @@ typedef struct my_text_layout_t {
   const my_allocator_t* allocator;
   uint32_t* visual_cps;        /**< len items: shaped + reordered */
   uint32_t* visual_to_logical; /**< len items: visual i -> logical index */
-  uint32_t* logical_to_visual; /**< len items: logical i -> visual index */
+  uint32_t* visual_logical_span; /**< len items: source codepoints covered */
+  uint32_t* logical_to_visual; /**< logical_len items: logical i -> visual index */
   uint8_t* visual_rtl;         /**< len items: visual cp's run is RTL */
   char* visual_utf8;           /**< visual_cps re-encoded as UTF-8 */
-  size_t len;
+  size_t len;                  /**< visual item count */
+  size_t logical_len;          /**< original logical codepoint count */
   bool has_rtl;   /**< any RTL-level run (or RTL base) */
   bool rtl_base;  /**< paragraph base direction is RTL (M13b) */
 } my_text_layout_t;

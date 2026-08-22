@@ -9,17 +9,15 @@
  *  - Selector items: `type` / `.class` / `#id` / `type.class` /
  *    `type#id`; optional pseudo `:hover`/`:pressed`/`:disabled` (none =
  *    all four states); `type type2...` descendant is SIMPLIFIED to
- *    "any ancestor of that type" (no full path); comma groups. NOT
- *    supported: `A > B` child combinator, `.class#id` combined
- *    class+id without type, multiple classes on one selector,
- *    pseudo other than the three above, `*`.
+ *    "any ancestor of that type" (no full path); comma groups. Child
+ *    combinators are supported for typed parents; multiple classes are
+ *    stored as a required class set. Pseudos other than the three above are
+ *    rejected.
  *  - Declaration values: colors `#rgb`/`#rrggbb`/`#rrggbbaa`/
  *    `rgb(r,g,b)`/`rgba(r,g,b,a)` (alpha 0-1 float or 0-255 int), named
- * declaration values: colors `#rgb`/`#rrggbb`/`#rrggbbaa`/
- *    `rgb(r,g,b)`/`rgba(r,g,b,a)` (alpha 0-1 float or 0-255 int), named
  *    colors (red green blue white black gray/grey orange yellow purple
- *    pink cyan transparent), sizes `Npx`/integers, floats, quoted
- *    strings; other identifiers pass through as strings.
+ *    pink cyan transparent), sizes `Npx`/integers, floats, quoted strings;
+ *    other identifiers pass through as strings.
  *  - Cascade: a pseudo rule is more specific than a bare rule at any
  *    source position (bare rules write only the NORMAL slot and the
  *    state->normal fallback covers the rest — so `button:hover` always
@@ -50,9 +48,10 @@ typedef struct my_css_error_t {
 typedef struct my_css_selector_t {
   char widget_type[MY_CSS_TYPE_LEN]; /**< "" = any type */
   char id[MY_CSS_NAME_LEN];          /**< "" = none (#id == widget name) */
-  char style_class[MY_CSS_NAME_LEN]; /**< "" = none (one class word) */
+  char style_class[MY_CSS_NAME_LEN]; /**< space-separated required classes */
   char ancestor_type[MY_CSS_TYPE_LEN]; /**< "" = none (descendant: any
                                         * ancestor of this type) */
+  bool ancestor_direct; /**< direct-child combinator (`A > B`) */
   int32_t state; /**< -1 = all states; else my_widget_state_t */
 } my_css_selector_t;
 
