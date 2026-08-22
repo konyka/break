@@ -5,6 +5,9 @@
  */
 #include "myui/my_css.h"
 
+#include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -102,6 +105,69 @@ static bool c_ident(css_p_t* p, char* out, size_t cap) {
   }
   out[n] = '\0';
   return n > 0;
+}
+
+static bool css_number(css_p_t* p, double* out, bool* integral) {
+  size_t start = p->pos;
+  size_t n;
+  size_t digits_before = 0;
+  size_t digits_after = 0;
+  size_t exponent_digits = 0;
+  char token[64];
+  char* end;
+  int c;
+
+  c = c_peek(p);
+  if (c == '+' || c == '-') {
+    c_next(p);
+  }
+  while ((c = c_peek(p)) >= '0' && c <= '9') {
+    digits_before++;
+    c_next(p);
+  }
+  if (c_peek(p) == '.') {
+    c_next(p);
+    while ((c = c_peek(p)) >= '0' && c <= '9') {
+      digits_after++;
+      c_next(p);
+    }
+  }
+  if (digits_before == 0 && digits_after == 0) {
+    p->pos = start;
+    return false;
+  }
+  if (c_peek(p) == 'e' || c_peek(p) == 'E') {
+    c_next(p);
+    c = c_peek(p);
+    if (c == '+' || c == '-') {
+      c_next(p);
+    }
+    while ((c = c_peek(p)) >= '0' && c <= '9') {
+      exponent_digits++;
+      c_next(p);
+    }
+    if (exponent_digits == 0) {
+      p->pos = start;
+      return false;
+    }
+  }
+  n = p->pos - start;
+  if (n >= sizeof(token)) {
+    p->pos = start;
+    return false;
+  }
+  memcpy(token, p->s + start, n);
+  token[n] = '\0';
+  errno = 0;
+  *out = strtod(token, &end);
+  if (end == token || *end != '\0' || errno == ERANGE || !isfinite(*out)) {
+    p->pos = start;
+    return false;
+  }
+  if (integral != NULL) {
+    *integral = digits_after == 0 && exponent_digits == 0;
+  }
+  return true;
 }
 
 /* ---------------- selectors ---------------- */
@@ -283,29 +349,18 @@ static bool css_func_color(css_p_t* p, const char* fn, uint32_t* out) {
   bool has_alpha;
   double comp[4] = {0, 0, 0, 1.0};
   int n = 0;
-  size_t k;
   has_alpha = my_str_eq(fn, "rgba");
   if (c_peek(p) != '(') {
     return false;
   }
   c_next(p);
   for (n = 0; n < (has_alpha ? 4 : 3); n++) {
-    char num[24];
-    size_t nl = 0;
+    bool integral;
     c_ws(p);
-    while (c_peek(p) >= 0 &&
-           ((c_peek(p) >= '0' && c_peek(p) <= '9') || c_peek(p) == '.' ||
-            c_peek(p) == '+' || c_peek(p) == '-')) {
-      if (nl + 1 >= sizeof(num)) {
-        return false;
-      }
-      num[nl++] = (char)c_next(p);
-    }
-    num[nl] = '\0';
-    if (nl == 0) {
+    if (!css_number(p, &comp[n], &integral)) {
       return false;
     }
-    comp[n] = strtod(num, NULL);
+    (void)integral;
     c_ws(p);
     if (n + 1 < (has_alpha ? 4 : 3)) {
       if (c_peek(p) != ',') {
@@ -325,15 +380,14 @@ static bool css_func_color(css_p_t* p, const char* fn, uint32_t* out) {
     uint32_t a;
     if (!has_alpha) {
       a = 255;
+    } else if (comp[3] <= 0.0) {
+      a = 0;
     } else if (comp[3] <= 1.0) {
       a = (uint32_t)(comp[3] * 255.0 + 0.5); /* 0-1 float */
     } else {
       a = comp[3] > 255 ? 255 : (uint32_t)comp[3]; /* 0-255 */
     }
     *out = (r << 24) | (g << 16) | (b << 8) | a;
-  }
-  for (k = 0; k < 4; k++) {
-    (void)k;
   }
   return true;
 }
@@ -376,29 +430,18 @@ static bool css_value(css_p_t* p, my_value_t* out) {
   }
   if ((c >= '0' && c <= '9') || c == '-' || c == '+') {
     /* number [px] */
-    size_t start = p->pos;
-    bool is_float = false;
-    while (c_peek(p) >= 0 &&
-           ((c_peek(p) >= '0' && c_peek(p) <= '9') || c_peek(p) == '.' ||
-            c_peek(p) == '+' || c_peek(p) == '-')) {
-      if (c_peek(p) == '.') {
-        is_float = true;
-      }
-      c_next(p);
+    double number;
+    bool integral;
+    if (!css_number(p, &number, &integral)) {
+      return false;
     }
-    {
-      char num[24];
-      size_t n = p->pos - start;
-      if (n == 0 || n >= sizeof(num)) {
+    if (integral) {
+      if (number < (double)INT32_MIN || number > (double)INT32_MAX) {
         return false;
       }
-      memcpy(num, p->s + start, n);
-      num[n] = '\0';
-      if (is_float) {
-        my_value_set_double(out, strtod(num, NULL));
-        return true;
-      }
-      my_value_set_int32(out, (int32_t)strtol(num, NULL, 10));
+      my_value_set_int32(out, (int32_t)number);
+    } else {
+      my_value_set_double(out, number);
     }
     /* optional px unit */
     if (c_peek(p) == 'p' && p->pos + 1 < p->len && p->s[p->pos + 1] == 'x') {
@@ -834,22 +877,43 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
     const my_css_rule_t* rule = my_css_rule(sheet, ri);
     for (si = 0; si < my_css_selector_count(rule); si++) {
       const my_css_selector_t* sel = my_css_selector(rule, si);
+      int32_t specificity = 0;
+      const char* p;
+      if (sel->id[0] != '\0') {
+        specificity += 10000;
+      }
+      for (p = sel->style_class; *p != '\0'; p++) {
+        if (*p != ' ' && (p == sel->style_class || p[-1] == ' ')) {
+          specificity += 100;
+        }
+      }
+      if (sel->widget_type[0] != '\0') {
+        specificity += 1;
+      }
+      if (sel->ancestor_type[0] != '\0') {
+        specificity += 1;
+        for (p = sel->ancestor_type; *p != '\0'; p++) {
+          if (*p == '.') {
+            specificity += 100;
+          }
+        }
+      }
       for (di = 0; di < my_css_decl_count(rule); di++) {
         const my_css_decl_t* d = my_css_decl(rule, di);
         if (sel->state >= 0) {
-          ret = my_theme_set_ex2(theme, sel->widget_type, sel->id,
+          ret = my_theme_set_ex3(theme, sel->widget_type, sel->id,
                                  sel->style_class, sel->ancestor_type,
                                  sel->ancestor_direct,
                                  (my_widget_state_t)sel->state, d->key,
-                                 &d->value);
+                                 &d->value, specificity + 100);
         } else {
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
            * always win regardless of source order (CSS specificity) */
-          ret = my_theme_set_ex2(theme, sel->widget_type, sel->id,
+          ret = my_theme_set_ex3(theme, sel->widget_type, sel->id,
                                  sel->style_class, sel->ancestor_type,
                                  sel->ancestor_direct, MY_STATE_NORMAL,
-                                 d->key, &d->value);
+                                 d->key, &d->value, specificity);
         }
         if (ret != MY_RET_OK) {
           break;

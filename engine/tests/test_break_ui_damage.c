@@ -114,6 +114,50 @@ static const my_widget_vtable_t s_remove_sibling_on_paint_vtable = {
 static const my_widget_vtable_t s_count_child_paint_vtable = {
     count_child_paint, NULL, NULL, NULL};
 
+TEST(damage_maps_to_conservative_drawable_scissor)
+{
+  my_dirty_rects_t damage;
+  break_ui_damage_scissor_t scissor;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){10, 20, 30, 25}),
+            MY_RET_OK);
+  ASSERT_TRUE(break_ui_damage_to_drawable_scissor(&damage, 100, 100, 301,
+                                                   201, &scissor));
+  ASSERT_EQ(scissor.x, 30u);
+  ASSERT_EQ(scissor.y, 40u);
+  ASSERT_EQ(scissor.w, 91u);
+  ASSERT_EQ(scissor.h, 51u);
+  my_dirty_rects_clear(&damage);
+}
+
+TEST(damage_scissor_clips_outside_logical_surface)
+{
+  my_dirty_rects_t damage;
+  break_ui_damage_scissor_t scissor;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){-20, -10, 40, 30}),
+            MY_RET_OK);
+  ASSERT_TRUE(break_ui_damage_to_drawable_scissor(&damage, 100, 80, 200, 160,
+                                                   &scissor));
+  ASSERT_EQ(scissor.x, 0u);
+  ASSERT_EQ(scissor.y, 0u);
+  ASSERT_EQ(scissor.w, 40u);
+  ASSERT_EQ(scissor.h, 40u);
+  my_dirty_rects_clear(&damage);
+}
+
+TEST(empty_damage_has_no_drawable_scissor)
+{
+  my_dirty_rects_t damage;
+  break_ui_damage_scissor_t scissor;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_FALSE(break_ui_damage_to_drawable_scissor(&damage, 100, 100, 200,
+                                                   200, &scissor));
+}
+
 TEST(collects_damage_from_all_windows)
 {
   my_pal_t *pal = my_pal_dummy_create(NULL);
@@ -463,6 +507,8 @@ TEST(paint_child_snapshot_handles_tree_mutation)
             MY_RET_OK);
   ASSERT_EQ(my_widget_set_user_data(first, &first_ctx), MY_RET_OK);
   ASSERT_EQ(my_widget_set_user_data(last, &last_ctx), MY_RET_OK);
+  /* Keep an observation reference because painting removes this child. */
+  my_widget_ref(removed);
   ASSERT_EQ(my_widget_add_child((my_widget_t *)root, first), MY_RET_OK);
   ASSERT_EQ(my_widget_add_child((my_widget_t *)root, removed), MY_RET_OK);
   ASSERT_EQ(my_widget_add_child((my_widget_t *)root, last), MY_RET_OK);
@@ -475,6 +521,7 @@ TEST(paint_child_snapshot_handles_tree_mutation)
   ASSERT_EQ(first_ctx.paint_count, 1);
   ASSERT_EQ(last_ctx.paint_count, 1);
   ASSERT_TRUE(removed->parent == NULL);
+  my_widget_unref(removed);
 
   my_object_unref((my_object_t *)root);
   my_pal_destroy(pal);
@@ -492,4 +539,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(window_record_failure_keeps_dirty);
     RUN_TEST(restoring_dirty_snapshot_preserves_new_invalidation);
     RUN_TEST(paint_child_snapshot_handles_tree_mutation);
+    RUN_TEST(damage_maps_to_conservative_drawable_scissor);
+    RUN_TEST(damage_scissor_clips_outside_logical_surface);
+    RUN_TEST(empty_damage_has_no_drawable_scissor);
 TEST_MAIN_END()

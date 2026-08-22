@@ -83,12 +83,66 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
   }
 }
 
-my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
+static int32_t class_count(const char* classes) {
+  int32_t count = 0;
+  bool in_word = false;
+  const char* p = classes != NULL ? classes : "";
+  while (*p != '\0') {
+    if (*p == ' ') {
+      in_word = false;
+    } else if (!in_word) {
+      count++;
+      in_word = true;
+    }
+    p++;
+  }
+  return count;
+}
+
+static int32_t selector_specificity(const char* widget_type, const char* name,
+                                    const char* style_class,
+                                    const char* ancestor_type) {
+  int32_t score = 0;
+  const char* dot;
+  if (name != NULL && name[0] != '\0') {
+    score += 10000;
+  }
+  score += class_count(style_class) * 100;
+  if (widget_type != NULL && widget_type[0] != '\0') {
+    score += 1;
+  }
+  if (ancestor_type != NULL && ancestor_type[0] != '\0') {
+    score += 1;
+    dot = strchr(ancestor_type, '.');
+    if (dot != NULL) {
+      score += class_count(dot + 1) * 100;
+    }
+  }
+  return score;
+}
+
+static size_t theme_style_prop_index(const my_style_t* style,
+                                     my_widget_state_t state,
+                                     const char* key) {
+  size_t i;
+  if (style == NULL || key == NULL || state >= MY_STATE_COUNT) {
+    return MY_STYLE_MAX_PROPS;
+  }
+  for (i = 0; i < style->counts[state]; i++) {
+    if (strncmp(style->props[state][i].key, key, MY_STYLE_KEY_LEN) == 0) {
+      return i;
+    }
+  }
+  return MY_STYLE_MAX_PROPS;
+}
+
+my_ret_t my_theme_set_ex3(my_theme_t* theme, const char* widget_type,
                           const char* name, const char* style_class,
                           const char* ancestor_type, bool ancestor_direct,
                           my_widget_state_t state, const char* key,
-                          const my_value_t* value) {
+                          const my_value_t* value, int32_t specificity) {
   my_theme_entry_t* e;
+  my_ret_t ret;
   if (theme == NULL || widget_type == NULL || key == NULL || value == NULL ||
       strlen(widget_type) >= MY_THEME_TYPE_LEN ||
       (name != NULL && strlen(name) >= MY_THEME_NAME_LEN) ||
@@ -102,7 +156,29 @@ my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
   if (e == NULL) {
     return MY_RET_OOM;
   }
-  return my_style_set(&e->style, state, key, value);
+  ret = my_style_set(&e->style, state, key, value);
+  if (ret != MY_RET_OK) {
+    return ret;
+  }
+  {
+    size_t index = theme_style_prop_index(&e->style, state, key);
+    if (index >= MY_STYLE_MAX_PROPS) {
+      return MY_RET_FAIL;
+    }
+    e->specificity[state][index] = specificity;
+  }
+  return MY_RET_OK;
+}
+
+my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const char* ancestor_type, bool ancestor_direct,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value) {
+  return my_theme_set_ex3(
+      theme, widget_type, name, style_class, ancestor_type, ancestor_direct,
+      state, key, value,
+      selector_specificity(widget_type, name, style_class, ancestor_type));
 }
 
 my_ret_t my_theme_set_ex(my_theme_t* theme, const char* widget_type,
@@ -287,6 +363,43 @@ static bool entry_matches_ex(const my_theme_entry_t* e, const char* type,
   }
 }
 
+static int32_t theme_property_specificity(const my_theme_entry_t* entry,
+                                          my_widget_state_t state,
+                                          const char* key) {
+  my_widget_state_t value_state = state;
+  size_t i;
+
+  if (entry == NULL || key == NULL || state >= MY_STATE_COUNT) {
+    return INT32_MIN;
+  }
+  for (;;) {
+    for (i = 0; i < entry->style.counts[value_state]; i++) {
+      if (strncmp(entry->style.props[value_state][i].key, key,
+                  MY_STYLE_KEY_LEN) == 0) {
+        return entry->specificity[value_state][i];
+      }
+    }
+    if (value_state == MY_STATE_NORMAL) {
+      break;
+    }
+    value_state = MY_STATE_NORMAL;
+  }
+  return INT32_MIN;
+}
+
+static int entry_cascade_level(const my_theme_entry_t* entry) {
+  if (entry->name[0] != '\0') {
+    return 0;
+  }
+  if (entry->style_class[0] != '\0') {
+    return 1;
+  }
+  if (entry->widget_type[0] != '\0') {
+    return 2;
+  }
+  return 3;
+}
+
 /** @brief Shared cascade scan. skip_type_wide excludes the level-2
  * (bare type) match — see my_theme_get_part. */
 static const my_value_t* theme_cascade_ex(const my_theme_t* theme,
@@ -297,28 +410,30 @@ static const my_value_t* theme_cascade_ex(const my_theme_t* theme,
                                           const char* key,
                                           bool skip_type_wide) {
   size_t i, n;
-  int level;
+  const my_value_t* best = NULL;
+  int32_t best_specificity = INT32_MIN;
   if (theme == NULL || key == NULL) {
     return NULL;
   }
   n = my_darray_size(theme->entries);
-  for (level = 0; level < 4; level++) {
-    if (level == 2 && skip_type_wide) {
+  for (i = n; i-- > 0;) {
+    const my_theme_entry_t* e =
+        (const my_theme_entry_t*)my_darray_get(theme->entries, i);
+    int level = entry_cascade_level(e);
+    if (skip_type_wide && level == 2) {
       continue;
     }
-    for (i = n; i-- > 0;) {
-      const my_theme_entry_t* e =
-          (const my_theme_entry_t*)my_darray_get(theme->entries, i);
-      if (entry_matches_ex(e, type, name, style_class, ancestor_anchor,
-                           level)) {
-        const my_value_t* v = my_style_get(&e->style, state, key);
-        if (v != NULL) {
-          return v;
-        }
+    if (entry_matches_ex(e, type, name, style_class, ancestor_anchor, level)) {
+      const my_value_t* value = my_style_get(&e->style, state, key);
+      int32_t specificity = theme_property_specificity(e, state, key);
+      if (value != NULL &&
+          (specificity > best_specificity || best == NULL)) {
+        best = value;
+        best_specificity = specificity;
       }
     }
   }
-  return NULL;
+  return best;
 }
 
 /** @brief Shared cascade scan. */

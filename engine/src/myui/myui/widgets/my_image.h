@@ -4,10 +4,10 @@
  * by path (LRU, default 8 entries), scales by mode and blits to the lcd.
  *
  * Scale modes: NONE (natural size, top-left), CENTER (natural size,
- * centered), FIT (aspect-preserving fit), FILL (stretch). Scaling is
- * nearest-neighbor (bilinear: TODO). Transparency is composited over the
- * widget's themed bg_color. Without MYUI_IMAGE_STB the widget paints a
- * placeholder box.
+ * centered), FIT (aspect-preserving fit), FILL (stretch). Scaling defaults to
+ * bilinear and can be changed to nearest through the public filter API.
+ * Transparency is composited over the widget's themed bg_color. Without
+ * MYUI_IMAGE_STB the widget paints a placeholder box.
  */
 #ifndef MY_IMAGE_H
 #define MY_IMAGE_H

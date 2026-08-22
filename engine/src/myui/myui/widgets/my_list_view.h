@@ -5,7 +5,8 @@
  *
  * Data comes from a my_list_adapter_t (create_row/bind_row/get_count).
  * The MVVM items binding installs an adapter automatically when its
- * target is a list_view. Fixed row height (variable heights: TODO).
+ * target is a list_view. Rows may use a lazy prefix-sum height index when
+ * the adapter supplies row_height(); fixed-height mode remains the fast path.
  * Scroll: POINTER_WHEEL, drag (grab), right-side scrollbar indicator.
  */
 #ifndef MY_LIST_VIEW_H

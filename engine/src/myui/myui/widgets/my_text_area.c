@@ -174,32 +174,7 @@ static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys, size_t start,
 /** @brief Legality of a break BEFORE index i (between prev and cur),
  * simplified UAX#14 classes (M12d): */
 static bool ta_break_ok_before(uint32_t prev_cp, uint32_t cur_cp) {
-  my_line_break_class_t p = my_line_break_class(prev_cp);
-  my_line_break_class_t c = my_line_break_class(cur_cp);
-  if (c == MY_LB_SP) {
-    return true; /* the space is consumed at the break */
-  }
-  if (c == MY_LB_NS) {
-    return false; /* no visual line starts with closing punctuation --
-                   * checked before "after space" (a space followed by NS
-                   * must not push NS to a line start) */
-  }
-  if (p == MY_LB_SP) {
-    return true; /* the space was already consumed by the previous line */
-  }
-  if (p == MY_LB_HY) {
-    return true; /* hyphen: break after */
-  }
-  if (c == MY_LB_HY) {
-    return false; /* hyphen joins the next char */
-  }
-  if (p == MY_LB_OP) {
-    return false; /* no visual line ends with an open bracket */
-  }
-  if (p == MY_LB_AL && c == MY_LB_AL) {
-    return false; /* word run continues */
-  }
-  return true;
+  return my_line_break_allowed(prev_cp, cur_cp);
 }
 
 /** @brief Rebuild visual lines for physical rows [from, end). */

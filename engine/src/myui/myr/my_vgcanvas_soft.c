@@ -240,7 +240,7 @@ static size_t collect_intersections(my_vgcanvas_soft_t* s,
                                     const path_point_t* pts,
                                     const contour_t* contours,
                                     size_t ncontours, float yc, float* xs,
-                                    size_t cap) {
+                                    size_t cap, bool close_open) {
   size_t nxs = 0, ci, i;
   for (ci = 0; ci < ncontours; ci++) {
     const contour_t* c = &contours[ci];
@@ -248,7 +248,7 @@ static size_t collect_intersections(my_vgcanvas_soft_t* s,
       size_t j = i + 1;
       float x0, y0, x1, y1;
       if (j == c->count) {
-        if (!c->closed) {
+        if (!c->closed && !close_open) {
           break;
         }
         j = 0;
@@ -288,7 +288,7 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
     /* hard edges: pixel-center rule */
     for (y = clip->y; y < clip->y + clip->h; y++) {
       size_t nxs = collect_intersections(s, pts, contours, ncontours,
-                                         (float)y + 0.5f, xs, xs_cap);
+                                         (float)y + 0.5f, xs, xs_cap, true);
       size_t k;
       qsort(xs, nxs, sizeof(float), float_cmp);
       for (k = 0; k + 1 < nxs; k += 2) {
@@ -338,7 +338,8 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       row_max = (float)clip->x;
       for (hh = 0; hh < halves; hh++) {
         size_t nxs = collect_intersections(s, pts, contours, ncontours,
-                                           (float)y + offs[hh], xs, xs_cap);
+                                           (float)y + offs[hh], xs, xs_cap,
+                                           true);
         if (nxs > 0) {
           qsort(xs, nxs, sizeof(float), float_cmp);
           if (xs[0] < row_min) {
@@ -366,7 +367,8 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       memset(rb.cov, 0, (size_t)bw);
       for (hh = 0; hh < halves; hh++) {
         size_t nxs = collect_intersections(s, pts, contours, ncontours,
-                                           (float)y + offs[hh], xs, xs_cap);
+                                           (float)y + offs[hh], xs, xs_cap,
+                                           true);
         size_t k;
         qsort(xs, nxs, sizeof(float), float_cmp);
         for (k = 0; k + 1 < nxs; k += 2) {
@@ -854,7 +856,8 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
       for (i = 0; i < nq; i++) {
         float xs[4];
         size_t nxs = collect_intersections(s, pts, &cs[i], 1,
-                                           (float)y + offs[hh], xs, 4);
+                                           (float)y + offs[hh], xs, 4,
+                                           false);
         if (nxs > 1) {
           size_t k;
           qsort(xs, nxs, sizeof(float), float_cmp);

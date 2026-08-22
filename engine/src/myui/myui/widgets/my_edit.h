@@ -8,7 +8,8 @@
  * (Shift+arrows, Ctrl+A), Backspace/Delete, horizontal scrolling.
  * Emits "changed" (event data = new text) and "activate" (Enter).
  * Focused state uses the style's HOVER slot for the border (documented
- * in docs/architecture.md). Cursor blinking: TODO (steady cursor).
+ * in docs/architecture.md). Focused cursors blink through the PAL timer
+ * callback; the timer is cancelled when focus or the widget ends.
  */
 #ifndef MY_EDIT_H
 #define MY_EDIT_H

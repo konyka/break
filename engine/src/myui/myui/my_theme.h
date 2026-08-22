@@ -28,6 +28,8 @@ typedef struct my_theme_entry_t {
   char ancestor_type[MY_THEME_TYPE_LEN]; /**< descendant selector: needs an
                                           * ancestor of this type; empty = none */
   bool ancestor_direct; /**< direct-child selector instead of any ancestor */
+  int32_t specificity[MY_STATE_COUNT][MY_STYLE_MAX_PROPS];
+  /**< CSS specificity parallel to style.props. */
   my_style_t style;
 } my_theme_entry_t;
 
@@ -81,6 +83,13 @@ my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
                           const char* ancestor_type, bool ancestor_direct,
                           my_widget_state_t state, const char* key,
                           const my_value_t* value);
+
+/** @brief Extended write with an explicit CSS specificity score. */
+my_ret_t my_theme_set_ex3(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const char* ancestor_type, bool ancestor_direct,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity);
 
 struct my_widget_t;
 

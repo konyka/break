@@ -18,12 +18,10 @@
  *    colors (red green blue white black gray/grey orange yellow purple
  *    pink cyan transparent), sizes `Npx`/integers, floats, quoted strings;
  *    other identifiers pass through as strings.
- *  - Cascade: a pseudo rule is more specific than a bare rule at any
- *    source position (bare rules write only the NORMAL slot and the
- *    state->normal fallback covers the rest — so `button:hover` always
- *    beats `button` for hover, matching real CSS specificity);
- *    same-specificity later writes override earlier ones (source
- *    order).
+ *  - Cascade: selector specificity is compared before source order. A bare
+ *    rule writes only the NORMAL slot; state lookups use that slot only when
+ *    the requested state has no property, and retain the normal rule's
+ *    specificity. Same-specificity later writes override earlier ones.
  *  - A malformed declaration is SKIPPED with a warning (lenient mode);
  *    a malformed selector/rule structure is a hard error with line/col.
  */
@@ -93,8 +91,9 @@ const my_css_decl_t* my_css_decl(const my_css_rule_t* rule, size_t index);
 
 /**
  * @brief Load a CSS sheet into the theme. Selectors map to extended
- * theme entries (type/id/class/ancestor,state); no-pseudo writes all
- * four states. Key aliases: background-color→bg_color, color→fg_color,
+ * theme entries (type/id/class/ancestor,state); no-pseudo writes the
+ * NORMAL slot and relies on state fallback. Key aliases:
+ * background-color→bg_color, color→fg_color,
  * border-color→border_color, border-width→border_width,
  * border-radius→round_radius, font-size→font_size; other keys pass
  * through unchanged. Later rules override earlier ones (source order),

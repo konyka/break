@@ -369,6 +369,31 @@ TEST(soft_canvas_public_capabilities_apply_scale)
   my_lcd_destroy(lcd);
 }
 
+TEST(soft_fill_closes_open_subpaths)
+{
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas;
+  uint8_t* pixels;
+  uint32_t stride;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_fill_color(canvas, my_color_rgb(255, 0, 0)),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_path(canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_move_to(canvas, 2, 2), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_line_to(canvas, 12, 2), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_line_to(canvas, 2, 12), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  stride = my_lcd_mem_get_stride(lcd);
+  ASSERT_NOT_NULL(pixels);
+  ASSERT_EQ(pixels[(size_t)4 * stride + (size_t)4 * 4 + 2], 255);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
 TEST(soft_mono_image_uses_ordered_dither)
 {
   static const uint8_t image[4 * 4 * 4] = {
@@ -431,6 +456,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles2_resize_uses_drawable_pixels);
     RUN_TEST(gles2_glyph_cache_separates_font_identity);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);
+    RUN_TEST(soft_fill_closes_open_subpaths);
     RUN_TEST(soft_mono_image_uses_ordered_dither);
     RUN_TEST(lcd_rejects_dimension_and_stride_overflow);
 TEST_MAIN_END()

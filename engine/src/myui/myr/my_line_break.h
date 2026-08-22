@@ -18,13 +18,15 @@
  *  - MY_LB_BK: hard breaks (\n etc.) -- handled by the physical-line
  *    logic, never reached by the table in practice.
  *
- * This is a SUBSET: full UAX#14 contextual rules (numeric punctuation
- * gluing, Hebrew quotes, SJ/RI sequences, dictionary breaking for SA)
- * are intentionally out of scope (documented).
+ * This is a SUBSET: dictionary breaking for SA and the full set of
+ * locale-specific tailoring remain out of scope. The contextual helper
+ * below covers combining marks, numeric punctuation, and adjacent regional
+ * indicators so callers do not need to duplicate those safety rules.
  */
 #ifndef MY_LINE_BREAK_H
 #define MY_LINE_BREAK_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum my_line_break_class_t {
@@ -40,5 +42,8 @@ typedef enum my_line_break_class_t {
 /** @brief Simplified line-break class of a codepoint (binary search,
  * default MY_LB_ID for gaps in the table). */
 my_line_break_class_t my_line_break_class(uint32_t cp);
+
+/** @brief Whether a line break is allowed between adjacent codepoints. */
+bool my_line_break_allowed(uint32_t prev_cp, uint32_t cur_cp);
 
 #endif /* MY_LINE_BREAK_H */

@@ -212,7 +212,11 @@ ordered dithering、MVVM 的 items 和 condition 绑定，以及文本布局的 
 Arabic joining 和 mandatory Lam-Alef 覆盖映射。布局参数解析同时拒绝负数、非有限数和
 超出 `int32_t`/百分比范围的输入；Grid、framebuffer stride、UTF-32/UTF-8 缓冲区和文本
 逻辑/视觉索引的乘法与边界均经过溢出保护。CSS 已支持 universal selector、多 class
-selector 和 typed direct-child selector；结构错误会拒绝加载，不会静默生成错误主题。
+selector、typed direct-child selector，以及按 selector specificity 和 source order 的
+cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的 specificity。数值
+解析拒绝孤立符号、非有限值和超出 `int32_t` 的整数，不会把恶意输入转换成未定义的资源
+尺寸或颜色值。软件开放 contour fill 会按 fill 语义自动闭合，开放 stroke 仍保留端点语义。
+结构错误会拒绝加载，不会静默生成错误主题。
 
 仍未实现或明确保留为后续阶段的能力如下：
 
@@ -224,7 +228,7 @@ selector 和 typed direct-child selector；结构错误会拒绝加载，不会�
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |
-| CSS/XML | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator、完整 specificity 和 at-rule 仍未实现；未知 at-rule 会跳过并告警 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
+| CSS/XML | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator 和完整 at-rule 语义仍未实现；未知 at-rule 会跳过并告警。selector specificity、source order 和数值边界已实现 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 
 实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、
@@ -232,10 +236,13 @@ selector 和 typed direct-child selector；结构错误会拒绝加载，不会�
 索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
-本轮定向 TDD 门禁为：`test_myui_css`（9/9）、`test_myui_text_layout`（3/3）和
-`test_myui_vgcanvas_backend`（8/8）。其中 CSS 用例覆盖 universal、多 class、direct-child
+本轮定向 TDD 门禁为：`test_myui_css`（14/14）、`test_myui_text_layout`（4/4）、
+`test_myui_vgcanvas_backend`（9/9）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
+universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
-backend 用例覆盖缩放、过滤、字体缓存隔离、Mono dither 以及 framebuffer 尺寸/stride 溢出。
+backend 用例覆盖缩放、过滤、字体缓存隔离、开放 contour fill、Mono dither 以及 framebuffer
+尺寸/stride 溢出；damage 用例覆盖共享 surface 的结构/布局失效、失败回滚和逻辑到 drawable
+scissor 的向外取整与裁剪。
 
 Floating widget 的绘制与命中语义也分离：`floating=true` 且没有 `on_event` 的普通控件
 是 paint-only overlay，不会吞掉其下方控件的 pointer hit-test；带 `on_event` 的浮层仍按
@@ -373,7 +380,7 @@ surface；它不是独立 Metal RHI。
 
 - X11 OpenGL/Vulkan、Wayland OpenGL/Vulkan 均严格构建 `dxx_break`；四个 Linux 后端
   均完成 8 秒窗口启动烟测且无崩溃。
-- 全量 `ENGINE_BUILD_TESTS=ON` 构建通过，`ctest -LE graphics` 为 `51/51`，且是 CI
+- 全量 `ENGINE_BUILD_TESTS=ON` 构建通过，`ctest -LE graphics` 为 `53/53`，且是 CI
   门禁。
 - `test_break_ui_input`、`test_break_ui_damage`、`test_myui_vggeometry`、
   `test_myui_window_manager`、`test_myui_break_pal`、`test_myui_mvvm`、`test_imgui_compat`、
@@ -400,7 +407,10 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
 ## 架构边界与后续风险
 
 - 共享 offscreen surface 会按逻辑窗口 dirty rect 重录，但最终仍执行一次全屏 composite
-  draw；尚未实现真正的局部 present，因此窗口数量增加时合成带宽仍按整面尺寸增长。
+  draw；尚未实现真正的局部 present，因此窗口数量增加时合成带宽仍按整面尺寸增长。已
+  提供经过整数溢出保护的 `break_ui_damage_to_drawable_scissor()` 纯函数供未来平台
+  damage 协商使用，但当前不把它用于 swapchain composite：默认 swapchain 每帧清屏且没有
+  保留 backbuffer/平台 partial-present 契约，直接启用 scissor 会丢失未损伤区域。
 - Wayland 当前固定使用 CSD，不协商 `xdg-decoration`；这是跨 compositor 行为一致性的
   取舍，代价是 title bar 和拖动逻辑由 myui 维护。
 - 分数缩放依赖 compositor 同时支持 `wp_fractional_scale_v1` 与 `wp_viewporter`；旧

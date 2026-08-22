@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "myr/my_arabic_shape.h"
+#include "myr/my_line_break.h"
 #include "myr/my_text_layout.h"
 
 TEST(arabic_shape_forms_lam_alef)
@@ -61,8 +62,17 @@ TEST(text_layout_preserves_lam_alef_logical_boundaries)
   my_text_layout_destroy(layout);
 }
 
+TEST(line_break_applies_unicode_context_rules)
+{
+  ASSERT_FALSE(my_line_break_allowed('a', 0x0301u));
+  ASSERT_FALSE(my_line_break_allowed('1', '.'));
+  ASSERT_FALSE(my_line_break_allowed('.', '2'));
+  ASSERT_FALSE(my_line_break_allowed(0x1F1E6u, 0x1F1E7u));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(arabic_shape_forms_lam_alef);
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
+    RUN_TEST(line_break_applies_unicode_context_rules);
 TEST_MAIN_END()
