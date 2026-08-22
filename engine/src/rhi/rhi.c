@@ -77,6 +77,22 @@ bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
     return true;
 }
 
+bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
+                                     const RHIOffscreenFBODesc *desc) {
+    if (!caps || !desc || desc->width == 0u || desc->height == 0u) return false;
+    if (desc->color_format == RHI_FORMAT_UNDEFINED ||
+        desc->color_format == RHI_FORMAT_D32_FLOAT) return false;
+
+    u32 samples = desc->sample_count == 0u ? 1u : desc->sample_count;
+    u32 sample_bit = rhi_sample_count_bit(samples);
+    if (sample_bit == 0u || (caps->color_sample_counts & sample_bit) == 0u)
+        return false;
+    if (samples > 1u && (!caps->color_resolve_supported ||
+                         !caps->depth_resolve_supported))
+        return false;
+    return true;
+}
+
 void *rhi_get_resource(RHIDevice *dev, RHIHandle h) {
     if (h.index >= RHI_MAX_RESOURCES) return NULL;
     RHIResourceSlot *s = &dev->slots[h.index];

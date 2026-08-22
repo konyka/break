@@ -37,6 +37,7 @@ typedef struct {
     u32        color_sample_counts;
     u32        surface_sample_count;
     bool       color_resolve_supported;
+    bool       depth_resolve_supported;
 } RHICapabilities;
 
 typedef enum {
@@ -114,6 +115,8 @@ typedef struct {
      * swapchain pass; set RHI_FORMAT_R16G16B16A16_SFLOAT for the HDR scene FBO.
      * Ignored by the GL backend. */
     RHIFormat color_format;
+    /* Graphics attachment sample count. Zero means the legacy 1x target. */
+    u32       sample_count;
     /* R440: MRT (G-buffer) target description. When mrt_attachment_count > 1 the
      * Vulkan backend builds the pipeline against a render pass with these color
      * attachment formats (+ D32F depth), render-pass-compatible with the pass
@@ -130,6 +133,16 @@ typedef struct {
     u32         mip_levels;
     const void *data;
 } RHITextureDesc;
+
+typedef struct {
+    u32       width;
+    u32       height;
+    RHIFormat color_format;
+    u32       sample_count;
+} RHIOffscreenFBODesc;
+
+/* Returns true only when the descriptor can be created without silently
+ * falling back to a different sample count. */
 
 typedef struct {
     RHIFilter  min_filter;
@@ -346,10 +359,14 @@ typedef struct {
     RHITexture     depth_tex;
     u32            width;
     u32            height;
+    u32            sample_count;
 } RHIOffscreenFBO;
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height);
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt);
+RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreenFBODesc *desc);
+bool            rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
+                                                const RHIOffscreenFBODesc *desc);
 void            rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
 /* R196-A: re-bind without clearing (preserve color+depth). Tonemap/cinematic

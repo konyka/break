@@ -220,6 +220,7 @@ typedef struct {
     bool             feat_independent_blend;   /* per-MRT-attachment blend state usable */
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
+    bool             feat_depth_stencil_resolve;
     VkDevice                 device;
     VkQueue          graphics_queue;
     VkQueue          present_queue;
@@ -1056,6 +1057,14 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vk->physical = gpus[0];
     free(gpus);
     vkGetPhysicalDeviceProperties(vk->physical, &vk->device_props);
+    VkPhysicalDeviceProperties2 device_props2 = {0};
+    device_props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    VkPhysicalDeviceDepthStencilResolveProperties depth_resolve_props = {0};
+    depth_resolve_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
+    device_props2.pNext = &depth_resolve_props;
+    vkGetPhysicalDeviceProperties2(vk->physical, &device_props2);
+    vk->feat_depth_stencil_resolve =
+        depth_resolve_props.supportedDepthResolveModes != 0;
     dev->capabilities.backend = RHI_BACKEND_VULKAN;
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     for (u32 samples = 2u; samples <= 64u; samples <<= 1u) {
@@ -1068,6 +1077,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.surface_sample_count = 1u;
     dev->capabilities.color_resolve_supported =
         (dev->capabilities.color_sample_counts & rhi_sample_count_bit(2u)) != 0u;
+    dev->capabilities.depth_resolve_supported = vk->feat_depth_stencil_resolve;
     LOG_INFO("Vulkan GPU: %s (push constants: %u bytes, UBO alignment: %lu)",
              vk->device_props.deviceName,
              vk->device_props.limits.maxPushConstantsSize,
@@ -2178,6 +2188,15 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     atts[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDependency dep = {0};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.srcAccessMask = 0;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     atts[1].format = VK_FORMAT_D32_SFLOAT;
     atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
     atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -2186,9 +2205,6 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     atts[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     atts[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sp = {0};
     sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sp.colorAttachmentCount = 1;
@@ -2200,14 +2216,6 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
      * incompatibility (VUID-vkCmdDraw-renderPass-02684), so a pipeline whose
      * template pass omits this dependency would be flagged when drawn into the
      * real FBO pass even though formats/subpasses match. */
-    VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     ci.attachmentCount = 2;
@@ -2229,6 +2237,18 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     vk->pipe_rp_cache[vk->pipe_rp_count] = rp;
     vk->pipe_rp_count++;
     return rp;
+}
+
+static VkSampleCountFlagBits vk_sample_count(u32 count) {
+    switch (count) {
+        case 2u: return VK_SAMPLE_COUNT_2_BIT;
+        case 4u: return VK_SAMPLE_COUNT_4_BIT;
+        case 8u: return VK_SAMPLE_COUNT_8_BIT;
+        case 16u: return VK_SAMPLE_COUNT_16_BIT;
+        case 32u: return VK_SAMPLE_COUNT_32_BIT;
+        case 64u: return VK_SAMPLE_COUNT_64_BIT;
+        default: return VK_SAMPLE_COUNT_1_BIT;
+    }
 }
 
 /* Resolve a desc color_format hint to the VkFormat the pipeline's base render
@@ -2430,7 +2450,7 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
     VkPipelineMultisampleStateCreateInfo msaa = {0};
     msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     msaa.sampleShadingEnable = VK_FALSE;
-    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    msaa.rasterizationSamples = vk_sample_count(desc->sample_count);
 
     VkPipelineColorBlendAttachmentState blend_att = {0};
     blend_att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -2635,6 +2655,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     VKShaderData *vs_data = (VKShaderData *)rhi_get_resource(dev, desc->vert);
     VKShaderData *fs_data = (VKShaderData *)rhi_get_resource(dev, desc->frag);
     if (!vs_data || !fs_data) return RHI_HANDLE_NULL;
+    if (desc->sample_count > 1u) {
+        LOG_WARN("VK: multisample graphics pipelines are not enabled yet");
+        return RHI_HANDLE_NULL;
+    }
 
     /* The pipeline layout is render-pass-independent and shared by the base
      * pipeline and all its render-pass-format variants. */
@@ -6635,13 +6659,20 @@ typedef struct {
     VkImage        color_image;
     VkDeviceMemory color_memory;
     VkImageView    color_view;
+    VkImage        msaa_color_image;
+    VkDeviceMemory msaa_color_memory;
+    VkImageView    msaa_color_view;
     VkImage        depth_image;
     VkDeviceMemory depth_memory;
     VkImageView    depth_view;
+    VkImage        msaa_depth_image;
+    VkDeviceMemory msaa_depth_memory;
+    VkImageView    msaa_depth_view;
     VkFramebuffer  framebuffer;
     VkRenderPass   render_pass;
     VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
     VkFormat       color_fmt;         /* for render-pass-compatible pipeline variants */
+    VkSampleCountFlagBits samples;
 } VKFBOData;
 
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt) {
@@ -6914,6 +6945,17 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     fbo.fb = rhi_make_handle(fidx, dev->slots[fidx].generation);
 
     return fbo;
+}
+
+RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreenFBODesc *desc) {
+    RHIOffscreenFBO fbo = {0};
+    if (!dev || !rhi_offscreen_fbo_desc_validate(&dev->capabilities, desc)) return fbo;
+    if (desc->sample_count > 1u) {
+        LOG_WARN("VK: multisample offscreen targets require a compatible resolve path");
+        return fbo;
+    }
+    return rhi_offscreen_fbo_create_fmt(dev, desc->width, desc->height,
+                                        desc->color_format);
 }
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height) {

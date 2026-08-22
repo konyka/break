@@ -193,6 +193,21 @@ Break RHI 路径不会再因创建分支不同而出现字号或坐标不一致�
 | `my_vgcanvas_set_antialias_level` | 覆盖率 AA（0-2） | 0/非 0 映射 MSAA | `MY_RET_NOT_SUPPORTED` | `MY_RET_NOT_SUPPORTED` |
 | `my_vgcanvas_set_scale_filter` | nearest/bilinear | nearest/bilinear | nearest/bilinear | nearest/bilinear |
 
+### Offscreen target 与 MSAA 边界
+
+Break RHI 的 `RHIOffscreenFBODesc` 是跨后端 target 描述，不暴露 OpenGL/Vulkan 类型。
+`sample_count == 0` 表示兼容旧行为的 `1x`；旧的 `rhi_offscreen_fbo_create*()` API
+始终创建 `1x`，避免升级后改变已有后处理链路。descriptor 在进入后端前会检查尺寸、
+格式、power-of-two sample count、颜色样本能力及 resolve 能力，非法请求返回空 target。
+
+OpenGL 的 `2x+` target 使用 multisample color/depth renderbuffer，另建单采样 color/depth
+texture 供采样；离开 target 或切换 target 时执行一次 resolve，避免绘制过程中反复 resolve。
+`RHIOffscreenFBO.color_tex` 和 `depth_tex` 始终指向可采样的单采样结果。
+
+Vulkan 的 `2x+` target 当前明确返回不支持：在深度 resolve 和 render-pass/pipeline sample
+兼容性契约完全实现前，不允许静默回退到 `1x`。因此 myui/BreakUI 不会因为仅查询到 GPU
+能力就自动打开真实 GPU AA；真实 AA 仍由后续 target 事务接入并通过 validation smoke 后启用。
+
 图像过滤是 canvas 状态的一部分，默认值为 bilinear。GLES/OpenGL 的图像纹理缓存键为
 `(rgba 指针, width, height, filter)`，避免同一位图在两种过滤模式间错误复用；没有扩展
 回调的旧 GL 适配仍回退到原始 RGBA 上传接口。Vulkan 使用共享的 linear/nearest sampler，
