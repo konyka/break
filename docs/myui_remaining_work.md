@@ -53,7 +53,7 @@
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、Hebrew quotes、复杂 numeric/context tailoring 未覆盖 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
 | 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现 | 解析器静默接受错误、运行期主题污染 | capability registry、strict diagnostics、AST/bridge 回滚测试 |
-| 平台 runtime CI | Windows/macOS/Wayland compositor runtime 缺少本机矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | runner build + 启动 smoke + HiDPI/IME/resize 证据 |
+| 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
 
 ## 实施顺序
 

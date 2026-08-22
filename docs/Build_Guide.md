@@ -176,7 +176,9 @@ cmake --build build-win-clang --parallel
 ctest --test-dir build-win-clang -LE graphics --output-on-failure
 ```
 
-`test_shader_io` 在 Windows CTest 中启用，源码路径同时支持 `/` 与 `\\` 分隔符。`test_vulkan` 需要真实 WGL/GPU 环境，因此保留 `graphics` 标签并从 headless CI 中排除。
+`test_shader_io` 与无 graphics 标签的 `test_platform_win32_runtime` 在 Windows CTest 中启用；后者使用真实 Win32
+窗口、`GetWindowTextW`、`WM_SIZE` 和平台销毁路径，不创建 graphics context。源码路径同时支持 `/` 与 `\\` 分隔符。
+`test_vulkan` 需要真实 WGL/GPU 环境，因此保留 `graphics` 标签并从 headless CI 中排除。
 
 在具备本机 GPU 的 Windows 环境可额外执行完整 graphics 集成测试：
 
@@ -441,7 +443,7 @@ GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触�
 | `vk` | X11 + Vulkan，Debug | `libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建 + `ctest -LE graphics` |
 | `wayland-gl` | Wayland + EGL OpenGL，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
 | `wayland-vk` | Wayland + Vulkan，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
-| `windows-clang` | Win32 + OpenGL，Debug | Windows SDK/Ninja | 全量构建、`dxx_break`、`ctest -LE graphics` |
+| `windows-clang` | Win32 + OpenGL，Debug | Windows SDK/Ninja | 全量构建、`dxx_break`、`test_platform_win32_runtime` 及其他 `ctest -LE graphics` |
 | `macos-vulkan` | Cocoa + MoltenVK，Debug | Homebrew `molten-vk`、`shaderc`、`freetype` | 编译 `dxx_break` |
 | `linux-clang-release` | X11 + OpenGL，Clang/LLD，Release，IPO ON | `clang lld cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
 | `linux-gcc-sanitizers` | X11 + OpenGL，GCC，Debug，ASan + UBSan | `gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
@@ -450,7 +452,7 @@ GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触�
 CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`。Wayland、Windows 和 macOS job
 额外显式构建 `dxx_break`，使 PAL/RHI 接口成为平台编译门禁。
 
-`linux-graphics-smoke` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe。它只运行现有的 `graphics` 标签测试；若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的 golden image 可能存在差异，因此该 job 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows WGL/Win32、macOS Cocoa/Metal 和真实 Wayland compositor runtime 仍未由这些 Linux jobs 验证，状态保持待验证；Wayland jobs 当前只提供构建与非图形 CTest 证据。
+`linux-graphics-smoke` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe。它只运行现有的 `graphics` 标签测试；若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的 golden image 可能存在差异，因此该 job 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows headless CTest 的 `test_platform_win32_runtime` 只提供 Win32 platform smoke 证据，不覆盖 WGL/Vulkan/GPU/present；macOS Cocoa/Metal 和真实 Wayland compositor runtime 仍未由这些 jobs 验证，状态保持待验证；Wayland jobs 当前只提供构建与非图形 CTest 证据。
 
 ## 7. 项目结构与两套构建
 
