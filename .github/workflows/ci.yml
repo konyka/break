@@ -53,6 +53,87 @@ jobs:
       - name: Test (headless suite)
         run: ctest --test-dir build -LE graphics --output-on-failure
 
+  linux-clang-release:
+    name: Linux + Clang/LLD (Release, headless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
+            libfreetype6-dev fonts-noto-cjk
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=engine/toolchain-clang-linux.cmake -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: ctest --test-dir build -LE graphics --output-on-failure
+
+  linux-gcc-sanitizers:
+    name: Linux + GCC (ASan + UBSan, headless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
+            libfreetype6-dev fonts-noto-cjk
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: ctest --test-dir build -LE graphics --output-on-failure
+
+  linux-graphics-smoke:
+    name: Linux + Xvfb/software graphics smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev \
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers mesa-utils \
+            libgl1-mesa-dri libgl1-mesa-dev xvfb x11-utils
+
+      - name: Configure
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test graphics smoke
+        run: |
+          test -x "$(command -v Xvfb)"
+          test -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid"' EXIT
+          export DISPLAY=:99
+          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          ctest --test-dir build -L graphics --output-on-failure
+
   wayland-gl:
     name: Linux Wayland + OpenGL (GCC)
     runs-on: ubuntu-latest

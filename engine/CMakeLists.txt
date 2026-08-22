@@ -65,6 +65,7 @@ endif()
 
 # Sanitizers
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
+option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
 if(ENGINE_USE_ASAN)
     if(MSVC)
@@ -72,6 +73,15 @@ if(ENGINE_USE_ASAN)
     else()
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address)
+    endif()
+endif()
+if(ENGINE_USE_UBSAN)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=undefined)
+    else()
+        message(FATAL_ERROR
+            "ENGINE_USE_UBSAN requires GCC or Clang; compiler ${CMAKE_C_COMPILER_ID} is unsupported")
     endif()
 endif()
 
