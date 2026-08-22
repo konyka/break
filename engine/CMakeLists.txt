@@ -724,6 +724,14 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_text PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_platform_text COMMAND test_platform_text)
 
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        add_executable(test_platform_win32_runtime tests/test_platform_win32_runtime.c)
+        target_include_directories(test_platform_win32_runtime PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_platform_win32_runtime PRIVATE engine m)
+        add_test(NAME test_platform_win32_runtime COMMAND test_platform_win32_runtime)
+        set_tests_properties(test_platform_win32_runtime PROPERTIES LABELS platform_runtime)
+    endif()
+
     add_executable(test_imgui_compat tests/test_imgui_compat.c
         src/ui/imgui_stubs.c
         src/myui/myr/my_vgcanvas_break_rhi.c)
