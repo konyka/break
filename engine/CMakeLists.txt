@@ -763,6 +763,16 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
 
+    add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
+        src/rhi/rhi.c src/core/log.c)
+    target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_rhi_capabilities PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME test_rhi_capabilities COMMAND test_rhi_capabilities)
+
     add_executable(test_myui_layout tests/test_myui_layout.c)
     target_include_directories(test_myui_layout PRIVATE
         ${TEST_INCLUDE_DIRS}

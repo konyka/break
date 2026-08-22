@@ -34,6 +34,7 @@ struct RHIDevice {
     /* Free-list for O(1) slot allocation (Round 18) */
     u32              free_head;   /* UINT32_MAX = empty */
     u32              free_count;
+    RHICapabilities  capabilities;
 };
 
 RHIDevice *g_current_device = NULL;
@@ -68,6 +69,12 @@ u32 rhi_alloc_slot(RHIDevice *dev) {
 
 RHIHandle rhi_make_handle(u32 index, u32 gen) {
     return (RHIHandle){index, gen};
+}
+
+bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
+    if (dev == NULL || out == NULL) return false;
+    *out = dev->capabilities;
+    return true;
 }
 
 void *rhi_get_resource(RHIDevice *dev, RHIHandle h) {

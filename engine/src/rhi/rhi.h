@@ -21,6 +21,24 @@ typedef enum {
     RHI_BACKEND_VULKAN,
 } RHIBackend;
 
+/* Capability bit for a power-of-two color sample count. */
+static inline u32 rhi_sample_count_bit(u32 count) {
+    u32 bit = 0u;
+    if (count == 0u || (count & (count - 1u)) != 0u) return 0u;
+    while (count > 1u) {
+        count >>= 1u;
+        bit++;
+    }
+    return 1u << bit;
+}
+
+typedef struct {
+    RHIBackend backend;
+    u32        color_sample_counts;
+    u32        surface_sample_count;
+    bool       color_resolve_supported;
+} RHICapabilities;
+
 typedef enum {
     RHI_FORMAT_R8G8B8A8_UNORM,
     RHI_FORMAT_B8G8R8A8_UNORM,
@@ -135,6 +153,7 @@ typedef struct RHIDevice RHIDevice;
 /* `w` and `h` are physical drawable pixels, never logical UI points. */
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
+bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 /* Resize the default framebuffer/swapchain in physical drawable pixels. */
 void       rhi_device_resize(RHIDevice *dev, u32 w, u32 h);
 

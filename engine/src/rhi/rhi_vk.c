@@ -1056,6 +1056,18 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vk->physical = gpus[0];
     free(gpus);
     vkGetPhysicalDeviceProperties(vk->physical, &vk->device_props);
+    dev->capabilities.backend = RHI_BACKEND_VULKAN;
+    dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
+    for (u32 samples = 2u; samples <= 64u; samples <<= 1u) {
+        VkSampleCountFlagBits flag = (VkSampleCountFlagBits)samples;
+        if ((vk->device_props.limits.framebufferColorSampleCounts & flag) != 0) {
+            dev->capabilities.color_sample_counts |=
+                rhi_sample_count_bit(samples);
+        }
+    }
+    dev->capabilities.surface_sample_count = 1u;
+    dev->capabilities.color_resolve_supported =
+        (dev->capabilities.color_sample_counts & rhi_sample_count_bit(2u)) != 0u;
     LOG_INFO("Vulkan GPU: %s (push constants: %u bytes, UBO alignment: %lu)",
              vk->device_props.deviceName,
              vk->device_props.limits.maxPushConstantsSize,

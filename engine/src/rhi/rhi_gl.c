@@ -432,6 +432,28 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     glCullFace(GL_BACK);
     gl_set_viewport_cached(0, 0, w, h);
 
+    dev->capabilities.backend = RHI_BACKEND_OPENGL;
+    dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.surface_sample_count = 1u;
+    {
+        GLint max_samples = 1;
+        GLint sample_buffers = 0;
+        GLint surface_samples = 0;
+        glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+        glGetIntegerv(GL_SAMPLE_BUFFERS, &sample_buffers);
+        glGetIntegerv(GL_SAMPLES, &surface_samples);
+        if (max_samples < 1) max_samples = 1;
+        for (u32 samples = 2u; samples <= 64u && samples <= (u32)max_samples;
+             samples <<= 1u) {
+            dev->capabilities.color_sample_counts |=
+                rhi_sample_count_bit(samples);
+        }
+        if (sample_buffers > 0 && surface_samples > 0) {
+            dev->capabilities.surface_sample_count = (u32)surface_samples;
+        }
+        dev->capabilities.color_resolve_supported = max_samples >= 2;
+    }
+
     dev->backend_data = gl;
     dev->width  = w;
     dev->height = h;

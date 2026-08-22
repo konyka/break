@@ -23,12 +23,16 @@
   active resource、样本数和尺寸。相同请求零分配、零重建；支持的样本数通过显式的
   power-of-two capability mask 表示。该 helper 已由 fake 状态机覆盖，但尚未接入真实
   Vulkan 或 Break RHI。
+- Break RHI 已新增只读 `RHICapabilities` 查询：统一报告后端类型、颜色样本数能力、
+  当前 surface 样本数和 resolve 能力；GL 从当前上下文查询，Vulkan 从 physical-device
+  `framebufferColorSampleCounts` 查询。查询本身无分配、无同步、无状态改变；真实 target
+  重建仍未接入。
 
 ## 未完成能力
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| GPU AA 动态协商 | capability 查询、非法请求拒绝、失败回滚、GL surface multisample 识别和后端无关的 target/resize 事务 helper 已完成；Vulkan/Break RHI 公共 level 2 仍未开放，Vulkan 仅有内部 MSAA 选择 | 重建失败后切换半成品 target、render-pass 不兼容、同步错误 | fake RHI 状态机 + Vulkan/Break RHI adapter 创建失败回滚 + 真实窗口 smoke |
+| GPU AA 动态协商 | capability 查询、非法请求拒绝、GL surface multisample 识别、RHI `RHICapabilities` 查询和后端无关的 target/resize 事务 helper 已完成；Vulkan/Break RHI 公共 level 2 仍未开放，Vulkan 仅有内部 MSAA 选择 | 重建失败后切换半成品 target、render-pass 不兼容、同步错误 | fake RHI 状态机 + Vulkan/Break RHI adapter 创建失败回滚 + 真实窗口 smoke |
 | OpenType shaping | Arabic fallback，不含完整 GSUB/GPOS、mark positioning、脚本 shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | HarfBuzz 可选构建；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
 | 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |
