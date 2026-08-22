@@ -248,9 +248,9 @@ static void win_queue_ime_composition(Platform *platform, HIMC context,
 /* ---- Window procedure ---- */
 
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    Platform *p = (Platform *)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
+    Platform *p = (Platform *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 
-    if (!p) return DefWindowProcA(hwnd, msg, wParam, lParam);
+    if (!p) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
     switch (msg) {
     case WM_CLOSE:
@@ -417,16 +417,18 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         break;
     }
 
-    return DefWindowProcA(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 /* ---- Platform API ---- */
 
 Platform *platform_create(const PlatformConfig *cfg) {
     Platform *p = calloc(1, sizeof(Platform));
+    int title_units;
+    wchar_t *title;
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
 
-    p->hinstance = GetModuleHandleA(NULL);
+    p->hinstance = GetModuleHandleW(NULL);
     p->width  = cfg->width;
     p->height = cfg->height;
     p->mouse_visible = true;  /* R427: cursor starts visible */
@@ -446,16 +448,16 @@ Platform *platform_create(const PlatformConfig *cfg) {
         }
     }
 
-    WNDCLASSEXA wc;
+    WNDCLASSEXW wc;
     memset(&wc, 0, sizeof(wc));
-    wc.cbSize        = sizeof(WNDCLASSEXA);
+    wc.cbSize        = sizeof(WNDCLASSEXW);
     wc.style         = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     wc.lpfnWndProc   = WindowProc;
     wc.hInstance     = p->hinstance;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.lpszClassName = "BreakEngine";
+    wc.lpszClassName = L"BreakEngine";
 
-    if (!RegisterClassExA(&wc)) {
+    if (!RegisterClassExW(&wc)) {
         LOG_FATAL("Failed to register window class");
         free(p);
         return NULL;
@@ -468,19 +470,39 @@ Platform *platform_create(const PlatformConfig *cfg) {
     i32 win_w = rect.right - rect.left;
     i32 win_h = rect.bottom - rect.top;
 
-    p->hwnd = CreateWindowExA(
-        0, "BreakEngine", cfg->title, style,
-        CW_USEDEFAULT, CW_USEDEFAULT, win_w, win_h,
-        NULL, NULL, p->hinstance, NULL);
-
-    if (!p->hwnd) {
-        LOG_FATAL("Failed to create window");
-        UnregisterClassA("BreakEngine", p->hinstance);
+    title_units = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                      cfg->title, -1, NULL, 0);
+    if (title_units <= 0) {
+        LOG_FATAL("Invalid UTF-8 window title");
+        UnregisterClassW(L"BreakEngine", p->hinstance);
+        free(p);
+        return NULL;
+    }
+    title = malloc((size_t)title_units * sizeof(*title));
+    if (title == NULL || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                             cfg->title, -1, title,
+                                             title_units) != title_units) {
+        free(title);
+        LOG_FATAL("Failed to convert window title to UTF-16");
+        UnregisterClassW(L"BreakEngine", p->hinstance);
         free(p);
         return NULL;
     }
 
-    SetWindowLongPtrA(p->hwnd, GWLP_USERDATA, (LONG_PTR)p);
+    p->hwnd = CreateWindowExW(
+        0, L"BreakEngine", title, style,
+        CW_USEDEFAULT, CW_USEDEFAULT, win_w, win_h,
+        NULL, NULL, p->hinstance, NULL);
+    free(title);
+
+    if (!p->hwnd) {
+        LOG_FATAL("Failed to create window");
+        UnregisterClassW(L"BreakEngine", p->hinstance);
+        free(p);
+        return NULL;
+    }
+
+    SetWindowLongPtrW(p->hwnd, GWLP_USERDATA, (LONG_PTR)p);
 
     p->hdc = GetDC(p->hwnd);
 
@@ -500,7 +522,7 @@ void platform_destroy(Platform *p) {
     platform_text_queue_destroy(&p->text_queue);
     if (p->hdc) ReleaseDC(p->hwnd, p->hdc);
     if (p->hwnd) DestroyWindow(p->hwnd);
-    UnregisterClassA("BreakEngine", p->hinstance);
+    UnregisterClassW(L"BreakEngine", p->hinstance);
     free(p);
     LOG_INFO("Platform destroyed");
 }
@@ -509,7 +531,7 @@ PlatformEventResult platform_poll(Platform *p) {
     input_new_frame(&p->input);
 
     MSG msg;
-    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
         /* R423: WM_QUIT never reaches the window proc (it's a thread-queue
          * message) — handle it here like the WM_CLOSE path. */
         if (msg.message == WM_QUIT) {
@@ -517,7 +539,7 @@ PlatformEventResult platform_poll(Platform *p) {
             break;
         }
         TranslateMessage(&msg);
-        DispatchMessageA(&msg);
+        DispatchMessageW(&msg);
     }
 
     /* Pump gamepads (XInput) into the shared input state. */
@@ -787,7 +809,7 @@ bool platform_cursor_set(Platform *p, PlatformCursor cursor) {
 bool platform_window_begin_move(Platform *p) {
     if (p == NULL || p->hwnd == NULL) return false;
     ReleaseCapture();
-    SendMessageA(p->hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    SendMessageW(p->hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
     return true;
 }
 
