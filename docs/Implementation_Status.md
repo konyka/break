@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## CI 验证矩阵（当前）
+
+`.github/workflows/ci.yml` 现包含三项 Linux 专项门禁：`linux-clang-release` 使用 Clang/LLD
+Release 并显式开启 `ENGINE_ENABLE_IPO=ON`，运行非 `graphics` CTest；`linux-gcc-sanitizers`
+使用 GCC、`ENGINE_USE_ASAN=ON` 和 `ENGINE_USE_UBSAN=ON`，运行非图形 CTest；
+`linux-graphics-smoke` 安装并启动 Xvfb，选择 Mesa lavapipe/llvmpipe 软件渲染，只运行现有
+`graphics` 标签测试（当前为 `test_vulkan`）。Graphics smoke 缺少 Xvfb 或 lavapipe ICD 时直接失败，
+软件渲染也不等价于真实 GPU 的 golden-image 证据。
+
+这些 Linux jobs 不提供 Windows WGL/Win32、macOS Cocoa/Metal 或真实 Wayland compositor 的 runtime
+验证；对应平台的 DPI、IME、present 和 GPU 行为仍保持待验证，不能从 Linux 构建或 headless 结果外推。
+
 最近阶段补充：**BreakUI AA/resize 事务边界收口（TDD）**：修复同一 render 边界同时发生
 drawable resize 与 AA 请求时，resize 的 target 注入会清掉 pending AA 请求的问题；候选 target
 激活后保留仍未满足的质量请求，下一边界继续重试，不静默降级。补充纯契约测试覆盖 pending

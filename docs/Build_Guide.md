@@ -156,6 +156,14 @@ cmake -B build-asan -DENGINE_USE_ASAN=ON
 cmake --build build-asan
 ```
 
+#### UndefinedBehaviorSanitizer 版本
+`ENGINE_USE_UBSAN` 默认为 OFF；GCC/Clang 开启后使用 `-fsanitize=undefined`，不改变默认构建：
+```bash
+cd engine
+cmake -B build-ubsan -DENGINE_USE_UBSAN=ON
+cmake --build build-ubsan
+```
+
 ### 2.5 Windows 平台构建
 
 #### Windows + Clang 验证
@@ -271,6 +279,7 @@ cmake --build build-gl
 | ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合） |
 | ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
 | ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
+| ENGINE_USE_UBSAN | OFF | 启用 UndefinedBehaviorSanitizer（GCC/Clang 使用 `-fsanitize=undefined`；MSVC 不启用） |
 | ENGINE_ENABLE_IPO | ON | Release 构建中在工具链支持时启用 IPO/LTO，仅作用于 `engine` 静态库 |
 | MYUI_FONT_FREETYPE | ON | 找到 FreeType 时启用 hinted 字形和 TTC 多字面选择；CJK 默认字体需要此选项 |
 | MYUI_FONT_STB | ON | 启用 `stb_truetype` 独立 TTF/OTF 回退 |
@@ -434,11 +443,14 @@ GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触�
 | `wayland-vk` | Wayland + Vulkan，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
 | `windows-clang` | Win32 + OpenGL，Debug | Windows SDK/Ninja | 全量构建、`dxx_break`、`ctest -LE graphics` |
 | `macos-vulkan` | Cocoa + MoltenVK，Debug | Homebrew `molten-vk`、`shaderc`、`freetype` | 编译 `dxx_break` |
+| `linux-clang-release` | X11 + OpenGL，Clang/LLD，Release，IPO ON | `clang lld cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
+| `linux-gcc-sanitizers` | X11 + OpenGL，GCC，Debug，ASan + UBSan | `gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
+| `linux-graphics-smoke` | X11 + Vulkan，GCC，Debug，Xvfb + lavapipe/llvmpipe | `libvulkan-dev libshaderc-dev mesa-vulkan-drivers libgl1-mesa-dri xvfb` 及 X11/FreeType 依赖 | 仅 `ctest -L graphics`（当前为 `test_vulkan`） |
 
 CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`。Wayland、Windows 和 macOS job
 额外显式构建 `dxx_break`，使 PAL/RHI 接口成为平台编译门禁。
 
-**graphics 标签为何不在主门禁**：`test_vulkan`（唯一的 graphics 测试）需要真实显示与 GPU，并做 golden-image 逐像素 MAE 比对；参考图在本机 Intel Mesa 驱动上生成，换用 lavapipe/llvmpipe 软件渲染必然产生像素差导致确定性失败。GitHub 托管 runner 无 GPU/显示，因此 graphics 套件只在有 GPU 的环境手工跑。DrawBench（`BREAK_DRAW_BENCH=1`）同理——性能数据只在真实 GPU 上有意义，不进 CI。
+`linux-graphics-smoke` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe。它只运行现有的 `graphics` 标签测试；若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的 golden image 可能存在差异，因此该 job 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows WGL/Win32、macOS Cocoa/Metal 和真实 Wayland compositor runtime 仍未由这些 Linux jobs 验证，状态保持待验证；Wayland jobs 当前只提供构建与非图形 CTest 证据。
 
 ## 7. 项目结构与两套构建
 
