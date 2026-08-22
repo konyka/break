@@ -12,6 +12,14 @@ Release 并显式开启 `ENGINE_ENABLE_IPO=ON`，运行非 `graphics` CTest；`l
 这些 Linux jobs 不提供 Windows WGL/Win32、macOS Cocoa/Metal 或真实 Wayland compositor 的 runtime
 验证；对应平台的 DPI、IME、present 和 GPU 行为仍保持待验证，不能从 Linux 构建或 headless 结果外推。
 
+## 最近更新
+
+**Windows Win32 platform runtime smoke（边界契约）**：新增 Windows-only 的 `test_platform_win32_runtime`，
+使用真实 `platform_create`/`platform_destroy`、`GetWindowTextW` 与 Win32 `WM_SIZE` 消息，锁定 BMP 与补充平面
+字符标题的 UTF-16 code units、非法 UTF-8 返回 `NULL`、一次 `platform_poll` 后的尺寸更新和销毁路径。
+该测试是无 graphics 标签的 Win32 平台 smoke，不创建 GL/Vulkan context、不验证 WGL/Vulkan surface、GPU、
+present 或帧级图形行为；Windows CI 的 headless CTest 会运行它，但这不等价于完整 Windows runtime CI 或 GPU 证据。
+
 最近阶段补充：**BreakUI AA/resize 事务边界收口（TDD）**：修复同一 render 边界同时发生
 drawable resize 与 AA 请求时，resize 的 target 注入会清掉 pending AA 请求的问题；候选 target
 激活后保留仍未满足的质量请求，下一边界继续重试，不静默降级。补充纯契约测试覆盖 pending
