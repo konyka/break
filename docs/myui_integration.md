@@ -222,7 +222,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
-| GPU AA | Vulkan 与 Break RHI 的 `set_antialias_level` 仍返回 `MY_RET_NOT_SUPPORTED` | 先扩展 RHI/RenderPass 的样本数能力查询，再以设备能力为准创建 MSAA target；失败时保持旧 target，不静默改变质量 |
+| GPU AA | Vulkan 与 Break RHI 的 `set_antialias_level` 仍返回 `MY_RET_NOT_SUPPORTED`；后端无关的 sample-count/resize 事务 helper 已完成，但尚未接入真实 target | 先扩展 RHI/RenderPass 的样本数能力查询，再以设备能力为准创建 MSAA target；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；完整 OpenType GSUB shaping、多段落 rebreaking 仍未实现 | 增加 shaping run、段落级缓存和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入所有 canvas |
 | 编辑器 | 行号、代码折叠、增量语法高亮等高级编辑器能力未实现 | 单独的 virtualized line model，限制单帧重排预算，避免把大文档编辑路径耦合到 widget 绘制 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
@@ -232,12 +232,15 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 
 实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、
-验证、一次提交”的状态转换，失败保留旧资源。缓存键必须包含影响结果的状态，输入长度、
+验证、提交、激活、回收”的状态转换，失败保留旧资源。当前通用事务实现位于
+`engine/src/myui/myr/my_vgcanvas_quality_transaction.h` 和
+`engine/src/myui/myr/my_vgcanvas_quality_transaction.c`，其能力 mask 仅接受幂次样本数，
+并把 resize 与 sample-count 放在同一次提交中。缓存键必须包含影响结果的状态，输入长度、
 索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 本轮定向 TDD 门禁为：`test_myui_css`（14/14）、`test_myui_text_layout`（4/4）、
-`test_myui_vgcanvas_backend`（13/13）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
+`test_myui_vgcanvas_backend`（21/21）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
 backend 用例覆盖缩放、过滤、字体缓存隔离、开放 contour fill、Mono dither、framebuffer

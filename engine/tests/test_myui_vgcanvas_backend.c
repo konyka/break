@@ -5,6 +5,7 @@
 #include "myr/my_gl.h"
 #include "myr/my_lcd_mem.h"
 #include "myr/my_vgcanvas_gles2.h"
+#include "myr/my_vgcanvas_quality_transaction.h"
 #include "myr/my_vgcanvas_soft.h"
 
 typedef struct mock_gl_t {
@@ -525,6 +526,295 @@ TEST(vgcanvas_quality_change_is_transactional_and_idempotent)
   ASSERT_EQ(canvas.filter_calls, 2);
 }
 
+typedef struct sample_transaction_fake_t {
+  int create_calls;
+  int validate_calls;
+  int submit_calls;
+  int retire_calls;
+  int activate_calls;
+  int destroy_calls;
+  my_ret_t create_result;
+  my_ret_t validate_result;
+  my_ret_t submit_result;
+  bool return_null_candidate;
+  void* old_candidate;
+  void* new_candidate;
+  void* activated_candidate;
+  void* retired_candidate;
+} sample_transaction_fake_t;
+
+static my_ret_t sample_fake_create(void* ctx, uint32_t sample_count,
+                                   uint32_t width, uint32_t height,
+                                   void** out_candidate) {
+  sample_transaction_fake_t* fake = (sample_transaction_fake_t*)ctx;
+  fake->create_calls++;
+  (void)sample_count;
+  (void)width;
+  (void)height;
+  if (fake->create_result != MY_RET_OK) {
+    return fake->create_result;
+  }
+  if (fake->return_null_candidate) {
+    *out_candidate = NULL;
+    return MY_RET_OK;
+  }
+  *out_candidate = fake->new_candidate;
+  return MY_RET_OK;
+}
+
+static my_ret_t sample_fake_validate(void* ctx, void* candidate) {
+  sample_transaction_fake_t* fake = (sample_transaction_fake_t*)ctx;
+  fake->validate_calls++;
+  if (candidate != fake->new_candidate) {
+    return MY_RET_FAIL;
+  }
+  return fake->validate_result;
+}
+
+static my_ret_t sample_fake_submit(void* ctx, void* candidate) {
+  sample_transaction_fake_t* fake = (sample_transaction_fake_t*)ctx;
+  fake->submit_calls++;
+  if (candidate != fake->new_candidate) {
+    return MY_RET_FAIL;
+  }
+  return fake->submit_result;
+}
+
+static void sample_fake_retire(void* ctx, void* candidate) {
+  sample_transaction_fake_t* fake = (sample_transaction_fake_t*)ctx;
+  fake->retire_calls++;
+  fake->retired_candidate = candidate;
+}
+
+static void sample_fake_activate(void* ctx, void* candidate) {
+  sample_transaction_fake_t* fake = (sample_transaction_fake_t*)ctx;
+  fake->activate_calls++;
+  fake->activated_candidate = candidate;
+}
+
+static void sample_fake_destroy(void* ctx, void* candidate) {
+  sample_transaction_fake_t* fake = (sample_transaction_fake_t*)ctx;
+  fake->destroy_calls++;
+  ASSERT_TRUE(candidate == fake->new_candidate);
+}
+
+static const my_vgcanvas_sample_transaction_ops_t s_sample_fake_ops = {
+    sample_fake_create, sample_fake_validate, sample_fake_submit,
+    sample_fake_activate, sample_fake_retire, sample_fake_destroy};
+
+static void sample_fake_init(sample_transaction_fake_t* fake) {
+  memset(fake, 0, sizeof(*fake));
+  fake->create_result = MY_RET_OK;
+  fake->validate_result = MY_RET_OK;
+  fake->submit_result = MY_RET_OK;
+  fake->old_candidate = fake;
+  fake->new_candidate = (char*)fake + 1;
+}
+
+TEST(sample_transaction_rejects_unsupported_without_touching_active)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  my_vgcanvas_sample_transaction_init(&tx, 1, 640, 480, fake.old_candidate,
+                                      my_vgcanvas_sample_count_bit(1u) |
+                                          my_vgcanvas_sample_count_bit(2u) |
+                                          my_vgcanvas_sample_count_bit(4u));
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 8, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+  ASSERT_TRUE(tx.active_candidate == fake.old_candidate);
+  ASSERT_EQ(fake.create_calls, 0);
+}
+
+TEST(sample_transaction_rolls_back_create_validate_and_submit_failures)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  my_vgcanvas_sample_transaction_init(&tx, 1, 640, 480, fake.old_candidate,
+                                      my_vgcanvas_sample_count_bit(1u) |
+                                          my_vgcanvas_sample_count_bit(2u) |
+                                          my_vgcanvas_sample_count_bit(4u));
+
+  fake.create_result = MY_RET_FAIL;
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_FAIL);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+  ASSERT_TRUE(tx.active_candidate == fake.old_candidate);
+  ASSERT_EQ(fake.destroy_calls, 0);
+
+  fake.create_result = MY_RET_OK;
+  fake.validate_result = MY_RET_FAIL;
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_FAIL);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+  ASSERT_TRUE(tx.active_candidate == fake.old_candidate);
+  ASSERT_EQ(fake.destroy_calls, 1);
+
+  fake.validate_result = MY_RET_OK;
+  fake.submit_result = MY_RET_FAIL;
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_FAIL);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+  ASSERT_TRUE(tx.active_candidate == fake.old_candidate);
+  ASSERT_EQ(fake.destroy_calls, 2);
+  ASSERT_EQ(fake.retire_calls, 0);
+}
+
+TEST(sample_transaction_commits_only_after_submit_and_is_idempotent)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  my_vgcanvas_sample_transaction_init(&tx, 1, 640, 480, fake.old_candidate,
+                                      my_vgcanvas_sample_count_bit(1u) |
+                                          my_vgcanvas_sample_count_bit(2u) |
+                                          my_vgcanvas_sample_count_bit(4u));
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_OK);
+  ASSERT_EQ(tx.active_sample_count, 2u);
+  ASSERT_TRUE(tx.active_candidate == fake.new_candidate);
+  ASSERT_EQ(fake.create_calls, 1);
+  ASSERT_EQ(fake.validate_calls, 1);
+  ASSERT_EQ(fake.submit_calls, 1);
+  ASSERT_EQ(fake.activate_calls, 1);
+  ASSERT_TRUE(fake.activated_candidate == fake.new_candidate);
+  ASSERT_EQ(fake.retire_calls, 1);
+  ASSERT_TRUE(fake.retired_candidate == fake.old_candidate);
+  ASSERT_EQ(fake.destroy_calls, 0);
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_OK);
+  ASSERT_EQ(fake.create_calls, 1);
+  ASSERT_EQ(fake.submit_calls, 1);
+
+  fake.new_candidate = (char*)&fake + 2;
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 800, 600,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_OK);
+  ASSERT_EQ(tx.active_width, 800u);
+  ASSERT_EQ(tx.active_height, 600u);
+  ASSERT_EQ(fake.create_calls, 2);
+  ASSERT_EQ(fake.submit_calls, 2);
+}
+
+TEST(sample_transaction_rejects_invalid_inputs_without_callbacks)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  my_vgcanvas_sample_transaction_init(&tx, 1, 640, 480, fake.old_candidate,
+                                      my_vgcanvas_sample_count_bit(1u) |
+                                          my_vgcanvas_sample_count_bit(2u) |
+                                          my_vgcanvas_sample_count_bit(4u));
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 0, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 3, 640, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 640, 480, NULL, &fake),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(&tx, 2, 0, 480,
+                                               &s_sample_fake_ops, &fake),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(fake.create_calls, 0);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+}
+
+TEST(sample_transaction_uses_explicit_power_of_two_capability_bits)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  my_vgcanvas_sample_transaction_init(
+      &tx, 1, 640, 480, fake.old_candidate,
+      my_vgcanvas_sample_count_bit(1u) |
+          my_vgcanvas_sample_count_bit(8u) |
+          my_vgcanvas_sample_count_bit(16u));
+
+  ASSERT_EQ(my_vgcanvas_sample_count_bit(0u), 0u);
+  ASSERT_EQ(my_vgcanvas_sample_count_bit(3u), 0u);
+  ASSERT_EQ(my_vgcanvas_sample_count_bit(8u), 8u);
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(
+                &tx, 8, 640, 480, &s_sample_fake_ops, &fake),
+            MY_RET_OK);
+  ASSERT_EQ(tx.active_sample_count, 8u);
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(
+                &tx, 32, 640, 480, &s_sample_fake_ops, &fake),
+            MY_RET_NOT_SUPPORTED);
+}
+
+TEST(sample_transaction_rejects_successful_empty_candidate_without_touching_active)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  fake.return_null_candidate = true;
+  my_vgcanvas_sample_transaction_init(
+      &tx, 1, 640, 480, fake.old_candidate,
+      my_vgcanvas_sample_count_bit(1u) |
+          my_vgcanvas_sample_count_bit(2u));
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(
+                &tx, 2, 640, 480, &s_sample_fake_ops, &fake),
+            MY_RET_FAIL);
+  ASSERT_TRUE(tx.active_candidate == fake.old_candidate);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+  ASSERT_EQ(fake.validate_calls, 0);
+  ASSERT_EQ(fake.destroy_calls, 0);
+}
+
+TEST(sample_transaction_rejects_candidate_alias_without_destroying_active)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  fake.new_candidate = fake.old_candidate;
+  my_vgcanvas_sample_transaction_init(
+      &tx, 1, 640, 480, fake.old_candidate,
+      my_vgcanvas_sample_count_bit(1u) |
+          my_vgcanvas_sample_count_bit(2u));
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(
+                &tx, 2, 640, 480, &s_sample_fake_ops, &fake),
+            MY_RET_FAIL);
+  ASSERT_TRUE(tx.active_candidate == fake.old_candidate);
+  ASSERT_EQ(tx.active_sample_count, 1u);
+  ASSERT_EQ(fake.validate_calls, 0);
+  ASSERT_EQ(fake.destroy_calls, 0);
+  ASSERT_EQ(fake.retire_calls, 0);
+}
+
+TEST(sample_transaction_builds_missing_initial_candidate)
+{
+  sample_transaction_fake_t fake;
+  my_vgcanvas_sample_transaction_t tx;
+  sample_fake_init(&fake);
+  my_vgcanvas_sample_transaction_init(
+      &tx, 2, 640, 480, NULL,
+      my_vgcanvas_sample_count_bit(1u) |
+          my_vgcanvas_sample_count_bit(2u));
+
+  ASSERT_EQ(my_vgcanvas_sample_transaction_set(
+                &tx, 2, 640, 480, &s_sample_fake_ops, &fake),
+            MY_RET_OK);
+  ASSERT_EQ(fake.create_calls, 1);
+  ASSERT_TRUE(tx.active_candidate == fake.new_candidate);
+  ASSERT_EQ(tx.active_sample_count, 2u);
+  ASSERT_EQ(fake.retire_calls, 0);
+}
+
 TEST(soft_fill_closes_open_subpaths)
 {
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
@@ -616,6 +906,14 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles_capabilities_reject_unsupported_surface_aa);
     RUN_TEST(gles_capabilities_enable_supported_surface_aa);
     RUN_TEST(vgcanvas_quality_change_is_transactional_and_idempotent);
+    RUN_TEST(sample_transaction_rejects_unsupported_without_touching_active);
+    RUN_TEST(sample_transaction_rolls_back_create_validate_and_submit_failures);
+    RUN_TEST(sample_transaction_commits_only_after_submit_and_is_idempotent);
+    RUN_TEST(sample_transaction_rejects_invalid_inputs_without_callbacks);
+    RUN_TEST(sample_transaction_uses_explicit_power_of_two_capability_bits);
+    RUN_TEST(sample_transaction_rejects_successful_empty_candidate_without_touching_active);
+    RUN_TEST(sample_transaction_rejects_candidate_alias_without_destroying_active);
+    RUN_TEST(sample_transaction_builds_missing_initial_candidate);
     RUN_TEST(soft_fill_closes_open_subpaths);
     RUN_TEST(soft_mono_image_uses_ordered_dither);
     RUN_TEST(lcd_rejects_dimension_and_stride_overflow);

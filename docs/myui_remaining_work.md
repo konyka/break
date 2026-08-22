@@ -18,12 +18,17 @@
 - vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
   成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
   Break RHI/Vulkan 在事务式 sample-count target 尚未接通前只暴露 level 0。
+- 新增后端无关的 sample-count/resize 事务 helper：候选资源按 `create -> validate ->
+  submit -> activate -> retire` 提交；创建、验证或提交失败只销毁 candidate，保留
+  active resource、样本数和尺寸。相同请求零分配、零重建；支持的样本数通过显式的
+  power-of-two capability mask 表示。该 helper 已由 fake 状态机覆盖，但尚未接入真实
+  Vulkan 或 Break RHI。
 
 ## 未完成能力
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| GPU AA 动态协商 | capability 查询、非法请求拒绝、失败回滚和 GL surface multisample 识别已完成；Vulkan/Break RHI 公共 level 2 仍未开放，Vulkan 仅有内部 MSAA 选择 | 重建失败后切换半成品 target、render-pass 不兼容、同步错误 | fake RHI 状态机 + GL/VK headless 创建失败回滚 + 真实窗口 smoke |
+| GPU AA 动态协商 | capability 查询、非法请求拒绝、失败回滚、GL surface multisample 识别和后端无关的 target/resize 事务 helper 已完成；Vulkan/Break RHI 公共 level 2 仍未开放，Vulkan 仅有内部 MSAA 选择 | 重建失败后切换半成品 target、render-pass 不兼容、同步错误 | fake RHI 状态机 + Vulkan/Break RHI adapter 创建失败回滚 + 真实窗口 smoke |
 | OpenType shaping | Arabic fallback，不含完整 GSUB/GPOS、mark positioning、脚本 shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | HarfBuzz 可选构建；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
 | 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |
@@ -39,8 +44,9 @@
 
 1. 保持 `my_vgcanvas` 公共 API 稳定；新增只读 RHI capability query，不让 widget
    直接依赖 Vulkan/OpenGL 类型。
-2. 为所有候选资源采用 `create -> validate -> activate -> retire` 状态机；失败只
-   释放 candidate，不触碰 active resource。
+2. 为所有候选资源采用 `create -> validate -> submit -> activate -> retire` 状态机；
+   失败只释放 candidate，不触碰 active resource。resize 与 sample-count 必须共用
+   同一事务，避免窗口尺寸变化和质量切换产生两个不一致的生命周期。
 3. 为每帧记录 damage area、draw calls、atlas misses、layout passes 和 fallback
    次数；默认关闭高成本日志，诊断模式才采样。
 

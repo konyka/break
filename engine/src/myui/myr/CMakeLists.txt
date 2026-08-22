@@ -3,6 +3,7 @@
 add_library(myr STATIC
   my_dirty_rects.c
   my_lcd_mem.c
+  my_vgcanvas_quality_transaction.c
   my_vgcanvas_soft.c
   my_vgcanvas_gles2.c
   my_vgcanvas_vulkan.c

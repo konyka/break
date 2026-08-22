@@ -227,6 +227,7 @@ set(MYUI_CORE_SOURCES
     src/myui/myc/myconf/my_conf_yaml.c
     src/myui/myr/my_dirty_rects.c
     src/myui/myr/my_lcd_mem.c
+    src/myui/myr/my_vgcanvas_quality_transaction.c
     src/myui/myr/my_vgcanvas_soft.c
     src/myui/myr/my_vgcanvas_gles2.c
     src/myui/myr/my_vgcanvas_vulkan.c
