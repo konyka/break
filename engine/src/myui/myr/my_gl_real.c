@@ -202,6 +202,15 @@ static void real_set_multisample(void* ctx, bool on) {
   (void)glGetError();
 }
 
+static bool real_has_multisample(void* ctx) {
+  GLint buffers = 0;
+  GLint samples = 0;
+  (void)ctx;
+  glGetIntegerv(GL_SAMPLE_BUFFERS, &buffers);
+  glGetIntegerv(GL_SAMPLES, &samples);
+  return buffers > 0 && samples > 0;
+}
+
 const my_gl_t* my_gl_real_default(void) {
   static const my_gl_t real = {real_viewport,      real_enable_scissor,
                                real_scissor,       real_clear_color,
@@ -214,7 +223,8 @@ const my_gl_t* my_gl_real_default(void) {
                                NULL,
                                NULL, /* shader_header_vs: ES2 needs none */
                                "precision mediump float;\n",
-                               real_create_texture_rgba_filtered};
+                               real_create_texture_rgba_filtered,
+                               real_has_multisample};
   return &real;
 }
 

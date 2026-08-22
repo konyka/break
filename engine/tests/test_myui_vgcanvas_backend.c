@@ -21,6 +21,9 @@ typedef struct mock_gl_t {
   int32_t viewport_h;
   float resolution_w;
   float resolution_h;
+  bool multisample_enabled;
+  bool multisample_available;
+  int32_t multisample_calls;
 } mock_gl_t;
 
 static void mock_viewport(void* ctx, int32_t w, int32_t h) {
@@ -141,6 +144,16 @@ static void mock_draw_textured(void* ctx, uint32_t program, uint32_t texture,
   mock->textured_count = count;
 }
 
+static void mock_set_multisample(void* ctx, bool enabled) {
+  mock_gl_t* mock = (mock_gl_t*)ctx;
+  mock->multisample_enabled = enabled;
+  mock->multisample_calls++;
+}
+
+static bool mock_has_multisample(void* ctx) {
+  return ((mock_gl_t*)ctx)->multisample_available;
+}
+
 static void mock_gl_init(mock_gl_t* mock) {
   memset(mock, 0, sizeof(*mock));
   mock->gl.viewport = mock_viewport;
@@ -157,8 +170,35 @@ static void mock_gl_init(mock_gl_t* mock) {
   mock->gl.create_texture_rgba_filtered = mock_create_texture_rgba_filtered;
   mock->gl.delete_texture = mock_delete_texture;
   mock->gl.draw_textured_quads = mock_draw_textured;
+  mock->gl.set_multisample = mock_set_multisample;
   mock->gl.ctx = mock;
 }
+
+typedef struct failing_canvas_t {
+  my_vgcanvas_t base;
+  bool fail;
+  int32_t calls;
+  int32_t filter_calls;
+} failing_canvas_t;
+
+static my_ret_t failing_set_antialias(my_vgcanvas_t* vg, int level) {
+  failing_canvas_t* canvas = (failing_canvas_t*)vg;
+  (void)level;
+  canvas->calls++;
+  return canvas->fail ? MY_RET_FAIL : MY_RET_OK;
+}
+
+static my_ret_t failing_set_scale_filter(my_vgcanvas_t* vg,
+                                         my_scale_filter_t filter) {
+  failing_canvas_t* canvas = (failing_canvas_t*)vg;
+  (void)filter;
+  canvas->filter_calls++;
+  return canvas->fail ? MY_RET_FAIL : MY_RET_OK;
+}
+
+static const my_vgcanvas_vtable_t s_failing_vtable = {
+    .set_antialias_level = failing_set_antialias,
+    .set_scale_filter = failing_set_scale_filter};
 
 typedef struct test_font_t {
   my_font_t base;
@@ -369,6 +409,122 @@ TEST(soft_canvas_public_capabilities_apply_scale)
   my_lcd_destroy(lcd);
 }
 
+TEST(vgcanvas_capabilities_are_explicit)
+{
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas;
+  my_vgcanvas_capabilities_t caps;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_TRUE((caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(0)) != 0u);
+  ASSERT_TRUE((caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(1)) != 0u);
+  ASSERT_TRUE((caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(2)) != 0u);
+  ASSERT_EQ(caps.active_antialias_level, 2u);
+  ASSERT_TRUE((caps.scale_filters & MY_VGCANVAS_FILTER_BIT(
+                                      MY_SCALE_FILTER_NEAREST)) != 0u);
+  ASSERT_TRUE((caps.scale_filters & MY_VGCANVAS_FILTER_BIT(
+                                      MY_SCALE_FILTER_BILINEAR)) != 0u);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 0), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level, 0u);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 3), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, NULL), MY_RET_INVALID_PARAMS);
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(gles_capabilities_reject_unsupported_surface_aa)
+{
+  mock_gl_t mock;
+  my_vgcanvas_t* canvas;
+  my_vgcanvas_capabilities_t caps;
+
+  mock_gl_init(&mock);
+  canvas = my_vgcanvas_gles2_create_with_gl(NULL, 16, 16, &mock.gl);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.antialias_levels, MY_VGCANVAS_AA_LEVEL_BIT(0));
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 2),
+            MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level, 0u);
+
+  my_vgcanvas_destroy(canvas);
+}
+
+TEST(gles_capabilities_enable_supported_surface_aa)
+{
+  mock_gl_t mock;
+  my_vgcanvas_t* canvas;
+  my_vgcanvas_capabilities_t caps;
+
+  mock_gl_init(&mock);
+  mock.multisample_available = true;
+  mock.gl.has_multisample = mock_has_multisample;
+  canvas = my_vgcanvas_gles2_create_with_gl(NULL, 16, 16, &mock.gl);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 2), MY_RET_OK);
+  ASSERT_TRUE(mock.multisample_enabled);
+  ASSERT_EQ(mock.multisample_calls, 1);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level, 2u);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 0), MY_RET_OK);
+  ASSERT_FALSE(mock.multisample_enabled);
+  ASSERT_EQ(mock.multisample_calls, 2);
+
+  my_vgcanvas_destroy(canvas);
+}
+
+TEST(vgcanvas_quality_change_is_transactional_and_idempotent)
+{
+  failing_canvas_t canvas;
+  my_vgcanvas_capabilities_t caps;
+
+  memset(&canvas, 0, sizeof(canvas));
+  canvas.base.vtable = &s_failing_vtable;
+  canvas.base.capabilities.antialias_levels =
+      MY_VGCANVAS_AA_LEVEL_BIT(0) | MY_VGCANVAS_AA_LEVEL_BIT(2);
+  canvas.base.capabilities.scale_filters =
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_NEAREST) |
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_BILINEAR);
+  canvas.base.capabilities.active_antialias_level = 0u;
+  canvas.base.capabilities.active_scale_filter = MY_SCALE_FILTER_BILINEAR;
+  canvas.fail = true;
+
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(&canvas.base, 0), MY_RET_OK);
+  ASSERT_EQ(canvas.calls, 0);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(&canvas.base, 2), MY_RET_FAIL);
+  ASSERT_EQ(canvas.calls, 1);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(&canvas.base, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level, 0u);
+
+  canvas.fail = false;
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(&canvas.base, 2), MY_RET_OK);
+  ASSERT_EQ(canvas.calls, 2);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(&canvas.base, 2), MY_RET_OK);
+  ASSERT_EQ(canvas.calls, 2);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(&canvas.base, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level, 2u);
+
+  canvas.fail = true;
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(&canvas.base,
+                                         MY_SCALE_FILTER_NEAREST), MY_RET_FAIL);
+  ASSERT_EQ(canvas.filter_calls, 1);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(&canvas.base, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_scale_filter, MY_SCALE_FILTER_BILINEAR);
+  canvas.fail = false;
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(&canvas.base,
+                                         MY_SCALE_FILTER_NEAREST), MY_RET_OK);
+  ASSERT_EQ(canvas.filter_calls, 2);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(&canvas.base,
+                                         MY_SCALE_FILTER_NEAREST), MY_RET_OK);
+  ASSERT_EQ(canvas.filter_calls, 2);
+}
+
 TEST(soft_fill_closes_open_subpaths)
 {
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
@@ -456,6 +612,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles2_resize_uses_drawable_pixels);
     RUN_TEST(gles2_glyph_cache_separates_font_identity);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);
+    RUN_TEST(vgcanvas_capabilities_are_explicit);
+    RUN_TEST(gles_capabilities_reject_unsupported_surface_aa);
+    RUN_TEST(gles_capabilities_enable_supported_surface_aa);
+    RUN_TEST(vgcanvas_quality_change_is_transactional_and_idempotent);
     RUN_TEST(soft_fill_closes_open_subpaths);
     RUN_TEST(soft_mono_image_uses_ordered_dither);
     RUN_TEST(lcd_rejects_dimension_and_stride_overflow);

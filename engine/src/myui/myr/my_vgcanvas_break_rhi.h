@@ -6,9 +6,10 @@
  * (xy + uv + RGBA) and submits them through the Break RHI. Solid geometry
  * and glyphs share a single atlas-backed pipeline; images use a second
  * RGBA-texture pipeline. Path tessellation is delegated to my_vggeometry.
- * The public antialias-level control returns MY_RET_NOT_SUPPORTED. The
- * canvas deliberately keeps a single-sample target until the Break RHI
- * exposes transactional sample-count negotiation.
+ * The public capability query exposes level 0 only. The canvas deliberately
+ * keeps a single-sample target until the Break RHI exposes transactional
+ * sample-count negotiation; requests for higher levels return
+ * MY_RET_NOT_SUPPORTED without changing state.
  */
 #ifndef MY_VGCANVAS_BREAK_RHI_H
 #define MY_VGCANVAS_BREAK_RHI_H

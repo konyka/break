@@ -63,6 +63,8 @@ typedef struct my_gl_t {
   uint32_t (*create_texture_rgba_filtered)(void* ctx, const uint8_t* rgba,
                                            int32_t w, int32_t h,
                                            bool linear);
+  /** @brief Reports whether the current drawable has multisample storage. */
+  bool (*has_multisample)(void* ctx);
 } my_gl_t;
 
 /**

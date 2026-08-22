@@ -237,12 +237,14 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 本轮定向 TDD 门禁为：`test_myui_css`（14/14）、`test_myui_text_layout`（4/4）、
-`test_myui_vgcanvas_backend`（9/9）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
+`test_myui_vgcanvas_backend`（13/13）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
-backend 用例覆盖缩放、过滤、字体缓存隔离、开放 contour fill、Mono dither 以及 framebuffer
-尺寸/stride 溢出；damage 用例覆盖共享 surface 的结构/布局失效、失败回滚和逻辑到 drawable
-scissor 的向外取整与裁剪。
+backend 用例覆盖缩放、过滤、字体缓存隔离、开放 contour fill、Mono dither、framebuffer
+尺寸/stride 溢出、能力查询、AA 支持/拒绝、失败回滚和幂等请求；damage 用例覆盖共享
+surface 的结构/布局失效、失败回滚和逻辑到 drawable scissor 的向外取整与裁剪。
+窗口 GPU 切换还会以 PAL 已协商的 multisample 状态覆盖 GL 查询结果，避免把驱动默认值
+误当成 surface 能力。
 
 Floating widget 的绘制与命中语义也分离：`floating=true` 且没有 `on_event` 的普通控件
 是 paint-only overlay，不会吞掉其下方控件的 pointer hit-test；带 `on_event` 的浮层仍按

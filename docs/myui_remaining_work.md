@@ -15,12 +15,15 @@
   64 位乘法均有测试，但暂不把它冒险用于默认 swapchain composite。
 - 编辑器光标闪烁、变高列表 prefix-sum、跨后端 nearest/bilinear 已存在，不再作为
   未实现能力记录。
+- vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
+  成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
+  Break RHI/Vulkan 在事务式 sample-count target 尚未接通前只暴露 level 0。
 
 ## 未完成能力
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| GPU AA 动态协商 | Vulkan/Break RHI 公共 `set_antialias_level` 仍不支持；Vulkan 仅有内部 MSAA 选择 | 重建失败后切换半成品 target、render-pass 不兼容、同步错误 | fake RHI 状态机 + GL/VK headless 创建失败回滚 + 真实窗口 smoke |
+| GPU AA 动态协商 | capability 查询、非法请求拒绝、失败回滚和 GL surface multisample 识别已完成；Vulkan/Break RHI 公共 level 2 仍未开放，Vulkan 仅有内部 MSAA 选择 | 重建失败后切换半成品 target、render-pass 不兼容、同步错误 | fake RHI 状态机 + GL/VK headless 创建失败回滚 + 真实窗口 smoke |
 | OpenType shaping | Arabic fallback，不含完整 GSUB/GPOS、mark positioning、脚本 shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | HarfBuzz 可选构建；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
 | 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |

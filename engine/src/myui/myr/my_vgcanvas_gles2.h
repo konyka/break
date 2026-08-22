@@ -45,6 +45,10 @@ my_ret_t my_vgcanvas_gles2_resize(my_vgcanvas_t* vg, int32_t width,
  */
 my_ret_t my_vgcanvas_gles2_set_antialias(my_vgcanvas_t* vg, bool enabled);
 
+/** @brief Update the surface multisample capability after PAL negotiation. */
+my_ret_t my_vgcanvas_gles2_set_multisample_available(my_vgcanvas_t* vg,
+                                                      bool available);
+
 /**
  * @brief HiDPI display scale (M12c): vertices/device coords = (user +
  * translate) * scale, font sizes multiply; viewport stays physical.

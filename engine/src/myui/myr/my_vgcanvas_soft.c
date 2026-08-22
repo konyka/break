@@ -1545,6 +1545,14 @@ my_vgcanvas_t* my_vgcanvas_soft_create(const my_allocator_t* allocator,
     return NULL;
   }
   s->base.vtable = &s_soft_vtable;
+  s->base.capabilities.antialias_levels =
+      MY_VGCANVAS_AA_LEVEL_BIT(0) | MY_VGCANVAS_AA_LEVEL_BIT(1) |
+      MY_VGCANVAS_AA_LEVEL_BIT(2);
+  s->base.capabilities.scale_filters =
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_NEAREST) |
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_BILINEAR);
+  s->base.capabilities.active_antialias_level = 2u;
+  s->base.capabilities.active_scale_filter = MY_SCALE_FILTER_BILINEAR;
   s->allocator = allocator;
   s->lcd = lcd;
   s->state.fill_color = my_color_rgba(0, 0, 0, 255);
@@ -1619,6 +1627,7 @@ static my_ret_t soft_set_scale_filter_vtable(my_vgcanvas_t* vg,
     return MY_RET_INVALID_PARAMS;
   }
   s->scale_filter = filter;
+  s->base.capabilities.active_scale_filter = filter;
   return MY_RET_OK;
 }
 
@@ -1645,6 +1654,7 @@ static my_ret_t soft_set_antialias_level_vtable(my_vgcanvas_t* vg,
     level = 2;
   }
   s->antialias_level = level;
+  s->base.capabilities.active_antialias_level = (uint8_t)level;
   return MY_RET_OK;
 }
 

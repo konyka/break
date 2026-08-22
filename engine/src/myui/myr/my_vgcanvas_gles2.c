@@ -100,6 +100,7 @@ typedef struct my_vgcanvas_gles2_t {
   uint32_t text_program; /**< lazy: created on first draw_text */
   uint32_t img_program;  /**< lazy: created on first draw_image */
   bool msaa;             /**< GL_MULTISAMPLE requested (M11c) */
+  bool multisample_available;
   gles_tex_entry_t tex_cache[GLES_TEX_CACHE_SIZE];
   gles_img_tex_entry_t img_tex_cache[GLES_IMG_TEX_CACHE_SIZE];
   uint64_t img_tex_tick;
@@ -702,10 +703,21 @@ my_vgcanvas_t* my_vgcanvas_gles2_create_with_gl(const my_allocator_t* allocator,
     return NULL;
   }
   s->base.vtable = &s_gles_vtable;
+  s->base.capabilities.antialias_levels = MY_VGCANVAS_AA_LEVEL_BIT(0);
+  s->base.capabilities.scale_filters =
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_NEAREST) |
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_BILINEAR);
+  s->base.capabilities.active_antialias_level = 0u;
+  s->base.capabilities.active_scale_filter = MY_SCALE_FILTER_BILINEAR;
   s->allocator = allocator;
   s->gl = *gl;
   s->fb_w = width;
   s->fb_h = height;
+  s->multisample_available =
+      gl->has_multisample != NULL && gl->has_multisample(gl->ctx);
+  if (s->multisample_available) {
+    s->base.capabilities.antialias_levels |= MY_VGCANVAS_AA_LEVEL_BIT(2);
+  }
   my_vggeometry_init(&s->geo, allocator);
   s->program = gles_make_program(s, VS_SRC, FS_SRC);
   if (s->program == 0) {
@@ -754,9 +766,37 @@ my_ret_t my_vgcanvas_gles2_set_antialias(my_vgcanvas_t* vg, bool enabled) {
   if (s == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
+  if (enabled && !s->multisample_available) {
+    return MY_RET_NOT_SUPPORTED;
+  }
+  if (s->msaa == enabled) {
+    return MY_RET_OK;
+  }
   s->msaa = enabled;
   if (s->gl.set_multisample != NULL) {
     s->gl.set_multisample(s->gl.ctx, enabled);
+  }
+  s->base.capabilities.active_antialias_level = enabled ? 2u : 0u;
+  return MY_RET_OK;
+}
+
+my_ret_t my_vgcanvas_gles2_set_multisample_available(my_vgcanvas_t* vg,
+                                                      bool available) {
+  my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
+  if (s == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (!available && s->msaa) {
+    if (s->gl.set_multisample != NULL) {
+      s->gl.set_multisample(s->gl.ctx, false);
+    }
+    s->msaa = false;
+    s->base.capabilities.active_antialias_level = 0u;
+  }
+  s->multisample_available = available;
+  s->base.capabilities.antialias_levels = MY_VGCANVAS_AA_LEVEL_BIT(0);
+  if (available) {
+    s->base.capabilities.antialias_levels |= MY_VGCANVAS_AA_LEVEL_BIT(2);
   }
   return MY_RET_OK;
 }

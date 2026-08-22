@@ -205,6 +205,15 @@ static void gl_set_multisample(void* ctx, bool on) {
   (void)glGetError();
 }
 
+static bool gl_has_multisample(void* ctx) {
+  GLint buffers = 0;
+  GLint samples = 0;
+  (void)ctx;
+  glGetIntegerv(GL_SAMPLE_BUFFERS, &buffers);
+  glGetIntegerv(GL_SAMPLES, &samples);
+  return buffers > 0 && samples > 0;
+}
+
 const my_gl_t* my_gl_desktop_default(void) {
   static const my_gl_t real = {gl_viewport,      gl_enable_scissor,
                                gl_scissor,       gl_clear_color,
@@ -217,7 +226,8 @@ const my_gl_t* my_gl_desktop_default(void) {
                                NULL,
                                "#version 120\n", /* shader_header_vs */
                                "#version 120\n", /* shader_header_fs */
-                               gl_create_texture_rgba_filtered};
+                               gl_create_texture_rgba_filtered,
+                               gl_has_multisample};
   return &real;
 }
 

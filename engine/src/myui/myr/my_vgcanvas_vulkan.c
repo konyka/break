@@ -1964,8 +1964,7 @@ static my_ret_t vk_set_scale_vtable(my_vgcanvas_t* vg, float scale) {
 
 static my_ret_t vk_set_antialias_level_vtable(my_vgcanvas_t* vg, int level) {
   (void)vg;
-  (void)level;
-  return MY_RET_NOT_SUPPORTED;
+  return level == 0 ? MY_RET_OK : MY_RET_NOT_SUPPORTED;
 }
 
 static my_ret_t vk_set_scale_filter_vtable(my_vgcanvas_t* vg,
@@ -2431,6 +2430,12 @@ static my_vgcanvas_t* vk_create_common(const my_allocator_t* allocator,
     return NULL;
   }
   c->base.vtable = &s_vk_vtable;
+  c->base.capabilities.antialias_levels = MY_VGCANVAS_AA_LEVEL_BIT(0);
+  c->base.capabilities.scale_filters =
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_NEAREST) |
+      MY_VGCANVAS_FILTER_BIT(MY_SCALE_FILTER_BILINEAR);
+  c->base.capabilities.active_antialias_level = 0u;
+  c->base.capabilities.active_scale_filter = MY_SCALE_FILTER_BILINEAR;
   c->allocator = allocator;
   c->offscreen = offscreen;
   c->surface = surface;

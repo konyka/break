@@ -13,9 +13,9 @@
  * Built only with MYUI_HAS_VULKAN; otherwise every entry point returns
  * NULL/MY_RET_NOT_SUPPORTED.
  * The implementation may use an internally selected MSAA render target, but
- * the portable set_antialias_level() control remains NOT_SUPPORTED until the
- * backend exposes a safe sample-count negotiation contract. A failed target
- * rebuild must leave the previously active target intact.
+ * the public capability query exposes level 0 until the backend exposes a
+ * safe sample-count negotiation contract. A failed target rebuild must leave
+ * the previously active target intact.
  */
 #ifndef MY_VGCANVAS_VULKAN_H
 #define MY_VGCANVAS_VULKAN_H

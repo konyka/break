@@ -383,6 +383,16 @@ static my_ret_t window_enable_gpu_gl(my_window_t* win, int api,
     }
     return MY_RET_FAIL;
   }
+  /* PAL owns the surface configuration, so use its negotiated sample state
+   * as the final source of truth for the portable canvas contract. */
+  if (my_vgcanvas_gles2_set_multisample_available(
+          vg, my_pal_gl_has_multisample(gl)) != MY_RET_OK) {
+    my_vgcanvas_destroy(vg);
+    if (gl != win->gl) {
+      my_pal_gl_destroy(gl);
+    }
+    return MY_RET_FAIL;
+  }
   window_release_gpu_resources_except(win, gl);
   win->vg = vg;
   win->vg_owned = true;

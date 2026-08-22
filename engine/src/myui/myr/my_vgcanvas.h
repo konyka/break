@@ -14,8 +14,9 @@
  *  - Path: begin_path/move_to/line_to/close_path build subpaths; fill()
  *    rasterizes with the EVEN-ODD rule, stroke() draws the polyline(s).
  *  - Anti-aliasing, alpha blending, image filtering, and text are backend
- *    capabilities. Callers must check the return value of optional quality
- *    controls; unsupported controls return MY_RET_NOT_SUPPORTED.
+ *    capabilities. Query my_vgcanvas_get_capabilities() before selecting
+ *    quality; unsupported controls return MY_RET_NOT_SUPPORTED and failed
+ *    changes do not alter the active state.
  */
 #ifndef MY_VGCANVAS_H
 #define MY_VGCANVAS_H
@@ -44,6 +45,16 @@ typedef enum my_scale_filter_t {
   MY_SCALE_FILTER_NEAREST = 0,
   MY_SCALE_FILTER_BILINEAR
 } my_scale_filter_t;
+
+#define MY_VGCANVAS_AA_LEVEL_BIT(level) (1u << (level))
+#define MY_VGCANVAS_FILTER_BIT(filter) (1u << (filter))
+
+typedef struct my_vgcanvas_capabilities_t {
+  uint32_t antialias_levels; /**< bitset of supported levels 0..2 */
+  uint32_t scale_filters; /**< bitset of supported my_scale_filter_t values */
+  uint8_t active_antialias_level; /**< last successfully activated level */
+  my_scale_filter_t active_scale_filter; /**< last successfully activated filter */
+} my_vgcanvas_capabilities_t;
 
 /** @brief vgcanvas vtable (frozen interface for all render backends). */
 typedef struct my_vgcanvas_vtable_t {
@@ -142,7 +153,18 @@ typedef struct my_vgcanvas_vtable_t {
 /** @brief vgcanvas base "class": first member of every backend. */
 struct my_vgcanvas_t {
   const my_vgcanvas_vtable_t* vtable;
+  my_vgcanvas_capabilities_t capabilities;
 };
+
+/** @brief Read immutable backend capabilities and current quality state. */
+static inline my_ret_t my_vgcanvas_get_capabilities(
+    const my_vgcanvas_t* vg, my_vgcanvas_capabilities_t* out) {
+  if (vg == NULL || out == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  *out = vg->capabilities;
+  return MY_RET_OK;
+}
 
 static inline my_ret_t my_vgcanvas_begin_frame(my_vgcanvas_t* vg,
                                                const my_rect_t* dirty) {
@@ -296,7 +318,23 @@ static inline my_ret_t my_vgcanvas_set_antialias_level(my_vgcanvas_t* vg,
   if (vg == NULL || vg->vtable->set_antialias_level == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
-  return vg->vtable->set_antialias_level(vg, level);
+  if (level < 0 || level > 2) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if ((vg->capabilities.antialias_levels &
+       MY_VGCANVAS_AA_LEVEL_BIT(level)) == 0u) {
+    return MY_RET_NOT_SUPPORTED;
+  }
+  if (vg->capabilities.active_antialias_level == (uint8_t)level) {
+    return MY_RET_OK;
+  }
+  {
+    my_ret_t ret = vg->vtable->set_antialias_level(vg, level);
+    if (ret == MY_RET_OK) {
+      vg->capabilities.active_antialias_level = (uint8_t)level;
+    }
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_set_scale_filter(my_vgcanvas_t* vg,
@@ -304,7 +342,24 @@ static inline my_ret_t my_vgcanvas_set_scale_filter(my_vgcanvas_t* vg,
   if (vg == NULL || vg->vtable->set_scale_filter == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
-  return vg->vtable->set_scale_filter(vg, filter);
+  if (filter != MY_SCALE_FILTER_NEAREST &&
+      filter != MY_SCALE_FILTER_BILINEAR) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if ((vg->capabilities.scale_filters & MY_VGCANVAS_FILTER_BIT(filter)) ==
+      0u) {
+    return MY_RET_NOT_SUPPORTED;
+  }
+  if (vg->capabilities.active_scale_filter == filter) {
+    return MY_RET_OK;
+  }
+  {
+    my_ret_t ret = vg->vtable->set_scale_filter(vg, filter);
+    if (ret == MY_RET_OK) {
+      vg->capabilities.active_scale_filter = filter;
+    }
+    return ret;
+  }
 }
 
 #endif /* MY_VGCANVAS_H */
