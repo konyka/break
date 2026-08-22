@@ -33,6 +33,9 @@
   color/depth renderbuffer、单采样可读 texture 和切换时 resolve；Vulkan 使用 multisample
   color/depth attachment、单采样 resolve attachment 及匹配 sample-count 的 render-pass/
   pipeline variant。能力不足时明确拒绝，不静默降级。
+- 已修复 resize 与 AA 请求同帧合并时 pending 请求被清除的缺陷；候选 target 激活后仍会
+  保留尚未满足的 AA 请求，直到下一次 render 边界成功切换。OpenGL 候选 FBO 的 multisample
+  renderbuffer、resolve FBO 和可采样纹理也统一走失败清理路径，避免资源泄漏。
 
 ## 未完成能力
 

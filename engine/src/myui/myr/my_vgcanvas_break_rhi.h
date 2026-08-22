@@ -26,6 +26,8 @@ void my_vgcanvas_break_rhi_set_cmd(my_vgcanvas_t *vg, RHICmdBuffer *cmd);
  * NULL disables target-backed AA negotiation. */
 void my_vgcanvas_break_rhi_set_target(my_vgcanvas_t *vg,
                                       RHIOffscreenFBO *target);
+void my_vgcanvas_break_rhi_set_target_preserve_pending(
+    my_vgcanvas_t *vg, RHIOffscreenFBO *target, int pending_level);
 
 /* Returns 0 or 2 when a target switch is queued, otherwise -1. */
 int my_vgcanvas_break_rhi_pending_antialias_level(const my_vgcanvas_t *vg);

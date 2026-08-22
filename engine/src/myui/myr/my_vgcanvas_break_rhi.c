@@ -58,7 +58,6 @@ typedef struct my_vgcanvas_break_rhi_t {
   RHICmdBuffer *cmd;
   RHIOffscreenFBO *target;
   int pending_antialias_level;
-  bool frame_active;
   u32 width, height;
 
   break_rhi_state_t state;
@@ -544,7 +543,6 @@ static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
 static my_ret_t rhi_begin_frame(my_vgcanvas_t *vg, const my_rect_t *dirty) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
   (void)dirty;
-  c->frame_active = true;
   c->solid_count = 0;
   c->image_count = 0;
   c->image_batch_count = 0;
@@ -555,7 +553,6 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
   u32 slot;
   size_t i;
-  c->frame_active = false;
   if (c->cmd == NULL || (c->solid_count == 0 && c->image_count == 0)) {
     return MY_RET_OK;
   }
@@ -1027,6 +1024,21 @@ void my_vgcanvas_break_rhi_set_target(my_vgcanvas_t *vg,
   }
   c->base.capabilities.active_antialias_level =
       target != NULL && target->sample_count > 1u ? 2u : 0u;
+}
+
+void my_vgcanvas_break_rhi_set_target_preserve_pending(
+    my_vgcanvas_t *vg, RHIOffscreenFBO *target, int pending_level) {
+  my_vgcanvas_break_rhi_t *c;
+  my_vgcanvas_break_rhi_set_target(vg, target);
+  if (vg == NULL || pending_level < 0 ||
+      !my_vgcanvas_break_rhi_aa_level_is_supported(pending_level)) {
+    return;
+  }
+  c = rhi_canvas(vg);
+  if (target != NULL)
+    c->pending_antialias_level =
+        my_vgcanvas_break_rhi_preserved_pending_level(
+            pending_level, target->sample_count);
 }
 
 int my_vgcanvas_break_rhi_pending_antialias_level(const my_vgcanvas_t *vg) {

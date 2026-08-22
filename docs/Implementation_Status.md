@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+最近阶段补充：**BreakUI AA/resize 事务边界收口（TDD）**：修复同一 render 边界同时发生
+drawable resize 与 AA 请求时，resize 的 target 注入会清掉 pending AA 请求的问题；候选 target
+激活后保留仍未满足的质量请求，下一边界继续重试，不静默降级。补充纯契约测试覆盖 pending
+保留、已满足和非法请求。OpenGL 多采样 offscreen target 的失败清理统一覆盖 MSAA color/depth
+renderbuffer、resolve FBO、color/depth texture，避免候选创建失败泄漏 GPU 对象。原有 Vulkan
+2x+ resolve、sample-count pipeline variant、BreakUI 回滚和 validation gate 继续保持通过。
+
 最近更新：**R559 动态 IBL 跨帧重烘焙（TDD）**：静态 IBL 在实时太阳（L/J/I/K、TOD）变化后
 会与可见 skybox 漂移。新增默认 36000 帧（约 10 分钟@60 FPS）触发的运行时 rebake，并提供
 `BREAK_IBL_STATIC=1` 静态 opt-out 与 `BREAK_IBL_REBAKE_FRAMES=N` 无头验证覆盖。重烘焙不再一次性

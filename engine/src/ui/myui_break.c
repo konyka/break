@@ -501,6 +501,8 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
                     logical_height != ui->logical_height;
   if (drawable_changed) {
     u32 sample_count = ui->surface_fbo.sample_count;
+    int pending_level =
+        my_vgcanvas_break_rhi_pending_antialias_level(ui->vg);
     RHIOffscreenFBO old_fbo = ui->surface_fbo;
     RHIOffscreenFBO candidate = rhi_offscreen_fbo_create_desc(
         ui->device, &(RHIOffscreenFBODesc){
@@ -512,7 +514,8 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
       return;
     }
     ui->surface_fbo = candidate;
-    my_vgcanvas_break_rhi_set_target(ui->vg, &ui->surface_fbo);
+    my_vgcanvas_break_rhi_set_target_preserve_pending(
+        ui->vg, &ui->surface_fbo, pending_level);
     my_vgcanvas_break_rhi_resize(ui->vg, width, height);
     ui->width = width;
     ui->height = height;

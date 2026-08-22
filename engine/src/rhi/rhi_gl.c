@@ -198,6 +198,20 @@ static void gl_resolve_active_offscreen(void) {
     }
 }
 
+static void gl_release_offscreen_storage(GLFBOData *fd) {
+    if (!fd) return;
+    if (g_gl_bound_fbo == fd->gl_fbo || g_gl_bound_fbo == fd->resolve_fbo)
+        g_gl_bound_fbo = 0;
+    if (fd->gl_fbo) glDeleteFramebuffers(1, &fd->gl_fbo);
+    if (fd->resolve_fbo && fd->resolve_fbo != fd->gl_fbo)
+        glDeleteFramebuffers(1, &fd->resolve_fbo);
+    if (fd->color_tex) glDeleteTextures(1, &fd->color_tex);
+    if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+    if (fd->color_rb) glDeleteRenderbuffers(1, &fd->color_rb);
+    if (fd->depth_rb) glDeleteRenderbuffers(1, &fd->depth_rb);
+    free(fd);
+}
+
 /* R79-4: GL_SCISSOR_TEST enable cache — avoids redundant glEnable/glDisable
  * calls in shadow pass (4 cascades enable + 2 unbinds disable per frame). */
 static bool g_gl_scissor_enabled = false;
@@ -2175,10 +2189,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
             LOG_WARN("GL: multisample offscreen FBO incomplete (0x%x)",
                      (unsigned)msaa_status);
             gl_bind_fbo_cached(0);
-            glDeleteFramebuffers(1, &fd->gl_fbo);
-            glDeleteRenderbuffers(1, &fd->color_rb);
-            glDeleteRenderbuffers(1, &fd->depth_rb);
-            free(fd);
+            gl_release_offscreen_storage(fd);
             return (RHIOffscreenFBO){0};
         }
 
@@ -2221,11 +2232,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
     gl_bind_fbo_cached(0);
     if (off_status != GL_FRAMEBUFFER_COMPLETE) {
         LOG_WARN("GL: offscreen FBO incomplete (0x%x)", (unsigned)off_status);
-        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
-        glDeleteFramebuffers(1, &fd->gl_fbo);
-        glDeleteTextures(1, &fd->color_tex);
-        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
-        free(fd);
+        gl_release_offscreen_storage(fd);
         return (RHIOffscreenFBO){0};
     }
 
@@ -2240,11 +2247,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
     if (!td) {
         /* R359: never publish fb without color/depth handles — callers gate on fb. */
         LOG_WARN("GL: offscreen color slot alloc failed");
-        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
-        glDeleteFramebuffers(1, &fd->gl_fbo);
-        glDeleteTextures(1, &fd->color_tex);
-        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
-        free(fd);
+        gl_release_offscreen_storage(fd);
         rhi_free_slot(dev, rhi_make_handle(tidx, dev->slots[tidx].generation));
         return (RHIOffscreenFBO){0};
     }
@@ -2260,12 +2263,8 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
     GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
     if (!dtd) {
         LOG_WARN("GL: offscreen depth slot alloc failed");
-        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
-        glDeleteFramebuffers(1, &fd->gl_fbo);
-        glDeleteTextures(1, &fd->color_tex);
-        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+        gl_release_offscreen_storage(fd);
         free(td);
-        free(fd);
         rhi_free_slot(dev, rhi_make_handle(cidx, dev->slots[cidx].generation));
         rhi_free_slot(dev, rhi_make_handle(tidx, dev->slots[tidx].generation));
         return (RHIOffscreenFBO){0};

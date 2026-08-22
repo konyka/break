@@ -11,6 +11,17 @@ static inline bool my_vgcanvas_break_rhi_aa_level_is_supported(int level) {
   return level == 0 || level == 2;
 }
 
+static inline int my_vgcanvas_break_rhi_preserved_pending_level(
+    int pending_level, u32 target_sample_count) {
+  if (!my_vgcanvas_break_rhi_aa_level_is_supported(pending_level) ||
+      target_sample_count ==
+          my_vgcanvas_break_rhi_sample_count_for_aa_level_internal(
+              pending_level)) {
+    return -1;
+  }
+  return pending_level;
+}
+
 /* Keep an implicit full-surface clip full after a drawable resize. Explicit
  * clips stay in device coordinates and are clamped to the new surface. */
 static inline my_rect_t my_vgcanvas_break_rhi_resize_clip(my_rect_t clip,
