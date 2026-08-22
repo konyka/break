@@ -56,6 +56,9 @@ typedef struct my_vgcanvas_break_rhi_t {
   const my_allocator_t *allocator;
   RHIDevice *device;
   RHICmdBuffer *cmd;
+  RHIOffscreenFBO *target;
+  int pending_antialias_level;
+  bool frame_active;
   u32 width, height;
 
   break_rhi_state_t state;
@@ -97,6 +100,10 @@ static const float BREAK_RHI_WHITE_UV =
 
 static my_vgcanvas_break_rhi_t *rhi_canvas(my_vgcanvas_t *vg) {
   return (my_vgcanvas_break_rhi_t *)vg;
+}
+
+u32 my_vgcanvas_break_rhi_sample_count_for_aa_level(int level) {
+  return my_vgcanvas_break_rhi_sample_count_for_aa_level_internal(level);
 }
 
 static my_ret_t grow_bytes(const my_allocator_t *allocator, void **array,
@@ -537,6 +544,7 @@ static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
 static my_ret_t rhi_begin_frame(my_vgcanvas_t *vg, const my_rect_t *dirty) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
   (void)dirty;
+  c->frame_active = true;
   c->solid_count = 0;
   c->image_count = 0;
   c->image_batch_count = 0;
@@ -547,6 +555,7 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
   u32 slot;
   size_t i;
+  c->frame_active = false;
   if (c->cmd == NULL || (c->solid_count == 0 && c->image_count == 0)) {
     return MY_RET_OK;
   }
@@ -640,8 +649,24 @@ static my_ret_t rhi_set_scale_vtable(my_vgcanvas_t *vg, float scale) {
 }
 
 static my_ret_t rhi_set_antialias_level_vtable(my_vgcanvas_t *vg, int level) {
-  (void)vg;
-  return level == 0 ? MY_RET_OK : MY_RET_NOT_SUPPORTED;
+  my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
+  if (c == NULL || !my_vgcanvas_break_rhi_aa_level_is_supported(level)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (c->target == NULL ||
+      (level == 2 &&
+       (c->base.capabilities.antialias_levels &
+        MY_VGCANVAS_AA_LEVEL_BIT(2)) == 0u)) {
+    return MY_RET_NOT_SUPPORTED;
+  }
+  if (c->target->sample_count ==
+      my_vgcanvas_break_rhi_sample_count_for_aa_level_internal(level)) {
+    return MY_RET_OK;
+  }
+  c->pending_antialias_level = level;
+  /* Target replacement belongs to BreakUI and must happen before the next
+   * render pass, not while a paint callback is recording commands. */
+  return MY_RET_PENDING;
 }
 
 static my_ret_t rhi_set_scale_filter_vtable(my_vgcanvas_t *vg,
@@ -904,6 +929,7 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   c->device = device;
   c->width = width;
   c->height = height;
+  c->pending_antialias_level = -1;
   c->state.fill_color = my_color_rgba(0, 0, 0, 255);
   c->state.stroke_color = my_color_rgba(0, 0, 0, 255);
   c->state.line_width = 1.0f;
@@ -982,6 +1008,32 @@ void my_vgcanvas_break_rhi_set_cmd(my_vgcanvas_t *vg, RHICmdBuffer *cmd) {
   if (vg != NULL) {
     rhi_canvas(vg)->cmd = cmd;
   }
+}
+
+void my_vgcanvas_break_rhi_set_target(my_vgcanvas_t *vg,
+                                      RHIOffscreenFBO *target) {
+  my_vgcanvas_break_rhi_t *c;
+  RHICapabilities caps;
+  if (vg == NULL) return;
+  c = rhi_canvas(vg);
+  c->target = target;
+  c->pending_antialias_level = -1;
+  c->base.capabilities.antialias_levels = MY_VGCANVAS_AA_LEVEL_BIT(0);
+  if (target != NULL && rhi_device_get_capabilities(c->device, &caps) &&
+      (caps.color_sample_counts & rhi_sample_count_bit(2u)) != 0u &&
+      (caps.depth_sample_counts & rhi_sample_count_bit(2u)) != 0u &&
+      caps.color_resolve_supported && caps.depth_resolve_supported) {
+    c->base.capabilities.antialias_levels |= MY_VGCANVAS_AA_LEVEL_BIT(2);
+  }
+  c->base.capabilities.active_antialias_level =
+      target != NULL && target->sample_count > 1u ? 2u : 0u;
+}
+
+int my_vgcanvas_break_rhi_pending_antialias_level(const my_vgcanvas_t *vg) {
+  const my_vgcanvas_break_rhi_t *c;
+  if (vg == NULL) return -1;
+  c = (const my_vgcanvas_break_rhi_t *)vg;
+  return c->pending_antialias_level;
 }
 
 my_ret_t my_vgcanvas_break_rhi_resize(my_vgcanvas_t *vg, u32 width,

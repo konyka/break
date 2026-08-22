@@ -112,10 +112,14 @@ static RHIPipeline break_ui_create_composite_pipeline(RHIDevice *device) {
 }
 
 static bool break_ui_create_surface_resources(BreakUI *ui, u32 width,
-                                              u32 height) {
+                                              u32 height, u32 sample_count) {
   RHISamplerDesc sampler_desc;
-  ui->surface_fbo = rhi_offscreen_fbo_create_fmt(
-      ui->device, width, height, RHI_FORMAT_R8G8B8A8_UNORM);
+  ui->surface_fbo = rhi_offscreen_fbo_create_desc(
+      ui->device, &(RHIOffscreenFBODesc){
+          .width = width,
+          .height = height,
+          .color_format = RHI_FORMAT_R8G8B8A8_UNORM,
+          .sample_count = sample_count});
   if (!rhi_handle_valid(ui->surface_fbo.fb)) {
     return false;
   }
@@ -133,8 +137,12 @@ static bool break_ui_create_surface_resources(BreakUI *ui, u32 width,
   }
   if (!rhi_handle_valid(ui->composite_pipeline) ||
       !rhi_handle_valid(ui->composite_sampler)) {
+    if (rhi_handle_valid(ui->surface_fbo.fb)) {
+      rhi_offscreen_fbo_destroy(ui->device, &ui->surface_fbo);
+    }
     return false;
   }
+  my_vgcanvas_break_rhi_set_target(ui->vg, &ui->surface_fbo);
   ui->surface_valid = false;
   return true;
 }
@@ -384,7 +392,7 @@ bool break_ui_init_with_fonts(BreakUI *ui, Platform *platform,
     break_ui_shutdown(ui);
     return false;
   }
-  if (!break_ui_create_surface_resources(ui, ui->width, ui->height)) {
+  if (!break_ui_create_surface_resources(ui, ui->width, ui->height, 1u)) {
     break_ui_shutdown(ui);
     return false;
   }
@@ -470,6 +478,11 @@ void break_ui_pump(BreakUI *ui) {
   pump_text(ui);
 }
 
+my_ret_t break_ui_set_antialias_level(BreakUI *ui, int level) {
+  if (ui == NULL || ui->vg == NULL) return MY_RET_INVALID_PARAMS;
+  return my_vgcanvas_set_antialias_level(ui->vg, level);
+}
+
 void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   u32 logical_width = 0;
   u32 logical_height = 0;
@@ -487,14 +500,47 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   logical_changed = logical_width != ui->logical_width ||
                     logical_height != ui->logical_height;
   if (drawable_changed) {
+    u32 sample_count = ui->surface_fbo.sample_count;
+    RHIOffscreenFBO old_fbo = ui->surface_fbo;
+    RHIOffscreenFBO candidate = rhi_offscreen_fbo_create_desc(
+        ui->device, &(RHIOffscreenFBODesc){
+            .width = width,
+            .height = height,
+            .color_format = RHI_FORMAT_R8G8B8A8_UNORM,
+            .sample_count = sample_count});
+    if (!rhi_handle_valid(candidate.fb)) {
+      return;
+    }
+    ui->surface_fbo = candidate;
+    my_vgcanvas_break_rhi_set_target(ui->vg, &ui->surface_fbo);
+    my_vgcanvas_break_rhi_resize(ui->vg, width, height);
     ui->width = width;
     ui->height = height;
-    my_vgcanvas_break_rhi_resize(ui->vg, width, height);
-    if (rhi_handle_valid(ui->surface_fbo.fb)) {
-      rhi_offscreen_fbo_destroy(ui->device, &ui->surface_fbo);
+    if (rhi_handle_valid(old_fbo.fb)) {
+      rhi_offscreen_fbo_destroy(ui->device, &old_fbo);
     }
-    if (!break_ui_create_surface_resources(ui, width, height)) {
-      return;
+    ui->surface_valid = false;
+  }
+  {
+    int pending_level = my_vgcanvas_break_rhi_pending_antialias_level(ui->vg);
+    if (pending_level >= 0) {
+      u32 sample_count = my_vgcanvas_break_rhi_sample_count_for_aa_level(
+          pending_level);
+      RHIOffscreenFBO old_fbo = ui->surface_fbo;
+      RHIOffscreenFBO candidate = rhi_offscreen_fbo_create_desc(
+          ui->device, &(RHIOffscreenFBODesc){
+              .width = ui->width,
+              .height = ui->height,
+              .color_format = RHI_FORMAT_R8G8B8A8_UNORM,
+              .sample_count = sample_count});
+      if (rhi_handle_valid(candidate.fb)) {
+        ui->surface_fbo = candidate;
+        my_vgcanvas_break_rhi_set_target(ui->vg, &ui->surface_fbo);
+        ui->surface_valid = false;
+        if (rhi_handle_valid(old_fbo.fb)) {
+          rhi_offscreen_fbo_destroy(ui->device, &old_fbo);
+        }
+      }
     }
   }
   if (logical_changed) {

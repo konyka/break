@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 
+#include "myc/my_error.h"
 #include "platform/platform.h"
 #include "rhi/rhi.h"
 
@@ -34,6 +35,9 @@ void break_ui_shutdown(BreakUI *ui);
 void break_ui_destroy(BreakUI *ui);
 void break_ui_pump(BreakUI *ui);
 void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height);
+/* Queue a transactional AA target switch; activation occurs before the next
+ * render pass. The active target remains usable if creation fails. */
+my_ret_t break_ui_set_antialias_level(BreakUI *ui, int level);
 
 void *break_ui_window(BreakUI *ui);
 struct my_window_t *break_ui_get_window(BreakUI *ui);

@@ -6,10 +6,9 @@
  * (xy + uv + RGBA) and submits them through the Break RHI. Solid geometry
  * and glyphs share a single atlas-backed pipeline; images use a second
  * RGBA-texture pipeline. Path tessellation is delegated to my_vggeometry.
- * The public capability query exposes level 0 only. The canvas deliberately
- * keeps a single-sample target until the Break RHI exposes transactional
- * sample-count negotiation; requests for higher levels return
- * MY_RET_NOT_SUPPORTED without changing state.
+ * The canvas borrows an optional Break RHI offscreen target. BreakUI owns the
+ * target transaction; the canvas queues quality changes requested during a
+ * paint callback and never destroys or replaces the active target itself.
  */
 #ifndef MY_VGCANVAS_BREAK_RHI_H
 #define MY_VGCANVAS_BREAK_RHI_H
@@ -22,6 +21,17 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
                                             u32 height);
 
 void my_vgcanvas_break_rhi_set_cmd(my_vgcanvas_t *vg, RHICmdBuffer *cmd);
+
+/* Attach the currently active target without transferring ownership. Passing
+ * NULL disables target-backed AA negotiation. */
+void my_vgcanvas_break_rhi_set_target(my_vgcanvas_t *vg,
+                                      RHIOffscreenFBO *target);
+
+/* Returns 0 or 2 when a target switch is queued, otherwise -1. */
+int my_vgcanvas_break_rhi_pending_antialias_level(const my_vgcanvas_t *vg);
+
+/* Map the portable AA level to the RHI target sample count. */
+u32 my_vgcanvas_break_rhi_sample_count_for_aa_level(int level);
 
 my_ret_t my_vgcanvas_break_rhi_resize(my_vgcanvas_t *vg, u32 width,
                                       u32 height);

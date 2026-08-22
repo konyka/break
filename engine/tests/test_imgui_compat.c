@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "ui/imgui.h"
+#include "myr/my_vgcanvas_break_rhi.h"
 #include "myr/my_vgcanvas_break_rhi_internal.h"
 
 TEST(imgui_button_clicks_on_release)
@@ -92,8 +93,19 @@ TEST(break_rhi_resize_preserves_or_clamps_device_clip)
   ASSERT_EQ(clip.h, 60);
 }
 
+TEST(break_rhi_aa_levels_map_to_transactional_targets)
+{
+  ASSERT_TRUE(my_vgcanvas_break_rhi_aa_level_is_supported(0));
+  ASSERT_TRUE(my_vgcanvas_break_rhi_aa_level_is_supported(2));
+  ASSERT_TRUE(!my_vgcanvas_break_rhi_aa_level_is_supported(1));
+  ASSERT_TRUE(!my_vgcanvas_break_rhi_aa_level_is_supported(3));
+  ASSERT_EQ(my_vgcanvas_break_rhi_sample_count_for_aa_level(0), 1u);
+  ASSERT_EQ(my_vgcanvas_break_rhi_sample_count_for_aa_level(2), 2u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(imgui_button_clicks_on_release);
     RUN_TEST(imgui_controls_update_values);
     RUN_TEST(break_rhi_resize_preserves_or_clamps_device_clip);
+    RUN_TEST(break_rhi_aa_levels_map_to_transactional_targets);
 TEST_MAIN_END()

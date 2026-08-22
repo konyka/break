@@ -21,8 +21,9 @@
 - 新增后端无关的 sample-count/resize 事务 helper：候选资源按 `create -> validate ->
   submit -> activate -> retire` 提交；创建、验证或提交失败只销毁 candidate，保留
   active resource、样本数和尺寸。相同请求零分配、零重建；支持的样本数通过显式的
-  power-of-two capability mask 表示。该 helper 已由 fake 状态机覆盖，但尚未接入真实
-  Vulkan 或 Break RHI。
+  power-of-two capability mask 表示。该 helper 已由 fake 状态机覆盖；BreakUI 的 resize
+  与 AA 切换已接入同等的 candidate/active/retire 生命周期，独立 Vulkan vgcanvas 仍保留
+  自己的 backend-specific target 边界。
 - Break RHI 已新增只读 `RHICapabilities` 查询：统一报告后端类型、颜色/深度样本数能力、
   当前 surface 样本数和 resolve 能力；GL 从当前上下文查询，Vulkan 从 physical-device
   sample-count limits 与 depth-stencil resolve properties 查询。查询本身无分配、无同步、
@@ -37,7 +38,7 @@
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、失败回滚和真实 2x smoke 已完成；动态窗口级 AA 协商仍未接入 vgcanvas 公共开关 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean；剩余工作为事务 helper 接入窗口级设置 |
+| GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | Arabic fallback，不含完整 GSUB/GPOS、mark positioning、脚本 shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | HarfBuzz 可选构建；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
 | 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |

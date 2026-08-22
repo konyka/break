@@ -178,6 +178,12 @@ my_window_t *win = break_ui_get_window(ui);
 - solid/image 分别使用双缓冲动态 VBO（按 `rhi_frame_index` 选择）。
 - 路径和圆角矩形由共享 `my_vggeometry` CPU 三角化。
 - OpenGL 使用 `font.vert/frag` + `ui_img.vert/frag`。
+
+BreakUI 的 AA 设置通过 `break_ui_set_antialias_level()` 进入事务边界。请求不会在
+widget paint 回调中销毁或替换当前 FBO；canvas 只记录 pending level，BreakUI 在下一次
+render 边界创建候选 `RHIOffscreenFBO`，创建成功后再激活并回收旧目标。候选创建失败时
+旧目标、尺寸和当前质量保持不变。level `0` 使用 1x，level `2` 在设备同时支持 color/
+depth sample count 与 resolve 时使用 2x；旧 RHI 创建 API 仍固定 1x。
 - Vulkan 使用 `font_vk.vert/frag` + `ui_img_vk.vert/frag`。
 
 ### Canvas 能力契约
@@ -455,8 +461,8 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
 - 文本队列到达预算时采用丢弃而不是阻塞或无限增长；如果应用需要可靠的编辑协议，应在
   上层实现 backpressure/重试，而不是直接绕过 `PlatformTextQueue`。
 - `my_vgcanvas` 的 AA 仍是可选能力而非最低公分母语义；调用者必须处理
-  `MY_RET_NOT_SUPPORTED`。GLES/OpenGL 的 MSAA 开关依赖已创建 surface 的样本能力；Vulkan
-  内部可选择 MSAA render target，但公共 `set_antialias_level()` 仍不承诺动态协商；Break RHI
-  同样明确返回 `MY_RET_NOT_SUPPORTED`。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、
+  `MY_RET_NOT_SUPPORTED`。GLES/OpenGL 的 MSAA 开关依赖已创建 surface 的样本能力；BreakUI
+  的 Break RHI canvas 通过 offscreen FBO 事务支持设备能力允许的 2x 切换，失败时保留旧
+  target。独立 Vulkan vgcanvas 仍保留自己的能力边界。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、
   Vulkan 和 Break RHI 的共同能力；Arabic 基础 shaping、L4 mirror 和 Mono ordered dither
   已落地，完整 OpenType shaping、复杂多段落文本和局部 present 仍按阶段计划处理。

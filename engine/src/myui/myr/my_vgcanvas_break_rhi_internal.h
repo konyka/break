@@ -3,6 +3,14 @@
 
 #include "myr/my_rect.h"
 
+static inline u32 my_vgcanvas_break_rhi_sample_count_for_aa_level_internal(int level) {
+  return level == 2 ? 2u : 1u;
+}
+
+static inline bool my_vgcanvas_break_rhi_aa_level_is_supported(int level) {
+  return level == 0 || level == 2;
+}
+
 /* Keep an implicit full-surface clip full after a drawable resize. Explicit
  * clips stay in device coordinates and are clamped to the new surface. */
 static inline my_rect_t my_vgcanvas_break_rhi_resize_clip(my_rect_t clip,
