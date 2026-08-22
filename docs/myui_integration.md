@@ -204,9 +204,12 @@ OpenGL 的 `2x+` target 使用 multisample color/depth renderbuffer，另建单�
 texture 供采样；离开 target 或切换 target 时执行一次 resolve，避免绘制过程中反复 resolve。
 `RHIOffscreenFBO.color_tex` 和 `depth_tex` 始终指向可采样的单采样结果。
 
-Vulkan 的 `2x+` target 当前明确返回不支持：在深度 resolve 和 render-pass/pipeline sample
-兼容性契约完全实现前，不允许静默回退到 `1x`。因此 myui/BreakUI 不会因为仅查询到 GPU
-能力就自动打开真实 GPU AA；真实 AA 仍由后续 target 事务接入并通过 validation smoke 后启用。
+Vulkan 的 `2x+` target 使用 multisample color/depth image 和单采样 color/depth resolve
+image；render pass 通过 depth-stencil resolve 完成 resolve，pipeline 按颜色格式和 sample
+count 建立兼容 variant。`color_tex/depth_tex` 始终指向可采样的单采样 resolve 结果，MSAA
+attachment 由 FBO 内部持有。设备必须同时支持 color/depth sample count 和至少一种 depth
+resolve mode，否则返回空 target，不静默降级。旧的 `rhi_offscreen_fbo_create*()` API 仍固定
+创建 `1x`；Vulkan shadow/MRT pipeline 的 `sample_count > 1` 当前明确拒绝。
 
 图像过滤是 canvas 状态的一部分，默认值为 bilinear。GLES/OpenGL 的图像纹理缓存键为
 `(rgba 指针, width, height, filter)`，避免同一位图在两种过滤模式间错误复用；没有扩展
@@ -237,7 +240,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
-| GPU AA | Vulkan 与 Break RHI 的 `set_antialias_level` 仍返回 `MY_RET_NOT_SUPPORTED`；RHI 已提供只读 `RHICapabilities` 样本数/resolve 查询，事务 helper 已完成但尚未接入真实 target | 下一步扩展 RHI/RenderPass 的 sample-count target 契约，再以设备能力为准创建 MSAA target；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
+| GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；完整 OpenType GSUB shaping、多段落 rebreaking 仍未实现 | 增加 shaping run、段落级缓存和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入所有 canvas |
 | 编辑器 | 行号、代码折叠、增量语法高亮等高级编辑器能力未实现 | 单独的 virtualized line model，限制单帧重排预算，避免把大文档编辑路径耦合到 widget 绘制 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |

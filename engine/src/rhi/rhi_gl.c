@@ -459,6 +459,7 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
 
     dev->capabilities.backend = RHI_BACKEND_OPENGL;
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.surface_sample_count = 1u;
     {
         GLint max_samples = 1;
@@ -471,6 +472,8 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
         for (u32 samples = 2u; samples <= 64u && samples <= (u32)max_samples;
              samples <<= 1u) {
             dev->capabilities.color_sample_counts |=
+                rhi_sample_count_bit(samples);
+            dev->capabilities.depth_sample_counts |=
                 rhi_sample_count_bit(samples);
         }
         if (sample_buffers > 0 && surface_samples > 0) {

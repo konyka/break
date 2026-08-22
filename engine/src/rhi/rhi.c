@@ -85,7 +85,8 @@ bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
 
     u32 samples = desc->sample_count == 0u ? 1u : desc->sample_count;
     u32 sample_bit = rhi_sample_count_bit(samples);
-    if (sample_bit == 0u || (caps->color_sample_counts & sample_bit) == 0u)
+    if (sample_bit == 0u || (caps->color_sample_counts & sample_bit) == 0u ||
+        (caps->depth_sample_counts & sample_bit) == 0u)
         return false;
     if (samples > 1u && (!caps->color_resolve_supported ||
                          !caps->depth_resolve_supported))

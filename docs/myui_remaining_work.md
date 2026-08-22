@@ -17,25 +17,27 @@
   未实现能力记录。
 - vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
   成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
-  Break RHI/Vulkan 在事务式 sample-count target 尚未接通前只暴露 level 0。
+  Break RHI/Vulkan 的真实 offscreen target 已支持设备能力允许的 2x+ 路径。
 - 新增后端无关的 sample-count/resize 事务 helper：候选资源按 `create -> validate ->
   submit -> activate -> retire` 提交；创建、验证或提交失败只销毁 candidate，保留
   active resource、样本数和尺寸。相同请求零分配、零重建；支持的样本数通过显式的
   power-of-two capability mask 表示。该 helper 已由 fake 状态机覆盖，但尚未接入真实
   Vulkan 或 Break RHI。
-- Break RHI 已新增只读 `RHICapabilities` 查询：统一报告后端类型、颜色样本数能力、
+- Break RHI 已新增只读 `RHICapabilities` 查询：统一报告后端类型、颜色/深度样本数能力、
   当前 surface 样本数和 resolve 能力；GL 从当前上下文查询，Vulkan 从 physical-device
-  `framebufferColorSampleCounts` 查询。查询本身无分配、无同步、无状态改变。
+  sample-count limits 与 depth-stencil resolve properties 查询。查询本身无分配、无同步、
+  无状态改变。
 - RHI 新增 `RHIOffscreenFBODesc` 与无副作用的 descriptor validation；旧创建 API 明确保持
   `1x`，不会因新增能力改变现有渲染行为。OpenGL 的 descriptor 路径已实现 multisample
-  color/depth renderbuffer、单采样可读 texture 和切换时 resolve；Vulkan 当前仅接受 `1x`
-  descriptor，MSAA target 在深度 resolve/render-pass 契约完成前明确拒绝，不静默降级。
+  color/depth renderbuffer、单采样可读 texture 和切换时 resolve；Vulkan 使用 multisample
+  color/depth attachment、单采样 resolve attachment 及匹配 sample-count 的 render-pass/
+  pipeline variant。能力不足时明确拒绝，不静默降级。
 
 ## 未完成能力
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| GPU AA 动态协商 | capability 查询、非法请求拒绝、GL surface multisample 识别、RHI `RHICapabilities` 查询、descriptor validation 和 GL offscreen MSAA target 已完成；Vulkan/Break RHI 公共 level 2 仍未开放 | 重建失败后切换半成品 target、Vulkan 深度 resolve/render-pass 不兼容、同步错误 | fake RHI 状态机 + GL target/readback smoke + Vulkan adapter 创建失败回滚 + 真实窗口 smoke |
+| GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、失败回滚和真实 2x smoke 已完成；动态窗口级 AA 协商仍未接入 vgcanvas 公共开关 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean；剩余工作为事务 helper 接入窗口级设置 |
 | OpenType shaping | Arabic fallback，不含完整 GSUB/GPOS、mark positioning、脚本 shaping | glyph/advance 与逻辑边界错配，字体缓存跨字体污染 | HarfBuzz 可选构建；golden glyph/advance、fallback、cache key 和禁用依赖构建 |
 | 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |
@@ -60,10 +62,11 @@
 ### 阶段 B：GPU AA
 
 1. 先写 fake device 的能力和事务测试：支持/不支持/创建失败/提交失败/重复设置。
-2. RHI 提供最大 color sample count 和 resolve compatibility 查询；GL 读取已创建
-   surface 能力，Vulkan 使用 physical-device limits 与 format properties。
-3. 离屏 target 增加 sample-count descriptor；MSAA color 与 single-sample resolve
-   target 一起候选创建，render pass/pipeline 全部验证后再激活。
+2. RHI 提供 color/depth sample count 和 resolve compatibility 查询；GL 读取已创建
+   surface 能力，Vulkan 使用 physical-device limits 与 depth-stencil resolve properties。
+3. 离屏 target 增加 sample-count descriptor；MSAA color/depth 与单采样 resolve target
+   一起候选创建，render pass/pipeline 全部验证后再激活。Vulkan shadow/MRT 多采样 pipeline
+   在 attachment 契约完整实现前明确拒绝，避免误用 1x render pass。
 4. 旧 target 保持可用直到新 target 首次提交成功；resize、DPI、device lost 都走
    同一事务路径。设备不支持时返回 `MY_RET_NOT_SUPPORTED`，不静默降低用户设置。
 

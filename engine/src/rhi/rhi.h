@@ -35,6 +35,7 @@ static inline u32 rhi_sample_count_bit(u32 count) {
 typedef struct {
     RHIBackend backend;
     u32        color_sample_counts;
+    u32        depth_sample_counts;
     u32        surface_sample_count;
     bool       color_resolve_supported;
     bool       depth_resolve_supported;

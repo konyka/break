@@ -25,6 +25,9 @@ TEST(offscreen_descriptor_requires_safe_supported_values)
     caps.color_sample_counts = rhi_sample_count_bit(1u) |
                                rhi_sample_count_bit(2u) |
                                rhi_sample_count_bit(4u);
+    caps.depth_sample_counts = rhi_sample_count_bit(1u) |
+                               rhi_sample_count_bit(2u) |
+                               rhi_sample_count_bit(4u);
     caps.color_resolve_supported = true;
     caps.depth_resolve_supported = true;
 
@@ -38,12 +41,16 @@ TEST(offscreen_descriptor_requires_safe_supported_values)
     desc.sample_count = 4u;
     caps.depth_resolve_supported = false;
     ASSERT_FALSE(rhi_offscreen_fbo_desc_validate(&caps, &desc));
+    caps.depth_resolve_supported = true;
+    caps.depth_sample_counts = rhi_sample_count_bit(1u) | rhi_sample_count_bit(2u);
+    ASSERT_FALSE(rhi_offscreen_fbo_desc_validate(&caps, &desc));
 }
 
 TEST(offscreen_descriptor_defaults_to_single_sample)
 {
     RHICapabilities caps = {0};
     caps.color_sample_counts = rhi_sample_count_bit(1u);
+    caps.depth_sample_counts = rhi_sample_count_bit(1u);
     RHIOffscreenFBODesc desc = {1u, 1u, RHI_FORMAT_R8G8B8A8_UNORM, 0u};
     ASSERT_TRUE(rhi_offscreen_fbo_desc_validate(&caps, &desc));
     ASSERT_EQ(desc.sample_count, 0u);
