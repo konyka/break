@@ -9,6 +9,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Platform detection
 option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
+# myui integration options
+option(MYUI_FONT_STB "TrueType fonts via stb_truetype" ON)
+option(MYUI_FONT_FREETYPE "Hinted fonts via FreeType when available" ON)
+option(MYUI_IMAGE_STB "Image decode via stb_image" ON)
+option(MYUI_UI_XML "XML UI loader" ON)
+option(MYUI_BIDI "BiDi reorder + Arabic shaping via vendored SheenBidi" ON)
+option(MYUI_HARFBUZZ "Optional OpenType shaping through HarfBuzz + FreeType" ON)
 
 if(UNIX)
     if(APPLE)
@@ -16,7 +23,7 @@ if(UNIX)
     else()
         if(ENGINE_ENABLE_WAYLAND)
             find_package(PkgConfig REQUIRED)
-            pkg_check_modules(WAYLAND REQUIRED wayland-client wayland-egl)
+            pkg_check_modules(WAYLAND REQUIRED wayland-client wayland-egl wayland-cursor)
             pkg_check_modules(XKB REQUIRED xkbcommon)
             find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
         else()
@@ -94,6 +101,7 @@ add_library(engine STATIC
     src/core/string.c
     src/core/profiler.c
     src/platform/input.c
+    src/platform/platform_text.c
     src/platform/time.c
     src/platform/filewatch.c
     src/platform/filewatch_backend.c
@@ -152,10 +160,6 @@ src/renderer/lens_effects.c
     src/physics/character.c
     src/audio/audio.c
     src/audio/audio_stream.c
-    src/ui/debug_ui.c
-    src/ui/font.c
-    src/ui/utf8.c
-    src/ui/imgui.c
     src/animation/skeleton.c
     src/animation/animation.c
     src/script/script.c
@@ -190,7 +194,217 @@ else()
     target_compile_options(lua PRIVATE -w)
 endif()
 
-target_link_libraries(engine PRIVATE glad lua)
+# Vendored stb single-header implementations are shared by the engine asset
+# pipeline, myui's font/image backends, and the dxx application.
+add_library(stb_truetype STATIC external/stb_truetype_impl.c)
+target_include_directories(stb_truetype PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+
+add_library(stb_image STATIC external/stb_image_impl.c)
+target_include_directories(stb_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+
+add_library(stb_image_write STATIC external/stb_image_write_impl.c)
+target_include_directories(stb_image_write PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+
+foreach(stb_target stb_truetype stb_image stb_image_write)
+    if(MSVC)
+        target_compile_options(${stb_target} PRIVATE /w)
+    else()
+        target_compile_options(${stb_target} PRIVATE -w)
+    endif()
+endforeach()
+
+target_link_libraries(engine PRIVATE glad lua stb_image)
+
+set(MYUI_CORE_SOURCES
+    src/myui/myc/my_mem.c
+    src/myui/myc/my_darray.c
+    src/myui/myc/my_str.c
+    src/myui/myc/my_emitter.c
+    src/myui/myc/my_value.c
+    src/myui/myc/my_object.c
+    src/myui/myc/myconf/my_conf.c
+    src/myui/myc/myconf/my_conf_json.c
+    src/myui/myc/myconf/my_conf_bson.c
+    src/myui/myc/myconf/my_conf_toml.c
+    src/myui/myc/myconf/my_conf_yaml.c
+    src/myui/myr/my_dirty_rects.c
+    src/myui/myr/my_lcd_mem.c
+    src/myui/myr/my_vgcanvas_quality_transaction.c
+    src/myui/myr/my_vgcanvas_soft.c
+    src/myui/myr/my_vgcanvas_gles2.c
+    src/myui/myr/my_vgcanvas_vulkan.c
+    src/myui/myr/my_vggeometry.c
+    src/myui/myr/my_gl_real.c
+    src/myui/myr/my_gl_desktop.c
+    src/myui/myr/my_font.c
+    src/myui/myr/my_font_stb.c
+    src/myui/myr/my_font_ft.c
+    src/myui/myr/my_bezier.c
+    src/myui/myr/my_arabic_shape.c
+    src/myui/myr/my_text_layout.c
+    src/myui/myr/my_line_break.c
+    src/myui/mypal/my_timer.c
+    src/myui/myui/my_widget.c
+    src/myui/myui/my_layout.c
+    src/myui/myui/my_event_dispatch.c
+    src/myui/myui/my_style.c
+    src/myui/myui/my_theme.c
+    src/myui/myui/my_animator.c
+    src/myui/myui/my_window.c
+    src/myui/myui/my_window_manager.c
+    src/myui/myui/my_xml.c
+    src/myui/myui/my_undo_stack.c
+    src/myui/myui/my_undo_manager.c
+    src/myui/myui/my_ui_loader.c
+    src/myui/myui/my_widget_class.c
+    src/myui/myui/my_widget_class_builtin.c
+    src/myui/myui/my_image_loader.c
+    src/myui/myui/widgets/my_button.c
+    src/myui/myui/widgets/my_label.c
+    src/myui/myui/widgets/my_edit.c
+    src/myui/myui/widgets/my_checkbox.c
+    src/myui/myui/widgets/my_slider.c
+    src/myui/myui/widgets/my_progress_bar.c
+    src/myui/myui/widgets/my_list_view.c
+    src/myui/myui/widgets/my_image.c
+    src/myui/myui/widgets/my_text_area.c
+    src/myui/myui/widgets/my_scroll_bar.c
+    src/myui/myui/widgets/my_dialog.c
+    src/myui/myui/widgets/my_menu.c
+    src/myui/myui/widgets/my_rich_label.c
+    src/myui/myui/widgets/my_scroll_view.c
+    src/myui/myui/widgets/my_node.c
+    src/myui/myui/widgets/my_node_view.c
+    src/myui/myui/my_css.c
+    src/myui/mymvvm/my_view_model.c
+    src/myui/mymvvm/my_view_model_array.c
+    src/myui/mymvvm/my_value_converter.c
+    src/myui/mymvvm/my_value_validator.c
+    src/myui/mymvvm/my_binding_rule.c
+    src/myui/mymvvm/my_binding_context.c
+    src/myui/mymvvm/my_data_binding.c
+    src/myui/mymvvm/my_command_binding.c
+    src/myui/mymvvm/my_items_binding.c
+    src/myui/mymvvm/my_condition_binding.c
+    src/myui/mymvvm/my_navigator.c
+    src/myui/mymvvm_myui/my_widget_target.c
+    src/myui/mymvvm_myui/my_mvvm.c
+)
+
+if(MYUI_BIDI)
+    list(APPEND MYUI_CORE_SOURCES external/SheenBidi/Source/SheenBidi.c)
+endif()
+
+add_library(myui_core STATIC ${MYUI_CORE_SOURCES})
+target_include_directories(myui_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+if(MYUI_BIDI)
+    target_include_directories(myui_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/SheenBidi/Headers
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/SheenBidi/Source
+    )
+    target_compile_definitions(myui_core PUBLIC MYUI_BIDI=1)
+    if(MSVC)
+        set_source_files_properties(external/SheenBidi/Source/SheenBidi.c PROPERTIES
+            COMPILE_DEFINITIONS SB_CONFIG_UNITY)
+    else()
+        set_source_files_properties(external/SheenBidi/Source/SheenBidi.c PROPERTIES
+            COMPILE_DEFINITIONS SB_CONFIG_UNITY
+            COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-Wno-unused-function;-Wno-unused-parameter;-Wno-implicit-fallthrough;-Wno-unused-value")
+    endif()
+endif()
+
+if(MYUI_FONT_STB)
+    target_compile_definitions(myui_core PUBLIC MYUI_FONT_STB=1)
+endif()
+if(MYUI_FONT_FREETYPE)
+    find_package(Freetype QUIET)
+    if(Freetype_FOUND)
+        target_compile_definitions(myui_core PUBLIC MYUI_FONT_FREETYPE=1)
+        target_link_libraries(myui_core PUBLIC Freetype::Freetype)
+    else()
+        message(STATUS "myui: FreeType not found; CJK TTC fonts fall back to stb/bitmap")
+    endif()
+endif()
+if(MYUI_HARFBUZZ AND MYUI_FONT_FREETYPE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(HARFBUZZ QUIET harfbuzz)
+    endif()
+    if(HARFBUZZ_FOUND)
+        target_compile_definitions(myui_core PUBLIC MYUI_FONT_HARFBUZZ=1)
+        target_include_directories(myui_core PUBLIC ${HARFBUZZ_INCLUDE_DIRS})
+        target_link_libraries(myui_core PUBLIC ${HARFBUZZ_LIBRARIES})
+    else()
+        message(STATUS "myui: HarfBuzz not found; OpenType shaping disabled")
+    endif()
+endif()
+if(MYUI_IMAGE_STB)
+    target_compile_definitions(myui_core PUBLIC MYUI_IMAGE_STB=1)
+endif()
+if(MYUI_UI_XML)
+    target_compile_definitions(myui_core PUBLIC MYUI_UI_XML=1)
+endif()
+
+target_link_libraries(myui_core PUBLIC
+    m
+    stb_truetype
+    stb_image
+    stb_image_write
+)
+
+# BreakUI adapter: myui PAL + RHI vgcanvas + application-facing bridge.
+add_library(break_myui STATIC
+    src/myui/mypal/break/my_pal_break.c
+    src/myui/myr/my_vgcanvas_break_rhi.c
+    src/ui/myui_break_input.c
+    src/ui/myui_break_damage.c
+    src/ui/myui_break.c
+    src/ui/debug_ui.c
+    src/ui/imgui_stubs.c
+)
+target_include_directories(break_myui PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+target_link_libraries(break_myui PUBLIC myui_core engine m)
+
+# duanxianxia myui application core. The break-aware executable is added in
+# apps/duanxianxia after the bridge is initialized.
+add_library(dxx_core STATIC
+    apps/duanxianxia/dxx_data.c
+    apps/duanxianxia/dxx_theme.c
+    apps/duanxianxia/dxx_app.c
+    apps/duanxianxia/views/nav_item.c
+    apps/duanxianxia/views/topbar.c
+    apps/duanxianxia/views/index_strip.c
+    apps/duanxianxia/views/footer.c
+    apps/duanxianxia/views/stock_item.c
+    apps/duanxianxia/views/ztpool.c
+    apps/duanxianxia/views/live_panels.c
+    apps/duanxianxia/views/placeholder.c
+    apps/duanxianxia/views/auth.c
+    apps/duanxianxia/views/qx_chart.c
+    apps/duanxianxia/views/qx_stats.c
+)
+target_include_directories(dxx_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/duanxianxia
+)
+target_link_libraries(dxx_core PUBLIC myui_core stb_image_write m)
+
+# Break-aware duanxianxia demo executable.
+add_executable(dxx_break apps/duanxianxia/dxx_break_main.c)
+target_include_directories(dxx_break PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/duanxianxia
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+target_link_libraries(dxx_break PRIVATE dxx_core break_myui engine m)
 
 if(ENGINE_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -228,8 +442,13 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
         set(REL_PTR_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/relative-pointer/relative-pointer-unstable-v1.xml")
         set(PTR_CONSTRAINTS_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml")
+        set(TEXT_INPUT_V3_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/text-input/text-input-unstable-v3.xml")
+        set(CURSOR_SHAPE_V1_XML "${WAYLAND_PROTOCOLS_DIR}/staging/cursor-shape/cursor-shape-v1.xml")
+        set(TABLET_V2_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/tablet/tablet-unstable-v2.xml")
         # R443: xdg-output for logical position / human-readable output names.
         set(XDG_OUTPUT_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-output/xdg-output-unstable-v1.xml")
+        set(FRACTIONAL_SCALE_V1_XML "${WAYLAND_PROTOCOLS_DIR}/staging/fractional-scale/fractional-scale-v1.xml")
+        set(VIEWPORTER_XML "${WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml")
 
         add_custom_command(
             OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h
@@ -264,6 +483,44 @@ if(ENGINE_PLATFORM STREQUAL "linux")
             COMMENT "Generating pointer-constraints-unstable-v1 Wayland protocol bindings"
         )
 
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/text-input-unstable-v3-client-protocol.h
+                   ${CMAKE_CURRENT_BINARY_DIR}/text-input-unstable-v3-protocol.c
+            COMMAND ${WAYLAND_SCANNER} client-header ${TEXT_INPUT_V3_XML}
+                    ${CMAKE_CURRENT_BINARY_DIR}/text-input-unstable-v3-client-protocol.h
+            COMMAND ${WAYLAND_SCANNER} private-code ${TEXT_INPUT_V3_XML}
+                    ${CMAKE_CURRENT_BINARY_DIR}/text-input-unstable-v3-protocol.c
+            DEPENDS ${TEXT_INPUT_V3_XML}
+            COMMENT "Generating text-input-unstable-v3 Wayland protocol bindings"
+        )
+
+        if(EXISTS ${CURSOR_SHAPE_V1_XML} AND EXISTS ${TABLET_V2_XML})
+            add_custom_command(
+                OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/cursor-shape-v1-client-protocol.h
+                       ${CMAKE_CURRENT_BINARY_DIR}/cursor-shape-v1-protocol.c
+                COMMAND ${WAYLAND_SCANNER} client-header ${CURSOR_SHAPE_V1_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/cursor-shape-v1-client-protocol.h
+                COMMAND ${WAYLAND_SCANNER} private-code ${CURSOR_SHAPE_V1_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/cursor-shape-v1-protocol.c
+                DEPENDS ${CURSOR_SHAPE_V1_XML}
+                COMMENT "Generating cursor-shape-v1 Wayland protocol bindings"
+            )
+            target_compile_definitions(engine PRIVATE ENGINE_WAYLAND_CURSOR_SHAPE=1)
+            set(WAYLAND_CURSOR_SHAPE_PROTOCOL_SOURCE
+                ${CMAKE_CURRENT_BINARY_DIR}/cursor-shape-v1-protocol.c)
+            add_custom_command(
+                OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/tablet-unstable-v2-protocol.c
+                COMMAND ${WAYLAND_SCANNER} private-code ${TABLET_V2_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/tablet-unstable-v2-protocol.c
+                DEPENDS ${TABLET_V2_XML}
+                COMMENT "Generating tablet-unstable-v2 Wayland protocol bindings"
+            )
+            set(WAYLAND_TABLET_PROTOCOL_SOURCE
+                ${CMAKE_CURRENT_BINARY_DIR}/tablet-unstable-v2-protocol.c)
+        else()
+            message(STATUS "cursor-shape-v1 unavailable; using standard Wayland cursor buffers")
+        endif()
+
         # R443: xdg-output-unstable-v1 bindings (multi-output enumeration).
         add_custom_command(
             OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-client-protocol.h
@@ -276,13 +533,46 @@ if(ENGINE_PLATFORM STREQUAL "linux")
             COMMENT "Generating xdg-output-unstable-v1 Wayland protocol bindings"
         )
 
+        if(EXISTS ${FRACTIONAL_SCALE_V1_XML} AND EXISTS ${VIEWPORTER_XML})
+            add_custom_command(
+                OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fractional-scale-v1-client-protocol.h
+                       ${CMAKE_CURRENT_BINARY_DIR}/fractional-scale-v1-protocol.c
+                COMMAND ${WAYLAND_SCANNER} client-header ${FRACTIONAL_SCALE_V1_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/fractional-scale-v1-client-protocol.h
+                COMMAND ${WAYLAND_SCANNER} private-code ${FRACTIONAL_SCALE_V1_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/fractional-scale-v1-protocol.c
+                DEPENDS ${FRACTIONAL_SCALE_V1_XML}
+                COMMENT "Generating fractional-scale-v1 Wayland protocol bindings"
+            )
+            add_custom_command(
+                OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/viewporter-client-protocol.h
+                       ${CMAKE_CURRENT_BINARY_DIR}/viewporter-protocol.c
+                COMMAND ${WAYLAND_SCANNER} client-header ${VIEWPORTER_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/viewporter-client-protocol.h
+                COMMAND ${WAYLAND_SCANNER} private-code ${VIEWPORTER_XML}
+                        ${CMAKE_CURRENT_BINARY_DIR}/viewporter-protocol.c
+                DEPENDS ${VIEWPORTER_XML}
+                COMMENT "Generating viewporter Wayland protocol bindings"
+            )
+            target_compile_definitions(engine PRIVATE ENGINE_WAYLAND_FRACTIONAL_SCALE=1)
+            set(WAYLAND_FRACTIONAL_SCALE_PROTOCOL_SOURCES
+                ${CMAKE_CURRENT_BINARY_DIR}/fractional-scale-v1-protocol.c
+                ${CMAKE_CURRENT_BINARY_DIR}/viewporter-protocol.c)
+        else()
+            message(STATUS "fractional-scale-v1 unavailable; using integer Wayland buffer scales")
+        endif()
+
         target_sources(engine PRIVATE
             src/platform/window_wayland.c
             src/platform/gamepad_linux.c
             ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/relative-pointer-unstable-v1-protocol.c
             ${CMAKE_CURRENT_BINARY_DIR}/pointer-constraints-unstable-v1-protocol.c
+            ${CMAKE_CURRENT_BINARY_DIR}/text-input-unstable-v3-protocol.c
+            ${WAYLAND_CURSOR_SHAPE_PROTOCOL_SOURCE}
+            ${WAYLAND_TABLET_PROTOCOL_SOURCE}
             ${CMAKE_CURRENT_BINARY_DIR}/xdg-output-unstable-v1-protocol.c
+            ${WAYLAND_FRACTIONAL_SCALE_PROTOCOL_SOURCES}
         )
         target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_WAYLAND=1)
         target_include_directories(engine PRIVATE
@@ -329,7 +619,7 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(engine PRIVATE opengl32 gdi32)
     endif()
 
-    target_link_libraries(engine PRIVATE user32 kernel32 shell32)
+    target_link_libraries(engine PRIVATE user32 kernel32 shell32 imm32)
     # XInput (gamepad) is loaded dynamically at runtime — no import lib needed.
     # Winsock2 for network module
     target_link_libraries(engine PRIVATE ws2_32)
@@ -367,7 +657,7 @@ endif()
 
 # Executable
 add_executable(engine_demo src/main.c)
-target_link_libraries(engine_demo PRIVATE engine m)
+target_link_libraries(engine_demo PRIVATE engine break_myui m)
 
 # Vulkan test executable
 add_executable(test_vulkan src/test_vulkan.c)
@@ -408,6 +698,136 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_math PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_math PRIVATE m)
     add_test(NAME test_math COMMAND test_math)
+
+    # myui integration unit tests: key mapping, shared geometry, and the
+    # window-manager event bridge used by BreakUI.
+    add_executable(test_break_ui_input tests/test_break_ui_input.c
+        src/ui/myui_break_input.c src/platform/platform_text.c)
+    target_include_directories(test_break_ui_input PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    add_test(NAME test_break_ui_input COMMAND test_break_ui_input)
+
+    add_executable(test_platform_text tests/test_platform_text.c
+        src/platform/platform_text.c)
+    target_include_directories(test_platform_text PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_text COMMAND test_platform_text)
+
+    add_executable(test_imgui_compat tests/test_imgui_compat.c
+        src/ui/imgui_stubs.c
+        src/myui/myr/my_vgcanvas_break_rhi.c)
+    target_include_directories(test_imgui_compat PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_imgui_compat PRIVATE myui_core engine m)
+    add_test(NAME test_imgui_compat COMMAND test_imgui_compat)
+
+    add_executable(test_break_ui_damage tests/test_break_ui_damage.c
+        src/ui/myui_break_damage.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
+    target_include_directories(test_break_ui_damage PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_break_ui_damage PRIVATE myui_core m)
+    add_test(NAME test_break_ui_damage COMMAND test_break_ui_damage)
+
+    add_executable(test_myui_vggeometry tests/test_myui_vggeometry.c)
+    target_include_directories(test_myui_vggeometry PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_vggeometry PRIVATE myui_core m)
+    add_test(NAME test_myui_vggeometry COMMAND test_myui_vggeometry)
+
+    add_executable(test_myui_window_manager tests/test_myui_window_manager.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
+    target_include_directories(test_myui_window_manager PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_window_manager PRIVATE myui_core m)
+    add_test(NAME test_myui_window_manager COMMAND test_myui_window_manager)
+
+    add_executable(test_myui_break_pal tests/test_myui_break_pal.c
+        src/myui/mypal/break/my_pal_break.c)
+    target_include_directories(test_myui_break_pal PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_break_pal PRIVATE myui_core engine m)
+    add_test(NAME test_myui_break_pal COMMAND test_myui_break_pal)
+
+    add_executable(test_myui_font tests/test_myui_font.c)
+    target_include_directories(test_myui_font PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_font PRIVATE myui_core m)
+    add_test(NAME test_myui_font COMMAND test_myui_font)
+
+    add_executable(test_myui_mvvm tests/test_myui_mvvm.c)
+    target_include_directories(test_myui_mvvm PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_mvvm PRIVATE myui_core m)
+    add_test(NAME test_myui_mvvm COMMAND test_myui_mvvm)
+
+    add_executable(test_myui_vgcanvas_backend
+        tests/test_myui_vgcanvas_backend.c)
+    target_include_directories(test_myui_vgcanvas_backend PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m)
+    add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
+
+    add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
+        src/rhi/rhi.c src/core/log.c)
+    target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_MACOS=1)
+    endif()
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_rhi_capabilities PRIVATE glad opengl32)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_rhi_capabilities PRIVATE
+            -ffunction-sections -fdata-sections)
+        target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME test_rhi_capabilities COMMAND test_rhi_capabilities)
+
+    add_executable(test_myui_layout tests/test_myui_layout.c)
+    target_include_directories(test_myui_layout PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_layout PRIVATE myui_core m)
+    add_test(NAME test_myui_layout COMMAND test_myui_layout)
+
+    add_executable(test_myui_css tests/test_myui_css.c)
+    target_include_directories(test_myui_css PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_css PRIVATE myui_core m)
+    add_test(NAME test_myui_css COMMAND test_myui_css)
+
+    add_executable(test_myui_text_layout tests/test_myui_text_layout.c)
+    target_include_directories(test_myui_text_layout PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_text_layout PRIVATE myui_core m)
+    add_test(NAME test_myui_text_layout COMMAND test_myui_text_layout)
 
     # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c
     add_executable(test_shadow tests/test_shadow.c src/math/math.c)
@@ -549,24 +969,6 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_pool PRIVATE m)
     add_test(NAME test_pool COMMAND test_pool)
 
-    # test_font_ui: UTF-8 decoding + immediate-mode UI logic (headless).
-    # Links the real imgui.c; the test drives it with a NULL FontRenderer
-    # (every draw call no-ops) and stubs the font symbols for the link.
-    add_executable(test_font_ui tests/test_font_ui.c
-        src/ui/utf8.c src/ui/imgui.c src/core/log.c)
-    target_include_directories(test_font_ui PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_font_ui PRIVATE m)
-    add_test(NAME test_font_ui COMMAND test_font_ui)
-
-    # R389: font_renderer_init input validation. font.c parses the TTF before its
-    # first rhi_* call, so the rejection paths run headlessly with dev = NULL; the
-    # test provides link-only RHI stubs.
-    add_executable(test_font_load tests/test_font_load.c
-        src/ui/font.c src/ui/utf8.c src/core/shader_io.c src/core/log.c src/math/math.c)
-    target_include_directories(test_font_load PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_font_load PRIVATE m)
-    add_test(NAME test_font_load COMMAND test_font_load)
-
     # test_mipmap_stream: streaming residency/eviction over async loader + VFS
     add_executable(test_mipmap_stream tests/test_mipmap_stream.c
         src/asset/mipmap_stream.c src/asset/async_loader.c src/asset/decode_pipeline.c src/asset/vfs.c
@@ -693,7 +1095,7 @@ if(ENGINE_BUILD_TESTS)
     if(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_asset_gltf PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     endif()
-    target_link_libraries(test_asset_gltf PRIVATE m)
+    target_link_libraries(test_asset_gltf PRIVATE stb_image m)
     add_test(NAME test_asset_gltf COMMAND test_asset_gltf)
 
     # R391: mutation fuzzer for the glTF loader. Same usage as the other fuzz_*
@@ -823,4 +1225,9 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_wayland PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_wayland PRIVATE m)
     add_test(NAME test_wayland COMMAND test_wayland)
+
+    add_executable(test_monitor_selection tests/test_monitor_selection.c)
+    target_include_directories(test_monitor_selection PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_monitor_selection PRIVATE m)
+    add_test(NAME test_monitor_selection COMMAND test_monitor_selection)
 endif()

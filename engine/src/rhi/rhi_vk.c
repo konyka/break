@@ -137,11 +137,13 @@ typedef struct {
      * VK_FORMAT_UNDEFINED marks depth-only/compute/MRT pipelines that are never
      * variant-ed. The SPIR-V copies + desc snapshot let us rebuild variants. */
     VkFormat          base_color_fmt;
+    VkSampleCountFlagBits base_sample_count;
     /* R440: MRT pipelines (desc->mrt_attachment_count > 1) are built against
      * this per-pipeline render pass (formats match rhi_mrt_fbo_create's pass,
      * so the two are render-pass-compatible); VK_NULL_HANDLE otherwise. */
     VkRenderPass      mrt_render_pass;
     VkFormat          variant_fmt[8];
+    VkSampleCountFlagBits variant_samples[8];
     VkPipeline        variant_pipe[8];
     u32               variant_count;
     u32              *vs_spirv;  usize vs_spirv_size;
@@ -220,6 +222,8 @@ typedef struct {
     bool             feat_independent_blend;   /* per-MRT-attachment blend state usable */
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
+    bool             feat_depth_stencil_resolve;
+    VkResolveModeFlagBits depth_resolve_mode;
     VkDevice                 device;
     VkQueue          graphics_queue;
     VkQueue          present_queue;
@@ -315,6 +319,7 @@ typedef struct {
      * can pick (or build) a render-pass-compatible pipeline variant.
      * VK_FORMAT_UNDEFINED means "do not variant" (depth-only/MRT passes). */
     VkFormat      active_color_fmt;
+    VkSampleCountFlagBits active_sample_count;
     /* R94-2: viewport/scissor cache -- skip redundant vkCmdSetViewport/Scissor */
     f32           cached_vp_x, cached_vp_y, cached_vp_w, cached_vp_h;
     f32           cached_vp_min_d, cached_vp_max_d;
@@ -335,6 +340,7 @@ typedef struct {
      * swapchain pass is used for the default (swapchain) target. */
     VkFormat     pipe_rp_formats[8];
     VkRenderPass pipe_rp_cache[8];
+    VkSampleCountFlagBits pipe_rp_samples[8];
     u32          pipe_rp_count;
 
     shaderc_compiler_t shaderc_compiler;
@@ -418,13 +424,15 @@ static VkRenderPass vk_make_resume_render_pass(VKBackend *vk,
 /* Record the currently-active render pass so a later dispatch can suspend and
  * the next draw can resume it. Call right after vkCmdBeginRenderPass. */
 static void vk_record_pass(VKBackend *vk, VkRenderPass resume_rp,
-                           VkFramebuffer fb, u32 w, u32 h, VkFormat color_fmt) {
+                           VkFramebuffer fb, u32 w, u32 h, VkFormat color_fmt,
+                           VkSampleCountFlagBits samples) {
     vk->resume_render_pass = resume_rp;
     vk->resume_framebuffer = fb;
     vk->resume_extent.width = w;
     vk->resume_extent.height = h;
     vk->pass_suspended = false;
     vk->active_color_fmt = color_fmt;
+    vk->active_sample_count = samples;
 }
 
 /* Resume a render pass previously suspended by rhi_cmd_dispatch. No clears: the
@@ -1056,6 +1064,38 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     vk->physical = gpus[0];
     free(gpus);
     vkGetPhysicalDeviceProperties(vk->physical, &vk->device_props);
+    VkPhysicalDeviceProperties2 device_props2 = {0};
+    device_props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    VkPhysicalDeviceDepthStencilResolveProperties depth_resolve_props = {0};
+    depth_resolve_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES;
+    device_props2.pNext = &depth_resolve_props;
+    vkGetPhysicalDeviceProperties2(vk->physical, &device_props2);
+    vk->feat_depth_stencil_resolve =
+        depth_resolve_props.supportedDepthResolveModes != 0;
+    if (depth_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT)
+        vk->depth_resolve_mode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    else if (depth_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_AVERAGE_BIT)
+        vk->depth_resolve_mode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    else if (depth_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_MIN_BIT)
+        vk->depth_resolve_mode = VK_RESOLVE_MODE_MIN_BIT;
+    else if (depth_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT)
+        vk->depth_resolve_mode = VK_RESOLVE_MODE_MAX_BIT;
+    dev->capabilities.backend = RHI_BACKEND_VULKAN;
+    dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
+    for (u32 samples = 2u; samples <= 64u; samples <<= 1u) {
+        VkSampleCountFlagBits flag = (VkSampleCountFlagBits)samples;
+        if ((vk->device_props.limits.framebufferColorSampleCounts & flag) != 0) {
+            dev->capabilities.color_sample_counts |=
+                rhi_sample_count_bit(samples);
+        }
+        if ((vk->device_props.limits.framebufferDepthSampleCounts & flag) != 0)
+            dev->capabilities.depth_sample_counts |= rhi_sample_count_bit(samples);
+    }
+    dev->capabilities.surface_sample_count = 1u;
+    dev->capabilities.color_resolve_supported =
+        (dev->capabilities.color_sample_counts & ~rhi_sample_count_bit(1u)) != 0u;
+    dev->capabilities.depth_resolve_supported = vk->feat_depth_stencil_resolve;
     LOG_INFO("Vulkan GPU: %s (push constants: %u bytes, UBO alignment: %lu)",
              vk->device_props.deviceName,
              vk->device_props.limits.maxPushConstantsSize,
@@ -1732,7 +1772,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi, VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
     vk_record_pass(vk, vk->render_pass_load, vk->framebuffers[vk->image_index],
-                   vk->swap_extent.width, vk->swap_extent.height, vk->swap_format);
+                   vk->swap_extent.width, vk->swap_extent.height, vk->swap_format,
+                   VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)vk->swap_extent.width, (f32)vk->swap_extent.height, 0.0f, 1.0f};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -2149,7 +2190,9 @@ static VkVertexInputAttributeDescription vk_attr(u32 location, u32 offset, VkFor
 static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     if (vkfmt == vk->swap_format) return vk->render_pass; /* default/swapchain */
     for (u32 i = 0; i < vk->pipe_rp_count; i++) {
-        if (vk->pipe_rp_formats[i] == vkfmt) return vk->pipe_rp_cache[i];
+        if (vk->pipe_rp_formats[i] == vkfmt &&
+            vk->pipe_rp_samples[i] == VK_SAMPLE_COUNT_1_BIT)
+            return vk->pipe_rp_cache[i];
     }
     if (vk->pipe_rp_count >= 8) return vk->render_pass; /* cache full (won't happen) */
 
@@ -2166,6 +2209,15 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     atts[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDependency dep = {0};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.srcAccessMask = 0;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     atts[1].format = VK_FORMAT_D32_SFLOAT;
     atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
     atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -2174,9 +2226,6 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     atts[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     atts[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sp = {0};
     sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sp.colorAttachmentCount = 1;
@@ -2188,14 +2237,6 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
      * incompatibility (VUID-vkCmdDraw-renderPass-02684), so a pipeline whose
      * template pass omits this dependency would be flagged when drawn into the
      * real FBO pass even though formats/subpasses match. */
-    VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     ci.attachmentCount = 2;
@@ -2214,9 +2255,246 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
         return VK_NULL_HANDLE;
     }
     vk->pipe_rp_formats[vk->pipe_rp_count] = vkfmt;
+    vk->pipe_rp_samples[vk->pipe_rp_count] = VK_SAMPLE_COUNT_1_BIT;
     vk->pipe_rp_cache[vk->pipe_rp_count] = rp;
     vk->pipe_rp_count++;
     return rp;
+}
+
+static VkRenderPass vk_pipeline_render_pass_fmt_samples(VKBackend *vk, VkFormat vkfmt,
+                                                         VkSampleCountFlagBits samples) {
+    if (samples == VK_SAMPLE_COUNT_1_BIT)
+        return vk_pipeline_render_pass_fmt(vk, vkfmt);
+    if (!vk || !vk->feat_depth_stencil_resolve) return VK_NULL_HANDLE;
+    for (u32 i = 0; i < vk->pipe_rp_count; i++) {
+        if (vk->pipe_rp_formats[i] == vkfmt && vk->pipe_rp_samples[i] == samples)
+            return vk->pipe_rp_cache[i];
+    }
+    if (vk->pipe_rp_count >= 8) return VK_NULL_HANDLE;
+
+    VkAttachmentDescription2 atts[4] = {0};
+    for (u32 i = 0; i < 4u; i++) atts[i].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+    atts[0].format = vkfmt;
+    atts[0].samples = samples;
+    atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    atts[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    atts[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    atts[1] = atts[0];
+    atts[1].format = vkfmt;
+    atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    atts[2] = atts[0];
+    atts[2].format = VK_FORMAT_D32_SFLOAT;
+    atts[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    atts[3] = atts[2];
+    atts[3].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference2 color_ref = {0};
+    color_ref.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+    color_ref.attachment = 0;
+    color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference2 resolve_ref = color_ref;
+    resolve_ref.attachment = 1;
+    VkAttachmentReference2 depth_ref = {0};
+    depth_ref.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+    depth_ref.attachment = 2;
+    depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference2 depth_resolve_ref = depth_ref;
+    depth_resolve_ref.attachment = 3;
+
+    VkSubpassDescriptionDepthStencilResolve ds_resolve = {0};
+    ds_resolve.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+    ds_resolve.depthResolveMode = vk->depth_resolve_mode;
+    ds_resolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    ds_resolve.pDepthStencilResolveAttachment = &depth_resolve_ref;
+    VkSubpassDescription2 subpass = {0};
+    subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+    subpass.pNext = &ds_resolve;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_ref;
+    subpass.pResolveAttachments = &resolve_ref;
+    subpass.pDepthStencilAttachment = &depth_ref;
+
+    VkSubpassDependency2 dependency = {0};
+    dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstStageMask = dependency.srcStageMask;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    VkRenderPassCreateInfo2 create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+    create_info.attachmentCount = 4;
+    create_info.pAttachments = atts;
+    create_info.subpassCount = 1;
+    create_info.pSubpasses = &subpass;
+    create_info.dependencyCount = 1;
+    create_info.pDependencies = &dependency;
+    VkRenderPass render_pass = VK_NULL_HANDLE;
+    if (vkCreateRenderPass2(vk->device, &create_info, NULL, &render_pass) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    vk->pipe_rp_formats[vk->pipe_rp_count] = vkfmt;
+    vk->pipe_rp_samples[vk->pipe_rp_count] = samples;
+    vk->pipe_rp_cache[vk->pipe_rp_count++] = render_pass;
+    return render_pass;
+}
+
+static VkRenderPass vk_create_msaa_resume_pass(VKBackend *vk, VkFormat color_format,
+                                                VkSampleCountFlagBits samples) {
+    VkAttachmentDescription2 atts[4] = {0};
+    for (u32 i = 0; i < 4u; i++) atts[i].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+    atts[0].format = color_format;
+    atts[0].samples = samples;
+    atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    atts[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    atts[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    atts[1] = atts[0];
+    atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    atts[1].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    atts[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    atts[2] = atts[0];
+    atts[2].format = VK_FORMAT_D32_SFLOAT;
+    atts[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    atts[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    atts[3] = atts[2];
+    atts[3].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    atts[3].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    atts[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference2 color = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, NULL, 0,
+                                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0};
+    VkAttachmentReference2 color_resolve = color;
+    color_resolve.attachment = 1;
+    VkAttachmentReference2 depth = color;
+    depth.attachment = 2;
+    depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference2 depth_resolve = depth;
+    depth_resolve.attachment = 3;
+    VkSubpassDescriptionDepthStencilResolve ds_resolve = {0};
+    ds_resolve.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+    ds_resolve.depthResolveMode = vk->depth_resolve_mode;
+    ds_resolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    ds_resolve.pDepthStencilResolveAttachment = &depth_resolve;
+    VkSubpassDescription2 subpass = {0};
+    subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+    subpass.pNext = &ds_resolve;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color;
+    subpass.pResolveAttachments = &color_resolve;
+    subpass.pDepthStencilAttachment = &depth;
+    VkRenderPassCreateInfo2 info = {0};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+    info.attachmentCount = 4;
+    info.pAttachments = atts;
+    info.subpassCount = 1;
+    info.pSubpasses = &subpass;
+    VkSubpassDependency2 dependency = {0};
+    dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstStageMask = dependency.srcStageMask;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    info.dependencyCount = 1;
+    info.pDependencies = &dependency;
+    VkRenderPass pass = VK_NULL_HANDLE;
+    if (vkCreateRenderPass2(vk->device, &info, NULL, &pass) != VK_SUCCESS)
+        LOG_WARN("VK: failed to create MSAA resume render pass");
+    return pass;
+}
+
+static VkSampleCountFlagBits vk_sample_count(u32 count) {
+    switch (count) {
+        case 2u: return VK_SAMPLE_COUNT_2_BIT;
+        case 4u: return VK_SAMPLE_COUNT_4_BIT;
+        case 8u: return VK_SAMPLE_COUNT_8_BIT;
+        case 16u: return VK_SAMPLE_COUNT_16_BIT;
+        case 32u: return VK_SAMPLE_COUNT_32_BIT;
+        case 64u: return VK_SAMPLE_COUNT_64_BIT;
+        default: return VK_SAMPLE_COUNT_1_BIT;
+    }
+}
+
+static bool vk_create_attachment_image(VKBackend *vk, VkFormat format,
+                                       u32 width, u32 height,
+                                       VkSampleCountFlagBits samples,
+                                       VkImageUsageFlags usage,
+                                       VkImageAspectFlags aspect,
+                                       VkImage *out_image,
+                                       VkDeviceMemory *out_memory,
+                                       VkImageView *out_view) {
+    VkImageCreateInfo image_info = {0};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = format;
+    image_info.extent = (VkExtent3D){width, height, 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = samples;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = usage;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(vk->device, &image_info, NULL, out_image) != VK_SUCCESS)
+        return false;
+
+    VkMemoryRequirements requirements;
+    vkGetImageMemoryRequirements(vk->device, *out_image, &requirements);
+    VkMemoryAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = requirements.size;
+    alloc_info.memoryTypeIndex = vk_find_memory(vk, requirements.memoryTypeBits,
+                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (alloc_info.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(vk->device, &alloc_info, NULL, out_memory) != VK_SUCCESS) {
+        vkDestroyImage(vk->device, *out_image, NULL);
+        *out_image = VK_NULL_HANDLE;
+        return false;
+    }
+    if (vkBindImageMemory(vk->device, *out_image, *out_memory, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, *out_memory, NULL);
+        vkDestroyImage(vk->device, *out_image, NULL);
+        *out_memory = VK_NULL_HANDLE;
+        *out_image = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkImageViewCreateInfo view_info = {0};
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = *out_image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange.aspectMask = aspect;
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(vk->device, &view_info, NULL, out_view) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, *out_memory, NULL);
+        vkDestroyImage(vk->device, *out_image, NULL);
+        *out_memory = VK_NULL_HANDLE;
+        *out_image = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+static bool vk_sample_count_supported(const VKBackend *vk, u32 count) {
+    if (!vk || rhi_sample_count_bit(count) == 0u) return false;
+    VkSampleCountFlagBits samples = (VkSampleCountFlagBits)count;
+    return (vk->device_props.limits.framebufferColorSampleCounts & samples) != 0 &&
+           (vk->device_props.limits.framebufferDepthSampleCounts & samples) != 0;
 }
 
 /* Resolve a desc color_format hint to the VkFormat the pipeline's base render
@@ -2418,7 +2696,7 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
     VkPipelineMultisampleStateCreateInfo msaa = {0};
     msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     msaa.sampleShadingEnable = VK_FALSE;
-    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    msaa.rasterizationSamples = vk_sample_count(desc->sample_count);
 
     VkPipelineColorBlendAttachmentState blend_att = {0};
     blend_att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -2510,11 +2788,14 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
 /* Return a pipeline compatible with a render pass of color format `vkfmt`,
  * building (and caching) a variant on demand. Falls back to the base pipeline if
  * the format is the base format, not variant-able, or a rebuild fails. */
-static VkPipeline vk_pipeline_for_fmt(VKBackend *vk, VKPipelineData *pd, VkFormat vkfmt) {
+static VkPipeline vk_pipeline_for_fmt(VKBackend *vk, VKPipelineData *pd, VkFormat vkfmt,
+                                      VkSampleCountFlagBits samples) {
     if (pd->is_compute || pd->base_color_fmt == VK_FORMAT_UNDEFINED) return pd->pipeline;
-    if (vkfmt == VK_FORMAT_UNDEFINED || vkfmt == pd->base_color_fmt) return pd->pipeline;
+    if ((vkfmt == VK_FORMAT_UNDEFINED || vkfmt == pd->base_color_fmt) &&
+        samples == pd->base_sample_count) return pd->pipeline;
     for (u32 i = 0; i < pd->variant_count; i++) {
-        if (pd->variant_fmt[i] == vkfmt) return pd->variant_pipe[i];
+        if (pd->variant_fmt[i] == vkfmt && pd->variant_samples[i] == samples)
+            return pd->variant_pipe[i];
     }
     if (pd->variant_count >= 8 || !pd->vs_spirv || !pd->fs_spirv) return pd->pipeline;
 
@@ -2531,20 +2812,44 @@ static VkPipeline vk_pipeline_for_fmt(VKBackend *vk, VKPipelineData *pd, VkForma
         return pd->pipeline;
     }
 
-    VkRenderPass rp = vk_pipeline_render_pass_fmt(vk, vkfmt);
-    VkPipeline var = vk_build_graphics_pipeline(vk, &pd->build_desc, pd->layout, vs_mod, fs_mod, rp, NULL);
+    RHIPipelineDesc variant_desc = pd->build_desc;
+    variant_desc.sample_count = samples == VK_SAMPLE_COUNT_1_BIT ? 1u : (u32)samples;
+    VkRenderPass rp = (samples == VK_SAMPLE_COUNT_1_BIT)
+        ? vk_pipeline_render_pass_fmt(vk, vkfmt)
+        : vk_pipeline_render_pass_fmt_samples(vk, vkfmt, samples);
+    VkPipeline var = vk_build_graphics_pipeline(vk, &variant_desc, pd->layout,
+                                                vs_mod, fs_mod, rp, NULL);
     vkDestroyShaderModule(vk->device, vs_mod, NULL);
     vkDestroyShaderModule(vk->device, fs_mod, NULL);
     if (var == VK_NULL_HANDLE) return pd->pipeline;
 
     pd->variant_fmt[pd->variant_count] = vkfmt;
+    pd->variant_samples[pd->variant_count] = samples;
     pd->variant_pipe[pd->variant_count] = var;
     pd->variant_count++;
     return var;
 }
 
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
+    if (!dev || !desc) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
+
+    u32 requested_samples = desc->sample_count == 0u ? 1u : desc->sample_count;
+    if (!desc->is_compute && requested_samples > 1u &&
+        (desc->is_shadow_depth || desc->mrt_attachment_count > 1u)) {
+        LOG_WARN("VK: multisample shadow/MRT pipelines are not supported");
+        return RHI_HANDLE_NULL;
+    }
+    if (!desc->is_compute && requested_samples > 1u &&
+        !rhi_offscreen_fbo_desc_validate(&dev->capabilities, &(RHIOffscreenFBODesc){
+            .width = 1u,
+            .height = 1u,
+            .color_format = desc->color_format == RHI_FORMAT_UNDEFINED
+                ? RHI_FORMAT_B8G8R8A8_UNORM : desc->color_format,
+            .sample_count = requested_samples })) {
+        LOG_WARN("VK: unsupported graphics pipeline sample count %u", requested_samples);
+        return RHI_HANDLE_NULL;
+    }
 
     if (desc->is_compute) {
         VKShaderData *cs_data = (VKShaderData *)rhi_get_resource(dev, desc->frag);
@@ -2623,7 +2928,6 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     VKShaderData *vs_data = (VKShaderData *)rhi_get_resource(dev, desc->vert);
     VKShaderData *fs_data = (VKShaderData *)rhi_get_resource(dev, desc->frag);
     if (!vs_data || !fs_data) return RHI_HANDLE_NULL;
-
     /* The pipeline layout is render-pass-independent and shared by the base
      * pipeline and all its render-pass-format variants. */
     VkPushConstantRange push_range = {0};
@@ -2677,7 +2981,11 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
                                              desc->mrt_attachment_count);
         base_rp = mrt_rp;
     } else {
-        base_rp = vk_pipeline_render_pass(vk, desc->color_format);
+        VkSampleCountFlagBits pipeline_samples = vk_sample_count(desc->sample_count);
+        base_rp = pipeline_samples == VK_SAMPLE_COUNT_1_BIT
+            ? vk_pipeline_render_pass(vk, desc->color_format)
+            : vk_pipeline_render_pass_fmt_samples(vk, vk_desc_base_color_fmt(vk, desc),
+                                                  pipeline_samples);
     }
     u32 stride = 0;
     VkPipeline pipeline = vk_build_graphics_pipeline(vk, desc, layout, vs_data->module,
@@ -2693,6 +3001,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     u32 idx = rhi_alloc_slot(dev);
     pd->layout = layout;
     pd->pipeline = pipeline;
+    pd->base_sample_count = vk_sample_count(desc->sample_count);
     pd->vertex_stride = stride;
     pd->push_range_size = push_range.size; /* R417: clamped at layout creation */
     pd->no_vertex_input = desc->no_vertex_input;
@@ -4051,7 +4360,8 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi, VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
     vk_record_pass(vk, vk->render_pass_load, vk->framebuffers[vk->image_index],
-                   vk->swap_extent.width, vk->swap_extent.height, vk->swap_format);
+                   vk->swap_extent.width, vk->swap_extent.height, vk->swap_format,
+                   VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)vk->swap_extent.width, (f32)vk->swap_extent.height, 0.0f, 1.0f};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -4083,7 +4393,7 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
      * color format, so the same logical pipeline can be drawn into FBOs of
      * different formats without breaking render-pass compatibility. */
     VkPipeline bound = pd->is_compute ? pd->pipeline
-                     : vk_pipeline_for_fmt(vk, pd, vk->active_color_fmt);
+        : vk_pipeline_for_fmt(vk, pd, vk->active_color_fmt, vk->active_sample_count);
     /* R89-1: Skip redundant vkCmdBindPipeline when pipeline unchanged. */
     if (bound != vk->current_pipeline) {
         vkCmdBindPipeline(vk->cmd_buffers[vk->current_frame], bind_point, bound);
@@ -5860,7 +6170,8 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     rpi.pClearValues = &clear;
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi, VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
-    vk_record_pass(vk, sd->render_pass_load, sd->framebuffer, sm->width, sm->height, VK_FORMAT_UNDEFINED);
+    vk_record_pass(vk, sd->render_pass_load, sd->framebuffer, sm->width, sm->height,
+                   VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)sm->width, (f32)sm->height, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -5898,7 +6209,7 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi, VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
     vk_record_pass(vk, vk->render_pass_load, vk->framebuffers[vk->image_index],
-                   screen_w, screen_h, vk->swap_format);
+                   screen_w, screen_h, vk->swap_format, VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)screen_w, (f32)screen_h, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -6623,26 +6934,63 @@ typedef struct {
     VkImage        color_image;
     VkDeviceMemory color_memory;
     VkImageView    color_view;
+    VkImage        msaa_color_image;
+    VkDeviceMemory msaa_color_memory;
+    VkImageView    msaa_color_view;
     VkImage        depth_image;
     VkDeviceMemory depth_memory;
     VkImageView    depth_view;
+    VkImage        msaa_depth_image;
+    VkDeviceMemory msaa_depth_memory;
+    VkImageView    msaa_depth_view;
     VkFramebuffer  framebuffer;
     VkRenderPass   render_pass;
     VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
     VkFormat       color_fmt;         /* for render-pass-compatible pipeline variants */
+    VkSampleCountFlagBits samples;
 } VKFBOData;
 
-RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt) {
+static void vk_offscreen_fbo_release(VKBackend *vk, VKFBOData *fd) {
+    if (!vk || !fd) return;
+    if (fd->framebuffer) vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
+    if (fd->render_pass) vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
+    if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
+    if (fd->color_view) vkDestroyImageView(vk->device, fd->color_view, NULL);
+    if (fd->color_image) vkDestroyImage(vk->device, fd->color_image, NULL);
+    if (fd->color_memory) vkFreeMemory(vk->device, fd->color_memory, NULL);
+    if (fd->msaa_color_view) vkDestroyImageView(vk->device, fd->msaa_color_view, NULL);
+    if (fd->msaa_color_image) vkDestroyImage(vk->device, fd->msaa_color_image, NULL);
+    if (fd->msaa_color_memory) vkFreeMemory(vk->device, fd->msaa_color_memory, NULL);
+    if (fd->depth_view) vkDestroyImageView(vk->device, fd->depth_view, NULL);
+    if (fd->depth_image) vkDestroyImage(vk->device, fd->depth_image, NULL);
+    if (fd->depth_memory) vkFreeMemory(vk->device, fd->depth_memory, NULL);
+    if (fd->msaa_depth_view) vkDestroyImageView(vk->device, fd->msaa_depth_view, NULL);
+    if (fd->msaa_depth_image) vkDestroyImage(vk->device, fd->msaa_depth_image, NULL);
+    if (fd->msaa_depth_memory) vkFreeMemory(vk->device, fd->msaa_depth_memory, NULL);
+    free(fd);
+}
+
+static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height,
+                                               RHIFormat color_fmt, u32 requested_samples) {
     VKBackend *vk = vk_backend(dev);
     RHIOffscreenFBO fbo = {0};
     fbo.width = width;
     fbo.height = height;
+    u32 sample_count = requested_samples == 0u ? 1u : requested_samples;
+    VkSampleCountFlagBits samples = vk_sample_count(sample_count);
+    if (!dev || !vk || rhi_sample_count_bit(sample_count) == 0u ||
+        !vk_sample_count_supported(vk, sample_count) ||
+        (sample_count > 1u && (!vk->feat_depth_stencil_resolve ||
+                               !dev->capabilities.color_resolve_supported)))
+        return fbo;
+    fbo.sample_count = sample_count;
 
     VkFormat vk_color_fmt = vk_format_from_rhi(color_fmt);
 
     VKFBOData *fd = calloc(1, sizeof(VKFBOData));
     if (!fd) return fbo;
     fd->color_fmt = vk_color_fmt;
+    VkAttachmentDescription attachments[4] = {0};
 
     VkImageCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -6759,32 +7107,67 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
         return fbo;
     }
 
-    VkAttachmentDescription attachments[2] = {0};
+    fd->samples = samples;
+    if (samples != VK_SAMPLE_COUNT_1_BIT) {
+        if (!vk_create_attachment_image(vk, vk_color_fmt, width, height, samples,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, &fd->msaa_color_image,
+                &fd->msaa_color_memory, &fd->msaa_color_view) ||
+            !vk_create_attachment_image(vk, VK_FORMAT_D32_SFLOAT, width, height, samples,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, &fd->msaa_depth_image,
+                &fd->msaa_depth_memory, &fd->msaa_depth_view)) {
+            vk_offscreen_fbo_release(vk, fd);
+            return fbo;
+        }
+    }
+
     attachments[0].format = vk_color_fmt;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].samples = samples;
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    attachments[1].format = VK_FORMAT_D32_SFLOAT;
+    attachments[0].finalLayout = samples == VK_SAMPLE_COUNT_1_BIT
+        ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[1].format = vk_color_fmt;
     attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    /* STORE so depth survives a render-pass suspend (compute dispatch). */
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachments[2].format = VK_FORMAT_D32_SFLOAT;
+    attachments[2].samples = samples;
+    attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    /* STORE so depth survives a render-pass suspend (compute dispatch). */
+    attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[3].format = VK_FORMAT_D32_SFLOAT;
+    attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[3].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[3].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[3].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    VkSubpassDescription sp = {0};
-    sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    sp.colorAttachmentCount = 1;
-    sp.pColorAttachments = &color_ref;
-    sp.pDepthStencilAttachment = &depth_ref;
+    if (samples == VK_SAMPLE_COUNT_1_BIT) {
+        attachments[1].format = VK_FORMAT_D32_SFLOAT;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
 
     VkSubpassDependency dep = {0};
     dep.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -6794,6 +7177,14 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
+    VkSubpassDescription sp = {0};
+    sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sp.colorAttachmentCount = 1;
+    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    sp.pColorAttachments = &color_ref;
+    sp.pDepthStencilAttachment = &depth_ref;
+
     VkRenderPassCreateInfo rpci = {0};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     rpci.attachmentCount = 2;
@@ -6802,39 +7193,90 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     rpci.pSubpasses = &sp;
     rpci.dependencyCount = 1;
     rpci.pDependencies = &dep;
-    if (vkCreateRenderPass(vk->device, &rpci, NULL, &fd->render_pass) != VK_SUCCESS) {
+    if (samples != VK_SAMPLE_COUNT_1_BIT) {
+        VkAttachmentReference2 color_ref2 = {0};
+        color_ref2.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+        color_ref2.attachment = 0;
+        color_ref2.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference2 resolve_ref2 = color_ref2;
+        resolve_ref2.attachment = 1;
+        VkAttachmentReference2 depth_ref2 = color_ref2;
+        depth_ref2.attachment = 2;
+        depth_ref2.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference2 depth_resolve_ref2 = depth_ref2;
+        depth_resolve_ref2.attachment = 3;
+        VkSubpassDescriptionDepthStencilResolve ds_resolve = {0};
+        ds_resolve.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+        ds_resolve.depthResolveMode = vk->depth_resolve_mode;
+        ds_resolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+        ds_resolve.pDepthStencilResolveAttachment = &depth_resolve_ref2;
+        VkSubpassDescription2 sp2 = {0};
+        sp2.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+        sp2.pNext = &ds_resolve;
+        sp2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sp2.colorAttachmentCount = 1;
+        sp2.pColorAttachments = &color_ref2;
+        sp2.pResolveAttachments = &resolve_ref2;
+        sp2.pDepthStencilAttachment = &depth_ref2;
+        VkSubpassDependency2 dep2 = {0};
+        dep2.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+        dep2.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dep2.dstSubpass = 0;
+        dep2.srcStageMask = dep.srcStageMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dep2.dstStageMask = dep2.srcStageMask;
+        dep2.dstAccessMask = dep.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        VkAttachmentDescription2 atts2[4] = {0};
+        for (u32 i = 0; i < 4u; i++) {
+            atts2[i].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+            atts2[i].format = attachments[i].format;
+            atts2[i].samples = attachments[i].samples;
+            atts2[i].loadOp = attachments[i].loadOp;
+            atts2[i].storeOp = attachments[i].storeOp;
+            atts2[i].stencilLoadOp = attachments[i].stencilLoadOp;
+            atts2[i].stencilStoreOp = attachments[i].stencilStoreOp;
+            atts2[i].initialLayout = attachments[i].initialLayout;
+            atts2[i].finalLayout = attachments[i].finalLayout;
+        }
+        VkRenderPassCreateInfo2 rpci2 = {0};
+        rpci2.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+        rpci2.attachmentCount = 4;
+        rpci2.pAttachments = atts2;
+        rpci2.subpassCount = 1;
+        rpci2.pSubpasses = &sp2;
+        rpci2.dependencyCount = 1;
+        rpci2.pDependencies = &dep2;
+        if (vkCreateRenderPass2(vk->device, &rpci2, NULL, &fd->render_pass) != VK_SUCCESS)
+            goto fbo_create_fail;
+    } else if (vkCreateRenderPass(vk->device, &rpci, NULL, &fd->render_pass) != VK_SUCCESS) {
+fbo_create_fail:
         LOG_FATAL("VK: failed to create MRT render pass");
-        vkDestroyImageView(vk->device, fd->depth_view, NULL);
-        vkFreeMemory(vk->device, fd->depth_memory, NULL);
-        vkDestroyImage(vk->device, fd->depth_image, NULL);
-        vkDestroyImageView(vk->device, fd->color_view, NULL);
-        vkFreeMemory(vk->device, fd->color_memory, NULL);
-        vkDestroyImage(vk->device, fd->color_image, NULL);
-        free(fd);
+        vk_offscreen_fbo_release(vk, fd);
         return fbo;
     }
-    fd->render_pass_load = vk_make_resume_render_pass(vk, &rpci);
+    if (samples == VK_SAMPLE_COUNT_1_BIT) {
+        fd->render_pass_load = vk_make_resume_render_pass(vk, &rpci);
+    } else {
+        fd->render_pass_load = vk_create_msaa_resume_pass(vk, vk_color_fmt, samples);
+        if (!fd->render_pass_load) {
+            vk_offscreen_fbo_release(vk, fd);
+            return fbo;
+        }
+    }
 
-    VkImageView views[] = {fd->color_view, fd->depth_view};
+    VkImageView views[] = {samples == VK_SAMPLE_COUNT_1_BIT ? fd->color_view : fd->msaa_color_view,
+                           samples == VK_SAMPLE_COUNT_1_BIT ? fd->depth_view : fd->color_view,
+                           fd->msaa_depth_view, fd->depth_view};
     VkFramebufferCreateInfo fbci = {0};
     fbci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbci.renderPass = fd->render_pass;
-    fbci.attachmentCount = 2;
+    fbci.attachmentCount = samples == VK_SAMPLE_COUNT_1_BIT ? 2u : 4u;
     fbci.pAttachments = views;
     fbci.width = width;
     fbci.height = height;
     fbci.layers = 1;
     if (vkCreateFramebuffer(vk->device, &fbci, NULL, &fd->framebuffer) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create MRT framebuffer");
-        if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
-        vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
-        vkDestroyImageView(vk->device, fd->depth_view, NULL);
-        vkFreeMemory(vk->device, fd->depth_memory, NULL);
-        vkDestroyImage(vk->device, fd->depth_image, NULL);
-        vkDestroyImageView(vk->device, fd->color_view, NULL);
-        vkFreeMemory(vk->device, fd->color_memory, NULL);
-        vkDestroyImage(vk->device, fd->color_image, NULL);
-        free(fd);
+        vk_offscreen_fbo_release(vk, fd);
         return fbo;
     }
 
@@ -6842,16 +7284,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     if (!td) {
         /* R359: GPU FBO already live in fd — tear down before returning null. */
         LOG_WARN("VK: offscreen color texture slot alloc failed");
-        if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
-        vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
-        vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
-        vkDestroyImageView(vk->device, fd->depth_view, NULL);
-        vkFreeMemory(vk->device, fd->depth_memory, NULL);
-        vkDestroyImage(vk->device, fd->depth_image, NULL);
-        vkDestroyImageView(vk->device, fd->color_view, NULL);
-        vkFreeMemory(vk->device, fd->color_memory, NULL);
-        vkDestroyImage(vk->device, fd->color_image, NULL);
-        free(fd);
+        vk_offscreen_fbo_release(vk, fd);
         return (RHIOffscreenFBO){0};
     }
     u32 idx = rhi_alloc_slot(dev);
@@ -6871,15 +7304,12 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     VKTextureData *dd = calloc(1, sizeof(VKTextureData));
     if (!dd) {
         LOG_WARN("VK: offscreen depth texture slot alloc failed");
-        /* Framebuffer before image views; color image owned by color_tex slot. */
-        if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
-        vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
-        vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
+        /* Destroy the color slot first, then release the complete candidate. */
+        fd->color_view = VK_NULL_HANDLE;
+        fd->color_image = VK_NULL_HANDLE;
+        fd->color_memory = VK_NULL_HANDLE;
         rhi_texture_destroy(dev, fbo.color_tex);
-        vkDestroyImageView(vk->device, fd->depth_view, NULL);
-        vkFreeMemory(vk->device, fd->depth_memory, NULL);
-        vkDestroyImage(vk->device, fd->depth_image, NULL);
-        free(fd);
+        vk_offscreen_fbo_release(vk, fd);
         return (RHIOffscreenFBO){0};
     }
     u32 didx = rhi_alloc_slot(dev);
@@ -6904,6 +7334,21 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     return fbo;
 }
 
+RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreenFBODesc *desc) {
+    RHIOffscreenFBO fbo = {0};
+    if (!dev || !rhi_offscreen_fbo_desc_validate(&dev->capabilities, desc)) return fbo;
+    if (desc->sample_count > 1u &&
+        (!dev->capabilities.color_resolve_supported ||
+         !dev->capabilities.depth_resolve_supported)) return fbo;
+    return vk_offscreen_fbo_create(dev, desc->width, desc->height,
+                                   desc->color_format, desc->sample_count);
+}
+
+RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height,
+                                             RHIFormat color_fmt) {
+    return vk_offscreen_fbo_create(dev, width, height, color_fmt, 1u);
+}
+
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height) {
     return rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_B8G8R8A8_UNORM);
 }
@@ -6915,16 +7360,7 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (!fd) return;
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in offscreen_fbo_destroy");
-    vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
-    vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
-    if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
-    vkDestroyImageView(vk->device, fd->color_view, NULL);
-    vkDestroyImage(vk->device, fd->color_image, NULL);
-    vkFreeMemory(vk->device, fd->color_memory, NULL);
-    vkDestroyImageView(vk->device, fd->depth_view, NULL);
-    vkDestroyImage(vk->device, fd->depth_image, NULL);
-    vkFreeMemory(vk->device, fd->depth_memory, NULL);
-    free(fd);
+    vk_offscreen_fbo_release(vk, fd);
     /* R425: free the VKTextureData structs behind the color/depth texture
      * slots (calloc'd at create) — the old code freed only the slots,
      * leaking 2 structs per destroy (resize recreates all post FBOs). */
@@ -6972,19 +7408,20 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     rpi.framebuffer = fd->framebuffer;
     rpi.renderArea.extent.width = fbo->width;
     rpi.renderArea.extent.height = fbo->height;
-    VkClearValue clears[2];
+    VkClearValue clears[4];
     memset(clears, 0, sizeof(clears));
     clears[0].color.float32[0] = 0.05f;
     clears[0].color.float32[1] = 0.05f;
     clears[0].color.float32[2] = 0.1f;
     clears[0].color.float32[3] = 1.0f;
-    clears[1].depthStencil.depth = 1.0f;
-    rpi.clearValueCount = 2;
+    clears[fd->samples == VK_SAMPLE_COUNT_1_BIT ? 1u : 2u].depthStencil.depth = 1.0f;
+    rpi.clearValueCount = fd->samples == VK_SAMPLE_COUNT_1_BIT ? 2u : 4u;
     rpi.pClearValues = clears;
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi,
         VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
-    vk_record_pass(vk, fd->render_pass_load, fd->framebuffer, fbo->width, fbo->height, fd->color_fmt);
+    vk_record_pass(vk, fd->render_pass_load, fd->framebuffer, fbo->width, fbo->height,
+                   fd->color_fmt, fd->samples);
 
     VkViewport vp = {0, 0, (f32)fbo->width, (f32)fbo->height, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -7045,7 +7482,8 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi,
         VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
-    vk_record_pass(vk, fd->render_pass_load, fd->framebuffer, fbo->width, fbo->height, fd->color_fmt);
+    vk_record_pass(vk, fd->render_pass_load, fd->framebuffer, fbo->width, fbo->height,
+                   fd->color_fmt, fd->samples);
 
     VkViewport vp = {0, 0, (f32)fbo->width, (f32)fbo->height, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -7083,7 +7521,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
         VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
     vk_record_pass(vk, vk->render_pass_load, vk->framebuffers[vk->image_index],
-                   screen_w, screen_h, vk->swap_format);
+                   screen_w, screen_h, vk->swap_format, VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)screen_w, (f32)screen_h, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -7522,7 +7960,8 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     vkCmdBeginRenderPass(vk->cmd_buffers[vk->current_frame], &rpi,
         VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
-    vk_record_pass(vk, md->render_pass_load, md->framebuffer, fbo->width, fbo->height, VK_FORMAT_UNDEFINED);
+    vk_record_pass(vk, md->render_pass_load, md->framebuffer, fbo->width, fbo->height,
+                   VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)fbo->width, (f32)fbo->height, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -7556,7 +7995,8 @@ void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
                          VK_SUBPASS_CONTENTS_INLINE);
     vk->render_pass_active = true;
     vk_record_pass(vk, md->render_pass_load, md->framebuffer,
-                   fbo->width, fbo->height, VK_FORMAT_UNDEFINED);
+                   fbo->width, fbo->height, VK_FORMAT_UNDEFINED,
+                   VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)fbo->width, (f32)fbo->height, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
@@ -7841,7 +8281,7 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
      * this depth pass; record the LOAD twin + this face's framebuffer so the
      * subsequent indirect draw can resume the pass instead of drawing outside it. */
     vk_record_pass(vk, cd->render_pass_load, cd->face_fbos[face],
-                   fbo->size, fbo->size, VK_FORMAT_UNDEFINED);
+                   fbo->size, fbo->size, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
 
     VkViewport vp = {0, 0, (f32)fbo->size, (f32)fbo->size, 0, 1};
     vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);

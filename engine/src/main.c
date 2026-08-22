@@ -289,7 +289,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
 #endif
     void *display = platform_display_native(platform);
     u32 w, h;
-    platform_get_size(platform, &w, &h);
+    platform_get_drawable_size(platform, &w, &h);
 
     rs->device = rhi_device_create(
 #ifdef ENGINE_VULKAN
@@ -2466,7 +2466,9 @@ int main(int argc, char **argv) {
 
     Camera camera = {0};
     u32 w, h;
-    platform_get_size(engine.platform, &w, &h);
+    u32 logical_w, logical_h;
+    platform_get_drawable_size(engine.platform, &w, &h);
+    platform_get_logical_size(engine.platform, &logical_w, &logical_h);
     /* R142: Guard against h==0 (window minimized) producing Inf/NaN aspect */
     camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f);
     /* R445: BREAK_CAM=x,y,z[,yaw_deg,pitch_deg] — scripted camera placement for
@@ -3393,7 +3395,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
         if (bench_result_show > 0) bench_result_show--;
 
-        platform_get_size(engine.platform, &w, &h);
+        platform_get_drawable_size(engine.platform, &w, &h);
+        platform_get_logical_size(engine.platform, &logical_w, &logical_h);
 
         /* F1: cycle render scale */
         if (input_key_pressed(platform_input(engine.platform), 271)) {
@@ -7655,7 +7658,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_bind_texture(cmd, insp_tex, postfx.sampler, 0);
                 rhi_cmd_draw(cmd, 3, 1);
             }
-            debug_ui_render(&ui, cmd, w, h);
+            debug_ui_render(&ui, cmd, logical_w, logical_h, w, h);
             rhi_gpu_timer_end(gpu_postfx_timer);
             rhi_frame_end(render.device);
             /* R445: BREAK_SCREENSHOT hook (inspector path) — read the
@@ -7714,12 +7717,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
         }
 
-        debug_ui_render(&ui, cmd, w, h);
+        debug_ui_render(&ui, cmd, logical_w, logical_h, w, h);
 
         if (imui_font_ready && imui_visible) {
             InputState *imin = platform_input(engine.platform);
             bool mdown = input_key_down(imin, INPUT_MOUSE_LEFT);
-            imui_begin(&imui_ctx, (f32)w, (f32)h, imin->mouse_x, imin->mouse_y, mdown);
+            f32 input_scale = platform_get_input_scale(engine.platform);
+            if (input_scale <= 0.0f) input_scale = 1.0f;
+            imui_begin(&imui_ctx, (f32)logical_w, (f32)logical_h, (f32)w,
+                       (f32)h, imin->mouse_x / input_scale,
+                       imin->mouse_y / input_scale, mdown);
             /* R437: rows = label + 2 headers + visible group contents. Height
              * uses the open flags from before this frame's widgets run — a
              * click that folds a group resizes the backdrop next frame. */

@@ -88,8 +88,14 @@ typedef struct {
 
 typedef struct {
     GLuint gl_fbo;
+    GLuint resolve_fbo;
     GLuint color_tex;
     GLuint depth_tex; /* R195-A: sampleable depth (was renderbuffer depth_rb) */
+    GLuint color_rb;
+    GLuint depth_rb;
+    u32    width;
+    u32    height;
+    u32    sample_count;
 } GLFBOData;
 
 typedef struct {
@@ -165,12 +171,45 @@ static GLuint g_gl_bound_array_buffer = 0;
  * per cubemap face); without cache, each bind triggers driver-side FBO
  * completeness validation. ~20-30 redundant calls/frame eliminated. */
 static GLuint g_gl_bound_fbo = 0;
+static GLFBOData *g_gl_active_offscreen = NULL;
 
 static void gl_bind_fbo_cached(GLuint fbo) {
     if (g_gl_bound_fbo != fbo) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         g_gl_bound_fbo = fbo;
     }
+}
+
+static void gl_resolve_offscreen(GLFBOData *fd) {
+    if (!fd || fd->sample_count <= 1u || !fd->resolve_fbo) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fd->gl_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fd->resolve_fbo);
+    glBlitFramebuffer(0, 0, (GLint)fd->width, (GLint)fd->height,
+                      0, 0, (GLint)fd->width, (GLint)fd->height,
+                      GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT,
+                      GL_NEAREST);
+    gl_bind_fbo_cached(fd->resolve_fbo);
+}
+
+static void gl_resolve_active_offscreen(void) {
+    if (g_gl_active_offscreen) {
+        gl_resolve_offscreen(g_gl_active_offscreen);
+        g_gl_active_offscreen = NULL;
+    }
+}
+
+static void gl_release_offscreen_storage(GLFBOData *fd) {
+    if (!fd) return;
+    if (g_gl_bound_fbo == fd->gl_fbo || g_gl_bound_fbo == fd->resolve_fbo)
+        g_gl_bound_fbo = 0;
+    if (fd->gl_fbo) glDeleteFramebuffers(1, &fd->gl_fbo);
+    if (fd->resolve_fbo && fd->resolve_fbo != fd->gl_fbo)
+        glDeleteFramebuffers(1, &fd->resolve_fbo);
+    if (fd->color_tex) glDeleteTextures(1, &fd->color_tex);
+    if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+    if (fd->color_rb) glDeleteRenderbuffers(1, &fd->color_rb);
+    if (fd->depth_rb) glDeleteRenderbuffers(1, &fd->depth_rb);
+    free(fd);
 }
 
 /* R79-4: GL_SCISSOR_TEST enable cache — avoids redundant glEnable/glDisable
@@ -431,6 +470,32 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     gl_set_viewport_cached(0, 0, w, h);
+
+    dev->capabilities.backend = RHI_BACKEND_OPENGL;
+    dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.surface_sample_count = 1u;
+    {
+        GLint max_samples = 1;
+        GLint sample_buffers = 0;
+        GLint surface_samples = 0;
+        glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+        glGetIntegerv(GL_SAMPLE_BUFFERS, &sample_buffers);
+        glGetIntegerv(GL_SAMPLES, &surface_samples);
+        if (max_samples < 1) max_samples = 1;
+        for (u32 samples = 2u; samples <= 64u && samples <= (u32)max_samples;
+             samples <<= 1u) {
+            dev->capabilities.color_sample_counts |=
+                rhi_sample_count_bit(samples);
+            dev->capabilities.depth_sample_counts |=
+                rhi_sample_count_bit(samples);
+        }
+        if (sample_buffers > 0 && surface_samples > 0) {
+            dev->capabilities.surface_sample_count = (u32)surface_samples;
+        }
+        dev->capabilities.color_resolve_supported = max_samples >= 2;
+        dev->capabilities.depth_resolve_supported = max_samples >= 2;
+    }
 
     dev->backend_data = gl;
     dev->width  = w;
@@ -743,9 +808,14 @@ void rhi_device_destroy(RHIDevice *dev) {
         case RHI_RES_FRAMEBUFFER: {
             GLFBOData *fd = (GLFBOData *)dev->slots[i].ptr;
             if (fd) {
+                if (g_gl_active_offscreen == fd) g_gl_active_offscreen = NULL;
                 if (fd->gl_fbo) glDeleteFramebuffers(1, &fd->gl_fbo);
+                if (fd->resolve_fbo && fd->resolve_fbo != fd->gl_fbo)
+                    glDeleteFramebuffers(1, &fd->resolve_fbo);
                 if (fd->color_tex) glDeleteTextures(1, &fd->color_tex);
                 if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+                if (fd->color_rb) glDeleteRenderbuffers(1, &fd->color_rb);
+                if (fd->depth_rb) glDeleteRenderbuffers(1, &fd->depth_rb);
                 free(fd);
             }
             break;
@@ -2072,11 +2142,16 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
     }
 }
 
-RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt) {
-    (void)dev;
+RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreenFBODesc *desc) {
     RHIOffscreenFBO fbo = {0};
+    if (!dev || !rhi_offscreen_fbo_desc_validate(&dev->capabilities, desc)) return fbo;
+    u32 width = desc->width;
+    u32 height = desc->height;
+    RHIFormat color_fmt = desc->color_format;
+    u32 sample_count = desc->sample_count == 0u ? 1u : desc->sample_count;
     fbo.width = width;
     fbo.height = height;
+    fbo.sample_count = sample_count;
 
     GLFBOData *fd = calloc(1, sizeof(GLFBOData));
     if (!fd) return fbo;
@@ -2089,6 +2164,40 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
 
     glGenFramebuffers(1, &fd->gl_fbo);
     gl_bind_fbo_cached(fd->gl_fbo);
+    fd->width = width;
+    fd->height = height;
+    fd->sample_count = sample_count;
+
+    if (sample_count > 1u) {
+        glGenRenderbuffers(1, &fd->color_rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, fd->color_rb);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, (GLsizei)sample_count,
+                                         gl_internal, (GLsizei)width, (GLsizei)height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  GL_RENDERBUFFER, fd->color_rb);
+
+        glGenRenderbuffers(1, &fd->depth_rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, fd->depth_rb);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, (GLsizei)sample_count,
+                                         GL_DEPTH_COMPONENT32F,
+                                         (GLsizei)width, (GLsizei)height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  GL_RENDERBUFFER, fd->depth_rb);
+
+        GLenum msaa_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (msaa_status != GL_FRAMEBUFFER_COMPLETE) {
+            LOG_WARN("GL: multisample offscreen FBO incomplete (0x%x)",
+                     (unsigned)msaa_status);
+            gl_bind_fbo_cached(0);
+            gl_release_offscreen_storage(fd);
+            return (RHIOffscreenFBO){0};
+        }
+
+        glGenFramebuffers(1, &fd->resolve_fbo);
+        gl_bind_fbo_cached(fd->resolve_fbo);
+    } else {
+        fd->resolve_fbo = fd->gl_fbo;
+    }
 
     glGenTextures(1, &fd->color_tex);
     glBindTexture(GL_TEXTURE_2D, fd->color_tex);
@@ -2123,11 +2232,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     gl_bind_fbo_cached(0);
     if (off_status != GL_FRAMEBUFFER_COMPLETE) {
         LOG_WARN("GL: offscreen FBO incomplete (0x%x)", (unsigned)off_status);
-        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
-        glDeleteFramebuffers(1, &fd->gl_fbo);
-        glDeleteTextures(1, &fd->color_tex);
-        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
-        free(fd);
+        gl_release_offscreen_storage(fd);
         return (RHIOffscreenFBO){0};
     }
 
@@ -2142,11 +2247,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     if (!td) {
         /* R359: never publish fb without color/depth handles — callers gate on fb. */
         LOG_WARN("GL: offscreen color slot alloc failed");
-        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
-        glDeleteFramebuffers(1, &fd->gl_fbo);
-        glDeleteTextures(1, &fd->color_tex);
-        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
-        free(fd);
+        gl_release_offscreen_storage(fd);
         rhi_free_slot(dev, rhi_make_handle(tidx, dev->slots[tidx].generation));
         return (RHIOffscreenFBO){0};
     }
@@ -2162,12 +2263,8 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     GLTextureData *dtd = calloc(1, sizeof(GLTextureData));
     if (!dtd) {
         LOG_WARN("GL: offscreen depth slot alloc failed");
-        if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
-        glDeleteFramebuffers(1, &fd->gl_fbo);
-        glDeleteTextures(1, &fd->color_tex);
-        if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+        gl_release_offscreen_storage(fd);
         free(td);
-        free(fd);
         rhi_free_slot(dev, rhi_make_handle(cidx, dev->slots[cidx].generation));
         rhi_free_slot(dev, rhi_make_handle(tidx, dev->slots[tidx].generation));
         return (RHIOffscreenFBO){0};
@@ -2196,9 +2293,11 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (!dev || !fbo) return;
     GLFBOData *fd = rhi_get_resource(dev, fbo->fb);
     if (!fd) return;
+    if (g_gl_active_offscreen == fd) g_gl_active_offscreen = NULL;
     /* R189-B: glDeleteFramebuffers unbinds; clear bind cache or a recycled
      * name can falsely skip glBindFramebuffer after resize recreate. */
-    if (g_gl_bound_fbo == fd->gl_fbo) g_gl_bound_fbo = 0;
+    if (g_gl_bound_fbo == fd->gl_fbo || g_gl_bound_fbo == fd->resolve_fbo)
+        g_gl_bound_fbo = 0;
     if (rhi_handle_valid(fbo->color_tex)) {
         GLTextureData *td = (GLTextureData *)rhi_get_resource(dev, fbo->color_tex);
         if (td) {
@@ -2226,11 +2325,20 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
         rhi_free_slot(dev, fbo->depth_tex);
     }
     glDeleteFramebuffers(1, &fd->gl_fbo);
+    if (fd->resolve_fbo && fd->resolve_fbo != fd->gl_fbo)
+        glDeleteFramebuffers(1, &fd->resolve_fbo);
     glDeleteTextures(1, &fd->color_tex);
     if (fd->depth_tex) glDeleteTextures(1, &fd->depth_tex);
+    if (fd->color_rb) glDeleteRenderbuffers(1, &fd->color_rb);
+    if (fd->depth_rb) glDeleteRenderbuffers(1, &fd->depth_rb);
     free(fd);
     rhi_free_slot(dev, fbo->fb);
     memset(fbo, 0, sizeof(*fbo));
+}
+
+RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt) {
+    RHIOffscreenFBODesc desc = {width, height, color_fmt, 1u};
+    return rhi_offscreen_fbo_create_desc(dev, &desc);
 }
 
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
@@ -2238,7 +2346,9 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     if (!fbo) return;
     GLFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
     if (!fd) return;
+    gl_resolve_active_offscreen();
     gl_bind_fbo_cached(fd->gl_fbo);
+    g_gl_active_offscreen = fd;
     /* R230-A: VK sets full-FBO viewport/scissor + depth 0..1 on bind. */
     gl_set_fbo_pass_state(fbo->width, fbo->height);
 }
@@ -2250,6 +2360,7 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
+    gl_resolve_active_offscreen();
     gl_bind_fbo_cached(0);
     /* R230: VK unbind resets full-swapchain viewport/scissor + depth 0..1. */
     gl_set_fbo_pass_state(screen_w, screen_h);

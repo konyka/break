@@ -158,6 +158,118 @@ TEST(add_after_remove_reuses_capacity) {
     ASSERT_EQ(l.items[1].global_name, 10u);
 }
 
+TEST(optional_protocol_global_removal_is_isolated) {
+    WaylandOptionalGlobals globals;
+
+    wl_out_optional_globals_init(&globals);
+    wl_out_optional_global_set(&globals, WAYLAND_OPTIONAL_DATA_DEVICE_MANAGER,
+                               10u);
+    wl_out_optional_global_set(&globals, WAYLAND_OPTIONAL_TEXT_INPUT_MANAGER,
+                               20u);
+    wl_out_optional_global_set(&globals, WAYLAND_OPTIONAL_VIEWPORTER, 30u);
+
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 20u),
+              WAYLAND_OPTIONAL_TEXT_INPUT_MANAGER);
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 20u),
+              WAYLAND_OPTIONAL_NONE);
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 999u),
+              WAYLAND_OPTIONAL_NONE);
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 10u),
+              WAYLAND_OPTIONAL_DATA_DEVICE_MANAGER);
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 30u),
+              WAYLAND_OPTIONAL_VIEWPORTER);
+}
+
+TEST(optional_protocol_global_reannouncement_replaces_name) {
+    WaylandOptionalGlobals globals;
+
+    wl_out_optional_globals_init(&globals);
+    wl_out_optional_global_set(&globals, WAYLAND_OPTIONAL_CURSOR_SHAPE_MANAGER,
+                               40u);
+    wl_out_optional_global_set(&globals, WAYLAND_OPTIONAL_CURSOR_SHAPE_MANAGER,
+                               41u);
+
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 40u),
+              WAYLAND_OPTIONAL_NONE);
+    ASSERT_EQ(wl_out_optional_global_take(&globals, 41u),
+              WAYLAND_OPTIONAL_CURSOR_SHAPE_MANAGER);
+}
+
+TEST(surface_scale_uses_largest_entered_output) {
+    WaylandOutputList l;
+    const u32 entered[] = {20u, 30u};
+    wl_out_list_init(&l);
+    ASSERT_EQ(wl_out_add(&l, 10u), 0);
+    ASSERT_EQ(wl_out_add(&l, 20u), 1);
+    ASSERT_EQ(wl_out_add(&l, 30u), 2);
+    l.items[0].scale = 1;
+    l.items[1].scale = 2;
+    l.items[2].scale = 3;
+
+    /* A surface spanning outputs must not undersize its framebuffer. */
+    ASSERT_EQ(wl_out_surface_scale(&l, entered, 2u), 3);
+}
+
+TEST(surface_scale_ignores_departed_and_unknown_outputs) {
+    WaylandOutputList l;
+    const u32 entered[] = {10u, 999u};
+    wl_out_list_init(&l);
+    ASSERT_EQ(wl_out_add(&l, 10u), 0);
+    l.items[0].scale = 2;
+
+    ASSERT_EQ(wl_out_surface_scale(&l, entered, 2u), 2);
+    ASSERT_TRUE(wl_out_remove(&l, 10u));
+    ASSERT_EQ(wl_out_surface_scale(&l, entered, 2u), 1);
+}
+
+TEST(fractional_surface_scale_uses_viewporter) {
+    WaylandSurfaceScale scale = wl_out_surface_render_scale(2, 150u, true);
+
+    ASSERT_TRUE(scale.uses_viewport);
+    ASSERT_EQ(scale.buffer_scale, 1);
+    ASSERT_EQ(scale.content_scale_120, 150u);
+    /* 101 * 1.25 is 126.25, which needs a 126 pixel backing buffer. */
+    ASSERT_EQ(wl_out_drawable_dimension(101u, scale.content_scale_120), 126u);
+    /* Toplevel dimensions round halfway away from zero. */
+    ASSERT_EQ(wl_out_drawable_dimension(101u, 180u), 152u);
+}
+
+TEST(integer_surface_scale_remains_fallback_without_fractional_protocol) {
+    WaylandSurfaceScale scale = wl_out_surface_render_scale(2, 150u, false);
+
+    ASSERT_FALSE(scale.uses_viewport);
+    ASSERT_EQ(scale.buffer_scale, 2);
+    ASSERT_EQ(scale.content_scale_120, 240u);
+    ASSERT_EQ(wl_out_drawable_dimension(101u, scale.content_scale_120), 202u);
+}
+
+TEST(integer_surface_scale_saturates_protocol_storage) {
+    WaylandSurfaceScale scale =
+        wl_out_surface_render_scale(INT32_MAX, 0u, false);
+
+    ASSERT_EQ(scale.buffer_scale, INT32_MAX);
+    ASSERT_EQ(scale.content_scale_120, UINT32_MAX);
+}
+
+TEST(fractional_drawable_size_handles_rounding_and_overflow) {
+    /* 100 * 1.25 is exact; 1 * 1.5 rounds halfway up to two pixels. */
+    ASSERT_EQ(wl_out_drawable_dimension(100u, 150u), 125u);
+    ASSERT_EQ(wl_out_drawable_dimension(1u, 180u), 2u);
+    ASSERT_EQ(wl_out_drawable_dimension(0xffffffffu, 240u), 0xffffffffu);
+    /* A missing compositor preference safely falls back to 1x. */
+    ASSERT_EQ(wl_out_drawable_dimension(99u, 0u), 99u);
+}
+
+TEST(fractional_cursor_buffer_scale_rounds_up) {
+    ASSERT_EQ(wl_out_cursor_buffer_scale(0u), 1);
+    ASSERT_EQ(wl_out_cursor_buffer_scale(120u), 1);
+    ASSERT_EQ(wl_out_cursor_buffer_scale(150u), 2);
+    ASSERT_EQ(wl_out_cursor_buffer_scale(180u), 2);
+    ASSERT_EQ(wl_out_cursor_buffer_scale(240u), 2);
+    ASSERT_EQ(wl_out_cursor_buffer_scale(241u), 3);
+    ASSERT_EQ(wl_out_cursor_buffer_scale(UINT32_MAX), 35791395);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(add_up_to_capacity_then_full);
     RUN_TEST(add_dedups_same_global_name);
@@ -171,4 +283,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(remove_last_slot);
     RUN_TEST(remove_unknown_global_returns_false);
     RUN_TEST(add_after_remove_reuses_capacity);
+    RUN_TEST(optional_protocol_global_removal_is_isolated);
+    RUN_TEST(optional_protocol_global_reannouncement_replaces_name);
+    RUN_TEST(surface_scale_uses_largest_entered_output);
+    RUN_TEST(surface_scale_ignores_departed_and_unknown_outputs);
+    RUN_TEST(fractional_surface_scale_uses_viewporter);
+    RUN_TEST(integer_surface_scale_remains_fallback_without_fractional_protocol);
+    RUN_TEST(integer_surface_scale_saturates_protocol_storage);
+    RUN_TEST(fractional_drawable_size_handles_rounding_and_overflow);
+    RUN_TEST(fractional_cursor_buffer_scale_rounds_up);
 TEST_MAIN_END()

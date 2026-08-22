@@ -34,6 +34,7 @@ struct RHIDevice {
     /* Free-list for O(1) slot allocation (Round 18) */
     u32              free_head;   /* UINT32_MAX = empty */
     u32              free_count;
+    RHICapabilities  capabilities;
 };
 
 RHIDevice *g_current_device = NULL;
@@ -68,6 +69,29 @@ u32 rhi_alloc_slot(RHIDevice *dev) {
 
 RHIHandle rhi_make_handle(u32 index, u32 gen) {
     return (RHIHandle){index, gen};
+}
+
+bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
+    if (dev == NULL || out == NULL) return false;
+    *out = dev->capabilities;
+    return true;
+}
+
+bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
+                                     const RHIOffscreenFBODesc *desc) {
+    if (!caps || !desc || desc->width == 0u || desc->height == 0u) return false;
+    if (desc->color_format == RHI_FORMAT_UNDEFINED ||
+        desc->color_format == RHI_FORMAT_D32_FLOAT) return false;
+
+    u32 samples = desc->sample_count == 0u ? 1u : desc->sample_count;
+    u32 sample_bit = rhi_sample_count_bit(samples);
+    if (sample_bit == 0u || (caps->color_sample_counts & sample_bit) == 0u ||
+        (caps->depth_sample_counts & sample_bit) == 0u)
+        return false;
+    if (samples > 1u && (!caps->color_resolve_supported ||
+                         !caps->depth_resolve_supported))
+        return false;
+    return true;
 }
 
 void *rhi_get_resource(RHIDevice *dev, RHIHandle h) {

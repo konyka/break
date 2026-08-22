@@ -21,6 +21,26 @@ typedef enum {
     RHI_BACKEND_VULKAN,
 } RHIBackend;
 
+/* Capability bit for a power-of-two color sample count. */
+static inline u32 rhi_sample_count_bit(u32 count) {
+    u32 bit = 0u;
+    if (count == 0u || (count & (count - 1u)) != 0u) return 0u;
+    while (count > 1u) {
+        count >>= 1u;
+        bit++;
+    }
+    return 1u << bit;
+}
+
+typedef struct {
+    RHIBackend backend;
+    u32        color_sample_counts;
+    u32        depth_sample_counts;
+    u32        surface_sample_count;
+    bool       color_resolve_supported;
+    bool       depth_resolve_supported;
+} RHICapabilities;
+
 typedef enum {
     RHI_FORMAT_R8G8B8A8_UNORM,
     RHI_FORMAT_B8G8R8A8_UNORM,
@@ -96,6 +116,8 @@ typedef struct {
      * swapchain pass; set RHI_FORMAT_R16G16B16A16_SFLOAT for the HDR scene FBO.
      * Ignored by the GL backend. */
     RHIFormat color_format;
+    /* Graphics attachment sample count. Zero means the legacy 1x target. */
+    u32       sample_count;
     /* R440: MRT (G-buffer) target description. When mrt_attachment_count > 1 the
      * Vulkan backend builds the pipeline against a render pass with these color
      * attachment formats (+ D32F depth), render-pass-compatible with the pass
@@ -112,6 +134,16 @@ typedef struct {
     u32         mip_levels;
     const void *data;
 } RHITextureDesc;
+
+typedef struct {
+    u32       width;
+    u32       height;
+    RHIFormat color_format;
+    u32       sample_count;
+} RHIOffscreenFBODesc;
+
+/* Returns true only when the descriptor can be created without silently
+ * falling back to a different sample count. */
 
 typedef struct {
     RHIFilter  min_filter;
@@ -132,8 +164,11 @@ typedef struct RHICmdBuffer RHICmdBuffer;
 typedef struct RHIDevice RHIDevice;
 
 /* ---- Device API ---- */
+/* `w` and `h` are physical drawable pixels, never logical UI points. */
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
+bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
+/* Resize the default framebuffer/swapchain in physical drawable pixels. */
 void       rhi_device_resize(RHIDevice *dev, u32 w, u32 h);
 
 /* ---- Frame lifecycle ---- */
@@ -325,10 +360,14 @@ typedef struct {
     RHITexture     depth_tex;
     u32            width;
     u32            height;
+    u32            sample_count;
 } RHIOffscreenFBO;
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height);
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt);
+RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreenFBODesc *desc);
+bool            rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
+                                                const RHIOffscreenFBODesc *desc);
 void            rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
 /* R196-A: re-bind without clearing (preserve color+depth). Tonemap/cinematic

@@ -164,6 +164,64 @@ typedef struct {
     i32 loc_light_dir, loc_light_color, loc_ambient, loc_camera_pos;
 } TestRenderState;
 
+static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
+                                   RHIBuffer ibo) {
+#ifdef ENGINE_VULKAN
+    RHICapabilities caps = {0};
+    if (!rhi_device_get_capabilities(rs->device, &caps)) return false;
+    const u32 sample_bit = rhi_sample_count_bit(2u);
+    if ((caps.color_sample_counts & sample_bit) == 0u ||
+        (caps.depth_sample_counts & sample_bit) == 0u ||
+        !caps.color_resolve_supported || !caps.depth_resolve_supported) {
+        LOG_WARN("SKIP: Vulkan 2x MSAA offscreen target is unsupported");
+        return true;
+    }
+
+    RHIOffscreenFBODesc desc = {
+        .width = 256u,
+        .height = 256u,
+        .color_format = RHI_FORMAT_B8G8R8A8_UNORM,
+        .sample_count = 2u,
+    };
+    RHIOffscreenFBO fbo = rhi_offscreen_fbo_create_desc(rs->device, &desc);
+    if (!rhi_handle_valid(fbo.fb) || !rhi_handle_valid(fbo.color_tex) ||
+        !rhi_handle_valid(fbo.depth_tex) || fbo.sample_count != 2u) {
+        LOG_ERROR("FAIL: Vulkan 2x MSAA FBO creation or sample contract");
+        if (rhi_handle_valid(fbo.fb)) rhi_offscreen_fbo_destroy(rs->device, &fbo);
+        return false;
+    }
+
+    RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+    if (!cmd) {
+        rhi_offscreen_fbo_destroy(rs->device, &fbo);
+        return false;
+    }
+    Mat4 identity = mat4_identity();
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+    rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+    rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+    rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+    rhi_cmd_draw_indexed(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 256u, 256u);
+    rhi_frame_end(rs->device);
+    rhi_present(rs->device);
+    rhi_offscreen_fbo_destroy(rs->device, &fbo);
+    LOG_INFO("PASS: Vulkan 2x MSAA offscreen draw/resolve/destroy");
+    return true;
+#else
+    (void)rs; (void)vbo; (void)ibo;
+    return true;
+#endif
+}
+
 /* Capture the presented frame, downsample, and compare against (or, with
  * GOLDEN_UPDATE=1, write) the reference PPM at `path`.
  * `reject_blank`: fail when the captured grid is a single flat color —
@@ -308,10 +366,15 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
 }
 
 static bool test_render_init(TestRenderState *rs, Platform *platform) {
-    void *window = platform_surface_native(platform);
+    void *window;
     void *display = platform_display_native(platform);
     u32 w, h;
-    platform_get_size(platform, &w, &h);
+#ifdef ENGINE_VULKAN
+    window = platform_surface_native(platform);
+#else
+    window = platform_window_native(platform);
+#endif
+    platform_get_drawable_size(platform, &w, &h);
 
     rs->device = rhi_device_create(TV_BACKEND, window, display, w, h);
     if (!rs->device) { LOG_ERROR("FAIL: device create"); return false; }
@@ -1371,7 +1434,7 @@ int main(int argc, char **argv) {
 #endif
 
     u32 motion_w, motion_h;
-    platform_get_size(engine.platform, &motion_w, &motion_h);
+    platform_get_drawable_size(engine.platform, &motion_w, &motion_h);
     LOG_INFO("============================================");
     LOG_INFO("TEST: MOTION BLUR RT1 RG16F");
     LOG_INFO("============================================");
@@ -1385,7 +1448,7 @@ int main(int argc, char **argv) {
      * Vulkan-only, while TEST 7 uses the same helper on both backends. */
     {
         u32 gw, gh;
-        platform_get_size(engine.platform, &gw, &gh);
+        platform_get_drawable_size(engine.platform, &gw, &gh);
         LOG_INFO("OpenGL build: golden + material-indirect gates (suite body is Vulkan-only)");
         bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw, gh);
         /* R438: non-identity camera variant (transpose-sensitive). */
@@ -1447,7 +1510,7 @@ int main(int argc, char **argv) {
     /* Camera */
     Camera camera = {0};
     u32 w, h;
-    platform_get_size(engine.platform, &w, &h);
+    platform_get_drawable_size(engine.platform, &w, &h);
     camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f); /* R142: guard h==0 */
 
     u8 tex2_data[] = {200, 50, 50, 255};
@@ -1527,6 +1590,12 @@ int main(int argc, char **argv) {
     }
 
     LOG_INFO("============================================");
+    LOG_INFO("TEST: VULKAN 2x MSAA OFFSCREEN RESOLVE");
+    LOG_INFO("============================================");
+    bool msaa_pass = tv_test_msaa_offscreen(&render, vbo, ibo);
+    LOG_INFO("RESULT: VULKAN 2x MSAA TEST %s", msaa_pass ? "PASSED ✓" : "FAILED");
+
+    LOG_INFO("============================================");
     LOG_INFO("Stress test: 500 frames, texture bind, multi-draw");
     LOG_INFO("============================================");
 
@@ -1538,7 +1607,7 @@ int main(int argc, char **argv) {
 
     while (engine_frame(&engine) && frame_count < target_frames) {
         frame_count++;
-        platform_get_size(engine.platform, &w, &h);
+        platform_get_drawable_size(engine.platform, &w, &h);
         camera_update(&camera, platform_input(engine.platform), (f32)engine.delta_time);
         total_time += engine.delta_time;
         if (engine.delta_time < min_dt) min_dt = engine.delta_time;
@@ -1931,7 +2000,7 @@ int main(int argc, char **argv) {
     bool combined_pass = false;
     {
         u32 cw, ch;
-        platform_get_size(engine.platform, &cw, &ch);
+        platform_get_drawable_size(engine.platform, &cw, &ch);
 
         CombinedAA caa = {0};
         CombinedColor cc = {0};
@@ -2056,7 +2125,7 @@ int main(int argc, char **argv) {
     LOG_INFO("============================================");
 
     u32 iw, ih;
-    platform_get_size(engine.platform, &iw, &ih);
+    platform_get_drawable_size(engine.platform, &iw, &ih);
     bool ibl_pass = tv_test_ibl(&render, vbo, ibo, iw, ih);
 
     if (ibl_pass) {
@@ -2262,7 +2331,7 @@ int main(int argc, char **argv) {
     /* R442: VK/GL share the backend-neutral body (tv_test_material_array);
      * the GL build runs it in its own early-exit branch above. */
     u32 tw = 0, th = 0;
-    platform_get_size(engine.platform, &tw, &th);
+    platform_get_drawable_size(engine.platform, &tw, &th);
     bool matarr_pass = tv_test_material_array(&render, tw, th);
 
     if (matarr_pass) {
@@ -2288,7 +2357,7 @@ int main(int argc, char **argv) {
 
     /* ---- TEST 8: Golden image regression ---- */
     u32 gw2, gh2;
-    platform_get_size(engine.platform, &gw2, &gh2);
+    platform_get_drawable_size(engine.platform, &gw2, &gh2);
     bool golden_pass = tv_run_golden_regression(&render, vbo, ibo, gw2, gh2);
     /* R438: non-identity camera variant (transpose-sensitive). */
     bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw2, gh2);
@@ -2312,6 +2381,7 @@ int main(int argc, char **argv) {
 #endif
 
     bool all_pass = motion_rt1_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+                    msaa_pass &&
                     compute_pass && combined_pass && ibl_pass && unified_pass &&
                     idraw_pass && matarr_pass && defarr_pass && golden_pass &&
                     validation_pass;

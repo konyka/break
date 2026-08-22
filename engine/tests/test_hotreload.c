@@ -5,6 +5,7 @@
 #include <string.h>
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -104,17 +105,20 @@ TEST(hotreload_pipeline_rejects_path_truncation)
     char tmp[256];
     test_tmp(tmp, sizeof tmp, "hr_long");
     for (char *c = tmp; *c; c++) if (*c == '\\') *c = '/';
+    ASSERT_EQ(TEST_MKDIR(tmp), 0);
     usize t = strlen(tmp);
     ASSERT_TRUE(t > 0 && t < 256);
     memcpy(vert, tmp, t);
     vert[t++] = '/';
-    memset(vert + t, 'v', 256u - t - 1u);
+    memset(vert + t, 'v', sizeof(vert) - t - 1u);
     vert[256] = '\0';
     t = strlen(tmp);
     memcpy(frag, tmp, t);
     frag[t++] = '/';
-    memset(frag + t, 'f', 256u - t - 1u);
+    memset(frag + t, 'f', sizeof(frag) - t - 1u);
     frag[256] = '\0';
+    ASSERT_EQ(strlen(vert), sizeof(vert) - 1u);
+    ASSERT_EQ(strlen(frag), sizeof(frag) - 1u);
     ASSERT_TRUE(write_file(vert, 16, '#'));
     ASSERT_TRUE(write_file(frag, 16, '#'));
 
@@ -126,6 +130,7 @@ TEST(hotreload_pipeline_rejects_path_truncation)
     ASSERT_FALSE(hr.ready);
     remove(vert);
     remove(frag);
+    ASSERT_EQ(TEST_RMDIR(tmp), 0);
 #endif
 }
 

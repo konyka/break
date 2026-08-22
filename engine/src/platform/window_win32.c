@@ -5,6 +5,7 @@
 #endif
 #include <windows.h>
 #include <windowsx.h>  /* R423: GET_X_LPARAM / GET_Y_LPARAM */
+#include <imm.h>
 
 /* ---- High-DPI compatibility shims (for older Windows SDKs) ---- */
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
@@ -18,12 +19,14 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 
 #include <platform/platform.h>
 #include <platform/input.h>
+#include <platform/platform_text.h>
 #include <core/types.h>
 #include <core/log.h>
 #include "gamepad_linux.h"  /* shared gamepad API; Windows impl in gamepad_win.c */
 
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 struct Platform {
     HINSTANCE   hinstance;
@@ -35,9 +38,37 @@ struct Platform {
     bool        is_fullscreen;
     bool        mouse_relative;
     bool        mouse_visible;  /* R427: desired cursor visibility (ShowCursor is counter-based) */
+    PlatformCursor cursor;
+    PlatformTextQueue text_queue;
+    PlatformImeSurrounding ime_surrounding;
+    bool        ime_enabled;
+    bool        ime_context_detached;
+    uint16_t    pending_high_surrogate;
+    u32         suppress_char_units;
+    HIMC        ime_context;
+    i32         ime_spot_x;
+    i32         ime_spot_y;
     RECT        windowed_rect;
     DWORD       windowed_style;
 };
+
+static void win_apply_cursor(Platform *p) {
+    LPCSTR resource;
+    if (p == NULL) return;
+    switch (p->cursor) {
+    case PLATFORM_CURSOR_TEXT:
+        resource = IDC_IBEAM;
+        break;
+    case PLATFORM_CURSOR_HAND:
+        resource = IDC_HAND;
+        break;
+    case PLATFORM_CURSOR_ARROW:
+    default:
+        resource = IDC_ARROW;
+        break;
+    }
+    SetCursor(LoadCursorA(NULL, resource));
+}
 
 /* ---- Key mapping ---- */
 
@@ -123,6 +154,97 @@ static i32 win_vk_to_index(i32 vk_code, LPARAM lParam) {
     }
 }
 
+static bool win_queue_utf16(Platform *platform, PlatformTextType type,
+                            const uint16_t *text, usize units, i32 cursor) {
+    char *utf8 = platform_utf16_to_utf8_alloc(text, units);
+    bool queued;
+    if (utf8 == NULL) return false;
+    queued = platform_text_queue_push(&platform->text_queue, type, utf8, cursor);
+    free(utf8);
+    return queued;
+}
+
+static void win_queue_char(Platform *platform, uint16_t unit) {
+    uint16_t text[2];
+    if (platform->pending_high_surrogate != 0) {
+        if (unit >= 0xDC00u && unit <= 0xDFFFu) {
+            text[0] = platform->pending_high_surrogate;
+            text[1] = unit;
+            win_queue_utf16(platform, PLATFORM_TEXT_COMMIT, text, 2, 0);
+            platform->pending_high_surrogate = 0;
+            return;
+        }
+        text[0] = platform->pending_high_surrogate;
+        win_queue_utf16(platform, PLATFORM_TEXT_COMMIT, text, 1, 0);
+        platform->pending_high_surrogate = 0;
+    }
+    if (unit >= 0xD800u && unit <= 0xDBFFu) {
+        platform->pending_high_surrogate = unit;
+    } else {
+        text[0] = unit;
+        win_queue_utf16(platform, PLATFORM_TEXT_COMMIT, text, 1, 0);
+    }
+}
+
+static void win_queue_ime_composition(Platform *platform, HIMC context,
+                                      DWORD flags) {
+    LONG bytes;
+    usize units;
+    i32 cursor = 0;
+    WCHAR *utf16;
+    if ((flags & GCS_RESULTSTR) != 0) {
+        bytes = ImmGetCompositionStringW(context, GCS_RESULTSTR, NULL, 0);
+        if (bytes > 0 &&
+            (usize)bytes <= PLATFORM_TEXT_MAX_BYTES * sizeof(*utf16) &&
+            (bytes % (LONG)sizeof(*utf16)) == 0) {
+            units = (usize)bytes / sizeof(utf16[0]);
+            utf16 = malloc((usize)bytes + sizeof(*utf16));
+            if (utf16 != NULL &&
+                ImmGetCompositionStringW(context, GCS_RESULTSTR, utf16,
+                                         (DWORD)bytes) == bytes) {
+                if (win_queue_utf16(platform, PLATFORM_TEXT_COMMIT,
+                                    (const uint16_t *)utf16, units, 0)) {
+                    if (units <= UINT32_MAX - platform->suppress_char_units)
+                        platform->suppress_char_units += (u32)units;
+                    else
+                        platform->suppress_char_units = UINT32_MAX;
+                }
+            }
+            free(utf16);
+        }
+    }
+    if ((flags & GCS_COMPSTR) != 0) {
+        bytes = ImmGetCompositionStringW(context, GCS_COMPSTR, NULL, 0);
+        if (bytes < 0) return;
+        if (bytes == 0) {
+            (void)platform_text_queue_push(&platform->text_queue,
+                                           PLATFORM_TEXT_PREEDIT, "", 0);
+            return;
+        }
+        if ((usize)bytes > PLATFORM_TEXT_MAX_BYTES * sizeof(*utf16) ||
+            (bytes % (LONG)sizeof(*utf16)) != 0) return;
+        units = (usize)bytes / sizeof(utf16[0]);
+        utf16 = malloc((usize)bytes + sizeof(*utf16));
+        if (utf16 == NULL || ImmGetCompositionStringW(context, GCS_COMPSTR, utf16,
+                                                       (DWORD)bytes) != bytes) {
+            free(utf16);
+            return;
+        }
+        if ((flags & GCS_CURSORPOS) != 0) {
+            LONG position = ImmGetCompositionStringW(context, GCS_CURSORPOS,
+                                                      NULL, 0);
+            if (position > 0) {
+                cursor = platform_utf16_units_to_codepoints(
+                    (const uint16_t *)utf16,
+                    position < (LONG)units ? (i32)position : (i32)units);
+            }
+        }
+        win_queue_utf16(platform, PLATFORM_TEXT_PREEDIT,
+                        (const uint16_t *)utf16, units, cursor);
+        free(utf16);
+    }
+}
+
 /* ---- Window procedure ---- */
 
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -138,6 +260,10 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
     case WM_KILLFOCUS:
         input_release_all(&p->input);
+        p->pending_high_surrogate = 0;
+        return 0;
+
+    case WM_SETFOCUS:
         return 0;
 
     case WM_SIZE:
@@ -145,8 +271,16 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         p->height = (u32)HIWORD(lParam);
         return 0;
 
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT) {
+            win_apply_cursor(p);
+            return TRUE;
+        }
+        break;
+
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
+        p->suppress_char_units = 0;
         i32 idx = win_vk_to_index((i32)wParam, lParam);
         if (idx >= 0) input_set_key(&p->input, idx, true);
         return 0;
@@ -157,6 +291,46 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (idx >= 0) input_set_key(&p->input, idx, false);
         return 0;
     }
+
+    case WM_IME_COMPOSITION: {
+        HIMC context = ImmGetContext(hwnd);
+        if (context != NULL) {
+            win_queue_ime_composition(p, context, (DWORD)lParam);
+            ImmReleaseContext(hwnd, context);
+        }
+        return 0;
+    }
+
+    case WM_CHAR:
+        if (p->ime_enabled && wParam >= 0x20 && wParam != 0x7Fu) {
+            if (p->suppress_char_units > 0) {
+                p->suppress_char_units--;
+                return 0;
+            }
+            win_queue_char(p, (uint16_t)wParam);
+            return 0;
+        }
+        break;
+
+#ifndef WM_UNICHAR
+#define WM_UNICHAR 0x0109
+#endif
+    case WM_UNICHAR:
+        if (wParam == UNICODE_NOCHAR) return TRUE;
+        if (p->ime_enabled) {
+            uint32_t codepoint = (uint32_t)wParam;
+            if (codepoint <= 0xFFFFu) {
+                win_queue_char(p, (uint16_t)codepoint);
+            } else if (codepoint <= 0x10FFFFu) {
+                uint16_t text[2];
+                codepoint -= 0x10000u;
+                text[0] = (uint16_t)(0xD800u + (codepoint >> 10));
+                text[1] = (uint16_t)(0xDC00u + (codepoint & 0x3FFu));
+                win_queue_utf16(p, PLATFORM_TEXT_COMMIT, text, 2, 0);
+            }
+            return 0;
+        }
+        break;
 
     case WM_DPICHANGED: {
         /* Use the suggested rect from lParam to keep window visually consistent */
@@ -256,6 +430,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->width  = cfg->width;
     p->height = cfg->height;
     p->mouse_visible = true;  /* R427: cursor starts visible */
+    p->cursor = PLATFORM_CURSOR_ARROW;
 
     /* ---- Enable Per-Monitor DPI Awareness V2 (Windows 10 1703+) ----
      * Use dynamic loading so we degrade gracefully on older systems
@@ -322,6 +497,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
 void platform_destroy(Platform *p) {
     if (!p) return;
     gamepad_shutdown();
+    platform_text_queue_destroy(&p->text_queue);
     if (p->hdc) ReleaseDC(p->hwnd, p->hdc);
     if (p->hwnd) DestroyWindow(p->hwnd);
     UnregisterClassA("BreakEngine", p->hinstance);
@@ -351,6 +527,66 @@ PlatformEventResult platform_poll(Platform *p) {
     return PLATFORM_EVENT_NONE;
 }
 
+u32 platform_poll_text(Platform *p, PlatformTextEvent *out, u32 max_events) {
+    return p != NULL ? platform_text_queue_pop(&p->text_queue, out, max_events)
+                     : 0;
+}
+
+void platform_ime_set_enabled(Platform *p, bool enabled) {
+    if (p == NULL) return;
+    if (p->ime_enabled == enabled) return;
+    p->ime_enabled = enabled;
+    if (enabled) {
+        if (p->ime_context_detached) {
+            (void)ImmAssociateContext(p->hwnd, p->ime_context);
+            p->ime_context_detached = false;
+        }
+    } else {
+        p->pending_high_surrogate = 0;
+        p->suppress_char_units = 0;
+        if (!p->ime_context_detached) {
+            p->ime_context = ImmAssociateContext(p->hwnd, NULL);
+            p->ime_context_detached = true;
+        }
+    }
+}
+
+bool platform_ime_is_enabled(Platform *p) {
+    return p != NULL && p->ime_enabled;
+}
+
+void platform_ime_set_surrounding(Platform *p, const char *utf8, i32 cursor,
+                                  i32 anchor) {
+    if (p != NULL) {
+        platform_ime_surrounding_set(&p->ime_surrounding, utf8,
+                                     cursor > 0 ? (usize)cursor : 0,
+                                     anchor > 0 ? (usize)anchor : 0);
+    }
+}
+
+void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
+    HIMC context;
+    COMPOSITIONFORM composition;
+    CANDIDATEFORM candidate;
+    if (p == NULL) return;
+    p->ime_spot_x = x;
+    p->ime_spot_y = y;
+    context = ImmGetContext(p->hwnd);
+    if (context == NULL) return;
+    memset(&composition, 0, sizeof(composition));
+    composition.dwStyle = CFS_POINT;
+    composition.ptCurrentPos.x = x;
+    composition.ptCurrentPos.y = y;
+    ImmSetCompositionWindow(context, &composition);
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.dwIndex = 0;
+    candidate.dwStyle = CFS_CANDIDATEPOS;
+    candidate.ptCurrentPos.x = x;
+    candidate.ptCurrentPos.y = y;
+    ImmSetCandidateWindow(context, &candidate);
+    ImmReleaseContext(p->hwnd, context);
+}
+
 InputState *platform_input(Platform *p) {
     return &p->input;
 }
@@ -372,6 +608,17 @@ void platform_get_size(Platform *p, u32 *w, u32 *h) {
     if (h) *h = p->height;
 }
 
+void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
+    f32 scale = platform_get_content_scale(p);
+    if (w) *w = p != NULL ? (u32)((f32)p->width / scale + 0.5f) : 0;
+    if (h) *h = p != NULL ? (u32)((f32)p->height / scale + 0.5f) : 0;
+}
+
+void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
+    if (w) *w = p != NULL ? p->width : 0;
+    if (h) *h = p != NULL ? p->height : 0;
+}
+
 f32 platform_get_dpi(Platform *p) {
     /* Use GetDpiForWindow (Win10 1607+) via dynamic loading */
     typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
@@ -390,9 +637,17 @@ f32 platform_get_dpi(Platform *p) {
     return 96.0f;
 }
 
-i32 platform_get_scale_factor(Platform *p) {
+f32 platform_get_content_scale(Platform *p) {
     f32 dpi = platform_get_dpi(p);
-    return (i32)((dpi + 48.0f) / 96.0f);
+    return dpi > 0.0f ? dpi / 96.0f : 1.0f;
+}
+
+f32 platform_get_input_scale(Platform *p) {
+    return platform_get_content_scale(p);
+}
+
+i32 platform_get_scale_factor(Platform *p) {
+    return (i32)(platform_get_content_scale(p) + 0.5f);
 }
 
 u32 platform_get_monitor_count(Platform *p) {
@@ -520,6 +775,101 @@ void platform_mouse_set_visible(Platform *p, bool visible) {
     if (visible == p->mouse_visible) return;
     ShowCursor(visible ? TRUE : FALSE);
     p->mouse_visible = visible;
+}
+
+bool platform_cursor_set(Platform *p, PlatformCursor cursor) {
+    if (p == NULL || cursor > PLATFORM_CURSOR_HAND) return false;
+    p->cursor = cursor;
+    win_apply_cursor(p);
+    return true;
+}
+
+bool platform_window_begin_move(Platform *p) {
+    if (p == NULL || p->hwnd == NULL) return false;
+    ReleaseCapture();
+    SendMessageA(p->hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    return true;
+}
+
+bool platform_needs_client_decoration(Platform *p) {
+    (void)p;
+    return false;
+}
+
+bool platform_clipboard_set_text(Platform *p, const char *utf8) {
+    int units;
+    HGLOBAL memory;
+    wchar_t *wide;
+    if (p == NULL || utf8 == NULL || !OpenClipboard(p->hwnd)) return false;
+    units = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    if (units <= 0) {
+        CloseClipboard();
+        return false;
+    }
+    memory = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)units * sizeof(wchar_t));
+    if (memory == NULL) {
+        CloseClipboard();
+        return false;
+    }
+    wide = GlobalLock(memory);
+    if (wide == NULL || MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide,
+                                             units) <= 0) {
+        if (wide != NULL) GlobalUnlock(memory);
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    GlobalUnlock(memory);
+    if (!EmptyClipboard() || SetClipboardData(CF_UNICODETEXT, memory) == NULL) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    CloseClipboard();
+    return true;
+}
+
+bool platform_clipboard_get_text(Platform *p, char *out, usize out_size) {
+    HANDLE handle;
+    const wchar_t *wide;
+    bool ok = false;
+    if (p == NULL || out == NULL || out_size == 0 || !OpenClipboard(p->hwnd))
+        return false;
+    handle = GetClipboardData(CF_UNICODETEXT);
+    wide = handle != NULL ? GlobalLock(handle) : NULL;
+    if (wide != NULL) {
+        (void)platform_utf16_to_utf8((const uint16_t *)wide, wcslen(wide), out,
+                                     out_size);
+        GlobalUnlock(handle);
+        ok = true;
+    }
+    CloseClipboard();
+    return ok;
+}
+
+PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
+                                                           char **out) {
+    HANDLE handle;
+    const wchar_t *wide;
+    int bytes;
+    (void)p;
+    if (out == NULL) return PLATFORM_CLIPBOARD_EMPTY;
+    *out = NULL;
+    if (!OpenClipboard(p != NULL ? p->hwnd : NULL)) return PLATFORM_CLIPBOARD_EMPTY;
+    handle = GetClipboardData(CF_UNICODETEXT);
+    wide = handle != NULL ? GlobalLock(handle) : NULL;
+    if (wide == NULL) {
+        CloseClipboard();
+        return PLATFORM_CLIPBOARD_EMPTY;
+    }
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    if (bytes > 0) *out = malloc((size_t)bytes);
+    if (*out != NULL) {
+        (void)WideCharToMultiByte(CP_UTF8, 0, wide, -1, *out, bytes, NULL, NULL);
+    }
+    GlobalUnlock(handle);
+    CloseClipboard();
+    return *out != NULL ? PLATFORM_CLIPBOARD_READY : PLATFORM_CLIPBOARD_EMPTY;
 }
 
 void platform_mouse_set_relative(Platform *p, bool relative) {

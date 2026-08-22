@@ -19,6 +19,7 @@
 ### 1.2 系统依赖（Linux）
 - X11 开发库 (libx11-dev) 或 Wayland 开发库（二选一，编译时互斥）
 - OpenGL (libgl1-mesa-dev) 或 Vulkan SDK
+- FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
 - 游戏手柄支持：evdev（Linux 内核内置，无需额外包）
 
@@ -45,7 +46,41 @@ cmake -B build-vk -DENGINE_VULKAN=ON
 cmake --build build-vk
 ```
 
-### 2.2 Wayland 后端构建
+### 2.2 myui / duanxianxia 集成构建
+
+`engine/src/myui` 与 `engine/apps/duanxianxia` 已作为引擎静态库和可执行目标
+接入同一 CMake 工程：
+
+```bash
+cd engine
+
+# OpenGL
+cmake -B build-myui -DENGINE_BUILD_TESTS=OFF
+cmake --build build-myui --target dxx_break break_myui myui_core dxx_core -j
+
+# Vulkan
+cmake -B build-myui-vk -DENGINE_BUILD_TESTS=OFF -DENGINE_VULKAN=ON
+cmake --build build-myui-vk --target dxx_break break_myui -j
+
+# Headless myui 测试
+cmake -B build-myui-tests -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF
+cmake --build build-myui-tests \
+  --target test_break_ui_input test_break_ui_damage test_myui_vggeometry \
+           test_myui_window_manager test_myui_break_pal test_myui_font \
+           test_imgui_compat -j
+ctest --test-dir build-myui-tests \
+  -R 'test_(break_ui_input|break_ui_damage|myui_vggeometry|myui_window_manager|myui_break_pal|myui_font|imgui_compat)' \
+  --output-on-failure
+```
+
+`dxx_break` 自动选用平台的简体中文字库；使用自定义 TTC 时可设置
+`BREAK_MYUI_FONT=/path/to/font.ttc` 与 `BREAK_MYUI_FONT_FACE=2`。若 CMake 未找到
+FreeType，独立 TTF/OTF 仍可通过 `stb_truetype` 使用，但可变 TTC（包括 Linux 的
+Noto Sans CJK）不可用。
+
+详细架构、渲染后端与 IME 状态见 `docs/myui_integration.md`。
+
+### 2.3 Wayland 后端构建
 
 依赖安装 (Fedora):
 ```bash
@@ -66,8 +101,14 @@ cmake .. -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON # Wayland + Vulkan
 
 > ⚠️ **注意**：`ENGINE_ENABLE_WAYLAND` 与 X11 后端为**编译时互斥选项**，不可同时启用。默认为 OFF（使用 X11）。
 Wayland 后端通过 EGL 提供 OpenGL 上下文，通过 `VK_KHR_wayland_surface` 提供 Vulkan 支持。CMake 会调用 `wayland-scanner` 从 `wayland-protocols` 自动生成 `xdg-shell` 客户端代码。
+同时生成 `text-input-v3`、`cursor-shape-v1`（可用时）和 tablet 协议绑定；cursor-shape
+不可用时自动退回 `wayland-cursor` theme。
 
-### 2.3 Linux 构建矩阵
+myui 的 Break PAL 在 Wayland 下使用共享 RHI surface：逻辑 dialog 不创建第二个 OS window，
+并且只有 root window 的 CSD 标题栏允许请求 `xdg_toplevel_move`。X11/Wayland 外部 clipboard
+读取由事件循环异步完成；第一次 `Ctrl+V` 会自动重试，不阻塞渲染帧。
+
+### 2.4 Linux 构建矩阵
 
 Linux 平台支持 4 种窗口后端 + 图形 API 组合：
 
@@ -115,7 +156,7 @@ cmake -B build-asan -DENGINE_USE_ASAN=ON
 cmake --build build-asan
 ```
 
-### 2.4 Windows 平台构建
+### 2.5 Windows 平台构建
 
 #### Windows + Clang 验证
 
@@ -231,6 +272,8 @@ cmake --build build-gl
 | ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
 | ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
 | ENGINE_ENABLE_IPO | ON | Release 构建中在工具链支持时启用 IPO/LTO，仅作用于 `engine` 静态库 |
+| MYUI_FONT_FREETYPE | ON | 找到 FreeType 时启用 hinted 字形和 TTC 多字面选择；CJK 默认字体需要此选项 |
+| MYUI_FONT_STB | ON | 启用 `stb_truetype` 独立 TTF/OTF 回退 |
 | CMAKE_C_STANDARD | 11 | C 语言标准 |
 | CMAKE_C_COMPILER | (自动) | 指定 C 编译器（`gcc` / `clang` / `cl`） |
 | CMAKE_CXX_COMPILER | (自动) | 指定 C++ 编译器（`g++` / `clang++` / `cl`） |
@@ -385,10 +428,15 @@ GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触�
 
 | Job | 配置 | 依赖（apt） | 测试 |
 |-----|------|-------------|------|
-| `gl` | X11 + OpenGL，Debug | `libx11-dev libxrandr-dev libgl1-mesa-dev` | `ctest -LE graphics`（37 项无头套件） |
-| `vk` | X11 + Vulkan，Debug | `libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev` | `ctest -LE graphics`（37 项无头套件） |
+| `gl` | X11 + OpenGL，Debug | `libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 全量构建 + `ctest -LE graphics` |
+| `vk` | X11 + Vulkan，Debug | `libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建 + `ctest -LE graphics` |
+| `wayland-gl` | Wayland + EGL OpenGL，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
+| `wayland-vk` | Wayland + Vulkan，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
+| `windows-clang` | Win32 + OpenGL，Debug | Windows SDK/Ninja | 全量构建、`dxx_break`、`ctest -LE graphics` |
+| `macos-vulkan` | Cocoa + MoltenVK，Debug | Homebrew `molten-vk`、`shaderc`、`freetype` | 编译 `dxx_break` |
 
-CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`。
+CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`。Wayland、Windows 和 macOS job
+额外显式构建 `dxx_break`，使 PAL/RHI 接口成为平台编译门禁。
 
 **graphics 标签为何不在主门禁**：`test_vulkan`（唯一的 graphics 测试）需要真实显示与 GPU，并做 golden-image 逐像素 MAE 比对；参考图在本机 Intel Mesa 驱动上生成，换用 lavapipe/llvmpipe 软件渲染必然产生像素差导致确定性失败。GitHub 托管 runner 无 GPU/显示，因此 graphics 套件只在有 GPU 的环境手工跑。DrawBench（`BREAK_DRAW_BENCH=1`）同理——性能数据只在真实 GPU 上有意义，不进 CI。
 

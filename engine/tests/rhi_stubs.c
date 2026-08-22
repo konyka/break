@@ -75,7 +75,7 @@ RHIShader  rhi_shader_create(RHIDevice *d, const char *src, usize len, bool is_f
 RHIShader  rhi_shader_create_compute(RHIDevice *d, const char *src, usize len) { (void)d; (void)src; (void)len; return stub_shader; }
 void       rhi_shader_destroy(RHIDevice *d, RHIShader s)                { (void)d; (void)s; }
 
-static RHIOffscreenFBO stub_offscreen_fbo = {{0,0}, {0,0}, {0,0}, 0, 0};
+static RHIOffscreenFBO stub_offscreen_fbo = {{0,0}, {0,0}, {0,0}, 0, 0, 1};
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *d, u32 w, u32 h)    { (void)d; (void)w; (void)h; return stub_offscreen_fbo; }
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *d, u32 w, u32 h, RHIFormat fmt) { (void)d; (void)w; (void)h; (void)fmt; return stub_offscreen_fbo; }

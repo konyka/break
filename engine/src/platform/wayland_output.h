@@ -28,8 +28,61 @@ typedef struct {
     u32               count;
 } WaylandOutputList;
 
+typedef enum {
+    WAYLAND_OPTIONAL_NONE = 0,
+    WAYLAND_OPTIONAL_DATA_DEVICE_MANAGER,
+    WAYLAND_OPTIONAL_TEXT_INPUT_MANAGER,
+    WAYLAND_OPTIONAL_XDG_OUTPUT_MANAGER,
+    WAYLAND_OPTIONAL_RELATIVE_POINTER_MANAGER,
+    WAYLAND_OPTIONAL_POINTER_CONSTRAINTS,
+    WAYLAND_OPTIONAL_CURSOR_SHAPE_MANAGER,
+    WAYLAND_OPTIONAL_FRACTIONAL_SCALE_MANAGER,
+    WAYLAND_OPTIONAL_VIEWPORTER,
+    WAYLAND_OPTIONAL_COUNT,
+} WaylandOptionalGlobal;
+
+typedef struct {
+    u32 names[WAYLAND_OPTIONAL_COUNT];
+} WaylandOptionalGlobals;
+
+/* Wayland fractional-scale uses a numerator with denominator 120. When a
+ * viewporter is available, buffers stay unscaled at the wl_surface level and
+ * wp_viewport maps the physical backing store back to logical coordinates. */
+typedef struct {
+    u32 content_scale_120;
+    i32 buffer_scale;
+    bool uses_viewport;
+} WaylandSurfaceScale;
+
 static inline void wl_out_list_init(WaylandOutputList *l) {
     memset(l, 0, sizeof(*l));
+}
+
+static inline void wl_out_optional_globals_init(WaylandOptionalGlobals *globals) {
+    memset(globals, 0, sizeof(*globals));
+}
+
+static inline void wl_out_optional_global_set(WaylandOptionalGlobals *globals,
+                                              WaylandOptionalGlobal global,
+                                              u32 name) {
+    if (globals == NULL || global <= WAYLAND_OPTIONAL_NONE ||
+        global >= WAYLAND_OPTIONAL_COUNT) return;
+    globals->names[global] = name;
+}
+
+/* Clears and returns the one optional global associated with a withdrawn
+ * registry name. A compositor can re-advertise a feature with a new name. */
+static inline WaylandOptionalGlobal wl_out_optional_global_take(
+    WaylandOptionalGlobals *globals, u32 name) {
+    if (globals == NULL || name == 0) return WAYLAND_OPTIONAL_NONE;
+    for (u32 i = WAYLAND_OPTIONAL_DATA_DEVICE_MANAGER;
+         i < WAYLAND_OPTIONAL_COUNT; i++) {
+        if (globals->names[i] == name) {
+            globals->names[i] = 0;
+            return (WaylandOptionalGlobal)i;
+        }
+    }
+    return WAYLAND_OPTIONAL_NONE;
 }
 
 /* Slot index for a registry global name, or -1 if not present. */
@@ -93,4 +146,51 @@ static inline void wl_out_accumulate_mode(WaylandOutputInfo *o, bool current,
         o->height = (u32)h;
         o->refresh_rate = hz;
     }
+}
+
+/* A Wayland surface may span several outputs. Its buffer scale must use the
+ * highest entered output scale so the compositor never upscales an
+ * undersized buffer. Unknown outputs are ignored because they may have been
+ * removed before the corresponding leave event is dispatched. */
+static inline i32 wl_out_surface_scale(const WaylandOutputList *l,
+                                       const u32 *entered_globals,
+                                       u32 entered_count) {
+    i32 scale = 1;
+    if (l == NULL || entered_globals == NULL) return scale;
+    for (u32 i = 0; i < entered_count; i++) {
+        i32 slot = wl_out_find(l, entered_globals[i]);
+        if (slot >= 0 && l->items[slot].scale > scale)
+            scale = l->items[slot].scale;
+    }
+    return scale;
+}
+
+static inline WaylandSurfaceScale wl_out_surface_render_scale(
+    i32 integer_scale, u32 fractional_scale_120, bool fractional_available) {
+    WaylandSurfaceScale result;
+    u32 fallback_scale = integer_scale > 0 ? (u32)integer_scale : 1u;
+    result.uses_viewport = fractional_available;
+    result.content_scale_120 = fractional_available && fractional_scale_120 > 0
+                                   ? fractional_scale_120
+                                   : fallback_scale > UINT32_MAX / 120u
+                                         ? UINT32_MAX
+                                         : fallback_scale * 120u;
+    result.buffer_scale = fractional_available ? 1 : (i32)fallback_scale;
+    return result;
+}
+
+/* Toplevel buffer sizes round halfway away from zero, per fractional-scale-v1. */
+static inline u32 wl_out_drawable_dimension(u32 logical,
+                                            u32 content_scale_120) {
+    u64 scale = content_scale_120 > 0 ? content_scale_120 : 120u;
+    u64 pixels = (u64)logical * scale;
+    pixels = (pixels + 60u) / 120u;
+    return pixels > UINT32_MAX ? UINT32_MAX : (u32)pixels;
+}
+
+/* Client-side cursor buffers cannot use viewporter, so choose an integer
+ * backing scale that never leaves the compositor to enlarge the bitmap. */
+static inline i32 wl_out_cursor_buffer_scale(u32 content_scale_120) {
+    u32 scale = content_scale_120 > 0 ? content_scale_120 : 120u;
+    return (i32)(scale / 120u + (scale % 120u != 0));
 }

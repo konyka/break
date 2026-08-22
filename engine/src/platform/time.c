@@ -38,10 +38,15 @@ f64 time_delta_since(u64 last_us) {
 }
 
 void time_sleep_us(u64 microseconds) {
+    if (microseconds == 0) return;
+
+    u64 deadline = time_base_ns() + microseconds * 1000ULL;
     if (microseconds >= 1000) {
         Sleep((DWORD)(microseconds / 1000));
-    } else if (microseconds > 0) {
-        Sleep(0);  /* yield */
+    }
+    while (time_base_ns() < deadline) {
+        /* Sleep(0) only yields and does not provide a sub-millisecond delay. */
+        SwitchToThread();
     }
 }
 
