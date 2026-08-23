@@ -32,8 +32,9 @@ renderbuffer、resolve FBO、color/depth texture，避免候选创建失败泄�
 Vulkan 和 soft canvas 的绘制与测量。每个后端的缓存键显式区分 font、codepoint/glyph-id、
 key 类型和字号；缺少 HarfBuzz/FreeType 或后端不支持时返回 `MY_RET_NOT_SUPPORTED` 并回退
 旧 codepoint 路径。新增 fake-font 跨后端回归覆盖 glyph-id 位图、26.6 advance/offset 和缓存
-语义。当前限制保留：RTL/复杂 GSUB、跨 face fallback chain shaping、paragraph rebreaking
-仍由后续阶段实现，现有 UBA/Arabic fallback 不受影响。
+语义。新增 `my_text_paragraph` 按逻辑 codepoint 范围执行 shaping-aware、cluster-safe
+换行，并接入 text area wrap；当前限制保留：RTL/复杂 GSUB、跨 face fallback chain shaping、
+paragraph visual mapping 与增量预算仍由后续阶段实现，现有 UBA/Arabic fallback 不受影响。
 
 最近更新：**R559 动态 IBL 跨帧重烘焙（TDD）**：静态 IBL 在实时太阳（L/J/I/K、TOD）变化后
 会与可见 skybox 漂移。新增默认 36000 帧（约 10 分钟@60 FPS）触发的运行时 rebake，并提供

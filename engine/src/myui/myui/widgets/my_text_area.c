@@ -10,7 +10,7 @@
 
 #include "myc/my_str.h"
 #include "myr/my_font.h"
-#include "myr/my_line_break.h"
+#include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
 #include "myui/my_undo_manager.h"
 #include "myui/my_undo_stack.h"
@@ -37,10 +37,11 @@ static void ta_offsets_push(my_text_area_t* ta, size_t offset) {
 
 /** @brief Rebuild line offsets from `row` to the end of the buffer. */
 static void ta_vlines_rebuild_from(my_text_area_t* ta, size_t from);
+static void ta_vlines_invalidate(my_text_area_t* ta);
 
 static void ta_rebuild_from(my_text_area_t* ta, size_t row) {
   if (ta->wrap) {
-    ta_vlines_rebuild_from(ta, row); /* visual lines follow the edit */
+    ta_vlines_invalidate(ta);
   }
   size_t pos, line;
   if (row == 0) {
@@ -60,6 +61,9 @@ static void ta_rebuild_from(my_text_area_t* ta, size_t row) {
       line++;
     }
     pos++;
+  }
+  if (ta->wrap) {
+    ta_vlines_invalidate(ta);
   }
 }
 
@@ -118,26 +122,10 @@ static size_t ta_line_cp_len(const my_text_area_t* ta, size_t row) {
   return len;
 }
 
-/* ---------------- visual lines (word wrap, M10b) ----------------
- * Physical lines (newline-separated) map to visual lines (wrapped to
- * the content width). Break rule: advance per codepoint; on overflow
- * break after the last space inside the visual line when one exists,
- * otherwise hard-break between any two codepoints (NOT full UAX#14 —
- * CJK/English mixes break anywhere, documented).
+/* ---------------- visual lines (paragraph model) ----------------
+ * Physical lines map to logical ranges from the shared paragraph wrapper.
+ * Widths are precomputed once and shaping clusters remain indivisible.
  */
-
-static float ta_cp_width(const my_text_area_t* ta, const char* s) {
-  if (ta->font != NULL) {
-    my_glyph_t g;
-    uint32_t cp;
-    const char* p = s;
-    cp = my_utf8_next(&p);
-    if (my_font_get_glyph(ta->font, cp, ta->font_size, &g) == MY_RET_OK) {
-      return (float)g.advance;
-    }
-  }
-  return (float)TA_CELL_W;
-}
 
 static float ta_inner_width(const my_text_area_t* ta) {
   float w = (float)(((my_widget_t*)ta)->rect.w - 2 * TA_PAD_X);
@@ -171,12 +159,6 @@ static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys, size_t start,
   return my_darray_push(ta->vlines, v);
 }
 
-/** @brief Legality of a break BEFORE index i (between prev and cur),
- * simplified UAX#14 classes (M12d): */
-static bool ta_break_ok_before(uint32_t prev_cp, uint32_t cur_cp) {
-  return my_line_break_allowed(prev_cp, cur_cp);
-}
-
 /** @brief Rebuild visual lines for physical rows [from, end). */
 static void ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
   size_t pi, n;
@@ -190,81 +172,29 @@ static void ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
   ta_vlines_drop_from(ta, from);
   n = ta_line_count(ta);
   for (pi = from; pi < n; pi++) {
-    size_t line_len = ta_line_cp_len(ta, pi);
-    size_t vstart = 0, col = 0;
-    size_t last_break = (size_t)-1;
-    float w = 0.0f, inner = ta_inner_width(ta);
     size_t start_off = ta_line_start(ta, pi);
-    size_t off = start_off;
-    uint32_t prev_cp = 0;
-
-    if (line_len == 0) {
-      ta_vline_push(ta, pi, 0, 0); /* empty physical line: one empty vline */
-      continue;
-    }
-    while (col < line_len) {
-      size_t cp_len = my_str_utf8_char_len(ta->text + off);
-      float cpw = ta_cp_width(ta, ta->text + off);
-      uint32_t cp_cur;
-      {
-        const char* q = ta->text + off;
-        cp_cur = my_utf8_next(&q);
+    size_t end_off = pi + 1 < n ? ta_line_start(ta, pi + 1) : ta->text_len;
+    size_t segment_len = end_off > start_off ? end_off - start_off : 0;
+    char* segment = (char*)my_mem_alloc(ta->allocator, segment_len + 1);
+    my_text_paragraph_t* paragraph;
+    size_t i;
+    if (segment == NULL) continue;
+    if (segment_len > 0) memcpy(segment, ta->text + start_off, segment_len);
+    if (segment_len > 0 && segment[segment_len - 1] == '\n') segment_len--;
+    segment[segment_len] = '\0';
+    paragraph = my_text_paragraph_process(
+        ta->allocator, segment, ta->font, ta->font_size,
+        (int32_t)ta_inner_width(ta));
+    my_mem_free(ta->allocator, segment);
+    if (paragraph == NULL) continue;
+    for (i = 0; i < paragraph->line_count; i++) {
+      const my_text_paragraph_line_t* line =
+          my_text_paragraph_line_at(paragraph, i);
+      if (line != NULL) {
+        (void)ta_vline_push(ta, pi, line->start_cp, line->cp_count);
       }
-      /* M12d: remember the latest LEGAL break boundary (UAX#14 subset) */
-      if (col > vstart && ta_break_ok_before(prev_cp, cp_cur)) {
-        last_break = col;
-      }
-      if (w + cpw > inner && col > vstart) {
-        size_t vlen;
-        if (ta->text[off] == ' ') {
-          /* the overflowing char is itself a space: break before it --
-           * everything so far fits, and the space is consumed below */
-          vlen = col - vstart;
-        } else if (last_break != (size_t)-1 && last_break > vstart) {
-          vlen = last_break - vstart; /* legal break boundary */
-        } else {
-          vlen = col - vstart; /* hard break between any codepoints */
-        }
-        ta_vline_push(ta, pi, vstart, vlen);
-        vstart += vlen;
-        /* consume spaces sitting exactly ON the break boundary (M12d):
-         * they belong to no visual line and carry no width */
-        while (vstart < line_len &&
-               ta->text[ta_offset_of(ta, pi, vstart)] == ' ') {
-          vstart++;
-        }
-        /* recompute width of [vstart, col): nothing wider needed later */
-        {
-          size_t bo = start_off, bc = 0;
-          w = 0.0f;
-          while (bc < col) {
-            float cw = ta_cp_width(ta, ta->text + bo);
-            if (bc >= vstart) {
-              w += cw;
-            }
-            bo += my_str_utf8_char_len(ta->text + bo);
-            bc++;
-          }
-        }
-        last_break = (size_t)-1;
-        if (ta->text[off] == ' ') {
-          /* the overflowing char is a space: consume it entirely (no
-           * visual line ever starts with whitespace) -- skip its width
-           * and do not record it as a future break point */
-          off += cp_len;
-          col++;
-          prev_cp = cp_cur;
-          continue;
-        }
-      }
-      w += cpw;
-      off += cp_len;
-      col++;
-      prev_cp = cp_cur;
     }
-    if (vstart < line_len) {
-      ta_vline_push(ta, pi, vstart, line_len - vstart);
-    }
+    my_text_paragraph_destroy(paragraph);
   }
 }
 
@@ -1660,6 +1590,8 @@ void my_text_area_set_font(my_widget_t* area, my_font_t* font, int32_t size) {
     if (size > 0) {
       ta->font_size = size;
     }
+    ta_vlines_invalidate(ta);
+    my_widget_invalidate(area, NULL);
   }
 }
 

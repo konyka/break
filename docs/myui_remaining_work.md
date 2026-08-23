@@ -9,7 +9,9 @@
 - CSS universal、多 class、typed direct-child、selector specificity、source order
   和 normal-slot specificity fallback。
 - CSS 数值输入的有限值、整数范围和颜色 alpha 边界检查。
-- UAX#14 实用子集的上下文规则：combining mark、数字标点和 Regional Indicator。
+- UAX#14 实用子集的上下文规则：combining mark、数字标点和 Regional Indicator；新增
+  shaping-aware paragraph model，按逻辑 codepoint 范围输出换行段，保护 ligature cluster
+  不被拆分，并已接入 text area 的 wrap 重排。
 - 软件开放 contour 的 fill 自动闭合；开放 stroke 不自动闭合。
 - 共享 surface damage 的逻辑坐标到 drawable scissor 纯函数；向外取整、裁剪和
   64 位乘法均有测试，但暂不把它冒险用于默认 swapchain composite。
@@ -48,7 +50,7 @@
 | --- | --- | --- | --- |
 | GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
-| 复杂 RTL rebreaking | 单段落 UBA visual reorder；多段落/换行后 visual-order 重排未完成 | 光标、选区和 line hit-test 错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约 |
+| 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
@@ -92,8 +94,8 @@
 
 ### 阶段 D：段落、编辑器和断行
 
-1. 把单字符串 layout 升级为 paragraph model，保留 logical/visual boundary 双向
-   映射；换行、justify、selection、cursor 共用同一段落结果。
+1. 已新增 paragraph model，保留逻辑 codepoint 范围并让 text area wrap 共用该结果；
+   下一步把每个 line 的 visual layout、justify、selection、cursor 也统一到 paragraph-owned mapping。
 2. 使用增量 dirty paragraph 队列和每帧预算；长文档只重排受影响行及其邻接上下文。
 3. 行号、折叠和语法高亮只消费行模型，不进入 widget paint 回调；折叠区间使用
    checked interval tree，所有偏移转换做边界检查。

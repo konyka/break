@@ -9,8 +9,8 @@
  * goal column. Shift+arrows select, Ctrl+A selects all, Ctrl+C/X/V via
  * the PAL clipboard (newlines preserved). Scrolls to keep the cursor
  * visible. Optional word wrap (M10b): a visual-line cache maps each
- * physical line to width-limited segments; greedy break after the last
- * fitting space, hard break otherwise (no UAX#14). Undo/redo is supported
+ * physical line to width-limited segments; shaping-aware greedy wrapping
+ * uses the UAX#14 subset and never splits a shaping cluster. Undo/redo is supported
  * through the private or shared undo manager; line numbers are not part of
  * this widget.
  * Emits "changed" (data = full text). No "activate" (Enter splits lines).

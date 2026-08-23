@@ -17,6 +17,7 @@ add_library(myr STATIC
   my_stb_truetype.c
   my_arabic_shape.c
   my_text_layout.c
+  my_text_paragraph.c
   my_line_break.c
 )
 
