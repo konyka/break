@@ -6,6 +6,12 @@
 
 ## 当前已完成
 
+- 冷却按钮已完成：按钮成功 click 后以 PAL 单调时钟建立截止时间，冷却期间拒绝
+  pointer down/up 重入；只在冷却期间创建一个 16ms 按钮级 timer 驱动失效和遮罩动画，
+  截止时间到达后自动停止。remaining/progress 查询均做过期检测、饱和转换和无 PAL
+  回退，销毁与 duration=0 会清理 timer。soft/GLES/Vulkan/Break RHI 统一复用
+  `fill_rect` 与 RGBA 颜色，不引入后端特定 shader。
+
 - CSS universal、多 class、typed direct-child、selector specificity、source order
   和 normal-slot specificity fallback。
 - CSS 数值输入的有限值、整数范围和颜色 alpha 边界检查。
@@ -60,6 +66,23 @@
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring 和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
 | 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现 | 解析器静默接受错误、运行期主题污染 | capability registry、strict diagnostics、AST/bridge 回滚测试 |
 | 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
+
+### 冷却按钮契约
+
+`my_button_set_cooldown(button, duration_ms)` 设置下一次成功 click 后采用的默认冷却时长。
+`duration_ms == 0` 会禁用冷却并立即取消动画 timer；修改非零 duration 不会中断当前
+冷却，只影响下一次 click。`my_button_is_cooling_down()` 每次按当前 PAL 单调时钟检查
+deadline，不能以 timer 是否存在作为业务判断。`remaining_ms` 返回饱和值，
+`cooldown_progress` 返回 `[0, 1]`，其中 `1` 表示刚开始、`0` 表示完成。
+
+冷却中的按钮不进入 pressed 状态，也不发出 `click`。成功 click 先建立 deadline 再
+发射事件，防止同步回调重入绕过限制。动画是从上到下的半透明公共 canvas 遮罩；timer
+抖动不会改变实际冷却时长。没有 PAL/loop 时查询仍安全，按钮可在挂载后正常获得动画
+驱动；timer 创建失败不影响 deadline 检测和输入安全。
+
+性能约束：非冷却状态无 timer、无逐帧扫描、无堆分配；冷却期间每个按钮最多一个
+timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销毁始终先移除 timer，
+避免回调访问已释放对象。
 
 ## 实施顺序
 

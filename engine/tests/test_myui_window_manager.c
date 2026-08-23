@@ -64,6 +64,17 @@ static void count_click(void* ctx, const char* event, void* data) {
   (*count)++;
 }
 
+static void dispatch_button_click(my_window_manager_t* wm, int32_t x,
+                                  int32_t y) {
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+  event.u.pointer.x = x;
+  event.u.pointer.y = y;
+  event.u.pointer.button = 1;
+  (void)my_window_manager_dispatch_surface_event(wm, &event);
+  event.type = MY_EVENT_POINTER_UP;
+  (void)my_window_manager_dispatch_surface_event(wm, &event);
+}
+
 static void count_user(void* ctx, const char* event, void* data) {
   int* marker = (int*)data;
   (void)event;
@@ -725,6 +736,129 @@ TEST(shared_surface_routes_keyboard_to_pointer_window)
   my_pal_destroy(pal);
 }
 
+TEST(button_cooldown_blocks_reentry_and_exposes_progress)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t *loop = my_pal_main_loop_create(pal);
+  my_window_manager_t *wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t *win = my_window_create(NULL, pal, 160, 100, "cooldown");
+  my_widget_t *button = my_button_create(NULL, "send");
+  int clicks = 0;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(button);
+  ASSERT_EQ(my_button_set_cooldown(button, 1000), MY_RET_OK);
+  ASSERT_FALSE(my_button_is_cooling_down(button));
+  ASSERT_EQ(my_button_cooldown_remaining_ms(button), 0u);
+  ASSERT_FLOAT_EQ(my_button_cooldown_progress(button), 0.0f, 0.0001f);
+  ASSERT_EQ(my_widget_set_rect(button, &(my_rect_t){10, 10, 80, 32}), MY_RET_OK);
+  ASSERT_NEQ(my_widget_on(button, "click", count_click, &clicks), 0u);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), button), MY_RET_OK);
+  my_widget_unref(button);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t *)win);
+
+  my_pal_dummy_set_now_ms(pal, 1000);
+  dispatch_button_click(wm, 20, 20);
+  ASSERT_EQ(clicks, 1);
+  ASSERT_TRUE(my_button_is_cooling_down(my_widget_get_child(my_window_widget(win), 0)));
+  ASSERT_EQ(my_button_cooldown_remaining_ms(my_widget_get_child(my_window_widget(win), 0)),
+            1000u);
+  ASSERT_FLOAT_EQ(my_button_cooldown_progress(
+                      my_widget_get_child(my_window_widget(win), 0)),
+                  1.0f, 0.0001f);
+
+  my_pal_dummy_set_now_ms(pal, 1500);
+  ASSERT_EQ(my_button_set_cooldown(my_widget_get_child(my_window_widget(win), 0),
+                                   2000),
+            MY_RET_OK);
+  dispatch_button_click(wm, 20, 20);
+  ASSERT_EQ(clicks, 1);
+  ASSERT_EQ(my_button_cooldown_remaining_ms(my_widget_get_child(my_window_widget(win), 0)),
+            500u);
+  ASSERT_TRUE(my_button_cooldown_progress(
+                  my_widget_get_child(my_window_widget(win), 0)) < 1.0f);
+
+  my_pal_dummy_set_now_ms(pal, 2000);
+  ASSERT_FALSE(my_button_is_cooling_down(my_widget_get_child(my_window_widget(win), 0)));
+  ASSERT_EQ(my_button_cooldown_remaining_ms(my_widget_get_child(my_window_widget(win), 0)),
+            0u);
+  ASSERT_FLOAT_EQ(my_button_cooldown_progress(
+                      my_widget_get_child(my_window_widget(win), 0)),
+                  0.0f, 0.0001f);
+  dispatch_button_click(wm, 20, 20);
+  ASSERT_EQ(clicks, 2);
+
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
+TEST(button_cooldown_zero_disables_without_timer)
+{
+  my_widget_t *button = my_button_create(NULL, "send");
+
+  ASSERT_EQ(my_button_set_cooldown(NULL, 250), MY_RET_INVALID_PARAMS);
+  ASSERT_FALSE(my_button_is_cooling_down(NULL));
+  ASSERT_EQ(my_button_cooldown_remaining_ms(NULL), 0u);
+  ASSERT_FLOAT_EQ(my_button_cooldown_progress(NULL), 0.0f, 0.0001f);
+  ASSERT_NOT_NULL(button);
+  ASSERT_EQ(my_button_set_cooldown(button, 0), MY_RET_OK);
+  ASSERT_FALSE(my_button_is_cooling_down(button));
+  ASSERT_EQ(my_button_cooldown_remaining_ms(button), 0u);
+  ASSERT_FLOAT_EQ(my_button_cooldown_progress(button), 0.0f, 0.0001f);
+  ASSERT_EQ(my_button_set_cooldown(button, 250), MY_RET_OK);
+  ASSERT_EQ(my_button_set_cooldown(button, 0), MY_RET_OK);
+  ASSERT_FALSE(my_button_is_cooling_down(button));
+  my_widget_unref(button);
+}
+
+TEST(button_cooldown_timer_tracks_deadline_and_stops)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t *loop = my_pal_main_loop_create(pal);
+  my_window_manager_t *wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t *win = my_window_create(NULL, pal, 160, 100, "cooldown-timer");
+  my_widget_t *button = my_button_create(NULL, "send");
+  my_button_t *state;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(button);
+  ASSERT_EQ(my_button_set_cooldown(button, 100), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(button, &(my_rect_t){10, 10, 80, 32}), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), button), MY_RET_OK);
+  my_widget_unref(button);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t *)win);
+  state = (my_button_t *)my_widget_get_child(my_window_widget(win), 0);
+
+  my_pal_dummy_set_now_ms(pal, 1000);
+  dispatch_button_click(wm, 20, 20);
+  ASSERT_TRUE(state->cooldown_timer != 0);
+  ASSERT_TRUE(state->cooldown_loop == loop);
+
+  my_pal_dummy_set_now_ms(pal, 1016);
+  ASSERT_EQ(my_pal_main_loop_run(loop), MY_RET_OK);
+  ASSERT_TRUE(state->cooldown_timer != 0);
+  ASSERT_TRUE(my_button_is_cooling_down((my_widget_t *)state));
+
+  my_pal_dummy_set_now_ms(pal, 1100);
+  ASSERT_EQ(my_pal_main_loop_run(loop), MY_RET_OK);
+  ASSERT_EQ(state->cooldown_timer, 0u);
+  ASSERT_TRUE(state->cooldown_loop == NULL);
+  ASSERT_FALSE(my_button_is_cooling_down((my_widget_t *)state));
+
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
 TEST(surface_resize_preserves_and_recenters_dialog)
 {
   my_pal_t *pal = my_pal_dummy_create(NULL);
@@ -1139,6 +1273,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(dialog_lifecycle_and_modal_blocking);
     RUN_TEST(shared_surface_routes_input_to_modal);
     RUN_TEST(shared_surface_routes_keyboard_to_pointer_window);
+    RUN_TEST(button_cooldown_blocks_reentry_and_exposes_progress);
+    RUN_TEST(button_cooldown_zero_disables_without_timer);
+    RUN_TEST(button_cooldown_timer_tracks_deadline_and_stops);
     RUN_TEST(surface_resize_preserves_and_recenters_dialog);
     RUN_TEST(back_to_home_clears_window_links_and_scrim);
     RUN_TEST(auto_paint_toggle_removes_timer);

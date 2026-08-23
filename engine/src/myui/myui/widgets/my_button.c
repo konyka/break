@@ -7,6 +7,57 @@
 #include "myc/my_str.h"
 #include "myui/my_window.h"
 
+#include <stdint.h>
+
+#define BUTTON_COOLDOWN_TICK_MS 16
+
+static uint64_t button_now_ms(const my_button_t* b) {
+  my_pal_t* pal = my_window_pal_of_widget((my_widget_t*)b);
+  return pal != NULL ? my_pal_time_now_ms(pal) : 0;
+}
+
+static uint64_t button_saturating_deadline(uint64_t now, uint32_t duration) {
+  uint64_t deadline = now + (uint64_t)duration;
+  return deadline < now ? UINT64_MAX : deadline;
+}
+
+static void button_stop_cooldown_timer(my_button_t* b) {
+  if (b->cooldown_timer != 0 && b->cooldown_loop != NULL) {
+    my_pal_main_loop_remove_timer(b->cooldown_loop, b->cooldown_timer);
+  }
+  b->cooldown_timer = 0;
+  b->cooldown_loop = NULL;
+}
+
+static void button_cancel_release_timer(my_button_t* b) {
+  if (b->release_timer != 0) {
+    my_pal_main_loop_t* loop = my_window_loop_of_widget((my_widget_t*)b);
+    if (loop != NULL) {
+      my_pal_main_loop_remove_timer(loop, b->release_timer);
+    }
+    b->release_timer = 0;
+  }
+}
+
+static my_ret_t button_cooldown_cb(void* ctx);
+
+static void button_ensure_cooldown_timer(my_button_t* b) {
+  my_pal_main_loop_t* loop;
+  if (!my_button_is_cooling_down((const my_widget_t*)b) ||
+      b->cooldown_timer != 0) {
+    return;
+  }
+  loop = my_window_loop_of_widget((my_widget_t*)b);
+  if (loop == NULL) {
+    return;
+  }
+  b->cooldown_timer = my_pal_main_loop_add_timer(
+      loop, button_cooldown_cb, b, BUTTON_COOLDOWN_TICK_MS);
+  if (b->cooldown_timer != 0) {
+    b->cooldown_loop = loop;
+  }
+}
+
 static my_color_t button_state_color(my_button_t* b) {
   my_widget_t* w = (my_widget_t*)b;
   my_widget_state_t state = my_widget_current_state(w, b->pressed);
@@ -33,6 +84,7 @@ static my_color_t button_state_color(my_button_t* b) {
 
 static void button_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_button_t* b = (my_button_t*)widget;
+  button_ensure_cooldown_timer(b);
   my_widget_state_t state = my_widget_current_state(widget, b->pressed);
   uint32_t border = my_widget_style_get_color(
       widget, state, MY_STYLE_BORDER_COLOR, 0x000000FFu);
@@ -46,6 +98,12 @@ static void button_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_vgcanvas_set_line_width(vg, 1);
   my_vgcanvas_stroke_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
                                             (float)widget->rect.h});
+  if (my_button_is_cooling_down((const my_widget_t*)b)) {
+    float progress = my_button_cooldown_progress((const my_widget_t*)b);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x00000040u));
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
+                                           (float)widget->rect.h * progress});
+  }
   /* text: real draw_text when a font is set on the backend (M7a) */
   if (b->text != NULL) {
     int32_t tw = 0, th = 0;
@@ -71,9 +129,74 @@ static bool button_point_inside(my_widget_t* widget, int32_t gx, int32_t gy) {
   return lx >= 0 && ly >= 0 && lx < widget->rect.w && ly < widget->rect.h;
 }
 
+bool my_button_is_cooling_down(const my_widget_t* button) {
+  const my_button_t* b;
+  if (button == NULL) {
+    return false;
+  }
+  b = (const my_button_t*)button;
+  return b->cooldown_until_ms != 0 && button_now_ms(b) < b->cooldown_until_ms;
+}
+
+uint32_t my_button_cooldown_remaining_ms(const my_widget_t* button) {
+  const my_button_t* b;
+  uint64_t remaining;
+  if (!my_button_is_cooling_down(button)) {
+    return 0;
+  }
+  b = (const my_button_t*)button;
+  remaining = b->cooldown_until_ms - button_now_ms(b);
+  return remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+}
+
+float my_button_cooldown_progress(const my_widget_t* button) {
+  const my_button_t* b;
+  uint32_t remaining;
+  if (button == NULL) {
+    return 0.0f;
+  }
+  b = (const my_button_t*)button;
+  if (b->cooldown_active_ms == 0 || !my_button_is_cooling_down(button)) {
+    return 0.0f;
+  }
+  remaining = my_button_cooldown_remaining_ms(button);
+  if (remaining >= b->cooldown_active_ms) {
+    return 1.0f;
+  }
+  return (float)remaining / (float)b->cooldown_active_ms;
+}
+
 /* keep the pressed visual visible at least this long; with frame
  * coalescing a quick click would otherwise never paint it */
 #define BUTTON_PRESS_MIN_MS 120
+
+static my_ret_t button_cooldown_cb(void* ctx) {
+  my_button_t* b = (my_button_t*)ctx;
+  if (!my_button_is_cooling_down((const my_widget_t*)b)) {
+    b->cooldown_until_ms = 0;
+    b->cooldown_active_ms = 0;
+    b->cooldown_timer = 0;
+    b->cooldown_loop = NULL;
+    my_widget_invalidate((my_widget_t*)b, NULL);
+    return MY_RET_FAIL;
+  }
+  my_widget_invalidate((my_widget_t*)b, NULL);
+  return MY_RET_OK;
+}
+
+static void button_start_cooldown(my_button_t* b) {
+  if (b->cooldown_ms == 0) {
+    b->cooldown_until_ms = 0;
+    b->cooldown_active_ms = 0;
+    button_stop_cooldown_timer(b);
+    return;
+  }
+  b->cooldown_active_ms = b->cooldown_ms;
+  b->cooldown_until_ms =
+      button_saturating_deadline(button_now_ms(b), b->cooldown_ms);
+  button_ensure_cooldown_timer(b);
+  my_widget_invalidate((my_widget_t*)b, NULL);
+}
 
 static my_ret_t button_release_cb(void* ctx) {
   my_button_t* b = (my_button_t*)ctx;
@@ -104,6 +227,12 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
   switch (event->type) {
     case MY_EVENT_POINTER_DOWN: {
       my_pal_t* pal;
+      if (my_button_is_cooling_down((const my_widget_t*)b)) {
+        button_cancel_release_timer(b);
+        b->pressed = false;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_FAIL;
+      }
       if (b->release_timer != 0) { /* a fresh press cancels a pending release */
         my_pal_main_loop_t* loop = my_window_loop_of_widget(widget);
         if (loop != NULL) {
@@ -118,12 +247,19 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
       return MY_RET_OK;
     }
     case MY_EVENT_POINTER_UP:
+      if (my_button_is_cooling_down((const my_widget_t*)b)) {
+        button_cancel_release_timer(b);
+        b->pressed = false;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_FAIL;
+      }
       if (!b->pressed) {
         return MY_RET_FAIL;
       }
       button_release(b);
       my_widget_invalidate(widget, NULL);
       if (button_point_inside(widget, event->u.pointer.x, event->u.pointer.y)) {
+        button_start_cooldown(b);
         my_emitter_emit(widget->emitter, "click", (void*)event);
       }
       return MY_RET_OK;
@@ -144,6 +280,7 @@ static void button_destroy_chain(my_object_t* obj) {
     }
     b->release_timer = 0;
   }
+  button_stop_cooldown_timer(b);
   my_mem_free(obj->allocator, b->text);
   my_widget_destroy((my_widget_t*)b);
   my_object_destroy(obj);
@@ -185,5 +322,21 @@ my_ret_t my_button_set_text(my_widget_t* button, const char* text) {
   my_mem_free(((my_object_t*)button)->allocator, b->text);
   b->text = copy;
   my_widget_invalidate(button, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_button_set_cooldown(my_widget_t* button, uint32_t duration_ms) {
+  my_button_t* b;
+  if (button == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  b = (my_button_t*)button;
+  b->cooldown_ms = duration_ms;
+  if (duration_ms == 0) {
+    b->cooldown_until_ms = 0;
+    b->cooldown_active_ms = 0;
+    button_stop_cooldown_timer(b);
+    my_widget_invalidate(button, NULL);
+  }
   return MY_RET_OK;
 }

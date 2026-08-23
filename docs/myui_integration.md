@@ -10,6 +10,27 @@
 - 在 GL 和 Vulkan 上使用同一套 CPU 三角化和双缓冲动态 VBO 路径。
 - 用可测试的桥接层隔离平台输入、IME 与渲染后端。
 
+## 冷却按钮
+
+按钮冷却是 widget 层能力，不依赖 Break RHI、OpenGL、Vulkan 或软件 canvas 的私有类型：
+
+```c
+my_button_set_cooldown(button, 1500);
+if (!my_button_is_cooling_down(button)) {
+    /* 可选：显示或启用业务操作 */
+}
+```
+
+成功 click 后按钮保存 PAL 提供的单调 deadline。冷却期间 pointer down/up 被拒绝且不
+产生 `click`；查询接口实时检测 deadline，因此 timer 丢失、主循环暂时停顿或窗口未
+挂载都不会绕过限制。按钮只在冷却期间启用一个 16ms timer，timer tick 触发局部
+invalidate，绘制通过公共 `my_vgcanvas_fill_rect()` 输出半透明进度遮罩。冷却完成后
+timer 自动停止，按钮销毁流程、`my_button_set_cooldown(button, 0)` 也会移除它。
+
+动画不参与业务判定：帧率、timer 抖动、GL/Vulkan 提交延迟只影响遮罩刷新，不影响
+deadline。所有后端都获得同一输入和视觉契约；不支持透明混合的后端仍执行公共绘制，
+由该后端的颜色语义处理，不引入 shader 分支。
+
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
 上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、
 `myr/my_vgcanvas_break_rhi.c` 和 `src/ui/myui_break*` 中实现，避免把 Break API

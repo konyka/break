@@ -1707,3 +1707,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   subsequent indirect/material-array gates pass. The former `0xC00000FD`
   failure was a test-stack overflow from local `LightSystem` storage; its
   clustered-light grid is now heap allocated by the integration test.
+## myui 冷却按钮（2026-08-23）
+
+- `my_button_set_cooldown()`、`my_button_is_cooling_down()`、剩余时间和进度查询已加入
+  公共按钮 API。
+- 实现使用 PAL 单调时钟作为唯一截止判定；冷却期间拒绝输入重入，成功 click 先锁定
+  deadline 再发事件，支持同步回调安全边界。
+- 动画采用按钮级惰性 16ms timer 和公共 canvas 半透明遮罩；非冷却状态不创建 timer，
+  到期自动停止，销毁与禁用路径清理 timer。
+- `test_myui_window_manager` 新增冷却阻断、进度、零时长禁用、timer tick/停止测试，
+  当前定向结果为 `30/30`。
+- 方案与限制详见 `docs/myui_remaining_work.md` 和 `docs/myui_integration.md`。
