@@ -45,6 +45,9 @@ typedef my_ret_t (*my_font_shape_fn)(my_font_t* font, const char* text,
                                      int32_t size, bool rtl,
                                      const my_allocator_t* allocator,
                                      my_font_shape_result_t* result);
+typedef my_ret_t (*my_font_get_glyph_id_fn)(my_font_t* font,
+                                            uint32_t glyph_id, int32_t size,
+                                            my_glyph_t* glyph);
 
 /** @brief A font source plus an optional face index for TTC collections. */
 typedef struct my_font_source_t {
@@ -68,6 +71,7 @@ typedef struct my_font_vtable_t {
    * NULL = "assume yes"). Used by the fallback chain. */
   bool (*has_glyph)(my_font_t* font, uint32_t codepoint);
   my_font_shape_fn shape;
+  my_font_get_glyph_id_fn get_glyph_id;
 } my_font_vtable_t;
 
 /** @brief Font base "class". */
@@ -113,6 +117,10 @@ my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
 
 /** @brief Release a result returned by my_font_shape. */
 void my_font_shape_destroy(my_font_shape_result_t* result);
+
+/** @brief Rasterize a backend glyph id from a shaped run. */
+my_ret_t my_font_get_glyph_id(my_font_t* font, uint32_t glyph_id,
+                              int32_t size, my_glyph_t* glyph);
 
 /**
  * @brief Fallback chain (M14b; backend-neutral since M16): load several

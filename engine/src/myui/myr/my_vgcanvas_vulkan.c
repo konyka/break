@@ -223,6 +223,7 @@ typedef struct vk_tex_t {
 typedef struct vk_glyph_entry_t {
   my_font_t* font;
   uint32_t codepoint;
+  bool key_is_glyph_id;
   int32_t size;
   vk_tex_t tex; /* .img == VK_NULL_HANDLE = empty */
 } vk_glyph_entry_t;
@@ -2128,7 +2129,7 @@ static int32_t vk_dev_font_size(const my_vgcanvas_vulkan_t* c) {
 /** @brief Draw one codepoint at pen_x and advance it. */
 static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
                        float top, int32_t ascent) {
-  my_glyph_t g;
+  my_glyph_t g = {0};
   uint32_t slot;
   float gx, gy;
   if (my_font_get_glyph(c->state.font, cp, vk_dev_font_size(c), &g) !=
@@ -2141,6 +2142,7 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
   slot = (cp ^ (uint32_t)vk_dev_font_size(c)) % VKC_GLYPH_CACHE;
   if (c->glyph_cache[slot].tex.img == VK_NULL_HANDLE ||
       c->glyph_cache[slot].font != c->state.font ||
+      c->glyph_cache[slot].key_is_glyph_id ||
       c->glyph_cache[slot].codepoint != cp ||
       c->glyph_cache[slot].size != vk_dev_font_size(c)) {
     if (!vk_tex_retire(c, &c->glyph_cache[slot].tex)) {
@@ -2154,6 +2156,7 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
     }
     c->glyph_cache[slot].font = c->state.font;
     c->glyph_cache[slot].codepoint = cp;
+    c->glyph_cache[slot].key_is_glyph_id = false;
     c->glyph_cache[slot].size = vk_dev_font_size(c);
   }
   gx = *pen_x + (float)g.bearing_x;
@@ -2166,6 +2169,52 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
                      6, c->state.fill_color);
   }
   *pen_x += (float)g.advance;
+}
+
+static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
+                                 const my_font_shape_glyph_t* shaped,
+                                 float* pen_x, float top, int32_t ascent) {
+  my_glyph_t g = {0};
+  uint32_t slot;
+  float gx, gy;
+  float advance = (float)shaped->advance_x_26_6 / 64.0f;
+  if (my_font_get_glyph_id(c->state.font, shaped->glyph_id,
+                           vk_dev_font_size(c), &g) != MY_RET_OK ||
+      g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
+    *pen_x += advance;
+    return;
+  }
+  slot = (shaped->glyph_id ^ (uint32_t)vk_dev_font_size(c)) % VKC_GLYPH_CACHE;
+  if (c->glyph_cache[slot].tex.img == VK_NULL_HANDLE ||
+      c->glyph_cache[slot].font != c->state.font ||
+      !c->glyph_cache[slot].key_is_glyph_id ||
+      c->glyph_cache[slot].codepoint != shaped->glyph_id ||
+      c->glyph_cache[slot].size != vk_dev_font_size(c)) {
+    if (!vk_tex_retire(c, &c->glyph_cache[slot].tex)) {
+      *pen_x += advance;
+      return;
+    }
+    if (vk_tex_create(c, &c->glyph_cache[slot].tex, g.bitmap, g.w, g.h,
+                      VK_FORMAT_R8_UNORM, c->sampler) != MY_RET_OK) {
+      *pen_x += advance;
+      return;
+    }
+    c->glyph_cache[slot].font = c->state.font;
+    c->glyph_cache[slot].codepoint = shaped->glyph_id;
+    c->glyph_cache[slot].key_is_glyph_id = true;
+    c->glyph_cache[slot].size = vk_dev_font_size(c);
+  }
+  gx = *pen_x + (float)shaped->offset_x_26_6 / 64.0f + (float)g.bearing_x;
+  gy = top + (float)(ascent - g.bearing_y) -
+       (float)shaped->offset_y_26_6 / 64.0f;
+  {
+    float x0 = gx, y0 = gy, x1 = gx + (float)g.w, y1 = gy + (float)g.h;
+    const float quad[6][4] = {{x0, y0, 0, 0}, {x1, y0, 1, 0}, {x1, y1, 1, 1},
+                              {x0, y0, 0, 0}, {x1, y1, 1, 1}, {x0, y1, 0, 1}};
+    vk_draw_textured(c, c->pipe_text, &c->glyph_cache[slot].tex,
+                     &quad[0][0], 6, c->state.fill_color);
+  }
+  *pen_x += advance;
 }
 
 static my_ret_t vk_draw_text(my_vgcanvas_t* vg, const char* text, float x,
@@ -2184,8 +2233,18 @@ static my_ret_t vk_draw_text(my_vgcanvas_t* vg, const char* text, float x,
   pen_x = (x + c->state.tx) * c->state.scale;
   top = (y + c->state.ty) * c->state.scale;
   if (!my_text_layout_may_need_bidi(text)) {
-    while (*p != '\0') {
-      vk_draw_cp(c, my_utf8_next(&p), &pen_x, top, ascent);
+    my_font_shape_result_t shaped = {0};
+    if (my_font_shape(c->state.font, text, vk_dev_font_size(c), false,
+                      c->allocator, &shaped) == MY_RET_OK) {
+      size_t i;
+      for (i = 0; i < shaped.count; i++) {
+        vk_draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else {
+      while (*p != '\0') {
+        vk_draw_cp(c, my_utf8_next(&p), &pen_x, top, ascent);
+      }
     }
   } else {
     my_text_layout_t* l = my_text_layout_process(c->allocator, text);
@@ -2228,7 +2287,20 @@ static my_ret_t vk_measure_text(my_vgcanvas_t* vg, const char* text,
                           w, h);
     my_text_layout_destroy(l);
   } else {
-    ret = my_font_measure(c->state.font, text, vk_dev_font_size(c), w, h);
+    my_font_shape_result_t shaped = {0};
+    ret = my_font_shape(c->state.font, text, vk_dev_font_size(c), false,
+                        c->allocator, &shaped);
+    if (ret == MY_RET_OK) {
+      int64_t width = 0;
+      size_t i;
+      for (i = 0; i < shaped.count; i++) width += shaped.glyphs[i].advance_x_26_6;
+      if (w != NULL) *w = (int32_t)((width + 32) / 64);
+      if (h != NULL) *h = my_font_line_height(c->state.font,
+                                               vk_dev_font_size(c));
+      my_font_shape_destroy(&shaped);
+    } else {
+      ret = my_font_measure(c->state.font, text, vk_dev_font_size(c), w, h);
+    }
   }
   if (ret == MY_RET_OK && c->state.scale != 1.0f) {
     if (w != NULL) {

@@ -21,6 +21,7 @@
 
 typedef struct ft_cache_entry_t {
   uint32_t codepoint;
+  bool key_is_glyph_id;
   int32_t size;
   uint8_t* bitmap; /**< owned, w*h bytes (NULL for blank) */
   int32_t w, h, bearing_x, bearing_y, advance;
@@ -89,7 +90,8 @@ static ft_cache_entry_t* ft_cache_lookup(my_font_ft_t* f, uint32_t cp,
   size_t i;
   for (i = 0; i < f->cache_capacity; i++) {
     ft_cache_entry_t* e = &f->cache[i];
-    if (e->occupied && e->codepoint == cp && e->size == size) {
+    if (e->occupied && !e->key_is_glyph_id && e->codepoint == cp &&
+        e->size == size) {
       e->last_used = ++f->tick;
       f->hits++;
       return e;
@@ -97,6 +99,74 @@ static ft_cache_entry_t* ft_cache_lookup(my_font_ft_t* f, uint32_t cp,
   }
   f->misses++;
   return NULL;
+}
+
+static ft_cache_entry_t* ft_cache_slot(my_font_ft_t* f);
+
+static ft_cache_entry_t* ft_cache_lookup_glyph(my_font_ft_t* f,
+                                                uint32_t glyph_id,
+                                                int32_t size) {
+  size_t i;
+  for (i = 0; i < f->cache_capacity; i++) {
+    ft_cache_entry_t* e = &f->cache[i];
+    if (e->occupied && e->key_is_glyph_id && e->codepoint == glyph_id &&
+        e->size == size) {
+      e->last_used = ++f->tick;
+      f->hits++;
+      return e;
+    }
+  }
+  f->misses++;
+  return NULL;
+}
+
+static my_ret_t ft_raster_glyph(my_font_ft_t* f, uint32_t cache_key,
+                                uint32_t glyph_id, int32_t size,
+                                bool key_is_glyph_id,
+                                my_glyph_t* glyph) {
+  ft_cache_entry_t* e = key_is_glyph_id
+                            ? ft_cache_lookup_glyph(f, cache_key, size)
+                            : ft_cache_lookup(f, cache_key, size);
+  if (e == NULL) {
+    FT_GlyphSlot slot;
+    ft_set_size(f, size);
+    if (FT_Load_Glyph(f->face, glyph_id, FT_LOAD_DEFAULT) != 0 ||
+        FT_Render_Glyph(f->face->glyph, FT_RENDER_MODE_NORMAL) != 0) {
+      return MY_RET_FAIL;
+    }
+    slot = f->face->glyph;
+    e = ft_cache_slot(f);
+    e->occupied = true;
+    e->key_is_glyph_id = key_is_glyph_id;
+    e->codepoint = cache_key;
+    e->size = size;
+    e->w = (int32_t)slot->bitmap.width;
+    e->h = (int32_t)slot->bitmap.rows;
+    e->bearing_x = slot->bitmap_left;
+    e->bearing_y = slot->bitmap_top;
+    e->advance = (int32_t)(slot->advance.x >> 6);
+    e->bitmap = NULL;
+    if (e->w > 0 && e->h > 0) {
+      size_t bytes = (size_t)e->w * (size_t)e->h;
+      e->bitmap = (uint8_t*)my_mem_alloc(f->allocator, bytes);
+      if (e->bitmap != NULL) {
+        int32_t row;
+        for (row = 0; row < e->h; row++) {
+          memcpy(e->bitmap + (size_t)row * (size_t)e->w,
+                 slot->bitmap.buffer + (size_t)row * (size_t)slot->bitmap.pitch,
+                 (size_t)e->w);
+        }
+      }
+    }
+    e->last_used = ++f->tick;
+  }
+  glyph->bitmap = e->bitmap;
+  glyph->w = e->w;
+  glyph->h = e->h;
+  glyph->bearing_x = e->bearing_x;
+  glyph->bearing_y = e->bearing_y;
+  glyph->advance = e->advance;
+  return MY_RET_OK;
 }
 
 static ft_cache_entry_t* ft_cache_slot(my_font_ft_t* f) {
@@ -118,54 +188,21 @@ static ft_cache_entry_t* ft_cache_slot(my_font_ft_t* f) {
 static my_ret_t ft_get_glyph(my_font_t* font, uint32_t codepoint, int32_t size,
                              my_glyph_t* glyph) {
   my_font_ft_t* f = (my_font_ft_t*)font;
-  ft_cache_entry_t* e;
   if (glyph == NULL || size <= 0) {
     return MY_RET_INVALID_PARAMS;
   }
-  e = ft_cache_lookup(f, codepoint, size);
-  if (e == NULL) {
-    FT_GlyphSlot slot;
-    ft_set_size(f, size);
-    if (FT_Load_Char(f->face, codepoint, FT_LOAD_DEFAULT) != 0) {
-      return MY_RET_FAIL;
-    }
-    slot = f->face->glyph;
-    if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL) != 0) {
-      return MY_RET_FAIL;
-    }
-    e = ft_cache_slot(f);
-    e->occupied = true;
-    e->codepoint = codepoint;
-    e->size = size;
-    e->w = (int32_t)slot->bitmap.width;
-    e->h = (int32_t)slot->bitmap.rows;
-    e->bearing_x = slot->bitmap_left;
-    e->bearing_y = slot->bitmap_top; /* pixels above the baseline */
-    e->advance = (int32_t)(slot->advance.x >> 6);
-    e->bitmap = NULL;
-    if (e->w > 0 && e->h > 0) {
-      /* ft bitmaps are 8bpp coverage already (NORMAL mode); rows may
-       * have a pitch != width */
-      size_t bytes = (size_t)e->w * (size_t)e->h;
-      e->bitmap = (uint8_t*)my_mem_alloc(f->allocator, bytes);
-      if (e->bitmap != NULL) {
-        int32_t row;
-        for (row = 0; row < e->h; row++) {
-          memcpy(e->bitmap + (size_t)row * (size_t)e->w,
-                 slot->bitmap.buffer + (size_t)row * (size_t)slot->bitmap.pitch,
-                 (size_t)e->w);
-        }
-      }
-    }
-    e->last_used = ++f->tick;
+  {
+    FT_UInt glyph_id = FT_Get_Char_Index(f->face, codepoint);
+    if (glyph_id == 0u) return MY_RET_NOT_FOUND;
+    return ft_raster_glyph(f, codepoint, glyph_id, size, false, glyph);
   }
-  glyph->bitmap = e->bitmap;
-  glyph->w = e->w;
-  glyph->h = e->h;
-  glyph->bearing_x = e->bearing_x;
-  glyph->bearing_y = e->bearing_y;
-  glyph->advance = e->advance;
-  return MY_RET_OK;
+}
+
+static my_ret_t ft_get_glyph_id(my_font_t* font, uint32_t glyph_id,
+                                int32_t size, my_glyph_t* glyph) {
+  if (glyph_id == 0u) return MY_RET_NOT_FOUND;
+  return ft_raster_glyph((my_font_ft_t*)font, glyph_id, glyph_id, size, true,
+                         glyph);
 }
 
 static int32_t ft_ascent(my_font_t* font, int32_t size) {
@@ -266,7 +303,8 @@ static bool ft_has_glyph(my_font_t* font, uint32_t codepoint) {
 static const my_font_vtable_t s_ft_vtable = {ft_measure,  ft_get_glyph,
                                              ft_ascent,   ft_descent,
                                              ft_line_height, ft_destroy,
-                                             ft_has_glyph, ft_shape};
+                                             ft_has_glyph, ft_shape,
+                                             ft_get_glyph_id};
 
 my_font_t* my_font_ft_create_ex(const my_allocator_t* allocator,
                                 const char* path, int32_t face_index,

@@ -74,6 +74,7 @@ typedef struct gles_state_t {
 typedef struct gles_tex_entry_t {
   my_font_t* font;
   uint32_t codepoint;
+  bool key_is_glyph_id;
   int32_t size;
   uint32_t texture; /**< 0 = empty */
 } gles_tex_entry_t;
@@ -424,7 +425,7 @@ static int32_t gles_dev_font_size(const my_vgcanvas_gles2_t* s) {
 /** @brief Draw one codepoint at pen_x and advance it (gles text body). */
 static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
                          float top, int32_t ascent) {
-  my_glyph_t g;
+  my_glyph_t g = {0};
   uint32_t slot;
   float gx, gy, quad[24];
   if (my_font_get_glyph(s->state.font, cp, gles_dev_font_size(s), &g) !=
@@ -437,6 +438,7 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
   slot = (cp ^ (uint32_t)gles_dev_font_size(s)) % GLES_TEX_CACHE_SIZE;
   if (s->tex_cache[slot].texture == 0 ||
       s->tex_cache[slot].font != s->state.font ||
+      s->tex_cache[slot].key_is_glyph_id ||
       s->tex_cache[slot].codepoint != cp ||
       s->tex_cache[slot].size != gles_dev_font_size(s)) {
     if (s->tex_cache[slot].texture != 0) {
@@ -446,6 +448,7 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
         s->gl.create_texture(s->gl.ctx, g.bitmap, g.w, g.h);
     s->tex_cache[slot].font = s->state.font;
     s->tex_cache[slot].codepoint = cp;
+    s->tex_cache[slot].key_is_glyph_id = false;
     s->tex_cache[slot].size = gles_dev_font_size(s);
   }
   gx = *pen_x + (float)g.bearing_x;
@@ -465,6 +468,55 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
   s->gl.draw_textured_quads(s->gl.ctx, s->text_program,
                             s->tex_cache[slot].texture, quad, 6);
   *pen_x += (float)g.advance;
+}
+
+static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
+                                   const my_font_shape_glyph_t* shaped,
+                                   float* pen_x, float top, int32_t ascent) {
+  my_glyph_t g = {0};
+  uint32_t slot;
+  float gx, gy, quad[24];
+  float advance = (float)shaped->advance_x_26_6 / 64.0f;
+  if (my_font_get_glyph_id(s->state.font, shaped->glyph_id,
+                           gles_dev_font_size(s), &g) != MY_RET_OK ||
+      g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
+    *pen_x += advance;
+    return;
+  }
+  slot = (shaped->glyph_id ^ (uint32_t)gles_dev_font_size(s)) %
+         GLES_TEX_CACHE_SIZE;
+  if (s->tex_cache[slot].texture == 0 ||
+      s->tex_cache[slot].font != s->state.font ||
+      !s->tex_cache[slot].key_is_glyph_id ||
+      s->tex_cache[slot].codepoint != shaped->glyph_id ||
+      s->tex_cache[slot].size != gles_dev_font_size(s)) {
+    if (s->tex_cache[slot].texture != 0) {
+      s->gl.delete_texture(s->gl.ctx, s->tex_cache[slot].texture);
+    }
+    s->tex_cache[slot].texture =
+        s->gl.create_texture(s->gl.ctx, g.bitmap, g.w, g.h);
+    s->tex_cache[slot].font = s->state.font;
+    s->tex_cache[slot].codepoint = shaped->glyph_id;
+    s->tex_cache[slot].key_is_glyph_id = true;
+    s->tex_cache[slot].size = gles_dev_font_size(s);
+  }
+  gx = *pen_x + (float)shaped->offset_x_26_6 / 64.0f + (float)g.bearing_x;
+  gy = top + (float)(ascent - g.bearing_y) -
+       (float)shaped->offset_y_26_6 / 64.0f;
+  {
+    float x0 = gx, y0 = gy, x1 = gx + (float)g.w, y1 = gy + (float)g.h;
+    const float verts[6][4] = {{x0, y0, 0, 0}, {x1, y0, 1, 0}, {x1, y1, 1, 1},
+                               {x0, y0, 0, 0}, {x1, y1, 1, 1}, {x0, y1, 0, 1}};
+    memcpy(quad, verts, sizeof(quad));
+  }
+  s->gl.uniform4f(s->gl.ctx, s->text_program, "u_color",
+                  (float)s->state.fill_color.r / 255.0f,
+                  (float)s->state.fill_color.g / 255.0f,
+                  (float)s->state.fill_color.b / 255.0f,
+                  (float)s->state.fill_color.a / 255.0f);
+  s->gl.draw_textured_quads(s->gl.ctx, s->text_program,
+                            s->tex_cache[slot].texture, quad, 6);
+  *pen_x += advance;
 }
 
 static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
@@ -497,9 +549,18 @@ static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
   top = (y + s->state.ty) * s->state.scale;
 
   if (!my_text_layout_may_need_bidi(text)) {
-    /* fast path: plain LTR, no layout work at all */
-    while (*p != '\0') {
-      gles_draw_cp(s, my_utf8_next(&p), &pen_x, top, ascent);
+    my_font_shape_result_t shaped = {0};
+    if (my_font_shape(s->state.font, text, gles_dev_font_size(s), false,
+                      s->allocator, &shaped) == MY_RET_OK) {
+      size_t i;
+      for (i = 0; i < shaped.count; i++) {
+        gles_draw_shaped_glyph(s, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else {
+      while (*p != '\0') {
+        gles_draw_cp(s, my_utf8_next(&p), &pen_x, top, ascent);
+      }
     }
   } else {
     /* shaped + visually reordered path (M11a); x is always the left
@@ -633,7 +694,20 @@ static my_ret_t gles_measure_text(my_vgcanvas_t* vg, const char* text,
                           gles_dev_font_size(s), w, h);
     my_text_layout_destroy(l);
   } else {
-    ret = my_font_measure(s->state.font, text, gles_dev_font_size(s), w, h);
+    my_font_shape_result_t shaped = {0};
+    ret = my_font_shape(s->state.font, text, gles_dev_font_size(s), false,
+                        s->allocator, &shaped);
+    if (ret == MY_RET_OK) {
+      int64_t width = 0;
+      size_t i;
+      for (i = 0; i < shaped.count; i++) width += shaped.glyphs[i].advance_x_26_6;
+      if (w != NULL) *w = (int32_t)((width + 32) / 64);
+      if (h != NULL) *h = my_font_line_height(s->state.font,
+                                               gles_dev_font_size(s));
+      my_font_shape_destroy(&shaped);
+    } else {
+      ret = my_font_measure(s->state.font, text, gles_dev_font_size(s), w, h);
+    }
   }
   if (ret == MY_RET_OK && s->state.scale != 1.0f) {
     if (w != NULL) {

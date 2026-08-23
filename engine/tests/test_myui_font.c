@@ -131,8 +131,44 @@ TEST(optional_opentype_shaping_has_explicit_fallback)
   my_font_destroy(font);
 }
 
+TEST(shaped_glyph_id_rasterization_is_separate_from_unicode)
+{
+#ifdef MYUI_FONT_FREETYPE
+  const char *path = "/usr/share/fonts/abattis-cantarell-fonts/Cantarell-Regular.otf";
+  FILE *file = fopen(path, "rb");
+  my_font_t *font;
+  my_glyph_t glyph;
+  if (file == NULL) {
+    printf("  SKIP: no shaping test font\n");
+    return;
+  }
+  fclose(file);
+  font = my_font_ft_create(NULL, path, 0, 32);
+  ASSERT_NOT_NULL(font);
+#ifdef MYUI_FONT_HARFBUZZ
+  my_font_shape_result_t shaped = {0};
+  ASSERT_EQ(my_font_shape(font, "office", 24, false, NULL, &shaped),
+            MY_RET_OK);
+  ASSERT_TRUE(shaped.count > 0);
+  ASSERT_EQ(my_font_get_glyph_id(font, shaped.glyphs[0].glyph_id, 24, &glyph),
+            MY_RET_OK);
+  ASSERT_TRUE(glyph.advance > 0);
+  ASSERT_TRUE(glyph_has_coverage(&glyph));
+  ASSERT_EQ(my_font_get_glyph_id(font, 0u, 24, &glyph), MY_RET_NOT_FOUND);
+  my_font_shape_destroy(&shaped);
+#else
+  ASSERT_EQ(my_font_get_glyph_id(font, 1u, 24, &glyph), MY_RET_OK);
+  ASSERT_TRUE(glyph.advance > 0);
+#endif
+  my_font_destroy(font);
+#else
+  printf("  SKIP: FreeType is unavailable\n");
+#endif
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(utf8_decodes_chinese_codepoints);
     RUN_TEST(cjk_ttc_face_rasterizes_chinese_glyphs);
     RUN_TEST(optional_opentype_shaping_has_explicit_fallback);
+    RUN_TEST(shaped_glyph_id_rasterization_is_separate_from_unicode);
 TEST_MAIN_END()

@@ -34,6 +34,7 @@ typedef struct {
 typedef struct {
   my_font_t *font;
   uint32_t codepoint;
+  bool key_is_glyph_id;
   int32_t size;
   u32 x, y, w, h;
 } break_rhi_glyph_t;
@@ -326,11 +327,14 @@ static bool atlas_alloc(my_vgcanvas_break_rhi_t *c, u32 w, u32 h, u32 *out_x,
 
 static const break_rhi_glyph_t *glyph_slot(my_vgcanvas_break_rhi_t *c,
                                            my_font_t *font, uint32_t cp,
+                                           bool key_is_glyph_id,
                                            int32_t size, const my_glyph_t *g) {
   size_t i;
   u32 x, y;
   for (i = 0; i < c->glyph_count; i++) {
-    if (c->glyphs[i].font == font && c->glyphs[i].codepoint == cp &&
+    if (c->glyphs[i].font == font &&
+        c->glyphs[i].key_is_glyph_id == key_is_glyph_id &&
+        c->glyphs[i].codepoint == cp &&
         c->glyphs[i].size == size) {
       return &c->glyphs[i];
     }
@@ -344,6 +348,7 @@ static const break_rhi_glyph_t *glyph_slot(my_vgcanvas_break_rhi_t *c,
   i = c->glyph_count++;
   c->glyphs[i].font = font;
   c->glyphs[i].codepoint = cp;
+  c->glyphs[i].key_is_glyph_id = key_is_glyph_id;
   c->glyphs[i].size = size;
   c->glyphs[i].x = x;
   c->glyphs[i].y = y;
@@ -353,29 +358,23 @@ static const break_rhi_glyph_t *glyph_slot(my_vgcanvas_break_rhi_t *c,
   return &c->glyphs[i];
 }
 
-static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
-                           float *pen_x, float top, int32_t ascent) {
-  my_glyph_t g;
+static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, uint32_t key,
+                              bool key_is_glyph_id, const my_glyph_t *g,
+                              float advance, float offset_x, float offset_y,
+                              float *pen_x, float top, int32_t ascent) {
   const break_rhi_glyph_t *slot;
   float gx, gy;
   float u0, v0, u1, v1;
   int32_t dev_font_size =
       (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
   if (dev_font_size < 1) dev_font_size = 1;
-  if (my_font_get_glyph(c->state.font, cp, dev_font_size, &g) != MY_RET_OK ||
-      g.w <= 0 || g.h <= 0 || g.bitmap == NULL) {
-    if (g.advance > 0) {
-      *pen_x += (float)g.advance;
-    }
-    return;
-  }
-  slot = glyph_slot(c, c->state.font, cp, dev_font_size, &g);
+  slot = glyph_slot(c, c->state.font, key, key_is_glyph_id, dev_font_size, g);
   if (slot == NULL) {
-    *pen_x += (float)g.advance;
+    *pen_x += advance;
     return;
   }
-  gx = *pen_x + (float)g.bearing_x;
-  gy = top + (float)(ascent - g.bearing_y);
+  gx = *pen_x + offset_x + (float)g->bearing_x;
+  gy = top + (float)(ascent - g->bearing_y) - offset_y;
   u0 = ((float)slot->x + 0.5f) / (float)BREAK_RHI_ATLAS_SIZE;
   v0 = ((float)slot->y + 0.5f) / (float)BREAK_RHI_ATLAS_SIZE;
   u1 = ((float)(slot->x + slot->w) - 0.5f) /
@@ -384,7 +383,7 @@ static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
        (float)BREAK_RHI_ATLAS_SIZE;
   {
     float x0 = gx, y0 = gy;
-    float x1 = gx + (float)g.w, y1 = gy + (float)g.h;
+    float x1 = gx + (float)g->w, y1 = gy + (float)g->h;
     (void)emit_solid_vertex(c, x0, y0, u0, v0, c->state.fill_color);
     (void)emit_solid_vertex(c, x1, y0, u1, v0, c->state.fill_color);
     (void)emit_solid_vertex(c, x0, y1, u0, v1, c->state.fill_color);
@@ -392,13 +391,49 @@ static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
     (void)emit_solid_vertex(c, x1, y1, u1, v1, c->state.fill_color);
     (void)emit_solid_vertex(c, x0, y1, u0, v1, c->state.fill_color);
   }
-  *pen_x += (float)g.advance;
+  *pen_x += advance;
+}
+
+static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
+                           float *pen_x, float top, int32_t ascent) {
+  my_glyph_t g;
+  int32_t dev_font_size =
+      (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
+  if (dev_font_size < 1) dev_font_size = 1;
+  if (my_font_get_glyph(c->state.font, cp, dev_font_size, &g) != MY_RET_OK ||
+      g.w <= 0 || g.h <= 0 || g.bitmap == NULL) {
+    *pen_x += g.advance > 0 ? (float)g.advance : 0.0f;
+    return;
+  }
+  draw_glyph_bitmap(c, cp, false, &g, (float)g.advance, 0.0f, 0.0f,
+                    pen_x, top, ascent);
+}
+
+static void draw_shaped_glyph(my_vgcanvas_break_rhi_t *c,
+                              const my_font_shape_glyph_t *shaped,
+                              float *pen_x, float top, int32_t ascent) {
+  my_glyph_t g;
+  int32_t dev_font_size =
+      (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
+  if (dev_font_size < 1) dev_font_size = 1;
+  if (my_font_get_glyph_id(c->state.font, shaped->glyph_id, dev_font_size,
+                           &g) != MY_RET_OK || g.w <= 0 || g.h <= 0 ||
+      g.bitmap == NULL) {
+    *pen_x += (float)shaped->advance_x_26_6 / 64.0f;
+    return;
+  }
+  draw_glyph_bitmap(c, shaped->glyph_id, true, &g,
+                    (float)shaped->advance_x_26_6 / 64.0f,
+                    (float)shaped->offset_x_26_6 / 64.0f,
+                    (float)shaped->offset_y_26_6 / 64.0f, pen_x, top,
+                    ascent);
 }
 
 static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
                               float y) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
   int32_t ascent;
+  int32_t dev_font_size;
   float pen_x, top;
   const char *p = text;
   if (text == NULL) return MY_RET_INVALID_PARAMS;
@@ -406,7 +441,7 @@ static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
     return MY_RET_NOT_SUPPORTED;
   }
   {
-    int32_t dev_font_size =
+    dev_font_size =
         (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
     if (dev_font_size < 1) dev_font_size = 1;
     ascent = my_font_ascent(c->state.font, dev_font_size);
@@ -415,6 +450,16 @@ static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
   top = (y + c->state.ty) * c->state.scale;
 
   if (!my_text_layout_may_need_bidi(text)) {
+    my_font_shape_result_t shaped = {0};
+    if (my_font_shape(c->state.font, text, dev_font_size, false, c->allocator,
+                      &shaped) == MY_RET_OK) {
+      size_t i;
+      for (i = 0; i < shaped.count; i++) {
+        draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+      return MY_RET_OK;
+    }
     while (*p != '\0') {
       draw_codepoint(c, my_utf8_next(&p), &pen_x, top, ascent);
     }
@@ -442,11 +487,29 @@ static my_ret_t rhi_measure_text(my_vgcanvas_t *vg, const char *text,
   if (text != NULL && my_text_layout_may_need_bidi(text)) {
     my_text_layout_t *layout = my_text_layout_process(c->allocator, text);
     if (layout == NULL) return MY_RET_OOM;
+    int32_t dev_font_size =
+        (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
+    if (dev_font_size < 1) dev_font_size = 1;
     ret = my_font_measure(c->state.font, layout->visual_utf8,
-                          c->state.font_size, w, h);
+                          dev_font_size, w, h);
     my_text_layout_destroy(layout);
   } else {
-    ret = my_font_measure(c->state.font, text, c->state.font_size, w, h);
+    my_font_shape_result_t shaped = {0};
+    int32_t dev_font_size =
+        (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
+    if (dev_font_size < 1) dev_font_size = 1;
+    ret = my_font_shape(c->state.font, text, dev_font_size, false,
+                        c->allocator, &shaped);
+    if (ret == MY_RET_OK) {
+      int64_t width = 0;
+      size_t i;
+      for (i = 0; i < shaped.count; i++) width += shaped.glyphs[i].advance_x_26_6;
+      if (w != NULL) *w = (int32_t)((width + 32) / 64);
+      if (h != NULL) *h = my_font_line_height(c->state.font, dev_font_size);
+      my_font_shape_destroy(&shaped);
+    } else {
+      ret = my_font_measure(c->state.font, text, dev_font_size, w, h);
+    }
   }
   if (ret == MY_RET_OK && c->state.scale != 1.0f) {
     if (w != NULL) *w = (int32_t)((float)*w / c->state.scale + 0.5f);

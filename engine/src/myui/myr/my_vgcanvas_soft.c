@@ -1004,7 +1004,7 @@ static int32_t soft_dev_font_size(const my_vgcanvas_soft_t* s) {
 static void soft_draw_cp(my_vgcanvas_soft_t* s, uint32_t cp, float* pen_x,
                          int32_t top, int32_t ascent) {
   const my_rect_t* clip = &s->state.clip;
-  my_glyph_t g;
+  my_glyph_t g = {0};
   int32_t gx, gy, row;
   if (my_font_get_glyph(s->state.font, cp, soft_dev_font_size(s), &g) !=
       MY_RET_OK) {
@@ -1035,6 +1035,39 @@ static void soft_draw_cp(my_vgcanvas_soft_t* s, uint32_t cp, float* pen_x,
   *pen_x += (float)g.advance;
 }
 
+static void soft_draw_shaped_glyph(my_vgcanvas_soft_t* s,
+                                   const my_font_shape_glyph_t* shaped,
+                                   float* pen_x, int32_t top, int32_t ascent) {
+  const my_rect_t* clip = &s->state.clip;
+  my_glyph_t g = {0};
+  int32_t gx, gy, row;
+  float advance = (float)shaped->advance_x_26_6 / 64.0f;
+  float offset_x = (float)shaped->offset_x_26_6 / 64.0f;
+  float offset_y = (float)shaped->offset_y_26_6 / 64.0f;
+  if (my_font_get_glyph_id(s->state.font, shaped->glyph_id,
+                           soft_dev_font_size(s), &g) != MY_RET_OK) {
+    *pen_x += advance;
+    return;
+  }
+  gx = soft_round(*pen_x + offset_x) + g.bearing_x;
+  gy = top + ascent - g.bearing_y - soft_round(offset_y);
+  if (g.bitmap != NULL) {
+    for (row = 0; row < g.h; row++) {
+      int32_t dy = gy + row;
+      int32_t dx0 = gx, dx1 = gx + g.w;
+      const uint8_t* alpha_row = g.bitmap + (size_t)row * (size_t)g.w;
+      if (dy < clip->y || dy >= clip->y + clip->h) continue;
+      if (dx0 < clip->x) dx0 = clip->x;
+      if (dx1 > clip->x + clip->w) dx1 = clip->x + clip->w;
+      if (dx1 > dx0) {
+        my_lcd_blend_span(s->lcd, dx0, dy, alpha_row + (dx0 - gx),
+                          dx1 - dx0, s->state.fill_color);
+      }
+    }
+  }
+  *pen_x += advance;
+}
+
 static my_ret_t soft_draw_text(my_vgcanvas_t* vg, const char* text, float x,
                                float y) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
@@ -1054,7 +1087,17 @@ static my_ret_t soft_draw_text(my_vgcanvas_t* vg, const char* text, float x,
   top = soft_round(SOFT_SY(s, y));
 
   if (!my_text_layout_may_need_bidi(text)) {
-    /* fast path: plain LTR, no layout work at all */
+    my_font_shape_result_t shaped = {0};
+    if (my_font_shape(s->state.font, text, soft_dev_font_size(s), false,
+                      s->allocator, &shaped) == MY_RET_OK) {
+      size_t i;
+      for (i = 0; i < shaped.count; i++) {
+        soft_draw_shaped_glyph(s, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+      return MY_RET_OK;
+    }
+    /* fallback: plain LTR, no layout work at all */
     while (*p != '\0') {
       soft_draw_cp(s, my_utf8_next(&p), &pen_x, top, ascent);
     }
@@ -1108,7 +1151,20 @@ static my_ret_t soft_measure_text(my_vgcanvas_t* vg, const char* text,
                           soft_dev_font_size(s), w, h);
     my_text_layout_destroy(l);
   } else {
-    ret = my_font_measure(s->state.font, text, soft_dev_font_size(s), w, h);
+    my_font_shape_result_t shaped = {0};
+    ret = my_font_shape(s->state.font, text, soft_dev_font_size(s), false,
+                        s->allocator, &shaped);
+    if (ret == MY_RET_OK) {
+      int64_t width = 0;
+      size_t i;
+      for (i = 0; i < shaped.count; i++) width += shaped.glyphs[i].advance_x_26_6;
+      if (w != NULL) *w = (int32_t)((width + 32) / 64);
+      if (h != NULL) *h = my_font_line_height(s->state.font,
+                                               soft_dev_font_size(s));
+      my_font_shape_destroy(&shaped);
+    } else {
+      ret = my_font_measure(s->state.font, text, soft_dev_font_size(s), w, h);
+    }
   }
   if (ret == MY_RET_OK && s->state.scale != 1.0f) {
     if (w != NULL) {

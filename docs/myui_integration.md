@@ -190,8 +190,10 @@ depth sample count 与 resolve 时使用 2x；旧 RHI 创建 API 仍固定 1x。
 font glyph id、UTF-8 byte cluster 和 26.6 fixed-point advance/offset。只有启用
 `MYUI_HARFBUZZ`、FreeType 与 HarfBuzz 均可用的直接 FreeType face 支持该接口；bitmap、stb
 以及 fallback chain 返回 `MY_RET_NOT_SUPPORTED`。当前 Break RHI、GLES、Vulkan 和 soft
-canvas 仍使用 Unicode codepoint bitmap 路径，避免将 glyph id 当作 codepoint；因此该接口是
-安全的测量/排版前置契约，完整 glyph raster/cache 接线需按 face/run 单独完成。
+canvas 的纯 LTR 路径已通过独立 `my_font_get_glyph_id()` raster API 消费 glyph run；四个
+后端的 glyph cache 均把 font pointer、glyph/codepoint 数值、key 类型和字号作为键，避免把
+glyph id 当作 Unicode codepoint 或发生缓存串线。shaping 失败时回退旧 codepoint 路径。当前
+RTL 仍使用 UBA/Arabic fallback，fallback chain 仍不伪装支持跨 face 的完整 OpenType shaping。
 
 ### Canvas 能力契约
 
@@ -254,7 +256,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
-| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；完整 OpenType GSUB shaping、多段落 rebreaking 仍未实现 | 增加 shaping run、段落级缓存和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入所有 canvas |
+| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；四后端纯 LTR OpenType glyph-run 已接入；完整 RTL GSUB、跨 face run 和多段落 rebreaking 仍未实现 | 增加 shaping run、段落级缓存和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
 | 编辑器 | 行号、代码折叠、增量语法高亮等高级编辑器能力未实现 | 单独的 virtualized line model，限制单帧重排预算，避免把大文档编辑路径耦合到 widget 绘制 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
