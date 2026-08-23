@@ -17,6 +17,8 @@
   64 位乘法均有测试，但暂不把它冒险用于默认 swapchain composite。
 - 编辑器光标闪烁、变高列表 prefix-sum、跨后端 nearest/bilinear 已存在，不再作为
   未实现能力记录。
+- text area wrap 重排采用候选 cache 事务：分配失败或 paragraph 构建失败不会清空旧
+  visual lines，dirty 标志保持到下一次成功重建，避免 OOM 时文本内容静默消失。
 - vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
   成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
   Break RHI/Vulkan 的真实 offscreen target 已支持设备能力允许的 2x+ 路径。

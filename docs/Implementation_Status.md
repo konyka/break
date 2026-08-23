@@ -36,6 +36,10 @@ key 类型和字号；缺少 HarfBuzz/FreeType 或后端不支持时返回 `MY_R
 换行，并接入 text area wrap；当前限制保留：RTL/复杂 GSUB、跨 face fallback chain shaping、
 paragraph visual mapping 与增量预算仍由后续阶段实现，现有 UBA/Arabic fallback 不受影响。
 
+**Text area wrap cache reliability (TDD)**：visual-line cache 改为候选数组事务；OOM 或
+paragraph 构建失败时保留上一份可用 cache 并继续标记 dirty，下一次布局边界重试，不再
+以空缓存替换有效文本布局。
+
 最近更新：**R559 动态 IBL 跨帧重烘焙（TDD）**：静态 IBL 在实时太阳（L/J/I/K、TOD）变化后
 会与可见 skybox 漂移。新增默认 36000 帧（约 10 分钟@60 FPS）触发的运行时 rebake，并提供
 `BREAK_IBL_STATIC=1` 静态 opt-out 与 `BREAK_IBL_REBAKE_FRAMES=N` 无头验证覆盖。重烘焙不再一次性

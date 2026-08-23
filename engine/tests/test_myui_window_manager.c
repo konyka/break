@@ -1,5 +1,7 @@
 #include "test_framework.h"
 
+#include <stdlib.h>
+
 #include "mypal/dummy/my_pal_dummy.h"
 #include "mypal/my_event.h"
 #include "myr/my_lcd_mem.h"
@@ -20,6 +22,30 @@ static void on_open_cb(my_window_manager_t* wm, my_window_t* win, void* ctx) {
   g_hook_wm = wm;
   g_hook_win = win;
   g_hook_ctx = ctx;
+}
+
+typedef struct text_area_fail_alloc_t {
+  bool fail;
+} text_area_fail_alloc_t;
+
+static void* text_area_fail_alloc(void* ctx, size_t size) {
+  text_area_fail_alloc_t* state = (text_area_fail_alloc_t*)ctx;
+  return state->fail ? NULL : malloc(size);
+}
+
+static void* text_area_fail_calloc(void* ctx, size_t count, size_t size) {
+  text_area_fail_alloc_t* state = (text_area_fail_alloc_t*)ctx;
+  return state->fail ? NULL : calloc(count, size);
+}
+
+static void* text_area_fail_realloc(void* ctx, void* ptr, size_t size) {
+  text_area_fail_alloc_t* state = (text_area_fail_alloc_t*)ctx;
+  return state->fail ? NULL : realloc(ptr, size);
+}
+
+static void text_area_fail_free(void* ctx, void* ptr) {
+  (void)ctx;
+  free(ptr);
 }
 
 static int g_result = -999;
@@ -280,6 +306,27 @@ TEST(text_area_wrap_rebuilds_after_edit)
   ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
   ASSERT_EQ(my_text_area_set_text(area, "abc\ndef"), MY_RET_OK);
   ASSERT_EQ(my_text_area_visual_line_count(area), 6u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_wrap_oom_keeps_previous_cache)
+{
+  text_area_fail_alloc_t state = {false};
+  my_allocator_t allocator = {&state, text_area_fail_alloc,
+                              text_area_fail_calloc, text_area_fail_realloc,
+                              text_area_fail_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 20, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcd"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  state.fail = true;
+  ASSERT_EQ(my_text_area_set_wrap(area, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  state.fail = false;
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
   my_widget_unref(area);
 }
 
@@ -1082,6 +1129,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(floating_plain_widget_does_not_crash_hit_test);
     RUN_TEST(text_area_grows_capacity_exponentially);
     RUN_TEST(text_area_wrap_rebuilds_after_edit);
+    RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);
     RUN_TEST(software_canvas_recreates_after_surface_resize);

@@ -36,7 +36,7 @@ static void ta_offsets_push(my_text_area_t* ta, size_t offset) {
 }
 
 /** @brief Rebuild line offsets from `row` to the end of the buffer. */
-static void ta_vlines_rebuild_from(my_text_area_t* ta, size_t from);
+static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from);
 static void ta_vlines_invalidate(my_text_area_t* ta);
 
 static void ta_rebuild_from(my_text_area_t* ta, size_t row) {
@@ -132,19 +132,6 @@ static float ta_inner_width(const my_text_area_t* ta) {
   return w > 1.0f ? w : 1.0f;
 }
 
-static void ta_vlines_drop_from(my_text_area_t* ta, size_t phys) {
-  while (my_darray_size(ta->vlines) > 0) {
-    my_visual_line_t* last =
-        (my_visual_line_t*)my_darray_get(ta->vlines,
-                                         my_darray_size(ta->vlines) - 1);
-    if (last->phys < phys) {
-      break;
-    }
-    my_darray_remove_at(ta->vlines, my_darray_size(ta->vlines) - 1);
-    my_mem_free(ta->allocator, last);
-  }
-}
-
 static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys, size_t start,
                               size_t len) {
   my_visual_line_t* v =
@@ -159,26 +146,37 @@ static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys, size_t start,
   return my_darray_push(ta->vlines, v);
 }
 
-/** @brief Rebuild visual lines for physical rows [from, end). */
-static void ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
-  size_t pi, n;
-  if (ta->vlines == NULL) {
-    ta->vlines = my_darray_create(ta->allocator, 0);
-    if (ta->vlines == NULL) {
-      return;
-    }
-    from = 0;
+static void ta_vlines_destroy_array(my_text_area_t* ta, my_darray_t* lines) {
+  size_t i;
+  if (lines == NULL) return;
+  for (i = 0; i < my_darray_size(lines); i++) {
+    my_mem_free(ta->allocator, my_darray_get(lines, i));
   }
-  ta_vlines_drop_from(ta, from);
+  my_darray_destroy(lines);
+}
+
+/** @brief Rebuild visual lines transactionally for physical rows [from, end). */
+static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
+  my_darray_t* old_lines = ta->vlines;
+  my_darray_t* new_lines;
+  size_t pi, n;
+  (void)from;
+  new_lines = my_darray_create(ta->allocator, 0);
+  if (new_lines == NULL) return MY_RET_OOM;
+  ta->vlines = new_lines;
   n = ta_line_count(ta);
-  for (pi = from; pi < n; pi++) {
+  for (pi = 0; pi < n; pi++) {
     size_t start_off = ta_line_start(ta, pi);
     size_t end_off = pi + 1 < n ? ta_line_start(ta, pi + 1) : ta->text_len;
     size_t segment_len = end_off > start_off ? end_off - start_off : 0;
     char* segment = (char*)my_mem_alloc(ta->allocator, segment_len + 1);
     my_text_paragraph_t* paragraph;
     size_t i;
-    if (segment == NULL) continue;
+    if (segment == NULL) {
+      ta->vlines = old_lines;
+      ta_vlines_destroy_array(ta, new_lines);
+      return MY_RET_OOM;
+    }
     if (segment_len > 0) memcpy(segment, ta->text + start_off, segment_len);
     if (segment_len > 0 && segment[segment_len - 1] == '\n') segment_len--;
     segment[segment_len] = '\0';
@@ -186,16 +184,29 @@ static void ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
         ta->allocator, segment, ta->font, ta->font_size,
         (int32_t)ta_inner_width(ta));
     my_mem_free(ta->allocator, segment);
-    if (paragraph == NULL) continue;
+    if (paragraph == NULL) {
+      ta->vlines = old_lines;
+      ta_vlines_destroy_array(ta, new_lines);
+      return MY_RET_OOM;
+    }
     for (i = 0; i < paragraph->line_count; i++) {
       const my_text_paragraph_line_t* line =
           my_text_paragraph_line_at(paragraph, i);
       if (line != NULL) {
-        (void)ta_vline_push(ta, pi, line->start_cp, line->cp_count);
+        if (ta_vline_push(ta, pi, line->start_cp, line->cp_count) !=
+            MY_RET_OK) {
+          my_text_paragraph_destroy(paragraph);
+          ta->vlines = old_lines;
+          ta_vlines_destroy_array(ta, new_lines);
+          return MY_RET_OOM;
+        }
       }
     }
     my_text_paragraph_destroy(paragraph);
   }
+  ta->vlines = new_lines;
+  ta_vlines_destroy_array(ta, old_lines);
+  return MY_RET_OK;
 }
 
 static void ta_vlines_invalidate(my_text_area_t* ta) {
@@ -205,9 +216,9 @@ static void ta_vlines_invalidate(my_text_area_t* ta) {
 /** @brief Ensure visual lines are built (when wrap is on). */
 static void ta_vlines_ensure(my_text_area_t* ta) {
   if (ta->wrap && ta->vlines_dirty) {
-    ta_vlines_drop_from(ta, 0);
-    ta_vlines_rebuild_from(ta, 0);
-    ta->vlines_dirty = false;
+    if (ta_vlines_rebuild_from(ta, 0) == MY_RET_OK) {
+      ta->vlines_dirty = false;
+    }
   }
 }
 
@@ -1393,6 +1404,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   }
   my_undo_stack_destroy(ta->undo);
   my_mem_free(ta->allocator, ta->ime_preedit);
+  ta_vlines_destroy_array(ta, ta->vlines);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
   my_mem_free(ta->allocator, ta->hint);
