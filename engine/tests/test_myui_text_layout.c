@@ -150,6 +150,16 @@ TEST(line_break_applies_unicode_context_rules)
   ASSERT_FALSE(my_line_break_allowed(0x1F1E6u, 0x1F1E7u));
 }
 
+TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together)
+{
+  ASSERT_FALSE(my_line_break_allowed(0x05D0u, '"'));
+  ASSERT_FALSE(my_line_break_allowed('"', 0x05D0u));
+  ASSERT_FALSE(my_line_break_allowed(0x0661u, 0x066Bu));
+  ASSERT_FALSE(my_line_break_allowed(0x066Bu, 0x0662u));
+  ASSERT_FALSE(my_line_break_allowed(0xFF11u, 0xFF0Eu));
+  ASSERT_FALSE(my_line_break_allowed(0xFF0Eu, 0xFF12u));
+}
+
 TEST(paragraph_preserves_logical_ranges_and_hard_boundaries)
 {
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
@@ -193,6 +203,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
     RUN_TEST(line_break_applies_unicode_context_rules);
+    RUN_TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together);
     RUN_TEST(paragraph_preserves_logical_ranges_and_hard_boundaries);
     RUN_TEST(paragraph_does_not_break_inside_shaping_cluster);
 TEST_MAIN_END()

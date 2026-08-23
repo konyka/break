@@ -36,8 +36,25 @@ static bool is_regional_indicator(uint32_t cp) {
   return cp >= 0x1F1E6u && cp <= 0x1F1FFu;
 }
 
-static bool is_ascii_digit(uint32_t cp) {
-  return cp >= '0' && cp <= '9';
+static bool is_decimal_digit(uint32_t cp) {
+  return (cp >= '0' && cp <= '9') ||
+         (cp >= 0x0660u && cp <= 0x0669u) ||
+         (cp >= 0x06F0u && cp <= 0x06F9u) ||
+         (cp >= 0xFF10u && cp <= 0xFF19u);
+}
+
+static bool is_decimal_separator(uint32_t cp) {
+  return cp == '.' || cp == ',' || cp == 0x066Bu || cp == 0x066Cu ||
+         cp == 0xFF0Eu || cp == 0xFF0Cu;
+}
+
+static bool is_hebrew_letter(uint32_t cp) {
+  return (cp >= 0x05D0u && cp <= 0x05EAu) ||
+         (cp >= 0x05F0u && cp <= 0x05F2u);
+}
+
+static bool is_hebrew_quote(uint32_t cp) {
+  return cp == '\'' || cp == '"' || cp == 0x05F3u || cp == 0x05F4u;
 }
 
 bool my_line_break_allowed(uint32_t prev_cp, uint32_t cur_cp) {
@@ -47,10 +64,14 @@ bool my_line_break_allowed(uint32_t prev_cp, uint32_t cur_cp) {
   if (is_combining_mark(cur_cp)) {
     return false;
   }
-  if ((cur_cp == '.' || cur_cp == ',') && is_ascii_digit(prev_cp)) {
+  if ((is_hebrew_letter(prev_cp) && is_hebrew_quote(cur_cp)) ||
+      (is_hebrew_quote(prev_cp) && is_hebrew_letter(cur_cp))) {
     return false;
   }
-  if ((prev_cp == '.' || prev_cp == ',') && is_ascii_digit(cur_cp)) {
+  if (is_decimal_separator(cur_cp) && is_decimal_digit(prev_cp)) {
+    return false;
+  }
+  if (is_decimal_separator(prev_cp) && is_decimal_digit(cur_cp)) {
     return false;
   }
   if (is_regional_indicator(prev_cp) && is_regional_indicator(cur_cp)) {
