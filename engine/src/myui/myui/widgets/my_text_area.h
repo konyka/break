@@ -39,7 +39,8 @@ typedef struct my_text_area_t {
   my_darray_t* line_offsets;/**< size_t per line start (line 0 = 0) */
   bool wrap;                /**< word wrap on (M10b, default off) */
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
-  bool vlines_dirty;        /**< vlines need a full rebuild */
+  bool vlines_dirty;        /**< vlines need a rebuild */
+  size_t vlines_dirty_from; /**< first physical row requiring rebuild */
   size_t cursor_row;
   size_t cursor_col;        /**< codepoints */
   size_t anchor_row;        /**< selection anchor (== cursor = no sel) */

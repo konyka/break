@@ -1748,3 +1748,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - `test_myui_loader` 定向结果为 `14/14`；默认 myui 10/10、无 Bidi loader 14/14、
   ASan/UBSan loader 14/14、Vulkan `myui_core` 构建和 YAML OFF 裁剪构建均通过。本轮补齐
   flow map key 预算与 sequence 内联 map 重复键拒绝，避免资源限制或配置完整性绕过。
+
+## myui text area incremental wrap cache（2026-08-24）
+
+- 以 TDD 新增 `text_area_wrap_reuses_unchanged_prefix_after_edit`：编辑中间物理行时，
+  之前的 visual-line 前缀保持对象稳定，避免每次输入都重建全文缓存。
+- wrap 重排改为 `dirty_from` 后缀候选事务；未受影响前缀转移到候选数组，后缀分配或
+  paragraph 构建失败只释放候选后缀，保留旧缓存并继续标记 dirty。
+- 验证：`test_myui_window_manager` **31/31**，myui 定向套件 **10/10**，并保留原有
+  wrap OOM 回滚契约。
