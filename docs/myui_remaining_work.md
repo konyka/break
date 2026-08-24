@@ -18,7 +18,8 @@
   block 的大括号，不会吞掉后续合法规则；结构错误仍硬失败，声明值错误仍按既有
   lenient 规则告警并跳过。
 - XML subset 现在拒绝重复属性，避免 `my_xml_node_attr()` 的 first-value-wins 歧义；
-  实体、CDATA、未引用属性和 root 尾部内容继续按结构契约校验。
+  实体、CDATA、未引用属性和 root 尾部内容继续按结构契约校验；元素嵌套深度限制为
+  `MY_XML_MAX_DEPTH=256`，超限输入在分配节点前拒绝，避免递归栈耗尽。
 - CSS 数值输入的有限值、整数范围和颜色 alpha 边界检查。
 - UAX#14 实用子集的上下文规则：combining mark、数字标点、Unicode 数字小数分隔符、
   Hebrew quotes 和 Regional Indicator；新增

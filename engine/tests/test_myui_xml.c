@@ -41,8 +41,45 @@ TEST(xml_rejects_unquoted_attribute_and_trailing_root)
   ASSERT_TRUE(error.message[0] != '\0');
 }
 
+TEST(xml_rejects_excessive_nesting_depth)
+{
+  char xml[4096];
+  my_xml_error_t error;
+  my_xml_doc_t* doc;
+  size_t pos = 0;
+  size_t i;
+
+  for (i = 0; i < MY_XML_MAX_DEPTH; i++) {
+    memcpy(xml + pos, "<n>", 3);
+    pos += 3;
+  }
+  for (i = 0; i < MY_XML_MAX_DEPTH; i++) {
+    memcpy(xml + pos, "</n>", 4);
+    pos += 4;
+  }
+  xml[pos] = '\0';
+  doc = my_xml_parse(NULL, xml, &error);
+  ASSERT_NOT_NULL(doc);
+  my_xml_doc_destroy(doc);
+
+  pos = 0;
+  for (i = 0; i < 257; i++) {
+    memcpy(xml + pos, "<n>", 3);
+    pos += 3;
+  }
+  for (i = 0; i < 257; i++) {
+    memcpy(xml + pos, "</n>", 4);
+    pos += 4;
+  }
+  xml[pos] = '\0';
+  doc = my_xml_parse(NULL, xml, &error);
+  ASSERT_TRUE(doc == NULL);
+  ASSERT_TRUE(error.message[0] != '\0');
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(xml_rejects_duplicate_attributes);
     RUN_TEST(xml_accepts_entities_and_cdata_without_confusing_markup);
     RUN_TEST(xml_rejects_unquoted_attribute_and_trailing_root);
+    RUN_TEST(xml_rejects_excessive_nesting_depth);
 TEST_MAIN_END()

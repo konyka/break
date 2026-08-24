@@ -219,11 +219,13 @@ static bool node_has_attr(const my_xml_node_t* node, const char* name) {
   return false;
 }
 
-static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err);
+static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err,
+                                    size_t depth);
 static void free_node(parser_t* ps, my_xml_node_t* node);
 
 /** @brief Parse the content of an element until its close tag. */
-static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node) {
+static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node,
+                              size_t depth) {
   for (;;) {
     skip_ws(ps);
     if (*ps->p == '\0') {
@@ -266,7 +268,7 @@ static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node) {
       my_xml_node_t* child;
       my_ret_t err = MY_RET_OK;
       ps->p++;
-      child = parse_element(ps, &err);
+      child = parse_element(ps, &err, depth + 1);
       if (err != MY_RET_OK || child == NULL) {
         free_node(ps, child);
         return err != MY_RET_OK ? err : MY_RET_FAIL;
@@ -283,9 +285,15 @@ static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node) {
 }
 
 /** @brief Parse one element (current char is just past '<'). */
-static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err) {
-  my_xml_node_t* node = (my_xml_node_t*)my_mem_calloc(ps->allocator, 1,
-                                                      sizeof(my_xml_node_t));
+static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err,
+                                    size_t depth) {
+  my_xml_node_t* node;
+  if (depth == 0 || depth > MY_XML_MAX_DEPTH) {
+    *out_err = fail(ps, "maximum element depth exceeded");
+    return NULL;
+  }
+  node = (my_xml_node_t*)my_mem_calloc(ps->allocator, 1,
+                                       sizeof(my_xml_node_t));
   if (node == NULL) {
     *out_err = MY_RET_OOM;
     return NULL;
@@ -306,7 +314,7 @@ static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err) {
     }
     if (*ps->p == '>') {
       ps->p++;
-      *out_err = parse_content(ps, node);
+      *out_err = parse_content(ps, node, depth);
       if (*out_err != MY_RET_OK) {
         /* caller destroys via doc root */
         return node;
@@ -427,7 +435,7 @@ my_xml_doc_t* my_xml_parse(const my_allocator_t* allocator, const char* str,
     return NULL;
   }
   doc->allocator = allocator;
-  doc->root = parse_element(&ps, &perr);
+  doc->root = parse_element(&ps, &perr, 1);
   if (perr != MY_RET_OK || doc->root == NULL) {
     if (perr == MY_RET_OK) {
       fail(&ps, "parse error");

@@ -14,6 +14,8 @@
 #include "myc/my_error.h"
 #include "myc/my_mem.h"
 
+#define MY_XML_MAX_DEPTH 256
+
 /** @brief One attribute (name/value, both owned). */
 typedef struct my_xml_attr_t {
   char* name;
