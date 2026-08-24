@@ -22,8 +22,10 @@
   窗口主题使用 `style` 字符串。非法类型、错误容器和 XML 输入均拒绝。
 - YAML loader 直接消费 `my_conf` 类型树，不做字符串属性二次解析；整数范围、有限浮点、
   绑定规则 512 bytes 上限和 widget 构造失败均有明确失败路径，避免配置输入污染运行时树。
-- YAML loader TDD 定向测试现为 `5/5`，覆盖控件、嵌套子节点、绑定、错误类型和 XML 拒绝；
-  UI 配置不再维护 XML DOM 资源预算或 XML 兼容层。
+- YAML loader/parser TDD 定向测试现为 `14/14`，覆盖控件、嵌套子节点、绑定、错误类型、
+  非 YAML 标记拒绝、输入大小、行数、block/flow 深度、集合规模和标量大小；UI 配置不再
+  维护 XML DOM 资源预算或 XML 兼容层。flow/map key 同样受 1 MiB 限制，序列内联 map
+  也拒绝重复键，避免替换语义掩盖配置错误。
 - CSS 数值输入的有限值、整数范围和颜色 alpha 边界检查。
 - UAX#14 实用子集的上下文规则：combining mark、数字标点、Unicode 数字小数分隔符、
   Hebrew quotes 和 Regional Indicator；新增

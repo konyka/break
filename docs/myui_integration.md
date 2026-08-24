@@ -68,7 +68,10 @@ children:
 loader 只接受 YAML 类型匹配的值：布尔属性必须是 YAML bool，整数属性必须在 `int32_t`
 范围内，浮点属性必须有限，`children` 必须是 sequence，`bindings` 的值必须是 string。
 绑定展开到固定 512-byte 规则缓冲，超限直接失败。解析失败或 widget 构造失败不会返回
-部分构造树，也不会保留临时配置树。
+部分构造树，也不会保留临时配置树。通用 YAML parser 额外限制输入 4 MiB、65536 行、
+256 层 block/flow 嵌套、单容器 4096 个子项和 1 MiB 标量；这些限制在 `my_conf` 层执行，
+不会因其他调用方绕过 UI loader 而失效。map key 也适用 1 MiB 上限；所有 map 形式（包括
+sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置。
 
 UI 配置不再支持 XML，`my_xml.*` 和 `test_myui_xml` 已移除；Wayland 协议生成所需的
 `.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。

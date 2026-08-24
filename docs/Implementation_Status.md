@@ -1741,8 +1741,10 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 以 TDD 新增 `test_myui_loader`，YAML 根对象使用 `type`，普通控件属性采用类型化
   标量，子控件使用 `children` sequence，绑定使用 `bindings` map，主题使用 `style`。
 - loader 直接消费 `my_conf` YAML tree，整数执行 `int32_t` 范围校验，浮点拒绝非有限值，
-  children/bindings 容器类型错误、绑定规则超限和 XML 输入均拒绝。
+  children/bindings 容器类型错误、绑定规则超限和非 YAML 标记均拒绝；通用 YAML parser
+  同时固定输入、行数、嵌套、集合和标量预算。
 - 已删除 UI XML parser、XML loader 编译选项和 `test_myui_xml`；Wayland 协议 XML 文件
   仍由平台协议生成流程使用，不属于 UI 配置支持。
-- `test_myui_loader` 定向结果为 `6/6`；默认 myui 10/10、无 Bidi loader 6/6、
-  ASan/UBSan loader 6/6、Vulkan `myui_core` 构建和 YAML OFF 裁剪构建均通过。
+- `test_myui_loader` 定向结果为 `14/14`；默认 myui 10/10、无 Bidi loader 14/14、
+  ASan/UBSan loader 14/14、Vulkan `myui_core` 构建和 YAML OFF 裁剪构建均通过。本轮补齐
+  flow map key 预算与 sequence 内联 map 重复键拒绝，避免资源限制或配置完整性绕过。

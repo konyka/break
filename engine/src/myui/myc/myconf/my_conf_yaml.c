@@ -27,11 +27,15 @@ typedef struct yaml_p_t {
   yline_t* lines;
   size_t n_lines;
   size_t i;      /**< cursor over lines */
+  size_t block_depth;
+  size_t flow_depth;
+  bool failed;
   my_conf_error_t* err;
 } yaml_p_t;
 
 static void y_fail(yaml_p_t* p, int32_t lineno, int32_t col,
                    const char* msg) {
+  p->failed = true;
   if (p->err != NULL && p->err->msg[0] == '\0') {
     p->err->line = lineno;
     p->err->col = col;
@@ -41,7 +45,7 @@ static void y_fail(yaml_p_t* p, int32_t lineno, int32_t col,
 }
 
 static bool y_failed(yaml_p_t* p) {
-  return p->err != NULL && p->err->msg[0] != '\0';
+  return p->failed;
 }
 
 /** @brief Split into lines; tab indentation is a hard error. */
@@ -49,11 +53,19 @@ static bool y_split(yaml_p_t* p) {
   size_t pos = 0;
   size_t cap = 16;
   int32_t lineno = 1;
+  if (p->len > MY_CONF_YAML_MAX_BYTES) {
+    y_fail(p, 1, 1, "YAML input exceeds resource budget");
+    return false;
+  }
   p->lines = (yline_t*)my_mem_alloc(p->allocator, cap * sizeof(yline_t));
   if (p->lines == NULL) {
     return false;
   }
   while (pos < p->len) {
+    if (p->n_lines >= MY_CONF_YAML_MAX_LINES) {
+      y_fail(p, lineno, 1, "YAML line count exceeds resource budget");
+      return false;
+    }
     size_t start = pos;
     size_t len;
     int32_t indent = 0;
@@ -183,6 +195,9 @@ static char* yv_dq(yv_t* v) {
           goto fail;
       }
     }
+    if (n >= MY_CONF_YAML_MAX_SCALAR_BYTES) {
+      goto fail;
+    }
     if (n + 2 > cap) {
       char* b2;
       cap *= 2;
@@ -197,7 +212,7 @@ static char* yv_dq(yv_t* v) {
   out[n] = '\0';
   return out;
 fail:
-  y_fail(v->p, v->lineno, 0, "unterminated/bad double-quoted string");
+  y_fail(v->p, v->lineno, 0, "double-quoted scalar exceeds resource budget or is invalid");
   my_mem_free(v->allocator, out);
   return NULL;
 }
@@ -223,6 +238,9 @@ static char* yv_sq(yv_t* v) {
         break;
       }
     }
+    if (n >= MY_CONF_YAML_MAX_SCALAR_BYTES) {
+      goto fail;
+    }
     if (n + 2 > cap) {
       char* b2;
       cap *= 2;
@@ -237,13 +255,17 @@ static char* yv_sq(yv_t* v) {
   out[n] = '\0';
   return out;
 fail:
-  y_fail(v->p, v->lineno, 0, "unterminated single-quoted string");
+  y_fail(v->p, v->lineno, 0, "single-quoted scalar exceeds resource budget or is invalid");
   my_mem_free(v->allocator, out);
   return NULL;
 }
 
 /** @brief Plain scalar: type-inferred node from a trimmed slice. */
 static my_conf_node_t* yv_plain(yv_t* v, const char* s, size_t len) {
+  if (len > MY_CONF_YAML_MAX_SCALAR_BYTES) {
+    y_fail(v->p, v->lineno, 1, "YAML scalar exceeds resource budget");
+    return NULL;
+  }
   /* strip a trailing comment (" #" boundary) and trailing spaces */
   while (len > 0 && s[len - 1] == ' ') {
     len--;
@@ -345,13 +367,21 @@ static my_conf_node_t* yv_plain(yv_t* v, const char* s, size_t len) {
 /** @brief Flow sequence [a, b] over the slice. */
 static my_conf_node_t* yv_flow_seq(yv_t* v) {
   my_conf_node_t* arr = my_conf_new_array(v->allocator);
+  if (v->p->flow_depth >= MY_CONF_YAML_MAX_DEPTH) {
+    y_fail(v->p, v->lineno, 0, "YAML flow nesting depth exceeds resource budget");
+    my_conf_destroy(arr);
+    return NULL;
+  }
+  v->p->flow_depth++;
   if (arr == NULL) {
+    v->p->flow_depth--;
     return NULL;
   }
   v->pos++; /* '[' */
   yv_ws(v);
   if (yv_peek(v) == ']') {
     v->pos++;
+    v->p->flow_depth--;
     return arr;
   }
   for (;;) {
@@ -359,6 +389,11 @@ static my_conf_node_t* yv_flow_seq(yv_t* v) {
     yv_ws(v);
     item = yv_value(v);
     if (item == NULL) {
+      goto fail;
+    }
+    if (my_conf_child_count(arr) >= MY_CONF_YAML_MAX_CHILDREN) {
+      my_conf_destroy(item);
+      y_fail(v->p, v->lineno, 0, "YAML flow sequence exceeds resource budget");
       goto fail;
     }
     if (my_conf_array_push(arr, item) != MY_RET_OK) {
@@ -372,12 +407,14 @@ static my_conf_node_t* yv_flow_seq(yv_t* v) {
     }
     if (yv_peek(v) == ']') {
       v->pos++;
+      v->p->flow_depth--;
       return arr;
     }
     y_fail(v->p, v->lineno, 0, "expected ',' or ']' in flow sequence");
     goto fail;
   }
 fail:
+  v->p->flow_depth--;
   my_conf_destroy(arr);
   return NULL;
 }
@@ -385,13 +422,21 @@ fail:
 /** @brief Flow map {k: v, ...} over the slice. */
 static my_conf_node_t* yv_flow_map(yv_t* v) {
   my_conf_node_t* obj = my_conf_new_object(v->allocator);
+  if (v->p->flow_depth >= MY_CONF_YAML_MAX_DEPTH) {
+    y_fail(v->p, v->lineno, 0, "YAML flow nesting depth exceeds resource budget");
+    my_conf_destroy(obj);
+    return NULL;
+  }
+  v->p->flow_depth++;
   if (obj == NULL) {
+    v->p->flow_depth--;
     return NULL;
   }
   v->pos++; /* '{' */
   yv_ws(v);
   if (yv_peek(v) == '}') {
     v->pos++;
+    v->p->flow_depth--;
     return obj;
   }
   for (;;) {
@@ -428,6 +473,11 @@ static my_conf_node_t* yv_flow_map(yv_t* v) {
       y_fail(v->p, v->lineno, 0, "expected ':' in flow map");
       goto fail;
     }
+    if (ke - ks > MY_CONF_YAML_MAX_SCALAR_BYTES) {
+      y_fail(v->p, v->lineno, 0,
+             "YAML flow map key exceeds resource budget");
+      goto fail;
+    }
     v->pos++;
     key = (char*)my_mem_alloc(v->allocator, ke - ks + 1);
     if (key == NULL) {
@@ -440,6 +490,25 @@ static my_conf_node_t* yv_flow_map(yv_t* v) {
     if (val == NULL) {
       my_mem_free(v->allocator, key);
       goto fail;
+    }
+    if (my_conf_child_count(obj) >= MY_CONF_YAML_MAX_CHILDREN) {
+      my_mem_free(v->allocator, key);
+      my_conf_destroy(val);
+      y_fail(v->p, v->lineno, 0, "YAML flow map exceeds resource budget");
+      goto fail;
+    }
+    {
+      size_t k;
+      for (k = 0; k < my_conf_child_count(obj); k++) {
+        my_conf_node_t* child = my_conf_child(obj, k);
+        if (my_conf_key(child) != NULL &&
+            strcmp(my_conf_key(child), key) == 0) {
+          my_mem_free(v->allocator, key);
+          my_conf_destroy(val);
+          y_fail(v->p, v->lineno, 0, "duplicate key");
+          goto fail;
+        }
+      }
     }
     if (my_conf_object_set(obj, key, val) != MY_RET_OK) {
       my_mem_free(v->allocator, key);
@@ -454,12 +523,14 @@ static my_conf_node_t* yv_flow_map(yv_t* v) {
     }
     if (yv_peek(v) == '}') {
       v->pos++;
+      v->p->flow_depth--;
       return obj;
     }
     y_fail(v->p, v->lineno, 0, "expected ',' or '}' in flow map");
     goto fail;
   }
 fail:
+  v->p->flow_depth--;
   my_conf_destroy(obj);
   return NULL;
 }
@@ -538,6 +609,7 @@ static my_conf_node_t* y_block_value(yaml_p_t* p, const char* s, size_t len,
 /* ---------------- block parser ---------------- */
 
 static my_conf_node_t* y_block(yaml_p_t* p, int32_t indent);
+static my_conf_node_t* y_block_impl(yaml_p_t* p, int32_t indent);
 
 /** @brief Does the slice look like "key:" / "key: value"? The colon
  * must be followed by a space or the end (URLs etc. stay plain). */
@@ -584,6 +656,10 @@ static char* y_pair_key(yaml_p_t* p, const char* s, size_t len,
   }
   if (ke == ks) {
     y_fail(p, lineno, 0, "empty key");
+    return NULL;
+  }
+  if (ke - ks > MY_CONF_YAML_MAX_SCALAR_BYTES) {
+    y_fail(p, lineno, 0, "YAML mapping key exceeds resource budget");
     return NULL;
   }
   out = (char*)my_mem_alloc(p->allocator, ke - ks + 1);
@@ -681,6 +757,13 @@ static my_conf_node_t* y_map(yaml_p_t* p, int32_t indent) {
         goto fail;
       }
     }
+    if (my_conf_child_count(obj) >= MY_CONF_YAML_MAX_CHILDREN) {
+      y_fail(p, l->lineno, l->indent + 1,
+             "YAML mapping size exceeds resource budget");
+      my_mem_free(p->allocator, key);
+      my_conf_destroy(val);
+      goto fail;
+    }
     if (my_conf_object_set(obj, key, val) != MY_RET_OK) {
       my_mem_free(p->allocator, key);
       my_conf_destroy(val);
@@ -777,12 +860,39 @@ static my_conf_node_t* y_seq(yaml_p_t* p, int32_t indent) {
         } else {
           mv = y_block_value(p, text + vstart, vlen, l->lineno);
         }
-        if (mv == NULL ||
-            my_conf_object_set(m, key, mv) != MY_RET_OK) {
+        if (mv == NULL) {
           my_mem_free(p->allocator, key);
           if (mv != NULL) {
             my_conf_destroy(mv);
           }
+          my_conf_destroy(m);
+          goto fail;
+        }
+        if (my_conf_child_count(m) >= MY_CONF_YAML_MAX_CHILDREN) {
+          y_fail(p, l->lineno, l->indent + 1,
+                 "YAML inline mapping size exceeds resource budget");
+          my_mem_free(p->allocator, key);
+          my_conf_destroy(mv);
+          my_conf_destroy(m);
+          goto fail;
+        }
+        {
+          size_t k;
+          for (k = 0; k < my_conf_child_count(m); k++) {
+            my_conf_node_t* child = my_conf_child(m, k);
+            if (my_conf_key(child) != NULL &&
+                strcmp(my_conf_key(child), key) == 0) {
+              y_fail(p, l->lineno, l->indent + 1, "duplicate key");
+              my_mem_free(p->allocator, key);
+              my_conf_destroy(mv);
+              my_conf_destroy(m);
+              goto fail;
+            }
+          }
+        }
+        if (my_conf_object_set(m, key, mv) != MY_RET_OK) {
+          my_mem_free(p->allocator, key);
+          my_conf_destroy(mv);
           my_conf_destroy(m);
           goto fail;
         }
@@ -841,12 +951,39 @@ static my_conf_node_t* y_seq(yaml_p_t* p, int32_t indent) {
               mv = y_block_value(p, pt + vs, vl, pl->lineno);
             }
           }
-          if (mv == NULL ||
-              my_conf_object_set(m, key, mv) != MY_RET_OK) {
+          if (mv == NULL) {
             my_mem_free(p->allocator, key);
             if (mv != NULL) {
               my_conf_destroy(mv);
             }
+            my_conf_destroy(m);
+            goto fail;
+          }
+          if (my_conf_child_count(m) >= MY_CONF_YAML_MAX_CHILDREN) {
+            y_fail(p, pl->lineno, pl->indent + 1,
+                   "YAML inline mapping size exceeds resource budget");
+            my_mem_free(p->allocator, key);
+            my_conf_destroy(mv);
+            my_conf_destroy(m);
+            goto fail;
+          }
+          {
+            size_t k;
+            for (k = 0; k < my_conf_child_count(m); k++) {
+              my_conf_node_t* child = my_conf_child(m, k);
+              if (my_conf_key(child) != NULL &&
+                  strcmp(my_conf_key(child), key) == 0) {
+                y_fail(p, pl->lineno, pl->indent + 1, "duplicate key");
+                my_mem_free(p->allocator, key);
+                my_conf_destroy(mv);
+                my_conf_destroy(m);
+                goto fail;
+              }
+            }
+          }
+          if (my_conf_object_set(m, key, mv) != MY_RET_OK) {
+            my_mem_free(p->allocator, key);
+            my_conf_destroy(mv);
             my_conf_destroy(m);
             goto fail;
           }
@@ -860,6 +997,12 @@ static my_conf_node_t* y_seq(yaml_p_t* p, int32_t indent) {
         }
       }
     }
+    if (my_conf_child_count(arr) >= MY_CONF_YAML_MAX_CHILDREN) {
+      y_fail(p, l->lineno, l->indent + 1,
+             "YAML sequence size exceeds resource budget");
+      my_conf_destroy(val);
+      goto fail;
+    }
     if (my_conf_array_push(arr, val) != MY_RET_OK) {
       my_conf_destroy(val);
       goto fail;
@@ -872,7 +1015,7 @@ fail:
 }
 
 /** @brief Block dispatcher: sequence vs mapping vs error. */
-static my_conf_node_t* y_block(yaml_p_t* p, int32_t indent) {
+static my_conf_node_t* y_block_impl(yaml_p_t* p, int32_t indent) {
   size_t ci = y_next_content(p, p->i);
   yline_t* l;
   const char* text;
@@ -887,6 +1030,19 @@ static my_conf_node_t* y_block(yaml_p_t* p, int32_t indent) {
     return y_seq(p, indent);
   }
   return y_map(p, indent);
+}
+
+static my_conf_node_t* y_block(yaml_p_t* p, int32_t indent) {
+  my_conf_node_t* result;
+  if (p->block_depth >= MY_CONF_YAML_MAX_DEPTH) {
+    y_fail(p, p->i < p->n_lines ? p->lines[p->i].lineno : 1, indent + 1,
+           "YAML nesting depth exceeds resource budget");
+    return NULL;
+  }
+  p->block_depth++;
+  result = y_block_impl(p, indent);
+  p->block_depth--;
+  return result;
 }
 
 my_conf_node_t* my_conf_parse_yaml(const my_allocator_t* allocator,

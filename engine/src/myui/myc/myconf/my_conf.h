@@ -20,6 +20,12 @@
 #include "myc/my_error.h"
 #include "myc/my_mem.h"
 
+#define MY_CONF_YAML_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_YAML_MAX_LINES 65536u
+#define MY_CONF_YAML_MAX_DEPTH 256u
+#define MY_CONF_YAML_MAX_CHILDREN 4096u
+#define MY_CONF_YAML_MAX_SCALAR_BYTES (1024u * 1024u)
+
 /** @brief Node type. */
 typedef enum my_conf_type_t {
   MY_CONF_NULL = 0,
