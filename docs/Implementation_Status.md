@@ -1727,3 +1727,11 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   采用固定范围判断，不改变生成的 UCD 类别表，也不引入逐段缓存或堆分配。
 - `test_myui_text_layout` 新增两组契约，定向结果为 `9/9`；完整 UAX#14、SA dictionary
   和复杂 numeric tailoring 仍明确记录为未完成。
+
+## myui CSS at-rule 跳过边界（2026-08-24）
+
+- 以 TDD 覆盖未知 `@` 规则中字符串、反斜杠转义、注释和嵌套 block 的大括号；后续
+  合法 rule 不再因跳过器误判深度而被吞掉。
+- 实现是单次线性扫描，仅作用于未知 at-rule 的解析冷路径；不改变 selector specificity、
+  theme bridge 或声明值的既有契约。
+- `test_myui_css` 定向结果为 `15/15`；完整 at-rule 语义仍属于未实现能力。

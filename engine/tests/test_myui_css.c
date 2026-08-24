@@ -319,6 +319,24 @@ TEST(css_comments_preserve_descendant_separator)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_unsupported_at_rules_ignore_braces_in_strings_and_comments)
+{
+  const char* css =
+      "@supports (content: \"}\") { /* } */ .ignored { color: red; } }"
+      "button { color: #123456; }";
+  my_css_error_t error;
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), &error);
+  const my_css_decl_t* decl;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  decl = my_css_decl(my_css_rule(sheet, 0), 0);
+  ASSERT_NOT_NULL(decl);
+  ASSERT_STR_EQ(decl->key, "fg_color");
+  ASSERT_EQ(my_value_get_uint32(&decl->value), 0x123456FFu);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(css_universal_selector_applies_to_any_widget);
     RUN_TEST(css_multiple_classes_match_as_a_set);
@@ -334,4 +352,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_rejects_dangling_and_repeated_combinators);
     RUN_TEST(css_rejects_adjacent_selector_tokens_without_combinator);
     RUN_TEST(css_comments_preserve_descendant_separator);
+    RUN_TEST(css_unsupported_at_rules_ignore_braces_in_strings_and_comments);
 TEST_MAIN_END()

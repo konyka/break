@@ -41,6 +41,14 @@ Emoji modifier 与 Unicode tag sequence；这些判断不分配内存，也不�
 SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于后续能力，不能将
 当前 practical subset 宣称为完整 UAX#14 实现。
 
+## CSS/XML 解析边界
+
+CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带行列号的失败；声明
+值错误保持兼容模式，告警后跳过，不污染已解析规则。未知 `@` 规则不会执行，但其
+跳过器会识别引号及反斜杠转义、块注释和嵌套大括号，避免字符串或注释中的 `}` 截断
+规则范围。该行为不等于完整 at-rule 支持，应用若需要 `@media` 等语义必须在上层
+能力注册后显式实现。
+
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
 上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、
 `myr/my_vgcanvas_break_rhi.c` 和 `src/ui/myui_break*` 中实现，避免把 Break API

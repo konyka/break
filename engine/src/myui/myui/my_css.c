@@ -546,9 +546,40 @@ static void css_rule_destroy(const my_allocator_t* allocator,
 /** @brief @rule: skip to the end of its block (or ';'). */
 static void css_skip_atrule(css_p_t* p) {
   int depth = 0;
+  char quote = '\0';
   MY_LOGW("my_css: skipping @-rule (unsupported)");
   while (c_peek(p) >= 0) {
-    int c = c_next(p);
+    int c = c_peek(p);
+    if (quote != '\0') {
+      c_next(p);
+      if (c == '\\' && c_peek(p) >= 0) {
+        c_next(p);
+      } else if (c == quote) {
+        quote = '\0';
+      }
+      continue;
+    }
+    if (c == '/' && p->pos + 1 < p->len && p->s[p->pos + 1] == '*') {
+      c_next(p);
+      c_next(p);
+      while (c_peek(p) >= 0 &&
+             !(c_peek(p) == '*' && p->pos + 1 < p->len &&
+               p->s[p->pos + 1] == '/')) {
+        c_next(p);
+      }
+      if (c_peek(p) < 0) {
+        css_fail(p, "unterminated @-rule comment");
+        return;
+      }
+      c_next(p);
+      c_next(p);
+      continue;
+    }
+    c = c_next(p);
+    if (c == '\'' || c == '"') {
+      quote = (char)c;
+      continue;
+    }
     if (c == '{') {
       depth++;
     } else if (c == '}') {
@@ -560,7 +591,9 @@ static void css_skip_atrule(css_p_t* p) {
       return;
     }
   }
-  if (depth > 0) {
+  if (quote != '\0') {
+    css_fail(p, "unterminated @-rule string");
+  } else if (depth > 0) {
     css_fail(p, "unterminated @-rule");
   }
 }
