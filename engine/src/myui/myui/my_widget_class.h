@@ -3,7 +3,7 @@
  * @brief Widget class registry: declarative tag -> create + property
  * descriptors (M24a).
  *
- * One table drives all three former hand-written mappings: the XML UI
+ * One table drives all three former hand-written mappings: the YAML UI
  * loader (my_ui_loader.c), the ui2c code generator (tools/ui2c.c) and the
  * MVVM property router (mymvvm_myui/my_widget_target.c). Built-in classes
  * are registered lazily on the first my_widget_class_find(); applications
@@ -38,7 +38,7 @@ typedef struct my_prop_desc_t {
   my_ret_t (*get)(const my_widget_t*, my_value_t*);  /**< NULL = write-only */
 } my_prop_desc_t;
 
-/** @brief A widget class: XML tag + factory + property table. */
+/** @brief A widget class: YAML type + factory + property table. */
 typedef struct my_widget_class_t {
   const char* type;                      /**< "button" ... */
   my_widget_t* (*create)(const my_allocator_t*);

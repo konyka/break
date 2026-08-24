@@ -9,7 +9,6 @@ add_library(myui STATIC
   my_animator.c
   my_window.c
   my_window_manager.c
-  my_xml.c
   my_undo_stack.c
   my_undo_manager.c
   my_ui_loader.c
@@ -39,8 +38,8 @@ add_library(myui STATIC
 target_include_directories(myui PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(myui PUBLIC myc myr mypal)
 
-if(MYUI_UI_XML)
-  target_compile_definitions(myui PUBLIC MYUI_UI_XML)
+if(MYUI_UI_YAML)
+  target_compile_definitions(myui PUBLIC MYUI_UI_YAML)
 endif()
 
 if(MYUI_IMAGE_STB)

@@ -2,8 +2,8 @@
  * @file my_widget_class.c
  * @brief Widget class registry: lookup + generic property access (M24a).
  *
- * XML-independent on purpose: this file must stay usable in
- * MYUI_UI_XML=OFF builds (ui2c-generated code relies on it).
+ * Loader-independent on purpose: this file must stay usable in
+ * MYUI_UI_YAML=OFF builds (generated code relies on it).
  */
 #include "myui/my_widget_class.h"
 

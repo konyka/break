@@ -11,7 +11,7 @@
  *    string + ordered property list).
  *
  * X row: X(tag, create_fn, create_str, PROPS_MACRO, EVENTS_MACRO)
- *  - tag:         XML tag / widget->widget_type string;
+ *  - tag:         YAML type / widget->widget_type string;
  *  - create_fn:   library-side factory adapter identifier (takes the
  *                 allocator);
  *  - create_str:  create call as a string, used by ui2c-generated code;
@@ -37,7 +37,7 @@
     label_prop_get_align)
 #define MYUI_EVENTS_LABEL(E)
 
-/* application order mirrors the former my_ui_loader make_edit */
+/* application order mirrors the former UI loader make_edit */
 #define MYUI_PROPS_EDIT(P)                                    \
   P("hint", MY_PROP_STRING, edit_prop_set_hint, NULL)         \
   P("password", MY_PROP_BOOL, edit_prop_set_password, NULL)   \
@@ -72,7 +72,7 @@
     progress_bar_prop_get_value)
 #define MYUI_EVENTS_PROGRESS_BAR(E)
 
-/* application order mirrors the former my_ui_loader make_text_area */
+/* application order mirrors the former UI loader make_text_area */
 #define MYUI_PROPS_TEXT_AREA(P)                                  \
   P("hint", MY_PROP_STRING, text_area_prop_set_hint, NULL)       \
   P("readonly", MY_PROP_BOOL, text_area_prop_set_readonly, NULL) \

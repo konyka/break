@@ -13,7 +13,7 @@ option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds
 option(MYUI_FONT_STB "TrueType fonts via stb_truetype" ON)
 option(MYUI_FONT_FREETYPE "Hinted fonts via FreeType when available" ON)
 option(MYUI_IMAGE_STB "Image decode via stb_image" ON)
-option(MYUI_UI_XML "XML UI loader" ON)
+option(MYUI_UI_YAML "YAML UI loader" ON)
 option(MYUI_BIDI "BiDi reorder + Arabic shaping via vendored SheenBidi" ON)
 option(MYUI_HARFBUZZ "Optional OpenType shaping through HarfBuzz + FreeType" ON)
 
@@ -263,7 +263,6 @@ set(MYUI_CORE_SOURCES
     src/myui/myui/my_animator.c
     src/myui/myui/my_window.c
     src/myui/myui/my_window_manager.c
-    src/myui/myui/my_xml.c
     src/myui/myui/my_undo_stack.c
     src/myui/myui/my_undo_manager.c
     src/myui/myui/my_ui_loader.c
@@ -356,8 +355,8 @@ endif()
 if(MYUI_IMAGE_STB)
     target_compile_definitions(myui_core PUBLIC MYUI_IMAGE_STB=1)
 endif()
-if(MYUI_UI_XML)
-    target_compile_definitions(myui_core PUBLIC MYUI_UI_XML=1)
+if(MYUI_UI_YAML)
+    target_compile_definitions(myui_core PUBLIC MYUI_UI_YAML=1)
 endif()
 
 target_link_libraries(myui_core PUBLIC
@@ -840,13 +839,13 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_myui_css PRIVATE myui_core m)
     add_test(NAME test_myui_css COMMAND test_myui_css)
 
-    add_executable(test_myui_xml tests/test_myui_xml.c)
-    target_include_directories(test_myui_xml PRIVATE
+    add_executable(test_myui_loader tests/test_myui_loader.c)
+    target_include_directories(test_myui_loader PRIVATE
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     )
-    target_link_libraries(test_myui_xml PRIVATE myui_core m)
-    add_test(NAME test_myui_xml COMMAND test_myui_xml)
+    target_link_libraries(test_myui_loader PRIVATE myui_core m)
+    add_test(NAME test_myui_loader COMMAND test_myui_loader)
 
     add_executable(test_myui_text_layout tests/test_myui_text_layout.c)
     target_include_directories(test_myui_text_layout PRIVATE

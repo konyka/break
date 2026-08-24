@@ -41,7 +41,7 @@ Emoji modifier 与 Unicode tag sequence；这些判断不分配内存，也不�
 SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于后续能力，不能将
 当前 practical subset 宣称为完整 UAX#14 实现。
 
-## CSS/XML 解析边界
+## CSS/YAML 解析边界
 
 CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带行列号的失败；声明
 值错误保持兼容模式，告警后跳过，不污染已解析规则。未知 `@` 规则不会执行，但其
@@ -49,22 +49,29 @@ CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带�
 规则范围。该行为不等于完整 at-rule 支持，应用若需要 `@media` 等语义必须在上层
 能力注册后显式实现。
 
-XML loader 同样拒绝结构歧义：元素属性名在同一元素内必须唯一，重复属性直接返回
-行列错误，不会由访问器静默选择第一个值。当前 XML subset 支持元素、属性、文本、
-注释、CDATA、自闭合标签和五种预定义实体；DTD、命名空间和未知实体仍明确拒绝。
-DOM 构造的元素嵌套深度上限为 `MY_XML_MAX_DEPTH=256`，超限在递归和分配前拒绝，
-把恶意深层输入的栈与节点数量成本限制在可预测范围内。为防止大属性、大文本和
-宽元素耗尽内存，名称、单个属性值、单元素文本、单元素属性数和子节点数分别限制为
-`MY_XML_MAX_NAME_BYTES=256`、`MY_XML_MAX_ATTRIBUTE_VALUE_BYTES=64 KiB`、
-`MY_XML_MAX_TEXT_BYTES=1 MiB`、`MY_XML_MAX_ATTRIBUTES_PER_ELEMENT=256` 和
-`MY_XML_MAX_CHILDREN_PER_ELEMENT=4096`。文本缓冲采用指数扩容并在扩容前检查预算；
-预算或整数溢出失败不会保留临时 DOM 节点；同一元素的文本容量跨普通文本、实体和
-CDATA 片段复用，密集实体输入保持摊销线性追加。该限制属于 XML subset 契约，不影响 CSS
-解析器的兼容跳过策略。
+YAML loader 使用统一的 `my_conf` 类型树，不引入第三方 YAML 运行库。UI 文档的根节点
+必须是 map，并包含字符串 `type`；普通属性直接作为同名键，子控件放在 `children` 数组，
+绑定放在 `bindings` map，主题放在 `style` 字符串。例如：
 
-资源预算契约由 `test_myui_xml` 覆盖，并在默认、无 Bidi、ASan/UBSan 和 Vulkan
-`myui_core` 构建配置中验证；这些是 headless/build 证据，不等价于窗口 compositor
-运行时覆盖。
+```yaml
+type: widget
+layout: linear:v:8
+children:
+  - type: label
+    text: Hello
+  - type: button
+    text: Apply
+    bindings:
+      click: apply_command
+```
+
+loader 只接受 YAML 类型匹配的值：布尔属性必须是 YAML bool，整数属性必须在 `int32_t`
+范围内，浮点属性必须有限，`children` 必须是 sequence，`bindings` 的值必须是 string。
+绑定展开到固定 512-byte 规则缓冲，超限直接失败。解析失败或 widget 构造失败不会返回
+部分构造树，也不会保留临时配置树。
+
+UI 配置不再支持 XML，`my_xml.*` 和 `test_myui_xml` 已移除；Wayland 协议生成所需的
+`.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。
 
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
 上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、
@@ -93,7 +100,7 @@ engine/
 
 | 目标 | 说明 |
 |------|------|
-| `myui_core` | myui 核心静态库，包含 font/image/xml/bidi/mvvm/widget 子系统 |
+| `myui_core` | myui 核心静态库，包含 font/image/yaml/bidi/mvvm/widget 子系统 |
 | `break_myui` | `my_pal_break` + RHI vgcanvas + `BreakUI` 桥 |
 | `dxx_core` | duanxianxia 视图构建器 |
 | `dxx_break` | Break-aware duanxianxia demo |
@@ -103,7 +110,7 @@ engine/
 | `MYUI_FONT_STB` | ON | stb_truetype 字体后端 |
 | `MYUI_FONT_FREETYPE` | ON（找到 FreeType 时） | 启用 hinting、TTC 多字面和 CJK 默认字体 |
 | `MYUI_IMAGE_STB` | ON | stb_image 解码 |
-| `MYUI_UI_XML` | ON | XML UI loader |
+| `MYUI_UI_YAML` | ON | YAML UI loader |
 | `MYUI_BIDI` | ON | 内置 SheenBidi |
 
 ## 构建与测试
@@ -317,7 +324,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |
-| CSS/XML | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator 和完整 at-rule 语义仍未实现；未知 at-rule 会跳过并告警。selector specificity、source order 和数值边界已实现 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
+| CSS/YAML UI | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator 和完整 at-rule 语义仍未实现；YAML UI loader 已采用类型化 schema。selector specificity、source order 和数值边界已实现 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 
 实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、

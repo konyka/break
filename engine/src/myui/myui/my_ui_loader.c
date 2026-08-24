@@ -1,11 +1,14 @@
 /**
  * @file my_ui_loader.c
- * @brief XML UI loader.
+ * @brief YAML UI loader.
  */
 #include "myui/my_ui_loader.h"
 
-#ifdef MYUI_UI_XML
+#ifdef MYUI_UI_YAML
 
+#include <float.h>
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,25 +18,30 @@
 #include "myui/my_layout.h"
 #include "myui/my_widget_class.h"
 
-/* ---------------- factory registry ---------------- */
-
 #define MY_UI_MAX_FACTORIES 32
+#define MY_UI_MAX_BIND_RULE_BYTES 512
 
 typedef struct ui_factory_entry_t {
-  char tag[24];
+  char type[24];
   my_ui_factory_fn_t factory;
 } ui_factory_entry_t;
 
 static ui_factory_entry_t g_factories[MY_UI_MAX_FACTORIES];
-static size_t g_factory_count = 0;
+static size_t g_factory_count;
 
-my_ret_t my_ui_loader_register(const char* tag, my_ui_factory_fn_t factory) {
+static void ui_fail(my_ui_error_t* err, const char* message) {
+  if (err != NULL && err->message[0] == '\0') {
+    snprintf(err->message, sizeof(err->message), "%s", message);
+  }
+}
+
+my_ret_t my_ui_loader_register(const char* type, my_ui_factory_fn_t factory) {
   size_t i;
-  if (tag == NULL || factory == NULL || strlen(tag) >= 24) {
+  if (type == NULL || factory == NULL || strlen(type) >= sizeof(g_factories[0].type)) {
     return MY_RET_INVALID_PARAMS;
   }
   for (i = 0; i < g_factory_count; i++) {
-    if (my_str_eq(g_factories[i].tag, tag)) {
+    if (my_str_eq(g_factories[i].type, type)) {
       g_factories[i].factory = factory;
       return MY_RET_OK;
     }
@@ -41,220 +49,283 @@ my_ret_t my_ui_loader_register(const char* tag, my_ui_factory_fn_t factory) {
   if (g_factory_count >= MY_UI_MAX_FACTORIES) {
     return MY_RET_OOM;
   }
-  strncpy(g_factories[g_factory_count].tag, tag, 23);
+  snprintf(g_factories[g_factory_count].type, sizeof(g_factories[0].type), "%s", type);
   g_factories[g_factory_count].factory = factory;
   g_factory_count++;
   return MY_RET_OK;
 }
 
-static my_ui_factory_fn_t find_factory(const char* tag) {
+static my_ui_factory_fn_t find_factory(const char* type) {
   size_t i;
   for (i = 0; i < g_factory_count; i++) {
-    if (my_str_eq(g_factories[i].tag, tag)) {
+    if (my_str_eq(g_factories[i].type, type)) {
       return g_factories[i].factory;
     }
   }
   return NULL;
 }
 
-/* ---------------- attribute helpers ---------------- */
-
-static int32_t attr_int(const my_xml_node_t* node, const char* name,
-                        int32_t fallback) {
-  const char* s = my_xml_node_attr(node, name);
-  return s != NULL ? (int32_t)strtol(s, NULL, 10) : fallback;
-}
-
-static bool attr_bool(const my_xml_node_t* node, const char* name,
-                      bool fallback) {
-  const char* s = my_xml_node_attr(node, name);
-  if (s == NULL) {
-    return fallback;
-  }
-  return my_str_eq(s, "true") || my_str_eq(s, "1");
-}
-
-/* ---------------- built-in widget classes (M24a) ---------------- */
-
-/**
- * @brief Apply the class property table to a freshly created widget:
- * properties are applied in table row order, each only when the XML node
- * carries a same-named attribute (mirrors the former make_* factories).
- */
-static void apply_class_props(my_widget_t* widget,
-                              const my_widget_class_t* cls,
-                              const my_xml_node_t* node) {
-  const my_prop_desc_t* p;
-  if (cls->props == NULL) {
-    return;
-  }
-  for (p = cls->props; p->name != NULL; p++) {
-    const char* s = my_xml_node_attr(node, p->name);
-    my_value_t v;
-    if (s == NULL || p->set == NULL) {
-      continue;
-    }
-    my_value_init(&v, ((my_object_t*)widget)->allocator);
-    switch (p->type) {
-      case MY_PROP_STRING:
-        my_value_set_str(&v, s);
-        break;
-      case MY_PROP_INT:
-        my_value_set_int32(&v, (int32_t)strtol(s, NULL, 10));
-        break;
-      case MY_PROP_FLOAT:
-        my_value_set_float(&v, strtof(s, NULL));
-        break;
-      case MY_PROP_BOOL:
-        my_value_set_bool(&v, my_str_eq(s, "true") || my_str_eq(s, "1"));
-        break;
-      default:
-        break;
-    }
-    p->set(widget, &v);
-    my_value_reset(&v);
-  }
-}
-
-/* ---------------- generic attribute application ---------------- */
-
-static my_ret_t apply_common(my_widget_t* widget, const my_xml_node_t* node,
-                             my_ui_error_t* err) {
-  const char* name = my_xml_node_attr(node, "name");
-  const char* lp = my_xml_node_attr(node, "lp");
-  const char* layout = my_xml_node_attr(node, "layout");
+static const my_conf_node_t* object_value(const my_conf_node_t* object,
+                                          const char* key) {
   size_t i;
-  char rules[512];
-  size_t rules_len = 0;
+  if (my_conf_type(object) != MY_CONF_OBJECT) {
+    return NULL;
+  }
+  for (i = 0; i < my_conf_child_count(object); i++) {
+    my_conf_node_t* child = my_conf_child(object, i);
+    if (my_str_eq(my_conf_key(child), key)) {
+      return child;
+    }
+  }
+  return NULL;
+}
 
-  if (name != NULL) {
-    my_widget_set_name(widget, name);
+static bool value_int32(const my_conf_node_t* node, int32_t fallback,
+                        int32_t* out) {
+  int64_t value;
+  if (node == NULL) {
+    *out = fallback;
+    return true;
   }
-  my_widget_set_rect(widget, &(my_rect_t){attr_int(node, "x", 0),
-                                          attr_int(node, "y", 0),
-                                          attr_int(node, "w", 0),
-                                          attr_int(node, "h", 0)});
-  if (my_xml_node_attr(node, "visible") != NULL) {
-    my_widget_set_visible(widget, attr_bool(node, "visible", true));
+  if (my_conf_type(node) != MY_CONF_INT64) {
+    return false;
   }
-  if (my_xml_node_attr(node, "enable") != NULL) {
-    widget->enable = attr_bool(node, "enable", true);
+  value = my_conf_as_int64(node, 0);
+  if (value < INT32_MIN || value > INT32_MAX) {
+    return false;
   }
-  if (my_xml_node_attr(node, "tooltip") != NULL) {
-    my_widget_set_tooltip(widget, my_xml_node_attr(node, "tooltip"));
-  }
-  if (my_xml_node_attr(node, "class") != NULL) {
-    my_widget_set_style_class(widget, my_xml_node_attr(node, "class"));
-  }
-  if (lp != NULL &&
-      my_widget_set_layout_params(widget, lp) != MY_RET_OK) {
-    if (err != NULL) {
-      err->line = node->line;
-      snprintf(err->message, sizeof(err->message), "bad lp: %s", lp);
-    }
-    return MY_RET_FAIL;
-  }
-  if (layout != NULL && strncmp(layout, "linear:", 7) == 0) {
-    bool horizontal = layout[7] == 'h';
-    int32_t spacing = 0;
-    const char* colon = strchr(layout + 7, ':');
-    if (colon != NULL) {
-      spacing = (int32_t)strtol(colon + 1, NULL, 10);
-    }
-    my_widget_set_layouter(widget,
-                           my_layouter_linear_create(NULL, horizontal, spacing));
-  }
+  *out = (int32_t)value;
+  return true;
+}
 
-  /* collect v:* attributes into bind_rules (";" separated) */
-  rules[0] = '\0';
-  for (i = 0; i < node->attr_count; i++) {
-    const char* an = node->attrs[i].name;
-    const char* av = node->attrs[i].value;
-    size_t need;
-    if (strncmp(an, "v:", 2) != 0) {
-      continue;
-    }
-    need = strlen(an) + 1 + strlen(av) + 1; /* "name=value;" */
-    if (rules_len + need >= sizeof(rules)) {
-      if (err != NULL) {
-        err->line = node->line;
-        snprintf(err->message, sizeof(err->message), "bind rules too long");
-      }
+static bool value_bool(const my_conf_node_t* node, bool fallback, bool* out) {
+  if (node == NULL) {
+    *out = fallback;
+    return true;
+  }
+  if (my_conf_type(node) != MY_CONF_BOOL) {
+    return false;
+  }
+  *out = my_conf_as_bool(node, fallback);
+  return true;
+}
+
+static my_ret_t set_typed_property(my_widget_t* widget,
+                                   const my_prop_desc_t* prop,
+                                   const my_conf_node_t* node) {
+  my_value_t value;
+  my_ret_t ret = MY_RET_FAIL;
+  my_value_init(&value, ((my_object_t*)widget)->allocator);
+  if (prop->type == MY_PROP_STRING && my_conf_type(node) == MY_CONF_STR) {
+    ret = my_value_set_str(&value, my_conf_as_str(node, NULL));
+  } else if (prop->type == MY_PROP_INT && my_conf_type(node) == MY_CONF_INT64) {
+    int64_t number = my_conf_as_int64(node, 0);
+    ret = number >= INT32_MIN && number <= INT32_MAX
+              ? my_value_set_int32(&value, (int32_t)number)
+              : MY_RET_FAIL;
+  } else if (prop->type == MY_PROP_FLOAT &&
+             (my_conf_type(node) == MY_CONF_INT64 ||
+              my_conf_type(node) == MY_CONF_DOUBLE)) {
+    double number = my_conf_type(node) == MY_CONF_INT64
+                        ? (double)my_conf_as_int64(node, 0)
+                        : my_conf_as_double(node, 0.0);
+    ret = isfinite(number) && number >= -FLT_MAX && number <= FLT_MAX
+              ? my_value_set_float(&value, (float)number)
+              : MY_RET_FAIL;
+  } else if (prop->type == MY_PROP_BOOL && my_conf_type(node) == MY_CONF_BOOL) {
+    ret = my_value_set_bool(&value, my_conf_as_bool(node, false));
+  }
+  if (ret == MY_RET_OK) {
+    ret = prop->set(widget, &value);
+  }
+  my_value_reset(&value);
+  return ret;
+}
+
+static my_ret_t apply_class_props(my_widget_t* widget,
+                                  const my_widget_class_t* cls,
+                                  const my_conf_node_t* node,
+                                  my_ui_error_t* err) {
+  const my_prop_desc_t* prop;
+  if (cls->props == NULL) {
+    return MY_RET_OK;
+  }
+  for (prop = cls->props; prop->name != NULL; prop++) {
+    const my_conf_node_t* value = object_value(node, prop->name);
+    if (value != NULL && prop->set != NULL &&
+        set_typed_property(widget, prop, value) != MY_RET_OK) {
+      ui_fail(err, "invalid typed widget property");
       return MY_RET_FAIL;
     }
-    rules_len += (size_t)snprintf(rules + rules_len, sizeof(rules) - rules_len,
-                                  "%s=%s;", an, av);
-  }
-  if (rules_len > 0) {
-    my_widget_set_bind_rules(widget, rules);
   }
   return MY_RET_OK;
 }
 
-/* ---------------- recursive build ---------------- */
+static my_ret_t apply_bindings(my_widget_t* widget, const my_conf_node_t* node,
+                               my_ui_error_t* err) {
+  const my_conf_node_t* bindings = object_value(node, "bindings");
+  char rules[MY_UI_MAX_BIND_RULE_BYTES];
+  size_t used = 0;
+  size_t i;
+  if (bindings == NULL) {
+    return MY_RET_OK;
+  }
+  if (my_conf_type(bindings) != MY_CONF_OBJECT) {
+    ui_fail(err, "bindings must be a map");
+    return MY_RET_FAIL;
+  }
+  for (i = 0; i < my_conf_child_count(bindings); i++) {
+    my_conf_node_t* value = my_conf_child(bindings, i);
+    const char* key = my_conf_key(value);
+    const char* text;
+    int wrote;
+    if (key == NULL || my_conf_type(value) != MY_CONF_STR) {
+      ui_fail(err, "binding values must be strings");
+      return MY_RET_FAIL;
+    }
+    text = my_conf_as_str(value, NULL);
+    wrote = snprintf(rules + used, sizeof(rules) - used, "v:%s=%s;", key, text);
+    if (wrote < 0 || (size_t)wrote >= sizeof(rules) - used) {
+      ui_fail(err, "bind rules too long");
+      return MY_RET_FAIL;
+    }
+    used += (size_t)wrote;
+  }
+  return used == 0 ? MY_RET_OK : my_widget_set_bind_rules(widget, rules);
+}
+
+static my_ret_t apply_common(my_widget_t* widget, const my_conf_node_t* node,
+                             my_ui_error_t* err) {
+  const my_conf_node_t* value;
+  const char* text;
+  int32_t x, y, w, h;
+  bool visible, enable;
+  if (my_conf_type(node) != MY_CONF_OBJECT ||
+      !value_int32(object_value(node, "x"), 0, &x) ||
+      !value_int32(object_value(node, "y"), 0, &y) ||
+      !value_int32(object_value(node, "w"), 0, &w) ||
+      !value_int32(object_value(node, "h"), 0, &h) ||
+      !value_bool(object_value(node, "visible"), true, &visible) ||
+      !value_bool(object_value(node, "enable"), true, &enable)) {
+    ui_fail(err, "invalid common widget property");
+    return MY_RET_FAIL;
+  }
+  value = object_value(node, "name");
+  if (value != NULL) {
+    if (my_conf_type(value) != MY_CONF_STR) {
+      ui_fail(err, "name must be a string");
+      return MY_RET_FAIL;
+    }
+    my_widget_set_name(widget, my_conf_as_str(value, NULL));
+  }
+  my_widget_set_rect(widget, &(my_rect_t){x, y, w, h});
+  my_widget_set_visible(widget, visible);
+  widget->enable = enable;
+  value = object_value(node, "tooltip");
+  if (value != NULL) {
+    if (my_conf_type(value) != MY_CONF_STR) {
+      ui_fail(err, "tooltip must be a string");
+      return MY_RET_FAIL;
+    }
+    my_widget_set_tooltip(widget, my_conf_as_str(value, NULL));
+  }
+  value = object_value(node, "class");
+  if (value != NULL) {
+    if (my_conf_type(value) != MY_CONF_STR) {
+      ui_fail(err, "class must be a string");
+      return MY_RET_FAIL;
+    }
+    my_widget_set_style_class(widget, my_conf_as_str(value, NULL));
+  }
+  value = object_value(node, "lp");
+  if (value != NULL && (my_conf_type(value) != MY_CONF_STR ||
+                        my_widget_set_layout_params(widget,
+                            my_conf_as_str(value, NULL)) != MY_RET_OK)) {
+    ui_fail(err, "invalid lp");
+    return MY_RET_FAIL;
+  }
+  value = object_value(node, "layout");
+  if (value != NULL) {
+    if (my_conf_type(value) != MY_CONF_STR) {
+      ui_fail(err, "layout must be a string");
+      return MY_RET_FAIL;
+    }
+    text = my_conf_as_str(value, NULL);
+    if (strncmp(text, "linear:", 7) == 0) {
+      bool horizontal = text[7] == 'h';
+      int32_t spacing = 0;
+      const char* colon = strchr(text + 7, ':');
+      if (colon != NULL) {
+        spacing = (int32_t)strtol(colon + 1, NULL, 10);
+      }
+      my_widget_set_layouter(widget,
+                             my_layouter_linear_create(NULL, horizontal, spacing));
+    }
+  }
+  return apply_bindings(widget, node, err);
+}
 
 static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
-                               const my_xml_node_t* node, my_ui_error_t* err);
+                               const my_conf_node_t* node, my_ui_error_t* err);
 
-static my_widget_t* build_children(const my_allocator_t* allocator,
-                                   my_pal_t* pal, my_widget_t* parent,
-                                   const my_xml_node_t* node,
+static my_widget_t* build_children(const my_allocator_t* allocator, my_pal_t* pal,
+                                   my_widget_t* parent, const my_conf_node_t* node,
                                    my_ui_error_t* err) {
+  const my_conf_node_t* children = object_value(node, "children");
   size_t i;
-  for (i = 0; i < node->child_count; i++) {
-    const my_xml_node_t* child = my_xml_node_child(node, i);
-    my_widget_t* w;
-    if (my_str_eq(child->name, "style")) {
-      continue; /* handled at window level */
-    }
-    w = build_node(allocator, pal, child, err);
-    if (w == NULL) {
+  if (children == NULL) {
+    return parent;
+  }
+  if (my_conf_type(children) != MY_CONF_ARRAY) {
+    ui_fail(err, "children must be a sequence");
+    return NULL;
+  }
+  for (i = 0; i < my_conf_child_count(children); i++) {
+    my_widget_t* child = build_node(allocator, pal, my_conf_child(children, i), err);
+    if (child == NULL) {
       return NULL;
     }
-    my_widget_add_child(parent, w);
-    my_widget_unref(w);
+    if (my_widget_add_child(parent, child) != MY_RET_OK) {
+      my_widget_unref(child);
+      ui_fail(err, "failed to attach child widget");
+      return NULL;
+    }
+    my_widget_unref(child);
   }
   return parent;
 }
 
 static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
-                               const my_xml_node_t* node, my_ui_error_t* err) {
-  my_widget_t* widget;
+                               const my_conf_node_t* node, my_ui_error_t* err) {
+  const my_conf_node_t* type_node;
+  const char* type;
+  const my_widget_class_t* cls;
   my_ui_factory_fn_t factory;
+  my_widget_t* widget;
   (void)pal;
-
-  if (my_str_eq(node->name, "window")) {
-    if (err != NULL) {
-      err->line = node->line;
-      snprintf(err->message, sizeof(err->message),
-               "<window> only allowed as root");
-    }
+  if (my_conf_type(node) != MY_CONF_OBJECT ||
+      (type_node = object_value(node, "type")) == NULL ||
+      my_conf_type(type_node) != MY_CONF_STR) {
+    ui_fail(err, "widget requires a string type");
     return NULL;
   }
-  /* custom-registered factories take precedence; built-in tags are
-   * created through the widget class table (M24a) */
-  factory = find_factory(node->name);
+  type = my_conf_as_str(type_node, NULL);
+  if (my_str_eq(type, "window")) {
+    ui_fail(err, "window is only allowed as root");
+    return NULL;
+  }
+  factory = find_factory(type);
+  cls = factory == NULL ? my_widget_class_find(type) : NULL;
   if (factory != NULL) {
     widget = factory(allocator, node);
-  } else {
-    const my_widget_class_t* cls = my_widget_class_find(node->name);
-    if (cls == NULL) {
-      if (err != NULL) {
-        err->line = node->line;
-        snprintf(err->message, sizeof(err->message), "unknown tag <%s>",
-                 node->name);
-      }
-      return NULL;
-    }
+  } else if (cls != NULL) {
     widget = cls->create(allocator);
-    if (widget != NULL) {
-      apply_class_props(widget, cls, node);
-    }
-  }
-  if (widget == NULL) {
+  } else {
+    ui_fail(err, "unknown widget type");
     return NULL;
   }
-  if (apply_common(widget, node, err) != MY_RET_OK ||
+  if (widget == NULL || (cls != NULL && apply_class_props(widget, cls, node, err) != MY_RET_OK) ||
+      apply_common(widget, node, err) != MY_RET_OK ||
       build_children(allocator, pal, widget, node, err) == NULL) {
     my_widget_unref(widget);
     return NULL;
@@ -262,116 +333,112 @@ static my_widget_t* build_node(const my_allocator_t* allocator, my_pal_t* pal,
   return widget;
 }
 
-static void apply_style_children(my_window_t* win, const my_xml_node_t* root) {
-  size_t i;
-  for (i = 0; i < root->child_count; i++) {
-    const my_xml_node_t* child = my_xml_node_child(root, i);
-    if (my_str_eq(child->name, "style") && child->text != NULL &&
-        win->theme != NULL) {
-      /* M18b: a <style> block containing '{' is CSS (my_theme_load_css);
-       * otherwise the legacy text format. Both coexist. */
-      if (strchr(child->text, '{') != NULL) {
-        my_theme_load_css(win->theme, child->text);
-      } else {
-        my_theme_load_str(win->theme, child->text);
-      }
-    }
+static void apply_style(my_window_t* window, const my_conf_node_t* root) {
+  const my_conf_node_t* style = object_value(root, "style");
+  const char* text;
+  if (style == NULL || my_conf_type(style) != MY_CONF_STR || window->theme == NULL) {
+    return;
+  }
+  text = my_conf_as_str(style, NULL);
+  if (strchr(text, '{') != NULL) {
+    my_theme_load_css(window->theme, text);
+  } else {
+    my_theme_load_str(window->theme, text);
   }
 }
 
 my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
-                            const char* xml_str, my_ui_error_t* err) {
-  my_xml_doc_t* doc;
-  my_xml_error_t xerr;
-  my_widget_t* result = NULL;
-
-  if (xml_str == NULL) {
+                            const char* yaml_str, my_ui_error_t* err) {
+  my_conf_error_t yaml_error;
+  my_conf_node_t* root;
+  const my_conf_node_t* type_node;
+  my_widget_t* result;
+  if (err != NULL) {
+    memset(err, 0, sizeof(*err));
+  }
+  if (yaml_str == NULL || strlen(yaml_str) > MY_UI_MAX_YAML_BYTES) {
+    ui_fail(err, "YAML input exceeds resource budget");
     return NULL;
   }
-  doc = my_xml_parse(allocator, xml_str, &xerr);
-  if (doc == NULL) {
+  root = my_conf_parse_yaml(allocator, yaml_str, strlen(yaml_str), &yaml_error);
+  if (root == NULL) {
     if (err != NULL) {
-      err->line = xerr.line;
-      snprintf(err->message, sizeof(err->message), "xml: %s (col %d)",
-               xerr.message, xerr.col);
+      err->line = yaml_error.line;
+      snprintf(err->message, sizeof(err->message), "yaml: %.70s (col %d)",
+               yaml_error.msg, yaml_error.col);
     }
     return NULL;
   }
-
-  if (my_str_eq(doc->root->name, "window")) {
-    my_window_t* win;
-    if (pal == NULL) {
-      if (err != NULL) {
-        err->line = doc->root->line;
-        snprintf(err->message, sizeof(err->message),
-                 "<window> root requires a pal");
-      }
-      my_xml_doc_destroy(doc);
+  type_node = object_value(root, "type");
+  if (type_node != NULL && my_conf_type(type_node) == MY_CONF_STR &&
+      my_str_eq(my_conf_as_str(type_node, NULL), "window")) {
+    int32_t width, height;
+    const my_conf_node_t* title = object_value(root, "title");
+    my_window_t* window;
+    if (pal == NULL || !value_int32(object_value(root, "w"), 640, &width) ||
+        !value_int32(object_value(root, "h"), 480, &height) ||
+        (title != NULL && my_conf_type(title) != MY_CONF_STR)) {
+      ui_fail(err, "window requires pal, integer size, and string title");
+      my_conf_destroy(root);
       return NULL;
     }
-    win = my_window_create(allocator, pal, attr_int(doc->root, "w", 640),
-                           attr_int(doc->root, "h", 480),
-                           my_xml_node_attr(doc->root, "title"));
-    if (win != NULL) {
-      if (apply_common((my_widget_t*)win, doc->root, err) != MY_RET_OK ||
-          build_children(allocator, pal, (my_widget_t*)win, doc->root, err) ==
-              NULL) {
-        my_widget_unref((my_widget_t*)win);
-        win = NULL;
-      } else {
-        apply_style_children(win, doc->root);
-      }
+    window = my_window_create(allocator, pal, width, height,
+                              title != NULL ? my_conf_as_str(title, NULL) : NULL);
+    result = (my_widget_t*)window;
+    if (window != NULL && (apply_common(result, root, err) != MY_RET_OK ||
+                           build_children(allocator, pal, result, root, err) == NULL)) {
+      my_widget_unref(result);
+      result = NULL;
+    } else if (window != NULL) {
+      apply_style(window, root);
     }
-    result = (my_widget_t*)win;
   } else {
-    result = build_node(allocator, pal, doc->root, err);
+    result = build_node(allocator, pal, root, err);
   }
-  my_xml_doc_destroy(doc);
+  my_conf_destroy(root);
   return result;
 }
 
 my_widget_t* my_ui_load_file(const my_allocator_t* allocator, my_pal_t* pal,
                              const char* path, my_ui_error_t* err) {
-  FILE* f;
+  FILE* file;
   long size;
-  char* buf;
+  char* buffer;
   my_widget_t* result;
-  if (path == NULL) {
+  if (path == NULL || (file = fopen(path, "rb")) == NULL ||
+      fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) < 0 ||
+      fseek(file, 0, SEEK_SET) != 0) {
+    if (file != NULL) {
+      fclose(file);
+    }
     return NULL;
   }
-  f = fopen(path, "rb");
-  if (f == NULL) {
+  buffer = (char*)my_mem_alloc(allocator, (size_t)size + 1u);
+  if (buffer == NULL || fread(buffer, 1, (size_t)size, file) != (size_t)size) {
+    fclose(file);
+    my_mem_free(allocator, buffer);
     return NULL;
   }
-  fseek(f, 0, SEEK_END);
-  size = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  buf = (char*)my_mem_alloc(allocator, (size_t)size + 1);
-  if (buf == NULL || fread(buf, 1, (size_t)size, f) != (size_t)size) {
-    fclose(f);
-    my_mem_free(allocator, buf);
-    return NULL;
-  }
-  fclose(f);
-  buf[size] = '\0';
-  result = my_ui_load_str(allocator, pal, buf, err);
-  my_mem_free(allocator, buf);
+  fclose(file);
+  buffer[size] = '\0';
+  result = my_ui_load_str(allocator, pal, buffer, err);
+  my_mem_free(allocator, buffer);
   return result;
 }
 
-#else /* !MYUI_UI_XML */
+#else
 
-my_ret_t my_ui_loader_register(const char* tag, my_ui_factory_fn_t factory) {
-  (void)tag;
+my_ret_t my_ui_loader_register(const char* type, my_ui_factory_fn_t factory) {
+  (void)type;
   (void)factory;
   return MY_RET_NOT_SUPPORTED;
 }
 
 my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
-                            const char* xml_str, my_ui_error_t* err) {
+                            const char* yaml_str, my_ui_error_t* err) {
   (void)allocator;
   (void)pal;
-  (void)xml_str;
+  (void)yaml_str;
   (void)err;
   return NULL;
 }
@@ -385,4 +452,4 @@ my_widget_t* my_ui_load_file(const my_allocator_t* allocator, my_pal_t* pal,
   return NULL;
 }
 
-#endif /* MYUI_UI_XML */
+#endif

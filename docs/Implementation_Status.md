@@ -1736,23 +1736,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   theme bridge 或声明值的既有契约。
 - `test_myui_css` 定向结果为 `15/15`；完整 at-rule 语义仍属于未实现能力。
 
-## myui XML 属性一致性（2026-08-24）
+## myui YAML UI loader（2026-08-24）
 
-- 以 TDD 新增 `test_myui_xml`，重复属性在 DOM 构造前拒绝，避免配置值出现
-  first-value-wins 歧义。
-- 属性查重使用当前节点已有属性的线性扫描，无额外集合分配；XML 属性数量通常很小，
-  以更低常态内存换取确定性校验。
-- `test_myui_xml` 定向结果为 `3/3`；实体、CDATA、未引用属性和 root 尾部内容回归均通过。
-- 同轮补充 `MY_XML_MAX_DEPTH=256`：边界深度接受，超限深度在节点分配前拒绝；XML 定向
-  测试现为 `4/4`。
-
-## myui XML 资源预算（2026-08-24）
-
-- 以 TDD 覆盖属性值和文本超限、单元素属性数及子节点数超限；预算检查先于扩容，
-  失败时释放临时属性值和未挂入父节点的子树。
-- 固定预算为：名称 256 bytes、单属性值 64 KiB、单元素文本 1 MiB、属性数 256、
-  子节点数 4096；结束标签名称同样执行名称预算。
-- 文本/属性缓冲从线性 `realloc` 改为指数扩容并封顶于预算，实体密集文本不再产生
-  O(n²) 扩容成本；保留 `size_t` 溢出保护。
-- `test_myui_xml` 定向结果为 `9/9`；默认 myui 10/10、无 Bidi XML 9/9、ASan/UBSan
-  XML 8/8 和 Vulkan `myui_core` 构建均通过；未宣称 compositor 运行时验证。
+- 以 TDD 新增 `test_myui_loader`，YAML 根对象使用 `type`，普通控件属性采用类型化
+  标量，子控件使用 `children` sequence，绑定使用 `bindings` map，主题使用 `style`。
+- loader 直接消费 `my_conf` YAML tree，整数执行 `int32_t` 范围校验，浮点拒绝非有限值，
+  children/bindings 容器类型错误、绑定规则超限和 XML 输入均拒绝。
+- 已删除 UI XML parser、XML loader 编译选项和 `test_myui_xml`；Wayland 协议 XML 文件
+  仍由平台协议生成流程使用，不属于 UI 配置支持。
+- `test_myui_loader` 定向结果为 `6/6`；默认 myui 10/10、无 Bidi loader 6/6、
+  ASan/UBSan loader 6/6、Vulkan `myui_core` 构建和 YAML OFF 裁剪构建均通过。
