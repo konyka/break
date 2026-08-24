@@ -209,6 +209,16 @@ static my_ret_t node_add_attr(parser_t* ps, my_xml_node_t* node, char* name,
   return MY_RET_OK;
 }
 
+static bool node_has_attr(const my_xml_node_t* node, const char* name) {
+  size_t i;
+  for (i = 0; i < node->attr_count; i++) {
+    if (my_str_eq(node->attrs[i].name, name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err);
 static void free_node(parser_t* ps, my_xml_node_t* node);
 
@@ -322,6 +332,12 @@ static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err) {
       if (parse_attr_value(ps, &value) != MY_RET_OK) {
         my_mem_free(ps->allocator, name);
         *out_err = MY_RET_FAIL;
+        return node;
+      }
+      if (node_has_attr(node, name)) {
+        my_mem_free(ps->allocator, name);
+        my_mem_free(ps->allocator, value);
+        *out_err = fail(ps, "duplicate attribute");
         return node;
       }
       if (node_add_attr(ps, node, name, value) != MY_RET_OK) {

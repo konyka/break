@@ -49,6 +49,10 @@ CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带�
 规则范围。该行为不等于完整 at-rule 支持，应用若需要 `@media` 等语义必须在上层
 能力注册后显式实现。
 
+XML loader 同样拒绝结构歧义：元素属性名在同一元素内必须唯一，重复属性直接返回
+行列错误，不会由访问器静默选择第一个值。当前 XML subset 支持元素、属性、文本、
+注释、CDATA、自闭合标签和五种预定义实体；DTD、命名空间和未知实体仍明确拒绝。
+
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
 上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、
 `myr/my_vgcanvas_break_rhi.c` 和 `src/ui/myui_break*` 中实现，避免把 Break API

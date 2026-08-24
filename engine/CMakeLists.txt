@@ -840,6 +840,14 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_myui_css PRIVATE myui_core m)
     add_test(NAME test_myui_css COMMAND test_myui_css)
 
+    add_executable(test_myui_xml tests/test_myui_xml.c)
+    target_include_directories(test_myui_xml PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_xml PRIVATE myui_core m)
+    add_test(NAME test_myui_xml COMMAND test_myui_xml)
+
     add_executable(test_myui_text_layout tests/test_myui_text_layout.c)
     target_include_directories(test_myui_text_layout PRIVATE
         ${TEST_INCLUDE_DIRS}

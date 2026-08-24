@@ -1735,3 +1735,11 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 实现是单次线性扫描，仅作用于未知 at-rule 的解析冷路径；不改变 selector specificity、
   theme bridge 或声明值的既有契约。
 - `test_myui_css` 定向结果为 `15/15`；完整 at-rule 语义仍属于未实现能力。
+
+## myui XML 属性一致性（2026-08-24）
+
+- 以 TDD 新增 `test_myui_xml`，重复属性在 DOM 构造前拒绝，避免配置值出现
+  first-value-wins 歧义。
+- 属性查重使用当前节点已有属性的线性扫描，无额外集合分配；XML 属性数量通常很小，
+  以更低常态内存换取确定性校验。
+- `test_myui_xml` 定向结果为 `3/3`；实体、CDATA、未引用属性和 root 尾部内容回归均通过。

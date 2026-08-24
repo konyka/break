@@ -17,6 +17,8 @@
 - 未知 CSS `@` 规则仍按兼容策略跳过，但跳过器现在能正确处理字符串转义、注释和嵌套
   block 的大括号，不会吞掉后续合法规则；结构错误仍硬失败，声明值错误仍按既有
   lenient 规则告警并跳过。
+- XML subset 现在拒绝重复属性，避免 `my_xml_node_attr()` 的 first-value-wins 歧义；
+  实体、CDATA、未引用属性和 root 尾部内容继续按结构契约校验。
 - CSS 数值输入的有限值、整数范围和颜色 alpha 边界检查。
 - UAX#14 实用子集的上下文规则：combining mark、数字标点、Unicode 数字小数分隔符、
   Hebrew quotes 和 Regional Indicator；新增
@@ -69,7 +71,7 @@
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
-| 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现；未知 at-rule 的结构化跳过已增强 | 解析器静默接受错误、运行期主题污染 | capability registry、strict diagnostics、AST/bridge 回滚测试 |
+| 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现；未知 at-rule 的结构化跳过和 XML 重复属性拒绝已实现 | 解析器静默接受错误、运行期主题污染 | capability registry、strict diagnostics、AST/bridge 回滚测试 |
 | 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
 
 ### 冷却按钮契约
