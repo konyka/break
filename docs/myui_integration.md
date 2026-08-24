@@ -53,7 +53,18 @@ XML loader 同样拒绝结构歧义：元素属性名在同一元素内必须唯
 行列错误，不会由访问器静默选择第一个值。当前 XML subset 支持元素、属性、文本、
 注释、CDATA、自闭合标签和五种预定义实体；DTD、命名空间和未知实体仍明确拒绝。
 DOM 构造的元素嵌套深度上限为 `MY_XML_MAX_DEPTH=256`，超限在递归和分配前拒绝，
-把恶意深层输入的栈与节点数量成本限制在可预测范围内。
+把恶意深层输入的栈与节点数量成本限制在可预测范围内。为防止大属性、大文本和
+宽元素耗尽内存，名称、单个属性值、单元素文本、单元素属性数和子节点数分别限制为
+`MY_XML_MAX_NAME_BYTES=256`、`MY_XML_MAX_ATTRIBUTE_VALUE_BYTES=64 KiB`、
+`MY_XML_MAX_TEXT_BYTES=1 MiB`、`MY_XML_MAX_ATTRIBUTES_PER_ELEMENT=256` 和
+`MY_XML_MAX_CHILDREN_PER_ELEMENT=4096`。文本缓冲采用指数扩容并在扩容前检查预算；
+预算或整数溢出失败不会保留临时 DOM 节点；同一元素的文本容量跨普通文本、实体和
+CDATA 片段复用，密集实体输入保持摊销线性追加。该限制属于 XML subset 契约，不影响 CSS
+解析器的兼容跳过策略。
+
+资源预算契约由 `test_myui_xml` 覆盖，并在默认、无 Bidi、ASan/UBSan 和 Vulkan
+`myui_core` 构建配置中验证；这些是 headless/build 证据，不等价于窗口 compositor
+运行时覆盖。
 
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
 上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、

@@ -15,6 +15,11 @@
 #include "myc/my_mem.h"
 
 #define MY_XML_MAX_DEPTH 256
+#define MY_XML_MAX_NAME_BYTES 256
+#define MY_XML_MAX_ATTRIBUTE_VALUE_BYTES (64u * 1024u)
+#define MY_XML_MAX_TEXT_BYTES (1024u * 1024u)
+#define MY_XML_MAX_ATTRIBUTES_PER_ELEMENT 256
+#define MY_XML_MAX_CHILDREN_PER_ELEMENT 4096
 
 /** @brief One attribute (name/value, both owned). */
 typedef struct my_xml_attr_t {

@@ -4,6 +4,7 @@
  */
 #include "myui/my_xml.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -59,6 +60,10 @@ static char* parse_name(parser_t* ps) {
     ps->p++;
   }
   len = (size_t)(ps->p - start);
+  if (len > MY_XML_MAX_NAME_BYTES) {
+    fail(ps, "XML name exceeds resource budget");
+    return NULL;
+  }
   return my_strndup(ps->allocator, start, len);
 }
 
@@ -67,16 +72,40 @@ static bool starts_with(parser_t* ps, const char* prefix) {
 }
 
 /** @brief Append text to a growable owned buffer. */
-static my_ret_t text_append(parser_t* ps, char** buf, const char* s,
-                            size_t len) {
-  size_t old = *buf != NULL ? strlen(*buf) : 0;
-  char* p = (char*)my_mem_realloc(ps->allocator, *buf, old + len + 1);
-  if (p == NULL) {
-    return MY_RET_OOM;
+static my_ret_t text_append(parser_t* ps, char** buf, size_t* used,
+                            size_t* capacity, const char* s, size_t len,
+                            size_t max_bytes) {
+  size_t total;
+  size_t needed;
+  size_t new_capacity;
+  char* p;
+  if (*used > max_bytes || len > max_bytes - *used) {
+    return fail(ps, "XML text value exceeds resource budget");
   }
-  memcpy(p + old, s, len);
-  p[old + len] = '\0';
-  *buf = p;
+  total = *used + len;
+  if (total >= SIZE_MAX) {
+    return fail(ps, "XML text size overflow");
+  }
+  needed = total + 1u;
+  if (needed > *capacity) {
+    new_capacity = *capacity != 0 ? *capacity : 64u;
+    while (new_capacity < needed) {
+      if (new_capacity > (max_bytes + 1u) / 2u) {
+        new_capacity = max_bytes + 1u;
+        break;
+      }
+      new_capacity *= 2u;
+    }
+    p = (char*)my_mem_realloc(ps->allocator, *buf, new_capacity);
+    if (p == NULL) {
+      return MY_RET_OOM;
+    }
+    *buf = p;
+    *capacity = new_capacity;
+  }
+  memcpy(*buf + *used, s, len);
+  (*buf)[total] = '\0';
+  *used = total;
   return MY_RET_OK;
 }
 
@@ -100,15 +129,20 @@ static my_ret_t parse_entity(parser_t* ps, char* out) {
 }
 
 /** @brief Parse text until '<' or end; decodes entities; CDATA appended raw. */
-static my_ret_t parse_text_into(parser_t* ps, char** text) {
+static my_ret_t parse_text_into(parser_t* ps, char** text, size_t* text_len,
+                                size_t* text_capacity) {
   for (;;) {
     const char* start = ps->p;
     while (*ps->p != '\0' && *ps->p != '<' && *ps->p != '&') {
       advance(ps);
     }
-    if (ps->p > start && text_append(ps, text, start, (size_t)(ps->p - start)) !=
-                            MY_RET_OK) {
-      return MY_RET_OOM;
+    if (ps->p > start) {
+      my_ret_t ret = text_append(ps, text, text_len, text_capacity, start,
+                                 (size_t)(ps->p - start),
+                                 MY_XML_MAX_TEXT_BYTES);
+      if (ret != MY_RET_OK) {
+        return ret;
+      }
     }
     if (*ps->p == '&') {
       char ch;
@@ -116,8 +150,12 @@ static my_ret_t parse_text_into(parser_t* ps, char** text) {
       if (parse_entity(ps, &ch) != MY_RET_OK) {
         return MY_RET_FAIL;
       }
-      if (text_append(ps, text, &ch, 1) != MY_RET_OK) {
-        return MY_RET_OOM;
+      {
+        my_ret_t ret = text_append(ps, text, text_len, text_capacity, &ch, 1,
+                                   MY_XML_MAX_TEXT_BYTES);
+        if (ret != MY_RET_OK) {
+          return ret;
+        }
       }
       continue;
     }
@@ -132,8 +170,13 @@ static my_ret_t parse_text_into(parser_t* ps, char** text) {
       while (ps->p < end) {
         advance(ps); /* keep line numbers */
       }
-      if (text_append(ps, text, start, (size_t)(end - start)) != MY_RET_OK) {
-        return MY_RET_OOM;
+      {
+        my_ret_t ret = text_append(ps, text, text_len, text_capacity, start,
+                                   (size_t)(end - start),
+                                   MY_XML_MAX_TEXT_BYTES);
+        if (ret != MY_RET_OK) {
+          return ret;
+        }
       }
       ps->p = end + 3;
       continue;
@@ -145,6 +188,8 @@ static my_ret_t parse_text_into(parser_t* ps, char** text) {
 static my_ret_t parse_attr_value(parser_t* ps, char** out) {
   char quote = *ps->p;
   char* buf = NULL;
+  size_t value_len = 0;
+  size_t value_capacity = 0;
   if (quote != '"' && quote != '\'') {
     return fail(ps, "attribute value must be quoted");
   }
@@ -155,8 +200,14 @@ static my_ret_t parse_attr_value(parser_t* ps, char** out) {
            *ps->p != '<') {
       advance(ps);
     }
-    if (text_append(ps, &buf, start, (size_t)(ps->p - start)) != MY_RET_OK) {
-      return MY_RET_OOM;
+    {
+      my_ret_t ret = text_append(ps, &buf, &value_len, &value_capacity, start,
+                                 (size_t)(ps->p - start),
+                                 MY_XML_MAX_ATTRIBUTE_VALUE_BYTES);
+      if (ret != MY_RET_OK) {
+        my_mem_free(ps->allocator, buf);
+        return ret;
+      }
     }
     if (*ps->p == quote) {
       ps->p++;
@@ -173,8 +224,13 @@ static my_ret_t parse_attr_value(parser_t* ps, char** out) {
         my_mem_free(ps->allocator, buf);
         return MY_RET_FAIL;
       }
-      if (text_append(ps, &buf, &ch, 1) != MY_RET_OK) {
-        return MY_RET_OOM;
+      {
+        my_ret_t ret = text_append(ps, &buf, &value_len, &value_capacity, &ch,
+                                   1, MY_XML_MAX_ATTRIBUTE_VALUE_BYTES);
+        if (ret != MY_RET_OK) {
+          my_mem_free(ps->allocator, buf);
+          return ret;
+        }
       }
     }
   }
@@ -184,9 +240,14 @@ static my_ret_t parse_attr_value(parser_t* ps, char** out) {
 
 static my_ret_t node_add_child(parser_t* ps, my_xml_node_t* parent,
                                my_xml_node_t* child) {
+  size_t bytes;
+  if (parent->child_count >= MY_XML_MAX_CHILDREN_PER_ELEMENT ||
+      parent->child_count > (SIZE_MAX / sizeof(my_xml_node_t*)) - 1u) {
+    return fail(ps, "XML child count exceeds resource budget");
+  }
+  bytes = (parent->child_count + 1u) * sizeof(my_xml_node_t*);
   my_xml_node_t** arr = (my_xml_node_t**)my_mem_realloc(
-      ps->allocator, parent->children,
-      (parent->child_count + 1) * sizeof(my_xml_node_t*));
+      ps->allocator, parent->children, bytes);
   if (arr == NULL) {
     return MY_RET_OOM;
   }
@@ -197,8 +258,14 @@ static my_ret_t node_add_child(parser_t* ps, my_xml_node_t* parent,
 
 static my_ret_t node_add_attr(parser_t* ps, my_xml_node_t* node, char* name,
                               char* value) {
+  size_t bytes;
+  if (node->attr_count >= MY_XML_MAX_ATTRIBUTES_PER_ELEMENT ||
+      node->attr_count > (SIZE_MAX / sizeof(my_xml_attr_t)) - 1u) {
+    return fail(ps, "XML attribute count exceeds resource budget");
+  }
+  bytes = (node->attr_count + 1u) * sizeof(my_xml_attr_t);
   my_xml_attr_t* arr = (my_xml_attr_t*)my_mem_realloc(
-      ps->allocator, node->attrs, (node->attr_count + 1) * sizeof(my_xml_attr_t));
+      ps->allocator, node->attrs, bytes);
   if (arr == NULL) {
     return MY_RET_OOM;
   }
@@ -226,6 +293,8 @@ static void free_node(parser_t* ps, my_xml_node_t* node);
 /** @brief Parse the content of an element until its close tag. */
 static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node,
                               size_t depth) {
+  size_t text_len = node->text != NULL ? strlen(node->text) : 0;
+  size_t text_capacity = node->text != NULL ? text_len + 1u : 0;
   for (;;) {
     skip_ws(ps);
     if (*ps->p == '\0') {
@@ -240,6 +309,9 @@ static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node,
         ps->p++;
       }
       len = (size_t)(ps->p - name_start);
+      if (len > MY_XML_MAX_NAME_BYTES) {
+        return fail(ps, "XML name exceeds resource budget");
+      }
       if (len != strlen(node->name) ||
           strncmp(name_start, node->name, len) != 0) {
         return fail(ps, "mismatched close tag");
@@ -273,13 +345,21 @@ static my_ret_t parse_content(parser_t* ps, my_xml_node_t* node,
         free_node(ps, child);
         return err != MY_RET_OK ? err : MY_RET_FAIL;
       }
-      if (node_add_child(ps, node, child) != MY_RET_OK) {
-        return MY_RET_OOM;
+      {
+        my_ret_t ret = node_add_child(ps, node, child);
+        if (ret != MY_RET_OK) {
+          free_node(ps, child);
+          return ret;
+        }
       }
       continue;
     }
-    if (parse_text_into(ps, &node->text) != MY_RET_OK) {
-      return fail(ps, "bad text content");
+    {
+      my_ret_t ret = parse_text_into(ps, &node->text, &text_len,
+                                     &text_capacity);
+      if (ret != MY_RET_OK) {
+        return ret;
+      }
     }
   }
 }
@@ -348,9 +428,14 @@ static my_xml_node_t* parse_element(parser_t* ps, my_ret_t* out_err,
         *out_err = fail(ps, "duplicate attribute");
         return node;
       }
-      if (node_add_attr(ps, node, name, value) != MY_RET_OK) {
-        *out_err = MY_RET_OOM;
-        return node;
+      {
+        my_ret_t ret = node_add_attr(ps, node, name, value);
+        if (ret != MY_RET_OK) {
+          my_mem_free(ps->allocator, name);
+          my_mem_free(ps->allocator, value);
+          *out_err = ret;
+          return node;
+        }
       }
     }
   }

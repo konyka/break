@@ -19,7 +19,11 @@
   lenient 规则告警并跳过。
 - XML subset 现在拒绝重复属性，避免 `my_xml_node_attr()` 的 first-value-wins 歧义；
   实体、CDATA、未引用属性和 root 尾部内容继续按结构契约校验；元素嵌套深度限制为
-  `MY_XML_MAX_DEPTH=256`，超限输入在分配节点前拒绝，避免递归栈耗尽。
+  `MY_XML_MAX_DEPTH=256`，超限输入在分配节点前拒绝，避免递归栈耗尽。名称、属性值、
+  文本、属性数和子节点数也有固定预算：分别为 256 bytes、64 KiB、1 MiB、256 和
+  4096；文本采用指数扩容，避免实体密集输入触发 O(n²) realloc。
+- XML 资源预算定向测试现为 `9/9`，并已在无 Bidi 构建及 ASan/UBSan 配置下通过；
+  密集实体文本回归锁定单元素内持久化容量，避免片段追加退化为 O(n²) realloc。
 - CSS 数值输入的有限值、整数范围和颜色 alpha 边界检查。
 - UAX#14 实用子集的上下文规则：combining mark、数字标点、Unicode 数字小数分隔符、
   Hebrew quotes 和 Regional Indicator；新增
@@ -72,7 +76,7 @@
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
-| 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现；未知 at-rule 的结构化跳过和 XML 重复属性拒绝已实现 | 解析器静默接受错误、运行期主题污染 | capability registry、strict diagnostics、AST/bridge 回滚测试 |
+| 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现；未知 at-rule 的结构化跳过和 XML 结构/资源预算拒绝已实现 | 解析器静默接受错误、运行期主题污染、恶意输入耗尽内存 | capability registry、strict diagnostics、AST/bridge 回滚测试；继续补齐 XML 全局输入预算与完整 selector tree |
 | 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
 
 ### 冷却按钮契约
