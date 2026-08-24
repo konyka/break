@@ -31,6 +31,16 @@ timer 自动停止，按钮销毁流程、`my_button_set_cooldown(button, 0)` �
 deadline。所有后端都获得同一输入和视觉契约；不支持透明混合的后端仍执行公共绘制，
 由该后端的颜色语义处理，不引入 shader 分支。
 
+## Unicode 断行边界
+
+`my_line_break_allowed()` 在所有 PAL/RHI 后端共享，文本排版不会因渲染后端不同而
+产生不同换行。当前上下文规则除组合音标、数值标点、希伯来引号和 Regional Indicator
+外，还保护 NBSP/figure space/narrow NBSP/word joiner、ZWJ、variation selector、
+Emoji modifier 与 Unicode tag sequence；这些判断不分配内存，也不扫描整段文本。
+
+SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于后续能力，不能将
+当前 practical subset 宣称为完整 UAX#14 实现。
+
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
 上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、
 `myr/my_vgcanvas_break_rhi.c` 和 `src/ui/myui_break*` 中实现，避免把 Break API

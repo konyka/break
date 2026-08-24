@@ -160,6 +160,28 @@ TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together)
   ASSERT_FALSE(my_line_break_allowed(0xFF0Eu, 0xFF12u));
 }
 
+TEST(line_break_keeps_unicode_glue_and_joiners_together)
+{
+  ASSERT_FALSE(my_line_break_allowed('a', 0x00A0u));
+  ASSERT_FALSE(my_line_break_allowed(0x00A0u, 'b'));
+  ASSERT_FALSE(my_line_break_allowed('a', 0x2060u));
+  ASSERT_FALSE(my_line_break_allowed(0x2060u, 'b'));
+  ASSERT_FALSE(my_line_break_allowed(0x4E00u, 0x00A0u));
+  ASSERT_FALSE(my_line_break_allowed(0x202Fu, 0x4E00u));
+  ASSERT_FALSE(my_line_break_allowed('a', 0x200Du));
+  ASSERT_FALSE(my_line_break_allowed(0x200Du, 'b'));
+}
+
+TEST(line_break_keeps_emoji_extensions_with_base_text)
+{
+  ASSERT_FALSE(my_line_break_allowed(0x1F600u, 0xFE0Fu));
+  ASSERT_FALSE(my_line_break_allowed(0xFE0Fu, 'a'));
+  ASSERT_FALSE(my_line_break_allowed(0x1F600u, 0x1F3FBu));
+  ASSERT_FALSE(my_line_break_allowed(0x1F3FBu, 'a'));
+  ASSERT_FALSE(my_line_break_allowed(0x1F600u, 0xE0061u));
+  ASSERT_FALSE(my_line_break_allowed(0xE0061u, 'a'));
+}
+
 TEST(paragraph_preserves_logical_ranges_and_hard_boundaries)
 {
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
@@ -204,6 +226,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
     RUN_TEST(line_break_applies_unicode_context_rules);
     RUN_TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together);
+    RUN_TEST(line_break_keeps_unicode_glue_and_joiners_together);
+    RUN_TEST(line_break_keeps_emoji_extensions_with_base_text);
     RUN_TEST(paragraph_preserves_logical_ranges_and_hard_boundaries);
     RUN_TEST(paragraph_does_not_break_inside_shaping_cluster);
 TEST_MAIN_END()

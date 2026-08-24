@@ -1718,3 +1718,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - `test_myui_window_manager` 新增冷却阻断、进度、零时长禁用、timer tick/停止测试，
   当前定向结果为 `30/30`。
 - 方案与限制详见 `docs/myui_remaining_work.md` 和 `docs/myui_integration.md`。
+
+## myui Unicode 断行边界（2026-08-24）
+
+- 以 TDD 补充 Unicode glue：NBSP、figure space、narrow NBSP、word joiner；即使相邻
+  CJK/默认可断类也不会错误断开。
+- 新增 ZWJ、variation selector、Emoji modifier 和 Unicode tag sequence 的不可断规则，
+  采用固定范围判断，不改变生成的 UCD 类别表，也不引入逐段缓存或堆分配。
+- `test_myui_text_layout` 新增两组契约，定向结果为 `9/9`；完整 UAX#14、SA dictionary
+  和复杂 numeric tailoring 仍明确记录为未完成。

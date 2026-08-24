@@ -20,8 +20,9 @@
  *
  * This is a SUBSET: dictionary breaking for SA and the full set of
  * locale-specific tailoring remain out of scope. The contextual helper
- * below covers combining marks, numeric punctuation, and adjacent regional
- * indicators so callers do not need to duplicate those safety rules.
+ * below covers combining marks, numeric punctuation, Hebrew quotes, regional
+ * indicators, Unicode glue and emoji/joiner extensions so callers do not need
+ * to duplicate those safety rules.
  */
 #ifndef MY_LINE_BREAK_H
 #define MY_LINE_BREAK_H

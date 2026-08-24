@@ -18,7 +18,9 @@
 - UAX#14 实用子集的上下文规则：combining mark、数字标点、Unicode 数字小数分隔符、
   Hebrew quotes 和 Regional Indicator；新增
   shaping-aware paragraph model，按逻辑 codepoint 范围输出换行段，保护 ligature cluster
-  不被拆分，并已接入 text area 的 wrap 重排。
+  不被拆分，并已接入 text area 的 wrap 重排。新增 Unicode glue（NBSP、figure space、
+  narrow NBSP、word joiner）、ZWJ、variation selector、Emoji modifier 和 tag sequence
+  扩展的不可断边界，所有规则均为 O(1) 上下文判断。
 - 软件开放 contour 的 fill 自动闭合；开放 stroke 不自动闭合。
 - 共享 surface damage 的逻辑坐标到 drawable scissor 纯函数；向外取整、裁剪和
   64 位乘法均有测试，但暂不把它冒险用于默认 swapchain composite。
@@ -63,7 +65,7 @@
 | 高级编辑器 | 行号、折叠、增量语法高亮未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 行模型增量更新、预算化重排、折叠/行号/高亮 TDD |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
-| 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring 和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
+| 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
 | 完整 CSS/XML | 复杂 combinator、at-rule 语义、完整 selector tree 未实现 | 解析器静默接受错误、运行期主题污染 | capability registry、strict diagnostics、AST/bridge 回滚测试 |
 | 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
 

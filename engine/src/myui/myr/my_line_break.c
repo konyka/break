@@ -32,6 +32,18 @@ static bool is_combining_mark(uint32_t cp) {
          (cp >= 0xFE20u && cp <= 0xFE2Fu);
 }
 
+static bool is_non_break_extension(uint32_t cp) {
+  return (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
+         (cp >= 0xE0100u && cp <= 0xE01EFu) ||
+         (cp >= 0x1F3FBu && cp <= 0x1F3FFu) ||
+         (cp >= 0xE0020u && cp <= 0xE007Fu) || cp == 0x200Du;
+}
+
+static bool is_non_break_glue(uint32_t cp) {
+  return cp == 0x00A0u || cp == 0x2007u || cp == 0x202Fu ||
+         cp == 0x2060u;
+}
+
 static bool is_regional_indicator(uint32_t cp) {
   return cp >= 0x1F1E6u && cp <= 0x1F1FFu;
 }
@@ -62,6 +74,12 @@ bool my_line_break_allowed(uint32_t prev_cp, uint32_t cur_cp) {
   my_line_break_class_t cur = my_line_break_class(cur_cp);
 
   if (is_combining_mark(cur_cp)) {
+    return false;
+  }
+  if (is_non_break_extension(prev_cp) || is_non_break_extension(cur_cp)) {
+    return false;
+  }
+  if (is_non_break_glue(prev_cp) || is_non_break_glue(cur_cp)) {
     return false;
   }
   if ((is_hebrew_letter(prev_cp) && is_hebrew_quote(cur_cp)) ||
