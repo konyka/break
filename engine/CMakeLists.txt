@@ -254,6 +254,7 @@ set(MYUI_CORE_SOURCES
     src/myui/myr/my_text_layout.c
     src/myui/myr/my_text_paragraph.c
     src/myui/myr/my_line_break.c
+    src/myui/myr/my_syntax.c
     src/myui/mypal/my_timer.c
     src/myui/myui/my_widget.c
     src/myui/myui/my_layout.c

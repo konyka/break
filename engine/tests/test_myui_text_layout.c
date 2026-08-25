@@ -1,11 +1,13 @@
 #include "test_framework.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "myr/my_arabic_shape.h"
 #include "myr/my_line_break.h"
 #include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
+#include "myr/my_syntax.h"
 
 typedef struct paragraph_test_font_t {
   my_font_t base;
@@ -182,6 +184,93 @@ TEST(line_break_keeps_emoji_extensions_with_base_text)
   ASSERT_FALSE(my_line_break_allowed(0xE0061u, 'a'));
 }
 
+TEST(syntax_cache_lexes_bounded_tokens_and_comments)
+{
+  my_syntax_cache_t* cache =
+      my_syntax_cache_create(NULL, MY_SYNTAX_C_LIKE);
+  const my_syntax_token_t* tokens;
+  size_t count = 0;
+
+  ASSERT_NOT_NULL(cache);
+  ASSERT_EQ(my_syntax_cache_set_text(cache,
+                                     "int value = 42; // note\n"),
+            MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(cache, 1), MY_RET_OK);
+  ASSERT_TRUE(my_syntax_cache_line_ready(cache, 0));
+  tokens = my_syntax_cache_line_tokens(cache, 0, &count);
+  ASSERT_NOT_NULL(tokens);
+  ASSERT_TRUE(count >= 7u);
+  ASSERT_EQ(tokens[0].kind, MY_SYNTAX_TOKEN_KEYWORD);
+  ASSERT_EQ(tokens[1].kind, MY_SYNTAX_TOKEN_TEXT);
+  ASSERT_EQ(tokens[2].kind, MY_SYNTAX_TOKEN_IDENTIFIER);
+  ASSERT_EQ(tokens[count - 1].kind, MY_SYNTAX_TOKEN_COMMENT);
+  my_syntax_cache_destroy(cache);
+}
+
+TEST(syntax_cache_propagates_state_only_from_dirty_suffix)
+{
+  my_syntax_cache_t* cache =
+      my_syntax_cache_create(NULL, MY_SYNTAX_C_LIKE);
+  const my_syntax_token_t* tokens;
+  size_t count = 0;
+
+  ASSERT_NOT_NULL(cache);
+  ASSERT_EQ(my_syntax_cache_set_text(cache, "/* open\ninside\n*/ int x;\n"),
+            MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(cache, 3), MY_RET_OK);
+  ASSERT_TRUE(my_syntax_cache_line_ready(cache, 2));
+  tokens = my_syntax_cache_line_tokens(cache, 1, &count);
+  ASSERT_NOT_NULL(tokens);
+  ASSERT_EQ(tokens[0].kind, MY_SYNTAX_TOKEN_COMMENT);
+  ASSERT_EQ(my_syntax_cache_replace_line(cache, 0, "int open;"), MY_RET_OK);
+  ASSERT_FALSE(my_syntax_cache_line_ready(cache, 0));
+  ASSERT_FALSE(my_syntax_cache_line_ready(cache, 1));
+  ASSERT_EQ(my_syntax_cache_ensure(cache, 1), MY_RET_OK);
+  ASSERT_TRUE(my_syntax_cache_line_ready(cache, 0));
+  ASSERT_FALSE(my_syntax_cache_line_ready(cache, 1));
+  ASSERT_EQ(my_syntax_cache_ensure(cache, 2), MY_RET_OK);
+  tokens = my_syntax_cache_line_tokens(cache, 1, &count);
+  ASSERT_NOT_NULL(tokens);
+  ASSERT_EQ(tokens[0].kind, MY_SYNTAX_TOKEN_IDENTIFIER);
+  my_syntax_cache_destroy(cache);
+}
+
+TEST(syntax_cache_rejects_source_and_line_budget_overflow)
+{
+  my_syntax_cache_t* cache =
+      my_syntax_cache_create(NULL, MY_SYNTAX_YAML);
+  char* line = (char*)malloc(MY_SYNTAX_MAX_LINE_BYTES + 2u);
+  size_t i;
+
+  ASSERT_NOT_NULL(cache);
+  ASSERT_NOT_NULL(line);
+  for (i = 0; i < MY_SYNTAX_MAX_LINE_BYTES + 1u; i++) line[i] = 'a';
+  line[MY_SYNTAX_MAX_LINE_BYTES + 1u] = '\0';
+  ASSERT_EQ(my_syntax_cache_set_text(cache, line), MY_RET_INVALID_PARAMS);
+  free(line);
+  my_syntax_cache_destroy(cache);
+}
+
+TEST(syntax_cache_replacement_is_transactional)
+{
+  my_syntax_cache_t* cache =
+      my_syntax_cache_create(NULL, MY_SYNTAX_C_LIKE);
+  char* line = (char*)malloc(MY_SYNTAX_MAX_LINE_BYTES + 2u);
+  size_t i;
+
+  ASSERT_NOT_NULL(cache);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(my_syntax_cache_set_text(cache, "int stable;\n"), MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(cache, 1), MY_RET_OK);
+  for (i = 0; i < MY_SYNTAX_MAX_LINE_BYTES + 1u; i++) line[i] = 'x';
+  line[MY_SYNTAX_MAX_LINE_BYTES + 1u] = '\0';
+  ASSERT_EQ(my_syntax_cache_set_text(cache, line), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_syntax_cache_line_count(cache), 2u);
+  ASSERT_TRUE(my_syntax_cache_line_ready(cache, 0));
+  my_syntax_cache_destroy(cache);
+  free(line);
+}
+
 TEST(paragraph_preserves_logical_ranges_and_hard_boundaries)
 {
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
@@ -230,4 +319,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(line_break_keeps_emoji_extensions_with_base_text);
     RUN_TEST(paragraph_preserves_logical_ranges_and_hard_boundaries);
     RUN_TEST(paragraph_does_not_break_inside_shaping_cluster);
+    RUN_TEST(syntax_cache_lexes_bounded_tokens_and_comments);
+    RUN_TEST(syntax_cache_propagates_state_only_from_dirty_suffix);
+    RUN_TEST(syntax_cache_rejects_source_and_line_budget_overflow);
+    RUN_TEST(syntax_cache_replacement_is_transactional);
 TEST_MAIN_END()

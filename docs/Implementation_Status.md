@@ -1794,3 +1794,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 验证：`test_rule_engine` **21/21**、myui 定向套件 **11/11**、C99 consumer、benchmark、
   ASan rule engine/myui/loader、Vulkan `myui_core` 与 `rule_engine_core` 构建通过。
 - 当前限制：嵌套事实遍历和通用 agenda 调度仍未实现。
+
+## myui incremental syntax line cache（2026-08-25）
+
+- 以 TDD 新增 `my_syntax_cache_t`：支持 C-like/YAML 有界词法 token、codepoint 坐标、
+  跨行 block-comment 状态、修改行后缀失效和按行预算重建。
+- 固定 4 MiB 源文本、1 MiB 单行、4096 token/行上限；超限拒绝，默认路径不进入 widget
+  paint，不增加逐帧全文扫描或后端依赖。
+- `test_myui_text_layout` 现为 **13/13**，覆盖 token 分类、状态传播、后缀失效和资源
+  边界。当前限制是尚未接入 text area paint 的分段颜色绘制。

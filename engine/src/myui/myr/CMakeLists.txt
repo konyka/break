@@ -19,6 +19,7 @@ add_library(myr STATIC
   my_text_layout.c
   my_text_paragraph.c
   my_line_break.c
+  my_syntax.c
 )
 
 target_include_directories(myr PUBLIC ${CMAKE_SOURCE_DIR}/src)
