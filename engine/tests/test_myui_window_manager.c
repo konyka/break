@@ -457,6 +457,92 @@ TEST(text_area_wrap_oom_keeps_previous_cache)
   my_widget_unref(area);
 }
 
+TEST(text_area_syntax_is_lazy_and_budgeted)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_text_area_set_text(area, "int first;\nint second;\n"),
+            MY_RET_OK);
+  ASSERT_FALSE(my_text_area_syntax_enabled(area));
+  ASSERT_TRUE(text_area->syntax_cache == NULL);
+  ASSERT_EQ(my_text_area_set_syntax_language(area, MY_SYNTAX_C_LIKE),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_line_budget(area, 1), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(area, true), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_enabled(area));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 1));
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
+TEST(text_area_syntax_replacement_invalidates_tokens)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "int first;\nint second;\n"),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(area, MY_SYNTAX_C_LIKE),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_line_budget(area, 8), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(area, true), MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(text_area->syntax_cache, 8), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 1));
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 0;
+  text_area->anchor_row = 0;
+  text_area->anchor_col = 0;
+  text_area->goal_col = 0;
+  ASSERT_EQ(my_text_area_set_text(area, "int changed;\nint second;\n"),
+            MY_RET_OK);
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+  my_widget_unref(area);
+}
+
+TEST(text_area_syntax_key_edit_invalidates_suffix)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "int first;\nint second;\n"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(area, MY_SYNTAX_C_LIKE), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(area, true), MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(text_area->syntax_cache, 8), MY_RET_OK);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 0;
+  text_area->anchor_row = 0;
+  text_area->anchor_col = 0;
+  text_area->focused = true;
+  event.u.key.key = 'x';
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+  my_widget_unref(area);
+}
+
 TEST(window_manager_refreshes_all_window_scales)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1386,6 +1472,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
+    RUN_TEST(text_area_syntax_is_lazy_and_budgeted);
+    RUN_TEST(text_area_syntax_replacement_invalidates_tokens);
+    RUN_TEST(text_area_syntax_key_edit_invalidates_suffix);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);
     RUN_TEST(software_canvas_recreates_after_surface_resize);

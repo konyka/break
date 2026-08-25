@@ -51,6 +51,8 @@ void my_syntax_cache_destroy(my_syntax_cache_t* cache);
 my_ret_t my_syntax_cache_set_text(my_syntax_cache_t* cache, const char* text);
 my_ret_t my_syntax_cache_replace_line(my_syntax_cache_t* cache, size_t row,
                                       const char* text);
+my_ret_t my_syntax_cache_replace_line_n(my_syntax_cache_t* cache, size_t row,
+                                        const char* text, size_t len);
 my_ret_t my_syntax_cache_set_language(my_syntax_cache_t* cache,
                                        my_syntax_language_t language);
 size_t my_syntax_cache_line_count(const my_syntax_cache_t* cache);

@@ -64,8 +64,10 @@ codepoint 范围；跨行 `/* ... */` 状态会传播到后缀。`my_syntax_cach
 因此绘制或输入路径不会被迫扫描全文。源文件、单行和单行 token 数量都有固定上限，
 超限直接拒绝。
 
-当前 cache 是编辑器模型基础设施，尚未把 token 自动转换为 text area 的多段颜色绘制；
-应用可先按预算预热 token，再由后续 paint bridge 消费 ready 行。
+text area 在启用语法高亮后懒创建该 cache，并在 paint 前按 `syntax_line_budget` 增量推进；
+ready 的非 RTL、有字体行才进行 token 分段绘制。默认关闭时不创建 cache、不启动 timer，
+也不扫描全文。无字体、RTL、justify 等路径继续使用原整行绘制，避免把有限 lexer 误宣称
+为完整语法高亮。
 
 ## CSS/YAML 解析边界
 
@@ -349,7 +351,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行并接入 text area；完整 RTL GSUB、跨 face run、多段落增量 rebreaking 仍未实现 | 增加 RTL shaping run、段落级 visual mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
-| 编辑器 | 代码折叠、行号栏、wrap 增量缓存和后端无关的增量语法行 lexer 已实现；text area paint 分段着色、嵌套折叠和持久化折叠仍未实现 | 将 ready token 行桥接到 paint，保持单帧预算，避免大文档全文扫描 |
+| 编辑器 | 代码折叠、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；嵌套折叠、持久化折叠、完整 RTL token shaping 仍未实现 | 扩展折叠模型和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |

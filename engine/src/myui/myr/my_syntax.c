@@ -339,12 +339,16 @@ my_ret_t my_syntax_cache_set_text(my_syntax_cache_t* cache, const char* text) {
 
 my_ret_t my_syntax_cache_replace_line(my_syntax_cache_t* cache, size_t row,
                                       const char* text) {
-  size_t len;
+  if (text == NULL) return MY_RET_INVALID_PARAMS;
+  return my_syntax_cache_replace_line_n(cache, row, text, strlen(text));
+}
+
+my_ret_t my_syntax_cache_replace_line_n(my_syntax_cache_t* cache, size_t row,
+                                        const char* text, size_t len) {
   size_t index;
   if (cache == NULL || text == NULL || row >= cache->line_count) {
     return MY_RET_INVALID_PARAMS;
   }
-  len = strlen(text);
   if (len > MY_SYNTAX_MAX_LINE_BYTES) return MY_RET_INVALID_PARAMS;
   if (syntax_set_line(&cache->lines[row], cache->allocator, text, len) !=
       MY_RET_OK) {

@@ -19,6 +19,7 @@
 #define MY_TEXT_AREA_H
 
 #include "mypal/my_pal.h"
+#include "myr/my_syntax.h"
 #include "myui/my_text_align.h"
 #include "myui/my_widget.h"
 
@@ -71,6 +72,10 @@ typedef struct my_text_area_t {
   my_text_align_t align;    /**< horizontal alignment (M11d, default LEFT) */
   char* ime_preedit;        /**< owned: composing text (M13a, NULL=none) */
   int32_t ime_caret;        /**< composing caret in codepoints */
+  my_syntax_cache_t* syntax_cache; /**< lazy incremental highlighting cache */
+  my_syntax_language_t syntax_language;
+  bool syntax_enabled;
+  size_t syntax_line_budget;
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);
@@ -128,6 +133,20 @@ bool my_text_area_is_folded(const my_widget_t* area, size_t row);
  * JUSTIFY behaves as LEFT.
  */
 my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align);
+
+/** @brief Enable bounded incremental syntax highlighting for the text. */
+my_ret_t my_text_area_set_syntax_enabled(my_widget_t* area, bool enabled);
+
+/** @brief Select the bounded lexer language (NONE disables token colors). */
+my_ret_t my_text_area_set_syntax_language(my_widget_t* area,
+                                          my_syntax_language_t language);
+
+/** @brief Set the maximum number of dirty lexer lines consumed per paint. */
+my_ret_t my_text_area_set_syntax_line_budget(my_widget_t* area,
+                                             size_t line_budget);
+
+bool my_text_area_syntax_enabled(const my_widget_t* area);
+bool my_text_area_syntax_line_ready(const my_widget_t* area, size_t row);
 
 /** @brief Visual line count (wrap on; 0 when off). */
 size_t my_text_area_visual_line_count(my_widget_t* area);

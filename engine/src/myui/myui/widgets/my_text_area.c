@@ -22,6 +22,7 @@
 #define TA_PAD_Y 3
 #define TA_CELL_W 8 /* fallback cell width without a font */
 #define TA_LINE_NUMBER_GAP 6
+#define TA_SYNTAX_DEFAULT_LINE_BUDGET 32
 
 typedef struct my_text_fold_range_t {
   size_t start_row;
@@ -445,6 +446,135 @@ static size_t ta_vline_of_pos(my_text_area_t* ta, size_t row, size_t col,
 
 /* ---------------- buffer ops ---------------- */
 
+static bool ta_syntax_active(const my_text_area_t* ta) {
+  return ta != NULL && ta->syntax_enabled &&
+         ta->syntax_language != MY_SYNTAX_NONE;
+}
+
+static void ta_syntax_destroy(my_text_area_t* ta) {
+  if (ta == NULL) return;
+  my_syntax_cache_destroy(ta->syntax_cache);
+  ta->syntax_cache = NULL;
+}
+
+static void ta_syntax_drop_on_error(my_text_area_t* ta) {
+  ta_syntax_destroy(ta);
+}
+
+static void ta_syntax_sync_after_edit(my_text_area_t* ta, size_t row,
+                                      size_t old_line_count) {
+  size_t start, end, line_len;
+  if (!ta_syntax_active(ta) || ta->syntax_cache == NULL) return;
+  if (old_line_count != ta_line_count(ta)) {
+    if (my_syntax_cache_set_text(ta->syntax_cache, ta->text) != MY_RET_OK) {
+      ta_syntax_drop_on_error(ta);
+    }
+    return;
+  }
+  if (row >= ta_line_count(ta)) {
+    ta_syntax_drop_on_error(ta);
+    return;
+  }
+  start = ta_line_start(ta, row);
+  end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
+                                    : ta->text_len;
+  line_len = end > start ? end - start : 0;
+  if (line_len > 0 && ta->text[start + line_len - 1] == '\n') line_len--;
+  if (my_syntax_cache_replace_line_n(ta->syntax_cache, row, ta->text + start,
+                                     line_len) != MY_RET_OK) {
+    ta_syntax_drop_on_error(ta);
+  }
+}
+
+static my_ret_t ta_syntax_prepare_document(my_text_area_t* ta,
+                                            const char* text,
+                                            my_syntax_cache_t** out_cache) {
+  my_syntax_cache_t* cache;
+  if (out_cache == NULL) return MY_RET_INVALID_PARAMS;
+  *out_cache = NULL;
+  if (!ta_syntax_active(ta)) return MY_RET_OK;
+  cache = my_syntax_cache_create(ta->allocator, ta->syntax_language);
+  if (cache == NULL) return MY_RET_OOM;
+  if (my_syntax_cache_set_text(cache, text != NULL ? text : "") != MY_RET_OK) {
+    my_syntax_cache_destroy(cache);
+    return MY_RET_INVALID_PARAMS;
+  }
+  *out_cache = cache;
+  return MY_RET_OK;
+}
+
+static my_ret_t ta_syntax_ensure_cache(my_text_area_t* ta) {
+  my_syntax_cache_t* cache;
+  if (!ta_syntax_active(ta) || ta->syntax_cache != NULL) return MY_RET_OK;
+  if (ta_syntax_prepare_document(ta, ta->text, &cache) != MY_RET_OK) {
+    return MY_RET_OOM;
+  }
+  ta->syntax_cache = cache;
+  return MY_RET_OK;
+}
+
+static size_t ta_byte_at_cp(const char* text, size_t cp) {
+  size_t at = 0;
+  while (text != NULL && text[at] != '\0' && cp > 0) {
+    at += my_str_utf8_char_len(text + at);
+    cp--;
+  }
+  return at;
+}
+
+static uint32_t ta_syntax_color(uint32_t normal,
+                                my_syntax_token_kind_t kind) {
+  switch (kind) {
+    case MY_SYNTAX_TOKEN_KEYWORD: return 0x9B59B6FFu;
+    case MY_SYNTAX_TOKEN_NUMBER: return 0x1D70A2FFu;
+    case MY_SYNTAX_TOKEN_STRING: return 0xA04000FFu;
+    case MY_SYNTAX_TOKEN_COMMENT: return 0x6B7280FFu;
+    default: return normal;
+  }
+}
+
+static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
+                                const my_visual_line_t* vl, const char* line,
+                                float base_x, int32_t ty, uint32_t normal) {
+  size_t count = 0, i;
+  const my_syntax_token_t* tokens;
+  if (ta->font == NULL || my_text_layout_may_need_bidi(line) ||
+      ta->syntax_cache == NULL ||
+      !my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)) {
+    return false;
+  }
+  tokens = my_syntax_cache_line_tokens(ta->syntax_cache, vl->phys, &count);
+  if (tokens == NULL || count == 0) return false;
+  for (i = 0; i < count; i++) {
+    size_t start = tokens[i].start_cp > vl->start_cp
+                       ? tokens[i].start_cp : vl->start_cp;
+    size_t end = tokens[i].start_cp + tokens[i].len_cp;
+    size_t visual_end = vl->start_cp + vl->len_cp;
+    size_t relative_start, relative_end, byte_start, byte_end;
+    char saved;
+    int32_t token_width = 0;
+    if (end > visual_end) end = visual_end;
+    if (start >= end) continue;
+    relative_start = start - vl->start_cp;
+    relative_end = end - vl->start_cp;
+    byte_start = ta_byte_at_cp(line, relative_start);
+    byte_end = ta_byte_at_cp(line, relative_end);
+    saved = ((char*)line)[byte_end];
+    ((char*)line)[byte_end] = '\0';
+    my_vgcanvas_set_fill_color(
+        vg, my_color_from_rgba32(ta_syntax_color(normal, tokens[i].kind)));
+    my_vgcanvas_draw_text(vg, line + byte_start, base_x, (float)ty);
+    if (ta->font != NULL) {
+      my_vgcanvas_measure_text(vg, line + byte_start, &token_width, NULL);
+    } else {
+      token_width = (int32_t)(relative_end - relative_start) * TA_CELL_W;
+    }
+    base_x += (float)token_width;
+    ((char*)line)[byte_end] = saved;
+  }
+  return true;
+}
+
 static void ta_cursor_to_offset(my_text_area_t* ta, size_t offset) {
   ta_pos_of(ta, offset, &ta->cursor_row, &ta->cursor_col);
   ta->anchor_row = ta->cursor_row;
@@ -527,6 +657,7 @@ static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
     size_t row, col;
     ta_pos_of(ta, offset, &row, &col);
     ta_rebuild_from(ta, row);
+    ta_syntax_sync_after_edit(ta, row, old_lines);
   }
   if (ta_line_count(ta) != old_lines) {
     ta_clear_folds(ta);
@@ -547,6 +678,7 @@ static void ta_delete_bytes(my_text_area_t* ta, size_t start, size_t end) {
     size_t row, col;
     ta_pos_of(ta, start, &row, &col);
     ta_rebuild_from(ta, row);
+    ta_syntax_sync_after_edit(ta, row, old_lines);
   }
   if (ta_line_count(ta) != old_lines) {
     ta_clear_folds(ta);
@@ -1266,6 +1398,10 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
 
 static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_text_area_t* ta = (my_text_area_t*)widget;
+  (void)ta_syntax_ensure_cache(ta);
+  if (ta->syntax_cache != NULL && ta->syntax_line_budget > 0) {
+    (void)my_syntax_cache_ensure(ta->syntax_cache, ta->syntax_line_budget);
+  }
   /* M24b: deliberately NOT my_widget_current_state(): the focused border
    * borrows the HOVER style slot (same convention as my_edit). */
   uint32_t bg = my_widget_style_get_color(
@@ -1476,7 +1612,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               }
             }
           } else {
-            my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
+            if (!ta_draw_syntax_line(ta, vg, vl, line, (float)base_x, ty, fg)) {
+              my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
+            }
           }
           my_mem_free(ta->allocator, line);
         }
@@ -1640,6 +1778,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   my_mem_free(ta->allocator, ta->ime_preedit);
   ta_clear_folds(ta);
   ta_vlines_destroy_array(ta, ta->vlines);
+  ta_syntax_destroy(ta);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
   my_mem_free(ta->allocator, ta->hint);
@@ -1661,6 +1800,8 @@ my_widget_t* my_text_area_create(const my_allocator_t* allocator) {
   ((my_object_t*)ta)->destroy = ta_destroy_chain;
   ta->allocator = allocator;
   ta->font_size = 16;
+  ta->syntax_language = MY_SYNTAX_NONE;
+  ta->syntax_line_budget = TA_SYNTAX_DEFAULT_LINE_BUDGET;
   ta->cursor_visible = true;
   ta->line_offsets = my_darray_create(allocator, 0);
   if (ta->line_offsets == NULL) {
@@ -1689,6 +1830,9 @@ my_widget_t* my_text_area_create(const my_allocator_t* allocator) {
 
 my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   my_text_area_t* ta = (my_text_area_t*)area;
+  my_syntax_cache_t* replacement = NULL;
+  my_syntax_cache_t* previous;
+  my_ret_t syntax_status;
   size_t len;
   if (area == NULL) {
     return MY_RET_INVALID_PARAMS;
@@ -1702,6 +1846,10 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   }
   len = text != NULL ? strlen(text) : 0;
   if (len == SIZE_MAX) return MY_RET_OOM;
+  if (ta_syntax_active(ta)) {
+    syntax_status = ta_syntax_prepare_document(ta, text, &replacement);
+    if (syntax_status != MY_RET_OK) return syntax_status;
+  }
   if (len + 1 > ta->text_cap) {
     size_t cap = ta->text_cap > 0 ? ta->text_cap : 1;
     while (cap < len + 1) {
@@ -1713,7 +1861,10 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
     }
     {
       char* p = (char*)my_mem_realloc(ta->allocator, ta->text, cap);
-      if (p == NULL) return MY_RET_OOM;
+      if (p == NULL) {
+        my_syntax_cache_destroy(replacement);
+        return MY_RET_OOM;
+      }
       ta->text = p;
       ta->text_cap = cap;
     }
@@ -1725,6 +1876,9 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   ta->text_len = len;
   ta_clear_folds(ta);
   ta_rebuild_from(ta, 0);
+  previous = ta->syntax_cache;
+  ta->syntax_cache = replacement;
+  my_syntax_cache_destroy(previous);
   ta_cursor_to_offset(ta, len);
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
@@ -1888,6 +2042,69 @@ my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align) {
   ((my_text_area_t*)area)->align = align;
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
+}
+
+my_ret_t my_text_area_set_syntax_enabled(my_widget_t* area, bool enabled) {
+  my_text_area_t* ta = (my_text_area_t*)area;
+  my_syntax_cache_t* cache = NULL;
+  if (area == NULL) return MY_RET_INVALID_PARAMS;
+  if (!enabled) {
+    ta->syntax_enabled = false;
+    ta_syntax_destroy(ta);
+    my_widget_invalidate(area, NULL);
+    return MY_RET_OK;
+  }
+  ta->syntax_enabled = true;
+  if (ta->syntax_language != MY_SYNTAX_NONE && ta->syntax_cache == NULL) {
+    if (ta_syntax_prepare_document(ta, ta->text, &cache) != MY_RET_OK) {
+      ta->syntax_enabled = false;
+      return MY_RET_OOM;
+    }
+    ta->syntax_cache = cache;
+  }
+  my_widget_invalidate(area, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_text_area_set_syntax_language(my_widget_t* area,
+                                          my_syntax_language_t language) {
+  my_text_area_t* ta = (my_text_area_t*)area;
+  my_syntax_cache_t* cache = NULL;
+  if (area == NULL || language < MY_SYNTAX_NONE || language > MY_SYNTAX_YAML) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (ta->syntax_language == language) return MY_RET_OK;
+  if (ta->syntax_enabled && language != MY_SYNTAX_NONE) {
+    my_syntax_language_t old = ta->syntax_language;
+    ta->syntax_language = language;
+    if (ta_syntax_prepare_document(ta, ta->text, &cache) != MY_RET_OK) {
+      ta->syntax_language = old;
+      return MY_RET_OOM;
+    }
+  }
+  ta->syntax_language = language;
+  ta_syntax_destroy(ta);
+  ta->syntax_cache = cache;
+  my_widget_invalidate(area, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_text_area_set_syntax_line_budget(my_widget_t* area,
+                                             size_t line_budget) {
+  if (area == NULL) return MY_RET_INVALID_PARAMS;
+  ((my_text_area_t*)area)->syntax_line_budget = line_budget;
+  my_widget_invalidate(area, NULL);
+  return MY_RET_OK;
+}
+
+bool my_text_area_syntax_enabled(const my_widget_t* area) {
+  return area != NULL && ((const my_text_area_t*)area)->syntax_enabled;
+}
+
+bool my_text_area_syntax_line_ready(const my_widget_t* area, size_t row) {
+  const my_text_area_t* ta = (const my_text_area_t*)area;
+  return ta != NULL && ta->syntax_cache != NULL &&
+         my_syntax_cache_line_ready(ta->syntax_cache, row);
 }
 
 size_t my_text_area_visual_line_count(my_widget_t* area) {

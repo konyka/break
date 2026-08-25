@@ -1802,4 +1802,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 固定 4 MiB 源文本、1 MiB 单行、4096 token/行上限；超限拒绝，默认路径不进入 widget
   paint，不增加逐帧全文扫描或后端依赖。
 - `test_myui_text_layout` 现为 **13/13**，覆盖 token 分类、状态传播、后缀失效和资源
-  边界。当前限制是尚未接入 text area paint 的分段颜色绘制。
+  边界。
+- text area 已通过 `set_syntax_enabled/language/line_budget` 接入 cache：默认懒关闭，
+  paint 每帧最多推进配置行数，ready 的非 RTL、有字体行按 token 分段着色；编辑和整段
+  替换会使修改行及后缀失效，失败时丢弃 stale cache 而不影响文本。无字体、RTL、justify
+  保留原整行绘制，当前仍是有限 lexer，不宣称完整语法高亮。
+- TDD 新增 `text_area_syntax_is_lazy_and_budgeted`、
+  `text_area_syntax_replacement_invalidates_tokens` 和
+  `text_area_syntax_key_edit_invalidates_suffix`；定向 `test_myui_window_manager`
+  39/39 通过。
