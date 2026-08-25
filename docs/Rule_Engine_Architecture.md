@@ -15,7 +15,8 @@ Implemented now:
 - literal and fact-reference `then` assignments applied before callback notification;
 - flat fact access with exact flat-key precedence for dotted names;
 - forward execution;
-- exact flat-key lookup for dotted fact names; nested traversal remains pending.
+- exact flat-key lookup for dotted fact names; structured-value path traversal is
+  bounded and separately tested, while rule-condition fallback remains flat-key only.
 - bounded object/array values and nested path lookup through the versioned value API;
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded, non-capability-bearing query seam for exact flat goals and
@@ -189,17 +190,19 @@ equivalent to agenda conflict resolution, but is not an incremental RETE
 network: alpha/beta memories, tokens, and fact-change propagation remain
 unsupported by the public runtime.
 
-## Private RETE milestone
+## Bounded RETE milestone
 
-`engine/src/rule_engine/rete.c` contains a private, test-only seam for a narrow
+`engine/src/rule_engine/rete.c` contains a bounded runtime seam for a narrow
 two-condition conjunction over existing flat facts. It subscribes to the
 generation-safe insert/update/retract events, rebuilds alpha matches and beta
 pairs in fact-slot order, stores token-like fact-id pairs plus monotonically
 ordered activation records, and removes stale records after updates or
-retractions. It is not installed into `re_engine_run`, does not expose the
-public opaque RETE handle, and does not advertise `RE_CAP2_AGENDA_RETE`.
-Agenda groups, streaming, backward chaining, concurrency, and all other RETE
-features remain outside this milestone.
+retractions. A matching single-rule run may install this network temporarily,
+and the public inspection handle/capability bit are reported only while that
+bounded network exists. The implementation is not full RETE-UL: it has no
+incremental memories, producer provenance, persistent agenda, or general
+condition graph. Agenda groups, streaming, backward chaining, concurrency, and
+all other RETE features remain outside this milestone.
 
 One run owns its activation list. A matching rule applies its parsed action
 assignment, then invokes the callback; the callback may further mutate facts

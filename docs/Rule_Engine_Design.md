@@ -88,7 +88,10 @@ The current focused tests establish:
    `lock-on-active`. The runtime does not claim producer provenance,
    incremental RETE, persistent agenda state, or post-focus-cycle reactivation.
 
-Nested fact traversal remains pending. Rule declarations may optionally include
+Structured-value nested fact traversal is implemented only through the bounded
+`re_facts_get_path` API and is covered by focused tests. Rule declarations still
+resolve dotted condition/action names through exact flat-key lookup; they do not
+fall back to structured traversal. Rule declarations may optionally include
 `salience <int32>` after the quoted name; matching activations execute in
 descending salience order, with source order preserved for ties. Dotted
 names, including action references, resolve only by exact flat-key lookup; no
