@@ -1757,3 +1757,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   paragraph 构建失败只释放候选后缀，保留旧缓存并继续标记 dirty。
 - 验证：`test_myui_window_manager` **31/31**，myui 定向套件 **10/10**，并保留原有
   wrap OOM 回滚契约。
+
+## myui text area line numbers（2026-08-25）
+
+- 以 TDD 新增行号栏边界测试：默认关闭、按行数位数扩大 gutter、关闭后恢复原始内容
+  起点；启用行号后 wrap 可用宽度重新计算，避免视觉布局与命中坐标漂移。
+- 新增 `my_text_area_set_line_numbers()`、`my_text_area_line_numbers_enabled()` 和
+  `my_text_area_content_left()`；绘制只遍历可见 visual lines，wrap 时每个物理行只绘制
+  一次行号，不引入逐帧全文扫描。
+- 验证：`test_myui_window_manager` **33/33**，其余 myui 定向测试保持通过。

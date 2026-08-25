@@ -4,6 +4,7 @@
  */
 #include "myui/widgets/my_text_area.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,11 +21,35 @@
 #define TA_PAD_X 4
 #define TA_PAD_Y 3
 #define TA_CELL_W 8 /* fallback cell width without a font */
+#define TA_LINE_NUMBER_GAP 6
 
 /* ---------------- line offset cache ---------------- */
 
 static size_t ta_line_count(const my_text_area_t* ta) {
   return my_darray_size(ta->line_offsets);
+}
+
+static size_t ta_decimal_digits(size_t value) {
+  size_t digits = 1;
+  while (value >= 10) {
+    value /= 10;
+    digits++;
+  }
+  return digits;
+}
+
+static int32_t ta_content_left_value(const my_text_area_t* ta) {
+  size_t digits;
+  size_t width;
+  if (ta == NULL || !ta->line_numbers) {
+    return TA_PAD_X;
+  }
+  digits = ta_decimal_digits(ta_line_count(ta));
+  if (digits > (SIZE_MAX - TA_PAD_X - TA_LINE_NUMBER_GAP) / TA_CELL_W) {
+    return INT32_MAX;
+  }
+  width = TA_PAD_X + digits * TA_CELL_W + TA_LINE_NUMBER_GAP;
+  return width > (size_t)INT32_MAX ? INT32_MAX : (int32_t)width;
 }
 
 static size_t ta_line_start(const my_text_area_t* ta, size_t row) {
@@ -128,7 +153,8 @@ static size_t ta_line_cp_len(const my_text_area_t* ta, size_t row) {
  */
 
 static float ta_inner_width(const my_text_area_t* ta) {
-  float w = (float)(((my_widget_t*)ta)->rect.w - 2 * TA_PAD_X);
+  float w = (float)(((my_widget_t*)ta)->rect.w -
+                    ta_content_left_value(ta) - TA_PAD_X);
   return w > 1.0f ? w : 1.0f;
 }
 
@@ -543,7 +569,7 @@ static void ta_ensure_visible(my_text_area_t* ta) {
     line_h = ta->font_size > 0 ? ta->font_size : 16;
   }
   inner_h = w->rect.h - 2 * TA_PAD_Y;
-  inner_w = w->rect.w - 2 * TA_PAD_X;
+  inner_w = w->rect.w - ta_content_left_value(ta) - TA_PAD_X;
   if (ta->wrap) {
     size_t civ;
     ta->scroll_x = 0; /* wrap: no horizontal scrolling */
@@ -562,7 +588,8 @@ static void ta_ensure_visible(my_text_area_t* ta) {
     }
   }
   if (!ta->wrap && inner_w > 0) {
-    cy = (int32_t)ta->cursor_col * TA_CELL_W;
+    cy = ta_content_left_value(ta) +
+         (int32_t)ta->cursor_col * TA_CELL_W;
     if (cy - ta->scroll_x < 0) {
       ta->scroll_x = cy;
     }
@@ -623,7 +650,8 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
   if (line_h <= 0) {
     line_h = 16;
   }
-  x = TA_PAD_X + (int32_t)ta->cursor_col * TA_CELL_W - ta->scroll_x;
+  x = ta_content_left_value(ta) + (int32_t)ta->cursor_col * TA_CELL_W -
+      ta->scroll_x;
   y = TA_PAD_Y + (int32_t)(ta->wrap ? 0 : ta->cursor_row) * line_h -
       ta->scroll_y + line_h; /* bottom of the cursor line */
   my_widget_local_to_global((my_widget_t*)ta, &x, &y);
@@ -1050,13 +1078,18 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
       l = ta_layout_rtl(ta, vl, &seg);
       if (l != NULL) {
         /* RTL (M12a): visual hit-test inside the line */
-        col = vl->start_cp +
-              my_text_layout_logical_at_x(l, ta->font, ta->font_size,
-                                          lx - TA_PAD_X + ta->scroll_x);
+        col = vl->start_cp + my_text_layout_logical_at_x(
+                                  l, ta->font, ta->font_size,
+                                  lx - ta_content_left_value(ta) +
+                                      ta->scroll_x);
         my_mem_free(ta->allocator, seg);
         my_text_layout_destroy(l);
       } else {
-        col = (size_t)((lx - TA_PAD_X + ta->scroll_x + TA_CELL_W / 2) /
+        if (lx < ta_content_left_value(ta)) {
+          lx = ta_content_left_value(ta);
+        }
+        col = (size_t)((lx - ta_content_left_value(ta) + ta->scroll_x +
+                        TA_CELL_W / 2) /
                        TA_CELL_W);
         if (col > vl->start_cp + vl->len_cp) {
           col = vl->start_cp + vl->len_cp;
@@ -1124,7 +1157,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if ((ta->text == NULL || ta->text_len == 0) && ta->hint != NULL &&
       !ta->focused) {
     my_vgcanvas_set_fill_color(vg, my_color_rgb(150, 150, 150));
-    my_vgcanvas_draw_text(vg, ta->hint, TA_PAD_X, TA_PAD_Y);
+    my_vgcanvas_draw_text(vg, ta->hint,
+                          (float)ta_content_left_value(ta), TA_PAD_Y);
   }
 
   {
@@ -1141,12 +1175,29 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       size_t end = ta_offset_of(ta, vl->phys, vl->start_cp + vl->len_cp);
       size_t len = end > start ? end - start : 0;
       int32_t ty = TA_PAD_Y + (int32_t)vi * line_h - ta->scroll_y;
+      if (ta->line_numbers && (vi == vfirst ||
+                               ta_vline_at(ta, vi - 1)->phys != vl->phys)) {
+        char number[32];
+        int32_t number_width = 0;
+        int32_t content_left = ta_content_left_value(ta);
+        snprintf(number, sizeof(number), "%zu", vl->phys + 1);
+        if (ta->font != NULL) {
+          my_vgcanvas_measure_text(vg, number, &number_width, NULL);
+        } else {
+          number_width = (int32_t)strlen(number) * TA_CELL_W;
+        }
+        my_vgcanvas_set_fill_color(vg, my_color_rgb(130, 130, 130));
+        my_vgcanvas_draw_text(
+            vg, number,
+            (float)(content_left - TA_LINE_NUMBER_GAP - number_width),
+            (float)ty);
+      }
       if (len > 0) {
         char* line = (char*)my_mem_alloc(ta->allocator, len + 1);
         if (line != NULL) {
-          int32_t inner_w = widget->rect.w - 2 * TA_PAD_X;
+          int32_t inner_w = widget->rect.w - ta_content_left_value(ta) - TA_PAD_X;
           int32_t lw = 0;
-          int32_t base_x = TA_PAD_X - ta->scroll_x;
+          int32_t base_x = ta_content_left_value(ta) - ta->scroll_x;
           int32_t delta = 0;
           bool justify = false;
           int nseps = 0;
@@ -1190,7 +1241,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           /* selection/cursor shift with the line for CENTER/RIGHT
            * (delta); JUSTIFY word stretching is not reflected in the
            * highlight/cursor positions (documented TODO) */
-          delta = justify ? 0 : base_x - (TA_PAD_X - ta->scroll_x);
+          delta = justify ? 0 :
+              base_x - (ta_content_left_value(ta) - ta->scroll_x);
           if (has_sel && vl->phys >= sel_r0 && vl->phys <= sel_r1) {
             size_t c0 = vl->phys == sel_r0 ? sel_c0 : 0;
             size_t c1 = vl->phys == sel_r1
@@ -1216,7 +1268,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                 size_t k;
                 for (k = 0; k < n && k < 4; k++) {
                   my_vgcanvas_fill_rect(
-                      vg, &(my_rectf_t){(float)(TA_PAD_X + delta +
+                      vg, &(my_rectf_t){(float)(ta_content_left_value(ta) +
+                                                    delta +
                                                     (int32_t)rects[k].x -
                                                     ta->scroll_x),
                                         (float)ty, rects[k].w,
@@ -1225,7 +1278,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                 my_text_layout_destroy(rl);
               } else {
                 my_vgcanvas_fill_rect(
-                    vg, &(my_rectf_t){(float)(TA_PAD_X + delta +
+                    vg, &(my_rectf_t){(float)(ta_content_left_value(ta) +
+                                                  delta +
                                                   (int32_t)(s0 - vl->start_cp) *
                                                       TA_CELL_W -
                                                   ta->scroll_x),
@@ -1291,12 +1345,12 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                               : ta->cursor_row;
     const my_visual_line_t* cv = ta_vline_at(ta, cvi);
     char* ctext = ta_vline_text(ta, cv);
-    int32_t cx = TA_PAD_X - ta->scroll_x;
+    int32_t cx = ta_content_left_value(ta) - ta->scroll_x;
     int32_t cy = TA_PAD_Y +
                  (int32_t)(ta->wrap ? cvi : ta->cursor_row) * line_h -
                  ta->scroll_y;
     if (ctext != NULL) {
-      int32_t inner_w = widget->rect.w - 2 * TA_PAD_X;
+      int32_t inner_w = widget->rect.w - ta_content_left_value(ta) - TA_PAD_X;
       int32_t lw = 0;
       size_t col_in = ta->cursor_col - cv->start_cp;
       /* same base as the text line (scroll + align), then the mapped
@@ -1559,6 +1613,30 @@ my_ret_t my_text_area_set_wrap(my_widget_t* area, bool wrap) {
   }
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
+}
+
+my_ret_t my_text_area_set_line_numbers(my_widget_t* area, bool enabled) {
+  my_text_area_t* ta = (my_text_area_t*)area;
+  if (area == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (ta->line_numbers != enabled) {
+    ta->line_numbers = enabled;
+    ta->scroll_x = 0;
+    if (ta->wrap) {
+      ta_vlines_invalidate_from(ta, 0);
+    }
+    my_widget_invalidate(area, NULL);
+  }
+  return MY_RET_OK;
+}
+
+bool my_text_area_line_numbers_enabled(const my_widget_t* area) {
+  return area != NULL && ((const my_text_area_t*)area)->line_numbers;
+}
+
+int32_t my_text_area_content_left(const my_widget_t* area) {
+  return ta_content_left_value((const my_text_area_t*)area);
 }
 
 my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align) {

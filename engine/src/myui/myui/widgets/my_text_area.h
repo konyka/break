@@ -38,6 +38,7 @@ typedef struct my_text_area_t {
   size_t text_cap;          /**< allocated bytes, including trailing NUL */
   my_darray_t* line_offsets;/**< size_t per line start (line 0 = 0) */
   bool wrap;                /**< word wrap on (M10b, default off) */
+  bool line_numbers;        /**< show a physical-line number gutter */
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
@@ -93,6 +94,15 @@ size_t my_text_area_line_count(my_widget_t* area);
 
 /** @brief Word wrap on/off (rebuilds visual lines, resets h-scroll). */
 my_ret_t my_text_area_set_wrap(my_widget_t* area, bool wrap);
+
+/** @brief Enable or disable the physical-line number gutter. */
+my_ret_t my_text_area_set_line_numbers(my_widget_t* area, bool enabled);
+
+/** @brief Whether the physical-line number gutter is enabled. */
+bool my_text_area_line_numbers_enabled(const my_widget_t* area);
+
+/** @brief Current content x offset including the optional gutter. */
+int32_t my_text_area_content_left(const my_widget_t* area);
 
 /**
  * @brief Horizontal alignment (M11d). LEFT/CENTER/RIGHT shift each

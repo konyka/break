@@ -43,6 +43,8 @@
 - text area wrap 重排现采用前缀复用 + 后缀候选事务：编辑只从受影响物理行开始重排，
   未受影响的 visual-line 对象保持稳定；候选构建失败时保留旧缓存，避免大文档编辑每次
   修改都重新分配和扫描全文。
+- text area 已支持可选物理行号栏：默认关闭，按可见行绘制，wrap 时同一物理行只绘制一次；
+  gutter 宽度随行数位数变化，文本、光标、选区、命中测试和 wrap 宽度统一避让。
 - vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
   成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
   Break RHI/Vulkan 的真实 offscreen target 已支持设备能力允许的 2x+ 路径。
@@ -77,7 +79,7 @@
 | GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
-| 高级编辑器 | 行号、折叠、增量语法高亮未实现；text area 已具备物理行 offset cache 和 wrap 后缀增量重排 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 独立行模型、预算化重排、折叠/行号/高亮 TDD |
+| 高级编辑器 | 代码折叠、增量语法高亮未实现；text area 已具备物理行 offset cache、wrap 后缀增量重排和可选行号栏 | 大文档单帧 O(n) 卡顿、折叠后索引失效 | 独立行模型、预算化重排、折叠/行号/高亮 TDD |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |

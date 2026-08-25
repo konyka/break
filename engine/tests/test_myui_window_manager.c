@@ -344,6 +344,38 @@ TEST(text_area_wrap_reuses_unchanged_prefix_after_edit)
   my_widget_unref(area);
 }
 
+TEST(text_area_line_number_gutter_has_bounded_width)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_FALSE(my_text_area_line_numbers_enabled(area));
+  ASSERT_EQ(my_text_area_content_left(area), 4);
+  ASSERT_EQ(my_text_area_set_line_numbers(area, true), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_line_numbers_enabled(area));
+  ASSERT_TRUE(my_text_area_content_left(area) > 4);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n"),
+            MY_RET_OK);
+  ASSERT_TRUE(my_text_area_content_left(area) >= 20);
+  ASSERT_EQ(my_text_area_set_line_numbers(area, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_content_left(area), 4);
+  my_widget_unref(area);
+}
+
+TEST(text_area_line_numbers_reduce_wrap_width)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcd"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 2u);
+  ASSERT_EQ(my_text_area_set_line_numbers(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_wrap_oom_keeps_previous_cache)
 {
   text_area_fail_alloc_t state = {false};
@@ -1288,6 +1320,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_grows_capacity_exponentially);
     RUN_TEST(text_area_wrap_rebuilds_after_edit);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
+    RUN_TEST(text_area_line_number_gutter_has_bounded_width);
+    RUN_TEST(text_area_line_numbers_reduce_wrap_width);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);
