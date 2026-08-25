@@ -36,8 +36,13 @@ re_status_t re_copy_string(const re_allocator_impl_t *allocator, re_string_t inp
 }
 
 void re_operand_destroy(const re_allocator_impl_t *allocator, re_operand_t *operand) {
+    size_t i;
     if (operand == NULL) return;
     re_free(allocator, operand->fact_name);
+    re_free(allocator, operand->function_name);
+    for (i = 0u; i < operand->argument_count; ++i)
+        re_operand_destroy(allocator, &operand->arguments[i]);
+    re_free(allocator, operand->arguments);
     if (operand->kind == RE_OPERAND_LITERAL && operand->value.type == RE_VALUE_STRING)
         re_free(allocator, (void *)operand->value.as.string.data);
     memset(operand, 0, sizeof(*operand));
@@ -51,6 +56,23 @@ re_status_t re_operand_copy(const re_allocator_impl_t *allocator, const re_opera
     if (source->kind == RE_OPERAND_FACT)
         return re_copy_string(allocator, (re_string_t){source->fact_name, source->fact_name_size},
                               &target->fact_name);
+    if (source->kind == RE_OPERAND_FUNCTION) {
+        size_t i;
+        re_status_t status = re_copy_string(allocator,
+            (re_string_t){source->function_name, source->function_name_size},
+            &target->function_name);
+        if (status != RE_STATUS_OK) return status;
+        if (source->argument_count != 0u) {
+            target->arguments = re_alloc(allocator, source->argument_count * sizeof(*target->arguments));
+            if (target->arguments == NULL) return RE_STATUS_OUT_OF_MEMORY;
+            target->argument_count = source->argument_count;
+            for (i = 0u; i < source->argument_count; ++i) {
+                status = re_operand_copy(allocator, &source->arguments[i], &target->arguments[i]);
+                if (status != RE_STATUS_OK) { re_operand_destroy(allocator, target); return status; }
+            }
+        }
+        return RE_STATUS_OK;
+    }
     if (source->value.type == RE_VALUE_STRING) {
         char *copy = NULL;
         re_status_t status = re_copy_string(allocator, source->value.as.string, &copy);

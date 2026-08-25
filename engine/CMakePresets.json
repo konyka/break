@@ -1,0 +1,33 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "hardening-asan",
+      "displayName": "Rule engine hardening with ASan",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-hardening-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENGINE_BUILD_TESTS": "ON",
+        "ENGINE_ENABLE_IPO": "OFF",
+        "ENGINE_USE_ASAN": "ON",
+        "ENGINE_VULKAN": "OFF",
+        "RULE_ENGINE_ENABLE_C11_PARALLEL": "ON"
+      }
+    },
+    {
+      "name": "hardening-ubsan",
+      "displayName": "Rule engine hardening with UBSan",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-hardening-ubsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENGINE_BUILD_TESTS": "ON",
+        "ENGINE_ENABLE_IPO": "OFF",
+        "ENGINE_USE_UBSAN": "ON",
+        "ENGINE_VULKAN": "OFF",
+        "RULE_ENGINE_ENABLE_C11_PARALLEL": "ON"
+      }
+    }
+  ]
+}

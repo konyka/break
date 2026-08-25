@@ -3,14 +3,51 @@
 
 static re_status_t resolve_operand(const re_facts_t *facts, const re_operand_t *operand, re_value_t *value) {
     if (operand->kind == RE_OPERAND_LITERAL) { *value = operand->value; return RE_STATUS_OK; }
-    return re_facts_resolve(facts, (re_string_t){operand->fact_name, operand->fact_name_size}, value);
+    return re_facts_get_path(facts, (re_string_t){operand->fact_name, operand->fact_name_size}, value);
+}
+static re_status_t evaluate(const re_engine_t *engine, re_facts_t *facts, const re_expr_t *expr, int *matched) {
+    re_value_t left, right; re_status_t status;
+    if (expr->kind == RE_EXPR_TRUE || expr->kind == RE_EXPR_FALSE) { *matched = expr->kind == RE_EXPR_TRUE; return RE_STATUS_OK; }
+    if (expr->kind == RE_EXPR_NOT) { status = evaluate(engine, facts, expr->first, matched); *matched = !*matched; return status; }
+    if (expr->kind == RE_EXPR_AND || expr->kind == RE_EXPR_OR) { status = evaluate(engine, facts, expr->first, matched); if (status != RE_STATUS_OK) return status; if (expr->kind == RE_EXPR_AND && !*matched) return RE_STATUS_OK; if (expr->kind == RE_EXPR_OR && *matched) return RE_STATUS_OK; return evaluate(engine, facts, expr->second, matched); }
+    status = re_operand_resolve((re_engine_t *)engine, facts, &expr->left, &left); if (status != RE_STATUS_OK) return status; status = re_operand_resolve((re_engine_t *)engine, facts, &expr->right, &right); if (status != RE_STATUS_OK) return status; *matched = re_value_compare(&left, &right, expr->compare); return RE_STATUS_OK;
+}
+int re_condition_is_pure(const re_expr_t *expr) {
+    if (expr == NULL) return 0;
+    if (expr->kind == RE_EXPR_COMPARE) {
+        return expr->left.kind != RE_OPERAND_FUNCTION && expr->right.kind != RE_OPERAND_FUNCTION;
+    }
+    if (expr->kind == RE_EXPR_TRUE || expr->kind == RE_EXPR_FALSE) return 1;
+    return re_condition_is_pure(expr->first) &&
+           (expr->kind == RE_EXPR_NOT || re_condition_is_pure(expr->second));
+}
+re_status_t re_engine_match_rule(const re_engine_t *engine, const re_facts_t *facts,
+                                 const re_rule_t *rule, int *matched) {
+    return evaluate(engine, (re_facts_t *)facts, rule->condition, matched);
 }
 
-static re_status_t apply_action(re_facts_t *facts, const re_rule_t *rule) {
-    re_value_t value;
-    re_status_t status = resolve_operand(facts, &rule->action_value, &value);
-    if (status != RE_STATUS_OK) return status;
-    return re_facts_set(facts, (re_string_t){rule->action_name, rule->action_name_size}, &value);
+re_status_t re_operand_resolve(re_engine_t *engine, re_facts_t *facts,
+                               const re_operand_t *operand, re_value_t *value) {
+    size_t i;
+    re_value_t *arguments;
+    re_function_t *function;
+    re_status_t status;
+    if (operand->kind != RE_OPERAND_FUNCTION) return resolve_operand(facts, operand, value);
+    for (function = engine->functions; function != NULL; function = function->next)
+        if (!function->unregistered && function->name_size == operand->function_name_size &&
+            memcmp(function->name, operand->function_name, function->name_size) == 0) break;
+    if (function == NULL) return RE_STATUS_NOT_FOUND;
+    arguments = operand->argument_count == 0u ? NULL : re_alloc(&engine->allocator, operand->argument_count * sizeof(*arguments));
+    if (operand->argument_count != 0u && arguments == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    for (i = 0u; i < operand->argument_count; ++i) {
+        status = re_operand_resolve(engine, facts, &operand->arguments[i], &arguments[i]);
+        if (status != RE_STATUS_OK) { re_free(&engine->allocator, arguments); return status; }
+    }
+    function->active_calls++;
+    status = function->call(engine, facts, arguments, operand->argument_count, value, function->context);
+    function->active_calls--;
+    re_free(&engine->allocator, arguments);
+    return status;
 }
 
 static re_status_t finish_run(re_engine_t *engine, re_facts_t *facts, re_status_t status) {
@@ -20,6 +57,8 @@ static re_status_t finish_run(re_engine_t *engine, re_facts_t *facts, re_status_
     destroy_facts = facts->destroy_requested;
     engine->running = 0;
     facts->running = 0;
+    facts->mutation_allowed = 0;
+    facts->read_allowed = 0;
     if (destroy_facts) re_facts_destroy(facts);
     if (destroy_engine) re_engine_destroy(engine);
     return status;
@@ -50,28 +89,107 @@ re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t
     re_allocator_impl_t a; re_engine_t *engine; re_allocator_init(&a, allocator);
     if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return NULL;
     engine = re_alloc(&a, sizeof(*engine)); if (engine == NULL) return NULL;
-    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; return engine;
+    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; return engine;
+}
+
+static void sort_activation_indices(const re_program_t *program, size_t *indices) {
+    size_t i;
+    for (i = 1u; i < program->rule_count; ++i) {
+        size_t current = indices[i];
+        size_t j = i;
+        while (j != 0u) {
+            const re_rule_t *left = &program->rules[indices[j - 1u]];
+            const re_rule_t *right = &program->rules[current];
+            if (left->salience > right->salience ||
+                (left->salience == right->salience && left->source_order < right->source_order)) break;
+            indices[j] = indices[j - 1u];
+            --j;
+        }
+        indices[j] = current;
+    }
+}
+static void free_agenda_state(const re_allocator_impl_t *allocator, size_t *indices,
+                              unsigned char *fired_no_loop, char **activation_groups,
+                              char **locked_groups) {
+    re_free(allocator, locked_groups); re_free(allocator, activation_groups);
+    re_free(allocator, fired_no_loop); re_free(allocator, indices);
 }
 void re_engine_destroy(re_engine_t *engine) {
     if (engine == NULL) return;
     if (engine->running) { engine->destroy_requested = 1; return; }
+    re_executor_destroy(engine->executor);
+    re_rete_network_destroy_internal(engine->rete_network);
+    while (engine->functions != NULL) { re_function_t *function = engine->functions; engine->functions = function->next; if (function->release != NULL) function->release(function->context); re_free(&engine->allocator, function->name); re_free(&engine->allocator, function); }
     re_program_destroy(engine->program); re_free(&engine->allocator, engine);
 }
 re_capabilities_t re_engine_capabilities(const re_engine_t *engine) { return engine == NULL ? 0u : RE_CAP_CORE_GRL | RE_CAP_FACTS | RE_CAP_FORWARD_EXECUTION; }
+
+re_status_t re_engine_capabilities_v2(const re_engine_t *engine, uint32_t version, re_capabilities_v2_t *out) {
+    if (engine == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (version != RE_ABI_VERSION_MAJOR) return RE_STATUS_NOT_SUPPORTED;
+    *out = RE_CAP2_CUSTOM_FUNCTIONS | RE_CAP2_STRUCTURED_VALUES | RE_CAP2_FACT_LIFECYCLE |
+           RE_CAP2_STREAMING_WINDOWS | RE_CAP2_STATE_PROVIDER;
+    if (engine->rete_network != NULL) *out |= RE_CAP2_AGENDA_RETE;
+#if defined(RE_ENABLE_C11_PARALLEL)
+    *out |= RE_CAP2_CONCURRENCY;
+#endif
+    return RE_STATUS_OK;
+}
+re_status_t re_engine_extension_info(const re_engine_t *engine, re_extension_id_t id, uint32_t version, re_extension_info_t *out) {
+    if (engine == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if ((id != RE_EXTENSION_CUSTOM_FUNCTIONS && id != RE_EXTENSION_STRUCTURED_VALUES && id != RE_EXTENSION_FACT_LIFECYCLE &&
+         id != RE_EXTENSION_AGENDA_RETE &&
+         id != RE_EXTENSION_STREAMING_WINDOWS && id != RE_EXTENSION_STATE_PROVIDER
+#if defined(RE_ENABLE_C11_PARALLEL)
+         && id != RE_EXTENSION_CONCURRENCY
+#endif
+         ) || version != 1u || out->struct_size < sizeof(*out)) return RE_STATUS_NOT_SUPPORTED;
+    out->abi_major = RE_ABI_VERSION_MAJOR; out->abi_minor = RE_ABI_VERSION_MINOR; out->extension_id = id; out->extension_version = 1u; out->reserved = 0u;
+    if (id == RE_EXTENSION_AGENDA_RETE && engine->rete_network == NULL) return RE_STATUS_NOT_SUPPORTED;
+    out->capability_bit = id == RE_EXTENSION_CUSTOM_FUNCTIONS ? RE_CAP2_CUSTOM_FUNCTIONS :
+        id == RE_EXTENSION_STRUCTURED_VALUES ? RE_CAP2_STRUCTURED_VALUES :
+        id == RE_EXTENSION_FACT_LIFECYCLE ? RE_CAP2_FACT_LIFECYCLE :
+        id == RE_EXTENSION_AGENDA_RETE ? RE_CAP2_AGENDA_RETE :
+        id == RE_EXTENSION_STREAMING_WINDOWS ? RE_CAP2_STREAMING_WINDOWS :
+        id == RE_EXTENSION_STATE_PROVIDER ? RE_CAP2_STATE_PROVIDER : RE_CAP2_CONCURRENCY;
+    return RE_STATUS_OK;
+}
+re_status_t re_engine_register_function(re_engine_t *engine, const re_function_descriptor_t *descriptor, re_function_t **out) {
+    re_function_t *function;
+    if (engine == NULL || descriptor == NULL || out == NULL || descriptor->struct_size < sizeof(*descriptor) || descriptor->abi_version != RE_ABI_VERSION_MAJOR || descriptor->name.data == NULL || descriptor->name.size == 0u || descriptor->call == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (engine->running) return RE_STATUS_BUSY;
+    *out = NULL; function = re_alloc(&engine->allocator, sizeof(*function)); if (function == NULL) return RE_STATUS_OUT_OF_MEMORY; memset(function, 0, sizeof(*function));
+    if (re_copy_string(&engine->allocator, descriptor->name, &function->name) != RE_STATUS_OK) { re_free(&engine->allocator, function); return RE_STATUS_OUT_OF_MEMORY; }
+    function->engine = engine; function->name_size = descriptor->name.size; function->call = descriptor->call; function->release = descriptor->release; function->context = descriptor->context; function->next = engine->functions; engine->functions = function; *out = function; return RE_STATUS_OK;
+}
+void re_function_unregister(re_function_t *function) {
+    re_function_t **link;
+    if (function == NULL || function->unregistered) return;
+    if (function->active_calls != 0u) return;
+    link = &function->engine->functions; while (*link != NULL && *link != function) link = &(*link)->next;
+    if (*link == function) *link = function->next;
+    function->unregistered = 1; if (function->release != NULL) function->release(function->context); re_free(&function->engine->allocator, function->name); re_free(&function->engine->allocator, function);
+}
 re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
     re_program_t *old; if (engine == NULL || program == NULL) return RE_STATUS_INVALID_ARGUMENT;
     if (program->rule_count > engine->limits.max_rules && engine->limits.max_rules != 0u) return RE_STATUS_LIMIT;
     if (engine->running) return RE_STATUS_BUSY;
-    old = engine->program; engine->program = program; re_program_destroy(old); return RE_STATUS_OK;
+    old = engine->program; engine->program = program; re_program_destroy(old);
+    return RE_STATUS_OK;
 }
 
 re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_options_t *options, const re_callbacks_t *callbacks) {
-    size_t i; size_t firings = 0u; size_t agenda_activations = 0u; re_limits_t limits; int explicit_limits;
+    size_t i; size_t firings = 0u; size_t agenda_activations = 0u; size_t *indices = NULL;
+    unsigned char *fired_no_loop = NULL; char **activation_groups = NULL; size_t activation_group_count = 0u;
+    char **locked_groups = NULL; size_t locked_group_count = 0u;
+    re_limits_t limits; int explicit_limits; unsigned char *parallel_matches = NULL;
+    re_status_t status;
     if (engine == NULL || facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
     if (engine->running) return RE_STATUS_BUSY;
     engine->running = 1;
     if (facts->running) { engine->running = 0; return RE_STATUS_BUSY; }
     facts->running = 1;
+    facts->read_allowed = 1;
     explicit_limits = options != NULL && options->limits != NULL;
     limits = explicit_limits ? *options->limits : engine->limits;
     if (limits.max_source_bytes == 0u) limits.max_source_bytes = engine->limits.max_source_bytes;
@@ -80,17 +198,82 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     if (limits.max_agenda_activations == 0u) limits.max_agenda_activations = engine->limits.max_agenda_activations;
     if (limits.max_firings == 0u) limits.max_firings = engine->limits.max_firings;
     if (engine->program == NULL) return finish_run(engine, facts, RE_STATUS_OK);
+    if (engine->rete_network != NULL) {
+        re_rete_network_destroy_internal(engine->rete_network);
+        engine->rete_network = NULL;
+    }
+    if (engine->program->rule_count == 1u) {
+        status = re_rete_network_create_rule(facts, &engine->program->rules[0], NULL, &engine->rete_network);
+        if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return finish_run(engine, facts, status);
+    }
+    if (engine->program->rule_count != 0u) {
+        indices = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*indices));
+        if (indices == NULL) return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY);
+        fired_no_loop = re_alloc(&engine->allocator, engine->program->rule_count);
+        if (fired_no_loop == NULL) { re_free(&engine->allocator, indices); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
+        memset(fired_no_loop, 0, engine->program->rule_count);
+        activation_groups = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*activation_groups));
+        locked_groups = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*locked_groups));
+        if (activation_groups == NULL || locked_groups == NULL) {
+            re_free(&engine->allocator, locked_groups); re_free(&engine->allocator, activation_groups);
+            re_free(&engine->allocator, fired_no_loop); re_free(&engine->allocator, indices);
+            return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY);
+        }
+        for (i = 0u; i < engine->program->rule_count; ++i) indices[i] = i;
+        sort_activation_indices(engine->program, indices);
+    }
+    if (engine->executor != NULL) {
+        int pure = 1;
+        for (i = 0u; i < engine->program->rule_count; ++i)
+            if (!re_condition_is_pure(engine->program->rules[i].condition)) pure = 0;
+        if (pure) {
+            parallel_matches = re_alloc(&engine->allocator, engine->program->rule_count);
+            if (parallel_matches == NULL) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
+            status = re_executor_match(engine->executor, engine, facts, engine->program, parallel_matches);
+            if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); }
+        }
+    }
     for (i = 0u; i < engine->program->rule_count; ++i) {
-        re_rule_t *rule = &engine->program->rules[i]; re_value_t left; re_value_t right; re_rule_event_t event; re_status_t status;
-        if (options != NULL && options->is_cancelled != NULL && options->is_cancelled(options->cancel_context) != 0) return finish_run(engine, facts, RE_STATUS_CANCELLED);
-        status = resolve_operand(facts, &rule->left, &left); if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK) return finish_run(engine, facts, status);
-        if (rule->compare != RE_COMPARE_TRUE) { status = resolve_operand(facts, &rule->right, &right); if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK || !re_value_compare(&left, &right, rule->compare)) continue; }
-        if (limits.max_agenda_activations != 0u && agenda_activations >= limits.max_agenda_activations) return finish_run(engine, facts, RE_STATUS_LIMIT);
+        re_rule_t *rule = &engine->program->rules[indices[i]]; re_rule_event_t event;
+        if (engine->program->module_focus != NULL) { size_t focus_index, import_index; int visible = 0; for (focus_index = 0u; focus_index < engine->program->module_count; ++focus_index) if (engine->program->modules[focus_index].name_size == strlen(engine->program->module_focus) && memcmp(engine->program->modules[focus_index].name, engine->program->module_focus, engine->program->modules[focus_index].name_size) == 0) break; if (focus_index == engine->program->module_count) continue; if (rule->module_index == focus_index) visible = 1; for (import_index = 0u; !visible && import_index < engine->program->modules[focus_index].import_count; ++import_index) if (engine->program->modules[focus_index].imports[import_index] != NULL && engine->program->modules[focus_index].imports[import_index][0] == engine->program->modules[rule->module_index].name[0] && strcmp(engine->program->modules[focus_index].imports[import_index], engine->program->modules[rule->module_index].name) == 0 && engine->program->modules[rule->module_index].export_all) visible = 1; if (!visible) continue; }
+        if (!re_rule_active(rule, engine->program->has_clock ? engine->program->clock_epoch : 0)) continue;
+        if (engine->program->agenda_focus == NULL) {
+            if (rule->agenda_group != NULL) continue;
+        } else if (rule->agenda_group == NULL || strcmp(rule->agenda_group, engine->program->agenda_focus) != 0) continue;
+        if (rule->no_loop && fired_no_loop[indices[i]]) continue;
+        if (rule->lock_on_active && rule->agenda_group != NULL) {
+            size_t group_index;
+            for (group_index = 0u; group_index < locked_group_count; ++group_index)
+                if (strcmp(locked_groups[group_index], rule->agenda_group) == 0) break;
+            if (group_index != locked_group_count) continue;
+        }
+        if (rule->activation_group != NULL) {
+            size_t group_index;
+            for (group_index = 0u; group_index < activation_group_count; ++group_index)
+                if (strcmp(activation_groups[group_index], rule->activation_group) == 0) break;
+            if (group_index != activation_group_count) continue;
+        }
+        if (options != NULL && options->is_cancelled != NULL && options->is_cancelled(options->cancel_context) != 0) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_CANCELLED); }
+         { int matched = 0; status = parallel_matches != NULL ? RE_STATUS_OK : evaluate(engine, facts, rule->condition, &matched); if (parallel_matches != NULL) matched = parallel_matches[indices[i]] != 0u; if (engine->rete_network != NULL && indices[i] == 0u) matched = re_rete_activation_count(engine->rete_network) != 0u; if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } if (!matched) continue; }
+        if (limits.max_agenda_activations != 0u && agenda_activations >= limits.max_agenda_activations) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
         ++agenda_activations;
         event.rule_name.data = rule->name; event.rule_name.size = rule->name_size; event.salience = rule->salience; event.activation_sequence = (uint64_t)firings + 1u;
-        status = apply_action(facts, rule); if (status != RE_STATUS_OK) return finish_run(engine, facts, status);
-        if (callbacks != NULL && callbacks->action != NULL) { status = callbacks->action(engine, facts, &event, callbacks->context); if (status != RE_STATUS_OK) return finish_run(engine, facts, status); }
-        ++firings; if (limits.max_firings != 0u && firings >= limits.max_firings) return finish_run(engine, facts, RE_STATUS_LIMIT);
+        if (rule->activation_group != NULL) {
+            activation_groups[activation_group_count] = rule->activation_group;
+            ++activation_group_count;
+        }
+        if (rule->no_loop) fired_no_loop[indices[i]] = 1u;
+        if (rule->lock_on_active && rule->agenda_group != NULL) {
+            locked_groups[locked_group_count] = rule->agenda_group;
+            ++locked_group_count;
+        }
+        facts->mutation_allowed = 1;
+        { size_t action_index; for (action_index = 0u; action_index < rule->action_count; ++action_index) { re_value_t value; status = re_operand_resolve(engine, facts, &rule->actions[action_index].value, &value); if (status != RE_STATUS_OK) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } status = re_facts_set(facts, (re_string_t){rule->actions[action_index].name, rule->actions[action_index].name_size}, &value); if (status != RE_STATUS_OK) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } } }
+        if (callbacks != NULL && callbacks->action != NULL) { status = callbacks->action(engine, facts, &event, callbacks->context); if (status != RE_STATUS_OK) { re_free(&engine->allocator, locked_groups); re_free(&engine->allocator, activation_groups); re_free(&engine->allocator, fired_no_loop); re_free(&engine->allocator, indices); return finish_run(engine, facts, status); } }
+        facts->mutation_allowed = 0;
+        ++firings; if (limits.max_firings != 0u && firings >= limits.max_firings) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
     }
+    re_free(&engine->allocator, parallel_matches);
+    free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups);
     return finish_run(engine, facts, RE_STATUS_OK);
 }

@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Platform detection
 option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
+option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match executor" OFF)
+option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
 # myui integration options
 option(MYUI_FONT_STB "TrueType fonts via stb_truetype" ON)
 option(MYUI_FONT_FREETYPE "Hinted fonts via FreeType when available" ON)
@@ -41,7 +43,7 @@ endif()
 # === Compiler flags ===
 if(MSVC)
     # Microsoft Visual C++ (cl.exe)
-    add_compile_options(/W4 /WX /utf-8)
+    add_compile_options(/W4 /WX /utf-8 /experimental:c11atomics)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
     # Clang (Linux/Windows clang-cl/clang)
@@ -320,7 +322,8 @@ if(MYUI_BIDI)
     target_compile_definitions(myui_core PUBLIC MYUI_BIDI=1)
     if(MSVC)
         set_source_files_properties(external/SheenBidi/Source/SheenBidi.c PROPERTIES
-            COMPILE_DEFINITIONS SB_CONFIG_UNITY)
+            COMPILE_DEFINITIONS SB_CONFIG_UNITY
+            COMPILE_OPTIONS "/wd4100;/wd4189")
     else()
         set_source_files_properties(external/SheenBidi/Source/SheenBidi.c PROPERTIES
             COMPILE_DEFINITIONS SB_CONFIG_UNITY
@@ -677,6 +680,9 @@ add_executable(test_vulkan src/test_vulkan.c)
 # cannot reach the backend from here; instead it arms the explicit
 # rhi_vk_validation_set_enabled(true) call at the top of test_vulkan's main.
 target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
+if(MSVC)
+    target_compile_options(test_vulkan PRIVATE /wd4702)
+endif()
 target_link_libraries(test_vulkan PRIVATE engine m)
 
 add_executable(packer tools/packer.c)
@@ -689,10 +695,38 @@ endif()
 
 # Rule-engine core: C99-only and independent of engine graphics, UI, and Lua.
 add_library(rule_engine_core STATIC
-    src/rule_engine/allocator.c src/rule_engine/facts.c
-    src/rule_engine/parser.c src/rule_engine/engine.c)
+    src/rule_engine/allocator.c src/rule_engine/facts.c src/rule_engine/values.c
+    src/rule_engine/parser.c src/rule_engine/engine.c src/rule_engine/extensions.c
+    src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
+    src/rule_engine/stream_correlation.c
+    src/rule_engine/rete.c src/rule_engine/advanced.c src/rule_engine/backward.c
+    src/rule_engine/executor.c)
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(RULE_ENGINE_ENABLE_REDIS)
+    find_path(RULE_ENGINE_REDIS_INCLUDE_DIR hiredis/hiredis.h)
+    find_library(RULE_ENGINE_REDIS_LIBRARY NAMES hiredis)
+    if(NOT RULE_ENGINE_REDIS_INCLUDE_DIR OR NOT RULE_ENGINE_REDIS_LIBRARY)
+        message(FATAL_ERROR
+            "RULE_ENGINE_ENABLE_REDIS requires hiredis/hiredis.h and a hiredis library; "
+            "install the client development package, then configure again")
+    endif()
+    message(STATUS
+        "Redis client detected at ${RULE_ENGINE_REDIS_INCLUDE_DIR}; native adapter remains "
+        "disabled until its integration contract is implemented")
+endif()
+if(RULE_ENGINE_ENABLE_C11_PARALLEL)
+    include(CheckIncludeFile)
+    check_include_file(threads.h RULE_ENGINE_HAS_THREADS_H)
+    if(NOT RULE_ENGINE_HAS_THREADS_H)
+        message(FATAL_ERROR "RULE_ENGINE_ENABLE_C11_PARALLEL requires C11 <threads.h>")
+    endif()
+    set_source_files_properties(src/rule_engine/executor.c PROPERTIES C_STANDARD 11)
+    if(MSVC)
+        set_source_files_properties(src/rule_engine/executor.c PROPERTIES COMPILE_OPTIONS "/std:c11")
+    endif()
+    target_compile_definitions(rule_engine_core PRIVATE RE_ENABLE_C11_PARALLEL=1)
+endif()
 
 # Rule-engine baseline benchmark. Timing-sensitive by design; build and run it
 # manually rather than registering it as a CTest test.
@@ -728,6 +762,24 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine COMMAND test_rule_engine)
+
+    add_executable(rule_engine_fuzz_smoke tests/rule_engine_fuzz_smoke.c)
+    set_property(TARGET rule_engine_fuzz_smoke PROPERTY C_STANDARD 99)
+    target_include_directories(rule_engine_fuzz_smoke PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(rule_engine_fuzz_smoke PRIVATE rule_engine_core)
+    add_test(NAME rule_engine_fuzz_smoke COMMAND rule_engine_fuzz_smoke)
+    set_tests_properties(rule_engine_fuzz_smoke PROPERTIES TIMEOUT 20 LABELS hardening)
+
+    if(RULE_ENGINE_ENABLE_C11_PARALLEL)
+        add_executable(test_rule_engine_executor_stress tests/test_rule_engine_executor_stress.c)
+        set_property(TARGET test_rule_engine_executor_stress PROPERTY C_STANDARD 99)
+        target_include_directories(test_rule_engine_executor_stress PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_rule_engine_executor_stress PRIVATE rule_engine_core)
+        add_test(NAME test_rule_engine_executor_stress COMMAND test_rule_engine_executor_stress)
+        set_tests_properties(test_rule_engine_executor_stress PROPERTIES TIMEOUT 20 LABELS hardening)
+    else()
+        message(STATUS "C11 executor stress target disabled; set RULE_ENGINE_ENABLE_C11_PARALLEL=ON when <threads.h> is available")
+    endif()
 
     # test_math: only needs math.c (vec3/quat are inline in header)
     add_executable(test_math tests/test_math.c src/math/math.c)

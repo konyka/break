@@ -1,0 +1,5 @@
+# case.metric=max_seconds
+sparse.cold_load=2.000000
+sparse.warm_eval=2.000000
+dense.cold_load=2.000000
+dense.warm_eval=2.000000

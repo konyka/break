@@ -14,7 +14,9 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     if (facts == NULL) return NULL;
     facts->allocator = selected; facts->limits = limits != NULL ? *limits : re_default_limits();
     facts->entries = NULL; facts->count = 0u; facts->capacity = 0u;
-    facts->running = 0; facts->destroy_requested = 0;
+    facts->mutation_serial = 0u;
+    facts->running = 0; facts->mutation_allowed = 0; facts->read_allowed = 0; facts->destroy_requested = 0;
+    facts->subscriptions = NULL;
     return facts;
 }
 
@@ -22,9 +24,11 @@ void re_facts_destroy(re_facts_t *facts) {
     size_t index;
     if (facts == NULL) return;
     if (facts->running) { facts->destroy_requested = 1; return; }
+    while (facts->subscriptions != NULL) re_subscription_destroy(facts->subscriptions);
     for (index = 0u; index < facts->count; ++index) {
         re_free(&facts->allocator, facts->entries[index].name);
         re_free(&facts->allocator, facts->entries[index].string_data);
+        re_value_destroy(facts->entries[index].structured);
     }
     re_free(&facts->allocator, facts->entries);
     re_free(&facts->allocator, facts);
@@ -40,7 +44,7 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
     if (value->type == RE_VALUE_STRING) {
         re_status_t status = re_copy_string(&facts->allocator, value->as.string, &string_copy);
         if (status != RE_STATUS_OK) return status;
-    } else if (value->type < RE_VALUE_NONE || value->type > RE_VALUE_STRING) return RE_STATUS_INVALID_ARGUMENT;
+    } else if (value->type < RE_VALUE_NONE || value->type > RE_VALUE_UNKNOWN) return RE_STATUS_INVALID_ARGUMENT;
     for (index = 0u; index < facts->count; ++index) if (same_name(name, &facts->entries[index])) break;
     if (index == facts->count) {
         if (facts->count == facts->capacity) {
@@ -60,7 +64,11 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
         { re_status_t status = re_copy_string(&facts->allocator, name, &name_copy);
           if (status != RE_STATUS_OK) { re_free(&facts->allocator, string_copy); return status; } }
         facts->entries[index].name = name_copy; facts->entries[index].name_size = name.size; facts->count++;
-    } else re_free(&facts->allocator, facts->entries[index].string_data);
+    } else {
+        re_free(&facts->allocator, facts->entries[index].string_data);
+        re_value_destroy(facts->entries[index].structured);
+        facts->entries[index].structured = NULL;
+    }
     replacement.value = *value; replacement.string_data = string_copy;
     if (replacement.value.type == RE_VALUE_BOOL)
         replacement.value.as.boolean = replacement.value.as.boolean != 0;
@@ -69,7 +77,11 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
         replacement.value.as.string.size = value->as.string.size;
     }
     replacement.name = facts->entries[index].name; replacement.name_size = facts->entries[index].name_size;
+    replacement.structured = NULL;
+    replacement.generation = facts->entries[index].generation;
+    replacement.active = facts->entries[index].active;
     facts->entries[index] = replacement;
+    facts->mutation_serial++;
     return RE_STATUS_OK;
 }
 
@@ -87,4 +99,100 @@ re_status_t re_facts_resolve(const re_facts_t *facts, re_string_t name, re_value
 
 re_status_t re_facts_get(const re_facts_t *facts, re_string_t name, re_value_t *out_value) {
     return re_facts_resolve(facts, name, out_value);
+}
+
+static void notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index) {
+    re_subscription_t *subscription = facts->subscriptions;
+    re_fact_event_t event;
+    event.struct_size = sizeof(event);
+    event.kind = kind;
+    event.id.slot = (uint64_t)index;
+    event.id.generation = facts->entries[index].generation;
+    event.name.data = facts->entries[index].name;
+    event.name.size = facts->entries[index].name_size;
+    event.value = facts->entries[index].value;
+    while (subscription != NULL) {
+        subscription->callback(facts, &event, subscription->context);
+        subscription = subscription->next;
+    }
+}
+
+re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
+                            const re_value_t *value, re_fact_id_t *out_id) {
+    size_t index;
+    re_status_t status;
+    if (facts == NULL || out_id == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    status = re_facts_set(facts, name, value);
+    if (status != RE_STATUS_OK) return status;
+    for (index = 0u; index < facts->count; ++index)
+        if (same_name(name, &facts->entries[index])) break;
+    facts->entries[index].generation += 1u;
+    facts->entries[index].active = 1;
+    out_id->slot = (uint64_t)index;
+    out_id->generation = facts->entries[index].generation;
+    notify(facts, RE_FACT_INSERT, index);
+    return RE_STATUS_OK;
+}
+
+re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id, const re_value_t *value) {
+    if (facts == NULL || value == NULL || id.slot >= facts->count ||
+        !facts->entries[id.slot].active || facts->entries[id.slot].generation != id.generation)
+        return RE_STATUS_NOT_FOUND;
+    {
+        re_status_t status = re_facts_set(facts, (re_string_t){facts->entries[id.slot].name, facts->entries[id.slot].name_size}, value);
+        if (status == RE_STATUS_OK) notify(facts, RE_FACT_UPDATE, (size_t)id.slot);
+        return status;
+    }
+}
+
+re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
+    char *name;
+    size_t name_size;
+    re_value_t value;
+    if (facts == NULL || id.slot >= facts->count || !facts->entries[id.slot].active ||
+        facts->entries[id.slot].generation != id.generation) return RE_STATUS_NOT_FOUND;
+    name = facts->entries[id.slot].name;
+    name_size = facts->entries[id.slot].name_size;
+    value = facts->entries[id.slot].value;
+    facts->entries[id.slot].name = NULL;
+    facts->entries[id.slot].name_size = 0u;
+    facts->entries[id.slot].string_data = NULL;
+    facts->entries[id.slot].structured = NULL;
+    facts->entries[id.slot].active = 0;
+    facts->entries[id.slot].name = name;
+    facts->entries[id.slot].name_size = name_size;
+    facts->entries[id.slot].value = value;
+    notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
+    re_free(&facts->allocator, facts->entries[id.slot].string_data);
+    re_value_destroy(facts->entries[id.slot].structured);
+    facts->entries[id.slot].string_data = NULL;
+    facts->entries[id.slot].structured = NULL;
+    re_free(&facts->allocator, facts->entries[id.slot].name);
+    facts->entries[id.slot].name = NULL;
+    facts->entries[id.slot].name_size = 0u;
+    return RE_STATUS_OK;
+}
+
+re_status_t re_facts_subscribe(re_facts_t *facts, re_fact_event_fn_t callback,
+                               void *context, re_subscription_t **out_subscription) {
+    re_subscription_t *subscription;
+    if (facts == NULL || callback == NULL || out_subscription == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    subscription = re_alloc(&facts->allocator, sizeof(*subscription));
+    if (subscription == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    subscription->facts = facts;
+    subscription->callback = callback;
+    subscription->context = context;
+    subscription->next = facts->subscriptions;
+    facts->subscriptions = subscription;
+    *out_subscription = subscription;
+    return RE_STATUS_OK;
+}
+
+void re_subscription_destroy(re_subscription_t *subscription) {
+    re_subscription_t **link;
+    if (subscription == NULL) return;
+    link = &subscription->facts->subscriptions;
+    while (*link != NULL && *link != subscription) link = &(*link)->next;
+    if (*link == subscription) *link = subscription->next;
+    re_free(&subscription->facts->allocator, subscription);
 }

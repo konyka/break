@@ -13,6 +13,9 @@ typedef struct re_fact_entry_t {
     size_t name_size;
     re_value_t value;
     char *string_data;
+    re_value_handle_t *structured;
+    uint64_t generation;
+    int active;
 } re_fact_entry_t;
 
 struct re_facts_t {
@@ -21,20 +24,64 @@ struct re_facts_t {
     re_fact_entry_t *entries;
     size_t count;
     size_t capacity;
+    uint64_t mutation_serial;
     int running;
+    int mutation_allowed;
+    int read_allowed;
     int destroy_requested;
+    struct re_subscription_t *subscriptions;
 };
 
-typedef enum re_operand_kind_t { RE_OPERAND_LITERAL, RE_OPERAND_FACT } re_operand_kind_t;
+typedef struct re_value_member_t {
+    char *key;
+    size_t key_size;
+    re_value_t scalar;
+    re_value_handle_t *child;
+} re_value_member_t;
+
+struct re_value_handle_t {
+    re_allocator_impl_t allocator;
+    int kind;
+    re_value_member_t *members;
+    size_t count;
+    size_t capacity;
+};
+
+struct re_subscription_t {
+    re_facts_t *facts;
+    re_fact_event_fn_t callback;
+    void *context;
+    struct re_subscription_t *next;
+};
+
+typedef enum re_operand_kind_t { RE_OPERAND_LITERAL, RE_OPERAND_FACT, RE_OPERAND_FUNCTION } re_operand_kind_t;
 typedef struct re_operand_t {
     re_operand_kind_t kind;
     re_value_t value;
     char *fact_name;
     size_t fact_name_size;
+    char *function_name;
+    size_t function_name_size;
+    struct re_operand_t *arguments;
+    size_t argument_count;
 } re_operand_t;
 
 typedef enum re_compare_t { RE_COMPARE_TRUE, RE_COMPARE_EQ, RE_COMPARE_NE, RE_COMPARE_GT,
     RE_COMPARE_GE, RE_COMPARE_LT, RE_COMPARE_LE } re_compare_t;
+typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE } re_expr_kind_t;
+typedef struct re_expr_t {
+    re_expr_kind_t kind;
+    re_compare_t compare;
+    re_operand_t left;
+    re_operand_t right;
+    struct re_expr_t *first;
+    struct re_expr_t *second;
+} re_expr_t;
+typedef struct re_action_t {
+    char *name;
+    size_t name_size;
+    re_operand_t value;
+} re_action_t;
 typedef struct re_rule_t {
     char *name;
     size_t name_size;
@@ -45,8 +92,26 @@ typedef struct re_rule_t {
     char *action_name;
     size_t action_name_size;
     re_operand_t action_value;
+    re_expr_t *condition;
+    re_action_t *actions;
+    size_t action_count;
+    int no_loop;
+    int lock_on_active;
+    char *agenda_group;
+    char *activation_group;
+    char *effective_date;
+    char *expiry_date;
     size_t source_order;
+    size_t module_index;
 } re_rule_t;
+
+typedef struct re_module_t {
+    char *name;
+    size_t name_size;
+    int export_all;
+    char **imports;
+    size_t import_count;
+} re_module_t;
 
 struct re_program_t {
     re_allocator_impl_t allocator;
@@ -55,7 +120,20 @@ struct re_program_t {
     size_t source_size;
     re_rule_t *rules;
     size_t rule_count;
+    char *module_focus;
+    char *agenda_focus;
+    int64_t clock_epoch;
+    int has_clock;
+    re_module_t *modules;
+    size_t module_count;
 };
+
+re_status_t re_accumulator_evaluate(re_accumulator_kind_t kind, const re_value_t *values, size_t count, re_value_t *out);
+re_status_t re_program_set_module_focus(re_program_t *program, re_string_t module);
+re_status_t re_program_set_agenda_focus(re_program_t *program, re_string_t group);
+re_status_t re_program_set_clock(re_program_t *program, int64_t epoch_seconds);
+int re_parse_date(const char *text, int64_t *out);
+int re_rule_active(const re_rule_t *rule, int64_t now);
 
 struct re_engine_t {
     re_allocator_impl_t allocator;
@@ -63,6 +141,111 @@ struct re_engine_t {
     re_program_t *program;
     int running;
     int destroy_requested;
+    struct re_function_t *functions;
+    re_executor_t *executor;
+    re_rete_network_t *rete_network;
+};
+
+typedef struct re_stream_event_impl_t {
+    uint64_t timestamp;
+    char *name;
+    size_t name_size;
+    re_value_t value;
+    char *value_data;
+} re_stream_event_impl_t;
+
+struct re_stream_window_t {
+    re_allocator_impl_t allocator;
+    re_stream_window_options_t options;
+    re_stream_event_impl_t *events;
+    size_t count;
+    size_t capacity;
+    uint64_t watermark;
+    uint64_t bucket_start;
+    uint64_t session_end;
+};
+
+re_status_t re_stream_window_create_bounded(re_engine_t *engine,
+                                            const re_stream_window_options_t *options,
+                                            re_stream_window_t **out_window);
+re_status_t re_stream_window_record_bounded(re_stream_window_t *window,
+                                            uint64_t timestamp_ms,
+                                            re_string_t event_name,
+                                            const re_value_t *value);
+
+struct re_state_provider_t {
+    re_allocator_impl_t allocator;
+    re_state_provider_descriptor_t descriptor;
+    re_provider_error_info_t last_error;
+    void *implementation;
+};
+
+re_status_t re_memory_provider_init(re_engine_t *engine,
+                                    const re_memory_provider_options_t *options,
+                                    re_state_provider_t **out_provider);
+
+typedef struct re_rete_condition_t {
+    re_string_t fact_name;
+    re_compare_t compare;
+    re_value_t value;
+} re_rete_condition_t;
+
+typedef struct re_rete_activation_t {
+    re_fact_id_t left;
+    re_fact_id_t right;
+    uint64_t sequence;
+} re_rete_activation_t;
+
+struct re_rete_network_t {
+    re_allocator_impl_t allocator;
+    re_facts_t *facts;
+    re_rete_condition_t *conditions;
+    size_t condition_count;
+    re_rete_activation_t *activations;
+    size_t activation_count;
+    size_t activation_capacity;
+    struct re_subscription_t *subscription;
+};
+
+struct re_function_t {
+    re_engine_t *engine;
+    char *name;
+    size_t name_size;
+    re_function_call_fn_t call;
+    re_function_release_fn_t release;
+    void *context;
+    size_t active_calls;
+    int unregistered;
+    struct re_function_t *next;
+};
+
+typedef struct re_query_binding_impl_t {
+    char *name;
+    size_t name_size;
+    re_value_t value;
+    char *string_data;
+} re_query_binding_impl_t;
+
+struct re_proof_t {
+    re_allocator_impl_t allocator;
+    re_query_binding_impl_t *bindings;
+    size_t binding_count;
+    char **trace_names;
+    size_t trace_count;
+};
+
+struct re_query_t {
+    re_allocator_impl_t allocator;
+    re_engine_t *engine;
+    re_facts_t *facts;
+    re_subscription_t *subscription;
+    re_query_result_t result;
+    re_proof_t **proofs;
+    size_t proof_count;
+    size_t next_proof;
+    size_t max_depth;
+    size_t max_solutions;
+    int invalidated;
 };
 
 void *re_alloc(const re_allocator_impl_t *allocator, size_t size);
@@ -72,9 +255,51 @@ void re_allocator_init(re_allocator_impl_t *target, const re_allocator_t *source
 re_limits_t re_default_limits(void);
 re_status_t re_copy_string(const re_allocator_impl_t *allocator, re_string_t input, char **out);
 void re_operand_destroy(const re_allocator_impl_t *allocator, re_operand_t *operand);
+void re_expr_destroy(const re_allocator_impl_t *allocator, re_expr_t *expr);
 re_status_t re_operand_copy(const re_allocator_impl_t *allocator, const re_operand_t *source,
-                            re_operand_t *target);
+                             re_operand_t *target);
+re_status_t re_operand_resolve(re_engine_t *engine, re_facts_t *facts,
+                                const re_operand_t *operand, re_value_t *value);
 re_status_t re_facts_resolve(const re_facts_t *facts, re_string_t name, re_value_t *out);
 int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare_t compare);
+int re_program_uses_rete(const re_program_t *program, const re_facts_t *facts);
+re_status_t re_engine_run_rete(re_engine_t *engine, re_facts_t *facts,
+                               const re_run_options_t *options,
+                                  const re_callbacks_t *callbacks);
+
+int re_condition_is_pure(const re_expr_t *expr);
+re_status_t re_engine_match_rule(const re_engine_t *engine, const re_facts_t *facts,
+                                 const re_rule_t *rule, int *matched);
+re_status_t re_executor_match(re_executor_t *executor, const re_engine_t *engine,
+                              const re_facts_t *facts, const re_program_t *program,
+                              unsigned char *matches);
+void re_executor_attach(re_executor_t *executor, re_engine_t *engine);
+re_status_t re_executor_create_impl(re_engine_t *engine, const re_concurrency_options_t *options,
+                                    re_executor_t **out_executor);
+void re_executor_destroy_impl(re_executor_t *executor);
+
+re_status_t re_query_create_bounded(re_engine_t *engine, re_facts_t *facts,
+                                    re_string_t goal, const re_query_options_t *options,
+                                    re_query_t **out_query);
+
+re_status_t re_rete_network_create(re_facts_t *facts,
+                                    const re_rete_condition_t conditions[2],
+                                    const re_allocator_t *allocator,
+                                    re_rete_network_t **out_network);
+re_status_t re_rete_network_create_conditions(re_facts_t *facts,
+                                               const re_rete_condition_t *conditions,
+                                               size_t condition_count,
+                                               const re_allocator_t *allocator,
+                                               re_rete_network_t **out_network);
+re_status_t re_rete_network_create_rule(re_facts_t *facts,
+                                        const re_rule_t *rule,
+                                        const re_allocator_t *allocator,
+                                        re_rete_network_t **out_network);
+void re_rete_network_destroy_internal(re_rete_network_t *network);
+size_t re_rete_activation_count(const re_rete_network_t *network);
+re_status_t re_rete_activation_get(const re_rete_network_t *network,
+                                    size_t index, re_rete_activation_t *out);
+int re_rete_conditions_from_rule(const re_rule_t *rule,
+                                 re_rete_condition_t conditions[2]);
 
 #endif
