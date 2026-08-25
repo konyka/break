@@ -49,7 +49,8 @@ SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于�
 作为 header 保留可见，后续物理行隐藏。严格包含嵌套允许，交叉或同起点重叠请求拒绝，
 不会改变文本缓冲区和逻辑 row/column 坐标。折叠状态可通过
 `my_text_area_folds_to_yaml()` / `my_text_area_folds_from_yaml()` 保存和恢复；YAML 仅允许
-`folds` 数组及 `start`/`end` 整数字段，导入采用事务替换。
+`version: 1`（同时兼容无版本 legacy 快照）、`folds` 数组及 `start`/`end` 整数字段，
+导入采用事务替换。
 
 折叠打开后，text area 为可见物理行建立缓存；wrap visual-line cache 只为可见行生成
 段落。默认无折叠路径直接复用物理行 offset cache，不创建可见行映射，也不增加逐帧全文

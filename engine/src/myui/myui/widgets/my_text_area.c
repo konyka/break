@@ -26,6 +26,8 @@
 #define TA_SYNTAX_DEFAULT_LINE_BUDGET 32
 #define TA_MAX_FOLD_STATE_BYTES (64u * 1024u)
 #define TA_MAX_FOLD_RANGES 4096u
+#define TA_FOLD_STATE_VERSION 1
+#define TA_FOLD_STATE_HEADER "version: 1\nfolds:\n"
 
 typedef struct my_text_fold_range_t {
   size_t start_row;
@@ -2094,17 +2096,16 @@ my_ret_t my_text_area_folds_to_yaml(const my_widget_t* area,
   if (area == NULL || out_yaml == NULL) return MY_RET_INVALID_PARAMS;
   *out_yaml = NULL;
   if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
-    yaml = (char*)my_mem_alloc(allocator, 8);
+    yaml = (char*)my_mem_alloc(allocator, sizeof(TA_FOLD_STATE_HEADER));
     if (yaml == NULL) return MY_RET_OOM;
-    memcpy(yaml, "folds:\n", 7);
-    yaml[7] = '\0';
+    memcpy(yaml, TA_FOLD_STATE_HEADER, sizeof(TA_FOLD_STATE_HEADER));
     *out_yaml = yaml;
     return MY_RET_OK;
   }
   if (my_darray_size(ta->fold_ranges) > TA_MAX_FOLD_RANGES) {
     return MY_RET_INVALID_PARAMS;
   }
-  len = 7;
+  len = sizeof(TA_FOLD_STATE_HEADER) - 1;
   for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
     const my_text_fold_range_t* range =
         (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
@@ -2118,8 +2119,8 @@ my_ret_t my_text_area_folds_to_yaml(const my_widget_t* area,
   }
   yaml = (char*)my_mem_alloc(allocator, len + 1);
   if (yaml == NULL) return MY_RET_OOM;
-  memcpy(yaml, "folds:\n", 7);
-  len = 7;
+  memcpy(yaml, TA_FOLD_STATE_HEADER, sizeof(TA_FOLD_STATE_HEADER) - 1);
+  len = sizeof(TA_FOLD_STATE_HEADER) - 1;
   for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
     const my_text_fold_range_t* range =
         (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
@@ -2141,6 +2142,7 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
   my_text_area_t* ta = (my_text_area_t*)area;
   my_conf_node_t* root = NULL;
   my_conf_node_t* folds;
+  my_conf_node_t* version;
   my_conf_error_t error;
   my_darray_t* candidate = NULL;
   size_t i;
@@ -2148,9 +2150,19 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
     return MY_RET_INVALID_PARAMS;
   }
   root = my_conf_parse_yaml(ta->allocator, yaml, strlen(yaml), &error);
-  if (root == NULL || my_conf_type(root) != MY_CONF_OBJECT ||
-      my_conf_child_count(root) != 1 ||
-      strcmp(my_conf_key(my_conf_child(root, 0)), "folds") != 0) {
+  if (root == NULL || my_conf_type(root) != MY_CONF_OBJECT) goto invalid;
+  if (my_conf_child_count(root) == 1 &&
+      strcmp(my_conf_key(my_conf_child(root, 0)), "folds") == 0) {
+    version = NULL;
+  } else if (my_conf_child_count(root) == 2) {
+    version = my_conf_get(root, "version");
+    if (version == NULL || my_conf_type(version) != MY_CONF_INT64 ||
+        my_conf_as_int64(version, -1) != TA_FOLD_STATE_VERSION) goto invalid;
+    if (strcmp(my_conf_key(my_conf_child(root, 0)), "version") != 0 &&
+        strcmp(my_conf_key(my_conf_child(root, 0)), "folds") != 0) goto invalid;
+    if (strcmp(my_conf_key(my_conf_child(root, 1)), "version") != 0 &&
+        strcmp(my_conf_key(my_conf_child(root, 1)), "folds") != 0) goto invalid;
+  } else {
     goto invalid;
   }
   folds = my_conf_get(root, "folds");

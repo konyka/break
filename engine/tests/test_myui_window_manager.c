@@ -449,13 +449,21 @@ TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
   ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, true), MY_RET_OK);
   ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
   ASSERT_NOT_NULL(yaml);
-  ASSERT_STR_EQ(yaml, "folds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
+  ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
   ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
   ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
   ASSERT_EQ(my_text_area_folds_from_yaml(area, yaml), MY_RET_OK);
   ASSERT_TRUE(my_text_area_is_folded(area, 0));
   ASSERT_TRUE(my_text_area_is_folded(area, 1));
   ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n"),
+            MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_folds_from_yaml(area, "version: 2\nfolds:\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
   ASSERT_EQ(my_text_area_folds_from_yaml(area,
                                          "folds:\n  - start: 0\n    end: 99\n"),
             MY_RET_INVALID_PARAMS);
@@ -474,7 +482,7 @@ TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
   my_mem_free(NULL, yaml);
   yaml = NULL;
   ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
-  ASSERT_STR_EQ(yaml, "folds:\n");
+  ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n");
   my_mem_free(NULL, yaml);
   my_widget_unref(area);
 }
