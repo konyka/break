@@ -1820,3 +1820,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   默认无折叠路径的分配或逐帧扫描成本。
 - TDD 新增 `text_area_nested_fold_ranges_preserve_containment`；定向
   `test_myui_window_manager` **40/40** 通过。
+
+## myui YAML fold-state persistence（2026-08-25）
+
+- 新增 `my_text_area_folds_to_yaml()` / `my_text_area_folds_from_yaml()`；格式严格限定为
+  `folds` 数组及每项的 `start`/`end` int64，当前只保存物理行闭区间，不保存文本内容或
+  光标状态。
+- 导出限制 64 KiB、4096 个区间；导入限制相同，并校验行范围、嵌套/交叉关系和所有 schema
+  字段。候选区间完全构建成功后才替换旧状态，非法 YAML 或 OOM 不破坏当前折叠。
+- TDD 新增 `text_area_fold_state_yaml_roundtrip_and_transaction`；普通和 ASan
+  `test_myui_window_manager` 均通过。

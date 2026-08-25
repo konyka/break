@@ -46,8 +46,10 @@ SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于�
 `my_text_area` 的行号栏和折叠均属于 widget/core 能力，不依赖 GL、Vulkan 或 Break RHI
 私有类型。行号栏通过 `my_text_area_set_line_numbers()` 启用；折叠通过
 `my_text_area_set_folded_range(area, start_row, end_row, true)` 设置，范围为闭区间，首行
-作为 header 保留可见，后续物理行隐藏。范围必须有效且互不重叠，非法或重叠请求拒绝，
-不会改变文本缓冲区和逻辑 row/column 坐标。
+作为 header 保留可见，后续物理行隐藏。严格包含嵌套允许，交叉或同起点重叠请求拒绝，
+不会改变文本缓冲区和逻辑 row/column 坐标。折叠状态可通过
+`my_text_area_folds_to_yaml()` / `my_text_area_folds_from_yaml()` 保存和恢复；YAML 仅允许
+`folds` 数组及 `start`/`end` 整数字段，导入采用事务替换。
 
 折叠打开后，text area 为可见物理行建立缓存；wrap visual-line cache 只为可见行生成
 段落。默认无折叠路径直接复用物理行 offset cache，不创建可见行映射，也不增加逐帧全文
@@ -351,7 +353,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行并接入 text area；完整 RTL GSUB、跨 face run、多段落增量 rebreaking 仍未实现 | 增加 RTL shaping run、段落级 visual mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
-| 编辑器 | 代码折叠（支持严格包含嵌套）、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；持久化折叠、完整 RTL token shaping 仍未实现 | 增加 YAML 折叠快照和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
+| 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |

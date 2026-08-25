@@ -439,6 +439,46 @@ TEST(text_area_nested_fold_ranges_preserve_containment)
   my_widget_unref(area);
 }
 
+TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  char* yaml = NULL;
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd\ne\nf"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
+  ASSERT_NOT_NULL(yaml);
+  ASSERT_STR_EQ(yaml, "folds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area, yaml), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 99\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 3\n    extra: 1\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 3\n\nextra: 1\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
+  my_mem_free(NULL, yaml);
+  yaml = NULL;
+  ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
+  ASSERT_STR_EQ(yaml, "folds:\n");
+  my_mem_free(NULL, yaml);
+  my_widget_unref(area);
+}
+
 TEST(text_area_folded_range_rebuilds_wrapped_visual_lines)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1492,6 +1532,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_folded_range_hides_only_inner_physical_lines);
     RUN_TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges);
     RUN_TEST(text_area_nested_fold_ranges_preserve_containment);
+    RUN_TEST(text_area_fold_state_yaml_roundtrip_and_transaction);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(text_area_syntax_is_lazy_and_budgeted);

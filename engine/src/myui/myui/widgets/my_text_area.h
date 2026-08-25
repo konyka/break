@@ -122,6 +122,14 @@ int32_t my_text_area_content_left(const my_widget_t* area);
 my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
                                        size_t end_row, bool folded);
 
+/** @brief Export folded physical-row ranges as a bounded YAML document. */
+my_ret_t my_text_area_folds_to_yaml(const my_widget_t* area,
+                                    const my_allocator_t* allocator,
+                                    char** out_yaml);
+
+/** @brief Transactionally replace folded ranges from the strict YAML schema. */
+my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml);
+
 /** @brief Whether `row` is currently the header of a folded range. */
 bool my_text_area_is_folded(const my_widget_t* area, size_t row);
 

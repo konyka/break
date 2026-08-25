@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "myc/my_str.h"
+#include "myc/myconf/my_conf.h"
 #include "myr/my_font.h"
 #include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
@@ -23,6 +24,8 @@
 #define TA_CELL_W 8 /* fallback cell width without a font */
 #define TA_LINE_NUMBER_GAP 6
 #define TA_SYNTAX_DEFAULT_LINE_BUDGET 32
+#define TA_MAX_FOLD_STATE_BYTES (64u * 1024u)
+#define TA_MAX_FOLD_RANGES 4096u
 
 typedef struct my_text_fold_range_t {
   size_t start_row;
@@ -133,6 +136,64 @@ static void ta_clear_folds(my_text_area_t* ta) {
   my_darray_destroy(ta->visible_rows);
   ta->visible_rows = NULL;
   ta->visible_rows_dirty = false;
+}
+
+static void ta_fold_ranges_destroy(const my_allocator_t* allocator,
+                                   my_darray_t* ranges) {
+  size_t i;
+  if (ranges == NULL) return;
+  for (i = 0; i < my_darray_size(ranges); i++) {
+    my_mem_free(allocator, my_darray_get(ranges, i));
+  }
+  my_darray_destroy(ranges);
+}
+
+static bool ta_fold_ranges_can_add(const my_darray_t* ranges, size_t start,
+                                   size_t end) {
+  size_t i;
+  for (i = 0; i < my_darray_size(ranges); i++) {
+    const my_text_fold_range_t* range =
+        (const my_text_fold_range_t*)my_darray_get(ranges, i);
+    bool new_contains_old;
+    bool old_contains_new;
+    if (range == NULL || start > range->end_row || end < range->start_row) {
+      continue;
+    }
+    new_contains_old = start < range->start_row && end >= range->end_row;
+    old_contains_new = range->start_row < start && range->end_row >= end;
+    if (!new_contains_old && !old_contains_new) return false;
+  }
+  return true;
+}
+
+static my_ret_t ta_fold_ranges_add_sorted(const my_allocator_t* allocator,
+                                          my_darray_t* ranges, size_t start,
+                                          size_t end) {
+  my_text_fold_range_t* range;
+  size_t insert_at = 0;
+  size_t i;
+  if (!ta_fold_ranges_can_add(ranges, start, end)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  range = (my_text_fold_range_t*)my_mem_calloc(allocator, 1, sizeof(*range));
+  if (range == NULL) return MY_RET_OOM;
+  range->start_row = start;
+  range->end_row = end;
+  while (insert_at < my_darray_size(ranges)) {
+    const my_text_fold_range_t* current =
+        (const my_text_fold_range_t*)my_darray_get(ranges, insert_at);
+    if (current == NULL || start < current->start_row) break;
+    insert_at++;
+  }
+  if (my_darray_push(ranges, range) != MY_RET_OK) {
+    my_mem_free(allocator, range);
+    return MY_RET_OOM;
+  }
+  for (i = my_darray_size(ranges) - 1; i > insert_at; i--) {
+    ranges->items[i] = ranges->items[i - 1];
+  }
+  ranges->items[insert_at] = range;
+  return MY_RET_OK;
 }
 
 static size_t ta_decimal_digits(size_t value) {
@@ -2021,6 +2082,129 @@ my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
   ta_vlines_invalidate_from(ta, 0);
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
+}
+
+my_ret_t my_text_area_folds_to_yaml(const my_widget_t* area,
+                                    const my_allocator_t* allocator,
+                                    char** out_yaml) {
+  const my_text_area_t* ta = (const my_text_area_t*)area;
+  size_t i;
+  size_t len = 0;
+  char* yaml;
+  if (area == NULL || out_yaml == NULL) return MY_RET_INVALID_PARAMS;
+  *out_yaml = NULL;
+  if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
+    yaml = (char*)my_mem_alloc(allocator, 8);
+    if (yaml == NULL) return MY_RET_OOM;
+    memcpy(yaml, "folds:\n", 7);
+    yaml[7] = '\0';
+    *out_yaml = yaml;
+    return MY_RET_OK;
+  }
+  if (my_darray_size(ta->fold_ranges) > TA_MAX_FOLD_RANGES) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  len = 7;
+  for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+    const my_text_fold_range_t* range =
+        (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
+    int n = range == NULL ? -1 : snprintf(NULL, 0,
+                                          "  - start: %zu\n    end: %zu\n",
+                                          range->start_row, range->end_row);
+    if (n < 0 || (size_t)n > TA_MAX_FOLD_STATE_BYTES - len) {
+      return MY_RET_INVALID_PARAMS;
+    }
+    len += (size_t)n;
+  }
+  yaml = (char*)my_mem_alloc(allocator, len + 1);
+  if (yaml == NULL) return MY_RET_OOM;
+  memcpy(yaml, "folds:\n", 7);
+  len = 7;
+  for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+    const my_text_fold_range_t* range =
+        (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
+    int n = snprintf(yaml + len, TA_MAX_FOLD_STATE_BYTES - len,
+                     "  - start: %zu\n    end: %zu\n", range->start_row,
+                     range->end_row);
+    if (n < 0) {
+      my_mem_free(allocator, yaml);
+      return MY_RET_INVALID_PARAMS;
+    }
+    len += (size_t)n;
+  }
+  yaml[len] = '\0';
+  *out_yaml = yaml;
+  return MY_RET_OK;
+}
+
+my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
+  my_text_area_t* ta = (my_text_area_t*)area;
+  my_conf_node_t* root = NULL;
+  my_conf_node_t* folds;
+  my_conf_error_t error;
+  my_darray_t* candidate = NULL;
+  size_t i;
+  if (area == NULL || yaml == NULL || strlen(yaml) > TA_MAX_FOLD_STATE_BYTES) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  root = my_conf_parse_yaml(ta->allocator, yaml, strlen(yaml), &error);
+  if (root == NULL || my_conf_type(root) != MY_CONF_OBJECT ||
+      my_conf_child_count(root) != 1 ||
+      strcmp(my_conf_key(my_conf_child(root, 0)), "folds") != 0) {
+    goto invalid;
+  }
+  folds = my_conf_get(root, "folds");
+  if (folds == NULL || my_conf_type(folds) != MY_CONF_ARRAY ||
+      my_conf_child_count(folds) > TA_MAX_FOLD_RANGES) goto invalid;
+  candidate = my_darray_create(ta->allocator, 0);
+  if (candidate == NULL) goto oom;
+  for (i = 0; i < my_conf_child_count(folds); i++) {
+    my_conf_node_t* item = my_conf_child(folds, i);
+    my_conf_node_t* start_node;
+    my_conf_node_t* end_node;
+    int64_t start_value, end_value;
+    if (item == NULL || my_conf_type(item) != MY_CONF_OBJECT ||
+        my_conf_child_count(item) != 2) goto invalid_candidate;
+    if (strcmp(my_conf_key(my_conf_child(item, 0)), "start") != 0 &&
+        strcmp(my_conf_key(my_conf_child(item, 0)), "end") != 0) {
+      goto invalid_candidate;
+    }
+    if (strcmp(my_conf_key(my_conf_child(item, 1)), "start") != 0 &&
+        strcmp(my_conf_key(my_conf_child(item, 1)), "end") != 0) {
+      goto invalid_candidate;
+    }
+    start_node = my_conf_get(item, "start");
+    end_node = my_conf_get(item, "end");
+    if (start_node == NULL || end_node == NULL ||
+        my_conf_type(start_node) != MY_CONF_INT64 ||
+        my_conf_type(end_node) != MY_CONF_INT64) goto invalid_candidate;
+    start_value = my_conf_as_int64(start_node, -1);
+    end_value = my_conf_as_int64(end_node, -1);
+    if (start_value < 0 || end_value < 0 || start_value >= end_value ||
+        (uint64_t)end_value >= ta_line_count(ta)) goto invalid_candidate;
+    if (ta_fold_ranges_add_sorted(ta->allocator, candidate,
+                                  (size_t)start_value, (size_t)end_value) !=
+        MY_RET_OK) goto invalid_candidate;
+  }
+  my_conf_destroy(root);
+  ta_fold_ranges_destroy(ta->allocator, ta->fold_ranges);
+  ta->fold_ranges = candidate;
+  my_darray_destroy(ta->visible_rows);
+  ta->visible_rows = NULL;
+  ta->visible_rows_dirty = true;
+  ta_vlines_invalidate_from(ta, 0);
+  my_widget_invalidate(area, NULL);
+  return MY_RET_OK;
+
+invalid_candidate:
+  ta_fold_ranges_destroy(ta->allocator, candidate);
+invalid:
+  my_conf_destroy(root);
+  return MY_RET_INVALID_PARAMS;
+oom:
+  ta_fold_ranges_destroy(ta->allocator, candidate);
+  my_conf_destroy(root);
+  return MY_RET_OOM;
 }
 
 bool my_text_area_is_folded(const my_widget_t* area, size_t row) {
