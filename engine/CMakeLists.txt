@@ -686,6 +686,24 @@ if(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(packer PRIVATE _WIN32_WINNT=0x0601)
 endif()
 
+# Rule-engine core: C99-only and independent of engine graphics, UI, and Lua.
+add_library(rule_engine_core STATIC
+    src/rule_engine/allocator.c src/rule_engine/facts.c
+    src/rule_engine/parser.c src/rule_engine/engine.c)
+set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
+target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Rule-engine baseline benchmark. Timing-sensitive by design; build and run it
+# manually rather than registering it as a CTest test.
+add_executable(rule_engine_bench tools/rule_engine_bench.c)
+set_property(TARGET rule_engine_bench PROPERTY C_STANDARD 99)
+target_link_libraries(rule_engine_bench PRIVATE rule_engine_core)
+
+# Compile-only public ABI consumer; no graphics or Lua dependency.
+add_library(rule_engine_c99_consumer OBJECT tests/rule_engine_c99_consumer.c)
+set_property(TARGET rule_engine_c99_consumer PROPERTY C_STANDARD 99)
+target_include_directories(rule_engine_c99_consumer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # Verification tool: mounts a .pak via VFS and compares against source files
 add_executable(verify_pak tools/verify_pak.c src/asset/vfs.c src/core/log.c)
 target_include_directories(verify_pak PRIVATE
@@ -702,6 +720,13 @@ if(ENGINE_BUILD_TESTS)
     enable_testing()
 
     set(TEST_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+
+    # Focused rule-engine ABI and behavior tests, independent of graphics/Lua.
+    add_executable(test_rule_engine tests/test_rule_engine.c)
+    set_property(TARGET test_rule_engine PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine COMMAND test_rule_engine)
 
     # test_math: only needs math.c (vec3/quat are inline in header)
     add_executable(test_math tests/test_math.c src/math/math.c)
