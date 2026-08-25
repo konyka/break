@@ -380,6 +380,64 @@ TEST(successful_install_run_is_deterministic) {
     re_engine_destroy(engine);
 }
 
+typedef struct rule_order_state_t {
+    const char *names[4];
+    size_t count;
+} rule_order_state_t;
+
+static re_status_t record_rule_order(re_engine_t *engine, re_facts_t *facts,
+                                     const re_rule_event_t *event,
+                                     void *context) {
+    rule_order_state_t *state = (rule_order_state_t *)context;
+    (void)engine;
+    (void)facts;
+    if (state->count >= sizeof(state->names) / sizeof(state->names[0])) {
+        return RE_STATUS_ERROR;
+    }
+    state->names[state->count++] = event->rule_name.data;
+    return RE_STATUS_OK;
+}
+
+TEST(salience_orders_activations_stably) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    rule_order_state_t state = {{0}, 0u};
+    re_callbacks_t callbacks = {record_rule_order, &state};
+
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"Low\" salience -5 { when true then Low = 1; }"
+             "rule \"High\" salience 10 { when true then High = 1; }"
+             "rule \"Tie\" salience 10 { when true then Tie = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(state.count, 3u);
+    ASSERT_EQ(state.names[0][0], 'H');
+    ASSERT_EQ(state.names[1][0], 'T');
+    ASSERT_EQ(state.names[2][0], 'L');
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(salience_rejects_invalid_integer_ranges) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"TooHigh\" salience 2147483648 { when true then A = 1; }"),
+        NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"TooLow\" salience -2147483649 { when true then A = 1; }"),
+        NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"Malformed\" salience 10x { when true then A = 1; }"),
+        NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+}
+
 static int cancel_now(void *context) {
     int *calls = context;
     (*calls)++;
@@ -439,6 +497,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(callback_destroy_is_deferred);
     RUN_TEST(program_load_failure_is_transactional);
     RUN_TEST(successful_install_run_is_deterministic);
+    RUN_TEST(salience_orders_activations_stably);
+    RUN_TEST(salience_rejects_invalid_integer_ranges);
     RUN_TEST(run_honors_cancellation_and_limits);
     RUN_TEST(deferred_capabilities_are_explicitly_unsupported);
 TEST_MAIN_END()

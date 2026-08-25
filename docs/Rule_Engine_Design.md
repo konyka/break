@@ -63,16 +63,19 @@ The current focused tests establish:
 2. Fact copy semantics and exact flat-key lookup for dotted names.
 3. Candidate load failure preserving an installed program.
 4. Successful install, literal and fact-reference action assignment, and
-   deterministic source-order callback notification after each assignment.
+   deterministic descending-salience callback notification with source-order
+   tie breaking after each assignment.
 5. Callback delivery and fact mutation, cancellation, and execution limits,
    including busy and deferred-destruction behavior. Zero per-run limit fields
    select the corresponding engine defaults; a zero engine default is unlimited.
 6. Capability reporting that excludes deferred features.
 
-Nested fact traversal and salience ordering are intentionally pending. Dotted
-names, including action references, resolve only by exact flat-key lookup; no
-nested fallback is implemented. Deferred behavior is not represented as local
-verified conformance until implementation and focused tests exist.
+Nested fact traversal remains pending. Rule declarations may optionally include
+`salience <int32>` after the quoted name; matching activations execute in
+descending salience order, with source order preserved for ties. Dotted names,
+including action references, resolve only by exact flat-key lookup; no nested
+fallback is implemented. Deferred behavior is not represented as local verified
+conformance until implementation and focused tests exist.
 
 Run focused behavior evidence with `ctest --test-dir <build> -R
 test_rule_engine --output-on-failure`; build the standalone ABI consumer with

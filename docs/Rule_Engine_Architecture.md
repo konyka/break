@@ -93,14 +93,15 @@ candidate. A failed install leaves both handles unchanged.
 ## Execution model
 
 The initial execution model is a bounded forward activation scan. The current
-implementation evaluates rules in source order and emits callback events;
-salience ordering and agenda scheduling remain pending locally.
+implementation evaluates rules in descending salience order and emits callback
+events; equal-salience rules retain source order. General agenda scheduling
+remains pending locally.
 
 One run owns its activation scan. A matching rule applies its parsed action assignment,
 then invokes the callback; the callback may further mutate facts through the supplied fact
 handle. Callback failure, cancellation, and limit exhaustion stop the run and return the
-corresponding status. Salience and agenda scheduling are not implemented in
-v1. No parallel execution is promised by this ABI.
+corresponding status. General agenda scheduling is not implemented in v1. No parallel
+execution is promised by this ABI.
 
 ## Allocator and errors
 

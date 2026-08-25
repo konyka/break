@@ -36,11 +36,22 @@ features:
     family: rete
     requirement: required
     syntax: 'engine.execute(&mut facts)?;'
-    expected_behavior: Evaluate matching rules, apply each action before its callback, and notify the caller callback in deterministic source order; callback fact mutation is allowed.
+    expected_behavior: Evaluate matching rules in stable salience/source order, apply each action before its callback, and notify the caller callback; callback fact mutation is allowed.
     upstream_refs: [README.md, docs/core-features/FEATURES.md, tests/rete_performance_test.rs]
     upstream_status: verified_upstream
     local_status: verified
     implementation_ref: engine/src/rule_engine/engine.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+  - id: rule-salience-ordering
+    family: rete
+    requirement: required
+    syntax: 'rule "VIP" salience 100 { when true then Priority = 1; }'
+    expected_behavior: Order matching activations by descending signed 32-bit salience and preserve source order for equal salience.
+    upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
+    upstream_status: verified_upstream
+    local_status: verified
+    implementation_ref: engine/src/rule_engine/parser.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Architecture.md
   - id: custom-functions

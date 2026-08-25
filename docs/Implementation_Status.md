@@ -875,7 +875,7 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 
 | 模块 | 状态 | 证据 / 说明 |
 |------|------|-------------|
-| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/{allocator,facts,parser,engine}.c`; `rule_engine_core` is graphics/Lua-independent. `test_rule_engine` verifies flat fact copying with exact dotted-key precedence, parsing/installation, literal and fact-reference `then` assignments before source-order callbacks, callback fact mutation, cancellation, inclusive limits, zero per-run fields selecting engine defaults, and capability bits. Nested traversal and salience/agenda ordering remain pending; deferred upstream families are not local parity claims. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
+| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/{allocator,facts,parser,engine}.c`; `rule_engine_core` is graphics/Lua-independent. `test_rule_engine` verifies flat fact copying with exact dotted-key precedence, parsing/installation, literal and fact-reference `then` assignments before stable salience/source-order callbacks, callback fact mutation, cancellation, inclusive limits, zero per-run fields selecting engine defaults, and capability bits. Nested traversal and general agenda scheduling remain pending; deferred upstream families are not local parity claims. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
 
 ## 游戏运行时
 
@@ -1783,3 +1783,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - `test_myui_window_manager` 现为 **36/36**；折叠实现保持 widget 不依赖任何渲染后端。
 - 当前限制：不支持嵌套/重叠折叠、折叠状态持久化和增量语法高亮，详见
   `docs/myui_remaining_work.md`。
+
+## rule engine salience ordering（2026-08-25）
+
+- 以 TDD 新增 GRL `salience <int32>` 语法和稳定激活顺序测试：匹配规则按 salience
+  降序执行，等值保持源代码顺序；非法整数、溢出和尾随标识符均拒绝。
+- 规则在加载期稳定插入排序，执行热路径不分配、不排序，保留已有限额、取消和回调契约。
+- 修复 rule engine 在 `-Werror` 下的 misleading-indentation 编译阻断，保持 C99 ABI 和
+  图形/UI 独立边界。
+- 验证：`test_rule_engine` **21/21**、myui 定向套件 **11/11**、C99 consumer、benchmark、
+  ASan rule engine/myui/loader、Vulkan `myui_core` 与 `rule_engine_core` 构建通过。
+- 当前限制：嵌套事实遍历和通用 agenda 调度仍未实现。

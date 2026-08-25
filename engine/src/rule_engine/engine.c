@@ -38,9 +38,12 @@ int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare
         if (c == 0) c = left->as.string.size < right->as.string.size ? -1 : left->as.string.size > right->as.string.size;
         l = (double)c; r = 0.0;
     } else return 0;
-    if (compare == RE_COMPARE_EQ) return l == r; if (compare == RE_COMPARE_NE) return l != r;
-    if (compare == RE_COMPARE_GT) return l > r; if (compare == RE_COMPARE_GE) return l >= r;
-    if (compare == RE_COMPARE_LT) return l < r; return l <= r;
+    if (compare == RE_COMPARE_EQ) return l == r;
+    if (compare == RE_COMPARE_NE) return l != r;
+    if (compare == RE_COMPARE_GT) return l > r;
+    if (compare == RE_COMPARE_GE) return l >= r;
+    if (compare == RE_COMPARE_LT) return l < r;
+    return l <= r;
 }
 
 re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t *limits) {
@@ -65,7 +68,8 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
 re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_options_t *options, const re_callbacks_t *callbacks) {
     size_t i; size_t firings = 0u; size_t agenda_activations = 0u; re_limits_t limits; int explicit_limits;
     if (engine == NULL || facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
-    if (engine->running) return RE_STATUS_BUSY; engine->running = 1;
+    if (engine->running) return RE_STATUS_BUSY;
+    engine->running = 1;
     if (facts->running) { engine->running = 0; return RE_STATUS_BUSY; }
     facts->running = 1;
     explicit_limits = options != NULL && options->limits != NULL;

@@ -15,6 +15,46 @@ static int word(parser_t *p, const char *word) {
         (n == p->size - p->at || !isalnum((unsigned char)p->text[p->at + n]))) { p->at += n; return 1; }
     return 0;
 }
+
+static re_status_t int32_literal(parser_t *p, int32_t *out) {
+    uint64_t magnitude = 0u;
+    size_t digits = 0u;
+    int negative = 0;
+
+    skip_space(p);
+    if (p->at < p->size && p->text[p->at] == '-') {
+        negative = 1;
+        ++p->at;
+    } else if (p->at < p->size && p->text[p->at] == '+') {
+        ++p->at;
+    }
+    while (p->at < p->size && isdigit((unsigned char)p->text[p->at])) {
+        uint32_t digit = (uint32_t)(p->text[p->at] - '0');
+        if (magnitude > (UINT64_MAX - digit) / 10u) {
+            return RE_STATUS_PARSE_ERROR;
+        }
+        magnitude = magnitude * 10u + digit;
+        ++p->at;
+        ++digits;
+    }
+    if (digits == 0u || (p->at < p->size &&
+                         (isalnum((unsigned char)p->text[p->at]) ||
+                          p->text[p->at] == '_'))) {
+        return RE_STATUS_PARSE_ERROR;
+    }
+    if ((!negative && magnitude > (uint64_t)INT32_MAX) ||
+        (negative && magnitude > (uint64_t)INT32_MAX + 1u)) {
+        return RE_STATUS_PARSE_ERROR;
+    }
+    if (out != NULL) {
+        if (negative && magnitude == (uint64_t)INT32_MAX + 1u) {
+            *out = INT32_MIN;
+        } else {
+            *out = negative ? -(int32_t)magnitude : (int32_t)magnitude;
+        }
+    }
+    return RE_STATUS_OK;
+}
 static re_status_t quoted(parser_t *p, char **out, size_t *out_size) {
     size_t start; if (!take(p, '"')) return RE_STATUS_PARSE_ERROR; start = p->at;
     while (p->at < p->size && p->text[p->at] != '"') ++p->at;
@@ -81,7 +121,8 @@ static void rule_destroy(const re_allocator_impl_t *a, re_rule_t *r) { re_free(a
 
 re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source, const re_limits_t *limits, re_program_t **out_program) {
     re_allocator_impl_t a; re_program_t *program; parser_t p; size_t capacity = 0u;
-    if (out_program == NULL || source.data == NULL) return RE_STATUS_INVALID_ARGUMENT; *out_program = NULL;
+    if (out_program == NULL || source.data == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    *out_program = NULL;
     re_allocator_init(&a, allocator); if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return RE_STATUS_INVALID_ARGUMENT;
     program = re_alloc(&a, sizeof(*program)); if (program == NULL) return RE_STATUS_OUT_OF_MEMORY;
     memset(program, 0, sizeof(*program)); program->allocator = a; program->limits = limits != NULL ? *limits : re_default_limits();
@@ -96,6 +137,9 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
         { re_status_t status = RE_STATUS_OK;
           if (!word(&p, "rule")) status = RE_STATUS_PARSE_ERROR;
           if (status == RE_STATUS_OK) status = quoted(&p, &rule.name, &rule.name_size);
+          if (status == RE_STATUS_OK && word(&p, "salience")) {
+              status = int32_literal(&p, &rule.salience);
+          }
           if (status == RE_STATUS_OK && !take(&p, '{')) status = RE_STATUS_PARSE_ERROR;
           if (status == RE_STATUS_OK && !word(&p, "when")) status = RE_STATUS_PARSE_ERROR;
           if (status != RE_STATUS_OK) { rule_destroy(&a, &rule); re_program_destroy(program); return status; } }
@@ -118,7 +162,17 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
             next = capacity == 0u ? 4u : capacity * 2u;
             if (next > (size_t)-1 / sizeof(*program->rules)) { rule_destroy(&a, &rule); re_program_destroy(program); return RE_STATUS_LIMIT; }
             { re_rule_t *grown = re_realloc(&a, program->rules, next * sizeof(*grown)); if (grown == NULL) { rule_destroy(&a, &rule); re_program_destroy(program); return RE_STATUS_OUT_OF_MEMORY; } program->rules = grown; capacity = next; } }
-        program->rules[program->rule_count++] = rule; skip_space(&p);
+        {
+            size_t insert_at = program->rule_count;
+            while (insert_at > 0u &&
+                   program->rules[insert_at - 1u].salience < rule.salience) {
+                program->rules[insert_at] = program->rules[insert_at - 1u];
+                --insert_at;
+            }
+            program->rules[insert_at] = rule;
+            ++program->rule_count;
+        }
+        skip_space(&p);
     }
     *out_program = program; return RE_STATUS_OK;
 }
