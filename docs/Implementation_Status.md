@@ -1811,3 +1811,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   `text_area_syntax_replacement_invalidates_tokens` 和
   `text_area_syntax_key_edit_invalidates_suffix`；定向 `test_myui_window_manager`
   39/39 通过。
+
+## myui nested folding ranges（2026-08-25）
+
+- 折叠区间现在允许严格包含嵌套：外层折叠时只显示外层 header，外层展开后内层折叠
+  继续生效；解除折叠按区间精确匹配，不破坏其他层级。
+- 同起点歧义区间和交叉区间仍拒绝，保持物理行到 visual line 的确定性；实现不增加
+  默认无折叠路径的分配或逐帧扫描成本。
+- TDD 新增 `text_area_nested_fold_ranges_preserve_containment`；定向
+  `test_myui_window_manager` **40/40** 通过。

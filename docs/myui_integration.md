@@ -351,7 +351,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行并接入 text area；完整 RTL GSUB、跨 face run、多段落增量 rebreaking 仍未实现 | 增加 RTL shaping run、段落级 visual mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
-| 编辑器 | 代码折叠、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；嵌套折叠、持久化折叠、完整 RTL token shaping 仍未实现 | 扩展折叠模型和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
+| 编辑器 | 代码折叠（支持严格包含嵌套）、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；持久化折叠、完整 RTL token shaping 仍未实现 | 增加 YAML 折叠快照和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |

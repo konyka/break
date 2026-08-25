@@ -418,6 +418,27 @@ TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges)
   my_widget_unref(area);
 }
 
+TEST(text_area_nested_fold_ranges_preserve_containment)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  const my_visual_line_t* line;
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd\ne\nf"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, true), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  line = my_text_area_visual_line_at(area, 1);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 1u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 6u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_folded_range_rebuilds_wrapped_visual_lines)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1470,6 +1491,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_line_numbers_reduce_wrap_width);
     RUN_TEST(text_area_folded_range_hides_only_inner_physical_lines);
     RUN_TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges);
+    RUN_TEST(text_area_nested_fold_ranges_preserve_containment);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(text_area_syntax_is_lazy_and_budgeted);

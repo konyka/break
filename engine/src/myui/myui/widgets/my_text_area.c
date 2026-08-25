@@ -1976,8 +1976,15 @@ my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
       my_widget_invalidate(area, NULL);
       return MY_RET_OK;
     }
-    if (folded && start_row <= range->end_row && end_row >= range->start_row) {
-      return MY_RET_INVALID_PARAMS;
+    if (folded && start_row <= range->end_row &&
+        end_row >= range->start_row) {
+      bool new_contains_old = start_row < range->start_row &&
+                              end_row >= range->end_row;
+      bool old_contains_new = range->start_row < start_row &&
+                              range->end_row >= end_row;
+      if (!new_contains_old && !old_contains_new) {
+        return MY_RET_INVALID_PARAMS;
+      }
     }
   }
   if (!folded) {

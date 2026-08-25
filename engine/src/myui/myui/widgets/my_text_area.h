@@ -12,7 +12,8 @@
  * physical line to width-limited segments; shaping-aware greedy wrapping
  * uses the UAX#14 subset and never splits a shaping cluster. Undo/redo is supported
  * through the private or shared undo manager. Optional physical line numbers
- * and non-overlapping physical-line folding ranges are supported.
+ * and physically ordered folding ranges (including strict containment nesting)
+ * are supported.
  * Emits "changed" (data = full text). No "activate" (Enter splits lines).
  */
 #ifndef MY_TEXT_AREA_H
@@ -115,7 +116,8 @@ int32_t my_text_area_content_left(const my_widget_t* area);
 /** @brief Fold or unfold a non-overlapping physical row range.
  *
  * The first row remains visible as the fold header; rows after `start_row`
- * through `end_row` are hidden. Ranges are inclusive and must not overlap.
+ * through `end_row` are hidden. Ranges are inclusive; nested containment is
+ * allowed, while crossing or same-header overlaps are rejected.
  */
 my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
                                        size_t end_row, bool folded);
