@@ -97,7 +97,7 @@ features:
     expected_behavior: Expose the locally implemented bounded agenda and private RETE seam; incremental indexing and full upstream RETE controls are not claimed.
     upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
     upstream_status: verified_upstream
-      local_status: verified_local
+    local_status: verified_local
     extension_abi: RE_EXTENSION_AGENDA_RETE
     implementation_ref: engine/src/rule_engine/rule_engine.h
     test_ref: engine/tests/test_rule_engine.c
@@ -105,8 +105,8 @@ features:
   - id: private-rete-bounded-conjunction
     family: rete
     requirement: optional
-    syntax: 'private test seam: two to eight flat fact conditions joined by conjunction'
-    expected_behavior: Maintain bounded deterministic token activations for insert/update/retract events and remove stale activations; unsupported boolean forms use the linear evaluator.
+    syntax: 'bounded runtime seam: two flat fact conditions joined by conjunction'
+    expected_behavior: Maintain bounded deterministic token activations for two flat fact conditions during a supported single-rule run and remove stale activations; unsupported boolean forms use the linear evaluator.
     upstream_refs: []
     upstream_status: not_applicable
     local_status: verified_local
