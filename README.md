@@ -36,3 +36,6 @@ the final link can consume LLVM bitcode; disable IPO with
   `docs/myui_integration.md` for the platform matrix.
 - Implementation status: `docs/Implementation_Status.md`
 - Performance roadmap: `docs/Round11_Performance_Plan.md`
+- Rule-engine architecture/design, benchmark, and conformance: `docs/Rule_Engine_Architecture.md`,
+  `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and
+  `docs/rule_engine_conformance.yml`
