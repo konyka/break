@@ -813,6 +813,10 @@ TEST(salience_orders_activations_stably) {
     ASSERT_EQ(state.names[0][0], 'H');
     ASSERT_EQ(state.names[1][0], 'T');
     ASSERT_EQ(state.names[2][0], 'L');
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 typedef struct provider_test_state_t {
     size_t calls;
     re_value_t value;
