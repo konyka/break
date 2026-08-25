@@ -41,6 +41,20 @@ Emoji modifier 与 Unicode tag sequence；这些判断不分配内存，也不�
 SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于后续能力，不能将
 当前 practical subset 宣称为完整 UAX#14 实现。
 
+## 编辑器折叠与行号
+
+`my_text_area` 的行号栏和折叠均属于 widget/core 能力，不依赖 GL、Vulkan 或 Break RHI
+私有类型。行号栏通过 `my_text_area_set_line_numbers()` 启用；折叠通过
+`my_text_area_set_folded_range(area, start_row, end_row, true)` 设置，范围为闭区间，首行
+作为 header 保留可见，后续物理行隐藏。范围必须有效且互不重叠，非法或重叠请求拒绝，
+不会改变文本缓冲区和逻辑 row/column 坐标。
+
+折叠打开后，text area 为可见物理行建立缓存；wrap visual-line cache 只为可见行生成
+段落。默认无折叠路径直接复用物理行 offset cache，不创建可见行映射，也不增加逐帧全文
+扫描。插入或删除导致物理行数量变化时清除折叠区间，避免把旧行号误用于新文本；仅修改
+行内内容时保留折叠并从受影响行增量重排。折叠行仍由同一逻辑文本、光标、选区和命中
+测试接口消费，绘制后端只接收公共 canvas 命令。
+
 ## CSS/YAML 解析边界
 
 CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带行列号的失败；声明

@@ -376,6 +376,66 @@ TEST(text_area_line_numbers_reduce_wrap_width)
   my_widget_unref(area);
 }
 
+TEST(text_area_folded_range_hides_only_inner_physical_lines)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  const my_visual_line_t* line;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nbb\nccc\ndddd"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 2, true), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_visual_line_count(area), 3u);
+  line = my_text_area_visual_line_at(area, 1);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 1u);
+  line = my_text_area_visual_line_at(area, 2);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 3u);
+  ASSERT_EQ(line->len_cp, 4u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 2, false), MY_RET_OK);
+  ASSERT_FALSE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd\ne"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 2, 2, true),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 3, 9, true),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 2, 4, true),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 4, false),
+            MY_RET_INVALID_PARAMS);
+  my_widget_unref(area);
+}
+
+TEST(text_area_folded_range_rebuilds_wrapped_visual_lines)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  const my_visual_line_t* line;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcd\nefgh\nijkl"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 6u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 1, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  line = my_text_area_visual_line_at(area, 2);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 2u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_wrap_oom_keeps_previous_cache)
 {
   text_area_fail_alloc_t state = {false};
@@ -1322,6 +1382,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_line_number_gutter_has_bounded_width);
     RUN_TEST(text_area_line_numbers_reduce_wrap_width);
+    RUN_TEST(text_area_folded_range_hides_only_inner_physical_lines);
+    RUN_TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges);
+    RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);

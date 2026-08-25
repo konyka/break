@@ -23,10 +23,115 @@
 #define TA_CELL_W 8 /* fallback cell width without a font */
 #define TA_LINE_NUMBER_GAP 6
 
+typedef struct my_text_fold_range_t {
+  size_t start_row;
+  size_t end_row;
+} my_text_fold_range_t;
+
 /* ---------------- line offset cache ---------------- */
 
 static size_t ta_line_count(const my_text_area_t* ta) {
   return my_darray_size(ta->line_offsets);
+}
+
+static void ta_visible_rows_invalidate(my_text_area_t* ta) {
+  ta->visible_rows_dirty = true;
+}
+
+static bool ta_row_hidden(const my_text_area_t* ta, size_t row) {
+  size_t i;
+  if (ta == NULL || ta->fold_ranges == NULL) {
+    return false;
+  }
+  for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+    const my_text_fold_range_t* range =
+        (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
+    if (range == NULL) {
+      continue;
+    }
+    if (row < range->start_row) {
+      break;
+    }
+    if (row <= range->end_row && row > range->start_row) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static my_ret_t ta_visible_rows_ensure(my_text_area_t* ta) {
+  my_darray_t* rows;
+  size_t row;
+  if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
+    return MY_RET_OK;
+  }
+  if (!ta->visible_rows_dirty && ta->visible_rows != NULL) {
+    return MY_RET_OK;
+  }
+  rows = my_darray_create(ta->allocator, 0);
+  if (rows == NULL) {
+    return MY_RET_OOM;
+  }
+  for (row = 0; row < ta_line_count(ta); row++) {
+    if (!ta_row_hidden(ta, row) && my_darray_push(rows, (void*)row) != MY_RET_OK) {
+      my_darray_destroy(rows);
+      return MY_RET_OOM;
+    }
+  }
+  my_darray_destroy(ta->visible_rows);
+  ta->visible_rows = rows;
+  ta->visible_rows_dirty = false;
+  return MY_RET_OK;
+}
+
+static size_t ta_visible_row_count(my_text_area_t* ta) {
+  if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
+    return ta_line_count(ta);
+  }
+  if (ta_visible_rows_ensure(ta) != MY_RET_OK || ta->visible_rows == NULL) {
+    return ta_line_count(ta);
+  }
+  return my_darray_size(ta->visible_rows);
+}
+
+static size_t ta_visible_row_at(my_text_area_t* ta, size_t index) {
+  if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
+    return index;
+  }
+  if (ta_visible_rows_ensure(ta) != MY_RET_OK || ta->visible_rows == NULL) {
+    return index < ta_line_count(ta) ? index : ta_line_count(ta) - 1;
+  }
+  return (size_t)my_darray_get(ta->visible_rows, index);
+}
+
+static size_t ta_visible_index_of_row(my_text_area_t* ta, size_t row) {
+  size_t i;
+  if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
+    return row;
+  }
+  if (ta_visible_rows_ensure(ta) != MY_RET_OK || ta->visible_rows == NULL) {
+    return row;
+  }
+  for (i = 0; i < my_darray_size(ta->visible_rows); i++) {
+    if ((size_t)my_darray_get(ta->visible_rows, i) == row) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+static void ta_clear_folds(my_text_area_t* ta) {
+  size_t i;
+  if (ta->fold_ranges != NULL) {
+    for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+      my_mem_free(ta->allocator, my_darray_get(ta->fold_ranges, i));
+    }
+    my_darray_destroy(ta->fold_ranges);
+    ta->fold_ranges = NULL;
+  }
+  my_darray_destroy(ta->visible_rows);
+  ta->visible_rows = NULL;
+  ta->visible_rows_dirty = false;
 }
 
 static size_t ta_decimal_digits(size_t value) {
@@ -68,6 +173,7 @@ static void ta_rebuild_from(my_text_area_t* ta, size_t row) {
   if (ta->wrap) {
     ta_vlines_invalidate_from(ta, row);
   }
+  ta_visible_rows_invalidate(ta);
   size_t pos, line;
   if (row == 0) {
     my_darray_clear(ta->line_offsets);
@@ -218,6 +324,9 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
   ta->vlines = new_lines;
   n = ta_line_count(ta);
   for (pi = from; pi < n; pi++) {
+    if (ta_row_hidden(ta, pi)) {
+      continue;
+    }
     size_t start_off = ta_line_start(ta, pi);
     size_t end_off = pi + 1 < n ? ta_line_start(ta, pi + 1) : ta->text_len;
     size_t segment_len = end_off > start_off ? end_off - start_off : 0;
@@ -283,7 +392,7 @@ static void ta_vlines_ensure(my_text_area_t* ta) {
 
 static size_t ta_vline_count(my_text_area_t* ta) {
   if (!ta->wrap) {
-    return ta_line_count(ta);
+    return ta_visible_row_count(ta);
   }
   ta_vlines_ensure(ta);
   return ta->vlines != NULL ? my_darray_size(ta->vlines) : 0;
@@ -292,9 +401,9 @@ static size_t ta_vline_count(my_text_area_t* ta) {
 static const my_visual_line_t* ta_vline_at(my_text_area_t* ta, size_t vi) {
   if (!ta->wrap) {
     static my_visual_line_t tmp;
-    tmp.phys = vi;
+    tmp.phys = ta_visible_row_at(ta, vi);
     tmp.start_cp = 0;
-    tmp.len_cp = ta_line_cp_len(ta, vi);
+    tmp.len_cp = ta_line_cp_len(ta, tmp.phys);
     return &tmp;
   }
   ta_vlines_ensure(ta);
@@ -407,6 +516,7 @@ static void emit_changed(my_text_area_t* ta) {
 
 static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
                             const char* bytes, size_t n) {
+  size_t old_lines = ta_line_count(ta);
   if (ta_reserve(ta, n) != MY_RET_OK) {
     return;
   }
@@ -418,9 +528,16 @@ static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
     ta_pos_of(ta, offset, &row, &col);
     ta_rebuild_from(ta, row);
   }
+  if (ta_line_count(ta) != old_lines) {
+    ta_clear_folds(ta);
+    if (ta->wrap) {
+      ta_vlines_invalidate_from(ta, 0);
+    }
+  }
 }
 
 static void ta_delete_bytes(my_text_area_t* ta, size_t start, size_t end) {
+  size_t old_lines = ta_line_count(ta);
   if (start >= end || end > ta->text_len) {
     return;
   }
@@ -430,6 +547,12 @@ static void ta_delete_bytes(my_text_area_t* ta, size_t start, size_t end) {
     size_t row, col;
     ta_pos_of(ta, start, &row, &col);
     ta_rebuild_from(ta, row);
+  }
+  if (ta_line_count(ta) != old_lines) {
+    ta_clear_folds(ta);
+    if (ta->wrap) {
+      ta_vlines_invalidate_from(ta, 0);
+    }
   }
 }
 
@@ -519,7 +642,7 @@ static void ta_sync_scroll_bar(my_text_area_t* ta) {
   if (ta->scroll_bar == NULL) {
     return;
   }
-  content = (int32_t)ta_line_count(ta) * ta_line_height(ta);
+  content = (int32_t)ta_vline_count(ta) * ta_line_height(ta);
   max = content - (w->rect.h - 2 * TA_PAD_Y);
   if (max < 0) {
     max = 0;
@@ -534,7 +657,7 @@ static void ta_sync_scroll_bar(my_text_area_t* ta) {
 
 static void ta_on_scroll_bar_changed(void* ctx, const char* event, void* data) {
   my_text_area_t* ta = (my_text_area_t*)ctx;
-  int32_t max = (int32_t)ta_line_count(ta) * ta_line_height(ta) -
+  int32_t max = (int32_t)ta_vline_count(ta) * ta_line_height(ta) -
                 (((my_widget_t*)ta)->rect.h - 2 * TA_PAD_Y);
   (void)event;
   (void)data;
@@ -577,7 +700,7 @@ static void ta_ensure_visible(my_text_area_t* ta) {
                                       &civ) *
              line_h;
   } else {
-    row_px = (int32_t)ta->cursor_row * line_h;
+    row_px = (int32_t)ta_visible_index_of_row(ta, ta->cursor_row) * line_h;
   }
   if (inner_h > 0) {
     if (row_px - ta->scroll_y < 0) {
@@ -609,6 +732,17 @@ static void ta_move_to(my_text_area_t* ta, size_t row, size_t col,
   size_t lines = ta_line_count(ta);
   if (row >= lines) {
     row = lines > 0 ? lines - 1 : 0;
+  }
+  if (ta_row_hidden(ta, row)) {
+    size_t i;
+    for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+      const my_text_fold_range_t* range =
+          (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
+      if (range != NULL && row <= range->end_row && row > range->start_row) {
+        row = range->start_row;
+        break;
+      }
+    }
   }
   {
     size_t max_col = ta_line_cp_len(ta, row);
@@ -897,11 +1031,11 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
           v = ta_vline_at(ta, vi + 1);
         }
       } else {
-        if (key == MY_KEY_UP && ta->cursor_row > 0) {
-          v = ta_vline_at(ta, ta->cursor_row - 1);
-        } else if (key == MY_KEY_DOWN &&
-                   ta->cursor_row + 1 < ta_line_count(ta)) {
-          v = ta_vline_at(ta, ta->cursor_row + 1);
+        size_t current = ta_visible_index_of_row(ta, ta->cursor_row);
+        if (key == MY_KEY_UP && current > 0) {
+          v = ta_vline_at(ta, current - 1);
+        } else if (key == MY_KEY_DOWN && current + 1 < ta_vline_count(ta)) {
+          v = ta_vline_at(ta, current + 1);
         }
       }
       if (v != NULL) {
@@ -964,9 +1098,22 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
       if (visible < 1) {
         visible = 1;
       }
-      row = key == MY_KEY_PAGE_DOWN ? ta->cursor_row + (size_t)visible
-          : ta->cursor_row > (size_t)visible ? ta->cursor_row - (size_t)visible
-                                             : 0;
+      if (ta->wrap) {
+        row = key == MY_KEY_PAGE_DOWN ? ta->cursor_row + (size_t)visible
+            : ta->cursor_row > (size_t)visible
+                ? ta->cursor_row - (size_t)visible
+                : 0;
+      } else {
+        size_t current = ta_visible_index_of_row(ta, ta->cursor_row);
+        size_t target = key == MY_KEY_PAGE_DOWN
+                            ? current + (size_t)visible
+                            : current > (size_t)visible
+                                ? current - (size_t)visible
+                                : 0;
+        row = ta_visible_row_at(ta, target < ta_vline_count(ta)
+                                      ? target
+                                      : ta_vline_count(ta) - 1);
+      }
       ta_move_to(ta, row, ta->goal_col, shift);
       return MY_RET_OK;
     }
@@ -1491,6 +1638,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   }
   my_undo_stack_destroy(ta->undo);
   my_mem_free(ta->allocator, ta->ime_preedit);
+  ta_clear_folds(ta);
   ta_vlines_destroy_array(ta, ta->vlines);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
@@ -1520,6 +1668,7 @@ my_widget_t* my_text_area_create(const my_allocator_t* allocator) {
     return NULL;
   }
   ta_offsets_push(ta, 0);
+  ta->visible_rows_dirty = false;
   ta->text = (char*)my_mem_calloc(allocator, 1, 1);
   if (ta->text == NULL) {
     my_object_unref((my_object_t*)ta);
@@ -1574,6 +1723,7 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   }
   ta->text[len] = '\0';
   ta->text_len = len;
+  ta_clear_folds(ta);
   ta_rebuild_from(ta, 0);
   ta_cursor_to_offset(ta, len);
   my_widget_invalidate(area, NULL);
@@ -1637,6 +1787,98 @@ bool my_text_area_line_numbers_enabled(const my_widget_t* area) {
 
 int32_t my_text_area_content_left(const my_widget_t* area) {
   return ta_content_left_value((const my_text_area_t*)area);
+}
+
+my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
+                                       size_t end_row, bool folded) {
+  my_text_area_t* ta = (my_text_area_t*)area;
+  size_t i;
+  if (area == NULL || start_row >= end_row || end_row >= ta_line_count(ta)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (ta->fold_ranges == NULL) {
+    if (!folded) {
+      return MY_RET_INVALID_PARAMS;
+    }
+    ta->fold_ranges = my_darray_create(ta->allocator, 0);
+    if (ta->fold_ranges == NULL) {
+      return MY_RET_OOM;
+    }
+  }
+  for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+    my_text_fold_range_t* range =
+        (my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
+    if (range == NULL) {
+      continue;
+    }
+    if (range->start_row == start_row && range->end_row == end_row) {
+      if (folded) {
+        return MY_RET_OK;
+      }
+      my_mem_free(ta->allocator, range);
+      my_darray_remove_at(ta->fold_ranges, i);
+      ta_visible_rows_invalidate(ta);
+      ta_vlines_invalidate_from(ta, 0);
+      my_widget_invalidate(area, NULL);
+      return MY_RET_OK;
+    }
+    if (folded && start_row <= range->end_row && end_row >= range->start_row) {
+      return MY_RET_INVALID_PARAMS;
+    }
+  }
+  if (!folded) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  {
+    my_text_fold_range_t* range =
+        (my_text_fold_range_t*)my_mem_calloc(ta->allocator, 1, sizeof(*range));
+    size_t insert_at = 0;
+    if (range == NULL) {
+      return MY_RET_OOM;
+    }
+    range->start_row = start_row;
+    range->end_row = end_row;
+    while (insert_at < my_darray_size(ta->fold_ranges)) {
+      const my_text_fold_range_t* current =
+          (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges,
+                                                     insert_at);
+      if (current == NULL || start_row < current->start_row) {
+        break;
+      }
+      insert_at++;
+    }
+    if (my_darray_push(ta->fold_ranges, range) != MY_RET_OK) {
+      my_mem_free(ta->allocator, range);
+      return MY_RET_OOM;
+    }
+    for (i = my_darray_size(ta->fold_ranges) - 1; i > insert_at; i--) {
+      ta->fold_ranges->items[i] = ta->fold_ranges->items[i - 1];
+    }
+    ta->fold_ranges->items[insert_at] = range;
+  }
+  ta_visible_rows_invalidate(ta);
+  ta_vlines_invalidate_from(ta, 0);
+  my_widget_invalidate(area, NULL);
+  return MY_RET_OK;
+}
+
+bool my_text_area_is_folded(const my_widget_t* area, size_t row) {
+  const my_text_area_t* ta = (const my_text_area_t*)area;
+  size_t i;
+  if (area == NULL || ta->fold_ranges == NULL) {
+    return false;
+  }
+  for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
+    const my_text_fold_range_t* range =
+        (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges, i);
+    if (range == NULL || range->start_row > row) {
+      break;
+    }
+    if (range->start_row == row) {
+      return true;
+    }
+  }
+  return false;
 }
 
 my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align) {

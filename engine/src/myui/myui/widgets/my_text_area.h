@@ -11,8 +11,8 @@
  * visible. Optional word wrap (M10b): a visual-line cache maps each
  * physical line to width-limited segments; shaping-aware greedy wrapping
  * uses the UAX#14 subset and never splits a shaping cluster. Undo/redo is supported
- * through the private or shared undo manager; line numbers are not part of
- * this widget.
+ * through the private or shared undo manager. Optional physical line numbers
+ * and non-overlapping physical-line folding ranges are supported.
  * Emits "changed" (data = full text). No "activate" (Enter splits lines).
  */
 #ifndef MY_TEXT_AREA_H
@@ -39,6 +39,9 @@ typedef struct my_text_area_t {
   my_darray_t* line_offsets;/**< size_t per line start (line 0 = 0) */
   bool wrap;                /**< word wrap on (M10b, default off) */
   bool line_numbers;        /**< show a physical-line number gutter */
+  my_darray_t* fold_ranges; /**< owned my_text_fold_range_t* entries */
+  my_darray_t* visible_rows;/**< cached physical rows when folds are active */
+  bool visible_rows_dirty;
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
@@ -103,6 +106,17 @@ bool my_text_area_line_numbers_enabled(const my_widget_t* area);
 
 /** @brief Current content x offset including the optional gutter. */
 int32_t my_text_area_content_left(const my_widget_t* area);
+
+/** @brief Fold or unfold a non-overlapping physical row range.
+ *
+ * The first row remains visible as the fold header; rows after `start_row`
+ * through `end_row` are hidden. Ranges are inclusive and must not overlap.
+ */
+my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
+                                       size_t end_row, bool folded);
+
+/** @brief Whether `row` is currently the header of a folded range. */
+bool my_text_area_is_folded(const my_widget_t* area, size_t row);
 
 /**
  * @brief Horizontal alignment (M11d). LEFT/CENTER/RIGHT shift each

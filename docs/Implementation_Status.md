@@ -1766,3 +1766,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   `my_text_area_content_left()`；绘制只遍历可见 visual lines，wrap 时每个物理行只绘制
   一次行号，不引入逐帧全文扫描。
 - 验证：`test_myui_window_manager` **33/33**，其余 myui 定向测试保持通过。
+
+## myui text area physical folding（2026-08-25）
+
+- 以 TDD 新增物理行折叠契约：首行保留为 header、隐藏范围行不生成 visual line，非法和
+  重叠范围拒绝，wrap 与非 wrap 均保持物理 row 映射稳定。
+- 新增 `my_text_area_set_folded_range()` 和 `my_text_area_is_folded()`；折叠状态使用排序
+  的非重叠区间和可见行缓存，默认无折叠路径不创建映射。物理行结构发生变化时清除区间，
+  避免编辑后继续使用失效行号。
+- `test_myui_window_manager` 现为 **36/36**；折叠实现保持 widget 不依赖任何渲染后端。
+- 当前限制：不支持嵌套/重叠折叠、折叠状态持久化和增量语法高亮，详见
+  `docs/myui_remaining_work.md`。
