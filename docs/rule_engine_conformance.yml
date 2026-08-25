@@ -1,0 +1,101 @@
+schema: rule-engine-conformance/v1
+project: rust-rule-engine
+upstream_reference:
+  tag: v1.21.4
+  commit: f80a5419847436f8095be6a9953c69b38a6ae052
+  evidence_manifest: docs/rule_engine_upstream.yml
+  observed_on: 2026-08-24
+  release_discrepancy: "v1.21.4 is tagged and published on crates.io, but no corresponding GitHub Release object was found."
+local_implementation_status: partial
+conformance_policy: Upstream behavior is a requirement to test; local verified statuses below are limited to the focused C99 core tests and do not imply parity for deferred families.
+statuses: [verified_upstream, pending, deferred, not_applicable]
+features:
+  - id: grl-rule-structure
+    family: core-grl
+    requirement: required
+    syntax: 'rule "VIP Discount" { when Customer.TotalSpent > 10000 then Customer.Discount = 0.15; }'
+    expected_behavior: Parse a named rule with when conditions and a then assignment, apply the literal or fact-reference value, then notify the caller callback for a matching rule.
+    upstream_refs: [README.md, docs/core-features/GRL_SYNTAX.md, tests/grl_cases.yml, tests/grl_harness.rs]
+    upstream_status: verified_upstream
+    local_status: verified
+    implementation_ref: engine/src/rule_engine/parser.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+  - id: facts-and-field-access
+    family: core-grl
+    requirement: required
+    syntax: 'facts.set("Customer.TotalSpent", Value::Number(15000.0));'
+    expected_behavior: Store and resolve copied flat fact fields used by conditions; dotted names use exact flat-key lookup.
+    upstream_refs: [README.md, CHANGELOG.md:1.21.4, tests/grl_harness_data.rs]
+    upstream_status: verified_upstream
+    local_status: verified
+    implementation_ref: engine/src/rule_engine/facts.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+  - id: rete-forward-execution
+    family: rete
+    requirement: required
+    syntax: 'engine.execute(&mut facts)?;'
+    expected_behavior: Evaluate matching rules, apply each action before its callback, and notify the caller callback in deterministic source order; callback fact mutation is allowed.
+    upstream_refs: [README.md, docs/core-features/FEATURES.md, tests/rete_performance_test.rs]
+    upstream_status: verified_upstream
+    local_status: verified
+    implementation_ref: engine/src/rule_engine/engine.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+  - id: custom-functions
+    family: rete
+    requirement: optional
+    syntax: 'engine.register_function("regex_match", |args, _| { /* return FactValue */ });'
+    expected_behavior: Invoke registered functions from GRL conditions with resolved fact or literal arguments.
+    upstream_refs: [README.md, CHANGELOG.md:1.20.3]
+    upstream_status: verified_upstream
+    local_status: deferred
+    implementation_ref: pending
+    test_ref: pending
+    doc_ref: pending
+  - id: backward-chaining
+    family: backward-chaining
+    requirement: optional
+    syntax: 'engine.query("Order.AutoApproved == true", &mut facts)?;'
+    expected_behavior: Prove or fail a goal and expose a proof trace using goal-driven search.
+    upstream_refs: [README.md, examples/09-backward-chaining/simple_query_demo.rs, tests/backward_comprehensive_tests.rs, tests/backward_thread_safety.rs]
+    upstream_status: verified_upstream
+    local_status: deferred
+    implementation_ref: pending
+    test_ref: pending
+    doc_ref: pending
+  - id: streaming-windows
+    family: streaming
+    requirement: optional
+    syntax: 'window.record(StreamEvent::with_timestamp("login_failure", data, "auth", event_ts_ms));'
+    expected_behavior: Maintain a trailing sliding count and evict events older than the configured duration.
+    upstream_refs: [README.md, CHANGELOG.md:1.21.0, tests/]
+    upstream_status: verified_upstream
+    local_status: deferred
+    implementation_ref: pending
+    test_ref: pending
+    doc_ref: pending
+  - id: streaming-redis-state
+    family: streaming-redis
+    requirement: optional
+    syntax: 'cargo build --features streaming-redis'
+    expected_behavior: Build and provide Redis-backed streaming state when the optional feature is enabled.
+    upstream_refs: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md, .github/workflows/rust.yml]
+    upstream_status: verified_upstream
+    local_status: deferred
+    implementation_ref: pending
+    test_ref: pending
+    doc_ref: pending
+  - id: v1-21-4-action-reference-resolution
+    family: v1.21.4-fix
+    requirement: required
+    syntax: 'User.firstNameAgain = User.firstName;'
+    expected_behavior: Resolve an action dotted-field reference to its value, apply the assignment, and notify the callback.
+    upstream_refs: [CHANGELOG.md:1.21.4, README.md, src/parser/grl.rs, src/expression.rs, src/engine/engine.rs]
+    upstream_status: verified_upstream
+    local_status: verified
+    implementation_ref: engine/src/rule_engine/engine.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+conformance_statement: Locally verified rows are limited to the focused C99 ABI behavior listed above; deferred upstream families remain unsupported or unverified.

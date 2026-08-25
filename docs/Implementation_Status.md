@@ -871,6 +871,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 | 粒子系统(GPU) | 部分→GPU cull(R12)→indirect(R167)→逐粒子速度(R555) | compute+graphics 可用。**R12**: `particle_cull.comp` 接线。**R167**: cull buffer 改为 `DrawIndirectCommand`+indices；`rhi_cmd_draw_indirect` 双后端；`particles_render` 仅调度 alive 实例（不再每帧 8192 VS early-out）；debug UI `last_alive_count` 仍为上界提示（无 CPU readback 停顿）；**R445**：管线补 `depth_compare_lequal`（深度规则下行为不变）；**R555**：SSBO 增 `previous_pos`（64-byte layout 测试锁定），update shader 在积分前保存位置、spawn 令 previous=current；forward MRT vertex/fragment 输出真实速度，透明 RT1 不 alpha blend，GL 120 帧 `MESA_DEBUG` 无 compute/graphics error |
 | 骨骼蒙皮(GPU) | 完整 | `skeleton.c` joint buffer 上传 + skinned shader |
 
+## Rule Engine
+
+| 模块 | 状态 | 证据 / 说明 |
+|------|------|-------------|
+| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/{allocator,facts,parser,engine}.c`; `rule_engine_core` is graphics/Lua-independent. `test_rule_engine` verifies flat fact copying with exact dotted-key precedence, parsing/installation, literal and fact-reference `then` assignments before source-order callbacks, callback fact mutation, cancellation, inclusive limits, zero per-run fields selecting engine defaults, and capability bits. Nested traversal and salience/agenda ordering remain pending; deferred upstream families are not local parity claims. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
+
 ## 游戏运行时
 
 | 模块 | 状态 | 证据 / 说明 |

@@ -80,6 +80,24 @@ Noto Sans CJK）不可用。
 
 详细架构、渲染后端与 IME 状态见 `docs/myui_integration.md`。
 
+### 2.2.1 Rule-engine core
+
+The rule engine is a standalone C99 core target. `rule_engine_core` contains
+only `engine/src/rule_engine/`; it has no graphics, UI, or Lua dependency.
+The focused test, benchmark, and strict public-header consumer are built with:
+
+```bash
+cmake -S engine -B build-rule -DENGINE_BUILD_TESTS=ON -DENGINE_ENABLE_IPO=OFF
+cmake --build build-rule --target test_rule_engine rule_engine_bench rule_engine_c99_consumer
+ctest --test-dir build-rule -R test_rule_engine --output-on-failure
+```
+
+Run `rule_engine_bench` manually; its timing output is not a CTest regression
+claim. The implemented local scope and deferred upstream families are listed in
+`docs/Rule_Engine_Architecture.md` and `docs/rule_engine_conformance.yml`.
+The public API contract is in `docs/Rule_Engine_Design.md`; upstream-only
+evidence is in `docs/rule_engine_upstream.yml`.
+
 ### 2.3 Wayland 后端构建
 
 依赖安装 (Fedora):

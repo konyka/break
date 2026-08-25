@@ -1,0 +1,71 @@
+schema: rule-engine-upstream-evidence/v1
+project: rust-rule-engine
+upstream:
+  repository: https://github.com/KSD-CO/rust-rule-engine
+  tag: v1.21.4
+  commit: f80a5419847436f8095be6a9953c69b38a6ae052
+  observed_on: 2026-08-24
+  package_version: 1.21.4
+  release_date: 2026-08-13
+  tag_commit_match: true
+  release_tag_discrepancy: "The requested tag and commit match, but GitHub has no Release object for v1.21.4; the crates.io package is version 1.21.4 and the tag/release date precedes this observation date."
+  license: MIT
+  license_source: https://raw.githubusercontent.com/KSD-CO/rust-rule-engine/f80a5419847436f8095be6a9953c69b38a6ae052/LICENSE
+  primary_sources:
+    - path: Cargo.toml
+      url: https://github.com/KSD-CO/rust-rule-engine/blob/f80a5419847436f8095be6a9953c69b38a6ae052/Cargo.toml
+    - path: README.md
+      url: https://github.com/KSD-CO/rust-rule-engine/blob/f80a5419847436f8095be6a9953c69b38a6ae052/README.md
+    - path: CHANGELOG.md
+      url: https://github.com/KSD-CO/rust-rule-engine/blob/f80a5419847436f8095be6a9953c69b38a6ae052/CHANGELOG.md
+    - path: docs/core-features/FEATURES.md
+      url: https://github.com/KSD-CO/rust-rule-engine/blob/f80a5419847436f8095be6a9953c69b38a6ae052/docs/core-features/FEATURES.md
+    - path: docs/core-features/GRL_SYNTAX.md
+      url: https://github.com/KSD-CO/rust-rule-engine/blob/f80a5419847436f8095be6a9953c69b38a6ae052/docs/core-features/GRL_SYNTAX.md
+    - path: LICENSE
+      url: https://github.com/KSD-CO/rust-rule-engine/blob/f80a5419847436f8095be6a9953c69b38a6ae052/LICENSE
+  upstream_test_evidence:
+    declared_in_readme: "436 tests passing (release notes also report historical counts for earlier releases)."
+    references:
+      - tests/grl_cases.yml
+      - tests/grl_harness.rs
+      - tests/backward_comprehensive_tests.rs
+      - tests/proof_graph_integration_test.rs
+      - tests/test_module_system.rs
+      - tests/tms_test.rs
+      - CHANGELOG.md:1.21.4
+    local_verification: pending
+feature_families:
+  - id: core-grl
+    status: verified_upstream
+    evidence: [README.md, docs/core-features/GRL_SYNTAX.md, examples/01-getting-started/grule_demo.rs]
+    summary: GRL parsing, rule loading, conditions, actions, facts, and expressions.
+  - id: rete
+    status: verified_upstream
+    evidence: [README.md, docs/core-features/FEATURES.md, examples/02-rete-engine/rete_grl_demo.rs]
+    summary: RETE/RETE-UL execution, alpha/beta indexing, incremental facts, and parallel execution.
+  - id: backward-chaining
+    status: verified_upstream
+    required_feature: backward-chaining
+    evidence: [README.md, examples/09-backward-chaining/simple_query_demo.rs]
+    summary: Goal-driven queries, unification, search strategies, aggregation, negation, and proof traces.
+  - id: streaming
+    status: verified_upstream
+    required_feature: streaming
+    evidence: [README.md, CHANGELOG.md:1.21.0, examples/03-advanced-features/streaming_with_rules_demo.rs]
+    summary: Stream patterns, sliding/tumbling/session windows, correlation, and TimeWindow.record().
+  - id: streaming-redis
+    status: verified_upstream
+    required_feature: streaming-redis
+    evidence: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md]
+    summary: Redis-backed streaming state.
+  - id: advanced-rule-control
+    status: verified_upstream
+    evidence: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
+    summary: Salience, no-loop, agenda groups, activation groups, date bounds, modules, and accumulators.
+  - id: v1.21.4-fix
+    status: verified_upstream
+    evidence: [CHANGELOG.md:1.21.4, README.md]
+    summary: Dotted field references in actions resolve to their actual value rather than a literal path.
+local_implementation_status: pending
+parity_statement: This file records upstream evidence only; it does not establish local implementation or full parity.
