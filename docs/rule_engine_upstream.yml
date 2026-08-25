@@ -43,7 +43,7 @@ feature_families:
   - id: rete
     status: verified_upstream
     evidence: [README.md, docs/core-features/FEATURES.md, examples/02-rete-engine/rete_grl_demo.rs]
-    summary: RETE/RETE-UL execution, alpha/beta indexing, incremental facts, and parallel execution.
+    summary: Upstream RETE/RETE-UL execution, alpha/beta indexing, incremental facts, and parallel execution. This is upstream evidence only, not local parity.
   - id: backward-chaining
     status: verified_upstream
     required_feature: backward-chaining
@@ -58,7 +58,7 @@ feature_families:
     status: verified_upstream
     required_feature: streaming-redis
     evidence: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md]
-    summary: Redis-backed streaming state.
+    summary: Upstream Redis-backed streaming state. Local documentation records only a configure-time hiredis boundary; no native Redis adapter is enabled.
   - id: advanced-rule-control
     status: verified_upstream
     evidence: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]

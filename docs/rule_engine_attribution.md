@@ -10,10 +10,9 @@ tag `v1.21.4`, commit
 - Copyright notice: Copyright (c) 2025 Rust Rule Engine Contributors
 
 The upstream source and documentation are referenced for evidence and
-conformance planning. This repository does not claim that the local
-implementation is complete or has full parity. Local implementation, test,
-and documentation status remains pending unless explicitly recorded elsewhere
-with local evidence.
+conformance planning. The local implementation is a bounded C99 subset and
+does not claim full upstream RETE-UL, Redis, or feature parity. Local status is
+recorded in the conformance manifest with code and test references.
 
 ## MIT notice
 

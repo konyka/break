@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document defines the implemented v1 core boundary. The public ABI is in
+This document defines the implemented v1 core and tested extension boundary. The public ABI is in
 `engine/src/rule_engine/rule_engine.h`, with implementation paths in
 `engine/src/rule_engine/allocator.c`, `facts.c`, `parser.c`, and `engine.c`.
 The focused executable `engine/tests/test_rule_engine.c` is local evidence for
@@ -16,16 +16,35 @@ Implemented now:
 - flat fact access with exact flat-key precedence for dotted names;
 - forward execution;
 - exact flat-key lookup for dotted fact names; nested traversal remains pending.
+- bounded object/array values and nested path lookup through the versioned value API;
+- explicit null/unknown values and generation-safe fact lifecycle notifications.
+- a bounded, non-capability-bearing query seam for exact flat goals and
+  zero-argument rule bodies; recursive unification, multi-solution proofs, and
+  proof graphs remain pending.
 
 Deferred explicitly:
 
-- custom functions;
-- backward chaining and proof traces;
-- streaming windows;
-- Redis-backed streaming state;
-- advanced rule control such as agenda groups, activation groups, accumulators,
-  date bounds, and modules.
-- nested fact traversal;
+- full upstream RETE/RETE-UL execution, incremental memories, and producer provenance;
+- argument-bearing/general backward chaining, recursive unification,
+  multi-solution enumeration, proof graphs, and upstream proof strategies;
+- native Redis-backed streaming state. The portable bounded in-memory provider is implemented;
+- persistent agenda control and full upstream truth-maintenance behavior.
+
+The bounded agenda-control subset enforces `MAIN`/named program focus,
+activation-group sibling cancellation, and the tested one-run `no-loop` and
+`lock-on-active` guards. Rule metadata remains immutable and runtime state is
+allocated for the run, so callback pointers and contexts are never retained.
+Producer provenance, persistent agenda state, focus stacks/cycles, and
+incremental propagation remain pending. The bounded RETE mode supports up to
+eight flat fact-vs-literal comparisons joined by conjunction, rebuilds its
+bounded token list on lifecycle events, and is used only when that exact
+supported subset is present. Other expressions use the linear evaluator.
+
+The private advanced test seam covers accumulator value behavior, bounded module
+declarations/imports/exports with cycle rejection and focused visibility, and
+injected-clock ownership. Module behavior is intentionally private and bounded;
+it does not advertise a public module ABI, complete date parsing, or agenda/RETE
+support.
 
 The local status is limited to behavior covered by
 `engine/tests/test_rule_engine.c`; these statuses match
@@ -60,8 +79,62 @@ caller responsibilities: callers read bytes and pass a bounded source slice to
 `re_program_load`.
 
 `re_engine_capabilities` reports only capabilities implemented by the local
-engine: core GRL, facts, and forward execution.
-Deferred upstream families intentionally have no capability bits in this ABI.
+engine: core GRL, facts, and forward execution. `re_engine_capabilities_v2` and
+`re_engine_extension_info` are versioned discovery seams. Their extension IDs
+and capability bits are append-only; a present bit means the backend is enabled,
+not merely that the header has a declaration. The extension declarations below
+are versioned seams. Implemented extensions are advertised by the v2 capability
+mask; unsupported operations return `RE_STATUS_NOT_SUPPORTED`.
+
+The extension families are: custom functions; structured values; fact lifecycle;
+agenda/RETE; backward queries/proofs; streaming windows; state providers (with
+Redis as an optional backend); and optional concurrency. C11 threading types,
+worker ownership, and scheduling remain private to a backend.
+
+### Streaming and state contract
+
+The header reserves independent version `1` contracts for streaming windows and
+state providers. `re_event_timestamp_ms_t` is an explicit unsigned 64-bit
+millisecond timestamp; it is event time supplied by the caller, not wall-clock
+time sampled by the engine. Window kinds are tumbling, sliding, and session.
+Options carry retention duration, event and byte limits, allowed lateness, and a
+late-event policy (`drop`, `accept`, or `error`). A zero limit is not defined by
+this foundation and must be rejected or assigned by a future versioned
+implementation rather than guessed by callers.
+
+Window event names and values are copied during a successful record call. No
+caller buffer is retained. The local runtime verifies half-open tumbling
+buckets of `retention_ms`, session extension until `retention_ms` after the
+latest event, event-time late policies, and event/byte bounds. Empty windows
+are snapshot-able and restore preserves deterministic opaque bytes. Sliding
+behavior remains covered by focused window, aggregate, correlation, and snapshot
+tests; Redis remains unsupported at runtime.
+The separate tested correlation seam filters retained events by type and
+string-valued key, counts first/second pairs within a timeout, and computes
+count, numeric sum, or numeric average without changing retention.
+
+Snapshots are caller-owned output bytes until the matching `release` callback;
+the callback receives the exact pointer and size and is called at most once.
+Restore borrows the supplied bytes for the duration of the call and never takes
+ownership. A snapshot has an explicit format version and is opaque bytes; the
+format is not JSON, host structs, or a portable serialization until a future
+format specification says so. A provider must reject an unknown format version
+without modifying state.
+
+State providers are opaque and return direct `re_status_t` results. The portable
+provider is deterministic, in-memory, bounded by configured key/value limits,
+and uses an injected clock for TTL tests. Its snapshot format is versioned and
+deterministic; restore stages all entries before replacing existing state. A backend
+may classify an operational failure as unavailable, timeout, serialization, or
+conflict through the provider-error contract; the engine must not silently fall
+back to local state. Redis is an optional provider boundary only: this ABI does
+not include a Redis client, connection type, network API, retry policy, or
+claim that native Redis support is enabled. Redis remains an explicit
+`RE_STATUS_NOT_SUPPORTED` boundary. Native enablement requires a CMake-detected
+hiredis-compatible header/library and a separately supplied controlled Redis
+integration endpoint; absent either prerequisite, configuration must keep the
+adapter disabled. Redis failures must propagate as provider errors and must
+never fall back to empty or in-memory state.
 
 ## Lifetime and ownership
 
@@ -78,6 +151,23 @@ Deferred upstream families intentionally have no capability bits in this ABI.
   It is invalid after the next fact mutation or facts destruction.
 - Callback pointers and callback context are borrowed only during
   `re_engine_run`; the engine does not retain them.
+- Extension descriptors are copied at registration. Names and immediate value
+  inputs are copied; descriptor contexts remain owned by the caller until the
+  matching unregister/destroy callback. A release callback runs once, after no
+  invocation can remain. Callback pointers and contexts must remain valid until
+  that release point.
+- Opaque extension handles have single-owner lifetimes. Returned values,
+  subscriptions, proof handles, agenda/RETE views, windows, providers, and
+  executors are borrowed or owned exactly as stated by their future extension
+  contract; NULL destruction is safe. Destroying a subscription ends callback
+  delivery before releasing its context. No placeholder function retains caller
+  output storage.
+- A created window or provider is owned by the caller and must be destroyed
+  exactly once. Versioned option and descriptor inputs are borrowed for the
+  call; provider context ownership follows its release callback.
+- Snapshot output is owned by the caller only through its release callback;
+  snapshot bytes are immutable while borrowed by the caller. Restore input is
+  borrowed and is not retained.
 - Engine and facts handles are busy during a run. Installation returns
   `RE_STATUS_BUSY`; destruction requested by a callback is deferred until the
   run unwinds. Callbacks must not retain or use a handle after returning.
@@ -92,16 +182,35 @@ candidate. A failed install leaves both handles unchanged.
 
 ## Execution model
 
-The initial execution model is a bounded forward activation scan. The current
-implementation evaluates rules in descending salience order and emits callback
-events; equal-salience rules retain source order. General agenda scheduling
-remains pending locally.
+The current forward runtime builds a bounded activation list from the immutable
+program, evaluates rule conditions, and fires activations in descending salience
+order with source order as the stable tie-breaker. This is behaviorally
+equivalent to agenda conflict resolution, but is not an incremental RETE
+network: alpha/beta memories, tokens, and fact-change propagation remain
+unsupported by the public runtime.
 
-One run owns its activation scan. A matching rule applies its parsed action assignment,
-then invokes the callback; the callback may further mutate facts through the supplied fact
-handle. Callback failure, cancellation, and limit exhaustion stop the run and return the
-corresponding status. General agenda scheduling is not implemented in v1. No parallel
-execution is promised by this ABI.
+## Private RETE milestone
+
+`engine/src/rule_engine/rete.c` contains a private, test-only seam for a narrow
+two-condition conjunction over existing flat facts. It subscribes to the
+generation-safe insert/update/retract events, rebuilds alpha matches and beta
+pairs in fact-slot order, stores token-like fact-id pairs plus monotonically
+ordered activation records, and removes stale records after updates or
+retractions. It is not installed into `re_engine_run`, does not expose the
+public opaque RETE handle, and does not advertise `RE_CAP2_AGENDA_RETE`.
+Agenda groups, streaming, backward chaining, concurrency, and all other RETE
+features remain outside this milestone.
+
+One run owns its activation list. A matching rule applies its parsed action
+assignment, then invokes the callback; the callback may further mutate facts
+through the supplied fact handle. Callback failure, cancellation, and limit
+exhaustion stop the run and return the corresponding status. Salience ordering
+is locally verified; persistent agenda groups, full producer-provenance
+semantics, and public agenda/RETE handles remain unsupported. The optional C11
+backend evaluates only pure read-only conditions in private workers, merges
+matches using existing salience/source ordering, and applies actions and
+callbacks serially. It is disabled unless `RULE_ENGINE_ENABLE_C11_PARALLEL` is
+enabled; mutating operations return `RE_STATUS_BUSY` during worker matching.
 
 ## Allocator and errors
 
@@ -138,6 +247,14 @@ different threads, but must externally synchronize every operation involving
 the same engine or facts handle. Callbacks execute on the calling thread.
 There is no implicit global lock, thread-local error state, or background
 worker in this contract.
+
+Extension limits are inherited from `re_limits_t` and may only add bounded
+fields through a later versioned options struct. Implementations must reject
+unknown required versions with `RE_STATUS_NOT_SUPPORTED`, reject undersized
+structs with `RE_STATUS_INVALID_ARGUMENT`, and never read beyond `struct_size`.
+Errors remain direct `re_status_t` results: unsupported backend, unavailable
+optional provider, limit exhaustion, cancellation, busy/reentrant use, and
+invalid ownership are distinct observable outcomes where applicable.
 
 The header uses only C99 facilities: fixed-width integers, `size_t`, named
 unions, opaque pointers, and function pointers. It intentionally avoids

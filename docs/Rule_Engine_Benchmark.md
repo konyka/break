@@ -14,8 +14,9 @@ engine/build/rule_engine_bench
 ```
 
 For multi-config generators use `engine/build/Debug/rule_engine_bench.exe`.
-The focused behavior evidence is `ctest --test-dir engine/build -R
-test_rule_engine --output-on-failure`, not the timing output.
+The focused behavior evidence is the 64-case `test_rule_engine` executable,
+run through `ctest --test-dir engine/build -R test_rule_engine
+--output-on-failure`, not the timing output.
 
 The benchmark reports `elapsed_seconds`, `run_count`, and workload counters for
 two fixed cases:
@@ -33,8 +34,31 @@ build type, machine, and workload are recorded alongside the output.
 This is a baseline for profiling decisions, not an optimization result. It does
 not imply RETE, JIT, SIMD, concurrency, or optimal performance.
 
-The repository has no bounded rule-engine fuzz driver or fuzz-specific CMake
-convention beyond manual `EXCLUDE_FROM_ALL` mutation fuzzers for larger engine
-subsystems. A rule-engine fuzz smoke target is therefore deferred until the
-core has a dedicated input-mutation harness and bounded seed/iteration
-contract; no deferred upstream feature is implemented here.
+## Hardening gate
+
+The bounded smoke target runs 256 seeded parser/evaluator, window, and provider
+mutations. The C11 executor stress target runs 64 iterations without sleeps.
+
+```text
+cmake --build engine/build --target rule_engine_fuzz_smoke
+ctest --test-dir engine/build -R rule_engine_fuzz_smoke --output-on-failure
+cmake -S engine -B engine/build-hardening -G Ninja -DRULE_ENGINE_ENABLE_C11_PARALLEL=ON -DENGINE_ENABLE_IPO=OFF
+cmake --build engine/build-hardening --target test_rule_engine_executor_stress
+ctest --test-dir engine/build-hardening -R 'test_rule_engine_executor_stress|test_rule_engine' --output-on-failure
+```
+
+When `<threads.h>` is unavailable, the stress target is not created; that is an
+unavailable gate, not a pass. `test_rule_engine` also compares serial and
+parallel callback traces deterministically.
+
+ASan/UBSan presets are available through `engine/CMakePresets.json` where the
+active compiler supports them. The benchmark threshold format is
+`case.metric=max_seconds` in `engine/scripts/rule_engine_bench_thresholds.txt`.
+
+```text
+cmake -DBENCH=engine/build/rule_engine_bench -DTHRESHOLD=engine/scripts/rule_engine_bench_thresholds.txt -DRUNS=3 -P engine/scripts/rule_engine_bench_regression.cmake
+```
+
+Thresholds are conservative smoke limits, not portable performance claims.
+Redis remains disabled by default; enabling it only checks hiredis discovery and
+does not claim a live integration service or native adapter.

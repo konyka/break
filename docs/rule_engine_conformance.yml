@@ -8,7 +8,7 @@ upstream_reference:
   release_discrepancy: "v1.21.4 is tagged and published on crates.io, but no corresponding GitHub Release object was found."
 local_implementation_status: partial
 conformance_policy: Upstream behavior is a requirement to test; local verified statuses below are limited to the focused C99 core tests and do not imply parity for deferred families.
-statuses: [verified_upstream, pending, deferred, not_applicable]
+statuses: [verified_upstream, verified, verified_local, pending, deferred, unsupported, optional_backend, equivalent_behavior, exact_parity, not_applicable]
 features:
   - id: grl-rule-structure
     family: core-grl
@@ -61,10 +61,71 @@ features:
     expected_behavior: Invoke registered functions from GRL conditions with resolved fact or literal arguments.
     upstream_refs: [README.md, CHANGELOG.md:1.20.3]
     upstream_status: verified_upstream
-    local_status: deferred
-    implementation_ref: pending
-    test_ref: pending
-    doc_ref: pending
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_CUSTOM_FUNCTIONS
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+  - id: structured-values
+    family: values
+    requirement: optional
+    syntax: 'facts.set_path("Customer", "Address.City", Value::String("Paris"));'
+    expected_behavior: Represent structured/object values with bounded traversal and explicit value ownership.
+    upstream_refs: [README.md, docs/core-features/FEATURES.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_STRUCTURED_VALUES
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+  - id: fact-lifecycle
+    family: facts
+    requirement: optional
+    syntax: 'facts.begin_transaction(); facts.commit();'
+    expected_behavior: Expose fact insert/update/retract lifecycle events with transactional ownership and bounded callbacks.
+    upstream_refs: [docs/core-features/FEATURES.md, tests/tms_test.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_FACT_LIFECYCLE
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+  - id: agenda-rete-control
+    family: rete
+    requirement: optional
+    syntax: 'engine.agenda(); engine.rete_network();'
+    expected_behavior: Expose the locally implemented bounded agenda and private RETE seam; incremental indexing and full upstream RETE controls are not claimed.
+    upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
+    upstream_status: verified_upstream
+      local_status: verified_local
+    extension_abi: RE_EXTENSION_AGENDA_RETE
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+  - id: private-rete-bounded-conjunction
+    family: rete
+    requirement: optional
+    syntax: 'private test seam: two to eight flat fact conditions joined by conjunction'
+    expected_behavior: Maintain bounded deterministic token activations for insert/update/retract events and remove stale activations; unsupported boolean forms use the linear evaluator.
+    upstream_refs: []
+    upstream_status: not_applicable
+    local_status: verified_local
+    implementation_ref: engine/src/rule_engine/rete.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+  - id: advanced-rule-control
+    family: advanced-rule-control
+    requirement: optional
+    syntax: 'salience 100; agenda-group "approval"; no-loop true;'
+    expected_behavior: Provide the locally tested bounded subset of salience, no-loop, agenda and activation groups, date bounds, modules, and accumulators; persistent agenda state, producer provenance, incremental RETE memories, and truth maintenance are not claimed.
+    upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md, tests/test_module_system.rs, tests/tms_test.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_AGENDA_RETE
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+    behavior_scope: private_bounded_slices; no full upstream parity claim
   - id: backward-chaining
     family: backward-chaining
     requirement: optional
@@ -72,32 +133,73 @@ features:
     expected_behavior: Prove or fail a goal and expose a proof trace using goal-driven search.
     upstream_refs: [README.md, examples/09-backward-chaining/simple_query_demo.rs, tests/backward_comprehensive_tests.rs, tests/backward_thread_safety.rs]
     upstream_status: verified_upstream
-    local_status: deferred
-    implementation_ref: pending
-    test_ref: pending
-    doc_ref: pending
+    local_status: pending
+    extension_abi: RE_EXTENSION_BACKWARD_PROOFS
+    implementation_ref: engine/src/rule_engine/backward.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+    behavior_scope: bounded_query_seam_only; recursive goal traversal, argument unification, multi-solution enumeration, and proof graphs are not implemented or claimed
   - id: streaming-windows
     family: streaming
     requirement: optional
     syntax: 'window.record(StreamEvent::with_timestamp("login_failure", data, "auth", event_ts_ms));'
-    expected_behavior: Maintain a trailing sliding count and evict events older than the configured duration.
+    expected_behavior: Define a versioned opaque window handle with explicit u64 millisecond event timestamps, tested tumbling/sliding/session kinds, retention/event/byte limits, allowed lateness, deterministic late-event policy, and deterministic opaque snapshot/restore.
     upstream_refs: [README.md, CHANGELOG.md:1.21.0, tests/]
     upstream_status: verified_upstream
-    local_status: deferred
-    implementation_ref: pending
-    test_ref: pending
-    doc_ref: pending
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_STREAMING_WINDOWS
+    implementation_ref: engine/src/rule_engine/extensions.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+    contract_only: false
+    runtime_enabled: true
+    snapshot_restore: opaque_versioned_bytes_with_explicit_release_callback
+    tested_subset: event_type_and_string_key_filtering; bounded_correlation_timeout; count_sum_average
   - id: streaming-redis-state
     family: streaming-redis
     requirement: optional
     syntax: 'cargo build --features streaming-redis'
-    expected_behavior: Build and provide Redis-backed streaming state when the optional feature is enabled.
+    expected_behavior: Define an optional state-provider boundary with callback and Redis kinds, direct provider errors, and no public network/client types; Redis runtime support remains pending.
     upstream_refs: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md, .github/workflows/rust.yml]
     upstream_status: verified_upstream
-    local_status: deferred
-    implementation_ref: pending
-    test_ref: pending
-    doc_ref: pending
+    local_status: optional_backend
+    extension_abi: RE_EXTENSION_STATE_PROVIDER
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
+    contract_only: false
+    runtime_enabled: true
+    portable_backend: deterministic_bounded_in_memory
+    native_redis_status: unsupported
+    provider_errors: [unavailable, timeout, serialization, conflict]
+    redis_boundary: configure_detection_only; native_adapter_not_implemented
+  - id: optional-concurrency
+    family: concurrency
+    requirement: optional
+    syntax: 'engine.executor_create({ worker_count: 4 });'
+    expected_behavior: Permit an optional executor backend without making C11 threading types or parallel ordering part of the base ABI.
+    upstream_refs: [README.md, tests/backward_thread_safety.rs, docs/core-features/FEATURES.md]
+    upstream_status: verified_upstream
+    local_status: optional_backend
+    extension_abi: RE_EXTENSION_CONCURRENCY
+    implementation_ref: engine/src/rule_engine/rule_engine.h
+    test_ref: engine/tests/test_rule_engine.c
+    build_option: RULE_ENGINE_ENABLE_C11_PARALLEL
+    stress_test_ref: engine/tests/test_rule_engine_executor_stress.c
+    behavior_scope: pure_read_only_conditions_only_serial_actions_and_callbacks
+    doc_ref: docs/Rule_Engine_Design.md
+  - id: nested-fact-traversal
+    family: values
+    requirement: required
+    syntax: 'Customer.Address.City'
+    expected_behavior: Resolve nested paths only when structured values are enabled; exact flat-key lookup remains the current core behavior.
+    upstream_refs: [README.md, docs/core-features/GRL_SYNTAX.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_STRUCTURED_VALUES
+    implementation_ref: engine/src/rule_engine/values.c
+    test_ref: engine/tests/test_rule_engine.c
+    doc_ref: docs/Rule_Engine_Design.md
   - id: v1-21-4-action-reference-resolution
     family: v1.21.4-fix
     requirement: required
@@ -109,4 +211,4 @@ features:
     implementation_ref: engine/src/rule_engine/engine.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Architecture.md
-conformance_statement: Locally verified rows are limited to the focused C99 ABI behavior listed above; deferred upstream families remain unsupported or unverified.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row is pending: its bounded query seam has tests for flat fact binding, zero-argument rule proving, depth-limit status, proof trace, and mutation invalidation, but recursive goal traversal, argument unification, multi-solution enumeration, and proof graphs have no implementation or tests. RETE-UL parity, incremental RETE memories, persistent agenda control, producer provenance, general backward chaining, and native Redis remain unsupported or unverified.

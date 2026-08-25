@@ -98,6 +98,16 @@ claim. The implemented local scope and deferred upstream families are listed in
 The public API contract is in `docs/Rule_Engine_Design.md`; upstream-only
 evidence is in `docs/rule_engine_upstream.yml`.
 
+The hardening gate adds bounded `rule_engine_fuzz_smoke` and, when
+`RULE_ENGINE_ENABLE_C11_PARALLEL=ON` with `<threads.h>`,
+`test_rule_engine_executor_stress`. The serial-vs-parallel callback trace check
+remains in `test_rule_engine`. ASan/UBSan presets are in
+`engine/CMakePresets.json`; configure or runtime failures mean unavailable
+evidence, not a passing sanitizer gate. Redis is intentionally OFF by default.
+`RULE_ENGINE_ENABLE_REDIS=ON` checks for hiredis headers and a library at
+configure time, but the native adapter remains unsupported and discovery does
+not provide a live integration service.
+
 ### 2.3 Wayland 后端构建
 
 依赖安装 (Fedora):
@@ -186,7 +196,7 @@ cmake --build build-ubsan
 
 #### Windows + Clang 验证
 
-本机已验证 Clang 22 + Ninja + WGL OpenGL 4.5；无 GPU 的 CI 仅运行非 `graphics` CTest：
+本机已验证 Clang 22 + Ninja 原生构建；无 GPU 的 CI 仅运行非 `graphics` CTest：
 
 ```powershell
 cmake -S engine -B build-win-clang -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
@@ -206,27 +216,26 @@ Push-Location engine
 Pop-Location
 ```
 
-该测试覆盖 WGL OpenGL 4.5、IBL cubemap capture/convolution/sample，以及 indirect 和 material-array 图形门禁。
+图形集成测试仍需具备 WGL/Vulkan/GPU 环境后单独验证。
 
 #### 使用 MSVC (Visual Studio)
 
-在 Visual Studio Developer Command Prompt 中：
+已在 MSVC 19.51.36246 / Visual Studio 2026 Developer Command Prompt 中使用 Ninja 完成
+Debug 原生 Windows 构建与非图形 Win32 runtime smoke。可复制以下命令：
 ```cmd
-cd engine
-mkdir build-msvc && cd build-msvc
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
+cmake -S engine -B build-msvc-1451-audit -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+cmake --build build-msvc-1451-audit --parallel
+ctest --test-dir build-msvc-1451-audit -LE graphics --output-on-failure
 ```
 
-或使用 Ninja：
-```cmd
-cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
-ninja
-```
+上述配置成功，完整构建在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下通过；重复构建无剩余工作。
+非图形 CTest `56/56` 通过，其中包括 `test_platform_win32_runtime`。这提供的是非图形、headless
+Win32 平台证据，不证明 WGL、Vulkan、GPU、present 或图形 runtime，也不证明 Windows Vulkan 构建。
 
 或显式指定 MSVC 工具链文件：
 ```cmd
-cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain-msvc.cmake -G Ninja
+cmake -S engine -B build-msvc -DCMAKE_TOOLCHAIN_FILE=engine/toolchain-msvc.cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-msvc --parallel
 ```
 
 #### Windows Clang 构建（从 Linux 交叉编译）
@@ -323,7 +332,7 @@ cmake --build build-gl
 | Linux | Wayland | Vulkan | GCC | 通过 |
 | Linux | Wayland | Vulkan | Clang | 通过 |
 | Windows | Win32 | OpenGL | MinGW | 待验证 |
-| Windows | Win32 | OpenGL | MSVC | 待验证 |
+| Windows | Win32 | OpenGL | MSVC | 原生构建 + 非图形 Win32 smoke 已验证 |
 | Windows | Win32 | OpenGL | Clang | 待验证 |
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 待验证 |
@@ -357,7 +366,7 @@ cmake --build build-gl
 ### 4.1.1 编译器兼容性说明
 
 - **GCC/Clang 通用标志**：`-Wall -Wextra -Werror -pedantic`
-- **MSVC 标志**：`/W4 /WX /utf-8`，自动定义 `_CRT_SECURE_NO_WARNINGS`
+- **MSVC 标志**：`/W4 /WX /utf-8 /experimental:c11atomics`，自动定义 `_CRT_SECURE_NO_WARNINGS`
 - **GCC 特有**：`-Wno-format-truncation` 仅在 GCC 下对 packer 工具启用
 - **Sanitizer**：GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`
 - **对齐宏**：代码使用 `ENGINE_ALIGN(x)` 宏，自动适配 `__attribute__` (GCC/Clang) 或 `__declspec(align)` (MSVC)
@@ -445,9 +454,9 @@ MESA_DEBUG=1 BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-x11-gl/engine_demo
 BREAK_FRAMES=120 BREAK_UI=0 ./build-verify-x11-vk/engine_demo
 ```
 
-Windows 运行时测试需要真实 Windows、WGL/Win32 surface 和可用 GPU；Linux 交叉构建不能替代
-该验证。本轮 Linux 环境没有安装 MinGW 或 MSVC，因此 Windows 状态保持“待验证”，不把
-Linux 的 GL/Vulkan 通过结果外推为 Windows 运行时通过。
+Windows 的本轮 MSVC 证据限于原生编译和非图形 Win32 platform smoke；Linux 交叉构建不能替代
+该验证。`test_platform_win32_runtime` 不创建 graphics context，因此 WGL、Vulkan、GPU、present
+和图形 runtime 仍待在相应目标环境验证，Windows Vulkan 构建也仍待验证。
 
 ### 6.4 持续集成（CI）
 
@@ -551,18 +560,18 @@ A: 重新 cmake 配置：`cmake -B build -DENGINE_VULKAN=ON/OFF`
 
 ---
 
-## TODO: Windows 平台验证（待环境具备后执行）
+## Windows 平台验证边界
 
-> 当前开发环境为 Fedora 44，Windows 功能已实现但尚未在真实 Windows 环境中验证。以下为待验证/待完善事项：
+MSVC 19.51.36246 / Visual Studio 2026 Developer Command Prompt + Ninja 已完成原生 Debug
+构建与非图形 Win32 smoke。以下项目仍待验证或完善：
 
 ### 待验证项
 
-1. **Windows 原生编译验证** — 使用 MSVC (Visual Studio 2019+) 编译 engine 库和 demo，确认零警告零错误
-2. **MinGW 交叉编译验证** — 在 Linux 上安装 mingw-w64 后使用 `toolchain-mingw.cmake` 交叉编译，验证产出物可在 Windows 运行
-3. **OpenGL WGL 后端运行验证** — 在 Windows 上运行 engine_demo (OpenGL 模式)，确认窗口创建、渲染、输入响应正常
-4. **Vulkan Win32 Surface 运行验证** — 在 Windows 上运行 engine_demo (Vulkan 模式)，确认 Surface 创建和渲染正常
-5. **高 DPI 验证** — 在 4K/高分屏 Windows 设备上测试 WM_DPICHANGED 响应和窗口缩放行为
-6. **文件热重载验证** — 确认 FindFirstChangeNotification 在 Windows 上正确检测着色器/资源文件修改
+1. **MinGW 交叉编译验证** — 在 Linux 上安装 mingw-w64 后使用 `toolchain-mingw.cmake` 交叉编译，验证产出物可在 Windows 运行
+2. **OpenGL WGL 后端运行验证** — 在 Windows 上运行 engine_demo (OpenGL 模式)，确认窗口创建、渲染、输入响应正常
+3. **Vulkan Win32 Surface 运行验证** — 在 Windows 上运行 engine_demo (Vulkan 模式)，确认 Surface 创建和渲染正常
+4. **高 DPI 验证** — 在 4K/高分屏 Windows 设备上测试 WM_DPICHANGED 响应和窗口缩放行为
+5. **文件热重载验证** — 确认 FindFirstChangeNotification 在 Windows 上正确检测着色器/资源文件修改
 
 ### 环境准备
 
@@ -579,4 +588,5 @@ cmake --build build-win-clang --parallel
 ctest --test-dir build-win-clang -LE graphics --output-on-failure
 ```
 
-结果：非图形测试 `40/40` 通过；图形运行时测试仍需具备 WGL/Vulkan 运行环境后单独验证。
+结果：Clang 非图形测试 `40/40` 通过；该记录不提供本轮 MSVC 证据，也不改变 WGL/Vulkan/GPU/present
+仍待验证的边界。

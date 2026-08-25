@@ -875,7 +875,7 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 
 | 模块 | 状态 | 证据 / 说明 |
 |------|------|-------------|
-| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/{allocator,facts,parser,engine}.c`; `rule_engine_core` is graphics/Lua-independent. `test_rule_engine` verifies flat fact copying with exact dotted-key precedence, parsing/installation, literal and fact-reference `then` assignments before stable salience/source-order callbacks, callback fact mutation, cancellation, inclusive limits, zero per-run fields selecting engine defaults, and capability bits. Nested traversal and general agenda scheduling remain pending; deferred upstream families are not local parity claims. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
+| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/`; `rule_engine_core` is graphics/Lua-independent. The focused cases in `engine/tests/test_rule_engine.c` cover flat facts, parsing/install, action references, callbacks, limits, bounded agenda controls, private/rebuild-based RETE, streaming windows and correlation, callback and memory providers, and the bounded query seam. Backward-chaining conformance is explicitly pending: recursive goal traversal, argument unification, multi-solution enumeration, and proof graphs are not implemented or tested. Native Redis and RETE-UL parity remain unsupported; C11 executor evidence is opt-in. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
 
 ## 游戏运行时
 
