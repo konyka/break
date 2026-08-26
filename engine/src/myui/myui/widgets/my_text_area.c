@@ -1816,6 +1816,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           int32_t base_x = ta_content_left_value(ta) - ta->scroll_x;
           int32_t delta = 0;
           bool justify = false;
+          bool line_bidi = my_text_layout_may_need_bidi(line);
+          my_text_layout_t* line_layout = NULL;
           int nseps = 0;
           /* alignment (M11d): measure the segment, shift its base x */
           if (ta->font != NULL) {
@@ -1824,6 +1826,11 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             lw = (int32_t)vl->len_cp * TA_CELL_W;
           }
           nseps = ta_justify_space_count(line, len);
+          if (line_bidi &&
+              (ta->align == MY_TEXT_ALIGN_LEFT || ta->align == MY_TEXT_ALIGN_JUSTIFY ||
+               has_sel)) {
+            line_layout = my_text_layout_process(ta->allocator, line);
+          }
           if (ta->align == MY_TEXT_ALIGN_CENTER) {
             base_x += (inner_w - lw) / 2;
           } else if (ta->align == MY_TEXT_ALIGN_RIGHT) {
@@ -1835,16 +1842,12 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             bool phys_continues =
                 vi + 1 < vcount && ta_vline_at(ta, vi + 1)->phys == vl->phys;
             justify = phys_continues && nseps > 0;
-          } else if (my_text_layout_may_need_bidi(line)) {
+          } else if (line_layout != NULL) {
             /* M13b: the default (LEFT) follows the paragraph direction:
              * an RTL line is right-aligned unless align was set to
              * CENTER/RIGHT/JUSTIFY explicitly */
-            my_text_layout_t* rl = my_text_layout_process(ta->allocator, line);
-            if (rl != NULL) {
-              if (rl->rtl_base) {
-                base_x += inner_w - lw;
-              }
-              my_text_layout_destroy(rl);
+            if (line_layout->rtl_base) {
+              base_x += inner_w - lw;
             }
           }
           /* selection/cursor shift with the line for CENTER/RIGHT
@@ -1863,15 +1866,11 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             if (s1 > s0) {
               /* RTL (M12a): the contiguous logical selection may show as
                * several visual segments at run boundaries */
-              my_text_layout_t* rl =
-                  my_text_layout_may_need_bidi(line)
-                      ? my_text_layout_process(ta->allocator, line)
-                      : NULL;
               my_vgcanvas_set_fill_color(vg, my_color_rgb(130, 170, 230));
-              if (rl != NULL) {
+              if (line_layout != NULL) {
                 my_rectf_t rects[4];
                 size_t n = my_text_layout_visual_rects(
-                    rl, ta->font, ta->font_size, s0 - vl->start_cp,
+                    line_layout, ta->font, ta->font_size, s0 - vl->start_cp,
                     s1 - vl->start_cp, rects, 4);
                 size_t k;
                 for (k = 0; k < n && k < 4; k++) {
@@ -1883,7 +1882,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                         (float)ty, rects[k].w,
                                         (float)line_h});
                 }
-                my_text_layout_destroy(rl);
               } else {
                 int32_t sx0 = (int32_t)(s0 - vl->start_cp) * TA_CELL_W;
                 int32_t sx1 = (int32_t)(s1 - vl->start_cp) * TA_CELL_W;
@@ -1950,6 +1948,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
             }
           }
+          my_text_layout_destroy(line_layout);
         }
       }
     }
@@ -1973,6 +1972,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       size_t col_in = ta->cursor_col - cv->start_cp;
       int nseps = 0;
       bool justify = false;
+      bool cursor_bidi = my_text_layout_may_need_bidi(ctext);
+      my_text_layout_t* cursor_layout =
+          cursor_bidi ? my_text_layout_process(ta->allocator, ctext) : NULL;
       /* same base as the text line (scroll + align), then the mapped
        * visual x for RTL, cell math otherwise (M12a) */
       if (ta->font != NULL) {
@@ -1989,22 +1991,15 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                  inner_w > lw && nseps > 0 && cvi + 1 < ta_vline_count(ta) &&
                  ta_vline_at(ta, cvi + 1)->phys == cv->phys) {
         justify = true;
-      } else if (my_text_layout_may_need_bidi(ctext)) {
+      } else if (cursor_layout != NULL) {
         /* M13b: default follows paragraph direction (RTL -> right) */
-        my_text_layout_t* rl = my_text_layout_process(ta->allocator, ctext);
-        if (rl != NULL) {
-          if (rl->rtl_base) {
-            cx += inner_w - lw;
-          }
-          my_text_layout_destroy(rl);
+        if (cursor_layout->rtl_base) {
+          cx += inner_w - lw;
         }
       }
-      if (my_text_layout_may_need_bidi(ctext)) {
-        my_text_layout_t* cl = my_text_layout_process(ta->allocator, ctext);
-        if (cl != NULL) {
-          cx += my_text_layout_visual_x(cl, ta->font, ta->font_size, col_in);
-          my_text_layout_destroy(cl);
-        }
+      if (cursor_layout != NULL) {
+        cx += my_text_layout_visual_x(cursor_layout, ta->font, ta->font_size,
+                                      col_in);
       } else if (justify) {
         cx += ta_justify_boundary_x(ta, ctext, col_in, (size_t)nseps, lw,
                                     inner_w);
@@ -2016,6 +2011,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           cx += ta_line_boundary_x(ta, cv->phys, ta->cursor_col);
         }
       }
+      my_text_layout_destroy(cursor_layout);
     } else {
       cx += (int32_t)(ta->wrap ? civ : ta->cursor_col) * TA_CELL_W;
     }

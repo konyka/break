@@ -433,6 +433,44 @@ TEST(text_area_visual_lines_cache_byte_ranges)
   my_widget_unref(area);
 }
 
+TEST(text_area_rtl_paint_reuses_layout)
+{
+  text_area_count_alloc_t state = {0};
+  my_allocator_t allocator = {&state, text_area_count_alloc,
+                              text_area_count_calloc, text_area_count_realloc,
+                              text_area_count_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  size_t before;
+  size_t first_frame;
+  size_t second_frame;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 54}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91\xD7\x92"),
+            MY_RET_OK);
+  text_area->focused = true;
+  text_area->cursor_visible = true;
+  before = state.alloc_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  first_frame = state.alloc_calls - before;
+  before = state.alloc_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  second_frame = state.alloc_calls - before;
+  ASSERT_TRUE(second_frame < first_frame);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
 TEST(text_area_wrap_reuses_unchanged_prefix_after_edit)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1943,6 +1981,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_grows_capacity_exponentially);
     RUN_TEST(text_area_wrap_rebuilds_after_edit);
     RUN_TEST(text_area_visual_lines_cache_byte_ranges);
+    RUN_TEST(text_area_rtl_paint_reuses_layout);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_line_number_gutter_has_bounded_width);
     RUN_TEST(text_area_line_numbers_reduce_wrap_width);

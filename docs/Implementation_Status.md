@@ -1934,3 +1934,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   消除每个 visual line 从物理行首重复扫描 UTF-8 的 O(visual lines * physical line length)
   风险；codepoint 光标、选择和公共后端接口不变。
 - 验证：`test_myui_window_manager` **53/53** 通过；实现不引入后端类型或额外逐帧缓存重建。
+
+## myui RTL paint layout reuse（2026-08-26）
+
+- 以 TDD 新增 `text_area_rtl_paint_reuses_layout`，先复现同一 RTL visual line 在默认方向
+  对齐、选区和光标路径中重复复制 layout 的问题。
+- 单帧 visual-line 作用域现在按需只构建一个 layout，默认方向对齐与选区几何共享；光标
+  路径合并 `rtl_base` 和 visual-x 查询。居中、右对齐以及无选区的合适 JUSTIFY 路径不
+  构建不必要的方向 layout，失败时继续使用既有 fallback。
+- 验证：`test_myui_window_manager` **54/54** 通过；没有引入全局可变 widget 状态或后端
+  专用 API。
