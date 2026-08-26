@@ -198,8 +198,9 @@ the backward-proof capability bit remains clear.
 Rule declarations may optionally use bounded formal parameters, for example
 `rule "Lookup"(Key)`. Conditions may use `goal("RuleName")` unchanged, or the
  parsed explicit form `goal("RuleName", actual, ...)`; bounded formal/actual
- binding queries are outside the explicit backward-machine slice and return
-`RE_STATUS_NOT_SUPPORTED`. The parser rejects malformed, duplicate, and
+  binding queries, nested goal operands, and registered custom-function
+  operands use the mature semantic evaluator; the explicit machine
+  remains reserved for simple zero-argument chains. The parser rejects malformed, duplicate, and
 over-bound formal/actual argument lists deterministically.
 The zero-argument form traverses installed rules with explicit `max_depth` bounds
 and active-path cycle detection. Results distinguish proved,
@@ -207,9 +208,14 @@ disproved, unknown, and depth-limit outcomes. Successful queries expose
 immutable proofs with copied bindings and deterministic source-order traces of
 the recursive rule-name path. `max_solutions` enumerates alternative rules for
  the queried rule; each proof also owns deterministic derivation-path nodes and
- parent/child edges. Shared-subgraph provenance and arbitrary predicate
- unification remain unsupported. Fact mutation invalidates the query's
-remaining proofs.
+   parent/child edges. An edge connects a node to its immediate trace-parent
+   goal, so sibling alternatives such as `Top -> A` and `Top -> B` are distinct
+   proofs rather than a shared graph. Shared-subgraph/upstream producer
+   provenance and arbitrary predicate unification remain unsupported.
+   `re_query_next` transfers ownership of the returned proof to the caller: it
+   remains valid after fact mutation and query destruction, while proofs not yet
+   returned are released by the query. Fact mutation invalidates only the
+   query's remaining proofs.
 
 Names and string slices returned by proof binding, trace, and node getters are
 borrowed from the proof and remain valid until `re_proof_destroy`; callers must

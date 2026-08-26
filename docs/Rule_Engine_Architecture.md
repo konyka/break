@@ -20,10 +20,13 @@ Implemented now:
 - bounded object/array values and nested path lookup through the versioned value API;
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded, non-capability-bearing query seam for exact flat goals and
-  recursive rule bodies with literal/propagated formal binding; general
-  unification and shared-subgraph/upstream proof provenance remain pending. The
+  recursive rule bodies with literal/propagated formal binding, nested goal
+  operands, and registered custom-function operands; general unification and
+  shared-subgraph/upstream proof provenance remain pending. The
   bounded binding slice stores each successful derivation path as owned nodes
-  and deterministic parent/child edges.
+   and deterministic parent/child edges. These edges describe the active
+   goal-call stack for that derivation, such as `Top -> A` or `Top -> B`;
+   they are not general producer provenance and are not shared between proofs.
 - backward condition evaluation uses heap-backed continuation frames for
   TRUE/FALSE, COMPARE, NOT, AND, and OR nodes. Checked frame growth and enclosing
   environment/trace checkpoints preserve failed-branch rollback. Goal and custom
@@ -34,8 +37,9 @@ Deferred explicitly:
 
 - full upstream RETE/RETE-UL execution, persistent agenda/TMS, and general producer provenance;
 - arbitrary argument unification, shared-subgraph proof graphs, and upstream
-  proof strategies; bounded recursive binding and derivation-path enumeration
-  are implemented and remain deliberately narrower than upstream semantics;
+  proof strategies; bounded recursive binding, nested goal operands, custom
+  function operands, and derivation-path enumeration are implemented and remain
+  deliberately narrower than upstream semantics;
 - native Redis-backed streaming state. The portable bounded in-memory provider is implemented;
 - persistent agenda control and full upstream truth-maintenance behavior.
 
@@ -54,8 +58,10 @@ injected-clock ownership. Module behavior is intentionally private and bounded;
 it does not advertise a public module ABI, complete date parsing, or agenda/RETE
 support.
 
-The local status is limited to behavior covered by
-`engine/tests/test_rule_engine.c`; these statuses match
+The local status is limited to behavior covered by the registered rule-engine
+tests, including `engine/tests/test_rule_engine.c`, the transaction, RETE,
+backward, machine-structure, machine-context, binding, fuzz-smoke, and
+optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
 upstream evidence only. No deferred family has an ABI placeholder.
 
@@ -280,7 +286,8 @@ preserves the query depth, cycle, trace, and maximum-solution limits for this
 subset. The production query entry point selects this path when the goal graph
 matches the supported shape; otherwise it uses the bounded compatibility path
 in `backward.c`, which also covers direct fact comparisons such as
-`Ready == true`, and supported boolean composition. Formal bindings,
-custom-function operands, and non-zero-argument goals return
-`RE_STATUS_NOT_SUPPORTED`. Neither path claims
+`Ready == true`, supported boolean composition, literal/propagated formal
+bindings, nested goal operands, and registered custom-function operands. The
+compatibility path still rejects arbitrary predicate unification and shared
+proof subgraphs. Neither path claims
 arbitrary upstream unification or shared-subgraph provenance.
