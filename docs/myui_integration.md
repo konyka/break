@@ -80,6 +80,16 @@ pointer 命中测试先以有符号坐标处理垂直位置，再转换为 visua
 固定落到第一行，下方点击固定落到最后一个可见 visual line，避免负值转 `size_t` 后下溢
 跳到文档末尾。坐标与行数计算使用有符号/无符号边界检查，不增加常态分配。
 
+pointer 的 y 命中使用与绘制、滚动和 IME 相同的字体 line-height，而不是配置字号；字体
+额外 leading 不会使点击提前落到下一 visual line。该路径只读取既有字体度量，保持 O(1)。
+
+键盘 `MY_KEY_PAGE_UP` / `MY_KEY_PAGE_DOWN` 在 wrap 模式下按 viewport 的 visual line
+移动，而不是按物理行移动；长物理行中的分页因此不会停留在原行。目标 visual line 通过
+已有缓存的二分索引和数组访问定位，再复用当前的 RTL 边界映射；分页不新增 visual-line
+cache 分配，索引路径复杂度为 O(log V)，其中 V 是缓存中的 visual line 数。需要 RTL 边界
+映射时沿用现有的单行 layout 临时对象。折叠行不会重新出现，因为目标来自同一份可见
+visual-line cache。非 wrap 模式保持可见物理行分页语义。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

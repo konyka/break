@@ -1885,3 +1885,23 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - pointer 垂直位置现在先在有符号域中计算，再钳制到 `[0, visible_count - 1]`；空文本、
   负坐标、超出底部及整数边界均不进行危险转换，正常路径无分配、常数复杂度。
 - 验证：`test_myui_window_manager` **47/47** 通过。
+
+## myui pointer font line-height mapping（2026-08-26）
+
+- 以 TDD 新增 `text_area_pointer_hit_test_uses_font_line_height`，先复现字体实际行高大于
+  配置字号时点击第一 visual line 底部被错误命中到第二行的问题。
+- pointer hit-test 改为复用 `ta_line_height()`，与绘制、滚动和 IME 的行距契约一致；无
+  新缓存、无分配，正常命中保持 O(1)。
+- 验证：`test_myui_window_manager` **48/48** 通过。
+
+## myui wrapped visual-line paging（2026-08-26）
+
+- 以 TDD 新增 `text_area_page_down_moves_by_wrapped_visual_lines` 和
+  `text_area_page_up_moves_by_wrapped_visual_lines`，先复现 wrap 模式按物理 row 分页导致
+  长行几乎不滚动的问题。
+- `MY_KEY_PAGE_UP/DOWN` 现在在 visual-line index 上计算 viewport 页距，使用已有 cache
+  的二分定位和数组访问映射回物理行/codepoint；目标列继续复用 visual boundary 与 RTL
+  映射，折叠行不会重新出现。分页不新增 visual-line cache 分配，索引路径复杂度为
+  O(log V)；非 wrap 行为保持不变。
+- 验证：`test_myui_window_manager` **50/50** 通过；实现仍只依赖 myui core/layout 接口，
+  不泄漏 GL、Vulkan、软件 canvas 或平台类型。
