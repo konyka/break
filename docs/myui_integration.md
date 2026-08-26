@@ -72,6 +72,10 @@ IME 候选框锚点也消费同一 visual-line 映射：wrap 时使用 visual li
 时使用实际 stretched-space 边界计算 x，再通过 widget 的全局坐标转换交给 PAL。这样
 Wayland、Win32、Cocoa 等平台只接收统一的逻辑候选框位置，不需要知道渲染后端或字体实现。
 
+非 wrap 文本的点击、水平滚动、光标和 IME 锚点也使用字体 glyph advance；无字体时才回退
+到 8px cell。wrap 视图只对当前 visual line 计算局部边界，避免每帧构建整段 glyph 缓存，
+并让变宽字体在所有输入与绘制路径保持一致。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

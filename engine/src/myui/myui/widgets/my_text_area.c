@@ -292,6 +292,49 @@ static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
   return TA_CELL_W;
 }
 
+static size_t ta_line_start(const my_text_area_t* ta, size_t row);
+
+static int32_t ta_line_boundary_x(const my_text_area_t* ta, size_t row,
+                                  size_t boundary) {
+  size_t start = ta_line_start(ta, row);
+  size_t end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
+                                           : ta->text_len;
+  size_t index = 0;
+  int32_t x = 0;
+  const char* p = ta->text + start;
+  while (start < end && *p != '\0' && *p != '\n' && index < boundary) {
+    const char* next = p;
+    uint32_t cp = my_utf8_next(&next);
+    x += ta_codepoint_advance(ta, cp);
+    start += (size_t)(next - p);
+    p = next;
+    index++;
+  }
+  return x;
+}
+
+static size_t ta_line_col_at_x(const my_text_area_t* ta, size_t row,
+                               int32_t x) {
+  size_t start = ta_line_start(ta, row);
+  size_t end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
+                                           : ta->text_len;
+  size_t col = 0;
+  int32_t boundary = 0;
+  const char* p = ta->text + start;
+  if (x <= 0) return 0;
+  while (start < end && *p != '\0' && *p != '\n') {
+    const char* next = p;
+    uint32_t cp = my_utf8_next(&next);
+    int32_t advance = ta_codepoint_advance(ta, cp);
+    if (x < boundary + (advance + 1) / 2) return col;
+    boundary += advance;
+    start += (size_t)(next - p);
+    p = next;
+    col++;
+  }
+  return col;
+}
+
 static int32_t ta_justify_boundary_x(const my_text_area_t* ta, const char* text,
                                      size_t boundary, size_t space_count,
                                      int32_t line_width, int32_t inner_width) {
@@ -1010,7 +1053,7 @@ static void ta_ensure_visible(my_text_area_t* ta) {
   }
   if (!ta->wrap && inner_w > 0) {
     cy = ta_content_left_value(ta) +
-         (int32_t)ta->cursor_col * TA_CELL_W;
+         ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
     if (cy - ta->scroll_x < 0) {
       ta->scroll_x = cy;
     }
@@ -1119,6 +1162,9 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
         }
       }
     }
+  }
+  if (!ta->wrap) {
+    cursor_x = ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
   }
   x = ta_content_left_value(ta) + cursor_x - ta->scroll_x;
   y = TA_PAD_Y + (int32_t)visual_index * line_h -
@@ -1571,9 +1617,11 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
         if (lx < ta_content_left_value(ta)) {
           lx = ta_content_left_value(ta);
         }
-        col = (size_t)((lx - ta_content_left_value(ta) + ta->scroll_x +
-                        TA_CELL_W / 2) /
-                       TA_CELL_W);
+        col = ta_line_col_at_x(
+            ta, vl->phys,
+            lx - ta_content_left_value(ta) + ta->scroll_x +
+                (ta->wrap ? ta_line_boundary_x(ta, vl->phys, vl->start_cp)
+                          : 0));
         if (col > vl->start_cp + vl->len_cp) {
           col = vl->start_cp + vl->len_cp;
         }
@@ -1767,6 +1815,11 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                   sx1 = ta_justify_boundary_x(
                       ta, line, s1 - vl->start_cp, (size_t)nseps, lw,
                       inner_w);
+                } else if (ta->font != NULL) {
+                  sx0 = ta_line_boundary_x(ta, vl->phys, s0);
+                  sx1 = ta_line_boundary_x(ta, vl->phys, s1);
+                  sx0 -= ta_line_boundary_x(ta, vl->phys, vl->start_cp);
+                  sx1 -= ta_line_boundary_x(ta, vl->phys, vl->start_cp);
                 }
                 my_vgcanvas_fill_rect(
                     vg, &(my_rectf_t){(float)(ta_content_left_value(ta) +
@@ -1881,7 +1934,12 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
         cx += ta_justify_boundary_x(ta, ctext, col_in, (size_t)nseps, lw,
                                     inner_w);
       } else {
-        cx += (int32_t)col_in * TA_CELL_W;
+        if (ta->wrap) {
+          cx += ta_line_boundary_x(ta, cv->phys, cv->start_cp + col_in) -
+                ta_line_boundary_x(ta, cv->phys, cv->start_cp);
+        } else {
+          cx += ta_line_boundary_x(ta, cv->phys, ta->cursor_col);
+        }
       }
       my_mem_free(ta->allocator, ctext);
     } else {

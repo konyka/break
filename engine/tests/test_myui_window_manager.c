@@ -48,6 +48,72 @@ static void text_area_fail_free(void* ctx, void* ptr) {
   free(ptr);
 }
 
+typedef struct text_area_variable_font_t {
+  my_font_t base;
+} text_area_variable_font_t;
+
+static my_ret_t text_area_variable_font_measure(my_font_t* font,
+                                                const char* text, int32_t size,
+                                                int32_t* width, int32_t* height) {
+  const char* p = text;
+  int32_t total = 0;
+  (void)font;
+  if (text == NULL || size <= 0 || width == NULL) return MY_RET_INVALID_PARAMS;
+  while (*p != '\0') {
+    total += *p == 'A' ? 5 : 20;
+    p++;
+  }
+  *width = total;
+  if (height != NULL) *height = size;
+  return MY_RET_OK;
+}
+
+static my_ret_t text_area_variable_font_glyph(my_font_t* font,
+                                              uint32_t codepoint, int32_t size,
+                                              my_glyph_t* glyph) {
+  (void)font;
+  if (glyph == NULL || size <= 0) return MY_RET_INVALID_PARAMS;
+  memset(glyph, 0, sizeof(*glyph));
+  glyph->advance = codepoint == 'A' ? 5 : 20;
+  return MY_RET_OK;
+}
+
+static int32_t text_area_variable_font_ascent(my_font_t* font, int32_t size) {
+  (void)font;
+  return size;
+}
+
+static int32_t text_area_variable_font_descent(my_font_t* font, int32_t size) {
+  (void)font;
+  (void)size;
+  return 0;
+}
+
+static int32_t text_area_variable_font_line_height(my_font_t* font,
+                                                   int32_t size) {
+  (void)font;
+  return size;
+}
+
+static void text_area_variable_font_destroy(my_font_t* font) { (void)font; }
+
+static bool text_area_variable_font_has_glyph(my_font_t* font,
+                                              uint32_t codepoint) {
+  (void)font;
+  return codepoint == 'A' || codepoint == 'B';
+}
+
+static const my_font_vtable_t text_area_variable_font_vtable = {
+    text_area_variable_font_measure,
+    text_area_variable_font_glyph,
+    text_area_variable_font_ascent,
+    text_area_variable_font_descent,
+    text_area_variable_font_line_height,
+    text_area_variable_font_destroy,
+    text_area_variable_font_has_glyph,
+    NULL,
+    NULL};
+
 static int g_result = -999;
 static int g_main_clicks;
 static int g_dialog_clicks;
@@ -1379,6 +1445,24 @@ TEST(text_widgets_toggle_platform_ime_with_focus)
   my_pal_destroy(pal);
 }
 
+TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent)
+{
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 40}), MY_RET_OK);
+  my_text_area_set_font(area, (my_font_t*)&font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "AB"), MY_RET_OK);
+  event.u.pointer.x = 7;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_col, 1u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1695,6 +1779,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(posted_user_event_reaches_top_window);
     RUN_TEST(user_event_can_close_window_during_dispatch);
     RUN_TEST(text_widgets_toggle_platform_ime_with_focus);
+    RUN_TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent);
     RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);

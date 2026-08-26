@@ -1868,3 +1868,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   每帧缓存。
 - 验证：`test_myui_window_manager` **45/45** 通过；普通 LTR、复杂 RTL 的既有限制边界
   保持不变。
+
+## myui variable-font coordinate contract（2026-08-26）
+
+- 以 TDD 新增 `text_area_variable_font_keeps_nonwrap_coordinates_consistent`，先复现
+  非 wrap 变宽字体点击仍按固定 8px cell 命中的错误。
+- 新增按 codepoint glyph advance 的边界与命中计算，统一非 wrap 点击、水平滚动、光标、
+  IME，以及 wrapped visual line 的局部光标/选区几何；无字体继续使用固定 cell fallback。
+- 当前 visual line 即时计算，不引入逐帧全文扫描或后端 API；验证：
+  `test_myui_window_manager` **46/46** 通过。
