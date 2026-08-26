@@ -1905,3 +1905,43 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   O(log V)；非 wrap 行为保持不变。
 - 验证：`test_myui_window_manager` **50/50** 通过；实现仍只依赖 myui core/layout 接口，
   不泄漏 GL、Vulkan、软件 canvas 或平台类型。
+
+## myui text-area paint scratch reuse（2026-08-26）
+
+- 以 TDD 新增 `text_area_paint_reuses_line_buffer`，先验证相同内容的连续绘制会为每个
+  visual line 反复申请临时字符串，造成帧级 allocator 抖动。
+- `my_text_area` 现在持有按需扩容的 widget-owned scratch buffer，visual line 文本和光标
+  锚点共用该 buffer；容量只在内容变长时增长，普通重绘不再产生逐行分配，后端 API 和
+  绘制命令保持不变。分配失败时继续跳过无法准备的行或使用光标 cell fallback。
+- 验证：`test_myui_window_manager` **51/51** 通过；scratch 生命周期在 widget destroy
+  中释放，跨 soft/GLES/Vulkan/Break RHI 仍只经过公共 canvas 接口。
+
+## myui justify paint allocation elimination（2026-08-26）
+
+- 以 TDD 新增 `text_area_justify_paint_reuses_line_buffer`，先复现 JUSTIFY 逐单词复制和
+  释放字符串导致的连续帧 allocator 抖动。
+- JUSTIFY 现在直接在 widget scratch buffer 中暂时写入 NUL 分隔符，完成公共 canvas 绘制
+  与测量后恢复原字符；不改变文本内容、布局或后端 API，普通 LTR 路径不再按单词数分配。
+- 验证：`test_myui_window_manager` **52/52** 通过；折行、选择、光标和 IME 逻辑保持既有
+  后端无关契约。
+
+## myui visual-line byte-range cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_visual_lines_cache_byte_ranges`，先锁定 wrapped visual line
+  必须暴露 paragraph 已计算的物理行内 byte 起止区间。
+- `my_visual_line_t` 现在缓存 `start_byte/len_bytes`；wrap 重排直接转存 paragraph line
+  的 byte span，非 wrap 视图生成等价整行 span。绘制和 scratch 文本准备直接使用区间，
+  消除每个 visual line 从物理行首重复扫描 UTF-8 的 O(visual lines * physical line length)
+  风险；codepoint 光标、选择和公共后端接口不变。
+- 验证：`test_myui_window_manager` **53/53** 通过；实现不引入后端类型或额外逐帧缓存重建。
+
+## myui RTL paint layout reuse（2026-08-26）
+
+- 以 TDD 新增 `text_area_rtl_paint_reuses_layout`，先复现同一 RTL visual line 在默认方向
+  对齐、选区和光标路径中重复复制 layout 的问题。
+- widget scratch 文本未变化时，visual-line 作用域现在跨帧复用一个 layout，默认方向对齐
+  与选区几何共享；光标路径合并 `rtl_base` 和 visual-x 查询。scratch 改变先销毁旧对象，
+  再按需建立新 layout；居中、右对齐以及无选区的合适 JUSTIFY 路径不构建不必要的方向
+  layout，失败时继续使用既有 fallback。
+- 验证：`test_myui_window_manager` **54/54** 通过；没有引入全局可变 widget 状态或后端
+  专用 API。

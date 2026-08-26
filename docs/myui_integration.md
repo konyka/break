@@ -90,6 +90,24 @@ cache 分配，索引路径复杂度为 O(log V)，其中 V 是缓存中的 visu
 映射时沿用现有的单行 layout 临时对象。折叠行不会重新出现，因为目标来自同一份可见
 visual-line cache。非 wrap 模式保持可见物理行分页语义。
 
+text area 绘制使用 widget 生命周期内的可复用 scratch buffer 组装 visual line 文本；容量只
+在遇到更长行时按需增长，普通重绘不再为每个 visual line 分配和释放临时字符串。光标锚点
+也复用同一 buffer，避免长文档闪烁或滚动时的 allocator 抖动。buffer 只属于 myui widget，
+不依赖软件、GL、Vulkan 或平台后端；分配失败时保留原有的单行跳过/光标 fallback 行为。
+JUSTIFY 绘制进一步在该 buffer 内原地临时切分单词，绘制和测量完成后恢复空格分隔符，
+避免每个单词创建独立字符串；因此普通 LTR/可见行路径不随单词数产生堆分配。
+
+每个 wrapped visual line 同时保存 paragraph 计算出的物理行内 byte 区间。绘制、光标和
+可见行文本准备直接使用该区间，不再对每个段从物理行首重复扫描 UTF-8；长物理行的绘制
+复杂度因此按可见字节数推进，而不是产生 visual-line 数乘以行长度的重复扫描。非 wrap
+视图生成等价的整行区间，公开的 codepoint 坐标契约保持不变。
+
+RTL visual line 的 layout 绑定到 widget 的 scratch 文本，在文本内容未变化时跨帧保留，并
+由默认方向对齐、选区几何和光标 visual-x 计算共享；连续重绘不再复制 layout。scratch 文本
+变化时先销毁旧 layout，再按需建立新对象，避免使用旧文本映射。居中、右对齐和不涉及选区
+的 JUSTIFY 路径不额外构建仅用于默认方向对齐的 layout，保持快速路径。layout 仍由 myui
+text-layout 层管理，渲染后端只消费公共绘制命令。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法
