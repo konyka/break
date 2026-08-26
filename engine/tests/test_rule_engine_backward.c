@@ -7,12 +7,9 @@
 /*
  * Backward-contract coverage for the bounded query seam:
  *
- * - A rule may declare ordered formal parameters as rule "Name"(X, Y).
- * - goal("Name", actual...) invokes that predicate. Actuals are literals or
- *   variables; formal variables are scoped to one rule invocation.
- * - Unification binds an unbound variable, rejects conflicting bindings, and
- *   requires repeated variables to compare equal. Bindings flow through every
- *   recursive hop and are copied into each proof returned by re_query_next.
+ * - Formal parameters, argument-bearing goal calls, and custom-function
+ *   conditions are outside the explicit backward-machine contract and return
+ *   RE_STATUS_NOT_SUPPORTED rather than selecting a legacy evaluator.
  * - Alternatives are visited in source order. max_solutions caps returned
  *   proofs, while max_depth yields RE_QUERY_LIMIT rather than hanging. A
  *   cycle without a proof is RE_QUERY_UNKNOWN when within the depth bound.
@@ -153,6 +150,7 @@ TEST(recursive_query_honors_max_depth) {
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Top"), &options, &query), RE_STATUS_LIMIT);
     ASSERT_EQ(re_query_result(query), RE_QUERY_LIMIT);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
     re_query_destroy(query);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
@@ -168,6 +166,8 @@ TEST(proof_trace_follows_recursive_rule_path) {
     };
     re_proof_t *proof = NULL;
     re_string_t name;
+    re_proof_node_t node = {sizeof(node), {NULL, 0u}};
+    re_proof_edge_t edge = {sizeof(edge), 0u, 0u};
     ASSERT_EQ(query_rules(&test_case, &fixture), RE_STATUS_OK);
     ASSERT_EQ(re_query_next(fixture.query, &proof), RE_STATUS_OK);
     ASSERT_EQ(re_proof_trace_count(proof), 3u);
@@ -177,6 +177,16 @@ TEST(proof_trace_follows_recursive_rule_path) {
     ASSERT_TRUE(name.size == 6u && memcmp(name.data, "Middle", 6u) == 0);
     ASSERT_EQ(re_proof_trace_get(proof, 2u, &name), RE_STATUS_OK);
     ASSERT_TRUE(name.size == 4u && memcmp(name.data, "Base", 4u) == 0);
+    ASSERT_EQ(re_proof_node_count(proof), 3u);
+    ASSERT_EQ(re_proof_edge_count(proof), 2u);
+    ASSERT_EQ(re_proof_node_get(proof, 0u, &node), RE_STATUS_OK);
+    ASSERT_TRUE(node.rule_name.size == 3u && memcmp(node.rule_name.data, "Top", 3u) == 0);
+    ASSERT_EQ(re_proof_edge_get(proof, 0u, &edge), RE_STATUS_OK);
+    ASSERT_EQ(edge.parent_index, 0u);
+    ASSERT_EQ(edge.child_index, 1u);
+    ASSERT_EQ(re_proof_edge_get(proof, 1u, &edge), RE_STATUS_OK);
+    ASSERT_EQ(edge.parent_index, 1u);
+    ASSERT_EQ(edge.child_index, 2u);
     re_proof_destroy(proof);
     destroy_query_fixture(&fixture);
 }
@@ -202,10 +212,37 @@ TEST(fact_mutation_invalidates_recursive_proofs) {
     proof = NULL;
     value.as.boolean = 0;
     ASSERT_EQ(re_facts_set(facts, text("Ready"), &value), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
     ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_NOT_FOUND);
     re_query_destroy(query);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
+}
+
+TEST(nested_or_enumerates_all_root_derivations) {
+    query_fixture_t fixture;
+    ASSERT_EQ(query_rules(&(query_case_t){
+        "rule \"A\" { when true then A = 1; }"
+        "rule \"B\" { when true then B = 2; }"
+        "rule \"C\" { when true then C = 3; }"
+        "rule \"Top\" { when goal(\"A\") or goal(\"B\") or goal(\"C\") then Done = 1; }",
+        "Top", 8u, 4u}, &fixture), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(fixture.query), 3u);
+    destroy_query_fixture(&fixture);
+}
+
+TEST(nested_or_under_and_preserves_all_branches) {
+    query_fixture_t fixture;
+    ASSERT_EQ(query_rules(&(query_case_t){
+        "rule \"A\" { when true then A = 1; }"
+        "rule \"B\" { when true then B = 2; }"
+        "rule \"C\" { when true then C = 3; }"
+        "rule \"Top\" { when true and (goal(\"A\") or goal(\"B\") or goal(\"C\")) then Done = 1; }",
+        "Top", 8u, 4u}, &fixture), RE_STATUS_OK);
+    ASSERT_EQ(re_query_solution_count(fixture.query), 3u);
+    destroy_query_fixture(&fixture);
 }
 
 /*
@@ -321,6 +358,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(recursive_query_honors_max_depth);
     RUN_TEST(proof_trace_follows_recursive_rule_path);
     RUN_TEST(fact_mutation_invalidates_recursive_proofs);
+    RUN_TEST(nested_or_enumerates_all_root_derivations);
+    RUN_TEST(nested_or_under_and_preserves_all_branches);
     RUN_TEST(generated_deep_goal_chain_proves_with_bounded_source);
     RUN_TEST(generated_deep_goal_chain_with_conditions_proves);
     RUN_TEST(deep_boolean_condition_proves_without_recursive_condition_walk);

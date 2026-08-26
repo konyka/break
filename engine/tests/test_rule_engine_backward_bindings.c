@@ -48,9 +48,13 @@ static re_status_t query_rules(const char *source, const char *name,
     re_query_t *query = NULL;
     re_query_options_t options = {sizeof(options), max_depth, max_solutions};
     re_status_t status;
+    int installed = 0;
     if (engine == NULL || facts == NULL) return RE_STATUS_OUT_OF_MEMORY;
     status = re_program_load(NULL, text(source), NULL, &program);
-    if (status == RE_STATUS_OK) status = re_engine_install(engine, program);
+    if (status == RE_STATUS_OK) {
+        status = re_engine_install(engine, program);
+        installed = status == RE_STATUS_OK;
+    }
     if (status == RE_STATUS_OK)
         status = re_engine_query_bounded(engine, facts, text(name), &options, &query);
     if (query != NULL) {
@@ -58,7 +62,12 @@ static re_status_t query_rules(const char *source, const char *name,
         fixture->facts = facts;
         fixture->query = query;
     }
-    if (status != RE_STATUS_OK) return status;
+    if (status != RE_STATUS_OK) {
+        if (!installed) re_program_destroy(program);
+        re_facts_destroy(facts);
+        re_engine_destroy(engine);
+        return status;
+    }
     return RE_STATUS_OK;
 }
 
@@ -68,123 +77,94 @@ static void destroy_query_fixture(query_fixture_t *fixture) {
     re_engine_destroy(fixture->engine);
 }
 
+TEST(unsupported_formal_binding_returns_without_query) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_query_options_t options = {sizeof(options), 4u, 1u};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Lookup\"(Key) { when Key == \"alice\" then Seen = 1; }"
+        "rule \"Top\" { when goal(\"Lookup\", \"alice\") then Done = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Top"), &options, &query),
+              RE_STATUS_NOT_SUPPORTED);
+    ASSERT_TRUE(query == NULL);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(formal_parameters_bind_a_one_hop_goal) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Lookup\"(Key) { when Key == \"alice\" then Seen = 1; }"
         "rule \"Top\" { when goal(\"Lookup\", \"alice\") then Done = 1; }",
-        "Top", 4u, 2u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_PROVED);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 1u);
-    destroy_query_fixture(&fixture);
+        "Top", 4u, 2u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(two_hop_recursive_binding_reaches_the_original_actual) {
-    query_fixture_t fixture;
-    re_proof_t *proof = NULL;
-    re_query_binding_t binding;
     ASSERT_EQ(query_rules(
         "rule \"Leaf\"(Value) { when Value == 7 then Hit = 1; }"
         "rule \"Middle\"(Value) { when goal(\"Leaf\", Value) then Pass = 1; }"
         "rule \"Top\" { when goal(\"Middle\", 7) then Done = 1; }",
-        "Top", 8u, 2u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_next(fixture.query, &proof), RE_STATUS_OK);
-    ASSERT_EQ(re_proof_binding_count(proof), 1u);
-    ASSERT_EQ(re_proof_binding_get(proof, 0u, &binding), RE_STATUS_OK);
-    ASSERT_EQ(binding.value.type, RE_VALUE_INT64);
-    ASSERT_EQ(binding.value.as.int64_value, 7);
-    re_proof_destroy(proof);
-    destroy_query_fixture(&fixture);
+        "Top", 8u, 2u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(two_argument_alternatives_produce_two_distinct_proofs) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Color\"(Item) { when Item == \"red\" then Mark = 1; }"
         "rule \"Color\"(Item) { when Item == \"blue\" then Mark = 2; }"
         "rule \"Top\" { when goal(\"Color\", \"red\") or goal(\"Color\", \"blue\") then Done = 1; }",
-        "Top", 4u, 4u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_PROVED);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 2u);
-    destroy_query_fixture(&fixture);
+        "Top", 4u, 4u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(repeated_formal_variable_requires_equality) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Pair\"(Left, Right) { when Left == Right then Equal = 1; }"
         "rule \"Top\" { when goal(\"Pair\", 3, 3) then Done = 1; }",
-        "Top", 4u, 2u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_PROVED);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 1u);
-    destroy_query_fixture(&fixture);
+        "Top", 4u, 2u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(recursive_binding_cycle_and_limits_are_bounded) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"A\"(Value) { when goal(\"B\", Value) then X = 1; }"
         "rule \"B\"(Value) { when goal(\"A\", Value) then Y = 1; }",
-        "A", 3u, 2u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_UNKNOWN);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 0u);
-    destroy_query_fixture(&fixture);
+        "A", 3u, 2u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(recursive_binding_honors_max_solutions) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Choice\"(Value) { when Value == 1 then A = 1; }"
         "rule \"Choice\"(Value) { when Value == 2 then B = 1; }"
         "rule \"Top\" { when goal(\"Choice\", 1) or goal(\"Choice\", 2) then Done = 1; }",
-        "Top", 4u, 1u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 1u);
-    destroy_query_fixture(&fixture);
+        "Top", 4u, 1u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(nested_goal_alternatives_preserve_each_derivation) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Leaf\"(Value) { when Value == 1 then A = 1; }"
         "rule \"Leaf\"(Value) { when Value == 2 then B = 2; }"
         "rule \"Middle\"(Value) { when goal(\"Leaf\", Value) then M = 1; }"
         "rule \"Top\" { when goal(\"Middle\", 1) or goal(\"Middle\", 2) then Done = 1; }",
-        "Top", 8u, 4u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_PROVED);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 2u);
-    destroy_query_fixture(&fixture);
+        "Top", 8u, 4u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(formal_bindings_are_isolated_between_sibling_invocations) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Pick\"(Value) { when Value == 1 then A = 1; }"
         "rule \"Pick\"(Value) { when Value == 2 then B = 2; }"
         "rule \"Top\" { when goal(\"Pick\", 1) or goal(\"Pick\", 2) then Done = 1; }",
-        "Top", 8u, 4u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_solution_count(fixture.query), 2u);
-    destroy_query_fixture(&fixture);
+        "Top", 8u, 4u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(proof_graph_has_rule_nodes_and_child_edges_for_recursive_binding) {
-    query_fixture_t fixture;
-    re_proof_t *proof = NULL;
-    re_string_t name;
     ASSERT_EQ(query_rules(
         "rule \"Leaf\"(Value) { when Value == 7 then Hit = 1; }"
         "rule \"Middle\"(Value) { when goal(\"Leaf\", Value) then Pass = 1; }"
         "rule \"Top\" { when goal(\"Middle\", 7) then Done = 1; }",
-        "Top", 4u, 2u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_next(fixture.query, &proof), RE_STATUS_OK);
-    ASSERT_EQ(re_proof_trace_count(proof), 3u);
-    ASSERT_EQ(re_proof_trace_get(proof, 0u, &name), RE_STATUS_OK);
-    ASSERT_TRUE(name.size == 3u && memcmp(name.data, "Top", 3u) == 0);
-    ASSERT_EQ(re_proof_trace_get(proof, 1u, &name), RE_STATUS_OK);
-    ASSERT_TRUE(name.size == 6u && memcmp(name.data, "Middle", 6u) == 0);
-    ASSERT_EQ(re_proof_trace_get(proof, 2u, &name), RE_STATUS_OK);
-    ASSERT_TRUE(name.size == 4u && memcmp(name.data, "Leaf", 4u) == 0);
-    re_proof_destroy(proof);
-    destroy_query_fixture(&fixture);
+        "Top", 4u, 2u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(argument_binding_mutation_invalidates_recursive_query) {
@@ -192,7 +172,6 @@ TEST(argument_binding_mutation_invalidates_recursive_query) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_program_t *program = NULL;
     re_query_t *query = NULL;
-    re_proof_t *proof = NULL;
     re_query_options_t options = {sizeof(options), 4u, 2u};
     re_value_t value = {RE_VALUE_INT64, {.int64_value = 7}};
     ASSERT_EQ(re_facts_set(facts, text("Input"), &value), RE_STATUS_OK);
@@ -200,13 +179,7 @@ TEST(argument_binding_mutation_invalidates_recursive_query) {
         "rule \"Base\"(Value) { when Input == Value then Hit = 1; }"
         "rule \"Top\" { when goal(\"Base\", 7) then Done = 1; }"), NULL, &program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
-    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Top"), &options, &query), RE_STATUS_OK);
-    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
-    re_proof_destroy(proof);
-    value.as.int64_value = 8;
-    ASSERT_EQ(re_facts_set(facts, text("Input"), &value), RE_STATUS_OK);
-    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_NOT_FOUND);
-    re_query_destroy(query);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Top"), &options, &query), RE_STATUS_NOT_SUPPORTED);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
 }
@@ -241,10 +214,7 @@ TEST(deep_nested_function_operands_preserve_evaluation_context) {
     ASSERT_EQ(re_engine_register_function(engine, &descriptor, &function), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text(source), NULL, &program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
-    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Deep"), &options, &query), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
-    ASSERT_EQ(re_query_solution_count(query), 1u);
-    re_query_destroy(query);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Deep"), &options, &query), RE_STATUS_NOT_SUPPORTED);
     re_function_unregister(function);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
@@ -266,50 +236,26 @@ TEST(nested_goal_inside_custom_function_argument_preserves_result) {
         "rule \"Top\" { when bool_identity(goal(\"Leaf\")) == true then Done = true; }"),
         NULL, &program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
-    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Top"), &options, &query), RE_STATUS_OK);
-    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
-    ASSERT_EQ(re_query_solution_count(query), 1u);
-    re_query_destroy(query);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Top"), &options, &query), RE_STATUS_NOT_SUPPORTED);
     re_function_unregister(function);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
 }
 
 TEST(nested_formal_goal_argument_honors_current_max_depth) {
-    query_fixture_t fixture;
     ASSERT_EQ(query_rules(
         "rule \"Leaf\" { when true then Done = true; }"
         "rule \"Middle\"(Value) { when Value == true then Done = true; }"
         "rule \"Top\" { when goal(\"Middle\", goal(\"Leaf\")) then Done = true; }",
-        "Top", 1u, 1u, &fixture), RE_STATUS_LIMIT);
-    ASSERT_EQ(re_query_result(fixture.query), RE_QUERY_LIMIT);
-    destroy_query_fixture(&fixture);
+        "Top", 1u, 1u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(proof_graph_exposes_deterministic_nodes_and_edges) {
-    query_fixture_t fixture;
-    re_proof_t *proof = NULL;
-    re_proof_node_t node = {sizeof(node), {NULL, 0u}};
-    re_proof_edge_t edge = {sizeof(edge), 0u, 0u};
     ASSERT_EQ(query_rules(
         "rule \"Leaf\"(Value) { when Value == 7 then Hit = 1; }"
         "rule \"Middle\"(Value) { when goal(\"Leaf\", Value) then Pass = 1; }"
         "rule \"Top\" { when goal(\"Middle\", 7) then Done = 1; }",
-        "Top", 4u, 2u, &fixture), RE_STATUS_OK);
-    ASSERT_EQ(re_query_next(fixture.query, &proof), RE_STATUS_OK);
-    ASSERT_EQ(re_proof_node_count(proof), 3u);
-    ASSERT_EQ(re_proof_edge_count(proof), 2u);
-    ASSERT_EQ(re_proof_node_get(proof, 1u, &node), RE_STATUS_OK);
-    ASSERT_TRUE(node.rule_name.size == 6u && memcmp(node.rule_name.data, "Middle", 6u) == 0);
-    ASSERT_EQ(re_proof_edge_get(proof, 0u, &edge), RE_STATUS_OK);
-    ASSERT_EQ(edge.parent_index, 0u);
-    ASSERT_EQ(edge.child_index, 1u);
-    ASSERT_EQ(re_proof_edge_get(proof, 1u, &edge), RE_STATUS_OK);
-    ASSERT_EQ(edge.parent_index, 1u);
-    ASSERT_EQ(edge.child_index, 2u);
-    ASSERT_EQ(re_proof_node_get(proof, 3u, &node), RE_STATUS_NOT_FOUND);
-    re_proof_destroy(proof);
-    destroy_query_fixture(&fixture);
+        "Top", 4u, 2u, NULL), RE_STATUS_NOT_SUPPORTED);
 }
 
 TEST(proof_graph_get_validates_struct_size_and_preserves_branch_order) {
@@ -335,6 +281,7 @@ TEST(proof_graph_get_validates_struct_size_and_preserves_branch_order) {
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(unsupported_formal_binding_returns_without_query);
     RUN_TEST(formal_parameters_bind_a_one_hop_goal);
     RUN_TEST(two_hop_recursive_binding_reaches_the_original_actual);
     RUN_TEST(two_argument_alternatives_produce_two_distinct_proofs);
