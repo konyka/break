@@ -1023,6 +1023,7 @@ static void ta_ensure_visible(my_text_area_t* ta) {
 
 /* ---------------- key handling ---------------- */
 
+static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl);
 static void ta_update_ime_spot(my_text_area_t* ta); /* fwd (M13a) */
 
 static void ta_move_to(my_text_area_t* ta, size_t row, size_t col,
@@ -1067,6 +1068,10 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
   my_widget_t* root = (my_widget_t*)ta;
   my_window_t* win;
   int32_t line_h, x, y;
+  size_t visual_index = ta->cursor_row;
+  size_t col_in = ta->cursor_col;
+  int32_t cursor_x = (int32_t)ta->cursor_col * TA_CELL_W;
+  char* line = NULL;
   while (root->parent != NULL) {
     root = root->parent;
   }
@@ -1082,10 +1087,43 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
   if (line_h <= 0) {
     line_h = 16;
   }
-  x = ta_content_left_value(ta) + (int32_t)ta->cursor_col * TA_CELL_W -
-      ta->scroll_x;
-  y = TA_PAD_Y + (int32_t)(ta->wrap ? 0 : ta->cursor_row) * line_h -
+  if (ta->wrap) {
+    const my_visual_line_t* visual_line;
+    visual_index = ta_vline_of_pos(ta, ta->cursor_row, ta->cursor_col,
+                                   &col_in);
+    visual_line = ta_vline_at(ta, visual_index);
+    if (visual_line != NULL) {
+      line = ta_vline_text(ta, visual_line);
+      col_in = ta->cursor_col - visual_line->start_cp;
+      if (line != NULL) {
+        size_t line_len = strlen(line);
+        int32_t line_width = (int32_t)line_len * TA_CELL_W;
+        int space_count = ta_justify_space_count(line, line_len);
+        bool justify = ta->align == MY_TEXT_ALIGN_JUSTIFY &&
+                       visual_index + 1 < ta_vline_count(ta) &&
+                       ta_vline_at(ta, visual_index + 1)->phys ==
+                           visual_line->phys &&
+                       space_count > 0;
+        if (ta->font != NULL) {
+          (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
+                                NULL);
+        }
+        if (justify) {
+          int32_t inner_width = ((my_widget_t*)ta)->rect.w -
+                                ta_content_left_value(ta) - TA_PAD_X;
+          cursor_x = ta_justify_boundary_x(ta, line, col_in,
+                                           (size_t)space_count, line_width,
+                                           inner_width);
+        } else {
+          cursor_x = (int32_t)col_in * TA_CELL_W;
+        }
+      }
+    }
+  }
+  x = ta_content_left_value(ta) + cursor_x - ta->scroll_x;
+  y = TA_PAD_Y + (int32_t)visual_index * line_h -
       ta->scroll_y + line_h; /* bottom of the cursor line */
+  my_mem_free(ta->allocator, line);
   my_widget_local_to_global((my_widget_t*)ta, &x, &y);
   my_pal_window_ime_set_spot(win->pal_window, x, y);
   my_pal_window_ime_set_surrounding(

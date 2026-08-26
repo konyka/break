@@ -68,6 +68,10 @@ text area 的 `MY_TEXT_ALIGN_JUSTIFY` 仅在 wrap 且当前物理行还有后续
 造成输入位置漂移。该计算只扫描当前 visual line，不分配额外缓存；复杂 RTL 的完整
 paragraph visual mapping 仍属于后续能力。
 
+IME 候选框锚点也消费同一 visual-line 映射：wrap 时使用 visual line index 计算 y，justify
+时使用实际 stretched-space 边界计算 x，再通过 widget 的全局坐标转换交给 PAL。这样
+Wayland、Win32、Cocoa 等平台只接收统一的逻辑候选框位置，不需要知道渲染后端或字体实现。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

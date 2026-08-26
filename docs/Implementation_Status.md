@@ -1858,3 +1858,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   glyph/cell advance 加 stretched-space 定位。正常绘制仍为逐行路径，不引入逐帧全文扫描；
   复杂 RTL 的完整 paragraph visual mapping 继续保持明确限制。
 - 验证：`test_myui_window_manager` **44/44** 通过；实现不引入渲染后端私有 API。
+
+## myui IME visual-line anchor mapping（2026-08-26）
+
+- 以 TDD 新增 `text_area_ime_spot_tracks_wrapped_justify_cursor`，覆盖 justify 拉伸空格
+  的横向候选框位置，以及光标移动到下一 wrapped visual line 后的纵向位置。
+- `ta_update_ime_spot()` 现在复用 text area 的 visual-line、justify boundary 和全局坐标
+  转换；Wayland/Win32/Cocoa 等 PAL 后端继续只接收统一坐标，不引入后端私有类型或额外
+  每帧缓存。
+- 验证：`test_myui_window_manager` **45/45** 通过；普通 LTR、复杂 RTL 的既有限制边界
+  保持不变。

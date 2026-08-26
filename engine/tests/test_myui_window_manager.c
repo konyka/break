@@ -1379,6 +1379,49 @@ TEST(text_widgets_toggle_platform_ime_with_focus)
   my_pal_destroy(pal);
 }
 
+TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
+{
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 200, 100, "main");
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  int32_t ime_x = 0;
+  int32_t ime_y = 0;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){10, 20, 54, 60}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(area, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc"), MY_RET_OK);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 3;
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), area), MY_RET_OK);
+  my_widget_unref(area);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t*)win);
+  my_event_dispatcher_set_focus(&win->dispatcher, area);
+  my_pal_dummy_get_ime_spot(win->pal_window, &ime_x, &ime_y);
+  ASSERT_EQ(ime_x, 44);
+  ASSERT_EQ(ime_y, 39);
+  my_event_dispatcher_set_focus(&win->dispatcher, NULL);
+  text_area->cursor_col = 6;
+  my_event_dispatcher_set_focus(&win->dispatcher, area);
+  my_pal_dummy_get_ime_spot(win->pal_window, &ime_x, &ime_y);
+  ASSERT_EQ(ime_x, 14);
+  ASSERT_EQ(ime_y, 55);
+
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
 TEST(removing_focused_widget_blurs_and_disables_ime)
 {
   my_pal_t *pal = my_pal_dummy_create(NULL);
@@ -1652,6 +1695,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(posted_user_event_reaches_top_window);
     RUN_TEST(user_event_can_close_window_during_dispatch);
     RUN_TEST(text_widgets_toggle_platform_ime_with_focus);
+    RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);
     RUN_TEST(event_bubbling_stops_at_removed_ancestor);

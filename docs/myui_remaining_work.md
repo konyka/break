@@ -50,6 +50,8 @@
 - text area justify 在 wrap 的普通 LTR 路径中统一正文、选区和光标的 stretched-space
   坐标，避免固定 cell 宽度造成命中和编辑位置漂移；复杂 RTL 的 paragraph visual mapping
   仍按后续能力处理。
+- text area IME 候选框锚点已复用 wrapped visual-line index 与 justify 边界，跨 visual line
+  的候选框 y 坐标和拉伸空格后的 x 坐标保持一致；平台只消费 PAL 的统一全局坐标。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。
