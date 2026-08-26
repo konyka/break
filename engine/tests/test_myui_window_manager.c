@@ -576,6 +576,41 @@ TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms)
   my_widget_unref(area);
 }
 
+TEST(text_area_justify_cursor_tracks_stretched_space)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 100, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  uint32_t stride;
+  size_t y;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 54, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(area, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc"), MY_RET_OK);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 3;
+  text_area->focused = true;
+  text_area->cursor_visible = true;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  stride = my_lcd_mem_get_stride(lcd);
+  ASSERT_NOT_NULL(pixels);
+  for (y = 3; y < 19; y++) {
+    ASSERT_EQ(pixels[y * stride + 34u * 4u], 33u);
+  }
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
 TEST(text_area_syntax_is_lazy_and_budgeted)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1595,6 +1630,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms);
+    RUN_TEST(text_area_justify_cursor_tracks_stretched_space);
     RUN_TEST(text_area_syntax_is_lazy_and_budgeted);
     RUN_TEST(text_area_syntax_replacement_invalidates_tokens);
     RUN_TEST(text_area_syntax_key_edit_invalidates_suffix);

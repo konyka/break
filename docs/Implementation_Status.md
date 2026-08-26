@@ -1849,3 +1849,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   保证资源压力下的语义正确性。
 - 验证：`test_myui_window_manager` **43/43** 通过；实现保持 widget/core 与所有渲染后端
   API 隔离。
+
+## myui justify cursor and selection mapping（2026-08-26）
+
+- 以 TDD 新增 `text_area_justify_cursor_tracks_stretched_space`，先复现正文拉伸空格后
+  光标仍按固定 8px cell 定位的漂移。
+- 新增无额外缓存的当前 visual line 边界计算；普通 LTR 的正文、选区矩形和光标均按实际
+  glyph/cell advance 加 stretched-space 定位。正常绘制仍为逐行路径，不引入逐帧全文扫描；
+  复杂 RTL 的完整 paragraph visual mapping 继续保持明确限制。
+- 验证：`test_myui_window_manager` **44/44** 通过；实现不引入渲染后端私有 API。

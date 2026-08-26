@@ -273,6 +273,43 @@ static size_t ta_decimal_digits(size_t value) {
   return digits;
 }
 
+static int ta_justify_space_count(const char* text, size_t len) {
+  size_t i;
+  int count = 0;
+  for (i = 0; i + 1 < len; i++) {
+    if (text[i] == ' ') count++;
+  }
+  return count;
+}
+
+static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
+  my_glyph_t glyph = {0};
+  if (ta->font != NULL &&
+      my_font_get_glyph(ta->font, cp, ta->font_size, &glyph) == MY_RET_OK &&
+      glyph.advance > 0) {
+    return glyph.advance;
+  }
+  return TA_CELL_W;
+}
+
+static int32_t ta_justify_boundary_x(const my_text_area_t* ta, const char* text,
+                                     size_t boundary, size_t space_count,
+                                     int32_t line_width, int32_t inner_width) {
+  const char* p = text;
+  size_t cp_index = 0;
+  float x = 0.0f;
+  float extra = space_count > 0 && inner_width > line_width
+                    ? (float)(inner_width - line_width) / (float)space_count
+                    : 0.0f;
+  while (*p != '\0' && cp_index < boundary) {
+    uint32_t cp = my_utf8_next(&p);
+    x += (float)ta_codepoint_advance(ta, cp);
+    if (cp == ' ') x += extra;
+    cp_index++;
+  }
+  return (int32_t)x;
+}
+
 static int32_t ta_content_left_value(const my_text_area_t* ta) {
   size_t digits;
   size_t width;
@@ -1613,7 +1650,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           int32_t delta = 0;
           bool justify = false;
           int nseps = 0;
-          size_t i;
           memcpy(line, ta->text + start, len);
           line[len] = '\0';
           /* alignment (M11d): measure the segment, shift its base x */
@@ -1622,11 +1658,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           } else {
             lw = (int32_t)vl->len_cp * TA_CELL_W;
           }
-          for (i = 0; i + 1 < len; i++) {
-            if (line[i] == ' ') {
-              nseps++; /* separating spaces (have a following char) */
-            }
-          }
+          nseps = ta_justify_space_count(line, len);
           if (ta->align == MY_TEXT_ALIGN_CENTER) {
             base_x += (inner_w - lw) / 2;
           } else if (ta->align == MY_TEXT_ALIGN_RIGHT) {
@@ -1651,8 +1683,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             }
           }
           /* selection/cursor shift with the line for CENTER/RIGHT
-           * (delta); JUSTIFY word stretching is not reflected in the
-           * highlight/cursor positions (documented TODO) */
+           * (delta); justified boundaries use the stretched word spacing. */
           delta = justify ? 0 :
               base_x - (ta_content_left_value(ta) - ta->scroll_x);
           if (has_sel && vl->phys >= sel_r0 && vl->phys <= sel_r1) {
@@ -1689,13 +1720,20 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                 }
                 my_text_layout_destroy(rl);
               } else {
+                int32_t sx0 = (int32_t)(s0 - vl->start_cp) * TA_CELL_W;
+                int32_t sx1 = (int32_t)(s1 - vl->start_cp) * TA_CELL_W;
+                if (justify) {
+                  sx0 = ta_justify_boundary_x(
+                      ta, line, s0 - vl->start_cp, (size_t)nseps, lw,
+                      inner_w);
+                  sx1 = ta_justify_boundary_x(
+                      ta, line, s1 - vl->start_cp, (size_t)nseps, lw,
+                      inner_w);
+                }
                 my_vgcanvas_fill_rect(
                     vg, &(my_rectf_t){(float)(ta_content_left_value(ta) +
-                                                  delta +
-                                                  (int32_t)(s0 - vl->start_cp) *
-                                                      TA_CELL_W -
-                                                  ta->scroll_x),
-                                      (float)ty, (float)(s1 - s0) * TA_CELL_W,
+                                                  delta + sx0 - ta->scroll_x),
+                                      (float)ty, (float)(sx1 - sx0),
                                       (float)line_h});
               }
             }
@@ -1767,6 +1805,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       int32_t inner_w = widget->rect.w - ta_content_left_value(ta) - TA_PAD_X;
       int32_t lw = 0;
       size_t col_in = ta->cursor_col - cv->start_cp;
+      int nseps = 0;
+      bool justify = false;
       /* same base as the text line (scroll + align), then the mapped
        * visual x for RTL, cell math otherwise (M12a) */
       if (ta->font != NULL) {
@@ -1774,10 +1814,15 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       } else {
         lw = (int32_t)cv->len_cp * TA_CELL_W;
       }
+      nseps = ta_justify_space_count(ctext, strlen(ctext));
       if (ta->align == MY_TEXT_ALIGN_CENTER) {
         cx += (inner_w - lw) / 2;
       } else if (ta->align == MY_TEXT_ALIGN_RIGHT) {
         cx += inner_w - lw;
+      } else if (ta->align == MY_TEXT_ALIGN_JUSTIFY && ta->wrap &&
+                 inner_w > lw && nseps > 0 && cvi + 1 < ta_vline_count(ta) &&
+                 ta_vline_at(ta, cvi + 1)->phys == cv->phys) {
+        justify = true;
       } else if (my_text_layout_may_need_bidi(ctext)) {
         /* M13b: default follows paragraph direction (RTL -> right) */
         my_text_layout_t* rl = my_text_layout_process(ta->allocator, ctext);
@@ -1794,6 +1839,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           cx += my_text_layout_visual_x(cl, ta->font, ta->font_size, col_in);
           my_text_layout_destroy(cl);
         }
+      } else if (justify) {
+        cx += ta_justify_boundary_x(ta, ctext, col_in, (size_t)nseps, lw,
+                                    inner_w);
       } else {
         cx += (int32_t)col_in * TA_CELL_W;
       }

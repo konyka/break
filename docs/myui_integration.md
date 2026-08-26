@@ -63,6 +63,11 @@ SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于�
 区间数)；正常路径仍保持 O(物理行数 + 折叠区间数)，优先保证折叠语义和光标/滚动映射的
 正确性。
 
+text area 的 `MY_TEXT_ALIGN_JUSTIFY` 仅在 wrap 且当前物理行还有后续 visual line 时拉伸
+分隔空格；普通 LTR 的绘制、选区和光标边界共用同一份空格宽度计算，不再用固定 cell 宽度
+造成输入位置漂移。该计算只扫描当前 visual line，不分配额外缓存；复杂 RTL 的完整
+paragraph visual mapping 仍属于后续能力。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

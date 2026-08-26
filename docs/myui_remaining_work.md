@@ -47,6 +47,9 @@
   header 行，wrap 时隐藏物理行不会生成 visual line；可见物理行有缓存，编辑导致物理
   行结构变化时安全清除折叠，避免偏移引用失效。可见行缓存 OOM 时使用不分配内存的线性
   回退，继续隐藏折叠行，不以错误的全物理行视图替代正确性。
+- text area justify 在 wrap 的普通 LTR 路径中统一正文、选区和光标的 stretched-space
+  坐标，避免固定 cell 宽度造成命中和编辑位置漂移；复杂 RTL 的 paragraph visual mapping
+  仍按后续能力处理。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。
