@@ -1924,3 +1924,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   与测量后恢复原字符；不改变文本内容、布局或后端 API，普通 LTR 路径不再按单词数分配。
 - 验证：`test_myui_window_manager` **52/52** 通过；折行、选择、光标和 IME 逻辑保持既有
   后端无关契约。
+
+## myui visual-line byte-range cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_visual_lines_cache_byte_ranges`，先锁定 wrapped visual line
+  必须暴露 paragraph 已计算的物理行内 byte 起止区间。
+- `my_visual_line_t` 现在缓存 `start_byte/len_bytes`；wrap 重排直接转存 paragraph line
+  的 byte span，非 wrap 视图生成等价整行 span。绘制和 scratch 文本准备直接使用区间，
+  消除每个 visual line 从物理行首重复扫描 UTF-8 的 O(visual lines * physical line length)
+  风险；codepoint 光标、选择和公共后端接口不变。
+- 验证：`test_myui_window_manager` **53/53** 通过；实现不引入后端类型或额外逐帧缓存重建。

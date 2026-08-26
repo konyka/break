@@ -66,6 +66,9 @@
   scratch buffer 保持零新增 allocator 调用，分配失败继续走既有安全回退。
 - JUSTIFY 单词绘制已改为 scratch buffer 原地切分并恢复分隔符，不再按单词分配临时字符串；
   连续绘制的分配契约覆盖普通 wrap 与 JUSTIFY 两条高频路径。
+- visual-line cache 已保存 paragraph 提供的物理行内 byte 区间；绘制和光标文本准备直接
+  复制缓存范围，避免长物理行按每个 visual line 重复扫描 UTF-8，保持可见字节数级别的
+  工作量和既有 codepoint 坐标 API。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。

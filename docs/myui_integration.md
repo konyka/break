@@ -97,6 +97,11 @@ text area 绘制使用 widget 生命周期内的可复用 scratch buffer 组装 
 JUSTIFY 绘制进一步在该 buffer 内原地临时切分单词，绘制和测量完成后恢复空格分隔符，
 避免每个单词创建独立字符串；因此普通 LTR/可见行路径不随单词数产生堆分配。
 
+每个 wrapped visual line 同时保存 paragraph 计算出的物理行内 byte 区间。绘制、光标和
+可见行文本准备直接使用该区间，不再对每个段从物理行首重复扫描 UTF-8；长物理行的绘制
+复杂度因此按可见字节数推进，而不是产生 visual-line 数乘以行长度的重复扫描。非 wrap
+视图生成等价的整行区间，公开的 codepoint 坐标契约保持不变。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

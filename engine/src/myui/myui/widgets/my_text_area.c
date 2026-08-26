@@ -474,8 +474,9 @@ static float ta_inner_width(const my_text_area_t* ta) {
   return w > 1.0f ? w : 1.0f;
 }
 
-static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys, size_t start,
-                              size_t len) {
+static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys,
+                              size_t start_byte, size_t end_byte,
+                              size_t start, size_t len) {
   my_visual_line_t* v =
       (my_visual_line_t*)my_mem_calloc(ta->allocator, 1,
                                        sizeof(my_visual_line_t));
@@ -483,6 +484,8 @@ static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys, size_t start,
     return MY_RET_OOM;
   }
   v->phys = phys;
+  v->start_byte = start_byte;
+  v->len_bytes = end_byte - start_byte;
   v->start_cp = start;
   v->len_cp = len;
   return my_darray_push(ta->vlines, v);
@@ -566,8 +569,8 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
       const my_text_paragraph_line_t* line =
           my_text_paragraph_line_at(paragraph, i);
       if (line != NULL) {
-        if (ta_vline_push(ta, pi, line->start_cp, line->cp_count) !=
-            MY_RET_OK) {
+        if (ta_vline_push(ta, pi, line->start_byte, line->end_byte,
+                          line->start_cp, line->cp_count) != MY_RET_OK) {
           my_text_paragraph_destroy(paragraph);
           ta->vlines = old_lines;
           ta_vlines_destroy_range(ta, new_lines, prefix_count);
@@ -611,7 +614,16 @@ static size_t ta_vline_count(my_text_area_t* ta) {
 static const my_visual_line_t* ta_vline_at(my_text_area_t* ta, size_t vi) {
   if (!ta->wrap) {
     static my_visual_line_t tmp;
+    size_t start;
+    size_t end;
     tmp.phys = ta_visible_row_at(ta, vi);
+    start = ta_line_start(ta, tmp.phys);
+    end = tmp.phys + 1 < ta_line_count(ta)
+              ? ta_line_start(ta, tmp.phys + 1)
+              : ta->text_len;
+    if (end > start && ta->text[end - 1] == '\n') end--;
+    tmp.start_byte = 0;
+    tmp.len_bytes = end - start;
     tmp.start_cp = 0;
     tmp.len_cp = ta_line_cp_len(ta, tmp.phys);
     return &tmp;
@@ -1579,8 +1591,8 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
 
 /** @brief Fresh NUL-terminated text of a visual line (caller frees). */
 static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl) {
-  size_t start = ta_offset_of(ta, vl->phys, vl->start_cp);
-  size_t end = ta_offset_of(ta, vl->phys, vl->start_cp + vl->len_cp);
+  size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
+  size_t end = start + vl->len_bytes;
   char* s;
   if (end <= start) {
     return NULL;
@@ -1614,8 +1626,8 @@ static bool ta_paint_text_reserve(my_text_area_t* ta, size_t required) {
 
 static char* ta_paint_vline_text(my_text_area_t* ta,
                                  const my_visual_line_t* vl) {
-  size_t start = ta_offset_of(ta, vl->phys, vl->start_cp);
-  size_t end = ta_offset_of(ta, vl->phys, vl->start_cp + vl->len_cp);
+  size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
+  size_t end = start + vl->len_bytes;
   size_t len;
   if (end <= start) return NULL;
   len = end - start;
@@ -1775,8 +1787,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     }
     for (vi = vfirst; vi <= vlast && vi < vcount; vi++) {
       const my_visual_line_t* vl = ta_vline_at(ta, vi);
-      size_t start = ta_offset_of(ta, vl->phys, vl->start_cp);
-      size_t end = ta_offset_of(ta, vl->phys, vl->start_cp + vl->len_cp);
+      size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
+      size_t end = start + vl->len_bytes;
       size_t len = end > start ? end - start : 0;
       int32_t ty = TA_PAD_Y + (int32_t)vi * line_h - ta->scroll_y;
       if (ta->line_numbers && (vi == vfirst ||

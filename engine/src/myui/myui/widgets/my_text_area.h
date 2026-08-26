@@ -27,6 +27,8 @@
 /** @brief One visual line inside a physical line (word wrap, M10b). */
 typedef struct my_visual_line_t {
   size_t phys;     /**< physical line index */
+  size_t start_byte; /**< start byte within the physical line */
+  size_t len_bytes;  /**< byte length of the visual line */
   size_t start_cp; /**< start column (codepoints) within the physical line */
   size_t len_cp;   /**< visual line length in codepoints */
 } my_visual_line_t;
