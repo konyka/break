@@ -627,3 +627,12 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
   target。独立 Vulkan vgcanvas 仍保留自己的能力边界。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、
   Vulkan 和 Break RHI 的共同能力；Arabic 基础 shaping、L4 mirror 和 Mono ordered dither
   已落地，完整 OpenType shaping、复杂多段落文本和局部 present 仍按阶段计划处理。
+
+## 语法高亮热路径
+
+`my_syntax_token_t` 同时提供 codepoint 和 UTF-8 byte 范围。lexer 在单次线性扫描中
+记录 `start_byte/len_bytes`，text area 绘制 wrapped visual line 时直接按 byte 范围
+裁剪 token，不再对每个 token 从物理行首重复扫描 UTF-8。完整 token 的绘制为 O(1)，
+整行 lexer 仍为 O(line bytes + token count)，并保留原有 codepoint 坐标供选择、光标和
+跨行状态传播使用。byte 范围来自同一行的受限源文本，不能跨行复用；所有超出 visual
+line 的 token 都跳过绘制，避免越界访问。

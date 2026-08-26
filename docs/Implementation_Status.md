@@ -1956,3 +1956,16 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   继续逐 codepoint 扫描。
 - 验证：`test_myui_window_manager` **55/55** 通过；缓存只位于 widget/core，不依赖任何
   GL、Vulkan、软件 canvas 或平台类型。
+
+## myui syntax token byte range cache（2026-08-26）
+
+- 以 TDD 新增 `syntax_cache_records_utf8_token_byte_ranges`，覆盖多字节 UTF-8 token
+  的 codepoint 与 byte span 一致性，并先通过缺少字段的编译失败确认测试有效。
+- `my_syntax_token_t` 现在缓存 `start_byte/len_bytes`；lexer 复用已有 UTF-8 单次扫描
+  直接填充范围。text area syntax paint 按 visual line byte span 裁剪 token，移除每个
+  token 从行首重复计算 byte offset 的 O(token count * line length) 热路径。
+- 完整 token 绘制为 O(1)，每个 visual line 只处理边界 token；原有 codepoint 范围、
+  增量行状态、预算限制与公共跨后端 canvas API 保持不变。
+- 定向验证：normal/ASan 的 `test_myui_text_layout` **14/14**、
+  `test_myui_window_manager` **55/55** 通过，Vulkan `myui_core` 构建通过；
+  `git diff --check` 与乱码/控制字符扫描通过。

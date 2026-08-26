@@ -198,3 +198,19 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 性能：固定 corpus 对比布局时间、峰值内存、draw call、atlas miss 和 composite
   像素面积；性能优化不得牺牲 active resource 回滚和输入预算。
 - 交付：文档、测试和实现一起提交；`git diff --check`、乱码扫描、工作区清洁后才推送。
+
+## 已完成：syntax token byte range cache（2026-08-26）
+
+- 以 TDD 新增 `syntax_cache_records_utf8_token_byte_ranges`，先验证多字节 UTF-8
+  identifier、ASCII keyword 和 number 的 codepoint/byte 范围同时准确记录。
+- lexer 在已有 `at/cp` 单次扫描中填充 `start_byte/len_bytes`；text area syntax paint
+  直接使用范围裁剪 wrapped visual line，删除每个 token 调用 `ta_byte_at_cp()` 的
+  物理行首扫描，连续 token 绘制不再产生 token 数量乘行长度的重复工作。
+- 复杂度：词法分析 O(line bytes + token count)，整 token 绘制 O(1)，每个 visual line
+  最多处理其首尾边界 token；codepoint 坐标、后端中立 API、lexer 行预算和失败回退
+  行为保持不变。
+- 验证：normal/ASan 的 `test_myui_text_layout` **14/14**、
+  `test_myui_window_manager` **55/55** 通过，Vulkan `myui_core` 构建通过；全量
+  非图形 ctest 仍受当前构建目录缺少历史测试二进制影响，且已有无关的网络测试失败，
+  不将这些结果归因于本改动。后续继续审查 paragraph-owned mapping、HarfBuzz shaping
+  与 partial present。

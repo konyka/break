@@ -814,15 +814,6 @@ static my_ret_t ta_syntax_ensure_cache(my_text_area_t* ta) {
   return MY_RET_OK;
 }
 
-static size_t ta_byte_at_cp(const char* text, size_t cp) {
-  size_t at = 0;
-  while (text != NULL && text[at] != '\0' && cp > 0) {
-    at += my_str_utf8_char_len(text + at);
-    cp--;
-  }
-  return at;
-}
-
 static uint32_t ta_syntax_color(uint32_t normal,
                                 my_syntax_token_kind_t kind) {
   switch (kind) {
@@ -851,15 +842,19 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
                        ? tokens[i].start_cp : vl->start_cp;
     size_t end = tokens[i].start_cp + tokens[i].len_cp;
     size_t visual_end = vl->start_cp + vl->len_cp;
-    size_t relative_start, relative_end, byte_start, byte_end;
+    size_t byte_start, byte_end;
     char saved;
     int32_t token_width = 0;
     if (end > visual_end) end = visual_end;
     if (start >= end) continue;
-    relative_start = start - vl->start_cp;
-    relative_end = end - vl->start_cp;
-    byte_start = ta_byte_at_cp(line, relative_start);
-    byte_end = ta_byte_at_cp(line, relative_end);
+    byte_start = start == vl->start_cp
+                     ? 0
+                     : tokens[i].start_byte - vl->start_byte;
+    byte_end = end == visual_end
+                   ? vl->len_bytes
+                   : tokens[i].start_byte + tokens[i].len_bytes -
+                         vl->start_byte;
+    if (byte_start >= byte_end || byte_end > vl->len_bytes) continue;
     saved = ((char*)line)[byte_end];
     ((char*)line)[byte_end] = '\0';
     my_vgcanvas_set_fill_color(
@@ -868,7 +863,7 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
     if (ta->font != NULL) {
       my_vgcanvas_measure_text(vg, line + byte_start, &token_width, NULL);
     } else {
-      token_width = (int32_t)(relative_end - relative_start) * TA_CELL_W;
+      token_width = (int32_t)(end - start) * TA_CELL_W;
     }
     base_x += (float)token_width;
     ((char*)line)[byte_end] = saved;
