@@ -668,6 +668,11 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
 }
 
 static void ta_vlines_invalidate_from(my_text_area_t* ta, size_t from) {
+  my_mem_free(ta->allocator, ta->vline_first_by_phys);
+  ta->vline_first_by_phys = NULL;
+  ta->vline_last_by_phys = NULL;
+  ta->vline_index_count = 0;
+  ta->vline_index_dirty = true;
   if (!ta->vlines_dirty || from < ta->vlines_dirty_from) {
     ta->vlines_dirty_from = from;
   }
@@ -681,6 +686,51 @@ static void ta_vlines_ensure(my_text_area_t* ta) {
       ta->vlines_dirty = false;
     }
   }
+}
+
+static bool ta_vline_index_ensure(my_text_area_t* ta) {
+  size_t physical_count;
+  size_t visual_count;
+  size_t* map;
+  size_t* first;
+  size_t* last;
+  size_t i;
+  if (!ta->wrap) return false;
+  ta_vlines_ensure(ta);
+  if (!ta->vline_index_dirty) {
+    return ta->vline_first_by_phys != NULL;
+  }
+  physical_count = ta_line_count(ta);
+  my_mem_free(ta->allocator, ta->vline_first_by_phys);
+  ta->vline_first_by_phys = NULL;
+  ta->vline_last_by_phys = NULL;
+  ta->vline_index_count = 0;
+  ta->vline_index_dirty = false;
+  if (physical_count == 0 ||
+      physical_count > SIZE_MAX / (2u * sizeof(size_t))) {
+    return false;
+  }
+  map = (size_t*)my_mem_alloc(ta->allocator,
+                              physical_count * 2u * sizeof(size_t));
+  if (map == NULL) return false;
+  first = map;
+  last = map + physical_count;
+  for (i = 0; i < physical_count; i++) {
+    first[i] = SIZE_MAX;
+    last[i] = SIZE_MAX;
+  }
+  visual_count = my_darray_size(ta->vlines);
+  for (i = 0; i < visual_count; i++) {
+    const my_visual_line_t* line =
+        (const my_visual_line_t*)my_darray_get(ta->vlines, i);
+    if (line == NULL || line->phys >= physical_count) continue;
+    if (first[line->phys] == SIZE_MAX) first[line->phys] = i;
+    last[line->phys] = i;
+  }
+  ta->vline_first_by_phys = first;
+  ta->vline_last_by_phys = last;
+  ta->vline_index_count = physical_count;
+  return true;
 }
 
 static size_t ta_vline_count(my_text_area_t* ta) {
@@ -720,6 +770,11 @@ static size_t ta_vline_of_pos(my_text_area_t* ta, size_t row, size_t col,
   if (n == 0) {
     *col_in_v = 0;
     return 0;
+  }
+  if (ta_vline_index_ensure(ta) && row < ta->vline_index_count &&
+      ta->vline_first_by_phys[row] != SIZE_MAX) {
+    lo = ta->vline_first_by_phys[row];
+    hi = ta->vline_last_by_phys[row] + 1;
   }
   /* vlines are sorted by (phys, start_cp): binary search the last vline
    * with (phys, start_cp) <= (row, col). At a shared boundary col the
@@ -2222,6 +2277,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   my_text_layout_destroy(ta->paint_layout);
   my_mem_free(ta->allocator, ta->paint_text);
   my_mem_free(ta->allocator, ta->geometry_boundaries);
+  my_mem_free(ta->allocator, ta->vline_first_by_phys);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
   my_mem_free(ta->allocator, ta->hint);

@@ -51,6 +51,10 @@ typedef struct my_text_area_t {
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
+  size_t* vline_first_by_phys; /**< first visual index for each visible row */
+  size_t* vline_last_by_phys;  /**< last visual index for each visible row */
+  size_t vline_index_count;    /**< physical-row count covered by the maps */
+  bool vline_index_dirty;      /**< maps need rebuilding or are unavailable */
   size_t cursor_row;
   size_t cursor_col;        /**< codepoints */
   size_t anchor_row;        /**< selection anchor (== cursor = no sel) */

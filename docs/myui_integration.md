@@ -636,3 +636,12 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
 整行 lexer 仍为 O(line bytes + token count)，并保留原有 codepoint 坐标供选择、光标和
 跨行状态传播使用。byte 范围来自同一行的受限源文本，不能跨行复用；所有超出 visual
 line 的 token 都跳过绘制，避免越界访问。
+
+## 换行位置索引
+
+wrap 模式额外维护物理行到 visual line 首尾索引的有界缓存。光标、IME 和命中测试先
+按物理行取得紧凑的 `[first, last]` 区间，再在该区间内二分；重复查询从全量 visual
+line 的 O(log V) 缩小为 O(log segments-of-row)，通常为常数级。折叠、文本编辑、宽度
+和字体变化通过同一 visual-line dirty 路径使缓存失效；缓存只覆盖当前物理行数，隐藏行
+使用 `SIZE_MAX` 哨兵。缓存分配失败或查询隐藏行时保留原有全量二分回退，不影响行为，
+也不依赖 GL、Vulkan、软件 canvas 或平台类型。

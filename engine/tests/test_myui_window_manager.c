@@ -436,6 +436,63 @@ TEST(text_area_visual_lines_cache_byte_ranges)
   my_widget_unref(area);
 }
 
+TEST(text_area_visual_line_index_cache_tracks_folds_and_edits)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* ta;
+  size_t col_in = 0;
+  size_t visual;
+
+  ASSERT_NOT_NULL(area);
+  ta = (my_text_area_t*)area;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcd\nefgh\nijkl"), MY_RET_OK);
+  visual = my_text_area_visual_line_of_pos(area, 1, 2, &col_in);
+  ASSERT_TRUE(visual < my_text_area_visual_line_count(area));
+  ASSERT_NOT_NULL(ta->vline_first_by_phys);
+  ASSERT_NOT_NULL(ta->vline_last_by_phys);
+  ASSERT_EQ(ta->vline_first_by_phys[1], 2u);
+  ASSERT_EQ(ta->vline_last_by_phys[1], 3u);
+  ASSERT_EQ(col_in, 0u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 1, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  ASSERT_EQ(my_text_area_visual_line_of_pos(area, 2, 1, &col_in), 2u);
+  ASSERT_EQ(ta->vline_first_by_phys[1], SIZE_MAX);
+  ASSERT_EQ(ta->vline_first_by_phys[2], 2u);
+  ASSERT_EQ(ta->vline_last_by_phys[2], 3u);
+  ASSERT_EQ(my_text_area_set_text(area, "xy\nzzzz"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 3u);
+  ASSERT_EQ(my_text_area_visual_line_of_pos(area, 1, 2, &col_in), 2u);
+  ASSERT_EQ(ta->vline_first_by_phys[1], 1u);
+  ASSERT_EQ(ta->vline_last_by_phys[1], 2u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_visual_line_index_cache_oom_falls_back)
+{
+  text_area_fail_alloc_t state = {false};
+  my_allocator_t allocator = {&state, text_area_fail_alloc,
+                              text_area_fail_calloc, text_area_fail_realloc,
+                              text_area_fail_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  my_text_area_t* ta;
+  size_t col_in = 0;
+
+  ASSERT_NOT_NULL(area);
+  ta = (my_text_area_t*)area;
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcdefgh"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  state.fail = true;
+  ASSERT_EQ(my_text_area_visual_line_of_pos(area, 0, 5, &col_in), 2u);
+  ASSERT_EQ(col_in, 1u);
+  ASSERT_TRUE(ta->vline_first_by_phys == NULL);
+  state.fail = false;
+  my_widget_unref(area);
+}
+
 TEST(text_area_geometry_cache_reuses_glyph_advances)
 {
   text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0};
@@ -2034,6 +2091,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_grows_capacity_exponentially);
     RUN_TEST(text_area_wrap_rebuilds_after_edit);
     RUN_TEST(text_area_visual_lines_cache_byte_ranges);
+    RUN_TEST(text_area_visual_line_index_cache_tracks_folds_and_edits);
+    RUN_TEST(text_area_visual_line_index_cache_oom_falls_back);
     RUN_TEST(text_area_geometry_cache_reuses_glyph_advances);
     RUN_TEST(text_area_rtl_paint_reuses_layout);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);

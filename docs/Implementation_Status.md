@@ -1969,3 +1969,17 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 定向验证：normal/ASan 的 `test_myui_text_layout` **14/14**、
   `test_myui_window_manager` **55/55** 通过，Vulkan `myui_core` 构建通过；
   `git diff --check` 与乱码/控制字符扫描通过。
+
+## myui visual line physical-row index cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_visual_line_index_cache_tracks_folds_and_edits` 与
+  `text_area_visual_line_index_cache_oom_falls_back`，先覆盖折叠/编辑失效和分配失败
+  回退，再实现索引缓存。
+- wrap 模式为每个物理行缓存首尾 visual index；`ta_vline_of_pos()` 先取得该行的
+  紧凑区间，再执行二分，避免在全量 visual line 数组上搜索不相关物理行。缓存失效
+  与 visual-line dirty 路径统一，事务重排失败仍保留旧 vlines 并使用安全回退。
+- 缓存是有界 widget-owned 内存，不引入全局状态或渲染后端类型；隐藏行以
+  `SIZE_MAX` 标识，OOM 时只禁用优化，不改变命中结果或编辑语义。
+- 验证：normal/ASan 的 `test_myui_window_manager` **57/57**、
+  `test_myui_text_layout` **14/14** 通过，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过。

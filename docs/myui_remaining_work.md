@@ -214,3 +214,17 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
   非图形 ctest 仍受当前构建目录缺少历史测试二进制影响，且已有无关的网络测试失败，
   不将这些结果归因于本改动。后续继续审查 paragraph-owned mapping、HarfBuzz shaping
   与 partial present。
+
+## 已完成：visual line physical-row index cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_visual_line_index_cache_tracks_folds_and_edits`，覆盖 wrap
+  行映射、折叠隐藏行、整段编辑后的重建；新增
+  `text_area_visual_line_index_cache_oom_falls_back` 覆盖索引分配失败回退。
+- `my_text_area` 为每个物理行缓存首尾 visual index，命中后只在该物理行的连续 visual
+  段内二分；缓存不改变 visual line 所有权、paragraph byte span 或后端 API。
+- 映射最多分配 `2 * physical_line_count * sizeof(size_t)`，OOM 时释放候选并回到旧的
+  全量二分，不重试每次查询；折叠、编辑、wrap/字号/宽度重排统一失效，避免旧索引
+  指向新文本。
+- 验证：normal/ASan 的 `test_myui_window_manager` **57/57**、
+  `test_myui_text_layout` **14/14** 通过，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过。
