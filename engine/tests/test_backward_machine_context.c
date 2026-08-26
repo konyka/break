@@ -45,6 +45,11 @@ TEST(context_assigns_stable_ids_and_resets_frames) {
     ASSERT_EQ(re_backward_machine_context_frame(&context, second)->parent_id, first);
     re_backward_machine_context_reset(&context);
     ASSERT_EQ(context.frame_count, 0u);
+    ASSERT_EQ(re_backward_machine_context_push(&context, RE_BACKWARD_FRAME_GOAL_SELECT,
+                                               RE_BACKWARD_MACHINE_FRAME_ID_INVALID,
+                                               RE_BACKWARD_FRAME_BORROWED, &second), RE_STATUS_OK);
+    ASSERT_EQ(second, 2u);
+    ASSERT_TRUE(re_backward_machine_context_frame(&context, first) == NULL);
     re_backward_machine_context_destroy(&context);
 }
 
@@ -88,7 +93,7 @@ TEST(context_reset_releases_owned_environment_storage) {
                                                RE_BACKWARD_MACHINE_FRAME_ID_INVALID,
                                                RE_BACKWARD_FRAME_OWNS_ENVIRONMENT, &id), RE_STATUS_OK);
     frame = re_backward_machine_context_frame(&context, id);
-    items = malloc(16u);
+    items = calloc(1u, sizeof(re_backward_machine_binding_t));
     ASSERT_NOT_NULL(items);
     frame->environment.items = items;
     frame->environment.count = 1u;

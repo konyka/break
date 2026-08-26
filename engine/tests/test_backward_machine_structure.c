@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../src/rule_engine/backward_machine_bind.h"
+#include "../src/rule_engine/re_internal.h"
 
 TEST(machine_source_has_no_legacy_evaluator_symbols) {
     const char *paths[] = {
@@ -30,6 +32,8 @@ TEST(machine_source_has_no_legacy_evaluator_symbols) {
         ASSERT_TRUE(strstr(buffer, "legacy_condition_matches") == NULL);
         ASSERT_TRUE(strstr(buffer, "re_operand_resolve") == NULL);
         ASSERT_TRUE(strstr(buffer, "machine_prove_goal") == NULL);
+        ASSERT_TRUE(strstr(buffer, "general_machine_goal_run") == NULL);
+        ASSERT_TRUE(strstr(buffer, "backward_goal_step") == NULL);
         if (strstr(paths[index], "backward.c") != NULL) {
             ASSERT_TRUE(strstr(buffer, "machine_operand_goal") == NULL);
             ASSERT_TRUE(strstr(buffer, "machine_goal_executor(query") == NULL);
@@ -49,7 +53,67 @@ TEST(production_query_path_routes_through_unified_machine) {
     ASSERT_TRUE(strstr(buffer, "re_backward_machine_run") != NULL);
 }
 
+TEST(production_parameterized_query_routes_through_machine) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_query_options_t options = {sizeof(options), 4u, 1u};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, (re_string_t){
+        "rule \"Lookup\"(Key) { when Key == \"alice\" then Seen = 1; }"
+        "rule \"Top\" { when goal(\"Lookup\", \"alice\") then Done = 1; }",
+        sizeof("rule \"Lookup\"(Key) { when Key == \"alice\" then Seen = 1; }"
+               "rule \"Top\" { when goal(\"Lookup\", \"alice\") then Done = 1; }") - 1u},
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, (re_string_t){"Top", 3u},
+                                       &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(direct_parameter_machine_enumerates_terminal_alternatives) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_backward_machine_bind_result_t result;
+    re_query_options_t options = {sizeof(options), 4u, 4u};
+    re_operand_t argument;
+    const char *source = "rule \"Pick\"(Value) { when true then A = 1; }"
+                         "rule \"Pick\"(Value) { when true then B = 2; }";
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, (re_string_t){source, strlen(source)}, NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    query = (re_query_t *)calloc(1u, sizeof(*query));
+    ASSERT_NOT_NULL(query);
+    query->allocator = engine->allocator;
+    query->engine = engine;
+    query->facts = facts;
+    query->max_depth = options.max_depth;
+    query->max_solutions = options.max_solutions;
+    memset(&argument, 0, sizeof(argument));
+    argument.kind = RE_OPERAND_LITERAL;
+    argument.value.type = RE_VALUE_INT64;
+    argument.value.as.int64_value = 7;
+    ASSERT_EQ(re_backward_machine_bind_run(query, (re_string_t){"Pick", 4u},
+                                           &argument, 1u, &result), RE_STATUS_OK);
+    ASSERT_EQ(result.solution_count, 2u);
+    ASSERT_EQ(result.last_parent_id, 0u);
+    re_free(&query->allocator, query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(machine_source_has_no_legacy_evaluator_symbols);
     RUN_TEST(production_query_path_routes_through_unified_machine);
+    RUN_TEST(production_parameterized_query_routes_through_machine);
+    RUN_TEST(direct_parameter_machine_enumerates_terminal_alternatives);
 TEST_MAIN_END()

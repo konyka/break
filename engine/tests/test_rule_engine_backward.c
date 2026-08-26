@@ -8,8 +8,8 @@
  * Backward-contract coverage for the bounded query seam:
  *
  * - Formal parameters, argument-bearing goal calls, and custom-function
- *   conditions are outside the explicit backward-machine contract and return
- *   RE_STATUS_NOT_SUPPORTED rather than selecting a legacy evaluator.
+ *   conditions are covered by the bounded compatibility evaluator; the
+ *   explicit machine remains reserved for simple zero-argument chains.
  * - Alternatives are visited in source order. max_solutions caps returned
  *   proofs, while max_depth yields RE_QUERY_LIMIT rather than hanging. A
  *   cycle without a proof is RE_QUERY_UNKNOWN when within the depth bound.
