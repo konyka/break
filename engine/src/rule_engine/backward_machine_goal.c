@@ -97,8 +97,8 @@ static int active_parent(const re_backward_machine_context_t *context,
                          re_backward_machine_frame_id_t id, re_string_t goal) {
     re_backward_machine_frame_t *frame;
     while (id != RE_BACKWARD_MACHINE_FRAME_ID_INVALID) {
-        if (id >= context->frame_count) return 0;
-        frame = &context->frames[id];
+        frame = re_backward_machine_context_frame((re_backward_machine_context_t *)context, id);
+        if (frame == NULL) return 0;
         if (same_text(frame->goal, goal)) return 1;
         id = frame->parent_id;
     }
@@ -170,7 +170,6 @@ re_status_t re_backward_machine_goal_run(re_query_t *query, re_string_t goal,
                     frame->state = RE_BACKWARD_FRAME_RETURN;
                 } else if (active_parent(&context, frame->parent_id, child)) {
                     callbacks->reset_trace(callbacks->context, frame->trace_start);
-                    selected = 1;
                     continue;
                 } else {
                     re_backward_machine_frame_id_t child_id;

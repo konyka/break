@@ -1,6 +1,8 @@
 #include "re_internal.h"
 #include <string.h>
 
+static void notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
+
 static int same_name(re_string_t name, const re_fact_entry_t *entry) {
     return entry->active && name.size == entry->name_size &&
         memcmp(name.data, entry->name, name.size) == 0;
@@ -65,6 +67,7 @@ void re_facts_destroy(re_facts_t *facts) {
 
 re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *value) {
     size_t index; re_fact_entry_t replacement; char *name_copy = NULL; char *string_copy = NULL;
+    int was_existing;
     if (facts == NULL || value == NULL || name.data == NULL || name.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
     if (facts->transaction != NULL)
         return re_facts_set(facts->transaction->staged, name, value);
@@ -77,6 +80,7 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
         if (status != RE_STATUS_OK) return status;
     } else if (value->type < RE_VALUE_NONE || value->type > RE_VALUE_UNKNOWN) return RE_STATUS_INVALID_ARGUMENT;
     for (index = 0u; index < facts->count; ++index) if (same_name(name, &facts->entries[index])) break;
+    was_existing = index < facts->count;
     if (index == facts->count) {
         if (facts->count == facts->capacity) {
             size_t capacity;
@@ -118,6 +122,7 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
     replacement.active = facts->entries[index].active;
     facts->entries[index] = replacement;
     facts->mutation_serial++;
+    if (was_existing) notify(facts, RE_FACT_UPDATE, index);
     return RE_STATUS_OK;
 }
 
@@ -184,7 +189,6 @@ re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id, const re_value_t
         return RE_STATUS_NOT_FOUND;
     {
         re_status_t status = re_facts_set(facts, (re_string_t){facts->entries[id.slot].name, facts->entries[id.slot].name_size}, value);
-        if (status == RE_STATUS_OK) notify(facts, RE_FACT_UPDATE, (size_t)id.slot);
         return status;
     }
 }
