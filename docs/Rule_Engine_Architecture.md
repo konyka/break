@@ -32,7 +32,7 @@ Implemented now:
 
 Deferred explicitly:
 
-- full upstream RETE/RETE-UL execution, incremental memories, and producer provenance;
+- full upstream RETE/RETE-UL execution, persistent agenda/TMS, and general producer provenance;
 - arbitrary argument unification, shared-subgraph proof graphs, and upstream
   proof strategies; bounded recursive binding and derivation-path enumeration
   are implemented and remain deliberately narrower than upstream semantics;
@@ -43,11 +43,10 @@ The bounded agenda-control subset enforces `MAIN`/named program focus,
 activation-group sibling cancellation, and the tested one-run `no-loop` and
 `lock-on-active` guards. Rule metadata remains immutable and runtime state is
 allocated for the run, so callback pointers and contexts are never retained.
-Producer provenance, persistent agenda state, focus stacks/cycles, and
-incremental propagation remain pending. The bounded RETE mode supports up to
-eight flat fact-vs-literal comparisons joined by conjunction, rebuilds its
-bounded token list on lifecycle events, and is used only when that exact
-supported subset is present. Other expressions use the linear evaluator.
+Persistent agenda state, focus stacks/cycles, and full TMS remain pending. The bounded RETE mode
+supports up to eight flat fact-vs-literal comparisons joined by conjunction, retains private
+alpha/beta/token memories across runs, and incrementally refreshes affected condition memories on
+lifecycle events. Other expressions use the linear evaluator.
 
 The private advanced test seam covers accumulator value behavior, bounded module
 declarations/imports/exports with cycle rejection and focused visibility, and
@@ -191,26 +190,23 @@ candidate. A failed install leaves both handles unchanged.
 
 ## Execution model
 
-The current forward runtime builds a bounded activation list from the immutable
-program, evaluates rule conditions, and fires activations in descending salience
-order with source order as the stable tie-breaker. This is behaviorally
-equivalent to agenda conflict resolution, but is not an incremental RETE
-network: alpha/beta memories, tokens, and fact-change propagation remain
-unsupported by the public runtime.
+The current forward runtime evaluates the immutable program and fires activations
+in descending salience order with source order as the stable tie-breaker. The
+supported single-rule conjunction path also retains a private incremental RETE
+network across runs and fact lifecycle events; other rule programs use the
+bounded linear evaluator.
 
 ## Bounded RETE milestone
 
 `engine/src/rule_engine/rete.c` contains a bounded runtime seam for a narrow
-two-condition conjunction over existing flat facts. It subscribes to the
-generation-safe insert/update/retract events, rebuilds alpha matches and beta
-pairs in fact-slot order, stores token-like fact-id pairs plus monotonically
-ordered activation records, and removes stale records after updates or
-retractions. A matching single-rule run may install this network temporarily,
-and the public inspection handle/capability bit are reported only while that
-bounded network exists. The implementation is not full RETE-UL: it has no
-incremental memories, producer provenance, persistent agenda, or general
-condition graph. Agenda groups, streaming, backward chaining, concurrency, and
-all other RETE features remain outside this milestone.
+two-condition conjunction over flat facts. It subscribes to generation-safe
+insert/update/retract events, retains alpha memories and beta token pairs across
+runs, stores fact-id lineage plus optional rule-name provenance, and removes
+stale records after lifecycle changes. A matching single-rule run installs this
+network and reuses it for the same fact handle. The implementation is not full
+RETE-UL: it has no persistent agenda, truth maintenance, or general condition
+graph. Agenda groups, streaming, backward chaining, concurrency, and all other
+RETE features remain outside this milestone.
 
 One run owns its activation list. A matching rule applies its parsed action
 assignment, then invokes the callback; the callback may further mutate facts

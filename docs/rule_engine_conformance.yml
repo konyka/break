@@ -106,18 +106,18 @@ features:
     family: rete
     requirement: optional
     syntax: 'bounded runtime seam: two flat fact conditions joined by conjunction'
-    expected_behavior: Maintain bounded deterministic token activations for two flat fact conditions during a supported single-rule run and remove stale activations; unsupported boolean forms use the linear evaluator.
+    expected_behavior: Maintain bounded deterministic incremental alpha/beta/token activations for two flat fact conditions across supported runs, remove stale activations on lifecycle events, and expose only fact-id/rule-name provenance; unsupported boolean forms use the linear evaluator and full RETE-UL/TMS remains unclaimed.
     upstream_refs: []
     upstream_status: not_applicable
     local_status: verified_local
     implementation_ref: engine/src/rule_engine/rete.c
-    test_ref: engine/tests/test_rule_engine.c
+    test_ref: engine/tests/test_rule_engine_rete_incremental.c
     doc_ref: docs/Rule_Engine_Architecture.md
   - id: advanced-rule-control
     family: advanced-rule-control
     requirement: optional
     syntax: 'salience 100; agenda-group "approval"; no-loop true;'
-    expected_behavior: Provide the locally tested bounded subset of salience, no-loop, agenda and activation groups, date bounds, modules, and accumulators; persistent agenda state, producer provenance, incremental RETE memories, and truth maintenance are not claimed.
+    expected_behavior: Provide the locally tested bounded subset of salience, no-loop, agenda and activation groups, date bounds, modules, and accumulators; persistent agenda state, full producer provenance, and truth maintenance are not claimed.
     upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md, tests/test_module_system.rs, tests/tms_test.rs]
     upstream_status: verified_upstream
     local_status: verified_local
@@ -136,7 +136,7 @@ features:
     local_status: verified_local
     extension_abi: RE_EXTENSION_BACKWARD_PROOFS
     implementation_ref: engine/src/rule_engine/backward.c
-    test_ref: engine/tests/test_rule_engine.c
+    test_ref: engine/tests/test_rule_engine_backward.c
     doc_ref: docs/Rule_Engine_Design.md
     behavior_scope: tested bounded query seam; goal("RuleName") recursion, formal/actual binding for literal and propagated values, active-path cycle detection, max_depth, deterministic alternative-rule enumeration, copied proof traces, owned derivation-path nodes and parent/child edges, and mutation invalidation; no arbitrary predicate unification or shared-subgraph provenance
   - id: streaming-windows
@@ -211,4 +211,4 @@ features:
     implementation_ref: engine/src/rule_engine/engine.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Architecture.md
-conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, and engine/tests/test_backward_machine_context.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow goal("RuleName") subset with bounded recursion, literal/propagated formal binding, cycle detection, deterministic alternative-rule enumeration, immutable proof-path ownership, deterministic derivation-path node/edge storage, and mutation invalidation. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, incremental RETE memories, persistent agenda control, producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, and engine/tests/test_backward_machine_context.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow goal("RuleName") subset with bounded recursion, literal/propagated formal binding, cycle detection, deterministic alternative-rule enumeration, immutable proof-path ownership, deterministic derivation-path node/edge storage, and mutation invalidation. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, persistent agenda control, full producer provenance, general backward chaining, and native Redis remain unsupported or unverified.

@@ -60,6 +60,13 @@ channel.
 
 ## Transaction and reentrancy rules
 
+Fact transactions are explicit, single-owner overlays. `re_facts_begin` deep-copies
+the current fact table and returns `RE_STATUS_BUSY` when another transaction is
+active. Transaction mutations are isolated until `re_facts_commit`; commit swaps
+the staged table before dispatching deterministic insert/update/retract events.
+`re_facts_rollback` discards the staged table and dispatches no events. Failed
+begin operations return `RE_STATUS_OUT_OF_MEMORY` without changing live facts.
+
 Loading and installation are separate so a caller can parse and validate a
 candidate before replacing live rules. `re_engine_run` must not be called
 recursively for the same engine or facts handle from an action callback; this
@@ -85,8 +92,9 @@ The current focused tests establish:
 7. The bounded agenda-control slice: explicit `MAIN`/named focus selection,
    activation-group sibling cancellation, deterministic salience/source
    ordering, and bounded one-run enforcement of `no-loop` and
-   `lock-on-active`. The runtime does not claim producer provenance,
-   incremental RETE, persistent agenda state, or post-focus-cycle reactivation.
+   `lock-on-active`. The bounded single-rule conjunction path retains private
+   incremental RETE memories and fact-id/rule-name activation provenance; the
+   runtime does not claim persistent agenda state or post-focus-cycle reactivation.
 
 Structured-value nested fact traversal is implemented only through the bounded
 `re_facts_get_path` API and is covered by focused tests. Rule declarations still
