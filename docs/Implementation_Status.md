@@ -1939,8 +1939,9 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 
 - 以 TDD 新增 `text_area_rtl_paint_reuses_layout`，先复现同一 RTL visual line 在默认方向
   对齐、选区和光标路径中重复复制 layout 的问题。
-- 单帧 visual-line 作用域现在按需只构建一个 layout，默认方向对齐与选区几何共享；光标
-  路径合并 `rtl_base` 和 visual-x 查询。居中、右对齐以及无选区的合适 JUSTIFY 路径不
-  构建不必要的方向 layout，失败时继续使用既有 fallback。
+- widget scratch 文本未变化时，visual-line 作用域现在跨帧复用一个 layout，默认方向对齐
+  与选区几何共享；光标路径合并 `rtl_base` 和 visual-x 查询。scratch 改变先销毁旧对象，
+  再按需建立新 layout；居中、右对齐以及无选区的合适 JUSTIFY 路径不构建不必要的方向
+  layout，失败时继续使用既有 fallback。
 - 验证：`test_myui_window_manager` **54/54** 通过；没有引入全局可变 widget 状态或后端
   专用 API。

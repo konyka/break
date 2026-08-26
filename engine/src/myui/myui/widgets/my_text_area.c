@@ -1629,12 +1629,32 @@ static char* ta_paint_vline_text(my_text_area_t* ta,
   size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
   size_t end = start + vl->len_bytes;
   size_t len;
-  if (end <= start) return NULL;
+  if (end <= start) {
+    my_text_layout_destroy(ta->paint_layout);
+    ta->paint_layout = NULL;
+    ta->paint_text_len = 0;
+    return NULL;
+  }
   len = end - start;
   if (!ta_paint_text_reserve(ta, len + 1)) return NULL;
+  if (ta->paint_text_len != len ||
+      memcmp(ta->paint_text, ta->text + start, len) != 0) {
+    my_text_layout_destroy(ta->paint_layout);
+    ta->paint_layout = NULL;
+  }
   memcpy(ta->paint_text, ta->text + start, len);
   ta->paint_text[len] = '\0';
+  ta->paint_text_len = len;
   return ta->paint_text;
+}
+
+static my_text_layout_t* ta_paint_layout(my_text_area_t* ta,
+                                         const char* text) {
+  if (!my_text_layout_may_need_bidi(text)) return NULL;
+  if (ta->paint_layout == NULL) {
+    ta->paint_layout = my_text_layout_process(ta->allocator, text);
+  }
+  return ta->paint_layout;
 }
 
 /** @brief Layout of a visual line's text when it needs bidi (out_text
@@ -1816,7 +1836,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           int32_t base_x = ta_content_left_value(ta) - ta->scroll_x;
           int32_t delta = 0;
           bool justify = false;
-          bool line_bidi = my_text_layout_may_need_bidi(line);
           my_text_layout_t* line_layout = NULL;
           int nseps = 0;
           /* alignment (M11d): measure the segment, shift its base x */
@@ -1826,10 +1845,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             lw = (int32_t)vl->len_cp * TA_CELL_W;
           }
           nseps = ta_justify_space_count(line, len);
-          if (line_bidi &&
-              (ta->align == MY_TEXT_ALIGN_LEFT || ta->align == MY_TEXT_ALIGN_JUSTIFY ||
-               has_sel)) {
-            line_layout = my_text_layout_process(ta->allocator, line);
+          if (my_text_layout_may_need_bidi(line) &&
+              (ta->align == MY_TEXT_ALIGN_LEFT || has_sel)) {
+            line_layout = ta_paint_layout(ta, line);
           }
           if (ta->align == MY_TEXT_ALIGN_CENTER) {
             base_x += (inner_w - lw) / 2;
@@ -1948,7 +1966,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
             }
           }
-          my_text_layout_destroy(line_layout);
         }
       }
     }
@@ -1972,9 +1989,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       size_t col_in = ta->cursor_col - cv->start_cp;
       int nseps = 0;
       bool justify = false;
-      bool cursor_bidi = my_text_layout_may_need_bidi(ctext);
-      my_text_layout_t* cursor_layout =
-          cursor_bidi ? my_text_layout_process(ta->allocator, ctext) : NULL;
+      my_text_layout_t* cursor_layout = ta_paint_layout(ta, ctext);
       /* same base as the text line (scroll + align), then the mapped
        * visual x for RTL, cell math otherwise (M12a) */
       if (ta->font != NULL) {
@@ -2011,7 +2026,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           cx += ta_line_boundary_x(ta, cv->phys, ta->cursor_col);
         }
       }
-      my_text_layout_destroy(cursor_layout);
     } else {
       cx += (int32_t)(ta->wrap ? civ : ta->cursor_col) * TA_CELL_W;
     }
@@ -2122,6 +2136,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   ta_clear_folds(ta);
   ta_vlines_destroy_array(ta, ta->vlines);
   ta_syntax_destroy(ta);
+  my_text_layout_destroy(ta->paint_layout);
   my_mem_free(ta->allocator, ta->paint_text);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);

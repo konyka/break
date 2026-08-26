@@ -444,7 +444,6 @@ TEST(text_area_rtl_paint_reuses_layout)
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
   size_t before;
-  size_t first_frame;
   size_t second_frame;
 
   ASSERT_NOT_NULL(area);
@@ -459,13 +458,19 @@ TEST(text_area_rtl_paint_reuses_layout)
   ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
   area->vtable->on_paint(area, canvas);
   ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
-  first_frame = state.alloc_calls - before;
   before = state.alloc_calls;
   ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
   area->vtable->on_paint(area, canvas);
   ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
   second_frame = state.alloc_calls - before;
-  ASSERT_TRUE(second_frame < first_frame);
+  ASSERT_EQ(second_frame, 0u);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x93\xD7\x94\xD7\x95"),
+            MY_RET_OK);
+  before = state.alloc_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(state.alloc_calls > before);
   my_vgcanvas_destroy(canvas);
   my_lcd_destroy(lcd);
   my_widget_unref(area);

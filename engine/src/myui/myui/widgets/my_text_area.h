@@ -24,6 +24,8 @@
 #include "myui/my_text_align.h"
 #include "myui/my_widget.h"
 
+typedef struct my_text_layout_t my_text_layout_t;
+
 /** @brief One visual line inside a physical line (word wrap, M10b). */
 typedef struct my_visual_line_t {
   size_t phys;     /**< physical line index */
@@ -81,6 +83,8 @@ typedef struct my_text_area_t {
   size_t syntax_line_budget;
   char* paint_text;
   size_t paint_text_cap;
+  size_t paint_text_len;
+  my_text_layout_t* paint_layout;
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);

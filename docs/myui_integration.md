@@ -102,10 +102,11 @@ JUSTIFY 绘制进一步在该 buffer 内原地临时切分单词，绘制和测�
 复杂度因此按可见字节数推进，而不是产生 visual-line 数乘以行长度的重复扫描。非 wrap
 视图生成等价的整行区间，公开的 codepoint 坐标契约保持不变。
 
-RTL visual line 的 layout 在单帧作用域内按需构建一次，并由默认方向对齐和选区几何共享；
-光标路径也合并方向判断与 visual-x 计算，避免同一段文本重复复制 layout。居中、右对齐和
-不涉及选区的 JUSTIFY 路径不额外构建仅用于默认方向对齐的 layout，保持快速路径。layout
-仍由 myui text-layout 层管理，渲染后端只消费公共绘制命令。
+RTL visual line 的 layout 绑定到 widget 的 scratch 文本，在文本内容未变化时跨帧保留，并
+由默认方向对齐、选区几何和光标 visual-x 计算共享；连续重绘不再复制 layout。scratch 文本
+变化时先销毁旧 layout，再按需建立新对象，避免使用旧文本映射。居中、右对齐和不涉及选区
+的 JUSTIFY 路径不额外构建仅用于默认方向对齐的 layout，保持快速路径。layout 仍由 myui
+text-layout 层管理，渲染后端只消费公共绘制命令。
 
 ### 增量语法行模型
 
