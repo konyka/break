@@ -108,6 +108,11 @@ RTL visual line 的 layout 绑定到 widget 的 scratch 文本，在文本内容
 的 JUSTIFY 路径不额外构建仅用于默认方向对齐的 layout，保持快速路径。layout 仍由 myui
 text-layout 层管理，渲染后端只消费公共绘制命令。
 
+text area 还为当前热物理行缓存 codepoint boundary 到 glyph advance 的前缀和。命中测试、
+光标、选区和 IME 几何查询共享该前缀和；缓存键包含物理行、文本 revision、字体指针和
+字号，文本编辑或字体配置变化后自动重建。正常重复查询为 O(1)，首次建立仍是当前行
+长度级别；分配失败回退到原有逐 codepoint 扫描，不影响坐标正确性。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法
@@ -622,3 +627,21 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
   target。独立 Vulkan vgcanvas 仍保留自己的能力边界。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、
   Vulkan 和 Break RHI 的共同能力；Arabic 基础 shaping、L4 mirror 和 Mono ordered dither
   已落地，完整 OpenType shaping、复杂多段落文本和局部 present 仍按阶段计划处理。
+
+## 语法高亮热路径
+
+`my_syntax_token_t` 同时提供 codepoint 和 UTF-8 byte 范围。lexer 在单次线性扫描中
+记录 `start_byte/len_bytes`，text area 绘制 wrapped visual line 时直接按 byte 范围
+裁剪 token，不再对每个 token 从物理行首重复扫描 UTF-8。完整 token 的绘制为 O(1)，
+整行 lexer 仍为 O(line bytes + token count)，并保留原有 codepoint 坐标供选择、光标和
+跨行状态传播使用。byte 范围来自同一行的受限源文本，不能跨行复用；所有超出 visual
+line 的 token 都跳过绘制，避免越界访问。
+
+## 换行位置索引
+
+wrap 模式额外维护物理行到 visual line 首尾索引的有界缓存。光标、IME 和命中测试先
+按物理行取得紧凑的 `[first, last]` 区间，再在该区间内二分；重复查询从全量 visual
+line 的 O(log V) 缩小为 O(log segments-of-row)，通常为常数级。折叠、文本编辑、宽度
+和字体变化通过同一 visual-line dirty 路径使缓存失效；缓存只覆盖当前物理行数，隐藏行
+使用 `SIZE_MAX` 哨兵。缓存分配失败或查询隐藏行时保留原有全量二分回退，不影响行为，
+也不依赖 GL、Vulkan、软件 canvas 或平台类型。

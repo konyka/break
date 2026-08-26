@@ -51,6 +51,10 @@ typedef struct my_text_area_t {
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
+  size_t* vline_first_by_phys; /**< first visual index for each visible row */
+  size_t* vline_last_by_phys;  /**< last visual index for each visible row */
+  size_t vline_index_count;    /**< physical-row count covered by the maps */
+  bool vline_index_dirty;      /**< maps need rebuilding or are unavailable */
   size_t cursor_row;
   size_t cursor_col;        /**< codepoints */
   size_t anchor_row;        /**< selection anchor (== cursor = no sel) */
@@ -85,6 +89,14 @@ typedef struct my_text_area_t {
   size_t paint_text_cap;
   size_t paint_text_len;
   my_text_layout_t* paint_layout;
+  uint64_t text_revision;
+  size_t geometry_row;
+  size_t geometry_count;
+  uint64_t geometry_revision;
+  my_font_t* geometry_font;
+  int32_t geometry_font_size;
+  int32_t* geometry_boundaries;
+  size_t geometry_capacity;
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);

@@ -1945,3 +1945,41 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   layout，失败时继续使用既有 fallback。
 - 验证：`test_myui_window_manager` **54/54** 通过；没有引入全局可变 widget 状态或后端
   专用 API。
+
+## myui text geometry prefix cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_geometry_cache_reuses_glyph_advances`，先复现连续绘制中同一物理
+  行反复调用字体 glyph advance 的问题，并覆盖文本变更后的失效重建。
+- `my_text_area` 现在缓存当前热物理行的 codepoint boundary 到 advance 前缀和，键包含
+  文本 revision、字体和字号；`ta_line_boundary_x()` 与 `ta_line_col_at_x()` 共享缓存，
+  命中后分别为 O(1) 和 O(log N)，首次建立为 O(N)。只保留一个热行以控制内存，分配失败
+  继续逐 codepoint 扫描。
+- 验证：`test_myui_window_manager` **55/55** 通过；缓存只位于 widget/core，不依赖任何
+  GL、Vulkan、软件 canvas 或平台类型。
+
+## myui syntax token byte range cache（2026-08-26）
+
+- 以 TDD 新增 `syntax_cache_records_utf8_token_byte_ranges`，覆盖多字节 UTF-8 token
+  的 codepoint 与 byte span 一致性，并先通过缺少字段的编译失败确认测试有效。
+- `my_syntax_token_t` 现在缓存 `start_byte/len_bytes`；lexer 复用已有 UTF-8 单次扫描
+  直接填充范围。text area syntax paint 按 visual line byte span 裁剪 token，移除每个
+  token 从行首重复计算 byte offset 的 O(token count * line length) 热路径。
+- 完整 token 绘制为 O(1)，每个 visual line 只处理边界 token；原有 codepoint 范围、
+  增量行状态、预算限制与公共跨后端 canvas API 保持不变。
+- 定向验证：normal/ASan 的 `test_myui_text_layout` **14/14**、
+  `test_myui_window_manager` **55/55** 通过，Vulkan `myui_core` 构建通过；
+  `git diff --check` 与乱码/控制字符扫描通过。
+
+## myui visual line physical-row index cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_visual_line_index_cache_tracks_folds_and_edits` 与
+  `text_area_visual_line_index_cache_oom_falls_back`，先覆盖折叠/编辑失效和分配失败
+  回退，再实现索引缓存。
+- wrap 模式为每个物理行缓存首尾 visual index；`ta_vline_of_pos()` 先取得该行的
+  紧凑区间，再执行二分，避免在全量 visual line 数组上搜索不相关物理行。缓存失效
+  与 visual-line dirty 路径统一，事务重排失败仍保留旧 vlines 并使用安全回退。
+- 缓存是有界 widget-owned 内存，不引入全局状态或渲染后端类型；隐藏行以
+  `SIZE_MAX` 标识，OOM 时只禁用优化，不改变命中结果或编辑语义。
+- 验证：normal/ASan 的 `test_myui_window_manager` **57/57**、
+  `test_myui_text_layout` **14/14** 通过，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过。

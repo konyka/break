@@ -74,7 +74,8 @@ static bool syntax_keyword(my_syntax_language_t language, const char* text,
 
 static my_ret_t syntax_token_push(const my_allocator_t* allocator,
                                   syntax_line_t* line, size_t start_cp,
-                                  size_t len_cp,
+                                  size_t len_cp, size_t start_byte,
+                                  size_t len_bytes,
                                   my_syntax_token_kind_t kind) {
   my_syntax_token_t* grown;
   size_t capacity;
@@ -92,8 +93,12 @@ static my_ret_t syntax_token_push(const my_allocator_t* allocator,
     line->tokens = grown;
     line->token_capacity = capacity;
   }
-  line->tokens[line->token_count++] =
-      (my_syntax_token_t){start_cp, len_cp, kind};
+  line->tokens[line->token_count++] = (my_syntax_token_t){
+      .start_cp = start_cp,
+      .len_cp = len_cp,
+      .kind = kind,
+      .start_byte = start_byte,
+      .len_bytes = len_bytes};
   return MY_RET_OK;
 }
 
@@ -127,6 +132,7 @@ static my_ret_t syntax_lex_line(const my_allocator_t* allocator,
         cp++;
       }
       status = syntax_token_push(allocator, line, start_cp, cp - start_cp,
+                                 start, at - start,
                                  MY_SYNTAX_TOKEN_COMMENT);
       if (status != MY_RET_OK) return status;
       continue;
@@ -206,7 +212,8 @@ static my_ret_t syntax_lex_line(const my_allocator_t* allocator,
       cp++;
       kind = MY_SYNTAX_TOKEN_PUNCTUATION;
     }
-    status = syntax_token_push(allocator, line, start_cp, cp - start_cp, kind);
+    status = syntax_token_push(allocator, line, start_cp, cp - start_cp,
+                               start, at - start, kind);
     if (status != MY_RET_OK) return status;
   }
   line->out_state = state;

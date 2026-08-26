@@ -207,6 +207,31 @@ TEST(syntax_cache_lexes_bounded_tokens_and_comments)
   my_syntax_cache_destroy(cache);
 }
 
+TEST(syntax_cache_records_utf8_token_byte_ranges)
+{
+  my_syntax_cache_t* cache =
+      my_syntax_cache_create(NULL, MY_SYNTAX_C_LIKE);
+  const my_syntax_token_t* tokens;
+  size_t count = 0;
+
+  ASSERT_NOT_NULL(cache);
+  ASSERT_EQ(my_syntax_cache_set_text(cache, "int \xE4\xB8\xAD\xE6\x96\x87 = 42;\n"),
+            MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(cache, 1), MY_RET_OK);
+  tokens = my_syntax_cache_line_tokens(cache, 0, &count);
+  ASSERT_NOT_NULL(tokens);
+  ASSERT_TRUE(count >= 7u);
+  ASSERT_EQ(tokens[0].start_byte, 0u);
+  ASSERT_EQ(tokens[0].len_bytes, 3u);
+  ASSERT_EQ(tokens[2].start_cp, 4u);
+  ASSERT_EQ(tokens[2].len_cp, 2u);
+  ASSERT_EQ(tokens[2].start_byte, 4u);
+  ASSERT_EQ(tokens[2].len_bytes, 6u);
+  ASSERT_EQ(tokens[6].start_byte, 13u);
+  ASSERT_EQ(tokens[6].len_bytes, 2u);
+  my_syntax_cache_destroy(cache);
+}
+
 TEST(syntax_cache_propagates_state_only_from_dirty_suffix)
 {
   my_syntax_cache_t* cache =
@@ -320,6 +345,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(paragraph_preserves_logical_ranges_and_hard_boundaries);
     RUN_TEST(paragraph_does_not_break_inside_shaping_cluster);
     RUN_TEST(syntax_cache_lexes_bounded_tokens_and_comments);
+    RUN_TEST(syntax_cache_records_utf8_token_byte_ranges);
     RUN_TEST(syntax_cache_propagates_state_only_from_dirty_suffix);
     RUN_TEST(syntax_cache_rejects_source_and_line_budget_overflow);
     RUN_TEST(syntax_cache_replacement_is_transactional);

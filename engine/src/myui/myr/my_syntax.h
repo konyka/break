@@ -41,6 +41,9 @@ typedef struct my_syntax_token_t {
   size_t start_cp;
   size_t len_cp;
   my_syntax_token_kind_t kind;
+  /** Byte span in the same UTF-8 source line as the codepoint span. */
+  size_t start_byte;
+  size_t len_bytes;
 } my_syntax_token_t;
 
 typedef struct my_syntax_cache_t my_syntax_cache_t;
