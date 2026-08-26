@@ -1500,6 +1500,54 @@ TEST(text_area_pointer_hit_test_uses_font_line_height)
   my_widget_unref(area);
 }
 
+TEST(text_area_page_down_moves_by_wrapped_visual_lines)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 54}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcdefghij"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 5u);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 0;
+  text_area->anchor_row = 0;
+  text_area->anchor_col = 0;
+  text_area->goal_col = 0;
+  text_area->focused = true;
+  event.u.key.key = MY_KEY_PAGE_DOWN;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_row, 0u);
+  ASSERT_EQ(text_area->cursor_col, 6u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_page_up_moves_by_wrapped_visual_lines)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 54}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcdef\nabcdefghij"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 8u);
+  text_area->cursor_row = 1;
+  text_area->cursor_col = 2;
+  text_area->anchor_row = 1;
+  text_area->anchor_col = 2;
+  text_area->goal_col = 0;
+  text_area->focused = true;
+  event.u.key.key = MY_KEY_PAGE_UP;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_row, 0u);
+  ASSERT_EQ(text_area->cursor_col, 2u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1819,6 +1867,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent);
     RUN_TEST(text_area_pointer_hit_test_clamps_vertical_bounds);
     RUN_TEST(text_area_pointer_hit_test_uses_font_line_height);
+    RUN_TEST(text_area_page_down_moves_by_wrapped_visual_lines);
+    RUN_TEST(text_area_page_up_moves_by_wrapped_visual_lines);
     RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);

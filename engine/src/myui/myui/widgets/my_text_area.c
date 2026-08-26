@@ -1476,15 +1476,43 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
     case MY_KEY_PAGE_UP: {
       int32_t visible = (((my_widget_t*)ta)->rect.h - 2 * TA_PAD_Y) /
                         ta_line_height(ta);
-      size_t row;
       if (visible < 1) {
         visible = 1;
       }
       if (ta->wrap) {
-        row = key == MY_KEY_PAGE_DOWN ? ta->cursor_row + (size_t)visible
-            : ta->cursor_row > (size_t)visible
-                ? ta->cursor_row - (size_t)visible
-                : 0;
+        size_t civ = 0;
+        size_t current =
+            ta_vline_of_pos(ta, ta->cursor_row, ta->cursor_col, &civ);
+        size_t count = ta_vline_count(ta);
+        size_t amount = (size_t)visible;
+        size_t target = current;
+        const my_visual_line_t* v;
+
+        if (count == 0) {
+          return MY_RET_OK;
+        }
+        if (key == MY_KEY_PAGE_DOWN) {
+          target = amount >= count - current ? count - 1 : current + amount;
+        } else if (current > amount) {
+          target = current - amount;
+        } else {
+          target = 0;
+        }
+        v = ta_vline_at(ta, target);
+        if (v != NULL) {
+          char* seg = NULL;
+          my_text_layout_t* l = ta_layout_rtl(ta, v, &seg);
+          size_t col = ta->goal_col < v->len_cp ? ta->goal_col : v->len_cp;
+          if (l != NULL) {
+            col = my_text_layout_logical_at_visual(l, col);
+            if (col > v->len_cp) {
+              col = v->len_cp;
+            }
+            my_mem_free(ta->allocator, seg);
+            my_text_layout_destroy(l);
+          }
+          ta_move_to(ta, v->phys, v->start_cp + col, shift);
+        }
       } else {
         size_t current = ta_visible_index_of_row(ta, ta->cursor_row);
         size_t target = key == MY_KEY_PAGE_DOWN
@@ -1492,11 +1520,11 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
                             : current > (size_t)visible
                                 ? current - (size_t)visible
                                 : 0;
-        row = ta_visible_row_at(ta, target < ta_vline_count(ta)
-                                      ? target
-                                      : ta_vline_count(ta) - 1);
+        size_t row = ta_visible_row_at(ta, target < ta_vline_count(ta)
+                                                ? target
+                                                : ta_vline_count(ta) - 1);
+        ta_move_to(ta, row, ta->goal_col, shift);
       }
-      ta_move_to(ta, row, ta->goal_col, shift);
       return MY_RET_OK;
     }
     case MY_KEY_BACKSPACE: {

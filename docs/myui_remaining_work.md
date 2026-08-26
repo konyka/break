@@ -58,6 +58,9 @@
   `size_t` 后错误跳到文档末尾；正常路径仍为常数开销。
 - text area pointer y 命中复用统一的字体 line-height，避免带额外 leading 的字体按字号
   提前切换到下一行；不增加缓存或每帧扫描。
+- text area 的 wrap 分页已按缓存中的 visual line 实现 `MY_KEY_PAGE_UP/DOWN`：长物理行
+  会按 viewport 行数正确跨越，折叠行继续保持隐藏；目标查找复用已有二分索引和 RTL 边界
+  映射，不新增 visual-line cache 分配且索引路径为 O(log V)。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。
@@ -96,7 +99,7 @@
 | GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
-| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、行级 lexer 和受限 token 着色已实现；后续快照版本迁移及完整 RTL token 绘制未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 保持 legacy 读取兼容并增加显式迁移策略，继续保持 lexer/cache 单帧预算 |
+| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、行级 lexer 和受限 token 着色已实现；后续快照版本迁移及完整 RTL token 绘制未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 保持 legacy 读取兼容并增加显式迁移策略，继续保持 lexer/cache 单帧预算 |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
