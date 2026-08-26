@@ -67,18 +67,6 @@ static re_status_t stream_copy_value(re_stream_window_t *window, const re_value_
     return RE_STATUS_OK;
 }
 
-re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction) {
-    (void)facts;
-    (void)out_transaction;
-    return unsupported();
-}
-re_status_t re_facts_commit(re_fact_txn_t *transaction) {
-    (void)transaction;
-    return unsupported();
-}
-void re_facts_rollback(re_fact_txn_t *transaction) {
-    (void)transaction;
-}
 re_status_t re_engine_agenda(const re_engine_t *engine, re_agenda_t **out_agenda) {
     (void)engine;
     (void)out_agenda;

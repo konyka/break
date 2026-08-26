@@ -42,11 +42,16 @@ endif()
 
 # === Compiler flags ===
 if(MSVC)
-    # Microsoft Visual C++ (cl.exe)
-    add_compile_options(/W4 /WX /utf-8 /experimental:c11atomics)
+    # MSVC-compatible frontends require C mode for this C-only project.
+    add_compile_options(/W4 /WX /utf-8)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        add_compile_options(/experimental:c11atomics)
+    elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        add_compile_options(/TC)
+    endif()
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
-    # Clang (Linux/Windows clang-cl/clang)
+    # Clang in GNU mode.
     add_compile_options(-Wall -Wextra -Werror -pedantic)
     # Clang does not produce format-truncation warnings; no special handling needed.
 elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
@@ -72,13 +77,16 @@ option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
 if(ENGINE_USE_ASAN)
     if(MSVC)
         add_compile_options(/fsanitize=address)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            add_compile_options(/clang:-fno-omit-frame-pointer)
+        endif()
     else()
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address)
     endif()
 endif()
 if(ENGINE_USE_UBSAN)
-    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang" AND NOT MSVC)
         add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
         add_link_options(-fsanitize=undefined)
     else()
@@ -697,6 +705,7 @@ endif()
 add_library(rule_engine_core STATIC
     src/rule_engine/allocator.c src/rule_engine/facts.c src/rule_engine/values.c
     src/rule_engine/parser.c src/rule_engine/engine.c src/rule_engine/extensions.c
+    src/rule_engine/transactions.c
     src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
     src/rule_engine/stream_correlation.c
     src/rule_engine/rete.c src/rule_engine/advanced.c src/rule_engine/backward.c
@@ -765,6 +774,18 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine COMMAND test_rule_engine)
+
+    add_executable(test_rule_engine_transactions tests/test_rule_engine_transactions.c)
+    set_property(TARGET test_rule_engine_transactions PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_transactions PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_transactions PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_transactions COMMAND test_rule_engine_transactions)
+
+    add_executable(test_rule_engine_rete_incremental tests/test_rule_engine_rete_incremental.c)
+    set_property(TARGET test_rule_engine_rete_incremental PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_rete_incremental PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_rete_incremental PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_rete_incremental COMMAND test_rule_engine_rete_incremental)
 
     add_executable(test_rule_engine_backward tests/test_rule_engine_backward.c)
     set_property(TARGET test_rule_engine_backward PROPERTY C_STANDARD 99)

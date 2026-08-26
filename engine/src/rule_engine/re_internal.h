@@ -29,7 +29,20 @@ struct re_facts_t {
     int mutation_allowed;
     int read_allowed;
     int destroy_requested;
+    int notifying;
     struct re_subscription_t *subscriptions;
+    struct re_subscription_t *retired_subscriptions;
+    struct re_fact_txn_t *transaction;
+    struct re_fact_txn_t *retired_transaction;
+};
+
+struct re_fact_txn_t {
+    re_facts_t *facts;
+    re_facts_t *original;
+    re_facts_t *staged;
+    int inactive;
+    uint64_t generation;
+    struct re_fact_txn_t *next_retired;
 };
 
 typedef struct re_value_member_t {
@@ -52,6 +65,7 @@ struct re_subscription_t {
     re_fact_event_fn_t callback;
     void *context;
     struct re_subscription_t *next;
+    int active;
 };
 
 typedef enum re_operand_kind_t {
@@ -201,16 +215,39 @@ typedef struct re_rete_activation_t {
     re_fact_id_t left;
     re_fact_id_t right;
     uint64_t sequence;
+    re_fact_id_t lineage[8];
+    size_t lineage_count;
+    re_string_t producer_rule;
 } re_rete_activation_t;
+
+typedef struct re_rete_alpha_memory_t {
+    re_fact_id_t *facts;
+    size_t count;
+    size_t capacity;
+} re_rete_alpha_memory_t;
+
+typedef struct re_rete_token_t {
+    re_fact_id_t lineage[8];
+    size_t lineage_count;
+    uint64_t sequence;
+} re_rete_token_t;
 
 struct re_rete_network_t {
     re_allocator_impl_t allocator;
     re_facts_t *facts;
+    const re_program_t *program;
     re_rete_condition_t *conditions;
     size_t condition_count;
     re_rete_activation_t *activations;
     size_t activation_count;
     size_t activation_capacity;
+    re_rete_alpha_memory_t *alpha_memories;
+    re_rete_token_t *tokens;
+    size_t token_count;
+    size_t token_capacity;
+    re_fact_id_t lineage_scratch[8];
+    uint64_t next_sequence;
+    re_string_t producer_rule;
     struct re_subscription_t *subscription;
 };
 

@@ -174,6 +174,7 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
     re_program_t *old; if (engine == NULL || program == NULL) return RE_STATUS_INVALID_ARGUMENT;
     if (program->rule_count > engine->limits.max_rules && engine->limits.max_rules != 0u) return RE_STATUS_LIMIT;
     if (engine->running) return RE_STATUS_BUSY;
+    re_rete_network_destroy_internal(engine->rete_network); engine->rete_network = NULL;
     old = engine->program; engine->program = program; re_program_destroy(old);
     return RE_STATUS_OK;
 }
@@ -198,13 +199,14 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     if (limits.max_agenda_activations == 0u) limits.max_agenda_activations = engine->limits.max_agenda_activations;
     if (limits.max_firings == 0u) limits.max_firings = engine->limits.max_firings;
     if (engine->program == NULL) return finish_run(engine, facts, RE_STATUS_OK);
-    if (engine->rete_network != NULL) {
+    if (engine->rete_network != NULL && engine->rete_network->facts != facts) {
         re_rete_network_destroy_internal(engine->rete_network);
         engine->rete_network = NULL;
     }
-    if (engine->program->rule_count == 1u) {
+    if (engine->program->rule_count == 1u && engine->rete_network == NULL) {
         status = re_rete_network_create_rule(facts, &engine->program->rules[0], NULL, &engine->rete_network);
         if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return finish_run(engine, facts, status);
+        if (engine->rete_network != NULL) engine->rete_network->program = engine->program;
     }
     if (engine->program->rule_count != 0u) {
         indices = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*indices));

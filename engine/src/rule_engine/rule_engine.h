@@ -426,6 +426,15 @@ void re_value_destroy(re_value_handle_t *value);
 re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction);
 re_status_t re_facts_commit(re_fact_txn_t *transaction);
 void re_facts_rollback(re_fact_txn_t *transaction);
+re_status_t re_facts_txn_set(re_fact_txn_t *transaction, re_string_t name,
+                             const re_value_t *value);
+re_status_t re_facts_txn_insert(re_fact_txn_t *transaction, re_string_t name,
+                                const re_value_t *value, re_fact_id_t *out_id);
+re_status_t re_facts_txn_update(re_fact_txn_t *transaction, re_fact_id_t id,
+                                const re_value_t *value);
+re_status_t re_facts_txn_retract(re_fact_txn_t *transaction, re_fact_id_t id);
+re_status_t re_facts_txn_get(const re_fact_txn_t *transaction, re_string_t name,
+                             re_value_t *out_value);
 re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
                             const re_value_t *value, re_fact_id_t *out_id);
 re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id,

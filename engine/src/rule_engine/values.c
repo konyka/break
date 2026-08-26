@@ -126,6 +126,8 @@ re_status_t re_facts_set_value(re_facts_t *facts, re_string_t name, const re_val
     re_value_handle_t *copy = NULL;
     re_status_t status;
     if (facts == NULL || value == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL)
+        return re_facts_set_value(facts->transaction->staged, name, value);
     status = value_copy(&facts->allocator, value, &copy);
     if (status != RE_STATUS_OK) return status;
     status = re_facts_set(facts, name, &(re_value_t){RE_VALUE_NONE, {0}});
@@ -149,6 +151,7 @@ re_status_t re_facts_get_path(const re_facts_t *facts, re_string_t path, re_valu
     size_t root_index;
     const re_value_handle_t *current;
     const re_value_member_t *member;
+    if (facts != NULL && facts->transaction != NULL) facts = facts->transaction->staged;
     if (re_facts_get(facts, path, out) == RE_STATUS_OK) return RE_STATUS_OK;
     while (i < path.size && path.data[i] != '.') ++i;
     if (i == path.size) return RE_STATUS_NOT_FOUND;
