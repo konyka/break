@@ -94,6 +94,8 @@ text area 绘制使用 widget 生命周期内的可复用 scratch buffer 组装 
 在遇到更长行时按需增长，普通重绘不再为每个 visual line 分配和释放临时字符串。光标锚点
 也复用同一 buffer，避免长文档闪烁或滚动时的 allocator 抖动。buffer 只属于 myui widget，
 不依赖软件、GL、Vulkan 或平台后端；分配失败时保留原有的单行跳过/光标 fallback 行为。
+JUSTIFY 绘制进一步在该 buffer 内原地临时切分单词，绘制和测量完成后恢复空格分隔符，
+避免每个单词创建独立字符串；因此普通 LTR/可见行路径不随单词数产生堆分配。
 
 ### 增量语法行模型
 

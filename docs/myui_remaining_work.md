@@ -64,6 +64,8 @@
 - text area 绘制已使用 widget 生命周期内的可复用 scratch buffer：同一内容的后续重绘不再
   为每个 visual line 和光标临时分配字符串，容量仅在更长行出现时增长；普通 LTR 路径的
   scratch buffer 保持零新增 allocator 调用，分配失败继续走既有安全回退。
+- JUSTIFY 单词绘制已改为 scratch buffer 原地切分并恢复分隔符，不再按单词分配临时字符串；
+  连续绘制的分配契约覆盖普通 wrap 与 JUSTIFY 两条高频路径。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。

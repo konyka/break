@@ -1915,3 +1915,12 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   绘制命令保持不变。分配失败时继续跳过无法准备的行或使用光标 cell fallback。
 - 验证：`test_myui_window_manager` **51/51** 通过；scratch 生命周期在 widget destroy
   中释放，跨 soft/GLES/Vulkan/Break RHI 仍只经过公共 canvas 接口。
+
+## myui justify paint allocation elimination（2026-08-26）
+
+- 以 TDD 新增 `text_area_justify_paint_reuses_line_buffer`，先复现 JUSTIFY 逐单词复制和
+  释放字符串导致的连续帧 allocator 抖动。
+- JUSTIFY 现在直接在 widget scratch buffer 中暂时写入 NUL 分隔符，完成公共 canvas 绘制
+  与测量后恢复原字符；不改变文本内容、布局或后端 API，普通 LTR 路径不再按单词数分配。
+- 验证：`test_myui_window_manager` **52/52** 通过；折行、选择、光标和 IME 逻辑保持既有
+  后端无关契约。

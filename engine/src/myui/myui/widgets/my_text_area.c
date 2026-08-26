@@ -1902,34 +1902,31 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             float x = (float)base_x;
             float space_extra = (float)(inner_w - lw) / (float)nseps;
             float space_w = (float)TA_CELL_W;
-            const char* p = line;
+            char* p = line;
             if (ta->font != NULL) {
               int32_t spw = 0;
               my_vgcanvas_measure_text(vg, " ", &spw, NULL);
               space_w = (float)spw;
             }
             while (*p != '\0') {
-              const char* wstart = p;
+              char* wstart = p;
               size_t wlen;
               while (*p != '\0' && *p != ' ') {
                 p++;
               }
               wlen = (size_t)(p - wstart);
               if (wlen > 0) {
-                char* word = (char*)my_mem_alloc(ta->allocator, wlen + 1);
-                if (word != NULL) {
-                  int32_t ww = 0;
-                  memcpy(word, wstart, wlen);
-                  word[wlen] = '\0';
-                  my_vgcanvas_draw_text(vg, word, x, (float)ty);
-                  if (ta->font != NULL) {
-                    my_vgcanvas_measure_text(vg, word, &ww, NULL);
-                  } else {
-                    ww = (int32_t)wlen * TA_CELL_W;
-                  }
-                  x += (float)ww;
-                  my_mem_free(ta->allocator, word);
+                char separator = *p;
+                int32_t ww = 0;
+                *p = '\0';
+                my_vgcanvas_draw_text(vg, wstart, x, (float)ty);
+                if (ta->font != NULL) {
+                  my_vgcanvas_measure_text(vg, wstart, &ww, NULL);
+                } else {
+                  ww = (int32_t)wlen * TA_CELL_W;
                 }
+                x += (float)ww;
+                *p = separator;
               }
               while (*p == ' ') {
                 x += space_w + space_extra;

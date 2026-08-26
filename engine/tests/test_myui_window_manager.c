@@ -1611,6 +1611,37 @@ TEST(text_area_paint_reuses_line_buffer)
   my_widget_unref(area);
 }
 
+TEST(text_area_justify_paint_reuses_line_buffer)
+{
+  text_area_count_alloc_t state = {0};
+  my_allocator_t allocator = {&state, text_area_count_alloc,
+                              text_area_count_calloc, text_area_count_realloc,
+                              text_area_count_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  size_t before;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 54, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(area, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc dd"), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  before = state.alloc_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_EQ(state.alloc_calls, before);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
 TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1933,6 +1964,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_page_down_moves_by_wrapped_visual_lines);
     RUN_TEST(text_area_page_up_moves_by_wrapped_visual_lines);
     RUN_TEST(text_area_paint_reuses_line_buffer);
+    RUN_TEST(text_area_justify_paint_reuses_line_buffer);
     RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);
