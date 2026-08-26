@@ -206,7 +206,10 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     if (engine->program->rule_count == 1u && engine->rete_network == NULL) {
         status = re_rete_network_create_rule(facts, &engine->program->rules[0], NULL, &engine->rete_network);
         if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return finish_run(engine, facts, status);
-        if (engine->rete_network != NULL) engine->rete_network->program = engine->program;
+        if (engine->rete_network != NULL) {
+            engine->rete_network->program = engine->program;
+            engine->rete_network->owner_engine = engine;
+        }
     }
     if (engine->program->rule_count != 0u) {
         indices = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*indices));

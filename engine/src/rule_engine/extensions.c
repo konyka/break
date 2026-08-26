@@ -82,6 +82,10 @@ re_status_t re_engine_rete_network(const re_engine_t *engine,
     return *out_network == NULL ? RE_STATUS_NOT_SUPPORTED : RE_STATUS_OK;
 }
 void re_rete_network_destroy(re_rete_network_t *network) {
+    if (network != NULL && network->owner_engine != NULL) {
+        network->owner_engine->rete_network = NULL;
+        network->owner_engine = NULL;
+    }
     re_rete_network_destroy_internal(network);
 }
 re_status_t re_engine_query(re_engine_t *engine, re_facts_t *facts,

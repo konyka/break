@@ -187,7 +187,9 @@ re_status_t re_facts_commit(re_fact_txn_t *transaction) {
     re_facts_destroy(transaction->original); re_facts_destroy(transaction->staged);
     transaction->next_retired = facts->retired_transaction;
     facts->retired_transaction = transaction;
-    if (facts->destroy_requested) re_facts_destroy(facts);
+    if (facts->destroy_requested) {
+        re_facts_destroy(facts);
+    }
     return RE_STATUS_OK;
 }
 
