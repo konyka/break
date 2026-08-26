@@ -280,6 +280,7 @@ preserves the query depth, cycle, trace, and maximum-solution limits for this
 subset. The production query entry point selects this path when the goal graph
 matches the supported shape; otherwise it uses the bounded compatibility path
 in `backward.c`, which also covers direct fact comparisons such as
-`Ready == true`, boolean composition, operands, formal bindings, and
-non-zero-argument goals covered by the focused tests. Neither path claims
+`Ready == true`, and supported boolean composition. Formal bindings,
+custom-function operands, and non-zero-argument goals return
+`RE_STATUS_NOT_SUPPORTED`. Neither path claims
 arbitrary upstream unification or shared-subgraph provenance.

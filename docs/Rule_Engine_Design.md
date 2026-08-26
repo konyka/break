@@ -198,9 +198,9 @@ the backward-proof capability bit remains clear.
 Rule declarations may optionally use bounded formal parameters, for example
 `rule "Lookup"(Key)`. Conditions may use `goal("RuleName")` unchanged, or the
  parsed explicit form `goal("RuleName", actual, ...)`; bounded formal/actual
- binding is supported for literal and propagated values, including repeated-
- formal equality checks. The parser rejects
-malformed, duplicate, and over-bound formal/actual argument lists deterministically.
+ binding queries are outside the explicit backward-machine slice and return
+`RE_STATUS_NOT_SUPPORTED`. The parser rejects malformed, duplicate, and
+over-bound formal/actual argument lists deterministically.
 The zero-argument form traverses installed rules with explicit `max_depth` bounds
 and active-path cycle detection. Results distinguish proved,
 disproved, unknown, and depth-limit outcomes. Successful queries expose
