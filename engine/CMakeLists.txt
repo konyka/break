@@ -700,6 +700,9 @@ add_library(rule_engine_core STATIC
     src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
     src/rule_engine/stream_correlation.c
     src/rule_engine/rete.c src/rule_engine/advanced.c src/rule_engine/backward.c
+     src/rule_engine/backward_machine.c
+     src/rule_engine/backward_machine_context.c
+       src/rule_engine/backward_machine_goal.c src/rule_engine/query.c
     src/rule_engine/executor.c)
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -762,6 +765,40 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine COMMAND test_rule_engine)
+
+    add_executable(test_rule_engine_backward tests/test_rule_engine_backward.c)
+    set_property(TARGET test_rule_engine_backward PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_backward PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_backward PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_backward COMMAND test_rule_engine_backward)
+
+    add_executable(test_rule_engine_backward_deep_chain tests/test_rule_engine_backward_deep_chain.c)
+    set_property(TARGET test_rule_engine_backward_deep_chain PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_backward_deep_chain PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_backward_deep_chain PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_backward_deep_chain COMMAND test_rule_engine_backward_deep_chain)
+
+     add_executable(test_backward_machine_structure tests/test_backward_machine_structure.c)
+    set_property(TARGET test_backward_machine_structure PROPERTY C_STANDARD 99)
+    target_include_directories(test_backward_machine_structure PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_backward_machine_structure PRIVATE
+        TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_backward_machine_structure PRIVATE rule_engine_core)
+     add_test(NAME test_backward_machine_structure COMMAND test_backward_machine_structure)
+
+     add_executable(test_backward_machine_context tests/test_backward_machine_context.c)
+     set_property(TARGET test_backward_machine_context PROPERTY C_STANDARD 99)
+     target_include_directories(test_backward_machine_context PRIVATE ${TEST_INCLUDE_DIRS})
+     target_link_libraries(test_backward_machine_context PRIVATE rule_engine_core)
+     add_test(NAME test_backward_machine_context COMMAND test_backward_machine_context)
+
+    add_executable(test_rule_engine_backward_bindings tests/test_rule_engine_backward_bindings.c)
+    set_property(TARGET test_rule_engine_backward_bindings PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_backward_bindings PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_backward_bindings PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_backward_bindings COMMAND test_rule_engine_backward_bindings)
+
 
     add_executable(rule_engine_fuzz_smoke tests/rule_engine_fuzz_smoke.c)
     set_property(TARGET rule_engine_fuzz_smoke PROPERTY C_STANDARD 99)
