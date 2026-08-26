@@ -144,6 +144,30 @@ re_status_t re_proof_trace_get(const re_proof_t *proof, size_t index,
     out_rule_name->size = strlen(proof->trace_names[index]);
     return RE_STATUS_OK;
 }
+size_t re_proof_node_count(const re_proof_t *proof) {
+    return proof == NULL ? 0u : proof->node_count;
+}
+re_status_t re_proof_node_get(const re_proof_t *proof, size_t index,
+                              re_proof_node_t *out_node) {
+    if (proof == NULL || out_node == NULL || out_node->struct_size < sizeof(*out_node))
+        return RE_STATUS_INVALID_ARGUMENT;
+    if (index >= proof->node_count) return RE_STATUS_NOT_FOUND;
+    out_node->rule_name.data = proof->nodes[index].rule_name;
+    out_node->rule_name.size = proof->nodes[index].rule_name_size;
+    return RE_STATUS_OK;
+}
+size_t re_proof_edge_count(const re_proof_t *proof) {
+    return proof == NULL ? 0u : proof->edge_count;
+}
+re_status_t re_proof_edge_get(const re_proof_t *proof, size_t index,
+                              re_proof_edge_t *out_edge) {
+    if (proof == NULL || out_edge == NULL || out_edge->struct_size < sizeof(*out_edge))
+        return RE_STATUS_INVALID_ARGUMENT;
+    if (index >= proof->edge_count) return RE_STATUS_NOT_FOUND;
+    out_edge->parent_index = proof->edges[index].parent_index;
+    out_edge->child_index = proof->edges[index].child_index;
+    return RE_STATUS_OK;
+}
 void re_query_destroy(re_query_t *query) {
     size_t index;
     if (query == NULL) return;
@@ -160,6 +184,10 @@ void re_proof_destroy(re_proof_t *proof) {
         re_free(&proof->allocator, proof->bindings[index].string_data);
     }
     for (index = 0u; index < proof->trace_count; ++index) re_free(&proof->allocator, proof->trace_names[index]);
+    for (index = 0u; index < proof->node_count; ++index)
+        re_free(&proof->allocator, proof->nodes[index].rule_name);
+    re_free(&proof->allocator, proof->edges);
+    re_free(&proof->allocator, proof->nodes);
     re_free(&proof->allocator, proof->trace_names);
     re_free(&proof->allocator, proof->bindings);
     re_free(&proof->allocator, proof);
