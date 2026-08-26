@@ -28,6 +28,36 @@ typedef struct text_area_fail_alloc_t {
   bool fail;
 } text_area_fail_alloc_t;
 
+typedef struct text_area_count_alloc_t {
+  size_t alloc_calls;
+} text_area_count_alloc_t;
+
+static void* text_area_count_alloc(void* ctx, size_t size) {
+  text_area_count_alloc_t* state = (text_area_count_alloc_t*)ctx;
+  void* ptr = malloc(size);
+  if (ptr != NULL) state->alloc_calls++;
+  return ptr;
+}
+
+static void* text_area_count_calloc(void* ctx, size_t count, size_t size) {
+  text_area_count_alloc_t* state = (text_area_count_alloc_t*)ctx;
+  void* ptr = calloc(count, size);
+  if (ptr != NULL) state->alloc_calls++;
+  return ptr;
+}
+
+static void* text_area_count_realloc(void* ctx, void* ptr, size_t size) {
+  text_area_count_alloc_t* state = (text_area_count_alloc_t*)ctx;
+  void* grown = realloc(ptr, size);
+  if (grown != NULL && grown != ptr) state->alloc_calls++;
+  return grown;
+}
+
+static void text_area_count_free(void* ctx, void* ptr) {
+  (void)ctx;
+  free(ptr);
+}
+
 static void* text_area_fail_alloc(void* ctx, size_t size) {
   text_area_fail_alloc_t* state = (text_area_fail_alloc_t*)ctx;
   return state->fail ? NULL : malloc(size);
@@ -1548,6 +1578,39 @@ TEST(text_area_page_up_moves_by_wrapped_visual_lines)
   my_widget_unref(area);
 }
 
+TEST(text_area_paint_reuses_line_buffer)
+{
+  text_area_count_alloc_t state = {0};
+  my_allocator_t allocator = {&state, text_area_count_alloc,
+                              text_area_count_calloc, text_area_count_realloc,
+                              text_area_count_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  size_t before;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 28, 54}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "abcdefghij"), MY_RET_OK);
+  text_area->focused = true;
+  text_area->cursor_visible = true;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  before = state.alloc_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_EQ(state.alloc_calls, before);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
 TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -1869,6 +1932,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_pointer_hit_test_uses_font_line_height);
     RUN_TEST(text_area_page_down_moves_by_wrapped_visual_lines);
     RUN_TEST(text_area_page_up_moves_by_wrapped_visual_lines);
+    RUN_TEST(text_area_paint_reuses_line_buffer);
     RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);

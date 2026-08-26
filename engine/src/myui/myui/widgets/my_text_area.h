@@ -77,6 +77,8 @@ typedef struct my_text_area_t {
   my_syntax_language_t syntax_language;
   bool syntax_enabled;
   size_t syntax_line_budget;
+  char* paint_text;
+  size_t paint_text_cap;
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);

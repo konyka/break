@@ -1593,6 +1593,38 @@ static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl) {
   return s;
 }
 
+static bool ta_paint_text_reserve(my_text_area_t* ta, size_t required) {
+  size_t capacity;
+  char* grown;
+  if (required <= ta->paint_text_cap) return true;
+  capacity = ta->paint_text_cap == 0 ? 64 : ta->paint_text_cap;
+  while (capacity < required) {
+    if (capacity > (size_t)-1 / 2) {
+      capacity = required;
+      break;
+    }
+    capacity *= 2;
+  }
+  grown = (char*)my_mem_realloc(ta->allocator, ta->paint_text, capacity);
+  if (grown == NULL) return false;
+  ta->paint_text = grown;
+  ta->paint_text_cap = capacity;
+  return true;
+}
+
+static char* ta_paint_vline_text(my_text_area_t* ta,
+                                 const my_visual_line_t* vl) {
+  size_t start = ta_offset_of(ta, vl->phys, vl->start_cp);
+  size_t end = ta_offset_of(ta, vl->phys, vl->start_cp + vl->len_cp);
+  size_t len;
+  if (end <= start) return NULL;
+  len = end - start;
+  if (!ta_paint_text_reserve(ta, len + 1)) return NULL;
+  memcpy(ta->paint_text, ta->text + start, len);
+  ta->paint_text[len] = '\0';
+  return ta->paint_text;
+}
+
 /** @brief Layout of a visual line's text when it needs bidi (out_text
  * receives the segment string to free), else NULL (fast path). */
 static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
@@ -1765,7 +1797,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             (float)ty);
       }
       if (len > 0) {
-        char* line = (char*)my_mem_alloc(ta->allocator, len + 1);
+        char* line = ta_paint_vline_text(ta, vl);
         if (line != NULL) {
           int32_t inner_w = widget->rect.w - ta_content_left_value(ta) - TA_PAD_X;
           int32_t lw = 0;
@@ -1773,8 +1805,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           int32_t delta = 0;
           bool justify = false;
           int nseps = 0;
-          memcpy(line, ta->text + start, len);
-          line[len] = '\0';
           /* alignment (M11d): measure the segment, shift its base x */
           if (ta->font != NULL) {
             my_vgcanvas_measure_text(vg, line, &lw, NULL);
@@ -1911,7 +1941,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
             }
           }
-          my_mem_free(ta->allocator, line);
         }
       }
     }
@@ -1924,7 +1953,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                                 ta->cursor_col, &civ)
                               : ta->cursor_row;
     const my_visual_line_t* cv = ta_vline_at(ta, cvi);
-    char* ctext = ta_vline_text(ta, cv);
+    char* ctext = ta_paint_vline_text(ta, cv);
     int32_t cx = ta_content_left_value(ta) - ta->scroll_x;
     int32_t cy = TA_PAD_Y +
                  (int32_t)(ta->wrap ? cvi : ta->cursor_row) * line_h -
@@ -1978,7 +2007,6 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           cx += ta_line_boundary_x(ta, cv->phys, ta->cursor_col);
         }
       }
-      my_mem_free(ta->allocator, ctext);
     } else {
       cx += (int32_t)(ta->wrap ? civ : ta->cursor_col) * TA_CELL_W;
     }
@@ -2089,6 +2117,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   ta_clear_folds(ta);
   ta_vlines_destroy_array(ta, ta->vlines);
   ta_syntax_destroy(ta);
+  my_mem_free(ta->allocator, ta->paint_text);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
   my_mem_free(ta->allocator, ta->hint);

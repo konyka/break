@@ -90,6 +90,11 @@ cache 分配，索引路径复杂度为 O(log V)，其中 V 是缓存中的 visu
 映射时沿用现有的单行 layout 临时对象。折叠行不会重新出现，因为目标来自同一份可见
 visual-line cache。非 wrap 模式保持可见物理行分页语义。
 
+text area 绘制使用 widget 生命周期内的可复用 scratch buffer 组装 visual line 文本；容量只
+在遇到更长行时按需增长，普通重绘不再为每个 visual line 分配和释放临时字符串。光标锚点
+也复用同一 buffer，避免长文档闪烁或滚动时的 allocator 抖动。buffer 只属于 myui widget，
+不依赖软件、GL、Vulkan 或平台后端；分配失败时保留原有的单行跳过/光标 fallback 行为。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

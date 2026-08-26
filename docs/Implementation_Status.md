@@ -1905,3 +1905,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   O(log V)；非 wrap 行为保持不变。
 - 验证：`test_myui_window_manager` **50/50** 通过；实现仍只依赖 myui core/layout 接口，
   不泄漏 GL、Vulkan、软件 canvas 或平台类型。
+
+## myui text-area paint scratch reuse（2026-08-26）
+
+- 以 TDD 新增 `text_area_paint_reuses_line_buffer`，先验证相同内容的连续绘制会为每个
+  visual line 反复申请临时字符串，造成帧级 allocator 抖动。
+- `my_text_area` 现在持有按需扩容的 widget-owned scratch buffer，visual line 文本和光标
+  锚点共用该 buffer；容量只在内容变长时增长，普通重绘不再产生逐行分配，后端 API 和
+  绘制命令保持不变。分配失败时继续跳过无法准备的行或使用光标 cell fallback。
+- 验证：`test_myui_window_manager` **51/51** 通过；scratch 生命周期在 widget destroy
+  中释放，跨 soft/GLES/Vulkan/Break RHI 仍只经过公共 canvas 接口。
