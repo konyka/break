@@ -7,7 +7,59 @@
 #include <string.h>
 
 typedef struct parser_t { const char *text; size_t size; size_t at; const re_allocator_impl_t *allocator; } parser_t;
-void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) { if (expr == NULL) return; re_operand_destroy(a, &expr->left); re_operand_destroy(a, &expr->right); re_expr_destroy(a, expr->first); re_expr_destroy(a, expr->second); re_free(a, expr); }
+#define RE_MAX_OPERAND_ARGUMENTS 64u
+#define RE_MAX_FORMAL_PARAMETERS 32u
+void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
+    re_expr_t **stack = NULL;
+    size_t count = 0u;
+    size_t capacity = 0u;
+    while (expr != NULL || count != 0u) {
+        if (expr != NULL) {
+            if (count == capacity) {
+                size_t next = capacity == 0u ? 16u : capacity * 2u;
+                re_expr_t **grown;
+                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) {
+                    re_free(a, stack);
+                    return;
+                }
+                grown = re_realloc(a, stack, next * sizeof(*grown));
+                if (grown == NULL) {
+                    re_free(a, stack);
+                    return;
+                }
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = expr;
+            expr = expr->first;
+            continue;
+        }
+        expr = stack[--count];
+        if (expr->second != NULL) {
+            if (count == capacity) {
+                size_t next = capacity == 0u ? 16u : capacity * 2u;
+                re_expr_t **grown;
+                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) {
+                    re_free(a, stack);
+                    return;
+                }
+                grown = re_realloc(a, stack, next * sizeof(*grown));
+                if (grown == NULL) {
+                    re_free(a, stack);
+                    return;
+                }
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = expr->second;
+        }
+        re_operand_destroy(a, &expr->left);
+        re_operand_destroy(a, &expr->right);
+        re_free(a, expr);
+        expr = NULL;
+    }
+    re_free(a, stack);
+}
 static void skip_space(parser_t *p) { while (p->at < p->size && isspace((unsigned char)p->text[p->at])) ++p->at; }
 static int take(parser_t *p, char c) { skip_space(p); if (p->at < p->size && p->text[p->at] == c) { ++p->at; return 1; } return 0; }
 static int word(parser_t *p, const char *word) {
@@ -70,72 +122,163 @@ static re_status_t quoted(parser_t *p, char **out, size_t *out_size) {
     *out = copy; *out_size = length;
     ++p->at; return RE_STATUS_OK;
 }
-static re_status_t operand(parser_t *p, re_operand_t *out) {
-    size_t start; char *end; double number; int negative = 0; int has_dot = 0;
-    memset(out, 0, sizeof(*out)); skip_space(p);
+typedef struct operand_parse_frame_t {
+    re_operand_t value;
+    size_t argument_capacity;
+} operand_parse_frame_t;
+
+static re_status_t operand_atom(parser_t *p, operand_parse_frame_t *frame, int *complete) {
+    size_t start;
+    char *end;
+    double number;
+    int negative = 0;
+    int has_dot = 0;
+    re_operand_t *out = &frame->value;
+    skip_space(p);
     if (p->at >= p->size) return RE_STATUS_PARSE_ERROR;
     if (p->text[p->at] == '"') {
         out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_STRING;
+        *complete = 1;
         return quoted(p, (char **)&out->value.as.string.data, &out->value.as.string.size);
     }
     if (word(p, "true")) {
         out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_BOOL;
-        out->value.as.boolean = 1; return RE_STATUS_OK;
+        out->value.as.boolean = 1;
+        *complete = 1;
+        return RE_STATUS_OK;
     }
     if (word(p, "false")) {
         out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_BOOL;
-        out->value.as.boolean = 0; return RE_STATUS_OK;
+        out->value.as.boolean = 0;
+        *complete = 1;
+        return RE_STATUS_OK;
     }
-    start = p->at; if (p->text[p->at] == '-') { negative = 1; ++p->at; }
+    start = p->at;
+    if (p->text[p->at] == '-') { negative = 1; ++p->at; }
     while (p->at < p->size && (isdigit((unsigned char)p->text[p->at]) || p->text[p->at] == '.')) {
         if (p->text[p->at] == '.') has_dot = 1;
         ++p->at;
     }
     if (p->at > start + (negative ? 1u : 0u)) {
         errno = 0;
+        out->kind = RE_OPERAND_LITERAL;
         if (has_dot) {
             number = strtod(p->text + start, &end);
             if (errno == ERANGE || !isfinite(number) || (size_t)(end - p->text) != p->at)
                 return RE_STATUS_PARSE_ERROR;
-            out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_DOUBLE;
-            out->value.as.double_value = number;
+            out->value.type = RE_VALUE_DOUBLE; out->value.as.double_value = number;
         } else {
             long long integer = strtoll(p->text + start, &end, 10);
             if (errno == ERANGE || (size_t)(end - p->text) != p->at)
                 return RE_STATUS_PARSE_ERROR;
-            out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_INT64;
-            out->value.as.int64_value = (int64_t)integer;
+            out->value.type = RE_VALUE_INT64; out->value.as.int64_value = (int64_t)integer;
         }
+        *complete = 1;
         return RE_STATUS_OK;
     }
-    p->at = start; while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) || p->text[p->at] == '.' || p->text[p->at] == '_')) ++p->at;
+    p->at = start;
+    while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
+           p->text[p->at] == '.' || p->text[p->at] == '_')) ++p->at;
     if (p->at == start) return RE_STATUS_PARSE_ERROR;
     if (p->at < p->size && p->text[p->at] == '(') {
-        size_t capacity = 0u;
         out->kind = RE_OPERAND_FUNCTION;
         out->function_name_size = p->at - start;
-        if (re_copy_string(p->allocator, (re_string_t){p->text + start, out->function_name_size}, &out->function_name) != RE_STATUS_OK)
+        if (re_copy_string(p->allocator, (re_string_t){p->text + start,
+                           out->function_name_size}, &out->function_name) != RE_STATUS_OK)
             return RE_STATUS_OUT_OF_MEMORY;
         ++p->at;
         skip_space(p);
-        while (p->at < p->size && p->text[p->at] != ')') {
-            re_operand_t argument;
-            re_status_t status = operand(p, &argument);
-            if (status != RE_STATUS_OK) { re_operand_destroy(p->allocator, out); return status; }
-            if (out->argument_count == capacity) {
-                size_t next = capacity == 0u ? 2u : capacity * 2u;
-                re_operand_t *grown = re_realloc(p->allocator, out->arguments, next * sizeof(*grown));
-                if (grown == NULL) { re_operand_destroy(p->allocator, &argument); re_operand_destroy(p->allocator, out); return RE_STATUS_OUT_OF_MEMORY; }
-                out->arguments = grown; capacity = next;
-            }
-            out->arguments[out->argument_count++] = argument;
-            if (!take(p, ',')) break;
-        }
-        if (!take(p, ')')) { re_operand_destroy(p->allocator, out); return RE_STATUS_PARSE_ERROR; }
+        *complete = p->at < p->size && p->text[p->at] == ')';
+        if (*complete) ++p->at;
         return RE_STATUS_OK;
     }
     out->kind = RE_OPERAND_FACT; out->fact_name_size = p->at - start;
-    return re_copy_string(p->allocator, (re_string_t){p->text + start, out->fact_name_size}, &out->fact_name);
+    *complete = 1;
+    return re_copy_string(p->allocator, (re_string_t){p->text + start,
+                          out->fact_name_size}, &out->fact_name);
+}
+
+static re_status_t operand_finish_function(parser_t *p, re_operand_t *out) {
+    char *goal_name;
+    if (out->function_name_size != 4u || memcmp(out->function_name, "goal", 4u) != 0)
+        return RE_STATUS_OK;
+    if (out->argument_count == 0u || out->arguments[0].kind != RE_OPERAND_LITERAL ||
+        out->arguments[0].value.type != RE_VALUE_STRING) return RE_STATUS_PARSE_ERROR;
+    if (re_copy_string(p->allocator, out->arguments[0].value.as.string, &goal_name) != RE_STATUS_OK)
+        return RE_STATUS_OUT_OF_MEMORY;
+    out->kind = RE_OPERAND_GOAL_CALL;
+    out->goal_name = goal_name;
+    out->goal_name_size = out->arguments[0].value.as.string.size;
+    re_operand_destroy(p->allocator, &out->arguments[0]);
+    if (out->argument_count > 1u) {
+        memmove(out->arguments, out->arguments + 1u,
+                (out->argument_count - 1u) * sizeof(*out->arguments));
+        --out->argument_count;
+    } else {
+        re_free(p->allocator, out->arguments); out->arguments = NULL;
+        out->argument_count = 0u;
+    }
+    re_free(p->allocator, out->function_name); out->function_name = NULL;
+    out->function_name_size = 0u;
+    return RE_STATUS_OK;
+}
+
+static re_status_t operand(parser_t *p, re_operand_t *out) {
+    operand_parse_frame_t *frames = NULL;
+    size_t count = 0u;
+    size_t capacity = 0u;
+    re_status_t status = RE_STATUS_OK;
+    int complete = 0;
+    memset(out, 0, sizeof(*out));
+    for (;;) {
+        operand_parse_frame_t *frame;
+        if (count == capacity) {
+            size_t next = capacity == 0u ? 8u : capacity * 2u;
+            if (next < capacity || next > (size_t)-1 / sizeof(operand_parse_frame_t)) {
+                status = RE_STATUS_LIMIT;
+                break;
+            }
+            operand_parse_frame_t *grown = re_realloc(p->allocator, frames, next * sizeof(*grown));
+            if (grown == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+            frames = grown; capacity = next;
+        }
+        frame = &frames[count++];
+        memset(frame, 0, sizeof(*frame));
+        status = operand_atom(p, frame, &complete);
+        if (status != RE_STATUS_OK) break;
+        while (complete) {
+            re_operand_t value = frame->value;
+            memset(&frame->value, 0, sizeof(frame->value));
+            --count;
+            if (value.kind == RE_OPERAND_FUNCTION) {
+                status = operand_finish_function(p, &value);
+                if (status != RE_STATUS_OK) { re_operand_destroy(p->allocator, &value); break; }
+            }
+            if (count == 0u) { *out = value; re_free(p->allocator, frames); return RE_STATUS_OK; }
+            frame = &frames[count - 1u];
+            if (frame->value.argument_count >= RE_MAX_OPERAND_ARGUMENTS) {
+                re_operand_destroy(p->allocator, &value); status = RE_STATUS_LIMIT; break;
+            }
+            if (frame->value.argument_count == frame->argument_capacity) {
+                size_t next = frame->argument_capacity == 0u ? 2u : frame->argument_capacity * 2u;
+                if (next < frame->argument_capacity || next > (size_t)-1 / sizeof(re_operand_t)) {
+                    re_operand_destroy(p->allocator, &value); status = RE_STATUS_LIMIT; break;
+                }
+                re_operand_t *grown = re_realloc(p->allocator, frame->value.arguments,
+                                                  next * sizeof(*grown));
+                if (grown == NULL) { re_operand_destroy(p->allocator, &value); status = RE_STATUS_OUT_OF_MEMORY; break; }
+                frame->value.arguments = grown; frame->argument_capacity = next;
+            }
+            frame->value.arguments[frame->value.argument_count++] = value;
+            if (take(p, ',')) { complete = 0; break; }
+            if (!take(p, ')')) { status = RE_STATUS_PARSE_ERROR; break; }
+            complete = 1;
+        }
+        if (status != RE_STATUS_OK) break;
+    }
+    while (count != 0u) re_operand_destroy(p->allocator, &frames[--count].value);
+    re_free(p->allocator, frames);
+    return status;
 }
 static re_status_t comparison(parser_t *p, re_compare_t *out) {
     skip_space(p);
@@ -147,21 +290,238 @@ static re_status_t comparison(parser_t *p, re_compare_t *out) {
     if (p->text[p->at] == '<') { ++p->at; *out = RE_COMPARE_LT; return RE_STATUS_OK; }
     return RE_STATUS_PARSE_ERROR;
 }
-static re_status_t expression(parser_t *p, re_expr_t **out);
-static re_status_t primary(parser_t *p, re_expr_t **out) {
-    re_expr_t *expr = re_alloc(p->allocator, sizeof(*expr)); if (expr == NULL) return RE_STATUS_OUT_OF_MEMORY; memset(expr, 0, sizeof(*expr));
-    if (take(p, '(')) { re_status_t s = expression(p, &expr->first); if (s == RE_STATUS_OK && !take(p, ')')) s = RE_STATUS_PARSE_ERROR; if (s != RE_STATUS_OK) { re_expr_destroy(p->allocator, expr); return s; } *out = expr->first; re_free(p->allocator, expr); return RE_STATUS_OK; }
-    if (word(p, "true")) { expr->kind = RE_EXPR_TRUE; *out = expr; return RE_STATUS_OK; }
-    if (word(p, "false")) { expr->kind = RE_EXPR_FALSE; *out = expr; return RE_STATUS_OK; }
-    if (word(p, "not")) { expr->kind = RE_EXPR_NOT; if (primary(p, &expr->first) != RE_STATUS_OK) { re_expr_destroy(p->allocator, expr); return RE_STATUS_PARSE_ERROR; } *out = expr; return RE_STATUS_OK; }
-    expr->kind = RE_EXPR_COMPARE; if (operand(p, &expr->left) != RE_STATUS_OK || comparison(p, &expr->compare) != RE_STATUS_OK || operand(p, &expr->right) != RE_STATUS_OK) { re_expr_destroy(p->allocator, expr); return RE_STATUS_PARSE_ERROR; } *out = expr; return RE_STATUS_OK;
+typedef enum expression_operator_t { EXPR_OP_LPAREN, EXPR_OP_NOT, EXPR_OP_AND, EXPR_OP_OR } expression_operator_t;
+#define RE_MAX_EXPRESSION_TERMS 65536u
+
+static int expression_precedence(expression_operator_t op) {
+    if (op == EXPR_OP_NOT) return 3;
+    if (op == EXPR_OP_AND) return 2;
+    if (op == EXPR_OP_OR) return 1;
+    return 0;
 }
+
+static re_status_t expression_apply(const re_allocator_impl_t *a,
+                                    expression_operator_t op,
+                                    re_expr_t **values, size_t *value_count) {
+    re_expr_t *expr;
+    if (op == EXPR_OP_NOT) {
+        if (*value_count < 1u) return RE_STATUS_PARSE_ERROR;
+        expr = re_alloc(a, sizeof(*expr));
+        if (expr == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memset(expr, 0, sizeof(*expr));
+        expr->kind = RE_EXPR_NOT;
+        expr->first = values[--*value_count];
+        values[(*value_count)++] = expr;
+        return RE_STATUS_OK;
+    }
+    if (*value_count < 2u) return RE_STATUS_PARSE_ERROR;
+    expr = re_alloc(a, sizeof(*expr));
+    if (expr == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    memset(expr, 0, sizeof(*expr));
+    expr->kind = op == EXPR_OP_AND ? RE_EXPR_AND : RE_EXPR_OR;
+    expr->second = values[--*value_count];
+    expr->first = values[--*value_count];
+    values[(*value_count)++] = expr;
+    return RE_STATUS_OK;
+}
+
 static re_status_t expression(parser_t *p, re_expr_t **out) {
-    re_expr_t *left; if (primary(p, &left) != RE_STATUS_OK) return RE_STATUS_PARSE_ERROR;
-    for (;;) { int is_and = word(p, "and"); int is_or = !is_and && word(p, "or"); re_expr_t *right; re_expr_t *joined;
-        if (!is_and && !is_or) break; if (primary(p, &right) != RE_STATUS_OK) { re_expr_destroy(p->allocator, left); return RE_STATUS_PARSE_ERROR; }
-        joined = re_alloc(p->allocator, sizeof(*joined)); if (joined == NULL) { re_expr_destroy(p->allocator, left); re_expr_destroy(p->allocator, right); return RE_STATUS_OUT_OF_MEMORY; } memset(joined, 0, sizeof(*joined)); joined->kind = is_and ? RE_EXPR_AND : RE_EXPR_OR; joined->first = left; joined->second = right; left = joined;
-    } *out = left; return RE_STATUS_OK;
+    re_expr_t **values = NULL;
+    expression_operator_t *operators = NULL;
+    size_t value_count = 0u, operator_count = 0u, capacity = 0u;
+    size_t terms = 0u;
+    int expect_value = 1;
+    re_status_t status = RE_STATUS_OK;
+    re_expr_t *value = NULL;
+    values = re_alloc(p->allocator, 16u * sizeof(*values));
+    operators = re_alloc(p->allocator, 16u * sizeof(*operators));
+    capacity = 16u;
+    if (values == NULL || operators == NULL) { re_free(p->allocator, values); re_free(p->allocator, operators); return RE_STATUS_OUT_OF_MEMORY; }
+    for (;;) {
+        if (expect_value) {
+            value = NULL;
+            if (take(p, '(')) {
+                if (operator_count == capacity) goto grow;
+                operators[operator_count++] = EXPR_OP_LPAREN;
+                continue;
+            }
+            if (word(p, "not")) {
+                if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                if (operator_count == capacity) goto grow;
+                operators[operator_count++] = EXPR_OP_NOT;
+                continue;
+            }
+            value = re_alloc(p->allocator, sizeof(*value));
+            if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+            memset(value, 0, sizeof(*value));
+            if (word(p, "true")) value->kind = RE_EXPR_TRUE;
+            else if (word(p, "false")) value->kind = RE_EXPR_FALSE;
+            else {
+                value->kind = RE_EXPR_COMPARE;
+                status = operand(p, &value->left);
+                if (status == RE_STATUS_OK &&
+                    (value->left.kind == RE_OPERAND_GOAL_CALL ||
+                     (value->left.kind == RE_OPERAND_FUNCTION && value->left.function_name_size == 4u &&
+                      memcmp(value->left.function_name, "goal", 4u) == 0))) {
+                    value->compare = RE_COMPARE_EQ;
+                    value->right.kind = RE_OPERAND_LITERAL;
+                    value->right.value.type = RE_VALUE_BOOL;
+                    value->right.value.as.boolean = 1;
+                } else if (status == RE_STATUS_OK) {
+                    status = comparison(p, &value->compare);
+                    if (status == RE_STATUS_OK) status = operand(p, &value->right);
+                }
+            }
+            if (status != RE_STATUS_OK) { re_expr_destroy(p->allocator, value); break; }
+            if (++terms > RE_MAX_EXPRESSION_TERMS) { re_expr_destroy(p->allocator, value); status = RE_STATUS_LIMIT; break; }
+            if (value_count == capacity) goto grow_value;
+            values[value_count++] = value;
+            expect_value = 0;
+            continue;
+        }
+        skip_space(p);
+        if (p->at < p->size && p->text[p->at] == ')') {
+            ++p->at;
+            while (operator_count != 0u && operators[operator_count - 1u] != EXPR_OP_LPAREN) {
+                status = expression_apply(p->allocator, operators[--operator_count], values, &value_count);
+                if (status != RE_STATUS_OK) break;
+            }
+            if (status != RE_STATUS_OK || operator_count == 0u) { status = RE_STATUS_PARSE_ERROR; break; }
+            --operator_count;
+            expect_value = 0;
+            continue;
+        }
+        {
+            expression_operator_t op;
+            if (word(p, "and")) op = EXPR_OP_AND;
+            else if (word(p, "or")) op = EXPR_OP_OR;
+            else break;
+            while (operator_count != 0u && operators[operator_count - 1u] != EXPR_OP_LPAREN &&
+                   expression_precedence(operators[operator_count - 1u]) >= expression_precedence(op)) {
+                status = expression_apply(p->allocator, operators[--operator_count], values, &value_count);
+                if (status != RE_STATUS_OK) break;
+            }
+            if (status != RE_STATUS_OK) break;
+            if (operator_count == capacity) goto grow;
+            operators[operator_count++] = op;
+            expect_value = 1;
+        }
+        continue;
+grow_value:
+        if (capacity > RE_MAX_EXPRESSION_TERMS / 2u) { status = RE_STATUS_LIMIT; break; }
+        capacity *= 2u;
+        {
+            re_expr_t **grown_values = re_realloc(p->allocator, values, capacity * sizeof(*values));
+            expression_operator_t *grown_operators = re_realloc(p->allocator, operators, capacity * sizeof(*operators));
+            if (grown_values == NULL || grown_operators == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+            values = grown_values;
+            operators = grown_operators;
+        }
+        values[value_count++] = value;
+        expect_value = 0;
+        continue;
+grow:
+        if (capacity > RE_MAX_EXPRESSION_TERMS / 2u) { status = RE_STATUS_LIMIT; break; }
+        capacity *= 2u;
+        {
+            re_expr_t **grown_values = re_realloc(p->allocator, values, capacity * sizeof(*values));
+            expression_operator_t *grown_operators = re_realloc(p->allocator, operators, capacity * sizeof(*operators));
+            if (grown_values == NULL || grown_operators == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+            values = grown_values;
+            operators = grown_operators;
+        }
+    }
+    while (status == RE_STATUS_OK && operator_count != 0u) {
+        if (operators[operator_count - 1u] == EXPR_OP_LPAREN) { status = RE_STATUS_PARSE_ERROR; break; }
+        status = expression_apply(p->allocator, operators[--operator_count], values, &value_count);
+    }
+    if (status == RE_STATUS_OK && (expect_value || value_count != 1u)) status = RE_STATUS_PARSE_ERROR;
+    if (status == RE_STATUS_OK) { *out = values[0]; values[0] = NULL; }
+    while (value_count != 0u) re_expr_destroy(p->allocator, values[--value_count]);
+    re_free(p->allocator, values);
+    re_free(p->allocator, operators);
+    return status;
+}
+static int formal_name(const re_rule_t *rule, const char *name, size_t size) { size_t i; for (i = 0u; i < rule->formal_parameter_count; ++i) if (strlen(rule->formal_parameters[i]) == size && memcmp(rule->formal_parameters[i], name, size) == 0) return 1; return 0; }
+static void mark_formals(const re_allocator_impl_t *allocator, const re_rule_t *rule, re_operand_t *root) {
+    re_operand_t **stack = NULL;
+    size_t count = 0u;
+    size_t capacity = 0u;
+    if (root == NULL) return;
+    for (;;) {
+        re_operand_t *operand;
+        size_t i;
+        if (root != NULL) {
+            if (count == capacity) {
+                size_t next = capacity == 0u ? 16u : capacity * 2u;
+                re_operand_t **grown;
+                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) { re_free(allocator, stack); return; }
+                grown = re_realloc(allocator, stack, next * sizeof(*grown));
+                if (grown == NULL) { re_free(allocator, stack); return; }
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = root;
+            root = NULL;
+        }
+        if (count == 0u) break;
+        operand = stack[--count];
+        if (operand->kind == RE_OPERAND_FACT) {
+            if (operand->fact_name_size == 1u && operand->fact_name[0] == '_') operand->kind = RE_OPERAND_ANONYMOUS;
+            else if (formal_name(rule, operand->fact_name, operand->fact_name_size)) operand->kind = RE_OPERAND_VARIABLE;
+        }
+        for (i = 0u; i < operand->argument_count; ++i) {
+            if (count == capacity) {
+                size_t next = capacity == 0u ? 16u : capacity * 2u;
+                re_operand_t **grown;
+                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) { re_free(allocator, stack); return; }
+                grown = re_realloc(allocator, stack, next * sizeof(*grown));
+                if (grown == NULL) { re_free(allocator, stack); return; }
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = &operand->arguments[i];
+        }
+    }
+    re_free(allocator, stack);
+}
+static re_status_t mark_formals_expr(const re_allocator_impl_t *allocator, const re_rule_t *rule, re_expr_t *expr) {
+    re_expr_t **stack;
+    size_t count = 0u;
+    size_t capacity = 16u;
+    if (expr == NULL) return RE_STATUS_OK;
+    stack = (re_expr_t **)re_alloc(allocator, capacity * sizeof(*stack));
+    if (stack == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    stack[count++] = expr;
+    while (count != 0u) {
+        re_expr_t *current = stack[--count];
+        mark_formals(allocator, rule, &current->left);
+        mark_formals(allocator, rule, &current->right);
+        if (current->first != NULL) {
+            if (count == capacity) {
+                size_t next = capacity > (size_t)-1 / 2u ? 0u : capacity * 2u;
+                if (next == 0u || next > (size_t)-1 / sizeof(re_expr_t *)) { re_free(allocator, stack); return RE_STATUS_LIMIT; }
+                re_expr_t **grown = (re_expr_t **)re_realloc(allocator, stack, next * sizeof(*grown));
+                if (grown == NULL) { re_free(allocator, stack); return RE_STATUS_OUT_OF_MEMORY; }
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = current->first;
+        }
+        if (current->second != NULL) {
+            if (count == capacity) {
+                size_t next = capacity > (size_t)-1 / 2u ? 0u : capacity * 2u;
+                if (next == 0u || next > (size_t)-1 / sizeof(re_expr_t *)) { re_free(allocator, stack); return RE_STATUS_LIMIT; }
+                re_expr_t **grown = (re_expr_t **)re_realloc(allocator, stack, next * sizeof(*grown));
+                if (grown == NULL) { re_free(allocator, stack); return RE_STATUS_OUT_OF_MEMORY; }
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = current->second;
+        }
+    }
+    re_free(allocator, stack);
+    return RE_STATUS_OK;
 }
 static re_status_t rule_attributes(parser_t *p, re_rule_t *rule) {
     int seen_salience = 0;
@@ -212,12 +572,32 @@ static re_status_t rule_attributes(parser_t *p, re_rule_t *rule) {
         if (!take(p, ';')) return RE_STATUS_PARSE_ERROR;
     }
 }
-static void rule_destroy(const re_allocator_impl_t *a, re_rule_t *r) { size_t i; re_free(a, r->name); re_free(a, r->agenda_group); re_free(a, r->activation_group); re_free(a, r->effective_date); re_free(a, r->expiry_date); re_operand_destroy(a, &r->left); re_operand_destroy(a, &r->right); re_operand_destroy(a, &r->action_value); re_expr_destroy(a, r->condition); for (i = 0u; i < r->action_count; ++i) { re_free(a, r->actions[i].name); re_operand_destroy(a, &r->actions[i].value); } re_free(a, r->actions); }
+static void rule_destroy(const re_allocator_impl_t *a, re_rule_t *r) { size_t i; re_free(a, r->name); re_free(a, r->agenda_group); re_free(a, r->activation_group); re_free(a, r->effective_date); re_free(a, r->expiry_date); for (i = 0u; i < r->formal_parameter_count; ++i) re_free(a, r->formal_parameters[i]); re_free(a, r->formal_parameters); re_operand_destroy(a, &r->left); re_operand_destroy(a, &r->right); re_operand_destroy(a, &r->action_value); re_expr_destroy(a, r->condition); for (i = 0u; i < r->action_count; ++i) { re_free(a, r->actions[i].name); re_operand_destroy(a, &r->actions[i].value); } re_free(a, r->actions); }
 static void modules_destroy(const re_allocator_impl_t *a, re_program_t *p) { size_t i, j; for (i = 0u; i < p->module_count; ++i) { re_free(a, p->modules[i].name); for (j = 0u; j < p->modules[i].import_count; ++j) re_free(a, p->modules[i].imports[j]); re_free(a, p->modules[i].imports); } re_free(a, p->modules); }
 static int find_module(const re_program_t *p, re_string_t name, size_t *index) { size_t i; for (i = 0u; i < p->module_count; ++i) if (p->modules[i].name_size == name.size && memcmp(p->modules[i].name, name.data, name.size) == 0) { *index = i; return 1; } return 0; }
 static re_status_t add_module(const re_allocator_impl_t *a, re_program_t *p, re_string_t name, size_t *index) { re_module_t *grown; if (find_module(p, name, index)) return RE_STATUS_PARSE_ERROR; grown = re_realloc(a, p->modules, (p->module_count + 1u) * sizeof(*grown)); if (grown == NULL) return RE_STATUS_OUT_OF_MEMORY; p->modules = grown; memset(&p->modules[p->module_count], 0, sizeof(*grown)); if (re_copy_string(a, name, &p->modules[p->module_count].name) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY; p->modules[p->module_count].name_size = name.size; *index = p->module_count++; return RE_STATUS_OK; }
 static re_status_t add_import(const re_allocator_impl_t *a, re_module_t *m, re_string_t name) { char **grown = re_realloc(a, m->imports, (m->import_count + 1u) * sizeof(*grown)); if (grown == NULL) return RE_STATUS_OUT_OF_MEMORY; m->imports = grown; if (re_copy_string(a, name, &m->imports[m->import_count]) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY; ++m->import_count; return RE_STATUS_OK; }
-static int module_cycle(const re_program_t *p, size_t current, size_t target, unsigned char *path) { size_t i, next; if (current == target) return 1; if (path[current]) return 0; path[current] = 1u; for (i = 0u; i < p->modules[current].import_count; ++i) { re_string_t name = {p->modules[current].imports[i], strlen(p->modules[current].imports[i])}; if (find_module(p, name, &next) && module_cycle(p, next, target, path)) return 1; } path[current] = 0u; return 0; }
+static int module_cycle(const re_program_t *p, size_t current, size_t target, unsigned char *path) {
+    size_t pass;
+    if (current == target) return 1;
+    path[current] = 1u;
+    for (pass = 0u; pass < p->module_count; ++pass) {
+        size_t module_index;
+        int changed = 0;
+        for (module_index = 0u; module_index < p->module_count; ++module_index) {
+            size_t import_index;
+            if (!path[module_index]) continue;
+            for (import_index = 0u; import_index < p->modules[module_index].import_count; ++import_index) {
+                size_t next;
+                re_string_t name = {p->modules[module_index].imports[import_index], strlen(p->modules[module_index].imports[import_index])};
+                if (find_module(p, name, &next) && next == target) return 1;
+                if (find_module(p, name, &next) && !path[next]) { path[next] = 1u; changed = 1; }
+            }
+        }
+        if (!changed) break;
+    }
+    return 0;
+}
 static re_status_t validate_modules(const re_allocator_impl_t *a, re_program_t *p) { size_t i, j, imported; unsigned char *path; path = p->module_count == 0u ? NULL : re_alloc(a, p->module_count); if (p->module_count != 0u && path == NULL) return RE_STATUS_OUT_OF_MEMORY; for (i = 0u; i < p->module_count; ++i) for (j = 0u; j < p->modules[i].import_count; ++j) { re_string_t name = {p->modules[i].imports[j], strlen(p->modules[i].imports[j])}; if (!find_module(p, name, &imported)) { re_free(a, path); return RE_STATUS_PARSE_ERROR; } } for (i = 0u; i < p->module_count; ++i) for (j = 0u; j < p->modules[i].import_count; ++j) { re_string_t name = {p->modules[i].imports[j], strlen(p->modules[i].imports[j])}; (void)find_module(p, name, &imported); memset(path, 0, p->module_count); if (module_cycle(p, imported, i, path) && imported != i) { re_free(a, path); return RE_STATUS_PARSE_ERROR; } } re_free(a, path); return RE_STATUS_OK; }
 
 re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source, const re_limits_t *limits, re_program_t **out_program) {
@@ -253,7 +633,24 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
         if (program->limits.max_rules != 0u && program->rule_count >= program->limits.max_rules) { re_program_destroy(program); return RE_STATUS_LIMIT; }
         { re_status_t status = RE_STATUS_OK;
           if (!word(&p, "rule")) status = RE_STATUS_PARSE_ERROR;
-          if (status == RE_STATUS_OK) status = quoted(&p, &rule.name, &rule.name_size);
+           if (status == RE_STATUS_OK) status = quoted(&p, &rule.name, &rule.name_size);
+           if (status == RE_STATUS_OK && take(&p, '(')) {
+               while (!take(&p, ')')) {
+                   size_t start; char *copy;
+                   if (rule.formal_parameter_count >= RE_MAX_FORMAL_PARAMETERS) { status = RE_STATUS_LIMIT; break; }
+                   skip_space(&p); start = p.at;
+                   while (p.at < p.size && (isalnum((unsigned char)p.text[p.at]) || p.text[p.at] == '_')) ++p.at;
+                   if (start == p.at || formal_name(&rule, p.text + start, p.at - start)) { status = RE_STATUS_PARSE_ERROR; break; }
+                   copy = NULL;
+                   if (re_copy_string(&a, (re_string_t){p.text + start, p.at - start}, &copy) != RE_STATUS_OK) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+                   { char **grown = re_realloc(&a, rule.formal_parameters, (rule.formal_parameter_count + 1u) * sizeof(*grown));
+                     if (grown == NULL) { re_free(&a, copy); status = RE_STATUS_OUT_OF_MEMORY; break; }
+                     rule.formal_parameters = grown; rule.formal_parameters[rule.formal_parameter_count++] = copy; }
+                   if (!take(&p, ',')) { if (!take(&p, ')')) status = RE_STATUS_PARSE_ERROR; break; }
+                   skip_space(&p);
+                   if (p.at < p.size && p.text[p.at] == ')') { status = RE_STATUS_PARSE_ERROR; break; }
+               }
+           }
           if (status == RE_STATUS_OK && word(&p, "salience")) {
               status = int32_literal(&p, &rule.salience);
           }
@@ -261,7 +658,7 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
           if (status == RE_STATUS_OK) status = rule_attributes(&p, &rule);
           if (status == RE_STATUS_OK && !word(&p, "when")) status = RE_STATUS_PARSE_ERROR;
           if (status != RE_STATUS_OK) { rule_destroy(&a, &rule); re_program_destroy(program); return status; } }
-          { re_status_t status = expression(&p, &rule.condition); if (status != RE_STATUS_OK) { rule_destroy(&a, &rule); re_program_destroy(program); return status; } }
+           { re_status_t status = expression(&p, &rule.condition); if (status == RE_STATUS_OK) status = mark_formals_expr(&a, &rule, rule.condition); if (status != RE_STATUS_OK) { rule_destroy(&a, &rule); re_program_destroy(program); return status; } }
          { re_status_t status = RE_STATUS_OK;
            if (!word(&p, "then")) status = RE_STATUS_PARSE_ERROR;
             while (status == RE_STATUS_OK) {

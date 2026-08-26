@@ -139,6 +139,20 @@ typedef struct re_query_binding_t {
   re_value_t value;
 } re_query_binding_t;
 
+/* Proof graph records are append-only ABI values. Callers set struct_size
+ * before each get operation so older consumers can remain source-compatible. */
+typedef struct re_proof_node_t {
+  uint32_t struct_size;
+  re_string_t rule_name;
+} re_proof_node_t;
+
+typedef struct re_proof_edge_t {
+  uint32_t struct_size;
+  size_t parent_index;
+  size_t child_index;
+} re_proof_edge_t;
+
+
 typedef void *(*re_alloc_fn_t)(void *context, size_t size);
 typedef void *(*re_realloc_fn_t)(void *context, void *memory, size_t size);
 typedef void (*re_free_fn_t)(void *context, void *memory);
@@ -440,7 +454,13 @@ re_status_t re_proof_binding_get(const re_proof_t *proof, size_t index,
                                  re_query_binding_t *out_binding);
 size_t re_proof_trace_count(const re_proof_t *proof);
 re_status_t re_proof_trace_get(const re_proof_t *proof, size_t index,
-                               re_string_t *out_rule_name);
+                                 re_string_t *out_rule_name);
+size_t re_proof_node_count(const re_proof_t *proof);
+re_status_t re_proof_node_get(const re_proof_t *proof, size_t index,
+                              re_proof_node_t *out_node);
+size_t re_proof_edge_count(const re_proof_t *proof);
+re_status_t re_proof_edge_get(const re_proof_t *proof, size_t index,
+                              re_proof_edge_t *out_edge);
 void re_query_destroy(re_query_t *query);
 void re_proof_destroy(re_proof_t *proof);
 re_status_t re_stream_window_create(re_engine_t *engine,

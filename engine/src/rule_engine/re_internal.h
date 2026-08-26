@@ -54,7 +54,10 @@ struct re_subscription_t {
     struct re_subscription_t *next;
 };
 
-typedef enum re_operand_kind_t { RE_OPERAND_LITERAL, RE_OPERAND_FACT, RE_OPERAND_FUNCTION } re_operand_kind_t;
+typedef enum re_operand_kind_t {
+    RE_OPERAND_LITERAL, RE_OPERAND_FACT, RE_OPERAND_FUNCTION,
+    RE_OPERAND_VARIABLE, RE_OPERAND_ANONYMOUS, RE_OPERAND_GOAL_CALL
+} re_operand_kind_t;
 typedef struct re_operand_t {
     re_operand_kind_t kind;
     re_value_t value;
@@ -62,6 +65,8 @@ typedef struct re_operand_t {
     size_t fact_name_size;
     char *function_name;
     size_t function_name_size;
+    char *goal_name;
+    size_t goal_name_size;
     struct re_operand_t *arguments;
     size_t argument_count;
 } re_operand_t;
@@ -103,6 +108,8 @@ typedef struct re_rule_t {
     char *expiry_date;
     size_t source_order;
     size_t module_index;
+    char **formal_parameters;
+    size_t formal_parameter_count;
 } re_rule_t;
 
 typedef struct re_module_t {
@@ -226,12 +233,26 @@ typedef struct re_query_binding_impl_t {
     char *string_data;
 } re_query_binding_impl_t;
 
+typedef struct re_proof_node_impl_t {
+    char *rule_name;
+    size_t rule_name_size;
+} re_proof_node_impl_t;
+
+typedef struct re_proof_edge_impl_t {
+    size_t parent_index;
+    size_t child_index;
+} re_proof_edge_impl_t;
+
 struct re_proof_t {
     re_allocator_impl_t allocator;
     re_query_binding_impl_t *bindings;
     size_t binding_count;
     char **trace_names;
     size_t trace_count;
+    re_proof_node_impl_t *nodes;
+    size_t node_count;
+    re_proof_edge_impl_t *edges;
+    size_t edge_count;
 };
 
 struct re_query_t {
@@ -279,8 +300,14 @@ re_status_t re_executor_create_impl(re_engine_t *engine, const re_concurrency_op
 void re_executor_destroy_impl(re_executor_t *executor);
 
 re_status_t re_query_create_bounded(re_engine_t *engine, re_facts_t *facts,
-                                    re_string_t goal, const re_query_options_t *options,
-                                    re_query_t **out_query);
+                                     re_string_t goal, const re_query_options_t *options,
+                                     re_query_t **out_query);
+re_status_t re_backward_query_create(re_engine_t *engine, re_facts_t *facts,
+                                      re_string_t goal, const re_query_options_t *options,
+                                      re_query_t **out_query);
+re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
+                                          re_string_t goal, const re_query_options_t *options,
+                                          re_query_t **out_query);
 
 re_status_t re_rete_network_create(re_facts_t *facts,
                                     const re_rete_condition_t conditions[2],
