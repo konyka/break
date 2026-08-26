@@ -1503,6 +1503,59 @@ TEST(query_proof_trace_is_deterministic_and_invalidated_by_mutation) {
     re_engine_destroy(engine);
 }
 
+TEST(backward_query_recurses_through_rule_name_conditions) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_string_t trace;
+    re_query_options_t options = {sizeof(options), 8u, 4u};
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Base\" { when true then BaseValue = true; } rule \"Derived\" { when Base == true then DerivedValue = true; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Derived"), &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    ASSERT_EQ(re_proof_trace_count(proof), 2u);
+    ASSERT_EQ(re_proof_trace_get(proof, 0u, &trace), RE_STATUS_OK);
+    ASSERT_TRUE(trace.size == 7u && memcmp(trace.data, "Derived", 7u) == 0);
+    ASSERT_EQ(re_proof_trace_get(proof, 1u, &trace), RE_STATUS_OK);
+    ASSERT_TRUE(trace.size == 4u && memcmp(trace.data, "Base", 4u) == 0);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(default_query_api_uses_unified_machine_path) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_string_t trace;
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Leaf\" { when true then Done = true; }"
+        "rule \"Top\" { when goal(\"Leaf\") then Done = true; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query(engine, facts, text("Top"), &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    ASSERT_EQ(re_proof_trace_get(proof, 0u, &trace), RE_STATUS_OK);
+    ASSERT_TRUE(trace.size == 3u && memcmp(trace.data, "Top", 3u) == 0);
+    ASSERT_EQ(re_proof_trace_get(proof, 1u, &trace), RE_STATUS_OK);
+    ASSERT_TRUE(trace.size == 4u && memcmp(trace.data, "Leaf", 4u) == 0);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(c99_header_contract);
     RUN_TEST(facts_copy_and_get_semantics);
@@ -1570,4 +1623,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bounded_query_proves_fact_and_binds_variable);
     RUN_TEST(bounded_query_reports_disproof_unknown_and_limit);
     RUN_TEST(query_proof_trace_is_deterministic_and_invalidated_by_mutation);
+    RUN_TEST(backward_query_recurses_through_rule_name_conditions);
+    RUN_TEST(default_query_api_uses_unified_machine_path);
 TEST_MAIN_END()

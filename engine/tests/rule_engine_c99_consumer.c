@@ -26,14 +26,17 @@ int rule_engine_c99_consumer(void)
         RE_STATE_PROVIDER_CALLBACK, 0u, 100u};
     re_snapshot_t snapshot = {sizeof(snapshot), 1u, NULL, 0u, NULL, NULL};
     re_stream_filter_options_t filter = {sizeof(filter), RE_STREAM_WINDOW_ABI_VERSION,
-                                         (re_string_t){"x", 1u}, (re_string_t){NULL, 0u}};
+                                          (re_string_t){"x", 1u}, (re_string_t){NULL, 0u}};
+    re_proof_node_t proof_node = {sizeof(proof_node), (re_string_t){NULL, 0u}};
+    re_proof_edge_t proof_edge = {sizeof(proof_edge), 0u, 0u};
 
     return options.limits == &limits && callbacks.action != NULL &&
                    value.type == RE_VALUE_INT64 && function.abi_version == RE_ABI_VERSION_MAJOR &&
                    window_options.kind == RE_STREAM_WINDOW_SLIDING &&
                    provider_options.kind == RE_STATE_PROVIDER_CALLBACK &&
                    snapshot.format_version == 1u
-                   && filter.event_type.size == 1u
+                   && filter.event_type.size == 1u && proof_node.struct_size == sizeof(proof_node)
+                   && proof_edge.child_index == 0u
                ? 0
                : 1;
 }
