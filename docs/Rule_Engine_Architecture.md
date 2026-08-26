@@ -20,14 +20,22 @@ Implemented now:
 - bounded object/array values and nested path lookup through the versioned value API;
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded, non-capability-bearing query seam for exact flat goals and
-  zero-argument rule bodies; recursive unification, multi-solution proofs, and
-  proof graphs remain pending.
+  recursive rule bodies with literal/propagated formal binding; general
+  unification and shared-subgraph/upstream proof provenance remain pending. The
+  bounded binding slice stores each successful derivation path as owned nodes
+  and deterministic parent/child edges.
+- backward condition evaluation uses heap-backed continuation frames for
+  TRUE/FALSE, COMPARE, NOT, AND, and OR nodes. Checked frame growth and enclosing
+  environment/trace checkpoints preserve failed-branch rollback. Goal and custom
+  function operand evaluation still uses the existing operand path and may
+  re-enter goal proving; operand continuation migration is deferred.
 
 Deferred explicitly:
 
 - full upstream RETE/RETE-UL execution, incremental memories, and producer provenance;
-- argument-bearing/general backward chaining, recursive unification,
-  multi-solution enumeration, proof graphs, and upstream proof strategies;
+- arbitrary argument unification, shared-subgraph proof graphs, and upstream
+  proof strategies; bounded recursive binding and derivation-path enumeration
+  are implemented and remain deliberately narrower than upstream semantics;
 - native Redis-backed streaming state. The portable bounded in-memory provider is implemented;
 - persistent agenda control and full upstream truth-maintenance behavior.
 
@@ -263,3 +271,19 @@ The header uses only C99 facilities: fixed-width integers, `size_t`, named
 unions, opaque pointers, and function pointers. It intentionally avoids
 anonymous unions, `_Static_assert`, atomics, variadic public APIs, and C11
 threading types.
+# Backward query execution paths
+
+The explicit goal frame machine handles zero-argument goal queries whose
+selected rules have one of these conditions:
+
+- `true`
+- a zero-argument `goal("RuleName")` transition
+
+It uses checked heap frames for rule selection and return transitions, and
+preserves the query depth, cycle, trace, and maximum-solution limits for this
+subset. The production query entry point selects this path when the goal graph
+matches the supported shape; otherwise it uses the bounded compatibility path
+in `backward.c`, which also covers direct fact comparisons such as
+`Ready == true`, boolean composition, operands, formal bindings, and
+non-zero-argument goals covered by the focused tests. Neither path claims
+arbitrary upstream unification or shared-subgraph provenance.

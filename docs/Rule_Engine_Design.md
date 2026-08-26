@@ -98,10 +98,17 @@ names, including action references, resolve only by exact flat-key lookup; no
 nested fallback is implemented. Deferred behavior is not represented as local
 verified conformance until implementation and focused tests exist.
 
-Run focused behavior evidence with `ctest --test-dir <build> -R
-test_rule_engine --output-on-failure`; build the standalone ABI consumer with
-`cmake --build <build> --target rule_engine_c99_consumer`. The consumer is
-compile-only and has no graphics or Lua dependency.
+Run focused behavior evidence with:
+
+```bash
+ctest --test-dir <build> -R 'test_rule_engine|test_backward_machine|rule_engine_fuzz_smoke' --output-on-failure
+```
+
+Build the standalone ABI consumer with `cmake --build <build> --target
+rule_engine_c99_consumer`. The consumer is compile-only and has no graphics or
+Lua dependency. `test_backward_machine_structure` is a source-level guard for
+the production routing symbols; runtime behavior is covered by the other
+focused tests.
 
 See `docs/Rule_Engine_Architecture.md` for module boundaries,
 `docs/rule_engine_conformance.yml` for local/upstream status, and
@@ -174,22 +181,32 @@ library, and only when the integration environment supplies a controlled
 Redis server. Missing client files, failed CMake discovery, or a missing test
 service must leave the option disabled; no credentials belong in the repository.
 
-## Pending bounded query slice
+## Bounded backward query slice
 
 The focused suite exercises a bounded, non-capability-bearing query seam only;
-the backward-chaining conformance row remains pending.
+the backward-proof capability bit remains clear.
 `re_engine_query_bounded` accepts exact flat fact goals of the form
 `Name == literal` or `Name == Variable`, plus exact installed rule names.
-Installed rule names are evaluated only as the existing bounded zero-argument
-predicate form. Results distinguish proved, disproved, unknown, and depth-limit
-outcomes. Successful queries expose immutable proofs with copied bindings and
-deterministic single-rule traces. The current implementation does not recurse
-through rule goals, unify predicate arguments, enumerate multiple solutions, or
-construct proof graphs; `max_solutions` is therefore not evidence of
-multi-solution semantics. Fact mutation invalidates the query's remaining
-proofs. The backward-proof capability bit remains clear, and this seam must not
-be described as completed backward chaining until those missing behaviors have
-implementation and focused tests.
+Rule declarations may optionally use bounded formal parameters, for example
+`rule "Lookup"(Key)`. Conditions may use `goal("RuleName")` unchanged, or the
+ parsed explicit form `goal("RuleName", actual, ...)`; bounded formal/actual
+ binding is supported for literal and propagated values, including repeated-
+ formal equality checks. The parser rejects
+malformed, duplicate, and over-bound formal/actual argument lists deterministically.
+The zero-argument form traverses installed rules with explicit `max_depth` bounds
+and active-path cycle detection. Results distinguish proved,
+disproved, unknown, and depth-limit outcomes. Successful queries expose
+immutable proofs with copied bindings and deterministic source-order traces of
+the recursive rule-name path. `max_solutions` enumerates alternative rules for
+ the queried rule; each proof also owns deterministic derivation-path nodes and
+ parent/child edges. Shared-subgraph provenance and arbitrary predicate
+ unification remain unsupported. Fact mutation invalidates the query's
+remaining proofs.
+
+Names and string slices returned by proof binding, trace, and node getters are
+borrowed from the proof and remain valid until `re_proof_destroy`; callers must
+not retain them afterward. Proof records are append-only ABI values, but
+getters require the complete record size currently defined by this header.
 
 Custom function callbacks receive borrowed engine/facts handles and a read-only
 argument array; they write one output value and must not retain pointers after

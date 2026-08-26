@@ -133,12 +133,12 @@ features:
     expected_behavior: Prove or fail a goal and expose a proof trace using goal-driven search.
     upstream_refs: [README.md, examples/09-backward-chaining/simple_query_demo.rs, tests/backward_comprehensive_tests.rs, tests/backward_thread_safety.rs]
     upstream_status: verified_upstream
-    local_status: pending
+    local_status: verified_local
     extension_abi: RE_EXTENSION_BACKWARD_PROOFS
     implementation_ref: engine/src/rule_engine/backward.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Design.md
-    behavior_scope: bounded_query_seam_only; recursive goal traversal, argument unification, multi-solution enumeration, and proof graphs are not implemented or claimed
+    behavior_scope: tested bounded query seam; goal("RuleName") recursion, formal/actual binding for literal and propagated values, active-path cycle detection, max_depth, deterministic alternative-rule enumeration, copied proof traces, owned derivation-path nodes and parent/child edges, and mutation invalidation; no arbitrary predicate unification or shared-subgraph provenance
   - id: streaming-windows
     family: streaming
     requirement: optional
@@ -211,4 +211,4 @@ features:
     implementation_ref: engine/src/rule_engine/engine.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Architecture.md
-conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row is pending: its bounded query seam has tests for flat fact binding, zero-argument rule proving, depth-limit status, proof trace, and mutation invalidation, but recursive goal traversal, argument unification, multi-solution enumeration, and proof graphs have no implementation or tests. RETE-UL parity, incremental RETE memories, persistent agenda control, producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, and engine/tests/test_backward_machine_context.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow goal("RuleName") subset with bounded recursion, literal/propagated formal binding, cycle detection, deterministic alternative-rule enumeration, immutable proof-path ownership, deterministic derivation-path node/edge storage, and mutation invalidation. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, incremental RETE memories, persistent agenda control, producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
