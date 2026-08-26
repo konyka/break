@@ -72,6 +72,9 @@
 - RTL 绘制已在 widget scratch 文本未变化时跨帧复用 layout：默认方向对齐、选区矩形共享
   同一对象，光标方向判断和 visual-x 计算也只构建一次；scratch 改变会事务式失效旧对象，
   居中/右对齐等无需方向 layout 的路径继续保持快速分支。
+- text area 已加入当前热物理行的 glyph boundary 前缀缓存：命中测试、光标、选区和 IME
+  查询复用同一组 advance，重复边界查询为 O(1)；文本 revision、字体或字号变化会失效，
+  OOM 时保留原逐 codepoint fallback，不为整篇文档增加几何缓存。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。

@@ -85,6 +85,14 @@ typedef struct my_text_area_t {
   size_t paint_text_cap;
   size_t paint_text_len;
   my_text_layout_t* paint_layout;
+  uint64_t text_revision;
+  size_t geometry_row;
+  size_t geometry_count;
+  uint64_t geometry_revision;
+  my_font_t* geometry_font;
+  int32_t geometry_font_size;
+  int32_t* geometry_boundaries;
+  size_t geometry_capacity;
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);

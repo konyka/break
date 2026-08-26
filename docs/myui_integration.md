@@ -108,6 +108,11 @@ RTL visual line 的 layout 绑定到 widget 的 scratch 文本，在文本内容
 的 JUSTIFY 路径不额外构建仅用于默认方向对齐的 layout，保持快速路径。layout 仍由 myui
 text-layout 层管理，渲染后端只消费公共绘制命令。
 
+text area 还为当前热物理行缓存 codepoint boundary 到 glyph advance 的前缀和。命中测试、
+光标、选区和 IME 几何查询共享该前缀和；缓存键包含物理行、文本 revision、字体指针和
+字号，文本编辑或字体配置变化后自动重建。正常重复查询为 O(1)，首次建立仍是当前行
+长度级别；分配失败回退到原有逐 codepoint 扫描，不影响坐标正确性。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

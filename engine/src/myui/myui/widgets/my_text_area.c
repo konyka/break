@@ -294,8 +294,74 @@ static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
 
 static size_t ta_line_start(const my_text_area_t* ta, size_t row);
 
-static int32_t ta_line_boundary_x(const my_text_area_t* ta, size_t row,
+static bool ta_geometry_reserve(my_text_area_t* ta, size_t required) {
+  size_t capacity;
+  int32_t* grown;
+  if (required <= ta->geometry_capacity) return true;
+  capacity = ta->geometry_capacity == 0 ? 16 : ta->geometry_capacity;
+  while (capacity < required) {
+    if (capacity > SIZE_MAX / 2) {
+      capacity = required;
+      break;
+    }
+    capacity *= 2;
+  }
+  if (capacity > SIZE_MAX / sizeof(*grown)) return false;
+  grown = (int32_t*)my_mem_realloc(ta->allocator, ta->geometry_boundaries,
+                                   capacity * sizeof(*grown));
+  if (grown == NULL) return false;
+  ta->geometry_boundaries = grown;
+  ta->geometry_capacity = capacity;
+  return true;
+}
+
+static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
+  size_t start, end, count = 0, cp_count;
+  const char* p;
+  if (row >= ta_line_count(ta)) return false;
+  if (ta->geometry_row == row && ta->geometry_revision == ta->text_revision &&
+      ta->geometry_font == ta->font &&
+      ta->geometry_font_size == ta->font_size) {
+    return true;
+  }
+  start = ta_line_start(ta, row);
+  end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
+                                   : ta->text_len;
+  p = ta->text + start;
+  while (start < end && *p != '\0' && *p != '\n') {
+    p += my_str_utf8_char_len(p);
+    start = (size_t)(p - ta->text);
+    count++;
+  }
+  if (!ta_geometry_reserve(ta, count + 1)) return false;
+  cp_count = count;
+  start = ta_line_start(ta, row);
+  p = ta->text + start;
+  ta->geometry_boundaries[0] = 0;
+  while (count > 0) {
+    const char* next = p;
+    uint32_t cp = my_utf8_next(&next);
+    size_t index = cp_count - count;
+    ta->geometry_boundaries[index + 1] =
+        ta->geometry_boundaries[index] + ta_codepoint_advance(ta, cp);
+    p = next;
+    count--;
+  }
+  ta->geometry_row = row;
+  ta->geometry_count = cp_count;
+  ta->geometry_revision = ta->text_revision;
+  ta->geometry_font = ta->font;
+  ta->geometry_font_size = ta->font_size;
+  return true;
+}
+
+static size_t ta_line_start(const my_text_area_t* ta, size_t row);
+
+static int32_t ta_line_boundary_x(my_text_area_t* ta, size_t row,
                                   size_t boundary) {
+  if (ta_geometry_ensure(ta, row) && boundary <= ta->geometry_count) {
+    return ta->geometry_boundaries[boundary];
+  }
   size_t start = ta_line_start(ta, row);
   size_t end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                            : ta->text_len;
@@ -313,15 +379,29 @@ static int32_t ta_line_boundary_x(const my_text_area_t* ta, size_t row,
   return x;
 }
 
-static size_t ta_line_col_at_x(const my_text_area_t* ta, size_t row,
+static size_t ta_line_col_at_x(my_text_area_t* ta, size_t row,
                                int32_t x) {
+  if (x <= 0) return 0;
+  if (ta_geometry_ensure(ta, row)) {
+    size_t lo = 0, hi = ta->geometry_count;
+    while (lo < hi) {
+      size_t mid = lo + (hi - lo) / 2;
+      int32_t advance = ta->geometry_boundaries[mid + 1] -
+                        ta->geometry_boundaries[mid];
+      if (x < ta->geometry_boundaries[mid] + (advance + 1) / 2) {
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return lo;
+  }
   size_t start = ta_line_start(ta, row);
   size_t end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                            : ta->text_len;
   size_t col = 0;
   int32_t boundary = 0;
   const char* p = ta->text + start;
-  if (x <= 0) return 0;
   while (start < end && *p != '\0' && *p != '\n') {
     const char* next = p;
     uint32_t cp = my_utf8_next(&next);
@@ -865,6 +945,12 @@ static void emit_changed(my_text_area_t* ta) {
                   ta->text != NULL ? ta->text : "");
 }
 
+static void ta_bump_text_revision(my_text_area_t* ta) {
+  ta->text_revision = ta->text_revision == UINT64_MAX
+                           ? 1
+                           : ta->text_revision + 1;
+}
+
 static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
                             const char* bytes, size_t n) {
   size_t old_lines = ta_line_count(ta);
@@ -874,6 +960,7 @@ static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
   memmove(ta->text + offset + n, ta->text + offset, ta->text_len - offset + 1);
   memcpy(ta->text + offset, bytes, n);
   ta->text_len += n;
+  ta_bump_text_revision(ta);
   {
     size_t row, col;
     ta_pos_of(ta, offset, &row, &col);
@@ -895,6 +982,7 @@ static void ta_delete_bytes(my_text_area_t* ta, size_t start, size_t end) {
   }
   memmove(ta->text + start, ta->text + end, ta->text_len - end + 1);
   ta->text_len -= end - start;
+  ta_bump_text_revision(ta);
   {
     size_t row, col;
     ta_pos_of(ta, start, &row, &col);
@@ -2138,6 +2226,7 @@ static void ta_destroy_chain(my_object_t* obj) {
   ta_syntax_destroy(ta);
   my_text_layout_destroy(ta->paint_layout);
   my_mem_free(ta->allocator, ta->paint_text);
+  my_mem_free(ta->allocator, ta->geometry_boundaries);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
   my_mem_free(ta->allocator, ta->hint);
@@ -2233,6 +2322,7 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   }
   ta->text[len] = '\0';
   ta->text_len = len;
+  ta_bump_text_revision(ta);
   ta_clear_folds(ta);
   ta_rebuild_from(ta, 0);
   previous = ta->syntax_cache;

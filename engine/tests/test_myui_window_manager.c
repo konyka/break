@@ -80,6 +80,7 @@ static void text_area_fail_free(void* ctx, void* ptr) {
 
 typedef struct text_area_variable_font_t {
   my_font_t base;
+  size_t glyph_calls;
 } text_area_variable_font_t;
 
 static my_ret_t text_area_variable_font_measure(my_font_t* font,
@@ -101,7 +102,9 @@ static my_ret_t text_area_variable_font_measure(my_font_t* font,
 static my_ret_t text_area_variable_font_glyph(my_font_t* font,
                                               uint32_t codepoint, int32_t size,
                                               my_glyph_t* glyph) {
-  (void)font;
+  text_area_variable_font_t* variable_font =
+      (text_area_variable_font_t*)font;
+  variable_font->glyph_calls++;
   if (glyph == NULL || size <= 0) return MY_RET_INVALID_PARAMS;
   memset(glyph, 0, sizeof(*glyph));
   glyph->advance = codepoint == 'A' ? 5 : 20;
@@ -431,6 +434,51 @@ TEST(text_area_visual_lines_cache_byte_ranges)
   ASSERT_EQ(line->start_byte, 4u);
   ASSERT_EQ(line->len_bytes, 2u);
   my_widget_unref(area);
+}
+
+TEST(text_area_geometry_cache_reuses_glyph_advances)
+{
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  size_t first_frame;
+  size_t second_frame;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 54}), MY_RET_OK);
+  my_text_area_set_font(area, (my_font_t*)&font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "ABBA"), MY_RET_OK);
+  text_area->focused = true;
+  text_area->cursor_visible = true;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  first_frame = font.glyph_calls;
+  ASSERT_TRUE(first_frame > 0);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  second_frame = font.glyph_calls - first_frame;
+  ASSERT_EQ(second_frame, 0u);
+  ASSERT_EQ(my_text_area_set_text(area, "BABA"), MY_RET_OK);
+  first_frame = font.glyph_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(font.glyph_calls > first_frame);
+  my_text_area_set_font(area, (my_font_t*)&font, 18);
+  first_frame = font.glyph_calls;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(font.glyph_calls > first_frame);
+  my_widget_unref(area);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
 }
 
 TEST(text_area_rtl_paint_reuses_layout)
@@ -1537,7 +1585,7 @@ TEST(text_widgets_toggle_platform_ime_with_focus)
 
 TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent)
 {
-  text_area_variable_font_t font = {{&text_area_variable_font_vtable}};
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0};
   my_widget_t* area = my_text_area_create(NULL);
   my_text_area_t* text_area = (my_text_area_t*)area;
   my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
@@ -1574,7 +1622,7 @@ TEST(text_area_pointer_hit_test_clamps_vertical_bounds)
 
 TEST(text_area_pointer_hit_test_uses_font_line_height)
 {
-  text_area_variable_font_t font = {{&text_area_variable_font_vtable}};
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}, 0};
   my_widget_t* area = my_text_area_create(NULL);
   my_text_area_t* text_area = (my_text_area_t*)area;
   my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
@@ -1986,6 +2034,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_grows_capacity_exponentially);
     RUN_TEST(text_area_wrap_rebuilds_after_edit);
     RUN_TEST(text_area_visual_lines_cache_byte_ranges);
+    RUN_TEST(text_area_geometry_cache_reuses_glyph_advances);
     RUN_TEST(text_area_rtl_paint_reuses_layout);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_line_number_gutter_has_bounded_width);

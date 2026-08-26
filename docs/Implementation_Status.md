@@ -1945,3 +1945,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   layout，失败时继续使用既有 fallback。
 - 验证：`test_myui_window_manager` **54/54** 通过；没有引入全局可变 widget 状态或后端
   专用 API。
+
+## myui text geometry prefix cache（2026-08-26）
+
+- 以 TDD 新增 `text_area_geometry_cache_reuses_glyph_advances`，先复现连续绘制中同一物理
+  行反复调用字体 glyph advance 的问题，并覆盖文本变更后的失效重建。
+- `my_text_area` 现在缓存当前热物理行的 codepoint boundary 到 advance 前缀和，键包含
+  文本 revision、字体和字号；`ta_line_boundary_x()` 与 `ta_line_col_at_x()` 共享缓存，
+  命中后分别为 O(1) 和 O(log N)，首次建立为 O(N)。只保留一个热行以控制内存，分配失败
+  继续逐 codepoint 扫描。
+- 验证：`test_myui_window_manager` **55/55** 通过；缓存只位于 widget/core，不依赖任何
+  GL、Vulkan、软件 canvas 或平台类型。
