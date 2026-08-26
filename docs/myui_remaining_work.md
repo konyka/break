@@ -56,6 +56,8 @@
   无字体才走固定 cell fallback；当前 visual line 边界计算保持无额外缓存。
 - text area pointer 垂直命中对负坐标和超出底部坐标做有符号边界钳制，避免负值转换为
   `size_t` 后错误跳到文档末尾；正常路径仍为常数开销。
+- text area pointer y 命中复用统一的字体 line-height，避免带额外 leading 的字体按字号
+  提前切换到下一行；不增加缓存或每帧扫描。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。

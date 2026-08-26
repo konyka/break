@@ -80,6 +80,9 @@ pointer 命中测试先以有符号坐标处理垂直位置，再转换为 visua
 固定落到第一行，下方点击固定落到最后一个可见 visual line，避免负值转 `size_t` 后下溢
 跳到文档末尾。坐标与行数计算使用有符号/无符号边界检查，不增加常态分配。
 
+pointer 的 y 命中使用与绘制、滚动和 IME 相同的字体 line-height，而不是配置字号；字体
+额外 leading 不会使点击提前落到下一 visual line。该路径只读取既有字体度量，保持 O(1)。
+
 ### 增量语法行模型
 
 `my_syntax_cache_t` 位于 `myr`，不依赖任何渲染后端。它支持 C-like 和 YAML 的有限词法

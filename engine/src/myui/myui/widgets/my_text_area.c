@@ -1592,7 +1592,7 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
   switch (event->type) {
     case MY_EVENT_POINTER_DOWN: {
       int32_t lx = event->u.pointer.x, ly = event->u.pointer.y;
-      int32_t line_h = ta->font_size > 0 ? ta->font_size : 16;
+      int32_t line_h = ta_line_height(ta);
       size_t row;
       const my_visual_line_t* vl;
       char* seg = NULL;

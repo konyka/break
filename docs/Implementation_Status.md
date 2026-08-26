@@ -1885,3 +1885,11 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - pointer 垂直位置现在先在有符号域中计算，再钳制到 `[0, visible_count - 1]`；空文本、
   负坐标、超出底部及整数边界均不进行危险转换，正常路径无分配、常数复杂度。
 - 验证：`test_myui_window_manager` **47/47** 通过。
+
+## myui pointer font line-height mapping（2026-08-26）
+
+- 以 TDD 新增 `text_area_pointer_hit_test_uses_font_line_height`，先复现字体实际行高大于
+  配置字号时点击第一 visual line 底部被错误命中到第二行的问题。
+- pointer hit-test 改为复用 `ta_line_height()`，与绘制、滚动和 IME 的行距契约一致；无
+  新缓存、无分配，正常命中保持 O(1)。
+- 验证：`test_myui_window_manager` **48/48** 通过。
