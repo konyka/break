@@ -12,13 +12,15 @@
  * physical line to width-limited segments; shaping-aware greedy wrapping
  * uses the UAX#14 subset and never splits a shaping cluster. Undo/redo is supported
  * through the private or shared undo manager. Optional physical line numbers
- * and non-overlapping physical-line folding ranges are supported.
+ * and physically ordered folding ranges (including strict containment nesting)
+ * are supported.
  * Emits "changed" (data = full text). No "activate" (Enter splits lines).
  */
 #ifndef MY_TEXT_AREA_H
 #define MY_TEXT_AREA_H
 
 #include "mypal/my_pal.h"
+#include "myr/my_syntax.h"
 #include "myui/my_text_align.h"
 #include "myui/my_widget.h"
 
@@ -71,6 +73,10 @@ typedef struct my_text_area_t {
   my_text_align_t align;    /**< horizontal alignment (M11d, default LEFT) */
   char* ime_preedit;        /**< owned: composing text (M13a, NULL=none) */
   int32_t ime_caret;        /**< composing caret in codepoints */
+  my_syntax_cache_t* syntax_cache; /**< lazy incremental highlighting cache */
+  my_syntax_language_t syntax_language;
+  bool syntax_enabled;
+  size_t syntax_line_budget;
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);
@@ -110,10 +116,19 @@ int32_t my_text_area_content_left(const my_widget_t* area);
 /** @brief Fold or unfold a non-overlapping physical row range.
  *
  * The first row remains visible as the fold header; rows after `start_row`
- * through `end_row` are hidden. Ranges are inclusive and must not overlap.
+ * through `end_row` are hidden. Ranges are inclusive; nested containment is
+ * allowed, while crossing or same-header overlaps are rejected.
  */
 my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
                                        size_t end_row, bool folded);
+
+/** @brief Export folded physical-row ranges as a bounded YAML document. */
+my_ret_t my_text_area_folds_to_yaml(const my_widget_t* area,
+                                    const my_allocator_t* allocator,
+                                    char** out_yaml);
+
+/** @brief Transactionally replace folded ranges from the strict YAML schema. */
+my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml);
 
 /** @brief Whether `row` is currently the header of a folded range. */
 bool my_text_area_is_folded(const my_widget_t* area, size_t row);
@@ -128,6 +143,20 @@ bool my_text_area_is_folded(const my_widget_t* area, size_t row);
  * JUSTIFY behaves as LEFT.
  */
 my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align);
+
+/** @brief Enable bounded incremental syntax highlighting for the text. */
+my_ret_t my_text_area_set_syntax_enabled(my_widget_t* area, bool enabled);
+
+/** @brief Select the bounded lexer language (NONE disables token colors). */
+my_ret_t my_text_area_set_syntax_language(my_widget_t* area,
+                                          my_syntax_language_t language);
+
+/** @brief Set the maximum number of dirty lexer lines consumed per paint. */
+my_ret_t my_text_area_set_syntax_line_budget(my_widget_t* area,
+                                             size_t line_budget);
+
+bool my_text_area_syntax_enabled(const my_widget_t* area);
+bool my_text_area_syntax_line_ready(const my_widget_t* area, size_t row);
 
 /** @brief Visual line count (wrap on; 0 when off). */
 size_t my_text_area_visual_line_count(my_widget_t* area);

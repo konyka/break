@@ -46,14 +46,39 @@ SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于�
 `my_text_area` 的行号栏和折叠均属于 widget/core 能力，不依赖 GL、Vulkan 或 Break RHI
 私有类型。行号栏通过 `my_text_area_set_line_numbers()` 启用；折叠通过
 `my_text_area_set_folded_range(area, start_row, end_row, true)` 设置，范围为闭区间，首行
-作为 header 保留可见，后续物理行隐藏。范围必须有效且互不重叠，非法或重叠请求拒绝，
-不会改变文本缓冲区和逻辑 row/column 坐标。
+作为 header 保留可见，后续物理行隐藏。严格包含嵌套允许，交叉或同起点重叠请求拒绝，
+不会改变文本缓冲区和逻辑 row/column 坐标。折叠状态可通过
+`my_text_area_folds_to_yaml()` / `my_text_area_folds_from_yaml()` 保存和恢复；YAML 仅允许
+`version: 1`（同时兼容无版本 legacy 快照）、`folds` 数组及 `start`/`end` 整数字段，
+导入采用事务替换。
 
 折叠打开后，text area 为可见物理行建立缓存；wrap visual-line cache 只为可见行生成
-段落。默认无折叠路径直接复用物理行 offset cache，不创建可见行映射，也不增加逐帧全文
-扫描。插入或删除导致物理行数量变化时清除折叠区间，避免把旧行号误用于新文本；仅修改
+段落。缓存构建按排序折叠区间维护有限活动栈，复杂度为 O(物理行数 + 折叠区间数)。默认
+无折叠路径直接复用物理行 offset cache，不创建可见行映射，也不增加逐帧全文扫描。插入或删除导致物理行数量变化时清除折叠区间，避免把旧行号误用于新文本；仅修改
 行内内容时保留折叠并从受影响行增量重排。折叠行仍由同一逻辑文本、光标、选区和命中
 测试接口消费，绘制后端只接收公共 canvas 命令。
+
+可见行缓存分配失败时不退化为显示全部物理行：count、index 和 row 映射改用不分配内存
+的线性回退，继续隐藏折叠行。该回退只发生在 OOM 路径，复杂度可为 O(物理行数 × 折叠
+区间数)；正常路径仍保持 O(物理行数 + 折叠区间数)，优先保证折叠语义和光标/滚动映射的
+正确性。
+
+text area 的 `MY_TEXT_ALIGN_JUSTIFY` 仅在 wrap 且当前物理行还有后续 visual line 时拉伸
+分隔空格；普通 LTR 的绘制、选区和光标边界共用同一份空格宽度计算，不再用固定 cell 宽度
+造成输入位置漂移。该计算只扫描当前 visual line，不分配额外缓存；复杂 RTL 的完整
+paragraph visual mapping 仍属于后续能力。
+
+IME 候选框锚点也消费同一 visual-line 映射：wrap 时使用 visual line index 计算 y，justify
+时使用实际 stretched-space 边界计算 x，再通过 widget 的全局坐标转换交给 PAL。这样
+Wayland、Win32、Cocoa 等平台只接收统一的逻辑候选框位置，不需要知道渲染后端或字体实现。
+
+非 wrap 文本的点击、水平滚动、光标和 IME 锚点也使用字体 glyph advance；无字体时才回退
+到 8px cell。wrap 视图只对当前 visual line 计算局部边界，避免每帧构建整段 glyph 缓存，
+并让变宽字体在所有输入与绘制路径保持一致。
+
+pointer 命中测试先以有符号坐标处理垂直位置，再转换为 visual-row 索引；控件上方点击
+固定落到第一行，下方点击固定落到最后一个可见 visual line，避免负值转 `size_t` 后下溢
+跳到文档末尾。坐标与行数计算使用有符号/无符号边界检查，不增加常态分配。
 
 ### 增量语法行模型
 
@@ -64,8 +89,10 @@ codepoint 范围；跨行 `/* ... */` 状态会传播到后缀。`my_syntax_cach
 因此绘制或输入路径不会被迫扫描全文。源文件、单行和单行 token 数量都有固定上限，
 超限直接拒绝。
 
-当前 cache 是编辑器模型基础设施，尚未把 token 自动转换为 text area 的多段颜色绘制；
-应用可先按预算预热 token，再由后续 paint bridge 消费 ready 行。
+text area 在启用语法高亮后懒创建该 cache，并在 paint 前按 `syntax_line_budget` 增量推进；
+ready 的非 RTL、有字体行才进行 token 分段绘制。默认关闭时不创建 cache、不启动 timer，
+也不扫描全文。无字体、RTL、justify 等路径继续使用原整行绘制，避免把有限 lexer 误宣称
+为完整语法高亮。
 
 ## CSS/YAML 解析边界
 
@@ -349,7 +376,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
 | 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行并接入 text area；完整 RTL GSUB、跨 face run、多段落增量 rebreaking 仍未实现 | 增加 RTL shaping run、段落级 visual mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
-| 编辑器 | 代码折叠、行号栏、wrap 增量缓存和后端无关的增量语法行 lexer 已实现；text area paint 分段着色、嵌套折叠和持久化折叠仍未实现 | 将 ready token 行桥接到 paint，保持单帧预算，避免大文档全文扫描 |
+| 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |

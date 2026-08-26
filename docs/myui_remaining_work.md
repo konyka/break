@@ -45,10 +45,21 @@
   修改都重新分配和扫描全文。
 - text area 已支持可选物理行号栏和非重叠物理行折叠：默认关闭行号和折叠，折叠只保留
   header 行，wrap 时隐藏物理行不会生成 visual line；可见物理行有缓存，编辑导致物理
-  行结构变化时安全清除折叠，避免偏移引用失效。
+  行结构变化时安全清除折叠，避免偏移引用失效。可见行缓存 OOM 时使用不分配内存的线性
+  回退，继续隐藏折叠行，不以错误的全物理行视图替代正确性。
+- text area justify 在 wrap 的普通 LTR 路径中统一正文、选区和光标的 stretched-space
+  坐标，避免固定 cell 宽度造成命中和编辑位置漂移；复杂 RTL 的 paragraph visual mapping
+  仍按后续能力处理。
+- text area IME 候选框锚点已复用 wrapped visual-line index 与 justify 边界，跨 visual line
+  的候选框 y 坐标和拉伸空格后的 x 坐标保持一致；平台只消费 PAL 的统一全局坐标。
+- text area 变宽字体的非 wrap 点击、水平滚动、光标和 IME 坐标已统一使用 glyph advance，
+  无字体才走固定 cell fallback；当前 visual line 边界计算保持无额外缓存。
+- text area pointer 垂直命中对负坐标和超出底部坐标做有符号边界钳制，避免负值转换为
+  `size_t` 后错误跳到文档末尾；正常路径仍为常数开销。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
-  block-comment 状态、后缀失效和每次重建预算均有明确边界；尚未接入 text area paint
-  的颜色分段绘制，因此不宣称完整语法高亮已完成。
+  block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
+  `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。
+  默认关闭时保持零 cache、零全文扫描；无字体、RTL、justify 继续回退整行绘制。
 - vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
   成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
   Break RHI/Vulkan 的真实 offscreen target 已支持设备能力允许的 2x+ 路径。
@@ -83,7 +94,7 @@
 | GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
-| 高级编辑器 | 非重叠物理行折叠、行号栏、wrap 增量缓存和后端无关的行级 lexer 已实现；text area paint 分段着色、嵌套折叠和折叠状态持久化未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | lexer/cache TDD、行模型到 paint 的零全文扫描桥接、折叠/高亮 TDD |
+| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、行级 lexer 和受限 token 着色已实现；后续快照版本迁移及完整 RTL token 绘制未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 保持 legacy 读取兼容并增加显式迁移策略，继续保持 lexer/cache 单帧预算 |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |

@@ -48,6 +48,72 @@ static void text_area_fail_free(void* ctx, void* ptr) {
   free(ptr);
 }
 
+typedef struct text_area_variable_font_t {
+  my_font_t base;
+} text_area_variable_font_t;
+
+static my_ret_t text_area_variable_font_measure(my_font_t* font,
+                                                const char* text, int32_t size,
+                                                int32_t* width, int32_t* height) {
+  const char* p = text;
+  int32_t total = 0;
+  (void)font;
+  if (text == NULL || size <= 0 || width == NULL) return MY_RET_INVALID_PARAMS;
+  while (*p != '\0') {
+    total += *p == 'A' ? 5 : 20;
+    p++;
+  }
+  *width = total;
+  if (height != NULL) *height = size;
+  return MY_RET_OK;
+}
+
+static my_ret_t text_area_variable_font_glyph(my_font_t* font,
+                                              uint32_t codepoint, int32_t size,
+                                              my_glyph_t* glyph) {
+  (void)font;
+  if (glyph == NULL || size <= 0) return MY_RET_INVALID_PARAMS;
+  memset(glyph, 0, sizeof(*glyph));
+  glyph->advance = codepoint == 'A' ? 5 : 20;
+  return MY_RET_OK;
+}
+
+static int32_t text_area_variable_font_ascent(my_font_t* font, int32_t size) {
+  (void)font;
+  return size;
+}
+
+static int32_t text_area_variable_font_descent(my_font_t* font, int32_t size) {
+  (void)font;
+  (void)size;
+  return 0;
+}
+
+static int32_t text_area_variable_font_line_height(my_font_t* font,
+                                                   int32_t size) {
+  (void)font;
+  return size;
+}
+
+static void text_area_variable_font_destroy(my_font_t* font) { (void)font; }
+
+static bool text_area_variable_font_has_glyph(my_font_t* font,
+                                              uint32_t codepoint) {
+  (void)font;
+  return codepoint == 'A' || codepoint == 'B';
+}
+
+static const my_font_vtable_t text_area_variable_font_vtable = {
+    text_area_variable_font_measure,
+    text_area_variable_font_glyph,
+    text_area_variable_font_ascent,
+    text_area_variable_font_descent,
+    text_area_variable_font_line_height,
+    text_area_variable_font_destroy,
+    text_area_variable_font_has_glyph,
+    NULL,
+    NULL};
+
 static int g_result = -999;
 static int g_main_clicks;
 static int g_dialog_clicks;
@@ -418,6 +484,102 @@ TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges)
   my_widget_unref(area);
 }
 
+TEST(text_area_nested_fold_ranges_preserve_containment)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  const my_visual_line_t* line;
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd\ne\nf"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, true), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  line = my_text_area_visual_line_at(area, 1);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 1u);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_visual_line_count(area), 6u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  char* yaml = NULL;
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd\ne\nf"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
+  ASSERT_NOT_NULL(yaml);
+  ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area, yaml), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n"),
+            MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_folds_from_yaml(area, "version: 2\nfolds:\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 99\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 3\n    extra: 1\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "folds:\n  - start: 0\n    end: 3\n\nextra: 1\n"),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_set_folded_range(area, 0, 5, false), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 3, false), MY_RET_OK);
+  my_mem_free(NULL, yaml);
+  yaml = NULL;
+  ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
+  ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n");
+  my_mem_free(NULL, yaml);
+  my_widget_unref(area);
+}
+
+TEST(text_area_many_nested_folds_build_visible_rows_once)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  char* text;
+  size_t line_count = 512;
+  size_t i;
+  ASSERT_NOT_NULL(area);
+  text = (char*)malloc(line_count * 2u + 1u);
+  ASSERT_NOT_NULL(text);
+  for (i = 0; i < line_count; i++) {
+    text[i * 2u] = 'x';
+    text[i * 2u + 1u] = '\n';
+  }
+  text[line_count * 2u] = '\0';
+  ASSERT_EQ(my_text_area_set_text(area, text), MY_RET_OK);
+  free(text);
+  for (i = 0; i < 128; i++) {
+    ASSERT_EQ(my_text_area_set_folded_range(area, i, line_count - i,
+                                            true),
+              MY_RET_OK);
+  }
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 127));
+  my_widget_unref(area);
+}
+
 TEST(text_area_folded_range_rebuilds_wrapped_visual_lines)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -454,6 +616,150 @@ TEST(text_area_wrap_oom_keeps_previous_cache)
   ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
   state.fail = false;
   ASSERT_EQ(my_text_area_visual_line_count(area), 4u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms)
+{
+  text_area_fail_alloc_t state = {false};
+  my_allocator_t allocator = {&state, text_area_fail_alloc,
+                              text_area_fail_calloc, text_area_fail_realloc,
+                              text_area_fail_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  const my_visual_line_t* line;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 2, true), MY_RET_OK);
+  state.fail = true;
+  ASSERT_EQ(my_text_area_visual_line_count(area), 3u);
+  line = my_text_area_visual_line_at(area, 1);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 1u);
+  line = my_text_area_visual_line_at(area, 2);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 3u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_justify_cursor_tracks_stretched_space)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 100, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  uint32_t stride;
+  size_t y;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 54, 80}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(area, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc"), MY_RET_OK);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 3;
+  text_area->focused = true;
+  text_area->cursor_visible = true;
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  stride = my_lcd_mem_get_stride(lcd);
+  ASSERT_NOT_NULL(pixels);
+  for (y = 3; y < 19; y++) {
+    ASSERT_EQ(pixels[y * stride + 34u * 4u], 33u);
+  }
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
+TEST(text_area_syntax_is_lazy_and_budgeted)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_text_area_set_text(area, "int first;\nint second;\n"),
+            MY_RET_OK);
+  ASSERT_FALSE(my_text_area_syntax_enabled(area));
+  ASSERT_TRUE(text_area->syntax_cache == NULL);
+  ASSERT_EQ(my_text_area_set_syntax_language(area, MY_SYNTAX_C_LIKE),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_line_budget(area, 1), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(area, true), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_enabled(area));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  area->vtable->on_paint(area, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 1));
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(area);
+}
+
+TEST(text_area_syntax_replacement_invalidates_tokens)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "int first;\nint second;\n"),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(area, MY_SYNTAX_C_LIKE),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_line_budget(area, 8), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(area, true), MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(text_area->syntax_cache, 8), MY_RET_OK);
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_TRUE(my_text_area_syntax_line_ready(area, 1));
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 0;
+  text_area->anchor_row = 0;
+  text_area->anchor_col = 0;
+  text_area->goal_col = 0;
+  ASSERT_EQ(my_text_area_set_text(area, "int changed;\nint second;\n"),
+            MY_RET_OK);
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
+  my_widget_unref(area);
+}
+
+TEST(text_area_syntax_key_edit_invalidates_suffix)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_KEY_DOWN);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "int first;\nint second;\n"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(area, MY_SYNTAX_C_LIKE), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(area, true), MY_RET_OK);
+  ASSERT_EQ(my_syntax_cache_ensure(text_area->syntax_cache, 8), MY_RET_OK);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 0;
+  text_area->anchor_row = 0;
+  text_area->anchor_col = 0;
+  text_area->focused = true;
+  event.u.key.key = 'x';
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 0));
+  ASSERT_FALSE(my_text_area_syntax_line_ready(area, 1));
   my_widget_unref(area);
 }
 
@@ -1139,6 +1445,86 @@ TEST(text_widgets_toggle_platform_ime_with_focus)
   my_pal_destroy(pal);
 }
 
+TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent)
+{
+  text_area_variable_font_t font = {{&text_area_variable_font_vtable}};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 40}), MY_RET_OK);
+  my_text_area_set_font(area, (my_font_t*)&font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "AB"), MY_RET_OK);
+  event.u.pointer.x = 7;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_col, 1u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_pointer_hit_test_clamps_vertical_bounds)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 60}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "first\nsecond\nthird"), MY_RET_OK);
+  event.u.pointer.x = 5;
+  event.u.pointer.y = -30;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_row, 0u);
+  event.u.pointer.y = 100;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_row, 2u);
+  my_widget_unref(area);
+}
+
+TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
+{
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 200, 100, "main");
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  int32_t ime_x = 0;
+  int32_t ime_y = 0;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){10, 20, 54, 60}),
+            MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_align(area, MY_TEXT_ALIGN_JUSTIFY), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "aa bb cc"), MY_RET_OK);
+  text_area->cursor_row = 0;
+  text_area->cursor_col = 3;
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), area), MY_RET_OK);
+  my_widget_unref(area);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t*)win);
+  my_event_dispatcher_set_focus(&win->dispatcher, area);
+  my_pal_dummy_get_ime_spot(win->pal_window, &ime_x, &ime_y);
+  ASSERT_EQ(ime_x, 44);
+  ASSERT_EQ(ime_y, 39);
+  my_event_dispatcher_set_focus(&win->dispatcher, NULL);
+  text_area->cursor_col = 6;
+  my_event_dispatcher_set_focus(&win->dispatcher, area);
+  my_pal_dummy_get_ime_spot(win->pal_window, &ime_x, &ime_y);
+  ASSERT_EQ(ime_x, 14);
+  ASSERT_EQ(ime_y, 55);
+
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
 TEST(removing_focused_widget_blurs_and_disables_ime)
 {
   my_pal_t *pal = my_pal_dummy_create(NULL);
@@ -1384,8 +1770,16 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_line_numbers_reduce_wrap_width);
     RUN_TEST(text_area_folded_range_hides_only_inner_physical_lines);
     RUN_TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges);
+    RUN_TEST(text_area_nested_fold_ranges_preserve_containment);
+    RUN_TEST(text_area_fold_state_yaml_roundtrip_and_transaction);
+    RUN_TEST(text_area_many_nested_folds_build_visible_rows_once);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
+    RUN_TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms);
+    RUN_TEST(text_area_justify_cursor_tracks_stretched_space);
+    RUN_TEST(text_area_syntax_is_lazy_and_budgeted);
+    RUN_TEST(text_area_syntax_replacement_invalidates_tokens);
+    RUN_TEST(text_area_syntax_key_edit_invalidates_suffix);
     RUN_TEST(window_manager_refreshes_all_window_scales);
     RUN_TEST(gpu_backend_request_reports_actual_state);
     RUN_TEST(software_canvas_recreates_after_surface_resize);
@@ -1404,6 +1798,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(posted_user_event_reaches_top_window);
     RUN_TEST(user_event_can_close_window_during_dispatch);
     RUN_TEST(text_widgets_toggle_platform_ime_with_focus);
+    RUN_TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent);
+    RUN_TEST(text_area_pointer_hit_test_clamps_vertical_bounds);
+    RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);
     RUN_TEST(event_bubbling_stops_at_removed_ancestor);

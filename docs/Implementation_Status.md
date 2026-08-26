@@ -1802,4 +1802,86 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 固定 4 MiB 源文本、1 MiB 单行、4096 token/行上限；超限拒绝，默认路径不进入 widget
   paint，不增加逐帧全文扫描或后端依赖。
 - `test_myui_text_layout` 现为 **13/13**，覆盖 token 分类、状态传播、后缀失效和资源
-  边界。当前限制是尚未接入 text area paint 的分段颜色绘制。
+  边界。
+- text area 已通过 `set_syntax_enabled/language/line_budget` 接入 cache：默认懒关闭，
+  paint 每帧最多推进配置行数，ready 的非 RTL、有字体行按 token 分段着色；编辑和整段
+  替换会使修改行及后缀失效，失败时丢弃 stale cache 而不影响文本。无字体、RTL、justify
+  保留原整行绘制，当前仍是有限 lexer，不宣称完整语法高亮。
+- TDD 新增 `text_area_syntax_is_lazy_and_budgeted`、
+  `text_area_syntax_replacement_invalidates_tokens` 和
+  `text_area_syntax_key_edit_invalidates_suffix`；定向 `test_myui_window_manager`
+  39/39 通过。
+
+## myui nested folding ranges（2026-08-25）
+
+- 折叠区间现在允许严格包含嵌套：外层折叠时只显示外层 header，外层展开后内层折叠
+  继续生效；解除折叠按区间精确匹配，不破坏其他层级。
+- 同起点歧义区间和交叉区间仍拒绝，保持物理行到 visual line 的确定性；实现不增加
+  默认无折叠路径的分配或逐帧扫描成本。
+- TDD 新增 `text_area_nested_fold_ranges_preserve_containment`；定向
+  `test_myui_window_manager` **40/40** 通过。
+
+## myui YAML fold-state persistence（2026-08-25）
+
+- 新增 `my_text_area_folds_to_yaml()` / `my_text_area_folds_from_yaml()`；导出使用
+  `version: 1`，格式严格限定为 `folds` 数组及每项的 `start`/`end` int64，当前只保存
+  物理行闭区间，不保存文本内容或光标状态；导入继续兼容上一阶段无 version 的 legacy
+  快照，未知版本直接拒绝。
+- 导出限制 64 KiB、4096 个区间；导入限制相同，并校验行范围、嵌套/交叉关系和所有 schema
+  字段。候选区间完全构建成功后才替换旧状态，非法 YAML 或 OOM 不破坏当前折叠。
+- TDD 新增 `text_area_fold_state_yaml_roundtrip_and_transaction`；普通和 ASan
+  `test_myui_window_manager` 均通过。
+
+## myui folding visible-row performance（2026-08-26）
+
+- 可见行缓存不再对每个物理行重新扫描全部折叠区间；按排序区间维护有界活动 end-stack，
+  构建复杂度从最坏 O(rows*ranges) 降为 O(rows+ranges)，严格嵌套区间结束后正确弹栈。
+- 无折叠默认路径不分配活动栈，编辑和渲染后端 API 不变。
+- TDD 新增 `text_area_many_nested_folds_build_visible_rows_once`；定向
+  `test_myui_window_manager` 达到 **42/42**。
+
+## myui folding visible-row OOM correctness（2026-08-26）
+
+- 以 TDD 新增 `text_area_folded_rows_remain_hidden_when_visible_cache_ooms`，覆盖可见行
+  缓存数组或活动栈分配失败时的 count、visual index 和 physical row 映射。
+- 缓存构建失败不再把全部物理行错误暴露给光标、滚动和绘制路径；三个查询改用不分配内存
+  的线性回退。正常缓存路径仍为 O(rows+ranges)，只有 OOM 回退允许 O(rows*ranges)，以
+  保证资源压力下的语义正确性。
+- 验证：`test_myui_window_manager` **43/43** 通过；实现保持 widget/core 与所有渲染后端
+  API 隔离。
+
+## myui justify cursor and selection mapping（2026-08-26）
+
+- 以 TDD 新增 `text_area_justify_cursor_tracks_stretched_space`，先复现正文拉伸空格后
+  光标仍按固定 8px cell 定位的漂移。
+- 新增无额外缓存的当前 visual line 边界计算；普通 LTR 的正文、选区矩形和光标均按实际
+  glyph/cell advance 加 stretched-space 定位。正常绘制仍为逐行路径，不引入逐帧全文扫描；
+  复杂 RTL 的完整 paragraph visual mapping 继续保持明确限制。
+- 验证：`test_myui_window_manager` **44/44** 通过；实现不引入渲染后端私有 API。
+
+## myui IME visual-line anchor mapping（2026-08-26）
+
+- 以 TDD 新增 `text_area_ime_spot_tracks_wrapped_justify_cursor`，覆盖 justify 拉伸空格
+  的横向候选框位置，以及光标移动到下一 wrapped visual line 后的纵向位置。
+- `ta_update_ime_spot()` 现在复用 text area 的 visual-line、justify boundary 和全局坐标
+  转换；Wayland/Win32/Cocoa 等 PAL 后端继续只接收统一坐标，不引入后端私有类型或额外
+  每帧缓存。
+- 验证：`test_myui_window_manager` **45/45** 通过；普通 LTR、复杂 RTL 的既有限制边界
+  保持不变。
+
+## myui variable-font coordinate contract（2026-08-26）
+
+- 以 TDD 新增 `text_area_variable_font_keeps_nonwrap_coordinates_consistent`，先复现
+  非 wrap 变宽字体点击仍按固定 8px cell 命中的错误。
+- 新增按 codepoint glyph advance 的边界与命中计算，统一非 wrap 点击、水平滚动、光标、
+  IME，以及 wrapped visual line 的局部光标/选区几何；无字体继续使用固定 cell fallback。
+- 当前 visual line 即时计算，不引入逐帧全文扫描或后端 API；验证：
+  `test_myui_window_manager` **46/46** 通过。
+
+## myui pointer vertical bounds（2026-08-26）
+
+- 以 TDD 新增 `text_area_pointer_hit_test_clamps_vertical_bounds`，先复现控件上方点击
+  因负坐标转换为 `size_t` 而跳到最后一行的问题。
+- pointer 垂直位置现在先在有符号域中计算，再钳制到 `[0, visible_count - 1]`；空文本、
+  负坐标、超出底部及整数边界均不进行危险转换，正常路径无分配、常数复杂度。
+- 验证：`test_myui_window_manager` **47/47** 通过。
