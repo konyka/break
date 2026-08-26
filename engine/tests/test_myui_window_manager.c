@@ -487,6 +487,33 @@ TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
   my_widget_unref(area);
 }
 
+TEST(text_area_many_nested_folds_build_visible_rows_once)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  char* text;
+  size_t line_count = 512;
+  size_t i;
+  ASSERT_NOT_NULL(area);
+  text = (char*)malloc(line_count * 2u + 1u);
+  ASSERT_NOT_NULL(text);
+  for (i = 0; i < line_count; i++) {
+    text[i * 2u] = 'x';
+    text[i * 2u + 1u] = '\n';
+  }
+  text[line_count * 2u] = '\0';
+  ASSERT_EQ(my_text_area_set_text(area, text), MY_RET_OK);
+  free(text);
+  for (i = 0; i < 128; i++) {
+    ASSERT_EQ(my_text_area_set_folded_range(area, i, line_count - i,
+                                            true),
+              MY_RET_OK);
+  }
+  ASSERT_EQ(my_text_area_visual_line_count(area), 1u);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 127));
+  my_widget_unref(area);
+}
+
 TEST(text_area_folded_range_rebuilds_wrapped_visual_lines)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1541,6 +1568,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_folded_range_rejects_invalid_or_overlapping_ranges);
     RUN_TEST(text_area_nested_fold_ranges_preserve_containment);
     RUN_TEST(text_area_fold_state_yaml_roundtrip_and_transaction);
+    RUN_TEST(text_area_many_nested_folds_build_visible_rows_once);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
     RUN_TEST(text_area_syntax_is_lazy_and_budgeted);

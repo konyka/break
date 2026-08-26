@@ -68,6 +68,10 @@ static bool ta_row_hidden(const my_text_area_t* ta, size_t row) {
 static my_ret_t ta_visible_rows_ensure(my_text_area_t* ta) {
   my_darray_t* rows;
   size_t row;
+  size_t range_index = 0;
+  size_t active_count = 0;
+  size_t range_count;
+  size_t* active_ends;
   if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
     return MY_RET_OK;
   }
@@ -78,12 +82,39 @@ static my_ret_t ta_visible_rows_ensure(my_text_area_t* ta) {
   if (rows == NULL) {
     return MY_RET_OOM;
   }
+  range_count = my_darray_size(ta->fold_ranges);
+  if (range_count > SIZE_MAX / sizeof(*active_ends)) {
+    my_darray_destroy(rows);
+    return MY_RET_OOM;
+  }
+  active_ends = (size_t*)my_mem_alloc(ta->allocator,
+                                      range_count * sizeof(*active_ends));
+  if (active_ends == NULL) {
+    my_darray_destroy(rows);
+    return MY_RET_OOM;
+  }
   for (row = 0; row < ta_line_count(ta); row++) {
-    if (!ta_row_hidden(ta, row) && my_darray_push(rows, (void*)row) != MY_RET_OK) {
+    while (active_count > 0 && active_ends[active_count - 1] < row) {
+      active_count--;
+    }
+    while (range_index < my_darray_size(ta->fold_ranges)) {
+      const my_text_fold_range_t* range =
+          (const my_text_fold_range_t*)my_darray_get(ta->fold_ranges,
+                                                     range_index);
+      if (range == NULL || range->start_row >= row) break;
+      if (range->end_row >= row) {
+        active_ends[active_count++] = range->end_row;
+      }
+      range_index++;
+    }
+    if (active_count == 0 &&
+        my_darray_push(rows, (void*)row) != MY_RET_OK) {
+      my_mem_free(ta->allocator, active_ends);
       my_darray_destroy(rows);
       return MY_RET_OOM;
     }
   }
+  my_mem_free(ta->allocator, active_ends);
   my_darray_destroy(ta->visible_rows);
   ta->visible_rows = rows;
   ta->visible_rows_dirty = false;

@@ -1831,3 +1831,11 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   字段。候选区间完全构建成功后才替换旧状态，非法 YAML 或 OOM 不破坏当前折叠。
 - TDD 新增 `text_area_fold_state_yaml_roundtrip_and_transaction`；普通和 ASan
   `test_myui_window_manager` 均通过。
+
+## myui folding visible-row performance（2026-08-26）
+
+- 可见行缓存不再对每个物理行重新扫描全部折叠区间；按排序区间维护有界活动 end-stack，
+  构建复杂度从最坏 O(rows*ranges) 降为 O(rows+ranges)，严格嵌套区间结束后正确弹栈。
+- 无折叠默认路径不分配活动栈，编辑和渲染后端 API 不变。
+- TDD 新增 `text_area_many_nested_folds_build_visible_rows_once`；定向
+  `test_myui_window_manager` 达到 **42/42**。
