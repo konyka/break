@@ -1599,9 +1599,18 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
       my_text_layout_t* l;
       size_t col;
       my_widget_global_to_local(widget, &lx, &ly);
-      row = (size_t)((ly - TA_PAD_Y + ta->scroll_y) / line_h);
-      if (row >= ta_vline_count(ta)) {
-        row = ta_vline_count(ta) > 0 ? ta_vline_count(ta) - 1 : 0;
+      {
+        int64_t content_y = (int64_t)ly - TA_PAD_Y + ta->scroll_y;
+        int64_t candidate_row;
+        size_t visible_count = ta_vline_count(ta);
+        candidate_row = content_y > 0 ? content_y / line_h : 0;
+        if (candidate_row <= 0 || visible_count == 0) {
+          row = 0;
+        } else if ((uint64_t)candidate_row >= (uint64_t)visible_count) {
+          row = visible_count - 1;
+        } else {
+          row = (size_t)candidate_row;
+        }
       }
       vl = ta_vline_at(ta, row); /* row is a VISUAL index (wrap-aware) */
       l = ta_layout_rtl(ta, vl, &seg);

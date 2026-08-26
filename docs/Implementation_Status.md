@@ -1877,3 +1877,11 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   IME，以及 wrapped visual line 的局部光标/选区几何；无字体继续使用固定 cell fallback。
 - 当前 visual line 即时计算，不引入逐帧全文扫描或后端 API；验证：
   `test_myui_window_manager` **46/46** 通过。
+
+## myui pointer vertical bounds（2026-08-26）
+
+- 以 TDD 新增 `text_area_pointer_hit_test_clamps_vertical_bounds`，先复现控件上方点击
+  因负坐标转换为 `size_t` 而跳到最后一行的问题。
+- pointer 垂直位置现在先在有符号域中计算，再钳制到 `[0, visible_count - 1]`；空文本、
+  负坐标、超出底部及整数边界均不进行危险转换，正常路径无分配、常数复杂度。
+- 验证：`test_myui_window_manager` **47/47** 通过。
