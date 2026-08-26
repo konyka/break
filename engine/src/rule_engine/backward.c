@@ -20,13 +20,16 @@ typedef struct environment_t {
 typedef struct trace_state_t {
     re_query_t *query;
     re_string_t *names;
+    size_t *parents;
     size_t count;
     size_t capacity;
+    int depth_exhausted;
 } trace_state_t;
 
 typedef struct call_frame_t {
     re_string_t name;
     const environment_t *environment;
+    size_t trace_index;
 } call_frame_t;
 
 typedef struct goal_work_stack_t {
@@ -74,12 +77,14 @@ static int equal_text(re_string_t left, re_string_t right);
 static re_status_t make_proof(re_query_t *query, const environment_t *environment,
                               const trace_state_t *trace);
 static re_status_t push_trace(trace_state_t *trace, re_string_t name);
+static re_status_t push_trace_parent(trace_state_t *trace, re_string_t name, size_t parent);
 static void goal_work_stack_destroy(const re_allocator_impl_t *allocator, goal_work_stack_t *stack);
 static void environment_destroy(const re_allocator_impl_t *allocator, environment_t *environment);
 
 typedef struct machine_callback_context_t {
     re_query_t *query;
     trace_state_t *trace;
+    size_t last_trace_index;
 } machine_callback_context_t;
 
 static re_status_t machine_make_proof(void *context) {
@@ -92,6 +97,17 @@ static re_status_t machine_make_proof(void *context) {
 
 static re_status_t machine_push_trace(void *context, re_string_t name) {
     return push_trace(((machine_callback_context_t *)context)->trace, name);
+}
+
+static re_status_t machine_push_trace_parent(void *context, re_string_t name, size_t parent_index,
+                                             size_t *out_index) {
+    machine_callback_context_t *callbacks = (machine_callback_context_t *)context;
+    re_status_t status = push_trace_parent(callbacks->trace, name, parent_index);
+    if (status == RE_STATUS_OK) {
+        callbacks->last_trace_index = callbacks->trace->count - 1u;
+        if (out_index != NULL) *out_index = callbacks->last_trace_index;
+    }
+    return status;
 }
 
 static void machine_reset_trace(void *context, size_t count) {
@@ -237,6 +253,8 @@ static re_status_t bind_value(const re_allocator_impl_t *allocator, environment_
                               re_string_t name, const re_value_t *value) {
     binding_t *binding = find_binding(environment, name);
     if (binding != NULL) {
+        if (binding->value.type == RE_VALUE_UNKNOWN && value->type == RE_VALUE_UNKNOWN)
+            return RE_STATUS_OK;
         return re_value_compare(&binding->value, value, RE_COMPARE_EQ) ? RE_STATUS_OK : RE_STATUS_NOT_FOUND;
     }
     {
@@ -259,16 +277,36 @@ static re_status_t bind_value(const re_allocator_impl_t *allocator, environment_
 }
 
 static re_status_t push_trace(trace_state_t *trace, re_string_t name) {
+    return push_trace_parent(trace, name, (size_t)-1);
+}
+
+static re_status_t push_trace_parent(trace_state_t *trace, re_string_t name, size_t parent) {
     re_string_t *grown;
+    size_t *grown_parents;
     size_t capacity;
     if (trace->count == trace->capacity) {
         capacity = trace->capacity == 0u ? 4u : trace->capacity * 2u;
-        grown = re_realloc(&trace->query->allocator, trace->names, capacity * sizeof(*grown));
+        if (capacity < trace->capacity || capacity > (size_t)-1 / sizeof(*grown) ||
+            capacity > (size_t)-1 / sizeof(*grown_parents)) return RE_STATUS_LIMIT;
+        grown = re_alloc(&trace->query->allocator, capacity * sizeof(*grown));
         if (grown == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        grown_parents = re_alloc(&trace->query->allocator, capacity * sizeof(*grown_parents));
+        if (grown_parents == NULL) {
+            re_free(&trace->query->allocator, grown);
+            return RE_STATUS_OUT_OF_MEMORY;
+        }
+        if (trace->count != 0u) {
+            memcpy(grown, trace->names, trace->count * sizeof(*grown));
+            memcpy(grown_parents, trace->parents, trace->count * sizeof(*grown_parents));
+        }
+        re_free(&trace->query->allocator, trace->names);
+        re_free(&trace->query->allocator, trace->parents);
         trace->names = grown;
+        trace->parents = grown_parents;
         trace->capacity = capacity;
     }
     trace->names[trace->count++] = name;
+    trace->parents[trace->count - 1u] = parent;
     return RE_STATUS_OK;
 }
 
@@ -308,23 +346,14 @@ static int find_rule(const re_engine_t *engine, re_string_t name, size_t *index)
     return 0;
 }
 
-static int environment_equal(const environment_t *left, const environment_t *right) {
-    size_t index;
-    if (left->count != right->count) return 0;
-    for (index = 0u; index < left->count; ++index) {
-        const binding_t *binding = find_const_binding(right,
-            (re_string_t){left->items[index].name, left->items[index].name_size});
-        if (binding == NULL || !re_value_compare(&left->items[index].value, &binding->value, RE_COMPARE_EQ))
-            return 0;
-    }
-    return 1;
-}
-
 static int active_frame(const call_frame_t *frames, size_t count, re_string_t name,
+                        size_t argument_count,
                         const environment_t *environment) {
     size_t index;
+    (void)environment;
+    if (argument_count != 0u) return 0;
     for (index = 0u; index < count; ++index)
-        if (equal_text(frames[index].name, name) && environment_equal(frames[index].environment, environment))
+        if (equal_text(frames[index].name, name))
             return 1;
     return 0;
 }
@@ -334,6 +363,7 @@ static re_status_t make_proof(re_query_t *query, const environment_t *environmen
     re_proof_t *proof = re_alloc(&query->allocator, sizeof(*proof));
     re_proof_t **grown_proofs;
     size_t index;
+    size_t edge_count = 0u;
     if (proof == NULL) return RE_STATUS_OUT_OF_MEMORY;
     memset(proof, 0, sizeof(*proof));
     proof->allocator = query->allocator;
@@ -349,6 +379,7 @@ static re_status_t make_proof(re_query_t *query, const environment_t *environmen
                            &binding->name) != RE_STATUS_OK) { re_proof_destroy(proof); return RE_STATUS_OUT_OF_MEMORY; }
         if (copy_value(&proof->allocator, &source->value, &binding->value,
                        &binding->string_data) != RE_STATUS_OK) { re_proof_destroy(proof); return RE_STATUS_OUT_OF_MEMORY; }
+        proof->binding_count = index + 1u;
     }
     proof->binding_count = environment->count;
     if (trace->count != 0u) {
@@ -365,22 +396,26 @@ static re_status_t make_proof(re_query_t *query, const environment_t *environmen
         proof->nodes = re_alloc(&proof->allocator, trace->count * sizeof(*proof->nodes));
         if (proof->nodes == NULL) { re_proof_destroy(proof); return RE_STATUS_OUT_OF_MEMORY; }
     }
-    if (trace->count > 1u) {
-        proof->edges = re_alloc(&proof->allocator, (trace->count - 1u) * sizeof(*proof->edges));
+    for (index = 0u; index < trace->count; ++index)
+        if (trace->parents[index] != (size_t)-1) ++edge_count;
+    if (edge_count != 0u) {
+        proof->edges = re_alloc(&proof->allocator, edge_count * sizeof(*proof->edges));
         if (proof->edges == NULL) { re_proof_destroy(proof); return RE_STATUS_OUT_OF_MEMORY; }
     }
+    edge_count = 0u;
     for (index = 0u; index < trace->count; ++index) {
         proof->nodes[index].rule_name_size = trace->names[index].size;
         if (re_copy_string(&proof->allocator, trace->names[index], &proof->nodes[index].rule_name) != RE_STATUS_OK) {
             re_proof_destroy(proof); return RE_STATUS_OUT_OF_MEMORY;
         }
         proof->node_count = index + 1u;
-        if (index != 0u) {
-            proof->edges[index - 1u].parent_index = index - 1u;
-            proof->edges[index - 1u].child_index = index;
+        if (trace->parents[index] != (size_t)-1) {
+            proof->edges[edge_count].parent_index = trace->parents[index];
+            proof->edges[edge_count].child_index = index;
+            ++edge_count;
         }
     }
-    proof->edge_count = trace->count > 1u ? trace->count - 1u : 0u;
+    proof->edge_count = edge_count;
     grown_proofs = re_realloc(&query->allocator, query->proofs,
                               (query->proof_count + 1u) * sizeof(*query->proofs));
     if (grown_proofs == NULL) { re_proof_destroy(proof); return RE_STATUS_OUT_OF_MEMORY; }
@@ -464,40 +499,6 @@ static int condition_has_or(const re_expr_t *expr) {
     return condition_has_or(expr->first) || condition_has_or(expr->second);
 }
 
-static int compatibility_operand_supported(const re_operand_t *operand) {
-    size_t index;
-    if (operand == NULL) return 0;
-    if (operand->kind == RE_OPERAND_GOAL_CALL)
-        return operand->argument_count == 0u;
-    if (operand->kind == RE_OPERAND_FUNCTION) return 0;
-    if (operand->kind != RE_OPERAND_LITERAL && operand->kind != RE_OPERAND_FACT &&
-        operand->kind != RE_OPERAND_VARIABLE && operand->kind != RE_OPERAND_ANONYMOUS)
-        return 0;
-    for (index = 0u; index < operand->argument_count; ++index)
-        if (!compatibility_operand_supported(&operand->arguments[index])) return 0;
-    return 1;
-}
-
-static int compatibility_condition_supported(const re_expr_t *expr) {
-    if (expr == NULL) return 0;
-    if (expr->kind == RE_EXPR_TRUE || expr->kind == RE_EXPR_FALSE) return 1;
-    if (expr->kind == RE_EXPR_NOT || expr->kind == RE_EXPR_AND || expr->kind == RE_EXPR_OR)
-        return compatibility_condition_supported(expr->first) &&
-               compatibility_condition_supported(expr->second);
-    return compatibility_operand_supported(&expr->left) &&
-           compatibility_operand_supported(&expr->right);
-}
-
-static int compatibility_program_supported(const re_engine_t *engine) {
-    size_t index;
-    for (index = 0u; index < engine->program->rule_count; ++index) {
-        const re_rule_t *rule = &engine->program->rules[index];
-        if (rule->formal_parameter_count != 0u ||
-            !compatibility_condition_supported(rule->condition)) return 0;
-    }
-    return 1;
-}
-
 static void condition_branch_list_destroy(const re_allocator_impl_t *allocator,
                                           condition_branch_list_t *branches) {
     size_t index;
@@ -552,7 +553,7 @@ static re_status_t condition_collect_branches(re_query_t *query, const re_expr_t
         if (status != RE_STATUS_OK) return status;
         status = machine_condition_matches(query, expr, &candidate, depth, frames,
                                             frame_count, trace, &matched);
-        if (status == RE_STATUS_NOT_FOUND) status = RE_STATUS_OK;
+            if (status == RE_STATUS_NOT_FOUND && (trace == NULL || !trace->depth_exhausted)) status = RE_STATUS_OK;
         if (status == RE_STATUS_OK && matched)
             status = condition_branch_list_append(&query->allocator, out, &candidate);
         environment_destroy(&query->allocator, &candidate);
@@ -574,7 +575,7 @@ static re_status_t condition_collect_branches(re_query_t *query, const re_expr_t
     return status;
 }
 
-static re_status_t general_machine_goal_run(re_query_t *query, re_string_t name, const re_operand_t *arguments,
+static re_status_t parameter_goal_execute(re_query_t *query, re_string_t name, const re_operand_t *arguments,
                               size_t argument_count, environment_t *environment,
                               size_t depth, call_frame_t *frames, size_t frame_count,
                               trace_state_t *trace, int root, int *proved_out);
@@ -585,10 +586,36 @@ static re_status_t backward_operand_goal(re_query_t *query, const re_operand_t *
                                         trace_state_t *trace, re_value_t *value) {
     re_string_t name;
     int proved = 0;
-    if (depth >= query->max_depth) return RE_STATUS_LIMIT;
+    if (depth >= query->max_depth) {
+        if (trace != NULL) trace->depth_exhausted = 1;
+        return RE_STATUS_LIMIT;
+    }
     if (operand->kind == RE_OPERAND_GOAL_CALL) {
         name = (re_string_t){operand->goal_name, operand->goal_name_size};
-        re_status_t status = general_machine_goal_run(query, name, operand->arguments,
+        if (operand->argument_count != 0u && depth + 1u >= query->max_depth) {
+            if (trace != NULL) trace->depth_exhausted = 1;
+            return RE_STATUS_LIMIT;
+        }
+        if (trace != NULL && operand->argument_count == 0u) {
+            size_t trace_index;
+            for (trace_index = 0u; trace_index < trace->count; ++trace_index)
+                if (equal_text(trace->names[trace_index], name))
+                    return RE_STATUS_NOT_FOUND;
+        }
+        {
+            size_t rule_index;
+            int found = 0;
+            for (rule_index = 0u; rule_index < query->engine->program->rule_count; ++rule_index) {
+                const re_rule_t *rule = &query->engine->program->rules[rule_index];
+                if (equal_text((re_string_t){rule->name, rule->name_size}, name)) {
+                    found = 1;
+                    if (rule->formal_parameter_count == operand->argument_count) break;
+                }
+            }
+            if (found && rule_index == query->engine->program->rule_count)
+                return RE_STATUS_INVALID_ARGUMENT;
+        }
+        re_status_t status = parameter_goal_execute(query, name, operand->arguments,
             operand->argument_count, environment, depth + 1u, frames, frame_count,
             trace, 0, &proved);
         value->type = RE_VALUE_BOOL;
@@ -599,7 +626,7 @@ static re_status_t backward_operand_goal(re_query_t *query, const re_operand_t *
         operand->arguments[0].kind == RE_OPERAND_LITERAL &&
         operand->arguments[0].value.type == RE_VALUE_STRING) {
         name = operand->arguments[0].value.as.string;
-        re_status_t status = general_machine_goal_run(query, name, NULL, 0u, environment,
+        re_status_t status = parameter_goal_execute(query, name, NULL, 0u, environment,
             depth + 1u, frames, frame_count, trace, 0, &proved);
         value->type = RE_VALUE_BOOL;
         value->as.boolean = proved;
@@ -610,8 +637,8 @@ static re_status_t backward_operand_goal(re_query_t *query, const re_operand_t *
             (re_string_t){operand->fact_name, operand->fact_name_size}, value);
         if (status != RE_STATUS_NOT_FOUND) return status;
         name = (re_string_t){operand->fact_name, operand->fact_name_size};
-        status = general_machine_goal_run(query, name, NULL, 0u, environment, depth + 1u,
-                                    frames, frame_count, trace, 0, &proved);
+        status = parameter_goal_execute(query, name, NULL, 0u, environment, depth + 1u,
+            frames, frame_count, trace, 0, &proved);
         value->type = RE_VALUE_BOOL;
         value->as.boolean = proved;
         return status;
@@ -727,8 +754,18 @@ static re_status_t bind_arguments(re_query_t *query, const re_rule_t *rule,
     size_t index;
     re_value_t value;
     re_status_t status;
-    if (argument_count == 0u)
-        return rule->formal_parameter_count == 0u ? RE_STATUS_OK : RE_STATUS_NOT_FOUND;
+    if (argument_count == 0u) {
+        if (rule->formal_parameter_count == 0u) return RE_STATUS_OK;
+        if (depth != 0u) return RE_STATUS_NOT_FOUND;
+        value.type = RE_VALUE_UNKNOWN;
+        for (index = 0u; index < rule->formal_parameter_count; ++index) {
+            status = bind_value(&query->allocator, environment,
+                (re_string_t){rule->formal_parameters[index],
+                              strlen(rule->formal_parameters[index])}, &value);
+            if (status != RE_STATUS_OK) return status;
+        }
+        return RE_STATUS_OK;
+    }
     if (rule->formal_parameter_count != argument_count) return RE_STATUS_NOT_FOUND;
     for (index = 0u; index < argument_count; ++index) {
         const re_operand_t *argument = &arguments[index];
@@ -754,11 +791,23 @@ static re_status_t machine_goal_step(re_query_t *query, re_string_t name, const 
                               trace_state_t *trace, int root, int *proved_out) {
     size_t rule_index;
     re_status_t status = RE_STATUS_OK;
-    if (depth > query->max_depth) return RE_STATUS_LIMIT;
+    if (depth >= query->max_depth) {
+        if (trace != NULL) trace->depth_exhausted = 1;
+        return RE_STATUS_LIMIT;
+    }
     if (proved_out != NULL) *proved_out = 0;
     if (!find_rule(query->engine, name, &rule_index)) return RE_STATUS_OK;
-    if (frames != NULL && active_frame(frames, frame_count, name, environment)) return RE_STATUS_OK;
-    if (trace != NULL && push_trace(trace, name) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    if (frames != NULL && active_frame(frames, frame_count, name, argument_count, environment)) {
+        if (argument_count == 0u) return RE_STATUS_NOT_FOUND;
+        if (trace != NULL) trace->depth_exhausted = 1;
+        return RE_STATUS_LIMIT;
+    }
+    if (trace != NULL) {
+        size_t parent = frames == NULL || frame_count == 0u
+            ? (size_t)-1 : frames[frame_count - 1u].trace_index;
+        if (push_trace_parent(trace, name, parent) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+        if (frames != NULL) frames[frame_count].trace_index = trace->count - 1u;
+    }
     if (frames != NULL) { frames[frame_count].name = name; frames[frame_count].environment = environment; }
     for (rule_index = 0u; rule_index < query->engine->program->rule_count; ++rule_index) {
         const re_rule_t *rule = &query->engine->program->rules[rule_index];
@@ -774,8 +823,19 @@ static re_status_t machine_goal_step(re_query_t *query, re_string_t name, const 
         {
         status = bind_arguments(query, rule, arguments, argument_count, &branch, depth,
                                 frames, frame_count, trace);
-        if (status == RE_STATUS_NOT_FOUND) { environment_destroy(&query->allocator, &branch); continue; }
-        if (status != RE_STATUS_OK) break;
+        if (status == RE_STATUS_NOT_FOUND) {
+            environment_destroy(&query->allocator, &branch);
+            continue;
+        }
+        if (status == RE_STATUS_OK && frames != NULL && arguments != NULL &&
+            depth + 1u >= query->max_depth) {
+            if (trace != NULL) trace->depth_exhausted = 1;
+            status = RE_STATUS_LIMIT;
+        }
+        if (status != RE_STATUS_OK) {
+            environment_destroy(&query->allocator, &branch);
+            break;
+        }
         if (condition_has_or(rule->condition)) {
             status = condition_collect_branches(query, rule->condition, &branch, depth,
                                                 frames, frame_count + 1u, trace, &alternatives);
@@ -792,7 +852,7 @@ static re_status_t machine_goal_step(re_query_t *query, re_string_t name, const 
                 status = machine_condition_matches(query, rule->condition, &alternative, depth,
                                                    frames, frame_count + 1u, trace,
                                                    &branch_matched);
-            if (status == RE_STATUS_NOT_FOUND) status = RE_STATUS_OK;
+            if (status == RE_STATUS_NOT_FOUND && (trace == NULL || !trace->depth_exhausted)) status = RE_STATUS_OK;
             if (status == RE_STATUS_OK && branch_matched)
                 status = condition_branch_list_append(&query->allocator, &alternatives, &alternative);
             environment_destroy(&query->allocator, &alternative);
@@ -822,11 +882,10 @@ static re_status_t machine_goal_step(re_query_t *query, re_string_t name, const 
         if (status != RE_STATUS_OK || (matched && !root) || query->proof_count >= query->max_solutions) break;
     }
     if (trace != NULL && (root || (proved_out != NULL && !*proved_out)) && trace->count != 0u) --trace->count;
-    if (status == RE_STATUS_NOT_FOUND) status = RE_STATUS_OK;
     return status;
 }
 
-static re_status_t general_machine_goal_run(re_query_t *query, re_string_t name, const re_operand_t *arguments,
+static re_status_t parameter_goal_execute(re_query_t *query, re_string_t name, const re_operand_t *arguments,
                               size_t argument_count, environment_t *environment,
                               size_t depth, call_frame_t *frames, size_t frame_count,
                               trace_state_t *trace, int root, int *proved_out) {
@@ -896,19 +955,21 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
         status = re_facts_get(facts, left, &actual);
         if (status == RE_STATUS_OK) {
             if (variable) {
-                trace_state_t direct_trace = {query, NULL, 0u, 0u};
+                trace_state_t direct_trace = {query, NULL, NULL, 0u, 0u, 0};
                 environment_t direct_environment;
                 memset(&direct_environment, 0, sizeof(direct_environment));
                 if (bind_value(&query->allocator, &direct_environment, right, &actual) != RE_STATUS_OK ||
                     push_trace(&direct_trace, left) != RE_STATUS_OK ||
                     make_proof(query, &direct_environment, &direct_trace) != RE_STATUS_OK) {
                     environment_destroy(&query->allocator, &direct_environment);
-                    re_free(&query->allocator, direct_trace.names);
+                 re_free(&query->allocator, direct_trace.names);
+                 re_free(&query->allocator, direct_trace.parents);
                     re_query_destroy(query);
                     return RE_STATUS_OUT_OF_MEMORY;
                 }
                 environment_destroy(&query->allocator, &direct_environment);
                 re_free(&query->allocator, direct_trace.names);
+                re_free(&query->allocator, direct_trace.parents);
                 query->result = RE_QUERY_PROVED;
             } else {
                 query->result = re_value_compare(&actual, &expected, RE_COMPARE_EQ) ? RE_QUERY_PROVED : RE_QUERY_DISPROVED;
@@ -925,14 +986,17 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
     trace.query = query;
     machine_callbacks.query = query;
     machine_callbacks.trace = &trace;
+    machine_callbacks.last_trace_index = (size_t)-1;
     status = re_backward_machine_goal_supported(engine, goal);
     if (status == RE_STATUS_OK) {
-        re_goal_machine_callbacks_t callbacks = {
-            &machine_callbacks, machine_make_proof, machine_push_trace, machine_reset_trace
+            re_goal_machine_callbacks_t callbacks = {
+            &machine_callbacks, machine_make_proof, machine_push_trace, machine_reset_trace,
+            machine_push_trace_parent
         };
         status = re_backward_machine_goal_run(query, goal, &callbacks);
         environment_destroy(&query->allocator, &environment);
         re_free(&query->allocator, trace.names);
+        re_free(&query->allocator, trace.parents);
         if (status == RE_STATUS_LIMIT) query->result = RE_QUERY_LIMIT;
         else if (status != RE_STATUS_OK) { re_query_destroy(query); return status; }
         else query->result = query->proof_count != 0u ? RE_QUERY_PROVED : RE_QUERY_UNKNOWN;
@@ -946,16 +1010,11 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
         re_free(&query->allocator, query);
         return status;
     }
-    if (!compatibility_program_supported(engine)) {
-        environment_destroy(&query->allocator, &environment);
-        re_free(&query->allocator, trace.names);
-        re_free(&query->allocator, query);
-        return RE_STATUS_NOT_SUPPORTED;
-    }
     if (query->max_depth == (size_t)-1 ||
         query->max_depth + 1u > (size_t)-1 / sizeof(*frames)) {
         environment_destroy(&query->allocator, &environment);
         re_free(&query->allocator, trace.names);
+        re_free(&query->allocator, trace.parents);
         re_free(&query->allocator, query);
         return RE_STATUS_LIMIT;
     }
@@ -963,14 +1022,18 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
     if (frames == NULL) {
         environment_destroy(&query->allocator, &environment);
         re_free(&query->allocator, trace.names);
+        re_free(&query->allocator, trace.parents);
         re_free(&query->allocator, query);
         return RE_STATUS_OUT_OF_MEMORY;
     }
-    status = general_machine_goal_run(query, goal, NULL, 0u, &environment, 0u, frames, 0u,
+    status = parameter_goal_execute(query, goal, NULL, 0u, &environment, 0u, frames, 0u,
                                       &trace, 1, NULL);
+    if ((status == RE_STATUS_OK || status == RE_STATUS_NOT_FOUND) && trace.depth_exhausted)
+        status = RE_STATUS_LIMIT;
     environment_destroy(&query->allocator, &environment);
     re_free(&query->allocator, frames);
     re_free(&query->allocator, trace.names);
+    re_free(&query->allocator, trace.parents);
     if (status == RE_STATUS_LIMIT) query->result = RE_QUERY_LIMIT;
     else if (status != RE_STATUS_OK) { re_query_destroy(query); return status; }
     else query->result = query->proof_count != 0u ? RE_QUERY_PROVED : RE_QUERY_UNKNOWN;

@@ -126,7 +126,7 @@ re_status_t re_backward_machine_goal_run(re_query_t *query, re_string_t goal,
         re_backward_machine_frame_t *frame = &context.frames[context.frame_count - 1u];
         if (frame->depth > query->max_depth) { status = RE_STATUS_LIMIT; break; }
         if (frame->state == RE_BACKWARD_FRAME_RETURN) {
-            if (frame->result && frame->parent_id == RE_BACKWARD_MACHINE_FRAME_ID_INVALID) {
+            if (frame->result.kind == RE_BACKWARD_MACHINE_RESULT_TRUE && frame->parent_id == RE_BACKWARD_MACHINE_FRAME_ID_INVALID) {
                 if (query->proof_count < query->max_solutions)
                     status = callbacks->make_proof(callbacks->context);
                 callbacks->reset_trace(callbacks->context, frame->trace_start);
@@ -134,13 +134,13 @@ re_status_t re_backward_machine_goal_run(re_query_t *query, re_string_t goal,
                 frame->state = RE_BACKWARD_FRAME_GOAL_SELECT;
             } else {
                 re_backward_machine_frame_id_t parent_id = frame->parent_id;
-                int result = frame->result;
+                re_backward_machine_result_kind_t result = frame->result.kind;
                 size_t trace_start = frame->trace_start;
                 context.frame_count--;
                 frame = re_backward_machine_context_frame(&context, parent_id);
                 if (frame == NULL) { status = RE_STATUS_ERROR; break; }
-                if (result) {
-                    frame->result = 1;
+                if (result == RE_BACKWARD_MACHINE_RESULT_TRUE) {
+                    frame->result.kind = RE_BACKWARD_MACHINE_RESULT_TRUE;
                     frame->state = RE_BACKWARD_FRAME_RETURN;
                 } else {
                     callbacks->reset_trace(callbacks->context, trace_start);
@@ -162,11 +162,20 @@ re_status_t re_backward_machine_goal_run(re_query_t *query, re_string_t goal,
                 kind = simple_condition(rule->condition, &child);
                 if (kind == 0) { status = RE_STATUS_NOT_FOUND; break; }
                 frame->trace_start = re_backward_machine_trace_checkpoint(&context);
-                status = callbacks->push_trace(callbacks->context, frame->goal);
+                if (callbacks->push_trace_parent != NULL) {
+                    size_t trace_index = (size_t)-1;
+                    status = callbacks->push_trace_parent(callbacks->context, frame->goal,
+                                                   frame->parent_id == RE_BACKWARD_MACHINE_FRAME_ID_INVALID
+                                                       ? (size_t)-1
+                                                       : re_backward_machine_context_frame(&context,
+                                                           frame->parent_id)->trace_index,
+                                                   &trace_index);
+                    frame->trace_index = trace_index;
+                } else status = callbacks->push_trace(callbacks->context, frame->goal);
                 if (status != RE_STATUS_OK) break;
                 selected = 1;
                 if (kind == 1) {
-                    frame->result = 1;
+                    frame->result.kind = RE_BACKWARD_MACHINE_RESULT_TRUE;
                     frame->state = RE_BACKWARD_FRAME_RETURN;
                 } else if (active_parent(&context, frame->parent_id, child)) {
                     callbacks->reset_trace(callbacks->context, frame->trace_start);
@@ -196,7 +205,7 @@ re_status_t re_backward_machine_goal_run(re_query_t *query, re_string_t goal,
                     context.frame_count--;
                     continue;
                 }
-                frame->result = 0;
+                frame->result.kind = RE_BACKWARD_MACHINE_RESULT_FALSE;
                 frame->state = RE_BACKWARD_FRAME_RETURN;
             }
         }

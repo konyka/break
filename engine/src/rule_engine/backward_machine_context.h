@@ -21,12 +21,31 @@ typedef enum re_backward_machine_frame_ownership_t {
 } re_backward_machine_frame_ownership_t;
 
 typedef struct re_backward_machine_environment_t {
-    void *items;
+    struct re_backward_machine_binding_t *items;
     size_t count;
     size_t capacity;
 } re_backward_machine_environment_t;
 
+typedef struct re_backward_machine_binding_t {
+    re_string_t name;
+    re_value_t value;
+    char *name_data;
+    char *string_data;
+} re_backward_machine_binding_t;
+
 typedef size_t re_backward_machine_frame_id_t;
+
+typedef enum re_backward_machine_result_kind_t {
+    RE_BACKWARD_MACHINE_RESULT_PENDING,
+    RE_BACKWARD_MACHINE_RESULT_TRUE,
+    RE_BACKWARD_MACHINE_RESULT_FALSE,
+    RE_BACKWARD_MACHINE_RESULT_NOT_SUPPORTED
+} re_backward_machine_result_kind_t;
+
+typedef struct re_backward_machine_result_t {
+    re_backward_machine_result_kind_t kind;
+    re_backward_machine_frame_id_t parent_id;
+} re_backward_machine_result_t;
 
 typedef struct re_backward_machine_frame_t {
     re_backward_machine_frame_id_t id;
@@ -34,13 +53,16 @@ typedef struct re_backward_machine_frame_t {
     re_backward_machine_frame_state_t state;
     re_backward_machine_frame_ownership_t ownership;
     re_string_t goal;
+    re_operand_t *arguments;
+    size_t argument_count;
     const re_expr_t *condition;
     const re_operand_t *operand;
     re_backward_machine_environment_t environment;
     size_t continuation;
     size_t depth;
     size_t trace_start;
-    int result;
+    size_t trace_index;
+    struct re_backward_machine_result_t result;
 } re_backward_machine_frame_t;
 
 typedef struct re_backward_machine_trace_t {

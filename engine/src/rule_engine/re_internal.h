@@ -235,6 +235,7 @@ typedef struct re_rete_token_t {
 struct re_rete_network_t {
     re_allocator_impl_t allocator;
     re_facts_t *facts;
+    re_engine_t *owner_engine;
     const re_program_t *program;
     re_rete_condition_t *conditions;
     size_t condition_count;

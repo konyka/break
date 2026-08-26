@@ -36,8 +36,18 @@ re_status_t re_backward_machine_environment_transfer(
 }
 
 static void frame_release(const re_allocator_impl_t *allocator, re_backward_machine_frame_t *frame) {
-    if (frame->ownership == RE_BACKWARD_FRAME_OWNS_ENVIRONMENT)
+    size_t index;
+    if (frame->ownership == RE_BACKWARD_FRAME_OWNS_ENVIRONMENT) {
+        re_backward_machine_binding_t *items = frame->environment.items;
+        for (index = 0u; index < frame->environment.count; ++index) {
+            re_free(allocator, items[index].name_data);
+            re_free(allocator, items[index].string_data);
+        }
         re_free(allocator, frame->environment.items);
+    }
+    for (index = 0u; index < frame->argument_count; ++index)
+        re_operand_destroy(allocator, &frame->arguments[index]);
+    re_free(allocator, frame->arguments);
     re_backward_machine_frame_reset(frame);
 }
 
@@ -57,6 +67,8 @@ void re_backward_machine_frame_init(re_backward_machine_frame_t *frame,
     frame->state = state;
     frame->parent_id = parent_id;
     frame->ownership = ownership;
+    frame->result.kind = RE_BACKWARD_MACHINE_RESULT_PENDING;
+    frame->result.parent_id = RE_BACKWARD_MACHINE_FRAME_ID_INVALID;
 }
 
 re_status_t re_backward_machine_context_init(re_backward_machine_context_t *context,
@@ -74,7 +86,6 @@ void re_backward_machine_context_reset(re_backward_machine_context_t *context) {
     for (index = 0u; index < context->frame_count; ++index)
         frame_release(context->allocator, &context->frames[index]);
     context->frame_count = 0u;
-    context->next_id = 0u;
     re_backward_machine_trace_cleanup(context, 0u);
 }
 
