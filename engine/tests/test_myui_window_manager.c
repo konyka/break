@@ -553,6 +553,29 @@ TEST(text_area_wrap_oom_keeps_previous_cache)
   my_widget_unref(area);
 }
 
+TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms)
+{
+  text_area_fail_alloc_t state = {false};
+  my_allocator_t allocator = {&state, text_area_fail_alloc,
+                              text_area_fail_calloc, text_area_fail_realloc,
+                              text_area_fail_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  const my_visual_line_t* line;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_text(area, "a\nb\nc\nd"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_folded_range(area, 1, 2, true), MY_RET_OK);
+  state.fail = true;
+  ASSERT_EQ(my_text_area_visual_line_count(area), 3u);
+  line = my_text_area_visual_line_at(area, 1);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 1u);
+  line = my_text_area_visual_line_at(area, 2);
+  ASSERT_NOT_NULL(line);
+  ASSERT_EQ(line->phys, 3u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_syntax_is_lazy_and_budgeted)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1571,6 +1594,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_many_nested_folds_build_visible_rows_once);
     RUN_TEST(text_area_folded_range_rebuilds_wrapped_visual_lines);
     RUN_TEST(text_area_wrap_oom_keeps_previous_cache);
+    RUN_TEST(text_area_folded_rows_remain_hidden_when_visible_cache_ooms);
     RUN_TEST(text_area_syntax_is_lazy_and_budgeted);
     RUN_TEST(text_area_syntax_replacement_invalidates_tokens);
     RUN_TEST(text_area_syntax_key_edit_invalidates_suffix);

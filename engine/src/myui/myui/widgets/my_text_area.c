@@ -65,6 +65,41 @@ static bool ta_row_hidden(const my_text_area_t* ta, size_t row) {
   return false;
 }
 
+static size_t ta_visible_row_count_uncached(const my_text_area_t* ta) {
+  size_t row;
+  size_t visible = 0;
+  for (row = 0; row < ta_line_count(ta); row++) {
+    if (!ta_row_hidden(ta, row)) visible++;
+  }
+  return visible;
+}
+
+static size_t ta_visible_row_at_uncached(const my_text_area_t* ta,
+                                         size_t index) {
+  size_t row;
+  size_t visible = 0;
+  size_t line_count = ta_line_count(ta);
+  if (line_count == 0) return 0;
+  for (row = 0; row < line_count; row++) {
+    if (ta_row_hidden(ta, row)) continue;
+    if (visible == index) return row;
+    visible++;
+  }
+  return line_count - 1;
+}
+
+static size_t ta_visible_index_of_row_uncached(const my_text_area_t* ta,
+                                               size_t row) {
+  size_t current;
+  size_t visible = 0;
+  for (current = 0; current < row && current < ta_line_count(ta);
+       current++) {
+    if (!ta_row_hidden(ta, current)) visible++;
+  }
+  if (row >= ta_line_count(ta) || ta_row_hidden(ta, row)) return 0;
+  return visible;
+}
+
 static my_ret_t ta_visible_rows_ensure(my_text_area_t* ta) {
   my_darray_t* rows;
   size_t row;
@@ -126,7 +161,7 @@ static size_t ta_visible_row_count(my_text_area_t* ta) {
     return ta_line_count(ta);
   }
   if (ta_visible_rows_ensure(ta) != MY_RET_OK || ta->visible_rows == NULL) {
-    return ta_line_count(ta);
+    return ta_visible_row_count_uncached(ta);
   }
   return my_darray_size(ta->visible_rows);
 }
@@ -136,7 +171,7 @@ static size_t ta_visible_row_at(my_text_area_t* ta, size_t index) {
     return index;
   }
   if (ta_visible_rows_ensure(ta) != MY_RET_OK || ta->visible_rows == NULL) {
-    return index < ta_line_count(ta) ? index : ta_line_count(ta) - 1;
+    return ta_visible_row_at_uncached(ta, index);
   }
   return (size_t)my_darray_get(ta->visible_rows, index);
 }
@@ -147,7 +182,7 @@ static size_t ta_visible_index_of_row(my_text_area_t* ta, size_t row) {
     return row;
   }
   if (ta_visible_rows_ensure(ta) != MY_RET_OK || ta->visible_rows == NULL) {
-    return row;
+    return ta_visible_index_of_row_uncached(ta, row);
   }
   for (i = 0; i < my_darray_size(ta->visible_rows); i++) {
     if ((size_t)my_darray_get(ta->visible_rows, i) == row) {

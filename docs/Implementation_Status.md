@@ -1839,3 +1839,13 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 无折叠默认路径不分配活动栈，编辑和渲染后端 API 不变。
 - TDD 新增 `text_area_many_nested_folds_build_visible_rows_once`；定向
   `test_myui_window_manager` 达到 **42/42**。
+
+## myui folding visible-row OOM correctness（2026-08-26）
+
+- 以 TDD 新增 `text_area_folded_rows_remain_hidden_when_visible_cache_ooms`，覆盖可见行
+  缓存数组或活动栈分配失败时的 count、visual index 和 physical row 映射。
+- 缓存构建失败不再把全部物理行错误暴露给光标、滚动和绘制路径；三个查询改用不分配内存
+  的线性回退。正常缓存路径仍为 O(rows+ranges)，只有 OOM 回退允许 O(rows*ranges)，以
+  保证资源压力下的语义正确性。
+- 验证：`test_myui_window_manager` **43/43** 通过；实现保持 widget/core 与所有渲染后端
+  API 隔离。
