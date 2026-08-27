@@ -33,6 +33,12 @@ Extension IDs, capability bits, existing enum values, and existing struct field
 order are append-only. A declaration in the header is not an implementation;
 until a bit is reported, callers must treat that family as unsupported.
 
+The forward `in` operator is a bounded local slice: the right-hand side may be
+an array literal with 1-64 scalar elements or a structured array containing scalar members. Comparisons
+use typed scalar equality, including exact `int64` equality; empty literals and
+non-array/malformed right-hand sides are rejected by the parser. This does not
+claim full upstream collection, property, or method-call semantics.
+
 ## Function contract table
 
 | Function | Caller owns | Engine/API owns | Failure and output rules |
@@ -42,6 +48,13 @@ until a bit is reported, callers must treat that family as unsupported.
 | `re_facts_create` | allocator and input limits | returned facts | `NULL` on invalid allocator or OOM |
 | `re_facts_destroy` | handle until call | copied names and values | NULL-safe, no return status |
 | `re_facts_set` | name/value memory after return | copied name/value | returns invalid argument, limit, or OOM without partial update |
+
+RETE network ownership is exclusive per facts store. Creating a second network
+while the store already has an attached network returns `RE_STATUS_BUSY`; the
+existing network and every previously returned handle remain valid until the
+caller destroys that network. The engine uses RETE for incremental provenance,
+but rule matching remains tied to the IR rule result when an exact token cannot
+be selected, rather than treating a nonzero activation count as a rule match.
 | `re_facts_get` | output storage | returned string slice temporarily | returns not found or invalid argument; no allocation |
 | `re_program_load` | source memory after return | candidate on success | output is unchanged on failure; candidate is caller-owned until install |
 | `re_program_destroy` | candidate until call | candidate allocations | NULL-safe, no return status |
@@ -64,7 +77,12 @@ Fact transactions are explicit, single-owner overlays. `re_facts_begin` deep-cop
 the current fact table and returns `RE_STATUS_BUSY` when another transaction is
 active. Transaction mutations are isolated until `re_facts_commit`; commit swaps
 the staged table before dispatching deterministic insert/update/retract events.
-`re_facts_rollback` discards the staged table and dispatches no events. Failed
+Direct insertion of an existing active name is an update and emits only one
+`RE_FACT_UPDATE` event; insertion of a new name emits one `RE_FACT_INSERT`.
+`re_facts_rollback` discards the staged table and dispatches no events. A
+notification callback observes committed state; if it fails, the commit remains
+committed, no compensating rollback event is emitted, and the RETE network is
+invalidated for rebuild. Failed
 begin operations return `RE_STATUS_OUT_OF_MEMORY` without changing live facts.
 
 Loading and installation are separate so a caller can parse and validate a
@@ -237,7 +255,10 @@ busy unregister is a no-op rather than a returned status.
 
 Structured values use opaque value handles so ownership and recursive layout can
 evolve without changing `re_value_t`. Objects and arrays copy their inputs and
-bound keys, depth, and collection size. `RE_VALUE_NULL`, `RE_VALUE_UNKNOWN`, and
+bound keys, depth, and collection size. Structured values are copied and
+destroyed recursively only through the documented maximum nesting depth of 64;
+attempting to add a child beyond that bound returns `RE_STATUS_LIMIT`.
+`RE_VALUE_NULL`, `RE_VALUE_UNKNOWN`, and
 `RE_STATUS_NOT_FOUND` distinguish explicit null, unknown, and missing paths.
 Fact lifecycle IDs contain a slot and generation; retract invalidates the old
 generation, and insert/update/retract notifications carry copied-name/value

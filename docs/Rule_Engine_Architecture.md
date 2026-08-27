@@ -15,9 +15,14 @@ Implemented now:
 - literal and fact-reference `then` assignments applied before callback notification;
 - flat fact access with exact flat-key precedence for dotted names;
 - forward execution;
+- a private immutable compiled IR candidate with bounded index tables, copied term
+  names, deterministic content IDs, and bounded source-envelope spans. The
+  forward evaluator consumes the validated IR; backward evaluation retains
+  its compatibility-tree path for the deliberately bounded query seam.
 - exact flat-key lookup for dotted fact names; structured-value path traversal is
   bounded and separately tested, while rule-condition fallback remains flat-key only.
 - bounded object/array values and nested path lookup through the versioned value API;
+- forward string operators `contains`, `startsWith`, `endsWith`, and `matches`, plus `+=` array append actions. The tested bounded `in` slice accepts non-empty literal arrays and structured arrays containing scalar members, compares booleans, strings, and numeric values with typed equality, and caps literal elements at 64; empty literals and malformed/non-array right-hand sides are rejected. This is not full upstream collection semantics.
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded, non-capability-bearing query seam for exact flat goals and
   recursive rule bodies with literal/propagated formal binding, nested goal
@@ -214,10 +219,14 @@ RETE-UL: it has no persistent agenda, truth maintenance, or general condition
 graph. Agenda groups, streaming, backward chaining, concurrency, and all other
 RETE features remain outside this milestone.
 
-One run owns its activation list. A matching rule applies its parsed action
-assignment, then invokes the callback; the callback may further mutate facts
-through the supplied fact handle. Callback failure, cancellation, and limit
-exhaustion stop the run and return the corresponding status. Salience ordering
+One run owns its activation list. Each matching rule executes all parsed action
+  assignments and its callback in one fact transaction; changes become visible only
+  after action processing succeeds, then fact notifications are emitted from the
+  committed state. If a notification callback returns an error, the commit remains
+  committed and no compensating rollback event is emitted. The RETE
+network is invalidated so its derived state is rebuilt before subsequent use.
+Cancellation and limit exhaustion roll back the in-flight activation and stop
+the run with the corresponding status. Salience ordering
 is locally verified; persistent agenda groups, full producer-provenance
 semantics, and public agenda/RETE handles remain unsupported. The optional C11
 backend evaluates only pure read-only conditions in private workers, merges

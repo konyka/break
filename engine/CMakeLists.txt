@@ -704,10 +704,10 @@ endif()
 # Rule-engine core: C99-only and independent of engine graphics, UI, and Lua.
 add_library(rule_engine_core STATIC
     src/rule_engine/allocator.c src/rule_engine/facts.c src/rule_engine/values.c
-    src/rule_engine/parser.c src/rule_engine/engine.c src/rule_engine/extensions.c
+    src/rule_engine/parser.c src/rule_engine/ir.c src/rule_engine/ir_validate.c src/rule_engine/engine.c src/rule_engine/extensions.c
     src/rule_engine/transactions.c
     src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
-    src/rule_engine/stream_correlation.c
+     src/rule_engine/stream_correlation.c src/rule_engine/ir_eval.c
     src/rule_engine/rete.c src/rule_engine/advanced.c src/rule_engine/backward.c
      src/rule_engine/backward_machine.c
       src/rule_engine/backward_machine_context.c
@@ -781,6 +781,12 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine_transactions PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine_transactions PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_transactions COMMAND test_rule_engine_transactions)
+
+    add_executable(test_rule_engine_ir tests/test_rule_engine_ir.c)
+    set_property(TARGET test_rule_engine_ir PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_ir PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_ir PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_ir COMMAND test_rule_engine_ir)
 
     add_executable(test_rule_engine_rete_incremental tests/test_rule_engine_rete_incremental.c)
     set_property(TARGET test_rule_engine_rete_incremental PROPERTY C_STANDARD 99)

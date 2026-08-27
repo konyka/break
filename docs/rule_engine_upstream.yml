@@ -67,5 +67,160 @@ feature_families:
     status: verified_upstream
     evidence: [CHANGELOG.md:1.21.4, README.md]
     summary: Dotted field references in actions resolve to their actual value rather than a literal path.
-local_implementation_status: pending
-parity_statement: This file records upstream evidence only; it does not establish local implementation or full parity.
+local_implementation_status: partial
+parity_statement: This file records upstream evidence and the inventory baseline; it does not establish local implementation or full parity. Local classifications are authoritative only when backed by an implementation reference and an executed local test reference.
+classification_vocabulary:
+  implemented: local code exists, but parity still requires the named conformance test
+  tested: local behavior is executed by the named test and is equivalent or exact as stated
+  pending: scoped for parity, but local evidence is incomplete
+  unsupported: local implementation intentionally does not provide the upstream behavior
+  optional_backend: available only through a separately enabled local backend
+  blocked: verification or implementation is blocked by an unavailable dependency/service
+  exact_parity: observable semantics and contract match the upstream slice
+  equivalent_behavior: observable outcome is preserved through a different C99 implementation or narrower boundary
+  bounded_behavior: deliberately narrower than upstream and must never be labeled exact_parity
+inventory:
+  public_modules:
+    - id: lib
+      upstream_ref: src/lib.rs
+      local_status: implemented
+      local_ref: engine/src/rule_engine/rule_engine.h
+      local_tests: [engine/tests/rule_engine_c99_consumer.c]
+      parity: equivalent_behavior
+      notes: C99 opaque ABI replaces Rust module exports; declarations alone are not capability evidence.
+    - id: engine
+      upstream_ref: src/engine/
+      local_status: tested
+      local_ref: engine/src/rule_engine/engine.c
+      local_tests: [engine/tests/test_rule_engine.c]
+      parity: equivalent_behavior
+      notes: Forward execution, assignment, callback, limits, cancellation, and transactional install are covered; plugin actions and full Rust engine APIs are not.
+    - id: errors
+      upstream_ref: src/errors.rs
+      local_status: tested
+      local_ref: engine/src/rule_engine/rule_engine.h
+      local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c]
+      parity: equivalent_behavior
+      notes: Direct re_status_t ABI replaces the upstream typed Rust error enum.
+    - id: expression
+      upstream_ref: src/expression.rs
+      local_status: pending
+      local_ref: engine/src/rule_engine/parser.c
+      local_tests: [engine/tests/test_rule_engine.c]
+      parity: bounded_behavior
+      notes: Local parser/evaluator covers the tested expression subset; upstream arithmetic, method calls, coercion, and built-ins are not fully inventoried as parity.
+    - id: parser
+      upstream_ref: src/parser/
+      local_status: tested
+      local_ref: engine/src/rule_engine/parser.c
+      local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c]
+      parity: bounded_behavior
+      notes: Named rules, conjunctions, salience, selected controls, references, and bounded modules are tested; full GRL syntax is pending.
+    - id: plugins
+      upstream_ref: src/plugins/
+      local_status: pending
+      local_ref: engine/src/rule_engine/extensions.c
+      local_tests: [engine/tests/test_rule_engine.c]
+      parity: equivalent_behavior
+      notes: Custom-function callback boundary is tested; upstream built-in plugin suite is not locally present.
+    - id: rete
+      upstream_ref: src/rete/
+      local_status: pending
+      local_ref: engine/src/rule_engine/rete.c
+      local_tests: [engine/tests/test_rule_engine_rete_incremental.c]
+      parity: bounded_behavior
+      notes: Local private RETE is a narrow conjunction seam, not upstream RETE-UL.
+    - id: types
+      upstream_ref: src/types.rs
+      local_status: tested
+      local_ref: engine/src/rule_engine/rule_engine.h
+      local_tests: [engine/tests/rule_engine_c99_consumer.c, engine/tests/test_rule_engine.c]
+      parity: equivalent_behavior
+      notes: C99 tagged values cover the tested scalar/null/unknown subset; Rust type and coercion surface is not identical.
+    - id: backward
+      upstream_ref: src/backward/
+      local_status: pending
+      local_ref: engine/src/rule_engine/backward.c
+      local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c]
+      parity: bounded_behavior
+      notes: Bounded goal recursion and bindings are tested; arbitrary unification and proof sharing are absent.
+    - id: streaming
+      upstream_ref: src/streaming/
+      local_status: pending
+      local_ref: engine/src/rule_engine/tumbling_session.c
+      local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c]
+      parity: bounded_behavior
+      notes: Window/correlation/provider slices exist, but full streaming patterns and watermark-integrated runtime are absent.
+  cargo_features:
+    - id: default
+      upstream_ref: Cargo.toml:[features].default
+      local_status: tested
+      local_ref: engine/CMakeLists.txt:704-742
+      local_tests: [engine/tests/test_rule_engine.c]
+      parity: equivalent_behavior
+    - id: streaming
+      upstream_ref: Cargo.toml:[features].streaming
+      local_status: implemented
+      local_ref: engine/src/rule_engine/extensions.c
+      local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c]
+      parity: bounded_behavior
+    - id: streaming-redis
+      upstream_ref: Cargo.toml:[features].streaming-redis
+      local_status: blocked
+      local_ref: engine/CMakeLists.txt:719-730
+      local_tests: []
+      parity: unsupported
+      notes: Native Redis adapter is unavailable; CMake only detects hiredis and deliberately does not enable runtime support.
+    - id: backward-chaining
+      upstream_ref: Cargo.toml:[features].backward-chaining
+      local_status: implemented
+      local_ref: engine/src/rule_engine/backward.c
+      local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c]
+      parity: bounded_behavior
+    - id: all-features
+      upstream_ref: Cargo.toml:package.metadata.docs.rs:all-features
+      local_status: pending
+      local_ref: engine/CMakeLists.txt:704-742
+      local_tests: []
+      parity: unsupported
+      notes: There is no local single switch equivalent to upstream all-features.
+  syntax_families:
+    - {id: rule-structure-and-actions, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/parser/grl.rs], local_status: tested, local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/engine.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior}
+    - {id: comparisons-and-boolean-logic, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs], local_status: tested, local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/engine.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior}
+    - {id: arithmetic-and-variable-references, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/expression.rs], local_status: tested, local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior, notes: Precedence, integer/double arithmetic, malformed expressions, division by zero, and checked integer overflow are covered; full upstream expression syntax remains pending.}
+    - {id: exists-not-forall, upstream_refs: [docs/core-features/FEATURES.md, src/rete/pattern.rs], local_status: unsupported, local_refs: [], local_tests: [], parity: unsupported}
+    - {id: arrays-multifield-and-in, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, src/rete/multifield.rs], local_status: tested, local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, notes: Non-empty literal arrays and structured arrays containing scalar members support typed membership; literal arrays are capped at 64 elements and full upstream collection semantics remain pending.}
+    - {id: modules-import-export, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/mod.rs], local_status: tested, local_refs: [engine/src/rule_engine/advanced.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior}
+    - {id: stream-patterns-windows-and-correlation, upstream_refs: [docs/advanced-features/STREAMING.md, src/streaming/], local_status: pending, local_refs: [engine/src/rule_engine/tumbling_session.c, engine/src/rule_engine/stream_correlation.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior}
+    - {id: backward-queries-unification-negation-aggregation, upstream_refs: [docs/api-reference/GRL_QUERY_SYNTAX.md, src/backward/], local_status: pending, local_refs: [engine/src/rule_engine/backward.c], local_tests: [engine/tests/test_rule_engine_backward.c], parity: bounded_behavior}
+  runtime_contracts:
+    - {id: ownership-and-lifetimes, upstream_refs: [src/engine/, src/rete/, src/backward/], local_status: tested, local_refs: [engine/src/rule_engine/allocator.c, engine/src/rule_engine/facts.c, engine/src/rule_engine/query.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_backward_bindings.c], parity: equivalent_behavior}
+    - {id: errors-limits-cancellation, upstream_refs: [src/errors.rs, src/engine/], local_status: tested, local_refs: [engine/src/rule_engine/engine.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c], parity: equivalent_behavior}
+    - {id: concurrency-and-thread-safety, upstream_refs: [src/rete/, src/backward/, tests/backward_thread_safety.rs], local_status: optional_backend, local_refs: [engine/src/rule_engine/executor.c], local_tests: [engine/tests/test_rule_engine_executor_stress.c], parity: bounded_behavior}
+    - {id: transactions-and-fact-lifecycle, upstream_refs: [src/rete/facts.rs, src/rete/tms.rs, tests/tms_test.rs], local_status: tested, local_refs: [engine/src/rule_engine/transactions.c, engine/src/rule_engine/facts.c], local_tests: [engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_rete_incremental.c], parity: equivalent_behavior}
+     - {id: canonical-ir, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_status: implemented, local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c, engine/src/rule_engine/ir_eval.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, notes: Private immutable IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and forward-evaluation boundary; it is not an upstream-compatible internal representation.}
+    - {id: rete-ul-tms-persistent-agenda, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/rete.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c], parity: bounded_behavior, notes: Full RETE-UL, TMS, and persistent agenda are absent locally.}
+    - {id: backward-arbitrary-unification-and-proof-sharing, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/backward.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c], parity: bounded_behavior, notes: Backward arbitrary unification and shared proof provenance are absent locally.}
+    - {id: full-streaming-patterns, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/extensions.c], local_tests: [engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, notes: Full streaming patterns are absent locally.}
+  test_families:
+    upstream_declared_count: 436
+    upstream_refs: [tests/grl_cases.yml, tests/grl_harness.rs, tests/backward_comprehensive_tests.rs, tests/proof_graph_integration_test.rs, tests/test_module_system.rs, tests/tms_test.rs, tests/backward_thread_safety.rs]
+    local_status: tested
+    local_refs: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/rule_engine_fuzz_smoke.c]
+    parity: bounded_behavior
+    notes: Local test counts are not a claim to match the upstream count; focused tests cover only named bounded slices.
+  examples:
+    upstream_source: Cargo.toml:[[example]]
+    local_status: pending
+    local_refs: []
+    parity: unsupported
+    names: [grule_demo, fraud_detection, expression_demo, method_calls_demo, in_operator_demo, string_methods_demo, rete_demo, rete_grl_demo, rete_typed_facts_demo, rete_deffacts_demo, tms_demo, accumulate_grl_demo, conflict_resolution_demo, grl_no_loop_demo, action_handlers_grl_demo, rule_templates_demo, streaming_with_rules_demo, quick_engine_comparison, parallel_engine_demo, memory_usage_comparison, rete_p3_incremental, rete_ul_drools_style, simple_query_demo, ecommerce_approval_demo, medical_diagnosis_demo, grl_query_demo, proof_graph_cache_demo, smart_home_modules, phase3_demo]
+    notes: Upstream example inventory is complete from the pinned Cargo manifest; no local Rust examples exist, so no example is promoted as implemented.
+  benchmarks:
+    upstream_refs: [Cargo.toml:[[bench]], benches/engine_comparison_benchmark.rs, benches/alpha_indexing_benchmark.rs, benches/rete_optimization_benchmark.rs, benches/backward_chaining_benchmarks.rs, benches/backward_chaining_index_benchmark.rs, benches/parallel_benchmarks.rs, benches/clone_optimization_benchmark.rs, benches/rete_1m_rules_benchmark.rs, benches/memory_usage_benchmark.rs]
+    local_status: implemented
+    local_refs: [engine/tools/rule_engine_bench.c, docs/Rule_Engine_Benchmark.md]
+    local_tests: []
+    parity: unsupported
+    names: [engine_comparison_benchmark, alpha_indexing_benchmark, rete_optimization_benchmark, backward_chaining_benchmarks, backward_chaining_index_benchmark, parallel_benchmarks, clone_optimization_benchmark, rete_1m_rules_benchmark, memory_usage_benchmark]
+    notes: The local benchmark is a deterministic core baseline, not an upstream benchmark equivalent and not a correctness test.
