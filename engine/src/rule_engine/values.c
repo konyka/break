@@ -235,3 +235,40 @@ re_status_t re_facts_get_path(const re_facts_t *facts, re_string_t path, re_valu
     }
     return RE_STATUS_NOT_FOUND;
 }
+
+re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t path,
+                                         const re_value_handle_t **out) {
+    size_t i = 0u, start, root_size, root_index;
+    const re_value_handle_t *current = NULL;
+    const re_value_member_t *member;
+    if (facts == NULL || out == NULL || path.data == NULL || path.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL) facts = facts->transaction->staged;
+    for (root_index = 0u; root_index < facts->count; ++root_index)
+        if (facts->entries[root_index].active && facts->entries[root_index].name_size == path.size &&
+            memcmp(facts->entries[root_index].name, path.data, path.size) == 0) {
+            current = facts->entries[root_index].structured;
+            if (current == NULL) return RE_STATUS_INVALID_ARGUMENT;
+            *out = current;
+            return RE_STATUS_OK;
+        }
+    while (i < path.size && path.data[i] != '.') ++i;
+    if (i == path.size) return RE_STATUS_NOT_FOUND;
+    root_size = i;
+    for (root_index = 0u; root_index < facts->count; ++root_index)
+        if (facts->entries[root_index].active && facts->entries[root_index].name_size == root_size &&
+            memcmp(facts->entries[root_index].name, path.data, root_size) == 0) {
+            current = facts->entries[root_index].structured;
+            break;
+        }
+    if (current == NULL) return RE_STATUS_NOT_FOUND;
+    for (start = root_size + 1u; start < path.size; ) {
+        size_t end = start;
+        while (end < path.size && path.data[end] != '.') ++end;
+        member = find_member(current, (re_string_t){path.data + start, end - start});
+        if (member == NULL || member->child == NULL) return RE_STATUS_NOT_FOUND;
+        current = member->child;
+        start = end == path.size ? path.size : end + 1u;
+    }
+    *out = current;
+    return RE_STATUS_OK;
+}

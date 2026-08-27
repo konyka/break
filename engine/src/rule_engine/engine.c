@@ -143,6 +143,34 @@ int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare
     return l <= r;
 }
 
+static size_t activation_premises(const re_engine_t *engine, const re_rule_t *rule,
+                                  size_t activation_index, re_fact_id_t premises[8],
+                                  uint64_t *sequence) {
+    if (engine->rete_network == NULL || engine->rete_network->producer_rule.size != rule->name_size ||
+        memcmp(engine->rete_network->producer_rule.data, rule->name, rule->name_size) != 0)
+        return 0u;
+    if (activation_index < engine->rete_network->activation_count) {
+        const re_rete_activation_t *activation = &engine->rete_network->activations[activation_index];
+        memcpy(premises, activation->lineage, activation->lineage_count * sizeof(*premises));
+        if (sequence != NULL) *sequence = activation->sequence;
+        return activation->lineage_count;
+    }
+    return 0u;
+}
+
+static int find_staged_fact(const re_facts_t *facts, re_string_t name,
+                            re_fact_id_t *out_id) {
+    size_t i;
+    for (i = 0u; i < facts->count; ++i)
+        if (facts->entries[i].active && facts->entries[i].name_size == name.size &&
+            memcmp(facts->entries[i].name, name.data, name.size) == 0) {
+            out_id->slot = (uint64_t)i;
+            out_id->generation = facts->entries[i].generation;
+            return 1;
+        }
+    return 0;
+}
+
 int re_value_equal_typed(const re_value_t *left, const re_value_t *right) {
     if (left == NULL || right == NULL || left->type != right->type) return 0;
     switch (left->type) {
@@ -282,10 +310,6 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     }
     if (engine->program->rule_count == 1u && engine->rete_network == NULL) {
         status = re_rete_network_create_rule(facts, &engine->program->rules[0], &engine->allocator.api, &engine->rete_network);
-        if (status == RE_STATUS_BUSY && facts->rete_network != NULL) {
-            engine->rete_network = facts->rete_network;
-            status = RE_STATUS_OK;
-        }
         if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return finish_run(engine, facts, status);
         if (engine->rete_network != NULL) {
             engine->rete_network->program = engine->program;
@@ -342,12 +366,17 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
         }
         if (options != NULL && options->is_cancelled != NULL && options->is_cancelled(options->cancel_context) != 0) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_CANCELLED); }
          { int matched = 0; status = parallel_matches != NULL ? RE_STATUS_OK : re_ir_match_rule(engine, facts, engine->program->ir, indices[i], &matched); if (parallel_matches != NULL) matched = parallel_matches[indices[i]] != 0u; if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } if (!matched) continue; }
-        if (limits.max_agenda_activations != 0u && agenda_activations >= limits.max_agenda_activations) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
-        ++agenda_activations;
-        event.rule_name.data = rule->name; event.rule_name.size = rule->name_size; event.salience = rule->salience;
-        /* The IR matcher does not expose the selected RETE token, so keep
-         * firing metadata local instead of associating a rule with token 0. */
-        event.activation_sequence = (uint64_t)firings + 1u;
+         {
+             size_t activation_index;
+             size_t activation_count = engine->rete_network != NULL &&
+                 engine->rete_network->producer_rule.size == rule->name_size &&
+                 memcmp(engine->rete_network->producer_rule.data, rule->name, rule->name_size) == 0 &&
+                 engine->rete_network->activation_count != 0u ? engine->rete_network->activation_count : 1u;
+             if (limits.max_agenda_activations != 0u && activation_count > limits.max_agenda_activations - agenda_activations) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
+             agenda_activations += activation_count;
+             for (activation_index = 0u; activation_index < activation_count; ++activation_index) {
+         event.rule_name.data = rule->name; event.rule_name.size = rule->name_size; event.salience = rule->salience;
+         event.activation_sequence = (uint64_t)firings + 1u;
         if (rule->activation_group != NULL) {
             activation_groups[activation_group_count] = rule->activation_group;
             ++activation_group_count;
@@ -366,11 +395,25 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             if (status == RE_STATUS_OK) {
                 for (action_index = 0u; action_index < ir_rule->action_count; ++action_index) {
                     re_value_t value;
+                    re_fact_id_t premises[8];
+                    re_fact_id_t target_id;
+                     size_t premise_count = activation_premises(engine, rule, activation_index, premises, &event.activation_sequence);
                     const re_ir_action_t *action = &engine->program->ir->actions[ir_rule->first_action + action_index];
                     const re_ir_term_t *target = &engine->program->ir->terms[action->target];
                     status = re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
                     if (status != RE_STATUS_OK) break;
-                    status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
+                    if (!action->append && premise_count != 0u &&
+                        !find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id))
+                        status = re_facts_insert_logical(facts, (re_string_t){target->name, target->name_size}, &value,
+                            (re_string_t){rule->name, rule->name_size}, premises, premise_count, &target_id);
+                    else {
+                        status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
+                        if (status == RE_STATUS_OK && !action->append && premise_count != 0u &&
+                            find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id) &&
+                            transaction->staged->entries[target_id.slot].logical)
+                            status = re_facts_justification_add(facts, target_id,
+                                (re_string_t){rule->name, rule->name_size}, premises, premise_count);
+                    }
                     if (status != RE_STATUS_OK) break;
                 }
             }
@@ -384,7 +427,9 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             }
         }
         facts->mutation_allowed = 0;
-        ++firings; if (limits.max_firings != 0u && firings >= limits.max_firings) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
+         ++firings; if (limits.max_firings != 0u && firings >= limits.max_firings) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
+             }
+         }
     }
     re_free(&engine->allocator, parallel_matches);
     free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups);

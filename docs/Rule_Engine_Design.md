@@ -52,9 +52,14 @@ claim full upstream collection, property, or method-call semantics.
 RETE network ownership is exclusive per facts store. Creating a second network
 while the store already has an attached network returns `RE_STATUS_BUSY`; the
 existing network and every previously returned handle remain valid until the
-caller destroys that network. The engine uses RETE for incremental provenance,
-but rule matching remains tied to the IR rule result when an exact token cannot
-be selected, rather than treating a nonzero activation count as a rule match.
+caller destroys that network. Networks created through the public RETE creation
+functions are caller-owned and are never adopted by an engine. An engine-created
+network is engine-owned and is destroyed with the engine. Destroying the facts
+store detaches a caller-owned network, including its subscription and indexed
+fact memories, but does not free the network object; the caller must destroy it.
+The engine uses RETE for incremental provenance and enumerates available bounded
+activations for the matching rule; the IR result remains the match guard when an
+exact token cannot be selected.
 | `re_facts_get` | output storage | returned string slice temporarily | returns not found or invalid argument; no allocation |
 | `re_program_load` | source memory after return | candidate on success | output is unchanged on failure; candidate is caller-owned until install |
 | `re_program_destroy` | candidate until call | candidate allocations | NULL-safe, no return status |

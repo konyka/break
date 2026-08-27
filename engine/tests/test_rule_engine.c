@@ -155,19 +155,20 @@ TEST(private_rete_two_condition_join_lifecycle) {
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
     ASSERT_EQ(state.count, 1u);
-    ASSERT_EQ(re_engine_rete_network(engine, &engine_network), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_get(engine_network, 0u, &activation), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_rete_network(engine, &engine_network), RE_STATUS_NOT_SUPPORTED);
+    ASSERT_TRUE(engine_network == NULL);
+    ASSERT_EQ(re_rete_activation_get(network, 0u, &activation), RE_STATUS_OK);
     ASSERT_EQ(activation.left.slot, left_id.slot);
     ASSERT_EQ(activation.left.generation, left_id.generation);
     ASSERT_EQ(activation.right.slot, right_id.slot);
     ASSERT_EQ(activation.right.generation, right_id.generation);
     ASSERT_EQ(activation.sequence, 1u);
     ASSERT_EQ(re_facts_update(facts, right_id, &updated), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_count(engine_network), 0u);
+    ASSERT_EQ(re_rete_activation_count(network), 0u);
     ASSERT_EQ(re_facts_update(facts, right_id, &right), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_count(engine_network), 1u);
+    ASSERT_EQ(re_rete_activation_count(network), 1u);
     ASSERT_EQ(re_facts_retract(facts, left_id), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_count(engine_network), 0u);
+    ASSERT_EQ(re_rete_activation_count(network), 0u);
     re_engine_destroy(engine);
     re_facts_destroy(facts);
 }

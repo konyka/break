@@ -443,7 +443,25 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
         if (expect_value) {
             value = NULL;
             skip_space(p);
-            if (p->at + 1u < p->size && p->text[p->at] == '(' &&
+            if (word(p, "exists") || word(p, "forall")) {
+                int is_forall = p->at >= 6u && memcmp(p->text + p->at - 6u, "forall", 6u) == 0;
+                value = re_alloc(p->allocator, sizeof(*value));
+                if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+                memset(value, 0, sizeof(*value));
+                value->kind = is_forall ? RE_EXPR_FORALL : RE_EXPR_EXISTS;
+                skip_space(p);
+                if (p->at < p->size && p->text[p->at] == '(') {
+                    status = RE_STATUS_NOT_SUPPORTED;
+                } else {
+                    status = operand(p, &value->left);
+                    if (status == RE_STATUS_OK) status = comparison(p, &value->compare);
+                    if (status == RE_STATUS_OK) status = operand(p, &value->right);
+                    if (status == RE_STATUS_OK &&
+                        (value->left.kind != RE_OPERAND_FACT ||
+                         value->right.kind != RE_OPERAND_LITERAL))
+                        status = RE_STATUS_NOT_SUPPORTED;
+                }
+            } else if (p->at + 1u < p->size && p->text[p->at] == '(' &&
                 (isdigit((unsigned char)p->text[p->at + 1u]) || p->text[p->at + 1u] == '.')) {
                 value = re_alloc(p->allocator, sizeof(*value));
                 if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }

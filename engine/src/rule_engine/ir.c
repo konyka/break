@@ -179,7 +179,7 @@ static re_status_t add_expr(re_ir_program_t *ir, const re_expr_t *expr, size_t *
         }
         frame = &frames[count - 1u];
         if (frame->phase == 0u) {
-            if (frame->expr->kind == RE_EXPR_COMPARE) {
+            if (frame->expr->kind == RE_EXPR_COMPARE || frame->expr->kind == RE_EXPR_EXISTS || frame->expr->kind == RE_EXPR_FORALL) {
                 status = add_term(ir, &frame->expr->left, &ir->exprs[frame->index].left);
                 if (status == RE_STATUS_OK)
                     status = add_term(ir, &frame->expr->right, &ir->exprs[frame->index].right);

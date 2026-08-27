@@ -202,6 +202,34 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                 if (expr->kind == RE_EXPR_TRUE || expr->kind == RE_EXPR_FALSE) { frame->matched = expr->kind == RE_EXPR_TRUE; frame->stage = 99u; }
                 else if (expr->kind == RE_EXPR_NOT || expr->kind == RE_EXPR_AND || expr->kind == RE_EXPR_OR) { frame->stage = 1u; status = frame_push(engine, state, RE_FRAME_EXPR, expr->first, state->frame_count - 1u, 0u); }
                 else if (expr->kind == RE_EXPR_COMPARE) { frame->stage = 2u; status = frame_push(engine, state, RE_FRAME_TERM, expr->left, state->frame_count - 1u, 0u); }
+                else if (expr->kind == RE_EXPR_EXISTS) {
+                    status = re_facts_get_path(facts,
+                        (re_string_t){ir->terms[expr->left].name, ir->terms[expr->left].name_size},
+                        &frame->left);
+                    if (status == RE_STATUS_NOT_FOUND) {
+                        status = RE_STATUS_OK;
+                        frame->matched = 0;
+                        frame->stage = 99u;
+                    } else if (status == RE_STATUS_OK) {
+                        frame->stage = 7u;
+                        status = frame_push(engine, state, RE_FRAME_TERM, expr->right,
+                                            state->frame_count - 1u, 1u);
+                    }
+                }
+                else if (expr->kind == RE_EXPR_FORALL) {
+                    const re_value_handle_t *array = NULL;
+                    status = re_facts_get_structured_path(facts,
+                        (re_string_t){ir->terms[expr->left].name, ir->terms[expr->left].name_size}, &array);
+                    if (status == RE_STATUS_OK) {
+                        if (array->kind != 2) status = RE_STATUS_INVALID_ARGUMENT;
+                        else {
+                            frame->position = 0u;
+                            frame->stage = 8u;
+                            status = frame_push(engine, state, RE_FRAME_TERM, expr->right,
+                                                state->frame_count - 1u, 1u);
+                        }
+                    }
+                }
                 else status = RE_STATUS_NOT_SUPPORTED;
             } else if (frame->stage == 1u) {
                 if (expr->kind == RE_EXPR_NOT) { frame->matched = !frame->matched; frame->stage = 99u; }
@@ -213,6 +241,25 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                 else { frame->stage = 5u; status = frame_push(engine, state, RE_FRAME_TERM, expr->right, state->frame_count - 1u, 1u); }
             } else if (frame->stage == 3u) { frame->matched = re_value_compare(&frame->left, &frame->right, expr->compare); frame->stage = 99u; }
             else if (frame->stage == 5u) { frame->matched = re_value_compare(&frame->left, &frame->right, expr->compare); frame->stage = 99u; }
+            else if (frame->stage == 7u) {
+                frame->matched = re_value_compare(&frame->left, &frame->right, expr->compare);
+                frame->stage = 99u;
+            } else if (frame->stage == 8u) {
+                const re_value_handle_t *array = NULL;
+                status = re_facts_get_structured_path(facts,
+                    (re_string_t){ir->terms[expr->left].name, ir->terms[expr->left].name_size}, &array);
+                if (status == RE_STATUS_OK) {
+                    if (array->kind != 2) status = RE_STATUS_INVALID_ARGUMENT;
+                    else if (frame->position == array->count) { frame->matched = 1; frame->stage = 99u; }
+                    else if (array->members[frame->position].child != NULL) status = RE_STATUS_INVALID_ARGUMENT;
+                    else {
+                        frame->matched = re_value_compare(&array->members[frame->position].scalar,
+                                                          &frame->right, expr->compare);
+                        ++frame->position;
+                        if (!frame->matched) frame->stage = 99u;
+                    }
+                }
+            }
             else if (frame->stage == 4u) { const re_ir_term_t *array = &ir->terms[expr->right]; if (frame->position == array->argument_count) frame->stage = 99u; else { frame->stage = 6u; status = frame_push(engine, state, RE_FRAME_TERM, array->argument_indices[frame->position], state->frame_count - 1u, 1u); } }
             else if (frame->stage == 6u) { if (re_value_equal_typed(&frame->left, &frame->right)) frame->matched = 1; ++frame->position; frame->stage = frame->matched ? 99u : 4u; }
         }

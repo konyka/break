@@ -24,6 +24,11 @@ Implemented now:
 - bounded object/array values and nested path lookup through the versioned value API;
 - forward string operators `contains`, `startsWith`, `endsWith`, and `matches`, plus `+=` array append actions. The tested bounded `in` slice accepts non-empty literal arrays and structured arrays containing scalar members, compares booleans, strings, and numeric values with typed equality, and caps literal elements at 64; empty literals and malformed/non-array right-hand sides are rejected. This is not full upstream collection semantics.
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
+- a bounded fact-store truth-maintenance slice: explicit and logical facts,
+  copied producer names, generation-safe premise IDs, duplicate-coalesced
+  justifications, and cascading retraction after final support removal. This
+  slice is transactional and capped by the existing fact/allocator limits;
+  it is `bounded_behavior`, not full RETE-UL TMS parity.
 - a bounded, non-capability-bearing query seam for exact flat goals and
   recursive rule bodies with literal/propagated formal binding, nested goal
   operands, and registered custom-function operands; general unification and
@@ -162,6 +167,11 @@ never fall back to empty or in-memory state.
 - `re_engine_install` consumes a successfully installed program. After a
   successful call the engine owns it; callers must not destroy or reuse it.
   On failure ownership stays with the caller.
+- A network created by `re_rete_network_create*` is caller-owned and is never
+  adopted by an engine. A network created internally for engine execution is
+  engine-owned and is released with the engine. A facts store owns the network
+  subscription while attached; destroying the store detaches caller-owned
+  networks and clears their indexed state without freeing the network handle.
 - `re_engine_destroy`, `re_facts_destroy`, and `re_program_destroy` release all
   owned allocations and accept `NULL`.
 - Fact names, source bytes, and string values are copied at the call boundary.
@@ -214,10 +224,28 @@ two-condition conjunction over flat facts. It subscribes to generation-safe
 insert/update/retract events, retains alpha memories and beta token pairs across
 runs, stores fact-id lineage plus optional rule-name provenance, and removes
 stale records after lifecycle changes. A matching single-rule run installs this
-network and reuses it for the same fact handle. The implementation is not full
-RETE-UL: it has no persistent agenda, truth maintenance, or general condition
+network and reuses it for the same fact handle. Its first bounded activation
+lineage is the premise set used when that run creates a new logical fact; the
+current forward loop fires each available bounded activation for a matching rule.
+The implementation is not full RETE-UL: it has no persistent agenda, truth maintenance, or general condition
 graph. Agenda groups, streaming, backward chaining, concurrency, and all other
 RETE features remain outside this milestone.
+
+### Bounded truth maintenance milestone
+
+`engine/src/rule_engine/tms.c` owns a private justification table attached to
+the fact store. `re_facts_insert_logical` records one copied producer-rule
+name and a bounded, generation-safe premise set. Justifications are
+deterministically stored, duplicate records coalesce, and a logical fact is
+retracted only after its final justification is removed. Retraction removes
+dependent justifications and propagates through dependent logical facts.
+Transactions clone and swap this metadata with the fact table, so rollback
+does not alter live TMS state. A RETE-backed action derives a new target as a
+logical fact and records the activation's fact IDs; an existing explicit target
+remains explicit. Stale premise IDs and self-cycles are rejected.
+The ABI exposes inspection and mutation helpers for this tested slice only;
+general multi-rule RETE producer inference, persistent agenda integration, arbitrary
+unification, and full upstream TMS remain unsupported.
 
 One run owns its activation list. Each matching rule executes all parsed action
   assignments and its callback in one fact transaction; changes become visible only

@@ -17,7 +17,20 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
         const re_ir_expr_t *expr = &ir->exprs[i];
         if (expr->kind < RE_EXPR_COMPARE || expr->kind > RE_EXPR_FALSE ||
             (expr->kind == RE_EXPR_COMPARE && (expr->compare < RE_COMPARE_TRUE || expr->compare > RE_COMPARE_IN))) return RE_STATUS_INVALID_ARGUMENT;
-        if (expr->kind == RE_EXPR_COMPARE && (!index_ok(expr->left, ir->term_count) || !index_ok(expr->right, ir->term_count))) return RE_STATUS_INVALID_ARGUMENT;
+        if ((expr->kind == RE_EXPR_COMPARE || expr->kind == RE_EXPR_EXISTS || expr->kind == RE_EXPR_FORALL) &&
+            (!index_ok(expr->left, ir->term_count) || !index_ok(expr->right, ir->term_count))) return RE_STATUS_INVALID_ARGUMENT;
+        if (expr->kind == RE_EXPR_EXISTS &&
+            (ir->terms[expr->left].kind != RE_IR_TERM_FACT ||
+             (ir->terms[expr->right].kind != RE_IR_TERM_BOOL &&
+              ir->terms[expr->right].kind != RE_IR_TERM_INT64 &&
+              ir->terms[expr->right].kind != RE_IR_TERM_DOUBLE &&
+             ir->terms[expr->right].kind != RE_IR_TERM_STRING))) return RE_STATUS_INVALID_ARGUMENT;
+        if (expr->kind == RE_EXPR_FORALL &&
+            (ir->terms[expr->left].kind != RE_IR_TERM_FACT ||
+             (ir->terms[expr->right].kind != RE_IR_TERM_BOOL &&
+              ir->terms[expr->right].kind != RE_IR_TERM_INT64 &&
+              ir->terms[expr->right].kind != RE_IR_TERM_DOUBLE &&
+              ir->terms[expr->right].kind != RE_IR_TERM_STRING))) return RE_STATUS_INVALID_ARGUMENT;
         if ((expr->kind == RE_EXPR_NOT || expr->kind == RE_EXPR_AND || expr->kind == RE_EXPR_OR) && !index_ok(expr->first, ir->expr_count)) return RE_STATUS_INVALID_ARGUMENT;
         if ((expr->kind == RE_EXPR_AND || expr->kind == RE_EXPR_OR) && !index_ok(expr->second, ir->expr_count)) return RE_STATUS_INVALID_ARGUMENT;
     }

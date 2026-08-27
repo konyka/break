@@ -28,6 +28,151 @@ static re_status_t run_source(const char *source, const char *fact_name,
     return status;
 }
 
+static re_status_t run_exists(const char *source, int set_fact, int fact_value,
+                              re_value_t *result) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t active = {RE_VALUE_BOOL, {.boolean = fact_value}};
+    re_status_t status;
+    if (engine == NULL || facts == NULL) {
+        re_facts_destroy(facts);
+        re_engine_destroy(engine);
+        return RE_STATUS_OUT_OF_MEMORY;
+    }
+    if (set_fact) status = re_facts_set(facts, text("Customer.Active"), &active);
+    else status = RE_STATUS_OK;
+    if (status == RE_STATUS_OK) status = re_program_load(NULL, text(source), NULL, &program);
+    if (status == RE_STATUS_OK) status = re_engine_install(engine, program);
+    if (status == RE_STATUS_OK) status = re_engine_run(engine, facts, NULL, NULL);
+    if (status == RE_STATUS_OK && result != NULL)
+        status = re_facts_get(facts, text("Result"), result);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+    return status;
+}
+
+TEST(exists_matches_present_flat_fact) {
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(run_exists("rule \"Exists\" { when exists Customer.Active == true then Result = 1; }",
+                        1, 1, &result), RE_STATUS_OK);
+    ASSERT_EQ(result.type, RE_VALUE_INT64);
+    ASSERT_EQ(result.as.int64_value, 1);
+}
+
+TEST(exists_absent_fact_does_not_fire) {
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(run_exists("rule \"Exists\" { when exists Customer.Active == true then Result = 1; }",
+                        0, 0, &result), RE_STATUS_NOT_FOUND);
+}
+
+TEST(exists_nonmatching_fact_does_not_fire) {
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(run_exists("rule \"Exists\" { when exists Customer.Active == true then Result = 1; }",
+                        1, 0, &result), RE_STATUS_NOT_FOUND);
+}
+
+TEST(exists_rejects_malformed_and_compound_shapes) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"Bad\" { when exists Customer.Active then Result = 1; }"),
+        NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"Bad\" { when exists (Customer.Active == true and Ready == true) then Result = 1; }"),
+        NULL, &program), RE_STATUS_NOT_SUPPORTED);
+}
+
+TEST(forall_matches_all_scalar_array_members) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *array = NULL;
+    re_program_t *program = NULL;
+    re_value_t item = {RE_VALUE_INT64, {.int64_value = 3}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &item), RE_STATUS_OK);
+    item.as.int64_value = 5;
+    ASSERT_EQ(re_value_array_append(array, &item), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Values"), array), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"All\" { when forall Values >= 3 then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_OK);
+    ASSERT_EQ(result.as.int64_value, 1);
+    re_value_destroy(array); re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(forall_nonmatching_and_empty_arrays_do_not_fire) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *array = NULL;
+    re_program_t *program = NULL;
+    re_value_t item = {RE_VALUE_INT64, {.int64_value = 2}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &item), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Values"), array), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"All\" { when forall Values >= 3 then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_NOT_FOUND);
+    re_value_destroy(array); array = NULL;
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Values"), array), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Empty\" { when forall Values >= 3 then EmptyResult = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("EmptyResult"), &result), RE_STATUS_OK);
+    re_value_destroy(array); re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(forall_rejects_malformed_and_non_array_values) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t scalar = {RE_VALUE_INT64, {.int64_value = 3}};
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when forall Values >= 3 then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_facts_set(facts, text("Values"), &scalar), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_INVALID_ARGUMENT);
+    program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when forall (Values >= 3) then Result = 1; }"), NULL, &program), RE_STATUS_NOT_SUPPORTED);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(forall_resolves_nested_array_path_and_rejects_nested_members) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *customer = NULL;
+    re_value_handle_t *values = NULL;
+    re_value_handle_t *nested = NULL;
+    re_value_handle_t *bad_customer = NULL;
+    re_value_t item = {RE_VALUE_INT64, {.int64_value = 4}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_value_create_object(facts, &customer), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_array(facts, &values), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(values, &item), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set_value(customer, text("Values"), values), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Customer"), customer), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Nested\" { when forall Customer.Values >= 4 then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_array(facts, &nested), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append_value(values, nested), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_object(facts, &bad_customer), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set_value(bad_customer, text("Values"), values), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Customer"), bad_customer), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_INVALID_ARGUMENT);
+    re_value_destroy(bad_customer); re_value_destroy(nested); re_value_destroy(values); re_value_destroy(customer);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
 TEST(compilation_is_deterministic_and_retains_typed_terms) {
     const char *source = "defmodule Sales { export: all; } rule \"Sales::VIP\"(customer) salience 7 { when customer.Total > 10 and Ready == true then Discount = 1; }";
     re_program_t *first = NULL;
@@ -187,6 +332,14 @@ TEST(ir_validation_rejects_malformed_array_membership_and_actions) {
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(exists_matches_present_flat_fact);
+    RUN_TEST(exists_absent_fact_does_not_fire);
+    RUN_TEST(exists_nonmatching_fact_does_not_fire);
+    RUN_TEST(exists_rejects_malformed_and_compound_shapes);
+    RUN_TEST(forall_matches_all_scalar_array_members);
+    RUN_TEST(forall_nonmatching_and_empty_arrays_do_not_fire);
+    RUN_TEST(forall_rejects_malformed_and_non_array_values);
+    RUN_TEST(forall_resolves_nested_array_path_and_rejects_nested_members);
     RUN_TEST(compilation_is_deterministic_and_retains_typed_terms);
     RUN_TEST(validation_rejects_bad_indices_and_truncated_tables);
     RUN_TEST(validation_rejects_unknown_ir_kinds);

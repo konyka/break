@@ -38,9 +38,11 @@ static re_status_t clone_facts(const re_facts_t *source, re_facts_t **out) {
         }
         copy->entries[index].generation = entry->generation;
         copy->entries[index].active = entry->active;
+        copy->entries[index].logical = entry->logical;
     }
     *out = copy;
     copy->mutation_serial = source->mutation_serial;
+    if (source->tms != NULL && re_tms_clone(source->tms, &copy->allocator, &copy->tms) != RE_STATUS_OK) { re_facts_destroy(copy); return RE_STATUS_OUT_OF_MEMORY; }
     return RE_STATUS_OK;
 }
 
@@ -210,17 +212,21 @@ re_status_t re_facts_txn_get(const re_fact_txn_t *txn, re_string_t name, re_valu
 re_status_t re_facts_commit(re_fact_txn_t *transaction) {
     re_facts_t *facts;
     re_fact_entry_t *entries;
+    re_tms_t *tms;
     size_t count, capacity;
     if (transaction == NULL || transaction->inactive || transaction->facts == NULL ||
         transaction->facts->transaction != transaction) return RE_STATUS_INVALID_ARGUMENT;
     facts = transaction->facts;
     entries = facts->entries; count = facts->count; capacity = facts->capacity;
+    tms = facts->tms;
     facts->entries = transaction->staged->entries;
     facts->count = transaction->staged->count; facts->capacity = transaction->staged->capacity;
+    facts->tms = transaction->staged->tms;
     if (transaction->staged->mutation_serial > facts->mutation_serial)
         facts->mutation_serial = transaction->staged->mutation_serial;
     transaction->staged->entries = entries;
     transaction->staged->count = count; transaction->staged->capacity = capacity;
+    transaction->staged->tms = tms;
     facts->transaction = NULL;
     facts->notifying = 1;
     transaction->inactive = 1;

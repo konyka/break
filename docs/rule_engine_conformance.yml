@@ -98,6 +98,7 @@ features:
     upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
     upstream_status: verified_upstream
     local_status: verified_local
+    ownership_contract: caller-created networks remain caller-owned; engine-created networks are released by the engine; facts destruction detaches caller-owned networks without freeing their handles
     extension_abi: RE_EXTENSION_AGENDA_RETE
     implementation_ref: engine/src/rule_engine/rule_engine.h
     test_ref: engine/tests/test_rule_engine.c
@@ -200,6 +201,19 @@ features:
     implementation_ref: engine/src/rule_engine/values.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Design.md
+  - id: exists-flat-fact-comparison
+    family: core-grl
+    requirement: required
+    syntax: 'exists Customer.Active == true'
+    expected_behavior: Match a bounded flat fact comparison when the exact fact exists and satisfies the scalar comparison; absence and mismatch are ordinary non-matches.
+    upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: engine/src/rule_engine/parser.c
+    test_ref: engine/tests/test_rule_engine_ir.c
+    parity: bounded_behavior
+    behavior_scope: one_flat_fact_scalar_comparison; linear_ir_evaluation; no_private_rete_collector
+    note: General nested or compound exists forms remain pending; the separate bounded forall slice is verified below.
   - id: v1-21-4-action-reference-resolution
     family: v1.21.4-fix
     requirement: required
@@ -211,6 +225,20 @@ features:
     implementation_ref: engine/src/rule_engine/engine.c
     test_ref: engine/tests/test_rule_engine.c
     doc_ref: docs/Rule_Engine_Architecture.md
+  - id: bounded-truth-maintenance
+    family: facts
+    requirement: optional
+    syntax: 'facts.insert_logical(name, value, producer_rule, premise_ids)'
+    expected_behavior: Track explicit versus logical facts with bounded copied producer provenance and generation-safe premise IDs; coalesce duplicate justifications, retain facts while supported, and cascade retraction after final support removal.
+    upstream_refs: [src/rete/tms.rs, tests/tms_test.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: engine/src/rule_engine/tms.c
+    test_ref: engine/tests/test_rule_engine_tms.c
+    doc_ref: docs/Rule_Engine_Architecture.md
+    parity: bounded_behavior
+    behavior_scope: private_fact_store_tms; bounded_justification_table; transactional_clone_swap; deterministic_provenance_inspection; no_full_rete_ul
+    note: This is a tested bounded lifecycle model, not full upstream TMS, persistent agenda integration, or automatic general RETE producer inference.
 conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, and engine/tests/test_backward_machine_context.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, persistent agenda control, full upstream producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
 inventory_manifest: docs/rule_engine_upstream.yml
 classification_policy:
@@ -222,6 +250,7 @@ classification_policy:
 known_gaps:
   - {id: canonical-ir, status: implemented, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Private immutable compiled IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and transactional-install boundary; forward evaluation uses the IR.}
   - {id: grl-string-operators-append-and-bounded-in, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, CHANGELOG.md:1.15.0], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Forward IR supports contains, startsWith, endsWith, matches, += array append, and bounded membership against literal arrays or structured arrays containing scalar members. Literal arrays are capped at 64 elements; typed equality is used and malformed/non-array RHS values are rejected. Full upstream collection semantics and method/property calls remain pending.}
+  - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c], parity: bounded_behavior, note: Local forall is a deliberately narrow array-fact slice: forall <fact-path> <scalar-comparison> <scalar-literal>, with exact-flat-key-first and nested structured-path lookup, scalar direct members only, bounded by existing container/depth/step limits, and vacuous truth for an empty array. Focused tests cover all-pass, mixed/one-fails, empty, absent/non-array, malformed, nested members, allocator failure, and depth/member boundaries. Parenthesized/general quantifiers, arbitrary predicates, fact-type quantification, and RETE-UL quantifier nodes remain pending.}
   - {id: rete-ul-tms-persistent-agenda, status: unsupported, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/advanced.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine.c], parity: bounded_behavior, note: Full RETE-UL, TMS, and persistent agenda are absent; local RETE and agenda rows are bounded equivalents only.}
   - {id: backward-arbitrary-unification-proof-sharing, status: unsupported, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/backward_machine_bind.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c], parity: bounded_behavior, note: Backward arbitrary unification and proof sharing are absent; local binding/proof paths are bounded and non-shared.}
   - {id: full-streaming-patterns, status: unsupported, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_refs: [engine/src/rule_engine/tumbling_session.c, engine/src/rule_engine/stream_correlation.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, note: Full streaming patterns are absent; local windows/correlation are bounded extension seams.}

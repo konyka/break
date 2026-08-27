@@ -235,6 +235,24 @@ re_status_t re_rete_network_create_rule(re_facts_t *facts, const re_rule_t *rule
     return status;
 }
 int re_rete_conditions_from_rule(const re_rule_t *rule, re_rete_condition_t conditions[2]) { size_t count = 0u; return rule != NULL && conditions != NULL && collect(rule->condition, conditions, &count) && count == 2u; }
+void re_rete_network_detach_facts(re_rete_network_t *network) {
+    size_t i;
+    if (network == NULL || network->facts == NULL) return;
+    if (network->facts->rete_network == network) network->facts->rete_network = NULL;
+    if (network->subscription != NULL) {
+        re_subscription_destroy(network->subscription);
+        network->subscription = NULL;
+    }
+    for (i = 0u; i < network->condition_count; ++i) {
+        re_free(&network->allocator, network->alpha_memories[i].facts);
+        network->alpha_memories[i].facts = NULL;
+        network->alpha_memories[i].count = 0u;
+        network->alpha_memories[i].capacity = 0u;
+    }
+    network->activation_count = 0u;
+    network->token_count = 0u;
+    network->facts = NULL;
+}
 void re_rete_network_destroy_internal(re_rete_network_t *network) { size_t i; if (network == NULL) return; if (network->facts != NULL && network->facts->rete_network == network) network->facts->rete_network = NULL; if (network->owner_engine != NULL && network->owner_engine->rete_network == network) network->owner_engine->rete_network = NULL; network->owner_engine = NULL; re_subscription_destroy(network->subscription); for (i = 0u; i < network->condition_count; ++i) re_free(&network->allocator, network->alpha_memories[i].facts); re_free(&network->allocator, network->alpha_memories); re_free(&network->allocator, network->conditions); re_free(&network->allocator, network->tokens); re_free(&network->allocator, network->activations); re_free(&network->allocator, network); }
 size_t re_rete_activation_count(const re_rete_network_t *network) { return network == NULL ? 0u : network->activation_count; }
 re_status_t re_rete_activation_get(const re_rete_network_t *network, size_t index, re_rete_activation_t *out) { if (network == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT; if (index >= network->activation_count) return RE_STATUS_NOT_FOUND; *out = network->activations[index]; return RE_STATUS_OK; }
