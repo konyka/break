@@ -88,7 +88,7 @@ features:
     local_status: verified_local
     extension_abi: RE_EXTENSION_FACT_LIFECYCLE
     implementation_ref: engine/src/rule_engine/rule_engine.h
-    test_ref: engine/tests/test_rule_engine.c
+    test_ref: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_transactions.c]
     doc_ref: docs/Rule_Engine_Design.md
   - id: agenda-rete-control
     family: rete
