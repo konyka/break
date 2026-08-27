@@ -1,8 +1,6 @@
 #include "re_internal.h"
 #include <string.h>
 
-static re_status_t notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
-
 static int same_name(re_string_t name, const re_fact_entry_t *entry) {
     return entry->active && name.size == entry->name_size &&
         memcmp(name.data, entry->name, name.size) == 0;
@@ -42,6 +40,8 @@ void re_facts_destroy(re_facts_t *facts) {
     {
         re_fact_txn_t *transaction = facts->retired_transaction;
         while (transaction != NULL) {
+            /* Retired handles remain valid tombstones after their store dies. */
+            transaction->inactive = 1;
             transaction->facts = NULL;
             transaction = transaction->next_retired;
         }
@@ -69,13 +69,14 @@ void re_facts_destroy(re_facts_t *facts) {
     re_free(&facts->allocator, facts);
 }
 
-re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *value) {
+re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
+                              const re_value_t *value, int emit_event) {
     size_t index; re_fact_entry_t replacement; char *name_copy = NULL; char *string_copy = NULL;
     int was_existing;
     if (facts == NULL || value == NULL || name.data == NULL || name.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
     if (facts->notifying) return RE_STATUS_BUSY;
     if (facts->transaction != NULL)
-        return re_facts_set(facts->transaction->staged, name, value);
+        return re_facts_set_impl(facts->transaction->staged, name, value, emit_event);
     if (facts->limits.max_facts != 0u && facts->count >= facts->limits.max_facts) {
         for (index = 0u; index < facts->count; ++index) if (same_name(name, &facts->entries[index])) break;
         if (index == facts->count) return RE_STATUS_LIMIT;
@@ -127,8 +128,12 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
     replacement.active = facts->entries[index].active;
     facts->entries[index] = replacement;
     facts->mutation_serial++;
-    if (was_existing) return notify(facts, RE_FACT_UPDATE, index);
+    if (emit_event && was_existing) return re_facts_notify(facts, RE_FACT_UPDATE, index);
     return RE_STATUS_OK;
+}
+
+re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *value) {
+    return re_facts_set_impl(facts, name, value, 1);
 }
 
 re_status_t re_facts_resolve(const re_facts_t *facts, re_string_t name, re_value_t *out) {
@@ -147,7 +152,7 @@ re_status_t re_facts_get(const re_facts_t *facts, re_string_t name, re_value_t *
     return re_facts_resolve(facts, name, out_value);
 }
 
-static re_status_t notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index) {
+re_status_t re_facts_notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index) {
     re_subscription_t *subscription = facts->subscriptions;
     re_fact_event_t event;
     int was_notifying = facts->notifying;
@@ -203,7 +208,7 @@ re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
     facts->entries[index].active = 1;
     out_id->slot = (uint64_t)index;
     out_id->generation = facts->entries[index].generation;
-    return notify(facts, RE_FACT_INSERT, index);
+    return re_facts_notify(facts, RE_FACT_INSERT, index);
 }
 
 re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id, const re_value_t *value) {
@@ -239,7 +244,7 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     facts->entries[id.slot].name = name;
     facts->entries[id.slot].name_size = name_size;
     facts->entries[id.slot].value = value;
-    return notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
+    return re_facts_notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
 }
 
 re_status_t re_facts_subscribe(re_facts_t *facts, re_fact_event_fn_t callback,

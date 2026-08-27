@@ -330,6 +330,9 @@ struct re_query_t {
 void *re_alloc(const re_allocator_impl_t *allocator, size_t size);
 void *re_realloc(const re_allocator_impl_t *allocator, void *memory, size_t size);
 void re_free(const re_allocator_impl_t *allocator, void *memory);
+re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
+                              const re_value_t *value, int emit_event);
+re_status_t re_facts_notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
 void re_allocator_init(re_allocator_impl_t *target, const re_allocator_t *source);
 re_limits_t re_default_limits(void);
 re_status_t re_copy_string(const re_allocator_impl_t *allocator, re_string_t input, char **out);

@@ -39,6 +39,26 @@ TEST(compiled_network_persists_across_runs) {
     re_engine_destroy(engine); re_facts_destroy(facts);
 }
 
+TEST(structured_fact_changes_emit_owned_lifecycle_events) {
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *array = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    event_state_t events = {0};
+    re_subscription_t *subscription = NULL;
+    ASSERT_EQ(re_facts_subscribe(facts, record_fact_event, &events, &subscription), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &one), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Tags"), array), RE_STATUS_OK);
+    ASSERT_EQ(events.count, 1u);
+    ASSERT_EQ(events.kinds[0], RE_FACT_INSERT);
+    ASSERT_EQ(re_facts_append_value(facts, text("Tags"), &one), RE_STATUS_OK);
+    ASSERT_EQ(events.count, 2u);
+    ASSERT_EQ(events.kinds[1], RE_FACT_UPDATE);
+    re_subscription_destroy(subscription);
+    re_value_destroy(array);
+    re_facts_destroy(facts);
+}
+
 TEST(engine_destroy_clears_rete_owner) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
@@ -258,6 +278,7 @@ TEST(structured_value_copy_enforces_depth_bound) {
 
 TEST_MAIN_BEGIN()
     RUN_TEST(compiled_network_persists_across_runs);
+    RUN_TEST(structured_fact_changes_emit_owned_lifecycle_events);
     RUN_TEST(engine_destroy_clears_rete_owner);
     RUN_TEST(unrelated_updates_preserve_memories_and_related_changes_propagate);
     RUN_TEST(unchanged_lineage_preserves_activation_sequence_across_unrelated_events);

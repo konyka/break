@@ -136,20 +136,25 @@ void re_value_destroy(re_value_handle_t *value) {
 
 re_status_t re_facts_set_value(re_facts_t *facts, re_string_t name, const re_value_handle_t *value) {
     size_t index;
+    int was_existing;
     re_value_handle_t *copy = NULL;
     re_status_t status;
     if (facts == NULL || value == NULL) return RE_STATUS_INVALID_ARGUMENT;
     if (facts->transaction != NULL)
         return re_facts_set_value(facts->transaction->staged, name, value);
+    for (index = 0u; index < facts->count; ++index)
+        if (facts->entries[index].active && facts->entries[index].name_size == name.size &&
+            memcmp(facts->entries[index].name, name.data, name.size) == 0) break;
+    was_existing = index < facts->count;
     status = value_copy(&facts->allocator, value, &copy);
     if (status != RE_STATUS_OK) return status;
-    status = re_facts_set(facts, name, &(re_value_t){RE_VALUE_NONE, {0}});
+    status = re_facts_set_impl(facts, name, &(re_value_t){RE_VALUE_NONE, {0}}, 0);
     if (status != RE_STATUS_OK) { value_free(&facts->allocator, copy); return status; }
     for (index = 0u; index < facts->count; ++index)
         if (facts->entries[index].name_size == name.size && memcmp(facts->entries[index].name, name.data, name.size) == 0) break;
     value_free(&facts->allocator, facts->entries[index].structured);
     facts->entries[index].structured = copy;
-    return RE_STATUS_OK;
+    return re_facts_notify(facts, was_existing ? RE_FACT_UPDATE : RE_FACT_INSERT, index);
 }
 
 re_status_t re_facts_append_value(re_facts_t *facts, re_string_t name, const re_value_t *value) {
