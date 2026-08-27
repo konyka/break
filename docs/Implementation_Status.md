@@ -1994,3 +1994,15 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   位于 widget/core，不引入 GL、Vulkan、软件 canvas 或平台类型。
 - 验证：normal `test_myui_window_manager` **58/58**；ASan、Vulkan 和最终差异/编码
   门禁待完成。
+
+## myui visual boundary prefix cache（2026-08-27）
+
+- 以 TDD 新增 `text_layout_reuses_font_boundary_prefix_cache`，覆盖 visual x、logical
+  hit-test、selection rects 的 glyph advance 复用和字号变更失效。
+- `my_text_layout_t` 按字体指针/字号缓存 visual boundary 前缀和；视觉 x 查询 O(1)，
+  命中测试在前缀和上 O(log N)，selection rects 不再逐项重新读取 glyph advance。
+- cache 是 caller-owned layout 的有界字段；realloc 失败保留旧缓存并安全回退，destroy
+  释放缓存，不污染全局 LRU master 或跨后端 canvas 契约。
+- 验证：normal/ASan（`detect_leaks=0`）`test_myui_text_layout` **15/15**、
+  `test_myui_window_manager` **58/58**，Vulkan `myui_core`、`git diff --check` 和
+  乱码扫描通过；LeakSanitizer 在当前 ptrace 环境中无法启动。

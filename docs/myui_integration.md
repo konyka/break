@@ -653,3 +653,10 @@ text area 对当前 RTL visual line 保留一条 widget-owned layout 缓存，�
 共享该 layout；命中时不再复制行文本或重新分配 layout，失效只发生在文本、字体或 visual
 line 范围变化后。纯 LTR 仍走零 layout 的快速路径，缓存创建失败则回到原临时 layout
 路径，不依赖任何渲染后端。
+
+## RTL 视觉宽度缓存
+
+`my_text_layout` 对调用者持有的 layout 按字体指针和字号缓存 visual boundary 前缀和。
+`visual_x`、`logical_at_x` 和 selection rects 共享该缓存：首次查询为 O(visual items)，
+后续边界查询为 O(1)，命中测试为 O(log visual items)。layout 仍保持字体无关的逻辑与
+视觉映射；字体或字号变化只重建宽度数组，分配失败回退原有逐字形计算，不改变结果。

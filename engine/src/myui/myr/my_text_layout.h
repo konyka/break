@@ -45,6 +45,10 @@ typedef struct my_text_layout_t {
   size_t logical_len;          /**< original logical codepoint count */
   bool has_rtl;   /**< any RTL-level run (or RTL base) */
   bool rtl_base;  /**< paragraph base direction is RTL (M13b) */
+  int32_t* visual_boundaries; /**< cached visual x prefix sums */
+  size_t visual_boundaries_capacity;
+  const my_font_t* visual_boundaries_font;
+  int32_t visual_boundaries_size;
 } my_text_layout_t;
 
 /**

@@ -241,3 +241,15 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
   Break RHI 边界不变。
 - 验证：normal `test_myui_window_manager` **58/58** 通过；ASan、Vulkan 和文档门禁
   在本阶段收尾复验。
+
+## 已完成：text layout visual boundary prefix cache（2026-08-27）
+
+- 以 TDD 新增 `text_layout_reuses_font_boundary_prefix_cache`，验证视觉 x、命中测试和
+  selection rects 首次计算字形宽度，连续查询不再重复调用 glyph；字号变化会重建。
+- `my_text_layout_t` 按调用者 layout 缓存 visual boundary 前缀和，键为字体指针与字号。
+  `visual_x` 为 O(1)，`logical_at_x` 在前缀和上二分，selection rects 复用宽度，首次
+  建立为 O(visual items)。
+- 分配失败保留旧缓存并回退原逐字形路径；缓存由 layout destroy 释放，不影响全局 LRU
+  master、glyph-run、soft/GLES/Vulkan/Break RHI API 或字体无关的 bidi 映射。
+- 验证：normal/ASan `test_myui_text_layout` **15/15**，normal/ASan
+  `test_myui_window_manager` **58/58**，Vulkan `myui_core` 构建和编码门禁通过。
