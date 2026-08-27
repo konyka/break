@@ -74,16 +74,21 @@ re_status_t re_operand_copy(const re_allocator_impl_t *allocator, const re_opera
         return re_copy_string(allocator, (re_string_t){source->fact_name, source->fact_name_size},
                               &target->fact_name);
     }
-    if (source->kind == RE_OPERAND_FUNCTION || source->kind == RE_OPERAND_GOAL_CALL) {
+    if (source->kind == RE_OPERAND_FUNCTION || source->kind == RE_OPERAND_GOAL_CALL ||
+        source->kind == RE_OPERAND_ARITHMETIC || source->kind == RE_OPERAND_ARRAY) {
         size_t i;
         re_status_t status;
-        if (source->kind == RE_OPERAND_GOAL_CALL) {
+        target->arithmetic_operator = source->arithmetic_operator;
+        if (source->kind == RE_OPERAND_ARITHMETIC || source->kind == RE_OPERAND_ARRAY) {
+            status = RE_STATUS_OK;
+        } else if (source->kind == RE_OPERAND_GOAL_CALL) {
             status = re_copy_string(allocator, (re_string_t){source->goal_name, source->goal_name_size}, &target->goal_name);
             target->goal_name_size = source->goal_name_size;
         } else status = re_copy_string(allocator,
             (re_string_t){source->function_name, source->function_name_size}, &target->function_name);
         if (status != RE_STATUS_OK) return status;
         if (source->argument_count != 0u) {
+            if (source->argument_count > (size_t)-1 / sizeof(*target->arguments)) return RE_STATUS_LIMIT;
             target->arguments = re_alloc(allocator, source->argument_count * sizeof(*target->arguments));
             if (target->arguments == NULL) return RE_STATUS_OUT_OF_MEMORY;
             target->argument_count = source->argument_count;

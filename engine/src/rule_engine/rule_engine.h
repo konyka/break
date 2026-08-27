@@ -560,7 +560,10 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program);
 
 /*
  * Runs the installed program against facts. Matching then assignments are
- * applied before the optional callback, which is also invoked for each firing.
+ * staged in one transaction per firing before the optional callback. The
+ * transaction commits its assignments only when the callback succeeds. Fact
+ * notification failures are reported after the committed state is visible;
+ * they do not compensate with rollback notifications.
  * Run-option limit fields use the engine defaults when zero; a non-zero limit
  * permits exactly that many activations or firings before the next one returns
  * RE_STATUS_LIMIT.

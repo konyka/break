@@ -7,6 +7,7 @@
 typedef struct re_allocator_impl_t {
     re_allocator_t api;
 } re_allocator_impl_t;
+typedef struct re_ir_program_t re_ir_program_t;
 
 typedef struct re_fact_entry_t {
     char *name;
@@ -30,10 +31,13 @@ struct re_facts_t {
     int read_allowed;
     int destroy_requested;
     int notifying;
+    /* Transactions opened by the engine run while facts->running is set. */
+    int run_transaction_allowed;
     struct re_subscription_t *subscriptions;
     struct re_subscription_t *retired_subscriptions;
     struct re_fact_txn_t *transaction;
     struct re_fact_txn_t *retired_transaction;
+    struct re_rete_network_t *rete_network;
 };
 
 struct re_fact_txn_t {
@@ -70,8 +74,12 @@ struct re_subscription_t {
 
 typedef enum re_operand_kind_t {
     RE_OPERAND_LITERAL, RE_OPERAND_FACT, RE_OPERAND_FUNCTION,
-    RE_OPERAND_VARIABLE, RE_OPERAND_ANONYMOUS, RE_OPERAND_GOAL_CALL
+    RE_OPERAND_VARIABLE, RE_OPERAND_ANONYMOUS, RE_OPERAND_GOAL_CALL,
+    RE_OPERAND_ARITHMETIC, RE_OPERAND_ARRAY
 } re_operand_kind_t;
+typedef enum re_arithmetic_operator_t {
+    RE_ARITH_ADD, RE_ARITH_SUBTRACT, RE_ARITH_MULTIPLY, RE_ARITH_DIVIDE
+} re_arithmetic_operator_t;
 typedef struct re_operand_t {
     re_operand_kind_t kind;
     re_value_t value;
@@ -83,10 +91,13 @@ typedef struct re_operand_t {
     size_t goal_name_size;
     struct re_operand_t *arguments;
     size_t argument_count;
+    re_arithmetic_operator_t arithmetic_operator;
 } re_operand_t;
 
 typedef enum re_compare_t { RE_COMPARE_TRUE, RE_COMPARE_EQ, RE_COMPARE_NE, RE_COMPARE_GT,
-    RE_COMPARE_GE, RE_COMPARE_LT, RE_COMPARE_LE } re_compare_t;
+    RE_COMPARE_GE, RE_COMPARE_LT, RE_COMPARE_LE, RE_COMPARE_CONTAINS,
+    RE_COMPARE_STARTS_WITH, RE_COMPARE_ENDS_WITH, RE_COMPARE_MATCHES,
+    RE_COMPARE_IN } re_compare_t;
 typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE } re_expr_kind_t;
 typedef struct re_expr_t {
     re_expr_kind_t kind;
@@ -100,6 +111,7 @@ typedef struct re_action_t {
     char *name;
     size_t name_size;
     re_operand_t value;
+    int append;
 } re_action_t;
 typedef struct re_rule_t {
     char *name;
@@ -147,9 +159,15 @@ struct re_program_t {
     int has_clock;
     re_module_t *modules;
     size_t module_count;
+    re_ir_program_t *ir;
 };
 
 re_status_t re_accumulator_evaluate(re_accumulator_kind_t kind, const re_value_t *values, size_t count, re_value_t *out);
+re_status_t re_ir_match_rule(const re_engine_t *engine, re_facts_t *facts,
+                             const re_ir_program_t *ir, size_t rule_index, int *matched);
+re_status_t re_ir_resolve_term(re_engine_t *engine, re_facts_t *facts,
+                               const re_ir_program_t *ir, size_t term_index,
+                               re_value_t *value);
 re_status_t re_program_set_module_focus(re_program_t *program, re_string_t module);
 re_status_t re_program_set_agenda_focus(re_program_t *program, re_string_t group);
 re_status_t re_program_set_clock(re_program_t *program, int64_t epoch_seconds);
@@ -236,6 +254,7 @@ struct re_rete_network_t {
     re_allocator_impl_t allocator;
     re_facts_t *facts;
     re_engine_t *owner_engine;
+    int engine_owned;
     const re_program_t *program;
     re_rete_condition_t *conditions;
     size_t condition_count;
@@ -250,6 +269,7 @@ struct re_rete_network_t {
     uint64_t next_sequence;
     re_string_t producer_rule;
     struct re_subscription_t *subscription;
+    int invalid;
 };
 
 struct re_function_t {
@@ -320,7 +340,12 @@ re_status_t re_operand_copy(const re_allocator_impl_t *allocator, const re_opera
 re_status_t re_operand_resolve(re_engine_t *engine, re_facts_t *facts,
                                 const re_operand_t *operand, re_value_t *value);
 re_status_t re_facts_resolve(const re_facts_t *facts, re_string_t name, re_value_t *out);
+re_status_t re_facts_begin_for_run(re_facts_t *facts, re_fact_txn_t **out_transaction);
+re_status_t re_facts_append_value(re_facts_t *facts, re_string_t name, const re_value_t *value);
+re_status_t re_facts_contains_value(const re_facts_t *facts, re_string_t path,
+                                    const re_value_t *needle, int *matched);
 int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare_t compare);
+int re_value_equal_typed(const re_value_t *left, const re_value_t *right);
 int re_program_uses_rete(const re_program_t *program, const re_facts_t *facts);
 re_status_t re_engine_run_rete(re_engine_t *engine, re_facts_t *facts,
                                const re_run_options_t *options,
