@@ -89,6 +89,15 @@ typedef struct my_text_area_t {
   size_t paint_text_cap;
   size_t paint_text_len;
   my_text_layout_t* paint_layout;
+  char* rtl_text;
+  size_t rtl_text_len;
+  my_text_layout_t* rtl_layout;
+  size_t rtl_phys;
+  size_t rtl_start_byte;
+  size_t rtl_len_bytes;
+  uint64_t rtl_revision;
+  my_font_t* rtl_font;
+  int32_t rtl_font_size;
   uint64_t text_revision;
   size_t geometry_row;
   size_t geometry_count;

@@ -228,3 +228,16 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 验证：normal/ASan 的 `test_myui_window_manager` **57/57**、
   `test_myui_text_layout` **14/14** 通过，Vulkan `myui_core` 构建、
   `git diff --check` 与乱码/控制字符扫描通过。
+
+## 已完成：RTL interaction layout cache（2026-08-27）
+
+- 以 TDD 新增 `text_area_rtl_hit_test_reuses_layout`，先证明连续 pointer hit-test 会
+  重复分配 visual line 文本和 layout，再实现 widget-owned 单条缓存。
+- 键盘左右移动、上下移动、Home/End、PageUp/PageDown 与 pointer hit-test 共享当前
+  visual line 的 layout；缓存键包含 text revision、物理行、byte span、字体和字号，
+  文本编辑与字体变化自动失效。
+- 命中路径无临时复制、无 layout 分配；纯 LTR 仍无 layout 开销，OOM 或 layout 失败
+  保持原有安全回退。生命周期在 widget destroy 中释放，核心 API 与 soft/GLES/Vulkan/
+  Break RHI 边界不变。
+- 验证：normal `test_myui_window_manager` **58/58** 通过；ASan、Vulkan 和文档门禁
+  在本阶段收尾复验。
