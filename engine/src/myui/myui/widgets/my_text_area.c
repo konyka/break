@@ -999,6 +999,11 @@ static void ta_bump_text_revision(my_text_area_t* ta) {
   ta->text_revision = ta->text_revision == UINT64_MAX
                            ? 1
                            : ta->text_revision + 1;
+  my_text_layout_destroy(ta->rtl_layout);
+  ta->rtl_layout = NULL;
+  my_mem_free(ta->allocator, ta->rtl_text);
+  ta->rtl_text = NULL;
+  ta->rtl_text_len = 0;
 }
 
 static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
@@ -1408,8 +1413,7 @@ static void ta_apply_undo_op(void* widget, const my_undo_op_t* op) {
 /** @brief Fresh NUL-terminated text of a visual line (caller frees). */
 static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl);
 static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
-                                       const my_visual_line_t* vl,
-                                       char** out_text);
+                                       const my_visual_line_t* vl);
 static my_ret_t ta_paste_tick(void* ctx);
 
 static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
@@ -1499,8 +1503,7 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
                                              ta->cursor_col, &(size_t){0})
                            : ta->cursor_row;
       const my_visual_line_t* vl = ta_vline_at(ta, vi);
-      char* seg = NULL;
-      my_text_layout_t* l = ta_layout_rtl(ta, vl, &seg);
+      my_text_layout_t* l = ta_layout_rtl(ta, vl);
       if (l != NULL) {
         size_t col_in = ta->cursor_col - vl->start_cp;
         bool at_visual_start = col_in == my_text_layout_boundary_home(l);
@@ -1526,8 +1529,6 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
           ta->goal_col = my_text_layout_visual_of_logical(
               l, ta->cursor_col - vl->start_cp);
         }
-        my_mem_free(ta->allocator, seg);
-        my_text_layout_destroy(l);
         return MY_RET_OK;
       }
       if (key == MY_KEY_LEFT) {
@@ -1571,16 +1572,13 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
         }
       }
       if (v != NULL) {
-        char* seg = NULL;
-        my_text_layout_t* l = ta_layout_rtl(ta, v, &seg);
+        my_text_layout_t* l = ta_layout_rtl(ta, v);
         size_t nc = ta->goal_col < v->len_cp ? ta->goal_col : v->len_cp;
         if (l != NULL) {
           nc = my_text_layout_logical_at_visual(l, nc);
           if (nc > v->len_cp) {
             nc = v->len_cp;
           }
-          my_mem_free(ta->allocator, seg);
-          my_text_layout_destroy(l);
         }
         ta_move_to(ta, v->phys, v->start_cp + nc, shift);
       }
@@ -1603,15 +1601,12 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
                                                    ta->cursor_col, &civ)
                                  : ta->cursor_row;
         const my_visual_line_t* v = ta_vline_at(ta, vi);
-        char* seg = NULL;
-        my_text_layout_t* l = ta_layout_rtl(ta, v, &seg);
+        my_text_layout_t* l = ta_layout_rtl(ta, v);
         size_t col;
         if (l != NULL) {
           col = v->start_cp + (key == MY_KEY_HOME
                                    ? my_text_layout_boundary_home(l)
                                    : my_text_layout_boundary_end(l));
-          my_mem_free(ta->allocator, seg);
-          my_text_layout_destroy(l);
         } else {
           col = key == MY_KEY_HOME ? v->start_cp
                                    : v->start_cp + v->len_cp;
@@ -1650,16 +1645,13 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
         }
         v = ta_vline_at(ta, target);
         if (v != NULL) {
-          char* seg = NULL;
-          my_text_layout_t* l = ta_layout_rtl(ta, v, &seg);
+          my_text_layout_t* l = ta_layout_rtl(ta, v);
           size_t col = ta->goal_col < v->len_cp ? ta->goal_col : v->len_cp;
           if (l != NULL) {
             col = my_text_layout_logical_at_visual(l, col);
             if (col > v->len_cp) {
               col = v->len_cp;
             }
-            my_mem_free(ta->allocator, seg);
-            my_text_layout_destroy(l);
           }
           ta_move_to(ta, v->phys, v->start_cp + col, shift);
         }
@@ -1795,24 +1787,51 @@ static my_text_layout_t* ta_paint_layout(my_text_area_t* ta,
   return ta->paint_layout;
 }
 
-/** @brief Layout of a visual line's text when it needs bidi (out_text
- * receives the segment string to free), else NULL (fast path). */
+/** @brief Cached layout of a visual line's text when it needs bidi. */
 static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
-                                       const my_visual_line_t* vl,
-                                       char** out_text) {
+                                       const my_visual_line_t* vl) {
+  size_t start;
+  size_t end;
+  if (ta->rtl_layout != NULL && ta->rtl_phys == vl->phys &&
+      ta->rtl_start_byte == vl->start_byte &&
+      ta->rtl_len_bytes == vl->len_bytes &&
+      ta->rtl_revision == ta->text_revision && ta->rtl_font == ta->font &&
+      ta->rtl_font_size == ta->font_size) {
+    return ta->rtl_layout;
+  }
+  start = ta_line_start(ta, vl->phys) + vl->start_byte;
+  end = start + vl->len_bytes;
   char* s = ta_vline_text(ta, vl);
   if (s == NULL) {
     return NULL;
   }
-  if (my_text_layout_may_need_bidi(s)) {
-    my_text_layout_t* l = my_text_layout_process(ta->allocator, s);
-    if (l != NULL) {
-      *out_text = s;
-      return l;
-    }
+  if (!my_text_layout_may_need_bidi(s)) {
+    my_mem_free(ta->allocator, s);
+    return NULL;
   }
-  my_mem_free(ta->allocator, s);
-  return NULL;
+  if (end < start) {
+    my_mem_free(ta->allocator, s);
+    return NULL;
+  }
+  {
+    my_text_layout_t* layout = my_text_layout_process(ta->allocator, s);
+    if (layout == NULL) {
+      my_mem_free(ta->allocator, s);
+      return NULL;
+    }
+    my_text_layout_destroy(ta->rtl_layout);
+    my_mem_free(ta->allocator, ta->rtl_text);
+    ta->rtl_layout = layout;
+    ta->rtl_text = s;
+    ta->rtl_text_len = vl->len_bytes;
+    ta->rtl_phys = vl->phys;
+    ta->rtl_start_byte = vl->start_byte;
+    ta->rtl_len_bytes = vl->len_bytes;
+    ta->rtl_revision = ta->text_revision;
+    ta->rtl_font = ta->font;
+    ta->rtl_font_size = ta->font_size;
+    return layout;
+  }
 }
 
 /* ---------------- events ---------------- */
@@ -1825,7 +1844,6 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
       int32_t line_h = ta_line_height(ta);
       size_t row;
       const my_visual_line_t* vl;
-      char* seg = NULL;
       my_text_layout_t* l;
       size_t col;
       my_widget_global_to_local(widget, &lx, &ly);
@@ -1843,15 +1861,13 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
         }
       }
       vl = ta_vline_at(ta, row); /* row is a VISUAL index (wrap-aware) */
-      l = ta_layout_rtl(ta, vl, &seg);
+      l = ta_layout_rtl(ta, vl);
       if (l != NULL) {
         /* RTL (M12a): visual hit-test inside the line */
         col = vl->start_cp + my_text_layout_logical_at_x(
                                   l, ta->font, ta->font_size,
                                   lx - ta_content_left_value(ta) +
                                       ta->scroll_x);
-        my_mem_free(ta->allocator, seg);
-        my_text_layout_destroy(l);
       } else {
         if (lx < ta_content_left_value(ta)) {
           lx = ta_content_left_value(ta);
@@ -2276,6 +2292,8 @@ static void ta_destroy_chain(my_object_t* obj) {
   ta_syntax_destroy(ta);
   my_text_layout_destroy(ta->paint_layout);
   my_mem_free(ta->allocator, ta->paint_text);
+  my_text_layout_destroy(ta->rtl_layout);
+  my_mem_free(ta->allocator, ta->rtl_text);
   my_mem_free(ta->allocator, ta->geometry_boundaries);
   my_mem_free(ta->allocator, ta->vline_first_by_phys);
   my_darray_destroy(ta->line_offsets);

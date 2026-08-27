@@ -645,3 +645,11 @@ line 的 O(log V) 缩小为 O(log segments-of-row)，通常为常数级。折叠
 和字体变化通过同一 visual-line dirty 路径使缓存失效；缓存只覆盖当前物理行数，隐藏行
 使用 `SIZE_MAX` 哨兵。缓存分配失败或查询隐藏行时保留原有全量二分回退，不影响行为，
 也不依赖 GL、Vulkan、软件 canvas 或平台类型。
+
+## RTL 交互布局缓存
+
+text area 对当前 RTL visual line 保留一条 widget-owned layout 缓存，键包含文本 revision、
+物理行、visual byte span、字体指针和字号。键盘导航、垂直导航、分页及 pointer hit-test
+共享该 layout；命中时不再复制行文本或重新分配 layout，失效只发生在文本、字体或 visual
+line 范围变化后。纯 LTR 仍走零 layout 的快速路径，缓存创建失败则回到原临时 layout
+路径，不依赖任何渲染后端。

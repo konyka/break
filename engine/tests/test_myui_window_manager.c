@@ -581,6 +581,32 @@ TEST(text_area_rtl_paint_reuses_layout)
   my_widget_unref(area);
 }
 
+TEST(text_area_rtl_hit_test_reuses_layout)
+{
+  text_area_count_alloc_t state = {0};
+  my_allocator_t allocator = {&state, text_area_count_alloc,
+                              text_area_count_calloc, text_area_count_realloc,
+                              text_area_count_free};
+  my_widget_t* area = my_text_area_create(&allocator);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+  size_t before;
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 54}), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91\xD7\x92"),
+            MY_RET_OK);
+  event.u.pointer.x = 20;
+  event.u.pointer.y = 5;
+  event.u.pointer.button = 1;
+  before = state.alloc_calls;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_TRUE(state.alloc_calls > before);
+  before = state.alloc_calls;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(state.alloc_calls - before, 0u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_wrap_reuses_unchanged_prefix_after_edit)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -2095,6 +2121,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_visual_line_index_cache_oom_falls_back);
     RUN_TEST(text_area_geometry_cache_reuses_glyph_advances);
     RUN_TEST(text_area_rtl_paint_reuses_layout);
+    RUN_TEST(text_area_rtl_hit_test_reuses_layout);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_line_number_gutter_has_bounded_width);
     RUN_TEST(text_area_line_numbers_reduce_wrap_width);

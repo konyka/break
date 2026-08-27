@@ -1983,3 +1983,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 验证：normal/ASan 的 `test_myui_window_manager` **57/57**、
   `test_myui_text_layout` **14/14** 通过，Vulkan `myui_core` 构建、
   `git diff --check` 与乱码/控制字符扫描通过。
+
+## myui RTL interaction layout cache（2026-08-27）
+
+- 以 TDD 新增 `text_area_rtl_hit_test_reuses_layout`，锁定连续命中测试不得重复分配
+  visual line 文本或 layout。
+- text area 现在缓存当前 RTL visual line 的 layout；键盘导航、垂直导航、分页和
+  pointer hit-test 共享缓存，键包含 text revision、物理行、byte span、字体及字号。
+- 纯 LTR 保持快速路径；缓存失效、OOM 或 layout 构建失败时回到既有临时路径。缓存只
+  位于 widget/core，不引入 GL、Vulkan、软件 canvas 或平台类型。
+- 验证：normal `test_myui_window_manager` **58/58**；ASan、Vulkan 和最终差异/编码
+  门禁待完成。
