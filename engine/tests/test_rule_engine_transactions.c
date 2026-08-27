@@ -25,6 +25,7 @@ typedef struct snapshot_state_t {
     size_t calls;
     int64_t value;
     size_t name_size;
+    re_status_t mutation_status;
 } snapshot_state_t;
 
 static void *test_alloc(void *context, size_t size) {
@@ -57,7 +58,7 @@ static re_status_t record_event(re_facts_t *facts, const re_fact_event_t *event,
 static re_status_t snapshot_event(re_facts_t *facts, const re_fact_event_t *event, void *context) {
     snapshot_state_t *state = context;
     re_value_t replacement = {RE_VALUE_INT64, {.int64_value = 99}};
-    (void)re_facts_set(facts, text("Other"), &replacement);
+    state->mutation_status = re_facts_set(facts, text("Other"), &replacement);
     state->calls++;
     state->name_size = event->name.size;
     state->value = event->value.as.int64_value;
@@ -260,6 +261,7 @@ TEST(transaction_event_payload_is_owned_snapshot) {
     ASSERT_EQ(state.calls, 1u);
     ASSERT_EQ(state.name_size, 1u);
     ASSERT_EQ(state.value, 7);
+    ASSERT_EQ(state.mutation_status, RE_STATUS_BUSY);
     re_subscription_destroy(subscription);
     re_facts_destroy(facts);
 }

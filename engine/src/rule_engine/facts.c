@@ -1,7 +1,7 @@
 #include "re_internal.h"
 #include <string.h>
 
-static void notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
+static re_status_t notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
 
 static int same_name(re_string_t name, const re_fact_entry_t *entry) {
     return entry->active && name.size == entry->name_size &&
@@ -18,11 +18,11 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     facts->allocator = selected; facts->limits = limits != NULL ? *limits : re_default_limits();
     facts->entries = NULL; facts->count = 0u; facts->capacity = 0u;
     facts->mutation_serial = 0u;
-    facts->running = 0; facts->mutation_allowed = 0; facts->read_allowed = 0; facts->destroy_requested = 0; facts->notifying = 0;
+    facts->running = 0; facts->mutation_allowed = 0; facts->read_allowed = 0; facts->destroy_requested = 0; facts->notifying = 0; facts->run_transaction_allowed = 0;
     facts->subscriptions = NULL;
     facts->retired_subscriptions = NULL;
     facts->transaction = NULL;
-    facts->retired_transaction = NULL;
+    facts->retired_transaction = NULL; facts->rete_network = NULL;
     return facts;
 }
 
@@ -34,6 +34,10 @@ void re_facts_destroy(re_facts_t *facts) {
         re_fact_txn_t *transaction = facts->transaction;
         re_facts_rollback(transaction);
         transaction->facts = NULL;
+    }
+    if (facts->rete_network != NULL) {
+        re_rete_network_destroy_internal(facts->rete_network);
+        facts->rete_network = NULL;
     }
     {
         re_fact_txn_t *transaction = facts->retired_transaction;
@@ -69,6 +73,7 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
     size_t index; re_fact_entry_t replacement; char *name_copy = NULL; char *string_copy = NULL;
     int was_existing;
     if (facts == NULL || value == NULL || name.data == NULL || name.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->notifying) return RE_STATUS_BUSY;
     if (facts->transaction != NULL)
         return re_facts_set(facts->transaction->staged, name, value);
     if (facts->limits.max_facts != 0u && facts->count >= facts->limits.max_facts) {
@@ -122,7 +127,7 @@ re_status_t re_facts_set(re_facts_t *facts, re_string_t name, const re_value_t *
     replacement.active = facts->entries[index].active;
     facts->entries[index] = replacement;
     facts->mutation_serial++;
-    if (was_existing) notify(facts, RE_FACT_UPDATE, index);
+    if (was_existing) return notify(facts, RE_FACT_UPDATE, index);
     return RE_STATUS_OK;
 }
 
@@ -142,7 +147,7 @@ re_status_t re_facts_get(const re_facts_t *facts, re_string_t name, re_value_t *
     return re_facts_resolve(facts, name, out_value);
 }
 
-static void notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index) {
+static re_status_t notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index) {
     re_subscription_t *subscription = facts->subscriptions;
     re_fact_event_t event;
     int was_notifying = facts->notifying;
@@ -156,10 +161,21 @@ static void notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index) 
     facts->notifying = 1;
     while (subscription != NULL) {
         re_subscription_t *next = subscription->next;
-        if (subscription->active) subscription->callback(facts, &event, subscription->context);
+        if (subscription->active) {
+            re_status_t status = subscription->callback(facts, &event, subscription->context);
+            if (status != RE_STATUS_OK) {
+                if (facts->rete_network != NULL) {
+                    facts->rete_network->invalid = 1;
+                    facts->rete_network->activation_count = 0u;
+                }
+                facts->notifying = was_notifying;
+                return status;
+            }
+        }
         subscription = next;
     }
     facts->notifying = was_notifying;
+    return RE_STATUS_OK;
 }
 
 re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
@@ -167,8 +183,18 @@ re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
     size_t index;
     re_status_t status;
     if (facts == NULL || out_id == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->notifying) return RE_STATUS_BUSY;
     if (facts->transaction != NULL)
         return re_facts_insert(facts->transaction->staged, name, value, out_id);
+    for (index = 0u; index < facts->count; ++index) {
+        if (same_name(name, &facts->entries[index])) {
+            status = re_facts_set(facts, name, value);
+            if (status != RE_STATUS_OK) return status;
+            out_id->slot = (uint64_t)index;
+            out_id->generation = facts->entries[index].generation;
+            return RE_STATUS_OK;
+        }
+    }
     status = re_facts_set(facts, name, value);
     if (status != RE_STATUS_OK) return status;
     for (index = 0u; index < facts->count; ++index)
@@ -177,11 +203,11 @@ re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
     facts->entries[index].active = 1;
     out_id->slot = (uint64_t)index;
     out_id->generation = facts->entries[index].generation;
-    notify(facts, RE_FACT_INSERT, index);
-    return RE_STATUS_OK;
+    return notify(facts, RE_FACT_INSERT, index);
 }
 
 re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id, const re_value_t *value) {
+    if (facts != NULL && facts->notifying) return RE_STATUS_BUSY;
     if (facts != NULL && facts->transaction != NULL)
         return re_facts_update(facts->transaction->staged, id, value);
     if (facts == NULL || value == NULL || id.slot >= facts->count ||
@@ -197,6 +223,7 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     char *name;
     size_t name_size;
     re_value_t value;
+    if (facts != NULL && facts->notifying) return RE_STATUS_BUSY;
     if (facts != NULL && facts->transaction != NULL)
         return re_facts_retract(facts->transaction->staged, id);
     if (facts == NULL || id.slot >= facts->count || !facts->entries[id.slot].active ||
@@ -212,8 +239,7 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     facts->entries[id.slot].name = name;
     facts->entries[id.slot].name_size = name_size;
     facts->entries[id.slot].value = value;
-    notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
-    return RE_STATUS_OK;
+    return notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
 }
 
 re_status_t re_facts_subscribe(re_facts_t *facts, re_fact_event_fn_t callback,

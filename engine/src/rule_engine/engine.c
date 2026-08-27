@@ -1,16 +1,42 @@
 #include "re_internal.h"
+#include "ir.h"
 #include <string.h>
+
+static int wildcard_match(re_string_t input, re_string_t pattern) {
+    size_t input_at = 0u;
+    size_t pattern_at = 0u;
+    size_t star_pattern = SIZE_MAX;
+    size_t star_input = 0u;
+    size_t steps = 0u;
+    size_t step_limit;
+    if (pattern.size == SIZE_MAX || input.size > SIZE_MAX / (pattern.size + 1u)) return 0;
+    step_limit = input.size * (pattern.size + 1u);
+    if (step_limit == SIZE_MAX) return 0;
+    ++step_limit;
+    while (input_at < input.size || pattern_at < pattern.size) {
+        if (++steps > step_limit) return 0;
+        if (input_at < input.size && pattern_at < pattern.size &&
+            (pattern.data[pattern_at] == '?' ||
+             pattern.data[pattern_at] == input.data[input_at])) {
+            ++input_at;
+            ++pattern_at;
+        } else if (pattern_at < pattern.size && pattern.data[pattern_at] == '*') {
+            star_pattern = pattern_at++;
+            star_input = input_at;
+        } else if (star_pattern != SIZE_MAX) {
+            pattern_at = star_pattern + 1u;
+            input_at = ++star_input;
+        } else {
+            return 0;
+        }
+    }
+    while (pattern_at < pattern.size && pattern.data[pattern_at] == '*') ++pattern_at;
+    return pattern_at == pattern.size;
+}
 
 static re_status_t resolve_operand(const re_facts_t *facts, const re_operand_t *operand, re_value_t *value) {
     if (operand->kind == RE_OPERAND_LITERAL) { *value = operand->value; return RE_STATUS_OK; }
     return re_facts_get_path(facts, (re_string_t){operand->fact_name, operand->fact_name_size}, value);
-}
-static re_status_t evaluate(const re_engine_t *engine, re_facts_t *facts, const re_expr_t *expr, int *matched) {
-    re_value_t left, right; re_status_t status;
-    if (expr->kind == RE_EXPR_TRUE || expr->kind == RE_EXPR_FALSE) { *matched = expr->kind == RE_EXPR_TRUE; return RE_STATUS_OK; }
-    if (expr->kind == RE_EXPR_NOT) { status = evaluate(engine, facts, expr->first, matched); *matched = !*matched; return status; }
-    if (expr->kind == RE_EXPR_AND || expr->kind == RE_EXPR_OR) { status = evaluate(engine, facts, expr->first, matched); if (status != RE_STATUS_OK) return status; if (expr->kind == RE_EXPR_AND && !*matched) return RE_STATUS_OK; if (expr->kind == RE_EXPR_OR && *matched) return RE_STATUS_OK; return evaluate(engine, facts, expr->second, matched); }
-    status = re_operand_resolve((re_engine_t *)engine, facts, &expr->left, &left); if (status != RE_STATUS_OK) return status; status = re_operand_resolve((re_engine_t *)engine, facts, &expr->right, &right); if (status != RE_STATUS_OK) return status; *matched = re_value_compare(&left, &right, expr->compare); return RE_STATUS_OK;
 }
 int re_condition_is_pure(const re_expr_t *expr) {
     if (expr == NULL) return 0;
@@ -23,7 +49,12 @@ int re_condition_is_pure(const re_expr_t *expr) {
 }
 re_status_t re_engine_match_rule(const re_engine_t *engine, const re_facts_t *facts,
                                  const re_rule_t *rule, int *matched) {
-    return evaluate(engine, (re_facts_t *)facts, rule->condition, matched);
+    size_t index;
+    if (engine == NULL || engine->program == NULL || rule == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    for (index = 0u; index < engine->program->rule_count; ++index)
+        if (&engine->program->rules[index] == rule) break;
+    if (index == engine->program->rule_count) return RE_STATUS_INVALID_ARGUMENT;
+    return re_ir_match_rule(engine, (re_facts_t *)facts, engine->program->ir, index, matched);
 }
 
 re_status_t re_operand_resolve(re_engine_t *engine, re_facts_t *facts,
@@ -67,7 +98,34 @@ static re_status_t finish_run(re_engine_t *engine, re_facts_t *facts, re_status_
 int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare_t compare) {
     double l; double r;
     if (compare == RE_COMPARE_TRUE) return 1;
-    if (left->type == RE_VALUE_INT64 && right->type == RE_VALUE_INT64) { l = (double)left->as.int64_value; r = (double)right->as.int64_value; }
+    if (left->type == RE_VALUE_STRING && right->type == RE_VALUE_STRING &&
+        (compare == RE_COMPARE_CONTAINS || compare == RE_COMPARE_STARTS_WITH ||
+         compare == RE_COMPARE_ENDS_WITH || compare == RE_COMPARE_MATCHES)) {
+        size_t i;
+        if (compare == RE_COMPARE_STARTS_WITH)
+            return right->as.string.size <= left->as.string.size &&
+                   memcmp(left->as.string.data, right->as.string.data, right->as.string.size) == 0;
+        if (compare == RE_COMPARE_ENDS_WITH)
+            return right->as.string.size <= left->as.string.size &&
+                   memcmp(left->as.string.data + left->as.string.size - right->as.string.size,
+                          right->as.string.data, right->as.string.size) == 0;
+        if (compare == RE_COMPARE_MATCHES)
+            return wildcard_match(left->as.string, right->as.string);
+        if (right->as.string.size == 0u) return 1;
+        for (i = 0u; i + right->as.string.size <= left->as.string.size; ++i)
+            if (memcmp(left->as.string.data + i, right->as.string.data,
+                       right->as.string.size) == 0) return 1;
+        return 0;
+    }
+    if (left->type == RE_VALUE_INT64 && right->type == RE_VALUE_INT64) {
+        if (compare == RE_COMPARE_EQ) return left->as.int64_value == right->as.int64_value;
+        if (compare == RE_COMPARE_NE) return left->as.int64_value != right->as.int64_value;
+        if (compare == RE_COMPARE_GT) return left->as.int64_value > right->as.int64_value;
+        if (compare == RE_COMPARE_GE) return left->as.int64_value >= right->as.int64_value;
+        if (compare == RE_COMPARE_LT) return left->as.int64_value < right->as.int64_value;
+        if (compare == RE_COMPARE_LE) return left->as.int64_value <= right->as.int64_value;
+        return 0;
+    }
     else if (left->type == RE_VALUE_DOUBLE && right->type == RE_VALUE_DOUBLE) { l = left->as.double_value; r = right->as.double_value; }
     else if (left->type == RE_VALUE_INT64 && right->type == RE_VALUE_DOUBLE) { l = (double)left->as.int64_value; r = right->as.double_value; }
     else if (left->type == RE_VALUE_DOUBLE && right->type == RE_VALUE_INT64) { l = left->as.double_value; r = (double)right->as.int64_value; }
@@ -83,6 +141,22 @@ int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare
     if (compare == RE_COMPARE_GE) return l >= r;
     if (compare == RE_COMPARE_LT) return l < r;
     return l <= r;
+}
+
+int re_value_equal_typed(const re_value_t *left, const re_value_t *right) {
+    if (left == NULL || right == NULL || left->type != right->type) return 0;
+    switch (left->type) {
+    case RE_VALUE_BOOL: return left->as.boolean == right->as.boolean;
+    case RE_VALUE_INT64: return left->as.int64_value == right->as.int64_value;
+    case RE_VALUE_DOUBLE: return left->as.double_value == right->as.double_value;
+    case RE_VALUE_STRING:
+        return left->as.string.size == right->as.string.size &&
+            (left->as.string.size == 0u || memcmp(left->as.string.data,
+                                                    right->as.string.data,
+                                                    left->as.string.size) == 0);
+    case RE_VALUE_NULL: case RE_VALUE_UNKNOWN: case RE_VALUE_NONE: return 1;
+    default: return 0;
+    }
 }
 
 re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t *limits) {
@@ -118,7 +192,9 @@ void re_engine_destroy(re_engine_t *engine) {
     if (engine == NULL) return;
     if (engine->running) { engine->destroy_requested = 1; return; }
     re_executor_destroy(engine->executor);
-    re_rete_network_destroy_internal(engine->rete_network);
+    if (engine->rete_network != NULL && engine->rete_network->engine_owned)
+        re_rete_network_destroy_internal(engine->rete_network);
+    engine->rete_network = NULL;
     while (engine->functions != NULL) { re_function_t *function = engine->functions; engine->functions = function->next; if (function->release != NULL) function->release(function->context); re_free(&engine->allocator, function->name); re_free(&engine->allocator, function); }
     re_program_destroy(engine->program); re_free(&engine->allocator, engine);
 }
@@ -172,6 +248,7 @@ void re_function_unregister(re_function_t *function) {
 }
 re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
     re_program_t *old; if (engine == NULL || program == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (re_ir_validate(program->ir) != RE_STATUS_OK) return RE_STATUS_INVALID_ARGUMENT;
     if (program->rule_count > engine->limits.max_rules && engine->limits.max_rules != 0u) return RE_STATUS_LIMIT;
     if (engine->running) return RE_STATUS_BUSY;
     re_rete_network_destroy_internal(engine->rete_network); engine->rete_network = NULL;
@@ -199,16 +276,21 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     if (limits.max_agenda_activations == 0u) limits.max_agenda_activations = engine->limits.max_agenda_activations;
     if (limits.max_firings == 0u) limits.max_firings = engine->limits.max_firings;
     if (engine->program == NULL) return finish_run(engine, facts, RE_STATUS_OK);
-    if (engine->rete_network != NULL && engine->rete_network->facts != facts) {
+    if (engine->rete_network != NULL && (engine->rete_network->facts != facts || engine->rete_network->invalid)) {
         re_rete_network_destroy_internal(engine->rete_network);
         engine->rete_network = NULL;
     }
     if (engine->program->rule_count == 1u && engine->rete_network == NULL) {
-        status = re_rete_network_create_rule(facts, &engine->program->rules[0], NULL, &engine->rete_network);
+        status = re_rete_network_create_rule(facts, &engine->program->rules[0], &engine->allocator.api, &engine->rete_network);
+        if (status == RE_STATUS_BUSY && facts->rete_network != NULL) {
+            engine->rete_network = facts->rete_network;
+            status = RE_STATUS_OK;
+        }
         if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return finish_run(engine, facts, status);
         if (engine->rete_network != NULL) {
             engine->rete_network->program = engine->program;
             engine->rete_network->owner_engine = engine;
+            engine->rete_network->engine_owned = 1;
         }
     }
     if (engine->program->rule_count != 0u) {
@@ -259,10 +341,13 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             if (group_index != activation_group_count) continue;
         }
         if (options != NULL && options->is_cancelled != NULL && options->is_cancelled(options->cancel_context) != 0) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_CANCELLED); }
-         { int matched = 0; status = parallel_matches != NULL ? RE_STATUS_OK : evaluate(engine, facts, rule->condition, &matched); if (parallel_matches != NULL) matched = parallel_matches[indices[i]] != 0u; if (engine->rete_network != NULL && indices[i] == 0u) matched = re_rete_activation_count(engine->rete_network) != 0u; if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } if (!matched) continue; }
+         { int matched = 0; status = parallel_matches != NULL ? RE_STATUS_OK : re_ir_match_rule(engine, facts, engine->program->ir, indices[i], &matched); if (parallel_matches != NULL) matched = parallel_matches[indices[i]] != 0u; if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } if (!matched) continue; }
         if (limits.max_agenda_activations != 0u && agenda_activations >= limits.max_agenda_activations) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
         ++agenda_activations;
-        event.rule_name.data = rule->name; event.rule_name.size = rule->name_size; event.salience = rule->salience; event.activation_sequence = (uint64_t)firings + 1u;
+        event.rule_name.data = rule->name; event.rule_name.size = rule->name_size; event.salience = rule->salience;
+        /* The IR matcher does not expose the selected RETE token, so keep
+         * firing metadata local instead of associating a rule with token 0. */
+        event.activation_sequence = (uint64_t)firings + 1u;
         if (rule->activation_group != NULL) {
             activation_groups[activation_group_count] = rule->activation_group;
             ++activation_group_count;
@@ -273,8 +358,31 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             ++locked_group_count;
         }
         facts->mutation_allowed = 1;
-        { size_t action_index; for (action_index = 0u; action_index < rule->action_count; ++action_index) { re_value_t value; status = re_operand_resolve(engine, facts, &rule->actions[action_index].value, &value); if (status != RE_STATUS_OK) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } status = re_facts_set(facts, (re_string_t){rule->actions[action_index].name, rule->actions[action_index].name_size}, &value); if (status != RE_STATUS_OK) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } } }
-        if (callbacks != NULL && callbacks->action != NULL) { status = callbacks->action(engine, facts, &event, callbacks->context); if (status != RE_STATUS_OK) { re_free(&engine->allocator, locked_groups); re_free(&engine->allocator, activation_groups); re_free(&engine->allocator, fired_no_loop); re_free(&engine->allocator, indices); return finish_run(engine, facts, status); } }
+        {
+            re_fact_txn_t *transaction = NULL;
+            size_t action_index;
+            const re_ir_rule_t *ir_rule = &engine->program->ir->rules[indices[i]];
+            status = re_facts_begin_for_run(facts, &transaction);
+            if (status == RE_STATUS_OK) {
+                for (action_index = 0u; action_index < ir_rule->action_count; ++action_index) {
+                    re_value_t value;
+                    const re_ir_action_t *action = &engine->program->ir->actions[ir_rule->first_action + action_index];
+                    const re_ir_term_t *target = &engine->program->ir->terms[action->target];
+                    status = re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
+                    if (status != RE_STATUS_OK) break;
+                    status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
+                    if (status != RE_STATUS_OK) break;
+                }
+            }
+            if (status == RE_STATUS_OK && callbacks != NULL && callbacks->action != NULL)
+                status = callbacks->action(engine, facts, &event, callbacks->context);
+            if (status == RE_STATUS_OK) status = re_facts_commit(transaction);
+            else re_facts_rollback(transaction);
+            if (status != RE_STATUS_OK) {
+                free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups);
+                return finish_run(engine, facts, status);
+            }
+        }
         facts->mutation_allowed = 0;
         ++firings; if (limits.max_firings != 0u && firings >= limits.max_firings) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
     }

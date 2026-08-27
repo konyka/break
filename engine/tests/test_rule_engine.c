@@ -124,6 +124,7 @@ TEST(private_rete_two_condition_join_lifecycle) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_rete_network_t *network = NULL;
     re_rete_activation_t activation;
+    re_rete_network_t *engine_network = NULL;
     re_fact_id_t left_id;
     re_fact_id_t right_id;
     re_value_t left = {RE_VALUE_INT64, {.int64_value = 7}};
@@ -144,23 +145,29 @@ TEST(private_rete_two_condition_join_lifecycle) {
     ASSERT_EQ(re_rete_activation_count(network), 0u);
     ASSERT_EQ(re_facts_insert(facts, (re_string_t){"Order.state", 11u}, &right, &right_id), RE_STATUS_OK);
     ASSERT_EQ(re_rete_activation_count(network), 1u);
-    ASSERT_EQ(re_program_load(NULL, text("rule \"Join\" { when Order.total > 5 and Order.state == \"ready\" then Result = 1; }"), NULL, &program), RE_STATUS_OK);
-    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
-    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
-    ASSERT_EQ(state.count, 1u);
     ASSERT_EQ(re_rete_activation_get(network, 0u, &activation), RE_STATUS_OK);
     ASSERT_EQ(activation.left.slot, left_id.slot);
     ASSERT_EQ(activation.left.generation, left_id.generation);
     ASSERT_EQ(activation.right.slot, right_id.slot);
     ASSERT_EQ(activation.right.generation, right_id.generation);
     ASSERT_EQ(activation.sequence, 1u);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Join\" { when Order.total > 5 and Order.state == \"ready\" then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(state.count, 1u);
+    ASSERT_EQ(re_engine_rete_network(engine, &engine_network), RE_STATUS_OK);
+    ASSERT_EQ(re_rete_activation_get(engine_network, 0u, &activation), RE_STATUS_OK);
+    ASSERT_EQ(activation.left.slot, left_id.slot);
+    ASSERT_EQ(activation.left.generation, left_id.generation);
+    ASSERT_EQ(activation.right.slot, right_id.slot);
+    ASSERT_EQ(activation.right.generation, right_id.generation);
+    ASSERT_EQ(activation.sequence, 1u);
     ASSERT_EQ(re_facts_update(facts, right_id, &updated), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_count(network), 0u);
+    ASSERT_EQ(re_rete_activation_count(engine_network), 0u);
     ASSERT_EQ(re_facts_update(facts, right_id, &right), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_count(network), 1u);
+    ASSERT_EQ(re_rete_activation_count(engine_network), 1u);
     ASSERT_EQ(re_facts_retract(facts, left_id), RE_STATUS_OK);
-    ASSERT_EQ(re_rete_activation_count(network), 0u);
-    re_rete_network_destroy_internal(network);
+    ASSERT_EQ(re_rete_activation_count(engine_network), 0u);
     re_engine_destroy(engine);
     re_facts_destroy(facts);
 }
@@ -187,6 +194,64 @@ static re_status_t count_event(re_engine_t *engine, re_facts_t *facts,
     (void)event;
     state->count++;
     return RE_STATUS_OK;
+}
+
+static re_status_t failing_action_callback(re_engine_t *engine, re_facts_t *facts,
+                                            const re_rule_event_t *event, void *context) {
+    (void)engine;
+    (void)facts;
+    (void)event;
+    (void)context;
+    return RE_STATUS_ERROR;
+}
+
+TEST(forward_multi_action_failure_rolls_back_earlier_action) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    re_function_t *function = NULL;
+    function_state_t function_state = {0u, 0u, 0};
+    re_function_descriptor_t descriptor = {sizeof(descriptor), RE_ABI_VERSION_MAJOR,
+        {"fail", 4u}, failing_function, NULL, &function_state};
+    ASSERT_EQ(re_engine_register_function(engine, &descriptor, &function), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Fail\" { when true then First = 1; Result = fail(); }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_ERROR);
+    ASSERT_EQ(re_facts_get(facts, text("First"), &output), RE_STATUS_NOT_FOUND);
+    re_function_unregister(function);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(forward_multi_action_success_commits_all_actions) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Set\" { when true then First = 1; Second = 2; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("First"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.int64_value, 1);
+    ASSERT_EQ(re_facts_get(facts, text("Second"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.int64_value, 2);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(forward_callback_failure_rolls_back_action_mutations) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    re_callbacks_t callbacks = {failing_action_callback, NULL};
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Fail\" { when true then First = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_ERROR);
+    ASSERT_EQ(re_facts_get(facts, text("First"), &output), RE_STATUS_NOT_FOUND);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
 }
 
 static void run_program(re_engine_t *engine, re_facts_t *facts, const char *source,
@@ -815,6 +880,365 @@ TEST(salience_orders_activations_stably) {
     ASSERT_EQ(state.names[2][0], 'L');
     re_facts_destroy(facts);
     re_engine_destroy(engine);
+}
+
+TEST(array_literal_membership_matches_numeric_and_string_values) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 2}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Value"), &value), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"In\" { when Value in [1, 2, \"two\"] then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_OK);
+    ASSERT_EQ(result.as.int64_value, 1);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(array_membership_covers_positive_negative_and_mixed_scalar_types) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t number = {RE_VALUE_DOUBLE, {.double_value = 2.5}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Number"), &number), RE_STATUS_OK);
+    run_program(engine, facts,
+        "rule \"Double\" { when Number in [1, 2.5, true, \"2.5\"] then DoubleHit = true; }"
+        "rule \"Wrong\" { when Number in [2, false, \"no\"] then WrongHit = true; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("DoubleHit"), &result), RE_STATUS_OK);
+    ASSERT_EQ(result.type, RE_VALUE_BOOL);
+    ASSERT_EQ(result.as.boolean, 1);
+    ASSERT_EQ(re_facts_get(facts, text("WrongHit"), &result), RE_STATUS_NOT_FOUND);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(array_literal_membership_rejects_non_match_and_malformed_arrays) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t value = {RE_VALUE_STRING, {.string = {"no", 2u}}};
+    ASSERT_EQ(re_facts_set(facts, text("Value"), &value), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Out\" { when Value in [\"yes\"] then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &value), RE_STATUS_NOT_FOUND);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Empty\" { when Value in [] then Result = 1; }"), NULL, &program), RE_STATUS_PARSE_ERROR);
+    re_program_destroy(program);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when Value in 1 then Result = 1; }"), NULL, &program), RE_STATUS_PARSE_ERROR);
+    re_program_destroy(program);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(array_membership_uses_typed_equality_without_integer_precision_loss) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = INT64_C(9007199254740993)}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Value"), &value), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Exact\" { when Value in [9007199254740992] then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_NOT_FOUND);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(array_membership_rejects_numeric_cross_type_equality) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t integer = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Value"), &integer), RE_STATUS_OK);
+    run_program(engine, facts,
+        "rule \"WrongType\" { when Value in [1.0] then Result = true; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_NOT_FOUND);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(structured_array_membership_uses_owned_copy) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *tags = NULL;
+    re_program_t *program = NULL;
+    re_value_t tag = {RE_VALUE_STRING, {.string = {"vip", 3u}}};
+    re_value_t result = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_value_create_array(facts, &tags), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(tags, &tag), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Tags"), tags), RE_STATUS_OK);
+    re_value_destroy(tags);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"StructuredIn\" { when \"vip\" in Tags then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &result), RE_STATUS_OK);
+    ASSERT_EQ(result.as.int64_value, 1);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(array_membership_rejects_structured_non_array_and_nested_elements) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *object = NULL;
+    re_value_handle_t *array = NULL;
+    re_value_handle_t *nested = NULL;
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_value_create_object(facts, &object), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("NotArray"), object), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"NotArray\" { when \"vip\" in NotArray then Result = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_array(facts, &nested), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append_value(array, nested), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Nested"), array), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"Nested\" { when \"vip\" in Nested then Result = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    re_value_destroy(nested);
+    re_value_destroy(array);
+    re_value_destroy(object);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(array_membership_literals_reject_non_scalar_elements_and_bound_count) {
+    re_program_t *program = NULL;
+    char source[1024];
+    char oversized[1024];
+    size_t used = 0u;
+    size_t oversized_used = 0u;
+    size_t index;
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"Bad\" { when 1 in [[1]] then Result = 1; }"), NULL, &program),
+        RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+    used += (size_t)snprintf(source + used, sizeof(source) - used,
+                             "rule \"Limit\" { when 1 in [");
+    for (index = 0u; index < 64u; ++index)
+        used += (size_t)snprintf(source + used, sizeof(source) - used, "%s1",
+                                 index == 0u ? "" : ",");
+    used += (size_t)snprintf(source + used, sizeof(source) - used,
+                             "] then Result = 1; }");
+    ASSERT_TRUE(used < sizeof(source));
+    ASSERT_EQ(re_program_load(NULL, text(source), NULL, &program), RE_STATUS_OK);
+    re_program_destroy(program);
+    program = NULL;
+    oversized_used += (size_t)snprintf(oversized + oversized_used,
+        sizeof(oversized) - oversized_used, "rule \"Limit\" { when 1 in [");
+    for (index = 0u; index < 65u; ++index)
+        oversized_used += (size_t)snprintf(oversized + oversized_used,
+            sizeof(oversized) - oversized_used, "%s1", index == 0u ? "" : ",");
+    oversized_used += (size_t)snprintf(oversized + oversized_used,
+        sizeof(oversized) - oversized_used, "] then Result = 1; }");
+    ASSERT_EQ(re_program_load(NULL, text(oversized), NULL, &program), RE_STATUS_LIMIT);
+    ASSERT_TRUE(program == NULL);
+}
+
+TEST(array_membership_array_copy_failure_leaves_facts_unchanged) {
+    allocator_state_t state = {0u, 0u, 0u};
+    re_allocator_t allocator = {&state, test_alloc, test_realloc, test_free};
+    re_facts_t *facts = re_facts_create(&allocator, NULL);
+    re_value_handle_t *array = NULL;
+    re_value_t member = {RE_VALUE_INT64, {.int64_value = 7}};
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &member), RE_STATUS_OK);
+    state.fail_at = state.calls + 1u;
+    ASSERT_EQ(re_facts_set_value(facts, text("Numbers"), array), RE_STATUS_OUT_OF_MEMORY);
+    ASSERT_EQ(re_facts_get(facts, text("Numbers"), &output), RE_STATUS_NOT_FOUND);
+    state.fail_at = 0u;
+    re_value_destroy(array);
+    re_facts_destroy(facts);
+    ASSERT_EQ(state.calls, state.frees + 1u);
+}
+
+TEST(grl_string_operators_match_in_forward_ir) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t value = {RE_VALUE_STRING, {.string = {"admin@example.com", 17u}}};
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Email"), &value), RE_STATUS_OK);
+    run_program(engine, facts,
+        "rule \"Strings\" { when Email contains \"admin\" then Matched = true; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Matched"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.type, RE_VALUE_BOOL);
+    ASSERT_EQ(output.as.boolean, 1);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(grl_append_action_preserves_action_order) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    run_program(engine, facts, "rule \"Append\" { when true then Items += 1; Items += 2; }", NULL);
+    ASSERT_EQ(re_facts_get_path(facts, text("Items.0"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.int64_value, 1);
+    ASSERT_EQ(re_facts_get_path(facts, text("Items.1"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.int64_value, 2);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(grl_arithmetic_precedence_is_observable) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t score = {RE_VALUE_INT64, {.int64_value = 3}};
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Score"), &score), RE_STATUS_OK);
+    run_program(engine, facts, "rule \"Arithmetic\" { when Score + 2 * 4 == 11 then Result = Score + 2 * 4; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.type, RE_VALUE_INT64);
+    ASSERT_EQ(output.as.int64_value, 11);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(grl_arithmetic_supports_subtraction_and_division) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    run_program(engine, facts,
+        "rule \"Arithmetic\" { when (20 - 8) / 3 == 4 then Result = (20 - 8) / 3; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.type, RE_VALUE_INT64);
+    ASSERT_EQ(output.as.int64_value, 4);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(grl_arithmetic_supports_negative_integer_multiplication) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    run_program(engine, facts,
+        "rule \"Arithmetic\" { when 2 * -3 == -6 then Result = 2 * -3; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.type, RE_VALUE_INT64);
+    ASSERT_EQ(output.as.int64_value, -6);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(grl_arithmetic_mixes_int_and_double_as_double) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    run_program(engine, facts,
+        "rule \"Arithmetic\" { when 5 / 2.0 == 2.5 then Result = 5 / 2.0; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.type, RE_VALUE_DOUBLE);
+    ASSERT_TRUE(output.as.double_value == 2.5);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(grl_arithmetic_rejects_malformed_and_zero_division) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when 1 + * 2 == 3 then X = 1; }"), NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when 1 / 0 == 0 then X = 1; }"), NULL, &program), RE_STATUS_ERROR);
+    ASSERT_TRUE(program == NULL);
+}
+
+TEST(grl_in_supports_array_literals_and_structured_arrays) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t role = {RE_VALUE_STRING, {.string = {"admin", 5u}}};
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    re_value_handle_t *tags = NULL;
+    ASSERT_EQ(re_facts_set(facts, text("Role"), &role), RE_STATUS_OK);
+    run_program(engine, facts, "rule \"Membership\" { when Role in [\"admin\", \"user\"] then Result = true; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.boolean, 1);
+    ASSERT_EQ(re_value_create_array(facts, &tags), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(tags, &role), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Tags"), tags), RE_STATUS_OK);
+    run_program(engine, facts, "rule \"StructuredMembership\" { when \"admin\" in Tags then Structured = true; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Structured"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.boolean, 1);
+    re_value_destroy(tags); re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(grl_matches_uses_wildcards) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t email = {RE_VALUE_STRING, {.string = {"admin@example.com", 17u}}};
+    re_value_t output = {RE_VALUE_NONE, {0}};
+    ASSERT_EQ(re_facts_set(facts, text("Email"), &email), RE_STATUS_OK);
+    run_program(engine, facts, "rule \"Pattern\" { when Email matches \"admin*@*.com\" then Result = true; }", NULL);
+    ASSERT_EQ(re_facts_get(facts, text("Result"), &output), RE_STATUS_OK);
+    ASSERT_EQ(output.as.boolean, 1);
+    re_facts_destroy(facts); re_engine_destroy(engine);
+}
+
+TEST(grl_matches_supports_question_mark_and_empty_strings) {
+    re_value_t value = {RE_VALUE_STRING, {.string = {"ab", 2u}}};
+    re_value_t question = {RE_VALUE_STRING, {.string = {"a?", 2u}}};
+    re_value_t empty = {RE_VALUE_STRING, {.string = {"", 0u}}};
+    re_value_t star = {RE_VALUE_STRING, {.string = {"*", 1u}}};
+    ASSERT_TRUE(re_value_compare(&value, &question, RE_COMPARE_MATCHES));
+    ASSERT_TRUE(!re_value_compare(&value, &empty, RE_COMPARE_MATCHES));
+    ASSERT_TRUE(re_value_compare(&empty, &star, RE_COMPARE_MATCHES));
+}
+
+TEST(grl_matches_rejects_nonmatching_wildcard_patterns) {
+    re_value_t value = {RE_VALUE_STRING, {.string = {"admin@example.com", 17u}}};
+    re_value_t pattern = {RE_VALUE_STRING, {.string = {"user?*@*.net", 12u}}};
+    ASSERT_TRUE(!re_value_compare(&value, &pattern, RE_COMPARE_MATCHES));
+}
+
+TEST(grl_matches_is_anchored_and_supports_zero_or_more_bytes) {
+    re_value_t value = {RE_VALUE_STRING, {.string = {"admin@example.com", 17u}}};
+    re_value_t prefix = {RE_VALUE_STRING, {.string = {"admin", 5u}}};
+    re_value_t suffix = {RE_VALUE_STRING, {.string = {"*.com", 5u}}};
+    re_value_t inner = {RE_VALUE_STRING, {.string = {"example", 7u}}};
+    re_value_t any = {RE_VALUE_STRING, {.string = {"*", 1u}}};
+    ASSERT_FALSE(re_value_compare(&value, &prefix, RE_COMPARE_MATCHES));
+    ASSERT_TRUE(re_value_compare(&value, &suffix, RE_COMPARE_MATCHES));
+    ASSERT_TRUE(re_value_compare(&value, &inner, RE_COMPARE_MATCHES) == 0);
+    ASSERT_TRUE(re_value_compare(&value, &any, RE_COMPARE_MATCHES));
+}
+
+TEST(grl_matches_question_mark_consumes_one_byte) {
+    re_value_t two_bytes = {RE_VALUE_STRING, {.string = {"ab", 2u}}};
+    re_value_t one_byte = {RE_VALUE_STRING, {.string = {"a", 1u}}};
+    re_value_t one_question = {RE_VALUE_STRING, {.string = {"?", 1u}}};
+    re_value_t two_questions = {RE_VALUE_STRING, {.string = {"??", 2u}}};
+    ASSERT_TRUE(re_value_compare(&two_bytes, &two_questions, RE_COMPARE_MATCHES));
+    ASSERT_FALSE(re_value_compare(&two_bytes, &one_question, RE_COMPARE_MATCHES));
+    ASSERT_TRUE(re_value_compare(&one_byte, &one_question, RE_COMPARE_MATCHES));
+}
+
+TEST(grl_matches_rejects_oversized_and_overflowing_patterns_without_dereference) {
+    re_value_t value = {RE_VALUE_STRING, {.string = {"x", 1u}}};
+    re_value_t oversized_pattern = {RE_VALUE_STRING, {.string = {(const char *)1, SIZE_MAX}}};
+    re_value_t overflowing_pattern = {RE_VALUE_STRING, {.string = {(const char *)1, SIZE_MAX - 1u}}};
+    re_value_t empty = {RE_VALUE_STRING, {.string = {"", 0u}}};
+    ASSERT_FALSE(re_value_compare(&value, &oversized_pattern, RE_COMPARE_MATCHES));
+    ASSERT_FALSE(re_value_compare(&value, &overflowing_pattern, RE_COMPARE_MATCHES));
+    ASSERT_TRUE(re_value_compare(&empty, &empty, RE_COMPARE_MATCHES));
+}
+
+TEST(malformed_action_requires_semicolon) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when true then Result = 1 }"), NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+}
+
+TEST(malformed_action_rejects_trailing_tokens_transactionally) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when true then Result = 1; garbage }"), NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when true then Result = 1; Result = 2 }"), NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
 }
 
 typedef struct provider_test_state_t {
@@ -1565,11 +1989,39 @@ TEST_MAIN_BEGIN()
     RUN_TEST(public_rete_supports_bounded_boolean_expression_and_nested_fact);
     RUN_TEST(then_literal_assignment_updates_facts_and_callback);
     RUN_TEST(then_fact_reference_assignment_updates_facts_and_callback);
+    RUN_TEST(forward_multi_action_failure_rolls_back_earlier_action);
+    RUN_TEST(forward_multi_action_success_commits_all_actions);
+    RUN_TEST(forward_callback_failure_rolls_back_action_mutations);
+    RUN_TEST(grl_string_operators_match_in_forward_ir);
+    RUN_TEST(grl_append_action_preserves_action_order);
+    RUN_TEST(grl_arithmetic_precedence_is_observable);
+    RUN_TEST(grl_arithmetic_supports_subtraction_and_division);
+    RUN_TEST(grl_arithmetic_supports_negative_integer_multiplication);
+    RUN_TEST(grl_arithmetic_mixes_int_and_double_as_double);
+    RUN_TEST(grl_arithmetic_rejects_malformed_and_zero_division);
+    RUN_TEST(grl_in_supports_array_literals_and_structured_arrays);
+    RUN_TEST(grl_matches_uses_wildcards);
+    RUN_TEST(grl_matches_supports_question_mark_and_empty_strings);
+    RUN_TEST(grl_matches_rejects_nonmatching_wildcard_patterns);
+    RUN_TEST(grl_matches_is_anchored_and_supports_zero_or_more_bytes);
+    RUN_TEST(grl_matches_question_mark_consumes_one_byte);
+    RUN_TEST(grl_matches_rejects_oversized_and_overflowing_patterns_without_dereference);
+    RUN_TEST(malformed_action_requires_semicolon);
+    RUN_TEST(malformed_action_rejects_trailing_tokens_transactionally);
     RUN_TEST(custom_function_is_registered_and_invoked_in_condition);
     RUN_TEST(custom_function_errors_propagate_from_action);
     RUN_TEST(custom_function_registration_validates_descriptor_and_reentrancy);
     RUN_TEST(dotted_fact_lookup_prefers_exact_flat_key);
     RUN_TEST(structured_values_support_nested_objects_and_arrays);
+    RUN_TEST(array_literal_membership_matches_numeric_and_string_values);
+    RUN_TEST(array_membership_covers_positive_negative_and_mixed_scalar_types);
+    RUN_TEST(array_literal_membership_rejects_non_match_and_malformed_arrays);
+    RUN_TEST(array_membership_uses_typed_equality_without_integer_precision_loss);
+    RUN_TEST(array_membership_rejects_numeric_cross_type_equality);
+    RUN_TEST(structured_array_membership_uses_owned_copy);
+    RUN_TEST(array_membership_rejects_structured_non_array_and_nested_elements);
+    RUN_TEST(array_membership_literals_reject_non_scalar_elements_and_bound_count);
+    RUN_TEST(array_membership_array_copy_failure_leaves_facts_unchanged);
     RUN_TEST(null_missing_and_unknown_are_distinct);
     RUN_TEST(fact_lifecycle_ids_are_generation_safe_and_notify);
     RUN_TEST(fact_lifecycle_notifications_provide_change_snapshots);

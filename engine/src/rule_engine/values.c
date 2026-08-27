@@ -2,6 +2,18 @@
 #include <stdio.h>
 #include <string.h>
 
+#define RE_VALUE_MAX_DEPTH 64u
+
+static size_t value_depth(const re_value_handle_t *value) {
+    size_t depth = 0u;
+    while (value != NULL) {
+        ++depth;
+        if (depth > RE_VALUE_MAX_DEPTH) return depth;
+        value = value->count == 0u ? NULL : value->members[0].child;
+    }
+    return depth;
+}
+
 static re_value_handle_t *value_new(const re_allocator_impl_t *allocator, int kind) {
     re_value_handle_t *value = re_alloc(allocator, sizeof(*value));
     if (value == NULL) return NULL;
@@ -65,6 +77,7 @@ static re_status_t value_add(re_value_handle_t *value, re_string_t key,
         (scalar == NULL && child == NULL) || (scalar != NULL && child != NULL))
         return RE_STATUS_INVALID_ARGUMENT;
     if (key.size > 256u || value->count >= 1024u) return RE_STATUS_LIMIT;
+    if (child != NULL && value_depth(child) > RE_VALUE_MAX_DEPTH) return RE_STATUS_LIMIT;
     if (value->count == value->capacity) {
         size_t capacity = value->capacity == 0u ? 4u : value->capacity * 2u;
         member = re_realloc(&value->allocator, value->members, capacity * sizeof(*member));
@@ -139,12 +152,55 @@ re_status_t re_facts_set_value(re_facts_t *facts, re_string_t name, const re_val
     return RE_STATUS_OK;
 }
 
+re_status_t re_facts_append_value(re_facts_t *facts, re_string_t name, const re_value_t *value) {
+    size_t index;
+    re_value_handle_t *array = NULL;
+    re_status_t status;
+    if (facts == NULL || value == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL) return re_facts_append_value(facts->transaction->staged, name, value);
+    for (index = 0u; index < facts->count; ++index)
+        if (facts->entries[index].active && facts->entries[index].name_size == name.size &&
+            memcmp(facts->entries[index].name, name.data, name.size) == 0) break;
+    if (index == facts->count || facts->entries[index].structured == NULL) {
+        status = re_value_create_array(facts, &array);
+        if (status != RE_STATUS_OK) return status;
+    } else {
+        status = value_copy(&facts->allocator, facts->entries[index].structured, &array);
+        if (status != RE_STATUS_OK) return status;
+    }
+    status = re_value_array_append(array, value);
+    if (status == RE_STATUS_OK) status = re_facts_set_value(facts, name, array);
+    re_value_destroy(array);
+    return status;
+}
+
 static const re_value_member_t *find_member(const re_value_handle_t *value, re_string_t key) {
     size_t i;
     for (i = 0u; i < value->count; ++i)
         if (value->members[i].key_size == key.size && memcmp(value->members[i].key, key.data, key.size) == 0)
             return &value->members[i];
     return NULL;
+}
+re_status_t re_facts_contains_value(const re_facts_t *facts, re_string_t path,
+                                    const re_value_t *needle, int *matched) {
+    size_t i;
+    const re_value_handle_t *array = NULL;
+    if (facts == NULL || needle == NULL || matched == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL) facts = facts->transaction->staged;
+    for (i = 0u; i < facts->count; ++i)
+        if (facts->entries[i].active && facts->entries[i].name_size == path.size &&
+            memcmp(facts->entries[i].name, path.data, path.size) == 0) {
+            array = facts->entries[i].structured;
+            break;
+        }
+    if (array == NULL || array->kind != 2) return RE_STATUS_INVALID_ARGUMENT;
+    *matched = 0;
+    for (i = 0u; i < array->count; ++i)
+        if (array->members[i].child == NULL && re_value_equal_typed(&array->members[i].scalar, needle)) {
+            *matched = 1;
+            break;
+        }
+    return RE_STATUS_OK;
 }
 re_status_t re_facts_get_path(const re_facts_t *facts, re_string_t path, re_value_t *out) {
     size_t i = 0u, start = 0u, root_size;

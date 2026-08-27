@@ -63,8 +63,8 @@ static int entry_changed(const re_fact_entry_t *left, const re_fact_entry_t *rig
            !structured_equal(left->structured, right->structured);
 }
 
-static void dispatch(re_facts_t *facts, const re_fact_entry_t *entry,
-                     size_t index, re_fact_change_kind_t kind) {
+static re_status_t dispatch(re_facts_t *facts, const re_fact_entry_t *entry,
+                            size_t index, re_fact_change_kind_t kind) {
     size_t count = 0u, cursor = 0u;
     re_subscription_t *subscription;
     re_subscription_t **snapshot;
@@ -74,11 +74,17 @@ static void dispatch(re_facts_t *facts, const re_fact_entry_t *entry,
     for (subscription = facts->subscriptions; subscription != NULL; subscription = subscription->next)
         if (subscription->active) ++count;
     snapshot = count == 0u ? NULL : re_alloc(&facts->allocator, count * sizeof(*snapshot));
-    if (count != 0u && snapshot == NULL) return;
+    if (count != 0u && snapshot == NULL) {
+        if (facts->rete_network != NULL) {
+            facts->rete_network->invalid = 1;
+            facts->rete_network->activation_count = 0u;
+        }
+        return RE_STATUS_OUT_OF_MEMORY;
+    }
     if (entry->name != NULL && re_copy_string(&facts->allocator,
-            (re_string_t){entry->name, entry->name_size}, &name_copy) != RE_STATUS_OK) goto cleanup;
+            (re_string_t){entry->name, entry->name_size}, &name_copy) != RE_STATUS_OK) goto oom;
     if (entry->value.type == RE_VALUE_STRING && re_copy_string(&facts->allocator,
-            entry->value.as.string, &value_copy) != RE_STATUS_OK) goto cleanup;
+            entry->value.as.string, &value_copy) != RE_STATUS_OK) goto oom;
     event = (re_fact_event_t){sizeof(event), kind, {(uint64_t)index, entry->generation},
         {name_copy, entry->name_size}, entry->value};
     if (value_copy != NULL) event.value.as.string.data = value_copy;
@@ -87,16 +93,37 @@ static void dispatch(re_facts_t *facts, const re_fact_entry_t *entry,
     facts->notifying = 1;
     for (cursor = 0u; cursor < count; ++cursor) {
         if (snapshot[cursor]->active)
-            snapshot[cursor]->callback(facts, &event, snapshot[cursor]->context);
+            {
+                re_status_t status = snapshot[cursor]->callback(facts, &event, snapshot[cursor]->context);
+                if (status != RE_STATUS_OK) {
+                    if (facts->rete_network != NULL) {
+                        facts->rete_network->invalid = 1;
+                        facts->rete_network->activation_count = 0u;
+                    }
+                    facts->notifying = 0;
+                    re_free(&facts->allocator, value_copy); re_free(&facts->allocator, name_copy);
+                    re_free(&facts->allocator, snapshot);
+                    return status;
+                }
+            }
     }
     facts->notifying = 0;
-cleanup:
     re_free(&facts->allocator, value_copy);
     re_free(&facts->allocator, name_copy);
     re_free(&facts->allocator, snapshot);
+    return RE_STATUS_OK;
+oom:
+    if (facts->rete_network != NULL) {
+        facts->rete_network->invalid = 1;
+        facts->rete_network->activation_count = 0u;
+    }
+    re_free(&facts->allocator, value_copy);
+    re_free(&facts->allocator, name_copy);
+    re_free(&facts->allocator, snapshot);
+    return RE_STATUS_OUT_OF_MEMORY;
 }
 
-static void emit_changes(re_fact_txn_t *transaction) {
+static re_status_t emit_changes(re_fact_txn_t *transaction) {
     size_t index;
     re_facts_t *facts = transaction->facts;
     re_facts_t *old = transaction->original;
@@ -105,20 +132,22 @@ static void emit_changes(re_fact_txn_t *transaction) {
         for (index = 0u; index < count; ++index) {
             int was_active = index < old->count && old->entries[index].active;
             int is_active = index < facts->count && facts->entries[index].active;
-            if (was_active && !is_active) dispatch(facts, &old->entries[index], index, RE_FACT_RETRACT);
-            if (!was_active && is_active) dispatch(facts, &facts->entries[index], index, RE_FACT_INSERT);
+            re_status_t status;
+            if (was_active && !is_active) { status = dispatch(facts, &old->entries[index], index, RE_FACT_RETRACT); if (status != RE_STATUS_OK) return status; }
+            if (!was_active && is_active) { status = dispatch(facts, &facts->entries[index], index, RE_FACT_INSERT); if (status != RE_STATUS_OK) return status; }
             if (was_active && is_active && entry_changed(&facts->entries[index], &old->entries[index]))
-                dispatch(facts, &facts->entries[index], index, RE_FACT_UPDATE);
+                { status = dispatch(facts, &facts->entries[index], index, RE_FACT_UPDATE); if (status != RE_STATUS_OK) return status; }
         }
     }
+    return RE_STATUS_OK;
 }
 
-re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction) {
+static re_status_t begin_transaction(re_facts_t *facts, re_fact_txn_t **out_transaction) {
     re_fact_txn_t *transaction;
     re_status_t status;
     if (facts == NULL || out_transaction == NULL) return RE_STATUS_INVALID_ARGUMENT;
     *out_transaction = NULL;
-    if (facts->transaction != NULL || facts->running || facts->notifying) return RE_STATUS_BUSY;
+    if (facts->transaction != NULL || (facts->running && !facts->run_transaction_allowed) || facts->notifying) return RE_STATUS_BUSY;
     transaction = re_alloc(&facts->allocator, sizeof(*transaction));
     if (transaction == NULL) return RE_STATUS_OUT_OF_MEMORY;
     transaction->facts = facts; transaction->original = NULL; transaction->staged = NULL; transaction->inactive = 0;
@@ -132,6 +161,19 @@ re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction) {
     }
     facts->transaction = transaction; *out_transaction = transaction;
     return RE_STATUS_OK;
+}
+
+re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction) {
+    return begin_transaction(facts, out_transaction);
+}
+
+re_status_t re_facts_begin_for_run(re_facts_t *facts, re_fact_txn_t **out_transaction) {
+    re_status_t status;
+    if (facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    facts->run_transaction_allowed = 1;
+    status = begin_transaction(facts, out_transaction);
+    facts->run_transaction_allowed = 0;
+    return status;
 }
 
 re_status_t re_facts_txn_set(re_fact_txn_t *txn, re_string_t name, const re_value_t *value) {
@@ -182,15 +224,17 @@ re_status_t re_facts_commit(re_fact_txn_t *transaction) {
     facts->transaction = NULL;
     facts->notifying = 1;
     transaction->inactive = 1;
-    emit_changes(transaction);
-    facts->notifying = 0;
-    re_facts_destroy(transaction->original); re_facts_destroy(transaction->staged);
-    transaction->next_retired = facts->retired_transaction;
-    facts->retired_transaction = transaction;
-    if (facts->destroy_requested) {
-        re_facts_destroy(facts);
+    {
+        re_status_t status = emit_changes(transaction);
+        facts->notifying = 0;
+        /* Notifications are post-commit. A callback error is reported to the
+         * caller, but cannot roll back state already visible to callbacks. */
+        re_facts_destroy(transaction->original); re_facts_destroy(transaction->staged);
+        transaction->next_retired = facts->retired_transaction;
+        facts->retired_transaction = transaction;
+        if (facts->destroy_requested && !facts->running) re_facts_destroy(facts);
+        return status;
     }
-    return RE_STATUS_OK;
 }
 
 void re_facts_rollback(re_fact_txn_t *transaction) {
