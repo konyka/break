@@ -21,6 +21,7 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     facts->retired_subscriptions = NULL;
     facts->transaction = NULL;
     facts->retired_transaction = NULL; facts->rete_network = NULL;
+    facts->tms = NULL;
     return facts;
 }
 
@@ -34,7 +35,8 @@ void re_facts_destroy(re_facts_t *facts) {
         transaction->facts = NULL;
     }
     if (facts->rete_network != NULL) {
-        re_rete_network_destroy_internal(facts->rete_network);
+        if (facts->rete_network->engine_owned) re_rete_network_destroy_internal(facts->rete_network);
+        else re_rete_network_detach_facts(facts->rete_network);
         facts->rete_network = NULL;
     }
     {
@@ -64,6 +66,7 @@ void re_facts_destroy(re_facts_t *facts) {
         re_value_destroy(facts->entries[index].structured);
     }
     re_free(&facts->allocator, facts->entries);
+    re_tms_destroy(facts->tms);
     /* Retired transaction records intentionally outlive facts so stale opaque
      * handles remain safe to query as inactive tombstones. */
     re_free(&facts->allocator, facts);
@@ -107,6 +110,7 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
         facts->entries[index].name = name_copy; facts->entries[index].name_size = name.size;
         facts->entries[index].generation = 0u;
         facts->entries[index].active = 1;
+        facts->entries[index].logical = 0;
         facts->entries[index].structured = NULL;
         facts->entries[index].string_data = NULL;
         facts->count++;
@@ -126,6 +130,7 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
     replacement.structured = NULL;
     replacement.generation = facts->entries[index].generation;
     replacement.active = facts->entries[index].active;
+    replacement.logical = facts->entries[index].logical;
     facts->entries[index] = replacement;
     facts->mutation_serial++;
     if (emit_event && was_existing) return re_facts_notify(facts, RE_FACT_UPDATE, index);
@@ -224,6 +229,46 @@ re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id, const re_value_t
     }
 }
 
+int re_facts_is_logical(const re_facts_t *facts, re_fact_id_t id) {
+    return facts != NULL && id.slot < facts->count && facts->entries[id.slot].active &&
+        facts->entries[id.slot].generation == id.generation && facts->entries[id.slot].logical;
+}
+
+re_status_t re_facts_insert_logical(re_facts_t *facts, re_string_t name, const re_value_t *value,
+                                    re_string_t rule, const re_fact_id_t *premises, size_t count,
+                                    re_fact_id_t *out_id) {
+    re_status_t status;
+    size_t index;
+    if (facts == NULL || value == NULL || out_id == NULL || rule.data == NULL || rule.size == 0u ||
+        (count != 0u && premises == NULL)) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL)
+        return re_facts_insert_logical(facts->transaction->staged, name, value, rule, premises, count, out_id);
+    for (index = 0u; index < facts->count; ++index)
+        if (facts->entries[index].active && facts->entries[index].name_size == name.size &&
+            memcmp(facts->entries[index].name, name.data, name.size) == 0 &&
+            !facts->entries[index].logical) {
+            status = re_facts_insert(facts, name, value, out_id);
+            return status;
+        }
+    status = re_facts_insert(facts, name, value, out_id);
+    if (status != RE_STATUS_OK) return status;
+    status = re_facts_justification_add(facts, *out_id, rule, premises, count);
+    if (status != RE_STATUS_OK) { re_facts_retract(facts, *out_id); return status; }
+    return RE_STATUS_OK;
+}
+
+re_status_t re_facts_provenance_get(const re_facts_t *facts, re_fact_id_t id, re_fact_provenance_t *out) {
+    size_t i;
+    if (facts == NULL || out == NULL || !re_facts_is_logical(facts, id)) return RE_STATUS_NOT_FOUND;
+    for (i = 0u; i < facts->tms->count; ++i) if (facts->tms->items[i].derived.slot == id.slot && facts->tms->items[i].derived.generation == id.generation) {
+        out->producer_rule.data = facts->tms->items[i].producer_rule;
+        out->producer_rule.size = facts->tms->items[i].producer_rule_size;
+        out->premises = facts->tms->items[i].premises; out->premise_count = facts->tms->items[i].premise_count;
+        return RE_STATUS_OK;
+    }
+    return RE_STATUS_NOT_FOUND;
+}
+
 re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     char *name;
     size_t name_size;
@@ -244,6 +289,8 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     facts->entries[id.slot].name = name;
     facts->entries[id.slot].name_size = name_size;
     facts->entries[id.slot].value = value;
+    re_tms_remove_derived(facts, id);
+    re_tms_remove_premise(facts, id);
     return re_facts_notify(facts, RE_FACT_RETRACT, (size_t)id.slot);
 }
 

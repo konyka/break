@@ -17,7 +17,23 @@ typedef struct re_fact_entry_t {
     re_value_handle_t *structured;
     uint64_t generation;
     int active;
+    int logical;
 } re_fact_entry_t;
+
+typedef struct re_tms_justification_t {
+    re_fact_id_t derived;
+    char *producer_rule;
+    size_t producer_rule_size;
+    re_fact_id_t *premises;
+    size_t premise_count;
+} re_tms_justification_t;
+
+typedef struct re_tms_t {
+    re_allocator_impl_t allocator;
+    re_tms_justification_t *items;
+    size_t count;
+    size_t capacity;
+} re_tms_t;
 
 struct re_facts_t {
     re_allocator_impl_t allocator;
@@ -38,6 +54,7 @@ struct re_facts_t {
     struct re_fact_txn_t *transaction;
     struct re_fact_txn_t *retired_transaction;
     struct re_rete_network_t *rete_network;
+    re_tms_t *tms;
 };
 
 struct re_fact_txn_t {
@@ -98,7 +115,7 @@ typedef enum re_compare_t { RE_COMPARE_TRUE, RE_COMPARE_EQ, RE_COMPARE_NE, RE_CO
     RE_COMPARE_GE, RE_COMPARE_LT, RE_COMPARE_LE, RE_COMPARE_CONTAINS,
     RE_COMPARE_STARTS_WITH, RE_COMPARE_ENDS_WITH, RE_COMPARE_MATCHES,
     RE_COMPARE_IN } re_compare_t;
-typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE } re_expr_kind_t;
+typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_EXISTS, RE_EXPR_FORALL, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE } re_expr_kind_t;
 typedef struct re_expr_t {
     re_expr_kind_t kind;
     re_compare_t compare;
@@ -334,6 +351,12 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
                               const re_value_t *value, int emit_event);
 re_status_t re_facts_notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
 void re_allocator_init(re_allocator_impl_t *target, const re_allocator_t *source);
+re_status_t re_tms_clone(const re_tms_t *source, const re_allocator_impl_t *allocator, re_tms_t **out);
+re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t path,
+                                         const re_value_handle_t **out);
+void re_tms_destroy(re_tms_t *tms);
+void re_tms_remove_derived(re_facts_t *facts, re_fact_id_t derived);
+void re_tms_remove_premise(re_facts_t *facts, re_fact_id_t premise);
 re_limits_t re_default_limits(void);
 re_status_t re_copy_string(const re_allocator_impl_t *allocator, re_string_t input, char **out);
 void re_operand_destroy(const re_allocator_impl_t *allocator, re_operand_t *operand);
@@ -389,6 +412,7 @@ re_status_t re_rete_network_create_rule(re_facts_t *facts,
                                         const re_allocator_t *allocator,
                                         re_rete_network_t **out_network);
 void re_rete_network_destroy_internal(re_rete_network_t *network);
+void re_rete_network_detach_facts(re_rete_network_t *network);
 size_t re_rete_activation_count(const re_rete_network_t *network);
 re_status_t re_rete_activation_get(const re_rete_network_t *network,
                                     size_t index, re_rete_activation_t *out);

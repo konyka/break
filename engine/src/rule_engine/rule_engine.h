@@ -307,6 +307,14 @@ typedef struct re_fact_id_t {
   uint64_t generation;
 } re_fact_id_t;
 
+typedef struct re_fact_provenance_t {
+  uint32_t struct_size;
+  uint32_t flags;
+  re_string_t producer_rule;
+  size_t premise_count;
+  const re_fact_id_t *premises;
+} re_fact_provenance_t;
+
 typedef enum re_fact_change_kind_t {
   RE_FACT_INSERT = 1,
   RE_FACT_UPDATE = 2,
@@ -440,6 +448,23 @@ re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
 re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id,
                             const re_value_t *value);
 re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id);
+re_status_t re_facts_insert_logical(re_facts_t *facts, re_string_t name,
+                                    const re_value_t *value,
+                                    re_string_t producer_rule,
+                                    const re_fact_id_t *premises,
+                                    size_t premise_count, re_fact_id_t *out_id);
+int re_facts_is_logical(const re_facts_t *facts, re_fact_id_t id);
+re_status_t re_facts_provenance_get(const re_facts_t *facts, re_fact_id_t id,
+                                    re_fact_provenance_t *out_provenance);
+size_t re_facts_justification_count(const re_facts_t *facts, re_fact_id_t id);
+re_status_t re_facts_justification_add(re_facts_t *facts, re_fact_id_t derived,
+                                       re_string_t producer_rule,
+                                       const re_fact_id_t *premises,
+                                       size_t premise_count);
+re_status_t re_facts_justification_remove(re_facts_t *facts, re_fact_id_t derived,
+                                          re_string_t producer_rule,
+                                          const re_fact_id_t *premises,
+                                          size_t premise_count);
 re_status_t re_facts_subscribe(re_facts_t *facts, re_fact_event_fn_t callback,
                                void *context,
                                re_subscription_t **out_subscription);
@@ -447,7 +472,8 @@ void re_subscription_destroy(re_subscription_t *subscription);
 re_status_t re_engine_agenda(const re_engine_t *engine, re_agenda_t **out_agenda);
 void re_agenda_destroy(re_agenda_t *agenda);
 re_status_t re_engine_rete_network(const re_engine_t *engine,
-                                   re_rete_network_t **out_network);
+                                    re_rete_network_t **out_network);
+/* Destroys a caller-owned network; engine-owned networks are released by the engine. */
 void re_rete_network_destroy(re_rete_network_t *network);
 re_status_t re_engine_query(re_engine_t *engine, re_facts_t *facts,
                              re_string_t goal, re_query_t **out_query);
