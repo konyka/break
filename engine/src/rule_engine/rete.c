@@ -76,23 +76,50 @@ static int token_used(const re_rete_network_t *network, size_t depth, re_fact_id
     return 0;
 }
 
-static re_status_t build_tokens(re_rete_network_t *network, size_t depth) {
+static uint64_t previous_sequence(const re_rete_network_t *network) {
     size_t i;
-    if (depth == network->condition_count) {
-        re_rete_token_t *token = &network->tokens[network->token_count++];
-        size_t j;
-        token->lineage_count = network->condition_count;
-        token->sequence = ++network->next_sequence;
-        for (j = 0u; j < token->lineage_count; ++j) token->lineage[j] = network->lineage_scratch[j];
-        return RE_STATUS_OK;
+    size_t j;
+    for (i = 0u; i < network->activation_count; ++i) {
+        const re_rete_activation_t *activation = &network->activations[i];
+        if (activation->lineage_count != network->condition_count) continue;
+        for (j = 0u; j < network->condition_count; ++j)
+            if (activation->lineage[j].slot != network->lineage_scratch[j].slot ||
+                activation->lineage[j].generation != network->lineage_scratch[j].generation) break;
+        if (j == network->condition_count) return activation->sequence;
     }
-    for (i = 0u; i < network->alpha_memories[depth].count; ++i) {
-        re_fact_id_t id = network->alpha_memories[depth].facts[i];
-        if (token_used(network, depth, id)) continue;
-        network->lineage_scratch[depth] = id;
-        if (build_tokens(network, depth + 1u) != RE_STATUS_OK) return RE_STATUS_LIMIT;
+    return 0u;
+}
+
+static re_status_t build_tokens(re_rete_network_t *network) {
+    size_t choices[RE_RETE_MAX_CONDITIONS] = {0u};
+    size_t depth = 0u;
+    for (;;) {
+        if (depth == network->condition_count) {
+            re_rete_token_t *token;
+            size_t j;
+            if (network->token_count >= network->token_capacity) return RE_STATUS_LIMIT;
+            token = &network->tokens[network->token_count++];
+            token->lineage_count = network->condition_count;
+            token->sequence = previous_sequence(network);
+            if (token->sequence == 0u) token->sequence = ++network->next_sequence;
+            for (j = 0u; j < token->lineage_count; ++j) token->lineage[j] = network->lineage_scratch[j];
+            --depth;
+        }
+        while (choices[depth] < network->alpha_memories[depth].count) {
+            re_fact_id_t id = network->alpha_memories[depth].facts[choices[depth]++];
+            if (token_used(network, depth, id)) continue;
+            network->lineage_scratch[depth] = id;
+            ++depth;
+            if (depth < network->condition_count) choices[depth] = 0u;
+            break;
+        }
+        if (depth == 0u && choices[0] == network->alpha_memories[0].count) return RE_STATUS_OK;
+        if (depth < network->condition_count && choices[depth] == network->alpha_memories[depth].count) {
+            choices[depth] = 0u;
+            if (depth == 0u) return RE_STATUS_OK;
+            --depth;
+        }
     }
-    return RE_STATUS_OK;
 }
 
 static re_status_t rebuild_tokens(re_rete_network_t *network) {
@@ -102,12 +129,21 @@ static re_status_t rebuild_tokens(re_rete_network_t *network) {
         if (network->alpha_memories[i].count != 0u && needed > (size_t)-1 / network->alpha_memories[i].count) return RE_STATUS_LIMIT;
         needed *= network->alpha_memories[i].count == 0u ? 1u : network->alpha_memories[i].count;
     }
-    if (grow((void **)&network->tokens, &network->token_capacity, needed,
-             sizeof(*network->tokens), &network->allocator) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    {
+        re_status_t status = grow((void **)&network->tokens, &network->token_capacity, needed,
+                                   sizeof(*network->tokens), &network->allocator);
+        if (status != RE_STATUS_OK) return status;
+    }
     network->token_count = 0u;
-    if (network->condition_count != 0u && build_tokens(network, 0u) != RE_STATUS_OK) return RE_STATUS_LIMIT;
-    if (grow((void **)&network->activations, &network->activation_capacity,
-             network->token_count, sizeof(*network->activations), &network->allocator) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    if (network->condition_count != 0u) {
+        re_status_t status = build_tokens(network);
+        if (status != RE_STATUS_OK) return status;
+    }
+    {
+        re_status_t status = grow((void **)&network->activations, &network->activation_capacity,
+                                  network->token_count, sizeof(*network->activations), &network->allocator);
+        if (status != RE_STATUS_OK) return status;
+    }
     network->activation_count = 0u;
     for (i = 0u; i < network->token_count; ++i) {
         re_rete_activation_t *activation = &network->activations[network->activation_count++];
@@ -126,15 +162,26 @@ static re_status_t fact_changed(re_facts_t *facts, const re_fact_event_t *event,
     re_rete_network_t *network = (re_rete_network_t *)context;
     size_t i;
     (void)facts;
+    if (network->invalid) return RE_STATUS_OUT_OF_MEMORY;
     for (i = 0u; i < network->condition_count; ++i) {
         if (network->conditions[i].fact_name.size != event->name.size ||
             memcmp(network->conditions[i].fact_name.data, event->name.data, event->name.size) != 0) continue;
         if (event->kind == RE_FACT_RETRACT) alpha_change(network, i, event->id, 0);
         else if (alpha_change(network, i, event->id, re_value_compare(&event->value,
-            &network->conditions[i].value, network->conditions[i].compare) != 0) != RE_STATUS_OK)
+            &network->conditions[i].value, network->conditions[i].compare) != 0) != RE_STATUS_OK) {
+            network->invalid = 1;
+            network->activation_count = 0u;
             return RE_STATUS_OUT_OF_MEMORY;
+        }
     }
-    return rebuild_tokens(network);
+    {
+        re_status_t status = rebuild_tokens(network);
+        if (status != RE_STATUS_OK) {
+            network->invalid = 1;
+            network->activation_count = 0u;
+        }
+        return status;
+    }
 }
 
 static re_status_t create_rule_conditions(re_facts_t *facts, const re_rule_t *rule,
@@ -165,8 +212,19 @@ re_status_t re_rete_network_create_conditions(re_facts_t *facts, const re_rete_c
         re_fact_id_t id = {(uint64_t)j, facts->entries[j].generation};
         if (alpha_change(network, i, id, 1) != RE_STATUS_OK) { re_rete_network_destroy_internal(network); return RE_STATUS_OUT_OF_MEMORY; }
     }
-    if (rebuild_tokens(network) != RE_STATUS_OK) { re_rete_network_destroy_internal(network); return RE_STATUS_OUT_OF_MEMORY; }
-    if (re_facts_subscribe(facts, fact_changed, network, &network->subscription) != RE_STATUS_OK) { re_rete_network_destroy_internal(network); return RE_STATUS_OUT_OF_MEMORY; }
+    {
+        re_status_t status = rebuild_tokens(network);
+        if (status != RE_STATUS_OK) { re_rete_network_destroy_internal(network); return status; }
+    }
+    {
+        re_status_t status = re_facts_subscribe(facts, fact_changed, network, &network->subscription);
+        if (status != RE_STATUS_OK) { re_rete_network_destroy_internal(network); return status; }
+    }
+    if (facts->rete_network != NULL) {
+        re_rete_network_destroy_internal(network);
+        return RE_STATUS_BUSY;
+    }
+    facts->rete_network = network;
     *out = network; return RE_STATUS_OK;
 }
 
@@ -177,6 +235,6 @@ re_status_t re_rete_network_create_rule(re_facts_t *facts, const re_rule_t *rule
     return status;
 }
 int re_rete_conditions_from_rule(const re_rule_t *rule, re_rete_condition_t conditions[2]) { size_t count = 0u; return rule != NULL && conditions != NULL && collect(rule->condition, conditions, &count) && count == 2u; }
-void re_rete_network_destroy_internal(re_rete_network_t *network) { size_t i; if (network == NULL) return; re_subscription_destroy(network->subscription); for (i = 0u; i < network->condition_count; ++i) re_free(&network->allocator, network->alpha_memories[i].facts); re_free(&network->allocator, network->alpha_memories); re_free(&network->allocator, network->conditions); re_free(&network->allocator, network->tokens); re_free(&network->allocator, network->activations); re_free(&network->allocator, network); }
+void re_rete_network_destroy_internal(re_rete_network_t *network) { size_t i; if (network == NULL) return; if (network->facts != NULL && network->facts->rete_network == network) network->facts->rete_network = NULL; if (network->owner_engine != NULL && network->owner_engine->rete_network == network) network->owner_engine->rete_network = NULL; network->owner_engine = NULL; re_subscription_destroy(network->subscription); for (i = 0u; i < network->condition_count; ++i) re_free(&network->allocator, network->alpha_memories[i].facts); re_free(&network->allocator, network->alpha_memories); re_free(&network->allocator, network->conditions); re_free(&network->allocator, network->tokens); re_free(&network->allocator, network->activations); re_free(&network->allocator, network); }
 size_t re_rete_activation_count(const re_rete_network_t *network) { return network == NULL ? 0u : network->activation_count; }
 re_status_t re_rete_activation_get(const re_rete_network_t *network, size_t index, re_rete_activation_t *out) { if (network == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT; if (index >= network->activation_count) return RE_STATUS_NOT_FOUND; *out = network->activations[index]; return RE_STATUS_OK; }

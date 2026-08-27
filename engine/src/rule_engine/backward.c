@@ -492,11 +492,51 @@ static re_status_t machine_condition_matches(re_query_t *query, const re_expr_t 
     return status;
 }
 
-static int condition_has_or(const re_expr_t *expr) {
+static int condition_has_or(const re_allocator_impl_t *allocator, const re_expr_t *expr) {
+    const re_expr_t **stack = NULL;
+    size_t count = 0u;
+    size_t capacity = 0u;
+    int found = 0;
     if (expr == NULL) return 0;
-    if (expr->kind == RE_EXPR_OR) return 1;
-    if (expr->kind != RE_EXPR_AND && expr->kind != RE_EXPR_NOT) return 0;
-    return condition_has_or(expr->first) || condition_has_or(expr->second);
+    for (;;) {
+        const re_expr_t *current;
+        if (expr != NULL) {
+            if (count == capacity) {
+                size_t next = capacity == 0u ? 8u : capacity * 2u;
+                const re_expr_t **grown;
+                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) break;
+                grown = re_realloc(allocator, stack, next * sizeof(*grown));
+                if (grown == NULL) break;
+                stack = grown;
+                capacity = next;
+            }
+            stack[count++] = expr;
+            expr = NULL;
+        }
+        if (count == 0u) break;
+        current = stack[--count];
+        if (current->kind == RE_EXPR_OR) {
+            found = 1;
+            break;
+        }
+        if (current->kind == RE_EXPR_AND || current->kind == RE_EXPR_NOT) {
+            expr = current->second;
+            if (current->first != NULL) {
+                if (count == capacity) {
+                    size_t next = capacity == 0u ? 8u : capacity * 2u;
+                    const re_expr_t **grown;
+                    if (next < capacity || next > (size_t)-1 / sizeof(*grown)) break;
+                    grown = re_realloc(allocator, stack, next * sizeof(*grown));
+                    if (grown == NULL) break;
+                    stack = grown;
+                    capacity = next;
+                }
+                stack[count++] = current->first;
+            }
+        }
+    }
+    re_free(allocator, stack);
+    return found;
 }
 
 static void condition_branch_list_destroy(const re_allocator_impl_t *allocator,
@@ -836,7 +876,7 @@ static re_status_t machine_goal_step(re_query_t *query, re_string_t name, const 
             environment_destroy(&query->allocator, &branch);
             break;
         }
-        if (condition_has_or(rule->condition)) {
+        if (condition_has_or(&query->allocator, rule->condition)) {
             status = condition_collect_branches(query, rule->condition, &branch, depth,
                                                 frames, frame_count + 1u, trace, &alternatives);
             if (status != RE_STATUS_OK) {
