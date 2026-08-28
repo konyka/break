@@ -238,45 +238,49 @@ features:
     local_status: verified_local
     extension_abi: RE_EXTENSION_STREAMING_WINDOWS
     implementation_ref: engine/src/rule_engine/extensions.c
-    test_ref: engine/tests/test_rule_engine.c
+    test_ref: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_stream_ext.c]
     doc_ref: docs/Rule_Engine_Design.md
     contract_only: false
     runtime_enabled: true
     snapshot_restore: opaque_versioned_bytes_with_explicit_release_callback
-    tested_subset: event_type_and_string_key_filtering; bounded_correlation_timeout; count_sum_average
+    tested_subset: event_type_and_string_key_filtering; bounded_correlation_timeout; count_sum_average_min_max_first_last
+    note: re_stream_aggregate_result_t grew by tail append (minimum/maximum/first/last) under struct_size gating - old-size callers get the old fields only. MIN/MAX fold numeric event values with the same RE_STATUS_INVALID_ARGUMENT-on-non-numeric tolerance as SUM/AVERAGE; FIRST/LAST copy the earliest/latest retained event by timestamp with insertion order breaking ties and accept any value type; an empty filtered set reports RE_STATUS_NOT_FOUND for the four new kinds while COUNT keeps 0/OK. first/last string data is a window-owned borrow valid until the next window mutation or destroy.
   - id: streaming-redis-state
     family: streaming-redis
     requirement: optional
     syntax: 'cargo build --features streaming-redis'
-    expected_behavior: Define an optional state-provider boundary with callback and Redis kinds, direct provider errors, and no public network/client types; Redis runtime support remains pending.
+    expected_behavior: Define an optional state-provider boundary with callback and Redis kinds, direct provider errors, and no public network/client types; a native Redis adapter compiles only when RULE_ENGINE_ENABLE_REDIS is ON and CMake discovers hiredis, and the Redis kind keeps returning RE_STATUS_NOT_SUPPORTED without the client.
     upstream_refs: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md, .github/workflows/rust.yml]
     upstream_status: verified_upstream
     local_status: optional_backend
     extension_abi: RE_EXTENSION_STATE_PROVIDER
-    implementation_ref: engine/src/rule_engine/rule_engine.h
-    test_ref: engine/tests/test_rule_engine.c
+    implementation_ref: [engine/src/rule_engine/rule_engine.h, engine/src/rule_engine/redis_provider.c, engine/CMakeLists.txt]
+    test_ref: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_stream_ext.c]
     doc_ref: docs/Rule_Engine_Design.md
     contract_only: false
     runtime_enabled: true
     portable_backend: deterministic_bounded_in_memory
-    native_redis_status: unsupported
+    native_redis_status: optional_adapter_compile_verified_only
     provider_errors: [unavailable, timeout, serialization, conflict]
-    redis_boundary: configure_detection_only; native_adapter_not_implemented
+    redis_boundary: optional_adapter_behind_RULE_ENGINE_ENABLE_REDIS; missing_client_force_disables_no_fallback
+    note: The sync hiredis adapter (redis_provider.c, compiled only with RE_HAS_HIREDIS) mirrors the in-memory provider vtable with "<prefix>:<name>" keys, raw-byte values (type tag plus payload), and PSETEX/SET/GET/DEL/PTTL with millisecond TTL; it configures through RE_REDIS_URL (default redis://127.0.0.1:6379) with fixed prefix "re" because the v1 options carry no connection field, and reports failures as RE_PROVIDER_ERROR_UNAVAILABLE via last_error. hiredis is absent on the verification host, so the adapter is compile-verified only - the disabled-build boundary is test-locked and the runtime roundtrip is skip-guarded by RE_TEST_REDIS_URL; hiredis discovery alone is not runtime evidence.
   - id: optional-concurrency
     family: concurrency
     requirement: optional
     syntax: 'engine.executor_create({ worker_count: 4 });'
-    expected_behavior: Permit an optional executor backend without making C11 threading types or parallel ordering part of the base ABI.
+    expected_behavior: Permit an optional executor backend without making C11 threading types or parallel ordering part of the base ABI; the threading contract is documented above re_engine_create and its busy semantics are test-locked.
     upstream_refs: [README.md, tests/backward_thread_safety.rs, docs/core-features/FEATURES.md]
     upstream_status: verified_upstream
     local_status: optional_backend
     extension_abi: RE_EXTENSION_CONCURRENCY
     implementation_ref: engine/src/rule_engine/rule_engine.h
-    test_ref: engine/tests/test_rule_engine.c
+    test_ref: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_stream_ext.c]
     build_option: RULE_ENGINE_ENABLE_C11_PARALLEL
     stress_test_ref: engine/tests/test_rule_engine_executor_stress.c
     behavior_scope: pure_read_only_conditions_only_serial_actions_and_callbacks
+    threading_contract: single_threaded_handles; conflicting_mutation_during_run_returns_busy; action_callback_fact_writes_stage_into_the_firing_transaction; allocator_callbacks_must_not_reenter_in_flight_handles; c11_executor_read_only_conditions_in_workers
     doc_ref: docs/Rule_Engine_Design.md
+    note: The Phase 4 audit found no new guard vectors - windows have no user-code callback paths, provider dispatch is single-return, and restore is staged - so the existing running/notifying/transaction flags cover the real reentrancy surface; reentrant run, user-transaction begin, and working-memory reset from an action callback all return RE_STATUS_BUSY, locked by the executor-stress busy-boundary phase (64 iterations, race-free on the engine thread) and the stream_ext guard tests.
   - id: nested-property-access
     family: values
     requirement: required
@@ -383,7 +387,7 @@ features:
     parity: bounded_behavior
     behavior_scope: instantiate_to_text_only; plain_byte_substitution; no_json_round_trip; no_engine_side_registry; no_clips_deftemplate_schema
     note: The emitted rule name is unescaped and text that is not an exact {{identifier}} placeholder copies through unchanged; there is no JSON round-trip and no program-side template registry.
-conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_rule_engine_backward_ext.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/test_rule_engine_grl_semantics.c, and engine/tests/test_rule_engine_agenda.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs; the query-negation, query-aggregation, search-strategies, and shared-proof-graph rows cover the Phase 3 extensions (prefix NOT negation-as-failure, bounded query aggregation, DFS/BFS/iterative-deepening strategy selection, and the 64-entry clear-all proof result cache). Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, full upstream truth maintenance and general multi-rule producer inference, general backward chaining, and native Redis remain unsupported or unverified.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_rule_engine_backward_ext.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/test_rule_engine_grl_semantics.c, engine/tests/test_rule_engine_agenda.c, and engine/tests/test_rule_engine_stream_ext.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs; the query-negation, query-aggregation, search-strategies, and shared-proof-graph rows cover the Phase 3 extensions (prefix NOT negation-as-failure, bounded query aggregation, DFS/BFS/iterative-deepening strategy selection, and the 64-entry clear-all proof result cache). Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, full upstream truth maintenance and general multi-rule producer inference, and general backward chaining remain unsupported; native Redis is an optional compile-gated adapter whose disabled-build boundary is verified and whose runtime roundtrip is unverified on the current host.
 inventory_manifest: docs/rule_engine_upstream.yml
 classification_policy:
   evidence_rule: A declaration, header, CMake option, or upstream documentation claim never promotes a local capability without an implementation reference and executed local test reference.
@@ -394,11 +398,11 @@ classification_policy:
 known_gaps:
   - {id: canonical-ir, status: implemented, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Private immutable compiled IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and transactional-install boundary; forward evaluation uses the IR.}
   - {id: grl-string-operators-append-and-bounded-in, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, CHANGELOG.md:1.15.0], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Forward IR supports contains, startsWith, endsWith, matches, += array append, and bounded membership against literal arrays or structured arrays containing scalar members. Literal arrays are capped at 64 elements; typed equality is used and malformed/non-array RHS values are rejected. Full upstream collection semantics remain pending; bounded then-action method calls and nested property writes are verified in the grl-method-calls and nested-property-access rows.}
-  - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c], parity: bounded_behavior, note: Local forall is a deliberately narrow array-fact slice: forall <fact-path> <scalar-comparison> <scalar-literal>, with exact-flat-key-first and nested structured-path lookup, scalar direct members only, bounded by existing container/depth/step limits, and vacuous truth for an empty array. Focused tests cover all-pass, mixed/one-fails, empty, absent/non-array, malformed, nested members, allocator failure, and depth/member boundaries. Parenthesized/general quantifiers, arbitrary predicates, fact-type quantification, and RETE-UL quantifier nodes remain pending.}
+  - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c], parity: bounded_behavior, note: "Local forall is a deliberately narrow array-fact slice: forall <fact-path> <scalar-comparison> <scalar-literal>, with exact-flat-key-first and nested structured-path lookup, scalar direct members only, bounded by existing container/depth/step limits, and vacuous truth for an empty array. Focused tests cover all-pass, mixed/one-fails, empty, absent/non-array, malformed, nested members, allocator failure, and depth/member boundaries. Parenthesized/general quantifiers, arbitrary predicates, fact-type quantification, and RETE-UL quantifier nodes remain pending."}
   - {id: rete-ul-tms-persistent-agenda, status: unsupported, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/agenda.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c], parity: bounded_behavior, note: Bounded persistent agenda with value-fingerprint refraction and pop-time revalidation is verified_local in the recognize-act-cycle and persistent-agenda-inspection rows; the design runs one private RETE network per eligible rule chained on the facts store with no cross-rule alpha sharing. Full RETE-UL and general truth maintenance remain unsupported.}
   - {id: backward-arbitrary-unification-proof-sharing, status: unsupported, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/backward_machine_bind.c, engine/src/rule_engine/proof_graph.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_ext.c], parity: bounded_behavior, note: The shared proof graph is now a bounded local result cache - 64 entries, clear-all eviction, final PROVED/DISPROVED results only, coarse per-facts invalidation - verified_local in the shared-proof-graph row; arbitrary predicate unification and the upstream shared-subgraph producer-provenance graph remain unsupported.}
   - {id: full-streaming-patterns, status: unsupported, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_refs: [engine/src/rule_engine/tumbling_session.c, engine/src/rule_engine/stream_correlation.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, note: Full streaming patterns are absent; local windows/correlation are bounded extension seams.}
-  - {id: native-redis, status: blocked, upstream_refs: [Cargo.toml:[features].streaming-redis, docs/advanced-features/REDIS_STATE_BACKEND.md], local_refs: [engine/CMakeLists.txt:719-730, engine/src/rule_engine/memory_provider.c], local_tests: [], parity: optional_backend, note: Native Redis is unavailable; hiredis detection alone is not implementation evidence.}
+  - {id: native-redis, status: optional_backend, upstream_refs: [Cargo.toml:[features].streaming-redis, docs/advanced-features/REDIS_STATE_BACKEND.md], local_refs: [engine/CMakeLists.txt:721-736, engine/src/rule_engine/redis_provider.c], local_tests: [engine/tests/test_rule_engine_stream_ext.c], parity: bounded_behavior, note: Native adapter compiles into rule_engine_core only when RULE_ENGINE_ENABLE_REDIS is ON and CMake discovers hiredis (defining RE_HAS_HIREDIS); a missing client force-disables the option with a STATUS message - no silent fallback, no hard error - and RE_STATE_PROVIDER_REDIS keeps returning RE_STATUS_NOT_SUPPORTED without the macro. hiredis is absent on the verification host, so the adapter is compile-verified only and its roundtrip test is RE_TEST_REDIS_URL skip-guarded; hiredis detection alone is not runtime evidence.}
 upstream_surface_baseline:
   source_commit: f80a5419847436f8095be6a9953c69b38a6ae052
   public_modules: [lib, engine, errors, expression, parser, plugins, rete, types, backward, streaming]
@@ -410,7 +414,7 @@ upstream_surface_baseline:
   source_of_truth: docs/rule_engine_upstream.yml
 local_evidence_baseline:
   build_tree: build-gate
-  build_command: cmake --build build-gate --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_tms test_rule_engine_grl_semantics test_rule_engine_forall_limits test_rule_engine_rete_incremental test_rule_engine_agenda test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_rule_engine_backward_ext test_backward_machine_structure test_backward_machine_context rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer
+  build_command: cmake --build build-gate --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_tms test_rule_engine_grl_semantics test_rule_engine_forall_limits test_rule_engine_rete_incremental test_rule_engine_agenda test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_rule_engine_backward_ext test_backward_machine_structure test_backward_machine_context test_rule_engine_stream_ext rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer
   focused_ctest_command: ctest --test-dir build-gate -R "rule_engine|backward_machine" --output-on-failure
-  focused_ctest_result: 15/15 passed
-  blocked_or_unavailable: [native-redis, C11 executor stress target is not generated in this build tree because RULE_ENGINE_ENABLE_C11_PARALLEL is OFF]
+  focused_ctest_result: 16/16 passed
+  blocked_or_unavailable: [native-redis runtime roundtrip (hiredis and a Redis service are absent on the verification host; the adapter is compile-verified only), C11 executor stress target is not generated in this build tree because RULE_ENGINE_ENABLE_C11_PARALLEL is OFF]

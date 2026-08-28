@@ -2,6 +2,14 @@
 #include <string.h>
 #include <stdint.h>
 
+#if defined(RE_HAS_HIREDIS)
+/* Native Redis adapter (redis_provider.c), compiled into rule_engine_core
+ * only when CMake discovers hiredis (RULE_ENGINE_ENABLE_REDIS). */
+re_status_t re_redis_provider_create(re_engine_t *engine,
+                                     const re_state_provider_options_t *options,
+                                     re_state_provider_t **out_provider);
+#endif
+
 static re_status_t unsupported(void) {
     return RE_STATUS_NOT_SUPPORTED;
 }
@@ -381,7 +389,13 @@ re_status_t re_engine_set_state_provider_v1(re_engine_t *engine, const re_state_
                                             const re_state_provider_descriptor_t *descriptor,
                                             re_state_provider_t **out_provider) {
     re_state_provider_t *provider;
-    if (options != NULL && options->kind == RE_STATE_PROVIDER_REDIS) return RE_STATUS_NOT_SUPPORTED;
+    if (options != NULL && options->kind == RE_STATE_PROVIDER_REDIS) {
+#if defined(RE_HAS_HIREDIS)
+        return re_redis_provider_create(engine, options, out_provider);
+#else
+        return RE_STATUS_NOT_SUPPORTED;
+#endif
+    }
     if (engine == NULL || options == NULL || descriptor == NULL || out_provider == NULL ||
         options->struct_size < sizeof(*options) || options->abi_version != RE_STATE_PROVIDER_ABI_VERSION ||
         options->kind != RE_STATE_PROVIDER_CALLBACK || descriptor->struct_size < sizeof(*descriptor) ||

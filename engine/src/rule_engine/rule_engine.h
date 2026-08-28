@@ -282,14 +282,33 @@ typedef struct re_stream_filter_options_t {
 typedef enum re_stream_aggregate_kind_t {
   RE_STREAM_AGGREGATE_COUNT = 1,
   RE_STREAM_AGGREGATE_SUM = 2,
-  RE_STREAM_AGGREGATE_AVERAGE = 3
+  RE_STREAM_AGGREGATE_AVERAGE = 3,
+  /* Appended in Task 16 (append-only ABI): MIN/MAX fold numeric event values;
+   * FIRST/LAST select the earliest/latest retained event by timestamp. */
+  RE_STREAM_AGGREGATE_MIN = 4,
+  RE_STREAM_AGGREGATE_MAX = 5,
+  RE_STREAM_AGGREGATE_FIRST = 6,
+  RE_STREAM_AGGREGATE_LAST = 7
 } re_stream_aggregate_kind_t;
 
+/* Callers set struct_size before each call so older consumers remain
+ * source-compatible. Implementations must gate each appended field on
+ * struct_size: fields before minimum require only the pre-Task-16 size
+ * (offsetof(re_stream_aggregate_result_t, minimum)); minimum/maximum/first/last
+ * are written only when struct_size covers them, and bytes beyond struct_size
+ * are never touched. first/last copy the retained event value; STRING data is
+ * borrowed from the window and stays valid until the next window mutation or
+ * destroy (the same borrow re_facts_get documents). */
 typedef struct re_stream_aggregate_result_t {
   uint32_t struct_size;
   uint64_t count;
   double sum;
   double average;
+  /* Appended in Task 16 (append-only ABI). */
+  double minimum;
+  double maximum;
+  re_value_t first;
+  re_value_t last;
 } re_stream_aggregate_result_t;
 
 typedef struct re_stream_correlation_options_t {
@@ -316,6 +335,12 @@ typedef struct re_snapshot_t {
 
 typedef enum re_state_provider_kind_t {
   RE_STATE_PROVIDER_CALLBACK = 1,
+  /* Native Redis provider. Available only when the library was built with
+   * RULE_ENGINE_ENABLE_REDIS=ON and hiredis was found (RE_HAS_HIREDIS);
+   * otherwise re_engine_set_state_provider_v1 returns
+   * RE_STATUS_NOT_SUPPORTED. The v1 options carry no connection field,
+   * so the native adapter connects via the RE_REDIS_URL environment
+   * variable (default redis://127.0.0.1:6379) with key prefix "re". */
   RE_STATE_PROVIDER_REDIS = 2
 } re_state_provider_kind_t;
 
@@ -423,6 +448,18 @@ typedef struct re_concurrency_options_t {
   uint32_t flags;
 } re_concurrency_options_t;
 
+/* Threading contract: engine, facts, windows and providers are
+ * single-threaded handles - callers must externally synchronize every
+ * operation on the same handle, and callbacks execute on the calling thread.
+ * While re_engine_run is active the engine and facts handles are busy:
+ * re-entering the run, opening a user transaction, or resetting working
+ * memory returns RE_STATUS_BUSY. A firing and its action callback share one
+ * fact transaction, so fact writes from the callback are staged and committed
+ * with the firing rather than rejected. Allocator callbacks (alloc/realloc/
+ * free) execute inside whichever operation triggered them and must not call
+ * back into any rule-engine API on a handle involved in that in-flight
+ * operation. The optional C11 executor evaluates read-only conditions in
+ * private workers and merges matches back on the engine thread. */
 /* The returned engine owns a copy of config and remains valid until destroy. */
 re_engine_t *re_engine_create(const re_allocator_t *allocator,
                               const re_limits_t *limits);
@@ -620,6 +657,16 @@ re_status_t re_stream_window_snapshot(const re_stream_window_t *window,
                                       re_snapshot_t *out_snapshot);
 re_status_t re_stream_window_restore(re_stream_window_t *window,
                                       const re_snapshot_t *snapshot);
+/* Aggregates the retained events matching filter (empty event_type/key match
+ * everything, the same filter count/sum already use). SUM/AVERAGE/MIN/MAX fold
+ * numeric values only - a non-numeric matching event is
+ * RE_STATUS_INVALID_ARGUMENT for all four. FIRST/LAST copy the value of the
+ * earliest/latest matching event by timestamp (insertion order breaks ties)
+ * and accept any value type. An empty filtered set reports
+ * RE_STATUS_NOT_FOUND for MIN/MAX/FIRST/LAST; COUNT keeps its 0/OK behavior.
+ * out_result->struct_size must cover at least the pre-Task-16 fields
+ * (offsetof(re_stream_aggregate_result_t, minimum)); appended fields are
+ * written only when struct_size covers them. */
 re_status_t re_stream_window_aggregate_v1(
     const re_stream_window_t *window,
     const re_stream_filter_options_t *filter,

@@ -270,8 +270,19 @@ on failure. Exact watermark, eviction, and session-gap behavior are not
 specified until the runtime implementation is tested.
 
 The tested correlation subset is separate from window storage. It provides
-count, numeric sum, and numeric average over retained events filtered by event
-type and an optional string-valued key. It also counts deterministic
+count, numeric sum, numeric average, and the appended minimum/maximum over
+retained events filtered by event type and an optional string-valued key, plus
+first/last selection of the earliest/latest matching event by timestamp with
+insertion order breaking ties. SUM/AVERAGE/MIN/MAX fold numeric values only -
+a non-numeric matching event is `RE_STATUS_INVALID_ARGUMENT` for all four -
+while FIRST/LAST accept any value type. An empty filtered set reports
+`RE_STATUS_NOT_FOUND` for the four new kinds; COUNT keeps its 0/OK behavior.
+`re_stream_aggregate_result_t` grew by tail append only: callers pass
+`struct_size`, fields before `minimum` require only the pre-append size, and
+each appended field is written only when `struct_size` covers it, so old-size
+callers keep the old fields untouched. The first/last values copy the retained
+event value; STRING data is borrowed from the window and stays valid until the
+next window mutation or destroy. It also counts deterministic
 first-type/second-type pairs sharing the optional key within a bounded timeout.
 This does not claim general stream patterns, joins, concurrency, or Redis state.
 
@@ -302,11 +313,24 @@ The portable in-memory provider is runtime-supported through its dedicated
 constructor with bounded keys/values, deterministic snapshots, injected-clock
 TTL, and atomic staged restore. Native Redis remains optional and returns
 `RE_STATUS_NOT_SUPPORTED` when unavailable; it is not implied by the ABI. The
-current build has no native Redis adapter enabled. A future adapter must be
-enabled only after CMake detects a usable hiredis-compatible header and
-library, and only when the integration environment supplies a controlled
-Redis server. Missing client files, failed CMake discovery, or a missing test
-service must leave the option disabled; no credentials belong in the repository.
+native adapter (`redis_provider.c`) compiles into `rule_engine_core` only when
+the CMake option `RULE_ENGINE_ENABLE_REDIS` (default OFF) is ON and the
+configure step discovers a hiredis header and library, which also defines
+`RE_HAS_HIREDIS`; a missing client force-disables the option with a STATUS
+message - no silent fallback and no hard error, replacing the former
+FATAL_ERROR stub - and without `RE_HAS_HIREDIS` the
+`RE_STATE_PROVIDER_REDIS` kind keeps returning `RE_STATUS_NOT_SUPPORTED`.
+The adapter mirrors the in-memory provider's vtable over the synchronous
+hiredis API: keys are `<prefix>:<name>`, values are raw bytes (a type tag
+followed by the payload), TTL uses millisecond PSETEX/PTTL with SET/GET/DEL,
+and failures record `RE_PROVIDER_ERROR_UNAVAILABLE` with a message in
+`last_error`. Because the v1 provider options carry no connection field, the
+adapter takes its connection from the `RE_REDIS_URL` environment variable
+(default `redis://127.0.0.1:6379`) with the fixed key prefix `re`. Discovery
+alone is not runtime evidence: enablement still requires the integration
+environment to supply a controlled Redis server, the roundtrip test runs only
+when `RE_TEST_REDIS_URL` names one (otherwise it prints SKIP and counts
+green), and no credentials belong in the repository.
 
 ## Bounded backward query slice
 
@@ -449,7 +473,15 @@ backend context and report backend failure rather than silently falling back.
 Concurrency is opt-in and opaque: only pure read-only conditions run in private
 workers, deterministic activation merge is followed by serial actions/callbacks,
 and the base C99 ABI does not include C11 thread types. Shared mutable engine or
-facts operations return `RE_STATUS_BUSY` during worker matching.
+facts operations return `RE_STATUS_BUSY` during worker matching. The threading
+contract is documented in the header above `re_engine_create` and is
+test-locked: engine, facts, windows, and providers are single-threaded handles
+that callers must externally synchronize; while `re_engine_run` is active,
+re-entering the run, opening a user transaction, or resetting working memory
+returns `RE_STATUS_BUSY`; fact writes from an action callback stage into the
+firing's transaction and commit with it rather than being rejected; and
+allocator callbacks must not re-enter any rule-engine API on a handle involved
+in the in-flight operation.
 
 All extension entry points may return `RE_STATUS_NOT_SUPPORTED` until their
 capability bit is advertised. Status labels in the conformance manifest mean:

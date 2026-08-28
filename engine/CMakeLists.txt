@@ -719,16 +719,22 @@ add_library(rule_engine_core STATIC
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(RULE_ENGINE_ENABLE_REDIS)
-    find_path(RULE_ENGINE_REDIS_INCLUDE_DIR hiredis/hiredis.h)
-    find_library(RULE_ENGINE_REDIS_LIBRARY NAMES hiredis)
-    if(NOT RULE_ENGINE_REDIS_INCLUDE_DIR OR NOT RULE_ENGINE_REDIS_LIBRARY)
-        message(FATAL_ERROR
-            "RULE_ENGINE_ENABLE_REDIS requires hiredis/hiredis.h and a hiredis library; "
-            "install the client development package, then configure again")
+    find_path(HIREDIS_INCLUDE_DIR hiredis/hiredis.h)
+    find_library(HIREDIS_LIBRARY NAMES hiredis)
+    if(HIREDIS_INCLUDE_DIR AND HIREDIS_LIBRARY)
+        set(RULE_ENGINE_HAS_HIREDIS ON)
+        target_sources(rule_engine_core PRIVATE src/rule_engine/redis_provider.c)
+        target_compile_definitions(rule_engine_core PRIVATE RE_HAS_HIREDIS)
+        target_include_directories(rule_engine_core PRIVATE ${HIREDIS_INCLUDE_DIR})
+        target_link_libraries(rule_engine_core PRIVATE ${HIREDIS_LIBRARY})
+        message(STATUS "Redis client detected at ${HIREDIS_INCLUDE_DIR}; native Redis state provider enabled")
+    else()
+        # Documented boundary: a missing client disables the option; there is
+        # no silent fallback to another provider.
+        message(STATUS "RULE_ENGINE_ENABLE_REDIS requested but hiredis not found - option disabled (no fallback)")
+        set(RULE_ENGINE_ENABLE_REDIS OFF CACHE BOOL
+            "Enable native Redis state provider (requires hiredis and a controlled integration service)" FORCE)
     endif()
-    message(STATUS
-        "Redis client detected at ${RULE_ENGINE_REDIS_INCLUDE_DIR}; native adapter remains "
-        "disabled until its integration contract is implemented")
 endif()
 if(RULE_ENGINE_ENABLE_C11_PARALLEL)
     include(CheckIncludeFile)
@@ -831,6 +837,17 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine_backward_ext PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine_backward_ext PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_backward_ext COMMAND test_rule_engine_backward_ext)
+
+    add_executable(test_rule_engine_stream_ext tests/test_rule_engine_stream_ext.c)
+    set_property(TARGET test_rule_engine_stream_ext PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_stream_ext PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_stream_ext PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_stream_ext COMMAND test_rule_engine_stream_ext)
+    # Mirror the rule_engine_core condition: the test sees RE_HAS_HIREDIS
+    # exactly when the native adapter was compiled into the library.
+    if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
+        target_compile_definitions(test_rule_engine_stream_ext PRIVATE RE_HAS_HIREDIS)
+    endif()
 
     add_executable(test_rule_engine_backward_deep_chain tests/test_rule_engine_backward_deep_chain.c)
     set_property(TARGET test_rule_engine_backward_deep_chain PROPERTY C_STANDARD 99)

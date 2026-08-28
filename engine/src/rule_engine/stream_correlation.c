@@ -28,27 +28,59 @@ re_status_t re_stream_window_aggregate_v1(const re_stream_window_t *window,
     size_t index;
     uint64_t count = 0u;
     double sum = 0.0;
+    double minimum = 0.0;
+    double maximum = 0.0;
+    const re_stream_event_impl_t *first = NULL;
+    const re_stream_event_impl_t *last = NULL;
+    uint32_t covered;
+    int folds_number;
     if (window == NULL || filter == NULL || out_result == NULL ||
         filter->struct_size < sizeof(*filter) ||
-        out_result->struct_size < sizeof(*out_result) ||
-        (kind != RE_STREAM_AGGREGATE_COUNT && kind != RE_STREAM_AGGREGATE_SUM &&
-         kind != RE_STREAM_AGGREGATE_AVERAGE)) return RE_STATUS_INVALID_ARGUMENT;
+        out_result->struct_size < (uint32_t)offsetof(re_stream_aggregate_result_t, minimum) ||
+        kind < RE_STREAM_AGGREGATE_COUNT || kind > RE_STREAM_AGGREGATE_LAST)
+        return RE_STATUS_INVALID_ARGUMENT;
+    folds_number = kind == RE_STREAM_AGGREGATE_SUM || kind == RE_STREAM_AGGREGATE_AVERAGE ||
+        kind == RE_STREAM_AGGREGATE_MIN || kind == RE_STREAM_AGGREGATE_MAX;
     for (index = 0u; index < window->count; ++index) {
         const re_stream_event_impl_t *event = &window->events[index];
         if (!stream_filter_matches(event, filter)) continue;
         if (count == UINT64_MAX) return RE_STATUS_LIMIT;
         ++count;
-        if (kind != RE_STREAM_AGGREGATE_COUNT) {
-            if (event->value.type == RE_VALUE_INT64) sum += (double)event->value.as.int64_value;
-            else if (event->value.type == RE_VALUE_DOUBLE) sum += event->value.as.double_value;
+        if (folds_number) {
+            double number;
+            if (event->value.type == RE_VALUE_INT64) number = (double)event->value.as.int64_value;
+            else if (event->value.type == RE_VALUE_DOUBLE) number = event->value.as.double_value;
             else return RE_STATUS_INVALID_ARGUMENT;
+            sum += number;
+            if (count == 1u || number < minimum) minimum = number;
+            if (count == 1u || number > maximum) maximum = number;
         }
+        /* The events array is timestamp-sorted for sliding windows but plain
+         * insertion order for bounded ones, so fold by timestamp: strict less
+         * keeps the earliest insertion on ties, greater-or-equal keeps the
+         * latest. */
+        if (first == NULL || event->timestamp < first->timestamp) first = event;
+        if (last == NULL || event->timestamp >= last->timestamp) last = event;
     }
-    memset(out_result, 0, sizeof(*out_result));
-    out_result->struct_size = sizeof(*out_result);
+    if (count == 0u && kind >= RE_STREAM_AGGREGATE_MIN) return RE_STATUS_NOT_FOUND;
+    covered = out_result->struct_size < (uint32_t)sizeof(*out_result)
+        ? out_result->struct_size : (uint32_t)sizeof(*out_result);
+    memset(out_result, 0, covered);
+    out_result->struct_size = covered;
     out_result->count = count;
     out_result->sum = sum;
     out_result->average = count == 0u ? 0.0 : sum / (double)count;
+    if ((uint32_t)offsetof(re_stream_aggregate_result_t, maximum) +
+        (uint32_t)sizeof(out_result->maximum) <= covered) {
+        out_result->minimum = minimum;
+        out_result->maximum = maximum;
+    }
+    if ((uint32_t)offsetof(re_stream_aggregate_result_t, last) +
+        (uint32_t)sizeof(out_result->last) <= covered) {
+        /* Borrowed window-owned values; see the struct comment in the header. */
+        if (first != NULL) out_result->first = first->value;
+        if (last != NULL) out_result->last = last->value;
+    }
     return RE_STATUS_OK;
 }
 

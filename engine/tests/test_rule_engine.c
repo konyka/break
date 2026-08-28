@@ -1504,7 +1504,8 @@ TEST(stream_window_filters_and_aggregates_bounded_contents) {
     re_stream_window_t *window = NULL;
     re_stream_filter_options_t filter = {sizeof(filter), RE_STREAM_WINDOW_ABI_VERSION,
         text("purchase"), (re_string_t){NULL, 0u}};
-    re_stream_aggregate_result_t result = {sizeof(result), 0u, 0.0, 0.0};
+    re_stream_aggregate_result_t result = {sizeof(result), 0u, 0.0, 0.0, 0.0, 0.0,
+        {RE_VALUE_NONE, {0}}, {RE_VALUE_NONE, {0}}};
     re_value_t first = {RE_VALUE_DOUBLE, {.double_value = 2.5}};
     re_value_t second = {RE_VALUE_DOUBLE, {.double_value = 7.5}};
     re_value_t other = {RE_VALUE_DOUBLE, {.double_value = 100.0}};

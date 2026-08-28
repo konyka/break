@@ -2095,3 +2095,46 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   2 次 miss）；INT64 折拢使用未检查加法，极端求和会溢出（回绕）且无状态报告；
   `RE_CAP2_BACKWARD_PROOFS` 能力位仍保持清零——任意谓词合一与上游共享子图
   producer provenance 未实现，位通告暂不提升。
+
+## rule engine phase 4：流聚合扩展与 Redis/并发边界加固（2026-08-28）
+
+- 流聚合扩展（Task 16）：`re_stream_aggregate_kind_t` 追加
+  `RE_STREAM_AGGREGATE_MIN=4/MAX=5/FIRST=6/LAST=7`；`re_stream_aggregate_result_t`
+  尾部追加 `minimum/maximum/first/last`，按 `struct_size` 门控写出——旧尺寸调用方仅
+  得到旧字段，追加字段仅在 `struct_size` 覆盖时写入。MIN/MAX 与 SUM/AVERAGE 同样只
+  折拢数值事件、遇非数值匹配事件返回 `RE_STATUS_INVALID_ARGUMENT`；FIRST/LAST 按
+  时间戳选取最早/最晚的留存匹配事件（插入序打破平局），接受任意值类型；空过滤集对
+  四种新 kind 返回 `RE_STATUS_NOT_FOUND`（COUNT 保持 0/OK）。first/last 的字符串数据
+  为窗口持有借用值，有效期至下一次窗口变更或销毁（与 `re_facts_get` 的借用约定一致，
+  头文件已注明）。
+- Redis 边界（Task 17）：CMake 选项 `RULE_ENGINE_ENABLE_REDIS`（默认 OFF）；ON 时
+  `find_path`/`find_library` 探测 hiredis——找到则把 `redis_provider.c` 编入
+  `rule_engine_core` 并定义 `RE_HAS_HIREDIS` 及链接库；缺失则以 STATUS 消息强制 OFF
+  （无静默回退、无硬错误，替换既有 FATAL_ERROR 桩）。适配器（仅随 hiredis 编译）以
+  同步 hiredis API 镜像 `memory_provider.c` 的 vtable：键为 `<prefix>:<name>`，值为
+  原始字节（类型标签 + 载荷），TTL 用毫秒 PSETEX/PTTL，配 SET/GET/DEL；因 v1 provider
+  options 无连接字段（有界接缝），连接取自 `RE_REDIS_URL` 环境变量（默认
+  `redis://127.0.0.1:6379`）+ 固定前缀 `re`；失败经 `last_error` 记录
+  `RE_PROVIDER_ERROR_UNAVAILABLE`。无该宏时 `RE_STATE_PROVIDER_REDIS` 保持返回
+  `RE_STATUS_NOT_SUPPORTED` 不变。测试：禁用构建边界锁定 + `RE_TEST_REDIS_URL`
+  跳过守卫的往返用例（未配置时打印 SKIP 且计绿——遵循项目证据规则的诚实不可用）。
+- 并发边界（Task 18）：审计驱动，未新增守卫（窗口无用户代码回调路径、restore 分段
+  提交、provider 为单返回分发；既有 running/notifying/transaction 标志已覆盖全部真实
+  向量）。`re_engine_create` 上方的头文件线程契约现明确：engine/facts/windows/providers
+  为单线程句柄；运行期间的冲突变更（重入 run、开启用户事务、重置工作内存）返回
+  `RE_STATUS_BUSY`；动作回调内的事实写入分段进入该 firing 的事务并随 firing 提交
+  （而非被拒绝）；allocator 回调不得对处于在飞操作的句柄重入任何规则引擎 API；C11
+  executor 仅在 worker 中求值只读条件。新测试：stream_ext 的 4 个单线程守卫用例
+  （套件共 12 个）+ executor-stress 的 busy-boundary 阶段（64 次迭代，回调内重入、
+  全程在引擎线程、无数据竞争）。
+- 顺带披露（Task 16）：`engine/tests/test_rule_engine.c:1507` 为聚合结果结构体追加做
+  位置初始化器补全（语义中性，由 -Werror 迫使）。
+- 验证：build-gate `ctest -R "rule_engine|backward_machine" --output-on-failure`
+  **16/16**；`test_rule_engine_stream_ext` **12/12**，ASAN（build-rule-fresh-asan）
+  同绿；executor stress 64+64 迭代于 engine/build-hardening-asan（MSVC cl，C11 ON）与
+  engine/build-hardening-ubsan-clang 全绿；`RULE_ENGINE_ENABLE_REDIS=ON` 配置在
+  hiredis 缺失时成功并以 STATUS 强制 OFF。
+- 当前限制：本机无 hiredis——适配器仅编译期验证（以 stand-in 头编译检查），运行时
+  往返在本机不可验证，由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
+  变更持有；通用流模式/join/watermark 仍不支持；Redis 的实际启用仍需集成环境提供
+  受控 Redis 服务。

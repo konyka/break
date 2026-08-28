@@ -71,6 +71,20 @@ Implemented now:
   environment/trace checkpoints preserve failed-branch rollback. Goal and custom
   function operand evaluation still uses the existing operand path and may
   re-enter goal proving; operand continuation migration is deferred.
+- extended stream aggregation over retained, type/key-filtered window events:
+  count/sum/average plus the appended min/max/first/last kinds under
+  struct_size-gated result fields, with window-owned first/last borrows and
+  `RE_STATUS_NOT_FOUND` on an empty filtered set for the four new kinds;
+- an optional native Redis state-provider adapter compiled into
+  `rule_engine_core` only when `RULE_ENGINE_ENABLE_REDIS` is ON and CMake
+  discovers hiredis, with the Redis kind otherwise unchanged at
+  `RE_STATUS_NOT_SUPPORTED` and no silent fallback;
+- a header-documented threading contract (above `re_engine_create`):
+  single-threaded engine/facts/window/provider handles, conflicting mutation
+  during a run returns `RE_STATUS_BUSY`, action-callback fact writes stage into
+  the firing's transaction, allocator callbacks must not re-enter any
+  rule-engine API on an in-flight handle, and the C11 executor evaluates
+  read-only conditions in private workers.
 
 Deferred explicitly:
 
@@ -81,7 +95,10 @@ Deferred explicitly:
   bounded query aggregation, strategy selection, and the bounded shared proof
   graph result cache are implemented and remain deliberately narrower than
   upstream semantics;
-- native Redis-backed streaming state. The portable bounded in-memory provider is implemented;
+- general stream patterns, joins, and watermarks. Redis-backed streaming state
+  is an optional backend with a native adapter (compiled only with
+  `RULE_ENGINE_ENABLE_REDIS` plus discovered hiredis, `RE_STATUS_NOT_SUPPORTED`
+  otherwise); the portable bounded in-memory provider is implemented;
 
 The bounded agenda-control subset enforces `MAIN`/named program focus,
 activation-group sibling cancellation, and the tested one-run `no-loop` and
@@ -172,10 +189,12 @@ buckets of `retention_ms`, session extension until `retention_ms` after the
 latest event, event-time late policies, and event/byte bounds. Empty windows
 are snapshot-able and restore preserves deterministic opaque bytes. Sliding
 behavior remains covered by focused window, aggregate, correlation, and snapshot
-tests; Redis remains unsupported at runtime.
+tests; Redis is an optional backend whose native adapter compiles only with
+discovered hiredis and stays `RE_STATUS_NOT_SUPPORTED` otherwise.
 The separate tested correlation seam filters retained events by type and
 string-valued key, counts first/second pairs within a timeout, and computes
-count, numeric sum, or numeric average without changing retention.
+count, numeric sum, numeric average, minimum, and maximum, and selects the
+first/last matching event by timestamp, without changing retention.
 
 Snapshots are caller-owned output bytes until the matching `release` callback;
 the callback receives the exact pointer and size and is called at most once.
@@ -193,11 +212,20 @@ may classify an operational failure as unavailable, timeout, serialization, or
 conflict through the provider-error contract; the engine must not silently fall
 back to local state. Redis is an optional provider boundary only: this ABI does
 not include a Redis client, connection type, network API, retry policy, or
-claim that native Redis support is enabled. Redis remains an explicit
-`RE_STATUS_NOT_SUPPORTED` boundary. Native enablement requires a CMake-detected
-hiredis-compatible header/library and a separately supplied controlled Redis
+claim that native Redis support is enabled. The native adapter
+(`redis_provider.c`) compiles into `rule_engine_core` only when
+`RULE_ENGINE_ENABLE_REDIS` is ON and CMake discovers a hiredis header/library
+(defining `RE_HAS_HIREDIS`); a missing client force-disables the option with a
+STATUS message and no silent fallback, and without the macro the Redis kind
+remains an explicit `RE_STATUS_NOT_SUPPORTED` boundary. The adapter connects
+through the `RE_REDIS_URL` environment variable (default
+`redis://127.0.0.1:6379`) with the fixed key prefix `re`, stores raw-byte
+values under `<prefix>:<name>` keys via PSETEX/SET/GET/DEL/PTTL, and reports
+failures as `RE_PROVIDER_ERROR_UNAVAILABLE` through `last_error`. Runtime
+enablement additionally requires a separately supplied controlled Redis
 integration endpoint; absent either prerequisite, configuration must keep the
-adapter disabled. Redis failures must propagate as provider errors and must
+adapter disabled, and on the current host the adapter is compile-verified only.
+Redis failures must propagate as provider errors and must
 never fall back to empty or in-memory state.
 
 ## Lifetime and ownership
@@ -341,7 +369,18 @@ Handles are not concurrently mutable. A caller may use independent handles on
 different threads, but must externally synchronize every operation involving
 the same engine or facts handle. Callbacks execute on the calling thread.
 There is no implicit global lock, thread-local error state, or background
-worker in this contract.
+worker in this contract. The header documents the full threading contract
+above `re_engine_create`, and the busy semantics are test-locked: engine,
+facts, windows, and providers are single-threaded handles; while
+`re_engine_run` is active, re-entering the run, opening a user transaction, or
+resetting working memory returns `RE_STATUS_BUSY` (the existing
+running/notifying/transaction flags cover these vectors, so no new guards were
+needed); fact writes from an action callback stage into the firing's
+transaction and commit with it rather than being rejected; allocator callbacks
+must not re-enter any rule-engine API on a handle involved in the in-flight
+operation; and the optional C11 executor evaluates only read-only conditions
+in private workers, merging matches back on the engine thread for serial
+actions and callbacks.
 
 Extension limits are inherited from `re_limits_t` and may only add bounded
 fields through a later versioned options struct. Implementations must reject
