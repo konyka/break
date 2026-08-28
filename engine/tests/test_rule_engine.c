@@ -473,8 +473,8 @@ TEST(run_limits_have_independent_inclusive_boundaries) {
     re_program_t *program = NULL;
     action_state_t state = {0u};
     re_callbacks_t callbacks = {count_event, &state};
-    re_limits_t agenda_limit = {0u, 0u, 0u, 1u, 0u};
-    re_limits_t firing_limit = {0u, 0u, 0u, 0u, 1u};
+    re_limits_t agenda_limit = {0u, 0u, 0u, 1u, 0u, 0u};
+    re_limits_t firing_limit = {0u, 0u, 0u, 0u, 1u, 0u};
     re_run_options_t options = {&agenda_limit, NULL, NULL};
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(facts);
@@ -507,7 +507,7 @@ TEST(boolean_values_are_normalized) {
 }
 
 TEST(exact_independent_limits_are_inclusive) {
-    re_limits_t limits = {0u, 1u, 1u, 0u, 0u};
+    re_limits_t limits = {0u, 1u, 1u, 0u, 0u, 0u};
     re_facts_t *facts = re_facts_create(NULL, &limits);
     re_program_t *program = NULL;
     re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
@@ -745,7 +745,7 @@ TEST(overflow_length_is_rejected_before_allocator) {
     re_allocator_t allocator = {&state, test_alloc, test_realloc, test_free};
     re_program_t *program = NULL;
     re_string_t oversized = {(const char *)1, (size_t)-1};
-    re_limits_t limits = {(size_t)-1, 0u, 0u, 0u, 0u};
+    re_limits_t limits = {(size_t)-1, 0u, 0u, 0u, 0u, 0u};
     ASSERT_EQ(re_program_load(&allocator, oversized, &limits, &program), RE_STATUS_INVALID_ARGUMENT);
     ASSERT_TRUE(program == NULL);
     ASSERT_EQ(state.calls, 1u);
@@ -1784,7 +1784,7 @@ TEST(run_honors_cancellation_and_limits) {
     ASSERT_EQ(re_engine_run(engine, facts, &cancelled, NULL), RE_STATUS_CANCELLED);
     ASSERT_TRUE(cancel_calls > 0);
 
-    re_limits_t limits = {0, 0, 0, 0, 1};
+    re_limits_t limits = {0, 0, 0, 0, 1, 0};
     re_run_options_t limited = {&limits, NULL, NULL};
     ASSERT_EQ(re_engine_run(engine, facts, &limited, NULL), RE_STATUS_LIMIT);
     re_facts_destroy(facts);

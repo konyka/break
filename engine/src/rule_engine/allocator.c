@@ -19,7 +19,7 @@ void re_free(const re_allocator_impl_t *allocator, void *memory) {
 }
 
 re_limits_t re_default_limits(void) {
-    re_limits_t limits = {65536u, 1024u, 1024u, 1024u, 1024u};
+    re_limits_t limits = {65536u, 1024u, 1024u, 1024u, 1024u, 1024u};
     return limits;
 }
 

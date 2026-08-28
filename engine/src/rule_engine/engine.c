@@ -91,6 +91,12 @@ static re_status_t finish_run(re_engine_t *engine, re_facts_t *facts, re_status_
     facts->running = 0;
     facts->mutation_allowed = 0;
     facts->read_allowed = 0;
+    /* Non-persistent agenda mode: every run exit clears pending activations
+     * and refraction keys. Persistent mode keeps both, so unfired
+     * activations and the fired (refraction) history carry into the next
+     * run, including on RE_STATUS_LIMIT / RE_STATUS_CANCELLED exits. */
+    if (engine->agenda == NULL || !engine->agenda->persistent)
+        re_agenda_reset(engine->agenda);
     if (destroy_facts) re_facts_destroy(facts);
     if (destroy_engine) re_engine_destroy(engine);
     return status;
@@ -144,21 +150,6 @@ int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare
     return l <= r;
 }
 
-static size_t activation_premises(const re_engine_t *engine, const re_rule_t *rule,
-                                  size_t activation_index, re_fact_id_t premises[8],
-                                  uint64_t *sequence) {
-    if (engine->rete_network == NULL || engine->rete_network->producer_rule.size != rule->name_size ||
-        memcmp(engine->rete_network->producer_rule.data, rule->name, rule->name_size) != 0)
-        return 0u;
-    if (activation_index < engine->rete_network->activation_count) {
-        const re_rete_activation_t *activation = &engine->rete_network->activations[activation_index];
-        memcpy(premises, activation->lineage, activation->lineage_count * sizeof(*premises));
-        if (sequence != NULL) *sequence = activation->sequence;
-        return activation->lineage_count;
-    }
-    return 0u;
-}
-
 static int find_staged_fact(const re_facts_t *facts, re_string_t name,
                             re_fact_id_t *out_id) {
     size_t i;
@@ -170,6 +161,18 @@ static int find_staged_fact(const re_facts_t *facts, re_string_t name,
             return 1;
         }
     return 0;
+}
+
+/* Resolves a condition read path to the id of the fact entry backing it: the
+ * exact flat key when one exists (flat wins, exactly like re_facts_get_path),
+ * otherwise the entry of the dotted root. */
+static int resolve_read_premise(const re_facts_t *facts, re_string_t path,
+                                re_fact_id_t *out_id) {
+    size_t dot = 0u;
+    if (find_staged_fact(facts, path, out_id)) return 1;
+    while (dot < path.size && path.data[dot] != '.') ++dot;
+    if (dot == 0u || dot == path.size) return 0;
+    return find_staged_fact(facts, (re_string_t){path.data, dot}, out_id);
 }
 
 /* Defined in values.c; internal cross-unit helper for setXxx method calls. */
@@ -327,6 +330,328 @@ static re_status_t resolve_method_term(re_engine_t *engine, re_facts_t *facts,
         term, out);
 }
 
+/* Run-scoped state for the recognize-act loop in re_engine_run. The
+ * no-loop / lock-on-active / activation-group bookkeeping lives here exactly
+ * like it did in the single-pass loop; indices stay sorted by salience
+ * (descending) with source-order ties. */
+typedef struct re_run_state_t {
+    size_t *indices;
+    unsigned char *fired_no_loop;
+    char **activation_groups;
+    size_t activation_group_count;
+    char **locked_groups;
+    size_t locked_group_count;
+    unsigned char *parallel_matches;
+    unsigned char *pure_conditions;
+    size_t next_rule;          /* first-pass cursor into indices */
+    size_t agenda_activations; /* new activations pushed this run */
+    size_t firings;
+} re_run_state_t;
+
+/* Fires one agenda activation inside its own transaction: runs the rule's
+ * actions in order, then the action callback, then commits; any failure
+ * rolls the transaction back and aborts the run with that status. The given
+ * premises (the true token lineage re-resolved at fire time, or the linear
+ * read-set ids captured at match time) feed logical insertion and
+ * justification, exactly like the old single-pass firing block. */
+static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
+                                   size_t rule_index,
+                                   const re_fact_id_t *premises, size_t premise_count,
+                                   uint64_t activation_sequence,
+                                   const re_callbacks_t *callbacks) {
+    re_rule_t *rule = &engine->program->rules[rule_index];
+    const re_ir_rule_t *ir_rule = &engine->program->ir->rules[rule_index];
+    re_rule_event_t event;
+    re_fact_txn_t *transaction = NULL;
+    re_status_t status;
+    size_t action_index;
+    event.rule_name.data = rule->name;
+    event.rule_name.size = rule->name_size;
+    event.salience = rule->salience;
+    event.activation_sequence = activation_sequence;
+    facts->mutation_allowed = 1;
+    status = re_facts_begin_for_run(facts, &transaction);
+    if (status == RE_STATUS_OK) {
+        for (action_index = 0u; action_index < ir_rule->action_count; ++action_index) {
+            re_value_t value;
+            re_fact_id_t target_id;
+            const re_ir_action_t *action = &engine->program->ir->actions[ir_rule->first_action + action_index];
+            const re_ir_term_t *target = &engine->program->ir->terms[action->target];
+            const re_ir_term_t *action_value = &engine->program->ir->terms[action->value];
+            if (action->kind == RE_IR_ACTION_METHOD_CALL) {
+                status = execute_method_call(engine, facts, engine->program->ir,
+                    (re_string_t){target->name, target->name_size},
+                    (re_string_t){action->method_name, action->method_name_size},
+                    action_value, NULL);
+                if (status != RE_STATUS_OK) break;
+                continue;
+            }
+            status = action_value->kind == RE_IR_TERM_METHOD_CALL
+                ? resolve_method_term(engine, facts, engine->program->ir, action_value, &value)
+                : re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
+            if (status != RE_STATUS_OK) break;
+            /* Dotted action target with premises: when the root resolves to an
+             * existing STRUCTURED fact (and no exact flat key shadows the full
+             * name), this is a nested member write, not a new flat "Root.key"
+             * shadow fact. The justification anchors on the ROOT fact id
+             * (producer rule + premises). Bounded semantics: TMS cascade
+             * retraction of a premise then retracts the whole root fact, not
+             * just the member - heavier but honest. A rule that reads and
+             * writes the same root would self-justify (a TMS self-cycle), so
+             * that justification is skipped. Targets whose root is missing or
+             * not structured keep the flat-fact behavior below. */
+            if (!action->append && premise_count != 0u) {
+                re_string_t target_name = {target->name, target->name_size};
+                re_fact_id_t root_id;
+                size_t dot = 0u;
+                while (dot < target_name.size && target_name.data[dot] != '.') ++dot;
+                if (dot != 0u && dot + 1u < target_name.size &&
+                    !find_staged_fact(transaction->staged, target_name, &target_id) &&
+                    find_staged_fact(transaction->staged, (re_string_t){target_name.data, dot}, &root_id) &&
+                    transaction->staged->entries[root_id.slot].structured != NULL &&
+                    transaction->staged->entries[root_id.slot].structured->kind == 1) {
+                    status = re_facts_set_path(facts, target_name, &value);
+                    if (status == RE_STATUS_NOT_FOUND &&
+                        memchr(target_name.data + dot + 1u, '.', target_name.size - dot - 1u) == NULL)
+                        status = re_facts_set_member(facts, (re_string_t){target_name.data, dot},
+                            (re_string_t){target_name.data + dot + 1u, target_name.size - dot - 1u}, &value);
+                    if (status == RE_STATUS_OK) {
+                        size_t p;
+                        for (p = 0u; p < premise_count; ++p)
+                            if (premises[p].slot == root_id.slot &&
+                                premises[p].generation == root_id.generation) break;
+                        if (p == premise_count)
+                            status = re_facts_justification_add(facts, root_id,
+                                (re_string_t){rule->name, rule->name_size}, premises, premise_count);
+                        if (status != RE_STATUS_OK) break;
+                        continue;
+                    }
+                    if (status != RE_STATUS_NOT_FOUND) break;
+                    /* Unresolvable member path: fall through to flat behavior. */
+                    status = RE_STATUS_OK;
+                }
+            }
+            if (!action->append && premise_count != 0u &&
+                !find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id))
+                status = re_facts_insert_logical(facts, (re_string_t){target->name, target->name_size}, &value,
+                    (re_string_t){rule->name, rule->name_size}, premises, premise_count, &target_id);
+            else {
+                status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set_path(facts, (re_string_t){target->name, target->name_size}, &value);
+                if (!action->append && status == RE_STATUS_NOT_FOUND)
+                    status = re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
+                if (status == RE_STATUS_OK && !action->append && premise_count != 0u &&
+                    find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id) &&
+                    transaction->staged->entries[target_id.slot].logical)
+                    status = re_facts_justification_add(facts, target_id,
+                        (re_string_t){rule->name, rule->name_size}, premises, premise_count);
+            }
+            if (status != RE_STATUS_OK) break;
+        }
+    }
+    if (status == RE_STATUS_OK && callbacks != NULL && callbacks->action != NULL)
+        status = callbacks->action(engine, facts, &event, callbacks->context);
+    if (status == RE_STATUS_OK) status = re_facts_commit(transaction);
+    else re_facts_rollback(transaction);
+    facts->mutation_allowed = 0;
+    return status;
+}
+
+/* FNV-1a over raw bytes, used for activation fingerprints. */
+static uint64_t fnv_mix(uint64_t hash, const void *data, size_t size) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    size_t i;
+    for (i = 0u; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+/* Facts keep (slot, generation) stable across value updates, so a bare
+ * slot/generation refraction key can never observe a changed premise value.
+ * The fingerprint mixes the current scalar value into what becomes the
+ * generation field of the pushed refraction key: a value-changing write
+ * re-activates the rule, while a no-op write or an unrelated change does
+ * not. True lineage ids are recovered from the network at fire time, so the
+ * fingerprint never reaches TMS justifications.
+ * bounded: NULL/UNKNOWN/NONE and structured values mix only their type tag,
+ * so content changes invisible to the scalar tag never re-activate a rule
+ * (a missed refire); doubles hash their raw bits, and a hash collision would
+ * suppress a legitimate re-activation. */
+static uint64_t activation_fingerprint(const re_facts_t *facts, re_fact_id_t id) {
+    uint64_t hash = 1469598103934665603ull;
+    hash = fnv_mix(hash, &id.slot, sizeof(id.slot));
+    hash = fnv_mix(hash, &id.generation, sizeof(id.generation));
+    if (id.slot < facts->count) {
+        const re_value_t *value = &facts->entries[id.slot].value;
+        hash = fnv_mix(hash, &value->type, sizeof(value->type));
+        if (value->type == RE_VALUE_BOOL)
+            hash = fnv_mix(hash, &value->as.boolean, sizeof(value->as.boolean));
+        else if (value->type == RE_VALUE_INT64)
+            hash = fnv_mix(hash, &value->as.int64_value, sizeof(value->as.int64_value));
+        else if (value->type == RE_VALUE_DOUBLE)
+            hash = fnv_mix(hash, &value->as.double_value, sizeof(value->as.double_value));
+        else if (value->type == RE_VALUE_STRING)
+            hash = fnv_mix(hash, value->as.string.data, value->as.string.size);
+    }
+    return hash;
+}
+
+/* Recovers the true lineage ids (real generations, condition order) behind
+ * an agenda entry: entry premises carry activation fingerprints instead of
+ * generations, so logical insertion and TMS justifications re-resolve the
+ * matching network token by its slot multiset. Also surfaces the token's
+ * sequence, which is what the rule event reports for RETE-attached rules
+ * (linear rules report the global firing counter). Returns 0 when the token
+ * is gone: the stale activation is then discarded at pop time without being
+ * marked fired, so a later cycle may legitimately re-create it. */
+static size_t resolve_true_premises(const re_engine_t *engine, size_t rule_index,
+                                    const re_agenda_entry_internal_t *entry,
+                                    re_fact_id_t *premises, uint64_t *out_sequence) {
+    const re_rete_network_t *network =
+        engine->rete_networks != NULL ? engine->rete_networks[rule_index] : NULL;
+    size_t i;
+    if (network == NULL || entry->premise_count == 0u) return 0u;
+    for (i = 0u; i < network->activation_count; ++i) {
+        const re_rete_activation_t *activation = &network->activations[i];
+        size_t j;
+        if (activation->lineage_count != entry->premise_count) continue;
+        for (j = 0u; j < activation->lineage_count; ++j) {
+            size_t k;
+            for (k = 0u; k < entry->premise_count; ++k)
+                if (entry->premises[k].slot == activation->lineage[j].slot) break;
+            if (k == entry->premise_count) break;
+        }
+        if (j != activation->lineage_count) continue;
+        memcpy(premises, activation->lineage, activation->lineage_count * sizeof(*premises));
+        if (out_sequence != NULL) *out_sequence = activation->sequence;
+        return activation->lineage_count;
+    }
+    return 0u;
+}
+
+/* Recognize phase for one rule: applies the run-scoped visibility gates
+ * (module focus, dates, agenda group, no-loop, lock-on-active,
+ * activation-group), evaluates the match, and pushes every resulting
+ * activation into the agenda. re_agenda_push dedups against pending and
+ * fired entries, which is where refraction lives. */
+static re_status_t compute_rule_activations(re_engine_t *engine, re_facts_t *facts,
+                                            const re_limits_t *limits, size_t tracked_cap,
+                                            re_run_state_t *state, size_t rule_index,
+                                            int first_pass) {
+    re_rule_t *rule = &engine->program->rules[rule_index];
+    re_rete_network_t *network = engine->rete_networks != NULL ? engine->rete_networks[rule_index] : NULL;
+    size_t activation_index;
+    size_t activation_count;
+    re_status_t status;
+    re_ir_read_set_t reads;
+    /* Function-calling (impure) conditions are evaluated only at their
+     * historical first-pass position: the engine cannot observe when an
+     * external function's answer changes, and recomputing would repeat
+     * observable calls the single-pass loop made exactly once per run. */
+    if (!first_pass && state->pure_conditions != NULL && !state->pure_conditions[rule_index])
+        return RE_STATUS_OK;
+    if (engine->program->module_focus != NULL) { size_t focus_index, import_index; int visible = 0; for (focus_index = 0u; focus_index < engine->program->module_count; ++focus_index) if (engine->program->modules[focus_index].name_size == strlen(engine->program->module_focus) && memcmp(engine->program->modules[focus_index].name, engine->program->module_focus, engine->program->modules[focus_index].name_size) == 0) break; if (focus_index == engine->program->module_count) return RE_STATUS_OK; if (rule->module_index == focus_index) visible = 1; for (import_index = 0u; !visible && import_index < engine->program->modules[focus_index].import_count; ++import_index) if (engine->program->modules[focus_index].imports[import_index] != NULL && engine->program->modules[focus_index].imports[import_index][0] == engine->program->modules[rule->module_index].name[0] && strcmp(engine->program->modules[focus_index].imports[import_index], engine->program->modules[rule->module_index].name) == 0 && engine->program->modules[rule->module_index].export_all) visible = 1; if (!visible) return RE_STATUS_OK; }
+    if (!re_rule_active(rule, engine->program->has_clock ? engine->program->clock_epoch : 0)) return RE_STATUS_OK;
+    if (engine->program->agenda_focus == NULL) {
+        if (rule->agenda_group != NULL) return RE_STATUS_OK;
+    } else if (rule->agenda_group == NULL || strcmp(rule->agenda_group, engine->program->agenda_focus) != 0) return RE_STATUS_OK;
+    if (rule->no_loop && state->fired_no_loop[rule_index]) return RE_STATUS_OK;
+    if (rule->lock_on_active && rule->agenda_group != NULL) {
+        size_t group_index;
+        for (group_index = 0u; group_index < state->locked_group_count; ++group_index)
+            if (strcmp(state->locked_groups[group_index], rule->agenda_group) == 0) break;
+        if (group_index != state->locked_group_count) return RE_STATUS_OK;
+    }
+    if (rule->activation_group != NULL) {
+        size_t group_index;
+        for (group_index = 0u; group_index < state->activation_group_count; ++group_index)
+            if (strcmp(state->activation_groups[group_index], rule->activation_group) == 0) break;
+        if (group_index != state->activation_group_count) return RE_STATUS_OK;
+    }
+    {
+        int matched = 0;
+        /* The read-set is captured at match time and attached to every pushed
+         * activation below. The executor's parallel-match path observes no
+         * read-set, so linear rules stay premise-less (once per run) there. */
+        reads.count = 0u;
+        status = state->parallel_matches != NULL ? RE_STATUS_OK
+            : re_ir_match_rule_readset(engine, facts, engine->program->ir, rule_index, &matched, &reads);
+        if (state->parallel_matches != NULL) matched = state->parallel_matches[rule_index] != 0u;
+        if (status == RE_STATUS_NOT_FOUND) return RE_STATUS_OK;
+        if (status != RE_STATUS_OK) return status;
+        if (!matched) return RE_STATUS_OK;
+    }
+    /* A rule with an attached network contributes one activation per token.
+     * Any other matched rule - a linear rule, or a network-attached rule
+     * whose zero-token push is the RETE/linear divergence fallback (the
+     * flat-name alpha memory cannot see structured member paths, so such a
+     * rule linear-matches without any token) - contributes exactly one
+     * activation keyed by the condition read-set, never a premise-less one;
+     * only zero-read (constant-true) conditions stay premise-less. */
+    activation_count = network != NULL && network->activation_count != 0u ? network->activation_count : 1u;
+    for (activation_index = 0u; activation_index < activation_count; ++activation_index) {
+        re_fact_id_t premises[RE_AGENDA_MAX_PREMISES];
+        re_fact_id_t read_ids[RE_AGENDA_MAX_PREMISES];
+        const re_fact_id_t *true_premises = NULL;
+        size_t premise_count = 0u;
+        size_t pending_before = engine->agenda->pending_count;
+        if (network != NULL && activation_index < network->activation_count) {
+            const re_rete_activation_t *activation = &network->activations[activation_index];
+            size_t j;
+            for (j = 0u; j < activation->lineage_count; ++j) {
+                premises[j].slot = activation->lineage[j].slot;
+                premises[j].generation = activation_fingerprint(facts, activation->lineage[j]);
+            }
+            /* True ids (real generations, condition order) ride alongside the
+             * fingerprint key so re_agenda_peek can report honest premises. */
+            true_premises = activation->lineage;
+            premise_count = activation->lineage_count;
+        } else {
+            /* Linear path: the condition read-set becomes the premise set
+             * (deduped by slot - the same fact read via several paths counts
+             * once - capped at RE_AGENDA_MAX_PREMISES). The true ids (real
+             * generations, read order) ride alongside the fingerprint key
+             * exactly like token lineage does for network rules. */
+            size_t j;
+            for (j = 0u; j < reads.count && premise_count < RE_AGENDA_MAX_PREMISES; ++j) {
+                re_fact_id_t id;
+                size_t k;
+                if (!resolve_read_premise(facts, reads.paths[j], &id)) continue;
+                for (k = 0u; k < premise_count; ++k)
+                    if (read_ids[k].slot == id.slot) break;
+                if (k != premise_count) continue;
+                read_ids[premise_count] = id;
+                premises[premise_count].slot = id.slot;
+                premises[premise_count].generation = activation_fingerprint(facts, id);
+                ++premise_count;
+            }
+            true_premises = premise_count != 0u ? read_ids : NULL;
+        }
+        /* Refraction keys persist for the entire run. The generation fields
+         * hold value fingerprints, so a value-changing write to any premise
+         * re-activates the rule - for RETE rules and, since the read-set
+         * provenance work, for linear rules alike. Only premise-less
+         * activations (constant-true conditions, or the parallel-match path)
+         * still refract for the whole run and fire at most once. And a
+         * premise value toggled A->B->A re-creates the original key, which
+         * stays refracted  -  timestep-free refraction, which keeps the loop
+         * terminating. */
+        status = re_agenda_push_full(engine->agenda, rule_index, rule->salience, premises, premise_count, true_premises);
+        if (status != RE_STATUS_OK) return status;
+        if (engine->agenda->pending_count != pending_before) {
+            /* Only genuinely new activations count against the run limits;
+             * deduped re-evaluations are recognize-phase no-ops. */
+            if (limits->max_agenda_activations != 0u &&
+                state->agenda_activations >= limits->max_agenda_activations) return RE_STATUS_LIMIT;
+            ++state->agenda_activations;
+            if (engine->agenda->fired_count + engine->agenda->pending_count > tracked_cap)
+                return RE_STATUS_LIMIT;
+        }
+    }
+    return RE_STATUS_OK;
+}
+
 int re_value_equal_typed(const re_value_t *left, const re_value_t *right) {
     if (left == NULL || right == NULL || left->type != right->type) return 0;
     switch (left->type) {
@@ -347,9 +672,73 @@ re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t
     re_allocator_impl_t a; re_engine_t *engine; re_allocator_init(&a, allocator);
     if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return NULL;
     engine = re_alloc(&a, sizeof(*engine)); if (engine == NULL) return NULL;
-    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; return engine;
+    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; return engine;
 }
 
+/* rete_network mirrors the first attached per-rule network (lowest rule
+ * index) so re_engine_rete_network() and the capability probes keep working
+ * without knowing about the array. */
+static void sync_rete_primary(re_engine_t *engine) {
+    size_t i;
+    engine->rete_network = NULL;
+    for (i = 0u; i < engine->rete_network_count; ++i)
+        if (engine->rete_networks[i] != NULL) {
+            engine->rete_network = engine->rete_networks[i];
+            break;
+        }
+}
+
+/* Destroys every per-rule network (destroy_internal clears the array slots
+ * itself, including slots freed indirectly through chain teardown) and
+ * releases the parallel array. */
+static void destroy_rete_networks(re_engine_t *engine) {
+    size_t i;
+    if (engine->rete_networks != NULL) {
+        for (i = 0u; i < engine->rete_network_count; ++i)
+            if (engine->rete_networks[i] != NULL)
+                re_rete_network_destroy_internal(engine->rete_networks[i]);
+        re_free(&engine->allocator, engine->rete_networks);
+        engine->rete_networks = NULL;
+        engine->rete_network_count = 0u;
+    }
+    engine->rete_network = NULL;
+}
+
+/* Lazily attaches one RETE network per eligible rule (an AND of at most
+ * eight fact-versus-literal comparisons, the collect() constraint in
+ * rete.c). Networks bound to another fact set or marked invalid are rebuilt;
+ * ineligible rules keep a NULL slot and use plain IR matching. */
+static re_status_t ensure_rete_networks(re_engine_t *engine, re_facts_t *facts) {
+    size_t i;
+    if (engine->rete_networks == NULL) {
+        if (engine->program->rule_count == 0u) return RE_STATUS_OK;
+        engine->rete_networks = re_alloc(&engine->allocator,
+            engine->program->rule_count * sizeof(*engine->rete_networks));
+        if (engine->rete_networks == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memset(engine->rete_networks, 0,
+               engine->program->rule_count * sizeof(*engine->rete_networks));
+        engine->rete_network_count = engine->program->rule_count;
+    }
+    for (i = 0u; i < engine->rete_network_count; ++i) {
+        re_rete_network_t *network = engine->rete_networks[i];
+        if (network != NULL && (network->facts != facts || network->invalid)) {
+            re_rete_network_destroy_internal(network);
+            network = NULL;
+        }
+        if (network == NULL) {
+            re_status_t status = re_rete_network_create_rule_chained(facts,
+                &engine->program->rules[i], &engine->allocator.api, &engine->rete_networks[i]);
+            if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return status;
+            if (engine->rete_networks[i] != NULL) {
+                engine->rete_networks[i]->program = engine->program;
+                engine->rete_networks[i]->owner_engine = engine;
+                engine->rete_networks[i]->engine_owned = 1;
+            }
+        }
+    }
+    sync_rete_primary(engine);
+    return RE_STATUS_OK;
+}
 static void sort_activation_indices(const re_program_t *program, size_t *indices) {
     size_t i;
     for (i = 1u; i < program->rule_count; ++i) {
@@ -368,7 +757,9 @@ static void sort_activation_indices(const re_program_t *program, size_t *indices
 }
 static void free_agenda_state(const re_allocator_impl_t *allocator, size_t *indices,
                               unsigned char *fired_no_loop, char **activation_groups,
-                              char **locked_groups) {
+                              char **locked_groups, unsigned char *parallel_matches,
+                              unsigned char *pure_conditions) {
+    re_free(allocator, pure_conditions); re_free(allocator, parallel_matches);
     re_free(allocator, locked_groups); re_free(allocator, activation_groups);
     re_free(allocator, fired_no_loop); re_free(allocator, indices);
 }
@@ -376,9 +767,9 @@ void re_engine_destroy(re_engine_t *engine) {
     if (engine == NULL) return;
     if (engine->running) { engine->destroy_requested = 1; return; }
     re_executor_destroy(engine->executor);
-    if (engine->rete_network != NULL && engine->rete_network->engine_owned)
-        re_rete_network_destroy_internal(engine->rete_network);
-    engine->rete_network = NULL;
+    destroy_rete_networks(engine);
+    re_agenda_destroy_internal(engine->agenda);
+    engine->agenda = NULL;
     while (engine->functions != NULL) { re_function_t *function = engine->functions; engine->functions = function->next; if (function->release != NULL) function->release(function->context); re_free(&engine->allocator, function->name); re_free(&engine->allocator, function); }
     re_program_destroy(engine->program); re_free(&engine->allocator, engine);
 }
@@ -435,14 +826,33 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
     if (re_ir_validate(program->ir) != RE_STATUS_OK) return RE_STATUS_INVALID_ARGUMENT;
     if (program->rule_count > engine->limits.max_rules && engine->limits.max_rules != 0u) return RE_STATUS_LIMIT;
     if (engine->running) return RE_STATUS_BUSY;
-    re_rete_network_destroy_internal(engine->rete_network); engine->rete_network = NULL;
+    destroy_rete_networks(engine);
+    /* Installing a new program invalidates any surviving agenda entries
+     * (rule indices and refraction keys refer to the old rules), persistent
+     * mode included. */
+    re_agenda_reset(engine->agenda);
     old = engine->program; engine->program = program; re_program_destroy(old);
     return RE_STATUS_OK;
 }
 
-/* Phase 2 agenda state will hang off the engine; the hook is a no-op until
- * there is an agenda to clear. */
-void re_engine_clear_agenda(re_engine_t *engine) { (void)engine; }
+/* Resets the lazily-created agenda (pending activations and refraction
+ * keys); NULL-safe when no agenda exists yet. */
+void re_engine_clear_agenda(re_engine_t *engine) {
+    if (engine == NULL) return;
+    re_agenda_reset(engine->agenda);
+}
+
+/* Lazily creates the engine-owned agenda; re_agenda_peek resolves rule names
+ * through the owning engine, so the agenda is back-linked here. */
+re_status_t re_engine_ensure_agenda(re_engine_t *engine) {
+    re_status_t status;
+    if (engine == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (engine->agenda != NULL) return RE_STATUS_OK;
+    status = re_agenda_create_internal(&engine->allocator.api, &engine->agenda);
+    if (status != RE_STATUS_OK) return status;
+    engine->agenda->engine = engine;
+    return RE_STATUS_OK;
+}
 
 static re_status_t load_deffacts_entry(re_facts_t *facts, const re_ir_program_t *ir,
                                        const re_ir_deffacts_entry_t *entry) {
@@ -504,11 +914,11 @@ re_status_t re_engine_reset_with_deffacts(re_engine_t *engine, re_facts_t *facts
 }
 
 re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_options_t *options, const re_callbacks_t *callbacks) {
-    size_t i; size_t firings = 0u; size_t agenda_activations = 0u; size_t *indices = NULL;
-    unsigned char *fired_no_loop = NULL; char **activation_groups = NULL; size_t activation_group_count = 0u;
-    char **locked_groups = NULL; size_t locked_group_count = 0u;
-    re_limits_t limits; int explicit_limits; unsigned char *parallel_matches = NULL;
-    re_status_t status;
+    size_t i;
+    re_run_state_t state;
+    re_limits_t limits; int explicit_limits;
+    size_t tracked_cap;
+    re_status_t status = RE_STATUS_OK;
     if (engine == NULL || facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
     if (engine->running) return RE_STATUS_BUSY;
     engine->running = 1;
@@ -522,148 +932,164 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     if (limits.max_facts == 0u) limits.max_facts = engine->limits.max_facts;
     if (limits.max_agenda_activations == 0u) limits.max_agenda_activations = engine->limits.max_agenda_activations;
     if (limits.max_firings == 0u) limits.max_firings = engine->limits.max_firings;
+    if (limits.max_activations_tracked == 0u) limits.max_activations_tracked = engine->limits.max_activations_tracked;
+    tracked_cap = limits.max_activations_tracked != 0u ? limits.max_activations_tracked : 1024u;
     if (engine->program == NULL) return finish_run(engine, facts, RE_STATUS_OK);
-    if (engine->rete_network != NULL && (engine->rete_network->facts != facts || engine->rete_network->invalid)) {
-        re_rete_network_destroy_internal(engine->rete_network);
-        engine->rete_network = NULL;
-    }
-    if (engine->program->rule_count == 1u && engine->rete_network == NULL) {
-        status = re_rete_network_create_rule(facts, &engine->program->rules[0], &engine->allocator.api, &engine->rete_network);
-        if (status == RE_STATUS_OUT_OF_MEMORY || status == RE_STATUS_LIMIT) return finish_run(engine, facts, status);
-        if (engine->rete_network != NULL) {
-            engine->rete_network->program = engine->program;
-            engine->rete_network->owner_engine = engine;
-            engine->rete_network->engine_owned = 1;
-        }
-    }
+    status = re_engine_ensure_agenda(engine);
+    if (status != RE_STATUS_OK) return finish_run(engine, facts, status);
+    status = ensure_rete_networks(engine, facts);
+    if (status != RE_STATUS_OK) return finish_run(engine, facts, status);
+    memset(&state, 0, sizeof(state));
     if (engine->program->rule_count != 0u) {
-        indices = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*indices));
-        if (indices == NULL) return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY);
-        fired_no_loop = re_alloc(&engine->allocator, engine->program->rule_count);
-        if (fired_no_loop == NULL) { re_free(&engine->allocator, indices); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
-        memset(fired_no_loop, 0, engine->program->rule_count);
-        activation_groups = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*activation_groups));
-        locked_groups = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*locked_groups));
-        if (activation_groups == NULL || locked_groups == NULL) {
-            re_free(&engine->allocator, locked_groups); re_free(&engine->allocator, activation_groups);
-            re_free(&engine->allocator, fired_no_loop); re_free(&engine->allocator, indices);
+        state.indices = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*state.indices));
+        if (state.indices == NULL) return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY);
+        state.fired_no_loop = re_alloc(&engine->allocator, engine->program->rule_count);
+        if (state.fired_no_loop == NULL) { re_free(&engine->allocator, state.indices); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
+        memset(state.fired_no_loop, 0, engine->program->rule_count);
+        state.pure_conditions = re_alloc(&engine->allocator, engine->program->rule_count);
+        if (state.pure_conditions == NULL) { re_free(&engine->allocator, state.fired_no_loop); re_free(&engine->allocator, state.indices); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
+        for (i = 0u; i < engine->program->rule_count; ++i)
+            state.pure_conditions[i] = (unsigned char)re_condition_is_pure(engine->program->rules[i].condition);
+        state.activation_groups = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*state.activation_groups));
+        state.locked_groups = re_alloc(&engine->allocator, engine->program->rule_count * sizeof(*state.locked_groups));
+        if (state.activation_groups == NULL || state.locked_groups == NULL) {
+            re_free(&engine->allocator, state.locked_groups); re_free(&engine->allocator, state.activation_groups);
+            re_free(&engine->allocator, state.pure_conditions);
+            re_free(&engine->allocator, state.fired_no_loop); re_free(&engine->allocator, state.indices);
             return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY);
         }
-        for (i = 0u; i < engine->program->rule_count; ++i) indices[i] = i;
-        sort_activation_indices(engine->program, indices);
+        for (i = 0u; i < engine->program->rule_count; ++i) state.indices[i] = i;
+        sort_activation_indices(engine->program, state.indices);
     }
     if (engine->executor != NULL) {
         int pure = 1;
         for (i = 0u; i < engine->program->rule_count; ++i)
             if (!re_condition_is_pure(engine->program->rules[i].condition)) pure = 0;
         if (pure) {
-            parallel_matches = re_alloc(&engine->allocator, engine->program->rule_count);
-            if (parallel_matches == NULL) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
-            status = re_executor_match(engine->executor, engine, facts, engine->program, parallel_matches);
-            if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); }
+            state.parallel_matches = re_alloc(&engine->allocator, engine->program->rule_count);
+            if (state.parallel_matches == NULL) { free_agenda_state(&engine->allocator, state.indices, state.fired_no_loop, state.activation_groups, state.locked_groups, NULL, state.pure_conditions); return finish_run(engine, facts, RE_STATUS_OUT_OF_MEMORY); }
         }
     }
-    for (i = 0u; i < engine->program->rule_count; ++i) {
-        re_rule_t *rule = &engine->program->rules[indices[i]]; re_rule_event_t event;
-        if (engine->program->module_focus != NULL) { size_t focus_index, import_index; int visible = 0; for (focus_index = 0u; focus_index < engine->program->module_count; ++focus_index) if (engine->program->modules[focus_index].name_size == strlen(engine->program->module_focus) && memcmp(engine->program->modules[focus_index].name, engine->program->module_focus, engine->program->modules[focus_index].name_size) == 0) break; if (focus_index == engine->program->module_count) continue; if (rule->module_index == focus_index) visible = 1; for (import_index = 0u; !visible && import_index < engine->program->modules[focus_index].import_count; ++import_index) if (engine->program->modules[focus_index].imports[import_index] != NULL && engine->program->modules[focus_index].imports[import_index][0] == engine->program->modules[rule->module_index].name[0] && strcmp(engine->program->modules[focus_index].imports[import_index], engine->program->modules[rule->module_index].name) == 0 && engine->program->modules[rule->module_index].export_all) visible = 1; if (!visible) continue; }
-        if (!re_rule_active(rule, engine->program->has_clock ? engine->program->clock_epoch : 0)) continue;
-        if (engine->program->agenda_focus == NULL) {
-            if (rule->agenda_group != NULL) continue;
-        } else if (rule->agenda_group == NULL || strcmp(rule->agenda_group, engine->program->agenda_focus) != 0) continue;
-        if (rule->no_loop && fired_no_loop[indices[i]]) continue;
+    /* Recognize-act cycle. The first pass evaluates one new rule per
+     * iteration (sorted by salience, then source order) so firings
+     * interleave with matching in the historical order; once every rule was
+     * evaluated, each iteration recomputes all visible rules and the agenda
+     * fires the highest-salience pending activation. Refraction (agenda
+     * dedup against fired keys) is what makes the loop terminate. */
+    for (;;) {
+        re_agenda_entry_internal_t activation;
+        re_rule_t *rule;
+        if (options != NULL && options->is_cancelled != NULL && options->is_cancelled(options->cancel_context) != 0) { status = RE_STATUS_CANCELLED; break; }
+        if (state.parallel_matches != NULL) {
+            status = re_executor_match(engine->executor, engine, facts, engine->program, state.parallel_matches);
+            if (status != RE_STATUS_OK) break;
+        }
+        if (state.next_rule < engine->program->rule_count) {
+            status = compute_rule_activations(engine, facts, &limits, tracked_cap, &state, state.indices[state.next_rule], 1);
+            ++state.next_rule;
+            if (status != RE_STATUS_OK) break;
+        }
+        for (i = 0u; i < state.next_rule; ++i) {
+            status = compute_rule_activations(engine, facts, &limits, tracked_cap, &state, state.indices[i], 0);
+            if (status != RE_STATUS_OK) break;
+        }
+        if (status != RE_STATUS_OK) break;
+        if (!re_agenda_pop_highest(engine->agenda, &activation)) {
+            if (state.next_rule < engine->program->rule_count) continue;
+            break;
+        }
+        rule = &engine->program->rules[activation.rule_index];
+        /* Group-level gates can have closed while the activation sat
+         * pending; such entries are dropped, exactly like the old pass
+         * skipped those rules when it reached them. */
         if (rule->lock_on_active && rule->agenda_group != NULL) {
             size_t group_index;
-            for (group_index = 0u; group_index < locked_group_count; ++group_index)
-                if (strcmp(locked_groups[group_index], rule->agenda_group) == 0) break;
-            if (group_index != locked_group_count) continue;
+            for (group_index = 0u; group_index < state.locked_group_count; ++group_index)
+                if (strcmp(state.locked_groups[group_index], rule->agenda_group) == 0) break;
+            if (group_index != state.locked_group_count) continue;
         }
         if (rule->activation_group != NULL) {
             size_t group_index;
-            for (group_index = 0u; group_index < activation_group_count; ++group_index)
-                if (strcmp(activation_groups[group_index], rule->activation_group) == 0) break;
-            if (group_index != activation_group_count) continue;
+            for (group_index = 0u; group_index < state.activation_group_count; ++group_index)
+                if (strcmp(state.activation_groups[group_index], rule->activation_group) == 0) break;
+            if (group_index != state.activation_group_count) continue;
         }
-        if (options != NULL && options->is_cancelled != NULL && options->is_cancelled(options->cancel_context) != 0) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_CANCELLED); }
-         { int matched = 0; status = parallel_matches != NULL ? RE_STATUS_OK : re_ir_match_rule(engine, facts, engine->program->ir, indices[i], &matched); if (parallel_matches != NULL) matched = parallel_matches[indices[i]] != 0u; if (status == RE_STATUS_NOT_FOUND) continue; if (status != RE_STATUS_OK) { re_free(&engine->allocator, parallel_matches); free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, status); } if (!matched) continue; }
-         {
-             size_t activation_index;
-             size_t activation_count = engine->rete_network != NULL &&
-                 engine->rete_network->producer_rule.size == rule->name_size &&
-                 memcmp(engine->rete_network->producer_rule.data, rule->name, rule->name_size) == 0 &&
-                 engine->rete_network->activation_count != 0u ? engine->rete_network->activation_count : 1u;
-             if (limits.max_agenda_activations != 0u && activation_count > limits.max_agenda_activations - agenda_activations) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
-             agenda_activations += activation_count;
-             for (activation_index = 0u; activation_index < activation_count; ++activation_index) {
-         event.rule_name.data = rule->name; event.rule_name.size = rule->name_size; event.salience = rule->salience;
-         event.activation_sequence = (uint64_t)firings + 1u;
-        if (rule->activation_group != NULL) {
-            activation_groups[activation_group_count] = rule->activation_group;
-            ++activation_group_count;
-        }
-        if (rule->no_loop) fired_no_loop[indices[i]] = 1u;
-        if (rule->lock_on_active && rule->agenda_group != NULL) {
-            locked_groups[locked_group_count] = rule->agenda_group;
-            ++locked_group_count;
-        }
-        facts->mutation_allowed = 1;
         {
-            re_fact_txn_t *transaction = NULL;
-            size_t action_index;
-            const re_ir_rule_t *ir_rule = &engine->program->ir->rules[indices[i]];
-            status = re_facts_begin_for_run(facts, &transaction);
-            if (status == RE_STATUS_OK) {
-                for (action_index = 0u; action_index < ir_rule->action_count; ++action_index) {
-                    re_value_t value;
-                    re_fact_id_t premises[8];
-                    re_fact_id_t target_id;
-                     size_t premise_count = activation_premises(engine, rule, activation_index, premises, &event.activation_sequence);
-                    const re_ir_action_t *action = &engine->program->ir->actions[ir_rule->first_action + action_index];
-                    const re_ir_term_t *target = &engine->program->ir->terms[action->target];
-                    const re_ir_term_t *action_value = &engine->program->ir->terms[action->value];
-                    if (action->kind == RE_IR_ACTION_METHOD_CALL) {
-                        status = execute_method_call(engine, facts, engine->program->ir,
-                            (re_string_t){target->name, target->name_size},
-                            (re_string_t){action->method_name, action->method_name_size},
-                            action_value, NULL);
+            re_fact_id_t true_premises[RE_AGENDA_MAX_PREMISES];
+            re_rete_network_t *network =
+                engine->rete_networks != NULL ? engine->rete_networks[activation.rule_index] : NULL;
+            size_t true_count = 0u;
+            uint64_t sequence = (uint64_t)state.firings + 1u;
+            /* Pop-time revalidation: facts may have moved on since the push.
+             * A token-backed entry must still resolve to a live token. An
+             * entry whose token is gone - or a linear read-set entry, which
+             * never had one - falls back to the true premise ids riding on
+             * the entry itself: it is stale (discarded without being marked
+             * fired, so a later cycle may legitimately re-push it) when a
+             * premise fact was retracted or re-asserted, or when a pure
+             * non-constant condition no longer matches, re-running the same
+             * match predicate used at compute time. A premise-less entry from
+             * a linear rule with a real pure condition re-runs that predicate
+             * as well (constant-true conditions and impure conditions are not
+             * re-checked  -  the latter are not re-observable  -  and the
+             * focus/date predicates are run-static). */
+            if (activation.premise_count != 0u) {
+                if (network != NULL)
+                    true_count = resolve_true_premises(engine, activation.rule_index,
+                                                       &activation, true_premises, &sequence);
+                if (true_count == 0u) {
+                    size_t k;
+                    for (k = 0u; k < activation.premise_count; ++k) {
+                        re_fact_id_t id = activation.true_premises[k];
+                        if (id.slot >= facts->count || !facts->entries[id.slot].active ||
+                            facts->entries[id.slot].generation != id.generation) break;
+                    }
+                    if (k != activation.premise_count) continue;
+                    if (rule->condition != NULL && rule->condition->kind != RE_EXPR_TRUE &&
+                        state.pure_conditions != NULL &&
+                        state.pure_conditions[activation.rule_index]) {
+                        int matched = 0;
+                        status = state.parallel_matches != NULL ? RE_STATUS_OK
+                            : re_ir_match_rule(engine, facts, engine->program->ir, activation.rule_index, &matched);
+                        if (state.parallel_matches != NULL) matched = state.parallel_matches[activation.rule_index] != 0u;
+                        if (status == RE_STATUS_NOT_FOUND) continue;
                         if (status != RE_STATUS_OK) break;
-                        continue;
+                        if (!matched) continue;
                     }
-                    status = action_value->kind == RE_IR_TERM_METHOD_CALL
-                        ? resolve_method_term(engine, facts, engine->program->ir, action_value, &value)
-                        : re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
-                    if (status != RE_STATUS_OK) break;
-                    if (!action->append && premise_count != 0u &&
-                        !find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id))
-                        status = re_facts_insert_logical(facts, (re_string_t){target->name, target->name_size}, &value,
-                            (re_string_t){rule->name, rule->name_size}, premises, premise_count, &target_id);
-                    else {
-                        status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set_path(facts, (re_string_t){target->name, target->name_size}, &value);
-                        if (!action->append && status == RE_STATUS_NOT_FOUND)
-                            status = re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
-                        if (status == RE_STATUS_OK && !action->append && premise_count != 0u &&
-                            find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id) &&
-                            transaction->staged->entries[target_id.slot].logical)
-                            status = re_facts_justification_add(facts, target_id,
-                                (re_string_t){rule->name, rule->name_size}, premises, premise_count);
-                    }
-                    if (status != RE_STATUS_OK) break;
+                    memcpy(true_premises, activation.true_premises,
+                           activation.premise_count * sizeof(*true_premises));
+                    true_count = activation.premise_count;
                 }
+            } else if (network == NULL && rule->condition != NULL &&
+                       rule->condition->kind != RE_EXPR_TRUE &&
+                       state.pure_conditions != NULL &&
+                       state.pure_conditions[activation.rule_index]) {
+                int matched = 0;
+                status = state.parallel_matches != NULL ? RE_STATUS_OK
+                    : re_ir_match_rule(engine, facts, engine->program->ir, activation.rule_index, &matched);
+                if (state.parallel_matches != NULL) matched = state.parallel_matches[activation.rule_index] != 0u;
+                if (status == RE_STATUS_NOT_FOUND) continue;
+                if (status != RE_STATUS_OK) break;
+                if (!matched) continue;
             }
-            if (status == RE_STATUS_OK && callbacks != NULL && callbacks->action != NULL)
-                status = callbacks->action(engine, facts, &event, callbacks->context);
-            if (status == RE_STATUS_OK) status = re_facts_commit(transaction);
-            else re_facts_rollback(transaction);
-            if (status != RE_STATUS_OK) {
-                free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups);
-                return finish_run(engine, facts, status);
-            }
+            status = fire_activation(engine, facts, activation.rule_index,
+                                     true_premises, true_count, sequence, callbacks);
         }
-        facts->mutation_allowed = 0;
-         ++firings; if (limits.max_firings != 0u && firings >= limits.max_firings) { free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups); return finish_run(engine, facts, RE_STATUS_LIMIT); }
-             }
-         }
+        if (status != RE_STATUS_OK) break;
+        status = re_agenda_mark_fired(engine->agenda, &activation);
+        if (status != RE_STATUS_OK) break;
+        if (rule->activation_group != NULL) {
+            state.activation_groups[state.activation_group_count] = rule->activation_group;
+            ++state.activation_group_count;
+        }
+        if (rule->no_loop) state.fired_no_loop[activation.rule_index] = 1u;
+        if (rule->lock_on_active && rule->agenda_group != NULL) {
+            state.locked_groups[state.locked_group_count] = rule->agenda_group;
+            ++state.locked_group_count;
+        }
+        ++state.firings;
+        if (limits.max_firings != 0u && state.firings >= limits.max_firings) { status = RE_STATUS_LIMIT; break; }
     }
-    re_free(&engine->allocator, parallel_matches);
-    free_agenda_state(&engine->allocator, indices, fired_no_loop, activation_groups, locked_groups);
-    return finish_run(engine, facts, RE_STATUS_OK);
+    free_agenda_state(&engine->allocator, state.indices, state.fired_no_loop, state.activation_groups, state.locked_groups, state.parallel_matches, state.pure_conditions);
+    return finish_run(engine, facts, status);
 }

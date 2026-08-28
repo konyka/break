@@ -30,6 +30,14 @@ typedef struct re_ir_eval_state_t {
     re_eval_frame_t *frames;
     size_t frame_count;
     size_t frame_capacity;
+    /* Bounded condition read-set (dedup, cap RE_IR_MAX_READ_PATHS, silent
+     * stop on overflow); recorded only when record_reads is set, i.e. during
+     * condition matching - action-RHS term resolution leaves it off so
+     * writes' reads never pollute rule premises. Paths borrow IR term
+     * strings, which outlive the evaluation. */
+    re_string_t read_paths[RE_IR_MAX_READ_PATHS];
+    size_t read_count;
+    int record_reads;
 } re_ir_eval_state_t;
 
 static re_status_t eval_step(re_ir_eval_state_t *state) {
@@ -62,6 +70,18 @@ static re_status_t push_rule(const re_engine_t *engine, re_ir_eval_state_t *stat
     return RE_STATUS_OK;
 }
 static void pop_rule(re_ir_eval_state_t *state) { --state->rule_count; }
+
+static void record_read(re_ir_eval_state_t *state, const char *name, size_t name_size) {
+    size_t i;
+    if (!state->record_reads) return;
+    for (i = 0u; i < state->read_count; ++i)
+        if (state->read_paths[i].size == name_size &&
+            memcmp(state->read_paths[i].data, name, name_size) == 0) return;
+    if (state->read_count == RE_IR_MAX_READ_PATHS) return;
+    state->read_paths[state->read_count].data = name;
+    state->read_paths[state->read_count].size = name_size;
+    ++state->read_count;
+}
 
 static re_status_t frame_push(const re_engine_t *engine, re_ir_eval_state_t *state,
                               re_eval_frame_kind_t kind, size_t index, size_t parent,
@@ -147,7 +167,9 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                 if (term->kind == RE_IR_TERM_BOOL || term->kind == RE_IR_TERM_INT64 || term->kind == RE_IR_TERM_DOUBLE || term->kind == RE_IR_TERM_STRING) {
                     frame->result = term->value; frame->stage = 99u;
                 } else if (term->kind == RE_IR_TERM_FACT) {
-                    status = re_facts_get_path(facts, (re_string_t){term->name, term->name_size}, &frame->result); frame->stage = 99u;
+                    status = re_facts_get_path(facts, (re_string_t){term->name, term->name_size}, &frame->result);
+                    if (status == RE_STATUS_OK) record_read(state, term->name, term->name_size);
+                    frame->stage = 99u;
                 } else if (term->kind == RE_IR_TERM_ARITHMETIC) {
                     if (term->argument_count != 2u || term->argument_indices == NULL) status = RE_STATUS_INVALID_ARGUMENT;
                     else { frame->stage = 1u; status = frame_push(engine, state, RE_FRAME_TERM, term->argument_indices[0], state->frame_count - 1u, 0u); }
@@ -206,6 +228,7 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                     status = re_facts_get_path(facts,
                         (re_string_t){ir->terms[expr->left].name, ir->terms[expr->left].name_size},
                         &frame->left);
+                    if (status == RE_STATUS_OK) record_read(state, ir->terms[expr->left].name, ir->terms[expr->left].name_size);
                     if (status == RE_STATUS_NOT_FOUND) {
                         status = RE_STATUS_OK;
                         frame->matched = 0;
@@ -220,6 +243,7 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                     const re_value_handle_t *array = NULL;
                     status = re_facts_get_structured_path(facts,
                         (re_string_t){ir->terms[expr->left].name, ir->terms[expr->left].name_size}, &array);
+                    if (status == RE_STATUS_OK) record_read(state, ir->terms[expr->left].name, ir->terms[expr->left].name_size);
                     if (status == RE_STATUS_OK) {
                         if (array->kind != 2) status = RE_STATUS_INVALID_ARGUMENT;
                         else {
@@ -239,7 +263,18 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                 if (expr->compare == RE_COMPARE_IN && ir->terms[expr->right].kind == RE_IR_TERM_ARRAY) { frame->position = 0u; frame->matched = 0; frame->stage = 4u; }
                 else if (expr->compare == RE_COMPARE_IN) { frame->stage = 99u; status = re_facts_contains_value(facts, (re_string_t){ir->terms[expr->right].name, ir->terms[expr->right].name_size}, &frame->left, &frame->matched); }
                 else { frame->stage = 5u; status = frame_push(engine, state, RE_FRAME_TERM, expr->right, state->frame_count - 1u, 1u); }
-            } else if (frame->stage == 3u) { frame->matched = re_value_compare(&frame->left, &frame->right, expr->compare); frame->stage = 99u; }
+            } else if (frame->stage == 3u) {
+                /* Reached only from the AND/OR path above, after the second
+                 * child completed; the completion handler already copied the
+                 * child's matched into this frame. AND/OR exprs carry no
+                 * compare operator (the parser zero-fills it, i.e.
+                 * RE_COMPARE_TRUE, which re_value_compare answers 1 for
+                 * unconditionally), so re-evaluating the frame as a
+                 * comparison here forced every "A and B" to match whenever A
+                 * was true (B ignored) and every "A or B" to match whenever A
+                 * was false. Keep the child's result instead. */
+                frame->stage = 99u;
+            }
             else if (frame->stage == 5u) { frame->matched = re_value_compare(&frame->left, &frame->right, expr->compare); frame->stage = 99u; }
             else if (frame->stage == 7u) {
                 frame->matched = re_value_compare(&frame->left, &frame->right, expr->compare);
@@ -280,15 +315,29 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
 static void state_destroy(const re_engine_t *engine, re_ir_eval_state_t *state) {
     re_free(&engine->allocator, state->frames); re_free(&engine->allocator, state->rules);
 }
-re_status_t re_ir_match_rule(const re_engine_t *engine, re_facts_t *facts, const re_ir_program_t *ir, size_t rule_index, int *matched) {
+static re_status_t match_rule_impl(const re_engine_t *engine, re_facts_t *facts, const re_ir_program_t *ir, size_t rule_index, int *matched, re_ir_read_set_t *reads) {
     re_ir_eval_state_t state; re_status_t status;
     if (engine == NULL || facts == NULL || ir == NULL || rule_index >= ir->rule_count || matched == NULL) return RE_STATUS_INVALID_ARGUMENT;
     memset(&state, 0, sizeof(state));
+    state.record_reads = reads != NULL;
     state.step_limit = ir->expr_count > SIZE_MAX - ir->term_count ? SIZE_MAX : ir->expr_count + ir->term_count;
     state.step_limit = state.step_limit > (SIZE_MAX - 1u) / 1024u ? SIZE_MAX : state.step_limit * 1024u + 1u;
     status = push_rule(engine, &state, rule_index);
     if (status == RE_STATUS_OK) { status = evaluate_iterative(engine, facts, ir, RE_FRAME_EXPR, ir->rules[rule_index].condition, matched, NULL, &state); pop_rule(&state); }
+    if (reads != NULL) {
+        reads->count = state.read_count;
+        if (state.read_count != 0u)
+            memcpy(reads->paths, state.read_paths, state.read_count * sizeof(*reads->paths));
+    }
     state_destroy(engine, &state); return status;
+}
+re_status_t re_ir_match_rule(const re_engine_t *engine, re_facts_t *facts, const re_ir_program_t *ir, size_t rule_index, int *matched) {
+    return match_rule_impl(engine, facts, ir, rule_index, matched, NULL);
+}
+re_status_t re_ir_match_rule_readset(const re_engine_t *engine, re_facts_t *facts, const re_ir_program_t *ir, size_t rule_index, int *matched, re_ir_read_set_t *reads) {
+    if (reads == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    reads->count = 0u;
+    return match_rule_impl(engine, facts, ir, rule_index, matched, reads);
 }
 re_status_t re_ir_resolve_term(re_engine_t *engine, re_facts_t *facts, const re_ir_program_t *ir, size_t term_index, re_value_t *value) {
     re_ir_eval_state_t state; re_status_t status;

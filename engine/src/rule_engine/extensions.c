@@ -67,13 +67,70 @@ static re_status_t stream_copy_value(re_stream_window_t *window, const re_value_
     return RE_STATUS_OK;
 }
 
-re_status_t re_engine_agenda(const re_engine_t *engine, re_agenda_t **out_agenda) {
-    (void)engine;
-    (void)out_agenda;
-    return unsupported();
+re_status_t re_engine_agenda(re_engine_t *engine, re_agenda_t **out_agenda) {
+    re_status_t status;
+    if (engine == NULL || out_agenda == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    status = re_engine_ensure_agenda(engine);
+    if (status != RE_STATUS_OK) return status;
+    *out_agenda = engine->agenda;
+    return RE_STATUS_OK;
 }
 void re_agenda_destroy(re_agenda_t *agenda) {
+    /* Documented no-op: agenda instances are engine-owned and are released
+     * by re_engine_destroy. */
     (void)agenda;
+}
+re_status_t re_engine_set_agenda_persistent(re_engine_t *engine, int enabled) {
+    re_status_t status;
+    if (engine == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (engine->running) return RE_STATUS_BUSY;
+    status = re_engine_ensure_agenda(engine);
+    if (status != RE_STATUS_OK) return status;
+    engine->agenda->persistent = enabled != 0;
+    return RE_STATUS_OK;
+}
+size_t re_agenda_count(const re_agenda_t *agenda) {
+    return agenda == NULL ? 0u : agenda->pending_count;
+}
+/* Pop order without mutation: salience descending, then activation sequence
+ * ascending (mirrors re_agenda_pop_highest). */
+static int agenda_entry_precedes(const re_agenda_entry_internal_t *left,
+                                 const re_agenda_entry_internal_t *right) {
+    return left->salience > right->salience ||
+        (left->salience == right->salience && left->sequence < right->sequence);
+}
+re_status_t re_agenda_peek(const re_agenda_t *agenda, size_t index, re_agenda_entry_t *out_entry) {
+    size_t i;
+    if (agenda == NULL || out_entry == NULL || out_entry->struct_size < sizeof(*out_entry))
+        return RE_STATUS_INVALID_ARGUMENT;
+    for (i = 0u; i < agenda->pending_count; ++i) {
+        const re_agenda_entry_internal_t *entry = &agenda->pending[i];
+        size_t rank = 0u;
+        size_t j;
+        for (j = 0u; j < agenda->pending_count; ++j)
+            if (j != i && agenda_entry_precedes(&agenda->pending[j], entry)) ++rank;
+        if (rank != index) continue;
+        memset(out_entry->premises, 0, sizeof(out_entry->premises));
+        out_entry->salience = entry->salience;
+        out_entry->activation_sequence = entry->sequence;
+        out_entry->premise_count = entry->premise_count;
+        if (entry->premise_count != 0u)
+            memcpy(out_entry->premises, entry->true_premises,
+                   entry->premise_count * sizeof(*entry->true_premises));
+        /* Borrowed from the owning engine's program; valid until the program
+         * is replaced or the engine is destroyed. Standalone agendas (no
+         * engine) report an empty name. */
+        out_entry->rule_name.data = NULL;
+        out_entry->rule_name.size = 0u;
+        if (agenda->engine != NULL && agenda->engine->program != NULL &&
+            entry->rule_index < agenda->engine->program->rule_count) {
+            const re_rule_t *rule = &agenda->engine->program->rules[entry->rule_index];
+            out_entry->rule_name.data = rule->name;
+            out_entry->rule_name.size = rule->name_size;
+        }
+        return RE_STATUS_OK;
+    }
+    return RE_STATUS_NOT_FOUND;
 }
 re_status_t re_engine_rete_network(const re_engine_t *engine,
                                     re_rete_network_t **out_network) {
@@ -82,10 +139,8 @@ re_status_t re_engine_rete_network(const re_engine_t *engine,
     return *out_network == NULL ? RE_STATUS_NOT_SUPPORTED : RE_STATUS_OK;
 }
 void re_rete_network_destroy(re_rete_network_t *network) {
-    if (network != NULL && network->owner_engine != NULL) {
-        network->owner_engine->rete_network = NULL;
-        network->owner_engine = NULL;
-    }
+    /* destroy_internal subsumes the owner cleanup: it clears the engine's
+     * per-rule network slots and re-syncs the primary handle. */
     re_rete_network_destroy_internal(network);
 }
 re_status_t re_engine_query(re_engine_t *engine, re_facts_t *facts,

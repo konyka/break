@@ -94,7 +94,7 @@ features:
     family: rete
     requirement: optional
     syntax: 'engine.agenda(); engine.rete_network();'
-    expected_behavior: Expose the locally implemented bounded agenda and private RETE seam; incremental indexing and full upstream RETE controls are not claimed.
+    expected_behavior: Expose the locally implemented bounded persistent agenda and per-rule private RETE seam; incremental indexing is bounded to per-rule networks and full upstream RETE controls are not claimed.
     upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
     upstream_status: verified_upstream
     local_status: verified_local
@@ -106,19 +106,48 @@ features:
   - id: private-rete-bounded-conjunction
     family: rete
     requirement: optional
-    syntax: 'bounded runtime seam: two flat fact conditions joined by conjunction'
-    expected_behavior: Maintain bounded deterministic incremental alpha/beta/token activations for two flat fact conditions across supported runs, remove stale activations on lifecycle events, and expose only fact-id/rule-name provenance; unsupported boolean forms use the linear evaluator and full RETE-UL/TMS remains unclaimed.
+    syntax: 'bounded runtime seam: up to eight ANDed fact-vs-literal comparisons per rule'
+    expected_behavior: Maintain bounded deterministic incremental alpha/beta/token memories for up to eight fact-vs-literal comparisons joined by conjunction, one private network per eligible rule chained on the facts store without cross-rule alpha sharing; remove stale activations on lifecycle events and expose only fact-id/rule-name provenance; unsupported boolean forms use the linear evaluator with read-set-keyed zero-token activations and full RETE-UL/TMS remains unclaimed.
     upstream_refs: []
     upstream_status: not_applicable
     local_status: verified_local
     implementation_ref: engine/src/rule_engine/rete.c
-    test_ref: engine/tests/test_rule_engine_rete_incremental.c
+    test_ref: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c]
     doc_ref: docs/Rule_Engine_Architecture.md
+  - id: recognize-act-cycle
+    family: rete
+    requirement: optional
+    syntax: 're_engine_run(engine, facts, options, callbacks);'
+    expected_behavior: Loop recompute, refraction-deduped agenda push, pop-highest, and fire until the agenda empties, a limit is reached, or cancellation is requested; refraction keys combine rule, premise slots, and value fingerprints, pop-time revalidation discards stale activations without mark_fired, per-rule RETE networks chained on the facts store cover every eligible rule (up to eight ANDed fact-vs-literal comparisons), and a zero-token fallback keys activations by the condition read-set for conditions the alpha memories cannot see.
+    upstream_refs: [src/engine/engine.rs, src/rete/agenda.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/engine.c, engine/src/rule_engine/agenda.c]
+    test_ref: engine/tests/test_rule_engine_agenda.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: value_fingerprint_refraction; timestep_free_fired_keys; pop_time_revalidation; per_rule_networks_no_cross_rule_alpha_sharing; max_activations_tracked_cap
+    note: Value fingerprints FNV-hash premise content; a collision can theoretically miss a refire, doubles hash raw bits, and NULL/UNKNOWN/NONE/structured values mix only the type tag. Fired keys persist per run (and across runs in persistent mode until a premise change), so an A->B->A value round trip within one run does not refire, and linear self-rewrite rules loop until max_firings (default 1024).
+  - id: persistent-agenda-inspection
+    family: rete
+    requirement: optional
+    syntax: 're_engine_set_agenda_persistent(engine, 1); re_agenda_peek(agenda, 0, &entry);'
+    expected_behavior: Provide a lazily created engine-owned agenda whose pending count and peek (salience descending, activation sequence ascending, true generation-safe premise ids) reflect the recognize-act cycle; with persistence enabled, pending activations and fired refraction keys survive OK, LIMIT, and CANCELLED run exits until a program install resets the agenda, and re_agenda_destroy is a documented no-op for the engine-owned instance.
+    upstream_refs: [src/rete/agenda.rs, docs/core-features/FEATURES.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    extension_abi: RE_EXTENSION_AGENDA_RETE
+    implementation_ref: [engine/src/rule_engine/engine.c, engine/src/rule_engine/agenda.c, engine/src/rule_engine/extensions.c]
+    test_ref: engine/tests/test_rule_engine_agenda.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: pending_and_fired_survive_run_exits; install_resets_agenda; abi_minor_3; capability_advertised_with_attached_networks
+    note: re_engine_agenda takes a non-const engine because creation is lazy; re_agenda_entry_t.rule_name borrows the installed program's storage; peek is O(n^2) bounded by max_activations_tracked (zero selects the 1024 default).
   - id: advanced-rule-control
     family: advanced-rule-control
     requirement: optional
     syntax: 'salience 100; agenda-group "approval"; no-loop true;'
-    expected_behavior: Provide the locally tested bounded subset of salience, no-loop, agenda and activation groups, date bounds, modules, and accumulators; persistent agenda state, full producer provenance, and truth maintenance are not claimed.
+    expected_behavior: Provide the locally tested bounded subset of salience, no-loop, agenda and activation groups, date bounds, modules, and accumulators; persistent agenda state is covered by the persistent-agenda-inspection row, while general producer provenance and full truth maintenance are not claimed.
     upstream_refs: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md, tests/test_module_system.rs, tests/tms_test.rs]
     upstream_status: verified_upstream
     local_status: verified_local
@@ -238,7 +267,21 @@ features:
     doc_ref: docs/Rule_Engine_Architecture.md
     parity: bounded_behavior
     behavior_scope: private_fact_store_tms; bounded_justification_table; transactional_clone_swap; deterministic_provenance_inspection; no_full_rete_ul
-    note: This is a tested bounded lifecycle model, not full upstream TMS, persistent agenda integration, or automatic general RETE producer inference.
+    note: This is a tested bounded lifecycle model, not full upstream TMS or automatic general RETE producer inference; persistent-agenda integration is bounded to retraction cancelling pending activations.
+  - id: linear-path-provenance
+    family: facts
+    requirement: optional
+    syntax: 'when N + 0 > 0 then N = N + 1;'
+    expected_behavior: Record a bounded condition read-set (eight deduped paths, silent overflow) on TERM_FACT/EXISTS/FORALL hits during linear matching (never on action right-hand sides or backward evaluation), derive premises as the RETE lineage union the read-set fact ids (capped at eight), route linear-path derivations through re_facts_insert_logical/re_facts_justification_add, and anchor dotted action targets with structured roots on the root fact id.
+    upstream_refs: [src/rete/tms.rs, tests/tms_test.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c]
+    test_ref: engine/tests/test_rule_engine_agenda.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: condition_read_set_only; root_anchored_dotted_target_justification; executor_parallel_path_captures_no_read_set
+    note: Dotted-target justification anchors on the root fact, so cascade retraction removes the root (a documented bound); RE_COMPARE_IN fact-operand reads are not in the read-set, structured-root premises mix only the type tag into fingerprints (member-only changes do not re-activate linear rules), and a dotted-target transitive cycle can surface RE_STATUS_LIMIT from the TMS dependency check.
   - id: grl-method-calls
     family: core-grl
     requirement: optional
@@ -281,7 +324,7 @@ features:
     parity: bounded_behavior
     behavior_scope: instantiate_to_text_only; plain_byte_substitution; no_json_round_trip; no_engine_side_registry; no_clips_deftemplate_schema
     note: The emitted rule name is unescaped and text that is not an exact {{identifier}} placeholder copies through unchanged; there is no JSON round-trip and no program-side template registry.
-conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, and engine/tests/test_rule_engine_grl_semantics.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, persistent agenda control, full upstream producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/test_rule_engine_grl_semantics.c, and engine/tests/test_rule_engine_agenda.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, full upstream truth maintenance and general multi-rule producer inference, general backward chaining, and native Redis remain unsupported or unverified.
 inventory_manifest: docs/rule_engine_upstream.yml
 classification_policy:
   evidence_rule: A declaration, header, CMake option, or upstream documentation claim never promotes a local capability without an implementation reference and executed local test reference.
@@ -293,7 +336,7 @@ known_gaps:
   - {id: canonical-ir, status: implemented, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Private immutable compiled IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and transactional-install boundary; forward evaluation uses the IR.}
   - {id: grl-string-operators-append-and-bounded-in, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, CHANGELOG.md:1.15.0], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Forward IR supports contains, startsWith, endsWith, matches, += array append, and bounded membership against literal arrays or structured arrays containing scalar members. Literal arrays are capped at 64 elements; typed equality is used and malformed/non-array RHS values are rejected. Full upstream collection semantics remain pending; bounded then-action method calls and nested property writes are verified in the grl-method-calls and nested-property-access rows.}
   - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c], parity: bounded_behavior, note: Local forall is a deliberately narrow array-fact slice: forall <fact-path> <scalar-comparison> <scalar-literal>, with exact-flat-key-first and nested structured-path lookup, scalar direct members only, bounded by existing container/depth/step limits, and vacuous truth for an empty array. Focused tests cover all-pass, mixed/one-fails, empty, absent/non-array, malformed, nested members, allocator failure, and depth/member boundaries. Parenthesized/general quantifiers, arbitrary predicates, fact-type quantification, and RETE-UL quantifier nodes remain pending.}
-  - {id: rete-ul-tms-persistent-agenda, status: unsupported, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/advanced.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine.c], parity: bounded_behavior, note: Full RETE-UL, TMS, and persistent agenda are absent; local RETE and agenda rows are bounded equivalents only.}
+  - {id: rete-ul-tms-persistent-agenda, status: unsupported, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/agenda.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c], parity: bounded_behavior, note: Bounded persistent agenda with value-fingerprint refraction and pop-time revalidation is verified_local in the recognize-act-cycle and persistent-agenda-inspection rows; the design runs one private RETE network per eligible rule chained on the facts store with no cross-rule alpha sharing. Full RETE-UL and general truth maintenance remain unsupported.}
   - {id: backward-arbitrary-unification-proof-sharing, status: unsupported, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/backward_machine_bind.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c], parity: bounded_behavior, note: Backward arbitrary unification and proof sharing are absent; local binding/proof paths are bounded and non-shared.}
   - {id: full-streaming-patterns, status: unsupported, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_refs: [engine/src/rule_engine/tumbling_session.c, engine/src/rule_engine/stream_correlation.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, note: Full streaming patterns are absent; local windows/correlation are bounded extension seams.}
   - {id: native-redis, status: blocked, upstream_refs: [Cargo.toml:[features].streaming-redis, docs/advanced-features/REDIS_STATE_BACKEND.md], local_refs: [engine/CMakeLists.txt:719-730, engine/src/rule_engine/memory_provider.c], local_tests: [], parity: optional_backend, note: Native Redis is unavailable; hiredis detection alone is not implementation evidence.}
@@ -307,8 +350,8 @@ upstream_surface_baseline:
   benchmarks: 9
   source_of_truth: docs/rule_engine_upstream.yml
 local_evidence_baseline:
-  build_tree: build-rule-engine-ninja
-  build_command: cmake --build build-rule-engine-ninja --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_rete_incremental test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_backward_machine_structure test_backward_machine_context rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer test_rule_engine_executor_stress
-  focused_ctest_command: ctest --test-dir build-rule-engine-ninja -R "test_rule_engine|test_backward_machine|rule_engine_fuzz_smoke" --output-on-failure
-  focused_ctest_result: 10/10 passed
-  blocked_or_unavailable: [native-redis, C11 executor stress in this build because <threads.h> feature target was disabled]
+  build_tree: build-gate
+  build_command: cmake --build build-gate --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_tms test_rule_engine_grl_semantics test_rule_engine_forall_limits test_rule_engine_rete_incremental test_rule_engine_agenda test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_backward_machine_structure test_backward_machine_context rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer
+  focused_ctest_command: ctest --test-dir build-gate -R "rule_engine|backward_machine" --output-on-failure
+  focused_ctest_result: 14/14 passed
+  blocked_or_unavailable: [native-redis, C11 executor stress target is not generated in this build tree because RULE_ENGINE_ENABLE_C11_PARALLEL is OFF]

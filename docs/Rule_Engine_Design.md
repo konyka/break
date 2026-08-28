@@ -60,7 +60,16 @@ store detaches a caller-owned network, including its subscription and indexed
 fact memories, but does not free the network object; the caller must destroy it.
 The engine uses RETE for incremental provenance and enumerates available bounded
 activations for the matching rule; the IR result remains the match guard when an
-exact token cannot be selected.
+exact token cannot be selected. Linear matching records a bounded condition
+read-set (up to eight deduped fact paths, silent overflow) on TERM_FACT, EXISTS,
+and FORALL hits - never on action right-hand sides or during backward
+evaluation - and a linear derivation's premise set is the RETE lineage union the
+read-set fact ids, capped at eight. Linear-path derivations go through
+`re_facts_insert_logical`/`re_facts_justification_add` exactly like RETE-backed
+ones. A dotted action target with a structured root writes the nested member
+with its justification anchored on the root fact id, so TMS cascade retraction
+removes the root (a documented bound), and a transitive premise cycle through a
+dotted target surfaces `RE_STATUS_LIMIT` from the TMS dependency check.
 | `re_facts_get` | output storage | returned string slice temporarily | returns not found or invalid argument; no allocation |
 | `re_program_load` | source memory after return | candidate on success | output is unchanged on failure; candidate is caller-owned until install |
 | `re_program_destroy` | candidate until call | candidate allocations | NULL-safe, no return status |
@@ -116,9 +125,41 @@ The current focused tests establish:
 7. The bounded agenda-control slice: explicit `MAIN`/named focus selection,
    activation-group sibling cancellation, deterministic salience/source
    ordering, and bounded one-run enforcement of `no-loop` and
-   `lock-on-active`. The bounded single-rule conjunction path retains private
-   incremental RETE memories and fact-id/rule-name activation provenance; the
-   runtime does not claim persistent agenda state or post-focus-cycle reactivation.
+   `lock-on-active`. `re_engine_run` executes a recognize-act cycle: each
+   pass recomputes the visible rules, pushes refraction-deduped activations,
+   and fires the highest-salience pending activation until the agenda is
+   empty, a limit is reached, or cancellation is requested. Refraction keys
+   combine the rule, premise slots, and value fingerprints; pop-time
+   revalidation discards stale activations without consuming the fired
+   budget. Every eligible rule (up to eight ANDed fact-vs-literal
+   comparisons) gets a private per-rule RETE network chained on the facts
+   store; conditions the alpha memories cannot see fall back to zero-token
+   activations keyed by the condition read-set. The engine-owned agenda is
+   created lazily by `re_engine_agenda` (a non-const call);
+   `re_engine_set_agenda_persistent` keeps pending activations and fired
+   refraction keys across OK, LIMIT, and CANCELLED run exits until a program
+   install resets the agenda; and `re_agenda_count`/`re_agenda_peek` expose
+   pending entries in salience-descending, sequence-ascending order with true
+   premise ids. These entry points ship under ABI minor 3
+   (`RE_ABI_VERSION_MINOR 3u`); `RE_CAP2_AGENDA_RETE` is advertised while
+   networks are attached, and `re_agenda_destroy` is a documented no-op for
+   the engine-owned instance.
+
+Refraction bounds are deliberate. Value fingerprints hash premise content
+with FNV-1a; a collision can theoretically miss a refire, doubles hash their
+raw bits, and NULL/UNKNOWN/NONE/structured values mix only the type tag, so a
+member-only change under a structured root does not re-activate a linear
+rule. Refraction is timestep-free: an A->B->A value round trip within one run
+does not refire because fired keys persist for the run (and across runs in
+persistent mode) until a premise value actually changes. A linear
+self-rewrite rule such as `when N + 0 > 0 then N = N + 1` now loops until
+`max_firings` (default 1024), symmetric with the RETE value-fingerprint
+semantics. The executor's parallel-match path captures no read-set, so linear
+rules stay once-per-run there, and `RE_COMPARE_IN` fact-operand reads are not
+part of the read-set. `re_limits_t` gains `max_activations_tracked` (zero
+selects the 1024 default), capping pending plus fired agenda entries;
+`re_agenda_peek` is O(n^2) within that bound and its rule_name borrows the
+installed program's storage.
 
 Structured-value nested fact access is implemented through the bounded
 `re_facts_get_path`/`re_facts_set_path` pair and is covered by focused tests.
@@ -177,7 +218,8 @@ otherwise become flat facts; array literals become structured array facts whose
 string elements follow the engine's shallow-copy convention: the program IR
 owns the string storage, so the installed program must outlive facts seeded
 from its deffacts. `re_engine_reset_with_deffacts` clears working memory (all
-facts, TMS justifications, and the Phase 2 agenda hook) and then loads every
+facts, TMS justifications, and the agenda's pending activations and refraction
+keys) and then loads every
 set. Two bounded reset notes apply. Fact IDs are slot/generation pairs and a
 clear restarts generations, so a caller-held `re_fact_id_t` from before a
 reset can alias a fresh fact and must be discarded. And a bare clear emits no
@@ -344,6 +386,10 @@ implementation. `pending` means the contract is scoped but not verified.
 New enum values may be appended. Existing enum numeric values and struct field
 order must not change after implementation begins. New optional capabilities
 use the versioned query and opaque handles rather than adding fields to existing
-public structs. Extension declarations do not claim custom functions, backward
+public structs. ABI minor 3 makes one deliberate exception:
+`max_activations_tracked` is appended to `re_limits_t`, which has no
+`struct_size` field; positional initializers and zero-init keep prior behavior
+at source level, but code compiled against the old layout must be recompiled.
+Extension declarations do not claim custom functions, backward
 chaining, streaming, Redis state, advanced agenda controls, or concurrency are
 complete.

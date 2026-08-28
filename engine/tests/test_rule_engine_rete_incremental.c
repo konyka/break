@@ -327,6 +327,41 @@ TEST(structured_value_copy_enforces_depth_bound) {
     re_facts_destroy(facts);
 }
 
+TEST(public_destroy_of_engine_network_rebuilds_on_next_run) {
+    /* Regression: publicly destroying an engine-attached network must clear
+     * the engine's per-rule slots (destroy_internal subsumes the owner
+     * cleanup); the next run rebuilds the chain instead of reading dangling
+     * slots. Run under ASAN to prove the use-after-free is gone. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_rete_network_t *network = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t two = {RE_VALUE_INT64, {.int64_value = 2}};
+    re_value_t three = {RE_VALUE_INT64, {.int64_value = 3}};
+    size_t calls = 0u;
+    re_callbacks_t callbacks = {count_action, &calls};
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"J1\" { when A > 0 and B == 2 then R1 = 1; } "
+        "rule \"J2\" { when A > 0 and C == 3 then R2 = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("A"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("B"), &two), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("C"), &three), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(calls, 2u);
+    ASSERT_EQ(re_engine_rete_network(engine, &network), RE_STATUS_OK);
+    re_rete_network_destroy(network);
+    ASSERT_EQ(re_engine_rete_network(engine, &network), RE_STATUS_NOT_SUPPORTED);
+    ASSERT_TRUE(network == NULL);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(calls, 4u);
+    ASSERT_EQ(re_engine_rete_network(engine, &network), RE_STATUS_OK);
+    ASSERT_NOT_NULL(network);
+    re_engine_destroy(engine);
+    re_facts_destroy(facts);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(compiled_network_persists_across_runs);
     RUN_TEST(structured_fact_changes_emit_owned_lifecycle_events);
@@ -346,4 +381,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retained_network_handle_survives_owner_replacement);
     RUN_TEST(insert_existing_name_emits_only_update);
     RUN_TEST(structured_value_copy_enforces_depth_bound);
+    RUN_TEST(public_destroy_of_engine_network_rebuilds_on_next_run);
 TEST_MAIN_END()

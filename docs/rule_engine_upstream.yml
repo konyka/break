@@ -125,11 +125,11 @@ inventory:
       notes: Custom-function callback boundary is tested; upstream built-in plugin suite is not locally present.
     - id: rete
       upstream_ref: src/rete/
-      local_status: pending
-      local_ref: engine/src/rule_engine/rete.c
-      local_tests: [engine/tests/test_rule_engine_rete_incremental.c]
+      local_status: tested
+      local_ref: [engine/src/rule_engine/rete.c, engine/src/rule_engine/agenda.c, engine/src/rule_engine/engine.c]
+      local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c]
       parity: bounded_behavior
-      notes: Local private RETE is a narrow conjunction seam, not upstream RETE-UL.
+      notes: Local private RETE is one bounded network per eligible rule (up to eight ANDed fact-vs-literal comparisons, chained on the facts store without cross-rule alpha sharing) plus a persistent agenda with value-fingerprint refraction and pop-time revalidation; not upstream RETE-UL.
     - id: types
       upstream_ref: src/types.rs
       local_status: tested
@@ -199,14 +199,14 @@ inventory:
     - {id: concurrency-and-thread-safety, upstream_refs: [src/rete/, src/backward/, tests/backward_thread_safety.rs], local_status: optional_backend, local_refs: [engine/src/rule_engine/executor.c], local_tests: [engine/tests/test_rule_engine_executor_stress.c], parity: bounded_behavior}
     - {id: transactions-and-fact-lifecycle, upstream_refs: [src/rete/facts.rs, src/rete/tms.rs, tests/tms_test.rs], local_status: tested, local_refs: [engine/src/rule_engine/transactions.c, engine/src/rule_engine/facts.c], local_tests: [engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_rete_incremental.c], parity: equivalent_behavior}
      - {id: canonical-ir, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_status: implemented, local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c, engine/src/rule_engine/ir_eval.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, notes: Private immutable IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and forward-evaluation boundary; it is not an upstream-compatible internal representation.}
-    - {id: rete-ul-tms-persistent-agenda, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/rete.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c], parity: bounded_behavior, notes: Full RETE-UL, TMS, and persistent agenda are absent locally.}
+    - {id: rete-ul-tms-persistent-agenda, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_status: tested, local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/agenda.c, engine/src/rule_engine/engine.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c], parity: bounded_behavior, notes: Bounded persistent agenda with value-fingerprint refraction and pop-time revalidation plus per-rule private networks are tested; full RETE-UL and general truth maintenance remain intentionally unsupported.}
     - {id: backward-arbitrary-unification-and-proof-sharing, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/backward.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c], parity: bounded_behavior, notes: Backward arbitrary unification and shared proof provenance are absent locally.}
     - {id: full-streaming-patterns, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/extensions.c], local_tests: [engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, notes: Full streaming patterns are absent locally.}
   test_families:
     upstream_declared_count: 436
     upstream_refs: [tests/grl_cases.yml, tests/grl_harness.rs, tests/backward_comprehensive_tests.rs, tests/proof_graph_integration_test.rs, tests/test_module_system.rs, tests/tms_test.rs, tests/backward_thread_safety.rs]
     local_status: tested
-    local_refs: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/rule_engine_fuzz_smoke.c]
+    local_refs: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/rule_engine_fuzz_smoke.c]
     parity: bounded_behavior
     notes: Local test counts are not a claim to match the upstream count; focused tests cover only named bounded slices.
   examples:

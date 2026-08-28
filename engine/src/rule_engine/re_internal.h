@@ -197,6 +197,22 @@ struct re_program_t {
 re_status_t re_accumulator_evaluate(re_accumulator_kind_t kind, const re_value_t *values, size_t count, re_value_t *out);
 re_status_t re_ir_match_rule(const re_engine_t *engine, re_facts_t *facts,
                              const re_ir_program_t *ir, size_t rule_index, int *matched);
+/* Bounded condition read-set: every fact path whose re_facts_get_path (or
+ * structured-path) hit contributed to a condition match, deduped and capped
+ * at RE_IR_MAX_READ_PATHS; overflow silently stops recording, so conditions
+ * reading more distinct fact paths get first-N provenance only. Paths borrow
+ * IR term strings; the IR program outlives the evaluation. */
+#define RE_IR_MAX_READ_PATHS 8u
+typedef struct re_ir_read_set_t {
+    re_string_t paths[RE_IR_MAX_READ_PATHS];
+    size_t count;
+} re_ir_read_set_t;
+/* Like re_ir_match_rule, but also reports the condition read-set. Recording
+ * applies only to condition evaluation; action-RHS resolution
+ * (re_ir_resolve_term) never records. */
+re_status_t re_ir_match_rule_readset(const re_engine_t *engine, re_facts_t *facts,
+                                     const re_ir_program_t *ir, size_t rule_index,
+                                     int *matched, re_ir_read_set_t *reads);
 re_status_t re_ir_resolve_term(re_engine_t *engine, re_facts_t *facts,
                                const re_ir_program_t *ir, size_t term_index,
                                re_value_t *value);
@@ -206,6 +222,53 @@ re_status_t re_program_set_clock(re_program_t *program, int64_t epoch_seconds);
 int re_parse_date(const char *text, int64_t *out);
 int re_rule_active(const re_rule_t *rule, int64_t now);
 
+#define RE_AGENDA_MAX_PREMISES 8u
+
+typedef struct re_agenda_entry_internal_t {
+    size_t rule_index;
+    /* Refraction key, sorted by (slot, generation-as-fingerprint): the
+     * generation fields hold value fingerprints, not real generations. */
+    re_fact_id_t premises[RE_AGENDA_MAX_PREMISES];
+    /* True premise ids (real generations, condition order) captured when the
+     * activation was created; re_agenda_peek reports these. */
+    re_fact_id_t true_premises[RE_AGENDA_MAX_PREMISES];
+    size_t premise_count;
+    int32_t salience;
+    uint64_t sequence;
+} re_agenda_entry_internal_t;
+
+struct re_agenda_t {
+    re_allocator_impl_t allocator;
+    re_agenda_entry_internal_t *pending;
+    size_t pending_count;
+    size_t pending_cap;
+    re_agenda_entry_internal_t *fired;
+    size_t fired_count;
+    size_t fired_cap; /* refraction keys */
+    uint64_t next_sequence;
+    /* Owning engine (NULL for standalone agendas); lets re_agenda_peek
+     * resolve rule names through the installed program. */
+    re_engine_t *engine;
+    int persistent;
+};
+
+re_status_t re_agenda_create_internal(re_allocator_t *alloc, re_agenda_t **out);
+void       re_agenda_destroy_internal(re_agenda_t *agenda);
+void       re_agenda_clear_pending(re_agenda_t *agenda);
+void       re_agenda_reset(re_agenda_t *agenda);
+int        re_agenda_refracted(const re_agenda_t *agenda, size_t rule_index,
+                               const re_fact_id_t *premises, size_t premise_count);
+re_status_t re_agenda_push(re_agenda_t *agenda, size_t rule_index, int32_t salience,
+                           const re_fact_id_t *premises, size_t premise_count);
+/* Like re_agenda_push, but also records the true premise ids (unsorted, real
+ * generations) for inspection; NULL true_premises records the key premises
+ * as passed. */
+re_status_t re_agenda_push_full(re_agenda_t *agenda, size_t rule_index, int32_t salience,
+                                const re_fact_id_t *premises, size_t premise_count,
+                                const re_fact_id_t *true_premises);
+re_status_t re_agenda_mark_fired(re_agenda_t *agenda, const re_agenda_entry_internal_t *entry);
+int        re_agenda_pop_highest(re_agenda_t *agenda, re_agenda_entry_internal_t *out);
+
 struct re_engine_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -214,7 +277,14 @@ struct re_engine_t {
     int destroy_requested;
     struct re_function_t *functions;
     re_executor_t *executor;
+    /* First attached per-rule network; kept in sync with rete_networks
+     * for re_engine_rete_network() and the capability probes. */
     re_rete_network_t *rete_network;
+    /* Per-rule RETE networks parallel to program->rules; NULL entries
+     * mark rules that are not RETE-eligible (or not yet attached). */
+    re_rete_network_t **rete_networks;
+    size_t rete_network_count;
+    re_agenda_t *agenda;
 };
 
 typedef struct re_stream_event_impl_t {
@@ -285,6 +355,10 @@ typedef struct re_rete_token_t {
 struct re_rete_network_t {
     re_allocator_impl_t allocator;
     re_facts_t *facts;
+    /* Chains every network attached to the same fact set; head is
+     * facts->rete_network. Engine per-rule networks append here so
+     * several rule networks can share one fact set. */
+    struct re_rete_network_t *next_on_facts;
     re_engine_t *owner_engine;
     int engine_owned;
     const re_program_t *program;
@@ -367,8 +441,10 @@ re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
 re_status_t re_facts_notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
 /* Wholesale working-memory reset: drops all fact entries and TMS justifications. */
 re_status_t re_facts_clear_all(re_facts_t *facts);
-/* No-op until the Phase 2 agenda lands; then clears pending agenda state. */
+/* Resets agenda state (pending activations and refraction keys) when an agenda exists. */
 void re_engine_clear_agenda(re_engine_t *engine);
+/* Lazily creates the engine-owned agenda and back-links it to the engine. */
+re_status_t re_engine_ensure_agenda(re_engine_t *engine);
 void re_allocator_init(re_allocator_impl_t *target, const re_allocator_t *source);
 re_status_t re_tms_clone(const re_tms_t *source, const re_allocator_impl_t *allocator, re_tms_t **out);
 re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t path,
@@ -427,6 +503,14 @@ re_status_t re_rete_network_create_conditions(re_facts_t *facts,
                                                const re_allocator_t *allocator,
                                                re_rete_network_t **out_network);
 re_status_t re_rete_network_create_rule(re_facts_t *facts,
+                                        const re_rule_t *rule,
+                                        const re_allocator_t *allocator,
+                                        re_rete_network_t **out_network);
+/* Engine-owned per-rule variant: chains the network off
+ * facts->rete_network instead of claiming it (never RE_STATUS_BUSY),
+ * and returns RE_STATUS_NOT_SUPPORTED with *out_network NULL for
+ * rules outside the collect() eligibility constraint. */
+re_status_t re_rete_network_create_rule_chained(re_facts_t *facts,
                                         const re_rule_t *rule,
                                         const re_allocator_t *allocator,
                                         re_rete_network_t **out_network);

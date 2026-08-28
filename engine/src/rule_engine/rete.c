@@ -158,10 +158,20 @@ static re_status_t rebuild_tokens(re_rete_network_t *network) {
     return RE_STATUS_OK;
 }
 
+/* A failed update aborts the dispatch loop, so networks later in the chain
+ * never see the event; poison the whole attachment chain, not just the
+ * network whose own update failed. All of them are rebuilt lazily. */
+static void invalidate_chain(re_facts_t *facts) {
+    re_rete_network_t *network;
+    for (network = facts->rete_network; network != NULL; network = network->next_on_facts) {
+        network->invalid = 1;
+        network->activation_count = 0u;
+    }
+}
+
 static re_status_t fact_changed(re_facts_t *facts, const re_fact_event_t *event, void *context) {
     re_rete_network_t *network = (re_rete_network_t *)context;
     size_t i;
-    (void)facts;
     if (network->invalid) return RE_STATUS_OUT_OF_MEMORY;
     for (i = 0u; i < network->condition_count; ++i) {
         if (network->conditions[i].fact_name.size != event->name.size ||
@@ -169,17 +179,13 @@ static re_status_t fact_changed(re_facts_t *facts, const re_fact_event_t *event,
         if (event->kind == RE_FACT_RETRACT) alpha_change(network, i, event->id, 0);
         else if (alpha_change(network, i, event->id, re_value_compare(&event->value,
             &network->conditions[i].value, network->conditions[i].compare) != 0) != RE_STATUS_OK) {
-            network->invalid = 1;
-            network->activation_count = 0u;
+            invalidate_chain(facts);
             return RE_STATUS_OUT_OF_MEMORY;
         }
     }
     {
         re_status_t status = rebuild_tokens(network);
-        if (status != RE_STATUS_OK) {
-            network->invalid = 1;
-            network->activation_count = 0u;
-        }
+        if (status != RE_STATUS_OK) invalidate_chain(facts);
         return status;
     }
 }
@@ -193,9 +199,9 @@ static re_status_t create_rule_conditions(re_facts_t *facts, const re_rule_t *ru
     return re_rete_network_create_conditions(facts, conditions, count, allocator, out);
 }
 
-re_status_t re_rete_network_create_conditions(re_facts_t *facts, const re_rete_condition_t *conditions,
-                                              size_t count, const re_allocator_t *allocator,
-                                              re_rete_network_t **out) {
+static re_status_t create_network_on_facts(re_facts_t *facts, const re_rete_condition_t *conditions,
+                                           size_t count, const re_allocator_t *allocator,
+                                           int chain, re_rete_network_t **out) {
     re_allocator_impl_t selected;
     re_rete_network_t *network;
     size_t i, j;
@@ -220,12 +226,32 @@ re_status_t re_rete_network_create_conditions(re_facts_t *facts, const re_rete_c
         re_status_t status = re_facts_subscribe(facts, fact_changed, network, &network->subscription);
         if (status != RE_STATUS_OK) { re_rete_network_destroy_internal(network); return status; }
     }
-    if (facts->rete_network != NULL) {
-        re_rete_network_destroy_internal(network);
-        return RE_STATUS_BUSY;
+    if (chain) {
+        /* Engine per-rule networks share the fact set: append to the chain
+         * headed at facts->rete_network instead of claiming the slot. A
+         * caller-owned head keeps the historical RE_STATUS_BUSY contract:
+         * the engine does not chain behind networks it does not own. */
+        re_rete_network_t **link = &facts->rete_network;
+        if (*link != NULL && !(*link)->engine_owned) {
+            re_rete_network_destroy_internal(network);
+            return RE_STATUS_BUSY;
+        }
+        while (*link != NULL) link = &(*link)->next_on_facts;
+        *link = network;
+    } else {
+        if (facts->rete_network != NULL) {
+            re_rete_network_destroy_internal(network);
+            return RE_STATUS_BUSY;
+        }
+        facts->rete_network = network;
     }
-    facts->rete_network = network;
     *out = network; return RE_STATUS_OK;
+}
+
+re_status_t re_rete_network_create_conditions(re_facts_t *facts, const re_rete_condition_t *conditions,
+                                              size_t count, const re_allocator_t *allocator,
+                                              re_rete_network_t **out) {
+    return create_network_on_facts(facts, conditions, count, allocator, 0, out);
 }
 
 re_status_t re_rete_network_create(re_facts_t *facts, const re_rete_condition_t conditions[2], const re_allocator_t *allocator, re_rete_network_t **out) { return re_rete_network_create_conditions(facts, conditions, 2u, allocator, out); }
@@ -234,10 +260,38 @@ re_status_t re_rete_network_create_rule(re_facts_t *facts, const re_rule_t *rule
     if (status == RE_STATUS_OK) (*out)->producer_rule = (re_string_t){rule->name, rule->name_size};
     return status;
 }
+re_status_t re_rete_network_create_rule_chained(re_facts_t *facts, const re_rule_t *rule,
+                                                const re_allocator_t *allocator,
+                                                re_rete_network_t **out_network) {
+    re_rete_condition_t conditions[RE_RETE_MAX_CONDITIONS];
+    size_t count = 0u;
+    re_status_t status;
+    if (out_network == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    *out_network = NULL;
+    if (rule == NULL || !collect(rule->condition, conditions, &count) || count < 2u)
+        return RE_STATUS_NOT_SUPPORTED;
+    status = create_network_on_facts(facts, conditions, count, allocator, 1, out_network);
+    if (status == RE_STATUS_OK)
+        (*out_network)->producer_rule = (re_string_t){rule->name, rule->name_size};
+    return status;
+}
 int re_rete_conditions_from_rule(const re_rule_t *rule, re_rete_condition_t conditions[2]) { size_t count = 0u; return rule != NULL && conditions != NULL && collect(rule->condition, conditions, &count) && count == 2u; }
 void re_rete_network_detach_facts(re_rete_network_t *network) {
     size_t i;
     if (network == NULL || network->facts == NULL) return;
+    /* Networks chained behind this one still belong to the fact set being
+     * torn down: engine-owned ones are destroyed (clearing their owner
+     * engine's per-rule slots), external ones detach the same way. */
+    while (network->next_on_facts != NULL) {
+        re_rete_network_t *child = network->next_on_facts;
+        if (child->engine_owned) {
+            re_rete_network_destroy_internal(child);
+            continue;
+        }
+        network->next_on_facts = child->next_on_facts;
+        child->next_on_facts = NULL;
+        re_rete_network_detach_facts(child);
+    }
     if (network->facts->rete_network == network) network->facts->rete_network = NULL;
     if (network->subscription != NULL) {
         re_subscription_destroy(network->subscription);
@@ -253,6 +307,41 @@ void re_rete_network_detach_facts(re_rete_network_t *network) {
     network->token_count = 0u;
     network->facts = NULL;
 }
-void re_rete_network_destroy_internal(re_rete_network_t *network) { size_t i; if (network == NULL) return; if (network->facts != NULL && network->facts->rete_network == network) network->facts->rete_network = NULL; if (network->owner_engine != NULL && network->owner_engine->rete_network == network) network->owner_engine->rete_network = NULL; network->owner_engine = NULL; re_subscription_destroy(network->subscription); for (i = 0u; i < network->condition_count; ++i) re_free(&network->allocator, network->alpha_memories[i].facts); re_free(&network->allocator, network->alpha_memories); re_free(&network->allocator, network->conditions); re_free(&network->allocator, network->tokens); re_free(&network->allocator, network->activations); re_free(&network->allocator, network); }
+void re_rete_network_destroy_internal(re_rete_network_t *network) {
+    size_t i;
+    if (network == NULL) return;
+    /* Destroying a network also destroys everything chained behind it: the
+     * fact-set teardown paths only ever invoke this on the chain head. Each
+     * child unlinks itself from the chain, so the loop drains the original
+     * chain. */
+    while (network->next_on_facts != NULL)
+        re_rete_network_destroy_internal(network->next_on_facts);
+    if (network->facts != NULL) {
+        re_rete_network_t **link = &network->facts->rete_network;
+        while (*link != NULL && *link != network) link = &(*link)->next_on_facts;
+        if (*link == network) *link = network->next_on_facts;
+    }
+    if (network->owner_engine != NULL) {
+        re_engine_t *owner = network->owner_engine;
+        for (i = 0u; i < owner->rete_network_count; ++i)
+            if (owner->rete_networks[i] == network) owner->rete_networks[i] = NULL;
+        if (owner->rete_network == network) {
+            owner->rete_network = NULL;
+            for (i = 0u; i < owner->rete_network_count; ++i)
+                if (owner->rete_networks[i] != NULL) {
+                    owner->rete_network = owner->rete_networks[i];
+                    break;
+                }
+        }
+        network->owner_engine = NULL;
+    }
+    re_subscription_destroy(network->subscription);
+    for (i = 0u; i < network->condition_count; ++i) re_free(&network->allocator, network->alpha_memories[i].facts);
+    re_free(&network->allocator, network->alpha_memories);
+    re_free(&network->allocator, network->conditions);
+    re_free(&network->allocator, network->tokens);
+    re_free(&network->allocator, network->activations);
+    re_free(&network->allocator, network);
+}
 size_t re_rete_activation_count(const re_rete_network_t *network) { return network == NULL ? 0u : network->activation_count; }
 re_status_t re_rete_activation_get(const re_rete_network_t *network, size_t index, re_rete_activation_t *out) { if (network == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT; if (index >= network->activation_count) return RE_STATUS_NOT_FOUND; *out = network->activations[index]; return RE_STATUS_OK; }

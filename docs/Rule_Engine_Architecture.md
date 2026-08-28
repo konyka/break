@@ -42,6 +42,14 @@ Implemented now:
   justifications, and cascading retraction after final support removal. This
   slice is transactional and capped by the existing fact/allocator limits;
   it is `bounded_behavior`, not full RETE-UL TMS parity.
+- a recognize-act agenda cycle with bounded persistence: per-run refraction on
+  (rule, premise slots, value fingerprints), pop-time revalidation of pending
+  activations, one private RETE network per eligible rule (up to eight ANDed
+  fact-vs-literal comparisons, no cross-rule alpha sharing) with a
+  read-set-keyed linear fallback, an opt-in persistent agenda surviving
+  OK/LIMIT/CANCELLED exits until program install, and bounded inspection via
+  `re_agenda_count`/`re_agenda_peek`; `re_limits_t` gains
+  `max_activations_tracked` (zero selects the 1024 default) under ABI minor 3.
 - a bounded, non-capability-bearing query seam for exact flat goals and
   recursive rule bodies with literal/propagated formal binding, nested goal
   operands, and registered custom-function operands; general unification and
@@ -58,22 +66,31 @@ Implemented now:
 
 Deferred explicitly:
 
-- full upstream RETE/RETE-UL execution, persistent agenda/TMS, and general producer provenance;
+- full upstream RETE/RETE-UL execution and general truth maintenance;
 - arbitrary argument unification, shared-subgraph proof graphs, and upstream
   proof strategies; bounded recursive binding, nested goal operands, custom
   function operands, and derivation-path enumeration are implemented and remain
   deliberately narrower than upstream semantics;
 - native Redis-backed streaming state. The portable bounded in-memory provider is implemented;
-- persistent agenda control and full upstream truth-maintenance behavior.
 
 The bounded agenda-control subset enforces `MAIN`/named program focus,
 activation-group sibling cancellation, and the tested one-run `no-loop` and
-`lock-on-active` guards. Rule metadata remains immutable and runtime state is
-allocated for the run, so callback pointers and contexts are never retained.
-Persistent agenda state, focus stacks/cycles, and full TMS remain pending. The bounded RETE mode
-supports up to eight flat fact-vs-literal comparisons joined by conjunction, retains private
-alpha/beta/token memories across runs, and incrementally refreshes affected condition memories on
-lifecycle events. Other expressions use the linear evaluator.
+`lock-on-active` guards. Rule metadata remains immutable and callback pointers
+and contexts are never retained. `re_engine_run` executes a recognize-act
+cycle: recompute visible rules, push refraction-deduped activations, pop the
+highest-salience pending entry, and fire it until the agenda empties, a limit
+is reached, or cancellation is requested. Pop-time revalidation discards stale
+activations without consuming the fired budget. Focus stacks/cycles and full
+TMS remain pending. Every eligible rule gets a private RETE network (up to
+eight fact-vs-literal comparisons joined by conjunction) chained on the facts
+store without cross-rule alpha sharing; networks retain alpha/beta/token
+memories across runs and incrementally refresh affected condition memories on
+lifecycle events. Conditions outside the comparison slice use the linear
+evaluator and produce zero-token activations keyed by the condition read-set.
+The opt-in persistent agenda (`re_engine_set_agenda_persistent`) keeps pending
+activations and fired refraction keys across OK, LIMIT, and CANCELLED exits
+until the next program install resets them; `re_agenda_count` and
+`re_agenda_peek` inspect pending entries in pop order with true premise ids.
 
 The private advanced test seam covers accumulator value behavior, bounded module
 declarations/imports/exports with cycle rejection and focused visibility, and
@@ -82,7 +99,7 @@ it does not advertise a public module ABI, complete date parsing, or agenda/RETE
 support.
 
 The local status is limited to behavior covered by the registered rule-engine
-tests, including `engine/tests/test_rule_engine.c`, the transaction, RETE,
+tests, including `engine/tests/test_rule_engine.c`, the transaction, RETE, agenda,
 backward, machine-structure, machine-context, binding, grl-semantics, fuzz-smoke, and
 optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
@@ -224,25 +241,29 @@ candidate. A failed install leaves both handles unchanged.
 
 ## Execution model
 
-The current forward runtime evaluates the immutable program and fires activations
-in descending salience order with source order as the stable tie-breaker. The
-supported single-rule conjunction path also retains a private incremental RETE
-network across runs and fact lifecycle events; other rule programs use the
-bounded linear evaluator.
+The forward runtime runs a recognize-act cycle over the immutable program: each
+pass recomputes visible rules, pushes refraction-deduped activations, and fires
+the highest-salience pending activation with source order as the stable
+tie-breaker, until the agenda empties, a limit is reached, or cancellation is
+requested. Every eligible rule retains a private incremental per-rule RETE
+network across runs and fact lifecycle events; conditions outside the bounded
+comparison slice use the linear evaluator with read-set-keyed activations.
 
 ## Bounded RETE milestone
 
-`engine/src/rule_engine/rete.c` contains a bounded runtime seam for a narrow
-two-condition conjunction over flat facts. It subscribes to generation-safe
-insert/update/retract events, retains alpha memories and beta token pairs across
-runs, stores fact-id lineage plus optional rule-name provenance, and removes
-stale records after lifecycle changes. A matching single-rule run installs this
-network and reuses it for the same fact handle. Its first bounded activation
-lineage is the premise set used when that run creates a new logical fact; the
-current forward loop fires each available bounded activation for a matching rule.
-The implementation is not full RETE-UL: it has no persistent agenda, truth maintenance, or general condition
-graph. Agenda groups, streaming, backward chaining, concurrency, and all other
-RETE features remain outside this milestone.
+`engine/src/rule_engine/rete.c` contains a bounded runtime seam for ANDed
+fact-vs-literal comparisons over flat facts, capped at eight conditions per
+rule. It subscribes to generation-safe insert/update/retract events, retains
+alpha memories and beta token pairs across runs, stores fact-id lineage plus
+optional rule-name provenance, and removes stale records after lifecycle
+changes. A run installs one private network per eligible rule, chained on the
+facts store without cross-rule alpha sharing, and reuses it for the same fact
+handle. An activation's lineage is the premise set used when its firing creates
+a new logical fact; the recognize-act loop revalidates each pending activation
+at pop time before firing it. The implementation is not full RETE-UL: it has
+no truth maintenance or general condition graph. Agenda groups, streaming,
+backward chaining, concurrency, and all other RETE features remain outside
+this milestone.
 
 ### Bounded truth maintenance milestone
 
@@ -257,10 +278,11 @@ does not alter live TMS state. A RETE-backed action derives a new target as a
 logical fact and records the activation's fact IDs; an existing explicit target
 remains explicit. Stale premise IDs and self-cycles are rejected.
 The ABI exposes inspection and mutation helpers for this tested slice only;
-general multi-rule RETE producer inference, persistent agenda integration, arbitrary
-unification, and full upstream TMS remain unsupported.
+general multi-rule RETE producer inference, arbitrary unification, and full
+upstream TMS remain unsupported.
 
-One run owns its activation list. Each matching rule executes all parsed action
+Outside the opt-in persistent agenda mode, a run owns its activation list. Each
+fired activation executes all parsed action
   assignments and its callback in one fact transaction; changes become visible only
   after action processing succeeds, then fact notifications are emitted from the
   committed state. If a notification callback returns an error, the commit remains
@@ -268,8 +290,8 @@ One run owns its activation list. Each matching rule executes all parsed action
 network is invalidated so its derived state is rebuilt before subsequent use.
 Cancellation and limit exhaustion roll back the in-flight activation and stop
 the run with the corresponding status. Salience ordering
-is locally verified; persistent agenda groups, full producer-provenance
-semantics, and public agenda/RETE handles remain unsupported. The optional C11
+is locally verified; agenda groups and general multi-rule producer-provenance
+inference remain unsupported. The optional C11
 backend evaluates only pure read-only conditions in private workers, merges
 matches using existing salience/source ordering, and applies actions and
 callbacks serially. It is disabled unless `RULE_ENGINE_ENABLE_C11_PARALLEL` is

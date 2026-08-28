@@ -94,7 +94,7 @@ enum {
 #define RE_CAP2_CONCURRENCY       ((re_capabilities_v2_t)1ull << 7)
 
 #define RE_ABI_VERSION_MAJOR 1u
-#define RE_ABI_VERSION_MINOR 2u
+#define RE_ABI_VERSION_MINOR 3u
 
 typedef struct re_extension_info_t {
   uint32_t struct_size;
@@ -170,6 +170,12 @@ typedef struct re_limits_t {
   size_t max_facts;
   size_t max_agenda_activations;
   size_t max_firings;
+  /* Caps total agenda entries (pending + fired refraction keys) tracked per
+   * run; 0 selects the default of 1024. Appended in Task 7: this struct has
+   * no struct_size field, so the append is source-compatible only - existing
+   * positional initializers keep compiling and zero-init keeps prior
+   * behavior; code compiled against the old layout must be recompiled. */
+  size_t max_activations_tracked;
 } re_limits_t;
 
 typedef int (*re_cancel_fn_t)(void *context);
@@ -471,8 +477,35 @@ re_status_t re_facts_subscribe(re_facts_t *facts, re_fact_event_fn_t callback,
                                void *context,
                                re_subscription_t **out_subscription);
 void re_subscription_destroy(re_subscription_t *subscription);
-re_status_t re_engine_agenda(const re_engine_t *engine, re_agenda_t **out_agenda);
+/* Returns the engine-owned agenda, creating it on first use. The instance is
+ * released by re_engine_destroy; re_agenda_destroy is a documented no-op for
+ * engine-owned instances. */
+re_status_t re_engine_agenda(re_engine_t *engine, re_agenda_t **out_agenda);
 void re_agenda_destroy(re_agenda_t *agenda);
+/* With persistence enabled, pending activations and the fired refraction
+ * history survive re_engine_run, including RE_STATUS_LIMIT and
+ * RE_STATUS_CANCELLED exits; the default non-persistent mode fully resets the
+ * agenda on every run exit. RE_STATUS_BUSY while the engine is running. */
+re_status_t re_engine_set_agenda_persistent(re_engine_t *engine, int enabled);
+/* Public snapshot of one pending agenda activation. rule_name is borrowed
+ * from the engine's program and stays valid until the program is replaced or
+ * the engine is destroyed. premises are the true fact ids (real generations,
+ * condition order) the activation was asserted with; the first premise_count
+ * entries are valid. */
+typedef struct re_agenda_entry_t {
+  uint32_t struct_size;
+  re_string_t rule_name;
+  int32_t salience;
+  uint64_t activation_sequence;
+  size_t premise_count;
+  re_fact_id_t premises[8];
+} re_agenda_entry_t;
+/* Number of pending (unfired) activations; NULL yields 0. */
+size_t re_agenda_count(const re_agenda_t *agenda);
+/* Reads the pending activation at index in pop order (salience descending,
+ * then activation sequence ascending); RE_STATUS_NOT_FOUND past the end.
+ * out_entry->struct_size must be at least sizeof(re_agenda_entry_t). */
+re_status_t re_agenda_peek(const re_agenda_t *agenda, size_t index, re_agenda_entry_t *out_entry);
 re_status_t re_engine_rete_network(const re_engine_t *engine,
                                     re_rete_network_t **out_network);
 /* Destroys a caller-owned network; engine-owned networks are released by the engine. */

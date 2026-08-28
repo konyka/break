@@ -2013,3 +2013,39 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   **13/13** 通过（build-gate，clang/Ninja Debug）。
 - 当前限制：方法调用仅限 then 动作；deffacts 为本地扩展而非上游语法；模板仅
   instantiate-to-text；持久 agenda 与完整 producer provenance 仍属 Phase 2。
+
+## rule engine phase 2：recognize–act 循环、有界持久 agenda 与线性路径 provenance（2026-08-28）
+
+- `re_engine_run` 改为 recognize–act 循环：重算可见规则 → 按 refraction 去重压入 agenda →
+  弹出最高 salience 项 → 触发，直至 agenda 为空、达到上限或被取消。refraction 键为
+  （规则、前提槽位、值指纹）；弹出时重新校验，陈旧 activation 直接丢弃且不消耗 fired 额度。
+  每条符合条件的规则（≤8 个 AND 的事实-字面量比较）获得独立私有 RETE 网络，经
+  `next_on_facts` 链在 facts 上、无跨规则 alpha 共享；alpha 记忆看不到的条件（如结构化
+  成员路径）回退为按条件 read-set 键控的零 token activation。
+- 持久 agenda 与检视 API：`re_engine_set_agenda_persistent`、真实的 `re_engine_agenda`
+  （惰性创建、非 const）、`re_agenda_count`、`re_agenda_peek`（salience 降序/序列升序、
+  真实前提 id）；`re_agenda_destroy` 对引擎持有实例为文档化空操作。持久模式下 pending 与
+  fired 记录在 OK/LIMIT/CANCELLED 退出后保留，安装新程序时重置。`re_limits_t` 追加
+  `max_activations_tracked`（0 → 默认 1024，约束 agenda fired+pending 总量）；ABI minor
+  升至 3，挂载网络时通告 `RE_CAP2_AGENDA_RETE`（测试锁定）。
+- 线性路径完整 provenance：线性匹配在 TERM_FACT/EXISTS/FORALL 命中时记录条件 read-set
+  （8 条路径去重、溢出静默截断；不含动作 RHS 与 backward）；前提 = RETE 谱系 ∪ read-set
+  事实 id（上限 8）；线性派生改经 `insert_logical`/`justification_add`；带结构化根的
+  点路径动作目标写嵌套成员，justification 锚定根事实 id（级联撤回根事实，属文档化边界）。
+- 顺带修复：`ir_eval.c` 线性求值器 stage 3 的 AND/OR 既有缺陷——第一合取项为真时忽略
+  第二操作数的结果（OR 对称地在第一操作数为假时恒真）；已修复并附 RETE/线性一致性
+  回归测试。
+- 验证：`test_rule_engine_agenda` **33/33**；build-gate 上
+  `ctest -R "rule_engine|backward_machine" --output-on-failure` **14/14**；ASAN+UBSAN
+  （build-rule-fresh-asan）agenda **33/33** + tms **11/11**；MSVC rule_engine_core
+  点建无警告；`test_rule_engine_rete_incremental` 新增引擎网络的公共 destroy UAF 回归。
+- 当前限制：值指纹为 FNV 哈希——理论碰撞会漏触发；NULL/UNKNOWN/NONE/结构化值仅混入
+  类型标签，double 按原始位哈希。refraction 无时间步：单次运行内 A→B→A 值往返不重新
+  触发（持久模式下 fired 键跨运行保留至前提变化）。线性自改写规则（如
+  `when N+0 > 0 then N = N + 1`）现循环至 `max_firings`（默认 1024），与 RETE 值指纹
+  语义对称。executor 并行路径不捕获 read-set（其下线性规则每次运行至多触发一次）；
+  `RE_COMPARE_IN` 的事实操作数读取不计入 read-set；结构化根前提仅混入类型标签（仅
+  成员变更不会重新激活线性规则）。点目标传递环可能从 TMS depends_on 返回
+  `RE_STATUS_LIMIT`（新的诚实失败模式）。`re_agenda_peek` 的 rule_name 借用已安装程序
+  的存储，peek 为 O(n²)、由 `max_activations_tracked` 约束。完整 RETE-UL 与通用 TMS
+  仍不支持。
