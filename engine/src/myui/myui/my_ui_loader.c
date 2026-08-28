@@ -401,7 +401,7 @@ my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
 
 my_widget_t* my_ui_load_file(const my_allocator_t* allocator, my_pal_t* pal,
                              const char* path, my_ui_error_t* err) {
-  FILE* file;
+  FILE* file = NULL;
   long size;
   char* buffer;
   my_widget_t* result;
