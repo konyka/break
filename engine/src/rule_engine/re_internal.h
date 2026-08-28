@@ -163,6 +163,19 @@ typedef struct re_module_t {
     size_t import_count;
 } re_module_t;
 
+typedef struct re_deffacts_entry_t {
+    char *path;
+    size_t path_size;
+    re_operand_t value;
+} re_deffacts_entry_t;
+
+typedef struct re_deffacts_set_t {
+    char *name;
+    size_t name_size;
+    re_deffacts_entry_t *entries;
+    size_t entry_count;
+} re_deffacts_set_t;
+
 struct re_program_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -176,6 +189,8 @@ struct re_program_t {
     int has_clock;
     re_module_t *modules;
     size_t module_count;
+    re_deffacts_set_t *deffacts_sets;
+    size_t deffacts_set_count;
     re_ir_program_t *ir;
 };
 
@@ -350,6 +365,10 @@ void re_free(const re_allocator_impl_t *allocator, void *memory);
 re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
                               const re_value_t *value, int emit_event);
 re_status_t re_facts_notify(re_facts_t *facts, re_fact_change_kind_t kind, size_t index);
+/* Wholesale working-memory reset: drops all fact entries and TMS justifications. */
+re_status_t re_facts_clear_all(re_facts_t *facts);
+/* No-op until the Phase 2 agenda lands; then clears pending agenda state. */
+void re_engine_clear_agenda(re_engine_t *engine);
 void re_allocator_init(re_allocator_impl_t *target, const re_allocator_t *source);
 re_status_t re_tms_clone(const re_tms_t *source, const re_allocator_impl_t *allocator, re_tms_t **out);
 re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t path,

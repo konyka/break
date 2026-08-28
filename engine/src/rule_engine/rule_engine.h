@@ -430,6 +430,8 @@ re_status_t re_facts_set_value(re_facts_t *facts, re_string_t name,
                                const re_value_handle_t *value);
 re_status_t re_facts_get_path(const re_facts_t *facts, re_string_t path,
                               re_value_t *out_value);
+re_status_t re_facts_set_path(re_facts_t *facts, re_string_t path,
+                              const re_value_t *value);
 void re_value_destroy(re_value_handle_t *value);
 re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction);
 re_status_t re_facts_commit(re_fact_txn_t *transaction);
@@ -597,6 +599,57 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program);
 re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts,
                           const re_run_options_t *options,
                           const re_callbacks_t *callbacks);
+
+/*
+ * Asserts the named deffacts set (all sets when name_or_null is NULL) as
+ * plain non-logical facts. Dotted paths update existing structured members
+ * via re_facts_set_path and otherwise become flat facts; array literals become
+ * structured array facts. Unknown name -> RE_STATUS_NOT_FOUND; no program
+ * installed -> RE_STATUS_INVALID_ARGUMENT.
+ */
+re_status_t re_engine_load_deffacts(re_engine_t *engine, re_facts_t *facts,
+                                    const char *name_or_null);
+/*
+ * Clears working memory (all facts, TMS justifications, and pending agenda
+ * state once the Phase 2 agenda exists), then loads every deffacts set of the
+ * installed program. With no deffacts the call only clears.
+ */
+re_status_t re_engine_reset_with_deffacts(re_engine_t *engine, re_facts_t *facts);
+
+/* Rule templates produce GRL source text by plain byte substitution of
+ * {{identifier}} placeholders in the condition and action templates; the host
+ * parses the emitted text via re_program_load and installs it as usual.
+ * Bounded exclusions: no JSON round-trip, no CLIPS-deftemplate schema
+ * validator, and no engine-side template registry.
+ *
+ * A placeholder has the exact shape {{identifier}} with no inner spaces; text
+ * such as "{{" or "{{ a }}" that does not match that shape is copied through
+ * unchanged (no escaping, no type checks). A placeholder with neither a
+ * supplied param nor a default fails with RE_STATUS_INVALID_ARGUMENT, as does
+ * a supplied param that matches no placeholder in either template. */
+typedef struct re_rule_template_t re_rule_template_t;
+typedef struct re_template_param_t { re_string_t name; re_string_t value; } re_template_param_t;
+/* Copies all four inputs; destroy the result with re_rule_template_destroy. */
+re_status_t re_rule_template_create(re_string_t name, re_string_t condition_template,
+                                    re_string_t action_template, int32_t salience,
+                                    re_rule_template_t **out_template);
+/* Sets or replaces the default used when instantiate supplies no value for
+ * param; param must be non-empty. */
+re_status_t re_rule_template_param_default(re_rule_template_t *t, re_string_t param,
+                                           re_string_t default_value);
+/* Emits exactly `rule "<rule_name>" [salience N] {\nwhen\n<cond>\nthen\n<action>;\n}`
+ * into out_text, omitting " salience N" when the template salience is 0;
+ * rule_name is emitted unescaped between the quotes.
+ * *inout_text_size carries the buffer capacity in and receives the required
+ * size (including the terminating NUL) out; a too-small or NULL buffer yields
+ * RE_STATUS_LIMIT after the required size is set. RE_STATUS_INVALID_ARGUMENT
+ * (null or malformed inputs, an unresolved placeholder, or a supplied param
+ * matching no placeholder) leaves *inout_text_size unchanged. */
+re_status_t re_rule_template_instantiate(const re_rule_template_t *t, re_string_t rule_name,
+                                         const re_template_param_t *params, size_t param_count,
+                                         char *out_text, size_t *inout_text_size);
+/* Releases the template and all copied strings. NULL is accepted. */
+void re_rule_template_destroy(re_rule_template_t *t);
 
 #ifdef __cplusplus
 }

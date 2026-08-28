@@ -59,6 +59,26 @@ static re_status_t add_term_node(re_ir_program_t *ir, const re_operand_t *operan
             operand->value.type == RE_VALUE_STRING ? RE_IR_TERM_STRING : RE_IR_TERM_NONE;
         term->name = NULL; term->name_size = 0u;
     }
+    if (operand->kind == RE_OPERAND_FUNCTION && operand->fact_name != NULL) {
+        /* $Receiver.method(...) operand: dotted "Receiver.method" term name. */
+        char *dotted;
+        size_t dotted_size;
+        if (operand->function_name_size > (size_t)-3 ||
+            operand->fact_name_size > (size_t)-3 - operand->function_name_size)
+            return RE_STATUS_LIMIT;
+        dotted_size = operand->fact_name_size + 1u + operand->function_name_size;
+        dotted = re_alloc(&ir->allocator, dotted_size + 1u);
+        if (dotted == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memcpy(dotted, operand->fact_name, operand->fact_name_size);
+        dotted[operand->fact_name_size] = '.';
+        memcpy(dotted + operand->fact_name_size + 1u, operand->function_name,
+               operand->function_name_size);
+        dotted[dotted_size] = '\0';
+        re_free(&ir->allocator, term->name);
+        term->name = dotted;
+        term->name_size = dotted_size;
+        term->kind = RE_IR_TERM_METHOD_CALL;
+    }
     if (operand->kind == RE_OPERAND_GOAL_CALL) {
         re_free(&ir->allocator, term->name); term->name = NULL;
         {
@@ -263,11 +283,52 @@ re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out) {
         status = add_expr(ir, source->condition, &rule->condition); if (status != RE_STATUS_OK) goto fail;
         memset(&rule_name, 0, sizeof(rule_name)); rule_name.kind = RE_OPERAND_FACT; rule_name.fact_name = source->name; rule_name.fact_name_size = source->name_size;
         status = add_term(ir, &rule_name, &rule->name); if (status != RE_STATUS_OK) goto fail;
-        for (j = 0u; j < source->action_count; ++j) { re_ir_action_t *action; re_operand_t target; memset(&target, 0, sizeof(target)); target.kind = RE_OPERAND_FACT; target.fact_name = source->actions[j].name; target.fact_name_size = source->actions[j].name_size; status = grow(&ir->allocator, (void **)&ir->actions, ir->action_count + 1u, sizeof(*action)); if (status != RE_STATUS_OK) goto fail; action = &ir->actions[ir->action_count]; memset(action, 0, sizeof(*action)); action->id = id_for(5u, ir->action_count, source->actions[j].name, source->actions[j].name_size); action->append = source->actions[j].append; status = add_term(ir, &target, &action->target); if (status != RE_STATUS_OK) goto fail; status = add_term(ir, &source->actions[j].value, &action->value); if (status != RE_STATUS_OK) goto fail; ++ir->action_count; }
+        for (j = 0u; j < source->action_count; ++j) {
+            re_ir_action_t *action; re_operand_t target;
+            memset(&target, 0, sizeof(target));
+            target.kind = RE_OPERAND_FACT; target.fact_name = source->actions[j].name; target.fact_name_size = source->actions[j].name_size;
+            status = grow(&ir->allocator, (void **)&ir->actions, ir->action_count + 1u, sizeof(*action)); if (status != RE_STATUS_OK) goto fail;
+            action = &ir->actions[ir->action_count]; memset(action, 0, sizeof(*action));
+            action->id = id_for(5u, ir->action_count, source->actions[j].name, source->actions[j].name_size);
+            action->append = source->actions[j].append;
+            ++ir->action_count;
+            if (source->actions[j].append == RE_ACTION_METHOD_CALL) {
+                action->kind = RE_IR_ACTION_METHOD_CALL; action->append = 0;
+                status = re_copy_string(&ir->allocator,
+                    (re_string_t){source->actions[j].value.function_name,
+                                  source->actions[j].value.function_name_size},
+                    &action->method_name);
+                if (status != RE_STATUS_OK) goto fail;
+                action->method_name_size = source->actions[j].value.function_name_size;
+            }
+            status = add_term(ir, &target, &action->target); if (status != RE_STATUS_OK) goto fail;
+            status = add_term(ir, &source->actions[j].value, &action->value); if (status != RE_STATUS_OK) goto fail;
+        }
         rule->action_count = source->action_count;
+    }
+    for (i = 0u; i < program->deffacts_set_count; ++i) {
+        re_ir_deffacts_set_t *set; const re_deffacts_set_t *source = &program->deffacts_sets[i];
+        re_operand_t set_name;
+        status = grow(&ir->allocator, (void **)&ir->deffacts_sets, ir->deffacts_set_count + 1u, sizeof(*set)); if (status != RE_STATUS_OK) goto fail;
+        set = &ir->deffacts_sets[ir->deffacts_set_count]; memset(set, 0, sizeof(*set));
+        set->id = id_for(6u, i, source->name, source->name_size);
+        set->first_entry = ir->deffacts_entry_count; set->span.end = ir->source_size; ++ir->deffacts_set_count;
+        memset(&set_name, 0, sizeof(set_name)); set_name.kind = RE_OPERAND_FACT; set_name.fact_name = source->name; set_name.fact_name_size = source->name_size;
+        status = add_term(ir, &set_name, &set->name); if (status != RE_STATUS_OK) goto fail;
+        for (j = 0u; j < source->entry_count; ++j) {
+            re_ir_deffacts_entry_t *entry; re_operand_t path;
+            status = grow(&ir->allocator, (void **)&ir->deffacts_entries, ir->deffacts_entry_count + 1u, sizeof(*entry)); if (status != RE_STATUS_OK) goto fail;
+            entry = &ir->deffacts_entries[ir->deffacts_entry_count]; memset(entry, 0, sizeof(*entry));
+            entry->id = id_for(7u, ir->deffacts_entry_count, source->entries[j].path, source->entries[j].path_size);
+            ++ir->deffacts_entry_count;
+            memset(&path, 0, sizeof(path)); path.kind = RE_OPERAND_FACT; path.fact_name = source->entries[j].path; path.fact_name_size = source->entries[j].path_size;
+            status = add_term(ir, &path, &entry->path); if (status != RE_STATUS_OK) goto fail;
+            status = add_term(ir, &source->entries[j].value, &entry->value); if (status != RE_STATUS_OK) goto fail;
+        }
+        set->entry_count = source->entry_count;
     }
     if (ir->rule_count != 0u) { if (ir->rule_count > (size_t)-1 / sizeof(*ir->spans)) { status = RE_STATUS_LIMIT; goto fail; } ir->spans = re_alloc(&ir->allocator, ir->rule_count * sizeof(*ir->spans)); if (ir->spans == NULL) { status = RE_STATUS_OUT_OF_MEMORY; goto fail; } ir->span_count = ir->rule_count; for (i = 0u; i < ir->span_count; ++i) ir->spans[i] = (re_ir_span_t){0u, program->source_size}; }
     *out = ir; return RE_STATUS_OK;
 fail: re_ir_destroy(ir); return status;
 }
-void re_ir_destroy(re_ir_program_t *ir) { size_t i; if (ir == NULL) return; for (i = 0u; i < ir->term_count; ++i) { re_free(&ir->allocator, ir->terms[i].name); re_free(&ir->allocator, ir->terms[i].argument_indices); if (ir->terms[i].value.type == RE_VALUE_STRING) re_free(&ir->allocator, (void *)ir->terms[i].value.as.string.data); } re_free(&ir->allocator, ir->strings); re_free(&ir->allocator, ir->spans); re_free(&ir->allocator, ir->actions); re_free(&ir->allocator, ir->rules); re_free(&ir->allocator, ir->modules); re_free(&ir->allocator, ir->exprs); re_free(&ir->allocator, ir->terms); re_free(&ir->allocator, ir); }
+void re_ir_destroy(re_ir_program_t *ir) { size_t i; if (ir == NULL) return; for (i = 0u; i < ir->term_count; ++i) { re_free(&ir->allocator, ir->terms[i].name); re_free(&ir->allocator, ir->terms[i].argument_indices); if (ir->terms[i].value.type == RE_VALUE_STRING) re_free(&ir->allocator, (void *)ir->terms[i].value.as.string.data); } for (i = 0u; i < ir->action_count; ++i) re_free(&ir->allocator, ir->actions[i].method_name); re_free(&ir->allocator, ir->strings); re_free(&ir->allocator, ir->spans); re_free(&ir->allocator, ir->deffacts_sets); re_free(&ir->allocator, ir->deffacts_entries); re_free(&ir->allocator, ir->actions); re_free(&ir->allocator, ir->rules); re_free(&ir->allocator, ir->modules); re_free(&ir->allocator, ir->exprs); re_free(&ir->allocator, ir->terms); re_free(&ir->allocator, ir); }

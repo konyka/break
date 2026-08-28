@@ -236,6 +236,78 @@ re_status_t re_facts_get_path(const re_facts_t *facts, re_string_t path, re_valu
     return RE_STATUS_NOT_FOUND;
 }
 
+re_status_t re_facts_set_path(re_facts_t *facts, re_string_t path, const re_value_t *value) {
+    size_t i = 0u, start = 0u, root_size;
+    size_t root_index;
+    re_value_handle_t *current;
+    re_value_member_t *member;
+    re_value_t probe;
+    if (facts == NULL || path.data == NULL || path.size == 0u || value == NULL)
+        return RE_STATUS_INVALID_ARGUMENT;
+    if (value->type == RE_VALUE_UNKNOWN) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL) facts = facts->transaction->staged;
+    /* Exact flat key wins; update it, never create it. */
+    if (re_facts_get(facts, path, &probe) == RE_STATUS_OK)
+        return re_facts_set(facts, path, value);
+    while (i < path.size && path.data[i] != '.') ++i;
+    if (i == path.size) return RE_STATUS_NOT_FOUND;
+    root_size = i;
+    current = NULL;
+    for (root_index = 0u; root_index < facts->count; ++root_index)
+        if (facts->entries[root_index].active &&
+            facts->entries[root_index].name_size == root_size &&
+            memcmp(facts->entries[root_index].name, path.data, root_size) == 0) {
+            current = facts->entries[root_index].structured;
+            break;
+        }
+    for (start = root_size + 1u; start <= path.size; ) {
+        size_t end = start;
+        while (end < path.size && path.data[end] != '.') ++end;
+        if (current == NULL) return RE_STATUS_NOT_FOUND;
+        member = (re_value_member_t *)find_member(current, (re_string_t){path.data + start, end - start});
+        if (member == NULL) return RE_STATUS_NOT_FOUND;
+        if (end == path.size) {
+            if (member->child != NULL) return RE_STATUS_NOT_FOUND;
+            member->scalar = *value;
+            return RE_STATUS_OK;
+        }
+        current = member->child;
+        start = end + 1u;
+    }
+    return RE_STATUS_NOT_FOUND;
+}
+
+/* Set-or-create a scalar member on the structured object held by the named
+ * fact root, mirroring how upstream setXxx inserts into the object's map.
+ * Transaction-staged like re_facts_set_path; an existing child value is
+ * replaced by the scalar. */
+re_status_t re_facts_set_member(re_facts_t *facts, re_string_t name,
+                                re_string_t key, const re_value_t *value) {
+    size_t index;
+    re_value_member_t *member;
+    if (facts == NULL || name.data == NULL || name.size == 0u ||
+        key.data == NULL || key.size == 0u || value == NULL)
+        return RE_STATUS_INVALID_ARGUMENT;
+    if (value->type == RE_VALUE_UNKNOWN) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->transaction != NULL) facts = facts->transaction->staged;
+    for (index = 0u; index < facts->count; ++index)
+        if (facts->entries[index].active &&
+            facts->entries[index].name_size == name.size &&
+            memcmp(facts->entries[index].name, name.data, name.size) == 0) break;
+    if (index == facts->count) return RE_STATUS_NOT_FOUND;
+    if (facts->entries[index].structured == NULL ||
+        facts->entries[index].structured->kind != 1)
+        return RE_STATUS_INVALID_ARGUMENT;
+    member = (re_value_member_t *)find_member(facts->entries[index].structured, key);
+    if (member != NULL) {
+        value_free(&facts->entries[index].structured->allocator, member->child);
+        member->child = NULL;
+        member->scalar = *value;
+        return RE_STATUS_OK;
+    }
+    return value_add(facts->entries[index].structured, key, value, NULL);
+}
+
 re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t path,
                                          const re_value_handle_t **out) {
     size_t i = 0u, start, root_size, root_index;

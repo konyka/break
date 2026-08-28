@@ -108,7 +108,7 @@ inventory:
       local_ref: engine/src/rule_engine/parser.c
       local_tests: [engine/tests/test_rule_engine.c]
       parity: bounded_behavior
-      notes: Local parser/evaluator covers the tested expression subset; upstream arithmetic, method calls, coercion, and built-ins are not fully inventoried as parity.
+      notes: Local parser/evaluator covers the tested expression subset; bounded then-action $Fact.method(...) calls (set/get/reset/update conventions with registered-function fallback) are verified local parity, while full upstream arithmetic, condition-position method dispatch, coercion, and built-ins are not fully inventoried as parity.
     - id: parser
       upstream_ref: src/parser/
       local_status: tested
@@ -212,10 +212,11 @@ inventory:
   examples:
     upstream_source: Cargo.toml:[[example]]
     local_status: pending
-    local_refs: []
+    local_refs: [engine/src/rule_engine/templates.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/parser.c]
+    local_tests: [engine/tests/test_rule_engine_grl_semantics.c]
     parity: unsupported
     names: [grule_demo, fraud_detection, expression_demo, method_calls_demo, in_operator_demo, string_methods_demo, rete_demo, rete_grl_demo, rete_typed_facts_demo, rete_deffacts_demo, tms_demo, accumulate_grl_demo, conflict_resolution_demo, grl_no_loop_demo, action_handlers_grl_demo, rule_templates_demo, streaming_with_rules_demo, quick_engine_comparison, parallel_engine_demo, memory_usage_comparison, rete_p3_incremental, rete_ul_drools_style, simple_query_demo, ecommerce_approval_demo, medical_diagnosis_demo, grl_query_demo, proof_graph_cache_demo, smart_home_modules, phase3_demo]
-    notes: Upstream example inventory is complete from the pinned Cargo manifest; no local Rust examples exist, so no example is promoted as implemented.
+    notes: Upstream example inventory is complete from the pinned Cargo manifest; no local Rust examples exist. rete_deffacts_demo and rule_templates_demo are covered with equivalent_behavior through the local deffacts GRL extension plus re_engine_load_deffacts/re_engine_reset_with_deffacts and the instantiate-to-text rule template API; every other example remains unpromoted.
   benchmarks:
     upstream_refs: [Cargo.toml:[[bench]], benches/engine_comparison_benchmark.rs, benches/alpha_indexing_benchmark.rs, benches/rete_optimization_benchmark.rs, benches/backward_chaining_benchmarks.rs, benches/backward_chaining_index_benchmark.rs, benches/parallel_benchmarks.rs, benches/clone_optimization_benchmark.rs, benches/rete_1m_rules_benchmark.rs, benches/memory_usage_benchmark.rs]
     local_status: implemented

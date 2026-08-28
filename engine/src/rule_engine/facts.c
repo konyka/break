@@ -72,6 +72,34 @@ void re_facts_destroy(re_facts_t *facts) {
     re_free(&facts->allocator, facts);
 }
 
+/* Wholesale working-memory reset: drops every fact entry and all TMS
+ * justifications without per-fact notifications. An attached rete network is
+ * torn down exactly like in re_facts_destroy so no stale fact ids survive;
+ * user subscriptions stay registered and observe later asserts. */
+re_status_t re_facts_clear_all(re_facts_t *facts) {
+    size_t index;
+    if (facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (facts->running || facts->notifying || facts->transaction != NULL) return RE_STATUS_BUSY;
+    if (facts->rete_network != NULL) {
+        if (facts->rete_network->engine_owned) re_rete_network_destroy_internal(facts->rete_network);
+        else re_rete_network_detach_facts(facts->rete_network);
+        facts->rete_network = NULL;
+    }
+    for (index = 0u; index < facts->count; ++index) {
+        re_free(&facts->allocator, facts->entries[index].name);
+        re_free(&facts->allocator, facts->entries[index].string_data);
+        re_value_destroy(facts->entries[index].structured);
+    }
+    re_free(&facts->allocator, facts->entries);
+    facts->entries = NULL;
+    facts->count = 0u;
+    facts->capacity = 0u;
+    re_tms_destroy(facts->tms);
+    facts->tms = NULL;
+    ++facts->mutation_serial;
+    return RE_STATUS_OK;
+}
+
 re_status_t re_facts_set_impl(re_facts_t *facts, re_string_t name,
                               const re_value_t *value, int emit_event) {
     size_t index; re_fact_entry_t replacement; char *name_copy = NULL; char *string_copy = NULL;

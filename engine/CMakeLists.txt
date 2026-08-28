@@ -714,7 +714,7 @@ add_library(rule_engine_core STATIC
       src/rule_engine/backward_machine_context.c
       src/rule_engine/backward_machine_bind.c
        src/rule_engine/backward_machine_goal.c src/rule_engine/query.c
-    src/rule_engine/executor.c)
+    src/rule_engine/executor.c src/rule_engine/templates.c)
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(RULE_ENGINE_ENABLE_REDIS)
@@ -788,6 +788,12 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine_tms PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine_tms PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_tms COMMAND test_rule_engine_tms)
+
+    add_executable(test_rule_engine_grl_semantics tests/test_rule_engine_grl_semantics.c)
+    set_property(TARGET test_rule_engine_grl_semantics PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_grl_semantics PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_grl_semantics PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_grl_semantics COMMAND test_rule_engine_grl_semantics)
 
     add_executable(test_rule_engine_ir tests/test_rule_engine_ir.c)
     set_property(TARGET test_rule_engine_ir PROPERTY C_STANDARD 99)

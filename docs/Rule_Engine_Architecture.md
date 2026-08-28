@@ -19,10 +19,23 @@ Implemented now:
   names, deterministic content IDs, and bounded source-envelope spans. The
   forward evaluator consumes the validated IR; backward evaluation retains
   its compatibility-tree path for the deliberately bounded query seam.
-- exact flat-key lookup for dotted fact names; structured-value path traversal is
-  bounded and separately tested, while rule-condition fallback remains flat-key only.
+- exact flat-key-first lookup for dotted fact names with a bounded structured-member
+  walk for condition reads and action writes; writes never create implicit
+  intermediate objects.
 - bounded object/array values and nested path lookup through the versioned value API;
 - forward string operators `contains`, `startsWith`, `endsWith`, and `matches`, plus `+=` array append actions. The tested bounded `in` slice accepts non-empty literal arrays and structured arrays containing scalar members, compares booleans, strings, and numeric values with typed equality, and caps literal elements at 64; empty literals and malformed/non-array right-hand sides are rejected. This is not full upstream collection semantics.
+- bounded then-action method calls `$Fact.method(...)`: set/get/reset/update
+  conventions on structured receiver facts with registered-function fallback
+  (`Fact.method`, then bare `method`) and explicit `RE_STATUS_NOT_SUPPORTED`
+  when unhandled; `$` outside a then method call is a parse error;
+- a local deffacts GRL extension: top-level named `deffacts "name" { Path = literal; }`
+  sets parsed atomically with the program and asserted as plain non-logical
+  facts via `re_engine_load_deffacts` / `re_engine_reset_with_deffacts`
+  (clear-all then reseed);
+- instantiate-to-text rule templates: `{{identifier}}` byte substitution with
+  per-param defaults emitting `rule "..." [salience N] {when/then}` source
+  that the host parses via `re_program_load`; no JSON round-trip and no
+  engine-side template registry.
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded fact-store truth-maintenance slice: explicit and logical facts,
   copied producer names, generation-safe premise IDs, duplicate-coalesced
@@ -70,7 +83,7 @@ support.
 
 The local status is limited to behavior covered by the registered rule-engine
 tests, including `engine/tests/test_rule_engine.c`, the transaction, RETE,
-backward, machine-structure, machine-context, binding, fuzz-smoke, and
+backward, machine-structure, machine-context, binding, grl-semantics, fuzz-smoke, and
 optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
 upstream evidence only. No deferred family has an ABI placeholder.

@@ -1,5 +1,6 @@
 #include "re_internal.h"
 #include "ir.h"
+#include <ctype.h>
 #include <string.h>
 
 static int wildcard_match(re_string_t input, re_string_t pattern) {
@@ -171,6 +172,161 @@ static int find_staged_fact(const re_facts_t *facts, re_string_t name,
     return 0;
 }
 
+/* Defined in values.c; internal cross-unit helper for setXxx method calls. */
+re_status_t re_facts_set_member(re_facts_t *facts, re_string_t name,
+                                re_string_t key, const re_value_t *value);
+
+static re_status_t call_registered_method(re_engine_t *engine, re_facts_t *facts,
+                                          const char *name, size_t name_size,
+                                          const re_value_t *arguments, size_t argument_count,
+                                          re_value_t *out) {
+    re_function_t *function;
+    re_status_t status;
+    for (function = engine->functions; function != NULL; function = function->next)
+        if (!function->unregistered && function->name_size == name_size &&
+            memcmp(function->name, name, name_size) == 0) break;
+    if (function == NULL) return RE_STATUS_NOT_FOUND;
+    function->active_calls++;
+    status = function->call(engine, facts, arguments, argument_count, out, function->context);
+    function->active_calls--;
+    return status;
+}
+
+/* Builds "<receiver>.<Property>" where Property is method+3 with the first
+ * character uppercased as-is (setSpeed -> "Speed"); members are case-sensitive. */
+static re_status_t method_property_path(const re_allocator_impl_t *allocator,
+                                        re_string_t receiver, re_string_t method,
+                                        char **out_path, size_t *out_path_size) {
+    size_t property_size = method.size - 3u;
+    size_t path_size;
+    char *path;
+    if (property_size > (size_t)-2 || receiver.size > (size_t)-2 - property_size)
+        return RE_STATUS_LIMIT;
+    path_size = receiver.size + 1u + property_size;
+    path = re_alloc(allocator, path_size + 1u);
+    if (path == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    memcpy(path, receiver.data, receiver.size);
+    path[receiver.size] = '.';
+    path[receiver.size + 1u] = (char)toupper((unsigned char)method.data[3]);
+    if (property_size > 1u)
+        memcpy(path + receiver.size + 2u, method.data + 4u, property_size - 1u);
+    path[path_size] = '\0';
+    *out_path = path;
+    *out_path_size = path_size;
+    return RE_STATUS_OK;
+}
+
+/* Executes a $Receiver.method(...) call. With out == NULL (then-statement
+ * form) any produced value is discarded; in operand position only getXxx and
+ * registered functions yield a value. All fact writes go through the active
+ * transaction exactly like ordinary actions. */
+static re_status_t execute_method_call(re_engine_t *engine, re_facts_t *facts,
+                                       const re_ir_program_t *ir,
+                                       re_string_t receiver, re_string_t method,
+                                       const re_ir_term_t *arguments_term,
+                                       re_value_t *out) {
+    re_value_t *arguments = NULL;
+    re_value_t result;
+    re_status_t status;
+    size_t i;
+    if (arguments_term->argument_count != 0u) {
+        if (arguments_term->argument_count > SIZE_MAX / sizeof(*arguments))
+            return RE_STATUS_LIMIT;
+        arguments = re_alloc(&engine->allocator,
+                             arguments_term->argument_count * sizeof(*arguments));
+        if (arguments == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        for (i = 0u; i < arguments_term->argument_count; ++i) {
+            status = re_ir_resolve_term(engine, facts, ir,
+                                        arguments_term->argument_indices[i], &arguments[i]);
+            if (status != RE_STATUS_OK) {
+                re_free(&engine->allocator, arguments);
+                return status;
+            }
+        }
+    }
+    result.type = RE_VALUE_NONE; result.as.int64_value = 0;
+    if (method.size > 3u && memcmp(method.data, "set", 3u) == 0) {
+        char *path; size_t path_size;
+        if (arguments_term->argument_count != 1u) status = RE_STATUS_INVALID_ARGUMENT;
+        else if (out != NULL) status = RE_STATUS_NOT_SUPPORTED;
+        else {
+            status = method_property_path(&engine->allocator, receiver, method, &path, &path_size);
+            if (status == RE_STATUS_OK) {
+                status = re_facts_set_path(facts, (re_string_t){path, path_size}, &arguments[0]);
+                if (status == RE_STATUS_NOT_FOUND)
+                    status = re_facts_set_member(facts, receiver,
+                        (re_string_t){path + receiver.size + 1u, method.size - 3u}, &arguments[0]);
+                re_free(&engine->allocator, path);
+            }
+        }
+    } else if (method.size > 3u && memcmp(method.data, "get", 3u) == 0) {
+        char *path; size_t path_size;
+        if (arguments_term->argument_count != 0u) status = RE_STATUS_INVALID_ARGUMENT;
+        else {
+            status = method_property_path(&engine->allocator, receiver, method, &path, &path_size);
+            if (status == RE_STATUS_OK) {
+                status = re_facts_get_path(facts, (re_string_t){path, path_size}, &result);
+                re_free(&engine->allocator, path);
+            }
+        }
+    } else if (method.size == 5u && memcmp(method.data, "reset", 5u) == 0) {
+        if (out != NULL) status = RE_STATUS_NOT_SUPPORTED;
+        else {
+            const re_value_handle_t *structured = NULL;
+            status = re_facts_get_structured_path(facts, receiver, &structured);
+            if (status == RE_STATUS_OK) {
+                re_value_handle_t *empty = NULL;
+                status = re_value_create_object(facts, &empty);
+                if (status == RE_STATUS_OK) {
+                    status = re_facts_set_value(facts, receiver, empty);
+                    re_value_destroy(empty);
+                }
+            }
+        }
+    } else if (method.size == 6u && memcmp(method.data, "update", 6u) == 0) {
+        status = out != NULL ? RE_STATUS_NOT_SUPPORTED : RE_STATUS_OK;
+    } else {
+        char *dotted;
+        size_t dotted_size;
+        if (method.size > (size_t)-2 || receiver.size > (size_t)-2 - method.size) {
+            status = RE_STATUS_LIMIT;
+        } else {
+            dotted_size = receiver.size + 1u + method.size;
+            dotted = re_alloc(&engine->allocator, dotted_size + 1u);
+            if (dotted == NULL) status = RE_STATUS_OUT_OF_MEMORY;
+            else {
+                memcpy(dotted, receiver.data, receiver.size);
+                dotted[receiver.size] = '.';
+                memcpy(dotted + receiver.size + 1u, method.data, method.size);
+                dotted[dotted_size] = '\0';
+                status = call_registered_method(engine, facts, dotted, dotted_size,
+                                                arguments, arguments_term->argument_count, &result);
+                if (status == RE_STATUS_NOT_FOUND)
+                    status = call_registered_method(engine, facts, method.data, method.size,
+                                                    arguments, arguments_term->argument_count, &result);
+                re_free(&engine->allocator, dotted);
+                if (status == RE_STATUS_NOT_FOUND) status = RE_STATUS_NOT_SUPPORTED;
+            }
+        }
+    }
+    re_free(&engine->allocator, arguments);
+    if (status == RE_STATUS_OK && out != NULL) *out = result;
+    return status;
+}
+
+/* Splits the dotted "Receiver.method" name of a RE_IR_TERM_METHOD_CALL term. */
+static re_status_t resolve_method_term(re_engine_t *engine, re_facts_t *facts,
+                                       const re_ir_program_t *ir,
+                                       const re_ir_term_t *term, re_value_t *out) {
+    size_t dot = 0u;
+    while (dot < term->name_size && term->name[dot] != '.') ++dot;
+    if (dot == 0u || dot + 1u >= term->name_size) return RE_STATUS_INVALID_ARGUMENT;
+    return execute_method_call(engine, facts, ir,
+        (re_string_t){term->name, dot},
+        (re_string_t){term->name + dot + 1u, term->name_size - dot - 1u},
+        term, out);
+}
+
 int re_value_equal_typed(const re_value_t *left, const re_value_t *right) {
     if (left == NULL || right == NULL || left->type != right->type) return 0;
     switch (left->type) {
@@ -282,6 +438,69 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
     re_rete_network_destroy_internal(engine->rete_network); engine->rete_network = NULL;
     old = engine->program; engine->program = program; re_program_destroy(old);
     return RE_STATUS_OK;
+}
+
+/* Phase 2 agenda state will hang off the engine; the hook is a no-op until
+ * there is an agenda to clear. */
+void re_engine_clear_agenda(re_engine_t *engine) { (void)engine; }
+
+static re_status_t load_deffacts_entry(re_facts_t *facts, const re_ir_program_t *ir,
+                                       const re_ir_deffacts_entry_t *entry) {
+    const re_ir_term_t *path = &ir->terms[entry->path];
+    const re_ir_term_t *value = &ir->terms[entry->value];
+    re_string_t name = {path->name, path->name_size};
+    size_t i;
+    re_status_t status;
+    if (value->kind == RE_IR_TERM_ARRAY) {
+        re_value_handle_t *array = NULL;
+        status = re_value_create_array(facts, &array);
+        for (i = 0u; status == RE_STATUS_OK && i < value->argument_count; ++i)
+            status = re_value_array_append(array, &ir->terms[value->argument_indices[i]].value);
+        if (status == RE_STATUS_OK) status = re_facts_set_value(facts, name, array);
+        re_value_destroy(array);
+        return status;
+    }
+    /* Dotted paths update an existing structured member (flat key wins);
+     * anything unresolved becomes a plain flat fact. */
+    status = re_facts_set_path(facts, name, &value->value);
+    if (status == RE_STATUS_NOT_FOUND) status = re_facts_set(facts, name, &value->value);
+    return status;
+}
+
+re_status_t re_engine_load_deffacts(re_engine_t *engine, re_facts_t *facts, const char *name_or_null) {
+    const re_ir_program_t *ir;
+    size_t i, j;
+    int found = 0;
+    if (engine == NULL || facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (engine->program == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (engine->running) return RE_STATUS_BUSY;
+    ir = engine->program->ir;
+    for (i = 0u; i < ir->deffacts_set_count; ++i) {
+        const re_ir_deffacts_set_t *set = &ir->deffacts_sets[i];
+        const re_ir_term_t *set_name = &ir->terms[set->name];
+        if (name_or_null != NULL) {
+            size_t name_size = strlen(name_or_null);
+            if (set_name->name_size != name_size ||
+                memcmp(set_name->name, name_or_null, name_size) != 0) continue;
+        }
+        found = 1;
+        for (j = 0u; j < set->entry_count; ++j) {
+            re_status_t status = load_deffacts_entry(facts, ir, &ir->deffacts_entries[set->first_entry + j]);
+            if (status != RE_STATUS_OK) return status;
+        }
+    }
+    return name_or_null != NULL && !found ? RE_STATUS_NOT_FOUND : RE_STATUS_OK;
+}
+
+re_status_t re_engine_reset_with_deffacts(re_engine_t *engine, re_facts_t *facts) {
+    re_status_t status;
+    if (engine == NULL || facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (engine->running) return RE_STATUS_BUSY;
+    status = re_facts_clear_all(facts);
+    if (status != RE_STATUS_OK) return status;
+    re_engine_clear_agenda(engine);
+    if (engine->program == NULL) return RE_STATUS_OK;
+    return re_engine_load_deffacts(engine, facts, NULL);
 }
 
 re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_options_t *options, const re_callbacks_t *callbacks) {
@@ -400,14 +619,27 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
                      size_t premise_count = activation_premises(engine, rule, activation_index, premises, &event.activation_sequence);
                     const re_ir_action_t *action = &engine->program->ir->actions[ir_rule->first_action + action_index];
                     const re_ir_term_t *target = &engine->program->ir->terms[action->target];
-                    status = re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
+                    const re_ir_term_t *action_value = &engine->program->ir->terms[action->value];
+                    if (action->kind == RE_IR_ACTION_METHOD_CALL) {
+                        status = execute_method_call(engine, facts, engine->program->ir,
+                            (re_string_t){target->name, target->name_size},
+                            (re_string_t){action->method_name, action->method_name_size},
+                            action_value, NULL);
+                        if (status != RE_STATUS_OK) break;
+                        continue;
+                    }
+                    status = action_value->kind == RE_IR_TERM_METHOD_CALL
+                        ? resolve_method_term(engine, facts, engine->program->ir, action_value, &value)
+                        : re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
                     if (status != RE_STATUS_OK) break;
                     if (!action->append && premise_count != 0u &&
                         !find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id))
                         status = re_facts_insert_logical(facts, (re_string_t){target->name, target->name_size}, &value,
                             (re_string_t){rule->name, rule->name_size}, premises, premise_count, &target_id);
                     else {
-                        status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
+                        status = action->append ? re_facts_append_value(facts, (re_string_t){target->name, target->name_size}, &value) : re_facts_set_path(facts, (re_string_t){target->name, target->name_size}, &value);
+                        if (!action->append && status == RE_STATUS_NOT_FOUND)
+                            status = re_facts_set(facts, (re_string_t){target->name, target->name_size}, &value);
                         if (status == RE_STATUS_OK && !action->append && premise_count != 0u &&
                             find_staged_fact(transaction->staged, (re_string_t){target->name, target->name_size}, &target_id) &&
                             transaction->staged->entries[target_id.slot].logical)

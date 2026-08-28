@@ -98,21 +98,22 @@ Upstream parity (`src/engine/template.rs`): string-template GRL generation,
 `{{param}}` placeholders, plain substitution, defaults, generated rules are
 ordinary parsed rules.
 
-- C API: `re_rule_template_create(name, condition_template,
-  action_template, salience)`; `re_rule_template_param(template, name,
-  type_tag, default_or_NULL)` (type tag is metadata only — upstream does no
-  substituted-value checking); `re_rule_template_instantiate(template,
-  rule_name, params, param_count, out_grl_text)`; missing required param →
-  `RE_STATUS_INVALID_ARGUMENT`.
-- Registry on program: `re_program_add_template`,
-  `re_program_generate_rules(program, template_name, instances, count)` —
-  instantiates + parses through the existing parser.
+- Shipped C API: `re_rule_template_create(name, condition_template,
+  action_template, salience)`; `re_rule_template_param_default(template,
+  param, default)`; `re_rule_template_instantiate(template, rule_name,
+  params, param_count, out_text, inout_text_size)`; missing required param or
+  unmatched supplied param → `RE_STATUS_INVALID_ARGUMENT`, too-small buffer →
+  `RE_STATUS_LIMIT` after the required size is reported. Upstream does no
+  substituted-value checking, and neither does the local byte substitution.
+- Shipped scope is the template object + param defaults + instantiate-to-text;
+  the host parses the emitted text via `re_program_load`. The program-side
+  registry (`re_program_add_template`/`re_program_generate_rules`) is dropped
+  — it adds no semantics beyond instantiate + load (YAGNI).
 - Bounded exclusions (documented): no JSON round-trip (upstream serde
   helper), no CLIPS-deftemplate fact-schema validator (upstream
   `rete/template.rs` — separate feature, stays unsupported).
-- Tests: substitution with defaults; missing required param; generated rule
-  parses and fires; bulk generation; `{{param}}` inside string literals
-  substituted verbatim (upstream plain-substitution parity).
+- Tests: substitution with defaults; missing required param; unmatched
+  supplied param; generated rule parses and fires; buffer size contract.
 
 ## Work item 2 — multi-rule activation, persistent agenda, provenance
 

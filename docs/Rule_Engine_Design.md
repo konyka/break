@@ -37,7 +37,8 @@ The forward `in` operator is a bounded local slice: the right-hand side may be
 an array literal with 1-64 scalar elements or a structured array containing scalar members. Comparisons
 use typed scalar equality, including exact `int64` equality; empty literals and
 non-array/malformed right-hand sides are rejected by the parser. This does not
-claim full upstream collection, property, or method-call semantics.
+claim full upstream collection semantics; bounded property access and
+then-action method calls are documented below.
 
 ## Function contract table
 
@@ -119,15 +120,18 @@ The current focused tests establish:
    incremental RETE memories and fact-id/rule-name activation provenance; the
    runtime does not claim persistent agenda state or post-focus-cycle reactivation.
 
-Structured-value nested fact traversal is implemented only through the bounded
-`re_facts_get_path` API and is covered by focused tests. Rule declarations still
-resolve dotted condition/action names through exact flat-key lookup; they do not
-fall back to structured traversal. Rule declarations may optionally include
-`salience <int32>` after the quoted name; matching activations execute in
-descending salience order, with source order preserved for ties. Dotted
-names, including action references, resolve only by exact flat-key lookup; no
-nested fallback is implemented. Deferred behavior is not represented as local
-verified conformance until implementation and focused tests exist.
+Structured-value nested fact access is implemented through the bounded
+`re_facts_get_path`/`re_facts_set_path` pair and is covered by focused tests.
+Dotted names in rule conditions and actions resolve exact flat-key first;
+absent a flat key, reads walk the root fact's structured members and writes
+update an existing structured member. Writes never create implicit intermediate
+objects or flat keys through the path API (`RE_STATUS_NOT_FOUND`); a rule
+then-assignment whose dotted target resolves nowhere falls back to a plain flat
+`re_facts_set`. Rule declarations may optionally include `salience <int32>`
+after the quoted name; matching activations execute in descending salience
+order, with source order preserved for ties. Deferred behavior is not
+represented as local verified conformance until implementation and focused
+tests exist.
 
 Run focused behavior evidence with:
 
@@ -144,6 +148,54 @@ focused tests.
 See `docs/Rule_Engine_Architecture.md` for module boundaries,
 `docs/rule_engine_conformance.yml` for local/upstream status, and
 `docs/Rule_Engine_Benchmark.md` for the manual workload.
+
+## Bounded GRL semantics: method calls, deffacts, and rule templates
+
+Rule `then` actions support `$Fact.method(arg, ...)`; the `$` prefix is
+required and a `$` anywhere outside a then method call is a parse error.
+Execution applies bounded conventions in order: `setXxx(v)` writes property
+`Xxx` on the receiver's structured object (structured path write first, member
+set-or-create second), `getXxx()` reads it and is the only conventional form
+usable as an action RHS operand, `reset()` replaces the receiver with an empty
+object, and `update()` is a bounded no-op kept for source parity. Any other
+name dispatches to a registered function named `Fact.method`, then bare
+`method`; with neither registered the run fails with
+`RE_STATUS_NOT_SUPPORTED`. Upstream silently no-ops an unknown method, so the
+explicit failure is a deliberate documented divergence. All writes go through
+the firing transaction and notify subscribers like ordinary assignments.
+`when` conditions are unchanged: calls there resolve through registered
+functions only.
+
+`deffacts "name" { Path = literal; }` is a local GRL extension; upstream
+exposes deffacts only through its Rust API. Sets parse atomically alongside
+rules and hold flat fact paths with scalar or array literals; a duplicate set
+name in one source is a parse error. `re_engine_load_deffacts` asserts one
+named set — or all sets for NULL — as plain non-logical facts, overwriting
+duplicates, and returns `RE_STATUS_NOT_FOUND` for an unknown name. Dotted
+entries update an existing structured member through `re_facts_set_path` and
+otherwise become flat facts; array literals become structured array facts whose
+string elements follow the engine's shallow-copy convention: the program IR
+owns the string storage, so the installed program must outlive facts seeded
+from its deffacts. `re_engine_reset_with_deffacts` clears working memory (all
+facts, TMS justifications, and the Phase 2 agenda hook) and then loads every
+set. Two bounded reset notes apply. Fact IDs are slot/generation pairs and a
+clear restarts generations, so a caller-held `re_fact_id_t` from before a
+reset can alias a fresh fact and must be discarded. And a bare clear emits no
+per-fact events, so standing queries are not invalidated by it; only the
+deffacts reseed's INSERT notifications invalidate them.
+
+Rule templates are an instantiate-to-text API. `re_rule_template_create`
+copies the name, condition, and action templates plus salience;
+`re_rule_template_param_default` sets per-parameter defaults;
+`re_rule_template_instantiate` substitutes `{{identifier}}` placeholders by
+plain byte substitution and emits `rule "<rule_name>" [salience N]` when/then
+text that the host parses through `re_program_load`. The rule name is emitted
+unescaped, text that is not an exact `{{identifier}}` placeholder copies
+through unchanged, a placeholder with neither a supplied param nor a default
+fails with `RE_STATUS_INVALID_ARGUMENT` (leaving the size output untouched),
+and a too-small buffer yields `RE_STATUS_LIMIT` after the required size is
+reported. There is deliberately no JSON round-trip, no CLIPS deftemplate
+schema validator, and no engine-side template registry.
 
 ## Tested private advanced slice
 

@@ -8,7 +8,7 @@ typedef struct re_ir_span_t { size_t start; size_t end; } re_ir_span_t;
 typedef enum re_ir_term_kind_t {
     RE_IR_TERM_NONE, RE_IR_TERM_BOOL, RE_IR_TERM_INT64, RE_IR_TERM_DOUBLE,
     RE_IR_TERM_STRING, RE_IR_TERM_FACT, RE_IR_TERM_FUNCTION, RE_IR_TERM_GOAL,
-    RE_IR_TERM_ARITHMETIC, RE_IR_TERM_ARRAY
+    RE_IR_TERM_ARITHMETIC, RE_IR_TERM_ARRAY, RE_IR_TERM_METHOD_CALL
 } re_ir_term_kind_t;
 typedef struct re_ir_term_t {
     re_ir_id_t id;
@@ -32,11 +32,20 @@ typedef struct re_ir_expr_t {
     size_t second;
     re_ir_span_t span;
 } re_ir_expr_t;
+/* re_action_t.append carries this parser signal for a `$Fact.method(...)`
+ * then-statement; re_ir_compile lowers it to RE_IR_ACTION_METHOD_CALL. */
+#define RE_ACTION_METHOD_CALL 2
+typedef enum re_ir_action_kind_t {
+    RE_IR_ACTION_ASSIGN, RE_IR_ACTION_METHOD_CALL
+} re_ir_action_kind_t;
 typedef struct re_ir_action_t {
     re_ir_id_t id;
     size_t target;
     size_t value;
     int append;
+    re_ir_action_kind_t kind;
+    char *method_name;
+    size_t method_name_size;
     re_ir_span_t span;
 } re_ir_action_t;
 typedef struct re_ir_rule_t {
@@ -56,6 +65,18 @@ typedef struct re_ir_module_t {
     size_t import_count;
     int export_all;
 } re_ir_module_t;
+typedef struct re_ir_deffacts_entry_t {
+    re_ir_id_t id;
+    size_t path;
+    size_t value;
+} re_ir_deffacts_entry_t;
+typedef struct re_ir_deffacts_set_t {
+    re_ir_id_t id;
+    size_t name;
+    size_t first_entry;
+    size_t entry_count;
+    re_ir_span_t span;
+} re_ir_deffacts_set_t;
 typedef struct re_ir_program_t {
     re_allocator_impl_t allocator;
     size_t source_size;
@@ -71,6 +92,10 @@ typedef struct re_ir_program_t {
     size_t rule_count;
     re_ir_module_t *modules;
     size_t module_count;
+    re_ir_deffacts_set_t *deffacts_sets;
+    size_t deffacts_set_count;
+    re_ir_deffacts_entry_t *deffacts_entries;
+    size_t deffacts_entry_count;
     re_ir_span_t *spans;
     size_t span_count;
 } re_ir_program_t;

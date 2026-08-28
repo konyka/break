@@ -189,17 +189,17 @@ features:
     stress_test_ref: engine/tests/test_rule_engine_executor_stress.c
     behavior_scope: pure_read_only_conditions_only_serial_actions_and_callbacks
     doc_ref: docs/Rule_Engine_Design.md
-  - id: nested-fact-traversal
+  - id: nested-property-access
     family: values
     requirement: required
     syntax: 'Customer.Address.City'
-    expected_behavior: Resolve nested paths only when structured values are enabled; exact flat-key lookup remains the current core behavior.
+    expected_behavior: Resolve dotted paths exact flat-key first, then by walking the root fact's structured members; reads through re_facts_get_path (existing) and writes through re_facts_set_path (new) cover rule conditions and action operands, writes never create implicit intermediate objects, and rule then-assignments route dotted targets through re_facts_set_path with a flat re_facts_set fallback.
     upstream_refs: [README.md, docs/core-features/GRL_SYNTAX.md]
     upstream_status: verified_upstream
     local_status: verified_local
     extension_abi: RE_EXTENSION_STRUCTURED_VALUES
     implementation_ref: engine/src/rule_engine/values.c
-    test_ref: engine/tests/test_rule_engine.c
+    test_ref: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_grl_semantics.c]
     doc_ref: docs/Rule_Engine_Design.md
   - id: exists-flat-fact-comparison
     family: core-grl
@@ -239,7 +239,49 @@ features:
     parity: bounded_behavior
     behavior_scope: private_fact_store_tms; bounded_justification_table; transactional_clone_swap; deterministic_provenance_inspection; no_full_rete_ul
     note: This is a tested bounded lifecycle model, not full upstream TMS, persistent agenda integration, or automatic general RETE producer inference.
-conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, and engine/tests/test_backward_machine_context.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, persistent agenda control, full upstream producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
+  - id: grl-method-calls
+    family: core-grl
+    requirement: optional
+    syntax: '$Customer.setScore(Score + 1); $Customer.getScore();'
+    expected_behavior: In then actions, $Fact.method(args) applies the bounded set/get/reset/update conventions against the receiver's structured object or dispatches to a registered function named "Fact.method" then "method", failing with RE_STATUS_NOT_SUPPORTED when neither exists; $ outside a then method call is a parse error, and when conditions keep bare-identifier registered-function dispatch only.
+    upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/expression.rs, src/engine/engine.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: engine/src/rule_engine/engine.c
+    test_ref: engine/tests/test_rule_engine_grl_semantics.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: then_action_dollar_receiver_calls_only; set_get_reset_update_conventions; registered_function_fallback; explicit_not_supported_divergence
+    note: Upstream silently no-ops an unknown method while the local engine fails the run with RE_STATUS_NOT_SUPPORTED; method calls in when conditions remain registered-function only.
+  - id: deffacts
+    family: facts
+    requirement: optional
+    syntax: 'deffacts "seed" { Customer.TotalSpent = 15000.0; }; re_engine_load_deffacts(engine, facts, NULL);'
+    expected_behavior: Parse top-level named deffacts sets of flat fact paths with scalar or array literals atomically alongside rules; re_engine_load_deffacts asserts one named set or all sets as plain non-logical facts with duplicates overwriting, and re_engine_reset_with_deffacts clears working memory (facts, TMS justifications, and the agenda hook) before loading every set.
+    upstream_refs: [Cargo.toml:[[example]].rete_deffacts_demo]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/engine.c]
+    test_ref: engine/tests/test_rule_engine_grl_semantics.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: local_grl_extension; scalar_and_array_literals_only; plain_non_logical_sets; clear_all_then_reseed
+    note: Upstream exposes deffacts through its Rust API only, so the GRL top-level form is a documented local extension rather than upstream syntax parity.
+  - id: rule-templates
+    family: core-grl
+    requirement: optional
+    syntax: 're_rule_template_instantiate(t, rule_name, params, param_count, out_text, &size);'
+    expected_behavior: Substitute {{identifier}} placeholders in condition and action templates by plain byte substitution with per-param defaults, emitting rule "name" [salience N] when/then text that the host parses through re_program_load; a missing param or an unmatched supplied param fails with RE_STATUS_INVALID_ARGUMENT.
+    upstream_refs: [src/engine/template.rs, Cargo.toml:[[example]].rule_templates_demo]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: engine/src/rule_engine/templates.c
+    test_ref: engine/tests/test_rule_engine_grl_semantics.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: instantiate_to_text_only; plain_byte_substitution; no_json_round_trip; no_engine_side_registry; no_clips_deftemplate_schema
+    note: The emitted rule name is unescaped and text that is not an exact {{identifier}} placeholder copies through unchanged; there is no JSON round-trip and no program-side template registry.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, and engine/tests/test_rule_engine_grl_semantics.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs. Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, persistent agenda control, full upstream producer provenance, general backward chaining, and native Redis remain unsupported or unverified.
 inventory_manifest: docs/rule_engine_upstream.yml
 classification_policy:
   evidence_rule: A declaration, header, CMake option, or upstream documentation claim never promotes a local capability without an implementation reference and executed local test reference.
@@ -249,7 +291,7 @@ classification_policy:
   statuses: [implemented, tested, pending, unsupported, optional_backend, blocked]
 known_gaps:
   - {id: canonical-ir, status: implemented, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Private immutable compiled IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and transactional-install boundary; forward evaluation uses the IR.}
-  - {id: grl-string-operators-append-and-bounded-in, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, CHANGELOG.md:1.15.0], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Forward IR supports contains, startsWith, endsWith, matches, += array append, and bounded membership against literal arrays or structured arrays containing scalar members. Literal arrays are capped at 64 elements; typed equality is used and malformed/non-array RHS values are rejected. Full upstream collection semantics and method/property calls remain pending.}
+  - {id: grl-string-operators-append-and-bounded-in, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, CHANGELOG.md:1.15.0], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Forward IR supports contains, startsWith, endsWith, matches, += array append, and bounded membership against literal arrays or structured arrays containing scalar members. Literal arrays are capped at 64 elements; typed equality is used and malformed/non-array RHS values are rejected. Full upstream collection semantics remain pending; bounded then-action method calls and nested property writes are verified in the grl-method-calls and nested-property-access rows.}
   - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c], parity: bounded_behavior, note: Local forall is a deliberately narrow array-fact slice: forall <fact-path> <scalar-comparison> <scalar-literal>, with exact-flat-key-first and nested structured-path lookup, scalar direct members only, bounded by existing container/depth/step limits, and vacuous truth for an empty array. Focused tests cover all-pass, mixed/one-fails, empty, absent/non-array, malformed, nested members, allocator failure, and depth/member boundaries. Parenthesized/general quantifiers, arbitrary predicates, fact-type quantification, and RETE-UL quantifier nodes remain pending.}
   - {id: rete-ul-tms-persistent-agenda, status: unsupported, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/advanced.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine.c], parity: bounded_behavior, note: Full RETE-UL, TMS, and persistent agenda are absent; local RETE and agenda rows are bounded equivalents only.}
   - {id: backward-arbitrary-unification-proof-sharing, status: unsupported, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/backward_machine_bind.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c], parity: bounded_behavior, note: Backward arbitrary unification and proof sharing are absent; local binding/proof paths are bounded and non-shared.}

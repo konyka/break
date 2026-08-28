@@ -1994,3 +1994,22 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   位于 widget/core，不引入 GL、Vulkan、软件 canvas 或平台类型。
 - 验证：normal `test_myui_window_manager` **58/58**；ASan、Vulkan 和最终差异/编码
   门禁待完成。
+
+## rule engine bounded GRL semantics phase 1（2026-08-28）
+
+- 新增 `re_facts_set_path` 嵌套写：精确平键优先，否则沿根事实的结构化成员更新；
+  不隐式创建中间对象，未命中返回 `RE_STATUS_NOT_FOUND`。规则 then 赋值的点路径经它
+  路由，未命中时回退平坦 `re_facts_set`。
+- 新增 then 动作 `$Fact.method(...)`：按 set/get/reset/update 约定处理，否则回退注册
+  函数（先 `Fact.method` 后 `method`），均未注册返回 `RE_STATUS_NOT_SUPPORTED`
+  （上游静默无操作，此处为有意分歧）；then 方法调用之外出现 `$` 为解析错误。
+- 新增本地 GRL 扩展 `deffacts "name" { Path = literal; }` 及
+  `re_engine_load_deffacts` / `re_engine_reset_with_deffacts`（清库后重播种全部为
+  普通非逻辑事实）；数组字面量的字符串元素沿用浅拷贝约定，由程序 IR 持有字符串存储。
+- 新增规则模板 API（`re_rule_template_create/param_default/instantiate/destroy`）：
+  对 `{{identifier}}` 做纯字节替换，生成 `rule "N" [salience N] {when/then}` 文本，
+  宿主经 `re_program_load` 解析安装；无 JSON 往返、无引擎侧模板注册表。
+- 验证：`test_rule_engine_grl_semantics` **23/23**，rule-engine 定向套件
+  **13/13** 通过（build-gate，clang/Ninja Debug）。
+- 当前限制：方法调用仅限 then 动作；deffacts 为本地扩展而非上游语法；模板仅
+  instantiate-to-text；持久 agenda 与完整 producer provenance 仍属 Phase 2。

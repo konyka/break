@@ -7,7 +7,9 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
         (ir->expr_count != 0u && ir->exprs == NULL) ||
         (ir->term_count != 0u && ir->terms == NULL) ||
         (ir->action_count != 0u && ir->actions == NULL) ||
-        (ir->span_count != 0u && ir->spans == NULL)) return RE_STATUS_INVALID_ARGUMENT;
+        (ir->span_count != 0u && ir->spans == NULL) ||
+        (ir->deffacts_set_count != 0u && ir->deffacts_sets == NULL) ||
+        (ir->deffacts_entry_count != 0u && ir->deffacts_entries == NULL)) return RE_STATUS_INVALID_ARGUMENT;
     for (i = 0u; i < ir->rule_count; ++i) {
         const re_ir_rule_t *rule = &ir->rules[i];
         if (!index_ok(rule->name, ir->term_count) || ir->terms[rule->name].name == NULL ||
@@ -37,9 +39,10 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
     for (i = 0u; i < ir->term_count; ++i) {
         const re_ir_term_t *term = &ir->terms[i];
         size_t j;
-        if (term->kind < RE_IR_TERM_NONE || term->kind > RE_IR_TERM_ARRAY) return RE_STATUS_INVALID_ARGUMENT;
+        if (term->kind < RE_IR_TERM_NONE || term->kind > RE_IR_TERM_METHOD_CALL) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_NONE ||
-            ((term->kind == RE_IR_TERM_FACT || term->kind == RE_IR_TERM_FUNCTION || term->kind == RE_IR_TERM_GOAL) &&
+            ((term->kind == RE_IR_TERM_FACT || term->kind == RE_IR_TERM_FUNCTION || term->kind == RE_IR_TERM_GOAL ||
+              term->kind == RE_IR_TERM_METHOD_CALL) &&
             term->name == NULL)) return RE_STATUS_INVALID_ARGUMENT;
         if ((term->kind == RE_IR_TERM_BOOL && term->value.type != RE_VALUE_BOOL) ||
             (term->kind == RE_IR_TERM_INT64 && term->value.type != RE_VALUE_INT64) ||
@@ -48,6 +51,7 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
             (term->kind == RE_IR_TERM_ARITHMETIC && (term->arithmetic_operator < RE_ARITH_ADD || term->arithmetic_operator > RE_ARITH_DIVIDE))) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_ARITHMETIC && term->argument_count != 2u) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_ARRAY && term->argument_count == 0u) return RE_STATUS_INVALID_ARGUMENT;
+        if (term->kind == RE_IR_TERM_METHOD_CALL && term->argument_count > 8u) return RE_STATUS_INVALID_ARGUMENT;
         if (term->argument_count != 0u && term->argument_indices == NULL) return RE_STATUS_INVALID_ARGUMENT;
         for (j = 0u; j < term->argument_count; ++j)
             if (!index_ok(term->argument_indices[j], ir->term_count) ||
@@ -57,13 +61,38 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
                   ir->terms[term->argument_indices[j]].kind != RE_IR_TERM_DOUBLE &&
                   ir->terms[term->argument_indices[j]].kind != RE_IR_TERM_STRING))) return RE_STATUS_INVALID_ARGUMENT;
     }
-    for (i = 0u; i < ir->action_count; ++i)
-        if (!index_ok(ir->actions[i].target, ir->term_count) ||
-            ir->terms[ir->actions[i].target].kind != RE_IR_TERM_FACT ||
-            !index_ok(ir->actions[i].value, ir->term_count)) return RE_STATUS_INVALID_ARGUMENT;
+    for (i = 0u; i < ir->action_count; ++i) {
+        const re_ir_action_t *action = &ir->actions[i];
+        if (action->kind < RE_IR_ACTION_ASSIGN || action->kind > RE_IR_ACTION_METHOD_CALL ||
+            !index_ok(action->target, ir->term_count) ||
+            ir->terms[action->target].kind != RE_IR_TERM_FACT ||
+            !index_ok(action->value, ir->term_count)) return RE_STATUS_INVALID_ARGUMENT;
+        if (action->kind == RE_IR_ACTION_METHOD_CALL &&
+            (action->method_name == NULL || action->method_name_size == 0u ||
+             ir->terms[action->value].kind != RE_IR_TERM_METHOD_CALL))
+            return RE_STATUS_INVALID_ARGUMENT;
+    }
     for (i = 0u; i < ir->expr_count; ++i)
         if (ir->exprs[i].kind == RE_EXPR_COMPARE && ir->exprs[i].compare == RE_COMPARE_IN &&
             ir->terms[ir->exprs[i].right].kind != RE_IR_TERM_ARRAY &&
             ir->terms[ir->exprs[i].right].kind != RE_IR_TERM_FACT) return RE_STATUS_INVALID_ARGUMENT;
+    for (i = 0u; i < ir->deffacts_set_count; ++i) {
+        const re_ir_deffacts_set_t *set = &ir->deffacts_sets[i];
+        if (!index_ok(set->name, ir->term_count) || ir->terms[set->name].name == NULL ||
+            set->first_entry > ir->deffacts_entry_count ||
+            set->entry_count > ir->deffacts_entry_count - set->first_entry) return RE_STATUS_INVALID_ARGUMENT;
+    }
+    for (i = 0u; i < ir->deffacts_entry_count; ++i) {
+        const re_ir_deffacts_entry_t *entry = &ir->deffacts_entries[i];
+        const re_ir_term_t *path;
+        const re_ir_term_t *value;
+        if (!index_ok(entry->path, ir->term_count) || !index_ok(entry->value, ir->term_count)) return RE_STATUS_INVALID_ARGUMENT;
+        path = &ir->terms[entry->path];
+        value = &ir->terms[entry->value];
+        if (path->kind != RE_IR_TERM_FACT || path->name == NULL || path->name_size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+        if (value->kind != RE_IR_TERM_BOOL && value->kind != RE_IR_TERM_INT64 &&
+            value->kind != RE_IR_TERM_DOUBLE && value->kind != RE_IR_TERM_STRING &&
+            value->kind != RE_IR_TERM_ARRAY) return RE_STATUS_INVALID_ARGUMENT;
+    }
     return RE_STATUS_OK;
 }
