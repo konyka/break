@@ -48,7 +48,7 @@ static re_status_t query_rules(const query_case_t *test_case,
     re_program_t *program = NULL;
     re_query_t *query = NULL;
     re_query_options_t options = {
-        sizeof(options), test_case->max_depth, test_case->max_solutions
+        sizeof(options), test_case->max_depth, test_case->max_solutions, 0u, 0u
     };
     re_status_t status;
     if (engine == NULL || facts == NULL) {
@@ -84,7 +84,7 @@ TEST(base_rule_proves_from_fact) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_program_t *program = NULL;
     re_query_t *query = NULL;
-    re_query_options_t options = {sizeof(options), 4u, 2u};
+    re_query_options_t options = {sizeof(options), 4u, 2u, 0u, 0u};
     re_value_t ready = {RE_VALUE_BOOL, {.boolean = 1}};
     ASSERT_EQ(re_facts_set(facts, text("Ready"), &ready), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text("rule \"Base\" { when Ready == true then X = 1; }"), NULL, &program), RE_STATUS_OK);
@@ -142,7 +142,7 @@ TEST(recursive_query_honors_max_depth) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_program_t *program = NULL;
     re_query_t *query = NULL;
-    re_query_options_t options = {sizeof(options), 1u, 2u};
+    re_query_options_t options = {sizeof(options), 1u, 2u, 0u, 0u};
     ASSERT_EQ(re_program_load(NULL, text(
         "rule \"Base\" { when true then X = 1; }"
         "rule \"Middle\" { when goal(\"Base\") then Y = 1; }"
@@ -197,7 +197,7 @@ TEST(fact_mutation_invalidates_recursive_proofs) {
     re_program_t *program = NULL;
     re_query_t *query = NULL;
     re_proof_t *proof = NULL;
-    re_query_options_t options = {sizeof(options), 4u, 2u};
+    re_query_options_t options = {sizeof(options), 4u, 2u, 0u, 0u};
     re_value_t value = {RE_VALUE_BOOL, {.boolean = 1}};
     ASSERT_EQ(re_facts_set(facts, text("Ready"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text(

@@ -52,7 +52,15 @@ Implemented now:
   `max_activations_tracked` (zero selects the 1024 default) under ABI minor 3.
 - a bounded, non-capability-bearing query seam for exact flat goals and
   recursive rule bodies with literal/propagated formal binding, nested goal
-  operands, and registered custom-function operands; general unification and
+  operands, and registered custom-function operands, extended in Phase 3 with
+  query-level `NOT` negation-as-failure (closed-world, no stratification,
+  LIMIT propagated never inverted), bounded query aggregation
+  (COUNT/SUM/AVERAGE/MIN/MAX/FIRST/LAST folded over an internal bounded query
+  at max_depth 64 / max_solutions 1024), per-query search strategies
+  (BREADTH_FIRST and ITERATIVE share an iterative-deepening wrapper over the
+  DFS machine), and a bounded engine-owned shared proof graph caching final
+  query results (64 entries, clear-all eviction, coarse per-facts
+  invalidation, deep-cloned served proofs); general unification and
   shared-subgraph/upstream proof provenance remain pending. The
   bounded binding slice stores each successful derivation path as owned nodes
    and deterministic parent/child edges. These edges describe the active
@@ -67,10 +75,12 @@ Implemented now:
 Deferred explicitly:
 
 - full upstream RETE/RETE-UL execution and general truth maintenance;
-- arbitrary argument unification, shared-subgraph proof graphs, and upstream
-  proof strategies; bounded recursive binding, nested goal operands, custom
-  function operands, and derivation-path enumeration are implemented and remain
-  deliberately narrower than upstream semantics;
+- arbitrary argument unification and the upstream shared-subgraph proof
+  provenance graph; bounded recursive binding, nested goal operands, custom
+  function operands, derivation-path enumeration, query-level negation,
+  bounded query aggregation, strategy selection, and the bounded shared proof
+  graph result cache are implemented and remain deliberately narrower than
+  upstream semantics;
 - native Redis-backed streaming state. The portable bounded in-memory provider is implemented;
 
 The bounded agenda-control subset enforces `MAIN`/named program focus,
@@ -363,3 +373,25 @@ bindings, nested goal operands, and registered custom-function operands. The
 compatibility path still rejects arbitrary predicate unification and shared
 proof subgraphs. Neither path claims
 arbitrary upstream unification or shared-subgraph provenance.
+
+Above both paths, `re_backward_machine_dispatch` owns query argument and
+option normalization (including the `re_query_options_t` `struct_size`
+versioning for the appended `strategy` and `disable_shared_proof_graph`
+fields), the leading-`NOT` negation-as-failure inversion, strategy selection,
+and the shared proof graph consult/store. The NOT subgoal re-enters the
+dispatcher with the caller's normalized options and `max_solutions` 1, so the
+inversion always applies to the strategy-selected result and a cached entry
+holds the final negation-resolved result for its exact goal text.
+`RE_QUERY_STRATEGY_BREADTH_FIRST` and `RE_QUERY_STRATEGY_ITERATIVE` run one
+capped DFS pass per probe with doubling depth caps (1, 2, 4, ... up to the
+configured maximum; first cap with at least one solution wins; more than 32
+doublings reports `RE_STATUS_LIMIT`). The shared proof graph
+(`proof_graph.c`) is a lazily created engine-owned 64-entry cache of final
+PROVED/DISPROVED results, consulted after normalization and keyed on the exact
+goal text, facts identity, normalized options, and `config_serial`, stamped
+with the facts `mutation_serial`; served proofs are deep clones with their own
+invalidation subscription, a full table clears every entry, and
+`re_engine_proof_graph_stats` exposes hits/misses. `re_engine_query_aggregate`
+lives in `backward.c` but only composes the public query API: an internal
+bounded query (max_depth 64, max_solutions 1024, DFS) whose named binding is
+folded over the solutions.

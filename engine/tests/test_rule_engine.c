@@ -1623,7 +1623,7 @@ TEST(private_modules_control_qualified_rule_visibility) {
     re_program_t *program = NULL;
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
-    re_query_options_t options = {sizeof(options), 4u, 1u};
+    re_query_options_t options = {sizeof(options), 4u, 1u, 0u, 0u};
     re_query_t *query = NULL;
     ASSERT_EQ(re_program_load(NULL, text(
         "defmodule Shared { export: all; } "
@@ -1861,7 +1861,7 @@ TEST(bounded_query_proves_fact_and_binds_variable) {
     re_query_t *query = NULL;
     re_proof_t *proof = NULL;
     re_query_binding_t binding;
-    re_query_options_t options = {sizeof(options), 8u, 4u};
+    re_query_options_t options = {sizeof(options), 8u, 4u, 0u, 0u};
     re_value_t value = {RE_VALUE_STRING, {.string = {"Ada", 3u}}};
     ASSERT_EQ(re_facts_set(facts, text("User"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("User == X"), &options, &query), RE_STATUS_OK);
@@ -1883,7 +1883,7 @@ TEST(bounded_query_reports_disproof_unknown_and_limit) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_query_t *query = NULL;
-    re_query_options_t options = {sizeof(options), 8u, 1u};
+    re_query_options_t options = {sizeof(options), 8u, 1u, 0u, 0u};
     re_value_t value = {RE_VALUE_BOOL, {.boolean = 1}};
     ASSERT_EQ(re_facts_set(facts, text("Ready"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Ready == false"), &options, &query), RE_STATUS_OK);
@@ -1910,7 +1910,7 @@ TEST(query_proof_trace_is_deterministic_and_invalidated_by_mutation) {
     re_proof_t *proof = NULL;
     re_string_t trace;
     re_value_t value = {RE_VALUE_BOOL, {.boolean = 1}};
-    re_query_options_t options = {sizeof(options), 8u, 2u};
+    re_query_options_t options = {sizeof(options), 8u, 2u, 0u, 0u};
     ASSERT_EQ(re_facts_set(facts, text("Ready"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text("rule \"Approved\" { when Ready == true then Mark = 1; }"), NULL, &program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
@@ -1935,7 +1935,7 @@ TEST(backward_query_recurses_through_rule_name_conditions) {
     re_query_t *query = NULL;
     re_proof_t *proof = NULL;
     re_string_t trace;
-    re_query_options_t options = {sizeof(options), 8u, 4u};
+    re_query_options_t options = {sizeof(options), 8u, 4u, 0u, 0u};
     ASSERT_EQ(re_program_load(NULL, text("rule \"Base\" { when true then BaseValue = true; } rule \"Derived\" { when Base == true then DerivedValue = true; }"), NULL, &program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Derived"), &options, &query), RE_STATUS_OK);

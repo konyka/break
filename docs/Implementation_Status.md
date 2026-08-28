@@ -875,7 +875,7 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 
 | 模块 | 状态 | 证据 / 说明 |
 |------|------|-------------|
-| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/`; `rule_engine_core` is graphics/Lua-independent. The focused cases in `engine/tests/test_rule_engine.c` cover flat facts, parsing/install, action references, callbacks, limits, bounded agenda controls, private/rebuild-based RETE, streaming windows and correlation, callback and memory providers, and the bounded query seam. The bounded backward slice covers zero-argument and parameterized goal chains, literal/propagated formal binding, nested goal operands, registered custom-function operands, boolean alternatives, recursive traversal, cycles, depth and solution limits, deterministic derivation-path proof nodes/edges, and fact-mutation invalidation; arbitrary predicate unification, shared-subgraph provenance, native Redis, and RETE-UL parity remain unsupported. C11 executor evidence is opt-in. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
+| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/`; `rule_engine_core` is graphics/Lua-independent. The focused cases in `engine/tests/test_rule_engine.c` cover flat facts, parsing/install, action references, callbacks, limits, bounded agenda controls, private/rebuild-based RETE, streaming windows and correlation, callback and memory providers, and the bounded query seam. The bounded backward slice covers zero-argument and parameterized goal chains, literal/propagated formal binding, nested goal operands, registered custom-function operands, boolean alternatives, recursive traversal, cycles, depth and solution limits, deterministic derivation-path proof nodes/edges, and fact-mutation invalidation; Phase 3 adds query-level `NOT` negation-as-failure, bounded query aggregation (COUNT/SUM/AVERAGE/MIN/MAX/FIRST/LAST), DFS/BFS/iterative-deepening strategy selection, and a bounded shared proof graph result cache; arbitrary predicate unification, shared-subgraph provenance, native Redis, and RETE-UL parity remain unsupported. C11 executor evidence is opt-in. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
 
 ## 游戏运行时
 
@@ -2049,3 +2049,49 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   `RE_STATUS_LIMIT`（新的诚实失败模式）。`re_agenda_peek` 的 rule_name 借用已安装程序
   的存储，peek 为 O(n²)、由 `max_activations_tracked` 约束。完整 RETE-UL 与通用 TMS
   仍不支持。
+
+## rule engine phase 3：查询级 NOT、查询聚合、搜索策略与共享证明图（2026-08-28）
+
+- 查询级否定（`NOT ` 前缀，negation-as-failure，封闭世界假设）：子目标可证 →
+  `RE_QUERY_DISPROVED` 且 0 解；子目标不可证或已否定 → `RE_QUERY_PROVED`，附一个空绑定
+  证明，其 trace 记录完整 `NOT <goal>` 文本；子目标深度受限 → `RE_QUERY_LIMIT` 原样透传
+  （反转受限搜索结果不可靠，故永不反转）。无 stratification——与上游一致（上游同样只允许
+  目标前缀形式）；嵌套 `NOT NOT` 每层递归解包一级；前缀区分大小写，不消耗 `max_depth`
+  层级（子目标以调用方规范化选项、`max_solutions` 1 重入分发器）；NOT 与搜索策略组合
+  （反转作用于策略选定的子目标结果）；空前缀剩余为 `RE_STATUS_INVALID_ARGUMENT`。另外：
+  精确形式 `goal("RuleName")` 查询字符串解包为裸规则目标；字面上命名为 `goal("X")` 的
+  规则会与之冲突（按规则 X 查询）。
+- 查询聚合 `re_engine_query_aggregate`：`RE_ACCUM_COUNT/SUM/AVERAGE/MIN/MAX` 加追加的
+  `FIRST/LAST`；内部有界查询（max_depth 64、max_solutions 1024、DFS）后按 DFS 序折拢
+  指定绑定。类型规则与上游聚合一致：COUNT → INT64、AVERAGE → DOUBLE、SUM/MIN/MAX 全
+  INT64 输入时保持 INT64——与 `re_accumulator_evaluate` 恒 DOUBLE 有意不同（头文件注释
+  已注明）。FIRST/LAST 遇字符串绑定返回 `RE_STATUS_NOT_SUPPORTED`（proof 字符串随内部
+  查询释放）；空解集：COUNT 0/OK，其余 `RE_STATUS_NOT_FOUND`；非数值折拢输入
+  `RE_STATUS_INVALID_ARGUMENT`；达到 1024 解上限或内部搜索深度受限报 `RE_STATUS_LIMIT`
+  （恰好满员与截断不可区分）。percentile/stddev/count-distinct、GROUP BY、嵌套或多变量
+  聚合均不支持；不解析上游 GRL query-block/WHERE 语法。
+- 搜索策略：`re_query_options_t` 追加 `strategy` 与 `disable_shared_proof_graph`，沿用
+  `struct_size` 版本化（旧尺寸结构 → DFS + 共享开；过短 → `RE_STATUS_INVALID_ARGUMENT`；
+  策略值越界同）。`BREADTH_FIRST`/`ITERATIVE` 共用基于 DFS 机器的迭代加深包装：以
+  max_depth 上限 1、2、4……递增至配置上限（默认 64），首个产出至少一个解的上限获胜；
+  超过 32 次翻倍报 `RE_STATUS_LIMIT`。backward 查询不执行动作，重复探测无副作用；获胜的
+  截断探测仍报 PROVED（截断是策略机制而非搜索失败）。上游 iterative deepening 同为递增
+  深度的 DFS 探测；上游 breadth-first 是独立队列式搜索，本地未建模。
+- 共享证明图：引擎持有、惰性创建的 64 项缓存（满则全清），键为 {目标文本、facts 指针、
+  `mutation_serial` 代际、规范化选项（max_depth/max_solutions/strategy）、`config_serial`}，
+  在选项规范化后查询；仅缓存终态 PROVED/DISPROVED（LIMIT/UNKNOWN 永不缓存）；服务证明为
+  深拷贝，服务查询自带与新建运行相同的失效订阅；`disable_shared_proof_graph` 完全绕过
+  查询/存储/统计（统计不动）；`re_engine_proof_graph_stats` 报告命中/未命中（首次缓存前
+  为零）。`config_serial` 在安装程序、注册/注销函数时递增。
+- 顺带修复（值得注意）：`re_facts_retract` 现在递增 `mutation_serial`——既有缺口（此前仅
+  set/insert/update 递增），否则撤回后共享证明图可能服务陈旧缓存；TMS 级联撤回与仅撤回
+  事务因此同样触发失效。
+- 验证：`test_rule_engine_backward_ext` **32/32**（经 `re_internal.h` 白盒）；build-gate 上
+  `ctest -R "rule_engine|backward_machine" --output-on-failure` **15/15**；ASAN+UBSAN
+  （build-rule-fresh-asan）ext 套件与规则引擎子集全绿；`rule_engine_c99_consumer` 干净。
+- 当前限制：缓存条目按 facts 指针值键控（从不解引用，无 UAF；销毁+同地址重分配且代际
+  匹配时可能别名——已记录为挂起的残留风险，未修复）；失效为粗粒度（同一 facts 任意变更
+  在下次查询时丢弃其全部条目）；NOT 查询的统计计入子目标查询（一次新的 `NOT X` 记录
+  2 次 miss）；INT64 折拢使用未检查加法，极端求和会溢出（回绕）且无状态报告；
+  `RE_CAP2_BACKWARD_PROOFS` 能力位仍保持清零——任意谓词合一与上游共享子图
+  producer provenance 未实现，位通告暂不提升。

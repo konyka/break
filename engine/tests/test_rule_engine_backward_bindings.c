@@ -72,7 +72,7 @@ static re_status_t query_rules(const char *source, const char *name,
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_program_t *program = NULL;
     re_query_t *query = NULL;
-    re_query_options_t options = {sizeof(options), max_depth, max_solutions};
+    re_query_options_t options = {sizeof(options), max_depth, max_solutions, 0u, 0u};
     re_status_t status;
     int installed = 0;
     if (engine == NULL || facts == NULL) return RE_STATUS_OUT_OF_MEMORY;
@@ -109,7 +109,7 @@ TEST(conflicting_argument_count_returns_defined_failure) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_program_t *program = NULL;
     re_query_t *query = NULL;
-    re_query_options_t options = {sizeof(options), 4u, 1u};
+    re_query_options_t options = {sizeof(options), 4u, 1u, 0u, 0u};
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(facts);
     ASSERT_EQ(re_program_load(NULL, text(
@@ -384,7 +384,7 @@ TEST(argument_binding_mutation_invalidates_recursive_query) {
     re_program_t *program = NULL;
     re_query_t *query = NULL;
     re_proof_t *proof = NULL;
-    re_query_options_t options = {sizeof(options), 4u, 2u};
+    re_query_options_t options = {sizeof(options), 4u, 2u, 0u, 0u};
     re_value_t value = {RE_VALUE_INT64, {.int64_value = 7}};
     ASSERT_EQ(re_facts_set(facts, text("Input"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text(
@@ -422,7 +422,7 @@ TEST(deep_nested_function_operands_preserve_evaluation_context) {
     re_function_t *function = NULL;
     re_function_descriptor_t descriptor = {sizeof(descriptor), RE_ABI_VERSION_MAJOR,
         {"identity", 8u}, identity_function, noop_release, NULL};
-    re_query_options_t options = {sizeof(options), nesting + 4u, 1u};
+    re_query_options_t options = {sizeof(options), nesting + 4u, 1u, 0u, 0u};
 
     ASSERT_NOT_NULL(source);
     ASSERT_NOT_NULL(engine);
@@ -460,7 +460,7 @@ TEST(nested_goal_inside_custom_function_argument_preserves_result) {
     re_function_t *function = NULL;
     re_function_descriptor_t descriptor = {sizeof(descriptor), RE_ABI_VERSION_MAJOR,
         {"bool_identity", sizeof("bool_identity") - 1u}, bool_identity_function, noop_release, NULL};
-    re_query_options_t options = {sizeof(options), 4u, 1u};
+    re_query_options_t options = {sizeof(options), 4u, 1u, 0u, 0u};
     ASSERT_EQ(re_engine_register_function(engine, &descriptor, &function), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text(
         "rule \"Leaf\" { when true then Done = true; }"
@@ -487,7 +487,7 @@ TEST(custom_function_only_backward_condition_uses_general_evaluator) {
     re_function_t *function = NULL;
     re_function_descriptor_t descriptor = {sizeof(descriptor), RE_ABI_VERSION_MAJOR,
         {"bool_identity", sizeof("bool_identity") - 1u}, bool_identity_function, noop_release, NULL};
-    re_query_options_t options = {sizeof(options), 4u, 1u};
+    re_query_options_t options = {sizeof(options), 4u, 1u, 0u, 0u};
     ASSERT_EQ(re_engine_register_function(engine, &descriptor, &function), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text(
         "rule \"Top\" { when bool_identity(true) == true then Done = true; }"),

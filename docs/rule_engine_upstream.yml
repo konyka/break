@@ -139,11 +139,11 @@ inventory:
       notes: C99 tagged values cover the tested scalar/null/unknown subset; Rust type and coercion surface is not identical.
     - id: backward
       upstream_ref: src/backward/
-      local_status: pending
-      local_ref: engine/src/rule_engine/backward.c
-      local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c]
+      local_status: tested
+      local_ref: [engine/src/rule_engine/backward.c, engine/src/rule_engine/proof_graph.c]
+      local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_ext.c]
       parity: bounded_behavior
-      notes: Bounded goal recursion and bindings are tested; arbitrary unification and proof sharing are absent.
+      notes: Bounded goal recursion and bindings are tested, plus query-level NOT (negation-as-failure, closed-world, no stratification - upstream also restricts NOT to a goal prefix), query aggregation over an internal bounded query (COUNT/SUM/AVERAGE/MIN/MAX/FIRST/LAST with int64-preserving SUM/MIN/MAX matching the upstream aggregation type rules), and selectable search strategies whose BFS/ITERATIVE share an iterative-deepening wrapper - upstream ITERATIVE is likewise DFS probes at rising depth caps, while upstream BFS is a separate queue-based search that is not modeled. A bounded 64-entry shared proof graph caches final query results; arbitrary unification and the upstream shared-subgraph provenance graph remain absent.
     - id: streaming
       upstream_ref: src/streaming/
       local_status: pending
@@ -173,9 +173,9 @@ inventory:
       notes: Native Redis adapter is unavailable; CMake only detects hiredis and deliberately does not enable runtime support.
     - id: backward-chaining
       upstream_ref: Cargo.toml:[features].backward-chaining
-      local_status: implemented
-      local_ref: engine/src/rule_engine/backward.c
-      local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c]
+      local_status: tested
+      local_ref: [engine/src/rule_engine/backward.c, engine/src/rule_engine/proof_graph.c]
+      local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_ext.c]
       parity: bounded_behavior
     - id: all-features
       upstream_ref: Cargo.toml:package.metadata.docs.rs:all-features
@@ -192,7 +192,7 @@ inventory:
     - {id: arrays-multifield-and-in, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, src/rete/multifield.rs], local_status: tested, local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, notes: Non-empty literal arrays and structured arrays containing scalar members support typed membership; literal arrays are capped at 64 elements and full upstream collection semantics remain pending.}
     - {id: modules-import-export, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/mod.rs], local_status: tested, local_refs: [engine/src/rule_engine/advanced.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior}
     - {id: stream-patterns-windows-and-correlation, upstream_refs: [docs/advanced-features/STREAMING.md, src/streaming/], local_status: pending, local_refs: [engine/src/rule_engine/tumbling_session.c, engine/src/rule_engine/stream_correlation.c], local_tests: [engine/tests/test_rule_engine.c], parity: bounded_behavior}
-    - {id: backward-queries-unification-negation-aggregation, upstream_refs: [docs/api-reference/GRL_QUERY_SYNTAX.md, src/backward/], local_status: pending, local_refs: [engine/src/rule_engine/backward.c], local_tests: [engine/tests/test_rule_engine_backward.c], parity: bounded_behavior}
+    - {id: backward-queries-unification-negation-aggregation, upstream_refs: [docs/api-reference/GRL_QUERY_SYNTAX.md, src/backward/], local_status: tested, local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/proof_graph.c], local_tests: [engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_ext.c], parity: bounded_behavior, notes: Prefix NOT negation-as-failure, bounded query aggregation (seven kinds, int64-preserving SUM/MIN/MAX), DFS/BFS/iterative-deepening strategy selection, and a bounded shared proof graph result cache are tested; arbitrary unification, the GRL query-block/WHERE surface, and upstream shared-subgraph provenance remain unsupported.}
   runtime_contracts:
     - {id: ownership-and-lifetimes, upstream_refs: [src/engine/, src/rete/, src/backward/], local_status: tested, local_refs: [engine/src/rule_engine/allocator.c, engine/src/rule_engine/facts.c, engine/src/rule_engine/query.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_backward_bindings.c], parity: equivalent_behavior}
     - {id: errors-limits-cancellation, upstream_refs: [src/errors.rs, src/engine/], local_status: tested, local_refs: [engine/src/rule_engine/engine.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c], parity: equivalent_behavior}
@@ -200,7 +200,7 @@ inventory:
     - {id: transactions-and-fact-lifecycle, upstream_refs: [src/rete/facts.rs, src/rete/tms.rs, tests/tms_test.rs], local_status: tested, local_refs: [engine/src/rule_engine/transactions.c, engine/src/rule_engine/facts.c], local_tests: [engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_rete_incremental.c], parity: equivalent_behavior}
      - {id: canonical-ir, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_status: implemented, local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c, engine/src/rule_engine/ir_eval.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, notes: Private immutable IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and forward-evaluation boundary; it is not an upstream-compatible internal representation.}
     - {id: rete-ul-tms-persistent-agenda, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_status: tested, local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/agenda.c, engine/src/rule_engine/engine.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c], parity: bounded_behavior, notes: Bounded persistent agenda with value-fingerprint refraction and pop-time revalidation plus per-rule private networks are tested; full RETE-UL and general truth maintenance remain intentionally unsupported.}
-    - {id: backward-arbitrary-unification-and-proof-sharing, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/backward.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c], parity: bounded_behavior, notes: Backward arbitrary unification and shared proof provenance are absent locally.}
+    - {id: backward-arbitrary-unification-and-proof-sharing, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/proof_graph.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_ext.c], parity: bounded_behavior, notes: The proof-sharing half is now a bounded local result cache (64 entries, clear-all eviction, final results only, coarse per-facts invalidation, pointer-identity keying with a documented ABA residual); arbitrary unification and the upstream shared-subgraph producer-provenance graph remain absent locally.}
     - {id: full-streaming-patterns, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_status: unsupported, local_refs: [engine/src/rule_engine/extensions.c], local_tests: [engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, notes: Full streaming patterns are absent locally.}
   test_families:
     upstream_declared_count: 436

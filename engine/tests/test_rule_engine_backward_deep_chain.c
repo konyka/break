@@ -19,7 +19,7 @@ TEST(machine_path_proves_deep_generated_chain) {
     re_program_t *program = NULL;
     re_query_t *query = NULL;
     re_proof_t *proof = NULL;
-    re_query_options_t options = {sizeof(options), (size_t)chain_length + 1u, 1u};
+    re_query_options_t options = {sizeof(options), (size_t)chain_length + 1u, 1u, 0u, 0u};
 
     ASSERT_TRUE(source != NULL);
     for (index = chain_length - 1; index >= 0; --index) {

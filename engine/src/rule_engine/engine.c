@@ -672,7 +672,7 @@ re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t
     re_allocator_impl_t a; re_engine_t *engine; re_allocator_init(&a, allocator);
     if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return NULL;
     engine = re_alloc(&a, sizeof(*engine)); if (engine == NULL) return NULL;
-    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; return engine;
+    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; return engine;
 }
 
 /* rete_network mirrors the first attached per-rule network (lowest rule
@@ -771,6 +771,8 @@ void re_engine_destroy(re_engine_t *engine) {
     re_agenda_destroy_internal(engine->agenda);
     engine->agenda = NULL;
     while (engine->functions != NULL) { re_function_t *function = engine->functions; engine->functions = function->next; if (function->release != NULL) function->release(function->context); re_free(&engine->allocator, function->name); re_free(&engine->allocator, function); }
+    re_proof_graph_destroy(engine->proof_graph);
+    engine->proof_graph = NULL;
     re_program_destroy(engine->program); re_free(&engine->allocator, engine);
 }
 re_capabilities_t re_engine_capabilities(const re_engine_t *engine) { return engine == NULL ? 0u : RE_CAP_CORE_GRL | RE_CAP_FACTS | RE_CAP_FORWARD_EXECUTION; }
@@ -811,7 +813,7 @@ re_status_t re_engine_register_function(re_engine_t *engine, const re_function_d
     if (engine->running) return RE_STATUS_BUSY;
     *out = NULL; function = re_alloc(&engine->allocator, sizeof(*function)); if (function == NULL) return RE_STATUS_OUT_OF_MEMORY; memset(function, 0, sizeof(*function));
     if (re_copy_string(&engine->allocator, descriptor->name, &function->name) != RE_STATUS_OK) { re_free(&engine->allocator, function); return RE_STATUS_OUT_OF_MEMORY; }
-    function->engine = engine; function->name_size = descriptor->name.size; function->call = descriptor->call; function->release = descriptor->release; function->context = descriptor->context; function->next = engine->functions; engine->functions = function; *out = function; return RE_STATUS_OK;
+    function->engine = engine; function->name_size = descriptor->name.size; function->call = descriptor->call; function->release = descriptor->release; function->context = descriptor->context; function->next = engine->functions; engine->functions = function; ++engine->config_serial; *out = function; return RE_STATUS_OK;
 }
 void re_function_unregister(re_function_t *function) {
     re_function_t **link;
@@ -819,7 +821,7 @@ void re_function_unregister(re_function_t *function) {
     if (function->active_calls != 0u) return;
     link = &function->engine->functions; while (*link != NULL && *link != function) link = &(*link)->next;
     if (*link == function) *link = function->next;
-    function->unregistered = 1; if (function->release != NULL) function->release(function->context); re_free(&function->engine->allocator, function->name); re_free(&function->engine->allocator, function);
+    function->unregistered = 1; ++function->engine->config_serial; if (function->release != NULL) function->release(function->context); re_free(&function->engine->allocator, function->name); re_free(&function->engine->allocator, function);
 }
 re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
     re_program_t *old; if (engine == NULL || program == NULL) return RE_STATUS_INVALID_ARGUMENT;
@@ -832,6 +834,8 @@ re_status_t re_engine_install(re_engine_t *engine, re_program_t *program) {
      * mode included. */
     re_agenda_reset(engine->agenda);
     old = engine->program; engine->program = program; re_program_destroy(old);
+    /* Cached proof-graph entries key on config_serial; new rules move it. */
+    ++engine->config_serial;
     return RE_STATUS_OK;
 }
 

@@ -77,6 +77,8 @@ dotted target surfaces `RE_STATUS_LIMIT` from the TMS dependency check.
 | `re_engine_run` | facts, options, callback context | no callback/context retention | returns status; no background work or retained output |
 | `re_engine_register_function` | descriptor memory after return; context until unregister | copied name and registration handle | transactional registration; callback/release lifetime is explicit |
 | `re_engine_query` / `re_query_next` | goal input after call | query and proof handles | bounded, pull-based proof iteration; unsupported until capability is advertised |
+| `re_engine_query_aggregate` | pattern and field inputs after call | output value (no string storage retained) | internal bounded query (max_depth 64, max_solutions 1024); cap or depth exhaustion reports `RE_STATUS_LIMIT` |
+| `re_engine_proof_graph_stats` | engine handle | hit/miss counters | zeroes before the first cached query; NULL engine or counter is invalid argument |
 | `re_stream_window_create_v1` / `re_stream_window_record_v1` | options and event name/value during call | window handle and copied event data | explicit u64 event timestamp; limits and late-event policy are part of options; tested bounded runtime |
 | `re_stream_window_snapshot` / `re_stream_window_restore` | restore bytes during call; snapshot bytes through release callback | snapshot output until release; restored window state | opaque versioned bytes; no mutation on unsupported format |
 | `re_engine_set_state_provider_v1` | options and descriptor during call; provider context until release/destroy | provider handle | callback or optional Redis boundary; provider failures are returned directly |
@@ -309,7 +311,12 @@ service must leave the option disabled; no credentials belong in the repository.
 ## Bounded backward query slice
 
 The focused suite exercises a bounded, non-capability-bearing query seam only;
-the backward-proof capability bit remains clear.
+the backward-proof capability bit remains clear. Phase 3 kept it that way
+deliberately: `re_engine_capabilities_v2` does not set
+`RE_CAP2_BACKWARD_PROOFS` and `re_engine_extension_info` reports
+`RE_EXTENSION_BACKWARD_PROOFS` as `RE_STATUS_NOT_SUPPORTED`, because arbitrary
+predicate unification and upstream shared-subgraph provenance remain
+unsupported and the seam is promoted only when that claim can be honest.
 `re_engine_query_bounded` accepts exact flat fact goals of the form
 `Name == literal` or `Name == Variable`, plus exact installed rule names.
 Rule declarations may optionally use bounded formal parameters, for example
@@ -333,6 +340,76 @@ the recursive rule-name path. `max_solutions` enumerates alternative rules for
    remains valid after fact mutation and query destruction, while proofs not yet
    returned are released by the query. Fact mutation invalidates only the
    query's remaining proofs.
+
+Phase 3 extends the same seam, still without advertising the capability bit.
+A leading `NOT ` prefix on a query goal is negation-as-failure under the
+closed-world assumption: a provable subgoal yields `RE_QUERY_DISPROVED` with
+zero solutions, an unprovable or disproved subgoal yields `RE_QUERY_PROVED`
+with one empty-binding proof whose trace names the full `NOT <goal>` text, and
+a depth-limited subgoal reports `RE_QUERY_LIMIT` unchanged because inverting a
+limited search would be unsound. There is no stratification pass - upstream
+likewise restricts NOT to a goal prefix. Nested `NOT NOT` unwraps one level
+per recursion, the prefix is case-sensitive and consumes no `max_depth` level
+(the subgoal re-enters the dispatcher with the caller's normalized options and
+`max_solutions` 1), an empty remainder is `RE_STATUS_INVALID_ARGUMENT`, and
+the inversion composes with the selected search strategy because it applies to
+the strategy-selected subgoal result. An exact-form `goal("RuleName")` query
+string unwraps to the bare rule goal; a rule literally named `goal("X")`
+collides with the unwrap.
+
+`re_engine_query_aggregate` runs a pattern (an ordinary query goal string)
+through an internal bounded query - `max_depth` 64, `max_solutions` 1024, DFS -
+and folds the named binding over the solutions in DFS order. Kinds are
+`RE_ACCUM_COUNT`/`SUM`/`AVERAGE`/`MIN`/`MAX` plus the appended
+`RE_ACCUM_FIRST`/`LAST`. Result typing follows the upstream aggregation rules:
+COUNT is `RE_VALUE_INT64`, AVERAGE `RE_VALUE_DOUBLE`, and SUM/MIN/MAX stay
+`RE_VALUE_INT64` when every folded value was INT64 - a deliberate difference
+from `re_accumulator_evaluate`'s always-DOUBLE, noted in the header. FIRST/LAST
+copy the first/last carrier's binding value; a STRING result is
+`RE_STATUS_NOT_SUPPORTED` because proof string storage dies with the internal
+query. An empty solution set yields COUNT 0 with `RE_STATUS_OK` and
+`RE_STATUS_NOT_FOUND` for every other kind; a non-numeric fold input is
+`RE_STATUS_INVALID_ARGUMENT`. Reaching the 1024-solution cap reports
+`RE_STATUS_LIMIT` because an exact fit cannot be told apart from a truncated
+set, as does a depth-limited internal search. Percentile, stddev,
+count-distinct, GROUP BY, and nested or multi-variable aggregation are
+excluded; upstream's GRL query-block/WHERE surface is not parsed. The INT64
+fold accumulates with unchecked addition, so extreme sums overflow (wrap)
+without a status.
+
+`re_query_options_t` appends `strategy` and `disable_shared_proof_graph` under
+the existing `struct_size` versioning: a struct that does not cover the
+appended tail gets DFS with sharing on, a sub-size struct is
+`RE_STATUS_INVALID_ARGUMENT`, and a strategy value outside [0, 2] is
+`RE_STATUS_INVALID_ARGUMENT`. `RE_QUERY_STRATEGY_BREADTH_FIRST` and
+`RE_QUERY_STRATEGY_ITERATIVE` share one iterative-deepening wrapper over the
+DFS machine - the goal is re-proven with `max_depth` caps 1, 2, 4, ... up to
+the configured maximum (default 64), the first cap with at least one solution
+wins, and more than 32 doublings reports `RE_STATUS_LIMIT`. Backward queries
+execute no actions, so re-probing is side-effect free. Upstream iterative
+deepening is likewise DFS probes at rising depth caps; upstream breadth-first
+is a separate queue-based search that is not modeled. A winning capped probe
+reports PROVED even though deeper branches were cut - the cap is the strategy
+mechanism, not a search failure.
+
+The shared proof graph is a lazily created engine-owned cache of final query
+results (PROVED/DISPROVED only; LIMIT/UNKNOWN are never cached), consulted
+after option normalization and keyed on the exact goal text, the facts
+identity, the normalized options (`max_depth`, `max_solutions`, `strategy`),
+and the engine config serial, and stamped with the facts mutation generation.
+It holds at most 64 entries and clears every entry when full; served proofs
+are deep clones, and a served query wires the same invalidation subscription a
+fresh run gets. `config_serial` bumps on program install and function
+register/unregister, and `mutation_serial` now also bumps on retraction, so
+TMS cascades and retract-only transactions invalidate cached proofs. Entries
+key on the facts pointer value but never dereference it, so there is no
+use-after-free; a destroy-plus-realloc at the same address with a matching
+generation could alias and is parked as a documented residual risk.
+`disable_shared_proof_graph` bypasses lookup, store, and stats entirely (no
+stats movement), and `re_engine_proof_graph_stats` reports hits and misses -
+zeroes before the first cached query. A NOT query counts the subgoal consult
+in the stats, so one fresh `NOT X` records two misses. The upstream
+shared-subgraph producer-provenance graph is not modeled.
 
 Names and string slices returned by proof binding, trace, and node getters are
 borrowed from the proof and remain valid until `re_proof_destroy`; callers must

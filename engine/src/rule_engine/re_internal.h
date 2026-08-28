@@ -269,6 +269,41 @@ re_status_t re_agenda_push_full(re_agenda_t *agenda, size_t rule_index, int32_t 
 re_status_t re_agenda_mark_fired(re_agenda_t *agenda, const re_agenda_entry_internal_t *entry);
 int        re_agenda_pop_highest(re_agenda_t *agenda, re_agenda_entry_internal_t *out);
 
+/* Shared proof graph (Task 14): an engine-owned cache of final backward-query
+ * results, consulted in re_backward_machine_dispatch AFTER option
+ * normalization, keyed on the exact goal text, the facts identity, the
+ * normalized search options (max_depth, max_solutions, strategy), the engine
+ * config serial, and the facts mutation generation - so cached results equal
+ * the final strategy/NOT-resolved results. Only RE_QUERY_PROVED and
+ * RE_QUERY_DISPROVED results are stored; LIMIT and UNKNOWN are never cached.
+ * An entry is stale when either serial moved and is dropped on lookup; the
+ * generation check is coarse (any mutation of the same facts object
+ * invalidates every entry bound to it). When the table is full the store
+ * path clears every entry (documented clear-all eviction). */
+#define RE_PROOF_GRAPH_CAPACITY 64u
+
+typedef struct re_proof_graph_entry_t {
+    char *goal;
+    size_t goal_size;
+    re_facts_t *facts; /* identity only, not owned */
+    uint64_t generation; /* facts->mutation_serial at store time */
+    uint64_t config_serial; /* engine->config_serial at store time */
+    size_t max_depth;
+    size_t max_solutions;
+    uint32_t strategy;
+    re_query_result_t result;
+    re_proof_t **proofs; /* cloned, owned */
+    size_t proof_count;
+} re_proof_graph_entry_t;
+
+typedef struct re_proof_graph_t {
+    re_allocator_impl_t allocator;
+    re_proof_graph_entry_t entries[RE_PROOF_GRAPH_CAPACITY];
+    size_t count;
+    uint64_t hits;
+    uint64_t misses;
+} re_proof_graph_t;
+
 struct re_engine_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -285,6 +320,12 @@ struct re_engine_t {
     re_rete_network_t **rete_networks;
     size_t rete_network_count;
     re_agenda_t *agenda;
+    /* Lazy-created on the first shared (non-disabled) backward query;
+     * released by re_engine_destroy. config_serial bumps on program install
+     * and function register/unregister so cached proofs never outlive the
+     * rules or functions they were derived from. */
+    re_proof_graph_t *proof_graph;
+    uint64_t config_serial;
 };
 
 typedef struct re_stream_event_impl_t {
@@ -492,6 +533,26 @@ re_status_t re_backward_query_create(re_engine_t *engine, re_facts_t *facts,
 re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
                                           re_string_t goal, const re_query_options_t *options,
                                           re_query_t **out_query);
+
+/* Lazily creates engine->proof_graph. Never fails the owning query: an
+ * allocation failure leaves proof_graph NULL and the caller falls back to
+ * an uncached run. */
+void re_proof_graph_ensure(re_engine_t *engine);
+void re_proof_graph_destroy(re_proof_graph_t *graph);
+re_status_t re_proof_clone(const re_allocator_impl_t *allocator,
+                            const re_proof_t *source, re_proof_t **out);
+/* Counts a hit or miss and, on a hit, returns a borrowed pointer to the
+ * live entry (clone its proofs before storing anything else). Stale
+ * entries (serial mismatch) are dropped and counted as misses. */
+re_status_t re_proof_graph_lookup(re_proof_graph_t *graph, re_facts_t *facts,
+                                   re_string_t goal, const re_query_options_t *options,
+                                   uint64_t config_serial,
+                                   const re_proof_graph_entry_t **out_entry);
+/* Clones the proofs into a new entry; clears all entries when full. */
+re_status_t re_proof_graph_store(re_proof_graph_t *graph, re_facts_t *facts,
+                                  re_string_t goal, const re_query_options_t *options,
+                                  uint64_t config_serial, re_query_result_t result,
+                                  re_proof_t *const *proofs, size_t proof_count);
 
 re_status_t re_rete_network_create(re_facts_t *facts,
                                     const re_rete_condition_t conditions[2],

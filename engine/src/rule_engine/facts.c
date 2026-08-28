@@ -317,6 +317,14 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     facts->entries[id.slot].name = name;
     facts->entries[id.slot].name_size = name_size;
     facts->entries[id.slot].value = value;
+    /* Retraction is a mutation like any other: bump the serial so
+     * generation-stamped consumers (the shared proof graph) see it.
+     * Subscribers already get RE_FACT_RETRACT below; the staged
+     * transaction clone is bumped through the recursion above, so a
+     * retract-only commit propagates via the serial comparison in
+     * re_facts_commit. TMS cascades route through this function and
+     * bump once per retracted fact. */
+    facts->mutation_serial++;
     re_tms_remove_derived(facts, id);
     re_tms_remove_premise(facts, id);
     return re_facts_notify(facts, RE_FACT_RETRACT, (size_t)id.slot);

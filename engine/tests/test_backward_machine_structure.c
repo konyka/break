@@ -58,7 +58,7 @@ TEST(production_parameterized_query_routes_through_machine) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_program_t *program = NULL;
     re_query_t *query = NULL;
-    re_query_options_t options = {sizeof(options), 4u, 1u};
+    re_query_options_t options = {sizeof(options), 4u, 1u, 0u, 0u};
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(facts);
     ASSERT_EQ(re_program_load(NULL, (re_string_t){
@@ -83,7 +83,7 @@ TEST(direct_parameter_machine_enumerates_terminal_alternatives) {
     re_program_t *program = NULL;
     re_query_t *query = NULL;
     re_backward_machine_bind_result_t result;
-    re_query_options_t options = {sizeof(options), 4u, 4u};
+    re_query_options_t options = {sizeof(options), 4u, 4u, 0u, 0u};
     re_operand_t argument;
     const char *source = "rule \"Pick\"(Value) { when true then A = 1; }"
                          "rule \"Pick\"(Value) { when true then B = 2; }";

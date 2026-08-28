@@ -24,7 +24,10 @@ typedef enum re_accumulator_kind_t {
   RE_ACCUM_SUM = 2,
   RE_ACCUM_AVERAGE = 3,
   RE_ACCUM_MIN = 4,
-  RE_ACCUM_MAX = 5
+  RE_ACCUM_MAX = 5,
+  /* Appended in Task 12: query-time first/last selectors (append-only ABI). */
+  RE_ACCUM_FIRST = 6,
+  RE_ACCUM_LAST = 7
 } re_accumulator_kind_t;
 
 typedef enum re_status_t {
@@ -51,7 +54,31 @@ typedef struct re_query_options_t {
   uint32_t struct_size;
   size_t max_depth;
   size_t max_solutions;
+  /* Appended in Task 13 (append-only ABI): query search strategy, one of
+   * RE_QUERY_STRATEGY_*. Readers must gate this field on
+   * struct_size >= offsetof(re_query_options_t, disable_shared_proof_graph);
+   * an absent field means RE_QUERY_STRATEGY_DEPTH_FIRST. */
+  uint32_t strategy;
+  /* Appended in Task 13, consumed in Task 14: per-query opt-out of the
+   * shared proof graph. 0 or absent keeps sharing ON, 1 bypasses the
+   * cache (no lookup, no store, no stats movement). Readers must gate
+   * this field on struct_size >= sizeof(re_query_options_t). */
+  uint32_t disable_shared_proof_graph;
 } re_query_options_t;
+
+/* Search strategies for re_query_options_t.strategy (Task 13).
+ * DEPTH_FIRST is the default single-pass DFS. BREADTH_FIRST and ITERATIVE are
+ * the same iterative-deepening wrapper (ITERATIVE is a documented alias): the
+ * goal is re-proven with max_depth = 1, 2, 4, 8, ... doubling up to the
+ * configured max_depth (default 64), and the first capped pass yielding at
+ * least one solution supplies the result proofs. Backward queries execute no
+ * actions, so re-probing is side-effect free. More than 32 doublings reports
+ * RE_STATUS_LIMIT. Values outside [0, 2] are RE_STATUS_INVALID_ARGUMENT. */
+enum {
+  RE_QUERY_STRATEGY_DEPTH_FIRST = 0u,
+  RE_QUERY_STRATEGY_BREADTH_FIRST = 1u,
+  RE_QUERY_STRATEGY_ITERATIVE = 2u
+};
 
 typedef enum re_value_type_t {
   RE_VALUE_NONE = 0,
@@ -533,6 +560,47 @@ re_status_t re_proof_edge_get(const re_proof_t *proof, size_t index,
                               re_proof_edge_t *out_edge);
 void re_query_destroy(re_query_t *query);
 void re_proof_destroy(re_proof_t *proof);
+/* Runs pattern (an ordinary query goal string, e.g. "Score == S") through an
+ * internal bounded query - max_depth 64 (the re_engine_query default) and a
+ * documented max_solutions cap of 1024 - and folds the binding named field
+ * over the solutions in DFS order. The internal query is destroyed before
+ * returning, so invalidation/mutation semantics match a caller-run query and
+ * no fact subscription survives. Reaching the 1024-solution cap reports
+ * RE_STATUS_LIMIT (an exact fit cannot be told apart from a truncated set),
+ * as does a depth-limited internal search.
+ *
+ * field.data == NULL is accepted for RE_ACCUM_COUNT only; COUNT counts every
+ * solution and ignores field. Every other kind skips solutions whose proof
+ * does not bind field, and reports RE_STATUS_NOT_FOUND when no solution binds
+ * it. Empty solution set: COUNT yields int64 0 with RE_STATUS_OK, all other
+ * kinds report RE_STATUS_NOT_FOUND.
+ *
+ * SUM/AVERAGE/MIN/MAX accept only INT64/DOUBLE bindings; any other type is
+ * RE_STATUS_INVALID_ARGUMENT (the same rejection re_accumulator_evaluate
+ * applies). Result typing: COUNT -> RE_VALUE_INT64; AVERAGE ->
+ * RE_VALUE_DOUBLE; SUM/MIN/MAX -> RE_VALUE_INT64 when every folded value was
+ * INT64, else RE_VALUE_DOUBLE - a deliberate divergence from
+ * re_accumulator_evaluate's always-DOUBLE result. The INT64 fold accumulates
+ * with unchecked addition, so extreme sums overflow (wrap) without a status.
+ * FIRST/LAST copy the binding value of the first/last solution carrying
+ * field; a STRING result reports RE_STATUS_NOT_SUPPORTED because proof string
+ * storage is freed with the internal query. kind outside [1, 7] and NULL
+ * engine/facts/out_value/pattern are RE_STATUS_INVALID_ARGUMENT. */
+re_status_t re_engine_query_aggregate(re_engine_t *engine, re_facts_t *facts,
+                                      re_accumulator_kind_t kind, re_string_t field,
+                                      re_string_t pattern, re_value_t *out_value);
+/* Shared proof graph counters (Task 14). The engine-owned graph caches
+ * final backward-query results (PROVED/DISPROVED only; LIMIT/UNKNOWN are
+ * never cached), keyed on the goal text, facts identity, normalized search
+ * options, and the engine config, and stamped with the facts mutation
+ * generation - any mutation of the same fact set invalidates its entries,
+ * including the first assert of a previously absent fact. The graph is
+ * created lazily on the first shared query, holds at most 64 entries, and
+ * clears every entry when full. A NULL engine or NULL counter is
+ * RE_STATUS_INVALID_ARGUMENT; an engine that has not cached yet reports
+ * zeroes with RE_STATUS_OK. */
+re_status_t re_engine_proof_graph_stats(const re_engine_t *engine,
+                                        uint64_t *out_hits, uint64_t *out_misses);
 re_status_t re_stream_window_create(re_engine_t *engine,
                                     re_stream_window_t **out_window);
 re_status_t re_stream_window_record(re_stream_window_t *window,

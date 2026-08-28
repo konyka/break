@@ -161,6 +161,10 @@ static int equal_text(re_string_t left, re_string_t right) {
     return left.size == right.size && (left.size == 0u || memcmp(left.data, right.data, left.size) == 0);
 }
 
+static int goal_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+}
+
 static int parse_int64_slice(re_string_t input, int64_t *out) {
     size_t index = 0u;
     int negative = 0;
@@ -940,8 +944,14 @@ static re_status_t parameter_goal_execute(re_query_t *query, re_string_t name, c
     return status;
 }
 
-re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
-                                     const re_query_options_t *options, re_query_t **out_query) {
+/* One capped depth-first pass over the goal: the goal("...") unwrap, the
+ * direct `Fact == value` comparison, the zero-argument frame-machine slice,
+ * and the plain DFS machine. re_backward_machine_dispatch owns argument and
+ * option normalization (including the struct_size versioning and the
+ * max_depth == 0 limit), so this always sees a full local options struct
+ * with max_depth >= 1 and max_solutions >= 1. */
+static re_status_t dispatch_once(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
+                                 const re_query_options_t *options, re_query_t **out_query) {
     re_query_t *query;
     environment_t environment;
     trace_state_t trace;
@@ -949,7 +959,6 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
     re_status_t status;
     const char *equals;
     machine_callback_context_t machine_callbacks;
-    if (engine == NULL || facts == NULL || out_query == NULL || goal.data == NULL || goal.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
     *out_query = NULL;
     query = re_alloc(&engine->allocator, sizeof(*query));
     if (query == NULL) return RE_STATUS_OUT_OF_MEMORY;
@@ -957,13 +966,15 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
     query->allocator = engine->allocator;
     query->engine = engine;
     query->facts = facts;
-    if (options != NULL && options->struct_size < sizeof(*options)) { re_free(&query->allocator, query); return RE_STATUS_INVALID_ARGUMENT; }
-    query->max_depth = options != NULL && options->max_depth != 0u ? options->max_depth : 64u;
-    query->max_solutions = options != NULL && options->max_solutions != 0u ? options->max_solutions : 1u;
-    if (options != NULL && options->max_depth == 0u) {
-        query->result = RE_QUERY_LIMIT;
-        *out_query = query;
-        return RE_STATUS_LIMIT;
+    query->max_depth = options->max_depth;
+    query->max_solutions = options->max_solutions;
+    /* An explicit goal("RuleName") query string names the same zero-argument
+     * rule goal the condition-level form does; unwrap it so the paths below
+     * see the bare rule name. Argument-bearing goal calls are not query goals. */
+    if (goal.size >= 8u && memcmp(goal.data, "goal(\"", 6u) == 0 &&
+        goal.data[goal.size - 1u] == ')' && goal.data[goal.size - 2u] == '"') {
+        goal.data += 6u;
+        goal.size -= 8u;
     }
     equals = (const char *)memchr(goal.data, '=', goal.size);
     if (equals != NULL && equals + 1 < goal.data + goal.size && equals[1] == '=') {
@@ -1084,7 +1095,392 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
     return query->result == RE_QUERY_LIMIT ? RE_STATUS_LIMIT : RE_STATUS_OK;
 }
 
+/* Shared proof graph glue (Task 14); the graph itself lives in proof_graph.c
+ * and the design notes with the struct in re_internal.h. */
+
+/* Builds the query object for a cache hit: clones of the entry's proofs plus
+ * the same invalidation subscription the fresh paths wire, so a served query
+ * self-invalidates on mutation exactly like a fresh one. */
+static re_status_t graph_serve(re_engine_t *engine, re_facts_t *facts,
+                               const re_query_options_t *options,
+                               const re_proof_graph_entry_t *entry,
+                               re_query_t **out_query) {
+    re_query_t *query = re_alloc(&engine->allocator, sizeof(*query));
+    size_t index;
+    if (query == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    memset(query, 0, sizeof(*query));
+    query->allocator = engine->allocator;
+    query->engine = engine;
+    query->facts = facts;
+    query->max_depth = options->max_depth;
+    query->max_solutions = options->max_solutions;
+    query->result = entry->result;
+    if (entry->proof_count != 0u) {
+        query->proofs = re_alloc(&query->allocator, entry->proof_count * sizeof(*query->proofs));
+        if (query->proofs == NULL) { re_free(&query->allocator, query); return RE_STATUS_OUT_OF_MEMORY; }
+        memset(query->proofs, 0, entry->proof_count * sizeof(*query->proofs));
+    }
+    for (index = 0u; index < entry->proof_count; ++index) {
+        if (re_proof_clone(&query->allocator, entry->proofs[index],
+                           &query->proofs[index]) != RE_STATUS_OK) {
+            re_query_destroy(query);
+            return RE_STATUS_OUT_OF_MEMORY;
+        }
+        query->proof_count = index + 1u;
+    }
+    if (re_facts_subscribe(facts, invalidate, query, &query->subscription) != RE_STATUS_OK) {
+        re_query_destroy(query);
+        return RE_STATUS_OUT_OF_MEMORY;
+    }
+    *out_query = query;
+    return RE_STATUS_OK;
+}
+
+/* Consults the cache for the normalized options: RE_STATUS_OK with a served
+ * query on a hit, RE_STATUS_NOT_FOUND on a miss (stats counted in the graph).
+ * The disable flag skips the consult entirely - no lookup, no stats. A NULL
+ * graph after ensure means OOM; the query then runs uncached. */
+static re_status_t graph_consult(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
+                                 const re_query_options_t *options, int sharing_disabled,
+                                 re_query_t **out_query) {
+    const re_proof_graph_entry_t *entry = NULL;
+    if (sharing_disabled) return RE_STATUS_NOT_FOUND;
+    re_proof_graph_ensure(engine);
+    if (engine->proof_graph == NULL) return RE_STATUS_NOT_FOUND;
+    if (re_proof_graph_lookup(engine->proof_graph, facts, goal, options,
+                              engine->config_serial, &entry) != RE_STATUS_OK)
+        return RE_STATUS_NOT_FOUND;
+    return graph_serve(engine, facts, options, entry, out_query);
+}
+
+/* Stores a final result; LIMIT/UNKNOWN are never cached, and caching never
+ * fails the query - an allocation failure just skips the store. */
+static void graph_maybe_store(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
+                              const re_query_options_t *options, int sharing_disabled,
+                              const re_query_t *query) {
+    if (sharing_disabled) return;
+    if (query->result != RE_QUERY_PROVED && query->result != RE_QUERY_DISPROVED) return;
+    re_proof_graph_ensure(engine);
+    if (engine->proof_graph == NULL) return;
+    (void)re_proof_graph_store(engine->proof_graph, facts, goal, options,
+                               engine->config_serial, query->result, query->proofs,
+                               query->proof_count);
+}
+
+/* Dispatch layering (Task 13):
+ *
+ *   re_backward_machine_dispatch - argument/option normalization (including
+ *       the struct_size versioning), the NOT prefix inversion, and strategy
+ *       selection (this function)
+ *   dispatch_once                - one full capped DFS pass over the goal
+ *
+ * The NOT prefix is handled BEFORE strategy selection so the inversion always
+ * applies to the strategy-selected result of the subgoal: the nested call
+ * re-enters this dispatcher with the caller's strategy and max_solutions=1.
+ * Iterating a NOT query itself would be unsound - a shallow probe that cannot
+ * yet prove the subgoal would invert to a false success.
+ *
+ * RE_QUERY_STRATEGY_BREADTH_FIRST / RE_QUERY_STRATEGY_ITERATIVE run
+ * dispatch_once with max_depth = 1, 2, 4, 8, ... doubling up to the
+ * configured max_depth; the first probe with at least one proof wins and its
+ * query (proofs plus invalidation subscription) is returned, while earlier
+ * probes are destroyed. Each probe is a fresh full run and backward queries
+ * execute no actions, so re-probing is side-effect free. A winning probe that
+ * cut deeper branches still reports RE_QUERY_PROVED: the cap is the
+ * strategy's own mechanism, not a search failure. A probe that completes
+ * without hitting its depth cap is authoritative for every deeper cap and is
+ * returned as-is. Exhausting the configured max_depth or the 32-doubling
+ * budget without a solution returns the last probe unchanged, reporting
+ * RE_QUERY_LIMIT exactly as a plain DFS run at that depth would. */
+re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
+                                     const re_query_options_t *options, re_query_t **out_query) {
+    re_query_t *query;
+    re_status_t status;
+    re_query_options_t normalized;
+    uint32_t strategy = RE_QUERY_STRATEGY_DEPTH_FIRST;
+    int sharing_disabled = 0;
+    if (engine == NULL || facts == NULL || out_query == NULL || goal.data == NULL || goal.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    *out_query = NULL;
+    /* Versioned-struct gate, mirroring the engine's other struct_size checks:
+     * a caller compiled against the pre-Task-13 layout passes the smaller
+     * struct_size and gets the defaults (DFS, shared proof graph ON); the
+     * appended tail is read only when struct_size covers it. */
+    if (options != NULL && options->struct_size < (uint32_t)offsetof(re_query_options_t, strategy))
+        return RE_STATUS_INVALID_ARGUMENT;
+    if (options != NULL && options->struct_size >= (uint32_t)offsetof(re_query_options_t, disable_shared_proof_graph))
+        strategy = options->strategy;
+    if (strategy > (uint32_t)RE_QUERY_STRATEGY_ITERATIVE) return RE_STATUS_INVALID_ARGUMENT;
+    /* Task 14 opt-out, gated on the full appended tail (absent/0 = shared
+     * proof graph ON, 1 = OFF). */
+    if (options != NULL && options->struct_size >= (uint32_t)sizeof(re_query_options_t) &&
+        options->disable_shared_proof_graph != 0u)
+        sharing_disabled = 1;
+    normalized.struct_size = (uint32_t)sizeof(normalized);
+    normalized.max_depth = options != NULL && options->max_depth != 0u ? options->max_depth : 64u;
+    normalized.max_solutions = options != NULL && options->max_solutions != 0u ? options->max_solutions : 1u;
+    normalized.strategy = strategy;
+    normalized.disable_shared_proof_graph = (uint32_t)sharing_disabled;
+    if (options != NULL && options->max_depth == 0u) {
+        query = re_alloc(&engine->allocator, sizeof(*query));
+        if (query == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memset(query, 0, sizeof(*query));
+        query->allocator = engine->allocator;
+        query->engine = engine;
+        query->facts = facts;
+        query->max_depth = normalized.max_depth;
+        query->max_solutions = normalized.max_solutions;
+        query->result = RE_QUERY_LIMIT;
+        *out_query = query;
+        return RE_STATUS_LIMIT;
+    }
+    /* Shared proof graph (Task 14): consulted here - after the struct_size
+     * versioning and BEFORE the NOT/strategy work - because this is the layer
+     * where the final result is known. The NOT recursion below re-enters this
+     * dispatcher, so a cached entry always holds the strategy-selected,
+     * negation-resolved result for its exact goal text; the subgoal
+     * participates under its own key (its normalized options match a direct
+     * query's, so "NOT X" and a later direct "X" share the "X" entry, and
+     * double negation caches "X", "NOT X", "NOT NOT X" as independent final
+     * results - none can poison another). A hit is served as a fresh query
+     * object with cloned proofs and its own invalidation subscription, so it
+     * self-invalidates on mutation exactly like a fresh run. */
+    status = graph_consult(engine, facts, goal, &normalized, sharing_disabled, &query);
+    if (status == RE_STATUS_OK) { *out_query = query; return RE_STATUS_OK; }
+    if (status != RE_STATUS_NOT_FOUND) return status;
+    /* Query-level negation-as-failure: a leading "NOT" followed by whitespace
+     * wraps the remainder as a subgoal run through this same dispatch with
+     * max_solutions=1. Only the prefix form exists (`!(...)` is not a query
+     * goal) and there is no stratification; nested "NOT NOT" unwraps one level
+     * per recursion. A subgoal that exhausts its budget reports RE_QUERY_LIMIT
+     * unchanged: inverting a limited search into a success would be unsound. */
+    if (goal.size > 3u && memcmp(goal.data, "NOT", 3u) == 0 && goal_space(goal.data[3])) {
+        re_string_t subgoal = {goal.data + 3u, goal.size - 3u};
+        re_query_options_t nested;
+        const re_query_options_t *nested_options = options;
+        re_query_t *subquery = NULL;
+        while (subgoal.size != 0u && goal_space(subgoal.data[0])) { ++subgoal.data; --subgoal.size; }
+        if (subgoal.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+        query = re_alloc(&engine->allocator, sizeof(*query));
+        if (query == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memset(query, 0, sizeof(*query));
+        query->allocator = engine->allocator;
+        query->engine = engine;
+        query->facts = facts;
+        query->max_depth = normalized.max_depth;
+        query->max_solutions = normalized.max_solutions;
+        if (options != NULL) {
+            /* The caller's struct may be the smaller pre-Task-13 layout, so
+             * copy the normalized values instead of `*options`; the subgoal
+             * keeps the caller's strategy so the inversion below applies to
+             * the strategy-selected result. */
+            nested = normalized;
+            nested.max_solutions = 1u;
+            nested_options = &nested;
+        }
+        status = re_backward_machine_dispatch(engine, facts, subgoal, nested_options, &subquery);
+        if (status != RE_STATUS_OK && status != RE_STATUS_LIMIT) {
+            re_free(&query->allocator, query);
+            return status;
+        }
+        if (subquery->result == RE_QUERY_LIMIT) {
+            query->result = RE_QUERY_LIMIT;
+        } else if (subquery->result == RE_QUERY_PROVED) {
+            query->result = RE_QUERY_DISPROVED;
+        } else {
+            trace_state_t not_trace = {query, NULL, NULL, 0u, 0u, 0};
+            environment_t not_environment = {NULL, 0u};
+            if (push_trace(&not_trace, goal) != RE_STATUS_OK ||
+                make_proof(query, &not_environment, &not_trace) != RE_STATUS_OK) {
+                re_free(&query->allocator, not_trace.names);
+                re_free(&query->allocator, not_trace.parents);
+                re_query_destroy(subquery);
+                re_query_destroy(query);
+                return RE_STATUS_OUT_OF_MEMORY;
+            }
+            re_free(&query->allocator, not_trace.names);
+            re_free(&query->allocator, not_trace.parents);
+            query->result = RE_QUERY_PROVED;
+        }
+        re_query_destroy(subquery);
+        graph_maybe_store(engine, facts, goal, &normalized, sharing_disabled, query);
+        if (re_facts_subscribe(facts, invalidate, query, &query->subscription) != RE_STATUS_OK) {
+            re_query_destroy(query); return RE_STATUS_OUT_OF_MEMORY;
+        }
+        *out_query = query;
+        return query->result == RE_QUERY_LIMIT ? RE_STATUS_LIMIT : RE_STATUS_OK;
+    }
+    if (strategy == RE_QUERY_STRATEGY_DEPTH_FIRST) {
+        status = dispatch_once(engine, facts, goal, &normalized, out_query);
+        if (status == RE_STATUS_OK && *out_query != NULL)
+            graph_maybe_store(engine, facts, goal, &normalized, sharing_disabled, *out_query);
+        return status;
+    }
+    {
+        re_query_options_t probe_options = normalized;
+        size_t cap = 1u;
+        size_t doublings = 0u;
+        for (;;) {
+            re_query_t *probe = NULL;
+            re_status_t probe_status;
+            probe_options.max_depth = cap;
+            probe_status = dispatch_once(engine, facts, goal, &probe_options, &probe);
+            if (probe == NULL) return probe_status;
+            if (probe->proof_count != 0u) {
+                if (probe->result == RE_QUERY_LIMIT) probe->result = RE_QUERY_PROVED;
+                graph_maybe_store(engine, facts, goal, &normalized, sharing_disabled, probe);
+                *out_query = probe;
+                return RE_STATUS_OK;
+            }
+            if (probe_status == RE_STATUS_OK || cap >= normalized.max_depth) {
+                *out_query = probe;
+                return probe_status;
+            }
+            if (doublings == 32u) {
+                probe->result = RE_QUERY_LIMIT;
+                *out_query = probe;
+                return RE_STATUS_LIMIT;
+            }
+            re_query_destroy(probe);
+            ++doublings;
+            if (cap > normalized.max_depth / 2u) cap = normalized.max_depth;
+            else cap *= 2u;
+        }
+    }
+}
+
 re_status_t re_backward_query_create(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
                                      const re_query_options_t *options, re_query_t **out_query) {
     return re_backward_machine_run(engine, facts, goal, options, out_query);
+}
+
+/* Documented cap for the internal bounded query run by
+ * re_engine_query_aggregate (rule_engine.h). */
+#define RE_AGGREGATE_MAX_SOLUTIONS 1024u
+
+/* Query aggregation lives here (not query.c/extensions.c) because backward.c
+ * owns query semantics; the function itself only composes the public query
+ * API. The fold reuses re_accumulator_evaluate's coercion rules: INT64 and
+ * DOUBLE are numeric, anything else is rejected; the result stays INT64 only
+ * when every folded value was INT64. FIRST/LAST copy the binding value of the
+ * first/last carrier; proof strings are freed with the internal query, so a
+ * STRING result reports RE_STATUS_NOT_SUPPORTED instead of dangling. */
+re_status_t re_engine_query_aggregate(re_engine_t *engine, re_facts_t *facts,
+                                      re_accumulator_kind_t kind, re_string_t field,
+                                      re_string_t pattern, re_value_t *out_value) {
+    re_query_options_t options;
+    re_query_t *query = NULL;
+    re_status_t status;
+    size_t solutions = 0u;
+    size_t folded = 0u;
+    int all_int64 = 1;
+    int64_t int_accumulator = 0;
+    double double_accumulator = 0.0;
+    re_value_t carried;
+    if (engine == NULL || facts == NULL || out_value == NULL ||
+        pattern.data == NULL || pattern.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    if (kind < RE_ACCUM_COUNT || kind > RE_ACCUM_LAST) return RE_STATUS_INVALID_ARGUMENT;
+    if (kind != RE_ACCUM_COUNT && field.data == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    carried.type = RE_VALUE_NONE;
+    carried.as.int64_value = 0;
+    options.struct_size = sizeof(options);
+    options.max_depth = 64u;
+    options.max_solutions = RE_AGGREGATE_MAX_SOLUTIONS;
+    options.strategy = RE_QUERY_STRATEGY_DEPTH_FIRST;
+    options.disable_shared_proof_graph = 0u;
+    status = re_engine_query_bounded(engine, facts, pattern, &options, &query);
+    if (status != RE_STATUS_OK) {
+        /* A depth-exhausted search reports RE_STATUS_LIMIT with the query still
+         * caller-owned; propagating beats folding a partial solution set. */
+        if (query != NULL) re_query_destroy(query);
+        return status;
+    }
+    for (;;) {
+        re_proof_t *proof = NULL;
+        re_query_binding_t binding;
+        size_t index;
+        size_t binding_count;
+        int found = 0;
+        status = re_query_next(query, &proof);
+        if (status == RE_STATUS_NOT_FOUND) break;
+        if (status != RE_STATUS_OK) { re_query_destroy(query); return status; }
+        ++solutions;
+        memset(&binding, 0, sizeof(binding));
+        if (kind != RE_ACCUM_COUNT) {
+            binding_count = re_proof_binding_count(proof);
+            for (index = 0u; index < binding_count; ++index) {
+                if (re_proof_binding_get(proof, index, &binding) != RE_STATUS_OK) break;
+                if (binding.name.size == field.size &&
+                    (field.size == 0u || memcmp(binding.name.data, field.data, field.size) == 0)) {
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        if (found) {
+            ++folded;
+            if (kind == RE_ACCUM_FIRST) {
+                if (folded == 1u) carried = binding.value;
+            } else if (kind == RE_ACCUM_LAST) {
+                carried = binding.value;
+            } else {
+                double value;
+                if (binding.value.type == RE_VALUE_INT64) value = (double)binding.value.as.int64_value;
+                else if (binding.value.type == RE_VALUE_DOUBLE) value = binding.value.as.double_value;
+                else {
+                    re_proof_destroy(proof);
+                    re_query_destroy(query);
+                    return RE_STATUS_INVALID_ARGUMENT;
+                }
+                if (binding.value.type != RE_VALUE_INT64) all_int64 = 0;
+                if (folded == 1u) {
+                    if (binding.value.type == RE_VALUE_INT64)
+                        int_accumulator = binding.value.as.int64_value;
+                    double_accumulator = value;
+                } else if (kind == RE_ACCUM_SUM || kind == RE_ACCUM_AVERAGE) {
+                    if (binding.value.type == RE_VALUE_INT64)
+                        int_accumulator += binding.value.as.int64_value;
+                    double_accumulator += value;
+                } else if (kind == RE_ACCUM_MIN) {
+                    if (binding.value.type == RE_VALUE_INT64 &&
+                        binding.value.as.int64_value < int_accumulator)
+                        int_accumulator = binding.value.as.int64_value;
+                    if (value < double_accumulator) double_accumulator = value;
+                } else {
+                    if (binding.value.type == RE_VALUE_INT64 &&
+                        binding.value.as.int64_value > int_accumulator)
+                        int_accumulator = binding.value.as.int64_value;
+                    if (value > double_accumulator) double_accumulator = value;
+                }
+            }
+        }
+        re_proof_destroy(proof);
+    }
+    re_query_destroy(query);
+    /* Reaching the cap cannot be told apart from a truncated solution set, so
+     * it reports RE_STATUS_LIMIT instead of a silently partial fold. */
+    if (solutions == RE_AGGREGATE_MAX_SOLUTIONS) return RE_STATUS_LIMIT;
+    if (kind == RE_ACCUM_COUNT) {
+        out_value->type = RE_VALUE_INT64;
+        out_value->as.int64_value = (int64_t)solutions;
+        return RE_STATUS_OK;
+    }
+    if (folded == 0u) return RE_STATUS_NOT_FOUND;
+    if (kind == RE_ACCUM_FIRST || kind == RE_ACCUM_LAST) {
+        if (carried.type == RE_VALUE_STRING) return RE_STATUS_NOT_SUPPORTED;
+        *out_value = carried;
+        return RE_STATUS_OK;
+    }
+    if (kind == RE_ACCUM_AVERAGE) {
+        out_value->type = RE_VALUE_DOUBLE;
+        out_value->as.double_value = double_accumulator / (double)folded;
+        return RE_STATUS_OK;
+    }
+    if (all_int64) {
+        out_value->type = RE_VALUE_INT64;
+        out_value->as.int64_value = int_accumulator;
+    } else {
+        out_value->type = RE_VALUE_DOUBLE;
+        out_value->as.double_value = double_accumulator;
+    }
+    return RE_STATUS_OK;
 }

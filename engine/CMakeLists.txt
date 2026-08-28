@@ -714,6 +714,7 @@ add_library(rule_engine_core STATIC
       src/rule_engine/backward_machine_context.c
       src/rule_engine/backward_machine_bind.c
        src/rule_engine/backward_machine_goal.c src/rule_engine/query.c
+     src/rule_engine/proof_graph.c
     src/rule_engine/executor.c src/rule_engine/templates.c src/rule_engine/agenda.c)
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -824,6 +825,12 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine_backward PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine_backward PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_backward COMMAND test_rule_engine_backward)
+
+    add_executable(test_rule_engine_backward_ext tests/test_rule_engine_backward_ext.c)
+    set_property(TARGET test_rule_engine_backward_ext PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_backward_ext PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_backward_ext PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_backward_ext COMMAND test_rule_engine_backward_ext)
 
     add_executable(test_rule_engine_backward_deep_chain tests/test_rule_engine_backward_deep_chain.c)
     set_property(TARGET test_rule_engine_backward_deep_chain PROPERTY C_STANDARD 99)
