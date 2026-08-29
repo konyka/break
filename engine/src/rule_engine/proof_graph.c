@@ -128,7 +128,8 @@ void re_proof_graph_destroy(re_proof_graph_t *graph) {
 static int entry_matches(const re_proof_graph_entry_t *entry, const re_facts_t *facts,
                          re_string_t goal, const re_query_options_t *options,
                          uint64_t config_serial) {
-    return entry->facts == facts && entry->config_serial == config_serial &&
+    return entry->facts == facts && entry->facts_nonce == facts->nonce &&
+           entry->config_serial == config_serial &&
            entry->max_depth == options->max_depth &&
            entry->max_solutions == options->max_solutions &&
            entry->strategy == options->strategy &&
@@ -193,6 +194,7 @@ re_status_t re_proof_graph_store(re_proof_graph_t *graph, re_facts_t *facts,
     }
     entry->goal_size = goal.size;
     entry->facts = facts;
+    entry->facts_nonce = facts->nonce;
     entry->generation = facts->mutation_serial;
     entry->config_serial = config_serial;
     entry->max_depth = options->max_depth;

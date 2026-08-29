@@ -1,6 +1,12 @@
 #include "re_internal.h"
 #include <string.h>
 
+/* Process-wide nonce source for the facts identity the shared proof graph
+ * keys on. A plain static counter suffices under the documented
+ * single-threaded-handles contract (rule_engine.h, re_engine_create):
+ * callers externally synchronize every operation on the same handle. */
+static uint64_t next_facts_nonce = 0u;
+
 static int same_name(re_string_t name, const re_fact_entry_t *entry) {
     return entry->active && name.size == entry->name_size &&
         memcmp(name.data, entry->name, name.size) == 0;
@@ -16,7 +22,8 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     facts->allocator = selected; facts->limits = limits != NULL ? *limits : re_default_limits();
     facts->entries = NULL; facts->count = 0u; facts->capacity = 0u;
     facts->mutation_serial = 0u;
-    facts->running = 0; facts->mutation_allowed = 0; facts->read_allowed = 0; facts->destroy_requested = 0; facts->notifying = 0; facts->run_transaction_allowed = 0;
+    facts->nonce = ++next_facts_nonce;
+    facts->running = 0; facts->destroy_requested = 0; facts->notifying = 0; facts->run_transaction_allowed = 0;
     facts->subscriptions = NULL;
     facts->retired_subscriptions = NULL;
     facts->transaction = NULL;

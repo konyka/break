@@ -40,9 +40,15 @@ static re_status_t clone_facts(const re_facts_t *source, re_facts_t **out) {
         copy->entries[index].active = entry->active;
         copy->entries[index].logical = entry->logical;
     }
-    *out = copy;
     copy->mutation_serial = source->mutation_serial;
+    /* The clone is the same logical facts, so it keeps the identity nonce
+     * rather than the fresh one re_facts_create assigned. */
+    copy->nonce = source->nonce;
     if (source->tms != NULL && re_tms_clone(source->tms, &copy->allocator, &copy->tms) != RE_STATUS_OK) { re_facts_destroy(copy); return RE_STATUS_OUT_OF_MEMORY; }
+    /* Publish only once the clone is fully built: every failure path above
+     * destroys copy and leaves *out untouched, so begin_transaction's cleanup
+     * never sees a dangling handle. */
+    *out = copy;
     return RE_STATUS_OK;
 }
 

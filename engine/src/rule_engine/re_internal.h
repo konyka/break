@@ -42,9 +42,12 @@ struct re_facts_t {
     size_t count;
     size_t capacity;
     uint64_t mutation_serial;
+    /* Process-unique identity nonce, assigned in re_facts_create; the shared
+     * proof graph keys entries on (pointer, nonce) so a new facts object
+     * reusing a destroyed one's address cannot alias a stale entry (ABA).
+     * The staged transaction clone copies it (same logical facts). */
+    uint64_t nonce;
     int running;
-    int mutation_allowed;
-    int read_allowed;
     int destroy_requested;
     int notifying;
     /* Transactions opened by the engine run while facts->running is set. */
@@ -279,13 +282,16 @@ int        re_agenda_pop_highest(re_agenda_t *agenda, re_agenda_entry_internal_t
  * An entry is stale when either serial moved and is dropped on lookup; the
  * generation check is coarse (any mutation of the same facts object
  * invalidates every entry bound to it). When the table is full the store
- * path clears every entry (documented clear-all eviction). */
+ * path clears every entry (documented clear-all eviction). The facts identity
+ * is pointer plus nonce, so a new facts object reusing a destroyed one's
+ * address never aliases a live entry (ABA). */
 #define RE_PROOF_GRAPH_CAPACITY 64u
 
 typedef struct re_proof_graph_entry_t {
     char *goal;
     size_t goal_size;
     re_facts_t *facts; /* identity only, not owned */
+    uint64_t facts_nonce; /* facts->nonce at store time (ABA guard) */
     uint64_t generation; /* facts->mutation_serial at store time */
     uint64_t config_serial; /* engine->config_serial at store time */
     size_t max_depth;
