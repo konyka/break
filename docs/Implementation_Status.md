@@ -2149,3 +2149,15 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   往返在本机不可验证，由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
   变更持有；通用流模式/join/watermark 仍不支持；Redis 的实际启用仍需集成环境提供
   受控 Redis 服务。
+
+## myui selection rect bounded output（2026-08-29）
+
+- 以 TDD 新增 `text_layout_visual_rects_honors_output_capacity`，先复现多视觉片段时
+  API 返回值超过 `cap` 的契约缺陷。
+- `my_text_layout_visual_rects()` 在缓存和逐字形回退路径都严格返回 `0..cap`，写满
+  输出后立即结束，避免在 text area/edit 只请求固定小数组时继续扫描。
+- 保持 RTL 分段顺序、字体宽度、OOM 回退和跨后端绘制行为不变；公共头文件同步明确
+  有界返回契约。
+- 验证：normal/ASan `test_myui_text_layout` **16/16**，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过；LeakSanitizer 继续受当前 ptrace
+  环境限制，ASan 使用 `detect_leaks=0`。

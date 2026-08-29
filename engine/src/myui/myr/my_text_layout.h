@@ -116,7 +116,8 @@ size_t my_text_layout_logical_at_visual(const my_text_layout_t* l,
  * @brief Selection highlight segments: visual x/w rects for a logical
  * range [l0, l1) (contiguous logical text may appear as several visual
  * segments at run boundaries). y/h left to the caller (0.0f here).
- * @return segment count (0..cap).
+ * @return number of written segments, bounded by `cap` (0..cap). The scan
+ * stops after the cap-th segment is closed.
  */
 size_t my_text_layout_visual_rects(const my_text_layout_t* l,
                                    const struct my_font_t* font, int32_t size,

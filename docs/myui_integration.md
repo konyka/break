@@ -660,3 +660,5 @@ line 范围变化后。纯 LTR 仍走零 layout 的快速路径，缓存创建�
 `visual_x`、`logical_at_x` 和 selection rects 共享该缓存：首次查询为 O(visual items)，
 后续边界查询为 O(1)，命中测试为 O(log visual items)。layout 仍保持字体无关的逻辑与
 视觉映射；字体或字号变化只重建宽度数组，分配失败回退原有逐字形计算，不改变结果。
+selection rects 严格遵守输出 `cap`，写满后立即停止剩余视觉项扫描，避免小输出缓冲的
+重复计算。

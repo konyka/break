@@ -738,6 +738,7 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
         if (n < cap) out[n] = my_rectf_init(seg_x, 0.0f, seg_w, 0.0f);
         n++;
         open = false;
+        if (n == cap) return cap;
       }
       x += (float)width;
     }
@@ -770,6 +771,7 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
       }
       n++;
       open = false;
+      if (n == cap) return cap;
     }
     x += w;
   }

@@ -253,3 +253,13 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
   master、glyph-run、soft/GLES/Vulkan/Break RHI API 或字体无关的 bidi 映射。
 - 验证：normal/ASan `test_myui_text_layout` **15/15**，normal/ASan
   `test_myui_window_manager` **58/58**，Vulkan `myui_core` 构建和编码门禁通过。
+
+## 已完成：selection rect bounded output（2026-08-29）
+
+- 以 TDD 新增 `text_layout_visual_rects_honors_output_capacity`，先复现多视觉片段时
+  API 返回值超过 `cap` 的契约缺陷。
+- `my_text_layout_visual_rects()` 在缓存和逐字形回退路径都严格返回 `0..cap`，写满
+  输出后立即结束，避免在 text area/edit 只请求固定小数组时继续扫描。
+- 保持 RTL 分段顺序、字体宽度、OOM 回退和跨后端绘制行为不变；公共头文件同步明确
+  有界返回契约。
+- 验证：`test_myui_text_layout` **16/16** 通过；normal/ASan/Vulkan 门禁已复验。
