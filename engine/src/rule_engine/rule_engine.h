@@ -234,7 +234,6 @@ typedef struct re_callbacks_t {
 /* Future extension objects are opaque and never expose private node layouts. */
 typedef struct re_function_t re_function_t;
 typedef struct re_value_handle_t re_value_handle_t;
-typedef struct re_fact_event_t re_fact_event_t;
 typedef struct re_fact_txn_t re_fact_txn_t;
 typedef struct re_subscription_t re_subscription_t;
 typedef struct re_agenda_t re_agenda_t;

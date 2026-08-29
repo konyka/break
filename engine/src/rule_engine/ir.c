@@ -268,7 +268,8 @@ static re_status_t add_expr(re_ir_program_t *ir, const re_expr_t *expr, size_t *
 re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out) {
     re_ir_program_t *ir; size_t i, j;
     re_status_t status = RE_STATUS_OK;
-    if (program == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT; *out = NULL;
+    if (program == NULL || out == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    *out = NULL;
     ir = re_alloc(&program->allocator, sizeof(*ir)); if (ir == NULL) return RE_STATUS_OUT_OF_MEMORY;
     memset(ir, 0, sizeof(*ir)); ir->allocator = program->allocator; ir->source_size = program->source_size;
     for (i = 0u; i < program->module_count; ++i) {

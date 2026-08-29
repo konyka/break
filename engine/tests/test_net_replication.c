@@ -13,18 +13,13 @@
 #include <sys/stat.h>
 #endif
 
-/* R444: a fixed UDP TEST_PORT collided across parallel ctest processes
- * (same-tree -j and cross-tree alike) — bind failed and every loopback test
- * fell over. Derive a per-process 16-port block from the pid (tests add
- * +0..+10 offsets on top of TEST_PORT, so the block must be wider than the
- * max offset or consecutive pids overlap each other's ports). Range check:
- * 23000 + 2599*16 = 64584, +10 < 65535. */
+/* R444: fixed UDP ports collided across parallel ctest processes. The tests
+ * that only exercise local state use an ephemeral kernel-selected port;
+ * loopback tests that need a destination use the per-process block below. */
 #define TEST_PORT ((u16)(23000u + ((u32)TEST_GETPID() % 2600u) * 16u))
 
 static u16 next_test_port(void) {
-    static u16 next = 0;
-    if (next == 0) next = (u16)(TEST_PORT + 14u);
-    return next++;
+    return 0u;
 }
 
 static void feed_ack(NetReplicator *rep, u32 ack);

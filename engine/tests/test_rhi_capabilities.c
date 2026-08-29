@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "rhi/rhi.h"
+#include "rhi/rhi_present_history.h"
 
 TEST(sample_count_bits_are_portable_and_bounded)
 {
@@ -92,6 +93,128 @@ TEST(present_damage_rects_have_a_fixed_upper_bound)
                                               100u, 100u));
 }
 
+TEST(present_history_forces_full_on_first_image_use)
+{
+    RHIPresentHistory history;
+    RHIPresentRect current = {10, 20, 30u, 40u};
+    RHIPresentRect output[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32 output_count = 0u;
+    bool full = false;
+
+    ASSERT_TRUE(rhi_present_history_init(&history, 2u, 100u, 100u));
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 0u, &current, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+    ASSERT_EQ(output_count, 1u);
+    ASSERT_EQ(output[0].w, 100u);
+    ASSERT_EQ(output[0].h, 100u);
+}
+
+TEST(present_history_merges_damage_since_image_was_used)
+{
+    RHIPresentHistory history;
+    RHIPresentRect first = {0, 0, 10u, 10u};
+    RHIPresentRect second = {80, 80, 10u, 10u};
+    RHIPresentRect current = {40, 40, 10u, 10u};
+    RHIPresentRect output[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32 output_count = 0u;
+    bool full = false;
+
+    ASSERT_TRUE(rhi_present_history_init(&history, 2u, 100u, 100u));
+    ASSERT_TRUE(rhi_present_history_commit(&history, 0u, &first, 1u));
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 1u, &second, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+    ASSERT_TRUE(rhi_present_history_commit(&history, 1u, &second, 1u));
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 0u, &current, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_FALSE(full);
+    ASSERT_EQ(output_count, 2u);
+    ASSERT_EQ(output[0].x, 80);
+    ASSERT_EQ(output[1].x, 40);
+}
+
+TEST(present_history_reset_invalidates_every_swapchain_image)
+{
+    RHIPresentHistory history;
+    RHIPresentRect damage = {1, 2, 3u, 4u};
+    RHIPresentRect output[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32 output_count = 0u;
+    bool full = false;
+
+    ASSERT_TRUE(rhi_present_history_init(&history, 2u, 20u, 20u));
+    ASSERT_TRUE(rhi_present_history_commit(&history, 0u, &damage, 1u));
+    ASSERT_TRUE(rhi_present_history_reset(&history));
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 0u, &damage, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 1u, &damage, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+}
+
+TEST(present_history_aborts_to_safe_full_frame)
+{
+    RHIPresentHistory history;
+    RHIPresentRect damage = {1, 2, 3u, 4u};
+    RHIPresentRect output[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32 output_count = 0u;
+    bool full = false;
+
+    ASSERT_TRUE(rhi_present_history_init(&history, 1u, 20u, 20u));
+    ASSERT_TRUE(rhi_present_history_commit(&history, 0u, &damage, 1u));
+    rhi_present_history_abort(&history);
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 0u, &damage, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+}
+
+TEST(present_history_rejects_invalid_damage_without_state_change)
+{
+    RHIPresentHistory history;
+    RHIPresentRect valid = {1, 2, 3u, 4u};
+    RHIPresentRect invalid = {-1, 2, 3u, 4u};
+
+    ASSERT_TRUE(rhi_present_history_init(&history, 1u, 20u, 20u));
+    ASSERT_TRUE(rhi_present_history_commit(&history, 0u, &valid, 1u));
+    ASSERT_FALSE(rhi_present_history_commit(&history, 0u, &invalid, 1u));
+    ASSERT_EQ(rhi_present_history_generation(&history), 1u);
+    ASSERT_TRUE(rhi_present_history_image_generation(&history, 0u) == 1u);
+}
+
+TEST(present_history_overflow_invalidates_other_images)
+{
+    RHIPresentHistory history;
+    RHIPresentRect damage = {1, 2, 3u, 4u};
+    RHIPresentRect output[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32 output_count = 0u;
+    bool full = false;
+    u32 i;
+
+    ASSERT_TRUE(rhi_present_history_init(&history, 2u, 20u, 20u));
+    ASSERT_TRUE(rhi_present_history_commit(&history, 0u, &damage, 1u));
+    for (i = 1u; i < RHI_PRESENT_HISTORY_CAPACITY; ++i) {
+        ASSERT_TRUE(rhi_present_history_commit(&history, 1u, &damage, 1u));
+    }
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 0u, &damage, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+    ASSERT_EQ(rhi_present_history_generation(&history),
+              RHI_PRESENT_HISTORY_CAPACITY);
+    ASSERT_TRUE(rhi_present_history_commit(&history, 0u, &damage, 1u));
+    ASSERT_TRUE(rhi_present_history_prepare(&history, 1u, &damage, 1u,
+                                             output, RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                             &output_count, &full));
+    ASSERT_TRUE(full);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(sample_count_bits_are_portable_and_bounded);
     RUN_TEST(capability_query_rejects_invalid_arguments);
@@ -99,4 +222,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(offscreen_descriptor_defaults_to_single_sample);
     RUN_TEST(present_damage_rects_require_bounded_nonempty_regions);
     RUN_TEST(present_damage_rects_have_a_fixed_upper_bound);
+    RUN_TEST(present_history_forces_full_on_first_image_use);
+    RUN_TEST(present_history_merges_damage_since_image_was_used);
+    RUN_TEST(present_history_reset_invalidates_every_swapchain_image);
+    RUN_TEST(present_history_aborts_to_safe_full_frame);
+    RUN_TEST(present_history_rejects_invalid_damage_without_state_change);
+    RUN_TEST(present_history_overflow_invalidates_other_images);
 TEST_MAIN_END()

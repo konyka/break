@@ -111,7 +111,8 @@ static re_status_t int32_literal(parser_t *p, int32_t *out) {
 }
 static re_status_t quoted(parser_t *p, char **out, size_t *out_size) {
     size_t start; size_t length = 0u; char *copy;
-    if (!take(p, '"')) return RE_STATUS_PARSE_ERROR; start = p->at;
+    if (!take(p, '"')) return RE_STATUS_PARSE_ERROR;
+    start = p->at;
     while (p->at < p->size && p->text[p->at] != '"') {
         if (p->text[p->at] == '\\' && p->at + 1u < p->size) p->at += 2u;
         else ++p->at;

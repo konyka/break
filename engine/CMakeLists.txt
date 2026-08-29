@@ -127,6 +127,7 @@ add_library(engine STATIC
     src/platform/filewatch_backend.c
     src/math/math.c
     src/rhi/rhi.c
+    src/rhi/rhi_present_history.c
     src/renderer/camera.c
     src/renderer/cull.c
     src/renderer/skybox.c
@@ -996,7 +997,7 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
-        src/rhi/rhi.c src/core/log.c)
+        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_LINUX=1)
