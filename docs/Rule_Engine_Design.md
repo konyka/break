@@ -206,7 +206,9 @@ name dispatches to a registered function named `Fact.method`, then bare
 `RE_STATUS_NOT_SUPPORTED`. Upstream silently no-ops an unknown method, so the
 explicit failure is a deliberate documented divergence. All writes go through
 the firing transaction and notify subscribers like ordinary assignments.
-`when` conditions are unchanged: calls there resolve through registered
+Unlike a dotted assignment target, a method-call write records no TMS
+justification, so TMS premise retraction does not cascade to the receiver
+fact. `when` conditions are unchanged: calls there resolve through registered
 functions only.
 
 `deffacts "name" { Path = literal; }` is a local GRL extension; upstream
@@ -217,9 +219,9 @@ named set — or all sets for NULL — as plain non-logical facts, overwriting
 duplicates, and returns `RE_STATUS_NOT_FOUND` for an unknown name. Dotted
 entries update an existing structured member through `re_facts_set_path` and
 otherwise become flat facts; array literals become structured array facts whose
-string elements follow the engine's shallow-copy convention: the program IR
-owns the string storage, so the installed program must outlive facts seeded
-from its deffacts. `re_engine_reset_with_deffacts` clears working memory (all
+string elements are deep-copied into fact-owned storage — structured members
+own their string payloads, so facts seeded from deffacts stay valid after the
+program is destroyed. `re_engine_reset_with_deffacts` clears working memory (all
 facts, TMS justifications, and the agenda's pending activations and refraction
 keys) and then loads every
 set. Two bounded reset notes apply. Fact IDs are slot/generation pairs and a

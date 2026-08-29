@@ -197,8 +197,10 @@ typedef struct re_limits_t {
   size_t max_facts;
   size_t max_agenda_activations;
   size_t max_firings;
-  /* Caps total agenda entries (pending + fired refraction keys) tracked per
-   * run; 0 selects the default of 1024. Appended in Task 7: this struct has
+  /* Caps total agenda entries (pending + fired refraction keys) tracked; with
+   * a persistent agenda (re_engine_set_agenda_persistent) the count is
+   * cumulative across runs rather than per run. 0 selects the default of
+   * 1024. Appended in Task 7: this struct has
    * no struct_size field, so the append is source-compatible only - existing
    * positional initializers keep compiling and zero-init keeps prior
    * behavior; code compiled against the old layout must be recompiled. */

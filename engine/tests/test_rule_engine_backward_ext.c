@@ -657,6 +657,55 @@ TEST(mutation_invalidates_cached_proof) {
     re_engine_destroy(engine);
 }
 
+TEST(member_write_bumps_mutation_serial) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_program_t *program = NULL;
+    re_value_handle_t *car = NULL;
+    re_value_t speed = {RE_VALUE_INT64, {.int64_value = 80}};
+    re_value_t ninety = {RE_VALUE_INT64, {.int64_value = 90}};
+    re_value_t x = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_EQ(re_value_create_object(facts, &car), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set(car, text("speed"), &speed), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Car"), car), RE_STATUS_OK);
+    re_value_destroy(car);
+    ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
+    /* The proof graph's invalidation is coarse: any mutation of the same
+     * facts object drops every entry. Cache a proof over flat fact X... */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 1u);
+    /* ...then a host member write on the unrelated Car fact bumps the serial
+     * (values.c), so the cached X proof is stale and the re-query misses. */
+    ASSERT_EQ(re_facts_set_path(facts, text("Car.speed"), &ninety), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 2u);
+    /* A rule-fired member write goes through the firing transaction: the
+     * staged serial bump propagates on commit and invalidates the cache. */
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"up\" { when Car.speed == 90 then Car.speed = 80; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 3u);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    assert_graph_stats(engine, 0u, 4u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(disable_flag_bypasses_cache) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
@@ -922,6 +971,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(not_query_composes_with_bfs);
     RUN_TEST(shared_graph_second_query_hits_cache);
     RUN_TEST(mutation_invalidates_cached_proof);
+    RUN_TEST(member_write_bumps_mutation_serial);
     RUN_TEST(disable_flag_bypasses_cache);
     RUN_TEST(different_facts_objects_do_not_share);
     RUN_TEST(not_absent_fact_cache_stays_fresh);

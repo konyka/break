@@ -30,6 +30,9 @@ static void value_free(const re_allocator_impl_t *allocator, re_value_handle_t *
     if (value == NULL) return;
     for (i = 0u; i < value->count; ++i) {
         re_free(allocator, value->members[i].key);
+        /* Member scalars own their string payloads (deep-copied on store). */
+        if (value->members[i].scalar.type == RE_VALUE_STRING)
+            re_free(allocator, (void *)value->members[i].scalar.as.string.data);
         value_free(allocator, value->members[i].child);
     }
     re_free(allocator, value->members);
@@ -61,6 +64,13 @@ static re_status_t value_copy(const re_allocator_impl_t *allocator,
         }
         member->key_size = source->members[i].key_size;
         member->scalar = source->members[i].scalar;
+        if (member->scalar.type == RE_VALUE_STRING) {
+            char *payload = NULL;
+            if (re_copy_string(allocator, member->scalar.as.string, &payload) != RE_STATUS_OK) {
+                value_free(allocator, copy); return RE_STATUS_OUT_OF_MEMORY;
+            }
+            member->scalar.as.string.data = payload;
+        }
         if (source->members[i].child != NULL &&
             value_copy(allocator, source->members[i].child, &member->child) != RE_STATUS_OK) {
             value_free(allocator, copy); return RE_STATUS_OUT_OF_MEMORY;
@@ -90,8 +100,19 @@ static re_status_t value_add(re_value_handle_t *value, re_string_t key,
         --value->count; return RE_STATUS_OUT_OF_MEMORY;
     }
     member->key_size = key.size;
-    if (scalar != NULL) member->scalar = *scalar;
-    else if (value_copy(&value->allocator, child, &member->child) != RE_STATUS_OK) {
+    if (scalar != NULL) {
+        char *payload = NULL;
+        /* Member scalars own their string payloads: deep-copy on store so the
+         * member never aliases borrowed (fact- or program-owned) storage. */
+        if (scalar->type == RE_VALUE_STRING) {
+            re_status_t copy_status = re_copy_string(&value->allocator, scalar->as.string, &payload);
+            if (copy_status != RE_STATUS_OK) {
+                re_free(&value->allocator, member->key); --value->count; return copy_status;
+            }
+        }
+        member->scalar = *scalar;
+        if (payload != NULL) member->scalar.as.string.data = payload;
+    } else if (value_copy(&value->allocator, child, &member->child) != RE_STATUS_OK) {
         re_free(&value->allocator, member->key); --value->count; return RE_STATUS_OUT_OF_MEMORY;
     }
     return RE_STATUS_OK;
@@ -267,8 +288,21 @@ re_status_t re_facts_set_path(re_facts_t *facts, re_string_t path, const re_valu
         member = (re_value_member_t *)find_member(current, (re_string_t){path.data + start, end - start});
         if (member == NULL) return RE_STATUS_NOT_FOUND;
         if (end == path.size) {
+            char *payload = NULL;
             if (member->child != NULL) return RE_STATUS_NOT_FOUND;
+            /* The member owns its string payload: deep-copy the new value before
+             * releasing the old one so no borrowed fact storage is retained. */
+            if (value->type == RE_VALUE_STRING) {
+                re_status_t copy_status = re_copy_string(&current->allocator, value->as.string, &payload);
+                if (copy_status != RE_STATUS_OK) return copy_status;
+            }
+            if (member->scalar.type == RE_VALUE_STRING)
+                re_free(&current->allocator, (void *)member->scalar.as.string.data);
             member->scalar = *value;
+            if (payload != NULL) member->scalar.as.string.data = payload;
+            /* Member writes are mutations: bump the serial so generation-stamped
+             * consumers (the shared proof graph) invalidate like any mutation. */
+            ++facts->mutation_serial;
             return RE_STATUS_OK;
         }
         current = member->child;
@@ -300,12 +334,29 @@ re_status_t re_facts_set_member(re_facts_t *facts, re_string_t name,
         return RE_STATUS_INVALID_ARGUMENT;
     member = (re_value_member_t *)find_member(facts->entries[index].structured, key);
     if (member != NULL) {
-        value_free(&facts->entries[index].structured->allocator, member->child);
+        const re_allocator_impl_t *allocator = &facts->entries[index].structured->allocator;
+        char *payload = NULL;
+        /* The member owns its string payload: deep-copy the new value before
+         * releasing the old one so no borrowed fact storage is retained. */
+        if (value->type == RE_VALUE_STRING) {
+            re_status_t copy_status = re_copy_string(allocator, value->as.string, &payload);
+            if (copy_status != RE_STATUS_OK) return copy_status;
+        }
+        value_free(allocator, member->child);
         member->child = NULL;
+        if (member->scalar.type == RE_VALUE_STRING)
+            re_free(allocator, (void *)member->scalar.as.string.data);
         member->scalar = *value;
+        if (payload != NULL) member->scalar.as.string.data = payload;
+        ++facts->mutation_serial;
         return RE_STATUS_OK;
     }
-    return value_add(facts->entries[index].structured, key, value, NULL);
+    {
+        re_status_t status = value_add(facts->entries[index].structured, key, value, NULL);
+        /* Member creation is a mutation too: keep serial-based invalidation. */
+        if (status == RE_STATUS_OK) ++facts->mutation_serial;
+        return status;
+    }
 }
 
 re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t path,

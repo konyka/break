@@ -497,6 +497,92 @@ TEST(template_buffer_too_small_reports_required_size) {
     re_rule_template_destroy(t);
 }
 
+TEST(member_string_write_survives_source_mutation) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_fact_id_t id;
+    re_value_t msg = {RE_VALUE_STRING, {0}};
+    re_value_t out;
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    set_structured_car(facts, 80);
+    msg.as.string = text("hello");
+    ASSERT_EQ(re_facts_insert(facts, text("Msg"), &msg, &id), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"copy\" { when Msg == \"hello\" then Car.note = Msg; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get_path(facts, text("Car.note"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_STRING);
+    ASSERT_TRUE(out.as.string.size == 5u && memcmp(out.as.string.data, "hello", 5u) == 0);
+    /* Mutating Msg frees the old "hello" fact storage; the member owns its
+     * own copy, so it must still read back the original string. */
+    msg.as.string = text("world!!");
+    ASSERT_EQ(re_facts_set(facts, text("Msg"), &msg), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get_path(facts, text("Car.note"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_STRING);
+    ASSERT_TRUE(out.as.string.size == 5u && memcmp(out.as.string.data, "hello", 5u) == 0);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(member_method_string_write_survives_source_mutation) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_fact_id_t id;
+    re_value_t msg = {RE_VALUE_STRING, {0}};
+    re_value_t out;
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    set_structured_car(facts, 80);
+    msg.as.string = text("hello");
+    ASSERT_EQ(re_facts_insert(facts, text("Msg"), &msg, &id), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL,
+        text("rule \"copy\" { when Msg == \"hello\" then $Car.setNote(Msg); }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    /* setNote derives the member name "Note". */
+    ASSERT_EQ(re_facts_get_path(facts, text("Car.Note"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_STRING);
+    ASSERT_TRUE(out.as.string.size == 5u && memcmp(out.as.string.data, "hello", 5u) == 0);
+    /* Same ownership guarantee through the method-call write path. */
+    msg.as.string = text("world!!");
+    ASSERT_EQ(re_facts_set(facts, text("Msg"), &msg), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get_path(facts, text("Car.Note"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_STRING);
+    ASSERT_TRUE(out.as.string.size == 5u && memcmp(out.as.string.data, "hello", 5u) == 0);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(structured_string_member_roundtrip_owns_storage) {
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *car = NULL;
+    re_value_t name = {RE_VALUE_STRING, {0}};
+    re_value_t out;
+    ASSERT_NOT_NULL(facts);
+    name.as.string = text("alpha");
+    ASSERT_EQ(re_value_create_object(facts, &car), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set(car, text("name"), &name), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Car"), car), RE_STATUS_OK);
+    /* Every store deep-copies: the builder handle, the stored fact, and the
+     * caller's value are independent, so destroying the handle cannot disturb
+     * the fact and later overwrites free only the member's own payload. */
+    re_value_destroy(car);
+    ASSERT_EQ(re_facts_get_path(facts, text("Car.name"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_STRING);
+    ASSERT_TRUE(out.as.string.size == 5u && memcmp(out.as.string.data, "alpha", 5u) == 0);
+    name.as.string = text("beta-longer");
+    ASSERT_EQ(re_facts_set_path(facts, text("Car.name"), &name), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get_path(facts, text("Car.name"), &out), RE_STATUS_OK);
+    ASSERT_TRUE(out.as.string.size == 11u && memcmp(out.as.string.data, "beta-longer", 11u) == 0);
+    re_facts_destroy(facts);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(set_path_updates_nested_structured_member);
     RUN_TEST(set_path_flat_key_shadows_nested_walk);
@@ -521,4 +607,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(template_unknown_supplied_param_invalid);
     RUN_TEST(template_generated_rule_parses_and_fires);
     RUN_TEST(template_buffer_too_small_reports_required_size);
+    RUN_TEST(member_string_write_survives_source_mutation);
+    RUN_TEST(member_method_string_write_survives_source_mutation);
+    RUN_TEST(structured_string_member_roundtrip_owns_storage);
 TEST_MAIN_END()
