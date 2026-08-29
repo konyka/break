@@ -113,7 +113,7 @@
 | GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
-| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer 和受限 token 着色已实现；后续快照版本迁移及完整 RTL token 绘制未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 保持 legacy 读取兼容并增加显式迁移策略，继续保持 lexer/cache 单帧预算 |
+| 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer 和受限 token 着色已实现；完整 RTL token 绘制未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐完整 RTL token 绘制 |
 | 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
@@ -263,3 +263,14 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 保持 RTL 分段顺序、字体宽度、OOM 回退和跨后端绘制行为不变；公共头文件同步明确
   有界返回契约。
 - 验证：`test_myui_text_layout` **16/16** 通过；normal/ASan/Vulkan 门禁已复验。
+
+## 已完成：fold-state YAML legacy migration（2026-08-29）
+
+- 以 TDD 新增 `text_area_fold_state_yaml_roundtrip_and_transaction` 的显式 v0 输入断言，
+  先验证 loader 错误拒绝 legacy 版本号。
+- `version: 0` 现在表示旧版 `folds` schema，与既有无 version legacy 输入使用相同的严格
+  字段、范围、数量和字节预算；成功导入后 exporter 始终生成 `version: 1`，形成可观测的
+  单向升级，不增加绘制或编辑热路径成本。
+- 保持未知版本拒绝和事务回滚语义；不恢复 XML 兼容层，不引入全局迁移状态。
+- 验证：normal/ASan `test_myui_window_manager` **58/58**，Vulkan `myui_core` 构建及
+  编码门禁通过；LeakSanitizer 继续使用 `detect_leaks=0` 规避当前 ptrace 环境限制。

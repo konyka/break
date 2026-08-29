@@ -748,6 +748,15 @@ TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
             MY_RET_OK);
   ASSERT_TRUE(my_text_area_is_folded(area, 0));
   ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_folds_from_yaml(area,
+                                         "version: 0\nfolds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n"),
+            MY_RET_OK);
+  ASSERT_TRUE(my_text_area_is_folded(area, 0));
+  ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
+  ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
+  my_mem_free(NULL, yaml);
+  yaml = NULL;
   ASSERT_EQ(my_text_area_folds_from_yaml(area, "version: 2\nfolds:\n"),
             MY_RET_INVALID_PARAMS);
   ASSERT_TRUE(my_text_area_is_folded(area, 0));

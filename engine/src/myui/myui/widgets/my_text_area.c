@@ -26,6 +26,7 @@
 #define TA_SYNTAX_DEFAULT_LINE_BUDGET 32
 #define TA_MAX_FOLD_STATE_BYTES (64u * 1024u)
 #define TA_MAX_FOLD_RANGES 4096u
+#define TA_FOLD_STATE_LEGACY_VERSION 0
 #define TA_FOLD_STATE_VERSION 1
 #define TA_FOLD_STATE_HEADER "version: 1\nfolds:\n"
 
@@ -2598,6 +2599,7 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
   my_conf_node_t* root = NULL;
   my_conf_node_t* folds;
   my_conf_node_t* version;
+  int64_t version_value;
   my_conf_error_t error;
   my_darray_t* candidate = NULL;
   size_t i;
@@ -2611,8 +2613,10 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
     version = NULL;
   } else if (my_conf_child_count(root) == 2) {
     version = my_conf_get(root, "version");
-    if (version == NULL || my_conf_type(version) != MY_CONF_INT64 ||
-        my_conf_as_int64(version, -1) != TA_FOLD_STATE_VERSION) goto invalid;
+    if (version == NULL || my_conf_type(version) != MY_CONF_INT64) goto invalid;
+    version_value = my_conf_as_int64(version, -1);
+    if (version_value != TA_FOLD_STATE_LEGACY_VERSION &&
+        version_value != TA_FOLD_STATE_VERSION) goto invalid;
     if (strcmp(my_conf_key(my_conf_child(root, 0)), "version") != 0 &&
         strcmp(my_conf_key(my_conf_child(root, 0)), "folds") != 0) goto invalid;
     if (strcmp(my_conf_key(my_conf_child(root, 1)), "version") != 0 &&

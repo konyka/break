@@ -2161,3 +2161,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 验证：normal/ASan `test_myui_text_layout` **16/16**，Vulkan `myui_core` 构建、
   `git diff --check` 与乱码/控制字符扫描通过；LeakSanitizer 继续受当前 ptrace
   环境限制，ASan 使用 `detect_leaks=0`。
+
+## myui fold-state YAML legacy migration（2026-08-29）
+
+- 以 TDD 在 `text_area_fold_state_yaml_roundtrip_and_transaction` 中加入显式 `version: 0`
+  输入，先锁定旧版编号被错误拒绝的回归。
+- `my_text_area_folds_from_yaml()` 将 `version: 0` 作为旧版 `folds` schema 接收，并沿用
+  同一套严格字段、范围、数量和输入预算；成功导入后 exporter 始终输出 `version: 1`。
+- 未知版本仍拒绝，candidate 解析失败仍不会替换 active fold state；不影响绘制热路径、
+  后端 API 或 XML 废弃边界。
+- 验证：normal/ASan `test_myui_window_manager` **58/58**，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过；LeakSanitizer 受当前 ptrace 环境限制。
