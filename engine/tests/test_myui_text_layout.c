@@ -12,6 +12,7 @@
 typedef struct paragraph_test_font_t {
   my_font_t base;
   const uint8_t* bitmap;
+  size_t glyph_calls;
 } paragraph_test_font_t;
 
 static my_ret_t paragraph_test_measure(my_font_t* font, const char* text,
@@ -28,6 +29,7 @@ static my_ret_t paragraph_test_glyph(my_font_t* font, uint32_t cp,
                                      int32_t size, my_glyph_t* glyph) {
   paragraph_test_font_t* test_font = (paragraph_test_font_t*)font;
   (void)cp;
+  test_font->glyph_calls++;
   if (glyph == NULL || size <= 0) return MY_RET_INVALID_PARAMS;
   glyph->bitmap = test_font->bitmap;
   glyph->w = 1;
@@ -141,6 +143,33 @@ TEST(text_layout_preserves_lam_alef_logical_boundaries)
   ASSERT_EQ(layout->logical_len, 2u);
   ASSERT_EQ(layout->len, 2u);
 #endif
+  my_text_layout_destroy(layout);
+}
+
+TEST(text_layout_reuses_font_boundary_prefix_cache)
+{
+  static const uint8_t bitmap[] = {255};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0};
+  my_text_layout_t* layout =
+      my_text_layout_process(NULL, "\xD7\x90\xD7\x91\xD7\x92");
+  my_rectf_t rects[2];
+  size_t before;
+
+  ASSERT_NOT_NULL(layout);
+  before = font.glyph_calls;
+  (void)my_text_layout_visual_x(layout, (my_font_t*)&font, 16, 2);
+  (void)my_text_layout_logical_at_x(layout, (my_font_t*)&font, 16, 2);
+  ASSERT_EQ(my_text_layout_visual_rects(layout, (my_font_t*)&font, 16, 0, 2,
+                                        rects, 2), 1u);
+  ASSERT_TRUE(font.glyph_calls > before);
+  before = font.glyph_calls;
+  (void)my_text_layout_visual_x(layout, (my_font_t*)&font, 16, 1);
+  (void)my_text_layout_logical_at_x(layout, (my_font_t*)&font, 16, 3);
+  (void)my_text_layout_visual_rects(layout, (my_font_t*)&font, 16, 1, 3,
+                                    rects, 2);
+  ASSERT_EQ(font.glyph_calls, before);
+  (void)my_text_layout_visual_x(layout, (my_font_t*)&font, 18, 1);
+  ASSERT_TRUE(font.glyph_calls > before);
   my_text_layout_destroy(layout);
 }
 
@@ -317,7 +346,7 @@ TEST(paragraph_preserves_logical_ranges_and_hard_boundaries)
 TEST(paragraph_does_not_break_inside_shaping_cluster)
 {
   static const uint8_t bitmap[] = {255};
-  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0};
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
       NULL, "office", (my_font_t*)&font, 16, 4);
   const my_text_paragraph_line_t* line;
@@ -338,6 +367,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(arabic_shape_forms_lam_alef);
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
+    RUN_TEST(text_layout_reuses_font_boundary_prefix_cache);
     RUN_TEST(line_break_applies_unicode_context_rules);
     RUN_TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together);
     RUN_TEST(line_break_keeps_unicode_glue_and_joiners_together);

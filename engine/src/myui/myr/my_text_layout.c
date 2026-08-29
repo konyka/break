@@ -5,6 +5,7 @@
  */
 #include "myr/my_text_layout.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -420,6 +421,7 @@ void my_text_layout_destroy(my_text_layout_t* layout) {
     my_mem_free(alloc, layout->visual_logical_span);
     my_mem_free(alloc, layout->logical_to_visual);
     my_mem_free(alloc, layout->visual_rtl);
+    my_mem_free(alloc, layout->visual_boundaries);
     my_mem_free(alloc, layout->visual_utf8);
     my_mem_free(alloc, layout);
   }
@@ -455,6 +457,38 @@ static float tl_cp_w(const my_font_t* font, int32_t size, uint32_t cp) {
     return 0.0f;
   }
   return (float)g.advance;
+}
+
+static bool tl_boundaries_ensure(const my_text_layout_t* layout,
+                                 const my_font_t* font, int32_t size) {
+  my_text_layout_t* l = (my_text_layout_t*)layout;
+  size_t required;
+  size_t i;
+  int32_t* grown;
+  int64_t total = 0;
+  if (l == NULL || l->len == SIZE_MAX) return false;
+  required = l->len + 1;
+  if (l->visual_boundaries != NULL &&
+      l->visual_boundaries_capacity >= required &&
+      l->visual_boundaries_font == font &&
+      l->visual_boundaries_size == size) {
+    return true;
+  }
+  if (required > SIZE_MAX / sizeof(*l->visual_boundaries)) return false;
+  grown = (int32_t*)my_mem_realloc(l->allocator, l->visual_boundaries,
+                                   required * sizeof(*grown));
+  if (grown == NULL) return false;
+  l->visual_boundaries = grown;
+  l->visual_boundaries[0] = 0;
+  for (i = 0; i < l->len; i++) {
+    total += (int64_t)tl_cp_w(font, size, l->visual_cps[i]);
+    if (total > INT32_MAX) total = INT32_MAX;
+    l->visual_boundaries[i + 1] = (int32_t)total;
+  }
+  l->visual_boundaries_capacity = required;
+  l->visual_boundaries_font = font;
+  l->visual_boundaries_size = size;
+  return true;
 }
 
 /** @brief Visual boundary index (0..len) of a logical boundary:
@@ -555,6 +589,9 @@ int32_t my_text_layout_visual_x(const my_text_layout_t* l,
     return 0;
   }
   v = tl_vb_of_lb(l, logical_boundary);
+  if (tl_boundaries_ensure(l, font, size) && v <= l->len) {
+    return l->visual_boundaries[v];
+  }
   for (i = 0; i < v; i++) {
     x += tl_cp_w(font, size, l->visual_cps[i]);
   }
@@ -571,6 +608,25 @@ size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
   }
   if (x <= 0) {
     return tl_lb_of_vb(l, 0);
+  }
+  if (tl_boundaries_ensure(l, font, size)) {
+    size_t lo = 0;
+    size_t hi = l->len;
+    while (lo < hi) {
+      size_t mid = lo + (hi - lo) / 2;
+      int32_t width = l->visual_boundaries[mid + 1] -
+                      l->visual_boundaries[mid];
+      int64_t midpoint = (int64_t)l->visual_boundaries[mid] +
+                         ((int64_t)width + 1) / 2;
+      if ((int64_t)x < midpoint) {
+        hi = mid;
+      } else if ((int64_t)x < l->visual_boundaries[mid + 1]) {
+        return tl_lb_of_vb(l, tl_canon_left(l, mid));
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return tl_lb_of_vb(l, l->len);
   }
   for (i = 0; i < l->len; i++) {
     float w = tl_cp_w(font, size, l->visual_cps[i]);
@@ -657,6 +713,35 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
   }
   if (l1 > l->logical_len) {
     l1 = l->logical_len;
+  }
+  if (tl_boundaries_ensure(l, font, size)) {
+    for (j = 0; j < l->len; j++) {
+      int32_t width = l->visual_boundaries[j + 1] -
+                      l->visual_boundaries[j];
+      size_t start = l->visual_to_logical[j];
+      size_t end = start;
+      bool in_sel;
+      if (l->visual_logical_span[j] > SIZE_MAX - end) {
+        end = SIZE_MAX;
+      } else {
+        end += l->visual_logical_span[j];
+      }
+      if (end > l->logical_len) end = l->logical_len;
+      in_sel = start < l1 && end > l0;
+      if (in_sel && !open) {
+        open = true;
+        seg_x = x;
+        seg_w = 0.0f;
+      }
+      if (in_sel) seg_w += (float)width;
+      if (open && (!in_sel || j + 1 == l->len)) {
+        if (n < cap) out[n] = my_rectf_init(seg_x, 0.0f, seg_w, 0.0f);
+        n++;
+        open = false;
+      }
+      x += (float)width;
+    }
+    return n;
   }
   for (j = 0; j < l->len; j++) {
     float w = tl_cp_w(font, size, l->visual_cps[j]);
