@@ -124,9 +124,10 @@ codepoint 范围；跨行 `/* ... */` 状态会传播到后缀。`my_syntax_cach
 超限直接拒绝。
 
 text area 在启用语法高亮后懒创建该 cache，并在 paint 前按 `syntax_line_budget` 增量推进；
-ready 的非 RTL、有字体行才进行 token 分段绘制。默认关闭时不创建 cache、不启动 timer，
-也不扫描全文。无字体、RTL、justify 等路径继续使用原整行绘制，避免把有限 lexer 误宣称
-为完整语法高亮。
+ready 的有字体行进行 token 分段绘制，RTL 行先复用 visual layout，再按 visual-order
+片段和 token 颜色绘制。默认关闭时不创建 cache、不启动 timer，也不扫描全文。无字体和
+cache 未 ready 时继续使用原整行绘制；JUSTIFY 仍使用受限的逐词绘制，复杂 RTL GSUB
+与跨 face shaping 不在该 lexer 契约内。
 
 ## CSS/YAML 解析边界
 
@@ -663,3 +664,7 @@ line 范围变化后。纯 LTR 仍走零 layout 的快速路径，缓存创建�
 视觉映射；字体或字号变化只重建宽度数组，分配失败回退原有逐字形计算，不改变结果。
 selection rects 严格遵守输出 `cap`，写满后立即停止剩余视觉项扫描，避免小输出缓冲的
 重复计算。
+RTL token 绘制复用同一 visual boundary 前缀和，按 token 范围二分定位颜色，再以 visual
+UTF-8 片段提交公共 canvas；纯 LTR 仍走原有单次 token 测量路径，避免新增热路径开销。
+内置 bitmap font 在创建时将 1bpp 资源展开为 8bpp alpha，绘制只读取合法的固定 8x8
+像素块，不在每帧做格式转换。

@@ -2172,3 +2172,19 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   后端 API 或 XML 废弃边界。
 - 验证：normal/ASan `test_myui_window_manager` **58/58**，Vulkan `myui_core` 构建、
   `git diff --check` 与乱码/控制字符扫描通过；LeakSanitizer 受当前 ptrace 环境限制。
+
+## myui RTL syntax token painting（2026-08-29）
+
+- 以 TDD 新增 `text_area_rtl_syntax_colors_tokens`，锁定 RTL 行不应因 bidi 直接退回整行
+  普通颜色绘制；测试比较启用 YAML keyword 高亮与无高亮基线的软件 canvas 输出。
+- text area 现在复用 visual UTF-8/layout，按 visual-order 连续片段设置 token 颜色；每个
+  visual item 通过有序 token 的二分查找确定颜色，复杂度为 O(V log T)，LTR 仍保持原有
+  O(T) token 测量路径。
+- 新增 `my_text_layout_visual_boundary_x()`，提供字体宽度缓存支持的视觉边界坐标查询；
+  core 和 canvas API 仍后端中立。复杂 RTL GSUB、跨 face fallback 和 JUSTIFY token 联动
+  保持明确未实现。
+- 内置 bitmap font 在创建时将 1bpp 数据展开为 8bpp alpha，修复绘制读取越界；绘制热路径
+  不做格式转换。
+- 验证：normal/ASan window manager **59/59** 与 text layout **16/16**、Vulkan
+  `myui_core` 构建、`git diff --check` 和乱码/控制字符扫描通过；LeakSanitizer 受当前
+  ptrace 环境限制。

@@ -49,7 +49,20 @@ uint32_t my_utf8_next(const char** s) {
 typedef struct my_font_bitmap_t {
   my_font_t base;
   const my_allocator_t* allocator;
+  uint8_t bitmap[95][64];
+  uint8_t fallback[64];
 } my_font_bitmap_t;
+
+static void bmp_expand_glyph(uint8_t* destination, const uint8_t* source) {
+  size_t row;
+  size_t column;
+  for (row = 0; row < 8; row++) {
+    for (column = 0; column < 8; column++) {
+      destination[row * 8 + column] =
+          (source[row] & (uint8_t)(0x80u >> column)) != 0 ? 255u : 0u;
+    }
+  }
+}
 
 static my_ret_t bmp_measure(my_font_t* font, const char* text, int32_t size,
                             int32_t* w, int32_t* h) {
@@ -74,23 +87,16 @@ static my_ret_t bmp_measure(my_font_t* font, const char* text, int32_t size,
 
 static my_ret_t bmp_get_glyph(my_font_t* font, uint32_t codepoint, int32_t size,
                               my_glyph_t* glyph) {
-  static const uint8_t blank[8] = {0};
-  (void)font;
+  my_font_bitmap_t* bitmap_font = (my_font_bitmap_t*)font;
   if (glyph == NULL || size <= 0) {
     return MY_RET_INVALID_PARAMS;
   }
   if (codepoint < 32 || codepoint > 126) {
-    /* non-ASCII: hollow box fallback glyph */
-    static const uint8_t box[8] = {0xFE, 0x82, 0x82, 0x82, 0x82, 0x82, 0xFE, 0};
-    glyph->bitmap = box;
-    glyph->w = 8;
-    glyph->h = 8;
-  } else if (codepoint == 32) {
-    glyph->bitmap = blank;
+    glyph->bitmap = bitmap_font->fallback;
     glyph->w = 8;
     glyph->h = 8;
   } else {
-    glyph->bitmap = MY_FONT_BITMAP_DATA[codepoint - 32];
+    glyph->bitmap = bitmap_font->bitmap[codepoint - 32];
     glyph->w = 8;
     glyph->h = 8;
   }
@@ -136,11 +142,19 @@ static const my_font_vtable_t s_bitmap_vtable = {bmp_measure, bmp_get_glyph,
 my_font_t* my_font_bitmap_create(const my_allocator_t* allocator) {
   my_font_bitmap_t* f =
       (my_font_bitmap_t*)my_mem_calloc(allocator, 1, sizeof(my_font_bitmap_t));
+  static const uint8_t fallback[8] = {0xFE, 0x82, 0x82, 0x82,
+                                      0x82, 0x82, 0xFE, 0};
+  size_t glyph_index;
   if (f == NULL) {
     return NULL;
   }
   f->base.vtable = &s_bitmap_vtable;
   f->allocator = allocator;
+  for (glyph_index = 0; glyph_index < 95; glyph_index++) {
+    bmp_expand_glyph(f->bitmap[glyph_index],
+                     MY_FONT_BITMAP_DATA[glyph_index]);
+  }
+  bmp_expand_glyph(f->fallback, fallback);
   return (my_font_t*)f;
 }
 

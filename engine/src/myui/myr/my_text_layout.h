@@ -90,6 +90,11 @@ int32_t my_text_layout_visual_x(const my_text_layout_t* l,
                                 const my_font_t* font, int32_t size,
                                 size_t logical_boundary);
 
+/** @brief Visual x (px) of a visual-order boundary. */
+int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
+                                         const my_font_t* font, int32_t size,
+                                         size_t visual_boundary);
+
 /** @brief Nearest logical boundary for a click at visual x. */
 size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
                                    const my_font_t* font, int32_t size,

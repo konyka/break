@@ -194,6 +194,7 @@ TEST(text_layout_visual_rects_honors_output_capacity)
             1u);
   ASSERT_EQ(rect.x, 0.0f);
   ASSERT_EQ(rect.w, 8.0f);
+  ASSERT_EQ(my_text_layout_visual_boundary_x(&layout, NULL, 16, 3), 24);
 }
 
 TEST(line_break_applies_unicode_context_rules)

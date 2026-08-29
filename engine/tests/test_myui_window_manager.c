@@ -4,6 +4,7 @@
 
 #include "mypal/dummy/my_pal_dummy.h"
 #include "mypal/my_event.h"
+#include "myr/my_font.h"
 #include "myr/my_lcd_mem.h"
 #include "myr/my_vgcanvas_soft.h"
 #include "myui/my_layout.h"
@@ -605,6 +606,64 @@ TEST(text_area_rtl_hit_test_reuses_layout)
   ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
   ASSERT_EQ(state.alloc_calls - before, 0u);
   my_widget_unref(area);
+}
+
+TEST(text_area_rtl_syntax_colors_tokens)
+{
+  my_widget_t* plain = my_text_area_create(NULL);
+  my_widget_t* highlighted = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_lcd_t* plain_lcd = my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_lcd_t* highlighted_lcd =
+      my_lcd_mem_create(NULL, 160, 80, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* plain_canvas = my_vgcanvas_soft_create(NULL, plain_lcd);
+  my_vgcanvas_t* highlighted_canvas =
+      my_vgcanvas_soft_create(NULL, highlighted_lcd);
+  uint8_t* plain_pixels;
+  uint8_t* highlighted_pixels;
+  uint32_t plain_stride;
+  uint32_t highlighted_stride;
+  size_t bytes;
+
+  ASSERT_NOT_NULL(plain);
+  ASSERT_NOT_NULL(highlighted);
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(plain_lcd);
+  ASSERT_NOT_NULL(highlighted_lcd);
+  ASSERT_NOT_NULL(plain_canvas);
+  ASSERT_NOT_NULL(highlighted_canvas);
+  ASSERT_EQ(my_widget_set_rect(plain, &(my_rect_t){0, 0, 80, 54}), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_rect(highlighted, &(my_rect_t){0, 0, 80, 54}),
+            MY_RET_OK);
+  my_text_area_set_font(plain, font, 16);
+  my_text_area_set_font(highlighted, font, 16);
+  ASSERT_EQ(my_vgcanvas_set_font(plain_canvas, font, 16), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_font(highlighted_canvas, font, 16), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(plain, "true \xD7\x90"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(highlighted, "true \xD7\x90"), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_enabled(highlighted, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_syntax_language(highlighted, MY_SYNTAX_YAML),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(plain_canvas, NULL), MY_RET_OK);
+  plain->vtable->on_paint(plain, plain_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(plain_canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(highlighted_canvas, NULL), MY_RET_OK);
+  highlighted->vtable->on_paint(highlighted, highlighted_canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(highlighted_canvas), MY_RET_OK);
+  plain_pixels = my_lcd_mem_get_buffer(plain_lcd);
+  highlighted_pixels = my_lcd_mem_get_buffer(highlighted_lcd);
+  plain_stride = my_lcd_mem_get_stride(plain_lcd);
+  highlighted_stride = my_lcd_mem_get_stride(highlighted_lcd);
+  ASSERT_EQ(plain_stride, highlighted_stride);
+  bytes = (size_t)plain_stride * 80u;
+  ASSERT_TRUE(memcmp(plain_pixels, highlighted_pixels, bytes) != 0);
+  my_vgcanvas_destroy(plain_canvas);
+  my_vgcanvas_destroy(highlighted_canvas);
+  my_lcd_destroy(plain_lcd);
+  my_lcd_destroy(highlighted_lcd);
+  my_font_destroy(font);
+  my_widget_unref(plain);
+  my_widget_unref(highlighted);
 }
 
 TEST(text_area_wrap_reuses_unchanged_prefix_after_edit)
@@ -2131,6 +2190,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_geometry_cache_reuses_glyph_advances);
     RUN_TEST(text_area_rtl_paint_reuses_layout);
     RUN_TEST(text_area_rtl_hit_test_reuses_layout);
+    RUN_TEST(text_area_rtl_syntax_colors_tokens);
     RUN_TEST(text_area_wrap_reuses_unchanged_prefix_after_edit);
     RUN_TEST(text_area_line_number_gutter_has_bounded_width);
     RUN_TEST(text_area_line_numbers_reduce_wrap_width);
