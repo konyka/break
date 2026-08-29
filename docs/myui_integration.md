@@ -24,10 +24,16 @@ drawable 面积 60%，自动回退全屏；空 damage 仅在 present target 保�
 所有无效尺寸、能力缺失、surface 重建、resize、AA 切换和绘制失败均走全屏/不绘制的安全
 路径，不凭 dirty rect 猜测 swapchain 内容。
 
-GL 和 Vulkan 当前均只声明动态 scissor 能力，不声明 swapchain 像素保留能力，因此运行时
-继续使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。真正启用 partial
-present 前，还必须分别接入 EGL/GLX/WGL damage present 或 Vulkan incremental present，跟踪
-每个 backbuffer 的 age，并在 present API 中提交同一份 damage 区域。
+RHI 现在提供 `rhi_frame_begin_damage()`，在帧开始前接收有界的 drawable damage 区域；
+它会拒绝空尺寸、负坐标、越界区域和超过 16 个矩形的输入，拒绝后回到普通帧路径。若
+后端报告 buffer age 不为 1，则同样强制全屏，避免把更早帧遗漏的 damage 当作已保留内容。
+Wayland EGL 在检测到 `EGL_EXT_buffer_age` 与 `eglSwapBuffersWithDamageKHR/EXT` 后，使用
+统一的 top-left 区域转换为 EGL 所需的 bottom-left 坐标；所有尺寸转换在进入 EGLint 前
+检查范围。GL X11、Win32 WGL、Vulkan 和 macOS 当前保持能力关闭。
+
+GL X11、Win32 WGL、Vulkan 和 macOS 当前均不声明 swapchain 像素保留能力，因此运行时继续
+使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。Vulkan 后续仍需按
+swapchain image 维护历史 damage，才能安全接入 incremental present。
 
 ## 冷却按钮
 

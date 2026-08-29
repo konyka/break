@@ -34,6 +34,7 @@ struct BreakUI {
   f32 prev_scroll_x, prev_scroll_y;
   bool prev_has_mouse;
   bool surface_valid;
+  bool present_partial_active;
   RHICapabilities rhi_caps;
   my_dirty_rects_t *dirty_snapshots;
   size_t dirty_snapshot_capacity;
@@ -490,6 +491,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   u32 logical_height = 0;
   bool drawable_changed;
   bool logical_changed;
+  bool force_full_composite;
   my_dirty_rects_t composite_damage;
   bool composite_damage_available = false;
   break_ui_surface_composite_decision_t composite_decision;
@@ -497,6 +499,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
    * resize event and never destroy or resize the shared RHI target. */
   if (ui == NULL || ui->window == NULL || ui->vg == NULL || cmd == NULL) return;
   my_dirty_rects_init(&composite_damage);
+  force_full_composite = !ui->surface_valid;
   platform_get_logical_size(ui->platform, &logical_width, &logical_height);
   if (logical_width == 0 || logical_height == 0) {
     logical_width = ui->logical_width;
@@ -529,6 +532,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
       rhi_offscreen_fbo_destroy(ui->device, &old_fbo);
     }
     ui->surface_valid = false;
+    force_full_composite = true;
   }
   {
     int pending_level = my_vgcanvas_break_rhi_pending_antialias_level(ui->vg);
@@ -546,6 +550,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
         ui->surface_fbo = candidate;
         my_vgcanvas_break_rhi_set_target(ui->vg, &ui->surface_fbo);
         ui->surface_valid = false;
+        force_full_composite = true;
         if (rhi_handle_valid(old_fbo.fb)) {
           rhi_offscreen_fbo_destroy(ui->device, &old_fbo);
         }
@@ -661,7 +666,9 @@ composite_surface:
         .drawable_width = width,
         .drawable_height = height,
         .retained_surface_valid = ui->surface_valid,
-        .present_target_preserved = ui->rhi_caps.present_target_preserved,
+        .present_target_preserved =
+            ui->rhi_caps.present_target_preserved && ui->present_partial_active &&
+            !force_full_composite,
         .scissor_supported = ui->rhi_caps.scissor_supported};
     if (!composite_damage_available) {
       my_dirty_rects_init(&composite_damage);
@@ -670,21 +677,73 @@ composite_surface:
         &composite_damage, &composite_options, &composite_decision);
     if (composite_decision.mode == BREAK_UI_COMPOSITE_SKIP) return;
     if (composite_decision.mode == BREAK_UI_COMPOSITE_PARTIAL) {
-      rhi_cmd_set_scissor(cmd, (i32)composite_decision.scissor.x,
-                          (i32)composite_decision.scissor.y,
-                          composite_decision.scissor.w,
-                          composite_decision.scissor.h);
+      rhi_cmd_set_scissor_top_left(cmd, composite_decision.scissor.x,
+                                   composite_decision.scissor.y,
+                                   composite_decision.scissor.w,
+                                   composite_decision.scissor.h);
     } else {
-      rhi_cmd_set_scissor(cmd, 0, 0, width, height);
+      rhi_cmd_set_scissor_top_left(cmd, 0, 0, width, height);
     }
     rhi_cmd_bind_pipeline(cmd, ui->composite_pipeline);
     rhi_cmd_bind_texture(cmd, ui->surface_fbo.color_tex,
                          ui->composite_sampler, 0);
     rhi_cmd_draw(cmd, 3, 1);
     if (composite_decision.mode == BREAK_UI_COMPOSITE_PARTIAL) {
-      rhi_cmd_set_scissor(cmd, 0, 0, width, height);
+      rhi_cmd_set_scissor_top_left(cmd, 0, 0, width, height);
     }
   }
+}
+
+bool break_ui_get_present_damage(BreakUI *ui, u32 width, u32 height,
+                                 RHIPresentRect *rects, u32 capacity,
+                                 u32 *out_count) {
+  my_dirty_rects_t damage;
+  break_ui_damage_scissor_t scissor;
+
+  if (out_count == NULL || ui == NULL || ui->platform == NULL ||
+      ui->vg == NULL || width == 0u || height == 0u) {
+    return false;
+  }
+  *out_count = 0u;
+  if (rects == NULL && capacity != 0u) return false;
+  {
+    u32 logical_width = 0u;
+    u32 logical_height = 0u;
+    platform_get_logical_size(ui->platform, &logical_width, &logical_height);
+    if (ui->width != width || ui->height != height ||
+        (logical_width != 0u && logical_height != 0u &&
+         (logical_width != ui->logical_width ||
+          logical_height != ui->logical_height)) ||
+        my_vgcanvas_break_rhi_pending_antialias_level(ui->vg) >= 0) {
+      if (capacity == 0u || rects == NULL) return false;
+      rects[0] = (RHIPresentRect){0, 0, width, height};
+      *out_count = 1u;
+      return true;
+    }
+  }
+  if (!ui->surface_valid) {
+    if (capacity == 0u || rects == NULL) return false;
+    rects[0] = (RHIPresentRect){0, 0, width, height};
+    *out_count = 1u;
+    return true;
+  }
+  break_ui_collect_surface_damage(ui->wm, &damage);
+  if (my_dirty_rects_count(&damage) == 0u) return true;
+  break_ui_expand_surface_damage(ui->wm, &damage);
+  if (capacity == 0u ||
+      !break_ui_damage_to_drawable_scissor(
+          &damage, ui->logical_width, ui->logical_height, width, height,
+          &scissor)) {
+    return false;
+  }
+  rects[0] = (RHIPresentRect){(i32)scissor.x, (i32)scissor.y, scissor.w,
+                              scissor.h};
+  *out_count = 1u;
+  return true;
+}
+
+void break_ui_set_present_partial(BreakUI *ui, bool enabled) {
+  if (ui != NULL) ui->present_partial_active = enabled;
 }
 
 void *break_ui_window(BreakUI *ui) {

@@ -7,8 +7,16 @@
 最多 8 个 dirty 碎片、合并 scissor 不超过 drawable 面积 60%。BreakUI composite 已接入
 决策和 scissor 恢复，但 GL/Vulkan 当前不声明 swapchain 保留能力，故运行时保持全屏合成，
 避免仅凭 dirty rect 导致黑屏或未更新区域丢失。TDD 新增碎片、面积、空 damage 和能力缺失
-用例，`test_break_ui_damage` 17/17 通过。真正 partial present 仍需各平台 present damage、
-backbuffer age 和 smoke 矩阵，不能由 Linux 单元测试推断完成。
+用例，`test_break_ui_damage` 18/18 通过。真正 partial present 仍需 Wayland compositor
+实机 smoke，以及 X11、Win32、Vulkan、macOS 的等价 present 能力，不能由 Linux 单元测试
+推断完成。
+
+**Wayland EGL partial present 接入（TDD）**：RHI 新增固定 16 项的 `RHIPresentRect` 输入、
+严格边界校验和 `rhi_frame_begin_damage()`；dxx 在 pump 后取得 drawable damage，无变化时
+不提交帧，首帧/resize/AA 变更/能力缺失时自动走全屏。Wayland EGL 仅在同时具备
+`EGL_EXT_buffer_age`、`eglSwapBuffersWithDamageKHR/EXT` 且当前 buffer age 为 1 时启用，
+并将 top-left damage 安全转换为 EGL bottom-left 坐标；GL X11、Win32、Vulkan、macOS
+能力明确关闭。Vulkan 仍待实现每 swapchain image 历史 damage 和增量 present。
 
 ## CI 验证矩阵（当前）
 

@@ -35,6 +35,10 @@ void break_ui_shutdown(BreakUI *ui);
 void break_ui_destroy(BreakUI *ui);
 void break_ui_pump(BreakUI *ui);
 void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height);
+bool break_ui_get_present_damage(BreakUI *ui, u32 width, u32 height,
+                                 RHIPresentRect *rects, u32 capacity,
+                                 u32 *out_count);
+void break_ui_set_present_partial(BreakUI *ui, bool enabled);
 /* Queue a transactional AA target switch; activation occurs before the next
  * render pass. The active target remains usable if creation fails. */
 my_ret_t break_ui_set_antialias_level(BreakUI *ui, int level);

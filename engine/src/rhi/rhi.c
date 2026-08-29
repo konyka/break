@@ -35,6 +35,10 @@ struct RHIDevice {
     u32              free_head;   /* UINT32_MAX = empty */
     u32              free_count;
     RHICapabilities  capabilities;
+    RHIPresentRect   frame_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32              frame_damage_count;
+    bool             frame_damage_requested;
+    bool             frame_partial_active;
 };
 
 RHIDevice *g_current_device = NULL;
@@ -75,6 +79,46 @@ bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
     if (dev == NULL || out == NULL) return false;
     *out = dev->capabilities;
     return true;
+}
+
+bool rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
+                                 u32 width, u32 height) {
+    u32 i;
+    if (count > RHI_MAX_PRESENT_DAMAGE_RECTS || width == 0u || height == 0u ||
+        (count != 0u && rects == NULL)) {
+        return false;
+    }
+    for (i = 0; i < count; ++i) {
+        const RHIPresentRect *rect = &rects[i];
+        if (rect->x < 0 || rect->y < 0 || rect->w == 0u || rect->h == 0u ||
+            (u64)rect->x + rect->w > width ||
+            (u64)rect->y + rect->h > height) {
+            return false;
+        }
+    }
+    return true;
+}
+
+RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
+                                     const RHIPresentRect *rects, u32 count,
+                                     bool *out_partial) {
+    if (out_partial != NULL) *out_partial = false;
+    if (dev == NULL) {
+        return NULL;
+    }
+    if (!rhi_present_damage_validate(rects, count, dev->width, dev->height)) {
+        return rhi_frame_begin(dev);
+    }
+    if (count != 0u) {
+        memcpy(dev->frame_damage, rects, count * sizeof(*rects));
+    }
+    dev->frame_damage_count = count;
+    dev->frame_damage_requested = true;
+    {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (out_partial != NULL) *out_partial = dev->frame_partial_active;
+        return cmd;
+    }
 }
 
 bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,

@@ -1689,6 +1689,7 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     g_current_device = dev;
+    dev->frame_partial_active = false;
 
     /* R175: Ensure deferred mip uploads finished before this frame samples them. */
     vk_mip_upload_reclaim(vk);
@@ -2090,6 +2091,14 @@ void rhi_present(RHIDevice *dev) {
     }
 
     vk->current_frame = (vk->current_frame + 1) % VK_MAX_FRAMES;
+    dev->frame_damage_requested = false;
+    dev->frame_damage_count = 0u;
+    dev->frame_partial_active = false;
+}
+
+void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w,
+                                  u32 h) {
+    rhi_cmd_set_scissor(cmd, (i32)x, (i32)y, w, h);
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {
