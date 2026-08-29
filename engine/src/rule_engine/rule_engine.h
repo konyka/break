@@ -665,9 +665,11 @@ re_status_t re_stream_window_restore(re_stream_window_t *window,
  * earliest/latest matching event by timestamp (insertion order breaks ties)
  * and accept any value type. An empty filtered set reports
  * RE_STATUS_NOT_FOUND for MIN/MAX/FIRST/LAST; COUNT keeps its 0/OK behavior.
+ * RE_STATUS_NOT_FOUND returns before out_result is touched.
  * out_result->struct_size must cover at least the pre-Task-16 fields
  * (offsetof(re_stream_aggregate_result_t, minimum)); appended fields are
- * written only when struct_size covers them. */
+ * written only when struct_size covers them, and first/last fold over every
+ * matching event regardless of kind. */
 re_status_t re_stream_window_aggregate_v1(
     const re_stream_window_t *window,
     const re_stream_filter_options_t *filter,

@@ -946,6 +946,303 @@ TEST(retract_only_transaction_invalidates_cache) {
     re_engine_destroy(engine);
 }
 
+/*
+ * Facts-identity nonce (final hardening): the proof graph key is the facts
+ * pointer plus a per-object nonce assigned in re_facts_create, so destroying
+ * a facts object and allocating the next one at the same address (reaching
+ * the same mutation serial) can no longer alias a stale cache entry. The
+ * reuse allocator below makes the address alignment deterministic: free
+ * pushes blocks onto a LIFO stack and alloc pops an exact-size match, so the
+ * re-created facts object always lands on the destroyed one's address. Sizes
+ * ride in a per-allocation header so realloc can copy without the old size.
+ */
+typedef struct reuse_block_t {
+    void *memory;
+    size_t size;
+} reuse_block_t;
+
+typedef struct reuse_allocator_t {
+    reuse_block_t blocks[32];
+    size_t count;
+} reuse_allocator_t;
+
+static void *reuse_alloc(void *context, size_t size) {
+    reuse_allocator_t *state = (reuse_allocator_t *)context;
+    unsigned char *raw;
+    if (state->count != 0u && state->blocks[state->count - 1u].size == size)
+        return state->blocks[--state->count].memory;
+    if (size > (size_t)-1 - sizeof(size_t)) return NULL;
+    raw = (unsigned char *)malloc(size + sizeof(size_t));
+    if (raw == NULL) return NULL;
+    memcpy(raw, &size, sizeof(size_t));
+    return raw + sizeof(size_t);
+}
+
+static void reuse_free(void *context, void *memory) {
+    reuse_allocator_t *state = (reuse_allocator_t *)context;
+    size_t size;
+    if (memory == NULL) return;
+    memcpy(&size, (const unsigned char *)memory - sizeof(size_t), sizeof(size_t));
+    if (state->count < 32u) {
+        state->blocks[state->count].memory = memory;
+        state->blocks[state->count].size = size;
+        ++state->count;
+        return;
+    }
+    free((unsigned char *)memory - sizeof(size_t));
+}
+
+static void *reuse_realloc(void *context, void *memory, size_t size) {
+    size_t old_size;
+    void *grown;
+    if (memory == NULL) return reuse_alloc(context, size);
+    memcpy(&old_size, (const unsigned char *)memory - sizeof(size_t), sizeof(size_t));
+    grown = reuse_alloc(context, size);
+    if (grown == NULL) return NULL;
+    memcpy(grown, memory, old_size < size ? old_size : size);
+    reuse_free(context, memory);
+    return grown;
+}
+
+/* Really free every block still parked on the reuse stack. */
+static void reuse_drain(reuse_allocator_t *state) {
+    while (state->count != 0u) {
+        --state->count;
+        free((unsigned char *)state->blocks[state->count].memory - sizeof(size_t));
+    }
+}
+
+TEST(facts_nonce_blocks_aba_stale_hit) {
+    reuse_allocator_t reuse;
+    re_allocator_t allocator;
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts_a;
+    re_facts_t *facts_b;
+    re_query_t *query = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t two = {RE_VALUE_INT64, {.int64_value = 2}};
+    uint64_t nonce_a;
+    memset(&reuse, 0, sizeof(reuse));
+    allocator.context = &reuse;
+    allocator.alloc = reuse_alloc;
+    allocator.realloc = reuse_realloc;
+    allocator.free = reuse_free;
+    ASSERT_NOT_NULL(engine);
+    facts_a = re_facts_create(&allocator, NULL);
+    ASSERT_NOT_NULL(facts_a);
+    nonce_a = facts_a->nonce;
+    /* Cache a PROVED result for "X == 1" against facts A (serial 1). */
+    ASSERT_EQ(re_facts_set(facts_a, text("X"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts_a, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 1u);
+    /* Destroy A and re-create through the reuse allocator: B lands on A's
+     * address, and one identically shaped set gives it the same mutation
+     * serial - the exact ABA alignment the pointer+serial key could not
+     * tell apart. */
+    re_facts_destroy(facts_a);
+    facts_b = re_facts_create(&allocator, NULL);
+    ASSERT_NOT_NULL(facts_b);
+    ASSERT_TRUE((void *)facts_b == (void *)facts_a);
+    ASSERT_TRUE(facts_b->nonce != nonce_a);
+    /* B carries X == 2: a stale hit would serve A's PROVED; the fresh run
+     * must miss and report DISPROVED. */
+    ASSERT_EQ(re_facts_set(facts_b, text("X"), &two), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts_b, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 2u);
+    /* The fresh DISPROVED is cached under B's own identity and then hits. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts_b, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    re_query_destroy(query);
+    assert_graph_stats(engine, 1u, 2u);
+    re_facts_destroy(facts_b);
+    reuse_drain(&reuse);
+    re_engine_destroy(engine);
+}
+
+/*
+ * Deepening-probe boundary (final hardening): the BFS/ITERATIVE wrapper
+ * re-proves with max_depth = 1, 2, 4, ... doubling up to the configured
+ * max_depth. The documented 32-doubling budget is unreachable in practice -
+ * reaching it needs max_depth > 2^32, and each probe allocates max_depth + 1
+ * call frames - so the reachable bound is the configured max_depth itself:
+ * the probe loop returns the last probe's LIMIT once the cap reaches it, and
+ * a probe that completes without hitting its cap (0 proofs, no depth
+ * exhaustion) terminates the loop immediately with that authoritative result.
+ */
+TEST(bfs_deepening_limits_at_configured_max_depth) {
+    /* 5-rule chain: proving "C5" needs depth 5 (C5 at depth 0 down to C1 at
+     * depth 4), so max_depth = 3 exhausts every probe and max_depth = 8
+     * proves at the cap = 8 probe. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_query_options_t options;
+    re_value_t x = {RE_VALUE_INT64, {.int64_value = 2}};
+    aggregate_install(engine,
+        "rule \"C1\" { when true then B1 = 1; }"
+        "rule \"C2\" { when goal(\"C1\") then B2 = 1; }"
+        "rule \"C3\" { when goal(\"C2\") then B3 = 1; }"
+        "rule \"C4\" { when goal(\"C3\") then B4 = 1; }"
+        "rule \"C5\" { when goal(\"C4\") then B5 = 1; }");
+    memset(&options, 0, sizeof(options));
+    options.struct_size = (uint32_t)sizeof(options);
+    options.max_solutions = 4u;
+    options.strategy = RE_QUERY_STRATEGY_BREADTH_FIRST;
+    /* Every probe (caps 1, 2, 3) hits its depth cap without a proof: the last
+     * probe's LIMIT is returned unchanged, exactly like a plain DFS run. */
+    options.max_depth = 3u;
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("C5"), &options, &query), RE_STATUS_LIMIT);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_LIMIT);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
+    re_query_destroy(query);
+    query = NULL;
+    /* Caps 1, 2, 4 still exhaust; the cap = 8 probe reaches depth 5. */
+    options.max_depth = 8u;
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("C5"), &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    re_query_destroy(query);
+    query = NULL;
+    /* A goal with no derivation completes the first probe without touching
+     * its depth cap: 0 proofs with RE_STATUS_OK is authoritative for every
+     * deeper cap, so the loop returns it immediately (no LIMIT). */
+    options.max_depth = 3u;
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("Missing"), &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
+    re_query_destroy(query);
+    query = NULL;
+    /* Same early exit through the direct fact-comparison slice: DISPROVED at
+     * the first probe, never LIMIT. */
+    ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+/*
+ * Aggregate solution cap (final hardening): re_engine_query_aggregate runs
+ * its internal query with max_solutions = 1024 (RE_AGGREGATE_MAX_SOLUTIONS),
+ * and reaching the cap reports RE_STATUS_LIMIT because an exact fit cannot be
+ * told apart from a truncated set. The goal rules multiply solutions by
+ * cross-product: an AND of two parenthesized OR chains of parameterized goal
+ * calls yields left*right solution branches (condition_collect_branches),
+ * so 31 x 33 / 32 x 32 / 32 x 33 alternatives need only 5 rules and shallow
+ * (~35-deep) expression trees - a flat 1025-alternative OR chain is deep
+ * enough to overflow the ASan-inflated stack in the recursive branch
+ * collector.
+ */
+static char aggregate_cap_source[8192];
+
+static void append_goal_alternatives(size_t *used, const char *rule, size_t count) {
+    size_t i;
+    for (i = 0u; i < count; ++i) {
+        int written = snprintf(aggregate_cap_source + *used,
+                               sizeof(aggregate_cap_source) - *used,
+                               i + 1u < count ? "goal(\"%s\", %d) or " : "goal(\"%s\", %d)",
+                               rule, (int)(i + 1u));
+        ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - *used);
+        *used += (size_t)written;
+    }
+}
+
+static void append_wrapped_or(size_t *used, const char *rule, size_t count) {
+    int written = snprintf(aggregate_cap_source + *used,
+                           sizeof(aggregate_cap_source) - *used, "(");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - *used);
+    *used += (size_t)written;
+    append_goal_alternatives(used, rule, count);
+    written = snprintf(aggregate_cap_source + *used,
+                       sizeof(aggregate_cap_source) - *used, ")");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - *used);
+    *used += (size_t)written;
+}
+
+static void build_aggregate_cap_source(void) {
+    size_t used = 0u;
+    int written = snprintf(aggregate_cap_source, sizeof(aggregate_cap_source),
+        "rule \"Left\"(X) { when X > 0 then L = 1; }"
+        "rule \"Right\"(Y) { when Y > 0 then R = 1; }"
+        "rule \"Wide\" { when ");
+    ASSERT_TRUE(written > 0);
+    used += (size_t)written;
+    append_wrapped_or(&used, "Left", 32u);
+    written = snprintf(aggregate_cap_source + used, sizeof(aggregate_cap_source) - used,
+                       " and ");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - used);
+    used += (size_t)written;
+    append_wrapped_or(&used, "Right", 33u);
+    written = snprintf(aggregate_cap_source + used, sizeof(aggregate_cap_source) - used,
+                       " then Done = 1; }"
+                       "rule \"Exact\" { when ");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - used);
+    used += (size_t)written;
+    append_wrapped_or(&used, "Left", 32u);
+    written = snprintf(aggregate_cap_source + used, sizeof(aggregate_cap_source) - used,
+                       " and ");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - used);
+    used += (size_t)written;
+    append_wrapped_or(&used, "Right", 32u);
+    written = snprintf(aggregate_cap_source + used, sizeof(aggregate_cap_source) - used,
+                       " then Done = 1; }"
+                       "rule \"Under\" { when ");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - used);
+    used += (size_t)written;
+    append_wrapped_or(&used, "Left", 31u);
+    written = snprintf(aggregate_cap_source + used, sizeof(aggregate_cap_source) - used,
+                       " and ");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - used);
+    used += (size_t)written;
+    append_wrapped_or(&used, "Right", 33u);
+    written = snprintf(aggregate_cap_source + used, sizeof(aggregate_cap_source) - used,
+                       " then Done = 1; }");
+    ASSERT_TRUE(written > 0 && (size_t)written < sizeof(aggregate_cap_source) - used);
+}
+
+TEST(aggregate_reports_limit_at_solution_cap) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t out;
+    re_string_t no_field = {NULL, 0u};
+    build_aggregate_cap_source();
+    aggregate_install(engine, aggregate_cap_source);
+    /* 32 x 33 = 1056 alternatives: the internal query stops at the
+     * 1024-solution cap and the fold reports RE_STATUS_LIMIT rather than a
+     * partial count. */
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_COUNT, no_field,
+                                        text("Wide"), &out), RE_STATUS_LIMIT);
+    /* 32 x 32 = 1024 solutions is the same LIMIT: an exact fit cannot be told
+     * apart from truncation at the cap. */
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_COUNT, no_field,
+                                        text("Exact"), &out), RE_STATUS_LIMIT);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(aggregate_below_solution_cap_succeeds) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t out;
+    re_string_t no_field = {NULL, 0u};
+    build_aggregate_cap_source();
+    aggregate_install(engine, aggregate_cap_source);
+    /* 31 x 33 = 1023 solutions, one below the cap, folds normally: the LIMIT
+     * boundary is exactly 1024, not "approaching" it. */
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_COUNT, no_field,
+                                        text("Under"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_INT64);
+    ASSERT_EQ(out.as.int64_value, 1023);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(query_not_succeeds_when_subgoal_unprovable);
     RUN_TEST(query_not_fails_when_subgoal_provable);
@@ -980,4 +1277,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(retract_invalidates_cached_proof);
     RUN_TEST(tms_cascade_invalidates_cached_proof);
     RUN_TEST(retract_only_transaction_invalidates_cache);
+    RUN_TEST(facts_nonce_blocks_aba_stale_hit);
+    RUN_TEST(bfs_deepening_limits_at_configured_max_depth);
+    RUN_TEST(aggregate_reports_limit_at_solution_cap);
+    RUN_TEST(aggregate_below_solution_cap_succeeds);
 TEST_MAIN_END()

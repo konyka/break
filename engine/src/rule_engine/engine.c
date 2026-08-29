@@ -89,8 +89,6 @@ static re_status_t finish_run(re_engine_t *engine, re_facts_t *facts, re_status_
     destroy_facts = facts->destroy_requested;
     engine->running = 0;
     facts->running = 0;
-    facts->mutation_allowed = 0;
-    facts->read_allowed = 0;
     /* Non-persistent agenda mode: every run exit clears pending activations
      * and refraction keys. Persistent mode keeps both, so unfired
      * activations and the fired (refraction) history carry into the next
@@ -369,7 +367,6 @@ static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
     event.rule_name.size = rule->name_size;
     event.salience = rule->salience;
     event.activation_sequence = activation_sequence;
-    facts->mutation_allowed = 1;
     status = re_facts_begin_for_run(facts, &transaction);
     if (status == RE_STATUS_OK) {
         for (action_index = 0u; action_index < ir_rule->action_count; ++action_index) {
@@ -452,7 +449,6 @@ static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
         status = callbacks->action(engine, facts, &event, callbacks->context);
     if (status == RE_STATUS_OK) status = re_facts_commit(transaction);
     else re_facts_rollback(transaction);
-    facts->mutation_allowed = 0;
     return status;
 }
 
@@ -928,7 +924,6 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
     engine->running = 1;
     if (facts->running) { engine->running = 0; return RE_STATUS_BUSY; }
     facts->running = 1;
-    facts->read_allowed = 1;
     explicit_limits = options != NULL && options->limits != NULL;
     limits = explicit_limits ? *options->limits : engine->limits;
     if (limits.max_source_bytes == 0u) limits.max_source_bytes = engine->limits.max_source_bytes;

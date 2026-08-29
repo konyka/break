@@ -1207,6 +1207,212 @@ TEST(agenda_peek_shows_linear_true_premises) {
     re_engine_destroy(engine);
 }
 
+/* ---- Final hardening: CANCELLED-exit persistence + quantifier provenance ---- */
+
+/* Cancel gate driven by firings observed through the action callback, so the
+ * test does not depend on recognize-act iteration bookkeeping. */
+typedef struct cancel_after_fire_t {
+    size_t fired;
+    size_t trip_after;
+} cancel_after_fire_t;
+
+static re_status_t count_fire(re_engine_t *engine, re_facts_t *facts,
+                              const re_rule_event_t *event, void *context) {
+    (void)engine; (void)facts; (void)event;
+    ++((cancel_after_fire_t *)context)->fired;
+    return RE_STATUS_OK;
+}
+
+static int cancel_after_fire(void *context) {
+    const cancel_after_fire_t *cancel = (const cancel_after_fire_t *)context;
+    return cancel->fired > cancel->trip_after;
+}
+
+TEST(persistent_agenda_survives_cancelled_exit) {
+    /* Same construction as agenda_peek_reports_pending_in_salience_order, but
+     * the run ends on the cancellation check instead of max_firings: the gate
+     * trips once Seed and High have fired, leaving Mid and Low pending.
+     * Persistent mode keeps the pending activations and the fired refraction
+     * keys across the CANCELLED exit, and the next uncancelled run fires only
+     * the survivors. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_agenda_t *agenda = NULL;
+    re_fact_id_t start_id = {0u, 0u};
+    re_fact_id_t gate_id = {0u, 0u};
+    re_fact_id_t x_id = {0u, 0u};
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t zero = {RE_VALUE_INT64, {.int64_value = 0}};
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    cancel_after_fire_t cancel = {0u, 1u};
+    re_run_options_t options = {NULL, cancel_after_fire, &cancel};
+    re_callbacks_t callbacks = {count_fire, &cancel};
+    name_log_t log = {{{0}}, 0u};
+    re_callbacks_t log_callbacks = {record_name, &log};
+    re_agenda_entry_t entry;
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_insert(facts, text("Start"), &one, &start_id), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_insert(facts, text("X"), &one, &x_id), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_insert(facts, text("Gate"), &zero, &gate_id), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Seed\" salience 0 { when Start == 1 then Gate = 1; } "
+        "rule \"High\" salience 10 { when Gate == 1 and X == 1 then H = 1; } "
+        "rule \"Mid\" salience 7 { when Gate == 1 and X == 1 then M = 1; } "
+        "rule \"Low\" salience 5 { when Gate == 1 and X == 1 then L = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_set_agenda_persistent(engine, 1), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, &options, &callbacks), RE_STATUS_CANCELLED);
+    /* Seed and High fired before the gate tripped. */
+    ASSERT_EQ(cancel.fired, 2u);
+    ASSERT_EQ(re_facts_get(facts, text("H"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.as.int64_value, 1);
+    /* Mid and Low survived the CANCELLED exit, peeked in pop order. */
+    ASSERT_EQ(re_engine_agenda(engine, &agenda), RE_STATUS_OK);
+    ASSERT_EQ(re_agenda_count(agenda), 2u);
+    memset(&entry, 0, sizeof(entry));
+    entry.struct_size = sizeof(entry);
+    ASSERT_EQ(re_agenda_peek(agenda, 0u, &entry), RE_STATUS_OK);
+    ASSERT_TRUE(name_is(entry.rule_name, "Mid"));
+    ASSERT_EQ(entry.salience, 7);
+    ASSERT_EQ(entry.premise_count, 2u);
+    ASSERT_EQ(entry.premises[0].slot, gate_id.slot);
+    ASSERT_EQ(entry.premises[0].generation, gate_id.generation);
+    ASSERT_EQ(entry.premises[1].slot, x_id.slot);
+    ASSERT_EQ(entry.premises[1].generation, x_id.generation);
+    memset(&entry, 0, sizeof(entry));
+    entry.struct_size = sizeof(entry);
+    ASSERT_EQ(re_agenda_peek(agenda, 1u, &entry), RE_STATUS_OK);
+    ASSERT_TRUE(name_is(entry.rule_name, "Low"));
+    /* The next uncancelled run drains the survivors and respects the
+     * persisted refraction keys: Seed and High do not refire. */
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &log_callbacks), RE_STATUS_OK);
+    ASSERT_EQ(log.count, 2u);
+    ASSERT_STR_EQ(log.names[0], "Mid");
+    ASSERT_STR_EQ(log.names[1], "Low");
+    ASSERT_EQ(re_agenda_count(agenda), 0u);
+    ASSERT_EQ(re_facts_get(facts, text("M"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.as.int64_value, 1);
+    ASSERT_EQ(re_facts_get(facts, text("L"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.as.int64_value, 1);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(exists_condition_records_read_premise) {
+    /* EXISTS takes the linear evaluator path (quantified conditions are
+     * RETE-ineligible) and records the quantified fact path in the condition
+     * read-set, so the derived fact's justification names the read fact. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_fact_id_t flag_id = {0u, 0u};
+    re_fact_id_t d_id = {1u, 1u}; /* Flag inserted first; D derived second */
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    re_fact_provenance_t provenance = {sizeof(provenance), 0u, {NULL, 0u}, 0u, NULL};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_insert(facts, text("Flag"), &one, &flag_id), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Ex\" { when exists Flag == 1 then D = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("D"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.as.int64_value, 1);
+    ASSERT_TRUE(re_facts_is_logical(facts, d_id));
+    ASSERT_EQ(re_facts_provenance_get(facts, d_id, &provenance), RE_STATUS_OK);
+    ASSERT_TRUE(name_is(provenance.producer_rule, "Ex"));
+    ASSERT_EQ(provenance.premise_count, 1u);
+    ASSERT_EQ(provenance.premises[0].slot, flag_id.slot);
+    ASSERT_EQ(provenance.premises[0].generation, flag_id.generation);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(forall_condition_records_read_premise) {
+    /* Same read-set provenance through FORALL: the quantified array fact is
+     * the derived fact's recorded premise. Values is set (not inserted) first,
+     * so its id is slot 0 generation 0; D derives at slot 1 generation 1. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *array = NULL;
+    re_program_t *program = NULL;
+    re_fact_id_t d_id = {1u, 1u};
+    re_value_t item = {RE_VALUE_INT64, {.int64_value = 3}};
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    re_fact_provenance_t provenance = {sizeof(provenance), 0u, {NULL, 0u}, 0u, NULL};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &item), RE_STATUS_OK);
+    item.as.int64_value = 5;
+    ASSERT_EQ(re_value_array_append(array, &item), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Values"), array), RE_STATUS_OK);
+    re_value_destroy(array);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"All\" { when forall Values >= 3 then D = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("D"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.as.int64_value, 1);
+    ASSERT_TRUE(re_facts_is_logical(facts, d_id));
+    ASSERT_EQ(re_facts_provenance_get(facts, d_id, &provenance), RE_STATUS_OK);
+    ASSERT_TRUE(name_is(provenance.producer_rule, "All"));
+    ASSERT_EQ(provenance.premise_count, 1u);
+    ASSERT_EQ(provenance.premises[0].slot, 0u);
+    ASSERT_EQ(provenance.premises[0].generation, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(read_set_cap_truncates_provenance_not_derivation) {
+    /* Nine distinct fact reads exceed RE_IR_MAX_READ_PATHS (8): recording
+     * stops silently at the cap, so the justification carries the first eight
+     * premises in read order while the derivation itself is unaffected. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_fact_id_t ids[9];
+    re_fact_id_t d_id = {9u, 1u}; /* F1..F9 inserted first; D derived tenth */
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    re_fact_provenance_t provenance = {sizeof(provenance), 0u, {NULL, 0u}, 0u, NULL};
+    size_t i;
+    char name[3];
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    for (i = 0u; i < 9u; ++i) {
+        name[0] = 'F';
+        name[1] = (char)('1' + i);
+        name[2] = '\0';
+        ASSERT_EQ(re_facts_insert(facts, text(name), &one, &ids[i]), RE_STATUS_OK);
+    }
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Wide\" { when F1 + F2 + F3 + F4 + F5 + F6 + F7 + F8 + F9 > 8 then D = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    /* The ninth read is dropped from the provenance record, not from the
+     * condition: the rule still derives D from the full 9-fact sum. */
+    ASSERT_EQ(re_facts_get(facts, text("D"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.as.int64_value, 1);
+    ASSERT_TRUE(re_facts_is_logical(facts, d_id));
+    ASSERT_EQ(re_facts_provenance_get(facts, d_id, &provenance), RE_STATUS_OK);
+    ASSERT_TRUE(name_is(provenance.producer_rule, "Wide"));
+    ASSERT_EQ(provenance.premise_count, 8u);
+    for (i = 0u; i < 8u; ++i) {
+        ASSERT_EQ(provenance.premises[i].slot, ids[i].slot);
+        ASSERT_EQ(provenance.premises[i].generation, ids[i].generation);
+    }
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(agenda_create_destroy);
     RUN_TEST(agenda_push_dedups_pending_order_insensitive);
@@ -1241,4 +1447,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(linear_rule_reactivates_on_premise_value_change_within_run);
     RUN_TEST(linear_rule_refraction_persistent_across_runs);
     RUN_TEST(agenda_peek_shows_linear_true_premises);
+    RUN_TEST(persistent_agenda_survives_cancelled_exit);
+    RUN_TEST(exists_condition_records_read_premise);
+    RUN_TEST(forall_condition_records_read_premise);
+    RUN_TEST(read_set_cap_truncates_provenance_not_derivation);
 TEST_MAIN_END()

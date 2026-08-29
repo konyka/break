@@ -266,6 +266,51 @@ TEST(transaction_event_payload_is_owned_snapshot) {
     re_facts_destroy(facts);
 }
 
+TEST(transaction_begin_tms_clone_failure_leaves_no_dangling_handle) {
+    /* clone_facts publishes *out only after the TMS clone succeeds: a failure
+     * there destroys the clone and leaves *out untouched, so
+     * begin_transaction's cleanup never double-destroys a dangling handle.
+     * The sweep fails each begin allocation in turn - the TMS clone of the
+     * original and of the staged clone included - and every failure must be a
+     * clean RE_STATUS_OUT_OF_MEMORY with no live handle. (The pre-fix
+     * double-destroy is a use-after-free; the ASan build is what makes it
+     * abort rather than silently corrupt.) */
+    allocator_state_t state = {0};
+    re_allocator_t allocator = {&state, test_alloc, test_realloc, test_free};
+    re_facts_t *facts = re_facts_create(&allocator, NULL);
+    re_fact_txn_t *transaction = NULL;
+    re_fact_id_t premise;
+    re_fact_id_t derived;
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
+    size_t k;
+    int saw_oom = 0;
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_insert(facts, text("P"), &value, &premise), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_insert_logical(facts, text("D"), &value, text("R"), &premise, 1u, &derived),
+              RE_STATUS_OK);
+    for (k = 1u; k <= 32u; ++k) {
+        re_status_t status;
+        state.fail_at = state.calls + k;
+        status = re_facts_begin(facts, &transaction);
+        state.fail_at = 0u;
+        if (status == RE_STATUS_OK) {
+            /* fail_at landed past the last allocation of begin. */
+            ASSERT_NOT_NULL(transaction);
+            re_facts_rollback(transaction);
+            transaction = NULL;
+            break;
+        }
+        ASSERT_EQ(status, RE_STATUS_OUT_OF_MEMORY);
+        ASSERT_TRUE(transaction == NULL);
+        saw_oom = 1;
+    }
+    ASSERT_TRUE(saw_oom);
+    /* The facts handle stays fully usable after the failed attempts. */
+    ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
+    re_facts_rollback(transaction);
+    re_facts_destroy(facts);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(transaction_begin_isolated_and_commit_notifies_in_order);
     RUN_TEST(transaction_rollback_discards_mutations_and_busy_statuses_are_stable);
@@ -278,4 +323,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(transaction_allocator_failures_leave_no_live_handle);
     RUN_TEST(transaction_noop_commit_emits_no_event_and_preserves_serial);
     RUN_TEST(transaction_event_payload_is_owned_snapshot);
+    RUN_TEST(transaction_begin_tms_clone_failure_leaves_no_dangling_handle);
 TEST_MAIN_END()
