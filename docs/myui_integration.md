@@ -10,6 +10,25 @@
 - 在 GL 和 Vulkan 上使用同一套 CPU 三角化和双缓冲动态 VBO 路径。
 - 用可测试的桥接层隔离平台输入、IME 与渲染后端。
 
+## 增量合成安全边界
+
+BreakUI 的 surface 重绘和最终 composite 分为两个独立阶段。surface 已经是持久的
+offscreen target，窗口 dirty 集合可先在逻辑坐标中收集，再通过
+`break_ui_damage_to_drawable_scissor()` 做保守的 drawable 映射；映射使用向外取整、裁剪和
+64 位乘法，避免高 DPI 缩放下漏画边缘。
+
+最终 composite 由 `break_ui_surface_composite_decide()` 返回 `SKIP`、`PARTIAL` 或 `FULL`：
+只有 offscreen surface 有效、RHI 明确声明 scissor 可用、并且平台明确保证 present target
+保留未更新像素时，才允许局部 scissor。dirty 碎片超过 8 个，或合并后的 scissor 超过
+drawable 面积 60%，自动回退全屏；空 damage 仅在 present target 保留时跳过 composite。
+所有无效尺寸、能力缺失、surface 重建、resize、AA 切换和绘制失败均走全屏/不绘制的安全
+路径，不凭 dirty rect 猜测 swapchain 内容。
+
+GL 和 Vulkan 当前均只声明动态 scissor 能力，不声明 swapchain 像素保留能力，因此运行时
+继续使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。真正启用 partial
+present 前，还必须分别接入 EGL/GLX/WGL damage present 或 Vulkan incremental present，跟踪
+每个 backbuffer 的 age，并在 present API 中提交同一份 damage 区域。
+
 ## 冷却按钮
 
 按钮冷却是 widget 层能力，不依赖 Break RHI、OpenGL、Vulkan 或软件 canvas 的私有类型：

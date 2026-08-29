@@ -472,6 +472,8 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     gl_set_viewport_cached(0, 0, w, h);
 
     dev->capabilities.backend = RHI_BACKEND_OPENGL;
+    dev->capabilities.scissor_supported = true;
+    dev->capabilities.present_target_preserved = false;
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.surface_sample_count = 1u;

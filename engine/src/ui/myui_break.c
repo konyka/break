@@ -34,6 +34,7 @@ struct BreakUI {
   f32 prev_scroll_x, prev_scroll_y;
   bool prev_has_mouse;
   bool surface_valid;
+  RHICapabilities rhi_caps;
   my_dirty_rects_t *dirty_snapshots;
   size_t dirty_snapshot_capacity;
 };
@@ -364,6 +365,7 @@ bool break_ui_init_with_fonts(BreakUI *ui, Platform *platform,
   memset(ui, 0, sizeof(*ui));
   ui->platform = platform;
   ui->device = device;
+  (void)rhi_device_get_capabilities(device, &ui->rhi_caps);
   ui->logical_width = width;
   ui->logical_height = height;
   platform_get_drawable_size(platform, &ui->width, &ui->height);
@@ -488,9 +490,13 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   u32 logical_height = 0;
   bool drawable_changed;
   bool logical_changed;
+  my_dirty_rects_t composite_damage;
+  bool composite_damage_available = false;
+  break_ui_surface_composite_decision_t composite_decision;
   /* The injected canvas is resized here; windows only receive the layout
    * resize event and never destroy or resize the shared RHI target. */
   if (ui == NULL || ui->window == NULL || ui->vg == NULL || cmd == NULL) return;
+  my_dirty_rects_init(&composite_damage);
   platform_get_logical_size(ui->platform, &logical_width, &logical_height);
   if (logical_width == 0 || logical_height == 0) {
     logical_width = ui->logical_width;
@@ -596,12 +602,14 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
       }
     }
     break_ui_collect_surface_damage_for_windows(windows, n, &damage);
+    composite_damage_available = true;
     if (my_dirty_rects_count(&damage) > 0) {
       if (!break_ui_ensure_dirty_snapshots(ui, n)) {
         my_window_manager_release_snapshot(ui->wm, windows, n);
         return;
       }
       break_ui_expand_surface_damage_for_windows(windows, n, &damage);
+      composite_damage = damage;
       for (i = 0; i < n; i++) {
         ui->dirty_snapshots[i] = windows[i]->dirty;
       }
@@ -647,10 +655,35 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   }
 composite_surface:
   if (ui->surface_valid) {
+    break_ui_surface_composite_options_t composite_options = {
+        .logical_width = ui->logical_width,
+        .logical_height = ui->logical_height,
+        .drawable_width = width,
+        .drawable_height = height,
+        .retained_surface_valid = ui->surface_valid,
+        .present_target_preserved = ui->rhi_caps.present_target_preserved,
+        .scissor_supported = ui->rhi_caps.scissor_supported};
+    if (!composite_damage_available) {
+      my_dirty_rects_init(&composite_damage);
+    }
+    (void)break_ui_surface_composite_decide(
+        &composite_damage, &composite_options, &composite_decision);
+    if (composite_decision.mode == BREAK_UI_COMPOSITE_SKIP) return;
+    if (composite_decision.mode == BREAK_UI_COMPOSITE_PARTIAL) {
+      rhi_cmd_set_scissor(cmd, (i32)composite_decision.scissor.x,
+                          (i32)composite_decision.scissor.y,
+                          composite_decision.scissor.w,
+                          composite_decision.scissor.h);
+    } else {
+      rhi_cmd_set_scissor(cmd, 0, 0, width, height);
+    }
     rhi_cmd_bind_pipeline(cmd, ui->composite_pipeline);
     rhi_cmd_bind_texture(cmd, ui->surface_fbo.color_tex,
                          ui->composite_sampler, 0);
     rhi_cmd_draw(cmd, 3, 1);
+    if (composite_decision.mode == BREAK_UI_COMPOSITE_PARTIAL) {
+      rhi_cmd_set_scissor(cmd, 0, 0, width, height);
+    }
   }
 }
 

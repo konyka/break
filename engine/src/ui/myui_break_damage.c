@@ -4,6 +4,9 @@
 
 #include "myui/my_window_manager.h"
 
+#define BREAK_UI_DEFAULT_MAX_DAMAGE_RECTS 8u
+#define BREAK_UI_DEFAULT_MAX_SCISSOR_AREA_PERCENT 60u
+
 bool break_ui_damage_to_drawable_scissor(
     const my_dirty_rects_t* damage, uint32_t logical_width,
     uint32_t logical_height, uint32_t drawable_width,
@@ -70,6 +73,70 @@ bool break_ui_damage_to_drawable_scissor(
   out->y = min_y;
   out->w = max_x - min_x;
   out->h = max_y - min_y;
+  return true;
+}
+
+bool break_ui_surface_composite_decide(
+    const my_dirty_rects_t* damage,
+    const break_ui_surface_composite_options_t* options,
+    break_ui_surface_composite_decision_t* out) {
+  uint32_t max_rects;
+  uint32_t max_area_percent;
+  uint64_t scissor_area;
+  uint64_t drawable_area;
+
+  if (damage == NULL || options == NULL || out == NULL) return false;
+  out->mode = BREAK_UI_COMPOSITE_FULL;
+  out->scissor = (break_ui_damage_scissor_t){0, 0, options->drawable_width,
+                                             options->drawable_height};
+  if (options->logical_width == 0u || options->logical_height == 0u ||
+      options->drawable_width == 0u || options->drawable_height == 0u) {
+    return true;
+  }
+  if (!options->retained_surface_valid || !options->present_target_preserved) {
+    return true;
+  }
+  if (my_dirty_rects_count(damage) == 0u) {
+    out->mode = BREAK_UI_COMPOSITE_SKIP;
+    return true;
+  }
+  if (!options->scissor_supported) return true;
+
+  max_rects = options->max_damage_rects == 0u
+                  ? BREAK_UI_DEFAULT_MAX_DAMAGE_RECTS
+                  : options->max_damage_rects;
+  max_area_percent = options->max_scissor_area_percent == 0u
+                         ? BREAK_UI_DEFAULT_MAX_SCISSOR_AREA_PERCENT
+                         : options->max_scissor_area_percent;
+  if (max_area_percent > 100u || my_dirty_rects_count(damage) > max_rects ||
+      !break_ui_damage_to_drawable_scissor(
+          damage, options->logical_width, options->logical_height,
+          options->drawable_width, options->drawable_height, &out->scissor)) {
+    return true;
+  }
+  scissor_area = (uint64_t)out->scissor.w * out->scissor.h;
+  drawable_area = (uint64_t)options->drawable_width *
+                  options->drawable_height;
+  if (drawable_area == 0u) {
+    out->scissor = (break_ui_damage_scissor_t){0, 0, options->drawable_width,
+                                               options->drawable_height};
+    return true;
+  }
+  {
+    uint64_t area_quotient = drawable_area / 100u;
+    uint64_t area_remainder = drawable_area % 100u;
+    uint64_t threshold = area_quotient * max_area_percent +
+                         (area_remainder * max_area_percent) / 100u;
+    uint64_t threshold_remainder =
+        (area_remainder * max_area_percent) % 100u;
+    if (scissor_area > threshold ||
+        (scissor_area == threshold && threshold_remainder != 0u)) {
+      out->scissor = (break_ui_damage_scissor_t){0, 0, options->drawable_width,
+                                                 options->drawable_height};
+      return true;
+    }
+  }
+  out->mode = BREAK_UI_COMPOSITE_PARTIAL;
   return true;
 }
 

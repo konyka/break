@@ -35,7 +35,8 @@
   扩展的不可断边界，所有规则均为 O(1) 上下文判断。
 - 软件开放 contour 的 fill 自动闭合；开放 stroke 不自动闭合。
 - 共享 surface damage 的逻辑坐标到 drawable scissor 纯函数；向外取整、裁剪和
-  64 位乘法均有测试，但暂不把它冒险用于默认 swapchain composite。
+  64 位乘法均有测试；新增 `SKIP/PARTIAL/FULL` 合成决策层，能力缺失、碎片过多或面积
+  过大时安全回退全屏，当前默认 swapchain 仍不宣称保留未更新像素。
 - 编辑器光标闪烁、变高列表 prefix-sum、跨后端 nearest/bilinear 已存在，不再作为
   未实现能力记录。
 - text area wrap 重排采用候选 cache 事务：分配失败或 paragraph 构建失败不会清空旧
@@ -114,7 +115,7 @@
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 JUSTIFY 联动未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
-| 真 partial present | 默认 swapchain 每帧清屏，全屏 composite；无平台 damage 协商 | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 保留 backbuffer + dirty threshold + 每平台 smoke |
+| 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策和 BreakUI scissor 接入；GL/Vulkan 仅声明 scissor，不声明 swapchain 保留，仍全屏 composite | 未损伤区域内容丢失、Wayland/X11/WSI 语义不一致 | 平台 capability + 每 backbuffer age + EGL/GLX/WGL/Vulkan damage present + dirty threshold + 每平台 smoke |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
 | 完整 CSS/YAML UI | CSS 复杂 combinator、at-rule 语义、完整 selector tree 未实现；YAML UI loader 已替代 XML 并采用类型化 schema | 解析器静默接受错误、运行期主题污染、恶意输入耗尽内存 | capability registry、strict diagnostics、schema/bridge 回滚测试；继续补齐 CSS selector tree 和 YAML 全局输入预算 |

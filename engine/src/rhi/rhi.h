@@ -39,6 +39,8 @@ typedef struct {
     u32        surface_sample_count;
     bool       color_resolve_supported;
     bool       depth_resolve_supported;
+    bool       scissor_supported;
+    bool       present_target_preserved;
 } RHICapabilities;
 
 typedef enum {

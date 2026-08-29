@@ -1081,6 +1081,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     else if (depth_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT)
         vk->depth_resolve_mode = VK_RESOLVE_MODE_MAX_BIT;
     dev->capabilities.backend = RHI_BACKEND_VULKAN;
+    dev->capabilities.scissor_supported = true;
+    dev->capabilities.present_target_preserved = false;
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
     for (u32 samples = 2u; samples <= 64u; samples <<= 1u) {

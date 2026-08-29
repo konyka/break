@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新
+
+**BreakUI 增量合成安全决策层（TDD）**：新增后端无关的 `SKIP/PARTIAL/FULL` 决策 helper，
+以持久 surface、present target 像素保留能力和动态 scissor 能力作为三项硬门槛；默认阈值为
+最多 8 个 dirty 碎片、合并 scissor 不超过 drawable 面积 60%。BreakUI composite 已接入
+决策和 scissor 恢复，但 GL/Vulkan 当前不声明 swapchain 保留能力，故运行时保持全屏合成，
+避免仅凭 dirty rect 导致黑屏或未更新区域丢失。TDD 新增碎片、面积、空 damage 和能力缺失
+用例，`test_break_ui_damage` 17/17 通过。真正 partial present 仍需各平台 present damage、
+backbuffer age 和 smoke 矩阵，不能由 Linux 单元测试推断完成。
+
 ## CI 验证矩阵（当前）
 
 `.github/workflows/ci.yml` 现包含三项 Linux 专项门禁：`linux-clang-release` 使用 Clang/LLD
