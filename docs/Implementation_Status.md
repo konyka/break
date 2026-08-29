@@ -1,5 +1,23 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新
+
+**BreakUI 增量合成安全决策层（TDD）**：新增后端无关的 `SKIP/PARTIAL/FULL` 决策 helper，
+以持久 surface、present target 像素保留能力和动态 scissor 能力作为三项硬门槛；默认阈值为
+最多 8 个 dirty 碎片、合并 scissor 不超过 drawable 面积 60%。BreakUI composite 已接入
+决策和 scissor 恢复，但 GL/Vulkan 当前不声明 swapchain 保留能力，故运行时保持全屏合成，
+避免仅凭 dirty rect 导致黑屏或未更新区域丢失。TDD 新增碎片、面积、空 damage 和能力缺失
+用例，`test_break_ui_damage` 18/18 通过。真正 partial present 仍需 Wayland compositor
+实机 smoke，以及 X11、Win32、Vulkan、macOS 的等价 present 能力，不能由 Linux 单元测试
+推断完成。
+
+**Wayland EGL partial present 接入（TDD）**：RHI 新增固定 16 项的 `RHIPresentRect` 输入、
+严格边界校验和 `rhi_frame_begin_damage()`；dxx 在 pump 后取得 drawable damage，无变化时
+不提交帧，首帧/resize/AA 变更/能力缺失时自动走全屏。Wayland EGL 仅在同时具备
+`EGL_EXT_buffer_age`、`eglSwapBuffersWithDamageKHR/EXT` 且当前 buffer age 为 1 时启用，
+并将 top-left damage 安全转换为 EGL bottom-left 坐标；GL X11、Win32、Vulkan、macOS
+能力明确关闭。Vulkan 仍待实现每 swapchain image 历史 damage 和增量 present。
+
 ## CI 验证矩阵（当前）
 
 `.github/workflows/ci.yml` 现包含三项 Linux 专项门禁：`linux-clang-release` 使用 Clang/LLD
@@ -2149,3 +2167,42 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   往返在本机不可验证，由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
   变更持有；通用流模式/join/watermark 仍不支持；Redis 的实际启用仍需集成环境提供
   受控 Redis 服务。
+
+## myui selection rect bounded output（2026-08-29）
+
+- 以 TDD 新增 `text_layout_visual_rects_honors_output_capacity`，先复现多视觉片段时
+  API 返回值超过 `cap` 的契约缺陷。
+- `my_text_layout_visual_rects()` 在缓存和逐字形回退路径都严格返回 `0..cap`，写满
+  输出后立即结束，避免在 text area/edit 只请求固定小数组时继续扫描。
+- 保持 RTL 分段顺序、字体宽度、OOM 回退和跨后端绘制行为不变；公共头文件同步明确
+  有界返回契约。
+- 验证：normal/ASan `test_myui_text_layout` **16/16**，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过；LeakSanitizer 继续受当前 ptrace
+  环境限制，ASan 使用 `detect_leaks=0`。
+
+## myui fold-state YAML legacy migration（2026-08-29）
+
+- 以 TDD 在 `text_area_fold_state_yaml_roundtrip_and_transaction` 中加入显式 `version: 0`
+  输入，先锁定旧版编号被错误拒绝的回归。
+- `my_text_area_folds_from_yaml()` 将 `version: 0` 作为旧版 `folds` schema 接收，并沿用
+  同一套严格字段、范围、数量和输入预算；成功导入后 exporter 始终输出 `version: 1`。
+- 未知版本仍拒绝，candidate 解析失败仍不会替换 active fold state；不影响绘制热路径、
+  后端 API 或 XML 废弃边界。
+- 验证：normal/ASan `test_myui_window_manager` **58/58**，Vulkan `myui_core` 构建、
+  `git diff --check` 与乱码/控制字符扫描通过；LeakSanitizer 受当前 ptrace 环境限制。
+
+## myui RTL syntax token painting（2026-08-29）
+
+- 以 TDD 新增 `text_area_rtl_syntax_colors_tokens`，锁定 RTL 行不应因 bidi 直接退回整行
+  普通颜色绘制；测试比较启用 YAML keyword 高亮与无高亮基线的软件 canvas 输出。
+- text area 现在复用 visual UTF-8/layout，按 visual-order 连续片段设置 token 颜色；每个
+  visual item 通过有序 token 的二分查找确定颜色，复杂度为 O(V log T)，LTR 仍保持原有
+  O(T) token 测量路径。
+- 新增 `my_text_layout_visual_boundary_x()`，提供字体宽度缓存支持的视觉边界坐标查询；
+  core 和 canvas API 仍后端中立。复杂 RTL GSUB、跨 face fallback 和 JUSTIFY token 联动
+  保持明确未实现。
+- 内置 bitmap font 在创建时将 1bpp 数据展开为 8bpp alpha，修复绘制读取越界；绘制热路径
+  不做格式转换。
+- 验证：normal/ASan window manager **59/59** 与 text layout **16/16**、Vulkan
+  `myui_core` 构建、`git diff --check` 和乱码/控制字符扫描通过；LeakSanitizer 受当前
+  ptrace 环境限制。

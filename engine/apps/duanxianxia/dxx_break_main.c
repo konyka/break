@@ -147,6 +147,9 @@ int main(void) {
 
   while (platform_poll(platform) != PLATFORM_EVENT_QUIT) {
     RHICmdBuffer *cmd;
+    RHIPresentRect damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32 damage_count = 0u;
+    bool partial = false;
     u32 nw = 0, nh = 0;
     platform_get_drawable_size(platform, &nw, &nh);
     if (nw != 0 && nh != 0 && (nw != drawable_w || nh != drawable_h)) {
@@ -155,9 +158,18 @@ int main(void) {
       drawable_h = nh;
     }
     break_ui_pump(ui);
-    cmd = rhi_frame_begin(device);
+    if (!break_ui_get_present_damage(ui, drawable_w, drawable_h, damage,
+                                     RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                     &damage_count)) {
+      damage[0] = (RHIPresentRect){0, 0, drawable_w, drawable_h};
+      damage_count = 1u;
+    }
+    if (damage_count == 0u) continue;
+    cmd = rhi_frame_begin_damage(device, damage, damage_count, &partial);
     if (cmd != NULL) {
+      break_ui_set_present_partial(ui, partial);
       break_ui_render(ui, cmd, drawable_w, drawable_h);
+      break_ui_set_present_partial(ui, false);
       rhi_frame_end(device);
       rhi_present(device);
     }

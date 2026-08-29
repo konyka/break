@@ -1081,6 +1081,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     else if (depth_resolve_props.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT)
         vk->depth_resolve_mode = VK_RESOLVE_MODE_MAX_BIT;
     dev->capabilities.backend = RHI_BACKEND_VULKAN;
+    dev->capabilities.scissor_supported = true;
+    dev->capabilities.present_target_preserved = false;
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
     for (u32 samples = 2u; samples <= 64u; samples <<= 1u) {
@@ -1687,6 +1689,7 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     g_current_device = dev;
+    dev->frame_partial_active = false;
 
     /* R175: Ensure deferred mip uploads finished before this frame samples them. */
     vk_mip_upload_reclaim(vk);
@@ -2088,6 +2091,14 @@ void rhi_present(RHIDevice *dev) {
     }
 
     vk->current_frame = (vk->current_frame + 1) % VK_MAX_FRAMES;
+    dev->frame_damage_requested = false;
+    dev->frame_damage_count = 0u;
+    dev->frame_partial_active = false;
+}
+
+void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w,
+                                  u32 h) {
+    rhi_cmd_set_scissor(cmd, (i32)x, (i32)y, w, h);
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {

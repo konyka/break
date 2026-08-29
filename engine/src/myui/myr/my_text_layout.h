@@ -90,6 +90,11 @@ int32_t my_text_layout_visual_x(const my_text_layout_t* l,
                                 const my_font_t* font, int32_t size,
                                 size_t logical_boundary);
 
+/** @brief Visual x (px) of a visual-order boundary. */
+int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
+                                         const my_font_t* font, int32_t size,
+                                         size_t visual_boundary);
+
 /** @brief Nearest logical boundary for a click at visual x. */
 size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
                                    const my_font_t* font, int32_t size,
@@ -116,7 +121,8 @@ size_t my_text_layout_logical_at_visual(const my_text_layout_t* l,
  * @brief Selection highlight segments: visual x/w rects for a logical
  * range [l0, l1) (contiguous logical text may appear as several visual
  * segments at run boundaries). y/h left to the caller (0.0f here).
- * @return segment count (0..cap).
+ * @return number of written segments, bounded by `cap` (0..cap). The scan
+ * stops after the cap-th segment is closed.
  */
 size_t my_text_layout_visual_rects(const my_text_layout_t* l,
                                    const struct my_font_t* font, int32_t size,

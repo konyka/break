@@ -16,11 +16,45 @@ typedef struct break_ui_damage_scissor_t {
   uint32_t h;
 } break_ui_damage_scissor_t;
 
+typedef enum break_ui_surface_composite_mode_t {
+  BREAK_UI_COMPOSITE_SKIP,
+  BREAK_UI_COMPOSITE_PARTIAL,
+  BREAK_UI_COMPOSITE_FULL
+} break_ui_surface_composite_mode_t;
+
+typedef struct break_ui_surface_composite_options_t {
+  uint32_t logical_width;
+  uint32_t logical_height;
+  uint32_t drawable_width;
+  uint32_t drawable_height;
+  uint32_t max_damage_rects;
+  uint32_t max_scissor_area_percent;
+  bool retained_surface_valid;
+  bool present_target_preserved;
+  bool scissor_supported;
+} break_ui_surface_composite_options_t;
+
+typedef struct break_ui_surface_composite_decision_t {
+  break_ui_surface_composite_mode_t mode;
+  break_ui_damage_scissor_t scissor;
+} break_ui_surface_composite_decision_t;
+
 /** @brief Map logical damage to a conservative drawable bounding scissor. */
 bool break_ui_damage_to_drawable_scissor(
     const my_dirty_rects_t* damage, uint32_t logical_width,
     uint32_t logical_height, uint32_t drawable_width,
     uint32_t drawable_height, break_ui_damage_scissor_t* out);
+
+/**
+ * Decide whether a retained UI surface can be composited partially.
+ *
+ * The caller must only set present_target_preserved when the platform/RHI
+ * guarantees that pixels outside the present damage remain intact.
+ */
+bool break_ui_surface_composite_decide(
+    const my_dirty_rects_t* damage,
+    const break_ui_surface_composite_options_t* options,
+    break_ui_surface_composite_decision_t* out);
 
 void break_ui_collect_surface_damage_for_windows(
     struct my_window_t* const* windows, size_t count,

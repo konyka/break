@@ -1,4 +1,5 @@
 #include <glad.h>
+#include <limits.h>
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <windows.h>
@@ -14,6 +15,9 @@
     #include <EGL/eglext.h>
     #include <wayland-client.h>
     #include <wayland-egl.h>
+    typedef EGLBoolean (*PFN_break_egl_swap_buffers_with_damage)(
+        EGLDisplay, EGLSurface, const EGLint *, EGLint);
+    static bool gl_extension_has(const char *extensions, const char *name);
 #else
     #include <GL/glx.h>
     #include <X11/Xlib.h>
@@ -31,6 +35,8 @@ typedef struct {
     EGLContext            egl_context;
     EGLSurface            egl_surface;
     EGLConfig             egl_config;
+    PFN_break_egl_swap_buffers_with_damage swap_buffers_with_damage;
+    bool                 buffer_age_supported;
 #else
     Display   *display;
     Window     window;
@@ -472,6 +478,36 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     gl_set_viewport_cached(0, 0, w, h);
 
     dev->capabilities.backend = RHI_BACKEND_OPENGL;
+    dev->capabilities.scissor_supported = true;
+    dev->capabilities.present_target_preserved = false;
+    dev->capabilities.present_damage_supported = false;
+    dev->capabilities.present_buffer_age_supported = false;
+#ifdef ENGINE_PLATFORM_WAYLAND
+    {
+        const char *extensions = eglQueryString(gl->egl_display, EGL_EXTENSIONS);
+        bool has_age = gl_extension_has(extensions, "EGL_EXT_buffer_age");
+        bool has_damage = gl_extension_has(extensions,
+                                           "EGL_KHR_swap_buffers_with_damage") ||
+                          gl_extension_has(extensions,
+                                           "EGL_EXT_swap_buffers_with_damage");
+        gl->buffer_age_supported = has_age;
+        if (has_damage) {
+            gl->swap_buffers_with_damage =
+                (PFN_break_egl_swap_buffers_with_damage)eglGetProcAddress(
+                    "eglSwapBuffersWithDamageKHR");
+            if (gl->swap_buffers_with_damage == NULL) {
+                gl->swap_buffers_with_damage =
+                    (PFN_break_egl_swap_buffers_with_damage)eglGetProcAddress(
+                        "eglSwapBuffersWithDamageEXT");
+            }
+        }
+        dev->capabilities.present_damage_supported =
+            gl->swap_buffers_with_damage != NULL;
+        dev->capabilities.present_buffer_age_supported = has_age;
+        dev->capabilities.present_target_preserved =
+            dev->capabilities.present_damage_supported && has_age;
+    }
+#endif
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.surface_sample_count = 1u;
@@ -534,6 +570,25 @@ static void gl_resize(RHIDevice *dev, u32 w, u32 h) {
 }
 
 static u32 g_gl_frame_index = 0;
+static u32 g_gl_target_height = 0;
+
+#ifdef ENGINE_PLATFORM_WAYLAND
+static bool gl_extension_has(const char *extensions, const char *name) {
+    size_t name_len;
+    const char *cursor;
+    if (extensions == NULL || name == NULL) return false;
+    name_len = strlen(name);
+    cursor = extensions;
+    while ((cursor = strstr(cursor, name)) != NULL) {
+        if ((cursor == extensions || cursor[-1] == ' ') &&
+            (cursor[name_len] == '\0' || cursor[name_len] == ' ')) {
+            return true;
+        }
+        cursor += name_len;
+    }
+    return false;
+}
+#endif
 
 /* R434: Non-NULL sentinel command handle.  GL rhi_cmd_* operate on immediate
  * global state and ignore the handle, but callers (notably the IBL bake chain
@@ -542,7 +597,9 @@ static u32 g_gl_frame_index = 0;
 static int g_gl_cmd_sentinel = 0;
 
 static void *gl_frame_begin(RHIDevice *dev) {
-    (void)dev;
+#ifdef ENGINE_PLATFORM_WAYLAND
+    GLBackend *gl = (GLBackend *)dev->backend_data;
+#endif
     /* R435: Match the VK swapchain render pass, whose depth attachment has
      * loadOp=CLEAR (vk_create_render_pass): every frame starts with a fresh
      * depth buffer.  GL previously never cleared default-framebuffer depth
@@ -556,11 +613,48 @@ static void *gl_frame_begin(RHIDevice *dev) {
      * previous frame.  Depth writes must be enabled or GL ignores the clear
      * (same pattern as rhi_cmd_clear_depth). */
     gl_bind_fbo_cached(0);
+    g_gl_target_height = dev->height;
+    dev->frame_partial_active = false;
+#ifdef ENGINE_PLATFORM_WAYLAND
+    if (dev->frame_damage_requested && dev->capabilities.present_target_preserved &&
+        gl->buffer_age_supported) {
+        EGLint age = 0;
+        bool dimensions_safe = dev->width <= (u32)INT_MAX &&
+                               dev->height <= (u32)INT_MAX;
+        u32 i;
+        for (i = 0u; dimensions_safe && i < dev->frame_damage_count; ++i) {
+            dimensions_safe = dev->frame_damage[i].w <= (u32)INT_MAX &&
+                              dev->frame_damage[i].h <= (u32)INT_MAX;
+        }
+        if (dimensions_safe &&
+            eglQuerySurface(gl->egl_display, gl->egl_surface,
+                            EGL_BUFFER_AGE_EXT, &age) && age == 1) {
+            dev->frame_partial_active = true;
+        }
+    }
+#endif
     if (!g_gl_depth_mask) {
         glDepthMask(GL_TRUE);
         g_gl_depth_mask = true;
     }
     glClear(GL_DEPTH_BUFFER_BIT);
+    if (dev->frame_partial_active && dev->frame_damage_count != 0u) {
+        u32 min_x = dev->width;
+        u32 min_y = dev->height;
+        u32 max_x = 0u;
+        u32 max_y = 0u;
+        u32 i;
+        for (i = 0u; i < dev->frame_damage_count; ++i) {
+            const RHIPresentRect *rect = &dev->frame_damage[i];
+            if ((u32)rect->x < min_x) min_x = (u32)rect->x;
+            if ((u32)rect->y < min_y) min_y = (u32)rect->y;
+            if ((u32)rect->x + rect->w > max_x) max_x = (u32)rect->x + rect->w;
+            if ((u32)rect->y + rect->h > max_y) max_y = (u32)rect->y + rect->h;
+        }
+        rhi_cmd_set_scissor_top_left((RHICmdBuffer *)&g_gl_cmd_sentinel,
+                                     min_x, min_y, max_x - min_x,
+                                     max_y - min_y);
+    }
     return &g_gl_cmd_sentinel;
 }
 
@@ -575,7 +669,24 @@ static void gl_present(RHIDevice *dev) {
 #ifdef ENGINE_PLATFORM_WINDOWS
     SwapBuffers(gl->hdc);
 #elif defined(ENGINE_PLATFORM_WAYLAND)
-    eglSwapBuffers(gl->egl_display, gl->egl_surface);
+    if (dev->frame_partial_active && gl->swap_buffers_with_damage != NULL) {
+        EGLint damage[4u * RHI_MAX_PRESENT_DAMAGE_RECTS];
+        u32 i;
+        for (i = 0u; i < dev->frame_damage_count; ++i) {
+            const RHIPresentRect *rect = &dev->frame_damage[i];
+            damage[4u * i + 0u] = rect->x;
+            damage[4u * i + 1u] = (EGLint)dev->height - rect->y - (EGLint)rect->h;
+            damage[4u * i + 2u] = (EGLint)rect->w;
+            damage[4u * i + 3u] = (EGLint)rect->h;
+        }
+        if (!gl->swap_buffers_with_damage(gl->egl_display, gl->egl_surface,
+                                          damage,
+                                          (EGLint)dev->frame_damage_count)) {
+            eglSwapBuffers(gl->egl_display, gl->egl_surface);
+        }
+    } else {
+        eglSwapBuffers(gl->egl_display, gl->egl_surface);
+    }
 #else
     glXSwapBuffers(gl->display, gl->window);
 #endif
@@ -873,6 +984,9 @@ void rhi_frame_end(RHIDevice *dev) {
 
 void rhi_present(RHIDevice *dev) {
     gl_present(dev);
+    dev->frame_damage_requested = false;
+    dev->frame_damage_count = 0u;
+    dev->frame_partial_active = false;
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {
@@ -1209,6 +1323,20 @@ void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
     glScissor((GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
     g_gl_scissor_x = x; g_gl_scissor_y = y; g_gl_scissor_w = w; g_gl_scissor_h = h;
     g_gl_scissor_rect_valid = true;
+}
+
+void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w,
+                                  u32 h) {
+    u32 bottom = 0u;
+    if (g_gl_target_height > y) {
+        u32 available = g_gl_target_height - y;
+        if (h > available) h = available;
+        bottom = available - h;
+    } else {
+        w = 0u;
+        h = 0u;
+    }
+    rhi_cmd_set_scissor(cmd, (i32)x, (i32)bottom, w, h);
 }
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
@@ -2349,6 +2477,7 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     gl_resolve_active_offscreen();
     gl_bind_fbo_cached(fd->gl_fbo);
     g_gl_active_offscreen = fd;
+    g_gl_target_height = fbo->height;
     /* R230-A: VK sets full-FBO viewport/scissor + depth 0..1 on bind. */
     gl_set_fbo_pass_state(fbo->width, fbo->height);
 }
@@ -2362,6 +2491,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
     gl_resolve_active_offscreen();
     gl_bind_fbo_cached(0);
+    g_gl_target_height = screen_h;
     /* R230: VK unbind resets full-swapchain viewport/scissor + depth 0..1. */
     gl_set_fbo_pass_state(screen_w, screen_h);
 }

@@ -4,6 +4,15 @@
 /* ---- Handle: index + generation for safe resource reference ---- */
 typedef struct { u32 index; u32 generation; } RHIHandle;
 
+#define RHI_MAX_PRESENT_DAMAGE_RECTS 16u
+
+typedef struct {
+    i32 x;
+    i32 y;
+    u32 w;
+    u32 h;
+} RHIPresentRect;
+
 /* ---- Strongly-typed handle aliases ---- */
 typedef RHIHandle RHIBuffer;
 typedef RHIHandle RHIShader;
@@ -39,6 +48,10 @@ typedef struct {
     u32        surface_sample_count;
     bool       color_resolve_supported;
     bool       depth_resolve_supported;
+    bool       scissor_supported;
+    bool       present_target_preserved;
+    bool       present_damage_supported;
+    bool       present_buffer_age_supported;
 } RHICapabilities;
 
 typedef enum {
@@ -168,11 +181,16 @@ typedef struct RHIDevice RHIDevice;
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
+bool       rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
+                                       u32 width, u32 height);
 /* Resize the default framebuffer/swapchain in physical drawable pixels. */
 void       rhi_device_resize(RHIDevice *dev, u32 w, u32 h);
 
 /* ---- Frame lifecycle ---- */
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev);
+RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
+                                     const RHIPresentRect *rects, u32 count,
+                                     bool *out_partial);
 void          rhi_frame_end(RHIDevice *dev);
 void          rhi_present(RHIDevice *dev);
 void          rhi_set_vsync(RHIDevice *dev, bool enabled);
@@ -221,6 +239,7 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, b
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
                           f32 min_depth, f32 max_depth);
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h);
+void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h);
 /* Set a non-Y-flipped viewport + matching scissor, matching the depth/shadow
  * render-pass convention (top-left origin on VK, native on GL). Used to render
  * cascaded-shadow quadrants into a single shadow-atlas texture. */

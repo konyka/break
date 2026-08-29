@@ -173,6 +173,30 @@ TEST(text_layout_reuses_font_boundary_prefix_cache)
   my_text_layout_destroy(layout);
 }
 
+TEST(text_layout_visual_rects_honors_output_capacity)
+{
+  uint32_t visual_cps[] = {'a', 'b', 'c', 'd'};
+  uint32_t visual_to_logical[] = {0, 2, 1, 3};
+  uint32_t visual_span[] = {1, 1, 1, 1};
+  uint32_t logical_to_visual[] = {0, 2, 1, 3};
+  uint8_t visual_rtl[] = {0, 0, 0, 0};
+  my_rectf_t rect;
+  my_text_layout_t layout = {
+      .visual_cps = visual_cps,
+      .visual_to_logical = visual_to_logical,
+      .visual_logical_span = visual_span,
+      .logical_to_visual = logical_to_visual,
+      .visual_rtl = visual_rtl,
+      .len = 4,
+      .logical_len = 4};
+
+  ASSERT_EQ(my_text_layout_visual_rects(&layout, NULL, 16, 0, 2, &rect, 1),
+            1u);
+  ASSERT_EQ(rect.x, 0.0f);
+  ASSERT_EQ(rect.w, 8.0f);
+  ASSERT_EQ(my_text_layout_visual_boundary_x(&layout, NULL, 16, 3), 24);
+}
+
 TEST(line_break_applies_unicode_context_rules)
 {
   ASSERT_FALSE(my_line_break_allowed('a', 0x0301u));
@@ -368,6 +392,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
     RUN_TEST(text_layout_reuses_font_boundary_prefix_cache);
+    RUN_TEST(text_layout_visual_rects_honors_output_capacity);
     RUN_TEST(line_break_applies_unicode_context_rules);
     RUN_TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together);
     RUN_TEST(line_break_keeps_unicode_glue_and_joiners_together);

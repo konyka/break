@@ -26,6 +26,7 @@
 #define TA_SYNTAX_DEFAULT_LINE_BUDGET 32
 #define TA_MAX_FOLD_STATE_BYTES (64u * 1024u)
 #define TA_MAX_FOLD_RANGES 4096u
+#define TA_FOLD_STATE_LEGACY_VERSION 0
 #define TA_FOLD_STATE_VERSION 1
 #define TA_FOLD_STATE_HEADER "version: 1\nfolds:\n"
 
@@ -880,18 +881,99 @@ static uint32_t ta_syntax_color(uint32_t normal,
   }
 }
 
+static my_syntax_token_kind_t ta_syntax_kind_at(
+    const my_syntax_token_t* tokens, size_t count, size_t logical) {
+  size_t lo = 0;
+  size_t hi = count;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    size_t start = tokens[mid].start_cp;
+    size_t len = tokens[mid].len_cp;
+    if (logical < start) {
+      hi = mid;
+    } else if (logical - start < len) {
+      return tokens[mid].kind;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return MY_SYNTAX_TOKEN_TEXT;
+}
+
+static void ta_draw_visual_syntax_segment(
+    my_text_area_t* ta, my_vgcanvas_t* vg, my_text_layout_t* layout,
+    size_t start, size_t end, size_t visual_start,
+    my_syntax_token_kind_t kind, float base_x, int32_t ty, uint32_t normal) {
+  char saved = layout->visual_utf8[end];
+  layout->visual_utf8[end] = '\0';
+  my_vgcanvas_set_fill_color(
+      vg, my_color_from_rgba32(ta_syntax_color(normal, kind)));
+  my_vgcanvas_draw_text(
+      vg, layout->visual_utf8 + start,
+      base_x + (float)my_text_layout_visual_boundary_x(
+                   layout, ta->font, ta->font_size, visual_start),
+      (float)ty);
+  layout->visual_utf8[end] = saved;
+}
+
 static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
                                 const my_visual_line_t* vl, const char* line,
-                                float base_x, int32_t ty, uint32_t normal) {
+                                float base_x, int32_t ty, uint32_t normal,
+                                my_text_layout_t* layout) {
   size_t count = 0, i;
   const my_syntax_token_t* tokens;
-  if (ta->font == NULL || my_text_layout_may_need_bidi(line) ||
-      ta->syntax_cache == NULL ||
+  if (ta->font == NULL || ta->syntax_cache == NULL ||
       !my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)) {
     return false;
   }
   tokens = my_syntax_cache_line_tokens(ta->syntax_cache, vl->phys, &count);
   if (tokens == NULL || count == 0) return false;
+  if (layout != NULL) {
+    size_t visual_offset = 0;
+    size_t group_start = 0;
+    size_t group_visual_start = 0;
+    my_syntax_token_kind_t group_kind = MY_SYNTAX_TOKEN_TEXT;
+    bool group_open = false;
+    const char* visual = layout->visual_utf8;
+    size_t visual_index;
+    for (visual_index = 0; visual_index < layout->len; visual_index++) {
+      size_t item_start = visual_offset;
+      size_t logical = layout->visual_to_logical[visual_index];
+      my_syntax_token_kind_t kind =
+          ta_syntax_kind_at(tokens, count, logical + vl->start_cp);
+      (void)my_utf8_next(&visual);
+      visual_offset = (size_t)(visual - layout->visual_utf8);
+      if (layout->visual_rtl[visual_index] != 0) {
+        if (group_open) {
+          ta_draw_visual_syntax_segment(ta, vg, layout, group_start,
+                                        item_start, group_visual_start,
+                                        group_kind, base_x, ty, normal);
+        }
+        ta_draw_visual_syntax_segment(ta, vg, layout, item_start,
+                                      visual_offset, visual_index, kind,
+                                      base_x, ty, normal);
+        group_open = false;
+      } else if (!group_open) {
+        group_open = true;
+        group_start = item_start;
+        group_visual_start = visual_index;
+        group_kind = kind;
+      } else if (kind != group_kind) {
+        ta_draw_visual_syntax_segment(ta, vg, layout, group_start, item_start,
+                                      group_visual_start, group_kind, base_x,
+                                      ty, normal);
+        group_start = item_start;
+        group_visual_start = visual_index;
+        group_kind = kind;
+      }
+    }
+    if (group_open) {
+      ta_draw_visual_syntax_segment(ta, vg, layout, group_start, visual_offset,
+                                    group_visual_start, group_kind, base_x, ty,
+                                    normal);
+    }
+    return true;
+  }
   for (i = 0; i < count; i++) {
     size_t start = tokens[i].start_cp > vl->start_cp
                        ? tokens[i].start_cp : vl->start_cp;
@@ -2000,7 +2082,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           }
           nseps = ta_justify_space_count(line, len);
           if (my_text_layout_may_need_bidi(line) &&
-              (ta->align == MY_TEXT_ALIGN_LEFT || has_sel)) {
+              (ta->align == MY_TEXT_ALIGN_LEFT || has_sel ||
+               (ta->syntax_cache != NULL &&
+                my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)))) {
             line_layout = ta_paint_layout(ta, line);
           }
           if (ta->align == MY_TEXT_ALIGN_CENTER) {
@@ -2116,7 +2200,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               }
             }
           } else {
-            if (!ta_draw_syntax_line(ta, vg, vl, line, (float)base_x, ty, fg)) {
+            if (!ta_draw_syntax_line(ta, vg, vl, line, (float)base_x, ty, fg,
+                                     line_layout)) {
               my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
             }
           }
@@ -2598,6 +2683,7 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
   my_conf_node_t* root = NULL;
   my_conf_node_t* folds;
   my_conf_node_t* version;
+  int64_t version_value;
   my_conf_error_t error;
   my_darray_t* candidate = NULL;
   size_t i;
@@ -2611,8 +2697,10 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
     version = NULL;
   } else if (my_conf_child_count(root) == 2) {
     version = my_conf_get(root, "version");
-    if (version == NULL || my_conf_type(version) != MY_CONF_INT64 ||
-        my_conf_as_int64(version, -1) != TA_FOLD_STATE_VERSION) goto invalid;
+    if (version == NULL || my_conf_type(version) != MY_CONF_INT64) goto invalid;
+    version_value = my_conf_as_int64(version, -1);
+    if (version_value != TA_FOLD_STATE_LEGACY_VERSION &&
+        version_value != TA_FOLD_STATE_VERSION) goto invalid;
     if (strcmp(my_conf_key(my_conf_child(root, 0)), "version") != 0 &&
         strcmp(my_conf_key(my_conf_child(root, 0)), "folds") != 0) goto invalid;
     if (strcmp(my_conf_key(my_conf_child(root, 1)), "version") != 0 &&

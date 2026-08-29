@@ -158,6 +158,111 @@ TEST(empty_damage_has_no_drawable_scissor)
                                                    200, &scissor));
 }
 
+TEST(surface_composite_requires_all_retention_capabilities)
+{
+  my_dirty_rects_t damage;
+  break_ui_surface_composite_options_t options = {0};
+  break_ui_surface_composite_decision_t decision;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){10, 10, 10, 10}),
+            MY_RET_OK);
+  options.logical_width = 100;
+  options.logical_height = 100;
+  options.drawable_width = 200;
+  options.drawable_height = 200;
+  options.retained_surface_valid = true;
+  options.present_target_preserved = true;
+  options.scissor_supported = true;
+
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_PARTIAL);
+  ASSERT_EQ(decision.scissor.x, 20u);
+  ASSERT_EQ(decision.scissor.y, 20u);
+  ASSERT_EQ(decision.scissor.w, 20u);
+  ASSERT_EQ(decision.scissor.h, 20u);
+
+  options.present_target_preserved = false;
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+
+  options.present_target_preserved = true;
+  options.scissor_supported = false;
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+  my_dirty_rects_clear(&damage);
+}
+
+TEST(surface_composite_skips_empty_damage_only_when_target_is_preserved)
+{
+  my_dirty_rects_t damage;
+  break_ui_surface_composite_options_t options = {
+      .logical_width = 100,
+      .logical_height = 100,
+      .drawable_width = 200,
+      .drawable_height = 200,
+      .retained_surface_valid = true,
+      .present_target_preserved = true,
+      .scissor_supported = true};
+  break_ui_surface_composite_decision_t decision;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_SKIP);
+  options.present_target_preserved = false;
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+}
+
+TEST(surface_composite_merges_fragmented_or_large_damage_to_fullscreen)
+{
+  my_dirty_rects_t damage;
+  break_ui_surface_composite_options_t options = {
+      .logical_width = 100,
+      .logical_height = 100,
+      .drawable_width = 100,
+      .drawable_height = 100,
+      .retained_surface_valid = true,
+      .present_target_preserved = true,
+      .scissor_supported = true,
+      .max_damage_rects = 2,
+      .max_scissor_area_percent = 50};
+  break_ui_surface_composite_decision_t decision;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){0, 0, 10, 10}), MY_RET_OK);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){90, 90, 10, 10}),
+            MY_RET_OK);
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+
+  my_dirty_rects_clear(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){0, 0, 80, 80}), MY_RET_OK);
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+  my_dirty_rects_clear(&damage);
+}
+
+TEST(surface_composite_area_threshold_does_not_overflow)
+{
+  my_dirty_rects_t damage;
+  break_ui_surface_composite_options_t options = {
+      .logical_width = 1,
+      .logical_height = 1,
+      .drawable_width = UINT32_MAX,
+      .drawable_height = UINT32_MAX,
+      .retained_surface_valid = true,
+      .present_target_preserved = true,
+      .scissor_supported = true};
+  break_ui_surface_composite_decision_t decision;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){0, 0, 1, 1}), MY_RET_OK);
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+  my_dirty_rects_clear(&damage);
+}
+
 TEST(collects_damage_from_all_windows)
 {
   my_pal_t *pal = my_pal_dummy_create(NULL);
@@ -542,4 +647,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(damage_maps_to_conservative_drawable_scissor);
     RUN_TEST(damage_scissor_clips_outside_logical_surface);
     RUN_TEST(empty_damage_has_no_drawable_scissor);
+    RUN_TEST(surface_composite_requires_all_retention_capabilities);
+    RUN_TEST(surface_composite_skips_empty_damage_only_when_target_is_preserved);
+    RUN_TEST(surface_composite_merges_fragmented_or_large_damage_to_fullscreen);
+    RUN_TEST(surface_composite_area_threshold_does_not_overflow);
 TEST_MAIN_END()

@@ -598,6 +598,22 @@ int32_t my_text_layout_visual_x(const my_text_layout_t* l,
   return (int32_t)(x + 0.5f);
 }
 
+int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
+                                         const my_font_t* font, int32_t size,
+                                         size_t visual_boundary) {
+  float x = 0.0f;
+  size_t i;
+  if (l == NULL) return 0;
+  if (visual_boundary > l->len) visual_boundary = l->len;
+  if (tl_boundaries_ensure(l, font, size)) {
+    return l->visual_boundaries[visual_boundary];
+  }
+  for (i = 0; i < visual_boundary; i++) {
+    x += tl_cp_w(font, size, l->visual_cps[i]);
+  }
+  return (int32_t)(x + 0.5f);
+}
+
 size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
                                    const my_font_t* font, int32_t size,
                                    int32_t x) {
@@ -738,6 +754,7 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
         if (n < cap) out[n] = my_rectf_init(seg_x, 0.0f, seg_w, 0.0f);
         n++;
         open = false;
+        if (n == cap) return cap;
       }
       x += (float)width;
     }
@@ -770,6 +787,7 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
       }
       n++;
       open = false;
+      if (n == cap) return cap;
     }
     x += w;
   }

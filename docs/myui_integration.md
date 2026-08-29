@@ -10,6 +10,31 @@
 - 在 GL 和 Vulkan 上使用同一套 CPU 三角化和双缓冲动态 VBO 路径。
 - 用可测试的桥接层隔离平台输入、IME 与渲染后端。
 
+## 增量合成安全边界
+
+BreakUI 的 surface 重绘和最终 composite 分为两个独立阶段。surface 已经是持久的
+offscreen target，窗口 dirty 集合可先在逻辑坐标中收集，再通过
+`break_ui_damage_to_drawable_scissor()` 做保守的 drawable 映射；映射使用向外取整、裁剪和
+64 位乘法，避免高 DPI 缩放下漏画边缘。
+
+最终 composite 由 `break_ui_surface_composite_decide()` 返回 `SKIP`、`PARTIAL` 或 `FULL`：
+只有 offscreen surface 有效、RHI 明确声明 scissor 可用、并且平台明确保证 present target
+保留未更新像素时，才允许局部 scissor。dirty 碎片超过 8 个，或合并后的 scissor 超过
+drawable 面积 60%，自动回退全屏；空 damage 仅在 present target 保留时跳过 composite。
+所有无效尺寸、能力缺失、surface 重建、resize、AA 切换和绘制失败均走全屏/不绘制的安全
+路径，不凭 dirty rect 猜测 swapchain 内容。
+
+RHI 现在提供 `rhi_frame_begin_damage()`，在帧开始前接收有界的 drawable damage 区域；
+它会拒绝空尺寸、负坐标、越界区域和超过 16 个矩形的输入，拒绝后回到普通帧路径。若
+后端报告 buffer age 不为 1，则同样强制全屏，避免把更早帧遗漏的 damage 当作已保留内容。
+Wayland EGL 在检测到 `EGL_EXT_buffer_age` 与 `eglSwapBuffersWithDamageKHR/EXT` 后，使用
+统一的 top-left 区域转换为 EGL 所需的 bottom-left 坐标；所有尺寸转换在进入 EGLint 前
+检查范围。GL X11、Win32 WGL、Vulkan 和 macOS 当前保持能力关闭。
+
+GL X11、Win32 WGL、Vulkan 和 macOS 当前均不声明 swapchain 像素保留能力，因此运行时继续
+使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。Vulkan 后续仍需按
+swapchain image 维护历史 damage，才能安全接入 incremental present。
+
 ## 冷却按钮
 
 按钮冷却是 widget 层能力，不依赖 Break RHI、OpenGL、Vulkan 或软件 canvas 的私有类型：
@@ -49,8 +74,9 @@ SA dictionary、复杂 numeric tailoring 和完整 UCD 版本化规则仍属于�
 作为 header 保留可见，后续物理行隐藏。严格包含嵌套允许，交叉或同起点重叠请求拒绝，
 不会改变文本缓冲区和逻辑 row/column 坐标。折叠状态可通过
 `my_text_area_folds_to_yaml()` / `my_text_area_folds_from_yaml()` 保存和恢复；YAML 仅允许
-`version: 1`（同时兼容无版本 legacy 快照）、`folds` 数组及 `start`/`end` 整数字段，
-导入采用事务替换。
+`version: 1`、显式 legacy 的 `version: 0`（以及无版本 legacy 快照）、`folds` 数组及
+`start`/`end` 整数字段；legacy 导入后由 exporter 统一升级为 `version: 1`，导入采用
+事务替换。
 
 折叠打开后，text area 为可见物理行建立缓存；wrap visual-line cache 只为可见行生成
 段落。缓存构建按排序折叠区间维护有限活动栈，复杂度为 O(物理行数 + 折叠区间数)。默认
@@ -123,9 +149,10 @@ codepoint 范围；跨行 `/* ... */` 状态会传播到后缀。`my_syntax_cach
 超限直接拒绝。
 
 text area 在启用语法高亮后懒创建该 cache，并在 paint 前按 `syntax_line_budget` 增量推进；
-ready 的非 RTL、有字体行才进行 token 分段绘制。默认关闭时不创建 cache、不启动 timer，
-也不扫描全文。无字体、RTL、justify 等路径继续使用原整行绘制，避免把有限 lexer 误宣称
-为完整语法高亮。
+ready 的有字体行进行 token 分段绘制，RTL 行先复用 visual layout，再按 visual-order
+片段和 token 颜色绘制。默认关闭时不创建 cache、不启动 timer，也不扫描全文。无字体和
+cache 未 ready 时继续使用原整行绘制；JUSTIFY 仍使用受限的逐词绘制，复杂 RTL GSUB
+与跨 face shaping 不在该 lexer 契约内。
 
 ## CSS/YAML 解析边界
 
@@ -660,3 +687,9 @@ line 范围变化后。纯 LTR 仍走零 layout 的快速路径，缓存创建�
 `visual_x`、`logical_at_x` 和 selection rects 共享该缓存：首次查询为 O(visual items)，
 后续边界查询为 O(1)，命中测试为 O(log visual items)。layout 仍保持字体无关的逻辑与
 视觉映射；字体或字号变化只重建宽度数组，分配失败回退原有逐字形计算，不改变结果。
+selection rects 严格遵守输出 `cap`，写满后立即停止剩余视觉项扫描，避免小输出缓冲的
+重复计算。
+RTL token 绘制复用同一 visual boundary 前缀和，按 token 范围二分定位颜色，再以 visual
+UTF-8 片段提交公共 canvas；纯 LTR 仍走原有单次 token 测量路径，避免新增热路径开销。
+内置 bitmap font 在创建时将 1bpp 资源展开为 8bpp alpha，绘制只读取合法的固定 8x8
+像素块，不在每帧做格式转换。
