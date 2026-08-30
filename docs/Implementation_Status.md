@@ -2,6 +2,12 @@
 
 ## 本轮更新
 
+**独立 myr 依赖策略收敛（TDD）**：修复旧版 `engine/src/myui/myr/CMakeLists.txt` 仅依赖
+`pkg-config` 且未启用 HarfBuzz 的配置漂移，统一为 FreeType 原生 CMake target、HarfBuzz
+CMake target 优先及 `pkg-config` imported target 回退，并使用正确的 `Freetype_FOUND` 变量。
+新增 `test_myr_dependency_config` 配置契约，防止独立入口再次退回旧依赖路径；主工程完整
+CTest 现为 **74/74**，无 `pkg-config` 的 HarfBuzz CMake package-only 构建通过。
+
 **HarfBuzz/FreeType 跨平台依赖探测（TDD）**：`myui_core` 先确认 FreeType 实际可用，再启用
 HarfBuzz；HarfBuzz 优先使用原生 CMake imported target，缺少 package config 时回退到
 `pkg-config` imported target。这样 Windows/macOS 包管理器和 Linux 无 `pkg-config` 环境不会

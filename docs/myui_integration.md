@@ -230,6 +230,10 @@ engine/
 | `MYUI_UI_YAML` | ON | YAML UI loader |
 | `MYUI_BIDI` | ON | 内置 SheenBidi |
 
+独立 `myr` CMake 入口遵循同一依赖策略：FreeType 使用 `Freetype::Freetype`，HarfBuzz
+优先使用 `harfbuzz::harfbuzz`，没有 CMake package 时回退 `PkgConfig::HARFBUZZ`；缺少
+可选依赖时保持对应字体后端关闭，不影响软件、OpenGL 或 Vulkan 其它路径。
+
 ## 构建与测试
 
 ```bash

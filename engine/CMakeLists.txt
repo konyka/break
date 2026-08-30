@@ -1055,6 +1055,10 @@ if(ENGINE_BUILD_TESTS)
     )
     target_link_libraries(test_myui_text_layout PRIVATE myui_core m)
     add_test(NAME test_myui_text_layout COMMAND test_myui_text_layout)
+    add_test(NAME test_myr_dependency_config
+        COMMAND ${CMAKE_COMMAND}
+            -DMYR_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
 
     # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c
     add_executable(test_shadow tests/test_shadow.c src/math/math.c)
