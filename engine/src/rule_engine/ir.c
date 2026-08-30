@@ -56,7 +56,8 @@ static re_status_t add_term_node(re_ir_program_t *ir, const re_operand_t *operan
         term->kind = operand->value.type == RE_VALUE_BOOL ? RE_IR_TERM_BOOL :
             operand->value.type == RE_VALUE_INT64 ? RE_IR_TERM_INT64 :
             operand->value.type == RE_VALUE_DOUBLE ? RE_IR_TERM_DOUBLE :
-            operand->value.type == RE_VALUE_STRING ? RE_IR_TERM_STRING : RE_IR_TERM_NONE;
+            operand->value.type == RE_VALUE_STRING ? RE_IR_TERM_STRING :
+            operand->value.type == RE_VALUE_NULL ? RE_IR_TERM_NULL : RE_IR_TERM_NONE;
         term->name = NULL; term->name_size = 0u;
     }
     if (operand->kind == RE_OPERAND_FUNCTION && operand->fact_name != NULL) {
@@ -159,6 +160,45 @@ typedef struct expr_frame_t {
     unsigned phase;
 } expr_frame_t;
 
+/* A6: deep-copies the parser accumulate payload into the IR expr. The expr
+ * was zeroed on creation and already counted, so a partial copy is released
+ * by re_ir_destroy like any other expr payload. */
+static re_status_t accumulate_copy_payload(re_ir_program_t *ir, const re_expr_t *expr,
+                                           re_ir_expr_t *item) {
+    size_t i;
+    re_status_t status = re_copy_string(&ir->allocator,
+        (re_string_t){expr->accumulate_type, expr->accumulate_type_size}, &item->accumulate_type);
+    if (status != RE_STATUS_OK) return status;
+    item->accumulate_type_size = expr->accumulate_type_size;
+    if (expr->accumulate_field != NULL) {
+        status = re_copy_string(&ir->allocator,
+            (re_string_t){expr->accumulate_field, expr->accumulate_field_size}, &item->accumulate_field);
+        if (status != RE_STATUS_OK) return status;
+        item->accumulate_field_size = expr->accumulate_field_size;
+    }
+    status = re_copy_string(&ir->allocator,
+        (re_string_t){expr->accumulate_func_name, expr->accumulate_func_name_size}, &item->accumulate_func_name);
+    if (status != RE_STATUS_OK) return status;
+    item->accumulate_func_name_size = expr->accumulate_func_name_size;
+    if (expr->accumulate_condition_count != 0u) {
+        if (expr->accumulate_condition_count > (size_t)-1 / sizeof(*item->accumulate_conditions)) return RE_STATUS_LIMIT;
+        item->accumulate_conditions = re_alloc(&ir->allocator,
+            expr->accumulate_condition_count * sizeof(*item->accumulate_conditions));
+        if (item->accumulate_conditions == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memset(item->accumulate_conditions, 0,
+               expr->accumulate_condition_count * sizeof(*item->accumulate_conditions));
+        for (i = 0u; i < expr->accumulate_condition_count; ++i) {
+            status = re_copy_string(&ir->allocator,
+                (re_string_t){expr->accumulate_conditions[i], strlen(expr->accumulate_conditions[i])},
+                &item->accumulate_conditions[i]);
+            if (status != RE_STATUS_OK) return status;
+        }
+    }
+    item->accumulate_condition_count = expr->accumulate_condition_count;
+    item->accumulate_func = expr->accumulate_func;
+    return RE_STATUS_OK;
+}
+
 static re_status_t add_expr_node(re_ir_program_t *ir, const re_expr_t *expr,
                                  size_t *out) {
     re_ir_expr_t *item;
@@ -173,7 +213,22 @@ static re_status_t add_expr_node(re_ir_program_t *ir, const re_expr_t *expr,
     item->kind = expr->kind;
     item->compare = expr->compare;
     item->span.end = ir->source_size;
+    item->multifield = expr->multifield;
+    item->nested = (expr->first != NULL &&
+                    (expr->kind == RE_EXPR_EXISTS || expr->kind == RE_EXPR_FORALL)) ? 1 : 0;
     ++ir->expr_count;
+    if (expr->kind == RE_EXPR_ACCUMULATE) {
+        status = accumulate_copy_payload(ir, expr, item);
+        if (status != RE_STATUS_OK) return status;
+    }
+    if (expr->kind == RE_EXPR_TYPED) {
+        /* A9: copy the declared type name; on error the partial copy is
+         * released by re_ir_destroy like any other expr payload. */
+        status = re_copy_string(&ir->allocator,
+            (re_string_t){expr->typed_type, expr->typed_type_size}, &item->typed_type);
+        if (status != RE_STATUS_OK) return status;
+        item->typed_type_size = expr->typed_type_size;
+    }
     *out = index;
     return RE_STATUS_OK;
 }
@@ -199,13 +254,39 @@ static re_status_t add_expr(re_ir_program_t *ir, const re_expr_t *expr, size_t *
         }
         frame = &frames[count - 1u];
         if (frame->phase == 0u) {
-            if (frame->expr->kind == RE_EXPR_COMPARE || frame->expr->kind == RE_EXPR_EXISTS || frame->expr->kind == RE_EXPR_FORALL) {
+            if (frame->expr->kind == RE_EXPR_MULTIFIELD) {
+                /* A5: the array path is always a term; only `count` carries a
+                 * (numeric literal) right term - the bare predicates leave
+                 * right at the SIZE_MAX sentinel. */
+                status = add_term(ir, &frame->expr->left, &ir->exprs[frame->index].left);
+                if (status == RE_STATUS_OK) {
+                    if (frame->expr->multifield == RE_MULTIFIELD_COUNT)
+                        status = add_term(ir, &frame->expr->right, &ir->exprs[frame->index].right);
+                    else
+                        ir->exprs[frame->index].right = SIZE_MAX;
+                }
+                if (status != RE_STATUS_OK) break;
+                frame->phase = 3u;
+            } else if (frame->expr->kind == RE_EXPR_TEST) {
+                /* A9 test(f(args)): the function call is the only term; right
+                 * keeps the SIZE_MAX sentinel like the bare multifield forms. */
+                status = add_term(ir, &frame->expr->left, &ir->exprs[frame->index].left);
+                if (status == RE_STATUS_OK) ir->exprs[frame->index].right = SIZE_MAX;
+                if (status != RE_STATUS_OK) break;
+                frame->phase = 3u;
+            } else if (frame->expr->kind == RE_EXPR_COMPARE ||
+                ((frame->expr->kind == RE_EXPR_EXISTS || frame->expr->kind == RE_EXPR_FORALL) &&
+                 frame->expr->first == NULL)) {
                 status = add_term(ir, &frame->expr->left, &ir->exprs[frame->index].left);
                 if (status == RE_STATUS_OK)
                     status = add_term(ir, &frame->expr->right, &ir->exprs[frame->index].right);
                 if (status != RE_STATUS_OK) break;
                 frame->phase = 3u;
-            } else if (frame->expr->kind == RE_EXPR_TRUE || frame->expr->kind == RE_EXPR_FALSE) {
+            } else if (frame->expr->kind == RE_EXPR_TRUE || frame->expr->kind == RE_EXPR_FALSE ||
+                       frame->expr->kind == RE_EXPR_ACCUMULATE) {
+                /* TRUE/FALSE and the A6 accumulate node carry no child
+                 * expressions or terms (the payload was copied by
+                 * add_expr_node). */
                 frame->phase = 3u;
             } else {
                 const re_expr_t *current_expr = frame->expr;
@@ -230,7 +311,8 @@ static re_status_t add_expr(re_ir_program_t *ir, const re_expr_t *expr, size_t *
         if (frame->phase == 1u) {
             const re_expr_t *current_expr = frame->expr;
             ir->exprs[frame->index].first = frame->child;
-            if (current_expr->kind == RE_EXPR_NOT) {
+            if (current_expr->kind == RE_EXPR_NOT || current_expr->kind == RE_EXPR_EXISTS ||
+                current_expr->kind == RE_EXPR_FORALL || current_expr->kind == RE_EXPR_TYPED) {
                 frame->phase = 3u;
             } else {
                 size_t child_index;
@@ -301,6 +383,16 @@ re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out) {
                 if (status != RE_STATUS_OK) goto fail;
                 action->method_name_size = source->actions[j].value.function_name_size;
             }
+            if (source->actions[j].append == RE_ACTION_BUILTIN_CALL) {
+                /* A8 bare `name(args)` action: the whole call (name plus
+                 * argument terms) becomes the target FUNCTION term; value is
+                 * unused. */
+                action->kind = RE_IR_ACTION_BUILTIN_CALL; action->append = 0;
+                status = add_term(ir, &source->actions[j].value, &action->target);
+                if (status != RE_STATUS_OK) goto fail;
+                action->value = SIZE_MAX;
+                continue;
+            }
             status = add_term(ir, &target, &action->target); if (status != RE_STATUS_OK) goto fail;
             status = add_term(ir, &source->actions[j].value, &action->value); if (status != RE_STATUS_OK) goto fail;
         }
@@ -327,8 +419,53 @@ re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out) {
         }
         set->entry_count = source->entry_count;
     }
+    for (i = 0u; i < program->query_count; ++i) {
+        re_ir_query_t *query; const re_query_block_t *source = &program->queries[i];
+        re_operand_t query_name; re_operand_t goal_text; size_t block;
+        status = grow(&ir->allocator, (void **)&ir->queries, ir->query_count + 1u, sizeof(*query)); if (status != RE_STATUS_OK) goto fail;
+        query = &ir->queries[ir->query_count]; memset(query, 0, sizeof(*query));
+        query->id = id_for(8u, i, source->name, source->name_size);
+        query->strategy = source->strategy; query->max_depth = source->max_depth;
+        query->max_solutions = source->max_solutions;
+        query->enable_memoization = source->enable_memoization;
+        query->enable_optimization = source->enable_optimization;
+        query->when = SIZE_MAX; query->span.end = ir->source_size; ++ir->query_count;
+        memset(&query_name, 0, sizeof(query_name)); query_name.kind = RE_OPERAND_FACT; query_name.fact_name = source->name; query_name.fact_name_size = source->name_size;
+        status = add_term(ir, &query_name, &query->name); if (status != RE_STATUS_OK) goto fail;
+        memset(&goal_text, 0, sizeof(goal_text)); goal_text.kind = RE_OPERAND_LITERAL;
+        goal_text.value.type = RE_VALUE_STRING; goal_text.value.as.string.data = source->goal; goal_text.value.as.string.size = source->goal_size;
+        status = add_term(ir, &goal_text, &query->goal); if (status != RE_STATUS_OK) goto fail;
+        if (source->when != NULL) { status = add_expr(ir, source->when, &query->when); if (status != RE_STATUS_OK) goto fail; }
+        for (block = 0u; block < RE_QUERY_BLOCK_COUNT; ++block) {
+            query->first_action[block] = ir->query_action_count;
+            for (j = 0u; j < source->action_counts[block]; ++j) {
+                const re_query_action_stmt_t *stmt = &source->actions[block][j];
+                re_ir_query_action_t *action; re_operand_t name_op;
+                status = grow(&ir->allocator, (void **)&ir->query_actions, ir->query_action_count + 1u, sizeof(*action)); if (status != RE_STATUS_OK) goto fail;
+                action = &ir->query_actions[ir->query_action_count]; memset(action, 0, sizeof(*action));
+                action->id = id_for(9u, ir->query_action_count, stmt->name, stmt->name_size);
+                action->is_call = stmt->is_call; action->value = SIZE_MAX; action->args = SIZE_MAX;
+                ++ir->query_action_count;
+                memset(&name_op, 0, sizeof(name_op));
+                if (stmt->is_call) { name_op.kind = RE_OPERAND_FUNCTION; name_op.function_name = stmt->name; name_op.function_name_size = stmt->name_size; }
+                else { name_op.kind = RE_OPERAND_FACT; name_op.fact_name = stmt->name; name_op.fact_name_size = stmt->name_size; }
+                status = add_term(ir, &name_op, &action->name); if (status != RE_STATUS_OK) goto fail;
+                if (stmt->is_call) {
+                    re_operand_t args_op;
+                    memset(&args_op, 0, sizeof(args_op)); args_op.kind = RE_OPERAND_LITERAL;
+                    args_op.value.type = RE_VALUE_STRING;
+                    args_op.value.as.string.data = stmt->args != NULL ? stmt->args : "";
+                    args_op.value.as.string.size = stmt->args_size;
+                    status = add_term(ir, &args_op, &action->args); if (status != RE_STATUS_OK) goto fail;
+                } else {
+                    status = add_term(ir, &stmt->value, &action->value); if (status != RE_STATUS_OK) goto fail;
+                }
+            }
+            query->action_count[block] = source->action_counts[block];
+        }
+    }
     if (ir->rule_count != 0u) { if (ir->rule_count > (size_t)-1 / sizeof(*ir->spans)) { status = RE_STATUS_LIMIT; goto fail; } ir->spans = re_alloc(&ir->allocator, ir->rule_count * sizeof(*ir->spans)); if (ir->spans == NULL) { status = RE_STATUS_OUT_OF_MEMORY; goto fail; } ir->span_count = ir->rule_count; for (i = 0u; i < ir->span_count; ++i) ir->spans[i] = (re_ir_span_t){0u, program->source_size}; }
     *out = ir; return RE_STATUS_OK;
 fail: re_ir_destroy(ir); return status;
 }
-void re_ir_destroy(re_ir_program_t *ir) { size_t i; if (ir == NULL) return; for (i = 0u; i < ir->term_count; ++i) { re_free(&ir->allocator, ir->terms[i].name); re_free(&ir->allocator, ir->terms[i].argument_indices); if (ir->terms[i].value.type == RE_VALUE_STRING) re_free(&ir->allocator, (void *)ir->terms[i].value.as.string.data); } for (i = 0u; i < ir->action_count; ++i) re_free(&ir->allocator, ir->actions[i].method_name); re_free(&ir->allocator, ir->strings); re_free(&ir->allocator, ir->spans); re_free(&ir->allocator, ir->deffacts_sets); re_free(&ir->allocator, ir->deffacts_entries); re_free(&ir->allocator, ir->actions); re_free(&ir->allocator, ir->rules); re_free(&ir->allocator, ir->modules); re_free(&ir->allocator, ir->exprs); re_free(&ir->allocator, ir->terms); re_free(&ir->allocator, ir); }
+void re_ir_destroy(re_ir_program_t *ir) { size_t i; if (ir == NULL) return; for (i = 0u; i < ir->term_count; ++i) { re_free(&ir->allocator, ir->terms[i].name); re_free(&ir->allocator, ir->terms[i].argument_indices); if (ir->terms[i].value.type == RE_VALUE_STRING) re_free(&ir->allocator, (void *)ir->terms[i].value.as.string.data); } for (i = 0u; i < ir->expr_count; ++i) { size_t j; for (j = 0u; j < ir->exprs[i].accumulate_condition_count; ++j) re_free(&ir->allocator, ir->exprs[i].accumulate_conditions[j]); re_free(&ir->allocator, ir->exprs[i].accumulate_conditions); re_free(&ir->allocator, ir->exprs[i].accumulate_type); re_free(&ir->allocator, ir->exprs[i].accumulate_field); re_free(&ir->allocator, ir->exprs[i].accumulate_func_name); re_free(&ir->allocator, ir->exprs[i].typed_type); } for (i = 0u; i < ir->action_count; ++i) re_free(&ir->allocator, ir->actions[i].method_name); re_free(&ir->allocator, ir->strings); re_free(&ir->allocator, ir->spans); re_free(&ir->allocator, ir->queries); re_free(&ir->allocator, ir->query_actions); re_free(&ir->allocator, ir->deffacts_sets); re_free(&ir->allocator, ir->deffacts_entries); re_free(&ir->allocator, ir->actions); re_free(&ir->allocator, ir->rules); re_free(&ir->allocator, ir->modules); re_free(&ir->allocator, ir->exprs); re_free(&ir->allocator, ir->terms); re_free(&ir->allocator, ir); }

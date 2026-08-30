@@ -640,6 +640,44 @@ re_status_t re_engine_query_aggregate(re_engine_t *engine, re_facts_t *facts,
  * zeroes with RE_STATUS_OK. */
 re_status_t re_engine_proof_graph_stats(const re_engine_t *engine,
                                         uint64_t *out_hits, uint64_t *out_misses);
+/* GRL query blocks (Task A7, upstream rust-rule-engine v1.21.4 grl_query.rs):
+ * runs the `query "Name" { ... }` blocks installed with the program. A query
+ * block carries a required raw goal text plus optional strategy
+ * (depth-first|breadth-first|iterative, default depth-first), max-depth
+ * (default 10), max-solutions (default 1), enable-memoization (default true;
+ * false maps to re_query_options_t.disable_shared_proof_graph),
+ * enable-optimization (accepted and ignored - there are no local optimization
+ * passes), a `when:` gate, and on-success/on-failure/on-missing action
+ * blocks.
+ *
+ * Execution: a false `when:` condition (a normal rule-condition expression;
+ * one referencing a missing fact counts as false) skips the query silently.
+ * Otherwise the goal text is split textually - one wrapping paren pair
+ * stripped, `||` split before `&&` when both appear - and each subgoal either
+ * evaluates directly against working memory (subgoals containing `!=`) or
+ * runs through re_engine_query_bounded with the block's strategy and limits.
+ * A proved goal runs the on-success statements; any other outcome runs
+ * on-failure. on-missing never fires: the backward machine does not track
+ * upstream's missing_facts list, so missing-fact outcomes fold into
+ * on-failure (documented divergence). Statements are flat scalar assignments
+ * `Name = true|false|<number>|"string"` written with re_facts_set, or calls
+ * LogMessage/Request/Print (stdout) and Debug (stderr); an unknown call name
+ * warns on stderr without failing.
+ *
+ * Queries never run inside re_engine_run - only through these two functions.
+ * Both report RE_STATUS_INVALID_ARGUMENT for NULL arguments or when no
+ * program is installed; re_engine_run_query reports RE_STATUS_NOT_FOUND for
+ * an unknown name; an installed program without query blocks makes
+ * re_engine_run_queries an OK no-op. A successful dispatch reports
+ * RE_STATUS_OK regardless of whether the goal proved. A HARD goal error
+ * (anything re_engine_query_bounded propagates other than RE_STATUS_LIMIT,
+ * e.g. RE_STATUS_NOT_SUPPORTED from the nested-quantifier backward boundary)
+ * propagates to the caller WITHOUT running either action block - on-failure
+ * dispatches only on a completed not-proved evaluation. When several blocks
+ * share a name, re_engine_run_query runs the first match in source order. */
+re_status_t re_engine_run_queries(re_engine_t *engine, re_facts_t *facts);
+re_status_t re_engine_run_query(re_engine_t *engine, re_facts_t *facts,
+                                re_string_t name);
 re_status_t re_stream_window_create(re_engine_t *engine,
                                     re_stream_window_t **out_window);
 re_status_t re_stream_window_record(re_stream_window_t *window,

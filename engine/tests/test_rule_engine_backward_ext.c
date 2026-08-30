@@ -1243,6 +1243,60 @@ TEST(aggregate_below_solution_cap_succeeds) {
     re_engine_destroy(engine);
 }
 
+/* I1 (Task A2 review): a rule whose condition uses the parenthesized
+ * quantifier form must not be provable through backward chaining — the
+ * compatibility evaluator previously fell into the legacy operand comparison
+ * with zeroed operands, and RE_COMPARE_TRUE over them answers true
+ * unconditionally, so the query silently PROVED. Now every
+ * condition-evaluation entry rejects the nested node honestly. */
+TEST(query_rule_with_forall_paren_condition_fails_not_supported) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_value_handle_t *alert = NULL;
+    re_value_t level = {RE_VALUE_STRING, {.string = {"low", 3u}}};
+    /* A low Alert exists, so forall(Alert.level == "high") is false; even a
+     * vacuous-true case (no Alert facts at all) must not prove Goal. */
+    ASSERT_EQ(re_value_create_object(facts, &alert), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set(alert, text("level"), &level), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Alert1"), alert), RE_STATUS_OK);
+    re_value_destroy(alert);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Derive\" { when forall(Alert.level == \"high\") then Goal = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Derive\")"), NULL, &query),
+              RE_STATUS_NOT_SUPPORTED);
+    ASSERT_TRUE(query == NULL);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(query_rule_with_exists_paren_condition_fails_not_supported) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_value_handle_t *alert = NULL;
+    re_value_t level = {RE_VALUE_STRING, {.string = {"high", 4u}}};
+    /* The quantifier is satisfiable here; the point is that backward chaining
+     * must still refuse rather than prove it through the legacy path. */
+    ASSERT_EQ(re_value_create_object(facts, &alert), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set(alert, text("level"), &level), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Alert1"), alert), RE_STATUS_OK);
+    re_value_destroy(alert);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Derive\" { when exists(Alert.level == \"high\") then Goal = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Derive\")"), NULL, &query),
+              RE_STATUS_NOT_SUPPORTED);
+    ASSERT_TRUE(query == NULL);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(query_not_succeeds_when_subgoal_unprovable);
     RUN_TEST(query_not_fails_when_subgoal_provable);
@@ -1281,4 +1335,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bfs_deepening_limits_at_configured_max_depth);
     RUN_TEST(aggregate_reports_limit_at_solution_cap);
     RUN_TEST(aggregate_below_solution_cap_succeeds);
+    RUN_TEST(query_rule_with_forall_paren_condition_fails_not_supported);
+    RUN_TEST(query_rule_with_exists_paren_condition_fails_not_supported);
 TEST_MAIN_END()

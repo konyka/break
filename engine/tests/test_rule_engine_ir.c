@@ -77,9 +77,12 @@ TEST(exists_rejects_malformed_and_compound_shapes) {
     ASSERT_EQ(re_program_load(NULL,
         text("rule \"Bad\" { when exists Customer.Active then Result = 1; }"),
         NULL, &program), RE_STATUS_PARSE_ERROR);
+    /* Task A2 behavior change: exists( <expr> ) is the full parenthesized
+     * form now (previously NOT_SUPPORTED) and loads cleanly. */
     ASSERT_EQ(re_program_load(NULL,
-        text("rule \"Bad\" { when exists (Customer.Active == true and Ready == true) then Result = 1; }"),
-        NULL, &program), RE_STATUS_NOT_SUPPORTED);
+        text("rule \"Ok\" { when exists (Customer.Active == true and Ready == true) then Result = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    re_program_destroy(program);
 }
 
 TEST(forall_matches_all_scalar_array_members) {
@@ -139,7 +142,10 @@ TEST(forall_rejects_malformed_and_non_array_values) {
     ASSERT_EQ(re_facts_set(facts, text("Values"), &scalar), RE_STATUS_OK);
     ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_INVALID_ARGUMENT);
     program = NULL;
-    ASSERT_EQ(re_program_load(NULL, text("rule \"Bad\" { when forall (Values >= 3) then Result = 1; }"), NULL, &program), RE_STATUS_NOT_SUPPORTED);
+    /* Task A2 behavior change: forall( <expr> ) is the full parenthesized
+     * form now (previously NOT_SUPPORTED) and loads cleanly. */
+    ASSERT_EQ(re_program_load(NULL, text("rule \"Ok\" { when forall (Values >= 3) then Result = 1; }"), NULL, &program), RE_STATUS_OK);
+    re_program_destroy(program);
     re_facts_destroy(facts); re_engine_destroy(engine);
 }
 

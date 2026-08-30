@@ -243,6 +243,155 @@ and a too-small buffer yields `RE_STATUS_LIMIT` after the required size is
 reported. There is deliberately no JSON round-trip, no CLIPS deftemplate
 schema validator, and no engine-side template registry.
 
+## GRL surface parity: expressions, quantifiers, built-ins, multifield, accumulate, query blocks, action built-ins
+
+This section records the sub-project A (2026-08-29) completion of the local
+GRL/expression surface against upstream rust-rule-engine v1.21.4 (`f80a541`).
+Feature coverage is the goal, bug replication is not: where upstream is
+degenerate the local engine keeps its saner behavior and the divergence is
+documented below. All rows are `verified_local` in
+`docs/rule_engine_conformance.yml` with test refs into
+`engine/tests/test_rule_engine_grl_surface.c` and
+`engine/tests/test_rule_engine_query_blocks.c`.
+
+Expression surface (Task A1). Word operator aliases `eq`/`ne`/`gt`/`gte`/`lt`/
+`lte`/`not_contains` parse to the same comparison kinds as the symbolic forms;
+`true`/`false`/`null` literals are case-insensitive; `%` is fmod-based modulo
+(Integer result iff both operands are Integer and the result is integral);
+`+` concatenates strings. The D4 comparison alignment: equality is strictly
+typed (`Integer(1) != Number(1.0)`, matching upstream `PartialEq`), while
+relational operators coerce through `to_number` — numeric strings coerce, and
+bool/null/array/object operands make the comparison false. Documented bounds,
+locked by test: string operators against non-string operands make `contains`
+false and `not_contains` true; `NONE == NONE` is true (typed equality over the
+tag, not three-valued logic); the strtod-based numeric-string coercion accepts
+hex float spellings (`"0x1p4"`) that upstream's Rust parser rejects, while
+`inf`/`infinity` spellings coerce in both; `%` computes in f64, so Integer
+operands beyond 2^53 can round; a leading `true`/`false` literal in a
+condition stays the whole-condition form, so bool relational rejection is
+observable through fact and RHS-literal positions.
+
+General quantifiers (Task A2). `!( <expr> )`, `exists( <expr> )`, and
+`forall( <expr> )` accept arbitrary inner boolean expressions. Candidate
+selection follows the upstream fact-name-prefix heuristic (D7): the target
+prefix is the text before the first `.` of the leftmost field reference,
+candidates are all active facts whose name equals or starts with it, and the
+inner expression evaluates per candidate with the prefix rebound; a
+per-candidate `NOT_FOUND` absorbs as a non-matching candidate. `forall` over
+an empty candidate set is vacuously true (D6); with no dotted field reference
+the inner evaluates once against the plain fact store. Quantifier conditions
+never join per-rule RETE networks, and backward chaining rejects rules
+carrying them with an honest `RE_STATUS_NOT_SUPPORTED`.
+
+Built-ins (Tasks A3/A4). `engine/src/rule_engine/builtins.c` hosts two
+families as a registry fallback (a registered user function of the same name
+overrides the built-in): the condition family `len`/`length`/`size`,
+`isEmpty`/`is_empty`, `contains`, `exists`/`notExists`/`not_exists`, and the
+utility family `log`/`print`/`println`, `now`/`timestamp`, deterministic
+per-engine `random`, `format`/`sprintf`, `length`/`size`/`count`,
+`sum`/`add`/`max`/`min`/`avg`/`average` (INT64-preserving folds),
+`round`/`floor`/`ceil`/`abs`, `contains`/`includes`, `startswith`/`endswith`,
+`lowercase`/`uppercase`/`trim`, `split`, `join`. Wrong arity/types yield false
+for the predicates and the documented error status for the math/string
+functions; an unresolvable fact-path argument absorbs to false (true for the
+negated probes). Deliberately skipped upstream-only aliases:
+`maximum`/`minimum`, `ceiling`, `absolute`, `begins_with`/`ends_with`,
+`tolower`/`toupper`, `strip`, `update`/`refresh`. `split` reproduces
+upstream's `format!("{:?}")` debug string and escapes only quote, backslash,
+`\n`, `\r`, `\t` — other control characters lack Rust-debug `\u{..}` fidelity.
+`len`/`length`/`size` return INT64 where upstream returns Number (f64), so
+under D4 `len(x) == 4` is true while `len(x) == 4.0` is false.
+
+Multifield ops (Task A5). A fact-path operand followed by `count <cmp>
+<numeric-literal>`, `first`, `last`, `empty`, `not_empty`/`notEmpty`, or
+`collect` is an array-shape predicate: count is the element count (missing
+field 0, present non-array field 1), first/last are non-empty-array predicates
+carrying no binding, collect is a presence predicate. The conditions are pure
+and re-evaluated, never RETE-eligible, and a resolved path joins the condition
+read-set anchored on the root fact. Upstream's GRL parser exposes exactly
+these spellings; `index`/`slice` exist only in upstream's RETE multifield
+Rust API and are a local parse error. Count equality is strictly typed
+(`count == 3.0` does not match an int64 3 — D4) while relational count
+comparisons coerce the literal. Flat-vs-structured conflict: presence follows
+the flat-key-first read while the array shape comes from the structured read
+alone, so a flat scalar shadowing a same-path structured array member still
+counts the member's elements.
+
+Accumulate CE (Task A6). `accumulate(Type($var: field, conds...), func(...))`
+flat-scans the `Type.<instance>.<field>` keys (a bare `Type.<field>` key is
+the default instance), keeps instances whose mini-conditions all hold, folds
+the extracted field with `sum`/`count`/`average`/`avg`/`min`/`max`, injects
+the result as the fact `Type.func`, and always matches. Documented
+divergences: mini-condition equality reuses `re_value_compare` (strict typed
+`==`, no double epsilon); the `$var`-less count form counts matching instances
+(upstream counts extracted values, 0 there); an unknown function name is a
+parse-time error (upstream raises at evaluation); an instance literally named
+`default` is not merged with the bare-key default instance. The injection
+write makes the node impure, so accumulate rules stay off RETE networks and
+evaluate at the first-pass position; the injected fact recomputes from the
+current facts on every run that reaches the node (cross-run stability is
+test-locked, with and without the optional executor attached), and a
+follow-up condition in the same `when` can gate on it.
+
+Query blocks (Task A7). Top-level `query "Name" { goal: ...; strategy: ...;
+max-depth: ...; max-solutions: ...; enable-memoization: ...;
+enable-optimization: ...; when: ...; on-success: { ... } on-failure: { ... }
+on-missing: { ... } }` blocks install with the program and run through
+`re_engine_run_query`/`re_engine_run_queries` on the bounded backward machine
+(`engine/src/rule_engine/query_exec.c`). The goal text splits textually
+(`||` before `&&`, one wrapping paren pair stripped), `!=` subgoals evaluate
+directly against working memory, `enable-memoization: false` maps to the
+shared-proof-graph disable flag, and `enable-optimization` is an accepted
+no-op. Documented divergences: scalar fields are `;`-terminated where
+upstream terminates goal/when at the newline; `on-missing` never fires — the
+machine tracks no `missing_facts` list, so it folds into `on-failure`; a hard
+goal error (anything `re_engine_query_bounded` propagates other than
+`RE_STATUS_LIMIT`, e.g. `RE_STATUS_NOT_SUPPORTED` from the nested-quantifier
+boundary) propagates without running either action block; duplicate query
+names run the first match in source order. Queries never run inside
+`re_engine_run`.
+
+Action built-ins (Task A8). Whitelisted bare `name(args)` then-statements:
+`retract($Obj)` sets the `_retracted_<root>` flag fact so condition reads on
+that root evaluate absent (conditions only; the flag must be exactly BOOL
+true; token-live pending activations re-pass the gated match at pop time);
+`log(...)` prints through the utility-built-in machinery;
+`ActivateAgendaGroup("g")` replaces the agenda focus for the rest of the run;
+`ScheduleRule`/`CompleteWorkflow`/`SetWorkflowData` dispatch to a registered
+function of the bare action name (D5 — upstream's workflow/scheduler
+subsystems do not exist locally), and an unhandled one fails the run with
+`RE_STATUS_NOT_SUPPORTED`. Any other bare action call stays a parse error.
+
+`test` CE and typed form (Task A9). `test(f(args))` truthiness-tests a lone
+function call result (BOOL as-is, INT64/DOUBLE nonzero, STRING non-empty,
+else false) and classifies impure; `$x: Type(conds)` has exists-semantics over
+the type prefix's candidates, with `$x` and bare field references rewritten to
+candidate-relative `Type`-rooted paths scoped to the form (a `$var` outside
+the form stays a parse error). Both stay off RETE networks and are
+`RE_STATUS_NOT_SUPPORTED` to backward chaining.
+
+Standing divergences of the whole surface: D1 — compound `&&`/`||` evaluation
+short-circuits locally (upstream evaluates both sides; side-effect-free
+conditions make them observationally equal); D2 — no receiver-aware condition
+method dispatch (a full dotted name resolves a registered function, otherwise
+`NOT_SUPPORTED`/false; upstream silently drops the receiver); D3 — `matches`
+stays wildcard-substring like upstream's stub. The `exists(` spelling
+disambiguates quantifier vs presence-function by scanning for a top-level
+comparison/logical operator, so fully parenthesized content
+(`exists((A == 1))`) and a lone typed or accumulate form
+(`exists($o: Order(amount > 1))`, `exists(accumulate(...))`) read as the
+function form and fail to parse — documented bounds.
+
+Syntax sweep (Task A10). The remaining upstream `GRL_SYNTAX.md` constructs are
+dispositioned as upstream-absent, locked by
+`syntax_sweep_unsupported_constructs_parse_error`: block comments `/* */` are
+doc-claimed but not implemented upstream (`grl.rs` `clean_text` strips only
+full `//`-prefixed lines inside when-clauses) and the local parser has no
+comment syntax at all — both forms are parse errors; the `enabled` rule
+attribute is a struct-only field upstream (`rule.rs`) with no GRL form;
+object literals `{k: v}` and index syntax `a[0]` appear in the upstream doc's
+type and nested-access sections without parser support on either side.
+
 ## Tested private advanced slice
 
 The current focused suite exercises a private, non-capability-bearing slice for
