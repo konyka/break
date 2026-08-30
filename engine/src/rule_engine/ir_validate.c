@@ -9,7 +9,9 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
         (ir->action_count != 0u && ir->actions == NULL) ||
         (ir->span_count != 0u && ir->spans == NULL) ||
         (ir->deffacts_set_count != 0u && ir->deffacts_sets == NULL) ||
-        (ir->deffacts_entry_count != 0u && ir->deffacts_entries == NULL)) return RE_STATUS_INVALID_ARGUMENT;
+        (ir->deffacts_entry_count != 0u && ir->deffacts_entries == NULL) ||
+        (ir->query_count != 0u && ir->queries == NULL) ||
+        (ir->query_action_count != 0u && ir->query_actions == NULL)) return RE_STATUS_INVALID_ARGUMENT;
     for (i = 0u; i < ir->rule_count; ++i) {
         const re_ir_rule_t *rule = &ir->rules[i];
         if (!index_ok(rule->name, ir->term_count) || ir->terms[rule->name].name == NULL ||
@@ -17,8 +19,59 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
     }
     for (i = 0u; i < ir->expr_count; ++i) {
         const re_ir_expr_t *expr = &ir->exprs[i];
-        if (expr->kind < RE_EXPR_COMPARE || expr->kind > RE_EXPR_FALSE ||
-            (expr->kind == RE_EXPR_COMPARE && (expr->compare < RE_COMPARE_TRUE || expr->compare > RE_COMPARE_IN))) return RE_STATUS_INVALID_ARGUMENT;
+        if (expr->kind < RE_EXPR_COMPARE || expr->kind > RE_EXPR_TYPED ||
+            (expr->kind == RE_EXPR_COMPARE && (expr->compare < RE_COMPARE_TRUE || expr->compare > RE_COMPARE_NOT_CONTAINS))) return RE_STATUS_INVALID_ARGUMENT;
+        if (expr->multifield < RE_MULTIFIELD_NONE || expr->multifield > RE_MULTIFIELD_COLLECT ||
+            (expr->kind != RE_EXPR_MULTIFIELD && expr->multifield != RE_MULTIFIELD_NONE) ||
+            (expr->kind == RE_EXPR_MULTIFIELD && expr->multifield == RE_MULTIFIELD_NONE)) return RE_STATUS_INVALID_ARGUMENT;
+        if (expr->kind == RE_EXPR_MULTIFIELD) {
+            /* A5 multifield predicate: the array path must be a fact term;
+             * count additionally carries an eq/relational operator and a
+             * numeric literal right term, the bare predicates none. */
+            if (!index_ok(expr->left, ir->term_count) ||
+                ir->terms[expr->left].kind != RE_IR_TERM_FACT) return RE_STATUS_INVALID_ARGUMENT;
+            if (expr->multifield == RE_MULTIFIELD_COUNT) {
+                if (expr->compare < RE_COMPARE_EQ || expr->compare > RE_COMPARE_LE ||
+                    !index_ok(expr->right, ir->term_count) ||
+                    (ir->terms[expr->right].kind != RE_IR_TERM_INT64 &&
+                     ir->terms[expr->right].kind != RE_IR_TERM_DOUBLE)) return RE_STATUS_INVALID_ARGUMENT;
+            } else if (expr->right != SIZE_MAX) return RE_STATUS_INVALID_ARGUMENT;
+        }
+        if (expr->nested != 0 &&
+            (expr->nested != 1 || (expr->kind != RE_EXPR_EXISTS && expr->kind != RE_EXPR_FORALL)))
+            return RE_STATUS_INVALID_ARGUMENT;
+        if (expr->nested != 0) {
+            /* Parenthesized quantifier form: the operand is the inner
+             * expression at `first`; left/right carry no terms. */
+            if (!index_ok(expr->first, ir->expr_count)) return RE_STATUS_INVALID_ARGUMENT;
+            continue;
+        }
+        if (expr->kind == RE_EXPR_ACCUMULATE) {
+            /* A6: the payload must be complete and the fold a known GRL
+             * accumulate function (RE_ACCUM_COUNT..RE_ACCUM_MAX; FIRST/LAST
+             * exist only in the query aggregation API). The node carries no
+             * term or expression children. */
+            if (expr->accumulate_type == NULL || expr->accumulate_func_name == NULL ||
+                expr->accumulate_func < RE_ACCUM_COUNT || expr->accumulate_func > RE_ACCUM_MAX ||
+                (expr->accumulate_condition_count != 0u && expr->accumulate_conditions == NULL))
+                return RE_STATUS_INVALID_ARGUMENT;
+            continue;
+        }
+        if (expr->kind == RE_EXPR_TEST) {
+            /* A9 test(f(args)): the operand is the function-call term; right
+             * keeps the SIZE_MAX sentinel. */
+            if (!index_ok(expr->left, ir->term_count) ||
+                ir->terms[expr->left].kind != RE_IR_TERM_FUNCTION ||
+                expr->right != SIZE_MAX) return RE_STATUS_INVALID_ARGUMENT;
+            continue;
+        }
+        if (expr->kind == RE_EXPR_TYPED) {
+            /* A9 typed form: the declared type name payload plus the inner
+             * condition at `first`; left/right stay zeroed. */
+            if (expr->typed_type == NULL || expr->typed_type_size == 0u ||
+                !index_ok(expr->first, ir->expr_count)) return RE_STATUS_INVALID_ARGUMENT;
+            continue;
+        }
         if ((expr->kind == RE_EXPR_COMPARE || expr->kind == RE_EXPR_EXISTS || expr->kind == RE_EXPR_FORALL) &&
             (!index_ok(expr->left, ir->term_count) || !index_ok(expr->right, ir->term_count))) return RE_STATUS_INVALID_ARGUMENT;
         if (expr->kind == RE_EXPR_EXISTS &&
@@ -39,7 +92,7 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
     for (i = 0u; i < ir->term_count; ++i) {
         const re_ir_term_t *term = &ir->terms[i];
         size_t j;
-        if (term->kind < RE_IR_TERM_NONE || term->kind > RE_IR_TERM_METHOD_CALL) return RE_STATUS_INVALID_ARGUMENT;
+        if (term->kind < RE_IR_TERM_NONE || term->kind > RE_IR_TERM_NULL) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_NONE ||
             ((term->kind == RE_IR_TERM_FACT || term->kind == RE_IR_TERM_FUNCTION || term->kind == RE_IR_TERM_GOAL ||
               term->kind == RE_IR_TERM_METHOD_CALL) &&
@@ -48,7 +101,8 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
             (term->kind == RE_IR_TERM_INT64 && term->value.type != RE_VALUE_INT64) ||
             (term->kind == RE_IR_TERM_DOUBLE && term->value.type != RE_VALUE_DOUBLE) ||
             (term->kind == RE_IR_TERM_STRING && term->value.type != RE_VALUE_STRING) ||
-            (term->kind == RE_IR_TERM_ARITHMETIC && (term->arithmetic_operator < RE_ARITH_ADD || term->arithmetic_operator > RE_ARITH_DIVIDE))) return RE_STATUS_INVALID_ARGUMENT;
+            (term->kind == RE_IR_TERM_NULL && term->value.type != RE_VALUE_NULL) ||
+            (term->kind == RE_IR_TERM_ARITHMETIC && (term->arithmetic_operator < RE_ARITH_ADD || term->arithmetic_operator > RE_ARITH_MODULO))) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_ARITHMETIC && term->argument_count != 2u) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_ARRAY && term->argument_count == 0u) return RE_STATUS_INVALID_ARGUMENT;
         if (term->kind == RE_IR_TERM_METHOD_CALL && term->argument_count > 8u) return RE_STATUS_INVALID_ARGUMENT;
@@ -63,9 +117,18 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
     }
     for (i = 0u; i < ir->action_count; ++i) {
         const re_ir_action_t *action = &ir->actions[i];
-        if (action->kind < RE_IR_ACTION_ASSIGN || action->kind > RE_IR_ACTION_METHOD_CALL ||
-            !index_ok(action->target, ir->term_count) ||
-            ir->terms[action->target].kind != RE_IR_TERM_FACT ||
+        if (action->kind < RE_IR_ACTION_ASSIGN || action->kind > RE_IR_ACTION_BUILTIN_CALL ||
+            !index_ok(action->target, ir->term_count)) return RE_STATUS_INVALID_ARGUMENT;
+        if (action->kind == RE_IR_ACTION_BUILTIN_CALL) {
+            /* A8: the target is the FUNCTION term carrying name and args; the
+             * name must be one of the six whitelisted action builtins. */
+            const re_ir_term_t *call = &ir->terms[action->target];
+            if (action->value != SIZE_MAX || call->kind != RE_IR_TERM_FUNCTION ||
+                call->name == NULL || !re_builtin_action_is(call->name, call->name_size))
+                return RE_STATUS_INVALID_ARGUMENT;
+            continue;
+        }
+        if (ir->terms[action->target].kind != RE_IR_TERM_FACT ||
             !index_ok(action->value, ir->term_count)) return RE_STATUS_INVALID_ARGUMENT;
         if (action->kind == RE_IR_ACTION_METHOD_CALL &&
             (action->method_name == NULL || action->method_name_size == 0u ||
@@ -93,6 +156,37 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
         if (value->kind != RE_IR_TERM_BOOL && value->kind != RE_IR_TERM_INT64 &&
             value->kind != RE_IR_TERM_DOUBLE && value->kind != RE_IR_TERM_STRING &&
             value->kind != RE_IR_TERM_ARRAY) return RE_STATUS_INVALID_ARGUMENT;
+    }
+    for (i = 0u; i < ir->query_count; ++i) {
+        const re_ir_query_t *query = &ir->queries[i];
+        size_t block;
+        if (!index_ok(query->name, ir->term_count) || ir->terms[query->name].name == NULL ||
+            !index_ok(query->goal, ir->term_count) ||
+            ir->terms[query->goal].kind != RE_IR_TERM_STRING ||
+            query->strategy < (int)RE_QUERY_STRATEGY_DEPTH_FIRST ||
+            query->strategy > (int)RE_QUERY_STRATEGY_ITERATIVE) return RE_STATUS_INVALID_ARGUMENT;
+        if (query->when != SIZE_MAX && !index_ok(query->when, ir->expr_count)) return RE_STATUS_INVALID_ARGUMENT;
+        for (block = 0u; block < RE_QUERY_BLOCK_COUNT; ++block)
+            if (query->first_action[block] > ir->query_action_count ||
+                query->action_count[block] > ir->query_action_count - query->first_action[block]) return RE_STATUS_INVALID_ARGUMENT;
+    }
+    for (i = 0u; i < ir->query_action_count; ++i) {
+        const re_ir_query_action_t *action = &ir->query_actions[i];
+        if (action->is_call != 0 && action->is_call != 1) return RE_STATUS_INVALID_ARGUMENT;
+        if (!index_ok(action->name, ir->term_count) || ir->terms[action->name].name == NULL ||
+            ir->terms[action->name].name_size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+        if (action->is_call) {
+            if (action->value != SIZE_MAX || !index_ok(action->args, ir->term_count) ||
+                ir->terms[action->args].kind != RE_IR_TERM_STRING ||
+                ir->terms[action->name].kind != RE_IR_TERM_FUNCTION) return RE_STATUS_INVALID_ARGUMENT;
+        } else {
+            re_ir_term_kind_t value_kind;
+            if (action->args != SIZE_MAX || !index_ok(action->value, ir->term_count) ||
+                ir->terms[action->name].kind != RE_IR_TERM_FACT) return RE_STATUS_INVALID_ARGUMENT;
+            value_kind = ir->terms[action->value].kind;
+            if (value_kind != RE_IR_TERM_BOOL && value_kind != RE_IR_TERM_INT64 &&
+                value_kind != RE_IR_TERM_DOUBLE && value_kind != RE_IR_TERM_STRING) return RE_STATUS_INVALID_ARGUMENT;
+        }
     }
     return RE_STATUS_OK;
 }

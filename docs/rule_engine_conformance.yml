@@ -305,7 +305,7 @@ features:
     test_ref: engine/tests/test_rule_engine_ir.c
     parity: bounded_behavior
     behavior_scope: one_flat_fact_scalar_comparison; linear_ir_evaluation; no_private_rete_collector
-    note: General nested or compound exists forms remain pending; the separate bounded forall slice is verified below.
+    note: General parenthesized quantifier forms (exists/forall/! with arbitrary inner expressions) are implemented in the grl-general-quantifiers row; the separate bounded array-fact forall slice keeps its own coverage.
   - id: v1-21-4-action-reference-resolution
     family: v1.21.4-fix
     requirement: required
@@ -387,7 +387,133 @@ features:
     parity: bounded_behavior
     behavior_scope: instantiate_to_text_only; plain_byte_substitution; no_json_round_trip; no_engine_side_registry; no_clips_deftemplate_schema
     note: The emitted rule name is unescaped and text that is not an exact {{identifier}} placeholder copies through unchanged; there is no JSON round-trip and no program-side template registry.
-conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_rule_engine_backward_ext.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/test_rule_engine_grl_semantics.c, engine/tests/test_rule_engine_agenda.c, and engine/tests/test_rule_engine_stream_ext.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs; the query-negation, query-aggregation, search-strategies, and shared-proof-graph rows cover the Phase 3 extensions (prefix NOT negation-as-failure, bounded query aggregation, DFS/BFS/iterative-deepening strategy selection, and the 64-entry clear-all proof result cache). Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, full upstream truth maintenance and general multi-rule producer inference, and general backward chaining remain unsupported; native Redis is an optional compile-gated adapter whose disabled-build boundary is verified and whose runtime roundtrip is unverified on the current host.
+  - id: grl-operator-aliases-and-literals
+    family: core-grl
+    requirement: optional
+    syntax: 'when A eq 1 and S not_contains "x" and N % 3 == 0 then R = "a" + "b";'
+    expected_behavior: Word operator aliases (eq/ne/gt/gte/lt/lte/not_contains), case-insensitive true/false and null literals, the % modulo operator (f64 fmod semantics; Integer result iff both operands are Integer and the result is integral), string + concatenation, and the D4 comparison alignment - equality is strictly typed (Integer(1) != Number(1.0)) while relational operators coerce through to_number (numeric strings coerce; bool/null/array/object operands make the comparison false).
+    upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, src/expression.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: word_aliases; case_insensitive_bool_null_literals; modulo_typed_result; string_concat; strict_typed_equality; relational_to_number_coercion
+    note: Bounds locked by test - string operators against non-string operands make contains false and not_contains true; NONE == NONE is true (typed equality over the tag, not three-valued logic); the strtod-based numeric-string coercion accepts hex float spellings ("0x1p4") that upstream's Rust parser rejects, while inf/infinity spellings coerce in both; % computes in f64, so Integer operands beyond 2^53 can round. A leading true/false literal stays the whole-condition form (parser special case), so bool relational rejection is locked through fact and RHS-literal positions.
+  - id: grl-general-quantifiers
+    family: core-grl
+    requirement: optional
+    syntax: 'when exists(Order.amount > 100) and forall(Payment.status == "completed") and !(User.banned == true) then Ok = 1;'
+    expected_behavior: General parenthesized !(expr) / exists(expr) / forall(expr) with arbitrary inner boolean expressions; candidate selection follows the upstream fact-name-prefix heuristic (D7 - the target prefix is the text before the first '.' of the leftmost field reference; candidates are all active facts whose name equals or starts with it; the inner evaluates per candidate with the prefix rebound); a per-candidate NOT_FOUND absorbs as a non-matching candidate; forall over an empty candidate set is vacuously true (D6); with no dotted field reference the inner evaluates once against the plain fact store.
+    upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern_matcher.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: [engine/tests/test_rule_engine_grl_surface.c, engine/tests/test_rule_engine_backward_ext.c]
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: arbitrary_inner_boolean_expressions; prefix_heuristic_candidates; per_candidate_rebinding; vacuous_forall; plain_store_fallback; linear_evaluation_only
+    note: Quantifier conditions never join per-rule RETE networks (linear evaluator only), and backward chaining rejects rules carrying them with RE_STATUS_NOT_SUPPORTED (locked in test_rule_engine_backward_ext.c). The exists( spelling disambiguates against the field-presence built-in by scanning for a top-level comparison/logical operator, so fully parenthesized content (exists((A == 1))) and a lone typed or accumulate form read as the function form and fail to parse - documented divergence.
+  - id: grl-condition-builtins
+    family: core-grl
+    requirement: optional
+    syntax: 'when len(User.name) > 3 and contains(User.tags, "vip") and exists("Order.total") then Ok = 1;'
+    expected_behavior: Condition built-ins as a registry fallback when the user function registry has no match - len/length/size (string byte length, array element count), isEmpty/is_empty, contains(x, y) (substring or typed array membership), exists/notExists/not_exists (fact-path presence probes, quoted or bare). Wrong arity or argument types yield false (never an error status); an unresolvable fact-path argument absorbs to false (true for the negated probes).
+    upstream_refs: [src/engine/condition_evaluator.rs, docs/core-features/GRL_SYNTAX.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/builtins.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: registry_first_fallback; false_on_bad_arity_or_type; arg_miss_absorbed; len_returns_int64
+    note: len/length/size return INT64 where upstream returns Number (f64) - under D4 strict equality len(x) == 4 is true while len(x) == 4.0 is false (documented divergence). Backward chaining does not consult built-ins (bounded query seam).
+  - id: grl-utility-builtins
+    family: core-grl
+    requirement: optional
+    syntax: 'then Msg = format("total %d", sum(A, B)); log("fired", N);'
+    expected_behavior: Utility built-ins in conditions and action RHS - log/print/println (joined message returned and printed to stdout), now/timestamp (unix seconds string), random (deterministic per-engine xorshift64), format/sprintf (%d/%s/%f/%% plus upstream {n} placeholders), length/size/count (aliases of the condition len semantics), sum/add/max/min/avg/average (INT64-preserving folds), round/floor/ceil/abs, contains/includes, startswith/endswith, lowercase/uppercase/trim, split (upstream Rust debug string), join (delimiter first).
+    upstream_refs: [src/engine/engine.rs, docs/core-features/GRL_SYNTAX.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/builtins.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: deterministic_random; clamped_snprintf_format; int64_preserving_folds; debug_string_split; registry_override
+    note: Deliberately skipped upstream-only aliases (none implemented locally) - maximum/minimum, ceiling, absolute, begins_with/ends_with, tolower/toupper, strip, update/refresh. split reproduces the upstream format!("{:?}") string and escapes only quote/backslash/\n/\r/\t - other control characters lack Rust-debug \u{..} fidelity (bound documented in builtins.c). random returns a typed INT64 where upstream returns a decimal string; doubles display via %g, approximating Rust shortest-round-trip.
+  - id: grl-multifield-ops
+    family: core-grl
+    requirement: optional
+    syntax: 'when Order.Items count > 5 and Order.Tags not_empty then Ok = 1;'
+    expected_behavior: Multifield array-shape predicates on a fact-path operand - count <cmp> <numeric-literal> (array element count; missing field counts 0, present non-array field counts 1), first/last (non-empty-array predicates carrying no binding), empty/not_empty/notEmpty, collect (presence predicate). Pure read-only conditions, never RETE-eligible; a resolved path joins the condition read-set with the array's root fact as premise.
+    upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/parser/grl.rs, src/engine/engine.rs, src/rete/multifield.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: count_first_last_empty_not_empty_collect; numeric_literal_count_rhs; flat_or_structured_probe; read_set_premise
+    note: Upstream's GRL parser itself exposes only the collect/count/first/last/empty spellings; index/slice exist only in upstream's RETE multifield Rust API and are a local parse error. count equality is strictly typed (count == 3.0 does not match an int64 3 - D4) while relational count comparisons coerce the literal; flat-vs-structured conflict - presence follows the flat-key-first read while the array shape comes from the structured read alone.
+  - id: grl-accumulate-ce
+    family: advanced-rule-control
+    requirement: optional
+    syntax: 'when accumulate(Order($o: amount, status == "ok"), sum($o)) and Order.sum > 100 then Ok = 1;'
+    expected_behavior: 'accumulate(Type($var: field, conds...), func(...)) CE - flat-scan "Type.<instance>.<field>" keys (a bare "Type.<field>" key is the default instance), keep instances whose mini-conditions all hold, fold the extracted field with sum/count/average/avg/min/max, inject the result as the fact "Type.func", and always match. The injected fact recomputes on every run that reaches the node and a follow-up condition can gate on it in the same when.'
+    upstream_refs: [src/parser/grl.rs, src/engine/engine.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: flat_prefix_scan; instance_grouping; result_injection; longest_first_operator_scan; strict_typed_mini_condition_equality; executor_attached_stability
+    note: Documented divergences - mini-condition equality reuses re_value_compare (strict typed ==, no double epsilon); the $var-less count form counts matching instances (upstream counts extracted values, 0 there); an unknown function name is a parse-time error (upstream raises at evaluation); an instance literally named "default" is not merged with the bare-key default instance. The impure injection keeps accumulate rules off RETE networks and on first-pass evaluation; cross-run recomputation and executor-attached runs are test-locked.
+  - id: grl-query-blocks
+    family: backward-chaining
+    requirement: optional
+    syntax: 'query "Check" { goal: A == 1 && B == 2; strategy: breadth-first; max-depth: 8; on-success: { S = 1; } on-failure: { F = 1; } }'
+    expected_behavior: Top-level query "Name" blocks - goal (required raw text), strategy/max-depth/max-solutions/enable-memoization/enable-optimization, a when gate, and on-success/on-failure/on-missing action blocks - executed through re_engine_run_query/re_engine_run_queries on the bounded backward machine; textual &&/|| goal splitting, != subgoals evaluated directly against working memory, the memoization toggle mapping to the shared proof graph, enable-optimization accepted as a no-op.
+    upstream_refs: [src/parser/grl_query.rs, docs/api-reference/GRL_QUERY_SYNTAX.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/query_exec.c, engine/src/rule_engine/rule_engine.h]
+    test_ref: engine/tests/test_rule_engine_query_blocks.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: textual_goal_split; direct_not_equal_evaluation; when_gate; source_order_run_queries; first_match_on_duplicate_names
+    note: on-missing is parsed but never fires (the machine tracks no missing_facts list; it folds into on-failure - documented divergence). A hard goal error (e.g. RE_STATUS_NOT_SUPPORTED from the nested-quantifier backward boundary) propagates without running either action block (test-locked). Scalar fields are ';'-terminated where upstream terminates goal/when at the newline (documented local divergence); queries never run inside re_engine_run.
+  - id: grl-action-builtins
+    family: core-grl
+    requirement: optional
+    syntax: 'then retract($Order); log("done"); ActivateAgendaGroup("billing");'
+    expected_behavior: Whitelisted bare name(args) then-statements - retract($Obj) sets the _retracted_<root> flag fact so condition reads on that root evaluate absent (conditions only; the flag must be exactly BOOL true; token-live pending activations re-pass the gated match at pop time), log(...) prints through the utility-built-in machinery, ActivateAgendaGroup replaces the agenda focus for the rest of the run, and ScheduleRule/CompleteWorkflow/SetWorkflowData dispatch to a registered function of the bare action name (D5) - unhandled ones fail the run with RE_STATUS_NOT_SUPPORTED.
+    upstream_refs: [src/engine/engine.rs, docs/core-features/GRL_SYNTAX.md]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/builtins.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: retract_flag_gating; mid_run_focus_switch; workflow_trio_registered_dispatch; whitelist_parse_boundary
+    note: D5 - upstream's workflow/scheduler subsystems do not exist locally, so the trio dispatches to a registered custom action handler instead of upstream's internal handling. Any other bare action call stays a parse error. The retract flag is an ordinary host-visible fact and gating is O(facts) per condition read.
+  - id: grl-test-ce-and-typed-form
+    family: core-grl
+    requirement: optional
+    syntax: 'when test(len(User.name) > 3) and $o: Order(amount > 100) then Ok = 1;'
+    expected_behavior: 'test(f(args)) CE truthiness-tests a lone function call result (BOOL as-is, INT64/DOUBLE nonzero, STRING non-empty, else false); the $x: Type(conds) typed form has exists-semantics over the type prefix candidates, with $x and bare field references rewritten to candidate-relative Type-rooted paths scoped to the form.'
+    upstream_refs: [src/parser/grl.rs, src/rete/pattern_matcher.rs]
+    upstream_status: verified_upstream
+    local_status: verified_local
+    implementation_ref: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir_eval.c]
+    test_ref: engine/tests/test_rule_engine_grl_surface.c
+    doc_ref: docs/Rule_Engine_Design.md
+    parity: bounded_behavior
+    behavior_scope: lone_function_call_inner; upstream_truthiness_table; typed_exists_semantics; scoped_var_rewrite
+    note: test() wraps a lone function call only (any other inner form is a parse error) and classifies impure; the typed form is pure iff its inner is. Both stay off RETE networks and are RE_STATUS_NOT_SUPPORTED to backward chaining; $var outside the typed form stays a parse error.
+conformance_statement: Locally verified rows are limited to the focused test cases in engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_transactions.c, engine/tests/test_rule_engine_backward.c, engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_deep_chain.c, engine/tests/test_rule_engine_backward_ext.c, engine/tests/test_backward_machine_structure.c, engine/tests/test_backward_machine_context.c, engine/tests/test_rule_engine_grl_semantics.c, engine/tests/test_rule_engine_grl_surface.c, engine/tests/test_rule_engine_query_blocks.c, engine/tests/test_rule_engine_agenda.c, and engine/tests/test_rule_engine_stream_ext.c plus separately named streaming, provider, fuzz-smoke, executor-stress, and C99 consumer evidence. The backward-chaining row covers the deliberately narrow bounded query seam with recursive goal traversal, literal/propagated formal-actual binding, nested goal operands, registered custom-function operands, cycle detection, deterministic alternative-rule enumeration, immutable proof ownership transferred by query_next, deterministic immediate trace-parent node/edge storage for each independent derivation, and mutation invalidation of remaining proofs; the query-negation, query-aggregation, search-strategies, and shared-proof-graph rows cover the Phase 3 extensions (prefix NOT negation-as-failure, bounded query aggregation, DFS/BFS/iterative-deepening strategy selection, and the 64-entry clear-all proof result cache). Arbitrary predicate unification, shared-subgraph proof provenance, RETE-UL parity, full upstream truth maintenance and general multi-rule producer inference, and general backward chaining remain unsupported; native Redis is an optional compile-gated adapter whose disabled-build boundary is verified and whose runtime roundtrip is unverified on the current host.
 inventory_manifest: docs/rule_engine_upstream.yml
 classification_policy:
   evidence_rule: A declaration, header, CMake option, or upstream documentation claim never promotes a local capability without an implementation reference and executed local test reference.
@@ -398,11 +524,12 @@ classification_policy:
 known_gaps:
   - {id: canonical-ir, status: implemented, upstream_refs: [src/rete/network.rs, RETE_ARCHITECTURE.md], local_refs: [engine/src/rule_engine/ir.h, engine/src/rule_engine/ir.c, engine/src/rule_engine/ir_validate.c], local_tests: [engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Private immutable compiled IR covers the tested rule, expression, term, action, module, bounded source-envelope span, validation, and transactional-install boundary; forward evaluation uses the IR.}
   - {id: grl-string-operators-append-and-bounded-in, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/types.rs, CHANGELOG.md:1.19.0, CHANGELOG.md:1.15.0], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/test_rule_engine_ir.c], parity: bounded_behavior, note: Forward IR supports contains, startsWith, endsWith, matches, += array append, and bounded membership against literal arrays or structured arrays containing scalar members. Literal arrays are capped at 64 elements; typed equality is used and malformed/non-array RHS values are rejected. Full upstream collection semantics remain pending; bounded then-action method calls and nested property writes are verified in the grl-method-calls and nested-property-access rows.}
-  - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c], parity: bounded_behavior, note: "Local forall is a deliberately narrow array-fact slice: forall <fact-path> <scalar-comparison> <scalar-literal>, with exact-flat-key-first and nested structured-path lookup, scalar direct members only, bounded by existing container/depth/step limits, and vacuous truth for an empty array. Focused tests cover all-pass, mixed/one-fails, empty, absent/non-array, malformed, nested members, allocator failure, and depth/member boundaries. Parenthesized/general quantifiers, arbitrary predicates, fact-type quantification, and RETE-UL quantifier nodes remain pending."}
+  - {id: forall-and-general-exists-forms, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/rete/pattern.rs, src/rete/pattern_matcher.rs], local_refs: [engine/src/rule_engine/parser.c, engine/src/rule_engine/ir.h, engine/src/rule_engine/ir_eval.c, engine/src/rule_engine/values.c], local_tests: [engine/tests/test_rule_engine_ir.c, engine/tests/test_rule_engine_forall_limits.c, engine/tests/test_rule_engine_grl_surface.c, engine/tests/test_rule_engine_backward_ext.c], parity: bounded_behavior, note: "Implemented as the grl-general-quantifiers feature row: general parenthesized !/exists/forall with arbitrary inner boolean expressions, prefix-heuristic candidate iteration (D7), per-candidate rebinding and NOT_FOUND absorption, vacuous-true forall (D6), and a plain-store fallback for undotted inner expressions. Divergences and bounds (exists-disambiguation, RETE/backward exclusion) are documented on that row and in docs/Rule_Engine_Design.md; the historical narrow array-fact forall slice keeps its test_rule_engine_forall_limits.c coverage. RETE-UL quantifier nodes remain unclaimed (linear evaluation only)."}
   - {id: rete-ul-tms-persistent-agenda, status: unsupported, upstream_refs: [src/rete/network.rs, src/rete/tms.rs, src/rete/agenda.rs], local_refs: [engine/src/rule_engine/rete.c, engine/src/rule_engine/engine.c, engine/src/rule_engine/agenda.c], local_tests: [engine/tests/test_rule_engine_rete_incremental.c, engine/tests/test_rule_engine_agenda.c], parity: bounded_behavior, note: Bounded persistent agenda with value-fingerprint refraction and pop-time revalidation is verified_local in the recognize-act-cycle and persistent-agenda-inspection rows; the design runs one private RETE network per eligible rule chained on the facts store with no cross-rule alpha sharing. Full RETE-UL and general truth maintenance remain unsupported.}
   - {id: backward-arbitrary-unification-proof-sharing, status: unsupported, upstream_refs: [src/backward/unification.rs, src/backward/proof_graph.rs], local_refs: [engine/src/rule_engine/backward.c, engine/src/rule_engine/backward_machine_bind.c, engine/src/rule_engine/proof_graph.c], local_tests: [engine/tests/test_rule_engine_backward_bindings.c, engine/tests/test_rule_engine_backward_ext.c], parity: bounded_behavior, note: The shared proof graph is now a bounded local result cache - 64 entries, clear-all eviction, final PROVED/DISPROVED results only, coarse per-facts invalidation - verified_local in the shared-proof-graph row; arbitrary predicate unification and the upstream shared-subgraph producer-provenance graph remain unsupported.}
   - {id: full-streaming-patterns, status: unsupported, upstream_refs: [src/rete/stream_alpha_node.rs, src/streaming/operators.rs, src/streaming/watermark.rs], local_refs: [engine/src/rule_engine/tumbling_session.c, engine/src/rule_engine/stream_correlation.c], local_tests: [engine/tests/test_rule_engine.c, engine/tests/rule_engine_fuzz_smoke.c], parity: bounded_behavior, note: Full streaming patterns are absent; local windows/correlation are bounded extension seams.}
   - {id: native-redis, status: optional_backend, upstream_refs: ['Cargo.toml:[features].streaming-redis', docs/advanced-features/REDIS_STATE_BACKEND.md], local_refs: [engine/CMakeLists.txt:721-736, engine/src/rule_engine/redis_provider.c], local_tests: [engine/tests/test_rule_engine_stream_ext.c], parity: bounded_behavior, note: Native adapter compiles into rule_engine_core only when RULE_ENGINE_ENABLE_REDIS is ON and CMake discovers hiredis (defining RE_HAS_HIREDIS); a missing client force-disables the option with a STATUS message - no silent fallback, no hard error - and RE_STATE_PROVIDER_REDIS keeps returning RE_STATUS_NOT_SUPPORTED without the macro. hiredis is absent on the verification host, so the adapter is compile-verified only and its roundtrip test is RE_TEST_REDIS_URL skip-guarded; hiredis detection alone is not runtime evidence.}
+  - {id: grl-syntax-sweep-upstream-absent-constructs, status: tested, upstream_refs: [docs/core-features/GRL_SYNTAX.md, src/parser/grl.rs, src/engine/rule.rs], local_refs: [engine/src/rule_engine/parser.c], local_tests: [engine/tests/test_rule_engine_grl_surface.c], parity: bounded_behavior, note: "Final syntax sweep dispositions (Task A10): block comments /* */ are doc-claimed but not implemented upstream (grl.rs clean_text strips only full //-prefixed lines inside when-clauses) and the local parser has no comment syntax at all - both forms are parse errors; the enabled rule attribute is a struct-only field upstream (rule.rs) with no GRL form (local parse error); object literals {k: v} and index syntax a[0] appear in the upstream doc's type and nested-access sections without parser support on either side (upstream index/slice exist only in the RETE multifield Rust API, not the GRL grammar). The rejections are locked by syntax_sweep_unsupported_constructs_parse_error."}
 upstream_surface_baseline:
   source_commit: f80a5419847436f8095be6a9953c69b38a6ae052
   public_modules: [lib, engine, errors, expression, parser, plugins, rete, types, backward, streaming]
@@ -414,7 +541,7 @@ upstream_surface_baseline:
   source_of_truth: docs/rule_engine_upstream.yml
 local_evidence_baseline:
   build_tree: build-gate
-  build_command: cmake --build build-gate --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_tms test_rule_engine_grl_semantics test_rule_engine_forall_limits test_rule_engine_rete_incremental test_rule_engine_agenda test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_rule_engine_backward_ext test_backward_machine_structure test_backward_machine_context test_rule_engine_stream_ext rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer
+  build_command: cmake --build build-gate --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_tms test_rule_engine_grl_semantics test_rule_engine_grl_surface test_rule_engine_query_blocks test_rule_engine_forall_limits test_rule_engine_rete_incremental test_rule_engine_agenda test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_rule_engine_backward_ext test_backward_machine_structure test_backward_machine_context test_rule_engine_stream_ext rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer
   focused_ctest_command: ctest --test-dir build-gate -R "rule_engine|backward_machine" --output-on-failure
-  focused_ctest_result: 16/16 passed
+  focused_ctest_result: 18/18 passed
   blocked_or_unavailable: [native-redis runtime roundtrip (hiredis and a Redis service are absent on the verification host; the adapter is compile-verified only), C11 executor stress target is not generated in this build tree because RULE_ENGINE_ENABLE_C11_PARALLEL is OFF]

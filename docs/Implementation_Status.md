@@ -2247,3 +2247,72 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 验证：normal/ASan window manager **59/59** 与 text layout **16/16**、Vulkan
   `myui_core` 构建、`git diff --check` 和乱码/控制字符扫描通过；LeakSanitizer 受当前
   ptrace 环境限制。
+
+## rule engine GRL surface 补全（sub-project A，2026-08-29）
+
+- 表达式表面（A1）：词法操作符别名 `eq/ne/gt/gte/lt/lte/not_contains`、大小写不敏感
+  `true/false/null` 字面量、`%` 取模（f64 fmod；两操作数均 Integer 且结果整时保持
+  Integer）、字符串 `+` 拼接；D4 比较对齐——相等严格按类型（`Integer(1) != Number(1.0)`），
+  关系操作符经 `to_number` 强制（数字字符串可强制；bool/null/array/object 一律 false）。
+  测试锁定边界：非字符串操作数下 `contains` 为 false、`not_contains` 为 true；
+  `NONE == NONE` 为 true（按标签的严格相等，非三值逻辑）；strtod 强制接受上游 Rust
+  解析器拒绝的十六进制浮点写法（`inf/infinity` 两侧均接受）；`%` 以 f64 计算，超过
+  2^53 的 Integer 操作数可能舍入。
+- 通用量词（A2）：`!(expr)`/`exists(expr)`/`forall(expr)` 接受任意内部布尔表达式；
+  候选选取按上游事实名前缀启发式（D7），逐候选重绑定并吸收 NOT_FOUND；空候选集
+  forall 空洞为真（D6）；无带点字段引用时按普通事实库求值一次。量词条件不进入
+  RETE 网络；backward 链接对含此类条件的规则诚实返回 `RE_STATUS_NOT_SUPPORTED`。
+- 内置函数（A3/A4，新增 `builtins.c`，注册函数优先的回退）：条件族
+  `len/length/size`、`isEmpty/is_empty`、`contains`、`exists/notExists/not_exists`；
+  工具族 `log/print/println`、`now/timestamp`、按引擎确定性的 `random`、
+  `format/sprintf`、`sum/add/max/min/avg/average`（保持 INT64 的折拢）、
+  `round/floor/ceil/abs`、`contains/includes`、`startswith/endswith`、
+  `lowercase/uppercase/trim`、`split`、`join`。有意跳过的上游别名：maximum/minimum、
+  ceiling、absolute、begins_with/ends_with、tolower/toupper、strip、update/refresh；
+  `split` 复刻上游 `{:?}` 调试字符串但仅转义引号/反斜杠/`\n`/`\r`/`\t`（其余控制
+  字符不具备 Rust-debug 保真）；`len` 族返回 INT64 而上游返回 Number（D4 下
+  `len(x) == 4.0` 为 false，已记录分歧）。
+- multifield 操作（A5）：事实路径后的 `count <cmp> <数值字面量>`、`first`/`last`、
+  `empty`/`not_empty`/`notEmpty`、`collect` 数组形状谓词；纯只读、不入 RETE；
+  `count` 相等严格按类型（`count == 3.0` 不匹配 int64 3，D4），关系比较仍强制字面量。
+  上游 GRL 解析器仅暴露这些拼写；`index`/`slice` 只存在于上游 RETE multifield Rust
+  API，本地为解析错误。
+- accumulate CE（A6）：`accumulate(Type($var: field, conds...), func(...))` 平坦前缀
+  扫描 + 实例分组 + 结果注入为 `Type.func` 事实；记录分歧——mini 条件相等复用
+  `re_value_compare`（严格类型、无 double epsilon）、无 `$var` 的 count 统计匹配实例数
+  （上游统计被抽取值，为 0）、未知函数名解析期报错、字面名 `default` 的实例不并入
+  裸键默认实例。注入写使节点不纯（首遍求值、不入 RETE）；每次到达节点的运行都按当前
+  事实重算注入值（跨运行稳定性与挂接 executor 情形均有测试锁定）。
+- GRL query 块（A7，新增 `query_exec.c` + `re_engine_run_queries`/`re_engine_run_query`，
+  本阶段唯一公共头变更）：`query "Name" { goal/strategy/max-depth/max-solutions/
+  enable-memoization/enable-optimization/when/on-success/on-failure/on-missing }`；
+  目标文本按 `&&`/`||` 文本拆分，`!=` 子目标直接对工作内存求值；记录分歧——标量字段
+  以 `;` 终止（上游以换行终止 goal/when）、on-missing 折叠进 on-failure（本地机器不
+  跟踪 missing_facts）、硬错误（如 backward 嵌套量词边界的 `RE_STATUS_NOT_SUPPORTED`）
+  不触发任何动作块直接向上传播、重名 query 按源序取首个；query 不在
+  `re_engine_run` 内运行。
+- 动作内置（A8）：白名单裸 `name(args)` then 语句——`retract($Obj)` 置
+  `_retracted_<root>` 标志事实使该根的条件读取按缺席处理（仅条件；标志必须恰为 BOOL
+  true；token 存活的 pending activation 在弹出时重过门控匹配）、`log(...)`、
+  `ActivateAgendaGroup` 中途切换 agenda 焦点、`ScheduleRule/CompleteWorkflow/
+  SetWorkflowData` 按裸名分发到注册函数（D5；未注册则 `RE_STATUS_NOT_SUPPORTED`）；
+  其余裸调用仍是解析错误。
+- `test(f(...))` CE 与 `$x: Type(conds)` 类型形式（A9）：test 对单个函数调用结果做
+  真值判定（BOOL 原样、INT64/DOUBLE 非零、STRING 非空）；类型形式对类型前缀候选做
+  exists 语义，`$x` 与裸字段引用在形式内改写为 Type 根相对路径（形式外 `$var` 仍为
+  解析错误）。两者均不入 RETE，backward 查询返回 `RE_STATUS_NOT_SUPPORTED`。
+- 语法清扫（A10）——上游 GRL_SYNTAX.md 剩余构造按"上游同样缺席"处置并由
+  `syntax_sweep_unsupported_constructs_parse_error` 锁定：`/* */` 块注释为上游文档
+  声称但未实现（grl.rs 的 clean_text 仅剥离 when 子句内整行 `//`；本地无任何注释
+  语法，两种形式均解析错误）；`enabled` 规则属性上游仅为结构体字段（rule.rs）、无
+  GRL 形式；对象字面量 `{k: v}` 与下标语法 `a[0]` 两侧均无解析器支持。
+- 验证：`test_rule_engine_grl_surface` **136/136**、`test_rule_engine_query_blocks`
+  **25/25**；build-gate `ctest -R "rule_engine|backward_machine" --output-on-failure`
+  **18/18**；build-gate 全量构建与 `ctest -LE graphics` 全绿；ASan
+  （build-rule-fresh-asan）两套件干净；`git diff --check` 通过。未提交前工作树已有
+  21 个既有脏文件，按选择性提交未纳入。
+- 当前限制：量词/multifield/accumulate/test/类型形式仅线性求值且对 backward 为
+  NOT_SUPPORTED；backward 不查询内置函数；D1 短路、D2 无接收者条件方法分发、D3
+  `matches` 通配子串为持续记录的分歧；`exists((A == 1))`、`exists($o: Type(...))`、
+  `exists(accumulate(...))` 按函数形式解析而报错（文档化边界）；完整 RETE-UL、通用
+  TMS、任意谓词合一仍不支持。

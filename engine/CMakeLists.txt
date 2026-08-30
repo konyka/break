@@ -714,6 +714,7 @@ endif()
 add_library(rule_engine_core STATIC
     src/rule_engine/allocator.c src/rule_engine/facts.c src/rule_engine/values.c
     src/rule_engine/parser.c src/rule_engine/ir.c src/rule_engine/ir_validate.c src/rule_engine/engine.c src/rule_engine/extensions.c
+    src/rule_engine/builtins.c
     src/rule_engine/transactions.c
     src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
      src/rule_engine/stream_correlation.c src/rule_engine/ir_eval.c
@@ -724,6 +725,7 @@ add_library(rule_engine_core STATIC
       src/rule_engine/backward_machine_bind.c
        src/rule_engine/backward_machine_goal.c src/rule_engine/query.c
      src/rule_engine/proof_graph.c
+     src/rule_engine/query_exec.c
     src/rule_engine/executor.c src/rule_engine/templates.c src/rule_engine/agenda.c)
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -846,6 +848,18 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_rule_engine_backward_ext PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine_backward_ext PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_backward_ext COMMAND test_rule_engine_backward_ext)
+
+    add_executable(test_rule_engine_grl_surface tests/test_rule_engine_grl_surface.c)
+    set_property(TARGET test_rule_engine_grl_surface PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_grl_surface PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_grl_surface PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_grl_surface COMMAND test_rule_engine_grl_surface)
+
+    add_executable(test_rule_engine_query_blocks tests/test_rule_engine_query_blocks.c)
+    set_property(TARGET test_rule_engine_query_blocks PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_query_blocks PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_query_blocks PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_query_blocks COMMAND test_rule_engine_query_blocks)
 
     add_executable(test_rule_engine_stream_ext tests/test_rule_engine_stream_ext.c)
     set_property(TARGET test_rule_engine_stream_ext PROPERTY C_STANDARD 99)

@@ -1,6 +1,7 @@
 #include "re_internal.h"
 #include "ir.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int wildcard_match(re_string_t input, re_string_t pattern) {
@@ -44,7 +45,27 @@ int re_condition_is_pure(const re_expr_t *expr) {
     if (expr->kind == RE_EXPR_COMPARE) {
         return expr->left.kind != RE_OPERAND_FUNCTION && expr->right.kind != RE_OPERAND_FUNCTION;
     }
+    /* A5: multifield predicates are pure read-only array probes (a fact
+     * path plus, for count, a numeric literal) - they re-evaluate on
+     * every pass like plain comparisons. */
+    if (expr->kind == RE_EXPR_MULTIFIELD) return 1;
+    /* A6: accumulate WRITES the injected "<Type>.<func>" fact while matching,
+     * so it is never pure: it stays off executor workers and evaluates only
+     * at the first-pass position, like function-calling conditions. */
+    if (expr->kind == RE_EXPR_ACCUMULATE) return 0;
+    /* A9: test() wraps a function call - impure like every
+     * function-call condition (first-pass-only evaluation, never on
+     * executor workers). */
+    if (expr->kind == RE_EXPR_TEST) return 0;
+    /* A9: the typed form evaluates its inner condition per candidate -
+     * pure iff the inner is pure (like the parenthesized quantifiers). */
+    if (expr->kind == RE_EXPR_TYPED) return re_condition_is_pure(expr->first);
     if (expr->kind == RE_EXPR_TRUE || expr->kind == RE_EXPR_FALSE) return 1;
+    /* Parenthesized quantifier forms (inner expression at `first`) are pure
+     * iff their inner expression is pure. The restricted fact/literal form
+     * (first == NULL) keeps its historical impure classification. */
+    if ((expr->kind == RE_EXPR_EXISTS || expr->kind == RE_EXPR_FORALL) && expr->first != NULL)
+        return re_condition_is_pure(expr->first);
     return re_condition_is_pure(expr->first) &&
            (expr->kind == RE_EXPR_NOT || re_condition_is_pure(expr->second));
 }
@@ -100,52 +121,76 @@ static re_status_t finish_run(re_engine_t *engine, re_facts_t *facts, re_status_
     return status;
 }
 
+/* Relational coercion per upstream to_number(): Integer/Number as-is,
+ * numeric strings parse (the full string must be a number), and bool, array,
+ * object or null operands fail, making the comparison false. The string is
+ * copied into a bounded buffer first: re_value_t strings are not guaranteed
+ * NUL-terminated. */
+static int value_to_number(const re_value_t *value, double *out) {
+    char buffer[256];
+    char *end;
+    if (value->type == RE_VALUE_INT64) { *out = (double)value->as.int64_value; return 1; }
+    if (value->type == RE_VALUE_DOUBLE) { *out = value->as.double_value; return 1; }
+    if (value->type != RE_VALUE_STRING || value->as.string.size == 0u ||
+        value->as.string.size >= sizeof(buffer)) return 0;
+    if (isspace((unsigned char)value->as.string.data[0])) return 0;
+    memcpy(buffer, value->as.string.data, value->as.string.size);
+    buffer[value->as.string.size] = '\0';
+    *out = strtod(buffer, &end);
+    return end == buffer + value->as.string.size;
+}
+
 int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare_t compare) {
-    double l; double r;
     if (compare == RE_COMPARE_TRUE) return 1;
-    if (left->type == RE_VALUE_STRING && right->type == RE_VALUE_STRING &&
-        (compare == RE_COMPARE_CONTAINS || compare == RE_COMPARE_STARTS_WITH ||
-         compare == RE_COMPARE_ENDS_WITH || compare == RE_COMPARE_MATCHES)) {
-        size_t i;
-        if (compare == RE_COMPARE_STARTS_WITH)
-            return right->as.string.size <= left->as.string.size &&
-                   memcmp(left->as.string.data, right->as.string.data, right->as.string.size) == 0;
-        if (compare == RE_COMPARE_ENDS_WITH)
-            return right->as.string.size <= left->as.string.size &&
-                   memcmp(left->as.string.data + left->as.string.size - right->as.string.size,
-                          right->as.string.data, right->as.string.size) == 0;
-        if (compare == RE_COMPARE_MATCHES)
-            return wildcard_match(left->as.string, right->as.string);
-        if (right->as.string.size == 0u) return 1;
-        for (i = 0u; i + right->as.string.size <= left->as.string.size; ++i)
-            if (memcmp(left->as.string.data + i, right->as.string.data,
-                       right->as.string.size) == 0) return 1;
-        return 0;
+    if (compare == RE_COMPARE_CONTAINS || compare == RE_COMPARE_NOT_CONTAINS ||
+        compare == RE_COMPARE_STARTS_WITH || compare == RE_COMPARE_ENDS_WITH ||
+        compare == RE_COMPARE_MATCHES) {
+        /* String operators require two strings; against anything else they
+         * are false (not_contains, the logical negation, is then true). */
+        if (left->type == RE_VALUE_STRING && right->type == RE_VALUE_STRING) {
+            size_t i;
+            int found;
+            if (compare == RE_COMPARE_STARTS_WITH)
+                return right->as.string.size <= left->as.string.size &&
+                       memcmp(left->as.string.data, right->as.string.data, right->as.string.size) == 0;
+            if (compare == RE_COMPARE_ENDS_WITH)
+                return right->as.string.size <= left->as.string.size &&
+                       memcmp(left->as.string.data + left->as.string.size - right->as.string.size,
+                              right->as.string.data, right->as.string.size) == 0;
+            if (compare == RE_COMPARE_MATCHES)
+                return wildcard_match(left->as.string, right->as.string);
+            found = right->as.string.size == 0u;
+            for (i = 0u; !found && i + right->as.string.size <= left->as.string.size; ++i)
+                if (memcmp(left->as.string.data + i, right->as.string.data,
+                           right->as.string.size) == 0) found = 1;
+            return compare == RE_COMPARE_CONTAINS ? found : !found;
+        }
+        return compare == RE_COMPARE_NOT_CONTAINS ? 1 : 0;
     }
-    if (left->type == RE_VALUE_INT64 && right->type == RE_VALUE_INT64) {
-        if (compare == RE_COMPARE_EQ) return left->as.int64_value == right->as.int64_value;
-        if (compare == RE_COMPARE_NE) return left->as.int64_value != right->as.int64_value;
-        if (compare == RE_COMPARE_GT) return left->as.int64_value > right->as.int64_value;
-        if (compare == RE_COMPARE_GE) return left->as.int64_value >= right->as.int64_value;
-        if (compare == RE_COMPARE_LT) return left->as.int64_value < right->as.int64_value;
-        if (compare == RE_COMPARE_LE) return left->as.int64_value <= right->as.int64_value;
-        return 0;
+    if (compare == RE_COMPARE_EQ || compare == RE_COMPARE_NE) {
+        /* D4: equality is strictly typed, matching upstream PartialEq -
+         * Integer(1) == Number(1.0) is FALSE. */
+        int equal = re_value_equal_typed(left, right);
+        return compare == RE_COMPARE_EQ ? equal : !equal;
     }
-    else if (left->type == RE_VALUE_DOUBLE && right->type == RE_VALUE_DOUBLE) { l = left->as.double_value; r = right->as.double_value; }
-    else if (left->type == RE_VALUE_INT64 && right->type == RE_VALUE_DOUBLE) { l = (double)left->as.int64_value; r = right->as.double_value; }
-    else if (left->type == RE_VALUE_DOUBLE && right->type == RE_VALUE_INT64) { l = left->as.double_value; r = (double)right->as.int64_value; }
-    else if (left->type == RE_VALUE_BOOL && right->type == RE_VALUE_BOOL) { l = (double)left->as.boolean; r = (double)right->as.boolean; }
-    else if (left->type == RE_VALUE_STRING && right->type == RE_VALUE_STRING) {
-        size_t n = left->as.string.size < right->as.string.size ? left->as.string.size : right->as.string.size; int c = n == 0u ? 0 : memcmp(left->as.string.data, right->as.string.data, n);
-        if (c == 0) c = left->as.string.size < right->as.string.size ? -1 : left->as.string.size > right->as.string.size;
-        l = (double)c; r = 0.0;
-    } else return 0;
-    if (compare == RE_COMPARE_EQ) return l == r;
-    if (compare == RE_COMPARE_NE) return l != r;
-    if (compare == RE_COMPARE_GT) return l > r;
-    if (compare == RE_COMPARE_GE) return l >= r;
-    if (compare == RE_COMPARE_LT) return l < r;
-    return l <= r;
+    if (compare == RE_COMPARE_GT || compare == RE_COMPARE_GE ||
+        compare == RE_COMPARE_LT || compare == RE_COMPARE_LE) {
+        double l;
+        double r;
+        if (left->type == RE_VALUE_INT64 && right->type == RE_VALUE_INT64) {
+            /* Exact integer comparison, no f64 precision loss. */
+            if (compare == RE_COMPARE_GT) return left->as.int64_value > right->as.int64_value;
+            if (compare == RE_COMPARE_GE) return left->as.int64_value >= right->as.int64_value;
+            if (compare == RE_COMPARE_LT) return left->as.int64_value < right->as.int64_value;
+            return left->as.int64_value <= right->as.int64_value;
+        }
+        if (!value_to_number(left, &l) || !value_to_number(right, &r)) return 0;
+        if (compare == RE_COMPARE_GT) return l > r;
+        if (compare == RE_COMPARE_GE) return l >= r;
+        if (compare == RE_COMPARE_LT) return l < r;
+        return l <= r;
+    }
+    return 0;
 }
 
 static int find_staged_fact(const re_facts_t *facts, re_string_t name,
@@ -225,7 +270,7 @@ static re_status_t execute_method_call(re_engine_t *engine, re_facts_t *facts,
                                        const re_ir_program_t *ir,
                                        re_string_t receiver, re_string_t method,
                                        const re_ir_term_t *arguments_term,
-                                       re_value_t *out) {
+                                       re_value_t *out, re_eval_scratch_t *scratch) {
     re_value_t *arguments = NULL;
     re_value_t result;
     re_status_t status;
@@ -238,7 +283,7 @@ static re_status_t execute_method_call(re_engine_t *engine, re_facts_t *facts,
         if (arguments == NULL) return RE_STATUS_OUT_OF_MEMORY;
         for (i = 0u; i < arguments_term->argument_count; ++i) {
             status = re_ir_resolve_term(engine, facts, ir,
-                                        arguments_term->argument_indices[i], &arguments[i]);
+                                        arguments_term->argument_indices[i], &arguments[i], scratch);
             if (status != RE_STATUS_OK) {
                 re_free(&engine->allocator, arguments);
                 return status;
@@ -318,14 +363,118 @@ static re_status_t execute_method_call(re_engine_t *engine, re_facts_t *facts,
 /* Splits the dotted "Receiver.method" name of a RE_IR_TERM_METHOD_CALL term. */
 static re_status_t resolve_method_term(re_engine_t *engine, re_facts_t *facts,
                                        const re_ir_program_t *ir,
-                                       const re_ir_term_t *term, re_value_t *out) {
+                                       const re_ir_term_t *term, re_value_t *out,
+                                       re_eval_scratch_t *scratch) {
     size_t dot = 0u;
     while (dot < term->name_size && term->name[dot] != '.') ++dot;
     if (dot == 0u || dot + 1u >= term->name_size) return RE_STATUS_INVALID_ARGUMENT;
     return execute_method_call(engine, facts, ir,
         (re_string_t){term->name, dot},
         (re_string_t){term->name + dot + 1u, term->name_size - dot - 1u},
-        term, out);
+        term, out, scratch);
+}
+
+/* A8 bare `name(args)` action statement (RE_IR_ACTION_BUILTIN_CALL; upstream
+ * grl.rs action builtins). Dispatches on the whitelisted name:
+ *
+ * - retract($Obj) sets the flag fact `_retracted_<root>` = true, <root> being
+ *   the leftmost dotted segment of the single fact-reference argument. The
+ *   flag is an ordinary fact (readable via re_facts_get, staged in the
+ *   activation's transaction); ir_eval.c gates condition reads on it, and
+ *   re-asserting the object does NOT clear it (upstream engine.rs
+ *   L964-975/L1240-1247 parity).
+ * - log(...) joins and prints its arguments to stdout through the A4 log
+ *   built-in (shared machinery; stdout is the documented local logging
+ *   convention - no log callback exists in the public API).
+ * - ActivateAgendaGroup("g") replaces the program's agenda focus for the
+ *   remainder of the run (and later runs, exactly like a
+ *   re_program_set_agenda_focus pre-set). The focus is program state, not a
+ *   fact, so it is not rolled back with the activation's transaction.
+ * - ScheduleRule/CompleteWorkflow/SetWorkflowData (D5) dispatch to a
+ *   registered function of the bare action name with the resolved arguments;
+ *   unhandled -> RE_STATUS_NOT_SUPPORTED.
+ */
+static re_status_t execute_builtin_action(re_engine_t *engine, re_facts_t *facts,
+                                          const re_ir_program_t *ir,
+                                          const re_ir_term_t *call,
+                                          re_eval_scratch_t *scratch) {
+    re_string_t name = {call->name, call->name_size};
+    re_value_t *arguments = NULL;
+    re_string_t *arg_paths = NULL;
+    re_value_t result;
+    re_status_t status = RE_STATUS_OK;
+    size_t i;
+    if (name.size == 7u && memcmp(name.data, "retract", 7u) == 0) {
+        /* Name-only: the argument is the object reference itself, never its
+         * resolved value (the object root may not exist as a flat fact). */
+        static const char prefix[] = "_retracted_";
+        const re_ir_term_t *object;
+        re_value_t flag;
+        char *flag_name;
+        size_t root = 0u;
+        size_t flag_size;
+        if (call->argument_count != 1u) return RE_STATUS_INVALID_ARGUMENT;
+        object = &ir->terms[call->argument_indices[0]];
+        if (object->kind != RE_IR_TERM_FACT || object->name == NULL)
+            return RE_STATUS_INVALID_ARGUMENT;
+        while (root < object->name_size && object->name[root] != '.') ++root;
+        if (root == 0u || root > SIZE_MAX - sizeof(prefix)) return RE_STATUS_LIMIT;
+        flag_size = sizeof(prefix) - 1u + root;
+        flag_name = re_alloc(&engine->allocator, flag_size + 1u);
+        if (flag_name == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memcpy(flag_name, prefix, sizeof(prefix) - 1u);
+        memcpy(flag_name + sizeof(prefix) - 1u, object->name, root);
+        flag_name[flag_size] = '\0';
+        flag.type = RE_VALUE_BOOL; flag.as.boolean = 1;
+        status = re_facts_set(facts, (re_string_t){flag_name, flag_size}, &flag);
+        re_free(&engine->allocator, flag_name);
+        return status;
+    }
+    if (call->argument_count != 0u) {
+        if (call->argument_count > SIZE_MAX / sizeof(*arguments) ||
+            call->argument_count > SIZE_MAX / sizeof(*arg_paths))
+            return RE_STATUS_LIMIT;
+        arguments = re_alloc(&engine->allocator,
+                             call->argument_count * sizeof(*arguments));
+        arg_paths = re_alloc(&engine->allocator,
+                             call->argument_count * sizeof(*arg_paths));
+        if (arguments == NULL || arg_paths == NULL) {
+            re_free(&engine->allocator, arguments);
+            re_free(&engine->allocator, arg_paths);
+            return RE_STATUS_OUT_OF_MEMORY;
+        }
+        memset(arg_paths, 0, call->argument_count * sizeof(*arg_paths));
+        for (i = 0u; i < call->argument_count; ++i) {
+            const re_ir_term_t *argument = &ir->terms[call->argument_indices[i]];
+            if (argument->kind == RE_IR_TERM_FACT)
+                arg_paths[i] = (re_string_t){argument->name, argument->name_size};
+            status = re_ir_resolve_term(engine, facts, ir,
+                                        call->argument_indices[i], &arguments[i], scratch);
+            if (status != RE_STATUS_OK) goto done;
+        }
+    }
+    result.type = RE_VALUE_NONE; result.as.int64_value = 0;
+    if (name.size == 3u && memcmp(name.data, "log", 3u) == 0) {
+        /* Shares the A4 log/print/println join-and-print machinery. */
+        status = re_builtin_call(engine, facts, name, arguments, arg_paths,
+                                 call->argument_count, &result, scratch);
+    } else if (name.size == 19u && memcmp(name.data, "ActivateAgendaGroup", 19u) == 0) {
+        if (call->argument_count != 1u || arguments[0].type != RE_VALUE_STRING)
+            status = RE_STATUS_INVALID_ARGUMENT;
+        else
+            status = re_program_set_agenda_focus(engine->program,
+                                                 arguments[0].as.string);
+    } else {
+        /* D5 trio: registered custom action handler under the bare action
+         * name (same registry the method-call fallback uses). */
+        status = call_registered_method(engine, facts, name.data, name.size,
+                                        arguments, call->argument_count, &result);
+        if (status == RE_STATUS_NOT_FOUND) status = RE_STATUS_NOT_SUPPORTED;
+    }
+done:
+    re_free(&engine->allocator, arguments);
+    re_free(&engine->allocator, arg_paths);
+    return status;
 }
 
 /* Run-scoped state for the recognize-act loop in re_engine_run. The
@@ -363,6 +512,7 @@ static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
     re_fact_txn_t *transaction = NULL;
     re_status_t status;
     size_t action_index;
+    re_eval_scratch_t scratch = {NULL, 0u, 0u};
     event.rule_name.data = rule->name;
     event.rule_name.size = rule->name_size;
     event.salience = rule->salience;
@@ -374,18 +524,29 @@ static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
             re_fact_id_t target_id;
             const re_ir_action_t *action = &engine->program->ir->actions[ir_rule->first_action + action_index];
             const re_ir_term_t *target = &engine->program->ir->terms[action->target];
-            const re_ir_term_t *action_value = &engine->program->ir->terms[action->value];
+            /* BUILTIN_CALL carries no value term (SIZE_MAX): form the pointer
+             * lazily so the out-of-range index never enters an arithmetic. */
+            const re_ir_term_t *action_value = action->kind == RE_IR_ACTION_BUILTIN_CALL
+                ? NULL : &engine->program->ir->terms[action->value];
+            re_eval_scratch_destroy(engine, &scratch);
             if (action->kind == RE_IR_ACTION_METHOD_CALL) {
                 status = execute_method_call(engine, facts, engine->program->ir,
                     (re_string_t){target->name, target->name_size},
                     (re_string_t){action->method_name, action->method_name_size},
-                    action_value, NULL);
+                    action_value, NULL, &scratch);
+                if (status != RE_STATUS_OK) break;
+                continue;
+            }
+            if (action->kind == RE_IR_ACTION_BUILTIN_CALL) {
+                /* A8: target is the FUNCTION term holding name and args. */
+                status = execute_builtin_action(engine, facts, engine->program->ir,
+                                                target, &scratch);
                 if (status != RE_STATUS_OK) break;
                 continue;
             }
             status = action_value->kind == RE_IR_TERM_METHOD_CALL
-                ? resolve_method_term(engine, facts, engine->program->ir, action_value, &value)
-                : re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value);
+                ? resolve_method_term(engine, facts, engine->program->ir, action_value, &value, &scratch)
+                : re_ir_resolve_term(engine, facts, engine->program->ir, action->value, &value, &scratch);
             if (status != RE_STATUS_OK) break;
             /* Dotted action target with premises: when the root resolves to an
              * existing STRUCTURED fact (and no exact flat key shadows the full
@@ -445,6 +606,7 @@ static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
             if (status != RE_STATUS_OK) break;
         }
     }
+    re_eval_scratch_destroy(engine, &scratch);
     if (status == RE_STATUS_OK && callbacks != NULL && callbacks->action != NULL)
         status = callbacks->action(engine, facts, &event, callbacks->context);
     if (status == RE_STATUS_OK) status = re_facts_commit(transaction);
@@ -668,7 +830,7 @@ re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t
     re_allocator_impl_t a; re_engine_t *engine; re_allocator_init(&a, allocator);
     if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return NULL;
     engine = re_alloc(&a, sizeof(*engine)); if (engine == NULL) return NULL;
-    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; return engine;
+    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; engine->random_state = RE_BUILTIN_RANDOM_SEED; return engine;
 }
 
 /* rete_network mirrors the first attached per-rule network (lowest rule
@@ -998,6 +1160,15 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
             break;
         }
         rule = &engine->program->rules[activation.rule_index];
+        /* The agenda focus can have moved while the activation sat pending
+         * (A8 ActivateAgendaGroup); entries whose group no longer matches the
+         * focus are dropped, exactly like the group-level gates below. With
+         * only a static pre-set focus this is a no-op: cross-group entries
+         * are never pushed in the first place. */
+        if (engine->program->agenda_focus == NULL) {
+            if (rule->agenda_group != NULL) continue;
+        } else if (rule->agenda_group == NULL ||
+                   strcmp(rule->agenda_group, engine->program->agenda_focus) != 0) continue;
         /* Group-level gates can have closed while the activation sat
          * pending; such entries are dropped, exactly like the old pass
          * skipped those rules when it reached them. */
@@ -1031,7 +1202,12 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
              * a linear rule with a real pure condition re-runs that predicate
              * as well (constant-true conditions and impure conditions are not
              * re-checked  -  the latter are not re-observable  -  and the
-             * focus/date predicates are run-static). */
+             * focus/date predicates are run-static). A live token alone is
+             * not sufficient for a pure condition either (A8 review I1): the
+             * retract($Obj) flag fact matches no network pattern, so a
+             * same-run retract cannot kill the token the way an ordinary
+             * premise write does - token-live pure entries therefore also
+             * re-pass the retract-gated linear match below. */
             if (activation.premise_count != 0u) {
                 if (network != NULL)
                     true_count = resolve_true_premises(engine, activation.rule_index,
@@ -1058,6 +1234,25 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
                     memcpy(true_premises, activation.true_premises,
                            activation.premise_count * sizeof(*true_premises));
                     true_count = activation.premise_count;
+                } else if (rule->condition != NULL &&
+                           rule->condition->kind != RE_EXPR_TRUE &&
+                           state.pure_conditions != NULL &&
+                           state.pure_conditions[activation.rule_index]) {
+                    /* Token-live pure entry: re-run the same gated linear
+                     * match the compute phase used. The re-check records no
+                     * read-set and runs on the same (transaction-free) view;
+                     * on a pass the token lineage in true_premises flows into
+                     * fire_activation unchanged. A dropped entry is not marked
+                     * fired, so it may legitimately re-push if the flag clears.
+                     * Impure conditions keep the historical first-pass-only
+                     * evaluation: their answers are not re-observable. */
+                    int matched = 0;
+                    status = state.parallel_matches != NULL ? RE_STATUS_OK
+                        : re_ir_match_rule(engine, facts, engine->program->ir, activation.rule_index, &matched);
+                    if (state.parallel_matches != NULL) matched = state.parallel_matches[activation.rule_index] != 0u;
+                    if (status == RE_STATUS_NOT_FOUND) continue;
+                    if (status != RE_STATUS_OK) break;
+                    if (!matched) continue;
                 }
             } else if (network == NULL && rule->condition != NULL &&
                        rule->condition->kind != RE_EXPR_TRUE &&

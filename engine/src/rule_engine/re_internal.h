@@ -98,7 +98,8 @@ typedef enum re_operand_kind_t {
     RE_OPERAND_ARITHMETIC, RE_OPERAND_ARRAY
 } re_operand_kind_t;
 typedef enum re_arithmetic_operator_t {
-    RE_ARITH_ADD, RE_ARITH_SUBTRACT, RE_ARITH_MULTIPLY, RE_ARITH_DIVIDE
+    RE_ARITH_ADD, RE_ARITH_SUBTRACT, RE_ARITH_MULTIPLY, RE_ARITH_DIVIDE,
+    RE_ARITH_MODULO
 } re_arithmetic_operator_t;
 typedef struct re_operand_t {
     re_operand_kind_t kind;
@@ -117,8 +118,14 @@ typedef struct re_operand_t {
 typedef enum re_compare_t { RE_COMPARE_TRUE, RE_COMPARE_EQ, RE_COMPARE_NE, RE_COMPARE_GT,
     RE_COMPARE_GE, RE_COMPARE_LT, RE_COMPARE_LE, RE_COMPARE_CONTAINS,
     RE_COMPARE_STARTS_WITH, RE_COMPARE_ENDS_WITH, RE_COMPARE_MATCHES,
-    RE_COMPARE_IN } re_compare_t;
-typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_EXISTS, RE_EXPR_FORALL, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE } re_expr_kind_t;
+    RE_COMPARE_IN, RE_COMPARE_NOT_CONTAINS } re_compare_t;
+/* A5 multifield condition ops (upstream grl.rs L115-155): RE_MULTIFIELD_COUNT
+ * uses expr->compare and expr->right (a numeric literal); the bare predicates
+ * carry no comparison and leave the right operand zeroed. */
+typedef enum re_multifield_op_t { RE_MULTIFIELD_NONE, RE_MULTIFIELD_COUNT,
+    RE_MULTIFIELD_FIRST, RE_MULTIFIELD_LAST, RE_MULTIFIELD_EMPTY,
+    RE_MULTIFIELD_NOT_EMPTY, RE_MULTIFIELD_COLLECT } re_multifield_op_t;
+typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_EXISTS, RE_EXPR_FORALL, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE, RE_EXPR_MULTIFIELD, RE_EXPR_ACCUMULATE, RE_EXPR_TEST, RE_EXPR_TYPED } re_expr_kind_t;
 typedef struct re_expr_t {
     re_expr_kind_t kind;
     re_compare_t compare;
@@ -126,6 +133,26 @@ typedef struct re_expr_t {
     re_operand_t right;
     struct re_expr_t *first;
     struct re_expr_t *second;
+    int multifield;
+    /* A6 accumulate payload (kind == RE_EXPR_ACCUMULATE only; all owned):
+     * type is the source pattern ("Order"), field the $var-extracted field
+     * (NULL for the $var-less form), conditions the raw mini-condition
+     * strings, func a re_accumulator_kind_t, and func_name the source
+     * spelling (the injected fact key is "<type>.<func_name>"). */
+    char *accumulate_type;
+    size_t accumulate_type_size;
+    char *accumulate_field;
+    size_t accumulate_field_size;
+    char **accumulate_conditions;
+    size_t accumulate_condition_count;
+    char *accumulate_func_name;
+    size_t accumulate_func_name_size;
+    int accumulate_func;
+    /* A9 typed-form payload (kind == RE_EXPR_TYPED only; owned): the declared
+     * type name, used as the candidate-iteration prefix at evaluation. The
+     * inner condition tree rides `first`; left/right stay zeroed. */
+    char *typed_type;
+    size_t typed_type_size;
 } re_expr_t;
 typedef struct re_action_t {
     char *name;
@@ -179,6 +206,43 @@ typedef struct re_deffacts_set_t {
     size_t entry_count;
 } re_deffacts_set_t;
 
+/* A7 GRL query blocks (upstream rust-rule-engine v1.21.4 grl_query.rs): the
+ * top-level `query "Name" { goal: <text>; ... }` form. The goal stays raw
+ * text (the executor splits &&/|| textually per upstream); `when` is a parsed
+ * condition expression (NULL when absent). Action statements are either flat
+ * scalar assignments `Name = true|false|<number>|"string"` or calls
+ * `Name(<raw args>)` keeping the raw argument text; anything else is a parse
+ * error at load (bounded divergence from upstream's lenient fallback). */
+typedef struct re_query_action_stmt_t {
+    char *name;              /* assignment target path or call name */
+    size_t name_size;
+    int is_call;
+    re_operand_t value;      /* assignment: RE_OPERAND_LITERAL scalar; zeroed for calls */
+    char *args;              /* call: raw argument text between the parens ("" when empty) */
+    size_t args_size;
+} re_query_action_stmt_t;
+
+/* Action block slots: 0 = on-success, 1 = on-failure, 2 = on-missing. */
+#define RE_QUERY_BLOCK_SUCCESS 0u
+#define RE_QUERY_BLOCK_FAILURE 1u
+#define RE_QUERY_BLOCK_MISSING 2u
+#define RE_QUERY_BLOCK_COUNT 3u
+
+typedef struct re_query_block_t {
+    char *name;
+    size_t name_size;
+    char *goal;
+    size_t goal_size;
+    int strategy;            /* RE_QUERY_STRATEGY_* */
+    size_t max_depth;
+    size_t max_solutions;
+    int enable_memoization;
+    int enable_optimization; /* parsed, documented no-op */
+    re_expr_t *when;
+    re_query_action_stmt_t *actions[RE_QUERY_BLOCK_COUNT];
+    size_t action_counts[RE_QUERY_BLOCK_COUNT];
+} re_query_block_t;
+
 struct re_program_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -194,12 +258,20 @@ struct re_program_t {
     size_t module_count;
     re_deffacts_set_t *deffacts_sets;
     size_t deffacts_set_count;
+    re_query_block_t *queries;
+    size_t query_count;
     re_ir_program_t *ir;
 };
 
 re_status_t re_accumulator_evaluate(re_accumulator_kind_t kind, const re_value_t *values, size_t count, re_value_t *out);
 re_status_t re_ir_match_rule(const re_engine_t *engine, re_facts_t *facts,
                              const re_ir_program_t *ir, size_t rule_index, int *matched);
+/* A7: evaluates an arbitrary IR condition expression against current facts
+ * (the query-block when-gate). RE_STATUS_NOT_FOUND reports a referenced fact
+ * that does not resolve; callers treat it as not-matched, mirroring
+ * re_ir_match_rule's contract with engine.c. */
+re_status_t re_ir_match_expr(const re_engine_t *engine, re_facts_t *facts,
+                             const re_ir_program_t *ir, size_t expr_index, int *matched);
 /* Bounded condition read-set: every fact path whose re_facts_get_path (or
  * structured-path) hit contributed to a condition match, deduped and capped
  * at RE_IR_MAX_READ_PATHS; overflow silently stops recording, so conditions
@@ -216,9 +288,25 @@ typedef struct re_ir_read_set_t {
 re_status_t re_ir_match_rule_readset(const re_engine_t *engine, re_facts_t *facts,
                                      const re_ir_program_t *ir, size_t rule_index,
                                      int *matched, re_ir_read_set_t *reads);
+/* Scratch storage owning the strings produced by `+` concatenation during
+ * term resolution. The caller passes a zero-initialized scratch to
+ * re_ir_resolve_term, consumes the resolved value (fact writes deep-copy
+ * strings), then releases the scratch. Condition matching frees its own
+ * scratch internally; only values escaping through re_ir_resolve_term need
+ * the caller-owned form. */
+typedef struct re_eval_scratch_t {
+    char **items;
+    size_t count;
+    size_t capacity;
+} re_eval_scratch_t;
+void re_eval_scratch_destroy(const re_engine_t *engine, re_eval_scratch_t *scratch);
+/* Takes ownership of an owned string produced during evaluation (concat or a
+ * string-producing built-in result). On a non-OK return the caller keeps
+ * ownership. */
+re_status_t re_eval_scratch_own(const re_engine_t *engine, re_eval_scratch_t *scratch, char *owned);
 re_status_t re_ir_resolve_term(re_engine_t *engine, re_facts_t *facts,
                                const re_ir_program_t *ir, size_t term_index,
-                               re_value_t *value);
+                               re_value_t *value, re_eval_scratch_t *scratch);
 re_status_t re_program_set_module_focus(re_program_t *program, re_string_t module);
 re_status_t re_program_set_agenda_focus(re_program_t *program, re_string_t group);
 re_status_t re_program_set_clock(re_program_t *program, int64_t epoch_seconds);
@@ -310,6 +398,10 @@ typedef struct re_proof_graph_t {
     uint64_t misses;
 } re_proof_graph_t;
 
+/* Fixed xorshift64 seed for the random() built-in (A4): nonzero by
+ * construction; re_engine_create loads it into engine->random_state. */
+#define RE_BUILTIN_RANDOM_SEED 0x9E3779B97F4A7C15ull
+
 struct re_engine_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -332,6 +424,12 @@ struct re_engine_t {
      * rules or functions they were derived from. */
     re_proof_graph_t *proof_graph;
     uint64_t config_serial;
+    /* A4: deterministic random() built-in state (xorshift64), seeded to
+     * RE_BUILTIN_RANDOM_SEED at creation - every engine produces the same
+     * sequence, so tests are stable; no public setter by design. Mutated
+     * through a const cast in the built-in dispatch, under the same
+     * single-threaded-handles contract as the rest of the engine. */
+    uint64_t random_state;
 };
 
 typedef struct re_stream_event_impl_t {
@@ -514,6 +612,34 @@ re_status_t re_facts_contains_value(const re_facts_t *facts, re_string_t path,
                                     const re_value_t *needle, int *matched);
 int re_value_compare(const re_value_t *left, const re_value_t *right, re_compare_t compare);
 int re_value_equal_typed(const re_value_t *left, const re_value_t *right);
+/* Built-in functions (builtins.c): the A3 condition family (upstream
+ * condition_evaluator.rs): len/length/size, isEmpty/is_empty, contains,
+ * exists/notExists/not_exists - and the A4 action/RHS utility family
+ * (upstream engine.rs execute_function_call): log/print/println,
+ * now/timestamp, random, format/sprintf, count, sum/add, max, min,
+ * avg/average, round, floor, ceil, abs, includes, startswith, endswith,
+ * lowercase, uppercase, trim, split, join. ir_eval.c consults them only
+ * after the user function registry misses, so a registered function of the
+ * same name overrides the built-in. */
+int re_builtin_is(const char *name, size_t size);
+/* Predicate built-ins (bool-returning) may appear bare as a whole condition,
+ * meaning fn(...) == true (parser.c). */
+int re_builtin_is_predicate(const char *name, size_t size);
+/* The value a built-in yields when a bare fact-path argument fails to
+ * resolve (absent fact): false, except the negated presence probes
+ * (notExists/not_exists) whose missing path is their truth. */
+int re_builtin_arg_miss_result(const char *name, size_t size);
+/* A8 bare `name(args)` then-statement actions (retract/log/
+ * ActivateAgendaGroup/ScheduleRule/CompleteWorkflow/SetWorkflowData);
+ * consulted by parser.c, ir_validate.c and engine.c. */
+int re_builtin_action_is(const char *name, size_t size);
+/* arg_fact_paths[i] holds the binding-rewritten path of bare fact-path
+ * arguments ({NULL, 0} otherwise); may be NULL when argc is 0. scratch owns
+ * the result strings produced by the string-returning built-ins (the caller
+ * releases it). Returns RE_STATUS_NOT_FOUND when name is not a built-in. */
+re_status_t re_builtin_call(re_engine_t *engine, re_facts_t *facts, re_string_t name,
+                            const re_value_t *args, const re_string_t *arg_fact_paths,
+                            size_t argc, re_value_t *out, re_eval_scratch_t *scratch);
 int re_program_uses_rete(const re_program_t *program, const re_facts_t *facts);
 re_status_t re_engine_run_rete(re_engine_t *engine, re_facts_t *facts,
                                const re_run_options_t *options,

@@ -7,7 +7,14 @@
 #include <string.h>
 #include "ir.h"
 
-typedef struct parser_t { const char *text; size_t size; size_t at; const re_allocator_impl_t *allocator; int allow_dollar; } parser_t;
+#define RE_MAX_TYPED_SCOPE 8u
+typedef struct parser_t { const char *text; size_t size; size_t at; const re_allocator_impl_t *allocator; int allow_dollar;
+    /* A9 typed-form variable scope ($x: Type(conds)): borrows into text;
+     * balanced within one expression() call, which restores the entry depth
+     * on every exit path. */
+    const char *typed_var[RE_MAX_TYPED_SCOPE]; size_t typed_var_size[RE_MAX_TYPED_SCOPE];
+    const char *typed_type[RE_MAX_TYPED_SCOPE]; size_t typed_type_size[RE_MAX_TYPED_SCOPE];
+    size_t typed_depth; } parser_t;
 #define RE_MAX_OPERAND_ARGUMENTS 64u
 #define RE_MAX_FORMAL_PARAMETERS 32u
 void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
@@ -56,6 +63,13 @@ void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
         }
         re_operand_destroy(a, &expr->left);
         re_operand_destroy(a, &expr->right);
+        { size_t i; /* A6: the accumulate payload strings (NULL/0 on other kinds). */
+          for (i = 0u; i < expr->accumulate_condition_count; ++i) re_free(a, expr->accumulate_conditions[i]);
+          re_free(a, expr->accumulate_conditions);
+          re_free(a, expr->accumulate_type);
+          re_free(a, expr->accumulate_field);
+          re_free(a, expr->accumulate_func_name);
+          re_free(a, expr->typed_type); /* A9 typed-form payload (NULL on other kinds). */ }
         re_free(a, expr);
         expr = NULL;
     }
@@ -63,10 +77,24 @@ void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
 }
 static void skip_space(parser_t *p) { while (p->at < p->size && isspace((unsigned char)p->text[p->at])) ++p->at; }
 static int take(parser_t *p, char c) { skip_space(p); if (p->at < p->size && p->text[p->at] == c) { ++p->at; return 1; } return 0; }
+/* Case-insensitive word() for the boolean/null literals: GRL treats TRUE,
+ * False, NULL and friends as literals regardless of letter case. */
+static int word_ci(parser_t *p, const char *word) {
+    size_t n = strlen(word); size_t i; skip_space(p);
+    if (n > p->size - p->at) return 0;
+    for (i = 0u; i < n; ++i)
+        if (tolower((unsigned char)p->text[p->at + i]) != tolower((unsigned char)word[i])) return 0;
+    if (n != p->size - p->at && isalnum((unsigned char)p->text[p->at + n])) return 0;
+    p->at += n; return 1;
+}
 static int word(parser_t *p, const char *word) {
     size_t n = strlen(word); skip_space(p);
+    /* Identifier characters here include '_' (operand names scan
+     * alnum/./_), so it must not terminate a keyword match: otherwise
+     * not_exists(...) would split into the `not` operator and a bogus
+     * `_exists` call. */
     if (n <= p->size - p->at && memcmp(p->text + p->at, word, n) == 0 &&
-        (n == p->size - p->at || !isalnum((unsigned char)p->text[p->at + n]))) { p->at += n; return 1; }
+        (n == p->size - p->at || (!isalnum((unsigned char)p->text[p->at + n]) && p->text[p->at + n] != '_'))) { p->at += n; return 1; }
     return 0;
 }
 
@@ -143,14 +171,74 @@ static re_status_t operand_parse_atom(parser_t *p, operand_parse_frame_t *frame,
         size_t receiver_start;
         size_t receiver_size;
         size_t method_start;
-        if (!p->allow_dollar) return RE_STATUS_PARSE_ERROR;
+        size_t scope;
         ++p->at;
         receiver_start = p->at;
         while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
                p->text[p->at] == '_')) ++p->at;
         receiver_size = p->at - receiver_start;
-        if (receiver_size == 0u || p->at >= p->size || p->text[p->at] != '.')
-            return RE_STATUS_PARSE_ERROR;
+        if (receiver_size == 0u || p->at >= p->size) return RE_STATUS_PARSE_ERROR;
+        /* A9: an in-scope typed-form variable rewrites to the Type-rooted
+         * spelling, exactly as if the type had been written literally:
+         * $x -> "Type", $x.a.b -> "Type.a.b", $x.m(..) -> "Type.m(..)" (the
+         * call form keeps D2's full-dotted-name lookup; no per-candidate
+         * receiver binding). Innermost scope wins. Reached from every operand
+         * position - RHS, call arguments, and a condition's atom LHS alike:
+         * expression()'s typed-form dispatch (typed_form_ahead) only
+         * intercepts the `$var : Type(` declaration shape, so `$var.field`
+         * atoms arrive here through the plain operand path (fix round 1,
+         * C1). */
+        scope = p->typed_depth;
+        while (scope != 0u) {
+            --scope;
+            if (p->typed_var_size[scope] == receiver_size &&
+                memcmp(p->typed_var[scope], p->text + receiver_start, receiver_size) == 0) {
+                const char *type = p->typed_type[scope];
+                size_t type_size = p->typed_type_size[scope];
+                size_t path_start = p->at;
+                size_t path_size;
+                char *name;
+                if (p->text[p->at] == '.') {
+                    ++p->at;
+                    if (p->at >= p->size || (!isalnum((unsigned char)p->text[p->at]) &&
+                        p->text[p->at] != '_')) return RE_STATUS_PARSE_ERROR;
+                    while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
+                           p->text[p->at] == '.' || p->text[p->at] == '_')) ++p->at;
+                }
+                path_size = p->at - path_start; /* includes the leading '.' when present */
+                if (type_size > (size_t)-1 - path_size - 1u) return RE_STATUS_LIMIT;
+                name = re_alloc(p->allocator, type_size + path_size + 1u);
+                if (name == NULL) return RE_STATUS_OUT_OF_MEMORY;
+                memcpy(name, type, type_size);
+                memcpy(name + type_size, p->text + path_start, path_size);
+                name[type_size + path_size] = '\0';
+                if (path_size != 0u && p->at < p->size && p->text[p->at] == '(') {
+                    out->kind = RE_OPERAND_FUNCTION;
+                    out->function_name = name;
+                    out->function_name_size = type_size + path_size;
+                    ++p->at;
+                    skip_space(p);
+                    *complete = p->at < p->size && p->text[p->at] == ')';
+                    if (*complete) ++p->at;
+                    return RE_STATUS_OK;
+                }
+                out->kind = RE_OPERAND_FACT;
+                out->fact_name = name;
+                out->fact_name_size = type_size + path_size;
+                *complete = 1;
+                return RE_STATUS_OK;
+            }
+        }
+        if (!p->allow_dollar) return RE_STATUS_PARSE_ERROR;
+        if (p->text[p->at] != '.') {
+            /* A8: a bare `$Ident` (no .method() call) is a plain fact-path
+             * reference to the identifier, e.g. the retract($Obj) argument. */
+            out->kind = RE_OPERAND_FACT;
+            out->fact_name_size = receiver_size;
+            *complete = 1;
+            return re_copy_string(p->allocator, (re_string_t){p->text + receiver_start,
+                              out->fact_name_size}, &out->fact_name);
+        }
         ++p->at;
         method_start = p->at;
         while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
@@ -216,15 +304,21 @@ static re_status_t operand_parse_atom(parser_t *p, operand_parse_frame_t *frame,
         *complete = 1;
         return quoted(p, (char **)&out->value.as.string.data, &out->value.as.string.size);
     }
-    if (word(p, "true")) {
+    if (word_ci(p, "true")) {
         out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_BOOL;
         out->value.as.boolean = 1;
         *complete = 1;
         return RE_STATUS_OK;
     }
-    if (word(p, "false")) {
+    if (word_ci(p, "false")) {
         out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_BOOL;
         out->value.as.boolean = 0;
+        *complete = 1;
+        return RE_STATUS_OK;
+    }
+    if (word_ci(p, "null")) {
+        out->kind = RE_OPERAND_LITERAL; out->value.type = RE_VALUE_NULL;
+        out->value.as.int64_value = 0;
         *complete = 1;
         return RE_STATUS_OK;
     }
@@ -269,6 +363,26 @@ static re_status_t operand_parse_atom(parser_t *p, operand_parse_frame_t *frame,
     }
     out->kind = RE_OPERAND_FACT; out->fact_name_size = p->at - start;
     *complete = 1;
+    /* A9: inside a typed form's conds a bare (dotless) field name resolves
+     * relative to the candidate: prefix the innermost scope's type so the A2
+     * binding machinery rebinds it per candidate. Dotted paths stay global;
+     * global facts are referenced outside the form (a candidate read that
+     * misses just scores the candidate false). */
+    if (p->typed_depth != 0u && memchr(p->text + start, '.', out->fact_name_size) == NULL) {
+        size_t top = p->typed_depth - 1u;
+        size_t field_size = out->fact_name_size;
+        char *name;
+        if (p->typed_type_size[top] > (size_t)-1 - field_size - 2u) return RE_STATUS_LIMIT;
+        name = re_alloc(p->allocator, p->typed_type_size[top] + 1u + field_size + 1u);
+        if (name == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        memcpy(name, p->typed_type[top], p->typed_type_size[top]);
+        name[p->typed_type_size[top]] = '.';
+        memcpy(name + p->typed_type_size[top] + 1u, p->text + start, field_size);
+        name[p->typed_type_size[top] + 1u + field_size] = '\0';
+        out->fact_name = name;
+        out->fact_name_size = p->typed_type_size[top] + 1u + field_size;
+        return RE_STATUS_OK;
+    }
     return re_copy_string(p->allocator, (re_string_t){p->text + start,
                           out->fact_name_size}, &out->fact_name);
 }
@@ -358,7 +472,7 @@ static re_status_t arithmetic_combine(parser_t *p, re_operand_t *left,
                                       re_operand_t *right, re_arithmetic_operator_t op) {
     re_operand_t combined;
     memset(&combined, 0, sizeof(combined));
-    if (op == RE_ARITH_DIVIDE && right->kind == RE_OPERAND_LITERAL &&
+    if ((op == RE_ARITH_DIVIDE || op == RE_ARITH_MODULO) && right->kind == RE_OPERAND_LITERAL &&
         ((right->value.type == RE_VALUE_INT64 && right->value.as.int64_value == 0) ||
          (right->value.type == RE_VALUE_DOUBLE && right->value.as.double_value == 0.0)))
         return RE_STATUS_ERROR;
@@ -389,8 +503,9 @@ static re_status_t operand_multiply(parser_t *p, re_operand_t *out) {
         re_arithmetic_operator_t op;
         re_operand_t right;
         skip_space(p);
-        if (p->at >= p->size || (p->text[p->at] != '*' && p->text[p->at] != '/')) break;
-        op = p->text[p->at++] == '*' ? RE_ARITH_MULTIPLY : RE_ARITH_DIVIDE;
+        if (p->at >= p->size || (p->text[p->at] != '*' && p->text[p->at] != '/' && p->text[p->at] != '%')) break;
+        op = p->text[p->at] == '*' ? RE_ARITH_MULTIPLY : p->text[p->at] == '/' ? RE_ARITH_DIVIDE : RE_ARITH_MODULO;
+        ++p->at;
         memset(&right, 0, sizeof(right)); status = operand_factor(p, &right);
         if (status == RE_STATUS_OK) status = arithmetic_combine(p, out, &right, op);
         if (status != RE_STATUS_OK) re_operand_destroy(p->allocator, &right);
@@ -415,10 +530,17 @@ static re_status_t operand(parser_t *p, re_operand_t *out) { return operand_add(
 static re_status_t comparison(parser_t *p, re_compare_t *out) {
     skip_space(p);
     if (word(p, "contains")) { *out = RE_COMPARE_CONTAINS; return RE_STATUS_OK; }
+    if (word(p, "not_contains")) { *out = RE_COMPARE_NOT_CONTAINS; return RE_STATUS_OK; }
     if (word(p, "startsWith") || word(p, "starts_with")) { *out = RE_COMPARE_STARTS_WITH; return RE_STATUS_OK; }
     if (word(p, "endsWith") || word(p, "ends_with")) { *out = RE_COMPARE_ENDS_WITH; return RE_STATUS_OK; }
     if (word(p, "matches")) { *out = RE_COMPARE_MATCHES; return RE_STATUS_OK; }
     if (word(p, "in")) { *out = RE_COMPARE_IN; return RE_STATUS_OK; }
+    if (word(p, "eq")) { *out = RE_COMPARE_EQ; return RE_STATUS_OK; }
+    if (word(p, "ne")) { *out = RE_COMPARE_NE; return RE_STATUS_OK; }
+    if (word(p, "gte")) { *out = RE_COMPARE_GE; return RE_STATUS_OK; }
+    if (word(p, "gt")) { *out = RE_COMPARE_GT; return RE_STATUS_OK; }
+    if (word(p, "lte")) { *out = RE_COMPARE_LE; return RE_STATUS_OK; }
+    if (word(p, "lt")) { *out = RE_COMPARE_LT; return RE_STATUS_OK; }
     if (p->at + 1u < p->size && p->text[p->at] == '=' && p->text[p->at + 1u] == '=') { p->at += 2u; *out = RE_COMPARE_EQ; return RE_STATUS_OK; }
     if (p->at + 1u < p->size && p->text[p->at] == '!' && p->text[p->at + 1u] == '=') { p->at += 2u; *out = RE_COMPARE_NE; return RE_STATUS_OK; }
     if (p->at + 1u < p->size && p->text[p->at + 1u] == '=') { if (p->text[p->at] == '>') *out = RE_COMPARE_GE; else if (p->text[p->at] == '<') *out = RE_COMPARE_LE; else return RE_STATUS_PARSE_ERROR; p->at += 2u; return RE_STATUS_OK; }
@@ -427,7 +549,178 @@ static re_status_t comparison(parser_t *p, re_compare_t *out) {
     if (p->text[p->at] == '<') { ++p->at; *out = RE_COMPARE_LT; return RE_STATUS_OK; }
     return RE_STATUS_PARSE_ERROR;
 }
-typedef enum expression_operator_t { EXPR_OP_LPAREN, EXPR_OP_NOT, EXPR_OP_AND, EXPR_OP_OR } expression_operator_t;
+/* A5 multifield condition ops (upstream grl.rs L115-155 anchored regexes,
+ * forward engine.rs L1115-1164 semantics): a fact-path operand followed by a
+ * multifield keyword is an array-shape predicate, not the left side of a
+ * plain comparison. `count` takes an equality/relational operator and a
+ * numeric literal operand; first/last/empty/not_empty/notEmpty/collect are
+ * bare predicates (a trailing comparison stays a parse error downstream).
+ * Sets *recognized and fills value when a keyword matches; a malformed
+ * count form is a parse error. */
+static re_status_t multifield_form(parser_t *p, re_expr_t *value, int *recognized) {
+    re_status_t status;
+    *recognized = 1;
+    if (word(p, "count")) {
+        value->kind = RE_EXPR_MULTIFIELD;
+        value->multifield = RE_MULTIFIELD_COUNT;
+        status = comparison(p, &value->compare);
+        if (status == RE_STATUS_OK &&
+            (value->compare < RE_COMPARE_EQ || value->compare > RE_COMPARE_LE))
+            status = RE_STATUS_PARSE_ERROR;
+        if (status == RE_STATUS_OK) status = operand(p, &value->right);
+        if (status == RE_STATUS_OK &&
+            (value->right.kind != RE_OPERAND_LITERAL ||
+             (value->right.value.type != RE_VALUE_INT64 &&
+              value->right.value.type != RE_VALUE_DOUBLE)))
+            status = RE_STATUS_PARSE_ERROR;
+        return status;
+    }
+    if (word(p, "first")) value->multifield = RE_MULTIFIELD_FIRST;
+    else if (word(p, "last")) value->multifield = RE_MULTIFIELD_LAST;
+    else if (word(p, "empty")) value->multifield = RE_MULTIFIELD_EMPTY;
+    else if (word(p, "not_empty") || word(p, "notEmpty")) value->multifield = RE_MULTIFIELD_NOT_EMPTY;
+    else if (word(p, "collect")) value->multifield = RE_MULTIFIELD_COLLECT;
+    else { *recognized = 0; return RE_STATUS_OK; }
+    value->kind = RE_EXPR_MULTIFIELD;
+    return RE_STATUS_OK;
+}
+/* A6 accumulate(...) CE (upstream grl.rs L834-881): the when-side atom
+ * accumulate(Type($var: field, cond, ...), func(...)). `accumulate` counts as
+ * the CE keyword only when immediately followed (modulo whitespace) by '(';
+ * anything else keeps the plain operand path. */
+static int accumulate_ahead(const parser_t *p) {
+    size_t probe;
+    if (p->size - p->at < 10u || memcmp(p->text + p->at, "accumulate", 10u) != 0) return 0;
+    if (p->size - p->at != 10u &&
+        (isalnum((unsigned char)p->text[p->at + 10u]) || p->text[p->at + 10u] == '_')) return 0;
+    probe = p->at + 10u;
+    while (probe < p->size && isspace((unsigned char)p->text[probe])) ++probe;
+    return probe < p->size && p->text[probe] == '(';
+}
+static void accumulate_trim(const parser_t *p, size_t *start, size_t *end) {
+    while (*start < *end && isspace((unsigned char)p->text[*start])) ++*start;
+    while (*end > *start && isspace((unsigned char)p->text[*end - 1u])) --*end;
+}
+/* A pattern part is a mini-condition when it carries one of the comparison
+ * operator characters anywhere (upstream's contains() check). */
+static int accumulate_part_is_condition(const parser_t *p, size_t start, size_t end) {
+    size_t i;
+    for (i = start; i < end; ++i)
+        if (p->text[i] == '=' || p->text[i] == '!' || p->text[i] == '>' || p->text[i] == '<') return 1;
+    return 0;
+}
+/* Parses the accumulate atom body; p->at sits just past the "accumulate"
+ * keyword (accumulate_ahead verified the '('). Fills the RE_EXPR_ACCUMULATE
+ * payload of value (zeroed by the caller); on error the partially filled
+ * payload stays for re_expr_destroy to release. */
+static re_status_t accumulate_form(parser_t *p, re_expr_t *value) {
+    size_t start;
+    if (!take(p, '(')) return RE_STATUS_PARSE_ERROR;
+    skip_space(p);
+    start = p->at;
+    while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) || p->text[p->at] == '_')) ++p->at;
+    if (p->at == start) return RE_STATUS_PARSE_ERROR;
+    if (re_copy_string(p->allocator, (re_string_t){p->text + start, p->at - start},
+                       &value->accumulate_type) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    value->accumulate_type_size = p->at - start;
+    if (!take(p, '(')) return RE_STATUS_PARSE_ERROR;
+    /* Pattern parts: "$var: field" bindings and mini-condition strings, split
+     * on top-level commas (quote- and paren-aware, like upstream's
+     * split_pattern_parts; no escape handling, like upstream). */
+    for (;;) {
+        size_t part_start, part_end, depth = 0u;
+        char quote = '\0';
+        skip_space(p);
+        part_start = p->at;
+        while (p->at < p->size) {
+            char c = p->text[p->at];
+            if (quote != '\0') { if (c == quote) quote = '\0'; ++p->at; continue; }
+            if (c == '"' || c == '\'') { quote = c; ++p->at; continue; }
+            if (c == '(') ++depth;
+            else if (c == ')') { if (depth == 0u) break; --depth; }
+            else if (c == ',' && depth == 0u) break;
+            ++p->at;
+        }
+        if (p->at == p->size) return RE_STATUS_PARSE_ERROR;
+        part_end = p->at;
+        accumulate_trim(p, &part_start, &part_end);
+        if (part_end > part_start) {
+            if (p->text[part_start] == '$') {
+                size_t colon = part_start + 1u;
+                while (colon < part_end && p->text[colon] != ':') ++colon;
+                if (colon < part_end) {
+                    /* "$var: field" — only the field is kept; the variable
+                     * name carries no meaning (upstream drops it too). */
+                    size_t field_start = colon + 1u, field_end = part_end;
+                    accumulate_trim(p, &field_start, &field_end);
+                    if (field_end == field_start) return RE_STATUS_PARSE_ERROR;
+                    re_free(p->allocator, value->accumulate_field);
+                    value->accumulate_field = NULL;
+                    if (re_copy_string(p->allocator,
+                            (re_string_t){p->text + field_start, field_end - field_start},
+                            &value->accumulate_field) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+                    value->accumulate_field_size = field_end - field_start;
+                }
+                /* A "$" part without a colon is dropped, like any
+                 * unrecognized pattern part (upstream ignores it). */
+            } else if (accumulate_part_is_condition(p, part_start, part_end)) {
+                char *copy = NULL;
+                char **grown;
+                if (re_copy_string(p->allocator,
+                        (re_string_t){p->text + part_start, part_end - part_start},
+                        &copy) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+                grown = re_realloc(p->allocator, value->accumulate_conditions,
+                                   (value->accumulate_condition_count + 1u) * sizeof(*grown));
+                if (grown == NULL) { re_free(p->allocator, copy); return RE_STATUS_OUT_OF_MEMORY; }
+                value->accumulate_conditions = grown;
+                value->accumulate_conditions[value->accumulate_condition_count++] = copy;
+            }
+            /* Anything else is silently dropped (upstream parity). */
+        }
+        if (p->text[p->at] == ',') { ++p->at; continue; }
+        ++p->at; /* the ')' closing the pattern */
+        break;
+    }
+    if (!take(p, ',')) return RE_STATUS_PARSE_ERROR;
+    skip_space(p);
+    start = p->at;
+    while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) || p->text[p->at] == '_')) ++p->at;
+    if (p->at == start) return RE_STATUS_PARSE_ERROR;
+    {
+        size_t name_size = p->at - start;
+        if (name_size == 3u && memcmp(p->text + start, "sum", 3u) == 0) value->accumulate_func = RE_ACCUM_SUM;
+        else if (name_size == 5u && memcmp(p->text + start, "count", 5u) == 0) value->accumulate_func = RE_ACCUM_COUNT;
+        else if (name_size == 7u && memcmp(p->text + start, "average", 7u) == 0) value->accumulate_func = RE_ACCUM_AVERAGE;
+        else if (name_size == 3u && memcmp(p->text + start, "avg", 3u) == 0) value->accumulate_func = RE_ACCUM_AVERAGE;
+        else if (name_size == 3u && memcmp(p->text + start, "min", 3u) == 0) value->accumulate_func = RE_ACCUM_MIN;
+        else if (name_size == 3u && memcmp(p->text + start, "max", 3u) == 0) value->accumulate_func = RE_ACCUM_MAX;
+        /* Unknown function: a parse-time error here; upstream raises its
+         * EvaluationError at evaluation time instead. */
+        else return RE_STATUS_PARSE_ERROR;
+        if (re_copy_string(p->allocator, (re_string_t){p->text + start, name_size},
+                           &value->accumulate_func_name) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+        value->accumulate_func_name_size = name_size;
+    }
+    /* The function argument is ignored (upstream's _function_arg) but must be
+     * well-formed through the matching ')'. */
+    if (!take(p, '(')) return RE_STATUS_PARSE_ERROR;
+    {
+        size_t depth = 1u;
+        char quote = '\0';
+        while (p->at < p->size && depth != 0u) {
+            char c = p->text[p->at];
+            if (quote != '\0') { if (c == quote) quote = '\0'; }
+            else if (c == '"' || c == '\'') quote = c;
+            else if (c == '(') ++depth;
+            else if (c == ')') --depth;
+            ++p->at;
+        }
+        if (depth != 0u) return RE_STATUS_PARSE_ERROR;
+    }
+    if (!take(p, ')')) return RE_STATUS_PARSE_ERROR;
+    return RE_STATUS_OK;
+}
+typedef enum expression_operator_t { EXPR_OP_LPAREN, EXPR_OP_NOT, EXPR_OP_AND, EXPR_OP_OR, EXPR_OP_EXISTS_PAREN, EXPR_OP_FORALL_PAREN, EXPR_OP_TYPED_PAREN } expression_operator_t;
 #define RE_MAX_EXPRESSION_TERMS 65536u
 
 static int expression_precedence(expression_operator_t op) {
@@ -462,11 +755,146 @@ static re_status_t expression_apply(const re_allocator_impl_t *a,
     return RE_STATUS_OK;
 }
 
+/* Grows both expression stacks (they share one capacity). Called inline at
+ * each push site: the old `goto grow` restarted the parse loop after growth,
+ * silently dropping the just-consumed token (a negation or operator never
+ * made it onto the stack). On failure any successful half-grow is kept in the
+ * out-pointers so caller cleanup never frees a stale block. */
+static re_status_t expression_grow(parser_t *p, re_expr_t ***values,
+                                   expression_operator_t **operators, size_t *capacity) {
+    size_t next;
+    re_expr_t **grown_values;
+    expression_operator_t *grown_operators;
+    if (*capacity > RE_MAX_EXPRESSION_TERMS / 2u) return RE_STATUS_LIMIT;
+    next = *capacity * 2u;
+    grown_values = re_realloc(p->allocator, *values, next * sizeof(*grown_values));
+    if (grown_values != NULL) *values = grown_values;
+    grown_operators = re_realloc(p->allocator, *operators, next * sizeof(*grown_operators));
+    if (grown_operators != NULL) *operators = grown_operators;
+    if (grown_values == NULL || grown_operators == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    *capacity = next;
+    return RE_STATUS_OK;
+}
+
+/* A3 exists() disambiguation: `exists` is both the quantifier keyword and the
+ * field-presence built-in function. The parenthesized form is the QUANTIFIER
+ * when its content is a condition - i.e. it carries a top-level comparison or
+ * logical operator (exists( Score.value > 90 )) - and the FUNCTION when the
+ * parens hold a lone operand (a quoted string or bare fact path:
+ * exists("A.b"), exists(A.b)). Scans to the matching close paren, aware of
+ * string literals and nesting; an empty inner keeps the quantifier reading so
+ * exists() stays the parse error it was. `forall(` has no function form and
+ * never consults this. */
+static int exists_paren_is_quantifier(const parser_t *p, size_t open) {
+    size_t at = open + 1u;
+    size_t depth = 1u;
+    int in_string = 0;
+    int saw_content = 0;
+    while (at < p->size && depth != 0u) {
+        char c = p->text[at];
+        if (in_string) {
+            if (c == '\\' && at + 1u < p->size) { at += 2u; continue; }
+            if (c == '"') in_string = 0;
+            ++at;
+            continue;
+        }
+        if (c == '"') { in_string = 1; saw_content = 1; ++at; continue; }
+        if (c == '(' || c == '[') { ++depth; saw_content = 1; ++at; continue; }
+        if (c == ')' || c == ']') {
+            if (depth == 1u && !saw_content) return 1;
+            --depth; ++at; continue;
+        }
+        if (depth == 1u) {
+            if (!isspace((unsigned char)c)) saw_content = 1;
+            if (c == '=' || c == '!' || c == '<' || c == '>' || c == '&' || c == '|') return 1;
+            if ((isalpha((unsigned char)c) || c == '_') &&
+                (at == open + 1u ||
+                 (!isalnum((unsigned char)p->text[at - 1u]) && p->text[at - 1u] != '.' &&
+                  p->text[at - 1u] != '_'))) {
+                size_t end = at;
+                size_t n;
+                const char *w;
+                while (end < p->size &&
+                       (isalnum((unsigned char)p->text[end]) || p->text[end] == '_')) ++end;
+                n = end - at;
+                w = p->text + at;
+                if ((n == 3u && memcmp(w, "and", 3u) == 0) ||
+                    (n == 2u && memcmp(w, "or", 2u) == 0) ||
+                    (n == 3u && memcmp(w, "not", 3u) == 0) ||
+                    (n == 8u && memcmp(w, "contains", 8u) == 0) ||
+                    (n == 12u && memcmp(w, "not_contains", 12u) == 0) ||
+                    (n == 2u && memcmp(w, "in", 2u) == 0) ||
+                    (n == 7u && memcmp(w, "matches", 7u) == 0) ||
+                    (n == 10u && memcmp(w, "startsWith", 10u) == 0) ||
+                    (n == 11u && memcmp(w, "starts_with", 11u) == 0) ||
+                    (n == 8u && memcmp(w, "endsWith", 8u) == 0) ||
+                    (n == 9u && memcmp(w, "ends_with", 9u) == 0) ||
+                    (n == 2u && memcmp(w, "eq", 2u) == 0) ||
+                    (n == 2u && memcmp(w, "ne", 2u) == 0) ||
+                    (n == 2u && memcmp(w, "gt", 2u) == 0) ||
+                    (n == 3u && memcmp(w, "gte", 3u) == 0) ||
+                    (n == 2u && memcmp(w, "lt", 2u) == 0) ||
+                    (n == 3u && memcmp(w, "lte", 3u) == 0) ||
+                    /* A5: the bare multifield predicates make the paren
+                     * content a condition too (exists(Items empty)).
+                     * `count` is absent: it always carries an explicit
+                     * comparison operator, caught by the symbol scan.
+                     * Pathological edge: a lone exists(empty) - a fact
+                     * literally named `empty` - scans as the quantifier here
+                     * and fails to parse; exists("empty") keeps the function
+                     * form (quoted content never trips this scan). */
+                    (n == 5u && memcmp(w, "first", 5u) == 0) ||
+                    (n == 4u && memcmp(w, "last", 4u) == 0) ||
+                    (n == 5u && memcmp(w, "empty", 5u) == 0) ||
+                    (n == 9u && memcmp(w, "not_empty", 9u) == 0) ||
+                    (n == 8u && memcmp(w, "notEmpty", 8u) == 0) ||
+                    (n == 7u && memcmp(w, "collect", 7u) == 0)) return 1;
+                at = end;
+                continue;
+            }
+        }
+        ++at;
+    }
+    return 0;
+}
+
+/* A9 test(f(args)) CE (upstream grl.rs L75-80, anchored on a function call):
+ * `test` counts as the CE keyword only when immediately followed (modulo
+ * whitespace) by '('; anything else (a fact named test, or a longer
+ * identifier like testValue) keeps the plain operand path. */
+static int test_ahead(const parser_t *p) {
+    size_t probe;
+    if (p->size - p->at < 4u || memcmp(p->text + p->at, "test", 4u) != 0) return 0;
+    if (p->size - p->at != 4u &&
+        (isalnum((unsigned char)p->text[p->at + 4u]) || p->text[p->at + 4u] == '_')) return 0;
+    probe = p->at + 4u;
+    while (probe < p->size && isspace((unsigned char)p->text[probe])) ++probe;
+    return probe < p->size && p->text[probe] == '(';
+}
+
+/* A9 typed-form dispatch (fix round 1, C1): `$` in value position opens the
+ * typed form only when the identifier is followed (modulo whitespace) by
+ * ':' - i.e. the `$var : Type(` declaration shape. Anything else
+ * ($o.amount, $o.a.b, $o.m()) falls through to the operand path, where
+ * operand_parse_atom's scope rewrite handles in-scope variables (and the
+ * historical parse error otherwise). */
+static int typed_form_ahead(const parser_t *p) {
+    size_t probe;
+    if (p->at >= p->size || p->text[p->at] != '$') return 0;
+    probe = p->at + 1u;
+    while (probe < p->size && (isalnum((unsigned char)p->text[probe]) ||
+           p->text[probe] == '_')) ++probe;
+    if (probe == p->at + 1u) return 0;
+    while (probe < p->size && isspace((unsigned char)p->text[probe])) ++probe;
+    return probe < p->size && p->text[probe] == ':';
+}
+
 static re_status_t expression(parser_t *p, re_expr_t **out) {
     re_expr_t **values = NULL;
     expression_operator_t *operators = NULL;
     size_t value_count = 0u, operator_count = 0u, capacity = 0u;
     size_t terms = 0u;
+    size_t typed_base = p->typed_depth;
     int expect_value = 1;
     re_status_t status = RE_STATUS_OK;
     re_expr_t *value = NULL;
@@ -476,26 +904,125 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
     if (values == NULL || operators == NULL) { re_free(p->allocator, values); re_free(p->allocator, operators); return RE_STATUS_OUT_OF_MEMORY; }
     for (;;) {
         if (expect_value) {
+            int exists_function_form = 0;
             value = NULL;
             skip_space(p);
-            if (word(p, "exists") || word(p, "forall")) {
+            /* A3: exists(...) is the field-presence built-in (parsed as an
+             * ordinary function-call operand below) when the paren content is
+             * a lone operand; with a top-level comparison/logical operator it
+             * stays the quantifier. forall( is always the quantifier.
+             * A9 boundary: a typed form as the LONE content of the parens
+             * (exists($o: Order(amount > 1))) is not recognized - the
+             * heuristic requires a top-level operator, so it reads as the
+             * exists() function and fails on '$'. Wrap it with an explicit
+             * operator (exists($o: Order(amount > 1) and true)) or drop the
+             * redundant quantifier - the bare typed form already has
+             * exists-semantics.
+             * A6 composition bound: exists(accumulate(...)) likewise carries
+             * no top-level operator, so it reads as the function form and
+             * dies on the accumulate atom - a parse error (upstream accepts
+             * the nesting; pathological composition, documented divergence). */
+            if (p->size - p->at >= 6u && memcmp(p->text + p->at, "exists", 6u) == 0 &&
+                (p->size - p->at == 6u || !isalnum((unsigned char)p->text[p->at + 6u]))) {
+                size_t probe = p->at + 6u;
+                while (probe < p->size && isspace((unsigned char)p->text[probe])) ++probe;
+                if (probe < p->size && p->text[probe] == '(')
+                    exists_function_form = !exists_paren_is_quantifier(p, probe);
+            }
+            if (!exists_function_form && (word(p, "exists") || word(p, "forall"))) {
                 int is_forall = p->at >= 6u && memcmp(p->text + p->at - 6u, "forall", 6u) == 0;
+                skip_space(p);
+                if (p->at < p->size && p->text[p->at] == '(') {
+                    /* Full form: exists( <expr> ) / forall( <expr> ). The paren
+                     * marker scopes the inner expression on the operator stack;
+                     * the matching ')' wraps the reduced inner value into the
+                     * quantifier node (reused shunting-yard machinery). */
+                    ++p->at;
+                    if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                    if (operator_count == capacity) {
+                    status = expression_grow(p, &values, &operators, &capacity);
+                    if (status != RE_STATUS_OK) break;
+                }
+                    operators[operator_count++] = is_forall ? EXPR_OP_FORALL_PAREN : EXPR_OP_EXISTS_PAREN;
+                    continue;
+                }
                 value = re_alloc(p->allocator, sizeof(*value));
                 if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
                 memset(value, 0, sizeof(*value));
                 value->kind = is_forall ? RE_EXPR_FORALL : RE_EXPR_EXISTS;
-                skip_space(p);
-                if (p->at < p->size && p->text[p->at] == '(') {
+                status = operand(p, &value->left);
+                if (status == RE_STATUS_OK) status = comparison(p, &value->compare);
+                if (status == RE_STATUS_OK) status = operand(p, &value->right);
+                if (status == RE_STATUS_OK &&
+                    (value->left.kind != RE_OPERAND_FACT ||
+                     value->right.kind != RE_OPERAND_LITERAL))
                     status = RE_STATUS_NOT_SUPPORTED;
-                } else {
-                    status = operand(p, &value->left);
-                    if (status == RE_STATUS_OK) status = comparison(p, &value->compare);
-                    if (status == RE_STATUS_OK) status = operand(p, &value->right);
-                    if (status == RE_STATUS_OK &&
-                        (value->left.kind != RE_OPERAND_FACT ||
-                         value->right.kind != RE_OPERAND_LITERAL))
-                        status = RE_STATUS_NOT_SUPPORTED;
+            } else if (test_ahead(p)) {
+                /* A9 test(f(args)) CE (upstream grl.rs L75-80): evaluates the
+                 * call and truthiness-tests the result. The inner must be a
+                 * lone function call - upstream's anchored form; a general
+                 * expression (or a trailing comparison) stays a parse error.
+                 * The common error path below destroys value. */
+                p->at += 4u;
+                if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                value = re_alloc(p->allocator, sizeof(*value));
+                if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+                memset(value, 0, sizeof(*value));
+                value->kind = RE_EXPR_TEST;
+                if (!take(p, '(')) status = RE_STATUS_PARSE_ERROR;
+                if (status == RE_STATUS_OK) status = operand(p, &value->left);
+                if (status == RE_STATUS_OK && value->left.kind != RE_OPERAND_FUNCTION)
+                    status = RE_STATUS_PARSE_ERROR;
+                if (status == RE_STATUS_OK && !take(p, ')')) status = RE_STATUS_PARSE_ERROR;
+            } else if (typed_form_ahead(p)) {
+                /* A9 typed form $x: Type(conds) (upstream grl.rs L82-87
+                 * typed_test_condition_regex), bounded to exists-semantics:
+                 * the form is true iff SOME Type-prefixed candidate satisfies
+                 * conds (the A2 candidate machinery evaluates it). $x is
+                 * scoped to the form's own conds - operand_parse_atom
+                 * rewrites it to the Type-rooted path; outside the form '$'
+                 * keeps its historical parse error. The paren marker scopes
+                 * the inner expression on the operator stack like the
+                 * quantifier forms. Only the `$var : Type(` shape lands here
+                 * (typed_form_ahead); `$var.field` atoms fall through to the
+                 * operand path below (fix round 1, C1). */
+                size_t var_start, var_size, type_start, type_size;
+                ++p->at;
+                var_start = p->at;
+                while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
+                       p->text[p->at] == '_')) ++p->at;
+                var_size = p->at - var_start;
+                if (var_size == 0u || !take(p, ':')) { status = RE_STATUS_PARSE_ERROR; break; }
+                skip_space(p);
+                type_start = p->at;
+                while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
+                       p->text[p->at] == '_')) ++p->at;
+                type_size = p->at - type_start;
+                if (type_size == 0u || !take(p, '(')) { status = RE_STATUS_PARSE_ERROR; break; }
+                if (p->typed_depth == RE_MAX_TYPED_SCOPE) { status = RE_STATUS_LIMIT; break; }
+                p->typed_var[p->typed_depth] = p->text + var_start;
+                p->typed_var_size[p->typed_depth] = var_size;
+                p->typed_type[p->typed_depth] = p->text + type_start;
+                p->typed_type_size[p->typed_depth] = type_size;
+                ++p->typed_depth;
+                if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                if (operator_count == capacity) {
+                    status = expression_grow(p, &values, &operators, &capacity);
+                    if (status != RE_STATUS_OK) break;
                 }
+                operators[operator_count++] = EXPR_OP_TYPED_PAREN;
+                continue;
+            } else if (accumulate_ahead(p)) {
+                /* A6: the accumulate(...) CE is a self-contained condition
+                 * atom; its evaluation injects "<Type>.<func>" and always
+                 * matches. The common error path below destroys value. */
+                p->at += 10u;
+                if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                value = re_alloc(p->allocator, sizeof(*value));
+                if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+                memset(value, 0, sizeof(*value));
+                value->kind = RE_EXPR_ACCUMULATE;
+                status = accumulate_form(p, value);
             } else if (p->at + 1u < p->size && p->text[p->at] == '(' &&
                 (isdigit((unsigned char)p->text[p->at + 1u]) || p->text[p->at + 1u] == '.')) {
                 value = re_alloc(p->allocator, sizeof(*value));
@@ -506,20 +1033,38 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
                 if (status == RE_STATUS_OK) status = operand(p, &value->right);
                 if (status != RE_STATUS_OK) { re_expr_destroy(p->allocator, value); break; }
             } else if (take(p, '(')) {
-                if (operator_count == capacity) goto grow;
+                if (operator_count == capacity) {
+                    status = expression_grow(p, &values, &operators, &capacity);
+                    if (status != RE_STATUS_OK) break;
+                }
                 operators[operator_count++] = EXPR_OP_LPAREN;
                 continue;
             } else if (word(p, "not")) {
                 if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
-                if (operator_count == capacity) goto grow;
+                if (operator_count == capacity) {
+                    status = expression_grow(p, &values, &operators, &capacity);
+                    if (status != RE_STATUS_OK) break;
+                }
+                operators[operator_count++] = EXPR_OP_NOT;
+                continue;
+            } else if (p->at < p->size && p->text[p->at] == '!' &&
+                       (p->at + 1u >= p->size || p->text[p->at + 1u] != '=')) {
+                /* Upstream `!` prefix form, equivalent to the `not` keyword;
+                 * `!=` stays the comparison operator (never valid here). */
+                ++p->at;
+                if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                if (operator_count == capacity) {
+                    status = expression_grow(p, &values, &operators, &capacity);
+                    if (status != RE_STATUS_OK) break;
+                }
                 operators[operator_count++] = EXPR_OP_NOT;
                 continue;
             } else {
                 value = re_alloc(p->allocator, sizeof(*value));
                 if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
                 memset(value, 0, sizeof(*value));
-                if (word(p, "true")) value->kind = RE_EXPR_TRUE;
-                else if (word(p, "false")) value->kind = RE_EXPR_FALSE;
+                if (word_ci(p, "true")) value->kind = RE_EXPR_TRUE;
+                else if (word_ci(p, "false")) value->kind = RE_EXPR_FALSE;
                 else {
                     value->kind = RE_EXPR_COMPARE;
                     status = operand(p, &value->left);
@@ -531,6 +1076,42 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
                         value->right.kind = RE_OPERAND_LITERAL;
                         value->right.value.type = RE_VALUE_BOOL;
                         value->right.value.as.boolean = 1;
+                    } else if (status == RE_STATUS_OK && value->left.kind == RE_OPERAND_FACT) {
+                        /* A5: a multifield keyword right after a fact path
+                         * turns the condition into an array-shape
+                         * predicate; otherwise the plain comparison path
+                         * (with the `in` operand-shape check) runs. */
+                        int recognized = 0;
+                        status = multifield_form(p, value, &recognized);
+                        if (status == RE_STATUS_OK && !recognized) {
+                            status = comparison(p, &value->compare);
+                            if (status == RE_STATUS_OK) status = operand(p, &value->right);
+                            if (status == RE_STATUS_OK && value->compare == RE_COMPARE_IN &&
+                                value->right.kind != RE_OPERAND_ARRAY && value->right.kind != RE_OPERAND_FACT)
+                                status = RE_STATUS_PARSE_ERROR;
+                        }
+                    } else if (status == RE_STATUS_OK && value->left.kind == RE_OPERAND_FUNCTION &&
+                               re_builtin_is_predicate(value->left.function_name,
+                                                       value->left.function_name_size)) {
+                        /* A3: a bare predicate built-in as a whole condition
+                         * means fn(...) == true (exists("A.b"), isEmpty(X),
+                         * contains(X, y)). An explicit comparison wins when
+                         * one follows, so exists("A.b") == false stays
+                         * writable; comparison() consumes nothing on failure,
+                         * so rewinding p->at is safe. */
+                        size_t before_compare = p->at;
+                        if (comparison(p, &value->compare) != RE_STATUS_OK) {
+                            p->at = before_compare;
+                            value->compare = RE_COMPARE_EQ;
+                            value->right.kind = RE_OPERAND_LITERAL;
+                            value->right.value.type = RE_VALUE_BOOL;
+                            value->right.value.as.boolean = 1;
+                        } else {
+                            status = operand(p, &value->right);
+                            if (status == RE_STATUS_OK && value->compare == RE_COMPARE_IN &&
+                                value->right.kind != RE_OPERAND_ARRAY && value->right.kind != RE_OPERAND_FACT)
+                                status = RE_STATUS_PARSE_ERROR;
+                        }
                     } else if (status == RE_STATUS_OK) {
                         status = comparison(p, &value->compare);
                         if (status == RE_STATUS_OK) status = operand(p, &value->right);
@@ -542,20 +1123,62 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
             }
             if (status != RE_STATUS_OK) { re_expr_destroy(p->allocator, value); break; }
             if (++terms > RE_MAX_EXPRESSION_TERMS) { re_expr_destroy(p->allocator, value); status = RE_STATUS_LIMIT; break; }
-            if (value_count == capacity) goto grow_value;
+            if (value_count == capacity) {
+                status = expression_grow(p, &values, &operators, &capacity);
+                if (status != RE_STATUS_OK) { re_expr_destroy(p->allocator, value); break; }
+            }
             values[value_count++] = value;
             expect_value = 0;
             continue;
         }
         skip_space(p);
         if (p->at < p->size && p->text[p->at] == ')') {
+            expression_operator_t opener;
             ++p->at;
-            while (operator_count != 0u && operators[operator_count - 1u] != EXPR_OP_LPAREN) {
+            while (operator_count != 0u && operators[operator_count - 1u] != EXPR_OP_LPAREN &&
+                   operators[operator_count - 1u] != EXPR_OP_EXISTS_PAREN &&
+                   operators[operator_count - 1u] != EXPR_OP_FORALL_PAREN &&
+                   operators[operator_count - 1u] != EXPR_OP_TYPED_PAREN) {
                 status = expression_apply(p->allocator, operators[--operator_count], values, &value_count);
                 if (status != RE_STATUS_OK) break;
             }
             if (status != RE_STATUS_OK || operator_count == 0u) { status = RE_STATUS_PARSE_ERROR; break; }
-            --operator_count;
+            opener = operators[--operator_count];
+            if (opener == EXPR_OP_TYPED_PAREN) {
+                /* Close of $x: Type( : wrap the reduced inner expression into
+                 * the typed node and copy the declared type out of the scope
+                 * entry. The node carries the inner tree through `first`;
+                 * left/right stay zeroed (like the nested quantifier forms). */
+                re_expr_t *inner;
+                if (value_count == 0u || p->typed_depth == 0u) { status = RE_STATUS_PARSE_ERROR; break; }
+                inner = values[--value_count];
+                value = re_alloc(p->allocator, sizeof(*value));
+                if (value == NULL) { re_expr_destroy(p->allocator, inner); status = RE_STATUS_OUT_OF_MEMORY; break; }
+                memset(value, 0, sizeof(*value));
+                value->kind = RE_EXPR_TYPED;
+                value->first = inner;
+                --p->typed_depth;
+                status = re_copy_string(p->allocator,
+                    (re_string_t){p->typed_type[p->typed_depth], p->typed_type_size[p->typed_depth]},
+                    &value->typed_type);
+                if (status != RE_STATUS_OK) { re_expr_destroy(p->allocator, value); break; }
+                value->typed_type_size = p->typed_type_size[p->typed_depth];
+                values[value_count++] = value; /* capacity held the popped inner */
+            } else if (opener != EXPR_OP_LPAREN) {
+                /* Close of exists( / forall( : wrap the reduced inner
+                 * expression into the quantifier node. The node carries the
+                 * inner tree through `first`; left/right stay zeroed, which
+                 * marks the nested form downstream (ir.c, ir_eval.c). */
+                re_expr_t *inner;
+                if (value_count == 0u) { status = RE_STATUS_PARSE_ERROR; break; }
+                inner = values[--value_count];
+                value = re_alloc(p->allocator, sizeof(*value));
+                if (value == NULL) { re_expr_destroy(p->allocator, inner); status = RE_STATUS_OUT_OF_MEMORY; break; }
+                memset(value, 0, sizeof(*value));
+                value->kind = opener == EXPR_OP_FORALL_PAREN ? RE_EXPR_FORALL : RE_EXPR_EXISTS;
+                value->first = inner;
+                values[value_count++] = value; /* capacity held the popped inner */
+            }
             expect_value = 0;
             continue;
         }
@@ -570,39 +1193,23 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
                 if (status != RE_STATUS_OK) break;
             }
             if (status != RE_STATUS_OK) break;
-            if (operator_count == capacity) goto grow;
+            if (operator_count == capacity) {
+                status = expression_grow(p, &values, &operators, &capacity);
+                if (status != RE_STATUS_OK) break;
+            }
             operators[operator_count++] = op;
             expect_value = 1;
         }
         continue;
-grow_value:
-        if (capacity > RE_MAX_EXPRESSION_TERMS / 2u) { status = RE_STATUS_LIMIT; break; }
-        capacity *= 2u;
-        {
-            re_expr_t **grown_values = re_realloc(p->allocator, values, capacity * sizeof(*values));
-            expression_operator_t *grown_operators = re_realloc(p->allocator, operators, capacity * sizeof(*operators));
-            if (grown_values == NULL || grown_operators == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
-            values = grown_values;
-            operators = grown_operators;
-        }
-        values[value_count++] = value;
-        expect_value = 0;
-        continue;
-grow:
-        if (capacity > RE_MAX_EXPRESSION_TERMS / 2u) { status = RE_STATUS_LIMIT; break; }
-        capacity *= 2u;
-        {
-            re_expr_t **grown_values = re_realloc(p->allocator, values, capacity * sizeof(*values));
-            expression_operator_t *grown_operators = re_realloc(p->allocator, operators, capacity * sizeof(*operators));
-            if (grown_values == NULL || grown_operators == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
-            values = grown_values;
-            operators = grown_operators;
-        }
     }
     while (status == RE_STATUS_OK && operator_count != 0u) {
-        if (operators[operator_count - 1u] == EXPR_OP_LPAREN) { status = RE_STATUS_PARSE_ERROR; break; }
+        if (operators[operator_count - 1u] == EXPR_OP_LPAREN ||
+            operators[operator_count - 1u] == EXPR_OP_EXISTS_PAREN ||
+            operators[operator_count - 1u] == EXPR_OP_FORALL_PAREN ||
+            operators[operator_count - 1u] == EXPR_OP_TYPED_PAREN) { status = RE_STATUS_PARSE_ERROR; break; }
         status = expression_apply(p->allocator, operators[--operator_count], values, &value_count);
     }
+    p->typed_depth = typed_base;
     if (status == RE_STATUS_OK && (expect_value || value_count != 1u)) status = RE_STATUS_PARSE_ERROR;
     if (status == RE_STATUS_OK) { *out = values[0]; values[0] = NULL; }
     while (value_count != 0u) re_expr_destroy(p->allocator, values[--value_count]);
@@ -744,6 +1351,8 @@ static void rule_destroy(const re_allocator_impl_t *a, re_rule_t *r) { size_t i;
 static void modules_destroy(const re_allocator_impl_t *a, re_program_t *p) { size_t i, j; for (i = 0u; i < p->module_count; ++i) { re_free(a, p->modules[i].name); for (j = 0u; j < p->modules[i].import_count; ++j) re_free(a, p->modules[i].imports[j]); re_free(a, p->modules[i].imports); } re_free(a, p->modules); }
 static void deffacts_set_destroy(const re_allocator_impl_t *a, re_deffacts_set_t *set) { size_t i; re_free(a, set->name); for (i = 0u; i < set->entry_count; ++i) { re_free(a, set->entries[i].path); re_operand_destroy(a, &set->entries[i].value); } re_free(a, set->entries); }
 static void deffacts_destroy(const re_allocator_impl_t *a, re_program_t *p) { size_t i; for (i = 0u; i < p->deffacts_set_count; ++i) deffacts_set_destroy(a, &p->deffacts_sets[i]); re_free(a, p->deffacts_sets); }
+static void query_block_destroy(const re_allocator_impl_t *a, re_query_block_t *q) { size_t b, i; re_free(a, q->name); re_free(a, q->goal); re_expr_destroy(a, q->when); for (b = 0u; b < RE_QUERY_BLOCK_COUNT; ++b) { for (i = 0u; i < q->action_counts[b]; ++i) { re_free(a, q->actions[b][i].name); re_operand_destroy(a, &q->actions[b][i].value); re_free(a, q->actions[b][i].args); } re_free(a, q->actions[b]); } }
+static void queries_destroy(const re_allocator_impl_t *a, re_program_t *p) { size_t i; for (i = 0u; i < p->query_count; ++i) query_block_destroy(a, &p->queries[i]); re_free(a, p->queries); }
 static int find_module(const re_program_t *p, re_string_t name, size_t *index) { size_t i; for (i = 0u; i < p->module_count; ++i) if (p->modules[i].name_size == name.size && memcmp(p->modules[i].name, name.data, name.size) == 0) { *index = i; return 1; } return 0; }
 static re_status_t add_module(const re_allocator_impl_t *a, re_program_t *p, re_string_t name, size_t *index) { re_module_t *grown; if (find_module(p, name, index)) return RE_STATUS_PARSE_ERROR; grown = re_realloc(a, p->modules, (p->module_count + 1u) * sizeof(*grown)); if (grown == NULL) return RE_STATUS_OUT_OF_MEMORY; p->modules = grown; memset(&p->modules[p->module_count], 0, sizeof(*grown)); if (re_copy_string(a, name, &p->modules[p->module_count].name) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY; p->modules[p->module_count].name_size = name.size; *index = p->module_count++; return RE_STATUS_OK; }
 static re_status_t add_import(const re_allocator_impl_t *a, re_module_t *m, re_string_t name) { char **grown = re_realloc(a, m->imports, (m->import_count + 1u) * sizeof(*grown)); if (grown == NULL) return RE_STATUS_OUT_OF_MEMORY; m->imports = grown; if (re_copy_string(a, name, &m->imports[m->import_count]) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY; ++m->import_count; return RE_STATUS_OK; }
@@ -770,6 +1379,203 @@ static int module_cycle(const re_program_t *p, size_t current, size_t target, un
 }
 static re_status_t validate_modules(const re_allocator_impl_t *a, re_program_t *p) { size_t i, j, imported; unsigned char *path; path = p->module_count == 0u ? NULL : re_alloc(a, p->module_count); if (p->module_count != 0u && path == NULL) return RE_STATUS_OUT_OF_MEMORY; for (i = 0u; i < p->module_count; ++i) for (j = 0u; j < p->modules[i].import_count; ++j) { re_string_t name = {p->modules[i].imports[j], strlen(p->modules[i].imports[j])}; if (!find_module(p, name, &imported)) { re_free(a, path); return RE_STATUS_PARSE_ERROR; } } for (i = 0u; i < p->module_count; ++i) for (j = 0u; j < p->modules[i].import_count; ++j) { re_string_t name = {p->modules[i].imports[j], strlen(p->modules[i].imports[j])}; (void)find_module(p, name, &imported); memset(path, 0, p->module_count); if (module_cycle(p, imported, i, path) && imported != i) { re_free(a, path); return RE_STATUS_PARSE_ERROR; } } re_free(a, path); return RE_STATUS_OK; }
 
+/* A7 query blocks (upstream grl_query.rs L17-42). The body is field-based
+ * (`field: value;`), not the rule when/then shape; scalar fields are
+ * `;`-terminated (upstream terminates goal/when at the newline; the
+ * terminator is the documented local divergence), `goal:` keeps its raw
+ * expression text for the executor's textual &&/|| split, and `when:` parses
+ * as an ordinary condition expression. Only `goal:` is required; defaults
+ * match upstream (depth-first, max-depth 10, max-solutions 1, memoization and
+ * optimization on). Duplicate fields are a parse error (the rule_attributes
+ * idiom; upstream's regexes silently take the first match). */
+
+/* Scans the raw goal text: everything up to the `;` terminator at paren
+ * depth 0, skipping over "..." strings (backslash escapes honored). The
+ * stored text is trimmed; an empty or unterminated goal is a parse error. */
+static re_status_t query_goal_text(parser_t *p, char **out, size_t *out_size) {
+    size_t start; size_t end; size_t depth = 0u; int in_string = 0; int escaped = 0;
+    skip_space(p);
+    start = p->at;
+    while (p->at < p->size) {
+        char c = p->text[p->at];
+        if (escaped) { escaped = 0; ++p->at; continue; }
+        if (in_string) {
+            if (c == '\\') escaped = 1;
+            else if (c == '"') in_string = 0;
+            ++p->at; continue;
+        }
+        if (c == '"') { in_string = 1; ++p->at; continue; }
+        if (c == '(') ++depth;
+        else if (c == ')') { if (depth == 0u) return RE_STATUS_PARSE_ERROR; --depth; }
+        else if (c == ';' && depth == 0u) break;
+        ++p->at;
+    }
+    if (p->at == p->size || depth != 0u || in_string) return RE_STATUS_PARSE_ERROR;
+    end = p->at;
+    ++p->at;
+    while (end > start && isspace((unsigned char)p->text[end - 1u])) --end;
+    if (end == start) return RE_STATUS_PARSE_ERROR;
+    if (re_copy_string(p->allocator, (re_string_t){p->text + start, end - start}, out) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    *out_size = end - start;
+    return RE_STATUS_OK;
+}
+
+/* One statement inside an on-success/on-failure/on-missing block: either
+ * `Name = <scalar literal>;` (flat assignment; arrays and nested paths are
+ * rejected) or `Name(<args>);` (the raw argument text is kept for the four
+ * known printers; anything else is a parse error at load). */
+static re_status_t query_action_statement(parser_t *p, re_query_action_stmt_t *stmt) {
+    size_t start;
+    skip_space(p);
+    start = p->at;
+    if (p->at >= p->size || !(isalpha((unsigned char)p->text[p->at]) || p->text[p->at] == '_')) return RE_STATUS_PARSE_ERROR;
+    while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) || p->text[p->at] == '_' || p->text[p->at] == '.')) ++p->at;
+    if (re_copy_string(p->allocator, (re_string_t){p->text + start, p->at - start}, &stmt->name) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    stmt->name_size = p->at - start;
+    skip_space(p);
+    if (take(p, '=')) {
+        re_status_t status;
+        if (p->at < p->size && p->text[p->at] == '=') return RE_STATUS_PARSE_ERROR;
+        status = operand_primary(p, &stmt->value);
+        if (status == RE_STATUS_OK && (stmt->value.kind != RE_OPERAND_LITERAL ||
+            (stmt->value.value.type != RE_VALUE_BOOL && stmt->value.value.type != RE_VALUE_INT64 &&
+             stmt->value.value.type != RE_VALUE_DOUBLE && stmt->value.value.type != RE_VALUE_STRING)))
+            status = RE_STATUS_PARSE_ERROR;
+        if (status == RE_STATUS_OK && !take(p, ';')) status = RE_STATUS_PARSE_ERROR;
+        return status;
+    }
+    if (take(p, '(')) {
+        size_t arg_start = p->at; size_t arg_end; size_t depth = 1u; int in_string = 0; int escaped = 0;
+        size_t i;
+        for (i = 0u; i < stmt->name_size; ++i) if (stmt->name[i] == '.') return RE_STATUS_PARSE_ERROR;
+        while (p->at < p->size) {
+            char c = p->text[p->at];
+            if (escaped) { escaped = 0; ++p->at; continue; }
+            if (in_string) {
+                if (c == '\\') escaped = 1;
+                else if (c == '"') in_string = 0;
+                ++p->at; continue;
+            }
+            if (c == '"') { in_string = 1; ++p->at; continue; }
+            if (c == '(') ++depth;
+            else if (c == ')') { --depth; if (depth == 0u) break; }
+            ++p->at;
+        }
+        if (p->at == p->size || in_string) return RE_STATUS_PARSE_ERROR;
+        arg_end = p->at;
+        ++p->at;
+        while (arg_end > arg_start && isspace((unsigned char)p->text[arg_end - 1u])) --arg_end;
+        while (arg_start < arg_end && isspace((unsigned char)p->text[arg_start])) ++arg_start;
+        stmt->is_call = 1;
+        if (re_copy_string(p->allocator, (re_string_t){p->text + arg_start, arg_end - arg_start}, &stmt->args) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+        stmt->args_size = arg_end - arg_start;
+        if (!take(p, ';')) return RE_STATUS_PARSE_ERROR;
+        return RE_STATUS_OK;
+    }
+    return RE_STATUS_PARSE_ERROR;
+}
+
+static re_status_t parse_query_block(parser_t *p, re_query_block_t *query) {
+    int seen_goal = 0; int seen_strategy = 0; int seen_max_depth = 0; int seen_max_solutions = 0;
+    int seen_memoization = 0; int seen_optimization = 0; int seen_when = 0;
+    int seen_blocks[RE_QUERY_BLOCK_COUNT] = {0, 0, 0};
+    query->strategy = (int)RE_QUERY_STRATEGY_DEPTH_FIRST;
+    query->max_depth = 10u;
+    query->max_solutions = 1u;
+    query->enable_memoization = 1;
+    query->enable_optimization = 1;
+    if (quoted(p, &query->name, &query->name_size) != RE_STATUS_OK || !take(p, '{')) return RE_STATUS_PARSE_ERROR;
+    for (;;) {
+        skip_space(p);
+        if (take(p, '}')) break;
+        if (p->at >= p->size) return RE_STATUS_PARSE_ERROR;
+        if (word(p, "goal")) {
+            re_status_t status;
+            if (seen_goal != 0 || !take(p, ':')) return RE_STATUS_PARSE_ERROR;
+            seen_goal = 1;
+            status = query_goal_text(p, &query->goal, &query->goal_size);
+            if (status != RE_STATUS_OK) return status;
+            continue;
+        }
+        if (word(p, "strategy")) {
+            if (seen_strategy != 0 || !take(p, ':')) return RE_STATUS_PARSE_ERROR;
+            seen_strategy = 1;
+            if (word(p, "depth-first")) query->strategy = (int)RE_QUERY_STRATEGY_DEPTH_FIRST;
+            else if (word(p, "breadth-first")) query->strategy = (int)RE_QUERY_STRATEGY_BREADTH_FIRST;
+            else if (word(p, "iterative")) query->strategy = (int)RE_QUERY_STRATEGY_ITERATIVE;
+            else return RE_STATUS_PARSE_ERROR; /* upstream silently keeps the default; local rejects at load */
+            if (!take(p, ';')) return RE_STATUS_PARSE_ERROR;
+            continue;
+        }
+        { int field = 0; /* 1 = max-depth, 2 = max-solutions, 3 = enable-memoization, 4 = enable-optimization */
+          if (word(p, "max-depth")) field = 1;
+          else if (word(p, "max-solutions")) field = 2;
+          else if (word(p, "enable-memoization")) field = 3;
+          else if (word(p, "enable-optimization")) field = 4;
+          if (field != 0) {
+              int *seen = field == 1 ? &seen_max_depth : field == 2 ? &seen_max_solutions :
+                  field == 3 ? &seen_memoization : &seen_optimization;
+              if (*seen != 0 || !take(p, ':')) return RE_STATUS_PARSE_ERROR;
+              *seen = 1;
+              if (field <= 2) {
+                  re_operand_t value; re_status_t status; size_t parsed;
+                  memset(&value, 0, sizeof(value));
+                  status = operand_primary(p, &value);
+                  if (status == RE_STATUS_OK && (value.kind != RE_OPERAND_LITERAL ||
+                      value.value.type != RE_VALUE_INT64 || value.value.as.int64_value < 0))
+                      status = RE_STATUS_PARSE_ERROR;
+                  parsed = status == RE_STATUS_OK ? (size_t)value.value.as.int64_value : 0u;
+                  re_operand_destroy(p->allocator, &value);
+                  if (status != RE_STATUS_OK) return status;
+                  if (field == 1) query->max_depth = parsed; else query->max_solutions = parsed;
+              } else {
+                  int enabled;
+                  if (word(p, "true")) enabled = 1;
+                  else if (word(p, "false")) enabled = 0;
+                  else return RE_STATUS_PARSE_ERROR;
+                  if (field == 3) query->enable_memoization = enabled; else query->enable_optimization = enabled;
+              }
+              if (!take(p, ';')) return RE_STATUS_PARSE_ERROR;
+              continue;
+          } }
+        if (word(p, "when")) {
+            re_status_t status;
+            if (seen_when != 0 || !take(p, ':')) return RE_STATUS_PARSE_ERROR;
+            seen_when = 1;
+            status = expression(p, &query->when);
+            if (status != RE_STATUS_OK) return status;
+            if (!take(p, ';')) return RE_STATUS_PARSE_ERROR;
+            continue;
+        }
+        { size_t block = RE_QUERY_BLOCK_COUNT;
+          if (word(p, "on-success")) block = RE_QUERY_BLOCK_SUCCESS;
+          else if (word(p, "on-failure")) block = RE_QUERY_BLOCK_FAILURE;
+          else if (word(p, "on-missing")) block = RE_QUERY_BLOCK_MISSING;
+          if (block != RE_QUERY_BLOCK_COUNT) {
+              if (seen_blocks[block] != 0 || !take(p, ':') || !take(p, '{')) return RE_STATUS_PARSE_ERROR;
+              seen_blocks[block] = 1;
+              for (;;) {
+                  re_query_action_stmt_t stmt;
+                  skip_space(p);
+                  if (take(p, '}')) break;
+                  if (p->at >= p->size) return RE_STATUS_PARSE_ERROR;
+                  memset(&stmt, 0, sizeof(stmt));
+                  { re_status_t status = query_action_statement(p, &stmt);
+                    if (status != RE_STATUS_OK) { re_free(p->allocator, stmt.name); re_operand_destroy(p->allocator, &stmt.value); re_free(p->allocator, stmt.args); return status; } }
+                  { size_t count = query->action_counts[block];
+                    re_query_action_stmt_t *grown = re_realloc(p->allocator, query->actions[block], (count + 1u) * sizeof(*grown));
+                    if (grown == NULL) { re_free(p->allocator, stmt.name); re_operand_destroy(p->allocator, &stmt.value); re_free(p->allocator, stmt.args); return RE_STATUS_OUT_OF_MEMORY; }
+                    query->actions[block] = grown; query->actions[block][count] = stmt; query->action_counts[block] = count + 1u; }
+              }
+              continue;
+          } }
+        return RE_STATUS_PARSE_ERROR;
+    }
+    if (seen_goal == 0) return RE_STATUS_PARSE_ERROR;
+    return RE_STATUS_OK;
+}
+
+
 re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source, const re_limits_t *limits, re_program_t **out_program) {
     re_allocator_impl_t a; re_program_t *program; parser_t p; size_t capacity = 0u;
     if (out_program == NULL || source.data == NULL) return RE_STATUS_INVALID_ARGUMENT;
@@ -781,7 +1587,7 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
     { re_status_t status = re_copy_string(&a, source, &program->source);
       if (status != RE_STATUS_OK) { re_free(&a, program); return status; } }
     program->source_size = source.size;
-    p.text = program->source; p.size = program->source_size; p.at = 0u; p.allocator = &a; p.allow_dollar = 0;
+    p.text = program->source; p.size = program->source_size; p.at = 0u; p.allocator = &a; p.allow_dollar = 0; p.typed_depth = 0u;
     while (p.at < p.size) {
         if (word(&p, "defmodule")) {
             size_t start; char *module_name = NULL; size_t module_size = 0u;
@@ -829,6 +1635,17 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
             { re_deffacts_set_t *grown = re_realloc(&a, program->deffacts_sets, (program->deffacts_set_count + 1u) * sizeof(*grown));
               if (grown == NULL) { deffacts_set_destroy(&a, &set); re_program_destroy(program); return RE_STATUS_OUT_OF_MEMORY; }
               program->deffacts_sets = grown; program->deffacts_sets[program->deffacts_set_count++] = set; }
+            continue;
+        }
+        if (word(&p, "query")) {
+            re_query_block_t query;
+            memset(&query, 0, sizeof(query));
+            p.allow_dollar = 0;
+            { re_status_t status = parse_query_block(&p, &query);
+              if (status != RE_STATUS_OK) { query_block_destroy(&a, &query); re_program_destroy(program); return status; } }
+            { re_query_block_t *grown = re_realloc(&a, program->queries, (program->query_count + 1u) * sizeof(*grown));
+              if (grown == NULL) { query_block_destroy(&a, &query); re_program_destroy(program); return RE_STATUS_OUT_OF_MEMORY; }
+              program->queries = grown; program->queries[program->query_count++] = query; }
             continue;
         }
         re_rule_t rule; re_operand_t action_target; memset(&rule, 0, sizeof(rule)); memset(&action_target, 0, sizeof(action_target)); rule.source_order = program->rule_count; p.allow_dollar = 0;
@@ -885,6 +1702,31 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
                  continue;
              }
              status = operand_primary(&p, &action_target);
+             if (status == RE_STATUS_OK && action_target.kind == RE_OPERAND_FUNCTION &&
+                 action_target.fact_name == NULL) {
+                 /* A8 bare `name(args)` action statement: only the whitelisted
+                  * upstream action builtins (retract/log/ActivateAgendaGroup/
+                  * ScheduleRule/CompleteWorkflow/SetWorkflowData) parse here;
+                  * any other bare call keeps the historical parse error. */
+                 if (!re_builtin_action_is(action_target.function_name,
+                         action_target.function_name_size)) status = RE_STATUS_PARSE_ERROR;
+                 if (status == RE_STATUS_OK &&
+                     re_copy_string(&a, (re_string_t){action_target.function_name,
+                         action_target.function_name_size}, &action.name) != RE_STATUS_OK)
+                     status = RE_STATUS_OUT_OF_MEMORY;
+                 if (status == RE_STATUS_OK) {
+                     action.name_size = action_target.function_name_size;
+                     action.value = action_target;
+                     memset(&action_target, 0, sizeof(action_target));
+                     action.append = RE_ACTION_BUILTIN_CALL;
+                     { size_t count = rule.action_count; re_action_t *grown = re_realloc(&a, rule.actions, (count + 1u) * sizeof(*grown)); if (grown == NULL) { re_free(&a, action.name); re_operand_destroy(&a, &action.value); status = RE_STATUS_OUT_OF_MEMORY; break; } rule.actions = grown; rule.actions[count] = action; rule.action_count = count + 1u; }
+                     if (!take(&p, ';')) { status = RE_STATUS_PARSE_ERROR; break; }
+                     skip_space(&p); if (p.at < p.size && p.text[p.at] == '}') break;
+                     continue;
+                 }
+                 re_operand_destroy(&a, &action_target);
+                 break;
+             }
              if (status == RE_STATUS_OK && action_target.kind != RE_OPERAND_FACT) status = RE_STATUS_PARSE_ERROR;
               if (status == RE_STATUS_OK) {
                   if (take(&p, '=')) action.append = 0;
@@ -933,7 +1775,7 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
      *out_program = program; return RE_STATUS_OK;
 }
 
-void re_program_destroy(re_program_t *program) { size_t i; if (program == NULL) return; re_ir_destroy(program->ir); for (i = 0u; i < program->rule_count; ++i) rule_destroy(&program->allocator, &program->rules[i]); modules_destroy(&program->allocator, program); deffacts_destroy(&program->allocator, program); re_free(&program->allocator, program->module_focus); re_free(&program->allocator, program->agenda_focus); re_free(&program->allocator, program->rules); re_free(&program->allocator, program->source); re_free(&program->allocator, program); }
+void re_program_destroy(re_program_t *program) { size_t i; if (program == NULL) return; re_ir_destroy(program->ir); for (i = 0u; i < program->rule_count; ++i) rule_destroy(&program->allocator, &program->rules[i]); modules_destroy(&program->allocator, program); deffacts_destroy(&program->allocator, program); queries_destroy(&program->allocator, program); re_free(&program->allocator, program->module_focus); re_free(&program->allocator, program->agenda_focus); re_free(&program->allocator, program->rules); re_free(&program->allocator, program->source); re_free(&program->allocator, program); }
 
 re_status_t re_program_set_module_focus(re_program_t *program, re_string_t module) {
     char *copy;

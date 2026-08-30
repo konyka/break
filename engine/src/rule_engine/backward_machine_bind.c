@@ -42,6 +42,23 @@ static int condition_shape_supported(const re_expr_t *condition) {
         condition->kind == RE_EXPR_OR)
         return condition_shape_supported(condition->first) &&
                condition_shape_supported(condition->second);
+    /* Parenthesized quantifier nodes (Task A2) carry an inner expression in
+     * `first` and zeroed operands; the explicit machine cannot evaluate them,
+     * so mark them unsupported (the caller answers RE_STATUS_NOT_SUPPORTED)
+     * instead of letting the vacuous operand check pass. */
+    if ((condition->kind == RE_EXPR_EXISTS || condition->kind == RE_EXPR_FORALL) &&
+        condition->first != NULL) return 0;
+    /* A5 multifield predicates need the forward evaluator's structured-path
+     * probe; the bare forms' zeroed right operand would otherwise pass the
+     * operand-shape check as a literal. */
+    if (condition->kind == RE_EXPR_MULTIFIELD) return 0;
+    /* A6 accumulate nodes write the injected result fact during matching;
+     * the backward machine cannot host them. */
+    if (condition->kind == RE_EXPR_ACCUMULATE) return 0;
+    /* A9: test() wraps a function call (already rejected operand-side) and
+     * the typed form iterates candidates; neither is a supported shape. The
+     * typed node's zeroed operands would otherwise pass as literals. */
+    if (condition->kind == RE_EXPR_TEST || condition->kind == RE_EXPR_TYPED) return 0;
     return operand_shape_supported(&condition->left) &&
            operand_shape_supported(&condition->right);
 }

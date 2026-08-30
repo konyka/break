@@ -456,6 +456,32 @@ static re_status_t machine_condition_matches(re_query_t *query, const re_expr_t 
                 status = condition_stack_push(&query->allocator, &stack, current->first);
                 if (status != RE_STATUS_OK) break;
                 continue;
+            } else if ((current->kind == RE_EXPR_EXISTS || current->kind == RE_EXPR_FORALL) &&
+                       current->first != NULL) {
+                /* Parenthesized quantifier node (Task A2): the compatibility
+                 * evaluator cannot rebind quantifier candidates. Its left/right
+                 * operands are zeroed, so falling into the legacy comparison
+                 * below would compare RE_COMPARE_TRUE over RE_VALUE_NONE and
+                 * silently answer true; fail honestly instead. */
+                status = RE_STATUS_NOT_SUPPORTED;
+                break;
+            } else if (current->kind == RE_EXPR_MULTIFIELD) {
+                /* A5 multifield predicate: the compatibility evaluator has no
+                 * structured-path probe, and bare forms carry a zeroed right
+                 * operand - fail honestly like the quantifier nodes above. */
+                status = RE_STATUS_NOT_SUPPORTED;
+                break;
+            } else if (current->kind == RE_EXPR_ACCUMULATE) {
+                /* A6 accumulate: the compatibility evaluator has no fact
+                 * write access for the result injection - fail honestly. */
+                status = RE_STATUS_NOT_SUPPORTED;
+                break;
+            } else if (current->kind == RE_EXPR_TEST || current->kind == RE_EXPR_TYPED) {
+                /* A9: the compatibility evaluator hosts neither the test()
+                 * function-call truthiness probe nor the candidate-iterating
+                 * typed form - fail honestly like the nodes above. */
+                status = RE_STATUS_NOT_SUPPORTED;
+                break;
             } else {
                 status = machine_operand_value(query, &current->left, environment, depth, frames, frame_count, trace, &left);
                 if (status != RE_STATUS_OK) break;

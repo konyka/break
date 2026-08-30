@@ -36,6 +36,20 @@ Implemented now:
   per-param defaults emitting `rule "..." [salience N] {when/then}` source
   that the host parses via `re_program_load`; no JSON round-trip and no
   engine-side template registry.
+- the completed GRL/expression surface (sub-project A, 2026-08-29): word
+  operator aliases, case-insensitive bool/null literals, `%` modulo, string
+  `+` concatenation, D4 comparison alignment (strict typed equality,
+  `to_number` relational coercion), general parenthesized
+  `!(...)`/`exists(...)`/`forall(...)` quantifiers over prefix-heuristic
+  candidates, the condition and utility built-in families (registry fallback
+  in `builtins.c`), multifield array-shape predicates, the
+  `accumulate(Type(...), func(...))` CE with result injection,
+  `test(f(...))` and the `$x: Type(conds)` typed form, whitelisted action
+  built-ins (`retract`/`log`/`ActivateAgendaGroup` plus the D5 workflow-trio
+  registered dispatch), and GRL `query "Name" { ... }` blocks executed by
+  `query_exec.c` through `re_engine_run_query`/`re_engine_run_queries`;
+  bounds and divergences are enumerated in `docs/Rule_Engine_Design.md`
+  ("GRL surface parity").
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded fact-store truth-maintenance slice: explicit and logical facts,
   copied producer names, generation-safe premise IDs, duplicate-coalesced
@@ -127,7 +141,8 @@ support.
 
 The local status is limited to behavior covered by the registered rule-engine
 tests, including `engine/tests/test_rule_engine.c`, the transaction, RETE, agenda,
-backward, machine-structure, machine-context, binding, grl-semantics, fuzz-smoke, and
+backward, machine-structure, machine-context, binding, grl-semantics, grl-surface,
+query-blocks, fuzz-smoke, and
 optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
 upstream evidence only. No deferred family has an ABI placeholder.
@@ -410,7 +425,12 @@ in `backward.c`, which also covers direct fact comparisons such as
 `Ready == true`, supported boolean composition, literal/propagated formal
 bindings, nested goal operands, and registered custom-function operands. The
 compatibility path still rejects arbitrary predicate unification and shared
-proof subgraphs. Neither path claims
+proof subgraphs. It likewise rejects the sub-project A condition forms it
+cannot evaluate honestly - nested parenthesized quantifiers, multifield
+predicates, accumulate, `test()`, and the typed form report
+`RE_STATUS_NOT_SUPPORTED` rather than proving through the legacy operand
+comparison, and backward chaining does not consult the built-in function
+families. Neither path claims
 arbitrary upstream unification or shared-subgraph provenance.
 
 Above both paths, `re_backward_machine_dispatch` owns query argument and
