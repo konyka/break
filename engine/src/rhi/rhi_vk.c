@@ -254,6 +254,7 @@ typedef struct {
     u32         current_frame;
     u32         image_index;
     bool        frame_started;
+    bool        frame_submitted;
 
     VKUniformRing uniform_ring[VK_MAX_FRAMES];
     u8           *uniform_mapped[VK_MAX_FRAMES];
@@ -1083,6 +1084,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.backend = RHI_BACKEND_VULKAN;
     dev->capabilities.scissor_supported = true;
     dev->capabilities.present_target_preserved = false;
+    dev->capabilities.present_damage_supported = false;
+    dev->capabilities.present_buffer_age_supported = false;
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
     dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
     for (u32 samples = 2u; samples <= 64u; samples <<= 1u) {
@@ -1184,20 +1187,20 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk->feat_partially_bound = true;
     }
 
-    const char *dev_extensions[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    const char *dev_extensions[3];
+    u32 dev_extension_count = 0u;
+    dev_extensions[dev_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef ENGINE_PLATFORM_MACOS
-        /* Mandatory on MoltenVK: a portability driver must have its subset
-         * extension enabled whenever the device advertises it. */
-        "VK_KHR_portability_subset",
+    /* Mandatory on MoltenVK: a portability driver must have its subset
+     * extension enabled whenever the device advertises it. */
+    dev_extensions[dev_extension_count++] = "VK_KHR_portability_subset";
 #endif
-    };
     VkDeviceCreateInfo dci = {0};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.pNext = &enabled_vk11; /* R441: 1.1 chain head (-> 1.2 features) */
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = (u32)(sizeof(dev_extensions) / sizeof(dev_extensions[0]));
+    dci.enabledExtensionCount = dev_extension_count;
     dci.ppEnabledExtensionNames = dev_extensions;
     dci.pEnabledFeatures = &enabled_features;
 
@@ -1690,6 +1693,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     g_current_device = dev;
     dev->frame_partial_active = false;
+    vk->frame_submitted = false;
 
     /* R175: Ensure deferred mip uploads finished before this frame samples them. */
     vk_mip_upload_reclaim(vk);
@@ -2069,13 +2073,21 @@ void rhi_frame_end(RHIDevice *dev) {
     if (vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]) != VK_SUCCESS) {
         LOG_FATAL("VK: vkQueueSubmit failed in frame_end");
         vk->frame_started = false;
+        vk->frame_submitted = false;
         return;
     }
     vk->frame_started = false;
+    vk->frame_submitted = true;
 }
 
 void rhi_present(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
+    if (!vk->frame_submitted) {
+        dev->frame_damage_requested = false;
+        dev->frame_damage_count = 0u;
+        dev->frame_partial_active = false;
+        return;
+    }
 
     VkPresentInfoKHR pi = {0};
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -2091,6 +2103,7 @@ void rhi_present(RHIDevice *dev) {
     }
 
     vk->current_frame = (vk->current_frame + 1) % VK_MAX_FRAMES;
+    vk->frame_submitted = false;
     dev->frame_damage_requested = false;
     dev->frame_damage_count = 0u;
     dev->frame_partial_active = false;

@@ -143,7 +143,7 @@ typedef struct re_ir_query_t {
     int enable_optimization; /* accepted, documented no-op */
     re_ir_span_t span;
 } re_ir_query_t;
-typedef struct re_ir_program_t {
+struct re_ir_program_t {
     re_allocator_impl_t allocator;
     size_t source_size;
     char *strings;
@@ -168,7 +168,7 @@ typedef struct re_ir_program_t {
     size_t query_action_count;
     re_ir_span_t *spans;
     size_t span_count;
-} re_ir_program_t;
+};
 
 re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out);
 re_status_t re_ir_validate(const re_ir_program_t *ir);

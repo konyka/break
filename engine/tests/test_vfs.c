@@ -597,16 +597,20 @@ TEST(vfs_mount_pak_rejects_path_truncation)
     ASSERT_EQ(TEST_MKDIR(base), 0);
     int dn = snprintf(dir, sizeof(dir), "%s", base);
     ASSERT_TRUE(dn >= 0 && (usize)dn < sizeof(dir));
-    usize win_cap = 230u;
-    while ((usize)dn < 250u && (usize)dn < win_cap) {
+    const usize target_dir_len = VFS_MAX_PATH;
+    while ((usize)dn < target_dir_len) {
         usize part = 70u;
-        if ((usize)dn + 1u + part > 250u) part = 250u - (usize)dn - 1u;
+        if ((usize)dn + 1u + part > target_dir_len) {
+            part = target_dir_len - (usize)dn - 1u;
+        }
+        ASSERT_TRUE(part > 0u);
         dir[dn++] = '/';
         memset(dir + dn, 'q', part);
         dn += (int)part;
         dir[dn] = '\0';
         ASSERT_EQ(TEST_MKDIR(dir), 0);
     }
+    ASSERT_TRUE(strlen(dir) >= VFS_MAX_PATH);
     int n = snprintf(path, sizeof(path), "%s/archive.pak", dir);
     ASSERT_TRUE(n >= 0 && (usize)n < sizeof(path));
     PakHeader hdr = { .magic = VFS_PAK_MAGIC, .version = VFS_PAK_VERSION,

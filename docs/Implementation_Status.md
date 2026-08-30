@@ -2,6 +2,27 @@
 
 ## 本轮更新
 
+**独立 myr 依赖策略收敛（TDD）**：修复旧版 `engine/src/myui/myr/CMakeLists.txt` 仅依赖
+`pkg-config` 且未启用 HarfBuzz 的配置漂移，统一为 FreeType 原生 CMake target、HarfBuzz
+CMake target 优先及 `pkg-config` imported target 回退，并使用正确的 `Freetype_FOUND` 变量。
+新增 `test_myr_dependency_config` 配置契约，防止独立入口再次退回旧依赖路径；主工程完整
+CTest 现为 **74/74**，无 `pkg-config` 的 HarfBuzz CMake package-only 构建通过。
+
+**HarfBuzz/FreeType 跨平台依赖探测（TDD）**：`myui_core` 先确认 FreeType 实际可用，再启用
+HarfBuzz；HarfBuzz 优先使用原生 CMake imported target，缺少 package config 时回退到
+`pkg-config` imported target。这样 Windows/macOS 包管理器和 Linux 无 `pkg-config` 环境不会
+错误关闭 OpenType shaping，同时 FreeType 缺失时不会留下不可链接的 HarfBuzz 定义。验证：
+禁用 `pkg-config` 的 CMake package-only 配置与构建通过；显式禁用 FreeType 的配置不启用
+HarfBuzz；GL、Vulkan、Wayland 全新配置/构建仍通过。
+
+**构建依赖与测试隔离修复（TDD）**：修正规则引擎公共头中 opaque typedef 与完整类型定义的
+重复声明，避免 GCC/Clang 严格构建因类型重定义失败；同时修正触发 `-Werror` 的误导性缩进。
+VFS 路径截断回归测试改为实际构造达到 `VFS_MAX_PATH` 的 PAK 路径，不放宽运行时安全边界。
+网络复制测试中仅验证本地状态的用例改用内核分配的临时 UDP 端口，互联用例继续使用按进程隔离
+的端口块，消除并行 CTest 的端口耗尽和跨进程碰撞。验证：完整 Debug GNU 构建成功，CTest
+**73/73** 通过；`test_vfs` **33/33**、`test_net_replication` **51/51**，后者双进程并行
+回归均通过；`git diff --check` 通过。
+
 **BreakUI 增量合成安全决策层（TDD）**：新增后端无关的 `SKIP/PARTIAL/FULL` 决策 helper，
 以持久 surface、present target 像素保留能力和动态 scissor 能力作为三项硬门槛；默认阈值为
 最多 8 个 dirty 碎片、合并 scissor 不超过 drawable 面积 60%。BreakUI composite 已接入
@@ -15,8 +36,18 @@
 严格边界校验和 `rhi_frame_begin_damage()`；dxx 在 pump 后取得 drawable damage，无变化时
 不提交帧，首帧/resize/AA 变更/能力缺失时自动走全屏。Wayland EGL 仅在同时具备
 `EGL_EXT_buffer_age`、`eglSwapBuffersWithDamageKHR/EXT` 且当前 buffer age 为 1 时启用，
-并将 top-left damage 安全转换为 EGL bottom-left 坐标；GL X11、Win32、Vulkan、macOS
-能力明确关闭。Vulkan 仍待实现每 swapchain image 历史 damage 和增量 present。
+并将 top-left damage 安全转换为 EGL bottom-left 坐标。GL X11、Win32、macOS 能力明确关闭。
+Vulkan 经过安全审计后不启用 `VK_KHR_incremental_present` 作为 partial-present 能力：该扩展
+只是 compositor 优化提示，不保证 present 后 swapchain image 内容可被 `LOAD`，因此不能满足
+未损伤区域保留这一硬前提。Vulkan 当前继续安全全屏，X11/Win32/macOS 同样保持全屏；固定容量
+历史 helper 仅作为未来存在明确 WSI 内容保留契约时的基础，不改变当前渲染行为。
+
+**Vulkan 增量呈现历史（TDD）**：新增 `rhi_present_history`，不分配每帧堆内存，固定追踪
+最多 16 个 swapchain image、64 条 damage generation；image 首次使用强制全屏，轮转时合并
+上次使用后的全部历史，容量溢出或历史不连续自动全屏。`test_rhi_capabilities` 已覆盖首次
+使用、历史合并、reset、abort、非法输入和容量溢出，共 12/12。安全审计确认 Vulkan 标准
+交换链没有足够的内容保留契约，故 helper 尚未接入 partial present；Vulkan engine 与 dxx
+构建通过，真实 WSI runtime 仍待具备 compositor 的环境。
 
 ## CI 验证矩阵（当前）
 

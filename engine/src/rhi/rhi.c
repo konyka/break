@@ -107,6 +107,9 @@ RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
         return NULL;
     }
     if (!rhi_present_damage_validate(rects, count, dev->width, dev->height)) {
+        dev->frame_damage_count = 0u;
+        dev->frame_damage_requested = false;
+        dev->frame_partial_active = false;
         return rhi_frame_begin(dev);
     }
     if (count != 0u) {

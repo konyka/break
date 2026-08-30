@@ -127,6 +127,7 @@ add_library(engine STATIC
     src/platform/filewatch_backend.c
     src/math/math.c
     src/rhi/rhi.c
+    src/rhi/rhi_present_history.c
     src/renderer/camera.c
     src/renderer/cull.c
     src/renderer/skybox.c
@@ -345,23 +346,31 @@ endif()
 if(MYUI_FONT_FREETYPE)
     find_package(Freetype QUIET)
     if(Freetype_FOUND)
+        set(MYUI_FREETYPE_FOUND ON)
         target_compile_definitions(myui_core PUBLIC MYUI_FONT_FREETYPE=1)
         target_link_libraries(myui_core PUBLIC Freetype::Freetype)
     else()
         message(STATUS "myui: FreeType not found; CJK TTC fonts fall back to stb/bitmap")
     endif()
 endif()
-if(MYUI_HARFBUZZ AND MYUI_FONT_FREETYPE)
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(HARFBUZZ QUIET harfbuzz)
-    endif()
-    if(HARFBUZZ_FOUND)
+if(MYUI_HARFBUZZ AND MYUI_FREETYPE_FOUND)
+    # Prefer native CMake package targets so Windows/macOS builds do not
+    # require pkg-config; retain pkg-config as a portable fallback.
+    find_package(harfbuzz CONFIG QUIET)
+    if(harfbuzz_FOUND AND TARGET harfbuzz::harfbuzz)
         target_compile_definitions(myui_core PUBLIC MYUI_FONT_HARFBUZZ=1)
-        target_include_directories(myui_core PUBLIC ${HARFBUZZ_INCLUDE_DIRS})
-        target_link_libraries(myui_core PUBLIC ${HARFBUZZ_LIBRARIES})
+        target_link_libraries(myui_core PUBLIC harfbuzz::harfbuzz)
     else()
-        message(STATUS "myui: HarfBuzz not found; OpenType shaping disabled")
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(HARFBUZZ QUIET IMPORTED_TARGET harfbuzz)
+        endif()
+        if(HARFBUZZ_FOUND AND TARGET PkgConfig::HARFBUZZ)
+            target_compile_definitions(myui_core PUBLIC MYUI_FONT_HARFBUZZ=1)
+            target_link_libraries(myui_core PUBLIC PkgConfig::HARFBUZZ)
+        else()
+            message(STATUS "myui: HarfBuzz not found; OpenType shaping disabled")
+        endif()
     endif()
 endif()
 if(MYUI_IMAGE_STB)
@@ -1010,7 +1019,7 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
-        src/rhi/rhi.c src/core/log.c)
+        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_LINUX=1)
@@ -1060,6 +1069,10 @@ if(ENGINE_BUILD_TESTS)
     )
     target_link_libraries(test_myui_text_layout PRIVATE myui_core m)
     add_test(NAME test_myui_text_layout COMMAND test_myui_text_layout)
+    add_test(NAME test_myr_dependency_config
+        COMMAND ${CMAKE_COMMAND}
+            -DMYR_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
 
     # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c
     add_executable(test_shadow tests/test_shadow.c src/math/math.c)

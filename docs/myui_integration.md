@@ -225,9 +225,14 @@ engine/
 |------|------|------|
 | `MYUI_FONT_STB` | ON | stb_truetype 字体后端 |
 | `MYUI_FONT_FREETYPE` | ON（找到 FreeType 时） | 启用 hinting、TTC 多字面和 CJK 默认字体 |
+| `MYUI_HARFBUZZ` | ON（同时找到 FreeType 与 HarfBuzz 时） | 优先使用 CMake package target，回退 pkg-config；启用 OpenType shaping |
 | `MYUI_IMAGE_STB` | ON | stb_image 解码 |
 | `MYUI_UI_YAML` | ON | YAML UI loader |
 | `MYUI_BIDI` | ON | 内置 SheenBidi |
+
+独立 `myr` CMake 入口遵循同一依赖策略：FreeType 使用 `Freetype::Freetype`，HarfBuzz
+优先使用 `harfbuzz::harfbuzz`，没有 CMake package 时回退 `PkgConfig::HARFBUZZ`；缺少
+可选依赖时保持对应字体后端关闭，不影响软件、OpenGL 或 Vulkan 其它路径。
 
 ## 构建与测试
 
