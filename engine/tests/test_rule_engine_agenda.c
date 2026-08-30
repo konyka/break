@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include "../src/rule_engine/re_internal.h"
+#include "../src/rule_engine/ir.h"
 #include <stdlib.h>
 
 static re_fact_id_t fact_id(uint64_t slot, uint64_t generation) {
@@ -1413,6 +1414,280 @@ TEST(read_set_cap_truncates_provenance_not_derivation) {
     re_engine_destroy(engine);
 }
 
+/* ---- B4: agenda focus stack + auto-focus (upstream rusty-rule-engine
+ * v1.21.4 rete/agenda.rs AdvancedAgenda): ActivateAgendaGroup pushes the
+ * current focus and switches; when the focus group's activations are
+ * exhausted the previous focus pops back. auto-focus switches the focus on
+ * a genuinely new activation push. */
+
+TEST(focus_stack_push_pop_primitives) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text("rule \"R\" { when true then X = 1; }"),
+                              NULL, &program), RE_STATUS_OK);
+    ASSERT_TRUE(program->agenda_focus == NULL);
+    ASSERT_EQ(program->agenda_focus_stack_count, 0u);
+    /* The no-focus (NULL) state is never stacked: pushing from it just
+     * switches, leaving nothing to pop back to (the A8 replace behavior). */
+    ASSERT_EQ(re_program_push_agenda_focus(program, text("g")), RE_STATUS_OK);
+    ASSERT_STR_EQ(program->agenda_focus, "g");
+    ASSERT_EQ(program->agenda_focus_stack_count, 0u);
+    ASSERT_EQ(re_program_pop_agenda_focus(program), 0);
+    ASSERT_STR_EQ(program->agenda_focus, "g");
+    /* A static pre-set focus is the bottom of stack the pops return to. */
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("a")), RE_STATUS_OK);
+    ASSERT_EQ(program->agenda_focus_stack_count, 0u);
+    ASSERT_EQ(re_program_push_agenda_focus(program, text("b")), RE_STATUS_OK);
+    ASSERT_STR_EQ(program->agenda_focus, "b");
+    ASSERT_EQ(program->agenda_focus_stack_count, 1u);
+    ASSERT_EQ(re_program_push_agenda_focus(program, text("c")), RE_STATUS_OK);
+    ASSERT_EQ(program->agenda_focus_stack_count, 2u);
+    /* Re-focusing the current group is a no-op (upstream set_focus). */
+    ASSERT_EQ(re_program_push_agenda_focus(program, text("c")), RE_STATUS_OK);
+    ASSERT_EQ(program->agenda_focus_stack_count, 2u);
+    ASSERT_EQ(re_program_pop_agenda_focus(program), 1);
+    ASSERT_STR_EQ(program->agenda_focus, "b");
+    ASSERT_EQ(re_program_pop_agenda_focus(program), 1);
+    ASSERT_STR_EQ(program->agenda_focus, "a");
+    ASSERT_EQ(re_program_pop_agenda_focus(program), 0);
+    ASSERT_STR_EQ(program->agenda_focus, "a");
+    /* A programmatic replace abandons the saved-focus history. */
+    ASSERT_EQ(re_program_push_agenda_focus(program, text("b")), RE_STATUS_OK);
+    ASSERT_EQ(program->agenda_focus_stack_count, 1u);
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("z")), RE_STATUS_OK);
+    ASSERT_EQ(program->agenda_focus_stack_count, 0u);
+    ASSERT_STR_EQ(program->agenda_focus, "z");
+    /* Argument validation matches re_program_set_agenda_focus. */
+    ASSERT_EQ(re_program_push_agenda_focus(NULL, text("x")), RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_EQ(re_program_push_agenda_focus(program, (re_string_t){NULL, 0u}),
+              RE_STATUS_INVALID_ARGUMENT);
+    re_program_destroy(program);
+}
+
+TEST(focus_push_pop_across_two_groups) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    name_log_t log = {{{0}}, 0u};
+    re_callbacks_t callbacks = {record_name, &log};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"M1\" salience 10 { agenda-group \"main\"; when true then M1Hit = 1; ActivateAgendaGroup(\"g\"); } "
+        "rule \"M2\" salience 5 { agenda-group \"main\"; when true then M2Hit = 1; } "
+        "rule \"G1\" { agenda-group \"g\"; when true then G1Hit = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    /* The static pre-set focus is the bottom of the focus stack. */
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("main")), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    /* M1 pushes main and switches to g; once g's activations are exhausted
+     * the pop returns to main, so M2 still fires. */
+    ASSERT_EQ(log.count, 3u);
+    ASSERT_STR_EQ(log.names[0], "M1");
+    ASSERT_STR_EQ(log.names[1], "G1");
+    ASSERT_STR_EQ(log.names[2], "M2");
+    ASSERT_STR_EQ(engine->program->agenda_focus, "main");
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(focus_push_pop_nested_two_levels) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    name_log_t log = {{{0}}, 0u};
+    re_callbacks_t callbacks = {record_name, &log};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"M1\" salience 10 { agenda-group \"main\"; when true then ActivateAgendaGroup(\"g\"); } "
+        "rule \"G1\" salience 5 { agenda-group \"g\"; when true then G1Hit = 1; ActivateAgendaGroup(\"h\"); } "
+        "rule \"G2\" salience 1 { agenda-group \"g\"; when true then G2Hit = 1; } "
+        "rule \"M2\" salience 1 { agenda-group \"main\"; when true then M2Hit = 1; } "
+        "rule \"H1\" { agenda-group \"h\"; when true then H1Hit = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("main")), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    /* main -> g -> h, then the stack unwinds one level per exhaustion. */
+    ASSERT_EQ(log.count, 5u);
+    ASSERT_STR_EQ(log.names[0], "M1");
+    ASSERT_STR_EQ(log.names[1], "G1");
+    ASSERT_STR_EQ(log.names[2], "H1");
+    ASSERT_STR_EQ(log.names[3], "G2");
+    ASSERT_STR_EQ(log.names[4], "M2");
+    ASSERT_STR_EQ(engine->program->agenda_focus, "main");
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(auto_focus_switches_focus_on_activation_push) {
+    /* The auto-focus rule matches outside the current focus (upstream
+     * evaluates rules group-agnostically); its new activation switches the
+     * focus at push time, so the later group-less rule never becomes
+     * visible. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    name_log_t log = {{{0}}, 0u};
+    re_callbacks_t callbacks = {record_name, &log};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_set(facts, text("Go"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"Trigger\" salience 10 { when true then TriggerHit = 1; } "
+        "rule \"Auto\" { agenda-group \"g\"; auto-focus true; when Go == 1 then GHit = 1; } "
+        "rule \"Tail\" { when true then TailHit = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(log.count, 2u);
+    ASSERT_STR_EQ(log.names[0], "Trigger");
+    ASSERT_STR_EQ(log.names[1], "Auto");
+    ASSERT_EQ(re_facts_get(facts, text("GHit"), &out), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("TailHit"), &out), RE_STATUS_NOT_FOUND);
+    /* No static focus was stacked, so the run ends on the switched group. */
+    ASSERT_STR_EQ(engine->program->agenda_focus, "g");
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(auto_focus_pops_back_to_static_preset) {
+    /* With a static pre-set focus the auto-focus switch is stacked, so the
+     * pop returns to it once the auto-focused group is exhausted. The
+     * refracted auto-focus rule re-matches after the pop but pushes nothing
+     * new, so it never re-switches (documented dedup behavior). */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    name_log_t log = {{{0}}, 0u};
+    re_callbacks_t callbacks = {record_name, &log};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_set(facts, text("Go"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"M1\" salience 10 { agenda-group \"main\"; when true then M1Hit = 1; } "
+        "rule \"M2\" salience 5 { agenda-group \"main\"; when true then M2Hit = 1; } "
+        "rule \"Auto\" { agenda-group \"g\"; auto-focus true; when Go == 1 then GHit = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("main")), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(log.count, 3u);
+    ASSERT_STR_EQ(log.names[0], "M1");
+    ASSERT_STR_EQ(log.names[1], "M2");
+    ASSERT_STR_EQ(log.names[2], "Auto");
+    ASSERT_STR_EQ(engine->program->agenda_focus, "main");
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(auto_focus_groupless_rule_is_documented_noop) {
+    /* Upstream allows auto-focus on a rule without an agenda-group; locally
+     * it is a documented no-op: the rule fires under the normal gate and the
+     * focus never switches. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"A\" { auto-focus true; when true then AHit = 1; } "
+        "rule \"G\" { agenda-group \"g\"; when true then GHit = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("AHit"), &out), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("GHit"), &out), RE_STATUS_NOT_FOUND);
+    ASSERT_TRUE(engine->program->agenda_focus == NULL);
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(auto_focus_attribute_parse_forms) {
+    re_program_t *program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"T\" { auto-focus true; when true then X = 1; }"), NULL, &program),
+        RE_STATUS_OK);
+    ASSERT_EQ(program->rules[0].auto_focus, 1);
+    /* The IR rule carries the mirror (like salience). */
+    ASSERT_EQ(program->ir->rules[0].auto_focus, 1);
+    re_program_destroy(program);
+    program = NULL;
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"F\" { agenda-group \"g\"; auto-focus false; when true then X = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(program->rules[0].auto_focus, 0);
+    re_program_destroy(program);
+    program = NULL;
+    /* A malformed value and a duplicate attribute follow the same
+     * parse-error idiom as no-loop / lock-on-active. */
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"B\" { auto-focus yes; when true then X = 1; }"), NULL, &program),
+        RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"B\" { auto-focus true; auto-focus false; when true then X = 1; }"),
+        NULL, &program), RE_STATUS_PARSE_ERROR);
+    ASSERT_TRUE(program == NULL);
+}
+
+TEST(focus_stack_survives_persistent_agenda_across_runs) {
+    /* The stack is program state (exactly like the focus itself), so a
+     * LIMIT-interrupted run resumes under the switched group and the pop
+     * back to the static pre-set focus still happens in the later run. The
+     * persistent agenda's refraction keys keep M1 from re-firing. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    name_log_t log = {{{0}}, 0u};
+    re_callbacks_t callbacks = {record_name, &log};
+    re_limits_t limits;
+    re_run_options_t options = {NULL, NULL, NULL};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_NOT_NULL(facts);
+    memset(&limits, 0, sizeof(limits));
+    limits.max_firings = 1u;
+    options.limits = &limits;
+    ASSERT_EQ(re_engine_set_agenda_persistent(engine, 1), RE_STATUS_OK);
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"M1\" salience 10 { agenda-group \"main\"; when true then ActivateAgendaGroup(\"g\"); } "
+        "rule \"G1\" { agenda-group \"g\"; when true then G1Hit = 1; } "
+        "rule \"M2\" salience 5 { agenda-group \"main\"; when true then M2Hit = 1; }"),
+        NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("main")), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    program = NULL;
+    /* Run 1 fires M1 (switching main -> g) and stops on the firing cap. */
+    ASSERT_EQ(re_engine_run(engine, facts, &options, &callbacks), RE_STATUS_LIMIT);
+    ASSERT_EQ(log.count, 1u);
+    ASSERT_STR_EQ(engine->program->agenda_focus, "g");
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 1u);
+    /* Run 2 fires G1, then the exhaustion pop returns to main for M2. */
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, &callbacks), RE_STATUS_OK);
+    ASSERT_EQ(log.count, 3u);
+    ASSERT_STR_EQ(log.names[0], "M1");
+    ASSERT_STR_EQ(log.names[1], "G1");
+    ASSERT_STR_EQ(log.names[2], "M2");
+    ASSERT_STR_EQ(engine->program->agenda_focus, "main");
+    ASSERT_EQ(engine->program->agenda_focus_stack_count, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(agenda_create_destroy);
     RUN_TEST(agenda_push_dedups_pending_order_insensitive);
@@ -1451,4 +1726,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(exists_condition_records_read_premise);
     RUN_TEST(forall_condition_records_read_premise);
     RUN_TEST(read_set_cap_truncates_provenance_not_derivation);
+    RUN_TEST(focus_stack_push_pop_primitives);
+    RUN_TEST(focus_push_pop_across_two_groups);
+    RUN_TEST(focus_push_pop_nested_two_levels);
+    RUN_TEST(auto_focus_switches_focus_on_activation_push);
+    RUN_TEST(auto_focus_pops_back_to_static_preset);
+    RUN_TEST(auto_focus_groupless_rule_is_documented_noop);
+    RUN_TEST(auto_focus_attribute_parse_forms);
+    RUN_TEST(focus_stack_survives_persistent_agenda_across_runs);
 TEST_MAIN_END()

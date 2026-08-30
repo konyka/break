@@ -29,6 +29,7 @@ re_facts_t *re_facts_create(const re_allocator_t *allocator, const re_limits_t *
     facts->transaction = NULL;
     facts->retired_transaction = NULL; facts->rete_network = NULL;
     facts->tms = NULL;
+    facts->premise_capture = NULL;
     return facts;
 }
 
@@ -223,20 +224,30 @@ re_status_t re_facts_notify(re_facts_t *facts, re_fact_change_kind_t kind, size_
     return RE_STATUS_OK;
 }
 
-re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
-                            const re_value_t *value, re_fact_id_t *out_id) {
+/* mark_explicit: public re_facts_insert is the host assertion API (upstream
+ * engine.insert records an explicit justification); asserting over a
+ * logically-derived fact records explicit support so a later premise
+ * retraction cannot cascade to it — upstream tms.rs keeps both justification
+ * lists and the explicit one is unconditionally valid. Internal derivation
+ * (re_facts_insert_logical) passes 0: a rule conclusion is never an explicit
+ * assertion. */
+static re_status_t facts_insert_internal(re_facts_t *facts, re_string_t name,
+                                         const re_value_t *value, re_fact_id_t *out_id,
+                                         int mark_explicit) {
     size_t index;
     re_status_t status;
     if (facts == NULL || out_id == NULL) return RE_STATUS_INVALID_ARGUMENT;
     if (facts->notifying) return RE_STATUS_BUSY;
     if (facts->transaction != NULL)
-        return re_facts_insert(facts->transaction->staged, name, value, out_id);
+        return facts_insert_internal(facts->transaction->staged, name, value, out_id, mark_explicit);
     for (index = 0u; index < facts->count; ++index) {
         if (same_name(name, &facts->entries[index])) {
             status = re_facts_set(facts, name, value);
             if (status != RE_STATUS_OK) return status;
             out_id->slot = (uint64_t)index;
             out_id->generation = facts->entries[index].generation;
+            if (mark_explicit && facts->entries[index].logical)
+                return re_tms_explicit_support_ensure(facts, *out_id);
             return RE_STATUS_OK;
         }
     }
@@ -249,6 +260,11 @@ re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
     out_id->slot = (uint64_t)index;
     out_id->generation = facts->entries[index].generation;
     return re_facts_notify(facts, RE_FACT_INSERT, index);
+}
+
+re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
+                            const re_value_t *value, re_fact_id_t *out_id) {
+    return facts_insert_internal(facts, name, value, out_id, 1);
 }
 
 re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id, const re_value_t *value) {
@@ -274,28 +290,44 @@ re_status_t re_facts_insert_logical(re_facts_t *facts, re_string_t name, const r
                                     re_fact_id_t *out_id) {
     re_status_t status;
     size_t index;
+    int existed = 0;
+    int was_explicit = 0;
     if (facts == NULL || value == NULL || out_id == NULL || rule.data == NULL || rule.size == 0u ||
         (count != 0u && premises == NULL)) return RE_STATUS_INVALID_ARGUMENT;
     if (facts->transaction != NULL)
         return re_facts_insert_logical(facts->transaction->staged, name, value, rule, premises, count, out_id);
     for (index = 0u; index < facts->count; ++index)
         if (facts->entries[index].active && facts->entries[index].name_size == name.size &&
-            memcmp(facts->entries[index].name, name.data, name.size) == 0 &&
-            !facts->entries[index].logical) {
-            status = re_facts_insert(facts, name, value, out_id);
-            return status;
+            memcmp(facts->entries[index].name, name.data, name.size) == 0) {
+            existed = 1;
+            was_explicit = !facts->entries[index].logical;
+            break;
         }
-    status = re_facts_insert(facts, name, value, out_id);
+    status = facts_insert_internal(facts, name, value, out_id, 0);
     if (status != RE_STATUS_OK) return status;
+    if (was_explicit) {
+        /* Upstream tms.rs keeps both justification lists: a host-asserted
+         * fact that a rule also derives keeps its unconditionally-valid
+         * explicit support next to the new logical justification, so a later
+         * premise retraction cannot cascade to it. */
+        status = re_tms_explicit_support_ensure(facts, *out_id);
+        if (status != RE_STATUS_OK) return status;
+    }
     status = re_facts_justification_add(facts, *out_id, rule, premises, count);
-    if (status != RE_STATUS_OK) { re_facts_retract(facts, *out_id); return status; }
+    if (status != RE_STATUS_OK) {
+        /* Retract only a fact this call created; a pre-existing entry (and
+         * any explicit support just recorded) belongs to the host. */
+        if (!existed) re_facts_retract(facts, *out_id);
+        return status;
+    }
     return RE_STATUS_OK;
 }
 
 re_status_t re_facts_provenance_get(const re_facts_t *facts, re_fact_id_t id, re_fact_provenance_t *out) {
     size_t i;
     if (facts == NULL || out == NULL || !re_facts_is_logical(facts, id)) return RE_STATUS_NOT_FOUND;
-    for (i = 0u; i < facts->tms->count; ++i) if (facts->tms->items[i].derived.slot == id.slot && facts->tms->items[i].derived.generation == id.generation) {
+    for (i = 0u; i < facts->tms->count; ++i) if (facts->tms->items[i].producer_rule != NULL &&
+        facts->tms->items[i].derived.slot == id.slot && facts->tms->items[i].derived.generation == id.generation) {
         out->producer_rule.data = facts->tms->items[i].producer_rule;
         out->producer_rule.size = facts->tms->items[i].producer_rule_size;
         out->premises = facts->tms->items[i].premises; out->premise_count = facts->tms->items[i].premise_count;

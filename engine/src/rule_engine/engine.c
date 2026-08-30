@@ -386,10 +386,13 @@ static re_status_t resolve_method_term(re_engine_t *engine, re_facts_t *facts,
  * - log(...) joins and prints its arguments to stdout through the A4 log
  *   built-in (shared machinery; stdout is the documented local logging
  *   convention - no log callback exists in the public API).
- * - ActivateAgendaGroup("g") replaces the program's agenda focus for the
+ * - ActivateAgendaGroup("g") switches the program's agenda focus for the
  *   remainder of the run (and later runs, exactly like a
- *   re_program_set_agenda_focus pre-set). The focus is program state, not a
- *   fact, so it is not rolled back with the activation's transaction.
+ *   re_program_set_agenda_focus pre-set), pushing the previous focus on the
+ *   B4 focus stack: when the new group's activations are exhausted the
+ *   previous focus pops back (upstream AdvancedAgenda). The focus and its
+ *   stack are program state, not facts, so they are not rolled back with
+ *   the activation's transaction.
  * - ScheduleRule/CompleteWorkflow/SetWorkflowData (D5) dispatch to a
  *   registered function of the bare action name with the resolved arguments;
  *   unhandled -> RE_STATUS_NOT_SUPPORTED.
@@ -462,8 +465,8 @@ static re_status_t execute_builtin_action(re_engine_t *engine, re_facts_t *facts
         if (call->argument_count != 1u || arguments[0].type != RE_VALUE_STRING)
             status = RE_STATUS_INVALID_ARGUMENT;
         else
-            status = re_program_set_agenda_focus(engine->program,
-                                                 arguments[0].as.string);
+            status = re_program_push_agenda_focus(engine->program,
+                                                  arguments[0].as.string);
     } else {
         /* D5 trio: registered custom action handler under the bare action
          * name (same registry the method-call fallback uses). */
@@ -711,9 +714,16 @@ static re_status_t compute_rule_activations(re_engine_t *engine, re_facts_t *fac
         return RE_STATUS_OK;
     if (engine->program->module_focus != NULL) { size_t focus_index, import_index; int visible = 0; for (focus_index = 0u; focus_index < engine->program->module_count; ++focus_index) if (engine->program->modules[focus_index].name_size == strlen(engine->program->module_focus) && memcmp(engine->program->modules[focus_index].name, engine->program->module_focus, engine->program->modules[focus_index].name_size) == 0) break; if (focus_index == engine->program->module_count) return RE_STATUS_OK; if (rule->module_index == focus_index) visible = 1; for (import_index = 0u; !visible && import_index < engine->program->modules[focus_index].import_count; ++import_index) if (engine->program->modules[focus_index].imports[import_index] != NULL && engine->program->modules[focus_index].imports[import_index][0] == engine->program->modules[rule->module_index].name[0] && strcmp(engine->program->modules[focus_index].imports[import_index], engine->program->modules[rule->module_index].name) == 0 && engine->program->modules[rule->module_index].export_all) visible = 1; if (!visible) return RE_STATUS_OK; }
     if (!re_rule_active(rule, engine->program->has_clock ? engine->program->clock_epoch : 0)) return RE_STATUS_OK;
+    /* B4: a rule with auto-focus AND an agenda-group is evaluated even when
+     * its group is not the current focus (upstream evaluates rules
+     * group-agnostically and lets the agenda see every activation); a
+     * genuinely new activation then switches the focus below. auto-focus on
+     * a group-less rule never bypasses the gate (documented no-op). */
     if (engine->program->agenda_focus == NULL) {
-        if (rule->agenda_group != NULL) return RE_STATUS_OK;
-    } else if (rule->agenda_group == NULL || strcmp(rule->agenda_group, engine->program->agenda_focus) != 0) return RE_STATUS_OK;
+        if (rule->agenda_group != NULL && !rule->auto_focus) return RE_STATUS_OK;
+    } else if (rule->agenda_group == NULL ||
+               (strcmp(rule->agenda_group, engine->program->agenda_focus) != 0 &&
+                !rule->auto_focus)) return RE_STATUS_OK;
     if (rule->no_loop && state->fired_no_loop[rule_index]) return RE_STATUS_OK;
     if (rule->lock_on_active && rule->agenda_group != NULL) {
         size_t group_index;
@@ -805,6 +815,16 @@ static re_status_t compute_rule_activations(re_engine_t *engine, re_facts_t *fac
             ++state->agenda_activations;
             if (engine->agenda->fired_count + engine->agenda->pending_count > tracked_cap)
                 return RE_STATUS_LIMIT;
+            /* B4 auto-focus (upstream AdvancedAgenda::add_activation): a
+             * genuinely new activation of an auto-focus rule switches the
+             * focus to the rule's group (focus-stack push semantics; a
+             * dedup/refraction hit adds nothing and never re-switches). The
+             * push is a no-op when the group already is the focus. */
+            if (rule->auto_focus && rule->agenda_group != NULL) {
+                status = re_program_push_agenda_focus(engine->program,
+                    (re_string_t){rule->agenda_group, strlen(rule->agenda_group)});
+                if (status != RE_STATUS_OK) return status;
+            }
         }
     }
     return RE_STATUS_OK;
@@ -1157,14 +1177,24 @@ re_status_t re_engine_run(re_engine_t *engine, re_facts_t *facts, const re_run_o
         if (status != RE_STATUS_OK) break;
         if (!re_agenda_pop_highest(engine->agenda, &activation)) {
             if (state.next_rule < engine->program->rule_count) continue;
+            /* B4: the focus group's activations are exhausted (cross-group
+             * entries are never pending: the compute gate only pushes the
+             * focus group, and the pop-time gate below drains whatever went
+             * stale). Pop the focus stack, exactly like upstream
+             * AdvancedAgenda::get_next_activation; an empty stack ends the
+             * run with the focus left on the exhausted group. */
+            if (re_program_pop_agenda_focus(engine->program)) continue;
             break;
         }
         rule = &engine->program->rules[activation.rule_index];
         /* The agenda focus can have moved while the activation sat pending
-         * (A8 ActivateAgendaGroup); entries whose group no longer matches the
-         * focus are dropped, exactly like the group-level gates below. With
-         * only a static pre-set focus this is a no-op: cross-group entries
-         * are never pushed in the first place. */
+         * (A8 ActivateAgendaGroup / B4 auto-focus); entries whose group no
+         * longer matches the focus are dropped, exactly like the group-level
+         * gates below. The B4 focus stack keeps this stale-activation
+         * protection: a popped-back group's rules re-push through the compute
+         * gate instead of reviving these entries. With only a static pre-set
+         * focus this is a no-op: cross-group entries are never pushed in the
+         * first place. */
         if (engine->program->agenda_focus == NULL) {
             if (rule->agenda_group != NULL) continue;
         } else if (rule->agenda_group == NULL ||

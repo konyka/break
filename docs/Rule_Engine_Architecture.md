@@ -50,12 +50,33 @@ Implemented now:
   `query_exec.c` through `re_engine_run_query`/`re_engine_run_queries`;
   bounds and divergences are enumerated in `docs/Rule_Engine_Design.md`
   ("GRL surface parity").
+- the sub-project B depth parity slice (2026-08-29): TMS parity at the
+  upstream `tms.rs`/`tms_test.rs` test slice (explicit support coexisting
+  with logical justifications via a premise-less marker justification,
+  multi-justification survival, cascade/diamond retraction, no
+  re-derivation), the shared proof graph upgraded to real node/premise shape
+  (bounded 32-entry premise capture with typed value fingerprints,
+  generation fast path plus per-premise revalidation, opaque fallback on
+  untracked reads, lazy dependent propagation,
+  `re_engine_proof_graph_stats_v2`), bounded `?var` unification in backward
+  goals and `goal("Rule", ...)` actuals per the upstream case table
+  (sticky-consistent, no occurs check, no deferral, one-directional
+  aliases), and the agenda focus stack with the `auto-focus` attribute
+  (push on ActivateAgendaGroup, pop on focus-group exhaustion, bounded 32);
+  bounds and ratified divergences are enumerated in
+  `docs/Rule_Engine_Design.md` ("RETE/TMS/unification depth parity").
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
-- a bounded fact-store truth-maintenance slice: explicit and logical facts,
-  copied producer names, generation-safe premise IDs, duplicate-coalesced
-  justifications, and cascading retraction after final support removal. This
-  slice is transactional and capped by the existing fact/allocator limits;
-  it is `bounded_behavior`, not full RETE-UL TMS parity.
+- a bounded fact-store truth-maintenance slice at upstream test-slice parity
+  (sub-project B): explicit and logical facts, copied producer names,
+  generation-safe premise IDs, duplicate-coalesced justifications, and
+  cascading retraction after final support removal; explicit support
+  (recorded as a premise-less marker justification) is unconditionally valid
+  and coexists with logical justifications on the same fact, matching
+  upstream `tms.rs`/`tms_test.rs` semantics including multi-justification
+  survival, diamond cascades, and no re-derivation on a new justification.
+  This slice is transactional and capped by the existing fact/allocator
+  limits; it is `bounded_behavior` (insertion-time cycle rejection is
+  stricter than upstream), not a general RETE producer-inference network.
 - a recognize-act agenda cycle with bounded persistence: per-run refraction on
   (rule, premise slots, value fingerprints), pop-time revalidation of pending
   activations, one private RETE network per eligible rule (up to eight ANDed
@@ -72,9 +93,12 @@ Implemented now:
   (COUNT/SUM/AVERAGE/MIN/MAX/FIRST/LAST folded over an internal bounded query
   at max_depth 64 / max_solutions 1024), per-query search strategies
   (BREADTH_FIRST and ITERATIVE share an iterative-deepening wrapper over the
-  DFS machine), and a bounded engine-owned shared proof graph caching final
-  query results (64 entries, clear-all eviction, coarse per-facts
-  invalidation, deep-cloned served proofs); general unification and
+  DFS machine), bounded `?var` unification per the upstream case table
+  (sticky-consistent, no occurs check, no deferral, one-directional
+  aliases), and a bounded engine-owned shared proof graph caching final
+  query results (64 entries, clear-all eviction, real node/premise shape
+  with per-premise revalidation over a generation fast path, deep-cloned
+  served proofs); arbitrary predicate unification and
   shared-subgraph/upstream proof provenance remain pending. The
   bounded binding slice stores each successful derivation path as owned nodes
    and deterministic parent/child edges. These edges describe the active
@@ -102,13 +126,18 @@ Implemented now:
 
 Deferred explicitly:
 
-- full upstream RETE/RETE-UL execution and general truth maintenance;
-- arbitrary argument unification and the upstream shared-subgraph proof
-  provenance graph; bounded recursive binding, nested goal operands, custom
-  function operands, derivation-path enumeration, query-level negation,
-  bounded query aggregation, strategy selection, and the bounded shared proof
-  graph result cache are implemented and remain deliberately narrower than
-  upstream semantics;
+- cross-rule RETE/RETE-UL execution and general multi-rule producer
+  inference - upstream's own cross-rule machinery is vapor (no shared
+  alpha/beta state in any execution path, dead Unifier integration, dead
+  integrated proof caching, stub parallel actions), documented in
+  `docs/Rule_Engine_Design.md` and not replicated per the evidence rule;
+- arbitrary predicate unification (structured terms, occurs check,
+  union-find) and the upstream shared-subgraph proof provenance graph;
+  bounded recursive binding, nested goal operands, custom function operands,
+  derivation-path enumeration, query-level negation, bounded query
+  aggregation, strategy selection, bounded `?var` unification, and the
+  real-shape shared proof graph result cache are implemented and remain
+  deliberately narrower than upstream semantics;
 - general stream patterns, joins, and watermarks. Redis-backed streaming state
   is an optional backend with a native adapter (compiled only with
   `RULE_ENGINE_ENABLE_REDIS` plus discovered hiredis, `RE_STATUS_NOT_SUPPORTED`
@@ -121,8 +150,13 @@ and contexts are never retained. `re_engine_run` executes a recognize-act
 cycle: recompute visible rules, push refraction-deduped activations, pop the
 highest-salience pending entry, and fire it until the agenda empties, a limit
 is reached, or cancellation is requested. Pop-time revalidation discards stale
-activations without consuming the fired budget. Focus stacks/cycles and full
-TMS remain pending. Every eligible rule gets a private RETE network (up to
+activations without consuming the fired budget. The agenda focus is a
+bounded stack (32): ActivateAgendaGroup pushes the current focus and
+switches, exhaustion of the focus group pops the previous focus back, and
+the `auto-focus` rule attribute switches focus when an activation push is
+genuinely new; the NULL no-focus state is never stacked (documented
+divergence from upstream's MAIN-return). Focus cycles and general TMS
+producer inference remain pending. Every eligible rule gets a private RETE network (up to
 eight fact-vs-literal comparisons joined by conjunction) chained on the facts
 store without cross-rule alpha sharing; networks retain alpha/beta/token
 memories across runs and incrementally refresh affected condition memories on
@@ -140,9 +174,9 @@ it does not advertise a public module ABI, complete date parsing, or agenda/RETE
 support.
 
 The local status is limited to behavior covered by the registered rule-engine
-tests, including `engine/tests/test_rule_engine.c`, the transaction, RETE, agenda,
-backward, machine-structure, machine-context, binding, grl-semantics, grl-surface,
-query-blocks, fuzz-smoke, and
+tests, including `engine/tests/test_rule_engine.c`, the transaction, TMS, RETE,
+agenda, backward, machine-structure, machine-context, binding, grl-semantics,
+grl-surface, query-blocks, fuzz-smoke, and
 optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
 upstream evidence only. No deferred family has an ABI placeholder.
@@ -330,9 +364,13 @@ Transactions clone and swap this metadata with the fact table, so rollback
 does not alter live TMS state. A RETE-backed action derives a new target as a
 logical fact and records the activation's fact IDs; an existing explicit target
 remains explicit. Stale premise IDs and self-cycles are rejected.
-The ABI exposes inspection and mutation helpers for this tested slice only;
-general multi-rule RETE producer inference, arbitrary unification, and full
-upstream TMS remain unsupported.
+The ABI exposes inspection and mutation helpers for this tested slice only.
+Sub-project B closed the explicit/logical coexistence delta against upstream
+`tms.rs`: explicit host assertions record a premise-less explicit-support
+marker, both supports coexist on one fact, and cascade guards retract only
+at zero total support - the twelve upstream TMS test semantics are ported in
+`test_rule_engine_tms.c`. General multi-rule RETE producer inference and
+arbitrary unification remain unsupported.
 
 Outside the opt-in persistent agenda mode, a run owns its activation list. Each
 fired activation executes all parsed action
@@ -449,8 +487,15 @@ doublings reports `RE_STATUS_LIMIT`). The shared proof graph
 PROVED/DISPROVED results, consulted after normalization and keyed on the exact
 goal text, facts identity, normalized options, and `config_serial`, stamped
 with the facts `mutation_serial`; served proofs are deep clones with their own
-invalidation subscription, a full table clears every entry, and
-`re_engine_proof_graph_stats` exposes hits/misses. `re_engine_query_aggregate`
+invalidation subscription, a full table clears every entry (counted as
+evictions), and `re_engine_proof_graph_stats` exposes hits/misses while the
+appended `re_engine_proof_graph_stats_v2` adds invalidations, stores, and
+evictions. Each store records an informational node per proof plus the
+producing run's bounded premise set (32 entries, typed value fingerprints,
+absent reads recorded); a serial mismatch on lookup revalidates
+premise-by-premise, so an entry survives mutations its premises did not
+observe, and untracked influences flip the capture opaque back to the coarse
+generation check. `re_engine_query_aggregate`
 lives in `backward.c` but only composes the public query API: an internal
 bounded query (max_depth 64, max_solutions 1024, DFS) whose named binding is
 folded over the solutions.

@@ -2306,3 +2306,97 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   `matches` 通配子串为持续记录的分歧；`exists((A == 1))`、`exists($o: Type(...))`、
   `exists(accumulate(...))` 按函数形式解析而报错（文档化边界）；完整 RETE-UL、通用
   TMS、任意谓词合一仍不支持。
+
+## rule engine RETE/TMS/unification 深度对齐（sub-project B，2026-08-30）
+
+- TMS 对齐收口（B1，上游 `src/rete/tms.rs` + `tests/tms_test.rs` 共 12 条测试语义
+  全部移植）：显式支持与逻辑论证共存——`re_facts_insert` 覆盖逻辑派生事实时记录显式
+  支持标记（无前提的 justification 项，即上游 `JustificationType::Explicit` 的本地
+  编码，公共溯源接口不可见），`re_facts_insert_logical` 作用于宿主断言事实时两者并留；
+  两处级联守卫改为总支撑计数归零才撤销（显式支持构造上恒有效）；多论证事实在单一前提
+  撤销后存活；菱形依赖完整级联；新增 justification 不重导出值；标记随 `re_tms_clone`
+  迁移（transactions.c 零改动）；`re_facts_justification_remove` 增加与 add 侧对称的
+  校验，公开输入无法删除标记。记录的分歧与边界：插入期成环以 `RE_STATUS_LIMIT` 拒绝
+  （上游容忍并靠 retracted 集终止；级联环情形本身与上游 `is_valid` 一致并以白盒测试
+  锁定；及时移除项是本地终止保证，上游从不清理映射）；`re_facts_set`/`re_facts_update`
+  为纯值写、不记录显式支持；仅剩标记的事实保持 `is_logical` 为真（上游在撤销前也将
+  事实留在 `logical_facts`）；结构化根派生保留"前提撤销级联至整根"的既有边界；上游
+  全局 TMS 统计结构体无本地聚合对应（按只增 ABI 改为钉住逐事实等价值）。
+- 证明图真实图形状（B2，上游 `src/backward/proof_graph.rs`）：64 项结果缓存仍为查找
+  层，图语义叠加其上——派发包装器在每次 backward 运行捕获有界（32、按路径去重）前提
+  集 {path, present, FNV-1a 类型化值指纹}（缺席读取记 present=0，之后首次断言仍可使
+  其失效；缓存命中将所供条目前提并入外层捕获）；每次存储按证明记录一个信息性节点
+  （trace 根规则名 + valid 标志）及产生运行的前提集；查找保留代数相等快路径，序列号
+  失配时逐前提重解析并比对存在性与类型化指纹——前提全部成立则条目在无关变更下存活
+  （相对 B2 前粗粒度整体失效的标题级行为升级），任一翻转即整体摘除（对应上游
+  `lookup_by_key` 过滤失效节点）；任何未追踪影响（证明中途的用户函数、前提上限溢出、
+  分配失败）使捕获转为 opaque 并回退到粗粒度代数检查，健全性绝不换精度。统计：原双
+  指针 `re_engine_proof_graph_stats` ABI 不变，新增 `re_engine_proof_graph_stats_v2`
+  以 struct_size 版本化的 `re_proof_graph_stats_t` 报告 hits/misses/invalidations/
+  stores/evictions（64 项清空式驱逐计入 evictions）；依赖传播为惰性（下次咨询时再校验
+  发现），与上游 eager `invalidate_handle` 递归在缓存用途下语义等价。边界：
+  object/array 事实仅按类型标签取指纹（未来若有成员级读取路径必须被捕获或转
+  opaque）；节点 valid 标志为上游形状保真、生产代码不消费。
+- 反向 `?var` 合一（B3，上游 `src/backward/unification.rs` 情形表）：查询目标串中
+  `==` 任一侧的 `?var` 触发合一——已绑定变量取其值；未绑定且对侧可解则绑定并经
+  `re_proof_binding_get` 以原样 `?s` 名浮出水面；不可解则不匹配（缺席事实读取报
+  `RE_QUERY_UNKNOWN`，与字面量路径一致）；两侧均未绑定（`?x == ?y`）报
+  `RE_QUERY_DISPROVED`（未读任何事实，可以空前提集缓存且永不翻转）；重绑定粘性一致
+  （同值通过，异值仅使该证明分支失败而非引擎错误）。`goal("Rule", a1, ...)` 查询串
+  接受字面量/`?var`/事实路径实参（嵌套调用/算术为 `RE_STATUS_INVALID_ARGUMENT`）；
+  未绑定 `?var` 实参使形参保持未绑定并记录 形参→?var 别名，形参取得具体值时别名按
+  粘性一致回绑；条件相等中未绑定形参经由既有操作数路径取得对侧具体值（事实读取全部
+  保持前提捕获）；聚合接口按原名折叠 `?var` 绑定、无 API 变更。记录的边界（与上游
+  一致）：无 occurs check、无延迟、值按标量/数组类型化相等（绝不逐元素）、别名为
+  单向值传播而非 union-find（跨跳要求同名形参）。上游自己的 Unifier 从未被其搜索
+  引擎调用（死集成），故情形表映射到本地机器的两个真实绑定点而非作为模块移植。
+  次要表面：直接目标字面量仅 int64，而 goal() 实参按 strtod 词法为 double（与既有
+  `==` 路径一致）。
+- agenda 焦点栈 + auto-focus（B4，上游 `src/rete/agenda.rs` AdvancedAgenda）：
+  `ActivateAgendaGroup("g")` 压入当前焦点并切换；焦点组 activation 耗尽（所有规则
+  完成首遍后 pending 队列排空）时弹回上一焦点继续 recognize-act 循环；栈空则运行
+  结束且焦点留在耗尽的组（恰为上游 `pop()?`）。栈存放在 program 上、与焦点同生命
+  周期（持久 agenda 被 LIMIT 中断的运行可在下次运行弹回；program 安装即重置）；
+  静态预设焦点为栈底；普通 setter 清空已存历史；栈有界 32
+  （`RE_AGENDA_FOCUS_STACK_MAX`，溢出丢弃已存焦点、切换仍发生）。
+  `auto-focus true|false` 属性沿 no-loop 语法惯例（其他值或重复属性均为解析错误）、
+  镜像入 IR、使其规则绕过计算门控（上游按组无关方式评估规则），且仅在压入产生真正
+  新 pending 项时切换焦点（去重/refraction 命中绝不重切换）；无组 auto-focus 为
+  文档化 no-op。已批准的分歧：NULL 无焦点状态永不入栈（无上游 MAIN 返回；保持已
+  批准的 A8 中途切换行为）；跨组 pending activation 经 A8 弹出时过期门控丢弃并在
+  该组重获焦点时重新压入（纯条件重新压入，净触发次数与上游分组堆相同；不纯（函数调用）
+  规则保持仅首遍求值的既有界限，该运行内不再重新触发；activation 序号可不同）；
+  焦点外的纯 auto-focus 规则每个重算周期都重新求值（与上游一致）；32 上限溢出路径
+  有文档无单测。
+- 上游 vapor——只记录不复制（spec Sub-project B 第 5 条）：任何上游执行路径都不
+  存在跨规则 alpha 共享与 beta token 传播（"RETE-UL" 是逐规则布尔表达式树；具名
+  BetaNode/TokenPool/NodeSharing 工具无任何引擎使用）；上游 Unifier 从未被反向搜索
+  调用；上游集成的证明图缓存为死代码（每次查询新建图 + insert/lookup 键失配）；
+  并行引擎的 action 为空操作且未接入主引擎；salience+recency 之外的
+  ConflictResolutionStrategy 与 RETE-UL accumulate 值绑定同样缺席。映射说明：本地
+  引擎对应上游 RustRuleEngine + BackwardEngine + streaming seam；ReteUlEngine/
+  IncrementalEngine 的引擎级怪癖（100/1000 迭代上限、`<name>_fired` 事实插入、
+  no_loop 默认 true、按类型更新全部事实的 action）属上游退化形态，有意不复制。
+- 文档：conformance.yml 新增 4 行（tms-explicit-logical-coexistence、
+  backward-qvar-unification、agenda-focus-stack-and-auto-focus、
+  upstream-vapor-rete-ul-and-dead-integration），重写 shared-proof-graph 行为 B2 实态
+  并把 rete-ul-tms-persistent-agenda 与 backward-arbitrary-unification-proof-sharing
+  两条 known_gaps 改为已交付状态（tested）；upstream.yml 的 rete/backward 模块行与
+  两条 runtime_contracts 行更新并引用 vapor 结论；Rule_Engine_Design.md 新增
+  "RETE/TMS/unification depth parity" 一节；Rule_Engine_Architecture.md 相应小节
+  同步。
+- 验证：聚焦套件 `ctest -R "rule_engine|backward_machine"` **18/18**
+  （test_rule_engine_tms 19/19、test_rule_engine_agenda 45/45、
+  test_rule_engine_backward_ext 51/51）；build-gate（clang Debug）全量构建 +
+  `ctest -LE graphics` **76/76**（test_async_loader 本次并行运行即通过，既有并行
+  flake 未复现）；build-rule-fresh-asan（clang，440 个编译单元同时带
+  -fsanitize=address 与 -fsanitize=undefined）聚焦套件 **18/18**、无诊断——ASan 与
+  UBSan 由该树一并覆盖（build-ci-ubsan 为 Visual Studio 生成器树，MSVC 无 UBSan，
+  非有效 UBSan 门禁）；MSVC 规则引擎矩阵（build-rule-debug，MSVC cl.exe + Ninja
+  Debug）构建全部规则引擎测试目标、聚焦套件 **18/18**；bench 回归
+  （rule_engine_bench_regression.cmake，RUNS=3）四项指标全部远低于 2.0s 阈值
+  （sparse cold ≈0.001s、sparse warm ≈0.058s、dense cold ≈0.003s、dense warm
+  ≈0.36-0.38s）；`git diff --check` 通过。
+- 当前限制：任意谓词合一（结构化项、occurs check、union-find）、共享子图证明溯源、
+  跨规则 RETE-UL（上游 vapor，已记录不复制）、规则触发派生之外的通用多规则生产者
+  推理仍不支持；test_async_loader 并行 flake 为既有事项，本阶段未触碰。

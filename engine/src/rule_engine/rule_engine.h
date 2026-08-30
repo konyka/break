@@ -516,11 +516,23 @@ re_status_t re_facts_txn_update(re_fact_txn_t *transaction, re_fact_id_t id,
 re_status_t re_facts_txn_retract(re_fact_txn_t *transaction, re_fact_id_t id);
 re_status_t re_facts_txn_get(const re_fact_txn_t *transaction, re_string_t name,
                              re_value_t *out_value);
+/* re_facts_insert is the explicit-assertion API (upstream engine.insert).
+ * Asserting over a logically-derived fact keeps its logical justifications
+ * AND records explicit support: the fact then survives premise retraction
+ * (upstream tms.rs keeps both justification lists; explicit support is
+ * unconditionally valid). re_facts_set/re_facts_update are plain value
+ * writes and never change TMS support. */
 re_status_t re_facts_insert(re_facts_t *facts, re_string_t name,
                             const re_value_t *value, re_fact_id_t *out_id);
 re_status_t re_facts_update(re_facts_t *facts, re_fact_id_t id,
                             const re_value_t *value);
 re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id);
+/* Deriving a fact the host already asserted explicitly keeps both supports:
+ * the logical justification is recorded alongside the explicit one (the fact
+ * becomes logical as well), so retracting a premise later leaves the fact
+ * alive. Deriving a fresh or already-logical fact adds a justification; the
+ * fact is auto-retracted when its last logical justification disappears and
+ * no explicit support was ever recorded. */
 re_status_t re_facts_insert_logical(re_facts_t *facts, re_string_t name,
                                     const re_value_t *value,
                                     re_string_t producer_rule,
@@ -529,6 +541,8 @@ re_status_t re_facts_insert_logical(re_facts_t *facts, re_string_t name,
 int re_facts_is_logical(const re_facts_t *facts, re_fact_id_t id);
 re_status_t re_facts_provenance_get(const re_facts_t *facts, re_fact_id_t id,
                                     re_fact_provenance_t *out_provenance);
+/* Counts logical (rule-produced) justifications only; explicit support
+ * recorded via re_facts_insert is unconditionally valid and not counted. */
 size_t re_facts_justification_count(const re_facts_t *facts, re_fact_id_t id);
 re_status_t re_facts_justification_add(re_facts_t *facts, re_fact_id_t derived,
                                        re_string_t producer_rule,
@@ -575,6 +589,25 @@ re_status_t re_engine_rete_network(const re_engine_t *engine,
                                     re_rete_network_t **out_network);
 /* Destroys a caller-owned network; engine-owned networks are released by the engine. */
 void re_rete_network_destroy(re_rete_network_t *network);
+/* Backward query goal strings. Forms: a bare rule name or goal("Rule") for a
+ * zero-argument rule goal; a direct comparison `Fact == literal` or
+ * `Fact == Variable` (binds Variable to the fact value); a `NOT ` prefix
+ * (negation as failure); and, since Task B3, `?var` unification and
+ * argument-bearing goal calls:
+ *
+ * - `Fact == ?s` / `?s == Fact` / `?s == literal` bind `?s` per solution;
+ *   bindings surface via re_proof_binding_get under the verbatim `?`-prefixed
+ *   name (upstream unification.rs keeps the prefix). An absent fact is
+ *   unresolvable and reports RE_QUERY_UNKNOWN like the literal path; `?x == ?y`
+ *   with both sides unbound has no match and reports RE_QUERY_DISPROVED (no
+ *   deferral, no occurs check - upstream parity).
+ * - goal("Rule", a1, ..., an) invokes a parameterized rule with literal,
+ *   fact-path, or `?var` actuals. A concrete-bound `?var` passes its value to
+ *   the formal; an unbound `?var` leaves the formal unbound and claims the
+ *   value the formal derives for that solution (sticky-consistent: a
+ *   conflicting rebind fails the proof branch, never the engine). Equality
+ *   over structured values is whole-value typed equality only - arrays never
+ *   unify element-wise. */
 re_status_t re_engine_query(re_engine_t *engine, re_facts_t *facts,
                              re_string_t goal, re_query_t **out_query);
 re_status_t re_engine_query_bounded(re_engine_t *engine, re_facts_t *facts,
@@ -598,10 +631,12 @@ re_status_t re_proof_edge_get(const re_proof_t *proof, size_t index,
                               re_proof_edge_t *out_edge);
 void re_query_destroy(re_query_t *query);
 void re_proof_destroy(re_proof_t *proof);
-/* Runs pattern (an ordinary query goal string, e.g. "Score == S") through an
+/* Runs pattern (an ordinary query goal string, e.g. "Score == S" or the B3
+ * `?var` forms - "User.Score == ?s" or goal("Pick", ?s)) through an
  * internal bounded query - max_depth 64 (the re_engine_query default) and a
  * documented max_solutions cap of 1024 - and folds the binding named field
- * over the solutions in DFS order. The internal query is destroyed before
+ * over the solutions in DFS order. field names a binding verbatim, so a
+ * `?var` field keeps its prefix ("?s"). The internal query is destroyed before
  * returning, so invalidation/mutation semantics match a caller-run query and
  * no fact subscription survives. Reaching the 1024-solution cap reports
  * RE_STATUS_LIMIT (an exact fit cannot be told apart from a truncated set),
@@ -631,14 +666,35 @@ re_status_t re_engine_query_aggregate(re_engine_t *engine, re_facts_t *facts,
  * final backward-query results (PROVED/DISPROVED only; LIMIT/UNKNOWN are
  * never cached), keyed on the goal text, facts identity, normalized search
  * options, and the engine config, and stamped with the facts mutation
- * generation - any mutation of the same fact set invalidates its entries,
- * including the first assert of a previously absent fact. The graph is
- * created lazily on the first shared query, holds at most 64 entries, and
- * clears every entry when full. A NULL engine or NULL counter is
- * RE_STATUS_INVALID_ARGUMENT; an engine that has not cached yet reports
+ * generation. Since Task B2 the generation check is only the fast path: a
+ * serial mismatch re-validates the entry's recorded premise reads (presence
+ * plus value fingerprint per fact the derivation observed), so mutating a
+ * fact the derivation never read leaves the entry valid; only a premise
+ * flip (or an opaque entry - a user function ran mid-proof) invalidates.
+ * The graph is created lazily on the first shared query, holds at most 64
+ * entries, and clears every entry when full. A NULL engine or NULL counter
+ * is RE_STATUS_INVALID_ARGUMENT; an engine that has not cached yet reports
  * zeroes with RE_STATUS_OK. */
 re_status_t re_engine_proof_graph_stats(const re_engine_t *engine,
                                         uint64_t *out_hits, uint64_t *out_misses);
+/* Extended shared proof graph counters (Task B2), same graph as
+ * re_engine_proof_graph_stats: invalidations counts entries unlinked by
+ * per-premise re-validation, stores counts successful cache stores, and
+ * evictions counts entries dropped by the clear-all flush when the 64-entry
+ * table fills. Callers set struct_size to sizeof(re_proof_graph_stats_t);
+ * a smaller value, a NULL engine, or a NULL output is
+ * RE_STATUS_INVALID_ARGUMENT. An engine that has not cached yet reports
+ * zeroes with RE_STATUS_OK. */
+typedef struct re_proof_graph_stats_t {
+  uint32_t struct_size;
+  uint64_t hits;
+  uint64_t misses;
+  uint64_t invalidations;
+  uint64_t stores;
+  uint64_t evictions;
+} re_proof_graph_stats_t;
+re_status_t re_engine_proof_graph_stats_v2(const re_engine_t *engine,
+                                           re_proof_graph_stats_t *out_stats);
 /* GRL query blocks (Task A7, upstream rust-rule-engine v1.21.4 grl_query.rs):
  * runs the `query "Name" { ... }` blocks installed with the program. A query
  * block carries a required raw goal text plus optional strategy

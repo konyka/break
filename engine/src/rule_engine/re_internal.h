@@ -35,6 +35,30 @@ typedef struct re_tms_t {
     size_t capacity;
 } re_tms_t;
 
+/* B2 (upstream proof_graph.rs justification shape): one fact read observed
+ * during a backward run - the path, whether it resolved, and a typed
+ * fingerprint of the observed value (re_value_fingerprint). A cached
+ * entry's premise set is the local analog of an upstream node's
+ * justification premise keys: the entry survives a facts mutation exactly
+ * when every premise still holds, so mutating a fact the derivation never
+ * read no longer invalidates. Overflow of RE_PROOF_GRAPH_MAX_PREMISES or
+ * an untracked read (a user function ran mid-proof) flips opaque, pinning
+ * the entry to the coarse generation check. */
+#define RE_PROOF_GRAPH_MAX_PREMISES 32u
+
+typedef struct re_proof_graph_premise_t {
+    char *path; /* owned */
+    size_t path_size;
+    uint64_t fingerprint; /* value fingerprint at read time; 0 when absent */
+    int present;
+} re_proof_graph_premise_t;
+
+typedef struct re_premise_set_t {
+    re_proof_graph_premise_t *items; /* owned, deduped by path (first read wins) */
+    size_t count;
+    int opaque;
+} re_premise_set_t;
+
 struct re_facts_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -58,6 +82,12 @@ struct re_facts_t {
     struct re_fact_txn_t *retired_transaction;
     struct re_rete_network_t *rete_network;
     re_tms_t *tms;
+    /* Borrowed premise capture installed by re_backward_machine_dispatch
+     * for the duration of one shared backward query (saved/restored across
+     * the NOT recursion); NULL whenever no capturing query runs. The fact
+     * reads in backward.c record the run's premise set here so the proof
+     * graph can store it with the cached entry. */
+    re_premise_set_t *premise_capture;
 };
 
 struct re_fact_txn_t {
@@ -175,6 +205,13 @@ typedef struct re_rule_t {
     size_t action_count;
     int no_loop;
     int lock_on_active;
+    /* B4 (upstream rusty-rule-engine v1.21.4 rete/agenda.rs
+     * Activation.auto_focus): with an agenda_group, a genuinely new
+     * activation switches the agenda focus to the rule's group (focus-stack
+     * push semantics, see re_program_push_agenda_focus). Without an
+     * agenda_group the flag is a documented no-op: upstream allows the
+     * combination and nothing ever switches. */
+    int auto_focus;
     char *agenda_group;
     char *activation_group;
     char *effective_date;
@@ -252,6 +289,15 @@ struct re_program_t {
     size_t rule_count;
     char *module_focus;
     char *agenda_focus;
+    /* B4 agenda focus stack (upstream rete/agenda.rs AdvancedAgenda
+     * focus_stack): saved previous focuses, top of stack last. Program
+     * state exactly like agenda_focus - it survives run exits (persistent
+     * agenda runs included) and dies with the program. Only real group
+     * names are stacked; the no-focus (NULL) state is never saved, so the
+     * static pre-set focus is the bottom of stack the pops return to.
+     * Bounded by RE_AGENDA_FOCUS_STACK_MAX. */
+    char **agenda_focus_stack;
+    size_t agenda_focus_stack_count;
     int64_t clock_epoch;
     int has_clock;
     re_module_t *modules;
@@ -309,6 +355,19 @@ re_status_t re_ir_resolve_term(re_engine_t *engine, re_facts_t *facts,
                                re_value_t *value, re_eval_scratch_t *scratch);
 re_status_t re_program_set_module_focus(re_program_t *program, re_string_t module);
 re_status_t re_program_set_agenda_focus(re_program_t *program, re_string_t group);
+/* B4 focus stack bound: pushes past the cap discard the saved previous
+ * focus (the focus switch itself still happens), mirroring the codebase's
+ * silent-truncation bounds (RE_IR_MAX_READ_PATHS). */
+#define RE_AGENDA_FOCUS_STACK_MAX 32u
+/* Upstream AdvancedAgenda::set_focus: switches program->agenda_focus to
+ * group, saving the current focus on the stack (a no-op when group already
+ * is the focus). The no-focus (NULL) state is never stacked. */
+re_status_t re_program_push_agenda_focus(re_program_t *program, re_string_t group);
+/* Upstream AdvancedAgenda::get_next_activation stack pop: restores the most
+ * recent saved focus. Returns 1 on a restore, 0 when the stack is empty -
+ * the focus then stays on the exhausted group, exactly like upstream's
+ * `self.focus = self.focus_stack.pop()?` leaves it. */
+int re_program_pop_agenda_focus(re_program_t *program);
 re_status_t re_program_set_clock(re_program_t *program, int64_t epoch_seconds);
 int re_parse_date(const char *text, int64_t *out);
 int re_rule_active(const re_rule_t *rule, int64_t now);
@@ -360,27 +419,52 @@ re_status_t re_agenda_push_full(re_agenda_t *agenda, size_t rule_index, int32_t 
 re_status_t re_agenda_mark_fired(re_agenda_t *agenda, const re_agenda_entry_internal_t *entry);
 int        re_agenda_pop_highest(re_agenda_t *agenda, re_agenda_entry_internal_t *out);
 
-/* Shared proof graph (Task 14): an engine-owned cache of final backward-query
- * results, consulted in re_backward_machine_dispatch AFTER option
- * normalization, keyed on the exact goal text, the facts identity, the
- * normalized search options (max_depth, max_solutions, strategy), the engine
- * config serial, and the facts mutation generation - so cached results equal
- * the final strategy/NOT-resolved results. Only RE_QUERY_PROVED and
- * RE_QUERY_DISPROVED results are stored; LIMIT and UNKNOWN are never cached.
- * An entry is stale when either serial moved and is dropped on lookup; the
- * generation check is coarse (any mutation of the same facts object
- * invalidates every entry bound to it). When the table is full the store
- * path clears every entry (documented clear-all eviction). The facts identity
- * is pointer plus nonce, so a new facts object reusing a destroyed one's
- * address never aliases a live entry (ABA). */
+/* Shared proof graph (Tasks 14 + B2): an engine-owned cache of final
+ * backward-query results, consulted in re_backward_machine_dispatch AFTER
+ * option normalization, keyed on the exact goal text, the facts identity,
+ * the normalized search options (max_depth, max_solutions, strategy), the
+ * engine config serial, and the facts mutation generation - so cached
+ * results equal the final strategy/NOT-resolved results. Only
+ * RE_QUERY_PROVED and RE_QUERY_DISPROVED results are stored; LIMIT and
+ * UNKNOWN are never cached. The facts identity is pointer plus nonce, so
+ * a new facts object reusing a destroyed one's address never aliases a
+ * live entry (ABA). When the table is full the store path clears every
+ * entry (documented clear-all eviction).
+ *
+ * B2 gives the cache the upstream proof graph's node shape
+ * (proof_graph.rs): an entry is keyed by the exact goal text - the local
+ * FactKey (upstream parses Type.field; the whole normalized goal is a
+ * strictly finer key, so textual variants simply cache separately) - and
+ * carries one node record per cached proof (the derivation's trace root
+ * as its rule name) plus the producing run's premise set as the
+ * justification's premise keys. The generation check stays the fast
+ * path; on a serial mismatch the entry is re-validated per premise
+ * (presence plus value fingerprint re-resolved against the live facts),
+ * so a mutation of facts the derivation never read leaves the entry VALID
+ * and its generation is refreshed onto the fast path. A premise flip
+ * unlinks the entry (upstream lookup_by_key filters invalid nodes; the
+ * local cache unlinks them) and counts an invalidation. Dependent
+ * propagation is the validation scan itself: entries naming a retracted
+ * derived fact in their premises find it absent - TMS cascades route
+ * through re_facts_retract, so cascade removals are covered. Entries
+ * marked opaque (a user function ran mid-proof, or the premise cap
+ * overflowed) keep the pre-B2 coarse semantics: any serial move
+ * invalidates them. */
 #define RE_PROOF_GRAPH_CAPACITY 64u
+
+/* One cached derivation of the goal (parallel to the entry's proofs). */
+typedef struct re_proof_graph_node_t {
+    char *rule_name; /* owned: trace root of the derivation (the node key) */
+    size_t rule_name_size;
+    int valid; /* entries are unlinked on invalidation; live nodes read 1 */
+} re_proof_graph_node_t;
 
 typedef struct re_proof_graph_entry_t {
     char *goal;
     size_t goal_size;
     re_facts_t *facts; /* identity only, not owned */
     uint64_t facts_nonce; /* facts->nonce at store time (ABA guard) */
-    uint64_t generation; /* facts->mutation_serial at store time */
+    uint64_t generation; /* facts->mutation_serial at store/last validation */
     uint64_t config_serial; /* engine->config_serial at store time */
     size_t max_depth;
     size_t max_solutions;
@@ -388,6 +472,9 @@ typedef struct re_proof_graph_entry_t {
     re_query_result_t result;
     re_proof_t **proofs; /* cloned, owned */
     size_t proof_count;
+    re_proof_graph_node_t *nodes; /* owned, parallel to proofs */
+    size_t node_count;
+    re_premise_set_t premises; /* the entry's justification premise keys */
 } re_proof_graph_entry_t;
 
 typedef struct re_proof_graph_t {
@@ -396,6 +483,9 @@ typedef struct re_proof_graph_t {
     size_t count;
     uint64_t hits;
     uint64_t misses;
+    uint64_t invalidations; /* entries unlinked by per-premise invalidation */
+    uint64_t stores; /* successful re_proof_graph_store calls */
+    uint64_t evictions; /* entries dropped by the clear-all-on-full flush */
 } re_proof_graph_t;
 
 /* Fixed xorshift64 seed for the random() built-in (A4): nonzero by
@@ -597,6 +687,10 @@ re_status_t re_facts_get_structured_path(const re_facts_t *facts, re_string_t pa
 void re_tms_destroy(re_tms_t *tms);
 void re_tms_remove_derived(re_facts_t *facts, re_fact_id_t derived);
 void re_tms_remove_premise(re_facts_t *facts, re_fact_id_t premise);
+/* Records a premise-less, unconditionally-valid explicit support item for a
+ * fact that also carries logical justifications (upstream tms.rs
+ * JustificationType::Explicit). Idempotent. */
+re_status_t re_tms_explicit_support_ensure(re_facts_t *facts, re_fact_id_t derived);
 re_limits_t re_default_limits(void);
 re_status_t re_copy_string(const re_allocator_impl_t *allocator, re_string_t input, char **out);
 void re_operand_destroy(const re_allocator_impl_t *allocator, re_operand_t *operand);
@@ -674,17 +768,31 @@ void re_proof_graph_destroy(re_proof_graph_t *graph);
 re_status_t re_proof_clone(const re_allocator_impl_t *allocator,
                             const re_proof_t *source, re_proof_t **out);
 /* Counts a hit or miss and, on a hit, returns a borrowed pointer to the
- * live entry (clone its proofs before storing anything else). Stale
- * entries (serial mismatch) are dropped and counted as misses. */
+ * live entry (clone its proofs before storing anything else). A serial
+ * mismatch triggers per-premise re-validation: entries whose premises all
+ * still hold survive with their generation refreshed; the rest are
+ * unlinked and counted as a miss plus an invalidation. */
 re_status_t re_proof_graph_lookup(re_proof_graph_t *graph, re_facts_t *facts,
                                    re_string_t goal, const re_query_options_t *options,
                                    uint64_t config_serial,
                                    const re_proof_graph_entry_t **out_entry);
-/* Clones the proofs into a new entry; clears all entries when full. */
+/* Clones the proofs, their node records, and the premise set into a new
+ * entry; clears all entries when full. premises may be NULL (empty set). */
 re_status_t re_proof_graph_store(re_proof_graph_t *graph, re_facts_t *facts,
                                   re_string_t goal, const re_query_options_t *options,
                                   uint64_t config_serial, re_query_result_t result,
-                                  re_proof_t *const *proofs, size_t proof_count);
+                                  re_proof_t *const *proofs, size_t proof_count,
+                                  const re_premise_set_t *premises);
+
+/* B2 premise-set plumbing (proof_graph.c): a typed value fingerprint for
+ * premise equality, plus record (deduped, capped), merge, and destroy for
+ * the bounded premise sets captured during backward runs. */
+uint64_t re_value_fingerprint(const re_value_t *value);
+void re_premise_set_destroy(const re_allocator_impl_t *allocator, re_premise_set_t *set);
+re_status_t re_premise_set_record(const re_allocator_impl_t *allocator, re_premise_set_t *set,
+                                  re_string_t path, int present, uint64_t fingerprint);
+re_status_t re_premise_set_merge(const re_allocator_impl_t *allocator, re_premise_set_t *target,
+                                 const re_premise_set_t *source);
 
 re_status_t re_rete_network_create(re_facts_t *facts,
                                     const re_rete_condition_t conditions[2],

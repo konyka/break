@@ -92,6 +92,9 @@ typedef struct re_ir_rule_t {
     size_t action_count;
     size_t module;
     int32_t salience;
+    /* B4: mirror of re_rule_t.auto_focus (upstream Activation.auto_focus),
+     * carried for IR consumers; the engine reads the re_rule_t flag. */
+    int auto_focus;
     re_ir_span_t span;
 } re_ir_rule_t;
 typedef struct re_ir_module_t {

@@ -362,7 +362,7 @@ re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out) {
         re_ir_rule_t *rule; const re_rule_t *source = &program->rules[i];
         re_operand_t rule_name;
         status = grow(&ir->allocator, (void **)&ir->rules, ir->rule_count + 1u, sizeof(*rule)); if (status != RE_STATUS_OK) goto fail;
-        rule = &ir->rules[ir->rule_count]; memset(rule, 0, sizeof(*rule)); rule->id = id_for(4u, i, source->name, source->name_size); rule->salience = source->salience; rule->module = source->module_index < program->module_count ? source->module_index : SIZE_MAX; rule->first_action = ir->action_count; ++ir->rule_count;
+        rule = &ir->rules[ir->rule_count]; memset(rule, 0, sizeof(*rule)); rule->id = id_for(4u, i, source->name, source->name_size); rule->salience = source->salience; rule->auto_focus = source->auto_focus; rule->module = source->module_index < program->module_count ? source->module_index : SIZE_MAX; rule->first_action = ir->action_count; ++ir->rule_count;
         status = add_expr(ir, source->condition, &rule->condition); if (status != RE_STATUS_OK) goto fail;
         memset(&rule_name, 0, sizeof(rule_name)); rule_name.kind = RE_OPERAND_FACT; rule_name.fact_name = source->name; rule_name.fact_name_size = source->name_size;
         status = add_term(ir, &rule_name, &rule->name); if (status != RE_STATUS_OK) goto fail;

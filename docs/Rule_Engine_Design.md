@@ -392,6 +392,146 @@ attribute is a struct-only field upstream (`rule.rs`) with no GRL form;
 object literals `{k: v}` and index syntax `a[0]` appear in the upstream doc's
 type and nested-access sections without parser support on either side.
 
+## RETE/TMS/unification depth parity: TMS, proof graph, ?var unification, agenda focus stack
+
+This section records the sub-project B (2026-08-29) closure of the real
+deltas against the working deep machinery of upstream rust-rule-engine
+v1.21.4 (`f80a541`), plus the upstream-vapor findings the parity scope
+deliberately does not replicate. The source-level research behind the vapor
+calls is recorded in
+`docs/superpowers/specs/2026-08-29-rule-engine-full-parity-design.md`
+(Sub-project B). All delivered rows are `verified_local` in
+`docs/rule_engine_conformance.yml`.
+
+TMS parity closure (Task B1, upstream `src/rete/tms.rs` +
+`tests/tms_test.rs` - the 12 upstream test semantics are all ported).
+Explicit support and logical justifications now coexist on one fact: an
+explicit host assertion (`re_facts_insert`) over a logically-derived fact
+records an explicit-support marker (a premise-less justification item, the
+local encoding of upstream `JustificationType::Explicit`, invisible to the
+public provenance helpers), and `re_facts_insert_logical` on a host-asserted
+fact keeps both supports. Both cascade guards retract a derived fact only
+when its total support count reaches zero, so explicit support is
+unconditionally valid by construction. Multi-justification facts survive
+single-premise retraction, diamond dependencies cascade fully, and a new
+justification never re-derives the value. Markers ride `re_tms_clone`, so
+transaction staged stores preserve them with no transactions.c change.
+`re_facts_justification_remove` mirrors the add-side validation, so no
+public input can delete a marker. Documented divergences and bounds:
+insertion-time cycles are rejected with `RE_STATUS_LIMIT` where upstream
+admits them and terminates via the retracted set (the cascade-cycle case
+itself matches upstream `is_valid` and is pinned whitebox; eager item
+removal is the local termination guarantee where upstream never cleans its
+maps); `re_facts_set`/`re_facts_update` are plain value writes that never
+record explicit support - only `re_facts_insert` (and `insert_logical` on an
+explicit entry) does; a marker-only survivor keeps `re_facts_is_logical`
+true (upstream keeps the fact in `logical_facts` until retracted);
+structured-root derivations keep the pre-existing bound that premise
+retraction cascades to the whole root; upstream's global TMS stats struct
+has no local aggregate (per-fact equivalents are pinned instead under the
+append-only ABI).
+
+Proof graph - real graph shape (Task B2, upstream
+`src/backward/proof_graph.rs`). The 64-entry result cache stays the lookup
+layer; the graph semantics now ride on it. Every backward run under the
+dispatch wrapper captures a bounded (32, deduped-by-path) premise set of
+{path, present, FNV-1a typed value fingerprint} covering each fact read -
+absent reads are recorded with present=0, so a later first assert still
+invalidates - and cache hits merge the served entry's premises into an
+enclosing capture. Each store records one informational node per proof
+(trace-root rule name + valid flag) with the producing run's premise set.
+Lookup keeps generation equality as the fast path and, on serial mismatch,
+re-resolves each premise and compares presence plus typed fingerprint: an
+entry whose premises all hold survives an unrelated mutation (the headline
+behavioral upgrade over the pre-B2 coarse drop), and any flip unlinks the
+whole entry - the local analog of upstream `lookup_by_key` filtering invalid
+nodes. Any untracked influence (user function mid-proof, premise-cap
+overflow, allocation failure) flips the capture opaque and pins the entry to
+the coarse generation check; soundness is never traded for precision. Stats:
+`re_engine_proof_graph_stats` keeps its two-pointer ABI, and the appended
+`re_engine_proof_graph_stats_v2` fills a struct_size-versioned
+`re_proof_graph_stats_t` {hits, misses, invalidations, stores, evictions}
+(the 64-entry clear-all flush counts as evictions). Dependent propagation is
+lazy - an invalidated dependent is detected by re-validation at its next
+consult - rather than upstream's eager `invalidate_handle` recursion;
+semantically equivalent for a result cache. Documented bounds: object/array
+facts fingerprint by type tag only (a future member-level read path must be
+captured or flip the capture opaque), and the node `valid` flag is upstream
+shape-fidelity no production code consumes.
+
+Backward `?var` unification (Task B3, upstream
+`src/backward/unification.rs` case table). A `?var` token on either side of
+`==` in a query goal string switches the comparison to unification: a bound
+variable resolves to its value; an unbound variable with a resolvable other
+side binds and surfaces via `re_proof_binding_get` under the verbatim `?s`
+name; an unresolvable side is no match (`RE_QUERY_UNKNOWN` on an absent fact
+read, identical to the literal path); two unbound variables (`?x == ?y`)
+are `RE_QUERY_DISPROVED` - nothing was read, so the result is cacheable with
+an empty premise set and can never flip. Rebinding is sticky-consistent:
+the same value is fine, a different value fails that proof branch (never an
+engine error). `goal("Rule", a1, ...)` query strings admit literal, `?var`,
+and fact-path actuals (nested calls/arithmetic are
+`RE_STATUS_INVALID_ARGUMENT`); an unbound `?var` actual leaves the formal
+unbound and records a formal-to-`?var` alias, and when the formal later
+claims a concrete value the alias rebinds the `?var` sticky-consistently.
+Condition equality with an unbound formal claims the other side's concrete
+value through the existing operand path, so every fact read stays
+premise-captured. Aggregation folds `?var` bindings with no API change.
+Documented bounds (upstream parity): no occurs check, no deferral, values
+are scalars/arrays compared by typed equality (never element-wise), and
+aliases are one-directional value propagation - no union-find, and
+propagation requires the same formal name hop-to-hop. Upstream's own
+`Unifier` is never called by its search engine (dead integration), so the
+case table is mapped onto the machine's two real binding points rather than
+ported as a module. Minor surface notes: direct-goal literals are int64-only
+while `goal()` actuals lex decimal spellings as doubles (consistent with the
+pre-existing `==` path), and an absent fact operand inside a rule condition
+resolves to false through the pre-existing rule-goal fallback.
+
+Agenda focus stack + auto-focus (Task B4, upstream `src/rete/agenda.rs`
+`AdvancedAgenda`). `ActivateAgendaGroup("g")` pushes the current focus and
+switches; when the focus group's activations are exhausted (pending queue
+drained after every rule had its first pass) the previous focus pops back
+and the recognize-act loop continues, and an empty stack ends the run with
+the focus left on the exhausted group (exactly upstream's `pop()?`). The
+stack lives on the program next to the focus (not on the agenda) so it
+shares the A8 focus lifetime: persistent-agenda runs interrupted by LIMIT
+pop back in the next run, and program install resets it for free. The
+static pre-set focus is the bottom of stack; the plain setter clears
+saved-focus history. The stack is bounded at 32
+(`RE_AGENDA_FOCUS_STACK_MAX`); overflow discards the saved focus and the
+switch still happens. The `auto-focus true|false` attribute follows the
+`no-loop` grammar idiom (any other value or a duplicate is a parse error),
+mirrors into the IR, bypasses the compute gate for its rule (upstream
+evaluates rules group-agnostically), and switches focus only when the push
+creates a genuinely new pending entry - dedup and refraction hits never
+re-switch. Group-less auto-focus is a documented no-op. Ratified
+divergences: the NULL no-focus state is never stacked (no upstream
+MAIN-return; this preserves the ratified A8 mid-run-switch behavior), and
+cross-group pending activations drain via the A8 pop-time stale gate and
+re-push when their group regains focus (pure conditions re-push, so their
+net firings match upstream's per-group heaps; impure rules keep their
+first-pass-only bound and do not re-fire that run; activation sequence
+numbers may differ). An out-of-focus
+pure auto-focus rule re-evaluates every recompute cycle, mirroring upstream;
+the 32-cap overflow path is documented but not unit-tested.
+
+Upstream vapor - documented, not replicated (spec Sub-project B, item 5).
+Cross-rule alpha sharing and beta token propagation do not exist in any
+upstream execution path ("RETE-UL" is a per-rule boolean expression tree;
+the named BetaNode/TokenPool/NodeSharing utilities are unused by any
+engine); upstream's `Unifier` (`src/backward/unification.rs`) is never
+called by the backward search; upstream's integrated proof-graph caching is
+dead (fresh graph per query plus an insert/lookup key mismatch); the
+parallel engine's actions are no-ops and it is not wired into the main
+engine; ConflictResolutionStrategy beyond salience+recency and RETE-UL
+accumulate value binding are likewise documented non-goals. Mapping note:
+the local engine corresponds to upstream RustRuleEngine + BackwardEngine +
+the streaming seams; ReteUlEngine/IncrementalEngine engine-level quirks
+(100/1000 iteration caps, `<name>_fired` fact insertion,
+no_loop-default-true, update-all-facts-of-type actions) are
+upstream-degenerate and deliberately not replicated.
+
 ## Tested private advanced slice
 
 The current focused suite exercises a private, non-capability-bearing slice for
@@ -493,7 +633,9 @@ deliberately: `re_engine_capabilities_v2` does not set
 predicate unification and upstream shared-subgraph provenance remain
 unsupported and the seam is promoted only when that claim can be honest.
 `re_engine_query_bounded` accepts exact flat fact goals of the form
-`Name == literal` or `Name == Variable`, plus exact installed rule names.
+`Name == literal`, `Name == Variable`, or `Name == ?var` (bounded
+unification per the depth parity section), argument-bearing
+`goal("Rule", actual, ...)` query strings, plus exact installed rule names.
 Rule declarations may optionally use bounded formal parameters, for example
 `rule "Lookup"(Key)`. Conditions may use `goal("RuleName")` unchanged, or the
  parsed explicit form `goal("RuleName", actual, ...)`; bounded formal/actual
@@ -572,18 +714,28 @@ results (PROVED/DISPROVED only; LIMIT/UNKNOWN are never cached), consulted
 after option normalization and keyed on the exact goal text, the facts
 identity, the normalized options (`max_depth`, `max_solutions`, `strategy`),
 and the engine config serial, and stamped with the facts mutation generation.
-It holds at most 64 entries and clears every entry when full; served proofs
-are deep clones, and a served query wires the same invalidation subscription a
-fresh run gets. `config_serial` bumps on program install and function
-register/unregister, and `mutation_serial` now also bumps on retraction, so
-TMS cascades and retract-only transactions invalidate cached proofs. Entries
-key on the facts pointer value but never dereference it, so there is no
-use-after-free; a destroy-plus-realloc at the same address with a matching
-generation could alias and is parked as a documented residual risk.
-`disable_shared_proof_graph` bypasses lookup, store, and stats entirely (no
-stats movement), and `re_engine_proof_graph_stats` reports hits and misses -
-zeroes before the first cached query. A NOT query counts the subgoal consult
-in the stats, so one fresh `NOT X` records two misses. The upstream
+It holds at most 64 entries and clears every entry when full (counted as
+evictions); served proofs are deep clones, and a served query wires the same
+invalidation subscription a fresh run gets. `config_serial` bumps on program
+install and function register/unregister, and `mutation_serial` now also
+bumps on retraction, so TMS cascades and retract-only transactions still
+force revalidation of cached proofs. Sub-project B replaced the coarse
+per-facts invalidation with the real graph shape described in the depth
+parity section: each run captures a bounded premise set (32, deduped by
+path, typed value fingerprints, absent reads recorded), and on a serial
+mismatch each premise is re-resolved - an entry whose premises all hold
+survives an unrelated mutation, while any flip unlinks the entry. Untracked
+influences (user function mid-proof, premise-cap overflow, allocation
+failure) flip the capture opaque and keep the coarse generation semantics
+for that entry. Entries key on the facts pointer value but never dereference
+it, so there is no use-after-free; a destroy-plus-realloc at the same
+address with a matching generation could alias and is parked as a documented
+residual risk. `disable_shared_proof_graph` bypasses lookup, store, and
+stats entirely (no stats movement), `re_engine_proof_graph_stats` reports
+hits and misses - zeroes before the first cached query - and the appended
+`re_engine_proof_graph_stats_v2` adds invalidations, stores, and evictions
+in a struct_size-versioned struct. A NOT query counts the subgoal consult in
+the stats, so one fresh `NOT X` records two misses. The upstream
 shared-subgraph producer-provenance graph is not modeled.
 
 Names and string slices returned by proof binding, trace, and node getters are

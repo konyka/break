@@ -1304,6 +1304,7 @@ static re_status_t rule_attributes(parser_t *p, re_rule_t *rule) {
     int seen_activation = 0;
     int seen_no_loop = 0;
     int seen_lock = 0;
+    int seen_auto_focus = 0;
     for (;;) {
         if (word(p, "date-effective") || word(p, "date-expires")) {
             int expiry = p->at >= 7u && memcmp(p->text + p->at - 7u, "expires", 6u) == 0;
@@ -1341,6 +1342,14 @@ static re_status_t rule_attributes(parser_t *p, re_rule_t *rule) {
             if (word(p, "true")) rule->lock_on_active = 1;
             else if (!word(p, "false")) return RE_STATUS_PARSE_ERROR;
             seen_lock = 1;
+        } else if (word(p, "auto-focus")) {
+            /* B4 (upstream Activation.auto_focus); the no-loop idiom: only
+             * true|false, duplicates rejected. Group-less rules accept the
+             * attribute too (upstream allows it); it is a runtime no-op. */
+            if (seen_auto_focus) return RE_STATUS_PARSE_ERROR;
+            if (word(p, "true")) rule->auto_focus = 1;
+            else if (!word(p, "false")) return RE_STATUS_PARSE_ERROR;
+            seen_auto_focus = 1;
         } else {
             return RE_STATUS_OK;
         }
@@ -1775,7 +1784,8 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
      *out_program = program; return RE_STATUS_OK;
 }
 
-void re_program_destroy(re_program_t *program) { size_t i; if (program == NULL) return; re_ir_destroy(program->ir); for (i = 0u; i < program->rule_count; ++i) rule_destroy(&program->allocator, &program->rules[i]); modules_destroy(&program->allocator, program); deffacts_destroy(&program->allocator, program); queries_destroy(&program->allocator, program); re_free(&program->allocator, program->module_focus); re_free(&program->allocator, program->agenda_focus); re_free(&program->allocator, program->rules); re_free(&program->allocator, program->source); re_free(&program->allocator, program); }
+static void focus_stack_destroy(const re_allocator_impl_t *a, re_program_t *p) { size_t i; for (i = 0u; i < p->agenda_focus_stack_count; ++i) re_free(a, p->agenda_focus_stack[i]); re_free(a, p->agenda_focus_stack); p->agenda_focus_stack = NULL; p->agenda_focus_stack_count = 0u; }
+void re_program_destroy(re_program_t *program) { size_t i; if (program == NULL) return; re_ir_destroy(program->ir); for (i = 0u; i < program->rule_count; ++i) rule_destroy(&program->allocator, &program->rules[i]); modules_destroy(&program->allocator, program); deffacts_destroy(&program->allocator, program); queries_destroy(&program->allocator, program); focus_stack_destroy(&program->allocator, program); re_free(&program->allocator, program->module_focus); re_free(&program->allocator, program->agenda_focus); re_free(&program->allocator, program->rules); re_free(&program->allocator, program->source); re_free(&program->allocator, program); }
 
 re_status_t re_program_set_module_focus(re_program_t *program, re_string_t module) {
     char *copy;
@@ -1793,5 +1803,47 @@ re_status_t re_program_set_agenda_focus(re_program_t *program, re_string_t group
     char *copy;
     if (program == NULL || group.data == NULL || group.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
     if (re_copy_string(&program->allocator, group, &copy) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    /* A programmatic focus replace abandons the saved-focus history (B4):
+     * the stack resets exactly like a fresh program's would. */
+    focus_stack_destroy(&program->allocator, program);
     re_free(&program->allocator, program->agenda_focus); program->agenda_focus = copy; return RE_STATUS_OK;
+}
+
+/* B4 (upstream rusty-rule-engine v1.21.4 rete/agenda.rs
+ * AdvancedAgenda::set_focus): re-focusing the current group is a no-op;
+ * otherwise the current focus is saved on the bounded stack and group
+ * becomes the focus. The no-focus (NULL) state is never stacked: with no
+ * static pre-set group there is no bottom-of-stack focus to return to, so
+ * leaving the group-less state stays one-way for the run (the A8 replace
+ * behavior for that case). */
+re_status_t re_program_push_agenda_focus(re_program_t *program, re_string_t group) {
+    char *copy;
+    if (program == NULL || group.data == NULL || group.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    if (program->agenda_focus != NULL && strlen(program->agenda_focus) == group.size &&
+        memcmp(program->agenda_focus, group.data, group.size) == 0) return RE_STATUS_OK;
+    if (re_copy_string(&program->allocator, group, &copy) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    if (program->agenda_focus != NULL) {
+        if (program->agenda_focus_stack_count < RE_AGENDA_FOCUS_STACK_MAX) {
+            char **grown = re_realloc(&program->allocator, program->agenda_focus_stack,
+                                      (program->agenda_focus_stack_count + 1u) * sizeof(*grown));
+            if (grown == NULL) { re_free(&program->allocator, copy); return RE_STATUS_OUT_OF_MEMORY; }
+            program->agenda_focus_stack = grown;
+            /* The saved entry takes ownership of the current focus string. */
+            program->agenda_focus_stack[program->agenda_focus_stack_count++] = program->agenda_focus;
+        } else {
+            /* Bounded overflow: the previous focus is discarded rather than
+             * saved; the switch still happens (documented cap behavior). */
+            re_free(&program->allocator, program->agenda_focus);
+        }
+    }
+    program->agenda_focus = copy;
+    return RE_STATUS_OK;
+}
+
+int re_program_pop_agenda_focus(re_program_t *program) {
+    if (program == NULL || program->agenda_focus_stack_count == 0u) return 0;
+    re_free(&program->allocator, program->agenda_focus);
+    /* Stack entries are never NULL (the no-focus state is not stacked). */
+    program->agenda_focus = program->agenda_focus_stack[--program->agenda_focus_stack_count];
+    return 1;
 }
