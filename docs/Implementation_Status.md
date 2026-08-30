@@ -2213,6 +2213,11 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   往返在本机不可验证，由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
   变更持有；通用流模式/join/watermark 仍不支持；Redis 的实际启用仍需集成环境提供
   受控 Redis 服务。
+- 依赖矩阵回归（2026-08-30）：`RULE_ENGINE_ENABLE_C11_PARALLEL=ON` 在检测到
+  `<threads.h>` 的主机构建并生成 executor stress target，完整 CTest **77/77**；
+  `RULE_ENGINE_ENABLE_REDIS=ON` 在仅有运行库、缺少 hiredis 开发头文件的主机上明确
+  输出 STATUS 并强制关闭选项，完整 CTest **76/76**。两条路径均未静默替换依赖或
+  把 Redis 服务不可用误报为通过。
 
 ## myui selection rect bounded output（2026-08-29）
 
