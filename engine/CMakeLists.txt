@@ -1058,6 +1058,7 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_myr_dependency_config
         COMMAND ${CMAKE_COMMAND}
             -DMYR_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/CMakeLists.txt
+            -DMYUI_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myui/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
 
     # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c

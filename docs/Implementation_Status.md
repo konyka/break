@@ -2,6 +2,16 @@
 
 ## 本轮更新
 
+**网络测试端口隔离（TDD）**：修复 `test_network` 与其它并行测试共用 PID 哈希固定端口的
+竞态；新增 `net_socket_get_local_address()` 跨平台查询 `getsockname()` 结果，UDP 测试
+统一绑定端口 `0` 并使用运行时端口互联。热路径不增加分配或锁，仅测试/诊断调用显式查询。
+新增 ephemeral-port 回归用例；验证：`test_network` **15/15**，四进程并行回归通过。
+
+**独立 myui 第三方路径解耦（TDD）**：`myr` 与 `myui` CMake 入口不再硬编码
+`${CMAKE_SOURCE_DIR}/3rd`，改用可覆盖的 `MYUI_THIRD_PARTY_DIR`，默认定位当前仓库的
+`engine/external`。新增配置契约同时检查两个入口，避免独立构建从错误源码根目录寻找
+SheenBidi/stb 依赖；主工程默认路径和性能行为不变。
+
 **独立 myr 依赖策略收敛（TDD）**：修复旧版 `engine/src/myui/myr/CMakeLists.txt` 仅依赖
 `pkg-config` 且未启用 HarfBuzz 的配置漂移，统一为 FreeType 原生 CMake target、HarfBuzz
 CMake target 优先及 `pkg-config` imported target 回退，并使用正确的 `Freetype_FOUND` 变量。

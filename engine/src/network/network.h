@@ -32,6 +32,7 @@ void net_shutdown(void);
 NetSocket *net_udp_create(u16 bind_port);                    /* UDP socket, bind port (0 = any) */
 NetSocket *net_tcp_connect(const char *host, u16 port);      /* TCP connect to remote */
 NetSocket *net_tcp_listen(u16 port, u32 backlog);            /* TCP listener */
+bool net_socket_get_local_address(const NetSocket *s, NetAddress *out);
 
 /* TCP-specific */
 NetSocket *net_tcp_accept(NetSocket *listener, NetAddress *out_addr);
