@@ -2,6 +2,11 @@
 
 ## 本轮更新
 
+**规则引擎数学库链接依赖（TDD）**：远程规则引擎 GRL 扩展新增 `round/floor/ceil/fmod`
+数学内建函数后，`rule_engine_core` 的独立测试和 benchmark 在 Unix 链接阶段缺少 `m` 而
+失败。现将 `m` 作为非 MSVC 平台的公开 target 依赖，使所有消费者自动继承并保持 Windows
+CRT 路径不变；验证：完整 Debug 构建与 CTest **76/76** 通过。
+
 **网络测试端口隔离（TDD）**：修复 `test_network` 与其它并行测试共用 PID 哈希固定端口的
 竞态；新增 `net_socket_get_local_address()` 跨平台查询 `getsockname()` 结果，UDP 测试
 统一绑定端口 `0` 并使用运行时端口互联。热路径不增加分配或锁，仅测试/诊断调用显式查询。
