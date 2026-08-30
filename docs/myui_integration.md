@@ -233,6 +233,12 @@ engine/
 独立 `myr` CMake 入口遵循同一依赖策略：FreeType 使用 `Freetype::Freetype`，HarfBuzz
 优先使用 `harfbuzz::harfbuzz`，没有 CMake package 时回退 `PkgConfig::HARFBUZZ`；缺少
 可选依赖时保持对应字体后端关闭，不影响软件、OpenGL 或 Vulkan 其它路径。
+独立构建还可通过 `-DMYUI_THIRD_PARTY_DIR=/path/to/dependencies` 覆盖 stb 与 SheenBidi
+目录，避免依赖调用方的 `${CMAKE_SOURCE_DIR}` 布局。
+
+网络模块的 UDP 测试使用 `net_udp_create(0)` 获取内核临时端口，并通过
+`net_socket_get_local_address()` 构造 loopback 目标，不依赖固定端口或进程号哈希；该 API
+在 Linux、Windows 等支持 IPv4 `getsockname()` 的平台保持相同语义。
 
 ## 构建与测试
 

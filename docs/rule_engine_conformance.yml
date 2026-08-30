@@ -596,4 +596,7 @@ local_evidence_baseline:
   build_command: cmake --build build-gate --target rule_engine_core test_rule_engine test_rule_engine_ir test_rule_engine_transactions test_rule_engine_tms test_rule_engine_grl_semantics test_rule_engine_grl_surface test_rule_engine_query_blocks test_rule_engine_forall_limits test_rule_engine_rete_incremental test_rule_engine_agenda test_rule_engine_backward test_rule_engine_backward_bindings test_rule_engine_backward_deep_chain test_rule_engine_backward_ext test_backward_machine_structure test_backward_machine_context test_rule_engine_stream_ext rule_engine_fuzz_smoke rule_engine_bench rule_engine_c99_consumer
   focused_ctest_command: ctest --test-dir build-gate -R "rule_engine|backward_machine" --output-on-failure
   focused_ctest_result: 18/18 passed
-  blocked_or_unavailable: [native-redis runtime roundtrip (hiredis and a Redis service are absent on the verification host; the adapter is compile-verified only), C11 executor stress target is not generated in this build tree because RULE_ENGINE_ENABLE_C11_PARALLEL is OFF]
+  blocked_or_unavailable: [native-redis runtime roundtrip (hiredis development files and a Redis service are absent on the verification host; the adapter is compile-verified only)]
+  recent_validation_2026_08_30:
+    c11_parallel: "configure/build/CTest passed with RULE_ENGINE_ENABLE_C11_PARALLEL=ON; 77/77 tests"
+    redis_missing_development_files: "RULE_ENGINE_ENABLE_REDIS=ON was force-disabled with STATUS; configure/build/CTest passed; 76/76 tests"

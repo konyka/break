@@ -206,6 +206,19 @@ NetSocket *net_udp_create(u16 bind_port)
     return net__alloc_socket(fd, NET_PROTO_UDP);
 }
 
+bool net_socket_get_local_address(const NetSocket *s, NetAddress *out)
+{
+    struct sockaddr_in addr;
+    socklen_t_compat addr_len = (socklen_t_compat)sizeof(addr);
+    if (!s || !out || s->fd == INVALID_RAW_SOCKET ||
+        getsockname(s->fd, (struct sockaddr *)&addr, &addr_len) < 0 ||
+        addr.sin_family != AF_INET) {
+        return false;
+    }
+    net__fill_address_from_sockaddr(&addr, out);
+    return true;
+}
+
 NetSocket *net_tcp_connect(const char *host, u16 port)
 {
     if (!net_init()) return NULL;

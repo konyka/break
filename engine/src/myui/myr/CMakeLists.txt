@@ -22,8 +22,10 @@ add_library(myr STATIC
   my_syntax.c
 )
 
+set(MYUI_THIRD_PARTY_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../external" CACHE PATH
+  "myui third-party dependency directory")
 target_include_directories(myr PUBLIC ${CMAKE_SOURCE_DIR}/src)
-target_include_directories(myr PRIVATE ${CMAKE_SOURCE_DIR}/3rd)
+target_include_directories(myr PRIVATE ${MYUI_THIRD_PARTY_DIR})
 target_link_libraries(myr PUBLIC myc)
 
 # FreeType backend (M16): hinted glyphs; auto-OFF when freetype2 is absent
@@ -73,7 +75,7 @@ endif()
 # BiDi reorder + Arabic shaping (M11a): vendored SheenBidi unity TU,
 # same warning relaxation as stb (third-party code, Apache-2.0)
 if(MYUI_BIDI)
-  set(SHEENBIDI_DIR ${CMAKE_SOURCE_DIR}/3rd/SheenBidi)
+  set(SHEENBIDI_DIR ${MYUI_THIRD_PARTY_DIR}/SheenBidi)
   target_sources(myr PRIVATE ${SHEENBIDI_DIR}/Source/SheenBidi.c)
   target_compile_definitions(myr PUBLIC MYUI_BIDI)
   target_include_directories(myr PRIVATE

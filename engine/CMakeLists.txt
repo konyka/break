@@ -729,6 +729,9 @@ add_library(rule_engine_core STATIC
     src/rule_engine/executor.c src/rule_engine/templates.c src/rule_engine/agenda.c)
 set_property(TARGET rule_engine_core PROPERTY C_STANDARD 99)
 target_include_directories(rule_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(NOT MSVC)
+    target_link_libraries(rule_engine_core PUBLIC m)
+endif()
 if(RULE_ENGINE_ENABLE_REDIS)
     find_path(HIREDIS_INCLUDE_DIR hiredis/hiredis.h)
     find_library(HIREDIS_LIBRARY NAMES hiredis)
@@ -1072,6 +1075,7 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_myr_dependency_config
         COMMAND ${CMAKE_COMMAND}
             -DMYR_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/CMakeLists.txt
+            -DMYUI_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myui/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
 
     # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c

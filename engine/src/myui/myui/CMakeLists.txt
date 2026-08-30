@@ -38,6 +38,9 @@ add_library(myui STATIC
 target_include_directories(myui PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(myui PUBLIC myc myr mypal)
 
+set(MYUI_THIRD_PARTY_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../external" CACHE PATH
+  "myui third-party dependency directory")
+
 if(MYUI_UI_YAML)
   target_compile_definitions(myui PUBLIC MYUI_UI_YAML)
 endif()
@@ -46,7 +49,7 @@ if(MYUI_IMAGE_STB)
   target_compile_definitions(myui PUBLIC MYUI_IMAGE_STB)
 endif()
 
-target_include_directories(myui PRIVATE ${CMAKE_SOURCE_DIR}/3rd)
+target_include_directories(myui PRIVATE ${MYUI_THIRD_PARTY_DIR})
 
 # third-party single-header libs: relax warnings ONLY for these TUs
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")

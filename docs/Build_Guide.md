@@ -105,8 +105,9 @@ remains in `test_rule_engine`. ASan/UBSan presets are in
 `engine/CMakePresets.json`; configure or runtime failures mean unavailable
 evidence, not a passing sanitizer gate. Redis is intentionally OFF by default.
 `RULE_ENGINE_ENABLE_REDIS=ON` checks for hiredis headers and a library at
-configure time, but the native adapter remains unsupported and discovery does
-not provide a live integration service.
+configure time. When both are found, the native adapter is compiled and linked;
+when either is missing, CMake force-disables the option without a fallback.
+Dependency discovery does not provide a live Redis integration service.
 
 ### 2.3 Wayland 后端构建
 

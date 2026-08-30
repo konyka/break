@@ -6,12 +6,6 @@
 #include <network/network.h>
 #include <string.h>
 
-/* R444: fixed loopback ports (19876..19880) collided across parallel ctest
- * processes — bind failed and the loopback tests fell over. Per-pid 16-port
- * block, same scheme as test_net_replication.c; the five users take +0..+4.
- * Range check: 23000 + 2599*16 = 64584, +4 < 65535. */
-#define TEST_PORT_BASE ((u16)(23000u + ((u32)TEST_GETPID() % 2600u) * 16u))
-
 /* UDP send completion does not guarantee the peer's non-blocking receive
  * queue has been populated yet. Wait for readiness before consuming a packet. */
 static i32 recvfrom_wait_readable(NetSocket *socket, void *buf, u32 size,
@@ -76,29 +70,16 @@ TEST(address_equal)
 TEST(udp_loopback)
 {
     ASSERT_TRUE(net_init());
-    /* Create two UDP sockets: sender and receiver */
     NetSocket *recv_s = net_udp_create(0);
     ASSERT_NOT_NULL(recv_s);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
-    /* Get receiver's bound port (we need to figure it out).
-     * Since we bound to port 0, the OS assigned a port.
-     * For this test, we'll use a fixed port instead. */
-    net_close(recv_s);
-    net_close(send_s);
-
-    /* R444: per-pid block port (was fixed 19876) */
-    recv_s = net_udp_create((u16)(TEST_PORT_BASE + 0u));
-    ASSERT_NOT_NULL(recv_s);
     net_set_nonblocking(recv_s, true);
-
-    send_s = net_udp_create(0);
-    ASSERT_NOT_NULL(send_s);
 
     /* Send a message */
     NetAddress dst;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 0u), &dst));
+    ASSERT_TRUE(net_socket_get_local_address(recv_s, &dst));
     const char *msg = "Hello, loopback!";
     i32 sent = net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
     ASSERT_TRUE(sent > 0);
@@ -134,13 +115,13 @@ TEST(poll_timeout)
 TEST(poll_readable)
 {
     ASSERT_TRUE(net_init());
-    NetSocket *recv_s = net_udp_create((u16)(TEST_PORT_BASE + 1u)); /* R444: per-pid block port (was fixed 19877) */
+    NetSocket *recv_s = net_udp_create(0);
     ASSERT_NOT_NULL(recv_s);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
     NetAddress dst;
-    net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 1u), &dst);
+    ASSERT_TRUE(net_socket_get_local_address(recv_s, &dst));
     const char *msg = "poll test";
     net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
 
@@ -188,6 +169,23 @@ TEST(udp_create_zero_port)
     net_shutdown();
 }
 
+TEST(udp_ephemeral_port_is_queryable)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *socket = net_udp_create(0);
+    ASSERT_NOT_NULL(socket);
+
+    NetAddress address;
+    ASSERT_TRUE(net_socket_get_local_address(socket, &address));
+    ASSERT_STR_EQ(address.host, "0.0.0.0");
+    ASSERT_TRUE(address.port != 0u);
+    ASSERT_FALSE(net_socket_get_local_address(NULL, &address));
+    ASSERT_FALSE(net_socket_get_local_address(socket, NULL));
+
+    net_close(socket);
+    net_shutdown();
+}
+
 TEST(sendto_empty_buffer)
 {
     ASSERT_TRUE(net_init());
@@ -211,14 +209,15 @@ TEST(sendto_const_address)
      * address (it previously cast away const). A genuinely const NetAddress
      * in read-only storage must work. */
     ASSERT_TRUE(net_init());
-    NetSocket *recv_s = net_udp_create((u16)(TEST_PORT_BASE + 2u)); /* R444: per-pid block port (was fixed 19878) */
+    NetSocket *recv_s = net_udp_create(0);
     ASSERT_NOT_NULL(recv_s);
     net_set_nonblocking(recv_s, true);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
-    /* R444: port is runtime now (per-pid block); the address stays const. */
-    const NetAddress dst = { .host = "127.0.0.1", .port = (u16)(TEST_PORT_BASE + 2u) };
+    NetAddress recv_addr;
+    ASSERT_TRUE(net_socket_get_local_address(recv_s, &recv_addr));
+    const NetAddress dst = { .host = "127.0.0.1", .port = recv_addr.port };
     const char *msg = "const addr";
     i32 sent = net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
     ASSERT_TRUE(sent > 0);
@@ -240,18 +239,18 @@ TEST(sendto_repeated_sends_with_cache)
      * the same destination (cache hit) and a send to a different destination
      * (key differs → re-resolve) must all arrive intact. */
     ASSERT_TRUE(net_init());
-    NetSocket *recv_a = net_udp_create((u16)(TEST_PORT_BASE + 3u)); /* R444: per-pid block port (was fixed 19879) */
+    NetSocket *recv_a = net_udp_create(0);
     ASSERT_NOT_NULL(recv_a);
     net_set_nonblocking(recv_a, true);
-    NetSocket *recv_b = net_udp_create((u16)(TEST_PORT_BASE + 4u)); /* R444: per-pid block port (was fixed 19880) */
+    NetSocket *recv_b = net_udp_create(0);
     ASSERT_NOT_NULL(recv_b);
     net_set_nonblocking(recv_b, true);
     NetSocket *send_s = net_udp_create(0);
     ASSERT_NOT_NULL(send_s);
 
     NetAddress dst_a, dst_b;
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 3u), &dst_a));
-    ASSERT_TRUE(net_address_resolve("127.0.0.1", (u16)(TEST_PORT_BASE + 4u), &dst_b));
+    ASSERT_TRUE(net_socket_get_local_address(recv_a, &dst_a));
+    ASSERT_TRUE(net_socket_get_local_address(recv_b, &dst_b));
 
     const char *m1 = "first";
     const char *m2 = "second";
@@ -293,6 +292,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(address_resolve_null);
     RUN_TEST(address_resolve_invalid);
     RUN_TEST(udp_create_zero_port);
+    RUN_TEST(udp_ephemeral_port_is_queryable);
     RUN_TEST(sendto_empty_buffer);
     RUN_TEST(sendto_const_address);
     RUN_TEST(sendto_repeated_sends_with_cache);
