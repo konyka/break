@@ -2,6 +2,13 @@
 
 ## 本轮更新
 
+**HarfBuzz/FreeType 跨平台依赖探测（TDD）**：`myui_core` 先确认 FreeType 实际可用，再启用
+HarfBuzz；HarfBuzz 优先使用原生 CMake imported target，缺少 package config 时回退到
+`pkg-config` imported target。这样 Windows/macOS 包管理器和 Linux 无 `pkg-config` 环境不会
+错误关闭 OpenType shaping，同时 FreeType 缺失时不会留下不可链接的 HarfBuzz 定义。验证：
+禁用 `pkg-config` 的 CMake package-only 配置与构建通过；显式禁用 FreeType 的配置不启用
+HarfBuzz；GL、Vulkan、Wayland 全新配置/构建仍通过。
+
 **构建依赖与测试隔离修复（TDD）**：修正规则引擎公共头中 opaque typedef 与完整类型定义的
 重复声明，避免 GCC/Clang 严格构建因类型重定义失败；同时修正触发 `-Werror` 的误导性缩进。
 VFS 路径截断回归测试改为实际构造达到 `VFS_MAX_PATH` 的 PAK 路径，不放宽运行时安全边界。

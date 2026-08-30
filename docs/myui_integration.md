@@ -225,6 +225,7 @@ engine/
 |------|------|------|
 | `MYUI_FONT_STB` | ON | stb_truetype 字体后端 |
 | `MYUI_FONT_FREETYPE` | ON（找到 FreeType 时） | 启用 hinting、TTC 多字面和 CJK 默认字体 |
+| `MYUI_HARFBUZZ` | ON（同时找到 FreeType 与 HarfBuzz 时） | 优先使用 CMake package target，回退 pkg-config；启用 OpenType shaping |
 | `MYUI_IMAGE_STB` | ON | stb_image 解码 |
 | `MYUI_UI_YAML` | ON | YAML UI loader |
 | `MYUI_BIDI` | ON | 内置 SheenBidi |
