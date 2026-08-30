@@ -717,7 +717,8 @@ add_library(rule_engine_core STATIC
     src/rule_engine/builtins.c
     src/rule_engine/transactions.c
     src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
-     src/rule_engine/stream_correlation.c src/rule_engine/ir_eval.c
+     src/rule_engine/stream_correlation.c src/rule_engine/stream_analytics.c src/rule_engine/stream_join.c src/rule_engine/ir_eval.c
+     src/rule_engine/stream_eval.c
      src/rule_engine/tms.c
     src/rule_engine/rete.c src/rule_engine/advanced.c src/rule_engine/backward.c
      src/rule_engine/backward_machine.c
@@ -874,6 +875,18 @@ if(ENGINE_BUILD_TESTS)
     if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
         target_compile_definitions(test_rule_engine_stream_ext PRIVATE RE_HAS_HIREDIS)
     endif()
+
+    add_executable(test_rule_engine_stream_grl tests/test_rule_engine_stream_grl.c)
+    set_property(TARGET test_rule_engine_stream_grl PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_stream_grl PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_stream_grl PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_stream_grl COMMAND test_rule_engine_stream_grl)
+
+    add_executable(test_rule_engine_stream_eval tests/test_rule_engine_stream_eval.c)
+    set_property(TARGET test_rule_engine_stream_eval PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_stream_eval PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_stream_eval PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_stream_eval COMMAND test_rule_engine_stream_eval)
 
     add_executable(test_rule_engine_backward_deep_chain tests/test_rule_engine_backward_deep_chain.c)
     set_property(TARGET test_rule_engine_backward_deep_chain PROPERTY C_STANDARD 99)

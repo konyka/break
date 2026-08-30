@@ -717,7 +717,7 @@ TEST(agenda_rete_capability_reported_with_attached_networks) {
     re_value_t two = {RE_VALUE_INT64, {.int64_value = 2}};
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(facts);
-    ASSERT_EQ(RE_ABI_VERSION_MINOR, 3u);
+    ASSERT_EQ(RE_ABI_VERSION_MINOR, 4u);
     ASSERT_EQ(re_facts_set(facts, text("A"), &one), RE_STATUS_OK);
     ASSERT_EQ(re_facts_set(facts, text("B"), &two), RE_STATUS_OK);
     ASSERT_EQ(re_program_load(NULL, text(

@@ -2420,3 +2420,96 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 当前限制：任意谓词合一（结构化项、occurs check、union-find）、共享子图证明溯源、
   跨规则 RETE-UL（上游 vapor，已记录不复制）、规则触发派生之外的通用多规则生产者
   推理仍不支持；test_async_loader 并行 flake 为既有事项，本阶段未触碰。
+
+## rule engine 流式补全（sub-project C，2026-08-30）
+
+- 聚合种类追加（C1，上游 `src/streaming/aggregator.rs:12`，ref f80a541）：
+  `re_stream_aggregate_kind_t` 尾部追加 `RE_STREAM_AGGREGATE_COUNT_DISTINCT = 8`、
+  `RE_STREAM_AGGREGATE_STDDEV = 9`、`RE_STREAM_AGGREGATE_PERCENTILE = 10`，
+  `RE_ABI_VERSION_MINOR` 整个子项目只升一次（3u→4u）。STDDEV 为总体标准差
+  （方差按 N 除，:233），少于 2 个数值报 `RE_STATUS_NOT_FOUND`（上游 `None`）；
+  PERCENTILE 升序排序后取最近秩 `round(p/100 * (n - 1))`（0-100 刻度，:253），
+  参数由 `re_stream_filter_options_t` 尾部 struct_size 门控字段承载（未覆盖或越界、
+  含 NaN，报 `RE_STATUS_INVALID_ARGUMENT`；追加前的旧 filter 尺寸对其余种类照常
+  可用）；COUNT_DISTINCT 在既有 `count` 字段报告，按 `re_value_t` 类型化相等
+  （double 位级比较）去重——上游按 `format!("{:?}")` 调试串去重会把 1 与 1.0 视为
+  相同，为已记录分歧。`re_stream_aggregate_result_t` 以同一 struct_size 成对门控
+  惯例尾部追加 `stddev`/`percentile`。
+- StreamAnalytics（C2，上游 `src/streaming/aggregator.rs:285`）：TTL 缓存命中当且仅
+  当 `current_time_ms - 条目时间戳 < ttl`（:311），命中不刷新时间戳；未命中经窗口
+  聚合重算、逐出全部过期条目（:323）后插入新值；缓存标识为调用方键 + 种类 +
+  filter 同一性（对上游纯字符串键的已记录加固）；时钟由宿主供给，引擎不采样时钟。
+  moving_average 对调用方窗口数组末 N 个做全局 `sum(events)/count(events)`（:329，
+  绝非"平均的平均"）；detect_anomalies 需 ≥3 窗口且历史值（除末窗口外全部）≥10，
+  按总体均值/标准差标记末窗口 `|z| > threshold` 的事件并报告其时间戳（:357；本地
+  事件无 ID，时间戳替代为已记录映射）；calculate_trend 逐窗平均、对半切分、
+  ±5% 阈值映射 Increasing/Decreasing/Stable（:399、:416、:430）。已记录分歧：
+  本地"字段"映射为事件名 + 数值标量；<3 窗口报 INVALID_ARGUMENT、<10 历史值报
+  NOT_FOUND（上游静默返回空）；历史标准差为 0 不标记；first_avg == 0 报 STABLE
+  （除零守卫）。
+- GRL 流语法（C3，上游 `src/parser/grl/stream_syntax.rs`）：条件文法
+  `var: EventType from stream("name") over window(<digits> <unit>, sliding|tumbling)`
+  解析为 `RE_EXPR_STREAM_PATTERN`（只增内部枚举）并镜像入 IR（自有负载字符串 +
+  `re_ir_validate` 良构分支，`re_engine_install` 硬拒绝畸形 IR）。事件类型可选且
+  恰为 `from` 的标识符不被消费为类型（:216）；window 子句可选（:93）；单位精确
+  采用上游大小写敏感集合（:166-179），其余单位一律解析错误；`session` 作为已记录
+  本地扩展接受并映射 `RE_STREAM_WINDOW_SESSION`（上游 GRL 拒绝 session，尽管其
+  Rust 枚举存在 `WindowType::Session`）。上游 `pattern && pattern` 联接文法
+  （:429）是 vapor——`join_conditions` 恒空、无任何消费者——本地一律解析错误。
+  携带流模式 CE 的规则不进 RETE 网络，对反向链保持诚实的
+  `RE_STATUS_NOT_SUPPORTED`。
+- 水位驱动闭合 + 跨流联接（C4，上游 `src/streaming/watermark.rs` 与
+  `src/rete/stream_join_node.rs`）：`re_stream_window_options_t` 尾部追加
+  struct_size 门控的 `watermark_drives_closure`（默认 0 = C 前行为）。开启后
+  tumbling 桶在水位 `>= bucket_end + allowed_lateness_ms` 时闭合、会话目标在水位
+  `>= (ts + retention) + allowed_lateness_ms` 时闭合；命中已闭合目标按既有迟到策略
+  处理（DROP→NOT_FOUND、ERROR→RE_STATUS_ERROR、ACCEPT 仅在目标仍保留时记录）；
+  sliding 无离散桶、保持仅记录门控（已记录惰性）；上游水位除联接节点驱逐外从不
+  驱动闭合，故该接线为已记录本地组合。联接 API 交付四种 JoinType（:11）与三种
+  JoinStrategy（:24），同键配对在记录时入队，未匹配外侧在单一单调水位越过时恰好
+  发射一次且绝不重发（:204 的本地组合）；界限为每侧 256 键、每键 64 缓冲事件
+  （drop-oldest + 丢弃计数）、256 待取匹配；时间比较本地统一毫秒（上游按整秒，
+  已记录分歧）；上游未将联接节点接入其 StreamRuleEngine，本地同样是宿主驱动的
+  独立 C 接缝。
+- 流规则求值（C5，上游 `src/streaming/engine.rs:341-378`）：引擎携有界流注册表
+  （16 名、重复名替换、借用窗口句柄、运行中报 BUSY）。`re_engine_stream_run` 向
+  调用方 facts 注入上游 execute_rules 事实集后跑一遍整个规则库：恒有
+  `WindowEventCount`（DOUBLE）、`WindowStartTime`、`WindowEndTime`、
+  `WindowDurationMs`（:347-353），并按事件名注入 `<name>Sum/Average/Min/Max`
+  数值折叠（:364-376；上游按数据 map 自动探测数值字段，:383；本地字段映射为事件
+  名）。每次注入都是普通 `re_facts_set`——覆盖陈旧同名事实并推进 facts 变更序列
+  号，B2 证明图缓存因此绝不可能跨两次流运行提供陈旧结果；上游钉住的
+  `when WindowEventCount > 5` 用法（:478-481）有测试覆盖。GRL 流模式 CE 对已注册
+  窗口求值：可选类型按事件名过滤，可选 window 子句限定 sliding 区间/当前
+  tumbling 桶/当前开放会话，无子句读全部保留事件；规则在任一保留事件合格时每运行
+  触发一次（exists 语义）。已批准分歧：未注册流报 `RE_STATUS_NOT_SUPPORTED` 而非
+  NOT_FOUND——`compute_rule_activations`（engine.c:755）会把 NOT_FOUND 吞成静默
+  不匹配；零时长 tumbling 子句报 INVALID_ARGUMENT（上游 `ts / 0` 会 panic）；
+  exists/单次激活语义（上游从不对流模式 CE 求值，无每事件激活多重性可镜像）。
+- 上游 vapor / 不适用——只记录不复制：GRL `&&` 联接条件（上游已解析但从不消费）；
+  `src/streaming/operators.rs` 离线流式链式 API（未接入上游引擎）；tokio mpsc
+  通道 + `Arc<RwLock<WindowManager>>` 拓扑（engine.rs:183-262，与单线程句柄契约
+  不适用，本地为同步宿主驱动接缝）；序列模式 CEP 在既有配对关联之外保持有界
+  （上游自身无活跃序列匹配器）。
+- 文档：conformance.yml 重写 streaming-windows 行（新种类 + 闭合标志入
+  tested_subset/note），新增 stream-analytics、grl-stream-syntax、stream-joins、
+  stream-rule-evaluation、upstream-vapor-streaming-join-operators-topology 共 5 行，
+  known_gaps 的 full-streaming-patterns 由 unsupported 改为 tested 交付实态；
+  upstream.yml 的 streaming 模块行、cargo-feature 行与 internal-api 行全部更新并
+  引 f80a541 文件:行；Rule_Engine_Design.md 新增 "Streaming completion parity"
+  一节；Rule_Engine_Architecture.md 相应小节同步。
+- 验证：build-gate（clang Debug）全量构建 + `ctest -LE graphics` **77/78 有效**
+  （原始并行运行 76/78——test_async_loader 为既有并行 flake，单跑即过；
+  test_network 3 条 UDP 发送失败来自远端提交 76871ec，与 origin/master 逐字节一致，
+  环境侧问题，本阶段不动）；聚焦套件 `ctest -R "rule_engine|backward_machine"`
+  **20/20**（test_rule_engine_stream_ext 45/45、test_rule_engine_stream_grl 19/19、
+  test_rule_engine_stream_eval 18/18、test_rule_engine_backward_ext 54/54、
+  test_rule_engine_agenda 45/45、test_rule_engine_tms 19/19）；
+  build-rule-fresh-asan（ASan+UBSan 同树）聚焦套件 **20/20**、无诊断；
+  MSVC 规则引擎矩阵（build-rule-debug）聚焦套件 **20/20**；bench 回归
+  （rule_engine_bench_regression.cmake，RUNS=3）四项指标全部远低于 2.0s 阈值
+  （最差 dense warm_eval 0.362s）；`git diff --check` 通过。
+- 当前限制：序列模式 CEP 在配对关联之外有界（上游无活跃序列匹配器）；GRL `&&`
+  联接、operators.rs 链式 API、tokio 拓扑为已记录 vapor/不适用，未复制；sliding
+  窗口不参与水位闭合（仅记录门控）；test_network 环境侧失败与 test_async_loader
+  并行 flake 均为既有事项，本阶段未触碰。

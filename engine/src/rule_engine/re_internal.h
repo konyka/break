@@ -155,7 +155,7 @@ typedef enum re_compare_t { RE_COMPARE_TRUE, RE_COMPARE_EQ, RE_COMPARE_NE, RE_CO
 typedef enum re_multifield_op_t { RE_MULTIFIELD_NONE, RE_MULTIFIELD_COUNT,
     RE_MULTIFIELD_FIRST, RE_MULTIFIELD_LAST, RE_MULTIFIELD_EMPTY,
     RE_MULTIFIELD_NOT_EMPTY, RE_MULTIFIELD_COLLECT } re_multifield_op_t;
-typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_EXISTS, RE_EXPR_FORALL, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE, RE_EXPR_MULTIFIELD, RE_EXPR_ACCUMULATE, RE_EXPR_TEST, RE_EXPR_TYPED } re_expr_kind_t;
+typedef enum re_expr_kind_t { RE_EXPR_COMPARE, RE_EXPR_EXISTS, RE_EXPR_FORALL, RE_EXPR_AND, RE_EXPR_OR, RE_EXPR_NOT, RE_EXPR_TRUE, RE_EXPR_FALSE, RE_EXPR_MULTIFIELD, RE_EXPR_ACCUMULATE, RE_EXPR_TEST, RE_EXPR_TYPED, RE_EXPR_STREAM_PATTERN } re_expr_kind_t;
 typedef struct re_expr_t {
     re_expr_kind_t kind;
     re_compare_t compare;
@@ -183,6 +183,43 @@ typedef struct re_expr_t {
      * inner condition tree rides `first`; left/right stay zeroed. */
     char *typed_type;
     size_t typed_type_size;
+    /* C3 stream-pattern CE payload (kind == RE_EXPR_STREAM_PATTERN only; all
+     * owned): `var: EventType from stream("name") over window(<n> <unit>,
+     * sliding|tumbling|session)` (upstream rust-rule-engine v1.21.4 f80a541
+     * src/parser/grl/stream_syntax.rs parse_stream_pattern). event_type is
+     * NULL when the pattern omits it (`e: from stream("events")`); the window
+     * clause is optional (stream_has_window). The kind carries
+     * re_stream_window_kind_t (rule_engine.h); `session` is a LOCAL
+     * EXTENSION - upstream's GRL window-type parser accepts only
+     * sliding|tumbling (stream_syntax.rs parse_window_type) even though
+     * WindowType::Session exists in the Rust enum, and the duration maps to
+     * the session timeout (window(10 min, session)). C5 wired FORWARD
+     * evaluation (ir_eval.c): the CE consults the engine's stream registry
+     * (re_engine_stream_lookup); an UNREGISTERED stream keeps the C3 gate's
+     * RE_STATUS_NOT_SUPPORTED (pinned by test_rule_engine_stream_grl.c - the
+     * brief's NOT_FOUND mapping would let re_engine_run swallow the error as
+     * an ordinary non-match, breaking that pin). Backward chaining stays
+     * honestly NOT_SUPPORTED via the node's `left` operand, which carries
+     * kind RE_OPERAND_ARITHMETIC as a sentinel: the backward compatibility
+     * evaluator (backward.c machine_condition_matches) and the bind machine's
+     * shape probe (backward_machine_bind.c condition_shape_supported) reject
+     * arithmetic-shaped condition operands with RE_STATUS_NOT_SUPPORTED/0, so
+     * the zeroed operand pair can never masquerade as a vacuously-true
+     * RE_COMPARE_TRUE literal pair the way it would if left zeroed
+     * (re_value_compare(_, _, RE_COMPARE_TRUE) is unconditional). The sentinel
+     * is kept (not replaced with explicit backward branches) because those
+     * files are outside C5's change scope and the sentinel already gates them
+     * exactly. */
+    char *stream_var;
+    size_t stream_var_size;
+    char *stream_event_type;
+    size_t stream_event_type_size;
+    char *stream_name;
+    size_t stream_name_size;
+    uint64_t stream_window_duration_ms;
+    int stream_window_kind; /* re_stream_window_kind_t when stream_has_window */
+    int stream_has_event_type;
+    int stream_has_window;
 } re_expr_t;
 typedef struct re_action_t {
     char *name;
@@ -492,6 +529,23 @@ typedef struct re_proof_graph_t {
  * construction; re_engine_create loads it into engine->random_state. */
 #define RE_BUILTIN_RANDOM_SEED 0x9E3779B97F4A7C15ull
 
+/* Sub-project C Task C5: the engine's stream registry (upstream
+ * rust-rule-engine v1.21.4 f80a541 src/streaming/engine.rs StreamRuleEngine
+ * window manager keyed by stream name). Name-keyed BORROWED window handles:
+ * registration copies the name but never takes ownership of the window, and
+ * re_engine_destroy releases the name copies only - destroying a registered
+ * window stays the host's job (unregister first, or destroy it after the
+ * engine). Bounded like every other engine roster (RE_PROOF_GRAPH_CAPACITY,
+ * RE_AGENDA_FOCUS_STACK_MAX): registrations past the cap report
+ * RE_STATUS_LIMIT. */
+#define RE_STREAM_REGISTRY_CAP 16u
+
+typedef struct re_stream_registry_entry_t {
+    char *name; /* owned copy */
+    size_t name_size;
+    re_stream_window_t *window; /* borrowed; NOT destroyed with the engine */
+} re_stream_registry_entry_t;
+
 struct re_engine_t {
     re_allocator_impl_t allocator;
     re_limits_t limits;
@@ -520,6 +574,11 @@ struct re_engine_t {
      * through a const cast in the built-in dispatch, under the same
      * single-threaded-handles contract as the rest of the engine. */
     uint64_t random_state;
+    /* C5 stream registry: stream_registry_count leading entries of the fixed
+     * array are live. Consulted by the stream-pattern CE evaluation
+     * (ir_eval.c) and re_engine_stream_register/unregister (stream_eval.c). */
+    re_stream_registry_entry_t stream_registry[RE_STREAM_REGISTRY_CAP];
+    size_t stream_registry_count;
 };
 
 typedef struct re_stream_event_impl_t {
@@ -548,6 +607,90 @@ re_status_t re_stream_window_record_bounded(re_stream_window_t *window,
                                             uint64_t timestamp_ms,
                                             re_string_t event_name,
                                             const re_value_t *value);
+
+/* C5: looks up a registered stream by exact name; NULL when unregistered
+ * (the caller maps that to the honest evaluation error). Implemented in
+ * stream_eval.c; consumed by the stream-pattern CE evaluation in ir_eval.c. */
+re_stream_window_t *re_engine_stream_lookup(const re_engine_t *engine,
+                                            const char *name, size_t name_size);
+
+/* Sub-project C Task C2: StreamAnalytics cache entry (upstream
+ * HashMap<String, (u64, AggregationResult)>, f80a541
+ * src/streaming/aggregator.rs:287). key/event_type are owned copies;
+ * first_data/last_data back STRING values in the cached result's first/last
+ * (deep-copied on insert so a cached result survives window mutation).
+ * percentile is identity-relevant only for RE_STREAM_AGGREGATE_PERCENTILE. */
+typedef struct re_stream_analytics_entry_t {
+    char *key;
+    size_t key_size;
+    char *event_type;
+    size_t event_type_size;
+    char *first_data;
+    char *last_data;
+    uint64_t timestamp_ms;
+    re_stream_aggregate_kind_t kind;
+    double percentile;
+    re_stream_aggregate_result_t result;
+} re_stream_analytics_entry_t;
+
+struct re_stream_analytics_t {
+    re_allocator_impl_t allocator;
+    uint64_t cache_ttl_ms;
+    re_stream_analytics_entry_t *entries;
+    size_t count;
+    size_t capacity;
+};
+
+/* Sub-project C Task C4: cross-stream join internals (upstream
+ * HashMap<String, VecDeque<StreamEvent>> per side, f80a541
+ * src/rete/stream_join_node.rs:60-63). Bounds follow the codebase's
+ * bounded-everything rule (documented on re_stream_join_record). */
+#define RE_STREAM_JOIN_MAX_KEYS 256u
+#define RE_STREAM_JOIN_PER_KEY_CAP 64u
+#define RE_STREAM_JOIN_MATCH_CAP 256u
+
+/* A buffered event: timestamp plus the matched flag that suppresses
+ * outer-join unmatched emission (upstream's left_matched/right_matched id
+ * maps, :65-68, mapped to per-event flags). Event payloads are not retained
+ * (documented on re_stream_join_record). */
+typedef struct re_stream_join_event_t {
+    uint64_t timestamp_ms;
+    int matched;
+} re_stream_join_event_t;
+
+typedef struct re_stream_join_key_entry_t {
+    char *key; /* owned; also backs the key borrow of every queued match */
+    size_t key_size;
+    re_stream_join_event_t *events;
+    size_t count;
+    size_t capacity;
+} re_stream_join_key_entry_t;
+
+typedef struct re_stream_join_match_entry_t {
+    const char *key; /* borrowed from the owning key entry (stable until destroy) */
+    size_t key_size;
+    uint64_t left_timestamp_ms; /* 0 when absent */
+    uint64_t right_timestamp_ms; /* 0 when absent */
+    uint64_t join_timestamp_ms;
+} re_stream_join_match_entry_t;
+
+struct re_stream_join_t {
+    re_allocator_impl_t allocator;
+    char *left_name; /* owned copies (upstream left_stream/right_stream, :51-54) */
+    size_t left_name_size;
+    char *right_name;
+    size_t right_name_size;
+    re_stream_join_type_t join_type;
+    re_stream_join_strategy_t strategy;
+    re_stream_join_key_entry_t *keys[2]; /* indexed by side - 1 */
+    size_t key_count[2];
+    size_t key_capacity[2];
+    uint64_t watermark; /* single node watermark (upstream :69), monotonic */
+    re_stream_join_match_entry_t *matches; /* FIFO drain queue, bounded */
+    size_t match_count;
+    size_t match_capacity;
+    uint64_t dropped; /* silent drop-oldest counter (buffers + match queue) */
+};
 
 struct re_state_provider_t {
     re_allocator_impl_t allocator;

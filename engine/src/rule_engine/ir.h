@@ -60,6 +60,24 @@ typedef struct re_ir_expr_t {
      * prefix. The inner condition is `first`; left/right stay zeroed. */
     char *typed_type;
     size_t typed_type_size;
+    /* C3 stream-pattern CE payload (RE_EXPR_STREAM_PATTERN only; owned
+     * copies freed by re_ir_destroy): the bound variable, the optional event
+     * type (NULL when absent), the stream name, and the optional window
+     * {duration_ms, re_stream_window_kind_t} with presence flags. `session`
+     * is a documented local extension over upstream f80a541
+     * stream_syntax.rs parse_window_type (sliding|tumbling only there); the
+     * window duration doubles as the session timeout. left/right/first stay
+     * zeroed - the node has no term or expression children. */
+    char *stream_var;
+    size_t stream_var_size;
+    char *stream_event_type;
+    size_t stream_event_type_size;
+    char *stream_name;
+    size_t stream_name_size;
+    uint64_t stream_window_duration_ms;
+    int stream_window_kind;
+    int stream_has_event_type;
+    int stream_has_window;
 } re_ir_expr_t;
 /* re_action_t.append carries this parser signal for a `$Fact.method(...)`
  * then-statement; re_ir_compile lowers it to RE_IR_ACTION_METHOD_CALL.

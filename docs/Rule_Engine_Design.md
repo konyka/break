@@ -532,6 +532,207 @@ the streaming seams; ReteUlEngine/IncrementalEngine engine-level quirks
 no_loop-default-true, update-all-facts-of-type actions) are
 upstream-degenerate and deliberately not replicated.
 
+## Streaming completion parity: aggregate kinds, StreamAnalytics, GRL stream syntax, watermark closure, joins, stream rule evaluation
+
+This section records the sub-project C (2026-08-30) closure of the streaming
+deltas against upstream rust-rule-engine v1.21.4 (`f80a541`), plus the
+streaming surfaces the parity scope documents but does not replicate. The
+upstream anchors with f80a541 file:line citations live in
+`docs/superpowers/plans/2026-08-30-rule-engine-full-parity-c-streaming.md`;
+the citations below refer to those anchors. All delivered rows are
+`verified_local` in `docs/rule_engine_conformance.yml`.
+
+Aggregate kinds (Task C1, upstream `src/streaming/aggregator.rs:12`). The
+`re_stream_aggregate_kind_t` enum gained tail-appended
+`RE_STREAM_AGGREGATE_COUNT_DISTINCT = 8`, `RE_STREAM_AGGREGATE_STDDEV = 9`,
+and `RE_STREAM_AGGREGATE_PERCENTILE = 10`; `RE_ABI_VERSION_MINOR` bumped once
+for the whole sub-project (3u to 4u). STDDEV is population standard deviation
+(variance sums `(v - mean)^2` over N, :233) and requires at least two numeric
+values, else `RE_STATUS_NOT_FOUND` (upstream `None`); PERCENTILE sorts the
+numeric values ascending and takes the nearest-rank index
+`round(p/100 * (n - 1))` on a 0-100 scale (:253), with the percentile carried
+on the struct_size-gated tail of `re_stream_filter_options_t` (an uncovered
+or out-of-range value, NaN included, is `RE_STATUS_INVALID_ARGUMENT`, while
+pre-append filter sizes keep working for every other kind); COUNT_DISTINCT
+reports in the existing `count` field under typed equality over `re_value_t`
+(bitwise double comparison) - upstream counts distinct `format!("{:?}")`
+debug strings, which would equate `1` and `1.0`, a documented divergence.
+STDDEV/PERCENTILE join the numeric folds, so a non-numeric matching event is
+`RE_STATUS_INVALID_ARGUMENT` exactly like SUM/AVERAGE/MIN/MAX, and an empty
+filtered set is `RE_STATUS_NOT_FOUND` for all three new kinds while COUNT
+keeps 0/OK. `re_stream_aggregate_result_t` gained `stddev`/`percentile` by
+tail append under the same struct_size pair-gating idiom as the Task-16
+fields.
+
+StreamAnalytics (Task C2, upstream `src/streaming/aggregator.rs:285`).
+`re_stream_analytics_create` builds an engine-allocator handle whose TTL
+cache hits iff `current_time_ms - entry_ts < ttl` (:311), serving the cached
+clone without refreshing the timestamp; on a miss it recomputes through the
+window aggregate, evicts every past-TTL entry (:323), inserts the fresh one,
+and returns. Cache identity is the caller key plus kind plus filter identity
+(event_type, and percentile for PERCENTILE compared bitwise) - a documented
+hardening over upstream string-only keys. The host supplies
+`current_time_ms`; the engine samples no clock (single-threaded handle
+contract). `re_stream_analytics_moving_average` folds the last N
+caller-supplied window handles into one global `sum(events)/count(events)`
+over numeric events of the given name (:329) - never an average of per-window
+averages. `re_stream_analytics_detect_anomalies` requires at least 3 windows
+and at least 10 historical numeric values (all windows except the last),
+computes population mean/stddev over the historical set, and flags
+last-window events with `|z| > threshold`, reporting their timestamps in
+window order (:357). `re_stream_analytics_calculate_trend` averages per
+window, half-splits the contributing windows (second half takes the odd
+extra), and maps `change_percent = (second_avg - first_avg)/first_avg * 100`
+to INCREASING (> +5), DECREASING (< -5), else STABLE (:399, :416, :430).
+Documented divergences: the local field mapping is the event name plus its
+numeric scalar (local events carry a name and one typed scalar, not data
+maps); upstream divides the moving average by the whole window event count
+while local counts only numeric events of the name; detect_anomalies reports
+timestamps because local events have no IDs (upstream returns event IDs), is
+`RE_STATUS_INVALID_ARGUMENT` below 3 windows and `RE_STATUS_NOT_FOUND` below
+10 historical values (upstream silently returns no anomalies), flags nothing
+on zero historical stddev (upstream would flag unequal values via infinite
+z-scores), and uses the buffer-capacity idiom (`RE_STATUS_LIMIT` plus the
+total in `out_count`; NULL,0 is the sizing query); calculate_trend is
+`RE_STATUS_INVALID_ARGUMENT` below 2 windows (upstream returns Stable) and
+STABLE when `first_avg == 0` (documented division guard; upstream f64
+division yields inf/NaN); cache misses whose fold fails are not cached
+(upstream caches `None`), and the evict-before-insert order differs from
+upstream only in the unobservable TTL-0 corner.
+
+GRL stream syntax (Task C3, upstream `src/parser/grl/stream_syntax.rs`). The
+condition grammar accepts `var: EventType from stream("name") over
+window(<digits> <unit>, sliding|tumbling)` into a `RE_EXPR_STREAM_PATTERN`
+node (append-only internal enum) mirrored into the IR with owned payload
+strings and a `re_ir_validate` well-formedness branch, so
+`re_engine_install` hard-rejects malformed stream-pattern IR. The event type
+is optional and an identifier that is exactly `from` is not consumed as a
+type (:216 - `e: from stream("events")` is legal; `From` and `fromage` ARE
+types); the window clause is optional (:93); the stream name runs to the next
+quote with no escape processing; the duration is digits + required whitespace
++ unit with exactly the upstream case-sensitive set (:166-179 -
+ms/millisecond(s), sec/second(s), min/minute(s), hour(s); anything else is a
+parse error) stored as duration_ms; kinds are sliding|tumbling (:192) plus
+`session`, accepted as a documented LOCAL EXTENSION mapping to
+`RE_STREAM_WINDOW_SESSION` with the duration as the session timeout -
+upstream's GRL parser rejects `session` even though `WindowType::Session`
+exists in its Rust enum. Variables follow the binding idiom, duplicates in
+one rule are a validation error, and the per-rule stream-pattern scope is
+capped at 16. Duration overflow (digits beyond u64 or unit multiplication) is
+a parse error where upstream wraps in release builds. The
+and-of-two-stream-patterns composition (upstream's `pattern && pattern` join
+spelling, :429) is a parse error because that grammar production is vapor
+upstream - `join_conditions` is always empty and nothing consumes
+`StreamJoinPattern`; mixed pattern-and-ordinary conditions and `or`
+compositions parse and are gated at evaluation. Rules carrying stream-pattern
+CEs stay off RETE networks (`collect()` admits only fact/literal
+comparisons), are impure (first-pass-only evaluation, never on executor
+workers), and stay honestly `RE_STATUS_NOT_SUPPORTED` to backward chaining -
+upstream has no stream-CE backward evaluation to mirror.
+
+Watermark-driven closure (Task C4, upstream `src/streaming/watermark.rs` and
+`src/streaming/window.rs`). `re_stream_window_options_t` gained the
+struct_size-gated `watermark_drives_closure` flag (default 0 = the pre-C
+behavior, forced 0 when the caller's struct_size does not cover it). With the
+flag on, each record is gated against the window's CURRENT watermark before
+the late gate: a tumbling bucket is closed when
+`watermark >= bucket_end + allowed_lateness_ms` and a record's session target
+when `watermark >= (timestamp_ms + retention_ms) + allowed_lateness_ms`
+(saturating arithmetic; a record that advances the watermark may close older
+buckets as a side effect). Closed + DROP reports `RE_STATUS_NOT_FOUND`,
+closed + ERROR reports `RE_STATUS_ERROR`, and closed + ACCEPT records only
+when the target is still retained (tumbling: the current bucket; session:
+inside the retained session), else `RE_STATUS_NOT_FOUND`. Sliding windows
+never reach the gate (record-gate only, documented inert). The gate is
+provably outcome-neutral for DROP/ERROR - closure is strictly stronger than
+the late gate there - so its observable teeth are exactly the ACCEPT clause;
+closed buckets stay readable for aggregation until the usual eviction.
+Upstream watermarks never drive window closure except join-node eviction, so
+this wiring is a documented local composition over the upstream
+late/watermark semantics (`is_late` = event_time < watermark, :43; allowed
+lateness `lateness <= max` processes else drops, :236-247; late events never
+advance the watermark, :340; the processing-time Periodic strategy is not
+applicable to the single-threaded contract).
+
+Cross-stream joins (Task C4, upstream `src/rete/stream_join_node.rs`). The
+standalone join API delivers `re_stream_join_type_t` {INNER, LEFT_OUTER,
+RIGHT_OUTER, FULL_OUTER} (:11), `re_stream_join_strategy_t` kinds
+TIME_WINDOW{duration_ms}, COUNT_WINDOW{count}, SESSION_WINDOW{gap_ms} (:24),
+and `re_stream_join_match_t` {key, left/right timestamp, join timestamp} with
+0 marking an absent side (:35). One match is queued per strategy-satisfying
+same-key pair at record time for any join type; TIME_WINDOW/SESSION_WINDOW
+match when `|left_ts - right_ts| <= duration_ms/gap_ms` (upstream compares
+whole seconds; local uniformly ms, documented); COUNT_WINDOW matches every
+same-key pair and never times out; the join timestamp is the later of the two
+matched timestamps. Unmatched outer sides emit exactly once when the single
+monotonic watermark passes them (`watermark - ts > window_size`, strict; the
+local composition of upstream's `update_watermark` eviction, :204) and never
+re-emit, reproducing upstream's observable join-manager outcome with one
+emission point (no eager processing-time emission, no watermark-time re-scan
+of buffered pairs); non-advancing watermark updates are accepted no-ops
+(advance-only rule, watermark.rs:131). Bounds: 256 distinct keys per side (a
+257th is `RE_STATUS_LIMIT`), 64 buffered events per key with drop-oldest plus
+a dropped counter, 256 queued matches with drop-oldest;
+`re_stream_join_drain` uses the capacity idiom (`RE_STATUS_LIMIT` + total in
+`out_count`; NULL,0 sizing query), and match keys borrow join-owned storage
+valid until destroy. Documented divergences: the record value is validated
+but not retained (no join output surfaces payloads), an empty key is
+`RE_STATUS_INVALID_ARGUMENT` (upstream silently skips keyless events), and
+the `side` argument is validated without partitioning state (one watermark
+per node). Upstream does not connect its join node to StreamRuleEngine; the
+local API is likewise a host-driven C seam, and the GRL `&&` join form stays
+a parse error.
+
+Stream rule evaluation (Task C5, upstream `src/streaming/engine.rs:341-378`).
+The engine carries a bounded stream registry (16 names, `RE_STATUS_LIMIT` at
+the cap, replace-on-duplicate, borrowed window handles the host keeps
+owning - `re_engine_destroy` frees only the name copies, `RE_STATUS_BUSY`
+mid-run, unregister a documented no-op for unknown names).
+`re_engine_stream_run(engine, facts, window)` injects the upstream
+execute_rules fact set into the caller's facts and runs the whole rule base
+once: always `WindowEventCount` (DOUBLE, the upstream f64 count - the pinned
+parity usage `when WindowEventCount > 5`, :478-481, is test-covered),
+`WindowStartTime`, `WindowEndTime`, `WindowDurationMs` (INT64 ms, clamped)
+from the window bounds (:347-353 - tumbling reports the current bucket span
+even while empty, sliding the [oldest retained, watermark] span, session the
+open session span, empty windows all-zero), plus per-event-name
+`<name>Sum/Average/Min/Max` DOUBLE folds over numeric retained values
+(:364-376 - the local field mapping is the event name; upstream auto-detects
+numeric fields over event data maps, :383; a name with only non-numeric
+events gets no facts). Every injection is a plain `re_facts_set`, so each
+write is host-visible, overwrites stale facts, and bumps the facts mutation
+serial - the B2 proof-graph cache keys on that serial, so no stale backward
+result survives across two stream runs. Upstream runs the rule base per
+window into a fresh `Facts` with actions uncaptured (:304-306); the local
+mapping is a host loop of `re_engine_stream_run` per stream into the host's
+own facts. The GRL stream-pattern CE evaluates against the registered window:
+the optional Type filters by event name, the optional window clause restricts
+to the sliding span `[watermark - duration, watermark]` (saturating), the
+current tumbling bucket, or the current open session, and no clause reads all
+retained events; a rule fires once per run when any retained event qualifies
+(exists semantics, first qualifying event in timestamp order the nominal
+binding). Ratified divergences: an unregistered stream reports
+`RE_STATUS_NOT_SUPPORTED`, never `NOT_FOUND`, because
+`compute_rule_activations` (engine.c:755) would swallow `NOT_FOUND` as a
+silent non-match; a zero-duration tumbling clause is
+`RE_STATUS_INVALID_ARGUMENT` (the upstream `ts / 0` division would panic);
+and the CE has exists/single-activation semantics - upstream never evaluates
+stream-pattern CEs at all (its engine fans the rule base out per window via
+fact injection), so there is no per-event activation multiplicity to mirror,
+and fact-premise refraction would collapse identical activations anyway.
+
+Upstream vapor and not-applicable surfaces - documented, not replicated
+(anchors in the C plan). The GRL `pattern && pattern` join grammar exists
+(`src/parser/grl/stream_syntax.rs:429`) but `join_conditions` is always empty
+and nothing consumes `StreamJoinPattern`; the `src/streaming/operators.rs`
+offline fluent stream API is not wired into the upstream engine; the tokio
+mpsc channel + `Arc<RwLock<WindowManager>>` + batch-task topology of
+`src/streaming/engine.rs:183-262` is not applicable to the single-threaded
+local handle contract, so the local composition is a synchronous host-driven
+seam; and sequence-pattern CEP beyond the delivered pair correlation stays
+bounded because upstream itself has no live sequence matcher. The working
+streaming machinery upstream actually has is delivered by the rows above.
+
 ## Tested private advanced slice
 
 The current focused suite exercises a private, non-capability-bearing slice for
@@ -557,25 +758,41 @@ must not replace it with local wall-clock time.
 
 Names and values are copied during the record call. A successful record may
 still be rejected by a limit or late-event policy; no partial event is visible
-on failure. Exact watermark, eviction, and session-gap behavior are not
-specified until the runtime implementation is tested.
+on failure. With the struct_size-gated `watermark_drives_closure` option off
+(the default, and the pre-C behavior), record-time watermark handling is
+exactly the configured late-event policy; with it on, tumbling buckets and
+session targets close once the current watermark passes their end plus
+allowed lateness - the streaming completion parity section records the exact
+formulas and the ACCEPT-clause teeth.
 
 The tested correlation subset is separate from window storage. It provides
 count, numeric sum, numeric average, and the appended minimum/maximum over
 retained events filtered by event type and an optional string-valued key, plus
 first/last selection of the earliest/latest matching event by timestamp with
-insertion order breaking ties. SUM/AVERAGE/MIN/MAX fold numeric values only -
-a non-numeric matching event is `RE_STATUS_INVALID_ARGUMENT` for all four -
-while FIRST/LAST accept any value type. An empty filtered set reports
-`RE_STATUS_NOT_FOUND` for the four new kinds; COUNT keeps its 0/OK behavior.
+insertion order breaking ties. Sub-project C appended three more kinds -
+count-distinct (reported in the `count` field under typed equality over
+`re_value_t`; upstream counts distinct debug-string spellings, a documented
+divergence), population stddev (at least two numeric values required, else
+`RE_STATUS_NOT_FOUND`), and nearest-rank percentile on a 0-100 scale from the
+struct_size-gated filter tail field (an uncovered or out-of-range percentile,
+NaN included, is `RE_STATUS_INVALID_ARGUMENT`; pre-append filter sizes keep
+working for every other kind). SUM/AVERAGE/MIN/MAX/STDDEV/PERCENTILE fold
+numeric values only - a non-numeric matching event is
+`RE_STATUS_INVALID_ARGUMENT` for all six - while FIRST/LAST accept any value
+type and COUNT_DISTINCT tolerates any mix. An empty filtered set reports
+`RE_STATUS_NOT_FOUND` for every kind except COUNT, which keeps its 0/OK
+behavior.
 `re_stream_aggregate_result_t` grew by tail append only: callers pass
 `struct_size`, fields before `minimum` require only the pre-append size, and
-each appended field is written only when `struct_size` covers it, so old-size
+each appended field group (minimum/maximum/first/last, then
+stddev/percentile) is written only when `struct_size` covers it, so old-size
 callers keep the old fields untouched. The first/last values copy the retained
 event value; STRING data is borrowed from the window and stays valid until the
 next window mutation or destroy. It also counts deterministic
 first-type/second-type pairs sharing the optional key within a bounded timeout.
-This does not claim general stream patterns, joins, concurrency, or Redis state.
+Stream patterns, joins, analytics, and stream rule evaluation are claimed by
+the streaming completion parity section; concurrency and Redis state remain
+unclaimed here.
 
 ### Snapshot and restore
 

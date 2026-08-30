@@ -19,7 +19,7 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
     }
     for (i = 0u; i < ir->expr_count; ++i) {
         const re_ir_expr_t *expr = &ir->exprs[i];
-        if (expr->kind < RE_EXPR_COMPARE || expr->kind > RE_EXPR_TYPED ||
+        if (expr->kind < RE_EXPR_COMPARE || expr->kind > RE_EXPR_STREAM_PATTERN ||
             (expr->kind == RE_EXPR_COMPARE && (expr->compare < RE_COMPARE_TRUE || expr->compare > RE_COMPARE_NOT_CONTAINS))) return RE_STATUS_INVALID_ARGUMENT;
         if (expr->multifield < RE_MULTIFIELD_NONE || expr->multifield > RE_MULTIFIELD_COLLECT ||
             (expr->kind != RE_EXPR_MULTIFIELD && expr->multifield != RE_MULTIFIELD_NONE) ||
@@ -70,6 +70,24 @@ re_status_t re_ir_validate(const re_ir_program_t *ir) {
              * condition at `first`; left/right stay zeroed. */
             if (expr->typed_type == NULL || expr->typed_type_size == 0u ||
                 !index_ok(expr->first, ir->expr_count)) return RE_STATUS_INVALID_ARGUMENT;
+            continue;
+        }
+        if (expr->kind == RE_EXPR_STREAM_PATTERN) {
+            /* C3 stream pattern: the payload must be complete and
+             * self-consistent (var and stream name always present; event type
+             * and window present exactly when their flags say so; a present
+             * window carries a known re_stream_window_kind_t). The node
+             * carries no term or expression children, like the A6 accumulate
+             * node. */
+            if (expr->stream_var == NULL || expr->stream_var_size == 0u ||
+                expr->stream_name == NULL || expr->stream_name_size == 0u ||
+                (expr->stream_has_event_type == 0) != (expr->stream_event_type == NULL) ||
+                expr->stream_has_window < 0 || expr->stream_has_window > 1 ||
+                expr->stream_has_event_type < 0 || expr->stream_has_event_type > 1 ||
+                (expr->stream_has_window != 0 &&
+                 (expr->stream_window_kind < RE_STREAM_WINDOW_TUMBLING ||
+                  expr->stream_window_kind > RE_STREAM_WINDOW_SESSION)))
+                return RE_STATUS_INVALID_ARGUMENT;
             continue;
         }
         if ((expr->kind == RE_EXPR_COMPARE || expr->kind == RE_EXPR_EXISTS || expr->kind == RE_EXPR_FORALL) &&

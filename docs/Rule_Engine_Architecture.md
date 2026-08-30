@@ -65,6 +65,24 @@ Implemented now:
   (push on ActivateAgendaGroup, pop on focus-group exhaustion, bounded 32);
   bounds and ratified divergences are enumerated in
   `docs/Rule_Engine_Design.md` ("RETE/TMS/unification depth parity").
+- the sub-project C streaming completion slice (2026-08-30): appended stream
+  aggregate kinds count-distinct/stddev/percentile (population stddev
+  requiring at least two values, nearest-rank percentile on a struct_size-gated
+  filter field, typed-equality distinct counting reported in the count field),
+  the StreamAnalytics analog (TTL-cached aggregates with key/kind/filter
+  identity, global moving average, population-statistics anomaly detection
+  reporting timestamps, half-split trend direction), the GRL stream-pattern CE
+  (`e: Type from stream("s") over window(N unit, sliding|tumbling)`, session a
+  documented local extension) evaluating against a bounded engine stream
+  registry (16 names, replace-on-duplicate, borrowed windows) with
+  exists/single-activation semantics, watermark-driven tumbling/session
+  closure behind the struct_size-gated `watermark_drives_closure` flag
+  (default off), the four-type three-strategy stream join API with
+  exactly-once outer emission on watermark pass, and `re_engine_stream_run`
+  fact injection (WindowEventCount/WindowStartTime/WindowEndTime/
+  WindowDurationMs plus per-name Sum/Average/Min/Max) with mutation-serial
+  coherence; bounds and ratified divergences are enumerated in
+  `docs/Rule_Engine_Design.md` ("Streaming completion parity");
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded fact-store truth-maintenance slice at upstream test-slice parity
   (sub-project B): explicit and logical facts, copied producer names,
@@ -110,9 +128,11 @@ Implemented now:
   function operand evaluation still uses the existing operand path and may
   re-enter goal proving; operand continuation migration is deferred.
 - extended stream aggregation over retained, type/key-filtered window events:
-  count/sum/average plus the appended min/max/first/last kinds under
-  struct_size-gated result fields, with window-owned first/last borrows and
-  `RE_STATUS_NOT_FOUND` on an empty filtered set for the four new kinds;
+  count/sum/average plus the appended min/max/first/last and (sub-project C)
+  count-distinct/population-stddev/nearest-rank-percentile kinds under
+  struct_size-gated result and filter fields, with window-owned first/last
+  borrows and `RE_STATUS_NOT_FOUND` on an empty filtered set for every kind
+  except COUNT;
 - an optional native Redis state-provider adapter compiled into
   `rule_engine_core` only when `RULE_ENGINE_ENABLE_REDIS` is ON and CMake
   discovers hiredis, with the Redis kind otherwise unchanged at
@@ -138,7 +158,14 @@ Deferred explicitly:
   aggregation, strategy selection, bounded `?var` unification, and the
   real-shape shared proof graph result cache are implemented and remain
   deliberately narrower than upstream semantics;
-- general stream patterns, joins, and watermarks. Redis-backed streaming state
+- sequence-pattern CEP beyond the delivered pair correlation (upstream itself
+  has no live sequence matcher), the upstream GRL `&&` stream-join grammar
+  (parsed but never consumed at f80a541 - a documented local parse error), the
+  operators.rs offline fluent stream API, and the tokio channel/RwLock
+  streaming topology (not applicable to the single-threaded handle contract);
+  the bounded stream-pattern CE, join API, watermark-driven closure, and
+  StreamAnalytics surface delivered by sub-project C are enumerated in
+  `docs/Rule_Engine_Design.md`. Redis-backed streaming state
   is an optional backend with a native adapter (compiled only with
   `RULE_ENGINE_ENABLE_REDIS` plus discovered hiredis, `RE_STATUS_NOT_SUPPORTED`
   otherwise); the portable bounded in-memory provider is implemented;
@@ -176,7 +203,7 @@ support.
 The local status is limited to behavior covered by the registered rule-engine
 tests, including `engine/tests/test_rule_engine.c`, the transaction, TMS, RETE,
 agenda, backward, machine-structure, machine-context, binding, grl-semantics,
-grl-surface, query-blocks, fuzz-smoke, and
+grl-surface, query-blocks, stream-ext, stream-grl, stream-eval, fuzz-smoke, and
 optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
 upstream evidence only. No deferred family has an ABI placeholder.
@@ -244,6 +271,25 @@ The separate tested correlation seam filters retained events by type and
 string-valued key, counts first/second pairs within a timeout, and computes
 count, numeric sum, numeric average, minimum, and maximum, and selects the
 first/last matching event by timestamp, without changing retention.
+
+Sub-project C extends the window seam with the appended count-distinct,
+stddev, and percentile aggregate kinds (population stddev requiring at least
+two values, nearest-rank percentile from a struct_size-gated filter field,
+typed-equality distinct counting reported in the count field), a
+struct_size-gated `watermark_drives_closure` option (default off) that closes
+tumbling buckets and session targets once the event-time watermark passes
+their end plus allowed lateness, a StreamAnalytics analog (TTL-cached
+aggregates with key/kind/filter-aware identity, global moving average,
+population-statistics anomaly detection reporting timestamps, half-split
+trend direction), a standalone cross-stream join API (four join types, three
+strategies, bounded per-key buffers, exactly-once outer emission on watermark
+pass), and a bounded engine stream registry (16 names, replace-on-duplicate,
+borrowed windows) whose `re_engine_stream_run` injects the
+WindowEventCount/WindowStartTime/WindowEndTime/WindowDurationMs facts plus
+per-name numeric aggregates into the caller's facts before one ordinary rule
+run. GRL stream-pattern condition elements evaluate against registered
+windows with exists semantics; an unregistered stream fails the run with
+`RE_STATUS_NOT_SUPPORTED`.
 
 Snapshots are caller-owned output bytes until the matching `release` callback;
 the callback receives the exact pointer and size and is called at most once.

@@ -121,7 +121,10 @@ enum {
 #define RE_CAP2_CONCURRENCY       ((re_capabilities_v2_t)1ull << 7)
 
 #define RE_ABI_VERSION_MAJOR 1u
-#define RE_ABI_VERSION_MINOR 3u
+/* Bumped 3u -> 4u in sub-project C Task C1, the first API-adding task of the
+ * streaming completion plan (the minor bumps once for sub-project C):
+ * docs/superpowers/plans/2026-08-30-rule-engine-full-parity-c-streaming.md */
+#define RE_ABI_VERSION_MINOR 4u
 
 typedef struct re_extension_info_t {
   uint32_t struct_size;
@@ -241,6 +244,8 @@ typedef struct re_rete_network_t re_rete_network_t;
 typedef struct re_query_t re_query_t;
 typedef struct re_proof_t re_proof_t;
 typedef struct re_stream_window_t re_stream_window_t;
+typedef struct re_stream_analytics_t re_stream_analytics_t;
+typedef struct re_stream_join_t re_stream_join_t;
 typedef struct re_state_provider_t re_state_provider_t;
 typedef struct re_executor_t re_executor_t;
 
@@ -271,6 +276,21 @@ typedef struct re_stream_window_options_t {
   size_t max_events;
   size_t max_bytes;
   uint64_t allowed_lateness_ms;
+  /* Appended in sub-project C Task C4 (append-only ABI): when non-zero, the
+   * window's own watermark closes tumbling buckets and sessions - a
+   * documented local composition (upstream watermarks only gate recording,
+   * never drive closure, f80a541 src/streaming/watermark.rs:340). A tumbling
+   * bucket is CLOSED once watermark >= bucket_end + allowed_lateness_ms; a
+   * record's session is CLOSED once watermark >= (record_ts + retention_ms)
+   * + allowed_lateness_ms. Records targeting a closed bucket/session get the
+   * late_event_policy treatment (DROP -> RE_STATUS_NOT_FOUND, ERROR ->
+   * RE_STATUS_ERROR, ACCEPT -> recorded only when the target is still
+   * retained, otherwise RE_STATUS_NOT_FOUND). Sliding windows have no
+   * discrete buckets, so the flag changes nothing for them (record-gate
+   * only). It is read only when struct_size covers it; callers passing the
+   * pre-C4 size (offsetof(re_stream_window_options_t, watermark_drives_closure))
+   * get the default 0, which is byte-identical to the pre-C4 behavior. */
+  uint32_t watermark_drives_closure;
 } re_stream_window_options_t;
 
 typedef struct re_stream_filter_options_t {
@@ -278,6 +298,12 @@ typedef struct re_stream_filter_options_t {
   uint32_t abi_version;
   re_string_t event_type;
   re_string_t key;
+  /* Appended in sub-project C Task C1 (append-only ABI): percentile on the
+   * 0-100 scale. It is read only for RE_STREAM_AGGREGATE_PERCENTILE and only
+   * when struct_size covers it; older callers keep passing the pre-C1 size
+   * (offsetof(re_stream_filter_options_t, percentile)) and every other kind
+   * keeps working. */
+  double percentile;
 } re_stream_filter_options_t;
 
 typedef enum re_stream_aggregate_kind_t {
@@ -289,7 +315,13 @@ typedef enum re_stream_aggregate_kind_t {
   RE_STREAM_AGGREGATE_MIN = 4,
   RE_STREAM_AGGREGATE_MAX = 5,
   RE_STREAM_AGGREGATE_FIRST = 6,
-  RE_STREAM_AGGREGATE_LAST = 7
+  RE_STREAM_AGGREGATE_LAST = 7,
+  /* Appended in sub-project C Task C1 (append-only ABI), mirroring upstream
+   * AggregationType CountDistinct/StdDev/Percentile (rust-rule-engine
+   * v1.21.4 f80a541 src/streaming/aggregator.rs:12). */
+  RE_STREAM_AGGREGATE_COUNT_DISTINCT = 8,
+  RE_STREAM_AGGREGATE_STDDEV = 9,
+  RE_STREAM_AGGREGATE_PERCENTILE = 10
 } re_stream_aggregate_kind_t;
 
 /* Callers set struct_size before each call so older consumers remain
@@ -299,7 +331,10 @@ typedef enum re_stream_aggregate_kind_t {
  * are written only when struct_size covers them, and bytes beyond struct_size
  * are never touched. first/last copy the retained event value; STRING data is
  * borrowed from the window and stays valid until the next window mutation or
- * destroy (the same borrow re_facts_get documents). */
+ * destroy (the same borrow re_facts_get documents). stddev/percentile were
+ * appended in sub-project C Task C1 and follow the same gating. For
+ * RE_STREAM_AGGREGATE_COUNT_DISTINCT the distinct-value count lands in
+ * count. */
 typedef struct re_stream_aggregate_result_t {
   uint32_t struct_size;
   uint64_t count;
@@ -310,6 +345,9 @@ typedef struct re_stream_aggregate_result_t {
   double maximum;
   re_value_t first;
   re_value_t last;
+  /* Appended in sub-project C Task C1 (append-only ABI). */
+  double stddev;
+  double percentile;
 } re_stream_aggregate_result_t;
 
 typedef struct re_stream_correlation_options_t {
@@ -320,6 +358,15 @@ typedef struct re_stream_correlation_options_t {
   re_string_t key;
   uint64_t timeout_ms;
 } re_stream_correlation_options_t;
+
+/* Appended in sub-project C Task C2 (append-only ABI), mirroring upstream
+ * TrendDirection (rust-rule-engine v1.21.4 f80a541
+ * src/streaming/aggregator.rs:430). */
+typedef enum re_stream_trend_t {
+  RE_STREAM_TREND_INCREASING = 1,
+  RE_STREAM_TREND_DECREASING = 2,
+  RE_STREAM_TREND_STABLE = 3
+} re_stream_trend_t;
 
 typedef void (*re_snapshot_release_fn_t)(void *context,
                                          const uint8_t *data,
@@ -755,15 +802,30 @@ re_status_t re_stream_window_restore(re_stream_window_t *window,
 /* Aggregates the retained events matching filter (empty event_type/key match
  * everything, the same filter count/sum already use). SUM/AVERAGE/MIN/MAX fold
  * numeric values only - a non-numeric matching event is
- * RE_STATUS_INVALID_ARGUMENT for all four. FIRST/LAST copy the value of the
- * earliest/latest matching event by timestamp (insertion order breaks ties)
- * and accept any value type. An empty filtered set reports
- * RE_STATUS_NOT_FOUND for MIN/MAX/FIRST/LAST; COUNT keeps its 0/OK behavior.
+ * RE_STATUS_INVALID_ARGUMENT for all four; STDDEV/PERCENTILE (sub-project C
+ * Task C1, upstream AggregationType f80a541 src/streaming/aggregator.rs:12)
+ * fold the same numeric set with the same rejection. STDDEV is the population
+ * standard deviation (variance = sum((v-mean)^2)/N, aggregator.rs:233) and
+ * needs >= 2 matching values. PERCENTILE sorts ascending and picks
+ * nearest-rank index round(p/100*(n-1)) (aggregator.rs:253); p comes from the
+ * tail-appended filter percentile field (0-100, and a pre-C1 filter
+ * struct_size cannot service the kind at all - both are
+ * RE_STATUS_INVALID_ARGUMENT). COUNT_DISTINCT counts distinct typed values
+ * over the matching set (same type tag and equal payload: int64 by value,
+ * double bitwise, string by content, bool by value, null=null), accepts any
+ * value type, and reports the distinct count in out_result->count; upstream
+ * counts distinct debug-strings, which would equate 1 and 1.0 - a documented
+ * divergence. FIRST/LAST copy the value of the earliest/latest matching event
+ * by timestamp (insertion order breaks ties) and accept any value type. An
+ * empty filtered set reports RE_STATUS_NOT_FOUND for every kind except COUNT,
+ * which keeps its 0/OK behavior; STDDEV with a single matching value is
+ * RE_STATUS_NOT_FOUND as well (upstream None).
  * RE_STATUS_NOT_FOUND returns before out_result is touched.
  * out_result->struct_size must cover at least the pre-Task-16 fields
  * (offsetof(re_stream_aggregate_result_t, minimum)); appended fields are
  * written only when struct_size covers them, and first/last fold over every
- * matching event regardless of kind. */
+ * matching event regardless of kind. filter->struct_size must cover at least
+ * the pre-C1 fields (offsetof(re_stream_filter_options_t, percentile)). */
 re_status_t re_stream_window_aggregate_v1(
     const re_stream_window_t *window,
     const re_stream_filter_options_t *filter,
@@ -773,6 +835,316 @@ re_status_t re_stream_window_correlate_v1(
     const re_stream_window_t *window,
     const re_stream_correlation_options_t *options,
     uint64_t *out_matches);
+
+/* Stream analytics (sub-project C Task C2): the local analog of upstream
+ * StreamAnalytics (rust-rule-engine v1.21.4 f80a541
+ * src/streaming/aggregator.rs:285) - a TTL aggregation cache plus the
+ * multi-window statistics. An analytics handle is single-threaded like every
+ * other handle (the threading contract above) and holds no clock: the host
+ * supplies current_time_ms to re_stream_analytics_aggregate_cached. Upstream
+ * aggregates a "field" out of each event's data map; local events are a name
+ * plus a typed scalar, so the local field mapping is the event name and the
+ * folded value is the event's numeric scalar (INT64/DOUBLE) - a non-numeric
+ * event carrying the name is skipped, the same tolerance upstream's
+ * get_numeric filter_map applies. Every windows array is a caller-owned array
+ * of borrowed window handles in chronological order (NULL handles are
+ * RE_STATUS_INVALID_ARGUMENT); nothing takes ownership. */
+re_status_t re_stream_analytics_create(re_engine_t *engine,
+                                       uint64_t cache_ttl_ms,
+                                       re_stream_analytics_t **out_analytics);
+/* Releases the cache and every owned string. NULL is accepted. */
+void re_stream_analytics_destroy(re_stream_analytics_t *analytics);
+/* Cached aggregation (upstream aggregate_cached, f80a541
+ * src/streaming/aggregator.rs:305). The cache entry identity is the caller
+ * key string PLUS the aggregation identity (kind, the filter event_type, and
+ * the filter percentile for RE_STREAM_AGGREGATE_PERCENTILE); upstream keys on
+ * the string alone, so two aggregations sharing one key alias upstream but
+ * miss here (documented hardening). A matching entry is a hit iff
+ * current_time_ms - entry_ts < the cache TTL (:311), and a hit neither
+ * refreshes the entry timestamp nor evicts anything. A current_time_ms behind
+ * the entry timestamp is always a miss (upstream's wrapping subtraction never
+ * hits on one either). On a miss the aggregation recomputes via
+ * re_stream_window_aggregate_v1 over the caller-supplied window, then EVERY
+ * entry past the TTL is evicted and the fresh entry inserted (upstream's
+ * evict-all retain, :323 - it runs after the insert and so also drops the
+ * fresh entry when the TTL is 0; the local order keeps the fresh entry so the
+ * returned first/last borrow stays valid, which is unobservable because a
+ * TTL-0 entry can never be a hit). Only successful aggregations are cached -
+ * an error status (for example RE_STATUS_NOT_FOUND from an empty filtered
+ * set) propagates with the cache untouched, where upstream caches its
+ * AggregationResult::None (documented divergence). first/last STRING data is
+ * deep-copied into the cache on insert and, on a hit, borrowed until the next
+ * analytics mutation or destroy. filter and out_result are validated exactly
+ * as re_stream_window_aggregate_v1 validates them (so a hit cannot sneak an
+ * uncovered struct_size past the gate); analytics/window NULL or key.data
+ * NULL is RE_STATUS_INVALID_ARGUMENT. */
+re_status_t re_stream_analytics_aggregate_cached(
+    re_stream_analytics_t *analytics, re_string_t key,
+    const re_stream_window_t *window, const re_stream_filter_options_t *filter,
+    re_stream_aggregate_kind_t kind, uint64_t current_time_ms,
+    re_stream_aggregate_result_t *out_result);
+/* Moving average over the trailing windows of the caller's array (upstream
+ * moving_average, f80a541 src/streaming/aggregator.rs:329): only the last
+ * last_n handles of windows[0..window_count) participate (all of them when
+ * last_n >= window_count), and the result is the global
+ * sum-of-values / event-count over every numeric event named event_name
+ * across those windows - NOT an average of per-window averages. Upstream's
+ * denominator is each window's total event count (TimeWindow::count counts
+ * events without the field too); the local denominator counts only numeric
+ * events named event_name, the documented name+scalar mapping.
+ * window_count == 0, last_n == 0, or no matching numeric events report
+ * RE_STATUS_NOT_FOUND (upstream None). event_name must be non-empty and
+ * out_value non-NULL (RE_STATUS_INVALID_ARGUMENT). */
+re_status_t re_stream_analytics_moving_average(
+    const re_stream_analytics_t *analytics,
+    const re_stream_window_t *const *windows, size_t window_count,
+    re_string_t event_name, size_t last_n, double *out_value);
+/* Z-score anomaly detection (upstream detect_anomalies, f80a541
+ * src/streaming/aggregator.rs:357). window_count < 3 is
+ * RE_STATUS_INVALID_ARGUMENT (upstream silently returns no anomalies - a
+ * documented divergence). Historical values are the numeric events named
+ * event_name in every window except the last; fewer than 10 is
+ * RE_STATUS_NOT_FOUND (upstream: no anomalies). Mean and standard deviation
+ * are population statistics over the historical values (variance divides by
+ * N, the same formula RE_STREAM_AGGREGATE_STDDEV documents). Events in the
+ * LAST window named event_name with fabs((value - mean) / stddev) > threshold
+ * are flagged and their timestamps reported in window order - upstream
+ * returns event IDs and local events have no IDs, so the timestamp is the
+ * local identity (documented mapping; duplicate timestamps repeat). A zero
+ * historical stddev flags nothing (documented guard: upstream divides by
+ * zero, so a value equal to the mean gets a NaN z-score and passes while any
+ * unequal value gets +/-inf and is flagged - local reports none). A NaN
+ * threshold flags nothing (every comparison is false), as upstream. When the
+ * flagged total exceeds capacity, out_timestamps receives the first capacity
+ * timestamps, *out_count receives the TOTAL flagged count, and the return is
+ * RE_STATUS_LIMIT (the codebase's buffer-capacity idiom,
+ * re_rule_template_instantiate; an exact fit reports RE_STATUS_OK).
+ * out_timestamps may be NULL only when capacity is 0 (a sizing query: it
+ * reports RE_STATUS_LIMIT with the required capacity in *out_count whenever
+ * any event is flagged, RE_STATUS_OK when none is). */
+re_status_t re_stream_analytics_detect_anomalies(
+    const re_stream_analytics_t *analytics,
+    const re_stream_window_t *const *windows, size_t window_count,
+    re_string_t event_name, double threshold,
+    uint64_t *out_timestamps, size_t capacity, size_t *out_count);
+/* Trend direction (upstream calculate_trend, f80a541
+ * src/streaming/aggregator.rs:399). window_count < 2 is
+ * RE_STATUS_INVALID_ARGUMENT (upstream returns Stable - a documented
+ * divergence). Each window contributes the average of its numeric events
+ * named event_name; windows with no such events contribute nothing
+ * (upstream's filter_map), and fewer than 2 contributing windows reports
+ * RE_STREAM_TREND_STABLE with RE_STATUS_OK (upstream Stable). The averages
+ * split in half (the second half takes the odd extra) and
+ * change_percent = (second_avg - first_avg) / first_avg * 100: > +5 is
+ * RE_STREAM_TREND_INCREASING, < -5 is RE_STREAM_TREND_DECREASING, anything
+ * else is RE_STREAM_TREND_STABLE (:416 - the +/-5 boundary itself is Stable).
+ * first_avg == 0 reports STABLE (documented division guard: upstream's f64
+ * division yields +inf/-inf - Increasing/Decreasing by the sign of
+ * second_avg - or NaN - Stable - when both averages are 0). */
+re_status_t re_stream_analytics_calculate_trend(
+    const re_stream_analytics_t *analytics,
+    const re_stream_window_t *const *windows, size_t window_count,
+    re_string_t event_name, re_stream_trend_t *out_trend);
+
+/* Cross-stream joins (sub-project C Task C4): the local analog of upstream
+ * StreamJoinNode (rust-rule-engine v1.21.4 f80a541 src/rete/stream_join_node.rs)
+ * - per-key event buffers for two named streams, strategy-bounded pair
+ * matching, and watermark-driven outer-join completion. A join handle is
+ * single-threaded like every other handle (the threading contract above) and
+ * is NOT registered on the engine; upstream's StreamJoinManager routing by
+ * event.metadata.source is replaced by the explicit side argument. Upstream
+ * emits unmatched outer-join events eagerly at process time and re-scans
+ * buffered pairs at update_watermark (:204); the local composition emits
+ * matched pairs exactly once at record time and unmatched outer sides exactly
+ * once when the watermark passes them (the observable outcome upstream's
+ * join_manager tests pin), and never re-emits - documented composition. */
+
+typedef enum re_stream_join_type_t {
+  RE_STREAM_JOIN_INNER = 1,
+  RE_STREAM_JOIN_LEFT_OUTER = 2,
+  RE_STREAM_JOIN_RIGHT_OUTER = 3,
+  RE_STREAM_JOIN_FULL_OUTER = 4
+} re_stream_join_type_t;
+
+typedef enum re_stream_join_side_t {
+  RE_STREAM_JOIN_LEFT = 1,
+  RE_STREAM_JOIN_RIGHT = 2
+} re_stream_join_side_t;
+
+typedef enum re_stream_join_strategy_kind_t {
+  RE_STREAM_JOIN_TIME_WINDOW = 1,
+  RE_STREAM_JOIN_COUNT_WINDOW = 2,
+  RE_STREAM_JOIN_SESSION_WINDOW = 3
+} re_stream_join_strategy_kind_t;
+
+/* Flat tagged strategy mirroring upstream JoinStrategy (:24): kind selects
+ * the active field (TIME_WINDOW -> duration_ms, COUNT_WINDOW -> count,
+ * SESSION_WINDOW -> gap_ms); the inactive fields are ignored. The active
+ * field must be non-zero (RE_STATUS_INVALID_ARGUMENT), mirroring the
+ * retention_ms == 0 window validation. TIME_WINDOW and SESSION_WINDOW match a
+ * left/right pair when |left_ts - right_ts| <= duration_ms / gap_ms
+ * (upstream is_within_window :221 - upstream compares in whole seconds to
+ * match its test conventions; local timestamps and parameters are uniformly
+ * milliseconds). COUNT_WINDOW matches every same-key pair regardless of
+ * distance (upstream returns true, :231) and bounds each per-key buffer to
+ * the most recent min(count, 64) events (upstream buffers unboundedly and
+ * never evicts for count windows - a documented divergence under the
+ * codebase's bounded-everything rule). */
+typedef struct re_stream_join_strategy_t {
+  uint32_t kind; /* re_stream_join_strategy_kind_t */
+  uint64_t duration_ms;
+  uint64_t count;
+  uint64_t gap_ms;
+} re_stream_join_strategy_t;
+
+/* One drained join result. key borrows the join's owned key storage and
+ * stays valid until re_stream_join_destroy. A 0 left_timestamp_ms /
+ * right_timestamp_ms marks the absent side of an outer-join emission (the
+ * brief's absent-marker convention; a genuine event at timestamp 0 is
+ * indistinguishable from absent, as documented). join_timestamp_ms is the
+ * later of the two matched timestamps, or the single event's own timestamp
+ * for an unmatched emission (upstream JoinedEvent join_timestamp, :35). */
+typedef struct re_stream_join_match_t {
+  re_string_t key;
+  uint64_t left_timestamp_ms;
+  uint64_t right_timestamp_ms;
+  uint64_t join_timestamp_ms;
+} re_stream_join_match_t;
+
+/* Creates a join between two named streams; names must be non-empty and are
+ * copied. join_type/strategy are validated as documented above. */
+re_status_t re_stream_join_create(re_engine_t *engine,
+                                  re_string_t left_name, re_string_t right_name,
+                                  re_stream_join_type_t join_type,
+                                  re_stream_join_strategy_t strategy,
+                                  re_stream_join_t **out_join);
+/* Releases the join, every buffered event, every queued match, and both
+ * names. NULL is accepted. */
+void re_stream_join_destroy(re_stream_join_t *join);
+/* Buffers the event under key on side and emits one queued match per
+ * strategy-satisfying same-key pair with the opposite side's buffered events
+ * (any join type, upstream process_left/process_right :104/:140). key must be
+ * non-empty (upstream silently skips keyless events, :108 - a documented
+ * divergence; the local strictness mirrors the window record validation).
+ * value must be non-NULL but is NOT retained: no join output surfaces event
+ * payloads (the match struct carries timestamps only), so buffering them
+ * would cost memory for nothing observable - documented. Buffers are
+ * bounded: per side at most 256 distinct keys (a new key beyond that is
+ * RE_STATUS_LIMIT and is not recorded) and per key at most 64 events
+ * (COUNT_WINDOW: min(count, 64)); per-key overflow silently drops the OLDEST
+ * event and bumps the re_stream_join_dropped counter (drop-oldest). The
+ * queued-match list is likewise capped at 256 with drop-oldest + counter. */
+re_status_t re_stream_join_record(re_stream_join_t *join,
+                                  re_stream_join_side_t side,
+                                  re_string_t key, uint64_t timestamp_ms,
+                                  const re_value_t *value);
+/* Advances the join watermark (upstream update_watermark, :204). Upstream's
+ * node holds a single watermark fed from whichever stream's watermark
+ * arrives; the local mapping keeps one watermark and validates but does not
+ * partition by side. A non-advancing update is an accepted no-op
+ * (RE_STATUS_OK), mirroring the window record path's watermark advance. An
+ * advancing update emits, for each outer-join side of join_type, every
+ * buffered event with watermark - ts > window_size that never matched
+ * (window_size = duration_ms / gap_ms; the comparison is strict, upstream
+ * :267), then evicts every expired event from both sides. Emitted events are
+ * evicted, so an event is emitted as unmatched at most once across all
+ * updates. COUNT_WINDOW never expires (upstream i64::MAX window, :259), so
+ * count-window outer joins emit no unmatched events - documented upstream
+ * parity. */
+re_status_t re_stream_join_update_watermark(re_stream_join_t *join,
+                                            re_stream_join_side_t side,
+                                            uint64_t watermark_ms);
+/* Drains queued matches oldest-first. *out_count always receives the TOTAL
+ * number of queued matches before this call; the first min(capacity, total)
+ * are copied out and removed. When the total exceeds capacity the return is
+ * RE_STATUS_LIMIT (the codebase's buffer-capacity idiom,
+ * re_rule_template_instantiate; an exact fit reports RE_STATUS_OK).
+ * out_matches may be NULL only when capacity is 0 (a sizing query: it reports
+ * RE_STATUS_LIMIT with the required capacity in *out_count whenever any match
+ * is queued, RE_STATUS_OK when none is). */
+re_status_t re_stream_join_drain(re_stream_join_t *join,
+                                 re_stream_join_match_t *out_matches,
+                                 size_t capacity, size_t *out_count);
+/* Total silent drops since creation: per-key buffer overflow drop-oldest
+ * plus queued-match overflow drop-oldest (both documented on
+ * re_stream_join_record). Watermark evictions and drained matches are not
+ * drops. */
+uint64_t re_stream_join_dropped(const re_stream_join_t *join);
+
+/* Stream rule evaluation (sub-project C Task C5): the local wiring of
+ * upstream StreamRuleEngine (rust-rule-engine v1.21.4 f80a541
+ * src/streaming/engine.rs) - a name-keyed stream registry on the engine plus
+ * window-fact injection before an ordinary rule run.
+ *
+ * re_engine_stream_register binds a stream name to a BORROWED window handle
+ * (upstream's WindowManager registry, engine.rs:183-262 - the local engine
+ * stays single-threaded per the threading contract above, so the tokio
+ * channel topology is not applicable). The name is copied; the window is
+ * not owned: re_engine_destroy never destroys registered windows, and the
+ * host must keep a registered window alive until it is unregistered or the
+ * engine is destroyed. name must be non-empty. Re-registering an existing
+ * name REPLACES the previous binding (documented choice over an error: the
+ * host can swap a stream's window without an unregister round-trip). The
+ * registry is capped at 16 streams; a 17th distinct name reports
+ * RE_STATUS_LIMIT. Both register and unregister report RE_STATUS_BUSY while
+ * the engine is running (a stream-pattern CE reads the registry during
+ * matching, so mid-run mutation is rejected like re_engine_install).
+ * re_engine_stream_unregister never destroys the window and is a documented
+ * no-op (RE_STATUS_OK) for an unregistered name.
+ *
+ * GRL stream-pattern CEs (`var: Type from stream("name") [over window(...)]`)
+ * evaluate against the registered window during re_engine_run: an event
+ * matches when its NAME equals the optional event type (local mapping: local
+ * events carry a name plus a scalar value, so the type filter applies to the
+ * event name and `var` denotes the event's scalar VALUE; upstream matches
+ * event_type against its event type field) and its timestamp passes the
+ * window clause (sliding: [watermark - duration, watermark], saturating;
+ * tumbling: the current bucket ts/duration == watermark/duration; session:
+ * the current open session, the newest retained event and its backward chain
+ * with consecutive gaps <= duration; no clause: all retained events). The CE
+ * has exists semantics - it matches when at least one retained event
+ * qualifies, scanning in timestamp order - and binds one activation per rule
+ * match under the engine's standard refraction (bounded divergence: upstream
+ * never evaluates stream-pattern CEs at all - its StreamRuleEngine runs the
+ * whole rule base per window through fact injection, and the &&
+ * stream-join grammar is vapor - so there is no per-event activation
+ * multiplicity to mirror). A CE naming an UNREGISTERED stream reports
+ * RE_STATUS_NOT_SUPPORTED, the honest gate C3 pinned. Stream-pattern CEs are
+ * not RETE-eligible (the collect() constraint admits only fact/literal
+ * comparisons) and are classified impure, so they evaluate once at their
+ * first-pass position on the linear path like the A6/A8/A9 ineligible forms;
+ * backward chaining on them stays RE_STATUS_NOT_SUPPORTED. */
+re_status_t re_engine_stream_register(re_engine_t *engine, re_string_t name,
+                                      re_stream_window_t *window);
+re_status_t re_engine_stream_unregister(re_engine_t *engine, re_string_t name);
+/* Window-fact injection + run (upstream execute_rules, f80a541
+ * src/streaming/engine.rs:341-378). Injects into the CALLER's facts
+ * (upstream injects into a fresh Facts per window - a documented mapping;
+ * upstream's per-window rule-base fan-out is a host loop over this call):
+ * - WindowEventCount: retained event count as a DOUBLE (upstream :347-353
+ *   injects the count as f64), WindowStartTime / WindowEndTime /
+ *   WindowDurationMs: the window bounds as INT64 ms (clamped at INT64_MAX),
+ *   always injected - even 0. Bounds: tumbling = the current bucket
+ *   [bucket_start*retention, +retention), saturating (a tumbling window
+ *   reports its current bucket's span even while it holds no events); sliding = [oldest retained
+ *   event ts, watermark]; session = [session start, session_end);
+ *   sliding/session with no retained events report 0 bounds and count 0.
+ *   WindowDurationMs is WindowEndTime - WindowStartTime.
+ * - per numeric event NAME (the local "field" - upstream scans each event's
+ *   data map for numeric fields, detect_numeric_fields :383; local events
+ *   carry one scalar value, so the event name is the field): "<name>Sum",
+ *   "<name>Average", "<name>Min", "<name>Max" as DOUBLEs (name verbatim plus
+ *   the capitalized suffix, :364-376). Non-numeric values are excluded from
+ *   their name's fold; a name whose retained events are all non-numeric gets
+ *   NO aggregate facts.
+ * Every injection is a host-visible re_facts_set write (so each one bumps
+ * the facts mutation serial and stale same-named facts are overwritten).
+ * Then runs re_engine_run(engine, facts, NULL, NULL) and reports its status;
+ * the pinned parity usage is a rule matching `WindowEventCount > 5`
+ * (upstream engine.rs:478-481). */
+re_status_t re_engine_stream_run(re_engine_t *engine, re_facts_t *facts,
+                                 re_stream_window_t *window);
+
 re_status_t re_engine_set_state_provider(re_engine_t *engine,
                                          const re_state_provider_descriptor_t *descriptor,
                                          re_state_provider_t **out_provider);

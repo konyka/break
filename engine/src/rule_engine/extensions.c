@@ -268,18 +268,29 @@ void re_stream_window_destroy(re_stream_window_t *window) {
 re_status_t re_stream_window_create_v1(re_engine_t *engine, const re_stream_window_options_t *options,
                                        re_stream_window_t **out_window) {
     re_stream_window_t *window;
-    if (engine == NULL || options == NULL || out_window == NULL || options->struct_size < sizeof(*options) ||
-        options->abi_version != RE_STREAM_WINDOW_ABI_VERSION ||
-        (options->kind != RE_STREAM_WINDOW_SLIDING && options->kind != RE_STREAM_WINDOW_TUMBLING &&
-         options->kind != RE_STREAM_WINDOW_SESSION) ||
-         options->retention_ms == 0u || options->max_events == 0u || options->max_bytes == 0u ||
-         (options->late_event_policy != RE_LATE_EVENT_DROP && options->late_event_policy != RE_LATE_EVENT_ACCEPT &&
-          options->late_event_policy != RE_LATE_EVENT_ERROR)) return RE_STATUS_INVALID_ARGUMENT;
-    if (options->kind != RE_STREAM_WINDOW_SLIDING) return re_stream_window_create_bounded(engine, options, out_window);
+    re_stream_window_options_t sanitized;
+    /* The watermark_drives_closure flag is tail-appended (Task C4): a pre-C4
+     * caller passes the pre-C4 struct_size, so the base validation covers
+     * only the pre-C4 fields and the flag defaults to 0 (pre-C4 behavior),
+     * the same idiom stream_correlation.c applies to the C1 percentile. */
+    if (engine == NULL || options == NULL || out_window == NULL ||
+        options->struct_size < (uint32_t)offsetof(re_stream_window_options_t, watermark_drives_closure) ||
+        options->abi_version != RE_STREAM_WINDOW_ABI_VERSION) return RE_STATUS_INVALID_ARGUMENT;
+    memset(&sanitized, 0, sizeof(sanitized));
+    memcpy(&sanitized, options, options->struct_size < (uint32_t)sizeof(sanitized)
+        ? options->struct_size : (uint32_t)sizeof(sanitized));
+    if (options->struct_size < (uint32_t)offsetof(re_stream_window_options_t, watermark_drives_closure) +
+        (uint32_t)sizeof(sanitized.watermark_drives_closure)) sanitized.watermark_drives_closure = 0u;
+    if ((sanitized.kind != RE_STREAM_WINDOW_SLIDING && sanitized.kind != RE_STREAM_WINDOW_TUMBLING &&
+         sanitized.kind != RE_STREAM_WINDOW_SESSION) ||
+         sanitized.retention_ms == 0u || sanitized.max_events == 0u || sanitized.max_bytes == 0u ||
+         (sanitized.late_event_policy != RE_LATE_EVENT_DROP && sanitized.late_event_policy != RE_LATE_EVENT_ACCEPT &&
+          sanitized.late_event_policy != RE_LATE_EVENT_ERROR)) return RE_STATUS_INVALID_ARGUMENT;
+    if (sanitized.kind != RE_STREAM_WINDOW_SLIDING) return re_stream_window_create_bounded(engine, &sanitized, out_window);
     *out_window = NULL;
     window = re_alloc(&engine->allocator, sizeof(*window));
     if (window == NULL) return RE_STATUS_OUT_OF_MEMORY;
-    memset(window, 0, sizeof(*window)); window->allocator = engine->allocator; window->options = *options;
+    memset(window, 0, sizeof(*window)); window->allocator = engine->allocator; window->options = sanitized;
     *out_window = window; return RE_STATUS_OK;
 }
 re_status_t re_stream_window_record_v1(re_stream_window_t *window, uint64_t timestamp_ms,

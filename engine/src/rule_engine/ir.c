@@ -229,6 +229,29 @@ static re_status_t add_expr_node(re_ir_program_t *ir, const re_expr_t *expr,
         if (status != RE_STATUS_OK) return status;
         item->typed_type_size = expr->typed_type_size;
     }
+    if (expr->kind == RE_EXPR_STREAM_PATTERN) {
+        /* C3: copy the stream-pattern payload (owned strings); on error the
+         * partial copy is released by re_ir_destroy like any other payload. */
+        status = re_copy_string(&ir->allocator,
+            (re_string_t){expr->stream_var, expr->stream_var_size}, &item->stream_var);
+        if (status != RE_STATUS_OK) return status;
+        item->stream_var_size = expr->stream_var_size;
+        if (expr->stream_event_type != NULL) {
+            status = re_copy_string(&ir->allocator,
+                (re_string_t){expr->stream_event_type, expr->stream_event_type_size},
+                &item->stream_event_type);
+            if (status != RE_STATUS_OK) return status;
+            item->stream_event_type_size = expr->stream_event_type_size;
+        }
+        status = re_copy_string(&ir->allocator,
+            (re_string_t){expr->stream_name, expr->stream_name_size}, &item->stream_name);
+        if (status != RE_STATUS_OK) return status;
+        item->stream_name_size = expr->stream_name_size;
+        item->stream_window_duration_ms = expr->stream_window_duration_ms;
+        item->stream_window_kind = expr->stream_window_kind;
+        item->stream_has_event_type = expr->stream_has_event_type;
+        item->stream_has_window = expr->stream_has_window;
+    }
     *out = index;
     return RE_STATUS_OK;
 }
@@ -283,10 +306,11 @@ static re_status_t add_expr(re_ir_program_t *ir, const re_expr_t *expr, size_t *
                 if (status != RE_STATUS_OK) break;
                 frame->phase = 3u;
             } else if (frame->expr->kind == RE_EXPR_TRUE || frame->expr->kind == RE_EXPR_FALSE ||
-                       frame->expr->kind == RE_EXPR_ACCUMULATE) {
-                /* TRUE/FALSE and the A6 accumulate node carry no child
-                 * expressions or terms (the payload was copied by
-                 * add_expr_node). */
+                       frame->expr->kind == RE_EXPR_ACCUMULATE ||
+                       frame->expr->kind == RE_EXPR_STREAM_PATTERN) {
+                /* TRUE/FALSE, the A6 accumulate node, and the C3 stream
+                 * pattern carry no child expressions or terms (the payloads
+                 * were copied by add_expr_node). */
                 frame->phase = 3u;
             } else {
                 const re_expr_t *current_expr = frame->expr;
@@ -469,4 +493,4 @@ re_status_t re_ir_compile(const re_program_t *program, re_ir_program_t **out) {
     *out = ir; return RE_STATUS_OK;
 fail: re_ir_destroy(ir); return status;
 }
-void re_ir_destroy(re_ir_program_t *ir) { size_t i; if (ir == NULL) return; for (i = 0u; i < ir->term_count; ++i) { re_free(&ir->allocator, ir->terms[i].name); re_free(&ir->allocator, ir->terms[i].argument_indices); if (ir->terms[i].value.type == RE_VALUE_STRING) re_free(&ir->allocator, (void *)ir->terms[i].value.as.string.data); } for (i = 0u; i < ir->expr_count; ++i) { size_t j; for (j = 0u; j < ir->exprs[i].accumulate_condition_count; ++j) re_free(&ir->allocator, ir->exprs[i].accumulate_conditions[j]); re_free(&ir->allocator, ir->exprs[i].accumulate_conditions); re_free(&ir->allocator, ir->exprs[i].accumulate_type); re_free(&ir->allocator, ir->exprs[i].accumulate_field); re_free(&ir->allocator, ir->exprs[i].accumulate_func_name); re_free(&ir->allocator, ir->exprs[i].typed_type); } for (i = 0u; i < ir->action_count; ++i) re_free(&ir->allocator, ir->actions[i].method_name); re_free(&ir->allocator, ir->strings); re_free(&ir->allocator, ir->spans); re_free(&ir->allocator, ir->queries); re_free(&ir->allocator, ir->query_actions); re_free(&ir->allocator, ir->deffacts_sets); re_free(&ir->allocator, ir->deffacts_entries); re_free(&ir->allocator, ir->actions); re_free(&ir->allocator, ir->rules); re_free(&ir->allocator, ir->modules); re_free(&ir->allocator, ir->exprs); re_free(&ir->allocator, ir->terms); re_free(&ir->allocator, ir); }
+void re_ir_destroy(re_ir_program_t *ir) { size_t i; if (ir == NULL) return; for (i = 0u; i < ir->term_count; ++i) { re_free(&ir->allocator, ir->terms[i].name); re_free(&ir->allocator, ir->terms[i].argument_indices); if (ir->terms[i].value.type == RE_VALUE_STRING) re_free(&ir->allocator, (void *)ir->terms[i].value.as.string.data); } for (i = 0u; i < ir->expr_count; ++i) { size_t j; for (j = 0u; j < ir->exprs[i].accumulate_condition_count; ++j) re_free(&ir->allocator, ir->exprs[i].accumulate_conditions[j]); re_free(&ir->allocator, ir->exprs[i].accumulate_conditions); re_free(&ir->allocator, ir->exprs[i].accumulate_type); re_free(&ir->allocator, ir->exprs[i].accumulate_field); re_free(&ir->allocator, ir->exprs[i].accumulate_func_name); re_free(&ir->allocator, ir->exprs[i].typed_type); re_free(&ir->allocator, ir->exprs[i].stream_var); re_free(&ir->allocator, ir->exprs[i].stream_event_type); re_free(&ir->allocator, ir->exprs[i].stream_name); } for (i = 0u; i < ir->action_count; ++i) re_free(&ir->allocator, ir->actions[i].method_name); re_free(&ir->allocator, ir->strings); re_free(&ir->allocator, ir->spans); re_free(&ir->allocator, ir->queries); re_free(&ir->allocator, ir->query_actions); re_free(&ir->allocator, ir->deffacts_sets); re_free(&ir->allocator, ir->deffacts_entries); re_free(&ir->allocator, ir->actions); re_free(&ir->allocator, ir->rules); re_free(&ir->allocator, ir->modules); re_free(&ir->allocator, ir->exprs); re_free(&ir->allocator, ir->terms); re_free(&ir->allocator, ir); }

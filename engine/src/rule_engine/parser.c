@@ -8,13 +8,20 @@
 #include "ir.h"
 
 #define RE_MAX_TYPED_SCOPE 8u
+#define RE_MAX_STREAM_PATTERN_SCOPE 16u
 typedef struct parser_t { const char *text; size_t size; size_t at; const re_allocator_impl_t *allocator; int allow_dollar;
     /* A9 typed-form variable scope ($x: Type(conds)): borrows into text;
      * balanced within one expression() call, which restores the entry depth
      * on every exit path. */
     const char *typed_var[RE_MAX_TYPED_SCOPE]; size_t typed_var_size[RE_MAX_TYPED_SCOPE];
     const char *typed_type[RE_MAX_TYPED_SCOPE]; size_t typed_type_size[RE_MAX_TYPED_SCOPE];
-    size_t typed_depth; } parser_t;
+    size_t typed_depth;
+    /* C3 stream-pattern variable roster (var: Type from stream(...)):
+     * borrows into text; per-expression() scope like the typed roster above
+     * (one when-clause == one rule), so a repeated stream-pattern variable
+     * within one rule is rejected as a validation error at parse time. */
+    const char *stream_var[RE_MAX_STREAM_PATTERN_SCOPE]; size_t stream_var_size[RE_MAX_STREAM_PATTERN_SCOPE];
+    size_t stream_var_count; } parser_t;
 #define RE_MAX_OPERAND_ARGUMENTS 64u
 #define RE_MAX_FORMAL_PARAMETERS 32u
 void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
@@ -69,7 +76,11 @@ void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
           re_free(a, expr->accumulate_type);
           re_free(a, expr->accumulate_field);
           re_free(a, expr->accumulate_func_name);
-          re_free(a, expr->typed_type); /* A9 typed-form payload (NULL on other kinds). */ }
+          re_free(a, expr->typed_type); /* A9 typed-form payload (NULL on other kinds). */
+          /* C3 stream-pattern payload (NULL/0 on other kinds). */
+          re_free(a, expr->stream_var);
+          re_free(a, expr->stream_event_type);
+          re_free(a, expr->stream_name); }
         re_free(a, expr);
         expr = NULL;
     }
@@ -745,6 +756,21 @@ static re_status_t expression_apply(const re_allocator_impl_t *a,
         return RE_STATUS_OK;
     }
     if (*value_count < 2u) return RE_STATUS_PARSE_ERROR;
+    if (op == EXPR_OP_AND &&
+        values[*value_count - 1u]->kind == RE_EXPR_STREAM_PATTERN &&
+        values[*value_count - 2u]->kind == RE_EXPR_STREAM_PATTERN) {
+        /* C3: two stream-pattern CEs joined by the when-clause's AND is the
+         * upstream `pattern && pattern` stream-join form - vapor upstream
+         * (stream_syntax.rs:429 parse_stream_join_pattern exists but
+         * join_conditions is always empty and nothing consumes
+         * StreamJoinPattern), so it is a parse error locally. Disambiguation
+         * rule: only an AND whose BOTH immediate operands are stream-pattern
+         * CEs is the rejected join; a stream pattern composed with ordinary
+         * CEs (upstream spells the connectors &&/||, the local when-grammar
+         * spells them and/or) stays a valid condition whose evaluation is
+         * gated NOT_SUPPORTED. */
+        return RE_STATUS_PARSE_ERROR;
+    }
     expr = re_alloc(a, sizeof(*expr));
     if (expr == NULL) return RE_STATUS_OUT_OF_MEMORY;
     memset(expr, 0, sizeof(*expr));
@@ -889,12 +915,187 @@ static int typed_form_ahead(const parser_t *p) {
     return probe < p->size && p->text[probe] == ':';
 }
 
+/* C3 stream-pattern dispatch (upstream rust-rule-engine v1.21.4 f80a541
+ * src/parser/grl/stream_syntax.rs parse_stream_pattern): a bare identifier
+ * followed (modulo whitespace) by ':' opens the
+ * `var: EventType from stream("name")` condition form. No existing condition
+ * form starts with `ident :` (the A9 typed form requires the `$` prefix), so
+ * the probe is unambiguous. Variables spelled like the condition keywords
+ * intercepted earlier in the dispatch chain (exists/forall/test/accumulate/
+ * not/true/false) keep those readings and never reach this form - the same
+ * collision those keywords already had with fact names. */
+static int stream_pattern_ahead(const parser_t *p) {
+    size_t probe = p->at;
+    if (probe >= p->size ||
+        (!isalnum((unsigned char)p->text[probe]) && p->text[probe] != '_')) return 0;
+    while (probe < p->size && (isalnum((unsigned char)p->text[probe]) ||
+           p->text[probe] == '_')) ++probe;
+    while (probe < p->size && isspace((unsigned char)p->text[probe])) ++probe;
+    return probe < p->size && p->text[probe] == ':';
+}
+
+/* C3 window duration `<digits> <unit>` (upstream parse_duration,
+ * stream_syntax.rs:166-179): digit1 + multispace1 + alpha1, units
+ * case-sensitive. Overflow follows the parser's integer-literal idiom
+ * (int32_literal): reject with RE_STATUS_PARSE_ERROR, both when the digits
+ * exceed u64 and when the unit multiplication would overflow (upstream's
+ * `value * 3600` wraps in release builds; the bounded local form rejects
+ * instead). */
+static re_status_t stream_window_duration(parser_t *p, uint64_t *out_ms) {
+    uint64_t magnitude = 0u;
+    uint64_t factor;
+    size_t digits = 0u;
+    size_t unit_start;
+    size_t unit_size;
+    int spaced = 0;
+    skip_space(p);
+    while (p->at < p->size && isdigit((unsigned char)p->text[p->at])) {
+        uint32_t digit = (uint32_t)(p->text[p->at] - '0');
+        if (magnitude > (UINT64_MAX - digit) / 10u) return RE_STATUS_PARSE_ERROR;
+        magnitude = magnitude * 10u + digit;
+        ++p->at;
+        ++digits;
+    }
+    if (digits == 0u) return RE_STATUS_PARSE_ERROR;
+    while (p->at < p->size && isspace((unsigned char)p->text[p->at])) { spaced = 1; ++p->at; }
+    if (!spaced) return RE_STATUS_PARSE_ERROR; /* upstream multispace1: "5min" fails */
+    unit_start = p->at;
+    while (p->at < p->size && isalpha((unsigned char)p->text[p->at])) ++p->at;
+    unit_size = p->at - unit_start;
+    if (unit_size == 0u) return RE_STATUS_PARSE_ERROR;
+    if ((unit_size == 2u && memcmp(p->text + unit_start, "ms", 2u) == 0) ||
+        (unit_size == 11u && memcmp(p->text + unit_start, "millisecond", 11u) == 0) ||
+        (unit_size == 12u && memcmp(p->text + unit_start, "milliseconds", 12u) == 0)) factor = 1u;
+    else if ((unit_size == 3u && memcmp(p->text + unit_start, "sec", 3u) == 0) ||
+             (unit_size == 6u && memcmp(p->text + unit_start, "second", 6u) == 0) ||
+             (unit_size == 7u && memcmp(p->text + unit_start, "seconds", 7u) == 0)) factor = 1000u;
+    else if ((unit_size == 3u && memcmp(p->text + unit_start, "min", 3u) == 0) ||
+             (unit_size == 6u && memcmp(p->text + unit_start, "minute", 6u) == 0) ||
+             (unit_size == 7u && memcmp(p->text + unit_start, "minutes", 7u) == 0)) factor = 60000u;
+    else if ((unit_size == 4u && memcmp(p->text + unit_start, "hour", 4u) == 0) ||
+             (unit_size == 5u && memcmp(p->text + unit_start, "hours", 5u) == 0)) factor = 3600000u;
+    else return RE_STATUS_PARSE_ERROR;
+    if (magnitude > UINT64_MAX / factor) return RE_STATUS_PARSE_ERROR;
+    *out_ms = magnitude * factor;
+    return RE_STATUS_OK;
+}
+
+/* C3 stream-pattern CE (upstream parse_stream_pattern/parse_stream_source/
+ * parse_window_spec, stream_syntax.rs): fills the RE_EXPR_STREAM_PATTERN
+ * payload. stream_pattern_ahead verified the `ident :` opener. The event
+ * type is optional: a leading `from` is not consumed as a type (upstream
+ * :216 rewinds the checkpoint when the identifier is exactly "from",
+ * case-sensitive). The window clause is optional (upstream :93
+ * opt(parse_window_spec)); `session` is accepted as a LOCAL EXTENSION -
+ * upstream's GRL window-type parser accepts only sliding|tumbling
+ * (parse_window_type, stream_syntax.rs:192) even though WindowType::Session
+ * exists in the Rust enum, and the duration maps to the session timeout
+ * (window(10 min, session)). The stream name is the chars up to the next
+ * '"' with no escape processing (take_while1(c != '"')), so an empty name
+ * or an unterminated quote is a parse error. */
+static re_status_t stream_pattern_form(parser_t *p, re_expr_t *value) {
+    size_t var_start;
+    size_t var_size;
+    size_t type_start = 0u;
+    size_t type_size = 0u;
+    size_t name_start;
+    size_t name_size;
+    size_t i;
+    var_start = p->at;
+    while (p->at < p->size && (isalnum((unsigned char)p->text[p->at]) ||
+           p->text[p->at] == '_')) ++p->at;
+    var_size = p->at - var_start;
+    if (var_size == 0u || !take(p, ':')) return RE_STATUS_PARSE_ERROR;
+    /* Duplicate stream-pattern variables in one rule are a validation error
+     * (the per-expression roster mirrors the A9 typed-var scope idiom). */
+    for (i = 0u; i < p->stream_var_count; ++i)
+        if (p->stream_var_size[i] == var_size &&
+            memcmp(p->stream_var[i], p->text + var_start, var_size) == 0)
+            return RE_STATUS_PARSE_ERROR;
+    if (p->stream_var_count == RE_MAX_STREAM_PATTERN_SCOPE) return RE_STATUS_LIMIT;
+    skip_space(p);
+    {
+        /* Optional event type: consume the identifier unless it is exactly
+         * "from" (the source keyword); anything else becomes the type. */
+        size_t checkpoint = p->at;
+        size_t probe = p->at;
+        while (probe < p->size && (isalnum((unsigned char)p->text[probe]) ||
+               p->text[probe] == '_')) ++probe;
+        if (probe != checkpoint &&
+            !(probe - checkpoint == 4u && memcmp(p->text + checkpoint, "from", 4u) == 0)) {
+            type_start = checkpoint;
+            type_size = probe - checkpoint;
+            p->at = probe;
+        }
+    }
+    if (!word(p, "from") || !word(p, "stream") || !take(p, '(')) return RE_STATUS_PARSE_ERROR;
+    skip_space(p);
+    if (p->at >= p->size || p->text[p->at] != '"') return RE_STATUS_PARSE_ERROR;
+    ++p->at;
+    name_start = p->at;
+    while (p->at < p->size && p->text[p->at] != '"') ++p->at;
+    if (p->at == p->size || p->at == name_start) return RE_STATUS_PARSE_ERROR;
+    name_size = p->at - name_start;
+    ++p->at; /* the closing quote */
+    skip_space(p);
+    if (!take(p, ')')) return RE_STATUS_PARSE_ERROR;
+    value->kind = RE_EXPR_STREAM_PATTERN;
+    /* The left operand's ARITHMETIC kind is a sentinel, not a real operand:
+     * the backward compatibility evaluator and the bind machine's shape
+     * probe reject arithmetic-shaped condition operands honestly
+     * (RE_STATUS_NOT_SUPPORTED / unsupported shape), so the node can never
+     * fall through those evaluators' zeroed-literal path and answer the
+     * unconditional RE_COMPARE_TRUE. See the payload comment in
+     * re_internal.h. */
+    value->left.kind = RE_OPERAND_ARITHMETIC;
+    if (re_copy_string(p->allocator, (re_string_t){p->text + var_start, var_size},
+                       &value->stream_var) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    value->stream_var_size = var_size;
+    if (re_copy_string(p->allocator, (re_string_t){p->text + name_start, name_size},
+                       &value->stream_name) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+    value->stream_name_size = name_size;
+    if (type_size != 0u) {
+        if (re_copy_string(p->allocator, (re_string_t){p->text + type_start, type_size},
+                           &value->stream_event_type) != RE_STATUS_OK) return RE_STATUS_OUT_OF_MEMORY;
+        value->stream_event_type_size = type_size;
+        value->stream_has_event_type = 1;
+    }
+    p->stream_var[p->stream_var_count] = p->text + var_start;
+    p->stream_var_size[p->stream_var_count] = var_size;
+    ++p->stream_var_count;
+    skip_space(p);
+    if (word(p, "over")) {
+        size_t kind_start;
+        size_t kind_size;
+        if (!word(p, "window") || !take(p, '(')) return RE_STATUS_PARSE_ERROR;
+        if (stream_window_duration(p, &value->stream_window_duration_ms) != RE_STATUS_OK)
+            return RE_STATUS_PARSE_ERROR;
+        if (!take(p, ',')) return RE_STATUS_PARSE_ERROR;
+        skip_space(p);
+        kind_start = p->at;
+        while (p->at < p->size && isalpha((unsigned char)p->text[p->at])) ++p->at;
+        kind_size = p->at - kind_start;
+        if (kind_size == 7u && memcmp(p->text + kind_start, "sliding", 7u) == 0)
+            value->stream_window_kind = RE_STREAM_WINDOW_SLIDING;
+        else if (kind_size == 8u && memcmp(p->text + kind_start, "tumbling", 8u) == 0)
+            value->stream_window_kind = RE_STREAM_WINDOW_TUMBLING;
+        else if (kind_size == 7u && memcmp(p->text + kind_start, "session", 7u) == 0)
+            value->stream_window_kind = RE_STREAM_WINDOW_SESSION; /* local extension */
+        else return RE_STATUS_PARSE_ERROR;
+        skip_space(p);
+        if (!take(p, ')')) return RE_STATUS_PARSE_ERROR;
+        value->stream_has_window = 1;
+    }
+    return RE_STATUS_OK;
+}
+
 static re_status_t expression(parser_t *p, re_expr_t **out) {
     re_expr_t **values = NULL;
     expression_operator_t *operators = NULL;
     size_t value_count = 0u, operator_count = 0u, capacity = 0u;
     size_t terms = 0u;
     size_t typed_base = p->typed_depth;
+    size_t stream_var_base = p->stream_var_count;
     int expect_value = 1;
     re_status_t status = RE_STATUS_OK;
     re_expr_t *value = NULL;
@@ -1023,6 +1224,17 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
                 memset(value, 0, sizeof(*value));
                 value->kind = RE_EXPR_ACCUMULATE;
                 status = accumulate_form(p, value);
+            } else if (stream_pattern_ahead(p)) {
+                /* C3 stream-pattern CE var: Type from stream("name")
+                 * [over window(...)] (upstream stream_syntax.rs
+                 * parse_stream_pattern): a self-contained condition atom
+                 * whose evaluation is gated RE_STATUS_NOT_SUPPORTED until
+                 * C5 wires it. The common error path below destroys value. */
+                if (++terms > RE_MAX_EXPRESSION_TERMS) { status = RE_STATUS_LIMIT; break; }
+                value = re_alloc(p->allocator, sizeof(*value));
+                if (value == NULL) { status = RE_STATUS_OUT_OF_MEMORY; break; }
+                memset(value, 0, sizeof(*value));
+                status = stream_pattern_form(p, value);
             } else if (p->at + 1u < p->size && p->text[p->at] == '(' &&
                 (isdigit((unsigned char)p->text[p->at + 1u]) || p->text[p->at + 1u] == '.')) {
                 value = re_alloc(p->allocator, sizeof(*value));
@@ -1210,6 +1422,7 @@ static re_status_t expression(parser_t *p, re_expr_t **out) {
         status = expression_apply(p->allocator, operators[--operator_count], values, &value_count);
     }
     p->typed_depth = typed_base;
+    p->stream_var_count = stream_var_base;
     if (status == RE_STATUS_OK && (expect_value || value_count != 1u)) status = RE_STATUS_PARSE_ERROR;
     if (status == RE_STATUS_OK) { *out = values[0]; values[0] = NULL; }
     while (value_count != 0u) re_expr_destroy(p->allocator, values[--value_count]);
@@ -1596,7 +1809,7 @@ re_status_t re_program_load(const re_allocator_t *allocator, re_string_t source,
     { re_status_t status = re_copy_string(&a, source, &program->source);
       if (status != RE_STATUS_OK) { re_free(&a, program); return status; } }
     program->source_size = source.size;
-    p.text = program->source; p.size = program->source_size; p.at = 0u; p.allocator = &a; p.allow_dollar = 0; p.typed_depth = 0u;
+    p.text = program->source; p.size = program->source_size; p.at = 0u; p.allocator = &a; p.allow_dollar = 0; p.typed_depth = 0u; p.stream_var_count = 0u;
     while (p.at < p.size) {
         if (word(&p, "defmodule")) {
             size_t start; char *module_name = NULL; size_t module_size = 0u;

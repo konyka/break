@@ -57,6 +57,12 @@ int re_condition_is_pure(const re_expr_t *expr) {
      * function-call condition (first-pass-only evaluation, never on
      * executor workers). */
     if (expr->kind == RE_EXPR_TEST) return 0;
+    /* C5: stream-pattern CEs read externally-mutated window state, not the
+     * fact store, so they are impure like the other RETE-ineligible forms
+     * (A6/A8/A9): first-pass-only evaluation on the linear path, never on
+     * executor workers, and no pop-time revalidation. (The NULL-child
+     * fallthrough below already answered 0; this pins it deliberately.) */
+    if (expr->kind == RE_EXPR_STREAM_PATTERN) return 0;
     /* A9: the typed form evaluates its inner condition per candidate -
      * pure iff the inner is pure (like the parenthesized quantifiers). */
     if (expr->kind == RE_EXPR_TYPED) return re_condition_is_pure(expr->first);
@@ -850,7 +856,7 @@ re_engine_t *re_engine_create(const re_allocator_t *allocator, const re_limits_t
     re_allocator_impl_t a; re_engine_t *engine; re_allocator_init(&a, allocator);
     if (a.api.alloc == NULL || a.api.realloc == NULL || a.api.free == NULL) return NULL;
     engine = re_alloc(&a, sizeof(*engine)); if (engine == NULL) return NULL;
-    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; engine->random_state = RE_BUILTIN_RANDOM_SEED; return engine;
+    engine->allocator = a; engine->limits = limits != NULL ? *limits : re_default_limits(); engine->program = NULL; engine->running = 0; engine->destroy_requested = 0; engine->functions = NULL; engine->executor = NULL; engine->rete_network = NULL; engine->rete_networks = NULL; engine->rete_network_count = 0u; engine->agenda = NULL; engine->proof_graph = NULL; engine->config_serial = 0u; engine->random_state = RE_BUILTIN_RANDOM_SEED; engine->stream_registry_count = 0u; return engine;
 }
 
 /* rete_network mirrors the first attached per-rule network (lowest rule
@@ -942,6 +948,7 @@ static void free_agenda_state(const re_allocator_impl_t *allocator, size_t *indi
     re_free(allocator, fired_no_loop); re_free(allocator, indices);
 }
 void re_engine_destroy(re_engine_t *engine) {
+    size_t stream_index;
     if (engine == NULL) return;
     if (engine->running) { engine->destroy_requested = 1; return; }
     re_executor_destroy(engine->executor);
@@ -951,6 +958,11 @@ void re_engine_destroy(re_engine_t *engine) {
     while (engine->functions != NULL) { re_function_t *function = engine->functions; engine->functions = function->next; if (function->release != NULL) function->release(function->context); re_free(&engine->allocator, function->name); re_free(&engine->allocator, function); }
     re_proof_graph_destroy(engine->proof_graph);
     engine->proof_graph = NULL;
+    /* C5: release the registry's owned name copies only - registered windows
+     * are borrowed handles and stay the host's to destroy. */
+    for (stream_index = 0u; stream_index < engine->stream_registry_count; ++stream_index)
+        re_free(&engine->allocator, engine->stream_registry[stream_index].name);
+    engine->stream_registry_count = 0u;
     re_program_destroy(engine->program); re_free(&engine->allocator, engine);
 }
 re_capabilities_t re_engine_capabilities(const re_engine_t *engine) { return engine == NULL ? 0u : RE_CAP_CORE_GRL | RE_CAP_FACTS | RE_CAP_FORWARD_EXECUTION; }

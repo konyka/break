@@ -58,7 +58,7 @@ static int smoke_window_and_provider(uint32_t *state) {
     re_value_t value = {RE_VALUE_INT64, {.int64_value = (int64_t)next_value(state)}};
     re_stream_window_options_t window_options = {
         sizeof(window_options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 100u, 8u, 256u, 10u};
+        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 100u, 8u, 256u, 10u, 0u};
     re_memory_provider_options_t provider_options = {
         sizeof(provider_options), RE_STATE_PROVIDER_ABI_VERSION,
         4u, 32u, 64u, NULL, NULL};
