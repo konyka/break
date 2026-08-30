@@ -66,31 +66,47 @@ Goal: every upstream GRL construct parses and evaluates.
    and closes the remaining gaps (or documents any final residual as
    unsupported with a reason).
 
-## Sub-project B — RETE / TMS / unification depth
+## Sub-project B — RETE / TMS / unification depth (re-scoped 2026-08-29 after source-level research)
 
-Goal: the matching core and truth maintenance reach upstream shape.
+Source-level research against tag f80a541 proved that several upstream
+"families" are vapor or dead code: there is NO real cross-rule RETE network
+(no shared alpha memories, no beta tokens in the execution path; "RETE-UL" is
+a per-rule boolean expression tree; the named BetaNode/TokenPool/NodeSharing
+utilities are unused by any engine); upstream's `Unifier` is never called by
+the backward search; upstream's integrated proof-graph caching is dead
+(fresh graph per query + insert/lookup key mismatch); the parallel engine's
+actions are no-ops and it is not wired into the main engine. Per the project
+evidence rule, vapor is NOT replicated. Sub-project B therefore targets
+everything upstream *actually has working*, closing the real deltas:
 
-1. **General incremental RETE**: one shared network per engine-facts pair:
-   shared alpha memories across rules (keyed by condition signature), beta
-   joins with incremental (per-fact-event) token propagation instead of
-   full rebuild, per-rule production nodes feeding the agenda. Replaces the
-   per-rule private networks internally; the public
-   `re_engine_rete_network` seam keeps working. Existing bounds (≤8
-   conditions) are lifted to a documented higher cap with graceful
-   linear-evaluator fallback beyond it.
-2. **General TMS**: justifications on any derivation depth, multi-producer
-   already exists; add retraction of premises through derived-fact chains of
-   arbitrary depth, and non-logical overrides (explicit set beats logical)
-   with documented precedence.
-3. **Arbitrary unification in backward**: goals unifying variables on both
-   sides (`X == Y`, `X == Fact.field`, structured patterns), occurs-check
-   policy documented (upstream has no occurs check — mirror), shared
-   substitution environment across AND/OR branches.
-4. **Shared-subgraph producer provenance graph**: evolve the Task-14 result
-   cache into a real graph: nodes keyed by (goal, bindingshape), edges =
-   derivations, shared across queries, TMS-style invalidation propagation
-   through dependents (upstream `ProofGraph` semantics), while keeping the
-   existing result-cache behavior as the lookup layer.
+1. **TMS parity closure** (`src/rete/tms.rs` is real and tested): explicit
+   vs logical justification validity (explicit unconditionally valid),
+   per-premise-granular cascade retraction with cycle guard,
+   multi-justification facts, no re-derivation on new justifications.
+   Upstream's 12 TMS tests (tms.rs inline + tests/tms_test.rs) become local
+   parity cases.
+2. **Proof graph → real graph shape** (upstream `proof_graph.rs` API is real
+   and unit-tested; only its engine integration is dead): nodes keyed by
+   FactKey + handle, per-node justifications with per-premise invalidation
+   granularity, dependents propagation, generation counter, stats. The
+   existing local result cache stays as the lookup layer and gains the
+   graph's dependent-invalidation semantics.
+3. **Backward unification** (upstream `unification.rs` case table +
+   `?var` goal syntax): variable-on-either-side unification over goals,
+   sticky-consistent bindings (conflict → error), no occurs check
+   (documented upstream parity), wired into the backward machine so bound
+   values surface in proofs.
+4. **Agenda parity**: focus STACK (push/pop on group exhaustion),
+   `auto-focus` rule attribute, activation recency tie-break mapping.
+   Documented mapping note: local engine ≈ upstream RustRuleEngine +
+   BackwardEngine + streaming seams; ReteUlEngine/IncrementalEngine
+   engine-level quirks (100/1000 iteration caps, `<name>_fired` fact
+   insertion, no_loop-default-true, update-all-facts-of-type actions) are
+   documented as not replicated (upstream-degenerate).
+5. **Documented non-goals (upstream vapor, evidence in
+   docs/rule_engine_upstream.yml)**: cross-rule alpha sharing, beta token
+   propagation, ConflictResolutionStrategy beyond salience+recency,
+   ParallelRuleEngine action execution, RETE-UL accumulate value binding.
 
 ## Sub-project C — streaming completion
 
