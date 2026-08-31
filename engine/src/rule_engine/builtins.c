@@ -2,6 +2,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -115,7 +116,112 @@
  *                           joined (upstream argument order); fewer than 2
  *                           arguments is RE_STATUS_INVALID_ARGUMENT.
  *
- * Semantics notes (both families):
+ * D1 plugin-parity family (upstream f80a541 src/plugins/; upstream attaches
+ * them via engine.load_plugin - here they are name-dispatched built-ins, so
+ * a registered host function still overrides them: ir_eval.c consults the
+ * registry first). All are semantically PURE (deterministic from their
+ * arguments; no clock, RNG, or stdout) and stay under the blanket-impure
+ * condition classification of re_condition_is_pure like every function call.
+ * Upstream's CamelCase fact-mutating ACTION forms (ToUpperCase, ArrayPush,
+ * ObjectKeys, ...) are NOT replicated: these expression functions plus plain
+ * assignment cover them (the D4 conformance row documents the mapping).
+ * Array/object arguments arrive as bare fact paths (an RE_VALUE_NONE
+ * placeholder plus its captured path, resolved through
+ * re_facts_get_structured_path); GRL array literals are not function
+ * arguments (an ARRAY term is NOT_SUPPORTED in that position).
+ *
+ *   concat(a, b, ...)       string_utils.rs:148 - display forms joined with
+ *                           no separator; fewer than 2 arguments is
+ *                           RE_STATUS_INVALID_ARGUMENT (upstream's Err).
+ *                           Upstream's value_to_string errors on Null/Array/
+ *                           Object; here they stringify through the A4
+ *                           display form ("null"/"[Array]"/"[Object]") -
+ *                           documented divergence (consistency with
+ *                           log/format beats novelty).
+ *   repeat(text, n)         string_utils.rs:163 - n must be an Integer
+ *                           (anything else is INVALID_ARGUMENT); n < 0 or
+ *                           n > 1000 is RE_STATUS_LIMIT (upstream's
+ *                           "Repeat count too large" error; a negative i64
+ *                           wraps to a huge usize upstream and hits the same
+ *                           cap).
+ *   substring(text, start[, len]) string_utils.rs:190 - BYTE-based over the
+ *                           UTF-8 bytes (byte-vs-char documented: upstream
+ *                           slices bytes as well and PANICS on a
+ *                           non-codepoint boundary; the byte slice is
+ *                           returned as-is here). start < 0 wraps huge
+ *                           upstream (`*i as usize`) so it yields "" like an
+ *                           out-of-range start; len clamps to the text end
+ *                           (upstream min(start + len, len)); a negative len
+ *                           (a usize-wrap/panic corner upstream) is
+ *                           INVALID_ARGUMENT instead of replicated.
+ *   replace(text, from, to) string_utils.rs:129 StringReplace body
+ *                           (text.replace) as a function - ALL
+ *                           non-overlapping occurrences, left to right; an
+ *                           empty `from` inserts `to` at every byte boundary
+ *                           (upstream-exact). Wrong arity is
+ *                           INVALID_ARGUMENT.
+ *   sqrt(x)                 math_utils.rs:170 - DOUBLE result; x is a number
+ *                           or a fully-parsing numeric string (upstream
+ *                           value_to_number); a negative x is
+ *                           RE_STATUS_INVALID_ARGUMENT (upstream's Err).
+ *   first(x) / last(x)      collection_utils.rs:286/:308 - array fact: the
+ *                           first/last element (a nested structured element
+ *                           surfaces as its "[Array]"/"[Object]" display
+ *                           placeholder; scalar strings borrow fact storage
+ *                           like trim); a string: the first/last UTF-8
+ *                           codepoint (upstream chars()); an EMPTY array or
+ *                           string, an object, or any other scalar yields
+ *                           Null (upstream's unwrap_or(Value::Null) and
+ *                           `_ => Value::Null`) - NOT an error.
+ *   reverse(x)              collection_utils.rs:330 - array fact: the
+ *                           reversed elements as a debug string (the scalar
+ *                           function ABI cannot return an array; the split
+ *                           idiom: ["a", "b"] with strings quoted/escaped,
+ *                           other scalars in display form); a string:
+ *                           codepoint-reversed (upstream chars().rev());
+ *                           anything else: the argument unchanged (upstream
+ *                           `_ => args[0].clone()`; a structured object
+ *                           surfaces as "[Object]").
+ *   slice(arr, start[, end]) collection_utils.rs:372 - array only (anything
+ *                           else is INVALID_ARGUMENT, upstream's Err);
+ *                           start/end go through value_to_number then Rust's
+ *                           SATURATING f64 -> usize cast (NaN/negative -> 0),
+ *                           both clamped to the length; start > end yields
+ *                           the empty array. The result is the debug string
+ *                           form (split idiom).
+ *   keys(obj) / values(obj) collection_utils.rs:404/:421 - object fact: the
+ *                           member keys/values as a debug string in the local
+ *                           store's INSERTION order (upstream iterates a
+ *                           HashMap whose order is deliberately unspecified;
+ *                           the local order is pinned by test); a non-object
+ *                           yields "[]" (upstream's Ok(vec![])).
+ *   isEmail(x)              validation.rs:179 - hand-rolled equivalent of
+ *                           the upstream regex
+ *                           ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+ *                           (no regex engine is linked): exactly one '@', a
+ *                           1+ char local part in the first class, and a
+ *                           domain in the second class whose LAST dot is
+ *                           preceded by 1+ class chars and followed by 2+
+ *                           ASCII letters (the last-dot split is
+ *                           match-equivalent to the backtracking regex).
+ *   isPhone(x)              validation.rs:191 exact: 10-15 ASCII digits
+ *                           after stripping every non-digit.
+ *   isUrl(x)                validation.rs:203 exact: starts_with "http://",
+ *                           "https://", or "ftp://".
+ *   isNumeric(x)            validation.rs:215 - whole-string Rust f64
+ *                           FromStr grammar (optional sign; case-insensitive
+ *                           inf/infinity/nan; a mantissa with an optional dot
+ *                           and an optional [eE] exponent; no whitespace, hex,
+ *                           or underscore forms).
+ *   inRange(v, min, max)    validation.rs:246 - inclusive bounds over
+ *                           value_to_number arguments (numbers or fully-
+ *                           parsing numeric strings; anything else is
+ *                           INVALID_ARGUMENT, upstream's Err).
+ *   The validation five are predicate built-ins (bare whole-condition use
+ *   means fn(...) == true); their argument stringifies through the A4
+ *   display form (upstream value_to_string leniency).
+ *
+ * Semantics notes (all families):
  * - Display forms follow upstream types.rs Display for Value: strings raw,
  *   integers decimal, booleans true/false, null "null", structured values
  *   [Array]/[Object] (an RE_VALUE_NONE argument with a captured fact path is
@@ -166,7 +272,13 @@ int re_builtin_is(const char *name, size_t size) {
            name_is(key, "avg") || name_is(key, "average") ||
            name_is(key, "round") || name_is(key, "floor") || name_is(key, "ceil") ||
            name_is(key, "abs") || name_is(key, "lowercase") || name_is(key, "uppercase") ||
-           name_is(key, "trim") || name_is(key, "split") || name_is(key, "join");
+           name_is(key, "trim") || name_is(key, "split") || name_is(key, "join") ||
+           name_is(key, "concat") || name_is(key, "repeat") || name_is(key, "substring") ||
+           name_is(key, "replace") || name_is(key, "sqrt") ||
+           name_is(key, "first") || name_is(key, "last") || name_is(key, "reverse") ||
+           name_is(key, "slice") || name_is(key, "keys") || name_is(key, "values") ||
+           name_is(key, "isEmail") || name_is(key, "isPhone") || name_is(key, "isUrl") ||
+           name_is(key, "isNumeric") || name_is(key, "inRange");
 }
 /* Predicate built-ins return booleans; the parser lets them appear bare as a
  * whole condition, meaning fn(...) == true. */
@@ -174,7 +286,9 @@ int re_builtin_is_predicate(const char *name, size_t size) {
     re_string_t key = {name, size};
     return name_is(key, "isEmpty") || name_is(key, "is_empty") || name_is(key, "contains") ||
            name_is(key, "includes") || name_is(key, "startswith") || name_is(key, "endswith") ||
-           name_is(key, "exists") || is_negated_presence(key);
+           name_is(key, "exists") || is_negated_presence(key) ||
+           name_is(key, "isEmail") || name_is(key, "isPhone") || name_is(key, "isUrl") ||
+           name_is(key, "isNumeric") || name_is(key, "inRange");
 }
 /* A8 bare `name(args)` then-statement actions (upstream grl.rs action
  * builtins), case-sensitive upstream spellings. retract/log/
@@ -853,6 +967,535 @@ static re_status_t call_join(re_engine_t *engine, re_facts_t *facts, const re_va
     return sb_finish(&sb, engine, scratch, out);
 }
 
+/* ---- D1 plugin-parity family ------------------------------------------ */
+
+/* Quoted string with the Rust-debug escaping of call_split (", \, \n, \r,
+ * \t); used by the array-result debug strings below. */
+static void sb_append_debug_string(re_strbuf_t *sb, const char *data, size_t size) {
+    size_t i;
+    sb_append_char(sb, '"');
+    for (i = 0u; i < size; ++i) {
+        char c = data[i];
+        if (c == '"' || c == '\\') {
+            sb_append_char(sb, '\\');
+            sb_append_char(sb, c);
+        } else if (c == '\n') {
+            sb_append_cstr(sb, "\\n");
+        } else if (c == '\r') {
+            sb_append_cstr(sb, "\\r");
+        } else if (c == '\t') {
+            sb_append_cstr(sb, "\\t");
+        } else {
+            sb_append_char(sb, c);
+        }
+    }
+    sb_append_char(sb, '"');
+}
+/* Element rendering for the array-result debug strings (the split idiom):
+ * strings quoted/escaped, other scalars in display form, nested structured
+ * members as [Array]/[Object]. */
+static void sb_append_debug_value(re_strbuf_t *sb, const re_facts_t *facts,
+                                  const re_value_t *value, const re_value_handle_t *child) {
+    re_string_t no_path = {NULL, 0u};
+    if (child != NULL) {
+        sb_append_cstr(sb, child->kind == 2 ? "[Array]" : "[Object]");
+        return;
+    }
+    if (value->type == RE_VALUE_STRING) {
+        sb_append_debug_string(sb, value->as.string.data, value->as.string.size);
+        return;
+    }
+    sb_append_value(sb, facts, value, no_path);
+}
+/* Resolves a bare fact-path argument (an RE_VALUE_NONE placeholder with a
+ * captured path) to its structured handle; returns 1 on success. */
+static int structured_arg(const re_facts_t *facts, const re_value_t *arg, re_string_t path,
+                          const re_value_handle_t **out) {
+    if (arg->type != RE_VALUE_NONE || path.data == NULL || path.size == 0u) return 0;
+    return re_facts_get_structured_path(facts, path, out) == RE_STATUS_OK;
+}
+/* UTF-8 codepoint byte length from the lead byte; continuation and invalid
+ * lead bytes count as 1 so malformed input still terminates. The string arms
+ * of first/last/reverse are codepoint-based like upstream's chars(); the
+ * continuation bytes themselves are never validated (documented). */
+static size_t utf8_cp_len(unsigned char lead) {
+    if (lead < 0x80u) return 1u;
+    if (lead < 0xC0u) return 1u;
+    if (lead < 0xE0u) return 2u;
+    if (lead < 0xF0u) return 3u;
+    if (lead < 0xF8u) return 4u;
+    return 1u;
+}
+static int ci_word_match(const char *data, size_t size, const char *word) {
+    size_t i;
+    if (strlen(word) != size) return 0;
+    for (i = 0u; i < size; ++i)
+        if (tolower((unsigned char)data[i]) != word[i]) return 0;
+    return 1;
+}
+/* Whole-string Rust f64 FromStr grammar (upstream validation.rs:215
+ * text.parse::<f64>() and the plugins' value_to_number string arm): an
+ * optional sign, then case-insensitive inf/infinity/nan or a decimal
+ * mantissa (Digit+ | Digit+ "." Digit* | "." Digit+) with an optional
+ * [eE][sign]Digit+ exponent; no whitespace, hex, or underscore forms.
+ * RE_STATUS_OK when the WHOLE text matches (*out receives the value when
+ * non-NULL; overflow to +-inf is a successful parse, matching Rust),
+ * RE_STATUS_INVALID_ARGUMENT when it does not. */
+static re_status_t rust_f64_parse(const re_allocator_impl_t *allocator, re_string_t text,
+                                  double *out) {
+    size_t i = 0u;
+    size_t mantissa_digits = 0u;
+    int negative = 0;
+    int valid;
+    if (text.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    if (text.data[0] == '+' || text.data[0] == '-') {
+        negative = text.data[0] == '-';
+        i = 1u;
+    }
+    if (ci_word_match(text.data + i, text.size - i, "nan")) {
+        if (out != NULL) *out = NAN; /* the sign of a NaN is unobservable here */
+        return RE_STATUS_OK;
+    }
+    if (ci_word_match(text.data + i, text.size - i, "inf") ||
+        ci_word_match(text.data + i, text.size - i, "infinity")) {
+        if (out != NULL) *out = negative ? -HUGE_VAL : HUGE_VAL;
+        return RE_STATUS_OK;
+    }
+    while (i < text.size && isdigit((unsigned char)text.data[i])) { ++i; ++mantissa_digits; }
+    if (i < text.size && text.data[i] == '.') {
+        ++i;
+        while (i < text.size && isdigit((unsigned char)text.data[i])) { ++i; ++mantissa_digits; }
+    }
+    valid = mantissa_digits != 0u;
+    if (valid && i < text.size && (text.data[i] == 'e' || text.data[i] == 'E')) {
+        size_t exponent_digits = 0u;
+        ++i;
+        if (i < text.size && (text.data[i] == '+' || text.data[i] == '-')) ++i;
+        while (i < text.size && isdigit((unsigned char)text.data[i])) { ++i; ++exponent_digits; }
+        valid = exponent_digits != 0u;
+    }
+    if (!valid || i != text.size) return RE_STATUS_INVALID_ARGUMENT;
+    if (out == NULL) return RE_STATUS_OK;
+    /* strtod needs a NUL-terminated copy. */
+    {
+        char stack_buf[64];
+        char *buf = stack_buf;
+        double parsed;
+        if (text.size >= sizeof(stack_buf)) {
+            buf = re_alloc(allocator, text.size + 1u);
+            if (buf == NULL) return RE_STATUS_OUT_OF_MEMORY;
+        }
+        memcpy(buf, text.data, text.size);
+        buf[text.size] = '\0';
+        parsed = strtod(buf, NULL);
+        if (buf != stack_buf) re_free(allocator, buf);
+        *out = parsed;
+    }
+    return RE_STATUS_OK;
+}
+/* The plugins' value_to_number arm set (f80a541 math_utils.rs /
+ * validation.rs helpers): Number/Integer directly, a String through the
+ * Rust f64 grammar, anything else is upstream's Err. */
+static re_status_t plugin_number(const re_allocator_impl_t *allocator, const re_value_t *value,
+                                 double *out) {
+    if (value->type == RE_VALUE_DOUBLE) {
+        *out = value->as.double_value;
+        return RE_STATUS_OK;
+    }
+    if (value->type == RE_VALUE_INT64) {
+        *out = (double)value->as.int64_value;
+        return RE_STATUS_OK;
+    }
+    if (value->type == RE_VALUE_STRING)
+        return rust_f64_parse(allocator, value->as.string, out);
+    return RE_STATUS_INVALID_ARGUMENT;
+}
+
+static re_status_t call_concat(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                               const re_string_t *arg_fact_paths, size_t argc,
+                               re_eval_scratch_t *scratch, re_value_t *out) {
+    re_strbuf_t sb;
+    re_string_t piece;
+    re_status_t status;
+    size_t i;
+    if (argc < 2u) return RE_STATUS_INVALID_ARGUMENT;
+    sb_init(&sb, &engine->allocator);
+    for (i = 0u; i < argc; ++i) {
+        status = value_to_string(engine, facts, &args[i], arg_path(arg_fact_paths, i), scratch, &piece);
+        if (status != RE_STATUS_OK) {
+            re_free(&engine->allocator, sb.data);
+            return status;
+        }
+        sb_append(&sb, piece.data, piece.size);
+    }
+    return sb_finish(&sb, engine, scratch, out);
+}
+static re_status_t call_repeat(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                               const re_string_t *arg_fact_paths, size_t argc,
+                               re_eval_scratch_t *scratch, re_value_t *out) {
+    re_string_t text_str;
+    re_strbuf_t sb;
+    re_status_t status;
+    int64_t count;
+    int64_t i;
+    if (argc != 2u) return RE_STATUS_INVALID_ARGUMENT;
+    status = value_to_string(engine, facts, &args[0], arg_path(arg_fact_paths, 0u), scratch, &text_str);
+    if (status != RE_STATUS_OK) return status;
+    if (args[1].type != RE_VALUE_INT64) return RE_STATUS_INVALID_ARGUMENT;
+    count = args[1].as.int64_value;
+    if (count < 0 || count > 1000) return RE_STATUS_LIMIT;
+    sb_init(&sb, &engine->allocator);
+    for (i = 0; i < count; ++i) sb_append(&sb, text_str.data, text_str.size);
+    return sb_finish(&sb, engine, scratch, out);
+}
+static re_status_t call_substring(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                                  const re_string_t *arg_fact_paths, size_t argc,
+                                  re_eval_scratch_t *scratch, re_value_t *out) {
+    re_string_t text_str;
+    re_status_t status;
+    size_t start;
+    size_t end;
+    if (argc < 2u || argc > 3u) return RE_STATUS_INVALID_ARGUMENT;
+    status = value_to_string(engine, facts, &args[0], arg_path(arg_fact_paths, 0u), scratch, &text_str);
+    if (status != RE_STATUS_OK) return status;
+    if (args[1].type != RE_VALUE_INT64) return RE_STATUS_INVALID_ARGUMENT;
+    /* Upstream start = *i as usize: a negative start wraps huge, so it lands
+     * on the same start >= text.len() early-out as an out-of-range start. */
+    if (args[1].as.int64_value < 0 || (uint64_t)args[1].as.int64_value >= text_str.size) {
+        out->type = RE_VALUE_STRING;
+        out->as.string.data = "";
+        out->as.string.size = 0u;
+        return RE_STATUS_OK;
+    }
+    start = (size_t)args[1].as.int64_value;
+    if (argc == 3u) {
+        if (args[2].type != RE_VALUE_INT64) return RE_STATUS_INVALID_ARGUMENT;
+        /* Upstream end = min(start + (*i as usize), len): a negative length
+         * wraps into a usize-overflow/panic corner; rejected instead of
+         * replicated (documented). */
+        if (args[2].as.int64_value < 0) return RE_STATUS_INVALID_ARGUMENT;
+        end = (uint64_t)args[2].as.int64_value > text_str.size - start
+                  ? text_str.size
+                  : start + (size_t)args[2].as.int64_value;
+    } else {
+        end = text_str.size;
+    }
+    /* The result borrows the (borrowed or scratch-owned) argument text. */
+    out->type = RE_VALUE_STRING;
+    out->as.string.data = text_str.data + start;
+    out->as.string.size = end - start;
+    return RE_STATUS_OK;
+}
+static re_status_t call_replace(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                                const re_string_t *arg_fact_paths, size_t argc,
+                                re_eval_scratch_t *scratch, re_value_t *out) {
+    re_string_t text_str;
+    re_string_t from;
+    re_string_t to;
+    re_strbuf_t sb;
+    re_status_t status;
+    size_t pos = 0u;
+    size_t i;
+    if (argc != 3u) return RE_STATUS_INVALID_ARGUMENT;
+    status = value_to_string(engine, facts, &args[0], arg_path(arg_fact_paths, 0u), scratch, &text_str);
+    if (status != RE_STATUS_OK) return status;
+    status = value_to_string(engine, facts, &args[1], arg_path(arg_fact_paths, 1u), scratch, &from);
+    if (status != RE_STATUS_OK) return status;
+    status = value_to_string(engine, facts, &args[2], arg_path(arg_fact_paths, 2u), scratch, &to);
+    if (status != RE_STATUS_OK) return status;
+    sb_init(&sb, &engine->allocator);
+    if (from.size == 0u) {
+        /* Rust str::replace with an empty pattern matches at every character
+         * boundary: "ab".replace("", "-") is "-a-b-", and a multi-byte
+         * codepoint is never split (upstream-exact). */
+        i = 0u;
+        while (i < text_str.size) {
+            size_t len = utf8_cp_len((unsigned char)text_str.data[i]);
+            if (len > text_str.size - i) len = text_str.size - i;
+            sb_append(&sb, to.data, to.size);
+            sb_append(&sb, text_str.data + i, len);
+            i += len;
+        }
+        sb_append(&sb, to.data, to.size);
+    } else {
+        for (i = 0u; i + from.size <= text_str.size;) {
+            if (memcmp(text_str.data + i, from.data, from.size) == 0) {
+                sb_append(&sb, text_str.data + pos, i - pos);
+                sb_append(&sb, to.data, to.size);
+                i += from.size;
+                pos = i;
+            } else {
+                ++i;
+            }
+        }
+        sb_append(&sb, text_str.data + pos, text_str.size - pos);
+    }
+    return sb_finish(&sb, engine, scratch, out);
+}
+static re_status_t call_sqrt(re_engine_t *engine, const re_value_t *args, size_t argc,
+                             re_value_t *out) {
+    double v;
+    re_status_t status;
+    if (argc != 1u) return RE_STATUS_INVALID_ARGUMENT;
+    status = plugin_number(&engine->allocator, &args[0], &v);
+    if (status != RE_STATUS_OK) return status;
+    /* math_utils.rs:170: a negative input is upstream's EvaluationError. */
+    if (v < 0.0) return RE_STATUS_INVALID_ARGUMENT;
+    out->type = RE_VALUE_DOUBLE;
+    out->as.double_value = sqrt(v);
+    return RE_STATUS_OK;
+}
+static re_status_t call_first_last(const re_facts_t *facts, const re_value_t *args,
+                                   const re_string_t *arg_fact_paths, size_t argc,
+                                   int last, re_value_t *out) {
+    const re_value_handle_t *structured = NULL;
+    if (argc != 1u) return RE_STATUS_INVALID_ARGUMENT;
+    if (structured_arg(facts, &args[0], arg_path(arg_fact_paths, 0u), &structured)) {
+        const re_value_member_t *member;
+        /* Objects (and unresolvable paths below) fall to the Null rule. */
+        if (structured->kind != 2 || structured->count == 0u) {
+            out->type = RE_VALUE_NULL;
+            return RE_STATUS_OK;
+        }
+        member = &structured->members[last ? structured->count - 1u : 0u];
+        if (member->child != NULL) {
+            /* A nested structured element has no scalar surface: the display
+             * placeholder stands in (documented). */
+            const char *placeholder = member->child->kind == 2 ? "[Array]" : "[Object]";
+            out->type = RE_VALUE_STRING;
+            out->as.string.data = placeholder;
+            out->as.string.size = strlen(placeholder);
+            return RE_STATUS_OK;
+        }
+        *out = member->scalar; /* borrows fact-owned strings, like call_trim */
+        return RE_STATUS_OK;
+    }
+    if (args[0].type == RE_VALUE_STRING && args[0].as.string.size != 0u) {
+        re_string_t s = args[0].as.string;
+        if (!last) {
+            size_t len = utf8_cp_len((unsigned char)s.data[0]);
+            if (len > s.size) len = s.size;
+            out->type = RE_VALUE_STRING;
+            out->as.string.data = s.data;
+            out->as.string.size = len;
+        } else {
+            size_t i = 0u;
+            size_t start = 0u;
+            size_t len = 1u;
+            while (i < s.size) {
+                len = utf8_cp_len((unsigned char)s.data[i]);
+                if (len > s.size - i) len = s.size - i;
+                start = i;
+                i += len;
+            }
+            out->type = RE_VALUE_STRING;
+            out->as.string.data = s.data + start;
+            out->as.string.size = len;
+        }
+        return RE_STATUS_OK;
+    }
+    /* collection_utils.rs:286/:308 `_ => Value::Null` (and the empty cases). */
+    out->type = RE_VALUE_NULL;
+    return RE_STATUS_OK;
+}
+static re_status_t call_reverse(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                                const re_string_t *arg_fact_paths, size_t argc,
+                                re_eval_scratch_t *scratch, re_value_t *out) {
+    const re_value_handle_t *structured = NULL;
+    re_strbuf_t sb;
+    size_t i;
+    if (argc != 1u) return RE_STATUS_INVALID_ARGUMENT;
+    if (structured_arg(facts, &args[0], arg_path(arg_fact_paths, 0u), &structured)) {
+        if (structured->kind != 2) {
+            /* Upstream's identity arm would return the object itself; the
+             * display placeholder stands in (documented). */
+            out->type = RE_VALUE_STRING;
+            out->as.string.data = "[Object]";
+            out->as.string.size = 8u;
+            return RE_STATUS_OK;
+        }
+        sb_init(&sb, &engine->allocator);
+        sb_append_char(&sb, '[');
+        for (i = structured->count; i != 0u; --i) {
+            const re_value_member_t *member = &structured->members[i - 1u];
+            if (i != structured->count) sb_append_cstr(&sb, ", ");
+            sb_append_debug_value(&sb, facts, &member->scalar, member->child);
+        }
+        sb_append_char(&sb, ']');
+        return sb_finish(&sb, engine, scratch, out);
+    }
+    if (args[0].type == RE_VALUE_STRING) {
+        /* chars().rev(): reverse whole codepoint byte sequences (a lead byte
+         * is found by walking back over 10xxxxxx continuation bytes, bounded
+         * at 4, so malformed input still terminates). */
+        re_string_t s = args[0].as.string;
+        sb_init(&sb, &engine->allocator);
+        i = s.size;
+        while (i != 0u) {
+            size_t start = i - 1u;
+            while (start != 0u && ((unsigned char)s.data[start] & 0xC0u) == 0x80u &&
+                   i - start < 4u)
+                --start;
+            sb_append(&sb, s.data + start, i - start);
+            i = start;
+        }
+        return sb_finish(&sb, engine, scratch, out);
+    }
+    /* collection_utils.rs:330 `_ => args[0].clone()`: scalar identity. */
+    *out = args[0];
+    return RE_STATUS_OK;
+}
+/* f64 -> index with Rust's saturating `as usize` cast
+ * (collection_utils.rs:372 value_to_number(...) as usize) folded with the
+ * upstream .min(arr.len()): NaN and negatives become 0, anything at/above
+ * the length becomes the length, and in-range values truncate. */
+static size_t rust_sat_index(double d, size_t count) {
+    if (!(d > 0.0)) return 0u;
+    if (d >= (double)count) return count;
+    return (size_t)d;
+}
+static re_status_t call_slice(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                              const re_string_t *arg_fact_paths, size_t argc,
+                              re_eval_scratch_t *scratch, re_value_t *out) {
+    const re_value_handle_t *array = NULL;
+    re_strbuf_t sb;
+    re_status_t status;
+    double d;
+    size_t start;
+    size_t end;
+    size_t i;
+    if (argc < 2u || argc > 3u) return RE_STATUS_INVALID_ARGUMENT;
+    /* Upstream errors unless the first argument is an array. */
+    if (!structured_arg(facts, &args[0], arg_path(arg_fact_paths, 0u), &array) ||
+        array->kind != 2)
+        return RE_STATUS_INVALID_ARGUMENT;
+    status = plugin_number(&engine->allocator, &args[1], &d);
+    if (status != RE_STATUS_OK) return status;
+    start = rust_sat_index(d, array->count);
+    if (argc == 3u) {
+        status = plugin_number(&engine->allocator, &args[2], &d);
+        if (status != RE_STATUS_OK) return status;
+        end = rust_sat_index(d, array->count);
+    } else {
+        end = array->count;
+    }
+    sb_init(&sb, &engine->allocator);
+    sb_append_char(&sb, '[');
+    if (start <= end) /* start > end yields the empty array upstream */
+        for (i = start; i < end; ++i) {
+            if (i != start) sb_append_cstr(&sb, ", ");
+            sb_append_debug_value(&sb, facts, &array->members[i].scalar, array->members[i].child);
+        }
+    sb_append_char(&sb, ']');
+    return sb_finish(&sb, engine, scratch, out);
+}
+static re_status_t call_keys_values(re_engine_t *engine, re_facts_t *facts, const re_value_t *args,
+                                    const re_string_t *arg_fact_paths, size_t argc,
+                                    int want_values, re_eval_scratch_t *scratch, re_value_t *out) {
+    const re_value_handle_t *structured = NULL;
+    re_strbuf_t sb;
+    size_t i;
+    int is_object;
+    if (argc != 1u) return RE_STATUS_INVALID_ARGUMENT;
+    is_object = structured_arg(facts, &args[0], arg_path(arg_fact_paths, 0u), &structured) &&
+                structured->kind == 1;
+    sb_init(&sb, &engine->allocator);
+    sb_append_char(&sb, '[');
+    /* Member (insertion) order; a non-object yields "[]" (upstream's
+     * Ok(Value::Array(vec![])) for keys/values on anything but an Object). */
+    if (is_object)
+        for (i = 0u; i < structured->count; ++i) {
+            const re_value_member_t *member = &structured->members[i];
+            if (i != 0u) sb_append_cstr(&sb, ", ");
+            if (want_values)
+                sb_append_debug_value(&sb, facts, &member->scalar, member->child);
+            else
+                sb_append_debug_string(&sb, member->key, member->key_size);
+        }
+    sb_append_char(&sb, ']');
+    return sb_finish(&sb, engine, scratch, out);
+}
+
+static int email_local_char(char c) {
+    return isalnum((unsigned char)c) || c == '.' || c == '_' || c == '%' || c == '+' || c == '-';
+}
+static int email_domain_char(char c) {
+    return isalnum((unsigned char)c) || c == '.' || c == '-';
+}
+/* Hand-rolled equivalent of the f80a541 email regex (validation.rs:179 via
+ * the :11-13 pattern ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$): the
+ * last-dot split is match-equivalent to the backtracking regex because '.'
+ * is itself in the domain class and the TLD must be all-alpha. */
+static int is_valid_email_local(re_string_t s) {
+    size_t i;
+    size_t at = s.size;
+    size_t last_dot = s.size;
+    for (i = 0u; i < s.size; ++i)
+        if (s.data[i] == '@') {
+            if (at != s.size) return 0;
+            at = i;
+        }
+    if (at == s.size || at == 0u || at + 1u >= s.size) return 0;
+    for (i = 0u; i < at; ++i)
+        if (!email_local_char(s.data[i])) return 0;
+    for (i = at + 1u; i < s.size; ++i) {
+        if (!email_domain_char(s.data[i])) return 0;
+        if (s.data[i] == '.') last_dot = i;
+    }
+    if (last_dot == s.size) return 0;      /* no dot in the domain */
+    if (last_dot == at + 1u) return 0;     /* the class+ before the dot is empty */
+    if (s.size - last_dot - 1u < 2u) return 0; /* the TLD is shorter than 2 */
+    for (i = last_dot + 1u; i < s.size; ++i)
+        if (!isalpha((unsigned char)s.data[i])) return 0;
+    return 1;
+}
+/* validation.rs:191 is_valid_phone exact. */
+static int is_valid_phone_local(re_string_t s) {
+    size_t i;
+    size_t digits = 0u;
+    for (i = 0u; i < s.size; ++i)
+        if (isdigit((unsigned char)s.data[i])) ++digits;
+    return digits >= 10u && digits <= 15u;
+}
+/* validation.rs:203 is_valid_url exact. */
+static int is_valid_url_local(re_string_t s) {
+    return (s.size >= 7u && memcmp(s.data, "http://", 7u) == 0) ||
+           (s.size >= 8u && memcmp(s.data, "https://", 8u) == 0) ||
+           (s.size >= 6u && memcmp(s.data, "ftp://", 6u) == 0);
+}
+static re_status_t call_validation_pred(re_engine_t *engine, re_facts_t *facts,
+                                        const re_value_t *args,
+                                        const re_string_t *arg_fact_paths, size_t argc, int kind,
+                                        re_eval_scratch_t *scratch, re_value_t *out) {
+    re_string_t s;
+    re_status_t status;
+    int valid;
+    if (argc != 1u) return RE_STATUS_INVALID_ARGUMENT;
+    status = value_to_string(engine, facts, &args[0], arg_path(arg_fact_paths, 0u), scratch, &s);
+    if (status != RE_STATUS_OK) return status;
+    if (kind == 0) valid = is_valid_email_local(s);
+    else if (kind == 1) valid = is_valid_phone_local(s);
+    else if (kind == 2) valid = is_valid_url_local(s);
+    else valid = rust_f64_parse(&engine->allocator, s, NULL) == RE_STATUS_OK;
+    return bool_result(out, valid);
+}
+static re_status_t call_in_range(re_engine_t *engine, const re_value_t *args, size_t argc,
+                                 re_value_t *out) {
+    double v;
+    double lo;
+    double hi;
+    re_status_t status;
+    if (argc != 3u) return RE_STATUS_INVALID_ARGUMENT;
+    status = plugin_number(&engine->allocator, &args[0], &v);
+    if (status != RE_STATUS_OK) return status;
+    status = plugin_number(&engine->allocator, &args[1], &lo);
+    if (status != RE_STATUS_OK) return status;
+    status = plugin_number(&engine->allocator, &args[2], &hi);
+    if (status != RE_STATUS_OK) return status;
+    /* validation.rs:246: value >= min && value <= max (inclusive). */
+    return bool_result(out, v >= lo && v <= hi);
+}
+
 re_status_t re_builtin_call(re_engine_t *engine, re_facts_t *facts, re_string_t name,
                             const re_value_t *args, const re_string_t *arg_fact_paths,
                             size_t argc, re_value_t *out, re_eval_scratch_t *scratch) {
@@ -910,5 +1553,51 @@ re_status_t re_builtin_call(re_engine_t *engine, re_facts_t *facts, re_string_t 
         return call_split(engine, facts, args, arg_fact_paths, argc, scratch, out);
     if (name_is(name, "join"))
         return call_join(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    /* D1 plugin-parity family. */
+    if (name_is(name, "concat"))
+        return call_concat(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    if (name_is(name, "repeat"))
+        return call_repeat(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    if (name_is(name, "substring"))
+        return call_substring(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    if (name_is(name, "replace"))
+        return call_replace(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    if (name_is(name, "sqrt"))
+        return call_sqrt(engine, args, argc, out);
+    if (name_is(name, "first"))
+        return call_first_last(facts, args, arg_fact_paths, argc, 0, out);
+    if (name_is(name, "last"))
+        return call_first_last(facts, args, arg_fact_paths, argc, 1, out);
+    if (name_is(name, "reverse"))
+        return call_reverse(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    if (name_is(name, "slice"))
+        return call_slice(engine, facts, args, arg_fact_paths, argc, scratch, out);
+    if (name_is(name, "keys"))
+        return call_keys_values(engine, facts, args, arg_fact_paths, argc, 0, scratch, out);
+    if (name_is(name, "values"))
+        return call_keys_values(engine, facts, args, arg_fact_paths, argc, 1, scratch, out);
+    if (name_is(name, "isEmail"))
+        return call_validation_pred(engine, facts, args, arg_fact_paths, argc, 0, scratch, out);
+    if (name_is(name, "isPhone"))
+        return call_validation_pred(engine, facts, args, arg_fact_paths, argc, 1, scratch, out);
+    if (name_is(name, "isUrl"))
+        return call_validation_pred(engine, facts, args, arg_fact_paths, argc, 2, scratch, out);
+    if (name_is(name, "isNumeric"))
+        return call_validation_pred(engine, facts, args, arg_fact_paths, argc, 3, scratch, out);
+    if (name_is(name, "inRange"))
+        return call_in_range(engine, args, argc, out);
+    /* D1 Step 5: the upstream date_utils plugin family (functions now/today/
+     * dayOfWeek/year/month/day; actions CurrentDate/CurrentTime/FormatDate/
+     * AddDays/IsWeekend - f80a541 src/plugins/date_utils.rs) is deliberately
+     * NOT implemented: every member reads the environment clock
+     * (Local::now(), :61-62), and the A4 now/timestamp pair is the bounded
+     * local equivalent. Upstream plugin metadata also declares items that are
+     * NEVER registered (vapor, not implemented here either):
+     * StringSplit/StringJoin/padLeft/padRight (string_utils metadata),
+     * Modulo/Power/Ceil/Floor/random (math_utils metadata), ArrayMap
+     * (collection_utils metadata), ParseDate/AddHours/DateDiff/dayOfYear
+     * (date_utils metadata), ValidateNumeric (validation metadata). Unknown
+     * names keep falling through to NOT_FOUND, so a rule calling them is
+     * skipped like any unknown function. */
     return RE_STATUS_NOT_FOUND;
 }

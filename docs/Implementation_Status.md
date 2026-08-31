@@ -2513,3 +2513,58 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   联接、operators.rs 链式 API、tokio 拓扑为已记录 vapor/不适用，未复制；sliding
   窗口不参与水位闭合（仅记录门控）；test_network 环境侧失败与 test_async_loader
   并行 flake 均为既有事项，本阶段未触碰。
+
+## rule engine 生态对齐（sub-project D，2026-08-31）
+
+- 插件边界（D1，上游 f80a541 `src/plugins/mod.rs:1-11`）：上游恰有五个插件，均经
+  `engine.load_plugin` 挂接（`src/engine/plugin.rs:48`、`engine.rs:1977`），非自动
+  加载、非 feature 门控；本地无 load_plugin 表面，纯函数助手以名字分发内建形式交付于
+  builtins.c（宿主函数注册表保持 override-first 优先）：concat/repeat/substring/
+  replace、sqrt、first/last/reverse/slice/keys/values、isEmail/isPhone/isUrl/
+  isNumeric/inRange 共 16 个，全部纯分类；按取回的上游函数体钉死 empty first/last →
+  Null、isUrl 接受 ftp://、replace 空 from 按 UTF-8 码点边界插入（upstream-exact）。
+  date_utils 族（读环境时钟，date_utils.rs:61-62）与 15 条元数据声明但从未注册的上游
+  项作为 vapor 只记录不实现；上游 lib.rs 宣传数字（44+ 动作 / 33+ 函数）超出实际
+  注册量（33 动作 + 29 函数），如实记录。新套件 test_rule_engine_plugin_parity
+  33/33。
+- 示例覆盖（D2）：pinned 清单 29 个 [[example]]（七个族目录）+ 清单外自动发现的
+  examples/session_window_demo.rs（examples/ 根部的 auto-discovered 目标）；无本地
+  Rust 示例，覆盖 = 由具名测试驱动的本地行为等价。逐族映射表 verbatim 存于
+  test_rule_engine_example_coverage.c 头部注释；新增 3 个 smoke（ex01 fraud_detection
+  式前向链、ex03 注册函数 action handler、ex09 GRL query 反向机），其余族映射既有
+  套件或记录在案的 not_applicable（05 性能 → bench 基线回归；parallel_engine_demo 与
+  rete_ul_drools_style 为上游 vapor；10 模块系统经本地 defmodule/import 机制
+  covered_bounded）。记录在案的有界分歧：反向条件匹配器只读平铺事实名（不遍历点分
+  对象，前向匹配器会遍历），已写入 upstream.yml backward-queries 行 notes。
+- Redis 探针（D3）：2026-08-31 实测 Redis 8.10.1 服务（MSYS2 构建）在
+  127.0.0.1:6379 存活（约 5.5 天 uptime，推翻同日早些时候"无服务"的探针结论），但
+  hiredis 客户端开发文件在所有探测位置均缺席（含无 installed/ 树的 VCPKG_ROOT），
+  `RULE_ENGINE_ENABLE_REDIS=ON` 在配置期被强制关闭（"no fallback"，
+  engine/CMakeLists.txt:736-753），roundtrip 测试编译期裁除；阻塞点是客户端缺席而非
+  服务缺席，行保持 optional_backend compile-verified（规范唯一允许的例外），未来任何
+  提升尝试须重新探针。逐字证据见 task-d3-report.md。
+- 全特性映射（D4）：上游 Cargo features {default, streaming, streaming-redis,
+  backward-chaining} 无聚合开关（--all-features 恰为后三者）；本地映射为 streaming 与
+  backward-chaining 恒开（无门控编译入 rule_engine_core）、streaming-redis ↔
+  RULE_ENGINE_ENABLE_REDIS（hiredis 自动探测，缺席即强制关闭）、工具开关
+  RULE_ENGINE_ENABLE_C11_PARALLEL / ENGINE_USE_ASAN / ENGINE_USE_UBSAN /
+  ENGINE_BUILD_TESTS；无单一 all-features 开关，以文档化清单代替。
+- 文档：upstream.yml 的 plugins 行 pending → tested 交付实态、all-features 行重写为
+  CMake 选项集映射、examples 清单注释按族更新（含 session_window_demo）、
+  backward-queries 行补平铺匹配分歧、streaming-redis 行补 D3 证据；conformance.yml
+  新增 plugin-pure-helpers 与 example-family-coverage 两行、streaming-redis-state 行
+  补探针证据、聚焦基线 20/20 → 22/22；Rule_Engine_Design.md 新增 "Ecosystem parity"
+  一节；Rule_Engine_Architecture.md 同步小节。
+- 验证：build-gate（clang Debug）全量构建 + `ctest -LE graphics` **79/80**（唯一失败
+  test_network 的 3 条 UDP 发送失败为远端提交 76871ec 引入的既有环境事项；
+  test_async_loader 并行 flake 本轮未出现——均为既有事项，本阶段不动）；聚焦套件
+  `ctest -R "rule_engine|backward_machine"` **22/22**（新增
+  test_rule_engine_plugin_parity 33/33、test_rule_engine_example_coverage 3/3）；
+  build-rule-fresh-asan（ASan+UBSan 同树）聚焦 **22/22**、无诊断；MSVC
+  （build-rule-debug）聚焦 **22/22**；bench 回归
+  （rule_engine_bench_regression.cmake，RUNS=3）四项指标全部远低于 2.0s 阈值（最差
+  dense warm_eval 0.382s）；`git diff --check` 通过。
+- 当前限制：native Redis roundtrip 未做运行时验证（客户端缺席；服务存活但无客户端
+  不可用，且服务可用性随时间变化须重探）；date_utils 族与插件 vapor 项只记录不实现；
+  上游 `then ActionName(...)` 裸动作拼写对非白名单名保持锁定的解析错误；反向条件匹配器
+  仅读平铺事实名；test_network 环境侧失败与 test_async_loader 并行 flake 为既有事项。

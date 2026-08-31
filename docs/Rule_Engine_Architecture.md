@@ -83,6 +83,23 @@ Implemented now:
   WindowDurationMs plus per-name Sum/Average/Min/Max) with mutation-serial
   coherence; bounds and ratified divergences are enumerated in
   `docs/Rule_Engine_Design.md` ("Streaming completion parity");
+- the sub-project D ecosystem parity slice (2026-08-31): the pure upstream
+  plugin helpers as name-dispatched built-ins behind the host function
+  registry's override-first precedence (concat/repeat/substring/replace,
+  sqrt, first/last/reverse/slice/keys/values, and the
+  isEmail/isPhone/isUrl/isNumeric/inRange predicates, all pure-classified;
+  the date family and 15 metadata-vapor items documented out), example-family
+  coverage of the pinned 29-example upstream manifest plus the auto-discovered
+  session_window_demo via a per-family mapping table and three new smokes
+  (`test_rule_engine_example_coverage.c`), the Redis row kept at
+  compile-verified optional_backend with the 2026-08-31 probe evidence
+  (service live, hiredis client absent), and the upstream cargo features
+  mapped to the local build-option set (streaming/backward-chaining always
+  on; streaming-redis behind `RULE_ENGINE_ENABLE_REDIS` with hiredis
+  auto-detection; tooling toggles `RULE_ENGINE_ENABLE_C11_PARALLEL`,
+  `ENGINE_USE_ASAN`/`ENGINE_USE_UBSAN`, `ENGINE_BUILD_TESTS`) with no single
+  all-features switch; bounds and ratified divergences are enumerated in
+  `docs/Rule_Engine_Design.md` ("Ecosystem parity");
 - explicit null/unknown values and generation-safe fact lifecycle notifications.
 - a bounded fact-store truth-maintenance slice at upstream test-slice parity
   (sub-project B): explicit and logical facts, copied producer names,
@@ -203,7 +220,8 @@ support.
 The local status is limited to behavior covered by the registered rule-engine
 tests, including `engine/tests/test_rule_engine.c`, the transaction, TMS, RETE,
 agenda, backward, machine-structure, machine-context, binding, grl-semantics,
-grl-surface, query-blocks, stream-ext, stream-grl, stream-eval, fuzz-smoke, and
+grl-surface, query-blocks, stream-ext, stream-grl, stream-eval, plugin-parity,
+example-coverage, fuzz-smoke, and
 optional executor-stress targets; these statuses match
 `docs/rule_engine_conformance.yml`. `docs/rule_engine_upstream.yml` records
 upstream evidence only. No deferred family has an ABI placeholder.

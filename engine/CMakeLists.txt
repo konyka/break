@@ -859,6 +859,18 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_rule_engine_grl_surface PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_grl_surface COMMAND test_rule_engine_grl_surface)
 
+    add_executable(test_rule_engine_plugin_parity tests/test_rule_engine_plugin_parity.c)
+    set_property(TARGET test_rule_engine_plugin_parity PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_plugin_parity PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_plugin_parity PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_plugin_parity COMMAND test_rule_engine_plugin_parity)
+
+    add_executable(test_rule_engine_example_coverage tests/test_rule_engine_example_coverage.c)
+    set_property(TARGET test_rule_engine_example_coverage PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_example_coverage PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_example_coverage PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_example_coverage COMMAND test_rule_engine_example_coverage)
+
     add_executable(test_rule_engine_query_blocks tests/test_rule_engine_query_blocks.c)
     set_property(TARGET test_rule_engine_query_blocks PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine_query_blocks PRIVATE ${TEST_INCLUDE_DIRS})

@@ -733,6 +733,95 @@ seam; and sequence-pattern CEP beyond the delivered pair correlation stays
 bounded because upstream itself has no live sequence matcher. The working
 streaming machinery upstream actually has is delivered by the rows above.
 
+## Ecosystem parity: plugin boundary, example coverage, Redis probe, feature mapping
+
+This section records sub-project D (2026-08-30/31), the final parity slice
+against upstream rust-rule-engine v1.21.4 (`f80a541`): the plugin boundary,
+example-family coverage, the Redis runtime probe, and the cargo-feature
+mapping. Upstream anchors with f80a541 file:line citations live in
+`docs/superpowers/plans/2026-08-30-rule-engine-full-parity-d-ecosystem.md`.
+All delivered rows are `verified_local` in `docs/rule_engine_conformance.yml`.
+
+Plugin boundary (Task D1). Upstream ships exactly five plugins
+(`src/plugins/mod.rs:1-11`), none feature-gated and none auto-loaded; each
+implements `RulePlugin` (`src/engine/plugin.rs:48`) and attaches via
+`engine.load_plugin` (`src/engine/engine.rs:1977`). There is deliberately no
+local `load_plugin` surface: the registered-function callback boundary stays
+the host-extension equivalent with override-first precedence, and the pure
+plugin helpers are name-dispatched engine built-ins in `builtins.c`. Of the
+29 registered upstream plugin functions, 8 were already covered by the A3/A4
+built-in families (min/max/sum/avg, length/contains, join, isEmpty); D1 added
+the 15 missing pure helpers — `concat`/`repeat`/`substring`
+(`string_utils.rs:148/:163/:190`), `sqrt` (`math_utils.rs:170`),
+`first`/`last`/`reverse`/`slice`/`keys`/`values`
+(`collection_utils.rs:286/:308/:330/:372/:404/:421`),
+`isEmail`/`isPhone`/`isUrl`/`isNumeric`/`inRange`
+(`validation.rs:179/:191/:203/:215/:246`) — plus the `StringReplace` action
+body (`string_utils.rs:129`) as a `replace()` function, all pure-classified
+and pinned by `test_rule_engine_plugin_parity.c` (33 tests). Fetched-body
+behaviors are pinned exactly: empty `first`/`last` yield Null, `isUrl` also
+accepts `ftp://`, and `replace` with an empty `from` inserts at UTF-8
+codepoint boundaries (upstream-exact). Documented out, not replicated: the
+`date_utils` family (environment-clock reads, `date_utils.rs:61-62`; A4
+`now`/`timestamp` is the bounded local equivalent), the fact-mutating
+CamelCase plugin actions (mapped to the expression functions plus plain
+assignment), and 15 metadata-declared-but-never-registered upstream items
+(vapor: StringSplit, StringJoin, padLeft, padRight, Modulo, Power, Ceil,
+Floor, random, ArrayMap, ParseDate, AddHours, DateDiff, dayOfYear,
+ValidateNumeric). Upstream's lib.rs marketing ("44+ actions & 33+ functions")
+overcounts the actually registered 33 actions + 29 functions.
+
+Example coverage (Task D2). The pinned upstream manifest holds 29
+`[[example]]` entries in seven family directories; `session_window_demo`
+additionally exists at `examples/session_window_demo.rs` as an
+auto-discovered target outside the manifest and is mapped with the streaming
+machinery. No local Rust examples exist, so coverage means a local behavioral
+equivalent exercised by a named test; the verbatim per-family mapping table
+lives in the header comment of
+`engine/tests/test_rule_engine_example_coverage.c`. Three new smokes cover
+shapes no existing suite pinned end-to-end — ex01 (fraud_detection/grule_demo
+forward chaining over structured facts), ex03 (action_handlers_grl_demo via
+registered-function expression dispatch), ex09 (grl_query_demo/
+ecommerce_approval_demo over the bounded backward machine); every other
+family maps to an existing suite or a documented not_applicable
+(05-performance to the deterministic bench baseline regression,
+parallel_engine_demo and rete_ul_drools_style are upstream vapor,
+10-module-system is covered_bounded by the local defmodule/import machinery).
+Two bounded divergences the mapping records: upstream's arbitrary bare
+`then ActionName(...)` spelling is a locked local parse error for
+non-whitelisted names, and the backward condition matcher reads flat fact
+names only (no dotted object traversal; the forward matcher walks) — the ex09
+smoke uses flat keys and pins this shape.
+
+Redis exception (Task D3). The streaming-redis row stays `optional_backend`
+compile-verified — the spec's one allowed exception. The 2026-08-31 probe
+(verbatim evidence in
+`.superpowers/sdd/2026-08-29-rule-engine-full-parity/task-d3-report.md`)
+found a genuine Redis 8.10.1 service (MSYS2 Windows build, ~5.5-day uptime)
+live at 127.0.0.1:6379 — refuting an earlier same-day probe that recorded no
+service — but the hiredis development files are absent everywhere probed
+(PATH, mingw roots, a VCPKG_ROOT with no installed/ tree, the Redis install
+tree itself, no vendored repo copy), so `RULE_ENGINE_ENABLE_REDIS=ON`
+force-disables at configure time ("no fallback",
+`engine/CMakeLists.txt:736-753`) and the roundtrip test stays compiled out
+(`#if RE_HAS_HIREDIS`) even with `RE_TEST_REDIS_URL` set against the live
+service. The blocker is the absent client, not the service; service
+availability is time-dependent and must be re-probed at any future promotion
+attempt (the promotion recipe is recorded in the D3 report).
+
+Feature mapping (Task D4). Upstream declares `default = []`,
+`streaming = ["tokio"]`, `streaming-redis = ["streaming","redis"]`,
+`backward-chaining = []` with no aggregate feature, so `--all-features` means
+exactly {streaming, streaming-redis, backward-chaining}. Locally: streaming
+and backward-chaining are always on — compiled into `rule_engine_core`
+unconditionally with no gate; streaming-redis maps to
+`RULE_ENGINE_ENABLE_REDIS` with hiredis auto-detection (force-OFF when the
+client is absent); and the remaining toggles are tooling options rather than
+upstream features — `RULE_ENGINE_ENABLE_C11_PARALLEL` (optional executor),
+`ENGINE_USE_ASAN`/`ENGINE_USE_UBSAN` (sanitizers), `ENGINE_BUILD_TESTS` (test
+targets). No single all-features switch exists locally; the mapping is this
+documented list (the upstream.yml all-features row).
+
 ## Tested private advanced slice
 
 The current focused suite exercises a private, non-capability-bearing slice for
