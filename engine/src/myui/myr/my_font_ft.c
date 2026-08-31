@@ -263,6 +263,7 @@ static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
   result->count = count;
   result->used_complex_shaping = true;
   for (i = 0; i < count; i++) {
+    result->glyphs[i].font = font;
     result->glyphs[i].glyph_id = infos[i].codepoint;
     result->glyphs[i].cluster = infos[i].cluster;
     result->glyphs[i].advance_x_26_6 = positions[i].x_advance;

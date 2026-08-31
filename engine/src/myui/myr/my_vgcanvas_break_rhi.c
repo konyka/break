@@ -358,7 +358,8 @@ static const break_rhi_glyph_t *glyph_slot(my_vgcanvas_break_rhi_t *c,
   return &c->glyphs[i];
 }
 
-static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, uint32_t key,
+static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, my_font_t *font,
+                              uint32_t key,
                               bool key_is_glyph_id, const my_glyph_t *g,
                               float advance, float offset_x, float offset_y,
                               float *pen_x, float top, int32_t ascent) {
@@ -368,7 +369,7 @@ static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, uint32_t key,
   int32_t dev_font_size =
       (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
   if (dev_font_size < 1) dev_font_size = 1;
-  slot = glyph_slot(c, c->state.font, key, key_is_glyph_id, dev_font_size, g);
+  slot = glyph_slot(c, font, key, key_is_glyph_id, dev_font_size, g);
   if (slot == NULL) {
     *pen_x += advance;
     return;
@@ -405,7 +406,8 @@ static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
     *pen_x += g.advance > 0 ? (float)g.advance : 0.0f;
     return;
   }
-  draw_glyph_bitmap(c, cp, false, &g, (float)g.advance, 0.0f, 0.0f,
+  draw_glyph_bitmap(c, c->state.font, cp, false, &g, (float)g.advance, 0.0f,
+                    0.0f,
                     pen_x, top, ascent);
 }
 
@@ -416,13 +418,16 @@ static void draw_shaped_glyph(my_vgcanvas_break_rhi_t *c,
   int32_t dev_font_size =
       (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
   if (dev_font_size < 1) dev_font_size = 1;
-  if (my_font_get_glyph_id(c->state.font, shaped->glyph_id, dev_font_size,
-                           &g) != MY_RET_OK || g.w <= 0 || g.h <= 0 ||
+  if (my_font_get_glyph_id(
+          shaped->font != NULL ? shaped->font : c->state.font,
+          shaped->glyph_id, dev_font_size, &g) != MY_RET_OK ||
+      g.w <= 0 || g.h <= 0 ||
       g.bitmap == NULL) {
     *pen_x += (float)shaped->advance_x_26_6 / 64.0f;
     return;
   }
-  draw_glyph_bitmap(c, shaped->glyph_id, true, &g,
+  draw_glyph_bitmap(c, shaped->font != NULL ? shaped->font : c->state.font,
+                    shaped->glyph_id, true, &g,
                     (float)shaped->advance_x_26_6 / 64.0f,
                     (float)shaped->offset_x_26_6 / 64.0f,
                     (float)shaped->offset_y_26_6 / 64.0f, pen_x, top,

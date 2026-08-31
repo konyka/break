@@ -16,6 +16,13 @@ Vulkan 配置同为 **25/25**。另完成 Vulkan 源码 `-Werror -pedantic` 语�
 
 ## 本轮更新
 
+**跨字体 glyph-run 事务与 RTL run 顺序（TDD）**：字体 shaping glyph 增加实际 face 身份，
+FreeType/HarfBuzz 输出和字体链聚合均保留该身份；GLES2、soft、Break RHI、Vulkan 的
+glyph-id 栅格化及缓存不再把 glyph id 当作全局 key。LTR 单 face 保持快速路径，RTL 跨 face
+只在发生字体切换时分配有界 run 描述并逆序提交。segment、扩容和逐分配点失败均事务回滚，
+结果不向调用方泄露部分 glyph。TDD 覆盖 Latin/CJK identity、RTL 跨 face 顺序和 allocator
+OOM 回滚；完整 paragraph bidi-run 到 OpenType glyph-run 的统一 mapping，仍是明确后续项。
+
 **文本布局输入预算（TDD）**：`my_text_layout_process()` 与
 `my_text_paragraph_process()` 原先会对调用方提供的 C 字符串先做无界扫描，再进入
 缓存、复制和排版分配。现分别在 `MY_TEXT_LAYOUT_MAX_BYTES` 与

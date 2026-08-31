@@ -748,3 +748,16 @@ RTL token 绘制复用同一 visual boundary 前缀和，按 token 范围二分�
 UTF-8 片段提交公共 canvas；纯 LTR 仍走原有单次 token 测量路径，避免新增热路径开销。
 内置 bitmap font 在创建时将 1bpp 资源展开为 8bpp alpha，绘制只读取合法的固定 8x8
 像素块，不在每帧做格式转换。
+
+## 跨字体 shaping 边界
+
+字体链按 codepoint 选择 face，并在支持 HarfBuzz 的构建中按连续 face 区间调用 shaping。
+每个 glyph 携带实际 face 指针；因此同一个 glyph id 在不同 face 中不会污染 soft、GLES2、
+Vulkan 或 Break RHI 的缓存。LTR 单 face 不创建 run 表，RTL 只有跨 face 时才分配固定大小
+的 run 描述并逆序提交，所有候选输出在成功前保持私有，OOM 时恢复为空结果。
+
+这不是完整 bidi OpenType 实现：当前 canvas 的复杂 bidi 文本仍由 SheenBidi/Arabic
+codepoint layout 绘制，paragraph 的 script、direction、font fallback、glyph clusters
+尚未共享到一个 glyph-run mapping。接入完整路径前必须维持 logical byte clusters、视觉
+run 顺序、selection/cursor mapping 和后端 atlas key 的一致性，并在依赖关闭时保留显式
+`MY_RET_NOT_SUPPORTED`/codepoint fallback。

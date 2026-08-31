@@ -243,7 +243,6 @@ static my_ret_t test_font_shape(my_font_t* font, const char* text,
                                 int32_t size, bool rtl,
                                 const my_allocator_t* allocator,
                                 my_font_shape_result_t* result) {
-  (void)font;
   (void)rtl;
   if (text == NULL || text[0] == '\0' || size <= 0 || result == NULL) {
     return MY_RET_INVALID_PARAMS;
@@ -255,6 +254,7 @@ static my_ret_t test_font_shape(my_font_t* font, const char* text,
     return MY_RET_OOM;
   }
   result->count = 1;
+  result->glyphs[0].font = font;
   result->glyphs[0].glyph_id = 7;
   result->glyphs[0].cluster = 0;
   result->glyphs[0].advance_x_26_6 = 3 * 64;

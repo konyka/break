@@ -304,3 +304,22 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 验证：normal/ASan `test_myui_window_manager` **59/59**、normal/ASan
   `test_myui_text_layout` **16/16**，Vulkan `myui_core` 构建及编码门禁通过；LeakSanitizer
   使用 `detect_leaks=0`。
+
+## 已完成：跨字体 glyph-run 事务与 RTL run 顺序（2026-08-31）
+
+- 以 TDD 新增字体链跨 face shaping 测试：Latin/CJK 连续片段分别调用对应 face，输出
+  glyph 保存实际字体身份，cluster 继续使用原始 UTF-8 byte offset；四个绘制后端的
+  glyph-id 栅格化与 atlas/texture cache 均按 `(font, glyph id, size, key kind)` 区分。
+- 字体链的 LTR 单 face 路径保持原有快速路径；RTL 仅在确实跨 face 时建立有界 run 表，
+  以逆序提交 face run，避免 CJK fallback 片段在视觉顺序中落到错误位置。候选结果全部
+  成功后才交付，任一 segment、扩容或 allocator 失败都会释放候选并清空结果。
+- 新增逐分配点 OOM 回滚测试和跨 face RTL 顺序测试；未声明 HarfBuzz/FreeType 时测试
+  仍编译为显式 skip，不改变旧 codepoint fallback。
+- 当前未宣称完整 RTL OpenType：canvas 的复杂 bidi 路径仍使用 UBA/Arabic codepoint
+  layout，尚未把 paragraph bidi run 的 script、direction、font identity 统一交给
+  HarfBuzz；下一阶段必须先建立 paragraph-owned logical/visual glyph mapping，再接入
+  selection、cursor、justify 和后端绘制。
+- 验证：普通字体/后端测试 **8/8、24/24**，Vulkan 字体/后端测试 **8/8、25/25**，
+  ASan 字体/后端测试 **8/8、24/24**；无 HarfBuzz 配置也完成 **8/8、24/24**，其中
+  shaping 专项按契约 skip。以上是构建目录定向证据，不替代 Windows/macOS/Wayland
+  真实 runtime 验证。

@@ -2402,18 +2402,19 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
                                  const my_font_shape_glyph_t* shaped,
                                  float* pen_x, float top, int32_t ascent) {
   my_glyph_t g = {0};
+  my_font_t* font = shaped->font != NULL ? shaped->font : c->state.font;
   uint32_t slot;
   float gx, gy;
   float advance = (float)shaped->advance_x_26_6 / 64.0f;
-  if (my_font_get_glyph_id(c->state.font, shaped->glyph_id,
-                           vk_dev_font_size(c), &g) != MY_RET_OK ||
+  if (my_font_get_glyph_id(
+          font, shaped->glyph_id, vk_dev_font_size(c), &g) != MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += advance;
     return;
   }
   slot = (shaped->glyph_id ^ (uint32_t)vk_dev_font_size(c)) % VKC_GLYPH_CACHE;
   if (c->glyph_cache[slot].tex.img == VK_NULL_HANDLE ||
-      c->glyph_cache[slot].font != c->state.font ||
+      c->glyph_cache[slot].font != font ||
       !c->glyph_cache[slot].key_is_glyph_id ||
       c->glyph_cache[slot].codepoint != shaped->glyph_id ||
       c->glyph_cache[slot].size != vk_dev_font_size(c)) {
@@ -2426,7 +2427,7 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
       *pen_x += advance;
       return;
     }
-    c->glyph_cache[slot].font = c->state.font;
+    c->glyph_cache[slot].font = font;
     c->glyph_cache[slot].codepoint = shaped->glyph_id;
     c->glyph_cache[slot].key_is_glyph_id = true;
     c->glyph_cache[slot].size = vk_dev_font_size(c);

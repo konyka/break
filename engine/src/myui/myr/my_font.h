@@ -26,6 +26,8 @@ typedef struct my_glyph_t {
 typedef struct my_font_t my_font_t;
 
 typedef struct my_font_shape_glyph_t {
+  /** @brief Face that owns glyph_id; providers must initialize this field. */
+  my_font_t* font;
   uint32_t glyph_id;
   uint32_t cluster;
   int32_t advance_x_26_6;

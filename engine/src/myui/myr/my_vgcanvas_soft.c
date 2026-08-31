@@ -1044,7 +1044,9 @@ static void soft_draw_shaped_glyph(my_vgcanvas_soft_t* s,
   float advance = (float)shaped->advance_x_26_6 / 64.0f;
   float offset_x = (float)shaped->offset_x_26_6 / 64.0f;
   float offset_y = (float)shaped->offset_y_26_6 / 64.0f;
-  if (my_font_get_glyph_id(s->state.font, shaped->glyph_id,
+  if (my_font_get_glyph_id(
+          shaped->font != NULL ? shaped->font : s->state.font,
+          shaped->glyph_id,
                            soft_dev_font_size(s), &g) != MY_RET_OK) {
     *pen_x += advance;
     return;

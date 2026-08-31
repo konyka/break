@@ -6,6 +6,9 @@
 > 2026-08-31 更新：`ENGINE_VULKAN` 现同步启用 `myui_core` 的私有 Vulkan vgcanvas。其
 > AA level 0/1/2 映射为 1x/2x/4x，target、render pass、pipeline、descriptor 与
 > swapchain 通过候选资源组原子交换；失败保留 active 资源，resize 与 AA 请求共享重建路径。
+> 同日字体链 shaping 收口：glyph-run 保存实际 face 身份，LTR 单 face 保持快速路径，
+> RTL 跨 face 仅建立有界 run 表并逆序提交；跨 face、cluster 和 allocator 回滚已有 TDD
+> 证据。完整 paragraph bidi 到 OpenType glyph-run mapping 仍未宣称完成。
 
 ---
 
@@ -4913,6 +4916,12 @@ combinator 直接失败。旧的 `my_theme_set_ex*()` 及单祖先观察字段�
 `my_text_paragraph_process()` 各自拒绝超过 4 MiB 的 C 字符串，避免缓存比较或字体测量
 之前产生无界扫描和分配。超限测试确认调用方 allocator 零次调用，正常布局仍走原有
 font-independent cache 与 paragraph 增量路径。
+
+字体 shaping 的实施边界必须遵循同一策略：glyph id 只能在 `(face, id, size, key kind)`
+范围内解释，字体链的所有 candidate 输出必须在完整成功后提交。普通 LTR 单 face 不增加
+run 描述分配；跨 face 或 RTL 才进入有界事务路径。后续 paragraph bidi 接入必须先产出
+logical byte cluster、visual run 顺序和 selection/cursor 映射测试，再接入四个 canvas，
+并保留依赖关闭时的显式 fallback，不能以 Linux headless 构建替代各平台 runtime 证据。
 
 1. **每个 Phase 必须有可运行的 demo** — 不可产出不可运行的"完成代码"
 2. **Phase 内按编号顺序开发** — 依赖关系已经排好

@@ -474,11 +474,12 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
                                    const my_font_shape_glyph_t* shaped,
                                    float* pen_x, float top, int32_t ascent) {
   my_glyph_t g = {0};
+  my_font_t* font = shaped->font != NULL ? shaped->font : s->state.font;
   uint32_t slot;
   float gx, gy, quad[24];
   float advance = (float)shaped->advance_x_26_6 / 64.0f;
-  if (my_font_get_glyph_id(s->state.font, shaped->glyph_id,
-                           gles_dev_font_size(s), &g) != MY_RET_OK ||
+  if (my_font_get_glyph_id(
+          font, shaped->glyph_id, gles_dev_font_size(s), &g) != MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += advance;
     return;
@@ -486,7 +487,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
   slot = (shaped->glyph_id ^ (uint32_t)gles_dev_font_size(s)) %
          GLES_TEX_CACHE_SIZE;
   if (s->tex_cache[slot].texture == 0 ||
-      s->tex_cache[slot].font != s->state.font ||
+      s->tex_cache[slot].font != font ||
       !s->tex_cache[slot].key_is_glyph_id ||
       s->tex_cache[slot].codepoint != shaped->glyph_id ||
       s->tex_cache[slot].size != gles_dev_font_size(s)) {
@@ -495,7 +496,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
     }
     s->tex_cache[slot].texture =
         s->gl.create_texture(s->gl.ctx, g.bitmap, g.w, g.h);
-    s->tex_cache[slot].font = s->state.font;
+    s->tex_cache[slot].font = font;
     s->tex_cache[slot].codepoint = shaped->glyph_id;
     s->tex_cache[slot].key_is_glyph_id = true;
     s->tex_cache[slot].size = gles_dev_font_size(s);
