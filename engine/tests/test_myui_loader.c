@@ -166,6 +166,28 @@ TEST(yaml_file_loader_rejects_embedded_nul)
   remove(path);
 }
 
+TEST(json_file_loader_rejects_oversized_file_before_allocation)
+{
+  char path[256];
+  FILE* file;
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+  size_t size = (size_t)MY_CONF_FILE_MAX_BYTES + 1u;
+
+  test_tmp(path, sizeof(path), "json_oversized_file");
+  file = fopen(path, "wb");
+  ASSERT_NOT_NULL(file);
+  ASSERT_EQ(fseek(file, (long)size, SEEK_SET), 0);
+  ASSERT_EQ(fputc('}', file), '}');
+  ASSERT_EQ(fclose(file), 0);
+  ASSERT_TRUE(my_conf_load_file(&allocator, path, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  remove(path);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -318,6 +340,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_loader_rejects_oversized_input);
     RUN_TEST(yaml_file_loader_rejects_oversized_file_before_allocation);
     RUN_TEST(yaml_file_loader_rejects_embedded_nul);
+    RUN_TEST(json_file_loader_rejects_oversized_file_before_allocation);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

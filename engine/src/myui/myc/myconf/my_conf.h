@@ -25,6 +25,7 @@
 #define MY_CONF_YAML_MAX_DEPTH 256u
 #define MY_CONF_YAML_MAX_CHILDREN 4096u
 #define MY_CONF_YAML_MAX_SCALAR_BYTES (1024u * 1024u)
+#define MY_CONF_FILE_MAX_BYTES (4u * 1024u * 1024u)
 
 /** @brief Node type. */
 typedef enum my_conf_type_t {
@@ -114,7 +115,7 @@ const char* my_conf_get_str(my_conf_node_t* node, const char* path,
 /* ---------------- file io ---------------- */
 
 /** @brief Load a JSON file into a tree (NULL on error; err may be
- * NULL). */
+ * NULL). Files are limited to MY_CONF_FILE_MAX_BYTES before allocation. */
 my_conf_node_t* my_conf_load_file(const my_allocator_t* allocator,
                                   const char* path, my_conf_error_t* err);
 

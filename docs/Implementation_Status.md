@@ -2,12 +2,17 @@
 
 ## 本轮更新
 
+**通用 JSON 配置文件预算（TDD）**：`my_conf_load_file()` 原先忽略 `fseek/ftell` 失败，且
+按文件长度直接分配，没有与解析输入建立统一上限。现新增 `MY_CONF_FILE_MAX_BYTES`（4 MiB），
+在 payload 分配前拒绝超限文件，并初始化/传播路径、定位、分配和读取错误；失败路径都会
+关闭文件并释放已申请缓冲。新增稀疏超大 JSON 文件回归，验证拒绝路径零次 payload 分配。
+
 **YAML 文件加载前置资源预算（TDD）**：`my_ui_load_file()` 原先先按文件长度申请完整
 缓冲区，再由字符串 loader 拒绝超过 4 MiB 的 YAML；恶意超大文件因此仍能触发一次大额
 分配。现文件读取入口在申请 payload 前复用 `MY_UI_MAX_YAML_BYTES` 检查，超限立即关闭
 文件并返回错误；文件输入同时拒绝嵌入 NUL，避免 C 字符串截断后静默忽略后续配置。
 新增稀疏超大文件与计数 allocator 回归测试，确认拒绝路径零次 payload 分配；定向
-`test_myui_loader` **16/16** 通过。
+`test_myui_loader` **17/17** 通过。
 
 **结构化数组索引格式化边界（TDD）**：`re_value_array_append()` 和
 `re_value_array_append_value()` 原先用未检查的 `sprintf` 构造数组键；虽然当前数组上限
