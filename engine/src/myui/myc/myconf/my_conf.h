@@ -27,6 +27,8 @@
 #define MY_CONF_YAML_MAX_SCALAR_BYTES (1024u * 1024u)
 #define MY_CONF_FILE_MAX_BYTES (4u * 1024u * 1024u)
 #define MY_CONF_JSON_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_TOML_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_BSON_MAX_BYTES (4u * 1024u * 1024u)
 
 /** @brief Node type. */
 typedef enum my_conf_type_t {
@@ -132,7 +134,8 @@ my_conf_node_t* my_conf_parse_json(const my_allocator_t* allocator,
                                    my_conf_error_t* err);
 
 /**
- * @brief Parse the TOML subset (M17b): key=value (basic ".." strings
+ * @brief Parse the TOML subset (M17b) within MY_CONF_TOML_MAX_BYTES:
+ * key=value (basic ".." strings
  * with escapes, literal '..' strings, dec/0x/0o/0b integers with
  * underscores, floats incl. inf/nan, bools, datetimes kept as STR
  * verbatim), [table]/[a.b.c], [[table array]], inline tables, arrays
@@ -170,14 +173,16 @@ char* my_conf_to_json_str(const my_allocator_t* allocator,
  * array, 0x07 objectId (24 hex chars), 0x08 bool, 0x09 datetime
  * (INT64, milliseconds), 0x0A null, 0x10 int32 -> INT64, 0x12 int64.
  * Any other element type is an ERROR (data integrity over leniency).
+ * Input is limited to MY_CONF_BSON_MAX_BYTES.
  * Malformed lengths/truncation are safely rejected.
  */
 my_conf_node_t* my_conf_parse_bson(const my_allocator_t* allocator,
                                    const uint8_t* data, size_t len,
                                    my_conf_error_t* err);
 
-/** @brief Serialize to BSON (owned buffer; out_len set). INT64 values
- * in int32 range are written as 0x10, else 0x12. */
+/** @brief Serialize to BSON (owned buffer; out_len set), limited to
+ * MY_CONF_BSON_MAX_BYTES. INT64 values in int32 range are written as 0x10,
+ * else 0x12. */
 uint8_t* my_conf_to_bson(const my_allocator_t* allocator,
                          my_conf_node_t* node, size_t* out_len);
 

@@ -207,6 +207,71 @@ TEST(json_parser_rejects_oversized_input_before_allocation)
   free(json);
 }
 
+TEST(toml_parser_rejects_oversized_input_before_allocation)
+{
+  size_t length = (size_t)MY_CONF_TOML_MAX_BYTES + 1u;
+  char* toml = (char*)malloc(length);
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+
+  ASSERT_NOT_NULL(toml);
+  memset(toml, ' ', length);
+  ASSERT_TRUE(my_conf_parse_toml(&allocator, toml, length, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  free(toml);
+}
+
+TEST(bson_parser_rejects_oversized_input_before_allocation)
+{
+  size_t length = (size_t)MY_CONF_BSON_MAX_BYTES + 1u;
+  unsigned char* bson = (unsigned char*)malloc(length);
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+
+  ASSERT_NOT_NULL(bson);
+  memset(bson, 0x20, length);
+  bson[0] = 5;
+  bson[1] = 0;
+  bson[2] = 0;
+  bson[3] = 0;
+  bson[4] = 0;
+  ASSERT_TRUE(my_conf_parse_bson(&allocator, bson, length, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  free(bson);
+}
+
+TEST(bson_writer_rejects_output_above_parser_budget)
+{
+  size_t text_length = (size_t)MY_CONF_BSON_MAX_BYTES - 1u;
+  char* text = (char*)malloc(text_length + 1u);
+  my_conf_node_t* root;
+  my_conf_node_t* value;
+  uint8_t* bson;
+  size_t bson_length = 0;
+
+  ASSERT_NOT_NULL(text);
+  memset(text, 'x', text_length);
+  text[text_length] = '\0';
+  root = my_conf_new_object(NULL);
+  value = my_conf_new_str(NULL, text);
+  ASSERT_NOT_NULL(root);
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_conf_object_set(root, "payload", value), MY_RET_OK);
+  bson = my_conf_to_bson(NULL, root, &bson_length);
+  ASSERT_TRUE(bson == NULL);
+  if (bson != NULL) {
+    my_mem_free(NULL, bson);
+  }
+  my_conf_destroy(root);
+  free(text);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -361,6 +426,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_file_loader_rejects_embedded_nul);
     RUN_TEST(json_file_loader_rejects_oversized_file_before_allocation);
     RUN_TEST(json_parser_rejects_oversized_input_before_allocation);
+    RUN_TEST(toml_parser_rejects_oversized_input_before_allocation);
+    RUN_TEST(bson_parser_rejects_oversized_input_before_allocation);
+    RUN_TEST(bson_writer_rejects_output_above_parser_budget);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

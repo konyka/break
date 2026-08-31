@@ -6,10 +6,15 @@
 在创建 sheet 和规则数组前增加 `MY_CSS_MAX_BYTES`（4 MiB）检查；超限路径零次 allocator
 分配，并新增回归测试。CSS/YAML 配置输入现统一具备入口预算保护。
 
+**TOML/BSON 解析输入预算（TDD）**：TOML 和 BSON 直解析入口原先仍可绕过配置资源边界，
+现于创建配置树前增加各自 4 MiB 预算检查；超限路径零次 allocator 分配，新增有效 BSON
+前缀与空白 TOML 的回归测试。BSON 写出器同步限制输出增长，避免生成自身解析器必拒绝的
+文档并防止容量倍增溢出。
+
 **直接 JSON 解析输入预算（TDD）**：文件加载入口已有 4 MiB 检查，但直接调用
 `my_conf_parse_json()` 原先仍可绕过该限制并进入递归解析及字符串分配。现于 parser 入口
 增加 `MY_CONF_JSON_MAX_BYTES` 前置检查，超限输入在任何配置节点分配前失败；新增计数
-allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **18/18**、完整 CTest
+allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **21/21**、完整 CTest
 **82/82** 通过。
 
 **通用 JSON 配置文件预算（TDD）**：`my_conf_load_file()` 原先忽略 `fseek/ftell` 失败，且

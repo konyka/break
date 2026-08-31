@@ -197,6 +197,9 @@ sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置�
 内存 API 绕过文件入口限制。
 CSS 内存解析入口受 `MY_CSS_MAX_BYTES` 4 MiB 预算保护，超限输入在创建 sheet 前拒绝；
 主题桥接沿用同一限制。
+TOML 与 BSON 直解析入口分别受 `MY_CONF_TOML_MAX_BYTES` 和
+`MY_CONF_BSON_MAX_BYTES` 4 MiB 预算保护，所有配置树解析入口均在节点分配前拒绝超限输入。
+BSON 写出器也受同一输出预算保护，超限时释放候选缓冲并返回失败。
 
 UI 配置不再支持 XML，`my_xml.*` 和 `test_myui_xml` 已移除；Wayland 协议生成所需的
 `.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。

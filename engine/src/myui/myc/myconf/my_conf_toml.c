@@ -893,6 +893,10 @@ my_conf_node_t* my_conf_parse_toml(const my_allocator_t* allocator,
   p.line = 1;
   p.col = 1;
   p.err = err;
+  if (len > MY_CONF_TOML_MAX_BYTES) {
+    toml_fail(&p, "TOML input exceeds resource budget");
+    return NULL;
+  }
   p.root = my_conf_new_object(allocator);
   p.tables = my_darray_create(allocator, 0);
   if (p.root == NULL || p.tables == NULL) {
