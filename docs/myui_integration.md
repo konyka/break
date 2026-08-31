@@ -199,6 +199,7 @@ JSON 写出器也受同一 4 MiB 输出预算保护，超限序列化返回失�
 配置文件。
 CSS 内存解析入口受 `MY_CSS_MAX_BYTES` 4 MiB 预算保护，超限输入在创建 sheet 前拒绝；
 主题桥接沿用同一限制。
+结构错误状态独立于可选的错误输出对象，调用方传入 `NULL` 仍不会接受畸形 CSS。
 TOML 与 BSON 直解析入口分别受 `MY_CONF_TOML_MAX_BYTES` 和
 `MY_CONF_BSON_MAX_BYTES` 4 MiB 预算保护，所有配置树解析入口均在节点分配前拒绝超限输入。
 BSON 写出器也受同一输出预算保护，超限时释放候选缓冲并返回失败。
@@ -480,7 +481,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
-本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（14/14）、
+本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（17/17）、
 `test_myui_text_layout`（4/4）、
 `test_myui_vgcanvas_backend`（21/21）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界

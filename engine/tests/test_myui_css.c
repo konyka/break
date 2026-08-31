@@ -369,6 +369,14 @@ TEST(css_unsupported_at_rules_ignore_braces_in_strings_and_comments)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_structural_errors_reject_without_error_storage)
+{
+  const char* css = "@supports {";
+  my_css_sheet_t* sheet = my_css_parse(NULL, css, strlen(css), NULL);
+
+  ASSERT_TRUE(sheet == NULL);
+}
+
 TEST(css_parser_rejects_oversized_input_before_allocation)
 {
   size_t length = (size_t)MY_CSS_MAX_BYTES + 1u;
@@ -402,5 +410,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_rejects_adjacent_selector_tokens_without_combinator);
     RUN_TEST(css_comments_preserve_descendant_separator);
     RUN_TEST(css_unsupported_at_rules_ignore_braces_in_strings_and_comments);
+    RUN_TEST(css_structural_errors_reject_without_error_storage);
     RUN_TEST(css_parser_rejects_oversized_input_before_allocation);
 TEST_MAIN_END()

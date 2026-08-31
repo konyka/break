@@ -20,6 +20,10 @@ allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **2
 JSON 写出器同步限制输出至 `MY_CONF_JSON_MAX_BYTES`，并在达到预算后停止字符串扫描，
 避免生成自身解析器必拒绝的文档以及无界容量倍增。
 
+CSS 解析器的结构错误状态不再依赖调用者提供 `my_css_error_t`；`err == NULL` 时同样拒绝
+未闭合 `@` 规则等非法输入，保留错误信息可选的 API 语义。`test_myui_css` 定向测试
+现为 **17/17**。
+
 **通用 JSON 配置文件预算（TDD）**：`my_conf_load_file()` 原先忽略 `fseek/ftell` 失败，且
 按文件长度直接分配，没有与解析输入建立统一上限。现新增 `MY_CONF_FILE_MAX_BYTES`（4 MiB），
 在 payload 分配前拒绝超限文件，并初始化/传播路径、定位、分配和读取错误；失败路径都会

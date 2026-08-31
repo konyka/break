@@ -23,9 +23,11 @@ typedef struct css_p_t {
   int32_t line;
   int32_t col;
   my_css_error_t* err;
+  bool failed;
 } css_p_t;
 
 static void css_fail(css_p_t* p, const char* msg) {
+  p->failed = true;
   if (p->err != NULL && p->err->msg[0] == '\0') {
     p->err->line = p->line;
     p->err->col = p->col;
@@ -52,7 +54,7 @@ static int c_next(css_p_t* p) {
 }
 
 static bool c_failed(css_p_t* p) {
-  return p->err != NULL && p->err->msg[0] != '\0';
+  return p->failed;
 }
 
 /** @brief Whitespace + comments. Returns true for actual whitespace, which
