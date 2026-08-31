@@ -67,9 +67,9 @@ static void chart_line_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   snprintf(buf, sizeof(buf), "%.0f", (double)c->ymax);
   my_vgcanvas_draw_text(vg, buf, 2, CHART_PAD_T - 5);
   snprintf(buf, sizeof(buf), "%.0f", (double)((c->ymin + c->ymax) / 2.0f));
-  my_vgcanvas_draw_text(vg, buf, 2, CHART_PAD_T + plot_h / 2 - 5);
+  my_vgcanvas_draw_text(vg, buf, 2.0f, (float)(CHART_PAD_T + plot_h / 2 - 5));
   snprintf(buf, sizeof(buf), "%.0f", (double)c->ymin);
-  my_vgcanvas_draw_text(vg, buf, 2, CHART_PAD_T + plot_h - 5);
+  my_vgcanvas_draw_text(vg, buf, 2.0f, (float)(CHART_PAD_T + plot_h - 5));
   /* x time ticks */
   {
     static const char* const T[] = {"09:30", "11:30", "13:00", "15:00"};

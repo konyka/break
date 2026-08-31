@@ -67,7 +67,7 @@ TEST(utf8_byte_offsets_are_codepoint_offsets)
 
 TEST(invalid_utf8_always_makes_progress)
 {
-    const char text[] = {'A', (char)0x80, (char)0xF5, 'B', '\0'};
+    const char text[] = "A\x80\xF5" "B";
 
     ASSERT_EQ(break_utf8_byte_to_cp(text, 1), 1);
     ASSERT_EQ(break_utf8_byte_to_cp(text, 2), 2);

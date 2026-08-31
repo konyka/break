@@ -2332,3 +2332,299 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   `matches` 通配子串为持续记录的分歧；`exists((A == 1))`、`exists($o: Type(...))`、
   `exists(accumulate(...))` 按函数形式解析而报错（文档化边界）；完整 RETE-UL、通用
   TMS、任意谓词合一仍不支持。
+
+## rule engine RETE/TMS/unification 深度对齐（sub-project B，2026-08-30）
+
+- TMS 对齐收口（B1，上游 `src/rete/tms.rs` + `tests/tms_test.rs` 共 12 条测试语义
+  全部移植）：显式支持与逻辑论证共存——`re_facts_insert` 覆盖逻辑派生事实时记录显式
+  支持标记（无前提的 justification 项，即上游 `JustificationType::Explicit` 的本地
+  编码，公共溯源接口不可见），`re_facts_insert_logical` 作用于宿主断言事实时两者并留；
+  两处级联守卫改为总支撑计数归零才撤销（显式支持构造上恒有效）；多论证事实在单一前提
+  撤销后存活；菱形依赖完整级联；新增 justification 不重导出值；标记随 `re_tms_clone`
+  迁移（transactions.c 零改动）；`re_facts_justification_remove` 增加与 add 侧对称的
+  校验，公开输入无法删除标记。记录的分歧与边界：插入期成环以 `RE_STATUS_LIMIT` 拒绝
+  （上游容忍并靠 retracted 集终止；级联环情形本身与上游 `is_valid` 一致并以白盒测试
+  锁定；及时移除项是本地终止保证，上游从不清理映射）；`re_facts_set`/`re_facts_update`
+  为纯值写、不记录显式支持；仅剩标记的事实保持 `is_logical` 为真（上游在撤销前也将
+  事实留在 `logical_facts`）；结构化根派生保留"前提撤销级联至整根"的既有边界；上游
+  全局 TMS 统计结构体无本地聚合对应（按只增 ABI 改为钉住逐事实等价值）。
+- 证明图真实图形状（B2，上游 `src/backward/proof_graph.rs`）：64 项结果缓存仍为查找
+  层，图语义叠加其上——派发包装器在每次 backward 运行捕获有界（32、按路径去重）前提
+  集 {path, present, FNV-1a 类型化值指纹}（缺席读取记 present=0，之后首次断言仍可使
+  其失效；缓存命中将所供条目前提并入外层捕获）；每次存储按证明记录一个信息性节点
+  （trace 根规则名 + valid 标志）及产生运行的前提集；查找保留代数相等快路径，序列号
+  失配时逐前提重解析并比对存在性与类型化指纹——前提全部成立则条目在无关变更下存活
+  （相对 B2 前粗粒度整体失效的标题级行为升级），任一翻转即整体摘除（对应上游
+  `lookup_by_key` 过滤失效节点）；任何未追踪影响（证明中途的用户函数、前提上限溢出、
+  分配失败）使捕获转为 opaque 并回退到粗粒度代数检查，健全性绝不换精度。统计：原双
+  指针 `re_engine_proof_graph_stats` ABI 不变，新增 `re_engine_proof_graph_stats_v2`
+  以 struct_size 版本化的 `re_proof_graph_stats_t` 报告 hits/misses/invalidations/
+  stores/evictions（64 项清空式驱逐计入 evictions）；依赖传播为惰性（下次咨询时再校验
+  发现），与上游 eager `invalidate_handle` 递归在缓存用途下语义等价。边界：
+  object/array 事实仅按类型标签取指纹（未来若有成员级读取路径必须被捕获或转
+  opaque）；节点 valid 标志为上游形状保真、生产代码不消费。
+- 反向 `?var` 合一（B3，上游 `src/backward/unification.rs` 情形表）：查询目标串中
+  `==` 任一侧的 `?var` 触发合一——已绑定变量取其值；未绑定且对侧可解则绑定并经
+  `re_proof_binding_get` 以原样 `?s` 名浮出水面；不可解则不匹配（缺席事实读取报
+  `RE_QUERY_UNKNOWN`，与字面量路径一致）；两侧均未绑定（`?x == ?y`）报
+  `RE_QUERY_DISPROVED`（未读任何事实，可以空前提集缓存且永不翻转）；重绑定粘性一致
+  （同值通过，异值仅使该证明分支失败而非引擎错误）。`goal("Rule", a1, ...)` 查询串
+  接受字面量/`?var`/事实路径实参（嵌套调用/算术为 `RE_STATUS_INVALID_ARGUMENT`）；
+  未绑定 `?var` 实参使形参保持未绑定并记录 形参→?var 别名，形参取得具体值时别名按
+  粘性一致回绑；条件相等中未绑定形参经由既有操作数路径取得对侧具体值（事实读取全部
+  保持前提捕获）；聚合接口按原名折叠 `?var` 绑定、无 API 变更。记录的边界（与上游
+  一致）：无 occurs check、无延迟、值按标量/数组类型化相等（绝不逐元素）、别名为
+  单向值传播而非 union-find（跨跳要求同名形参）。上游自己的 Unifier 从未被其搜索
+  引擎调用（死集成），故情形表映射到本地机器的两个真实绑定点而非作为模块移植。
+  次要表面：直接目标字面量仅 int64，而 goal() 实参按 strtod 词法为 double（与既有
+  `==` 路径一致）。
+- agenda 焦点栈 + auto-focus（B4，上游 `src/rete/agenda.rs` AdvancedAgenda）：
+  `ActivateAgendaGroup("g")` 压入当前焦点并切换；焦点组 activation 耗尽（所有规则
+  完成首遍后 pending 队列排空）时弹回上一焦点继续 recognize-act 循环；栈空则运行
+  结束且焦点留在耗尽的组（恰为上游 `pop()?`）。栈存放在 program 上、与焦点同生命
+  周期（持久 agenda 被 LIMIT 中断的运行可在下次运行弹回；program 安装即重置）；
+  静态预设焦点为栈底；普通 setter 清空已存历史；栈有界 32
+  （`RE_AGENDA_FOCUS_STACK_MAX`，溢出丢弃已存焦点、切换仍发生）。
+  `auto-focus true|false` 属性沿 no-loop 语法惯例（其他值或重复属性均为解析错误）、
+  镜像入 IR、使其规则绕过计算门控（上游按组无关方式评估规则），且仅在压入产生真正
+  新 pending 项时切换焦点（去重/refraction 命中绝不重切换）；无组 auto-focus 为
+  文档化 no-op。已批准的分歧：NULL 无焦点状态永不入栈（无上游 MAIN 返回；保持已
+  批准的 A8 中途切换行为）；跨组 pending activation 经 A8 弹出时过期门控丢弃并在
+  该组重获焦点时重新压入（纯条件重新压入，净触发次数与上游分组堆相同；不纯（函数调用）
+  规则保持仅首遍求值的既有界限，该运行内不再重新触发；activation 序号可不同）；
+  焦点外的纯 auto-focus 规则每个重算周期都重新求值（与上游一致）；32 上限溢出路径
+  有文档无单测。
+- 上游 vapor——只记录不复制（spec Sub-project B 第 5 条）：任何上游执行路径都不
+  存在跨规则 alpha 共享与 beta token 传播（"RETE-UL" 是逐规则布尔表达式树；具名
+  BetaNode/TokenPool/NodeSharing 工具无任何引擎使用）；上游 Unifier 从未被反向搜索
+  调用；上游集成的证明图缓存为死代码（每次查询新建图 + insert/lookup 键失配）；
+  并行引擎的 action 为空操作且未接入主引擎；salience+recency 之外的
+  ConflictResolutionStrategy 与 RETE-UL accumulate 值绑定同样缺席。映射说明：本地
+  引擎对应上游 RustRuleEngine + BackwardEngine + streaming seam；ReteUlEngine/
+  IncrementalEngine 的引擎级怪癖（100/1000 迭代上限、`<name>_fired` 事实插入、
+  no_loop 默认 true、按类型更新全部事实的 action）属上游退化形态，有意不复制。
+- 文档：conformance.yml 新增 4 行（tms-explicit-logical-coexistence、
+  backward-qvar-unification、agenda-focus-stack-and-auto-focus、
+  upstream-vapor-rete-ul-and-dead-integration），重写 shared-proof-graph 行为 B2 实态
+  并把 rete-ul-tms-persistent-agenda 与 backward-arbitrary-unification-proof-sharing
+  两条 known_gaps 改为已交付状态（tested）；upstream.yml 的 rete/backward 模块行与
+  两条 runtime_contracts 行更新并引用 vapor 结论；Rule_Engine_Design.md 新增
+  "RETE/TMS/unification depth parity" 一节；Rule_Engine_Architecture.md 相应小节
+  同步。
+- 验证：聚焦套件 `ctest -R "rule_engine|backward_machine"` **18/18**
+  （test_rule_engine_tms 19/19、test_rule_engine_agenda 45/45、
+  test_rule_engine_backward_ext 51/51）；build-gate（clang Debug）全量构建 +
+  `ctest -LE graphics` **76/76**（test_async_loader 本次并行运行即通过，既有并行
+  flake 未复现）；build-rule-fresh-asan（clang，440 个编译单元同时带
+  -fsanitize=address 与 -fsanitize=undefined）聚焦套件 **18/18**、无诊断——ASan 与
+  UBSan 由该树一并覆盖（build-ci-ubsan 为 Visual Studio 生成器树，MSVC 无 UBSan，
+  非有效 UBSan 门禁）；MSVC 规则引擎矩阵（build-rule-debug，MSVC cl.exe + Ninja
+  Debug）构建全部规则引擎测试目标、聚焦套件 **18/18**；bench 回归
+  （rule_engine_bench_regression.cmake，RUNS=3）四项指标全部远低于 2.0s 阈值
+  （sparse cold ≈0.001s、sparse warm ≈0.058s、dense cold ≈0.003s、dense warm
+  ≈0.36-0.38s）；`git diff --check` 通过。
+- 当前限制：任意谓词合一（结构化项、occurs check、union-find）、共享子图证明溯源、
+  跨规则 RETE-UL（上游 vapor，已记录不复制）、规则触发派生之外的通用多规则生产者
+  推理仍不支持；test_async_loader 并行 flake 为既有事项，本阶段未触碰。
+
+## rule engine 流式补全（sub-project C，2026-08-30）
+
+- 聚合种类追加（C1，上游 `src/streaming/aggregator.rs:12`，ref f80a541）：
+  `re_stream_aggregate_kind_t` 尾部追加 `RE_STREAM_AGGREGATE_COUNT_DISTINCT = 8`、
+  `RE_STREAM_AGGREGATE_STDDEV = 9`、`RE_STREAM_AGGREGATE_PERCENTILE = 10`，
+  `RE_ABI_VERSION_MINOR` 整个子项目只升一次（3u→4u）。STDDEV 为总体标准差
+  （方差按 N 除，:233），少于 2 个数值报 `RE_STATUS_NOT_FOUND`（上游 `None`）；
+  PERCENTILE 升序排序后取最近秩 `round(p/100 * (n - 1))`（0-100 刻度，:253），
+  参数由 `re_stream_filter_options_t` 尾部 struct_size 门控字段承载（未覆盖或越界、
+  含 NaN，报 `RE_STATUS_INVALID_ARGUMENT`；追加前的旧 filter 尺寸对其余种类照常
+  可用）；COUNT_DISTINCT 在既有 `count` 字段报告，按 `re_value_t` 类型化相等
+  （double 位级比较）去重——上游按 `format!("{:?}")` 调试串去重会把 1 与 1.0 视为
+  相同，为已记录分歧。`re_stream_aggregate_result_t` 以同一 struct_size 成对门控
+  惯例尾部追加 `stddev`/`percentile`。
+- StreamAnalytics（C2，上游 `src/streaming/aggregator.rs:285`）：TTL 缓存命中当且仅
+  当 `current_time_ms - 条目时间戳 < ttl`（:311），命中不刷新时间戳；未命中经窗口
+  聚合重算、逐出全部过期条目（:323）后插入新值；缓存标识为调用方键 + 种类 +
+  filter 同一性（对上游纯字符串键的已记录加固）；时钟由宿主供给，引擎不采样时钟。
+  moving_average 对调用方窗口数组末 N 个做全局 `sum(events)/count(events)`（:329，
+  绝非"平均的平均"）；detect_anomalies 需 ≥3 窗口且历史值（除末窗口外全部）≥10，
+  按总体均值/标准差标记末窗口 `|z| > threshold` 的事件并报告其时间戳（:357；本地
+  事件无 ID，时间戳替代为已记录映射）；calculate_trend 逐窗平均、对半切分、
+  ±5% 阈值映射 Increasing/Decreasing/Stable（:399、:416、:430）。已记录分歧：
+  本地"字段"映射为事件名 + 数值标量；<3 窗口报 INVALID_ARGUMENT、<10 历史值报
+  NOT_FOUND（上游静默返回空）；历史标准差为 0 不标记；first_avg == 0 报 STABLE
+  （除零守卫）。
+- GRL 流语法（C3，上游 `src/parser/grl/stream_syntax.rs`）：条件文法
+  `var: EventType from stream("name") over window(<digits> <unit>, sliding|tumbling)`
+  解析为 `RE_EXPR_STREAM_PATTERN`（只增内部枚举）并镜像入 IR（自有负载字符串 +
+  `re_ir_validate` 良构分支，`re_engine_install` 硬拒绝畸形 IR）。事件类型可选且
+  恰为 `from` 的标识符不被消费为类型（:216）；window 子句可选（:93）；单位精确
+  采用上游大小写敏感集合（:166-179），其余单位一律解析错误；`session` 作为已记录
+  本地扩展接受并映射 `RE_STREAM_WINDOW_SESSION`（上游 GRL 拒绝 session，尽管其
+  Rust 枚举存在 `WindowType::Session`）。上游 `pattern && pattern` 联接文法
+  （:429）是 vapor——`join_conditions` 恒空、无任何消费者——本地一律解析错误。
+  携带流模式 CE 的规则不进 RETE 网络，对反向链保持诚实的
+  `RE_STATUS_NOT_SUPPORTED`。
+- 水位驱动闭合 + 跨流联接（C4，上游 `src/streaming/watermark.rs` 与
+  `src/rete/stream_join_node.rs`）：`re_stream_window_options_t` 尾部追加
+  struct_size 门控的 `watermark_drives_closure`（默认 0 = C 前行为）。开启后
+  tumbling 桶在水位 `>= bucket_end + allowed_lateness_ms` 时闭合、会话目标在水位
+  `>= (ts + retention) + allowed_lateness_ms` 时闭合；命中已闭合目标按既有迟到策略
+  处理（DROP→NOT_FOUND、ERROR→RE_STATUS_ERROR、ACCEPT 仅在目标仍保留时记录）；
+  sliding 无离散桶、保持仅记录门控（已记录惰性）；上游水位除联接节点驱逐外从不
+  驱动闭合，故该接线为已记录本地组合。联接 API 交付四种 JoinType（:11）与三种
+  JoinStrategy（:24），同键配对在记录时入队，未匹配外侧在单一单调水位越过时恰好
+  发射一次且绝不重发（:204 的本地组合）；界限为每侧 256 键、每键 64 缓冲事件
+  （drop-oldest + 丢弃计数）、256 待取匹配；时间比较本地统一毫秒（上游按整秒，
+  已记录分歧）；上游未将联接节点接入其 StreamRuleEngine，本地同样是宿主驱动的
+  独立 C 接缝。
+- 流规则求值（C5，上游 `src/streaming/engine.rs:341-378`）：引擎携有界流注册表
+  （16 名、重复名替换、借用窗口句柄、运行中报 BUSY）。`re_engine_stream_run` 向
+  调用方 facts 注入上游 execute_rules 事实集后跑一遍整个规则库：恒有
+  `WindowEventCount`（DOUBLE）、`WindowStartTime`、`WindowEndTime`、
+  `WindowDurationMs`（:347-353），并按事件名注入 `<name>Sum/Average/Min/Max`
+  数值折叠（:364-376；上游按数据 map 自动探测数值字段，:383；本地字段映射为事件
+  名）。每次注入都是普通 `re_facts_set`——覆盖陈旧同名事实并推进 facts 变更序列
+  号，B2 证明图缓存因此绝不可能跨两次流运行提供陈旧结果；上游钉住的
+  `when WindowEventCount > 5` 用法（:478-481）有测试覆盖。GRL 流模式 CE 对已注册
+  窗口求值：可选类型按事件名过滤，可选 window 子句限定 sliding 区间/当前
+  tumbling 桶/当前开放会话，无子句读全部保留事件；规则在任一保留事件合格时每运行
+  触发一次（exists 语义）。已批准分歧：未注册流报 `RE_STATUS_NOT_SUPPORTED` 而非
+  NOT_FOUND——`compute_rule_activations`（engine.c:755）会把 NOT_FOUND 吞成静默
+  不匹配；零时长 tumbling 子句报 INVALID_ARGUMENT（上游 `ts / 0` 会 panic）；
+  exists/单次激活语义（上游从不对流模式 CE 求值，无每事件激活多重性可镜像）。
+- 上游 vapor / 不适用——只记录不复制：GRL `&&` 联接条件（上游已解析但从不消费）；
+  `src/streaming/operators.rs` 离线流式链式 API（未接入上游引擎）；tokio mpsc
+  通道 + `Arc<RwLock<WindowManager>>` 拓扑（engine.rs:183-262，与单线程句柄契约
+  不适用，本地为同步宿主驱动接缝）；序列模式 CEP 在既有配对关联之外保持有界
+  （上游自身无活跃序列匹配器）。
+- 文档：conformance.yml 重写 streaming-windows 行（新种类 + 闭合标志入
+  tested_subset/note），新增 stream-analytics、grl-stream-syntax、stream-joins、
+  stream-rule-evaluation、upstream-vapor-streaming-join-operators-topology 共 5 行，
+  known_gaps 的 full-streaming-patterns 由 unsupported 改为 tested 交付实态；
+  upstream.yml 的 streaming 模块行、cargo-feature 行与 internal-api 行全部更新并
+  引 f80a541 文件:行；Rule_Engine_Design.md 新增 "Streaming completion parity"
+  一节；Rule_Engine_Architecture.md 相应小节同步。
+- 验证：build-gate（clang Debug）全量构建 + `ctest -LE graphics` **77/78 有效**
+  （原始并行运行 76/78——test_async_loader 为既有并行 flake，单跑即过；
+  test_network 3 条 UDP 发送失败来自远端提交 76871ec，与 origin/master 逐字节一致，
+  环境侧问题，本阶段不动）；聚焦套件 `ctest -R "rule_engine|backward_machine"`
+  **20/20**（test_rule_engine_stream_ext 45/45、test_rule_engine_stream_grl 19/19、
+  test_rule_engine_stream_eval 18/18、test_rule_engine_backward_ext 54/54、
+  test_rule_engine_agenda 45/45、test_rule_engine_tms 19/19）；
+  build-rule-fresh-asan（ASan+UBSan 同树）聚焦套件 **20/20**、无诊断；
+  MSVC 规则引擎矩阵（build-rule-debug）聚焦套件 **20/20**；bench 回归
+  （rule_engine_bench_regression.cmake，RUNS=3）四项指标全部远低于 2.0s 阈值
+  （最差 dense warm_eval 0.362s）；`git diff --check` 通过。
+- 当前限制：序列模式 CEP 在配对关联之外有界（上游无活跃序列匹配器）；GRL `&&`
+  联接、operators.rs 链式 API、tokio 拓扑为已记录 vapor/不适用，未复制；sliding
+  窗口不参与水位闭合（仅记录门控）；test_network 环境侧失败与 test_async_loader
+  并行 flake 均为既有事项，本阶段未触碰。
+
+## rule engine 生态对齐（sub-project D，2026-08-31）
+
+- 插件边界（D1，上游 f80a541 `src/plugins/mod.rs:1-11`）：上游恰有五个插件，均经
+  `engine.load_plugin` 挂接（`src/engine/plugin.rs:48`、`engine.rs:1977`），非自动
+  加载、非 feature 门控；本地无 load_plugin 表面，纯函数助手以名字分发内建形式交付于
+  builtins.c（宿主函数注册表保持 override-first 优先）：concat/repeat/substring/
+  replace、sqrt、first/last/reverse/slice/keys/values、isEmail/isPhone/isUrl/
+  isNumeric/inRange 共 16 个，全部纯分类；按取回的上游函数体钉死 empty first/last →
+  Null、isUrl 接受 ftp://、replace 空 from 按 UTF-8 码点边界插入（upstream-exact）。
+  date_utils 族（读环境时钟，date_utils.rs:61-62）与 15 条元数据声明但从未注册的上游
+  项作为 vapor 只记录不实现；上游 lib.rs 宣传数字（44+ 动作 / 33+ 函数）超出实际
+  注册量（33 动作 + 29 函数），如实记录。新套件 test_rule_engine_plugin_parity
+  33/33。
+- 示例覆盖（D2）：pinned 清单 29 个 [[example]]（七个族目录）+ 清单外自动发现的
+  examples/session_window_demo.rs（examples/ 根部的 auto-discovered 目标）；无本地
+  Rust 示例，覆盖 = 由具名测试驱动的本地行为等价。逐族映射表 verbatim 存于
+  test_rule_engine_example_coverage.c 头部注释；新增 3 个 smoke（ex01 fraud_detection
+  式前向链、ex03 注册函数 action handler、ex09 GRL query 反向机），其余族映射既有
+  套件或记录在案的 not_applicable（05 性能 → bench 基线回归；parallel_engine_demo 与
+  rete_ul_drools_style 为上游 vapor；10 模块系统经本地 defmodule/import 机制
+  covered_bounded）。记录在案的有界分歧：反向条件匹配器只读平铺事实名（不遍历点分
+  对象，前向匹配器会遍历），已写入 upstream.yml backward-queries 行 notes。
+- Redis 探针（D3）：2026-08-31 实测 Redis 8.10.1 服务（MSYS2 构建）在
+  127.0.0.1:6379 存活（约 5.5 天 uptime，推翻同日早些时候"无服务"的探针结论），但
+  hiredis 客户端开发文件在所有探测位置均缺席（含无 installed/ 树的 VCPKG_ROOT），
+  `RULE_ENGINE_ENABLE_REDIS=ON` 在配置期被强制关闭（"no fallback"，
+  engine/CMakeLists.txt:736-753），roundtrip 测试编译期裁除；阻塞点是客户端缺席而非
+  服务缺席，行保持 optional_backend compile-verified（规范唯一允许的例外），未来任何
+  提升尝试须重新探针。逐字证据见 task-d3-report.md。
+- 全特性映射（D4）：上游 Cargo features {default, streaming, streaming-redis,
+  backward-chaining} 无聚合开关（--all-features 恰为后三者）；本地映射为 streaming 与
+  backward-chaining 恒开（无门控编译入 rule_engine_core）、streaming-redis ↔
+  RULE_ENGINE_ENABLE_REDIS（hiredis 自动探测，缺席即强制关闭）、工具开关
+  RULE_ENGINE_ENABLE_C11_PARALLEL / ENGINE_USE_ASAN / ENGINE_USE_UBSAN /
+  ENGINE_BUILD_TESTS；无单一 all-features 开关，以文档化清单代替。
+- 文档：upstream.yml 的 plugins 行 pending → tested 交付实态、all-features 行重写为
+  CMake 选项集映射、examples 清单注释按族更新（含 session_window_demo）、
+  backward-queries 行补平铺匹配分歧、streaming-redis 行补 D3 证据；conformance.yml
+  新增 plugin-pure-helpers 与 example-family-coverage 两行、streaming-redis-state 行
+  补探针证据、聚焦基线 20/20 → 22/22；Rule_Engine_Design.md 新增 "Ecosystem parity"
+  一节；Rule_Engine_Architecture.md 同步小节。
+- 验证：build-gate（clang Debug）全量构建 + `ctest -LE graphics` **79/80**（唯一失败
+  test_network 的 3 条 UDP 发送失败为远端提交 76871ec 引入的既有环境事项；
+  test_async_loader 并行 flake 本轮未出现——均为既有事项，本阶段不动）；聚焦套件
+  `ctest -R "rule_engine|backward_machine"` **22/22**（新增
+  test_rule_engine_plugin_parity 33/33、test_rule_engine_example_coverage 3/3）；
+  build-rule-fresh-asan（ASan+UBSan 同树）聚焦 **22/22**、无诊断；MSVC
+  （build-rule-debug）聚焦 **22/22**；bench 回归
+  （rule_engine_bench_regression.cmake，RUNS=3）四项指标全部远低于 2.0s 阈值（最差
+  dense warm_eval 0.382s）；`git diff --check` 通过。
+- 当前限制：native Redis roundtrip 未做运行时验证（客户端缺席；服务存活但无客户端
+  不可用，且服务可用性随时间变化须重探）；date_utils 族与插件 vapor 项只记录不实现；
+  上游 `then ActionName(...)` 裸动作拼写对非白名单名保持锁定的解析错误；反向条件匹配器
+  仅读平铺事实名；test_network 环境侧失败与 test_async_loader 并行 flake 为既有事项。
+
+## rule engine Redis 运行时验证提升（2026-08-31）
+
+- 两处受控侧使能修复落地：`engine/src/rule_engine/redis_provider.c` 在
+  `RE_HAS_HIREDIS` 块内、`_WIN32` 下先于 hiredis.h 包含 `<winsock2.h>`（上游
+  hiredis.h 在 `_MSC_VER` 下仅前向声明 `struct timeval`，而本文件的
+  redisConnectWithTimeout 超时需要完整类型）；`engine/CMakeLists.txt` 的
+  RULE_ENGINE_ENABLE_REDIS 块在 WIN32 下为 rule_engine_core 链接 ws2_32（静态库
+  PRIVATE 经 link-only 接口传递到 test_rule_engine_stream_ext 等消费目标）。两项
+  均为探测期外置 workaround（scratch 头补丁、`-DCMAKE_EXE_LINKER_FLAGS=-lws2_32`）
+  的受控内化。
+- 原始 hiredis 复证：scratch 重解包 hiredis v1.4.1 头文件无任何补丁（库由未改源
+  以 clang MSVC ABI 静态构建），build-redis-probe 从零配置、不带链接器旗标即通过
+  探测门；不带 RE_TEST_REDIS_URL 运行 roundtrip 干净 SKIP（48/48），带
+  `RE_TEST_REDIS_URL=redis://127.0.0.1:6379` 对存活 Redis 8.10.1 实测
+  `redis_roundtrip_when_service_available` **OK**（48/48），ctest 该套件通过；
+  服务侧 DBSIZE 0→0、无 `re:*` 残留键（测试自清）。
+- 回归：build-gate（redis OFF）重配置后聚焦 `ctest -R "rule_engine|backward_machine"`
+  **22/22**、`test_network` 通过；MSVC build-rule-debug 聚焦 **22/22** 且
+  test_network 通过。
+- 文档行提升：conformance.yml `streaming-redis-state` 行 `native_redis_status` 由
+  compile-verified-only 提升为 runtime-verified，known_gaps native-redis 行与
+  upstream.yml streaming-redis cargo_feature 行同步（bounded 注记不变，仅验证状态
+  改变）；roundtrip 仍由 RE_TEST_REDIS_URL 跳过门控（无宏时编译期裁除不变），服务
+  可用性随时间变化，重跑前须重探——跳过门控仍是 CI 路径。逐字证据见
+  `.superpowers/sdd/2026-08-29-rule-engine-full-parity/redis-enablement-report.md`。
+
+## 网络与异步加载测试修复（2026-08-31）
+
+- `test_network` 三个 UDP 用例失败的根因经探针实证：用例把绑定 INADDR_ANY 的套接字
+  本地地址（`0.0.0.0`）直接用作 sendto 目的地址，Winsock 以 WSAEADDRNOTAVAIL(10049)
+  拒绝（Linux 将通配映射到回环，故仅在 Windows 失败）；缺陷随远端 76871ec 的测试
+  改动进入，network.c 库无辜（旧版测试对当前库全过）。修复为测试侧
+  `net_test_normalize_loopback()`：通配地址归一到回环（`0.0.0.0`→`127.0.0.1`，
+  `::`→`::1`），恰好应用于三处发送点；套件在 build-gate 复绿。
+- `test_async_loader` 并行 flake 的根因经压测实证：固定迭代次数的忙等循环实为约
+  10ms 的隐式时限，CPU 超订阅下工作线程链超时（ burner 加压下 37 次运行 158 例失败，
+  单跑 0/100）；实现端（条件变量+CAS 完成环）无缺陷。修复为测试侧单调墙钟期限轮询
+  （`test_now_us` + `test_wait_deadline`，5 秒预算）替换 8 处忙等；验证：burner 加压
+  35/35、全量并行 5/5 且 80/80 全绿。
+- 评审 Minor 顺带收尾：两处文档的 RULE_ENGINE_ENABLE_REDIS 块行号引用随 ws2_32 六行
+  插入更新为 `:736-759`；回环归一的 IPv6 臂改映 `::1`。
+
+## rule engine 全平价计划集合卷（2026-08-31）
+
+- 四个子项目全部交付并推送：A（GRL/表达式面，`bf11de3`+`d537c7d`）、B（RETE/TMS/
+  统一化深度，`e2cff59`+`625265d`）、C（流式补全，`5e51e75`）、D（生态，`dff2d22`）；
+  后续波次：残留清扫 `1ef38d8`+`72dbb30`、环境修复与 Redis 运行时验证 `8e54306`、
+  本地 WIP 保留 `c141fa9`+`6519085`+`d908b9a`、别名补全与期限化 `32e0c5d`。
+- 合卷基线：全量无头 **80/80**、聚焦 `rule_engine|backward_machine` **22/22** × 三套
+  工具链树（clang Debug / ASan+UBSan / MSVC）、bench 回归 PASS、`git diff --check` 干净。
+- 裁定记录归档：SDD 台账（含全部评审裁定与 SAFE-TO-LEAVE 设计边界）入库于
+  `docs/superpowers/ledgers/2026-08-29-rule-engine-full-parity.md`；完整工作区（任务
+  简报/报告、评审包、诊断）留盘于 `.superpowers/sdd/`（`.git/info/exclude` 排除）。

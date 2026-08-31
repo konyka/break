@@ -719,7 +719,8 @@ add_library(rule_engine_core STATIC
     src/rule_engine/builtins.c
     src/rule_engine/transactions.c
     src/rule_engine/tumbling_session.c src/rule_engine/memory_provider.c
-     src/rule_engine/stream_correlation.c src/rule_engine/ir_eval.c
+     src/rule_engine/stream_correlation.c src/rule_engine/stream_analytics.c src/rule_engine/stream_join.c src/rule_engine/ir_eval.c
+     src/rule_engine/stream_eval.c
      src/rule_engine/tms.c
     src/rule_engine/rete.c src/rule_engine/advanced.c src/rule_engine/backward.c
      src/rule_engine/backward_machine.c
@@ -777,6 +778,16 @@ if(RULE_ENGINE_ENABLE_REDIS)
         else()
             target_include_directories(rule_engine_core PRIVATE ${HIREDIS_INCLUDE_DIR})
             target_link_libraries(rule_engine_core PRIVATE ${HIREDIS_LIBRARY})
+        endif()
+        if(WIN32)
+            # hiredis's socket calls need Winsock2 on the link line. PRIVATE on
+            # the static rule_engine_core still propagates to its consumers
+            # (e.g. test_rule_engine_stream_ext) via the link-only interface.
+            target_link_libraries(rule_engine_core PRIVATE ws2_32)
+        endif()
+        if(_rule_engine_hiredis_target)
+            message(STATUS "Redis client enabled from ${_rule_engine_hiredis_source_dir}")
+        else()
             message(STATUS "Redis client detected at ${HIREDIS_INCLUDE_DIR}; native Redis state provider enabled")
         endif()
     else()
@@ -898,6 +909,18 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_rule_engine_grl_surface PRIVATE rule_engine_core)
     add_test(NAME test_rule_engine_grl_surface COMMAND test_rule_engine_grl_surface)
 
+    add_executable(test_rule_engine_plugin_parity tests/test_rule_engine_plugin_parity.c)
+    set_property(TARGET test_rule_engine_plugin_parity PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_plugin_parity PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_plugin_parity PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_plugin_parity COMMAND test_rule_engine_plugin_parity)
+
+    add_executable(test_rule_engine_example_coverage tests/test_rule_engine_example_coverage.c)
+    set_property(TARGET test_rule_engine_example_coverage PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_example_coverage PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_example_coverage PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_example_coverage COMMAND test_rule_engine_example_coverage)
+
     add_executable(test_rule_engine_query_blocks tests/test_rule_engine_query_blocks.c)
     set_property(TARGET test_rule_engine_query_blocks PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine_query_blocks PRIVATE ${TEST_INCLUDE_DIRS})
@@ -914,6 +937,18 @@ if(ENGINE_BUILD_TESTS)
     if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
         target_compile_definitions(test_rule_engine_stream_ext PRIVATE RE_HAS_HIREDIS)
     endif()
+
+    add_executable(test_rule_engine_stream_grl tests/test_rule_engine_stream_grl.c)
+    set_property(TARGET test_rule_engine_stream_grl PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_stream_grl PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_stream_grl PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_stream_grl COMMAND test_rule_engine_stream_grl)
+
+    add_executable(test_rule_engine_stream_eval tests/test_rule_engine_stream_eval.c)
+    set_property(TARGET test_rule_engine_stream_eval PROPERTY C_STANDARD 99)
+    target_include_directories(test_rule_engine_stream_eval PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_rule_engine_stream_eval PRIVATE rule_engine_core)
+    add_test(NAME test_rule_engine_stream_eval COMMAND test_rule_engine_stream_eval)
 
     add_executable(test_rule_engine_backward_deep_chain tests/test_rule_engine_backward_deep_chain.c)
     set_property(TARGET test_rule_engine_backward_deep_chain PROPERTY C_STANDARD 99)

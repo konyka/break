@@ -68,7 +68,7 @@ static bool deque_init(WorkStealDeque *dq, u32 capacity) {
 }
 
 static void deque_destroy(WorkStealDeque *dq) {
-    free(dq->buffer);
+    free((void *)dq->buffer);
     dq->buffer = NULL;
 }
 

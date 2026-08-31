@@ -835,6 +835,108 @@ done:
     return status;
 }
 
+/* C5 stream-pattern CE evaluation (upstream rust-rule-engine v1.21.4
+ * f80a541 src/parser/grl/stream_syntax.rs parse_stream_pattern; rule_engine.h
+ * documents the semantics and the bounded divergences). The CE consults the
+ * engine's stream registry: an UNREGISTERED stream reports
+ * RE_STATUS_NOT_SUPPORTED, the honest gate C3 pinned (the brief's NOT_FOUND
+ * mapping is deliberately NOT used - compute_rule_activations swallows
+ * NOT_FOUND as an ordinary non-match, which would silently flip the pinned
+ * C3 behavior). Event-time filtering uses the CLAUSE's duration against the
+ * registered window's watermark; the type filter matches the event NAME and
+ * `var` denotes the event's scalar value (local events carry a name plus one
+ * scalar; upstream matches event_type against its event type field). The
+ * result is exists semantics: matched is set on the first qualifying event
+ * (timestamp order only for sliding windows, whose event array is
+ * insertion-sorted; tumbling/session bounded windows scan in record-append
+ * order, unobservable under exists semantics - nothing downstream consumes
+ * the nominal per-activation binding locally). */
+static int stream_scope_contains(const re_stream_window_t *window,
+                                 const re_ir_expr_t *expr, uint64_t session_start,
+                                 uint64_t timestamp) {
+    uint64_t duration = expr->stream_window_duration_ms;
+    if (!expr->stream_has_window) return 1; /* no clause: all retained events */
+    if (expr->stream_window_kind == RE_STREAM_WINDOW_SLIDING) {
+        /* [watermark - duration, watermark], saturating sub. */
+        uint64_t lo = duration > window->watermark ? 0u : window->watermark - duration;
+        return timestamp >= lo && timestamp <= window->watermark;
+    }
+    if (expr->stream_window_kind == RE_STREAM_WINDOW_TUMBLING) {
+        /* The current bucket (upstream window.rs: ts / window_ms); a zero
+         * duration is rejected by the caller (bucket size 0 is undefined). */
+        return timestamp / duration == window->watermark / duration;
+    }
+    /* session: the current open session (tumbling_session.c semantics). */
+    return timestamp >= session_start;
+}
+
+/* Start timestamp of the current open session: the newest retained event
+ * and its backward chain with consecutive gaps <= duration. The events
+ * array is only append-ordered for bounded windows (late ACCEPT records can
+ * land out of order), so the timestamps are sorted into a scratch copy
+ * first. */
+static re_status_t session_scope_start(const re_engine_t *engine,
+                                       const re_stream_window_t *window,
+                                       uint64_t duration, uint64_t *out_start) {
+    uint64_t *timestamps;
+    uint64_t last;
+    size_t i;
+    if (window->count == 0u) { *out_start = 0u; return RE_STATUS_OK; }
+    if (window->count > SIZE_MAX / sizeof(*timestamps)) return RE_STATUS_LIMIT;
+    timestamps = re_alloc(&engine->allocator, window->count * sizeof(*timestamps));
+    if (timestamps == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    for (i = 0u; i < window->count; ++i) timestamps[i] = window->events[i].timestamp;
+    /* Insertion sort ascending (bounded by the window's own max_events). */
+    for (i = 1u; i < window->count; ++i) {
+        uint64_t current = timestamps[i];
+        size_t j = i;
+        while (j != 0u && timestamps[j - 1u] > current) {
+            timestamps[j] = timestamps[j - 1u];
+            --j;
+        }
+        timestamps[j] = current;
+    }
+    last = timestamps[window->count - 1u];
+    i = window->count - 1u;
+    while (i != 0u && last - timestamps[i - 1u] <= duration) {
+        last = timestamps[i - 1u];
+        --i;
+    }
+    *out_start = timestamps[i];
+    re_free(&engine->allocator, timestamps);
+    return RE_STATUS_OK;
+}
+
+static re_status_t stream_pattern_match(const re_engine_t *engine,
+                                        const re_ir_expr_t *expr, int *matched) {
+    const re_stream_window_t *window;
+    uint64_t session_start = 0u;
+    size_t index;
+    re_status_t status = RE_STATUS_OK;
+    *matched = 0;
+    window = re_engine_stream_lookup(engine, expr->stream_name, expr->stream_name_size);
+    if (window == NULL) return RE_STATUS_NOT_SUPPORTED; /* the pinned C3 gate */
+    if (expr->stream_has_window && expr->stream_window_kind == RE_STREAM_WINDOW_TUMBLING &&
+        expr->stream_window_duration_ms == 0u)
+        return RE_STATUS_INVALID_ARGUMENT; /* bucket size 0 is undefined */
+    if (expr->stream_has_window && expr->stream_window_kind == RE_STREAM_WINDOW_SESSION) {
+        status = session_scope_start(engine, window, expr->stream_window_duration_ms,
+                                     &session_start);
+        if (status != RE_STATUS_OK) return status;
+    }
+    for (index = 0u; index < window->count; ++index) {
+        const re_stream_event_impl_t *event = &window->events[index];
+        if (expr->stream_has_event_type &&
+            (event->name_size != expr->stream_event_type_size ||
+             memcmp(event->name, expr->stream_event_type, expr->stream_event_type_size) != 0))
+            continue;
+        if (!stream_scope_contains(window, expr, session_start, event->timestamp)) continue;
+        *matched = 1;
+        break;
+    }
+    return RE_STATUS_OK;
+}
+
 static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *facts,
                                       const re_ir_program_t *ir, re_eval_frame_kind_t kind,
                                       size_t index, int *matched, re_value_t *value,
@@ -1127,6 +1229,13 @@ static re_status_t evaluate_iterative(const re_engine_t *engine, re_facts_t *fac
                                                 state->frame_count - 1u, 0u);
                         }
                     }
+                }
+                else if (expr->kind == RE_EXPR_STREAM_PATTERN) {
+                    /* C5: the stream-pattern CE evaluates against the
+                     * engine's stream registry (exists semantics over the
+                     * filtered retained events). */
+                    status = stream_pattern_match(engine, expr, &frame->matched);
+                    if (status == RE_STATUS_OK) frame->stage = 99u;
                 }
                 else status = RE_STATUS_NOT_SUPPORTED;
             } else if (frame->stage == 1u) {

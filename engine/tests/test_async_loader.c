@@ -5,6 +5,42 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
+/* Monotonic clock for wait deadlines. platform/time.c has a suitable
+ * time_microseconds(), but it is not linked into this test target and
+ * only this file may change, so use a small local equivalent
+ * (QueryPerformanceCounter on Windows, CLOCK_MONOTONIC elsewhere). */
+#if defined(ENGINE_PLATFORM_WINDOWS)
+#include <windows.h>
+static u64 test_now_us(void) {
+    static LARGE_INTEGER freq = {0};
+    LARGE_INTEGER counter;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    /* Overflow-safe split, same as platform/time.c (R423). */
+    u64 c = (u64)counter.QuadPart;
+    u64 f = (u64)freq.QuadPart;
+    return (c / f) * 1000000ULL + ((c % f) * 1000000ULL) / f;
+}
+#else
+#include <time.h>
+static u64 test_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000ULL + (u64)ts.tv_nsec / 1000ULL;
+}
+#endif
+
+/* Flake fix (see .scratch-flakediag/diagnosis.md): the fixed-iteration
+ * `volatile` busy loops below were implicit timing deadlines that could
+ * expire before the worker finished under CPU oversubscription. Each
+ * poll now runs until a monotonic wall-clock deadline: the 5 s budget
+ * only bounds how long we wait, it is not a timing assumption. */
+#define TEST_WAIT_BUDGET_US 5000000ULL
+
+static u64 test_wait_deadline(void) {
+    return test_now_us() + TEST_WAIT_BUDGET_US;
+}
+
 /* ---- Init/Shutdown ---- */
 
 TEST(async_loader_init_shutdown) {
@@ -56,13 +92,15 @@ TEST(async_loader_load_nonexistent) {
                                    test_load_callback, NULL);
     ASSERT_NEQ(id, (u64)0);
 
-    /* Wait for completion - poll a few times */
-    for (int i = 0; i < 100; i++) {
+    /* Wait for completion - poll until done or the deadline expires */
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         AssetState st = async_loader_status(id);
         if (st == ASSET_FAILED || st == ASSET_READY || st == ASSET_UNLOADED) {
             break;
         }
+        if (test_now_us() >= deadline) break;
         /* Small sleep equivalent: busy loop */
         for (volatile int j = 0; j < 100000; j++) { (void)j; }
     }
@@ -90,11 +128,13 @@ TEST(async_loader_status_loading) {
     AssetState st = async_loader_status(id);
     ASSERT_TRUE(st == ASSET_LOADING || st == ASSET_FAILED || st == ASSET_READY);
 
-    /* Wait for completion */
-    for (int i = 0; i < 100; i++) {
+    /* Wait for completion (deadline-bounded poll) */
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         st = async_loader_status(id);
         if (st != ASSET_LOADING) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 100000; j++) { (void)j; }
     }
 
@@ -272,9 +312,11 @@ TEST(async_loader_priority_ordering) {
     ASSERT_NEQ(id_low_b, (u64)0);
     ASSERT_NEQ(id_high, (u64)0);
 
-    for (int i = 0; i < 500; i++) {
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         if (atomic_load(&g_pri_order_count) >= 3) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
 
@@ -355,10 +397,12 @@ TEST(async_loader_decode_non_blocking) {
 
     /* Main thread pumps ticks without blocking on decode. */
     int ticks = 0;
-    for (int i = 0; i < 500; i++) {
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         ticks++;
         if (atomic_load(&g_decode_cb_called)) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
 
@@ -407,9 +451,11 @@ TEST(async_loader_range_truncated_fails)
                                         range_trunc_cb, NULL);
     ASSERT_NEQ(id, (u64)0);
 
-    for (int i = 0; i < 200; i++) {
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         if (atomic_load(&g_range_cb_called)) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
 
@@ -453,9 +499,11 @@ TEST(async_loader_range_zero_reads_to_end)
     u64 id = async_loader_request_range(strrchr(path, '/') + 1, 2, 0,
                                         range_to_end_cb, NULL);
     ASSERT_NEQ(id, (u64)0);
-    for (int i = 0; i < 200; i++) {
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         if (atomic_load(&g_range_to_end_called)) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
     ASSERT_EQ(atomic_load(&g_range_to_end_called), 1);
@@ -495,11 +543,14 @@ TEST(async_loader_completion_burst)
         if ((i & 31) == 0) async_loader_tick();
     }
 
-    for (int i = 0; i < 200000; i++) {
+    /* Wait for the burst to drain - poll until done or the deadline expires */
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         if (atomic_load(&g_burst_cb_count) >= N &&
             async_loader_pending_count() == 0)
             break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 5000; j++) { (void)j; }
     }
 
@@ -614,8 +665,10 @@ TEST(async_loader_shutdown_drains_ready_completion)
     ASSERT_NEQ(id, (u64)0);
 
     /* Observe completion without draining the main-thread queue. */
-    for (int i = 0; i < 200; i++) {
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         if (async_loader_status(id) == ASSET_READY) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
     ASSERT_EQ(async_loader_status(id), ASSET_READY);
@@ -679,8 +732,10 @@ TEST(async_loader_shutdown_drains_decoded_completion)
                                           shutdown_decode_cb, NULL, 0);
     ASSERT_NEQ(id, (u64)0);
 
-    for (int i = 0; i < 200; i++) {
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         if (decode_pipeline_ready_count() > 0) break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 50000; j++) { (void)j; }
     }
     ASSERT_TRUE(decode_pipeline_ready_count() > 0);

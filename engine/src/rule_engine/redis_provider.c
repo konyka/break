@@ -32,6 +32,14 @@
 
 #if defined(RE_HAS_HIREDIS)
 
+#if defined(_WIN32)
+/* winsock2.h defines struct timeval, which hiredis.h only forward-declares
+ * when _MSC_VER is set (clang targeting the MSVC ABI, and MSVC itself), but
+ * this file uses it as a complete type for redisConnectWithTimeout. Include
+ * it before hiredis.h so the tracked source needs no hiredis header patch. */
+#include <winsock2.h>
+#endif
+
 #include <hiredis/hiredis.h>
 #include <stdio.h>
 #include <stdlib.h>

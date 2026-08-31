@@ -1306,7 +1306,7 @@ TEST(sliding_window_records_eviction_lateness_limits_and_snapshot_restore) {
     re_stream_window_t *window = NULL;
     re_stream_window_t *restored = NULL;
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 100u, 3u, 30u, 10u};
+        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 100u, 3u, 30u, 10u, 0u};
     re_value_t value = {RE_VALUE_STRING, { .string = {"x", 1u} }};
     re_snapshot_t first = {sizeof(first), 0u, NULL, 0u, NULL, NULL};
     re_snapshot_t second = {sizeof(second), 0u, NULL, 0u, NULL, NULL};
@@ -1339,7 +1339,7 @@ TEST(tumbling_window_uses_half_open_event_time_buckets) {
     re_stream_window_t *window = NULL;
     re_snapshot_t snapshot = {sizeof(snapshot), 0u, NULL, 0u, NULL, NULL};
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_TUMBLING, RE_LATE_EVENT_DROP, 100u, 8u, 1024u, 0u};
+        RE_STREAM_WINDOW_TUMBLING, RE_LATE_EVENT_DROP, 100u, 8u, 1024u, 0u, 0u};
     re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
     ASSERT_EQ(re_stream_window_create_v1(engine, &options, &window), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 99u, text("before"), &value), RE_STATUS_OK);
@@ -1356,7 +1356,7 @@ TEST(session_window_creates_extends_and_times_out_deterministically) {
     re_stream_window_t *window = NULL;
     re_snapshot_t snapshot = {sizeof(snapshot), 0u, NULL, 0u, NULL, NULL};
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_SESSION, RE_LATE_EVENT_DROP, 50u, 8u, 1024u, 0u};
+        RE_STREAM_WINDOW_SESSION, RE_LATE_EVENT_DROP, 50u, 8u, 1024u, 0u, 0u};
     re_value_t value = {RE_VALUE_BOOL, {.boolean = 1}};
     ASSERT_EQ(re_stream_window_create_v1(engine, &options, &window), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 100u, text("a"), &value), RE_STATUS_OK);
@@ -1374,7 +1374,7 @@ TEST(tumbling_window_applies_late_policy_limits_and_empty_snapshot) {
     re_stream_window_t *window = NULL;
     re_snapshot_t snapshot = {sizeof(snapshot), 0u, NULL, 0u, NULL, NULL};
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_TUMBLING, RE_LATE_EVENT_ERROR, 100u, 2u, 32u, 10u};
+        RE_STREAM_WINDOW_TUMBLING, RE_LATE_EVENT_ERROR, 100u, 2u, 32u, 10u, 0u};
     re_value_t value = {RE_VALUE_STRING, {.string = {"payload", 7u}}};
     ASSERT_EQ(re_stream_window_create_v1(engine, &options, &window), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 100u, text("first"), &value), RE_STATUS_OK);
@@ -1534,14 +1534,14 @@ TEST(stream_window_filters_and_aggregates_bounded_contents) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_stream_window_t *window = NULL;
     re_stream_filter_options_t filter = {sizeof(filter), RE_STREAM_WINDOW_ABI_VERSION,
-        text("purchase"), (re_string_t){NULL, 0u}};
+        text("purchase"), (re_string_t){NULL, 0u}, 0.0};
     re_stream_aggregate_result_t result = {sizeof(result), 0u, 0.0, 0.0, 0.0, 0.0,
-        {RE_VALUE_NONE, {0}}, {RE_VALUE_NONE, {0}}};
+        {RE_VALUE_NONE, {0}}, {RE_VALUE_NONE, {0}}, 0.0, 0.0};
     re_value_t first = {RE_VALUE_DOUBLE, {.double_value = 2.5}};
     re_value_t second = {RE_VALUE_DOUBLE, {.double_value = 7.5}};
     re_value_t other = {RE_VALUE_DOUBLE, {.double_value = 100.0}};
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 1000u, 8u, 1024u, 0u};
+        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 1000u, 8u, 1024u, 0u, 0u};
     ASSERT_EQ(re_stream_window_create_v1(engine, &options, &window), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 10u, text("purchase"), &first), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 20u, text("purchase"), &second), RE_STATUS_OK);
@@ -1564,7 +1564,7 @@ TEST(stream_window_correlates_matching_types_keys_and_timeout_deterministically)
     re_value_t other = {RE_VALUE_STRING, {.string = {"acct-8", 6u}}};
     uint64_t matches = 0u;
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 1000u, 8u, 1024u, 0u};
+        RE_STREAM_WINDOW_SLIDING, RE_LATE_EVENT_DROP, 1000u, 8u, 1024u, 0u, 0u};
     ASSERT_EQ(re_stream_window_create_v1(engine, &options, &window), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 100u, text("login"), &key), RE_STATUS_OK);
     ASSERT_EQ(re_stream_window_record_v1(window, 130u, text("purchase"), &key), RE_STATUS_OK);
@@ -1579,7 +1579,7 @@ TEST(streaming_boundaries_overflow_and_restore_are_atomic) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_stream_window_t *window = NULL;
     re_stream_window_options_t options = {sizeof(options), RE_STREAM_WINDOW_ABI_VERSION,
-        RE_STREAM_WINDOW_SESSION, RE_LATE_EVENT_ACCEPT, 50u, 8u, 1024u, 50u};
+        RE_STREAM_WINDOW_SESSION, RE_LATE_EVENT_ACCEPT, 50u, 8u, 1024u, 50u, 0u};
     re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
     re_snapshot_t before = {sizeof(before), 0u, NULL, 0u, NULL, NULL};
     re_snapshot_t after = {sizeof(after), 0u, NULL, 0u, NULL, NULL};

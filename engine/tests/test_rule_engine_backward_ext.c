@@ -666,28 +666,33 @@ TEST(member_write_bumps_mutation_serial) {
     re_value_t speed = {RE_VALUE_INT64, {.int64_value = 80}};
     re_value_t ninety = {RE_VALUE_INT64, {.int64_value = 90}};
     re_value_t x = {RE_VALUE_INT64, {.int64_value = 1}};
+    uint64_t serial;
+    re_proof_graph_stats_t stats;
     ASSERT_EQ(re_value_create_object(facts, &car), RE_STATUS_OK);
     ASSERT_EQ(re_value_object_set(car, text("speed"), &speed), RE_STATUS_OK);
     ASSERT_EQ(re_facts_set_value(facts, text("Car"), car), RE_STATUS_OK);
     re_value_destroy(car);
     ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
-    /* The proof graph's invalidation is coarse: any mutation of the same
-     * facts object drops every entry. Cache a proof over flat fact X... */
+    /* Cache a proof over flat fact X... */
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
     ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
     re_query_destroy(query);
     query = NULL;
     assert_graph_stats(engine, 0u, 1u);
-    /* ...then a host member write on the unrelated Car fact bumps the serial
-     * (values.c), so the cached X proof is stale and the re-query misses. */
+    /* ...then a host member write on the unrelated Car fact still bumps the
+     * serial (values.c), but since Task B2 the serial bump is only the fast
+     * path: the cached entry's premises (X alone) are re-validated and the
+     * entry SURVIVES, so the re-query hits. */
+    serial = facts->mutation_serial;
     ASSERT_EQ(re_facts_set_path(facts, text("Car.speed"), &ninety), RE_STATUS_OK);
+    ASSERT_TRUE(facts->mutation_serial > serial);
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
     ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
     re_query_destroy(query);
     query = NULL;
-    assert_graph_stats(engine, 0u, 2u);
-    /* A rule-fired member write goes through the firing transaction: the
-     * staged serial bump propagates on commit and invalidates the cache. */
+    assert_graph_stats(engine, 1u, 1u);
+    /* Installing a program bumps the config serial, so the next query misses
+     * on the key (not on invalidation) and caches a fresh entry. */
     ASSERT_EQ(re_program_load(NULL,
         text("rule \"up\" { when Car.speed == 90 then Car.speed = 80; }"),
         NULL, &program), RE_STATUS_OK);
@@ -696,12 +701,25 @@ TEST(member_write_bumps_mutation_serial) {
     ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
     re_query_destroy(query);
     query = NULL;
-    assert_graph_stats(engine, 0u, 3u);
+    assert_graph_stats(engine, 1u, 2u);
+    /* A rule-fired member write goes through the firing transaction: the
+     * staged serial bump propagates on commit, but X's value is untouched, so
+     * the premise fingerprint still matches and the entry survives again. */
     ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    {
+        /* Prove the rule actually fired through its transaction. */
+        re_value_t after;
+        ASSERT_EQ(re_facts_get_path(facts, text("Car.speed"), &after), RE_STATUS_OK);
+        ASSERT_EQ(after.as.int64_value, 80);
+    }
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
     ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
     re_query_destroy(query);
-    assert_graph_stats(engine, 0u, 4u);
+    assert_graph_stats(engine, 2u, 2u);
+    memset(&stats, 0, sizeof(stats));
+    stats.struct_size = (uint32_t)sizeof(stats);
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.invalidations, 0u);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
 }
@@ -1297,6 +1315,611 @@ TEST(query_rule_with_exists_paren_condition_fails_not_supported) {
     re_engine_destroy(engine);
 }
 
+/*
+ * Task B2 per-premise invalidation (upstream proof_graph.rs mapped onto the
+ * local result-cache shape): cached entries record the fact reads (premises)
+ * their derivation observed, and a facts mutation invalidates an entry only
+ * when one of its premises actually flipped (presence or value fingerprint).
+ * The upstream proof-graph integration cases map locally as: basic
+ * store/lookup -> shared_graph_second_query_hits_cache (Task 14); the
+ * invalidation chain and dependent propagation ->
+ * proof_graph_invalidation_chain_retracts_dependents; multiple justifications
+ * -> proof_graph_multiple_justifications_survive; hit/miss stats ->
+ * proof_graph_stats_v2_reports_full_counters; FactKey parsing ->
+ * proof_graph_goal_text_is_the_cache_key; clear-all eviction accounting ->
+ * proof_graph_evictions_counted_on_clear_all; plus the headline behavioral
+ * upgrade, proof_graph_unrelated_mutation_preserves_entry.
+ */
+TEST(proof_graph_unrelated_mutation_preserves_entry) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_value_t a = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t b = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_proof_graph_stats_t stats;
+    ASSERT_EQ(re_facts_set(facts, text("A"), &a), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("B"), &b), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("A == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 1u);
+    /* The derivation read only A, so mutating the unrelated fact B leaves the
+     * cached entry valid and the re-query HITS - pre-B2 coarse invalidation
+     * dropped the entry here. */
+    b.as.int64_value = 2;
+    ASSERT_EQ(re_facts_set(facts, text("B"), &b), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("A == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 1u, 1u);
+    memset(&stats, 0, sizeof(stats));
+    stats.struct_size = (uint32_t)sizeof(stats);
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.invalidations, 0u);
+    ASSERT_EQ(stats.stores, 1u);
+    /* Mutating the premise fact itself invalidates the entry: the re-query
+     * misses and runs fresh against the new value. */
+    a.as.int64_value = 2;
+    ASSERT_EQ(re_facts_set(facts, text("A"), &a), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("A == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 1u, 2u);
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.invalidations, 1u);
+    ASSERT_EQ(stats.stores, 2u);
+    /* The fresh DISPROVED entry is itself cached and survives a later
+     * unrelated mutation. */
+    b.as.int64_value = 3;
+    ASSERT_EQ(re_facts_set(facts, text("B"), &b), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("A == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    re_query_destroy(query);
+    assert_graph_stats(engine, 2u, 2u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(proof_graph_invalidation_chain_retracts_dependents) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_fact_id_t id_a;
+    re_fact_id_t id_b;
+    re_fact_id_t id_c;
+    re_value_t out;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    /* A -> B -> C: each logical insertion lists the previous fact as its
+     * premise (what rule derivation does through re_facts_insert_logical), so
+     * retracting A cascades through B into C. */
+    ASSERT_EQ(re_facts_insert(facts, text("A"), &one, &id_a), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_insert_logical(facts, text("B"), &one, text("R1"), &id_a, 1u, &id_b),
+              RE_STATUS_OK);
+    ASSERT_EQ(re_facts_insert_logical(facts, text("C"), &one, text("R2"), &id_b, 1u, &id_c),
+              RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("C == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 1u);
+    /* The cached entry's premise set names C. The cascade removes C without
+     * any direct mutation of it - dependent propagation through the TMS - and
+     * the entry invalidates transitively: miss plus fresh UNKNOWN. */
+    ASSERT_EQ(re_facts_retract(facts, id_a), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("B"), &out), RE_STATUS_NOT_FOUND);
+    ASSERT_EQ(re_facts_get(facts, text("C"), &out), RE_STATUS_NOT_FOUND);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("C == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
+    re_query_destroy(query);
+    assert_graph_stats(engine, 0u, 2u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(proof_graph_multiple_justifications_survive) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_program_t *program = NULL;
+    re_query_t *query = NULL;
+    re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t two = {RE_VALUE_INT64, {.int64_value = 2}};
+    /* Two rules named G: the goal has two independent derivations
+     * (justifications), one reading X and one reading Y. */
+    ASSERT_EQ(re_program_load(NULL, text(
+        "rule \"G\" { when X == 1 then GA = 1; }"
+        "rule \"G\" { when Y == 1 then GB = 1; }"), NULL, &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("X"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("Y"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("G"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 1u);
+    /* max_solutions=1 stopped at the first justification (reading X), so a
+     * mutation of the ALTERNATIVE justification's premise leaves the cached
+     * node valid - the local form of a node surviving on its remaining
+     * justification. */
+    ASSERT_EQ(re_facts_set(facts, text("Y"), &two), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("G"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 1u, 1u);
+    /* The stored node record names the proving rule (the trace root). */
+    ASSERT_NOT_NULL(engine->proof_graph);
+    ASSERT_EQ(engine->proof_graph->count, 1u);
+    ASSERT_EQ(engine->proof_graph->entries[0].node_count, 1u);
+    ASSERT_EQ(engine->proof_graph->entries[0].nodes[0].rule_name_size, 1u);
+    ASSERT_TRUE(memcmp(engine->proof_graph->entries[0].nodes[0].rule_name, "G", 1u) == 0);
+    ASSERT_EQ(engine->proof_graph->entries[0].nodes[0].valid, 1);
+    /* Invalidate the used justification: the entry is unlinked, the re-query
+     * misses, and the fresh run proves the goal through the remaining
+     * justification (Y restored, X flipped) - re-derivation keeps the node. */
+    ASSERT_EQ(re_facts_set(facts, text("Y"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("X"), &two), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("G"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 1u, 2u);
+    /* The re-derived entry is cached and serves the next query. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("G"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    assert_graph_stats(engine, 2u, 2u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(proof_graph_stats_v2_reports_full_counters) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_value_t x = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_proof_graph_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(NULL, &stats), RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, NULL), RE_STATUS_INVALID_ARGUMENT);
+    stats.struct_size = (uint32_t)sizeof(stats) - 1u;
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_INVALID_ARGUMENT);
+    /* The graph is lazy: an engine that never cached reports zeroes. */
+    stats.struct_size = (uint32_t)sizeof(stats);
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.hits, 0u);
+    ASSERT_EQ(stats.misses, 0u);
+    ASSERT_EQ(stats.invalidations, 0u);
+    ASSERT_EQ(stats.stores, 0u);
+    ASSERT_EQ(stats.evictions, 0u);
+    ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.misses, 1u);
+    ASSERT_EQ(stats.stores, 1u);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    re_query_destroy(query);
+    query = NULL;
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.hits, 1u);
+    ASSERT_EQ(stats.misses, 1u);
+    /* A premise flip counts one invalidation; the fresh result stores again. */
+    x.as.int64_value = 2;
+    ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    re_query_destroy(query);
+    query = NULL;
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.hits, 1u);
+    ASSERT_EQ(stats.misses, 2u);
+    ASSERT_EQ(stats.invalidations, 1u);
+    ASSERT_EQ(stats.stores, 2u);
+    ASSERT_EQ(stats.evictions, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(proof_graph_evictions_counted_on_clear_all) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_value_t x = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_proof_graph_stats_t stats;
+    char goal[32];
+    size_t i;
+    ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
+    /* One more goal than the table holds: the 65th store flushes the table,
+     * counting every dropped entry as an eviction. */
+    for (i = 0u; i <= (size_t)RE_PROOF_GRAPH_CAPACITY; ++i) {
+        snprintf(goal, sizeof(goal), "X == %u", (unsigned int)i);
+        ASSERT_EQ(re_engine_query_bounded(engine, facts, text(goal), NULL, &query), RE_STATUS_OK);
+        re_query_destroy(query);
+        query = NULL;
+    }
+    ASSERT_NOT_NULL(engine->proof_graph);
+    ASSERT_EQ(engine->proof_graph->count, 1u);
+    memset(&stats, 0, sizeof(stats));
+    stats.struct_size = (uint32_t)sizeof(stats);
+    ASSERT_EQ(re_engine_proof_graph_stats_v2(engine, &stats), RE_STATUS_OK);
+    ASSERT_EQ(stats.stores, (uint64_t)RE_PROOF_GRAPH_CAPACITY + 1u);
+    ASSERT_EQ(stats.evictions, (uint64_t)RE_PROOF_GRAPH_CAPACITY);
+    ASSERT_EQ(stats.invalidations, 0u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(proof_graph_goal_text_is_the_cache_key) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_value_t x = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_EQ(re_facts_set(facts, text("X"), &x), RE_STATUS_OK);
+    /* Upstream parses a FactKey{type, field, pattern} out of the goal text;
+     * the local cache key is the exact normalized goal text - strictly finer,
+     * so textual variants of the same condition are independent entries that
+     * never alias. Both variants prove, each through its own key. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X==1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 0u, 2u);
+    ASSERT_EQ(engine->proof_graph->count, 2u);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X==1"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    re_query_destroy(query);
+    query = NULL;
+    assert_graph_stats(engine, 2u, 2u);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+/*
+ * B3 `?var` unification in backward query goal strings (upstream
+ * unification.rs case table, bounded). A `?name` token in a query goal is a
+ * per-query-run variable whose bindings surface through re_proof_binding_get
+ * under its verbatim `?`-prefixed name (upstream keeps the prefix:
+ * Expression::Variable(format!("?{}", name))).
+ *
+ * - `Fact == ?s` (or `?s == Fact`) binds `?s` to the fact value per solution;
+ *   an absent fact is unresolvable and reports UNKNOWN exactly like the
+ *   literal-comparison path.
+ * - `?x == ?y` with both sides unbound has no match (upstream binds nothing
+ *   it cannot resolve and never defers); the goal reads no facts, so the
+ *   failure is definitive: RE_QUERY_DISPROVED.
+ * - `goal("Rule", actual, ?var, ...)` query strings flow through the
+ *   formals/actuals machinery: an unbound `?var` actual leaves the formal an
+ *   unbound placeholder and rides as an alias, so the formal's eventual
+ *   concrete bind claims the `?var` too. Binding is sticky-consistent: the
+ *   same `?var` rebound to a different value fails that proof branch, never
+ *   the engine.
+ */
+static const char QVAR_CHAIN_RULES[] =
+    "rule \"Leaf\"(V) { when User.Score == V and User.Score >= 80 then A = 1; }"
+    "rule \"Mid\"(V) { when goal(\"Leaf\", V) then B = 1; }";
+
+static const char QVAR_PICK_RULES[] =
+    "rule \"Pick\"(V) { when User.A == V then A = 1; }"
+    "rule \"Pick\"(V) { when User.B == V then B = 1; }";
+
+static const char QVAR_PAIR_RULES[] =
+    "rule \"Pair\"(L, R) { when User.A == L and User.B == R then Hit = 1; }";
+
+static const char GOAL_STRING_RULES[] =
+    "rule \"Pick\"(V) { when User.Name == V then Chosen = 1; }";
+
+static int proof_binding_named(re_proof_t *proof, const char *name, re_query_binding_t *out) {
+    size_t count = re_proof_binding_count(proof);
+    size_t index;
+    size_t name_size = strlen(name);
+    for (index = 0u; index < count; ++index) {
+        if (re_proof_binding_get(proof, index, out) != RE_STATUS_OK) return 0;
+        if (out->name.size == name_size && memcmp(out->name.data, name, name_size) == 0) return 1;
+    }
+    return 0;
+}
+
+TEST(qvar_binds_from_fact) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_query_binding_t binding;
+    re_value_t score = {RE_VALUE_INT64, {.int64_value = 85}};
+    ASSERT_EQ(re_facts_set(facts, text("User.Score"), &score), RE_STATUS_OK);
+    /* Fact on the left: `?s` claims the fact value. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("User.Score == ?s"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?s", &binding));
+    ASSERT_EQ(binding.value.type, RE_VALUE_INT64);
+    ASSERT_EQ(binding.value.as.int64_value, 85);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    query = NULL;
+    proof = NULL;
+    /* Variable on the left: the unify case table is symmetric. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("?s == User.Score"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?s", &binding));
+    ASSERT_EQ(binding.value.as.int64_value, 85);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    query = NULL;
+    proof = NULL;
+    /* A literal is resolvable, so the variable binds it directly. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("?x == 42"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?x", &binding));
+    ASSERT_EQ(binding.value.type, RE_VALUE_INT64);
+    ASSERT_EQ(binding.value.as.int64_value, 42);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    query = NULL;
+    proof = NULL;
+    /* An absent fact is unresolvable: UNKNOWN, like the literal path. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("?n == Missing.Fact"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(qvar_binds_through_rule_goal_chain) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_query_binding_t binding;
+    re_value_t score = {RE_VALUE_INT64, {.int64_value = 85}};
+    aggregate_install(engine, QVAR_CHAIN_RULES);
+    ASSERT_EQ(re_facts_set(facts, text("User.Score"), &score), RE_STATUS_OK);
+    /* The unbound `?s` actual leaves Mid's formal V unbound; the Leaf goal
+     * call carries the same placeholder down, and the condition's fact read
+     * claims it - the alias then points `?s` at the derived value. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Mid\", ?s)"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?s", &binding));
+    ASSERT_EQ(binding.value.type, RE_VALUE_INT64);
+    ASSERT_EQ(binding.value.as.int64_value, 85);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "V", &binding));
+    ASSERT_EQ(binding.value.as.int64_value, 85);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    query = NULL;
+    proof = NULL;
+    /* Without the fact the chain cannot drive the proof: UNKNOWN. (Inside a
+     * rule condition an absent fact operand resolves to false through the
+     * pre-existing rule-goal fallback in backward_operand_goal, so the ==
+     * side binds V = false; the >= 80 gate then rejects the branch. The
+     * direct query path has no such fallback and reports UNKNOWN on the
+     * absent read itself, as qvar_binds_from_fact shows.) */
+    re_facts_destroy(facts);
+    facts = re_facts_create(NULL, NULL);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Mid\", ?s)"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(qvar_sticky_consistency_conflict_fails_branch) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_query_binding_t binding;
+    re_value_t a = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t b = {RE_VALUE_INT64, {.int64_value = 2}};
+    aggregate_install(engine, QVAR_PAIR_RULES);
+    ASSERT_EQ(re_facts_set(facts, text("User.A"), &a), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("User.B"), &b), RE_STATUS_OK);
+    /* Both formals alias the same `?x`: L claims 1 from User.A, then R's
+     * claim of 2 from User.B conflicts with the sticky `?x` binding - the
+     * branch fails (UNKNOWN, zero solutions), it is not an engine error. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Pair\", ?x, ?x)"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
+    re_query_destroy(query);
+    query = NULL;
+    /* Same value on both reads unifies: the branch proves with ?x = 1. */
+    b.as.int64_value = 1;
+    ASSERT_EQ(re_facts_set(facts, text("User.B"), &b), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Pair\", ?x, ?x)"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?x", &binding));
+    ASSERT_EQ(binding.value.type, RE_VALUE_INT64);
+    ASSERT_EQ(binding.value.as.int64_value, 1);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(qvar_two_unbound_variables_no_match) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    /* Neither side can produce a value and nothing defers: no match. No fact
+     * is read, so the failure is definitive (DISPROVED, not UNKNOWN). */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("?x == ?y"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(qvar_aggregation_over_bindings) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t a = {RE_VALUE_INT64, {.int64_value = 10}};
+    re_value_t b = {RE_VALUE_INT64, {.int64_value = 20}};
+    re_value_t out;
+    aggregate_install(engine, QVAR_PICK_RULES);
+    ASSERT_EQ(re_facts_set(facts, text("User.A"), &a), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("User.B"), &b), RE_STATUS_OK);
+    /* The aggregation field names the `?s` binding verbatim, prefix included. */
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_SUM, text("?s"),
+                                        text("goal(\"Pick\", ?s)"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_INT64);
+    ASSERT_EQ(out.as.int64_value, 30);
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_COUNT, text("?s"),
+                                        text("goal(\"Pick\", ?s)"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_INT64);
+    ASSERT_EQ(out.as.int64_value, 2);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(qvar_multi_solution_enumeration_under_max_solutions) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_query_binding_t binding;
+    re_value_t a = {RE_VALUE_INT64, {.int64_value = 10}};
+    re_value_t b = {RE_VALUE_INT64, {.int64_value = 20}};
+    re_query_options_t options = {sizeof(options), 64u, 2u, 0u, 0u};
+    aggregate_install(engine, QVAR_PICK_RULES);
+    ASSERT_EQ(re_facts_set(facts, text("User.A"), &a), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("User.B"), &b), RE_STATUS_OK);
+    /* Each rule alternative is its own proof branch with its own `?s`. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Pick\", ?s)"), &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 2u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?s", &binding));
+    ASSERT_EQ(binding.value.as.int64_value, 10);
+    re_proof_destroy(proof);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?s", &binding));
+    ASSERT_EQ(binding.value.as.int64_value, 20);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    query = NULL;
+    proof = NULL;
+    /* A single-solution budget stops after the first alternative. */
+    options.max_solutions = 1u;
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Pick\", ?s)"), &options, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "?s", &binding));
+    ASSERT_EQ(binding.value.as.int64_value, 10);
+    re_proof_destroy(proof);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_NOT_FOUND);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+/* Final whole-branch review regression: the legacy zero-arg goal("...") unwrap
+ * in dispatch_once must fire only for the single-quoted-name form. An
+ * argument-bearing call whose last actual is a string literal also starts with
+ * `goal("` and ends with `")`, so the old guard mangled it to `Pick", "alice`
+ * before parse_goal_call ever saw it and the query reported UNKNOWN with zero
+ * solutions for a provable goal. */
+TEST(goal_call_trailing_string_actual_proves) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_proof_t *proof = NULL;
+    re_query_binding_t binding;
+    re_value_t name = {RE_VALUE_STRING, {.string = {"alice", 5u}}};
+    aggregate_install(engine, GOAL_STRING_RULES);
+    ASSERT_EQ(re_facts_set(facts, text("User.Name"), &name), RE_STATUS_OK);
+    /* The trailing string actual must reach parse_goal_call intact: the formal
+     * V binds "alice" and the condition matches the fact. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Pick\", \"alice\")"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
+    memset(&binding, 0, sizeof(binding));
+    ASSERT_TRUE(proof_binding_named(proof, "V", &binding));
+    ASSERT_EQ(binding.value.type, RE_VALUE_STRING);
+    ASSERT_TRUE(binding.value.as.string.size == 5u &&
+                memcmp(binding.value.as.string.data, "alice", 5u) == 0);
+    re_proof_destroy(proof);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(goal_call_zero_arg_name_still_unwraps) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_value_t flag = {RE_VALUE_INT64, {.int64_value = 1}};
+    aggregate_install(engine,
+                      "rule \"Derive\" { when Flag == 1 then Derived = 1; }");
+    ASSERT_EQ(re_facts_set(facts, text("Flag"), &flag), RE_STATUS_OK);
+    /* The single-quoted-name form carries no interior quote, so the legacy
+     * unwrap still applies and the bare rule goal proves. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("goal(\"Derive\")"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(query_not_goal_call_string_actual_inverts) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_query_t *query = NULL;
+    re_value_t name = {RE_VALUE_STRING, {.string = {"alice", 5u}}};
+    aggregate_install(engine, GOAL_STRING_RULES);
+    /* Fact absent: the string-actual subgoal cannot prove, so NOT proves. */
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("NOT goal(\"Pick\", \"alice\")"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_PROVED);
+    ASSERT_EQ(re_query_solution_count(query), 1u);
+    re_query_destroy(query);
+    query = NULL;
+    /* Fact present: the subgoal proves, so the negated goal is disproved. */
+    ASSERT_EQ(re_facts_set(facts, text("User.Name"), &name), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_bounded(engine, facts, text("NOT goal(\"Pick\", \"alice\")"), NULL, &query), RE_STATUS_OK);
+    ASSERT_EQ(re_query_result(query), RE_QUERY_DISPROVED);
+    ASSERT_EQ(re_query_solution_count(query), 0u);
+    re_query_destroy(query);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(query_not_succeeds_when_subgoal_unprovable);
     RUN_TEST(query_not_fails_when_subgoal_provable);
@@ -1337,4 +1960,19 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aggregate_below_solution_cap_succeeds);
     RUN_TEST(query_rule_with_forall_paren_condition_fails_not_supported);
     RUN_TEST(query_rule_with_exists_paren_condition_fails_not_supported);
+    RUN_TEST(proof_graph_unrelated_mutation_preserves_entry);
+    RUN_TEST(proof_graph_invalidation_chain_retracts_dependents);
+    RUN_TEST(proof_graph_multiple_justifications_survive);
+    RUN_TEST(proof_graph_stats_v2_reports_full_counters);
+    RUN_TEST(proof_graph_evictions_counted_on_clear_all);
+    RUN_TEST(proof_graph_goal_text_is_the_cache_key);
+    RUN_TEST(qvar_binds_from_fact);
+    RUN_TEST(qvar_binds_through_rule_goal_chain);
+    RUN_TEST(qvar_sticky_consistency_conflict_fails_branch);
+    RUN_TEST(qvar_two_unbound_variables_no_match);
+    RUN_TEST(qvar_aggregation_over_bindings);
+    RUN_TEST(qvar_multi_solution_enumeration_under_max_solutions);
+    RUN_TEST(goal_call_trailing_string_actual_proves);
+    RUN_TEST(goal_call_zero_arg_name_still_unwraps);
+    RUN_TEST(query_not_goal_call_string_actual_inverts);
 TEST_MAIN_END()

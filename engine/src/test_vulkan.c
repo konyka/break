@@ -1621,7 +1621,8 @@ int main(int argc, char **argv) {
 
         rhi_cmd_clear_color(cmd, 0.1f, 0.1f, 0.15f, 1.0f);
 
-        skybox_render(&skybox, cmd, &view.e[0][0], &mat4_inv_perspective(proj).e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
+        Mat4 inv_proj = mat4_inv_perspective(proj);
+        skybox_render(&skybox, cmd, &view.e[0][0], &inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
 
         terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0],
                        &camera.position.e[0], render.test_tex, render.sampler,
@@ -1657,7 +1658,8 @@ int main(int argc, char **argv) {
 
         /* Pipeline rebind test: bind skybox then back to blinn_phong */
         if (sky_ok && frame_count % 10 == 0) {
-            skybox_render(&skybox, cmd, &view.e[0][0], &mat4_inv_perspective(proj).e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
+            Mat4 pipeline_inv_proj = mat4_inv_perspective(proj);
+            skybox_render(&skybox, cmd, &view.e[0][0], &pipeline_inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
@@ -1719,7 +1721,8 @@ int main(int argc, char **argv) {
         Mat4 view = camera_view(&camera);
         Mat4 proj = camera_projection(&camera);
 
-        skybox_render(&skybox, cmd, &view.e[0][0], &mat4_inv_perspective(proj).e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
+        Mat4 inv_proj = mat4_inv_perspective(proj);
+        skybox_render(&skybox, cmd, &view.e[0][0], &inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
 
         rhi_cmd_bind_pipeline(cmd, render.pipeline);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
@@ -1842,7 +1845,8 @@ int main(int argc, char **argv) {
         Mat4 view = camera_view(&camera);
         Mat4 proj = camera_projection(&camera);
 
-        skybox_render(&skybox, cmd, &view.e[0][0], &mat4_inv_perspective(proj).e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
+        Mat4 inv_proj = mat4_inv_perspective(proj);
+        skybox_render(&skybox, cmd, &view.e[0][0], &inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
 
         Query *iq = world_query(inst_world, qtypes, 1);
         u32 instance_idx = 0;

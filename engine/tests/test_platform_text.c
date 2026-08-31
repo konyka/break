@@ -61,7 +61,7 @@ TEST(utf8_copy_keeps_codepoint_boundaries)
 
 TEST(utf8_copy_handles_truncated_sequences)
 {
-    const char text[] = {(char)0xE4, '\0'};
+    const char text[] = "\xE4";
     char output[4];
 
     ASSERT_EQ(platform_utf8_copy(output, sizeof(output), text), 1u);

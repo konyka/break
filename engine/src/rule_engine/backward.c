@@ -12,9 +12,26 @@ typedef struct binding_t {
     char *string_data;
 } binding_t;
 
+/* B3 (upstream unification.rs, bounded): one alias edge formal -> `?var`,
+ * recorded when a `?var` actual of a query-level goal("Rule", ...) call is
+ * still unbound. The formal stays an unbound placeholder; when it later
+ * claims a concrete value the `?var` claims the same value,
+ * sticky-consistently. Alias targets always start with '?' and GRL formal
+ * names never can, so the alias graph is acyclic by construction. This is
+ * one-directional value propagation, not a union-find: a `?var` follows only
+ * the formals it was an actual for. */
+typedef struct binding_alias_t {
+    char *formal;
+    size_t formal_size;
+    char *variable;
+    size_t variable_size;
+} binding_alias_t;
+
 typedef struct environment_t {
     binding_t *items;
     size_t count;
+    binding_alias_t *aliases;
+    size_t alias_count;
 } environment_t;
 
 typedef struct trace_state_t {
@@ -76,6 +93,8 @@ typedef struct condition_branch_list_t {
 static int equal_text(re_string_t left, re_string_t right);
 static re_status_t make_proof(re_query_t *query, const environment_t *environment,
                               const trace_state_t *trace);
+static re_status_t bind_value(const re_allocator_impl_t *allocator, environment_t *environment,
+                              re_string_t name, const re_value_t *value);
 static re_status_t push_trace(trace_state_t *trace, re_string_t name);
 static re_status_t push_trace_parent(trace_state_t *trace, re_string_t name, size_t parent);
 static void goal_work_stack_destroy(const re_allocator_impl_t *allocator, goal_work_stack_t *stack);
@@ -89,7 +108,7 @@ typedef struct machine_callback_context_t {
 
 static re_status_t machine_make_proof(void *context) {
     machine_callback_context_t *callbacks = (machine_callback_context_t *)context;
-    environment_t environment = {NULL, 0u};
+    environment_t environment = {NULL, 0u, NULL, 0u};
     re_status_t status = make_proof(callbacks->query, &environment, callbacks->trace);
     environment_destroy(&callbacks->query->allocator, &environment);
     return status;
@@ -161,6 +180,27 @@ static int equal_text(re_string_t left, re_string_t right) {
     return left.size == right.size && (left.size == 0u || memcmp(left.data, right.data, left.size) == 0);
 }
 
+/* B2 premise capture: a fact read observed by the running query is recorded
+ * into the capture set re_backward_machine_dispatch installed on the facts
+ * (NULL when no capturing query runs). Recording never fails the run - the
+ * distinct-path cap and allocation failures just flip the set opaque, which
+ * pins the resulting cache entry to the coarse generation check. Only OK
+ * (present) and NOT_FOUND (absent) reads are observations; harder errors
+ * abort the run before any store. */
+static void capture_read(re_engine_t *engine, re_facts_t *facts, re_string_t path,
+                         re_status_t read_status, const re_value_t *value) {
+    re_premise_set_t *capture;
+    if (engine == NULL || facts == NULL) return;
+    capture = facts->premise_capture;
+    if (capture == NULL) return;
+    if (read_status != RE_STATUS_OK && read_status != RE_STATUS_NOT_FOUND) return;
+    if (re_premise_set_record(&engine->allocator, capture, path,
+                              read_status == RE_STATUS_OK,
+                              read_status == RE_STATUS_OK ? re_value_fingerprint(value) : 0u)
+            != RE_STATUS_OK)
+        capture->opaque = 1;
+}
+
 static int goal_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
 }
@@ -197,6 +237,11 @@ static void environment_destroy(const re_allocator_impl_t *allocator, environmen
         re_free(allocator, environment->items[index].string_data);
     }
     re_free(allocator, environment->items);
+    for (index = 0u; index < environment->alias_count; ++index) {
+        re_free(allocator, environment->aliases[index].formal);
+        re_free(allocator, environment->aliases[index].variable);
+    }
+    re_free(allocator, environment->aliases);
     memset(environment, 0, sizeof(*environment));
 }
 
@@ -215,9 +260,11 @@ static re_status_t environment_copy(const re_allocator_impl_t *allocator,
                                      const environment_t *source, environment_t *target) {
     size_t index;
     memset(target, 0, sizeof(*target));
-    if (source->count == 0u) return RE_STATUS_OK;
-    target->items = re_alloc(allocator, source->count * sizeof(*target->items));
-    if (target->items == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    if (source->count == 0u && source->alias_count == 0u) return RE_STATUS_OK;
+    if (source->count != 0u) {
+        target->items = re_alloc(allocator, source->count * sizeof(*target->items));
+        if (target->items == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    }
     for (index = 0u; index < source->count; ++index) {
         binding_t *destination = &target->items[index];
         const binding_t *origin = &source->items[index];
@@ -237,6 +284,30 @@ static re_status_t environment_copy(const re_allocator_impl_t *allocator,
         }
         target->count = index + 1u;
     }
+    if (source->alias_count != 0u) {
+        target->aliases = re_alloc(allocator, source->alias_count * sizeof(*target->aliases));
+        if (target->aliases == NULL) {
+            environment_destroy(allocator, target);
+            return RE_STATUS_OUT_OF_MEMORY;
+        }
+        for (index = 0u; index < source->alias_count; ++index) {
+            binding_alias_t *destination = &target->aliases[index];
+            const binding_alias_t *origin = &source->aliases[index];
+            memset(destination, 0, sizeof(*destination));
+            destination->formal_size = origin->formal_size;
+            destination->variable_size = origin->variable_size;
+            if (re_copy_string(allocator, (re_string_t){origin->formal, origin->formal_size},
+                               &destination->formal) != RE_STATUS_OK ||
+                re_copy_string(allocator, (re_string_t){origin->variable, origin->variable_size},
+                               &destination->variable) != RE_STATUS_OK) {
+                re_free(allocator, destination->formal);
+                target->alias_count = index;
+                environment_destroy(allocator, target);
+                return RE_STATUS_OUT_OF_MEMORY;
+            }
+            target->alias_count = index + 1u;
+        }
+    }
     return RE_STATUS_OK;
 }
 
@@ -253,12 +324,71 @@ static const binding_t *find_const_binding(const environment_t *environment, re_
     return find_binding((environment_t *)environment, name);
 }
 
+/* Propagates a fresh concrete bind along matching aliases (formal -> `?var`).
+ * A firing requires an unbound-to-concrete transition (or a new binding), so
+ * the recursion cannot spin; a sticky conflict surfaces as
+ * RE_STATUS_NOT_FOUND for the caller to read as a branch failure. */
+static re_status_t alias_propagate(const re_allocator_impl_t *allocator, environment_t *environment,
+                                   re_string_t formal, const re_value_t *value) {
+    size_t index;
+    for (index = 0u; index < environment->alias_count; ++index) {
+        const binding_alias_t *alias = &environment->aliases[index];
+        if (formal.size == alias->formal_size &&
+            (formal.size == 0u || memcmp(formal.data, alias->formal, formal.size) == 0)) {
+            re_status_t status = bind_value(allocator, environment,
+                (re_string_t){alias->variable, alias->variable_size}, value);
+            if (status != RE_STATUS_OK) return status;
+        }
+    }
+    return RE_STATUS_OK;
+}
+
+/* Records one alias edge; the strings are copied. */
+static re_status_t alias_append(const re_allocator_impl_t *allocator, environment_t *environment,
+                                re_string_t formal, re_string_t variable) {
+    binding_alias_t *grown = re_realloc(allocator, environment->aliases,
+                                        (environment->alias_count + 1u) * sizeof(*grown));
+    binding_alias_t *alias;
+    if (grown == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    environment->aliases = grown;
+    alias = &environment->aliases[environment->alias_count];
+    memset(alias, 0, sizeof(*alias));
+    alias->formal_size = formal.size;
+    alias->variable_size = variable.size;
+    if (re_copy_string(allocator, formal, &alias->formal) != RE_STATUS_OK)
+        return RE_STATUS_OUT_OF_MEMORY;
+    if (re_copy_string(allocator, variable, &alias->variable) != RE_STATUS_OK) {
+        re_free(allocator, alias->formal);
+        memset(alias, 0, sizeof(*alias));
+        return RE_STATUS_OUT_OF_MEMORY;
+    }
+    ++environment->alias_count;
+    return RE_STATUS_OK;
+}
+
 static re_status_t bind_value(const re_allocator_impl_t *allocator, environment_t *environment,
                               re_string_t name, const re_value_t *value) {
     binding_t *binding = find_binding(environment, name);
     if (binding != NULL) {
-        if (binding->value.type == RE_VALUE_UNKNOWN && value->type == RE_VALUE_UNKNOWN)
-            return RE_STATUS_OK;
+        if (binding->value.type == RE_VALUE_UNKNOWN) {
+            /* An UNKNOWN-valued binding is an unbound placeholder (a formal
+             * waiting for its value, or an unbound `?var`): the first
+             * concrete value claims it; another placeholder changes nothing. */
+            if (value->type == RE_VALUE_UNKNOWN) return RE_STATUS_OK;
+            {
+                re_value_t claimed;
+                char *claimed_data;
+                if (copy_value(allocator, value, &claimed, &claimed_data) != RE_STATUS_OK)
+                    return RE_STATUS_OUT_OF_MEMORY;
+                re_free(allocator, binding->string_data);
+                binding->value = claimed;
+                binding->string_data = claimed_data;
+            }
+            return alias_propagate(allocator, environment, name, value);
+        }
+        /* Sticky consistency (upstream Bindings::bind): rebinding to the same
+         * value is fine; a different value makes the proof branch fail -
+         * RE_STATUS_NOT_FOUND is a branch failure, never an engine error. */
         return re_value_compare(&binding->value, value, RE_COMPARE_EQ) ? RE_STATUS_OK : RE_STATUS_NOT_FOUND;
     }
     {
@@ -277,6 +407,8 @@ static re_status_t bind_value(const re_allocator_impl_t *allocator, environment_
         }
         ++environment->count;
     }
+    if (value->type != RE_VALUE_UNKNOWN)
+        return alias_propagate(allocator, environment, name, value);
     return RE_STATUS_OK;
 }
 
@@ -433,6 +565,48 @@ static re_status_t machine_operand_value(re_query_t *query, const re_operand_t *
                                  call_frame_t *frames, size_t frame_count,
                                  trace_state_t *trace, re_value_t *value);
 
+/* B3 condition-equality unification (upstream unification.rs case table,
+ * bounded): a RE_OPERAND_VARIABLE side whose binding is still the UNKNOWN
+ * placeholder is an unbound variable; when the other side resolved to a
+ * concrete value the variable claims it (sticky-consistent via bind_value: a
+ * conflicting later value fails the branch, never the engine). Two unbound
+ * variables have no match - upstream binds nothing it cannot resolve and
+ * never defers. There is deliberately NO occurs check (upstream parity) and
+ * no structured-term unification: values are scalars/arrays and equality
+ * stays re_value_equal_typed, so an array binds or compares only as a whole
+ * typed value, never element-wise. The bound value is whatever the operand
+ * machinery resolved - for an absent fact operand that is the pre-existing
+ * rule-goal fallback's false (backward_operand_goal), so an ungated
+ * `Fact == V` condition with Fact absent binds V = false rather than
+ * failing; the direct `==` query path has no fallback and stays UNKNOWN. */
+static re_status_t unify_compare_operands(re_query_t *query, environment_t *environment,
+                                          const re_operand_t *left_operand, const re_value_t *left,
+                                          const re_operand_t *right_operand, const re_value_t *right,
+                                          int *matched) {
+    int left_unbound = left_operand->kind == RE_OPERAND_VARIABLE && left->type == RE_VALUE_UNKNOWN;
+    int right_unbound = right_operand->kind == RE_OPERAND_VARIABLE && right->type == RE_VALUE_UNKNOWN;
+    re_status_t status;
+    if (left_unbound && right_unbound) { *matched = 0; return RE_STATUS_OK; }
+    if (left_unbound && right->type != RE_VALUE_UNKNOWN) {
+        status = bind_value(&query->allocator, environment,
+            (re_string_t){left_operand->fact_name, left_operand->fact_name_size}, right);
+        if (status == RE_STATUS_NOT_FOUND) { *matched = 0; return RE_STATUS_OK; }
+        if (status != RE_STATUS_OK) return status;
+        *matched = 1;
+        return RE_STATUS_OK;
+    }
+    if (right_unbound && left->type != RE_VALUE_UNKNOWN) {
+        status = bind_value(&query->allocator, environment,
+            (re_string_t){right_operand->fact_name, right_operand->fact_name_size}, left);
+        if (status == RE_STATUS_NOT_FOUND) { *matched = 0; return RE_STATUS_OK; }
+        if (status != RE_STATUS_OK) return status;
+        *matched = 1;
+        return RE_STATUS_OK;
+    }
+    *matched = re_value_compare(left, right, RE_COMPARE_EQ);
+    return RE_STATUS_OK;
+}
+
 static re_status_t machine_condition_matches(re_query_t *query, const re_expr_t *expr,
                                      environment_t *environment, size_t depth,
                                      call_frame_t *frames, size_t frame_count,
@@ -487,7 +661,13 @@ static re_status_t machine_condition_matches(re_query_t *query, const re_expr_t 
                 if (status != RE_STATUS_OK) break;
                 status = machine_operand_value(query, &current->right, environment, depth, frames, frame_count, trace, &right);
                 if (status != RE_STATUS_OK) break;
-                frame->result = re_value_compare(&left, &right, current->compare);
+                if (current->compare == RE_COMPARE_EQ) {
+                    status = unify_compare_operands(query, environment, &current->left, &left,
+                                                    &current->right, &right, &frame->result);
+                    if (status != RE_STATUS_OK) break;
+                } else {
+                    frame->result = re_value_compare(&left, &right, current->compare);
+                }
                 final_result = frame->result;
                 --stack.count;
             }
@@ -705,6 +885,8 @@ static re_status_t backward_operand_goal(re_query_t *query, const re_operand_t *
     if (operand->kind == RE_OPERAND_FACT) {
         re_status_t status = re_facts_get(query->facts,
             (re_string_t){operand->fact_name, operand->fact_name_size}, value);
+        capture_read(query->engine, query->facts,
+                     (re_string_t){operand->fact_name, operand->fact_name_size}, status, value);
         if (status != RE_STATUS_NOT_FOUND) return status;
         name = (re_string_t){operand->fact_name, operand->fact_name_size};
         status = parameter_goal_execute(query, name, NULL, 0u, environment, depth + 1u,
@@ -748,6 +930,10 @@ static re_status_t machine_operand_value(re_query_t *query, const re_operand_t *
                    memcmp(function->name, frame->operand->function_name, function->name_size) != 0))
                 function = function->next;
             if (function == NULL) { status = RE_STATUS_NOT_FOUND; break; }
+            /* A user function's fact reads are untracked: pin the run's
+             * capture to the coarse generation check. */
+            if (query->facts->premise_capture != NULL)
+                query->facts->premise_capture->opaque = 1;
             function->active_calls++;
             status = function->call(query->engine, query->facts, frame->arguments,
                                     frame->argument_count, &frame->result, function->context);
@@ -840,8 +1026,31 @@ static re_status_t bind_arguments(re_query_t *query, const re_rule_t *rule,
     for (index = 0u; index < argument_count; ++index) {
         const re_operand_t *argument = &arguments[index];
         if (argument->kind == RE_OPERAND_VARIABLE) {
-            const binding_t *binding = find_const_binding(environment,
-                (re_string_t){argument->fact_name, argument->fact_name_size});
+            re_string_t argument_name = {argument->fact_name, argument->fact_name_size};
+            const binding_t *binding = find_const_binding(environment, argument_name);
+            if (argument_name.size >= 2u && argument_name.data[0] == '?') {
+                /* B3 `?var` actual (query goal strings only; GRL variables
+                 * start with '$', so the '?' prefix is unambiguous). A
+                 * concrete-bound `?var` passes its value to the formal
+                 * (sticky, via bind_value). An unbound one leaves the formal
+                 * an unbound placeholder and rides as an alias, so the
+                 * formal's eventual concrete bind claims the `?var` too. */
+                re_string_t formal_name = {rule->formal_parameters[index],
+                                           strlen(rule->formal_parameters[index])};
+                if (binding != NULL && binding->value.type != RE_VALUE_UNKNOWN) {
+                    status = bind_value(&query->allocator, environment, formal_name, &binding->value);
+                    if (status != RE_STATUS_OK) return status;
+                    continue;
+                }
+                value.type = RE_VALUE_UNKNOWN;
+                status = bind_value(&query->allocator, environment, formal_name, &value);
+                if (status != RE_STATUS_OK) return status;
+                status = bind_value(&query->allocator, environment, argument_name, &value);
+                if (status != RE_STATUS_OK) return status;
+                status = alias_append(&query->allocator, environment, formal_name, argument_name);
+                if (status != RE_STATUS_OK) return status;
+                continue;
+            }
             if (binding == NULL) return RE_STATUS_NOT_FOUND;
             value = binding->value;
         } else {
@@ -970,6 +1179,260 @@ static re_status_t parameter_goal_execute(re_query_t *query, re_string_t name, c
     return status;
 }
 
+/* B3 `?var` query-goal support (upstream unification.rs case table, bounded
+ * to the query goal surface; upstream's own Unifier integration is dead code
+ * there, so this is the local working mapping). A `?var` token is '?' plus
+ * one or more [A-Za-z0-9_] characters; anything else starting with '?' is
+ * just an (usually absent) fact path. */
+
+/* One trimmed side of a direct `==` query goal, classified. */
+typedef struct goal_side_t {
+    int is_variable;  /* `?` + identifier */
+    int is_literal;
+    re_value_t literal; /* valid when is_literal; string data borrows the goal text */
+    re_string_t text;
+} goal_side_t;
+
+static int goal_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static void goal_side_classify(re_string_t text, goal_side_t *side) {
+    size_t index;
+    side->text = text;
+    side->is_variable = 0;
+    side->is_literal = 0;
+    if (text.size >= 2u && text.data[0] == '?') {
+        for (index = 1u; index < text.size && goal_ident_char(text.data[index]); ++index) {}
+        if (index == text.size) {
+            side->is_variable = 1;
+            return;
+        }
+    }
+    if (text.size >= 2u && text.data[0] == '"' && text.data[text.size - 1u] == '"') {
+        side->is_literal = 1;
+        side->literal.type = RE_VALUE_STRING;
+        side->literal.as.string.data = text.data + 1u;
+        side->literal.as.string.size = text.size - 2u;
+        return;
+    }
+    if (text.size == 4u && memcmp(text.data, "true", 4u) == 0) {
+        side->is_literal = 1;
+        side->literal.type = RE_VALUE_BOOL;
+        side->literal.as.boolean = 1;
+        return;
+    }
+    if (text.size == 5u && memcmp(text.data, "false", 5u) == 0) {
+        side->is_literal = 1;
+        side->literal.type = RE_VALUE_BOOL;
+        side->literal.as.boolean = 0;
+        return;
+    }
+    {
+        int64_t number;
+        if (parse_int64_slice(text, &number)) {
+            side->is_literal = 1;
+            side->literal.type = RE_VALUE_INT64;
+            side->literal.as.int64_value = number;
+        }
+    }
+}
+
+/* Unifies a direct `==` query goal where at least one side is a `?var`:
+ * variable-on-either-side per the upstream case table - an unbound variable
+ * with a resolvable other side binds the value (per solution, sticky);
+ * unresolvable (absent fact) reports UNKNOWN exactly like the literal
+ * comparison path; two unbound variables have no match, and since no fact
+ * was read the failure is definitive (DISPROVED). There is no deferral and
+ * no occurs check (upstream parity, documented). */
+static re_status_t unify_direct_goal(re_query_t *query, re_engine_t *engine, re_facts_t *facts,
+                                     re_string_t goal, const goal_side_t *left,
+                                     const goal_side_t *right) {
+    const goal_side_t *variable_side;
+    const goal_side_t *value_side;
+    re_value_t actual;
+    re_status_t status;
+    environment_t environment;
+    trace_state_t trace;
+    query->result = RE_QUERY_UNKNOWN;
+    if (left->is_variable && right->is_variable) {
+        query->result = RE_QUERY_DISPROVED;
+        return RE_STATUS_OK;
+    }
+    variable_side = left->is_variable ? left : right;
+    value_side = left->is_variable ? right : left;
+    if (value_side->is_literal) {
+        actual = value_side->literal;
+    } else {
+        status = re_facts_get(facts, value_side->text, &actual);
+        capture_read(engine, facts, value_side->text, status, &actual);
+        if (status == RE_STATUS_NOT_FOUND) return RE_STATUS_OK; /* result stays UNKNOWN */
+        if (status != RE_STATUS_OK) return status;
+    }
+    memset(&environment, 0, sizeof(environment));
+    memset(&trace, 0, sizeof(trace));
+    trace.query = query;
+    if (bind_value(&query->allocator, &environment, variable_side->text, &actual) != RE_STATUS_OK ||
+        push_trace(&trace, goal) != RE_STATUS_OK ||
+        make_proof(query, &environment, &trace) != RE_STATUS_OK) {
+        environment_destroy(&query->allocator, &environment);
+        re_free(&query->allocator, trace.names);
+        re_free(&query->allocator, trace.parents);
+        return RE_STATUS_OUT_OF_MEMORY;
+    }
+    environment_destroy(&query->allocator, &environment);
+    re_free(&query->allocator, trace.names);
+    re_free(&query->allocator, trace.parents);
+    query->result = RE_QUERY_PROVED;
+    return RE_STATUS_OK;
+}
+
+/* An argument-bearing `goal("Rule", a1, ..., an)` query goal, parsed. The
+ * name borrows the goal text; the arguments own their strings (destroy each
+ * with re_operand_destroy). Actuals are bounded to string/bool/int64/double
+ * literals, `?var`s, and fact-path tokens - nested calls or arithmetic in a
+ * query goal string are RE_STATUS_INVALID_ARGUMENT, not a silent miss. */
+typedef struct goal_call_t {
+    re_string_t name;
+    re_operand_t *arguments;
+    size_t argument_count;
+} goal_call_t;
+
+static void goal_call_destroy(const re_allocator_impl_t *allocator, goal_call_t *call) {
+    size_t index;
+    for (index = 0u; index < call->argument_count; ++index)
+        re_operand_destroy(allocator, &call->arguments[index]);
+    re_free(allocator, call->arguments);
+    memset(call, 0, sizeof(*call));
+}
+
+static re_status_t goal_call_operand(const re_allocator_impl_t *allocator, re_string_t token,
+                                     re_operand_t *out) {
+    size_t index;
+    memset(out, 0, sizeof(*out));
+    if (token.size == 0u) return RE_STATUS_INVALID_ARGUMENT;
+    if (token.size >= 2u && token.data[0] == '"' && token.data[token.size - 1u] == '"') {
+        char *copy = NULL;
+        if (re_copy_string(allocator, (re_string_t){token.data + 1u, token.size - 2u},
+                           &copy) != RE_STATUS_OK)
+            return RE_STATUS_OUT_OF_MEMORY;
+        out->kind = RE_OPERAND_LITERAL;
+        out->value.type = RE_VALUE_STRING;
+        out->value.as.string.data = copy;
+        out->value.as.string.size = token.size - 2u;
+        return RE_STATUS_OK;
+    }
+    if (token.size == 4u && memcmp(token.data, "true", 4u) == 0) {
+        out->kind = RE_OPERAND_LITERAL;
+        out->value.type = RE_VALUE_BOOL;
+        out->value.as.boolean = 1;
+        return RE_STATUS_OK;
+    }
+    if (token.size == 5u && memcmp(token.data, "false", 5u) == 0) {
+        out->kind = RE_OPERAND_LITERAL;
+        out->value.type = RE_VALUE_BOOL;
+        out->value.as.boolean = 0;
+        return RE_STATUS_OK;
+    }
+    {
+        int64_t number;
+        if (parse_int64_slice(token, &number)) {
+            out->kind = RE_OPERAND_LITERAL;
+            out->value.type = RE_VALUE_INT64;
+            out->value.as.int64_value = number;
+            return RE_STATUS_OK;
+        }
+    }
+    if (token.size < 256u) {
+        char buffer[256];
+        char *end;
+        double number;
+        memcpy(buffer, token.data, token.size);
+        buffer[token.size] = '\0';
+        number = strtod(buffer, &end);
+        if (end == buffer + token.size && end != buffer) {
+            out->kind = RE_OPERAND_LITERAL;
+            out->value.type = RE_VALUE_DOUBLE;
+            out->value.as.double_value = number;
+            return RE_STATUS_OK;
+        }
+    }
+    if (token.size >= 2u && token.data[0] == '?') {
+        for (index = 1u; index < token.size && goal_ident_char(token.data[index]); ++index) {}
+        if (index != token.size) return RE_STATUS_INVALID_ARGUMENT;
+        out->kind = RE_OPERAND_VARIABLE;
+        out->fact_name_size = token.size;
+        return re_copy_string(allocator, token, &out->fact_name) == RE_STATUS_OK
+            ? RE_STATUS_OK : RE_STATUS_OUT_OF_MEMORY;
+    }
+    for (index = 0u; index < token.size; ++index)
+        if (!goal_ident_char(token.data[index]) && token.data[index] != '.')
+            return RE_STATUS_INVALID_ARGUMENT;
+    out->kind = RE_OPERAND_FACT;
+    out->fact_name_size = token.size;
+    return re_copy_string(allocator, token, &out->fact_name) == RE_STATUS_OK
+        ? RE_STATUS_OK : RE_STATUS_OUT_OF_MEMORY;
+}
+
+static re_status_t parse_goal_call(const re_allocator_impl_t *allocator, re_string_t goal,
+                                   goal_call_t *call, int *is_call) {
+    const char *close_quote;
+    size_t at;
+    memset(call, 0, sizeof(*call));
+    *is_call = 0;
+    if (goal.size < 7u || memcmp(goal.data, "goal(\"", 6u) != 0) return RE_STATUS_OK;
+    close_quote = (const char *)memchr(goal.data + 6u, '"', goal.size - 6u);
+    if (close_quote == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    call->name.data = goal.data + 6u;
+    call->name.size = (size_t)(close_quote - (goal.data + 6u));
+    at = (size_t)(close_quote - goal.data) + 1u;
+    while (at < goal.size && goal.data[at] == ' ') ++at;
+    if (at >= goal.size) return RE_STATUS_INVALID_ARGUMENT;
+    if (goal.data[at] == ')') {
+        if (at + 1u != goal.size) return RE_STATUS_INVALID_ARGUMENT;
+        *is_call = 1;
+        return RE_STATUS_OK;
+    }
+    if (goal.data[at] != ',') return RE_STATUS_INVALID_ARGUMENT;
+    for (;;) {
+        re_string_t token;
+        re_operand_t *grown;
+        size_t start;
+        size_t end;
+        int in_quote = 0;
+        ++at;
+        while (at < goal.size && goal.data[at] == ' ') ++at;
+        start = at;
+        for (end = at; end < goal.size; ++end) {
+            char c = goal.data[end];
+            if (in_quote) {
+                if (c == '"') in_quote = 0;
+            } else if (c == '"') in_quote = 1;
+            else if (c == ',' || c == ')') break;
+        }
+        if (end >= goal.size) { goal_call_destroy(allocator, call); return RE_STATUS_INVALID_ARGUMENT; }
+        token.data = goal.data + start;
+        token.size = end - start;
+        while (token.size != 0u && token.data[token.size - 1u] == ' ') --token.size;
+        grown = re_realloc(allocator, call->arguments,
+                           (call->argument_count + 1u) * sizeof(*grown));
+        if (grown == NULL) { goal_call_destroy(allocator, call); return RE_STATUS_OUT_OF_MEMORY; }
+        call->arguments = grown;
+        memset(&call->arguments[call->argument_count], 0, sizeof(call->arguments[0]));
+        if (goal_call_operand(allocator, token, &call->arguments[call->argument_count]) != RE_STATUS_OK) {
+            goal_call_destroy(allocator, call);
+            return RE_STATUS_INVALID_ARGUMENT;
+        }
+        ++call->argument_count;
+        if (goal.data[end] == ',') { at = end; continue; }
+        if (end + 1u != goal.size) { goal_call_destroy(allocator, call); return RE_STATUS_INVALID_ARGUMENT; }
+        break;
+    }
+    *is_call = 1;
+    return RE_STATUS_OK;
+}
+
 /* One capped depth-first pass over the goal: the goal("...") unwrap, the
  * direct `Fact == value` comparison, the zero-argument frame-machine slice,
  * and the plain DFS machine. re_backward_machine_dispatch owns argument and
@@ -996,9 +1459,15 @@ static re_status_t dispatch_once(re_engine_t *engine, re_facts_t *facts, re_stri
     query->max_solutions = options->max_solutions;
     /* An explicit goal("RuleName") query string names the same zero-argument
      * rule goal the condition-level form does; unwrap it so the paths below
-     * see the bare rule name. Argument-bearing goal calls are not query goals. */
+     * see the bare rule name. Argument-bearing goal calls parse further down
+     * (parse_goal_call, Task B3): they also start with `goal("` and can end
+     * with `")` when the last actual is a string literal, so the unwrap is
+     * restricted to the single-quoted-name shape - the zero-arg form has no
+     * interior quote between the opening quote and the closing `")`, while
+     * argument forms always do. */
     if (goal.size >= 8u && memcmp(goal.data, "goal(\"", 6u) == 0 &&
-        goal.data[goal.size - 1u] == ')' && goal.data[goal.size - 2u] == '"') {
+        goal.data[goal.size - 1u] == ')' && goal.data[goal.size - 2u] == '"' &&
+        memchr(goal.data + 6u, '"', goal.size - 8u) == NULL) {
         goal.data += 6u;
         goal.size -= 8u;
     }
@@ -1009,10 +1478,26 @@ static re_status_t dispatch_once(re_engine_t *engine, re_facts_t *facts, re_stri
         re_value_t expected;
         re_value_t actual;
         int variable = 0;
+        goal_side_t left_side;
+        goal_side_t right_side;
         while (left.size != 0u && left.data[0] == ' ') { ++left.data; --left.size; }
         while (left.size != 0u && left.data[left.size - 1u] == ' ') --left.size;
         while (right.size != 0u && right.data[0] == ' ') { ++right.data; --right.size; }
         while (right.size != 0u && right.data[right.size - 1u] == ' ') --right.size;
+        /* B3: a `?var` on either side switches the comparison to unification
+         * (the proof trace then roots at the whole goal text). Goals without
+         * a `?var` run the pre-B3 path below unchanged. */
+        goal_side_classify(left, &left_side);
+        goal_side_classify(right, &right_side);
+        if (left_side.is_variable || right_side.is_variable) {
+            status = unify_direct_goal(query, engine, facts, goal, &left_side, &right_side);
+            if (status != RE_STATUS_OK) { re_query_destroy(query); return status; }
+            if (re_facts_subscribe(facts, invalidate, query, &query->subscription) != RE_STATUS_OK) {
+                re_query_destroy(query); return RE_STATUS_OUT_OF_MEMORY;
+            }
+            *out_query = query;
+            return RE_STATUS_OK;
+        }
         if (right.size != 0u && right.data[0] == '"' && right.data[right.size - 1u] == '"') {
             expected.type = RE_VALUE_STRING;
             expected.as.string.data = right.data + 1u;
@@ -1030,6 +1515,7 @@ static re_status_t dispatch_once(re_engine_t *engine, re_facts_t *facts, re_stri
             }
         }
         status = re_facts_get(facts, left, &actual);
+        capture_read(engine, facts, left, status, &actual);
         if (status == RE_STATUS_OK) {
             if (variable) {
                 trace_state_t direct_trace = {query, NULL, NULL, 0u, 0u, 0};
@@ -1087,24 +1573,50 @@ static re_status_t dispatch_once(re_engine_t *engine, re_facts_t *facts, re_stri
         re_free(&query->allocator, query);
         return status;
     }
-    if (query->max_depth == (size_t)-1 ||
-        query->max_depth + 1u > (size_t)-1 / sizeof(*frames)) {
-        environment_destroy(&query->allocator, &environment);
-        re_free(&query->allocator, trace.names);
-        re_free(&query->allocator, trace.parents);
-        re_free(&query->allocator, query);
-        return RE_STATUS_LIMIT;
+    /* B3: an argument-bearing goal("Rule", a1, ..., an) query goal runs the
+     * same frame-machine root pass as a bare rule name, with the parsed
+     * actuals flowing through bind_arguments (`?var` actuals included). */
+    {
+        goal_call_t call;
+        int is_call = 0;
+        re_string_t root_name = goal;
+        const re_operand_t *root_arguments = NULL;
+        size_t root_argument_count = 0u;
+        status = parse_goal_call(&query->allocator, goal, &call, &is_call);
+        if (status != RE_STATUS_OK) {
+            environment_destroy(&query->allocator, &environment);
+            re_free(&query->allocator, trace.names);
+            re_free(&query->allocator, trace.parents);
+            re_query_destroy(query);
+            return status;
+        }
+        if (is_call) {
+            root_name = call.name;
+            root_arguments = call.arguments;
+            root_argument_count = call.argument_count;
+        }
+        if (query->max_depth == (size_t)-1 ||
+            query->max_depth + 1u > (size_t)-1 / sizeof(*frames)) {
+            goal_call_destroy(&query->allocator, &call);
+            environment_destroy(&query->allocator, &environment);
+            re_free(&query->allocator, trace.names);
+            re_free(&query->allocator, trace.parents);
+            re_free(&query->allocator, query);
+            return RE_STATUS_LIMIT;
+        }
+        frames = re_alloc(&query->allocator, (query->max_depth + 1u) * sizeof(*frames));
+        if (frames == NULL) {
+            goal_call_destroy(&query->allocator, &call);
+            environment_destroy(&query->allocator, &environment);
+            re_free(&query->allocator, trace.names);
+            re_free(&query->allocator, trace.parents);
+            re_free(&query->allocator, query);
+            return RE_STATUS_OUT_OF_MEMORY;
+        }
+        status = parameter_goal_execute(query, root_name, root_arguments, root_argument_count,
+                                        &environment, 0u, frames, 0u, &trace, 1, NULL);
+        goal_call_destroy(&query->allocator, &call);
     }
-    frames = re_alloc(&query->allocator, (query->max_depth + 1u) * sizeof(*frames));
-    if (frames == NULL) {
-        environment_destroy(&query->allocator, &environment);
-        re_free(&query->allocator, trace.names);
-        re_free(&query->allocator, trace.parents);
-        re_free(&query->allocator, query);
-        return RE_STATUS_OUT_OF_MEMORY;
-    }
-    status = parameter_goal_execute(query, goal, NULL, 0u, &environment, 0u, frames, 0u,
-                                      &trace, 1, NULL);
     if ((status == RE_STATUS_OK || status == RE_STATUS_NOT_FOUND) && trace.depth_exhausted)
         status = RE_STATUS_LIMIT;
     environment_destroy(&query->allocator, &environment);
@@ -1176,6 +1688,13 @@ static re_status_t graph_consult(re_engine_t *engine, re_facts_t *facts, re_stri
     if (re_proof_graph_lookup(engine->proof_graph, facts, goal, options,
                               engine->config_serial, &entry) != RE_STATUS_OK)
         return RE_STATUS_NOT_FOUND;
+    /* A cached hit still contributes its premises to an enclosing capture
+     * (the NOT recursion nests dispatches), so a parent result derived from
+     * this subgoal hit depends on the same facts the entry does. */
+    if (facts->premise_capture != NULL &&
+        re_premise_set_merge(&engine->allocator, facts->premise_capture,
+                             &entry->premises) != RE_STATUS_OK)
+        facts->premise_capture->opaque = 1;
     return graph_serve(engine, facts, options, entry, out_query);
 }
 
@@ -1190,21 +1709,23 @@ static void graph_maybe_store(re_engine_t *engine, re_facts_t *facts, re_string_
     if (engine->proof_graph == NULL) return;
     (void)re_proof_graph_store(engine->proof_graph, facts, goal, options,
                                engine->config_serial, query->result, query->proofs,
-                               query->proof_count);
+                               query->proof_count, facts->premise_capture);
 }
 
 /* Dispatch layering (Task 13):
  *
- *   re_backward_machine_dispatch - argument/option normalization (including
+ *   re_backward_machine_dispatch - the B2 premise-capture wrapper (below)
+ *   dispatch_run                 - argument/option normalization (including
  *       the struct_size versioning), the NOT prefix inversion, and strategy
  *       selection (this function)
  *   dispatch_once                - one full capped DFS pass over the goal
  *
  * The NOT prefix is handled BEFORE strategy selection so the inversion always
  * applies to the strategy-selected result of the subgoal: the nested call
- * re-enters this dispatcher with the caller's strategy and max_solutions=1.
- * Iterating a NOT query itself would be unsound - a shallow probe that cannot
- * yet prove the subgoal would invert to a false success.
+ * re-enters the public dispatcher with the caller's strategy and
+ * max_solutions=1 (nesting the premise capture with it). Iterating a NOT
+ * query itself would be unsound - a shallow probe that cannot yet prove the
+ * subgoal would invert to a false success.
  *
  * RE_QUERY_STRATEGY_BREADTH_FIRST / RE_QUERY_STRATEGY_ITERATIVE run
  * dispatch_once with max_depth = 1, 2, 4, 8, ... doubling up to the
@@ -1218,8 +1739,8 @@ static void graph_maybe_store(re_engine_t *engine, re_facts_t *facts, re_string_
  * returned as-is. Exhausting the configured max_depth or the 32-doubling
  * budget without a solution returns the last probe unchanged, reporting
  * RE_QUERY_LIMIT exactly as a plain DFS run at that depth would. */
-re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
-                                     const re_query_options_t *options, re_query_t **out_query) {
+static re_status_t dispatch_run(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
+                                const re_query_options_t *options, re_query_t **out_query) {
     re_query_t *query;
     re_status_t status;
     re_query_options_t normalized;
@@ -1314,7 +1835,7 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
             query->result = RE_QUERY_DISPROVED;
         } else {
             trace_state_t not_trace = {query, NULL, NULL, 0u, 0u, 0};
-            environment_t not_environment = {NULL, 0u};
+            environment_t not_environment = {NULL, 0u, NULL, 0u};
             if (push_trace(&not_trace, goal) != RE_STATUS_OK ||
                 make_proof(query, &not_environment, &not_trace) != RE_STATUS_OK) {
                 re_free(&query->allocator, not_trace.names);
@@ -1372,6 +1893,38 @@ re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts,
             else cap *= 2u;
         }
     }
+}
+
+/* B2 premise capture wrapper: installs a bounded read-set on the facts for
+ * the whole dispatch and hands it to the store path through
+ * facts->premise_capture, so a cached entry records exactly the fact reads its
+ * derivation observed. The NOT recursion re-enters this function, so each
+ * nested level merges its subgoal's premises into the parent capture on exit
+ * (the parent's cached entry then covers the whole negated derivation).
+ * Disabled sharing skips the capture entirely - nothing will consult or
+ * store. The capture is a borrowed stack scope: save/restore keeps nested or
+ * callback-driven re-entrant dispatches on the same facts object sound. */
+re_status_t re_backward_machine_dispatch(re_engine_t *engine, re_facts_t *facts, re_string_t goal,
+                                         const re_query_options_t *options, re_query_t **out_query) {
+    re_premise_set_t capture;
+    re_premise_set_t *previous;
+    re_status_t status;
+    if (engine == NULL || facts == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    /* Mirrors the struct_size gate in dispatch_run: a caller compiled against
+     * the pre-Task-13 layout has no disable flag (sharing ON). */
+    if (options != NULL && options->struct_size >= (uint32_t)sizeof(re_query_options_t) &&
+        options->disable_shared_proof_graph != 0u)
+        return dispatch_run(engine, facts, goal, options, out_query);
+    memset(&capture, 0, sizeof(capture));
+    previous = facts->premise_capture;
+    facts->premise_capture = &capture;
+    status = dispatch_run(engine, facts, goal, options, out_query);
+    facts->premise_capture = previous;
+    if (previous != NULL &&
+        re_premise_set_merge(&engine->allocator, previous, &capture) != RE_STATUS_OK)
+        previous->opaque = 1;
+    re_premise_set_destroy(&engine->allocator, &capture);
+    return status;
 }
 
 re_status_t re_backward_query_create(re_engine_t *engine, re_facts_t *facts, re_string_t goal,

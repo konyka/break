@@ -7,6 +7,7 @@
 #include "myc/myconf/my_conf.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -304,10 +305,9 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
       }
     }
     if (c == 'i') {
-      return my_conf_new_double(p->allocator,
-                                neg ? -1.0 / 0.0 : 1.0 / 0.0);
+      return my_conf_new_double(p->allocator, neg ? -HUGE_VAL : HUGE_VAL);
     }
-    return my_conf_new_double(p->allocator, 0.0 / 0.0);
+    return my_conf_new_double(p->allocator, NAN);
   }
   /* datetime -> STR verbatim (until ws/comment/eol/bracket) */
   if (t_is_datetime(p)) {

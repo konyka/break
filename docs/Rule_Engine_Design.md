@@ -392,6 +392,436 @@ attribute is a struct-only field upstream (`rule.rs`) with no GRL form;
 object literals `{k: v}` and index syntax `a[0]` appear in the upstream doc's
 type and nested-access sections without parser support on either side.
 
+## RETE/TMS/unification depth parity: TMS, proof graph, ?var unification, agenda focus stack
+
+This section records the sub-project B (2026-08-29) closure of the real
+deltas against the working deep machinery of upstream rust-rule-engine
+v1.21.4 (`f80a541`), plus the upstream-vapor findings the parity scope
+deliberately does not replicate. The source-level research behind the vapor
+calls is recorded in
+`docs/superpowers/specs/2026-08-29-rule-engine-full-parity-design.md`
+(Sub-project B). All delivered rows are `verified_local` in
+`docs/rule_engine_conformance.yml`.
+
+TMS parity closure (Task B1, upstream `src/rete/tms.rs` +
+`tests/tms_test.rs` - the 12 upstream test semantics are all ported).
+Explicit support and logical justifications now coexist on one fact: an
+explicit host assertion (`re_facts_insert`) over a logically-derived fact
+records an explicit-support marker (a premise-less justification item, the
+local encoding of upstream `JustificationType::Explicit`, invisible to the
+public provenance helpers), and `re_facts_insert_logical` on a host-asserted
+fact keeps both supports. Both cascade guards retract a derived fact only
+when its total support count reaches zero, so explicit support is
+unconditionally valid by construction. Multi-justification facts survive
+single-premise retraction, diamond dependencies cascade fully, and a new
+justification never re-derives the value. Markers ride `re_tms_clone`, so
+transaction staged stores preserve them with no transactions.c change.
+`re_facts_justification_remove` mirrors the add-side validation, so no
+public input can delete a marker. Documented divergences and bounds:
+insertion-time cycles are rejected with `RE_STATUS_LIMIT` where upstream
+admits them and terminates via the retracted set (the cascade-cycle case
+itself matches upstream `is_valid` and is pinned whitebox; eager item
+removal is the local termination guarantee where upstream never cleans its
+maps); `re_facts_set`/`re_facts_update` are plain value writes that never
+record explicit support - only `re_facts_insert` (and `insert_logical` on an
+explicit entry) does; a marker-only survivor keeps `re_facts_is_logical`
+true (upstream keeps the fact in `logical_facts` until retracted);
+structured-root derivations keep the pre-existing bound that premise
+retraction cascades to the whole root; upstream's global TMS stats struct
+has no local aggregate (per-fact equivalents are pinned instead under the
+append-only ABI).
+
+Proof graph - real graph shape (Task B2, upstream
+`src/backward/proof_graph.rs`). The 64-entry result cache stays the lookup
+layer; the graph semantics now ride on it. Every backward run under the
+dispatch wrapper captures a bounded (32, deduped-by-path) premise set of
+{path, present, FNV-1a typed value fingerprint} covering each fact read -
+absent reads are recorded with present=0, so a later first assert still
+invalidates - and cache hits merge the served entry's premises into an
+enclosing capture. Each store records one informational node per proof
+(trace-root rule name + valid flag) with the producing run's premise set.
+Lookup keeps generation equality as the fast path and, on serial mismatch,
+re-resolves each premise and compares presence plus typed fingerprint: an
+entry whose premises all hold survives an unrelated mutation (the headline
+behavioral upgrade over the pre-B2 coarse drop), and any flip unlinks the
+whole entry - the local analog of upstream `lookup_by_key` filtering invalid
+nodes. Any untracked influence (user function mid-proof, premise-cap
+overflow, allocation failure) flips the capture opaque and pins the entry to
+the coarse generation check; soundness is never traded for precision. Stats:
+`re_engine_proof_graph_stats` keeps its two-pointer ABI, and the appended
+`re_engine_proof_graph_stats_v2` fills a struct_size-versioned
+`re_proof_graph_stats_t` {hits, misses, invalidations, stores, evictions}
+(the 64-entry clear-all flush counts as evictions). Dependent propagation is
+lazy - an invalidated dependent is detected by re-validation at its next
+consult - rather than upstream's eager `invalidate_handle` recursion;
+semantically equivalent for a result cache. Documented bounds: object/array
+facts fingerprint by type tag only (a future member-level read path must be
+captured or flip the capture opaque), and the node `valid` flag is upstream
+shape-fidelity no production code consumes.
+
+Backward `?var` unification (Task B3, upstream
+`src/backward/unification.rs` case table). A `?var` token on either side of
+`==` in a query goal string switches the comparison to unification: a bound
+variable resolves to its value; an unbound variable with a resolvable other
+side binds and surfaces via `re_proof_binding_get` under the verbatim `?s`
+name; an unresolvable side is no match (`RE_QUERY_UNKNOWN` on an absent fact
+read, identical to the literal path); two unbound variables (`?x == ?y`)
+are `RE_QUERY_DISPROVED` - nothing was read, so the result is cacheable with
+an empty premise set and can never flip. Rebinding is sticky-consistent:
+the same value is fine, a different value fails that proof branch (never an
+engine error). `goal("Rule", a1, ...)` query strings admit literal, `?var`,
+and fact-path actuals (nested calls/arithmetic are
+`RE_STATUS_INVALID_ARGUMENT`); an unbound `?var` actual leaves the formal
+unbound and records a formal-to-`?var` alias, and when the formal later
+claims a concrete value the alias rebinds the `?var` sticky-consistently.
+Condition equality with an unbound formal claims the other side's concrete
+value through the existing operand path, so every fact read stays
+premise-captured. Aggregation folds `?var` bindings with no API change.
+Documented bounds (upstream parity): no occurs check, no deferral, values
+are scalars/arrays compared by typed equality (never element-wise), and
+aliases are one-directional value propagation - no union-find, and
+propagation requires the same formal name hop-to-hop. Upstream's own
+`Unifier` is never called by its search engine (dead integration), so the
+case table is mapped onto the machine's two real binding points rather than
+ported as a module. Minor surface notes: direct-goal literals are int64-only
+while `goal()` actuals lex decimal spellings as doubles (consistent with the
+pre-existing `==` path), and an absent fact operand inside a rule condition
+resolves to false through the pre-existing rule-goal fallback.
+
+Agenda focus stack + auto-focus (Task B4, upstream `src/rete/agenda.rs`
+`AdvancedAgenda`). `ActivateAgendaGroup("g")` pushes the current focus and
+switches; when the focus group's activations are exhausted (pending queue
+drained after every rule had its first pass) the previous focus pops back
+and the recognize-act loop continues, and an empty stack ends the run with
+the focus left on the exhausted group (exactly upstream's `pop()?`). The
+stack lives on the program next to the focus (not on the agenda) so it
+shares the A8 focus lifetime: persistent-agenda runs interrupted by LIMIT
+pop back in the next run, and program install resets it for free. The
+static pre-set focus is the bottom of stack; the plain setter clears
+saved-focus history. The stack is bounded at 32
+(`RE_AGENDA_FOCUS_STACK_MAX`); overflow discards the saved focus and the
+switch still happens. The `auto-focus true|false` attribute follows the
+`no-loop` grammar idiom (any other value or a duplicate is a parse error),
+mirrors into the IR, bypasses the compute gate for its rule (upstream
+evaluates rules group-agnostically), and switches focus only when the push
+creates a genuinely new pending entry - dedup and refraction hits never
+re-switch. Group-less auto-focus is a documented no-op. Ratified
+divergences: the NULL no-focus state is never stacked (no upstream
+MAIN-return; this preserves the ratified A8 mid-run-switch behavior), and
+cross-group pending activations drain via the A8 pop-time stale gate and
+re-push when their group regains focus (pure conditions re-push, so their
+net firings match upstream's per-group heaps; impure rules keep their
+first-pass-only bound and do not re-fire that run; activation sequence
+numbers may differ). An out-of-focus
+pure auto-focus rule re-evaluates every recompute cycle, mirroring upstream;
+the 32-cap overflow path is documented but not unit-tested.
+
+Upstream vapor - documented, not replicated (spec Sub-project B, item 5).
+Cross-rule alpha sharing and beta token propagation do not exist in any
+upstream execution path ("RETE-UL" is a per-rule boolean expression tree;
+the named BetaNode/TokenPool/NodeSharing utilities are unused by any
+engine); upstream's `Unifier` (`src/backward/unification.rs`) is never
+called by the backward search; upstream's integrated proof-graph caching is
+dead (fresh graph per query plus an insert/lookup key mismatch); the
+parallel engine's actions are no-ops and it is not wired into the main
+engine; ConflictResolutionStrategy beyond salience+recency and RETE-UL
+accumulate value binding are likewise documented non-goals. Mapping note:
+the local engine corresponds to upstream RustRuleEngine + BackwardEngine +
+the streaming seams; ReteUlEngine/IncrementalEngine engine-level quirks
+(100/1000 iteration caps, `<name>_fired` fact insertion,
+no_loop-default-true, update-all-facts-of-type actions) are
+upstream-degenerate and deliberately not replicated.
+
+## Streaming completion parity: aggregate kinds, StreamAnalytics, GRL stream syntax, watermark closure, joins, stream rule evaluation
+
+This section records the sub-project C (2026-08-30) closure of the streaming
+deltas against upstream rust-rule-engine v1.21.4 (`f80a541`), plus the
+streaming surfaces the parity scope documents but does not replicate. The
+upstream anchors with f80a541 file:line citations live in
+`docs/superpowers/plans/2026-08-30-rule-engine-full-parity-c-streaming.md`;
+the citations below refer to those anchors. All delivered rows are
+`verified_local` in `docs/rule_engine_conformance.yml`.
+
+Aggregate kinds (Task C1, upstream `src/streaming/aggregator.rs:12`). The
+`re_stream_aggregate_kind_t` enum gained tail-appended
+`RE_STREAM_AGGREGATE_COUNT_DISTINCT = 8`, `RE_STREAM_AGGREGATE_STDDEV = 9`,
+and `RE_STREAM_AGGREGATE_PERCENTILE = 10`; `RE_ABI_VERSION_MINOR` bumped once
+for the whole sub-project (3u to 4u). STDDEV is population standard deviation
+(variance sums `(v - mean)^2` over N, :233) and requires at least two numeric
+values, else `RE_STATUS_NOT_FOUND` (upstream `None`); PERCENTILE sorts the
+numeric values ascending and takes the nearest-rank index
+`round(p/100 * (n - 1))` on a 0-100 scale (:253), with the percentile carried
+on the struct_size-gated tail of `re_stream_filter_options_t` (an uncovered
+or out-of-range value, NaN included, is `RE_STATUS_INVALID_ARGUMENT`, while
+pre-append filter sizes keep working for every other kind); COUNT_DISTINCT
+reports in the existing `count` field under typed equality over `re_value_t`
+(bitwise double comparison) - upstream counts distinct `format!("{:?}")`
+debug strings, which would equate `1` and `1.0`, a documented divergence.
+STDDEV/PERCENTILE join the numeric folds, so a non-numeric matching event is
+`RE_STATUS_INVALID_ARGUMENT` exactly like SUM/AVERAGE/MIN/MAX, and an empty
+filtered set is `RE_STATUS_NOT_FOUND` for all three new kinds while COUNT
+keeps 0/OK. `re_stream_aggregate_result_t` gained `stddev`/`percentile` by
+tail append under the same struct_size pair-gating idiom as the Task-16
+fields.
+
+StreamAnalytics (Task C2, upstream `src/streaming/aggregator.rs:285`).
+`re_stream_analytics_create` builds an engine-allocator handle whose TTL
+cache hits iff `current_time_ms - entry_ts < ttl` (:311), serving the cached
+clone without refreshing the timestamp; on a miss it recomputes through the
+window aggregate, evicts every past-TTL entry (:323), inserts the fresh one,
+and returns. Cache identity is the caller key plus kind plus filter identity
+(event_type, and percentile for PERCENTILE compared bitwise) - a documented
+hardening over upstream string-only keys. The host supplies
+`current_time_ms`; the engine samples no clock (single-threaded handle
+contract). `re_stream_analytics_moving_average` folds the last N
+caller-supplied window handles into one global `sum(events)/count(events)`
+over numeric events of the given name (:329) - never an average of per-window
+averages. `re_stream_analytics_detect_anomalies` requires at least 3 windows
+and at least 10 historical numeric values (all windows except the last),
+computes population mean/stddev over the historical set, and flags
+last-window events with `|z| > threshold`, reporting their timestamps in
+window order (:357). `re_stream_analytics_calculate_trend` averages per
+window, half-splits the contributing windows (second half takes the odd
+extra), and maps `change_percent = (second_avg - first_avg)/first_avg * 100`
+to INCREASING (> +5), DECREASING (< -5), else STABLE (:399, :416, :430).
+Documented divergences: the local field mapping is the event name plus its
+numeric scalar (local events carry a name and one typed scalar, not data
+maps); upstream divides the moving average by the whole window event count
+while local counts only numeric events of the name; detect_anomalies reports
+timestamps because local events have no IDs (upstream returns event IDs), is
+`RE_STATUS_INVALID_ARGUMENT` below 3 windows and `RE_STATUS_NOT_FOUND` below
+10 historical values (upstream silently returns no anomalies), flags nothing
+on zero historical stddev (upstream would flag unequal values via infinite
+z-scores), and uses the buffer-capacity idiom (`RE_STATUS_LIMIT` plus the
+total in `out_count`; NULL,0 is the sizing query); calculate_trend is
+`RE_STATUS_INVALID_ARGUMENT` below 2 windows (upstream returns Stable) and
+STABLE when `first_avg == 0` (documented division guard; upstream f64
+division yields inf/NaN); cache misses whose fold fails are not cached
+(upstream caches `None`), and the evict-before-insert order differs from
+upstream only in the unobservable TTL-0 corner.
+
+GRL stream syntax (Task C3, upstream `src/parser/grl/stream_syntax.rs`). The
+condition grammar accepts `var: EventType from stream("name") over
+window(<digits> <unit>, sliding|tumbling)` into a `RE_EXPR_STREAM_PATTERN`
+node (append-only internal enum) mirrored into the IR with owned payload
+strings and a `re_ir_validate` well-formedness branch, so
+`re_engine_install` hard-rejects malformed stream-pattern IR. The event type
+is optional and an identifier that is exactly `from` is not consumed as a
+type (:216 - `e: from stream("events")` is legal; `From` and `fromage` ARE
+types); the window clause is optional (:93); the stream name runs to the next
+quote with no escape processing; the duration is digits + required whitespace
++ unit with exactly the upstream case-sensitive set (:166-179 -
+ms/millisecond(s), sec/second(s), min/minute(s), hour(s); anything else is a
+parse error) stored as duration_ms; kinds are sliding|tumbling (:192) plus
+`session`, accepted as a documented LOCAL EXTENSION mapping to
+`RE_STREAM_WINDOW_SESSION` with the duration as the session timeout -
+upstream's GRL parser rejects `session` even though `WindowType::Session`
+exists in its Rust enum. Variables follow the binding idiom, duplicates in
+one rule are a validation error, and the per-rule stream-pattern scope is
+capped at 16. Duration overflow (digits beyond u64 or unit multiplication) is
+a parse error where upstream wraps in release builds. The
+and-of-two-stream-patterns composition (upstream's `pattern && pattern` join
+spelling, :429) is a parse error because that grammar production is vapor
+upstream - `join_conditions` is always empty and nothing consumes
+`StreamJoinPattern`; mixed pattern-and-ordinary conditions and `or`
+compositions parse and are gated at evaluation. Rules carrying stream-pattern
+CEs stay off RETE networks (`collect()` admits only fact/literal
+comparisons), are impure (first-pass-only evaluation, never on executor
+workers), and stay honestly `RE_STATUS_NOT_SUPPORTED` to backward chaining -
+upstream has no stream-CE backward evaluation to mirror.
+
+Watermark-driven closure (Task C4, upstream `src/streaming/watermark.rs` and
+`src/streaming/window.rs`). `re_stream_window_options_t` gained the
+struct_size-gated `watermark_drives_closure` flag (default 0 = the pre-C
+behavior, forced 0 when the caller's struct_size does not cover it). With the
+flag on, each record is gated against the window's CURRENT watermark before
+the late gate: a tumbling bucket is closed when
+`watermark >= bucket_end + allowed_lateness_ms` and a record's session target
+when `watermark >= (timestamp_ms + retention_ms) + allowed_lateness_ms`
+(saturating arithmetic; a record that advances the watermark may close older
+buckets as a side effect). Closed + DROP reports `RE_STATUS_NOT_FOUND`,
+closed + ERROR reports `RE_STATUS_ERROR`, and closed + ACCEPT records only
+when the target is still retained (tumbling: the current bucket; session:
+inside the retained session), else `RE_STATUS_NOT_FOUND`. Sliding windows
+never reach the gate (record-gate only, documented inert). The gate is
+provably outcome-neutral for DROP/ERROR - closure is strictly stronger than
+the late gate there - so its observable teeth are exactly the ACCEPT clause;
+closed buckets stay readable for aggregation until the usual eviction.
+Upstream watermarks never drive window closure except join-node eviction, so
+this wiring is a documented local composition over the upstream
+late/watermark semantics (`is_late` = event_time < watermark, :43; allowed
+lateness `lateness <= max` processes else drops, :236-247; late events never
+advance the watermark, :340; the processing-time Periodic strategy is not
+applicable to the single-threaded contract).
+
+Cross-stream joins (Task C4, upstream `src/rete/stream_join_node.rs`). The
+standalone join API delivers `re_stream_join_type_t` {INNER, LEFT_OUTER,
+RIGHT_OUTER, FULL_OUTER} (:11), `re_stream_join_strategy_t` kinds
+TIME_WINDOW{duration_ms}, COUNT_WINDOW{count}, SESSION_WINDOW{gap_ms} (:24),
+and `re_stream_join_match_t` {key, left/right timestamp, join timestamp} with
+0 marking an absent side (:35). One match is queued per strategy-satisfying
+same-key pair at record time for any join type; TIME_WINDOW/SESSION_WINDOW
+match when `|left_ts - right_ts| <= duration_ms/gap_ms` (upstream compares
+whole seconds; local uniformly ms, documented); COUNT_WINDOW matches every
+same-key pair and never times out; the join timestamp is the later of the two
+matched timestamps. Unmatched outer sides emit exactly once when the single
+monotonic watermark passes them (`watermark - ts > window_size`, strict; the
+local composition of upstream's `update_watermark` eviction, :204) and never
+re-emit, reproducing upstream's observable join-manager outcome with one
+emission point (no eager processing-time emission, no watermark-time re-scan
+of buffered pairs); non-advancing watermark updates are accepted no-ops
+(advance-only rule, watermark.rs:131). Bounds: 256 distinct keys per side (a
+257th is `RE_STATUS_LIMIT`), 64 buffered events per key with drop-oldest plus
+a dropped counter, 256 queued matches with drop-oldest;
+`re_stream_join_drain` uses the capacity idiom (`RE_STATUS_LIMIT` + total in
+`out_count`; NULL,0 sizing query), and match keys borrow join-owned storage
+valid until destroy. Documented divergences: the record value is validated
+but not retained (no join output surfaces payloads), an empty key is
+`RE_STATUS_INVALID_ARGUMENT` (upstream silently skips keyless events), and
+the `side` argument is validated without partitioning state (one watermark
+per node). Upstream does not connect its join node to StreamRuleEngine; the
+local API is likewise a host-driven C seam, and the GRL `&&` join form stays
+a parse error.
+
+Stream rule evaluation (Task C5, upstream `src/streaming/engine.rs:341-378`).
+The engine carries a bounded stream registry (16 names, `RE_STATUS_LIMIT` at
+the cap, replace-on-duplicate, borrowed window handles the host keeps
+owning - `re_engine_destroy` frees only the name copies, `RE_STATUS_BUSY`
+mid-run, unregister a documented no-op for unknown names).
+`re_engine_stream_run(engine, facts, window)` injects the upstream
+execute_rules fact set into the caller's facts and runs the whole rule base
+once: always `WindowEventCount` (DOUBLE, the upstream f64 count - the pinned
+parity usage `when WindowEventCount > 5`, :478-481, is test-covered),
+`WindowStartTime`, `WindowEndTime`, `WindowDurationMs` (INT64 ms, clamped)
+from the window bounds (:347-353 - tumbling reports the current bucket span
+even while empty, sliding the [oldest retained, watermark] span, session the
+open session span, empty windows all-zero), plus per-event-name
+`<name>Sum/Average/Min/Max` DOUBLE folds over numeric retained values
+(:364-376 - the local field mapping is the event name; upstream auto-detects
+numeric fields over event data maps, :383; a name with only non-numeric
+events gets no facts). Every injection is a plain `re_facts_set`, so each
+write is host-visible, overwrites stale facts, and bumps the facts mutation
+serial - the B2 proof-graph cache keys on that serial, so no stale backward
+result survives across two stream runs. Upstream runs the rule base per
+window into a fresh `Facts` with actions uncaptured (:304-306); the local
+mapping is a host loop of `re_engine_stream_run` per stream into the host's
+own facts. The GRL stream-pattern CE evaluates against the registered window:
+the optional Type filters by event name, the optional window clause restricts
+to the sliding span `[watermark - duration, watermark]` (saturating), the
+current tumbling bucket, or the current open session, and no clause reads all
+retained events; a rule fires once per run when any retained event qualifies
+(exists semantics, first qualifying event in timestamp order the nominal
+binding). Ratified divergences: an unregistered stream reports
+`RE_STATUS_NOT_SUPPORTED`, never `NOT_FOUND`, because
+`compute_rule_activations` (engine.c:755) would swallow `NOT_FOUND` as a
+silent non-match; a zero-duration tumbling clause is
+`RE_STATUS_INVALID_ARGUMENT` (the upstream `ts / 0` division would panic);
+and the CE has exists/single-activation semantics - upstream never evaluates
+stream-pattern CEs at all (its engine fans the rule base out per window via
+fact injection), so there is no per-event activation multiplicity to mirror,
+and fact-premise refraction would collapse identical activations anyway.
+
+Upstream vapor and not-applicable surfaces - documented, not replicated
+(anchors in the C plan). The GRL `pattern && pattern` join grammar exists
+(`src/parser/grl/stream_syntax.rs:429`) but `join_conditions` is always empty
+and nothing consumes `StreamJoinPattern`; the `src/streaming/operators.rs`
+offline fluent stream API is not wired into the upstream engine; the tokio
+mpsc channel + `Arc<RwLock<WindowManager>>` + batch-task topology of
+`src/streaming/engine.rs:183-262` is not applicable to the single-threaded
+local handle contract, so the local composition is a synchronous host-driven
+seam; and sequence-pattern CEP beyond the delivered pair correlation stays
+bounded because upstream itself has no live sequence matcher. The working
+streaming machinery upstream actually has is delivered by the rows above.
+
+## Ecosystem parity: plugin boundary, example coverage, Redis probe, feature mapping
+
+This section records sub-project D (2026-08-30/31), the final parity slice
+against upstream rust-rule-engine v1.21.4 (`f80a541`): the plugin boundary,
+example-family coverage, the Redis runtime probe, and the cargo-feature
+mapping. Upstream anchors with f80a541 file:line citations live in
+`docs/superpowers/plans/2026-08-30-rule-engine-full-parity-d-ecosystem.md`.
+All delivered rows are `verified_local` in `docs/rule_engine_conformance.yml`.
+
+Plugin boundary (Task D1). Upstream ships exactly five plugins
+(`src/plugins/mod.rs:1-11`), none feature-gated and none auto-loaded; each
+implements `RulePlugin` (`src/engine/plugin.rs:48`) and attaches via
+`engine.load_plugin` (`src/engine/engine.rs:1977`). There is deliberately no
+local `load_plugin` surface: the registered-function callback boundary stays
+the host-extension equivalent with override-first precedence, and the pure
+plugin helpers are name-dispatched engine built-ins in `builtins.c`. Of the
+29 registered upstream plugin functions, 8 were already covered by the A3/A4
+built-in families (min/max/sum/avg, length/contains, join, isEmpty); D1 added
+the 15 missing pure helpers — `concat`/`repeat`/`substring`
+(`string_utils.rs:148/:163/:190`), `sqrt` (`math_utils.rs:170`),
+`first`/`last`/`reverse`/`slice`/`keys`/`values`
+(`collection_utils.rs:286/:308/:330/:372/:404/:421`),
+`isEmail`/`isPhone`/`isUrl`/`isNumeric`/`inRange`
+(`validation.rs:179/:191/:203/:215/:246`) — plus the `StringReplace` action
+body (`string_utils.rs:129`) as a `replace()` function, all pure-classified
+and pinned by `test_rule_engine_plugin_parity.c` (33 tests). Fetched-body
+behaviors are pinned exactly: empty `first`/`last` yield Null, `isUrl` also
+accepts `ftp://`, and `replace` with an empty `from` inserts at UTF-8
+codepoint boundaries (upstream-exact). Documented out, not replicated: the
+`date_utils` family (environment-clock reads, `date_utils.rs:61-62`; A4
+`now`/`timestamp` is the bounded local equivalent), the fact-mutating
+CamelCase plugin actions (mapped to the expression functions plus plain
+assignment), and 15 metadata-declared-but-never-registered upstream items
+(vapor: StringSplit, StringJoin, padLeft, padRight, Modulo, Power, Ceil,
+Floor, random, ArrayMap, ParseDate, AddHours, DateDiff, dayOfYear,
+ValidateNumeric). Upstream's lib.rs marketing ("44+ actions & 33+ functions")
+overcounts the actually registered 33 actions + 29 functions.
+
+Example coverage (Task D2). The pinned upstream manifest holds 29
+`[[example]]` entries in seven family directories; `session_window_demo`
+additionally exists at `examples/session_window_demo.rs` as an
+auto-discovered target outside the manifest and is mapped with the streaming
+machinery. No local Rust examples exist, so coverage means a local behavioral
+equivalent exercised by a named test; the verbatim per-family mapping table
+lives in the header comment of
+`engine/tests/test_rule_engine_example_coverage.c`. Three new smokes cover
+shapes no existing suite pinned end-to-end — ex01 (fraud_detection/grule_demo
+forward chaining over structured facts), ex03 (action_handlers_grl_demo via
+registered-function expression dispatch), ex09 (grl_query_demo/
+ecommerce_approval_demo over the bounded backward machine); every other
+family maps to an existing suite or a documented not_applicable
+(05-performance to the deterministic bench baseline regression,
+parallel_engine_demo and rete_ul_drools_style are upstream vapor,
+10-module-system is covered_bounded by the local defmodule/import machinery).
+Two bounded divergences the mapping records: upstream's arbitrary bare
+`then ActionName(...)` spelling is a locked local parse error for
+non-whitelisted names, and the backward condition matcher reads flat fact
+names only (no dotted object traversal; the forward matcher walks) — the ex09
+smoke uses flat keys and pins this shape.
+
+Redis exception (Task D3). The streaming-redis row stays `optional_backend`
+compile-verified — the spec's one allowed exception. The 2026-08-31 probe
+(verbatim evidence in
+`.superpowers/sdd/2026-08-29-rule-engine-full-parity/task-d3-report.md`)
+found a genuine Redis 8.10.1 service (MSYS2 Windows build, ~5.5-day uptime)
+live at 127.0.0.1:6379 — refuting an earlier same-day probe that recorded no
+service — but the hiredis development files are absent everywhere probed
+(PATH, mingw roots, a VCPKG_ROOT with no installed/ tree, the Redis install
+tree itself, no vendored repo copy), so `RULE_ENGINE_ENABLE_REDIS=ON`
+force-disables at configure time ("no fallback",
+`engine/CMakeLists.txt:736-753`) and the roundtrip test stays compiled out
+(`#if RE_HAS_HIREDIS`) even with `RE_TEST_REDIS_URL` set against the live
+service. The blocker is the absent client, not the service; service
+availability is time-dependent and must be re-probed at any future promotion
+attempt (the promotion recipe is recorded in the D3 report).
+
+Feature mapping (Task D4). Upstream declares `default = []`,
+`streaming = ["tokio"]`, `streaming-redis = ["streaming","redis"]`,
+`backward-chaining = []` with no aggregate feature, so `--all-features` means
+exactly {streaming, streaming-redis, backward-chaining}. Locally: streaming
+and backward-chaining are always on — compiled into `rule_engine_core`
+unconditionally with no gate; streaming-redis maps to
+`RULE_ENGINE_ENABLE_REDIS` with hiredis auto-detection (force-OFF when the
+client is absent); and the remaining toggles are tooling options rather than
+upstream features — `RULE_ENGINE_ENABLE_C11_PARALLEL` (optional executor),
+`ENGINE_USE_ASAN`/`ENGINE_USE_UBSAN` (sanitizers), `ENGINE_BUILD_TESTS` (test
+targets). No single all-features switch exists locally; the mapping is this
+documented list (the upstream.yml all-features row).
+
 ## Tested private advanced slice
 
 The current focused suite exercises a private, non-capability-bearing slice for
@@ -417,25 +847,41 @@ must not replace it with local wall-clock time.
 
 Names and values are copied during the record call. A successful record may
 still be rejected by a limit or late-event policy; no partial event is visible
-on failure. Exact watermark, eviction, and session-gap behavior are not
-specified until the runtime implementation is tested.
+on failure. With the struct_size-gated `watermark_drives_closure` option off
+(the default, and the pre-C behavior), record-time watermark handling is
+exactly the configured late-event policy; with it on, tumbling buckets and
+session targets close once the current watermark passes their end plus
+allowed lateness - the streaming completion parity section records the exact
+formulas and the ACCEPT-clause teeth.
 
 The tested correlation subset is separate from window storage. It provides
 count, numeric sum, numeric average, and the appended minimum/maximum over
 retained events filtered by event type and an optional string-valued key, plus
 first/last selection of the earliest/latest matching event by timestamp with
-insertion order breaking ties. SUM/AVERAGE/MIN/MAX fold numeric values only -
-a non-numeric matching event is `RE_STATUS_INVALID_ARGUMENT` for all four -
-while FIRST/LAST accept any value type. An empty filtered set reports
-`RE_STATUS_NOT_FOUND` for the four new kinds; COUNT keeps its 0/OK behavior.
+insertion order breaking ties. Sub-project C appended three more kinds -
+count-distinct (reported in the `count` field under typed equality over
+`re_value_t`; upstream counts distinct debug-string spellings, a documented
+divergence), population stddev (at least two numeric values required, else
+`RE_STATUS_NOT_FOUND`), and nearest-rank percentile on a 0-100 scale from the
+struct_size-gated filter tail field (an uncovered or out-of-range percentile,
+NaN included, is `RE_STATUS_INVALID_ARGUMENT`; pre-append filter sizes keep
+working for every other kind). SUM/AVERAGE/MIN/MAX/STDDEV/PERCENTILE fold
+numeric values only - a non-numeric matching event is
+`RE_STATUS_INVALID_ARGUMENT` for all six - while FIRST/LAST accept any value
+type and COUNT_DISTINCT tolerates any mix. An empty filtered set reports
+`RE_STATUS_NOT_FOUND` for every kind except COUNT, which keeps its 0/OK
+behavior.
 `re_stream_aggregate_result_t` grew by tail append only: callers pass
 `struct_size`, fields before `minimum` require only the pre-append size, and
-each appended field is written only when `struct_size` covers it, so old-size
+each appended field group (minimum/maximum/first/last, then
+stddev/percentile) is written only when `struct_size` covers it, so old-size
 callers keep the old fields untouched. The first/last values copy the retained
 event value; STRING data is borrowed from the window and stays valid until the
 next window mutation or destroy. It also counts deterministic
 first-type/second-type pairs sharing the optional key within a bounded timeout.
-This does not claim general stream patterns, joins, concurrency, or Redis state.
+Stream patterns, joins, analytics, and stream rule evaluation are claimed by
+the streaming completion parity section; concurrency and Redis state remain
+unclaimed here.
 
 ### Snapshot and restore
 
@@ -500,7 +946,9 @@ deliberately: `re_engine_capabilities_v2` does not set
 predicate unification and upstream shared-subgraph provenance remain
 unsupported and the seam is promoted only when that claim can be honest.
 `re_engine_query_bounded` accepts exact flat fact goals of the form
-`Name == literal` or `Name == Variable`, plus exact installed rule names.
+`Name == literal`, `Name == Variable`, or `Name == ?var` (bounded
+unification per the depth parity section), argument-bearing
+`goal("Rule", actual, ...)` query strings, plus exact installed rule names.
 Rule declarations may optionally use bounded formal parameters, for example
 `rule "Lookup"(Key)`. Conditions may use `goal("RuleName")` unchanged, or the
  parsed explicit form `goal("RuleName", actual, ...)`; bounded formal/actual
@@ -579,18 +1027,28 @@ results (PROVED/DISPROVED only; LIMIT/UNKNOWN are never cached), consulted
 after option normalization and keyed on the exact goal text, the facts
 identity, the normalized options (`max_depth`, `max_solutions`, `strategy`),
 and the engine config serial, and stamped with the facts mutation generation.
-It holds at most 64 entries and clears every entry when full; served proofs
-are deep clones, and a served query wires the same invalidation subscription a
-fresh run gets. `config_serial` bumps on program install and function
-register/unregister, and `mutation_serial` now also bumps on retraction, so
-TMS cascades and retract-only transactions invalidate cached proofs. Entries
-key on the facts pointer value but never dereference it, so there is no
-use-after-free; a destroy-plus-realloc at the same address with a matching
-generation could alias and is parked as a documented residual risk.
-`disable_shared_proof_graph` bypasses lookup, store, and stats entirely (no
-stats movement), and `re_engine_proof_graph_stats` reports hits and misses -
-zeroes before the first cached query. A NOT query counts the subgoal consult
-in the stats, so one fresh `NOT X` records two misses. The upstream
+It holds at most 64 entries and clears every entry when full (counted as
+evictions); served proofs are deep clones, and a served query wires the same
+invalidation subscription a fresh run gets. `config_serial` bumps on program
+install and function register/unregister, and `mutation_serial` now also
+bumps on retraction, so TMS cascades and retract-only transactions still
+force revalidation of cached proofs. Sub-project B replaced the coarse
+per-facts invalidation with the real graph shape described in the depth
+parity section: each run captures a bounded premise set (32, deduped by
+path, typed value fingerprints, absent reads recorded), and on a serial
+mismatch each premise is re-resolved - an entry whose premises all hold
+survives an unrelated mutation, while any flip unlinks the entry. Untracked
+influences (user function mid-proof, premise-cap overflow, allocation
+failure) flip the capture opaque and keep the coarse generation semantics
+for that entry. Entries key on the facts pointer value but never dereference
+it, so there is no use-after-free; a destroy-plus-realloc at the same
+address with a matching generation could alias and is parked as a documented
+residual risk. `disable_shared_proof_graph` bypasses lookup, store, and
+stats entirely (no stats movement), `re_engine_proof_graph_stats` reports
+hits and misses - zeroes before the first cached query - and the appended
+`re_engine_proof_graph_stats_v2` adds invalidations, stores, and evictions
+in a struct_size-versioned struct. A NOT query counts the subgoal consult in
+the stats, so one fresh `NOT X` records two misses. The upstream
 shared-subgraph producer-provenance graph is not modeled.
 
 Names and string slices returned by proof binding, trace, and node getters are

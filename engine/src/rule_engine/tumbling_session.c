@@ -52,6 +52,49 @@ static void bounded_limits(re_stream_window_t *window) {
         bounded_drop(window, 0u);
 }
 
+static uint64_t bounded_saturating_add(uint64_t base, uint64_t add) {
+    return base > UINT64_MAX - add ? UINT64_MAX : base + add;
+}
+
+/* Sub-project C Task C4, watermark-driven closure (a documented local
+ * composition - upstream watermarks only gate recording and never drive
+ * window closure, f80a541 src/streaming/watermark.rs:340; only join-node
+ * eviction consumes them, src/rete/stream_join_node.rs:204). Evaluated
+ * lazily at record time against the window's CURRENT watermark - no timers,
+ * per the single-threaded contract. A record that ADVANCES the watermark may
+ * therefore close older buckets/sessions as a side effect, and subsequent
+ * records to them get the late-policy treatment below. A tumbling bucket is
+ * CLOSED when watermark >= bucket_end + allowed_lateness_ms; the session a
+ * record targets is CLOSED when watermark >= (timestamp_ms + retention_ms)
+ * + allowed_lateness_ms. The gate runs BEFORE the late gate: for DROP and
+ * ERROR it can never change the outcome (bucket_end > timestamp_ms and the
+ * +retention term make closure strictly stronger than gap > lateness, so a
+ * closed target is a late target with the same status); the observable delta
+ * is ACCEPT - a closed target is recorded only when it is still retained
+ * (tumbling: its bucket is the window's current bucket; session: the record
+ * lands in the open session, timestamp_ms <= session_end), otherwise it is
+ * RE_STATUS_NOT_FOUND instead of the late gate's silent RE_STATUS_OK. Closed
+ * buckets remain readable for aggregation until the usual bucket switch or
+ * bound eviction. Sliding windows never reach this function (extensions.c
+ * keeps them on the record-gate-only path - no discrete buckets). */
+static int bounded_closed_target(const re_stream_window_t *window, uint64_t timestamp_ms,
+                                 int *out_retained) {
+    uint64_t close_at;
+    if (window->options.kind == RE_STREAM_WINDOW_TUMBLING) {
+        uint64_t bucket = timestamp_ms / window->options.retention_ms;
+        uint64_t bucket_end = bounded_saturating_add(
+            timestamp_ms - timestamp_ms % window->options.retention_ms,
+            window->options.retention_ms);
+        close_at = bounded_saturating_add(bucket_end, window->options.allowed_lateness_ms);
+        *out_retained = window->count != 0u && bucket == window->bucket_start;
+    } else {
+        uint64_t own_end = bounded_saturating_add(timestamp_ms, window->options.retention_ms);
+        close_at = bounded_saturating_add(own_end, window->options.allowed_lateness_ms);
+        *out_retained = window->count != 0u && timestamp_ms <= window->session_end;
+    }
+    return window->watermark >= close_at;
+}
+
 re_status_t re_stream_window_create_bounded(re_engine_t *engine,
                                             const re_stream_window_options_t *options,
                                             re_stream_window_t **out_window) {
@@ -71,11 +114,21 @@ re_status_t re_stream_window_record_bounded(re_stream_window_t *window,
                                             re_string_t event_name,
                                             const re_value_t *value) {
     re_stream_event_impl_t event;
+    int accept_closed_retained = 0;
     uint64_t gap = window != NULL && timestamp_ms < window->watermark
         ? window->watermark - timestamp_ms : 0u;
     if (window == NULL || value == NULL || event_name.data == NULL || event_name.size == 0u)
         return RE_STATUS_INVALID_ARGUMENT;
-    if (gap > window->options.allowed_lateness_ms)
+    if (window->options.watermark_drives_closure) {
+        int retained = 0;
+        if (bounded_closed_target(window, timestamp_ms, &retained)) {
+            if (window->options.late_event_policy == RE_LATE_EVENT_DROP) return RE_STATUS_NOT_FOUND;
+            if (window->options.late_event_policy == RE_LATE_EVENT_ERROR) return RE_STATUS_ERROR;
+            if (!retained) return RE_STATUS_NOT_FOUND;
+            accept_closed_retained = 1; /* ACCEPT: record the retained closed target. */
+        }
+    }
+    if (!accept_closed_retained && gap > window->options.allowed_lateness_ms)
         return window->options.late_event_policy == RE_LATE_EVENT_DROP ? RE_STATUS_NOT_FOUND
             : window->options.late_event_policy == RE_LATE_EVENT_ERROR ? RE_STATUS_ERROR : RE_STATUS_OK;
     if (timestamp_ms > window->watermark) window->watermark = timestamp_ms;

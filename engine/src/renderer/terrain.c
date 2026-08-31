@@ -44,7 +44,7 @@ static void terrain_rebuild_region(Terrain *t, i32 gx0, i32 gz0, i32 gx1, i32 gz
                 f32 hu = terrain_sample_height(t, gx, gz + 1) * t->height_scale;
                 f32 nx = hl - hr, ny = 2.0f * hx, nz = hd - hu;
                 f32 nl2 = nx * nx + ny * ny + nz * nz;
-                if (nl2 > 0.0000001f) { f32 inv = fast_rsqrt(nl2); nx *= inv; ny *= inv; nz *= inv; }
+                if (nl2 > 0.0000001f) { f32 inv_normal = fast_rsqrt(nl2); nx *= inv_normal; ny *= inv_normal; nz *= inv_normal; }
                 f32 verts[8] = { fx, fy, fz, nx, ny, nz, (f32)gx * inv, (f32)gz * inv };
                 u32 offset = (u32)(gz * (i32)t->grid_size + gx) * 8 * sizeof(f32);
                 rhi_buffer_update_region(t->device, t->vbo, offset, verts, sizeof(verts));

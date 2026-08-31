@@ -12,7 +12,7 @@ static void record_failure(const char *message)
 
 TEST(invalid_utf8_title_is_rejected_without_creating_a_window)
 {
-    const char invalid_utf8[] = {(char)0xE4, (char)0xB8, '\0'};
+    const char invalid_utf8[] = "\xE4\xB8";
     PlatformConfig config = {640, 480, invalid_utf8};
 
     ASSERT_EQ(platform_create(&config), NULL);

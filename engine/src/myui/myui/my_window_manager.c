@@ -156,7 +156,7 @@ my_ret_t my_window_manager_dispatch_surface_event(
     return my_window_manager_close(wm, top);
   }
   if (!wm_is_pointer_event(event->type)) {
-    my_window_t* target = top;
+    target = top;
     if (top->modal) {
       wm->surface_focus_window = top;
     } else if (wm->surface_focus_window != NULL) {

@@ -775,10 +775,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     joints[0] = ja;
                     joints[1] = blend ? jb : ja;
                     joints[2] = 0; joints[3] = 0;
-                    f32 *w = (f32 *)(vdata + vi * 64 + 48);
-                    w[0] = blend ? 0.5f : 1.0f;
-                    w[1] = blend ? 0.5f : 0.0f;
-                    w[2] = 0; w[3] = 0;
+                    f32 *weights = (f32 *)(vdata + vi * 64 + 48);
+                    weights[0] = blend ? 0.5f : 1.0f;
+                    weights[1] = blend ? 0.5f : 0.0f;
+                    weights[2] = 0; weights[3] = 0;
                     vi++;
                 }
             }
@@ -2752,7 +2752,7 @@ f64 bench_start = 0;
 i32 bench_result_show = 0;
 /* R433: also save the actual f32 values + preset indices so restore is exact. */
 struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
-         f32 bloom_val, gr_val; i32 bloom_preset_idx, gr_preset_idx; } bench_saved;
+         f32 bloom_val, gr_val; i32 bloom_preset_idx, gr_preset_idx; } bench_saved = {0};
 
     post_process_init(&postfx, render.device, rw, rh);
     ssao_init(&ssao, render.device, rw, rh);
@@ -3892,16 +3892,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 u32 shoreline = 0;
                 f32 wy = water.water_y;
                 for (u32 i = 0; i < nn; i++) {
-                    f32 h = terrain.heightmap[i];
-                    if (h < hmin) hmin = h;
-                    if (h > hmax) hmax = h;
-                    hsum += h;
-                    hsum2 += h * h;
+                    f32 terrain_h = terrain.heightmap[i];
+                    if (terrain_h < hmin) hmin = terrain_h;
+                    if (terrain_h > hmax) hmax = terrain_h;
+                    hsum += terrain_h;
+                    hsum2 += terrain_h * terrain_h;
                     u32 gx = i % n, gz = i / n;
-                    bool below = h < wy;
+                    bool below = terrain_h < wy;
                     if (below) {
                         underwater_count++;
-                        f32 wd = wy - h;
+                        f32 wd = wy - terrain_h;
                         water_depth_sum += wd;
                         if (wd > water_depth_max_l) water_depth_max_l = wd;
                         water_cx_sum += (f32)gx * wd;
@@ -4337,7 +4337,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             if (new_cols > collision_peak) collision_peak = new_cols;
             collision_flash = 1.0f;
             last_collision_pos = physics->last_collision_pos;
-            last_collision_frame = engine.frame_count;
+            last_collision_frame = (u32)engine.frame_count;
             /* R445: sfx bus one-shot — a short blip per collision burst,
              * finally giving the R435 "sfx" bus a real source. Volume scales
              * with the burst's mean impact speed (total_collision_speed
@@ -4353,9 +4353,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (sfx_handle == 0) {
                     f32 dv2 = physics->total_collision_speed - sfx_prev_col_speed;
                     f32 v_avg = dv2 > 0.0f ? sqrtf(dv2 / (f32)new_cols) : 0.0f;
-                    f32 vol = 0.3f + v_avg * 0.07f;
-                    if (vol > 1.0f) vol = 1.0f;
-                    sfx_handle = audio_play(audio, sfx_clip_path, vol, false);
+                    f32 sfx_volume = 0.3f + v_avg * 0.07f;
+                    if (sfx_volume > 1.0f) sfx_volume = 1.0f;
+                    sfx_handle = audio_play(audio, sfx_clip_path, sfx_volume, false);
                     if (sfx_handle != 0) {
                         audio_source_set_bus(audio, sfx_handle, audio_sfx_bus);
                         sfx_play_count++;
@@ -4491,10 +4491,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             /* R57-fix: Hash-based pseudo-random shake — avoids 2× sinf/cosf per frame.
              * Previous quadratic approx was wrong for large angles; hash gives good
              * randomness without any trig. Shake only affects proj.e[2][0..1] by ≤0.015. */
-            u32 fc = engine.frame_count;
-            u32 h = fc * 1103515245u + 12345u;          /* LCG hash */
-            f32 shx = (f32)(h & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;  /* [-0.5, 0.5] */
-            f32 shy = (f32)((h >> 16) & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;
+            u32 fc = (u32)engine.frame_count;
+            u32 shake_hash = fc * 1103515245u + 12345u;          /* LCG hash */
+            f32 shx = (f32)(shake_hash & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;  /* [-0.5, 0.5] */
+            f32 shy = (f32)((shake_hash >> 16) & 0xFFFF) * (1.0f / 65536.0f) - 0.5f;
             proj.e[2][0] += (shx * 0.02f) * screen_shake;
             proj.e[2][1] += (shy * 0.02f) * screen_shake;
             /* R446: shake is real image motion — keep it in the jitter-free
@@ -4577,8 +4577,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 for (i32 ri = 0; ri < 200; ri++) {
                     rx += fwd_x * step_sz; ry += fwd_y * step_sz; rz += fwd_z * step_sz;
                     if (rx < 0 || rz < 0 || rx >= (f32)terrain.grid_size * terrain.scale || rz >= (f32)terrain.grid_size * terrain.scale) break;
-                    f32 rh = terrain_get_height(&terrain, rx, rz);
-                    if (ry <= rh) { hit = true; hit_h = rh; break; }
+                    f32 ray_height = terrain_get_height(&terrain, rx, rz);
+                    if (ry <= ray_height) { hit = true; hit_h = ray_height; break; }
                 }
                 if (hit) {
                     f32 rd2 = (rx - camera.position.e[0])*(rx - camera.position.e[0]) + (rz - camera.position.e[2])*(rz - camera.position.e[2]);
@@ -4708,8 +4708,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 vz2 += physics->bodies[bi].velocity.e[2] * physics->bodies[bi].velocity.e[2];
                 if (physics->bodies[bi].velocity.e[1] < -1.0f) falling_count++;
                 dyn_count++;
-                age_sum += (f32)(engine.frame_count - physics->bodies[bi].spawn_frame) * engine.delta_time;
-                f32 age_s = (f32)(engine.frame_count - physics->bodies[bi].spawn_frame) * engine.delta_time;
+                age_sum += (f32)(engine.frame_count - physics->bodies[bi].spawn_frame) * (f32)engine.delta_time;
+                f32 age_s = (f32)(engine.frame_count - physics->bodies[bi].spawn_frame) * (f32)engine.delta_time;
                 if (age_s < 5.0f) age_young++; else if (age_s < 20.0f) age_mid++; else if (age_s < 60.0f) age_old++; else age_ancient++;
                 if (physics->bodies[bi].position.e[1] < min_y) min_y = physics->bodies[bi].position.e[1];
                 if (physics->bodies[bi].position.e[1] > max_y) max_y = physics->bodies[bi].position.e[1];
@@ -4845,8 +4845,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
                 f32 span = vec3_len(vec3_sub(bmax, bmin));
                 Vec3 bsz = vec3_sub(bmax, bmin);
-                f32 vol = bsz.e[0] * bsz.e[1] * bsz.e[2];
-                f32 density = vol > 1.0f ? (f32)(physics->count - 1) / vol : 0.0f;
+                f32 bounds_volume = bsz.e[0] * bsz.e[1] * bsz.e[2];
+                f32 density = bounds_volume > 1.0f ? (f32)(physics->count - 1) / bounds_volume : 0.0f;
                 debug_ui_text(&ui, "Bodies span: %.1f  density: %.4f/m³  bounds: (%.0f,%.0f,%.0f)-(%.0f,%.0f,%.0f)", span, density, bmin.e[0], bmin.e[1], bmin.e[2], bmax.e[0], bmax.e[1], bmax.e[2]);
             }
             if (physics->count > 2) {
@@ -4942,7 +4942,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 (world->entity_count * (sizeof(CTransform)+sizeof(CMeshRef)+sizeof(CRigidBody)) + physics->count * sizeof(RigidBody)) / 1024,
                 world->entity_count * (sizeof(CTransform)+sizeof(CMeshRef)+sizeof(CRigidBody)),
                 physics->count * sizeof(RigidBody));
-                f32 spawn_rate = total_time > 1.0f ? (f32)(physics->count - 1) / total_time : 0.0f;
+                f32 spawn_rate = total_time > 1.0f ? (f32)(physics->count - 1) / (f32)total_time : 0.0f;
                 f32 time_to_cap = spawn_rate > 0.01f ? ((f32)physics->capacity - (f32)physics->count) / spawn_rate : -1.0f;
                 if (time_to_cap > 0.0f && time_to_cap < 3600.0f) {
                     debug_ui_text(&ui, "Session: frame %u  uptime %.0fs  spawn: %.2f/s  cap %u in %.0fs", (u32)engine.frame_count, total_time, spawn_rate, physics->capacity, time_to_cap);
@@ -5018,10 +5018,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
               if (grad_bearing < 0) grad_bearing += 360.0f;
               const char *gdir = (grad_bearing < 22.5f || grad_bearing >= 337.5f) ? "N" : grad_bearing < 67.5f ? "NE" : grad_bearing < 112.5f ? "E" : grad_bearing < 157.5f ? "SE" : grad_bearing < 202.5f ? "S" : grad_bearing < 247.5f ? "SW" : grad_bearing < 292.5f ? "W" : "NW";
               debug_ui_text(&ui, "Camera: yaw=%.1f° pitch=%.1f° fov=%.0f°  AGL=%.1f  slope=%.1f° ↓%s  [%s h=%.1f]", camera.yaw * 57.2958f, camera.pitch * 57.2958f, camera.fov * 57.2958f, cagl, atanf(cached_cslope) * 57.2958f, gdir, biome, ch);
-              { static f32 prev_yaw=0,prev_pitch=0; f32 yr=(camera.yaw-prev_yaw)/engine.delta_time*57.2958f; f32 pr=(camera.pitch-prev_pitch)/engine.delta_time*57.2958f; debug_ui_text(&ui, "Angular v: yaw=%.0f°/s pitch=%.0f°/s", yr, pr); prev_yaw=camera.yaw; prev_pitch=camera.pitch; }
+               { static f32 prev_yaw=0,prev_pitch=0; f32 yr=(camera.yaw-prev_yaw)/(f32)engine.delta_time*57.2958f; f32 pr=(camera.pitch-prev_pitch)/(f32)engine.delta_time*57.2958f; debug_ui_text(&ui, "Angular v: yaw=%.0f°/s pitch=%.0f°/s", yr, pr); prev_yaw=camera.yaw; prev_pitch=camera.pitch; }
             }
-            { debug_ui_text(&ui, "Forward: (%.2f,%.2f,%.2f)  Mouse: (%.0f,%.0f)  Traveled: %.0f m  Speed: %.1f m/s", cam_fwd.e[0], cam_fwd.e[1], cam_fwd.e[2], inp->mouse_x, inp->mouse_y, camera_distance_traveled, engine.delta_time > 0.0001f ? camera_frame_dist / engine.delta_time : 0.0f); }
-            { static const char *tn[] = {"Rolling Hills", "Volcano", "Waves", "Ridged", "Craters"}; u32 ttris = (terrain.grid_size - 1) * (terrain.grid_size - 1) * 2; const char *tclass = terrain_hstd < 1.0f ? "flat" : terrain_hstd < 3.0f ? "hilly" : terrain_hstd < 6.0f ? "mountainous" : "extreme"; f32 mod_rate = total_time > 1.0f ? (f32)terrain.modify_count / total_time : 0.0f; f32 mod_eff = terrain.modify_count > 0 ? terrain.total_delta / (f32)terrain.modify_count : 0.0f; debug_ui_text(&ui, "Terrain: %s (%s) %ux%u (%u tris) mods:%u (%.1f/s) delta:%.0f (avg %.1f/mod) h:[%.1f,%.1f] avg=%.1f std=%.2f (%+.3f)  brush=%.0f", tn[terrain_preset], tclass, terrain.grid_size, terrain.grid_size, ttris, terrain.modify_count, mod_rate, terrain.total_delta, mod_eff, terrain_hmin, terrain_hmax, terrain_havg, terrain_hstd, terrain_hstd_delta, brush_radius); }
+             { debug_ui_text(&ui, "Forward: (%.2f,%.2f,%.2f)  Mouse: (%.0f,%.0f)  Traveled: %.0f m  Speed: %.1f m/s", cam_fwd.e[0], cam_fwd.e[1], cam_fwd.e[2], inp->mouse_x, inp->mouse_y, camera_distance_traveled, engine.delta_time > 0.0001f ? camera_frame_dist / (f32)engine.delta_time : 0.0f); }
+             { static const char *tn[] = {"Rolling Hills", "Volcano", "Waves", "Ridged", "Craters"}; u32 ttris = (terrain.grid_size - 1) * (terrain.grid_size - 1) * 2; const char *tclass = terrain_hstd < 1.0f ? "flat" : terrain_hstd < 3.0f ? "hilly" : terrain_hstd < 6.0f ? "mountainous" : "extreme"; f32 mod_rate = total_time > 1.0f ? (f32)terrain.modify_count / (f32)total_time : 0.0f; f32 mod_eff = terrain.modify_count > 0 ? terrain.total_delta / (f32)terrain.modify_count : 0.0f; debug_ui_text(&ui, "Terrain: %s (%s) %ux%u (%u tris) mods:%u (%.1f/s) delta:%.0f (avg %.1f/mod) h:[%.1f,%.1f] avg=%.1f std=%.2f (%+.3f)  brush=%.0f", tn[terrain_preset], tclass, terrain.grid_size, terrain.grid_size, ttris, terrain.modify_count, mod_rate, terrain.total_delta, mod_eff, terrain_hmin, terrain_hmax, terrain_havg, terrain_hstd, terrain_hstd_delta, brush_radius); }
             if (terrain.modify_count > 0) { u32 mq=0; for(u32 qi=1;qi<4;qi++) if(terrain.edit_quadrant[qi]>terrain.edit_quadrant[mq]) mq=qi; debug_ui_text(&ui, "Edit heatmap: NW:%u NE:%u SW:%u SE:%u  hottest:%s", terrain.edit_quadrant[0],terrain.edit_quadrant[1],terrain.edit_quadrant[2],terrain.edit_quadrant[3], mq==0?"NW":mq==1?"NE":mq==2?"SW":"SE"); }
             if (underwater) debug_ui_text(&ui, "[UNDERWATER] depth: %.1f m", water.water_y - camera.position.e[1]);
             if (water.enabled) debug_ui_text(&ui, "Water: y=%.1f %s coverage: %.1f%%  vol: %.0f m³  depth: avg=%.2f max=%.2f  centroid: (%.1f,%.1f)  shoreline: %u edges", water.water_y, underwater ? "(below)" : "", terrain_water_pct, terrain_water_vol, terrain_water_depth_avg, terrain_water_depth_max, terrain_water_cx, terrain_water_cz, terrain_shoreline);
@@ -5257,10 +5257,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 for (u32 mx = 0; mx < 8; mx++) {
                     u32 gx = (mx * (gs - 1)) / 7;
                     u32 gz = (mz * (gs - 1)) / 7;
-                    f32 h = terrain.heightmap ? terrain.heightmap[gz * gs + gx] : 0;
+                    f32 sample_height = terrain.heightmap ? terrain.heightmap[gz * gs + gx] : 0.0f;
                     /* R428: heightmap values can be negative (crater presets) —
                      * float->u32 of a negative is UB. Clamp in float first. */
-                    f32 hv = fminf(fmaxf(h / terrain.height_scale * 6.0f, 0.0f), 6.0f);
+                    f32 hv = fminf(fmaxf(sample_height / terrain.height_scale * 6.0f, 0.0f), 6.0f);
                     u32 lvl = (u32)hv;
                     line[mx] = hm[lvl];
                 }
@@ -5755,11 +5755,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     anim_blend.local_positions, anim_blend.local_rotations,
                     anim_blend.local_scales);
             } else {
-                render.anim_clip.time += engine.delta_time;
+                render.anim_clip.time += (f32)engine.delta_time;
                 if (render.anim_clip.time >= render.anim_clip.duration) {
                     render.anim_clip.time -= render.anim_clip.duration;
                 }
-                skeleton_evaluate(&render.skeleton, &render.anim_clip, engine.delta_time);
+                skeleton_evaluate(&render.skeleton, &render.anim_clip, (f32)engine.delta_time);
             }
             /* R76-4: Skip skeleton upload, pipeline bind, and uniform sets when
              * no skinned rendering will occur (no skinned meshes and no fallback VBO). */
@@ -5924,44 +5924,44 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             /* cached query — no query_done() needed */
 
             {
-                InputState *inp = platform_input(engine.platform);
+                InputState *input_state = platform_input(engine.platform);
                 /* R364/R365: cam speed = Shift+9/0. Wayland yields '(' / ')' for that chord. */
-                if (input_key_down(inp, 289) &&
-                    (input_key_pressed(inp, 57) || input_key_pressed(inp, (i32)'('))) {
+                if (input_key_down(input_state, 289) &&
+                    (input_key_pressed(input_state, 57) || input_key_pressed(input_state, (i32)'('))) {
                     camera.move_speed = fminf(camera.move_speed + 1.0f, 20.0f);
                     LOG_INFO("Camera speed: %.1f", camera.move_speed);
                 }
-                if (input_key_down(inp, 289) &&
-                    (input_key_pressed(inp, 48) || input_key_pressed(inp, (i32)')'))) {
+                if (input_key_down(input_state, 289) &&
+                    (input_key_pressed(input_state, 48) || input_key_pressed(input_state, (i32)')'))) {
                     camera.move_speed = fmaxf(camera.move_speed - 1.0f, 0.5f);
                     LOG_INFO("Camera speed: %.1f", camera.move_speed);
                 }
-                if (input_key_down(inp, (i32)'l')) {
-                    sun_azimuth += 1.5f * engine.delta_time;
+                if (input_key_down(input_state, (i32)'l')) {
+                    sun_azimuth += 1.5f * (f32)engine.delta_time;
                 }
-                if (input_key_down(inp, (i32)'j')) {
-                    sun_azimuth -= 1.5f * engine.delta_time;
+                if (input_key_down(input_state, (i32)'j')) {
+                    sun_azimuth -= 1.5f * (f32)engine.delta_time;
                 }
-                if (input_key_down(inp, (i32)'i')) {
-                    sun_elevation = fminf(sun_elevation + 1.0f * engine.delta_time, 1.55f);
+                if (input_key_down(input_state, (i32)'i')) {
+                    sun_elevation = fminf(sun_elevation + 1.0f * (f32)engine.delta_time, 1.55f);
                 }
-                if (input_key_down(inp, (i32)'k')) {
-                    sun_elevation = fmaxf(sun_elevation - 1.0f * engine.delta_time, 0.05f);
+                if (input_key_down(input_state, (i32)'k')) {
+                    sun_elevation = fmaxf(sun_elevation - 1.0f * (f32)engine.delta_time, 0.05f);
                 }
-                if (input_key_pressed(inp, (i32)'o')) {
+                if (input_key_pressed(input_state, (i32)'o')) {
                     tod_cycle = !tod_cycle;
                     LOG_INFO("Time-of-day cycle: %s", tod_cycle ? "ON" : "OFF");
                 }
                 if (tod_cycle) {
-                    sun_azimuth += tod_speed * engine.delta_time;
+                    sun_azimuth += tod_speed * (f32)engine.delta_time;
                     sun_elevation = 0.4f + 0.55f * sinf(sun_azimuth * 0.5f);
                     if (sun_elevation < 0.05f) sun_elevation = 0.05f;
                 }
-                if (input_key_pressed(inp, (i32)'f')) {
+                if (input_key_pressed(input_state, (i32)'f')) {
                     wireframe_mode = !wireframe_mode;
                     LOG_INFO("Wireframe: %s", wireframe_mode ? "ON" : "OFF");
                 }
-                if (input_key_pressed(inp, (i32)'p')) {
+                if (input_key_pressed(input_state, (i32)'p')) {
                     /* R358: DEFERRED without initialized MRT skips forward AND deferred → blank. */
                     if (render.render_path == RENDER_PATH_FORWARD) {
                         if (!render.deferred.initialized) {
@@ -5976,7 +5976,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                              render.render_path == RENDER_PATH_DEFERRED ? "DEFERRED" : "FORWARD");
                 }
                 /* R363: AA was on 'h' (also terrain dig). Moved to KP_4 (309). */
-                if (input_key_pressed(inp, 309)) {
+                if (input_key_pressed(input_state, 309)) {
                     static i32 aa_mode = 3;
                     aa_mode = (aa_mode + 1) % 4;
                     fxaa_enabled = (aa_mode == 1 || aa_mode == 3);

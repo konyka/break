@@ -62,12 +62,16 @@ static bool write_mip_file(void) {
 static bool write_truncated_level0_mip_file(void) {
     FILE *f = fopen(TMP_PATH, "wb");
     if (!f) return false;
-    u8 half[level_bytes(0) / 2u];
-    memset(half, 0xAA, sizeof(half));
-    if (fwrite(half, 1, sizeof(half), f) != sizeof(half)) {
+    const u32 half_size = level_bytes(0) / 2u;
+    u8 *half = malloc(half_size);
+    if (!half) { fclose(f); return false; }
+    memset(half, 0xAA, half_size);
+    if (fwrite(half, 1, half_size, f) != half_size) {
+        free(half);
         fclose(f);
         return false;
     }
+    free(half);
     fclose(f);
     return true;
 }
