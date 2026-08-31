@@ -187,8 +187,9 @@ loader 只接受 YAML 类型匹配的值：布尔属性必须是 YAML bool，整
 sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置。
 
 `my_ui_load_file()` 在读取文件 payload 前执行同一 4 MiB 文件预算检查；超限文件会先关闭
-文件再返回错误，不会按攻击者提供的文件长度申请完整缓冲区。`test_myui_loader` 的文件级
-资源边界回归与字符串级预算回归均纳入测试门禁。
+文件再返回错误，不会按攻击者提供的文件长度申请完整缓冲区。文件中的嵌入 NUL 也会被
+拒绝，而不是被 C 字符串 API 截断；`test_myui_loader` 的文件级资源边界回归与字符串级
+预算回归均纳入测试门禁。
 
 UI 配置不再支持 XML，`my_xml.*` 和 `test_myui_xml` 已移除；Wayland 协议生成所需的
 `.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。

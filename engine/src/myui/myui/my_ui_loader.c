@@ -347,8 +347,10 @@ static void apply_style(my_window_t* window, const my_conf_node_t* root) {
   }
 }
 
-my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
-                            const char* yaml_str, my_ui_error_t* err) {
+static my_widget_t* ui_load_yaml_bytes(const my_allocator_t* allocator,
+                                       my_pal_t* pal, const char* yaml,
+                                       size_t yaml_len, bool reject_nul,
+                                       my_ui_error_t* err) {
   my_conf_error_t yaml_error;
   my_conf_node_t* root;
   const my_conf_node_t* type_node;
@@ -356,11 +358,19 @@ my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
   if (err != NULL) {
     memset(err, 0, sizeof(*err));
   }
-  if (yaml_str == NULL || strlen(yaml_str) > MY_UI_MAX_YAML_BYTES) {
+  if (yaml == NULL) {
+    ui_fail(err, "invalid YAML input");
+    return NULL;
+  }
+  if (yaml_len > MY_UI_MAX_YAML_BYTES) {
     ui_fail(err, "YAML input exceeds resource budget");
     return NULL;
   }
-  root = my_conf_parse_yaml(allocator, yaml_str, strlen(yaml_str), &yaml_error);
+  if (reject_nul && memchr(yaml, '\0', yaml_len) != NULL) {
+    ui_fail(err, "YAML input contains NUL byte");
+    return NULL;
+  }
+  root = my_conf_parse_yaml(allocator, yaml, yaml_len, &yaml_error);
   if (root == NULL) {
     if (err != NULL) {
       err->line = yaml_error.line;
@@ -399,18 +409,35 @@ my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
   return result;
 }
 
+my_widget_t* my_ui_load_str(const my_allocator_t* allocator, my_pal_t* pal,
+                            const char* yaml_str, my_ui_error_t* err) {
+  return ui_load_yaml_bytes(allocator, pal, yaml_str,
+                            yaml_str != NULL ? strlen(yaml_str) : 0u, false,
+                            err);
+}
+
 my_widget_t* my_ui_load_file(const my_allocator_t* allocator, my_pal_t* pal,
                              const char* path, my_ui_error_t* err) {
   FILE* file = NULL;
   long size;
   char* buffer;
   my_widget_t* result;
-  if (path == NULL || (file = fopen(path, "rb")) == NULL ||
-      fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) < 0 ||
+  if (err != NULL) {
+    memset(err, 0, sizeof(*err));
+  }
+  if (path == NULL) {
+    ui_fail(err, "invalid YAML file path");
+    return NULL;
+  }
+  file = fopen(path, "rb");
+  if (file == NULL) {
+    ui_fail(err, "cannot open YAML file");
+    return NULL;
+  }
+  if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) < 0 ||
       fseek(file, 0, SEEK_SET) != 0) {
-    if (file != NULL) {
-      fclose(file);
-    }
+    fclose(file);
+    ui_fail(err, "cannot read YAML file");
     return NULL;
   }
   if (size > (long)MY_UI_MAX_YAML_BYTES) {
@@ -426,7 +453,7 @@ my_widget_t* my_ui_load_file(const my_allocator_t* allocator, my_pal_t* pal,
   }
   fclose(file);
   buffer[size] = '\0';
-  result = my_ui_load_str(allocator, pal, buffer, err);
+  result = ui_load_yaml_bytes(allocator, pal, buffer, (size_t)size, true, err);
   my_mem_free(allocator, buffer);
   return result;
 }

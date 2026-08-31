@@ -148,6 +148,24 @@ TEST(yaml_file_loader_rejects_oversized_file_before_allocation)
   remove(path);
 }
 
+TEST(yaml_file_loader_rejects_embedded_nul)
+{
+  char path[256];
+  FILE* file;
+  my_ui_error_t error = {0};
+
+  test_tmp(path, sizeof(path), "yaml_embedded_nul");
+  file = fopen(path, "wb");
+  ASSERT_NOT_NULL(file);
+  ASSERT_TRUE(fputs("type: label\ntext: safe\n", file) >= 0);
+  ASSERT_EQ(fputc('\0', file), '\0');
+  ASSERT_TRUE(fputs("type: button\ntext: ignored\n", file) >= 0);
+  ASSERT_EQ(fclose(file), 0);
+  ASSERT_TRUE(my_ui_load_file(NULL, NULL, path, &error) == NULL);
+  ASSERT_TRUE(error.message[0] != '\0');
+  remove(path);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -299,6 +317,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_loader_applies_bindings_map);
     RUN_TEST(yaml_loader_rejects_oversized_input);
     RUN_TEST(yaml_file_loader_rejects_oversized_file_before_allocation);
+    RUN_TEST(yaml_file_loader_rejects_embedded_nul);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);
