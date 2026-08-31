@@ -471,6 +471,10 @@ my_conf_node_t* my_conf_parse_json(const my_allocator_t* allocator,
   p.line = 1;
   p.col = 1;
   p.err = err;
+  if (len > MY_CONF_JSON_MAX_BYTES) {
+    json_fail(&p, "JSON input exceeds resource budget");
+    return NULL;
+  }
   root = json_value(&p);
   if (root == NULL) {
     return NULL;

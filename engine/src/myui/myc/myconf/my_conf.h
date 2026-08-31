@@ -26,6 +26,7 @@
 #define MY_CONF_YAML_MAX_CHILDREN 4096u
 #define MY_CONF_YAML_MAX_SCALAR_BYTES (1024u * 1024u)
 #define MY_CONF_FILE_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_JSON_MAX_BYTES (4u * 1024u * 1024u)
 
 /** @brief Node type. */
 typedef enum my_conf_type_t {
@@ -124,8 +125,8 @@ my_ret_t my_conf_save_file(my_conf_node_t* node, const char* path);
 
 /* ---------------- JSON ---------------- */
 
-/** @brief Parse JSON (full RFC 8259 set). NULL on error (err filled
- * with line/col/msg when non-NULL). */
+/** @brief Parse JSON (full RFC 8259 set) within MY_CONF_JSON_MAX_BYTES.
+ * NULL on error (err filled with line/col/msg when non-NULL). */
 my_conf_node_t* my_conf_parse_json(const my_allocator_t* allocator,
                                    const char* data, size_t len,
                                    my_conf_error_t* err);

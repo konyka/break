@@ -193,6 +193,8 @@ sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置�
 
 通用 `my_conf_load_file()` 的 JSON 文件入口也使用独立的 `MY_CONF_FILE_MAX_BYTES` 4 MiB
 预算，并在申请 payload 前拒绝超限文件；该入口不改变 YAML UI loader 的类型化 schema。
+直接 `my_conf_parse_json()` 同样受 `MY_CONF_JSON_MAX_BYTES` 4 MiB 输入预算保护，避免从
+内存 API 绕过文件入口限制。
 
 UI 配置不再支持 XML，`my_xml.*` 和 `test_myui_xml` 已移除；Wayland 协议生成所需的
 `.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。
