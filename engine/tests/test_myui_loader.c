@@ -272,6 +272,31 @@ TEST(bson_writer_rejects_output_above_parser_budget)
   free(text);
 }
 
+TEST(json_writer_rejects_output_above_parser_budget)
+{
+  size_t text_length = (size_t)MY_CONF_JSON_MAX_BYTES - 1u;
+  char* text = (char*)malloc(text_length + 1u);
+  my_conf_node_t* root;
+  my_conf_node_t* value;
+  char* json;
+
+  ASSERT_NOT_NULL(text);
+  memset(text, 'x', text_length);
+  text[text_length] = '\0';
+  root = my_conf_new_object(NULL);
+  value = my_conf_new_str(NULL, text);
+  ASSERT_NOT_NULL(root);
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_conf_object_set(root, "payload", value), MY_RET_OK);
+  json = my_conf_to_json_str(NULL, root, false);
+  ASSERT_TRUE(json == NULL);
+  if (json != NULL) {
+    my_mem_free(NULL, json);
+  }
+  my_conf_destroy(root);
+  free(text);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -429,6 +454,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(toml_parser_rejects_oversized_input_before_allocation);
     RUN_TEST(bson_parser_rejects_oversized_input_before_allocation);
     RUN_TEST(bson_writer_rejects_output_above_parser_budget);
+    RUN_TEST(json_writer_rejects_output_above_parser_budget);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

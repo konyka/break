@@ -14,8 +14,11 @@
 **直接 JSON 解析输入预算（TDD）**：文件加载入口已有 4 MiB 检查，但直接调用
 `my_conf_parse_json()` 原先仍可绕过该限制并进入递归解析及字符串分配。现于 parser 入口
 增加 `MY_CONF_JSON_MAX_BYTES` 前置检查，超限输入在任何配置节点分配前失败；新增计数
-allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **21/21**、完整 CTest
+allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **22/22**、完整 CTest
 **82/82** 通过。
+
+JSON 写出器同步限制输出至 `MY_CONF_JSON_MAX_BYTES`，并在达到预算后停止字符串扫描，
+避免生成自身解析器必拒绝的文档以及无界容量倍增。
 
 **通用 JSON 配置文件预算（TDD）**：`my_conf_load_file()` 原先忽略 `fseek/ftell` 失败，且
 按文件长度直接分配，没有与解析输入建立统一上限。现新增 `MY_CONF_FILE_MAX_BYTES`（4 MiB），

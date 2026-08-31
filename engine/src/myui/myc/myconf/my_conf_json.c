@@ -501,13 +501,28 @@ typedef struct json_w_t {
 } json_w_t;
 
 static void jw_raw(json_w_t* w, const char* s, size_t n) {
+  size_t needed;
   if (w->oom) {
     return;
   }
-  if (w->len + n + 1 > w->cap) {
+  if (n > (size_t)MY_CONF_JSON_MAX_BYTES ||
+      w->len > (size_t)MY_CONF_JSON_MAX_BYTES - n) {
+    w->oom = true;
+    return;
+  }
+  needed = w->len + n;
+  if (needed + 1u > w->cap) {
     char* bigger;
-    while (w->len + n + 1 > w->cap) {
-      w->cap *= 2;
+    while (needed + 1u > w->cap) {
+      if (w->cap > ((size_t)MY_CONF_JSON_MAX_BYTES + 1u) / 2u) {
+        w->cap = (size_t)MY_CONF_JSON_MAX_BYTES + 1u;
+        break;
+      }
+      w->cap *= 2u;
+    }
+    if (needed + 1u > w->cap) {
+      w->oom = true;
+      return;
     }
     bigger = (char*)my_mem_realloc(w->allocator, w->buf, w->cap);
     if (bigger == NULL) {
@@ -539,6 +554,9 @@ static void jw_indent(json_w_t* w) {
 static void jw_string(json_w_t* w, const char* s) {
   jw_str(w, "\"");
   for (; s != NULL && *s != '\0'; s++) {
+    if (w->oom) {
+      return;
+    }
     unsigned char c = (unsigned char)*s;
     switch (c) {
       case '"': jw_str(w, "\\\""); break;

@@ -160,8 +160,9 @@ my_conf_node_t* my_conf_parse_yaml(const my_allocator_t* allocator,
                                    const char* data, size_t len,
                                    my_conf_error_t* err);
 
-/** @brief Serialize to JSON (owned string). pretty: 2-space indent,
- * newlines; otherwise compact. */
+/** @brief Serialize to JSON (owned string), limited to
+ * MY_CONF_JSON_MAX_BYTES. pretty: 2-space indent, newlines; otherwise
+ * compact. */
 char* my_conf_to_json_str(const my_allocator_t* allocator,
                           my_conf_node_t* node, bool pretty);
 

@@ -195,6 +195,8 @@ sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置�
 预算，并在申请 payload 前拒绝超限文件；该入口不改变 YAML UI loader 的类型化 schema。
 直接 `my_conf_parse_json()` 同样受 `MY_CONF_JSON_MAX_BYTES` 4 MiB 输入预算保护，避免从
 内存 API 绕过文件入口限制。
+JSON 写出器也受同一 4 MiB 输出预算保护，超限序列化返回失败，不会产生不可重新加载的
+配置文件。
 CSS 内存解析入口受 `MY_CSS_MAX_BYTES` 4 MiB 预算保护，超限输入在创建 sheet 前拒绝；
 主题桥接沿用同一限制。
 TOML 与 BSON 直解析入口分别受 `MY_CONF_TOML_MAX_BYTES` 和
