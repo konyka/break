@@ -189,7 +189,7 @@ static my_ret_t lcd_mem_draw_pixels(my_lcd_t* lcd, const void* pixels, int32_t x
   if (m->format == MY_PIXEL_FORMAT_MONO) {
     const uint8_t* src = (const uint8_t*)pixels;
     uint32_t src_stride = w / 8u + (w % 8u != 0u ? 1u : 0u);
-    uint32_t row;
+    uint32_t mono_row;
     if ((size_t)h > SIZE_MAX / src_stride) {
       return MY_RET_INVALID_PARAMS;
     }
@@ -198,14 +198,14 @@ static my_ret_t lcd_mem_draw_pixels(my_lcd_t* lcd, const void* pixels, int32_t x
     if (!my_rect_intersect(&dst, &bounds, &clipped)) {
       return MY_RET_OK;
     }
-    for (row = 0; row < (uint32_t)clipped.h; row++) {
-      uint32_t sy = (uint32_t)(clipped.y - y) + row;
+    for (mono_row = 0; mono_row < (uint32_t)clipped.h; mono_row++) {
+      uint32_t sy = (uint32_t)(clipped.y - y) + mono_row;
       int32_t col;
       for (col = 0; col < clipped.w; col++) {
         uint32_t sx = (uint32_t)(clipped.x - x) + (uint32_t)col;
         bool on = (src[(size_t)sy * src_stride + sx / 8u] &
                    (uint8_t)(0x80u >> (sx % 8u))) != 0;
-        uint8_t* dst_row = m->buffer + (size_t)(clipped.y + (int32_t)row) *
+        uint8_t* dst_row = m->buffer + (size_t)(clipped.y + (int32_t)mono_row) *
                            m->stride;
         uint8_t mask = (uint8_t)(0x80u >>
                                  ((uint32_t)(clipped.x + col) % 8u));

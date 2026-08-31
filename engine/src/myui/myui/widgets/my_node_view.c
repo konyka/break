@@ -871,7 +871,7 @@ static void nv_dashed_rect(my_vgcanvas_t* vg, float x, float y, float w,
 static void nv_minimap_fit(const my_node_view_t* v, float* bx0, float* by0,
                            float* scale) {
   my_widget_t* w = (my_widget_t*)v;
-  float x0 = 0, y0 = 0, x1 = w->rect.w, y1 = w->rect.h;
+  float x0 = 0.0f, y0 = 0.0f, x1 = (float)w->rect.w, y1 = (float)w->rect.h;
   float vx0, vy0, vx1, vy1;
   size_t i, n = my_widget_child_count(w);
   float bw, bh, s1, s2;
