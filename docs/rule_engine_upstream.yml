@@ -155,7 +155,7 @@ inventory:
     - id: default
       upstream_ref: Cargo.toml:[features].default
       local_status: tested
-      local_ref: engine/CMakeLists.txt:704-742
+      local_ref: [engine/CMakeLists.txt:12-13, engine/CMakeLists.txt:74-75, engine/CMakeLists.txt:736-753, engine/CMakeLists.txt:789]
       local_tests: [engine/tests/test_rule_engine.c]
       parity: equivalent_behavior
     - id: streaming

@@ -855,9 +855,12 @@ int re_value_equal_typed(const re_value_t *left, const re_value_t *right);
  * (upstream engine.rs execute_function_call): log/print/println,
  * now/timestamp, random, format/sprintf, count, sum/add, max, min,
  * avg/average, round, floor, ceil, abs, includes, startswith, endswith,
- * lowercase, uppercase, trim, split, join. ir_eval.c consults them only
- * after the user function registry misses, so a registered function of the
- * same name overrides the built-in. */
+ * lowercase, uppercase, trim, split, join - and the D1 plugin-parity
+ * family (upstream src/plugins/ pure helpers, f80a541): concat, repeat,
+ * substring, replace, sqrt, first, last, reverse, slice, keys, values,
+ * isEmail, isPhone, isUrl, isNumeric, inRange. ir_eval.c consults them
+ * only after the user function registry misses, so a registered function
+ * of the same name overrides the built-in. */
 int re_builtin_is(const char *name, size_t size);
 /* Predicate built-ins (bool-returning) may appear bare as a whole condition,
  * meaning fn(...) == true (parser.c). */
