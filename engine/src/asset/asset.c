@@ -1080,10 +1080,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             }
             if (joint_idx == UINT32_MAX) continue;
 
-            AnimPathType path;
-            if (ch->target_path == cgltf_animation_path_type_translation) path = ANIM_PATH_TRANSLATION;
-            else if (ch->target_path == cgltf_animation_path_type_rotation) path = ANIM_PATH_ROTATION;
-            else if (ch->target_path == cgltf_animation_path_type_scale) path = ANIM_PATH_SCALE;
+            AnimPathType anim_path;
+            if (ch->target_path == cgltf_animation_path_type_translation) anim_path = ANIM_PATH_TRANSLATION;
+            else if (ch->target_path == cgltf_animation_path_type_rotation) anim_path = ANIM_PATH_ROTATION;
+            else if (ch->target_path == cgltf_animation_path_type_scale) anim_path = ANIM_PATH_SCALE;
             else continue;
 
             cgltf_animation_sampler *samp = ch->sampler;
@@ -1136,14 +1136,14 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                     cgltf_accessor_read_float(samp->output, k, packed_values[k],
                                               comp < 4 ? comp : 4);
                 }
-                if (path == ANIM_PATH_ROTATION && comp == 4) {
+                if (anim_path == ANIM_PATH_ROTATION && comp == 4) {
                     f32 len = 0;
                     for (usize c = 0; c < 4; c++) len += packed_values[k][c] * packed_values[k][c];
                     if (len > 0) { f32 inv = 1.0f / sqrtf(len); for (usize c = 0; c < 4; c++) packed_values[k][c] *= inv; }
                 }
             }
 
-            anim_clip_add_channel(clip, joint_idx, path, n, times, &packed_values[0][0]);
+            anim_clip_add_channel(clip, joint_idx, anim_path, n, times, &packed_values[0][0]);
             /* R251 (CORRECTNESS): honor the sampler interpolation mode. cgltf exposes
              * samp->interpolation; the loader previously ignored it, so STEP samplers
              * (stepped/hard-cut animations, a common export default for mechanical

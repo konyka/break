@@ -157,9 +157,9 @@ static bool heap_push(RequestHeap *heap, u64 slot, i32 priority, u64 seq) {
     return true;
 }
 
-static bool heap_pop(RequestHeap *heap, u64 *out_slot) {
+static bool heap_pop(RequestHeap *heap, u32 *out_slot) {
     if (heap->count == 0) return false;
-    *out_slot = heap->items[0].slot;
+    *out_slot = (u32)heap->items[0].slot;
     heap->items[0] = heap->items[--heap->count];
     if (heap->count > 0) heap_sift_down(heap, 0);
     return true;
@@ -230,7 +230,7 @@ static bool async_finalize(u32 slot_idx, AssetState final_state) {
 
 static void io_worker_run(void) {
     while (atomic_load_explicit(&g_loader.running, memory_order_acquire)) {
-        u64 slot_idx = 0;
+        u32 slot_idx = 0;
         bool have_work = false;
 
         async_mutex_lock(&g_queue_mutex);

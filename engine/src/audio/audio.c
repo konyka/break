@@ -3,9 +3,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 #define MINIAUDIO_IMPLEMENTATION
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4244)
+#endif
 #include <miniaudio.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 struct AudioSource {
     ma_sound  sound;
@@ -87,7 +95,7 @@ struct AudioImpl {
 AudioSystem *audio_system_create(void) {
     /* Single alloc: AudioSystem + AudioImpl (aligned to max_align_t) */
     usize as_sz  = sizeof(AudioSystem);
-    usize align  = _Alignof(max_align_t);
+    usize align  = _Alignof(long double);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
     u8 *audio_block = (u8 *)calloc(1, as_off + sizeof(struct AudioImpl));
     if (!audio_block) {
@@ -126,7 +134,7 @@ void audio_system_destroy(AudioSystem *as) {
     if (!as) return;
     /* Recompute impl pointer from the same single-allocation layout */
     usize as_sz  = sizeof(AudioSystem);
-    usize align  = _Alignof(max_align_t);
+    usize align  = _Alignof(long double);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
     struct AudioImpl *impl = (struct AudioImpl *)((u8 *)as + as_off);
 

@@ -190,8 +190,8 @@ void skeleton_evaluate(Skeleton *sk, const AnimClip *clip, f32 dt) {
 
         f32 t0 = ch->times[kf];
         f32 t1 = ch->times[kf_next];
-        f32 dt = t1 - t0;
-        f32 frac = (dt > 0.0f) ? (t - t0) * (1.0f / dt) : 0.0f;
+        f32 keyframe_dt = t1 - t0;
+        f32 frac = (keyframe_dt > 0.0f) ? (t - t0) * (1.0f / keyframe_dt) : 0.0f;
         if (frac < 0.0f) frac = 0.0f;
         if (frac > 1.0f) frac = 1.0f;
         /* R252: STEP holds keyframe kf across [t0, t1), taking kf_next only at
