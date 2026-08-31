@@ -199,6 +199,7 @@ JSON 写出器也受同一 4 MiB 输出预算保护，超限序列化返回失�
 配置文件。
 JSON parser 同时拒绝 `strtod` 溢出的非有限数字，保证 RFC 数字输入不会落入不可序列化
 的运行期值。
+YAML 与 TOML 普通数字的 `strtod` 溢出也会失败；TOML 的显式 `inf`/`nan` 保持兼容。
 CSS 内存解析入口受 `MY_CSS_MAX_BYTES` 4 MiB 预算保护，超限输入在创建 sheet 前拒绝；
 主题桥接沿用同一限制。
 结构错误状态独立于可选的错误输出对象，调用方传入 `NULL` 仍不会接受畸形 CSS。

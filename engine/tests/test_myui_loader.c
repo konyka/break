@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -305,6 +306,41 @@ TEST(json_parser_rejects_nonfinite_numbers)
   my_conf_destroy(root);
 }
 
+TEST(yaml_parser_rejects_nonfinite_numbers)
+{
+  const char* yaml = "value: 1e999";
+  my_conf_node_t* root = my_conf_parse_yaml(NULL, yaml, strlen(yaml), NULL);
+
+  ASSERT_TRUE(root == NULL);
+  my_conf_destroy(root);
+}
+
+TEST(toml_parser_rejects_nonfinite_numbers)
+{
+  const char* toml = "value = 1e999";
+  my_conf_node_t* root = my_conf_parse_toml(NULL, toml, strlen(toml), NULL);
+
+  ASSERT_TRUE(root == NULL);
+  my_conf_destroy(root);
+}
+
+TEST(toml_parser_preserves_explicit_special_numbers)
+{
+  const char* toml = "positive = inf\nnegative = -nan\n";
+  my_conf_node_t* root = my_conf_parse_toml(NULL, toml, strlen(toml), NULL);
+  my_conf_node_t* positive;
+  my_conf_node_t* negative;
+
+  ASSERT_NOT_NULL(root);
+  positive = my_conf_get(root, "positive");
+  negative = my_conf_get(root, "negative");
+  ASSERT_NOT_NULL(positive);
+  ASSERT_NOT_NULL(negative);
+  ASSERT_TRUE(isinf(my_conf_as_double(positive, 0.0)));
+  ASSERT_TRUE(isnan(my_conf_as_double(negative, 0.0)));
+  my_conf_destroy(root);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -464,6 +500,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bson_writer_rejects_output_above_parser_budget);
     RUN_TEST(json_writer_rejects_output_above_parser_budget);
     RUN_TEST(json_parser_rejects_nonfinite_numbers);
+    RUN_TEST(yaml_parser_rejects_nonfinite_numbers);
+    RUN_TEST(toml_parser_rejects_nonfinite_numbers);
+    RUN_TEST(toml_parser_preserves_explicit_special_numbers);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

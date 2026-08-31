@@ -152,8 +152,8 @@ my_conf_node_t* my_conf_parse_toml(const my_allocator_t* allocator,
  * @brief Parse the YAML subset (M17b): indented blocks (key: value,
  * key: + nested block, - item lists incl. "- key: value" map items),
  * flow [a, b] / {k: v}, # comments, single/double-quoted strings,
- * plain scalars with type inference (null/~/true/false/int/float, else
- * STR). NOT supported (all hard errors): multi-document (---), anchors
+ * plain scalars with type inference (null/~/true/false/int/finite float,
+ * else STR). NOT supported (all hard errors): multi-document (---), anchors
  * (&), tags (!), folded scalars (> |), tab indentation; inconsistent
  * indentation is an error.
  */

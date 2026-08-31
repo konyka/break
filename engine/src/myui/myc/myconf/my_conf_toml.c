@@ -383,6 +383,10 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
     t_clean_num(p, buf, sizeof(buf), ds, p->pos);
     if (is_double) {
       double d = strtod(buf, NULL);
+      if (!isfinite(d)) {
+        toml_fail(p, "number is not finite");
+        return NULL;
+      }
       return my_conf_new_double(p->allocator, neg ? -d : d);
     }
     /* leading zero check (TOML forbids 01) */
@@ -395,9 +399,13 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
       long long v = strtoll(buf, NULL, 10);
       if (errno == ERANGE) {
         /* keep the JSON codec's rule: overflow -> DOUBLE */
+        double d = strtod(buf, NULL);
+        if (!isfinite(d)) {
+          toml_fail(p, "number is not finite");
+          return NULL;
+        }
         return my_conf_new_double(p->allocator,
-                                  (double)(neg ? -strtod(buf, NULL)
-                                               : strtod(buf, NULL)));
+                                  (double)(neg ? -d : d));
       }
       return my_conf_new_int64(p->allocator, (int64_t)(neg ? -v : v));
     }

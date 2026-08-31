@@ -7,6 +7,7 @@
 #include "myc/myconf/my_conf.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -337,13 +338,23 @@ static my_conf_node_t* yv_plain(yv_t* v, const char* s, size_t len) {
       memcpy(buf, s, len);
       buf[len] = '\0';
       if (dot || exp) {
-        return my_conf_new_double(v->allocator, strtod(buf, NULL));
+        double d = strtod(buf, NULL);
+        if (!isfinite(d)) {
+          y_fail(v->p, v->lineno, 0, "number is not finite");
+          return NULL;
+        }
+        return my_conf_new_double(v->allocator, d);
       }
       errno = 0;
       {
         long long iv = strtoll(buf, NULL, 10);
         if (errno == ERANGE) {
-          return my_conf_new_double(v->allocator, strtod(buf, NULL));
+          double d = strtod(buf, NULL);
+          if (!isfinite(d)) {
+            y_fail(v->p, v->lineno, 0, "number is not finite");
+            return NULL;
+          }
+          return my_conf_new_double(v->allocator, d);
         }
         return my_conf_new_int64(v->allocator, (int64_t)iv);
       }
