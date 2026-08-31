@@ -25,11 +25,16 @@ static int stream_filter_matches(const re_stream_event_impl_t *event,
 
 /* Typed value equality for COUNT_DISTINCT: same type tag and equal payload
  * (double compared bitwise, string by content, NONE/NULL/UNKNOWN equal their
- * own tag). Mirrors the backward_machine_bind.c value_equal idiom except for
- * the bitwise double compare; upstream counts distinct debug-strings instead
- * (rust-rule-engine v1.21.4 f80a541 src/streaming/aggregator.rs
- * CountDistinct arm), which would equate 1 and 1.0 - a documented
- * divergence. */
+ * own tag). The nearer local precedent is the shared re_value_equal_typed
+ * (declared in re_internal.h, defined in engine.c): it is NOT reused because
+ * its double arm is `==`, which would conflate -0.0 with 0.0 and make every
+ * NaN unequal even to an identical NaN; the bitwise compare keeps NaN and
+ * -0.0 distinct, the same choice the analytics cache's percentile identity
+ * makes (stream_analytics.c). It otherwise mirrors the
+ * backward_machine_bind.c value_equal idiom; upstream counts distinct
+ * debug-strings instead (rust-rule-engine v1.21.4 f80a541
+ * src/streaming/aggregator.rs CountDistinct arm), which would equate 1 and
+ * 1.0 - a documented divergence. */
 static int stream_value_equal(const re_value_t *left, const re_value_t *right) {
     if (left->type != right->type) return 0;
     switch (left->type) {

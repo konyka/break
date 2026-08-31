@@ -847,8 +847,10 @@ done:
  * `var` denotes the event's scalar value (local events carry a name plus one
  * scalar; upstream matches event_type against its event type field). The
  * result is exists semantics: matched is set on the first qualifying event
- * (timestamp order, the nominal per-activation binding; nothing downstream
- * consumes the binding locally). */
+ * (timestamp order only for sliding windows, whose event array is
+ * insertion-sorted; tumbling/session bounded windows scan in record-append
+ * order, unobservable under exists semantics - nothing downstream consumes
+ * the nominal per-activation binding locally). */
 static int stream_scope_contains(const re_stream_window_t *window,
                                  const re_ir_expr_t *expr, uint64_t session_start,
                                  uint64_t timestamp) {

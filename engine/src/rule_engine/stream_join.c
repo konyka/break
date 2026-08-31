@@ -7,10 +7,14 @@
  * Matched pairs are queued exactly once at record time (upstream
  * process_left/process_right, :104/:140); unmatched outer-join sides are
  * queued exactly once when the watermark passes them (upstream
- * update_watermark, :204). Both exactly-once guarantees hold absent
- * allocation failure: a transient OOM mid-record/mid-update may leave
- * partial state (structurally safe, but an unmatched event could re-emit
- * on the next update). The public header documents every composition
+ * update_watermark, :204). The watermark pass's exactly-once guarantee
+ * survives a transient OOM: the eviction pass runs even when queueing a
+ * match fails, so an unmatched event whose emission could not be queued is
+ * evicted rather than re-emitted on a later update (the failure is still
+ * reported to the caller). A transient OOM mid-record may still leave
+ * partial state (structurally safe: a matched pair can lose its queued
+ * emission, and an outer side left unflagged can emit once as unmatched at
+ * the next watermark pass). The public header documents every composition
  * decision and divergence. */
 
 static size_t join_per_key_cap(const re_stream_join_t *join) {
@@ -239,6 +243,7 @@ re_status_t re_stream_join_update_watermark(re_stream_join_t *join,
     size_t side_index;
     size_t key_index;
     size_t event_index;
+    re_status_t result = RE_STATUS_OK;
     int emit_left;
     int emit_right;
     if (join == NULL || (side != RE_STREAM_JOIN_LEFT && side != RE_STREAM_JOIN_RIGHT))
@@ -272,7 +277,12 @@ re_status_t re_stream_join_update_watermark(re_stream_join_t *join,
                 status = join_queue_match(join, key_entry,
                     side_index == 0u ? event->timestamp_ms : 0u,
                     side_index == 0u ? 0u : event->timestamp_ms);
-                if (status != RE_STATUS_OK) return status;
+                /* Keep sweeping on a queue failure: the eviction pass below
+                 * must still run so an event whose emission could not be
+                 * queued is evicted and can never re-emit on a later update
+                 * (exactly-once survives a transient OOM; the first failure
+                 * is reported to the caller). */
+                if (status != RE_STATUS_OK && result == RE_STATUS_OK) result = status;
             }
         }
     }
@@ -292,7 +302,9 @@ re_status_t re_stream_join_update_watermark(re_stream_join_t *join,
             key_entry->count = kept;
         }
     }
-    return RE_STATUS_OK;
+    /* Eviction ran even when queueing failed above, so exactly-once holds:
+     * an unqueued emission's event is gone and cannot re-emit. */
+    return result;
 }
 
 re_status_t re_stream_join_drain(re_stream_join_t *join,

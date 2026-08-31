@@ -256,6 +256,59 @@ TEST(stream_eval_injection_tumbling_bucket_bounds) {
     re_engine_destroy(engine);
 }
 
+TEST(stream_eval_injection_empty_tumbling_reports_bucket_zero_span) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_stream_window_t *window = make_window(engine, RE_STREAM_WINDOW_TUMBLING, 1000u);
+    re_value_t probe;
+    ASSERT_NOT_NULL(window);
+    /* A tumbling window reports its current bucket's span even while it holds
+     * no events (documented on re_engine_stream_run): the untouched bucket 0
+     * is [0, retention). */
+    ASSERT_EQ(re_engine_stream_run(engine, facts, window), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("WindowEventCount"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.type, RE_VALUE_DOUBLE);
+    ASSERT_FLOAT_EQ(probe.as.double_value, 0.0, 0.0001);
+    ASSERT_EQ(re_facts_get(facts, text("WindowStartTime"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 0);
+    ASSERT_EQ(re_facts_get(facts, text("WindowEndTime"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 1000);
+    ASSERT_EQ(re_facts_get(facts, text("WindowDurationMs"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 1000);
+    re_stream_window_destroy(window);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(stream_eval_injection_session_span) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_stream_window_t *window = make_window(engine, RE_STREAM_WINDOW_SESSION, 10000u);
+    re_value_t probe;
+    re_value_t one = int_value(1);
+    re_value_t three = int_value(3);
+    ASSERT_NOT_NULL(window);
+    /* One session (gap 1000 <= the 10000 timeout): the injected span is
+     * [session start, session_end) = [first retained event ts, last event ts
+     * + timeout) (stream_eval.c stream_window_bounds). */
+    ASSERT_EQ(re_stream_window_record_v1(window, 1000u, text("A"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_window_record_v1(window, 2000u, text("A"), &three), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_stream_run(engine, facts, window), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("WindowEventCount"), &probe), RE_STATUS_OK);
+    ASSERT_FLOAT_EQ(probe.as.double_value, 2.0, 0.0001);
+    ASSERT_EQ(re_facts_get(facts, text("WindowStartTime"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 1000);
+    ASSERT_EQ(re_facts_get(facts, text("WindowEndTime"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 12000);
+    ASSERT_EQ(re_facts_get(facts, text("WindowDurationMs"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 11000);
+    ASSERT_EQ(re_facts_get(facts, text("ASum"), &probe), RE_STATUS_OK);
+    ASSERT_FLOAT_EQ(probe.as.double_value, 4.0, 0.0001);
+    re_stream_window_destroy(window);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(stream_eval_registry_register_replace_unregister) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_stream_window_t *first = make_window(engine, RE_STREAM_WINDOW_SLIDING, 1000u);
@@ -471,6 +524,56 @@ TEST(stream_eval_grl_sliding_clause_filters_old_events) {
     re_engine_destroy(engine);
 }
 
+TEST(stream_eval_grl_sliding_clause_lower_bound_is_closed) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_stream_window_t *window = make_window(engine, RE_STREAM_WINDOW_SLIDING, 200000u);
+    re_program_t *program = NULL;
+    re_value_t probe;
+    re_value_t one = int_value(1);
+    ASSERT_NOT_NULL(window);
+    ASSERT_EQ(load("rule \"B\" { when e: Edge from stream(\"s\") over window(5 sec, sliding) then FiredB = 1; }"
+                   "rule \"O\" { when e: Out from stream(\"s\") over window(5 sec, sliding) then FiredO = 1; }",
+                   &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_stream_register(engine, text("s"), window), RE_STATUS_OK);
+    /* Watermark 100000: the clause span is [95000, 100000] - an event exactly
+     * at watermark - duration IS included (the closed lower bound,
+     * stream_scope_contains' >=), one 1ms below it is not. */
+    ASSERT_EQ(re_stream_window_record_v1(window, 94999u, text("Out"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_window_record_v1(window, 95000u, text("Edge"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_window_record_v1(window, 100000u, text("X"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_get(facts, text("FiredB"), &probe), RE_STATUS_OK);
+    ASSERT_EQ(probe.as.int64_value, 1);
+    ASSERT_EQ(re_facts_get(facts, text("FiredO"), &probe), RE_STATUS_NOT_FOUND);
+    re_stream_window_destroy(window);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(stream_eval_grl_tumbling_zero_duration_is_invalid_argument) {
+    /* Bucket size 0 is undefined: over a REGISTERED stream the CE reports the
+     * honest RE_STATUS_INVALID_ARGUMENT (stream_pattern_match rejects before
+     * scanning) - the disclosed divergence from upstream's modulo-by-zero
+     * corner, previously unpinned. */
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_stream_window_t *window = make_window(engine, RE_STREAM_WINDOW_SLIDING, 100000u);
+    re_program_t *program = NULL;
+    re_value_t one = int_value(1);
+    ASSERT_NOT_NULL(window);
+    ASSERT_EQ(load("rule \"Z\" { when e: E from stream(\"s\") over window(0 ms, tumbling) then FiredZ = 1; }",
+                   &program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_install(engine, program), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_stream_register(engine, text("s"), window), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_window_record_v1(window, 10u, text("E"), &one), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_run(engine, facts, NULL, NULL), RE_STATUS_INVALID_ARGUMENT);
+    re_stream_window_destroy(window);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(stream_eval_grl_tumbling_clause_current_bucket) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
@@ -584,6 +687,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stream_eval_injection_overwrites_stale_facts);
     RUN_TEST(stream_eval_injection_bumps_mutation_serial);
     RUN_TEST(stream_eval_injection_tumbling_bucket_bounds);
+    RUN_TEST(stream_eval_injection_empty_tumbling_reports_bucket_zero_span);
+    RUN_TEST(stream_eval_injection_session_span);
     RUN_TEST(stream_eval_registry_register_replace_unregister);
     RUN_TEST(stream_eval_registry_invalid_arguments);
     RUN_TEST(stream_eval_registry_cap_is_16);
@@ -592,6 +697,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stream_eval_grl_typed_and_untyped_binding_fires);
     RUN_TEST(stream_eval_grl_type_filter_excludes_other_names);
     RUN_TEST(stream_eval_grl_sliding_clause_filters_old_events);
+    RUN_TEST(stream_eval_grl_sliding_clause_lower_bound_is_closed);
+    RUN_TEST(stream_eval_grl_tumbling_zero_duration_is_invalid_argument);
     RUN_TEST(stream_eval_grl_tumbling_clause_current_bucket);
     RUN_TEST(stream_eval_grl_session_clause_end_to_end);
     RUN_TEST(stream_eval_grl_unregistered_stream_is_not_supported);

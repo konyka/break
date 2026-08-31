@@ -1114,6 +1114,15 @@ TEST(stream_analytics_detect_anomalies_flags_exact_outliers) {
         text("T"), 3.0, out_ts, 4u, &out_count), RE_STATUS_OK);
     ASSERT_EQ(out_count, 1u);
     ASSERT_EQ(out_ts[0], 300u);
+    /* Population-vs-sample discrimination (aggregator.rs:375-376 divides by
+     * N): the SAMPLE stddev (N-1 divisor) would give z-scores ~2.85/~3.80, so
+     * a 2.9 threshold would flag only ts 300; the population z-scores +3/-4
+     * flag both. */
+    ASSERT_EQ(re_stream_analytics_detect_anomalies(analytics, windows, 3u,
+        text("T"), 2.9, out_ts, 4u, &out_count), RE_STATUS_OK);
+    ASSERT_EQ(out_count, 2u);
+    ASSERT_EQ(out_ts[0], 200u);
+    ASSERT_EQ(out_ts[1], 300u);
     /* Capacity overflow reports the total and fills what fits
      * (the codebase's RE_STATUS_LIMIT buffer idiom). */
     out_ts[0] = 0u;
@@ -1206,6 +1215,28 @@ TEST(stream_analytics_trend_direction_boundaries) {
         (const re_stream_window_t *const *)w, 1u, text("T"), NULL),
         RE_STATUS_INVALID_ARGUMENT);
     destroy_windows(w, 1u);
+    re_stream_analytics_destroy(analytics);
+    re_engine_destroy(engine);
+}
+
+TEST(stream_analytics_trend_odd_count_split_second_half_takes_extra) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_stream_analytics_t *analytics = NULL;
+    re_stream_window_t *w[4] = {NULL, NULL, NULL, NULL};
+    re_stream_trend_t trend = RE_STREAM_TREND_STABLE;
+    static const double split_probe[3] = {100.0, 200.0, 100.0};
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_stream_analytics_create(engine, 0u, &analytics), RE_STATUS_OK);
+    /* used == 3 splits half = used/2 = 1 (aggregator.rs:411,
+     * &averages[..len/2] / &averages[len/2..]): the SECOND half takes the odd
+     * extra, so first_avg = 100 and second_avg = (200 + 100) / 2 = 150 ->
+     * +50% Increasing. The other convention (first half takes the extra)
+     * would give first_avg = 150, second_avg = 100 -> -33% Decreasing. */
+    ASSERT_EQ(build_value_windows(engine, split_probe, 3u, w, 4u), 3u);
+    ASSERT_EQ(re_stream_analytics_calculate_trend(analytics,
+        (const re_stream_window_t *const *)w, 3u, text("T"), &trend), RE_STATUS_OK);
+    ASSERT_EQ(trend, RE_STREAM_TREND_INCREASING);
+    destroy_windows(w, 3u);
     re_stream_analytics_destroy(analytics);
     re_engine_destroy(engine);
 }
@@ -1612,6 +1643,65 @@ TEST(stream_join_left_outer_unmatched_once_after_watermark) {
     re_engine_destroy(engine);
 }
 
+TEST(stream_join_left_outer_session_window_unmatched_once) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_stream_join_strategy_t strategy = {RE_STREAM_JOIN_SESSION_WINDOW, 0u, 0u, 500u};
+    re_stream_join_t *join = make_join(engine, RE_STREAM_JOIN_LEFT_OUTER, strategy);
+    re_stream_join_match_t matches[8];
+    size_t count = 99u;
+    re_value_t v = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_NOT_NULL(join);
+    ASSERT_EQ(re_stream_join_record(join, RE_STREAM_JOIN_LEFT, text("k"), 1000u, &v), RE_STATUS_OK);
+    /* SESSION_WINDOW expires on the gap (join_window_size -> gap_ms): the
+     * same strict watermark - ts > gap boundary as the time-window pin. */
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 1500u), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 0u);
+    /* The watermark pass emits the unmatched left exactly once... */
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 1501u), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_TRUE(join_match_eq(&matches[0], "k", 1000u, 0u, 1000u));
+    /* ...and evicts it: no re-emission on later updates. */
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 9000u), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 0u);
+    re_stream_join_destroy(join);
+    re_engine_destroy(engine);
+}
+
+TEST(stream_join_record_already_expired_buffers_then_emits_once) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_stream_join_strategy_t strategy = {RE_STREAM_JOIN_TIME_WINDOW, 10u, 0u, 0u};
+    re_stream_join_t *join = make_join(engine, RE_STREAM_JOIN_LEFT_OUTER, strategy);
+    re_stream_join_match_t matches[8];
+    size_t count = 99u;
+    re_value_t v = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_NOT_NULL(join);
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 1000u), RE_STATUS_OK);
+    /* The record path has no watermark gate: an event already expired under
+     * the current watermark (1000 - 900 > 10) is BUFFERED, not rejected, and
+     * emits nothing at record time. */
+    ASSERT_EQ(re_stream_join_record(join, RE_STREAM_JOIN_LEFT, text("late"), 900u, &v), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 0u);
+    /* A non-advancing update is an accepted no-op - no emission. */
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 1000u), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 0u);
+    /* The next ADVANCING update emits the buffered straggler exactly once... */
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 1001u), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 1u);
+    ASSERT_TRUE(join_match_eq(&matches[0], "late", 900u, 0u, 900u));
+    /* ...and evicts it: no re-emission afterwards. */
+    ASSERT_EQ(re_stream_join_update_watermark(join, RE_STREAM_JOIN_LEFT, 2000u), RE_STATUS_OK);
+    ASSERT_EQ(re_stream_join_drain(join, matches, 8u, &count), RE_STATUS_OK);
+    ASSERT_EQ(count, 0u);
+    re_stream_join_destroy(join);
+    re_engine_destroy(engine);
+}
+
 TEST(stream_join_right_outer_and_full_outer_unmatched) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_stream_join_strategy_t strategy = {RE_STREAM_JOIN_TIME_WINDOW, 10u, 0u, 0u};
@@ -1827,6 +1917,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stream_analytics_detect_anomalies_flags_exact_outliers);
     RUN_TEST(stream_analytics_detect_anomalies_zero_stddev_flags_nothing);
     RUN_TEST(stream_analytics_trend_direction_boundaries);
+    RUN_TEST(stream_analytics_trend_odd_count_split_second_half_takes_extra);
     RUN_TEST(stream_analytics_trend_first_avg_zero_guard);
     RUN_TEST(stream_closure_flag_off_preserves_tumbling_behavior);
     RUN_TEST(stream_closure_flag_off_preserves_session_behavior);
@@ -1841,6 +1932,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stream_join_count_window_pairing_and_cap);
     RUN_TEST(stream_join_session_gap);
     RUN_TEST(stream_join_left_outer_unmatched_once_after_watermark);
+    RUN_TEST(stream_join_left_outer_session_window_unmatched_once);
+    RUN_TEST(stream_join_record_already_expired_buffers_then_emits_once);
     RUN_TEST(stream_join_right_outer_and_full_outer_unmatched);
     RUN_TEST(stream_join_drain_capacity_limit);
     RUN_TEST(stream_join_buffer_overflow_drops_oldest);

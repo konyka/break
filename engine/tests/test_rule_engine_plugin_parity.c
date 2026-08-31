@@ -443,6 +443,37 @@ TEST(plugin_keys_values_non_object_is_empty) {
     re_engine_destroy(engine);
 }
 
+TEST(plugin_debug_string_nested_structured_members) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *nest = NULL;
+    re_value_handle_t *inner_array = NULL;
+    re_value_handle_t *inner_object = NULL;
+    re_value_t one = integer(1);
+    re_value_t two = integer(2);
+    ASSERT_EQ(re_value_create_array(facts, &nest), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_array(facts, &inner_array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_create_object(facts, &inner_object), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(inner_array, &two), RE_STATUS_OK);
+    ASSERT_EQ(re_value_object_set(inner_object, text("k"), &two), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(nest, &one), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append_value(nest, inner_array), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append_value(nest, inner_object), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set_value(facts, text("Nest"), nest), RE_STATUS_OK);
+    re_value_destroy(inner_object);
+    re_value_destroy(inner_array);
+    re_value_destroy(nest);
+    /* builtins.c sb_append_debug_value (the array-result debug-string path):
+     * a nested structured member surfaces as the [Array]/[Object]
+     * placeholder, never its contents. */
+    run_program(engine, facts,
+        "rule \"R\" { when true then A = slice(Nest, 0); B = reverse(Nest); }");
+    assert_string_fact(facts, "A", "[1, [Array], [Object]]");
+    assert_string_fact(facts, "B", "[[Object], [Array], 1]");
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 /* ---- validation helpers (validation.rs) --------------------------------- */
 
 TEST(plugin_is_numeric_table) {
@@ -461,6 +492,7 @@ TEST(plugin_is_numeric_table) {
         " T1 = isNumeric(\"123\"); T2 = isNumeric(\"-1.5\"); T3 = isNumeric(\"1e3\");"
         " T4 = isNumeric(\".5\"); T5 = isNumeric(\"5.\"); T6 = isNumeric(\"NaN\");"
         " T7 = isNumeric(\"inf\"); T8 = isNumeric(\"-Infinity\"); T9 = isNumeric(7);"
+        " T10 = isNumeric(\"1e999\");"
         " F1 = isNumeric(\"12a\"); F2 = isNumeric(\"\"); F3 = isNumeric(\" 1\");"
         " F4 = isNumeric(\"1 \"); F5 = isNumeric(\"0x10\"); F6 = isNumeric(\"+\");"
         " F7 = isNumeric(\"1.2.3\"); F8 = isNumeric(\"1e\"); F9 = isNumeric(true); }");
@@ -470,6 +502,9 @@ TEST(plugin_is_numeric_table) {
     assert_bool_fact(facts, "T5", 1); assert_bool_fact(facts, "T6", 1);
     assert_bool_fact(facts, "T7", 1); assert_bool_fact(facts, "T8", 1);
     assert_bool_fact(facts, "T9", 1);
+    /* Overflow to +-inf is a successful Rust f64 FromStr parse (validation.rs
+     * value_to_number accepts it), so the grammar accepts 1e999. */
+    assert_bool_fact(facts, "T10", 1);
     assert_bool_fact(facts, "F1", 0); assert_bool_fact(facts, "F2", 0);
     assert_bool_fact(facts, "F3", 0); assert_bool_fact(facts, "F4", 0);
     assert_bool_fact(facts, "F5", 0); assert_bool_fact(facts, "F6", 0);
@@ -591,6 +626,62 @@ TEST(plugin_validation_arity_and_type_errors) {
     expect_run_status("rule \"R\" { when true then A = inRange(5, true, 10); }", RE_STATUS_INVALID_ARGUMENT);
 }
 
+/* ---- A4 upstream alias names (engine.rs execute_function_call, f80a541) --- */
+
+TEST(plugin_a4_alias_names_match_targets) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    /* maximum == max (:1427), ceiling == ceil (:1432), begins_with ==
+     * startswith (:1435), strip == trim (:1439): same results, same typing,
+     * same leniencies as the dispatch target. */
+    run_program(engine, facts,
+        "rule \"R\" { when true then"
+        " A = maximum(3, 7, 5); B = max(3, 7, 5);"
+        " C = maximum(1.5, 2); D = max(1.5, 2);"
+        " E = ceiling(2.5); F = ceil(2.5);"
+        " G = ceiling(7); H = ceil(7);"
+        " I = begins_with(\"hello\", \"he\"); J = startswith(\"hello\", \"he\");"
+        " K = begins_with(\"hello\", \"lo\"); L = startswith(\"hello\", \"lo\");"
+        " M = begins_with(\"a\"); N = begins_with(5, 2);"
+        " O = strip(\"  x  \"); P = trim(\"  x  \");"
+        " S = strip(5); T = trim(5); }");
+    assert_int_fact(facts, "A", 7);
+    assert_int_fact(facts, "B", 7);
+    assert_double_fact(facts, "C", 2.0);
+    assert_double_fact(facts, "D", 2.0);
+    assert_double_fact(facts, "E", 3.0);
+    assert_double_fact(facts, "F", 3.0);
+    /* An INT64 argument passes ceil/ceiling through unchanged (typed INT64). */
+    assert_int_fact(facts, "G", 7);
+    assert_int_fact(facts, "H", 7);
+    assert_bool_fact(facts, "I", 1);
+    assert_bool_fact(facts, "J", 1);
+    assert_bool_fact(facts, "K", 0);
+    assert_bool_fact(facts, "L", 0);
+    /* Wrong arity or non-string operands are the predicate's false, never an
+     * error - exactly like startswith. */
+    assert_bool_fact(facts, "M", 0);
+    assert_bool_fact(facts, "N", 0);
+    assert_string_fact(facts, "O", "x");
+    assert_string_fact(facts, "P", "x");
+    /* The text argument stringifies (upstream's to_string leniency). */
+    assert_string_fact(facts, "S", "5");
+    assert_string_fact(facts, "T", "5");
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
+TEST(plugin_a4_alias_error_paths_match_targets) {
+    /* The aliases share their target's error paths: the math/string transforms
+     * reject a missing or non-numeric first argument. */
+    expect_run_status("rule \"R\" { when true then A = ceiling(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = ceil(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = ceiling(\"x\"); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = ceil(\"x\"); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = strip(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = trim(); }", RE_STATUS_INVALID_ARGUMENT);
+}
+
 /* ---- dispatch rules: override, arg-miss, vapor, classification ---------- */
 
 static re_status_t override_concat_call(re_engine_t *engine, re_facts_t *facts,
@@ -636,6 +727,24 @@ TEST(plugin_host_override_wins_over_new_names) {
     re_engine_destroy(engine);
 }
 
+TEST(plugin_alias_host_override_wins) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_function_t *maximum_fn = NULL;
+    re_function_descriptor_t maximum_descriptor = {sizeof(maximum_descriptor), RE_ABI_VERSION_MAJOR,
+        {"maximum", 7u}, override_concat_call, NULL, NULL};
+    ASSERT_EQ(re_engine_register_function(engine, &maximum_descriptor, &maximum_fn), RE_STATUS_OK);
+    run_program(engine, facts,
+        "rule \"R\" { when true then A = maximum(1, 2); B = max(1, 2); }");
+    /* The registry wins over the built-in alias; the unaliased max still
+     * dispatches to the built-in. */
+    assert_string_fact(facts, "A", "OVERRIDE");
+    assert_int_fact(facts, "B", 2);
+    re_function_unregister(maximum_fn);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(plugin_absent_fact_arg_miss_is_false) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
@@ -656,18 +765,39 @@ TEST(plugin_absent_fact_arg_miss_is_false) {
 TEST(plugin_date_family_and_vapor_stay_unimplemented) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
-    /* date_utils (clock-dependent) and the metadata-vapor names are NOT
-     * built-ins: unknown names keep the A3 rule-skip behavior. */
+    /* date_utils (clock-dependent), the metadata-vapor names, and the
+     * update/refresh message stubs (f80a541 engine.rs:1421 - the RETE-UL
+     * fact-refresh notification the names promise is documented vapor, so
+     * there is nothing honest to dispatch to) are NOT built-ins: unknown
+     * names keep the A3 rule-skip behavior. */
     run_program(engine, facts,
         "rule \"D1\" { when today() == 1 then HitD1 = 1; }"
         "rule \"D2\" { when dayOfWeek() == 1 then HitD2 = 1; }"
         "rule \"V1\" { when padLeft(\"a\", 1) == 1 then HitV1 = 1; }"
         "rule \"V2\" { when ArrayMap() == 1 then HitV2 = 1; }"
+        "rule \"V3\" { when Modulo(4, 2) == 1 then HitV3 = 1; }"
+        "rule \"V4\" { when Power(2, 3) == 1 then HitV4 = 1; }"
+        "rule \"V5\" { when Ceil(1) == 1 then HitV5 = 1; }"
+        "rule \"V6\" { when Floor(1) == 1 then HitV6 = 1; }"
+        "rule \"V7\" { when AddHours(1, 2) == 1 then HitV7 = 1; }"
+        "rule \"V8\" { when DateDiff(1, 2) == 1 then HitV8 = 1; }"
+        "rule \"V9\" { when dayOfYear() == 1 then HitV9 = 1; }"
+        "rule \"U1\" { when update(1) == 1 then HitU1 = 1; }"
+        "rule \"U2\" { when refresh(1) == 1 then HitU2 = 1; }"
         "rule \"Ok\" { when true then HitOk = 1; }");
     assert_no_fact(facts, "HitD1");
     assert_no_fact(facts, "HitD2");
     assert_no_fact(facts, "HitV1");
     assert_no_fact(facts, "HitV2");
+    assert_no_fact(facts, "HitV3");
+    assert_no_fact(facts, "HitV4");
+    assert_no_fact(facts, "HitV5");
+    assert_no_fact(facts, "HitV6");
+    assert_no_fact(facts, "HitV7");
+    assert_no_fact(facts, "HitV8");
+    assert_no_fact(facts, "HitV9");
+    assert_no_fact(facts, "HitU1");
+    assert_no_fact(facts, "HitU2");
     assert_int_fact(facts, "HitOk", 1);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
@@ -676,10 +806,14 @@ TEST(plugin_date_family_and_vapor_stay_unimplemented) {
 TEST(plugin_classification_pins) {
     static const char *const names[] = {"concat", "repeat", "substring", "replace", "sqrt",
         "first", "last", "reverse", "slice", "keys", "values",
-        "isEmail", "isPhone", "isUrl", "isNumeric", "inRange"};
-    static const char *const predicates[] = {"isEmail", "isPhone", "isUrl", "isNumeric", "inRange"};
+        "isEmail", "isPhone", "isUrl", "isNumeric", "inRange",
+        "maximum", "ceiling", "begins_with", "strip"};
+    static const char *const predicates[] = {"isEmail", "isPhone", "isUrl", "isNumeric", "inRange",
+        "begins_with"};
     static const char *const absent[] = {"today", "dayOfWeek", "year", "month", "day",
-        "padLeft", "padRight", "StringSplit", "StringJoin", "ArrayMap", "ParseDate", "ValidateNumeric"};
+        "padLeft", "padRight", "StringSplit", "StringJoin", "ArrayMap", "ParseDate", "ValidateNumeric",
+        "Modulo", "Power", "Ceil", "Floor", "AddHours", "DateDiff", "dayOfYear",
+        "update", "refresh"};
     size_t i;
     re_expr_t cond;
     for (i = 0u; i < sizeof(names) / sizeof(names[0]); ++i)
@@ -693,6 +827,10 @@ TEST(plugin_classification_pins) {
     ASSERT_FALSE(re_builtin_is_predicate("first", 5u));
     ASSERT_FALSE(re_builtin_is_predicate("keys", 4u));
     ASSERT_FALSE(re_builtin_is_predicate("sqrt", 4u));
+    /* Nor are the value-returning A4 aliases. */
+    ASSERT_FALSE(re_builtin_is_predicate("maximum", 7u));
+    ASSERT_FALSE(re_builtin_is_predicate("ceiling", 7u));
+    ASSERT_FALSE(re_builtin_is_predicate("strip", 5u));
     /* A4 purity rule unchanged: EVERY function-calling condition is impure
      * (first-pass-only, never on executor workers) even though all D1 names
      * are deterministic from their arguments; plain fact/literal compares
@@ -737,13 +875,17 @@ TEST_MAIN_BEGIN()
     RUN_TEST(plugin_slice_requires_array_and_numeric_bounds);
     RUN_TEST(plugin_keys_values_insertion_order);
     RUN_TEST(plugin_keys_values_non_object_is_empty);
+    RUN_TEST(plugin_debug_string_nested_structured_members);
     RUN_TEST(plugin_is_numeric_table);
     RUN_TEST(plugin_is_url_prefixes);
     RUN_TEST(plugin_is_email_handrolled_regex);
     RUN_TEST(plugin_is_phone_digit_count);
     RUN_TEST(plugin_in_range_inclusive_bounds);
     RUN_TEST(plugin_validation_arity_and_type_errors);
+    RUN_TEST(plugin_a4_alias_names_match_targets);
+    RUN_TEST(plugin_a4_alias_error_paths_match_targets);
     RUN_TEST(plugin_host_override_wins_over_new_names);
+    RUN_TEST(plugin_alias_host_override_wins);
     RUN_TEST(plugin_absent_fact_arg_miss_is_false);
     RUN_TEST(plugin_date_family_and_vapor_stay_unimplemented);
     RUN_TEST(plugin_classification_pins);

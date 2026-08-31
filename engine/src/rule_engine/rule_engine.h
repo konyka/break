@@ -1103,12 +1103,15 @@ uint64_t re_stream_join_dropped(const re_stream_join_t *join);
  * the current open session, the newest retained event and its backward chain
  * with consecutive gaps <= duration; no clause: all retained events). The CE
  * has exists semantics - it matches when at least one retained event
- * qualifies, scanning in timestamp order - and binds one activation per rule
- * match under the engine's standard refraction (bounded divergence: upstream
- * never evaluates stream-pattern CEs at all - its StreamRuleEngine runs the
- * whole rule base per window through fact injection, and the &&
- * stream-join grammar is vapor - so there is no per-event activation
- * multiplicity to mirror). A CE naming an UNREGISTERED stream reports
+ * qualifies - and binds one activation per rule match under the engine's
+ * standard refraction (bounded divergence: upstream never evaluates
+ * stream-pattern CEs at all - its StreamRuleEngine runs the whole rule base
+ * per window through fact injection, and the && stream-join grammar is
+ * vapor - so there is no per-event activation multiplicity to mirror). The
+ * scan runs in timestamp order only for sliding windows (their event array
+ * is insertion-sorted); tumbling/session bounded windows append in record
+ * order, which the exists/single-activation semantics makes unobservable. A
+ * CE naming an UNREGISTERED stream reports
  * RE_STATUS_NOT_SUPPORTED, the honest gate C3 pinned. Stream-pattern CEs are
  * not RETE-eligible (the collect() constraint admits only fact/literal
  * comparisons) and are classified impure, so they evaluate once at their

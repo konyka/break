@@ -1422,6 +1422,8 @@ TEST(read_set_cap_truncates_provenance_not_derivation) {
 
 TEST(focus_stack_push_pop_primitives) {
     re_program_t *program = NULL;
+    size_t i;
+    char group_name[16];
     ASSERT_EQ(re_program_load(NULL, text("rule \"R\" { when true then X = 1; }"),
                               NULL, &program), RE_STATUS_OK);
     ASSERT_TRUE(program->agenda_focus == NULL);
@@ -1456,6 +1458,31 @@ TEST(focus_stack_push_pop_primitives) {
     ASSERT_EQ(re_program_set_agenda_focus(program, text("z")), RE_STATUS_OK);
     ASSERT_EQ(program->agenda_focus_stack_count, 0u);
     ASSERT_STR_EQ(program->agenda_focus, "z");
+    /* Cap overflow (RE_AGENDA_FOCUS_STACK_MAX, re_internal.h): 33 distinct
+     * pushes from a static pre-set bottom fill the stack to 32; the 33rd push
+     * still SWITCHES the focus but discards the would-be-saved current focus
+     * (freed, not stacked - the parser.c overflow branch), so the stack keeps
+     * the OLDEST 32 saved focuses and pops unwind them LIFO. */
+    ASSERT_EQ(re_program_set_agenda_focus(program, text("f00")), RE_STATUS_OK);
+    for (i = 1u; i <= RE_AGENDA_FOCUS_STACK_MAX + 1u; ++i) {
+        snprintf(group_name, sizeof(group_name), "f%02u", (unsigned)i);
+        ASSERT_EQ(re_program_push_agenda_focus(program, text(group_name)), RE_STATUS_OK);
+        ASSERT_EQ(program->agenda_focus_stack_count,
+                  i < RE_AGENDA_FOCUS_STACK_MAX ? i : RE_AGENDA_FOCUS_STACK_MAX);
+    }
+    ASSERT_EQ(program->agenda_focus_stack_count, RE_AGENDA_FOCUS_STACK_MAX);
+    ASSERT_STR_EQ(program->agenda_focus, "f33");
+    /* f32 is the discarded entry: 32 pops restore f31 down to the f00 bottom,
+     * then the stack is empty and the focus stays (upstream's pop-or-stay). */
+    for (i = 0u; i < RE_AGENDA_FOCUS_STACK_MAX; ++i) {
+        snprintf(group_name, sizeof(group_name), "f%02u",
+                 (unsigned)(RE_AGENDA_FOCUS_STACK_MAX - 1u - i));
+        ASSERT_EQ(re_program_pop_agenda_focus(program), 1);
+        ASSERT_STR_EQ(program->agenda_focus, group_name);
+    }
+    ASSERT_EQ(program->agenda_focus_stack_count, 0u);
+    ASSERT_EQ(re_program_pop_agenda_focus(program), 0);
+    ASSERT_STR_EQ(program->agenda_focus, "f00");
     /* Argument validation matches re_program_set_agenda_focus. */
     ASSERT_EQ(re_program_push_agenda_focus(NULL, text("x")), RE_STATUS_INVALID_ARGUMENT);
     ASSERT_EQ(re_program_push_agenda_focus(program, (re_string_t){NULL, 0u}),
