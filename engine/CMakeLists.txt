@@ -742,6 +742,12 @@ if(RULE_ENGINE_ENABLE_REDIS)
         target_compile_definitions(rule_engine_core PRIVATE RE_HAS_HIREDIS)
         target_include_directories(rule_engine_core PRIVATE ${HIREDIS_INCLUDE_DIR})
         target_link_libraries(rule_engine_core PRIVATE ${HIREDIS_LIBRARY})
+        if(WIN32)
+            # hiredis's socket calls need Winsock2 on the link line. PRIVATE on
+            # the static rule_engine_core still propagates to its consumers
+            # (e.g. test_rule_engine_stream_ext) via the link-only interface.
+            target_link_libraries(rule_engine_core PRIVATE ws2_32)
+        endif()
         message(STATUS "Redis client detected at ${HIREDIS_INCLUDE_DIR}; native Redis state provider enabled")
     else()
         # Documented boundary: a missing client disables the option; there is

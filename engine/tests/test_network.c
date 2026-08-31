@@ -19,6 +19,23 @@ static i32 recvfrom_wait_readable(NetSocket *socket, void *buf, u32 size,
 
 /* ----------------------------------------------------------------------- */
 
+/* A socket bound to INADDR_ANY reports local host "0.0.0.0"; Winsock rejects
+ * sendto() to the wildcard with WSAEADDRNOTAVAIL (Linux maps it to loopback,
+ * which is why this only fails on Windows). Normalize the destination to
+ * loopback for tests that send to a socket's own local address. */
+static void net_test_normalize_loopback(NetAddress *addr)
+{
+    if (strcmp(addr->host, "0.0.0.0") == 0) {
+        strncpy(addr->host, "127.0.0.1", sizeof(addr->host) - 1u);
+        addr->host[sizeof(addr->host) - 1u] = '\0';
+    } else if (strcmp(addr->host, "::") == 0) {
+        strncpy(addr->host, "::1", sizeof(addr->host) - 1u);
+        addr->host[sizeof(addr->host) - 1u] = '\0';
+    }
+}
+
+/* ----------------------------------------------------------------------- */
+
 TEST(init_shutdown)
 {
     ASSERT_TRUE(net_init());
@@ -80,6 +97,7 @@ TEST(udp_loopback)
     /* Send a message */
     NetAddress dst;
     ASSERT_TRUE(net_socket_get_local_address(recv_s, &dst));
+    net_test_normalize_loopback(&dst);
     const char *msg = "Hello, loopback!";
     i32 sent = net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
     ASSERT_TRUE(sent > 0);
@@ -122,6 +140,7 @@ TEST(poll_readable)
 
     NetAddress dst;
     ASSERT_TRUE(net_socket_get_local_address(recv_s, &dst));
+    net_test_normalize_loopback(&dst);
     const char *msg = "poll test";
     net_sendto(send_s, msg, (u32)strlen(msg) + 1, &dst);
 
@@ -251,6 +270,8 @@ TEST(sendto_repeated_sends_with_cache)
     NetAddress dst_a, dst_b;
     ASSERT_TRUE(net_socket_get_local_address(recv_a, &dst_a));
     ASSERT_TRUE(net_socket_get_local_address(recv_b, &dst_b));
+    net_test_normalize_loopback(&dst_a);
+    net_test_normalize_loopback(&dst_b);
 
     const char *m1 = "first";
     const char *m2 = "second";

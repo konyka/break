@@ -2568,3 +2568,45 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   不可用，且服务可用性随时间变化须重探）；date_utils 族与插件 vapor 项只记录不实现；
   上游 `then ActionName(...)` 裸动作拼写对非白名单名保持锁定的解析错误；反向条件匹配器
   仅读平铺事实名；test_network 环境侧失败与 test_async_loader 并行 flake 为既有事项。
+
+## rule engine Redis 运行时验证提升（2026-08-31）
+
+- 两处受控侧使能修复落地：`engine/src/rule_engine/redis_provider.c` 在
+  `RE_HAS_HIREDIS` 块内、`_WIN32` 下先于 hiredis.h 包含 `<winsock2.h>`（上游
+  hiredis.h 在 `_MSC_VER` 下仅前向声明 `struct timeval`，而本文件的
+  redisConnectWithTimeout 超时需要完整类型）；`engine/CMakeLists.txt` 的
+  RULE_ENGINE_ENABLE_REDIS 块在 WIN32 下为 rule_engine_core 链接 ws2_32（静态库
+  PRIVATE 经 link-only 接口传递到 test_rule_engine_stream_ext 等消费目标）。两项
+  均为探测期外置 workaround（scratch 头补丁、`-DCMAKE_EXE_LINKER_FLAGS=-lws2_32`）
+  的受控内化。
+- 原始 hiredis 复证：scratch 重解包 hiredis v1.4.1 头文件无任何补丁（库由未改源
+  以 clang MSVC ABI 静态构建），build-redis-probe 从零配置、不带链接器旗标即通过
+  探测门；不带 RE_TEST_REDIS_URL 运行 roundtrip 干净 SKIP（48/48），带
+  `RE_TEST_REDIS_URL=redis://127.0.0.1:6379` 对存活 Redis 8.10.1 实测
+  `redis_roundtrip_when_service_available` **OK**（48/48），ctest 该套件通过；
+  服务侧 DBSIZE 0→0、无 `re:*` 残留键（测试自清）。
+- 回归：build-gate（redis OFF）重配置后聚焦 `ctest -R "rule_engine|backward_machine"`
+  **22/22**、`test_network` 通过；MSVC build-rule-debug 聚焦 **22/22** 且
+  test_network 通过。
+- 文档行提升：conformance.yml `streaming-redis-state` 行 `native_redis_status` 由
+  compile-verified-only 提升为 runtime-verified，known_gaps native-redis 行与
+  upstream.yml streaming-redis cargo_feature 行同步（bounded 注记不变，仅验证状态
+  改变）；roundtrip 仍由 RE_TEST_REDIS_URL 跳过门控（无宏时编译期裁除不变），服务
+  可用性随时间变化，重跑前须重探——跳过门控仍是 CI 路径。逐字证据见
+  `.superpowers/sdd/2026-08-29-rule-engine-full-parity/redis-enablement-report.md`。
+
+## 网络与异步加载测试修复（2026-08-31）
+
+- `test_network` 三个 UDP 用例失败的根因经探针实证：用例把绑定 INADDR_ANY 的套接字
+  本地地址（`0.0.0.0`）直接用作 sendto 目的地址，Winsock 以 WSAEADDRNOTAVAIL(10049)
+  拒绝（Linux 将通配映射到回环，故仅在 Windows 失败）；缺陷随远端 76871ec 的测试
+  改动进入，network.c 库无辜（旧版测试对当前库全过）。修复为测试侧
+  `net_test_normalize_loopback()`：通配地址归一到回环（`0.0.0.0`→`127.0.0.1`，
+  `::`→`::1`），恰好应用于三处发送点；套件在 build-gate 复绿。
+- `test_async_loader` 并行 flake 的根因经压测实证：固定迭代次数的忙等循环实为约
+  10ms 的隐式时限，CPU 超订阅下工作线程链超时（ burner 加压下 37 次运行 158 例失败，
+  单跑 0/100）；实现端（条件变量+CAS 完成环）无缺陷。修复为测试侧单调墙钟期限轮询
+  （`test_now_us` + `test_wait_deadline`，5 秒预算）替换 8 处忙等；验证：burner 加压
+  35/35、全量并行 5/5 且 80/80 全绿。
+- 评审 Minor 顺带收尾：两处文档的 RULE_ENGINE_ENABLE_REDIS 块行号引用随 ws2_32 六行
+  插入更新为 `:736-759`；回环归一的 IPv6 臂改映 `::1`。
