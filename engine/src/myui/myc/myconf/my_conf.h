@@ -127,8 +127,9 @@ my_ret_t my_conf_save_file(my_conf_node_t* node, const char* path);
 
 /* ---------------- JSON ---------------- */
 
-/** @brief Parse JSON (full RFC 8259 set) within MY_CONF_JSON_MAX_BYTES.
- * NULL on error (err filled with line/col/msg when non-NULL). */
+/** @brief Parse JSON (full RFC 8259 set) within MY_CONF_JSON_MAX_BYTES;
+ * numeric values must be finite. NULL on error (err filled with
+ * line/col/msg when non-NULL). */
 my_conf_node_t* my_conf_parse_json(const my_allocator_t* allocator,
                                    const char* data, size_t len,
                                    my_conf_error_t* err);

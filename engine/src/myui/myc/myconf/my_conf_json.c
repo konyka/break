@@ -7,6 +7,7 @@
 #include "myc/myconf/my_conf.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -277,7 +278,12 @@ static my_conf_node_t* json_number(json_p_t* p) {
   memcpy(buf, p->s + start, n);
   buf[n] = '\0';
   if (is_double) {
-    return my_conf_new_double(p->allocator, strtod(buf, NULL));
+    double d = strtod(buf, NULL);
+    if (!isfinite(d)) {
+      json_fail(p, "number is not finite");
+      return NULL;
+    }
+    return my_conf_new_double(p->allocator, d);
   }
   {
     long long v;
@@ -287,7 +293,12 @@ static my_conf_node_t* json_number(json_p_t* p) {
     errno = 0;
     v = strtoll(buf, NULL, 10);
     if (errno == ERANGE) {
-      return my_conf_new_double(p->allocator, strtod(buf, NULL));
+      double d = strtod(buf, NULL);
+      if (!isfinite(d)) {
+        json_fail(p, "number is not finite");
+        return NULL;
+      }
+      return my_conf_new_double(p->allocator, d);
     }
     return my_conf_new_int64(p->allocator, (int64_t)v);
   }

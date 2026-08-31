@@ -297,6 +297,14 @@ TEST(json_writer_rejects_output_above_parser_budget)
   free(text);
 }
 
+TEST(json_parser_rejects_nonfinite_numbers)
+{
+  my_conf_node_t* root = my_conf_parse_json(NULL, "1e999", 5u, NULL);
+
+  ASSERT_TRUE(root == NULL);
+  my_conf_destroy(root);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -455,6 +463,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bson_parser_rejects_oversized_input_before_allocation);
     RUN_TEST(bson_writer_rejects_output_above_parser_budget);
     RUN_TEST(json_writer_rejects_output_above_parser_budget);
+    RUN_TEST(json_parser_rejects_nonfinite_numbers);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);
