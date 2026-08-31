@@ -5,6 +5,7 @@
 typedef struct { u32 index; u32 generation; } RHIHandle;
 
 #define RHI_MAX_PRESENT_DAMAGE_RECTS 16u
+#define RHI_MAX_SCREENSHOT_BYTES (64u * 1024u * 1024u)
 
 typedef struct {
     i32 x;
@@ -183,6 +184,10 @@ void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 bool       rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
                                        u32 width, u32 height);
+/* Validate a bounded RGBA8 screenshot region and destination storage. */
+bool       rhi_screenshot_region_validate(u32 x, u32 y, u32 w, u32 h,
+                                          u32 width, u32 height,
+                                          usize dst_bytes);
 /* Resize the default framebuffer/swapchain in physical drawable pixels. */
 void       rhi_device_resize(RHIDevice *dev, u32 w, u32 h);
 
@@ -446,9 +451,12 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex);
 void*       rhi_buffer_map(RHIDevice *dev, RHIBuffer buf);
 void        rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf);
 void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size);
-/* Reads back the framebuffer into `pixels` as RGBA8, 4 bytes per pixel —
- * the caller must provide w*h*4 bytes (both backends, unified in R425). */
-void        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels);
+/* Reads back the framebuffer into `pixels` as RGBA8. The region must be
+ * inside the drawable and `pixel_bytes` must be at least w*h*4. The call
+ * waits for completion on Vulkan and returns false without touching pixels
+ * when validation or backend readback fails. */
+bool        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
+                           u8 *pixels, usize pixel_bytes);
 
 /* R438: Vulkan validation-message gate (defined only by the VK backend).
  * When enabled, the backend requests the validation layer, registers a

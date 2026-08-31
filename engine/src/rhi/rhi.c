@@ -99,6 +99,26 @@ bool rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
     return true;
 }
 
+bool rhi_screenshot_region_validate(u32 x, u32 y, u32 w, u32 h,
+                                    u32 width, u32 height,
+                                    usize dst_bytes) {
+    usize required;
+    usize max_size = (usize)-1;
+    if (width == 0u || height == 0u || w == 0u || h == 0u ||
+        x >= width || y >= height || w > width - x || h > height - y) {
+        return false;
+    }
+    if ((usize)w > max_size / 4u) {
+        return false;
+    }
+    required = (usize)w * 4u;
+    if ((usize)h > max_size / required) {
+        return false;
+    }
+    required *= (usize)h;
+    return required <= (usize)RHI_MAX_SCREENSHOT_BYTES && dst_bytes >= required;
+}
+
 RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
                                      const RHIPresentRect *rects, u32 count,
                                      bool *out_partial) {

@@ -1837,7 +1837,9 @@ Vulkan:  3-4 周出三角形  (instance/device/swapchain/renderpass/pipeline/fra
 
 关键实现:
 - F12 captures current framebuffer to `screenshot_N.bmp` in working directory
-- `rhi_screenshot()` new RHI function: GL uses `glReadPixels(RGB)`, VK stub (logs warning)
+- `rhi_screenshot()` provides a bounded RGBA8 readback on both GL and Vulkan; callers pass the
+  destination byte count, and invalid/oversized regions fail before backend access. Vulkan uses
+  the swapchain transfer-source path with staging synchronization; GL uses `glReadPixels`.
 - `save_bmp()` writes 24-bit BMP with proper row padding (4-byte aligned)
 - Incrementing `screenshot_id` for unique filenames
 - CPU-side malloc/free for pixel buffer — zero persistent memory overhead

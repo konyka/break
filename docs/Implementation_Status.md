@@ -31,6 +31,14 @@ JSON 数字解析拒绝指数或超大整数转换产生的非有限值，避免
 YAML 与 TOML 的普通十进制/浮点溢出同样拒绝非有限结果；TOML 明确写出的 `inf`、`nan`
 仍按其格式语义保留。
 
+**RHI 窗口截图契约（TDD）**：`rhi_screenshot()` 统一为双后端带目标缓冲区长度的
+RGBA8 读回接口；公共验证在执行任何 backend readback 前拒绝零尺寸、越界区域、乘法
+溢出和容量不足。GL 返回 `glGetError()` 状态，Vulkan 复用 swapchain 的 `TRANSFER_SRC`
+能力，以一次性 staging buffer、设备/队列完成等待和 layout 恢复执行窗口图像读回；所有
+失败路径返回 `false`，不会写入目标缓冲。新增 `test_rhi_capabilities` 两项尺寸/溢出契约，
+真实 `test_vulkan` 截图与 golden 路径同步使用显式容量；截图仍是诊断冷路径，不增加每帧
+渲染成本。
+
 **通用 JSON 配置文件预算（TDD）**：`my_conf_load_file()` 原先忽略 `fseek/ftell` 失败，且
 按文件长度直接分配，没有与解析输入建立统一上限。现新增 `MY_CONF_FILE_MAX_BYTES`（4 MiB），
 在 payload 分配前拒绝超限文件，并初始化/传播路径、定位、分配和读取错误；失败路径都会

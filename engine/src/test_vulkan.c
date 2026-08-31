@@ -232,7 +232,11 @@ static bool golden_capture_compare(RHIDevice *device, const char *path, u32 w, u
     bool golden_pass = false;
     u8 *shot = (u8 *)malloc((usize)w * h * 4u);
     if (shot) {
-        rhi_screenshot(device, 0, 0, w, h, shot);
+        if (!rhi_screenshot(device, 0, 0, w, h, shot,
+                            (usize)w * h * 4u)) {
+            free(shot);
+            return false;
+        }
         u8 grid[GOLDEN_GW * GOLDEN_GH * 3];
         golden_downsample(shot, w, h, grid);
         free(shot);
@@ -843,7 +847,11 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
         u32 pw = scr_w, ph = scr_h;
         u8 *shot = malloc((usize)pw * ph * 4u);
         if (shot) {
-            rhi_screenshot(rs->device, 0, 0, pw, ph, shot);
+            if (!rhi_screenshot(rs->device, 0, 0, pw, ph, shot,
+                                (usize)pw * ph * 4u)) {
+                free(shot);
+                return false;
+            }
             /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (y+1)/2*h */
             const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
             const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };

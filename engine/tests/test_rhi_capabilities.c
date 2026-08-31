@@ -93,6 +93,33 @@ TEST(present_damage_rects_have_a_fixed_upper_bound)
                                               100u, 100u));
 }
 
+TEST(screenshot_region_requires_bounded_rgba8_storage)
+{
+    ASSERT_TRUE(rhi_screenshot_region_validate(2u, 3u, 4u, 5u,
+                                                16u, 16u, 80u));
+    ASSERT_TRUE(rhi_screenshot_region_validate(2u, 3u, 4u, 5u,
+                                                16u, 16u, 81u));
+    ASSERT_FALSE(rhi_screenshot_region_validate(2u, 3u, 4u, 5u,
+                                                 16u, 16u, 79u));
+    ASSERT_FALSE(rhi_screenshot_region_validate(16u, 0u, 1u, 1u,
+                                                 16u, 16u, 4u));
+    ASSERT_FALSE(rhi_screenshot_region_validate(0u, 0u, 0u, 1u,
+                                                 16u, 16u, 0u));
+    ASSERT_FALSE(rhi_screenshot_region_validate(0u, 15u, 2u, 2u,
+                                                 16u, 16u, 16u));
+    ASSERT_FALSE(rhi_screenshot_region_validate(0u, 0u, 8192u, 8192u,
+                                                 8192u, 8192u,
+                                                 (usize)RHI_MAX_SCREENSHOT_BYTES));
+}
+
+TEST(screenshot_region_rejects_size_overflow)
+{
+    ASSERT_FALSE(rhi_screenshot_region_validate(UINT32_MAX, UINT32_MAX,
+                                                 UINT32_MAX, UINT32_MAX,
+                                                 UINT32_MAX, UINT32_MAX,
+                                                 SIZE_MAX));
+}
+
 TEST(present_history_forces_full_on_first_image_use)
 {
     RHIPresentHistory history;
@@ -222,6 +249,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(offscreen_descriptor_defaults_to_single_sample);
     RUN_TEST(present_damage_rects_require_bounded_nonempty_regions);
     RUN_TEST(present_damage_rects_have_a_fixed_upper_bound);
+    RUN_TEST(screenshot_region_requires_bounded_rgba8_storage);
+    RUN_TEST(screenshot_region_rejects_size_overflow);
     RUN_TEST(present_history_forces_full_on_first_image_use);
     RUN_TEST(present_history_merges_damage_since_image_was_used);
     RUN_TEST(present_history_reset_invalidates_every_swapchain_image);

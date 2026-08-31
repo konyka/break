@@ -471,7 +471,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
-| Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |
+| Vulkan/GL readback | `rhi_screenshot()` 提供统一 RGBA8 窗口/默认 framebuffer 读回；调用方必须提供目标字节数，区域越界、零尺寸、乘法溢出或容量不足均失败 | Vulkan 使用 swapchain `TRANSFER_SRC`、一次性 staging buffer 与完成等待；GL 使用受边界校验的 `glReadPixels`。该同步 API 仅用于诊断/截图，不用于每帧渲染 |
 | CSS/YAML UI | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator 和完整 at-rule 语义仍未实现；YAML UI loader 已采用类型化 schema。selector specificity、source order 和数值边界已实现 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 

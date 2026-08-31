@@ -110,6 +110,9 @@
   不再先申请整文件缓冲；文件中的嵌入 NUL 也明确拒绝，避免后续 YAML 字节被 C 字符串
   截断。字符串 loader 与 parser 的既有行数、深度、集合和标量预算保持不变；JSON、TOML
   与 BSON 直解析入口同样受 4 MiB 输入预算保护。
+- RHI 窗口截图现提供带目标缓冲区长度的统一 RGBA8 API；GL 和 Vulkan 均在后端读回前
+  校验 drawable 边界、零尺寸、乘法溢出和目标容量。Vulkan 继续使用一次性 staging
+  buffer 与队列等待，失败返回 `false` 且不触碰目标缓冲；截图是诊断路径，不进入每帧热路径。
 
 ## 未完成能力
 
@@ -120,7 +123,6 @@
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 JUSTIFY 联动未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
 | 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不启用为能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`；新增固定容量 `rhi_present_history` 作为未来具备明确保留契约的平台基础；X11/Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | 具备明确 image 保留保证的 Vulkan/WSI 方案；X11/Win32/macOS runtime smoke；Wayland compositor smoke；异常 present 与真实 image 轮转验证 |
-| Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
 | 完整 CSS/YAML UI | CSS 复杂 combinator、at-rule 语义、完整 selector tree 未实现；YAML UI loader 已替代 XML 并采用类型化 schema；CSS/YAML/JSON/TOML/BSON 入口均有 4 MiB 输入预算 | 解析器静默接受错误、运行期主题污染、恶意输入耗尽内存 | capability registry、strict diagnostics、schema/bridge 回滚测试；继续补齐 CSS selector tree |
 | 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
