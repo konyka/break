@@ -482,7 +482,13 @@ u32 occlusion_cull_visible_count(const OcclusionCullSystem *sys) {
         __m128i vis = _mm_andnot_si128(eq, nz);      /* all 1s if visible!=0 */
         /* Count visible elements: each contributes 4 bytes of 0xFF */
         int mask = _mm_movemask_epi8(vis);
-        count += (u32)__builtin_popcount(mask) / 4;
+        u32 bits = (u32)mask;
+        u32 set_bits = 0;
+        while (bits != 0u) {
+            bits &= bits - 1u;
+            set_bits++;
+        }
+        count += set_bits / 4u;
     }
 
     /* Scalar tail */

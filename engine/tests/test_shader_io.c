@@ -8,13 +8,16 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
     const char *slash = strrchr(__FILE__, '/');
     const char *backslash = strrchr(__FILE__, '\\');
     if (!slash || (backslash && backslash > slash)) slash = backslash;
-    const char *candidates[3] = { NULL, name, NULL };
+    const char *candidates[4] = { NULL, name, NULL, NULL };
+    char root_rel[1024];
+    snprintf(root_rel, sizeof(root_rel), "../shaders/%s", name);
+    candidates[2] = root_rel;
     if (slash) {
         snprintf(rel, sizeof(rel), "%.*s/../shaders/%s",
                  (int)(slash - __FILE__), __FILE__, name);
         candidates[0] = rel;
     }
-    for (usize i = 0; i < 2 && candidates[i]; i++) {
+    for (usize i = 0; i < 3 && candidates[i]; i++) {
         FILE *f = fopen(candidates[i], "rb");
         if (!f) continue;
         usize n = fread(buf, 1, cap - 1, f);
@@ -28,9 +31,18 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
 static bool read_engine_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
+    char root_rel[1024];
     const char *slash = strrchr(__FILE__, '/');
     const char *backslash = strrchr(__FILE__, '\\');
     if (!slash || (backslash && backslash > slash)) slash = backslash;
+    snprintf(root_rel, sizeof(root_rel), "../src/%s", name);
+    FILE *root_file = fopen(root_rel, "rb");
+    if (root_file) {
+        usize n = fread(buf, 1, cap - 1, root_file);
+        fclose(root_file);
+        buf[n] = '\0';
+        if (n > 0) return true;
+    }
     if (!slash) return false;
     snprintf(rel, sizeof(rel), "%.*s/../src/%s",
              (int)(slash - __FILE__), __FILE__, name);

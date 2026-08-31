@@ -1,8 +1,11 @@
+#ifdef ENGINE_PLATFORM_WINDOWS
+    #include <windows.h>
+#endif
+
 #include <glad.h>
 #include <limits.h>
 
 #ifdef ENGINE_PLATFORM_WINDOWS
-    #include <windows.h>
     #include <GL/gl.h>
     /* WGL extension function types */
     typedef HGLRC (WINAPI *PFNWGLCREATECONTEXTATTRIBSARBPROC)(HDC, HGLRC, const int*);
