@@ -2,6 +2,13 @@
 
 ## 本轮更新
 
+**结构化数组索引格式化边界（TDD）**：`re_value_array_append()` 和
+`re_value_array_append_value()` 原先用未检查的 `sprintf` 构造数组键；虽然当前数组上限
+暂时使 24-byte 缓冲区足够，未来调整上限会重新引入截断或越界风险。现改为无分配的固定
+十进制转换 helper，在写入前检查数组上限和输出容量；最大合法索引 `1023` 可完整编码，
+容量不足明确失败，达到 1024 项后不再执行格式化或部分写入。验证：`test_rule_engine`
+通过，完整构建与 CTest **82/82** 通过。
+
 **规则引擎数学库链接依赖（TDD）**：远程规则引擎 GRL 扩展新增 `round/floor/ceil/fmod`
 数学内建函数后，`rule_engine_core` 的独立测试和 benchmark 在 Unix 链接阶段缺少 `m` 而
 失败。现将 `m` 作为非 MSVC 平台的公开 target 依赖，使所有消费者自动继承并保持 Windows

@@ -419,6 +419,24 @@ TEST(structured_values_support_nested_objects_and_arrays) {
     re_facts_destroy(facts);
 }
 
+TEST(structured_array_index_formatting_is_bounded) {
+    char key[5];
+    size_t size = 0u;
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *array = NULL;
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_TRUE(re_value_array_index_key(1023u, key, sizeof(key), &size));
+    ASSERT_EQ(size, 4u);
+    ASSERT_TRUE(strcmp(key, "1023") == 0);
+    ASSERT_FALSE(re_value_array_index_key(1023u, key, 4u, &size));
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    for (size_t i = 0u; i < 1024u; ++i)
+        ASSERT_EQ(re_value_array_append(array, &value), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &value), RE_STATUS_LIMIT);
+    re_value_destroy(array);
+    re_facts_destroy(facts);
+}
+
 TEST(null_missing_and_unknown_are_distinct) {
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_value_t null_value = {RE_VALUE_NULL, {0}};
@@ -2052,6 +2070,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(custom_function_registration_validates_descriptor_and_reentrancy);
     RUN_TEST(dotted_fact_lookup_prefers_exact_flat_key);
     RUN_TEST(structured_values_support_nested_objects_and_arrays);
+    RUN_TEST(structured_array_index_formatting_is_bounded);
     RUN_TEST(array_literal_membership_matches_numeric_and_string_values);
     RUN_TEST(array_membership_covers_positive_negative_and_mixed_scalar_types);
     RUN_TEST(array_literal_membership_rejects_non_match_and_malformed_arrays);
