@@ -2,6 +2,14 @@
 
 ## 本轮更新
 
+**文本布局输入预算（TDD）**：`my_text_layout_process()` 与
+`my_text_paragraph_process()` 原先会对调用方提供的 C 字符串先做无界扫描，再进入
+缓存、复制和排版分配。现分别在 `MY_TEXT_LAYOUT_MAX_BYTES` 与
+`MY_TEXT_PARAGRAPH_MAX_BYTES`（均为 4 MiB）内做有界预检，超限输入只扫描到预算边界
+即拒绝，且不会调用调用方 allocator；正常路径保持原有缓存和增量排版行为。新增文本
+布局/paragraph 超限零分配回归测试；定向 `test_myui_text_layout` **17/17**、ASan/UBSan
+定向 **17/17** 通过。
+
 **CSS 多级 selector 路径（TDD）**：在原单级祖先兼容字段之外，解析器现在以固定容量
 数组保存最多 4 级祖先 compound，支持空白 descendant 与可链式 `>` direct-child 关系，
 祖先可带 type/class/id 组合；祖先伪类因主题查询没有祖先状态维度而明确拒绝。主题桥接

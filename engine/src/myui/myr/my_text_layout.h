@@ -32,6 +32,8 @@
 #include "myr/my_font.h"
 #include "myr/my_rect.h"
 
+#define MY_TEXT_LAYOUT_MAX_BYTES (4u * 1024u * 1024u)
+
 /** @brief One laid-out string (caller-owned copy). */
 typedef struct my_text_layout_t {
   const my_allocator_t* allocator;
@@ -52,8 +54,8 @@ typedef struct my_text_layout_t {
 } my_text_layout_t;
 
 /**
- * @brief Lay out a logical-order UTF-8 string. NULL text -> NULL. The
- * returned layout is owned by the caller (a copy of the cached master).
+ * @brief Lay out a logical-order UTF-8 string. NULL or oversized text -> NULL.
+ * The returned layout is owned by the caller (a copy of the cached master).
  */
 my_text_layout_t* my_text_layout_process(const my_allocator_t* allocator,
                                          const char* text);

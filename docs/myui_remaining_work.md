@@ -77,6 +77,8 @@
 - text area 已加入当前热物理行的 glyph boundary 前缀缓存：命中测试、光标、选区和 IME
   查询复用同一组 advance，重复边界查询为 O(1)；文本 revision、字体或字号变化会失效，
   OOM 时保留原逐 codepoint fallback，不为整篇文档增加几何缓存。
+- 文本布局与 paragraph 入口增加 4 MiB 字节预算；超限输入在缓存、复制和字体测量前
+  有界拒绝，拒绝路径不调用调用方 allocator，正常路径保持原有缓存与排版复杂度。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。

@@ -15,6 +15,38 @@ typedef struct paragraph_test_font_t {
   size_t glyph_calls;
 } paragraph_test_font_t;
 
+typedef struct text_budget_alloc_state_t {
+  size_t calls;
+} text_budget_alloc_state_t;
+
+static void* text_budget_alloc(void* context, size_t size) {
+  text_budget_alloc_state_t* state = (text_budget_alloc_state_t*)context;
+  (void)size;
+  state->calls++;
+  return NULL;
+}
+
+static void* text_budget_calloc(void* context, size_t count, size_t size) {
+  text_budget_alloc_state_t* state = (text_budget_alloc_state_t*)context;
+  (void)count;
+  (void)size;
+  state->calls++;
+  return NULL;
+}
+
+static void* text_budget_realloc(void* context, void* memory, size_t size) {
+  text_budget_alloc_state_t* state = (text_budget_alloc_state_t*)context;
+  (void)memory;
+  (void)size;
+  state->calls++;
+  return NULL;
+}
+
+static void text_budget_free(void* context, void* memory) {
+  (void)context;
+  (void)memory;
+}
+
 static my_ret_t paragraph_test_measure(my_font_t* font, const char* text,
                                        int32_t size, int32_t* w, int32_t* h) {
   (void)font;
@@ -387,6 +419,31 @@ TEST(paragraph_does_not_break_inside_shaping_cluster)
   my_text_paragraph_destroy(paragraph);
 }
 
+TEST(text_layout_and_paragraph_reject_oversized_input_before_allocating)
+{
+  text_budget_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, text_budget_alloc, text_budget_calloc,
+                              text_budget_realloc, text_budget_free};
+  size_t layout_len = MY_TEXT_LAYOUT_MAX_BYTES + 1u;
+  size_t paragraph_len = MY_TEXT_PARAGRAPH_MAX_BYTES + 1u;
+  char* layout_text = (char*)malloc(layout_len + 1u);
+  char* paragraph_text = (char*)malloc(paragraph_len + 1u);
+
+  ASSERT_NOT_NULL(layout_text);
+  ASSERT_NOT_NULL(paragraph_text);
+  memset(layout_text, 'x', layout_len);
+  memset(paragraph_text, 'y', paragraph_len);
+  layout_text[layout_len] = '\0';
+  paragraph_text[paragraph_len] = '\0';
+  ASSERT_TRUE(my_text_layout_process(&allocator, layout_text) == NULL);
+  ASSERT_EQ(state.calls, 0u);
+  ASSERT_TRUE(my_text_paragraph_process(&allocator, paragraph_text, NULL, 16,
+                                        0) == NULL);
+  ASSERT_EQ(state.calls, 0u);
+  free(layout_text);
+  free(paragraph_text);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(arabic_shape_forms_lam_alef);
     RUN_TEST(text_layout_maps_rtl_visual_order);
@@ -399,6 +456,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(line_break_keeps_emoji_extensions_with_base_text);
     RUN_TEST(paragraph_preserves_logical_ranges_and_hard_boundaries);
     RUN_TEST(paragraph_does_not_break_inside_shaping_cluster);
+    RUN_TEST(text_layout_and_paragraph_reject_oversized_input_before_allocating);
     RUN_TEST(syntax_cache_lexes_bounded_tokens_and_comments);
     RUN_TEST(syntax_cache_records_utf8_token_byte_ranges);
     RUN_TEST(syntax_cache_propagates_state_only_from_dirty_suffix);

@@ -43,9 +43,20 @@ static uint32_t tl_mirror_cp(uint32_t cp) {
 
 /* ---------------- utf-8 helpers ---------------- */
 
+static bool tl_bounded_text_len(const char* text, size_t* out_len) {
+  size_t text_len = 0;
+  while (text_len <= MY_TEXT_LAYOUT_MAX_BYTES && text[text_len] != '\0') {
+    text_len++;
+  }
+  if (text_len > MY_TEXT_LAYOUT_MAX_BYTES) {
+    return false;
+  }
+  *out_len = text_len;
+  return true;
+}
+
 static uint32_t* tl_decode(const my_allocator_t* alloc, const char* text,
-                           size_t* out_len) {
-  size_t text_len = strlen(text);
+                           size_t text_len, size_t* out_len) {
   size_t cap;
   size_t n = 0;
   if (text_len == SIZE_MAX || text_len + 1 > SIZE_MAX / sizeof(uint32_t)) {
@@ -156,12 +167,13 @@ static void tl_master_free(tl_master_t* m) {
 }
 
 /** @brief Compute the master: decode, shape (BIDI), reorder (BIDI). */
-static bool tl_master_compute(tl_master_t* m, const char* text) {
+static bool tl_master_compute(tl_master_t* m, const char* text,
+                              size_t text_len) {
   size_t source_len = 0, i;
   bool may = false;
   memset(m, 0, sizeof(*m));
   m->text = my_strdup(NULL, text);
-  m->cps = tl_decode(NULL, text, &source_len);
+  m->cps = tl_decode(NULL, text, text_len, &source_len);
   if (m->text == NULL || m->cps == NULL) {
     tl_master_free(m);
     return false;
@@ -381,9 +393,12 @@ static my_text_layout_t* tl_copy(const my_allocator_t* alloc,
 
 my_text_layout_t* my_text_layout_process(const my_allocator_t* allocator,
                                          const char* text) {
-  size_t i, slot = 0;
+  size_t i, slot = 0, text_len;
   uint64_t oldest;
   if (text == NULL) {
+    return NULL;
+  }
+  if (!tl_bounded_text_len(text, &text_len)) {
     return NULL;
   }
   g_tick++;
@@ -406,7 +421,7 @@ my_text_layout_t* my_text_layout_process(const my_allocator_t* allocator,
     }
   }
   tl_master_free(&g_cache[slot]);
-  if (!tl_master_compute(&g_cache[slot], text)) {
+  if (!tl_master_compute(&g_cache[slot], text, text_len)) {
     return NULL;
   }
   g_cache[slot].tick = g_tick;

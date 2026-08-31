@@ -30,6 +30,18 @@ static my_ret_t paragraph_add_line(my_text_paragraph_t* paragraph,
   return MY_RET_OK;
 }
 
+static bool paragraph_bounded_text_len(const char* text, size_t* out_len) {
+  size_t len = 0;
+  while (len <= MY_TEXT_PARAGRAPH_MAX_BYTES && text[len] != '\0') {
+    len++;
+  }
+  if (len > MY_TEXT_PARAGRAPH_MAX_BYTES) {
+    return false;
+  }
+  *out_len = len;
+  return true;
+}
+
 static size_t paragraph_cp_index(const size_t* offsets, size_t count,
                                  size_t byte) {
   size_t lo = 0, hi = count;
@@ -197,17 +209,22 @@ my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
                                                int32_t max_width) {
   my_text_paragraph_t* paragraph;
   size_t capacity = 0, start_byte = 0, start_cp = 0, cp_count = 0;
+  size_t text_len;
   const char* p;
-  if (text == NULL || (font != NULL && size <= 0)) return NULL;
+  if (text == NULL || (font != NULL && size <= 0) ||
+      !paragraph_bounded_text_len(text, &text_len)) {
+    return NULL;
+  }
   paragraph = (my_text_paragraph_t*)my_mem_calloc(
       allocator, 1, sizeof(my_text_paragraph_t));
   if (paragraph == NULL) return NULL;
   paragraph->allocator = allocator;
-  paragraph->text = my_strdup(allocator, text);
+  paragraph->text = (char*)my_mem_alloc(allocator, text_len + 1u);
   if (paragraph->text == NULL) {
     my_text_paragraph_destroy(paragraph);
     return NULL;
   }
+  memcpy(paragraph->text, text, text_len + 1u);
   p = paragraph->text;
   while (true) {
     if (*p == '\0' || *p == '\n') {

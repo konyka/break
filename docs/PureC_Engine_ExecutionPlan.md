@@ -4905,6 +4905,11 @@ combinator 直接失败。旧的 `my_theme_set_ex*()` 及单祖先观察字段�
 `my_theme_set_ex4()` 原子复制到条目；specificity 累加路径各级权重，查询热路径零分配。
 该阶段以失败测试先行，定向 `test_myui_css` 通过后再更新本矩阵和集成文档。
 
+文本布局入口同样先做有界字节预检：`my_text_layout_process()` 和
+`my_text_paragraph_process()` 各自拒绝超过 4 MiB 的 C 字符串，避免缓存比较或字体测量
+之前产生无界扫描和分配。超限测试确认调用方 allocator 零次调用，正常布局仍走原有
+font-independent cache 与 paragraph 增量路径。
+
 1. **每个 Phase 必须有可运行的 demo** — 不可产出不可运行的"完成代码"
 2. **Phase 内按编号顺序开发** — 依赖关系已经排好
 3. **先跑通再优化** — 未经 proflier 证明的优化一律推迟

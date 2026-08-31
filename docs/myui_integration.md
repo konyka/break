@@ -154,6 +154,11 @@ ready 的有字体行进行 token 分段绘制，RTL 行先复用 visual layout�
 cache 未 ready 时继续使用原整行绘制；JUSTIFY 仍使用受限的逐词绘制，复杂 RTL GSUB
 与跨 face shaping 不在该 lexer 契约内。
 
+文本布局和 paragraph 入口同样受 4 MiB 字节预算约束：预检最多读取预算边界，超限在
+缓存查找、文本复制和字体排版前失败，不触发调用方 allocator。该预算保护布局冷路径的
+恶意超长输入，正常输入仍复用既有全局 layout master cache、paragraph 增量缓存和各后端
+的 glyph 路径。
+
 ## CSS/YAML 解析边界
 
 CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带行列号的失败；声明
