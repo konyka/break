@@ -7,6 +7,37 @@
 #include "myui/my_ui_loader.h"
 #include "myui/widgets/my_label.h"
 
+typedef struct loader_alloc_state_t {
+  size_t alloc_calls;
+} loader_alloc_state_t;
+
+static void* loader_test_alloc(void* context, size_t size)
+{
+  loader_alloc_state_t* state = (loader_alloc_state_t*)context;
+  state->alloc_calls++;
+  return malloc(size);
+}
+
+static void* loader_test_calloc(void* context, size_t count, size_t size)
+{
+  loader_alloc_state_t* state = (loader_alloc_state_t*)context;
+  state->alloc_calls++;
+  return calloc(count, size);
+}
+
+static void* loader_test_realloc(void* context, void* memory, size_t size)
+{
+  loader_alloc_state_t* state = (loader_alloc_state_t*)context;
+  state->alloc_calls++;
+  return realloc(memory, size);
+}
+
+static void loader_test_free(void* context, void* memory)
+{
+  (void)context;
+  free(memory);
+}
+
 TEST(yaml_loader_builds_typed_widget)
 {
   const char* yaml =
@@ -93,6 +124,28 @@ TEST(yaml_loader_rejects_oversized_input)
   ASSERT_TRUE(my_ui_load_str(NULL, NULL, yaml, &error) == NULL);
   ASSERT_TRUE(error.message[0] != '\0');
   free(yaml);
+}
+
+TEST(yaml_file_loader_rejects_oversized_file_before_allocation)
+{
+  char path[256];
+  FILE* file;
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_ui_error_t error = {0};
+  size_t size = (size_t)MY_UI_MAX_YAML_BYTES + 1u;
+
+  test_tmp(path, sizeof(path), "yaml_oversized_file");
+  file = fopen(path, "wb");
+  ASSERT_NOT_NULL(file);
+  ASSERT_EQ(fseek(file, (long)size, SEEK_SET), 0);
+  ASSERT_EQ(fputc('\n', file), '\n');
+  ASSERT_EQ(fclose(file), 0);
+  ASSERT_TRUE(my_ui_load_file(&allocator, NULL, path, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.message[0] != '\0');
+  remove(path);
 }
 
 TEST(yaml_parser_rejects_excessive_nesting)
@@ -245,6 +298,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_loader_rejects_invalid_shapes);
     RUN_TEST(yaml_loader_applies_bindings_map);
     RUN_TEST(yaml_loader_rejects_oversized_input);
+    RUN_TEST(yaml_file_loader_rejects_oversized_file_before_allocation);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

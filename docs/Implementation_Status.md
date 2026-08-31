@@ -2,6 +2,12 @@
 
 ## 本轮更新
 
+**YAML 文件加载前置资源预算（TDD）**：`my_ui_load_file()` 原先先按文件长度申请完整
+缓冲区，再由字符串 loader 拒绝超过 4 MiB 的 YAML；恶意超大文件因此仍能触发一次大额
+分配。现文件读取入口在申请 payload 前复用 `MY_UI_MAX_YAML_BYTES` 检查，超限立即关闭
+文件并返回错误。新增稀疏超大文件与计数 allocator 回归测试，确认拒绝路径零次 payload
+分配；定向 `test_myui_loader` 通过。
+
 **结构化数组索引格式化边界（TDD）**：`re_value_array_append()` 和
 `re_value_array_append_value()` 原先用未检查的 `sprintf` 构造数组键；虽然当前数组上限
 暂时使 24-byte 缓冲区足够，未来调整上限会重新引入截断或越界风险。现改为无分配的固定

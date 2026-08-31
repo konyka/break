@@ -413,6 +413,11 @@ my_widget_t* my_ui_load_file(const my_allocator_t* allocator, my_pal_t* pal,
     }
     return NULL;
   }
+  if (size > (long)MY_UI_MAX_YAML_BYTES) {
+    fclose(file);
+    ui_fail(err, "YAML input exceeds resource budget");
+    return NULL;
+  }
   buffer = (char*)my_mem_alloc(allocator, (size_t)size + 1u);
   if (buffer == NULL || fread(buffer, 1, (size_t)size, file) != (size_t)size) {
     fclose(file);

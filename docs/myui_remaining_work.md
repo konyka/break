@@ -106,6 +106,9 @@
   `MY_RET_NOT_SUPPORTED`。Break RHI、GLES/OpenGL、Vulkan 和 soft canvas 的纯 LTR 路径
   已消费 glyph-run，并使用独立 glyph-id raster/cache key；shaping 失败仍回退 Unicode
   codepoint 路径。
+- YAML UI 文件入口现于 payload 分配前检查 4 MiB 文件预算；超限输入立即关闭文件并失败，
+  不再先申请整文件缓冲，字符串 loader 与 parser 的既有行数、深度、集合和标量预算保持
+  不变。
 
 ## 未完成能力
 
