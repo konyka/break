@@ -35,6 +35,19 @@ GL X11、Win32 WGL、Vulkan 和 macOS 当前均不声明 swapchain 像素保留�
 使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。Vulkan 后续仍需按
 swapchain image 维护历史 damage，才能安全接入 incremental present。
 
+## Vulkan vgcanvas 质量事务
+
+独立 Vulkan vgcanvas 将 portable AA level 映射为明确的 sample count：level 0/1/2
+分别对应 1x/2x/4x。能力来自 physical-device 与实际颜色格式的交集，不支持的 level
+在调用 Vulkan 前返回 `MY_RET_NOT_SUPPORTED`。当前 sample count、target 尺寸、render pass、
+pipeline 和 descriptor 资源必须属于同一个候选组，候选全部创建并完成初始化后才交换到
+active；失败只销毁候选，保留旧 target、pipeline、尺寸和 capability。
+
+AA 切换与 resize 使用同一条候选重建路径。resize 请求在下一帧边界合并，多个请求只保留
+最后尺寸；重建期间不修改 active 尺寸或 clip。窗口 out-of-date 也复用该路径，避免先销毁
+旧 swapchain 再发现新资源创建失败。MSAA 创建失败不再静默降级到 1x；初始设备能力查询
+决定默认质量，运行时显式请求失败则保持原质量。
+
 ## 冷却按钮
 
 按钮冷却是 widget 层能力，不依赖 Break RHI、OpenGL、Vulkan 或软件 canvas 的私有类型：

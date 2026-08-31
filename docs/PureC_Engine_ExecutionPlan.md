@@ -3,6 +3,10 @@
 > 基于 `PureC_Engine_DeepDive.md` 中确定的最优方案，制定分阶段实施路线图。
 > 核心策略: **垂直切片优先** — 每个阶段产出可运行的 demo，而非逐模块堆叠。
 
+> 2026-08-31 更新：`ENGINE_VULKAN` 现同步启用 `myui_core` 的私有 Vulkan vgcanvas。其
+> AA level 0/1/2 映射为 1x/2x/4x，target、render pass、pipeline、descriptor 与
+> swapchain 通过候选资源组原子交换；失败保留 active 资源，resize 与 AA 请求共享重建路径。
+
 ---
 
 ## 实际状态校正（Round 0 核查）

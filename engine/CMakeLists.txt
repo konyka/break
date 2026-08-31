@@ -112,6 +112,7 @@ if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
             "shaderc_shared not found — install shaderc (e.g. libshaderc-dev / shaderc) "
             "or configure without -DENGINE_VULKAN=ON")
     endif()
+    find_package(Vulkan REQUIRED)
 endif()
 
 # Engine library
@@ -380,6 +381,10 @@ if(MYUI_IMAGE_STB)
 endif()
 if(MYUI_UI_YAML)
     target_compile_definitions(myui_core PUBLIC MYUI_UI_YAML=1)
+endif()
+if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+    target_compile_definitions(myui_core PUBLIC MYUI_HAS_VULKAN=1)
+    target_link_libraries(myui_core PUBLIC Vulkan::Vulkan)
 endif()
 
 target_link_libraries(myui_core PUBLIC

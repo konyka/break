@@ -86,6 +86,11 @@
 - vgcanvas 已提供零分配的 capability 查询；AA/filter 请求先检查能力，状态只在后端
   成功后更新并对重复请求短路。GL 只有当前 surface 报告 multisample 时才暴露 level 2；
   Break RHI/Vulkan 的真实 offscreen target 已支持设备能力允许的 2x+ 路径。
+- 独立 Vulkan vgcanvas 现按 physical-device 与 image-format 能力报告 1x/2x/4x AA；
+  level 切换、resize 和 swapchain out-of-date 重建均先构造 candidate target、render pass、
+  pipeline 与 descriptor 资源，设备空闲且候选完整后一次性交换。创建、验证或提交失败只
+  清理 candidate，不销毁 active；候选 MSAA 失败不再静默降级。顶层 `ENGINE_VULKAN` 现在
+  同时启用 `myui_core` 的 Vulkan 编译定义与链接依赖。
 - 新增后端无关的 sample-count/resize 事务 helper：候选资源按 `create -> validate ->
   submit -> activate -> retire` 提交；创建、验证或提交失败只销毁 candidate，保留
   active resource、样本数和尺寸。相同请求零分配、零重建；支持的样本数通过显式的
@@ -121,7 +126,6 @@
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| GPU AA 动态协商 | capability 查询、非法请求拒绝、GL/Vulkan offscreen MSAA target、Vulkan 深度 resolve、pipeline/render-pass sample variant、BreakUI 事务切换、失败回滚和真实 2x smoke 已完成；完整 Vulkan vgcanvas 私有 backend 与窗口级独立 swapchain AA 仍未接入 | 重建失败后切换半成品 target、不同后端 sample/resolve 语义不一致、同步错误 | fake RHI 状态机 + BreakUI candidate/active 生命周期 + GL target/readback smoke + Vulkan 2x draw/resolve/destroy + validation clean |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的纯 LTR 绘制与测量；RTL/跨 face fallback chain 暂不伪装支持完整 shaping | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 paragraph/run 级 RTL shaping |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射、跨 face shaping、多段落增量预算和 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 RTL run shaping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 JUSTIFY 联动未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |

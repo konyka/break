@@ -1,5 +1,19 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Vulkan vgcanvas AA 事务
+
+独立 Vulkan vgcanvas 现将 `ENGINE_VULKAN` 构建选项正确传递到 `myui_core`，并链接 Vulkan
+运行库；此前顶层工程虽然启用了 RHI Vulkan，却让该 vgcanvas 始终编译为 stub。后端按实际
+设备与颜色格式报告 1x/2x/4x AA 能力，AA level 切换、resize 和 out-of-date swapchain
+重建统一采用 candidate resource 组，target、render pass、pipeline、descriptor 和
+swapchain 成功创建后才一次性交换。任何创建失败都保留 active 资源，且 MSAA 失败不再静默
+降级。
+
+TDD 验证：普通配置的 `test_myui_vgcanvas_backend` 为 **24/24**，Vulkan 配置为 **25/25**；
+真实 Vulkan offscreen 已覆盖能力读取、1x↔4x 切换、resize 后提交和销毁；ASan/UBSan
+Vulkan 配置同为 **25/25**。另完成 Vulkan 源码 `-Werror -pedantic` 语法编译与
+`git diff --check`。
+
 ## 本轮更新
 
 **文本布局输入预算（TDD）**：`my_text_layout_process()` 与
