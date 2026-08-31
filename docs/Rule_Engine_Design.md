@@ -471,6 +471,11 @@ configure step discovers a hiredis header and library, which also defines
 message - no silent fallback and no hard error, replacing the former
 FATAL_ERROR stub - and without `RE_HAS_HIREDIS` the
 `RE_STATE_PROVIDER_REDIS` kind keeps returning `RE_STATUS_NOT_SUPPORTED`.
+Alternatively, `RULE_ENGINE_REDIS_SOURCE_DIR` may point to a Redis source tree
+or a hiredis source directory; CMake builds the bundled hiredis C sources as a
+private static target and applies the same `RE_HAS_HIREDIS` boundary. This
+source path is useful for reproducible builds and does not expose hiredis in
+the public ABI.
 The adapter mirrors the in-memory provider's vtable over the synchronous
 hiredis API: keys are `<prefix>:<name>`, values are raw bytes (a type tag
 followed by the payload), TTL uses millisecond PSETEX/PTTL with SET/GET/DEL,
@@ -481,7 +486,9 @@ adapter takes its connection from the `RE_REDIS_URL` environment variable
 alone is not runtime evidence: enablement still requires the integration
 environment to supply a controlled Redis server, the roundtrip test runs only
 when `RE_TEST_REDIS_URL` names one (otherwise it prints SKIP and counts
-green), and no credentials belong in the repository.
+green), and no credentials belong in the repository. With Redis 8.10.1 as the
+source directory, the source-backed build and live roundtrip are verified in
+the local integration matrix.
 
 ## Bounded backward query slice
 

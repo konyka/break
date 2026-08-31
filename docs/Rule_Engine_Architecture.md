@@ -239,7 +239,11 @@ values under `<prefix>:<name>` keys via PSETEX/SET/GET/DEL/PTTL, and reports
 failures as `RE_PROVIDER_ERROR_UNAVAILABLE` through `last_error`. Runtime
 enablement additionally requires a separately supplied controlled Redis
 integration endpoint; absent either prerequisite, configuration must keep the
-adapter disabled, and on the current host the adapter is compile-verified only.
+adapter disabled. A source-backed build with Redis 8.10.1 and a controlled
+local service is covered by the integration matrix.
+For reproducible source builds, `RULE_ENGINE_REDIS_SOURCE_DIR` accepts a Redis
+checkout or its `deps/hiredis` directory and builds a private static hiredis
+target before compiling the adapter; this has the same no-fallback behavior.
 Redis failures must propagate as provider errors and must
 never fall back to empty or in-memory state.
 

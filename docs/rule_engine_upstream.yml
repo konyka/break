@@ -58,7 +58,7 @@ feature_families:
     status: verified_upstream
     required_feature: streaming-redis
     evidence: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md]
-    summary: Upstream Redis-backed streaming state. Locally the native adapter is an optional backend compiled only when RULE_ENGINE_ENABLE_REDIS is ON and CMake discovers hiredis; without the client the Redis kind stays RE_STATUS_NOT_SUPPORTED, and the adapter is compile-verified only on the current host.
+    summary: Upstream Redis-backed streaming state. Locally the native adapter is an optional backend compiled when RULE_ENGINE_ENABLE_REDIS is ON and CMake either discovers hiredis or builds it from RULE_ENGINE_REDIS_SOURCE_DIR; without a client/source dependency the Redis kind stays RE_STATUS_NOT_SUPPORTED. The source-backed adapter and live roundtrip are verified against Redis 8.10.1, while the default build remains compile-gated.
   - id: advanced-rule-control
     status: verified_upstream
     evidence: [docs/core-features/FEATURES.md, docs/core-features/GRL_SYNTAX.md]
@@ -171,7 +171,7 @@ inventory:
       local_ref: [engine/CMakeLists.txt:721-736, engine/src/rule_engine/redis_provider.c]
       local_tests: [engine/tests/test_rule_engine_stream_ext.c]
       parity: bounded_behavior
-      notes: Native adapter mirrors the in-memory provider vtable over the sync hiredis API - the same synchronous style as upstream's redis-crate usage - with "<prefix>:<name>" keys, raw-byte values, and PSETEX/SET/GET/DEL/PTTL; it compiles only when RULE_ENGINE_ENABLE_REDIS is ON and hiredis is discovered (a missing client force-disables the option, no silent fallback), and without the macro the Redis kind stays RE_STATUS_NOT_SUPPORTED. Compile-verified only on the current host; the runtime roundtrip is RE_TEST_REDIS_URL skip-guarded.
+      notes: Native adapter mirrors the in-memory provider vtable over the sync hiredis API - the same synchronous style as upstream's redis-crate usage - with "<prefix>:<name>" keys, raw-byte values, and PSETEX/SET/GET/DEL/PTTL; it compiles only when RULE_ENGINE_ENABLE_REDIS is ON and hiredis is discovered or built from RULE_ENGINE_REDIS_SOURCE_DIR (a missing client/source dependency force-disables the option, no silent fallback), and without the macro the Redis kind stays RE_STATUS_NOT_SUPPORTED. The source-backed runtime roundtrip is verified against Redis 8.10.1; other environments remain RE_TEST_REDIS_URL skip-guarded.
     - id: backward-chaining
       upstream_ref: Cargo.toml:[features].backward-chaining
       local_status: tested

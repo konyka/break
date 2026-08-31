@@ -11,6 +11,8 @@ option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
 option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match executor" OFF)
 option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
+set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
+    "Redis source tree or hiredis source directory used to build the native client")
 # myui integration options
 option(MYUI_FONT_STB "TrueType fonts via stb_truetype" ON)
 option(MYUI_FONT_FREETYPE "Hinted fonts via FreeType when available" ON)
@@ -733,15 +735,50 @@ if(NOT MSVC)
     target_link_libraries(rule_engine_core PUBLIC m)
 endif()
 if(RULE_ENGINE_ENABLE_REDIS)
-    find_path(HIREDIS_INCLUDE_DIR hiredis/hiredis.h)
-    find_library(HIREDIS_LIBRARY NAMES hiredis)
-    if(HIREDIS_INCLUDE_DIR AND HIREDIS_LIBRARY)
+    set(_rule_engine_hiredis_source_dir "")
+    set(_rule_engine_hiredis_target "")
+    if(RULE_ENGINE_REDIS_SOURCE_DIR)
+        if(EXISTS "${RULE_ENGINE_REDIS_SOURCE_DIR}/deps/hiredis/hiredis.h")
+            set(_rule_engine_hiredis_source_dir "${RULE_ENGINE_REDIS_SOURCE_DIR}/deps/hiredis")
+        elseif(EXISTS "${RULE_ENGINE_REDIS_SOURCE_DIR}/hiredis.h")
+            set(_rule_engine_hiredis_source_dir "${RULE_ENGINE_REDIS_SOURCE_DIR}")
+        else()
+            message(FATAL_ERROR
+                "RULE_ENGINE_REDIS_SOURCE_DIR must be a Redis source tree or hiredis source directory")
+        endif()
+        add_library(rule_engine_hiredis STATIC
+            ${_rule_engine_hiredis_source_dir}/alloc.c
+            ${_rule_engine_hiredis_source_dir}/async.c
+            ${_rule_engine_hiredis_source_dir}/hiredis.c
+            ${_rule_engine_hiredis_source_dir}/net.c
+            ${_rule_engine_hiredis_source_dir}/read.c
+            ${_rule_engine_hiredis_source_dir}/sds.c
+            ${_rule_engine_hiredis_source_dir}/sockcompat.c)
+        set_property(TARGET rule_engine_hiredis PROPERTY C_STANDARD 99)
+        target_include_directories(rule_engine_hiredis PUBLIC
+            ${_rule_engine_hiredis_source_dir}/..
+            ${_rule_engine_hiredis_source_dir})
+        if(WIN32)
+            target_link_libraries(rule_engine_hiredis PUBLIC ws2_32 crypt32)
+        endif()
+        set(_rule_engine_hiredis_target rule_engine_hiredis)
+        message(STATUS "Redis source detected at ${_rule_engine_hiredis_source_dir}; building bundled hiredis")
+    else()
+        find_path(HIREDIS_INCLUDE_DIR hiredis/hiredis.h)
+        find_library(HIREDIS_LIBRARY NAMES hiredis)
+    endif()
+    if(_rule_engine_hiredis_target OR (HIREDIS_INCLUDE_DIR AND HIREDIS_LIBRARY))
         set(RULE_ENGINE_HAS_HIREDIS ON)
         target_sources(rule_engine_core PRIVATE src/rule_engine/redis_provider.c)
         target_compile_definitions(rule_engine_core PRIVATE RE_HAS_HIREDIS)
-        target_include_directories(rule_engine_core PRIVATE ${HIREDIS_INCLUDE_DIR})
-        target_link_libraries(rule_engine_core PRIVATE ${HIREDIS_LIBRARY})
-        message(STATUS "Redis client detected at ${HIREDIS_INCLUDE_DIR}; native Redis state provider enabled")
+        if(_rule_engine_hiredis_target)
+            target_include_directories(rule_engine_core PRIVATE ${_rule_engine_hiredis_source_dir}/..)
+            target_link_libraries(rule_engine_core PRIVATE ${_rule_engine_hiredis_target})
+        else()
+            target_include_directories(rule_engine_core PRIVATE ${HIREDIS_INCLUDE_DIR})
+            target_link_libraries(rule_engine_core PRIVATE ${HIREDIS_LIBRARY})
+            message(STATUS "Redis client detected at ${HIREDIS_INCLUDE_DIR}; native Redis state provider enabled")
+        endif()
     else()
         # Documented boundary: a missing client disables the option; there is
         # no silent fallback to another provider.
@@ -796,6 +833,9 @@ if(ENGINE_BUILD_TESTS)
     set_property(TARGET test_rule_engine PROPERTY C_STANDARD 99)
     target_include_directories(test_rule_engine PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_rule_engine PRIVATE rule_engine_core)
+    if(RULE_ENGINE_ENABLE_REDIS AND RULE_ENGINE_HAS_HIREDIS)
+        target_compile_definitions(test_rule_engine PRIVATE RE_HAS_HIREDIS)
+    endif()
     add_test(NAME test_rule_engine COMMAND test_rule_engine)
 
     add_executable(test_rule_engine_transactions tests/test_rule_engine_transactions.c)
@@ -1077,6 +1117,10 @@ if(ENGINE_BUILD_TESTS)
             -DMYR_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/CMakeLists.txt
             -DMYUI_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myui/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
+    add_test(NAME test_redis_dependency_config
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_LIST_FILE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_redis_dependency_config.cmake)
 
     # R434: test_shadow: CSM texel snapping — header-only csm.h, only needs math.c
     add_executable(test_shadow tests/test_shadow.c src/math/math.c)

@@ -1,12 +1,37 @@
 #include "test_framework.h"
 #include <rule_engine/rule_engine.h>
 #include "../src/rule_engine/re_internal.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static re_string_t text(const char *value) {
     re_string_t result = {value, strlen(value)};
     return result;
 }
+
+#if defined(RE_HAS_HIREDIS)
+#if !defined(_WIN32)
+extern int setenv(const char *name, const char *value, int overwrite);
+extern int unsetenv(const char *name);
+#endif
+static void redis_test_set_url(const char *url) {
+#if defined(_WIN32)
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "RE_REDIS_URL=%s", url);
+    _putenv(buffer);
+#else
+    setenv("RE_REDIS_URL", url, 1);
+#endif
+}
+static void redis_test_clear_url(void) {
+#if defined(_WIN32)
+    _putenv("RE_REDIS_URL=");
+#else
+    unsetenv("RE_REDIS_URL");
+#endif
+}
+#endif
 
 typedef struct allocator_state_t {
     size_t calls;
@@ -1444,7 +1469,13 @@ TEST(memory_state_provider_rejects_bounds_corruption_and_redis) {
     ASSERT_EQ(re_state_provider_put(provider, text("a"), &too_long, 0u), RE_STATUS_LIMIT);
     ASSERT_EQ(re_state_provider_put(provider, text("bb"), &value, 0u), RE_STATUS_LIMIT);
     ASSERT_EQ(re_state_provider_restore(provider, &bad), RE_STATUS_INVALID_ARGUMENT);
+#if defined(RE_HAS_HIREDIS)
+    redis_test_set_url("redis://127.0.0.1:6390");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &redis, &descriptor, &provider), RE_STATUS_ERROR);
+    redis_test_clear_url();
+#else
     ASSERT_EQ(re_engine_set_state_provider_v1(engine, &redis, &descriptor, &provider), RE_STATUS_NOT_SUPPORTED);
+#endif
     re_state_provider_destroy(provider); re_engine_destroy(engine);
 }
 
@@ -1598,8 +1629,14 @@ TEST(redis_provider_failure_does_not_create_or_fallback_to_memory) {
         RE_STATE_PROVIDER_REDIS, 0u, 100u};
     re_state_provider_descriptor_t descriptor = {sizeof(descriptor), RE_STATE_PROVIDER_ABI_VERSION,
         provider_get, NULL, NULL, NULL, NULL, NULL, NULL};
+#if defined(RE_HAS_HIREDIS)
+    redis_test_set_url("redis://127.0.0.1:6390");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, &descriptor, &provider), RE_STATUS_ERROR);
+    redis_test_clear_url();
+#else
     ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, &descriptor, &provider),
               RE_STATUS_NOT_SUPPORTED);
+#endif
     ASSERT_TRUE(provider == NULL);
     re_engine_destroy(engine);
 }

@@ -2209,15 +2209,21 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   同绿；executor stress 64+64 迭代于 engine/build-hardening-asan（MSVC cl，C11 ON）与
   engine/build-hardening-ubsan-clang 全绿；`RULE_ENGINE_ENABLE_REDIS=ON` 配置在
   hiredis 缺失时成功并以 STATUS 强制 OFF。
-- 当前限制：本机无 hiredis——适配器仅编译期验证（以 stand-in 头编译检查），运行时
-  往返在本机不可验证，由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
+- 当前限制：默认系统依赖路径不保证存在 hiredis 开发包；若未配置源码或系统依赖，
+  适配器保持禁用，运行时往返由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
   变更持有；通用流模式/join/watermark 仍不支持；Redis 的实际启用仍需集成环境提供
-  受控 Redis 服务。
+  受控 Redis 服务。使用 Redis 8.10.1 源码路径的真实服务往返已在下一条依赖矩阵中验证。
 - 依赖矩阵回归（2026-08-30）：`RULE_ENGINE_ENABLE_C11_PARALLEL=ON` 在检测到
   `<threads.h>` 的主机构建并生成 executor stress target，完整 CTest **77/77**；
   `RULE_ENGINE_ENABLE_REDIS=ON` 在仅有运行库、缺少 hiredis 开发头文件的主机上明确
   输出 STATUS 并强制关闭选项，完整 CTest **76/76**。两条路径均未静默替换依赖或
   把 Redis 服务不可用误报为通过。
+- Redis 源码依赖接入（2026-08-31）：新增
+  `RULE_ENGINE_REDIS_SOURCE_DIR`，可直接指向 Redis 源码树（自动定位
+  `deps/hiredis`）或 hiredis 源目录；CMake 在隔离的私有静态 target 中编译
+  hiredis，避免要求系统安装开发包，也不把客户端类型暴露到公共 ABI。先以配置契约
+  测试锁定，再修复源目录 include 根路径缺陷；Redis 8.10.1 + C11 并行 + 原生适配器
+  的 focused 回归和 `RE_TEST_REDIS_URL` 真实往返均通过。
 
 ## myui selection rect bounded output（2026-08-29）
 

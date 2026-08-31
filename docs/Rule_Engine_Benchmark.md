@@ -64,4 +64,6 @@ cmake -DBENCH=engine/build/rule_engine_bench -DTHRESHOLD=engine/scripts/rule_eng
 Thresholds are conservative smoke limits, not portable performance claims.
 Redis remains disabled by default; enabling it compiles the native adapter only
 when hiredis headers and a library are discovered. This check does not claim a
-live integration service.
+live integration service. A Redis source checkout can be supplied with
+`-DRULE_ENGINE_REDIS_SOURCE_DIR=/path/to/redis`; CMake then builds its bundled
+`deps/hiredis` sources as a private static dependency.
