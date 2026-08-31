@@ -9,10 +9,11 @@
  *  - Selector items: `type` / `.class` / `#id` / `type.class` /
  *    `type#id`; optional pseudo `:hover`/`:pressed`/`:disabled` (none =
  *    all four states); `type type2...` descendant is SIMPLIFIED to
- *    "any ancestor of that type" (no full path); comma groups. Child
- *    combinators are supported for typed parents; multiple classes are
- *    stored as a required class set. Pseudos other than the three above are
- *    rejected.
+ *    bounded descendant paths (up to MY_CSS_MAX_ANCESTORS); comma groups.
+ *    `>` direct-child combinators may be chained, and ancestor components
+ *    support type/class/id. Multiple classes are stored as a required class
+ *    set. Pseudos other than the three above are rejected; ancestor pseudos
+ *    are rejected because ancestor state is not part of the theme lookup key.
  *  - Declaration values: colors `#rgb`/`#rrggbb`/`#rrggbbaa`/
  *    `rgb(r,g,b)`/`rgba(r,g,b,a)` (alpha 0-1 float or 0-255 int), named
  *    colors (red green blue white black gray/grey orange yellow purple
@@ -35,6 +36,14 @@
 #define MY_CSS_TYPE_LEN 24
 #define MY_CSS_NAME_LEN 32
 #define MY_CSS_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CSS_MAX_ANCESTORS 4u
+
+/** @brief One ancestor component in a bounded selector path. */
+typedef struct my_css_ancestor_t {
+  char widget_type[MY_CSS_TYPE_LEN];
+  char id[MY_CSS_NAME_LEN];
+  char style_class[MY_CSS_NAME_LEN];
+} my_css_ancestor_t;
 
 /** @brief Parse/bridge error with 1-based position. */
 typedef struct my_css_error_t {
@@ -48,9 +57,11 @@ typedef struct my_css_selector_t {
   char widget_type[MY_CSS_TYPE_LEN]; /**< "" = any type */
   char id[MY_CSS_NAME_LEN];          /**< "" = none (#id == widget name) */
   char style_class[MY_CSS_NAME_LEN]; /**< space-separated required classes */
-  char ancestor_type[MY_CSS_TYPE_LEN]; /**< "" = none (descendant: any
-                                        * ancestor of this type) */
+  char ancestor_type[MY_CSS_TYPE_LEN]; /**< legacy single-ancestor view */
   bool ancestor_direct; /**< direct-child combinator (`A > B`) */
+  u32 ancestor_count; /**< bounded path length; zero keeps legacy fields */
+  my_css_ancestor_t ancestors[MY_CSS_MAX_ANCESTORS];
+  bool ancestor_direct_path[MY_CSS_MAX_ANCESTORS];
   int32_t state; /**< -1 = all states; else my_widget_state_t */
 } my_css_selector_t;
 

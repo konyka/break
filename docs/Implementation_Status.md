@@ -2,6 +2,13 @@
 
 ## 本轮更新
 
+**CSS 多级 selector 路径（TDD）**：在原单级祖先兼容字段之外，解析器现在以固定容量
+数组保存最多 4 级祖先 compound，支持空白 descendant 与可链式 `>` direct-child 关系，
+祖先可带 type/class/id 组合；祖先伪类因主题查询没有祖先状态维度而明确拒绝。主题桥接
+使用 `my_theme_set_ex4()` 复制路径数据，查询按目标到根逐级匹配，匹配过程零分配，
+并累加完整路径 specificity。新增多级成功、direct-child 中间节点错误、祖先 id/class
+不匹配、specificity 覆盖和深度拒绝测试；`test_myui_css` **23/23** 通过。
+
 **CSS 解析输入预算（TDD）**：`my_css_parse()` 原先可由内存 API 直接传入无界输入，
 在创建 sheet 和规则数组前增加 `MY_CSS_MAX_BYTES`（4 MiB）检查；超限路径零次 allocator
 分配，并新增回归测试。CSS/YAML 配置输入现统一具备入口预算保护。
@@ -23,7 +30,7 @@ JSON 写出器同步限制输出至 `MY_CONF_JSON_MAX_BYTES`，并在达到预�
 
 CSS 解析器的结构错误状态不再依赖调用者提供 `my_css_error_t`；`err == NULL` 时同样拒绝
 未闭合 `@` 规则等非法输入，保留错误信息可选的 API 语义。`test_myui_css` 定向测试
-现为 **17/17**。
+现为 **23/23**。
 
 JSON 数字解析拒绝指数或超大整数转换产生的非有限值，避免合法外观输入生成 JSON 无法
 重新加载的 `NaN/Inf` 配置节点；新增无错误存储对象的回归测试。

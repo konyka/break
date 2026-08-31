@@ -42,12 +42,30 @@ void my_theme_destroy(my_theme_t* theme) {
   my_mem_free(theme->allocator, theme);
 }
 
-static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
-                                          const char* name,
-                                          const char* style_class,
-                                          const char* ancestor_type,
-                                          bool ancestor_direct,
-                                          bool create) {
+static bool theme_ancestor_path_equal(const my_theme_entry_t* entry,
+                                      const my_theme_ancestor_t* ancestors,
+                                      size_t ancestor_count,
+                                      const bool* direct_path) {
+  size_t i;
+  if (entry->ancestor_count != ancestor_count) {
+    return false;
+  }
+  for (i = 0; i < ancestor_count; i++) {
+    if (!my_str_eq(entry->ancestors[i].widget_type, ancestors[i].widget_type) ||
+        !my_str_eq(entry->ancestors[i].name, ancestors[i].name) ||
+        !my_str_eq(entry->ancestors[i].style_class, ancestors[i].style_class) ||
+        entry->ancestor_direct_path[i] != direct_path[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static my_theme_entry_t* theme_find_entry_ex(
+    my_theme_t* theme, const char* type, const char* name,
+    const char* style_class, const char* ancestor_type, bool ancestor_direct,
+    const my_theme_ancestor_t* ancestors, size_t ancestor_count,
+    const bool* direct_path, bool create) {
   size_t i, n = my_darray_size(theme->entries);
   const char* nm = name != NULL ? name : "";
   const char* cl = style_class != NULL ? style_class : "";
@@ -55,8 +73,13 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
   for (i = 0; i < n; i++) {
     my_theme_entry_t* e = (my_theme_entry_t*)my_darray_get(theme->entries, i);
     if (my_str_eq(e->widget_type, type) && my_str_eq(e->name, nm) &&
-        my_str_eq(e->style_class, cl) && my_str_eq(e->ancestor_type, an) &&
-        e->ancestor_direct == ancestor_direct) {
+        my_str_eq(e->style_class, cl) &&
+        ((ancestor_count > 0u &&
+          theme_ancestor_path_equal(e, ancestors, ancestor_count,
+                                    direct_path)) ||
+         (ancestor_count == 0u && e->ancestor_count == 0u &&
+          my_str_eq(e->ancestor_type, an) &&
+          e->ancestor_direct == ancestor_direct))) {
       return e;
     }
   }
@@ -74,6 +97,13 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
     strncpy(e->style_class, cl, MY_THEME_NAME_LEN - 1);
     strncpy(e->ancestor_type, an, MY_THEME_TYPE_LEN - 1);
     e->ancestor_direct = ancestor_direct;
+    e->ancestor_count = (u32)ancestor_count;
+    if (ancestor_count > 0u) {
+      memcpy(e->ancestors, ancestors,
+             ancestor_count * sizeof(e->ancestors[0]));
+      memcpy(e->ancestor_direct_path, direct_path,
+             ancestor_count * sizeof(e->ancestor_direct_path[0]));
+    }
     my_style_init(&e->style, theme->allocator);
     if (my_darray_push(theme->entries, e) != MY_RET_OK) {
       my_mem_free(theme->allocator, e);
@@ -81,6 +111,16 @@ static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
     }
     return e;
   }
+}
+
+static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
+                                          const char* name,
+                                          const char* style_class,
+                                          const char* ancestor_type,
+                                          bool ancestor_direct,
+                                          bool create) {
+  return theme_find_entry_ex(theme, type, name, style_class, ancestor_type,
+                             ancestor_direct, NULL, 0u, NULL, create);
 }
 
 static int32_t class_count(const char* classes) {
@@ -153,6 +193,52 @@ my_ret_t my_theme_set_ex3(my_theme_t* theme, const char* widget_type,
   }
   e = theme_find_entry(theme, widget_type, name, style_class, ancestor_type,
                        ancestor_direct, true);
+  if (e == NULL) {
+    return MY_RET_OOM;
+  }
+  ret = my_style_set(&e->style, state, key, value);
+  if (ret != MY_RET_OK) {
+    return ret;
+  }
+  {
+    size_t index = theme_style_prop_index(&e->style, state, key);
+    if (index >= MY_STYLE_MAX_PROPS) {
+      return MY_RET_FAIL;
+    }
+    e->specificity[state][index] = specificity;
+  }
+  return MY_RET_OK;
+}
+
+my_ret_t my_theme_set_ex4(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity) {
+  my_theme_entry_t* e;
+  my_ret_t ret;
+  size_t i;
+  if (theme == NULL || widget_type == NULL || key == NULL || value == NULL ||
+      state >= MY_STATE_COUNT || ancestor_count > MY_THEME_MAX_ANCESTORS ||
+      (ancestor_count > 0u &&
+       (ancestors == NULL || ancestor_direct_path == NULL)) ||
+      strlen(widget_type) >= MY_THEME_TYPE_LEN ||
+      (name != NULL && strlen(name) >= MY_THEME_NAME_LEN) ||
+      (style_class != NULL && strlen(style_class) >= MY_THEME_NAME_LEN)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  for (i = 0; i < ancestor_count; i++) {
+    if (strlen(ancestors[i].widget_type) >= MY_THEME_TYPE_LEN ||
+        strlen(ancestors[i].name) >= MY_THEME_NAME_LEN ||
+        strlen(ancestors[i].style_class) >= MY_THEME_NAME_LEN) {
+      return MY_RET_INVALID_PARAMS;
+    }
+  }
+  e = theme_find_entry_ex(theme, widget_type, name, style_class, NULL, false,
+                          ancestors, ancestor_count, ancestor_direct_path,
+                          true);
   if (e == NULL) {
     return MY_RET_OOM;
   }
@@ -297,15 +383,57 @@ static bool class_set_match(const char* list, const char* required) {
   return true;
 }
 
+static bool theme_ancestor_matches(const my_theme_ancestor_t* selector,
+                                    const my_widget_t* widget) {
+  if (widget == NULL) {
+    return false;
+  }
+  if (selector->widget_type[0] != '\0' &&
+      !my_str_eq(selector->widget_type, widget->widget_type)) {
+    return false;
+  }
+  if (selector->name[0] != '\0' &&
+      !my_str_eq(selector->name, ((const my_object_t*)widget)->name)) {
+    return false;
+  }
+  return class_set_match(widget->style_class, selector->style_class);
+}
+
+static bool theme_ancestor_path_matches(const my_theme_entry_t* entry,
+                                        const my_widget_t* ancestor_anchor) {
+  size_t i;
+  const my_widget_t* cursor = ancestor_anchor;
+  for (i = 0; i < entry->ancestor_count; i++) {
+    const my_widget_t* candidate = cursor;
+    bool found = false;
+    while (candidate != NULL) {
+      if (theme_ancestor_matches(&entry->ancestors[i], candidate)) {
+        found = true;
+        cursor = candidate->parent;
+        break;
+      }
+      if (entry->ancestor_direct_path[i]) {
+        break;
+      }
+      candidate = candidate->parent;
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** @brief Entry matches at one cascade level (level 0 = id, 1 = class,
- * 2 = type). The descendant condition searches from `ancestor_anchor`
- * INCLUSIVE (a part's owner counts as its own ancestor anchor). */
+ * 2 = type). */
 static bool entry_matches_ex(const my_theme_entry_t* e, const char* type,
                              const char* name, const char* style_class,
                              const my_widget_t* ancestor_anchor, int level) {
-  /* descendant condition first (cheap): needs an ancestor of the type
-   * (entry stores "type" or "type.class" — class word-matched) */
-  if (e->ancestor_type[0] != '\0') {
+  if (e->ancestor_count > 0u) {
+    if (!theme_ancestor_path_matches(e, ancestor_anchor)) {
+      return false;
+    }
+  } else if (e->ancestor_type[0] != '\0') {
     const my_widget_t* a = ancestor_anchor;
     char atype[MY_THEME_TYPE_LEN];
     const char* aclass = NULL;

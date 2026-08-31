@@ -174,8 +174,7 @@ static bool css_number(css_p_t* p, double* out, bool* integral) {
 
 /* ---------------- selectors ---------------- */
 
-/** @brief One selector item, e.g. `button.primary:hover`. A leading
- * ancestor type (`window button`) is handled by the caller. */
+/** @brief One selector item, e.g. `button.primary:hover`. */
 static bool c_selector(css_p_t* p, my_css_selector_t* out) {
   bool universal = false;
 
@@ -256,22 +255,22 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
   return true;
 }
 
-static bool c_ancestor(css_p_t* p, my_css_selector_t* ancestor,
-                       const my_css_selector_t* selector) {
-  size_t type_len = strlen(selector->widget_type);
-  size_t class_len = strlen(selector->style_class);
-  size_t need = type_len + (class_len > 0 ? 1u + class_len : 0u);
-  if (need >= sizeof(ancestor->widget_type)) {
+static bool c_ancestor_copy(css_p_t* p, my_css_ancestor_t* ancestor,
+                            const my_css_selector_t* selector) {
+  if (selector->state != -1 || selector->widget_type[0] == '\0') {
+    css_fail(p, "ancestor must have a type and no pseudo class");
+    return false;
+  }
+  if (strlen(selector->id) >= sizeof(ancestor->id) ||
+      strlen(selector->style_class) >= sizeof(ancestor->style_class)) {
     css_fail(p, "ancestor selector too long");
     return false;
   }
-  memcpy(ancestor->widget_type, selector->widget_type, type_len);
-  if (class_len > 0) {
-    ancestor->widget_type[type_len] = '.';
-    memcpy(ancestor->widget_type + type_len + 1u, selector->style_class,
-           class_len);
-  }
-  ancestor->widget_type[need] = '\0';
+  snprintf(ancestor->widget_type, sizeof(ancestor->widget_type), "%s",
+           selector->widget_type);
+  snprintf(ancestor->id, sizeof(ancestor->id), "%s", selector->id);
+  snprintf(ancestor->style_class, sizeof(ancestor->style_class), "%s",
+           selector->style_class);
   return true;
 }
 
@@ -603,19 +602,20 @@ static void css_skip_atrule(css_p_t* p) {
 /** @brief One rule: selectors { declarations }. */
 static my_css_rule_t* css_rule(css_p_t* p) {
   my_css_rule_t* r = css_rule_new(p->allocator);
-  my_css_selector_t ancestor;
-  bool has_ancestor = false;
-  bool ancestor_direct = false;
+  my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
+  bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
+  size_t compound_count = 0;
+  bool pending_direct = false;
   if (r == NULL) {
     css_fail(p, "oom");
     return NULL;
   }
-  memset(&ancestor, 0, sizeof(ancestor));
   /* selector group */
   for (;;) {
     my_css_selector_t sel;
     my_css_selector_t* slot;
     bool separated;
+    size_t i;
     c_ws(p);
     if (c_failed(p)) {
       goto fail;
@@ -623,51 +623,58 @@ static my_css_rule_t* css_rule(css_p_t* p) {
     if (!c_selector(p, &sel)) {
       goto fail;
     }
+    if (compound_count >= sizeof(compounds) / sizeof(compounds[0])) {
+      css_fail(p, "selector ancestor depth exceeded");
+      goto fail;
+    }
+    if (compound_count > 0u) {
+      direct_between[compound_count] = pending_direct;
+    }
+    compounds[compound_count++] = sel;
     separated = c_ws(p);
     if (c_peek(p) == '>') {
       c_next(p);
       c_ws(p);
-      if (sel.id[0] != '\0' || sel.ancestor_type[0] != '\0' ||
-          sel.state != -1 || sel.widget_type[0] == '\0' || has_ancestor) {
-        css_fail(p, "child ancestor must be a type");
+      if (c_peek(p) < 0 || c_peek(p) == '>' || c_peek(p) == ',' ||
+          c_peek(p) == '{') {
+        css_fail(p, "expected selector after '>'");
         goto fail;
       }
-      if (!c_ancestor(p, &ancestor, &sel)) {
-        goto fail;
-      }
-      has_ancestor = true;
-      ancestor_direct = true;
+      pending_direct = true;
       continue;
     }
-    /* descendant: another selector follows a space (simplified: the
-     * first becomes the ancestor condition — bare type, or type.class
-     * since M19c; stored as "type.class" in the entry) */
     if (separated && c_peek(p) != ',' && c_peek(p) != '{') {
-      if (sel.id[0] != '\0' || sel.ancestor_type[0] != '\0' ||
-          sel.state != -1 || sel.widget_type[0] == '\0') {
-        css_fail(p, "descendant ancestor must be a type[.class]");
-        goto fail;
-      }
-      if (has_ancestor) {
-        css_fail(p, "only one descendant level supported");
-        goto fail;
-      }
-      if (!c_ancestor(p, &ancestor, &sel)) {
-        goto fail;
-      }
-      has_ancestor = true;
-      ancestor_direct = false;
-      continue; /* parse the actual target selector next */
+      pending_direct = false;
+      continue;
     }
     if (c_peek(p) != ',' && c_peek(p) != '{') {
       css_fail(p, "unexpected selector token");
       goto fail;
     }
-    if (has_ancestor) {
-      snprintf(sel.ancestor_type, sizeof(sel.ancestor_type), "%s",
-               ancestor.widget_type);
-      sel.ancestor_direct = ancestor_direct;
-      has_ancestor = false; /* consumed by this selector */
+    sel = compounds[compound_count - 1u];
+    sel.ancestor_count = (u32)(compound_count - 1u);
+    for (i = 0; i < compound_count - 1u; i++) {
+      size_t source = compound_count - 2u - i;
+      if (!c_ancestor_copy(p, &sel.ancestors[i], &compounds[source])) {
+        goto fail;
+      }
+      sel.ancestor_direct_path[i] = direct_between[source + 1u];
+    }
+    if (sel.ancestor_count == 1u && sel.ancestors[0].id[0] == '\0') {
+      size_t type_len = strlen(sel.ancestors[0].widget_type);
+      size_t class_len = strlen(sel.ancestors[0].style_class);
+      if (type_len + (class_len > 0u ? 1u + class_len : 0u) <
+          sizeof(sel.ancestor_type)) {
+        memcpy(sel.ancestor_type, sel.ancestors[0].widget_type, type_len);
+        if (class_len > 0u) {
+          sel.ancestor_type[type_len] = '.';
+          memcpy(sel.ancestor_type + type_len + 1u,
+                 sel.ancestors[0].style_class, class_len);
+        }
+        sel.ancestor_type[type_len + (class_len > 0u ? 1u + class_len : 0u)] =
+            '\0';
+        sel.ancestor_direct = sel.ancestor_direct_path[0];
+      }
     }
     slot = (my_css_selector_t*)my_mem_calloc(p->allocator, 1,
                                              sizeof(my_css_selector_t));
@@ -683,13 +690,11 @@ static my_css_rule_t* css_rule(css_p_t* p) {
     }
     if (c_peek(p) == ',') {
       c_next(p);
+      compound_count = 0;
+      pending_direct = false;
       continue;
     }
     break;
-  }
-  if (has_ancestor) {
-    css_fail(p, "dangling ancestor selector");
-    goto fail;
   }
   c_ws(p);
   if (c_peek(p) != '{') {
@@ -916,8 +921,20 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
     const my_css_rule_t* rule = my_css_rule(sheet, ri);
     for (si = 0; si < my_css_selector_count(rule); si++) {
       const my_css_selector_t* sel = my_css_selector(rule, si);
+      my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
       int32_t specificity = 0;
       const char* p;
+      size_t ai;
+      memset(ancestors, 0, sizeof(ancestors));
+      for (ai = 0; ai < sel->ancestor_count; ai++) {
+        snprintf(ancestors[ai].widget_type, sizeof(ancestors[ai].widget_type),
+                 "%s", sel->ancestors[ai].widget_type);
+        snprintf(ancestors[ai].name, sizeof(ancestors[ai].name), "%s",
+                 sel->ancestors[ai].id);
+        snprintf(ancestors[ai].style_class,
+                 sizeof(ancestors[ai].style_class), "%s",
+                 sel->ancestors[ai].style_class);
+      }
       if (sel->id[0] != '\0') {
         specificity += 10000;
       }
@@ -929,7 +946,23 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
       if (sel->widget_type[0] != '\0') {
         specificity += 1;
       }
-      if (sel->ancestor_type[0] != '\0') {
+      if (sel->ancestor_count > 0u) {
+        size_t ai;
+        for (ai = 0; ai < sel->ancestor_count; ai++) {
+          if (sel->ancestors[ai].id[0] != '\0') {
+            specificity += 10000;
+          }
+          for (p = sel->ancestors[ai].style_class; *p != '\0'; p++) {
+            if (*p != ' ' && (p == sel->ancestors[ai].style_class ||
+                              p[-1] == ' ')) {
+              specificity += 100;
+            }
+          }
+          if (sel->ancestors[ai].widget_type[0] != '\0') {
+            specificity += 1;
+          }
+        }
+      } else if (sel->ancestor_type[0] != '\0') {
         specificity += 1;
         for (p = sel->ancestor_type; *p != '\0'; p++) {
           if (*p == '.') {
@@ -940,19 +973,20 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
       for (di = 0; di < my_css_decl_count(rule); di++) {
         const my_css_decl_t* d = my_css_decl(rule, di);
         if (sel->state >= 0) {
-          ret = my_theme_set_ex3(theme, sel->widget_type, sel->id,
-                                 sel->style_class, sel->ancestor_type,
-                                 sel->ancestor_direct,
-                                 (my_widget_state_t)sel->state, d->key,
-                                 &d->value, specificity + 100);
+          ret = my_theme_set_ex4(
+              theme, sel->widget_type, sel->id, sel->style_class,
+              ancestors, sel->ancestor_count,
+              sel->ancestor_direct_path, (my_widget_state_t)sel->state,
+              d->key, &d->value, specificity + 100);
         } else {
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
            * always win regardless of source order (CSS specificity) */
-          ret = my_theme_set_ex3(theme, sel->widget_type, sel->id,
-                                 sel->style_class, sel->ancestor_type,
-                                 sel->ancestor_direct, MY_STATE_NORMAL,
-                                 d->key, &d->value, specificity);
+          ret = my_theme_set_ex4(
+              theme, sel->widget_type, sel->id, sel->style_class,
+              ancestors, sel->ancestor_count,
+              sel->ancestor_direct_path, MY_STATE_NORMAL, d->key, &d->value,
+              specificity);
         }
         if (ret != MY_RET_OK) {
           break;

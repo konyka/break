@@ -311,6 +311,143 @@ TEST(css_child_parent_classes_match_as_a_set)
   my_theme_destroy(theme);
 }
 
+TEST(css_multilevel_selector_chain_matches)
+{
+  const char* css =
+      "window.primary panel > button#submit { color: #556677; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* root = my_widget_create(NULL, "root");
+  my_widget_t* window = my_widget_create(NULL, "window");
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* button = my_widget_create(NULL, "submit");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(root);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(panel);
+  ASSERT_NOT_NULL(button);
+  root->widget_type = "root";
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(window, "primary"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(root, window), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(window);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x556677FFu);
+  my_widget_unref(root);
+  my_theme_destroy(theme);
+}
+
+TEST(css_multilevel_direct_path_rejects_wrong_intermediate)
+{
+  const char* css = "window > panel > button { color: #556677; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* window = my_widget_create(NULL, "window");
+  my_widget_t* wrapper = my_widget_create(NULL, "wrapper");
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* button = my_widget_create(NULL, "button");
+
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(wrapper);
+  ASSERT_NOT_NULL(panel);
+  ASSERT_NOT_NULL(button);
+  window->widget_type = "window";
+  wrapper->widget_type = "wrapper";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, wrapper), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrapper, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(wrapper);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
+TEST(css_multilevel_ancestor_id_and_class_must_match)
+{
+  const char* css = "window#main.primary panel button { color: #667788; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* window = my_widget_create(NULL, "main");
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* button = my_widget_create(NULL, "button");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(panel);
+  ASSERT_NOT_NULL(button);
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(window, "primary"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x667788FFu);
+  ASSERT_EQ(my_widget_set_style_class(window, "secondary"), MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
+TEST(css_multilevel_specificity_beats_simple_selector)
+{
+  const char* css = "button { color: red; }"
+                    "window.primary panel > button { color: blue; }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* window = my_widget_create(NULL, "window");
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* button = my_widget_create(NULL, "button");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(panel);
+  ASSERT_NOT_NULL(button);
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(window, "primary"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css(theme, css), MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
+TEST(css_rejects_selector_paths_over_depth_limit)
+{
+  const char* css = "a b c d e f { color: red; }";
+  my_css_error_t error;
+
+  ASSERT_TRUE(my_css_parse(NULL, css, strlen(css), &error) == NULL);
+  ASSERT_TRUE(error.msg[0] != '\0');
+}
+
 TEST(css_rejects_dangling_and_repeated_combinators)
 {
   const char* dangling = "window > { color: #334455; }";
@@ -406,6 +543,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_class_selector_is_safe_without_widget_classes);
     RUN_TEST(css_child_combinator_matches_only_direct_parent);
     RUN_TEST(css_child_parent_classes_match_as_a_set);
+    RUN_TEST(css_multilevel_selector_chain_matches);
+    RUN_TEST(css_multilevel_direct_path_rejects_wrong_intermediate);
+    RUN_TEST(css_multilevel_ancestor_id_and_class_must_match);
+    RUN_TEST(css_multilevel_specificity_beats_simple_selector);
+    RUN_TEST(css_rejects_selector_paths_over_depth_limit);
     RUN_TEST(css_rejects_dangling_and_repeated_combinators);
     RUN_TEST(css_rejects_adjacent_selector_tokens_without_combinator);
     RUN_TEST(css_comments_preserve_descendant_separator);

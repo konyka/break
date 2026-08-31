@@ -203,6 +203,11 @@ YAML 与 TOML 普通数字的 `strtod` 溢出也会失败；TOML 的显式 `inf`
 CSS 内存解析入口受 `MY_CSS_MAX_BYTES` 4 MiB 预算保护，超限输入在创建 sheet 前拒绝；
 主题桥接沿用同一限制。
 结构错误状态独立于可选的错误输出对象，调用方传入 `NULL` 仍不会接受畸形 CSS。
+selector 最多包含 4 个祖先 compound。路径按目标到根方向匹配：空白是可跨层的
+descendant，`>` 只接受直接父节点；祖先支持 type/class/id 组合，但不接受伪类（祖先
+状态不在主题查询键中）。匹配使用主题条目内的固定数组，不在绘制或查询热路径分配；
+超过深度、重复/悬空 combinator 和错误祖先形式在解析期拒绝。单祖先仍填充旧的
+`ancestor_type`/`ancestor_direct` 观察字段，旧 `my_theme_set_ex*()` API 保持兼容。
 TOML 与 BSON 直解析入口分别受 `MY_CONF_TOML_MAX_BYTES` 和
 `MY_CONF_BSON_MAX_BYTES` 4 MiB 预算保护，所有配置树解析入口均在节点分配前拒绝超限输入。
 BSON 写出器也受同一输出预算保护，超限时释放候选缓冲并返回失败。
@@ -472,7 +477,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
 | Vulkan/GL readback | `rhi_screenshot()` 提供统一 RGBA8 窗口/默认 framebuffer 读回；调用方必须提供目标字节数，区域越界、零尺寸、乘法溢出或容量不足均失败 | Vulkan 使用 swapchain `TRANSFER_SRC`、一次性 staging buffer 与完成等待；GL 使用受边界校验的 `glReadPixels`。该同步 API 仅用于诊断/截图，不用于每帧渲染 |
-| CSS/YAML UI | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator 和完整 at-rule 语义仍未实现；YAML UI loader 已采用类型化 schema。selector specificity、source order 和数值边界已实现 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
+| CSS/YAML UI | CSS 支持最多 4 级祖先路径、descendant/typed `>` 链、祖先 type/class/id、specificity/source order；完整 at-rule 语义仍未实现。YAML UI loader 已采用类型化 schema | 建立 capability registry 和严格诊断模式；继续评估完整 at-rule，但保持解析边界与运行期回滚 |
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 
 实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、
@@ -484,7 +489,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
-本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（17/17）、
+本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（23/23）、
 `test_myui_text_layout`（4/4）、
 `test_myui_vgcanvas_backend`（21/21）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
