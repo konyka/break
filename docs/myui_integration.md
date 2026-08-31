@@ -196,7 +196,7 @@ sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置�
 直接 `my_conf_parse_json()` 同样受 `MY_CONF_JSON_MAX_BYTES` 4 MiB 输入预算保护，避免从
 内存 API 绕过文件入口限制。
 JSON 写出器也受同一 4 MiB 输出预算保护，超限序列化返回失败，不会产生不可重新加载的
-配置文件。
+配置文件；程序化配置树中的 `NaN`/`Inf` 等非有限浮点值同样拒绝写出。
 JSON parser 同时拒绝 `strtod` 溢出的非有限数字，保证 RFC 数字输入不会落入不可序列化
 的运行期值。
 YAML 与 TOML 普通数字的 `strtod` 溢出也会失败；TOML 的显式 `inf`/`nan` 保持兼容。

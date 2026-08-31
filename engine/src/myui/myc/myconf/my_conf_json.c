@@ -509,11 +509,12 @@ typedef struct json_w_t {
   bool pretty;
   int depth;
   bool oom;
+  bool failed;
 } json_w_t;
 
 static void jw_raw(json_w_t* w, const char* s, size_t n) {
   size_t needed;
-  if (w->oom) {
+  if (w->oom || w->failed) {
     return;
   }
   if (n > (size_t)MY_CONF_JSON_MAX_BYTES ||
@@ -612,7 +613,11 @@ static void jw_value(json_w_t* w, my_conf_node_t* node) {
       break;
     case MY_CONF_DOUBLE: {
       double d = my_conf_as_double(node, 0.0);
-      if (d == (double)(long long)d && d < 9.0e15 && d > -9.0e15) {
+      if (!isfinite(d)) {
+        w->failed = true;
+        return;
+      }
+      if (d < 9.0e15 && d > -9.0e15 && d == (double)(long long)d) {
         /* integral doubles print with .0 so the type survives a
          * round trip (1.5 stays 1.5, 2.0 must not become "2") */
         snprintf(num, sizeof(num), "%.1f", d);
@@ -683,7 +688,7 @@ char* my_conf_to_json_str(const my_allocator_t* allocator,
   if (pretty) {
     jw_str(&w, "\n");
   }
-  if (w.oom) {
+  if (w.oom || w.failed) {
     my_mem_free(allocator, w.buf);
     return NULL;
   }

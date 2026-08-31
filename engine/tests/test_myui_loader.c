@@ -341,6 +341,39 @@ TEST(toml_parser_preserves_explicit_special_numbers)
   my_conf_destroy(root);
 }
 
+TEST(json_writer_rejects_nonfinite_numbers)
+{
+  const double invalid_values[] = {NAN, INFINITY, -INFINITY};
+  size_t i;
+
+  for (i = 0; i < sizeof(invalid_values) / sizeof(invalid_values[0]); i++) {
+    my_conf_node_t* value = my_conf_new_double(NULL, invalid_values[i]);
+    char* json;
+
+    ASSERT_NOT_NULL(value);
+    json = my_conf_to_json_str(NULL, value, false);
+    ASSERT_TRUE(json == NULL);
+    if (json != NULL) {
+      my_mem_free(NULL, json);
+    }
+    my_conf_destroy(value);
+  }
+}
+
+TEST(json_writer_handles_large_finite_numbers)
+{
+  my_conf_node_t* value = my_conf_new_double(NULL, 1.0e300);
+  char* json;
+
+  ASSERT_NOT_NULL(value);
+  json = my_conf_to_json_str(NULL, value, false);
+  ASSERT_NOT_NULL(json);
+  if (json != NULL) {
+    my_mem_free(NULL, json);
+  }
+  my_conf_destroy(value);
+}
+
 TEST(yaml_parser_rejects_excessive_nesting)
 {
   size_t capacity = MY_CONF_YAML_MAX_DEPTH * 4u + 32u;
@@ -503,6 +536,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_parser_rejects_nonfinite_numbers);
     RUN_TEST(toml_parser_rejects_nonfinite_numbers);
     RUN_TEST(toml_parser_preserves_explicit_special_numbers);
+    RUN_TEST(json_writer_rejects_nonfinite_numbers);
+    RUN_TEST(json_writer_handles_large_finite_numbers);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

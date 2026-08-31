@@ -14,11 +14,12 @@
 **直接 JSON 解析输入预算（TDD）**：文件加载入口已有 4 MiB 检查，但直接调用
 `my_conf_parse_json()` 原先仍可绕过该限制并进入递归解析及字符串分配。现于 parser 入口
 增加 `MY_CONF_JSON_MAX_BYTES` 前置检查，超限输入在任何配置节点分配前失败；新增计数
-allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **26/26**、完整 CTest
+allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **28/28**、完整 CTest
 **82/82** 通过。
 
 JSON 写出器同步限制输出至 `MY_CONF_JSON_MAX_BYTES`，并在达到预算后停止字符串扫描，
-避免生成自身解析器必拒绝的文档以及无界容量倍增。
+避免生成自身解析器必拒绝的文档以及无界容量倍增；程序化配置树中的 `NaN`/`Inf` 等非有限
+浮点值也会被拒绝，序列化返回失败。
 
 CSS 解析器的结构错误状态不再依赖调用者提供 `my_css_error_t`；`err == NULL` 时同样拒绝
 未闭合 `@` 规则等非法输入，保留错误信息可选的 API 语义。`test_myui_css` 定向测试
