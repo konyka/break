@@ -2610,3 +2610,15 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   35/35、全量并行 5/5 且 80/80 全绿。
 - 评审 Minor 顺带收尾：两处文档的 RULE_ENGINE_ENABLE_REDIS 块行号引用随 ws2_32 六行
   插入更新为 `:736-759`；回环归一的 IPv6 臂改映 `::1`。
+
+## rule engine 全平价计划集合卷（2026-08-31）
+
+- 四个子项目全部交付并推送：A（GRL/表达式面，`bf11de3`+`d537c7d`）、B（RETE/TMS/
+  统一化深度，`e2cff59`+`625265d`）、C（流式补全，`5e51e75`）、D（生态，`dff2d22`）；
+  后续波次：残留清扫 `1ef38d8`+`72dbb30`、环境修复与 Redis 运行时验证 `8e54306`、
+  本地 WIP 保留 `c141fa9`+`6519085`+`d908b9a`、别名补全与期限化 `32e0c5d`。
+- 合卷基线：全量无头 **80/80**、聚焦 `rule_engine|backward_machine` **22/22** × 三套
+  工具链树（clang Debug / ASan+UBSan / MSVC）、bench 回归 PASS、`git diff --check` 干净。
+- 裁定记录归档：SDD 台账（含全部评审裁定与 SAFE-TO-LEAVE 设计边界）入库于
+  `docs/superpowers/ledgers/2026-08-29-rule-engine-full-parity.md`；完整工作区（任务
+  简报/报告、评审包、诊断）留盘于 `.superpowers/sdd/`（`.git/info/exclude` 排除）。
