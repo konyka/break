@@ -84,7 +84,8 @@
  *                           no numeric arguments sum is Integer 0, max is
  *                           -inf and min is +inf (DOUBLE; upstream's fold
  *                           seeds translated to typed values). The upstream
- *                           maximum aliases max (engine.rs:1427).
+ *                           maximum aliases max (engine.rs:1427) and minimum
+ *                           aliases min (:1428).
  *   avg/average(...)        DOUBLE mean over the numeric arguments; none
  *                           numeric -> 0.0.
  *   round/floor/ceil/abs(x) DOUBLE math on a double argument; an INT64
@@ -95,7 +96,8 @@
  *                           missing or non-numeric first argument is
  *                           RE_STATUS_INVALID_ARGUMENT (upstream's Err);
  *                           extra arguments are ignored. The upstream
- *                           ceiling aliases ceil (engine.rs:1432).
+ *                           ceiling aliases ceil (engine.rs:1432) and
+ *                           absolute aliases abs (:1433).
  *   contains/includes(x, y) same as the A3 contains (shared code path).
  *   startswith/endswith(x, y) typed STRING/STRING predicates (bool); wrong
  *                           arity or non-string arguments are false, matching
@@ -103,13 +105,16 @@
  *                           coerces both sides through to_string and errors
  *                           below 2 arguments; documented divergence). The
  *                           upstream begins_with aliases startswith
- *                           (engine.rs:1435).
+ *                           (engine.rs:1435) and ends_with aliases endswith
+ *                           (:1436).
  *   lowercase/uppercase/trim(x) string transforms over the display form of
  *                           the first argument (upstream's to_string
  *                           leniency, so trim(5) is "5"); ASCII case mapping,
  *                           isspace trimming; zero arguments is
  *                           RE_STATUS_INVALID_ARGUMENT (upstream's Err). The
- *                           upstream strip aliases trim (engine.rs:1439).
+ *                           upstream strip aliases trim (engine.rs:1439),
+ *                           tolower aliases lowercase (:1437), and toupper
+ *                           aliases uppercase (:1438).
  *   split(text, delim)      upstream returns format!("{:?}", parts) - a
  *                           Rust-debug string, not an array - so the scalar
  *                           function ABI needs no extension: the result is
@@ -267,17 +272,21 @@ int re_builtin_is(const char *name, size_t size) {
     return name_is(key, "len") || name_is(key, "length") || name_is(key, "size") ||
            name_is(key, "count") || name_is(key, "isEmpty") || name_is(key, "is_empty") ||
            name_is(key, "contains") || name_is(key, "includes") ||
-           name_is(key, "startswith") || name_is(key, "begins_with") || name_is(key, "endswith") ||
+           name_is(key, "startswith") || name_is(key, "begins_with") ||
+           name_is(key, "endswith") || name_is(key, "ends_with") ||
            name_is(key, "exists") || is_negated_presence(key) ||
            name_is(key, "log") || name_is(key, "print") || name_is(key, "println") ||
            name_is(key, "now") || name_is(key, "timestamp") || name_is(key, "random") ||
            name_is(key, "format") || name_is(key, "sprintf") ||
            name_is(key, "sum") || name_is(key, "add") ||
-           name_is(key, "max") || name_is(key, "maximum") || name_is(key, "min") ||
+           name_is(key, "max") || name_is(key, "maximum") ||
+           name_is(key, "min") || name_is(key, "minimum") ||
            name_is(key, "avg") || name_is(key, "average") ||
            name_is(key, "round") || name_is(key, "floor") || name_is(key, "ceil") ||
            name_is(key, "ceiling") ||
-           name_is(key, "abs") || name_is(key, "lowercase") || name_is(key, "uppercase") ||
+           name_is(key, "abs") || name_is(key, "absolute") ||
+           name_is(key, "lowercase") || name_is(key, "tolower") ||
+           name_is(key, "uppercase") || name_is(key, "toupper") ||
            name_is(key, "trim") || name_is(key, "strip") || name_is(key, "split") || name_is(key, "join") ||
            name_is(key, "concat") || name_is(key, "repeat") || name_is(key, "substring") ||
            name_is(key, "replace") || name_is(key, "sqrt") ||
@@ -292,7 +301,7 @@ int re_builtin_is_predicate(const char *name, size_t size) {
     re_string_t key = {name, size};
     return name_is(key, "isEmpty") || name_is(key, "is_empty") || name_is(key, "contains") ||
            name_is(key, "includes") || name_is(key, "startswith") || name_is(key, "begins_with") ||
-           name_is(key, "endswith") ||
+           name_is(key, "endswith") || name_is(key, "ends_with") ||
            name_is(key, "exists") || is_negated_presence(key) ||
            name_is(key, "isEmail") || name_is(key, "isPhone") || name_is(key, "isUrl") ||
            name_is(key, "isNumeric") || name_is(key, "inRange");
@@ -1534,7 +1543,7 @@ re_status_t re_builtin_call(re_engine_t *engine, re_facts_t *facts, re_string_t 
         return call_sum(args, argc, out);
     if (name_is(name, "max") || name_is(name, "maximum"))
         return call_max_min(args, argc, 1, out);
-    if (name_is(name, "min"))
+    if (name_is(name, "min") || name_is(name, "minimum"))
         return call_max_min(args, argc, 0, out);
     if (name_is(name, "avg") || name_is(name, "average"))
         return call_avg(args, argc, out);
@@ -1544,15 +1553,15 @@ re_status_t re_builtin_call(re_engine_t *engine, re_facts_t *facts, re_string_t 
         return call_math1(args, argc, 1, out);
     if (name_is(name, "ceil") || name_is(name, "ceiling"))
         return call_math1(args, argc, 2, out);
-    if (name_is(name, "abs"))
+    if (name_is(name, "abs") || name_is(name, "absolute"))
         return call_math1(args, argc, 3, out);
     if (name_is(name, "startswith") || name_is(name, "begins_with"))
         return call_starts_ends_with(args, argc, 1, out);
-    if (name_is(name, "endswith"))
+    if (name_is(name, "endswith") || name_is(name, "ends_with"))
         return call_starts_ends_with(args, argc, 0, out);
-    if (name_is(name, "lowercase"))
+    if (name_is(name, "lowercase") || name_is(name, "tolower"))
         return call_case_map(engine, facts, args, arg_fact_paths, argc, 0, scratch, out);
-    if (name_is(name, "uppercase"))
+    if (name_is(name, "uppercase") || name_is(name, "toupper"))
         return call_case_map(engine, facts, args, arg_fact_paths, argc, 1, scratch, out);
     if (name_is(name, "trim") || name_is(name, "strip"))
         return call_trim(engine, facts, args, arg_fact_paths, argc, scratch, out);

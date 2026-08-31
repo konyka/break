@@ -631,9 +631,12 @@ TEST(plugin_validation_arity_and_type_errors) {
 TEST(plugin_a4_alias_names_match_targets) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
-    /* maximum == max (:1427), ceiling == ceil (:1432), begins_with ==
-     * startswith (:1435), strip == trim (:1439): same results, same typing,
-     * same leniencies as the dispatch target. */
+    re_value_t out = {RE_VALUE_NONE, {0}};
+    /* maximum == max (:1427), minimum == min (:1428), ceiling == ceil
+     * (:1432), absolute == abs (:1433), begins_with == startswith (:1435),
+     * ends_with == endswith (:1436), tolower == lowercase (:1437),
+     * toupper == uppercase (:1438), strip == trim (:1439): same results,
+     * same typing, same leniencies as the dispatch target. */
     run_program(engine, facts,
         "rule \"R\" { when true then"
         " A = maximum(3, 7, 5); B = max(3, 7, 5);"
@@ -644,7 +647,19 @@ TEST(plugin_a4_alias_names_match_targets) {
         " K = begins_with(\"hello\", \"lo\"); L = startswith(\"hello\", \"lo\");"
         " M = begins_with(\"a\"); N = begins_with(5, 2);"
         " O = strip(\"  x  \"); P = trim(\"  x  \");"
-        " S = strip(5); T = trim(5); }");
+        " S = strip(5); T = trim(5);"
+        " U1 = minimum(3, 7, 5); U2 = min(3, 7, 5);"
+        " U3 = minimum(1.5, 2); U4 = min(1.5, 2);"
+        " U5 = minimum(); U6 = min();"
+        " V1 = absolute(-3); V2 = abs(-3);"
+        " V3 = absolute(-2.5); V4 = abs(-2.5);"
+        " W1 = ends_with(\"hello\", \"lo\"); W2 = endswith(\"hello\", \"lo\");"
+        " W3 = ends_with(\"hello\", \"he\"); W4 = endswith(\"hello\", \"he\");"
+        " W5 = ends_with(\"a\"); W6 = ends_with(5, 2);"
+        " X1 = tolower(\"HeLLo\"); X2 = lowercase(\"HeLLo\");"
+        " X3 = tolower(5); X4 = lowercase(5);"
+        " Y1 = toupper(\"HeLLo\"); Y2 = uppercase(\"HeLLo\");"
+        " Y3 = toupper(5); Y4 = uppercase(5); }");
     assert_int_fact(facts, "A", 7);
     assert_int_fact(facts, "B", 7);
     assert_double_fact(facts, "C", 2.0);
@@ -667,6 +682,40 @@ TEST(plugin_a4_alias_names_match_targets) {
     /* The text argument stringifies (upstream's to_string leniency). */
     assert_string_fact(facts, "S", "5");
     assert_string_fact(facts, "T", "5");
+    assert_int_fact(facts, "U1", 3);
+    assert_int_fact(facts, "U2", 3);
+    assert_double_fact(facts, "U3", 1.5);
+    assert_double_fact(facts, "U4", 1.5);
+    /* No numeric arguments: min/minimum are +inf typed DOUBLE (upstream's
+     * fold seed), same as max's -inf. */
+    ASSERT_EQ(re_facts_get(facts, text("U5"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_DOUBLE);
+    ASSERT_TRUE(out.as.double_value > 1e308);
+    ASSERT_EQ(re_facts_get(facts, text("U6"), &out), RE_STATUS_OK);
+    ASSERT_EQ(out.type, RE_VALUE_DOUBLE);
+    ASSERT_TRUE(out.as.double_value > 1e308);
+    /* abs keeps an INT64 argument typed; a double argument stays DOUBLE. */
+    assert_int_fact(facts, "V1", 3);
+    assert_int_fact(facts, "V2", 3);
+    assert_double_fact(facts, "V3", 2.5);
+    assert_double_fact(facts, "V4", 2.5);
+    assert_bool_fact(facts, "W1", 1);
+    assert_bool_fact(facts, "W2", 1);
+    assert_bool_fact(facts, "W3", 0);
+    assert_bool_fact(facts, "W4", 0);
+    /* Wrong arity or non-string operands are the predicate's false, never an
+     * error - exactly like endswith. */
+    assert_bool_fact(facts, "W5", 0);
+    assert_bool_fact(facts, "W6", 0);
+    assert_string_fact(facts, "X1", "hello");
+    assert_string_fact(facts, "X2", "hello");
+    /* The text argument stringifies (upstream's to_string leniency). */
+    assert_string_fact(facts, "X3", "5");
+    assert_string_fact(facts, "X4", "5");
+    assert_string_fact(facts, "Y1", "HELLO");
+    assert_string_fact(facts, "Y2", "HELLO");
+    assert_string_fact(facts, "Y3", "5");
+    assert_string_fact(facts, "Y4", "5");
     re_facts_destroy(facts);
     re_engine_destroy(engine);
 }
@@ -678,6 +727,14 @@ TEST(plugin_a4_alias_error_paths_match_targets) {
     expect_run_status("rule \"R\" { when true then A = ceil(); }", RE_STATUS_INVALID_ARGUMENT);
     expect_run_status("rule \"R\" { when true then A = ceiling(\"x\"); }", RE_STATUS_INVALID_ARGUMENT);
     expect_run_status("rule \"R\" { when true then A = ceil(\"x\"); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = absolute(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = abs(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = absolute(\"x\"); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = abs(\"x\"); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = tolower(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = lowercase(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = toupper(); }", RE_STATUS_INVALID_ARGUMENT);
+    expect_run_status("rule \"R\" { when true then A = uppercase(); }", RE_STATUS_INVALID_ARGUMENT);
     expect_run_status("rule \"R\" { when true then A = strip(); }", RE_STATUS_INVALID_ARGUMENT);
     expect_run_status("rule \"R\" { when true then A = trim(); }", RE_STATUS_INVALID_ARGUMENT);
 }
@@ -731,15 +788,23 @@ TEST(plugin_alias_host_override_wins) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
     re_function_t *maximum_fn = NULL;
+    re_function_t *tolower_fn = NULL;
     re_function_descriptor_t maximum_descriptor = {sizeof(maximum_descriptor), RE_ABI_VERSION_MAJOR,
         {"maximum", 7u}, override_concat_call, NULL, NULL};
+    re_function_descriptor_t tolower_descriptor = {sizeof(tolower_descriptor), RE_ABI_VERSION_MAJOR,
+        {"tolower", 7u}, override_concat_call, NULL, NULL};
     ASSERT_EQ(re_engine_register_function(engine, &maximum_descriptor, &maximum_fn), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_register_function(engine, &tolower_descriptor, &tolower_fn), RE_STATUS_OK);
     run_program(engine, facts,
-        "rule \"R\" { when true then A = maximum(1, 2); B = max(1, 2); }");
-    /* The registry wins over the built-in alias; the unaliased max still
-     * dispatches to the built-in. */
+        "rule \"R\" { when true then A = maximum(1, 2); B = max(1, 2);"
+        " C = tolower(\"x\"); D = lowercase(\"x\"); }");
+    /* The registry wins over the built-in alias; the unaliased max and
+     * lowercase still dispatch to the built-in. */
     assert_string_fact(facts, "A", "OVERRIDE");
     assert_int_fact(facts, "B", 2);
+    assert_string_fact(facts, "C", "OVERRIDE");
+    assert_string_fact(facts, "D", "x");
+    re_function_unregister(tolower_fn);
     re_function_unregister(maximum_fn);
     re_facts_destroy(facts);
     re_engine_destroy(engine);
@@ -807,9 +872,10 @@ TEST(plugin_classification_pins) {
     static const char *const names[] = {"concat", "repeat", "substring", "replace", "sqrt",
         "first", "last", "reverse", "slice", "keys", "values",
         "isEmail", "isPhone", "isUrl", "isNumeric", "inRange",
-        "maximum", "ceiling", "begins_with", "strip"};
+        "maximum", "ceiling", "begins_with", "strip",
+        "minimum", "absolute", "ends_with", "tolower", "toupper"};
     static const char *const predicates[] = {"isEmail", "isPhone", "isUrl", "isNumeric", "inRange",
-        "begins_with"};
+        "begins_with", "ends_with"};
     static const char *const absent[] = {"today", "dayOfWeek", "year", "month", "day",
         "padLeft", "padRight", "StringSplit", "StringJoin", "ArrayMap", "ParseDate", "ValidateNumeric",
         "Modulo", "Power", "Ceil", "Floor", "AddHours", "DateDiff", "dayOfYear",
@@ -831,6 +897,10 @@ TEST(plugin_classification_pins) {
     ASSERT_FALSE(re_builtin_is_predicate("maximum", 7u));
     ASSERT_FALSE(re_builtin_is_predicate("ceiling", 7u));
     ASSERT_FALSE(re_builtin_is_predicate("strip", 5u));
+    ASSERT_FALSE(re_builtin_is_predicate("minimum", 7u));
+    ASSERT_FALSE(re_builtin_is_predicate("absolute", 8u));
+    ASSERT_FALSE(re_builtin_is_predicate("tolower", 7u));
+    ASSERT_FALSE(re_builtin_is_predicate("toupper", 7u));
     /* A4 purity rule unchanged: EVERY function-calling condition is impure
      * (first-pass-only, never on executor workers) even though all D1 names
      * are deterministic from their arguments; plain fact/literal compares

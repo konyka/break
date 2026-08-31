@@ -543,11 +543,14 @@ TEST(async_loader_completion_burst)
         if ((i & 31) == 0) async_loader_tick();
     }
 
-    for (int i = 0; i < 200000; i++) {
+    /* Wait for the burst to drain - poll until done or the deadline expires */
+    u64 deadline = test_wait_deadline();
+    for (;;) {
         async_loader_tick();
         if (atomic_load(&g_burst_cb_count) >= N &&
             async_loader_pending_count() == 0)
             break;
+        if (test_now_us() >= deadline) break;
         for (volatile int j = 0; j < 5000; j++) { (void)j; }
     }
 
