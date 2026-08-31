@@ -801,6 +801,10 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
   p.line = 1;
   p.col = 1;
   p.err = err;
+  if (len > MY_CSS_MAX_BYTES) {
+    css_fail(&p, "CSS input exceeds resource budget");
+    return NULL;
+  }
   sheet = (my_css_sheet_t*)my_mem_calloc(allocator, 1,
                                          sizeof(my_css_sheet_t));
   if (sheet == NULL) {

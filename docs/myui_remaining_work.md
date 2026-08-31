@@ -121,7 +121,7 @@
 | 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不启用为能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`；新增固定容量 `rhi_present_history` 作为未来具备明确保留契约的平台基础；X11/Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | 具备明确 image 保留保证的 Vulkan/WSI 方案；X11/Win32/macOS runtime smoke；Wayland compositor smoke；异常 present 与真实 image 轮转验证 |
 | Vulkan 窗口 readback | 仅离屏 readback；WSI readback 明确不支持 | 传输 usage、layout、fence 和窗口性能回归 | 显式截图 API、尺寸预算、staging/fence、validation clean |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
-| 完整 CSS/YAML UI | CSS 复杂 combinator、at-rule 语义、完整 selector tree 未实现；YAML UI loader 已替代 XML 并采用类型化 schema | 解析器静默接受错误、运行期主题污染、恶意输入耗尽内存 | capability registry、strict diagnostics、schema/bridge 回滚测试；继续补齐 CSS selector tree 和 YAML 全局输入预算 |
+| 完整 CSS/YAML UI | CSS 复杂 combinator、at-rule 语义、完整 selector tree 未实现；YAML UI loader 已替代 XML 并采用类型化 schema；CSS/YAML/JSON 入口均有 4 MiB 输入预算 | 解析器静默接受错误、运行期主题污染、恶意输入耗尽内存 | capability registry、strict diagnostics、schema/bridge 回滚测试；继续补齐 CSS selector tree |
 | 平台 runtime CI | Windows 已有无 graphics 的 Win32 platform smoke（UTF-8 标题、非法输入、WM_SIZE、销毁）；macOS/Wayland compositor 仍缺本机 runtime 矩阵 | 构建通过但 DPI、IME、present 在实际 compositor 失败 | Windows platform smoke + 各平台启动 smoke + HiDPI/IME/resize/present 证据；当前 smoke 不代表 GPU/WGL/Vulkan 成功 |
 
 ### 冷却按钮契约

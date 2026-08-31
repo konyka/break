@@ -2,6 +2,10 @@
 
 ## 本轮更新
 
+**CSS 解析输入预算（TDD）**：`my_css_parse()` 原先可由内存 API 直接传入无界输入，
+在创建 sheet 和规则数组前增加 `MY_CSS_MAX_BYTES`（4 MiB）检查；超限路径零次 allocator
+分配，并新增回归测试。CSS/YAML 配置输入现统一具备入口预算保护。
+
 **直接 JSON 解析输入预算（TDD）**：文件加载入口已有 4 MiB 检查，但直接调用
 `my_conf_parse_json()` 原先仍可绕过该限制并进入递归解析及字符串分配。现于 parser 入口
 增加 `MY_CONF_JSON_MAX_BYTES` 前置检查，超限输入在任何配置节点分配前失败；新增计数

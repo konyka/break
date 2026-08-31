@@ -1,10 +1,42 @@
 #include "test_framework.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "myui/my_css.h"
 #include "myui/my_theme.h"
 #include "myui/my_widget.h"
+
+typedef struct css_alloc_state_t {
+  size_t alloc_calls;
+} css_alloc_state_t;
+
+static void* css_test_alloc(void* context, size_t size)
+{
+  css_alloc_state_t* state = (css_alloc_state_t*)context;
+  state->alloc_calls++;
+  return malloc(size);
+}
+
+static void* css_test_calloc(void* context, size_t count, size_t size)
+{
+  css_alloc_state_t* state = (css_alloc_state_t*)context;
+  state->alloc_calls++;
+  return calloc(count, size);
+}
+
+static void* css_test_realloc(void* context, void* memory, size_t size)
+{
+  css_alloc_state_t* state = (css_alloc_state_t*)context;
+  state->alloc_calls++;
+  return realloc(memory, size);
+}
+
+static void css_test_free(void* context, void* memory)
+{
+  (void)context;
+  free(memory);
+}
 
 TEST(css_universal_selector_applies_to_any_widget)
 {
@@ -337,6 +369,23 @@ TEST(css_unsupported_at_rules_ignore_braces_in_strings_and_comments)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_parser_rejects_oversized_input_before_allocation)
+{
+  size_t length = (size_t)MY_CSS_MAX_BYTES + 1u;
+  char* css = (char*)malloc(length);
+  css_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, css_test_alloc, css_test_calloc,
+                              css_test_realloc, css_test_free};
+  my_css_error_t error = {0};
+
+  ASSERT_NOT_NULL(css);
+  memset(css, ' ', length);
+  ASSERT_TRUE(my_css_parse(&allocator, css, length, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  free(css);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(css_universal_selector_applies_to_any_widget);
     RUN_TEST(css_multiple_classes_match_as_a_set);
@@ -353,4 +402,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_rejects_adjacent_selector_tokens_without_combinator);
     RUN_TEST(css_comments_preserve_descendant_separator);
     RUN_TEST(css_unsupported_at_rules_ignore_braces_in_strings_and_comments);
+    RUN_TEST(css_parser_rejects_oversized_input_before_allocation);
 TEST_MAIN_END()

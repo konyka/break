@@ -34,6 +34,7 @@
 
 #define MY_CSS_TYPE_LEN 24
 #define MY_CSS_NAME_LEN 32
+#define MY_CSS_MAX_BYTES (4u * 1024u * 1024u)
 
 /** @brief Parse/bridge error with 1-based position. */
 typedef struct my_css_error_t {
@@ -71,8 +72,9 @@ typedef struct my_css_sheet_t {
   my_darray_t* rules; /**< my_css_rule_t* */
 } my_css_sheet_t;
 
-/** @brief Parse a CSS subset sheet. NULL on structural error (err
- * filled). Declaration-level problems only warn + skip. */
+/** @brief Parse a CSS subset sheet within MY_CSS_MAX_BYTES. NULL on
+ * structural or budget error (err filled when non-NULL). Declaration-level
+ * problems only warn + skip. */
 my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
                              const char* css, size_t len,
                              my_css_error_t* err);
