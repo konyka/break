@@ -78,6 +78,10 @@ typedef struct my_text_area_t {
   my_pal_main_loop_t* paste_loop; /**< weak while async paste is pending */
   my_font_t* font;          /**< borrowed */
   int32_t font_size;
+  my_font_shape_params_t shaping_params;
+  char* shaping_language;
+  char* shaping_features;
+  uint64_t shaping_revision;
   my_text_align_t align;    /**< horizontal alignment (M11d, default LEFT) */
   char* ime_preedit;        /**< owned: composing text (M13a, NULL=none) */
   int32_t ime_caret;        /**< composing caret in codepoints */
@@ -102,6 +106,7 @@ typedef struct my_text_area_t {
   size_t geometry_row;
   size_t geometry_count;
   uint64_t geometry_revision;
+  uint64_t geometry_shaping_revision;
   my_font_t* geometry_font;
   int32_t geometry_font_size;
   int32_t* geometry_boundaries;
@@ -126,6 +131,10 @@ my_ret_t my_text_area_set_max_len(my_widget_t* area, size_t max_codepoints);
 my_ret_t my_text_area_set_undo_shared(my_widget_t* area, void* mgr);
 /** @brief Font for layout/measuring (borrowed). */
 void my_text_area_set_font(my_widget_t* area, my_font_t* font, int32_t size);
+
+/** @brief Set bounded shaping parameters; NULL restores defaults. */
+my_ret_t my_text_area_set_shaping_params(
+    my_widget_t* area, const my_font_shape_params_t* params);
 
 /** @brief Line count (from the offset cache). */
 size_t my_text_area_line_count(my_widget_t* area);

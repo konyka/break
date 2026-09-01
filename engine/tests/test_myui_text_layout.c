@@ -328,6 +328,49 @@ static const my_font_vtable_t s_paragraph_shape_ex_vtable = {
     .shape = paragraph_test_shape,
     .shape_ex = paragraph_test_shape_ex};
 
+static my_ret_t layout_feature_shape_ex(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
+  paragraph_test_font_t* test_font = (paragraph_test_font_t*)font;
+  const char* p = text;
+  size_t count = 0;
+  size_t i;
+  bool wide = params != NULL && params->features != NULL &&
+              strcmp(params->features, "wide") == 0;
+  uint32_t cps[64];
+  uint32_t clusters[64];
+
+  if (font == NULL || text == NULL || size <= 0 || params == NULL ||
+      result == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  while (*p != '\0') {
+    const char* next = p;
+    if (count >= sizeof(cps) / sizeof(cps[0])) return MY_RET_FAIL;
+    clusters[count] = (uint32_t)(p - text);
+    cps[count] = my_utf8_next(&next);
+    p = next;
+    count++;
+  }
+  test_font->shape_calls++;
+  result->allocator = allocator;
+  result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
+      allocator, count > 0 ? count : 1, sizeof(*result->glyphs));
+  if (result->glyphs == NULL) return MY_RET_OOM;
+  result->count = count;
+  for (i = 0; i < count; i++) {
+    result->glyphs[i].font = font;
+    result->glyphs[i].glyph_id = cps[i];
+    result->glyphs[i].cluster = clusters[i];
+    result->glyphs[i].advance_x_26_6 = wide ? 3 * 64 : 64;
+  }
+  return MY_RET_OK;
+}
+
+static const my_font_vtable_t s_layout_feature_shape_ex_vtable = {
+    .shape_ex = layout_feature_shape_ex};
+
 TEST(text_layout_splits_mixed_scripts_for_shape_provider)
 {
   paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
@@ -766,6 +809,28 @@ TEST(text_layout_reuses_font_boundary_prefix_cache)
   my_text_layout_destroy(layout);
 }
 
+TEST(text_layout_boundary_cache_keys_shaping_parameters)
+{
+  paragraph_test_font_t font = {{&s_layout_feature_shape_ex_vtable}, NULL, 0,
+                                0, 0, {0}, 0};
+  my_font_shape_params_t narrow = {false, MY_FONT_SCRIPT_LATN, NULL, NULL};
+  my_font_shape_params_t wide = {false, MY_FONT_SCRIPT_LATN, NULL, "wide"};
+  my_text_layout_t* layout = my_text_layout_process(NULL, "ab");
+
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(my_text_layout_visual_boundary_x_ex(
+                layout, (my_font_t*)&font, 16, 2, &narrow),
+            2);
+  ASSERT_EQ(my_text_layout_visual_boundary_x_ex(
+                layout, (my_font_t*)&font, 16, 2, &wide),
+            6);
+  ASSERT_EQ(my_text_layout_visual_boundary_x_ex(
+                layout, (my_font_t*)&font, 16, 2, &narrow),
+            2);
+  ASSERT_EQ(font.shape_calls, 3u);
+  my_text_layout_destroy(layout);
+}
+
 TEST(text_layout_visual_rects_honors_output_capacity)
 {
   uint32_t visual_cps[] = {'a', 'b', 'c', 'd'};
@@ -1055,6 +1120,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_boundaries_use_ligature_advance);
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
     RUN_TEST(text_layout_reuses_font_boundary_prefix_cache);
+    RUN_TEST(text_layout_boundary_cache_keys_shaping_parameters);
     RUN_TEST(text_layout_visual_rects_honors_output_capacity);
     RUN_TEST(line_break_applies_unicode_context_rules);
     RUN_TEST(line_break_keeps_hebrew_quotes_and_unicode_numbers_together);

@@ -348,7 +348,8 @@ static bool ta_geometry_from_shaping(my_text_area_t* ta, size_t row,
   }
   for (i = 0; i <= count; i++) {
     ta->geometry_boundaries[i] =
-        my_text_layout_visual_x(layout, ta->font, ta->font_size, i);
+        my_text_layout_visual_x_ex(layout, ta->font, ta->font_size, i,
+                                   &ta->shaping_params);
   }
   my_text_layout_destroy(layout);
   my_mem_free(ta->allocator, text);
@@ -360,6 +361,7 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
   const char* p;
   if (row >= ta_line_count(ta)) return false;
   if (ta->geometry_row == row && ta->geometry_revision == ta->text_revision &&
+      ta->geometry_shaping_revision == ta->shaping_revision &&
       ta->geometry_font == ta->font &&
       ta->geometry_font_size == ta->font_size) {
     return true;
@@ -378,11 +380,13 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
   if (count == SIZE_MAX || !ta_geometry_reserve(ta, count + 1)) return false;
   cp_count = count;
   if (ta->font != NULL && ta->font->vtable != NULL &&
-      ta->font->vtable->shape != NULL &&
+      (ta->font->vtable->shape != NULL ||
+       ta->font->vtable->shape_ex != NULL) &&
       ta_geometry_from_shaping(ta, row, cp_count)) {
     ta->geometry_row = row;
     ta->geometry_count = cp_count;
     ta->geometry_revision = ta->text_revision;
+    ta->geometry_shaping_revision = ta->shaping_revision;
     ta->geometry_font = ta->font;
     ta->geometry_font_size = ta->font_size;
     return true;
@@ -395,12 +399,13 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     if (layout != NULL && layout->logical_len == cp_count) {
       size_t i;
       for (i = 0; i <= cp_count; i++) {
-        ta->geometry_boundaries[i] =
-            my_text_layout_visual_x(layout, ta->font, ta->font_size, i);
+        ta->geometry_boundaries[i] = my_text_layout_visual_x_ex(
+            layout, ta->font, ta->font_size, i, &ta->shaping_params);
       }
       ta->geometry_row = row;
       ta->geometry_count = cp_count;
       ta->geometry_revision = ta->text_revision;
+      ta->geometry_shaping_revision = ta->shaping_revision;
       ta->geometry_font = ta->font;
       ta->geometry_font_size = ta->font_size;
       return true;
@@ -421,6 +426,7 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
   ta->geometry_row = row;
   ta->geometry_count = cp_count;
   ta->geometry_revision = ta->text_revision;
+  ta->geometry_shaping_revision = ta->shaping_revision;
   ta->geometry_font = ta->font;
   ta->geometry_font_size = ta->font_size;
   return true;
@@ -706,9 +712,9 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
     if (segment_len > 0) memcpy(segment, ta->text + start_off, segment_len);
     if (segment_len > 0 && segment[segment_len - 1] == '\n') segment_len--;
     segment[segment_len] = '\0';
-    paragraph = my_text_paragraph_process(
+    paragraph = my_text_paragraph_process_ex(
         ta->allocator, segment, ta->font, ta->font_size,
-        (int32_t)ta_inner_width(ta));
+        (int32_t)ta_inner_width(ta), &ta->shaping_params);
     my_mem_free(ta->allocator, segment);
     if (paragraph == NULL) {
       ta->vlines = old_lines;
@@ -980,8 +986,9 @@ static void ta_draw_visual_syntax_segment(
       vg, my_color_from_rgba32(ta_syntax_color(normal, kind)));
   my_vgcanvas_draw_text(
       vg, layout->visual_utf8 + start,
-      base_x + (float)my_text_layout_visual_boundary_x(
-                   layout, ta->font, ta->font_size, visual_start),
+      base_x + (float)my_text_layout_visual_boundary_x_ex(
+                   layout, ta->font, ta->font_size, visual_start,
+                   &ta->shaping_params),
       (float)ty);
   layout->visual_utf8[end] = saved;
 }
@@ -1454,8 +1461,9 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
       }
       line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
       if (line_layout != NULL) {
-        line_width = my_text_layout_visual_boundary_x(
-            line_layout, ta->font, ta->font_size, line_layout->len);
+        line_width = my_text_layout_visual_boundary_x_ex(
+            line_layout, ta->font, ta->font_size, line_layout->len,
+            &ta->shaping_params);
       } else if (line != NULL && ta->font != NULL) {
         (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
                               NULL);
@@ -1476,8 +1484,9 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
               ta, line, col_in, (size_t)space_count, line_width, inner_width);
         }
       } else if (line_layout != NULL) {
-        cursor_x = my_text_layout_visual_x(line_layout, ta->font,
-                                           ta->font_size, col_in);
+        cursor_x = my_text_layout_visual_x_ex(
+            line_layout, ta->font, ta->font_size, col_in,
+            &ta->shaping_params);
       } else {
         cursor_x = ta_line_boundary_x(
                        ta, visual_line->phys, visual_line->start_cp + col_in) -
@@ -1503,8 +1512,9 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
     visual_line = ta_vline_at(ta, visual_index);
     line_layout = visual_line != NULL ? ta_layout_rtl(ta, visual_line) : NULL;
     if (line_layout != NULL) {
-      line_width = my_text_layout_visual_boundary_x(
-          line_layout, ta->font, ta->font_size, line_layout->len);
+      line_width = my_text_layout_visual_boundary_x_ex(
+          line_layout, ta->font, ta->font_size, line_layout->len,
+          &ta->shaping_params);
     } else if (visual_line != NULL) {
       line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
       line = ta_vline_text(ta, visual_line);
@@ -1529,8 +1539,9 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
       line_offset = 0;
     }
     if (line_layout != NULL) {
-      cursor_x = my_text_layout_visual_x(line_layout, ta->font,
-                                         ta->font_size, ta->cursor_col);
+      cursor_x = my_text_layout_visual_x_ex(
+          line_layout, ta->font, ta->font_size, ta->cursor_col,
+          &ta->shaping_params);
     } else {
       cursor_x = ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
     }
@@ -2079,10 +2090,10 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
       l = ta_layout_rtl(ta, vl);
       if (l != NULL) {
         /* RTL (M12a): visual hit-test inside the line */
-        col = vl->start_cp + my_text_layout_logical_at_x(
+        col = vl->start_cp + my_text_layout_logical_at_x_ex(
                                   l, ta->font, ta->font_size,
                                   lx - ta_content_left_value(ta) +
-                                      ta->scroll_x);
+                                      ta->scroll_x, &ta->shaping_params);
       } else {
         if (lx < ta_content_left_value(ta)) {
           lx = ta_content_left_value(ta);
@@ -2258,9 +2269,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               my_vgcanvas_set_fill_color(vg, my_color_rgb(130, 170, 230));
               if (line_layout != NULL) {
                 my_rectf_t rects[4];
-                size_t n = my_text_layout_visual_rects(
+                size_t n = my_text_layout_visual_rects_ex(
                     line_layout, ta->font, ta->font_size, s0 - vl->start_cp,
-                    s1 - vl->start_cp, rects, 4);
+                    s1 - vl->start_cp, rects, 4, &ta->shaping_params);
                 size_t k;
                 for (k = 0; k < n && k < 4; k++) {
                   my_vgcanvas_fill_rect(
@@ -2385,8 +2396,9 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
         }
       }
       if (cursor_layout != NULL) {
-        cx += my_text_layout_visual_x(cursor_layout, ta->font, ta->font_size,
-                                      col_in);
+        cx += my_text_layout_visual_x_ex(
+            cursor_layout, ta->font, ta->font_size, col_in,
+            &ta->shaping_params);
       } else if (justify) {
         cx += ta_justify_boundary_x(ta, ctext, col_in, (size_t)nseps, lw,
                                     inner_w);
@@ -2513,6 +2525,8 @@ static void ta_destroy_chain(my_object_t* obj) {
   my_text_layout_destroy(ta->rtl_layout);
   my_mem_free(ta->allocator, ta->rtl_text);
   my_mem_free(ta->allocator, ta->geometry_boundaries);
+  my_mem_free(ta->allocator, ta->shaping_language);
+  my_mem_free(ta->allocator, ta->shaping_features);
   my_mem_free(ta->allocator, ta->vline_first_by_phys);
   my_darray_destroy(ta->line_offsets);
   my_mem_free(ta->allocator, ta->text);
@@ -3039,6 +3053,73 @@ my_ret_t my_text_area_set_max_len(my_widget_t* area, size_t max_codepoints) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_text_area_t*)area)->max_len = max_codepoints;
+  return MY_RET_OK;
+}
+
+static bool ta_shape_string_valid(const char* value, size_t max_bytes) {
+  size_t i;
+  if (value == NULL) return true;
+  for (i = 0; i <= max_bytes; i++) {
+    if (value[i] == '\0') return true;
+  }
+  return false;
+}
+
+static bool ta_shape_string_equal(const char* left, const char* right,
+                                  size_t max_bytes) {
+  if (left == NULL || right == NULL) return left == right;
+  return ta_shape_string_valid(right, max_bytes) &&
+         strcmp(left, right) == 0;
+}
+
+my_ret_t my_text_area_set_shaping_params(
+    my_widget_t* area, const my_font_shape_params_t* params) {
+  my_text_area_t* ta = (my_text_area_t*)area;
+  my_font_shape_params_t effective = {false, 0u, NULL, NULL};
+  char* language = NULL;
+  char* features = NULL;
+  if (ta == NULL) return MY_RET_INVALID_PARAMS;
+  if (params != NULL) effective = *params;
+  if (!ta_shape_string_valid(effective.language,
+                             MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) ||
+      !ta_shape_string_valid(effective.features,
+                             MY_FONT_SHAPE_MAX_FEATURE_BYTES)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (ta->shaping_params.rtl == effective.rtl &&
+      ta->shaping_params.script == effective.script &&
+      ta_shape_string_equal(ta->shaping_params.language, effective.language,
+                            MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) &&
+      ta_shape_string_equal(ta->shaping_params.features, effective.features,
+                            MY_FONT_SHAPE_MAX_FEATURE_BYTES)) {
+    return MY_RET_OK;
+  }
+  if (effective.language != NULL) {
+    language = my_strdup(ta->allocator, effective.language);
+  }
+  if (effective.features != NULL) {
+    features = my_strdup(ta->allocator, effective.features);
+  }
+  if ((effective.language != NULL && language == NULL) ||
+      (effective.features != NULL && features == NULL)) {
+    my_mem_free(ta->allocator, language);
+    my_mem_free(ta->allocator, features);
+    return MY_RET_OOM;
+  }
+  my_mem_free(ta->allocator, ta->shaping_language);
+  my_mem_free(ta->allocator, ta->shaping_features);
+  ta->shaping_language = language;
+  ta->shaping_features = features;
+  ta->shaping_params = effective;
+  ta->shaping_params.language = ta->shaping_language;
+  ta->shaping_params.features = ta->shaping_features;
+  if (ta->shaping_revision == UINT64_MAX) {
+    ta->shaping_revision = 1u;
+  } else {
+    ta->shaping_revision++;
+  }
+  ta_vlines_invalidate_from(ta, 0);
+  my_widget_invalidate(area, NULL);
   return MY_RET_OK;
 }
 

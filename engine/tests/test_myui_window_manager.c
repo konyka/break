@@ -582,6 +582,40 @@ TEST(text_area_geometry_cache_reuses_glyph_advances)
   my_lcd_destroy(lcd);
 }
 
+TEST(text_area_shaping_params_are_owned_and_validated)
+{
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  char language[] = "ar";
+  char features[] = "liga=0";
+  char invalid_language[MY_FONT_SHAPE_MAX_LANGUAGE_BYTES + 2];
+  my_font_shape_params_t params = {true, MY_FONT_SCRIPT_ARAB, language,
+                                   features};
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_text_area_set_shaping_params(area, &params), MY_RET_OK);
+  language[0] = 'x';
+  features[0] = 'x';
+  ASSERT_TRUE(text_area->shaping_params.rtl);
+  ASSERT_EQ(text_area->shaping_params.script, MY_FONT_SCRIPT_ARAB);
+  ASSERT_STR_EQ(text_area->shaping_params.language, "ar");
+  ASSERT_STR_EQ(text_area->shaping_params.features, "liga=0");
+
+  memset(invalid_language, 'a', sizeof(invalid_language));
+  invalid_language[sizeof(invalid_language) - 1] = '\0';
+  params.language = invalid_language;
+  ASSERT_EQ(my_text_area_set_shaping_params(area, &params),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_STR_EQ(text_area->shaping_params.language, "ar");
+  ASSERT_STR_EQ(text_area->shaping_params.features, "liga=0");
+  ASSERT_EQ(my_text_area_set_shaping_params(area, NULL), MY_RET_OK);
+  ASSERT_FALSE(text_area->shaping_params.rtl);
+  ASSERT_EQ(text_area->shaping_params.script, 0u);
+  ASSERT_TRUE(text_area->shaping_params.language == NULL);
+  ASSERT_TRUE(text_area->shaping_params.features == NULL);
+  my_widget_unref(area);
+}
+
 TEST(text_area_rtl_paint_reuses_layout)
 {
   text_area_count_alloc_t state = {0};
@@ -2662,6 +2696,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_visual_line_index_cache_tracks_folds_and_edits);
     RUN_TEST(text_area_visual_line_index_cache_oom_falls_back);
     RUN_TEST(text_area_geometry_cache_reuses_glyph_advances);
+    RUN_TEST(text_area_shaping_params_are_owned_and_validated);
     RUN_TEST(text_area_rtl_paint_reuses_layout);
     RUN_TEST(text_area_rtl_hit_test_reuses_layout);
     RUN_TEST(text_area_rtl_syntax_colors_tokens);

@@ -154,9 +154,28 @@ RTL visual line 的 layout 绑定到 widget 的 scratch 文本，在文本内容
 text-layout 层管理，渲染后端只消费公共绘制命令。
 
 text area 还为当前热物理行缓存 codepoint boundary 到 glyph advance 的前缀和。命中测试、
-光标、选区和 IME 几何查询共享该前缀和；缓存键包含物理行、文本 revision、字体指针和
-字号，文本编辑或字体配置变化后自动重建。正常重复查询为 O(1)，首次建立仍是当前行
-长度级别；分配失败回退到原有逐 codepoint 扫描，不影响坐标正确性。
+光标、选区和 IME 几何查询共享该前缀和；缓存键包含物理行、文本 revision、shaping
+revision、字体指针和字号，文本编辑、字体配置或 shaping 配置变化后自动重建。正常重复
+查询为 O(1)，首次建立仍是当前行长度级别；分配失败回退到原有逐 codepoint 扫描，不影响
+坐标正确性。
+
+### Shaping 参数与几何一致性
+
+`my_text_layout_visual_x_ex()`、`my_text_layout_visual_boundary_x_ex()`、
+`my_text_layout_logical_at_x_ex()` 和 `my_text_layout_visual_rects_ex()` 接受同一份
+`my_font_shape_params_t`。旧 API 保留默认参数兼容路径。layout 的 boundary cache 不仅
+按字体和字号命中，还按 `rtl`、script、language 内容和 features 内容命中；字符串键由
+layout 自己复制，且沿用字体 shaping 的 64/1024 字节预算，避免调用方释放或修改参数后
+污染几何结果。
+
+`my_text_area_set_shaping_params()` 对参数字符串做有界校验和事务复制。设置成功会使
+wrap paragraph、热行 geometry、光标、selection、IME hit-test 的 shaping revision 失效；
+换行使用 `my_text_paragraph_process_ex()`，几何使用上述 `_ex` API。这样不同 language、
+feature 或 direction 不会复用旧 advance/cluster boundary。渲染后端仍只消费公共 canvas
+命令，shape provider 不存在时回退到安全的 glyph advance 路径。注意当前
+`my_vgcanvas_draw_text()` 尚未接收显式 shaping 参数，因此非默认参数目前只保证换行和
+交互几何一致；要保证 glyph 外观也一致，需要后续跨 soft/GLES/Vulkan/Break RHI 的
+`draw_text_ex()`/`measure_text_ex()` 契约。
 
 ### 增量语法行模型
 

@@ -26,6 +26,17 @@ paragraph 新增 `my_text_paragraph_process_ex()` 和只读
 字符串由 paragraph 自己复制并在 OOM 时事务回滚。新增参数透传、所有权和回滚用例，当前
 `test_myui_text_layout` 为 **35/35**。
 
+text layout geometry 新增 `_ex` 查询接口，visual boundary cache 现在按字体、字号、
+direction、script、language 内容和 features 内容区分；参数字符串由 layout 复制并受
+shaping 字节预算约束。text area 新增 `my_text_area_set_shaping_params()`，换行、几何、
+光标、selection 和 IME 查询共享 shaping revision，设置采用有界校验和事务复制。TDD
+验证：`test_myui_text_layout` **36/36**、`test_myui_window_manager` **71/71**。
+完整 UAX#24/OpenType script resolution、variation selector、language system、feature
+policy、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
+当前 `my_vgcanvas_draw_text()`/`measure_text()` 尚未接收显式 shaping 参数，因此非默认
+language/features 只在 paragraph 与交互几何路径生效；跨 soft/GLES/Vulkan/Break RHI 的
+`draw_text_ex()`/`measure_text_ex()` 以及按参数隔离 glyph cache 仍是下一阶段架构缺口。
+
 ## 本轮更新：Vulkan vgcanvas AA 事务
 
 独立 Vulkan vgcanvas 现将 `ENGINE_VULKAN` 构建选项正确传递到 `myui_core`，并链接 Vulkan

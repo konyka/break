@@ -54,6 +54,11 @@ typedef struct my_text_layout_t {
   size_t visual_boundaries_capacity;
   const my_font_t* visual_boundaries_font;
   int32_t visual_boundaries_size;
+  bool visual_boundaries_params_valid;
+  bool visual_boundaries_rtl;
+  uint32_t visual_boundaries_script;
+  char* visual_boundaries_language;
+  char* visual_boundaries_features;
   uint32_t* visual_shaped_span; /**< cluster spans for cached shaping */
   size_t visual_shaped_span_capacity;
   const my_font_t* visual_shaped_span_font;
@@ -124,15 +129,30 @@ int32_t my_text_layout_visual_x(const my_text_layout_t* l,
                                 const my_font_t* font, int32_t size,
                                 size_t logical_boundary);
 
+/** @brief Visual x using explicit shaping parameters. */
+int32_t my_text_layout_visual_x_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size,
+    size_t logical_boundary, const my_font_shape_params_t* params);
+
 /** @brief Visual x (px) of a visual-order boundary. */
 int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
                                          const my_font_t* font, int32_t size,
                                          size_t visual_boundary);
 
+/** @brief Visual boundary x using explicit shaping parameters. */
+int32_t my_text_layout_visual_boundary_x_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size,
+    size_t visual_boundary, const my_font_shape_params_t* params);
+
 /** @brief Nearest logical boundary for a click at visual x. */
 size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
                                    const my_font_t* font, int32_t size,
                                    int32_t x);
+
+/** @brief Nearest logical boundary using explicit shaping parameters. */
+size_t my_text_layout_logical_at_x_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size, int32_t x,
+    const my_font_shape_params_t* params);
 
 /** @brief Left/Right keys move VISUALLY (RTL run: Left = logical +1). */
 size_t my_text_layout_boundary_left(const my_text_layout_t* l,
@@ -162,5 +182,11 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
                                    const struct my_font_t* font, int32_t size,
                                    size_t l0, size_t l1, my_rectf_t* out,
                                    size_t cap);
+
+/** @brief Selection rectangles using explicit shaping parameters. */
+size_t my_text_layout_visual_rects_ex(
+    const my_text_layout_t* l, const struct my_font_t* font, int32_t size,
+    size_t l0, size_t l1, my_rectf_t* out, size_t cap,
+    const my_font_shape_params_t* params);
 
 #endif /* MY_TEXT_LAYOUT_H */

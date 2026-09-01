@@ -482,6 +482,8 @@ void my_text_layout_destroy(my_text_layout_t* layout) {
     my_mem_free(alloc, layout->logical_to_visual);
     my_mem_free(alloc, layout->visual_rtl);
     my_mem_free(alloc, layout->visual_boundaries);
+    my_mem_free(alloc, layout->visual_boundaries_language);
+    my_mem_free(alloc, layout->visual_boundaries_features);
     my_mem_free(alloc, layout->logical_utf8);
     my_mem_free(alloc, layout->logical_byte_offsets);
     my_mem_free(alloc, layout->visual_shaped_span);
@@ -970,8 +972,89 @@ static size_t tl_logical_index_for_byte(const my_text_layout_t* l,
   return l->logical_len;
 }
 
-static bool tl_boundaries_from_shaping(my_text_layout_t* l,
-                                       const my_font_t* font, int32_t size) {
+static bool tl_shape_param_string_valid(const char* value, size_t max_bytes) {
+  size_t i;
+  if (value == NULL) return true;
+  for (i = 0; i <= max_bytes; i++) {
+    if (value[i] == '\0') return true;
+  }
+  return false;
+}
+
+static bool tl_shape_params_valid(const my_font_shape_params_t* params) {
+  return params != NULL &&
+         tl_shape_param_string_valid(params->language,
+                                     MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) &&
+         tl_shape_param_string_valid(params->features,
+                                     MY_FONT_SHAPE_MAX_FEATURE_BYTES);
+}
+
+static bool tl_shape_key_string_equal(const char* cached, const char* value,
+                                      size_t max_bytes) {
+  if (cached == NULL || value == NULL) return cached == value;
+  return tl_shape_param_string_valid(value, max_bytes) &&
+         strcmp(cached, value) == 0;
+}
+
+static bool tl_boundaries_key_matches(
+    const my_text_layout_t* l, const my_font_shape_params_t* params) {
+  if (!l->visual_boundaries_params_valid || !tl_shape_params_valid(params)) {
+    return false;
+  }
+  return l->visual_boundaries_rtl == params->rtl &&
+         l->visual_boundaries_script == params->script &&
+         tl_shape_key_string_equal(l->visual_boundaries_language,
+                                   params->language,
+                                   MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) &&
+         tl_shape_key_string_equal(l->visual_boundaries_features,
+                                   params->features,
+                                   MY_FONT_SHAPE_MAX_FEATURE_BYTES);
+}
+
+static void tl_boundaries_key_clear(my_text_layout_t* l) {
+  my_mem_free(l->allocator, l->visual_boundaries_language);
+  my_mem_free(l->allocator, l->visual_boundaries_features);
+  l->visual_boundaries_language = NULL;
+  l->visual_boundaries_features = NULL;
+  l->visual_boundaries_params_valid = false;
+  l->visual_boundaries_rtl = false;
+  l->visual_boundaries_script = 0u;
+}
+
+static bool tl_boundaries_key_set(my_text_layout_t* l,
+                                  const my_font_shape_params_t* params) {
+  char* language = NULL;
+  char* features = NULL;
+  if (!tl_shape_params_valid(params)) {
+    tl_boundaries_key_clear(l);
+    return false;
+  }
+  if (params->language != NULL) {
+    language = my_strdup(l->allocator, params->language);
+  }
+  if (params->features != NULL) {
+    features = my_strdup(l->allocator, params->features);
+  }
+  if ((params->language != NULL && language == NULL) ||
+      (params->features != NULL && features == NULL)) {
+    my_mem_free(l->allocator, language);
+    my_mem_free(l->allocator, features);
+    tl_boundaries_key_clear(l);
+    return false;
+  }
+  my_mem_free(l->allocator, l->visual_boundaries_language);
+  my_mem_free(l->allocator, l->visual_boundaries_features);
+  l->visual_boundaries_language = language;
+  l->visual_boundaries_features = features;
+  l->visual_boundaries_rtl = params->rtl;
+  l->visual_boundaries_script = params->script;
+  l->visual_boundaries_params_valid = true;
+  return true;
+}
+
+static bool tl_boundaries_from_shaping(
+    my_text_layout_t* l, const my_font_t* font, int32_t size,
+    const my_font_shape_params_t* params) {
   my_font_shape_result_t shaped = {0};
   int64_t* advances = NULL;
   uint8_t* cluster_starts = NULL;
@@ -983,8 +1066,8 @@ static bool tl_boundaries_from_shaping(my_text_layout_t* l,
       !tl_logical_offsets_ensure(l)) {
     return false;
   }
-  ret = my_text_layout_shape(l, l->logical_utf8, (my_font_t*)font, size,
-                             l->allocator, &shaped);
+  ret = my_text_layout_shape_ex(l, l->logical_utf8, (my_font_t*)font, size,
+                                params, l->allocator, &shaped);
   if (ret != MY_RET_OK) return false;
   if (l->len > 0) {
     if (l->len > SIZE_MAX / sizeof(*advances)) {
@@ -1102,8 +1185,9 @@ static bool tl_boundaries_from_shaping(my_text_layout_t* l,
   return true;
 }
 
-static bool tl_boundaries_ensure(const my_text_layout_t* layout,
-                                 const my_font_t* font, int32_t size) {
+static bool tl_boundaries_ensure(
+    const my_text_layout_t* layout, const my_font_t* font, int32_t size,
+    const my_font_shape_params_t* params) {
   my_text_layout_t* l = (my_text_layout_t*)layout;
   size_t required;
   size_t i;
@@ -1114,7 +1198,8 @@ static bool tl_boundaries_ensure(const my_text_layout_t* layout,
   if (l->visual_boundaries != NULL &&
       l->visual_boundaries_capacity >= required &&
       l->visual_boundaries_font == font &&
-      l->visual_boundaries_size == size) {
+      l->visual_boundaries_size == size &&
+      tl_boundaries_key_matches(l, params)) {
     return true;
   }
   if (required > SIZE_MAX / sizeof(*l->visual_boundaries)) return false;
@@ -1128,7 +1213,7 @@ static bool tl_boundaries_ensure(const my_text_layout_t* layout,
   l->visual_shaped_span_capacity = 0;
   l->visual_shaped_span_font = NULL;
   l->visual_shaped_span_size = 0;
-  if (!tl_boundaries_from_shaping(l, font, size)) {
+  if (!tl_boundaries_from_shaping(l, font, size, params)) {
     for (i = 0; i < l->len; i++) {
       total += (int64_t)tl_cp_w(font, size, l->visual_cps[i]);
       if (total > INT32_MAX) total = INT32_MAX;
@@ -1147,16 +1232,23 @@ static bool tl_boundaries_ensure(const my_text_layout_t* layout,
   l->visual_boundaries_capacity = required;
   l->visual_boundaries_font = font;
   l->visual_boundaries_size = size;
+  if (!tl_boundaries_key_set(l, params)) {
+    my_mem_free(l->allocator, l->visual_shaped_span);
+    l->visual_shaped_span = NULL;
+    l->visual_shaped_span_capacity = 0;
+  }
   return true;
 }
 
 static size_t tl_visual_span_for(const my_text_layout_t* layout,
                                  const my_font_t* font, int32_t size,
-                                 size_t visual) {
+                                 size_t visual,
+                                 const my_font_shape_params_t* params) {
   if (layout->visual_shaped_span != NULL &&
       layout->visual_shaped_span_capacity > visual &&
       layout->visual_shaped_span_font == font &&
-      layout->visual_shaped_span_size == size) {
+      layout->visual_shaped_span_size == size &&
+      tl_boundaries_key_matches(layout, params)) {
     return layout->visual_shaped_span[visual];
   }
   return layout->visual_logical_span[visual];
@@ -1226,7 +1318,8 @@ static size_t tl_lb_of_vb(const my_text_layout_t* l, size_t v) {
 }
 
 static size_t tl_lb_of_vb_font(const my_text_layout_t* l, size_t v,
-                               const my_font_t* font, int32_t size) {
+                               const my_font_t* font, int32_t size,
+                               const my_font_shape_params_t* params) {
   size_t prev;
   size_t end;
   size_t span;
@@ -1234,7 +1327,7 @@ static size_t tl_lb_of_vb_font(const my_text_layout_t* l, size_t v,
     if (l->len == 0) return 0;
     if (l->visual_rtl[0] != 0) {
       end = l->visual_to_logical[0];
-      span = tl_visual_span_for(l, font, size, 0);
+      span = tl_visual_span_for(l, font, size, 0, params);
       if (span > SIZE_MAX - end) return l->logical_len;
       end += span;
       return end > l->logical_len ? l->logical_len : end;
@@ -1245,7 +1338,7 @@ static size_t tl_lb_of_vb_font(const my_text_layout_t* l, size_t v,
   prev = v - 1u;
   if (l->visual_rtl[prev] != 0) return l->visual_to_logical[prev];
   end = l->visual_to_logical[prev];
-  span = tl_visual_span_for(l, font, size, prev);
+  span = tl_visual_span_for(l, font, size, prev, params);
   if (span > SIZE_MAX - end) return l->logical_len;
   end += span;
   return end > l->logical_len ? l->logical_len : end;
@@ -1277,16 +1370,29 @@ static size_t tl_canon_left(const my_text_layout_t* l, size_t v) {
   return v;
 }
 
-int32_t my_text_layout_visual_x(const my_text_layout_t* l,
-                                const my_font_t* font, int32_t size,
-                                size_t logical_boundary) {
+static void tl_geometry_params(const my_text_layout_t* l,
+                               const my_font_shape_params_t* params,
+                               my_font_shape_params_t* effective) {
+  if (params != NULL) {
+    *effective = *params;
+  } else {
+    *effective = (my_font_shape_params_t){
+        l != NULL && l->rtl_base, 0u, NULL, NULL};
+  }
+}
+
+int32_t my_text_layout_visual_x_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size,
+    size_t logical_boundary, const my_font_shape_params_t* params) {
   size_t v, i;
   float x = 0.0f;
+  my_font_shape_params_t effective;
   if (l == NULL) {
     return 0;
   }
+  tl_geometry_params(l, params, &effective);
   v = tl_vb_of_lb(l, logical_boundary);
-  if (tl_boundaries_ensure(l, font, size) && v <= l->len) {
+  if (tl_boundaries_ensure(l, font, size, &effective) && v <= l->len) {
     return l->visual_boundaries[v];
   }
   for (i = 0; i < v; i++) {
@@ -1295,14 +1401,22 @@ int32_t my_text_layout_visual_x(const my_text_layout_t* l,
   return (int32_t)(x + 0.5f);
 }
 
-int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
-                                         const my_font_t* font, int32_t size,
-                                         size_t visual_boundary) {
+int32_t my_text_layout_visual_x(const my_text_layout_t* l,
+                                const my_font_t* font, int32_t size,
+                                size_t logical_boundary) {
+  return my_text_layout_visual_x_ex(l, font, size, logical_boundary, NULL);
+}
+
+int32_t my_text_layout_visual_boundary_x_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size,
+    size_t visual_boundary, const my_font_shape_params_t* params) {
   float x = 0.0f;
   size_t i;
+  my_font_shape_params_t effective;
   if (l == NULL) return 0;
+  tl_geometry_params(l, params, &effective);
   if (visual_boundary > l->len) visual_boundary = l->len;
-  if (tl_boundaries_ensure(l, font, size)) {
+  if (tl_boundaries_ensure(l, font, size, &effective)) {
     return l->visual_boundaries[visual_boundary];
   }
   for (i = 0; i < visual_boundary; i++) {
@@ -1311,18 +1425,27 @@ int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
   return (int32_t)(x + 0.5f);
 }
 
-size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
-                                   const my_font_t* font, int32_t size,
-                                   int32_t x) {
+int32_t my_text_layout_visual_boundary_x(const my_text_layout_t* l,
+                                         const my_font_t* font, int32_t size,
+                                         size_t visual_boundary) {
+  return my_text_layout_visual_boundary_x_ex(l, font, size, visual_boundary,
+                                              NULL);
+}
+
+size_t my_text_layout_logical_at_x_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size, int32_t x,
+    const my_font_shape_params_t* params) {
   float acc = 0.0f;
   size_t i;
+  my_font_shape_params_t effective;
   if (l == NULL || l->len == 0) {
     return 0;
   }
-  if (x <= 0) {
-    return tl_lb_of_vb_font(l, 0, font, size);
-  }
-  if (tl_boundaries_ensure(l, font, size)) {
+  tl_geometry_params(l, params, &effective);
+  if (tl_boundaries_ensure(l, font, size, &effective)) {
+    if (x <= 0) {
+      return tl_lb_of_vb_font(l, 0, font, size, &effective);
+    }
     size_t lo = 0;
     size_t hi = l->len;
     while (lo < hi) {
@@ -1337,13 +1460,17 @@ size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
         int64_t midpoint = (int64_t)l->visual_boundaries[mid] +
                            ((int64_t)width + 1) / 2;
         if ((int64_t)x < midpoint) {
-          return tl_lb_of_vb_font(l, tl_canon_left(l, mid), font, size);
+          return tl_lb_of_vb_font(l, tl_canon_left(l, mid), font, size,
+                                  &effective);
         }
-        return tl_lb_of_vb_font(l, tl_canon_right(l, mid + 1), font,
-                                size);
+        return tl_lb_of_vb_font(l, tl_canon_right(l, mid + 1), font, size,
+                                &effective);
       }
     }
-    return tl_lb_of_vb_font(l, l->len, font, size);
+    return tl_lb_of_vb_font(l, l->len, font, size, &effective);
+  }
+  if (x <= 0) {
+    return tl_lb_of_vb(l, 0);
   }
   for (i = 0; i < l->len; i++) {
     float w = tl_cp_w(font, size, l->visual_cps[i]);
@@ -1416,14 +1543,21 @@ size_t my_text_layout_logical_at_visual(const my_text_layout_t* l,
   return tl_lb_of_vb(l, visual_boundary);
 }
 
-size_t my_text_layout_visual_rects(const my_text_layout_t* l,
+size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
                                    const my_font_t* font, int32_t size,
-                                   size_t l0, size_t l1, my_rectf_t* out,
-                                   size_t cap) {
+                                   int32_t x) {
+  return my_text_layout_logical_at_x_ex(l, font, size, x, NULL);
+}
+
+size_t my_text_layout_visual_rects_ex(
+    const my_text_layout_t* l, const my_font_t* font, int32_t size, size_t l0,
+    size_t l1, my_rectf_t* out, size_t cap,
+    const my_font_shape_params_t* params) {
   size_t j, n = 0;
   float x = 0.0f;
   bool open = false;
   float seg_x = 0.0f, seg_w = 0.0f;
+  my_font_shape_params_t effective;
   if (l == NULL || out == NULL || cap == 0 || l0 >= l1 ||
       l0 >= l->logical_len) {
     return 0;
@@ -1431,14 +1565,15 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
   if (l1 > l->logical_len) {
     l1 = l->logical_len;
   }
-  if (tl_boundaries_ensure(l, font, size)) {
+  tl_geometry_params(l, params, &effective);
+  if (tl_boundaries_ensure(l, font, size, &effective)) {
     for (j = 0; j < l->len; j++) {
       int32_t width = l->visual_boundaries[j + 1] -
                       l->visual_boundaries[j];
       size_t start = l->visual_to_logical[j];
       size_t end = start;
       bool in_sel;
-      size_t span = tl_visual_span_for(l, font, size, j);
+      size_t span = tl_visual_span_for(l, font, size, j, &effective);
       if (span > SIZE_MAX - end) {
         end = SIZE_MAX;
       } else {
@@ -1467,7 +1602,7 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
     size_t start = l->visual_to_logical[j];
     size_t end = start;
     {
-      size_t span = tl_visual_span_for(l, font, size, j);
+      size_t span = tl_visual_span_for(l, font, size, j, &effective);
       if (span > SIZE_MAX - end) {
         end = SIZE_MAX;
       } else {
@@ -1497,4 +1632,12 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
     x += w;
   }
   return n;
+}
+
+size_t my_text_layout_visual_rects(const my_text_layout_t* l,
+                                   const my_font_t* font, int32_t size,
+                                   size_t l0, size_t l1, my_rectf_t* out,
+                                   size_t cap) {
+  return my_text_layout_visual_rects_ex(l, font, size, l0, l1, out, cap,
+                                         NULL);
 }

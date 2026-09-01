@@ -390,3 +390,24 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
   含 bidi codepoint 时创建 layout，普通 LTR 行保持无 layout 的快速路径。
 - 验证：新增 text-layout 预扫描测试和 text-area 全量测试通过；后续完整 OpenType
   script/features、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍保持未完成。
+
+## 已完成：shaping 参数敏感的 geometry cache（2026-09-01）
+
+- 以 TDD 新增 `text_layout_boundary_cache_keys_shaping_parameters`，fake `shape_ex`
+  provider 对不同 feature 返回不同 advance；同一 layout/font/size 切换参数时必须重新
+  shaping，切回旧参数也不能误用新 geometry。
+- 新增 `my_text_layout_visual_x_ex()`、`my_text_layout_visual_boundary_x_ex()`、
+  `my_text_layout_logical_at_x_ex()` 和 `my_text_layout_visual_rects_ex()`；旧 API 继续
+  使用兼容默认参数。boundary cache key 现在包含字体、字号、direction、script、
+  language 内容和 features 内容，字符串由 layout 复制并受既有预算保护。
+- `my_text_area_set_shaping_params()` 以事务方式复制和校验参数；text area 的 wrap、
+  geometry、光标、selection、IME 查询共用 shaping revision 和显式 geometry API，参数
+  变更不会留下旧 boundary。新增所有权、超长输入和失败保持旧状态测试。
+- 验证：`test_myui_text_layout` **36/36**、`test_myui_window_manager` **71/71**；
+  普通 build-myui-tests 构建通过。完整 OpenType script resolution、variation selector、
+  language system、feature policy、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
+- 当前架构缺口：`my_vgcanvas_draw_text()` 尚未提供 `my_font_shape_params_t` 参数，四个
+  canvas 的非默认 feature/language 绘制仍走默认 shaping。`my_text_area_set_shaping_params()`
+  已保证 wrap 与交互几何一致，但非默认参数的 glyph 外观要等 `draw_text_ex`/`measure_text_ex`
+  跨后端契约落地后才能宣称绘制一致；该扩展必须保留旧 vtable ABI、按参数区分 glyph cache，
+  并先以 soft/GLES/Vulkan/Break RHI 的 golden advance 测试驱动。
