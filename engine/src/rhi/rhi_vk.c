@@ -2091,6 +2091,7 @@ void rhi_present(RHIDevice *dev) {
     if (!vk->frame_submitted) {
         dev->frame_damage_requested = false;
         dev->frame_damage_count = 0u;
+        dev->frame_current_damage_count = 0u;
         dev->frame_partial_active = false;
         return;
     }
@@ -2112,6 +2113,7 @@ void rhi_present(RHIDevice *dev) {
     vk->frame_submitted = false;
     dev->frame_damage_requested = false;
     dev->frame_damage_count = 0u;
+    dev->frame_current_damage_count = 0u;
     dev->frame_partial_active = false;
 }
 

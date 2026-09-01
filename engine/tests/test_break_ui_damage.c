@@ -131,6 +131,31 @@ TEST(damage_maps_to_conservative_drawable_scissor)
   my_dirty_rects_clear(&damage);
 }
 
+TEST(drawable_damage_maps_back_to_logical_conservatively)
+{
+  my_rect_t logical;
+  RHIPresentRect drawable = {150, 75, 50u, 25u};
+
+  ASSERT_TRUE(break_ui_drawable_damage_to_logical(
+      &drawable, 100u, 50u, 200u, 100u, &logical));
+  ASSERT_EQ(logical.x, 75);
+  ASSERT_EQ(logical.y, 37);
+  ASSERT_TRUE(logical.w >= 25);
+  ASSERT_TRUE(logical.h >= 12);
+}
+
+TEST(drawable_damage_mapping_rejects_invalid_regions)
+{
+  my_rect_t logical;
+  RHIPresentRect invalid = {-1, 0, 1u, 1u};
+
+  ASSERT_FALSE(break_ui_drawable_damage_to_logical(
+      &invalid, 100u, 50u, 200u, 100u, &logical));
+  invalid = (RHIPresentRect){199, 0, 2u, 1u};
+  ASSERT_FALSE(break_ui_drawable_damage_to_logical(
+      &invalid, 100u, 50u, 200u, 100u, &logical));
+}
+
 TEST(damage_scissor_clips_outside_logical_surface)
 {
   my_dirty_rects_t damage;
@@ -645,6 +670,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(restoring_dirty_snapshot_preserves_new_invalidation);
     RUN_TEST(paint_child_snapshot_handles_tree_mutation);
     RUN_TEST(damage_maps_to_conservative_drawable_scissor);
+    RUN_TEST(drawable_damage_maps_back_to_logical_conservatively);
+    RUN_TEST(drawable_damage_mapping_rejects_invalid_regions);
     RUN_TEST(damage_scissor_clips_outside_logical_surface);
     RUN_TEST(empty_damage_has_no_drawable_scissor);
     RUN_TEST(surface_composite_requires_all_retention_capabilities);

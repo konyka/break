@@ -24,16 +24,22 @@ drawable 面积 60%，自动回退全屏；空 damage 仅在 present target 保�
 所有无效尺寸、能力缺失、surface 重建、resize、AA 切换和绘制失败均走全屏/不绘制的安全
 路径，不凭 dirty rect 猜测 swapchain 内容。
 
-RHI 现在提供 `rhi_frame_begin_damage()`，在帧开始前接收有界的 drawable damage 区域；
-它会拒绝空尺寸、负坐标、越界区域和超过 16 个矩形的输入，拒绝后回到普通帧路径。若
-后端报告 buffer age 不为 1，则同样强制全屏，避免把更早帧遗漏的 damage 当作已保留内容。
-Wayland EGL 在检测到 `EGL_EXT_buffer_age` 与 `eglSwapBuffersWithDamageKHR/EXT` 后，使用
-统一的 top-left 区域转换为 EGL 所需的 bottom-left 坐标；所有尺寸转换在进入 EGLint 前
+RHI 现在提供 `rhi_frame_begin_damage()`，在帧开始前接收有界的 drawable damage 区域；帧开始
+后可用 `rhi_frame_get_damage()` 读取后端根据 buffer age 合并后的有效重绘区域。它会拒绝
+空尺寸、负坐标、越界区域和超过 16 个矩形的输入，拒绝后回到普通帧路径。Wayland EGL
+只有同时检测到 `EGL_EXT_buffer_age`、`eglSwapBuffersWithDamageKHR/EXT` 和成功协商的
+`EGL_BUFFER_PRESERVED` 时才启用局部路径；固定容量 history 合并 age>1 的历史区域。
+统一的 top-left 区域会转换为 EGL 所需的 bottom-left 坐标，所有尺寸转换在进入 EGLint 前
 检查范围。GL X11、Win32 WGL、Vulkan 和 macOS 当前保持能力关闭。
 
+present 状态采用提交后更新：history 仅在 swap 成功后记录实际提交区域，resize、swap
+失败或 history 缺口会强制全屏并清除旧 history；因此局部优化失败不会污染下一帧的保留
+像素假设。
+
 GL X11、Win32 WGL、Vulkan 和 macOS 当前均不声明 swapchain 像素保留能力，因此运行时继续
-使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。Vulkan 后续仍需按
-swapchain image 维护历史 damage，才能安全接入 incremental present。
+使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。Vulkan 仍不启用
+`VK_KHR_incremental_present`：该扩展是 compositor 优化提示，并不保证 present 后 swapchain
+image 内容可被 `LOAD`，所以不能满足 retained-buffer 的硬前提。
 
 ## Vulkan vgcanvas 质量事务
 

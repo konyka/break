@@ -37,6 +37,8 @@ struct RHIDevice {
     RHICapabilities  capabilities;
     RHIPresentRect   frame_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
     u32              frame_damage_count;
+    RHIPresentRect   frame_current_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
+    u32              frame_current_damage_count;
     bool             frame_damage_requested;
     bool             frame_partial_active;
 };
@@ -128,13 +130,16 @@ RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
     }
     if (!rhi_present_damage_validate(rects, count, dev->width, dev->height)) {
         dev->frame_damage_count = 0u;
+        dev->frame_current_damage_count = 0u;
         dev->frame_damage_requested = false;
         dev->frame_partial_active = false;
         return rhi_frame_begin(dev);
     }
     if (count != 0u) {
+        memcpy(dev->frame_current_damage, rects, count * sizeof(*rects));
         memcpy(dev->frame_damage, rects, count * sizeof(*rects));
     }
+    dev->frame_current_damage_count = count;
     dev->frame_damage_count = count;
     dev->frame_damage_requested = true;
     {
@@ -142,6 +147,21 @@ RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
         if (out_partial != NULL) *out_partial = dev->frame_partial_active;
         return cmd;
     }
+}
+
+bool rhi_frame_get_damage(const RHIDevice *dev, RHIPresentRect *rects,
+                          u32 capacity, u32 *out_count) {
+    if (dev == NULL || out_count == NULL ||
+        (rects == NULL && capacity != 0u) ||
+        capacity < dev->frame_damage_count) {
+        return false;
+    }
+    if (dev->frame_damage_count != 0u) {
+        memcpy(rects, dev->frame_damage,
+               dev->frame_damage_count * sizeof(dev->frame_damage[0]));
+    }
+    *out_count = dev->frame_damage_count;
+    return true;
 }
 
 bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,

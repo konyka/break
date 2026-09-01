@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "myr/my_dirty_rects.h"
+#include "rhi/rhi.h"
 
 struct my_window_manager_t;
 struct my_window_t;
@@ -44,6 +45,12 @@ bool break_ui_damage_to_drawable_scissor(
     const my_dirty_rects_t* damage, uint32_t logical_width,
     uint32_t logical_height, uint32_t drawable_width,
     uint32_t drawable_height, break_ui_damage_scissor_t* out);
+
+/** @brief Map a drawable-pixel damage region back to conservative logical pixels. */
+bool break_ui_drawable_damage_to_logical(
+    const RHIPresentRect* damage, uint32_t logical_width,
+    uint32_t logical_height, uint32_t drawable_width,
+    uint32_t drawable_height, my_rect_t* out);
 
 /**
  * Decide whether a retained UI surface can be composited partially.
