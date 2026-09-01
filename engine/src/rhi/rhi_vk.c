@@ -638,7 +638,11 @@ static VkShaderModule vk_compile_glsl(VKBackend *vk, const char *source, usize l
 
 static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk->physical, vk->surface, &caps);
+    VkResult caps_res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk->physical, vk->surface, &caps);
+    if (caps_res != VK_SUCCESS) {
+        LOG_FATAL("VK: surface capabilities query failed: %d (surface presentable?)", (int)caps_res);
+        return false;
+    }
 
     /* R430: validate the preferred format against the surface — the old
      * hardcoded B8G8R8A8_SRGB made vkCreateSwapchainKHR fail on surfaces
@@ -1123,7 +1127,33 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     VkPhysicalDevice *gpus = calloc(gpu_count, sizeof(VkPhysicalDevice));
     if (!gpus) { LOG_FATAL("VK: OOM GPU list"); free(vk); return false; }
     vkEnumeratePhysicalDevices(vk->instance, &gpu_count, gpus);
-    vk->physical = gpus[0];
+    /* R574 (ROBUSTNESS): prefer the first GPU whose surface capabilities are
+     * actually queryable AND that can present to the surface. On
+     * hybrid-graphics laptops an iGPU driver can fail the caps query outright
+     * (observed: AMD Radeon iGPU returning VK_ERROR_UNKNOWN while the NVIDIA
+     * dGPU works) — picking gpus[0] blindly then crashed
+     * vkCreateSwapchainKHR on garbage capabilities. */
+    vk->physical = VK_NULL_HANDLE;
+    for (u32 i = 0; i < gpu_count; i++) {
+        VkSurfaceCapabilitiesKHR probe_caps;
+        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpus[i], vk->surface,
+                                                      &probe_caps) != VK_SUCCESS)
+            continue;
+        u32 qcount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(gpus[i], &qcount, NULL);
+        VkBool32 can_present = VK_FALSE;
+        for (u32 q = 0; q < qcount && !can_present; q++) {
+            vkGetPhysicalDeviceSurfaceSupportKHR(gpus[i], q, vk->surface,
+                                                 &can_present);
+        }
+        if (!can_present) continue;
+        vk->physical = gpus[i];
+        break;
+    }
+    if (vk->physical == VK_NULL_HANDLE) {
+        LOG_WARN("VK: no GPU passed the surface probes; falling back to the first device");
+        vk->physical = gpus[0];
+    }
     free(gpus);
     vkGetPhysicalDeviceProperties(vk->physical, &vk->device_props);
     VkPhysicalDeviceProperties2 device_props2 = {0};

@@ -46,6 +46,17 @@ cmake -B build-vk -DENGINE_VULKAN=ON
 cmake --build build-vk
 ```
 
+Windows 备注（2026-09-01 起可本机验证）：Vulkan SDK 可无头解包到
+`engine/external/VulkanSDK/`（已加入本地 git 排除，勿提交）。Windows 下
+`find_package(Vulkan)` 用 `VULKAN_SDK` 环境变量，或显式传
+`-DVulkan_LIBRARY=<SDK>/Lib/vulkan-1.lib -DVulkan_INCLUDE_DIR=<SDK>/Include
+-DSHADERC_LIB=<SDK>/Lib/shaderc_shared.lib`（Windows 分支的 shaderc 链接由
+本仓库补齐，Linux/macOS 分支原本就有）；运行时把 `<SDK>/Bin` 加入 `PATH`
+（shaderc_shared.dll），并设 `VK_LAYER_PATH=<SDK>/Bin` 让加载器找到
+`VK_LAYER_KHRONOS_validation`。`test_vulkan` 通过 ctest 运行
+（`ctest -R ^test_vulkan$`，工作目录须为 engine/ 源码根）即带进程内验证门：
+任何验证警告/错误都会判负。
+
 ### 2.2 myui / duanxianxia 集成构建
 
 `engine/src/myui` 与 `engine/apps/duanxianxia` 已作为引擎静态库和可执行目标
