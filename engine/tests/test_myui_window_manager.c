@@ -1,11 +1,13 @@
 #include "test_framework.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "mypal/dummy/my_pal_dummy.h"
 #include "mypal/my_event.h"
 #include "myr/my_font.h"
 #include "myr/my_lcd_mem.h"
+#include "myr/my_text_layout.h"
 #include "myr/my_vgcanvas_soft.h"
 #include "myui/my_layout.h"
 #include "myui/my_window_manager.h"
@@ -149,6 +151,44 @@ static const my_font_vtable_t text_area_variable_font_vtable = {
     text_area_variable_font_has_glyph,
     NULL,
     NULL};
+
+static my_ret_t text_area_ligature_shape(my_font_t* font, const char* text,
+                                         int32_t size, bool rtl,
+                                         const my_allocator_t* allocator,
+                                         my_font_shape_result_t* result) {
+  const char* hebrew = "\xD7\x90\xD7\x91";
+  size_t i;
+  if (font == NULL || text == NULL || size <= 0 || result == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (strcmp(text, "fi") != 0 && strcmp(text, hebrew) != 0) {
+    return MY_RET_FAIL;
+  }
+  result->allocator = allocator;
+  result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
+      allocator, strcmp(text, "fi") == 0 ? 1u : 2u, sizeof(*result->glyphs));
+  if (result->glyphs == NULL) return MY_RET_OOM;
+  if (strcmp(text, "fi") == 0) {
+    result->count = 1;
+    result->glyphs[0].font = font;
+    result->glyphs[0].glyph_id = 1;
+    result->glyphs[0].cluster = 0;
+    result->glyphs[0].advance_x_26_6 = 10 * 64;
+    return MY_RET_OK;
+  }
+  result->count = 2;
+  for (i = 0; i < result->count; i++) {
+    size_t source = rtl ? result->count - i - 1u : i;
+    result->glyphs[i].font = font;
+    result->glyphs[i].glyph_id = 1;
+    result->glyphs[i].cluster = (uint32_t)(source * 2u);
+    result->glyphs[i].advance_x_26_6 = 8 * 64;
+  }
+  return MY_RET_OK;
+}
+
+static const my_font_vtable_t text_area_ligature_vtable = {
+    .shape = text_area_ligature_shape};
 
 static int g_result = -999;
 static int g_main_clicks;
@@ -814,6 +854,8 @@ TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
             MY_RET_OK);
   ASSERT_TRUE(my_text_area_is_folded(area, 0));
   ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  my_mem_free(NULL, yaml);
+  yaml = NULL;
   ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
   ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
   my_mem_free(NULL, yaml);
@@ -1754,6 +1796,24 @@ TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent)
   my_widget_unref(area);
 }
 
+TEST(text_area_nonwrap_hit_test_uses_shaping_clusters)
+{
+  my_font_t font = {&text_area_ligature_vtable};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 40}), MY_RET_OK);
+  my_text_area_set_font(area, &font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "fi"), MY_RET_OK);
+  event.u.pointer.x = 15;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_col, 2u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_pointer_hit_test_clamps_vertical_bounds)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -1944,6 +2004,137 @@ TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
   my_window_manager_destroy(wm);
   my_pal_main_loop_destroy(loop);
   my_pal_destroy(pal);
+}
+
+TEST(text_area_nonwrap_rtl_ime_spot_uses_visual_boundary)
+{
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 200, 100, "main");
+  my_widget_t* area = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_text_layout_t* layout;
+  int32_t ime_x = 0;
+  int32_t ime_y = 0;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(font);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){10, 20, 100, 40}),
+            MY_RET_OK);
+  my_text_area_set_font(area, font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91\xD7\x92"),
+            MY_RET_OK);
+  ((my_text_area_t*)area)->cursor_row = 0;
+  ((my_text_area_t*)area)->cursor_col = 0;
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), area), MY_RET_OK);
+  my_widget_unref(area);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t*)win);
+  my_event_dispatcher_set_focus(&win->dispatcher, area);
+  my_pal_dummy_get_ime_spot(win->pal_window, &ime_x, &ime_y);
+  layout = my_text_layout_process(NULL, "\xD7\x90\xD7\x91\xD7\x92");
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(ime_x, 10 + 4 + (100 - 4 - 4 - 48) +
+                       my_text_layout_visual_x(layout, font, 16, 0));
+  my_text_layout_destroy(layout);
+
+  my_event_dispatcher_set_focus(&win->dispatcher, NULL);
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+  my_font_destroy(font);
+}
+
+TEST(text_area_wrap_rtl_ime_spot_uses_visual_boundary)
+{
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 200, 100, "main");
+  my_widget_t* area = my_text_area_create(NULL);
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_text_layout_t* layout;
+  int32_t ime_x = 0;
+  int32_t ime_y = 0;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(area);
+  ASSERT_NOT_NULL(font);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){10, 20, 100, 40}),
+            MY_RET_OK);
+  my_text_area_set_font(area, font, 16);
+  ASSERT_EQ(my_text_area_set_wrap(area, true), MY_RET_OK);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91\xD7\x92"),
+            MY_RET_OK);
+  ((my_text_area_t*)area)->cursor_row = 0;
+  ((my_text_area_t*)area)->cursor_col = 0;
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), area), MY_RET_OK);
+  my_widget_unref(area);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t*)win);
+  my_event_dispatcher_set_focus(&win->dispatcher, area);
+  my_pal_dummy_get_ime_spot(win->pal_window, &ime_x, &ime_y);
+  layout = my_text_layout_process(NULL, "\xD7\x90\xD7\x91\xD7\x92");
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(ime_x, 10 + 4 + (100 - 4 - 4 - 48) +
+                       my_text_layout_visual_x(layout, font, 16, 0));
+  my_text_layout_destroy(layout);
+
+  my_event_dispatcher_set_focus(&win->dispatcher, NULL);
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+  my_font_destroy(font);
+}
+
+TEST(text_area_nonwrap_rtl_geometry_keeps_logical_boundaries)
+{
+  my_font_t font = {&text_area_ligature_vtable};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 100, 40}), MY_RET_OK);
+  my_text_area_set_font(area, &font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91"), MY_RET_OK);
+  event.u.pointer.x = 15;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->geometry_boundaries[0], 16);
+  ASSERT_EQ(text_area->geometry_boundaries[1], 8);
+  ASSERT_EQ(text_area->geometry_boundaries[2], 0);
+  my_widget_unref(area);
+}
+
+TEST(text_area_nonwrap_rtl_geometry_works_without_shaping)
+{
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 100, 40}), MY_RET_OK);
+  my_text_area_set_font(area, font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91"), MY_RET_OK);
+  event.u.pointer.x = 15;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->geometry_boundaries[0], 32);
+  ASSERT_EQ(text_area->geometry_boundaries[1], 16);
+  ASSERT_EQ(text_area->geometry_boundaries[2], 0);
+  my_font_destroy(font);
+  my_widget_unref(area);
 }
 
 TEST(removing_focused_widget_blurs_and_disables_ime)
@@ -2507,6 +2698,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(user_event_can_close_window_during_dispatch);
     RUN_TEST(text_widgets_toggle_platform_ime_with_focus);
     RUN_TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent);
+    RUN_TEST(text_area_nonwrap_hit_test_uses_shaping_clusters);
     RUN_TEST(text_area_pointer_hit_test_clamps_vertical_bounds);
     RUN_TEST(text_area_pointer_hit_test_uses_font_line_height);
     RUN_TEST(text_area_page_down_moves_by_wrapped_visual_lines);
@@ -2514,6 +2706,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_paint_reuses_line_buffer);
     RUN_TEST(text_area_justify_paint_reuses_line_buffer);
     RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
+    RUN_TEST(text_area_nonwrap_rtl_ime_spot_uses_visual_boundary);
+    RUN_TEST(text_area_wrap_rtl_ime_spot_uses_visual_boundary);
+    RUN_TEST(text_area_nonwrap_rtl_geometry_keeps_logical_boundaries);
+    RUN_TEST(text_area_nonwrap_rtl_geometry_works_without_shaping);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);
     RUN_TEST(event_bubbling_stops_at_removed_ancestor);

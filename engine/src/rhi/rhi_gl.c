@@ -2645,12 +2645,20 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
     (void)cmd; (void)depth_tex;
 }
 
-void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
-    (void)dev;
+bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
+                    u8 *pixels, usize pixel_bytes) {
+    if (!dev || !pixels ||
+        !rhi_screenshot_region_validate(x, y, w, h, dev->width, dev->height,
+                                        pixel_bytes)) {
+        return false;
+    }
     /* R425: read RGBA (4B/px) to match the VK backend — the old GL_RGB
      * (3B/px) let callers size buffers inconsistently (VK overran w*h*3
      * buffers; GL left every 4th byte of w*h*4 buffers unwritten). */
+    while (glGetError() != GL_NO_ERROR) {
+    }
     glReadPixels((GLint)x, (GLint)y, (GLint)w, (GLint)h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    return glGetError() == GL_NO_ERROR;
 }
 
 struct RHIGPUTimer {

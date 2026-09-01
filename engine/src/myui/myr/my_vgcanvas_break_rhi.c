@@ -358,7 +358,8 @@ static const break_rhi_glyph_t *glyph_slot(my_vgcanvas_break_rhi_t *c,
   return &c->glyphs[i];
 }
 
-static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, uint32_t key,
+static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, my_font_t *font,
+                              uint32_t key,
                               bool key_is_glyph_id, const my_glyph_t *g,
                               float advance, float offset_x, float offset_y,
                               float *pen_x, float top, int32_t ascent) {
@@ -368,7 +369,7 @@ static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, uint32_t key,
   int32_t dev_font_size =
       (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
   if (dev_font_size < 1) dev_font_size = 1;
-  slot = glyph_slot(c, c->state.font, key, key_is_glyph_id, dev_font_size, g);
+  slot = glyph_slot(c, font, key, key_is_glyph_id, dev_font_size, g);
   if (slot == NULL) {
     *pen_x += advance;
     return;
@@ -405,7 +406,8 @@ static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
     *pen_x += g.advance > 0 ? (float)g.advance : 0.0f;
     return;
   }
-  draw_glyph_bitmap(c, cp, false, &g, (float)g.advance, 0.0f, 0.0f,
+  draw_glyph_bitmap(c, c->state.font, cp, false, &g, (float)g.advance, 0.0f,
+                    0.0f,
                     pen_x, top, ascent);
 }
 
@@ -416,13 +418,16 @@ static void draw_shaped_glyph(my_vgcanvas_break_rhi_t *c,
   int32_t dev_font_size =
       (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
   if (dev_font_size < 1) dev_font_size = 1;
-  if (my_font_get_glyph_id(c->state.font, shaped->glyph_id, dev_font_size,
-                           &g) != MY_RET_OK || g.w <= 0 || g.h <= 0 ||
+  if (my_font_get_glyph_id(
+          shaped->font != NULL ? shaped->font : c->state.font,
+          shaped->glyph_id, dev_font_size, &g) != MY_RET_OK ||
+      g.w <= 0 || g.h <= 0 ||
       g.bitmap == NULL) {
     *pen_x += (float)shaped->advance_x_26_6 / 64.0f;
     return;
   }
-  draw_glyph_bitmap(c, shaped->glyph_id, true, &g,
+  draw_glyph_bitmap(c, shaped->font != NULL ? shaped->font : c->state.font,
+                    shaped->glyph_id, true, &g,
                     (float)shaped->advance_x_26_6 / 64.0f,
                     (float)shaped->offset_x_26_6 / 64.0f,
                     (float)shaped->offset_y_26_6 / 64.0f, pen_x, top,
@@ -465,12 +470,26 @@ static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
     }
   } else {
     my_text_layout_t *layout = my_text_layout_process(c->allocator, text);
+    my_font_shape_result_t shaped = {0};
+    my_ret_t shape_ret;
     size_t i;
     if (layout == NULL) {
       return MY_RET_OOM;
     }
-    for (i = 0; i < layout->len; i++) {
-      draw_codepoint(c, layout->visual_cps[i], &pen_x, top, ascent);
+    shape_ret = my_text_layout_shape(layout, text, c->state.font,
+                                     dev_font_size, c->allocator, &shaped);
+    if (shape_ret == MY_RET_OK) {
+      for (i = 0; i < shaped.count; i++) {
+        draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else if (shape_ret == MY_RET_NOT_SUPPORTED) {
+      for (i = 0; i < layout->len; i++) {
+        draw_codepoint(c, layout->visual_cps[i], &pen_x, top, ascent);
+      }
+    } else {
+      my_text_layout_destroy(layout);
+      return shape_ret;
     }
     my_text_layout_destroy(layout);
   }
@@ -490,8 +509,24 @@ static my_ret_t rhi_measure_text(my_vgcanvas_t *vg, const char *text,
     int32_t dev_font_size =
         (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
     if (dev_font_size < 1) dev_font_size = 1;
-    ret = my_font_measure(c->state.font, layout->visual_utf8,
-                          dev_font_size, w, h);
+    {
+      my_font_shape_result_t shaped = {0};
+      ret = my_text_layout_shape(layout, text, c->state.font, dev_font_size,
+                                 c->allocator, &shaped);
+      if (ret == MY_RET_OK) {
+        int64_t width = 0;
+        size_t i;
+        for (i = 0; i < shaped.count; i++) {
+          width += shaped.glyphs[i].advance_x_26_6;
+        }
+        if (w != NULL) *w = (int32_t)((width + 32) / 64);
+        if (h != NULL) *h = my_font_line_height(c->state.font, dev_font_size);
+        my_font_shape_destroy(&shaped);
+      } else if (ret == MY_RET_NOT_SUPPORTED) {
+        ret = my_font_measure(c->state.font, layout->visual_utf8,
+                              dev_font_size, w, h);
+      }
+    }
     my_text_layout_destroy(layout);
   } else {
     my_font_shape_result_t shaped = {0};

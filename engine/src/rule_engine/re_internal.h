@@ -3,6 +3,7 @@
 
 #include "rule_engine/rule_engine.h"
 #include <stddef.h>
+#include <stdbool.h>
 
 typedef struct re_allocator_impl_t {
     re_allocator_t api;
@@ -105,6 +106,9 @@ typedef struct re_value_member_t {
     re_value_t scalar;
     re_value_handle_t *child;
 } re_value_member_t;
+
+bool re_value_array_index_key(size_t index, char *buffer, size_t capacity,
+                              size_t *out_size);
 
 struct re_value_handle_t {
     re_allocator_impl_t allocator;

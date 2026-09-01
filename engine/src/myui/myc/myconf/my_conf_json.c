@@ -7,6 +7,7 @@
 #include "myc/myconf/my_conf.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -277,7 +278,12 @@ static my_conf_node_t* json_number(json_p_t* p) {
   memcpy(buf, p->s + start, n);
   buf[n] = '\0';
   if (is_double) {
-    return my_conf_new_double(p->allocator, strtod(buf, NULL));
+    double d = strtod(buf, NULL);
+    if (!isfinite(d)) {
+      json_fail(p, "number is not finite");
+      return NULL;
+    }
+    return my_conf_new_double(p->allocator, d);
   }
   {
     long long v;
@@ -287,7 +293,12 @@ static my_conf_node_t* json_number(json_p_t* p) {
     errno = 0;
     v = strtoll(buf, NULL, 10);
     if (errno == ERANGE) {
-      return my_conf_new_double(p->allocator, strtod(buf, NULL));
+      double d = strtod(buf, NULL);
+      if (!isfinite(d)) {
+        json_fail(p, "number is not finite");
+        return NULL;
+      }
+      return my_conf_new_double(p->allocator, d);
     }
     return my_conf_new_int64(p->allocator, (int64_t)v);
   }
@@ -471,6 +482,10 @@ my_conf_node_t* my_conf_parse_json(const my_allocator_t* allocator,
   p.line = 1;
   p.col = 1;
   p.err = err;
+  if (len > MY_CONF_JSON_MAX_BYTES) {
+    json_fail(&p, "JSON input exceeds resource budget");
+    return NULL;
+  }
   root = json_value(&p);
   if (root == NULL) {
     return NULL;
@@ -494,16 +509,32 @@ typedef struct json_w_t {
   bool pretty;
   int depth;
   bool oom;
+  bool failed;
 } json_w_t;
 
 static void jw_raw(json_w_t* w, const char* s, size_t n) {
-  if (w->oom) {
+  size_t needed;
+  if (w->oom || w->failed) {
     return;
   }
-  if (w->len + n + 1 > w->cap) {
+  if (n > (size_t)MY_CONF_JSON_MAX_BYTES ||
+      w->len > (size_t)MY_CONF_JSON_MAX_BYTES - n) {
+    w->oom = true;
+    return;
+  }
+  needed = w->len + n;
+  if (needed + 1u > w->cap) {
     char* bigger;
-    while (w->len + n + 1 > w->cap) {
-      w->cap *= 2;
+    while (needed + 1u > w->cap) {
+      if (w->cap > ((size_t)MY_CONF_JSON_MAX_BYTES + 1u) / 2u) {
+        w->cap = (size_t)MY_CONF_JSON_MAX_BYTES + 1u;
+        break;
+      }
+      w->cap *= 2u;
+    }
+    if (needed + 1u > w->cap) {
+      w->oom = true;
+      return;
     }
     bigger = (char*)my_mem_realloc(w->allocator, w->buf, w->cap);
     if (bigger == NULL) {
@@ -535,6 +566,9 @@ static void jw_indent(json_w_t* w) {
 static void jw_string(json_w_t* w, const char* s) {
   jw_str(w, "\"");
   for (; s != NULL && *s != '\0'; s++) {
+    if (w->oom) {
+      return;
+    }
     unsigned char c = (unsigned char)*s;
     switch (c) {
       case '"': jw_str(w, "\\\""); break;
@@ -579,7 +613,11 @@ static void jw_value(json_w_t* w, my_conf_node_t* node) {
       break;
     case MY_CONF_DOUBLE: {
       double d = my_conf_as_double(node, 0.0);
-      if (d == (double)(long long)d && d < 9.0e15 && d > -9.0e15) {
+      if (!isfinite(d)) {
+        w->failed = true;
+        return;
+      }
+      if (d < 9.0e15 && d > -9.0e15 && d == (double)(long long)d) {
         /* integral doubles print with .0 so the type survives a
          * round trip (1.5 stays 1.5, 2.0 must not become "2") */
         snprintf(num, sizeof(num), "%.1f", d);
@@ -650,7 +688,7 @@ char* my_conf_to_json_str(const my_allocator_t* allocator,
   if (pretty) {
     jw_str(&w, "\n");
   }
-  if (w.oom) {
+  if (w.oom || w.failed) {
     my_mem_free(allocator, w.buf);
     return NULL;
   }

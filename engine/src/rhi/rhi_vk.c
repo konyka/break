@@ -1940,22 +1940,22 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     return (RHICmdBuffer *)vk;
 }
 
-void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
-    if (!dev || !pixels) return;
+bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
+                    u8 *pixels, usize pixel_bytes) {
+    if (!dev || !pixels) return false;
     VKBackend *vk = vk_backend(dev);
-    if (!vk) return;
+    if (!vk) return false;
 
-    /* R421: clamp the requested rect to the swapchain extent — an
-     * out-of-range x/y/w/h made vkCmdCopyImageToBuffer read outside the
-     * swapchain image. Reject rects fully outside; shrink partial ones. */
-    if (x >= vk->swap_extent.width || y >= vk->swap_extent.height) return;
-    if (w > vk->swap_extent.width - x) w = vk->swap_extent.width - x;
-    if (h > vk->swap_extent.height - y) h = vk->swap_extent.height - y;
-    if (w == 0u || h == 0u) return;
+    if (!rhi_screenshot_region_validate(x, y, w, h, vk->swap_extent.width,
+                                        vk->swap_extent.height, pixel_bytes)) {
+        return false;
+    }
 
     /* Wait for all frames to complete before reading back. */
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS) {
         LOG_WARN("VK: vkDeviceWaitIdle failed in screenshot");
+        return false;
+    }
 
     /* Create a host-visible staging buffer. */
     VkDeviceSize buf_size = (VkDeviceSize)w * h * 4u;
@@ -1968,7 +1968,7 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
     VkBuffer staging_buf;
     if (vkCreateBuffer(vk->device, &buf_ci, NULL, &staging_buf) != VK_SUCCESS) {
         LOG_WARN("screenshot: failed to create staging buffer");
-        return;
+        return false;
     }
 
     VkMemoryRequirements mem_req;
@@ -1984,13 +1984,13 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
     if (vkAllocateMemory(vk->device, &alloc, NULL, &staging_mem) != VK_SUCCESS) {
         LOG_WARN("screenshot: failed to allocate staging memory");
         vkDestroyBuffer(vk->device, staging_buf, NULL);
-        return;
+        return false;
     }
     if (vkBindBufferMemory(vk->device, staging_buf, staging_mem, 0) != VK_SUCCESS) {
         LOG_WARN("screenshot: failed to bind staging buffer memory");
         vkFreeMemory(vk->device, staging_mem, NULL);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
-        return;
+        return false;
     }
 
     /* Allocate a one-shot command buffer for the copy. */
@@ -2005,7 +2005,7 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         LOG_FATAL("VK: failed to allocate screenshot command buffer");
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
-        return;
+        return false;
     }
 
     VkCommandBufferBeginInfo begin = {0};
@@ -2016,7 +2016,7 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
-        return;
+        return false;
     }
 
     /* Transition swapchain image to TRANSFER_SRC_OPTIMAL. */
@@ -2061,7 +2061,7 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
-        return;
+        return false;
     }
 
     /* Submit and wait. */
@@ -2074,10 +2074,15 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
-        return;
+        return false;
     }
-    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
         LOG_WARN("VK: vkQueueWaitIdle failed in screenshot");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return false;
+    }
 
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
 
@@ -2087,7 +2092,7 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
         LOG_FATAL("VK: vkMapMemory failed in screenshot");
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
-        return;
+        return false;
     }
     const u8 *src = (const u8 *)mapped;
     /* R421: iterate in usize — the old 32-bit w*h overflowed for large
@@ -2109,6 +2114,7 @@ void rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels) {
 
     vkFreeMemory(vk->device, staging_mem, NULL);
     vkDestroyBuffer(vk->device, staging_buf, NULL);
+    return true;
 }
 
 struct RHIGPUTimer {

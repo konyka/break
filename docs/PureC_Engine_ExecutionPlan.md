@@ -3,6 +3,13 @@
 > 基于 `PureC_Engine_DeepDive.md` 中确定的最优方案，制定分阶段实施路线图。
 > 核心策略: **垂直切片优先** — 每个阶段产出可运行的 demo，而非逐模块堆叠。
 
+> 2026-08-31 更新：`ENGINE_VULKAN` 现同步启用 `myui_core` 的私有 Vulkan vgcanvas。其
+> AA level 0/1/2 映射为 1x/2x/4x，target、render pass、pipeline、descriptor 与
+> swapchain 通过候选资源组原子交换；失败保留 active 资源，resize 与 AA 请求共享重建路径。
+> 同日字体链 shaping 收口：glyph-run 保存实际 face 身份，LTR 单 face 保持快速路径，
+> RTL 跨 face 仅建立有界 run 表并逆序提交；跨 face、cluster 和 allocator 回滚已有 TDD
+> 证据。完整 paragraph bidi 到 OpenType glyph-run mapping 仍未宣称完成。
+
 ---
 
 ## 实际状态校正（Round 0 核查）
@@ -1837,7 +1844,9 @@ Vulkan:  3-4 周出三角形  (instance/device/swapchain/renderpass/pipeline/fra
 
 关键实现:
 - F12 captures current framebuffer to `screenshot_N.bmp` in working directory
-- `rhi_screenshot()` new RHI function: GL uses `glReadPixels(RGB)`, VK stub (logs warning)
+- `rhi_screenshot()` provides a bounded RGBA8 readback on both GL and Vulkan; callers pass the
+  destination byte count, and invalid/oversized regions fail before backend access. Vulkan uses
+  the swapchain transfer-source path with staging synchronization; GL uses `glReadPixels`.
 - `save_bmp()` writes 24-bit BMP with proper row padding (4-byte aligned)
 - Incrementing `screenshot_id` for unique filenames
 - CPU-side malloc/free for pixel buffer — zero persistent memory overhead
@@ -4893,6 +4902,33 @@ Week 17-24 ███████████████████████
 ---
 
 ## 7. 开发纪律
+
+### myui CSS 路径扩展（2026-08-31）
+
+CSS 主题选择器采用固定容量路径而不是运行期树或每次查询分配：最多 4 个祖先
+compound，按目标最近祖先到最远祖先存储；空白关系执行有界祖先搜索，`>` 关系只检查
+直接父节点。type/class/id 约束在解析期和查询期均做长度校验，超过深度或出现悬空、重复
+combinator 直接失败。旧的 `my_theme_set_ex*()` 及单祖先观察字段保留，CSS 新路径通过
+`my_theme_set_ex4()` 原子复制到条目；specificity 累加路径各级权重，查询热路径零分配。
+该阶段以失败测试先行，定向 `test_myui_css` 通过后再更新本矩阵和集成文档。
+
+文本布局入口同样先做有界字节预检：`my_text_layout_process()` 和
+`my_text_paragraph_process()` 各自拒绝超过 4 MiB 的 C 字符串，避免缓存比较或字体测量
+之前产生无界扫描和分配。超限测试确认调用方 allocator 零次调用，正常布局仍走原有
+font-independent cache 与 paragraph 增量路径。
+
+2026-09-01：paragraph bidi glyph-run 已通过 `my_text_layout_shape()` 接入 soft、GLES2、
+Vulkan 和 Break RHI 的复杂文本绘制/测量。该 API 按 visual bidi run 恢复逻辑 UTF-8 输入，
+按 resolved direction shaping，并把 glyph cluster 映射回逻辑 byte offset；失败事务不会
+交付部分 glyph。layout 自有原 logical UTF-8 副本，输入必须逐字节匹配，provider cluster
+必须为 codepoint 起点；依赖关闭时保留 codepoint fallback。完整 script/features shaping、
+跨段落增量 rebreaking 与 JUSTIFY selection 仍是后续工作。
+
+字体 shaping 的实施边界必须遵循同一策略：glyph id 只能在 `(face, id, size, key kind)`
+范围内解释，字体链的所有 candidate 输出必须在完整成功后提交。普通 LTR 单 face 不增加
+run 描述分配；跨 face 或 RTL 才进入有界事务路径。后续 paragraph bidi 接入必须先产出
+logical byte cluster、visual run 顺序和 selection/cursor 映射测试，再接入四个 canvas，
+并保留依赖关闭时的显式 fallback，不能以 Linux headless 构建替代各平台 runtime 证据。
 
 1. **每个 Phase 必须有可运行的 demo** — 不可产出不可运行的"完成代码"
 2. **Phase 内按编号顺序开发** — 依赖关系已经排好

@@ -35,6 +35,19 @@ GL X11、Win32 WGL、Vulkan 和 macOS 当前均不声明 swapchain 像素保留�
 使用全屏 composite；这是有意的安全默认值，不是未检查的性能开关。Vulkan 后续仍需按
 swapchain image 维护历史 damage，才能安全接入 incremental present。
 
+## Vulkan vgcanvas 质量事务
+
+独立 Vulkan vgcanvas 将 portable AA level 映射为明确的 sample count：level 0/1/2
+分别对应 1x/2x/4x。能力来自 physical-device 与实际颜色格式的交集，不支持的 level
+在调用 Vulkan 前返回 `MY_RET_NOT_SUPPORTED`。当前 sample count、target 尺寸、render pass、
+pipeline 和 descriptor 资源必须属于同一个候选组，候选全部创建并完成初始化后才交换到
+active；失败只销毁候选，保留旧 target、pipeline、尺寸和 capability。
+
+AA 切换与 resize 使用同一条候选重建路径。resize 请求在下一帧边界合并，多个请求只保留
+最后尺寸；重建期间不修改 active 尺寸或 clip。窗口 out-of-date 也复用该路径，避免先销毁
+旧 swapchain 再发现新资源创建失败。MSAA 创建失败不再静默降级到 1x；初始设备能力查询
+决定默认质量，运行时显式请求失败则保持原质量。
+
 ## 冷却按钮
 
 按钮冷却是 widget 层能力，不依赖 Break RHI、OpenGL、Vulkan 或软件 canvas 的私有类型：
@@ -154,6 +167,11 @@ ready 的有字体行进行 token 分段绘制，RTL 行先复用 visual layout�
 cache 未 ready 时继续使用原整行绘制；JUSTIFY 仍使用受限的逐词绘制，复杂 RTL GSUB
 与跨 face shaping 不在该 lexer 契约内。
 
+文本布局和 paragraph 入口同样受 4 MiB 字节预算约束：预检最多读取预算边界，超限在
+缓存查找、文本复制和字体排版前失败，不触发调用方 allocator。该预算保护布局冷路径的
+恶意超长输入，正常输入仍复用既有全局 layout master cache、paragraph 增量缓存和各后端
+的 glyph 路径。
+
 ## CSS/YAML 解析边界
 
 CSS 仍采用明确的 subset 契约：结构性 selector/rule 错误返回带行列号的失败；声明
@@ -185,6 +203,32 @@ loader 只接受 YAML 类型匹配的值：布尔属性必须是 YAML bool，整
 256 层 block/flow 嵌套、单容器 4096 个子项和 1 MiB 标量；这些限制在 `my_conf` 层执行，
 不会因其他调用方绕过 UI loader 而失效。map key 也适用 1 MiB 上限；所有 map 形式（包括
 sequence 内联 map）均拒绝重复键，防止静默覆盖已验证的配置。
+
+`my_ui_load_file()` 在读取文件 payload 前执行同一 4 MiB 文件预算检查；超限文件会先关闭
+文件再返回错误，不会按攻击者提供的文件长度申请完整缓冲区。文件中的嵌入 NUL 也会被
+拒绝，而不是被 C 字符串 API 截断；`test_myui_loader` 的文件级资源边界回归与字符串级
+预算回归均纳入测试门禁。
+
+通用 `my_conf_load_file()` 的 JSON 文件入口也使用独立的 `MY_CONF_FILE_MAX_BYTES` 4 MiB
+预算，并在申请 payload 前拒绝超限文件；该入口不改变 YAML UI loader 的类型化 schema。
+直接 `my_conf_parse_json()` 同样受 `MY_CONF_JSON_MAX_BYTES` 4 MiB 输入预算保护，避免从
+内存 API 绕过文件入口限制。
+JSON 写出器也受同一 4 MiB 输出预算保护，超限序列化返回失败，不会产生不可重新加载的
+配置文件；程序化配置树中的 `NaN`/`Inf` 等非有限浮点值同样拒绝写出。
+JSON parser 同时拒绝 `strtod` 溢出的非有限数字，保证 RFC 数字输入不会落入不可序列化
+的运行期值。
+YAML 与 TOML 普通数字的 `strtod` 溢出也会失败；TOML 的显式 `inf`/`nan` 保持兼容。
+CSS 内存解析入口受 `MY_CSS_MAX_BYTES` 4 MiB 预算保护，超限输入在创建 sheet 前拒绝；
+主题桥接沿用同一限制。
+结构错误状态独立于可选的错误输出对象，调用方传入 `NULL` 仍不会接受畸形 CSS。
+selector 最多包含 4 个祖先 compound。路径按目标到根方向匹配：空白是可跨层的
+descendant，`>` 只接受直接父节点；祖先支持 type/class/id 组合，但不接受伪类（祖先
+状态不在主题查询键中）。匹配使用主题条目内的固定数组，不在绘制或查询热路径分配；
+超过深度、重复/悬空 combinator 和错误祖先形式在解析期拒绝。单祖先仍填充旧的
+`ancestor_type`/`ancestor_direct` 观察字段，旧 `my_theme_set_ex*()` API 保持兼容。
+TOML 与 BSON 直解析入口分别受 `MY_CONF_TOML_MAX_BYTES` 和
+`MY_CONF_BSON_MAX_BYTES` 4 MiB 预算保护，所有配置树解析入口均在节点分配前拒绝超限输入。
+BSON 写出器也受同一输出预算保护，超限时释放候选缓冲并返回失败。
 
 UI 配置不再支持 XML，`my_xml.*` 和 `test_myui_xml` 已移除；Wayland 协议生成所需的
 `.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。
@@ -446,12 +490,12 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
-| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行并接入 text area；完整 RTL GSUB、跨 face run、多段落增量 rebreaking 仍未实现 | 增加 RTL shaping run、段落级 visual mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
+| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行、bidi glyph-run 和 visual mapping 并接入 text area；完整 script/features GSUB、多段落增量 rebreaking 仍未实现 | 增加 script/features shaping、段落级增量 mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约 |
 | 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
-| Vulkan readback | 窗口路径 readback 有意不支持，避免把 WSI 资源强制改为可传输并引入同步开销 | 仅为离屏截图提供显式 readback API，使用 staging buffer、fence 和尺寸上限 |
-| CSS/YAML UI | CSS 仍是受限子集：后代选择器只支持单级 typed ancestor，复杂 combinator 和完整 at-rule 语义仍未实现；YAML UI loader 已采用类型化 schema。selector specificity、source order 和数值边界已实现 | 建立 capability registry 和严格诊断模式；扩展语法时保持结构错误可诊断、运行期不破坏已构建树 |
+| Vulkan/GL readback | `rhi_screenshot()` 提供统一 RGBA8 窗口/默认 framebuffer 读回；调用方必须提供目标字节数，区域越界、零尺寸、乘法溢出或容量不足均失败 | Vulkan 使用 swapchain `TRANSFER_SRC`、一次性 staging buffer 与完成等待；GL 使用受边界校验的 `glReadPixels`。该同步 API 仅用于诊断/截图，不用于每帧渲染 |
+| CSS/YAML UI | CSS 支持最多 4 级祖先路径、descendant/typed `>` 链、祖先 type/class/id、specificity/source order；完整 at-rule 语义仍未实现。YAML UI loader 已采用类型化 schema | 建立 capability registry 和严格诊断模式；继续评估完整 at-rule，但保持解析边界与运行期回滚 |
 | 平台 | Windows/macOS 及未启用的 GLES/Vulkan/Wayland 构建路径缺少本机 CI runtime | 保持公共接口无平台类型泄漏；在对应 runner 上增加 build、启动烟测和 HiDPI/输入/IME 矩阵 |
 
 实施原则：先写跨后端契约测试，再实现各 backend adapter；所有候选 GPU 资源采用“创建、
@@ -463,9 +507,9 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 索引乘法和行列尺寸必须在分配前检查，绘制线程不等待外部平台协议。这样可把性能优化
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
-本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（14/14）、
-`test_myui_text_layout`（4/4）、
-`test_myui_vgcanvas_backend`（21/21）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
+本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（23/23）、
+`test_myui_text_layout`（27/27）、
+`test_myui_vgcanvas_backend`（25/25）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
 backend 用例覆盖缩放、过滤、字体缓存隔离、开放 contour fill、Mono dither、framebuffer
@@ -704,3 +748,34 @@ RTL token 绘制复用同一 visual boundary 前缀和，按 token 范围二分�
 UTF-8 片段提交公共 canvas；纯 LTR 仍走原有单次 token 测量路径，避免新增热路径开销。
 内置 bitmap font 在创建时将 1bpp 资源展开为 8bpp alpha，绘制只读取合法的固定 8x8
 像素块，不在每帧做格式转换。
+
+## 跨字体 shaping 边界
+
+字体链按 codepoint 选择 face，并在支持 HarfBuzz 的构建中按连续 face 区间调用 shaping。
+每个 glyph 携带实际 face 指针；因此同一个 glyph id 在不同 face 中不会污染 soft、GLES2、
+Vulkan 或 Break RHI 的缓存。LTR 单 face 不创建 run 表，RTL 只有跨 face 时才分配固定大小
+的 run 描述并逆序提交，所有候选输出在成功前保持私有，OOM 时恢复为空结果。
+
+paragraph 的 `my_text_layout_shape()` 现已将 SheenBidi visual runs 转换为按 direction
+shaping 的 glyph-run；复杂 canvas 绘制与测量统一消费该结果。它仍不是完整 Unicode bidi
+OpenType 实现：paragraph 的 script/features 配置、跨段落增量 shaping 尚未完成。接入后续
+能力时必须维持 logical byte clusters、视觉 run 顺序、selection/cursor mapping 和后端
+atlas key 的一致性。layout 的 caller-owned copy 同时保留原 logical UTF-8；glyph-run API
+会拒绝非逐字节匹配的输入和不落在 UTF-8 codepoint 起点的 provider cluster，并在依赖关闭时保留显式
+`MY_RET_NOT_SUPPORTED`/codepoint fallback。
+
+Text area 的非 wrap 几何也复用 shaping 的 visual advance 和 cluster span：连字或其他多 codepoint
+cluster 只占用一个 glyph advance，selection、IME spot 和 pointer hit-test 使用同一组前缀和，避免
+绘制坐标与编辑坐标分叉。字体 vtable 的 `measure`、`get_glyph`、metrics、destroy 和 glyph-id
+回调均允许为空；公共包装器返回 `MY_RET_NOT_SUPPORTED` 或零值，控件再使用有界默认行高，因而
+shape-only provider 不会在不支持的栅格化路径中触发空函数指针。YAML 折叠导出返回的字符串由调用方
+使用传入 allocator 释放，重复导出前必须先释放旧输出。
+
+Text area 的 RTL 光标与 IME 候选框现在也使用同一套 visual boundary：非 wrap 和 wrap 模式均复用
+widget-owned 的 RTL layout cache、shaping advance、段落方向和对齐偏移。逻辑光标位于 RTL 行首时
+会落在视觉行尾，默认 LEFT 对齐的 RTL 行保持与绘制一致的右对齐；重复的焦点/光标更新不会再次
+复制已缓存的 RTL 行文本。非 RTL 行继续走 geometry prefix 快速路径。
+
+RTL geometry 的回退不依赖 HarfBuzz：当字体只提供基础 glyph API 时，text area 仅对含 bidi
+codepoint 的物理行执行长度受限预扫描并复用既有 layout cache；普通 LTR 行不创建 bidi layout，
+保持原有逐 glyph advance 路径。

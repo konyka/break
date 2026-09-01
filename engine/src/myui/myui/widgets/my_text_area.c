@@ -285,7 +285,8 @@ static int ta_justify_space_count(const char* text, size_t len) {
 
 static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
   my_glyph_t glyph = {0};
-  if (ta->font != NULL &&
+  if (ta->font != NULL && ta->font->vtable != NULL &&
+      ta->font->vtable->get_glyph != NULL &&
       my_font_get_glyph(ta->font, cp, ta->font_size, &glyph) == MY_RET_OK &&
       glyph.advance > 0) {
     return glyph.advance;
@@ -294,6 +295,9 @@ static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
 }
 
 static size_t ta_line_start(const my_text_area_t* ta, size_t row);
+static const my_visual_line_t* ta_vline_at(my_text_area_t* ta, size_t vi);
+static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
+                                       const my_visual_line_t* vl);
 
 static bool ta_geometry_reserve(my_text_area_t* ta, size_t required) {
   size_t capacity;
@@ -316,8 +320,43 @@ static bool ta_geometry_reserve(my_text_area_t* ta, size_t required) {
   return true;
 }
 
+static bool ta_geometry_from_shaping(my_text_area_t* ta, size_t row,
+                                     size_t count) {
+  size_t start = ta_line_start(ta, row);
+  size_t end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
+                                           : ta->text_len;
+  size_t line_end = start;
+  size_t len;
+  char* text;
+  my_text_layout_t* layout;
+  size_t i;
+  while (line_end < end && ta->text[line_end] != '\0' &&
+         ta->text[line_end] != '\n') {
+    line_end += my_str_utf8_char_len(ta->text + line_end);
+  }
+  if (line_end < start) return false;
+  len = line_end - start;
+  if (len == SIZE_MAX) return false;
+  text = (char*)my_mem_alloc(ta->allocator, len + 1u);
+  if (text == NULL) return false;
+  if (len > 0) memcpy(text, ta->text + start, len);
+  text[len] = '\0';
+  layout = my_text_layout_process(ta->allocator, text);
+  if (layout == NULL) {
+    my_mem_free(ta->allocator, text);
+    return false;
+  }
+  for (i = 0; i <= count; i++) {
+    ta->geometry_boundaries[i] =
+        my_text_layout_visual_x(layout, ta->font, ta->font_size, i);
+  }
+  my_text_layout_destroy(layout);
+  my_mem_free(ta->allocator, text);
+  return true;
+}
+
 static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
-  size_t start, end, count = 0, cp_count;
+  size_t start, end, line_start, line_bytes, count = 0, cp_count;
   const char* p;
   if (row >= ta_line_count(ta)) return false;
   if (ta->geometry_row == row && ta->geometry_revision == ta->text_revision &&
@@ -326,6 +365,7 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     return true;
   }
   start = ta_line_start(ta, row);
+  line_start = start;
   end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                    : ta->text_len;
   p = ta->text + start;
@@ -334,8 +374,38 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     start = (size_t)(p - ta->text);
     count++;
   }
-  if (!ta_geometry_reserve(ta, count + 1)) return false;
+  line_bytes = start - line_start;
+  if (count == SIZE_MAX || !ta_geometry_reserve(ta, count + 1)) return false;
   cp_count = count;
+  if (ta->font != NULL && ta->font->vtable != NULL &&
+      ta->font->vtable->shape != NULL &&
+      ta_geometry_from_shaping(ta, row, cp_count)) {
+    ta->geometry_row = row;
+    ta->geometry_count = cp_count;
+    ta->geometry_revision = ta->text_revision;
+    ta->geometry_font = ta->font;
+    ta->geometry_font_size = ta->font_size;
+    return true;
+  }
+  if (ta->font != NULL && ta->font->vtable != NULL &&
+      ta->font->vtable->shape == NULL &&
+      my_text_layout_may_need_bidi_n(ta->text + line_start, line_bytes)) {
+    const my_visual_line_t* vl = ta_vline_at(ta, row);
+    my_text_layout_t* layout = vl != NULL ? ta_layout_rtl(ta, vl) : NULL;
+    if (layout != NULL && layout->logical_len == cp_count) {
+      size_t i;
+      for (i = 0; i <= cp_count; i++) {
+        ta->geometry_boundaries[i] =
+            my_text_layout_visual_x(layout, ta->font, ta->font_size, i);
+      }
+      ta->geometry_row = row;
+      ta->geometry_count = cp_count;
+      ta->geometry_revision = ta->text_revision;
+      ta->geometry_font = ta->font;
+      ta->geometry_font_size = ta->font_size;
+      return true;
+    }
+  }
   start = ta_line_start(ta, row);
   p = ta->text + start;
   ta->geometry_boundaries[0] = 0;
@@ -1351,6 +1421,11 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
   size_t visual_index = ta->cursor_row;
   size_t col_in = ta->cursor_col;
   int32_t cursor_x = (int32_t)ta->cursor_col * TA_CELL_W;
+  int32_t line_width = 0;
+  int32_t inner_width;
+  int32_t line_offset = 0;
+  const my_visual_line_t* visual_line = NULL;
+  my_text_layout_t* line_layout = NULL;
   char* line = NULL;
   while (root->parent != NULL) {
     root = root->parent;
@@ -1368,40 +1443,98 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
     line_h = 16;
   }
   if (ta->wrap) {
-    const my_visual_line_t* visual_line;
     visual_index = ta_vline_of_pos(ta, ta->cursor_row, ta->cursor_col,
                                    &col_in);
     visual_line = ta_vline_at(ta, visual_index);
     if (visual_line != NULL) {
-      line = ta_vline_text(ta, visual_line);
       col_in = ta->cursor_col - visual_line->start_cp;
-      if (line != NULL) {
+      line_layout = ta_layout_rtl(ta, visual_line);
+      if (line_layout == NULL) {
+        line = ta_vline_text(ta, visual_line);
+      }
+      line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
+      if (line_layout != NULL) {
+        line_width = my_text_layout_visual_boundary_x(
+            line_layout, ta->font, ta->font_size, line_layout->len);
+      } else if (line != NULL && ta->font != NULL) {
+        (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
+                              NULL);
+      }
+      inner_width = ((my_widget_t*)ta)->rect.w - ta_content_left_value(ta) -
+                    TA_PAD_X;
+      if (inner_width < 0) {
+        inner_width = 0;
+      }
+      if (line_layout == NULL && line != NULL &&
+          ta->align == MY_TEXT_ALIGN_JUSTIFY &&
+          visual_index + 1 < ta_vline_count(ta) &&
+          ta_vline_at(ta, visual_index + 1)->phys == visual_line->phys) {
         size_t line_len = strlen(line);
-        int32_t line_width = (int32_t)line_len * TA_CELL_W;
         int space_count = ta_justify_space_count(line, line_len);
-        bool justify = ta->align == MY_TEXT_ALIGN_JUSTIFY &&
-                       visual_index + 1 < ta_vline_count(ta) &&
-                       ta_vline_at(ta, visual_index + 1)->phys ==
-                           visual_line->phys &&
-                       space_count > 0;
-        if (ta->font != NULL) {
-          (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
-                                NULL);
+        if (space_count > 0) {
+          cursor_x = ta_justify_boundary_x(
+              ta, line, col_in, (size_t)space_count, line_width, inner_width);
         }
-        if (justify) {
-          int32_t inner_width = ((my_widget_t*)ta)->rect.w -
-                                ta_content_left_value(ta) - TA_PAD_X;
-          cursor_x = ta_justify_boundary_x(ta, line, col_in,
-                                           (size_t)space_count, line_width,
-                                           inner_width);
-        } else {
-          cursor_x = (int32_t)col_in * TA_CELL_W;
+      } else if (line_layout != NULL) {
+        cursor_x = my_text_layout_visual_x(line_layout, ta->font,
+                                           ta->font_size, col_in);
+      } else {
+        cursor_x = ta_line_boundary_x(
+                       ta, visual_line->phys, visual_line->start_cp + col_in) -
+                   ta_line_boundary_x(ta, visual_line->phys,
+                                      visual_line->start_cp);
+      }
+      if (!(line_layout == NULL && ta->align == MY_TEXT_ALIGN_JUSTIFY)) {
+        if (ta->align == MY_TEXT_ALIGN_CENTER) {
+          line_offset = (inner_width - line_width) / 2;
+        } else if (ta->align == MY_TEXT_ALIGN_RIGHT ||
+                   (ta->align == MY_TEXT_ALIGN_LEFT && line_layout != NULL &&
+                    line_layout->rtl_base)) {
+          line_offset = inner_width - line_width;
         }
+        if (line_offset < 0) {
+          line_offset = 0;
+        }
+        cursor_x += line_offset;
       }
     }
   }
   if (!ta->wrap) {
-    cursor_x = ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
+    visual_line = ta_vline_at(ta, visual_index);
+    line_layout = visual_line != NULL ? ta_layout_rtl(ta, visual_line) : NULL;
+    if (line_layout != NULL) {
+      line_width = my_text_layout_visual_boundary_x(
+          line_layout, ta->font, ta->font_size, line_layout->len);
+    } else if (visual_line != NULL) {
+      line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
+      line = ta_vline_text(ta, visual_line);
+      if (line != NULL && ta->font != NULL) {
+        (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
+                              NULL);
+      }
+    }
+    inner_width = ((my_widget_t*)ta)->rect.w - ta_content_left_value(ta) -
+                  TA_PAD_X;
+    if (inner_width < 0) {
+      inner_width = 0;
+    }
+    if (ta->align == MY_TEXT_ALIGN_CENTER) {
+      line_offset = (inner_width - line_width) / 2;
+    } else if (ta->align == MY_TEXT_ALIGN_RIGHT ||
+               (ta->align == MY_TEXT_ALIGN_LEFT && line_layout != NULL &&
+                line_layout->rtl_base)) {
+      line_offset = inner_width - line_width;
+    }
+    if (line_offset < 0) {
+      line_offset = 0;
+    }
+    if (line_layout != NULL) {
+      cursor_x = my_text_layout_visual_x(line_layout, ta->font,
+                                         ta->font_size, ta->cursor_col);
+    } else {
+      cursor_x = ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
+    }
+    cursor_x += line_offset;
   }
   x = ta_content_left_value(ta) + cursor_x - ta->scroll_x;
   y = TA_PAD_Y + (int32_t)visual_index * line_h -

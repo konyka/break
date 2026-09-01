@@ -25,6 +25,10 @@
 #define MY_CONF_YAML_MAX_DEPTH 256u
 #define MY_CONF_YAML_MAX_CHILDREN 4096u
 #define MY_CONF_YAML_MAX_SCALAR_BYTES (1024u * 1024u)
+#define MY_CONF_FILE_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_JSON_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_TOML_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_CONF_BSON_MAX_BYTES (4u * 1024u * 1024u)
 
 /** @brief Node type. */
 typedef enum my_conf_type_t {
@@ -114,7 +118,7 @@ const char* my_conf_get_str(my_conf_node_t* node, const char* path,
 /* ---------------- file io ---------------- */
 
 /** @brief Load a JSON file into a tree (NULL on error; err may be
- * NULL). */
+ * NULL). Files are limited to MY_CONF_FILE_MAX_BYTES before allocation. */
 my_conf_node_t* my_conf_load_file(const my_allocator_t* allocator,
                                   const char* path, my_conf_error_t* err);
 
@@ -123,14 +127,16 @@ my_ret_t my_conf_save_file(my_conf_node_t* node, const char* path);
 
 /* ---------------- JSON ---------------- */
 
-/** @brief Parse JSON (full RFC 8259 set). NULL on error (err filled
- * with line/col/msg when non-NULL). */
+/** @brief Parse JSON (full RFC 8259 set) within MY_CONF_JSON_MAX_BYTES;
+ * numeric values must be finite. NULL on error (err filled with
+ * line/col/msg when non-NULL). */
 my_conf_node_t* my_conf_parse_json(const my_allocator_t* allocator,
                                    const char* data, size_t len,
                                    my_conf_error_t* err);
 
 /**
- * @brief Parse the TOML subset (M17b): key=value (basic ".." strings
+ * @brief Parse the TOML subset (M17b) within MY_CONF_TOML_MAX_BYTES:
+ * key=value (basic ".." strings
  * with escapes, literal '..' strings, dec/0x/0o/0b integers with
  * underscores, floats incl. inf/nan, bools, datetimes kept as STR
  * verbatim), [table]/[a.b.c], [[table array]], inline tables, arrays
@@ -146,8 +152,8 @@ my_conf_node_t* my_conf_parse_toml(const my_allocator_t* allocator,
  * @brief Parse the YAML subset (M17b): indented blocks (key: value,
  * key: + nested block, - item lists incl. "- key: value" map items),
  * flow [a, b] / {k: v}, # comments, single/double-quoted strings,
- * plain scalars with type inference (null/~/true/false/int/float, else
- * STR). NOT supported (all hard errors): multi-document (---), anchors
+ * plain scalars with type inference (null/~/true/false/int/finite float,
+ * else STR). NOT supported (all hard errors): multi-document (---), anchors
  * (&), tags (!), folded scalars (> |), tab indentation; inconsistent
  * indentation is an error.
  */
@@ -155,8 +161,9 @@ my_conf_node_t* my_conf_parse_yaml(const my_allocator_t* allocator,
                                    const char* data, size_t len,
                                    my_conf_error_t* err);
 
-/** @brief Serialize to JSON (owned string). pretty: 2-space indent,
- * newlines; otherwise compact. */
+/** @brief Serialize to JSON (owned string), limited to
+ * MY_CONF_JSON_MAX_BYTES. pretty: 2-space indent, newlines; otherwise
+ * compact. */
 char* my_conf_to_json_str(const my_allocator_t* allocator,
                           my_conf_node_t* node, bool pretty);
 
@@ -168,14 +175,16 @@ char* my_conf_to_json_str(const my_allocator_t* allocator,
  * array, 0x07 objectId (24 hex chars), 0x08 bool, 0x09 datetime
  * (INT64, milliseconds), 0x0A null, 0x10 int32 -> INT64, 0x12 int64.
  * Any other element type is an ERROR (data integrity over leniency).
+ * Input is limited to MY_CONF_BSON_MAX_BYTES.
  * Malformed lengths/truncation are safely rejected.
  */
 my_conf_node_t* my_conf_parse_bson(const my_allocator_t* allocator,
                                    const uint8_t* data, size_t len,
                                    my_conf_error_t* err);
 
-/** @brief Serialize to BSON (owned buffer; out_len set). INT64 values
- * in int32 range are written as 0x10, else 0x12. */
+/** @brief Serialize to BSON (owned buffer; out_len set), limited to
+ * MY_CONF_BSON_MAX_BYTES. INT64 values in int32 range are written as 0x10,
+ * else 0x12. */
 uint8_t* my_conf_to_bson(const my_allocator_t* allocator,
                          my_conf_node_t* node, size_t* out_len);
 

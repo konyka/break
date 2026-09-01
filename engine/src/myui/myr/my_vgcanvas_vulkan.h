@@ -12,10 +12,10 @@
  *
  * Built only with MYUI_HAS_VULKAN; otherwise every entry point returns
  * NULL/MY_RET_NOT_SUPPORTED.
- * The implementation may use an internally selected MSAA render target. Its
- * public capability remains conservative until a backend-specific target
- * transaction is available; a failed target rebuild must leave the previously
- * active target intact.
+ * The backend reports the device-supported 1x/2x/4x sample levels. Target,
+ * render-pass, pipeline, and swapchain changes are committed as one
+ * candidate-resource transaction; a failed rebuild leaves the active target
+ * and reported quality unchanged.
  */
 #ifndef MY_VGCANVAS_VULKAN_H
 #define MY_VGCANVAS_VULKAN_H

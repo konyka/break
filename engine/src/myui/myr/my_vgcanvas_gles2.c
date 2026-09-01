@@ -474,11 +474,12 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
                                    const my_font_shape_glyph_t* shaped,
                                    float* pen_x, float top, int32_t ascent) {
   my_glyph_t g = {0};
+  my_font_t* font = shaped->font != NULL ? shaped->font : s->state.font;
   uint32_t slot;
   float gx, gy, quad[24];
   float advance = (float)shaped->advance_x_26_6 / 64.0f;
-  if (my_font_get_glyph_id(s->state.font, shaped->glyph_id,
-                           gles_dev_font_size(s), &g) != MY_RET_OK ||
+  if (my_font_get_glyph_id(
+          font, shaped->glyph_id, gles_dev_font_size(s), &g) != MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += advance;
     return;
@@ -486,7 +487,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
   slot = (shaped->glyph_id ^ (uint32_t)gles_dev_font_size(s)) %
          GLES_TEX_CACHE_SIZE;
   if (s->tex_cache[slot].texture == 0 ||
-      s->tex_cache[slot].font != s->state.font ||
+      s->tex_cache[slot].font != font ||
       !s->tex_cache[slot].key_is_glyph_id ||
       s->tex_cache[slot].codepoint != shaped->glyph_id ||
       s->tex_cache[slot].size != gles_dev_font_size(s)) {
@@ -495,7 +496,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
     }
     s->tex_cache[slot].texture =
         s->gl.create_texture(s->gl.ctx, g.bitmap, g.w, g.h);
-    s->tex_cache[slot].font = s->state.font;
+    s->tex_cache[slot].font = font;
     s->tex_cache[slot].codepoint = shaped->glyph_id;
     s->tex_cache[slot].key_is_glyph_id = true;
     s->tex_cache[slot].size = gles_dev_font_size(s);
@@ -566,12 +567,27 @@ static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
     /* shaped + visually reordered path (M11a); x is always the left
      * edge (see my_text_layout.h) */
     my_text_layout_t* l = my_text_layout_process(s->allocator, text);
+    my_font_shape_result_t shaped = {0};
+    my_ret_t shape_ret;
     size_t i;
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    for (i = 0; i < l->len; i++) {
-      gles_draw_cp(s, l->visual_cps[i], &pen_x, top, ascent);
+    shape_ret = my_text_layout_shape(l, text, s->state.font,
+                                     gles_dev_font_size(s), s->allocator,
+                                     &shaped);
+    if (shape_ret == MY_RET_OK) {
+      for (i = 0; i < shaped.count; i++) {
+        gles_draw_shaped_glyph(s, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else if (shape_ret == MY_RET_NOT_SUPPORTED) {
+      for (i = 0; i < l->len; i++) {
+        gles_draw_cp(s, l->visual_cps[i], &pen_x, top, ascent);
+      }
+    } else {
+      my_text_layout_destroy(l);
+      return shape_ret;
     }
     my_text_layout_destroy(l);
   }
@@ -684,14 +700,30 @@ static my_ret_t gles_measure_text(my_vgcanvas_t* vg, const char* text,
   }
   /* measure at the device size, report LOGICAL units (M12c) */
   if (text != NULL && my_text_layout_may_need_bidi(text)) {
-    /* shaping changes widths (order does not): measure the shaped and
-     * reordered string (M11a) */
     my_text_layout_t* l = my_text_layout_process(s->allocator, text);
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    ret = my_font_measure(s->state.font, l->visual_utf8,
-                          gles_dev_font_size(s), w, h);
+    {
+      my_font_shape_result_t shaped = {0};
+      ret = my_text_layout_shape(l, text, s->state.font,
+                                 gles_dev_font_size(s), s->allocator, &shaped);
+      if (ret == MY_RET_OK) {
+        int64_t width = 0;
+        size_t i;
+        for (i = 0; i < shaped.count; i++) {
+          width += shaped.glyphs[i].advance_x_26_6;
+        }
+        if (w != NULL) *w = (int32_t)((width + 32) / 64);
+        if (h != NULL) {
+          *h = my_font_line_height(s->state.font, gles_dev_font_size(s));
+        }
+        my_font_shape_destroy(&shaped);
+      } else if (ret == MY_RET_NOT_SUPPORTED) {
+        ret = my_font_measure(s->state.font, l->visual_utf8,
+                              gles_dev_font_size(s), w, h);
+      }
+    }
     my_text_layout_destroy(l);
   } else {
     my_font_shape_result_t shaped = {0};

@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "myr/my_text_layout.h"
+#include "myr/my_vgcanvas_quality_transaction.h"
 #include "myr/my_vggeometry.h"
 
 #define VK_USE_PLATFORM_XLIB_KHR
@@ -263,6 +264,7 @@ typedef struct my_vgcanvas_vulkan_t {
   const my_allocator_t* allocator;
   bool offscreen;
   int32_t fb_w, fb_h;
+  int32_t pending_fb_w, pending_fb_h;
   bool need_recreate;
   int dbg_frames; /* MYUI_VK_DUMP frame counter (debug only) */
   int dbg_dump_frame; /* dump at the Nth present (MYUI_VK_DUMP_FRAME) */
@@ -634,20 +636,142 @@ static void vk_destroy_targets(my_vgcanvas_vulkan_t* c) {
   }
   if (c->msaa_img != VK_NULL_HANDLE) {
     vkDestroyImage(g_vk.dev, c->msaa_img, NULL);
-    vkFreeMemory(g_vk.dev, c->msaa_mem, NULL);
     c->msaa_img = VK_NULL_HANDLE;
+  }
+  if (c->msaa_mem != VK_NULL_HANDLE) {
+    vkFreeMemory(g_vk.dev, c->msaa_mem, NULL);
+    c->msaa_mem = VK_NULL_HANDLE;
   }
   if (c->swapchain != VK_NULL_HANDLE) {
     vkDestroySwapchainKHR(g_vk.dev, c->swapchain, NULL);
     c->swapchain = VK_NULL_HANDLE;
   }
-  if (c->offscreen_mem != VK_NULL_HANDLE) {
+  if (c->offscreen && c->target_imgs[0] != VK_NULL_HANDLE) {
     vkDestroyImage(g_vk.dev, c->target_imgs[0], NULL);
-    vkFreeMemory(g_vk.dev, c->offscreen_mem, NULL);
-    c->offscreen_mem = VK_NULL_HANDLE;
     c->target_imgs[0] = VK_NULL_HANDLE;
   }
+  if (c->offscreen_mem != VK_NULL_HANDLE) {
+    vkFreeMemory(g_vk.dev, c->offscreen_mem, NULL);
+    c->offscreen_mem = VK_NULL_HANDLE;
+  }
   c->img_count = 0;
+}
+
+static void vk_clear_resource_handles(my_vgcanvas_vulkan_t* c) {
+  uint32_t i;
+  c->swapchain = VK_NULL_HANDLE;
+  c->img_count = 0;
+  c->offscreen_mem = VK_NULL_HANDLE;
+  c->msaa_img = VK_NULL_HANDLE;
+  c->msaa_mem = VK_NULL_HANDLE;
+  c->msaa_view = VK_NULL_HANDLE;
+  c->renderpass = VK_NULL_HANDLE;
+  c->resolve_rp = VK_NULL_HANDLE;
+  c->ds_layout = VK_NULL_HANDLE;
+  c->ds_pool = VK_NULL_HANDLE;
+  c->sampler = VK_NULL_HANDLE;
+  c->nearest_sampler = VK_NULL_HANDLE;
+  c->pipe_layout = VK_NULL_HANDLE;
+  c->pipe_flat = VK_NULL_HANDLE;
+  c->pipe_text = VK_NULL_HANDLE;
+  c->pipe_img = VK_NULL_HANDLE;
+  for (i = 0; i < VKC_MAX_IMGS; i++) {
+    c->target_imgs[i] = VK_NULL_HANDLE;
+    c->target_views[i] = VK_NULL_HANDLE;
+    c->fbs[i] = VK_NULL_HANDLE;
+    c->resolve_fbs[i] = VK_NULL_HANDLE;
+    c->pending_fb[i] = VK_NULL_HANDLE;
+  }
+}
+
+static void vk_destroy_resource_handles(my_vgcanvas_vulkan_t* c) {
+  if (c == NULL) {
+    return;
+  }
+  vk_destroy_targets(c);
+  if (c->pipe_flat != VK_NULL_HANDLE) {
+    vkDestroyPipeline(g_vk.dev, c->pipe_flat, NULL);
+  }
+  if (c->pipe_text != VK_NULL_HANDLE) {
+    vkDestroyPipeline(g_vk.dev, c->pipe_text, NULL);
+  }
+  if (c->pipe_img != VK_NULL_HANDLE) {
+    vkDestroyPipeline(g_vk.dev, c->pipe_img, NULL);
+  }
+  if (c->pipe_layout != VK_NULL_HANDLE) {
+    vkDestroyPipelineLayout(g_vk.dev, c->pipe_layout, NULL);
+  }
+  if (c->ds_pool != VK_NULL_HANDLE) {
+    vkDestroyDescriptorPool(g_vk.dev, c->ds_pool, NULL);
+  }
+  if (c->ds_layout != VK_NULL_HANDLE) {
+    vkDestroyDescriptorSetLayout(g_vk.dev, c->ds_layout, NULL);
+  }
+  if (c->sampler != VK_NULL_HANDLE) {
+    vkDestroySampler(g_vk.dev, c->sampler, NULL);
+  }
+  if (c->nearest_sampler != VK_NULL_HANDLE) {
+    vkDestroySampler(g_vk.dev, c->nearest_sampler, NULL);
+  }
+  if (c->renderpass != VK_NULL_HANDLE) {
+    vkDestroyRenderPass(g_vk.dev, c->renderpass, NULL);
+  }
+  if (c->resolve_rp != VK_NULL_HANDLE) {
+    vkDestroyRenderPass(g_vk.dev, c->resolve_rp, NULL);
+  }
+  vk_clear_resource_handles(c);
+}
+
+static void vk_swap_resource_handles(my_vgcanvas_vulkan_t* a,
+                                     my_vgcanvas_vulkan_t* b) {
+  my_vgcanvas_vulkan_t tmp = *a;
+  a->swapchain = b->swapchain;
+  a->format = b->format;
+  a->samples = b->samples;
+  a->img_count = b->img_count;
+  memcpy(a->target_imgs, b->target_imgs, sizeof(a->target_imgs));
+  memcpy(a->target_views, b->target_views, sizeof(a->target_views));
+  memcpy(a->fbs, b->fbs, sizeof(a->fbs));
+  a->offscreen_mem = b->offscreen_mem;
+  a->msaa_img = b->msaa_img;
+  a->msaa_mem = b->msaa_mem;
+  a->msaa_view = b->msaa_view;
+  a->renderpass = b->renderpass;
+  a->resolve_rp = b->resolve_rp;
+  memcpy(a->resolve_fbs, b->resolve_fbs, sizeof(a->resolve_fbs));
+  memcpy(a->pending_fb, b->pending_fb, sizeof(a->pending_fb));
+  a->ds_layout = b->ds_layout;
+  a->ds_pool = b->ds_pool;
+  a->sampler = b->sampler;
+  a->nearest_sampler = b->nearest_sampler;
+  a->pipe_layout = b->pipe_layout;
+  a->pipe_flat = b->pipe_flat;
+  a->pipe_text = b->pipe_text;
+  a->pipe_img = b->pipe_img;
+
+  b->swapchain = tmp.swapchain;
+  b->format = tmp.format;
+  b->samples = tmp.samples;
+  b->img_count = tmp.img_count;
+  memcpy(b->target_imgs, tmp.target_imgs, sizeof(b->target_imgs));
+  memcpy(b->target_views, tmp.target_views, sizeof(b->target_views));
+  memcpy(b->fbs, tmp.fbs, sizeof(b->fbs));
+  b->offscreen_mem = tmp.offscreen_mem;
+  b->msaa_img = tmp.msaa_img;
+  b->msaa_mem = tmp.msaa_mem;
+  b->msaa_view = tmp.msaa_view;
+  b->renderpass = tmp.renderpass;
+  b->resolve_rp = tmp.resolve_rp;
+  memcpy(b->resolve_fbs, tmp.resolve_fbs, sizeof(b->resolve_fbs));
+  memcpy(b->pending_fb, tmp.pending_fb, sizeof(b->pending_fb));
+  b->ds_layout = tmp.ds_layout;
+  b->ds_pool = tmp.ds_pool;
+  b->sampler = tmp.sampler;
+  b->nearest_sampler = tmp.nearest_sampler;
+  b->pipe_layout = tmp.pipe_layout;
+  b->pipe_flat = tmp.pipe_flat;
+  b->pipe_text = tmp.pipe_text;
+  b->pipe_img = tmp.pipe_img;
 }
 
 /** @brief Create the MSAA color image when samples > 1. */
@@ -1036,15 +1160,17 @@ static my_ret_t vk_create_targets(my_vgcanvas_vulkan_t* c) {
      * transitions in windowed MSAA than the reference soft backend.
      * MYUI_VK_MSAA=1 forces windowed 4x; MYUI_VK_NOMSAA=1 disables MSAA. */
     VkPhysicalDeviceProperties props;
+    uint32_t sample_counts;
     vkGetPhysicalDeviceProperties(g_vk.pdev, &props);
-    c->samples = (props.limits.framebufferColorSampleCounts &
-                  VK_SAMPLE_COUNT_4_BIT) != 0
+    sample_counts = (uint32_t)props.limits.framebufferColorSampleCounts;
+    c->samples = (sample_counts & VK_SAMPLE_COUNT_4_BIT) != 0
                      ? VK_SAMPLE_COUNT_4_BIT
                      : VK_SAMPLE_COUNT_1_BIT;
     if (!c->offscreen) {
       c->samples = VK_SAMPLE_COUNT_1_BIT;
     }
-    if (getenv("MYUI_VK_MSAA") != NULL) {
+    if (getenv("MYUI_VK_MSAA") != NULL &&
+        (sample_counts & VK_SAMPLE_COUNT_4_BIT) != 0u) {
       c->samples = VK_SAMPLE_COUNT_4_BIT;
     }
     if (getenv("MYUI_VK_NOMSAA") != NULL) {
@@ -1178,14 +1304,7 @@ static my_ret_t vk_create_targets(my_vgcanvas_vulkan_t* c) {
     return MY_RET_FAIL;
   }
   if (vk_create_msaa(c) != MY_RET_OK) {
-    /* MSAA image failed: degrade to single-sample and rebuild the
-     * renderpass accordingly */
-    c->samples = VK_SAMPLE_COUNT_1_BIT;
-    vkDestroyRenderPass(g_vk.dev, c->renderpass, NULL);
-    c->renderpass = VK_NULL_HANDLE;
-    if (vk_create_renderpass(c) != MY_RET_OK) {
-      return MY_RET_FAIL;
-    }
+    return MY_RET_FAIL;
   }
   if (vk_create_framebuffers(c) != MY_RET_OK) {
     return MY_RET_FAIL;
@@ -1431,6 +1550,84 @@ static my_ret_t vk_create_pipelines(my_vgcanvas_vulkan_t* c) {
   return MY_RET_OK;
 }
 
+static uint32_t vk_supported_sample_counts(const my_vgcanvas_vulkan_t* c) {
+  VkPhysicalDeviceProperties props;
+  VkImageFormatProperties image_props;
+  VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  uint32_t counts;
+
+  if (c == NULL) {
+    return 0u;
+  }
+  vkGetPhysicalDeviceProperties(g_vk.pdev, &props);
+  counts = (uint32_t)props.limits.framebufferColorSampleCounts;
+  memset(&image_props, 0, sizeof(image_props));
+  if (vkGetPhysicalDeviceImageFormatProperties(
+          g_vk.pdev, c->format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+          usage, 0, &image_props) == VK_SUCCESS) {
+    counts &= (uint32_t)image_props.sampleCounts;
+  } else {
+    counts = VK_SAMPLE_COUNT_1_BIT;
+  }
+  counts |= (uint32_t)c->samples;
+  return counts & (uint32_t)(VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
+                             VK_SAMPLE_COUNT_4_BIT);
+}
+
+static uint8_t vk_antialias_level_for_samples(VkSampleCountFlagBits samples) {
+  switch (samples) {
+    case VK_SAMPLE_COUNT_2_BIT:
+      return 1u;
+    case VK_SAMPLE_COUNT_4_BIT:
+      return 2u;
+    default:
+      return 0u;
+  }
+}
+
+static void vk_update_capabilities(my_vgcanvas_vulkan_t* c) {
+  uint32_t sample_counts = vk_supported_sample_counts(c);
+  c->base.capabilities.antialias_levels =
+      my_vgcanvas_antialias_levels_for_sample_counts(sample_counts);
+  c->base.capabilities.active_antialias_level =
+      vk_antialias_level_for_samples(c->samples);
+}
+
+static my_ret_t vk_rebuild_resources(my_vgcanvas_vulkan_t* c, int32_t width,
+                                     int32_t height,
+                                     VkSampleCountFlagBits samples) {
+  my_vgcanvas_vulkan_t candidate;
+
+  if (c == NULL || width <= 0 || height <= 0 ||
+      (samples != VK_SAMPLE_COUNT_1_BIT &&
+       samples != VK_SAMPLE_COUNT_2_BIT &&
+       samples != VK_SAMPLE_COUNT_4_BIT)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  candidate = *c;
+  vk_clear_resource_handles(&candidate);
+  candidate.fb_w = width;
+  candidate.fb_h = height;
+  candidate.samples = samples;
+  if (vk_create_targets(&candidate) != MY_RET_OK ||
+      vk_create_pipelines(&candidate) != MY_RET_OK) {
+    vk_destroy_resource_handles(&candidate);
+    return MY_RET_FAIL;
+  }
+  if (candidate.samples != samples) {
+    vk_destroy_resource_handles(&candidate);
+    return MY_RET_FAIL;
+  }
+  vkDeviceWaitIdle(g_vk.dev);
+  vk_swap_resource_handles(c, &candidate);
+  vk_destroy_resource_handles(&candidate);
+  c->fb_w = width;
+  c->fb_h = height;
+  c->state.clip = my_rect_init(0, 0, width, height);
+  vk_update_capabilities(c);
+  return MY_RET_OK;
+}
+
 /* ---------------- frame lifecycle ---------------- */
 
 static void vk_push(my_vgcanvas_vulkan_t* c, my_color_t color) {
@@ -1494,12 +1691,19 @@ static my_ret_t vk_begin_frame(my_vgcanvas_t* vg, const my_rect_t* dirty) {
   my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
   vk_frame_t* f;
   VkCommandBufferBeginInfo bi;
+  int32_t target_w;
+  int32_t target_h;
   (void)dirty;
   if (c->need_recreate) {
-    c->need_recreate = false;
-    if (vk_create_targets(c) != MY_RET_OK) {
+    target_w = c->pending_fb_w > 0 ? c->pending_fb_w : c->fb_w;
+    target_h = c->pending_fb_h > 0 ? c->pending_fb_h : c->fb_h;
+    if (vk_rebuild_resources(c, target_w, target_h, c->samples) !=
+        MY_RET_OK) {
       return MY_RET_FAIL;
     }
+    c->pending_fb_w = 0;
+    c->pending_fb_h = 0;
+    c->need_recreate = false;
   }
   f = &c->frames[c->frame_idx];
   vkWaitForFences(g_vk.dev, 1, &f->fence, VK_TRUE, UINT64_MAX);
@@ -1510,7 +1714,8 @@ static my_ret_t vk_begin_frame(my_vgcanvas_t* vg, const my_rect_t* dirty) {
                                          f->sem_acquire, VK_NULL_HANDLE,
                                          &c->img_idx);
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
-      if (vk_create_targets(c) != MY_RET_OK) {
+      if (vk_rebuild_resources(c, c->fb_w, c->fb_h, c->samples) !=
+          MY_RET_OK) {
         return MY_RET_FAIL;
       }
       acq = vkAcquireNextImageKHR(g_vk.dev, c->swapchain, UINT64_MAX,
@@ -1836,9 +2041,8 @@ my_ret_t my_vgcanvas_vulkan_resize(my_vgcanvas_t* vg, int32_t width,
     return MY_RET_INVALID_PARAMS;
   }
   if (c->fb_w != width || c->fb_h != height) {
-    c->fb_w = width;
-    c->fb_h = height;
-    c->state.clip = my_rect_init(0, 0, width, height);
+    c->pending_fb_w = width;
+    c->pending_fb_h = height;
     c->need_recreate = true;
   }
   return MY_RET_OK;
@@ -1964,8 +2168,31 @@ static my_ret_t vk_set_scale_vtable(my_vgcanvas_t* vg, float scale) {
 }
 
 static my_ret_t vk_set_antialias_level_vtable(my_vgcanvas_t* vg, int level) {
-  (void)vg;
-  return level == 0 ? MY_RET_OK : MY_RET_NOT_SUPPORTED;
+  my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
+  uint32_t sample_count;
+  int32_t target_w;
+  int32_t target_h;
+  my_ret_t ret;
+  if (c == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  sample_count = my_vgcanvas_antialias_level_sample_count(level);
+  if (sample_count == 0u) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (c->cmd_pending || c->in_renderpass) {
+    return MY_RET_FAIL;
+  }
+  target_w = c->pending_fb_w > 0 ? c->pending_fb_w : c->fb_w;
+  target_h = c->pending_fb_h > 0 ? c->pending_fb_h : c->fb_h;
+  ret = vk_rebuild_resources(c, target_w, target_h,
+                             (VkSampleCountFlagBits)sample_count);
+  if (ret == MY_RET_OK) {
+    c->pending_fb_w = 0;
+    c->pending_fb_h = 0;
+    c->need_recreate = false;
+  }
+  return ret;
 }
 
 static my_ret_t vk_set_scale_filter_vtable(my_vgcanvas_t* vg,
@@ -2175,18 +2402,19 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
                                  const my_font_shape_glyph_t* shaped,
                                  float* pen_x, float top, int32_t ascent) {
   my_glyph_t g = {0};
+  my_font_t* font = shaped->font != NULL ? shaped->font : c->state.font;
   uint32_t slot;
   float gx, gy;
   float advance = (float)shaped->advance_x_26_6 / 64.0f;
-  if (my_font_get_glyph_id(c->state.font, shaped->glyph_id,
-                           vk_dev_font_size(c), &g) != MY_RET_OK ||
+  if (my_font_get_glyph_id(
+          font, shaped->glyph_id, vk_dev_font_size(c), &g) != MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += advance;
     return;
   }
   slot = (shaped->glyph_id ^ (uint32_t)vk_dev_font_size(c)) % VKC_GLYPH_CACHE;
   if (c->glyph_cache[slot].tex.img == VK_NULL_HANDLE ||
-      c->glyph_cache[slot].font != c->state.font ||
+      c->glyph_cache[slot].font != font ||
       !c->glyph_cache[slot].key_is_glyph_id ||
       c->glyph_cache[slot].codepoint != shaped->glyph_id ||
       c->glyph_cache[slot].size != vk_dev_font_size(c)) {
@@ -2199,7 +2427,7 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
       *pen_x += advance;
       return;
     }
-    c->glyph_cache[slot].font = c->state.font;
+    c->glyph_cache[slot].font = font;
     c->glyph_cache[slot].codepoint = shaped->glyph_id;
     c->glyph_cache[slot].key_is_glyph_id = true;
     c->glyph_cache[slot].size = vk_dev_font_size(c);
@@ -2248,12 +2476,27 @@ static my_ret_t vk_draw_text(my_vgcanvas_t* vg, const char* text, float x,
     }
   } else {
     my_text_layout_t* l = my_text_layout_process(c->allocator, text);
+    my_font_shape_result_t shaped = {0};
+    my_ret_t shape_ret;
     size_t i;
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    for (i = 0; i < l->len; i++) {
-      vk_draw_cp(c, l->visual_cps[i], &pen_x, top, ascent);
+    shape_ret = my_text_layout_shape(l, text, c->state.font,
+                                     vk_dev_font_size(c), c->allocator,
+                                     &shaped);
+    if (shape_ret == MY_RET_OK) {
+      for (i = 0; i < shaped.count; i++) {
+        vk_draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else if (shape_ret == MY_RET_NOT_SUPPORTED) {
+      for (i = 0; i < l->len; i++) {
+        vk_draw_cp(c, l->visual_cps[i], &pen_x, top, ascent);
+      }
+    } else {
+      my_text_layout_destroy(l);
+      return shape_ret;
     }
     my_text_layout_destroy(l);
   }
@@ -2283,8 +2526,26 @@ static my_ret_t vk_measure_text(my_vgcanvas_t* vg, const char* text,
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    ret = my_font_measure(c->state.font, l->visual_utf8, vk_dev_font_size(c),
-                          w, h);
+    {
+      my_font_shape_result_t shaped = {0};
+      ret = my_text_layout_shape(l, text, c->state.font,
+                                 vk_dev_font_size(c), c->allocator, &shaped);
+      if (ret == MY_RET_OK) {
+        int64_t width = 0;
+        size_t i;
+        for (i = 0; i < shaped.count; i++) {
+          width += shaped.glyphs[i].advance_x_26_6;
+        }
+        if (w != NULL) *w = (int32_t)((width + 32) / 64);
+        if (h != NULL) {
+          *h = my_font_line_height(c->state.font, vk_dev_font_size(c));
+        }
+        my_font_shape_destroy(&shaped);
+      } else if (ret == MY_RET_NOT_SUPPORTED) {
+        ret = my_font_measure(c->state.font, l->visual_utf8,
+                              vk_dev_font_size(c), w, h);
+      }
+    }
     my_text_layout_destroy(l);
   } else {
     my_font_shape_result_t shaped = {0};
@@ -2403,37 +2664,7 @@ static void vk_destroy(my_vgcanvas_t* vg) {
   for (i = 0; i < VKC_IMG_CACHE; i++) {
     vk_tex_destroy_now(c, &c->img_cache[i].tex);
   }
-  if (c->sampler != VK_NULL_HANDLE) {
-    vkDestroySampler(g_vk.dev, c->sampler, NULL);
-  }
-  if (c->nearest_sampler != VK_NULL_HANDLE) {
-    vkDestroySampler(g_vk.dev, c->nearest_sampler, NULL);
-  }
-  if (c->ds_pool != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(g_vk.dev, c->ds_pool, NULL);
-  }
-  if (c->ds_layout != VK_NULL_HANDLE) {
-    vkDestroyDescriptorSetLayout(g_vk.dev, c->ds_layout, NULL);
-  }
-  if (c->pipe_flat != VK_NULL_HANDLE) {
-    vkDestroyPipeline(g_vk.dev, c->pipe_flat, NULL);
-  }
-  if (c->pipe_text != VK_NULL_HANDLE) {
-    vkDestroyPipeline(g_vk.dev, c->pipe_text, NULL);
-  }
-  if (c->pipe_img != VK_NULL_HANDLE) {
-    vkDestroyPipeline(g_vk.dev, c->pipe_img, NULL);
-  }
-  if (c->pipe_layout != VK_NULL_HANDLE) {
-    vkDestroyPipelineLayout(g_vk.dev, c->pipe_layout, NULL);
-  }
-  if (c->renderpass != VK_NULL_HANDLE) {
-    vkDestroyRenderPass(g_vk.dev, c->renderpass, NULL);
-  }
-  if (c->resolve_rp != VK_NULL_HANDLE) {
-    vkDestroyRenderPass(g_vk.dev, c->resolve_rp, NULL);
-  }
-  vk_destroy_targets(c);
+  vk_destroy_resource_handles(c);
   if (c->surface != VK_NULL_HANDLE) {
     vkDestroySurfaceKHR(g_vk.inst, c->surface, NULL);
   }
@@ -2529,6 +2760,7 @@ static my_vgcanvas_t* vk_create_common(const my_allocator_t* allocator,
     vk_destroy((my_vgcanvas_t*)c);
     return NULL;
   }
+  vk_update_capabilities(c);
   if (vk_make_buffer(VKC_VBUF_PER_FRAME * VKC_FRAMES,
                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |

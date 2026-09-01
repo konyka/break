@@ -114,12 +114,16 @@ static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgba) {
  * never overwrite earlier captures. */
 static void demo_save_screenshot(RHIDevice *dev, u32 w, u32 h) {
     if (!dev || w == 0 || h == 0) return;
+    if (!rhi_screenshot_region_validate(0, 0, w, h, w, h, (usize)-1)) return;
     /* R428: (a) w*h*4 (~3.7MB at 720p RGBA) never fits the 256KB frame_arena —
      * malloc; (b) backends output RGBA, so size for 4 bytes/pixel. */
     usize pix_bytes = (usize)w * (usize)h * 4u;
     u8 *pixels = (u8 *)malloc(pix_bytes);
     if (!pixels) return;
-    rhi_screenshot(dev, 0, 0, w, h, pixels);
+    if (!rhi_screenshot(dev, 0, 0, w, h, pixels, pix_bytes)) {
+        free(pixels);
+        return;
+    }
     /* R445: GL glReadPixels returns BOTTOM-UP rows while save_bmp expects
      * top-down input. Flip in place — this also corrects the F12 capture.
      * R446: the VK readback is bottom-up too on X11/Intel (BREAK_SCREENSHOT

@@ -1,5 +1,4 @@
 #include "re_internal.h"
-#include <stdio.h>
 #include <string.h>
 
 #define RE_VALUE_MAX_DEPTH 64u
@@ -118,6 +117,24 @@ static re_status_t value_add(re_value_handle_t *value, re_string_t key,
     return RE_STATUS_OK;
 }
 
+bool re_value_array_index_key(size_t index, char *buffer, size_t capacity,
+                              size_t *out_size) {
+    char reversed[sizeof(size_t) * 3u + 1u];
+    size_t length = 0u;
+    size_t i;
+    if (buffer == NULL || out_size == NULL || capacity == 0u) return false;
+    do {
+        if (length >= sizeof(reversed)) return false;
+        reversed[length++] = (char)('0' + index % 10u);
+        index /= 10u;
+    } while (index != 0u);
+    if (length >= capacity) return false;
+    for (i = 0u; i < length; ++i) buffer[i] = reversed[length - i - 1u];
+    buffer[length] = '\0';
+    *out_size = length;
+    return true;
+}
+
 re_status_t re_value_create_struct(re_facts_t *facts, re_value_handle_t **out_value) {
     return re_value_create_object(facts, out_value);
 }
@@ -139,17 +156,21 @@ re_status_t re_value_object_set_value(re_value_handle_t *object, re_string_t key
 }
 re_status_t re_value_array_append(re_value_handle_t *array, const re_value_t *value) {
     char key[24];
-    int size;
+    size_t size;
     if (array == NULL || array->kind != 2) return RE_STATUS_INVALID_ARGUMENT;
-    size = sprintf(key, "%lu", (unsigned long)array->count);
-    return value_add(array, (re_string_t){key, (size_t)size}, value, NULL);
+    if (array->count >= 1024u ||
+        !re_value_array_index_key(array->count, key, sizeof(key), &size))
+        return RE_STATUS_LIMIT;
+    return value_add(array, (re_string_t){key, size}, value, NULL);
 }
 re_status_t re_value_array_append_value(re_value_handle_t *array, const re_value_handle_t *value) {
     char key[24];
-    int size;
+    size_t size;
     if (array == NULL || array->kind != 2) return RE_STATUS_INVALID_ARGUMENT;
-    size = sprintf(key, "%lu", (unsigned long)array->count);
-    return value_add(array, (re_string_t){key, (size_t)size}, NULL, value);
+    if (array->count >= 1024u ||
+        !re_value_array_index_key(array->count, key, sizeof(key), &size))
+        return RE_STATUS_LIMIT;
+    return value_add(array, (re_string_t){key, size}, NULL, value);
 }
 void re_value_destroy(re_value_handle_t *value) {
     if (value != NULL) value_free(&value->allocator, value);

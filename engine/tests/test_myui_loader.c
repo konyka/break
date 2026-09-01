@@ -1,11 +1,43 @@
 #include "test_framework.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "myc/myconf/my_conf.h"
 #include "myui/my_ui_loader.h"
 #include "myui/widgets/my_label.h"
+
+typedef struct loader_alloc_state_t {
+  size_t alloc_calls;
+} loader_alloc_state_t;
+
+static void* loader_test_alloc(void* context, size_t size)
+{
+  loader_alloc_state_t* state = (loader_alloc_state_t*)context;
+  state->alloc_calls++;
+  return malloc(size);
+}
+
+static void* loader_test_calloc(void* context, size_t count, size_t size)
+{
+  loader_alloc_state_t* state = (loader_alloc_state_t*)context;
+  state->alloc_calls++;
+  return calloc(count, size);
+}
+
+static void* loader_test_realloc(void* context, void* memory, size_t size)
+{
+  loader_alloc_state_t* state = (loader_alloc_state_t*)context;
+  state->alloc_calls++;
+  return realloc(memory, size);
+}
+
+static void loader_test_free(void* context, void* memory)
+{
+  (void)context;
+  free(memory);
+}
 
 TEST(yaml_loader_builds_typed_widget)
 {
@@ -93,6 +125,253 @@ TEST(yaml_loader_rejects_oversized_input)
   ASSERT_TRUE(my_ui_load_str(NULL, NULL, yaml, &error) == NULL);
   ASSERT_TRUE(error.message[0] != '\0');
   free(yaml);
+}
+
+TEST(yaml_file_loader_rejects_oversized_file_before_allocation)
+{
+  char path[256];
+  FILE* file;
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_ui_error_t error = {0};
+  size_t size = (size_t)MY_UI_MAX_YAML_BYTES + 1u;
+
+  test_tmp(path, sizeof(path), "yaml_oversized_file");
+  file = fopen(path, "wb");
+  ASSERT_NOT_NULL(file);
+  ASSERT_EQ(fseek(file, (long)size, SEEK_SET), 0);
+  ASSERT_EQ(fputc('\n', file), '\n');
+  ASSERT_EQ(fclose(file), 0);
+  ASSERT_TRUE(my_ui_load_file(&allocator, NULL, path, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.message[0] != '\0');
+  remove(path);
+}
+
+TEST(yaml_file_loader_rejects_embedded_nul)
+{
+  char path[256];
+  FILE* file;
+  my_ui_error_t error = {0};
+
+  test_tmp(path, sizeof(path), "yaml_embedded_nul");
+  file = fopen(path, "wb");
+  ASSERT_NOT_NULL(file);
+  ASSERT_TRUE(fputs("type: label\ntext: safe\n", file) >= 0);
+  ASSERT_EQ(fputc('\0', file), '\0');
+  ASSERT_TRUE(fputs("type: button\ntext: ignored\n", file) >= 0);
+  ASSERT_EQ(fclose(file), 0);
+  ASSERT_TRUE(my_ui_load_file(NULL, NULL, path, &error) == NULL);
+  ASSERT_TRUE(error.message[0] != '\0');
+  remove(path);
+}
+
+TEST(json_file_loader_rejects_oversized_file_before_allocation)
+{
+  char path[256];
+  FILE* file;
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+  size_t size = (size_t)MY_CONF_FILE_MAX_BYTES + 1u;
+
+  test_tmp(path, sizeof(path), "json_oversized_file");
+  file = fopen(path, "wb");
+  ASSERT_NOT_NULL(file);
+  ASSERT_EQ(fseek(file, (long)size, SEEK_SET), 0);
+  ASSERT_EQ(fputc('}', file), '}');
+  ASSERT_EQ(fclose(file), 0);
+  ASSERT_TRUE(my_conf_load_file(&allocator, path, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  remove(path);
+}
+
+TEST(json_parser_rejects_oversized_input_before_allocation)
+{
+  size_t length = (size_t)MY_CONF_JSON_MAX_BYTES + 1u;
+  char* json = (char*)malloc(length);
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+
+  ASSERT_NOT_NULL(json);
+  memset(json, ' ', length);
+  json[0] = '{';
+  json[1] = '}';
+  ASSERT_TRUE(my_conf_parse_json(&allocator, json, length, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  free(json);
+}
+
+TEST(toml_parser_rejects_oversized_input_before_allocation)
+{
+  size_t length = (size_t)MY_CONF_TOML_MAX_BYTES + 1u;
+  char* toml = (char*)malloc(length);
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+
+  ASSERT_NOT_NULL(toml);
+  memset(toml, ' ', length);
+  ASSERT_TRUE(my_conf_parse_toml(&allocator, toml, length, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  free(toml);
+}
+
+TEST(bson_parser_rejects_oversized_input_before_allocation)
+{
+  size_t length = (size_t)MY_CONF_BSON_MAX_BYTES + 1u;
+  unsigned char* bson = (unsigned char*)malloc(length);
+  loader_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, loader_test_alloc, loader_test_calloc,
+                              loader_test_realloc, loader_test_free};
+  my_conf_error_t error = {0};
+
+  ASSERT_NOT_NULL(bson);
+  memset(bson, 0x20, length);
+  bson[0] = 5;
+  bson[1] = 0;
+  bson[2] = 0;
+  bson[3] = 0;
+  bson[4] = 0;
+  ASSERT_TRUE(my_conf_parse_bson(&allocator, bson, length, &error) == NULL);
+  ASSERT_EQ(state.alloc_calls, 0u);
+  ASSERT_TRUE(error.msg[0] != '\0');
+  free(bson);
+}
+
+TEST(bson_writer_rejects_output_above_parser_budget)
+{
+  size_t text_length = (size_t)MY_CONF_BSON_MAX_BYTES - 1u;
+  char* text = (char*)malloc(text_length + 1u);
+  my_conf_node_t* root;
+  my_conf_node_t* value;
+  uint8_t* bson;
+  size_t bson_length = 0;
+
+  ASSERT_NOT_NULL(text);
+  memset(text, 'x', text_length);
+  text[text_length] = '\0';
+  root = my_conf_new_object(NULL);
+  value = my_conf_new_str(NULL, text);
+  ASSERT_NOT_NULL(root);
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_conf_object_set(root, "payload", value), MY_RET_OK);
+  bson = my_conf_to_bson(NULL, root, &bson_length);
+  ASSERT_TRUE(bson == NULL);
+  if (bson != NULL) {
+    my_mem_free(NULL, bson);
+  }
+  my_conf_destroy(root);
+  free(text);
+}
+
+TEST(json_writer_rejects_output_above_parser_budget)
+{
+  size_t text_length = (size_t)MY_CONF_JSON_MAX_BYTES - 1u;
+  char* text = (char*)malloc(text_length + 1u);
+  my_conf_node_t* root;
+  my_conf_node_t* value;
+  char* json;
+
+  ASSERT_NOT_NULL(text);
+  memset(text, 'x', text_length);
+  text[text_length] = '\0';
+  root = my_conf_new_object(NULL);
+  value = my_conf_new_str(NULL, text);
+  ASSERT_NOT_NULL(root);
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_conf_object_set(root, "payload", value), MY_RET_OK);
+  json = my_conf_to_json_str(NULL, root, false);
+  ASSERT_TRUE(json == NULL);
+  if (json != NULL) {
+    my_mem_free(NULL, json);
+  }
+  my_conf_destroy(root);
+  free(text);
+}
+
+TEST(json_parser_rejects_nonfinite_numbers)
+{
+  my_conf_node_t* root = my_conf_parse_json(NULL, "1e999", 5u, NULL);
+
+  ASSERT_TRUE(root == NULL);
+  my_conf_destroy(root);
+}
+
+TEST(yaml_parser_rejects_nonfinite_numbers)
+{
+  const char* yaml = "value: 1e999";
+  my_conf_node_t* root = my_conf_parse_yaml(NULL, yaml, strlen(yaml), NULL);
+
+  ASSERT_TRUE(root == NULL);
+  my_conf_destroy(root);
+}
+
+TEST(toml_parser_rejects_nonfinite_numbers)
+{
+  const char* toml = "value = 1e999";
+  my_conf_node_t* root = my_conf_parse_toml(NULL, toml, strlen(toml), NULL);
+
+  ASSERT_TRUE(root == NULL);
+  my_conf_destroy(root);
+}
+
+TEST(toml_parser_preserves_explicit_special_numbers)
+{
+  const char* toml = "positive = inf\nnegative = -nan\n";
+  my_conf_node_t* root = my_conf_parse_toml(NULL, toml, strlen(toml), NULL);
+  my_conf_node_t* positive;
+  my_conf_node_t* negative;
+
+  ASSERT_NOT_NULL(root);
+  positive = my_conf_get(root, "positive");
+  negative = my_conf_get(root, "negative");
+  ASSERT_NOT_NULL(positive);
+  ASSERT_NOT_NULL(negative);
+  ASSERT_TRUE(isinf(my_conf_as_double(positive, 0.0)));
+  ASSERT_TRUE(isnan(my_conf_as_double(negative, 0.0)));
+  my_conf_destroy(root);
+}
+
+TEST(json_writer_rejects_nonfinite_numbers)
+{
+  const double invalid_values[] = {NAN, INFINITY, -INFINITY};
+  size_t i;
+
+  for (i = 0; i < sizeof(invalid_values) / sizeof(invalid_values[0]); i++) {
+    my_conf_node_t* value = my_conf_new_double(NULL, invalid_values[i]);
+    char* json;
+
+    ASSERT_NOT_NULL(value);
+    json = my_conf_to_json_str(NULL, value, false);
+    ASSERT_TRUE(json == NULL);
+    if (json != NULL) {
+      my_mem_free(NULL, json);
+    }
+    my_conf_destroy(value);
+  }
+}
+
+TEST(json_writer_handles_large_finite_numbers)
+{
+  my_conf_node_t* value = my_conf_new_double(NULL, 1.0e300);
+  char* json;
+
+  ASSERT_NOT_NULL(value);
+  json = my_conf_to_json_str(NULL, value, false);
+  ASSERT_NOT_NULL(json);
+  if (json != NULL) {
+    my_mem_free(NULL, json);
+  }
+  my_conf_destroy(value);
 }
 
 TEST(yaml_parser_rejects_excessive_nesting)
@@ -277,6 +556,20 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_loader_rejects_invalid_shapes);
     RUN_TEST(yaml_loader_applies_bindings_map);
     RUN_TEST(yaml_loader_rejects_oversized_input);
+    RUN_TEST(yaml_file_loader_rejects_oversized_file_before_allocation);
+    RUN_TEST(yaml_file_loader_rejects_embedded_nul);
+    RUN_TEST(json_file_loader_rejects_oversized_file_before_allocation);
+    RUN_TEST(json_parser_rejects_oversized_input_before_allocation);
+    RUN_TEST(toml_parser_rejects_oversized_input_before_allocation);
+    RUN_TEST(bson_parser_rejects_oversized_input_before_allocation);
+    RUN_TEST(bson_writer_rejects_output_above_parser_budget);
+    RUN_TEST(json_writer_rejects_output_above_parser_budget);
+    RUN_TEST(json_parser_rejects_nonfinite_numbers);
+    RUN_TEST(yaml_parser_rejects_nonfinite_numbers);
+    RUN_TEST(toml_parser_rejects_nonfinite_numbers);
+    RUN_TEST(toml_parser_preserves_explicit_special_numbers);
+    RUN_TEST(json_writer_rejects_nonfinite_numbers);
+    RUN_TEST(json_writer_handles_large_finite_numbers);
     RUN_TEST(yaml_parser_rejects_excessive_nesting);
     RUN_TEST(yaml_parser_rejects_excessive_sequence_size);
     RUN_TEST(yaml_parser_rejects_invalid_input_without_error_storage);

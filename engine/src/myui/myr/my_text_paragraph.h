@@ -12,6 +12,8 @@
 #include "myc/my_mem.h"
 #include "myr/my_font.h"
 
+#define MY_TEXT_PARAGRAPH_MAX_BYTES (4u * 1024u * 1024u)
+
 typedef struct my_text_paragraph_line_t {
   size_t start_byte;
   size_t end_byte;
@@ -27,7 +29,8 @@ typedef struct my_text_paragraph_t {
   size_t logical_len;
 } my_text_paragraph_t;
 
-/** @brief Build a bounded paragraph; max_width <= 0 disables wrapping. */
+/** @brief Build a bounded paragraph; oversized text returns NULL, and
+ * max_width <= 0 disables wrapping. */
 my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
                                                const char* text,
                                                my_font_t* font, int32_t size,

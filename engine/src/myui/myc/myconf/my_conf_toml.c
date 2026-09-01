@@ -391,6 +391,10 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
     t_clean_num(p, buf, sizeof(buf), ds, p->pos);
     if (is_double) {
       double d = strtod(buf, NULL);
+      if (!isfinite(d)) {
+        toml_fail(p, "number is not finite");
+        return NULL;
+      }
       return my_conf_new_double(p->allocator, neg ? -d : d);
     }
     /* leading zero check (TOML forbids 01) */
@@ -403,9 +407,13 @@ static my_conf_node_t* t_number_or_special(toml_p_t* p) {
       long long v = strtoll(buf, NULL, 10);
       if (errno == ERANGE) {
         /* keep the JSON codec's rule: overflow -> DOUBLE */
+        double d = strtod(buf, NULL);
+        if (!isfinite(d)) {
+          toml_fail(p, "number is not finite");
+          return NULL;
+        }
         return my_conf_new_double(p->allocator,
-                                  (double)(neg ? -strtod(buf, NULL)
-                                               : strtod(buf, NULL)));
+                                  (double)(neg ? -d : d));
       }
       return my_conf_new_int64(p->allocator, (int64_t)(neg ? -v : v));
     }
@@ -904,6 +912,10 @@ my_conf_node_t* my_conf_parse_toml(const my_allocator_t* allocator,
   p.line = 1;
   p.col = 1;
   p.err = err;
+  if (len > MY_CONF_TOML_MAX_BYTES) {
+    toml_fail(&p, "TOML input exceeds resource budget");
+    return NULL;
+  }
   p.root = my_conf_new_object(allocator);
   p.tables = my_darray_create(allocator, 0);
   if (p.root == NULL || p.tables == NULL) {

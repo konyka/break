@@ -26,6 +26,8 @@ typedef struct my_glyph_t {
 typedef struct my_font_t my_font_t;
 
 typedef struct my_font_shape_glyph_t {
+  /** @brief Face that owns glyph_id; providers must initialize this field. */
+  my_font_t* font;
   uint32_t glyph_id;
   uint32_t cluster;
   int32_t advance_x_26_6;
@@ -81,24 +83,37 @@ struct my_font_t {
 
 static inline my_ret_t my_font_measure(my_font_t* font, const char* text,
                                        int32_t size, int32_t* w, int32_t* h) {
+  if (font == NULL || font->vtable == NULL || font->vtable->measure == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return font->vtable->measure(font, text, size, w, h);
 }
 
 static inline my_ret_t my_font_get_glyph(my_font_t* font, uint32_t codepoint,
                                          int32_t size, my_glyph_t* glyph) {
+  if (font == NULL || font->vtable == NULL || font->vtable->get_glyph == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return font->vtable->get_glyph(font, codepoint, size, glyph);
 }
 
 static inline int32_t my_font_ascent(my_font_t* font, int32_t size) {
+  if (font == NULL || font->vtable == NULL || font->vtable->ascent == NULL) {
+    return 0;
+  }
   return font->vtable->ascent(font, size);
 }
 
 static inline int32_t my_font_line_height(my_font_t* font, int32_t size) {
+  if (font == NULL || font->vtable == NULL ||
+      font->vtable->line_height == NULL) {
+    return 0;
+  }
   return font->vtable->line_height(font, size);
 }
 
 static inline void my_font_destroy(my_font_t* font) {
-  if (font != NULL) {
+  if (font != NULL && font->vtable != NULL && font->vtable->destroy != NULL) {
     font->vtable->destroy(font);
   }
 }
@@ -106,8 +121,9 @@ static inline void my_font_destroy(my_font_t* font) {
 /** @brief Whether the face has a glyph for codepoint (M16; NULL vtable
  * slot = assume yes). */
 static inline bool my_font_has_glyph(my_font_t* font, uint32_t codepoint) {
-  return font->vtable->has_glyph == NULL ||
-         font->vtable->has_glyph(font, codepoint);
+  return font != NULL && font->vtable != NULL &&
+         (font->vtable->has_glyph == NULL ||
+          font->vtable->has_glyph(font, codepoint));
 }
 
 /** @brief Shape UTF-8 text when the selected font backend supports it. */

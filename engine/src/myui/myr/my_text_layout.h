@@ -32,6 +32,8 @@
 #include "myr/my_font.h"
 #include "myr/my_rect.h"
 
+#define MY_TEXT_LAYOUT_MAX_BYTES (4u * 1024u * 1024u)
+
 /** @brief One laid-out string (caller-owned copy). */
 typedef struct my_text_layout_t {
   const my_allocator_t* allocator;
@@ -40,6 +42,9 @@ typedef struct my_text_layout_t {
   uint32_t* visual_logical_span; /**< len items: source codepoints covered */
   uint32_t* logical_to_visual; /**< logical_len items: logical i -> visual index */
   uint8_t* visual_rtl;         /**< len items: visual cp's run is RTL */
+  char* logical_utf8;          /**< original logical UTF-8; binds glyph clusters */
+  uint32_t* logical_byte_offsets; /**< lazy logical codepoint byte starts */
+  size_t logical_byte_offsets_capacity;
   char* visual_utf8;           /**< visual_cps re-encoded as UTF-8 */
   size_t len;                  /**< visual item count */
   size_t logical_len;          /**< original logical codepoint count */
@@ -49,11 +54,15 @@ typedef struct my_text_layout_t {
   size_t visual_boundaries_capacity;
   const my_font_t* visual_boundaries_font;
   int32_t visual_boundaries_size;
+  uint32_t* visual_shaped_span; /**< cluster spans for cached shaping */
+  size_t visual_shaped_span_capacity;
+  const my_font_t* visual_shaped_span_font;
+  int32_t visual_shaped_span_size;
 } my_text_layout_t;
 
 /**
- * @brief Lay out a logical-order UTF-8 string. NULL text -> NULL. The
- * returned layout is owned by the caller (a copy of the cached master).
+ * @brief Lay out a logical-order UTF-8 string. NULL or oversized text -> NULL.
+ * The returned layout is owned by the caller (a copy of the cached master).
  */
 my_text_layout_t* my_text_layout_process(const my_allocator_t* allocator,
                                          const char* text);
@@ -69,11 +78,30 @@ void my_text_layout_destroy(my_text_layout_t* layout);
  */
 bool my_text_layout_may_need_bidi(const char* text);
 
+/** @brief Bounded bidi pre-scan for a valid UTF-8 byte slice. */
+bool my_text_layout_may_need_bidi_n(const char* text, size_t byte_len);
+
 /** @brief Drop all cached layouts (tests / shutdown). */
 void my_text_layout_cache_flush(void);
 
 /** @brief Occupied cache slots (tests). */
 size_t my_text_layout_cache_size(void);
+
+/**
+ * @brief Shape a bidi layout into visual-order glyphs.
+ *
+ * `logical_text` must byte-match the logical UTF-8 string used to create
+ * `layout`. Runs are shaped in logical order with their resolved direction,
+ * then returned in visual order. Glyph clusters are absolute UTF-8 byte
+ * offsets in `logical_text`, and each glyph retains its owning face. The
+ * result is caller-owned and must be released with my_font_shape_destroy().
+ * Returns MY_RET_NOT_SUPPORTED when the selected font has no shaping
+ * provider; other failures leave an empty result.
+ */
+my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
+                              const char* logical_text, my_font_t* font,
+                              int32_t size, const my_allocator_t* allocator,
+                              my_font_shape_result_t* result);
 
 /* ---------------- editing support: boundary <-> visual (M12a) --------
  * A CURSOR always sits between two logical codepoints (a "logical

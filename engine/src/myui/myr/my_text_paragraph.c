@@ -8,6 +8,7 @@
 
 #include "myc/my_str.h"
 #include "myr/my_line_break.h"
+#include "myr/my_text_layout.h"
 
 static my_ret_t paragraph_add_line(my_text_paragraph_t* paragraph,
                                    size_t* capacity, size_t start_byte,
@@ -28,6 +29,18 @@ static my_ret_t paragraph_add_line(my_text_paragraph_t* paragraph,
   paragraph->lines[paragraph->line_count++] =
       (my_text_paragraph_line_t){start_byte, end_byte, start_cp, cp_count};
   return MY_RET_OK;
+}
+
+static bool paragraph_bounded_text_len(const char* text, size_t* out_len) {
+  size_t len = 0;
+  while (len <= MY_TEXT_PARAGRAPH_MAX_BYTES && text[len] != '\0') {
+    len++;
+  }
+  if (len > MY_TEXT_PARAGRAPH_MAX_BYTES) {
+    return false;
+  }
+  *out_len = len;
+  return true;
 }
 
 static size_t paragraph_cp_index(const size_t* offsets, size_t count,
@@ -59,39 +72,52 @@ static my_ret_t paragraph_measure(const my_allocator_t* allocator,
                                   const char* text, my_font_t* font,
                                   int32_t size, uint32_t* cps, size_t* offsets,
                                   size_t count, float* widths, bool* blocked) {
+  my_font_shape_result_t shaped = {0};
+  my_text_layout_t* layout = NULL;
+  my_ret_t shape_ret;
   size_t i;
   if (font == NULL) {
     for (i = 0; i < count; i++) widths[i] = 8.0f;
     return MY_RET_OK;
   }
-  {
-    my_font_shape_result_t shaped = {0};
-    if (my_font_shape(font, text, size, false, allocator, &shaped) ==
-        MY_RET_OK) {
-      size_t glyph;
-      for (glyph = 0; glyph < shaped.count; glyph++) {
-        size_t cp = paragraph_cp_index(offsets, count,
-                                       shaped.glyphs[glyph].cluster);
-        if (cp < count) {
-          widths[cp] +=
-              (float)shaped.glyphs[glyph].advance_x_26_6 / 64.0f;
-        }
+  if (my_text_layout_may_need_bidi(text)) {
+    layout = my_text_layout_process(allocator, text);
+    if (layout == NULL) return MY_RET_OOM;
+    shape_ret = my_text_layout_shape(layout, text, font, size, allocator,
+                                     &shaped);
+    my_text_layout_destroy(layout);
+  } else {
+    shape_ret = my_font_shape(font, text, size, false, allocator, &shaped);
+  }
+  if (shape_ret == MY_RET_OK) {
+    size_t glyph;
+    size_t text_len = strlen(text);
+    for (glyph = 0; glyph < shaped.count; glyph++) {
+      size_t cp;
+      if (shaped.glyphs[glyph].cluster >= text_len) {
+        my_font_shape_destroy(&shaped);
+        return MY_RET_FAIL;
       }
-      for (glyph = 0; glyph + 1 < shaped.count; glyph++) {
-        size_t start = paragraph_cp_index(
-            offsets, count, shaped.glyphs[glyph].cluster);
-        size_t next = paragraph_cp_index(
-            offsets, count, shaped.glyphs[glyph + 1].cluster);
-        if (start < count && next < count && next > start) {
-          size_t boundary;
-          for (boundary = start + 1; boundary < next; boundary++) {
-            blocked[boundary] = true;
-          }
-        }
+      cp = paragraph_cp_index(offsets, count,
+                              shaped.glyphs[glyph].cluster);
+      if (cp >= count) {
+        my_font_shape_destroy(&shaped);
+        return MY_RET_FAIL;
       }
-      my_font_shape_destroy(&shaped);
-      return MY_RET_OK;
+      widths[cp] +=
+          (float)shaped.glyphs[glyph].advance_x_26_6 / 64.0f;
+      blocked[cp] = true;
     }
+    for (i = 1; i < count; i++) {
+      blocked[i] = !blocked[i];
+    }
+    my_font_shape_destroy(&shaped);
+    return MY_RET_OK;
+  }
+  if (shape_ret == MY_RET_OOM) return shape_ret;
+  if (shape_ret != MY_RET_NOT_SUPPORTED) return shape_ret;
+  if (font->vtable == NULL || font->vtable->get_glyph == NULL) {
+    return MY_RET_NOT_SUPPORTED;
   }
   for (i = 0; i < count; i++) {
     my_glyph_t glyph = {0};
@@ -197,17 +223,22 @@ my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
                                                int32_t max_width) {
   my_text_paragraph_t* paragraph;
   size_t capacity = 0, start_byte = 0, start_cp = 0, cp_count = 0;
+  size_t text_len;
   const char* p;
-  if (text == NULL || (font != NULL && size <= 0)) return NULL;
+  if (text == NULL || (font != NULL && size <= 0) ||
+      !paragraph_bounded_text_len(text, &text_len)) {
+    return NULL;
+  }
   paragraph = (my_text_paragraph_t*)my_mem_calloc(
       allocator, 1, sizeof(my_text_paragraph_t));
   if (paragraph == NULL) return NULL;
   paragraph->allocator = allocator;
-  paragraph->text = my_strdup(allocator, text);
+  paragraph->text = (char*)my_mem_alloc(allocator, text_len + 1u);
   if (paragraph->text == NULL) {
     my_text_paragraph_destroy(paragraph);
     return NULL;
   }
+  memcpy(paragraph->text, text, text_len + 1u);
   p = paragraph->text;
   while (true) {
     if (*p == '\0' || *p == '\n') {

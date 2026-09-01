@@ -279,6 +279,10 @@ my_conf_node_t* my_conf_parse_bson(const my_allocator_t* allocator,
   r.data = data;
   r.len = len;
   r.err = err;
+  if (len > MY_CONF_BSON_MAX_BYTES) {
+    bson_fail(&r, "BSON input exceeds resource budget");
+    return NULL;
+  }
   root = bson_document(&r, false);
   if (root == NULL) {
     return NULL;
@@ -302,13 +306,28 @@ typedef struct bson_w_t {
 } bson_w_t;
 
 static void bw_raw(bson_w_t* w, const void* p, size_t n) {
+  size_t needed;
   if (w->oom) {
     return;
   }
-  if (w->len + n > w->cap) {
+  if (n > (size_t)MY_CONF_BSON_MAX_BYTES ||
+      w->len > (size_t)MY_CONF_BSON_MAX_BYTES - n) {
+    w->oom = true;
+    return;
+  }
+  needed = w->len + n;
+  if (needed > w->cap) {
     uint8_t* bigger;
-    while (w->len + n > w->cap) {
-      w->cap *= 2;
+    while (needed > w->cap) {
+      if (w->cap > (size_t)MY_CONF_BSON_MAX_BYTES / 2u) {
+        w->cap = (size_t)MY_CONF_BSON_MAX_BYTES;
+        break;
+      }
+      w->cap *= 2u;
+    }
+    if (needed > w->cap) {
+      w->oom = true;
+      return;
     }
     bigger = (uint8_t*)my_mem_realloc(w->allocator, w->buf, w->cap);
     if (bigger == NULL) {

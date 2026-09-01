@@ -7,6 +7,7 @@
 #include "myr/my_vgcanvas_gles2.h"
 #include "myr/my_vgcanvas_quality_transaction.h"
 #include "myr/my_vgcanvas_soft.h"
+#include "myr/my_vgcanvas_vulkan.h"
 
 typedef struct mock_gl_t {
   my_gl_t gl;
@@ -205,6 +206,7 @@ typedef struct test_font_t {
   my_font_t base;
   const uint8_t* bitmap;
   const uint8_t* shaped_bitmap;
+  int32_t shape_calls;
 } test_font_t;
 
 static my_ret_t test_font_measure(my_font_t* font, const char* text,
@@ -242,11 +244,12 @@ static my_ret_t test_font_shape(my_font_t* font, const char* text,
                                 int32_t size, bool rtl,
                                 const my_allocator_t* allocator,
                                 my_font_shape_result_t* result) {
-  (void)font;
+  test_font_t* test_font = (test_font_t*)font;
   (void)rtl;
   if (text == NULL || text[0] == '\0' || size <= 0 || result == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
+  test_font->shape_calls++;
   result->allocator = allocator;
   result->glyphs = (my_font_shape_glyph_t*)my_mem_alloc(
       allocator, sizeof(my_font_shape_glyph_t));
@@ -254,6 +257,7 @@ static my_ret_t test_font_shape(my_font_t* font, const char* text,
     return MY_RET_OOM;
   }
   result->count = 1;
+  result->glyphs[0].font = font;
   result->glyphs[0].glyph_id = 7;
   result->glyphs[0].cluster = 0;
   result->glyphs[0].advance_x_26_6 = 3 * 64;
@@ -401,8 +405,8 @@ TEST(gles2_glyph_cache_separates_font_identity)
 {
   static const uint8_t font_a_bitmap[] = {0x11};
   static const uint8_t font_b_bitmap[] = {0xEE};
-  test_font_t font_a = {{&s_test_font_vtable}, font_a_bitmap, font_a_bitmap};
-  test_font_t font_b = {{&s_test_font_vtable}, font_b_bitmap, font_b_bitmap};
+  test_font_t font_a = {{&s_test_font_vtable}, font_a_bitmap, font_a_bitmap, 0};
+  test_font_t font_b = {{&s_test_font_vtable}, font_b_bitmap, font_b_bitmap, 0};
   mock_gl_t mock;
   my_vgcanvas_t* canvas;
 
@@ -424,7 +428,7 @@ TEST(gles2_draws_shaped_glyph_id_and_advance)
 {
   static const uint8_t codepoint_bitmap[] = {0x11};
   static const uint8_t shaped_bitmap[] = {0xEE};
-  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap};
+  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap, 0};
   mock_gl_t mock;
   my_vgcanvas_t* canvas;
 
@@ -444,11 +448,32 @@ TEST(gles2_draws_shaped_glyph_id_and_advance)
   my_vgcanvas_destroy(canvas);
 }
 
+TEST(gles2_shapes_complex_bidi_runs_before_drawing)
+{
+  static const uint8_t codepoint_bitmap[] = {0x11};
+  static const uint8_t shaped_bitmap[] = {0xEE};
+  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap,
+                      0};
+  mock_gl_t mock;
+  my_vgcanvas_t* canvas;
+
+  mock_gl_init(&mock);
+  canvas = my_vgcanvas_gles2_create_with_gl(NULL, 100, 80, &mock.gl);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, (my_font_t*)&font, 12), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "A\xD7\x90\xD7\x91" "B", 0, 16),
+            MY_RET_OK);
+  ASSERT_TRUE(font.shape_calls > 0);
+  ASSERT_TRUE(mock.uploaded_alpha_count > 0);
+  ASSERT_TRUE(mock.uploaded_alpha[0] == shaped_bitmap);
+  my_vgcanvas_destroy(canvas);
+}
+
 TEST(soft_draws_shaped_glyph_id_and_advance)
 {
   static const uint8_t codepoint_bitmap[] = {0x00};
   static const uint8_t shaped_bitmap[] = {0xFF};
-  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap};
+  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap, 0};
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas;
   uint8_t* pixels;
@@ -909,6 +934,57 @@ TEST(sample_transaction_builds_missing_initial_candidate)
   ASSERT_EQ(fake.retire_calls, 0);
 }
 
+TEST(vgcanvas_antialias_levels_use_explicit_sample_contract)
+{
+  ASSERT_EQ(my_vgcanvas_antialias_level_sample_count(0), 1u);
+  ASSERT_EQ(my_vgcanvas_antialias_level_sample_count(1), 2u);
+  ASSERT_EQ(my_vgcanvas_antialias_level_sample_count(2), 4u);
+  ASSERT_EQ(my_vgcanvas_antialias_level_sample_count(-1), 0u);
+  ASSERT_EQ(my_vgcanvas_antialias_level_sample_count(3), 0u);
+
+  ASSERT_EQ(my_vgcanvas_antialias_levels_for_sample_counts(
+                my_vgcanvas_sample_count_bit(1u)),
+            MY_VGCANVAS_AA_LEVEL_BIT(0));
+  ASSERT_EQ(my_vgcanvas_antialias_levels_for_sample_counts(
+                my_vgcanvas_sample_count_bit(1u) |
+                my_vgcanvas_sample_count_bit(2u) |
+                my_vgcanvas_sample_count_bit(4u)),
+            MY_VGCANVAS_AA_LEVEL_BIT(0) |
+                MY_VGCANVAS_AA_LEVEL_BIT(1) |
+                MY_VGCANVAS_AA_LEVEL_BIT(2));
+}
+
+#ifdef MYUI_HAS_VULKAN
+TEST(vulkan_offscreen_quality_and_resize_commit_as_one_transaction)
+{
+  my_vgcanvas_t* canvas;
+  my_vgcanvas_capabilities_t caps;
+
+  canvas = my_vgcanvas_vulkan_create_offscreen(NULL, 32, 24);
+  if (canvas == NULL) {
+    printf("  SKIP: no usable Vulkan offscreen device\n");
+    return;
+  }
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_TRUE((caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(0)) != 0u);
+  if ((caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(2)) != 0u) {
+    ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 0), MY_RET_OK);
+  }
+  ASSERT_EQ(my_vgcanvas_vulkan_resize(canvas, 48, 40), MY_RET_OK);
+  if ((caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(2)) != 0u) {
+    ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 2), MY_RET_OK);
+  }
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level,
+            (caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(2)) != 0u
+                ? 2u
+                : 0u);
+  my_vgcanvas_destroy(canvas);
+}
+#endif
+
 TEST(soft_fill_closes_open_subpaths)
 {
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
@@ -996,6 +1072,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles2_resize_uses_drawable_pixels);
     RUN_TEST(gles2_glyph_cache_separates_font_identity);
     RUN_TEST(gles2_draws_shaped_glyph_id_and_advance);
+    RUN_TEST(gles2_shapes_complex_bidi_runs_before_drawing);
     RUN_TEST(soft_draws_shaped_glyph_id_and_advance);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);
     RUN_TEST(vgcanvas_capabilities_are_explicit);
@@ -1010,6 +1087,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sample_transaction_rejects_successful_empty_candidate_without_touching_active);
     RUN_TEST(sample_transaction_rejects_candidate_alias_without_destroying_active);
     RUN_TEST(sample_transaction_builds_missing_initial_candidate);
+    RUN_TEST(vgcanvas_antialias_levels_use_explicit_sample_contract);
+#ifdef MYUI_HAS_VULKAN
+    RUN_TEST(vulkan_offscreen_quality_and_resize_commit_as_one_transaction);
+#endif
     RUN_TEST(soft_fill_closes_open_subpaths);
     RUN_TEST(soft_mono_image_uses_ordered_dither);
     RUN_TEST(lcd_rejects_dimension_and_stride_overflow);

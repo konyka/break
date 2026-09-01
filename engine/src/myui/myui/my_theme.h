@@ -13,21 +13,32 @@
 #ifndef MY_THEME_H
 #define MY_THEME_H
 
+#include <core/types.h>
 #include "myc/my_darray.h"
 #include "myui/my_style.h"
 
 #define MY_THEME_TYPE_LEN 24
 #define MY_THEME_NAME_LEN 32
+#define MY_THEME_MAX_ANCESTORS 4u
+
+/** @brief Fixed-size ancestor selector component; no lookup allocation. */
+typedef struct my_theme_ancestor_t {
+  char widget_type[MY_THEME_TYPE_LEN];
+  char name[MY_THEME_NAME_LEN];
+  char style_class[MY_THEME_NAME_LEN];
+} my_theme_ancestor_t;
 
 /** @brief One theme rule: style for a (type [, name][, class]
- * [, ancestor-type]) selector. */
+ * [, bounded ancestor path]) selector. */
 typedef struct my_theme_entry_t {
   char widget_type[MY_THEME_TYPE_LEN]; /**< e.g. "button"; "" = any */
   char name[MY_THEME_NAME_LEN];        /**< CSS #id == widget name; empty = none */
   char style_class[MY_THEME_NAME_LEN]; /**< CSS required classes; empty = none */
-  char ancestor_type[MY_THEME_TYPE_LEN]; /**< descendant selector: needs an
-                                          * ancestor of this type; empty = none */
+  char ancestor_type[MY_THEME_TYPE_LEN]; /**< legacy single-ancestor view */
   bool ancestor_direct; /**< direct-child selector instead of any ancestor */
+  u32 ancestor_count;
+  my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
+  bool ancestor_direct_path[MY_THEME_MAX_ANCESTORS];
   int32_t specificity[MY_STATE_COUNT][MY_STYLE_MAX_PROPS];
   /**< CSS specificity parallel to style.props. */
   my_style_t style;
@@ -68,9 +79,9 @@ const my_value_t* my_theme_get(const my_theme_t* theme, const char* widget_type,
 
 /**
  * @brief Extended rule write (M18a CSS bridge): style_class is a
- * space-separated required class set, and ancestor_type is a descendant
- * requirement (the widget needs some ancestor of this type). Same selector
- * rewrites in place (source-order override).
+ * space-separated required class set, and ancestor_type is the legacy
+ * single-ancestor descendant requirement. Same selector rewrites in place
+ * (source-order override).
  */
 my_ret_t my_theme_set_ex(my_theme_t* theme, const char* widget_type,
                          const char* name, const char* style_class,
@@ -88,6 +99,19 @@ my_ret_t my_theme_set_ex2(my_theme_t* theme, const char* widget_type,
 my_ret_t my_theme_set_ex3(my_theme_t* theme, const char* widget_type,
                           const char* name, const char* style_class,
                           const char* ancestor_type, bool ancestor_direct,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity);
+
+/** @brief Extended write for a bounded multi-level selector path.
+ * Ancestors are ordered nearest-to-farthest from the target. Each path flag
+ * applies between the target/current match and that ancestor: true means
+ * direct-child, false means descendant search. The operation copies inputs.
+ */
+my_ret_t my_theme_set_ex4(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
                           my_widget_state_t state, const char* key,
                           const my_value_t* value, int32_t specificity);
 

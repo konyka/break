@@ -21,6 +21,28 @@ static inline uint32_t my_vgcanvas_sample_count_bit(uint32_t sample_count) {
   return sample_count;
 }
 
+/** @brief Map the portable AA level to a concrete multisample count. */
+static inline uint32_t my_vgcanvas_antialias_level_sample_count(int level) {
+  if (level < 0 || level > 2) {
+    return 0u;
+  }
+  return 1u << (uint32_t)level;
+}
+
+/** @brief Convert Vulkan/RHI sample-count bits to portable AA level bits. */
+static inline uint32_t my_vgcanvas_antialias_levels_for_sample_counts(
+    uint32_t sample_counts) {
+  uint32_t levels = 0u;
+  int level;
+  for (level = 0; level <= 2; level++) {
+    uint32_t samples = my_vgcanvas_antialias_level_sample_count(level);
+    if ((sample_counts & my_vgcanvas_sample_count_bit(samples)) != 0u) {
+      levels |= 1u << (uint32_t)level;
+    }
+  }
+  return levels;
+}
+
 typedef struct my_vgcanvas_sample_transaction_ops_t {
   my_ret_t (*create)(void* ctx, uint32_t sample_count, uint32_t width,
                      uint32_t height, void** out_candidate);

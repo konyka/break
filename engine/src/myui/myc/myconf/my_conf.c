@@ -275,28 +275,42 @@ const char* my_conf_get_str(my_conf_node_t* node, const char* path,
 
 /* ---------------- file io ---------------- */
 
+static void conf_file_fail(my_conf_error_t* err, const char* message) {
+  if (err != NULL) {
+    err->line = 0;
+    err->col = 0;
+    err->offset = 0;
+    snprintf(err->msg, sizeof(err->msg), "%s", message);
+  }
+}
+
 my_conf_node_t* my_conf_load_file(const my_allocator_t* allocator,
                                   const char* path, my_conf_error_t* err) {
   FILE* f;
   long size;
   char* buf;
   my_conf_node_t* root;
+  if (err != NULL) {
+    memset(err, 0, sizeof(*err));
+  }
   if (path == NULL) {
+    conf_file_fail(err, "invalid configuration path");
     return NULL;
   }
   f = fopen(path, "rb");
   if (f == NULL) {
-    if (err != NULL) {
-      err->line = 0;
-      err->col = 0;
-      err->offset = 0;
-      snprintf(err->msg, sizeof(err->msg), "cannot open %s", path);
-    }
+    conf_file_fail(err, "cannot open configuration file");
     return NULL;
   }
   if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 ||
       fseek(f, 0, SEEK_SET) != 0) {
     fclose(f);
+    conf_file_fail(err, "cannot read configuration file");
+    return NULL;
+  }
+  if (size > (long)MY_CONF_FILE_MAX_BYTES) {
+    fclose(f);
+    conf_file_fail(err, "configuration file exceeds resource budget");
     return NULL;
   }
   buf = (char*)my_mem_alloc(allocator, (size_t)size + 1);
@@ -304,6 +318,8 @@ my_conf_node_t* my_conf_load_file(const my_allocator_t* allocator,
       (size > 0 && fread(buf, 1, (size_t)size, f) != (size_t)size)) {
     fclose(f);
     my_mem_free(allocator, buf);
+    conf_file_fail(err, buf == NULL ? "out of memory" :
+                                      "cannot read configuration file");
     return NULL;
   }
   fclose(f);

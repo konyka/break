@@ -1,6 +1,110 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Vulkan vgcanvas AA 事务
+
+独立 Vulkan vgcanvas 现将 `ENGINE_VULKAN` 构建选项正确传递到 `myui_core`，并链接 Vulkan
+运行库；此前顶层工程虽然启用了 RHI Vulkan，却让该 vgcanvas 始终编译为 stub。后端按实际
+设备与颜色格式报告 1x/2x/4x AA 能力，AA level 切换、resize 和 out-of-date swapchain
+重建统一采用 candidate resource 组，target、render pass、pipeline、descriptor 和
+swapchain 成功创建后才一次性交换。任何创建失败都保留 active 资源，且 MSAA 失败不再静默
+降级。
+
+TDD 验证：普通配置的 `test_myui_vgcanvas_backend` 为 **24/24**，Vulkan 配置为 **25/25**；
+真实 Vulkan offscreen 已覆盖能力读取、1x↔4x 切换、resize 后提交和销毁；ASan/UBSan
+Vulkan 配置同为 **25/25**。另完成 Vulkan 源码 `-Werror -pedantic` 语法编译与
+`git diff --check`。
+
 ## 本轮更新
+
+**跨字体 glyph-run 事务与 RTL run 顺序（TDD）**：字体 shaping glyph 增加实际 face 身份，
+FreeType/HarfBuzz 输出和字体链聚合均保留该身份；GLES2、soft、Break RHI、Vulkan 的
+glyph-id 栅格化及缓存不再把 glyph id 当作全局 key。LTR 单 face 保持快速路径，RTL 跨 face
+只在发生字体切换时分配有界 run 描述并逆序提交。segment、扩容和逐分配点失败均事务回滚，
+结果不向调用方泄露部分 glyph。TDD 覆盖 Latin/CJK identity、RTL 跨 face 顺序和 allocator
+OOM 回滚；paragraph 级 glyph-run mapping 已在本轮接入，完整 script/features shaping 仍是
+明确后续项。
+
+**paragraph bidi glyph-run 接入（TDD）**：新增 `my_text_layout_shape()`，将 SheenBidi 解析的
+视觉 run 还原为按 direction shaping 的逻辑 UTF-8 run，再合并为视觉顺序 glyph；cluster 映射
+回原始 UTF-8 byte offset，实际 face 身份贯穿四个 canvas 的 glyph-id 栅格化与测量。复杂路径
+的 shaping、扩容、重复 logical mapping 或 allocator 失败均不泄露部分结果；不支持 shaping
+时保留 visual codepoint fallback。layout 保留原 logical UTF-8 以拒绝错误输入，provider cluster
+必须落在 UTF-8 codepoint 起点；逐分配点 OOM、Lam-Alef 与异常 cluster 回归已覆盖。完整
+script/features 配置和跨段落增量 shaping 仍未实现。
+
+paragraph 断行测量已复用该 visual bidi glyph-run：需要 bidi 的行按 resolved direction
+shaping，非法 UTF-8 cluster 直接失败，未启用 HarfBuzz 时保留 codepoint fallback。
+
+**文本布局输入预算（TDD）**：`my_text_layout_process()` 与
+`my_text_paragraph_process()` 原先会对调用方提供的 C 字符串先做无界扫描，再进入
+缓存、复制和排版分配。现分别在 `MY_TEXT_LAYOUT_MAX_BYTES` 与
+`MY_TEXT_PARAGRAPH_MAX_BYTES`（均为 4 MiB）内做有界预检，超限输入只扫描到预算边界
+即拒绝，且不会调用调用方 allocator；正常路径保持原有缓存和增量排版行为。新增文本
+布局/paragraph 超限零分配回归测试；定向 `test_myui_text_layout` **17/17**、ASan/UBSan
+定向 **17/17** 通过。
+
+**CSS 多级 selector 路径（TDD）**：在原单级祖先兼容字段之外，解析器现在以固定容量
+数组保存最多 4 级祖先 compound，支持空白 descendant 与可链式 `>` direct-child 关系，
+祖先可带 type/class/id 组合；祖先伪类因主题查询没有祖先状态维度而明确拒绝。主题桥接
+使用 `my_theme_set_ex4()` 复制路径数据，查询按目标到根逐级匹配，匹配过程零分配，
+并累加完整路径 specificity。新增多级成功、direct-child 中间节点错误、祖先 id/class
+不匹配、specificity 覆盖和深度拒绝测试；`test_myui_css` **23/23** 通过。
+
+**CSS 解析输入预算（TDD）**：`my_css_parse()` 原先可由内存 API 直接传入无界输入，
+在创建 sheet 和规则数组前增加 `MY_CSS_MAX_BYTES`（4 MiB）检查；超限路径零次 allocator
+分配，并新增回归测试。CSS/YAML 配置输入现统一具备入口预算保护。
+
+**TOML/BSON 解析输入预算（TDD）**：TOML 和 BSON 直解析入口原先仍可绕过配置资源边界，
+现于创建配置树前增加各自 4 MiB 预算检查；超限路径零次 allocator 分配，新增有效 BSON
+前缀与空白 TOML 的回归测试。BSON 写出器同步限制输出增长，避免生成自身解析器必拒绝的
+文档并防止容量倍增溢出。
+
+**直接 JSON 解析输入预算（TDD）**：文件加载入口已有 4 MiB 检查，但直接调用
+`my_conf_parse_json()` 原先仍可绕过该限制并进入递归解析及字符串分配。现于 parser 入口
+增加 `MY_CONF_JSON_MAX_BYTES` 前置检查，超限输入在任何配置节点分配前失败；新增计数
+allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **28/28**、完整 CTest
+**82/82** 通过。
+
+JSON 写出器同步限制输出至 `MY_CONF_JSON_MAX_BYTES`，并在达到预算后停止字符串扫描，
+避免生成自身解析器必拒绝的文档以及无界容量倍增；程序化配置树中的 `NaN`/`Inf` 等非有限
+浮点值也会被拒绝，序列化返回失败。
+
+CSS 解析器的结构错误状态不再依赖调用者提供 `my_css_error_t`；`err == NULL` 时同样拒绝
+未闭合 `@` 规则等非法输入，保留错误信息可选的 API 语义。`test_myui_css` 定向测试
+现为 **23/23**。
+
+JSON 数字解析拒绝指数或超大整数转换产生的非有限值，避免合法外观输入生成 JSON 无法
+重新加载的 `NaN/Inf` 配置节点；新增无错误存储对象的回归测试。
+
+YAML 与 TOML 的普通十进制/浮点溢出同样拒绝非有限结果；TOML 明确写出的 `inf`、`nan`
+仍按其格式语义保留。
+
+**RHI 窗口截图契约（TDD）**：`rhi_screenshot()` 统一为双后端带目标缓冲区长度的
+RGBA8 读回接口；公共验证在执行任何 backend readback 前拒绝零尺寸、越界区域、乘法
+溢出和容量不足。GL 返回 `glGetError()` 状态，Vulkan 复用 swapchain 的 `TRANSFER_SRC`
+能力，以一次性 staging buffer、设备/队列完成等待和 layout 恢复执行窗口图像读回；所有
+失败路径返回 `false`，不会写入目标缓冲。新增 `test_rhi_capabilities` 两项尺寸/溢出契约，
+真实 `test_vulkan` 截图与 golden 路径同步使用显式容量；截图仍是诊断冷路径，不增加每帧
+渲染成本。
+
+**通用 JSON 配置文件预算（TDD）**：`my_conf_load_file()` 原先忽略 `fseek/ftell` 失败，且
+按文件长度直接分配，没有与解析输入建立统一上限。现新增 `MY_CONF_FILE_MAX_BYTES`（4 MiB），
+在 payload 分配前拒绝超限文件，并初始化/传播路径、定位、分配和读取错误；失败路径都会
+关闭文件并释放已申请缓冲。新增稀疏超大 JSON 文件回归，验证拒绝路径零次 payload 分配。
+
+**YAML 文件加载前置资源预算（TDD）**：`my_ui_load_file()` 原先先按文件长度申请完整
+缓冲区，再由字符串 loader 拒绝超过 4 MiB 的 YAML；恶意超大文件因此仍能触发一次大额
+分配。现文件读取入口在申请 payload 前复用 `MY_UI_MAX_YAML_BYTES` 检查，超限立即关闭
+文件并返回错误；文件输入同时拒绝嵌入 NUL，避免 C 字符串截断后静默忽略后续配置。
+新增稀疏超大文件与计数 allocator 回归测试，确认拒绝路径零次 payload 分配；定向
+`test_myui_loader` **17/17** 通过。
+
+**结构化数组索引格式化边界（TDD）**：`re_value_array_append()` 和
+`re_value_array_append_value()` 原先用未检查的 `sprintf` 构造数组键；虽然当前数组上限
+暂时使 24-byte 缓冲区足够，未来调整上限会重新引入截断或越界风险。现改为无分配的固定
+十进制转换 helper，在写入前检查数组上限和输出容量；最大合法索引 `1023` 可完整编码，
+容量不足明确失败，达到 1024 项后不再执行格式化或部分写入。验证：`test_rule_engine`
+通过，完整构建与 CTest **82/82** 通过。
 
 **规则引擎数学库链接依赖（TDD）**：远程规则引擎 GRL 扩展新增 `round/floor/ceil/fmod`
 数学内建函数后，`rule_engine_core` 的独立测试和 benchmark 在 Unix 链接阶段缺少 `m` 而
@@ -2209,15 +2313,21 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   同绿；executor stress 64+64 迭代于 engine/build-hardening-asan（MSVC cl，C11 ON）与
   engine/build-hardening-ubsan-clang 全绿；`RULE_ENGINE_ENABLE_REDIS=ON` 配置在
   hiredis 缺失时成功并以 STATUS 强制 OFF。
-- 当前限制：本机无 hiredis——适配器仅编译期验证（以 stand-in 头编译检查），运行时
-  往返在本机不可验证，由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
+- 当前限制：默认系统依赖路径不保证存在 hiredis 开发包；若未配置源码或系统依赖，
+  适配器保持禁用，运行时往返由 `RE_TEST_REDIS_URL` 跳过守卫；first/last 借用值不得跨窗口
   变更持有；通用流模式/join/watermark 仍不支持；Redis 的实际启用仍需集成环境提供
-  受控 Redis 服务。
+  受控 Redis 服务。使用 Redis 8.10.1 源码路径的真实服务往返已在下一条依赖矩阵中验证。
 - 依赖矩阵回归（2026-08-30）：`RULE_ENGINE_ENABLE_C11_PARALLEL=ON` 在检测到
   `<threads.h>` 的主机构建并生成 executor stress target，完整 CTest **77/77**；
   `RULE_ENGINE_ENABLE_REDIS=ON` 在仅有运行库、缺少 hiredis 开发头文件的主机上明确
   输出 STATUS 并强制关闭选项，完整 CTest **76/76**。两条路径均未静默替换依赖或
   把 Redis 服务不可用误报为通过。
+- Redis 源码依赖接入（2026-08-31）：新增
+  `RULE_ENGINE_REDIS_SOURCE_DIR`，可直接指向 Redis 源码树（自动定位
+  `deps/hiredis`）或 hiredis 源目录；CMake 在隔离的私有静态 target 中编译
+  hiredis，避免要求系统安装开发包，也不把客户端类型暴露到公共 ABI。先以配置契约
+  测试锁定，再修复源目录 include 根路径缺陷；Redis 8.10.1 + C11 并行 + 原生适配器
+  的 focused 回归和 `RE_TEST_REDIS_URL` 真实往返均通过。
 
 ## myui selection rect bounded output（2026-08-29）
 

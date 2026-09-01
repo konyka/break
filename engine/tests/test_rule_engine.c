@@ -1,12 +1,37 @@
 #include "test_framework.h"
 #include <rule_engine/rule_engine.h>
 #include "../src/rule_engine/re_internal.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static re_string_t text(const char *value) {
     re_string_t result = {value, strlen(value)};
     return result;
 }
+
+#if defined(RE_HAS_HIREDIS)
+#if !defined(_WIN32)
+extern int setenv(const char *name, const char *value, int overwrite);
+extern int unsetenv(const char *name);
+#endif
+static void redis_test_set_url(const char *url) {
+#if defined(_WIN32)
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "RE_REDIS_URL=%s", url);
+    _putenv(buffer);
+#else
+    setenv("RE_REDIS_URL", url, 1);
+#endif
+}
+static void redis_test_clear_url(void) {
+#if defined(_WIN32)
+    _putenv("RE_REDIS_URL=");
+#else
+    unsetenv("RE_REDIS_URL");
+#endif
+}
+#endif
 
 typedef struct allocator_state_t {
     size_t calls;
@@ -391,6 +416,24 @@ TEST(structured_values_support_nested_objects_and_arrays) {
     re_value_destroy(tags);
     re_value_destroy(address);
     re_value_destroy(customer);
+    re_facts_destroy(facts);
+}
+
+TEST(structured_array_index_formatting_is_bounded) {
+    char key[5];
+    size_t size = 0u;
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_handle_t *array = NULL;
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_TRUE(re_value_array_index_key(1023u, key, sizeof(key), &size));
+    ASSERT_EQ(size, 4u);
+    ASSERT_TRUE(strcmp(key, "1023") == 0);
+    ASSERT_FALSE(re_value_array_index_key(1023u, key, 4u, &size));
+    ASSERT_EQ(re_value_create_array(facts, &array), RE_STATUS_OK);
+    for (size_t i = 0u; i < 1024u; ++i)
+        ASSERT_EQ(re_value_array_append(array, &value), RE_STATUS_OK);
+    ASSERT_EQ(re_value_array_append(array, &value), RE_STATUS_LIMIT);
+    re_value_destroy(array);
     re_facts_destroy(facts);
 }
 
@@ -1444,7 +1487,13 @@ TEST(memory_state_provider_rejects_bounds_corruption_and_redis) {
     ASSERT_EQ(re_state_provider_put(provider, text("a"), &too_long, 0u), RE_STATUS_LIMIT);
     ASSERT_EQ(re_state_provider_put(provider, text("bb"), &value, 0u), RE_STATUS_LIMIT);
     ASSERT_EQ(re_state_provider_restore(provider, &bad), RE_STATUS_INVALID_ARGUMENT);
+#if defined(RE_HAS_HIREDIS)
+    redis_test_set_url("redis://127.0.0.1:6390");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &redis, &descriptor, &provider), RE_STATUS_ERROR);
+    redis_test_clear_url();
+#else
     ASSERT_EQ(re_engine_set_state_provider_v1(engine, &redis, &descriptor, &provider), RE_STATUS_NOT_SUPPORTED);
+#endif
     re_state_provider_destroy(provider); re_engine_destroy(engine);
 }
 
@@ -1598,8 +1647,14 @@ TEST(redis_provider_failure_does_not_create_or_fallback_to_memory) {
         RE_STATE_PROVIDER_REDIS, 0u, 100u};
     re_state_provider_descriptor_t descriptor = {sizeof(descriptor), RE_STATE_PROVIDER_ABI_VERSION,
         provider_get, NULL, NULL, NULL, NULL, NULL, NULL};
+#if defined(RE_HAS_HIREDIS)
+    redis_test_set_url("redis://127.0.0.1:6390");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, &descriptor, &provider), RE_STATUS_ERROR);
+    redis_test_clear_url();
+#else
     ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, &descriptor, &provider),
               RE_STATUS_NOT_SUPPORTED);
+#endif
     ASSERT_TRUE(provider == NULL);
     re_engine_destroy(engine);
 }
@@ -2015,6 +2070,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(custom_function_registration_validates_descriptor_and_reentrancy);
     RUN_TEST(dotted_fact_lookup_prefers_exact_flat_key);
     RUN_TEST(structured_values_support_nested_objects_and_arrays);
+    RUN_TEST(structured_array_index_formatting_is_bounded);
     RUN_TEST(array_literal_membership_matches_numeric_and_string_values);
     RUN_TEST(array_membership_covers_positive_negative_and_mixed_scalar_types);
     RUN_TEST(array_literal_membership_rejects_non_match_and_malformed_arrays);

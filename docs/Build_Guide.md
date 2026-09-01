@@ -108,6 +108,10 @@ evidence, not a passing sanitizer gate. Redis is intentionally OFF by default.
 configure time. When both are found, the native adapter is compiled and linked;
 when either is missing, CMake force-disables the option without a fallback.
 Dependency discovery does not provide a live Redis integration service.
+For a source checkout such as Redis 8.10.1, set
+`-DRULE_ENGINE_REDIS_SOURCE_DIR=/home/timeshift/opensource/redis-8.10.1`.
+This builds a private static hiredis target from `deps/hiredis`, avoiding a
+system install and keeping the Redis client out of the public ABI.
 
 ### 2.3 Wayland 后端构建
 
