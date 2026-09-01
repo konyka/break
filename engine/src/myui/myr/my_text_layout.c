@@ -139,7 +139,8 @@ static uint32_t tl_script_tag(uint32_t cp) {
   }
   if (cp >= 0x0900u && cp <= 0x097Fu) return MY_FONT_SCRIPT_DEVA;
   if (cp >= 0x0980u && cp <= 0x09FFu) return MY_FONT_SCRIPT_BENG;
-  if (cp >= 0x0E00u && cp <= 0x0E7Fu) return MY_FONT_SCRIPT_THAA;
+  if (cp >= 0x0780u && cp <= 0x07BFu) return MY_FONT_SCRIPT_THAA;
+  if (cp >= 0x0E00u && cp <= 0x0E7Fu) return MY_FONT_SCRIPT_THAI;
   if (cp >= 0xAC00u && cp <= 0xD7AFu) return MY_FONT_SCRIPT_HANG;
   if ((cp >= 0x3400u && cp <= 0x4DBFu) ||
       (cp >= 0x4E00u && cp <= 0x9FFFu) ||
@@ -773,6 +774,16 @@ my_ret_t my_text_layout_shape_ex(
         run_scripts[i] = tl_script_tag(source_cps[run_logical[i]]);
       }
       {
+        uint32_t previous_script = 0u;
+        for (i = 0u; i < units; ++i) {
+          if (run_scripts[i] != 0u) {
+            previous_script = run_scripts[i];
+          } else if (previous_script != 0u) {
+            run_scripts[i] = previous_script;
+          }
+        }
+      }
+      {
         uint32_t next_script = 0u;
         for (i = units; i > 0u; --i) {
           size_t index = i - 1u;
@@ -781,13 +792,6 @@ my_ret_t my_text_layout_shape_ex(
           } else {
             run_scripts[index] = next_script;
           }
-        }
-      }
-      {
-        uint32_t previous_script = 0u;
-        for (i = 0u; i < units; ++i) {
-          if (run_scripts[i] != 0u) previous_script = run_scripts[i];
-          else run_scripts[i] = previous_script;
         }
       }
     }

@@ -13,9 +13,13 @@ paragraph 在未指定 script 时按有限 Unicode block 映射拆分连续 shap
 原始 UTF-8 byte offset。任一 provider、cluster 校验或 allocator 失败都会清空整个 result，
 不泄露已完成的 segment。
 
-TDD 定向验证：`test_myui_font` **11/11**，`test_myui_text_layout` **30/30**；当前能力
+TDD 定向验证：`test_myui_font` **11/11**，`test_myui_text_layout` **32/32**；当前能力
 仍不等于完整 UAX#24/OpenType，variation selector、language system、feature policy、
 增量 shaping cache、完整复杂 RTL/GSUB 及跨段落 rebreaking 继续作为未完成项。
+
+script resolver 已补充 Thai (`Thai`) 与 Thaana (`Thaa`) 的准确 tag 映射；Common/Inherited
+字符优先继承前序 script，段首才向后继承。TDD 新增组合附加符号与 Thai 边界用例，当前
+`test_myui_text_layout` 为 **32/32**。
 
 ## 本轮更新：Vulkan vgcanvas AA 事务
 

@@ -37,6 +37,7 @@ typedef struct my_font_t my_font_t;
 #define MY_FONT_SCRIPT_DEVA MY_FONT_SCRIPT_TAG('D', 'e', 'v', 'a')
 #define MY_FONT_SCRIPT_BENG MY_FONT_SCRIPT_TAG('B', 'e', 'n', 'g')
 #define MY_FONT_SCRIPT_THAA MY_FONT_SCRIPT_TAG('T', 'h', 'a', 'a')
+#define MY_FONT_SCRIPT_THAI MY_FONT_SCRIPT_TAG('T', 'h', 'a', 'i')
 #define MY_FONT_SCRIPT_HANG MY_FONT_SCRIPT_TAG('H', 'a', 'n', 'g')
 
 #define MY_FONT_SHAPE_MAX_LANGUAGE_BYTES 64u

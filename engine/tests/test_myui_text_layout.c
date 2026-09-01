@@ -244,6 +244,7 @@ static const char* s_paragraph_last_language;
 static const char* s_paragraph_last_features;
 static size_t s_paragraph_shape_ex_calls;
 static size_t s_paragraph_shape_ex_fail_after;
+static size_t s_paragraph_segment_bytes[8];
 
 static my_ret_t paragraph_test_shape(my_font_t* font, const char* text,
                                      int32_t size, bool rtl,
@@ -309,6 +310,7 @@ static my_ret_t paragraph_test_shape_ex(
   s_paragraph_last_language = params->language;
   s_paragraph_last_features = params->features;
   s_paragraph_shape_ex_calls++;
+  s_paragraph_segment_bytes[test_font->script_count] = strlen(text);
   test_font->scripts[test_font->script_count++] = params->script;
   if (s_paragraph_shape_ex_fail_after != 0u &&
       s_paragraph_shape_ex_calls > s_paragraph_shape_ex_fail_after) {
@@ -393,6 +395,45 @@ TEST(text_layout_shape_ex_failure_rolls_back_segment_results)
   ASSERT_TRUE(result.glyphs == NULL);
   ASSERT_EQ(result.count, 0u);
   ASSERT_EQ(state.live, 0u);
+  my_text_layout_destroy(layout);
+}
+
+TEST(text_layout_keeps_inherited_marks_with_previous_script)
+{
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  my_font_shape_result_t result = {0};
+  my_text_layout_t* layout =
+      my_text_layout_process(NULL, "a" "\xCC\x81" "\xE7\x9F\xAD");
+
+  ASSERT_NOT_NULL(layout);
+  memset(s_paragraph_segment_bytes, 0, sizeof(s_paragraph_segment_bytes));
+  ASSERT_EQ(my_text_layout_shape(layout, "a" "\xCC\x81" "\xE7\x9F\xAD",
+                                 (my_font_t*)&font, 16, NULL, &result),
+            MY_RET_OK);
+  ASSERT_EQ(font.script_count, 2u);
+  ASSERT_EQ(font.scripts[0], MY_FONT_SCRIPT_LATN);
+  ASSERT_EQ(font.scripts[1], MY_FONT_SCRIPT_HANI);
+  ASSERT_EQ(s_paragraph_segment_bytes[0], 3u);
+  ASSERT_EQ(s_paragraph_segment_bytes[1], 3u);
+  my_font_shape_destroy(&result);
+  my_text_layout_destroy(layout);
+}
+
+TEST(text_layout_maps_thai_to_thai_script)
+{
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  my_font_shape_result_t result = {0};
+  my_text_layout_t* layout = my_text_layout_process(NULL, "\xE0\xB8\x81");
+
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(my_text_layout_shape(layout, "\xE0\xB8\x81", (my_font_t*)&font,
+                                 16, NULL, &result),
+            MY_RET_OK);
+  ASSERT_EQ(font.script_count, 1u);
+  ASSERT_EQ(font.scripts[0], MY_FONT_SCRIPT_THAI);
+  my_font_shape_destroy(&result);
   my_text_layout_destroy(layout);
 }
 
@@ -941,6 +982,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_splits_mixed_scripts_for_shape_provider);
     RUN_TEST(text_layout_shape_ex_forwards_language_and_features);
     RUN_TEST(text_layout_shape_ex_failure_rolls_back_segment_results);
+    RUN_TEST(text_layout_keeps_inherited_marks_with_previous_script);
+    RUN_TEST(text_layout_maps_thai_to_thai_script);
     RUN_TEST(text_layout_shape_oom_is_transactional);
     RUN_TEST(text_layout_shape_rejects_mismatched_source_text);
     RUN_TEST(text_layout_shape_rejects_non_boundary_cluster);
