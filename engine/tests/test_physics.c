@@ -403,6 +403,29 @@ TEST(bvh_raycast_allows_null_hit_output)
     bvh_destroy(&bvh);
 }
 
+TEST(bvh_raycast_rejects_negative_max_dist_on_parallel_ray)
+{
+    /* Contract pin (repo-review wave): a negative or NaN max_dist can never
+     * contain a hit — including the all-parallel (zero-direction) ray, whose
+     * slab loop has no tmin/tmax comparison and relies on the leaf's
+     * t < best_t filter to stay silent. The entry guard pins it explicitly. */
+    BVH bvh;
+    bvh_init(&bvh, 1);
+    BVHAABB aabb = { .min = vec3(4, -1, -1), .max = vec3(6, 1, 1) };
+    bvh_build(&bvh, &aabb, 1);
+
+    /* Zero direction, origin inside the slab, negative cap. */
+    ASSERT_FALSE(bvh_raycast(&bvh, vec3(5, 0, 0), vec3(0, 0, 0), -1.0f, NULL));
+    /* Same rejection for a normal ray under a negative cap. */
+    ASSERT_FALSE(bvh_raycast(&bvh, vec3(0, 0, 0), vec3(1, 0, 0), -1.0f, NULL));
+    ASSERT_FALSE(bvh_raycast(&bvh, vec3(0, 0, 0), vec3(1, 0, 0),
+                             (f32)NAN, NULL));
+    /* Control: the same parallel ray with a valid cap still hits at t=0. */
+    ASSERT_TRUE(bvh_raycast(&bvh, vec3(5, 0, 0), vec3(0, 0, 0), 100.0f, NULL));
+
+    bvh_destroy(&bvh);
+}
+
 /* ----------------------------------------------------------------------- */
 /*  Edge Cases                                                              */
 /* ----------------------------------------------------------------------- */
@@ -1288,6 +1311,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bvh_coincident_objects_not_dropped);
     RUN_TEST(bvh_raycast_test);
     RUN_TEST(bvh_raycast_allows_null_hit_output);
+    RUN_TEST(bvh_raycast_rejects_negative_max_dist_on_parallel_ray);
     /* Edge cases */
     RUN_TEST(physics_empty_world_raycast);
     RUN_TEST(physics_zero_velocity_body);

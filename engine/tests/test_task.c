@@ -221,6 +221,40 @@ TEST(submit_dep_on_heap_handle_fails)
     task_wait(g_ts);
 }
 
+/* Repo-review wave: task_wait's "all done" condition includes the caller's
+ * own running task, so a worker calling it could never observe completion —
+ * self-deadlock. The entry guard logs and returns immediately instead. */
+static _Atomic i32 g_worker_wait_returned;
+static _Atomic i32 g_worker_wait_caller;
+
+static void worker_wait_fn(void *ctx)
+{
+    (void)ctx;
+    i32 id = task_worker_id(g_ts); /* -1 when the main thread drains inline */
+    if (id >= 0) {
+        task_wait(g_ts); /* guarded: logs and returns at once (else hang) */
+    }
+    atomic_store(&g_worker_wait_caller, id);
+    atomic_fetch_add(&g_worker_wait_returned, 1);
+}
+
+TEST(task_wait_from_worker_returns_immediately)
+{
+    atomic_store(&g_worker_wait_returned, 0);
+    atomic_store(&g_worker_wait_caller, -2);
+    task_submit(g_ts, worker_wait_fn, NULL);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_worker_wait_returned), 1);
+    /* Whether the task executed on a worker (guard exercised, id >= 0) or was
+     * drained inline on the main thread (id == -1, guard not reachable — a
+     * nested main-thread wait would itself be a contract violation), the
+     * system must stay healthy; the next task must run normally. */
+    atomic_store(&g_counter, 0);
+    task_submit(g_ts, increment_fn, NULL);
+    task_wait(g_ts);
+    ASSERT_EQ(atomic_load(&g_counter), 1);
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -246,6 +280,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(out_of_range_priority_is_clamped);
     RUN_TEST(beyond_pool_capacity_all_execute);
     RUN_TEST(submit_dep_on_heap_handle_fails);
+    RUN_TEST(task_wait_from_worker_returns_immediately);
 
     task_system_destroy(g_ts);
 

@@ -581,6 +581,11 @@ bool bvh_raycast(const BVH *bvh, Vec3 origin, Vec3 dir, f32 max_dist, BVHRayHit 
     for (int i = 0; i < 3; i++) {
         if (!isfinite(origin.e[i]) || !isfinite(dir.e[i])) return false;
     }
+    /* Explicit garbage-in contract: a negative or NaN max_dist can never
+     * contain a hit (hit distances are >= 0). Today's leaf filter
+     * (t < best_t) already rejects those outcomes; this entry guard pins the
+     * contract explicitly instead of relying on that accident. */
+    if (!(max_dist >= 0.0f)) return false;
 
     Vec3 inv_dir;
     bool axis_parallel[3];

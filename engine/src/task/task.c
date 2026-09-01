@@ -738,6 +738,13 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
  * ============================================================ */
 
 void task_wait(TaskSystem *ts) {
+    /* Contract (task.h): not callable from a worker task — the wait set
+     * includes the caller's own running task, which can never complete while
+     * it waits, so the loop below could never exit (self-deadlock). */
+    if (tls_worker_id >= 0 && (u32)tls_worker_id < ts->worker_count) {
+        LOG_WARN("task_wait called from a worker task (self-deadlock) — returning");
+        return;
+    }
     /* Spin until all submitted tasks are completed */
     while (true) {
         u64 submitted = atomic_load_explicit(&ts->total_tasks_submitted, memory_order_acquire);

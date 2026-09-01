@@ -117,7 +117,10 @@ void task_submit(TaskSystem *ts, TaskFn fn, void *ctx);
 /** Submit N tasks with same function (backward-compatible, NORMAL priority). */
 void task_submit_n(TaskSystem *ts, TaskFn fn, void **ctxs, i32 count);
 
-/** Wait until all submitted tasks are complete. */
+/** Wait until all submitted tasks are complete.
+ * Must NOT be called from a worker task: the wait set includes the caller's
+ * own running task, which can never complete while it waits (self-deadlock);
+ * the call logs a warning and returns immediately instead. */
 void task_wait(TaskSystem *ts);
 
 /** Get current worker ID (returns -1 if called from non-worker thread). */
@@ -135,7 +138,9 @@ TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
 /** Wait for a specific task to complete.
  * Heap-fallback handles (returned once the 4096-entry task pool is exhausted)
  * cannot be resolved to their Task; waiting on one waits for ALL currently
- * submitted tasks instead — conservative, but the wait is always real. */
+ * submitted tasks instead — conservative, but the wait is always real.
+ * Must NOT be called from a worker task (same self-deadlock contract as
+ * task_wait). */
 void task_wait_handle(TaskSystem *ts, TaskHandle handle);
 
 /** Get worker thread count. */
