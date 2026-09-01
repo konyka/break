@@ -660,6 +660,24 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   }
 composite_surface:
   if (ui->surface_valid) {
+    if (ui->present_partial_active) {
+      RHIPresentRect effective_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
+      u32 effective_count = 0u;
+      u32 i;
+      if (rhi_frame_get_damage(ui->device, effective_damage,
+                               RHI_MAX_PRESENT_DAMAGE_RECTS,
+                               &effective_count)) {
+        for (i = 0u; i < effective_count; ++i) {
+          my_rect_t rect;
+          if (break_ui_drawable_damage_to_logical(
+                  &effective_damage[i], ui->logical_width,
+                  ui->logical_height, width, height, &rect)) {
+            (void)my_dirty_rects_add(&composite_damage, &rect);
+          }
+        }
+        composite_damage_available = true;
+      }
+    }
     break_ui_surface_composite_options_t composite_options = {
         .logical_width = ui->logical_width,
         .logical_height = ui->logical_height,

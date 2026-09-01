@@ -26,6 +26,8 @@
     #include <X11/Xlib.h>
 #endif
 
+#include "rhi/rhi_present_history.h"
+
 typedef struct {
 #ifdef ENGINE_PLATFORM_WINDOWS
     HDC     hdc;
@@ -40,6 +42,8 @@ typedef struct {
     EGLConfig             egl_config;
     PFN_break_egl_swap_buffers_with_damage swap_buffers_with_damage;
     bool                 buffer_age_supported;
+    RHIPresentDamageHistory damage_history;
+    bool                 damage_history_valid;
 #else
     Display   *display;
     Window     window;
@@ -403,8 +407,18 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
         return false;
     }
 
-    gl->egl_surface = eglCreateWindowSurface(gl->egl_display, gl->egl_config,
-                                              (EGLNativeWindowType)gl->egl_window, NULL);
+    EGLint surface_attribs[] = {EGL_NONE, EGL_NONE, EGL_NONE};
+    EGLint surface_type = 0;
+    if (eglGetConfigAttrib(gl->egl_display, gl->egl_config, EGL_SURFACE_TYPE,
+                           &surface_type) == EGL_TRUE &&
+        (surface_type & EGL_SWAP_BEHAVIOR_PRESERVED_BIT) != 0) {
+        surface_attribs[0] = EGL_SWAP_BEHAVIOR;
+        surface_attribs[1] = EGL_BUFFER_PRESERVED;
+        surface_attribs[2] = EGL_NONE;
+    }
+    gl->egl_surface = eglCreateWindowSurface(
+        gl->egl_display, gl->egl_config,
+        (EGLNativeWindowType)gl->egl_window, surface_attribs);
     if (gl->egl_surface == EGL_NO_SURFACE) {
         LOG_FATAL("EGL: failed to create window surface");
         eglDestroyContext(gl->egl_display, gl->egl_context);
@@ -494,6 +508,13 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
                           gl_extension_has(extensions,
                                            "EGL_EXT_swap_buffers_with_damage");
         gl->buffer_age_supported = has_age;
+        EGLint swap_behavior = EGL_BUFFER_DESTROYED;
+        bool preserved = eglQuerySurface(gl->egl_display, gl->egl_surface,
+                                         EGL_SWAP_BEHAVIOR,
+                                         &swap_behavior) == EGL_TRUE &&
+                         swap_behavior == EGL_BUFFER_PRESERVED;
+        gl->damage_history_valid =
+            rhi_present_damage_history_init(&gl->damage_history, w, h);
         if (has_damage) {
             gl->swap_buffers_with_damage =
                 (PFN_break_egl_swap_buffers_with_damage)eglGetProcAddress(
@@ -508,7 +529,8 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
             gl->swap_buffers_with_damage != NULL;
         dev->capabilities.present_buffer_age_supported = has_age;
         dev->capabilities.present_target_preserved =
-            dev->capabilities.present_damage_supported && has_age;
+            dev->capabilities.present_damage_supported && has_age &&
+            preserved && gl->damage_history_valid;
     }
 #endif
     dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
@@ -570,6 +592,13 @@ static void gl_resize(RHIDevice *dev, u32 w, u32 h) {
     gl_set_viewport_cached(0, 0, w, h);
     dev->width  = w;
     dev->height = h;
+#ifdef ENGINE_PLATFORM_WAYLAND
+    {
+        GLBackend *gl = (GLBackend *)dev->backend_data;
+        gl->damage_history_valid =
+            rhi_present_damage_history_init(&gl->damage_history, w, h);
+    }
+#endif
 }
 
 static u32 g_gl_frame_index = 0;
@@ -620,7 +649,7 @@ static void *gl_frame_begin(RHIDevice *dev) {
     dev->frame_partial_active = false;
 #ifdef ENGINE_PLATFORM_WAYLAND
     if (dev->frame_damage_requested && dev->capabilities.present_target_preserved &&
-        gl->buffer_age_supported) {
+        gl->buffer_age_supported && gl->damage_history_valid) {
         EGLint age = 0;
         bool dimensions_safe = dev->width <= (u32)INT_MAX &&
                                dev->height <= (u32)INT_MAX;
@@ -631,8 +660,25 @@ static void *gl_frame_begin(RHIDevice *dev) {
         }
         if (dimensions_safe &&
             eglQuerySurface(gl->egl_display, gl->egl_surface,
-                            EGL_BUFFER_AGE_EXT, &age) && age == 1) {
-            dev->frame_partial_active = true;
+                            EGL_BUFFER_AGE_EXT, &age) && age >= 0) {
+            RHIPresentRect effective[RHI_MAX_PRESENT_DAMAGE_RECTS];
+            u32 effective_count = 0u;
+            bool full = false;
+            if (rhi_present_damage_history_prepare_age(
+                    &gl->damage_history, (u32)age,
+                    dev->frame_current_damage,
+                    dev->frame_current_damage_count, effective,
+                    RHI_MAX_PRESENT_DAMAGE_RECTS, &effective_count, &full)) {
+                if (full) {
+                    dev->frame_damage[0] = effective[0];
+                    dev->frame_damage_count = 1u;
+                } else {
+                    memcpy(dev->frame_damage, effective,
+                           effective_count * sizeof(effective[0]));
+                    dev->frame_damage_count = effective_count;
+                    dev->frame_partial_active = true;
+                }
+            }
         }
     }
 #endif
@@ -641,23 +687,6 @@ static void *gl_frame_begin(RHIDevice *dev) {
         g_gl_depth_mask = true;
     }
     glClear(GL_DEPTH_BUFFER_BIT);
-    if (dev->frame_partial_active && dev->frame_damage_count != 0u) {
-        u32 min_x = dev->width;
-        u32 min_y = dev->height;
-        u32 max_x = 0u;
-        u32 max_y = 0u;
-        u32 i;
-        for (i = 0u; i < dev->frame_damage_count; ++i) {
-            const RHIPresentRect *rect = &dev->frame_damage[i];
-            if ((u32)rect->x < min_x) min_x = (u32)rect->x;
-            if ((u32)rect->y < min_y) min_y = (u32)rect->y;
-            if ((u32)rect->x + rect->w > max_x) max_x = (u32)rect->x + rect->w;
-            if ((u32)rect->y + rect->h > max_y) max_y = (u32)rect->y + rect->h;
-        }
-        rhi_cmd_set_scissor_top_left((RHICmdBuffer *)&g_gl_cmd_sentinel,
-                                     min_x, min_y, max_x - min_x,
-                                     max_y - min_y);
-    }
     return &g_gl_cmd_sentinel;
 }
 
@@ -667,11 +696,13 @@ static void gl_frame_end(RHIDevice *dev) {
     g_gl_frame_index++;
 }
 
-static void gl_present(RHIDevice *dev) {
+static bool gl_present(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
 #ifdef ENGINE_PLATFORM_WINDOWS
-    SwapBuffers(gl->hdc);
+    return SwapBuffers(gl->hdc) != 0;
 #elif defined(ENGINE_PLATFORM_WAYLAND)
+    EGLBoolean swapped;
+    bool used_damage = false;
     if (dev->frame_partial_active && gl->swap_buffers_with_damage != NULL) {
         EGLint damage[4u * RHI_MAX_PRESENT_DAMAGE_RECTS];
         u32 i;
@@ -682,16 +713,32 @@ static void gl_present(RHIDevice *dev) {
             damage[4u * i + 2u] = (EGLint)rect->w;
             damage[4u * i + 3u] = (EGLint)rect->h;
         }
-        if (!gl->swap_buffers_with_damage(gl->egl_display, gl->egl_surface,
-                                          damage,
-                                          (EGLint)dev->frame_damage_count)) {
-            eglSwapBuffers(gl->egl_display, gl->egl_surface);
+        swapped = gl->swap_buffers_with_damage(gl->egl_display, gl->egl_surface,
+                                               damage,
+                                               (EGLint)dev->frame_damage_count);
+        if (swapped) {
+            used_damage = true;
+        } else {
+            swapped = eglSwapBuffers(gl->egl_display, gl->egl_surface);
         }
     } else {
-        eglSwapBuffers(gl->egl_display, gl->egl_surface);
+        swapped = eglSwapBuffers(gl->egl_display, gl->egl_surface);
     }
+    if (swapped && gl->damage_history_valid) {
+        RHIPresentRect committed = {0, 0, dev->width, dev->height};
+        const RHIPresentRect *committed_rects = used_damage
+                                                    ? dev->frame_damage
+                                                    : &committed;
+        u32 committed_count = used_damage ? dev->frame_damage_count : 1u;
+        (void)rhi_present_damage_history_commit(
+            &gl->damage_history, committed_rects, committed_count);
+    } else if (!swapped && gl->damage_history_valid) {
+        (void)rhi_present_damage_history_reset(&gl->damage_history);
+    }
+    return swapped == EGL_TRUE;
 #else
     glXSwapBuffers(gl->display, gl->window);
+    return true;
 #endif
 }
 
@@ -986,9 +1033,10 @@ void rhi_frame_end(RHIDevice *dev) {
 }
 
 void rhi_present(RHIDevice *dev) {
-    gl_present(dev);
+    (void)gl_present(dev);
     dev->frame_damage_requested = false;
     dev->frame_damage_count = 0u;
+    dev->frame_current_damage_count = 0u;
     dev->frame_partial_active = false;
 }
 

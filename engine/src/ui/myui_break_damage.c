@@ -4,6 +4,38 @@
 
 #include "myui/my_window_manager.h"
 
+bool break_ui_drawable_damage_to_logical(
+    const RHIPresentRect* damage, uint32_t logical_width,
+    uint32_t logical_height, uint32_t drawable_width,
+    uint32_t drawable_height, my_rect_t* out) {
+  uint64_t right;
+  uint64_t bottom;
+  uint64_t x0;
+  uint64_t y0;
+  uint64_t x1;
+  uint64_t y1;
+  if (damage == NULL || out == NULL || logical_width == 0u ||
+      logical_height == 0u || drawable_width == 0u || drawable_height == 0u ||
+      damage->x < 0 || damage->y < 0 || damage->w == 0u || damage->h == 0u ||
+      (uint64_t)damage->x + damage->w > drawable_width ||
+      (uint64_t)damage->y + damage->h > drawable_height ||
+      logical_width > INT32_MAX || logical_height > INT32_MAX) {
+    return false;
+  }
+  right = (uint64_t)damage->x + damage->w;
+  bottom = (uint64_t)damage->y + damage->h;
+  x0 = ((uint64_t)damage->x * logical_width) / drawable_width;
+  y0 = ((uint64_t)damage->y * logical_height) / drawable_height;
+  x1 = (right * logical_width + drawable_width - 1u) / drawable_width;
+  y1 = (bottom * logical_height + drawable_height - 1u) / drawable_height;
+  if (x1 > logical_width) x1 = logical_width;
+  if (y1 > logical_height) y1 = logical_height;
+  if (x0 >= x1 || y0 >= y1) return false;
+  *out = (my_rect_t){(int32_t)x0, (int32_t)y0, (int32_t)(x1 - x0),
+                     (int32_t)(y1 - y0)};
+  return true;
+}
+
 #define BREAK_UI_DEFAULT_MAX_DAMAGE_RECTS 8u
 #define BREAK_UI_DEFAULT_MAX_SCISSOR_AREA_PERCENT 60u
 

@@ -164,7 +164,13 @@ int main(void) {
       damage[0] = (RHIPresentRect){0, 0, drawable_w, drawable_h};
       damage_count = 1u;
     }
-    if (damage_count == 0u) continue;
+    if (damage_count == 0u) {
+      RHICapabilities caps = {0};
+      if (!rhi_device_get_capabilities(device, &caps) ||
+          !caps.present_target_preserved) {
+        continue;
+      }
+    }
     cmd = rhi_frame_begin_damage(device, damage, damage_count, &partial);
     if (cmd != NULL) {
       break_ui_set_present_partial(ui, partial);

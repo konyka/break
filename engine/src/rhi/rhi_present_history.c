@@ -177,3 +177,118 @@ u64 rhi_present_history_image_generation(const RHIPresentHistory *history,
     if (history == NULL || image_index >= history->image_count) return 0u;
     return history->image_generation[image_index];
 }
+
+static bool damage_history_rects_valid(const RHIPresentDamageHistory *history,
+                                       const RHIPresentRect *rects,
+                                       u32 count) {
+    u32 i;
+    if (history == NULL || count > RHI_MAX_PRESENT_DAMAGE_RECTS ||
+        (count != 0u && rects == NULL)) {
+        return false;
+    }
+    for (i = 0u; i < count; ++i) {
+        const RHIPresentRect *rect = &rects[i];
+        if (rect->x < 0 || rect->y < 0 || rect->w == 0u || rect->h == 0u ||
+            (u64)rect->x + (u64)rect->w > history->width ||
+            (u64)rect->y + (u64)rect->h > history->height) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool damage_history_output_full(const RHIPresentDamageHistory *history,
+                                        RHIPresentRect *out, u32 out_capacity,
+                                        u32 *out_count, bool *out_full) {
+    if (history == NULL || out == NULL || out_capacity == 0u ||
+        out_count == NULL || out_full == NULL) {
+        return false;
+    }
+    out[0] = (RHIPresentRect){0, 0, history->width, history->height};
+    *out_count = 1u;
+    *out_full = true;
+    return true;
+}
+
+bool rhi_present_damage_history_init(RHIPresentDamageHistory *history,
+                                     u32 width, u32 height) {
+    if (history == NULL || width == 0u || height == 0u) return false;
+    memset(history, 0, sizeof(*history));
+    history->width = width;
+    history->height = height;
+    return true;
+}
+
+bool rhi_present_damage_history_reset(RHIPresentDamageHistory *history) {
+    u32 width;
+    u32 height;
+    if (history == NULL || history->width == 0u || history->height == 0u) {
+        return false;
+    }
+    width = history->width;
+    height = history->height;
+    memset(history, 0, sizeof(*history));
+    history->width = width;
+    history->height = height;
+    return true;
+}
+
+bool rhi_present_damage_history_prepare_age(
+    const RHIPresentDamageHistory *history, u32 buffer_age,
+    const RHIPresentRect *current, u32 count, RHIPresentRect *out,
+    u32 out_capacity, u32 *out_count, bool *out_full) {
+    u32 first;
+    u32 i;
+    if (history == NULL || out_count == NULL || out_full == NULL ||
+        !damage_history_rects_valid(history, current, count)) {
+        return false;
+    }
+    *out_count = 0u;
+    *out_full = false;
+    if (buffer_age == 0u || buffer_age > history->entry_count ||
+        buffer_age > RHI_PRESENT_DAMAGE_HISTORY_CAPACITY) {
+        return damage_history_output_full(history, out, out_capacity,
+                                           out_count, out_full);
+    }
+    first = history->entry_count - (buffer_age - 1u);
+    for (i = first; i < history->entry_count; ++i) {
+        const RHIPresentHistoryEntry *entry = &history->entries[i];
+        if (entry->count > out_capacity - *out_count) {
+            return damage_history_output_full(history, out, out_capacity,
+                                               out_count, out_full);
+        }
+        if (entry->count != 0u) {
+            memcpy(&out[*out_count], entry->rects,
+                   entry->count * sizeof(entry->rects[0]));
+            *out_count += entry->count;
+        }
+    }
+    if (count > out_capacity - *out_count) {
+        return damage_history_output_full(history, out, out_capacity,
+                                           out_count, out_full);
+    }
+    if (count != 0u) {
+        memcpy(&out[*out_count], current, count * sizeof(current[0]));
+        *out_count += count;
+    }
+    return true;
+}
+
+bool rhi_present_damage_history_commit(RHIPresentDamageHistory *history,
+                                       const RHIPresentRect *current,
+                                       u32 count) {
+    if (!damage_history_rects_valid(history, current, count)) return false;
+    if (history->entry_count == RHI_PRESENT_DAMAGE_HISTORY_CAPACITY) {
+        memmove(&history->entries[0], &history->entries[1],
+                (RHI_PRESENT_DAMAGE_HISTORY_CAPACITY - 1u) *
+                    sizeof(history->entries[0]));
+        history->entry_count--;
+    }
+    history->entries[history->entry_count].count = count;
+    if (count != 0u) {
+        memcpy(history->entries[history->entry_count].rects, current,
+               count * sizeof(current[0]));
+    }
+    history->entry_count++;
+    return true;
+}
