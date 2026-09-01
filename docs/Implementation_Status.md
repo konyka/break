@@ -21,6 +21,11 @@ script resolver 已补充 Thai (`Thai`) 与 Thaana (`Thaa`) 的准确 tag 映射
 字符优先继承前序 script，段首才向后继承。TDD 新增组合附加符号与 Thai 边界用例，当前
 `test_myui_text_layout` 为 **32/32**。
 
+paragraph 新增 `my_text_paragraph_process_ex()` 和只读
+`my_text_paragraph_shape_params()`；换行测量会接收同一组 direction/script/language/features，
+字符串由 paragraph 自己复制并在 OOM 时事务回滚。新增参数透传、所有权和回滚用例，当前
+`test_myui_text_layout` 为 **35/35**。
+
 ## 本轮更新：Vulkan vgcanvas AA 事务
 
 独立 Vulkan vgcanvas 现将 `ENGINE_VULKAN` 构建选项正确传递到 `myui_core`，并链接 Vulkan

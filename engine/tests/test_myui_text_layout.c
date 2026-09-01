@@ -437,6 +437,66 @@ TEST(text_layout_maps_thai_to_thai_script)
   my_text_layout_destroy(layout);
 }
 
+TEST(paragraph_process_ex_forwards_shaping_parameters)
+{
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  const my_font_shape_params_t params = {
+      false, MY_FONT_SCRIPT_LATN, "en-US", "kern=0,liga=1"};
+  my_text_paragraph_t* paragraph;
+
+  s_paragraph_last_language = NULL;
+  s_paragraph_last_features = NULL;
+  s_paragraph_shape_ex_calls = 0;
+  paragraph = my_text_paragraph_process_ex(NULL, "office", (my_font_t*)&font,
+                                           16, 0, &params);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(s_paragraph_shape_ex_calls, 1u);
+  ASSERT_STR_EQ(s_paragraph_last_language, "en-US");
+  ASSERT_STR_EQ(s_paragraph_last_features, "kern=0,liga=1");
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_process_ex_owns_shaping_parameter_strings)
+{
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  char language[] = "ar";
+  char features[] = "liga=0";
+  my_font_shape_params_t params = {true, MY_FONT_SCRIPT_ARAB, language,
+                                   features};
+  const my_font_shape_params_t* stored;
+  my_text_paragraph_t* paragraph = my_text_paragraph_process_ex(
+      NULL, "ab", (my_font_t*)&font, 16, 0, &params);
+
+  ASSERT_NOT_NULL(paragraph);
+  language[0] = 'x';
+  features[0] = 'x';
+  stored = my_text_paragraph_shape_params(paragraph);
+  ASSERT_NOT_NULL(stored);
+  ASSERT_TRUE(stored->language != language);
+  ASSERT_TRUE(stored->features != features);
+  ASSERT_TRUE(stored->rtl);
+  ASSERT_EQ(stored->script, MY_FONT_SCRIPT_ARAB);
+  ASSERT_STR_EQ(stored->language, "ar");
+  ASSERT_STR_EQ(stored->features, "liga=0");
+  ASSERT_TRUE(my_text_paragraph_shape_params(NULL) == NULL);
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_process_ex_parameter_copy_is_transactional)
+{
+  text_shape_alloc_state_t state = {0, 3, 0};
+  my_allocator_t allocator = {&state, text_shape_alloc, text_shape_calloc,
+                              text_shape_realloc, text_shape_free};
+  const my_font_shape_params_t params = {false, MY_FONT_SCRIPT_LATN, "en",
+                                         "liga=0"};
+
+  ASSERT_TRUE(my_text_paragraph_process_ex(
+                  &allocator, "ab", NULL, 16, 0, &params) == NULL);
+  ASSERT_EQ(state.live, 0u);
+}
+
 static my_ret_t paragraph_bad_cluster_shape(my_font_t* font, const char* text,
                                             int32_t size, bool rtl,
                                             const my_allocator_t* allocator,
@@ -984,6 +1044,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_shape_ex_failure_rolls_back_segment_results);
     RUN_TEST(text_layout_keeps_inherited_marks_with_previous_script);
     RUN_TEST(text_layout_maps_thai_to_thai_script);
+    RUN_TEST(paragraph_process_ex_forwards_shaping_parameters);
+    RUN_TEST(paragraph_process_ex_owns_shaping_parameter_strings);
+    RUN_TEST(paragraph_process_ex_parameter_copy_is_transactional);
     RUN_TEST(text_layout_shape_oom_is_transactional);
     RUN_TEST(text_layout_shape_rejects_mismatched_source_text);
     RUN_TEST(text_layout_shape_rejects_non_boundary_cluster);

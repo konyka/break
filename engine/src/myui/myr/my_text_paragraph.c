@@ -43,6 +43,33 @@ static bool paragraph_bounded_text_len(const char* text, size_t* out_len) {
   return true;
 }
 
+static bool paragraph_param_len(const char* value, size_t limit,
+                                size_t* out_len) {
+  size_t length;
+  if (value == NULL) {
+    *out_len = 0u;
+    return true;
+  }
+  for (length = 0u; length <= limit; ++length) {
+    if (value[length] == '\0') {
+      *out_len = length;
+      return true;
+    }
+  }
+  return false;
+}
+
+static char* paragraph_copy_param(const my_allocator_t* allocator,
+                                  const char* value, size_t length) {
+  char* copy;
+  if (value == NULL) return NULL;
+  if (length == SIZE_MAX) return NULL;
+  copy = (char*)my_mem_alloc(allocator, length + 1u);
+  if (copy == NULL) return NULL;
+  memcpy(copy, value, length + 1u);
+  return copy;
+}
+
 static size_t paragraph_cp_index(const size_t* offsets, size_t count,
                                  size_t byte) {
   size_t lo = 0, hi = count;
@@ -71,7 +98,8 @@ static void paragraph_destroy_arrays(const my_allocator_t* allocator,
 static my_ret_t paragraph_measure(const my_allocator_t* allocator,
                                   const char* text, my_font_t* font,
                                   int32_t size, uint32_t* cps, size_t* offsets,
-                                  size_t count, float* widths, bool* blocked) {
+                                  size_t count, float* widths, bool* blocked,
+                                  const my_font_shape_params_t* shape_params) {
   my_font_shape_result_t shaped = {0};
   my_text_layout_t* layout = NULL;
   my_ret_t shape_ret;
@@ -83,11 +111,12 @@ static my_ret_t paragraph_measure(const my_allocator_t* allocator,
   if (my_text_layout_may_need_bidi(text)) {
     layout = my_text_layout_process(allocator, text);
     if (layout == NULL) return MY_RET_OOM;
-    shape_ret = my_text_layout_shape(layout, text, font, size, allocator,
-                                     &shaped);
+    shape_ret = my_text_layout_shape_ex(layout, text, font, size, shape_params,
+                                        allocator, &shaped);
     my_text_layout_destroy(layout);
   } else {
-    shape_ret = my_font_shape(font, text, size, false, allocator, &shaped);
+    shape_ret = my_font_shape_ex(font, text, size, shape_params, allocator,
+                                 &shaped);
   }
   if (shape_ret == MY_RET_OK) {
     size_t glyph;
@@ -135,7 +164,8 @@ static my_ret_t paragraph_build_segment(my_text_paragraph_t* paragraph,
                                         size_t* capacity, size_t start_byte,
                                         size_t end_byte, size_t start_cp,
                                         size_t count, my_font_t* font,
-                                        int32_t size, int32_t max_width) {
+                                        int32_t size, int32_t max_width,
+                                        const my_font_shape_params_t* shape_params) {
   const char* segment = paragraph->text + start_byte;
   uint32_t* cps = NULL;
   size_t* offsets = NULL;
@@ -171,7 +201,7 @@ static my_ret_t paragraph_build_segment(my_text_paragraph_t* paragraph,
     off += (size_t)(p - (segment + off));
   }
   ret = paragraph_measure(paragraph->allocator, segment, font, size, cps,
-                          offsets, count, widths, blocked);
+                          offsets, count, widths, blocked, shape_params);
   if (ret != MY_RET_OK) goto done;
 
   if (max_width <= 0) {
@@ -217,22 +247,50 @@ done:
   return ret;
 }
 
-my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
-                                               const char* text,
-                                               my_font_t* font, int32_t size,
-                                               int32_t max_width) {
+my_text_paragraph_t* my_text_paragraph_process_ex(
+    const my_allocator_t* allocator, const char* text, my_font_t* font,
+    int32_t size, int32_t max_width,
+    const my_font_shape_params_t* shape_params) {
   my_text_paragraph_t* paragraph;
+  my_font_shape_params_t default_shape_params = {false, 0u, NULL, NULL};
+  const my_font_shape_params_t* effective_shape_params =
+      shape_params != NULL ? shape_params : &default_shape_params;
   size_t capacity = 0, start_byte = 0, start_cp = 0, cp_count = 0;
   size_t text_len;
+  size_t language_len;
+  size_t features_len;
   const char* p;
   if (text == NULL || (font != NULL && size <= 0) ||
-      !paragraph_bounded_text_len(text, &text_len)) {
+      !paragraph_bounded_text_len(text, &text_len) ||
+      !paragraph_param_len(effective_shape_params->language,
+                           MY_FONT_SHAPE_MAX_LANGUAGE_BYTES, &language_len) ||
+      !paragraph_param_len(effective_shape_params->features,
+                           MY_FONT_SHAPE_MAX_FEATURE_BYTES, &features_len)) {
     return NULL;
   }
   paragraph = (my_text_paragraph_t*)my_mem_calloc(
       allocator, 1, sizeof(my_text_paragraph_t));
   if (paragraph == NULL) return NULL;
   paragraph->allocator = allocator;
+  paragraph->shape_params = *effective_shape_params;
+  if (effective_shape_params->language != NULL) {
+    paragraph->shape_language = paragraph_copy_param(
+        allocator, effective_shape_params->language, language_len);
+    if (paragraph->shape_language == NULL) {
+      my_text_paragraph_destroy(paragraph);
+      return NULL;
+    }
+    paragraph->shape_params.language = paragraph->shape_language;
+  }
+  if (effective_shape_params->features != NULL) {
+    paragraph->shape_features = paragraph_copy_param(
+        allocator, effective_shape_params->features, features_len);
+    if (paragraph->shape_features == NULL) {
+      my_text_paragraph_destroy(paragraph);
+      return NULL;
+    }
+    paragraph->shape_params.features = paragraph->shape_features;
+  }
   paragraph->text = (char*)my_mem_alloc(allocator, text_len + 1u);
   if (paragraph->text == NULL) {
     my_text_paragraph_destroy(paragraph);
@@ -244,7 +302,8 @@ my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
     if (*p == '\0' || *p == '\n') {
       if (paragraph_build_segment(paragraph, &capacity, start_byte,
                                   (size_t)(p - paragraph->text), start_cp,
-                                  cp_count, font, size, max_width) != MY_RET_OK) {
+                                  cp_count, font, size, max_width,
+                                  effective_shape_params) != MY_RET_OK) {
         my_text_paragraph_destroy(paragraph);
         return NULL;
       }
@@ -267,10 +326,20 @@ my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
   return paragraph;
 }
 
+my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
+                                               const char* text,
+                                               my_font_t* font, int32_t size,
+                                               int32_t max_width) {
+  return my_text_paragraph_process_ex(allocator, text, font, size, max_width,
+                                      NULL);
+}
+
 void my_text_paragraph_destroy(my_text_paragraph_t* paragraph) {
   const my_allocator_t* allocator;
   if (paragraph == NULL) return;
   allocator = paragraph->allocator;
+  my_mem_free(allocator, paragraph->shape_features);
+  my_mem_free(allocator, paragraph->shape_language);
   my_mem_free(allocator, paragraph->text);
   my_mem_free(allocator, paragraph->lines);
   my_mem_free(allocator, paragraph);
@@ -280,4 +349,9 @@ const my_text_paragraph_line_t* my_text_paragraph_line_at(
     const my_text_paragraph_t* paragraph, size_t index) {
   if (paragraph == NULL || index >= paragraph->line_count) return NULL;
   return &paragraph->lines[index];
+}
+
+const my_font_shape_params_t* my_text_paragraph_shape_params(
+    const my_text_paragraph_t* paragraph) {
+  return paragraph != NULL ? &paragraph->shape_params : NULL;
 }

@@ -443,6 +443,10 @@ shaping run。RTL segment 按 visual run 顺序提交，失败时整个 result �
 shaping cache 和跨 face 的完整 OpenType shaping 仍未实现。
 有限 resolver 已区分 `Thai` 与 `Thaa` tag，并让 Common/Inherited 字符优先归入前序
 script（段首才使用后继 script），组合附加符号因此不会在相邻 script 边界被拆开。
+paragraph 可通过 `my_text_paragraph_process_ex()` 使用同一组参数进行换行测量；language/
+features 会复制到 paragraph 自身，`my_text_paragraph_shape_params()` 返回只读的受管参数，
+因此调用方释放或修改原字符串不会改变后续排版。旧的
+`my_text_paragraph_process()` 保持默认参数和原有快速路径。
 字体 shaping 入口本身也限制输入为 `MY_FONT_SHAPE_MAX_BYTES`（4 MiB），在调用 provider 或
 HarfBuzz 前完成有界扫描；layout/paragraph 入口使用各自同等大小的前置预算。
 
@@ -507,7 +511,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
-| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining、mandatory Lam-Alef、有限 script segment 和 cluster-safe bidi glyph-run；完整 UAX#24/script extensions、script features GSUB、多段落增量 rebreaking 仍未实现 | 增加完整 script resolution、variation selector/language system、段落级增量 mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约 |
+| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining、mandatory Lam-Alef、有限 script segment、paragraph shaping 参数和 cluster-safe bidi glyph-run；完整 UAX#24/script extensions、script features GSUB、多段落增量 rebreaking 仍未实现 | 增加完整 script resolution、variation selector/language system、段落级增量 mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约 |
 | 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |

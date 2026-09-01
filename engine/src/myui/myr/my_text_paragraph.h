@@ -27,6 +27,9 @@ typedef struct my_text_paragraph_t {
   my_text_paragraph_line_t* lines;
   size_t line_count;
   size_t logical_len;
+  my_font_shape_params_t shape_params;
+  char* shape_language;
+  char* shape_features;
 } my_text_paragraph_t;
 
 /** @brief Build a bounded paragraph; oversized text returns NULL, and
@@ -36,11 +39,21 @@ my_text_paragraph_t* my_text_paragraph_process(const my_allocator_t* allocator,
                                                my_font_t* font, int32_t size,
                                                int32_t max_width);
 
+/** @brief Build a paragraph using explicit shaping parameters. */
+my_text_paragraph_t* my_text_paragraph_process_ex(
+    const my_allocator_t* allocator, const char* text, my_font_t* font,
+    int32_t size, int32_t max_width,
+    const my_font_shape_params_t* shape_params);
+
 /** @brief Destroy a paragraph returned by my_text_paragraph_process. */
 void my_text_paragraph_destroy(my_text_paragraph_t* paragraph);
 
 /** @brief Read one logical line; NULL is returned for an invalid index. */
 const my_text_paragraph_line_t* my_text_paragraph_line_at(
     const my_text_paragraph_t* paragraph, size_t index);
+
+/** @brief Read shaping parameters owned by the paragraph. */
+const my_font_shape_params_t* my_text_paragraph_shape_params(
+    const my_text_paragraph_t* paragraph);
 
 #endif /* MY_TEXT_PARAGRAPH_H */
