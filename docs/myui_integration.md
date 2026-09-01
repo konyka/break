@@ -508,7 +508,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（23/23）、
-`test_myui_text_layout`（23/23）、
+`test_myui_text_layout`（25/25）、
 `test_myui_vgcanvas_backend`（25/25）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；

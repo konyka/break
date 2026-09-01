@@ -13,6 +13,8 @@ typedef struct paragraph_test_font_t {
   my_font_t base;
   const uint8_t* bitmap;
   size_t glyph_calls;
+  size_t shape_calls;
+  size_t rtl_shape_calls;
 } paragraph_test_font_t;
 
 static my_ret_t layout_shape_font_shape(my_font_t* font, const char* text,
@@ -211,10 +213,38 @@ static my_ret_t paragraph_test_shape(my_font_t* font, const char* text,
                                      int32_t size, bool rtl,
                                      const my_allocator_t* allocator,
                                      my_font_shape_result_t* result) {
-  (void)font;
-  (void)rtl;
+  paragraph_test_font_t* test_font = (paragraph_test_font_t*)font;
+  test_font->shape_calls++;
+  if (rtl) test_font->rtl_shape_calls++;
   if (text == NULL || size <= 0 || result == NULL) return MY_RET_INVALID_PARAMS;
   result->allocator = allocator;
+  if (strcmp(text, "office") != 0) {
+    const char* p = text;
+    uint32_t cps[64];
+    uint32_t clusters[64];
+    size_t count = 0;
+    size_t i;
+    while (*p != '\0') {
+      const char* next = p;
+      if (count >= 64u) return MY_RET_FAIL;
+      clusters[count] = (uint32_t)(p - text);
+      cps[count] = my_utf8_next(&next);
+      p = next;
+      count++;
+    }
+    result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
+        allocator, count > 0 ? count : 1, sizeof(*result->glyphs));
+    if (result->glyphs == NULL) return MY_RET_OOM;
+    result->count = count;
+    for (i = 0; i < count; i++) {
+      size_t source = rtl ? count - i - 1u : i;
+      result->glyphs[i].font = font;
+      result->glyphs[i].glyph_id = cps[source];
+      result->glyphs[i].cluster = clusters[source];
+      result->glyphs[i].advance_x_26_6 = 64;
+    }
+    return MY_RET_OK;
+  }
   result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
       allocator, 4, sizeof(my_font_shape_glyph_t));
   if (result->glyphs == NULL) return MY_RET_OOM;
@@ -238,6 +268,26 @@ static const my_font_vtable_t s_paragraph_test_vtable = {
     paragraph_test_measure, paragraph_test_glyph, paragraph_test_ascent,
     paragraph_test_descent, paragraph_test_line_height, paragraph_test_destroy,
     NULL, paragraph_test_shape, NULL};
+
+static my_ret_t paragraph_bad_cluster_shape(my_font_t* font, const char* text,
+                                            int32_t size, bool rtl,
+                                            const my_allocator_t* allocator,
+                                            my_font_shape_result_t* result) {
+  (void)rtl;
+  if (text == NULL || size <= 0 || result == NULL) return MY_RET_INVALID_PARAMS;
+  result->allocator = allocator;
+  result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
+      allocator, 1, sizeof(*result->glyphs));
+  if (result->glyphs == NULL) return MY_RET_OOM;
+  result->count = 1;
+  result->glyphs[0].font = font;
+  result->glyphs[0].cluster = 1;
+  result->glyphs[0].advance_x_26_6 = 64;
+  return MY_RET_OK;
+}
+
+static const my_font_vtable_t s_paragraph_bad_cluster_vtable = {
+    .shape = paragraph_bad_cluster_shape};
 
 TEST(arabic_shape_forms_lam_alef)
 {
@@ -423,7 +473,7 @@ TEST(text_layout_preserves_lam_alef_logical_boundaries)
 TEST(text_layout_reuses_font_boundary_prefix_cache)
 {
   static const uint8_t bitmap[] = {255};
-  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0};
   my_text_layout_t* layout =
       my_text_layout_process(NULL, "\xD7\x90\xD7\x91\xD7\x92");
   my_rectf_t rects[2];
@@ -645,7 +695,7 @@ TEST(paragraph_preserves_logical_ranges_and_hard_boundaries)
 TEST(paragraph_does_not_break_inside_shaping_cluster)
 {
   static const uint8_t bitmap[] = {255};
-  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0};
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
       NULL, "office", (my_font_t*)&font, 16, 4);
   const my_text_paragraph_line_t* line;
@@ -660,6 +710,32 @@ TEST(paragraph_does_not_break_inside_shaping_cluster)
   ASSERT_EQ(line->start_cp, 2u);
   ASSERT_TRUE(line->cp_count >= 3u);
   my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_shapes_bidi_runs_before_wrapping)
+{
+  static const uint8_t bitmap[] = {255};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0};
+  my_text_paragraph_t* paragraph = my_text_paragraph_process(
+      NULL, "A\xD7\x90\xD7\x91" "B", (my_font_t*)&font, 16, 0);
+
+  ASSERT_NOT_NULL(paragraph);
+#ifdef MYUI_BIDI
+  ASSERT_TRUE(font.shape_calls >= 3u);
+  ASSERT_TRUE(font.rtl_shape_calls >= 1u);
+#else
+  ASSERT_EQ(font.shape_calls, 1u);
+  ASSERT_EQ(font.rtl_shape_calls, 0u);
+#endif
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_rejects_non_boundary_shape_cluster)
+{
+  my_font_t font = {&s_paragraph_bad_cluster_vtable};
+
+  ASSERT_TRUE(my_text_paragraph_process(NULL, "\xD7\x90", &font, 16, 0) ==
+              NULL);
 }
 
 TEST(text_layout_and_paragraph_reject_oversized_input_before_allocating)
@@ -705,6 +781,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(line_break_keeps_emoji_extensions_with_base_text);
     RUN_TEST(paragraph_preserves_logical_ranges_and_hard_boundaries);
     RUN_TEST(paragraph_does_not_break_inside_shaping_cluster);
+    RUN_TEST(paragraph_shapes_bidi_runs_before_wrapping);
+    RUN_TEST(paragraph_rejects_non_boundary_shape_cluster);
     RUN_TEST(text_layout_and_paragraph_reject_oversized_input_before_allocating);
     RUN_TEST(syntax_cache_lexes_bounded_tokens_and_comments);
     RUN_TEST(syntax_cache_records_utf8_token_byte_ranges);

@@ -32,6 +32,9 @@ OOM 回滚；paragraph 级 glyph-run mapping 已在本轮接入，完整 script/
 必须落在 UTF-8 codepoint 起点；逐分配点 OOM、Lam-Alef 与异常 cluster 回归已覆盖。完整
 script/features 配置和跨段落增量 shaping 仍未实现。
 
+paragraph 断行测量已复用该 visual bidi glyph-run：需要 bidi 的行按 resolved direction
+shaping，非法 UTF-8 cluster 直接失败，未启用 HarfBuzz 时保留 codepoint fallback。
+
 **文本布局输入预算（TDD）**：`my_text_layout_process()` 与
 `my_text_paragraph_process()` 原先会对调用方提供的 C 字符串先做无界扫描，再进入
 缓存、复制和排版分配。现分别在 `MY_TEXT_LAYOUT_MAX_BYTES` 与

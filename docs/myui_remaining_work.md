@@ -127,7 +127,7 @@
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
 | OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的 LTR 与受限 bidi visual-run 绘制/测量；完整 script/features 级 paragraph shaping 仍未完成 | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 script/features 级 run shaping |
-| 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，text area 已消费该模型；RTL 行内视觉映射和跨 face glyph-run 已接入，跨段落增量预算与 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 script/features run shaping |
+| 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，并在断行测量时复用 visual bidi glyph-run；text area 已消费该模型，RTL 行内视觉映射和跨 face glyph-run 已接入；跨段落增量预算与 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 script/features run shaping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 JUSTIFY 联动未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
 | 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不启用为能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`；新增固定容量 `rhi_present_history` 作为未来具备明确保留契约的平台基础；X11/Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | 具备明确 image 保留保证的 Vulkan/WSI 方案；X11/Win32/macOS runtime smoke；Wayland compositor smoke；异常 present 与真实 image 轮转验证 |
 | 完整 UAX#14 | SA dictionary、复杂 numeric/context tailoring、部分 LB 类别和完整 UCD 版本规则仍未覆盖；当前实用子集已覆盖 combining mark、Unicode 数字小数分隔符、Hebrew quotes、Regional Indicator、Unicode glue、joiner 与 emoji 扩展 | 错误断词或标点孤行 | 版本化 UCD golden corpus + 超长输入预算测试 |
@@ -335,7 +335,10 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
   provider cluster；输出采用候选事务，失败时清空结果，避免 selection/cursor 使用半成品。
 - 当前仍未宣称完整 Unicode script/features shaping：段落的 script 分段、OpenType feature
   配置、跨段落增量 rebreaking 和 JUSTIFY selection 联动留作后续阶段。
-- 验证：文本布局 **23/23**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
-  无 HarfBuzz **23/23、8/8、24/24**，ASan **23/23、8/8、24/24**。
+- paragraph 断行测量现在对需要 bidi 的行先走 `my_text_layout_shape()`，按 visual run 的
+  resolved direction shaping；cluster 不在 UTF-8 codepoint 起点时整段失败，不静默忽略
+  provider 输出。无 HarfBuzz 时保持原有 codepoint fallback。
+- 验证：文本布局 **25/25**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
+  无 HarfBuzz **25/25、8/8、24/24**，ASan **25/25、8/8、24/24**。
   `engine/build` 全量 CTest 中实际存在的 77 个测试全部通过；4 个未生成的可选
   rule-engine 目标为 `Not Run`，不属于本轮源码回归失败。
