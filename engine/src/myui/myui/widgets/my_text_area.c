@@ -344,8 +344,8 @@ static bool ta_geometry_from_shaping(my_text_area_t* ta, size_t row,
     return false;
   }
   for (i = 0; i <= count; i++) {
-    ta->geometry_boundaries[i] = my_text_layout_visual_boundary_x(
-        layout, ta->font, ta->font_size, i);
+    ta->geometry_boundaries[i] =
+        my_text_layout_visual_x(layout, ta->font, ta->font_size, i);
   }
   my_text_layout_destroy(layout);
   my_mem_free(ta->allocator, text);
@@ -1350,6 +1350,8 @@ static void ta_ensure_visible(my_text_area_t* ta) {
 /* ---------------- key handling ---------------- */
 
 static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl);
+static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
+                                       const my_visual_line_t* vl);
 static void ta_update_ime_spot(my_text_area_t* ta); /* fwd (M13a) */
 
 static void ta_move_to(my_text_area_t* ta, size_t row, size_t col,
@@ -1397,6 +1399,11 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
   size_t visual_index = ta->cursor_row;
   size_t col_in = ta->cursor_col;
   int32_t cursor_x = (int32_t)ta->cursor_col * TA_CELL_W;
+  int32_t line_width = 0;
+  int32_t inner_width;
+  int32_t line_offset = 0;
+  const my_visual_line_t* visual_line = NULL;
+  my_text_layout_t* line_layout = NULL;
   char* line = NULL;
   while (root->parent != NULL) {
     root = root->parent;
@@ -1414,40 +1421,98 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
     line_h = 16;
   }
   if (ta->wrap) {
-    const my_visual_line_t* visual_line;
     visual_index = ta_vline_of_pos(ta, ta->cursor_row, ta->cursor_col,
                                    &col_in);
     visual_line = ta_vline_at(ta, visual_index);
     if (visual_line != NULL) {
-      line = ta_vline_text(ta, visual_line);
       col_in = ta->cursor_col - visual_line->start_cp;
-      if (line != NULL) {
+      line_layout = ta_layout_rtl(ta, visual_line);
+      if (line_layout == NULL) {
+        line = ta_vline_text(ta, visual_line);
+      }
+      line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
+      if (line_layout != NULL) {
+        line_width = my_text_layout_visual_boundary_x(
+            line_layout, ta->font, ta->font_size, line_layout->len);
+      } else if (line != NULL && ta->font != NULL) {
+        (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
+                              NULL);
+      }
+      inner_width = ((my_widget_t*)ta)->rect.w - ta_content_left_value(ta) -
+                    TA_PAD_X;
+      if (inner_width < 0) {
+        inner_width = 0;
+      }
+      if (line_layout == NULL && line != NULL &&
+          ta->align == MY_TEXT_ALIGN_JUSTIFY &&
+          visual_index + 1 < ta_vline_count(ta) &&
+          ta_vline_at(ta, visual_index + 1)->phys == visual_line->phys) {
         size_t line_len = strlen(line);
-        int32_t line_width = (int32_t)line_len * TA_CELL_W;
         int space_count = ta_justify_space_count(line, line_len);
-        bool justify = ta->align == MY_TEXT_ALIGN_JUSTIFY &&
-                       visual_index + 1 < ta_vline_count(ta) &&
-                       ta_vline_at(ta, visual_index + 1)->phys ==
-                           visual_line->phys &&
-                       space_count > 0;
-        if (ta->font != NULL) {
-          (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
-                                NULL);
+        if (space_count > 0) {
+          cursor_x = ta_justify_boundary_x(
+              ta, line, col_in, (size_t)space_count, line_width, inner_width);
         }
-        if (justify) {
-          int32_t inner_width = ((my_widget_t*)ta)->rect.w -
-                                ta_content_left_value(ta) - TA_PAD_X;
-          cursor_x = ta_justify_boundary_x(ta, line, col_in,
-                                           (size_t)space_count, line_width,
-                                           inner_width);
-        } else {
-          cursor_x = (int32_t)col_in * TA_CELL_W;
+      } else if (line_layout != NULL) {
+        cursor_x = my_text_layout_visual_x(line_layout, ta->font,
+                                           ta->font_size, col_in);
+      } else {
+        cursor_x = ta_line_boundary_x(
+                       ta, visual_line->phys, visual_line->start_cp + col_in) -
+                   ta_line_boundary_x(ta, visual_line->phys,
+                                      visual_line->start_cp);
+      }
+      if (!(line_layout == NULL && ta->align == MY_TEXT_ALIGN_JUSTIFY)) {
+        if (ta->align == MY_TEXT_ALIGN_CENTER) {
+          line_offset = (inner_width - line_width) / 2;
+        } else if (ta->align == MY_TEXT_ALIGN_RIGHT ||
+                   (ta->align == MY_TEXT_ALIGN_LEFT && line_layout != NULL &&
+                    line_layout->rtl_base)) {
+          line_offset = inner_width - line_width;
         }
+        if (line_offset < 0) {
+          line_offset = 0;
+        }
+        cursor_x += line_offset;
       }
     }
   }
   if (!ta->wrap) {
-    cursor_x = ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
+    visual_line = ta_vline_at(ta, visual_index);
+    line_layout = visual_line != NULL ? ta_layout_rtl(ta, visual_line) : NULL;
+    if (line_layout != NULL) {
+      line_width = my_text_layout_visual_boundary_x(
+          line_layout, ta->font, ta->font_size, line_layout->len);
+    } else if (visual_line != NULL) {
+      line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
+      line = ta_vline_text(ta, visual_line);
+      if (line != NULL && ta->font != NULL) {
+        (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
+                              NULL);
+      }
+    }
+    inner_width = ((my_widget_t*)ta)->rect.w - ta_content_left_value(ta) -
+                  TA_PAD_X;
+    if (inner_width < 0) {
+      inner_width = 0;
+    }
+    if (ta->align == MY_TEXT_ALIGN_CENTER) {
+      line_offset = (inner_width - line_width) / 2;
+    } else if (ta->align == MY_TEXT_ALIGN_RIGHT ||
+               (ta->align == MY_TEXT_ALIGN_LEFT && line_layout != NULL &&
+                line_layout->rtl_base)) {
+      line_offset = inner_width - line_width;
+    }
+    if (line_offset < 0) {
+      line_offset = 0;
+    }
+    if (line_layout != NULL) {
+      cursor_x = my_text_layout_visual_x(line_layout, ta->font,
+                                         ta->font_size, ta->cursor_col);
+    } else {
+      cursor_x = ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
+    }
+    cursor_x += line_offset;
   }
   x = ta_content_left_value(ta) + cursor_x - ta->scroll_x;
   y = TA_PAD_Y + (int32_t)visual_index * line_h -

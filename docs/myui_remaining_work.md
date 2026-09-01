@@ -354,3 +354,15 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 验证：普通、无 HarfBuzz、Vulkan、ASan 四套构建的 `test_myui_text_layout`、
   `test_myui_font`、`test_myui_vgcanvas_backend`、`test_myui_window_manager` 均通过，
   每套 **4/4**；ASan 同时通过新增 shape-only 路径且无泄漏报告。
+
+## 已完成：RTL text-area geometry 与 IME boundary 对齐（2026-09-01）
+
+- 以 TDD 新增非 wrap/wrap RTL IME spot 测试，以及 RTL logical boundary geometry 测试，锁定
+  光标、绘制和平台候选框不能分别使用 logical cell x 的契约。
+- text area 的 RTL IME 更新现在复用 widget-owned layout cache，按 shaping visual advance、
+  paragraph direction 和 LEFT/CENTER/RIGHT 对齐计算坐标；wrap 模式也不再使用固定 cell 宽度。
+- geometry prefix 的填充改为 logical boundary -> visual x，而不是把 visual boundary index 当作
+  logical boundary，修复 RTL 水平滚动和可见性查询的坐标倒置；LTR/ligature 路径保持原有缓存。
+- 验证：普通、无 HarfBuzz、Vulkan、ASan 配置均通过相关 text-area、text-layout、font 和
+  canvas 测试；完整 OpenType script/features、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍
+  保持在未完成列表中。

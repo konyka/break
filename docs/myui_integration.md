@@ -770,3 +770,8 @@ cluster 只占用一个 glyph advance，selection、IME spot 和 pointer hit-tes
 回调均允许为空；公共包装器返回 `MY_RET_NOT_SUPPORTED` 或零值，控件再使用有界默认行高，因而
 shape-only provider 不会在不支持的栅格化路径中触发空函数指针。YAML 折叠导出返回的字符串由调用方
 使用传入 allocator 释放，重复导出前必须先释放旧输出。
+
+Text area 的 RTL 光标与 IME 候选框现在也使用同一套 visual boundary：非 wrap 和 wrap 模式均复用
+widget-owned 的 RTL layout cache、shaping advance、段落方向和对齐偏移。逻辑光标位于 RTL 行首时
+会落在视觉行尾，默认 LEFT 对齐的 RTL 行保持与绘制一致的右对齐；重复的焦点/光标更新不会再次
+复制已缓存的 RTL 行文本。非 RTL 行继续走 geometry prefix 快速路径。
