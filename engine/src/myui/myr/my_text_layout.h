@@ -42,6 +42,7 @@ typedef struct my_text_layout_t {
   uint32_t* visual_logical_span; /**< len items: source codepoints covered */
   uint32_t* logical_to_visual; /**< logical_len items: logical i -> visual index */
   uint8_t* visual_rtl;         /**< len items: visual cp's run is RTL */
+  char* logical_utf8;          /**< original logical UTF-8; binds glyph clusters */
   char* visual_utf8;           /**< visual_cps re-encoded as UTF-8 */
   size_t len;                  /**< visual item count */
   size_t logical_len;          /**< original logical codepoint count */
@@ -76,6 +77,22 @@ void my_text_layout_cache_flush(void);
 
 /** @brief Occupied cache slots (tests). */
 size_t my_text_layout_cache_size(void);
+
+/**
+ * @brief Shape a bidi layout into visual-order glyphs.
+ *
+ * `logical_text` must byte-match the logical UTF-8 string used to create
+ * `layout`. Runs are shaped in logical order with their resolved direction,
+ * then returned in visual order. Glyph clusters are absolute UTF-8 byte
+ * offsets in `logical_text`, and each glyph retains its owning face. The
+ * result is caller-owned and must be released with my_font_shape_destroy().
+ * Returns MY_RET_NOT_SUPPORTED when the selected font has no shaping
+ * provider; other failures leave an empty result.
+ */
+my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
+                              const char* logical_text, my_font_t* font,
+                              int32_t size, const my_allocator_t* allocator,
+                              my_font_shape_result_t* result);
 
 /* ---------------- editing support: boundary <-> visual (M12a) --------
  * A CURSOR always sits between two logical codepoints (a "logical

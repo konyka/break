@@ -470,12 +470,26 @@ static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
     }
   } else {
     my_text_layout_t *layout = my_text_layout_process(c->allocator, text);
+    my_font_shape_result_t shaped = {0};
+    my_ret_t shape_ret;
     size_t i;
     if (layout == NULL) {
       return MY_RET_OOM;
     }
-    for (i = 0; i < layout->len; i++) {
-      draw_codepoint(c, layout->visual_cps[i], &pen_x, top, ascent);
+    shape_ret = my_text_layout_shape(layout, text, c->state.font,
+                                     dev_font_size, c->allocator, &shaped);
+    if (shape_ret == MY_RET_OK) {
+      for (i = 0; i < shaped.count; i++) {
+        draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else if (shape_ret == MY_RET_NOT_SUPPORTED) {
+      for (i = 0; i < layout->len; i++) {
+        draw_codepoint(c, layout->visual_cps[i], &pen_x, top, ascent);
+      }
+    } else {
+      my_text_layout_destroy(layout);
+      return shape_ret;
     }
     my_text_layout_destroy(layout);
   }
@@ -495,8 +509,24 @@ static my_ret_t rhi_measure_text(my_vgcanvas_t *vg, const char *text,
     int32_t dev_font_size =
         (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
     if (dev_font_size < 1) dev_font_size = 1;
-    ret = my_font_measure(c->state.font, layout->visual_utf8,
-                          dev_font_size, w, h);
+    {
+      my_font_shape_result_t shaped = {0};
+      ret = my_text_layout_shape(layout, text, c->state.font, dev_font_size,
+                                 c->allocator, &shaped);
+      if (ret == MY_RET_OK) {
+        int64_t width = 0;
+        size_t i;
+        for (i = 0; i < shaped.count; i++) {
+          width += shaped.glyphs[i].advance_x_26_6;
+        }
+        if (w != NULL) *w = (int32_t)((width + 32) / 64);
+        if (h != NULL) *h = my_font_line_height(c->state.font, dev_font_size);
+        my_font_shape_destroy(&shaped);
+      } else if (ret == MY_RET_NOT_SUPPORTED) {
+        ret = my_font_measure(c->state.font, layout->visual_utf8,
+                              dev_font_size, w, h);
+      }
+    }
     my_text_layout_destroy(layout);
   } else {
     my_font_shape_result_t shaped = {0};

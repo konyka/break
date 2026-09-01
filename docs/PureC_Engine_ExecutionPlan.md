@@ -4917,6 +4917,13 @@ combinator 直接失败。旧的 `my_theme_set_ex*()` 及单祖先观察字段�
 之前产生无界扫描和分配。超限测试确认调用方 allocator 零次调用，正常布局仍走原有
 font-independent cache 与 paragraph 增量路径。
 
+2026-09-01：paragraph bidi glyph-run 已通过 `my_text_layout_shape()` 接入 soft、GLES2、
+Vulkan 和 Break RHI 的复杂文本绘制/测量。该 API 按 visual bidi run 恢复逻辑 UTF-8 输入，
+按 resolved direction shaping，并把 glyph cluster 映射回逻辑 byte offset；失败事务不会
+交付部分 glyph。layout 自有原 logical UTF-8 副本，输入必须逐字节匹配，provider cluster
+必须为 codepoint 起点；依赖关闭时保留 codepoint fallback。完整 script/features shaping、
+跨段落增量 rebreaking 与 JUSTIFY selection 仍是后续工作。
+
 字体 shaping 的实施边界必须遵循同一策略：glyph id 只能在 `(face, id, size, key kind)`
 范围内解释，字体链的所有 candidate 输出必须在完整成功后提交。普通 LTR 单 face 不增加
 run 描述分配；跨 face 或 RTL 才进入有界事务路径。后续 paragraph bidi 接入必须先产出

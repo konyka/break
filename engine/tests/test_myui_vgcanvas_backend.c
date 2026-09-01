@@ -206,6 +206,7 @@ typedef struct test_font_t {
   my_font_t base;
   const uint8_t* bitmap;
   const uint8_t* shaped_bitmap;
+  int32_t shape_calls;
 } test_font_t;
 
 static my_ret_t test_font_measure(my_font_t* font, const char* text,
@@ -243,10 +244,12 @@ static my_ret_t test_font_shape(my_font_t* font, const char* text,
                                 int32_t size, bool rtl,
                                 const my_allocator_t* allocator,
                                 my_font_shape_result_t* result) {
+  test_font_t* test_font = (test_font_t*)font;
   (void)rtl;
   if (text == NULL || text[0] == '\0' || size <= 0 || result == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
+  test_font->shape_calls++;
   result->allocator = allocator;
   result->glyphs = (my_font_shape_glyph_t*)my_mem_alloc(
       allocator, sizeof(my_font_shape_glyph_t));
@@ -402,8 +405,8 @@ TEST(gles2_glyph_cache_separates_font_identity)
 {
   static const uint8_t font_a_bitmap[] = {0x11};
   static const uint8_t font_b_bitmap[] = {0xEE};
-  test_font_t font_a = {{&s_test_font_vtable}, font_a_bitmap, font_a_bitmap};
-  test_font_t font_b = {{&s_test_font_vtable}, font_b_bitmap, font_b_bitmap};
+  test_font_t font_a = {{&s_test_font_vtable}, font_a_bitmap, font_a_bitmap, 0};
+  test_font_t font_b = {{&s_test_font_vtable}, font_b_bitmap, font_b_bitmap, 0};
   mock_gl_t mock;
   my_vgcanvas_t* canvas;
 
@@ -425,7 +428,7 @@ TEST(gles2_draws_shaped_glyph_id_and_advance)
 {
   static const uint8_t codepoint_bitmap[] = {0x11};
   static const uint8_t shaped_bitmap[] = {0xEE};
-  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap};
+  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap, 0};
   mock_gl_t mock;
   my_vgcanvas_t* canvas;
 
@@ -445,11 +448,32 @@ TEST(gles2_draws_shaped_glyph_id_and_advance)
   my_vgcanvas_destroy(canvas);
 }
 
+TEST(gles2_shapes_complex_bidi_runs_before_drawing)
+{
+  static const uint8_t codepoint_bitmap[] = {0x11};
+  static const uint8_t shaped_bitmap[] = {0xEE};
+  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap,
+                      0};
+  mock_gl_t mock;
+  my_vgcanvas_t* canvas;
+
+  mock_gl_init(&mock);
+  canvas = my_vgcanvas_gles2_create_with_gl(NULL, 100, 80, &mock.gl);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, (my_font_t*)&font, 12), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "A\xD7\x90\xD7\x91" "B", 0, 16),
+            MY_RET_OK);
+  ASSERT_TRUE(font.shape_calls > 0);
+  ASSERT_TRUE(mock.uploaded_alpha_count > 0);
+  ASSERT_TRUE(mock.uploaded_alpha[0] == shaped_bitmap);
+  my_vgcanvas_destroy(canvas);
+}
+
 TEST(soft_draws_shaped_glyph_id_and_advance)
 {
   static const uint8_t codepoint_bitmap[] = {0x00};
   static const uint8_t shaped_bitmap[] = {0xFF};
-  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap};
+  test_font_t font = {{&s_test_font_vtable}, codepoint_bitmap, shaped_bitmap, 0};
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas;
   uint8_t* pixels;
@@ -1048,6 +1072,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles2_resize_uses_drawable_pixels);
     RUN_TEST(gles2_glyph_cache_separates_font_identity);
     RUN_TEST(gles2_draws_shaped_glyph_id_and_advance);
+    RUN_TEST(gles2_shapes_complex_bidi_runs_before_drawing);
     RUN_TEST(soft_draws_shaped_glyph_id_and_advance);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);
     RUN_TEST(vgcanvas_capabilities_are_explicit);

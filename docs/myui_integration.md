@@ -490,7 +490,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
-| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行并接入 text area；完整 RTL GSUB、跨 face run、多段落增量 rebreaking 仍未实现 | 增加 RTL shaping run、段落级 visual mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约，再接入 RTL canvas |
+| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行、bidi glyph-run 和 visual mapping 并接入 text area；完整 script/features GSUB、多段落增量 rebreaking 仍未实现 | 增加 script/features shaping、段落级增量 mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约 |
 | 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
@@ -508,8 +508,8 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（23/23）、
-`test_myui_text_layout`（4/4）、
-`test_myui_vgcanvas_backend`（21/21）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
+`test_myui_text_layout`（23/23）、
+`test_myui_vgcanvas_backend`（25/25）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
 backend 用例覆盖缩放、过滤、字体缓存隔离、开放 contour fill、Mono dither、framebuffer
@@ -756,8 +756,10 @@ UTF-8 片段提交公共 canvas；纯 LTR 仍走原有单次 token 测量路径�
 Vulkan 或 Break RHI 的缓存。LTR 单 face 不创建 run 表，RTL 只有跨 face 时才分配固定大小
 的 run 描述并逆序提交，所有候选输出在成功前保持私有，OOM 时恢复为空结果。
 
-这不是完整 bidi OpenType 实现：当前 canvas 的复杂 bidi 文本仍由 SheenBidi/Arabic
-codepoint layout 绘制，paragraph 的 script、direction、font fallback、glyph clusters
-尚未共享到一个 glyph-run mapping。接入完整路径前必须维持 logical byte clusters、视觉
-run 顺序、selection/cursor mapping 和后端 atlas key 的一致性，并在依赖关闭时保留显式
+paragraph 的 `my_text_layout_shape()` 现已将 SheenBidi visual runs 转换为按 direction
+shaping 的 glyph-run；复杂 canvas 绘制与测量统一消费该结果。它仍不是完整 Unicode bidi
+OpenType 实现：paragraph 的 script/features 配置、跨段落增量 shaping 尚未完成。接入后续
+能力时必须维持 logical byte clusters、视觉 run 顺序、selection/cursor mapping 和后端
+atlas key 的一致性。layout 的 caller-owned copy 同时保留原 logical UTF-8；glyph-run API
+会拒绝非逐字节匹配的输入和不落在 UTF-8 codepoint 起点的 provider cluster，并在依赖关闭时保留显式
 `MY_RET_NOT_SUPPORTED`/codepoint fallback。

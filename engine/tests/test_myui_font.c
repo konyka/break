@@ -95,6 +95,7 @@ static my_ret_t shape_alloc_then_fail(my_font_t* font, const char* text,
   result->glyphs = (my_font_shape_glyph_t*)my_mem_alloc(
       allocator, sizeof(*result->glyphs));
   if (result->glyphs == NULL) return MY_RET_OOM;
+  result->allocator = NULL;
   result->count = 1;
   return MY_RET_FAIL;
 }

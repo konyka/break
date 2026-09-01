@@ -21,7 +21,16 @@ FreeType/HarfBuzz 输出和字体链聚合均保留该身份；GLES2、soft、Br
 glyph-id 栅格化及缓存不再把 glyph id 当作全局 key。LTR 单 face 保持快速路径，RTL 跨 face
 只在发生字体切换时分配有界 run 描述并逆序提交。segment、扩容和逐分配点失败均事务回滚，
 结果不向调用方泄露部分 glyph。TDD 覆盖 Latin/CJK identity、RTL 跨 face 顺序和 allocator
-OOM 回滚；完整 paragraph bidi-run 到 OpenType glyph-run 的统一 mapping，仍是明确后续项。
+OOM 回滚；paragraph 级 glyph-run mapping 已在本轮接入，完整 script/features shaping 仍是
+明确后续项。
+
+**paragraph bidi glyph-run 接入（TDD）**：新增 `my_text_layout_shape()`，将 SheenBidi 解析的
+视觉 run 还原为按 direction shaping 的逻辑 UTF-8 run，再合并为视觉顺序 glyph；cluster 映射
+回原始 UTF-8 byte offset，实际 face 身份贯穿四个 canvas 的 glyph-id 栅格化与测量。复杂路径
+的 shaping、扩容、重复 logical mapping 或 allocator 失败均不泄露部分结果；不支持 shaping
+时保留 visual codepoint fallback。layout 保留原 logical UTF-8 以拒绝错误输入，provider cluster
+必须落在 UTF-8 codepoint 起点；逐分配点 OOM、Lam-Alef 与异常 cluster 回归已覆盖。完整
+script/features 配置和跨段落增量 shaping 仍未实现。
 
 **文本布局输入预算（TDD）**：`my_text_layout_process()` 与
 `my_text_paragraph_process()` 原先会对调用方提供的 C 字符串先做无界扫描，再进入

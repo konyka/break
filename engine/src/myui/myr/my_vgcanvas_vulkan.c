@@ -2476,12 +2476,27 @@ static my_ret_t vk_draw_text(my_vgcanvas_t* vg, const char* text, float x,
     }
   } else {
     my_text_layout_t* l = my_text_layout_process(c->allocator, text);
+    my_font_shape_result_t shaped = {0};
+    my_ret_t shape_ret;
     size_t i;
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    for (i = 0; i < l->len; i++) {
-      vk_draw_cp(c, l->visual_cps[i], &pen_x, top, ascent);
+    shape_ret = my_text_layout_shape(l, text, c->state.font,
+                                     vk_dev_font_size(c), c->allocator,
+                                     &shaped);
+    if (shape_ret == MY_RET_OK) {
+      for (i = 0; i < shaped.count; i++) {
+        vk_draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
+      }
+      my_font_shape_destroy(&shaped);
+    } else if (shape_ret == MY_RET_NOT_SUPPORTED) {
+      for (i = 0; i < l->len; i++) {
+        vk_draw_cp(c, l->visual_cps[i], &pen_x, top, ascent);
+      }
+    } else {
+      my_text_layout_destroy(l);
+      return shape_ret;
     }
     my_text_layout_destroy(l);
   }
@@ -2511,8 +2526,26 @@ static my_ret_t vk_measure_text(my_vgcanvas_t* vg, const char* text,
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    ret = my_font_measure(c->state.font, l->visual_utf8, vk_dev_font_size(c),
-                          w, h);
+    {
+      my_font_shape_result_t shaped = {0};
+      ret = my_text_layout_shape(l, text, c->state.font,
+                                 vk_dev_font_size(c), c->allocator, &shaped);
+      if (ret == MY_RET_OK) {
+        int64_t width = 0;
+        size_t i;
+        for (i = 0; i < shaped.count; i++) {
+          width += shaped.glyphs[i].advance_x_26_6;
+        }
+        if (w != NULL) *w = (int32_t)((width + 32) / 64);
+        if (h != NULL) {
+          *h = my_font_line_height(c->state.font, vk_dev_font_size(c));
+        }
+        my_font_shape_destroy(&shaped);
+      } else if (ret == MY_RET_NOT_SUPPORTED) {
+        ret = my_font_measure(c->state.font, l->visual_utf8,
+                              vk_dev_font_size(c), w, h);
+      }
+    }
     my_text_layout_destroy(l);
   } else {
     my_font_shape_result_t shaped = {0};

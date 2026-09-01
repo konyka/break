@@ -384,7 +384,8 @@ static my_text_layout_t* tl_copy(const my_allocator_t* alloc,
     memcpy(l->visual_rtl, m->vrtl, m->len);
   }
   l->visual_utf8 = my_strdup(alloc, m->utf8 != NULL ? m->utf8 : "");
-  if (l->visual_utf8 == NULL) {
+  l->logical_utf8 = my_strdup(alloc, m->text != NULL ? m->text : "");
+  if (l->visual_utf8 == NULL || l->logical_utf8 == NULL) {
     my_text_layout_destroy(l);
     return NULL;
   }
@@ -437,6 +438,7 @@ void my_text_layout_destroy(my_text_layout_t* layout) {
     my_mem_free(alloc, layout->logical_to_visual);
     my_mem_free(alloc, layout->visual_rtl);
     my_mem_free(alloc, layout->visual_boundaries);
+    my_mem_free(alloc, layout->logical_utf8);
     my_mem_free(alloc, layout->visual_utf8);
     my_mem_free(alloc, layout);
   }
@@ -457,6 +459,261 @@ size_t my_text_layout_cache_size(void) {
     }
   }
   return n;
+}
+
+static my_ret_t tl_shape_append(
+    const my_allocator_t* allocator, my_font_shape_result_t* result,
+    size_t* capacity, const my_font_shape_result_t* shaped,
+    const size_t* run_offsets, const uint32_t* source_bytes,
+    size_t run_count, size_t run_text_len) {
+  size_t required;
+  size_t next_capacity;
+  size_t i;
+  my_font_shape_glyph_t* glyphs;
+
+  if (shaped->count > SIZE_MAX - result->count) return MY_RET_OOM;
+  required = result->count + shaped->count;
+  if (required > *capacity) {
+    next_capacity = *capacity > 0 ? *capacity : 8u;
+    while (next_capacity < required) {
+      if (next_capacity > SIZE_MAX / 2u) {
+        next_capacity = required;
+        break;
+      }
+      next_capacity *= 2u;
+    }
+    if (next_capacity > SIZE_MAX / sizeof(*result->glyphs)) {
+      return MY_RET_OOM;
+    }
+    glyphs = (my_font_shape_glyph_t*)my_mem_realloc(
+        allocator, result->glyphs,
+        next_capacity * sizeof(*result->glyphs));
+    if (glyphs == NULL) return MY_RET_OOM;
+    result->glyphs = glyphs;
+    *capacity = next_capacity;
+  }
+  for (i = 0; i < shaped->count; i++) {
+    my_font_shape_glyph_t glyph = shaped->glyphs[i];
+    size_t lo = 0;
+    size_t hi = run_count;
+    if (glyph.cluster >= run_text_len || run_count == 0) return MY_RET_FAIL;
+    while (lo + 1u < hi) {
+      size_t mid = lo + (hi - lo) / 2u;
+      if (run_offsets[mid] <= glyph.cluster) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    if (glyph.cluster != run_offsets[lo]) return MY_RET_FAIL;
+    glyph.cluster = source_bytes[lo];
+    result->glyphs[result->count++] = glyph;
+  }
+  return MY_RET_OK;
+}
+
+my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
+                              const char* logical_text, my_font_t* font,
+                              int32_t size, const my_allocator_t* allocator,
+                              my_font_shape_result_t* result) {
+  uint32_t* source_cps = NULL;
+  uint32_t* source_bytes = NULL;
+  bool* seen = NULL;
+  size_t text_len;
+  size_t source_count = 0;
+  size_t capacity = 0;
+  size_t visual_start = 0;
+  size_t i;
+  my_ret_t ret = MY_RET_OK;
+
+  if (result == NULL) return MY_RET_INVALID_PARAMS;
+  memset(result, 0, sizeof(*result));
+  result->allocator = allocator;
+  result->rtl = layout != NULL ? layout->rtl_base : false;
+  if (layout == NULL || logical_text == NULL || font == NULL || size <= 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (!tl_bounded_text_len(logical_text, &text_len)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (layout->logical_utf8 == NULL || strcmp(layout->logical_utf8,
+                                             logical_text) != 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (layout->logical_len > SIZE_MAX / sizeof(*source_cps) ||
+      layout->logical_len > SIZE_MAX / sizeof(*source_bytes) ||
+      layout->logical_len > SIZE_MAX / sizeof(*seen)) {
+    return MY_RET_OOM;
+  }
+  if (layout->logical_len > 0) {
+    source_cps = (uint32_t*)my_mem_alloc(
+        allocator, layout->logical_len * sizeof(*source_cps));
+    source_bytes = (uint32_t*)my_mem_alloc(
+        allocator, layout->logical_len * sizeof(*source_bytes));
+    seen = (bool*)my_mem_calloc(allocator, layout->logical_len,
+                                sizeof(*seen));
+    if (source_cps == NULL || source_bytes == NULL || seen == NULL) {
+      ret = MY_RET_OOM;
+      goto done;
+    }
+  }
+  {
+    const char* p = logical_text;
+    while (*p != '\0') {
+      const char* next = p;
+      if (source_count >= layout->logical_len) {
+        ret = MY_RET_INVALID_PARAMS;
+        goto done;
+      }
+      source_bytes[source_count] = (uint32_t)(p - logical_text);
+      source_cps[source_count++] = my_utf8_next(&next);
+      p = next;
+    }
+  }
+  if (source_count != layout->logical_len || text_len > UINT32_MAX) {
+    ret = MY_RET_INVALID_PARAMS;
+    goto done;
+  }
+  if (layout->len == 0) {
+    if (layout->logical_len != 0) ret = MY_RET_INVALID_PARAMS;
+    goto done;
+  }
+  if (layout->visual_to_logical == NULL ||
+      layout->visual_logical_span == NULL || layout->visual_rtl == NULL) {
+    ret = MY_RET_INVALID_PARAMS;
+    goto done;
+  }
+
+  while (visual_start < layout->len) {
+    size_t visual_end = visual_start + 1u;
+    bool rtl = layout->visual_rtl[visual_start] != 0;
+    size_t run_count = 0;
+    size_t units = 0;
+    size_t run_text_len = 0;
+    size_t run_bytes_capacity;
+    char* run_text = NULL;
+    size_t* run_offsets = NULL;
+    uint32_t* run_sources = NULL;
+    my_font_shape_result_t shaped = {0};
+
+    while (visual_end < layout->len &&
+           (layout->visual_rtl[visual_end] != 0) == rtl) {
+      visual_end++;
+    }
+    for (i = visual_start; i < visual_end; i++) {
+      size_t span = layout->visual_logical_span[i];
+      if (span == 0 || layout->visual_to_logical[i] > layout->logical_len ||
+          span > layout->logical_len - layout->visual_to_logical[i] ||
+          run_count > SIZE_MAX - span) {
+        ret = MY_RET_INVALID_PARAMS;
+        goto run_done;
+      }
+      run_count += span;
+    }
+    if (run_count == 0 || run_count > SIZE_MAX / 4u ||
+        run_count + 1u < run_count) {
+      ret = MY_RET_OOM;
+      goto run_done;
+    }
+    run_bytes_capacity = run_count * 4u + 1u;
+    if (run_count > SIZE_MAX / sizeof(*run_offsets) ||
+        run_count > SIZE_MAX / sizeof(*run_sources)) {
+      ret = MY_RET_OOM;
+      goto run_done;
+    }
+    run_text = (char*)my_mem_alloc(allocator, run_bytes_capacity);
+    run_offsets = (size_t*)my_mem_alloc(allocator,
+                                        run_count * sizeof(*run_offsets));
+    run_sources = (uint32_t*)my_mem_alloc(allocator,
+                                          run_count * sizeof(*run_sources));
+    if (run_text == NULL || run_offsets == NULL || run_sources == NULL) {
+      ret = MY_RET_OOM;
+      goto run_done;
+    }
+    if (rtl) {
+      for (i = visual_end; i > visual_start; i--) {
+        size_t vi = i - 1u;
+        size_t logical = layout->visual_to_logical[vi];
+        size_t k;
+        for (k = 0; k < layout->visual_logical_span[vi]; k++) {
+          size_t source = logical + k;
+          size_t encoded;
+          if (seen[source]) {
+            ret = MY_RET_INVALID_PARAMS;
+            goto run_done;
+          }
+          seen[source] = true;
+          run_offsets[units] = run_text_len;
+          run_sources[units] = source_bytes[source];
+          encoded = tl_utf8_encode(source_cps[source],
+                                   run_text + run_text_len);
+          if (encoded > run_bytes_capacity - run_text_len - 1u) {
+            ret = MY_RET_OOM;
+            goto run_done;
+          }
+          run_text_len += encoded;
+          units++;
+        }
+      }
+    } else {
+      for (i = visual_start; i < visual_end; i++) {
+        size_t logical = layout->visual_to_logical[i];
+        size_t k;
+        for (k = 0; k < layout->visual_logical_span[i]; k++) {
+          size_t source = logical + k;
+          size_t encoded;
+          if (seen[source]) {
+            ret = MY_RET_INVALID_PARAMS;
+            goto run_done;
+          }
+          seen[source] = true;
+          run_offsets[units] = run_text_len;
+          run_sources[units] = source_bytes[source];
+          encoded = tl_utf8_encode(source_cps[source],
+                                   run_text + run_text_len);
+          if (encoded > run_bytes_capacity - run_text_len - 1u) {
+            ret = MY_RET_OOM;
+            goto run_done;
+          }
+          run_text_len += encoded;
+          units++;
+        }
+      }
+    }
+    if (units != run_count) {
+      ret = MY_RET_INVALID_PARAMS;
+      goto run_done;
+    }
+    run_text[run_text_len] = '\0';
+    ret = my_font_shape(font, run_text, size, rtl, allocator, &shaped);
+    if (ret == MY_RET_OK) {
+      ret = tl_shape_append(allocator, result, &capacity, &shaped,
+                            run_offsets, run_sources, run_count,
+                            run_text_len);
+    }
+    my_font_shape_destroy(&shaped);
+
+  run_done:
+    my_mem_free(allocator, run_sources);
+    my_mem_free(allocator, run_offsets);
+    my_mem_free(allocator, run_text);
+    if (ret != MY_RET_OK) goto done;
+    visual_start = visual_end;
+  }
+  for (i = 0; i < layout->logical_len; i++) {
+    if (!seen[i]) {
+      ret = MY_RET_INVALID_PARAMS;
+      goto done;
+    }
+  }
+  result->used_complex_shaping = true;
+
+done:
+  my_mem_free(allocator, seen);
+  my_mem_free(allocator, source_bytes);
+  my_mem_free(allocator, source_cps);
+  if (ret != MY_RET_OK) my_font_shape_destroy(result);
+  return ret;
 }
 
 /* ---------------- boundary <-> visual (M12a) ---------------- */

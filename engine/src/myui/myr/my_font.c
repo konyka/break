@@ -487,6 +487,7 @@ my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
   {
     my_ret_t ret =
         font->vtable->shape(font, text, size, rtl, allocator, result);
+    result->allocator = allocator;
     if (ret != MY_RET_OK) {
       my_font_shape_destroy(result);
       return ret;
@@ -494,6 +495,14 @@ my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
     if (result->count > 0 && result->glyphs == NULL) {
       my_font_shape_destroy(result);
       return MY_RET_FAIL;
+    }
+    {
+      size_t i;
+      for (i = 0; i < result->count; i++) {
+        if (result->glyphs[i].font == NULL) {
+          result->glyphs[i].font = font;
+        }
+      }
     }
     return MY_RET_OK;
   }
