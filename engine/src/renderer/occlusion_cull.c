@@ -461,6 +461,9 @@ u32 occlusion_cull_hiz_dispatch_count(const OcclusionCullSystem *sys) {
 }
 
 u32 occlusion_cull_visible_count(const OcclusionCullSystem *sys) {
+    /* R485: NULL guard — its neighbors (occlusion_cull_hiz_dispatch_count)
+     * already have one; a NULL system has no object_count to report. */
+    if (!sys) return 0;
     if (!sys->enabled || !sys->visibility_readback || sys->object_count == 0) {
         return sys->object_count;
     }

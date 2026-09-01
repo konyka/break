@@ -39,6 +39,7 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
 }
 
 void engine_shutdown(Engine *e) {
+    if (!e) return;
     if (e->platform) {
         platform_destroy(e->platform);
         e->platform = NULL;

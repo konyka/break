@@ -1480,6 +1480,14 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_terrain PRIVATE m)
     add_test(NAME test_terrain COMMAND test_terrain)
 
+    # test_indirect_draw: R482 grouped-upload validation (prefix sum > max_draws
+    # must be rejected) — CPU-side; RHI buffer uploads are no-op stubs.
+    add_executable(test_indirect_draw tests/test_indirect_draw.c
+        src/renderer/indirect_draw.c src/core/shader_io.c src/core/log.c tests/rhi_stubs.c)
+    target_include_directories(test_indirect_draw PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_indirect_draw PRIVATE m)
+    add_test(NAME test_indirect_draw COMMAND test_indirect_draw)
+
     # test_particles: CPU-side fallback command construction for the GPU particle path
     add_executable(test_particles tests/test_particles.c)
     target_include_directories(test_particles PRIVATE ${TEST_INCLUDE_DIRS})

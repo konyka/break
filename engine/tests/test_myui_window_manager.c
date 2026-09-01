@@ -11,6 +11,8 @@
 #include "myui/my_window_manager.h"
 #include "myui/widgets/my_dialog.h"
 #include "myui/widgets/my_button.h"
+#include "myui/widgets/my_menu.h"
+#include "myui/widgets/my_node_view.h"
 #include "myui/widgets/my_edit.h"
 #include "myui/widgets/my_text_area.h"
 
@@ -2178,6 +2180,286 @@ TEST(text_widgets_paste_full_clipboard_without_fixed_buffer_limit)
   my_pal_destroy(pal);
 }
 
+TEST(window_close_cancels_node_view_flow_timer)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t *loop = my_pal_main_loop_create(pal);
+  my_window_manager_t *wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t *win = my_window_create(NULL, pal, 400, 300, "main");
+  my_widget_t *view = my_node_view_create(NULL);
+  my_widget_t *na = NULL;
+  my_widget_t *nb = NULL;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(view);
+  my_window_manager_set_auto_paint(wm, false); /* isolate the flow tick */
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), view), MY_RET_OK);
+  my_widget_unref(view);
+  na = my_node_view_add_node(view, "a", "A", "cat", 20, 20, 120, 60);
+  nb = my_node_view_add_node(view, "b", "B", "cat", 240, 20, 120, 60);
+  ASSERT_NOT_NULL(na);
+  ASSERT_NOT_NULL(nb);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t *)win);
+  my_node_view_set_flow_enabled(view, true); /* arms the 33ms flow timer */
+
+  my_pal_dummy_set_now_ms(pal, 10000);
+  ASSERT_EQ(my_pal_main_loop_run(loop), MY_RET_OK);
+  ASSERT_TRUE(my_node_view_flow_offset(view) > 0.0f); /* timer really ran */
+
+  /* Close with the flow timer live: the destroy chain must cancel it via
+   * the still-valid win->loop. Pre-fix wm_release_window_at nulled
+   * loop/anim_mgr first, so the shared loop kept a timer that ticked the
+   * freed view 33ms later (heap UAF, ASAN-catchable). */
+  ASSERT_EQ(my_window_manager_close(wm, win), MY_RET_OK);
+  ASSERT_EQ(my_window_manager_count(wm), 0u);
+  my_pal_dummy_set_now_ms(pal, 20000);
+  ASSERT_EQ(my_pal_main_loop_run(loop), MY_RET_OK);
+
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
+TEST(node_view_remove_node_cancels_magnet_preview)
+{
+  my_widget_t *view = my_node_view_create(NULL);
+  my_widget_t *na = NULL;
+  my_widget_t *nb = NULL;
+  int32_t ax = 0, ay = 0, bx = 0, by = 0;
+  my_event_t ev;
+
+  ASSERT_NOT_NULL(view);
+  ASSERT_EQ(my_widget_set_rect(view, &(my_rect_t){0, 0, 400, 300}),
+            MY_RET_OK);
+  na = my_node_view_add_node(view, "a", "A", "cat", 20, 20, 120, 60);
+  nb = my_node_view_add_node(view, "b", "B", "cat", 240, 20, 120, 60);
+  ASSERT_NOT_NULL(na);
+  ASSERT_NOT_NULL(nb);
+  ASSERT_EQ(my_node_add_socket(na, MY_SOCKET_OUT, "out", 0u), MY_RET_OK);
+  ASSERT_EQ(my_node_add_socket(nb, MY_SOCKET_IN, "in", 0u), MY_RET_OK);
+  ASSERT_TRUE(my_node_socket_center(na, MY_SOCKET_OUT, 0, &ax, &ay));
+  ASSERT_TRUE(my_node_socket_center(nb, MY_SOCKET_IN, 0, &bx, &by));
+
+  /* drag a link out of a's output socket: preview activates */
+  ev = my_event_init(MY_EVENT_POINTER_DOWN);
+  ev.u.pointer.x = ax;
+  ev.u.pointer.y = ay;
+  ev.u.pointer.button = 1;
+  ASSERT_EQ(view->vtable->on_event(view, &ev), MY_RET_OK);
+  /* hover b's input socket: the magnet snaps to b */
+  ev = my_event_init(MY_EVENT_POINTER_MOVE);
+  ev.u.pointer.x = bx;
+  ev.u.pointer.y = by;
+  ASSERT_EQ(view->vtable->on_event(view, &ev), MY_RET_OK);
+
+  /* Delete the magnet TARGET: the preview must be cancelled, not left
+   * pointing at the freed node (pre-fix POINTER_UP connected to it). */
+  ASSERT_EQ(my_node_view_remove_node(view, "b"), MY_RET_OK);
+  ev = my_event_init(MY_EVENT_POINTER_UP);
+  ev.u.pointer.x = bx;
+  ev.u.pointer.y = by;
+  ev.u.pointer.button = 1;
+  (void)view->vtable->on_event(view, &ev);
+  ASSERT_EQ(my_node_view_link_count(view), 0u);
+
+  my_widget_unref(view);
+}
+
+TEST(node_view_remove_node_clears_embedded_child_grab)
+{
+  my_widget_t *view = my_node_view_create(NULL);
+  my_widget_t *nc = NULL;
+  my_widget_t *btn = NULL;
+  my_event_t ev;
+
+  ASSERT_NOT_NULL(view);
+  ASSERT_EQ(my_widget_set_rect(view, &(my_rect_t){0, 0, 400, 300}),
+            MY_RET_OK);
+  nc = my_node_view_add_node(view, "c", "C", "cat", 20, 20, 120, 80);
+  ASSERT_NOT_NULL(nc);
+  btn = my_button_create(NULL, "x");
+  ASSERT_NOT_NULL(btn);
+  ASSERT_EQ(my_widget_set_rect(btn, &(my_rect_t){10, 30, 40, 20}), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(nc, btn), MY_RET_OK);
+  my_widget_unref(btn);
+
+  /* press the embedded button: the view grabs it (M23c) */
+  ev = my_event_init(MY_EVENT_POINTER_DOWN);
+  ev.u.pointer.x = 35; /* node (20,20) + button (10,30) + (5,5) */
+  ev.u.pointer.y = 55;
+  ev.u.pointer.button = 1;
+  ASSERT_EQ(view->vtable->on_event(view, &ev), MY_RET_OK);
+  /* moves are forwarded to the grabbed child while it lives */
+  ev = my_event_init(MY_EVENT_POINTER_MOVE);
+  ev.u.pointer.x = 36;
+  ev.u.pointer.y = 56;
+  ASSERT_EQ(view->vtable->on_event(view, &ev), MY_RET_OK);
+
+  /* deleting the node kills the grabbed child with it */
+  ASSERT_EQ(my_node_view_remove_node(view, "c"), MY_RET_OK);
+  /* pre-fix the next move dereferenced the freed child's vtable and
+   * returned OK; the grab must be cleared instead */
+  ASSERT_EQ(view->vtable->on_event(view, &ev), MY_RET_FAIL);
+
+  my_widget_unref(view);
+}
+
+typedef struct focus_move_ctx_t {
+  my_event_dispatcher_t *dispatcher;
+  my_widget_t *target;
+  int done;
+} focus_move_ctx_t;
+
+static void blur_moves_focus_cb(void *ctx, const char *event,
+                                void *event_data) {
+  focus_move_ctx_t *c = (focus_move_ctx_t *)ctx;
+  (void)event;
+  (void)event_data;
+  if (!c->done) {
+    c->done = 1; /* reentrant blurs must not recurse */
+    my_event_dispatcher_set_focus(c->dispatcher, c->target);
+  }
+}
+
+TEST(blur_handler_can_move_focus_to_another_widget)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_window_t *win = my_window_create(NULL, pal, 200, 100, "main");
+  my_widget_t *a = my_button_create(NULL, "a");
+  my_widget_t *b = my_button_create(NULL, "b");
+  focus_move_ctx_t ctx;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(a);
+  ASSERT_NOT_NULL(b);
+  ctx.dispatcher = &win->dispatcher;
+  ctx.target = b;
+  ctx.done = 0;
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), a), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), b), MY_RET_OK);
+  my_widget_unref(a);
+  my_widget_unref(b);
+  ASSERT_TRUE(my_widget_on(a, "blur", blur_moves_focus_cb, &ctx) != 0u);
+
+  my_event_dispatcher_set_focus(&win->dispatcher, a);
+  ASSERT_TRUE(win->dispatcher.focused == a);
+  /* blurring a lets its handler move focus to b; the outer set_focus(NULL)
+   * must not clobber that choice */
+  my_event_dispatcher_set_focus(&win->dispatcher, NULL);
+  ASSERT_TRUE(win->dispatcher.focused == b);
+
+  my_object_unref((my_object_t *)win);
+  my_pal_destroy(pal);
+}
+
+typedef struct blur_destroy_ctx_t {
+  my_widget_t *root;
+  my_widget_t *widget; /* owned ref, dropped from the blur handler */
+  int done;
+} blur_destroy_ctx_t;
+
+static void blur_destroys_widget_cb(void *ctx, const char *event,
+                                    void *event_data) {
+  blur_destroy_ctx_t *c = (blur_destroy_ctx_t *)ctx;
+  (void)event;
+  (void)event_data;
+  if (!c->done) {
+    c->done = 1; /* the removal re-emits blur via forget(): no recursion */
+    my_widget_remove_child(c->root, c->widget);
+    my_widget_unref(c->widget); /* drop our ref: widget dies mid-emit */
+    c->widget = NULL;
+  }
+}
+
+TEST(blur_handler_can_destroy_the_old_focused_widget)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_window_t *win = my_window_create(NULL, pal, 200, 100, "main");
+  my_widget_t *a = my_button_create(NULL, "a");
+  my_widget_t *b = my_button_create(NULL, "b");
+  blur_destroy_ctx_t ctx;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(a);
+  ASSERT_NOT_NULL(b);
+  ctx.root = my_window_widget(win);
+  ctx.widget = a; /* we keep the create ref; the handler drops it */
+  ctx.done = 0;
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), a), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(my_window_widget(win), b), MY_RET_OK);
+  my_widget_unref(b);
+  ASSERT_TRUE(my_widget_on(a, "blur", blur_destroys_widget_cb, &ctx) != 0u);
+
+  my_event_dispatcher_set_focus(&win->dispatcher, a);
+  ASSERT_TRUE(win->dispatcher.focused == a);
+  /* the blur handler destroys a (emitter freed) while the blur emit is
+   * still unwinding on it — the dispatcher must hold a ref across the
+   * emit (pre-fix heap UAF, ASAN-catchable) — and the caller's focus
+   * target must still win afterwards */
+  my_event_dispatcher_set_focus(&win->dispatcher, b);
+  ASSERT_TRUE(ctx.widget == NULL);
+  ASSERT_TRUE(win->dispatcher.focused == b);
+
+  my_object_unref((my_object_t *)win);
+  my_pal_destroy(pal);
+}
+
+TEST(window_close_invalidates_open_menu)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t *loop = my_pal_main_loop_create(pal);
+  my_window_manager_t *wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t *win = my_window_create(NULL, pal, 400, 300, "main");
+  my_menu_t *menu = my_menu_create(NULL);
+  my_menu_t *sub = NULL;
+  my_widget_t *overlay = NULL;
+  my_widget_t *box = NULL;
+  my_widget_t *item = NULL;
+  my_event_t ev;
+
+  ASSERT_NOT_NULL(pal);
+  ASSERT_NOT_NULL(loop);
+  ASSERT_NOT_NULL(wm);
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(menu);
+  ASSERT_EQ(my_menu_add_item(menu, "leaf", 1), MY_RET_OK);
+  sub = my_menu_add_submenu(menu, "more");
+  ASSERT_NOT_NULL(sub);
+  ASSERT_EQ(my_menu_add_item(sub, "child", 2), MY_RET_OK);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t *)win);
+  ASSERT_EQ(my_menu_popup(win, menu, 10, 10, NULL, NULL), MY_RET_OK);
+  ASSERT_TRUE(my_menu_widget(menu) != NULL);
+
+  /* arm the 120ms submenu hover timer by hovering the "more" item */
+  overlay = my_menu_widget(menu);
+  box = my_widget_get_child(overlay, 0);
+  ASSERT_NOT_NULL(box);
+  item = my_widget_get_child(box, 1); /* 0 = leaf, 1 = more */
+  ASSERT_NOT_NULL(item);
+  ev = my_event_init(MY_EVENT_POINTER_MOVE);
+  ASSERT_EQ(item->vtable->on_event(item, &ev), MY_RET_OK);
+
+  /* closing the window destroys the overlay in place: the model must be
+   * invalidated and the hover timer cancelled, not left dangling on the
+   * freed window (pre-fix my_menu_dismiss/destroy dereferenced it) */
+  ASSERT_EQ(my_window_manager_close(wm, win), MY_RET_OK);
+  ASSERT_TRUE(my_menu_widget(menu) == NULL);
+
+  my_pal_dummy_set_now_ms(pal, 10000);
+  ASSERT_EQ(my_pal_main_loop_run(loop), MY_RET_OK); /* stale timer fires here pre-fix */
+  my_menu_destroy(menu);
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(injected_canvas_inherits_window_scale);
     RUN_TEST(dynamic_scale_reconfigures_injected_canvas_without_resize);
@@ -2238,4 +2520,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(event_bubbling_stops_at_self_removed_leaf);
     RUN_TEST(text_widgets_apply_ime_delete_surrounding);
     RUN_TEST(text_widgets_paste_full_clipboard_without_fixed_buffer_limit);
+    RUN_TEST(window_close_cancels_node_view_flow_timer);
+    RUN_TEST(node_view_remove_node_cancels_magnet_preview);
+    RUN_TEST(node_view_remove_node_clears_embedded_child_grab);
+    RUN_TEST(blur_handler_can_move_focus_to_another_widget);
+    RUN_TEST(blur_handler_can_destroy_the_old_focused_widget);
+    RUN_TEST(window_close_invalidates_open_menu);
 TEST_MAIN_END()

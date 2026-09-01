@@ -7,6 +7,10 @@
 #include <core/shader_io.h>
 
 bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forward_mrt) {
+    /* R481: zero-init up front (sibling postfx systems already do) — the
+     * failure paths below call water_shutdown, which checks vbo/ibo handles
+     * that init never sets before those paths can run. */
+    memset(w, 0, sizeof(*w));
     w->device = dev;
     w->water_y = water_y;
     w->time = 0.0f;

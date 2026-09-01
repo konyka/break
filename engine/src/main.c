@@ -4912,7 +4912,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 f32 mom_dot = mom_mag > 0.01f && prev_mom_mag > 0.01f ? vec3_dot(momentum, prev_momentum) / (mom_mag * prev_mom_mag) : 0.0f;
                 if (mom_dot > 1.0f) { mom_dot = 1.0f; }
                 if (mom_dot < -1.0f) { mom_dot = -1.0f; }
-                debug_ui_text(&ui, "Momentum: (%.1f,%.1f,%.1f) |p|=%.1f  record: %.1f  drift: %.2f/s  persist: %.2f  dir: %.0f° (%s)", momentum.e[0], momentum.e[1], momentum.e[2], mom_mag, mom_record, mom_drift / engine.delta_time, mom_dot, mb, mc);
+                debug_ui_text(&ui, "Momentum: (%.1f,%.1f,%.1f) |p|=%.1f  record: %.1f  drift: %.2f/s  persist: %.2f  dir: %.0f° (%s)", momentum.e[0], momentum.e[1], momentum.e[2], mom_mag, mom_record, engine.delta_time > 0.0001f ? mom_drift / (f32)engine.delta_time : 0.0f, mom_dot, mb, mc);
                 prev_mom_mag = mom_mag;
                 prev_momentum = momentum;
             }

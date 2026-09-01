@@ -90,6 +90,11 @@ static void terrain_rebuild_region(Terrain *t, i32 gx0, i32 gz0, i32 gx1, i32 gz
 
 bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale,
                   bool forward_mrt) {
+    /* R481: zero-init up front (sibling postfx systems already do) — the
+     * failure paths below call terrain_shutdown, which frees _flatten_*
+     * scratch pointers that init never sets; without this they hold caller
+     * garbage. */
+    memset(t, 0, sizeof(*t));
     /* R161-A: Validate grid_size to prevent unsigned underflow in (grid_size - 1)
      * expressions.  grid_size=0 causes (grid_size-1) to wrap to 0xFFFFFFFF,
      * making the index-generation loop run ~4 billion iterations and write far
@@ -500,12 +505,25 @@ void terrain_flatten(Terrain *t, f32 wx, f32 wz, f32 radius) {
     i32 area = (gx1 - gx0 + 1) * (gz1 - gz0 + 1);
     /* Use persistent buffers — grow if needed, never shrink */
     if ((u32)area > t->_flatten_cap) {
-        free(t->_flatten_indices); /* single alloc: indices + dists */
         /* Merge: i32 indices[area] + f32 dists[area] in one block */
         usize ind_bytes = (usize)area * sizeof(i32);
         usize dist_off  = (ind_bytes + 3u) & ~(usize)3u; /* align to f32 */
         u8 *flat_block  = (u8 *)malloc(dist_off + (usize)area * sizeof(f32));
-        if (!flat_block) return;
+        if (!flat_block) {
+            /* R480: allocate BEFORE free — the old order freed first, so a
+             * failed grow left both pointers dangling and the cap stale:
+             * a later larger flatten double-freed, a smaller one wrote
+             * through the freed block (UAF), and terrain_shutdown freed it
+             * yet again. Drop the cache instead — NULL pointers + zero cap
+             * keep every later flatten and terrain_shutdown safe (the next
+             * grow retries from scratch). */
+            free(t->_flatten_indices);
+            t->_flatten_indices = NULL;
+            t->_flatten_dists   = NULL;
+            t->_flatten_cap = 0;
+            return;
+        }
+        free(t->_flatten_indices); /* single alloc: indices + dists */
         t->_flatten_indices = (i32 *)flat_block;
         t->_flatten_dists   = (f32 *)(flat_block + dist_off);
         t->_flatten_cap = (u32)area;

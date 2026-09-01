@@ -19,9 +19,11 @@ static u64 time_base_ns(void) {
 }
 
 void time_init(void) {
-    /* Pre-cache the frequency on Windows */
-    LARGE_INTEGER freq;
-    QueryPerformanceFrequency(&freq);
+    /* R571: the old "pre-cache" queried into a local and discarded it -
+     * a no-op. Prime time_base_ns so its function-local static frequency
+     * is populated through the same (idempotent, same-value) path first-
+     * use would take. */
+    (void)time_base_ns();
 }
 
 f64 time_seconds(void) {

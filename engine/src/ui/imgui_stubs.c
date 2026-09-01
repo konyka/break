@@ -165,6 +165,7 @@ void imui_label(ImUI *ui, const char *fmt, ...) {
 }
 
 bool imui_button(ImUI *ui, u32 id, const char *label) {
+  if (ui == NULL) return false;
   f32 x = ui->origin_x + ui->pad;
   f32 y = ui->cursor_y;
   f32 w = ui->panel_w - ui->pad * 2.0f;
@@ -182,6 +183,7 @@ bool imui_button(ImUI *ui, u32 id, const char *label) {
 }
 
 bool imui_checkbox(ImUI *ui, u32 id, const char *label, bool *value) {
+  if (ui == NULL) return false;
   f32 x = ui->origin_x + ui->pad;
   f32 y = ui->cursor_y;
   f32 box = ui->row_h - 8.0f;
@@ -199,6 +201,7 @@ bool imui_checkbox(ImUI *ui, u32 id, const char *label, bool *value) {
 
 bool imui_slider_float(ImUI *ui, u32 id, const char *label, f32 *value,
                        f32 minv, f32 maxv) {
+  if (ui == NULL) return false;
   f32 x = ui->origin_x + ui->pad;
   f32 y = ui->cursor_y;
   f32 w = ui->panel_w - ui->pad * 2.0f;
@@ -249,6 +252,7 @@ static void im_fold_marker(ImUI *ui, f32 x, f32 y, bool open) {
 }
 
 bool imui_collapsing_header(ImUI *ui, u32 id, const char *label, bool *open) {
+  if (ui == NULL) return false;
   f32 x = ui->origin_x + ui->pad;
   f32 y = ui->cursor_y;
   f32 w = ui->panel_w - ui->pad * 2.0f;
@@ -272,6 +276,7 @@ bool imui_collapsing_header(ImUI *ui, u32 id, const char *label, bool *open) {
 }
 
 bool imui_radio(ImUI *ui, u32 id, const char *label, i32 *value, i32 option) {
+  if (ui == NULL) return false;
   f32 x = ui->origin_x + ui->pad;
   f32 y = ui->cursor_y;
   f32 box = ui->row_h - 8.0f;

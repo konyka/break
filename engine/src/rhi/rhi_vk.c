@@ -200,6 +200,67 @@ struct VKCubemapData {
 };
 typedef struct VKCubemapData VKCubemapData;
 
+/* RHI_RES_FRAMEBUFFER slots carry one of two payload types (shadow map /
+ * offscreen FBO); a tag at offset 0 lets rhi_device_destroy tell them apart
+ * without the public handle structs. */
+#define VK_SHADOW_DATA_MAGIC 0x53484D50u
+#define VK_FBO_DATA_MAGIC    0x4F46424Fu
+
+typedef struct {
+    u32            magic; /* VK_SHADOW_DATA_MAGIC */
+    VkImage        depth_image;
+    VkDeviceMemory depth_memory;
+    VkImageView    depth_view;
+    VkFramebuffer  framebuffer;
+    VkRenderPass   render_pass;
+    VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
+} VKShadowData;
+
+typedef struct {
+    u32            magic; /* VK_FBO_DATA_MAGIC */
+    VkImage        color_image;
+    VkDeviceMemory color_memory;
+    VkImageView    color_view;
+    VkImage        msaa_color_image;
+    VkDeviceMemory msaa_color_memory;
+    VkImageView    msaa_color_view;
+    VkImage        depth_image;
+    VkDeviceMemory depth_memory;
+    VkImageView    depth_view;
+    VkImage        msaa_depth_image;
+    VkDeviceMemory msaa_depth_memory;
+    VkImageView    msaa_depth_view;
+    VkFramebuffer  framebuffer;
+    VkRenderPass   render_pass;
+    VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
+    VkFormat       color_fmt;         /* for render-pass-compatible pipeline variants */
+    VkSampleCountFlagBits samples;
+} VKFBOData;
+
+typedef struct {
+    VkImage        color_images[RHI_MRT_MAX_ATTACHMENTS];
+    VkDeviceMemory color_memories[RHI_MRT_MAX_ATTACHMENTS];
+    VkImageView    color_views[RHI_MRT_MAX_ATTACHMENTS];
+    VkImage        depth_image;
+    VkDeviceMemory depth_memory;
+    VkImageView    depth_view;
+    VkFramebuffer  framebuffer;
+    VkRenderPass   render_pass;
+    VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
+    u32            attachment_count;
+} VKMRTFBOData;
+
+typedef struct {
+    VkImage        depth_image;     /* cubemap: 6 layers */
+    VkDeviceMemory depth_memory;
+    VkImageView    depth_view;      /* cubemap view (all 6 layers) */
+    VkImageView    face_views[6];   /* per-face 2D views */
+    VkFramebuffer  face_fbos[6];   /* per-face framebuffers */
+    VkRenderPass   render_pass;
+    VkRenderPass   render_pass_load; /* LOAD-op twin for compute suspend/resume */
+    u32            size;
+} VKCubemapDepthFBOData;
+
 typedef struct {
     VkSampler sampler;
 } VKSamplerData;
@@ -1632,6 +1693,9 @@ void rhi_device_destroy(RHIDevice *dev) {
                 for (u32 v = 0; v < pd->variant_count; v++) {
                     vkDestroyPipeline(vk->device, pd->variant_pipe[v], NULL);
                 }
+                /* R440: per-pipeline MRT render pass — vk_pipeline_data_free
+                 * destroys it; this hand-rolled case must too. */
+                if (pd->mrt_render_pass) vkDestroyRenderPass(vk->device, pd->mrt_render_pass, NULL);
                 vkDestroyPipelineLayout(vk->device, pd->layout, NULL);
                 free(pd->vs_spirv);
                 free(pd->fs_spirv);
@@ -1663,12 +1727,86 @@ void rhi_device_destroy(RHIDevice *dev) {
             if (sd) { vkDestroySampler(vk->device, sd->sampler, NULL); free(sd); }
             break;
         }
+        case RHI_RES_CUBEMAP: {
+            /* Mirrors the tail of rhi_cubemap_destroy (device already idle). */
+            VKCubemapData *cd = (VKCubemapData *)dev->slots[i].ptr;
+            if (cd) {
+                for (u32 f = 0; f < 6; f++) {
+                    for (u32 m = 0; m < VK_MAX_MIP_VIEWS; m++) {
+                        if (cd->face_views[f][m])
+                            vkDestroyImageView(vk->device, cd->face_views[f][m], NULL);
+                    }
+                }
+                vkDestroyImageView(vk->device, cd->view, NULL);
+                vkDestroyImage(vk->device, cd->image, NULL);
+                vkFreeMemory(vk->device, cd->memory, NULL);
+                free(cd);
+            }
+            break;
+        }
+        case RHI_RES_FRAMEBUFFER: {
+            /* Two payload types share this slot type, tagged at create:
+             * VKShadowData (shadow map) / VKFBOData (offscreen FBO). Their
+             * color/depth image+view+memory are aliased into sibling
+             * RHI_RES_TEXTURE slots and released by the TEXTURE case;
+             * destroy here only what no texture slot owns (mirrors the tails
+             * of rhi_shadow_map_destroy / vk_offscreen_fbo_release, minus the
+             * aliased objects and the device-idle wait done once up front). */
+            const u32 *magic = (const u32 *)dev->slots[i].ptr;
+            if (magic && *magic == VK_SHADOW_DATA_MAGIC) {
+                VKShadowData *sd = (VKShadowData *)dev->slots[i].ptr;
+                if (vk->shadow_render_pass == sd->render_pass)
+                    vk->shadow_render_pass = VK_NULL_HANDLE;
+                if (sd->framebuffer) vkDestroyFramebuffer(vk->device, sd->framebuffer, NULL);
+                if (sd->render_pass) vkDestroyRenderPass(vk->device, sd->render_pass, NULL);
+                if (sd->render_pass_load) vkDestroyRenderPass(vk->device, sd->render_pass_load, NULL);
+                free(sd);
+            } else if (magic && *magic == VK_FBO_DATA_MAGIC) {
+                VKFBOData *fd = (VKFBOData *)dev->slots[i].ptr;
+                if (fd->framebuffer) vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
+                if (fd->render_pass) vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
+                if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
+                if (fd->msaa_color_view) vkDestroyImageView(vk->device, fd->msaa_color_view, NULL);
+                if (fd->msaa_color_image) vkDestroyImage(vk->device, fd->msaa_color_image, NULL);
+                if (fd->msaa_color_memory) vkFreeMemory(vk->device, fd->msaa_color_memory, NULL);
+                if (fd->msaa_depth_view) vkDestroyImageView(vk->device, fd->msaa_depth_view, NULL);
+                if (fd->msaa_depth_image) vkDestroyImage(vk->device, fd->msaa_depth_image, NULL);
+                if (fd->msaa_depth_memory) vkFreeMemory(vk->device, fd->msaa_depth_memory, NULL);
+                free(fd);
+            } else {
+                free(dev->slots[i].ptr);
+            }
+            break;
+        }
         case RHI_RES_MRT_FBO: {
-            /* freed explicitly via rhi_mrt_fbo_destroy; device-destroy skips */
+            /* Attachment + depth image/view/memory are aliased into sibling
+             * RHI_RES_TEXTURE slots (released by the TEXTURE case);
+             * destroy only the framebuffer, both render passes and the struct
+             * (mirrors rhi_mrt_fbo_destroy, minus the aliased objects). */
+            VKMRTFBOData *md = (VKMRTFBOData *)dev->slots[i].ptr;
+            if (md) {
+                if (md->framebuffer) vkDestroyFramebuffer(vk->device, md->framebuffer, NULL);
+                if (md->render_pass) vkDestroyRenderPass(vk->device, md->render_pass, NULL);
+                if (md->render_pass_load) vkDestroyRenderPass(vk->device, md->render_pass_load, NULL);
+                free(md);
+            }
             break;
         }
         case RHI_RES_CUBEMAP_DEPTH_FBO: {
-            /* freed explicitly via rhi_cubemap_depth_fbo_destroy */
+            /* The depth image/view/memory are aliased into the sibling
+             * RHI_RES_TEXTURE slot (released by the TEXTURE case);
+             * destroy the per-face views/framebuffers, both render passes and
+             * the struct (mirrors rhi_cubemap_depth_fbo_destroy). */
+            VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)dev->slots[i].ptr;
+            if (cd) {
+                for (u32 face = 0; face < 6; face++) {
+                    if (cd->face_fbos[face]) vkDestroyFramebuffer(vk->device, cd->face_fbos[face], NULL);
+                    if (cd->face_views[face]) vkDestroyImageView(vk->device, cd->face_views[face], NULL);
+                }
+                if (cd->render_pass) vkDestroyRenderPass(vk->device, cd->render_pass, NULL);
+                if (cd->render_pass_load) vkDestroyRenderPass(vk->device, cd->render_pass_load, NULL);
+                free(cd);
+            }
             break;
         }
         default:
@@ -1701,17 +1839,17 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
         LOG_FATAL("VK: vkWaitForFences failed in frame_begin");
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
     if (vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetFences failed in frame_begin");
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
     if (vkResetDescriptorPool(vk->device, vk->desc_pools[vk->current_frame], 0) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetDescriptorPool failed in frame_begin");
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
 
     VkResult res = vkAcquireNextImageKHR(vk->device, vk->swapchain, UINT64_MAX,
@@ -1722,7 +1860,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
             vk->image_semaphores[vk->current_frame], VK_NULL_HANDLE, &vk->image_index);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
             vk->frame_started = false;
-            return (RHICmdBuffer *)vk;
+            return NULL;
         }
     } else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
         /* R148: Handle VK_ERROR_DEVICE_LOST / VK_ERROR_SURFACE_LOST_KHR / etc.
@@ -1731,7 +1869,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
          * framebuffer and causing a cascade of GPU errors. */
         LOG_ERROR("VK: vkAcquireNextImageKHR failed (res=%d)", (int)res);
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
     /* VK_SUBOPTIMAL_KHR is a success — swapchain rebuild deferred to rhi_present */
 
@@ -1742,13 +1880,13 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (!vk->framebuffers) {
         LOG_ERROR("VK: framebuffers not available in frame_begin");
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
 
     if (vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetCommandBuffer failed in frame_begin");
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
     vk->current_pipeline = VK_NULL_HANDLE; /* R89-1: reset pipeline cache for new command buffer */
     vk->vp_valid = false; vk->sc_valid = false;  /* R94-2: reset viewport/scissor cache */
@@ -1760,7 +1898,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (vkBeginCommandBuffer(vk->cmd_buffers[vk->current_frame], &bi) != VK_SUCCESS) {
         LOG_FATAL("VK: vkBeginCommandBuffer failed in frame_begin");
         vk->frame_started = false;
-        return (RHICmdBuffer *)vk;
+        return NULL;
     }
 
     VkRenderPassBeginInfo rpi = {0};
@@ -3409,6 +3547,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     VKBackend *vk = vk_backend(dev);
     VkFormat fmt = vk_format_from_rhi(desc->format);
     bool is_depth = (desc->format == RHI_FORMAT_D32_FLOAT);
+    /* Depth textures must use the DEPTH aspect (view + barriers); COLOR is
+     * invalid for D32 and trips VUID-VkImageViewCreateInfo-image-01762. */
+    VkImageAspectFlags aspect = is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                         : VK_IMAGE_ASPECT_COLOR_BIT;
 
     VkImageCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -3432,7 +3574,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
      * albedo/MR textures and tripped
      * VUID-vkCmdCopyImageToBuffer-srcImage-00186 /
      * VUID-VkImageMemoryBarrier-oldLayout-01212 without it). */
-    if (!is_depth) {
+    if (is_depth) {
+        /* Depth textures are rendered into (shadow/atlas paths). */
+        ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    } else {
         ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -3469,7 +3614,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     vci.image = image;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = fmt;
-    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.aspectMask = aspect;
     /* R171: Expose full mip chain for sampling (Hi-Z textureLod / textureQueryLevels).
      * Per-mip storage image binds create their own single-level views. */
     vci.subresourceRange.levelCount = ci.mipLevels;
@@ -3577,7 +3722,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.aspectMask = aspect;
         /* R430: transition the full mip chain — the view spans ci.mipLevels
          * and mips 1+ would otherwise stay UNDEFINED. */
         barrier.subresourceRange.levelCount = ci.mipLevels;
@@ -3591,7 +3736,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         region.bufferOffset = 0;
         region.bufferRowLength = 0;
         region.bufferImageHeight = 0;
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.aspectMask = aspect;
         region.imageSubresource.mipLevel = 0;
         region.imageSubresource.baseArrayLayer = 0;
         region.imageSubresource.layerCount = 1;
@@ -3605,7 +3750,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier2.image = image;
-        barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier2.subresourceRange.aspectMask = aspect;
         barrier2.subresourceRange.levelCount = ci.mipLevels; /* R430: full chain */
         barrier2.subresourceRange.layerCount = 1;
         barrier2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -3693,7 +3838,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.aspectMask = aspect;
         barrier.subresourceRange.levelCount = ci.mipLevels;
         barrier.subresourceRange.layerCount = 1;
         barrier.srcAccessMask = 0;
@@ -4289,6 +4434,9 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     VKBackend *vk = vk_backend(dev);
     VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
     if (!td) return;
+    /* The material-texture fallback caches this view
+     * (rhi_cmd_bind_shadow_texture) — drop the cache before destroying it. */
+    if (vk->shadow_tex_view == td->view) vk->shadow_tex_view = VK_NULL_HANDLE;
     /* R176: Pending mip upload may still reference this image — reclaim first. */
     vk_mip_upload_reclaim(vk);
     vk_wait_frames(vk);
@@ -5966,15 +6114,6 @@ static void vk_rebind_uniform_buffers(VKBackend *vk) {
 
 /* ---- Shadow map ---- */
 
-typedef struct {
-    VkImage        depth_image;
-    VkDeviceMemory depth_memory;
-    VkImageView    depth_view;
-    VkFramebuffer  framebuffer;
-    VkRenderPass   render_pass;
-    VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
-} VKShadowData;
-
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     VKBackend *vk = vk_backend(dev);
     RHIShadowMap sm = {0};
@@ -5983,6 +6122,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
 
     VKShadowData *sd = calloc(1, sizeof(VKShadowData));
     if (!sd) return sm;
+    sd->magic = VK_SHADOW_DATA_MAGIC;
 
     VkImageCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -6143,6 +6283,9 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     if (!sd) return;
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shadow_map_destroy");
+    /* Drop the cached fallback shadow view before it dangles (it aliases
+     * sd->depth_view, destroyed just below). */
+    if (vk->shadow_tex_view == sd->depth_view) vk->shadow_tex_view = VK_NULL_HANDLE;
     vkDestroyFramebuffer(vk->device, sd->framebuffer, NULL);
     /* R430: clear the cached default shadow pass like the create-failure
      * path does — it aliases sd->render_pass destroyed just below. */
@@ -6954,26 +7097,6 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
 
 /* ---- Offscreen FBO ---- */
 
-typedef struct {
-    VkImage        color_image;
-    VkDeviceMemory color_memory;
-    VkImageView    color_view;
-    VkImage        msaa_color_image;
-    VkDeviceMemory msaa_color_memory;
-    VkImageView    msaa_color_view;
-    VkImage        depth_image;
-    VkDeviceMemory depth_memory;
-    VkImageView    depth_view;
-    VkImage        msaa_depth_image;
-    VkDeviceMemory msaa_depth_memory;
-    VkImageView    msaa_depth_view;
-    VkFramebuffer  framebuffer;
-    VkRenderPass   render_pass;
-    VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
-    VkFormat       color_fmt;         /* for render-pass-compatible pipeline variants */
-    VkSampleCountFlagBits samples;
-} VKFBOData;
-
 static void vk_offscreen_fbo_release(VKBackend *vk, VKFBOData *fd) {
     if (!vk || !fd) return;
     if (fd->framebuffer) vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
@@ -6996,14 +7119,15 @@ static void vk_offscreen_fbo_release(VKBackend *vk, VKFBOData *fd) {
 
 static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height,
                                                RHIFormat color_fmt, u32 requested_samples) {
-    VKBackend *vk = vk_backend(dev);
     RHIOffscreenFBO fbo = {0};
     fbo.width = width;
     fbo.height = height;
     u32 sample_count = requested_samples == 0u ? 1u : requested_samples;
+    if (!dev || rhi_sample_count_bit(sample_count) == 0u)
+        return fbo;
+    VKBackend *vk = vk_backend(dev);
     VkSampleCountFlagBits samples = vk_sample_count(sample_count);
-    if (!dev || !vk || rhi_sample_count_bit(sample_count) == 0u ||
-        !vk_sample_count_supported(vk, sample_count) ||
+    if (!vk || !vk_sample_count_supported(vk, sample_count) ||
         (sample_count > 1u && (!vk->feat_depth_stencil_resolve ||
                                !dev->capabilities.color_resolve_supported)))
         return fbo;
@@ -7013,6 +7137,7 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
 
     VKFBOData *fd = calloc(1, sizeof(VKFBOData));
     if (!fd) return fbo;
+    fd->magic = VK_FBO_DATA_MAGIC;
     fd->color_fmt = vk_color_fmt;
     VkAttachmentDescription attachments[4] = {0};
 
@@ -7558,30 +7683,6 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 /* ======================================================================== */
 /* MRT (Multiple Render Targets) framebuffer -- VK backend                  */
 /* ======================================================================== */
-
-typedef struct {
-    VkImage        color_images[RHI_MRT_MAX_ATTACHMENTS];
-    VkDeviceMemory color_memories[RHI_MRT_MAX_ATTACHMENTS];
-    VkImageView    color_views[RHI_MRT_MAX_ATTACHMENTS];
-    VkImage        depth_image;
-    VkDeviceMemory depth_memory;
-    VkImageView    depth_view;
-    VkFramebuffer  framebuffer;
-    VkRenderPass   render_pass;
-    VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
-    u32            attachment_count;
-} VKMRTFBOData;
-
-typedef struct {
-    VkImage        depth_image;     /* cubemap: 6 layers */
-    VkDeviceMemory depth_memory;
-    VkImageView    depth_view;      /* cubemap view (all 6 layers) */
-    VkImageView    face_views[6];   /* per-face 2D views */
-    VkFramebuffer  face_fbos[6];   /* per-face framebuffers */
-    VkRenderPass   render_pass;
-    VkRenderPass   render_pass_load; /* LOAD-op twin for compute suspend/resume */
-    u32            size;
-} VKCubemapDepthFBOData;
 
 /* Helper: create a 2D VkImage + memory + view for MRT color attachments. */
 static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,

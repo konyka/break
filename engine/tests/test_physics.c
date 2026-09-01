@@ -1078,6 +1078,191 @@ TEST(constraint_ball_invalid_rejected)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  Repo-review: capsule-vs-box skewer MTV (whole-capsule SAT)              */
+/* ----------------------------------------------------------------------- */
+
+/* Capsule axis pierces a thin slab with the capsule centre ABOVE the slab
+ * mid-plane: the MTV must eject the capsule UP onto the slab (nearest side)
+ * with the exact whole-capsule depth, and applying it must fully separate.
+ * The old single-point sphere_vs_box exit faced the wrong side (tie -> down)
+ * and under-separated (depth = point-exit + r). */
+TEST(collide_capsule_box_skewer_ejects_up_full_separation)
+{
+    RigidBody cap = {0};
+    cap.shape = SHAPE_CAPSULE; cap.position = vec3(0, 0.35f, 0);
+    cap.radius = 0.3f; cap.half_height = 0.6f;   /* spans y in [-0.55, 1.25] */
+    RigidBody box = {0};
+    box.shape = SHAPE_BOX; box.position = vec3(0, 0, 0);
+    box.half_extent = vec3(5, 0.5f, 5);          /* slab y in [-0.5, 0.5] */
+
+    Contact c;
+    ASSERT_TRUE(physics_collide(&cap, &box, &c));
+    /* Capsule ejected UP: the capsule->box normal points DOWN. */
+    ASSERT_TRUE(c.normal.e[1] < -0.9f);
+    /* Exact depth: slab top (0.5) - capsule bottom (-0.55) = 1.05. */
+    ASSERT_FLOAT_EQ(c.depth, 1.05f, 1e-3f);
+
+    /* Full separation: after the MTV (plus slack), no contact remains. */
+    cap.position = vec3_sub(cap.position, vec3_scale(c.normal, c.depth + 1e-4f));
+    ASSERT_FALSE(physics_collide(&cap, &box, &c));
+}
+
+/* Same skewer with the capsule centre BELOW the mid-plane: the geometric MTV
+ * ejects DOWN through the nearer face and still fully separates — the old
+ * code left up to a full radius of residual overlap (worst 0.99997 at r=1.0). */
+TEST(collide_capsule_box_skewer_below_midplane_full_separation)
+{
+    RigidBody cap = {0};
+    cap.shape = SHAPE_CAPSULE; cap.position = vec3(0, -0.1f, 0);
+    cap.radius = 0.3f; cap.half_height = 0.6f;   /* spans y in [-1.0, 0.8] */
+    RigidBody box = {0};
+    box.shape = SHAPE_BOX; box.position = vec3(0, 0, 0);
+    box.half_extent = vec3(5, 0.5f, 5);
+
+    Contact c;
+    ASSERT_TRUE(physics_collide(&cap, &box, &c));
+    /* Down exit (1.3) beats up exit (1.5): capsule->box normal points UP. */
+    ASSERT_TRUE(c.normal.e[1] > 0.9f);
+    /* Exact depth: capsule top (0.8) - slab bottom (-0.5) = 1.3. */
+    ASSERT_FLOAT_EQ(c.depth, 1.3f, 1e-3f);
+
+    cap.position = vec3_sub(cap.position, vec3_scale(c.normal, c.depth + 1e-4f));
+    ASSERT_FALSE(physics_collide(&cap, &box, &c));
+}
+
+/* ----------------------------------------------------------------------- */
+/*  Repo-review: rest_frames = slow AND stationary (frozen-BVH creep)       */
+/* ----------------------------------------------------------------------- */
+
+TEST(slow_creep_body_keeps_bvh_refit)
+{
+    /* A body creeping at 0.04 m/s (below the 0.05 m/s rest threshold) kept
+     * accumulating rest_frames while still moving every frame; both refit
+     * passes skip rest_frames > 2, so its BVH leaf froze at the spawn spot
+     * and the body ghosted through the wall (verified 2.35 m drift in 60 s).
+     * Rest must require a bit-unchanged position, so the leaf tracks. */
+    PhysicsWorld *pw = physics_world_create(8);
+    physics_set_contact_callback(pw, test_on_contact_pair, NULL);
+
+    /* Static wall ahead: spans x in [0.6, 0.8]. */
+    u32 w = physics_body_create(pw, vec3(0.7f, 0, 0), vec3(0.1f, 5, 5), 0.0f, true, 0);
+    /* Slow-creeping dynamic body: speed 0.04 m/s < 0.05 rest threshold. */
+    u32 b = physics_body_create(pw, vec3(0, 0, 0), vec3(0.25f, 0.25f, 0.25f), 1.0f, false, 0);
+    pw->bodies[b].acceleration = vec3(0, 0, 0);
+    g_pair_a = w; g_pair_b = b; g_pair_hits = 0;
+
+    const f32 dt = 1.0f / 60.0f;
+    u32 max_rest = 0;
+    for (int i = 0; i < 1500; i++) {
+        pw->bodies[b].velocity = vec3(0.04f, 0, 0); /* sustained creep */
+        physics_step(pw, dt);
+        if (pw->bodies[b].rest_frames > max_rest) max_rest = pw->bodies[b].rest_frames;
+    }
+
+    /* The body moved every frame, so it must never reach deep rest. */
+    ASSERT_TRUE(max_rest <= 2);
+    /* ... so the wall contact still fires and the body does not ghost through
+     * (old code: leaf frozen near x=0, no pair, body sailed to x ~ 1.0). */
+    ASSERT_TRUE(g_pair_hits > 0);
+    ASSERT_TRUE(pw->bodies[b].position.e[0] < 0.6f);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
+/*  Repo-review: raycast robustness (parallel slabs, NaN, lazy BVH, NULL)   */
+/* ----------------------------------------------------------------------- */
+
+TEST(bvh_raycast_parallel_origin_outside_slab_misses)
+{
+    BVH bvh;
+    bvh_init(&bvh, 1);
+    BVHAABB aabb = { .min = vec3(200, 0, -1), .max = vec3(300, 1, 1) };
+    bvh_build(&bvh, &aabb, 1);
+
+    /* Ray parallel to Y/Z with the origin 1e-9 BELOW the y slab: a true miss,
+     * but the old ±1e8 fake inv_dir stretched the y slab to t in [0.1, 1e8],
+     * admitting a phantom hit at t=200 (origin within ~max_t*1e-8 outside). */
+    ASSERT_TRUE(!bvh_raycast(&bvh, vec3(0, -1e-9f, 0), vec3(1, 0, 0), 1000.0f, NULL));
+
+    /* Control: origin inside the y/z slabs hits at t=200. */
+    BVHRayHit hit;
+    ASSERT_TRUE(bvh_raycast(&bvh, vec3(0, 0.5f, 0), vec3(1, 0, 0), 1000.0f, &hit));
+    ASSERT_FLOAT_EQ(hit.t, 200.0f, 0.01f);
+    bvh_destroy(&bvh);
+}
+
+TEST(raycast_rejects_nan_inputs)
+{
+    PhysicsWorld *pw = physics_world_create(4);
+    physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 1.0f, false, 0);
+    physics_step(pw, 0.001f);
+
+    /* NaN origin/dir used to pass every slab comparison -> phantom hit t=0. */
+    ASSERT_TRUE(!physics_raycast(pw, vec3(NAN, 0, 0), vec3(1, 0, 0), 100.0f, NULL, NULL));
+    ASSERT_TRUE(!physics_raycast(pw, vec3(0, 0, 0), vec3(1, NAN, 0), 100.0f, NULL, NULL));
+    ASSERT_TRUE(!bvh_raycast(&pw->bvh, vec3(0, NAN, 0), vec3(1, 0, 0), 100.0f, NULL));
+    /* Sane query still hits. */
+    ASSERT_TRUE(physics_raycast(pw, vec3(0, 0, 0), vec3(1, 0, 0), 100.0f, NULL, NULL));
+    physics_world_destroy(pw);
+}
+
+TEST(raycast_hit_before_first_step)
+{
+    /* The BVH only built on physics_step, so a query issued before the first
+     * step silently missed every body. physics_raycast builds it lazily. */
+    PhysicsWorld *pw = physics_world_create(4);
+    physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
+
+    u32 hit_body = 999;
+    f32 hit_t = -1.0f;
+    ASSERT_TRUE(physics_raycast(pw, vec3(0, 0, 0), vec3(1, 0, 0), 100.0f, &hit_body, &hit_t));
+    ASSERT_EQ(hit_body, 0u);
+    ASSERT_FLOAT_EQ(hit_t, 4.0f, 0.01f);
+    physics_world_destroy(pw);
+}
+
+TEST(null_world_api_guards)
+{
+    /* Older APIs crashed on a NULL world; newer ones already guarded. */
+    physics_world_destroy(NULL);
+    physics_step(NULL, 1.0f / 60.0f);
+    ASSERT_TRUE(!physics_raycast(NULL, vec3(0, 0, 0), vec3(1, 0, 0), 1.0f, NULL, NULL));
+    physics_body_apply_impulse(NULL, 0, vec3(1, 0, 0));
+    physics_body_set_ccd(NULL, 0, true);
+    ASSERT_EQ(physics_body_create(NULL, vec3(0, 0, 0), vec3(1, 1, 1), 1.0f, false, 0), UINT32_MAX);
+    ASSERT_EQ(physics_body_create_sphere(NULL, vec3(0, 0, 0), 1.0f, 1.0f, false, 0), UINT32_MAX);
+    ASSERT_EQ(physics_body_create_capsule(NULL, vec3(0, 0, 0), 0.5f, 1.0f, 1.0f, false, 0), UINT32_MAX);
+}
+
+/* ----------------------------------------------------------------------- */
+/*  Repo-review: shape parameter validation at creation                     */
+/* ----------------------------------------------------------------------- */
+
+TEST(body_create_clamps_nonpositive_extents)
+{
+    /* Negative/NaN extents built an inverted AABB (min > max) that never
+     * overlapped anything: a permanent broadphase ghost. Clamped to 0. */
+    PhysicsWorld *pw = physics_world_create(8);
+    u32 b = physics_body_create(pw, vec3(0, 0, 0), vec3(-2, 1, NAN), 1.0f, false, 0);
+    ASSERT_TRUE(b != UINT32_MAX);
+    ASSERT_TRUE(pw->bodies[b].half_extent.e[0] == 0.0f);
+    ASSERT_TRUE(pw->bodies[b].half_extent.e[2] == 0.0f);
+    AABB a = aabb_from_body(&pw->bodies[b]);
+    for (int i = 0; i < 3; i++) ASSERT_TRUE(a.min.e[i] <= a.max.e[i]);
+
+    u32 s = physics_body_create_sphere(pw, vec3(0, 0, 0), -1.0f, 1.0f, false, 0);
+    ASSERT_TRUE(s != UINT32_MAX);
+    ASSERT_TRUE(pw->bodies[s].radius == 0.0f);
+    ASSERT_TRUE(pw->bodies[s].shape == SHAPE_SPHERE);
+
+    u32 c = physics_body_create_capsule(pw, vec3(0, 0, 0), -0.5f, -2.0f, 1.0f, false, 0);
+    ASSERT_TRUE(c != UINT32_MAX);
+    ASSERT_TRUE(pw->bodies[c].radius == 0.0f);
+    ASSERT_TRUE(pw->bodies[c].half_height == 0.0f);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(aabb_from_body_basic);
@@ -1144,4 +1329,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(constraint_ball_static_end_stays_put);
     RUN_TEST(constraint_ball_velocity_full_vector);
     RUN_TEST(constraint_ball_invalid_rejected);
+    /* Repo-review: capsule-box skewer MTV, rest/BVH creep, query robustness */
+    RUN_TEST(collide_capsule_box_skewer_ejects_up_full_separation);
+    RUN_TEST(collide_capsule_box_skewer_below_midplane_full_separation);
+    RUN_TEST(slow_creep_body_keeps_bvh_refit);
+    RUN_TEST(bvh_raycast_parallel_origin_outside_slab_misses);
+    RUN_TEST(raycast_rejects_nan_inputs);
+    RUN_TEST(raycast_hit_before_first_step);
+    RUN_TEST(null_world_api_guards);
+    RUN_TEST(body_create_clamps_nonpositive_extents);
 TEST_MAIN_END()

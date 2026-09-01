@@ -46,9 +46,12 @@ static u32 profiler_alloc_tid(void) {
 u32 profiler_register_thread(const char *name) {
     if (tls_tid != 0u) return tls_tid; /* idempotent per thread */
     u32 t = profiler_alloc_tid();
-    /* R434: past the cap, fold onto the main track rather than failing. */
-    if (t >= PROFILER_MAX_THREADS) t = PROFILER_TID_MAIN;
-    if (!g_thread_used[t]) {
+    /* R434: past the cap, fold onto the main track rather than failing. Folded
+     * threads must skip the name store — several folded threads (plus the main
+     * thread itself) would otherwise race on g_thread_names[PROFILER_TID_MAIN]. */
+    bool folded = (t >= PROFILER_MAX_THREADS);
+    if (folded) t = PROFILER_TID_MAIN;
+    if (!folded && !atomic_load_explicit(&g_thread_used[t], memory_order_acquire)) {
         char fallback[PROFILER_THREAD_NAME_LEN];
         if (!name) {
             if (t == PROFILER_TID_MAIN) {
@@ -77,9 +80,19 @@ void profiler_set_enabled(bool enabled) {
     g_profiler.enabled = enabled;
 }
 
+/* g_profiler.frame_index is a plain u32 in the public Profiler struct (tests
+ * read it directly, so the header field stays), but profiler_end_frame (main
+ * thread) writes it while profiler_push/pop (any recording thread) read it.
+ * Access it through an atomic lvalue — _Atomic u32 and u32 share layout on
+ * every supported toolchain — so that cross-thread handoff is not a data race. */
+static _Atomic u32 *profiler_frame_index_atomic(void) {
+    return (_Atomic u32 *)&g_profiler.frame_index;
+}
+
 void profiler_begin_frame(void) {
     if (!g_profiler.enabled) return;
-    ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
+    ProfilerFrame *f = &g_profiler.frames[
+        atomic_load_explicit(profiler_frame_index_atomic(), memory_order_acquire)];
     f->region_count = 0;
     g_profiler.open_count = 0; /* R304: reset the open-region stack per frame */
     tls_open_count = 0;        /* R434: per-thread open stack (calling thread) */
@@ -89,15 +102,18 @@ void profiler_begin_frame(void) {
 
 void profiler_end_frame(void) {
     if (!g_profiler.enabled) return;
-    ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
+    u32 idx = atomic_load_explicit(profiler_frame_index_atomic(), memory_order_acquire);
+    ProfilerFrame *f = &g_profiler.frames[idx];
     f->frame_end_us = time_microseconds();
-    g_profiler.frame_index = (g_profiler.frame_index + 1) % PROFILER_MAX_FRAMES;
+    atomic_store_explicit(profiler_frame_index_atomic(),
+                          (idx + 1u) % PROFILER_MAX_FRAMES, memory_order_release);
     if (g_profiler.frame_count < PROFILER_MAX_FRAMES) g_profiler.frame_count++;
 }
 
 void profiler_push(const char *name) {
     if (!g_profiler.enabled) return;
-    ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
+    ProfilerFrame *f = &g_profiler.frames[
+        atomic_load_explicit(profiler_frame_index_atomic(), memory_order_acquire)];
     u32 tid = profiler_current_tid(); /* R434: tag the zone with the real thread */
     /* R419: when the frame is full, push a sentinel so the matching pop stays
      * balanced — otherwise the pop would finalize an outer region with this
@@ -127,7 +143,8 @@ void profiler_push(const char *name) {
 
 void profiler_pop(void) {
     if (!g_profiler.enabled) return;
-    ProfilerFrame *f = &g_profiler.frames[g_profiler.frame_index];
+    ProfilerFrame *f = &g_profiler.frames[
+        atomic_load_explicit(profiler_frame_index_atomic(), memory_order_acquire)];
     /* R304 (CORRECTNESS): finalize the innermost OPEN region (LIFO), not the
      * last appended one. The old `regions[region_count-1]` was wrong under
      * nesting: region_count is never decremented (regions are kept for export),
@@ -148,7 +165,8 @@ void profiler_pop(void) {
 
 const ProfilerFrame *profiler_last_frame(void) {
     if (g_profiler.frame_count == 0) return NULL;
-    u32 idx = (g_profiler.frame_index + PROFILER_MAX_FRAMES - 1) % PROFILER_MAX_FRAMES;
+    u32 idx = (atomic_load_explicit(profiler_frame_index_atomic(), memory_order_acquire)
+               + PROFILER_MAX_FRAMES - 1) % PROFILER_MAX_FRAMES;
     return &g_profiler.frames[idx];
 }
 

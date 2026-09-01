@@ -484,6 +484,61 @@ TEST(noise_stamp_absurd_radius_clamped)
     free_terrain(t);
 }
 
+TEST(flatten_regrow_cycle_clean)
+{
+    /* R480: the flatten cache grow was reordered allocate-BEFORE-free so an
+     * OOM grow can no longer leave dangling pointers + a stale cap (later
+     * flatten double-free/UAF, shutdown double-free). This codebase has no
+     * malloc-failure injection harness (terrain.c calls raw malloc), so the
+     * OOM branch itself is inspection-verified; what this test pins is that
+     * grow → regrow → reuse cycles keep the cache functional and shutdown
+     * clean — ASan flags any mis-paired free/alloc in the reordered
+     * sequence. */
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    for (u32 i = 0; i < GRID * GRID; i++)
+        t->heightmap[i] = (f32)(i % 5) * 2.0f;
+
+    /* Small area: cache grows from 0. */
+    terrain_flatten(t, 0.0f, 0.0f, 1.0f);
+    ASSERT_NOT_NULL(t->_flatten_indices);
+    ASSERT_NOT_NULL(t->_flatten_dists);
+    ASSERT_TRUE(t->_flatten_cap > 0u);
+
+    /* Larger area: regrow — the old block is freed only after the new one
+     * allocated. Run twice: the second call is area <= cap (no regrow). */
+    terrain_flatten(t, 0.0f, 0.0f, 8.0f);
+    u32 big_cap = t->_flatten_cap;
+    terrain_flatten(t, 0.0f, 0.0f, 8.0f);
+    ASSERT_EQ(t->_flatten_cap, big_cap);
+
+    /* Smaller again: the cache never shrinks, and the edit still applies. */
+    terrain_flatten(t, 0.0f, 0.0f, 1.0f);
+    ASSERT_EQ(t->_flatten_cap, big_cap);
+
+    for (u32 i = 0; i < GRID * GRID; i++)
+        ASSERT_TRUE(isfinite(t->heightmap[i]));
+    ASSERT_EQ(t->modify_count, 4u);
+    free_terrain(t); /* terrain_shutdown: one clean free of the cache block */
+}
+
+TEST(flatten_null_cache_never_written)
+{
+    /* R480: the state an OOM grow failure leaves is NULL pointers + zero cap
+     * (the next flatten retries the grow). Defensively pin the guard behind
+     * it: with NULL cache pointers and a stale nonzero cap that skips the
+     * grow branch, flatten must bail without writing through the cache, and
+     * shutdown must stay clean. */
+    Terrain *t = make_terrain(GRID, 10.0f, 1.0f);
+    fill_uniform(t, 1.0f);
+    t->_flatten_cap = 0xFFFFFFFFu; /* stale: skips the grow branch */
+
+    terrain_flatten(t, 0.0f, 0.0f, 5.0f); /* must not write through NULL */
+
+    for (u32 i = 0; i < GRID * GRID; i++)
+        ASSERT_FLOAT_EQ(t->heightmap[i], 1.0f, EPS);
+    free_terrain(t); /* free(NULL) — no double-free */
+}
+
 /* R425: R421 clamped only radius; wx/wz were still cast f32→i32 unclamped.
  * Absurd world coords (1e30, -1e30, inf, NaN) on the edit APIs and
  * terrain_get_height must stay finite and in-grid — no UB. */
@@ -609,6 +664,9 @@ int main(void) {
     RUN_TEST(modify_height_absurd_radius_clamped);
     RUN_TEST(flatten_absurd_radius_clamped);
     RUN_TEST(noise_stamp_absurd_radius_clamped);
+    /* R480: flatten cache grow/shutdown safety */
+    RUN_TEST(flatten_regrow_cycle_clean);
+    RUN_TEST(flatten_null_cache_never_written);
     /* R425: wx/wz clamp */
     RUN_TEST(absurd_world_coords_clamped);
     RUN_TEST(get_height_absurd_coords_clamp_to_edge);

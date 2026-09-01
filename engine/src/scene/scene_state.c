@@ -1,9 +1,15 @@
 #include "scene_state.h"
 #include <core/log.h>
 #include <math/math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The save/load path below dumps the whole Camera struct starting at
+ * &camera->position — pin the field the raw layout relies on. */
+_Static_assert(offsetof(Camera, position) == 0,
+               "scene state serializes Camera from &position");
 
 typedef struct {
     Camera  camera;
@@ -146,7 +152,12 @@ bool scene_state_save(const char *path, const SceneStateCtx *ctx) {
     bool sv_ok = true;
     u32 magic = SCENE_STATE_MAGIC_V3;
     sv_ok &= fwrite(&magic, 4, 1, sf) == 1;
-    sv_ok &= fwrite(&ctx->camera->position, sizeof(Camera), 1, sf) == 1;
+    /* Raw struct dump: serialize a zero-initialized copy so the padding bytes
+     * in the file are deterministic instead of leaking stack contents. */
+    Camera cam_ser;
+    memset(&cam_ser, 0, sizeof(cam_ser));
+    cam_ser = *ctx->camera;
+    sv_ok &= fwrite(&cam_ser, sizeof(cam_ser), 1, sf) == 1;
     sv_ok &= fwrite(ctx->sun_azimuth, sizeof(f32), 1, sf) == 1;
     sv_ok &= fwrite(ctx->sun_elevation, sizeof(f32), 1, sf) == 1;
     sv_ok &= fwrite(ctx->exposure, sizeof(f32), 1, sf) == 1;

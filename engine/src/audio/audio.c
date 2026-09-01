@@ -92,8 +92,15 @@ struct AudioImpl {
     ma_engine engine;
 };
 
+/* The AudioImpl offset formula below (mirrored in audio_system_destroy) aligns
+ * the trailing impl block with _Alignof(long double); pin that this satisfies
+ * ma_engine's alignment. */
+_Static_assert(_Alignof(long double) >= 8,
+               "AudioImpl alignment relies on _Alignof(long double) >= 8");
+
 AudioSystem *audio_system_create(void) {
-    /* Single alloc: AudioSystem + AudioImpl (aligned to max_align_t) */
+    /* Single alloc: AudioSystem + AudioImpl (impl aligned to
+     * _Alignof(long double); destroy recomputes the same offset) */
     usize as_sz  = sizeof(AudioSystem);
     usize align  = _Alignof(long double);
     usize as_off = (as_sz + align - 1) & ~(align - 1);
@@ -232,16 +239,40 @@ u32 audio_play(AudioSystem *as, const char *path, f32 volume, bool looping) {
 }
 
 void audio_play_3d(AudioSystem *as, const char *path, Vec3 position, f32 volume, bool looping) {
-    u32 handle = audio_play(as, path, volume, looping);
-    if (handle == 0) return;
-    AudioSource *src = audio_resolve(as, handle);
-    if (!src) return;
-    /* R270 (CORRECTNESS): audio_play() now inits with NO_SPATIALIZATION, so a
-     * 3D sound must re-enable it (and pick the same inverse-distance model the
-     * streaming 3D path uses) before positioning it. */
+    if (!as || !as->engine || !path) return;
+
+    u32 id = audio_acquire_slot(as);
+    if (id == UINT32_MAX) return;
+
+    struct AudioImpl *impl = as->engine;
+    AudioSource *src = &as->sources[id];
+
+    /* Spatial variant of audio_play() (miniaudio spatializes by default, so
+     * flags=0). Spatialization state and the world position are set BEFORE
+     * ma_sound_start, mirroring audio_play_streamed's spatial init — routing
+     * through audio_play() started the sound 2D at the origin and only then
+     * re-spatialized it, so the first mixing quantum could play unspatialized. */
+    ma_result result = ma_sound_init_from_file(&impl->engine, path, 0, NULL, NULL, &src->sound);
+    if (result != MA_SUCCESS) {
+        LOG_WARN("Failed to load sound: %s (%d)", path, result);
+        /* Return slot to free-list */
+        if (as->free_count < AUDIO_MAX_SOURCES) {
+            as->free_list[as->free_count++] = id;
+        }
+        return;
+    }
+
+    src->volume = volume;             /* R435 */
+    src->bus = AUDIO_BUS_MASTER;      /* R435 */
+    src->applied_gain = audio_source_effective_gain(as, src);
+    ma_sound_set_volume(&src->sound, src->applied_gain);
+    ma_sound_set_looping(&src->sound, looping);
+    /* R270: same inverse-distance model as the streaming 3D path. */
     ma_sound_set_spatialization_enabled(&src->sound, MA_TRUE);
     ma_sound_set_attenuation_model(&src->sound, ma_attenuation_model_inverse);
     ma_sound_set_position(&src->sound, position.e[0], position.e[1], position.e[2]);
+    ma_sound_start(&src->sound);
+    src->active = true;
 }
 
 void audio_stop(AudioSystem *as, u32 source_id) {

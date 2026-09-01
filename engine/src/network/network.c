@@ -28,6 +28,11 @@
     #endif
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    /* SIO_UDP_CONNRESET lives in <mswsock.h>; provide the documented value
+     * (_WSAIOW(IOC_VENDOR,12)) for toolchains whose headers lack it. */
+    #ifndef SIO_UDP_CONNRESET
+    #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+    #endif
     typedef SOCKET RawSocket;
     typedef int    socklen_t_compat;
     #define INVALID_RAW_SOCKET INVALID_SOCKET
@@ -193,6 +198,22 @@ NetSocket *net_udp_create(u16 bind_port)
         return NULL;
     }
 
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* R567: on Windows, a datagram sent to a closed port queues an ICMP
+     * port-unreachable that fails the NEXT recvfrom/sendto on this socket
+     * with WSAECONNRESET. Disable that behavior at creation (standard
+     * practice, recommended by MSDN) so the spurious error never surfaces;
+     * this fixes the datagram paths uniformly instead of mapping
+     * WSAECONNRESET in each of net_recvfrom/net_sendto. */
+    {
+        DWORD bytes_returned = 0;
+        BOOL  connreset_off  = FALSE;
+        (void)WSAIoctl(fd, (DWORD)SIO_UDP_CONNRESET,
+                       &connreset_off, (DWORD)sizeof(connreset_off),
+                       NULL, 0, &bytes_returned, NULL, NULL);
+    }
+#endif
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -254,9 +275,19 @@ NetSocket *net_tcp_listen(u16 port, u32 backlog)
         return NULL;
     }
 
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* R568: SO_REUSEADDR on Windows does not mean what it means on POSIX —
+     * it lets another process bind the same listening port (hijack).
+     * SO_EXCLUSIVEADDRUSE gives the exclusive-listener semantics POSIX
+     * provides by default. */
+    int exclusive = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     (const char *)&exclusive, (socklen_t_compat)sizeof(exclusive));
+#else
     int yes = 1;
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
                      (const char *)&yes, (socklen_t_compat)sizeof(yes));
+#endif
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -442,6 +473,7 @@ i32 net_poll(NetPollFd *fds, u32 count, i32 timeout_ms)
     NativePollFd stack_buf[32];
     NativePollFd *native = stack_buf;
     bool heap_alloc = false;
+    u32 native_count = 0;
 
     if (count > (u32)(sizeof(stack_buf) / sizeof(stack_buf[0]))) {
         native = (NativePollFd *)calloc(count, sizeof(NativePollFd));
@@ -451,19 +483,30 @@ i32 net_poll(NetPollFd *fds, u32 count, i32 timeout_ms)
         memset(stack_buf, 0, sizeof(stack_buf));
     }
 
+    /* R569: skip NULL-socket entries instead of passing an invalid fd down —
+     * POSIX poll ignores negative fds while WSAPoll flags them POLLNVAL.
+     * Compacting the native array makes NULL entries behave like POSIX on
+     * both backends (revents left 0, never counted in the result). */
     for (u32 i = 0; i < count; ++i) {
-        native[i].fd      = fds[i].socket ? fds[i].socket->fd : INVALID_RAW_SOCKET;
-        native[i].events  = 0;
-        native[i].revents = 0;
-        if (fds[i].events & NET_POLL_READ)  native[i].events |= POLLIN;
-        if (fds[i].events & NET_POLL_WRITE) native[i].events |= POLLOUT;
         fds[i].revents = 0;
+        if (!fds[i].socket) continue;
+        NativePollFd *nfd = &native[native_count++];
+        nfd->fd      = fds[i].socket->fd;
+        nfd->events  = 0;
+        nfd->revents = 0;
+        if (fds[i].events & NET_POLL_READ)  nfd->events |= POLLIN;
+        if (fds[i].events & NET_POLL_WRITE) nfd->events |= POLLOUT;
+    }
+
+    if (native_count == 0) {
+        if (heap_alloc) free(native);
+        return 0;
     }
 
 #if defined(ENGINE_PLATFORM_WINDOWS)
-    int rc = NET_POLL_FN(native, (ULONG)count, (INT)timeout_ms);
+    int rc = NET_POLL_FN(native, (ULONG)native_count, (INT)timeout_ms);
 #else
-    int rc = NET_POLL_FN(native, (NativePollCount)count, timeout_ms);
+    int rc = NET_POLL_FN(native, (NativePollCount)native_count, timeout_ms);
 #endif
 
     if (rc < 0) {
@@ -471,12 +514,16 @@ i32 net_poll(NetPollFd *fds, u32 count, i32 timeout_ms)
         return NET_ERROR;
     }
 
+    /* Map compacted results back: the j-th non-NULL entry used native[j]. */
+    u32 j = 0;
     for (u32 i = 0; i < count; ++i) {
+        if (!fds[i].socket) continue;
         u32 rev = 0;
-        if (native[i].revents & POLLIN)  rev |= NET_POLL_READ;
-        if (native[i].revents & POLLOUT) rev |= NET_POLL_WRITE;
-        if (native[i].revents & (POLLERR | POLLHUP | POLLNVAL)) rev |= NET_POLL_ERROR;
+        if (native[j].revents & POLLIN)  rev |= NET_POLL_READ;
+        if (native[j].revents & POLLOUT) rev |= NET_POLL_WRITE;
+        if (native[j].revents & (POLLERR | POLLHUP | POLLNVAL)) rev |= NET_POLL_ERROR;
         fds[i].revents = rev;
+        j++;
     }
 
     if (heap_alloc) free(native);

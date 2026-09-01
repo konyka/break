@@ -210,9 +210,18 @@ static void lv_sync_rows(my_list_view_t* lv) {
     }
     slot->widget = row;
     slot->index = index;
-    my_widget_add_child(self, row);
+    if (my_widget_add_child(self, row) != MY_RET_OK) {
+      /* not attached: row is still ours; slot must not dangle on it */
+      my_widget_unref(row);
+      my_mem_free(lv->allocator, slot);
+      return;
+    }
     my_widget_unref(row); /* tree holds the ref while visible */
-    my_darray_push(lv->active, slot);
+    if (my_darray_push(lv->active, slot) != MY_RET_OK) {
+      my_widget_remove_child(self, row); /* tree drops its ref, row dies */
+      my_mem_free(lv->allocator, slot);
+      return;
+    }
   }
 }
 

@@ -216,9 +216,9 @@ TEST(occ_vis_null_system)
 
 TEST(occ_count_null_system)
 {
-    /* occlusion_cull_visible_count does not check for NULL - skip this test */
-    /* Just verify the test framework doesn't crash */
-    ASSERT_TRUE(true);
+    /* R485: occlusion_cull_visible_count now has the NULL guard its
+     * neighbors already had — a NULL system reports 0. */
+    ASSERT_EQ(occlusion_cull_visible_count(NULL), 0u);
 }
 
 TEST(occ_vis_large_index)

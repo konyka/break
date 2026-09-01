@@ -24,19 +24,21 @@ typedef struct {
  * to malloc when the pool is exhausted.
  * R415: the pool was a one-shot bump allocator — after 64 requests every
  * allocation fell back to malloc forever. Slots are now chained into a free
- * list: each free slot's first 4 bytes hold the index of the next free slot,
+ * list: each free slot's next_free holds the index of the next free slot,
  * mgr->req_pool_next is the head (MIPMAP_REQ_POOL_EMPTY when none), and
  * mip_free_req pushes slots back for reuse. */
 #define MIPMAP_REQ_SLOT_STRIDE 24
 #define MIPMAP_REQ_POOL_EMPTY 0xFFFFFFFFu
 _Static_assert(sizeof(MipLoadReq) <= MIPMAP_REQ_SLOT_STRIDE,
                "MipLoadReq exceeds pool slot stride");
+_Static_assert(sizeof(MipReqPoolSlot) == MIPMAP_REQ_SLOT_STRIDE,
+               "pool slot union must match the slot stride");
 
 static MipLoadReq *mip_alloc_req(MipmapStreamManager *mgr) {
     if (mgr->req_pool_next != MIPMAP_REQ_POOL_EMPTY) {
-        MipLoadReq *r = (MipLoadReq *)(mgr->req_pool + mgr->req_pool_next * MIPMAP_REQ_SLOT_STRIDE);
-        mgr->req_pool_next = *(const u32 *)r; /* pop: head = slot's next-free link */
-        return r;
+        MipReqPoolSlot *slot = &mgr->req_pool[mgr->req_pool_next];
+        mgr->req_pool_next = slot->next_free; /* pop: head = slot's next-free link */
+        return (MipLoadReq *)slot->bytes;
     }
     return (MipLoadReq *)malloc(sizeof(MipLoadReq));
 }
@@ -46,14 +48,14 @@ static void mip_free_req(MipLoadReq *req) {
     /* Read mgr BEFORE writing the free-list link: the link overwrites the
      * first bytes of the slot, which is where req->mgr lives. */
     MipmapStreamManager *mgr = req->mgr;
-    const u8 *pool_start = mgr ? mgr->req_pool : NULL;
+    const u8 *pool_start = mgr ? (const u8 *)mgr->req_pool : NULL;
     if (pool_start) {
         const u8 *p = (const u8 *)req;
         if (p >= pool_start &&
             p < pool_start + MIPMAP_STREAM_REQ_POOL_SIZE * MIPMAP_REQ_SLOT_STRIDE) {
             /* R415: push the slot back onto the pool free list for reuse. */
             u32 idx = (u32)((p - pool_start) / MIPMAP_REQ_SLOT_STRIDE);
-            *(u32 *)req = mgr->req_pool_next;
+            mgr->req_pool[idx].next_free = mgr->req_pool_next;
             mgr->req_pool_next = idx;
             return;
         }
@@ -191,11 +193,11 @@ bool mipmap_stream_init(MipmapStreamManager *mgr, usize memory_budget) {
     if (!mgr) return false;
     memset(mgr, 0, sizeof(*mgr));
     mgr->memory_budget = memory_budget > 0 ? memory_budget : (64 * 1024 * 1024); /* 64MB default */
-    /* R415: chain all request-pool slots into the free list (slot's first
-     * 4 bytes = next free index); req_pool_next is the head. */
+    /* R415: chain all request-pool slots into the free list (each free slot's
+     * next_free = index of the next free slot); req_pool_next is the head. */
     for (u32 i = 0; i < MIPMAP_STREAM_REQ_POOL_SIZE; i++) {
-        u8 *slot = mgr->req_pool + (usize)i * MIPMAP_REQ_SLOT_STRIDE;
-        *(u32 *)slot = (i + 1 < MIPMAP_STREAM_REQ_POOL_SIZE) ? (i + 1) : MIPMAP_REQ_POOL_EMPTY;
+        mgr->req_pool[i].next_free =
+            (i + 1 < MIPMAP_STREAM_REQ_POOL_SIZE) ? (i + 1) : MIPMAP_REQ_POOL_EMPTY;
     }
     mgr->req_pool_next = 0;
     mgr->ready = true;

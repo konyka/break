@@ -294,9 +294,11 @@ my_conf_node_t* my_conf_load_file(const my_allocator_t* allocator,
     }
     return NULL;
   }
-  fseek(f, 0, SEEK_END);
-  size = ftell(f);
-  fseek(f, 0, SEEK_SET);
+  if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 ||
+      fseek(f, 0, SEEK_SET) != 0) {
+    fclose(f);
+    return NULL;
+  }
   buf = (char*)my_mem_alloc(allocator, (size_t)size + 1);
   if (buf == NULL ||
       (size > 0 && fread(buf, 1, (size_t)size, f) != (size_t)size)) {
@@ -305,6 +307,7 @@ my_conf_node_t* my_conf_load_file(const my_allocator_t* allocator,
     return NULL;
   }
   fclose(f);
+  buf[size] = '\0';
   root = my_conf_parse_json(allocator, buf, (size_t)size, err);
   my_mem_free(allocator, buf);
   return root;

@@ -96,6 +96,18 @@ static Chunk *chunk_alloc(u32 chunk_size) {
     return c;
 }
 
+/* Derive a safe column alignment from a component's registered size.
+ * world_register_component takes no alignment, but sizeof(T) is guaranteed to
+ * be a multiple of alignof(T), so the largest power of two dividing the size
+ * covers any type whose alignment is a power of two (all supported targets).
+ * Cap at 16: chunks come from calloc (max_align_t) and the base offset is
+ * 16-aligned, so a larger derived alignment could not be honored anyway. */
+static u32 ecs_component_align(u32 size) {
+    if (size == 0) return 1u;
+    u32 a = size & (~size + 1u); /* lowest set bit = largest pow2 dividing size */
+    return a > 16u ? 16u : a;
+}
+
 static Archetype *create_archetype(World *w, const ComponentType *types, u32 count) {
     if (w->archetype_count >= ECS_MAX_ARCHETYPES) {
         LOG_FATAL("ECS archetype limit reached");
@@ -130,6 +142,12 @@ static Archetype *create_archetype(World *w, const ComponentType *types, u32 cou
     offset = (offset + 15u) & ~15u;
     a->entity_offset = sizeof(Chunk);
     for (u32 i = 0; i < count; i++) {
+        /* Each column must be aligned to its component's alignment: advancing
+         * by size*capacity alone leaves e.g. an 8-byte column right behind a
+         * 1-byte column misaligned (UB on strict-alignment targets). Round
+         * every column offset up to the alignment derived from its size. */
+        u32 align = ecs_component_align(w->component_sizes[types[i]]);
+        offset = (offset + align - 1u) & ~(align - 1u);
         a->offsets[i] = offset;
         offset += w->component_sizes[types[i]] * a->chunk_capacity;
     }
@@ -690,9 +708,18 @@ static u64 archetype_component_mask(Archetype *a) {
     return mask;
 }
 
+/* Contract: queries live in a fixed 256-slot ring (w->queries) handed out
+ * round-robin, so at most 256 world_query results may be outstanding at once —
+ * the 257th world_query silently recycles the oldest slot (frees its heap
+ * matching buffer). Call query_done when finished; note query_done is ONLY for
+ * world_query results — never call it on a world_query_cached result (see
+ * below), which must stay valid until the cache entry is invalidated. */
 Query *world_query(World *w, const ComponentType *types, u32 count) {
-    u32 slot = w->query_next_slot;
-    w->query_next_slot = (w->query_next_slot + 1) % 256;
+    /* Atomic slot claim: concurrent world_query calls (nested dispatch from
+     * parallel workers) each get a distinct slot; slot-local state below is
+     * then only ever touched by the claiming thread. */
+    u32 slot = atomic_fetch_add_explicit(&w->query_next_slot, 1u,
+                                         memory_order_relaxed) % 256;
     Query *q = &w->queries[slot];
     /* Free heap-allocated matching (from previous use with >64 results) */
     if (q->match_cap > ECS_QUERY_INLINE_CAP) { free(q->matching); }
@@ -766,6 +793,10 @@ bool query_next(QueryIter *it) {
     return false;
 }
 
+/* Releases a world_query result (frees any heap matching buffer and resets the
+ * slot). Do NOT call on a world_query_cached result: cached queries are
+ * recycled by cache invalidation (cache_version), and resetting the slot here
+ * would leave the cache pointing at an emptied query. */
 void query_done(Query *q) {
     if (q) {
         if (q->match_cap > ECS_QUERY_INLINE_CAP) {
@@ -816,6 +847,11 @@ static bool query_type_mask(const ComponentType *types, u32 count,
     return true;
 }
 
+/* Cached variant of world_query: the result occupies one of the same 256 ring
+ * slots but is owned by the cache. Contract: NEVER call query_done on it — the
+ * cached match list stays valid until a structural change bumps cache_version,
+ * and query_done would free/reset state the cache still references. The ring
+ * contract still applies: >256 interleaved live queries can recycle the slot. */
 Query *world_query_cached(World *w, const ComponentType *types, u32 count) {
     if (!w || !types || count == 0) return NULL;
 

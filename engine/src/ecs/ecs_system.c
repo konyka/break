@@ -1,5 +1,6 @@
 #include <ecs/ecs_system.h>
 #include <core/log.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,6 +37,15 @@ static void ecs_job_run(void *ctx) {
 #define ECS_JOB_POOL_SIZE 512
 static EcsJob _job_pool[ECS_JOB_POOL_SIZE];
 
+/* Re-entry depth for the shared _job_pool. A system callback that itself calls
+ * ecs_parallel_for (nested dispatch) runs on a worker thread of the outer
+ * dispatch and would overwrite _job_pool entries the outer call's workers
+ * haven't dequeued yet — outer jobs then execute with the inner call's
+ * fn/view/user or are lost. The counter is global (not thread-local) because
+ * concurrent nested calls from DIFFERENT worker threads race on the same pool
+ * too. Any nested/concurrent call falls back to the serial in-place path. */
+static _Atomic u32 _dispatch_depth;
+
 void ecs_parallel_for(World *w, TaskSystem *ts,
                       const ComponentType *types, u32 count,
                       EcsSystemFn fn, void *user) {
@@ -56,39 +66,51 @@ void ecs_parallel_for(World *w, TaskSystem *ts,
     }
     if (job_count == 0) { query_done(q); return; }
 
-    EcsJob *jobs;
+    EcsJob *jobs = NULL;
     bool heap_fallback = false;
-    if (job_count <= ECS_JOB_POOL_SIZE) {
-        jobs = _job_pool;
-    } else {
-        jobs = (EcsJob *)malloc(job_count * sizeof(EcsJob));
-        if (!jobs) {
-            /* R238 (CORRECTNESS/MEMORY): OOM with more non-empty chunks than the
-             * fixed pool can hold. The previous fallback clamped job_count to
-             * ECS_JOB_POOL_SIZE, but the fill loop below still iterated ALL
-             * non-empty chunks, writing jobs[512], jobs[513]... past
-             * _job_pool[ECS_JOB_POOL_SIZE] — an out-of-bounds .bss write — and
-             * also silently dropped the clamped-off chunks. Run every chunk
-             * serially in place: no job array, no overflow, no dropped chunks. */
-            LOG_WARN("ECS: job allocation failed (%u jobs), running serially", job_count);
-            for (u32 ai = 0; ai < q->match_count; ai++) {
-                Archetype *a = q->matching[ai];
-                for (Chunk *c = a->chunks; c; c = c->next) {
-                    if (c->count == 0) continue;
-                    EcsJob job;
-                    job.view.world     = w;
-                    job.view.archetype = a;
-                    job.view.chunk     = c;
-                    job.view.count     = c->count;
-                    job.fn             = fn;
-                    job.user           = user;
-                    ecs_job_run(&job);
-                }
+    /* Nested or concurrent dispatch: run serially in place (no job array, so
+     * the shared _job_pool stays owned by the outermost call). */
+    bool serial_only =
+        atomic_fetch_add_explicit(&_dispatch_depth, 1u, memory_order_acq_rel) != 0u;
+    if (!serial_only) {
+        if (job_count <= ECS_JOB_POOL_SIZE) {
+            jobs = _job_pool;
+        } else {
+            jobs = (EcsJob *)malloc(job_count * sizeof(EcsJob));
+            if (!jobs) {
+                /* R238 (CORRECTNESS/MEMORY): OOM with more non-empty chunks than the
+                 * fixed pool can hold. The previous fallback clamped job_count to
+                 * ECS_JOB_POOL_SIZE, but the fill loop below still iterated ALL
+                 * non-empty chunks, writing jobs[512], jobs[513]... past
+                 * _job_pool[ECS_JOB_POOL_SIZE] — an out-of-bounds .bss write — and
+                 * also silently dropped the clamped-off chunks. Run every chunk
+                 * serially in place: no job array, no overflow, no dropped chunks. */
+                LOG_WARN("ECS: job allocation failed (%u jobs), running serially", job_count);
+                serial_only = true;
+            } else {
+                heap_fallback = true;
             }
-            query_done(q);
-            return;
         }
-        heap_fallback = true;
+    }
+    if (serial_only) {
+        for (u32 ai = 0; ai < q->match_count; ai++) {
+            Archetype *a = q->matching[ai];
+            for (Chunk *c = a->chunks; c; c = c->next) {
+                if (c->count == 0) continue;
+                EcsJob job;
+                job.view.world     = w;
+                job.view.archetype = a;
+                job.view.chunk     = c;
+                job.view.count     = c->count;
+                job.fn             = fn;
+                job.user           = user;
+                ecs_job_run(&job);
+            }
+        }
+        atomic_fetch_sub_explicit(&_dispatch_depth, 1u, memory_order_acq_rel);
+        if (heap_fallback) free(jobs);
+        query_done(q);
+        return;
     }
     u32 ji = 0;
     for (u32 ai = 0; ai < q->match_count; ai++) {
@@ -116,6 +138,7 @@ void ecs_parallel_for(World *w, TaskSystem *ts,
         }
     }
 
+    atomic_fetch_sub_explicit(&_dispatch_depth, 1u, memory_order_acq_rel);
     if (heap_fallback) free(jobs);
     query_done(q);
 }

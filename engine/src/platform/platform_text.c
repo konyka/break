@@ -152,6 +152,11 @@ void platform_ime_surrounding_set(PlatformImeSurrounding *surrounding,
         if (cursor < start || anchor < start || cursor > end || anchor > end) {
             start = 0;
             end = utf8_prefix_length(text, PLATFORM_IME_SURROUNDING_MAX);
+            /* R572: the fallback resets the window; cursor/anchor that were
+             * outside the old window can still exceed the new end — clamp
+             * them so the stored offsets stay within [0, end - start]. */
+            if (cursor > end) cursor = end;
+            if (anchor > end) anchor = end;
         }
     }
     memcpy(surrounding->utf8, text + start, end - start);

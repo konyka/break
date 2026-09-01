@@ -145,7 +145,7 @@ static my_widget_t* focus_step(my_widget_t* root, my_widget_t* current,
     /* simple recursive walk implemented iteratively with an explicit
      * state: we walk using parent/child links only */
     size_t i;
-    my_widget_t* order[256];
+    my_widget_t* order[256]; /* cap: first 256 focusables (documented) */
     size_t count = 0;
     /* stack-based preorder */
     my_widget_t* stack[256];
@@ -201,13 +201,19 @@ static my_widget_t* nearest_focusable(my_widget_t* w) {
  * "hover_enter"), invalidating both so the MY_STATE_HOVER style slot
  * takes effect. While a grab is active the grabbed widget keeps hover. */
 static void hover_update(my_event_dispatcher_t* d, my_widget_t* target) {
-  if (d->hovered == target) {
+  my_widget_t* old = d->hovered;
+  if (old == target) {
     return;
   }
-  if (d->hovered != NULL) {
-    d->hovered->hovered = false;
-    my_widget_invalidate(d->hovered, NULL);
-    my_emitter_emit(d->hovered->emitter, "hover_leave", NULL);
+  /* Keep both widgets alive across the emits: a hover_leave/hover_enter
+   * listener may destroy either widget (deliver() uses the same pattern). */
+  my_widget_ref(target);
+  if (old != NULL) {
+    my_widget_ref(old);
+    old->hovered = false;
+    my_widget_invalidate(old, NULL);
+    my_emitter_emit(old->emitter, "hover_leave", NULL);
+    my_widget_unref(old);
   }
   d->hovered = target;
   if (target != NULL) {
@@ -216,19 +222,30 @@ static void hover_update(my_event_dispatcher_t* d, my_widget_t* target) {
     my_emitter_emit(target->emitter, "hover_enter", NULL);
   }
   hover_cursor_apply(d, target); /* M21a: cursor follows the hover class */
+  my_widget_unref(target);
 }
 
 /** @brief Switch key focus, emitting "blur"/"focus" on the widgets. */
 static void set_focus(my_event_dispatcher_t* d, my_widget_t* widget) {
-  if (d->focused == widget) {
+  my_widget_t* old = d->focused;
+  if (old == widget) {
     return;
   }
-  if (d->focused != NULL) {
-    my_emitter_emit(d->focused->emitter, "blur", NULL);
+  if (old != NULL) {
+    my_widget_ref(old); /* a blur listener may destroy the old widget */
+    my_emitter_emit(old->emitter, "blur", NULL);
+    my_widget_unref(old);
+    if (d->focused != old && d->focused != NULL) {
+      return; /* the blur handler moved focus elsewhere: keep its choice */
+    }
+    /* d->focused == NULL also covers old leaving the tree mid-emit
+     * (forget() cleared it): the caller's choice still applies. */
   }
   d->focused = widget;
   if (widget != NULL) {
+    my_widget_ref(widget); /* a focus listener may destroy the widget */
     my_emitter_emit(widget->emitter, "focus", NULL);
+    my_widget_unref(widget);
   }
 }
 
@@ -338,8 +355,12 @@ void my_event_dispatcher_forget(my_event_dispatcher_t* dispatcher,
   }
   if (dispatcher->focused != NULL &&
       is_self_or_descendant(dispatcher->focused, widget)) {
-    my_emitter_emit(dispatcher->focused->emitter, "blur", NULL);
-    dispatcher->focused = NULL;
+    my_widget_t* old = my_widget_ref(dispatcher->focused);
+    my_emitter_emit(old->emitter, "blur", NULL);
+    my_widget_unref(old);
+    if (dispatcher->focused == old) {
+      dispatcher->focused = NULL; /* a blur handler may have moved focus */
+    }
   }
   if (dispatcher->hovered != NULL &&
       is_self_or_descendant(dispatcher->hovered, widget)) {

@@ -237,6 +237,26 @@ TEST(surrounding_text_preserves_utf8_offsets)
     ASSERT_EQ(platform_utf8_byte_to_utf16_units(text, 8), 4);
 }
 
+TEST(surrounding_text_fallback_clamps_cursor_and_anchor)
+{
+    /* R572: when the centered window cannot contain cursor/anchor, the
+     * fallback resets to the text prefix — cursor/anchor beyond the new
+     * end used to be stored out of range. They must be clamped into the
+     * stored window. */
+    PlatformImeSurrounding surrounding;
+    char text[5001];
+
+    memset(text, 'a', 5000);
+    text[5000] = '\0';
+    /* focus = anchor = 4990 -> window [2990, 5000); cursor 10 is outside,
+     * so the fallback path runs with anchor 4990 > new end. */
+    platform_ime_surrounding_set(&surrounding, text, 10, 4990);
+    ASSERT_EQ(strlen(surrounding.utf8), (usize)PLATFORM_IME_SURROUNDING_MAX);
+    ASSERT_EQ(surrounding.cursor, 10);
+    ASSERT_EQ(surrounding.anchor, PLATFORM_IME_SURROUNDING_MAX);
+    ASSERT_TRUE((usize)surrounding.anchor <= strlen(surrounding.utf8));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(queue_is_fifo_and_accepts_empty_preedit);
     RUN_TEST(empty_queue_poll_is_safe);
@@ -255,4 +275,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(utf8_byte_offsets_convert_to_codepoints);
     RUN_TEST(surrounding_text_keeps_cursor_in_a_valid_window);
     RUN_TEST(surrounding_text_preserves_utf8_offsets);
+    RUN_TEST(surrounding_text_fallback_clamps_cursor_and_anchor);
 TEST_MAIN_END()

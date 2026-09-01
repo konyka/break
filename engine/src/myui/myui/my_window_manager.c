@@ -76,9 +76,12 @@ static void wm_release_window_at(my_window_manager_t* wm, size_t index) {
   if (wm->surface_focus_window == win) {
     wm->surface_focus_window = NULL;
   }
-  win->wm = NULL;
-  win->loop = NULL;
-  ((my_widget_t*)win)->anim_mgr = NULL;
+  /* Unref BEFORE detaching loop/anim_mgr: the destroy chain cancels the
+   * tip timer, stops animations, and lets descendant destroy chains
+   * (node_view flow timer, button release timer) re-resolve win->loop —
+   * all of them need these fields still valid, otherwise the shared main
+   * loop keeps timers that fire on freed objects. A window that survives
+   * via outside refs simply keeps valid pointers. */
   my_widget_unref((my_widget_t*)win);
   wm_refresh_scrims(wm);
   if (wm->surface_focus_window == NULL) {

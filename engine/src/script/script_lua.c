@@ -8,6 +8,7 @@
 #include <lua/lauxlib.h>
 #include <lua/lualib.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -42,6 +43,14 @@ static RigidBody *checked_body(lua_State *L, PhysicsWorld *pw, int arg) {
     u32 idx;
     if (!checked_body_index(L, pw, arg, &idx)) return NULL;
     return &pw->bodies[idx];
+}
+
+/* NaN/Inf guard for vector components handed to physics: a single nonfinite
+ * value poisons the broadphase for ALL bodies (collisions silently missed).
+ * Matches the .script parser, which rejects nonfinite values (script.c).
+ * On rejection the bindings no-op, same as an invalid body id. */
+static bool checked_vec3_finite(f32 x, f32 y, f32 z) {
+    return isfinite(x) && isfinite(y) && isfinite(z);
 }
 
 /* -------------------------------------------------------------------------
@@ -83,9 +92,13 @@ static int l_set_pos(lua_State *L) {
     PhysicsWorld *pw = ls ? (PhysicsWorld *)ls->physics : NULL;
     RigidBody *b = checked_body(L, pw, 1);
     if (!b) return 0;
-    b->position.e[0] = (f32)luaL_checknumber(L, 2);
-    b->position.e[1] = (f32)luaL_checknumber(L, 3);
-    b->position.e[2] = (f32)luaL_checknumber(L, 4);
+    f32 x = (f32)luaL_checknumber(L, 2);
+    f32 y = (f32)luaL_checknumber(L, 3);
+    f32 z = (f32)luaL_checknumber(L, 4);
+    if (!checked_vec3_finite(x, y, z)) return 0;
+    b->position.e[0] = x;
+    b->position.e[1] = y;
+    b->position.e[2] = z;
     /* R423: teleporting must wake the body and force a BVH refit — a resting
      * body otherwise keeps its stale AABB at the old location and collisions
      * at the new one are missed. Mirrors the engine's own teleports (R374/
@@ -109,9 +122,13 @@ static int l_set_vel(lua_State *L) {
     LuaScript *ls = ls_from_state(L);
     RigidBody *b = checked_body(L, ls ? (PhysicsWorld *)ls->physics : NULL, 1);
     if (!b) return 0;
-    b->velocity.e[0] = (f32)luaL_checknumber(L, 2);
-    b->velocity.e[1] = (f32)luaL_checknumber(L, 3);
-    b->velocity.e[2] = (f32)luaL_checknumber(L, 4);
+    f32 x = (f32)luaL_checknumber(L, 2);
+    f32 y = (f32)luaL_checknumber(L, 3);
+    f32 z = (f32)luaL_checknumber(L, 4);
+    if (!checked_vec3_finite(x, y, z)) return 0;
+    b->velocity.e[0] = x;
+    b->velocity.e[1] = y;
+    b->velocity.e[2] = z;
     return 0;
 }
 
@@ -123,6 +140,7 @@ static int l_apply_impulse(lua_State *L) {
     Vec3 imp = vec3((f32)luaL_checknumber(L, 2),
                     (f32)luaL_checknumber(L, 3),
                     (f32)luaL_checknumber(L, 4));
+    if (!checked_vec3_finite(imp.e[0], imp.e[1], imp.e[2])) return 0;
     physics_body_apply_impulse(pw, idx, imp);
     return 0;
 }
@@ -135,6 +153,12 @@ static int l_spawn(lua_State *L) {
                     (f32)luaL_checknumber(L, 2),
                     (f32)luaL_checknumber(L, 3));
     f32 mass = (f32)luaL_optnumber(L, 4, 1.0);
+    /* A nonfinite position or mass would poison the whole physics world —
+     * refuse the spawn and return the invalid id (0). */
+    if (!checked_vec3_finite(pos.e[0], pos.e[1], pos.e[2]) || !isfinite(mass)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
     u32 id = physics_body_create(pw, pos, vec3(0.5f, 0.5f, 0.5f), mass, false, 0);
     /* R352/R354: UINT32_MAX → 0 (invalid); else 1-based Lua id = C index + 1. */
     lua_pushinteger(L, (id == UINT32_MAX) ? 0 : (lua_Integer)(id + 1u));

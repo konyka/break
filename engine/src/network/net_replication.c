@@ -256,6 +256,12 @@ static bool net_repl_peer_apply_line(NetReplicator *rep, const char *line) {
      * (70000 silently wrapped to 4464, registering the wrong peer address). */
     if (port > 65535u || !isfinite(rtt) || !isfinite(rt))
         return false;
+    /* R573: the host is embedded verbatim in peer file names
+     * (net_repl_peer_file_path); reject separators and ".." so a crafted
+     * .peer line cannot traverse directories when peers are persisted. */
+    if (strchr(host, '/') != NULL || strchr(host, '\\') != NULL ||
+        strstr(host, "..") != NULL)
+        return false;
 
     NetAddress addr = {0};
     memcpy(addr.host, host, strlen(host) + 1);

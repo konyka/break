@@ -78,7 +78,12 @@ Vec3 aabb_overlap_depth(AABB a, AABB b) {
 PhysicsWorld *physics_world_create(u32 max_bodies) {
     /* Single allocation: PhysicsWorld + RigidBody[] + BVHAABB[] staging.
      * Layout: [PhysicsWorld pw][RigidBody bodies * N][BVHAABB staging * N] */
-    usize pw_bytes     = sizeof(PhysicsWorld);
+    usize pw_bytes = sizeof(PhysicsWorld);
+    /* Mirror bvh.c's count_fits_size guard: on 32-bit a max_bodies near
+     * UINT32_MAX overflows the size computation and the wrapped calloc would
+     * hand back a block smaller than the layout below assumes. */
+    if ((usize)max_bodies > (SIZE_MAX - pw_bytes) / (sizeof(RigidBody) + sizeof(BVHAABB)))
+        return NULL;
     usize bodies_bytes = (usize)max_bodies * sizeof(RigidBody);
     usize stage_bytes  = (usize)max_bodies * sizeof(BVHAABB);
     u8 *block = (u8 *)calloc(1, pw_bytes + bodies_bytes + stage_bytes);
@@ -95,6 +100,7 @@ PhysicsWorld *physics_world_create(u32 max_bodies) {
 }
 
 void physics_world_destroy(PhysicsWorld *pw) {
+    if (!pw) return;
     bvh_destroy(&pw->bvh);
     /* Single free: bodies and _bvh_staging are within the same block as pw */
     free(pw);
@@ -123,6 +129,14 @@ void physics_body_revive(RigidBody *rb, f32 mass, bool is_static, u32 frame) {
 u32 physics_body_create(PhysicsWorld *pw, Vec3 pos, Vec3 half_ext, f32 mass, bool is_static, u32 frame) {
     u32 id;
     RigidBody *b;
+    if (!pw) return UINT32_MAX;
+    /* Clamp negative/NaN extents to 0: an inverted AABB (min > max) never
+     * overlaps anything, making the body a permanent broadphase ghost.
+     * !(x >= 0) catches both negative and NaN (same convention as the R435
+     * rest_length guard below). */
+    for (int i = 0; i < 3; i++) {
+        if (!(half_ext.e[i] >= 0.0f)) half_ext.e[i] = 0.0f;
+    }
     /* R376/R377: Del parks with spawn_frame=UINT32_MAX (no destroy/free_stack).
      * Reuse those slots so E/] cannot permanently exhaust capacity. Skip 0 (ground). */
     for (id = 1; id < pw->count; id++) {
@@ -162,6 +176,8 @@ init:
 }
 
 u32 physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass, bool is_static, u32 frame) {
+    if (!pw) return UINT32_MAX;
+    if (!(radius >= 0.0f)) radius = 0.0f; /* negative/NaN -> 0 (see body_create) */
     u32 id = physics_body_create(pw, pos, vec3(radius, radius, radius), mass, is_static, frame);
     if (id < pw->count) {
         RigidBody *b = &pw->bodies[id];
@@ -172,6 +188,11 @@ u32 physics_body_create_sphere(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 mass,
 }
 
 u32 physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half_height, f32 mass, bool is_static, u32 frame) {
+    if (!pw) return UINT32_MAX;
+    /* Clamp negative/NaN shape parameters: a negative radius or half_height
+     * produced an inverted AABB -> permanent ghost body. */
+    if (!(radius >= 0.0f)) radius = 0.0f;
+    if (!(half_height >= 0.0f)) half_height = 0.0f;
     u32 id = physics_body_create(pw, pos, vec3(radius, half_height + radius, radius), mass, is_static, frame);
     if (id < pw->count) {
         RigidBody *b = &pw->bodies[id];
@@ -183,7 +204,7 @@ u32 physics_body_create_capsule(PhysicsWorld *pw, Vec3 pos, f32 radius, f32 half
 }
 
 void physics_body_set_ccd(PhysicsWorld *pw, u32 body_id, bool enable) {
-    if (body_id >= pw->count) return;
+    if (!pw || body_id >= pw->count) return;
     pw->bodies[body_id].ccd = enable;
 }
 
@@ -399,7 +420,7 @@ static void solve_distance_constraint_velocities(PhysicsWorld *pw) {
 }
 
 void physics_body_apply_impulse(PhysicsWorld *pw, u32 body_id, Vec3 impulse) {
-    if (body_id >= pw->count) return;
+    if (!pw || body_id >= pw->count) return;
     RigidBody *b = &pw->bodies[body_id];
     if (b->is_static || b->inv_mass <= 0.0f) return;
     b->velocity.e[0] += impulse.e[0] * b->inv_mass;
@@ -485,6 +506,20 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
 
 /* ---- Narrowphase geometry helpers ---- */
 
+/* Bit-exact position-change test for rest detection (CORRECTNESS): the old
+ * rule incremented rest_frames whenever speed^2 < 0.0025 (|v| < 0.05 m/s),
+ * while integration still advanced p += v*dt every frame. A sustained
+ * sub-threshold creep (verified: 0.04 m/s for 60 s = 2.35 m drift) left the
+ * BVH leaf frozen forever — both refit passes skip rest_frames > 2 — and the
+ * body ghosted through walls. Rest now requires the position to be
+ * bit-unchanged this step; that also makes the recomputed AABB bit-identical,
+ * so the refit skip is exact rather than heuristic. Truly idle bodies still
+ * reach rest: damping (0.98/frame) shrinks v*dt below the float ulp of the
+ * position, at which point p stops changing. */
+static bool vec3_moved(Vec3 a, Vec3 b) {
+    return (a.e[0] != b.e[0]) || (a.e[1] != b.e[1]) || (a.e[2] != b.e[2]);
+}
+
 static f32 clampf01(f32 v) {
     if (v < 0.0f) return 0.0f;
     if (v > 1.0f) return 1.0f;
@@ -552,6 +587,26 @@ static Vec3 closest_on_aabb(AABB box, Vec3 p) {
         r.e[i] = v;
     }
     return r;
+}
+
+/* Slab test: does segment [a0,a1] intersect the AABB? */
+static bool segment_intersects_aabb(Vec3 a0, Vec3 a1, AABB ab) {
+    Vec3 d = vec3_sub(a1, a0);
+    f32 tmin = 0.0f, tmax = 1.0f;
+    for (int i = 0; i < 3; i++) {
+        if (fabsf(d.e[i]) < 1e-12f) {
+            if (a0.e[i] < ab.min.e[i] || a0.e[i] > ab.max.e[i]) return false;
+        } else {
+            f32 inv = 1.0f / d.e[i];
+            f32 t1 = (ab.min.e[i] - a0.e[i]) * inv;
+            f32 t2 = (ab.max.e[i] - a0.e[i]) * inv;
+            if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > tmin) tmin = t1;
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax) return false;
+        }
+    }
+    return true;
 }
 
 static void capsule_segment(const RigidBody *b, Vec3 *bottom, Vec3 *top) {
@@ -658,20 +713,75 @@ static bool collide_ordered(const RigidBody *A, const RigidBody *B,
     if (sa == SHAPE_CAPSULE && sb == SHAPE_BOX) {
         Vec3 a0, a1; capsule_segment(A, &a0, &a1);
         AABB ab = aabb_from_body(B);
-        /* Two-step closest approximation: seg->box center, refine. */
-        Vec3 segp = closest_on_segment(a0, a1, B->position, NULL);
-        Vec3 cp   = closest_on_aabb(ab, segp);
+        f32 r = A->radius;
+        /* Whole-capsule MTV (CORRECTNESS): the old path reduced the pair to
+         * sphere_vs_box at the single segment point nearest the box centre.
+         * When the capsule axis pierces the box ("skewer"), that point's
+         * least-penetration face can sit on the wrong side of the mid-plane,
+         * and depth = point-exit + r separates only that ONE point — the rest
+         * of the capsule stayed overlapped by up to r (measured residual
+         * 0.99997 at r=1.0). Compute the MTV over the whole capsule instead:
+         * SAT over the 3 box face axes (capsule interval = segment range ± r)
+         * plus the radial axis through the closest segment/box points. Each
+         * candidate is a valid separation of the FULL capsule (translating by
+         * the projection overlap along any axis separates the pair), so the
+         * least-depth candidate is the MTV. */
+        Vec3 segp  = closest_on_segment(a0, a1, B->position, NULL);
+        Vec3 cp    = closest_on_aabb(ab, segp);
         Vec3 segp2 = closest_on_segment(a0, a1, cp, NULL);
         Vec3 cp2   = closest_on_aabb(ab, segp2);
+        /* One more refinement pass for edge/corner accuracy. */
+        segp2 = closest_on_segment(a0, a1, cp2, NULL);
+        cp2   = closest_on_aabb(ab, segp2);
         Vec3 d = vec3_sub(cp2, segp2);
         f32 dist2 = vec3_dot(d, d);
-        if (dist2 >= A->radius * A->radius) {
-            bool inside = (segp2.e[0] >= ab.min.e[0] && segp2.e[0] <= ab.max.e[0] &&
-                           segp2.e[1] >= ab.min.e[1] && segp2.e[1] <= ab.max.e[1] &&
-                           segp2.e[2] >= ab.min.e[2] && segp2.e[2] <= ab.max.e[2]);
-            if (!inside) return false;
+
+        bool seg_hits_box = segment_intersects_aabb(a0, a1, ab);
+        if (!seg_hits_box && dist2 >= r * r) return false;
+
+        f32 best_depth = 1e30f;
+        Vec3 best_n = vec3(0, 1, 0);
+
+        /* Box face axes. Exit toward +i moves the capsule along +i, so the
+         * capsule->box normal is -i. */
+        for (int i = 0; i < 3; i++) {
+            f32 lo = a0.e[i] < a1.e[i] ? a0.e[i] : a1.e[i];
+            f32 hi = a0.e[i] > a1.e[i] ? a0.e[i] : a1.e[i];
+            f32 cap_min = lo - r, cap_max = hi + r;
+            if (cap_max < ab.min.e[i] || cap_min > ab.max.e[i]) return false;
+            f32 exit_hi = ab.max.e[i] - cap_min;  /* push capsule toward +i */
+            f32 exit_lo = cap_max - ab.min.e[i];  /* push capsule toward -i */
+            if (exit_hi < best_depth) {
+                best_depth = exit_hi;
+                best_n = vec3(0, 0, 0);
+                best_n.e[i] = -1.0f;
+            }
+            if (exit_lo < best_depth) {
+                best_depth = exit_lo;
+                best_n = vec3(0, 0, 0);
+                best_n.e[i] = 1.0f;
+            }
         }
-        return sphere_vs_box(segp2, A->radius, B, n, depth, pt);
+
+        /* Radial axis (segment outside the box): direction from the closest
+         * box point to the closest segment point — the cap/edge/corner MTV.
+         * Skipped for a piercing segment, where it is not a separating axis
+         * (depth r - |d| would under-separate exactly like the old bug). */
+        if (!seg_hits_box && dist2 > 1e-12f && dist2 < r * r) {
+            f32 inv = fast_rsqrt(dist2);
+            f32 dist = dist2 * inv;
+            f32 rdepth = r - dist;
+            if (rdepth < best_depth) {
+                best_depth = rdepth;
+                best_n = vec3_scale(d, inv);
+            }
+        }
+
+        if (best_depth >= 1e30f) return false; /* unreachable: intervals overlap */
+        *n = best_n;
+        *depth = best_depth;
+        *pt = cp2;
+        return true;
     }
     /* box vs box: AABB MTV (matches legacy behavior). */
     AABB aa = aabb_from_body(A);
@@ -956,30 +1066,44 @@ static void integrate_body_ccd(PhysicsWorld *pw, u32 idx, f32 dt) {
     }
     b->position = newp;
 
+    /* Rest = slow AND stationary: see vec3_moved above the narrowphase helpers. */
     f32 spd2 = vec3_dot(b->velocity, b->velocity);
-    if (spd2 < 0.0025f) b->rest_frames++;
+    if (spd2 < 0.0025f && !vec3_moved(b->position, oldp)) b->rest_frames++;
     else b->rest_frames = 0;
 }
 
+/* Build the BVH when it is dirty. physics_step calls this every frame, and
+ * the query APIs call it so a query issued before the first step does not
+ * silently miss every body (the tree starts empty with bvh_dirty set). The
+ * BVH is a derived cache of body positions, so this lazy build is logically
+ * const even though it writes pw->bvh / pw->bvh_dirty. */
+static void physics_ensure_bvh(const PhysicsWorld *pw) {
+    if (!pw->bvh_dirty) return;
+    PhysicsWorld *m = (PhysicsWorld *)pw; /* lazy init of a derived cache */
+    BVHAABB *aabbs = m->_bvh_staging;
+    for (u32 i = 0; i < m->count; i++) {
+        AABB box = aabb_from_body(&m->bodies[i]);
+        aabbs[i].min = box.min;
+        aabbs[i].max = box.max;
+    }
+    bvh_build(&m->bvh, aabbs, m->count);
+    m->bvh_dirty = false;
+}
+
 void physics_step(PhysicsWorld *pw, f32 dt) {
+    if (!pw) return;
     pw->collision_count = 0;
 
     /* BVH broadphase: rebuild/refit BEFORE integration so CCD can query it */
-    if (pw->bvh_dirty) {
-        BVHAABB *aabbs = pw->_bvh_staging;
-        for (u32 i = 0; i < pw->count; i++) {
-            AABB box = aabb_from_body(&pw->bodies[i]);
-            aabbs[i].min = box.min;
-            aabbs[i].max = box.max;
-        }
-        bvh_build(&pw->bvh, aabbs, pw->count);
-        pw->bvh_dirty = false;
-    } else {
+    bool bvh_rebuilt = pw->bvh_dirty;
+    physics_ensure_bvh(pw);
+    if (!bvh_rebuilt) {
         for (u32 i = 0; i < pw->count; i++) {
             if (pw->bodies[i].is_static) continue; /* static AABB never changes */
-            /* Skip BVH refit for resting bodies: rest_frames > 2 means position
-             * hasn't changed meaningfully for 2+ frames, so AABB is unchanged.
-             * Eliminates O(depth) tree walk per resting body. */
+            /* Skip BVH refit for resting bodies: rest_frames > 2 now requires
+             * the position to have been bit-unchanged for 2+ frames (see the
+             * integration loops below), so the stored AABB is bit-identical
+             * and skipping the refit is exact. */
             if (pw->bodies[i].rest_frames > 2) continue;
             AABB box = aabb_from_body(&pw->bodies[i]);
             BVHAABB bvh_box;
@@ -999,18 +1123,20 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         if (b->is_static) continue;
         if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
 
+        Vec3 oldp = b->position;
+
         /* Velocity integration: v += a * dt */
         simd_vec3_add_scaled_sse2(b->velocity.e, b->velocity.e, b->acceleration.e, dt);
-        
+
         /* Damping: v *= 0.98 */
         simd_vec3_scale_sse2(b->velocity.e, b->velocity.e, damping);
-        
+
         /* Position integration: p += v * dt */
         simd_vec3_add_scaled_sse2(b->position.e, b->position.e, b->velocity.e, dt);
-        
+
         /* Rest detection using SIMD dot product */
         f32 spd2 = simd_vec3_dot_sse2(b->velocity.e, b->velocity.e);
-        if (spd2 < rest_threshold) b->rest_frames++;
+        if (spd2 < rest_threshold && !vec3_moved(b->position, oldp)) b->rest_frames++;
         else b->rest_frames = 0;
     }
 #else
@@ -1018,6 +1144,8 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         RigidBody *b = &pw->bodies[i];
         if (b->is_static) continue;
         if (b->ccd) { integrate_body_ccd(pw, i, dt); continue; }
+
+        Vec3 oldp = b->position;
 
         b->velocity.e[0] += b->acceleration.e[0] * dt;
         b->velocity.e[1] += b->acceleration.e[1] * dt;
@@ -1033,7 +1161,7 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
         b->position.e[2] += b->velocity.e[2] * dt;
 
         f32 spd2 = b->velocity.e[0]*b->velocity.e[0] + b->velocity.e[1]*b->velocity.e[1] + b->velocity.e[2]*b->velocity.e[2];
-        if (spd2 < 0.0025f) b->rest_frames++;
+        if (spd2 < 0.0025f && !vec3_moved(b->position, oldp)) b->rest_frames++;
         else b->rest_frames = 0;
     }
 #endif
@@ -1080,6 +1208,14 @@ void physics_step(PhysicsWorld *pw, f32 dt) {
 }
 
 bool physics_raycast(const PhysicsWorld *pw, Vec3 origin, Vec3 dir, f32 max_dist, u32 *out_body, f32 *out_t) {
+    if (!pw) return false;
+    /* Reject non-finite queries (NaN/Inf): comparisons against NaN pass every
+     * slab test and report a phantom hit at t=0. Same NaN-reject policy as
+     * physics_constraint_add_distance / add_ball. */
+    for (int i = 0; i < 3; i++) {
+        if (!isfinite(origin.e[i]) || !isfinite(dir.e[i])) return false;
+    }
+    physics_ensure_bvh(pw); /* first query may precede the first step */
     BVHRayHit hit;
     if (bvh_raycast(&pw->bvh, origin, dir, max_dist, &hit)) {
         if (out_body) *out_body = hit.object_index;

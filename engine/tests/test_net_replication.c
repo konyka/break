@@ -1721,6 +1721,35 @@ TEST(peer_load_rejects_nonfinite_rtt)
     net_replicator_shutdown(&rep);
 }
 
+TEST(peer_load_rejects_path_traversal_host)
+{
+    /* R573: the host from a .peer line is embedded verbatim in peer file
+     * names (net_repl_peer_file_path). A crafted line with '/', '\\', or
+     * ".." in the host must be rejected, or saving peers could traverse
+     * out of the peers directory. */
+    NetReplicator rep = {0};
+    ASSERT_TRUE(net_replicator_init(&rep, next_test_port()));
+
+    char path[64]; test_tmp(path, sizeof path, "test_netrep_badhost.txt");
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "# break netrep peers v1\n");
+    fprintf(f, "peer ../../etc/evil 20730 1.000 2.000 3 4 5\n");
+    fprintf(f, "peer 10.0.0.1\\..\\evil 20731 1.000 2.000 3 4 5\n");
+    fprintf(f, "peer sub/.. 20732 1.000 2.000 3 4 5\n");
+    fprintf(f, "peer 127.0.0.1 20733 1.000 2.000 3 4 5\n");
+    fclose(f);
+
+    ASSERT_TRUE(net_replicator_peer_load(&rep, path));
+    ASSERT_EQ(net_replicator_peer_count(&rep), 1u);
+    const NetRepPeerStats *ps = net_replicator_peer_at(&rep, 0u);
+    ASSERT_TRUE(ps != NULL);
+    ASSERT_EQ((u32)ps->addr.port, 20733u);
+
+    remove(path);
+    net_replicator_shutdown(&rep);
+}
+
 TEST(parse_payload_clamps_forged_count)
 {
     /* R254: a packet declaring more snapshots than its byte length can hold must
@@ -2045,6 +2074,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(peer_channels_evict_stalest);
     RUN_TEST(peer_load_rejects_port_overflow);
     RUN_TEST(peer_load_rejects_nonfinite_rtt);
+    RUN_TEST(peer_load_rejects_path_traversal_host);
     RUN_TEST(reliable_window_multiple_inflight);
     RUN_TEST(reliable_window_ack_per_slot);
     RUN_TEST(reliable_window_ack_is_scoped_to_sender);

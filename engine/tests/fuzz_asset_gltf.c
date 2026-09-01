@@ -42,10 +42,37 @@ u64 async_loader_request(const char *path, AsyncLoadCallback cb, void *user) {
 u64 async_loader_request_texture(const char *path, AsyncLoadCallback cb, void *user, i32 pri) {
     (void)path; (void)cb; (void)user; (void)pri; return 0u;
 }
+/* Link-only stubs for symbols asset.c references but this EXCLUDE_FROM_ALL
+ * target does not link (unlike test_asset_gltf, the fuzz target has no
+ * stb_image on its link line). rhi_buffer_update_region mirrors the
+ * test_asset_gltf stub. The stbi stubs fail every decode: texture loads then
+ * take asset_load_texture's NULL path (LOG_ERROR, RHI_HANDLE_NULL) instead of
+ * decoding — the geometry/skin/animation paths under fuzz are unaffected.
+ * If the target ever links stb_image for real, delete the three stbi stubs. */
+void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
+                              const void *data, usize size) {
+    (void)dev; (void)buf; (void)offset; (void)data; (void)size;
+}
+unsigned char *stbi_load_from_memory(const unsigned char *buffer, int len,
+                                     int *x, int *y, int *channels_in_file,
+                                     int desired_channels) {
+    (void)buffer; (void)len; (void)x; (void)y;
+    (void)channels_in_file; (void)desired_channels;
+    return NULL;
+}
+unsigned char *stbi_load(const char *filename, int *x, int *y,
+                         int *channels_in_file, int desired_channels) {
+    (void)filename; (void)x; (void)y; (void)channels_in_file;
+    (void)desired_channels;
+    return NULL;
+}
+void stbi_image_free(void *retval_from_stbi_load) {
+    (void)retval_from_stbi_load;
+}
 
 /* ---- fuzzer ---- */
 
-static unsigned long rng_state = 0x5EED1234u;
+static unsigned long long rng_state = 0x5EED1234u; /* 64-bit on LLP64 too (>> 33 below) */
 static unsigned rnd(void) {
     rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
     return (unsigned)(rng_state >> 33);
@@ -53,7 +80,12 @@ static unsigned rnd(void) {
 
 /* A JSON seed with a skin, animation and indexed primitive, so the skinning and
  * animation paths are reachable — they are the parts cgltf_validate says least
- * about. The buffer holds 3 VEC3 positions plus room for joints/weights. */
+ * about. The buffer holds 3 VEC3 positions plus room for joints/weights.
+ * bufferViews 3 (inverse-bind) and 5 (anim sampler output) carry a byteStride
+ * so digit mutations reach the undersized/padded stride class (ASan-confirmed
+ * OOB reads in the raw IBM memcpy and the sampler output fast path). Both are
+ * compact at rest (stride == element size), so the unmutated seed still loads;
+ * view 5's byteLength leaves headroom for mutated strides to pass validate. */
 static const char *JSON_SEED =
 "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
 "\"scenes\":[{\"nodes\":[0,1]}],"
@@ -77,9 +109,9 @@ static const char *JSON_SEED =
  "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
  "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":24},"
  "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":6},"
- "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":64},"
+ "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":64,\"byteStride\":64},"
  "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":8},"
- "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":24},"
+ "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":104,\"byteStride\":12},"
  "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":12},"
  "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48}],"
 "\"buffers\":[{\"byteLength\":128,\"uri\":\"data:application/octet-stream;base64,"

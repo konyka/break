@@ -2924,7 +2924,21 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     gl_bind_fbo_cached(cd->gl_fbo);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
+    /* R358/R362-class gate: an incomplete FBO must not be published —
+     * bind_face would otherwise glClear/draw into it. Check with face 0
+     * attached; it stays attached (bind_face re-attaches per face). */
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X, cd->depth_tex, 0);
+    GLenum cdf_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     gl_bind_fbo_cached(0);
+    if (cdf_status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_WARN("GL: cubemap depth FBO incomplete (0x%x)", (unsigned)cdf_status);
+        if (g_gl_bound_fbo == cd->gl_fbo) g_gl_bound_fbo = 0;
+        glDeleteFramebuffers(1, &cd->gl_fbo);
+        glDeleteTextures(1, &cd->depth_tex);
+        free(cd);
+        return (RHICubemapDepthFBO){0};
+    }
 
     /* Register depth texture handle. */
     GLTextureData *td = calloc(1, sizeof(GLTextureData));
@@ -2942,7 +2956,9 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     td->width             = size;
     td->height            = size;
     td->mip_levels        = 1u;
-    td->gl_internal_format = GL_DEPTH_COMPONENT32F;
+    /* Must match the glTexImage2D internal format above (mip-view creation
+     * via glTextureView requires an identical depth format). */
+    td->gl_internal_format = GL_DEPTH_COMPONENT24;
     dev->slots[tidx].ptr  = td;
     /* Tag as cubemap so gl_bind_tex_unit binds GL_TEXTURE_CUBE_MAP for the
      * point-shadow depth cube (sampled as samplerCube + .r). */

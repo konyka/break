@@ -796,9 +796,12 @@ void task_wait_handle(TaskSystem *ts, TaskHandle handle) {
     /* R156: Check against task_pool_capacity, not task_pool_count —
      * pool_count can exceed capacity when pool is exhausted. */
     /* R414: heap-fallback tasks are never registered in task_pool, so their
-     * handles (idx 0xFFFFFFFF) cannot be resolved — reject explicitly rather
-     * than falling through to the capacity check by accident. */
-    if (idx == 0xFFFFFFFFu) return;
+     * handles (idx 0xFFFFFFFF) cannot be resolved to a Task. Do NOT silently
+     * return here: a caller that waits before releasing the task's ctx would
+     * race the still-running task (UAF). Wait conservatively for ALL submitted
+     * tasks instead — task_wait() returns only after this task (and everything
+     * submitted so far) has completed, so the wait is real. */
+    if (idx == 0xFFFFFFFFu) { task_wait(ts); return; }
     if (idx >= ts->task_pool_capacity) return;  /* handle not found — already done */
 
     Task *t = ts->task_pool[idx];

@@ -363,6 +363,32 @@ TEST(script_large_values)
 
 /* ----------------------------------------------------------------------- */
 
+/* Over-cap `func` lines are rejected at SCRIPT_MAX_CALLBACKS; the ops that
+ * follow them must be dropped, not appended to the last accepted function. */
+TEST(script_over_cap_function_ops_dropped)
+{
+    char path[64]; /* R444: per-pid path */
+    test_tmp(path, sizeof path, "test_func_cap.script");
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    for (u32 i = 0; i < SCRIPT_MAX_CALLBACKS; i++)
+        fprintf(f, "func f%u\n", i);
+    fprintf(f, "func overflow\n");
+    fprintf(f, "set x 1\n");
+    fclose(f);
+
+    ScriptEngine se = {0};
+    script_engine_init(&se);
+    bool ok = script_load(&se, path);
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(se.func_count, (u32)SCRIPT_MAX_CALLBACKS);
+    /* The rejected function's op must NOT have leaked into the last function. */
+    ASSERT_EQ(se.funcs[SCRIPT_MAX_CALLBACKS - 1].op_count, 0u);
+
+    script_engine_shutdown(&se);
+    remove(path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(init_shutdown);
     RUN_TEST(set_get_global);
@@ -381,6 +407,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(script_only_comments);
     RUN_TEST(script_negative_values);
     RUN_TEST(script_rejects_excessive_ops);
+    RUN_TEST(script_over_cap_function_ops_dropped);
     RUN_TEST(script_rejects_oversized_file);
     RUN_TEST(script_large_values);
 TEST_MAIN_END()

@@ -1068,6 +1068,43 @@ TEST(ecs_oversized_component) {
     world_destroy(w);
 }
 
+/* Column alignment regression: a 1-byte component followed by an 8-byte
+ * component in one archetype used to leave the second column misaligned
+ * (offsets advanced by size*capacity with no padding) — misaligned component
+ * pointers are UB on strict-alignment targets. */
+#define COMP_BYTE_FLAG 7
+#define COMP_WIDE      8
+TEST(ecs_component_columns_aligned) {
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    world_register_component(w, COMP_BYTE_FLAG, 1u);
+    world_register_component(w, COMP_WIDE, sizeof(u64));
+
+    Entity ents[8];
+    for (u32 i = 0; i < 8; i++) {
+        ents[i] = world_create_entity(w);
+        u8 *flag = (u8 *)world_add_component(w, ents[i], COMP_BYTE_FLAG);
+        ASSERT_NOT_NULL(flag);
+        *flag = (u8)(0xA0u + i);
+        u64 *wide = (u64 *)world_add_component(w, ents[i], COMP_WIDE);
+        ASSERT_NOT_NULL(wide);
+        ASSERT_EQ((usize)((uintptr_t)wide & 7u), 0u); /* 8-byte aligned */
+        *wide = 0xDEADBEEF00000000ull + i;
+    }
+
+    for (u32 i = 0; i < 8; i++) {
+        u64 *wide = (u64 *)world_get_component(w, ents[i], COMP_WIDE);
+        ASSERT_NOT_NULL(wide);
+        ASSERT_EQ((usize)((uintptr_t)wide & 7u), 0u);
+        ASSERT_TRUE(*wide == 0xDEADBEEF00000000ull + i);
+        u8 *flag = (u8 *)world_get_component(w, ents[i], COMP_BYTE_FLAG);
+        ASSERT_NOT_NULL(flag);
+        ASSERT_EQ((u32)*flag, 0xA0u + i);
+    }
+
+    world_destroy(w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_world_create_destroy);
     RUN_TEST(ecs_register_component_size_change_rejected);
@@ -1078,6 +1115,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ecs_entity_destroy);
     RUN_TEST(ecs_swap_remove_across_chunks);
     RUN_TEST(ecs_oversized_component);
+    RUN_TEST(ecs_component_columns_aligned);
     RUN_TEST(ecs_component_add_get);
     RUN_TEST(ecs_component_multiple);
     RUN_TEST(ecs_component_remove);

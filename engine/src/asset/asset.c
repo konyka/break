@@ -1004,7 +1004,15 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
              * cgltf for anything that is not actually float MAT4. */
             if (ibm->component_type == cgltf_component_type_r_32f &&
                 cgltf_accessor_is_type(ibm, cgltf_type_mat4) &&
-                !ibm->is_sparse /* R426: raw memcpy skips sparse overrides */) {
+                !ibm->is_sparse /* R426: raw memcpy skips sparse overrides */ &&
+                /* The raw memcpy below assumes compact 64-byte elements, but
+                 * cgltf adopts bufferView.byteStride verbatim into acc->stride
+                 * with no lower bound: byteStride 4 passes cgltf_validate
+                 * (stride*(count-1)+64 still fits the view) and the compact
+                 * read then walks 64 bytes per joint out of a far smaller span
+                 * (ASan: heap-buffer-overflow READ of size 64). Anything
+                 * non-compact goes through cgltf's stride-aware conversion. */
+                cgltf_accessor_stride(ibm) == sizeof(f32) * 16) {
                 const f32 *ibm_data = (const f32 *)cgltf_buffer_data(ibm);
                 usize ibm_count = (usize)ibm->count;
                 /* R115-3: Check ibm_data for NULL (cgltf_buffer_data may return NULL). */
@@ -1051,8 +1059,12 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 ch->sampler->input->type != cgltf_type_scalar) continue;
             usize time_count = (usize)ch->sampler->input->count;
             /* R426: sparse input times — the raw f32 read below only sees the
-             * base data, so read the last key through cgltf (sparse-aware). */
-            if (ch->sampler->input->is_sparse) {
+             * base data, so read the last key through cgltf (sparse-aware).
+             * A non-compact stride takes the same path: times_data[count-1]
+             * assumes 4-byte elements, so with byteStride > 4 it reads the
+             * wrong key and with an undersized byteStride it over-reads. */
+            if (ch->sampler->input->is_sparse ||
+                cgltf_accessor_stride(ch->sampler->input) != sizeof(f32)) {
                 f32 last = 0.0f;
                 if (time_count > 0 &&
                     cgltf_accessor_read_float(ch->sampler->input, time_count - 1, &last, 1) &&
@@ -1106,9 +1118,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
             /* R426: sparse input times are read key-by-key through cgltf
              * (sparse-aware) into a local array; non-sparse keeps the raw f32
-             * base pointer above. */
+             * base pointer above. A non-compact stride takes the same path —
+             * the raw times[k] index assumes 4-byte elements. */
             f32 sparse_times[SKELETON_MAX_KEYFRAMES];
-            if (samp->input->is_sparse) {
+            if (samp->input->is_sparse ||
+                cgltf_accessor_stride(samp->input) != sizeof(f32)) {
                 for (u32 k = 0; k < n; k++) {
                     if (!cgltf_accessor_read_float(samp->input, k, &sparse_times[k], 1))
                         sparse_times[k] = 0.0f;
@@ -1125,8 +1139,15 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
              * accessor is actually float.
              * R426: also convert when the accessor is sparse — the raw
              * values[k*comp+c] reads skip the override views. */
+            /* The fast path additionally requires compact float elements:
+             * cgltf adopts bufferView.byteStride verbatim into acc->stride
+             * with no lower bound, so byteStride 4 on a VEC3/float accessor
+             * passes cgltf_validate (stride*(count-1)+element fits the view)
+             * and values[k*comp+c] then over-reads the span (ASan:
+             * heap-buffer-overflow READ of size 4). */
             bool output_float = samp->output->component_type == cgltf_component_type_r_32f &&
-                                !samp->output->is_sparse;
+                                !samp->output->is_sparse &&
+                                cgltf_accessor_stride(samp->output) == comp * sizeof(f32);
             for (u32 k = 0; k < n; k++) {
                 if (output_float) {
                     for (usize c = 0; c < comp && c < 4; c++) {

@@ -538,6 +538,39 @@ TEST(engine_set_pos_wakes_resting_body)
 
 /* ----------------------------------------------------------------------- */
 
+/* Nonfinite guard: NaN/Inf passed to the physics bindings must be dropped,
+ * not injected into the world (one NaN poisons the broadphase for ALL
+ * bodies). Matches the .script parser's finite-value contract (script.c). */
+TEST(engine_bindings_reject_nonfinite)
+{
+    PhysicsWorld *pw = physics_world_create(64);
+    physics_body_create(pw, vec3(1, 2, 3), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+
+    LuaScript ls;
+    ASSERT_TRUE(lua_script_init(&ls));
+    lua_script_bind_host(&ls, NULL, pw, NULL);
+
+    ASSERT_TRUE(lua_script_load_string(&ls,
+        "nan = 0/0\n"
+        "inf = 1/0\n"
+        "engine.set_pos(1, nan, 9, 9)\n"
+        "engine.set_vel(1, inf, 8, 8)\n"
+        "engine.apply_impulse(1, nan, 0, 0)\n"
+        "bad_id = engine.spawn(nan, 0, 0)\n"
+        "bad_mass = engine.spawn(0, 10, 0, inf)\n", "t"));
+
+    /* All nonfinite inputs must have been dropped: body untouched, no spawns. */
+    ASSERT_TRUE(fabsf(pw->bodies[0].position.e[0] - 1.0f) < 1e-5f);
+    ASSERT_TRUE(fabsf(pw->bodies[0].position.e[1] - 2.0f) < 1e-5f);
+    ASSERT_TRUE(fabsf(pw->bodies[0].velocity.e[0]) < 1e-5f);
+    ASSERT_EQ(pw->count, 1u);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "bad_id", -1.0)) < 1e-9);
+    ASSERT_TRUE(fabs(lua_script_get_number(&ls, "bad_mass", -1.0)) < 1e-9);
+
+    lua_script_shutdown(&ls);
+    physics_world_destroy(pw);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(init_shutdown);
     RUN_TEST(run_string_sets_global);
@@ -563,4 +596,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lua_load_rejects_path_truncation);
     RUN_TEST(lua_load_rejects_oversized_file);
     RUN_TEST(engine_set_pos_wakes_resting_body);
+    RUN_TEST(engine_bindings_reject_nonfinite);
 TEST_MAIN_END()

@@ -55,6 +55,10 @@ typedef struct my_node_view_t {
   /* M20b: link flow (marching dashes, 33ms tick) */
   float flow_offset;
   uint32_t flow_timer;    /**< loop timer id, 0 = unmounted */
+  my_pal_main_loop_t* flow_loop; /**< weak loop while the timer is armed:
+                                * destroy chains cannot re-resolve it via
+                                * my_window_loop_of_widget (parent is NULLed
+                                * before children are unref'd) */
   bool flow_all;          /**< flow ALL links (default: selected only) */
   /* M20b: minimap (floating child, painted last) */
   my_widget_t* minimap;   /**< weak (tree ref) */
@@ -71,12 +75,23 @@ typedef struct my_node_view_t {
 
 /* forward decls (defined in the link geometry section) */
 typedef struct link_pts_t {
-  float xs[256];
+  float xs[256]; /* cap: flattened bezier point budget per link */
   float ys[256];
   int n;
 } link_pts_t;
 static my_ret_t link_pts_emit(void* ctx, float x, float y);
 static void nv_flow_sync_timer(my_node_view_t* v);
+
+/** @brief true when w is `ancestor` itself or lives under it. */
+static bool nv_in_subtree(const my_widget_t* w, const my_widget_t* ancestor) {
+  while (w != NULL) {
+    if (w == ancestor) {
+      return true;
+    }
+    w = w->parent;
+  }
+  return false;
+}
 
 /* ---------------- selection set (M20b) ---------------- */
 
@@ -255,9 +270,17 @@ static void nv_flow_sync_timer(my_node_view_t* v) {
   if (want && v->flow_timer == 0 && loop != NULL) {
     v->flow_timer =
         my_pal_main_loop_add_timer(loop, nv_flow_tick, v, 33);
-  } else if (!want && v->flow_timer != 0 && loop != NULL) {
-    my_pal_main_loop_remove_timer(loop, v->flow_timer);
+    if (v->flow_timer != 0) {
+      v->flow_loop = loop;
+    }
+  } else if (!want && v->flow_timer != 0) {
+    /* cancel via the arming loop: the resolve-walk already fails once the
+     * view is detached (parent NULL), which is exactly when disarms land */
+    if (v->flow_loop != NULL) {
+      my_pal_main_loop_remove_timer(v->flow_loop, v->flow_timer);
+    }
     v->flow_timer = 0;
+    v->flow_loop = NULL;
   }
 }
 
@@ -427,6 +450,16 @@ my_ret_t my_node_view_remove_node(my_widget_t* view, const char* node_id) {
         v->preview.active = false;
         v->preview.out_node = NULL;
         v->preview.magnet_node = NULL;
+      }
+      if (v->preview.magnet_node == node) {
+        /* drag TARGET removed (source still alive): cancel the preview,
+         * otherwise overlay paint / POINTER_UP dereference the freed node */
+        v->preview.active = false;
+        v->preview.out_node = NULL;
+        v->preview.magnet_node = NULL;
+      }
+      if (v->child_grab != NULL && nv_in_subtree(v->child_grab, node)) {
+        v->child_grab = NULL; /* grabbed embedded widget dies with the node */
       }
       if (v->drag_node == node) {
         v->drag_node = NULL;
@@ -1474,11 +1507,11 @@ static void nv_destroy_chain(my_object_t* obj) {
   my_node_view_t* v = (my_node_view_t*)obj;
   size_t i, n;
   if (v->flow_timer != 0) {
-    my_pal_main_loop_t* loop = my_window_loop_of_widget((my_widget_t*)v);
-    if (loop != NULL) {
-      my_pal_main_loop_remove_timer(loop, v->flow_timer);
+    if (v->flow_loop != NULL) {
+      my_pal_main_loop_remove_timer(v->flow_loop, v->flow_timer);
     }
     v->flow_timer = 0;
+    v->flow_loop = NULL;
   }
   if (v->links != NULL) {
     n = my_darray_size(v->links);

@@ -226,7 +226,9 @@ void indirect_draw_upload(IndirectDrawSystem *sys, RHIDevice *dev,
                           const DrawIndexedIndirectCmd *cmds, u32 count) {
     /* R437: single implicit group covering [0,count). Goes through the grouped
      * path so mat_id/group_base are refreshed too (a stale grouped upload on
-     * the same system must not leak its intervals). */
+     * the same system must not leak its intervals). R482: count > max_draws is
+     * now REJECTED (logged + dropped), not silently clamped — see
+     * indirect_draw_upload_grouped. */
     indirect_draw_upload_grouped(sys, dev, cmds, &count, 1);
 }
 
@@ -241,10 +243,23 @@ void indirect_draw_upload_grouped(IndirectDrawSystem *sys, RHIDevice *dev,
         return;
     }
 
-    u32 count = 0;
-    for (u32 g = 0; g < group_count; g++) count += group_sizes[g];
-    if (count == 0) return;
-    if (count > sys->max_draws) count = sys->max_draws;
+    /* R482: reject a group-size prefix sum exceeding max_draws — the old code
+     * clamped only the total (`count`) while storing UNCLAMPED per-group
+     * sizes in group_cpu_cap[]/group_cpu_base[], so the compact shader
+     * scattered past visible_draws_buf (GPU OOB write) and
+     * indirect_draw_execute_group read/drew past the buffer. Refusing the
+     * upload (same idiom as the group_count check above) keeps CPU and GPU
+     * intervals consistent; u64 accumulator because u32 group sizes can
+     * wrap a u32 sum and bypass the check. */
+    u64 total = 0;
+    for (u32 g = 0; g < group_count; g++) total += group_sizes[g];
+    if (total == 0) return;
+    if (total > sys->max_draws) {
+        LOG_WARN("IndirectDraw: grouped upload sizes sum %llu > max_draws %u — rejected",
+                 (unsigned long long)total, sys->max_draws);
+        return;
+    }
+    u32 count = (u32)total;
 
     /* R437: per-cmd group index + capacity base, derived from the group-size
      * prefix sums. Scatter target = group_base[idx] + atomic cursor of

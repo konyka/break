@@ -498,19 +498,32 @@ void bvh_query_pairs(const BVH *bvh, BVHPairCallback callback, void *ctx) {
 }
 
 /* ---- Raycast ---- */
-static bool ray_aabb_intersect(Vec3 origin, Vec3 inv_dir, BVHAABB box,
-                               f32 max_t, f32 *out_t) {
+/* Robust slab test. Axes with |dir| <= 1e-8 are treated as parallel: the ray
+ * must then originate within that axis's slab, and the axis does not
+ * constrain t. The old ±1e8 fake inv_dir admitted origins up to ~max_t*1e-8
+ * OUTSIDE the slab (false positives); a ±INF inv_dir hits 0*INF = NaN when
+ * the origin sits exactly on a slab bound. The parallel-axis branch is exact
+ * in both cases. The SIMD path is kept for rays with no near-parallel axis. */
+static bool ray_aabb_intersect(Vec3 origin, Vec3 inv_dir, const bool axis_parallel[3],
+                               BVHAABB box, f32 max_t, f32 *out_t) {
 #if SIMD_SSE2
-    /* Use SIMD-optimized version */
-    return simd_ray_aabb_intersect_sse2(
-        origin.e, inv_dir.e,
-        box.min.e, box.max.e,
-        max_t, out_t) != 0;
-#else
+    if (!axis_parallel[0] && !axis_parallel[1] && !axis_parallel[2]) {
+        /* Use SIMD-optimized version */
+        return simd_ray_aabb_intersect_sse2(
+            origin.e, inv_dir.e,
+            box.min.e, box.max.e,
+            max_t, out_t) != 0;
+    }
+#endif
     f32 tmin = 0.0f;
     f32 tmax = max_t;
 
     for (int i = 0; i < 3; i++) {
+        if (axis_parallel[i]) {
+            if (origin.e[i] < box.min.e[i] || origin.e[i] > box.max.e[i])
+                return false;
+            continue;
+        }
         f32 t1 = (box.min.e[i] - origin.e[i]) * inv_dir.e[i];
         f32 t2 = (box.max.e[i] - origin.e[i]) * inv_dir.e[i];
         if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; }
@@ -520,17 +533,16 @@ static bool ray_aabb_intersect(Vec3 origin, Vec3 inv_dir, BVHAABB box,
     }
     *out_t = tmin;
     return true;
-#endif
 }
 
 static void bvh_raycast_recursive(const BVH *bvh, u32 node_idx,
-                                   Vec3 origin, Vec3 inv_dir,
+                                   Vec3 origin, Vec3 inv_dir, const bool axis_parallel[3],
                                    f32 *best_t, u32 *best_obj) {
     if (node_idx == BVH_NULL) return;
 
     const BVHNode *node = &bvh->nodes[node_idx];
     f32 t;
-    if (!ray_aabb_intersect(origin, inv_dir, node->bounds, *best_t, &t)) return;
+    if (!ray_aabb_intersect(origin, inv_dir, axis_parallel, node->bounds, *best_t, &t)) return;
 
     if (node->object_index != BVH_NULL) {
         /* Leaf node - t is already the intersection distance */
@@ -543,8 +555,8 @@ static void bvh_raycast_recursive(const BVH *bvh, u32 node_idx,
 
     /* Determine traversal order: visit closer child first */
     f32 t_left = FLT_MAX, t_right = FLT_MAX;
-    bool hit_left = ray_aabb_intersect(origin, inv_dir, bvh->nodes[node->left].bounds, *best_t, &t_left);
-    bool hit_right = ray_aabb_intersect(origin, inv_dir, bvh->nodes[node->right].bounds, *best_t, &t_right);
+    bool hit_left = ray_aabb_intersect(origin, inv_dir, axis_parallel, bvh->nodes[node->left].bounds, *best_t, &t_left);
+    bool hit_right = ray_aabb_intersect(origin, inv_dir, axis_parallel, bvh->nodes[node->right].bounds, *best_t, &t_right);
 
     if (hit_left && hit_right) {
         u32 first = node->left, second = node->right;
@@ -552,27 +564,35 @@ static void bvh_raycast_recursive(const BVH *bvh, u32 node_idx,
             first = node->right;
             second = node->left;
         }
-        bvh_raycast_recursive(bvh, first, origin, inv_dir, best_t, best_obj);
-        bvh_raycast_recursive(bvh, second, origin, inv_dir, best_t, best_obj);
+        bvh_raycast_recursive(bvh, first, origin, inv_dir, axis_parallel, best_t, best_obj);
+        bvh_raycast_recursive(bvh, second, origin, inv_dir, axis_parallel, best_t, best_obj);
     } else if (hit_left) {
-        bvh_raycast_recursive(bvh, node->left, origin, inv_dir, best_t, best_obj);
+        bvh_raycast_recursive(bvh, node->left, origin, inv_dir, axis_parallel, best_t, best_obj);
     } else if (hit_right) {
-        bvh_raycast_recursive(bvh, node->right, origin, inv_dir, best_t, best_obj);
+        bvh_raycast_recursive(bvh, node->right, origin, inv_dir, axis_parallel, best_t, best_obj);
     }
 }
 
 bool bvh_raycast(const BVH *bvh, Vec3 origin, Vec3 dir, f32 max_dist, BVHRayHit *hit) {
     if (bvh->root == BVH_NULL) return false;
 
-    Vec3 inv_dir;
+    /* Reject non-finite queries (NaN/Inf origin or dir): NaN comparisons pass
+     * every slab test and reported a phantom hit at t=0. */
     for (int i = 0; i < 3; i++) {
-        inv_dir.e[i] = fabsf(dir.e[i]) > 1e-8f ? 1.0f / dir.e[i] : (dir.e[i] >= 0.0f ? 1e8f : -1e8f);
+        if (!isfinite(origin.e[i]) || !isfinite(dir.e[i])) return false;
+    }
+
+    Vec3 inv_dir;
+    bool axis_parallel[3];
+    for (int i = 0; i < 3; i++) {
+        axis_parallel[i] = fabsf(dir.e[i]) <= 1e-8f;
+        inv_dir.e[i] = axis_parallel[i] ? 0.0f : 1.0f / dir.e[i];
     }
 
     f32 best_t = max_dist;
     u32 best_obj = BVH_NULL;
 
-    bvh_raycast_recursive(bvh, bvh->root, origin, inv_dir, &best_t, &best_obj);
+    bvh_raycast_recursive(bvh, bvh->root, origin, inv_dir, axis_parallel, &best_t, &best_obj);
 
     if (best_obj != BVH_NULL) {
         if (hit) {

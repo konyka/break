@@ -1689,7 +1689,8 @@ int main(int argc, char **argv) {
     LOG_INFO("============================================");
     LOG_INFO("Frames rendered: %u / %u target", frame_count, target_frames);
     LOG_INFO("Total time: %.2f seconds", total_time);
-    LOG_INFO("Average FPS: %.1f", (f64)frame_count / total_time);
+    /* R486: total_time is 0.0 when no frame ran — guard the inf log line. */
+    LOG_INFO("Average FPS: %.1f", total_time > 0.0 ? (f64)frame_count / total_time : 0.0);
     LOG_INFO("Frame errors: %u", error_count);
     LOG_INFO("Frame time: min=%.2f ms, max=%.2f ms", min_dt * 1000.0, max_dt * 1000.0);
 

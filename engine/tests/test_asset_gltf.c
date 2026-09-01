@@ -1067,6 +1067,186 @@ TEST(vfs_rejects_backslash_traversal)
     TEST_RMDIR(root);
 }
 
+/* ASan-confirmed heap-buffer-overflow (READ of size 4): the animation sampler
+ * output fast path read values[k*comp+c] assuming compact VEC3 float data,
+ * but cgltf adopts bufferView.byteStride verbatim into acc->stride with no
+ * lower bound — byteStride 4 passes cgltf_validate (4*(2-1)+12 <= 16) and the
+ * compact read of key 1 then ran past the 24-byte buffer. Non-compact output
+ * now converts through cgltf's stride-aware cgltf_accessor_read_float, so
+ * key k reads the VEC3 at byteOffset + k*byteStride. */
+TEST(gltf_strided_anim_output_reads_strided_keys)
+{
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_strided_anim_out.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    /* [0..8)   input times 2xf32: 0.0, 1.0
+     * [8..24)  output span declared byteStride 4: floats 1,2,3,4 —
+     *          strided key 0 = (1,2,3) at byte 8, key 1 = (2,3,4) at byte 12 */
+    u8 buf[24];
+    memset(buf, 0, sizeof(buf));
+    put_f32(buf + 4, 1.0f);
+    put_f32(buf + 8, 1.0f);
+    put_f32(buf + 12, 2.0f);
+    put_f32(buf + 16, 3.0f);
+    put_f32(buf + 20, 4.0f);
+    ASSERT_TRUE(write_bin(bin_path, buf, sizeof(buf)));
+
+    char json[1536];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0,1]}],\"nodes\":[{},{}],"
+             "\"skins\":[{\"joints\":[1]}],"
+             "\"animations\":[{\"channels\":[{\"sampler\":0,"
+             "\"target\":{\"node\":1,\"path\":\"translation\"}}],"
+             "\"samplers\":[{\"input\":0,\"output\":1}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":8},"
+             "{\"buffer\":0,\"byteOffset\":8,\"byteLength\":16,\"byteStride\":4}],"
+             "\"buffers\":[{\"byteLength\":24,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    /* Under ASan, reaching the end of the load is the no-over-read proof. */
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.anim_clip_count, 1u);
+    ASSERT_EQ(scene.anim_clips[0].channel_count, 1u);
+    const AnimChannel *ch = &scene.anim_clips[0].channels[0];
+    ASSERT_EQ(ch->keyframe_count, 2u);
+    ASSERT_FLOAT_EQ(ch->times[1], 1.0f, 1e-6f);
+    /* Stride-aware values: key 1 starts one float after key 0. */
+    ASSERT_FLOAT_EQ(ch->values[0][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->values[0][1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->values[0][2], 3.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->values[1][0], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->values[1][1], 3.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->values[1][2], 4.0f, 1e-6f);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+    remove(bin_path);
+}
+
+/* ASan-confirmed heap-buffer-overflow (READ of size 64): the inverse-bind
+ * fast path memcpy'd 16 f32 per joint assuming compact MAT4 float data. A
+ * bufferView byteStride 4 passes cgltf_validate (4*(2-1)+64 <= 68) and the
+ * raw read of joint 1 then walked 64 bytes past the 68-byte buffer.
+ * Non-compact IBM data now converts through cgltf_accessor_read_float. */
+TEST(gltf_strided_inverse_bind_reads_strided_joints)
+{
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_strided_ibm.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    /* 17 f32: 1.0..17.0. Declared byteStride 4 on a MAT4 accessor, so the
+     * strided joint matrices overlap: joint 0 = floats[0..15] (1..16),
+     * joint 1 = floats[1..16] (2..17). */
+    u8 buf[68];
+    for (u32 i = 0; i < 17; i++) put_f32(buf + i * 4, (f32)(i + 1));
+    ASSERT_TRUE(write_bin(bin_path, buf, sizeof(buf)));
+
+    char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0,1]}],\"nodes\":[{},{}],"
+             "\"skins\":[{\"joints\":[0,1],\"inverseBindMatrices\":0}],"
+             "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+             "\"count\":2,\"type\":\"MAT4\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":68,"
+             "\"byteStride\":4}],"
+             "\"buffers\":[{\"byteLength\":68,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    /* Under ASan, reaching the end of the load is the no-over-read proof. */
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.joint_count, 2u);
+    /* Stride-aware: joint 1's matrix starts one float after joint 0's. */
+    ASSERT_FLOAT_EQ(scene.inverse_bind[0].e[0][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(scene.inverse_bind[0].e[3][3], 16.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(scene.inverse_bind[1].e[0][0], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(scene.inverse_bind[1].e[3][3], 17.0f, 1e-6f);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+    remove(bin_path);
+}
+
+/* Same byteStride class in the animation TIMES fast paths (clip duration scan
+ * and per-channel key times): both indexed raw f32 assuming 4-byte elements.
+ * A padded byteStride 8 is legal and in-bounds, but the raw index reads the
+ * wrong key — wrong clip duration and key times, not an over-read.
+ * Non-compact times now read through cgltf_accessor_read_float. */
+TEST(gltf_strided_anim_times_read_correctly)
+{
+    char bin_path[128]; test_tmp(bin_path, sizeof bin_path, "test_strided_anim_times.bin"); /* R444: per-pid path — parallel ctest trees raced on the fixed name */
+    /* [0..16)  input times, declared byteStride 8: key 0 = 0.0 at byte 0,
+     *          key 1 = 2.0 at byte 8
+     * [16..40) output 2xVEC3 f32 compact: (1,2,3), (4,5,6) */
+    u8 buf[40];
+    memset(buf, 0, sizeof(buf));
+    put_f32(buf + 8, 2.0f);
+    put_f32(buf + 16, 1.0f);
+    put_f32(buf + 20, 2.0f);
+    put_f32(buf + 24, 3.0f);
+    put_f32(buf + 28, 4.0f);
+    put_f32(buf + 32, 5.0f);
+    put_f32(buf + 36, 6.0f);
+    ASSERT_TRUE(write_bin(bin_path, buf, sizeof(buf)));
+
+    char json[1536];
+    snprintf(json, sizeof(json),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,"
+             "\"scenes\":[{\"nodes\":[0,1]}],\"nodes\":[{},{}],"
+             "\"skins\":[{\"joints\":[1]}],"
+             "\"animations\":[{\"channels\":[{\"sampler\":0,"
+             "\"target\":{\"node\":1,\"path\":\"translation\"}}],"
+             "\"samplers\":[{\"input\":0,\"output\":1}]}],"
+             "\"accessors\":["
+             "{\"bufferView\":0,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"},"
+             "{\"bufferView\":1,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}],"
+             "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":16,"
+             "\"byteStride\":8},"
+             "{\"buffer\":0,\"byteOffset\":16,\"byteLength\":24}],"
+             "\"buffers\":[{\"byteLength\":40,\"uri\":\"%s\"}]}",
+             /* R444: URI resolves next to the .gltf; embed the per-pid basename */
+             strrchr(bin_path, '/') + 1);
+    ASSERT_TRUE(write_text(TMP_GLTF, json));
+
+    AssetCtx ctx;
+    asset_ctx_init(&ctx, NULL);
+    ctx.vfs = NULL;
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
+    ASSERT_EQ(scene.anim_clips[0].channel_count, 1u);
+    const AnimChannel *ch = &scene.anim_clips[0].channels[0];
+    ASSERT_EQ(ch->keyframe_count, 2u);
+    /* Stride-aware key times: the second key sits at byte 8, not byte 4. */
+    ASSERT_FLOAT_EQ(ch->times[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->times[1], 2.0f, 1e-6f);
+    /* The duration scan reads the same strided last key. */
+    ASSERT_FLOAT_EQ(scene.anim_clips[0].duration, 2.0f, 1e-6f);
+    /* Compact output still takes the fast path: key 1 = (4,5,6). */
+    ASSERT_FLOAT_EQ(ch->values[1][0], 4.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch->values[1][2], 6.0f, 1e-6f);
+
+    asset_scene_free(&ctx, &scene);
+    remove(TMP_GLTF);
+    remove(bin_path);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(asset_ctx_init_clears_vfs);
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
@@ -1093,4 +1273,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scene_world_transforms_parent_cycle_terminates);
     RUN_TEST(gltf_multi_primitive_mesh_emits_node_per_primitive);
     RUN_TEST(vfs_rejects_backslash_traversal);
+    RUN_TEST(gltf_strided_anim_output_reads_strided_keys);
+    RUN_TEST(gltf_strided_inverse_bind_reads_strided_joints);
+    RUN_TEST(gltf_strided_anim_times_read_correctly);
 TEST_MAIN_END()

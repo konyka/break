@@ -163,6 +163,14 @@ static char* t_basic_string(toml_p_t* p) {
               goto fail;
             }
           }
+          if (cp >= 0xD800 && cp <= 0xDFFF) {
+            toml_fail(p, "surrogate escape not allowed");
+            goto fail;
+          }
+          if (cp > 0x10FFFF) {
+            toml_fail(p, "codepoint out of range");
+            goto fail;
+          }
           {
             char enc[4];
             int en = 0;
@@ -600,6 +608,7 @@ static my_conf_node_t* t_nav(toml_p_t* p, const char* path, size_t len,
       next = my_conf_new_object(p->allocator);
       if (next == NULL ||
           my_conf_object_set(cur, seg, next) != MY_RET_OK) {
+        my_conf_destroy(next); /* NULL-safe; set() keeps no ref on failure */
         my_mem_free(p->allocator, seg);
         toml_fail(p, "oom");
         return NULL;
@@ -747,6 +756,7 @@ static bool t_header(toml_p_t* p) {
     if (arr == NULL) {
       arr = my_conf_new_array(p->allocator);
       if (arr == NULL || my_conf_object_set(par, seg, arr) != MY_RET_OK) {
+        my_conf_destroy(arr); /* NULL-safe; set() keeps no ref on failure */
         my_mem_free(p->allocator, seg);
         toml_fail(p, "oom");
         return false;
@@ -760,6 +770,7 @@ static bool t_header(toml_p_t* p) {
     {
       my_conf_node_t* t = my_conf_new_object(p->allocator);
       if (t == NULL || my_conf_array_push(arr, t) != MY_RET_OK) {
+        my_conf_destroy(t); /* NULL-safe; push keeps no ref on failure */
         toml_fail(p, "oom");
         return false;
       }

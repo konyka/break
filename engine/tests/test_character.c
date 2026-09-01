@@ -525,6 +525,72 @@ TEST(character_stationary_platform_no_carry)
 }
 
 /* ----------------------------------------------------------------------- */
+/*  Repo-review: fast fall onto a thin slab (capsule skewer + stale ground) */
+/* ----------------------------------------------------------------------- */
+
+/* A character falling ~63 m/s moves >1 m per frame, so its capsule axis
+ * crosses a thin slab's interior in a single step. The old single-point
+ * capsule-vs-box MTV faced the wrong side of the mid-plane and under-
+ * separated, shoving the character THROUGH the slab; the sticky grounded
+ * flag then reported a stale supported state. Must end ON TOP, grounded. */
+TEST(character_fast_fall_lands_on_slab)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    /* 1 m thick slab, top at y=0.5. */
+    physics_body_create(pw, vec3(0, 0, 0), vec3(10, 0.5f, 10), 0.0f, true, 0);
+
+    CharacterController cc = character_create(vec3(0, 1.6f, 0), 0.3f, 1.8f);
+    const f32 dt = 1.0f / 60.0f;
+    cc.velocity.e[1] = -63.0f;  /* >1 m of fall per frame: skewer case */
+    for (int i = 0; i < 10; i++)
+        character_update(&cc, pw, dt, vec3(0, 0, 0), false);
+
+    /* Feet must rest ON the slab top (y=0.5), supported, fall stopped. */
+    ASSERT_TRUE(cc.grounded);
+    ASSERT_TRUE(cc.position.e[1] > 0.4f);
+    ASSERT_TRUE(cc.position.e[1] < 0.7f);
+    ASSERT_TRUE(cc.velocity.e[1] == 0.0f);
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
+/*  Repo-review: sweep NaN rejection + idle rsqrt guard                     */
+/* ----------------------------------------------------------------------- */
+
+TEST(sweep_test_rejects_nan)
+{
+    PhysicsWorld *pw = physics_world_create(16);
+    physics_body_create(pw, vec3(5, 0, 0), vec3(1, 1, 1), 0.0f, true, 0);
+    physics_step(pw, 0.001f);
+
+    /* NaN origin/delta used to pass every slab comparison -> phantom hit t=0. */
+    ASSERT_TRUE(!physics_sweep_test(pw, vec3(NAN, 0, 0), vec3(10, 0, 0), 999, NULL, NULL));
+    ASSERT_TRUE(!physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, NAN, 0), 999, NULL, NULL));
+    /* Sane sweep still hits. */
+    ASSERT_TRUE(physics_sweep_test(pw, vec3(0, 0, 0), vec3(10, 0, 0), 999, NULL, NULL));
+    physics_world_destroy(pw);
+}
+
+TEST(character_idle_position_stays_finite)
+{
+    /* fast_rsqrt(0) = +inf made horiz_len = 0*inf = NaN with zero input. */
+    PhysicsWorld *pw = physics_world_create(16);
+    physics_body_create(pw, vec3(0, -0.5f, 0), vec3(20, 0.5f, 20), 0.0f, true, 0);
+
+    CharacterController cc = character_create(vec3(0, 0.2f, 0), 0.3f, 1.8f);
+    for (int i = 0; i < 120; i++)
+        character_update(&cc, pw, 1.0f / 60.0f, vec3(0, 0, 0), false);
+
+    ASSERT_TRUE(isfinite(cc.position.e[0]));
+    ASSERT_TRUE(isfinite(cc.position.e[1]));
+    ASSERT_TRUE(isfinite(cc.position.e[2]));
+    ASSERT_TRUE(isfinite(cc.velocity.e[0]));
+    ASSERT_TRUE(isfinite(cc.velocity.e[1]));
+    ASSERT_TRUE(isfinite(cc.velocity.e[2]));
+    physics_world_destroy(pw);
+}
+
+/* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(character_create_basic);
@@ -558,4 +624,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(character_rides_moving_platform);
     RUN_TEST(character_rides_descending_platform);
     RUN_TEST(character_stationary_platform_no_carry);
+    /* Repo-review: skewer fall-through, NaN sweep, idle rsqrt */
+    RUN_TEST(character_fast_fall_lands_on_slab);
+    RUN_TEST(sweep_test_rejects_nan);
+    RUN_TEST(character_idle_position_stays_finite);
 TEST_MAIN_END()

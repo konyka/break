@@ -31,11 +31,11 @@ static void button_stop_cooldown_timer(my_button_t* b) {
 
 static void button_cancel_release_timer(my_button_t* b) {
   if (b->release_timer != 0) {
-    my_pal_main_loop_t* loop = my_window_loop_of_widget((my_widget_t*)b);
-    if (loop != NULL) {
-      my_pal_main_loop_remove_timer(loop, b->release_timer);
+    if (b->release_loop != NULL) {
+      my_pal_main_loop_remove_timer(b->release_loop, b->release_timer);
     }
     b->release_timer = 0;
+    b->release_loop = NULL;
   }
 }
 
@@ -201,6 +201,7 @@ static void button_start_cooldown(my_button_t* b) {
 static my_ret_t button_release_cb(void* ctx) {
   my_button_t* b = (my_button_t*)ctx;
   b->release_timer = 0;
+  b->release_loop = NULL;
   b->pressed = false;
   my_widget_invalidate((my_widget_t*)b, NULL);
   return MY_RET_FAIL; /* one-shot */
@@ -216,6 +217,9 @@ static void button_release(my_button_t* b) {
       b->release_timer = my_pal_main_loop_add_timer(
           loop, button_release_cb, b,
           (uint32_t)(BUTTON_PRESS_MIN_MS - (now - b->down_ms)));
+      if (b->release_timer != 0) {
+        b->release_loop = loop;
+      }
     }
     return;
   }
@@ -234,11 +238,7 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
         return MY_RET_FAIL;
       }
       if (b->release_timer != 0) { /* a fresh press cancels a pending release */
-        my_pal_main_loop_t* loop = my_window_loop_of_widget(widget);
-        if (loop != NULL) {
-          my_pal_main_loop_remove_timer(loop, b->release_timer);
-        }
-        b->release_timer = 0;
+        button_cancel_release_timer(b);
       }
       pal = my_window_pal_of_widget(widget);
       b->down_ms = pal != NULL ? my_pal_time_now_ms(pal) : 0;
@@ -273,13 +273,7 @@ static const my_widget_vtable_t s_button_vtable = {button_on_paint,
 
 static void button_destroy_chain(my_object_t* obj) {
   my_button_t* b = (my_button_t*)obj;
-  if (b->release_timer != 0) {
-    my_pal_main_loop_t* loop = my_window_loop_of_widget((my_widget_t*)b);
-    if (loop != NULL) {
-      my_pal_main_loop_remove_timer(loop, b->release_timer);
-    }
-    b->release_timer = 0;
-  }
+  button_cancel_release_timer(b);
   button_stop_cooldown_timer(b);
   my_mem_free(obj->allocator, b->text);
   my_widget_destroy((my_widget_t*)b);

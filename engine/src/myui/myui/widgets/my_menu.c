@@ -27,13 +27,15 @@ typedef struct menu_item_t {
   my_menu_t* sub; /**< child menu (owned by the PARENT model) */
 } menu_item_t;
 
+typedef struct hover_open_ctx_t hover_open_ctx_t;
+
 struct my_menu_t {
   const my_allocator_t* allocator;
   my_darray_t* items;        /**< menu_item_t* */
   my_menu_t* parent;         /**< weak: cascade parent */
   my_menu_t* open_sub;       /**< weak: currently open child */
   my_window_t* win;          /**< weak while open */
-  my_widget_t* overlay;      /**< in the window tree while open */
+  my_widget_t* overlay;      /**< weak: owned by the window tree while open */
   my_widget_t* box;
   my_menu_select_cb cb;
   void* cb_ctx;
@@ -41,6 +43,9 @@ struct my_menu_t {
   int32_t hover_index;       /**< last hovered item index (-1 none) */
   int32_t max_depth;    /**< cascade depth limit, default 3 */
   uint32_t hover_timer; /**< pending submenu open timer id */
+  hover_open_ctx_t* hover_ctx; /**< owned: pending hover timer ctx (freed on
+                                    fire by the callback, on cancel by
+                                    menu_cancel_hover_timer) */
 };
 
 /* ---------------- item widget ---------------- */
@@ -94,11 +99,11 @@ static void menu_open_sub(my_menu_t* parent, menu_item_t* item,
                           int32_t item_y);
 static void menu_cancel_hover_timer(my_menu_t* m);
 
-typedef struct hover_open_ctx_t {
+struct hover_open_ctx_t {
   my_menu_t* menu;
   menu_item_t* item;
   int32_t item_y;
-} hover_open_ctx_t;
+};
 
 static my_ret_t menu_hover_open_cb(void* ctx) {
   hover_open_ctx_t* h = (hover_open_ctx_t*)ctx;
@@ -109,6 +114,7 @@ static my_ret_t menu_hover_open_cb(void* ctx) {
   }
   if (m != NULL) {
     m->hover_timer = 0;
+    m->hover_ctx = NULL; /* ownership returns here; freed just below */
   }
   my_mem_free(h->menu != NULL ? h->menu->allocator : NULL, h);
   return MY_RET_FAIL; /* one-shot */
@@ -152,8 +158,15 @@ static my_ret_t menu_item_event(my_widget_t* widget, const my_event_t* event) {
           h->menu = iw->menu;
           h->item = iw->item;
           h->item_y = widget->rect.y;
-          iw->menu->hover_timer = my_pal_main_loop_add_timer(
-              iw->menu->win->loop, menu_hover_open_cb, h, 120);
+          if (iw->menu->win != NULL && iw->menu->win->loop != NULL) {
+            iw->menu->hover_timer = my_pal_main_loop_add_timer(
+                iw->menu->win->loop, menu_hover_open_cb, h, 120);
+          }
+          if (iw->menu->hover_timer != 0) {
+            iw->menu->hover_ctx = h; /* timer owns it until fire/cancel */
+          } else {
+            my_mem_free(iw->menu->allocator, h); /* no loop / arm failed */
+          }
         }
       } else if (iw->menu->open_sub != NULL) {
         my_menu_dismiss(iw->menu->open_sub);
@@ -238,8 +251,9 @@ static int32_t menu_box_width(my_menu_t* m) {
 /** @brief Dismiss this menu's overlay only (not children). */
 static void menu_close_overlay(my_menu_t* m) {
   if (m->overlay != NULL && m->win != NULL) {
+    /* the tree owns the only overlay ref: removal destroys it, and its
+     * destroy chain clears m->overlay/box/win (kept below for clarity) */
     my_widget_remove_child(my_window_widget(m->win), m->overlay);
-    my_widget_unref(m->overlay); /* tree held it; we drop ours */
     m->overlay = NULL;
     m->box = NULL;
     m->win = NULL;
@@ -254,6 +268,34 @@ static void menu_cancel_hover_timer(my_menu_t* m) {
     my_pal_main_loop_remove_timer(m->win->loop, m->hover_timer);
   }
   m->hover_timer = 0;
+  /* The one-shot callback frees the ctx when it FIRES; a cancelled timer
+   * never runs, so the pending ctx is freed here instead. */
+  if (m->hover_ctx != NULL) {
+    my_mem_free(m->allocator, m->hover_ctx);
+    m->hover_ctx = NULL;
+  }
+}
+
+/** @brief Overlay destroy chain: window teardown destroys the overlay in
+ * place (my_widget_destroy unrefs children directly — no remove_child, so
+ * the model is never dismissed). Drop the model's weak refs and cancel the
+ * pending hover timer while win->loop is still valid, otherwise the model
+ * keeps dangling win/overlay/box pointers and the shared main loop keeps a
+ * timer whose ctx dereferences the freed window. */
+static void menu_overlay_destroy_chain(my_object_t* obj) {
+  my_widget_t* ov = (my_widget_t*)obj;
+  my_menu_t* m = NULL;
+  if (my_widget_child_count(ov) > 0) {
+    m = (my_menu_t*)my_widget_get_user_data(my_widget_get_child(ov, 0));
+  }
+  if (m != NULL && m->overlay == ov) {
+    menu_cancel_hover_timer(m);
+    m->overlay = NULL;
+    m->box = NULL;
+    m->win = NULL;
+  }
+  my_widget_destroy(ov);
+  my_object_destroy(obj);
 }
 
 void my_menu_dismiss(my_menu_t* menu) {
@@ -435,6 +477,9 @@ static my_ret_t menu_popup_at(my_menu_t* m, int32_t x, int32_t y) {
     return MY_RET_OOM;
   }
   my_widget_subclass_init(ov, &s_menu_overlay_vtable);
+  /* so the model is invalidated even when the window is torn down with the
+   * popup still open (no dismiss path runs in that case) */
+  ((my_object_t*)ov)->destroy = menu_overlay_destroy_chain;
   ov->floating = true;
   ov->focusable = true;
   my_widget_set_rect(ov, &(my_rect_t){0, 0, root->rect.w, root->rect.h});
@@ -463,9 +508,19 @@ static my_ret_t menu_popup_at(my_menu_t* m, int32_t x, int32_t y) {
     my_widget_add_child(box, (my_widget_t*)iw);
     my_widget_unref((my_widget_t*)iw);
   }
-  my_widget_add_child(ov, box);
+  if (my_widget_add_child(ov, box) != MY_RET_OK) {
+    my_widget_unref(box); /* still ours: add_child kept no ref on failure */
+    my_widget_unref(ov);
+    return MY_RET_OOM;
+  }
   my_widget_unref(box);
-  my_widget_add_child(root, ov); /* last child = on top */
+  if (my_widget_add_child(root, ov) != MY_RET_OK) { /* last child = on top */
+    my_widget_unref(ov); /* destroys overlay + box; model never sees them */
+    return MY_RET_OOM;
+  }
+  my_widget_unref(ov); /* tree owns the only ref; m->overlay stays weak, so
+                        * window teardown destroys the overlay and its
+                        * destroy chain invalidates the model */
   m->overlay = ov;
   m->box = box;
   m->active = -1;

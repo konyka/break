@@ -36,8 +36,9 @@ typedef struct {
 typedef struct VFS VFS;
 
 /* Initialize the async loader with the given I/O thread count (recommend 2).
- * The VFS pointer is used for all file reads. */
-void async_loader_init(u32 io_thread_count, VFS *vfs);
+ * The VFS pointer is used for all file reads. Returns false when no I/O
+ * thread could be started; the loader is then left inert (not running). */
+bool async_loader_init(u32 io_thread_count, VFS *vfs);
 
 /* Shut down the loader, joining all I/O threads. */
 void async_loader_shutdown(void);
@@ -51,7 +52,9 @@ void async_loader_tick(void);
 /* Query the state of a request by ID. */
 AssetState async_loader_status(u64 request_id);
 
-/* Cancel a pending (not yet started) request. Returns true if cancelled. */
+/* Cancel a pending (not yet started) request. Returns true if cancelled.
+ * Main-thread only, like the submit calls above — a cross-thread cancel
+ * races slot recycling. */
 bool async_loader_cancel(u64 request_id);
 
 /* Get the number of pending (queued + in-flight) requests. */

@@ -394,7 +394,7 @@ static AsyncThreadFn io_worker_fn(void) {
 
 /* ---- Public API ---- */
 
-void async_loader_init(u32 io_thread_count, VFS *vfs) {
+bool async_loader_init(u32 io_thread_count, VFS *vfs) {
     memset(&g_loader, 0, sizeof(g_loader));
 
     g_loader.vfs = vfs;
@@ -439,10 +439,16 @@ void async_loader_init(u32 io_thread_count, VFS *vfs) {
     }
     g_loader.thread_count = started;
     if (started == 0) {
-        LOG_FATAL("Async loader: failed to create any I/O threads");
+        /* LOG_FATAL does not abort, so this must return: with zero workers
+         * every request would queue forever (pending until the slots fill).
+         * Fail cleanly instead — leave the loader inert and report false. */
+        LOG_ERROR("Async loader: failed to create any I/O threads");
+        atomic_store(&g_loader.running, false);
+        return false;
     }
 
     LOG_INFO("Async loader initialized: %u I/O threads", started);
+    return true;
 }
 
 void async_loader_shutdown(void) {

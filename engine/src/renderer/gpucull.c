@@ -153,7 +153,10 @@ void gpucull_update_objects(GPUCullSystem *gc, const f32 *positions, const f32 *
     u32 n = count > GPUCULL_MAX_OBJECTS ? GPUCULL_MAX_OBJECTS : count;
     /* R193-B: object_ssbo is DEVICE_LOCAL (R190); legacy CSM path called this
      * every frame on static node_spheres → staging QueueWaitIdle. Skip when
-     * GPU already has this count (mega bake spheres do not change). */
+     * GPU already has this count (mega bake spheres do not change).
+     * R483: header contract — the object set is treated as a STATIC BAKED
+     * set: content changes at an unchanged count are silently ignored; a
+     * count change is required to force a re-upload. */
     if (gc->objects_uploaded && gc->object_count == n) return;
     gc->object_count = n;
 

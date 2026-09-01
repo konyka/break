@@ -1,5 +1,6 @@
 #pragma once
 #include <core/types.h>
+#include <stdatomic.h>
 
 #define ECS_MAX_COMPONENTS 128
 #define ECS_CHUNK_SIZE     (16 * 1024)
@@ -97,7 +98,11 @@ typedef struct {
 
     Query      queries[256];
     u32        query_count;
-    u32        query_next_slot;
+    /* Atomic: nested ecs_parallel_for calls from worker threads query the same
+     * world concurrently — a plain read-modify-write claim hands two callers
+     * the same slot, and one caller's query_done/reset then zeroes the other's
+     * result mid-use (diagnosed via flaky test_ecs_system nested-dispatch). */
+    _Atomic u32 query_next_slot;
 
     /* Query cache: maps signature hash to query slot for O(1) lookup */
     u32        query_cache[ECS_QUERY_CACHE_SIZE]; /* slot index, 0xFFFFFFFF = empty */

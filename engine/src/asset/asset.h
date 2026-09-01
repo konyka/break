@@ -102,6 +102,9 @@ typedef struct {
     u32            resource_count;
 } Scene;
 
+/* out_scene must be zero-initialized before the call (memset or {}): failure
+ * paths unwind via asset_scene_free(ctx, out_scene), which frees whatever the
+ * pointer fields hold. All in-tree callers zero it first. */
 bool   asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene);
 void   asset_scene_free(AssetCtx *ctx, Scene *scene);
 void   scene_compute_world_transforms(Scene *scene);

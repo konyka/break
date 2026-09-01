@@ -130,8 +130,30 @@ void *pool_acquire(Pool *p) {
     return block;
 }
 
+/* Debug double-release detection: releasing a block that is already on the
+ * free list threads it in twice, so a later acquire hands the same block out
+ * twice. Walk is bounded by block_count (a well-formed list has at most that
+ * many nodes) so an already-corrupted cyclic list cannot hang the check.
+ * Self-contained (log.h only) — assert.c is not linked into every pool user. */
+#ifndef NDEBUG
+static bool pool_free_list_contains(const Pool *p, const void *ptr) {
+    usize steps = 0;
+    for (void *n = p->free_list; n && steps < p->block_count;
+         n = *(void **)n, steps++) {
+        if (n == ptr) return true;
+    }
+    return false;
+}
+#endif
+
 void pool_release(Pool *p, void *ptr) {
     if (!p || !ptr) return;
+#ifndef NDEBUG
+    if (pool_free_list_contains(p, ptr)) {
+        LOG_ERROR("pool_release: double release of %p corrupts the free list", ptr);
+        return;
+    }
+#endif
     *(void **)ptr = p->free_list;
     p->free_list = ptr;
     if (p->used > 0) p->used--;

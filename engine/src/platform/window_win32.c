@@ -27,6 +27,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <limits.h>  /* R564: INT_MAX clamp for bounded clipboard length */
 
 struct Platform {
     HINSTANCE   hinstance;
@@ -48,7 +49,7 @@ struct Platform {
     HIMC        ime_context;
     i32         ime_spot_x;
     i32         ime_spot_y;
-    RECT        windowed_rect;
+    WINDOWPLACEMENT windowed_placement;  /* R566: keeps maximized state */
     DWORD       windowed_style;
 };
 
@@ -283,13 +284,18 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         p->suppress_char_units = 0;
         i32 idx = win_vk_to_index((i32)wParam, lParam);
         if (idx >= 0) input_set_key(&p->input, idx, true);
-        return 0;
+        if (msg == WM_KEYDOWN) return 0;
+        /* R562: system keys must still reach DefWindowProcW - consuming
+         * WM_SYSKEY* here killed Alt+F4 (DefWindowProcW turns it into
+         * WM_CLOSE) and every other default system-key accelerator. */
+        break;
     }
     case WM_KEYUP:
     case WM_SYSKEYUP: {
         i32 idx = win_vk_to_index((i32)wParam, lParam);
         if (idx >= 0) input_set_key(&p->input, idx, false);
-        return 0;
+        if (msg == WM_KEYUP) return 0;
+        break;  /* R562: see WM_SYSKEYDOWN above */
     }
 
     case WM_IME_COMPOSITION: {
@@ -353,7 +359,18 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         /* R423: GET_*_LPARAM sign-extends — LOWORD/HIWORD are unsigned, so
          * negative coords (secondary monitor left of / above the primary)
          * wrapped to huge positive values. */
-        input_set_mouse(&p->input, (f32)GET_X_LPARAM(lParam), (f32)GET_Y_LPARAM(lParam));
+        if (p->mouse_relative) {
+            /* R563: in relative mode WM_INPUT raw deltas own mouse_dx/dy;
+             * accumulating absolute-position deltas here too double-counted
+             * (~2x speed, mixed units). Track only the absolute position,
+             * mirroring the X11 backend's exclusive relative branch. */
+            p->input.has_mouse_pos = true;
+            p->input.mouse_x = (f32)GET_X_LPARAM(lParam);
+            p->input.mouse_y = (f32)GET_Y_LPARAM(lParam);
+        } else {
+            input_set_mouse(&p->input, (f32)GET_X_LPARAM(lParam),
+                            (f32)GET_Y_LPARAM(lParam));
+        }
         return 0;
 
     case WM_MOUSEWHEEL: {
@@ -631,9 +648,16 @@ void platform_get_size(Platform *p, u32 *w, u32 *h) {
 }
 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
+    /* R565: guard NULL before platform_get_content_scale (it dereferences
+     * p->hwnd); the ternaries after the call were dead code as ordered. */
+    if (p == NULL) {
+        if (w) *w = 0;
+        if (h) *h = 0;
+        return;
+    }
     f32 scale = platform_get_content_scale(p);
-    if (w) *w = p != NULL ? (u32)((f32)p->width / scale + 0.5f) : 0;
-    if (h) *h = p != NULL ? (u32)((f32)p->height / scale + 0.5f) : 0;
+    if (w) *w = (u32)((f32)p->width / scale + 0.5f);
+    if (h) *h = (u32)((f32)p->height / scale + 0.5f);
 }
 
 void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
@@ -752,9 +776,13 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
 
 void platform_toggle_fullscreen(Platform *p) {
     if (!p->is_fullscreen) {
-        /* Save current windowed state */
+        /* Save current windowed state. R566: GetWindowPlacement (unlike
+         * GetWindowRect) also captures the maximized/minimized show state
+         * and the restored (normal) rect, so a maximized window no longer
+         * comes back un-maximized after a fullscreen round-trip. */
         p->windowed_style = (DWORD)GetWindowLongA(p->hwnd, GWL_STYLE);
-        GetWindowRect(p->hwnd, &p->windowed_rect);
+        p->windowed_placement.length = sizeof(p->windowed_placement);
+        GetWindowPlacement(p->hwnd, &p->windowed_placement);
 
         /* Remove window decoration and maximize to monitor */
         MONITORINFO mi;
@@ -769,14 +797,13 @@ void platform_toggle_fullscreen(Platform *p) {
                      mi.rcMonitor.bottom - mi.rcMonitor.top,
                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     } else {
-        /* Restore windowed state */
+        /* Restore windowed state (placement restores the show state too) */
         SetWindowLongA(p->hwnd, GWL_STYLE, (LONG)p->windowed_style);
-        SetWindowPos(p->hwnd, NULL,
-                     p->windowed_rect.left, p->windowed_rect.top,
-                     p->windowed_rect.right - p->windowed_rect.left,
-                     p->windowed_rect.bottom - p->windowed_rect.top,
-                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_NOZORDER);
-        ShowWindow(p->hwnd, SW_NORMAL);
+        SetWindowPlacement(p->hwnd, &p->windowed_placement);
+        /* Apply the restored style's frame without moving the window. */
+        SetWindowPos(p->hwnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
     p->is_fullscreen = !p->is_fullscreen;
 }
@@ -860,7 +887,12 @@ bool platform_clipboard_get_text(Platform *p, char *out, usize out_size) {
     handle = GetClipboardData(CF_UNICODETEXT);
     wide = handle != NULL ? GlobalLock(handle) : NULL;
     if (wide != NULL) {
-        (void)platform_utf16_to_utf8((const uint16_t *)wide, wcslen(wide), out,
+        /* R564: Windows does not guarantee CF_UNICODETEXT is NUL-terminated;
+         * bound the scan by the GlobalAlloc region instead of trusting
+         * wcslen not to run past it. */
+        usize max_units = (usize)(GlobalSize(handle) / sizeof(wchar_t));
+        usize units = wcsnlen(wide, max_units);
+        (void)platform_utf16_to_utf8((const uint16_t *)wide, units, out,
                                      out_size);
         GlobalUnlock(handle);
         ok = true;
@@ -884,10 +916,20 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
         CloseClipboard();
         return PLATFORM_CLIPBOARD_EMPTY;
     }
-    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
-    if (bytes > 0) *out = malloc((size_t)bytes);
+    /* R564: same unterminated-clipboard hazard as platform_clipboard_get_text;
+     * pass the bounded length to WideCharToMultiByte instead of -1. */
+    usize max_units = (usize)(GlobalSize(handle) / sizeof(wchar_t));
+    usize units = wcsnlen(wide, max_units);
+    if (units > (usize)INT_MAX) units = (usize)INT_MAX;
+    bytes = WideCharToMultiByte(CP_UTF8, 0, wide, (int)units, NULL, 0, NULL, NULL);
+    if (bytes > 0) *out = malloc((size_t)bytes + 1);
     if (*out != NULL) {
-        (void)WideCharToMultiByte(CP_UTF8, 0, wide, -1, *out, bytes, NULL, NULL);
+        (void)WideCharToMultiByte(CP_UTF8, 0, wide, (int)units, *out, bytes, NULL, NULL);
+        (*out)[bytes] = '\0';
+    } else if (units == 0) {
+        /* Preserve the old "READY with empty string" result for empty text. */
+        *out = malloc(1);
+        if (*out != NULL) (*out)[0] = '\0';
     }
     GlobalUnlock(handle);
     CloseClipboard();

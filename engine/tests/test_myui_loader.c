@@ -238,6 +238,38 @@ TEST(yaml_parser_rejects_duplicate_flow_map_key)
   ASSERT_TRUE(error.msg[0] != '\0');
 }
 
+TEST(toml_parser_rejects_surrogate_escapes)
+{
+  const char* hi = "a = \"\\uD800\"\n";
+  const char* lo = "a = \"\\uDFFF\"\n";
+  my_conf_error_t error;
+  my_conf_node_t* root = my_conf_parse_toml(NULL, hi, strlen(hi), &error);
+
+  ASSERT_TRUE(root == NULL);
+  root = my_conf_parse_toml(NULL, lo, strlen(lo), &error);
+  ASSERT_TRUE(root == NULL);
+}
+
+TEST(toml_parser_rejects_out_of_range_unicode_escape)
+{
+  const char* toml = "a = \"\\U00110000\"\n";
+  my_conf_error_t error;
+  my_conf_node_t* root = my_conf_parse_toml(NULL, toml, strlen(toml), &error);
+
+  ASSERT_TRUE(root == NULL);
+}
+
+TEST(toml_parser_accepts_in_range_unicode_escapes)
+{
+  const char* toml = "a = \"\\u0041\\U0001F600\"\n";
+  my_conf_error_t error;
+  my_conf_node_t* root = my_conf_parse_toml(NULL, toml, strlen(toml), &error);
+
+  ASSERT_NOT_NULL(root);
+  ASSERT_STR_EQ(my_conf_get_str(root, "a", ""), "A\xF0\x9F\x98\x80");
+  my_conf_destroy(root);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(yaml_loader_builds_typed_widget);
     RUN_TEST(yaml_loader_builds_nested_children);
@@ -253,4 +285,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(yaml_parser_rejects_oversized_flow_map_key);
     RUN_TEST(yaml_parser_rejects_duplicate_inline_map_key);
     RUN_TEST(yaml_parser_rejects_duplicate_flow_map_key);
+    RUN_TEST(toml_parser_rejects_surrogate_escapes);
+    RUN_TEST(toml_parser_rejects_out_of_range_unicode_escape);
+    RUN_TEST(toml_parser_accepts_in_range_unicode_escapes);
 TEST_MAIN_END()

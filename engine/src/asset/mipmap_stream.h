@@ -55,6 +55,17 @@ typedef struct {
 typedef void (*MipmapUploadFn)(void *ctx, i32 tex_idx, u32 level,
                                u32 width, u32 height, const void *data, u32 size);
 
+/* Request context pool slot: one per preallocated MipLoadReq (.c-internal,
+ * 24 bytes on 64-bit). The union makes the free-list link formal — a free
+ * slot stores the next free index in next_free instead of an aliased,
+ * under-aligned (u32 *) store into a u8[]; align gives the slot the
+ * alignment MipLoadReq's pointer/u64 members need. */
+typedef union {
+    u32 next_free;
+    u64 align;
+    u8  bytes[24];
+} MipReqPoolSlot;
+
 typedef struct {
     StreamedTexture    textures[MIPMAP_STREAM_MAX_TEXTURES];
     u32                texture_count;
@@ -71,7 +82,7 @@ typedef struct {
     MipmapUploadFn     upload_fn;
     void              *upload_ctx;
     /* Request context pool: avoids per-request malloc (24 bytes/slot for MipLoadReq) */
-    u8                 req_pool[MIPMAP_STREAM_REQ_POOL_SIZE * 24];
+    MipReqPoolSlot     req_pool[MIPMAP_STREAM_REQ_POOL_SIZE];
     u32                req_pool_next;  /* next free slot index */
 } MipmapStreamManager;
 

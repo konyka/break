@@ -132,7 +132,10 @@ TaskHandle task_submit_ex(TaskSystem *ts, TaskFn fn, void *ctx, TaskPriority pri
 TaskHandle task_submit_dep(TaskSystem *ts, TaskFn fn, void *ctx,
                            TaskHandle *deps, u32 dep_count);
 
-/** Wait for a specific task to complete. */
+/** Wait for a specific task to complete.
+ * Heap-fallback handles (returned once the 4096-entry task pool is exhausted)
+ * cannot be resolved to their Task; waiting on one waits for ALL currently
+ * submitted tasks instead — conservative, but the wait is always real. */
 void task_wait_handle(TaskSystem *ts, TaskHandle handle);
 
 /** Get worker thread count. */

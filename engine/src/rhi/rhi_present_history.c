@@ -94,8 +94,8 @@ bool rhi_present_history_prepare(const RHIPresentHistory *history,
     u64 last_generation;
     u64 expected_generation;
     u32 i;
-    if (history == NULL || out_count == NULL || out_full == NULL ||
-        image_index >= history->image_count ||
+    if (history == NULL || out == NULL || out_count == NULL ||
+        out_full == NULL || image_index >= history->image_count ||
         !history_rects_valid(history, current, count)) {
         return false;
     }

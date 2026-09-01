@@ -214,6 +214,9 @@ static my_ret_t share_btn_event(my_widget_t* widget, const my_event_t* event) {
       out = ztp_export_png(t, rw->font, rw->font_size);
     }
     dlg = my_dialog_create(NULL, wm->pal, "分享图片", 300, 120);
+    if (dlg == NULL) {
+      return MY_RET_OK; /* OOM: keep the event consumed, skip the popup */
+    }
     if (my_str_eq(root->widget_type, "window") &&
         ((my_window_t*)root)->font != NULL) {
       my_window_set_font(dlg->win, ((my_window_t*)root)->font,
@@ -222,14 +225,24 @@ static my_ret_t share_btn_event(my_widget_t* widget, const my_event_t* event) {
     snprintf(text, sizeof(text), "%s",
              out != NULL ? "已生成图片（演示环境）：" : "图片生成失败");
     msg = my_label_create(NULL, text);
-    my_widget_set_layout_params(msg, "h:28");
-    my_widget_add_child(my_dialog_content(dlg), msg);
-    my_widget_unref(msg);
+    if (msg != NULL) {
+      my_widget_set_layout_params(msg, "h:28");
+      if (my_widget_add_child(my_dialog_content(dlg), msg) == MY_RET_OK) {
+        my_widget_unref(msg); /* tree owns it now */
+      } else {
+        my_widget_unref(msg); /* never attached: destroy instead of leak */
+      }
+    }
     if (out != NULL) {
       msg = my_label_create(NULL, out);
-      my_widget_set_layout_params(msg, "h:28");
-      my_widget_add_child(my_dialog_content(dlg), msg);
-      my_widget_unref(msg);
+      if (msg != NULL) {
+        my_widget_set_layout_params(msg, "h:28");
+        if (my_widget_add_child(my_dialog_content(dlg), msg) == MY_RET_OK) {
+          my_widget_unref(msg); /* tree owns it now */
+        } else {
+          my_widget_unref(msg); /* never attached: destroy instead of leak */
+        }
+      }
     }
     my_dialog_add_button(dlg, "关闭", 0);
     my_dialog_open(dlg, wm, share_dialog_result, dlg);

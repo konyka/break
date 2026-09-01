@@ -95,6 +95,9 @@ static void map_buttons(const XINPUT_GAMEPAD *gp, GamepadState *s) {
 /* ---------------------------------------------------------------- */
 
 void gamepad_init(void) {
+    /* R570: not idempotent — a second call would overwrite g_pad.dll and leak
+     * the xinput HMODULE. Early-return once initialized. */
+    if (g_pad.initialized) return;
     memset(&g_pad, 0, sizeof(g_pad));
 
     static const char *dlls[] = {

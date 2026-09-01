@@ -298,6 +298,110 @@ TEST(sendto_repeated_sends_with_cache)
     net_shutdown();
 }
 
+TEST(udp_send_to_closed_port_does_not_poison_socket)
+{
+    /* R567: on Windows a datagram sent to a closed port queues an ICMP
+     * port-unreachable that fails the NEXT recvfrom/sendto on the socket
+     * with WSAECONNRESET. net_udp_create disables that behavior via
+     * WSAIoctl(SIO_UDP_CONNRESET), so sends must keep succeeding and
+     * recvfrom must never report NET_ERROR. POSIX has no such behavior for
+     * unconnected UDP, so the test passes trivially there. */
+    ASSERT_TRUE(net_init());
+
+    /* Reserve then release an ephemeral port so it is definitely closed. */
+    NetSocket *probe = net_udp_create(0);
+    ASSERT_NOT_NULL(probe);
+    NetAddress closed;
+    ASSERT_TRUE(net_socket_get_local_address(probe, &closed));
+    net_close(probe);
+    ASSERT_TRUE(net_address_resolve("127.0.0.1", closed.port, &closed));
+
+    NetSocket *s = net_udp_create(0);
+    ASSERT_NOT_NULL(s);
+    net_set_nonblocking(s, true);
+
+    /* Repeat so the ICMP has many chances to arrive (it is what poisons
+     * the next call when the behavior is not disabled). */
+    const char *msg = "probe";
+    for (int i = 0; i < 25; i++) {
+        char buf[64];
+        NetPollFd pfd = { .socket = s, .events = NET_POLL_READ, .revents = 0 };
+        ASSERT_TRUE(net_sendto(s, msg, (u32)strlen(msg) + 1, &closed) > 0);
+        (void)net_poll(&pfd, 1, 40);
+        ASSERT_TRUE(net_recvfrom(s, buf, sizeof(buf), NULL) != NET_ERROR);
+    }
+
+    net_close(s);
+    net_shutdown();
+}
+
+TEST(tcp_listen_same_port_twice_fails)
+{
+    /* R568: on Windows SO_REUSEADDR let another socket bind the same
+     * listening port (hijack); the Windows path now sets
+     * SO_EXCLUSIVEADDRUSE instead. A second listen on the same port must
+     * fail on Windows (WSAEACCES) and on POSIX (EADDRINUSE while the first
+     * socket is listening). */
+    ASSERT_TRUE(net_init());
+    NetSocket *first = net_tcp_listen(0, 4);
+    ASSERT_NOT_NULL(first);
+
+    NetAddress addr;
+    ASSERT_TRUE(net_socket_get_local_address(first, &addr));
+    ASSERT_TRUE(addr.port != 0u);
+
+    NetSocket *second = net_tcp_listen(addr.port, 4);
+    ASSERT_TRUE(second == NULL);
+
+    net_close(first);
+    net_shutdown();
+}
+
+TEST(poll_ignores_null_socket_entries)
+{
+    /* R569: NULL-socket entries must behave like POSIX poll's ignored
+     * negative fds on every backend — WSAPoll used to flag them POLLNVAL.
+     * Their revents stay 0 and they are not counted in the return value. */
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = net_udp_create(0);
+    ASSERT_NOT_NULL(recv_s);
+    NetSocket *send_s = net_udp_create(0);
+    ASSERT_NOT_NULL(send_s);
+
+    NetPollFd fds[3];
+    memset(fds, 0, sizeof(fds));
+    fds[0].socket = NULL;   fds[0].events = NET_POLL_READ;
+    fds[1].socket = recv_s; fds[1].events = NET_POLL_READ;
+    fds[2].socket = NULL;   fds[2].events = NET_POLL_READ;
+
+    /* Nothing pending: plain timeout, the NULLs contribute nothing. */
+    ASSERT_EQ(net_poll(fds, 3, 10), 0);
+    ASSERT_EQ(fds[0].revents, 0u);
+    ASSERT_EQ(fds[1].revents, 0u);
+    ASSERT_EQ(fds[2].revents, 0u);
+
+    /* Data on the middle entry: rc counts exactly it, and the compacted
+     * result still maps back to the right slot. */
+    NetAddress dst;
+    ASSERT_TRUE(net_socket_get_local_address(recv_s, &dst));
+    net_test_normalize_loopback(&dst);
+    const char *msg = "x";
+    ASSERT_TRUE(net_sendto(send_s, msg, 2, &dst) > 0);
+    ASSERT_EQ(net_poll(fds, 3, 1000), 1);
+    ASSERT_EQ(fds[0].revents, 0u);
+    ASSERT_TRUE((fds[1].revents & NET_POLL_READ) != 0);
+    ASSERT_EQ(fds[2].revents, 0u);
+
+    /* All-NULL set returns 0 with no spurious events. */
+    NetPollFd none[1] = { { NULL, NET_POLL_READ, 0 } };
+    ASSERT_EQ(net_poll(none, 1, 10), 0);
+    ASSERT_EQ(none[0].revents, 0u);
+
+    net_close(send_s);
+    net_close(recv_s);
+    net_shutdown();
+}
+
 /* ----------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -317,4 +421,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sendto_empty_buffer);
     RUN_TEST(sendto_const_address);
     RUN_TEST(sendto_repeated_sends_with_cache);
+    RUN_TEST(udp_send_to_closed_port_does_not_poison_socket);
+    RUN_TEST(tcp_listen_same_port_twice_fails);
+    RUN_TEST(poll_ignores_null_socket_entries);
 TEST_MAIN_END()

@@ -177,6 +177,9 @@ void parallel_renderer_submit(ParallelRenderer *pr, RHICmdBuffer *rhi_cmd);
 /*
  * Swap buffers and signal submit thread (used with double-buffering).
  * Returns immediately; submission happens on submit thread.
+ * R484: an external join of all recording workers between end_frame and
+ * swap_and_submit is required before wiring workers (end_frame only flips
+ * `recording`; a still-writing worker would race the submit thread's replay).
  */
 void parallel_renderer_swap_and_submit(ParallelRenderer *pr);
 

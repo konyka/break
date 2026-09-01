@@ -20,6 +20,11 @@ typedef struct my_button_t {
   bool pressed;               /**< pointer is down inside */
   uint64_t down_ms;           /**< press time (min display, M16) */
   uint32_t release_timer;     /**< pending delayed release (0 = none) */
+  my_pal_main_loop_t* release_loop; /**< weak loop while release_timer is
+                               * armed (mirrors cooldown_loop): destroy
+                               * chains cannot re-resolve the loop via
+                               * my_window_loop_of_widget (parent is NULLed
+                               * before children are unref'd) */
   uint32_t cooldown_ms;       /**< configured cooldown after a click */
   uint32_t cooldown_active_ms; /**< duration of the current cooldown */
   uint64_t cooldown_until_ms; /**< monotonic deadline, 0 = inactive */

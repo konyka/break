@@ -42,7 +42,12 @@ static RigidBody char_capsule(const CharacterController *cc, Vec3 feet) {
  * R437: `out_ground_body` (nullable) receives the id of the body whose
  * walkable contact last supported the capsule, UINT32_MAX when unsupported.
  * Static supports are recorded too — callers distinguish via
- * pw->bodies[id].is_static (simpler than a second out-flag). */
+ * pw->bodies[id].is_static (simpler than a second out-flag).
+ * CORRECTNESS: grounded/ground_body reflect the FINAL contact-producing
+ * iteration only — the old sticky-or let an up-flavored contact from a
+ * mid-oscillation iteration leave a stale supported state after a later
+ * iteration had ejected the capsule off the support. Iterations that find no
+ * contact (clean separation) keep the last contact's verdict. */
 static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
                                Vec3 pos, bool *out_grounded,
                                u32 *out_ground_body) {
@@ -52,6 +57,7 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
 
     f32 r = cc->radius;
     f32 hh = cc->height * 0.5f;
+    f32 margin = r * 2.0f;
 
     /* Query BVH for nearby candidates; fall back to all bodies if BVH not built */
     /* R418: stack buffer, not static — a function-local static made this
@@ -60,7 +66,6 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
     u32 nc = 0;
     bool use_bvh = (pw->bvh.node_count > 0);
     if (use_bvh) {
-        f32 margin = r * 2.0f;
         BVHAABB query_box;
         query_box.min = vec3(pos.e[0] - r - margin, pos.e[1] - margin, pos.e[2] - r - margin);
         query_box.max = vec3(pos.e[0] + r + margin, pos.e[1] + hh + cc->height + margin, pos.e[2] + r + margin);
@@ -149,9 +154,20 @@ static Vec3 char_slide_resolve(const CharacterController *cc, PhysicsWorld *pw,
         if (!any) break;
         Vec3 sep = vec3_scale(best_n, -1.0f);
         pos = vec3_add(pos, vec3_scale(sep, best_depth));
-        if (sep.e[1] > cc->slope_limit) {
-            grounded = true;
-            ground_body = best_id;  /* R437: remember the supporting body */
+        /* Grounded state is decided by THIS iteration's contact alone (see the
+         * function comment): a later down/side ejection must clear the support
+         * an earlier up-flavored iteration set. */
+        grounded = (sep.e[1] > cc->slope_limit);
+        ground_body = grounded ? best_id : UINT32_MAX;
+        /* The candidate list was queried at the entry position; a correction
+         * larger than the query margin can move the capsule next to bodies
+         * the initial box never covered — re-query at the new position. */
+        if (use_bvh && best_depth > margin) {
+            BVHAABB query_box;
+            query_box.min = vec3(pos.e[0] - r - margin, pos.e[1] - margin, pos.e[2] - r - margin);
+            query_box.max = vec3(pos.e[0] + r + margin, pos.e[1] + hh + cc->height + margin, pos.e[2] + r + margin);
+            nc = bvh_query_aabb(&pw->bvh, query_box, candidates, 64);
+            if (nc >= 64u) use_bvh = false; /* R239 saturation fallback */
         }
     }
     if (out_grounded) *out_grounded = grounded;
@@ -223,10 +239,11 @@ void character_update(CharacterController *cc, PhysicsWorld *pw, f32 dt,
     cc->ground_body = grounded_v ? ground_body : UINT32_MAX;
 
     /* 2) Horizontal move + wall slide.
-     * Compute horiz_len and inv_len together: avoids redundant fast_rsqrt call. */
+     * Compute horiz_len and inv_len together: avoids redundant fast_rsqrt call.
+     * Skip the rsqrt when idle: fast_rsqrt(0) = +inf and 0*inf = NaN. */
     Vec3 horiz = vec3(cc->velocity.e[0] * dt, 0.0f, cc->velocity.e[2] * dt);
     f32  horiz_l2 = horiz.e[0] * horiz.e[0] + horiz.e[2] * horiz.e[2];
-    f32  horiz_inv = fast_rsqrt(horiz_l2);
+    f32  horiz_inv = (horiz_l2 > 0.0f) ? fast_rsqrt(horiz_l2) : 0.0f;
     f32  horiz_len = horiz_l2 * horiz_inv;
     Vec3 flat_target = vec3_add(pos, horiz);
     bool grounded_h = false;
@@ -271,6 +288,13 @@ bool character_is_grounded(const CharacterController *cc) {
 
 bool physics_sweep_test(const PhysicsWorld *pw, Vec3 origin, Vec3 delta,
                          u32 ignore_body, Vec3 *out_hit_pos, f32 *out_t) {
+    if (!pw) return false;
+    /* Reject non-finite queries (NaN/Inf): NaN comparisons pass every slab
+     * test and report a phantom hit at t=0. Same policy as physics_raycast. */
+    for (int a = 0; a < 3; a++) {
+        if (!isfinite(origin.e[a]) || !isfinite(delta.e[a])) return false;
+    }
+
     f32 best_t = 1.0f;
     bool hit = false;
 

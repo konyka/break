@@ -197,9 +197,13 @@ TEST(beyond_pool_capacity_all_execute)
         last = task_submit_ex(g_ts, increment_fn, NULL, TASK_PRIORITY_NORMAL);
         ASSERT_NEQ(last, TASK_HANDLE_INVALID);
     }
-    /* `last` is a heap-fallback handle (idx 0xFFFFFFFF): task_wait_handle
-     * explicitly rejects it and must return immediately, not hang. */
+    /* `last` is a heap-fallback handle (idx 0xFFFFFFFF): it cannot be
+     * resolved through the pool, so task_wait_handle waits for ALL submitted
+     * tasks — the wait must be REAL (a bare return would let a caller free
+     * ctx under a still-running task). The counter must already be complete
+     * before the separate task_wait below. */
     task_wait_handle(g_ts, last);
+    ASSERT_EQ(atomic_load(&g_counter), N);
     task_wait(g_ts);
     ASSERT_EQ(atomic_load(&g_counter), N);
 }

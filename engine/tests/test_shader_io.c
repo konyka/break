@@ -5,8 +5,11 @@
 static bool read_shader_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
-    const char *slash = strrchr(__FILE__, '/');
-    const char *backslash = strrchr(__FILE__, '\\');
+    /* MSVC does not merge separate __FILE__ expansions into one literal, so
+     * `slash - __FILE__` across two expansions is garbage — expand it once. */
+    const char *self = __FILE__;
+    const char *slash = strrchr(self, '/');
+    const char *backslash = strrchr(self, '\\');
     if (!slash || (backslash && backslash > slash)) slash = backslash;
     const char *candidates[4] = { NULL, name, NULL, NULL };
     char root_rel[1024];
@@ -14,7 +17,7 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
     candidates[2] = root_rel;
     if (slash) {
         snprintf(rel, sizeof(rel), "%.*s/../shaders/%s",
-                 (int)(slash - __FILE__), __FILE__, name);
+                 (int)(slash - self), self, name);
         candidates[0] = rel;
     }
     for (usize i = 0; i < 3 && candidates[i]; i++) {
@@ -32,8 +35,11 @@ static bool read_engine_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
     char root_rel[1024];
-    const char *slash = strrchr(__FILE__, '/');
-    const char *backslash = strrchr(__FILE__, '\\');
+    /* MSVC does not merge separate __FILE__ expansions into one literal, so
+     * `slash - __FILE__` across two expansions is garbage — expand it once. */
+    const char *self = __FILE__;
+    const char *slash = strrchr(self, '/');
+    const char *backslash = strrchr(self, '\\');
     if (!slash || (backslash && backslash > slash)) slash = backslash;
     snprintf(root_rel, sizeof(root_rel), "../src/%s", name);
     FILE *root_file = fopen(root_rel, "rb");
@@ -45,7 +51,7 @@ static bool read_engine_source(const char *name, char *buf, usize cap)
     }
     if (!slash) return false;
     snprintf(rel, sizeof(rel), "%.*s/../src/%s",
-             (int)(slash - __FILE__), __FILE__, name);
+             (int)(slash - self), self, name);
     FILE *f = fopen(rel, "rb");
     if (!f) return false;
     if (fseek(f, 0, SEEK_END) != 0) {
@@ -267,7 +273,8 @@ TEST(vulkan_ibl_gate_uses_compatible_vertex_contract)
 
 TEST(transparent_motion_vectors_do_not_alpha_blend_rt1)
 {
-    char src[131072];
+    /* rhi_vk.c outgrew the old 128KiB cap; the grepped contracts sit past it. */
+    static char src[262144];
     ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "alpha_blend_color_only"));
     ASSERT_NOT_NULL(strstr(src, "enabled_features.independentBlend = VK_TRUE"));

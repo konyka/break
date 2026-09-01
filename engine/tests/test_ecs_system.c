@@ -164,10 +164,71 @@ TEST(ecs_parallel_for_empty) {
     world_destroy(w);
 }
 
+/* ---- nested dispatch: a system callback that dispatches again ----
+ * The parallel job pool is a single shared static buffer; a nested
+ * ecs_parallel_for used to overwrite entries the outer call's workers hadn't
+ * dequeued yet (outer jobs ran with the inner call's fn/view/user or were
+ * lost). Nested calls must fall back to the serial path and both levels must
+ * produce correct results. */
+static World      *g_nested_inner_world;
+static TaskSystem *g_nested_ts;
+static _Atomic int g_outer_visited;
+static _Atomic int g_outer_calls;
+static _Atomic int g_inner_visited;
+
+static void sys_nested_inner(EcsChunkView *v, void *user) {
+    (void)user;
+    atomic_fetch_add(&g_inner_visited, (int)v->count);
+}
+
+static void sys_nested_outer(EcsChunkView *v, void *user) {
+    (void)user;
+    atomic_fetch_add(&g_outer_calls, 1);
+    atomic_fetch_add(&g_outer_visited, (int)v->count);
+    ComponentType inner_types[] = { COMP_TAG };
+    ecs_parallel_for(g_nested_inner_world, g_nested_ts, inner_types, 1,
+                     sys_nested_inner, NULL);
+}
+
+TEST(ecs_parallel_for_nested_dispatch) {
+    /* 2000 P+V entities: chunk capacity is ~582, so several outer jobs. */
+    World *outer_w = make_world_with_entities(2000, 0);
+    World *inner_w = world_create();
+    world_register_component(inner_w, COMP_TAG, sizeof(Tag));
+    const int INNER_N = 64;
+    for (int i = 0; i < INNER_N; i++) {
+        Entity e = world_create_entity(inner_w);
+        world_add_component(inner_w, e, COMP_TAG);
+    }
+    g_nested_inner_world = inner_w;
+
+    TaskSystem *ts = task_system_create(4);
+    ASSERT_NOT_NULL(ts);
+    g_nested_ts = ts;
+
+    atomic_store(&g_outer_visited, 0);
+    atomic_store(&g_outer_calls, 0);
+    atomic_store(&g_inner_visited, 0);
+    ComponentType types[] = { COMP_POSITION, COMP_VELOCITY };
+    ecs_parallel_for(outer_w, ts, types, 2, sys_nested_outer, NULL);
+
+    /* Every outer entity visited exactly once... */
+    ASSERT_EQ(atomic_load(&g_outer_visited), 2000);
+    /* ...and each outer chunk invocation ran one complete inner pass. */
+    ASSERT_TRUE(atomic_load(&g_outer_calls) > 1); /* multi-job: pool in use */
+    ASSERT_EQ(atomic_load(&g_inner_visited),
+              INNER_N * atomic_load(&g_outer_calls));
+
+    task_system_destroy(ts);
+    world_destroy(inner_w);
+    world_destroy(outer_w);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(ecs_parallel_for_visits_all);
     RUN_TEST(ecs_parallel_for_serial);
     RUN_TEST(ecs_parallel_for_mutates_data);
     RUN_TEST(ecs_scheduler_runs_systems);
     RUN_TEST(ecs_parallel_for_empty);
+    RUN_TEST(ecs_parallel_for_nested_dispatch);
 TEST_MAIN_END()

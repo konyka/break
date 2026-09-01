@@ -29,14 +29,20 @@ static void script_engine_clear_content(ScriptEngine *se) {
     se->loaded = false;
 }
 
-static bool script_parse_line(ScriptEngine *se, const char *line) {
+/* cur_func_valid tracks whether the function currently receiving ops was
+ * itself accepted: when the SCRIPT_MAX_CALLBACKS cap rejects a `func` line,
+ * the following op lines must be dropped rather than land in the previous
+ * (unrelated) function. */
+static bool script_parse_line(ScriptEngine *se, const char *line, bool *cur_func_valid) {
     char func_name[64] = {0};
     if (sscanf(line, "func %63s", func_name) == 1) {
+        *cur_func_valid = false;
         if (se->func_count < SCRIPT_MAX_CALLBACKS) {
             snprintf(se->funcs[se->func_count].name, sizeof(se->funcs[se->func_count].name), "%s", func_name);
             se->funcs[se->func_count].ops = NULL;
             se->funcs[se->func_count].op_count = 0;
             se->func_count++;
+            *cur_func_valid = true;
         }
         return true;
     }
@@ -54,6 +60,10 @@ static bool script_parse_line(ScriptEngine *se, const char *line) {
         }
         return true;
     }
+
+    /* Ops of an over-cap (rejected) function go nowhere — not to the last
+     * accepted function. */
+    if (!*cur_func_valid) return true;
 
     ScriptFunc *fn = &se->funcs[se->func_count - 1];
     /* R392: SCRIPT_MAX_CALLBACKS limits func count but not op count — a file
@@ -126,13 +136,14 @@ static bool script_load_into(ScriptEngine *se, const char *path) {
     }
 
     char *line = se->source;
+    bool cur_func_valid = false;
     while (*line) {
         char *nl = strchr(line, '\n');
         if (nl) *nl = '\0';
 
         while (*line == ' ' || *line == '\t') line++;
         if (*line != '#' && *line != '\0') {
-            if (!script_parse_line(se, line)) {
+            if (!script_parse_line(se, line, &cur_func_valid)) {
                 LOG_WARN("Script: %s contains a nonfinite value", path);
                 return false;
             }
