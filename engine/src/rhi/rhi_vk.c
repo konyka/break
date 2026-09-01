@@ -284,6 +284,7 @@ typedef struct {
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
     bool             feat_depth_stencil_resolve;
+    bool             has_device_fault; /* R576: VK_EXT_device_fault enabled */
     VkResolveModeFlagBits depth_resolve_mode;
     VkDevice                 device;
     VkQueue          graphics_queue;
@@ -450,6 +451,45 @@ static void vk_wait_frames(VKBackend *vk) {
         LOG_WARN("VK: vkWaitForFences failed in wait_frames");
 }
 
+/* R576: device-fault forensics — after a DEVICE_LOST, report the driver's
+ * fault description and faulting address ranges (VK_EXT_device_fault). */
+static void vk_dump_device_fault(VKBackend *vk, const char *site) {
+    if (!vk->has_device_fault) return;
+    PFN_vkGetDeviceFaultInfoEXT get_fault =
+        (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(vk->device, "vkGetDeviceFaultInfoEXT");
+    if (!get_fault) return;
+    VkDeviceFaultCountsEXT counts;
+    memset(&counts, 0, sizeof(counts));
+    counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+    VkResult r0 = get_fault(vk->device, &counts, NULL);
+    if (r0 != VK_SUCCESS) {
+        LOG_ERROR("VK: device fault query at %s failed (%d)", site, (int)r0);
+        return;
+    }
+    VkDeviceFaultAddressInfoEXT *addrs =
+        calloc(counts.addressInfoCount ? counts.addressInfoCount : 1u, sizeof(*addrs));
+    VkDeviceFaultVendorInfoEXT *vendors =
+        calloc(counts.vendorInfoCount ? counts.vendorInfoCount : 1u, sizeof(*vendors));
+    if (!addrs || !vendors) { free(addrs); free(vendors); return; }
+    VkDeviceFaultInfoEXT fi;
+    memset(&fi, 0, sizeof(fi));
+    fi.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
+    fi.pAddressInfos = addrs;
+    fi.pVendorInfos = vendors;
+    if (get_fault(vk->device, &counts, &fi) == VK_SUCCESS) {
+        LOG_ERROR("VK: device fault at %s: %s (address infos %u, vendor infos %u)",
+                  site, fi.description, (unsigned)counts.addressInfoCount,
+                  (unsigned)counts.vendorInfoCount);
+        for (u32 i = 0; i < counts.addressInfoCount; i++) {
+            LOG_ERROR("VK:   fault address 0x%llx precision %u bytes",
+                      (unsigned long long)addrs[i].reportedAddress,
+                      (unsigned)addrs[i].addressPrecision);
+        }
+    }
+    free(addrs);
+    free(vendors);
+}
+
 static u32 vk_find_memory(VKBackend *vk, u32 type_filter, VkMemoryPropertyFlags props) {
     VkPhysicalDeviceMemoryProperties mem_props;
     vkGetPhysicalDeviceMemoryProperties(vk->physical, &mem_props);
@@ -576,6 +616,7 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     si.pCommandBuffers = &cb;
     if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
         LOG_FATAL("VK: vkQueueSubmit failed in init_image_layout");
+        vk_dump_device_fault(vk, "init_image_layout");
     if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
         LOG_FATAL("VK: vkQueueWaitIdle failed in init_image_layout");
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
@@ -1301,7 +1342,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk->feat_partially_bound = true;
     }
 
-    const char *dev_extensions[3];
+    const char *dev_extensions[4];
     u32 dev_extension_count = 0u;
     dev_extensions[dev_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef ENGINE_PLATFORM_MACOS
@@ -1309,6 +1350,26 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
      * extension enabled whenever the device advertises it. */
     dev_extensions[dev_extension_count++] = "VK_KHR_portability_subset";
 #endif
+    /* R576: enable VK_EXT_device_fault when offered (vendor fault forensics —
+     * after a DEVICE_LOST, vkGetDeviceFaultInfoEXT reports the faulting
+     * pipeline-stage/address info; see vk_dump_device_fault). */
+    {
+        u32 avail = 0;
+        vk->has_device_fault = false;
+        vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, NULL);
+        VkExtensionProperties *props = calloc(avail ? avail : 1u, sizeof(*props));
+        if (props) {
+            vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, props);
+            for (u32 i = 0; i < avail; i++) {
+                if (strcmp(props[i].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0) {
+                    dev_extensions[dev_extension_count++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
+                    vk->has_device_fault = true;
+                    break;
+                }
+            }
+            free(props);
+        }
+    }
     VkDeviceCreateInfo dci = {0};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.pNext = &enabled_vk11; /* R441: 1.1 chain head (-> 1.2 features) */
@@ -1889,8 +1950,10 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     /* R175: Ensure deferred mip uploads finished before this frame samples them. */
     vk_mip_upload_reclaim(vk);
 
-    if (vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-        LOG_FATAL("VK: vkWaitForFences failed in frame_begin");
+    VkResult fence_res = vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX);
+    if (fence_res != VK_SUCCESS) {
+        LOG_FATAL("VK: vkWaitForFences failed in frame_begin (res=%d)", (int)fence_res);
+        vk_dump_device_fault(vk, "frame_begin");
         vk->frame_started = false;
         return NULL;
     }
@@ -2270,6 +2333,7 @@ void rhi_frame_end(RHIDevice *dev) {
     VkResult submit_res = vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]);
     if (submit_res != VK_SUCCESS) {
         LOG_FATAL("VK: vkQueueSubmit failed in frame_end (res=%d)", (int)submit_res);
+        vk_dump_device_fault(vk, "frame_end");
         vk->frame_started = false;
         vk->frame_submitted = false;
         return;
