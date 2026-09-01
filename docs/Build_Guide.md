@@ -57,6 +57,11 @@ Windows 备注（2026-09-01 起可本机验证）：Vulkan SDK 可无头解包�
 （`ctest -R ^test_vulkan$`，工作目录须为 engine/ 源码根）即带进程内验证门：
 任何验证警告/错误都会判负。
 
+设备选择：默认取第一块"caps 可查且可呈现"的 GPU（带兜底的回退到
+gpus[0] + 回退 caps，见 rhi_vk.c R574/R575）；要强制指定某块卡（例如本机
+AMD 核显的 caps 查询有驱动缺陷、需在 AMD 上验证），设
+`RE_VK_DEVICE_INDEX=<n>`（枚举顺序见运行日志里的 Vulkan GPU 行）。
+
 ### 2.2 myui / duanxianxia 集成构建
 
 `engine/src/myui` 与 `engine/apps/duanxianxia` 已作为引擎静态库和可执行目标

@@ -639,9 +639,21 @@ static VkShaderModule vk_compile_glsl(VKBackend *vk, const char *source, usize l
 static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult caps_res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk->physical, vk->surface, &caps);
-    if (caps_res != VK_SUCCESS) {
-        LOG_FATAL("VK: surface capabilities query failed: %d (surface presentable?)", (int)caps_res);
-        return false;
+    int caps_ok = (caps_res == VK_SUCCESS);
+    if (!caps_ok) {
+        /* R575: some drivers fail ONLY this query (observed: AMD iGPU driver
+         * 2.0.310 returning VK_ERROR_UNKNOWN while formats/present-modes
+         * queries succeed). Fall back to safe defaults so the device stays
+         * usable: requested extent, identity transform, double buffering. */
+        LOG_WARN("VK: surface caps query failed (%d) — using fallback caps "
+                 "(requested extent, identity transform, double buffer)",
+                 (int)caps_res);
+        memset(&caps, 0, sizeof(caps));
+        caps.currentExtent.width = UINT32_MAX; /* take the clamp path below */
+        caps.minImageExtent.width = 1;  caps.minImageExtent.height = 1;
+        caps.maxImageExtent.width = 16384; caps.maxImageExtent.height = 16384;
+        caps.minImageCount = 1;
+        caps.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     }
 
     /* R430: validate the preferred format against the surface — the old
@@ -1134,6 +1146,17 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
      * dGPU works) — picking gpus[0] blindly then crashed
      * vkCreateSwapchainKHR on garbage capabilities. */
     vk->physical = VK_NULL_HANDLE;
+    /* R575 (ENV OVERRIDE): RE_VK_DEVICE_INDEX=<n> pins the physical device
+     * (for bring-up on a specific GPU, e.g. a hybrid laptop whose iGPU driver
+     * has a broken surface-caps query). Out-of-range values are ignored. */
+    {
+        const char *env_idx = getenv("RE_VK_DEVICE_INDEX");
+        if (env_idx && env_idx[0]) {
+            u32 want = (u32)strtoul(env_idx, NULL, 10);
+            if (want < gpu_count) vk->physical = gpus[want];
+        }
+    }
+    if (vk->physical == VK_NULL_HANDLE)
     for (u32 i = 0; i < gpu_count; i++) {
         VkSurfaceCapabilitiesKHR probe_caps;
         if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpus[i], vk->surface,
