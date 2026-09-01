@@ -326,6 +326,15 @@ TEST(arabic_shape_forms_lam_alef)
   ASSERT_EQ(cps[0], 0xFEFBu);
 }
 
+TEST(text_layout_bidi_prescan_is_bounded)
+{
+  const char text[] = "abc\xD7\x90";
+
+  ASSERT_FALSE(my_text_layout_may_need_bidi_n(text, 3));
+  ASSERT_TRUE(my_text_layout_may_need_bidi_n(text, sizeof(text) - 1));
+  ASSERT_FALSE(my_text_layout_may_need_bidi_n(NULL, 0));
+}
+
 TEST(text_layout_maps_rtl_visual_order)
 {
   const char* text = "(\xD7\x90)";
@@ -820,6 +829,7 @@ TEST(text_layout_and_paragraph_reject_oversized_input_before_allocating)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(arabic_shape_forms_lam_alef);
+    RUN_TEST(text_layout_bidi_prescan_is_bounded);
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_shapes_bidi_runs_with_logical_clusters);
     RUN_TEST(text_layout_shape_oom_is_transactional);

@@ -2113,6 +2113,28 @@ TEST(text_area_nonwrap_rtl_geometry_keeps_logical_boundaries)
   my_widget_unref(area);
 }
 
+TEST(text_area_nonwrap_rtl_geometry_works_without_shaping)
+{
+  my_font_t* font = my_font_bitmap_create(NULL);
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(font);
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 100, 40}), MY_RET_OK);
+  my_text_area_set_font(area, font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "\xD7\x90\xD7\x91"), MY_RET_OK);
+  event.u.pointer.x = 15;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->geometry_boundaries[0], 32);
+  ASSERT_EQ(text_area->geometry_boundaries[1], 16);
+  ASSERT_EQ(text_area->geometry_boundaries[2], 0);
+  my_font_destroy(font);
+  my_widget_unref(area);
+}
+
 TEST(removing_focused_widget_blurs_and_disables_ime)
 {
   my_pal_t *pal = my_pal_dummy_create(NULL);
@@ -2405,6 +2427,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_nonwrap_rtl_ime_spot_uses_visual_boundary);
     RUN_TEST(text_area_wrap_rtl_ime_spot_uses_visual_boundary);
     RUN_TEST(text_area_nonwrap_rtl_geometry_keeps_logical_boundaries);
+    RUN_TEST(text_area_nonwrap_rtl_geometry_works_without_shaping);
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);
     RUN_TEST(event_bubbling_stops_at_removed_ancestor);

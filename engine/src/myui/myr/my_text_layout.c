@@ -138,6 +138,25 @@ bool my_text_layout_may_need_bidi(const char* text) {
   return false;
 }
 
+bool my_text_layout_may_need_bidi_n(const char* text, size_t byte_len) {
+  size_t consumed = 0;
+  if (text == NULL) {
+    return false;
+  }
+  while (consumed < byte_len) {
+    const char* p = text + consumed;
+    const char* next = p;
+    if (tl_cp_needs_bidi(my_utf8_next(&next))) {
+      return true;
+    }
+    if (next <= p || (size_t)(next - p) > byte_len - consumed) {
+      return false;
+    }
+    consumed += (size_t)(next - p);
+  }
+  return false;
+}
+
 /* ---------------- layout master (cache payload) ---------------- */
 
 typedef struct tl_master_t {

@@ -295,6 +295,9 @@ static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
 }
 
 static size_t ta_line_start(const my_text_area_t* ta, size_t row);
+static const my_visual_line_t* ta_vline_at(my_text_area_t* ta, size_t vi);
+static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
+                                       const my_visual_line_t* vl);
 
 static bool ta_geometry_reserve(my_text_area_t* ta, size_t required) {
   size_t capacity;
@@ -353,7 +356,7 @@ static bool ta_geometry_from_shaping(my_text_area_t* ta, size_t row,
 }
 
 static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
-  size_t start, end, count = 0, cp_count;
+  size_t start, end, line_start, line_bytes, count = 0, cp_count;
   const char* p;
   if (row >= ta_line_count(ta)) return false;
   if (ta->geometry_row == row && ta->geometry_revision == ta->text_revision &&
@@ -362,6 +365,7 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     return true;
   }
   start = ta_line_start(ta, row);
+  line_start = start;
   end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                    : ta->text_len;
   p = ta->text + start;
@@ -370,6 +374,7 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     start = (size_t)(p - ta->text);
     count++;
   }
+  line_bytes = start - line_start;
   if (count == SIZE_MAX || !ta_geometry_reserve(ta, count + 1)) return false;
   cp_count = count;
   if (ta->font != NULL && ta->font->vtable != NULL &&
@@ -381,6 +386,25 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     ta->geometry_font = ta->font;
     ta->geometry_font_size = ta->font_size;
     return true;
+  }
+  if (ta->font != NULL && ta->font->vtable != NULL &&
+      ta->font->vtable->shape == NULL &&
+      my_text_layout_may_need_bidi_n(ta->text + line_start, line_bytes)) {
+    const my_visual_line_t* vl = ta_vline_at(ta, row);
+    my_text_layout_t* layout = vl != NULL ? ta_layout_rtl(ta, vl) : NULL;
+    if (layout != NULL && layout->logical_len == cp_count) {
+      size_t i;
+      for (i = 0; i <= cp_count; i++) {
+        ta->geometry_boundaries[i] =
+            my_text_layout_visual_x(layout, ta->font, ta->font_size, i);
+      }
+      ta->geometry_row = row;
+      ta->geometry_count = cp_count;
+      ta->geometry_revision = ta->text_revision;
+      ta->geometry_font = ta->font;
+      ta->geometry_font_size = ta->font_size;
+      return true;
+    }
   }
   start = ta_line_start(ta, row);
   p = ta->text + start;
@@ -1350,8 +1374,6 @@ static void ta_ensure_visible(my_text_area_t* ta) {
 /* ---------------- key handling ---------------- */
 
 static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl);
-static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
-                                       const my_visual_line_t* vl);
 static void ta_update_ime_spot(my_text_area_t* ta); /* fwd (M13a) */
 
 static void ta_move_to(my_text_area_t* ta, size_t row, size_t col,

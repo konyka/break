@@ -78,6 +78,9 @@ void my_text_layout_destroy(my_text_layout_t* layout);
  */
 bool my_text_layout_may_need_bidi(const char* text);
 
+/** @brief Bounded bidi pre-scan for a valid UTF-8 byte slice. */
+bool my_text_layout_may_need_bidi_n(const char* text, size_t byte_len);
+
 /** @brief Drop all cached layouts (tests / shutdown). */
 void my_text_layout_cache_flush(void);
 

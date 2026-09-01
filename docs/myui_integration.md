@@ -508,7 +508,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（23/23）、
-`test_myui_text_layout`（26/26）、
+`test_myui_text_layout`（27/27）、
 `test_myui_vgcanvas_backend`（25/25）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
@@ -775,3 +775,7 @@ Text area 的 RTL 光标与 IME 候选框现在也使用同一套 visual boundar
 widget-owned 的 RTL layout cache、shaping advance、段落方向和对齐偏移。逻辑光标位于 RTL 行首时
 会落在视觉行尾，默认 LEFT 对齐的 RTL 行保持与绘制一致的右对齐；重复的焦点/光标更新不会再次
 复制已缓存的 RTL 行文本。非 RTL 行继续走 geometry prefix 快速路径。
+
+RTL geometry 的回退不依赖 HarfBuzz：当字体只提供基础 glyph API 时，text area 仅对含 bidi
+codepoint 的物理行执行长度受限预扫描并复用既有 layout cache；普通 LTR 行不创建 bidi layout，
+保持原有逐 glyph advance 路径。

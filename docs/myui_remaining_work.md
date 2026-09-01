@@ -338,8 +338,8 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - paragraph 断行测量现在对需要 bidi 的行先走 `my_text_layout_shape()`，按 visual run 的
   resolved direction shaping；cluster 不在 UTF-8 codepoint 起点时整段失败，不静默忽略
   provider 输出。无 HarfBuzz 时保持原有 codepoint fallback。
-- 验证：文本布局 **26/26**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
-  无 HarfBuzz **26/26、8/8、24/24**，ASan **26/26、8/8、24/24**。
+- 验证：文本布局 **27/27**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
+  无 HarfBuzz **27/27、8/8、24/24**，ASan **27/27、8/8、24/24**。
   `engine/build` 全量 CTest 中实际存在的 77 个测试全部通过；4 个未生成的可选
   rule-engine 目标为 `Not Run`，不属于本轮源码回归失败。
 
@@ -366,3 +366,12 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 验证：普通、无 HarfBuzz、Vulkan、ASan 配置均通过相关 text-area、text-layout、font 和
   canvas 测试；完整 OpenType script/features、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍
   保持在未完成列表中。
+
+## 已完成：无 shaping provider 的 RTL geometry 回退（2026-09-01）
+
+- 以 TDD 新增无 HarfBuzz/无 shaping provider 的 RTL logical boundary 测试，确保 bitmap 等
+  基础字体的水平可见性和 IME 坐标仍按视觉顺序计算。
+- 新增长度受限的 `my_text_layout_may_need_bidi_n()` 预扫描；geometry 只在目标物理行确实
+  含 bidi codepoint 时创建 layout，普通 LTR 行保持无 layout 的快速路径。
+- 验证：新增 text-layout 预扫描测试和 text-area 全量测试通过；后续完整 OpenType
+  script/features、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍保持未完成。
