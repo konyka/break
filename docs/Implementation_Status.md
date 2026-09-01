@@ -33,9 +33,11 @@ shaping 字节预算约束。text area 新增 `my_text_area_set_shaping_params()
 验证：`test_myui_text_layout` **36/36**、`test_myui_window_manager` **71/71**。
 完整 UAX#24/OpenType script resolution、variation selector、language system、feature
 policy、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
-当前 `my_vgcanvas_draw_text()`/`measure_text()` 尚未接收显式 shaping 参数，因此非默认
-language/features 只在 paragraph 与交互几何路径生效；跨 soft/GLES/Vulkan/Break RHI 的
-`draw_text_ex()`/`measure_text_ex()` 以及按参数隔离 glyph cache 仍是下一阶段架构缺口。
+`my_vgcanvas_draw_text_ex()`/`my_vgcanvas_measure_text_ex()` 已通过 base canvas 的同步
+shaping 上下文接入 soft、GLES2、Vulkan 和 Break RHI；旧 vtable 布局和默认 API 保持兼容，
+上下文不跨调用保存。参数化 glyph/advance 的 soft golden 测试通过，其他后端完成编译
+验证。完整 UAX#24、variation selector、language system、feature policy、跨段落增量
+rebreaking 和 RTL JUSTIFY 联动仍未完成。
 
 ## 本轮更新：Vulkan vgcanvas AA 事务
 

@@ -976,6 +976,11 @@ static my_syntax_token_kind_t ta_syntax_kind_at(
   return MY_SYNTAX_TOKEN_TEXT;
 }
 
+static my_ret_t ta_draw_text(my_text_area_t* ta, my_vgcanvas_t* vg,
+                             const char* text, float x, float y) {
+  return my_vgcanvas_draw_text_ex(vg, text, x, y, &ta->shaping_params);
+}
+
 static void ta_draw_visual_syntax_segment(
     my_text_area_t* ta, my_vgcanvas_t* vg, my_text_layout_t* layout,
     size_t start, size_t end, size_t visual_start,
@@ -984,8 +989,8 @@ static void ta_draw_visual_syntax_segment(
   layout->visual_utf8[end] = '\0';
   my_vgcanvas_set_fill_color(
       vg, my_color_from_rgba32(ta_syntax_color(normal, kind)));
-  my_vgcanvas_draw_text(
-      vg, layout->visual_utf8 + start,
+  ta_draw_text(
+      ta, vg, layout->visual_utf8 + start,
       base_x + (float)my_text_layout_visual_boundary_x_ex(
                    layout, ta->font, ta->font_size, visual_start,
                    &ta->shaping_params),
@@ -1073,7 +1078,7 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
     ((char*)line)[byte_end] = '\0';
     my_vgcanvas_set_fill_color(
         vg, my_color_from_rgba32(ta_syntax_color(normal, tokens[i].kind)));
-    my_vgcanvas_draw_text(vg, line + byte_start, base_x, (float)ty);
+    ta_draw_text(ta, vg, line + byte_start, base_x, (float)ty);
     if (ta->font != NULL) {
       my_vgcanvas_measure_text(vg, line + byte_start, &token_width, NULL);
     } else {
@@ -2173,8 +2178,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if ((ta->text == NULL || ta->text_len == 0) && ta->hint != NULL &&
       !ta->focused) {
     my_vgcanvas_set_fill_color(vg, my_color_rgb(150, 150, 150));
-    my_vgcanvas_draw_text(vg, ta->hint,
-                          (float)ta_content_left_value(ta), TA_PAD_Y);
+    ta_draw_text(ta, vg, ta->hint, (float)ta_content_left_value(ta),
+                 TA_PAD_Y);
   }
 
   {
@@ -2203,8 +2208,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           number_width = (int32_t)strlen(number) * TA_CELL_W;
         }
         my_vgcanvas_set_fill_color(vg, my_color_rgb(130, 130, 130));
-        my_vgcanvas_draw_text(
-            vg, number,
+        ta_draw_text(
+            ta, vg, number,
             (float)(content_left - TA_LINE_NUMBER_GAP - number_width),
             (float)ty);
       }
@@ -2329,7 +2334,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                 char separator = *p;
                 int32_t ww = 0;
                 *p = '\0';
-                my_vgcanvas_draw_text(vg, wstart, x, (float)ty);
+                ta_draw_text(ta, vg, wstart, x, (float)ty);
                 if (ta->font != NULL) {
                   my_vgcanvas_measure_text(vg, wstart, &ww, NULL);
                 } else {
@@ -2346,7 +2351,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           } else {
             if (!ta_draw_syntax_line(ta, vg, vl, line, (float)base_x, ty, fg,
                                      line_layout)) {
-              my_vgcanvas_draw_text(vg, line, (float)base_x, (float)ty);
+              ta_draw_text(ta, vg, line, (float)base_x, (float)ty);
             }
           }
         }
@@ -2422,7 +2427,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
      * document (no undo, no "changed"); does not blink with the caret */
     if (ta->ime_preedit != NULL) {
       int32_t pw = 0;
-      my_vgcanvas_draw_text(vg, ta->ime_preedit, (float)cx, (float)cy);
+      ta_draw_text(ta, vg, ta->ime_preedit, (float)cx, (float)cy);
       if (ta->font != NULL) {
         my_vgcanvas_measure_text(vg, ta->ime_preedit, &pw, NULL);
       } else {

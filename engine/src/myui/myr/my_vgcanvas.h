@@ -25,6 +25,7 @@
 #include "myr/my_color.h"
 #include "myr/my_font.h"
 #include "myr/my_rect.h"
+#include "myr/my_text_layout.h"
 
 typedef struct my_vgcanvas_t my_vgcanvas_t;
 
@@ -154,7 +155,36 @@ typedef struct my_vgcanvas_vtable_t {
 struct my_vgcanvas_t {
   const my_vgcanvas_vtable_t* vtable;
   my_vgcanvas_capabilities_t capabilities;
+  const my_font_shape_params_t* active_shape_params;
 };
+
+static inline const my_font_shape_params_t* my_vgcanvas_shape_params(
+    const my_vgcanvas_t* vg) {
+  return vg != NULL ? vg->active_shape_params : NULL;
+}
+
+static inline my_ret_t my_vgcanvas_shape_font(
+    my_vgcanvas_t* vg, my_font_t* font, const char* text, int32_t size,
+    bool rtl, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
+  my_font_shape_params_t defaults = {rtl, 0u, NULL, NULL};
+  const my_font_shape_params_t* params = my_vgcanvas_shape_params(vg);
+  return my_font_shape_ex(font, text, size,
+                          params != NULL ? params : &defaults, allocator,
+                          result);
+}
+
+static inline my_ret_t my_vgcanvas_shape_layout(
+    my_vgcanvas_t* vg, const my_text_layout_t* layout, const char* text,
+    my_font_t* font, int32_t size, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
+  const my_font_shape_params_t* params = my_vgcanvas_shape_params(vg);
+  if (params != NULL) {
+    return my_text_layout_shape_ex(layout, text, font, size, params,
+                                   allocator, result);
+  }
+  return my_text_layout_shape(layout, text, font, size, allocator, result);
+}
 
 /** @brief Read immutable backend capabilities and current quality state. */
 static inline my_ret_t my_vgcanvas_get_capabilities(
@@ -262,6 +292,17 @@ static inline my_ret_t my_vgcanvas_draw_text(my_vgcanvas_t* vg, const char* text
   return vg->vtable->draw_text(vg, text, x, y);
 }
 
+static inline my_ret_t my_vgcanvas_draw_text_ex(
+    my_vgcanvas_t* vg, const char* text, float x, float y,
+    const my_font_shape_params_t* params) {
+  const my_font_shape_params_t* previous = vg->active_shape_params;
+  my_ret_t ret;
+  vg->active_shape_params = params;
+  ret = vg->vtable->draw_text(vg, text, x, y);
+  vg->active_shape_params = previous;
+  return ret;
+}
+
 static inline void my_vgcanvas_destroy(my_vgcanvas_t* vg) {
   if (vg != NULL) {
     vg->vtable->destroy(vg);
@@ -277,6 +318,17 @@ static inline my_ret_t my_vgcanvas_measure_text(my_vgcanvas_t* vg,
                                                 const char* text, int32_t* w,
                                                 int32_t* h) {
   return vg->vtable->measure_text(vg, text, w, h);
+}
+
+static inline my_ret_t my_vgcanvas_measure_text_ex(
+    my_vgcanvas_t* vg, const char* text, int32_t* w, int32_t* h,
+    const my_font_shape_params_t* params) {
+  const my_font_shape_params_t* previous = vg->active_shape_params;
+  my_ret_t ret;
+  vg->active_shape_params = params;
+  ret = vg->vtable->measure_text(vg, text, w, h);
+  vg->active_shape_params = previous;
+  return ret;
 }
 
 static inline my_ret_t my_vgcanvas_draw_image(my_vgcanvas_t* vg,

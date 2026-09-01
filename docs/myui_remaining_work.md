@@ -406,8 +406,8 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 验证：`test_myui_text_layout` **36/36**、`test_myui_window_manager` **71/71**；
   普通 build-myui-tests 构建通过。完整 OpenType script resolution、variation selector、
   language system、feature policy、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
-- 当前架构缺口：`my_vgcanvas_draw_text()` 尚未提供 `my_font_shape_params_t` 参数，四个
-  canvas 的非默认 feature/language 绘制仍走默认 shaping。`my_text_area_set_shaping_params()`
-  已保证 wrap 与交互几何一致，但非默认参数的 glyph 外观要等 `draw_text_ex`/`measure_text_ex`
-  跨后端契约落地后才能宣称绘制一致；该扩展必须保留旧 vtable ABI、按参数区分 glyph cache，
-  并先以 soft/GLES/Vulkan/Break RHI 的 golden advance 测试驱动。
+- 四个 canvas 现通过 base canvas 的同步 shaping 上下文支持
+  `my_vgcanvas_draw_text_ex()`/`my_vgcanvas_measure_text_ex()`；旧 vtable 布局和默认 API
+  保持兼容。上下文只在调用期间有效，避免跨帧悬空指针；各后端继续以当前 glyph-id/
+  font/size cache 消费结果。新增 soft 参数透传 golden advance 测试，GLES/Vulkan/Break
+  RHI 共享同一 helper 并完成编译验证。

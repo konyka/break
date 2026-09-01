@@ -456,8 +456,8 @@ static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
 
   if (!my_text_layout_may_need_bidi(text)) {
     my_font_shape_result_t shaped = {0};
-    if (my_font_shape(c->state.font, text, dev_font_size, false, c->allocator,
-                      &shaped) == MY_RET_OK) {
+    if (my_vgcanvas_shape_font(vg, c->state.font, text, dev_font_size, false,
+                               c->allocator, &shaped) == MY_RET_OK) {
       size_t i;
       for (i = 0; i < shaped.count; i++) {
         draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
@@ -476,8 +476,9 @@ static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
     if (layout == NULL) {
       return MY_RET_OOM;
     }
-    shape_ret = my_text_layout_shape(layout, text, c->state.font,
-                                     dev_font_size, c->allocator, &shaped);
+    shape_ret = my_vgcanvas_shape_layout(
+        vg, layout, text, c->state.font, dev_font_size, c->allocator,
+        &shaped);
     if (shape_ret == MY_RET_OK) {
       for (i = 0; i < shaped.count; i++) {
         draw_shaped_glyph(c, &shaped.glyphs[i], &pen_x, top, ascent);
@@ -511,8 +512,9 @@ static my_ret_t rhi_measure_text(my_vgcanvas_t *vg, const char *text,
     if (dev_font_size < 1) dev_font_size = 1;
     {
       my_font_shape_result_t shaped = {0};
-      ret = my_text_layout_shape(layout, text, c->state.font, dev_font_size,
-                                 c->allocator, &shaped);
+      ret = my_vgcanvas_shape_layout(
+          vg, layout, text, c->state.font, dev_font_size, c->allocator,
+          &shaped);
       if (ret == MY_RET_OK) {
         int64_t width = 0;
         size_t i;
@@ -533,8 +535,8 @@ static my_ret_t rhi_measure_text(my_vgcanvas_t *vg, const char *text,
     int32_t dev_font_size =
         (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
     if (dev_font_size < 1) dev_font_size = 1;
-    ret = my_font_shape(c->state.font, text, dev_font_size, false,
-                        c->allocator, &shaped);
+    ret = my_vgcanvas_shape_font(vg, c->state.font, text, dev_font_size,
+                                 false, c->allocator, &shaped);
     if (ret == MY_RET_OK) {
       int64_t width = 0;
       size_t i;

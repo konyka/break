@@ -172,10 +172,10 @@ layout 自己复制，且沿用字体 shaping 的 64/1024 字节预算，避免�
 wrap paragraph、热行 geometry、光标、selection、IME hit-test 的 shaping revision 失效；
 换行使用 `my_text_paragraph_process_ex()`，几何使用上述 `_ex` API。这样不同 language、
 feature 或 direction 不会复用旧 advance/cluster boundary。渲染后端仍只消费公共 canvas
-命令，shape provider 不存在时回退到安全的 glyph advance 路径。注意当前
-`my_vgcanvas_draw_text()` 尚未接收显式 shaping 参数，因此非默认参数目前只保证换行和
-交互几何一致；要保证 glyph 外观也一致，需要后续跨 soft/GLES/Vulkan/Break RHI 的
-`draw_text_ex()`/`measure_text_ex()` 契约。
+命令，shape provider 不存在时回退到安全的 glyph advance 路径。`my_vgcanvas_draw_text_ex()`
+和 `my_vgcanvas_measure_text_ex()` 在同步调用期间注入同一 shaping 参数，soft、GLES2、
+Vulkan 与 Break RHI 共用该路径；旧 API 保持默认参数和旧 vtable 布局。参数上下文不跨帧
+保存，避免悬空指针，glyph/advance 结果仍由各后端当前帧事务消费。
 
 ### 增量语法行模型
 

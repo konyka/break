@@ -551,8 +551,9 @@ static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
 
   if (!my_text_layout_may_need_bidi(text)) {
     my_font_shape_result_t shaped = {0};
-    if (my_font_shape(s->state.font, text, gles_dev_font_size(s), false,
-                      s->allocator, &shaped) == MY_RET_OK) {
+    if (my_vgcanvas_shape_font(vg, s->state.font, text,
+                               gles_dev_font_size(s), false, s->allocator,
+                               &shaped) == MY_RET_OK) {
       size_t i;
       for (i = 0; i < shaped.count; i++) {
         gles_draw_shaped_glyph(s, &shaped.glyphs[i], &pen_x, top, ascent);
@@ -573,9 +574,9 @@ static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
     if (l == NULL) {
       return MY_RET_OOM;
     }
-    shape_ret = my_text_layout_shape(l, text, s->state.font,
-                                     gles_dev_font_size(s), s->allocator,
-                                     &shaped);
+    shape_ret = my_vgcanvas_shape_layout(
+        vg, l, text, s->state.font, gles_dev_font_size(s), s->allocator,
+        &shaped);
     if (shape_ret == MY_RET_OK) {
       for (i = 0; i < shaped.count; i++) {
         gles_draw_shaped_glyph(s, &shaped.glyphs[i], &pen_x, top, ascent);
@@ -706,8 +707,9 @@ static my_ret_t gles_measure_text(my_vgcanvas_t* vg, const char* text,
     }
     {
       my_font_shape_result_t shaped = {0};
-      ret = my_text_layout_shape(l, text, s->state.font,
-                                 gles_dev_font_size(s), s->allocator, &shaped);
+      ret = my_vgcanvas_shape_layout(
+          vg, l, text, s->state.font, gles_dev_font_size(s), s->allocator,
+          &shaped);
       if (ret == MY_RET_OK) {
         int64_t width = 0;
         size_t i;
@@ -727,8 +729,9 @@ static my_ret_t gles_measure_text(my_vgcanvas_t* vg, const char* text,
     my_text_layout_destroy(l);
   } else {
     my_font_shape_result_t shaped = {0};
-    ret = my_font_shape(s->state.font, text, gles_dev_font_size(s), false,
-                        s->allocator, &shaped);
+    ret = my_vgcanvas_shape_font(vg, s->state.font, text,
+                                 gles_dev_font_size(s), false, s->allocator,
+                                 &shaped);
     if (ret == MY_RET_OK) {
       int64_t width = 0;
       size_t i;

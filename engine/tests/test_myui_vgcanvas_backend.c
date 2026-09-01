@@ -266,6 +266,18 @@ static my_ret_t test_font_shape(my_font_t* font, const char* text,
   return MY_RET_OK;
 }
 
+static my_ret_t test_font_shape_ex(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
+  my_ret_t ret = test_font_shape(font, text, size, false, allocator, result);
+  if (ret == MY_RET_OK && params != NULL && params->features != NULL &&
+      strcmp(params->features, "wide") == 0) {
+    result->glyphs[0].advance_x_26_6 = 6 * 64;
+  }
+  return ret;
+}
+
 static my_ret_t test_font_get_glyph_id(my_font_t* font, uint32_t glyph_id,
                                        int32_t size, my_glyph_t* glyph) {
   test_font_t* test_font = (test_font_t*)font;
@@ -305,6 +317,17 @@ static const my_font_vtable_t s_test_font_vtable = {
     test_font_measure,     test_font_get_glyph, test_font_ascent,
     test_font_descent,     test_font_line_height, test_font_destroy, NULL,
     test_font_shape,       test_font_get_glyph_id, NULL};
+
+static const my_font_vtable_t s_test_shape_ex_font_vtable = {
+    .measure = test_font_measure,
+    .get_glyph = test_font_get_glyph,
+    .ascent = test_font_ascent,
+    .descent = test_font_descent,
+    .line_height = test_font_line_height,
+    .destroy = test_font_destroy,
+    .shape = test_font_shape,
+    .get_glyph_id = test_font_get_glyph_id,
+    .shape_ex = test_font_shape_ex};
 
 TEST(gles2_image_vertices_apply_canvas_scale)
 {
@@ -494,6 +517,30 @@ TEST(soft_draws_shaped_glyph_id_and_advance)
   pixels = my_lcd_mem_get_buffer(lcd);
   stride = my_lcd_mem_get_stride(lcd);
   ASSERT_EQ(pixels[(size_t)11 * stride + 1u * 4u + 2u], 255);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(vgcanvas_shape_ex_forwards_parameters)
+{
+  static const uint8_t bitmap[] = {0xFF};
+  test_font_t font = {{&s_test_shape_ex_font_vtable}, bitmap, bitmap, 0};
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 32, 16, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas;
+  my_font_shape_params_t params = {false, MY_FONT_SCRIPT_LATN, "en",
+                                   "wide"};
+  int32_t width = 0;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, (my_font_t*)&font, 12), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_measure_text_ex(canvas, "A", &width, NULL, &params),
+            MY_RET_OK);
+  ASSERT_EQ(width, 6);
+  ASSERT_EQ(my_vgcanvas_measure_text(canvas, "A", &width, NULL), MY_RET_OK);
+  ASSERT_EQ(width, 3);
+  ASSERT_EQ(my_vgcanvas_draw_text_ex(canvas, "A", 0, 0, &params), MY_RET_OK);
   my_vgcanvas_destroy(canvas);
   my_lcd_destroy(lcd);
 }
@@ -1074,6 +1121,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(gles2_draws_shaped_glyph_id_and_advance);
     RUN_TEST(gles2_shapes_complex_bidi_runs_before_drawing);
     RUN_TEST(soft_draws_shaped_glyph_id_and_advance);
+    RUN_TEST(vgcanvas_shape_ex_forwards_parameters);
     RUN_TEST(soft_canvas_public_capabilities_apply_scale);
     RUN_TEST(vgcanvas_capabilities_are_explicit);
     RUN_TEST(gles_capabilities_reject_unsupported_surface_aa);
