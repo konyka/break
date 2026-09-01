@@ -150,6 +150,7 @@ static const my_font_vtable_t text_area_variable_font_vtable = {
     text_area_variable_font_destroy,
     text_area_variable_font_has_glyph,
     NULL,
+    NULL,
     NULL};
 
 static my_ret_t text_area_ligature_shape(my_font_t* font, const char* text,

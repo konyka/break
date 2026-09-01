@@ -137,7 +137,7 @@ static bool bmp_has_glyph(my_font_t* font, uint32_t codepoint) {
 static const my_font_vtable_t s_bitmap_vtable = {bmp_measure, bmp_get_glyph,
                                                  bmp_ascent, bmp_descent,
                                                  bmp_line_height, bmp_destroy,
-                                                 bmp_has_glyph, NULL, NULL};
+                                                 bmp_has_glyph, NULL, NULL, NULL};
 
 my_font_t* my_font_bitmap_create(const my_allocator_t* allocator) {
   my_font_bitmap_t* f =
@@ -284,7 +284,8 @@ static my_ret_t chain_append_shape(
 
 static my_ret_t chain_shape_run(
     my_font_t* face, const char* text, size_t start, size_t end,
-    int32_t size, bool rtl, const my_allocator_t* allocator,
+    int32_t size, const my_font_shape_params_t* params,
+    const my_allocator_t* allocator,
     my_font_shape_result_t* result, size_t* capacity) {
   my_font_shape_result_t shaped = {0};
   char* segment;
@@ -300,7 +301,7 @@ static my_ret_t chain_shape_run(
   }
   memcpy(segment, text + start, length);
   segment[length] = '\0';
-  ret = my_font_shape(face, segment, size, rtl, allocator, &shaped);
+  ret = my_font_shape_ex(face, segment, size, params, allocator, &shaped);
   if (ret == MY_RET_OK) {
     ret = chain_append_shape(allocator, result, capacity, &shaped, start,
                              face);
@@ -316,9 +317,10 @@ typedef struct chain_shape_segment_t {
   size_t end;
 } chain_shape_segment_t;
 
-static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
-                            bool rtl, const my_allocator_t* allocator,
-                            my_font_shape_result_t* result) {
+static my_ret_t chain_shape_ex(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
   my_font_chain_t* c = (my_font_chain_t*)font;
   const char* p = text;
   my_font_t* run_face = NULL;
@@ -326,6 +328,10 @@ static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
   size_t capacity = 0;
   my_ret_t ret;
   bool crossed_face = false;
+  bool rtl;
+
+  if (params == NULL) return MY_RET_INVALID_PARAMS;
+  rtl = params->rtl;
 
   while (*p != '\0') {
     const char* next = p;
@@ -340,8 +346,13 @@ static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
         crossed_face = true;
         break;
       }
-      ret = chain_shape_run(run_face, text, run_start, byte, size, false,
+      {
+        my_font_shape_params_t run_params = *params;
+        run_params.rtl = false;
+        ret = chain_shape_run(run_face, text, run_start, byte, size,
+                              &run_params,
                             allocator, result, &capacity);
+      }
       if (ret != MY_RET_OK) {
         my_font_shape_destroy(result);
         return ret;
@@ -354,7 +365,7 @@ static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
   if (!crossed_face) {
     if (run_face != NULL) {
       ret = chain_shape_run(run_face, text, run_start, (size_t)(p - text),
-                            size, rtl, allocator, result, &capacity);
+                            size, params, allocator, result, &capacity);
       if (ret != MY_RET_OK) {
         my_font_shape_destroy(result);
         return ret;
@@ -427,7 +438,7 @@ static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
     for (i = run_count; i > 0; i--) {
       ret = chain_shape_run(segments[i - 1].face, text,
                             segments[i - 1].start, segments[i - 1].end, size,
-                            true, allocator, result, &capacity);
+                            params, allocator, result, &capacity);
       if (ret != MY_RET_OK) {
         my_mem_free(allocator, segments);
         my_font_shape_destroy(result);
@@ -438,6 +449,13 @@ static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
   }
   result->used_complex_shaping = true;
   return MY_RET_OK;
+}
+
+static my_ret_t chain_shape(my_font_t* font, const char* text, int32_t size,
+                            bool rtl, const my_allocator_t* allocator,
+                            my_font_shape_result_t* result) {
+  my_font_shape_params_t params = {rtl, 0u, NULL, NULL};
+  return chain_shape_ex(font, text, size, &params, allocator, result);
 }
 
 static int32_t chain_ascent(my_font_t* font, int32_t size) {
@@ -469,24 +487,58 @@ static void chain_destroy(my_font_t* font) {
 static const my_font_vtable_t s_chain_vtable = {
     chain_measure, chain_get_glyph,  chain_ascent,   chain_descent,
     chain_line_height, chain_destroy, NULL /* per-face has_glyph */, chain_shape,
-    NULL};
+    NULL, chain_shape_ex};
 
-my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
-                       bool rtl, const my_allocator_t* allocator,
-                       my_font_shape_result_t* result) {
+static bool shape_param_string_valid(const char* value, size_t max_bytes) {
+  size_t length;
+  if (value == NULL) return true;
+  for (length = 0u; length <= max_bytes; ++length) {
+    if (value[length] == '\0') return true;
+  }
+  return false;
+}
+
+static bool shape_text_valid(const char* text) {
+  size_t length;
+  for (length = 0u; length <= MY_FONT_SHAPE_MAX_BYTES; ++length) {
+    if (text[length] == '\0') return true;
+  }
+  return false;
+}
+
+my_ret_t my_font_shape_ex(my_font_t* font, const char* text, int32_t size,
+                          const my_font_shape_params_t* params,
+                          const my_allocator_t* allocator,
+                          my_font_shape_result_t* result) {
+  my_font_shape_params_t defaults = {false, 0u, NULL, NULL};
+  my_font_shape_params_t effective;
   if (result == NULL) return MY_RET_INVALID_PARAMS;
   memset(result, 0, sizeof(*result));
   result->allocator = allocator;
-  result->rtl = rtl;
-  if (font == NULL || text == NULL || size <= 0) {
+  effective = params != NULL ? *params : defaults;
+  result->rtl = effective.rtl;
+  if (font == NULL || text == NULL || size <= 0 || !shape_text_valid(text) ||
+      !shape_param_string_valid(effective.language,
+                                MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) ||
+      !shape_param_string_valid(effective.features,
+                                MY_FONT_SHAPE_MAX_FEATURE_BYTES)) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (font->vtable == NULL || font->vtable->shape == NULL) {
+  if (font->vtable == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
   {
-    my_ret_t ret =
-        font->vtable->shape(font, text, size, rtl, allocator, result);
+    my_ret_t ret;
+    if (font->vtable->shape_ex != NULL) {
+      ret = font->vtable->shape_ex(font, text, size, &effective, allocator,
+                                   result);
+    } else if (font->vtable->shape != NULL && effective.script == 0u &&
+               effective.language == NULL && effective.features == NULL) {
+      ret = font->vtable->shape(font, text, size, effective.rtl, allocator,
+                                result);
+    } else {
+      return MY_RET_NOT_SUPPORTED;
+    }
     result->allocator = allocator;
     if (ret != MY_RET_OK) {
       my_font_shape_destroy(result);
@@ -506,6 +558,13 @@ my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
     }
     return MY_RET_OK;
   }
+}
+
+my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
+                       bool rtl, const my_allocator_t* allocator,
+                       my_font_shape_result_t* result) {
+  my_font_shape_params_t params = {rtl, 0u, NULL, NULL};
+  return my_font_shape_ex(font, text, size, &params, allocator, result);
 }
 
 void my_font_shape_destroy(my_font_shape_result_t* result) {

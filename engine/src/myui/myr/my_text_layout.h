@@ -103,6 +103,12 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
                               int32_t size, const my_allocator_t* allocator,
                               my_font_shape_result_t* result);
 
+/** @brief Shape with explicit script, language and feature settings. */
+my_ret_t my_text_layout_shape_ex(
+    const my_text_layout_t* layout, const char* logical_text,
+    my_font_t* font, int32_t size, const my_font_shape_params_t* params,
+    const my_allocator_t* allocator, my_font_shape_result_t* result);
+
 /* ---------------- editing support: boundary <-> visual (M12a) --------
  * A CURSOR always sits between two logical codepoints (a "logical
  * boundary", 0..len). Its visual position is defined by ONE consistent

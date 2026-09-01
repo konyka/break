@@ -426,14 +426,23 @@ render 边界创建候选 `RHIOffscreenFBO`，创建成功后再激活并回收�
 depth sample count 与 resolve 时使用 2x；旧 RHI 创建 API 仍固定 1x。
 - Vulkan 使用 `font_vk.vert/frag` + `ui_img_vk.vert/frag`。
 
-可选 OpenType shaping 通过 `my_font_shape()` 暴露为后端中立的 glyph run：每个 glyph 携带
-font glyph id、UTF-8 byte cluster 和 26.6 fixed-point advance/offset。只有启用
-`MYUI_HARFBUZZ`、FreeType 与 HarfBuzz 均可用的直接 FreeType face 支持该接口；bitmap、stb
-以及 fallback chain 返回 `MY_RET_NOT_SUPPORTED`。当前 Break RHI、GLES、Vulkan 和 soft
-canvas 的纯 LTR 路径已通过独立 `my_font_get_glyph_id()` raster API 消费 glyph run；四个
+可选 OpenType shaping 通过 `my_font_shape()` 和 `my_font_shape_ex()` 暴露为后端中立的
+glyph run：每个 glyph 携带 font glyph id、UTF-8 byte cluster 和 26.6 fixed-point
+advance/offset。`my_font_shape_ex()` 额外接收 direction、OpenType script tag、language
+和有界 feature 字符串。只有启用 `MYUI_HARFBUZZ`、FreeType 与 HarfBuzz 均可用的直接
+FreeType face 支持显式 shaping；bitmap、stb 以及不支持显式参数的旧 provider 返回
+`MY_RET_NOT_SUPPORTED`，旧的无参数 shaping callback 仍可通过 `my_font_shape()` 工作。
+当前 Break RHI、GLES、Vulkan 和 soft canvas 的纯 LTR 路径已通过独立
+`my_font_get_glyph_id()` raster API 消费 glyph run；四个
 后端的 glyph cache 均把 font pointer、glyph/codepoint 数值、key 类型和字号作为键，避免把
-glyph id 当作 Unicode codepoint 或发生缓存串线。shaping 失败时回退旧 codepoint 路径。当前
-RTL 仍使用 UBA/Arabic fallback，fallback chain 仍不伪装支持跨 face 的完整 OpenType shaping。
+glyph id 当作 Unicode codepoint 或发生缓存串线。shaping 失败时回退旧 codepoint 路径。
+paragraph 的 `my_text_layout_shape_ex()` 会在未指定 script 时按有限 Unicode block 映射拆分
+连续 script segment，并把 language/features 透传到每个 segment；显式 script 则保持单一
+shaping run。RTL segment 按 visual run 顺序提交，失败时整个 result 事务回滚。该映射不等于
+完整 UAX#24 script resolution；language system、variation selector、feature policy、增量
+shaping cache 和跨 face 的完整 OpenType shaping 仍未实现。
+字体 shaping 入口本身也限制输入为 `MY_FONT_SHAPE_MAX_BYTES`（4 MiB），在调用 provider 或
+HarfBuzz 前完成有界扫描；layout/paragraph 入口使用各自同等大小的前置预算。
 
 ### Canvas 能力契约
 
@@ -496,7 +505,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 | 范围 | 当前边界 | 后续方案 |
 |------|----------|----------|
 | GPU AA | Break RHI 的 `RHIOffscreenFBODesc` 已支持按设备能力创建真实 2x+ target；Vulkan/Break RHI 的 `set_antialias_level` 仍未承诺动态窗口级协商 | 将已完成的 target 创建接入窗口级事务；沿用 `create -> validate -> submit -> activate -> retire`，失败时保持旧 target，不静默改变质量 |
-| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining 和 mandatory Lam-Alef；paragraph 已提供 cluster-safe 逻辑换行、bidi glyph-run 和 visual mapping 并接入 text area；完整 script/features GSUB、多段落增量 rebreaking 仍未实现 | 增加 script/features shaping、段落级增量 mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约 |
+| 复杂 RTL | 已支持单段落 UBA 重排、L4 镜像、Arabic joining、mandatory Lam-Alef、有限 script segment 和 cluster-safe bidi glyph-run；完整 UAX#24/script features GSUB、多段落增量 rebreaking 仍未实现 | 增加完整 script resolution、variation selector/language system、段落级增量 mapping 和 line-break model，先以 golden 字形/视觉顺序测试锁定契约 |
 | 编辑器 | 代码折叠（支持严格包含嵌套）、有界 YAML 折叠快照、行号栏、wrap 增量缓存、增量 lexer 和受限 token 分段着色已实现；完整 RTL token shaping 仍未实现 | 增加版本字段和 bidi shaping，保持单帧预算，避免大文档全文扫描 |
 | 图像 | Mono 使用固定成本 4x4 ordered dithering；误差扩散和更高位深量化未实现 | 保持当前有界、可预测的 dither 路径；仅在实测收益明确时增加其他量化策略 |
 | Present | 共享 offscreen surface 仍执行一次全屏 composite，未实现真正的局部 present | 先按平台确认 damage/partial-present 语义，再以 dirty region 合并和带宽阈值选择局部或全屏提交 |
@@ -714,7 +723,7 @@ BreakUI shutdown 和 dialog 生命周期保持同一套释放规则。
   的 Break RHI canvas 通过 offscreen FBO 事务支持设备能力允许的 2x 切换，失败时保留旧
   target。独立 Vulkan vgcanvas 仍保留自己的能力边界。nearest/bilinear 图像过滤已成为软件、GLES/OpenGL、
   Vulkan 和 Break RHI 的共同能力；Arabic 基础 shaping、L4 mirror 和 Mono ordered dither
-  已落地，完整 OpenType shaping、复杂多段落文本和局部 present 仍按阶段计划处理。
+  已落地；有限 script/features shaping 契约已落地，完整 OpenType shaping、复杂多段落文本和局部 present 仍按阶段计划处理。
 
 ## 语法高亮热路径
 
@@ -762,10 +771,12 @@ UTF-8 片段提交公共 canvas；纯 LTR 仍走原有单次 token 测量路径�
 Vulkan 或 Break RHI 的缓存。LTR 单 face 不创建 run 表，RTL 只有跨 face 时才分配固定大小
 的 run 描述并逆序提交，所有候选输出在成功前保持私有，OOM 时恢复为空结果。
 
-paragraph 的 `my_text_layout_shape()` 现已将 SheenBidi visual runs 转换为按 direction
-shaping 的 glyph-run；复杂 canvas 绘制与测量统一消费该结果。它仍不是完整 Unicode bidi
-OpenType 实现：paragraph 的 script/features 配置、跨段落增量 shaping 尚未完成。接入后续
-能力时必须维持 logical byte clusters、视觉 run 顺序、selection/cursor mapping 和后端
+paragraph 的 `my_text_layout_shape()` 现已将 SheenBidi visual runs 转换为按 direction 和
+有限 script segment shaping 的 glyph-run；`my_text_layout_shape_ex()` 还支持显式
+script/language/features。复杂 canvas 绘制与测量统一消费该结果。它仍不是完整 Unicode bidi
+OpenType 实现：UAX#24 script resolution、language system、variation selector、feature
+policy、跨段落增量 shaping 尚未完成。接入后续能力时必须维持 logical byte clusters、视觉
+run 顺序、selection/cursor mapping 和后端
 atlas key 的一致性。layout 的 caller-owned copy 同时保留原 logical UTF-8；glyph-run API
 会拒绝非逐字节匹配的输入和不落在 UTF-8 codepoint 起点的 provider cluster，并在依赖关闭时保留显式
 `MY_RET_NOT_SUPPORTED`/codepoint fallback。

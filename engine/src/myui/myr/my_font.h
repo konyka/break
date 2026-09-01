@@ -25,6 +25,31 @@ typedef struct my_glyph_t {
 
 typedef struct my_font_t my_font_t;
 
+#define MY_FONT_SCRIPT_TAG(a, b, c, d) \
+  (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | \
+   ((uint32_t)(c) << 8) | (uint32_t)(d))
+#define MY_FONT_SCRIPT_LATN MY_FONT_SCRIPT_TAG('L', 'a', 't', 'n')
+#define MY_FONT_SCRIPT_ARAB MY_FONT_SCRIPT_TAG('A', 'r', 'a', 'b')
+#define MY_FONT_SCRIPT_HEBR MY_FONT_SCRIPT_TAG('H', 'e', 'b', 'r')
+#define MY_FONT_SCRIPT_HANI MY_FONT_SCRIPT_TAG('H', 'a', 'n', 'i')
+#define MY_FONT_SCRIPT_GREK MY_FONT_SCRIPT_TAG('G', 'r', 'e', 'k')
+#define MY_FONT_SCRIPT_CYRL MY_FONT_SCRIPT_TAG('C', 'y', 'r', 'l')
+#define MY_FONT_SCRIPT_DEVA MY_FONT_SCRIPT_TAG('D', 'e', 'v', 'a')
+#define MY_FONT_SCRIPT_BENG MY_FONT_SCRIPT_TAG('B', 'e', 'n', 'g')
+#define MY_FONT_SCRIPT_THAA MY_FONT_SCRIPT_TAG('T', 'h', 'a', 'a')
+#define MY_FONT_SCRIPT_HANG MY_FONT_SCRIPT_TAG('H', 'a', 'n', 'g')
+
+#define MY_FONT_SHAPE_MAX_LANGUAGE_BYTES 64u
+#define MY_FONT_SHAPE_MAX_FEATURE_BYTES 1024u
+#define MY_FONT_SHAPE_MAX_BYTES (4u * 1024u * 1024u)
+
+typedef struct my_font_shape_params_t {
+  bool rtl;
+  uint32_t script;
+  const char* language;
+  const char* features;
+} my_font_shape_params_t;
+
 typedef struct my_font_shape_glyph_t {
   /** @brief Face that owns glyph_id; providers must initialize this field. */
   my_font_t* font;
@@ -47,6 +72,10 @@ typedef my_ret_t (*my_font_shape_fn)(my_font_t* font, const char* text,
                                      int32_t size, bool rtl,
                                      const my_allocator_t* allocator,
                                      my_font_shape_result_t* result);
+typedef my_ret_t (*my_font_shape_ex_fn)(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result);
 typedef my_ret_t (*my_font_get_glyph_id_fn)(my_font_t* font,
                                             uint32_t glyph_id, int32_t size,
                                             my_glyph_t* glyph);
@@ -74,6 +103,7 @@ typedef struct my_font_vtable_t {
   bool (*has_glyph)(my_font_t* font, uint32_t codepoint);
   my_font_shape_fn shape;
   my_font_get_glyph_id_fn get_glyph_id;
+  my_font_shape_ex_fn shape_ex;
 } my_font_vtable_t;
 
 /** @brief Font base "class". */
@@ -126,10 +156,16 @@ static inline bool my_font_has_glyph(my_font_t* font, uint32_t codepoint) {
           font->vtable->has_glyph(font, codepoint));
 }
 
-/** @brief Shape UTF-8 text when the selected font backend supports it. */
+/** @brief Shape UTF-8 text within MY_FONT_SHAPE_MAX_BYTES. */
 my_ret_t my_font_shape(my_font_t* font, const char* text, int32_t size,
                        bool rtl, const my_allocator_t* allocator,
                        my_font_shape_result_t* result);
+
+/** @brief Shape bounded UTF-8 text with direction, script, language/features. */
+my_ret_t my_font_shape_ex(my_font_t* font, const char* text, int32_t size,
+                          const my_font_shape_params_t* params,
+                          const my_allocator_t* allocator,
+                          my_font_shape_result_t* result);
 
 /** @brief Release a result returned by my_font_shape. */
 void my_font_shape_destroy(my_font_shape_result_t* result);

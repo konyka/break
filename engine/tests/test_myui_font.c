@@ -103,6 +103,29 @@ static my_ret_t shape_alloc_then_fail(my_font_t* font, const char* text,
 static const my_font_vtable_t s_shape_failure_vtable = {
     .shape = shape_alloc_then_fail};
 
+typedef struct shape_params_font_t {
+  my_font_t base;
+  my_font_shape_params_t received;
+  bool called;
+} shape_params_font_t;
+
+static my_ret_t shape_params_probe(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
+  shape_params_font_t* probe = (shape_params_font_t*)font;
+  if (text == NULL || size <= 0 || params == NULL || result == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  probe->received = *params;
+  probe->called = true;
+  result->allocator = allocator;
+  return MY_RET_OK;
+}
+
+static const my_font_vtable_t s_shape_params_vtable = {
+    .shape_ex = shape_params_probe};
+
 #ifdef MYUI_FONT_FREETYPE
 static bool glyph_has_coverage(const my_glyph_t *glyph) {
   size_t i;
@@ -144,6 +167,57 @@ TEST(font_shape_cleans_partial_provider_results)
   ASSERT_EQ(result.count, 0u);
   ASSERT_TRUE(result.glyphs == NULL);
   ASSERT_EQ(state.live, 0u);
+}
+
+TEST(font_shape_ex_forwards_script_language_and_features)
+{
+  shape_params_font_t font = {{&s_shape_params_vtable}, {0}, false};
+  const my_font_shape_params_t params = {
+      true, MY_FONT_SCRIPT_ARAB, "ar", "liga=0,kern=1"};
+  my_font_shape_result_t result = {0};
+
+  ASSERT_EQ(my_font_shape_ex((my_font_t*)&font, "abc", 16, &params, NULL,
+                             &result), MY_RET_OK);
+  ASSERT_TRUE(font.called);
+  ASSERT_TRUE(font.received.rtl);
+  ASSERT_EQ(font.received.script, MY_FONT_SCRIPT_ARAB);
+  ASSERT_STR_EQ(font.received.language, "ar");
+  ASSERT_STR_EQ(font.received.features, "liga=0,kern=1");
+  my_font_shape_destroy(&result);
+}
+
+TEST(font_shape_ex_rejects_oversized_feature_parameters)
+{
+  my_font_t font = {&s_shape_failure_vtable};
+  my_font_shape_params_t params = {false, 0, NULL, NULL};
+  my_font_shape_result_t result = {0};
+  char features[MY_FONT_SHAPE_MAX_FEATURE_BYTES + 2u];
+
+  memset(features, 'a', sizeof(features));
+  features[sizeof(features) - 1u] = '\0';
+  params.features = features;
+  ASSERT_EQ(my_font_shape_ex(&font, "a", 12, &params, NULL, &result),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(result.count, 0u);
+  ASSERT_TRUE(result.glyphs == NULL);
+}
+
+TEST(font_shape_rejects_oversized_text_before_provider)
+{
+  shape_params_font_t font = {{&s_shape_params_vtable}, {0}, false};
+  my_font_shape_result_t result = {0};
+  size_t length = (size_t)MY_FONT_SHAPE_MAX_BYTES + 1u;
+  char* text = (char*)malloc(length + 1u);
+
+  ASSERT_NOT_NULL(text);
+  memset(text, 'x', length);
+  text[length] = '\0';
+  ASSERT_EQ(my_font_shape(&font.base, text, 12, false, NULL, &result),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_FALSE(font.called);
+  ASSERT_EQ(result.count, 0u);
+  ASSERT_TRUE(result.glyphs == NULL);
+  free(text);
 }
 
 TEST(cjk_ttc_face_rasterizes_chinese_glyphs)
@@ -383,6 +457,9 @@ TEST(font_chain_rtl_reverses_cross_face_runs)
 TEST_MAIN_BEGIN()
     RUN_TEST(utf8_decodes_chinese_codepoints);
     RUN_TEST(font_shape_cleans_partial_provider_results);
+    RUN_TEST(font_shape_ex_forwards_script_language_and_features);
+    RUN_TEST(font_shape_ex_rejects_oversized_feature_parameters);
+    RUN_TEST(font_shape_rejects_oversized_text_before_provider);
     RUN_TEST(cjk_ttc_face_rasterizes_chinese_glyphs);
     RUN_TEST(optional_opentype_shaping_has_explicit_fallback);
     RUN_TEST(shaped_glyph_id_rasterization_is_separate_from_unicode);

@@ -304,7 +304,7 @@ static void test_font_destroy(my_font_t* font) {
 static const my_font_vtable_t s_test_font_vtable = {
     test_font_measure,     test_font_get_glyph, test_font_ascent,
     test_font_descent,     test_font_line_height, test_font_destroy, NULL,
-    test_font_shape,       test_font_get_glyph_id};
+    test_font_shape,       test_font_get_glyph_id, NULL};
 
 TEST(gles2_image_vertices_apply_canvas_scale)
 {

@@ -223,9 +223,10 @@ static int32_t ft_line_height(my_font_t* font, int32_t size) {
   return (int32_t)(f->face->size->metrics.height >> 6);
 }
 
-static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
-                         bool rtl, const my_allocator_t* allocator,
-                         my_font_shape_result_t* result) {
+static my_ret_t ft_shape_ex(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
 #ifdef MYUI_FONT_HARFBUZZ
   my_font_ft_t* f = (my_font_ft_t*)font;
   hb_font_t* hb_font;
@@ -234,7 +235,12 @@ static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
   const hb_glyph_info_t* infos;
   const hb_glyph_position_t* positions;
   unsigned int i;
-  if (text == NULL || size <= 0 || result == NULL) return MY_RET_INVALID_PARAMS;
+  char script_name[5];
+  hb_feature_t features[32];
+  unsigned int feature_count = 0;
+  if (text == NULL || size <= 0 || params == NULL || result == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ft_set_size(f, size);
   hb_font = hb_ft_font_create_referenced(f->face);
   buffer = hb_buffer_create();
@@ -245,9 +251,48 @@ static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
     return MY_RET_OOM;
   }
   hb_buffer_add_utf8(buffer, text, -1, 0, -1);
-  hb_buffer_set_direction(buffer, rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+  hb_buffer_set_direction(buffer,
+                          params->rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+  if (params->script != 0u) {
+    script_name[0] = (char)(params->script >> 24);
+    script_name[1] = (char)(params->script >> 16);
+    script_name[2] = (char)(params->script >> 8);
+    script_name[3] = (char)params->script;
+    script_name[4] = '\0';
+    hb_buffer_set_script(buffer, hb_script_from_string(script_name, 4));
+  }
+  if (params->language != NULL) {
+    hb_buffer_set_language(
+        buffer, hb_language_from_string(params->language, -1));
+  }
   hb_buffer_guess_segment_properties(buffer);
-  hb_shape(hb_font, buffer, NULL, 0);
+  if (params->features != NULL && params->features[0] != '\0') {
+    size_t feature_start = 0u;
+    size_t feature_length = strlen(params->features);
+    while (feature_start < feature_length) {
+      size_t feature_end = feature_start;
+      if (feature_count >= 32u) {
+        hb_buffer_destroy(buffer);
+        hb_font_destroy(hb_font);
+        return MY_RET_INVALID_PARAMS;
+      }
+      while (feature_end < feature_length &&
+             params->features[feature_end] != ',') {
+        feature_end++;
+      }
+      if (feature_end == feature_start ||
+          !hb_feature_from_string(params->features + feature_start,
+                                  (int)(feature_end - feature_start),
+                                  &features[feature_count])) {
+        hb_buffer_destroy(buffer);
+        hb_font_destroy(hb_font);
+        return MY_RET_INVALID_PARAMS;
+      }
+      feature_count++;
+      feature_start = feature_end + 1u;
+    }
+  }
+  hb_shape(hb_font, buffer, features, feature_count);
   infos = hb_buffer_get_glyph_infos(buffer, &count);
   positions = hb_buffer_get_glyph_positions(buffer, &count);
   if (count > 0) {
@@ -274,10 +319,17 @@ static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
   hb_font_destroy(hb_font);
   return MY_RET_OK;
 #else
-  (void)font; (void)text; (void)size; (void)rtl; (void)allocator;
+  (void)font; (void)text; (void)size; (void)params; (void)allocator;
   (void)result;
   return MY_RET_NOT_SUPPORTED;
 #endif
+}
+
+static my_ret_t ft_shape(my_font_t* font, const char* text, int32_t size,
+                         bool rtl, const my_allocator_t* allocator,
+                         my_font_shape_result_t* result) {
+  my_font_shape_params_t params = {rtl, 0u, NULL, NULL};
+  return ft_shape_ex(font, text, size, &params, allocator, result);
 }
 
 static void ft_destroy(my_font_t* font) {
@@ -305,7 +357,7 @@ static const my_font_vtable_t s_ft_vtable = {ft_measure,  ft_get_glyph,
                                              ft_ascent,   ft_descent,
                                              ft_line_height, ft_destroy,
                                              ft_has_glyph, ft_shape,
-                                             ft_get_glyph_id};
+                                             ft_get_glyph_id, ft_shape_ex};
 
 my_font_t* my_font_ft_create_ex(const my_allocator_t* allocator,
                                 const char* path, int32_t face_index,

@@ -1,5 +1,22 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：script/features shaping 契约（2026-09-01）
+
+字体 vtable 在尾部追加可选 `shape_ex`，新增 `my_font_shape_ex()` 和
+`my_text_layout_shape_ex()`，支持 direction、OpenType script tag、language 与有界
+feature 字符串；旧 `shape` callback 的 ABI/行为保持兼容。FreeType/HarfBuzz 会设置
+buffer 的 direction/script/language 并解析最多 32 个 feature；不支持显式参数的 provider
+明确返回 `MY_RET_NOT_SUPPORTED`。
+
+paragraph 在未指定 script 时按有限 Unicode block 映射拆分连续 shaping segment，RTL segment
+按 visual 顺序处理，provider 收到的文本严格以 segment 为边界，glyph cluster 继续映射到
+原始 UTF-8 byte offset。任一 provider、cluster 校验或 allocator 失败都会清空整个 result，
+不泄露已完成的 segment。
+
+TDD 定向验证：`test_myui_font` **11/11**，`test_myui_text_layout` **30/30**；当前能力
+仍不等于完整 UAX#24/OpenType，variation selector、language system、feature policy、
+增量 shaping cache、完整复杂 RTL/GSUB 及跨段落 rebreaking 继续作为未完成项。
+
 ## 本轮更新：Vulkan vgcanvas AA 事务
 
 独立 Vulkan vgcanvas 现将 `ENGINE_VULKAN` 构建选项正确传递到 `myui_core`，并链接 Vulkan
@@ -21,8 +38,8 @@ FreeType/HarfBuzz 输出和字体链聚合均保留该身份；GLES2、soft、Br
 glyph-id 栅格化及缓存不再把 glyph id 当作全局 key。LTR 单 face 保持快速路径，RTL 跨 face
 只在发生字体切换时分配有界 run 描述并逆序提交。segment、扩容和逐分配点失败均事务回滚，
 结果不向调用方泄露部分 glyph。TDD 覆盖 Latin/CJK identity、RTL 跨 face 顺序和 allocator
-OOM 回滚；paragraph 级 glyph-run mapping 已在本轮接入，完整 script/features shaping 仍是
-明确后续项。
+  OOM 回滚；paragraph 级 glyph-run mapping 与有限 script/features 契约已在本轮接入，完整
+  UAX#24/script resolution、variation selector、language system 和增量 shaping 仍是明确后续项。
 
 **paragraph bidi glyph-run 接入（TDD）**：新增 `my_text_layout_shape()`，将 SheenBidi 解析的
 视觉 run 还原为按 direction shaping 的逻辑 UTF-8 run，再合并为视觉顺序 glyph；cluster 映射

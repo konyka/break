@@ -79,6 +79,8 @@
   OOM 时保留原逐 codepoint fallback，不为整篇文档增加几何缓存。
 - 文本布局与 paragraph 入口增加 4 MiB 字节预算；超限输入在缓存、复制和字体测量前
   有界拒绝，拒绝路径不调用调用方 allocator，正常路径保持原有缓存与排版复杂度。
+- 字体 shaping 公共入口增加独立 4 MiB 输入预算；超限文本在进入旧 provider、字体链或
+  HarfBuzz 前拒绝，避免直接 API 绕过 layout 的输入限制。
 - 新增后端无关的 `my_syntax_cache_t` 行级增量 lexer：C-like/YAML 词法 token、跨行
   block-comment 状态、后缀失效和每次重建预算均有明确边界；text area 现以懒创建和
   `syntax_line_budget` 消费 ready 行，并在非 RTL、有字体路径进行 token 颜色分段绘制。
@@ -110,7 +112,8 @@
   保留尚未满足的 AA 请求，直到下一次 render 边界成功切换。OpenGL 候选 FBO 的 multisample
   renderbuffer、resolve FBO 和可采样纹理也统一走失败清理路径，避免资源泄漏。
 - 已加入可选 OpenType shaping 契约：启用 `MYUI_HARFBUZZ` 且存在 FreeType/HarfBuzz 时，
-  字体后端输出 glyph id、cluster、26.6 advance/offset；缺少依赖或后端不支持时返回
+  字体后端输出 glyph id、cluster、26.6 advance/offset；`shape_ex` 额外透传 direction、
+  script、language 和有界 features。缺少依赖或后端不支持显式参数时返回
   `MY_RET_NOT_SUPPORTED`。Break RHI、GLES/OpenGL、Vulkan 和 soft canvas 的纯 LTR 路径
   已消费 glyph-run，并使用独立 glyph-id raster/cache key；shaping 失败仍回退 Unicode
   codepoint 路径。
@@ -126,7 +129,7 @@
 
 | 能力 | 当前边界 | 主要风险 | 完成判据 |
 | --- | --- | --- | --- |
-| OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas 的 LTR 与受限 bidi visual-run 绘制/测量；完整 script/features 级 paragraph shaping 仍未完成 | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补 script/features 级 run shaping |
+| OpenType shaping | 可选 HarfBuzz + FreeType glyph-run 已接入四个 canvas；字体 API 支持 direction/script/language/features，paragraph 按有限 script 映射拆分 run，并保留 byte cluster 与失败回滚 | glyph/advance 与逻辑边界错配、字体缓存跨 key 污染、复杂 RTL 视觉顺序错误 | 保持 glyph-id/codepoint 独立缓存；golden glyph/advance、禁用依赖回退和四后端构建；后续补完整 UAX#24/script resolution、variation selector、feature policy 与增量 cache key |
 | 复杂 RTL rebreaking | paragraph 按逻辑范围生成 cluster-safe wrapped lines，并在断行测量时复用 visual bidi glyph-run；text area 已消费该模型，RTL 行内视觉映射和跨 face glyph-run 已接入；跨段落增量预算与 JUSTIFY selection 联动仍未完成 | 光标、选区和 line hit-test 在 bidi run/换行边界错位 | 段落模型 golden visual order、重排后逻辑映射、JUSTIFY/selection 契约；后续补完整 script/features run shaping |
 | 高级编辑器 | 物理行折叠支持严格包含嵌套、有界 YAML v1 状态快照、legacy v0/无版本快照显式升级、可见行缓存 O(rows+ranges) 构建、OOM 正确性回退、行号栏、wrap 增量缓存、visual-line 分页、绘制 scratch 复用、行级 lexer、LTR/RTL 受限 token 着色已实现；完整 RTL GSUB、跨 face token shaping 和 JUSTIFY 联动未实现 | 大文档单帧 O(n) 卡顿、折叠后索引失效、token 状态跨行污染 | 继续保持 lexer/cache 单帧预算，并补齐 paragraph/run 级 RTL shaping |
 | 真 partial present | 已完成后端无关的 `SKIP/PARTIAL/FULL` 决策、RHI 有界 damage 帧接口、Wayland EGL buffer-age/damage-present 接入和 dxx 集成；Wayland 在 `EGL_BUFFER_PRESERVED` 成功协商后使用固定容量 history 合并 age>1 重绘区域，history 仅在 swap 成功后更新，失败/resize 自动清除；Vulkan 仍安全全屏，`VK_KHR_incremental_present` 不启用为能力位，因为该扩展不保证 present 后 swapchain image 内容可被 `LOAD`；X11/Win32/macOS 仍安全全屏 | 未损伤区域内容丢失、WSI 内容保留语义误用、Vulkan 缺少标准 buffer-age/内容保留契约、真实平台能力未覆盖 | 真实 Wayland compositor smoke；X11/Win32/macOS runtime smoke；异常 present 与真实 buffer-age 轮转验证；具备明确 image 保留保证的 Vulkan/WSI 方案 |
@@ -178,12 +181,15 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 
 1. CMake 自动检测 HarfBuzz，默认可选；关闭或缺失时保留现有 Arabic fallback。
 2. 以 UTF-32 paragraph/run 为输入，按 script、direction、font identity 和字号
-   分割 shaping run；输出 glyph id、advance、offset 与 logical span。
+   分割 shaping run；输出 glyph id、advance、offset 与 logical span。当前已落地
+   `my_font_shape_ex()` 与 `my_text_layout_shape_ex()`，显式参数只在 provider 支持时生效，
+   旧 `shape` callback 保持兼容。
 3. 缓存键必须包含字体身份、face index、字号、script、direction、feature set 和
    text hash；缓存容量固定上限，命中失败只回退当前 run。
 4. 已接入测量与 Break RHI、GLES/Vulkan/soft 的 glyph upload；任一后端失败
-   不改变其他后端路径。当前限制是纯 LTR 直连 face，RTL 仍由现有 UBA/Arabic fallback
-   路径负责，fallback chain 仍按 codepoint 路由。
+   不改变其他后端路径。当前 script 自动识别是有限 Unicode block 映射，不等于完整
+   UAX#24；language system、variation selector、feature policy、跨段落增量 shaping
+   与完整 RTL/复杂 GSUB 仍需后续 golden corpus 验证。
 
 ### 阶段 D：段落、编辑器和断行
 
@@ -333,13 +339,15 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - 输入长度、run 数量、数组乘法、重复 logical mapping 和 allocator OOM 均有边界检查；
   layout 还保存 caller-owned logical UTF-8 副本，拒绝不匹配输入或非 codepoint 边界的
   provider cluster；输出采用候选事务，失败时清空结果，避免 selection/cursor 使用半成品。
-- 当前仍未宣称完整 Unicode script/features shaping：段落的 script 分段、OpenType feature
-  配置、跨段落增量 rebreaking 和 JUSTIFY selection 联动留作后续阶段。
+- 当前仍未宣称完整 Unicode script/features shaping：有限 script 分段和 OpenType feature
+  透传已完成；UAX#24 script resolution、variation selector、language system、跨段落增量
+  rebreaking 和 JUSTIFY selection 联动留作后续阶段。
 - paragraph 断行测量现在对需要 bidi 的行先走 `my_text_layout_shape()`，按 visual run 的
   resolved direction shaping；cluster 不在 UTF-8 codepoint 起点时整段失败，不静默忽略
   provider 输出。无 HarfBuzz 时保持原有 codepoint fallback。
-- 验证：文本布局 **27/27**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
-  无 HarfBuzz **27/27、8/8、24/24**，ASan **27/27、8/8、24/24**。
+- 验证：文本布局 **30/30**，普通字体/后端 **11/11、25/25**，无 BiDi **30/30**，
+  ASan/UBSan 字体与布局 **11/11、30/30**；Vulkan、Wayland GL/VK 的 `myui_core`
+  配置构建通过。
   `engine/build` 全量 CTest 中实际存在的 77 个测试全部通过；4 个未生成的可选
   rule-engine 目标为 `Not Run`，不属于本轮源码回归失败。
 

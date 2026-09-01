@@ -15,6 +15,8 @@ typedef struct paragraph_test_font_t {
   size_t glyph_calls;
   size_t shape_calls;
   size_t rtl_shape_calls;
+  uint32_t scripts[8];
+  size_t script_count;
 } paragraph_test_font_t;
 
 static my_ret_t layout_shape_font_shape(my_font_t* font, const char* text,
@@ -238,6 +240,11 @@ static int32_t paragraph_test_line_height(my_font_t* font, int32_t size) {
 
 static void paragraph_test_destroy(my_font_t* font) { (void)font; }
 
+static const char* s_paragraph_last_language;
+static const char* s_paragraph_last_features;
+static size_t s_paragraph_shape_ex_calls;
+static size_t s_paragraph_shape_ex_fail_after;
+
 static my_ret_t paragraph_test_shape(my_font_t* font, const char* text,
                                      int32_t size, bool rtl,
                                      const my_allocator_t* allocator,
@@ -293,10 +300,101 @@ static my_ret_t paragraph_test_shape(my_font_t* font, const char* text,
   return MY_RET_OK;
 }
 
+static my_ret_t paragraph_test_shape_ex(
+    my_font_t* font, const char* text, int32_t size,
+    const my_font_shape_params_t* params, const my_allocator_t* allocator,
+    my_font_shape_result_t* result) {
+  paragraph_test_font_t* test_font = (paragraph_test_font_t*)font;
+  if (params == NULL || test_font->script_count >= 8u) return MY_RET_FAIL;
+  s_paragraph_last_language = params->language;
+  s_paragraph_last_features = params->features;
+  s_paragraph_shape_ex_calls++;
+  test_font->scripts[test_font->script_count++] = params->script;
+  if (s_paragraph_shape_ex_fail_after != 0u &&
+      s_paragraph_shape_ex_calls > s_paragraph_shape_ex_fail_after) {
+    return MY_RET_FAIL;
+  }
+  return paragraph_test_shape(font, text, size, params->rtl, allocator, result);
+}
+
 static const my_font_vtable_t s_paragraph_test_vtable = {
     paragraph_test_measure, paragraph_test_glyph, paragraph_test_ascent,
     paragraph_test_descent, paragraph_test_line_height, paragraph_test_destroy,
-    NULL, paragraph_test_shape, NULL};
+    NULL, paragraph_test_shape, NULL, NULL};
+
+static const my_font_vtable_t s_paragraph_shape_ex_vtable = {
+    .shape = paragraph_test_shape,
+    .shape_ex = paragraph_test_shape_ex};
+
+TEST(text_layout_splits_mixed_scripts_for_shape_provider)
+{
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  my_text_layout_t* layout;
+  my_font_shape_result_t result = {0};
+
+  layout = my_text_layout_process(NULL, "a" "\xE7\x9F\xAD" "b");
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(my_text_layout_shape(layout, "a" "\xE7\x9F\xAD" "b", (my_font_t*)&font,
+                                 16, NULL, &result), MY_RET_OK);
+  ASSERT_EQ(font.script_count, 3u);
+  ASSERT_EQ(font.scripts[0], MY_FONT_SCRIPT_LATN);
+  ASSERT_EQ(font.scripts[1], MY_FONT_SCRIPT_HANI);
+  ASSERT_EQ(font.scripts[2], MY_FONT_SCRIPT_LATN);
+  ASSERT_EQ(result.count, 3u);
+  my_font_shape_destroy(&result);
+  my_text_layout_destroy(layout);
+}
+
+TEST(text_layout_shape_ex_forwards_language_and_features)
+{
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  my_font_shape_params_t params = {false, MY_FONT_SCRIPT_LATN, "en",
+                                   "kern=0,liga=1"};
+  my_font_shape_result_t result = {0};
+  my_text_layout_t* layout = my_text_layout_process(NULL, "ab");
+
+  ASSERT_NOT_NULL(layout);
+  s_paragraph_last_language = NULL;
+  s_paragraph_last_features = NULL;
+  s_paragraph_shape_ex_calls = 0;
+  ASSERT_EQ(my_text_layout_shape_ex(layout, "ab", (my_font_t*)&font, 16,
+                                    &params, NULL, &result), MY_RET_OK);
+  ASSERT_EQ(s_paragraph_shape_ex_calls, 1u);
+  ASSERT_TRUE(s_paragraph_last_language != NULL);
+  ASSERT_EQ(strcmp(s_paragraph_last_language, "en"), 0);
+  ASSERT_TRUE(s_paragraph_last_features != NULL);
+  ASSERT_EQ(strcmp(s_paragraph_last_features, "kern=0,liga=1"), 0);
+  ASSERT_EQ(result.count, 2u);
+  my_font_shape_destroy(&result);
+  my_text_layout_destroy(layout);
+}
+
+TEST(text_layout_shape_ex_failure_rolls_back_segment_results)
+{
+  text_shape_alloc_state_t state = {0};
+  my_allocator_t allocator = {&state, text_shape_alloc, text_shape_calloc,
+                              text_shape_realloc, text_shape_free};
+  paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
+                                {0}, 0};
+  my_font_shape_result_t result = {0};
+  my_ret_t ret;
+  my_text_layout_t* layout =
+      my_text_layout_process(NULL, "a" "\xE7\x9F\xAD" "b");
+
+  ASSERT_NOT_NULL(layout);
+  s_paragraph_shape_ex_calls = 0;
+  s_paragraph_shape_ex_fail_after = 1;
+  ret = my_text_layout_shape(layout, "a" "\xE7\x9F\xAD" "b",
+                             (my_font_t*)&font, 16, &allocator, &result);
+  s_paragraph_shape_ex_fail_after = 0;
+  ASSERT_EQ(ret, MY_RET_FAIL);
+  ASSERT_TRUE(result.glyphs == NULL);
+  ASSERT_EQ(result.count, 0u);
+  ASSERT_EQ(state.live, 0u);
+  my_text_layout_destroy(layout);
+}
 
 static my_ret_t paragraph_bad_cluster_shape(my_font_t* font, const char* text,
                                             int32_t size, bool rtl,
@@ -366,8 +464,13 @@ TEST(text_layout_shapes_bidi_runs_with_logical_clusters)
             MY_RET_OK);
   ASSERT_EQ(shaped.count, layout->logical_len);
   ASSERT_EQ(shaped.glyphs[0].cluster, 0u);
+#ifdef MYUI_BIDI
   ASSERT_EQ(shaped.glyphs[1].cluster, 3u);
   ASSERT_EQ(shaped.glyphs[2].cluster, 1u);
+#else
+  ASSERT_EQ(shaped.glyphs[1].cluster, 1u);
+  ASSERT_EQ(shaped.glyphs[2].cluster, 3u);
+#endif
   ASSERT_EQ(shaped.glyphs[3].cluster, 5u);
   my_font_shape_destroy(&shaped);
   my_text_layout_destroy(layout);
@@ -537,7 +640,8 @@ TEST(text_layout_preserves_lam_alef_logical_boundaries)
 TEST(text_layout_reuses_font_boundary_prefix_cache)
 {
   static const uint8_t bitmap[] = {255};
-  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0,
+                                {0}, 0};
   my_text_layout_t* layout =
       my_text_layout_process(NULL, "\xD7\x90\xD7\x91\xD7\x92");
   my_rectf_t rects[2];
@@ -759,7 +863,8 @@ TEST(paragraph_preserves_logical_ranges_and_hard_boundaries)
 TEST(paragraph_does_not_break_inside_shaping_cluster)
 {
   static const uint8_t bitmap[] = {255};
-  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0,
+                                {0}, 0};
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
       NULL, "office", (my_font_t*)&font, 16, 4);
   const my_text_paragraph_line_t* line;
@@ -779,7 +884,8 @@ TEST(paragraph_does_not_break_inside_shaping_cluster)
 TEST(paragraph_shapes_bidi_runs_before_wrapping)
 {
   static const uint8_t bitmap[] = {255};
-  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0};
+  paragraph_test_font_t font = {{&s_paragraph_test_vtable}, bitmap, 0, 0, 0,
+                                {0}, 0};
   my_text_paragraph_t* paragraph = my_text_paragraph_process(
       NULL, "A\xD7\x90\xD7\x91" "B", (my_font_t*)&font, 16, 0);
 
@@ -832,6 +938,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_bidi_prescan_is_bounded);
     RUN_TEST(text_layout_maps_rtl_visual_order);
     RUN_TEST(text_layout_shapes_bidi_runs_with_logical_clusters);
+    RUN_TEST(text_layout_splits_mixed_scripts_for_shape_provider);
+    RUN_TEST(text_layout_shape_ex_forwards_language_and_features);
+    RUN_TEST(text_layout_shape_ex_failure_rolls_back_segment_results);
     RUN_TEST(text_layout_shape_oom_is_transactional);
     RUN_TEST(text_layout_shape_rejects_mismatched_source_text);
     RUN_TEST(text_layout_shape_rejects_non_boundary_cluster);

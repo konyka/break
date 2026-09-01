@@ -125,6 +125,30 @@ static bool tl_cp_needs_bidi(uint32_t cp) {
          (cp >= 0x2066u && cp <= 0x2069u);   /* isolates */
 }
 
+static uint32_t tl_script_tag(uint32_t cp) {
+  if ((cp >= 0x0041u && cp <= 0x024Fu) ||
+      (cp >= 0x1E00u && cp <= 0x1EFFu)) {
+    return MY_FONT_SCRIPT_LATN;
+  }
+  if (cp >= 0x0370u && cp <= 0x03FFu) return MY_FONT_SCRIPT_GREK;
+  if (cp >= 0x0400u && cp <= 0x052Fu) return MY_FONT_SCRIPT_CYRL;
+  if (cp >= 0x0590u && cp <= 0x05FFu) return MY_FONT_SCRIPT_HEBR;
+  if ((cp >= 0x0600u && cp <= 0x08FFu) ||
+      (cp >= 0xFB50u && cp <= 0xFEFFu)) {
+    return MY_FONT_SCRIPT_ARAB;
+  }
+  if (cp >= 0x0900u && cp <= 0x097Fu) return MY_FONT_SCRIPT_DEVA;
+  if (cp >= 0x0980u && cp <= 0x09FFu) return MY_FONT_SCRIPT_BENG;
+  if (cp >= 0x0E00u && cp <= 0x0E7Fu) return MY_FONT_SCRIPT_THAA;
+  if (cp >= 0xAC00u && cp <= 0xD7AFu) return MY_FONT_SCRIPT_HANG;
+  if ((cp >= 0x3400u && cp <= 0x4DBFu) ||
+      (cp >= 0x4E00u && cp <= 0x9FFFu) ||
+      (cp >= 0xF900u && cp <= 0xFAFFu)) {
+    return MY_FONT_SCRIPT_HANI;
+  }
+  return 0u;
+}
+
 bool my_text_layout_may_need_bidi(const char* text) {
   const char* p = text;
   if (text == NULL) {
@@ -486,7 +510,7 @@ static my_ret_t tl_shape_append(
     const my_allocator_t* allocator, my_font_shape_result_t* result,
     size_t* capacity, const my_font_shape_result_t* shaped,
     const size_t* run_offsets, const uint32_t* source_bytes,
-    size_t run_count, size_t run_text_len) {
+    size_t run_count, size_t run_text_base, size_t run_text_len) {
   size_t required;
   size_t next_capacity;
   size_t i;
@@ -517,26 +541,48 @@ static my_ret_t tl_shape_append(
     my_font_shape_glyph_t glyph = shaped->glyphs[i];
     size_t lo = 0;
     size_t hi = run_count;
-    if (glyph.cluster >= run_text_len || run_count == 0) return MY_RET_FAIL;
-    while (lo + 1u < hi) {
-      size_t mid = lo + (hi - lo) / 2u;
-      if (run_offsets[mid] <= glyph.cluster) {
-        lo = mid;
-      } else {
-        hi = mid;
-      }
+    if (glyph.cluster > SIZE_MAX - run_text_base || run_count == 0) {
+      return MY_RET_FAIL;
     }
-    if (glyph.cluster != run_offsets[lo]) return MY_RET_FAIL;
+    {
+      size_t cluster = run_text_base + glyph.cluster;
+      if (run_text_len > SIZE_MAX - run_text_base ||
+          cluster < run_text_base ||
+          cluster >= run_text_base + run_text_len) {
+        return MY_RET_FAIL;
+      }
+      while (lo + 1u < hi) {
+        size_t mid = lo + (hi - lo) / 2u;
+        if (run_offsets[mid] <= cluster) {
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+      if (cluster != run_offsets[lo]) return MY_RET_FAIL;
+    }
     glyph.cluster = source_bytes[lo];
     result->glyphs[result->count++] = glyph;
   }
   return MY_RET_OK;
 }
 
-my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
-                              const char* logical_text, my_font_t* font,
-                              int32_t size, const my_allocator_t* allocator,
-                              my_font_shape_result_t* result) {
+static my_ret_t tl_shape_run(my_font_t* font, const char* text, int32_t size,
+                             const my_font_shape_params_t* params,
+                             const my_allocator_t* allocator,
+                             my_font_shape_result_t* result) {
+  my_ret_t ret = my_font_shape_ex(font, text, size, params, allocator, result);
+  if (ret == MY_RET_NOT_SUPPORTED && params->script != 0u &&
+      params->language == NULL && params->features == NULL) {
+    ret = my_font_shape(font, text, size, params->rtl, allocator, result);
+  }
+  return ret;
+}
+
+my_ret_t my_text_layout_shape_ex(
+    const my_text_layout_t* layout, const char* logical_text, my_font_t* font,
+    int32_t size, const my_font_shape_params_t* params,
+    const my_allocator_t* allocator, my_font_shape_result_t* result) {
   uint32_t* source_cps = NULL;
   uint32_t* source_bytes = NULL;
   bool* seen = NULL;
@@ -546,6 +592,9 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
   size_t visual_start = 0;
   size_t i;
   my_ret_t ret = MY_RET_OK;
+  my_font_shape_params_t default_params = {false, 0u, NULL, NULL};
+  const my_font_shape_params_t* effective_params =
+      params != NULL ? params : &default_params;
 
   if (result == NULL) return MY_RET_INVALID_PARAMS;
   memset(result, 0, sizeof(*result));
@@ -615,7 +664,12 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
     char* run_text = NULL;
     size_t* run_offsets = NULL;
     uint32_t* run_sources = NULL;
+    uint32_t* run_logical = NULL;
+    uint32_t* run_scripts = NULL;
     my_font_shape_result_t shaped = {0};
+    bool split_scripts = effective_params->script == 0u &&
+                         font->vtable != NULL &&
+                         font->vtable->shape_ex != NULL;
 
     while (visual_end < layout->len &&
            (layout->visual_rtl[visual_end] != 0) == rtl) {
@@ -647,7 +701,14 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
                                         run_count * sizeof(*run_offsets));
     run_sources = (uint32_t*)my_mem_alloc(allocator,
                                           run_count * sizeof(*run_sources));
-    if (run_text == NULL || run_offsets == NULL || run_sources == NULL) {
+    if (split_scripts) {
+      run_logical = (uint32_t*)my_mem_alloc(
+          allocator, run_count * sizeof(*run_logical));
+      run_scripts = (uint32_t*)my_mem_alloc(
+          allocator, run_count * sizeof(*run_scripts));
+    }
+    if (run_text == NULL || run_offsets == NULL || run_sources == NULL ||
+        (split_scripts && (run_logical == NULL || run_scripts == NULL))) {
       ret = MY_RET_OOM;
       goto run_done;
     }
@@ -666,6 +727,7 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
           seen[source] = true;
           run_offsets[units] = run_text_len;
           run_sources[units] = source_bytes[source];
+          if (split_scripts) run_logical[units] = (uint32_t)source;
           encoded = tl_utf8_encode(source_cps[source],
                                    run_text + run_text_len);
           if (encoded > run_bytes_capacity - run_text_len - 1u) {
@@ -690,6 +752,7 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
           seen[source] = true;
           run_offsets[units] = run_text_len;
           run_sources[units] = source_bytes[source];
+          if (split_scripts) run_logical[units] = (uint32_t)source;
           encoded = tl_utf8_encode(source_cps[source],
                                    run_text + run_text_len);
           if (encoded > run_bytes_capacity - run_text_len - 1u) {
@@ -705,16 +768,94 @@ my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
       ret = MY_RET_INVALID_PARAMS;
       goto run_done;
     }
-    run_text[run_text_len] = '\0';
-    ret = my_font_shape(font, run_text, size, rtl, allocator, &shaped);
-    if (ret == MY_RET_OK) {
-      ret = tl_shape_append(allocator, result, &capacity, &shaped,
-                            run_offsets, run_sources, run_count,
-                            run_text_len);
+    if (split_scripts) {
+      for (i = 0u; i < units; ++i) {
+        run_scripts[i] = tl_script_tag(source_cps[run_logical[i]]);
+      }
+      {
+        uint32_t next_script = 0u;
+        for (i = units; i > 0u; --i) {
+          size_t index = i - 1u;
+          if (run_scripts[index] != 0u) {
+            next_script = run_scripts[index];
+          } else {
+            run_scripts[index] = next_script;
+          }
+        }
+      }
+      {
+        uint32_t previous_script = 0u;
+        for (i = 0u; i < units; ++i) {
+          if (run_scripts[i] != 0u) previous_script = run_scripts[i];
+          else run_scripts[i] = previous_script;
+        }
+      }
     }
-    my_font_shape_destroy(&shaped);
+    run_text[run_text_len] = '\0';
+    if (!split_scripts) {
+      my_font_shape_params_t run_params = *effective_params;
+      run_params.rtl = rtl;
+      ret = tl_shape_run(font, run_text, size, &run_params, allocator,
+                         &shaped);
+      if (ret == MY_RET_OK) {
+        ret = tl_shape_append(allocator, result, &capacity, &shaped,
+                              run_offsets, run_sources, run_count, 0u,
+                              run_text_len);
+      }
+      my_font_shape_destroy(&shaped);
+    } else {
+      size_t segment_cursor = rtl ? units : 0u;
+      while ((rtl && segment_cursor > 0u) ||
+             (!rtl && segment_cursor < units)) {
+        size_t segment_start;
+        size_t segment_end;
+        uint32_t script;
+        my_font_shape_params_t run_params = *effective_params;
+        if (rtl) {
+          segment_end = segment_cursor;
+          script = run_scripts[segment_cursor - 1u];
+          segment_start = segment_cursor - 1u;
+          while (segment_start > 0u &&
+                 run_scripts[segment_start - 1u] == script) {
+            segment_start--;
+          }
+        } else {
+          segment_start = segment_cursor;
+          segment_end = segment_start + 1u;
+          script = run_scripts[segment_start];
+          while (segment_end < units && run_scripts[segment_end] == script) {
+            segment_end++;
+          }
+        }
+        run_params.rtl = rtl;
+        run_params.script = script;
+        {
+          size_t segment_base = run_offsets[segment_start];
+          size_t segment_limit = segment_end < units
+                                     ? run_offsets[segment_end]
+                                     : run_text_len;
+          char saved = run_text[segment_limit];
+          run_text[segment_limit] = '\0';
+          ret = tl_shape_run(font, run_text + segment_base, (int32_t)size,
+                             &run_params, allocator, &shaped);
+          if (ret == MY_RET_OK) {
+            ret = tl_shape_append(
+                allocator, result, &capacity, &shaped,
+                run_offsets + segment_start, run_sources + segment_start,
+                segment_end - segment_start, segment_base,
+                segment_limit - segment_base);
+          }
+          run_text[segment_limit] = saved;
+        }
+        my_font_shape_destroy(&shaped);
+        if (ret != MY_RET_OK) break;
+        segment_cursor = rtl ? segment_start : segment_end;
+      }
+    }
 
   run_done:
+    my_mem_free(allocator, run_scripts);
+    my_mem_free(allocator, run_logical);
     my_mem_free(allocator, run_sources);
     my_mem_free(allocator, run_offsets);
     my_mem_free(allocator, run_text);
@@ -735,6 +876,16 @@ done:
   my_mem_free(allocator, source_cps);
   if (ret != MY_RET_OK) my_font_shape_destroy(result);
   return ret;
+}
+
+my_ret_t my_text_layout_shape(const my_text_layout_t* layout,
+                              const char* logical_text, my_font_t* font,
+                              int32_t size, const my_allocator_t* allocator,
+                              my_font_shape_result_t* result) {
+  my_font_shape_params_t params = {
+      layout != NULL && layout->rtl_base, 0u, NULL, NULL};
+  return my_text_layout_shape_ex(layout, logical_text, font, size, &params,
+                                 allocator, result);
 }
 
 /* ---------------- boundary <-> visual (M12a) ---------------- */
