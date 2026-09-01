@@ -404,6 +404,7 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
   geometry、光标、selection、IME 查询共用 shaping revision 和显式 geometry API，参数
   变更不会留下旧 boundary。新增所有权、超长输入和失败保持旧状态测试。
 - 验证：`test_myui_text_layout` **36/36**、`test_myui_window_manager` **71/71**；
+  无 BiDi 配置的 `test_myui_text_layout` **36/36**、`test_myui_window_manager` **67/67**；
   普通 build-myui-tests 构建通过。完整 OpenType script resolution、variation selector、
   language system、feature policy、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
 - 四个 canvas 现通过 base canvas 的同步 shaping 上下文支持

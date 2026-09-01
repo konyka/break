@@ -2041,6 +2041,7 @@ TEST(text_area_ime_spot_tracks_wrapped_justify_cursor)
   my_pal_destroy(pal);
 }
 
+#ifdef MYUI_BIDI
 TEST(text_area_nonwrap_rtl_ime_spot_uses_visual_boundary)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -2171,6 +2172,7 @@ TEST(text_area_nonwrap_rtl_geometry_works_without_shaping)
   my_font_destroy(font);
   my_widget_unref(area);
 }
+#endif
 
 TEST(removing_focused_widget_blurs_and_disables_ime)
 {
@@ -2742,10 +2744,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_area_paint_reuses_line_buffer);
     RUN_TEST(text_area_justify_paint_reuses_line_buffer);
     RUN_TEST(text_area_ime_spot_tracks_wrapped_justify_cursor);
+#ifdef MYUI_BIDI
     RUN_TEST(text_area_nonwrap_rtl_ime_spot_uses_visual_boundary);
     RUN_TEST(text_area_wrap_rtl_ime_spot_uses_visual_boundary);
     RUN_TEST(text_area_nonwrap_rtl_geometry_keeps_logical_boundaries);
     RUN_TEST(text_area_nonwrap_rtl_geometry_works_without_shaping);
+#endif
     RUN_TEST(removing_focused_widget_blurs_and_disables_ime);
     RUN_TEST(removing_hovered_grabbed_widget_resets_dispatch_state);
     RUN_TEST(event_bubbling_stops_at_removed_ancestor);
