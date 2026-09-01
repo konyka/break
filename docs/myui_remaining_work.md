@@ -338,7 +338,19 @@ timer，每 tick 只读取单调时间、计算进度和 invalidate。按钮销�
 - paragraph 断行测量现在对需要 bidi 的行先走 `my_text_layout_shape()`，按 visual run 的
   resolved direction shaping；cluster 不在 UTF-8 codepoint 起点时整段失败，不静默忽略
   provider 输出。无 HarfBuzz 时保持原有 codepoint fallback。
-- 验证：文本布局 **25/25**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
-  无 HarfBuzz **25/25、8/8、24/24**，ASan **25/25、8/8、24/24**。
+- 验证：文本布局 **26/26**，普通字体/后端 **8/8、25/25**，Vulkan 字体/后端 **8/8、25/25**，
+  无 HarfBuzz **26/26、8/8、24/24**，ASan **26/26、8/8、24/24**。
   `engine/build` 全量 CTest 中实际存在的 77 个测试全部通过；4 个未生成的可选
   rule-engine 目标为 `Not Run`，不属于本轮源码回归失败。
+
+## 已完成：shaping-aware text geometry 与字体回调安全（2026-09-01）
+
+- 以 TDD 新增连字 `fi` 的 text-area 非 wrap pointer hit-test；几何缓存现在使用 shaping glyph
+  advance 和 cluster span，selection、命中测试及 IME 坐标共享同一视觉前缀和。
+- 修复字体抽象层的可选 vtable 回调契约：`measure`、`get_glyph`、metrics、destroy 和
+  `get_glyph_id` 缺失时安全返回，不再解引用空函数指针；shape-only font 继续可用于布局几何。
+- 修复 YAML 折叠快照测试中重复覆盖输出指针的泄漏，明确导出字符串由调用方按传入 allocator
+  释放，保持解析事务和版本迁移语义不变。
+- 验证：普通、无 HarfBuzz、Vulkan、ASan 四套构建的 `test_myui_text_layout`、
+  `test_myui_font`、`test_myui_vgcanvas_backend`、`test_myui_window_manager` 均通过，
+  每套 **4/4**；ASan 同时通过新增 shape-only 路径且无泄漏报告。

@@ -82,6 +82,35 @@ static my_font_t* layout_bad_cluster_test_font(void) {
   return &font;
 }
 
+static my_ret_t layout_ligature_shape(my_font_t* font, const char* text,
+                                      int32_t size, bool rtl,
+                                      const my_allocator_t* allocator,
+                                      my_font_shape_result_t* result) {
+  (void)rtl;
+  if (font == NULL || text == NULL || size <= 0 || result == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (strcmp(text, "fi") != 0) return MY_RET_FAIL;
+  result->allocator = allocator;
+  result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
+      allocator, 1, sizeof(*result->glyphs));
+  if (result->glyphs == NULL) return MY_RET_OOM;
+  result->count = 1;
+  result->glyphs[0].font = font;
+  result->glyphs[0].glyph_id = 1;
+  result->glyphs[0].cluster = 0;
+  result->glyphs[0].advance_x_26_6 = 10 * 64;
+  return MY_RET_OK;
+}
+
+static const my_font_vtable_t s_layout_ligature_vtable = {
+    .shape = layout_ligature_shape};
+
+static my_font_t* layout_ligature_test_font(void) {
+  static my_font_t font = {&s_layout_ligature_vtable};
+  return &font;
+}
+
 static my_font_t* layout_shape_test_font(void) {
   static my_font_t font = {&s_layout_shape_font_vtable};
   return &font;
@@ -441,6 +470,32 @@ TEST(text_layout_shape_preserves_lam_alef_clusters)
   my_text_layout_destroy(layout);
 }
 
+TEST(text_layout_boundaries_use_ligature_advance)
+{
+  my_text_layout_t* layout = my_text_layout_process(NULL, "fi");
+  my_rectf_t rect;
+
+  ASSERT_NOT_NULL(layout);
+  ASSERT_EQ(my_text_layout_visual_x(layout, layout_ligature_test_font(), 16, 1),
+            10);
+  ASSERT_EQ(my_text_layout_visual_x(layout, layout_ligature_test_font(), 16, 2),
+            10);
+  ASSERT_EQ(my_text_layout_visual_boundary_x(layout, layout_ligature_test_font(),
+                                             16, 2),
+            10);
+  ASSERT_EQ(my_text_layout_logical_at_x(layout, layout_ligature_test_font(),
+                                        16, 4),
+            0u);
+  ASSERT_EQ(my_text_layout_logical_at_x(layout, layout_ligature_test_font(),
+                                        16, 6),
+            2u);
+  ASSERT_EQ(my_text_layout_visual_rects(layout, layout_ligature_test_font(), 16,
+                                        1, 2, &rect, 1),
+            1u);
+  ASSERT_EQ(rect.w, 10.0f);
+  my_text_layout_destroy(layout);
+}
+
 TEST(text_layout_preserves_lam_alef_logical_boundaries)
 {
   const char* text = "\xD9\x84\xD8\xA7";
@@ -480,20 +535,20 @@ TEST(text_layout_reuses_font_boundary_prefix_cache)
   size_t before;
 
   ASSERT_NOT_NULL(layout);
-  before = font.glyph_calls;
+  before = font.shape_calls;
   (void)my_text_layout_visual_x(layout, (my_font_t*)&font, 16, 2);
   (void)my_text_layout_logical_at_x(layout, (my_font_t*)&font, 16, 2);
   ASSERT_EQ(my_text_layout_visual_rects(layout, (my_font_t*)&font, 16, 0, 2,
                                         rects, 2), 1u);
-  ASSERT_TRUE(font.glyph_calls > before);
-  before = font.glyph_calls;
+  ASSERT_TRUE(font.shape_calls > before);
+  before = font.shape_calls;
   (void)my_text_layout_visual_x(layout, (my_font_t*)&font, 16, 1);
   (void)my_text_layout_logical_at_x(layout, (my_font_t*)&font, 16, 3);
   (void)my_text_layout_visual_rects(layout, (my_font_t*)&font, 16, 1, 3,
                                     rects, 2);
-  ASSERT_EQ(font.glyph_calls, before);
+  ASSERT_EQ(font.shape_calls, before);
   (void)my_text_layout_visual_x(layout, (my_font_t*)&font, 18, 1);
-  ASSERT_TRUE(font.glyph_calls > before);
+  ASSERT_TRUE(font.shape_calls > before);
   my_text_layout_destroy(layout);
 }
 
@@ -772,6 +827,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_shape_rejects_non_boundary_cluster);
     RUN_TEST(text_layout_shape_allocation_failures_rollback);
     RUN_TEST(text_layout_shape_preserves_lam_alef_clusters);
+    RUN_TEST(text_layout_boundaries_use_ligature_advance);
     RUN_TEST(text_layout_preserves_lam_alef_logical_boundaries);
     RUN_TEST(text_layout_reuses_font_boundary_prefix_cache);
     RUN_TEST(text_layout_visual_rects_honors_output_capacity);

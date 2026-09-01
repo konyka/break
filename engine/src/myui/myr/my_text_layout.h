@@ -43,6 +43,8 @@ typedef struct my_text_layout_t {
   uint32_t* logical_to_visual; /**< logical_len items: logical i -> visual index */
   uint8_t* visual_rtl;         /**< len items: visual cp's run is RTL */
   char* logical_utf8;          /**< original logical UTF-8; binds glyph clusters */
+  uint32_t* logical_byte_offsets; /**< lazy logical codepoint byte starts */
+  size_t logical_byte_offsets_capacity;
   char* visual_utf8;           /**< visual_cps re-encoded as UTF-8 */
   size_t len;                  /**< visual item count */
   size_t logical_len;          /**< original logical codepoint count */
@@ -52,6 +54,10 @@ typedef struct my_text_layout_t {
   size_t visual_boundaries_capacity;
   const my_font_t* visual_boundaries_font;
   int32_t visual_boundaries_size;
+  uint32_t* visual_shaped_span; /**< cluster spans for cached shaping */
+  size_t visual_shaped_span_capacity;
+  const my_font_t* visual_shaped_span_font;
+  int32_t visual_shaped_span_size;
 } my_text_layout_t;
 
 /**

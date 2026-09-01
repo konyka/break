@@ -519,7 +519,9 @@ my_ret_t my_font_get_glyph_id(my_font_t* font, uint32_t glyph_id,
   if (font == NULL || glyph == NULL || size <= 0) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (font->vtable->get_glyph_id == NULL) return MY_RET_NOT_SUPPORTED;
+  if (font->vtable == NULL || font->vtable->get_glyph_id == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return font->vtable->get_glyph_id(font, glyph_id, size, glyph);
 }
 

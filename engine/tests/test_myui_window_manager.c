@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "mypal/dummy/my_pal_dummy.h"
 #include "mypal/my_event.h"
@@ -147,6 +148,30 @@ static const my_font_vtable_t text_area_variable_font_vtable = {
     text_area_variable_font_has_glyph,
     NULL,
     NULL};
+
+static my_ret_t text_area_ligature_shape(my_font_t* font, const char* text,
+                                         int32_t size, bool rtl,
+                                         const my_allocator_t* allocator,
+                                         my_font_shape_result_t* result) {
+  (void)rtl;
+  if (font == NULL || text == NULL || size <= 0 || result == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (strcmp(text, "fi") != 0) return MY_RET_FAIL;
+  result->allocator = allocator;
+  result->glyphs = (my_font_shape_glyph_t*)my_mem_calloc(
+      allocator, 1, sizeof(*result->glyphs));
+  if (result->glyphs == NULL) return MY_RET_OOM;
+  result->count = 1;
+  result->glyphs[0].font = font;
+  result->glyphs[0].glyph_id = 1;
+  result->glyphs[0].cluster = 0;
+  result->glyphs[0].advance_x_26_6 = 10 * 64;
+  return MY_RET_OK;
+}
+
+static const my_font_vtable_t text_area_ligature_vtable = {
+    .shape = text_area_ligature_shape};
 
 static int g_result = -999;
 static int g_main_clicks;
@@ -812,6 +837,8 @@ TEST(text_area_fold_state_yaml_roundtrip_and_transaction)
             MY_RET_OK);
   ASSERT_TRUE(my_text_area_is_folded(area, 0));
   ASSERT_TRUE(my_text_area_is_folded(area, 1));
+  my_mem_free(NULL, yaml);
+  yaml = NULL;
   ASSERT_EQ(my_text_area_folds_to_yaml(area, NULL, &yaml), MY_RET_OK);
   ASSERT_STR_EQ(yaml, "version: 1\nfolds:\n  - start: 0\n    end: 5\n  - start: 1\n    end: 3\n");
   my_mem_free(NULL, yaml);
@@ -1752,6 +1779,24 @@ TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent)
   my_widget_unref(area);
 }
 
+TEST(text_area_nonwrap_hit_test_uses_shaping_clusters)
+{
+  my_font_t font = {&text_area_ligature_vtable};
+  my_widget_t* area = my_text_area_create(NULL);
+  my_text_area_t* text_area = (my_text_area_t*)area;
+  my_event_t event = my_event_init(MY_EVENT_POINTER_DOWN);
+
+  ASSERT_NOT_NULL(area);
+  ASSERT_EQ(my_widget_set_rect(area, &(my_rect_t){0, 0, 80, 40}), MY_RET_OK);
+  my_text_area_set_font(area, &font, 16);
+  ASSERT_EQ(my_text_area_set_text(area, "fi"), MY_RET_OK);
+  event.u.pointer.x = 15;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(area->vtable->on_event(area, &event), MY_RET_OK);
+  ASSERT_EQ(text_area->cursor_col, 2u);
+  my_widget_unref(area);
+}
+
 TEST(text_area_pointer_hit_test_clamps_vertical_bounds)
 {
   my_widget_t* area = my_text_area_create(NULL);
@@ -2225,6 +2270,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(user_event_can_close_window_during_dispatch);
     RUN_TEST(text_widgets_toggle_platform_ime_with_focus);
     RUN_TEST(text_area_variable_font_keeps_nonwrap_coordinates_consistent);
+    RUN_TEST(text_area_nonwrap_hit_test_uses_shaping_clusters);
     RUN_TEST(text_area_pointer_hit_test_clamps_vertical_bounds);
     RUN_TEST(text_area_pointer_hit_test_uses_font_line_height);
     RUN_TEST(text_area_page_down_moves_by_wrapped_visual_lines);

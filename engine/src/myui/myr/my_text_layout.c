@@ -439,6 +439,8 @@ void my_text_layout_destroy(my_text_layout_t* layout) {
     my_mem_free(alloc, layout->visual_rtl);
     my_mem_free(alloc, layout->visual_boundaries);
     my_mem_free(alloc, layout->logical_utf8);
+    my_mem_free(alloc, layout->logical_byte_offsets);
+    my_mem_free(alloc, layout->visual_shaped_span);
     my_mem_free(alloc, layout->visual_utf8);
     my_mem_free(alloc, layout);
   }
@@ -725,10 +727,205 @@ static float tl_cp_w(const my_font_t* font, int32_t size, uint32_t cp) {
   if (font == NULL) {
     return 8.0f;
   }
+  if (font->vtable == NULL || font->vtable->get_glyph == NULL) {
+    return 0.0f;
+  }
   if (my_font_get_glyph((my_font_t*)font, cp, size, &g) != MY_RET_OK) {
     return 0.0f;
   }
   return (float)g.advance;
+}
+
+static bool tl_logical_offsets_ensure(my_text_layout_t* l) {
+  size_t i;
+  const char* p;
+  uint32_t* offsets;
+  if (l == NULL || l->logical_utf8 == NULL) return false;
+  if (l->logical_byte_offsets != NULL &&
+      l->logical_byte_offsets_capacity >= l->logical_len) {
+    return true;
+  }
+  if (l->logical_len > SIZE_MAX / sizeof(*offsets)) return false;
+  offsets = (uint32_t*)my_mem_realloc(
+      l->allocator, l->logical_byte_offsets,
+      (l->logical_len > 0 ? l->logical_len : 1) * sizeof(*offsets));
+  if (offsets == NULL) return false;
+  l->logical_byte_offsets = offsets;
+  l->logical_byte_offsets_capacity = 0;
+  p = l->logical_utf8;
+  for (i = 0; i < l->logical_len; i++) {
+    const char* next = p;
+    size_t byte = (size_t)(p - l->logical_utf8);
+    if (byte > UINT32_MAX) {
+      my_mem_free(l->allocator, offsets);
+      l->logical_byte_offsets = NULL;
+      return false;
+    }
+    offsets[i] = (uint32_t)byte;
+    (void)my_utf8_next(&next);
+    if (next <= p) {
+      my_mem_free(l->allocator, offsets);
+      l->logical_byte_offsets = NULL;
+      return false;
+    }
+    p = next;
+  }
+  if (*p != '\0') {
+    my_mem_free(l->allocator, offsets);
+    l->logical_byte_offsets = NULL;
+    return false;
+  }
+  l->logical_byte_offsets_capacity = l->logical_len;
+  return true;
+}
+
+static size_t tl_logical_index_for_byte(const my_text_layout_t* l,
+                                        uint32_t byte) {
+  size_t lo = 0;
+  size_t hi = l->logical_len;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2u;
+    if (l->logical_byte_offsets[mid] < byte) {
+      lo = mid + 1u;
+    } else if (l->logical_byte_offsets[mid] > byte) {
+      hi = mid;
+    } else {
+      return mid;
+    }
+  }
+  return l->logical_len;
+}
+
+static bool tl_boundaries_from_shaping(my_text_layout_t* l,
+                                       const my_font_t* font, int32_t size) {
+  my_font_shape_result_t shaped = {0};
+  int64_t* advances = NULL;
+  uint8_t* cluster_starts = NULL;
+  uint32_t* shaped_span = NULL;
+  int64_t width;
+  my_ret_t ret;
+  size_t i;
+  if (font == NULL || l->logical_utf8 == NULL ||
+      !tl_logical_offsets_ensure(l)) {
+    return false;
+  }
+  ret = my_text_layout_shape(l, l->logical_utf8, (my_font_t*)font, size,
+                             l->allocator, &shaped);
+  if (ret != MY_RET_OK) return false;
+  if (l->len > 0) {
+    if (l->len > SIZE_MAX / sizeof(*advances)) {
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    advances = (int64_t*)my_mem_calloc(l->allocator, l->len,
+                                       sizeof(*advances));
+    if (advances == NULL) {
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+  }
+  if (l->logical_len > 0) {
+    if (l->logical_len > SIZE_MAX / sizeof(*cluster_starts)) {
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    cluster_starts = (uint8_t*)my_mem_calloc(l->allocator, l->logical_len,
+                                             sizeof(*cluster_starts));
+    if (cluster_starts == NULL) {
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+  }
+  for (i = 0; i < shaped.count; i++) {
+    size_t logical = tl_logical_index_for_byte(l,
+                                               shaped.glyphs[i].cluster);
+    size_t visual;
+    if (logical >= l->logical_len) {
+      my_mem_free(l->allocator, cluster_starts);
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    cluster_starts[logical] = 1;
+    visual = l->logical_to_visual[logical];
+    if (visual >= l->len) {
+      my_mem_free(l->allocator, cluster_starts);
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    if ((shaped.glyphs[i].advance_x_26_6 > 0 &&
+         advances[visual] > INT64_MAX -
+                              shaped.glyphs[i].advance_x_26_6) ||
+        (shaped.glyphs[i].advance_x_26_6 < 0 &&
+        advances[visual] < INT64_MIN -
+                              shaped.glyphs[i].advance_x_26_6)) {
+      my_mem_free(l->allocator, cluster_starts);
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    advances[visual] += shaped.glyphs[i].advance_x_26_6;
+  }
+  if (l->len > 0) {
+    if (l->len > SIZE_MAX / sizeof(*shaped_span)) {
+      my_mem_free(l->allocator, cluster_starts);
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    shaped_span = (uint32_t*)my_mem_alloc(
+        l->allocator, l->len * sizeof(*shaped_span));
+    if (shaped_span == NULL) {
+      my_mem_free(l->allocator, cluster_starts);
+      my_mem_free(l->allocator, advances);
+      my_font_shape_destroy(&shaped);
+      return false;
+    }
+    for (i = 0; i < l->len; i++) {
+      shaped_span[i] = l->visual_logical_span[i];
+    }
+    {
+      size_t next_start = l->logical_len;
+      for (i = l->logical_len; i > 0; i--) {
+        size_t logical = i - 1u;
+        if (cluster_starts[logical] != 0) {
+          size_t visual = l->logical_to_visual[logical];
+          size_t span = next_start - logical;
+          if (visual < l->len && span > shaped_span[visual]) {
+            shaped_span[visual] = span > UINT32_MAX ? UINT32_MAX
+                                                    : (uint32_t)span;
+          }
+          next_start = logical;
+        }
+      }
+    }
+  }
+  for (i = 0; i < l->len; i++) {
+    if (advances[i] > INT64_MAX - 32) {
+      width = INT64_MAX;
+    } else if (advances[i] < INT64_MIN + 32) {
+      width = INT64_MIN;
+    } else {
+      width = advances[i] >= 0 ? (advances[i] + 32) / 64
+                               : (advances[i] - 32) / 64;
+    }
+    if (width > INT32_MAX) width = INT32_MAX;
+    if (width < INT32_MIN) width = INT32_MIN;
+    if (width < 0) width = 0;
+    l->visual_boundaries[i + 1] = (int32_t)width;
+  }
+  my_mem_free(l->allocator, cluster_starts);
+  my_mem_free(l->allocator, advances);
+  my_mem_free(l->allocator, l->visual_shaped_span);
+  l->visual_shaped_span = shaped_span;
+  l->visual_shaped_span_capacity = l->len;
+  l->visual_shaped_span_font = font;
+  l->visual_shaped_span_size = size;
+  my_font_shape_destroy(&shaped);
+  return true;
 }
 
 static bool tl_boundaries_ensure(const my_text_layout_t* layout,
@@ -752,15 +949,43 @@ static bool tl_boundaries_ensure(const my_text_layout_t* layout,
   if (grown == NULL) return false;
   l->visual_boundaries = grown;
   l->visual_boundaries[0] = 0;
-  for (i = 0; i < l->len; i++) {
-    total += (int64_t)tl_cp_w(font, size, l->visual_cps[i]);
-    if (total > INT32_MAX) total = INT32_MAX;
-    l->visual_boundaries[i + 1] = (int32_t)total;
+  my_mem_free(l->allocator, l->visual_shaped_span);
+  l->visual_shaped_span = NULL;
+  l->visual_shaped_span_capacity = 0;
+  l->visual_shaped_span_font = NULL;
+  l->visual_shaped_span_size = 0;
+  if (!tl_boundaries_from_shaping(l, font, size)) {
+    for (i = 0; i < l->len; i++) {
+      total += (int64_t)tl_cp_w(font, size, l->visual_cps[i]);
+      if (total > INT32_MAX) total = INT32_MAX;
+      if (total < 0) total = 0;
+      l->visual_boundaries[i + 1] = (int32_t)total;
+    }
+  } else {
+    total = 0;
+    for (i = 0; i < l->len; i++) {
+      total += (int64_t)l->visual_boundaries[i + 1];
+      if (total > INT32_MAX) total = INT32_MAX;
+      if (total < 0) total = 0;
+      l->visual_boundaries[i + 1] = (int32_t)total;
+    }
   }
   l->visual_boundaries_capacity = required;
   l->visual_boundaries_font = font;
   l->visual_boundaries_size = size;
   return true;
+}
+
+static size_t tl_visual_span_for(const my_text_layout_t* layout,
+                                 const my_font_t* font, int32_t size,
+                                 size_t visual) {
+  if (layout->visual_shaped_span != NULL &&
+      layout->visual_shaped_span_capacity > visual &&
+      layout->visual_shaped_span_font == font &&
+      layout->visual_shaped_span_size == size) {
+    return layout->visual_shaped_span[visual];
+  }
+  return layout->visual_logical_span[visual];
 }
 
 /** @brief Visual boundary index (0..len) of a logical boundary:
@@ -823,6 +1048,32 @@ static size_t tl_lb_of_vb(const my_text_layout_t* l, size_t v) {
     return l->logical_len;
   }
   end += l->visual_logical_span[prev];
+  return end > l->logical_len ? l->logical_len : end;
+}
+
+static size_t tl_lb_of_vb_font(const my_text_layout_t* l, size_t v,
+                               const my_font_t* font, int32_t size) {
+  size_t prev;
+  size_t end;
+  size_t span;
+  if (l->len == 0 || v == 0) {
+    if (l->len == 0) return 0;
+    if (l->visual_rtl[0] != 0) {
+      end = l->visual_to_logical[0];
+      span = tl_visual_span_for(l, font, size, 0);
+      if (span > SIZE_MAX - end) return l->logical_len;
+      end += span;
+      return end > l->logical_len ? l->logical_len : end;
+    }
+    return l->visual_to_logical[0];
+  }
+  if (v > l->len) v = l->len;
+  prev = v - 1u;
+  if (l->visual_rtl[prev] != 0) return l->visual_to_logical[prev];
+  end = l->visual_to_logical[prev];
+  span = tl_visual_span_for(l, font, size, prev);
+  if (span > SIZE_MAX - end) return l->logical_len;
+  end += span;
   return end > l->logical_len ? l->logical_len : end;
 }
 
@@ -895,26 +1146,30 @@ size_t my_text_layout_logical_at_x(const my_text_layout_t* l,
     return 0;
   }
   if (x <= 0) {
-    return tl_lb_of_vb(l, 0);
+    return tl_lb_of_vb_font(l, 0, font, size);
   }
   if (tl_boundaries_ensure(l, font, size)) {
     size_t lo = 0;
     size_t hi = l->len;
     while (lo < hi) {
       size_t mid = lo + (hi - lo) / 2;
-      int32_t width = l->visual_boundaries[mid + 1] -
-                      l->visual_boundaries[mid];
-      int64_t midpoint = (int64_t)l->visual_boundaries[mid] +
-                         ((int64_t)width + 1) / 2;
-      if ((int64_t)x < midpoint) {
+      if ((int64_t)x < l->visual_boundaries[mid]) {
         hi = mid;
-      } else if ((int64_t)x < l->visual_boundaries[mid + 1]) {
-        return tl_lb_of_vb(l, tl_canon_left(l, mid));
-      } else {
+      } else if ((int64_t)x >= l->visual_boundaries[mid + 1]) {
         lo = mid + 1;
+      } else {
+        int32_t width = l->visual_boundaries[mid + 1] -
+                        l->visual_boundaries[mid];
+        int64_t midpoint = (int64_t)l->visual_boundaries[mid] +
+                           ((int64_t)width + 1) / 2;
+        if ((int64_t)x < midpoint) {
+          return tl_lb_of_vb_font(l, tl_canon_left(l, mid), font, size);
+        }
+        return tl_lb_of_vb_font(l, tl_canon_right(l, mid + 1), font,
+                                size);
       }
     }
-    return tl_lb_of_vb(l, l->len);
+    return tl_lb_of_vb_font(l, l->len, font, size);
   }
   for (i = 0; i < l->len; i++) {
     float w = tl_cp_w(font, size, l->visual_cps[i]);
@@ -1009,10 +1264,11 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
       size_t start = l->visual_to_logical[j];
       size_t end = start;
       bool in_sel;
-      if (l->visual_logical_span[j] > SIZE_MAX - end) {
+      size_t span = tl_visual_span_for(l, font, size, j);
+      if (span > SIZE_MAX - end) {
         end = SIZE_MAX;
       } else {
-        end += l->visual_logical_span[j];
+        end += span;
       }
       if (end > l->logical_len) end = l->logical_len;
       in_sel = start < l1 && end > l0;
@@ -1036,10 +1292,13 @@ size_t my_text_layout_visual_rects(const my_text_layout_t* l,
     float w = tl_cp_w(font, size, l->visual_cps[j]);
     size_t start = l->visual_to_logical[j];
     size_t end = start;
-    if (l->visual_logical_span[j] > SIZE_MAX - end) {
-      end = SIZE_MAX;
-    } else {
-      end += l->visual_logical_span[j];
+    {
+      size_t span = tl_visual_span_for(l, font, size, j);
+      if (span > SIZE_MAX - end) {
+        end = SIZE_MAX;
+      } else {
+        end += span;
+      }
     }
     if (end > l->logical_len) {
       end = l->logical_len;

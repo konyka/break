@@ -285,7 +285,8 @@ static int ta_justify_space_count(const char* text, size_t len) {
 
 static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
   my_glyph_t glyph = {0};
-  if (ta->font != NULL &&
+  if (ta->font != NULL && ta->font->vtable != NULL &&
+      ta->font->vtable->get_glyph != NULL &&
       my_font_get_glyph(ta->font, cp, ta->font_size, &glyph) == MY_RET_OK &&
       glyph.advance > 0) {
     return glyph.advance;
@@ -316,6 +317,41 @@ static bool ta_geometry_reserve(my_text_area_t* ta, size_t required) {
   return true;
 }
 
+static bool ta_geometry_from_shaping(my_text_area_t* ta, size_t row,
+                                     size_t count) {
+  size_t start = ta_line_start(ta, row);
+  size_t end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
+                                           : ta->text_len;
+  size_t line_end = start;
+  size_t len;
+  char* text;
+  my_text_layout_t* layout;
+  size_t i;
+  while (line_end < end && ta->text[line_end] != '\0' &&
+         ta->text[line_end] != '\n') {
+    line_end += my_str_utf8_char_len(ta->text + line_end);
+  }
+  if (line_end < start) return false;
+  len = line_end - start;
+  if (len == SIZE_MAX) return false;
+  text = (char*)my_mem_alloc(ta->allocator, len + 1u);
+  if (text == NULL) return false;
+  if (len > 0) memcpy(text, ta->text + start, len);
+  text[len] = '\0';
+  layout = my_text_layout_process(ta->allocator, text);
+  if (layout == NULL) {
+    my_mem_free(ta->allocator, text);
+    return false;
+  }
+  for (i = 0; i <= count; i++) {
+    ta->geometry_boundaries[i] = my_text_layout_visual_boundary_x(
+        layout, ta->font, ta->font_size, i);
+  }
+  my_text_layout_destroy(layout);
+  my_mem_free(ta->allocator, text);
+  return true;
+}
+
 static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
   size_t start, end, count = 0, cp_count;
   const char* p;
@@ -334,8 +370,18 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     start = (size_t)(p - ta->text);
     count++;
   }
-  if (!ta_geometry_reserve(ta, count + 1)) return false;
+  if (count == SIZE_MAX || !ta_geometry_reserve(ta, count + 1)) return false;
   cp_count = count;
+  if (ta->font != NULL && ta->font->vtable != NULL &&
+      ta->font->vtable->shape != NULL &&
+      ta_geometry_from_shaping(ta, row, cp_count)) {
+    ta->geometry_row = row;
+    ta->geometry_count = cp_count;
+    ta->geometry_revision = ta->text_revision;
+    ta->geometry_font = ta->font;
+    ta->geometry_font_size = ta->font_size;
+    return true;
+  }
   start = ta_line_start(ta, row);
   p = ta->text + start;
   ta->geometry_boundaries[0] = 0;

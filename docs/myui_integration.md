@@ -508,7 +508,7 @@ cascade；普通规则在 hover/pressed/disabled 查询时保留 normal-slot 的
 （缓存、批处理、增量布局）限制在不牺牲安全和可恢复性的范围内。
 
 本轮定向 TDD 门禁为：`test_rhi_capabilities`（2/2）、`test_myui_css`（23/23）、
-`test_myui_text_layout`（25/25）、
+`test_myui_text_layout`（26/26）、
 `test_myui_vgcanvas_backend`（25/25）和 `test_break_ui_damage`（14/14）。其中 CSS 用例覆盖
 universal、多 class、direct-child、specificity fallback、数值边界
 和 malformed selector；文本用例覆盖 RTL visual mapping、Lam-Alef logical span 和选区；
@@ -763,3 +763,10 @@ OpenType 实现：paragraph 的 script/features 配置、跨段落增量 shaping
 atlas key 的一致性。layout 的 caller-owned copy 同时保留原 logical UTF-8；glyph-run API
 会拒绝非逐字节匹配的输入和不落在 UTF-8 codepoint 起点的 provider cluster，并在依赖关闭时保留显式
 `MY_RET_NOT_SUPPORTED`/codepoint fallback。
+
+Text area 的非 wrap 几何也复用 shaping 的 visual advance 和 cluster span：连字或其他多 codepoint
+cluster 只占用一个 glyph advance，selection、IME spot 和 pointer hit-test 使用同一组前缀和，避免
+绘制坐标与编辑坐标分叉。字体 vtable 的 `measure`、`get_glyph`、metrics、destroy 和 glyph-id
+回调均允许为空；公共包装器返回 `MY_RET_NOT_SUPPORTED` 或零值，控件再使用有界默认行高，因而
+shape-only provider 不会在不支持的栅格化路径中触发空函数指针。YAML 折叠导出返回的字符串由调用方
+使用传入 allocator 释放，重复导出前必须先释放旧输出。
