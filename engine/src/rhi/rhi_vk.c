@@ -2244,8 +2244,9 @@ void rhi_frame_end(RHIDevice *dev) {
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &vk->render_semaphores[vk->image_index];
 
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]) != VK_SUCCESS) {
-        LOG_FATAL("VK: vkQueueSubmit failed in frame_end");
+    VkResult submit_res = vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]);
+    if (submit_res != VK_SUCCESS) {
+        LOG_FATAL("VK: vkQueueSubmit failed in frame_end (res=%d)", (int)submit_res);
         vk->frame_started = false;
         vk->frame_submitted = false;
         return;
