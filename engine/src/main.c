@@ -109,6 +109,10 @@ static void save_bmp(const char *path, u32 w, u32 h, const u8 *rgba) {
     if (!bmp_ok) LOG_WARN("BMP write: partial write failure for %s", path);
 }
 
+/* R577: F12 defers the capture into the next frame — rhi_screenshot is legal
+ * only while a swapchain image is acquired (frame_begin..present). */
+static bool g_screenshot_pending = false;
+
 /* R445: screenshot helper shared by the F12 key and BREAK_SCREENSHOT. The file
  * counter scans for existing screenshot_N.bmp on first use so repeated runs
  * never overwrite earlier captures. */
@@ -3489,8 +3493,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         if (input_key_pressed(platform_input(engine.platform), 282)) {
             /* R445: extracted to demo_save_screenshot, shared with the
-             * BREAK_SCREENSHOT env hook below. */
-            demo_save_screenshot(render.device, w, h);
+             * BREAK_SCREENSHOT env hook below.
+             * R577: defer into the frame — legal only while acquired. */
+            g_screenshot_pending = true;
         }
 
         /* Page_Up: export Chrome profiler trace (also set PROFILER_TRACE=1 on exit).
@@ -7675,6 +7680,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 demo_save_screenshot(render.device, w, h);
                 screenshot_next++;
             }
+            /* R577: deferred F12 capture — after frame_end, before present:
+             * the only spec-legal point carrying this frame's pixels. */
+            if (g_screenshot_pending) {
+                g_screenshot_pending = false;
+                demo_save_screenshot(render.device, w, h);
+            }
             rhi_present(render.device);
             motion_history_commit(&node_motion_history);
             motion_history_commit(&entity_motion_history);
@@ -7785,6 +7796,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             (i64)engine.frame_count >= screenshot_frames[screenshot_next]) {
             demo_save_screenshot(render.device, w, h);
             screenshot_next++;
+        }
+        /* R577: deferred F12 capture — after frame_end, before present:
+         * the only spec-legal point carrying this frame's pixels. */
+        if (g_screenshot_pending) {
+            g_screenshot_pending = false;
+            demo_save_screenshot(render.device, w, h);
         }
         rhi_present(render.device);
         motion_history_commit(&node_motion_history);

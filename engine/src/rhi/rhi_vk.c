@@ -614,11 +614,14 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
         LOG_FATAL("VK: vkQueueSubmit failed in init_image_layout");
         vk_dump_device_fault(vk, "init_image_layout");
-    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+    }
+    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
         LOG_FATAL("VK: vkQueueWaitIdle failed in init_image_layout");
+        vk_dump_device_fault(vk, "init_image_layout");
+    }
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
 }
 
@@ -746,6 +749,14 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
 
     u32 img_count = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && img_count > caps.maxImageCount) img_count = caps.maxImageCount;
+    /* R577: prefer triple buffering where legal — on hybrid laptops the
+     * cross-GPU present copy (dGPU renders, iGPU displays) adds per-present
+     * latency, and two images starve the acquire path into timeout-cadence
+     * stalls. */
+    if (caps.minImageCount > 0u && caps.minImageCount + 1u < 3u) {
+        img_count = 3u;
+        if (caps.maxImageCount > 0 && img_count > caps.maxImageCount) img_count = caps.maxImageCount;
+    }
 
     VkSwapchainCreateInfoKHR sci = {0};
     sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -2061,6 +2072,17 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
     if (!dev || !pixels) return false;
     VKBackend *vk = vk_backend(dev);
     if (!vk) return false;
+    /* R577 (CORRECTNESS): the readback transitions vk->swap_images[image_index],
+     * which is only legal while that image is acquired — i.e. from
+     * rhi_frame_begin until rhi_present. Post-present calls touch an image
+     * the presentation engine owns again (spec violation; drivers tolerate it
+     * to varying degrees — the cross-GPU hybrid path does not). Refuse loudly
+     * so callers move the capture inside the frame (frame_begin..present). */
+    if (!vk->frame_started && !vk->frame_submitted) {
+        LOG_ERROR("VK: rhi_screenshot outside an acquired frame is illegal "
+                  "(image not acquired) — call between frame_begin and present");
+        return false;
+    }
 
     if (!rhi_screenshot_region_validate(x, y, w, h, vk->swap_extent.width,
                                         vk->swap_extent.height, pixel_bytes)) {

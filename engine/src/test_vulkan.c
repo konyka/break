@@ -227,19 +227,12 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
  * `reject_blank`: fail when the captured grid is a single flat color —
  * a blank reference/compare is layout-insensitive and silently useless
  * (R438: the camera golden was blank for exactly this reason). */
-static bool golden_capture_compare(RHIDevice *device, const char *path, u32 w, u32 h,
-                                   bool reject_blank) {
+static bool golden_compare_buffer(const u8 *shot, const char *path, u32 w, u32 h,
+                                  bool reject_blank) {
     bool golden_pass = false;
-    u8 *shot = (u8 *)malloc((usize)w * h * 4u);
-    if (shot) {
-        if (!rhi_screenshot(device, 0, 0, w, h, shot,
-                            (usize)w * h * 4u)) {
-            free(shot);
-            return false;
-        }
+    {
         u8 grid[GOLDEN_GW * GOLDEN_GH * 3];
         golden_downsample(shot, w, h, grid);
-        free(shot);
 
         if (reject_blank) {
             bool varied = false;
@@ -283,6 +276,11 @@ static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vb
     LOG_INFO("============================================");
 
     Mat4 gid = mat4_identity();
+    /* R577: capture goes between frame_end and present — the only spec-legal
+     * point carrying THIS frame's content (post-present readback of a
+     * swapchain image is a spec violation the engine now refuses). */
+    u8 *shot = (u8 *)malloc((usize)w * h * 4u);
+    bool captured = false;
     for (u32 f = 0; f < 3; f++) {
         RHICmdBuffer *cmd = rhi_frame_begin(render->device);
         if (!cmd) continue;
@@ -300,10 +298,16 @@ static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vb
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
         rhi_cmd_draw_indexed(cmd, 3, 1);
         rhi_frame_end(render->device);
+        /* R577: capture after frame_end / before present — the only
+         * spec-legal point carrying THIS frame's content. */
+        if (f == 2u && shot)
+            captured = rhi_screenshot(render->device, 0, 0, w, h, shot,
+                                      (usize)w * h * 4u);
         rhi_present(render->device);
     }
 
-    bool golden_pass = golden_capture_compare(render->device, GOLDEN_PATH, w, h, false);
+    bool golden_pass = captured && golden_compare_buffer(shot, GOLDEN_PATH, w, h, false);
+    free(shot);
     if (golden_pass) {
         LOG_INFO("RESULT: GOLDEN IMAGE TEST PASSED ✓");
     } else {
@@ -339,6 +343,8 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
     Mat4 view = camera_view(&cam);
     Mat4 proj = camera_projection(&cam);
 
+    u8 *shot = (u8 *)malloc((usize)w * h * 4u);
+    bool captured = false;
     for (u32 f = 0; f < 3; f++) {
         RHICmdBuffer *cmd = rhi_frame_begin(render->device);
         if (!cmd) continue;
@@ -357,10 +363,14 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
         rhi_cmd_draw_indexed(cmd, 3, 1);
         rhi_frame_end(render->device);
+        if (f == 2u && shot)
+            captured = rhi_screenshot(render->device, 0, 0, w, h, shot,
+                                      (usize)w * h * 4u);
         rhi_present(render->device);
     }
 
-    bool golden_pass = golden_capture_compare(render->device, GOLDEN_CAM_PATH, w, h, true);
+    bool golden_pass = captured && golden_compare_buffer(shot, GOLDEN_CAM_PATH, w, h, true);
+    free(shot);
     if (golden_pass) {
         LOG_INFO("RESULT: GOLDEN CAMERA IMAGE TEST PASSED ✓");
     } else {
@@ -793,6 +803,8 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
     }
 
     u32 exec_count = 0xFFFFFFFFu, frames_ok = 0;
+    u8 *shot = NULL;
+    bool captured = false;
     if (setup_ok) {
         i32 l_model = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_model");
         i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_view");
@@ -831,6 +843,15 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             rhi_cmd_bind_index_buffer(cmd, arr_ibo, 0, true);
             indirect_draw_execute(&ids, rs->device);
             rhi_frame_end(rs->device);
+            /* R577: capture after frame_end (image still acquired, its final
+             * content submitted) and before present — the only spec-legal
+             * point whose content is THIS frame's. */
+            if (f == 2u) {
+                shot = malloc((usize)scr_w * scr_h * 4u);
+                if (shot)
+                    captured = rhi_screenshot(rs->device, 0, 0, scr_w, scr_h,
+                                              shot, (usize)scr_w * scr_h * 4u);
+            }
             rhi_present(rs->device);
             frames_ok++;
         }
@@ -845,13 +866,13 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         u32 pw = scr_w, ph = scr_h;
-        u8 *shot = malloc((usize)pw * ph * 4u);
+        /* R577: shot was captured in-frame above; post-present readback of a
+         * swapchain image is a spec violation (the engine now refuses it). */
+        if (!captured) {
+            free(shot);
+            return false;
+        }
         if (shot) {
-            if (!rhi_screenshot(rs->device, 0, 0, pw, ph, shot,
-                                (usize)pw * ph * 4u)) {
-                free(shot);
-                return false;
-            }
             /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (y+1)/2*h */
             const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
             const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };

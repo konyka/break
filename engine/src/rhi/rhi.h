@@ -457,7 +457,13 @@ void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
 /* Reads back the framebuffer into `pixels` as RGBA8. The region must be
  * inside the drawable and `pixel_bytes` must be at least w*h*4. The call
  * waits for completion on Vulkan and returns false without touching pixels
- * when validation or backend readback fails. */
+ * when validation or backend readback fails.
+ * R577: must be called while a swapchain image is acquired — between
+ * rhi_frame_begin and rhi_present (in-frame or post-frame_end pre-present).
+ * Post-present calls are a Vulkan spec violation (the image is owned by the
+ * presentation engine again) and are refused (false + error log). The readback
+ * carries the previously presented frame's pixels: rendering recorded into the
+ * in-flight frame is not visible to it. */
 bool        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
                            u8 *pixels, usize pixel_bytes);
 
