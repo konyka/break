@@ -1384,6 +1384,19 @@ TEST(break_rhi_rejects_dimensions_that_do_not_fit_ui_rect)
   ASSERT_TRUE(my_vgcanvas_break_rhi_size_valid((uint32_t)INT32_MAX, 1u));
 }
 
+#ifndef MYUI_HAS_VULKAN
+TEST(vulkan_disabled_instance_api_fails_closed)
+{
+  const char* extensions[] = {"VK_KHR_surface"};
+
+  ASSERT_TRUE(my_vgcanvas_vulkan_instance() == NULL);
+  ASSERT_TRUE(my_vgcanvas_vulkan_instance_acquire() == NULL);
+  ASSERT_TRUE(my_vgcanvas_vulkan_instance_acquire_with_extensions(
+                  extensions, 1u) == NULL);
+  my_vgcanvas_vulkan_instance_release();
+}
+#endif
+
 TEST_MAIN_BEGIN()
     RUN_TEST(vgcanvas_public_api_rejects_null_canvas);
     RUN_TEST(vgcanvas_public_api_reports_missing_backend_slots);
@@ -1426,4 +1439,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(soft_mono_image_uses_ordered_dither);
     RUN_TEST(lcd_rejects_dimension_and_stride_overflow);
     RUN_TEST(break_rhi_rejects_dimensions_that_do_not_fit_ui_rect);
+#ifndef MYUI_HAS_VULKAN
+    RUN_TEST(vulkan_disabled_instance_api_fails_closed);
+#endif
 TEST_MAIN_END()

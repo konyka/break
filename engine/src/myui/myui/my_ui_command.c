@@ -2,11 +2,21 @@
  * @file my_ui_command.c
  * @brief Owned, loop-thread UI command submission.
  */
-#include "myui/my_ui_command.h"
+#include "myui/my_ui_command_internal.h"
 
 #include <stdatomic.h>
 
 #include "myc/my_ref_count.h"
+
+#define MY_UI_COMMAND_MAX_DISPATCH_DEPTH 8u
+
+typedef struct my_ui_command_dispatch_context_t {
+  my_pal_main_loop_t* loops[MY_UI_COMMAND_MAX_DISPATCH_DEPTH];
+  uint32_t depth;
+} my_ui_command_dispatch_context_t;
+
+static _Thread_local my_ui_command_dispatch_context_t
+    my_ui_command_dispatch_context;
 
 typedef enum my_ui_command_state_t {
   MY_UI_COMMAND_CREATED = 0,
@@ -24,6 +34,7 @@ struct my_ui_command_t {
   void* context;
   my_ui_command_context_destroy_fn destroy_context;
   _Atomic(my_ui_command_scope_t*) scope;
+  _Atomic(my_pal_main_loop_t*) target_loop;
   my_ui_command_t* scope_prev;
   my_ui_command_t* scope_next;
   bool scope_linked;
@@ -102,6 +113,7 @@ my_ui_command_t* my_ui_command_create(
   command->allocator = allocator;
   atomic_init(&command->ref_count, 1u);
   atomic_init(&command->state, MY_UI_COMMAND_CREATED);
+  atomic_init(&command->target_loop, NULL);
   command->execute = execute;
   command->context = context;
   command->destroy_context = destroy_context;
@@ -222,6 +234,7 @@ my_ret_t my_ui_command_submit_scoped(my_pal_main_loop_t* loop,
                  memory_order_acq_rel, memory_order_acquire)) {
     return MY_RET_PENDING;
   }
+  atomic_store_explicit(&command->target_loop, loop, memory_order_release);
   my_ui_command_ref(command);
   event = my_event_init(MY_EVENT_COMMAND);
   event.u.command.data = command;
@@ -232,6 +245,7 @@ my_ret_t my_ui_command_submit_scoped(my_pal_main_loop_t* loop,
     (void)atomic_compare_exchange_strong_explicit(
         &command->state, &expected, MY_UI_COMMAND_CREATED,
         memory_order_acq_rel, memory_order_acquire);
+    atomic_store_explicit(&command->target_loop, NULL, memory_order_release);
     my_event_release_payload(&event);
     my_ui_command_detach_scope(command);
     return ret;
@@ -271,7 +285,16 @@ bool my_ui_command_is_cancelled(const my_ui_command_t* command) {
 
 void my_ui_command_dispatch(my_ui_command_t* command) {
   int expected = MY_UI_COMMAND_QUEUED;
-  if (command == NULL ||
+  my_pal_main_loop_t* current_loop;
+  my_pal_main_loop_t* target_loop;
+  if (command == NULL || my_ui_command_dispatch_context.depth == 0u) {
+    return;
+  }
+  current_loop = my_ui_command_dispatch_context
+                     .loops[my_ui_command_dispatch_context.depth - 1u];
+  target_loop = atomic_load_explicit(&command->target_loop,
+                                     memory_order_acquire);
+  if (current_loop != target_loop ||
       !atomic_compare_exchange_strong_explicit(
           &command->state, &expected, MY_UI_COMMAND_RUNNING,
           memory_order_acq_rel, memory_order_acquire)) {
@@ -281,4 +304,23 @@ void my_ui_command_dispatch(my_ui_command_t* command) {
   (void)command->execute(command->context);
   atomic_store_explicit(&command->state, MY_UI_COMMAND_DONE,
                         memory_order_release);
+}
+
+void my_ui_command_dispatch_context_enter(my_pal_main_loop_t* loop) {
+  if (loop == NULL ||
+      my_ui_command_dispatch_context.depth >=
+          MY_UI_COMMAND_MAX_DISPATCH_DEPTH) {
+    return;
+  }
+  my_ui_command_dispatch_context
+      .loops[my_ui_command_dispatch_context.depth++] = loop;
+}
+
+void my_ui_command_dispatch_context_leave(my_pal_main_loop_t* loop) {
+  if (loop == NULL || my_ui_command_dispatch_context.depth == 0u ||
+      my_ui_command_dispatch_context
+              .loops[my_ui_command_dispatch_context.depth - 1u] != loop) {
+    return;
+  }
+  my_ui_command_dispatch_context.depth--;
 }

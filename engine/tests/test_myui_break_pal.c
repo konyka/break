@@ -3,6 +3,7 @@
 #include "mypal/break/my_pal_break.h"
 #include "mypal/dummy/my_pal_dummy.h"
 #include "myui/my_ui_command.h"
+#include "myui/my_ui_command_internal.h"
 #include "ui/myui_break.h"
 
 #include <stdint.h>
@@ -148,6 +149,56 @@ TEST(dummy_ui_command_executes_once_and_releases_context)
   ASSERT_EQ(state.execute_count, 1);
   ASSERT_EQ(state.destroy_count, 1);
 
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
+TEST(dummy_ui_command_rejects_dispatch_outside_loop_context)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t *loop = my_pal_main_loop_create(pal);
+  command_test_context_t state = {0, 0};
+  my_ui_command_t *command = my_ui_command_create(
+      NULL, command_test_execute, &state, command_test_destroy);
+
+  ASSERT_NOT_NULL(command);
+  ASSERT_EQ(my_pal_set_event_handler(pal, on_command_event, NULL), MY_RET_OK);
+  my_ui_command_dispatch(command);
+  ASSERT_EQ(state.execute_count, 0);
+  ASSERT_EQ(state.destroy_count, 0);
+  ASSERT_EQ(my_ui_command_submit(loop, command), MY_RET_OK);
+  my_ui_command_unref(command);
+  ASSERT_EQ(my_pal_main_loop_pump_n(loop, 1u), 1u);
+  ASSERT_EQ(state.execute_count, 1);
+  ASSERT_EQ(state.destroy_count, 1);
+
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
+TEST(dummy_ui_command_rejects_dispatch_from_wrong_loop_context)
+{
+  my_pal_t *pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t *loop = my_pal_main_loop_create(pal);
+  my_pal_main_loop_t *wrong_loop = my_pal_main_loop_create(pal);
+  command_test_context_t state = {0, 0};
+  my_ui_command_t *command = my_ui_command_create(
+      NULL, command_test_execute, &state, command_test_destroy);
+
+  ASSERT_NOT_NULL(command);
+  ASSERT_EQ(my_pal_set_event_handler(pal, on_command_event, NULL), MY_RET_OK);
+  ASSERT_EQ(my_ui_command_submit(loop, command), MY_RET_OK);
+  my_ui_command_dispatch_context_enter(wrong_loop);
+  my_ui_command_dispatch(command);
+  my_ui_command_dispatch_context_leave(wrong_loop);
+  ASSERT_EQ(state.execute_count, 0);
+  ASSERT_EQ(state.destroy_count, 0);
+  my_ui_command_unref(command);
+  ASSERT_EQ(my_pal_main_loop_pump_n(loop, 1u), 1u);
+  ASSERT_EQ(state.execute_count, 1);
+  ASSERT_EQ(state.destroy_count, 1);
+
+  my_pal_main_loop_destroy(wrong_loop);
   my_pal_main_loop_destroy(loop);
   my_pal_destroy(pal);
 }
@@ -1070,6 +1121,8 @@ TEST(break_ui_dimensions_fit_signed_myui_contract)
 TEST_MAIN_BEGIN()
     RUN_TEST(break_ui_command_executes_once_and_releases_context);
     RUN_TEST(dummy_ui_command_executes_once_and_releases_context);
+    RUN_TEST(dummy_ui_command_rejects_dispatch_outside_loop_context);
+    RUN_TEST(dummy_ui_command_rejects_dispatch_from_wrong_loop_context);
     RUN_TEST(break_ui_command_cancel_skips_execution);
     RUN_TEST(dummy_ui_command_destroy_releases_queued_context);
 #if !defined(_WIN32)

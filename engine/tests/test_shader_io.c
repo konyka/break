@@ -387,6 +387,24 @@ TEST(vulkan_physical_device_selection_is_suitable_and_fail_closed)
     ASSERT_TRUE(strstr(src, "falling back to the first device") == NULL);
 }
 
+TEST(ui_command_dispatch_context_is_internal)
+{
+    static char src[65536];
+    ASSERT_TRUE(read_engine_source("myui/myui/my_ui_command.h", src, sizeof(src)));
+    ASSERT_TRUE(strstr(src, "my_ui_command_dispatch_context_enter") == NULL);
+    ASSERT_TRUE(strstr(src, "my_ui_command_dispatch_context_leave") == NULL);
+    ASSERT_TRUE(read_engine_source("myui/myui/my_ui_command_internal.h", src,
+                                   sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "my_ui_command_dispatch_context_enter"));
+    ASSERT_NOT_NULL(strstr(src, "my_ui_command_dispatch_context_leave"));
+    ASSERT_TRUE(read_engine_source("myui/mypal/dummy/my_pal_dummy.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "my_ui_command_dispatch_context_enter"));
+    ASSERT_NOT_NULL(strstr(src, "my_ui_command_dispatch_context_leave"));
+    ASSERT_TRUE(read_engine_source("myui/mypal/break/my_pal_break.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "my_ui_command_dispatch_context_enter"));
+    ASSERT_NOT_NULL(strstr(src, "my_ui_command_dispatch_context_leave"));
+}
+
 TEST(vulkan_deferred_mip_upload_is_backend_owned)
 {
     static char src[524288];
@@ -570,6 +588,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vulkan_memory_allocation_rejects_invalid_type);
     RUN_TEST(vulkan_extension_and_device_enumeration_fail_closed);
     RUN_TEST(vulkan_physical_device_selection_is_suitable_and_fail_closed);
+    RUN_TEST(ui_command_dispatch_context_is_internal);
     RUN_TEST(vulkan_deferred_mip_upload_is_backend_owned);
     RUN_TEST(motion_blur_prefers_per_object_velocity_texture);
     RUN_TEST(deferred_skinned_gbuffer_contract);

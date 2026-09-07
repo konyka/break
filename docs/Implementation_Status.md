@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：Vulkan 关闭配置的安全桩闭合（2026-09-07）
+
+- 修复 `MYUI_HAS_VULKAN` 未定义时遗漏的
+  `my_vgcanvas_vulkan_instance_acquire_with_extensions()` 实现；非 Vulkan 构建现在与
+  其他 Vulkan 入口一致地返回 `NULL`，不会初始化资源，也不会保留扩展指针。
+- 新增后端契约测试，覆盖实例 peek、普通 acquire、带扩展 acquire 和 release 的安全失败语义。
+- 非 Vulkan ASan/UBSan 定向构建与测试通过：vgcanvas **36/36**、Break PAL **29/29**、窗口管理器
+  **235/235**、MVVM **43/43**、shader I/O **26/26**；该配置不再出现未定义 Vulkan 符号。
+
 ## 本轮补充：Vulkan WSI 扩展 sidecar（2026-09-07）
 
 - 新增 `engine/src/myui/mypal/my_pal_vulkan.c` 与版本化 provider API，在不修改 frozen
@@ -4814,6 +4823,20 @@ and overwrite are rejected, while the owning device retains the existing
 non-blocking reclaim behavior. TDD coverage is `test_shader_io` 24/24 and
 `test_rhi_capabilities` 40/40. Multi-device concurrent submit/teardown still
 needs dedicated Vulkan runtime or fault-injection coverage.
+
+## UI command dispatch thread gate (2026-09-07)
+
+`my_ui_command_dispatch()` now requires an internal thread-local dispatch token
+installed only by the PAL event pump around the application handler. A direct
+call outside a loop event, or a call while another loop token is active, is a
+safe no-op; the command remains queued for its target loop. Commands record
+their target loop at submission, and the token hooks live in a private sidecar
+header rather than the frozen PAL vtable or public command header.
+
+TDD coverage: `test_myui_break_pal` 29/29, `test_shader_io` 26/26,
+`test_myui_window_manager` 235/235, and `test_myui_mvvm` 43/43. Generic
+borrowed-pointer invalidation, real host UI-thread scheduling, and platform
+runtime matrices remain open validation boundaries.
 
 ## Vulkan physical-device suitability selection (2026-09-07)
 

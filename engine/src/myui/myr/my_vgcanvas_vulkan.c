@@ -3141,6 +3141,12 @@ void* my_vgcanvas_vulkan_instance_acquire(void) {
   return NULL;
 }
 
+void* my_vgcanvas_vulkan_instance_acquire_with_extensions(
+    const char* const* extensions, uint32_t extension_count) {
+  (void)extensions;
+  (void)extension_count;
+  return NULL;
+}
 
 void my_vgcanvas_vulkan_instance_release(void) {
 }

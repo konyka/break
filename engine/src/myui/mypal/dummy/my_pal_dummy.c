@@ -3,6 +3,7 @@
  * @brief Dummy PAL port: headless windows + manual event queue + fake clock.
  */
 #include "mypal/dummy/my_pal_dummy.h"
+#include "myui/my_ui_command_internal.h"
 
 #include "myc/my_str.h"
 #include "myr/my_lcd_mem.h"
@@ -313,7 +314,9 @@ static bool dummy_loop_pump_one(dummy_loop_t* l) {
   if (l->event_head == NULL) l->event_tail = NULL;
   atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
   if (l->pal->handler != NULL) {
+    my_ui_command_dispatch_context_enter((my_pal_main_loop_t*)l);
     l->pal->handler(l->pal->handler_ctx, qe->window, &qe->event);
+    my_ui_command_dispatch_context_leave((my_pal_main_loop_t*)l);
   }
   my_event_release_payload(&qe->event);
   my_mem_free(l->allocator, qe->ime_text);

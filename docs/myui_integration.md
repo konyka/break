@@ -1,5 +1,13 @@
 # myui 集成与 Break RHI 后端
 
+## Vulkan 关闭时的 ABI 契约（2026-09-07）
+
+`MYUI_VULKAN=OFF` 或 Vulkan SDK 不可用时，Vulkan canvas 源文件仍提供完整的公共入口桩。
+实例查询与 acquire 返回 `NULL`，release 为无操作，canvas 创建返回 `NULL`，操作接口返回
+`MY_RET_NOT_SUPPORTED`；带 PAL 扩展列表的 acquire 入口同样不会读取、保存或释放调用方数组。
+因此 `myui_core` 的窗口代码可以保持统一调用链，软件/GLES/桌面 OpenGL 配置不会因静态链接
+缺少 Vulkan 符号而失败。
+
 ## 可选渲染后端配置（2026-09-07）
 
 可复用入口提供 `MYUI_GLES2`、`MYUI_GL_DESKTOP` 和 `MYUI_VULKAN` 三个显式选项。
@@ -288,6 +296,11 @@ window manager、timer 或 RHI API。command 通过既有 PAL `post_event` 进�
 `execute` 只在 loop 线程执行；`created -> queued -> running -> done/cancelled` 原子状态机
 拒绝重复提交，取消和 loop 销毁丢弃都不会重复执行或释放 context。提交失败会释放队列引用并
 恢复可重试状态，调用方仍负责释放自己的 command 引用。
+
+command dispatch 还通过内部 sidecar 记录当前 PAL 事件泵的 loop 令牌；脱离事件泵或从另一
+个 loop 直接调用 dispatch 会安全跳过，不会把 command context 执行在线程外。该令牌接口不
+在公共 command 头文件中暴露，Break/dummy 事件泵在调用应用 handler 前后自动建立和清除，
+因此不扩展 frozen PAL vtable，也不给外部调用方伪造线程上下文的入口。
 
 将 command 绑定到 window 或 manager 时，先取得
 `my_window_command_scope_ref()` 或 `my_window_manager_command_scope_ref()`，再调用

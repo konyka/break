@@ -1,5 +1,16 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：Vulkan 关闭配置链接缺陷修复（2026-09-07）
+
+TDD 先在非 Vulkan 后端测试中锁定完整 instance API 的安全失败契约，随后补齐
+`my_vgcanvas_vulkan_instance_acquire_with_extensions()` stub。修复后重新配置的 ASan/UBSan
+构建成功链接 `test_myui_window_manager`，并完成 vgcanvas、Break PAL、窗口管理器、MVVM 和
+shader I/O 五套定向测试，合计 **379/379**；未发现 ASan/UBSan 报告。
+
+该验证覆盖无 Vulkan SDK/能力的静态配置，不等价于真实窗口 WSI。Vulkan 开启配置的离屏与
+headless 回归仍需保持，并由真实 X11/Wayland/Win32/macOS runner 继续验证设备、surface、
+swapchain 和 validation-layer 生命周期。
+
 ## 本轮补充：Vulkan WSI 依赖边界（2026-09-07）
 
 `myr` 不再强制定义 X11/Wayland Vulkan 平台宏，避免 Windows/macOS 交叉编译被错误
@@ -519,6 +530,19 @@ TDD 覆盖 Break/dummy 的四生产者并发投递和 IME 快照，普通、ASan
 主循环线程完成。拥有上下文的跨线程 UI command API 已通过独立 sidecar 实现，不破坏冻结
 PAL vtable，并定义了 manager/window scope 关闭期间的任务析构语义；后续仍需完善通用
 lease/borrowed-pointer 失效协议，不能把 command scope 当作所有异步指针的自动保活机制。
+
+## 本轮补充：UI command dispatch 线程闸门（2026-09-07）
+
+此前 `my_ui_command_dispatch()` 虽由 PAL handler 使用，但公开入口本身缺少当前 loop
+上下文证明，外部线程可以绕过提交路径直接调用。现在 command 记录目标 loop，PAL
+事件泵在 handler 前后建立内部、线程局部的 dispatch token；无 token 或 token 属于另一
+个 loop 时 dispatch 直接跳过，合法事件仍只执行一次。token 仅位于内部头文件，不扩展
+冻结 PAL vtable，正常 command 提交和执行不增加锁、堆分配或渲染热路径开销。
+
+TDD 新增直接 dispatch 与错误 loop 的负向回归，以及公共/内部头文件边界契约；
+`test_myui_break_pal` **29/29**、`test_shader_io` **26/26**、`test_myui_window_manager`
+**235/235** 和 `test_myui_mvvm` **43/43** 通过。通用 borrowed pointer 自动失效、真实
+宿主 UI 线程调度和平台 runtime 矩阵仍需后续验证。
 
 ## 本轮补充：窗口关闭通知与 popup 生命周期收口（2026-09-05）
 
