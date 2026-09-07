@@ -38,6 +38,10 @@ static void progress_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
 static const my_widget_vtable_t s_progress_vtable = {progress_on_paint, NULL,
                                                      NULL, NULL};
 
+bool my_progress_bar_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_progress_vtable;
+}
+
 my_widget_t* my_progress_bar_create(const my_allocator_t* allocator) {
   my_progress_bar_t* b =
       (my_progress_bar_t*)my_mem_calloc(allocator, 1, sizeof(my_progress_bar_t));
@@ -56,7 +60,7 @@ my_widget_t* my_progress_bar_create(const my_allocator_t* allocator) {
 
 my_ret_t my_progress_bar_set_value(my_widget_t* bar, float value) {
   my_progress_bar_t* b = (my_progress_bar_t*)bar;
-  if (bar == NULL) {
+  if (!my_progress_bar_is_instance(bar)) {
     return MY_RET_INVALID_PARAMS;
   }
   if (value < 0.0f) {
@@ -73,5 +77,6 @@ my_ret_t my_progress_bar_set_value(my_widget_t* bar, float value) {
 }
 
 float my_progress_bar_get_value(my_widget_t* bar) {
-  return bar != NULL ? ((my_progress_bar_t*)bar)->value : 0.0f;
+  return my_progress_bar_is_instance(bar) ? ((my_progress_bar_t*)bar)->value
+                                           : 0.0f;
 }

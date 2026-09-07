@@ -9,6 +9,7 @@
 #include "myc/my_darray.h"
 #include "myc/my_str.h"
 #include "myui/my_layout.h"
+#include "myui/my_widget_registry_internal.h"
 
 /* ---------------- lifecycle ---------------- */
 
@@ -41,7 +42,7 @@ my_ret_t my_widget_init(my_widget_t* widget, const my_allocator_t* allocator,
     return MY_RET_INVALID_PARAMS;
   }
   memset(widget, 0, sizeof(*widget));
-  widget->base.ref_count = 1;
+  atomic_init(&widget->base.ref_count, 1u);
   widget->base.destroy = my_widget_destroy_chain;
   widget->base.allocator = allocator;
   if (name != NULL) {
@@ -68,6 +69,10 @@ my_ret_t my_widget_init(my_widget_t* widget, const my_allocator_t* allocator,
     return MY_RET_OOM;
   }
   return MY_RET_OK;
+}
+
+bool my_widget_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == NULL;
 }
 
 my_ret_t my_widget_subclass_init(my_widget_t* widget,
@@ -97,6 +102,7 @@ void my_widget_destroy(my_widget_t* widget) {
   if (widget == NULL) {
     return;
   }
+  my_widget_class_unbind_instance(widget);
   n = my_darray_size(widget->children);
   for (i = 0; i < n; i++) {
     my_widget_t* child =
@@ -160,6 +166,9 @@ my_ret_t my_widget_remove_child(my_widget_t* parent, my_widget_t* child) {
   for (i = 0; i < n; i++) {
     if (my_darray_get(parent->children, i) == child) {
       my_widget_invalidate(parent, NULL);
+      if (parent->child_removed_hook != NULL) {
+        parent->child_removed_hook(parent, child);
+      }
       my_widget_t* root = my_widget_root(parent);
       if (root != NULL && root->removed_hook != NULL) {
         root->removed_hook(root, child);
@@ -527,6 +536,15 @@ uint32_t my_widget_on(my_widget_t* widget, const char* event_name,
     return 0;
   }
   return my_emitter_on(widget->emitter, event_name, callback, ctx);
+}
+
+uint32_t my_widget_on_lease(my_widget_t* widget, const char* event_name,
+                            my_event_callback_t callback,
+                            my_emitter_context_lease_t* lease) {
+  if (widget == NULL) {
+    return 0;
+  }
+  return my_emitter_on_lease(widget->emitter, event_name, callback, lease);
 }
 
 my_ret_t my_widget_off(my_widget_t* widget, uint32_t id) {

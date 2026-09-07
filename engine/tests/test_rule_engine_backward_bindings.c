@@ -445,6 +445,7 @@ TEST(deep_nested_function_operands_preserve_evaluation_context) {
     ASSERT_EQ(re_query_solution_count(query), 1u);
     ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_OK);
     re_proof_destroy(proof);
+    re_query_destroy(query);
     re_function_unregister(function);
     re_facts_destroy(facts);
     re_engine_destroy(engine);

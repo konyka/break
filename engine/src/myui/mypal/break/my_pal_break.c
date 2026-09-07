@@ -17,6 +17,11 @@ typedef struct break_pal_t {
   my_pal_window_t *primary_window;
 } break_pal_t;
 
+typedef struct break_media_provider_t {
+  const my_allocator_t *allocator;
+  Platform *platform;
+} break_media_provider_t;
+
 typedef struct break_window_t {
   my_pal_window_t base;
   break_pal_t *pal;
@@ -39,6 +44,7 @@ typedef struct break_loop_t {
   break_queued_event_t *event_head;
   break_queued_event_t *event_tail;
   atomic_flag event_lock;
+  atomic_bool accepting_events;
   atomic_bool quit;
 } break_loop_t;
 
@@ -212,6 +218,12 @@ static my_ret_t break_loop_post_event(my_pal_main_loop_t *loop,
   while (atomic_flag_test_and_set_explicit(&l->event_lock,
                                            memory_order_acquire)) {
   }
+  if (!atomic_load_explicit(&l->accepting_events, memory_order_relaxed)) {
+    atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
+    my_mem_free(l->allocator, queued->ime_text);
+    my_mem_free(l->allocator, queued);
+    return MY_RET_PENDING;
+  }
   if (l->event_tail != NULL)
     l->event_tail->next = queued;
   else
@@ -239,6 +251,7 @@ static uint32_t break_loop_dispatch_events(break_loop_t *l) {
     if (l->pal->handler != NULL) {
       (void)l->pal->handler(l->pal->handler_ctx, NULL, &queued->event);
     }
+    my_event_release_payload(&queued->event);
     my_mem_free(l->allocator, queued->ime_text);
     my_mem_free(l->allocator, queued);
     count++;
@@ -276,13 +289,19 @@ static void break_loop_destroy(my_pal_main_loop_t *loop) {
   break_loop_t *l = (break_loop_t *)loop;
   if (l != NULL) {
     break_queued_event_t *queued;
+    while (atomic_flag_test_and_set_explicit(&l->event_lock,
+                                             memory_order_acquire)) {
+    }
+    atomic_store_explicit(&l->accepting_events, false, memory_order_release);
     while (l->event_head != NULL) {
       queued = l->event_head;
       l->event_head = queued->next;
       my_mem_free(l->allocator, queued->ime_text);
+      my_event_release_payload(&queued->event);
       my_mem_free(l->allocator, queued);
     }
     l->event_tail = NULL;
+    atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
     my_timer_manager_destroy(l->timers);
     my_mem_free(l->allocator, l);
   }
@@ -302,6 +321,7 @@ static my_pal_main_loop_t *break_main_loop_create(my_pal_t *pal) {
   l->allocator = p->allocator;
   atomic_init(&l->quit, false);
   atomic_flag_clear(&l->event_lock);
+  atomic_init(&l->accepting_events, true);
   l->timers = my_timer_manager_create(p->allocator, break_timer_now, p);
   if (l->timers == NULL) {
     break_loop_destroy((my_pal_main_loop_t *)l);
@@ -372,9 +392,33 @@ static bool break_needs_csd(my_pal_t *pal) {
   return platform_needs_client_decoration(break_pal_from(pal)->platform);
 }
 
+static my_ret_t break_get_media_context(void *provider_context,
+                                        my_pal_media_context_ex_t *out) {
+  PlatformMediaContext platform_context;
+  break_media_provider_t *provider = (break_media_provider_t *)provider_context;
+  if (out == NULL) return MY_RET_INVALID_PARAMS;
+  if (!platform_get_media_context(provider->platform, &platform_context)) {
+    return MY_RET_NOT_SUPPORTED;
+  }
+  out->base.screen = platform_context.screen;
+  out->base.prefers_dark = platform_context.prefers_dark;
+  out->base.prefers_reduced_motion = platform_context.prefers_reduced_motion;
+  out->base.capabilities = platform_context.capabilities & MY_PAL_MEDIA_CAP_ALL;
+  out->known = platform_context.known & MY_PAL_MEDIA_KNOWN_ALL;
+  return MY_RET_OK;
+}
+
+static void break_release_media_context(void *provider_context) {
+  break_media_provider_t *provider = (break_media_provider_t *)provider_context;
+  if (provider != NULL) {
+    my_mem_free(provider->allocator, provider);
+  }
+}
+
 static void break_pal_destroy(my_pal_t *pal) {
   break_pal_t *p = break_pal_from(pal);
   if (p != NULL) {
+    my_pal_unregister_media_provider(pal);
     my_mem_free(p->allocator, p);
   }
 }
@@ -395,6 +439,24 @@ my_pal_t *my_pal_break_create(const my_allocator_t *allocator, Platform *platfor
   p->base.vtable = &s_break_pal_vtable;
   p->allocator = allocator;
   p->platform = platform;
+  {
+    break_media_provider_t *media_provider = (break_media_provider_t *)
+        my_mem_calloc(allocator, 1, sizeof(*media_provider));
+    const my_pal_media_provider_t provider = {
+        sizeof(provider), MY_PAL_MEDIA_PROVIDER_ABI_VERSION,
+        break_get_media_context, media_provider, break_release_media_context};
+    if (media_provider == NULL) {
+      my_mem_free(allocator, p);
+      return NULL;
+    }
+    media_provider->allocator = allocator;
+    media_provider->platform = platform;
+    if (my_pal_register_media_provider((my_pal_t *)p, &provider) != MY_RET_OK) {
+      my_mem_free(allocator, media_provider);
+      my_mem_free(allocator, p);
+      return NULL;
+    }
+  }
   return (my_pal_t *)p;
 }
 

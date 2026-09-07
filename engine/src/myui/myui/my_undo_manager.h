@@ -15,8 +15,10 @@
  * under a my_window root). A tag change breaks the open batch naturally;
  * blur still breaks batches via my_undo_manager_break_batch.
  *
- * Ownership: the manager is created/destroyed by the app; widgets and
- * the window hold BORROWED pointers. Attach to a window with
+ * Ownership: the app owns the manager handle. Destroying it closes recording
+ * and routing immediately, but storage is retired only after all registered
+ * widgets unregister; widgets and the window hold non-owning pointers while
+ * registered. Attach to a window with
  * my_window_set_undo_manager so widgets can find it via
  * my_window_undo_manager_of_widget (convenience; widgets are switched to
  * shared mode explicitly).
@@ -26,13 +28,14 @@
 
 #include "myui/my_undo_stack.h"
 
-/** @brief Apply one undo/redo op to a widget (edit/text_area impl). */
-typedef void (*my_undo_apply_fn)(void* widget, const my_undo_op_t* op);
-
 typedef struct my_undo_manager_t my_undo_manager_t;
 
 my_undo_manager_t* my_undo_manager_create(const my_allocator_t* allocator,
                                           size_t capacity);
+/** @brief Retain a manager for a window or another long-lived owner. */
+my_undo_manager_t* my_undo_manager_ref(my_undo_manager_t* mgr);
+/** @brief Release a reference acquired with my_undo_manager_ref. */
+void my_undo_manager_unref(my_undo_manager_t* mgr);
 void my_undo_manager_destroy(my_undo_manager_t* mgr);
 
 /** @brief Register a shared-mode widget (borrowed refs; called by
@@ -48,6 +51,11 @@ my_ret_t my_undo_manager_record_insert(my_undo_manager_t* mgr, void* widget,
 my_ret_t my_undo_manager_record_delete(my_undo_manager_t* mgr, void* widget,
                                        size_t offset, const char* bytes,
                                        size_t len);
+my_ret_t my_undo_manager_record_replace(my_undo_manager_t* mgr, void* widget,
+                                         size_t offset, const char* deleted,
+                                         size_t deleted_len,
+                                         const char* inserted,
+                                         size_t inserted_len);
 
 /** @brief Close the open batch (widget blur, cursor jumps). */
 void my_undo_manager_break_batch(my_undo_manager_t* mgr);

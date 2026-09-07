@@ -6,6 +6,10 @@ typedef struct { u32 index; u32 generation; } RHIHandle;
 
 #define RHI_MAX_PRESENT_DAMAGE_RECTS 16u
 #define RHI_MAX_SCREENSHOT_BYTES (64u * 1024u * 1024u)
+#define RHI_MAX_DRAWABLE_DIMENSION 16384u
+#define RHI_MAX_MIP_LEVELS 16u
+#define RHI_MAX_TEXTURE_ARRAY_LAYERS 2048u
+#define RHI_MAX_TEXTURE_UNITS 16u
 
 typedef struct {
     i32 x;
@@ -184,6 +188,12 @@ void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 bool       rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
                                        u32 width, u32 height);
+/* Convert top-left drawable damage to the bottom-left convention used by
+ * EGL/GLX damage-present extensions. This is allocation-free and supports
+ * in-place conversion when the input and output buffers alias. */
+bool       rhi_present_damage_to_bottom_left(const RHIPresentRect *rects,
+                                             u32 count, u32 width, u32 height,
+                                             RHIPresentRect *out, u32 capacity);
 /* Validate a bounded RGBA8 screenshot region and destination storage. */
 bool       rhi_screenshot_region_validate(u32 x, u32 y, u32 w, u32 h,
                                           u32 width, u32 height,
@@ -206,6 +216,9 @@ void          rhi_set_vsync(RHIDevice *dev, bool enabled);
 u32           rhi_frame_index(RHIDevice *dev);
 
 /* ---- Resource creation ---- */
+/* Pure descriptor validation shared by every backend. */
+bool        rhi_buffer_desc_validate(const RHIBufferDesc *desc);
+bool        rhi_texture_desc_validate(const RHITextureDesc *desc);
 RHIBuffer   rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc);
 void        rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf);
 RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment);
@@ -332,6 +345,7 @@ typedef struct {
 } RHICubemapDesc;
 
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc);
+bool       rhi_cubemap_desc_validate(const RHICubemapDesc *desc);
 void       rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm);
 /* Transition all faces/mips of a cubemap that was written via compute storage
  * (GENERAL layout) back to a shader-readable layout for sampling.  Performs a
@@ -415,6 +429,8 @@ typedef struct {
 
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
                               const RHIFormat *formats, u32 attachment_count);
+bool      rhi_mrt_desc_validate(u32 width, u32 height,
+                                const RHIFormat *formats, u32 attachment_count);
 void      rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo);
 void      rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo);
 void      rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo);

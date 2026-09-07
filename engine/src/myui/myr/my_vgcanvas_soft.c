@@ -6,8 +6,8 @@
  *  - Path fill: scanline even-odd rule over ALL subpaths (a half-open
  *    [y0, y1) edge test avoids double-counted vertices); correct for
  *    concave and self-intersecting polygons; nested contours punch holes.
- *  - Stroke: Bresenham line per segment with a square line_width brush —
- *    a deliberate 1px/integer-width approximation, no joins/caps yet.
+ *  - Stroke: bounded segment geometry with butt/round/square caps and
+ *    miter/round/bevel joins; AA uses a single coverage union where enabled.
  *  - Rounded rect: 3 body rects + 4 scanline-filled quarter circles.
  *  - No anti-aliasing, no alpha blending (documented in my_vgcanvas.h).
  */
@@ -79,11 +79,24 @@ static my_ret_t soft_grow(const my_allocator_t* alloc, void** arr, size_t* cap,
                           size_t need, size_t elem_size) {
   void* p;
   size_t new_cap = *cap > 0 ? *cap : 16;
+  if (elem_size == 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (need == SIZE_MAX) {
+    return MY_RET_OOM;
+  }
   if (need <= *cap) {
     return MY_RET_OK;
   }
   while (new_cap < need) {
+    if (new_cap > SIZE_MAX / 2u) {
+      new_cap = need;
+      break;
+    }
     new_cap *= 2;
+  }
+  if (new_cap > SIZE_MAX / elem_size) {
+    return MY_RET_OOM;
   }
   p = my_mem_realloc(alloc, *arr, new_cap * elem_size);
   if (p == NULL) {
@@ -411,8 +424,10 @@ static my_ret_t soft_end_frame(my_vgcanvas_t* vg) {
 
 static my_ret_t soft_save(my_vgcanvas_t* vg) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
-  my_ret_t ret = soft_grow(s->allocator, (void**)&s->stack, &s->stack_cap,
-                           s->stack_count + 1, sizeof(soft_state_t));
+  my_ret_t ret;
+  if (s->stack_count == SIZE_MAX) return MY_RET_OOM;
+  ret = soft_grow(s->allocator, (void**)&s->stack, &s->stack_cap,
+                  s->stack_count + 1, sizeof(soft_state_t));
   if (ret != MY_RET_OK) {
     return ret;
   }
@@ -431,6 +446,7 @@ static my_ret_t soft_restore(my_vgcanvas_t* vg) {
 
 static my_ret_t soft_translate(my_vgcanvas_t* vg, float dx, float dy) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
+  if (!isfinite(dx) || !isfinite(dy)) return MY_RET_INVALID_PARAMS;
   s->state.tx += dx;
   s->state.ty += dy;
   return MY_RET_OK;
@@ -439,7 +455,7 @@ static my_ret_t soft_translate(my_vgcanvas_t* vg, float dx, float dy) {
 static my_ret_t soft_clip_rect(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
   my_rect_t dev, clipped;
-  if (rect == NULL) {
+  if (!my_vgcanvas_finite_rect(rect)) {
     return MY_RET_INVALID_PARAMS;
   }
   /* clip is inclusive: origin floors, far edge ceils */
@@ -468,6 +484,7 @@ static my_ret_t soft_set_stroke_color(my_vgcanvas_t* vg, my_color_t color) {
 }
 
 static my_ret_t soft_set_line_width(my_vgcanvas_t* vg, float width) {
+  if (!isfinite(width) || width <= 0.0f) return MY_RET_INVALID_PARAMS;
   ((my_vgcanvas_soft_t*)vg)->state.line_width = width;
   return MY_RET_OK;
 }
@@ -618,8 +635,10 @@ static my_ret_t soft_begin_path(my_vgcanvas_t* vg) {
 
 static my_ret_t soft_move_to(my_vgcanvas_t* vg, float x, float y) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
-  my_ret_t ret = soft_grow(s->allocator, (void**)&s->contours, &s->contour_cap,
-                           s->contour_count + 1, sizeof(contour_t));
+  my_ret_t ret = soft_grow(
+      s->allocator, (void**)&s->contours, &s->contour_cap,
+      s->contour_count == SIZE_MAX ? SIZE_MAX : s->contour_count + 1,
+      sizeof(contour_t));
   if (ret != MY_RET_OK) {
     return ret;
   }
@@ -636,8 +655,10 @@ static my_ret_t soft_line_to(my_vgcanvas_t* vg, float x, float y) {
   if (s->contour_count == 0) {
     return soft_move_to(vg, x, y); /* implicit move_to */
   }
-  ret = soft_grow(s->allocator, (void**)&s->points, &s->point_cap,
-                  s->point_count + 1, sizeof(path_point_t));
+  ret = soft_grow(
+      s->allocator, (void**)&s->points, &s->point_cap,
+      s->point_count == SIZE_MAX ? SIZE_MAX : s->point_count + 1,
+      sizeof(path_point_t));
   if (ret != MY_RET_OK) {
     return ret;
   }
@@ -674,8 +695,8 @@ static my_ret_t soft_curve_to(my_vgcanvas_t* vg, float cx1, float cy1,
   }
   x0 = s->points[s->point_count - 1].x;
   y0 = s->points[s->point_count - 1].y;
-  /* adaptive de Casteljau -> polyline -> the existing stroke strip/AA
-   * path does the rest (fill of open beziers is a documented TODO) */
+  /* Adaptive de Casteljau -> polyline; fill closes the open contour while
+   * stroke retains the original open-end cap semantics. */
   return my_bezier_cubic_to_lines(x0, y0, cx1, cy1, cx2, cy2, x, y, 0.25f,
                                   16, soft_bezier_emit, vg, NULL);
 }
@@ -698,6 +719,50 @@ static my_ret_t soft_fill(my_vgcanvas_t* vg) {
 typedef struct stroke_disk_t {
   int32_t cx, cy, r;
 } stroke_disk_t;
+
+static bool soft_join_points(const path_point_t* points, size_t vertex,
+                             size_t prev, size_t next, float half,
+                             float odd_off, my_line_join_t join,
+                             path_point_t out[3]) {
+  float px = points[vertex].x + odd_off;
+  float py = points[vertex].y + odd_off;
+  float in_x = points[vertex].x - points[prev].x;
+  float in_y = points[vertex].y - points[prev].y;
+  float out_x = points[next].x - points[vertex].x;
+  float out_y = points[next].y - points[vertex].y;
+  float in_len = sqrtf(in_x * in_x + in_y * in_y);
+  float out_len = sqrtf(out_x * out_x + out_y * out_y);
+  float cross = in_x * out_y - in_y * out_x;
+  float side, in_nx, in_ny, out_nx, out_ny;
+
+  if (in_len < 0.001f || out_len < 0.001f || fabsf(cross) < 0.0001f) {
+    return false;
+  }
+  in_nx = -in_y / in_len * half;
+  in_ny = in_x / in_len * half;
+  out_nx = -out_y / out_len * half;
+  out_ny = out_x / out_len * half;
+  side = cross > 0.0f ? -1.0f : 1.0f;
+  out[0].x = px + side * in_nx;
+  out[0].y = py + side * in_ny;
+  out[2].x = px + side * out_nx;
+  out[2].y = py + side * out_ny;
+  out[1].x = px;
+  out[1].y = py;
+  if (join == MY_LINE_JOIN_MITER) {
+    float t = ((out[2].x - out[0].x) * out_y -
+               (out[2].y - out[0].y) * out_x) /
+              cross;
+    float mx = out[0].x + in_x * t;
+    float my = out[0].y + in_y * t;
+    float miter_len = sqrtf((mx - px) * (mx - px) + (my - py) * (my - py));
+    if (isfinite(miter_len) && miter_len <= half * 4.0f) {
+      out[1].x = mx;
+      out[1].y = my;
+    }
+  }
+  return true;
+}
 
 /** @brief Union-merge stroke fill (M11d, AA levels >= 1): all segment
  * quads and cap/join disks accumulate into ONE per-row coverage buffer
@@ -732,7 +797,9 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
       ndisks += 2;
     }
     if (s->state.line_join == MY_LINE_JOIN_ROUND && edges > 0) {
-      ndisks += c->closed ? edges - 1 : edges;
+      ndisks += edges;
+    } else if (s->state.line_join != MY_LINE_JOIN_ROUND) {
+      nquads += c->closed ? edges : (c->count > 2 ? c->count - 2 : 0);
     }
   }
   if (nquads == 0 && ndisks == 0) {
@@ -784,6 +851,17 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
       float len = sqrtf(dx * dx + dy * dy);
       float nx, ny;
       contour_t* qc = &cs[nq];
+      if (!c->closed && s->state.line_cap == MY_LINE_CAP_SQUARE &&
+          len >= 0.001f) {
+        if (i == 0) {
+          x0 -= dx / len * half;
+          y0 -= dy / len * half;
+        }
+        if (i + 1 == edges) {
+          x1 += dx / len * half;
+          y1 += dy / len * half;
+        }
+      }
       if (len < 0.001f) {
         nx = 0.0f;
         ny = 0.0f; /* zero-length: small square stamp */
@@ -812,13 +890,37 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
       qc->closed = true;
       nq++;
       np += 4;
-      if (s->state.line_join == MY_LINE_JOIN_ROUND && i + 1 < c->count) {
+      if (s->state.line_join == MY_LINE_JOIN_ROUND &&
+          (c->closed || i + 1 < c->count)) {
         disks[nd].cx = (int32_t)floorf(SOFT_SX(s, s->points[c->start + j].x) +
                                        odd_off);
         disks[nd].cy = (int32_t)floorf(SOFT_SY(s, s->points[c->start + j].y) +
                                        odd_off);
         disks[nd].r = (int32_t)(half * s->state.scale + 0.5f);
         nd++;
+      }
+    }
+    if (s->state.line_join != MY_LINE_JOIN_ROUND) {
+      for (i = 0; i < c->count; i++) {
+        size_t vertex = c->start + i;
+        size_t prev, next;
+        path_point_t join_points[3];
+        contour_t* jc;
+        if ((!c->closed && (i == 0 || i + 1 == c->count)) ||
+            c->count < 3) continue;
+        prev = c->start + (i == 0 ? c->count - 1 : i - 1);
+        next = c->start + ((i + 1) % c->count);
+        if (!soft_join_points(s->points, vertex, prev, next, half, odd_off,
+                              s->state.line_join, join_points)) {
+          continue;
+        }
+        jc = &cs[nq++];
+        jc->start = np;
+        jc->count = 3;
+        jc->closed = true;
+        pts[np++] = join_points[0];
+        pts[np++] = join_points[1];
+        pts[np++] = join_points[2];
       }
     }
   }
@@ -939,6 +1041,17 @@ static my_ret_t soft_stroke(my_vgcanvas_t* vg) {
       float len = sqrtf(dx * dx + dy * dy);
       float nx, ny;
       path_point_t quad[4];
+      if (!c->closed && s->state.line_cap == MY_LINE_CAP_SQUARE &&
+          len >= 0.001f) {
+        if (i == 0) {
+          x0 -= dx / len * half;
+          y0 -= dy / len * half;
+        }
+        if (i + 1 == edges) {
+          x1 += dx / len * half;
+          y1 += dy / len * half;
+        }
+      }
       contour_t qcontour;
       if (len < 0.001f) {
         /* zero-length segment: small square stamp */
@@ -968,7 +1081,8 @@ static my_ret_t soft_stroke(my_vgcanvas_t* vg) {
       fill_polys(s, quad, 4, &qcontour, 1, s->state.stroke_color);
       /* round joins: half-lw disk at each interior vertex (slight
        * over-blend with segment ends for translucent strokes, noted) */
-      if (s->state.line_join == MY_LINE_JOIN_ROUND && i + 1 < c->count) {
+      if (s->state.line_join == MY_LINE_JOIN_ROUND &&
+          (c->closed || i + 1 < c->count)) {
         int32_t r = (int32_t)(half * s->state.scale + 0.5f);
         if (r > 0) {
           soft_fill_circle(
@@ -980,16 +1094,78 @@ static my_ret_t soft_stroke(my_vgcanvas_t* vg) {
         }
       }
     }
+    if (s->state.line_join != MY_LINE_JOIN_ROUND) {
+      for (i = 0; i < c->count; i++) {
+        size_t vertex = c->start + i;
+        size_t prev, next;
+        float in_x, in_y, out_x, out_y, in_len, out_len, cross;
+        float in_nx, in_ny, out_nx, out_ny, side;
+        path_point_t join_poly[3];
+        contour_t join_contour;
+        if ((!c->closed && (i == 0 || i + 1 == c->count)) ||
+            c->count < 3) continue;
+        prev = c->start + (i == 0 ? c->count - 1 : i - 1);
+        next = c->start + ((i + 1) % c->count);
+        in_x = s->points[vertex].x - s->points[prev].x;
+        in_y = s->points[vertex].y - s->points[prev].y;
+        out_x = s->points[next].x - s->points[vertex].x;
+        out_y = s->points[next].y - s->points[vertex].y;
+        in_len = sqrtf(in_x * in_x + in_y * in_y);
+        out_len = sqrtf(out_x * out_x + out_y * out_y);
+        cross = in_x * out_y - in_y * out_x;
+        if (in_len < 0.001f || out_len < 0.001f || fabsf(cross) < 0.0001f)
+          continue;
+        in_nx = -in_y / in_len * half;
+        in_ny = in_x / in_len * half;
+        out_nx = -out_y / out_len * half;
+        out_ny = out_x / out_len * half;
+        side = cross > 0.0f ? -1.0f : 1.0f;
+        join_poly[0].x = s->points[vertex].x + odd_off + side * in_nx;
+        join_poly[0].y = s->points[vertex].y + odd_off + side * in_ny;
+        join_poly[2].x = s->points[vertex].x + odd_off + side * out_nx;
+        join_poly[2].y = s->points[vertex].y + odd_off + side * out_ny;
+        join_poly[1].x = s->points[vertex].x + odd_off;
+        join_poly[1].y = s->points[vertex].y + odd_off;
+        if (s->state.line_join == MY_LINE_JOIN_MITER) {
+          float denom = in_x * out_y - in_y * out_x;
+          float t = ((join_poly[2].x - join_poly[0].x) * out_y -
+                     (join_poly[2].y - join_poly[0].y) * out_x) / denom;
+          float mx = join_poly[0].x + in_x * t;
+          float my = join_poly[0].y + in_y * t;
+          float miter_len = sqrtf((mx - join_poly[1].x) *
+                                      (mx - join_poly[1].x) +
+                                  (my - join_poly[1].y) *
+                                      (my - join_poly[1].y));
+          if (isfinite(miter_len) && miter_len <= half * 4.0f) {
+            join_poly[1].x = mx;
+            join_poly[1].y = my;
+          }
+        }
+        join_contour.start = 0;
+        join_contour.count = 3;
+        join_contour.closed = true;
+        fill_polys(s, join_poly, 3, &join_contour, 1,
+                   s->state.stroke_color);
+      }
+    }
   }
   return MY_RET_OK;
 }
 
 static my_ret_t soft_set_line_cap(my_vgcanvas_t* vg, my_line_cap_t cap) {
+  if (vg == NULL || (cap != MY_LINE_CAP_BUTT && cap != MY_LINE_CAP_ROUND &&
+                     cap != MY_LINE_CAP_SQUARE)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ((my_vgcanvas_soft_t*)vg)->state.line_cap = cap;
   return MY_RET_OK;
 }
 
 static my_ret_t soft_set_line_join(my_vgcanvas_t* vg, my_line_join_t join) {
+  if (vg == NULL || (join != MY_LINE_JOIN_MITER &&
+                     join != MY_LINE_JOIN_ROUND && join != MY_LINE_JOIN_BEVEL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ((my_vgcanvas_soft_t*)vg)->state.line_join = join;
   return MY_RET_OK;
 }
@@ -1006,6 +1182,7 @@ static void soft_draw_cp(my_vgcanvas_soft_t* s, uint32_t cp, float* pen_x,
   const my_rect_t* clip = &s->state.clip;
   my_glyph_t g = {0};
   int32_t gx, gy, row;
+  if (my_font_is_variation_selector(cp)) return;
   if (my_font_get_glyph(s->state.font, cp, soft_dev_font_size(s), &g) !=
       MY_RET_OK) {
     return;
@@ -1015,16 +1192,20 @@ static void soft_draw_cp(my_vgcanvas_soft_t* s, uint32_t cp, float* pen_x,
   if (g.bitmap != NULL) {
     for (row = 0; row < g.h; row++) {
       int32_t dy = gy + row;
-      int32_t dx0 = gx, dx1 = gx + g.w;
+      int64_t dx1_64 = (int64_t)gx + g.w;
+      int32_t dx0 = gx, dx1 = dx1_64 > INT32_MAX ? INT32_MAX
+                                                   : (int32_t)dx1_64;
       const uint8_t* alpha_row = g.bitmap + (size_t)row * (size_t)g.w;
-      if (dy < clip->y || dy >= clip->y + clip->h) {
+      if (dy < clip->y || (int64_t)dy >= my_rect_bottom_i64(clip)) {
         continue;
       }
       if (dx0 < clip->x) {
         dx0 = clip->x;
       }
-      if (dx1 > clip->x + clip->w) {
-        dx1 = clip->x + clip->w;
+      if ((int64_t)dx1 > my_rect_right_i64(clip)) {
+        dx1 = my_rect_right_i64(clip) > INT32_MAX
+                  ? INT32_MAX
+                  : (int32_t)my_rect_right_i64(clip);
       }
       if (dx1 > dx0) {
         my_lcd_blend_span(s->lcd, dx0, dy, alpha_row + (dx0 - gx), dx1 - dx0,
@@ -1033,6 +1214,7 @@ static void soft_draw_cp(my_vgcanvas_soft_t* s, uint32_t cp, float* pen_x,
     }
   }
   *pen_x += (float)g.advance;
+  my_font_glyph_release(&g);
 }
 
 static void soft_draw_shaped_glyph(my_vgcanvas_soft_t* s,
@@ -1056,11 +1238,17 @@ static void soft_draw_shaped_glyph(my_vgcanvas_soft_t* s,
   if (g.bitmap != NULL) {
     for (row = 0; row < g.h; row++) {
       int32_t dy = gy + row;
-      int32_t dx0 = gx, dx1 = gx + g.w;
+      int64_t dx1_64 = (int64_t)gx + g.w;
+      int32_t dx0 = gx, dx1 = dx1_64 > INT32_MAX ? INT32_MAX
+                                                   : (int32_t)dx1_64;
       const uint8_t* alpha_row = g.bitmap + (size_t)row * (size_t)g.w;
-      if (dy < clip->y || dy >= clip->y + clip->h) continue;
+      if (dy < clip->y || (int64_t)dy >= my_rect_bottom_i64(clip)) continue;
       if (dx0 < clip->x) dx0 = clip->x;
-      if (dx1 > clip->x + clip->w) dx1 = clip->x + clip->w;
+      if ((int64_t)dx1 > my_rect_right_i64(clip)) {
+        dx1 = my_rect_right_i64(clip) > INT32_MAX
+                  ? INT32_MAX
+                  : (int32_t)my_rect_right_i64(clip);
+      }
       if (dx1 > dx0) {
         my_lcd_blend_span(s->lcd, dx0, dy, alpha_row + (dx0 - gx),
                           dx1 - dx0, s->state.fill_color);
@@ -1068,6 +1256,7 @@ static void soft_draw_shaped_glyph(my_vgcanvas_soft_t* s,
     }
   }
   *pen_x += advance;
+  my_font_glyph_release(&g);
 }
 
 static my_ret_t soft_draw_text(my_vgcanvas_t* vg, const char* text, float x,
@@ -1141,12 +1330,11 @@ static my_ret_t soft_draw_text(my_vgcanvas_t* vg, const char* text, float x,
 static my_ret_t soft_set_font(my_vgcanvas_t* vg, my_font_t* font,
                               int32_t size) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
+  if (size <= 0) return MY_RET_INVALID_PARAMS;
   if (font != NULL) {
     s->state.font = font;
   }
-  if (size > 0) {
-    s->state.font_size = size;
-  }
+  s->state.font_size = size;
   return MY_RET_OK;
 }
 
@@ -1460,6 +1648,7 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
   uint8_t* pre = NULL;
   int32_t sw, sh;
   int32_t dy;
+  int64_t y_end;
   my_ret_t ret = MY_RET_OK;
   if (rgba == NULL || dst == NULL || w <= 0 || h <= 0) {
     return MY_RET_INVALID_PARAMS;
@@ -1475,16 +1664,17 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     if (!my_rect_intersect(&dev, &s->state.clip, &clipped)) {
       return MY_RET_OK;
     }
+    y_end = my_rect_bottom_i64(&clipped);
     mono_stride = (uint32_t)clipped.w / 8u +
                   ((uint32_t)clipped.w % 8u != 0u ? 1u : 0u);
     row = (uint8_t*)my_mem_alloc(s->allocator, mono_stride);
     if (row == NULL) {
       return MY_RET_OOM;
     }
-    for (y = clipped.y; y < clipped.y + clipped.h; y++) {
+    for (y = clipped.y; (int64_t)y < y_end; y++) {
       int32_t x;
       memset(row, 0, mono_stride);
-      for (x = clipped.x; x < clipped.x + clipped.w; x++) {
+      for (x = clipped.x; (int64_t)x < my_rect_right_i64(&clipped); x++) {
         int32_t sx = (int32_t)((int64_t)(x - dev.x) * w /
                                (dev.w > 0 ? dev.w : 1));
         int32_t sy = (int32_t)((int64_t)(y - dev.y) * h /
@@ -1547,7 +1737,7 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     my_mem_free(s->allocator, pre);
     return MY_RET_OOM;
   }
-  for (dy = clipped.y; dy < clipped.y + clipped.h; dy++) {
+  for (dy = clipped.y; (int64_t)dy < my_rect_bottom_i64(&clipped); dy++) {
     int32_t sy =
         (int32_t)((int64_t)(dy - dev.y) * sh / (dev.h > 0 ? dev.h : 1));
     int32_t dx;
@@ -1558,7 +1748,7 @@ static my_ret_t soft_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     if (sy >= sh) {
       sy = sh - 1;
     }
-    for (dx = clipped.x; dx < clipped.x + clipped.w; dx++) {
+    for (dx = clipped.x; (int64_t)dx < my_rect_right_i64(&clipped); dx++) {
       if (s->scale_filter == MY_SCALE_FILTER_BILINEAR) {
         uint8_t px4[4];
         float fx = ((float)(dx - dev.x) + 0.5f) * (float)sw /
@@ -1668,7 +1858,7 @@ my_vgcanvas_t* my_vgcanvas_soft_create(const my_allocator_t* allocator,
 static my_ret_t soft_reset_clip(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
   my_rect_t dev;
-  if (rect == NULL) {
+  if (!my_vgcanvas_finite_rect(rect)) {
     return MY_RET_INVALID_PARAMS;
   }
   dev = my_rect_init((int32_t)floorf(SOFT_SX(s, rect->x)),
@@ -1697,7 +1887,7 @@ void my_vgcanvas_soft_set_scale(my_vgcanvas_t* vg, float scale) {
 
 static my_ret_t soft_set_scale_vtable(my_vgcanvas_t* vg, float scale) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
-  if (s == NULL || scale <= 0.0f) {
+  if (s == NULL || !isfinite(scale) || scale <= 0.0f) {
     return MY_RET_INVALID_PARAMS;
   }
   s->state.scale = scale;

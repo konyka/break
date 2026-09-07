@@ -128,6 +128,15 @@ For a source checkout such as Redis 8.10.1, set
 `-DRULE_ENGINE_REDIS_SOURCE_DIR=/home/timeshift/opensource/redis-8.10.1`.
 This builds a private static hiredis target from `deps/hiredis`, avoiding a
 system install and keeping the Redis client out of the public ABI.
+The adapter validates `RE_REDIS_URL` (maximum 4096 bytes and a maximum 128-byte
+`prefix`), bounds keys to 4096 bytes and values to 16 MiB, and rejects operation
+timeouts longer than 24 hours before allocating or connecting. A non-zero
+`operation_timeout_ms` configures both connect and blocking command socket
+timeouts; timeout failures are exposed as `RE_PROVIDER_ERROR_TIMEOUT`, while
+other connection or command failures remain `RE_PROVIDER_ERROR_UNAVAILABLE`.
+Zero keeps hiredis's no-command-timeout behavior and should only be used when
+the caller controls the surrounding operation lifetime. These are local safety
+limits; a missing client still force-disables the option without fallback.
 
 ### 2.3 Wayland 后端构建
 
@@ -250,7 +259,9 @@ ctest --test-dir build-msvc-1451-audit -LE graphics --output-on-failure
 ```
 
 上述配置成功，完整构建在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下通过；重复构建无剩余工作。
-非图形 CTest `56/56` 通过，其中包括 `test_platform_win32_runtime`。这提供的是非图形、headless
+非图形 CTest `56/56` 通过，其中包括 `test_platform_win32_runtime`。CI 另外显式构建并执行
+`test_platform_config`、`test_platform_null_safety` 和 `test_platform_win32_runtime`，避免平台
+runtime 门禁仅依赖全量测试筛选。这提供的是非图形、headless
 Win32 平台证据，不证明 WGL、Vulkan、GPU、present 或图形 runtime，也不证明 Windows Vulkan 构建。
 
 或显式指定 MSVC 工具链文件：
@@ -329,6 +340,7 @@ cmake --build build-gl
 | ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合） |
 | ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
 | ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
+| ENGINE_USE_TSAN | OFF | 启用 ThreadSanitizer（GCC/Clang 使用 `-fsanitize=thread`；用于线程安全专项验证） |
 | ENGINE_USE_UBSAN | OFF | 启用 UndefinedBehaviorSanitizer（GCC/Clang 使用 `-fsanitize=undefined`；MSVC 不启用） |
 | ENGINE_ENABLE_IPO | ON | Release 构建中在工具链支持时启用 IPO/LTO，仅作用于 `engine` 静态库 |
 | MYUI_FONT_FREETYPE | ON | 找到 FreeType 时启用 hinted 字形和 TTC 多字面选择；CJK 默认字体需要此选项 |
@@ -487,20 +499,20 @@ GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触�
 
 | Job | 配置 | 依赖（apt） | 测试 |
 |-----|------|-------------|------|
-| `gl` | X11 + OpenGL，Debug | `libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 全量构建 + `ctest -LE graphics` |
+| `gl` | X11 + OpenGL，Debug | `libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk xvfb x11-utils` | 全量构建 + `ctest -LE graphics` + Xvfb 下 `test_platform_x11_runtime`/`test_rhi_x11_runtime` |
 | `vk` | X11 + Vulkan，Debug | `libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建 + `ctest -LE graphics` |
-| `wayland-gl` | Wayland + EGL OpenGL，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
-| `wayland-vk` | Wayland + Vulkan，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建、`dxx_break`、`ctest -LE graphics` |
+| `wayland-gl` | Wayland + EGL OpenGL，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libfreetype6-dev fonts-noto-cjk weston` | 全量构建、`dxx_break`、Weston headless + `ctest -LE graphics` |
+| `wayland-vk` | Wayland + Vulkan，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk weston` | 全量构建、`dxx_break`、Weston headless + `ctest -LE graphics` |
 | `windows-clang` | Win32 + OpenGL，Debug | Windows SDK/Ninja | 全量构建、`dxx_break`、`test_platform_win32_runtime` 及其他 `ctest -LE graphics` |
-| `macos-vulkan` | Cocoa + MoltenVK，Debug | Homebrew `molten-vk`、`shaderc`、`freetype` | 编译 `dxx_break` |
+| `macos-vulkan` | Cocoa + MoltenVK，Debug | Homebrew `molten-vk`、`shaderc`、`freetype` | 编译 `dxx_break`、Cocoa runtime smoke 与平台契约测试 |
 | `linux-clang-release` | X11 + OpenGL，Clang/LLD，Release，IPO ON | `clang lld cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
 | `linux-gcc-sanitizers` | X11 + OpenGL，GCC，Debug，ASan + UBSan | `gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
 | `linux-graphics-smoke` | X11 + Vulkan，GCC，Debug，Xvfb + lavapipe/llvmpipe | `libvulkan-dev libshaderc-dev mesa-vulkan-drivers libgl1-mesa-dri xvfb` 及 X11/FreeType 依赖 | 仅 `ctest -L graphics`（当前为 `test_vulkan`） |
 
-CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`。Wayland、Windows 和 macOS job
+CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`；OpenGL job 另外启动 Xvfb 执行 GLX runtime 门禁。Wayland、Windows 和 macOS job
 额外显式构建 `dxx_break`，使 PAL/RHI 接口成为平台编译门禁。
 
-`linux-graphics-smoke` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe。它只运行现有的 `graphics` 标签测试；若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的 golden image 可能存在差异，因此该 job 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows headless CTest 的 `test_platform_win32_runtime` 只提供 Win32 platform smoke 证据，不覆盖 WGL/Vulkan/GPU/present；macOS Cocoa/Metal 和真实 Wayland compositor runtime 仍未由这些 jobs 验证，状态保持待验证；Wayland jobs 当前只提供构建与非图形 CTest 证据。
+`linux-graphics-smoke` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe；该 job 同时执行 `graphics` 标签中的 X11 platform smoke。若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的 golden image 可能存在差异，因此该 job 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows job 的 `test_platform_win32_runtime` 提供 Win32 platform smoke 证据，不覆盖 WGL/Vulkan/GPU/present；macOS job 执行 Cocoa window smoke；Wayland jobs 启动 Weston headless compositor 后执行 Wayland platform smoke。上述 smoke 仍不等价于真实 GPU、IME、buffer-age 或物理设备矩阵，也不等价于完整 retained-buffer partial-present 验证。
 
 ## 7. 项目结构与两套构建
 
@@ -552,9 +564,9 @@ bk::ApplicationInterface* g_pApp = &g_App;
 #include "engine.h"
 
 int main() {
-    Engine engine;
+    Engine engine = {0};
     EngineConfig cfg = { .width = 1280, .height = 720, .title = "My Game" };
-    engine_init(&engine, &cfg);
+    if (!engine_init(&engine, &cfg)) return 1;
     while (engine_frame(&engine)) {
         // 游戏逻辑
     }

@@ -39,6 +39,9 @@ typedef struct my_navigator_t {
 /** @brief Install the process-wide default navigator (weak ref). */
 void my_navigator_set_default(my_navigator_t* nav);
 
+/** @brief Clear the default only when it still points to `nav`. */
+void my_navigator_clear_default(my_navigator_t* nav);
+
 /** @brief Dispatch a request to the default navigator. */
 my_ret_t my_navigator_request(const my_navigator_request_t* request);
 

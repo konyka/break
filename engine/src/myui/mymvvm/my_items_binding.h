@@ -20,15 +20,18 @@ typedef struct my_items_binding_t {
   const my_allocator_t* allocator;
   my_binding_target_t* target; /**< weak */
   my_binding_rule_t rule;
-  my_view_model_array_t* array; /**< resolved from the vm prop (weak) */
+  my_view_model_array_t* array; /**< resolved from the vm prop (owned ref) */
   uint32_t array_listener_id;
   uint32_t vm_listener_id; /**< re-resolve when the prop itself changes */
+  uint32_t vm_all_listener_id;
+  my_ret_t last_error;
 } my_items_binding_t;
 
 my_items_binding_t* my_items_binding_create(const my_allocator_t* allocator,
                                             my_binding_context_t* ctx,
                                             my_binding_target_t* target,
-                                            const my_binding_rule_t* rule);
+                                            const my_binding_rule_t* rule,
+                                            my_ret_t* error);
 
 void my_items_binding_destroy(my_items_binding_t* binding);
 

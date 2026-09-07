@@ -31,12 +31,21 @@ my_ret_t my_condition_binding_eval(my_condition_binding_t* b) {
   }
   my_value_init(&out, NULL);
   my_value_set_bool(&out, cond);
-  my_binding_target_set_prop(b->target, b->rule.widget_prop, &out);
-  my_value_reset(&out);
-  return MY_RET_OK;
+  {
+    my_ret_t ret = my_binding_target_set_prop(b->target, b->rule.widget_prop,
+                                              &out);
+    my_value_reset(&out);
+    return ret;
+  }
 }
 
 static void on_prop_changed(void* ctx, const char* event, void* data) {
+  (void)event;
+  (void)data;
+  my_condition_binding_eval((my_condition_binding_t*)ctx);
+}
+
+static void on_props_changed(void* ctx, const char* event, void* data) {
   (void)event;
   (void)data;
   my_condition_binding_eval((my_condition_binding_t*)ctx);
@@ -53,6 +62,13 @@ my_ret_t my_condition_binding_rebind(my_condition_binding_t* b) {
     snprintf(event, sizeof(event), "prop:%s", b->rule.vm_prop);
     b->vm_listener_id = my_emitter_on(vm->emitter, event, on_prop_changed, b);
     if (b->vm_listener_id == 0) {
+      return MY_RET_OOM;
+    }
+    b->vm_all_listener_id =
+        my_emitter_on(vm->emitter, "props", on_props_changed, b);
+    if (b->vm_all_listener_id == 0) {
+      my_emitter_off(vm->emitter, b->vm_listener_id);
+      b->vm_listener_id = 0;
       return MY_RET_OOM;
     }
   }
@@ -90,6 +106,10 @@ void my_condition_binding_destroy(my_condition_binding_t* b) {
   vm = my_binding_context_get_view_model(b->ctx);
   if (vm != NULL && b->vm_listener_id > 0) {
     my_emitter_off(vm->emitter, b->vm_listener_id);
+  }
+  if (vm != NULL && b->vm_all_listener_id > 0) {
+    my_emitter_off(vm->emitter, b->vm_all_listener_id);
+    b->vm_all_listener_id = 0;
   }
   my_mem_free(b->allocator, b);
 }

@@ -25,6 +25,7 @@ typedef struct my_scroll_bar_t {
 } my_scroll_bar_t;
 
 my_widget_t* my_scroll_bar_create(const my_allocator_t* allocator);
+bool my_scroll_bar_is_instance(const my_widget_t* widget);
 my_ret_t my_scroll_bar_set_value(my_widget_t* bar, float value);
 float my_scroll_bar_get_value(my_widget_t* bar);
 my_ret_t my_scroll_bar_set_page_size(my_widget_t* bar, float page_size);

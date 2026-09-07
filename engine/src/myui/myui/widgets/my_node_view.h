@@ -22,6 +22,9 @@
 /** @brief Create the canvas widget (focusable for Del). */
 my_widget_t* my_node_view_create(const my_allocator_t* allocator);
 
+/** @brief Return whether a widget is a node-view instance. */
+bool my_node_view_is_instance(const my_widget_t* widget);
+
 /** @brief Add a node at (x, y) with size w x h (canvas coords). w or h
  * == 0 auto-sizes that dimension to the content (M21b: title, socket
  * rows, embedded children; recomputed as content changes).

@@ -1,7 +1,7 @@
 /**
  * @file my_theme.h
  * @brief Theme: a style sheet mapping (widget type, optional name) to
- * styles, plus a minimal text loader.
+ * styles, plus transactional text loading.
  *
  * Text format (one rule per line, '#' starts hex colors, blank lines and
  * lines starting with ';' are ignored):
@@ -20,6 +20,9 @@
 #define MY_THEME_TYPE_LEN 24
 #define MY_THEME_NAME_LEN 32
 #define MY_THEME_MAX_ANCESTORS 4u
+#define MY_THEME_MAX_SCOPE_LIMITS 4u
+#define MY_THEME_SCOPE_ROOT_IMPLICIT MY_THEME_MAX_ANCESTORS
+#define MY_THEME_MAX_BYTES (4u * 1024u * 1024u)
 
 /** @brief Fixed-size ancestor selector component; no lookup allocation. */
 typedef struct my_theme_ancestor_t {
@@ -39,6 +42,9 @@ typedef struct my_theme_entry_t {
   u32 ancestor_count;
   my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
   bool ancestor_direct_path[MY_THEME_MAX_ANCESTORS];
+  u32 scope_limit_count;
+  my_theme_ancestor_t scope_limits[MY_THEME_MAX_SCOPE_LIMITS];
+  u32 scope_limit_root_index[MY_THEME_MAX_SCOPE_LIMITS];
   int32_t specificity[MY_STATE_COUNT][MY_STYLE_MAX_PROPS];
   /**< CSS specificity parallel to style.props. */
   my_style_t style;
@@ -52,6 +58,10 @@ typedef struct my_theme_t {
 
 my_theme_t* my_theme_create(const my_allocator_t* allocator);
 void my_theme_destroy(my_theme_t* theme);
+
+/** @brief Deep-copy a theme for transactional loading. NULL on allocation
+ * failure; values, selector metadata and cascade specificity are copied. */
+my_theme_t* my_theme_clone(const my_theme_t* source);
 
 /** @brief Set a property on the (type, name) rule (name NULL/"" = type-wide). */
 my_ret_t my_theme_set(my_theme_t* theme, const char* widget_type, const char* name,
@@ -115,6 +125,23 @@ my_ret_t my_theme_set_ex4(my_theme_t* theme, const char* widget_type,
                           my_widget_state_t state, const char* key,
                           const my_value_t* value, int32_t specificity);
 
+/** @brief Extended write with bounded @scope exclusion selectors.
+ *
+ * A scope limit root index may equal MY_THEME_SCOPE_ROOT_IMPLICIT to denote
+ * an omitted scope root. In that form the limit is searched on the complete
+ * widget parent chain and no ancestor selector is added.
+ */
+my_ret_t my_theme_set_ex5(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_ancestor_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity);
+
 struct my_widget_t;
 
 /**
@@ -153,7 +180,7 @@ my_theme_t* my_theme_default_create(const my_allocator_t* allocator);
 
 /**
  * @brief Load rules from text (see file header for the format).
- * @return MY_RET_OK, or MY_RET_INVALID_PARAMS on the first bad line.
+ * @return MY_RET_OK, or an error when a line is invalid or allocation fails.
  */
 my_ret_t my_theme_load_str(my_theme_t* theme, const char* str);
 

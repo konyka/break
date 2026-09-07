@@ -158,13 +158,15 @@ static re_status_t begin_transaction(re_facts_t *facts, re_fact_txn_t **out_tran
     if (facts->transaction != NULL || (facts->running && !facts->run_transaction_allowed) || facts->notifying) return RE_STATUS_BUSY;
     transaction = re_alloc(&facts->allocator, sizeof(*transaction));
     if (transaction == NULL) return RE_STATUS_OUT_OF_MEMORY;
+    transaction->allocator = facts->allocator;
     transaction->facts = facts; transaction->original = NULL; transaction->staged = NULL; transaction->inactive = 0;
     transaction->generation = facts->mutation_serial + 1u;
     transaction->next_retired = NULL;
     status = clone_facts(facts, &transaction->original);
     if (status == RE_STATUS_OK) status = clone_facts(facts, &transaction->staged);
     if (status != RE_STATUS_OK) {
-        re_facts_destroy(transaction->original); re_facts_destroy(transaction->staged);
+        re_facts_destroy(transaction->original); transaction->original = NULL;
+        re_facts_destroy(transaction->staged); transaction->staged = NULL;
         re_free(&facts->allocator, transaction); return status;
     }
     facts->transaction = transaction; *out_transaction = transaction;
@@ -241,7 +243,8 @@ re_status_t re_facts_commit(re_fact_txn_t *transaction) {
         facts->notifying = 0;
         /* Notifications are post-commit. A callback error is reported to the
          * caller, but cannot roll back state already visible to callbacks. */
-        re_facts_destroy(transaction->original); re_facts_destroy(transaction->staged);
+        re_facts_destroy(transaction->original); transaction->original = NULL;
+        re_facts_destroy(transaction->staged); transaction->staged = NULL;
         transaction->next_retired = facts->retired_transaction;
         facts->retired_transaction = transaction;
         if (facts->destroy_requested && !facts->running) re_facts_destroy(facts);
@@ -254,8 +257,25 @@ void re_facts_rollback(re_fact_txn_t *transaction) {
     if (transaction == NULL || transaction->inactive || transaction->facts == NULL ||
         transaction->facts->transaction != transaction) return;
     facts = transaction->facts; facts->transaction = NULL;
-    re_facts_destroy(transaction->original); re_facts_destroy(transaction->staged);
+    re_facts_destroy(transaction->original); transaction->original = NULL;
+    re_facts_destroy(transaction->staged); transaction->staged = NULL;
     transaction->inactive = 1;
     transaction->next_retired = facts->retired_transaction;
     facts->retired_transaction = transaction;
+}
+
+void re_facts_txn_destroy(re_fact_txn_t *transaction) {
+    re_facts_t *facts;
+    re_fact_txn_t **cursor;
+    if (transaction == NULL || !transaction->inactive) return;
+    facts = transaction->facts;
+    if (facts != NULL) {
+        cursor = &facts->retired_transaction;
+        while (*cursor != NULL && *cursor != transaction)
+            cursor = &(*cursor)->next_retired;
+        if (*cursor == transaction) *cursor = transaction->next_retired;
+    }
+    re_free(&transaction->allocator, transaction->original);
+    re_free(&transaction->allocator, transaction->staged);
+    re_free(&transaction->allocator, transaction);
 }

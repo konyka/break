@@ -19,6 +19,7 @@ typedef struct my_data_binding_t {
   my_value_validator_t* validator;   /**< owned when parameterized */
   bool validator_owned;
   uint32_t vm_listener_id;
+  uint32_t vm_all_listener_id;
   uint32_t target_listener_id;
   bool updating;                     /**< echo-loop guard */
 } my_data_binding_t;

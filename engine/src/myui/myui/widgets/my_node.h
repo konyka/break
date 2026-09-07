@@ -32,6 +32,12 @@ my_widget_t* my_node_create(const my_allocator_t* allocator,
                             my_widget_t* view, const char* id,
                             const char* title, const char* category);
 
+/** @brief Return whether a widget is a node instance. */
+bool my_node_is_instance(const my_widget_t* widget);
+
+/** @brief Clear the node's non-owning view link before its view is destroyed. */
+void my_node_detach_view(my_widget_t* node);
+
 /** @brief Add a socket (name copied; type_color = rgba32 fallback).
  * Triggers an auto-size recompute on auto-sized nodes (M21b). */
 my_ret_t my_node_add_socket(my_widget_t* node, my_socket_dir_t dir,
@@ -40,7 +46,8 @@ my_ret_t my_node_add_socket(my_widget_t* node, my_socket_dir_t dir,
 /** @brief Number of sockets of one direction. */
 size_t my_node_socket_count(const my_widget_t* node, my_socket_dir_t dir);
 
-/** @brief Socket dot center in canvas (= view-local) coordinates. */
+/** @brief Socket dot center in canvas (= view-local) coordinates.
+ * Returns false without writing when either output is NULL. */
 bool my_node_socket_center(const my_widget_t* node, my_socket_dir_t dir,
                            size_t slot, int32_t* out_x, int32_t* out_y);
 

@@ -83,13 +83,8 @@ my_view_model_t* my_binding_context_get_view_model(my_binding_context_t* ctx) {
   return ctx != NULL ? ctx->vm : NULL;
 }
 
-my_ret_t my_binding_context_set_view_model(my_binding_context_t* ctx,
-                                           my_view_model_t* vm) {
+static void detach_bindings(my_binding_context_t* ctx) {
   size_t i, n;
-  if (ctx == NULL) {
-    return MY_RET_INVALID_PARAMS;
-  }
-  /* detach listeners from the old vm before releasing it */
   n = my_darray_size(ctx->bindings);
   for (i = 0; i < n; i++) {
     binding_entry_t* e = (binding_entry_t*)my_darray_get(ctx->bindings, i);
@@ -97,35 +92,84 @@ my_ret_t my_binding_context_set_view_model(my_binding_context_t* ctx,
         ctx->vm != NULL) {
       my_emitter_off(ctx->vm->emitter, e->u.data->vm_listener_id);
       e->u.data->vm_listener_id = 0;
+      if (e->u.data->vm_all_listener_id > 0) {
+        my_emitter_off(ctx->vm->emitter, e->u.data->vm_all_listener_id);
+        e->u.data->vm_all_listener_id = 0;
+      }
     } else if (e->kind == MY_RULE_ITEMS) {
       if (e->u.items->array != NULL && e->u.items->array_listener_id > 0) {
         my_emitter_off(e->u.items->array->emitter,
                        e->u.items->array_listener_id);
         e->u.items->array_listener_id = 0;
       }
-      e->u.items->array = NULL;
+      if (e->u.items->array != NULL) {
+        my_view_model_array_unref(e->u.items->array);
+        e->u.items->array = NULL;
+      }
       if (e->u.items->vm_listener_id > 0 && ctx->vm != NULL) {
         my_emitter_off(ctx->vm->emitter, e->u.items->vm_listener_id);
         e->u.items->vm_listener_id = 0;
+      }
+      if (e->u.items->vm_all_listener_id > 0 && ctx->vm != NULL) {
+        my_emitter_off(ctx->vm->emitter, e->u.items->vm_all_listener_id);
+        e->u.items->vm_all_listener_id = 0;
       }
     } else if (e->kind == MY_RULE_CONDITION &&
                e->u.condition->vm_listener_id > 0 && ctx->vm != NULL) {
       my_emitter_off(ctx->vm->emitter, e->u.condition->vm_listener_id);
       e->u.condition->vm_listener_id = 0;
+      if (e->u.condition->vm_all_listener_id > 0) {
+        my_emitter_off(ctx->vm->emitter, e->u.condition->vm_all_listener_id);
+        e->u.condition->vm_all_listener_id = 0;
+      }
     }
   }
-  my_view_model_unref(ctx->vm);
-  ctx->vm = my_view_model_ref(vm);
+}
+
+static my_ret_t rebind_bindings(my_binding_context_t* ctx) {
+  size_t i, n;
+  my_ret_t ret = MY_RET_OK;
+  n = my_darray_size(ctx->bindings);
   for (i = 0; i < n; i++) {
     binding_entry_t* e = (binding_entry_t*)my_darray_get(ctx->bindings, i);
+    my_ret_t current = MY_RET_OK;
     if (e->kind == MY_RULE_DATA) {
-      my_data_binding_rebind(e->u.data, vm);
+      current = my_data_binding_rebind(e->u.data, ctx->vm);
     } else if (e->kind == MY_RULE_ITEMS) {
-      my_items_binding_rebind(e->u.items);
+      current = my_items_binding_rebind(e->u.items);
+      if (current == MY_RET_OK) {
+        current = e->u.items->last_error;
+      }
     } else if (e->kind == MY_RULE_CONDITION) {
-      my_condition_binding_rebind(e->u.condition);
+      current = my_condition_binding_rebind(e->u.condition);
+    }
+    if (current != MY_RET_OK && ret == MY_RET_OK) {
+      ret = current;
     }
   }
+  return ret;
+}
+
+my_ret_t my_binding_context_set_view_model(my_binding_context_t* ctx,
+                                           my_view_model_t* vm) {
+  my_view_model_t* old_vm;
+  my_ret_t ret;
+  if (ctx == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  old_vm = ctx->vm;
+  /* Keep the old reference until all bindings accept the new VM. */
+  detach_bindings(ctx);
+  ctx->vm = my_view_model_ref(vm);
+  ret = rebind_bindings(ctx);
+  if (ret != MY_RET_OK) {
+    detach_bindings(ctx);
+    my_view_model_unref(ctx->vm);
+    ctx->vm = old_vm;
+    (void)rebind_bindings(ctx);
+    return ret;
+  }
+  my_view_model_unref(old_vm);
   return MY_RET_OK;
 }
 
@@ -155,11 +199,13 @@ my_ret_t my_binding_context_bind(my_binding_context_t* ctx,
       return MY_RET_FAIL;
     }
   } else if (rule.type == MY_RULE_ITEMS) {
+    my_ret_t items_error = MY_RET_FAIL;
     e->kind = MY_RULE_ITEMS;
-    e->u.items = my_items_binding_create(ctx->allocator, ctx, target, &rule);
+    e->u.items = my_items_binding_create(ctx->allocator, ctx, target, &rule,
+                                         &items_error);
     if (e->u.items == NULL) {
       my_mem_free(ctx->allocator, e);
-      return MY_RET_NOT_SUPPORTED; /* target lacks rebuild_items */
+      return items_error;
     }
   } else if (rule.type == MY_RULE_CONDITION) {
     e->kind = MY_RULE_CONDITION;

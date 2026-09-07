@@ -53,6 +53,10 @@ static void label_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
 
 static const my_widget_vtable_t s_label_vtable = {label_on_paint, NULL, NULL, NULL};
 
+bool my_label_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_label_vtable;
+}
+
 static void label_destroy_chain(my_object_t* obj) {
   my_label_t* label = (my_label_t*)obj;
   my_mem_free(obj->allocator, label->text);
@@ -87,7 +91,7 @@ my_widget_t* my_label_create(const my_allocator_t* allocator, const char* text) 
 }
 
 my_ret_t my_label_set_align(my_widget_t* label, my_text_align_t align) {
-  if (label == NULL) {
+  if (!my_label_is_instance(label)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_label_t*)label)->align = align;
@@ -98,7 +102,7 @@ my_ret_t my_label_set_align(my_widget_t* label, my_text_align_t align) {
 my_ret_t my_label_set_text(my_widget_t* label, const char* text) {
   my_label_t* l = (my_label_t*)label;
   char* copy;
-  if (label == NULL) {
+  if (!my_label_is_instance(label)) {
     return MY_RET_INVALID_PARAMS;
   }
   copy = my_strdup(((my_object_t*)label)->allocator, text);

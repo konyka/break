@@ -86,6 +86,12 @@ static void on_vm_prop_changed(void* ctx, const char* event, void* data) {
   }
 }
 
+static void on_vm_props_changed(void* ctx, const char* event, void* data) {
+  (void)event;
+  (void)data;
+  on_vm_prop_changed(ctx, event, data);
+}
+
 static void on_target_changed(void* ctx, const char* event, void* data) {
   my_data_binding_t* binding = (my_data_binding_t*)ctx;
   (void)event;
@@ -129,7 +135,17 @@ static my_ret_t subscribe_vm(my_data_binding_t* b, my_view_model_t* vm) {
   }
   vm_event_name(b->rule.vm_prop, event, sizeof(event));
   b->vm_listener_id = my_emitter_on(vm->emitter, event, on_vm_prop_changed, b);
-  return b->vm_listener_id > 0 ? MY_RET_OK : MY_RET_OOM;
+  if (b->vm_listener_id == 0) {
+    return MY_RET_OOM;
+  }
+  b->vm_all_listener_id =
+      my_emitter_on(vm->emitter, "props", on_vm_props_changed, b);
+  if (b->vm_all_listener_id == 0) {
+    my_emitter_off(vm->emitter, b->vm_listener_id);
+    b->vm_listener_id = 0;
+    return MY_RET_OOM;
+  }
+  return MY_RET_OK;
 }
 
 my_data_binding_t* my_data_binding_create(const my_allocator_t* allocator,
@@ -162,7 +178,10 @@ my_data_binding_t* my_data_binding_create(const my_allocator_t* allocator,
       return NULL;
     }
   }
-  my_data_binding_push(b); /* initial sync */
+  if (my_data_binding_push(b) != MY_RET_OK) {
+    my_data_binding_destroy(b);
+    return NULL;
+  }
   return b;
 }
 
@@ -175,6 +194,10 @@ void my_data_binding_destroy(my_data_binding_t* binding) {
   if (vm != NULL && binding->vm_listener_id > 0) {
     my_emitter_off(vm->emitter, binding->vm_listener_id);
     binding->vm_listener_id = 0;
+  }
+  if (vm != NULL && binding->vm_all_listener_id > 0) {
+    my_emitter_off(vm->emitter, binding->vm_all_listener_id);
+    binding->vm_all_listener_id = 0;
   }
   if (binding->target_listener_id > 0) {
     my_binding_target_off_event(binding->target, binding->target_listener_id);
@@ -191,6 +214,7 @@ my_ret_t my_data_binding_rebind(my_data_binding_t* binding, my_view_model_t* vm)
     return MY_RET_INVALID_PARAMS;
   }
   binding->vm_listener_id = 0;
+  binding->vm_all_listener_id = 0;
   if (subscribe_vm(binding, vm) != MY_RET_OK) {
     return MY_RET_OOM;
   }

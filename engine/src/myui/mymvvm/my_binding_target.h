@@ -51,12 +51,24 @@ struct my_binding_target_t {
 static inline my_ret_t my_binding_target_set_prop(my_binding_target_t* target,
                                                   const char* name,
                                                   const my_value_t* value) {
+  if (target == NULL || target->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (target->vtable->set_prop == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return target->vtable->set_prop(target, name, value);
 }
 
 static inline my_ret_t my_binding_target_get_prop(my_binding_target_t* target,
                                                   const char* name,
                                                   my_value_t* value) {
+  if (target == NULL || target->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (target->vtable->get_prop == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return target->vtable->get_prop(target, name, value);
 }
 
@@ -64,11 +76,21 @@ static inline uint32_t my_binding_target_on_event(my_binding_target_t* target,
                                                   const char* event,
                                                   my_event_callback_t callback,
                                                   void* ctx) {
+  if (target == NULL || target->vtable == NULL ||
+      target->vtable->on_event == NULL) {
+    return 0u;
+  }
   return target->vtable->on_event(target, event, callback, ctx);
 }
 
 static inline my_ret_t my_binding_target_off_event(my_binding_target_t* target,
                                                    uint32_t id) {
+  if (target == NULL || target->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (target->vtable->off_event == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return target->vtable->off_event(target, id);
 }
 

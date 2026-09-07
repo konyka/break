@@ -14,6 +14,12 @@
 #include "myui/my_window.h"
 
 struct my_window_manager_t;
+struct my_ui_command_scope_t;
+
+/** @brief Called before a window manager releases its own storage. */
+typedef void (*my_window_manager_destroy_listener_t)(void* ctx);
+typedef void (*my_window_manager_destroy_context_destroy_fn_t)(void* ctx);
+typedef void (*my_window_on_open_context_destroy_fn_t)(void* ctx);
 
 /**
  * @brief Open hook: called once per my_window_manager_open AFTER the
@@ -30,21 +36,34 @@ typedef struct my_window_manager_t {
   my_pal_t* pal;            /**< borrowed */
   my_pal_main_loop_t* loop; /**< borrowed */
   my_darray_t* windows;     /**< stack of owned refs (my_window_t*) */
+  my_darray_t* destroy_listeners; /**< owned lifecycle listener records */
+  uint32_t destroy_listener_next_id;
   my_animator_manager_t* anim_mgr; /**< owned: drives widget animations */
   uint32_t paint_timer_id;  /**< periodic dirty-window repaint tick */
   bool auto_paint;          /**< false: Break drives painting (no tick) */
   my_window_on_open_t on_open; /**< BreakUI injection hook */
   void* on_open_ctx;
+  my_window_on_open_context_destroy_fn_t on_open_destroy;
+  my_emitter_context_lease_t* on_open_lease;
   my_window_t* surface_pointer_grab; /**< weak shared-surface capture */
   my_window_t* surface_focus_window; /**< weak shared-surface key/IME target */
   uint64_t windows_epoch;      /**< increments when the stack changes */
   bool quit_requested;      /**< set when the last window was closed */
+  bool destroying;           /**< lifecycle guard against re-entrant teardown */
+  bool destroy_requested;    /**< deferred until an active callback unwinds */
+  unsigned callback_depth;   /**< manager callbacks currently executing */
+  struct my_darray_t* retired_on_open_hooks; /**< deferred hook releases */
+  struct my_ui_command_scope_t* command_scope; /**< owned async lifetime */
 } my_window_manager_t;
 
 /** @brief Create a manager; registers the PAL event handler. */
 my_window_manager_t* my_window_manager_create(const my_allocator_t* allocator,
                                               my_pal_t* pal,
                                               my_pal_main_loop_t* loop);
+
+/** @brief Retain the manager scope for commands tied to its lifetime. */
+struct my_ui_command_scope_t* my_window_manager_command_scope_ref(
+    my_window_manager_t* wm);
 
 /**
  * @brief Push a window (takes one manager ref), show it, invalidate fully.
@@ -58,6 +77,8 @@ my_ret_t my_window_manager_open(my_window_manager_t* wm, my_window_t* win);
 /**
  * @brief Close (remove + unref) a window. Closing the last one calls
  * main_loop quit and sets quit_requested.
+ * Destroying the manager from a close, event, or paint callback is deferred
+ * until the active manager callback unwinds.
  */
 my_ret_t my_window_manager_close(my_window_manager_t* wm, my_window_t* win);
 
@@ -65,6 +86,31 @@ my_ret_t my_window_manager_close(my_window_manager_t* wm, my_window_t* win);
 my_window_t* my_window_manager_top(my_window_manager_t* wm);
 void my_window_manager_set_on_open(my_window_manager_t* wm,
                                    my_window_on_open_t cb, void* ctx);
+/** @brief Replace the open hook and transfer its context on success. */
+my_ret_t my_window_manager_set_on_open_owned(
+    my_window_manager_t* wm, my_window_on_open_t cb, void* ctx,
+    my_window_on_open_context_destroy_fn_t destroy_ctx);
+/** @brief Replace the open hook with an invalidatable context lease. */
+my_ret_t my_window_manager_set_on_open_lease(
+    my_window_manager_t* wm, my_window_on_open_t cb,
+    my_emitter_context_lease_t* lease);
+
+/** @brief Register a cold-path manager-destroy listener; returns an ID. */
+uint32_t my_window_manager_add_destroy_listener(
+    my_window_manager_t* wm, my_window_manager_destroy_listener_t callback,
+    void* ctx);
+/** @brief Register a destroy listener whose context is released exactly once. */
+uint32_t my_window_manager_add_destroy_listener_owned(
+    my_window_manager_t* wm, my_window_manager_destroy_listener_t callback,
+    void* ctx, my_window_manager_destroy_context_destroy_fn_t destroy_ctx);
+/** @brief Register a destroy listener guarded by an invalidatable lease. */
+uint32_t my_window_manager_add_destroy_listener_lease(
+    my_window_manager_t* wm, my_window_manager_destroy_listener_t callback,
+    my_emitter_context_lease_t* lease);
+
+/** @brief Remove a manager-destroy listener before manager destruction. */
+my_ret_t my_window_manager_remove_destroy_listener(my_window_manager_t* wm,
+                                                   uint32_t id);
 
 /**
  * @brief Toggle the manager's ~33ms repaint tick (default on). BreakUI
@@ -94,6 +140,19 @@ my_ret_t my_window_manager_resize_surface(my_window_manager_t* wm,
 /** @brief Refresh the content scale of every logical window in the stack.
  * Returns true if any canvas was reconfigured and invalidated. */
 bool my_window_manager_refresh_scales(my_window_manager_t* wm);
+
+/** @brief Refresh responsive CSS only for windows whose media facts changed. */
+bool my_window_manager_refresh_media(my_window_manager_t* wm);
+
+/**
+ * @brief Refresh responsive CSS and preserve failures for the caller.
+ *
+ * `out_changed` is set when at least one window committed a new media style.
+ * A non-OK result means at least one window could not commit; callers should
+ * retry after the resource failure is cleared.
+ */
+my_ret_t my_window_manager_refresh_media_ex(my_window_manager_t* wm,
+                                            bool* out_changed);
 
 /** @brief Close all windows above the bottom one. */
 my_ret_t my_window_manager_back_to_home(my_window_manager_t* wm);

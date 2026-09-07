@@ -13,6 +13,8 @@
 #include "myc/my_error.h"
 #include "myc/my_mem.h"
 
+#include <stdatomic.h>
+
 typedef struct my_object_t my_object_t;
 
 /** @brief Destructor: must release the object, see my_object_destroy(). */
@@ -20,7 +22,7 @@ typedef void (*my_object_destroy_fn_t)(my_object_t* obj);
 
 /** @brief Reference-counted base object. */
 struct my_object_t {
-  int ref_count;                    /**< current reference count */
+  atomic_uint ref_count;            /**< current reference count */
   char* name;                       /**< owned copy of the name (may be NULL) */
   my_object_destroy_fn_t destroy;   /**< virtual destructor */
   const my_allocator_t* allocator;  /**< allocator used for name and struct */

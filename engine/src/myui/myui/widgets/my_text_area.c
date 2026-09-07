@@ -5,6 +5,7 @@
 #include "myui/widgets/my_text_area.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,48 @@
 #define TA_FOLD_STATE_VERSION 1
 #define TA_FOLD_STATE_HEADER "version: 1\nfolds:\n"
 
+static int32_t ta_sat_i64(int64_t value) {
+  if (value > INT32_MAX) return INT32_MAX;
+  if (value < INT32_MIN) return INT32_MIN;
+  return (int32_t)value;
+}
+
+static int32_t ta_sat_size_mul(size_t value, int32_t factor) {
+  if (factor <= 0 || value == 0) return 0;
+  if (value > (size_t)INT32_MAX / (size_t)factor) return INT32_MAX;
+  return (int32_t)(value * (size_t)factor);
+}
+
+static int32_t ta_sat_add(int32_t left, int32_t right) {
+  return ta_sat_i64((int64_t)left + (int64_t)right);
+}
+
+static size_t ta_sat_size_add(size_t left, size_t right) {
+  return right > SIZE_MAX - left ? SIZE_MAX : left + right;
+}
+
+static int32_t ta_sat_f32(float value) {
+  if (!isfinite(value)) return 0;
+  if (value >= (float)INT32_MAX) return INT32_MAX;
+  if (value <= (float)INT32_MIN) return INT32_MIN;
+  return (int32_t)value;
+}
+
+static int32_t ta_content_left_value(const my_text_area_t* ta);
+
+static int32_t ta_inner_width_i32(const my_text_area_t* ta) {
+  const my_widget_t* widget = (const my_widget_t*)ta;
+  int64_t width = (int64_t)widget->rect.w - ta_content_left_value(ta) -
+                  TA_PAD_X;
+  return width > INT32_MAX ? INT32_MAX : width > 0 ? (int32_t)width : 0;
+}
+
+static int32_t ta_inner_height(const my_text_area_t* ta) {
+  const my_widget_t* widget = (const my_widget_t*)ta;
+  int64_t height = (int64_t)widget->rect.h - 2 * TA_PAD_Y;
+  return height > INT32_MAX ? INT32_MAX : height > 0 ? (int32_t)height : 0;
+}
+
 typedef struct my_text_fold_range_t {
   size_t start_row;
   size_t end_row;
@@ -39,6 +82,17 @@ typedef struct my_text_fold_range_t {
 
 static size_t ta_line_count(const my_text_area_t* ta) {
   return my_darray_size(ta->line_offsets);
+}
+
+static size_t ta_line_content_end(const my_text_area_t* ta, size_t start,
+                                  size_t end) {
+  size_t pos = start;
+  while (pos < end) {
+    size_t break_len = my_line_break_hard_break_len(ta->text + pos, end - pos);
+    if (break_len > 0u) return pos;
+    pos += my_str_utf8_char_len(ta->text + pos);
+  }
+  return end;
 }
 
 static void ta_visible_rows_invalidate(my_text_area_t* ta) {
@@ -275,22 +329,31 @@ static size_t ta_decimal_digits(size_t value) {
 }
 
 static int ta_justify_space_count(const char* text, size_t len) {
-  size_t i;
+  const char* p = text;
   int count = 0;
-  for (i = 0; i + 1 < len; i++) {
-    if (text[i] == ' ') count++;
+  const char* end = text != NULL ? text + len : NULL;
+  if (text == NULL) return 0;
+  while (p < end && *p != '\0') {
+    const char* next = p;
+    uint32_t cp = my_utf8_next(&next);
+    if (my_line_break_is_breaking_space(cp) && next < end) count++;
+    p = next;
   }
   return count;
 }
 
 static int32_t ta_codepoint_advance(const my_text_area_t* ta, uint32_t cp) {
   my_glyph_t glyph = {0};
+  if (my_font_is_variation_selector(cp)) return 0;
   if (ta->font != NULL && ta->font->vtable != NULL &&
       ta->font->vtable->get_glyph != NULL &&
       my_font_get_glyph(ta->font, cp, ta->font_size, &glyph) == MY_RET_OK &&
       glyph.advance > 0) {
-    return glyph.advance;
+    int32_t advance = glyph.advance;
+    my_font_glyph_release(&glyph);
+    return advance;
   }
+  my_font_glyph_release(&glyph);
   return TA_CELL_W;
 }
 
@@ -298,10 +361,13 @@ static size_t ta_line_start(const my_text_area_t* ta, size_t row);
 static const my_visual_line_t* ta_vline_at(my_text_area_t* ta, size_t vi);
 static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
                                        const my_visual_line_t* vl);
+static my_ret_t ta_draw_text(my_text_area_t* ta, my_vgcanvas_t* vg,
+                             const char* text, float x, float y);
 
 static bool ta_geometry_reserve(my_text_area_t* ta, size_t required) {
   size_t capacity;
   int32_t* grown;
+  if (required == SIZE_MAX) return false;
   if (required <= ta->geometry_capacity) return true;
   capacity = ta->geometry_capacity == 0 ? 16 : ta->geometry_capacity;
   while (capacity < required) {
@@ -327,32 +393,23 @@ static bool ta_geometry_from_shaping(my_text_area_t* ta, size_t row,
                                            : ta->text_len;
   size_t line_end = start;
   size_t len;
-  char* text;
   my_text_layout_t* layout;
   size_t i;
   while (line_end < end && ta->text[line_end] != '\0' &&
-         ta->text[line_end] != '\n') {
+         my_line_break_hard_break_len(ta->text + line_end, end - line_end) == 0u) {
     line_end += my_str_utf8_char_len(ta->text + line_end);
   }
   if (line_end < start) return false;
   len = line_end - start;
   if (len == SIZE_MAX) return false;
-  text = (char*)my_mem_alloc(ta->allocator, len + 1u);
-  if (text == NULL) return false;
-  if (len > 0) memcpy(text, ta->text + start, len);
-  text[len] = '\0';
-  layout = my_text_layout_process(ta->allocator, text);
-  if (layout == NULL) {
-    my_mem_free(ta->allocator, text);
-    return false;
-  }
+  layout = my_text_layout_process_n(ta->allocator, ta->text + start, len);
+  if (layout == NULL) return false;
   for (i = 0; i <= count; i++) {
     ta->geometry_boundaries[i] =
         my_text_layout_visual_x_ex(layout, ta->font, ta->font_size, i,
                                    &ta->shaping_params);
   }
   my_text_layout_destroy(layout);
-  my_mem_free(ta->allocator, text);
   return true;
 }
 
@@ -371,7 +428,8 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
   end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                    : ta->text_len;
   p = ta->text + start;
-  while (start < end && *p != '\0' && *p != '\n') {
+  while (start < end && *p != '\0' &&
+         my_line_break_hard_break_len(p, end - start) == 0u) {
     p += my_str_utf8_char_len(p);
     start = (size_t)(p - ta->text);
     count++;
@@ -418,8 +476,8 @@ static bool ta_geometry_ensure(my_text_area_t* ta, size_t row) {
     const char* next = p;
     uint32_t cp = my_utf8_next(&next);
     size_t index = cp_count - count;
-    ta->geometry_boundaries[index + 1] =
-        ta->geometry_boundaries[index] + ta_codepoint_advance(ta, cp);
+    ta->geometry_boundaries[index + 1] = ta_sat_add(
+        ta->geometry_boundaries[index], ta_codepoint_advance(ta, cp));
     p = next;
     count--;
   }
@@ -445,10 +503,11 @@ static int32_t ta_line_boundary_x(my_text_area_t* ta, size_t row,
   size_t index = 0;
   int32_t x = 0;
   const char* p = ta->text + start;
-  while (start < end && *p != '\0' && *p != '\n' && index < boundary) {
+  while (start < end && *p != '\0' && index < boundary &&
+         my_line_break_hard_break_len(p, end - start) == 0u) {
     const char* next = p;
     uint32_t cp = my_utf8_next(&next);
-    x += ta_codepoint_advance(ta, cp);
+    x = ta_sat_add(x, ta_codepoint_advance(ta, cp));
     start += (size_t)(next - p);
     p = next;
     index++;
@@ -479,7 +538,8 @@ static size_t ta_line_col_at_x(my_text_area_t* ta, size_t row,
   size_t col = 0;
   int32_t boundary = 0;
   const char* p = ta->text + start;
-  while (start < end && *p != '\0' && *p != '\n') {
+  while (start < end && *p != '\0' &&
+         my_line_break_hard_break_len(p, end - start) == 0u) {
     const char* next = p;
     uint32_t cp = my_utf8_next(&next);
     int32_t advance = ta_codepoint_advance(ta, cp);
@@ -504,10 +564,170 @@ static int32_t ta_justify_boundary_x(const my_text_area_t* ta, const char* text,
   while (*p != '\0' && cp_index < boundary) {
     uint32_t cp = my_utf8_next(&p);
     x += (float)ta_codepoint_advance(ta, cp);
-    if (cp == ' ') x += extra;
+    if (my_line_break_is_breaking_space(cp)) x += extra;
     cp_index++;
   }
   return (int32_t)x;
+}
+
+static bool ta_layout_justify_space(const my_text_layout_t* layout,
+                                    size_t visual_index) {
+  size_t logical;
+  size_t span;
+  if (layout == NULL || visual_index >= layout->len ||
+      !my_line_break_is_breaking_space(layout->visual_cps[visual_index])) {
+    return false;
+  }
+  logical = layout->visual_to_logical[visual_index];
+  span = layout->visual_logical_span[visual_index];
+  if (span > SIZE_MAX - logical) {
+    return false;
+  }
+  return logical + span < layout->logical_len;
+}
+
+static size_t ta_layout_justify_space_count(const my_text_layout_t* layout) {
+  size_t i;
+  size_t count = 0;
+  if (layout == NULL) return 0;
+  for (i = 0; i < layout->len; i++) {
+    if (ta_layout_justify_space(layout, i)) count++;
+  }
+  return count;
+}
+
+static size_t ta_layout_justify_spaces_before(const my_text_layout_t* layout,
+                                              size_t visual_boundary) {
+  size_t i;
+  size_t count = 0;
+  if (layout == NULL || visual_boundary > layout->len) return 0;
+  for (i = 0; i < visual_boundary; i++) {
+    if (ta_layout_justify_space(layout, i)) count++;
+  }
+  return count;
+}
+
+static int32_t ta_layout_justify_boundary_x(
+    const my_text_area_t* ta, const my_text_layout_t* layout,
+    size_t logical_boundary, size_t space_count, int32_t line_width,
+    int32_t inner_width) {
+  size_t visual_boundary;
+  size_t spaces_before;
+  float extra;
+  float x;
+  if (layout == NULL || space_count == 0u || inner_width <= line_width) {
+    return my_text_layout_visual_x_ex(layout, ta->font, ta->font_size,
+                                      logical_boundary, &ta->shaping_params);
+  }
+  visual_boundary = my_text_layout_visual_of_logical(layout, logical_boundary);
+  spaces_before = ta_layout_justify_spaces_before(layout, visual_boundary);
+  extra = (float)(inner_width - line_width) / (float)space_count;
+  x = (float)my_text_layout_visual_boundary_x_ex(
+      layout, ta->font, ta->font_size, visual_boundary, &ta->shaping_params);
+  x += extra * (float)spaces_before;
+  if (x >= (float)INT32_MAX) return INT32_MAX;
+  return ta_sat_f32(x + 0.5f);
+}
+
+static size_t ta_layout_justify_rects(
+    const my_text_area_t* ta, const my_text_layout_t* layout, size_t l0,
+    size_t l1, my_rectf_t* rects, size_t cap, size_t space_count,
+    int32_t line_width, int32_t inner_width) {
+  size_t count;
+  size_t boundary;
+  size_t rect_index = 0u;
+  size_t spaces_before = 0u;
+  size_t start_spaces = 0u;
+  bool start_found = false;
+  float extra;
+  if (layout == NULL || rects == NULL || cap == 0u) return 0u;
+  count = my_text_layout_visual_rects_ex(
+      layout, ta->font, ta->font_size, l0, l1, rects, cap,
+      &ta->shaping_params);
+  if (space_count == 0u || inner_width <= line_width) return count;
+  extra = (float)(inner_width - line_width) / (float)space_count;
+  if (count > cap) count = cap;
+  for (boundary = 0u; boundary <= layout->len && rect_index < count;
+       boundary++) {
+    int32_t x = my_text_layout_visual_boundary_x_ex(
+        layout, ta->font, ta->font_size, boundary, &ta->shaping_params);
+    while (rect_index < count) {
+      int32_t start_x = ta_sat_f32(rects[rect_index].x + 0.5f);
+      int32_t end_x = ta_sat_f32(rects[rect_index].x + rects[rect_index].w +
+                                 0.5f);
+      if (!start_found) {
+        if (x != start_x) break;
+        start_found = true;
+        start_spaces = spaces_before;
+      }
+      if (x != end_x) break;
+      rects[rect_index].x += extra * (float)start_spaces;
+      rects[rect_index].w += extra * (float)(spaces_before - start_spaces);
+      rect_index++;
+      start_found = false;
+    }
+    if (boundary < layout->len && ta_layout_justify_space(layout, boundary)) {
+      spaces_before++;
+    }
+  }
+  return count;
+}
+
+static void ta_draw_justify_layout(
+    my_text_area_t* ta, my_vgcanvas_t* vg, my_text_layout_t* layout,
+    float base_x, float y, size_t space_count, int32_t line_width,
+    int32_t inner_width) {
+  size_t i;
+  size_t word_start = 0u;
+  size_t word_start_byte = 0u;
+  size_t visual_offset = 0u;
+  float x = base_x;
+  float extra = space_count > 0u && inner_width > line_width
+                    ? (float)(inner_width - line_width) /
+                          (float)space_count
+                    : 0.0f;
+
+  if (layout == NULL || layout->visual_utf8 == NULL) return;
+  for (i = 0u; i <= layout->len; i++) {
+    bool separator = i < layout->len && ta_layout_justify_space(layout, i);
+    size_t current_byte = visual_offset;
+    if (separator || i == layout->len) {
+      if (current_byte > word_start_byte) {
+        char saved = layout->visual_utf8[current_byte];
+        layout->visual_utf8[current_byte] = '\0';
+        ta_draw_text(ta, vg, layout->visual_utf8 + word_start_byte, x, y);
+        layout->visual_utf8[current_byte] = saved;
+        x += (float)(my_text_layout_visual_boundary_x_ex(
+                         layout, ta->font, ta->font_size, i,
+                         &ta->shaping_params) -
+                     my_text_layout_visual_boundary_x_ex(
+                         layout, ta->font, ta->font_size, word_start,
+                         &ta->shaping_params));
+      }
+      if (separator) {
+        x += (float)(my_text_layout_visual_boundary_x_ex(
+                         layout, ta->font, ta->font_size, i + 1u,
+                         &ta->shaping_params) -
+                     my_text_layout_visual_boundary_x_ex(
+                         layout, ta->font, ta->font_size, i,
+                         &ta->shaping_params));
+        x += extra;
+        word_start = i + 1u;
+        word_start_byte = current_byte;
+        {
+          const char* next = layout->visual_utf8 + current_byte;
+          (void)my_utf8_next(&next);
+          word_start_byte = (size_t)(next - layout->visual_utf8);
+          visual_offset = word_start_byte;
+        }
+      }
+    }
+    if (i < layout->len && !separator) {
+      const char* next = layout->visual_utf8 + visual_offset;
+      (void)my_utf8_next(&next);
+      visual_offset = (size_t)(next - layout->visual_utf8);
+    }
+  }
 }
 
 static int32_t ta_content_left_value(const my_text_area_t* ta) {
@@ -554,11 +774,15 @@ static void ta_rebuild_from(my_text_area_t* ta, size_t row) {
     my_darray_remove_at(ta->line_offsets, ta_line_count(ta) - 1);
   }
   while (pos < ta->text_len) {
-    if (ta->text[pos] == '\n') {
-      ta_offsets_push(ta, pos + 1);
+    size_t break_len = my_line_break_hard_break_len(
+        ta->text + pos, ta->text_len - pos);
+    if (break_len > 0u) {
+      ta_offsets_push(ta, pos + break_len);
       line++;
+      pos += break_len;
+      continue;
     }
-    pos++;
+    pos += my_str_utf8_char_len(ta->text + pos);
   }
   if (ta->wrap) {
     ta_vlines_invalidate_from(ta, row);
@@ -573,8 +797,10 @@ static size_t ta_offset_of(const my_text_area_t* ta, size_t row, size_t col) {
   start = ta_line_start(ta, row);
   end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                     : ta->text_len;
+  end = ta_line_content_end(ta, start, end);
   off = start;
-  while (off < end && c < col && ta->text[off] != '\n') {
+  while (off < end && c < col &&
+         my_line_break_hard_break_len(ta->text + off, end - off) == 0u) {
     off += my_str_utf8_char_len(ta->text + off);
     c++;
   }
@@ -597,12 +823,13 @@ static void ta_pos_of(const my_text_area_t* ta, size_t offset, size_t* row,
   r = lo;
   start = ta_line_start(ta, r);
   off = start;
-  while (off < offset && ta->text[off] != '\n') {
+  while (off < offset && my_line_break_hard_break_len(ta->text + off,
+                                           offset - off) == 0u) {
     off += my_str_utf8_char_len(ta->text + off);
     c++;
   }
-  *row = r;
-  *col = c;
+  if (row != NULL) *row = r;
+  if (col != NULL) *col = c;
 }
 
 static size_t ta_line_cp_len(const my_text_area_t* ta, size_t row) {
@@ -613,7 +840,8 @@ static size_t ta_line_cp_len(const my_text_area_t* ta, size_t row) {
   start = ta_line_start(ta, row);
   end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                     : ta->text_len;
-  while (start < end && ta->text[start] != '\n') {
+  end = ta_line_content_end(ta, start, end);
+  while (start < end) {
     start += my_str_utf8_char_len(ta->text + start);
     len++;
   }
@@ -626,8 +854,8 @@ static size_t ta_line_cp_len(const my_text_area_t* ta, size_t row) {
  */
 
 static float ta_inner_width(const my_text_area_t* ta) {
-  float w = (float)(((my_widget_t*)ta)->rect.w -
-                    ta_content_left_value(ta) - TA_PAD_X);
+  float w = (float)((my_widget_t*)ta)->rect.w -
+            (float)ta_content_left_value(ta) - (float)TA_PAD_X;
   return w > 1.0f ? w : 1.0f;
 }
 
@@ -645,7 +873,11 @@ static my_ret_t ta_vline_push(my_text_area_t* ta, size_t phys,
   v->len_bytes = end_byte - start_byte;
   v->start_cp = start;
   v->len_cp = len;
-  return my_darray_push(ta->vlines, v);
+  if (my_darray_push(ta->vlines, v) != MY_RET_OK) {
+    my_mem_free(ta->allocator, v);
+    return MY_RET_OOM;
+  }
+  return MY_RET_OK;
 }
 
 static void ta_vlines_destroy_array(my_text_area_t* ta, my_darray_t* lines) {
@@ -668,17 +900,105 @@ static void ta_vlines_destroy_range(my_text_area_t* ta, my_darray_t* lines,
   }
 }
 
+static void ta_vlines_destroy_range_to(my_text_area_t* ta,
+                                       my_darray_t* lines, size_t from,
+                                       size_t to) {
+  size_t i;
+  if (lines == NULL) return;
+  if (from > my_darray_size(lines)) from = my_darray_size(lines);
+  if (to > my_darray_size(lines)) to = my_darray_size(lines);
+  if (to < from) to = from;
+  for (i = from; i < to; i++) {
+    my_mem_free(ta->allocator, my_darray_get(lines, i));
+  }
+}
+
+static my_ret_t ta_vlines_append_paragraph(
+    my_text_area_t* ta, my_text_paragraph_t* paragraph, size_t from,
+    size_t suffix_start) {
+  size_t i;
+  size_t physical_row = from;
+  size_t physical_count = ta_line_count(ta);
+  size_t physical_cp_base = 0u;
+  if (suffix_start > ta->text_len) return MY_RET_INVALID_PARAMS;
+  for (i = 0u; i < paragraph->line_count; i++) {
+    const my_text_paragraph_line_t* line =
+        my_text_paragraph_line_at(paragraph, i);
+    size_t global_start;
+    size_t global_end;
+    size_t phys;
+    size_t physical_start;
+    size_t physical_end;
+    size_t start_cp;
+    if (line == NULL || line->start_byte > paragraph->text_len ||
+        line->end_byte < line->start_byte ||
+        line->end_byte > paragraph->text_len ||
+        line->end_byte > ta->text_len - suffix_start) {
+      return MY_RET_FAIL;
+    }
+    global_start = suffix_start + line->start_byte;
+    global_end = suffix_start + line->end_byte;
+    while (physical_row + 1u < physical_count &&
+           ta_line_start(ta, physical_row + 1u) <= global_start) {
+      size_t row_cp_count = ta_line_cp_len(ta, physical_row);
+      if (physical_cp_base > SIZE_MAX - row_cp_count) {
+        return MY_RET_FAIL;
+      }
+      physical_cp_base += row_cp_count;
+      physical_row++;
+    }
+    phys = physical_row;
+    if (phys < from || phys >= physical_count) return MY_RET_FAIL;
+    physical_start = ta_line_start(ta, phys);
+    physical_end = phys + 1u < physical_count
+                       ? ta_line_start(ta, phys + 1u)
+                       : ta->text_len;
+    if (global_end < physical_start || global_end > physical_end ||
+        ta_line_content_end(ta, physical_start, physical_end) < global_end) {
+      return MY_RET_FAIL;
+    }
+    if (line->start_cp < physical_cp_base) return MY_RET_FAIL;
+    start_cp = line->start_cp - physical_cp_base;
+    if (ta_vline_push(ta, phys, global_start - physical_start,
+                      global_end - physical_start, start_cp,
+                      line->cp_count) != MY_RET_OK) {
+      return MY_RET_OOM;
+    }
+  }
+  return MY_RET_OK;
+}
+
 /** @brief Rebuild visual lines transactionally for physical rows [from, end). */
 static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
   my_darray_t* old_lines = ta->vlines;
   my_darray_t* new_lines;
   size_t pi, n, old_count, prefix_count = 0;
+  size_t old_suffix_start = 0u;
+  size_t old_physical_count = 0u;
+  size_t candidate_end = 0u;
+  bool reuse_suffix = ta->vlines_reuse_suffix &&
+                      ta->vlines_reuse_old_line_index <=
+                          my_darray_size(old_lines) &&
+                      ta->vlines_reuse_new_phys >= from &&
+                      ta->vlines_reuse_new_phys <= ta_line_count(ta) &&
+                      my_darray_size(ta->fold_ranges) == 0u;
   if (from > ta_line_count(ta)) {
     from = ta_line_count(ta);
   }
+  n = ta_line_count(ta);
   new_lines = my_darray_create(ta->allocator, 0);
   if (new_lines == NULL) return MY_RET_OOM;
   old_count = my_darray_size(old_lines);
+  if (old_count > 0u) {
+    const my_visual_line_t* last_line =
+        (const my_visual_line_t*)my_darray_get(old_lines, old_count - 1u);
+    if (last_line != NULL) old_physical_count = last_line->phys + 1u;
+  }
+  if (reuse_suffix &&
+      (ta->vlines_reuse_old_line_index >= old_count ||
+       old_physical_count <= ta->vlines_reuse_old_phys)) {
+    reuse_suffix = false;
+  }
   while (prefix_count < old_count) {
     const my_visual_line_t* line =
         (const my_visual_line_t*)my_darray_get(old_lines, prefix_count);
@@ -692,30 +1012,138 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
     prefix_count++;
   }
   ta->vlines = new_lines;
-  n = ta_line_count(ta);
-  for (pi = from; pi < n; pi++) {
-    if (ta_row_hidden(ta, pi)) {
-      continue;
+  if (reuse_suffix) {
+    for (pi = from; pi < ta->vlines_reuse_new_phys; ++pi) {
+      size_t start_off;
+      size_t end_off;
+      size_t segment_end;
+      size_t segment_len;
+      my_text_paragraph_t* paragraph;
+      size_t i;
+      if (ta_row_hidden(ta, pi)) continue;
+      start_off = ta_line_start(ta, pi);
+      end_off = pi + 1u < n ? ta_line_start(ta, pi + 1u) : ta->text_len;
+      segment_end = ta_line_content_end(ta, start_off, end_off);
+      segment_len = segment_end > start_off ? segment_end - start_off : 0u;
+      paragraph = my_text_paragraph_process_n_ex(
+          ta->allocator, ta->text + start_off, segment_len, ta->font,
+          ta->font_size, (int32_t)ta_inner_width(ta), &ta->shaping_params);
+      if (paragraph == NULL) {
+        ta->vlines = old_lines;
+        ta_vlines_destroy_range(ta, new_lines, prefix_count);
+        my_darray_destroy(new_lines);
+        return MY_RET_OOM;
+      }
+      for (i = 0u; i < paragraph->line_count; ++i) {
+        const my_text_paragraph_line_t* line =
+            my_text_paragraph_line_at(paragraph, i);
+        if (line != NULL &&
+            ta_vline_push(ta, pi, line->start_byte, line->end_byte,
+                          line->start_cp, line->cp_count) != MY_RET_OK) {
+          my_text_paragraph_destroy(paragraph);
+          ta->vlines = old_lines;
+          ta_vlines_destroy_range(ta, new_lines, prefix_count);
+          my_darray_destroy(new_lines);
+          return MY_RET_OOM;
+        }
+      }
+      my_text_paragraph_destroy(paragraph);
     }
-    size_t start_off = ta_line_start(ta, pi);
-    size_t end_off = pi + 1 < n ? ta_line_start(ta, pi + 1) : ta->text_len;
-    size_t segment_len = end_off > start_off ? end_off - start_off : 0;
-    char* segment = (char*)my_mem_alloc(ta->allocator, segment_len + 1);
+    old_suffix_start = ta->vlines_reuse_old_line_index;
+    candidate_end = my_darray_size(new_lines);
+    {
+      size_t i;
+      for (i = old_suffix_start; i < old_count; ++i) {
+        const my_visual_line_t* line =
+            (const my_visual_line_t*)my_darray_get(old_lines, i);
+        if (line == NULL || my_darray_push(new_lines, (void*)line) != MY_RET_OK) {
+          new_lines->size = candidate_end;
+          ta_vlines_destroy_range_to(ta, new_lines, prefix_count,
+                                     candidate_end);
+          my_darray_destroy(new_lines);
+          ta->vlines = old_lines;
+          return MY_RET_OOM;
+        }
+      }
+      for (i = candidate_end; i < my_darray_size(new_lines); ++i) {
+        my_visual_line_t* line =
+            (my_visual_line_t*)my_darray_get(new_lines, i);
+        line->phys = ta->vlines_reuse_new_phys +
+                     (line->phys - ta->vlines_reuse_old_phys);
+      }
+    }
+  } else if (my_darray_size(ta->fold_ranges) == 0u &&
+      old_physical_count == ta_line_count(ta) && from < ta_line_count(ta)) {
+    size_t i = prefix_count;
+    while (i < old_count) {
+      const my_visual_line_t* line =
+          (const my_visual_line_t*)my_darray_get(old_lines, i);
+      if (line == NULL || line->phys > from) break;
+      i++;
+    }
+    old_suffix_start = i;
+  }
+  if (!reuse_suffix && my_darray_size(ta->fold_ranges) == 0u &&
+      old_physical_count == n && from < n) {
     my_text_paragraph_t* paragraph;
-    size_t i;
-    if (segment == NULL) {
+    size_t suffix_start = ta_line_start(ta, from);
+    size_t suffix_end = from + 1u < n ? ta_line_start(ta, from + 1u)
+                                      : ta->text_len;
+    size_t segment_end = ta_line_content_end(ta, suffix_start, suffix_end);
+    size_t suffix_len = segment_end - suffix_start;
+    paragraph = my_text_paragraph_process_n_ex(
+        ta->allocator, ta->text + suffix_start, suffix_len, ta->font,
+        ta->font_size, (int32_t)ta_inner_width(ta), &ta->shaping_params);
+    if (paragraph == NULL) {
       ta->vlines = old_lines;
       ta_vlines_destroy_range(ta, new_lines, prefix_count);
       my_darray_destroy(new_lines);
       return MY_RET_OOM;
     }
-    if (segment_len > 0) memcpy(segment, ta->text + start_off, segment_len);
-    if (segment_len > 0 && segment[segment_len - 1] == '\n') segment_len--;
-    segment[segment_len] = '\0';
-    paragraph = my_text_paragraph_process_ex(
-        ta->allocator, segment, ta->font, ta->font_size,
-        (int32_t)ta_inner_width(ta), &ta->shaping_params);
-    my_mem_free(ta->allocator, segment);
+    {
+      my_ret_t append_ret =
+          ta_vlines_append_paragraph(ta, paragraph, from, suffix_start);
+      if (append_ret != MY_RET_OK) {
+        my_text_paragraph_destroy(paragraph);
+        ta->vlines = old_lines;
+        ta_vlines_destroy_range(ta, new_lines, prefix_count);
+        my_darray_destroy(new_lines);
+        return append_ret;
+      }
+    }
+    my_text_paragraph_destroy(paragraph);
+    candidate_end = my_darray_size(new_lines);
+    if (old_suffix_start < old_count) {
+      size_t i;
+      for (i = old_suffix_start; i < old_count; i++) {
+        const my_visual_line_t* line =
+            (const my_visual_line_t*)my_darray_get(old_lines, i);
+        if (line == NULL || line->phys <= from ||
+            my_darray_push(new_lines, (void*)line) != MY_RET_OK) {
+          ta->vlines = old_lines;
+          ta_vlines_destroy_range_to(ta, new_lines, prefix_count,
+                                     candidate_end);
+          my_darray_destroy(new_lines);
+          return MY_RET_OOM;
+        }
+      }
+    }
+  } else if (!reuse_suffix) for (pi = from; pi < n; pi++) {
+    if (ta_row_hidden(ta, pi)) {
+      continue;
+    }
+    size_t start_off = ta_line_start(ta, pi);
+    size_t end_off = pi + 1 < n ? ta_line_start(ta, pi + 1) : ta->text_len;
+    size_t segment_end = end_off;
+    size_t segment_len;
+    my_text_paragraph_t* paragraph;
+    size_t i;
+    if (segment_end > start_off)
+      segment_end = ta_line_content_end(ta, start_off, segment_end);
+    segment_len = segment_end > start_off ? segment_end - start_off : 0;
+    paragraph = my_text_paragraph_process_n_ex(
+        ta->allocator, ta->text + start_off, segment_len, ta->font,
+        ta->font_size, (int32_t)ta_inner_width(ta), &ta->shaping_params);
     if (paragraph == NULL) {
       ta->vlines = old_lines;
       ta_vlines_destroy_range(ta, new_lines, prefix_count);
@@ -739,8 +1167,10 @@ static my_ret_t ta_vlines_rebuild_from(my_text_area_t* ta, size_t from) {
     my_text_paragraph_destroy(paragraph);
   }
   ta->vlines = new_lines;
-  ta_vlines_destroy_range(ta, old_lines, prefix_count);
+  if (old_suffix_start == 0u) old_suffix_start = old_count;
+  ta_vlines_destroy_range_to(ta, old_lines, prefix_count, old_suffix_start);
   my_darray_destroy(old_lines);
+  ta->vlines_reuse_suffix = false;
   return MY_RET_OK;
 }
 
@@ -828,7 +1258,7 @@ static const my_visual_line_t* ta_vline_at(my_text_area_t* ta, size_t vi) {
     end = tmp.phys + 1 < ta_line_count(ta)
               ? ta_line_start(ta, tmp.phys + 1)
               : ta->text_len;
-    if (end > start && ta->text[end - 1] == '\n') end--;
+    end = ta_line_content_end(ta, start, end);
     tmp.start_byte = 0;
     tmp.len_bytes = end - start;
     tmp.start_cp = 0;
@@ -912,7 +1342,7 @@ static void ta_syntax_sync_after_edit(my_text_area_t* ta, size_t row,
   end = row + 1 < ta_line_count(ta) ? ta_line_start(ta, row + 1)
                                     : ta->text_len;
   line_len = end > start ? end - start : 0;
-  if (line_len > 0 && ta->text[start + line_len - 1] == '\n') line_len--;
+  line_len = ta_line_content_end(ta, start, start + line_len) - start;
   if (my_syntax_cache_replace_line_n(ta->syntax_cache, row, ta->text + start,
                                      line_len) != MY_RET_OK) {
     ta_syntax_drop_on_error(ta);
@@ -1059,8 +1489,8 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
   for (i = 0; i < count; i++) {
     size_t start = tokens[i].start_cp > vl->start_cp
                        ? tokens[i].start_cp : vl->start_cp;
-    size_t end = tokens[i].start_cp + tokens[i].len_cp;
-    size_t visual_end = vl->start_cp + vl->len_cp;
+    size_t end = ta_sat_size_add(tokens[i].start_cp, tokens[i].len_cp);
+    size_t visual_end = ta_sat_size_add(vl->start_cp, vl->len_cp);
     size_t byte_start, byte_end;
     char saved;
     int32_t token_width = 0;
@@ -1082,7 +1512,7 @@ static bool ta_draw_syntax_line(my_text_area_t* ta, my_vgcanvas_t* vg,
     if (ta->font != NULL) {
       my_vgcanvas_measure_text(vg, line + byte_start, &token_width, NULL);
     } else {
-      token_width = (int32_t)(end - start) * TA_CELL_W;
+      token_width = ta_sat_size_mul(end - start, TA_CELL_W);
     }
     base_x += (float)token_width;
     ((char*)line)[byte_end] = saved;
@@ -1159,99 +1589,240 @@ static void emit_changed(my_text_area_t* ta) {
                   ta->text != NULL ? ta->text : "");
 }
 
+static void ta_rtl_cache_clear(my_text_area_t* ta) {
+  size_t i;
+  for (i = 0; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    my_text_layout_destroy(ta->rtl_cache[i].layout);
+    memset(&ta->rtl_cache[i], 0, sizeof(ta->rtl_cache[i]));
+  }
+  ta->rtl_cache_tick = 0;
+  ta->rtl_layout = NULL;
+}
+
+static uint64_t ta_rtl_cache_next_tick(my_text_area_t* ta) {
+  size_t i;
+  if (ta->rtl_cache_tick == UINT64_MAX) {
+    ta->rtl_cache_tick = 0;
+    for (i = 0; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+      ta->rtl_cache[i].last_used = 0;
+    }
+  }
+  ta->rtl_cache_tick++;
+  return ta->rtl_cache_tick;
+}
+
+static void ta_rtl_cache_mirror(my_text_area_t* ta,
+                                const my_text_area_rtl_cache_entry_t* entry) {
+  ta->rtl_layout = entry->layout;
+  ta->rtl_phys = entry->phys;
+  ta->rtl_start_byte = entry->start_byte;
+  ta->rtl_len_bytes = entry->len_bytes;
+  ta->rtl_revision = entry->text_revision;
+  ta->rtl_shaping_revision = entry->shaping_revision;
+  ta->rtl_font = entry->font;
+  ta->rtl_font_size = entry->font_size;
+}
+
 static void ta_bump_text_revision(my_text_area_t* ta) {
   ta->text_revision = ta->text_revision == UINT64_MAX
                            ? 1
                            : ta->text_revision + 1;
-  my_text_layout_destroy(ta->rtl_layout);
-  ta->rtl_layout = NULL;
-  my_mem_free(ta->allocator, ta->rtl_text);
-  ta->rtl_text = NULL;
-  ta->rtl_text_len = 0;
+  ta_rtl_cache_clear(ta);
+  ta->navigation_valid = false;
 }
 
-static void ta_insert_bytes(my_text_area_t* ta, size_t offset,
-                            const char* bytes, size_t n) {
-  size_t old_lines = ta_line_count(ta);
-  if (ta_reserve(ta, n) != MY_RET_OK) {
-    return;
+static my_ret_t ta_replace_prepare(my_text_area_t* ta, size_t start,
+                                   size_t end, const char* bytes, size_t n,
+                                   bool enforce_max_len) {
+  size_t removed_len;
+  size_t removed_cps;
+  size_t inserted_cps;
+  size_t current_cps;
+  size_t extra = 0;
+  if (ta == NULL || start > end || end > ta->text_len) {
+    return MY_RET_INVALID_PARAMS;
   }
-  memmove(ta->text + offset + n, ta->text + offset, ta->text_len - offset + 1);
-  memcpy(ta->text + offset, bytes, n);
-  ta->text_len += n;
+  removed_len = end - start;
+  if (n > SIZE_MAX - (ta->text_len - removed_len) ||
+      (bytes == NULL && n > 0)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  removed_cps = my_str_utf8_strlen(ta->text + start) -
+                my_str_utf8_strlen(ta->text + end);
+  inserted_cps = my_str_utf8_strlen(bytes != NULL ? bytes : "");
+  current_cps = ta_total_cps(ta);
+  if (removed_cps > current_cps) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (enforce_max_len && ta->max_len > 0) {
+    size_t remaining = current_cps - removed_cps;
+    if (inserted_cps > ta->max_len ||
+        remaining > ta->max_len - inserted_cps) {
+      return MY_RET_FAIL;
+    }
+  }
+  if (n > removed_len) {
+    extra = n - removed_len;
+  }
+  if (ta_reserve(ta, extra) != MY_RET_OK) {
+    return MY_RET_OOM;
+  }
+  return MY_RET_OK;
+}
+
+static my_ret_t ta_replace_bytes_prepared(my_text_area_t* ta, size_t start,
+                                          size_t end, const char* bytes,
+                                          size_t n) {
+  size_t removed_len;
+  size_t old_lines;
+  size_t old_text_len;
+  size_t old_suffix_phys = 0u;
+  size_t old_suffix_byte = 0u;
+  bool suffix_candidate = false;
+  size_t row;
+  removed_len = end - start;
+  old_lines = ta_line_count(ta);
+  old_text_len = ta->text_len;
+  ta->vlines_reuse_suffix = false;
+  if (ta->wrap && !ta->vlines_dirty && old_lines > 1u &&
+      (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0u)) {
+    size_t edit_row;
+    size_t candidate;
+    ta_pos_of(ta, start, &edit_row, NULL);
+    for (candidate = edit_row + 1u; candidate < old_lines; ++candidate) {
+      old_suffix_byte = ta_line_start(ta, candidate);
+      if (old_suffix_byte > end ||
+          (n >= removed_len && old_suffix_byte == end)) {
+        old_suffix_phys = candidate;
+        suffix_candidate = true;
+        break;
+      }
+    }
+  }
+  memmove(ta->text + start + n, ta->text + end,
+          ta->text_len - end + 1);
+  if (n > 0) {
+    memcpy(ta->text + start, bytes, n);
+  }
+  ta->text_len = ta->text_len - removed_len + n;
   ta_bump_text_revision(ta);
-  {
-    size_t row, col;
-    ta_pos_of(ta, offset, &row, &col);
-    ta_rebuild_from(ta, row);
-    ta_syntax_sync_after_edit(ta, row, old_lines);
+  ta_pos_of(ta, start, &row, NULL);
+  ta_rebuild_from(ta, row);
+  if (suffix_candidate && old_suffix_byte <= old_text_len) {
+    size_t delta = n >= removed_len ? n - removed_len : removed_len - n;
+    size_t new_suffix_byte;
+    size_t new_suffix_phys;
+    if (n >= removed_len) {
+      new_suffix_byte = old_suffix_byte > SIZE_MAX - delta
+                            ? SIZE_MAX
+                            : old_suffix_byte + delta;
+    } else {
+      new_suffix_byte = old_suffix_byte < delta
+                            ? SIZE_MAX
+                            : old_suffix_byte - delta;
+    }
+    for (new_suffix_phys = row + 1u; new_suffix_phys < ta_line_count(ta);
+         ++new_suffix_phys) {
+      if (ta_line_start(ta, new_suffix_phys) == new_suffix_byte) break;
+    }
+    if (new_suffix_phys < ta_line_count(ta)) {
+      size_t old_line_index = 0u;
+      size_t old_visual_count = my_darray_size(ta->vlines);
+      while (old_line_index < old_visual_count) {
+        const my_visual_line_t* line =
+            (const my_visual_line_t*)my_darray_get(ta->vlines,
+                                                   old_line_index);
+        if (line != NULL && line->phys >= old_suffix_phys) break;
+        old_line_index++;
+      }
+      if (old_line_index < old_visual_count) {
+        ta->vlines_reuse_suffix = true;
+        ta->vlines_reuse_old_line_index = old_line_index;
+        ta->vlines_reuse_old_phys = old_suffix_phys;
+        ta->vlines_reuse_new_phys = new_suffix_phys;
+      }
+    }
   }
+  ta_syntax_sync_after_edit(ta, row, old_lines);
   if (ta_line_count(ta) != old_lines) {
     ta_clear_folds(ta);
     if (ta->wrap) {
       ta_vlines_invalidate_from(ta, 0);
     }
   }
+  return MY_RET_OK;
 }
 
-static void ta_delete_bytes(my_text_area_t* ta, size_t start, size_t end) {
-  size_t old_lines = ta_line_count(ta);
-  if (start >= end || end > ta->text_len) {
-    return;
-  }
-  memmove(ta->text + start, ta->text + end, ta->text_len - end + 1);
-  ta->text_len -= end - start;
-  ta_bump_text_revision(ta);
-  {
-    size_t row, col;
-    ta_pos_of(ta, start, &row, &col);
-    ta_rebuild_from(ta, row);
-    ta_syntax_sync_after_edit(ta, row, old_lines);
-  }
-  if (ta_line_count(ta) != old_lines) {
-    ta_clear_folds(ta);
-    if (ta->wrap) {
-      ta_vlines_invalidate_from(ta, 0);
-    }
-  }
+static my_ret_t ta_replace_bytes(my_text_area_t* ta, size_t start, size_t end,
+                                 const char* bytes, size_t n,
+                                 bool enforce_max_len) {
+  my_ret_t result = ta_replace_prepare(ta, start, end, bytes, n,
+                                       enforce_max_len);
+  if (result != MY_RET_OK) return result;
+  return ta_replace_bytes_prepared(ta, start, end, bytes, n);
 }
 
 static void user_insert(my_text_area_t* ta, const char* bytes, size_t n,
                         size_t cp_count) {
+  my_widget_t* held = my_widget_ref((my_widget_t*)ta);
   size_t r0, c0, r1, c1, start;
   if (ta->readonly) {
-    return;
+    goto done;
   }
   if (ta_sel(ta, &r0, &c0, &r1, &c1)) {
     size_t s0 = ta_offset_of(ta, r0, c0);
     size_t s1 = ta_offset_of(ta, r1, c1);
+    my_ret_t result;
+    if (ta_replace_prepare(ta, s0, s1, bytes, n, true) != MY_RET_OK) {
+      goto done;
+    }
     if (!ta->applying_history) {
       if (ta->undo_shared != NULL) {
-        my_undo_manager_record_delete(ta->undo_shared, ta, s0, ta->text + s0,
-                                      s1 - s0);
+        result = my_undo_manager_record_replace(
+            ta->undo_shared, ta, s0, ta->text + s0, s1 - s0, bytes, n);
       } else if (ta->undo != NULL) {
-        my_undo_stack_record_delete(ta->undo, s0, ta->text + s0, s1 - s0);
+        result = my_undo_stack_record_replace(ta->undo, s0, ta->text + s0,
+                                              s1 - s0, bytes, n);
+      } else {
+        result = MY_RET_OK;
+      }
+      if (result != MY_RET_OK) {
+        goto done;
       }
     }
-    ta_delete_bytes(ta, s0, s1);
-    ta_cursor_to_offset(ta, s0);
+    if (ta_replace_bytes_prepared(ta, s0, s1, bytes, n) != MY_RET_OK) {
+      goto done;
+    }
+    ta_cursor_to_offset(ta, s0 + n);
     emit_changed(ta);
-  }
-  if (ta->max_len > 0 && ta_total_cps(ta) + cp_count > ta->max_len) {
-    return;
+    my_widget_invalidate((my_widget_t*)ta, NULL);
+    goto done;
   }
   start = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
+  if (ta_replace_prepare(ta, start, start, bytes, n, true) != MY_RET_OK) {
+    goto done;
+  }
+  (void)cp_count;
   if (!ta->applying_history) {
     if (ta->undo_shared != NULL) {
-      my_undo_manager_record_insert(ta->undo_shared, ta, start, bytes, n);
+      if (my_undo_manager_record_insert(ta->undo_shared, ta, start, bytes,
+                                        n) != MY_RET_OK) {
+        goto done;
+      }
     } else if (ta->undo != NULL) {
-      my_undo_stack_record_insert(ta->undo, start, bytes, n);
+      if (my_undo_stack_record_insert(ta->undo, start, bytes, n) != MY_RET_OK) {
+        goto done;
+      }
     }
   }
-  ta_insert_bytes(ta, start, bytes, n);
+  if (ta_replace_bytes_prepared(ta, start, start, bytes, n) != MY_RET_OK) {
+    return;
+  }
   ta_cursor_to_offset(ta, start + n);
   emit_changed(ta);
   my_widget_invalidate((my_widget_t*)ta, NULL);
+done:
+  my_widget_unref(held);
 }
 
 static my_ret_t ta_paste(my_text_area_t* ta) {
@@ -1269,22 +1840,36 @@ static my_ret_t ta_paste(my_text_area_t* ta) {
 }
 
 static void user_delete_range(my_text_area_t* ta, size_t start, size_t end) {
+  my_widget_t* held = my_widget_ref((my_widget_t*)ta);
+  my_ret_t result;
   if (ta->readonly) {
-    return;
+    goto done;
+  }
+  if (ta_replace_prepare(ta, start, end, NULL, 0, false) != MY_RET_OK) {
+    goto done;
   }
   if (!ta->applying_history) {
     if (ta->undo_shared != NULL) {
-      my_undo_manager_record_delete(ta->undo_shared, ta, start,
-                                    ta->text + start, end - start);
+      result = my_undo_manager_record_delete(ta->undo_shared, ta, start,
+                                              ta->text + start, end - start);
     } else if (ta->undo != NULL) {
-      my_undo_stack_record_delete(ta->undo, start, ta->text + start,
-                                  end - start);
+      result = my_undo_stack_record_delete(ta->undo, start, ta->text + start,
+                                            end - start);
+    } else {
+      result = MY_RET_OK;
+    }
+    if (result != MY_RET_OK) {
+      goto done;
     }
   }
-  ta_delete_bytes(ta, start, end);
+  if (ta_replace_bytes_prepared(ta, start, end, NULL, 0) != MY_RET_OK) {
+    return;
+  }
   ta_cursor_to_offset(ta, start);
   emit_changed(ta);
   my_widget_invalidate((my_widget_t*)ta, NULL);
+done:
+  my_widget_unref(held);
 }
 
 /* ---------------- scrolling ---------------- */
@@ -1302,77 +1887,100 @@ static void ta_sync_scroll_bar(my_text_area_t* ta) {
   if (ta->scroll_bar == NULL) {
     return;
   }
-  content = (int32_t)ta_vline_count(ta) * ta_line_height(ta);
-  max = content - (w->rect.h - 2 * TA_PAD_Y);
+  content = ta_sat_size_mul(ta_vline_count(ta), ta_line_height(ta));
+  max = ta_sat_i64((int64_t)content -
+                   ((int64_t)w->rect.h - 2 * TA_PAD_Y));
   if (max < 0) {
     max = 0;
   }
   my_scroll_bar_set_page_size(
-      ta->scroll_bar, content > 0
-                          ? (float)(w->rect.h - 2 * TA_PAD_Y) / (float)content
-                          : 1.0f);
+      ta->scroll_bar, content > 0 ? (float)ta_inner_height(ta) / (float)content
+                                  : 1.0f);
   my_scroll_bar_set_value(ta->scroll_bar,
                           max > 0 ? (float)ta->scroll_y / (float)max : 0.0f);
 }
 
 static void ta_on_scroll_bar_changed(void* ctx, const char* event, void* data) {
   my_text_area_t* ta = (my_text_area_t*)ctx;
-  int32_t max = (int32_t)ta_vline_count(ta) * ta_line_height(ta) -
-                (((my_widget_t*)ta)->rect.h - 2 * TA_PAD_Y);
+  int32_t max = ta_sat_i64(
+      (int64_t)ta_sat_size_mul(ta_vline_count(ta), ta_line_height(ta)) -
+      ((int64_t)((my_widget_t*)ta)->rect.h - 2 * TA_PAD_Y));
   (void)event;
   (void)data;
   if (max < 0) {
     max = 0;
   }
-  ta->scroll_y = (int32_t)(my_scroll_bar_get_value(ta->scroll_bar) * (float)max);
+  ta->scroll_y = ta_sat_f32(
+      my_scroll_bar_get_value(ta->scroll_bar) * (float)max);
   ta_sync_scroll_bar(ta);
   my_widget_invalidate((my_widget_t*)ta, NULL);
 }
 
 my_ret_t my_text_area_set_scroll_bar(my_widget_t* area, my_widget_t* bar) {
   my_text_area_t* ta = (my_text_area_t*)area;
-  if (area == NULL) {
+  uint32_t listener_id;
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
-  ta->scroll_bar = bar;
+  if (bar != NULL && !my_scroll_bar_is_instance(bar)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (bar == ta->scroll_bar) {
+    ta_sync_scroll_bar(ta);
+    return MY_RET_OK;
+  }
   if (bar != NULL) {
-    my_widget_on(bar, "changed", ta_on_scroll_bar_changed, ta);
+    listener_id = my_widget_on(bar, "changed", ta_on_scroll_bar_changed, ta);
+    if (listener_id == 0u) return MY_RET_OOM;
+  } else {
+    listener_id = 0u;
+  }
+  if (ta->scroll_bar != NULL && ta->scroll_bar_listener_id != 0u) {
+    (void)my_widget_off(ta->scroll_bar, ta->scroll_bar_listener_id);
+  }
+  if (ta->scroll_bar != NULL) {
+    my_widget_unref(ta->scroll_bar);
+  }
+  ta->scroll_bar = bar;
+  ta->scroll_bar_listener_id = listener_id;
+  if (ta->scroll_bar != NULL) {
+    my_widget_ref(ta->scroll_bar);
   }
   ta_sync_scroll_bar(ta);
   return MY_RET_OK;
 }
 
 static void ta_ensure_visible(my_text_area_t* ta) {
-  my_widget_t* w = (my_widget_t*)ta;
   int32_t line_h = ta->font != NULL
                        ? my_font_line_height(ta->font, ta->font_size)
                        : ta->font_size;
   int32_t inner_h, inner_w, cy, row_px;
+  int64_t row_px_64;
   if (line_h <= 0) {
     line_h = ta->font_size > 0 ? ta->font_size : 16;
   }
-  inner_h = w->rect.h - 2 * TA_PAD_Y;
-  inner_w = w->rect.w - ta_content_left_value(ta) - TA_PAD_X;
+  inner_h = ta_inner_height(ta);
+  inner_w = ta_inner_width_i32(ta);
   if (ta->wrap) {
     size_t civ;
     ta->scroll_x = 0; /* wrap: no horizontal scrolling */
-    row_px = (int32_t)ta_vline_of_pos(ta, ta->cursor_row, ta->cursor_col,
-                                      &civ) *
-             line_h;
+    row_px_64 = (int64_t)ta_vline_of_pos(ta, ta->cursor_row, ta->cursor_col,
+                                         &civ) * line_h;
   } else {
-    row_px = (int32_t)ta_visible_index_of_row(ta, ta->cursor_row) * line_h;
+    row_px_64 = (int64_t)ta_visible_index_of_row(ta, ta->cursor_row) * line_h;
   }
+  row_px = ta_sat_i64(row_px_64);
   if (inner_h > 0) {
     if (row_px - ta->scroll_y < 0) {
       ta->scroll_y = row_px;
     }
-    if (row_px + line_h - ta->scroll_y > inner_h) {
-      ta->scroll_y = row_px + line_h - inner_h;
+    if (row_px_64 + line_h - ta->scroll_y > inner_h) {
+      ta->scroll_y = ta_sat_i64(row_px_64 + line_h - inner_h);
     }
   }
   if (!ta->wrap && inner_w > 0) {
-    cy = ta_content_left_value(ta) +
-         ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col);
+    cy = ta_sat_add(ta_content_left_value(ta),
+                    ta_line_boundary_x(ta, ta->cursor_row, ta->cursor_col));
     if (cy - ta->scroll_x < 0) {
       ta->scroll_x = cy;
     }
@@ -1391,6 +1999,7 @@ static void ta_update_ime_spot(my_text_area_t* ta); /* fwd (M13a) */
 static void ta_move_to(my_text_area_t* ta, size_t row, size_t col,
                        bool select) {
   size_t lines = ta_line_count(ta);
+  ta->navigation_valid = false;
   if (row >= lines) {
     row = lines > 0 ? lines - 1 : 0;
   }
@@ -1432,10 +2041,12 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
   int32_t line_h, x, y;
   size_t visual_index = ta->cursor_row;
   size_t col_in = ta->cursor_col;
-  int32_t cursor_x = (int32_t)ta->cursor_col * TA_CELL_W;
+  int32_t cursor_x = ta_sat_size_mul(ta->cursor_col, TA_CELL_W);
   int32_t line_width = 0;
   int32_t inner_width;
   int32_t line_offset = 0;
+  bool justify = false;
+  size_t space_count = 0u;
   const my_visual_line_t* visual_line = NULL;
   my_text_layout_t* line_layout = NULL;
   char* line = NULL;
@@ -1464,30 +2075,33 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
       if (line_layout == NULL) {
         line = ta_vline_text(ta, visual_line);
       }
-      line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
+      line_width = ta_sat_size_mul(visual_line->len_cp, TA_CELL_W);
       if (line_layout != NULL) {
         line_width = my_text_layout_visual_boundary_x_ex(
             line_layout, ta->font, ta->font_size, line_layout->len,
             &ta->shaping_params);
+        space_count = ta_layout_justify_space_count(line_layout);
       } else if (line != NULL && ta->font != NULL) {
         (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
                               NULL);
       }
-      inner_width = ((my_widget_t*)ta)->rect.w - ta_content_left_value(ta) -
-                    TA_PAD_X;
-      if (inner_width < 0) {
-        inner_width = 0;
+      if (line == NULL && line_layout == NULL) {
+        space_count = 0u;
+      } else if (line_layout == NULL && line != NULL) {
+        space_count = (size_t)ta_justify_space_count(line, strlen(line));
       }
-      if (line_layout == NULL && line != NULL &&
-          ta->align == MY_TEXT_ALIGN_JUSTIFY &&
-          visual_index + 1 < ta_vline_count(ta) &&
+      inner_width = ta_inner_width_i32(ta);
+      if (ta->align == MY_TEXT_ALIGN_JUSTIFY && inner_width > line_width &&
+          space_count > 0u && visual_index + 1 < ta_vline_count(ta) &&
           ta_vline_at(ta, visual_index + 1)->phys == visual_line->phys) {
-        size_t line_len = strlen(line);
-        int space_count = ta_justify_space_count(line, line_len);
-        if (space_count > 0) {
-          cursor_x = ta_justify_boundary_x(
-              ta, line, col_in, (size_t)space_count, line_width, inner_width);
-        }
+        justify = true;
+      }
+      if (justify && line_layout != NULL) {
+        cursor_x = ta_layout_justify_boundary_x(
+            ta, line_layout, col_in, space_count, line_width, inner_width);
+      } else if (justify && line != NULL) {
+        cursor_x = ta_justify_boundary_x(ta, line, col_in, space_count,
+                                         line_width, inner_width);
       } else if (line_layout != NULL) {
         cursor_x = my_text_layout_visual_x_ex(
             line_layout, ta->font, ta->font_size, col_in,
@@ -1498,7 +2112,7 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
                    ta_line_boundary_x(ta, visual_line->phys,
                                       visual_line->start_cp);
       }
-      if (!(line_layout == NULL && ta->align == MY_TEXT_ALIGN_JUSTIFY)) {
+      if (!justify) {
         if (ta->align == MY_TEXT_ALIGN_CENTER) {
           line_offset = (inner_width - line_width) / 2;
         } else if (ta->align == MY_TEXT_ALIGN_RIGHT ||
@@ -1521,18 +2135,14 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
           line_layout, ta->font, ta->font_size, line_layout->len,
           &ta->shaping_params);
     } else if (visual_line != NULL) {
-      line_width = (int32_t)visual_line->len_cp * TA_CELL_W;
+      line_width = ta_sat_size_mul(visual_line->len_cp, TA_CELL_W);
       line = ta_vline_text(ta, visual_line);
       if (line != NULL && ta->font != NULL) {
         (void)my_font_measure(ta->font, line, ta->font_size, &line_width,
                               NULL);
       }
     }
-    inner_width = ((my_widget_t*)ta)->rect.w - ta_content_left_value(ta) -
-                  TA_PAD_X;
-    if (inner_width < 0) {
-      inner_width = 0;
-    }
+    inner_width = ta_inner_width_i32(ta);
     if (ta->align == MY_TEXT_ALIGN_CENTER) {
       line_offset = (inner_width - line_width) / 2;
     } else if (ta->align == MY_TEXT_ALIGN_RIGHT ||
@@ -1552,9 +2162,10 @@ static void ta_update_ime_spot(my_text_area_t* ta) {
     }
     cursor_x += line_offset;
   }
-  x = ta_content_left_value(ta) + cursor_x - ta->scroll_x;
-  y = TA_PAD_Y + (int32_t)visual_index * line_h -
-      ta->scroll_y + line_h; /* bottom of the cursor line */
+  x = ta_sat_i64((int64_t)ta_content_left_value(ta) + cursor_x -
+                 ta->scroll_x);
+  y = ta_sat_i64((int64_t)TA_PAD_Y +
+                 (int64_t)visual_index * line_h - ta->scroll_y + line_h);
   my_mem_free(ta->allocator, line);
   my_widget_local_to_global((my_widget_t*)ta, &x, &y);
   my_pal_window_ime_set_spot(win->pal_window, x, y);
@@ -1621,25 +2232,39 @@ static my_ret_t ta_on_ime_delete_surrounding(my_text_area_t* ta,
   return MY_RET_OK;
 }
 
-static void ta_apply_history(my_text_area_t* ta, const my_undo_op_t* op) {
+static my_ret_t ta_apply_history(my_text_area_t* ta, const my_undo_op_t* op) {
+  my_widget_t* held = my_widget_ref((my_widget_t*)ta);
+  my_ret_t result;
   ta->applying_history = true;
-  ta_delete_bytes(ta, op->offset, op->offset + op->remove_len);
-  ta_insert_bytes(ta, op->offset, op->bytes, op->bytes_len);
+  if (op->offset > SIZE_MAX - op->remove_len) {
+    ta->applying_history = false;
+    my_widget_unref(held);
+    return MY_RET_INVALID_PARAMS;
+  }
+  result = ta_replace_bytes(ta, op->offset, op->offset + op->remove_len,
+                             op->bytes, op->bytes_len, false);
+  if (result != MY_RET_OK) {
+    ta->applying_history = false;
+    my_widget_unref(held);
+    return result;
+  }
   ta_cursor_to_offset(ta, op->offset + op->bytes_len);
   ta->applying_history = false;
   emit_changed(ta);
   my_widget_invalidate((my_widget_t*)ta, NULL);
+  my_widget_unref(held);
+  return MY_RET_OK;
 }
 
 /** @brief Shared-mode apply callback (M11b). */
-static void ta_apply_undo_op(void* widget, const my_undo_op_t* op) {
-  ta_apply_history((my_text_area_t*)widget, op);
+static my_ret_t ta_apply_undo_op(void* widget, const my_undo_op_t* op) {
+  return ta_apply_history((my_text_area_t*)widget, op);
 }
 
 /* ---------------- RTL mapping (M12a): per visual line segment ---------
- * Wrap breaking itself stays in LOGICAL order; only drawing, cursor,
- * clicks and selection go through the visual mapping (visual-order wrap
- * rebreaking for mixed paragraphs is a documented TODO). */
+ * Wrap breaking itself stays in LOGICAL order; drawing, cursor, clicks and
+ * selection use the visual mapping. Arrow navigation retains the visual-line
+ * identity across shared logical boundaries. */
 
 /** @brief Fresh NUL-terminated text of a visual line (caller frees). */
 static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl);
@@ -1663,10 +2288,12 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
     }
     {
       my_undo_op_t op;
-      my_ret_t r = shift ? my_undo_stack_redo(ta->undo, &op)
-                         : my_undo_stack_undo(ta->undo, &op);
-      if (r == MY_RET_OK) {
-        ta_apply_history(ta, &op);
+      bool redo = shift;
+      my_ret_t r = redo ? my_undo_stack_redo_peek_tagged(ta->undo, &op, NULL)
+                        : my_undo_stack_undo_peek_tagged(ta->undo, &op, NULL);
+      if (r == MY_RET_OK && ta_apply_history(ta, &op) == MY_RET_OK) {
+        if (redo) my_undo_stack_commit_redo(ta->undo);
+        else my_undo_stack_commit_undo(ta->undo);
       }
     }
     return MY_RET_OK;
@@ -1678,8 +2305,9 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
     }
     {
       my_undo_op_t op;
-      if (my_undo_stack_redo(ta->undo, &op) == MY_RET_OK) {
-        ta_apply_history(ta, &op);
+      if (my_undo_stack_redo_peek_tagged(ta->undo, &op, NULL) == MY_RET_OK &&
+          ta_apply_history(ta, &op) == MY_RET_OK) {
+        my_undo_stack_commit_redo(ta->undo);
       }
     }
     return MY_RET_OK;
@@ -1727,25 +2355,66 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
   switch (key) {
     case MY_KEY_LEFT:
     case MY_KEY_RIGHT: {
-      /* RTL (M12a): arrows move VISUALLY within the current line. Line
-       * crossings fall back to logical line ends (visual continuity of
-       * mixed paragraphs across lines is a documented TODO). */
-      size_t vi = ta->wrap ? ta_vline_of_pos(ta, ta->cursor_row,
-                                             ta->cursor_col, &(size_t){0})
-                           : ta->cursor_row;
+      /* RTL (M12a): arrows move through the global visual-line order. The
+       * adjacent visual line may belong to another physical line. */
+      size_t vi;
+      size_t navigation_target;
+      bool track_navigation = ta->wrap;
+      if (ta->wrap && ta->navigation_valid &&
+          ta->navigation_row == ta->cursor_row &&
+          ta->navigation_col == ta->cursor_col &&
+          ta->navigation_visual_index < ta_vline_count(ta)) {
+        vi = ta->navigation_visual_index;
+      } else {
+        vi = ta->wrap ? ta_vline_of_pos(ta, ta->cursor_row,
+                                        ta->cursor_col, &(size_t){0})
+                      : ta->cursor_row;
+      }
+      navigation_target = vi;
       const my_visual_line_t* vl = ta_vline_at(ta, vi);
       my_text_layout_t* l = ta_layout_rtl(ta, vl);
       if (l != NULL) {
         size_t col_in = ta->cursor_col - vl->start_cp;
         bool at_visual_start = col_in == my_text_layout_boundary_home(l);
         bool at_visual_end = col_in == my_text_layout_boundary_end(l);
+        bool crossed_visual_line = false;
+        size_t target_visual_col = 0;
         if (key == MY_KEY_LEFT && at_visual_start) {
-          if (ta->cursor_row > 0) {
+          if (ta->wrap && vi > 0) {
+            const my_visual_line_t* previous = ta_vline_at(ta, vi - 1);
+            if (previous != NULL) {
+              my_text_layout_t* previous_layout =
+                  ta_layout_rtl(ta, previous);
+              target_visual_col = previous_layout != NULL
+                                      ? my_text_layout_boundary_end(
+                                            previous_layout)
+                                      : previous->len_cp;
+              ta_move_to(ta, previous->phys,
+                         previous->start_cp + target_visual_col, shift);
+              crossed_visual_line = true;
+              navigation_target = vi - 1u;
+            }
+          }
+          if (!crossed_visual_line && ta->cursor_row > 0) {
             ta_move_to(ta, ta->cursor_row - 1,
                        ta_line_cp_len(ta, ta->cursor_row - 1), shift);
           }
         } else if (key == MY_KEY_RIGHT && at_visual_end) {
-          if (ta->cursor_row + 1 < ta_line_count(ta)) {
+          if (ta->wrap && vi + 1 < ta_vline_count(ta)) {
+            const my_visual_line_t* next = ta_vline_at(ta, vi + 1);
+            if (next != NULL) {
+              my_text_layout_t* next_layout = ta_layout_rtl(ta, next);
+              target_visual_col = next_layout != NULL
+                                      ? my_text_layout_boundary_home(next_layout)
+                                      : 0;
+              ta_move_to(ta, next->phys,
+                         next->start_cp + target_visual_col, shift);
+              crossed_visual_line = true;
+              navigation_target = vi + 1u;
+            }
+          }
+          if (!crossed_visual_line &&
+              ta->cursor_row + 1 < ta_line_count(ta)) {
             ta_move_to(ta, ta->cursor_row + 1, 0, shift);
           }
         } else {
@@ -1755,10 +2424,20 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
           ta_move_to(ta, ta->cursor_row, vl->start_cp + nb, shift);
         }
         if (!shift) {
-          /* goal column tracks the VISUAL boundary index (identity for
-           * pure LTR, so the legacy semantics are unchanged) */
-          ta->goal_col = my_text_layout_visual_of_logical(
-              l, ta->cursor_col - vl->start_cp);
+          if (crossed_visual_line) {
+            ta->goal_col = target_visual_col;
+          } else {
+            /* goal column tracks the VISUAL boundary index (identity for
+             * pure LTR, so the legacy semantics are unchanged) */
+            ta->goal_col = my_text_layout_visual_of_logical(
+                l, ta->cursor_col - vl->start_cp);
+          }
+        }
+        if (ta->wrap && track_navigation) {
+          ta->navigation_visual_index = navigation_target;
+          ta->navigation_row = ta->cursor_row;
+          ta->navigation_col = ta->cursor_col;
+          ta->navigation_valid = true;
         }
         return MY_RET_OK;
       }
@@ -1938,23 +2617,42 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
       break;
   }
   if (key >= 32 && key <= 126 && !ctrl) {
-    char ch = (char)key;
-    user_insert(ta, &ch, 1, 1);
+    char ch[2] = {(char)key, '\0'};
+    user_insert(ta, ch, 1, 1);
     return MY_RET_OK;
   }
   return MY_RET_FAIL;
 }
 
 /* ---------------- RTL mapping (M12a): per visual line segment ---------
- * Wrap breaking itself stays in LOGICAL order; only drawing, cursor,
- * clicks and selection go through the visual mapping (visual-order wrap
- * rebreaking for mixed paragraphs is a documented TODO). */
+ * Wrap breaking stays in logical order; drawing, cursor, clicks and
+ * selection use the visual mapping. Dirty suffixes are processed as one
+ * paragraph so hard-line boundaries remain explicit without per-line setup.
+ */
 
 /** @brief Fresh NUL-terminated text of a visual line (caller frees). */
+static bool ta_vline_slice_bounds(const my_text_area_t* ta,
+                                  const my_visual_line_t* vl, size_t* start,
+                                  size_t* end) {
+  size_t line_start;
+  if (ta == NULL || vl == NULL || start == NULL || end == NULL ||
+      vl->phys >= ta_line_count(ta)) {
+    return false;
+  }
+  line_start = ta_line_start(ta, vl->phys);
+  if (line_start > ta->text_len || vl->start_byte > ta->text_len - line_start)
+    return false;
+  *start = line_start + vl->start_byte;
+  if (vl->len_bytes > ta->text_len - *start) return false;
+  *end = *start + vl->len_bytes;
+  return true;
+}
+
 static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl) {
-  size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
-  size_t end = start + vl->len_bytes;
+  size_t start;
+  size_t end;
   char* s;
+  if (!ta_vline_slice_bounds(ta, vl, &start, &end)) return NULL;
   if (end <= start) {
     return NULL;
   }
@@ -1969,6 +2667,7 @@ static char* ta_vline_text(my_text_area_t* ta, const my_visual_line_t* vl) {
 static bool ta_paint_text_reserve(my_text_area_t* ta, size_t required) {
   size_t capacity;
   char* grown;
+  if (required == SIZE_MAX) return false;
   if (required <= ta->paint_text_cap) return true;
   capacity = ta->paint_text_cap == 0 ? 64 : ta->paint_text_cap;
   while (capacity < required) {
@@ -1987,87 +2686,82 @@ static bool ta_paint_text_reserve(my_text_area_t* ta, size_t required) {
 
 static char* ta_paint_vline_text(my_text_area_t* ta,
                                  const my_visual_line_t* vl) {
-  size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
-  size_t end = start + vl->len_bytes;
+  size_t start;
+  size_t end;
   size_t len;
+  if (!ta_vline_slice_bounds(ta, vl, &start, &end)) return NULL;
   if (end <= start) {
-    my_text_layout_destroy(ta->paint_layout);
-    ta->paint_layout = NULL;
     ta->paint_text_len = 0;
     return NULL;
   }
   len = end - start;
   if (!ta_paint_text_reserve(ta, len + 1)) return NULL;
-  if (ta->paint_text_len != len ||
-      memcmp(ta->paint_text, ta->text + start, len) != 0) {
-    my_text_layout_destroy(ta->paint_layout);
-    ta->paint_layout = NULL;
-  }
   memcpy(ta->paint_text, ta->text + start, len);
   ta->paint_text[len] = '\0';
   ta->paint_text_len = len;
   return ta->paint_text;
 }
 
-static my_text_layout_t* ta_paint_layout(my_text_area_t* ta,
-                                         const char* text) {
-  if (!my_text_layout_may_need_bidi(text)) return NULL;
-  if (ta->paint_layout == NULL) {
-    ta->paint_layout = my_text_layout_process(ta->allocator, text);
-  }
-  return ta->paint_layout;
-}
-
 /** @brief Cached layout of a visual line's text when it needs bidi. */
 static my_text_layout_t* ta_layout_rtl(my_text_area_t* ta,
                                        const my_visual_line_t* vl) {
+  my_text_area_rtl_cache_entry_t* entry;
+  my_text_area_rtl_cache_entry_t* victim;
+  uint64_t tick;
+  size_t i;
   size_t start;
   size_t end;
-  if (ta->rtl_layout != NULL && ta->rtl_phys == vl->phys &&
-      ta->rtl_start_byte == vl->start_byte &&
-      ta->rtl_len_bytes == vl->len_bytes &&
-      ta->rtl_revision == ta->text_revision && ta->rtl_font == ta->font &&
-      ta->rtl_font_size == ta->font_size) {
-    return ta->rtl_layout;
-  }
-  start = ta_line_start(ta, vl->phys) + vl->start_byte;
-  end = start + vl->len_bytes;
-  char* s = ta_vline_text(ta, vl);
-  if (s == NULL) {
-    return NULL;
-  }
-  if (!my_text_layout_may_need_bidi(s)) {
-    my_mem_free(ta->allocator, s);
-    return NULL;
-  }
-  if (end < start) {
-    my_mem_free(ta->allocator, s);
-    return NULL;
-  }
-  {
-    my_text_layout_t* layout = my_text_layout_process(ta->allocator, s);
-    if (layout == NULL) {
-      my_mem_free(ta->allocator, s);
-      return NULL;
+  size_t length;
+  my_text_layout_t* layout;
+  for (i = 0; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    entry = &ta->rtl_cache[i];
+    if (entry->layout != NULL && entry->phys == vl->phys &&
+        entry->start_byte == vl->start_byte &&
+        entry->len_bytes == vl->len_bytes &&
+        entry->text_revision == ta->text_revision && entry->font == ta->font &&
+        entry->font_size == ta->font_size &&
+        entry->shaping_revision == ta->shaping_revision) {
+      entry->last_used = ta_rtl_cache_next_tick(ta);
+      ta_rtl_cache_mirror(ta, entry);
+      return entry->layout;
     }
-    my_text_layout_destroy(ta->rtl_layout);
-    my_mem_free(ta->allocator, ta->rtl_text);
-    ta->rtl_layout = layout;
-    ta->rtl_text = s;
-    ta->rtl_text_len = vl->len_bytes;
-    ta->rtl_phys = vl->phys;
-    ta->rtl_start_byte = vl->start_byte;
-    ta->rtl_len_bytes = vl->len_bytes;
-    ta->rtl_revision = ta->text_revision;
-    ta->rtl_font = ta->font;
-    ta->rtl_font_size = ta->font_size;
-    return layout;
   }
+  if (!ta_vline_slice_bounds(ta, vl, &start, &end)) return NULL;
+  length = end - start;
+  if (!my_text_layout_may_need_bidi_n(ta->text + start, length)) return NULL;
+  layout = my_text_layout_process_n(ta->allocator, ta->text + start, length);
+  if (layout == NULL) return NULL;
+  victim = NULL;
+  for (i = 0; i < MY_TEXT_AREA_RTL_CACHE_CAPACITY; i++) {
+    entry = &ta->rtl_cache[i];
+    if (entry->layout == NULL) {
+      victim = entry;
+      break;
+    }
+    if (victim == NULL || entry->last_used < victim->last_used) {
+      victim = entry;
+    }
+  }
+  my_text_layout_destroy(victim->layout);
+  memset(victim, 0, sizeof(*victim));
+  victim->layout = layout;
+  victim->phys = vl->phys;
+  victim->start_byte = vl->start_byte;
+  victim->len_bytes = vl->len_bytes;
+  victim->text_revision = ta->text_revision;
+  victim->shaping_revision = ta->shaping_revision;
+  victim->font = ta->font;
+  victim->font_size = ta->font_size;
+  tick = ta_rtl_cache_next_tick(ta);
+  victim->last_used = tick;
+  ta_rtl_cache_mirror(ta, victim);
+  return layout;
 }
 
 /* ---------------- events ---------------- */
 
-static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
+static my_ret_t ta_on_event_impl(my_widget_t* widget,
+                                 const my_event_t* event) {
   my_text_area_t* ta = (my_text_area_t*)widget;
   switch (event->type) {
     case MY_EVENT_POINTER_DOWN: {
@@ -2132,6 +2826,13 @@ static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
   }
 }
 
+static my_ret_t ta_on_event(my_widget_t* widget, const my_event_t* event) {
+  my_widget_t* held = my_widget_ref(widget);
+  my_ret_t result = ta_on_event_impl(widget, event);
+  my_widget_unref(held);
+  return result;
+}
+
 /* ---------------- paint ---------------- */
 
 static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
@@ -2186,16 +2887,19 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     /* iterate VISUAL lines (wrap on: wrapped segments; off: = physical) */
     size_t vcount = ta_vline_count(ta), vi;
     size_t vfirst = (size_t)(ta->scroll_y / line_h);
-    size_t vlast = vfirst + (size_t)(widget->rect.h / line_h) + 1;
+    size_t vlast = ta_sat_size_add(
+        ta_sat_size_add(vfirst, (size_t)(widget->rect.h / line_h)), 1u);
     if (vlast >= vcount && vcount > 0) {
       vlast = vcount - 1;
     }
     for (vi = vfirst; vi <= vlast && vi < vcount; vi++) {
       const my_visual_line_t* vl = ta_vline_at(ta, vi);
-      size_t start = ta_line_start(ta, vl->phys) + vl->start_byte;
-      size_t end = start + vl->len_bytes;
+      size_t start;
+      size_t end;
+      if (!ta_vline_slice_bounds(ta, vl, &start, &end)) continue;
       size_t len = end > start ? end - start : 0;
-      int32_t ty = TA_PAD_Y + (int32_t)vi * line_h - ta->scroll_y;
+      int32_t ty = ta_sat_i64((int64_t)TA_PAD_Y +
+                              (int64_t)vi * line_h - ta->scroll_y);
       if (ta->line_numbers && (vi == vfirst ||
                                ta_vline_at(ta, vi - 1)->phys != vl->phys)) {
         char number[32];
@@ -2205,7 +2909,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
         if (ta->font != NULL) {
           my_vgcanvas_measure_text(vg, number, &number_width, NULL);
         } else {
-          number_width = (int32_t)strlen(number) * TA_CELL_W;
+          number_width = ta_sat_size_mul(strlen(number), TA_CELL_W);
         }
         my_vgcanvas_set_fill_color(vg, my_color_rgb(130, 130, 130));
         ta_draw_text(
@@ -2216,7 +2920,7 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       if (len > 0) {
         char* line = ta_paint_vline_text(ta, vl);
         if (line != NULL) {
-          int32_t inner_w = widget->rect.w - ta_content_left_value(ta) - TA_PAD_X;
+          int32_t inner_w = ta_inner_width_i32(ta);
           int32_t lw = 0;
           int32_t base_x = ta_content_left_value(ta) - ta->scroll_x;
           int32_t delta = 0;
@@ -2227,14 +2931,19 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
           if (ta->font != NULL) {
             my_vgcanvas_measure_text(vg, line, &lw, NULL);
           } else {
-            lw = (int32_t)vl->len_cp * TA_CELL_W;
+            lw = ta_sat_size_mul(vl->len_cp, TA_CELL_W);
           }
           nseps = ta_justify_space_count(line, len);
           if (my_text_layout_may_need_bidi(line) &&
               (ta->align == MY_TEXT_ALIGN_LEFT || has_sel ||
                (ta->syntax_cache != NULL &&
                 my_syntax_cache_line_ready(ta->syntax_cache, vl->phys)))) {
-            line_layout = ta_paint_layout(ta, line);
+            line_layout = ta_layout_rtl(ta, vl);
+          }
+          if (line_layout != NULL) {
+            lw = my_text_layout_visual_boundary_x_ex(
+                line_layout, ta->font, ta->font_size, line_layout->len,
+                &ta->shaping_params);
           }
           if (ta->align == MY_TEXT_ALIGN_CENTER) {
             base_x += (inner_w - lw) / 2;
@@ -2274,9 +2983,15 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
               my_vgcanvas_set_fill_color(vg, my_color_rgb(130, 170, 230));
               if (line_layout != NULL) {
                 my_rectf_t rects[4];
-                size_t n = my_text_layout_visual_rects_ex(
-                    line_layout, ta->font, ta->font_size, s0 - vl->start_cp,
-                    s1 - vl->start_cp, rects, 4, &ta->shaping_params);
+                size_t n = justify
+                               ? ta_layout_justify_rects(
+                                     ta, line_layout, s0 - vl->start_cp,
+                                     s1 - vl->start_cp, rects, 4,
+                                     (size_t)nseps, lw, inner_w)
+                               : my_text_layout_visual_rects_ex(
+                                     line_layout, ta->font, ta->font_size,
+                                     s0 - vl->start_cp, s1 - vl->start_cp,
+                                     rects, 4, &ta->shaping_params);
                 size_t k;
                 for (k = 0; k < n && k < 4; k++) {
                   my_vgcanvas_fill_rect(
@@ -2288,8 +3003,8 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                         (float)line_h});
                 }
               } else {
-                int32_t sx0 = (int32_t)(s0 - vl->start_cp) * TA_CELL_W;
-                int32_t sx1 = (int32_t)(s1 - vl->start_cp) * TA_CELL_W;
+                int32_t sx0 = ta_sat_size_mul(s0 - vl->start_cp, TA_CELL_W);
+                int32_t sx1 = ta_sat_size_mul(s1 - vl->start_cp, TA_CELL_W);
                 if (justify) {
                   sx0 = ta_justify_boundary_x(
                       ta, line, s0 - vl->start_cp, (size_t)nseps, lw,
@@ -2312,7 +3027,10 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             }
           }
           my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(fg));
-          if (justify) {
+          if (justify && line_layout != NULL) {
+            ta_draw_justify_layout(ta, vg, line_layout, (float)base_x,
+                                   (float)ty, (size_t)nseps, lw, inner_w);
+          } else if (justify) {
             /* draw word by word, stretching each separating space */
             float x = (float)base_x;
             float space_extra = (float)(inner_w - lw) / (float)nseps;
@@ -2325,9 +3043,14 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             }
             while (*p != '\0') {
               char* wstart = p;
+              size_t word_count = 0u;
               size_t wlen;
-              while (*p != '\0' && *p != ' ') {
-                p++;
+              while (*p != '\0') {
+                const char* next = p;
+                uint32_t cp = my_utf8_next(&next);
+                if (my_line_break_is_breaking_space(cp)) break;
+                p = (char*)next;
+                word_count++;
               }
               wlen = (size_t)(p - wstart);
               if (wlen > 0) {
@@ -2338,14 +3061,17 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                 if (ta->font != NULL) {
                   my_vgcanvas_measure_text(vg, wstart, &ww, NULL);
                 } else {
-                  ww = (int32_t)wlen * TA_CELL_W;
+                  ww = ta_sat_size_mul(word_count, TA_CELL_W);
                 }
                 x += (float)ww;
                 *p = separator;
               }
-              while (*p == ' ') {
+              while (*p != '\0') {
+                const char* next = p;
+                uint32_t cp = my_utf8_next(&next);
+                if (!my_line_break_is_breaking_space(cp)) break;
                 x += space_w + space_extra;
-                p++;
+                p = (char*)next;
               }
             }
           } else {
@@ -2368,22 +3094,23 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     const my_visual_line_t* cv = ta_vline_at(ta, cvi);
     char* ctext = ta_paint_vline_text(ta, cv);
     int32_t cx = ta_content_left_value(ta) - ta->scroll_x;
-    int32_t cy = TA_PAD_Y +
-                 (int32_t)(ta->wrap ? cvi : ta->cursor_row) * line_h -
-                 ta->scroll_y;
+    int32_t cy = ta_sat_i64((int64_t)TA_PAD_Y +
+                            (int64_t)(ta->wrap ? cvi : ta->cursor_row) *
+                                line_h -
+                            ta->scroll_y);
     if (ctext != NULL) {
-      int32_t inner_w = widget->rect.w - ta_content_left_value(ta) - TA_PAD_X;
+      int32_t inner_w = ta_inner_width_i32(ta);
       int32_t lw = 0;
       size_t col_in = ta->cursor_col - cv->start_cp;
       int nseps = 0;
       bool justify = false;
-      my_text_layout_t* cursor_layout = ta_paint_layout(ta, ctext);
+      my_text_layout_t* cursor_layout = ta_layout_rtl(ta, cv);
       /* same base as the text line (scroll + align), then the mapped
        * visual x for RTL, cell math otherwise (M12a) */
       if (ta->font != NULL) {
         my_vgcanvas_measure_text(vg, ctext, &lw, NULL);
       } else {
-        lw = (int32_t)cv->len_cp * TA_CELL_W;
+        lw = ta_sat_size_mul(cv->len_cp, TA_CELL_W);
       }
       nseps = ta_justify_space_count(ctext, strlen(ctext));
       if (ta->align == MY_TEXT_ALIGN_CENTER) {
@@ -2405,18 +3132,24 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
             cursor_layout, ta->font, ta->font_size, col_in,
             &ta->shaping_params);
       } else if (justify) {
-        cx += ta_justify_boundary_x(ta, ctext, col_in, (size_t)nseps, lw,
-                                    inner_w);
+        cx = ta_sat_add(cx, ta_justify_boundary_x(
+                                ta, ctext, col_in, (size_t)nseps, lw,
+                                inner_w));
       } else {
         if (ta->wrap) {
-          cx += ta_line_boundary_x(ta, cv->phys, cv->start_cp + col_in) -
-                ta_line_boundary_x(ta, cv->phys, cv->start_cp);
+          cx = ta_sat_add(
+              cx, ta_sat_i64(
+                      (int64_t)ta_line_boundary_x(
+                          ta, cv->phys, ta_sat_size_add(cv->start_cp, col_in)) -
+                      ta_line_boundary_x(ta, cv->phys, cv->start_cp)));
         } else {
-          cx += ta_line_boundary_x(ta, cv->phys, ta->cursor_col);
+          cx = ta_sat_add(cx,
+                          ta_line_boundary_x(ta, cv->phys, ta->cursor_col));
         }
       }
     } else {
-      cx += (int32_t)(ta->wrap ? civ : ta->cursor_col) * TA_CELL_W;
+      cx = ta_sat_add(cx, ta_sat_size_mul(
+                              ta->wrap ? civ : ta->cursor_col, TA_CELL_W));
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(fg));
     if (ta->cursor_visible) {
@@ -2431,11 +3164,12 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       if (ta->font != NULL) {
         my_vgcanvas_measure_text(vg, ta->ime_preedit, &pw, NULL);
       } else {
-        pw = (int32_t)my_str_utf8_strlen(ta->ime_preedit) * TA_CELL_W;
+        pw = ta_sat_size_mul(my_str_utf8_strlen(ta->ime_preedit), TA_CELL_W);
       }
       if (pw > 0) {
         my_vgcanvas_fill_rect(vg, &(my_rectf_t){(float)cx,
-                                                (float)(cy + line_h - 1),
+                                                (float)ta_sat_i64(
+                                                    (int64_t)cy + line_h - 1),
                                                 (float)pw, 1.0f});
       }
     }
@@ -2445,20 +3179,31 @@ static void ta_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
 
 static const my_widget_vtable_t s_ta_vtable = {ta_on_paint, ta_on_event, NULL, NULL};
 
+bool my_text_area_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_ta_vtable;
+}
+
 /* ---------------- focus / blink / lifecycle ---------------- */
 
 static my_ret_t ta_blink_tick(void* ctx) {
   my_text_area_t* ta = (my_text_area_t*)ctx;
+  my_widget_t* held = my_widget_ref((my_widget_t*)ta);
   ta->cursor_visible = !ta->cursor_visible;
   my_widget_invalidate((my_widget_t*)ta, NULL);
+  my_widget_unref(held);
   return MY_RET_OK;
 }
 
 static my_ret_t ta_paste_tick(void* ctx) {
   my_text_area_t* ta = (my_text_area_t*)ctx;
-  if (ta->focused && ta_paste(ta) == MY_RET_PENDING) return MY_RET_OK;
+  my_widget_t* held = my_widget_ref((my_widget_t*)ta);
+  if (ta->focused && ta_paste(ta) == MY_RET_PENDING) {
+    my_widget_unref(held);
+    return MY_RET_OK;
+  }
   ta->paste_timer_id = 0;
   ta->paste_loop = NULL;
+  my_widget_unref(held);
   return MY_RET_FAIL;
 }
 
@@ -2511,6 +3256,14 @@ static void ta_on_blur(void* ctx, const char* event, void* data) {
 
 static void ta_destroy_chain(my_object_t* obj) {
   my_text_area_t* ta = (my_text_area_t*)obj;
+  if (ta->scroll_bar != NULL && ta->scroll_bar_listener_id != 0u) {
+    (void)my_widget_off(ta->scroll_bar, ta->scroll_bar_listener_id);
+    ta->scroll_bar_listener_id = 0u;
+  }
+  if (ta->scroll_bar != NULL) {
+    my_widget_unref(ta->scroll_bar);
+    ta->scroll_bar = NULL;
+  }
   if (ta->blink_timer_id > 0 && ta->blink_loop != NULL) {
     my_pal_main_loop_remove_timer(ta->blink_loop, ta->blink_timer_id);
   }
@@ -2525,10 +3278,8 @@ static void ta_destroy_chain(my_object_t* obj) {
   ta_clear_folds(ta);
   ta_vlines_destroy_array(ta, ta->vlines);
   ta_syntax_destroy(ta);
-  my_text_layout_destroy(ta->paint_layout);
   my_mem_free(ta->allocator, ta->paint_text);
-  my_text_layout_destroy(ta->rtl_layout);
-  my_mem_free(ta->allocator, ta->rtl_text);
+  ta_rtl_cache_clear(ta);
   my_mem_free(ta->allocator, ta->geometry_boundaries);
   my_mem_free(ta->allocator, ta->shaping_language);
   my_mem_free(ta->allocator, ta->shaping_features);
@@ -2588,15 +3339,8 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   my_syntax_cache_t* previous;
   my_ret_t syntax_status;
   size_t len;
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
-  }
-  /* programmatic replacement: not undoable; the document diverged. In
-   * shared mode only THIS widget's entries are dropped (M11b). */
-  if (ta->undo_shared != NULL) {
-    my_undo_manager_clear_widget(ta->undo_shared, ta);
-  } else if (ta->undo != NULL) {
-    my_undo_stack_clear(ta->undo);
   }
   len = text != NULL ? strlen(text) : 0;
   if (len == SIZE_MAX) return MY_RET_OOM;
@@ -2626,6 +3370,13 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
   if (len > 0) {
     memcpy(ta->text, text, len);
   }
+  /* Programmatic replacement is not undoable, but clear history only after
+   * every fallible preparation step has succeeded. */
+  if (ta->undo_shared != NULL) {
+    my_undo_manager_clear_widget(ta->undo_shared, ta);
+  } else if (ta->undo != NULL) {
+    my_undo_stack_clear(ta->undo);
+  }
   ta->text[len] = '\0';
   ta->text_len = len;
   ta_bump_text_revision(ta);
@@ -2641,13 +3392,13 @@ my_ret_t my_text_area_set_text(my_widget_t* area, const char* text) {
 
 const char* my_text_area_get_text(my_widget_t* area) {
   my_text_area_t* ta = (my_text_area_t*)area;
-  return area == NULL || ta->text == NULL ? "" : ta->text;
+  return !my_text_area_is_instance(area) || ta->text == NULL ? "" : ta->text;
 }
 
 my_ret_t my_text_area_set_hint(my_widget_t* area, const char* hint) {
   my_text_area_t* ta = (my_text_area_t*)area;
   char* copy;
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
   copy = my_strdup(ta->allocator, hint);
@@ -2662,13 +3413,14 @@ my_ret_t my_text_area_set_hint(my_widget_t* area, const char* hint) {
 
 my_ret_t my_text_area_set_wrap(my_widget_t* area, bool wrap) {
   my_text_area_t* ta = (my_text_area_t*)area;
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
   if (ta->wrap != wrap) {
     ta->wrap = wrap;
     ta->scroll_x = 0;
     ta_vlines_invalidate_from(ta, 0);
+    ta->navigation_valid = false;
   }
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
@@ -2676,7 +3428,7 @@ my_ret_t my_text_area_set_wrap(my_widget_t* area, bool wrap) {
 
 my_ret_t my_text_area_set_line_numbers(my_widget_t* area, bool enabled) {
   my_text_area_t* ta = (my_text_area_t*)area;
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
   if (ta->line_numbers != enabled) {
@@ -2691,10 +3443,14 @@ my_ret_t my_text_area_set_line_numbers(my_widget_t* area, bool enabled) {
 }
 
 bool my_text_area_line_numbers_enabled(const my_widget_t* area) {
-  return area != NULL && ((const my_text_area_t*)area)->line_numbers;
+  return my_text_area_is_instance(area) &&
+         ((const my_text_area_t*)area)->line_numbers;
 }
 
 int32_t my_text_area_content_left(const my_widget_t* area) {
+  if (!my_text_area_is_instance(area)) {
+    return 0;
+  }
   return ta_content_left_value((const my_text_area_t*)area);
 }
 
@@ -2702,7 +3458,8 @@ my_ret_t my_text_area_set_folded_range(my_widget_t* area, size_t start_row,
                                        size_t end_row, bool folded) {
   my_text_area_t* ta = (my_text_area_t*)area;
   size_t i;
-  if (area == NULL || start_row >= end_row || end_row >= ta_line_count(ta)) {
+  if (!my_text_area_is_instance(area) || start_row >= end_row ||
+      end_row >= ta_line_count(ta)) {
     return MY_RET_INVALID_PARAMS;
   }
   if (ta->fold_ranges == NULL) {
@@ -2785,7 +3542,8 @@ my_ret_t my_text_area_folds_to_yaml(const my_widget_t* area,
   size_t i;
   size_t len = 0;
   char* yaml;
-  if (area == NULL || out_yaml == NULL) return MY_RET_INVALID_PARAMS;
+  if (!my_text_area_is_instance(area) || out_yaml == NULL)
+    return MY_RET_INVALID_PARAMS;
   *out_yaml = NULL;
   if (ta->fold_ranges == NULL || my_darray_size(ta->fold_ranges) == 0) {
     yaml = (char*)my_mem_alloc(allocator, sizeof(TA_FOLD_STATE_HEADER));
@@ -2839,7 +3597,8 @@ my_ret_t my_text_area_folds_from_yaml(my_widget_t* area, const char* yaml) {
   my_conf_error_t error;
   my_darray_t* candidate = NULL;
   size_t i;
-  if (area == NULL || yaml == NULL || strlen(yaml) > TA_MAX_FOLD_STATE_BYTES) {
+  if (!my_text_area_is_instance(area) || yaml == NULL ||
+      strlen(yaml) > TA_MAX_FOLD_STATE_BYTES) {
     return MY_RET_INVALID_PARAMS;
   }
   root = my_conf_parse_yaml(ta->allocator, yaml, strlen(yaml), &error);
@@ -2917,7 +3676,7 @@ oom:
 bool my_text_area_is_folded(const my_widget_t* area, size_t row) {
   const my_text_area_t* ta = (const my_text_area_t*)area;
   size_t i;
-  if (area == NULL || ta->fold_ranges == NULL) {
+  if (!my_text_area_is_instance(area) || ta->fold_ranges == NULL) {
     return false;
   }
   for (i = 0; i < my_darray_size(ta->fold_ranges); i++) {
@@ -2934,7 +3693,7 @@ bool my_text_area_is_folded(const my_widget_t* area, size_t row) {
 }
 
 my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align) {
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_text_area_t*)area)->align = align;
@@ -2945,7 +3704,7 @@ my_ret_t my_text_area_set_align(my_widget_t* area, my_text_align_t align) {
 my_ret_t my_text_area_set_syntax_enabled(my_widget_t* area, bool enabled) {
   my_text_area_t* ta = (my_text_area_t*)area;
   my_syntax_cache_t* cache = NULL;
-  if (area == NULL) return MY_RET_INVALID_PARAMS;
+  if (!my_text_area_is_instance(area)) return MY_RET_INVALID_PARAMS;
   if (!enabled) {
     ta->syntax_enabled = false;
     ta_syntax_destroy(ta);
@@ -2968,7 +3727,8 @@ my_ret_t my_text_area_set_syntax_language(my_widget_t* area,
                                           my_syntax_language_t language) {
   my_text_area_t* ta = (my_text_area_t*)area;
   my_syntax_cache_t* cache = NULL;
-  if (area == NULL || language < MY_SYNTAX_NONE || language > MY_SYNTAX_YAML) {
+  if (!my_text_area_is_instance(area) || language < MY_SYNTAX_NONE ||
+      language > MY_SYNTAX_YAML) {
     return MY_RET_INVALID_PARAMS;
   }
   if (ta->syntax_language == language) return MY_RET_OK;
@@ -2989,29 +3749,35 @@ my_ret_t my_text_area_set_syntax_language(my_widget_t* area,
 
 my_ret_t my_text_area_set_syntax_line_budget(my_widget_t* area,
                                              size_t line_budget) {
-  if (area == NULL) return MY_RET_INVALID_PARAMS;
+  if (!my_text_area_is_instance(area)) return MY_RET_INVALID_PARAMS;
   ((my_text_area_t*)area)->syntax_line_budget = line_budget;
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
 }
 
 bool my_text_area_syntax_enabled(const my_widget_t* area) {
-  return area != NULL && ((const my_text_area_t*)area)->syntax_enabled;
+  return my_text_area_is_instance(area) &&
+         ((const my_text_area_t*)area)->syntax_enabled;
 }
 
 bool my_text_area_syntax_line_ready(const my_widget_t* area, size_t row) {
   const my_text_area_t* ta = (const my_text_area_t*)area;
-  return ta != NULL && ta->syntax_cache != NULL &&
+  return my_text_area_is_instance(area) && ta->syntax_cache != NULL &&
          my_syntax_cache_line_ready(ta->syntax_cache, row);
 }
 
 size_t my_text_area_visual_line_count(my_widget_t* area) {
-  return area != NULL ? ta_vline_count((my_text_area_t*)area) : 0;
+  return my_text_area_is_instance(area)
+             ? ta_vline_count((my_text_area_t*)area)
+             : 0;
 }
 
 const my_visual_line_t* my_text_area_visual_line_at(my_widget_t* area,
                                                     size_t index) {
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
+    return NULL;
+  }
+  if (index >= ta_vline_count((my_text_area_t*)area)) {
     return NULL;
   }
   return ta_vline_at((my_text_area_t*)area, index);
@@ -3020,7 +3786,7 @@ const my_visual_line_t* my_text_area_visual_line_at(my_widget_t* area,
 size_t my_text_area_visual_line_of_pos(my_widget_t* area, size_t row,
                                        size_t col, size_t* col_in_v) {
   size_t civ = 0;
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return 0;
   }
   return ta_vline_of_pos((my_text_area_t*)area, row, col,
@@ -3028,8 +3794,19 @@ size_t my_text_area_visual_line_of_pos(my_widget_t* area, size_t row,
 }
 
 my_ret_t my_text_area_set_undo_shared(my_widget_t* area, void* mgr) {  my_text_area_t* ta = (my_text_area_t*)area;
-  if (area == NULL) {
+  my_undo_manager_t* next = (my_undo_manager_t*)mgr;
+  my_ret_t result;
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (ta->undo_shared == next) {
+    return MY_RET_OK;
+  }
+  if (next != NULL) {
+    result = my_undo_manager_register(next, ta, ta_apply_undo_op);
+    if (result != MY_RET_OK) {
+      return result;
+    }
   }
   if (ta->undo_shared != NULL) {
     /* leaving shared mode discards the widget's shared history
@@ -3038,15 +3815,12 @@ my_ret_t my_text_area_set_undo_shared(my_widget_t* area, void* mgr) {  my_text_a
     my_undo_manager_clear_widget(ta->undo_shared, ta);
     my_undo_manager_unregister(ta->undo_shared, ta);
   }
-  ta->undo_shared = (my_undo_manager_t*)mgr;
-  if (ta->undo_shared != NULL) {
-    return my_undo_manager_register(ta->undo_shared, ta, ta_apply_undo_op);
-  }
+  ta->undo_shared = next;
   return MY_RET_OK;
 }
 
 my_ret_t my_text_area_set_readonly(my_widget_t* area, bool readonly) {
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_text_area_t*)area)->readonly = readonly;
@@ -3054,7 +3828,7 @@ my_ret_t my_text_area_set_readonly(my_widget_t* area, bool readonly) {
 }
 
 my_ret_t my_text_area_set_max_len(my_widget_t* area, size_t max_codepoints) {
-  if (area == NULL) {
+  if (!my_text_area_is_instance(area)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_text_area_t*)area)->max_len = max_codepoints;
@@ -3081,15 +3855,24 @@ my_ret_t my_text_area_set_shaping_params(
     my_widget_t* area, const my_font_shape_params_t* params) {
   my_text_area_t* ta = (my_text_area_t*)area;
   my_font_shape_params_t effective = {false, 0u, NULL, NULL};
+  char normalized_features[MY_FONT_SHAPE_MAX_FEATURE_BYTES + 1u];
   char* language = NULL;
   char* features = NULL;
-  if (ta == NULL) return MY_RET_INVALID_PARAMS;
+  if (!my_text_area_is_instance(area)) return MY_RET_INVALID_PARAMS;
   if (params != NULL) effective = *params;
-  if (!ta_shape_string_valid(effective.language,
-                             MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) ||
-      !ta_shape_string_valid(effective.features,
-                             MY_FONT_SHAPE_MAX_FEATURE_BYTES)) {
+  if (!my_font_shape_params_valid(&effective)) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (effective.features != NULL &&
+      !my_font_shape_features_normalize(effective.features,
+                                        normalized_features,
+                                        sizeof(normalized_features))) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (effective.features != NULL) {
+    effective.features = normalized_features[0] != '\0'
+                             ? normalized_features
+                             : NULL;
   }
   if (ta->shaping_params.rtl == effective.rtl &&
       ta->shaping_params.script == effective.script &&
@@ -3123,25 +3906,30 @@ my_ret_t my_text_area_set_shaping_params(
   } else {
     ta->shaping_revision++;
   }
+  ta_rtl_cache_clear(ta);
   ta_vlines_invalidate_from(ta, 0);
+  ta->navigation_valid = false;
   my_widget_invalidate(area, NULL);
   return MY_RET_OK;
 }
 
 void my_text_area_set_font(my_widget_t* area, my_font_t* font, int32_t size) {
   my_text_area_t* ta = (my_text_area_t*)area;
-  if (area != NULL) {
+  if (my_text_area_is_instance(area)) {
     if (font != NULL) {
       ta->font = font;
     }
     if (size > 0) {
       ta->font_size = size;
     }
+    ta_rtl_cache_clear(ta);
     ta_vlines_invalidate_from(ta, 0);
     my_widget_invalidate(area, NULL);
   }
 }
 
 size_t my_text_area_line_count(my_widget_t* area) {
-  return area != NULL ? ta_line_count((my_text_area_t*)area) : 0;
+  return my_text_area_is_instance(area)
+             ? ta_line_count((my_text_area_t*)area)
+             : 0;
 }

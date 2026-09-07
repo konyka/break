@@ -19,15 +19,15 @@
 #ifdef MYUI_HAS_VULKAN
 
 #include <math.h>
+#include <limits.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "myr/my_text_layout.h"
 #include "myr/my_vgcanvas_quality_transaction.h"
 #include "myr/my_vggeometry.h"
 
-#define VK_USE_PLATFORM_XLIB_KHR
-#define VK_USE_PLATFORM_WAYLAND_KHR
 #include <vulkan/vulkan.h>
 
 #include "myr/vulkan_shaders/flat.vert.inc"
@@ -47,6 +47,11 @@
 
 typedef struct vk_global_t {
   int refs;
+  bool surface_enabled;
+  bool swapchain_enabled;
+  uint32_t instance_ext_count;
+  char instance_exts[MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS]
+                     [MYUI_VULKAN_MAX_EXTENSION_NAME];
   VkInstance inst;
   VkPhysicalDevice pdev;
   VkDevice dev;
@@ -56,6 +61,17 @@ typedef struct vk_global_t {
 } vk_global_t;
 
 static vk_global_t g_vk;
+static atomic_flag g_vk_lifecycle_lock = ATOMIC_FLAG_INIT;
+
+static void vk_lifecycle_lock(void) {
+  while (atomic_flag_test_and_set_explicit(&g_vk_lifecycle_lock,
+                                           memory_order_acquire)) {
+  }
+}
+
+static void vk_lifecycle_unlock(void) {
+  atomic_flag_clear_explicit(&g_vk_lifecycle_lock, memory_order_release);
+}
 
 static bool vk_ext_present(const char* name) {
   uint32_t n = 0, i;
@@ -79,23 +95,90 @@ static bool vk_ext_present(const char* name) {
   return found;
 }
 
-static my_ret_t vk_global_init(void) {
+static bool vk_device_ext_present(VkPhysicalDevice pdev, const char* name) {
+  uint32_t n = 0, i;
+  VkExtensionProperties props[128];
+  if (pdev == VK_NULL_HANDLE || name == NULL ||
+      vkEnumerateDeviceExtensionProperties(pdev, NULL, &n, NULL) != VK_SUCCESS) {
+    return false;
+  }
+  if (n > 128) n = 128;
+  if (vkEnumerateDeviceExtensionProperties(pdev, NULL, &n, props) != VK_SUCCESS) {
+    return false;
+  }
+  for (i = 0; i < n; ++i) {
+    if (strcmp(props[i].extensionName, name) == 0) return true;
+  }
+  return false;
+}
+
+static void vk_add_instance_ext(const char** exts, uint32_t* count,
+                                const char* name) {
+  if (*count >= 8u || !vk_ext_present(name)) return;
+  exts[(*count)++] = name;
+}
+
+static void vk_global_init_reset(void) {
+  memset(&g_vk, 0, sizeof(g_vk));
+}
+
+static bool vk_instance_ext_enabled(const char* name) {
+  uint32_t i;
+  if (name == NULL) return false;
+  for (i = 0; i < g_vk.instance_ext_count; ++i) {
+    if (strcmp(g_vk.instance_exts[i], name) == 0) return true;
+  }
+  return false;
+}
+
+static bool vk_instance_ext_in_list(const char* const* names, uint32_t count,
+                                    const char* name) {
+  uint32_t i;
+  if (names == NULL || name == NULL) return false;
+  for (i = 0; i < count; ++i) {
+    if (names[i] != NULL && strcmp(names[i], name) == 0) return true;
+  }
+  return false;
+}
+
+static my_ret_t vk_global_init(const char* const* requested_exts,
+                               uint32_t requested_count) {
   VkApplicationInfo app;
   VkInstanceCreateInfo ici;
-  const char* exts[4];
+  const char* exts[8];
   uint32_t nexts = 0;
   uint32_t ndev = 0, i;
   VkPhysicalDevice devs[8];
+  if (requested_count > MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS ||
+      (requested_count != 0u && requested_exts == NULL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   if (g_vk.inst != VK_NULL_HANDLE) {
+    for (i = 0; i < requested_count; ++i) {
+      if (!vk_instance_ext_enabled(requested_exts[i])) {
+        return MY_RET_NOT_SUPPORTED;
+      }
+    }
     return MY_RET_OK;
   }
   memset(&g_vk, 0, sizeof(g_vk));
-  exts[nexts++] = VK_KHR_SURFACE_EXTENSION_NAME;
-  if (vk_ext_present(VK_KHR_XLIB_SURFACE_EXTENSION_NAME)) {
-    exts[nexts++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
-  }
-  if (vk_ext_present(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME)) {
-    exts[nexts++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
+  if (requested_count == 0u) {
+    vk_add_instance_ext(exts, &nexts, "VK_KHR_surface");
+    vk_add_instance_ext(exts, &nexts, "VK_KHR_xlib_surface");
+    vk_add_instance_ext(exts, &nexts, "VK_KHR_wayland_surface");
+    vk_add_instance_ext(exts, &nexts, "VK_KHR_win32_surface");
+    vk_add_instance_ext(exts, &nexts, "VK_EXT_metal_surface");
+  } else {
+    for (i = 0; i < requested_count; ++i) {
+      if (requested_exts[i] == NULL || requested_exts[i][0] == '\0' ||
+          !vk_ext_present(requested_exts[i])) {
+        vk_global_init_reset();
+        return MY_RET_NOT_SUPPORTED;
+      }
+      if (!vk_instance_ext_in_list(exts, nexts, requested_exts[i])) {
+        exts[nexts++] = requested_exts[i];
+      }
+    }
   }
   memset(&app, 0, sizeof(app));
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -107,11 +190,23 @@ static my_ret_t vk_global_init(void) {
   ici.enabledExtensionCount = nexts;
   ici.ppEnabledExtensionNames = exts;
   if (vkCreateInstance(&ici, NULL, &g_vk.inst) != VK_SUCCESS) {
+    vk_global_init_reset();
     return MY_RET_NOT_SUPPORTED;
+  }
+  g_vk.instance_ext_count = nexts;
+  for (i = 0; i < nexts; ++i) {
+    size_t length = strlen(exts[i]);
+    if (length >= MYUI_VULKAN_MAX_EXTENSION_NAME) {
+      vkDestroyInstance(g_vk.inst, NULL);
+      vk_global_init_reset();
+      return MY_RET_NOT_SUPPORTED;
+    }
+    memcpy(g_vk.instance_exts[i], exts[i], length + 1u);
   }
   if (vkEnumeratePhysicalDevices(g_vk.inst, &ndev, NULL) != VK_SUCCESS ||
       ndev == 0) {
     vkDestroyInstance(g_vk.inst, NULL);
+    vk_global_init_reset();
     return MY_RET_NOT_SUPPORTED;
   }
   if (ndev > 8) {
@@ -119,6 +214,7 @@ static my_ret_t vk_global_init(void) {
   }
   if (vkEnumeratePhysicalDevices(g_vk.inst, &ndev, devs) != VK_SUCCESS) {
     vkDestroyInstance(g_vk.inst, NULL);
+    vk_global_init_reset();
     return MY_RET_NOT_SUPPORTED;
   }
   for (i = 0; i < ndev && g_vk.pdev == VK_NULL_HANDLE; i++) {
@@ -139,11 +235,13 @@ static my_ret_t vk_global_init(void) {
   }
   if (g_vk.pdev == VK_NULL_HANDLE) {
     vkDestroyInstance(g_vk.inst, NULL);
+    vk_global_init_reset();
     return MY_RET_NOT_SUPPORTED;
   }
   {
     float prio = 1.0f;
-    const char* dev_exts[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char* dev_exts[1];
+    uint32_t dev_ext_count = 0;
     VkDeviceQueueCreateInfo qci;
     VkDeviceCreateInfo dci;
     memset(&qci, 0, sizeof(qci));
@@ -155,13 +253,20 @@ static my_ret_t vk_global_init(void) {
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
+    if (vk_instance_ext_enabled("VK_KHR_surface") &&
+        vk_device_ext_present(g_vk.pdev, "VK_KHR_swapchain")) {
+      dev_exts[dev_ext_count++] = "VK_KHR_swapchain";
+      g_vk.swapchain_enabled = true;
+    }
+    dci.enabledExtensionCount = dev_ext_count;
     dci.ppEnabledExtensionNames = dev_exts;
     if (vkCreateDevice(g_vk.pdev, &dci, NULL, &g_vk.dev) != VK_SUCCESS) {
       vkDestroyInstance(g_vk.inst, NULL);
+      vk_global_init_reset();
       return MY_RET_NOT_SUPPORTED;
     }
   }
+  g_vk.surface_enabled = vk_instance_ext_enabled("VK_KHR_surface");
   vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
   {
     VkCommandPoolCreateInfo pci;
@@ -173,6 +278,7 @@ static my_ret_t vk_global_init(void) {
         VK_SUCCESS) {
       vkDestroyDevice(g_vk.dev, NULL);
       vkDestroyInstance(g_vk.inst, NULL);
+      vk_global_init_reset();
       return MY_RET_NOT_SUPPORTED;
     }
   }
@@ -180,15 +286,44 @@ static my_ret_t vk_global_init(void) {
 }
 
 static my_ret_t vk_global_acquire(void) {
-  if (vk_global_init() != MY_RET_OK) {
+  my_ret_t ret;
+  vk_lifecycle_lock();
+  ret = vk_global_init(NULL, 0u);
+  if (ret != MY_RET_OK) {
+    vk_lifecycle_unlock();
     return MY_RET_NOT_SUPPORTED;
   }
+  if (g_vk.refs == INT_MAX) {
+    vk_lifecycle_unlock();
+    return MY_RET_OOM;
+  }
   g_vk.refs++;
+  vk_lifecycle_unlock();
+  return MY_RET_OK;
+}
+
+static my_ret_t vk_global_acquire_with_extensions(
+    const char* const* extensions, uint32_t extension_count) {
+  my_ret_t ret;
+  vk_lifecycle_lock();
+  ret = vk_global_init(extensions, extension_count);
+  if (ret != MY_RET_OK) {
+    vk_lifecycle_unlock();
+    return ret;
+  }
+  if (g_vk.refs == INT_MAX) {
+    vk_lifecycle_unlock();
+    return MY_RET_OOM;
+  }
+  ++g_vk.refs;
+  vk_lifecycle_unlock();
   return MY_RET_OK;
 }
 
 static void vk_global_release(void) {
+  vk_lifecycle_lock();
   if (g_vk.refs <= 0) {
+    vk_lifecycle_unlock();
     return;
   }
   g_vk.refs--;
@@ -199,11 +334,35 @@ static void vk_global_release(void) {
     vkDestroyInstance(g_vk.inst, NULL);
     memset(&g_vk, 0, sizeof(g_vk));
   }
+  vk_lifecycle_unlock();
 }
 
 void* my_vgcanvas_vulkan_instance(void) {
-  /* peek only: canvases own the global lifecycle (no ref taken here) */
-  return vk_global_init() == MY_RET_OK ? (void*)g_vk.inst : NULL;
+  void* instance;
+  /* Peek only; callers that need initialization must hold an acquire lease. */
+  vk_lifecycle_lock();
+  instance = g_vk.inst != VK_NULL_HANDLE ? (void*)g_vk.inst : NULL;
+  vk_lifecycle_unlock();
+  return instance;
+}
+
+void* my_vgcanvas_vulkan_instance_acquire(void) {
+  if (vk_global_acquire() != MY_RET_OK) return NULL;
+  return (void*)g_vk.inst;
+}
+
+void* my_vgcanvas_vulkan_instance_acquire_with_extensions(
+    const char* const* extensions, uint32_t extension_count) {
+  if (vk_global_acquire_with_extensions(extensions, extension_count) !=
+      MY_RET_OK) {
+    return NULL;
+  }
+  return (void*)g_vk.inst;
+}
+
+
+void my_vgcanvas_vulkan_instance_release(void) {
+  vk_global_release();
 }
 
 void my_vgcanvas_vulkan_destroy_surface(void* vk_surface) {
@@ -587,8 +746,11 @@ static bool vk_tex_retire(my_vgcanvas_vulkan_t* c, vk_tex_t* t) {
   if (t->img == VK_NULL_HANDLE) {
     return true;
   }
+  if (c->retired_count[idx] == SIZE_MAX) return false;
   if (c->retired_count[idx] + 1 > c->retired_cap[idx]) {
+    if (c->retired_cap[idx] > SIZE_MAX / 2u) return false;
     new_cap = c->retired_cap[idx] > 0 ? c->retired_cap[idx] * 2 : 32;
+    if (new_cap > SIZE_MAX / sizeof(vk_tex_t)) return false;
     grown = (vk_tex_t*)my_mem_realloc(c->allocator, c->retired[idx],
                                       new_cap * sizeof(vk_tex_t));
     if (grown == NULL) {
@@ -2054,9 +2216,21 @@ static my_ret_t vk_save(my_vgcanvas_t* vg) {
   my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
   vk_state_t* grown;
   size_t new_cap = c->stack_cap > 0 ? c->stack_cap : 8;
-  if (c->stack_count + 1 > c->stack_cap) {
-    while (new_cap < c->stack_count + 1) {
+  size_t required;
+  if (c->stack_count == SIZE_MAX) {
+    return MY_RET_OOM;
+  }
+  required = c->stack_count + 1;
+  if (required > c->stack_cap) {
+    while (new_cap < required) {
+      if (new_cap > SIZE_MAX / 2u) {
+        new_cap = required;
+        break;
+      }
       new_cap *= 2;
+    }
+    if (new_cap > SIZE_MAX / sizeof(vk_state_t)) {
+      return MY_RET_OOM;
     }
     grown = (vk_state_t*)my_mem_realloc(c->allocator, c->stack,
                                         new_cap * sizeof(vk_state_t));
@@ -2066,7 +2240,8 @@ static my_ret_t vk_save(my_vgcanvas_t* vg) {
     c->stack = grown;
     c->stack_cap = new_cap;
   }
-  c->stack[c->stack_count++] = c->state;
+  c->stack[c->stack_count] = c->state;
+  c->stack_count = required;
   return MY_RET_OK;
 }
 
@@ -2144,23 +2319,33 @@ static my_ret_t vk_set_stroke_color(my_vgcanvas_t* vg, my_color_t color) {
 }
 
 static my_ret_t vk_set_line_width(my_vgcanvas_t* vg, float width) {
+  if (!isfinite(width) || width <= 0.0f) return MY_RET_INVALID_PARAMS;
   ((my_vgcanvas_vulkan_t*)vg)->state.line_width = width;
   return MY_RET_OK;
 }
 
 static my_ret_t vk_set_line_cap(my_vgcanvas_t* vg, my_line_cap_t cap) {
+  if (vg == NULL || (cap != MY_LINE_CAP_BUTT && cap != MY_LINE_CAP_ROUND &&
+                     cap != MY_LINE_CAP_SQUARE)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ((my_vgcanvas_vulkan_t*)vg)->state.line_cap = cap;
   return MY_RET_OK;
 }
 
 static my_ret_t vk_set_line_join(my_vgcanvas_t* vg, my_line_join_t join) {
+  if (vg == NULL || (join != MY_LINE_JOIN_MITER &&
+                     join != MY_LINE_JOIN_ROUND &&
+                     join != MY_LINE_JOIN_BEVEL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ((my_vgcanvas_vulkan_t*)vg)->state.line_join = join;
   return MY_RET_OK;
 }
 
 static my_ret_t vk_set_scale_vtable(my_vgcanvas_t* vg, float scale) {
   my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
-  if (c == NULL || scale <= 0.0f) {
+  if (c == NULL || !isfinite(scale) || scale <= 0.0f) {
     return MY_RET_INVALID_PARAMS;
   }
   c->state.scale = scale;
@@ -2274,6 +2459,9 @@ static my_ret_t vk_fill_rect(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   vk_geo_setup(c);
   my_vggeometry_rect(&c->geo, rect->x, rect->y, rect->x + rect->w,
                      rect->y + rect->h);
+  if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&c->geo);
+  }
   vk_draw_flat(c, c->state.fill_color);
   return MY_RET_OK;
 }
@@ -2286,6 +2474,9 @@ static my_ret_t vk_stroke_rect(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   vk_geo_setup(c);
   my_vggeometry_stroke_rect(&c->geo, rect->x, rect->y, rect->w, rect->h,
                             c->state.line_width);
+  if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&c->geo);
+  }
   vk_draw_flat(c, c->state.stroke_color);
   return MY_RET_OK;
 }
@@ -2299,6 +2490,9 @@ static my_ret_t vk_fill_rounded_rect(my_vgcanvas_t* vg,
   vk_geo_setup(c);
   my_vggeometry_fill_rounded_rect(&c->geo, rect->x, rect->y, rect->w,
                                   rect->h, radius);
+  if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&c->geo);
+  }
   vk_draw_flat(c, c->state.fill_color);
   return MY_RET_OK;
 }
@@ -2329,19 +2523,21 @@ static my_ret_t vk_curve_to(my_vgcanvas_t* vg, float cx1, float cy1,
 
 static my_ret_t vk_fill(my_vgcanvas_t* vg) {
   my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
+  my_ret_t ret;
   vk_geo_setup(c);
-  if (my_vggeometry_fill(&c->geo, &c->state.clip) == MY_RET_OOM) {
-    return MY_RET_OOM;
-  }
+  ret = my_vggeometry_fill(&c->geo, &c->state.clip);
+  if (ret != MY_RET_OK) return ret;
   vk_draw_flat(c, c->state.fill_color);
   return MY_RET_OK;
 }
 
 static my_ret_t vk_stroke(my_vgcanvas_t* vg) {
   my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
+  my_ret_t ret;
   vk_geo_setup(c);
-  my_vggeometry_stroke(&c->geo, c->state.line_width, c->state.line_cap,
-                       c->state.line_join);
+  ret = my_vggeometry_stroke(&c->geo, c->state.line_width, c->state.line_cap,
+                             c->state.line_join);
+  if (ret != MY_RET_OK) return ret;
   vk_draw_flat(c, c->state.stroke_color);
   return MY_RET_OK;
 }
@@ -2359,10 +2555,12 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
   my_glyph_t g = {0};
   uint32_t slot;
   float gx, gy;
+  if (my_font_is_variation_selector(cp)) return;
   if (my_font_get_glyph(c->state.font, cp, vk_dev_font_size(c), &g) !=
           MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += g.advance > 0 ? (float)g.advance : 0.0f;
+    my_font_glyph_release(&g);
     return;
   }
   /* direct-mapped texture cache: evict on slot collision (same as gles2) */
@@ -2374,11 +2572,13 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
       c->glyph_cache[slot].size != vk_dev_font_size(c)) {
     if (!vk_tex_retire(c, &c->glyph_cache[slot].tex)) {
       *pen_x += (float)g.advance;
+      my_font_glyph_release(&g);
       return;
     }
     if (vk_tex_create(c, &c->glyph_cache[slot].tex, g.bitmap, g.w, g.h,
                       VK_FORMAT_R8_UNORM, c->sampler) != MY_RET_OK) {
       *pen_x += (float)g.advance;
+      my_font_glyph_release(&g);
       return;
     }
     c->glyph_cache[slot].font = c->state.font;
@@ -2396,6 +2596,7 @@ static void vk_draw_cp(my_vgcanvas_vulkan_t* c, uint32_t cp, float* pen_x,
                      6, c->state.fill_color);
   }
   *pen_x += (float)g.advance;
+  my_font_glyph_release(&g);
 }
 
 static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
@@ -2410,6 +2611,7 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
           font, shaped->glyph_id, vk_dev_font_size(c), &g) != MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += advance;
+    my_font_glyph_release(&g);
     return;
   }
   slot = (shaped->glyph_id ^ (uint32_t)vk_dev_font_size(c)) % VKC_GLYPH_CACHE;
@@ -2420,11 +2622,13 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
       c->glyph_cache[slot].size != vk_dev_font_size(c)) {
     if (!vk_tex_retire(c, &c->glyph_cache[slot].tex)) {
       *pen_x += advance;
+      my_font_glyph_release(&g);
       return;
     }
     if (vk_tex_create(c, &c->glyph_cache[slot].tex, g.bitmap, g.w, g.h,
                       VK_FORMAT_R8_UNORM, c->sampler) != MY_RET_OK) {
       *pen_x += advance;
+      my_font_glyph_release(&g);
       return;
     }
     c->glyph_cache[slot].font = font;
@@ -2443,6 +2647,7 @@ static void vk_draw_shaped_glyph(my_vgcanvas_vulkan_t* c,
                      &quad[0][0], 6, c->state.fill_color);
   }
   *pen_x += advance;
+  my_font_glyph_release(&g);
 }
 
 static my_ret_t vk_draw_text(my_vgcanvas_t* vg, const char* text, float x,
@@ -2506,12 +2711,11 @@ static my_ret_t vk_draw_text(my_vgcanvas_t* vg, const char* text, float x,
 
 static my_ret_t vk_set_font(my_vgcanvas_t* vg, my_font_t* font, int32_t size) {
   my_vgcanvas_vulkan_t* c = (my_vgcanvas_vulkan_t*)vg;
+  if (size <= 0) return MY_RET_INVALID_PARAMS;
   if (font != NULL) {
     c->state.font = font;
   }
-  if (size > 0) {
-    c->state.font_size = size;
-  }
+  c->state.font_size = size;
   return MY_RET_OK;
 }
 
@@ -2629,6 +2833,9 @@ static my_ret_t vk_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     vk_geo_setup(c);
     my_vggeometry_rect(&c->geo, dst->x, dst->y, dst->x + dst->w,
                        dst->y + dst->h);
+    if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+      return my_vggeometry_status(&c->geo);
+    }
     vk_draw_flat(c, *bg);
   }
   tex = vk_image_texture(c, rgba, w, h, c->state.scale_filter);
@@ -2722,6 +2929,11 @@ static my_vgcanvas_t* vk_create_common(const my_allocator_t* allocator,
   }
   if (!offscreen) {
     VkBool32 sup = VK_FALSE;
+    if (!g_vk.surface_enabled || !g_vk.swapchain_enabled ||
+        surface == VK_NULL_HANDLE) {
+      vk_global_release();
+      return NULL;
+    }
     vkGetPhysicalDeviceSurfaceSupportKHR(g_vk.pdev, g_vk.qfam, surface,
                                          &sup);
     if (sup != VK_TRUE) {
@@ -2923,6 +3135,14 @@ my_ret_t my_vgcanvas_vulkan_readback(my_vgcanvas_t* vg, uint8_t* rgba,
 
 void* my_vgcanvas_vulkan_instance(void) {
   return NULL;
+}
+
+void* my_vgcanvas_vulkan_instance_acquire(void) {
+  return NULL;
+}
+
+
+void my_vgcanvas_vulkan_instance_release(void) {
 }
 
 my_vgcanvas_t* my_vgcanvas_vulkan_create(const my_allocator_t* allocator,

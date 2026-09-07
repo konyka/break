@@ -13,6 +13,37 @@
 
 /* ---------------- entries ---------------- */
 
+static void theme_entry_destroy(const my_allocator_t* allocator,
+                                my_theme_entry_t* entry) {
+  if (entry == NULL) {
+    return;
+  }
+  my_style_reset(&entry->style);
+  my_mem_free(allocator, entry);
+}
+
+static void theme_discard_entry(my_theme_t* theme, my_theme_entry_t* entry) {
+  size_t i;
+  for (i = 0; i < my_darray_size(theme->entries); i++) {
+    if (my_darray_get(theme->entries, i) == entry) {
+      (void)my_darray_remove_at(theme->entries, i);
+      theme_entry_destroy(theme->allocator, entry);
+      return;
+    }
+  }
+}
+
+static bool theme_bounded_cstr_len(const char* text, size_t* length) {
+  size_t i;
+  for (i = 0; i < MY_THEME_MAX_BYTES; i++) {
+    if (text[i] == '\0') {
+      *length = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 my_theme_t* my_theme_create(const my_allocator_t* allocator) {
   my_theme_t* theme = (my_theme_t*)my_mem_calloc(allocator, 1, sizeof(my_theme_t));
   if (theme == NULL) {
@@ -35,11 +66,76 @@ void my_theme_destroy(my_theme_t* theme) {
   n = my_darray_size(theme->entries);
   for (i = 0; i < n; i++) {
     my_theme_entry_t* e = (my_theme_entry_t*)my_darray_get(theme->entries, i);
-    my_style_reset(&e->style);
-    my_mem_free(theme->allocator, e);
+    theme_entry_destroy(theme->allocator, e);
   }
   my_darray_destroy(theme->entries);
   my_mem_free(theme->allocator, theme);
+}
+
+my_theme_t* my_theme_clone(const my_theme_t* source) {
+  my_theme_t* candidate;
+  size_t i;
+  if (source == NULL) {
+    return NULL;
+  }
+  candidate = my_theme_create(source->allocator);
+  if (candidate == NULL) {
+    return NULL;
+  }
+  for (i = 0; i < my_darray_size(source->entries); i++) {
+    const my_theme_entry_t* source_entry =
+        (const my_theme_entry_t*)my_darray_get(source->entries, i);
+    my_theme_entry_t* candidate_entry = (my_theme_entry_t*)my_mem_calloc(
+        candidate->allocator, 1, sizeof(my_theme_entry_t));
+    size_t state;
+    if (candidate_entry == NULL) {
+      my_theme_destroy(candidate);
+      return NULL;
+    }
+    memcpy(candidate_entry->widget_type, source_entry->widget_type,
+           sizeof(candidate_entry->widget_type));
+    memcpy(candidate_entry->name, source_entry->name,
+           sizeof(candidate_entry->name));
+    memcpy(candidate_entry->style_class, source_entry->style_class,
+           sizeof(candidate_entry->style_class));
+    memcpy(candidate_entry->ancestor_type, source_entry->ancestor_type,
+           sizeof(candidate_entry->ancestor_type));
+    candidate_entry->ancestor_direct = source_entry->ancestor_direct;
+    candidate_entry->ancestor_count = source_entry->ancestor_count;
+    memcpy(candidate_entry->ancestors, source_entry->ancestors,
+           sizeof(candidate_entry->ancestors));
+    memcpy(candidate_entry->ancestor_direct_path,
+           source_entry->ancestor_direct_path,
+           sizeof(candidate_entry->ancestor_direct_path));
+    candidate_entry->scope_limit_count = source_entry->scope_limit_count;
+    memcpy(candidate_entry->scope_limits, source_entry->scope_limits,
+           sizeof(candidate_entry->scope_limits));
+    memcpy(candidate_entry->scope_limit_root_index,
+           source_entry->scope_limit_root_index,
+           sizeof(candidate_entry->scope_limit_root_index));
+    memcpy(candidate_entry->specificity, source_entry->specificity,
+           sizeof(candidate_entry->specificity));
+    my_style_init(&candidate_entry->style, candidate->allocator);
+    for (state = 0; state < MY_STATE_COUNT; state++) {
+      size_t prop;
+      for (prop = 0; prop < source_entry->style.counts[state]; prop++) {
+        const my_style_prop_t* source_prop =
+            &source_entry->style.props[state][prop];
+        if (my_style_set(&candidate_entry->style, (my_widget_state_t)state,
+                         source_prop->key, &source_prop->value) != MY_RET_OK) {
+          theme_entry_destroy(candidate->allocator, candidate_entry);
+          my_theme_destroy(candidate);
+          return NULL;
+        }
+      }
+    }
+    if (my_darray_push(candidate->entries, candidate_entry) != MY_RET_OK) {
+      theme_entry_destroy(candidate->allocator, candidate_entry);
+      my_theme_destroy(candidate);
+      return NULL;
+    }
+  }
+  return candidate;
 }
 
 static bool theme_ancestor_path_equal(const my_theme_entry_t* entry,
@@ -61,11 +157,32 @@ static bool theme_ancestor_path_equal(const my_theme_entry_t* entry,
   return true;
 }
 
-static my_theme_entry_t* theme_find_entry_ex(
+static bool theme_scope_limits_equal(
+    const my_theme_entry_t* entry, const my_theme_ancestor_t* limits,
+    size_t limit_count, const size_t* root_indices) {
+  size_t i;
+  if (entry->scope_limit_count != limit_count) return false;
+  for (i = 0u; i < limit_count; ++i) {
+    if (root_indices == NULL || entry->scope_limit_root_index[i] !=
+                                    (u32)root_indices[i] ||
+        !my_str_eq(entry->scope_limits[i].widget_type,
+                   limits[i].widget_type) ||
+        !my_str_eq(entry->scope_limits[i].name, limits[i].name) ||
+        !my_str_eq(entry->scope_limits[i].style_class,
+                   limits[i].style_class)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static my_theme_entry_t* theme_find_entry_scoped(
     my_theme_t* theme, const char* type, const char* name,
     const char* style_class, const char* ancestor_type, bool ancestor_direct,
     const my_theme_ancestor_t* ancestors, size_t ancestor_count,
-    const bool* direct_path, bool create) {
+    const bool* direct_path, const my_theme_ancestor_t* scope_limits,
+    size_t scope_limit_count, const size_t* scope_limit_root_indices,
+    bool create) {
   size_t i, n = my_darray_size(theme->entries);
   const char* nm = name != NULL ? name : "";
   const char* cl = style_class != NULL ? style_class : "";
@@ -79,7 +196,9 @@ static my_theme_entry_t* theme_find_entry_ex(
                                     direct_path)) ||
          (ancestor_count == 0u && e->ancestor_count == 0u &&
           my_str_eq(e->ancestor_type, an) &&
-          e->ancestor_direct == ancestor_direct))) {
+          e->ancestor_direct == ancestor_direct)) &&
+        theme_scope_limits_equal(e, scope_limits, scope_limit_count,
+                                 scope_limit_root_indices)) {
       return e;
     }
   }
@@ -104,6 +223,14 @@ static my_theme_entry_t* theme_find_entry_ex(
       memcpy(e->ancestor_direct_path, direct_path,
              ancestor_count * sizeof(e->ancestor_direct_path[0]));
     }
+    e->scope_limit_count = (u32)scope_limit_count;
+    if (scope_limit_count > 0u) {
+      memcpy(e->scope_limits, scope_limits,
+             scope_limit_count * sizeof(e->scope_limits[0]));
+      for (i = 0u; i < scope_limit_count; ++i) {
+        e->scope_limit_root_index[i] = (u32)scope_limit_root_indices[i];
+      }
+    }
     my_style_init(&e->style, theme->allocator);
     if (my_darray_push(theme->entries, e) != MY_RET_OK) {
       my_mem_free(theme->allocator, e);
@@ -111,6 +238,16 @@ static my_theme_entry_t* theme_find_entry_ex(
     }
     return e;
   }
+}
+
+static my_theme_entry_t* theme_find_entry_ex(
+    my_theme_t* theme, const char* type, const char* name,
+    const char* style_class, const char* ancestor_type, bool ancestor_direct,
+    const my_theme_ancestor_t* ancestors, size_t ancestor_count,
+    const bool* direct_path, bool create) {
+  return theme_find_entry_scoped(
+      theme, type, name, style_class, ancestor_type, ancestor_direct,
+      ancestors, ancestor_count, direct_path, NULL, 0u, NULL, create);
 }
 
 static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
@@ -183,6 +320,7 @@ my_ret_t my_theme_set_ex3(my_theme_t* theme, const char* widget_type,
                           const my_value_t* value, int32_t specificity) {
   my_theme_entry_t* e;
   my_ret_t ret;
+  bool created;
   if (theme == NULL || widget_type == NULL || key == NULL || value == NULL ||
       strlen(widget_type) >= MY_THEME_TYPE_LEN ||
       (name != NULL && strlen(name) >= MY_THEME_NAME_LEN) ||
@@ -192,17 +330,28 @@ my_ret_t my_theme_set_ex3(my_theme_t* theme, const char* widget_type,
     return MY_RET_INVALID_PARAMS;
   }
   e = theme_find_entry(theme, widget_type, name, style_class, ancestor_type,
-                       ancestor_direct, true);
+                       ancestor_direct, false);
+  created = e == NULL;
+  if (created) {
+    e = theme_find_entry(theme, widget_type, name, style_class, ancestor_type,
+                         ancestor_direct, true);
+  }
   if (e == NULL) {
     return MY_RET_OOM;
   }
   ret = my_style_set(&e->style, state, key, value);
   if (ret != MY_RET_OK) {
+    if (created) {
+      theme_discard_entry(theme, e);
+    }
     return ret;
   }
   {
     size_t index = theme_style_prop_index(&e->style, state, key);
     if (index >= MY_STYLE_MAX_PROPS) {
+      if (created) {
+        theme_discard_entry(theme, e);
+      }
       return MY_RET_FAIL;
     }
     e->specificity[state][index] = specificity;
@@ -220,6 +369,7 @@ my_ret_t my_theme_set_ex4(my_theme_t* theme, const char* widget_type,
   my_theme_entry_t* e;
   my_ret_t ret;
   size_t i;
+  bool created;
   if (theme == NULL || widget_type == NULL || key == NULL || value == NULL ||
       state >= MY_STATE_COUNT || ancestor_count > MY_THEME_MAX_ANCESTORS ||
       (ancestor_count > 0u &&
@@ -238,17 +388,97 @@ my_ret_t my_theme_set_ex4(my_theme_t* theme, const char* widget_type,
   }
   e = theme_find_entry_ex(theme, widget_type, name, style_class, NULL, false,
                           ancestors, ancestor_count, ancestor_direct_path,
-                          true);
+                          false);
+  created = e == NULL;
+  if (created) {
+    e = theme_find_entry_ex(theme, widget_type, name, style_class, NULL, false,
+                            ancestors, ancestor_count, ancestor_direct_path,
+                            true);
+  }
   if (e == NULL) {
     return MY_RET_OOM;
   }
   ret = my_style_set(&e->style, state, key, value);
   if (ret != MY_RET_OK) {
+    if (created) {
+      theme_discard_entry(theme, e);
+    }
     return ret;
   }
   {
     size_t index = theme_style_prop_index(&e->style, state, key);
     if (index >= MY_STYLE_MAX_PROPS) {
+      if (created) {
+        theme_discard_entry(theme, e);
+      }
+      return MY_RET_FAIL;
+    }
+    e->specificity[state][index] = specificity;
+  }
+  return MY_RET_OK;
+}
+
+my_ret_t my_theme_set_ex5(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_ancestor_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity) {
+  my_theme_entry_t* e;
+  my_ret_t ret;
+  size_t i;
+  bool created;
+  if (scope_limit_count > MY_THEME_MAX_SCOPE_LIMITS ||
+      (scope_limit_count != 0u &&
+       (scope_limits == NULL || scope_limit_root_indices == NULL))) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (theme == NULL || widget_type == NULL || key == NULL || value == NULL ||
+      state >= MY_STATE_COUNT || ancestor_count > MY_THEME_MAX_ANCESTORS ||
+      (ancestor_count > 0u &&
+       (ancestors == NULL || ancestor_direct_path == NULL)) ||
+      strlen(widget_type) >= MY_THEME_TYPE_LEN ||
+      (name != NULL && strlen(name) >= MY_THEME_NAME_LEN) ||
+      (style_class != NULL && strlen(style_class) >= MY_THEME_NAME_LEN)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  for (i = 0u; i < scope_limit_count; ++i) {
+    if (strlen(scope_limits[i].widget_type) >= MY_THEME_TYPE_LEN ||
+        strlen(scope_limits[i].name) >= MY_THEME_NAME_LEN ||
+        strlen(scope_limits[i].style_class) >= MY_THEME_NAME_LEN) {
+      return MY_RET_INVALID_PARAMS;
+    }
+    if (scope_limit_root_indices[i] > MY_THEME_SCOPE_ROOT_IMPLICIT ||
+        (scope_limit_root_indices[i] != MY_THEME_SCOPE_ROOT_IMPLICIT &&
+         scope_limit_root_indices[i] >= ancestor_count)) {
+      return MY_RET_INVALID_PARAMS;
+    }
+  }
+  e = theme_find_entry_scoped(
+      theme, widget_type, name, style_class, NULL, false, ancestors,
+      ancestor_count, ancestor_direct_path, scope_limits, scope_limit_count,
+      scope_limit_root_indices, false);
+  created = e == NULL;
+  if (e == NULL) {
+    e = theme_find_entry_scoped(
+        theme, widget_type, name, style_class, NULL, false, ancestors,
+        ancestor_count, ancestor_direct_path, scope_limits, scope_limit_count,
+        scope_limit_root_indices, true);
+  }
+  if (e == NULL) return MY_RET_OOM;
+  ret = my_style_set(&e->style, state, key, value);
+  if (ret != MY_RET_OK) {
+    if (created) theme_discard_entry(theme, e);
+    return ret;
+  }
+  {
+    size_t index = theme_style_prop_index(&e->style, state, key);
+    if (index >= MY_STYLE_MAX_PROPS) {
+      if (created) theme_discard_entry(theme, e);
       return MY_RET_FAIL;
     }
     e->specificity[state][index] = specificity;
@@ -424,6 +654,40 @@ static bool theme_ancestor_path_matches(const my_theme_entry_t* entry,
   return true;
 }
 
+static bool theme_scope_limits_match(const my_theme_entry_t* entry,
+                                     const char* type, const char* name,
+                                     const char* style_class,
+                                     const my_widget_t* ancestor_anchor) {
+  size_t limit_index;
+  for (limit_index = 0u; limit_index < entry->scope_limit_count;
+       ++limit_index) {
+    size_t root_index = entry->scope_limit_root_index[limit_index];
+    const my_widget_t* candidate;
+    if (root_index > MY_THEME_SCOPE_ROOT_IMPLICIT) return true;
+    if ((entry->scope_limits[limit_index].widget_type[0] == '\0' ||
+         my_str_eq(entry->scope_limits[limit_index].widget_type, type)) &&
+        (entry->scope_limits[limit_index].name[0] == '\0' ||
+         (name != NULL &&
+          my_str_eq(entry->scope_limits[limit_index].name, name))) &&
+        class_set_match(style_class,
+                        entry->scope_limits[limit_index].style_class)) {
+      return true;
+    }
+    for (candidate = ancestor_anchor; candidate != NULL;
+         candidate = candidate->parent) {
+      if (theme_ancestor_matches(&entry->scope_limits[limit_index],
+                                 candidate)) {
+        return true;
+      }
+      if (root_index != MY_THEME_SCOPE_ROOT_IMPLICIT &&
+          theme_ancestor_matches(&entry->ancestors[root_index], candidate)) {
+        break;
+      }
+    }
+  }
+  return false;
+}
+
 /** @brief Entry matches at one cascade level (level 0 = id, 1 = class,
  * 2 = type). */
 static bool entry_matches_ex(const my_theme_entry_t* e, const char* type,
@@ -433,7 +697,13 @@ static bool entry_matches_ex(const my_theme_entry_t* e, const char* type,
     if (!theme_ancestor_path_matches(e, ancestor_anchor)) {
       return false;
     }
-  } else if (e->ancestor_type[0] != '\0') {
+  }
+  if (e->scope_limit_count > 0u &&
+      theme_scope_limits_match(e, type, name, style_class,
+                               ancestor_anchor)) {
+    return false;
+  }
+  if (e->ancestor_count == 0u && e->ancestor_type[0] != '\0') {
     const my_widget_t* a = ancestor_anchor;
     char atype[MY_THEME_TYPE_LEN];
     const char* aclass = NULL;
@@ -631,44 +901,71 @@ uint32_t my_widget_part_color(my_widget_t* widget, const char* part_type,
 
 /* ---------------- default theme ---------------- */
 
+static my_ret_t theme_default_set_color(my_theme_t* theme, const char* type,
+                                        my_widget_state_t state,
+                                        const char* key, uint32_t color) {
+  return my_theme_set_color(theme, type, NULL, state, key, color);
+}
+
+static my_ret_t theme_default_set_int(my_theme_t* theme, const char* type,
+                                      my_widget_state_t state, const char* key,
+                                      int32_t value) {
+  return my_theme_set_int(theme, type, NULL, state, key, value);
+}
+
 my_theme_t* my_theme_default_create(const my_allocator_t* allocator) {
   my_theme_t* t = my_theme_create(allocator);
   if (t == NULL) {
     return NULL;
   }
-  my_theme_set_color(t, "window", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR, 0xF5F5F5FF);
-
-  my_theme_set_color(t, "button", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR, 0xE0E0E0FF);
-  my_theme_set_color(t, "button", NULL, MY_STATE_HOVER, MY_STYLE_BG_COLOR, 0xEEEEEEFF);
-  my_theme_set_color(t, "button", NULL, MY_STATE_PRESSED, MY_STYLE_BG_COLOR, 0xBDBDBDFF);
-  my_theme_set_color(t, "button", NULL, MY_STATE_DISABLED, MY_STYLE_BG_COLOR, 0xCFCFCFFF);
-  my_theme_set_color(t, "button", NULL, MY_STATE_NORMAL, MY_STYLE_BORDER_COLOR, 0x9E9E9EFF);
-  my_theme_set_color(t, "button", NULL, MY_STATE_NORMAL, MY_STYLE_FG_COLOR, 0x212121FF);
-  my_theme_set_int(t, "button", NULL, MY_STATE_NORMAL, MY_STYLE_ROUND_RADIUS, 4);
-
-  my_theme_set_color(t, "label", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR, 0xF5F5F5FF);
-  my_theme_set_color(t, "label", NULL, MY_STATE_NORMAL, MY_STYLE_FG_COLOR, 0x212121FF);
+  if (theme_default_set_color(t, "window", MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
+                              0xF5F5F5FF) != MY_RET_OK ||
+      theme_default_set_color(t, "button", MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
+                              0xE0E0E0FF) != MY_RET_OK ||
+      theme_default_set_color(t, "button", MY_STATE_HOVER, MY_STYLE_BG_COLOR,
+                              0xEEEEEEFF) != MY_RET_OK ||
+      theme_default_set_color(t, "button", MY_STATE_PRESSED, MY_STYLE_BG_COLOR,
+                              0xBDBDBDFF) != MY_RET_OK ||
+      theme_default_set_color(t, "button", MY_STATE_DISABLED,
+                              MY_STYLE_BG_COLOR, 0xCFCFCFFF) != MY_RET_OK ||
+      theme_default_set_color(t, "button", MY_STATE_NORMAL,
+                              MY_STYLE_BORDER_COLOR, 0x9E9E9EFF) != MY_RET_OK ||
+      theme_default_set_color(t, "button", MY_STATE_NORMAL, MY_STYLE_FG_COLOR,
+                              0x212121FF) != MY_RET_OK ||
+      theme_default_set_int(t, "button", MY_STATE_NORMAL,
+                            MY_STYLE_ROUND_RADIUS, 4) != MY_RET_OK ||
+      theme_default_set_color(t, "label", MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
+                              0xF5F5F5FF) != MY_RET_OK ||
+      theme_default_set_color(t, "label", MY_STATE_NORMAL, MY_STYLE_FG_COLOR,
+                              0x212121FF) != MY_RET_OK) {
+    goto fail;
+  }
 
   /* composite widgets (M13c) */
-  my_theme_set_color(t, "dialog_content", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
-                     0xF5F5F5FF);
-  my_theme_set_color(t, "menu_box", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
-                     0xFAFAFAFF);
-  my_theme_set_color(t, "menu_box", NULL, MY_STATE_NORMAL, MY_STYLE_BORDER_COLOR,
-                     0x9E9E9EFF);
-  my_theme_set_color(t, "menu_item", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
-                     0xFAFAFAFF);
-  my_theme_set_color(t, "menu_item", NULL, MY_STATE_HOVER, MY_STYLE_BG_COLOR,
-                     0xE3F2FDFF);
-  my_theme_set_color(t, "menu_item", NULL, MY_STATE_NORMAL, MY_STYLE_FG_COLOR,
-                     0x212121FF);
-  my_theme_set_color(t, "tooltip", NULL, MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
-                     0x323232F2);
-  my_theme_set_color(t, "tooltip", NULL, MY_STATE_NORMAL, MY_STYLE_FG_COLOR,
-                     0xF5F5F5FF);
-  my_theme_set_color(t, "tooltip", NULL, MY_STATE_NORMAL, MY_STYLE_BORDER_COLOR,
-                     0x616161FF);
+  if (theme_default_set_color(t, "dialog_content", MY_STATE_NORMAL,
+                              MY_STYLE_BG_COLOR, 0xF5F5F5FF) != MY_RET_OK ||
+      theme_default_set_color(t, "menu_box", MY_STATE_NORMAL,
+                              MY_STYLE_BG_COLOR, 0xFAFAFAFF) != MY_RET_OK ||
+      theme_default_set_color(t, "menu_box", MY_STATE_NORMAL,
+                              MY_STYLE_BORDER_COLOR, 0x9E9E9EFF) != MY_RET_OK ||
+      theme_default_set_color(t, "menu_item", MY_STATE_NORMAL,
+                              MY_STYLE_BG_COLOR, 0xFAFAFAFF) != MY_RET_OK ||
+      theme_default_set_color(t, "menu_item", MY_STATE_HOVER,
+                              MY_STYLE_BG_COLOR, 0xE3F2FDFF) != MY_RET_OK ||
+      theme_default_set_color(t, "menu_item", MY_STATE_NORMAL,
+                              MY_STYLE_FG_COLOR, 0x212121FF) != MY_RET_OK ||
+      theme_default_set_color(t, "tooltip", MY_STATE_NORMAL,
+                              MY_STYLE_BG_COLOR, 0x323232F2) != MY_RET_OK ||
+      theme_default_set_color(t, "tooltip", MY_STATE_NORMAL,
+                              MY_STYLE_FG_COLOR, 0xF5F5F5FF) != MY_RET_OK ||
+      theme_default_set_color(t, "tooltip", MY_STATE_NORMAL,
+                              MY_STYLE_BORDER_COLOR, 0x616161FF) != MY_RET_OK) {
+    goto fail;
+  }
   return t;
+fail:
+  my_theme_destroy(t);
+  return NULL;
 }
 
 /* ---------------- text loader ---------------- */
@@ -797,8 +1094,19 @@ static my_ret_t theme_load_line(my_theme_t* theme, const char* line, size_t len)
 
 my_ret_t my_theme_load_str(my_theme_t* theme, const char* str) {
   const char* cur;
+  my_theme_t* candidate;
+  my_darray_t* old_entries;
+  size_t length;
   if (theme == NULL || str == NULL) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (!theme_bounded_cstr_len(str, &length)) {
+    return MY_RET_FAIL;
+  }
+  (void)length;
+  candidate = my_theme_clone(theme);
+  if (candidate == NULL) {
+    return MY_RET_OOM;
   }
   cur = str;
   while (*cur != '\0') {
@@ -810,8 +1118,10 @@ my_ret_t my_theme_load_str(my_theme_t* theme, const char* str) {
       len--;
     }
     if (len > 0 && *cur != ';') {
-      if (theme_load_line(theme, cur, len) != MY_RET_OK) {
-        return MY_RET_INVALID_PARAMS;
+      my_ret_t ret = theme_load_line(candidate, cur, len);
+      if (ret != MY_RET_OK) {
+        my_theme_destroy(candidate);
+        return ret;
       }
     }
     if (eol == NULL) {
@@ -819,6 +1129,10 @@ my_ret_t my_theme_load_str(my_theme_t* theme, const char* str) {
     }
     cur = eol + 1;
   }
+  old_entries = theme->entries;
+  theme->entries = candidate->entries;
+  candidate->entries = old_entries;
+  my_theme_destroy(candidate);
   return MY_RET_OK;
 }
 
@@ -826,19 +1140,34 @@ my_ret_t my_theme_load_str(my_theme_t* theme, const char* str) {
 
 my_ret_t my_widget_style_set(my_widget_t* widget, my_widget_state_t state,
                              const char* key, const my_value_t* value) {
-  if (widget == NULL || key == NULL || value == NULL) {
+  my_style_t* candidate;
+  my_ret_t ret;
+  if (widget == NULL || key == NULL || value == NULL ||
+      state >= MY_STATE_COUNT || strlen(key) >= MY_STYLE_KEY_LEN) {
     return MY_RET_INVALID_PARAMS;
   }
   if (widget->local_style == NULL) {
-    widget->local_style =
-        (my_style_t*)my_mem_calloc(((my_object_t*)widget)->allocator, 1,
-                                   sizeof(my_style_t));
-    if (widget->local_style == NULL) {
+    candidate = (my_style_t*)my_mem_calloc(
+        ((my_object_t*)widget)->allocator, 1, sizeof(my_style_t));
+    if (candidate == NULL) {
       return MY_RET_OOM;
     }
-    my_style_init(widget->local_style, ((my_object_t*)widget)->allocator);
+    my_style_init(candidate, ((my_object_t*)widget)->allocator);
+    ret = my_style_set(candidate, state, key, value);
+    if (ret != MY_RET_OK) {
+      my_style_reset(candidate);
+      my_mem_free(((my_object_t*)widget)->allocator, candidate);
+      return ret;
+    }
+    widget->local_style = candidate;
+  } else {
+    ret = my_style_set(widget->local_style, state, key, value);
+    if (ret != MY_RET_OK) {
+      return ret;
+    }
   }
-  return my_style_set(widget->local_style, state, key, value);
+  my_widget_invalidate(widget, NULL);
+  return ret;
 }
 
 const my_value_t* my_widget_style_get(my_widget_t* widget,

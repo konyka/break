@@ -19,6 +19,9 @@
 /** @brief Create an empty rich label. */
 my_widget_t* my_rich_label_create(const my_allocator_t* allocator);
 
+/** @brief Return whether a widget is a rich-label instance. */
+bool my_rich_label_is_instance(const my_widget_t* widget);
+
 /** @brief Append a segment (text copied; rgba32 color; bold = fake). */
 my_ret_t my_rich_label_add_segment(my_widget_t* label, const char* text,
                                    uint32_t rgba_color, bool bold);

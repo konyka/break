@@ -32,6 +32,7 @@ typedef struct break_ui_surface_composite_options_t {
   uint32_t max_scissor_area_percent;
   bool retained_surface_valid;
   bool present_target_preserved;
+  bool present_damage_supported;
   bool scissor_supported;
 } break_ui_surface_composite_options_t;
 
@@ -39,6 +40,25 @@ typedef struct break_ui_surface_composite_decision_t {
   break_ui_surface_composite_mode_t mode;
   break_ui_damage_scissor_t scissor;
 } break_ui_surface_composite_decision_t;
+
+typedef enum break_ui_present_frame_mode_t {
+  BREAK_UI_PRESENT_FRAME_FULL,
+  BREAK_UI_PRESENT_FRAME_PARTIAL,
+  BREAK_UI_PRESENT_FRAME_SKIP
+} break_ui_present_frame_mode_t;
+
+typedef struct break_ui_present_frame_decision_t {
+  break_ui_present_frame_mode_t mode;
+  bool partial_active;
+} break_ui_present_frame_decision_t;
+
+/** @brief Decide whether the host must begin, partially begin, or skip a frame. */
+bool break_ui_present_frame_decide(
+    bool partial_requested, bool surface_valid, bool target_preserved,
+    bool present_damage_supported, bool buffer_age_supported,
+    const RHIPresentRect* damage,
+    uint32_t damage_count, uint32_t drawable_width, uint32_t drawable_height,
+    break_ui_present_frame_decision_t* out);
 
 /** @brief Map logical damage to a conservative drawable bounding scissor. */
 bool break_ui_damage_to_drawable_scissor(

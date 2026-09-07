@@ -15,7 +15,7 @@ my_ret_t my_view_model_array_init(my_view_model_array_t* arr,
     return MY_RET_INVALID_PARAMS;
   }
   memset(arr, 0, sizeof(*arr));
-  arr->base.ref_count = 1;
+  atomic_init(&arr->base.ref_count, 1u);
   arr->base.allocator = allocator;
   arr->vtable = vtable;
   arr->emitter = my_emitter_create(allocator);
@@ -30,10 +30,15 @@ void my_view_model_array_destroy(my_view_model_array_t* arr) {
 }
 
 my_ret_t my_view_model_array_notify_change(my_view_model_array_t* arr) {
+  my_view_model_array_t* held;
+  my_ret_t result;
   if (arr == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
-  return my_emitter_emit(arr->emitter, "items_changed", NULL);
+  held = my_view_model_array_ref(arr);
+  result = my_emitter_emit(arr->emitter, "items_changed", NULL);
+  my_view_model_array_unref(held);
+  return result;
 }
 
 /* ---------------- dummy ---------------- */

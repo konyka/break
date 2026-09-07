@@ -52,26 +52,41 @@ static inline void my_view_model_array_unref(my_view_model_array_t* arr) {
 }
 
 static inline size_t my_view_model_array_get_count(my_view_model_array_t* arr) {
+  if (arr == NULL || arr->vtable == NULL || arr->vtable->get_count == NULL) {
+    return 0u;
+  }
   return arr->vtable->get_count(arr);
 }
 
 static inline my_view_model_t* my_view_model_array_get_item(
     my_view_model_array_t* arr, size_t index) {
+  if (arr == NULL || arr->vtable == NULL || arr->vtable->get_item == NULL) {
+    return NULL;
+  }
   return arr->vtable->get_item(arr, index);
 }
 
 static inline my_ret_t my_view_model_array_insert(my_view_model_array_t* arr,
                                                   size_t index,
                                                   my_view_model_t* item) {
+  if (arr == NULL || arr->vtable == NULL || arr->vtable->insert == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return arr->vtable->insert(arr, index, item);
 }
 
 static inline my_ret_t my_view_model_array_remove(my_view_model_array_t* arr,
                                                   size_t index) {
+  if (arr == NULL || arr->vtable == NULL || arr->vtable->remove == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return arr->vtable->remove(arr, index);
 }
 
 static inline my_ret_t my_view_model_array_clear(my_view_model_array_t* arr) {
+  if (arr == NULL || arr->vtable == NULL || arr->vtable->clear == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return arr->vtable->clear(arr);
 }
 

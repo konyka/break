@@ -25,6 +25,14 @@ struct my_undo_stack_t {
   size_t undo_pos; /**< entries[0..undo_pos) undoable; rest redoable */
 };
 
+static bool undo_size_add(size_t first, size_t second, size_t* result) {
+  if (second > SIZE_MAX - first) {
+    return false;
+  }
+  *result = first + second;
+  return true;
+}
+
 my_undo_stack_t* my_undo_stack_create(const my_allocator_t* allocator,
                                       size_t capacity) {
   my_undo_stack_t* s =
@@ -96,18 +104,27 @@ void my_undo_stack_clear(my_undo_stack_t* stack) {
 }
 
 /** @brief Any new edit kills the redo branch. */
-static void drop_redo(my_undo_stack_t* s) {
-  while (my_darray_size(s->entries) > s->undo_pos) {
-    size_t last = my_darray_size(s->entries) - 1;
-    entry_free(s, (undo_entry_t*)my_darray_get(s->entries, last));
-    my_darray_remove_at(s->entries, last);
-  }
-}
-
 static undo_entry_t* new_entry(my_undo_stack_t* s) {
   undo_entry_t* e;
-  /* capacity: drop the oldest */
-  while (my_darray_size(s->entries) >= s->capacity) {
+  e = (undo_entry_t*)my_mem_calloc(s->allocator, 1, sizeof(undo_entry_t));
+  if (e != NULL) {
+    e->batchable = true;
+  }
+  return e;
+}
+
+static my_ret_t commit_entry(my_undo_stack_t* s, undo_entry_t* entry) {
+  size_t redo_start = s->undo_pos;
+  size_t n;
+  if (my_darray_push(s->entries, entry) != MY_RET_OK) {
+    return MY_RET_OOM;
+  }
+  while ((n = my_darray_size(s->entries)) > redo_start + 1u) {
+    undo_entry_t* redo = (undo_entry_t*)my_darray_get(s->entries, redo_start);
+    entry_free(s, redo);
+    my_darray_remove_at(s->entries, redo_start);
+  }
+  while (my_darray_size(s->entries) > s->capacity) {
     undo_entry_t* old = (undo_entry_t*)my_darray_get(s->entries, 0);
     entry_free(s, old);
     my_darray_remove_at(s->entries, 0);
@@ -115,19 +132,17 @@ static undo_entry_t* new_entry(my_undo_stack_t* s) {
       s->undo_pos--;
     }
   }
-  e = (undo_entry_t*)my_mem_calloc(s->allocator, 1, sizeof(undo_entry_t));
-  if (e != NULL) {
-    e->batchable = true;
-    if (my_darray_push(s->entries, e) != MY_RET_OK) {
-      my_mem_free(s->allocator, e);
-      return NULL;
-    }
-  }
-  return e;
+  s->undo_pos = my_darray_size(s->entries);
+  return MY_RET_OK;
 }
 
 static char* memdup(my_undo_stack_t* s, const char* bytes, size_t len) {
-  char* p = (char*)my_mem_alloc(s->allocator, len + 1);
+  size_t allocation_size;
+  char* p;
+  if (!undo_size_add(len, 1, &allocation_size)) {
+    return NULL;
+  }
+  p = (char*)my_mem_alloc(s->allocator, allocation_size);
   if (p != NULL) {
     if (len > 0) {
       memcpy(p, bytes, len);
@@ -141,19 +156,28 @@ my_ret_t my_undo_stack_record_insert_tagged(my_undo_stack_t* stack, void* tag,
                                             size_t offset, const char* bytes,
                                             size_t len) {
   size_t n;
+  size_t allocation_size;
+  size_t next_offset;
   undo_entry_t* last;
   if (stack == NULL || (bytes == NULL && len > 0)) {
     return MY_RET_INVALID_PARAMS;
   }
-  drop_redo(stack);
   n = my_darray_size(stack->entries);
   last = n > 0 ? (undo_entry_t*)my_darray_get(stack->entries, n - 1) : NULL;
-  if (last != NULL && last->batchable && last->tag == tag &&
+  next_offset = offset;
+  if (stack->undo_pos == n && last != NULL &&
+      !undo_size_add(last->offset, last->inserted_len, &next_offset)) {
+    return MY_RET_OOM;
+  }
+  if (stack->undo_pos == n && last != NULL && last->batchable &&
+      last->tag == tag &&
       last->deleted_len == 0 &&
-      offset == last->offset + last->inserted_len) {
+      offset == next_offset &&
+      undo_size_add(last->inserted_len, len, &allocation_size) &&
+      undo_size_add(allocation_size, 1, &allocation_size)) {
     /* typing stream: append to the open batch */
     char* p = (char*)my_mem_realloc(stack->allocator, last->inserted,
-                                    last->inserted_len + len + 1);
+                                    allocation_size);
     if (p == NULL) {
       return MY_RET_OOM;
     }
@@ -174,10 +198,12 @@ my_ret_t my_undo_stack_record_insert_tagged(my_undo_stack_t* stack, void* tag,
   last->inserted_len = len;
   if (len > 0 && last->inserted == NULL) {
     entry_free(stack, last);
-    my_darray_remove_at(stack->entries, my_darray_size(stack->entries) - 1);
     return MY_RET_OOM;
   }
-  stack->undo_pos = my_darray_size(stack->entries);
+  if (commit_entry(stack, last) != MY_RET_OK) {
+    entry_free(stack, last);
+    return MY_RET_OOM;
+  }
   return MY_RET_OK;
 }
 
@@ -186,21 +212,65 @@ my_ret_t my_undo_stack_record_insert(my_undo_stack_t* stack, size_t offset,
   return my_undo_stack_record_insert_tagged(stack, NULL, offset, bytes, len);
 }
 
+my_ret_t my_undo_stack_record_replace_tagged(
+    my_undo_stack_t* stack, void* tag, size_t offset, const char* deleted,
+    size_t deleted_len, const char* inserted, size_t inserted_len) {
+  undo_entry_t* entry;
+  if (stack == NULL || (deleted == NULL && deleted_len > 0) ||
+      (inserted == NULL && inserted_len > 0)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  entry = new_entry(stack);
+  if (entry == NULL) {
+    return MY_RET_OOM;
+  }
+  entry->tag = tag;
+  entry->offset = offset;
+  entry->deleted = memdup(stack, deleted, deleted_len);
+  entry->inserted = memdup(stack, inserted, inserted_len);
+  if ((deleted_len > 0 && entry->deleted == NULL) ||
+      (inserted_len > 0 && entry->inserted == NULL)) {
+    entry_free(stack, entry);
+    return MY_RET_OOM;
+  }
+  entry->deleted_len = deleted_len;
+  entry->inserted_len = inserted_len;
+  entry->batchable = false;
+  if (commit_entry(stack, entry) != MY_RET_OK) {
+    entry_free(stack, entry);
+    return MY_RET_OOM;
+  }
+  return MY_RET_OK;
+}
+
+my_ret_t my_undo_stack_record_replace(
+    my_undo_stack_t* stack, size_t offset, const char* deleted,
+    size_t deleted_len, const char* inserted, size_t inserted_len) {
+  return my_undo_stack_record_replace_tagged(
+      stack, NULL, offset, deleted, deleted_len, inserted, inserted_len);
+}
+
 my_ret_t my_undo_stack_record_delete_tagged(my_undo_stack_t* stack, void* tag,
                                             size_t offset, const char* bytes,
                                             size_t len) {
   size_t n;
+  size_t combined_len;
+  size_t allocation_size;
   undo_entry_t* last;
   if (stack == NULL || (bytes == NULL && len > 0) || len == 0) {
     return MY_RET_INVALID_PARAMS;
   }
-  drop_redo(stack);
   n = my_darray_size(stack->entries);
   last = n > 0 ? (undo_entry_t*)my_darray_get(stack->entries, n - 1) : NULL;
-  if (last != NULL && last->batchable && last->tag == tag &&
-      last->inserted_len == 0 && offset + len == last->offset) {
+  if (stack->undo_pos == n && last != NULL && last->batchable &&
+      last->tag == tag &&
+      last->inserted_len == 0 &&
+      undo_size_add(offset, len, &combined_len) &&
+      combined_len == last->offset &&
+      undo_size_add(last->deleted_len, len, &combined_len) &&
+      undo_size_add(combined_len, 1, &allocation_size)) {
     /* backspace stream: prepend to the open batch */
-    char* p = (char*)my_mem_alloc(stack->allocator, last->deleted_len + len);
+    char* p = (char*)my_mem_alloc(stack->allocator, allocation_size);
     if (p == NULL) {
       return MY_RET_OOM;
     }
@@ -224,10 +294,12 @@ my_ret_t my_undo_stack_record_delete_tagged(my_undo_stack_t* stack, void* tag,
   last->deleted_len = len;
   if (last->deleted == NULL) {
     entry_free(stack, last);
-    my_darray_remove_at(stack->entries, my_darray_size(stack->entries) - 1);
     return MY_RET_OOM;
   }
-  stack->undo_pos = my_darray_size(stack->entries);
+  if (commit_entry(stack, last) != MY_RET_OK) {
+    entry_free(stack, last);
+    return MY_RET_OOM;
+  }
   return MY_RET_OK;
 }
 
@@ -273,6 +345,21 @@ my_ret_t my_undo_stack_undo_tagged(my_undo_stack_t* stack, my_undo_op_t* op,
   return MY_RET_OK;
 }
 
+my_ret_t my_undo_stack_undo_peek_tagged(my_undo_stack_t* stack,
+                                        my_undo_op_t* op, void** tag) {
+  undo_entry_t* e;
+  if (stack == NULL || op == NULL || !my_undo_stack_can_undo(stack)) {
+    return MY_RET_NOT_FOUND;
+  }
+  e = (undo_entry_t*)my_darray_get(stack->entries, stack->undo_pos - 1u);
+  op->offset = e->offset;
+  op->remove_len = e->inserted_len;
+  op->bytes = e->deleted != NULL ? e->deleted : "";
+  op->bytes_len = e->deleted_len;
+  if (tag != NULL) *tag = e->tag;
+  return MY_RET_OK;
+}
+
 my_ret_t my_undo_stack_redo_tagged(my_undo_stack_t* stack, my_undo_op_t* op,
                                    void** tag) {
   undo_entry_t* e;
@@ -289,6 +376,33 @@ my_ret_t my_undo_stack_redo_tagged(my_undo_stack_t* stack, my_undo_op_t* op,
   if (tag != NULL) {
     *tag = e->tag;
   }
+  return MY_RET_OK;
+}
+
+my_ret_t my_undo_stack_redo_peek_tagged(my_undo_stack_t* stack,
+                                        my_undo_op_t* op, void** tag) {
+  undo_entry_t* e;
+  if (stack == NULL || op == NULL || !my_undo_stack_can_redo(stack)) {
+    return MY_RET_NOT_FOUND;
+  }
+  e = (undo_entry_t*)my_darray_get(stack->entries, stack->undo_pos);
+  op->offset = e->offset;
+  op->remove_len = e->deleted_len;
+  op->bytes = e->inserted != NULL ? e->inserted : "";
+  op->bytes_len = e->inserted_len;
+  if (tag != NULL) *tag = e->tag;
+  return MY_RET_OK;
+}
+
+my_ret_t my_undo_stack_commit_undo(my_undo_stack_t* stack) {
+  if (stack == NULL || !my_undo_stack_can_undo(stack)) return MY_RET_NOT_FOUND;
+  stack->undo_pos--;
+  return MY_RET_OK;
+}
+
+my_ret_t my_undo_stack_commit_redo(my_undo_stack_t* stack) {
+  if (stack == NULL || !my_undo_stack_can_redo(stack)) return MY_RET_NOT_FOUND;
+  stack->undo_pos++;
   return MY_RET_OK;
 }
 

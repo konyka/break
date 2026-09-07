@@ -10,6 +10,12 @@ void my_navigator_set_default(my_navigator_t* nav) {
   g_default_navigator = nav;
 }
 
+void my_navigator_clear_default(my_navigator_t* nav) {
+  if (g_default_navigator == nav) {
+    g_default_navigator = NULL;
+  }
+}
+
 my_ret_t my_navigator_request(const my_navigator_request_t* request) {
   if (request == NULL) {
     return MY_RET_INVALID_PARAMS;

@@ -77,21 +77,34 @@ bool my_str_end_with(const char* s, const char* suffix) {
 }
 
 size_t my_str_utf8_char_len(const char* s) {
+  const unsigned char* p;
   unsigned char c;
+  unsigned char second;
   if (s == NULL || *s == '\0') {
     return 0;
   }
+  p = (const unsigned char*)s;
   c = (unsigned char)*s;
   if (c < 0x80) {
     return 1;
   }
-  if ((c & 0xE0) == 0xC0) {
+  if (c >= 0xC2u && c <= 0xDFu && p[1] != '\0' &&
+      (p[1] & 0xC0u) == 0x80u) {
     return 2;
   }
-  if ((c & 0xF0) == 0xE0) {
+  if (c >= 0xE0u && c <= 0xEFu && p[1] != '\0' && p[2] != '\0' &&
+      (p[1] & 0xC0u) == 0x80u && (p[2] & 0xC0u) == 0x80u) {
+    second = p[1];
+    if (c == 0xE0u && second < 0xA0u) return 1;
+    if (c == 0xEDu && second >= 0xA0u) return 1;
     return 3;
   }
-  if ((c & 0xF8) == 0xF0) {
+  if (c >= 0xF0u && c <= 0xF4u && p[1] != '\0' && p[2] != '\0' &&
+      p[3] != '\0' && (p[1] & 0xC0u) == 0x80u &&
+      (p[2] & 0xC0u) == 0x80u && (p[3] & 0xC0u) == 0x80u) {
+    second = p[1];
+    if (c == 0xF0u && second < 0x90u) return 1;
+    if (c == 0xF4u && second > 0x8Fu) return 1;
     return 4;
   }
   return 1; /* invalid lead byte: skip one byte to stay progressing */

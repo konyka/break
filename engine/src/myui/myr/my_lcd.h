@@ -78,52 +78,97 @@ struct my_lcd_t {
 };
 
 static inline uint32_t my_lcd_get_width(my_lcd_t* lcd) {
+  if (lcd == NULL || lcd->vtable == NULL || lcd->vtable->get_width == NULL) {
+    return 0u;
+  }
   return lcd->vtable->get_width(lcd);
 }
 
 /** @brief Raw framebuffer access; NULL when the backend has none. */
 static inline uint8_t* my_lcd_get_buffer(my_lcd_t* lcd) {
-  return lcd->vtable->get_buffer != NULL ? lcd->vtable->get_buffer(lcd) : NULL;
+  return lcd != NULL && lcd->vtable != NULL &&
+                 lcd->vtable->get_buffer != NULL
+             ? lcd->vtable->get_buffer(lcd)
+             : NULL;
 }
 static inline uint32_t my_lcd_get_stride(my_lcd_t* lcd) {
-  return lcd->vtable->get_stride != NULL ? lcd->vtable->get_stride(lcd) : 0;
+  return lcd != NULL && lcd->vtable != NULL &&
+                 lcd->vtable->get_stride != NULL
+             ? lcd->vtable->get_stride(lcd)
+             : 0u;
 }
 
 static inline uint32_t my_lcd_get_height(my_lcd_t* lcd) {
+  if (lcd == NULL || lcd->vtable == NULL || lcd->vtable->get_height == NULL) {
+    return 0u;
+  }
   return lcd->vtable->get_height(lcd);
 }
 
 static inline my_pixel_format_t my_lcd_get_format(my_lcd_t* lcd) {
+  if (lcd == NULL || lcd->vtable == NULL || lcd->vtable->get_format == NULL) {
+    return (my_pixel_format_t)-1;
+  }
   return lcd->vtable->get_format(lcd);
 }
 
 static inline my_ret_t my_lcd_begin_frame(my_lcd_t* lcd, const my_rect_t* dirty) {
+  if (lcd == NULL || lcd->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lcd->vtable->begin_frame == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return lcd->vtable->begin_frame(lcd, dirty);
 }
 
 static inline my_ret_t my_lcd_end_frame(my_lcd_t* lcd) {
+  if (lcd == NULL || lcd->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lcd->vtable->end_frame == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return lcd->vtable->end_frame(lcd);
 }
 
 static inline my_ret_t my_lcd_draw_pixels(my_lcd_t* lcd, const void* pixels,
                                           int32_t x, int32_t y, uint32_t w,
                                           uint32_t h) {
+  if (lcd == NULL || lcd->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lcd->vtable->draw_pixels == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return lcd->vtable->draw_pixels(lcd, pixels, x, y, w, h);
 }
 
 static inline my_ret_t my_lcd_fill_rect(my_lcd_t* lcd, const my_rect_t* rect,
                                         my_color_t color) {
+  if (lcd == NULL || lcd->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lcd->vtable->fill_rect == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return lcd->vtable->fill_rect(lcd, rect, color);
 }
 
 static inline my_ret_t my_lcd_blend_span(my_lcd_t* lcd, int32_t x, int32_t y,
                                          const uint8_t* alpha, int32_t n,
                                          my_color_t color) {
+  if (lcd == NULL || lcd->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lcd->vtable->blend_span == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   return lcd->vtable->blend_span(lcd, x, y, alpha, n, color);
 }
 
 static inline void my_lcd_destroy(my_lcd_t* lcd) {
-  if (lcd != NULL) {
+  if (lcd != NULL && lcd->vtable != NULL && lcd->vtable->destroy != NULL) {
     lcd->vtable->destroy(lcd);
   }
 }

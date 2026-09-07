@@ -129,6 +129,7 @@ int main(void) {
     fprintf(stderr, "dxx: break_ui_init failed\n");
     return 1;
   }
+  break_ui_set_present_partial(ui, true);
 
   wm = break_ui_get_window_manager(ui);
 
@@ -147,9 +148,7 @@ int main(void) {
 
   while (platform_poll(platform) != PLATFORM_EVENT_QUIT) {
     RHICmdBuffer *cmd;
-    RHIPresentRect damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
-    u32 damage_count = 0u;
-    bool partial = false;
+    bool skip = false;
     u32 nw = 0, nh = 0;
     platform_get_drawable_size(platform, &nw, &nh);
     if (nw != 0 && nh != 0 && (nw != drawable_w || nh != drawable_h)) {
@@ -158,24 +157,10 @@ int main(void) {
       drawable_h = nh;
     }
     break_ui_pump(ui);
-    if (!break_ui_get_present_damage(ui, drawable_w, drawable_h, damage,
-                                     RHI_MAX_PRESENT_DAMAGE_RECTS,
-                                     &damage_count)) {
-      damage[0] = (RHIPresentRect){0, 0, drawable_w, drawable_h};
-      damage_count = 1u;
-    }
-    if (damage_count == 0u) {
-      RHICapabilities caps = {0};
-      if (!rhi_device_get_capabilities(device, &caps) ||
-          !caps.present_target_preserved) {
-        continue;
-      }
-    }
-    cmd = rhi_frame_begin_damage(device, damage, damage_count, &partial);
+    cmd = break_ui_frame_begin(ui, drawable_w, drawable_h, &skip, NULL);
+    if (skip) continue;
     if (cmd != NULL) {
-      break_ui_set_present_partial(ui, partial);
       break_ui_render(ui, cmd, drawable_w, drawable_h);
-      break_ui_set_present_partial(ui, false);
       rhi_frame_end(device);
       rhi_present(device);
     }

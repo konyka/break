@@ -17,7 +17,7 @@ my_ret_t my_view_model_init(my_view_model_t* vm, const my_allocator_t* allocator
     return MY_RET_INVALID_PARAMS;
   }
   memset(vm, 0, sizeof(*vm));
-  vm->base.ref_count = 1;
+  atomic_init(&vm->base.ref_count, 1u);
   vm->base.allocator = allocator;
   vm->vtable = vtable;
   vm->emitter = my_emitter_create(allocator);
@@ -77,15 +77,21 @@ my_ret_t my_view_model_exec(my_view_model_t* vm, const char* cmd,
 }
 
 my_ret_t my_view_model_notify_change(my_view_model_t* vm, const char* name) {
+  my_view_model_t* held;
+  my_ret_t result;
   char event[80];
   if (vm == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
+  held = my_view_model_ref(vm);
   if (name == NULL) {
-    return my_emitter_emit(vm->emitter, "props", NULL);
+    result = my_emitter_emit(vm->emitter, "props", NULL);
+  } else {
+    snprintf(event, sizeof(event), "prop:%s", name);
+    result = my_emitter_emit(vm->emitter, event, NULL);
   }
-  snprintf(event, sizeof(event), "prop:%s", name);
-  return my_emitter_emit(vm->emitter, event, NULL);
+  my_view_model_unref(held);
+  return result;
 }
 
 /* ---------------- dummy ---------------- */

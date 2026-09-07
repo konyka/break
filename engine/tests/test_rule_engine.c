@@ -17,16 +17,14 @@ extern int unsetenv(const char *name);
 #endif
 static void redis_test_set_url(const char *url) {
 #if defined(_WIN32)
-    char buffer[256];
-    snprintf(buffer, sizeof(buffer), "RE_REDIS_URL=%s", url);
-    _putenv(buffer);
+    (void)_putenv_s("RE_REDIS_URL", url);
 #else
     setenv("RE_REDIS_URL", url, 1);
 #endif
 }
 static void redis_test_clear_url(void) {
 #if defined(_WIN32)
-    _putenv("RE_REDIS_URL=");
+    (void)_putenv_s("RE_REDIS_URL", "");
 #else
     unsetenv("RE_REDIS_URL");
 #endif
@@ -194,6 +192,7 @@ TEST(private_rete_two_condition_join_lifecycle) {
     ASSERT_EQ(re_rete_activation_count(network), 1u);
     ASSERT_EQ(re_facts_retract(facts, left_id), RE_STATUS_OK);
     ASSERT_EQ(re_rete_activation_count(network), 0u);
+    re_rete_network_destroy(network);
     re_engine_destroy(engine);
     re_facts_destroy(facts);
 }
@@ -1928,8 +1927,9 @@ TEST(bounded_query_proves_fact_and_binds_variable) {
     ASSERT_TRUE(binding.name.size == 1u && binding.name.data[0] == 'X');
     ASSERT_EQ(binding.value.type, RE_VALUE_STRING);
     ASSERT_TRUE(memcmp(binding.value.as.string.data, "Ada", 3u) == 0);
-    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_NOT_FOUND);
     re_proof_destroy(proof);
+    proof = NULL;
+    ASSERT_EQ(re_query_next(query, &proof), RE_STATUS_NOT_FOUND);
     re_query_destroy(query);
     re_facts_destroy(facts);
     re_engine_destroy(engine);

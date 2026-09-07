@@ -31,7 +31,7 @@ float my_easing_ease_in_out(float t) {
 
 typedef struct my_anim_t {
   uint32_t id;
-  my_widget_t* widget; /**< weak; cancelled on removal via stop_widget */
+  my_widget_t* widget; /**< owned while the animation record exists */
   char prop[4];        /**< "x" "y" "w" "h" "xy" */
   float from_x, from_y;
   float to_x, to_y;
@@ -55,9 +55,85 @@ struct my_animator_manager_t {
   uint32_t next_id;
   uint32_t timer_id;
   bool timer_active;
+  bool ticking;
+  bool sweep_pending;
+  bool destroy_requested;
 };
 
 static my_ret_t anim_tick(void* ctx);
+
+static bool anim_id_in_use(const my_animator_manager_t* mgr, uint32_t id) {
+  size_t i, n = my_darray_size(mgr->anims);
+  for (i = 0; i < n; i++) {
+    const my_anim_t* animation =
+        (const my_anim_t*)my_darray_get(mgr->anims, i);
+    if (animation != NULL && animation->id == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static uint32_t anim_allocate_id(my_animator_manager_t* mgr) {
+  size_t attempts = 0;
+  size_t occupied = my_darray_size(mgr->anims);
+  uint32_t candidate = mgr->next_id == 0u ? 1u : mgr->next_id;
+
+  if (occupied >= (size_t)UINT32_MAX) {
+    return 0u;
+  }
+  while (attempts <= occupied) {
+    if (!anim_id_in_use(mgr, candidate)) {
+      mgr->next_id = candidate == UINT32_MAX ? 1u : candidate + 1u;
+      return candidate;
+    }
+    candidate = candidate == UINT32_MAX ? 1u : candidate + 1u;
+    attempts++;
+  }
+  return 0u;
+}
+
+static void anim_sweep(my_animator_manager_t* mgr) {
+  size_t i = 0;
+  while (i < my_darray_size(mgr->anims)) {
+    my_anim_t* animation = (my_anim_t*)my_darray_get(mgr->anims, i);
+    if (animation == NULL || !animation->active) {
+      (void)my_darray_remove_at(mgr->anims, i);
+      if (animation != NULL) {
+        my_widget_unref(animation->widget);
+      }
+      my_mem_free(mgr->allocator, animation);
+    } else {
+      i++;
+    }
+  }
+}
+
+static void anim_sweep_if_safe(my_animator_manager_t* mgr) {
+  if (mgr->ticking) {
+    mgr->sweep_pending = true;
+    return;
+  }
+  anim_sweep(mgr);
+  mgr->sweep_pending = false;
+}
+
+static void anim_manager_free(my_animator_manager_t* mgr) {
+  size_t i, n;
+  if (mgr == NULL) {
+    return;
+  }
+  n = my_darray_size(mgr->anims);
+  for (i = 0; i < n; i++) {
+    my_anim_t* animation = (my_anim_t*)my_darray_get(mgr->anims, i);
+    if (animation != NULL) {
+      my_widget_unref(animation->widget);
+      my_mem_free(mgr->allocator, animation);
+    }
+  }
+  my_darray_destroy(mgr->anims);
+  my_mem_free(mgr->allocator, mgr);
+}
 
 static void ensure_timer(my_animator_manager_t* mgr) {
   if (!mgr->timer_active && my_animator_manager_active_count(mgr) > 0) {
@@ -99,17 +175,16 @@ my_animator_manager_t* my_animator_manager_create(const my_allocator_t* allocato
 }
 
 void my_animator_manager_destroy(my_animator_manager_t* mgr) {
-  size_t i, n;
   if (mgr == NULL) {
     return;
   }
-  drop_timer(mgr);
-  n = my_darray_size(mgr->anims);
-  for (i = 0; i < n; i++) {
-    my_mem_free(mgr->allocator, my_darray_get(mgr->anims, i));
+  if (mgr->ticking) {
+    mgr->destroy_requested = true;
+    drop_timer(mgr);
+    return;
   }
-  my_darray_destroy(mgr->anims);
-  my_mem_free(mgr->allocator, mgr);
+  drop_timer(mgr);
+  anim_manager_free(mgr);
 }
 
 size_t my_animator_manager_active_count(my_animator_manager_t* mgr) {
@@ -133,7 +208,8 @@ uint32_t my_animator_animate(my_animator_manager_t* mgr, my_widget_t* widget,
                              my_anim_update_cb_t on_update,
                              my_anim_done_cb_t on_done, void* ctx) {
   my_anim_t* a;
-  if (mgr == NULL || widget == NULL || prop == NULL || strlen(prop) >= 4 ||
+  if (mgr == NULL || mgr->destroy_requested || widget == NULL ||
+      prop == NULL || strlen(prop) >= 4 ||
       (strcmp(prop, "x") != 0 && strcmp(prop, "y") != 0 &&
        strcmp(prop, "w") != 0 && strcmp(prop, "h") != 0 &&
        strcmp(prop, "xy") != 0)) {
@@ -143,8 +219,12 @@ uint32_t my_animator_animate(my_animator_manager_t* mgr, my_widget_t* widget,
   if (a == NULL) {
     return 0;
   }
-  a->id = mgr->next_id++;
-  a->widget = widget;
+  a->id = anim_allocate_id(mgr);
+  if (a->id == 0u) {
+    my_mem_free(mgr->allocator, a);
+    return 0;
+  }
+  a->widget = my_widget_ref(widget);
   strcpy(a->prop, prop);
   a->from_x = strcmp(prop, "y") == 0 ? (float)widget->rect.y
                                      : (float)widget->rect.x;
@@ -167,6 +247,7 @@ uint32_t my_animator_animate(my_animator_manager_t* mgr, my_widget_t* widget,
   a->cb_ctx = ctx;
   a->active = true;
   if (my_darray_push(mgr->anims, a) != MY_RET_OK) {
+    my_widget_unref(a->widget);
     my_mem_free(mgr->allocator, a);
     return 0;
   }
@@ -196,6 +277,9 @@ void my_animator_stop(my_animator_manager_t* mgr, uint32_t anim_id) {
   if (mgr == NULL) {
     return;
   }
+  if (mgr->destroy_requested) {
+    return;
+  }
   n = my_darray_size(mgr->anims);
   for (i = 0; i < n; i++) {
     my_anim_t* a = (my_anim_t*)my_darray_get(mgr->anims, i);
@@ -206,12 +290,16 @@ void my_animator_stop(my_animator_manager_t* mgr, uint32_t anim_id) {
   }
   if (my_animator_manager_active_count(mgr) == 0) {
     drop_timer(mgr);
+    anim_sweep_if_safe(mgr);
   }
 }
 
 void my_animator_stop_widget(my_animator_manager_t* mgr, my_widget_t* widget) {
   size_t i, n;
   if (mgr == NULL || widget == NULL) {
+    return;
+  }
+  if (mgr->destroy_requested) {
     return;
   }
   n = my_darray_size(mgr->anims);
@@ -227,6 +315,7 @@ void my_animator_stop_widget(my_animator_manager_t* mgr, my_widget_t* widget) {
   }
   if (my_animator_manager_active_count(mgr) == 0) {
     drop_timer(mgr);
+    anim_sweep_if_safe(mgr);
   }
 }
 
@@ -261,6 +350,7 @@ static my_ret_t anim_tick(void* ctx) {
   uint64_t now = my_pal_time_now_ms(mgr->pal);
   size_t i, n = my_darray_size(mgr->anims);
 
+  mgr->ticking = true;
   for (i = 0; i < n; i++) {
     my_anim_t* a = (my_anim_t*)my_darray_get(mgr->anims, i);
     uint64_t elapsed;
@@ -269,7 +359,7 @@ static my_ret_t anim_tick(void* ctx) {
     if (!a->active) {
       continue;
     }
-    if (now < a->start_ms + a->delay_ms) {
+    if (now < a->start_ms || now - a->start_ms < (uint64_t)a->delay_ms) {
       continue;
     }
     elapsed = now - a->start_ms - a->delay_ms;
@@ -282,6 +372,9 @@ static my_ret_t anim_tick(void* ctx) {
       if (a->on_done != NULL) {
         a->on_done(a->widget, a->cb_ctx);
       }
+      if (mgr->destroy_requested) {
+        break;
+      }
       continue;
     }
     t = (float)(elapsed % a->duration_ms) / (float)a->duration_ms;
@@ -289,10 +382,21 @@ static my_ret_t anim_tick(void* ctx) {
       t = 1.0f - t;
     }
     anim_apply(a, a->easing(t));
+    if (mgr->destroy_requested) {
+      break;
+    }
   }
 
-  if (my_animator_manager_active_count(mgr) == 0) {
+  if (!mgr->destroy_requested &&
+      my_animator_manager_active_count(mgr) == 0) {
     drop_timer(mgr);
   }
+  mgr->ticking = false;
+  if (mgr->destroy_requested) {
+    anim_manager_free(mgr);
+    return MY_RET_OK;
+  }
+  anim_sweep(mgr);
+  mgr->sweep_pending = false;
   return MY_RET_OK;
 }

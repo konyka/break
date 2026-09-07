@@ -16,6 +16,12 @@
 #include "myr/my_vgcanvas.h"
 #include "rhi/rhi.h"
 
+/** @brief Whether a drawable size fits myui's signed rectangle ABI. */
+static inline bool my_vgcanvas_break_rhi_size_valid(u32 width, u32 height) {
+  return width != 0u && height != 0u && width <= (u32)INT32_MAX &&
+         height <= (u32)INT32_MAX;
+}
+
 my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
                                             RHIDevice *device, u32 width,
                                             u32 height);
@@ -31,6 +37,9 @@ void my_vgcanvas_break_rhi_set_target_preserve_pending(
 
 /* Returns 0 or 2 when a target switch is queued, otherwise -1. */
 int my_vgcanvas_break_rhi_pending_antialias_level(const my_vgcanvas_t *vg);
+
+/* Cancel a queued target switch without changing the active target. */
+void my_vgcanvas_break_rhi_cancel_pending_antialias_level(my_vgcanvas_t *vg);
 
 /* Map the portable AA level to the RHI target sample count. */
 u32 my_vgcanvas_break_rhi_sample_count_for_aa_level(int level);

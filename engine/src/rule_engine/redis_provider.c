@@ -41,13 +41,35 @@
 #endif
 
 #include <hiredis/hiredis.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#define RE_REDIS_URL_MAX_BYTES 4096u
+#define RE_REDIS_PREFIX_MAX_BYTES 128u
+#define RE_REDIS_MAX_TIMEOUT_MS (24ull * 60ull * 60ull * 1000ull)
+#define RE_REDIS_MAX_KEY_BYTES 4096u
+#define RE_REDIS_MAX_VALUE_BYTES (16u * 1024u * 1024u)
+
+static bool redis_bounded_string_size(const char *value, size_t limit,
+                                      size_t *out_size) {
+    size_t i;
+    if (value == NULL || out_size == NULL) return false;
+    for (i = 0u; i <= limit; ++i) {
+        if (value[i] == '\0') {
+            *out_size = i;
+            return true;
+        }
+    }
+    return false;
+}
+
 typedef struct redis_state_t {
     re_allocator_impl_t allocator;
     redisContext *connection;
+    uint64_t operation_timeout_ms;
     char *prefix;
     size_t prefix_size;
     /* Backing store for the last STRING result handed out by redis_get. */
@@ -71,11 +93,31 @@ static re_status_t redis_fail(re_state_provider_t *provider, redis_state_t *stat
     return RE_STATUS_ERROR;
 }
 
+static re_provider_error_t redis_connection_error_kind(const redis_state_t *state) {
+    const redisContext *connection = state->connection;
+    const char *message = connection->errstr;
+    int platform_timeout_error = 0;
+    if (connection->err == REDIS_ERR_TIMEOUT) return RE_PROVIDER_ERROR_TIMEOUT;
+    if (state->operation_timeout_ms == 0u || connection->err != REDIS_ERR_IO) {
+        return RE_PROVIDER_ERROR_UNAVAILABLE;
+    }
+    /* hiredis 1.4 reports SO_RCVTIMEO/SO_SNDTIMEO as EAGAIN on POSIX,
+     * while Windows reports REDIS_ERR_TIMEOUT. The blocking adapter can
+     * safely classify these errno strings as timeout only when a finite
+     * command timeout is configured. */
+    platform_timeout_error = strcmp(message, "Resource temporarily unavailable") == 0 ||
+                             strcmp(message, "Operation would block") == 0 ||
+                             strstr(message, "timed out") != NULL ||
+                             strstr(message, "timeout") != NULL;
+    return platform_timeout_error ? RE_PROVIDER_ERROR_TIMEOUT
+                                  : RE_PROVIDER_ERROR_UNAVAILABLE;
+}
+
 /* Frees an error reply and records the failure; returns the reply on success. */
 static redisReply *redis_checked(re_state_provider_t *provider, redis_state_t *state,
                                  redisReply *reply) {
     if (reply == NULL) {
-        redis_fail(provider, state, RE_PROVIDER_ERROR_UNAVAILABLE,
+        redis_fail(provider, state, redis_connection_error_kind(state),
                    state->connection->errstr[0] != '\0' ? state->connection->errstr
                                                         : "redis connection error");
         return NULL;
@@ -92,7 +134,7 @@ static redisReply *redis_checked(re_state_provider_t *provider, redis_state_t *s
 /* Builds the owned "<prefix>:<name>" key buffer; NULL for an invalid key. */
 static char *redis_key(redis_state_t *state, re_string_t key, size_t *out_size) {
     char *full;
-    if (key.data == NULL || key.size == 0u) return NULL;
+    if (key.data == NULL || key.size == 0u || key.size > RE_REDIS_MAX_KEY_BYTES) return NULL;
     if (key.size > SIZE_MAX - state->prefix_size - 1u) return NULL;
     *out_size = state->prefix_size + 1u + key.size;
     full = re_alloc(&state->allocator, *out_size);
@@ -120,7 +162,7 @@ static re_status_t redis_encode_value(redis_state_t *state, const re_value_t *va
                                       char **out_data, size_t *out_size) {
     size_t payload = redis_value_payload(value);
     char *data;
-    if (payload == SIZE_MAX) return RE_STATUS_INVALID_ARGUMENT;
+    if (payload == SIZE_MAX || payload > RE_REDIS_MAX_VALUE_BYTES) return RE_STATUS_LIMIT;
     if (value->type == RE_VALUE_STRING && payload != 0u && value->as.string.data == NULL)
         return RE_STATUS_INVALID_ARGUMENT;
     if (payload > SIZE_MAX - sizeof(int32_t)) return RE_STATUS_INVALID_ARGUMENT;
@@ -143,28 +185,36 @@ static re_status_t redis_decode_value(re_state_provider_t *provider, redis_state
     const char *payload;
     size_t payload_size;
     char *copy;
+    re_value_t decoded;
     if (size < sizeof(int32_t))
         return redis_fail(provider, state, RE_PROVIDER_ERROR_SERIALIZATION,
                           "stored redis value is too short");
     memcpy(&type, data, sizeof(int32_t));
     payload = data + sizeof(int32_t);
     payload_size = size - sizeof(int32_t);
-    memset(out, 0, sizeof(*out));
+    if (payload_size > RE_REDIS_MAX_VALUE_BYTES) {
+        return redis_fail(provider, state, RE_PROVIDER_ERROR_SERIALIZATION,
+                          "stored redis value exceeds the local size limit");
+    }
+    memset(&decoded, 0, sizeof(decoded));
     switch (type) {
     case RE_VALUE_BOOL:
-        if (payload_size != sizeof(out->as.boolean)) break;
-        out->type = RE_VALUE_BOOL;
-        memcpy(&out->as.boolean, payload, payload_size);
+        if (payload_size != sizeof(decoded.as.boolean)) break;
+        decoded.type = RE_VALUE_BOOL;
+        memcpy(&decoded.as.boolean, payload, payload_size);
+        *out = decoded;
         return RE_STATUS_OK;
     case RE_VALUE_INT64:
-        if (payload_size != sizeof(out->as.int64_value)) break;
-        out->type = RE_VALUE_INT64;
-        memcpy(&out->as.int64_value, payload, payload_size);
+        if (payload_size != sizeof(decoded.as.int64_value)) break;
+        decoded.type = RE_VALUE_INT64;
+        memcpy(&decoded.as.int64_value, payload, payload_size);
+        *out = decoded;
         return RE_STATUS_OK;
     case RE_VALUE_DOUBLE:
-        if (payload_size != sizeof(out->as.double_value)) break;
-        out->type = RE_VALUE_DOUBLE;
-        memcpy(&out->as.double_value, payload, payload_size);
+        if (payload_size != sizeof(decoded.as.double_value)) break;
+        decoded.type = RE_VALUE_DOUBLE;
+        memcpy(&decoded.as.double_value, payload, payload_size);
+        *out = decoded;
         return RE_STATUS_OK;
     case RE_VALUE_STRING:
         copy = re_alloc(&state->allocator, payload_size + 1u);
@@ -173,14 +223,16 @@ static re_status_t redis_decode_value(re_state_provider_t *provider, redis_state
         copy[payload_size] = '\0';
         re_free(&state->allocator, state->last_string);
         state->last_string = copy;
-        out->type = RE_VALUE_STRING;
-        out->as.string.data = copy;
-        out->as.string.size = payload_size;
+        decoded.type = RE_VALUE_STRING;
+        decoded.as.string.data = copy;
+        decoded.as.string.size = payload_size;
+        *out = decoded;
         return RE_STATUS_OK;
     case RE_VALUE_NULL:
     case RE_VALUE_UNKNOWN:
         if (payload_size != 0u) break;
-        out->type = (re_value_type_t)type;
+        decoded.type = (re_value_type_t)type;
+        *out = decoded;
         return RE_STATUS_OK;
     default:
         break;
@@ -226,6 +278,7 @@ static re_status_t redis_put(re_state_provider_t *provider, re_string_t key,
     redisReply *reply;
     re_status_t status;
     if (value == NULL) return RE_STATUS_INVALID_ARGUMENT;
+    if (ttl > (uint64_t)INT64_MAX) return RE_STATUS_LIMIT;
     full_key = redis_key(state, key, &key_size);
     if (full_key == NULL) return RE_STATUS_INVALID_ARGUMENT;
     status = redis_encode_value(state, value, &encoded, &encoded_size);
@@ -275,6 +328,9 @@ static re_status_t redis_delete(re_state_provider_t *provider, re_string_t key, 
     if (reply->type != REDIS_REPLY_INTEGER)
         status = redis_fail(provider, state, RE_PROVIDER_ERROR_UNAVAILABLE,
                             "unexpected redis DEL reply type");
+    else if (reply->integer < 0)
+        status = redis_fail(provider, state, RE_PROVIDER_ERROR_SERIALIZATION,
+                            "redis DEL returned an invalid negative value");
     else if (reply->integer == 0)
         status = RE_STATUS_NOT_FOUND;
     freeReplyObject(reply);
@@ -302,6 +358,9 @@ static re_status_t redis_ttl(re_state_provider_t *provider, re_string_t key,
         status = RE_STATUS_NOT_FOUND;
     } else if (reply->integer == -1) {
         *out = 0u;
+    } else if (reply->integer < 0) {
+        status = redis_fail(provider, state, RE_PROVIDER_ERROR_SERIALIZATION,
+                            "redis PTTL returned an invalid negative value");
     } else {
         *out = (uint64_t)reply->integer;
     }
@@ -326,28 +385,35 @@ static re_status_t redis_parse_url(const char *url, char *host, size_t host_capa
     const char *cursor;
     const char *host_end;
     size_t host_size;
+    size_t url_size;
     char *end;
-    if (strncmp(url, scheme, sizeof(scheme) - 1u) != 0) return RE_STATUS_INVALID_ARGUMENT;
+    if (url == NULL || host == NULL || host_capacity == 0u || port == NULL ||
+        database == NULL || prefix == NULL || prefix_size == NULL ||
+        !redis_bounded_string_size(url, RE_REDIS_URL_MAX_BYTES, &url_size) ||
+        strncmp(url, scheme, sizeof(scheme) - 1u) != 0) {
+        return RE_STATUS_INVALID_ARGUMENT;
+    }
     cursor = url + sizeof(scheme) - 1u;
     host_end = cursor;
-    while (*host_end != '\0' && *host_end != ':' && *host_end != '/' && *host_end != '?')
+    while ((size_t)(host_end - url) < url_size && *host_end != ':' &&
+           *host_end != '/' && *host_end != '?')
         ++host_end;
     host_size = (size_t)(host_end - cursor);
-    if (host_size >= host_capacity) return RE_STATUS_INVALID_ARGUMENT;
-    if (host_size != 0u) {
-        memcpy(host, cursor, host_size);
-        host[host_size] = '\0';
-    }
+    if (host_size == 0u || host_size >= host_capacity) return RE_STATUS_INVALID_ARGUMENT;
+    memcpy(host, cursor, host_size);
+    host[host_size] = '\0';
     cursor = host_end;
     if (*cursor == ':') {
+        errno = 0;
         long parsed = strtol(cursor + 1, &end, 10);
-        if (end == cursor + 1 || parsed < 1 || parsed > 65535) return RE_STATUS_INVALID_ARGUMENT;
+        if (errno == ERANGE || end == cursor + 1 || parsed < 1 || parsed > 65535) return RE_STATUS_INVALID_ARGUMENT;
         *port = (int)parsed;
         cursor = end;
     }
     if (*cursor == '/') {
+        errno = 0;
         long parsed = strtol(cursor + 1, &end, 10);
-        if (end == cursor + 1 || parsed < 0) return RE_STATUS_INVALID_ARGUMENT;
+        if (errno == ERANGE || end == cursor + 1 || parsed < 0) return RE_STATUS_INVALID_ARGUMENT;
         *database = parsed;
         cursor = end;
     }
@@ -355,9 +421,10 @@ static re_status_t redis_parse_url(const char *url, char *host, size_t host_capa
         static const char key[] = "prefix=";
         if (strncmp(cursor + 1, key, sizeof(key) - 1u) != 0) return RE_STATUS_INVALID_ARGUMENT;
         *prefix = cursor + 1 + sizeof(key) - 1u;
-        *prefix_size = strlen(*prefix);
-        if (*prefix_size == 0u) return RE_STATUS_INVALID_ARGUMENT;
-        cursor += strlen(cursor);
+        *prefix_size = url_size - (size_t)(*prefix - url);
+        if (*prefix_size == 0u || *prefix_size > RE_REDIS_PREFIX_MAX_BYTES) return RE_STATUS_INVALID_ARGUMENT;
+        if (strchr(*prefix, '&') != NULL || strchr(*prefix, '?') != NULL) return RE_STATUS_INVALID_ARGUMENT;
+        cursor = *prefix + *prefix_size;
     }
     return *cursor == '\0' ? RE_STATUS_OK : RE_STATUS_INVALID_ARGUMENT;
 }
@@ -383,6 +450,10 @@ re_status_t re_redis_provider_create(re_engine_t *engine,
     if (url == NULL || *url == '\0') url = "redis://127.0.0.1:6379";
     status = redis_parse_url(url, host, sizeof(host), &port, &database, &prefix, &prefix_size);
     if (status != RE_STATUS_OK) return status;
+    if (options->operation_timeout_ms > RE_REDIS_MAX_TIMEOUT_MS ||
+        options->operation_timeout_ms / 1000u > (uint64_t)LONG_MAX) {
+        return RE_STATUS_INVALID_ARGUMENT;
+    }
     state = re_alloc(&engine->allocator, sizeof(*state));
     provider = state == NULL ? NULL : re_alloc(&engine->allocator, sizeof(*provider));
     if (state == NULL || provider == NULL) {
@@ -392,6 +463,7 @@ re_status_t re_redis_provider_create(re_engine_t *engine,
     }
     memset(state, 0, sizeof(*state));
     state->allocator = engine->allocator;
+    state->operation_timeout_ms = options->operation_timeout_ms;
     state->prefix = re_alloc(&state->allocator, prefix_size + 1u);
     if (state->prefix == NULL) {
         re_free(&engine->allocator, provider);
@@ -417,6 +489,18 @@ re_status_t re_redis_provider_create(re_engine_t *engine,
         re_free(&engine->allocator, provider);
         re_free(&engine->allocator, state);
         return RE_STATUS_ERROR;
+    }
+    if (options->operation_timeout_ms != 0u) {
+        struct timeval timeout;
+        timeout.tv_sec = (long)(options->operation_timeout_ms / 1000u);
+        timeout.tv_usec = (long)(options->operation_timeout_ms % 1000u) * 1000L;
+        if (redisSetTimeout(state->connection, timeout) != REDIS_OK) {
+            redisFree(state->connection);
+            re_free(&engine->allocator, state->prefix);
+            re_free(&engine->allocator, provider);
+            re_free(&engine->allocator, state);
+            return RE_STATUS_ERROR;
+        }
     }
     if (database >= 0) {
         char db_text[24];

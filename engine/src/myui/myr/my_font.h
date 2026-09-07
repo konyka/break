@@ -10,6 +10,8 @@
 #ifndef MY_FONT_H
 #define MY_FONT_H
 
+#include <string.h>
+
 #include "myc/my_error.h"
 #include "myc/my_mem.h"
 
@@ -21,6 +23,9 @@ typedef struct my_glyph_t {
   int32_t bearing_x;     /**< left side bearing (pixels from pen x) */
   int32_t bearing_y;     /**< ascent offset: pixels above the baseline */
   int32_t advance;       /**< pen advance */
+  /** @brief Internal lease; do not copy a live glyph value. */
+  void* lease;
+  void (*release_lease)(void* lease);
 } my_glyph_t;
 
 typedef struct my_font_t my_font_t;
@@ -39,10 +44,30 @@ typedef struct my_font_t my_font_t;
 #define MY_FONT_SCRIPT_THAA MY_FONT_SCRIPT_TAG('T', 'h', 'a', 'a')
 #define MY_FONT_SCRIPT_THAI MY_FONT_SCRIPT_TAG('T', 'h', 'a', 'i')
 #define MY_FONT_SCRIPT_HANG MY_FONT_SCRIPT_TAG('H', 'a', 'n', 'g')
+#define MY_FONT_SCRIPT_HIRA MY_FONT_SCRIPT_TAG('H', 'i', 'r', 'a')
+#define MY_FONT_SCRIPT_KANA MY_FONT_SCRIPT_TAG('K', 'a', 'n', 'a')
+#define MY_FONT_SCRIPT_ARMN MY_FONT_SCRIPT_TAG('A', 'r', 'm', 'n')
+#define MY_FONT_SCRIPT_GEOR MY_FONT_SCRIPT_TAG('G', 'e', 'o', 'r')
+#define MY_FONT_SCRIPT_ETHI MY_FONT_SCRIPT_TAG('E', 't', 'h', 'i')
+#define MY_FONT_SCRIPT_MYMR MY_FONT_SCRIPT_TAG('M', 'y', 'm', 'r')
+#define MY_FONT_SCRIPT_KHMR MY_FONT_SCRIPT_TAG('K', 'h', 'm', 'r')
+#define MY_FONT_SCRIPT_LAOO MY_FONT_SCRIPT_TAG('L', 'a', 'o', 'o')
+#define MY_FONT_SCRIPT_TAML MY_FONT_SCRIPT_TAG('T', 'a', 'm', 'l')
+#define MY_FONT_SCRIPT_TELU MY_FONT_SCRIPT_TAG('T', 'e', 'l', 'u')
+#define MY_FONT_SCRIPT_KNDA MY_FONT_SCRIPT_TAG('K', 'n', 'd', 'a')
+#define MY_FONT_SCRIPT_MLYM MY_FONT_SCRIPT_TAG('M', 'l', 'y', 'm')
 
 #define MY_FONT_SHAPE_MAX_LANGUAGE_BYTES 64u
 #define MY_FONT_SHAPE_MAX_FEATURE_BYTES 1024u
+#define MY_FONT_SHAPE_MAX_FEATURE_COUNT 32u
 #define MY_FONT_SHAPE_MAX_BYTES (4u * 1024u * 1024u)
+/* Bound provider output independently from input bytes and allocator size. */
+#define MY_FONT_SHAPE_MAX_GLYPHS (1024u * 1024u)
+#define MY_FONT_STB_MAX_FILE_BYTES (64u * 1024u * 1024u)
+/* Keep fallback-chain setup bounded; shaping remains linear in loaded faces. */
+#define MY_FONT_CHAIN_MAX_SOURCES 256u
+/* Bound retained cache entries while callers hold glyph leases. */
+#define MY_FONT_MAX_GLYPH_OVERFLOW_ENTRIES 1024u
 
 typedef struct my_font_shape_params_t {
   bool rtl;
@@ -50,6 +75,43 @@ typedef struct my_font_shape_params_t {
   const char* language;
   const char* features;
 } my_font_shape_params_t;
+
+typedef enum my_font_shape_support_t {
+  MY_FONT_SHAPE_SUPPORT_UNKNOWN = 0,
+  MY_FONT_SHAPE_SUPPORTED = 1,
+  MY_FONT_SHAPE_UNSUPPORTED = 2
+} my_font_shape_support_t;
+
+typedef enum my_font_variation_support_t {
+  MY_FONT_VARIATION_SUPPORT_UNKNOWN = 0,
+  MY_FONT_VARIATION_SUPPORTED = 1,
+  MY_FONT_VARIATION_UNSUPPORTED = 2
+} my_font_variation_support_t;
+
+/** @brief Validate bounded shaping parameters before changing layout state. */
+bool my_font_shape_params_valid(const my_font_shape_params_t* params);
+
+/**
+ * @brief Normalize a bounded comma-separated OpenType feature list.
+ *
+ * Tags are sorted, duplicate or overlapping ranges use the last declaration,
+ * and the result is written to caller-owned storage. No heap allocation is
+ * performed. NULL and empty input normalize to an empty string.
+ */
+bool my_font_shape_features_normalize(const char* features, char* output,
+                                      size_t output_size);
+
+/**
+ * @brief Query bounded script/language and requested feature support.
+ *
+ * A provider reports supported only when the script/language system exists
+ * and every requested feature tag is present in a compatible shaping table.
+ * Unknown providers return SUPPORT_UNKNOWN so callers can retain a safe
+ * best-effort fallback.
+ */
+my_ret_t my_font_shape_support_query(
+    my_font_t* font, const my_font_shape_params_t* params,
+    my_font_shape_support_t* support);
 
 typedef struct my_font_shape_glyph_t {
   /** @brief Face that owns glyph_id; providers must initialize this field. */
@@ -77,6 +139,11 @@ typedef my_ret_t (*my_font_shape_ex_fn)(
     my_font_t* font, const char* text, int32_t size,
     const my_font_shape_params_t* params, const my_allocator_t* allocator,
     my_font_shape_result_t* result);
+typedef my_ret_t (*my_font_shape_support_fn)(
+    my_font_t* font, const my_font_shape_params_t* params,
+    my_font_shape_support_t* support);
+typedef my_font_variation_support_t (*my_font_variation_support_fn)(
+    my_font_t* font, uint32_t codepoint, uint32_t selector);
 typedef my_ret_t (*my_font_get_glyph_id_fn)(my_font_t* font,
                                             uint32_t glyph_id, int32_t size,
                                             my_glyph_t* glyph);
@@ -105,6 +172,9 @@ typedef struct my_font_vtable_t {
   my_font_shape_fn shape;
   my_font_get_glyph_id_fn get_glyph_id;
   my_font_shape_ex_fn shape_ex;
+  my_font_shape_support_fn shape_support;
+  /** @brief Optional exact base/selector coverage query; NULL = unknown. */
+  my_font_variation_support_fn variation_support;
 } my_font_vtable_t;
 
 /** @brief Font base "class". */
@@ -120,12 +190,44 @@ static inline my_ret_t my_font_measure(my_font_t* font, const char* text,
   return font->vtable->measure(font, text, size, w, h);
 }
 
+static inline void my_font_glyph_release(my_glyph_t* glyph);
+
+/**
+ * @brief Rasterize a codepoint and acquire a bitmap lease.
+ *
+ * On success, consume the bitmap before calling my_font_glyph_release().
+ */
 static inline my_ret_t my_font_get_glyph(my_font_t* font, uint32_t codepoint,
                                          int32_t size, my_glyph_t* glyph) {
-  if (font == NULL || font->vtable == NULL || font->vtable->get_glyph == NULL) {
+  if (glyph == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
-  return font->vtable->get_glyph(font, codepoint, size, glyph);
+  memset(glyph, 0, sizeof(*glyph));
+  if (font == NULL || font->vtable == NULL ||
+      font->vtable->get_glyph == NULL) {
+    return MY_RET_NOT_SUPPORTED;
+  }
+  {
+    my_ret_t result = font->vtable->get_glyph(font, codepoint, size, glyph);
+    if (result != MY_RET_OK) my_font_glyph_release(glyph);
+    return result;
+  }
+}
+
+/**
+ * @brief Release a glyph returned by my_font_get_glyph or get_glyph_id.
+ *
+ * The bitmap is borrowed through this lease. It remains valid until this
+ * function is called, and the font must remain alive until then. Do not copy
+ * a live glyph value; call this function exactly once for every successful
+ * glyph lookup.
+ */
+static inline void my_font_glyph_release(my_glyph_t* glyph) {
+  if (glyph == NULL) return;
+  if (glyph->release_lease != NULL && glyph->lease != NULL) {
+    glyph->release_lease(glyph->lease);
+  }
+  memset(glyph, 0, sizeof(*glyph));
 }
 
 static inline int32_t my_font_ascent(my_font_t* font, int32_t size) {
@@ -133,6 +235,14 @@ static inline int32_t my_font_ascent(my_font_t* font, int32_t size) {
     return 0;
   }
   return font->vtable->ascent(font, size);
+}
+
+static inline int32_t my_font_descent(my_font_t* font, int32_t size) {
+  if (font == NULL || font->vtable == NULL ||
+      font->vtable->descent == NULL) {
+    return 0;
+  }
+  return font->vtable->descent(font, size);
 }
 
 static inline int32_t my_font_line_height(my_font_t* font, int32_t size) {
@@ -171,7 +281,7 @@ my_ret_t my_font_shape_ex(my_font_t* font, const char* text, int32_t size,
 /** @brief Release a result returned by my_font_shape. */
 void my_font_shape_destroy(my_font_shape_result_t* result);
 
-/** @brief Rasterize a backend glyph id from a shaped run. */
+/** @brief Rasterize a backend glyph id and acquire a bitmap lease. */
 my_ret_t my_font_get_glyph_id(my_font_t* font, uint32_t glyph_id,
                               int32_t size, my_glyph_t* glyph);
 
@@ -196,9 +306,16 @@ my_font_t* my_font_create_chain_ex(const my_allocator_t* allocator,
 
 /**
  * @brief Decode the first UTF-8 codepoint of s and advance the pointer.
- * Invalid bytes decode as 0xFFFD (advance 1). s must not be empty.
+ * Invalid, truncated, overlong, surrogate, and out-of-range sequences decode
+ * as 0xFFFD and advance one byte. s must not be empty.
  */
 uint32_t my_utf8_next(const char** s);
+
+/** @brief Whether cp is a Unicode variation selector, not a standalone glyph. */
+static inline bool my_font_is_variation_selector(uint32_t cp) {
+  return (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
+         (cp >= 0xE0100u && cp <= 0xE01EFu);
+}
 
 /* ---------------- built-in 8x8 bitmap font ---------------- */
 
@@ -214,6 +331,11 @@ my_font_t* my_font_bitmap_create(const my_allocator_t* allocator);
  */
 my_font_t* my_font_stb_create(const my_allocator_t* allocator, const char* path,
                               size_t cache_capacity);
+
+/** @brief Load a STB TrueType/TTC face with an explicit face index. */
+my_font_t* my_font_stb_create_ex(const my_allocator_t* allocator,
+                                 const char* path, int32_t face_index,
+                                 size_t cache_capacity);
 
 /** @brief Test/diagnostics: glyph cache hit counter (0 without STB). */
 size_t my_font_stb_cache_hits(my_font_t* font);

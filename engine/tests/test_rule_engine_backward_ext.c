@@ -955,6 +955,7 @@ TEST(retract_only_transaction_invalidates_cache) {
     ASSERT_EQ(re_facts_begin(facts, &txn), RE_STATUS_OK);
     ASSERT_EQ(re_facts_txn_retract(txn, id), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(txn), RE_STATUS_OK);
+    re_facts_txn_destroy(txn);
     ASSERT_EQ(re_engine_query_bounded(engine, facts, text("X == 1"), NULL, &query), RE_STATUS_OK);
     ASSERT_EQ(re_query_result(query), RE_QUERY_UNKNOWN);
     ASSERT_EQ(re_query_solution_count(query), 0u);

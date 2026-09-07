@@ -92,6 +92,7 @@ struct re_facts_t {
 };
 
 struct re_fact_txn_t {
+    re_allocator_impl_t allocator;
     re_facts_t *facts;
     re_facts_t *original;
     re_facts_t *staged;

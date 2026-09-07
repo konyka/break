@@ -31,8 +31,10 @@ const my_rect_t* my_dirty_rects_get(const my_dirty_rects_t* dr, size_t index) {
  * larger blits.
  */
 static bool my_rect_touches(const my_rect_t* a, const my_rect_t* b) {
-  return a->x <= b->x + b->w && b->x <= a->x + a->w && a->y <= b->y + b->h &&
-         b->y <= a->y + a->h;
+  return (int64_t)a->x <= my_rect_right_i64(b) &&
+         (int64_t)b->x <= my_rect_right_i64(a) &&
+         (int64_t)a->y <= my_rect_bottom_i64(b) &&
+         (int64_t)b->y <= my_rect_bottom_i64(a);
 }
 
 my_ret_t my_dirty_rects_add(my_dirty_rects_t* dr, const my_rect_t* rect) {

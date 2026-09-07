@@ -75,6 +75,10 @@ struct my_layouter_t;
 typedef void (*my_widget_removed_hook_t)(my_widget_t* root,
                                          my_widget_t* removed);
 
+/** @brief Parent-local hook invoked before a direct child is detached. */
+typedef void (*my_widget_child_removed_hook_t)(my_widget_t* parent,
+                                               my_widget_t* child);
+
 /** @brief Widget base "class". */
 struct my_widget_t {
   my_object_t base;                 /**< ref counting + destroy chain */
@@ -105,11 +109,15 @@ struct my_widget_t {
   char* bind_rules;                 /**< owned: MVVM rules (M4b), ";" separated */
   void* anim_mgr;                   /**< root only, weak (my_animator) */
   my_widget_removed_hook_t removed_hook; /**< root only: subtree removed */
+  my_widget_child_removed_hook_t child_removed_hook; /**< optional parent hook */
 };
 
 /** @brief Initialize an already-allocated widget (subclass factories). */
 my_ret_t my_widget_init(my_widget_t* widget, const my_allocator_t* allocator,
                         const my_widget_vtable_t* vtable, const char* name);
+
+/** @brief Return true for a plain widget instance. */
+bool my_widget_is_instance(const my_widget_t* widget);
 
 /**
  * @brief Lightweight anonymous subclassing (M24c): replace the vtable of
@@ -262,6 +270,10 @@ void my_widget_paint(my_widget_t* widget, my_vgcanvas_t* vg);
 /** @brief Register an emitter listener ("click", "pointer_down", ...). */
 uint32_t my_widget_on(my_widget_t* widget, const char* event_name,
                       my_event_callback_t callback, void* ctx);
+/** @brief Register a listener with an invalidatable context lease. */
+uint32_t my_widget_on_lease(my_widget_t* widget, const char* event_name,
+                            my_event_callback_t callback,
+                            my_emitter_context_lease_t* lease);
 /** @brief Unregister a listener by id. */
 my_ret_t my_widget_off(my_widget_t* widget, uint32_t id);
 

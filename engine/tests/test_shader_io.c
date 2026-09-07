@@ -300,6 +300,103 @@ TEST(vulkan_command_buffer_updates_have_transfer_dst_usage)
     ASSERT_NOT_NULL(strstr(src, "ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT"));
 }
 
+TEST(vulkan_init_failure_cleanup_contract)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "static void vk_init_cleanup"));
+    ASSERT_NOT_NULL(strstr(src, "vk_init_cleanup(dev, vk)"));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_create_depth"));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_create_framebuffers"));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_create_render_pass"));
+    ASSERT_NOT_NULL(strstr(src, "vk->cmd_buffer_count"));
+    ASSERT_NOT_NULL(strstr(src, "g_validation_gate_active = false"));
+}
+
+TEST(vulkan_distinct_graphics_present_queues_use_safe_sharing)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "VkDeviceQueueCreateInfo queue_infos[2]"));
+    ASSERT_NOT_NULL(strstr(src, "queue_info_count = 2u"));
+    ASSERT_NOT_NULL(strstr(src, "VK_SHARING_MODE_CONCURRENT"));
+    ASSERT_NOT_NULL(strstr(src, "sci.queueFamilyIndexCount = 2u"));
+    ASSERT_NOT_NULL(strstr(src, "sci.pQueueFamilyIndices = queue_families"));
+}
+
+TEST(vulkan_swapchain_rebuild_recreates_render_pass_before_attachments)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    const char *recreate = strstr(src, "static void vk_recreate_swapchain");
+    ASSERT_NOT_NULL(recreate);
+    ASSERT_NOT_NULL(strstr(recreate, "vk_create_render_pass(vk)"));
+    ASSERT_NOT_NULL(strstr(recreate, "!vk_create_depth(vk)"));
+    ASSERT_NOT_NULL(strstr(recreate, "!vk_create_framebuffers(vk)"));
+}
+
+TEST(vulkan_swapchain_queries_fail_closed)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface,"));
+    ASSERT_NOT_NULL(strstr(src, "&fmt_count, NULL) != VK_SUCCESS"));
+    ASSERT_NOT_NULL(strstr(src, "VK: surface format query failed"));
+    ASSERT_NOT_NULL(strstr(src, "vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface,"));
+    ASSERT_NOT_NULL(strstr(src, "&mode_count, NULL) != VK_SUCCESS"));
+    ASSERT_NOT_NULL(strstr(src, "VK: present mode query failed"));
+    ASSERT_NOT_NULL(strstr(src, "VK: surface reports no present modes"));
+}
+
+TEST(vulkan_memory_allocation_rejects_invalid_type)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_allocate_memory"));
+    ASSERT_NOT_NULL(strstr(src, "info->memoryTypeIndex == UINT32_MAX"));
+    ASSERT_TRUE(strstr(src, "vkAllocateMemory(vk->device, &") == NULL);
+}
+
+TEST(vulkan_extension_and_device_enumeration_fail_closed)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_instance_extension_available"));
+    ASSERT_NOT_NULL(strstr(src, "VK: required instance extension unavailable"));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_device_extension_available"));
+    ASSERT_NOT_NULL(strstr(src, "VK: required device extension unavailable"));
+    ASSERT_NOT_NULL(strstr(src, "vkEnumeratePhysicalDevices(vk->instance, &gpu_count, NULL) != VK_SUCCESS"));
+    ASSERT_NOT_NULL(strstr(src, "vkEnumeratePhysicalDevices(vk->instance, &gpu_count, gpus) != VK_SUCCESS"));
+    ASSERT_NOT_NULL(strstr(src, "VK: physical device enumeration failed"));
+}
+
+TEST(vulkan_physical_device_selection_is_suitable_and_fail_closed)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "static bool vk_physical_device_suitable"));
+    ASSERT_NOT_NULL(strstr(src, "VK_KHR_SWAPCHAIN_EXTENSION_NAME"));
+    ASSERT_NOT_NULL(strstr(src, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface"));
+    ASSERT_NOT_NULL(strstr(src, "vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface"));
+    ASSERT_NOT_NULL(strstr(src, "vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface"));
+    ASSERT_NOT_NULL(strstr(src, "vkGetPhysicalDeviceSurfaceSupportKHR(physical, q, surface"));
+    ASSERT_NOT_NULL(strstr(src, "!= VK_SUCCESS"));
+    ASSERT_NOT_NULL(strstr(src, "RE_VK_DEVICE_INDEX"));
+    ASSERT_NOT_NULL(strstr(src, "requested GPU is not suitable"));
+    ASSERT_NOT_NULL(strstr(src, "no suitable Vulkan GPU found"));
+    ASSERT_TRUE(strstr(src, "falling back to the first device") == NULL);
+}
+
+TEST(vulkan_deferred_mip_upload_is_backend_owned)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "VKBackend      *owner_backend"));
+    ASSERT_NOT_NULL(strstr(src, "vk_mip_upload_owned_by_other"));
+    ASSERT_NOT_NULL(strstr(src, "g_mip_upload_pending.owner_backend = vk"));
+    ASSERT_NOT_NULL(strstr(src, "mip upload slot is owned by another device"));
+}
+
 TEST(motion_blur_prefers_per_object_velocity_texture)
 {
     char src[131072];
@@ -466,6 +563,14 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vulkan_ibl_gate_uses_compatible_vertex_contract);
     RUN_TEST(transparent_motion_vectors_do_not_alpha_blend_rt1);
     RUN_TEST(vulkan_command_buffer_updates_have_transfer_dst_usage);
+    RUN_TEST(vulkan_init_failure_cleanup_contract);
+    RUN_TEST(vulkan_distinct_graphics_present_queues_use_safe_sharing);
+    RUN_TEST(vulkan_swapchain_rebuild_recreates_render_pass_before_attachments);
+    RUN_TEST(vulkan_swapchain_queries_fail_closed);
+    RUN_TEST(vulkan_memory_allocation_rejects_invalid_type);
+    RUN_TEST(vulkan_extension_and_device_enumeration_fail_closed);
+    RUN_TEST(vulkan_physical_device_selection_is_suitable_and_fail_closed);
+    RUN_TEST(vulkan_deferred_mip_upload_is_backend_owned);
     RUN_TEST(motion_blur_prefers_per_object_velocity_texture);
     RUN_TEST(deferred_skinned_gbuffer_contract);
     RUN_TEST(deferred_skinned_gbuffer_regressions_are_guarded);

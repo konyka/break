@@ -1,0 +1,5 @@
+version: 2
+locale: th-Thai
+cases:
+  - codepoints: "0E01,0E02,0E03"
+    expected: "1,0"

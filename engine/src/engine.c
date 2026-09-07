@@ -4,21 +4,32 @@
 #include <platform/time.h>
 #include <platform/input.h>
 #include <stdio.h>
+#include <math.h>
 
 bool engine_init(Engine *e, const EngineConfig *cfg) {
     /* R429: cfg was dereferenced unconditionally — engine_init(e, NULL)
      * segfaulted. Reject bad args up front. */
-    if (!e || !cfg) return false;
-
-    LOG_INFO("Engine initializing...");
-
-    time_init();
+    if (!e || !cfg || e->platform != NULL ||
+        !isfinite(cfg->target_fps) || cfg->target_fps < 0.0) return false;
 
     PlatformConfig pcfg = {
         .width  = cfg->width,
         .height = cfg->height,
         .title  = cfg->title,
     };
+    if (!platform_config_valid(&pcfg)) return false;
+
+    e->delta_time = 0.0;
+    e->frame_count = 0;
+    e->fps = 0.0;
+    e->target_fps = 0.0;
+    e->last_frame_us = 0;
+    e->fps_accum = 0.0;
+    e->fps_frames = 0;
+
+    LOG_INFO("Engine initializing...");
+
+    time_init();
 
     e->platform = platform_create(&pcfg);
     if (!e->platform) {
@@ -48,6 +59,7 @@ void engine_shutdown(Engine *e) {
 }
 
 bool engine_frame(Engine *e) {
+    if (e == NULL || e->platform == NULL) return false;
     PlatformEventResult result = platform_poll(e->platform);
     if (result == PLATFORM_EVENT_QUIT) {
         return false;
@@ -66,11 +78,13 @@ bool engine_frame(Engine *e) {
      * so the game-visible delta_time was only the sleep duration (excluding
      * frame work) and fps_accum summed pre-sleep deltas, over-reporting fps.
      * delta_time is now the full frame period (work + sleep), computed once. */
-    if (e->target_fps > 0.0) {
-        f64 target_ms = 1.0 / e->target_fps;
-        f64 elapsed_ms = (f64)(now_us - e->last_frame_us) / 1e6;
-        if (elapsed_ms < target_ms) {
-            u64 sleep_us = (u64)((target_ms - elapsed_ms) * 1e6);
+    if (isfinite(e->target_fps) && e->target_fps > 0.0) {
+        f64 target_us = 1e6 / e->target_fps;
+        f64 elapsed_us = (f64)(now_us - e->last_frame_us);
+        f64 sleep_us_f = target_us - elapsed_us;
+        if (isfinite(sleep_us_f) && sleep_us_f > 0.0 &&
+            sleep_us_f < (f64)UINT64_MAX) {
+            u64 sleep_us = (u64)sleep_us_f;
             time_sleep_us(sleep_us);
             now_us = time_microseconds();
         }

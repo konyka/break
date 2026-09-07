@@ -13,5 +13,9 @@ add_library(mymvvm STATIC
   my_navigator.c
 )
 
-target_include_directories(mymvvm PUBLIC ${CMAKE_SOURCE_DIR}/src)
+set(MYUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
+  "myui source root used by myui public headers")
+set(MYUI_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
+  "engine source root used by myui public headers")
+target_include_directories(mymvvm PUBLIC ${MYUI_SOURCE_DIR} ${MYUI_ENGINE_SOURCE_DIR})
 target_link_libraries(mymvvm PUBLIC myc)

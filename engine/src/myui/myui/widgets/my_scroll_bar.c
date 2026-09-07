@@ -27,7 +27,9 @@ static void sb_set_internal(my_scroll_bar_t* b, float v, bool notify) {
     b->value = v;
     my_widget_invalidate((my_widget_t*)b, NULL);
     if (notify) {
+      my_widget_ref((my_widget_t*)b);
       my_emitter_emit(((my_widget_t*)b)->emitter, "changed", NULL);
+      my_widget_unref((my_widget_t*)b);
     }
   }
 }
@@ -137,6 +139,10 @@ static void sb_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
 
 static const my_widget_vtable_t s_sb_vtable = {sb_on_paint, sb_on_event, NULL, NULL};
 
+bool my_scroll_bar_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_sb_vtable;
+}
+
 my_widget_t* my_scroll_bar_create(const my_allocator_t* allocator) {
   my_scroll_bar_t* b =
       (my_scroll_bar_t*)my_mem_calloc(allocator, 1, sizeof(my_scroll_bar_t));
@@ -155,7 +161,7 @@ my_widget_t* my_scroll_bar_create(const my_allocator_t* allocator) {
 }
 
 my_ret_t my_scroll_bar_set_value(my_widget_t* bar, float value) {
-  if (bar == NULL) {
+  if (!my_scroll_bar_is_instance(bar)) {
     return MY_RET_INVALID_PARAMS;
   }
   sb_set_internal((my_scroll_bar_t*)bar, value, false);
@@ -163,12 +169,12 @@ my_ret_t my_scroll_bar_set_value(my_widget_t* bar, float value) {
 }
 
 float my_scroll_bar_get_value(my_widget_t* bar) {
-  return bar != NULL ? ((my_scroll_bar_t*)bar)->value : 0.0f;
+  return my_scroll_bar_is_instance(bar) ? ((my_scroll_bar_t*)bar)->value : 0.0f;
 }
 
 my_ret_t my_scroll_bar_set_page_size(my_widget_t* bar, float page_size) {
   my_scroll_bar_t* b = (my_scroll_bar_t*)bar;
-  if (bar == NULL) {
+  if (!my_scroll_bar_is_instance(bar)) {
     return MY_RET_INVALID_PARAMS;
   }
   b->page_size = sb_clamp(page_size, 0.0f, 1.0f);
@@ -177,5 +183,5 @@ my_ret_t my_scroll_bar_set_page_size(my_widget_t* bar, float page_size) {
 }
 
 float my_scroll_bar_get_page_size(my_widget_t* bar) {
-  return bar != NULL ? ((my_scroll_bar_t*)bar)->page_size : 0.0f;
+  return my_scroll_bar_is_instance(bar) ? ((my_scroll_bar_t*)bar)->page_size : 0.0f;
 }

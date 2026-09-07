@@ -1,43 +1,1848 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
-## 本轮更新：script/features shaping 契约（2026-09-01）
+## 本轮补充：Vulkan WSI 扩展 sidecar（2026-09-07）
+
+- 新增 `engine/src/myui/mypal/my_pal_vulkan.c` 与版本化 provider API，在不修改 frozen
+  PAL window vtable 的前提下协商 instance extensions。
+- provider 查询具备 ABI/容量校验、固定存储深拷贝、失败时清零输出、替换/注销延迟释放和 in-flight 查询
+  保护；扩展查询位于窗口创建冷路径，不进入渲染热路径。
+- Vulkan 实例记录首次创建时启用的扩展集合；后续请求未启用扩展会安全失败，避免不安全
+  的实例升级。surface 所有权仍由 PAL 的既有 `vk_create_surface` 契约负责。
+- `test_myui_break_pal`、Vulkan/non-Vulkan backend、依赖配置和完整 headless CTest 已验证；
+  Break PAL 不注册伪造 surface provider，真实平台 WSI runtime 仍需各平台 runner。
+
+## 本轮补充：Vulkan 全局生命周期并发安全（2026-09-07）
+
+- Vulkan 共享 instance/device 的初始化、引用计数、peek 和最终销毁现在由 C11
+  `atomic_flag` 保护；初始化失败会在同一闸门内清零全局句柄，避免并发调用观察到半初始化状态。
+- 该同步只位于全局资源冷生命周期路径，不进入 canvas 绘制、提交、缓存或文本布局热路径；
+  canvas 仍要求由宿主按既有 UI/RHI 线程亲和性使用。
+- 新增 Vulkan 多线程 acquire/release 回归；Vulkan backend、非 Vulkan backend 与完整 headless
+  CTest 均通过。真实跨线程 canvas 操作和动态平台 surface 生命周期仍需平台宿主验证。
+
+## 本轮补充：glyph bitmap lease 与 cache 淘汰安全（2026-09-06）
+
+- `my_font_get_glyph()`/`my_font_get_glyph_id()` 现在返回带 lease 的 bitmap；调用方
+  消费完成后调用 `my_font_glyph_release()`，不得复制 live glyph，字体须保持有效到
+  所有 lease 释放。
+- 内置 bitmap font 也发布 owner lease；销毁请求后拒绝新的 glyph 查询，最后一个
+  lease 释放后才回收 font，字体链销毁时由子 face 继续承担该 lease。
+- FreeType/STB cache 仅淘汰零引用槽位；cache 满且旧 bitmap 仍被使用时写入
+  font-owned overflow entry，数量受 `min(cache_capacity, MY_FONT_MAX_GLYPH_OVERFLOW_ENTRIES)`
+  限制，超限安全返回 `MY_RET_OOM`，避免 UAF，正常 cache 热路径不增加分配或全局锁竞争。
+- 四个渲染后端、布局/段落/text-area 已迁移释放协议；TDD 新增容量为 1 的淘汰与
+  overflow 预算、bitmap owner lease 与失败 provider 回滚回归，普通字体专项 **82/82** 通过。
+- FreeType/STB 的 destroy 请求现在在存在 glyph lease 时延迟最终回收，新增先 destroy
+  后 release 的两项回归；当前字体专项为 **82/82**。失败的 glyph provider 输出也会由
+  公共 wrapper 回滚并清空；这不是通用跨线程调用协议，新的
+  provider 调用与 destroy 仍需由宿主串行化。
+- 最终门禁：普通、ASan/UBSan、STB-only 和 Clang TSan 字体专项均为 **82/82**；普通
+  UI/文本/后端专项分别为 **235/235、124/124、35/35**，`git diff --check` 通过。
+
+## 本轮补充：FreeType provider 并发访问收口（2026-09-06）
+
+- 同一 FreeType face 的 `measure`、glyph/glyph-id、shaping、capability 和 variation 查询
+  现在由对象级跨平台互斥保护，覆盖 `FT_Face` 当前字号及两个 LRU cache；不同 face 使用
+  独立锁，不引入全局 provider 串行化。
+- FreeType 进程级 `FT_Library` 初始化增加原子自旋初始化保护；字体对象销毁仍由调用方在
+  所有调用完成后负责，锁不提供跨线程对象生命周期保证。
+- TDD 新增共享 face 并发测试；普通与 ASan/UBSan 字体专项 **73/73**，STB-only **73/73**。
+  GCC TSan 当前因环境缺少 `/usr/lib64/libtsan.so.2.0.0` 无法链接，需工具链修复后补跑。
+
+## 本轮补充：STB provider 并发访问收口（2026-09-06）
+
+- STB 字体对象的 `measure`、glyph、metrics、coverage 和 cache 诊断访问现在由对象级跨平台
+  互斥保护，避免 `stbtt_fontinfo`、LRU cache 和计数器竞争；`measure` 不再锁内重入
+  `line_height`。
+- 不同字体对象保持独立锁；`Threads::Threads` 作为 `myui_core` 的公开链接依赖，保证
+  静态消费者获得所需线程实现。
+- TDD 新增共享 STB face 并发测试；普通 FreeType+STB、ASan/UBSan、STB-only 字体专项
+  均为 **74/74**。销毁仍须由宿主在所有调用结束后执行。
+
+## 本轮补充：模块 factory 实例绑定事务（2026-09-06）
+
+- YAML 动态 factory 的 module lease 覆盖 factory 返回、module instance 绑定和失败销毁，
+  消除 quiesce 在实例计数发布前通过的竞态窗口。
+- 绑定失败的候选 widget 在 module lease 仍有效时回滚；普通 factory 和渲染/布局/事件
+  热路径无新增锁、分配或扫描。
+- `test_myui_loader` 当前 **120/120** 通过；真实动态库卸载仍要求宿主按 quiesce 协议验证。
+
+## 本轮补充：CSS `@scope to` 完整受限边界（2026-09-06）
+
+- `@scope` 支持显式或省略的 root；`to` 支持 type/class/id/universal compound selector
+  以及最多 4 项的 selector list。每项边界沿固定 widget parent 链匹配，边界节点及其
+  后代不再应用作用域规则；嵌套 scope 的边界独立保留。
+- 隐式 root 使用固定哨兵，不增加 theme 查询分配、锁或后端分支；公开
+  `my_theme_set_ex5()` 对哨兵索引和 selector 数量执行有界参数校验。
+- TDD `test_myui_css` 普通构建、GLES/Break、Vulkan、Wayland、YAML-off 及 ASan 构建均
+  为 **101/101**；非图形完整 CTest 为 **96/96**，图形 runtime 矩阵仍需真实显示设备。
+  组合器、超过 4 项 list、完整 CSS Scoping 规范仍未实现。
+
+## 本轮补充：window-manager on_open callback lease（2026-09-06）
+
+- 新增 `my_window_manager_set_on_open_owned()` 与
+  `my_window_manager_set_on_open_lease()`，统一 `on_open` context 的替换、失效和销毁语义。
+- 新 hook 提交成功后才释放旧 hook；重入替换时旧 owned/lease context 进入 retired 队列，
+  最外层 manager callback 返回后再释放；manager teardown 释放当前 owned/lease context，
+  失效 lease 不再启动新的 `on_open` callback，普通 borrowed setter 保持兼容。
+- TDD 覆盖 invalidation、替换、重入替换、重入 manager 销毁、析构一次性和 manager 销毁，
+  普通与 ASan/UBSan 专项测试均为 **235/235**。
+
+## 本轮补充：菜单与 dialog callback lease（2026-09-06）
+
+- 新增 `my_menu_popup_lease()` 与 `my_dialog_open_lease()`，为独立 callback API 提供与
+  emitter 相同的 invalidation/lifetime 协议。
+- 打开成功后 menu/dialog 持有 lease 引用；失效后跳过尚未开始的 callback，已经进入的
+  callback 可完成；关闭、窗口/manager teardown 和失败回滚均正确释放引用，destructor 一次。
+- TDD 覆盖无效注册、提前 unref、失效后跳过、callback 内失效及窗口/manager teardown，专项测试 **226/226**。
+- 普通 borrowed/owned API 兼容保留；UI 句柄和 callback 仍要求所属主循环线程。
+
+## 本轮补充：emitter borrowed context lease（2026-09-06）
+
+- 新增 `my_emitter_context_lease_t` 及 emitter/widget/window/window-manager 的 lease listener
+  API，owner 可在 teardown 前显式 invalidate，阻止新的 callback 使用失效 context。
+- listener 持有 lease 引用；调用方可在注册后释放自己的引用，最终移除/销毁时 destructor
+  恰好执行一次；无效 lease 注册失败且不转移所有权。
+- 普通 listener 热路径不增加同步成本；guarded listener 只在 callback 生命周期边界执行
+  固定闸门检查。TDD 新增失效、重入、提前释放、失败注册、widget 转发、window close 和
+  manager destroy 回归，window manager **219/219**。
+- 菜单/dialog 独立 callback API 已提供 lease 迁移入口；其余未迁移的 borrowed callback 仍按各模块文档约束执行。
+
+## 本轮补充：字体 descent vtable 边界（2026-09-06）
+
+- 新增 `my_font_descent()` 安全包装器，缺失 metric slot 返回 0，避免空函数指针调用。
+- font chain 的 descent 聚合改走公共包装器；检查为 O(1)，保持 ABI 和热路径成本不变。
+- TDD 新增缺失 metric slot 回归；普通 `test_myui_font` **72/72** 通过。
+
+## 本轮补充：LCD 渲染后端 vtable 边界（2026-09-06）
+
+- `my_lcd_*` 现在安全处理空 LCD、空 vtable 与缺失 slot，避免跨渲染后端的空函数指针调用。
+- 查询使用零/空/无效 format 默认值，绘制与帧操作返回确定错误；无分配、无锁的 O(1) 防护。
+- TDD 覆盖基础 LCD 接口的无效对象与缺失 slot，`test_myui_vgcanvas_backend` **35/35** 通过。
+
+## 本轮补充：MVVM target 与 array vtable 边界（2026-09-06）
+
+- `my_binding_target_*`、`my_view_model_array_*` 及 items binding 现在拒绝空对象、空 vtable
+  和缺失 slot，避免自定义 MVVM 适配器触发空函数指针调用。
+- 公共查询安全返回零/空值，写入类接口返回确定错误；检查为 O(1) 且不增加热路径成本。
+- TDD 覆盖缺失 vtable 和 items binding 创建，`test_myui_mvvm` **40/40** 通过。
+
+## 本轮补充：emitter listener ID 回绕安全（2026-09-06）
+
+- 修复监听器 ID 在 `uint32_t` 回绕后返回 `0` 或复用活动 ID 的生命周期缺陷。
+- 正常注册路径保持 O(1)，只在回绕冷路径执行活动 ID 冲突扫描；无可用 ID 时安全失败。
+- TDD 覆盖最大 ID、回绕冲突和注销，普通与 ASan/UBSan window manager 测试均为
+  **214/214**。
+
+## 本轮补充：MVVM 绑定规则严格解析（2026-09-06）
+
+- 绑定规则现在拒绝空选项、重复选项、括号不平衡，以及条件体混入普通选项；合法嵌套
+  validator 参数保持支持。
+- 选项去重为固定位图，括号验证为单次有界扫描，不增加 UI 绘制/布局热路径成本。
+- TDD 覆盖新增边界，`test_myui_mvvm` **37/37** 通过；`Items=` 与选项形式的
+  `Condition=` 仍按明确能力边界返回 `MY_RET_NOT_SUPPORTED`。
+
+## 本轮补充：Menu 操作重入与级联销毁安全（2026-09-06）
+
+- 菜单关闭、overlay destroy chain 和模型销毁现在使用轻量操作深度保护；菜单在关闭
+  或销毁回调期间被再次销毁时只登记请求，待最外层操作完成后统一释放，避免 callback
+  栈继续访问已释放的菜单模型。该保护位于弹出/销毁冷路径，不增加绘制、布局或命中测试
+  热路径的锁和分配。
+- overlay 销毁时先摘除窗口、manager、overlay、timer 和 callback state，再执行 owned
+  context destructor；因此 destructor 可以安全请求菜单或窗口销毁，且 callback state
+  仍只释放一次。级联窗口关闭会逐级清空 parent/open_sub 的可见 popup 状态。
+- TDD 新增 `menu_owned_context_destroy_may_destroy_menu_and_window` 与
+  `window_destroy_with_open_menu_submenu_detaches_parent_chain`；普通、ASan/UBSan 和
+  Clang TSan `test_myui_window_manager` 均为 **207/207**。跨线程菜单调用仍不受支持，
+  调用方必须在所属 UI loop 中执行模型和 popup 生命周期操作。
+
+## 本轮补充：动态 class lease 线程归属安全（2026-09-06）
+
+- `my_widget_class_lease_t` 记录获取线程的跨平台 ID；`release()` 只允许获取线程释放。
+  外部线程调用会保持 snapshot/module lease、卸载等待计数及获取线程 callback guard 不变，
+  避免错误释放导致动态 callback 仍在执行时被宿主卸载。
+- POSIX 使用 `pthread_equal`，Windows 使用 `GetCurrentThreadId`；当前线程比较和让出执行权
+  原语位于公共 `platform_thread.h`，不进入绘制、布局或事件热路径的额外锁与分配。
+- TDD 新增 `widget_class_lease_rejects_foreign_thread_release`；普通 loader **115/115**，
+  原有 runtime snapshot、schema factory/migration 与 module quiesce 回归保持通过。lease
+  仍是线程亲和栈对象；module token 通过显式 retain/release 支持跨线程安全持有。
+
+## 本轮补充：动态 class lease 复制安全（2026-09-06）
+
+- lease 增加原始存储地址 cookie；结构体复制品即使位于同一线程，也不能重复释放同一个
+  snapshot/module lease。复制或跨线程调用会保持原 lease 的 callback guard 和卸载计数，
+  直到获取线程释放原始对象，避免动态模块过早 quiesce 或卸载。
+- `my_widget_class_bind_instance()` 同样验证 cookie 与线程归属，不能使用复制品绕过模块
+  实例计数。该检查只在 class callback/实例绑定冷路径执行，不增加绘制和布局热路径成本。
+- TDD 新增 `widget_class_lease_rejects_copied_release`；普通 loader **116/116**，ASan/UBSan、
+  Clang TSan loader 及全量 CTest 均在最终验证中复跑。
+
+## 本轮补充：字体链 shaping 能力选择与输入预算（2026-09-06）
+
+- fallback chain 在显式 script/language/features 请求下，按完整 cluster 覆盖和 face
+  capability 共同选择字体；首 face 即使覆盖所有 codepoint 但不支持 `liga` 或目标
+  language-system，也会选择后续支持 face。无显式请求仍保持原有快速覆盖路径。
+- 每次 shaping 对各 face 的 capability 只查询一次并复用固定数组，避免长文本按 cluster
+  重复查询；失败路径释放临时数组并保持结果事务性为空。chain source/path 数量限制为
+  `MY_FONT_CHAIN_MAX_SOURCES`（256），并在分配前拒绝乘法溢出。
+- TDD 新增 `font_chain_prefers_shape_capable_face_for_explicit_features` 与
+  `font_chain_rejects_excessive_source_count_before_allocation`；普通、ASan/UBSan、
+  Clang TSan `test_myui_font` 均为 **69/69**，全量 CTest 保持 **99/99**。
+
+## 本轮补充：跨平台 clipboard UTF-8 边界统一（2026-09-06）
+
+- `platform_utf8_validate()` 以显式长度执行 O(n) UTF-8 校验，拒绝 overlong、surrogate、
+  超出 `U+10FFFF`、截断序列和嵌入 NUL；所有平台的 clipboard 写入、X11/Wayland 本地及外部接收缓存均在交付前校验，
+  非法数据不会进入编辑器或 shaping。
+- X11 与 Wayland 的最大 clipboard payload 统一为允许恰好 `16 MiB`，额外保留 NUL 终止字节；
+  Wayland 达到上限时使用非阻塞 EOF/超限探测，超限/非法请求不会覆盖旧缓存。TDD 新增
+  平台文本边界测试，相关平台与 UI 专项通过。
+
+## 本轮补充：shaping unsupported 回退收口（2026-09-06）
+
+- `my_font_shape_ex()` 现在不会在 capability provider 明确返回 `UNSUPPORTED` 时继续调用
+  带显式 feature 的 `shape_ex`；该请求返回 `MY_RET_NOT_SUPPORTED`，防止 OpenType feature
+  被静默忽略。
+- 无显式 feature 的旧请求继续支持 language -> script -> legacy `shape` 回退；
+  `UNKNOWN` 保持最佳努力兼容。TDD 新增 provider 调用计数和空结果回归，`test_myui_font`
+  **67/67**、文本布局/窗口/MVVM 专项均通过。
+
+## 本轮补充：共享引用计数溢出保护（2026-09-06）
+
+- 新增 `myc/my_ref_count.h`，使用无锁 CAS 对 `atomic_uint`/`atomic_size_t` 做饱和递增；
+  计数达到类型上限时拒绝递增，不会回绕到 0。饱和值不递减，安全优先于极端情况下的
+  资源回收，避免错误析构和 UAF。
+- 统一应用于基础 `my_object`、MVVM context/异步状态、undo manager、UI command/scope、
+  image loader lease 与 list adapter lease；不进入绘制、布局和滚动热路径。
+- TDD 边界回归验证最大值拒绝递增、上限到达及饱和释放；窗口管理专项 **205/205**，完整
+  默认 CTest **99/99**，`git diff --check` 通过。
+
+## 本轮补充：emitter 重入销毁安全（2026-09-06）
+
+- `my_emitter_destroy()` 在 listener callback 内不再立即释放 listener 数组；它发布关闭
+  标记，最外层 `my_emitter_emit()` 收尾时统一释放，并立即停止本轮后续 listener。嵌套
+  emit 只有最外层返回才执行 dispose，避免 callback 栈访问释放后的 emitter。
+- 新增 `my_emitter_on_owned()`，并以 TDD 覆盖 emitter 自毁、owned context 注销释放一次、
+  emitter 析构释放一次及 context 析构重入销毁；普通及 sanitizer
+  `test_myui_window_manager` 均为 **204/204**，`git diff --check` 通过。
+- window close 与 window-manager destroy listener 新增 owned context 变体；borrowed API
+  保持兼容，主动移除或销毁路径均保证 context destructor 恰好一次。TDD 新增两条生命周期
+  回归；记录先摘除再执行 destructor，支持 destructor 重入销毁 owner，普通及 sanitizer
+  `test_myui_window_manager` 升至 **204/204**。
+- owned listener 的 destructor 不在 listener 记录仍挂接 owner 时运行；记录先摘除并释放，再
+  调用 destructor。这样 destructor 可以释放最后一个 window 引用或请求 manager 销毁；borrowed
+  API 不接管 context，调用方继续负责其生命周期。
+- 动态 module token 的 registry 计数和引用协调可并发；创建者持有 owner reference，跨线程
+  调用方先 retain、完成后 release。destroy 只在 token 已 quiesce 且 owner reference 唯一时
+  成功，随后 token 标记 destroyed 并在进程退出时回收；销毁后的迟到调用 fail-closed。该引用
+  协调只处于动态卸载冷路径，不向绘制或事件热路径加入引用锁。
+- 当前验证基线：完整默认 CTest **99/99**；`test_myui_window_manager` **204/204**、
+  `test_myui_mvvm` **35/35**、`test_myui_loader` **118/118**；ASan/UBSan、Clang TSAN 的
+  三项定向门禁，以及 `MYUI_UI_YAML=OFF` 的 loader stub 门禁均通过。
+- 动态 YAML schema 的 `MY_PROP_COLOR` 将 `0..UINT32_MAX` 整数映射为
+  `MY_VALUE_UINT32`（`0xRRGGBBAA`）传给 setter；此前严格校验会接受此字段但 setter 转换
+  缺失。TDD 覆盖有效 RGBA32、负值和上界外整数；转换仅发生在 loader 字段冷路径。
+
+## 本轮补充：myui 同步 emitter 生命周期安全（2026-09-06）
+
+- 修复 edit/text-area 的同步编辑事务：输入、删除、IME、粘贴及撤销/重做在回调期间和
+  回调返回后的 handler 尾部均保持 widget 存活；button 的键盘 click 路径也覆盖发射后
+  的失效区域更新。监听器可以安全地移除并释放自身，不再触发 UAF。
+- TDD 覆盖 editor、button、node view、checkbox、slider、scroll bar 和 MVVM emitter 的
+  self-removal/self-release 组合；普通及 sanitizer `test_myui_window_manager` 为
+  **199/199**，`test_myui_mvvm` 为 **35/35**。引用保护只位于事件/通知事务边界，不增加
+  绘制热路径的锁、分配或后端分支。
+- timer 回调不采用会阻塞析构的 widget 强引用；控件和窗口销毁链先取消所属 loop timer，
+  PAL timer manager 对 callback 内销毁采用延迟释放。真实多平台窗口线程、compositor、
+  clipboard/IME/present/buffer-age 和动态模块卸载仍需宿主 runtime 证据。
+
+## 本轮补充：List adapter lease 生命周期收口（2026-09-05）
+
+- 保留 borrowed `my_list_view_set_adapter()`，新增引用计数的
+  `my_list_adapter_lease_t`/`my_list_view_set_adapter_lease()`；列表持有 lease 引用，替换
+  或销毁时先回收 active/pool rows，再释放 adapter，避免 row vtable 所属实例提前失效。
+- lease 引用操作使用原子计数，不进入绘制/滚动热路径；安装失败和 adapter 重入分别保持
+  当前状态并返回 `MY_RET_INVALID_PARAMS`/`MY_RET_PENDING`。vtable 与 adapter 实例在 lease
+  存续期间必须保持不变，UI 调用仍须在所属 loop。
+- MVVM items adapter 改为 target-held/list-held 双 lease，模板切换和 target 销毁不再直接
+  释放仍可能被 list 使用的 adapter。TDD：普通 `test_myui_window_manager` **184/184**、
+  `test_myui_mvvm` **33/33** 通过。
+
+## 本轮补充：Scroll view 内容弱引用失效（2026-09-05）
+
+- `scroll_view` 使用 parent-local child-remove hook，在调用方直接移除内容 child 时清空
+  `content` 并复位 offset，后续测量、滚动和查询不会访问悬空 widget。
+- 该清理只位于树变更冷路径，不增加帧内分配、滚动扫描或后端分支；原有候选式内容替换保持
+  不变。TDD 覆盖 direct remove 后查询/滚动；普通、ASan、Clang TSAN
+  `test_myui_window_manager` **184/184** 通过。
+
+## 本轮补充：Image loader lease、缓存隔离与输入校验（2026-09-05）
+
+- 图片缓存键改为 `(loader, lease, path)`，避免不同 loader 或不同生命周期 token 的同名资源
+  发生跨缓存污染；缓存复制 RGBA 像素并调用 loader `free_data`，不接管 loader 私有内存。
+- 带 lease 的 loader 由 image 与缓存条目共同持有引用，最后一次 unref 才执行 release callback；
+  borrowed loader 不进入缓存，每次绘制后释放临时数据。loader vtable、像素指针、正尺寸和
+  RGBA 字节数均在缓存写入前校验；非法 loader 设置失败且保留旧状态。命中路径仍为 O(1)，
+  不增加绘制热路径锁和分配。
+- 缓存是每个 UI loop 线程的固定容量 LRU，命中/未命中统计为原子计数；
+  `my_image_cache_clear()` 只清理调用线程缓存，缓存条目的 release callback 也在调用线程运行。
+- TDD 覆盖同名路径隔离、lease 与缓存联合持有、borrowed 临时数据、原 loader 释放以及非法
+  vtable/数据安全失败；普通 `test_myui_window_manager` **184/184**，ASan/Clang TSAN 定向门禁通过。
+
+## 本轮补充：Animator widget 生命周期与时间边界（2026-09-06）
+
+- animator 记录持有目标 widget 的强引用；动画完成、显式停止、目标子树移除和 manager 销毁
+  时统一释放，调用方释放 creator 引用后 timer 仍不会访问悬空 widget。完成记录在 tick/停止
+  冷路径回收，避免长时间运行造成动画数组无界保留。
+- 延迟判断使用 `now - start` 差值而非 `start + delay`，避免 `uint64_t` 溢出；时钟回拨不会
+  提前完成。动画 ID 始终为非零且跳过活动记录已占用的 ID，回绕仍保持唯一，安全 ID 不可用
+  时提交失败并保持旧状态。
+- 回调重入停止只标记记录失效，tick 结束后统一回收，避免遍历期间压缩动画数组；不增加
+  帧内锁或额外分配。
+- TDD 新增动画延迟上界、widget creator 引用释放和回调重入回归；普通
+  `test_myui_window_manager` **184/184**，ASan/Clang TSAN 定向门禁通过。
+
+## 本轮补充：共享撤销管理器延迟销毁（2026-09-06）
+
+- `my_undo_manager_destroy()` 现在是幂等关闭操作：立即清空历史并拒绝新的记录、undo/redo
+  和 batch 调用；manager 存储由 owner 引用与每个注册 edit/text-area 的引用共同保护，最后
+  一个控件注销后才真正释放。
+- 因此 manager-first 销毁后，edit/text-area 的析构和显式解绑仍可安全调用 unregister，
+  不再访问已释放的 shared manager。该机制不扩展 widget ABI，也不把 targets 数组变成跨线程
+  容器；注册、注销和路由操作仍要求所属 UI loop 串行化。
+- 窗口绑定 shared manager 时持有一份引用，解绑和窗口销毁时释放；因此控件与窗口两类借用
+  方都不会在 owner destroy 后留下悬空 manager。公开契约仍要求调用方 destroy 后不再访问
+  原始 manager 句柄。
+- TDD 新增 edit/text-area manager-first 销毁、解绑及 window-held 引用回归；普通
+  `test_myui_window_manager` **184/184**，ASan/Clang TSAN 定向门禁通过。
+
+## 本轮补充：编辑器异步 clipboard 回调生命周期（2026-09-06）
+
+- `my_edit` 与 `my_text_area` 的异步 paste timer 在重试 PAL clipboard 前取得 widget 临时
+  引用，并在所有返回路径释放；`changed` listener 可在 paste 事务中移除并释放自身，不会
+  让事务剩余路径或 timer 清理访问悬空对象。
+- 保护仅位于异步回调冷路径，不增加同步输入、绘制热路径的锁、分配或全局扫描；PAL ABI
+  与所属 UI loop 线程归属保持不变。dummy PAL 增加可控 pending-read 注入以覆盖重试路径。
+- TDD 新增 edit/text-area self-removing listener 回归；普通和 sanitizer
+  `test_myui_window_manager` 均为 **186/186** 通过。Clang TSAN 配置目录当前未生成可执行
+  目标，本轮不虚报 TSAN 结果，待该配置完成构建后补跑同一回归。
+
+## 本轮补充：PAL timer callback 延迟销毁（2026-09-06）
+
+- `my_timer_manager_destroy()` 在 callback 或嵌套 `fire()` 中不再立即释放 manager；它发布
+  关闭标记，由最外层 `fire()` 完成当前 entry 收尾后统一释放，并停止同一轮后续 timer。
+- 关闭标记发布后，add/remove/due/fire 入口安全拒绝后续操作；普通和 sanitizer
+  `test_myui_window_manager` 均为 **235/235**，覆盖 callback destroy 和 teardown 重入回归。
+- 新增 `my_timer_add_lease()`，timer 持有 callback context lease；失效后跳过尚未开始的
+  callback，已进入的 callback 可完成，最终 lease 引用恰好释放一次，旧 borrowed API 保持兼容。
+- manager dispose 进入幂等 `disposing` 状态；lease destructor 重入 destroy、add、remove、
+  due 或 fire 均 fail-closed，不会触碰已开始释放的 timer 数组。
+- `due_in_ms()` 在读取等待时间时清理失效 lease 的堆根，避免向主循环返回短暂的 `0ms`
+  忙等；该清理位于等待时间冷路径，不增加正常 timer fire 的扫描成本。
+
+## 本轮补充：Window manager 回调重入销毁（2026-09-06）
+
+- repaint、PAL event、surface event、window close 和 close-listener 事务统一维护 callback
+  depth；回调中请求 manager 销毁会延迟到事务边界，当前帧停止后续窗口绘制，避免 teardown
+  后继续访问 manager。
+- TDD 新增 paint/event/close-listener/`on_open` 重入回归；普通和 sanitizer
+  `test_myui_window_manager` 均为 **235/235**。
+
+## 本轮补充：MVVM 异步 context 线程归属与对象引用安全（2026-09-05）
+
+- `my_mvvm_context_unref()` 的最后引用释放改为在绑定 UI loop 完成最终 widget、binding listener 和 command scope 清理；worker 释放 context 不再在线程外析构 UI 对象。
+- `my_object_t.ref_count` 改为原子计数，覆盖 VM、array、widget 等共享对象的并发 ref/unref；保留现有 ABI 字段布局语义，不扩展 PAL vtable。
+- TDD 新增 bulk data/condition/items 异步刷新和四 worker 并发提交/释放 context；普通与 ASan `test_myui_mvvm` 为 **32/32**，TSAN 用例用于检测对象引用竞争。
+
+## 本轮补充：MVVM template context 所有权（2026-09-05）
+
+- 新增 `my_mvvm_register_template_owned()`/`my_mvvm_unregister_template()`，为长期
+  `builder_ctx` 提供显式析构回调；同名替换和注销均恰好释放一次，失败注册不转移所有权。
+- 普通、ASan 和 Clang TSAN `test_myui_mvvm` 均通过 **32/32**；兼容的旧注册接口仍保留
+  borrowed context 语义，builder 线程亲和性仍由调用方负责。
+
+## 本轮补充：异步导航请求生命周期（2026-09-05）
+
+- `my_navigator_wm_request_async()` 复制固定大小的导航请求，只接受 navigator 所属 PAL loop，
+  并通过 navigator 自有 command scope 投递；页面 factory 和 window manager 操作只在 loop 线程执行。
+- navigator 或 manager 销毁会取消尚未执行的请求；foreign loop 和 window manager 打开失败都
+  显式返回错误。`my_navigator_wm_add_page_owned()` 可转移 page factory context 所有权，
+  `my_navigator_wm_add_page_lease()` 支持 invalidatable factory context；lease 失效后跳过
+  尚未开始的 factory，已进入的 factory 可自然完成。同步
+  request 的 page factory 重入销毁会延迟到最外层 request 返回，并停止后续 window-manager
+  操作；普通专项 `test_myui_mvvm` 为 **43/43**。同步默认 navigator API 仍要求宿主串行化
+  注册、替换和请求。
+
+## 本轮补充：拥有上下文的 UI command 调度（2026-09-05）
+
+- 新增 `my_ui_command_t` sidecar，不扩展冻结的 PAL main-loop vtable；command 通过现有
+  `post_event` 投递，拥有显式 context destructor 和一次性执行状态。
+- `created -> queued -> running -> done/cancelled` 状态机拒绝重复提交，允许跨线程提交与
+  取消；真正的 execute 始终发生在 loop 线程。队列执行和 loop 销毁丢弃都释放 queue ref，
+  context destructor 恰好调用一次；提交失败保留 command 可重试。
+- Break/dummy command 与窗口管理器重入回归已加入 TDD：`test_myui_break_pal` **23/23**、
+  `test_myui_window_manager` **168/168**。同一 scope 可安全管理多个 sibling command，
+  单个 command 出队不会关闭 scope。未提供通用 borrowed pointer 自动失效；context
+  内含 UI 对象时仍须调用方用外部引用或 lease 管理关闭顺序，并保证 loop 在提交完成前存活。
+
+最新验证：普通、ASan 和 Clang TSAN 的两个定向测试均通过；排除网络、网络复制和
+Vulkan 宿主设备限制后，普通构建完整 CTest 为 **95/95**。这组数字取自最新 scope
+实现，不沿用之前的旧基线。
+
+## 本轮补充：PAL 跨线程事件队列收口（2026-09-05）
+
+- `my_pal_main_loop_post_event()` 保持冻结的 PAL vtable ABI，明确保证 loop 对象存活期间可由
+  多个生产者并发投递；Break 与 dummy 后端均使用锁内 O(1) 链式 FIFO，分配和 IME 文本复制在
+  锁外完成，避免动态数组扩容或出队搬移扩大竞争临界区。
+- posted `IME_PREEDIT`/`IME_COMMIT` 现在深拷贝 UTF-8 文本，调用者可在投递返回后复用或修改
+  原缓冲；`MY_EVENT_USER.data` 则继续是应用拥有的借用指针，不能跨异步边界释放。loop 销毁会
+  丢弃尚未派发的事件及其复制文本；生产者必须先停止并完成投递，再销毁 loop。
+- TDD 新增 Break 与 dummy 的四生产者并发投递及 IME 文本快照回归。普通、ASan 与 Clang TSAN
+  `test_myui_break_pal` 均为 **17/17**；窗口管理器普通/ASan仍为 **161/161**。排除网络、
+  网络复制和 Vulkan 宿主限制后 CTest 为 **96/96**；GNU TSAN 配置因宿主缺少
+  `/usr/lib64/libtsan.so.2.0.0` 无法链接，未将其计为通过。
+- 此项不使 widget、window manager、timer 或 dialog 的直接跨线程 API 安全；跨线程 UI 变更仍
+  必须由调用方通过已验证的事件队列回到所属主循环线程，并保持 loop/manager 生命周期有效。
+
+## 本轮补充：窗口关闭监听与弹出控件失效协议（2026-09-05）
+
+- `my_window` 新增有界 close-listener 生命周期 API。窗口从 `my_window_manager` 栈移除时，
+  在解绑 `loop/anim_mgr/wm` 前先一次性通知监听者；监听记录支持安全注销和回调重入，窗口
+  最终销毁时再次幂等收口。合法重开会重新激活关闭通知状态，不增加绘制热路径扫描。
+- 菜单 popup 和 modal dialog 都登记窗口关闭监听。窗口即使仍被外部引用，关闭时也会先取消
+  hover/交互状态、移除 overlay、清空借用指针并注销 manager listener，避免 timer 或 manager
+  回调访问已释放模型；dialog 主动关闭仍保留一次性结果回调语义。
+- 新增 `window_close_invalidates_menu_with_external_window_ref` 与
+  `dialog_detaches_when_window_is_closed_directly` 回归，并覆盖关闭后重开；普通及 ASan
+  `test_myui_window_manager` 均为 **161/161**。普通及 ASan `test_myui_mvvm` 均为
+  **17/17**；排除网络、网络复制和 Vulkan 宿主限制的 CTest 为 **96/96**，X11 runtime 两项
+  因当前无 display 按标准 skip。
+- 当前仍不承诺跨线程 UI 生命周期操作、通用 borrowed pointer 自动失效或真实 GPU/IME/present
+  宿主能力；这些需要线程调度、owner/lease 和各平台 runner 的独立契约。
+
+## 本轮补充：Dialog manager 失效协议（2026-09-05）
+
+- `my_dialog` 打开时登记 `my_window_manager` 销毁监听；正常关闭、打开失败和 dialog
+  销毁都会注销监听。manager 先销毁时，监听回调清空 dialog 的借用 manager 指针和
+  listener ID，之后调用 `my_dialog_close()` 或 `my_dialog_destroy()` 不会访问已释放
+  manager。
+- 该方案保持 dialog window 的 creator 引用独立于 manager 的栈引用，不引入 dialog、
+  window 和 manager 的循环所有权；manager 销毁期间仍由 window destroy chain 负责清理
+  动画、定时器和 PAL 资源。
+- TDD 新增 `dialog_detaches_when_window_manager_is_destroyed_first`；普通及 ASan
+  `test_myui_window_manager` 均为 **154/154** 通过。
+- 跨线程 dialog 操作、回调上下文所有权和通用借用指针自动失效仍未实现；当前 API
+  继续要求所有 UI 生命周期操作发生在所属主循环线程。
+
+## 本轮补充：Menu 子模型独立销毁协议（2026-09-05）
+
+- `my_menu_destroy(submenu)` 现在先销毁子模型，再从父模型移除对应 submenu item；父模型
+  的 `parent/open_sub` 关系同步清空，后续父菜单操作和父模型销毁不会访问已释放子模型。
+- 父模型整体销毁时走内部递归路径，不触发已经摘链的独立销毁逻辑，避免重复释放；弹出层
+  和 hover timer 仍在模型销毁前关闭。
+- TDD 新增 `menu_destroyed_submenu_detaches_from_parent` 和
+  `menu_destroyed_open_submenu_invalidates_parent_popup`；普通及 ASan
+  `test_myui_window_manager` 均为 **156/156** 通过。
+- 菜单选择回调上下文仍由调用方负责保持有效；跨线程模型修改和通用 callback lease
+  仍未提供，菜单 API 继续要求在所属 UI 主循环线程调用。
+
+## 本轮补充：Menu manager-first 销毁（2026-09-05）
+
+- 菜单弹出时登记 window manager 销毁监听；manager 先销毁时，overlay 随窗口树销毁并
+  清理 hover timer，模型的 `overlay/box/win/wm` 借用关系全部失效。
+- 菜单正常关闭、弹出失败和模型销毁都会注销监听；manager-first teardown 后再次调用
+  dismiss/destroy 不会访问已释放 manager。
+- TDD 新增 `menu_detaches_when_window_manager_is_destroyed_first`；普通及 ASan
+  `test_myui_window_manager` 均为 **159/159** 通过。
+
+## 本轮补充：List adapter 重入边界（2026-09-05）
+
+- `list_view` 同步可见行时进入受保护状态并临时保活自身；adapter 的
+  `get_count/create_row/bind_row` 回调期间再次刷新、换 adapter、改滚动位置、改行高或
+  换绑 scrollbar 会返回 `MY_RET_PENDING`，不会递归重建 active/pool。
+- scrollbar 反向同步增加轻量 guard，列表写入 scrollbar 时不会反馈触发第二次列表重建；
+  普通路径不增加逐帧扫描或堆分配。
+- TDD 新增 `list_view_rejects_adapter_reentry_during_sync`；普通及 ASan
+  `test_myui_window_manager` 均为 **159/159** 通过。
+- adapter 仍是借用 vtable/实例；跨线程访问或释放必须由所属 UI 主循环和调用方所有权
+  协议保证，当前 API 不隐式提供并发保护。
+
+## 本轮补充：Closed window 借用状态失效（2026-09-05）
+
+- `my_window_manager_close()` 在释放 manager 栈引用时保留临时 window 引用，确保窗口
+  destroy chain 能在有效的 loop/animator manager 上取消 tooltip、节点流和按钮定时器。
+- 窗口仍被外部持有时，关闭完成后才清空 `wm/loop/anim_mgr`；没有外部引用时则直接完成
+  destroy chain，不留下悬空字段。manager-first teardown 复用同一安全顺序。
+- TDD 新增 `closed_window_detaches_manager_borrowed_state`；普通及 ASan
+  `test_myui_window_manager` 均为 **158/158** 通过。
+- 该机制仍是单线程生命周期协议；跨线程 close、异步回调上下文所有权和通用弱引用自动
+  失效不在当前 API 保证范围内。
+
+## 本轮更新：组合控件与窗口生命周期事务（2026-09-05）
+
+- `scroll_view` 的 opaque handle 新增真实 vtable 实例校验；其 content 替换改为候选
+  child 先挂载、成功后才释放旧 child，非法或已附着的候选不会清空现有内容。
+- `my_window_manager_open()` 拒绝同一窗口重复入栈。`my_dialog_open()` 拒绝仍打开的
+  dialog，并在打开失败时回滚 modal、scrim、回调和 manager 指针，避免半打开状态。
+- `list_view` 校验 adapter 必须具备完整的核心回调；替换 adapter 时销毁旧 active/pool
+  rows 并清空高度缓存，避免跨 adapter 复用私有 row。异常动态 row height 保守回退到
+  固定行高，保持 prefix sum 单调；prefix sum 使用显式 64 位数组，不依赖指针宽度，
+  超大 count/高度安全饱和；回收池 OOM 时释放临时保活引用。
+- TDD 新增 opaque scroll-view、content 失败事务、重复 window/dialog open 回归；普通
+  `test_myui_window_manager` 当前 **159/159** 通过。
+
+## 本轮补充：节点视图通用移除与弱引用收口（2026-09-05）
+
+- `my_widget_remove_child()` 新增父节点级 `child_removed_hook`，在直接子节点脱离且
+  父引用仍有效时通知拥有内部模型状态的组合控件；不扩展 widget vtable，避免要求既有
+  自定义 vtable 聚合初始化器同步改写。
+- `node_view` 使用该回调统一清除连线、选择集、当前选择、拖拽节点、预览/磁吸节点和
+  嵌入控件抓取；因此调用方直接移除节点也不会留下可绘制或可交互的悬空引用。节点视图
+  的标准 `remove_node()` 同样复用该单一路径，并同步 flow timer、重绘和 changed 事件。
+- 节点视图销毁前解除每个直接节点的反向 `view` 弱引用；外部仍持有节点引用时，节点
+  后续绘制不会访问已销毁的 view。该机制只覆盖 node-view 已知关系，不能替代全局 weak
+  reference 自动失效。
+- TDD 新增通用 child removal 和外部持有节点销毁回归；普通及 ASan
+  `test_myui_window_manager` 均为 **152/152** 通过。
+
+## 本轮补充：MVVM 目标与命令监听生命周期（2026-09-05）
+
+- `my_widget_target_t` 持有目标 widget 的 target-lifetime 引用，避免调用方释放 creator
+  引用或从 widget tree 移除后，VM listener 访问悬空控件；target 销毁时释放该引用，
+  不形成 widget 与 binding context 的循环所有权。
+- MVVM items 路由使用 `my_list_view_is_instance()` 判断虚拟列表，不再信任可写的
+  `widget_type` 字符串；伪造类型只走普通容器重建路径。
+- `CloseWindow=true` 的 widget listener 由 `my_mvvm_context_t` 登记，并在上下文销毁
+  前注销；绑定失败也回滚已注册 listener，避免按钮事件访问已释放的 MVVM context。
+- TDD 新增目标保活、树移除、伪造 list 类型和 CloseWindow listener 回归；普通及 ASan
+  `test_myui_mvvm` 均为 **14/14** 通过；`test_myui_mvvm` 构建目标显式链接 dummy PAL，
+  保证其真实 window 生命周期回归不依赖测试目标的隐式链接顺序。
+
+## 本轮补充：Navigator 默认实例失效协议（2026-09-05）
+
+- 默认 navigator 仍保持无所有权注册，但增加条件清除接口；window-manager navigator
+  销毁时只清除仍指向自身的默认项，不会误清理后来安装的 replacement navigator。
+- navigator 销毁后请求稳定返回 `MY_RET_NOT_FOUND`，避免全局裸指针跳入已释放对象；该
+  机制不改变调用方对 navigator、window manager 和 PAL 的独立所有权责任。
+- TDD 新增默认 navigator 销毁、替换后旧实例销毁和最终清除回归；普通及 ASan
+  `test_myui_mvvm` 均为 **15/15** 通过。
+
+## 本轮更新：widget 专用 API 类型边界（2026-09-05）
+
+- 编辑器、文本区、节点、节点视图、富文本标签及已审计控件的公开入口统一以真实
+  vtable 身份作为 O(1) 类型证明；普通 `my_widget` 或伪造 `widget_type` 不会被强制
+  转换为派生对象。非法查询返回稳定中性值，非法写入返回 `MY_RET_INVALID_PARAMS`。
+- 节点视图连接同时校验节点直接归属、输入/输出方向和槽位范围，拒绝跨 view 或
+  自连接造成的不可绘制 link；socket 中心查询在输出指针为空时不写内存，socket
+  方向也执行枚举校验。
+- TDD 新增专用 setter/query、跨 view/非法 socket 回归；普通
+  `test_myui_window_manager` 当前 **152/152** 通过。该边界不替代通用 weak 引用的
+  自动失效机制，其他跨对象关系仍需逐项审计。
+
+## 本轮更新：滚动条绑定类型边界（2026-09-05）
+
+- `scroll_view`、`list_view` 和 `text_area` 的 scrollbar 绑定入口统一调用
+  `my_scroll_bar_is_instance()`，scrollbar value/page-size 读写也执行相同实例校验；
+  在 listener 创建和状态替换前拒绝非 scrollbar widget，非法输入不会破坏已有合法绑定。
+- TDD 新增非 scrollbar 绑定及外部引用先释放回归，普通 `test_myui_window_manager` 为
+  **141/141**；绑定 link reference 会在解绑或容器析构时释放，避免 scrollbar 悬空。
+
+## 本轮更新：CSS `@layer` 解析期级联（2026-09-05）
+
+- CSS parser 支持有界 `@layer` block、`@layer a, b;` 顺序声明和嵌套层；
+  层名/数量/深度及重复项均执行固定预算校验，晚声明顺序会刷新既有规则。
+- theme bridge 按最终 layer rank 稳定提交规则，未分层规则最后应用；层优先级
+  编码为有界负偏移，不改变公共 `my_theme_set_ex3/ex4()` 的源码覆盖契约，查询
+  热路径继续使用既有 selector cascade。
+- capability registry 新增 `MY_CSS_FEATURE_LAYERS`、`MY_CSS_FEATURE_IMPORTS` 和
+  `MY_CSS_FEATURE_SCOPE`；TDD `test_myui_css` 当前 **103/103** 通过，覆盖层序、导入
+  安全、scope root、`to` 边界和条件 at-rule 组合。
+- `@import` 已通过显式、有界 resolver 展开，并拒绝绝对/穿越路径；`@scope` root 支持
+  type/class/id/universal/implicit root，有界 `to` type/class/id/universal compound
+  selector 以及最多 4 项 selector list 使用固定祖先路径与边界哨兵匹配；组合器、超过
+  4 项 list 和完整 CSS Scoping 仍未实现。
+
+## 本轮更新：profile-aware SA dictionary paragraph 接入（2026-09-05）
+
+- 新增 `my_line_break_dictionary_profile_fn`、有界 profile options 以及
+  `my_line_break_apply_dictionary_profile()`；不改变 legacy callback/options
+  布局，validated locale 仅在回调期间借用。
+- 新增 `my_text_paragraph_process_n_break_profile_callback_ex()`，使 profile
+  locale 真正参与 paragraph wrapping；旧 profile/legacy paragraph 入口继续
+  走原有路径。
+- 连续 SA run 使用固定大小 scratch，callback 成功后才提交边界；无效 scalar、
+  profile、预算和失败回调均保持原数组不变，不进入渲染后端或分配路径。
+- TDD `test_myui_text_layout` **122/122** 通过；该扩展不等同于内置语言词典，
+  产品级 SA dictionary 数据和 locale-specific tailoring 仍待补齐。
+
+## 本轮更新：内置 Thai SA 基线词典（2026-09-05）
+
+- 新增版本 1 `th-Thai` 固定只读 corpus 和 paragraph callback 适配器；实现无
+  I/O、无堆分配、无锁，未知或部分匹配 run 保守保持不可断。
+- 完整 run 覆盖验证和最长匹配均在固定上界内执行；不支持 profile 返回
+  `MY_RET_NOT_SUPPORTED`，非法输入保持事务性。
+- TDD `test_myui_text_layout` **124/124** 通过；这不是完整 Thai 词典或完整
+  UAX#14 locale tailoring，生产语言数据和 golden corpus 仍需后续接入。
+
+## 本轮更新：滚动条监听生命周期收口（2026-09-05）
+
+- `scroll_view`、`list_view`、`text_area` 现在保存外部 `scroll_bar` listener ID；
+  重复绑定幂等，换绑/解绑/析构移除旧监听，新增监听失败保持旧连接。
+- 该修复消除 callback 累积和销毁后悬空回调风险，不改变滚动值、页尺寸或
+  wheel/key 行为；滚动条仍由调用方持有，必须覆盖活动链接生命周期。
+- TDD `test_myui_window_manager` 普通与 ASan 均为 **139/139** 通过。
+
+## 本轮补充：跨字体组合簇段落断行回归与架构审计（2026-09-05）
+
+paragraph wrap 现以 shaping cluster 为不可拆分边界，跨字体 `a + U+0305` 组合簇在窄
+宽度下保持同一物理行，不会把 combining mark 单独推到下一行。新增 TDD 回归并通过；
+测试 UTF-8 字面量使用相邻字符串形式，避免 `\\x85b` 被编译器解析为超出范围的转义。
+
+本轮审计确认：冷却按钮的业务判断独立于 timer 存在性，冷却期间每按钮最多一个 timer；
+paragraph line-layout cache 为固定 4 槽，构建失败不替换旧布局；RHI 多采样质量切换继续
+遵循候选资源事务，失败路径不改变 active resource。尚未关闭的架构边界仍是跨物理段落
+增量 visual rebreaking、完整跨 face GSUB/GPOS 上下文、locale-specific UAX#14 tailoring、
+完整 CSS at-rule 语义，以及真实 Windows/macOS/Wayland/X11/Vulkan retained-buffer runtime。
+
+验证：默认完整 CTest **99/99**；`test_myui_font` **66/66**、`test_myui_text_layout`
+**119/119**、`test_myui_window_manager` **138/138**；ASan 字体/文本 **66/66**、
+**119/119**；STB-only 字体/文本 **66/66**、**119/119**；`git diff --check` 通过。
+
+## 本轮补充：RTL OpenType GSUB/GPOS golden 与方向结果修复（2026-09-05）
+
+新增真实 Noto Sans Arabic/Hebrew variable-font golden，覆盖 RTL glyph 顺序、反向 byte
+cluster、正向 26.6 advance、face identity 与复杂 shaping 标志。测试首先发现并修复
+FreeType/HarfBuzz provider 在清空结果事务时丢失 `rtl` 标志的问题；公共
+`my_font_shape_ex()` 也在 provider 成功返回后恢复方向字段，避免任意 provider 清空结果
+造成 API 结果漂移。另加入同一 Arabic variable font 的 300/900 weight golden，确认 glyph
+顺序与 cluster 稳定而 26.6 advance 随 variation 轴变化。`test_myui_font` 当前为 **60/60**，
+Arabic/Hebrew/variation golden 均通过。
+该证据覆盖单段 Arabic/Hebrew run，不等同完整跨段落 RTL rebreaking、跨字体 RTL shaping
+或完整 OpenType language/feature corpus。
+
+字体链的 `shape_ex` vtable 直调路径现在也执行结果清零、4 MiB 文本预算和 shaping 参数
+校验，并在成功时保留 RTL 状态，避免绕过公共包装层后复用旧 glyph-run 或读取超长输入。
+新增直调 provider 回归，当前字体测试为 **61/61**。
+
+FreeType 与 STB 的 direct `measure` vtable 入口现在都执行 4 MiB 有界 NUL 扫描，防止绕过
+公共包装层触发无界输入读取；字体链 cluster 扫描同时纳入 ZWNJ，保持连接控制符与相邻
+序列的 face 归属。新增两项 direct measure 回归，当前测试基线为 **66/66**。
+
+字体链的 face 选择现在以扩展 grapheme cluster 为最小单位：Unicode 17 combining mark、
+variation selector、emoji modifier、tag 与 ZWJ sequence 会优先交给同一可覆盖 face，再按
+连续 face 区间调用 HarfBuzz。TDD 使用 Cantarell/Noto Sans 复现并修复缺 mark 的 primary
+face 把 `a + U+0305` 拆成两个错误 cluster 的问题，并以 Cantarell/Noto Color Emoji 锁定
+ZWJ sequence 不被切段。该冷路径只增加每个 cluster 的有界 face 覆盖扫描；当前
+`test_myui_font` 为 **66/66**。同时修正字体链 measure 对跨 face combining cluster 的宽度
+累加，避免附着 mark 被当作独立 glyph 宽度；完整跨 face fallback 的 GSUB/GPOS 上下文
+协商仍未实现。
+
+## 本轮补充：OpenType language-system golden（2026-09-05）
+
+新增真实 FreeType/HarfBuzz `locl` golden：Source Code Pro 在明确 `cyrl` script 下，
+俄语 `ru` 与塞尔维亚语 `sr` 对同一 Cyrillic 文本选择不同 glyph（首 glyph 分别为
+`795` 与 `871`），同时保持 byte cluster、advance 和结果事务一致。测试不把
+design-unit advance 误当像素值，并在断言前释放结果，避免失败路径污染 sanitizer。
+`test_myui_font` 当前 **64/64**，ASan 定向测试通过。完整语言/字体 corpus 和更复杂
+RTL GSUB 语义仍保留在未完成矩阵。
+
+## 本轮补充：Redis 8.10.1 依赖与运行时回归（2026-09-05）
+
+使用 `/home/timeshift/opensource/redis-8.10.1/deps/hiredis` 构建私有静态客户端，未依赖
+系统 hiredis 开发包，也未修改 Redis 源码。`RULE_ENGINE_ENABLE_REDIS=ON` 配置、hiredis
+编译、超时探针、prefix URL 往返和 Redis 真实服务集成均通过；设置
+`RE_TEST_REDIS_URL=redis://127.0.0.1:6379` 时 Redis 配置完整 CTest 为 **99/99**。
+未提供客户端源码/开发包时仍保持显式 force-disable、无内存 provider 静默回退。
+
+## 本轮补充：FreeType shaping provider 输入边界（2026-09-05）
+
+FreeType/HarfBuzz `shape_ex` provider 现在独立执行 4 MiB 文本预算、参数校验和结果
+初始化；即使调用方绕过 `my_font_shape_ex()` 直接访问 vtable，也不会把无界 `-1` 文本
+交给 HarfBuzz，失败时不会残留旧 glyph-run。新增直接 provider 超限输入回归；
+`test_myui_font` 当前 **56/56**（其中环境依赖的 required-feature 用例按既有规则显式
+skip），引擎目标编译和 `git diff --check` 通过。
+
+## 本轮补充：EDID/CTA 边界防御（2026-09-05）
+
+EDID 冷路径现在要求输入由完整的 128 字节 block 组成；X11 RandR 读取同时检查
+`bytes_after == 0`，避免把属性截断误交给解析器。CTA 扩展解析采用扩展级事务：空
+扩展和未知 extended tag 可安全忽略，HDR Static Metadata block 必须包含完整的
+descriptor 与 EOTF 字段；遇到坏 checksum、越界数据块或部分 trailing block 时，不会
+提交已经扫描出的 HDR 能力。媒体能力仍按 sRGB/unknown 安全回退。
+
+TDD `test_platform_display_media` 已覆盖 P3、Rec.2020+PQ、坏 base checksum、截断
+扩展、空 CTA、短 HDR descriptor、部分 CTA 回滚和 129-byte 尾部截断，共 **8/8**。
+引擎目标编译及 `git diff --check` 通过；真实 RandR `bytes_after` 异常仍需物理 X11
+驱动或可注入 X11 harness 证据。
+
+## 本轮补充：Win32 媒体失效与 DPI 消息防御（2026-09-05）
+
+Win32 runtime TDD 新增设置变化后的媒体缓存失效/代际递增，以及缺少 suggested `RECT`
+的 `WM_DPICHANGED` 消息安全忽略。Display Configuration 2 HDR 查询保留动态解析和
+旧 SDK 数值兼容宏；`GetMonitorInfoW` 使用 SDK 兼容的 `MONITORINFO` 基类转换。
+Linux 主机上的 Zig Windows 目标语法检查以 `-Wall -Wextra -Werror` 通过；Windows
+runner 仍负责真实窗口、注册表和显示配置 API 的 runtime 证据。
+
+## 本轮补充：Wayland 媒体快照缓存（2026-09-05）
+
+Wayland `Platform` 现在保存固定大小的媒体快照；首次查询组装 pointer/touch/sRGB
+事实，后续命中只复制结构，不重复组装。seat capability 变化在事件路径使缓存失效并
+递增饱和媒体代际；即使代际已到上限也仍会失效缓存。新增 Wayland runtime 快照稳定性
+回归，保持未知能力不被默认值伪造。
+
+## 本轮补充：X11 RandR EDID 媒体能力（2026-09-05）
+
+新增无平台状态的 EDID 解析器：校验 base block 头和 checksum，按固定上限读取最多
+8 个 CTA 扩展，依据标准色度主色识别 Display P3/Rec.2020，并只在 CTA HDR Static
+Metadata 数据块明确声明 PQ/HLG EOTF 时设置 HDR。X11 仅在媒体冷路径读取当前窗口所在
+RandR 输出的 `EDID` 属性；属性缺失、截断、checksum 错误或色度不匹配均保持原有 sRGB
+安全回退和 HDR unknown。TDD 覆盖 P3、Rec.2020+HDR、错误 checksum、截断扩展，X11
+runtime 额外校验 capability 与 known 位层级。
+
+## 本轮补充：RHI 命令 owner 与活动帧隔离（2026-09-04）
+
+GL 命令句柄改为绑定当前 `RHIDevice`，不再使用所有设备共享的 sentinel；Vulkan 命令句柄
+校验其 backend 身份。两套后端的命令入口现在都拒绝 NULL、错设备、切换设备后的旧句柄
+和已结束帧，显式设备参数的间接绘制也要求目标设备是当前活动帧。Vulkan 内部 uniform
+重绑使用真实命令句柄，不再通过 NULL 绕过 owner 检查。检查保持 O(1)、无锁、无分配，
+避免跨设备/跨帧状态污染。
+
+TDD 保留资源句柄跨设备隔离和命令 owner 回归；普通 X11/GL、Wayland/GL、X11/Vulkan、
+Wayland/Vulkan 的 `test_rhi_capabilities`、`test_ibl`、`test_indirect_draw` 均通过，
+ASan `test_rhi_capabilities` 通过。当前仍未实现多线程并行 command context：进程级
+`g_current_device` 仍要求单线程、单活动设备，未来必须以显式 context/queue ownership
+和同步协议替换，而不能将全局变量直接改成无保护共享状态。
+
+## 本轮补充：RHI 设备创建前置契约（2026-09-04）
+
+GL 与 Vulkan 设备创建现在在调用原生 API 前统一拒绝错误 backend、NULL 原生句柄、零
+尺寸和超过 `RHI_MAX_DRAWABLE_DIMENSION`（16384）的 drawable；Vulkan 不再忽略传入的
+backend 参数。resize 同样拒绝超限尺寸。TDD 增加创建前置边界回归，并在 X11/GL、
+Wayland/GL、Wayland/Vulkan 和 ASan 配置验证。
+
+## 本轮补充：RHI 设备控制 NULL/尺寸边界（2026-09-04）
+
+`rhi_device_resize()` 现在拒绝 NULL、零宽和零高输入，`rhi_set_vsync()` 对 NULL 设备
+安全返回；GL、Wayland/EGL 与 Vulkan 后端统一实现。TDD 新增 NULL/零尺寸回归，并与帧
+生命周期测试一起覆盖多后端配置，避免无效控制请求进入原生 WSI 或 EGL/Vulkan 重建路径。
+
+## 本轮补充：RHI 帧生命周期跨后端 NULL 契约（2026-09-04）
+
+统一 RHI 帧入口现在拒绝 NULL 设备：`rhi_frame_begin()` 返回 NULL，`rhi_frame_end()`、
+`rhi_present()` 无副作用，`rhi_frame_index()` 返回 0。TDD 将同一契约编译并运行于
+X11/OpenGL、Wayland/OpenGL、Wayland/Vulkan 和 ASan 配置；四套 `test_rhi_capabilities`
+均为 **20/20**。同时修正 `test_rhi_capabilities` 的后端编译宏与链接依赖，避免测试目标
+把 Wayland/Vulkan 源码误编译成 X11/OpenGL 变体。该修复不改变有效设备的帧顺序或 RHI ABI。
+
+## 本轮补充：Engine 帧率配置数值边界（2026-09-04）
+
+`EngineConfig.target_fps` 现在在初始化前拒绝负数、NaN 和无穷值；运行中若宿主直接修改
+公开字段为异常数值，帧率限制路径会安全退化为不限帧，不执行危险的无穷浮点到 `u64`
+转换。TDD 新增三类非法配置回归，保持 `0` 不限帧和既有合法帧率行为不变。
+
+## 本轮补充：平台标题有界校验（2026-09-04）
+
+平台配置校验现在以 `PLATFORM_MAX_WINDOW_TITLE_BYTES`（包含 NUL 的 4096 字节）执行一次
+有界 C 字符串扫描，并将已知长度传给 UTF-8 校验器；超限标题在进入任何原生窗口 API 前
+拒绝。边界长度接受、超限拒绝已加入 TDD，普通与 ASan `test_platform_config` 覆盖通过。
+该限制只作用于窗口创建冷路径，避免异常输入造成无界扫描或平台标题分配压力。
+
+## 本轮补充：平台标题 UTF-8 截断安全（2026-09-04）
+
+平台配置校验改为先计算 C 字符串长度，再按剩余字节数读取 UTF-8 continuation byte，
+不再在截断序列上探测字符串终止符后继续读取。TDD 新增单字节非法 lead、2/3/4 字节
+截断、非法 continuation 和非法 lead 范围回归；普通与 ASan `test_platform_config` 均通过。
+该修复只影响创建窗口前的冷路径，不改变合法标题或任一平台/RHI ABI。
+
+## 本轮补充：text-area 单行 wrapped 增量重排（2026-09-04）
+
+当编辑不改变物理行数量且没有折叠区间时，wrapped text-area 现在只为受影响物理行
+构造候选 visual lines，并转移后续物理行的既有对象；后缀的 byte/CP 坐标本来就是物理
+行内相对值，因此无需重新 shaping。候选数组和对象所有权在提交前保持事务隔离，任意
+OOM/非法结果都恢复旧 cache；换行数量变化、折叠状态或全量配置变化继续使用原有安全
+重建路径。TDD 新增后缀指针稳定性、尾部空物理行复用、连续空行表示、末行编辑和跨行
+删除回归；默认 `test_myui_window_manager` 当前为 **134/134**，并通过 ASan 定向回归，
+未改变 widget 或渲染后端 API。
+
+## 本轮补充：SA dictionary profile 契约（2026-09-04）
+
+断行器新增 `my_line_break_dictionary_profile_t` 与
+`my_line_break_apply_dictionary_ex()`，并由 paragraph 的
+`my_text_paragraph_process_n_break_profile_ex()` /
+`my_text_paragraph_process_break_profile_ex()` 透传。profile 固定版本为 1，locale 使用
+有界 ASCII BCP-47 风格子标签，长度上限为 64 字节；版本、空子标签、非法字符和超长
+输入在任何 dictionary callback 或 paragraph 分配前拒绝。旧的三字段
+`my_line_break_options_t` 与旧入口保持不变，不改变冻结 ABI 或 legacy 调用方的行为。
+profile 必须与实际 dictionary callback 成对提供；无 callback 的 profile 配置也会被拒绝。
+TDD 覆盖成功透传、未来版本拒绝、非法 locale 和非法 Unicode scalar 拒绝；默认
+`test_myui_text_layout` 当前为 **118/118**。该 profile 只提供可审计的 tailoring 身份与预算门禁，不虚构词典内容；
+locale dictionary corpus、词典版本发布和产品级语言策略仍属于未完成能力。
+
+新增 `verify_myui_sa_dictionary` 有界 YAML corpus 验证器，复用正式 YAML parser，固定检查
+profile version/locale、SA codepoint scalar、run 上限和 golden boundary；正例、版本错误、
+非法 scalar、非法 locale 与 golden mismatch 均接入 CTest。该工具使用独立的确定性 callback
+fixture 验证 API/事务契约，不等价于
+Thai/Khmer/Lao 产品词典；真实词典仍必须由调用方提供并单独提交版本化语言 corpus。
+
+## 本轮补充：媒体 provider 并发注销生命周期（2026-09-04）
+
+媒体快照查询现在持有固定 slot token。注销立即阻止新查询，但保留在途查询所持有的
+provider context，直到最后一个查询退出后才延迟回收；slot 在此期间不可复用。该方案
+不改变冻结的 PAL ABI、不让销毁线程忙等，并覆盖回调重入、并发注销和 context 回收顺序。
+普通与 ASan `test_myui_break_pal` 均通过（新增并发/回调注销用例）；provider 回调不得
+递归销毁所属 PAL，避免回调线程自等待。PAL 销毁流程应先注销 provider，再释放 PAL
+对象；在途查询的固定 slot token 会保证 context 延迟回收。
+
+## 本轮补充：冷却按钮键盘激活与严格断行验证（2026-09-04）
+
+冷却按钮现支持焦点状态下的 `Return`/`Space` 成对按键激活：重复 `key_down`、错键
+`key_up`、冷却期间输入和焦点丢失后的旧释放事件均不会重复发出 `click`；键盘和指针
+激活状态独立维护，短指针按压的延迟视觉释放不会吞掉后续键盘激活。成功键盘释放复用
+既有单调 deadline 与 16ms 动画 timer，不把动画状态作为业务门禁。TDD
+`test_myui_window_manager` 当前为 **127/127**。
+
+新增 `engine/tools/verify_myui_line_break.c`，严格解析 Unicode 17
+`LineBreakTest.txt` 的 `÷/×` marker，拒绝超长行、代理项、越界码点、缺失 marker 和
+尾部垃圾，并报告首个差异。正例、断行不匹配和畸形输入均接入 CTest；验证器增强的是
+可重复验收链路。Unicode 17 官方语料当前已全量通过：60,487 个边界、0 个差异；
+locale-specific tailoring 与调用方 SA dictionary 仍由上层策略负责。
+
+## 本轮补充：Unicode 17 断行严格语料验证器（2026-09-04）
+
+新增 `engine/tools/verify_myui_line_break.c`，严格解析 Unicode
+`LineBreakTest.txt` 的 UTF-8 `÷/×` marker，拒绝超长行、非法十六进制码点、代理项和
+缺失/多余 marker，并逐边界调用 streaming line-break state。验证器不改变运行时断行热路，
+首个差异会输出行号、边界、码点和期望/实际结果；固定正例、规则不匹配反例和畸形输入反例
+已注册为 CTest。本机 Unicode 17 官方语料已严格通过 60,487/60,487 个边界；运行时仍
+保持 O(1)、无分配、无锁设计。locale-specific tailoring 与调用方 SA dictionary 仍由
+上层策略负责。
+
+## 本轮补充：Unicode 17 扩展图形未分配范围生成（2026-09-04）
+
+断行器不再使用零散码点判断扩展图形未分配字符，新增
+`tools/generate_myui_extended_pictographic_data.sh`，从 Unicode 17 的
+`emoji-data.txt`、`DerivedGeneralCategory.txt` 和 `LineBreak.txt` 求交集，生成独立的
+`ID_ExtPictUnassigned`/`XX_ExtPictUnassigned` 静态范围表。运行时仅做有序范围二分查找，
+无分配、无锁，并修正 `1F02C..1F02F`、`1F8D9..1F8FF` 和 `1FC00..1FFFD` 的
+`EM` 及前置类别规则。TDD 文本布局测试为 **115/115**；Unicode 17 官方
+`LineBreakTest.txt` 已通过 **60,487/60,487** 个边界。locale-specific tailoring、
+SA dictionary 产品策略和真实平台语言策略仍不属于默认规则语料的验证范围。
+
+## 本轮补充：Unicode 17 断行边界优先级校准（2026-09-04）
+
+按 TDD 修复并验证了四类高置信边界：`QU → CB` 不再因 `CB` 对象通用分支而错误放行；
+Hangul `H2/H3/Jamo` 与 `SA` 分离，`HY/HH → SA` 保持连续；数字分隔符到 Hangul
+不再误用 `AL` 规则；`ID_ExtPictUnassigned × EM`、非 `SP → OP`、
+`AL/ID/SA → XX_ExtPictUnassigned` 和普通字符到 `RI` 的优先级得到校准，同时保留
+U+2329 的 East Asian 开括号语义。TDD 新增对应定向回归，普通 `test_myui_text_layout`
+为 **115/115**；实现仍为 O(1)、无分配、无锁。默认 Unicode 17 golden corpus
+已零差异通过；East Asian/locale tailoring、组合标记的产品级语言策略和 `SA`
+词典质量仍由上层策略负责，不把默认语料通过扩大为所有 locale 行为。
+
+## 本轮补充：Unicode 17 SP 后 IS/QU 断行例外（2026-09-04）
+
+官方 `LineBreakTest.txt` 明确要求 `SP × IS`（例如空格与逗号之间不可断），同时要求
+`SP ÷ NS`（例如 U+3005/U+203C）允许断行，不能让
+LB18 的通用“空格后断行”覆盖该上下文；另一方面，`SP ÷ QU` 仅对 Unicode 判定为
+opening quote 的 `QU` 生效，中性 `QU`（如 ASCII `"`）也按 LB18 允许断行，closing quote
+继续不可断。实现增加显式优先级保护，保持
+O(1)、无分配、无锁。TDD 补充逗号、NS、U+00AB、U+00BB、ZWJ 和 emoji modifier
+回归；普通、Sanitizer、STB-only
+和无 BiDi 文本布局均为 **103/103**，核心 MyUI CTest 3/3 通过。streaming state 额外
+保存 `CL/CP/EX/IS` 闭合标点后的空格上下文，覆盖 LB16 的 `NS/CJ` 不起行约束；`SY`
+不被过度纳入该集合。完整 UAX#14 golden
+corpus 仍属于后续矩阵。本轮同时修正 `CB` 对象后的空格与组合扩展保护，普通对象边界
+仍可断；emoji modifier 仅与 `EB` 保持 `EB × EM`，不再被误作全局 glue。
+同时修正 LB4–LB6 的方向优先级：普通字符到硬换行不可断，硬换行之后可断，连续硬换行
+可断，CRLF 仍保持原子性；`CB` 仅在其后接普通对象边界时放行，组合扩展和高优先级
+闭合/分隔标点仍保持连续，`B2 → VF/VI` 继承前置断点。
+`CB → VF/VI` 也遵循对象后的断点规则，而普通 combining mark 仍保持附着。
+
+## 本轮补充：Unicode 17 SP 后 CM/GL 解析优先级（2026-09-04）
+
+`SP` 后的 combining mark、Unicode glue 和 `VF` 此前会被通用“组合/胶着不可断”分支
+提前拦截，未按 UAX#14 LB9/LB18 在空格后的重新解析规则产生断点。现在在保留硬断行、
+ZWSP、WJ/ZWJ、引号、闭合标点和 `NS/SY` 保护的前提下，允许 `SP` 后的 CM/GL/VF 等
+类别断行；开括号后的消费型空格仍由 streaming 状态覆盖。TDD 扩展空格后类别回归，
+普通 `test_myui_text_layout` 为 **102/102**。
+
+## 本轮补充：Unicode 17 Hebrew HL 类别覆盖（2026-09-04）
+
+Hebrew solidus、maqaf 和引号规则此前用有限 codepoint 范围判断字母，漏掉 UCD `HL`
+类别中的 FB1D–FB4F 兼容 Hebrew 字形。现在统一使用生成表的 `MY_LB_HL` 类别，避免
+类别数据与上下文规则分叉；TDD 新增 FB1D 与 solidus 的绑定回归。实现仍为 O(1)、无分配、
+无锁，普通 `test_myui_text_layout` 保持 **102/102**。
+
+## 本轮补充：Unicode 17 空格后置断行优先级（2026-09-04）
+
+空格后的断行此前会被 `BA/IN/CJ/HH` 等“目标字符前禁止断点”分支提前拦截，违反
+Unicode 17 LB18 在这些类别上的实际优先级。现在仅在硬断行、组合标记、ZWSP、glue、
+`SY`、闭合标点、`NS` 和引号等更高优先级保护不适用时，允许 `SP` 后断行；开括号后的
+消费型空格仍由 streaming 状态保持与后续内容不拆。实现保持 O(1)、无分配、无锁。TDD
+新增 `SP` 后 `BA/IN/HH/CJ` 以及 `SY` 负向回归，普通 `test_myui_text_layout` 为
+**102/102**。
+
+## 本轮补充：Unicode 17 Indic virama 跨组合标记状态（2026-09-04）
+
+Indic `VI` 本身属于 combining mark，旧状态机在处理它时提前返回，未保存 virama
+上下文；后续一个或多个普通组合标记会因此丢失 `AK/AS/DottedCircle VI x
+AK/DottedCircle` 的 LB28 不断规则。现在使用固定布尔状态保存 virama 链，普通组合标记
+继承该状态，非组合字符到达后立即按当前字符重置。每个 codepoint 仍为 O(1)、无分配、
+无锁。TDD 新增跨两个组合标记的 Indic 回归，普通 `test_myui_text_layout` 为 **99/99**。
+
+## 本轮补充：Unicode 17 BB 前置断行类别（2026-09-03）
+
+UCD 的 `BB`（例如 U+00B4）此前在生成器中被折叠为 `HY`，导致本应允许的 `BB` 前方
+断点被禁止，并错误继承了 `HY` 的后置断行语义。现在保留独立的 `MY_LB_BB` 类别，
+使 BB 允许前方断点、禁止后方断点；其余 `BA/HY/B2` 语义保持独立。TDD 新增 BB 类别及
+前后边界回归；普通 `test_myui_text_layout` 为 **99/99**。
+
+## 本轮补充：Unicode 17 B2 双向断行类别（2026-09-03）
+
+UCD 的 `B2`（例如 U+2014/U+2E3A）此前在生成器中被折叠为 `HY`，继承了“只允许在
+符号之后断行”的错误语义，导致其前方断点被错误禁止。现在生成表保留独立的 `MY_LB_B2`
+类别：B2 前后均可断，连续 B2 以及 `B2 SP* B2` 仍按 LB17 不断。修复只改变生成类别和
+固定类别分支，不增加运行期分配、锁或后端依赖。TDD 新增 B2 类别、前后断点、连续 B2
+和带空格序列回归；普通 `test_myui_text_layout` 为 **99/99**。
+
+## 本轮补充：Unicode 17 LB25 数字状态覆盖（2026-09-03）
+
+流式断行状态机此前只用少量脚本的 codepoint 范围识别数字，导致 Unicode UCD 中其余
+`NU` 字符无法进入指数、分隔符和数字运算符上下文。现在数字值、数字分隔符和 solidus
+状态复用生成表中的 `NU/IS/SY` 类别；ASCII、阿拉伯数字和全角数字行为保持兼容。每个
+codepoint 仍是 O(1)、无分配、无锁。TDD 新增 Devanagari 与 Mathematical Alphanumeric
+Digits 回归，普通 `test_myui_text_layout` 为 **99/99**；完整 LB25 规则交互和官方
+Unicode golden corpus 仍保留在后续矩阵。
+
+## 本轮补充：Unicode 17 Indic LB28 定向断行（2026-09-03）
+
+`AP/AK/AS/VF/VI` 的 Unicode 17 断行类别不再被通用 alphabetic 路径折叠。此前
+`AK x AP`、`AK x AK` 和 `AS x AK` 被错误粘连；现在仅按 UAX#14
+LB28.11--LB28.14 的定向规则保留所需组合，并通过流式 starter 上下文处理
+`AK/AS/DottedCircle VI x AK/DottedCircle`。该修复只增加固定状态和常数时间类别检查，
+不分配、不加锁，也不改变后端 API。
+
+TDD 先以 Unicode 17 `LineBreakTest.txt` 的 Kawi/Balinese/Batak 样例重现 `AK x AP`
+错误，再覆盖 `AK x AK`、`AK x AS`、`AS x AK`、跨 Latin 边界和 virama 流式序列；普通
+`test_myui_text_layout` 为 **98/98**。完整 UAX#14 golden corpus、locale tailoring 和
+SA dictionary corpus 仍独立保留为后续工作。
+
+## 本轮补充：STB CFF/CID 深层边界安全（2026-09-03）
+
+STB CFF 构造路径新增有界 header/INDEX 校验：header size、INDEX count、offset size、
+递增 offset 和对象数据范围必须落在 `CFF ` 表 payload 内；截断目录声明会在第三方
+解析器运行前拒绝。同步修正 vendored `stb_truetype`，CFF parser buffer 使用真实表长度，
+不再把任意 CFF 表映射成 512 MiB 的伪范围，避免畸形偏移越过文件 payload。该保护只在
+字体构造冷路径执行，不改变公共 font vtable；运行期非法 charstring glyph、CID
+FDSelect 和 INDEX 索引安全返回空结果，且 `CharStrings` 数量必须与 `maxp.numGlyphs`
+一致、每个 charstring 对象必须为非空且位于 INDEX payload 内；合法 CFF OTF 仍可加载和
+栅格化。
+
+CID CFF 的 FDArray 现在逐项解析 Font DICT，并验证每项 Private 的 size/offset、Private
+DICT 的 Subrs 相对偏移和 Subr INDEX 是否仍位于 CFF payload 内；同时修正 CID 路径保存
+FDSelect 偏移，确保 vendored STB 后续按 glyph 选择 FD 时使用经过验证的区域。TDD 新增
+`stb_loads_bounded_cid_cff_font` 与 `stb_rejects_invalid_cid_font_dict_private_data`，
+覆盖合法 CID 固件及越界 Private、Private size 和 Subrs 三类畸形输入。普通、ASan/UBSan、
+Vulkan 与 STB-only 字体测试均为 **55/55**，文本布局测试均为 **98/98**。这仍不等价于
+同时拒绝 CFF1 DICT 中 vendored STB 不支持的数字编码，避免进入断言路径。完整
+CFF/CFF2 charstring 指令、完整 DICT 语义或 OpenType table 语义验证，后续仍需独立
+语义 corpus。
+
+Type 2 CharStrings 另增加有界词法扫描：主 CharStrings、Global Subr 以及各 Font DICT
+Private 下的 Local Subr 均检查数字操作数、转义 opcode、stem hint 数量、hintmask/cntrmask
+mask 字节和保留 opcode 是否仍在对象 payload 内；主 CharString 仅在调用上下文可证明时
+检查 subr 调用操作数，调用 Subr 后将栈/ hint 上下文标记为未知，避免把合法 Subr 的调用方
+操作数误当作缺失。Subr 的栈未知部分退化为只验证 token 字节宽度，避免把调用方的 hint
+mask 误解析。该逻辑不会重复实现完整 Type 2 interpreter，也不会进入 glyph 绘制热路径。TDD 新增
+`stb_rejects_malformed_type2_charstrings`，覆盖截断数字、截断转义和保留 opcode；CFF DICT 对已知
+操作符的固定/偶数操作数基数及尾部悬空操作数也会拒绝，新增
+`stb_rejects_malformed_cff_dict_operands` 回归；正常 CFF corpus 同时覆盖 Comfortaa 与
+Cantarell。普通字体测试为 **55/55**，文本布局测试仍为 **98/98**；ASan/UBSan、Vulkan
+与 STB-only 矩阵同步覆盖该校验。
+
+## 本轮补充：STB 复合 glyph 图遍历优化（2026-09-03）
+
+STB TrueType 构造期的复合 glyph 无环校验改为带 `start/end/cursor/more` 状态的显式
+帧栈 DFS：不使用调用栈，不重复扫描父 glyph 已处理的组件前缀，图遍历复杂度稳定为
+O(V+E)，并继续受 glyph 数量和 allocator 失败路径约束。组件记录步进统一检查参数和
+变换字段的字节边界；`MORE_COMPONENTS` 在记录末尾时仍会拒绝，不会把尾部填充误当成
+组件，也不会放宽已有的坏字体拒绝规则。该优化只发生在字体加载冷路径，不改变公共
+font vtable、glyph cache 或绘制热路径。
+
+TDD 新增 `stb_accepts_deep_component_chain_without_recursion`，用 128 层以上的无环
+组件图覆盖深度和父帧游标保持；先以旧实现确认回归夹具可复现，再以新实现通过。普通、
+ASan/UBSan、Vulkan 与 STB-only 的 `test_myui_font` 均为 **48/48**，配套
+`test_myui_text_layout` 均通过。该用例不等价于完整 OpenType 语义验证；CFF/CFF2、
+COLR/SVG、复合 glyph 指令语义和完整轮廓规范仍属于后续范围。
+
+## 本轮补充：STB sfnt/TTC 容器边界校验（2026-09-03）
+
+STB 构造路径在第三方解析器前执行无分配的 sfnt/TTC 容器校验：验证头和版本、TTC
+face 目录、选中 face 偏移、表目录长度，以及每张表的 offset/length 是否落在文件
+payload 内；对 TrueType 还校验必需表固定字段、cmap format 4 数组/索引范围和
+`loca/glyf` 偏移、glyph header 最小长度、复合 glyph 组件索引/参数记录和组件图无环性。
+畸形数据会在
+`stbtt_GetFontOffsetForIndex()` 或 `stbtt_InitFont()` 读取前安全拒绝，不改变公共
+vtable 或绘制热路径。更深的轮廓坐标流和 OpenType 子结构仍由 STB 解析，尚未宣称
+完整格式验证。
+
+TDD 新增 `stb_rejects_truncated_ttc_header`、
+`stb_rejects_out_of_range_table_offset`、`stb_rejects_short_required_table` 和
+`stb_rejects_out_of_range_cmap_glyph_index`、`stb_rejects_short_glyph_record` 和
+`stb_rejects_out_of_range_component_glyph`、`stb_rejects_component_cycle` 和
+`stb_rejects_out_of_range_simple_glyph_instruction`、
+`stb_rejects_truncated_simple_glyph_coordinates`；普通、
+ASan/UBSan、Vulkan 与 STB-only
+`test_myui_font` 均为 **47/47**。CFF2/COLRv1 等 STB
+不支持格式继续显式失败。
+
+## 本轮补充：STB glyph cache OOM 事务（2026-09-03）
+
+STB 后端现在在驱逐旧 glyph cache entry 之前完成位图尺寸检查、乘法溢出检查和拥有数据
+复制。任一步分配失败都会释放临时 stb 位图并返回 `MY_RET_OOM`，不会清空旧 entry，也
+不会发布缺少 bitmap 的半成品 entry；成功路径保持原有 LRU 和 glyph-id 语义。该修复与
+FreeType 的缓存提交契约一致，不增加锁、逐帧分配或后端 ABI 变化。
+
+TDD 新增 `stb_glyph_oom_does_not_poison_cache`，验证失败重试成功且原 glyph 仍可命中；
+普通 `test_myui_font` **40/40** 通过（required LangSys 样本缺失时按既有规则显式 skip）。
+该测试覆盖 STB 开启路径，FreeType、Vulkan 和 Sanitizer 矩阵继续复用同一缓存契约；完整
+OpenType language-specific feature 选择、RTL GSUB 和跨字体 variation corpus 仍未完成。
+
+## 本轮补充：STB TTC face index 支持（2026-09-03）
+
+STB 后端新增 `my_font_stb_create_ex()`，对 TrueType Collection 使用显式
+`face_index` 解析目标字体；普通 TTF 的非零 index 和越界 TTC index 均明确失败，不会
+静默加载 face 0。字体链在 FreeType 不可用时传递 `my_font_source_t.face_index`，保持
+跨平台、多字面字体选择语义一致；旧 `my_font_stb_create()` 仍固定选择 face 0。
+
+TDD 通过运行时双 face TrueType Collection fixture 验证非零选面和非法 index 拒绝；普通、
+ASan/UBSan、Vulkan 与 STB-only `test_myui_font` 均为 **40/40**。CFF2/COLRv1 等 STB
+不支持的轮廓格式继续安全返回失败，不计入 STB TrueType 能力。
+
+STB 文件读取增加 `MY_FONT_STB_MAX_FILE_BYTES`（64 MiB）预算，并在 payload 分配前检查
+文件定位、长度和回绕；超限、空文件或定位失败只释放固定对象，不申请文件缓冲。TDD
+`stb_rejects_oversized_file_before_allocation` 覆盖该边界。
+
+## 本轮补充：动态模块实例 quiesce 契约（2026-09-03）
+
+class registry 新增 `my_widget_class_module_t` 生命周期 token，以及
+`my_widget_class_runtime_register_module()`、`my_widget_class_module_begin_unload()`、
+`my_widget_class_module_try_unload()` 和 `my_widget_class_module_destroy()`。模块 class
+通过 `my_widget_class_bind_instance()` 绑定到 widget；widget 销毁时自动解绑，避免动态
+模块在实例仍存活时被错误释放。模块进入 unload 状态后拒绝新 lease 和新 class 注册；
+`try_unload()` 仅在 active class、callback lease 和 widget instance 全部归零时成功，
+callback 内调用卸载接口会快速返回 `MY_RET_NOT_SUPPORTED`，不会递归锁死。推荐直接创建
+class widget 时使用 `my_widget_class_create()`，由框架自动完成 lease 与实例绑定。
+
+TDD 新增实例存活保护、callback 内卸载拒绝、推荐创建路径、loader factory/migration
+绑定、非法参数、重复替换计数、同 owner class 替换、schema-ex/chain 变体、引用阻止销毁、
+销毁后 fail-closed 及未知 token 拒绝回归；普通 `test_myui_loader` 为 **119/119**，YAML-off 禁用路径为
+**2/2**。ASan/UBSan 与 Vulkan 变体继续复用同一断言集合。
+该 token 是稳定地址的生命周期协调层：支持显式 `retain/release`，destroy 后保留 token
+地址并对迟到调用 fail-closed，避免跨线程 token 使用形成悬空指针；token 不执行
+`dlclose`/`FreeLibrary`/`NSUnload`。真实动态库仍必须由宿主在 `try_unload()` 成功后执行
+平台卸载，并通过对应平台 runtime/窗口线程 quiesce 验证。
+
+## 本轮补充：loader 属性回调租约与重入保护（2026-09-03）
+
+YAML loader 在整个文档构建期间持有 registry 读租约；动态 schema 的属性 setter
+现在与 factory、migration 一样进入线程局部 callback guard。setter 内尝试注册、替换、
+注销或冻结 loader/class registry 会快速返回 `MY_RET_NOT_SUPPORTED`，不会递归等待读写锁，
+且成功/失败返回路径均成对退出 guard。新增属性回调重入回归，`test_myui_loader`
+**104/104** 通过。
+
+class callback lease 在 loader 中仅覆盖 class create 和属性 setter，不再跨越公共属性、
+子树构建或样式处理；运行期替换/注销不会被无关子节点的慢路径额外阻塞。普通、Vulkan、
+ASan/UBSan loader 回归均为 **104/104**，YAML-off 禁用路径为 **2/2**。
+新增失败 setter 的 guard 清理测试，以及子树阻塞期间 class replacement 的并发测试。
+
+## 本轮补充：动态 class callback lease（2026-09-03）
+
+class registry 新增 `my_widget_class_acquire()`/`my_widget_class_release()`，以 immutable
+snapshot 计数保护 class factory、property、`is_instance` 的在途 callback。runtime
+replace/unregister 发布新快照后 retire 旧快照并等待 lease 归零；lease 期间共享 callback
+guard 拒绝递归 registry mutation，避免 callback 锁递归死锁。该路径保持冷路径加锁、callback
+期间无额外分配；TDD `test_myui_loader` **101/101** 通过。外部直接使用旧 descriptor callback
+仍必须遵守 lease，widget 实例销毁与真实动态库卸载顺序仍由调用方负责。
+
+## 本轮补充：UAX#14 数值与 Hangul 边界（2026-09-03）
+
+断行 helper 现在补齐 `HH`/`SY` 前置禁止断点、LB24 字母与数值前后缀粘连、
+`PR × ID/EB/EM`、`ID/EB/EM × PO`、`HY × NU` 及 Hangul LB27 组合；流式状态还覆盖
+`B2 SP* B2` 和 `HL (HY|HH) × 非 HL`。状态保留固定大小的数字后缀闭合状态，兼顾
+pair helper 与 `$10%x` 这类上下文。实现保持 O(1)、无锁、
+无分配且不改变公开 ABI；TDD `test_myui_text_layout` **98/98** 通过。完整 UAX#14 的
+LB25/LB28 全部交互、locale tailoring、SA dictionary corpus 和 golden corpus 仍未完成。
+
+## 本轮补充：text-area Unicode JUSTIFY（2026-09-03）
+
+text-area 的 JUSTIFY 分隔符计数、光标/IME 几何、选区矩形、RTL visual layout 和无 shaping
+绘制回退现在统一识别 Unicode breaking spaces，不再只处理 ASCII 空格；无 shaping 词宽按
+codepoint 计算。该路径保持 O(n) 单次扫描、无分配、无锁，TDD `test_myui_window_manager`
+为 **125/125**。
+
+## 本轮补充：Unicode breaking-space wrap（2026-09-03）
+
+公开的 `my_line_break_is_breaking_space()` 统一断行状态机与 paragraph wrap 的空格集合。
+换行回退和行边界裁剪现在覆盖 Unicode breaking spaces，避免 U+2000..U+2006、U+2008..U+200A、
+U+205F、U+3000 残留在错误物理行。该路径无分配、无锁，TDD `test_myui_text_layout` 为
+**91/91**。
+
+## 本轮补充：Unicode breaking-space 断行上下文（2026-09-03）
+
+流式 UAX#14 实用子集现在将 Unicode breaking spaces（U+2000..U+2006、U+2008..U+200A、
+U+205F、U+3000）与 ASCII 空格统一处理。开括号后的这些空格不会使后续内容在错误的
+位置断开；NBSP、WORD JOINER 和 ZWSP 仍使用各自的 glue/break 规则。实现只做固定范围
+检查，不分配、不加锁。TDD 新增 Unicode 空格回归，普通 `test_myui_text_layout` 为
+**89/89**；完整 UAX#14 locale tailoring 与 golden corpus 仍未完成。
+
+## 本轮补充：帧级 MyUI metrics 与 BreakUI 生命周期（2026-09-03）
+
+`myr/my_ui_metrics` 提供固定容量 8 帧、owner-loop 单线程的可选性能 ring buffer。它对
+关闭状态保持零写入/零分配/零锁开销，所有计数使用 `uint64_t` 饱和加法；嵌套 scope 只在
+最外层成功结束时发布。canvas wrapper 仅统计成功且参数有效的 logical draw operation，
+后端 frame 提交失败会丢弃当前样本。
+
+BreakUI 的 `break_ui_frame_begin()` 在成功取得 RHI command 后打开外层 scope，
+`break_ui_render()` 在所有错误、资源失败、窗口迭代失败和 composite skip 路径统一关闭；
+因此 shared-surface layout、logical damage 和嵌套 canvas 绘制可以被同一个样本观测。指标
+不等同于实际 GL/Vulkan draw call、最终 compositor damage 或跨线程 profiling 数据。
+
+TDD：`test_myui_metrics` **6/6**，`test_myui_vgcanvas_backend` **34/34**，
+`test_myui_window_manager` **124/124**，myui core 定向构建通过。最终门禁还通过
+Redis 配置 CTest **84/84**、Vulkan syntax/window/backend **7/7、124/124、35/35**、
+ASan/UBSan syntax/window **7/7、124/124**，以及 YAML-off 裁剪 CTest **83/83**。
+YAML-off 新增 `test_myui_loader_disabled` **2/2**，验证能力位为零、loader stub 不伪造
+错误状态；CMake 不再在 YAML 关闭时注册完整 YAML loader 测试。真实
+Wayland/X11/Win32/Cocoa/Vulkan runtime 证据仍需目标平台设备和 compositor。
+
+## 本轮补充：编辑器增量语法状态收敛（2026-09-03）
+
+语法缓存区分源码 dirty、旧状态快照和当前 token ready。单行编辑保持 lazy lexer 预算；
+同一跨行输入/输出状态下，未修改后缀复用旧 token 快照并提前收敛，避免大文档编辑后
+无谓分配和后缀重扫。块注释等状态变化只传播到实际收敛点，后续独立编辑仍单独失效，
+避免错误恢复。
+
+TDD：`test_myui_syntax` **7/7**、`test_myui_window_manager` **124/124**；普通与
+ASan/UBSan 定向回归通过，未改变渲染后端 ABI。
+
+## 本轮补充：OpenType language cache key 归一化（2026-09-03）
+
+FreeType/HarfBuzz capability cache 对 language 标签进行有界 ASCII 大小写折叠，
+`ZH-CN` 与 `zh-cn` 共享同一 script/language cache entry，避免重复 GSUB/GPOS 表扫描。
+归一化只作用于 provider/cache 层，不等同完整 BCP-47 canonicalization、locale alias
+或 tailoring；既有语言长度预算和 provider fallback 保持不变。
+
+TDD：普通 `test_myui_font` **35/35**，无 FreeType/HarfBuzz 构建继续显式 skip。
+
+glyph-run 与 visual-boundary cache 同步只对 language key 做有界 ASCII 大小写折叠，
+新增 `text_layout_shape_cache_normalizes_language_tag_case`；普通、Vulkan、ASan/UBSan
+文本布局均为 **88/88**。paragraph/text-area 对外参数仍保留调用者语言字符串，归一化
+不等同完整 BCP-47 canonicalization。
+
+同时修复 SA dictionary 回调对 `allow_before[0]` 的越界语义：run 起点现在不接受回调
+改写，内部边界仍在回调成功后事务性提交。普通、Vulkan、ASan/UBSan 文本布局均为
+**87/87**。
+
+## 本轮补充：PAL 定时器 OOM 与时钟上界可靠性（2026-09-03）
+
+定时器 fire 阶段不再使用动态 deferred 容器：当前回调条目保存在内联 current 槽位，回调
+结束后直接回到活动堆。回调期间新增 timer 进入 pending，pending 条目只有成功恢复到活动
+堆后才从队列移除，临时 OOM 不会令按钮持有的 timer ID 失效；嵌套 fire 通过无分配 current
+链保持内外层当前 timer 的删除与恢复安全。周期 timer
+在 `UINT64_MAX` 时钟上界触发后进入不可立即再次触发的状态，避免主循环忙循环；检测到时钟
+回拨后按新采样重新计算 deadline。普通窗口管理器定向测试 **123/123**，ASan/UBSan 专项
+同样通过；该修改不引入线程、平台或 RHI 依赖。
+
+## 本轮补充：Redis 源码依赖与输入边界收口（2026-09-03）
+
+使用 `/home/timeshift/opensource/redis-8.10.1` 的干净 CMake 构建验证了
+`deps/hiredis` 私有静态依赖链：配置、编译和 rule-engine 原生适配器测试均通过。
+Redis URL、prefix、key、value 和连接 timeout 现在分别受 4096 字节、128 字节、4096 字节、
+16 MiB、24 小时固定上限保护；超限输入在网络连接或 payload 分配前拒绝，远端超限 payload
+报告序列化错误，不会触发无界本地分配。非零 `operation_timeout_ms` 同时约束连接和阻塞命令
+读写，超时报告 `RE_PROVIDER_ERROR_TIMEOUT`，其他连接/命令错误报告
+`RE_PROVIDER_ERROR_UNAVAILABLE`。TDD 原生 `test_rule_engine_stream_ext` **50/50**
+通过；未设置 `RE_TEST_REDIS_URL` 时真实服务往返仍按设计显式 skip。
+
+## 本轮补充：Redis prefix URL 真实往返修复（2026-09-05）
+
+受控 Redis 8.10.1 服务在 `?prefix=codex` URL 下的 TDD roundtrip 首次暴露解析器游标
+遗漏 `?prefix=` 头部、从而把合法 URL 判为无效的问题。修复将游标直接定位到已验证 prefix
+尾端，保持单次有界 URL 扫描、O(1) 指针运算、无额外分配；`&` 与第二个 `?` 仍被拒绝。
+回归同时锁定“合法 prefix 到达连接阶段”的无服务断言。Windows 测试 helper 改用
+`_putenv_s`，不再以 256 字节栈缓冲截断 4096 字节 URL 边界测试。隔离端口真实 Redis
+服务上的 `test_rule_engine_stream_ext` 为 **50/50**，涵盖 timeout probe 与 prefix roundtrip；
+服务在测试结束后确认停止。`last_error` 保留最近一次诊断失败，成功或 `NOT_FOUND` 不会抹除。
+
+## 本轮补充：BreakUI damage-aware frame bridge（2026-09-03）
+
+BreakUI 新增 `break_ui_frame_begin()`，宿主应在 `break_ui_pump()` 后调用它，再将返回的
+命令交给 `break_ui_render()`。bridge 统一收集 drawable damage，并以固定容量、无分配的
+`FULL/PARTIAL/SKIP` 规划器门控 `rhi_frame_begin_damage()`：后端能力缺失、surface/resize/
+AA 状态不稳定或输入异常都安全退化全屏。无 dirty 只在没有 buffer-age 历史需求时跳帧；
+buffer-age 场景保留开始帧的机会，由 RHI 合并历史区域。render 阶段只依据本帧实际 partial
+结果启用局部 composite，避免跨帧开关造成错误的 swapchain 保留假设。
+
+TDD：`test_break_ui_damage` **29/29**，关键 BreakUI/RHI CTest **7/7**，ASan/UBSan
+定向回归通过；YAML-off `myui_core` 构建通过。真实 Wayland compositor、Windows/macOS
+runtime、X11/Win32/Cocoa buffer retention 和 Vulkan WSI 仍未由当前 headless 环境验证。
+
+## 本轮补充：class registry 运行期快照发布（2026-09-03）
+
+class registry 在 `my_widget_class_freeze()` 后提供
+`my_widget_class_runtime_register()` 与 `my_widget_class_runtime_unregister()`。写侧在互斥锁
+内复制当前有界 class table，完成 descriptor/name owned snapshot 后以 release 原子存储发布；
+冻结后的查找只做 acquire 加载和最多 64 项的线性查找，不加读锁、不分配，也不会观察部分复制。
+内建 class 不允许覆盖或删除，运行期注销只影响新查找。旧 table、旧 descriptor snapshot 和已
+返回的 class 指针保留到进程退出，避免读者悬空；该机制是低频冷路径，不是每帧注册机制。新增
+`my_widget_class_acquire()`/`release()` 作为 thread-affine callback lease：替换/注销发布新表
+后标记旧 snapshot 并等待在途 lease，lease 期间启用共享 callback guard，回调内 registry
+写入快速失败而不递归等待。class create、property 和 `is_instance` 内部路径均使用 lease。
+动态模块卸载仍需调用方先销毁实例，并避免直接调用未持 lease 的旧 descriptor callback。TDD
+覆盖新增/替换/删除、内建保护、旧 snapshot 稳定性、多读者并发和 replace/unregister 等待；
+本轮另补充运行期写侧的锁内冻结复核，避免 freeze 与 runtime writer 的检查竞态。
+
+loader factory/schema 同步提供冻结后的 `my_ui_loader_runtime_register_schema()`、
+`my_ui_loader_runtime_register_dynamic_schema()` 与 `my_ui_loader_runtime_unregister()`；写侧
+复用跨平台读写租约，owned descriptor 在完整校验/复制后替换，注销等待在途加载/查询结束，
+不释放旧读者仍在使用的 schema。`window` 与 built-in class 受到保护，回调内 runtime 写入仍由
+共享线程局部 callback 深度拒绝。TDD 覆盖冻结后新增/替换/注销、动态 schema owned snapshot、
+内建保护、在途加载等待、回调重入、OOM 事务替换和非法输入预检；`test_myui_loader` **100/100** 通过。
+
+## 本轮补充：媒体扩展 ABI 兼容性收口（2026-09-03）
+
+媒体能力不再追加到冻结的 `my_pal_vtable_t`，旧 PAL vtable 初始化和调用保持安全。
+基础 `my_pal_media_context_t` 与 `my_css_media_context_t` 也恢复原布局；需要显式区分
+未知事实时，分别使用版本化 provider 与 `my_*_media_context_ex_t` / `ex2` API。provider
+通过 ABI 版本和 `size` 校验，PAL 销毁前注销；查询仅发生在 CSS 解析、主题加载和窗口
+resize 冷路径，渲染帧热路径无媒体锁、分配或后端分支。TDD：CSS 67/67、Break PAL
+8/8，原有 Loader 90/90、Window Manager 117/117 通过。
+
+## 本轮更新：YAML 窗口 CSS 响应式媒体样式（2026-09-03）
+
+YAML 窗口 CSS `style` 现在保存源文本与加载前主题基线。窗口创建和逻辑尺寸 resize
+均在冷路径用一次性 viewport 上下文重算 `@media`；断点使用逻辑像素，物理 drawable
+与 HiDPI scale 不会改变样式选择。候选主题完成复制、解析和写入后才交换，失败时保留
+当前主题与旧 CSS 源。普通 `test_myui_loader` **87/87**、`test_myui_css` **65/65**、
+`test_myui_window_manager` **117/117** 通过，覆盖初始 viewport、resize 切换和失败保留。
+
+本轮补充 PAL 媒体能力快照：使用版本化媒体 provider 扩展，冻结的
+`my_pal_vtable_t` 不追加字段；Break、Dummy 及 X11/Wayland/Win32/Cocoa 平台适配层完成
+安全能力映射。缺失 provider 返回不支持并降级为零设备能力。窗口 CSS 仅在冷路径消费
+扩展快照；旧 `my_pal_media_context_t`、`my_css_media_context_t` 及旧媒体入口保持原
+布局，需要 known mask 时使用 `*_media_context_ex_t` 与 `ex2` API。普通 loader **90/90**、
+Break PAL **8/8** 通过；HDR、系统偏好和高阶色域仍保持未知，等待可靠平台来源与 runtime
+证据。
+
+## 本轮更新：dirty suffix 批量折行与 OOM 收口（2026-09-03）
+
+wrap 模式下，未启用折叠时的 dirty physical-row suffix 统一交给一次
+`my_text_paragraph_t` 处理，再映射回物理行 visual lines；未修改前缀继续复用，硬换行、
+逻辑 codepoint 范围和 shaping cluster 语义保持不变。折叠路径保留逐行处理，避免折叠
+范围改变 paragraph 输入语义。候选 paragraph、visual-line 数组和物理映射失败时恢复旧
+缓存；`ta_vline_push()` 的 darray 扩容失败会释放候选 visual-line，避免 OOM 泄漏。
+
+TDD 门禁：普通/ASan `test_myui_window_manager` **113/113**，普通/ASan
+`test_myui_text_layout` **78/78**；YAML-off 与 Vulkan `myui_core` 构建通过。
+
+## 本轮补充：BreakUI GPU AA pending 事务收口（2026-09-03）
+
+BreakUI 的 Break RHI AA 请求在下一渲染边界提交；若在提交前恢复当前 active level，
+现在会显式撤销 pending target switch，避免旧请求误执行。非法 level 不会污染 pending
+状态，active target、尺寸和质量仍保持不变。新增 vgcanvas 回归覆盖保留与取消两条路径。
+
+TDD 门禁：普通/ASan `test_myui_vgcanvas_backend` **34/34** 通过；既有 11 个
+myui/Break 专项 CTest 全部通过。
+
+## 本轮更新：my_text_area 编辑事务与历史一致性（2026-09-03）
+
+`my_text_area` 的用户编辑和历史重放统一使用替换事务：先校验范围、UTF-8 计数、最大
+长度和文档容量，再提交 undo，最后执行不会失败的原地替换。插入、选区替换和删除在
+OOM、约束拒绝或历史分配失败时均保留原文、光标、选区与 undo/redo 状态。程序化
+`set_text()` 将语法候选、文本扩容和内容复制完成后才清理当前 widget 历史，避免失败
+加载破坏可撤销状态；ASCII 键盘字符使用 NUL 终止的临时缓冲，`ta_pos_of()` 正确支持
+空列输出。
+
+TDD 门禁：普通 `test_myui_window_manager` **110/110**、ASan/UBSan **110/110**、无 BiDi
+**99/99**、`test_myui_text_layout` **75/75** 通过；YAML-off 与 Vulkan `myui_core` 构建
+通过。该改动不改变 PAL、window、canvas 的 frozen vtable 布局。
+
+undo/redo 重放采用 `peek -> apply -> commit`：只有目标 widget 成功应用 patch 后才移动
+undo 游标；owner 未注册或文档应用失败时，原 undo/redo 状态保持可用。
+
+## 本轮更新：统一硬换行分隔符契约（2026-09-03）
+
+公共 `my_line_break_hard_break_len()` 统一 paragraph 与 text area 对 LF、VT、FF、CR、CRLF、NEL、
+U+2028 和 U+2029 的识别。CRLF 按一个物理分隔符处理，分隔符不进入行内容和逻辑字符
+计数；行偏移、几何、wrap、syntax 与 cursor 使用同一规则。该 helper 只进行最多三个
+字节的边界检查，不分配、不加锁，不改变 PAL/window/canvas frozen vtable。
+
+TDD 门禁：普通/ASan `test_myui_text_layout` **78/78**，普通/ASan
+`test_myui_window_manager` **111/111** 通过；完整 UAX#14 locale tailoring 仍未实现。
+
+## 本轮更新：my_edit 事务与跨后端边界（2026-09-03）
+
+单行编辑器的插入、选区替换和删除现在采用候选文本事务：新文本及 password mask 均准备
+成功后才交换到 widget，OOM 时保持旧文本、掩码、光标和选区；`changed` 与 undo 记录不会
+在失败操作中产生。`my_edit_set_text()` 与 `my_edit_set_password()` 返回实际失败码，
+不再吞掉分配错误。测量和绘制入口统一 edit 有效字体，并对 fallback 宽度、IME 预编辑、
+selection/cursor 坐标使用 64 位中间值和饱和回写，保持所有 canvas 后端坐标语义一致。
+
+TDD 门禁：普通 `test_myui_window_manager` **102/102**、ASan/UBSan **102/102**、无 BiDi
+**93/93**、`test_myui_text_layout` **75/75** 通过。该改动不改变 PAL、window、canvas 的
+frozen vtable 布局。
+
+## 本轮更新：undo 栈事务与 replace 语义（2026-09-03）
+
+`my_undo_stack` 新增不可批量的 replace patch，保存替换前后的完整字节范围；`my_edit` 的
+选区替换可由一次 undo 恢复原文，redo 重新应用新文。连续退格批处理现在为合并缓冲区
+预留 NUL 终止字节，公共长度计算统一拒绝 `size_t` 回绕。
+
+undo 记录在候选 entry、payload 和 darray 扩容全部成功后才提交，失败不会丢失 redo 分支、
+容量中的旧历史或当前 undo 位置。正常批量输入仍保持摊销 realloc，未改变 PAL/window/canvas
+frozen vtable。
+
+TDD 门禁：普通 `test_myui_window_manager` **102/102**、ASan/UBSan **102/102**、无 BiDi
+**93/93**、`test_myui_text_layout` **75/75** 通过。
+
+## 本轮更新：text area 几何与滚动边界（2026-09-03）
+
+text area 的 glyph advance 累加、fallback cell 宽度、visual line 高度、滚动内容高度以及
+游标/IME/绘制 y 坐标现在采用 64 位中间值和 `INT32_MAX` 饱和语义；视觉行缓存切片增加
+文本缓冲区边界校验。TDD 新增极大 glyph advance 测试，普通 `test_myui_window_manager`
+**91/91**、无 BiDi **82/82**、ASan/UBSan **91/91** 通过；YAML-off 与 Vulkan `myui_core`
+构建通过。
+
+## 本轮更新：矩形端点溢出防护（2026-09-03）
+
+UI 矩形的半开区间端点现在统一使用 64 位中间值，覆盖 contains、intersect、union 和
+dirty merge 接触判断，防止极限坐标下的有符号整数回绕。输出 ABI 保持 `int32_t`；超出
+范围的宽高饱和到 `INT32_MAX`，负尺寸仍按空矩形处理。TDD 新增负坐标、`INT32_MIN`、
+`INT32_MAX` 跨界端点和 dirty 合并用例，`test_break_ui_damage` 为 **24/24**。
+
+同一轮窗口几何审计补齐模态窗口居中、tooltip 定位和 dirty 快照容量边界：居中与提示框
+坐标使用 64 位中间值，尺寸乘法在扩容前检查回绕，失败时保持安全边界。TDD：
+`test_break_ui_damage` **24/24**，`test_myui_window_manager` **84/84**。
+
+菜单和节点编辑器的极限尺寸也已收口：菜单宽高/边缘翻转/子菜单锚点、节点自动尺寸的
+文本与子节点端点均使用 64 位中间值，并在写回前饱和。TDD 新增极限弹出与自动尺寸回归，
+`test_myui_window_manager` **86/86**，ASan 定向回归通过。
+
+节点视图 socket 命中/拖拽、soft/LCD 裁剪循环和 Break RHI drawable 尺寸契约继续收口：
+极限坐标使用 64 位差值、端点和饱和偏移，超出 signed UI rectangle ABI 的尺寸直接拒绝。
+TDD：`test_myui_window_manager` **88/88**、`test_myui_vgcanvas_backend` **33/33**、
+`test_break_ui_damage` **24/24**。
+
+BreakUI 的 `u32` logical/drawable 尺寸入口现统一校验 signed myui rectangle ABI；初始化、
+render、present-damage 查询和 Break RHI canvas 创建/resize 不再接受会截断为负数的尺寸。
+TDD：`test_myui_break_pal` **7/7**。
+
+## 本轮更新：跨后端 stroke 线帽与连接语义（2026-09-03）
+
+共享 `my_vggeometry_stroke()` 现提供 butt/round/square 线帽和 miter/round/bevel 连接，
+所有 bundled soft、GLES2、Vulkan、Break RHI 后端沿用同一几何输出。miter 以半线宽 4 倍
+为上限，超限退化为 bevel；闭合 contour 首顶点连接不再遗漏，开放 contour 仍不自动闭合。
+soft AA union 同步纳入 square 端点和 miter/bevel 连接，避免后端和 AA 模式之间的视觉漂移。
+公共及后端 setter 拒绝未知枚举且不修改状态，未扩展 frozen vtable。TDD：普通
+`test_myui_vggeometry` **7/7**、`test_myui_vgcanvas_backend` **32/32**。
+
+## 本轮更新：共享几何输入边界（2026-09-03）
+
+`my_vggeometry` 底层 API 现在独立拒绝非有限 path/Bezier/transform、非法 stroke style、
+非正尺寸和无效 clip；primitive 对非法值安全忽略，错误 path 不留下半个 contour。GPU
+后端传播共享 fill/stroke 错误，避免提交半成品顶点。该保护不改变 frozen vtable，正常
+路径仅增加固定边界检查。TDD：普通几何测试 **10/10**，普通后端测试 **32/32**。
+
+共享几何输出增加首错状态与事务边界：顶点扩容失败、输出溢出或变换后非有限值不会再被
+静默丢弃；后续 fill/stroke 及 GLES2、Vulkan、Break RHI 的 primitive/图像背景路径会在
+提交前返回错误。Bezier 追加失败回滚新增点，clip 扫描采用 64 位端点迭代，`begin_verts()`
+开启新输出事务并清除旧错误。TDD 使用失败 allocator 验证无半成品顶点；普通几何测试
+**13/13**，后端测试 **32/32**。
+
+## 本轮更新：CSS `@supports` 有界条件（2026-09-03）
+
+myui CSS 新增单声明 `@supports (property: value)`：复用已实现声明值语法和 key alias，
+只接受颜色及数值样式属性，在解析期展开匹配规则并丢弃不匹配 block。查询有固定字节预算，
+复杂 `and`/`or`/`not` 条件和未知属性/值不被误判为支持。严格模式返回稳定的
+`MY_CSS_ERROR_UNSUPPORTED_FEATURE` 与 `MY_CSS_FEATURE_SUPPORTS` 能力位，兼容模式跳过整个
+block。该设计不把 supports 条件带入主题查询热路径；普通 `test_myui_css` 为 **61/61**。
+
+## 本轮更新：CSS 设备能力媒体条件（2026-09-02）
+
+条件媒体入口 `my_css_parse_media_ex()` 与 `my_theme_load_css_media_ex()` 现支持通过
+`my_css_media_context_t.capabilities` 传入的 `hover`、`pointer`、`any-pointer`、
+`color-gamut` 和 `dynamic-range` 能力。能力使用显式 bitmask，解析入口拒绝未知 bit，
+未知 feature/value 仍按严格策略报告 `MY_CSS_ERROR_UNSUPPORTED_FEATURE`。`color-gamut`
+按等级匹配（`p3` 满足 `srgb`，`rec2020` 满足 `p3` 和 `srgb`），`dynamic-range: standard`
+保持默认兼容语义。
+
+设备条件只在解析冷路径评估并扁平化，主题查询热路径不读取平台或后端状态，不引入每帧
+分配、锁或重复扫描。该层只定义跨平台能力输入契约，不负责真实 X11、Win32、Wayland、
+macOS 或 GL/Vulkan 能力采集；完整 at-rule 语义和真实平台 runtime CI 仍未完成。TDD 新增
+设备能力匹配、色域等级、未知值和未知 bit 回归，普通 `test_myui_css` 为 **55/55**。
+
+PAL 公共 inline wrapper 现统一验证对象、vtable 和必选槽位；空对象返回
+`MY_RET_INVALID_PARAMS`，可选能力缺失返回 `MY_RET_NOT_SUPPORTED` 或安全默认值，且不改动
+frozen vtable 布局。正常路径只增加固定指针判断，不引入分配或锁。TDD 新增空对象和部分
+vtable 回归，`test_myui_break_pal` 为 **6/6**。
+
+## 本轮更新：RTL wrapped visual-line 水平导航（2026-09-02）
+
+RTL wrapped text 的水平光标移动现在按全局 visual-line 顺序跨越相邻 visual line，包含
+物理行边界；Shift+箭头保持逻辑 selection anchor。实现只复用已有 visual-line 索引和固定
+RTL layout cache，不增加渲染帧分配。TDD 新增跨 visual-line、跨物理行导航/反向移动和选区
+回归，普通 `test_myui_window_manager` 为 **83/83**；完整跨段落 visual rebreaking 仍在
+未完成矩阵中。
+
+MVVM data/condition binding 的首次 `vm -> view` 同步现在是创建事务的一部分：目标 setter
+失败会传播为绑定失败，并清理已注册 listener、validator 和候选绑定对象；condition 求值
+同样不再吞掉 setter 错误。TDD 新增失败目标回归，普通与 ASan `test_myui_mvvm` 均为
+**3/3**。正常事件路径保持同步直达、无队列和无额外帧分配。
+
+MVVM context 切换现保留旧 VM 引用并采用回滚事务：新 VM 的任一 data/items/condition 绑定
+重订阅或初始刷新失败时，清理新监听、恢复旧 VM 和旧监听后再返回错误，避免绑定集合处于
+新旧 VM 混合状态。TDD 新增切换失败回归，普通与 ASan `test_myui_mvvm` 均为 **4/4**。
+
+断行状态机补齐 UAX#14 的 B2 break-both 配对和 SY 后接 Hebrew letter 约束；规则只增加
+固定码点判断，不引入分配或历史文本扫描。TDD 新增 B2 与 Hebrew solidus 回归，保持
+Unicode 17 实用子集边界，不宣称完整 UAX#14。
+
+## 本轮更新：Unicode 17 LineBreak 与 loader 生命周期（2026-09-02）
+
+CSS 条件媒体已加入解析期评估入口：`my_css_parse_media_ex()` 和
+`my_theme_load_css_media_ex()` 接收一次性 `my_css_media_context_t`，支持有界 viewport、
+orientation、颜色方案、reduced-motion 条件以及 `width/height` CSS range（例如
+`width >= 800px`、`400px <= width < 800px`）；逗号 OR 与 query 内 `and` AND 均在解析时
+完成，未匹配 block 不进入主题。query 有固定字节预算，未知特性/单位严格失败，主题查询
+不读取媒体状态。TDD 新增过滤、事务回滚、方向/动效偏好、range 和输入边界回归；普通
+`test_myui_css` 为 **51/51**，旧 CSS 入口兼容行为保持不变。
+
+shaping 公共边界新增 `MY_FONT_SHAPE_MAX_GLYPHS` 输出预算。provider、字体链和 text-layout
+聚合层在复制或扩容前拒绝超限 glyph-run，并事务性释放 provider 已交付的结果，避免恶意
+或损坏 provider 通过超大 `count` 触发无界遍历、容量回绕或后续缓存污染。TDD 新增超大
+provider 结果回归；普通 `test_myui_font` 为 **34/34**，`git diff --check` 通过。
+
+YAML loader 的 dynamic schema 生命周期已完成一轮性能优先安全收口：查询结果中的类型名、
+属性描述符名称和事件名称复制到 `my_ui_type_info_t` 固定有界存储，避免替换 schema 后的
+悬空指针；加载/查询使用跨平台读租约，注册/替换使用写租约，写者阻止新读者并等待在途
+操作结束后再释放旧 owned schema。读侧允许同线程嵌套，写侧采用写者等待计数避免饥饿；
+freeze 的启动期兼容行为保持不变。TDD 新增查询快照稳定性和读期间替换等待用例，
+`test_myui_loader` 为 **81/81**；普通、ASan/UBSan loader 构建以及 YAML-off `myui_core`
+构建通过。
+
+断行类别表已从旧版 vendored libunibreak 数据升级为 Unicode UCD 17.0.0
+`LineBreak.txt` 的仓库静态生成产物，头文件携带 `MY_LINE_BREAK_UCD_VERSION` 版本宏。
+新增 `tools/generate_myui_line_break_data.sh`，生成器强制拒绝非 17.0.0 输入、合并有序连续
+区间并只写入候选临时文件后替换，运行时仍为二分查表、无文件访问和无分配。Kawi 等新字符
+类别与既有 glue/Hangul/emoji 上下文规则保持一致。`SA` 保留为 `MY_LB_SA`，并新增有界
+dictionary callback 及 paragraph/wrap 接入：连续 SA run 最多 256 个 codepoint，使用固定
+scratch，回调失败时事务性回滚，不交付半成品。TDD 新增 Unicode 17 新字符、dictionary
+边界、预算和 paragraph 失败回归，普通、ASan/UBSan、无 BiDi `test_myui_text_layout` 均为
+**72/72**，生成结果已通过字节
+可复现校验。
+
+## 本轮更新：数值斜线序列断行边界（2026-09-02）
+
+断行状态机现在将数字两侧的斜线按数值序列连接处理，`1/2` 不会在斜线前后拆开，
+离开数值序列后仍恢复正常断行。状态仅增加固定的数值上下文，不分配内存、不扫描历史
+文本；普通文本斜线不改变既有行为。TDD 先复现 `1/2` 的错误断点，修复后普通和
+ASan/UBSan `test_myui_text_layout` 均为 **67/67**。
+
+## 本轮更新：通用属性路由实例校验（2026-09-02）
+
+通用 `my_widget_set_prop()`/`my_widget_get_prop()` 在调用内置 descriptor callback 前，使用
+class 提供的 `is_instance` checker 校验对象的真实 vtable 身份，不再信任公开可写的
+`widget_type` 字符串。label、普通 widget 或其他伪造类型对象访问 list_view/button 等
+专用属性时统一返回 `MY_RET_INVALID_PARAMS`，不会读取错误控件的私有字段；旧自定义 class
+可将 checker 置为 `NULL`，保留既有兼容行为。每次校验仅做一次函数指针比较，无分配、无锁、
+无扫描，适用于 soft、GLES/OpenGL、Vulkan 和 Break RHI。TDD 新增类型伪造回归，普通与
+ASan `test_myui_loader` 均为 **83/83**。
+
+## 本轮更新：局部样式 OOM 候选事务（2026-09-02）
+
+`my_widget_style_set()` 首次写入局部样式时先在候选 `my_style_t` 中完成值复制，成功后才
+挂载到 widget；OOM 或容量失败只释放候选，不留下空 `local_style`，不改变 dirty 状态。
+已有样式的失败更新同样不触发失效。TDD 新增 OOM 回归，普通与 ASan
+`test_myui_css` 均为 **44/44**。
+
+## 本轮更新：局部样式失败事务边界（2026-09-02）
+
+`my_widget_style_set()` 现在在首次创建局部样式前预校验 state 和 key 长度；非法请求直接
+返回 `MY_RET_INVALID_PARAMS`，不分配 `local_style`、不改变 dirty 状态。合法写入成功后
+触发 retained invalidation。TDD 新增失败请求无分配回归，普通与 ASan
+`test_myui_css` 均为 **43/43**。
+
+## 本轮更新：局部样式写入触发 retained invalidation（2026-09-02）
+
+`my_widget_style_set()` 在局部样式成功新增或替换后立即触发 widget 及祖先失效，确保
+soft、GLES/OpenGL、Vulkan 和 Break RHI 的 retained surface 不继续显示旧像素。失败的参数
+校验、OOM 或样式容量错误不触发失效，也不改变旧样式。TDD 新增局部样式 dirty 回归，
+普通与 ASan `test_myui_css` 均为 **42/42**。
+
+## 本轮更新：冷却查询单次时钟采样（2026-09-02）
+
+按钮剩余时间和进度查询现在每次只采样一次 PAL 单调时钟，并在同一采样值上完成截止时间
+比较与饱和换算，避免时钟在连续读取间跨过 deadline 时发生无符号下溢。查询仍为 O(1)、
+无分配；动画 timer 不参与业务判定。TDD 增加可递增时钟回归，普通与 ASan
+`test_myui_window_manager` 均为 **81/81**。
+
+## 本轮更新：按钮 API 类型安全（2026-09-02）
+
+按钮文本、冷却设置和冷却查询入口现在通过按钮专用 vtable 身份校验确认对象类型，
+不再仅依赖公开可写的 `widget_type` 字段。将 label、普通 widget 或空句柄传入时，
+设置接口返回 `MY_RET_INVALID_PARAMS`，查询接口返回安全默认值；错误路径不读取按钮
+私有字段、不分配内存、不创建定时器。TDD 新增非按钮对象回归，普通与 ASan
+`test_myui_window_manager` 均为 **81/81**。
+
+## 本轮更新：Canvas 状态数值边界（2026-09-02）
+
+公共 canvas setter 及四个后端现在拒绝 NaN、Inf 和非正 line width，几何/曲线/文字/图像入口
+也拒绝非有限坐标与圆角半径，避免非法浮点进入 transform、clip 或栅格化路径；失败不会修改
+活动状态。
+正常状态更新仍为 O(1)，不增加渲染帧分配或扫描。TDD 新增数值边界回归，普通
+`test_myui_vgcanvas_backend` 为 **30/30**。
+
+## 本轮更新：字体测量宽度饱和（2026-09-02）
+
+bitmap、stb、FreeType 和字体链的宽度累加不再直接写入 `int32_t`；累加使用更宽类型，
+最终结果在输出边界饱和到 `[0, INT32_MAX]`。超长文本或大字号不会因宽度回绕产生负布局、
+错误命中或未定义行为，正常字体测量仍为单次线性遍历且不增加堆分配。TDD 新增 4 MiB
+文本测量回归，普通 `test_myui_font` 为 **30/30**。
+
+## 本轮更新：公共 Canvas API 失败契约（2026-09-02）
+
+所有 `my_vgcanvas_*` inline 入口现在先验证 canvas 和 vtable，再调用后端槽位；空句柄统一
+返回 `MY_RET_INVALID_PARAMS`，合法 canvas 缺少可选/扩展槽位统一返回 `MY_RET_NOT_SUPPORTED`，
+不会跨后端因函数指针为空而崩溃。质量设置仍在能力 mask 通过后才更新活动状态。TDD 新增
+空 canvas 和缺失槽位回归，普通 `test_myui_vgcanvas_backend` 现为 **30/30**。
+
+## 本轮更新：my_darray 容量回绕防护（2026-09-02）
+
+通用 `my_darray` 的容量倍增现在在回绕和 `capacity * sizeof(void*)` 前执行上界检查，
+`size == SIZE_MAX` 也会在 `size + 1` 前安全返回 `MY_RET_OOM`。失败路径不调用 allocator，
+不修改已有指针、size 或 capacity；正常路径仍保持倍增策略。TDD 新增两个极限容量回归，
+`test_myui_layout` 现为 **6/6**。
+
+## 本轮更新：OpenType required feature 优先级（2026-09-02）
+
+FreeType/HarfBuzz shaping 现在读取已选 GSUB/GPOS LangSys 的 required feature。required tag
+具有最高优先级：用户传入 `-tag` 或 `tag=0` 时，provider 将该请求提升为启用；普通
+feature 的显式关闭不变。未显式指定 script 时，策略使用 HarfBuzz buffer 推断的 script，
+避免默认 shaping 路径绕过同一规则。capability 查询也把 required tag 判定为支持，保持查询
+结果与实际 shaping 一致。required tag 收集固定为 32 项上限、无外部文件访问和无每帧缓存，
+公共接口仍只暴露整数 tag/count，不泄漏 HarfBuzz、FreeType 或平台类型。
+
+TDD 新增 `freetype_required_feature_cannot_be_disabled`：在有 required LangSys 的测试字体上
+验证 capability 不被禁用请求误判，且禁用请求与默认 shaping 输出一致；当前 Cantarell 系统样本
+不含 required LangSys，因此该用例显式 skip。普通 `test_myui_font` 为 **29/29**，不改变
+无 HarfBuzz 构建的 `MY_RET_NOT_SUPPORTED` 契约。
+
+FreeType glyph cache 的位图分配现在采用提交前事务：位图 OOM 或尺寸乘法溢出会在驱逐旧
+缓存项之前返回，既不缓存空 glyph，也不改变已有缓存；重试可以重新加载并成功。可变字体
+`wght` 坐标数组分配失败会释放 `FT_MM_Var`、face 和对象，权重转换使用饱和整数运算。
+TDD 增加 glyph-cache OOM 重试和 variable-font 构造回滚用例，普通与 ASan
+`test_myui_font` 均为 **29/29**。
+
+## 本轮更新：VS15/VS16 shaping 基础契约（2026-09-02）
+
+FreeType/HarfBuzz shaping buffer 现在使用 `HB_BUFFER_FLAG_REMOVE_DEFAULT_IGNORABLES`。字体
+没有消费的 VS15/VS16 不再变成独立 glyph，不增加 advance，输出 cluster 继续指向前一个基字符；
+字体支持的 variation glyph 仍由 HarfBuzz 在 shaping 阶段选择。该标志不会破坏参与 emoji 组合的
+ZWJ sequence，且不改变 soft、GLES2、Vulkan、Break RHI 的公共 API。
+
+TDD 新增 `freetype_shaping_attaches_variation_selector_to_base`，同时覆盖 VS15 与 VS16 的
+UTF-8 byte cluster；`freetype_shaping_preserves_zwj_sequence` 验证 ZWJ 组合仍输出单一组合 glyph；
+`freetype_shaping_selects_cjk_variation_glyph` 使用真实 Noto CJK IVS 验证变体 glyph id 被选择。
+普通 `test_myui_font` 为 **32/32**；ASan/UBSan、Vulkan 和无 HarfBuzz 字体/布局配置均通过；完整 language-specific feature
+选择、RTL GSUB、跨字体 variation 覆盖和 locale-specific presentation 仍未完成。
+
+## 本轮更新：Unicode combining 数据版本固定（2026-09-02）
+
+combining-mark 区间表现在明确绑定 Unicode UCD **17.0.0**。生成脚本会校验同目录
+`ReadMe.txt` 的版本后才写出表，错误版本会拒绝生成；仓库内静态表携带版本宏，构建和运行时
+不读取 UCD 文件。TDD 增加版本宏及 `Mn/Mc/Me` 区间契约，保证不同平台和不同安装环境不会
+因本地 UCD 版本差异产生不同断行结果。生成结果与 checked-in header 已完成字节一致性验证。
+
+## 本轮更新：RTL JUSTIFY visual mapping（2026-09-02）
+
+text area 的 RTL wrapped JUSTIFY 现在按 visual layout 逐词绘制，ASCII separator 的额外宽度
+按 visual 顺序累加；光标 IME spot 使用同一 visual boundary 加权坐标，selection rects 也会
+对拉伸前后边界同步调整。选区矩形的空间前缀通过一次 visual-boundary 遍历计算，避免长行
+多片段选择的 O(n²) 重复边界查找，不增加堆分配。普通 LTR、无 shaping 和非 JUSTIFY 路径
+保持原有快速路径，不新增逐帧分配或平台/RHI 类型依赖。TDD 新增 RTL 光标和像素选区回归，
+普通与 ASan `test_myui_window_manager` 均为 **81/81**，无 BiDi 配置为 **75/75**。
+
+## 本轮更新：paragraph 全局 RTL 边界映射（2026-09-02）
+
+paragraph 现提供 `my_text_paragraph_line_visual_of_logical()` 和
+`my_text_paragraph_line_logical_at_visual()`：调用方使用 paragraph 全局 logical boundary
+时，API 自动复用固定 4 槽 line-layout LRU，将结果转换为对应行的局部 visual boundary，
+反向查询再加回该行的全局 codepoint 起点。映射不复制文本、不创建额外缓存，非法行和
+溢出均安全返回；TDD 新增跨行 RTL/括号映射测试，当前 `test_myui_text_layout` 为 **63/63**。
+
+## 本轮更新：Hangul LB26 断行边界（2026-09-02）
+
+断行状态机新增 UAX#14 LB26 的 Hangul Jamo 与 LV/LVT 音节组合判断：JL 后接 JL/JV/LV/LVT、
+JV/LV 后接 JV/JT、JT/LVT 后接 JT 均禁止换行。分类只使用固定范围和音节模运算，不分配内存、
+不访问外部 UCD 文件，也不改变 LTR/RTL 或任何渲染后端 API。TDD 先验证旧实现错误放行，再修复
+为 `test_myui_text_layout` **61/61**；既有定时器和 YAML/CSS 回归保持通过。
+
+## 本轮更新：ZWNJ LB9 断行边界（2026-09-02）
+
+断行状态机将零宽非连接符 `U+200C` 与 ZWJ、variation selector、emoji modifier 等一起视为
+不可拆分扩展。这样 CJK 或其他表外字符紧邻 ZWNJ 时不会错误产生断点；判断仍为固定范围比较，
+不读取外部 UCD 文件、不分配内存，也不改变普通 LTR/RTL 和后端 API。TDD 先验证
+`U+4E00 U+200C U+4E00` 旧实现错误放行，再修复为普通、ASan、无 BiDi 文本布局均
+**63/63**。
+
+## 本轮更新：Unicode combining-mark LB9 覆盖（2026-09-02）
+
+断行规则不再只依赖少数手写 combining-mark 范围，新增由 UnicodeData 的 `Mn/Mc/Me` 类别生成
+的静态区间表。运行时使用二分查找，并同时检查相邻两个 codepoint，覆盖 Devanagari 等非拉丁
+脚本的 spacing mark；生成脚本为 `tools/generate_myui_combining_marks.sh`，不把 UCD 文件带入
+运行时，也不增加堆分配。TDD 先验证 `U+093E` 与 CJK 相邻时错误放行，再修复为普通、ASan、
+无 BiDi 文本布局均 **64/64**，生成结果可重复校验。
+
+## 本轮更新：Unicode combining 数据版本固定（2026-09-02）
+
+combining-mark 区间表明确绑定 Unicode UCD **17.0.0**。生成脚本会校验同目录
+`ReadMe.txt` 的版本后才写出表，错误版本会拒绝生成；仓库内静态表携带版本宏，构建和运行时
+不读取 UCD 文件。TDD 增加版本宏及 `Mn/Mc/Me` 区间契约，保证不同平台和安装环境不会因
+本地 UCD 版本差异产生不同断行结果。生成结果与 checked-in header 已完成字节一致性验证，
+普通、无 BiDi 和 ASan 文本布局均为 **68/68**。
+
+## 本轮更新：UI 几何增长溢出防护（2026-09-02）
+
+共享几何、soft、GLES2、Break RHI 和 Vulkan state stack 的容量增长现在在倍增和
+`capacity * element_size` 前执行上界检查；异常尺寸返回既有 OOM/参数错误，不会让容量回绕、
+分配过小缓冲区或破坏后续绘制状态。正常容量增长仍保持倍增策略，不引入逐帧扫描或额外分配。
+普通 `test_myui_vgcanvas_backend` **30/30**、`test_myui_vggeometry` **3/3**，ASan 后端
+测试 **30/30** 通过。
+
+## 本轮更新：Unicode glue 边界补全（2026-09-02）
+
+断行 glue 集合新增非断行连字符 `U+2011` 与历史零宽不换行空格 `U+FEFF`，并沿用前后
+codepoint 双向检查，避免它们与 CJK 或其他表外字符相邻时产生错误断点。规则为 O(1)、
+无分配且不改变普通换行缓存；TDD 先验证旧实现错误放行，修复后普通、ASan、无 BiDi 文本
+布局均为 **65/65**，窗口管理器仍为 **81/81**、**75/75**。
+
+## 本轮更新：PAL 定时器边界契约（2026-09-02）
+
+定时器现在拒绝 `interval_ms == 0`，从源头避免周期零导致的主循环忙循环；ID 分配在
+`uint32_t` 回绕后跳过 0 和仍保留在管理器中的 ID，避免重复标识。`due_in_ms()` 对超过
+`UINT32_MAX` 的等待返回饱和值，时钟回拨不会因为窄化转换生成错误的短等待。首次调度和
+周期重调度继续采用 `UINT64_MAX` 饱和 deadline，接近时钟上限时不提前触发。
+
+TDD 新增零间隔拒绝与回拨等待饱和测试；普通 `test_myui_window_manager` 为 **77/77**，
+此前的冷却按钮、timer 创建失败和 deadline 回绕回归保持通过。
+
+## 本轮更新：CSS 能力注册表与结构化严格诊断（2026-09-02）
+
+`my_css_capabilities()` 现提供进程级只读能力注册表：支持的规则、selector、typed value、
+cascade 以及有限的 `@media all`/`@media screen` 展开能力、已知 parse flag、4 MiB 输入预算
+与 4 级祖先预算均可在解析前查询；条件媒体通过独立上下文入口在解析期评估，设备能力
+、有界 `@supports` 单声明查询和其他 at-rule 语义仍不在支持范围内。查询无
+分配、无锁，也不读取平台或渲染后端状态，适合配置预检和跨后端一致性检查。
+
+`my_css_error_t` 新增稳定的 `my_css_error_code_t` 和相关 `capability` 位。严格 at-rule
+拒绝、未知策略位、输入超限、语法错误和 OOM 可由机器代码区分，同时保留原有行列号与消息
+字段，旧调用方使用方式不变。TDD 定向验证 `test_myui_css` 为 **41/41**；新增用例覆盖
+静态注册表、有限媒体容器展开、媒体嵌套深度、缺失 at-rule 能力指示和策略/预算错误分类。
+
+YAML loader 以相同原则提供 `my_ui_loader_capabilities()` 和 `my_ui_error_code_t`：schema、
+children、bindings、CSS style 与资源预算可在加载前查询，输入预算、YAML 语法、schema、
+未知控件、资源和样式错误可机器区分，`field` 提供首个可识别的 YAML key。注册表为进程级
+只读数据，不依赖平台/RHI。TDD 新增
+能力注册表与错误分类用例，`test_myui_loader` 为 **40/40**。
+
+随后补充 `my_ui_loader_query_type()`：查询路径不分配内存，可返回内置 class 的属性类型、
+属性数量和事件列表，并将仅注册 factory 的不透明类型标记为 `factory_registered` 而非虚构
+schema。注册名使用有界扫描，`MYUI_UI_YAML=OFF` 下 query、load 和 schema-register 也提供
+安全 stub。TDD 当前
+`test_myui_loader` 为 **43/43**，覆盖内置 schema、自定义 factory 与未终止注册名。
+
+本轮把公共字段和 `window` 根 schema 纳入 type query，并为 `my_ui_load_str_ex()`/
+`my_ui_load_file_ex()` 增加 `MY_UI_LOAD_STRICT_SCHEMA`。严格入口对公开内置 schema 与已注册
+schema 的 factory 拒绝未知 YAML key，默认入口与无 schema 自定义 factory 的兼容语义不变；
+窗口 root 查询路径的空 class 解引用由 ASan 发现并修复。当前 `test_myui_loader` 为
+**47/47**。
+
+自定义 factory 现可通过 `my_ui_loader_register_schema()` 绑定静态属性/事件表；查询不复制
+表且严格 schema 可拒绝未知字段，旧的不透明 `my_ui_loader_register()` 行为保持兼容。未知
+load policy 单独使用 `MY_UI_ERROR_UNKNOWN_POLICY`。TDD 当前 `test_myui_loader` 为 **50/50**。
+
+严格 schema 的属性预检现在覆盖自定义 schema 的 string/int/float/bool/color 元数据，在
+factory 创建前拒绝类型不匹配、范围溢出和非有限浮点；错误字段保持属性名。该路径只在
+显式严格加载的冷路径执行，不增加默认兼容加载或渲染帧开销。
+
+YAML 错误诊断进一步增加固定预算的嵌套 `path`，递归子节点错误可定位到
+`children[i]...field`，超长路径安全截断。TDD 新增嵌套定位和深层截断用例，当前
+`test_myui_loader` 为 **56/56**。
+
+严格 schema 现将预检扩展到公共字段、`window` 根字段、layout/bindings/children 容器和
+整棵 widget 子树；所有这些检查均在创建任意 factory/window 前完成，避免父节点或自定义
+factory 因后代错误产生副作用。文件入口新增未知字段与嵌套公共字段路径回归测试；路径
+超出固定预算后保持精确的 `<path-truncated>` 标记。普通/ASan loader 均为 **71/71**，
+CTest 的 myui 三项为 **3/3**，无 BiDi 与 `MYUI_UI_YAML=OFF` 裁剪构建也通过。
+
+## myui YAML schema version migration（2026-09-02）
+
+- 以 TDD 先加入版本迁移成功、未来版本拒绝、嵌套迁移、后代失败回滚和迁移 OOM 用例，
+  再在 YAML parse 后执行迁移；任何 factory/window 创建和严格 schema 校验都发生在整棵
+  树迁移完成之后。
+- `my_ui_loader_register_schema_ex()` 为自定义 factory 注册有界 `uint32_t` schema version
+  与 borrowed migration callback；另提供 `my_ui_loader_register_schema_chain()`，以最多
+  16 个连续的单版本步骤表达可审计迁移链。旧注册 API 默认版本 1，未提供 `version` 的
+  YAML 继续按当前版本兼容。显式旧版本必须有 callback/完整链路，显式未来版本、负值、
+  超 `UINT32_MAX` 或非整数版本均拒绝。
+- 迁移按 `children` 递归处理，每个节点独立解析版本并保留固定错误路径；链路注册时拒绝
+  非相邻、乱序或超过 16 步的表，运行时对缺失步骤直接失败。递归深度受
+  `MY_CONF_YAML_MAX_DEPTH` 限制。callback 失败或 OOM 时销毁私有配置树，绝不交付部分
+  widget，也不触发任一 factory；callback 不得改变节点 `type`。
+- `my_conf_object_take()` 提供无分配的 child 所有权转移，供迁移 callback 原子重命名字段。
+  迁移后仍执行严格类型、范围、容器和未知字段校验；版本字段作为公共保留字段出现在
+  type query 中。registry 注册前还会拒绝保留字段冲突和重复属性/事件，并保持失败替换的
+  原条目不变。class registry 同样执行有界名称/descriptor 校验，复制类型/属性/事件名称到
+  owned snapshot，并提供启动期 freeze API；built-in 批量注册失败时整批回滚；
+  冻结后注册返回 `MY_RET_NOT_SUPPORTED`，首次查找与启动期注册同步，freeze 发布后查询为
+  无锁只读快路径。动态 schema 通过显式计数复制
+  descriptor 名称和回调元数据，使用调用方 allocator；动态→动态→静态替换会释放全部
+  owned storage，OOM 或校验失败不会替换旧条目。`test_myui_loader` 当前 **83/83** 通过，
+  未增加渲染帧路径成本。
+
+## 本轮更新：有界断行上下文与精确 slice（2026-09-02）
+
+`my_line_break_state_t` 现维护固定大小的数值上下文：指数标记/符号与数字保持在同一
+数值序列内，货币符号、百分号及其 Unicode 变体也不会被拆开。该状态机每个 codepoint
+仅做常数时间更新，不分配内存；它是 UAX#14 实用子集的增量增强，并不宣称完整的
+locale tailoring 或 SA dictionary 支持。
+
+`my_text_layout_process_n()` 接受 NUL-free、精确长度的 UTF-8 byte slice；它只读取
+调用方声明的范围，并复用全局有界 master layout cache。`my_text_paragraph_line_layout()`
+按需构建 paragraph-owned 的单行视觉 layout，重复查询返回稳定指针，单行 OOM 不写入
+缓存，后续可重试，paragraph 销毁时统一释放。
+
+text area 的绘制、命中测试、光标和 IME 视觉映射现在共享固定 4 槽的按 visual line
+RTL LRU 缓存，不再同时维护 paint layout 与 RTL layout 两套对象；缓存键包含文本 revision、
+物理行、visual byte span、字体、字号和 shaping revision。缓存容量固定，不在绘制热路径扩容；
+文本、字体或 shaping 参数改变时一次性释放所有槽位。几何 shaping 同样使用精确 slice，普通
+重绘不产生临时整行字符串分配。paragraph 还提供 `my_text_paragraph_process_n_ex()`，对
+NUL-free slice 执行同样的有界处理，text area wrap 直接复用物理行内存，避免每行再复制临时字符串。
+行 shaping 在 paragraph 自有副本上临时隔离行尾 NUL，恢复后再继续处理，避免 provider
+越过当前物理行。该合并保持 soft、GLES2、Vulkan 和 Break RHI 的公共 canvas API 不变。
+
+TDD 定向验证：`test_myui_text_layout` **72/72**、`test_myui_font` **33/33**、
+`test_myui_window_manager` **75/75**、`test_myui_vgcanvas_backend` **30/30**。
+
+## 本轮更新：CSS 主题桥接事务完整性（2026-09-02）
+
+`my_theme_load_css_ex()` 现在先把活动主题的 entries 深拷贝到候选主题，再在候选主题上
+应用 CSS；复制的不只是 selector 元数据，也包括每个 state 的 `my_value_t` 和对应
+specificity。全部操作成功后才交换 entries，旧主题由候选对象接管并释放。解析、候选复制、
+属性写入或动态数组扩容失败时只销毁候选，活动主题的旧 entries、字符串和 specificity
+保持不变。这样 CSS 桥接的回滚成本集中在加载冷路径，查询热路径仍为原有零分配扫描，且
+不引入任何平台或渲染后端 API。
+
+TDD 新增旧 entry 保留、同键覆盖、specificity 保留和逐分配点故障回滚测试；普通配置的
+`test_myui_css` 为 **35/35**，并检查候选销毁后的 allocator live count 为零。
+
+legacy 文本主题入口 `my_theme_load_str()` 也复用公共 `my_theme_clone()`：坏行、字符串
+复制或扩容失败只销毁候选，不会留下前序行已经写入的半主题；成功后才交换 entries。
+同时修复 `my_style_set()` 的新属性 OOM 路径，值复制成功前不会增加属性计数；默认主题
+创建的任一属性写入失败也会返回 NULL 并释放已创建资源。
+单次 `my_theme_set_ex3/ex4()` 创建的新 entry 在属性写入失败时也会立即撤销，避免主题中
+出现空 selector entry。
+
+## 本轮更新：script/extensions/features shaping 契约（2026-09-02）
+
+公共 `my_utf8_next()` 现严格拒绝 overlong、UTF-16 surrogate、超出
+`U+10FFFF`、非法 continuation 和截断序列；异常输入统一返回 `U+FFFD` 并只前进一个
+字节，保证所有布局、字体链和配置文本路径可重新同步且不读取未属于 C 字符串的字节。
+该检查保持 O(1) 每个 codepoint、无分配。
+
+feature 输入现由 `my_font_shape_features_normalize()` 在公共入口统一规范化：不改变
+既有 `my_font_shape_params_t` ABI，不产生堆分配；tag 按稳定字典序排列，重复 tag 与重叠
+范围遵循最后声明覆盖，并把结果用于 provider、paragraph 所有权和 visual-boundary cache
+键。支持 `tag=value`、`+tag`、`-tag` 及有限范围语法；输出容量不足、非法 token、范围
+反转和超过 32 条原始声明均安全拒绝。
+
+新增 `my_font_shape_support_query()` capability 接口；FreeType/HarfBuzz 通过 GSUB/GPOS
+真实 script/language system 表查询支持状态，字体链按 face 聚合，固定 16 项 LRU 避免
+热路径重复创建 HarfBuzz face。查询同时对规范化后的 feature tag 做固定上限检查：每个请求
+tag 必须在兼容的 GSUB 或 GPOS language system 中存在；缺失 tag 返回明确不支持，不把未知
+feature 静默当成已生效。缓存键包含 script、language 和 canonical feature set。明确不支持时
+按“原请求 -> 同 script 默认 language -> 默认 script -> legacy provider”回退，未知状态则
+保持最佳努力，不误拒绝旧 provider。
 
 字体 vtable 在尾部追加可选 `shape_ex`，新增 `my_font_shape_ex()` 和
 `my_text_layout_shape_ex()`，支持 direction、OpenType script tag、language 与有界
-feature 字符串；旧 `shape` callback 的 ABI/行为保持兼容。FreeType/HarfBuzz 会设置
-buffer 的 direction/script/language 并解析最多 32 个 feature；不支持显式参数的 provider
-明确返回 `MY_RET_NOT_SUPPORTED`。
+feature 字符串；旧 `shape` callback 的 ABI/行为保持兼容。公共入口统一拒绝空 feature
+项、尾逗号和超过 32 项的列表；FreeType/HarfBuzz 会设置 buffer 的
+direction/script/language 并解析同一上限的 feature。HarfBuzz 在输入与输出阶段均检查
+buffer allocation 状态；不支持显式参数的 provider 明确返回 `MY_RET_NOT_SUPPORTED`。
 
-paragraph 在未指定 script 时按有限 Unicode block 映射拆分连续 shaping segment，RTL segment
+paragraph 在未指定 script 时按 Unicode Script 属性拆分连续 shaping segment；BiDi 构建复用
+SheenBidi Unicode 17 primary Script 数据，并使用仓库内由 Unicode 17.0.0
+`ScriptExtensions.txt` 生成的静态扩展表；无 BiDi 构建也复用该表，仅 primary Script 使用
+常用 block fallback。扩展字符按“前序候选、后序候选、稳定邻接 fallback”解析，运行时二分查找、
+无文件访问和无额外分配。RTL segment
 按 visual 顺序处理，provider 收到的文本严格以 segment 为边界，glyph cluster 继续映射到
 原始 UTF-8 byte offset。任一 provider、cluster 校验或 allocator 失败都会清空整个 result，
 不泄露已完成的 segment。
 
-TDD 定向验证：`test_myui_font` **11/11**，`test_myui_text_layout` **32/32**；当前能力
-仍不等于完整 UAX#24/OpenType，variation selector、language system、feature policy、
-增量 shaping cache、完整复杂 RTL/GSUB 及跨段落 rebreaking 继续作为未完成项。
+TDD 定向验证：`test_myui_font` **27/27**，`test_myui_text_layout` **53/53**；当前能力
+已覆盖 Unicode 17 primary Script 与 Script_Extensions 解析，并提供有限 language-system
+能力查询、feature 存在性检查、required feature 优先级与安全回退，但仍不等于完整 OpenType，
+provider-specific variation glyph 覆盖、language-specific feature 选择、完整复杂
+RTL/GSUB 及跨段落 rebreaking 继续作为未完成项。
 
-script resolver 已补充 Thai (`Thai`) 与 Thaana (`Thaa`) 的准确 tag 映射；Common/Inherited
-字符优先继承前序 script，段首才向后继承。TDD 新增组合附加符号与 Thai 边界用例，当前
-`test_myui_text_layout` 为 **32/32**。
+文本布局 shaping 现增加每个 layout 的固定 4 槽 LRU glyph-run cache；键包含字体指针、字号、
+direction、script、language 和 canonical features，命中路径在文本一致性校验后直接复制结果，
+不再分配或扫描源 codepoint 数组。缓存写入使用 layout allocator，失败只放弃缓存；缓存命中时
+输出复制失败只影响当前调用。layout 不拥有字体，调用方必须保证字体及字体链 face 在 layout
+销毁前有效。TDD 新增参数隔离、缓存回收、写入失败和命中单次输出分配用例，布局测试为
+`53/53`。
+
+variation selector 的基础契约已统一：bitmap、FreeType、stb、字体链、text-area 几何和四个
+canvas 的非 shaping fallback 不把 VS 当作独立 glyph 或 advance，也不会因 VS 切换字体 face；
+FreeType/HarfBuzz 额外清理未消费的 VS15/VS16，保留基字符 byte cluster，并交由 provider 选择
+字体实际支持的 presentation glyph。完整跨字体和 locale-specific presentation 仍由后续 OpenType
+阶段处理。
+
+script resolver 已补充 Thai (`Thai`) 与 Thaana (`Thaa`) 的准确 tag 映射，并新增 Armenian
+(`Armn`)、Georgian (`Geor`)、Ethiopic (`Ethi`)、Myanmar (`Mymr`)、Khmer (`Khmr`)、Lao
+(`Laoo`)、Tamil (`Taml`)、Telugu (`Telu`)、Kannada (`Knda`) 和 Malayalam (`Mlym`) 的常用
+Unicode block 映射；Common/Inherited 字符优先继承前序 script，段首才向后继承。TDD 新增
+多 script provider 捕获用例；Common Arabic 标点与基本区/补充区 variation selector 均保持
+邻接 script，不触发错误分段或 bidi 路径；Greek、Armenian、Georgian、Ethiopic、Myanmar
+和 Khmer 的常用 supplementary block 也已覆盖。BiDi 构建复用 SheenBidi Unicode 17 primary
+Script 数据与仓库内 Script_Extensions 静态表，无 BiDi 构建继续使用无依赖 primary fallback。
+当前 `test_myui_text_layout` 为 **60/60**。
 
 paragraph 新增 `my_text_paragraph_process_ex()` 和只读
 `my_text_paragraph_shape_params()`；换行测量会接收同一组 direction/script/language/features，
 字符串由 paragraph 自己复制并在 OOM 时事务回滚。新增参数透传、所有权和回滚用例，当前
-`test_myui_text_layout` 为 **35/35**。
+`test_myui_text_layout` 为 **60/60**。
+
+paragraph 现提供 `my_text_paragraph_line_layout()`：逻辑换行段的视觉布局按需构建并由
+paragraph 所有，固定 4 槽 LRU 在命中期间返回同一对象；不再按整段 line_count 分配指针
+数组，单行构建失败不会写入缓存，后续可重试。销毁 paragraph 时统一释放已构建的 line layout。
 
 text layout geometry 新增 `_ex` 查询接口，visual boundary cache 现在按字体、字号、
 direction、script、language 内容和 features 内容区分；参数字符串由 layout 复制并受
 shaping 字节预算约束。text area 新增 `my_text_area_set_shaping_params()`，换行、几何、
-光标、selection 和 IME 查询共享 shaping revision，设置采用有界校验和事务复制。TDD
-验证：`test_myui_text_layout` **36/36**、`test_myui_window_manager` **71/71**。
-完整 UAX#24/OpenType script resolution、variation selector、language system、feature
-policy、跨段落增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
+光标、selection 和 IME 查询共享 shaping revision，设置采用有界校验、规范化和事务复制；
+等价 feature 列表不会造成伪 revision 失效。TDD
+验证：`test_myui_text_layout` **60/60**、`test_myui_window_manager` **75/75**。
+完整 UAX#24/OpenType script resolution、provider-specific variation glyph 覆盖、language-system feature
+选择、跨段落
+增量 rebreaking 和 RTL JUSTIFY 联动仍未完成。
 `my_vgcanvas_draw_text_ex()`/`my_vgcanvas_measure_text_ex()` 已通过 base canvas 的同步
 shaping 上下文接入 soft、GLES2、Vulkan 和 Break RHI；旧 vtable 布局和默认 API 保持兼容，
 上下文不跨调用保存。参数化 glyph/advance 的 soft golden 测试通过，其他后端完成编译
-验证。完整 UAX#24、variation selector、language system、feature policy、跨段落增量
-rebreaking 和 RTL JUSTIFY 联动仍未完成。
+验证。完整 UAX#24、provider-specific variation glyph 覆盖、language-system feature 选择、跨段落增量 rebreaking
+和 RTL JUSTIFY 联动仍未完成。
 
 ## 本轮更新：Vulkan vgcanvas AA 事务
 
@@ -60,8 +1865,9 @@ FreeType/HarfBuzz 输出和字体链聚合均保留该身份；GLES2、soft、Br
 glyph-id 栅格化及缓存不再把 glyph id 当作全局 key。LTR 单 face 保持快速路径，RTL 跨 face
 只在发生字体切换时分配有界 run 描述并逆序提交。segment、扩容和逐分配点失败均事务回滚，
 结果不向调用方泄露部分 glyph。TDD 覆盖 Latin/CJK identity、RTL 跨 face 顺序和 allocator
-  OOM 回滚；paragraph 级 glyph-run mapping 与有限 script/features 契约已在本轮接入，完整
-  UAX#24/script resolution、variation selector、language system 和增量 shaping 仍是明确后续项。
+  OOM 回滚；paragraph 级 glyph-run mapping、有限 script/features 契约和 script/language
+  capability 回退已在本轮接入，完整 UAX#24/script resolution、variation selector 语义和
+  增量 shaping 仍是明确后续项。
 
 **paragraph bidi glyph-run 接入（TDD）**：新增 `my_text_layout_shape()`，将 SheenBidi 解析的
 视觉 run 还原为按 direction shaping 的逻辑 UTF-8 run，再合并为视觉顺序 glyph；cluster 映射
@@ -101,12 +1907,31 @@ shaping，非法 UTF-8 cluster 直接失败，未启用 HarfBuzz 时保留 codep
 **直接 JSON 解析输入预算（TDD）**：文件加载入口已有 4 MiB 检查，但直接调用
 `my_conf_parse_json()` 原先仍可绕过该限制并进入递归解析及字符串分配。现于 parser 入口
 增加 `MY_CONF_JSON_MAX_BYTES` 前置检查，超限输入在任何配置节点分配前失败；新增计数
-allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **28/28**、完整 CTest
+allocator 回归测试，确认拒绝路径零次分配。`test_myui_loader` **38/38**、完整 CTest
 **82/82** 通过。
 
 JSON 写出器同步限制输出至 `MY_CONF_JSON_MAX_BYTES`，并在达到预算后停止字符串扫描，
 避免生成自身解析器必拒绝的文档以及无界容量倍增；程序化配置树中的 `NaN`/`Inf` 等非有限
 浮点值也会被拒绝，序列化返回失败。
+
+**YAML 样式错误传播（TDD）**：窗口根节点的 `style` 现在区分 legacy 文本主题和 CSS
+样式；CSS 使用 `MY_CSS_PARSE_STRICT_AT_RULES`，文本主题和 CSS 的任何解析、复制或写入
+失败都会使整个 YAML 窗口候选加载失败，不再静默返回未按配置样式化的窗口。样式应用发生
+在窗口树交付前，失败路径释放已创建的窗口、PAL window 和主题资源。新增非法 CSS 样式
+拒绝及合法 CSS 样式生效测试；`test_myui_loader` 当前为 **38/38**。文件读取缓冲分配
+失败和读取失败也会填充 loader 错误信息，避免调用方只能得到无上下文的 NULL。
+
+CSS 与 YAML 的 C-string 入口均增加预算内 NUL 扫描：未在 4 MiB 边界内终止的输入在任何
+解析、主题或配置分配前失败，避免通过 `strlen()` 产生无界读取。新增无终止输入回归，
+`test_myui_css` 为 **35/35**，`test_myui_loader` 为 **38/38**。
+
+legacy 文本主题入口同样受 `MY_THEME_MAX_BYTES` 4 MiB 有界 NUL 扫描保护，未终止输入在
+候选主题复制前拒绝，不再由 `strchr()`/`strlen()` 无界读取。
+
+**YAML 通用属性严格性（TDD）**：`name`、`tooltip` 和 `class` 的 setter 失败不再被忽略；
+`layout` 只接受 `default`、`linear:h[:int32]` 或 `linear:v[:int32]`，非法轴向、缺失间距
+和超出 `int32_t` 的间距均拒绝。线性 layouter 使用调用方 allocator 创建，创建失败会回滚
+整个 widget。新增分配故障和布局语法回归，普通/ASan loader 均为 **38/38**。
 
 CSS 解析器的结构错误状态不再依赖调用者提供 `my_css_error_t`；`err == NULL` 时同样拒绝
 未闭合 `@` 规则等非法输入，保留错误信息可选的 API 语义。`test_myui_css` 定向测试
@@ -191,8 +2016,8 @@ VFS 路径截断回归测试改为实际构造达到 `VFS_MAX_PATH` 的 PAK 路�
 推断完成。
 
 **Wayland EGL partial present 接入（TDD）**：RHI 新增固定 16 项的 `RHIPresentRect` 输入、
-严格边界校验和 `rhi_frame_begin_damage()`；dxx 在 pump 后取得 drawable damage，无变化时
-不提交帧，首帧/resize/AA 变更/能力缺失时自动走全屏。Wayland EGL 仅在同时具备
+严格边界校验和 `rhi_frame_begin_damage()`；dxx 现在通过 `break_ui_frame_begin()` 统一取得
+drawable damage 并开始帧，无变化时仅在安全条件满足时不提交帧，首帧/resize/AA 变更/能力缺失时自动走全屏。Wayland EGL 仅在同时具备
 `EGL_EXT_buffer_age`、`eglSwapBuffersWithDamageKHR/EXT` 且当前 buffer age 为 1 时启用，
 并将 top-left damage 安全转换为 EGL bottom-left 坐标。GL X11、Win32、macOS 能力明确关闭。
 Vulkan 经过安全审计后不启用 `VK_KHR_incremental_present` 作为 partial-present 能力：该扩展
@@ -209,10 +2034,11 @@ Vulkan 经过安全审计后不启用 `VK_KHR_incremental_present` 作为 partia
 
 ## CI 验证矩阵（当前）
 
-`.github/workflows/ci.yml` 现包含三项 Linux 专项门禁：`linux-clang-release` 使用 Clang/LLD
+`.github/workflows/ci.yml` 现包含 Linux 专项门禁：`linux-clang-release` 使用 Clang/LLD
 Release 并显式开启 `ENGINE_ENABLE_IPO=ON`，运行非 `graphics` CTest；`linux-gcc-sanitizers`
-使用 GCC、`ENGINE_USE_ASAN=ON` 和 `ENGINE_USE_UBSAN=ON`，运行非图形 CTest；
-`linux-graphics-smoke` 安装并启动 Xvfb，选择 Mesa lavapipe/llvmpipe 软件渲染，只运行现有
+使用 GCC、`ENGINE_USE_ASAN=ON` 和 `ENGINE_USE_UBSAN=ON`，运行非图形 CTest；`gl` job
+额外安装并启动 Xvfb，运行 `test_platform_x11_runtime` 与 `test_rhi_x11_runtime` 的
+OpenGL/GLX 生命周期门禁；`linux-graphics-smoke` 安装并启动 Xvfb，选择 Mesa lavapipe/llvmpipe 软件渲染，只运行现有
 `graphics` 标签测试（当前为 `test_vulkan`）。Graphics smoke 缺少 Xvfb 或 lavapipe ICD 时直接失败，
 软件渲染也不等价于真实 GPU 的 golden-image 证据。
 
@@ -1082,7 +2908,7 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 
 | 模块 | 状态 | 证据 / 说明 |
 |------|------|-------------|
-| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/`; `rule_engine_core` is graphics/Lua-independent. The focused cases in `engine/tests/test_rule_engine.c` cover flat facts, parsing/install, action references, callbacks, limits, bounded agenda controls, private/rebuild-based RETE, streaming windows and correlation, callback and memory providers, and the bounded query seam. The bounded backward slice covers zero-argument and parameterized goal chains, literal/propagated formal binding, nested goal operands, registered custom-function operands, boolean alternatives, recursive traversal, cycles, depth and solution limits, deterministic derivation-path proof nodes/edges, and fact-mutation invalidation; Phase 3 adds query-level `NOT` negation-as-failure, bounded query aggregation (COUNT/SUM/AVERAGE/MIN/MAX/FIRST/LAST), DFS/BFS/iterative-deepening strategy selection, and a bounded shared proof graph result cache; arbitrary predicate unification, shared-subgraph provenance, native Redis, and RETE-UL parity remain unsupported. C11 executor evidence is opt-in. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
+| Rule-engine C99 core | 部分 | `engine/src/rule_engine/rule_engine.h` and `engine/src/rule_engine/`; `rule_engine_core` is graphics/Lua-independent. The focused cases in `engine/tests/test_rule_engine.c` cover flat facts, parsing/install, action references, callbacks, limits, bounded agenda controls, private/rebuild-based RETE, streaming windows and correlation, callback and memory providers, and the bounded query seam. The bounded backward slice covers zero-argument and parameterized goal chains, literal/propagated formal binding, nested goal operands, registered custom-function operands, boolean alternatives, recursive traversal, cycles, depth and solution limits, deterministic derivation-path proof nodes/edges, and fact-mutation invalidation; Phase 3 adds query-level `NOT` negation-as-failure, bounded query aggregation (COUNT/SUM/AVERAGE/MIN/MAX/FIRST/LAST), DFS/BFS/iterative-deepening strategy selection, and a bounded shared proof graph result cache; native Redis is an optional compile-gated adapter, verified with Redis 8.10.1 when `RULE_ENGINE_REDIS_SOURCE_DIR` supplies private hiredis; arbitrary predicate unification, shared-subgraph provenance, and RETE-UL parity remain unsupported. C11 executor evidence is opt-in. See `docs/Rule_Engine_Architecture.md`, `docs/Rule_Engine_Design.md`, `docs/Rule_Engine_Benchmark.md`, and `docs/rule_engine_conformance.yml`. |
 
 ## 游戏运行时
 
@@ -1932,6 +3758,14 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
   当前定向结果为 `30/30`。
 - 方案与限制详见 `docs/myui_remaining_work.md` 和 `docs/myui_integration.md`。
 
+## 冷却按钮时钟边界（2026-09-03）
+
+- TDD 覆盖 PAL 时钟回拨下的最短按压释放保护，以及 `UINT64_MAX` deadline 饱和时的
+  冷却检测、剩余时间、进度和 timer 不忙循环契约。
+- 释放路径对回拨采用饱和 elapsed；饱和 deadline 使用起始时间计算有限 duration，且
+  不创建无法到期的周期动画 timer。普通/ASan `test_myui_window_manager` 均为
+  **119/119**。
+
 ## myui Unicode 断行边界（2026-08-24）
 
 - 以 TDD 补充 Unicode glue：NBSP、figure space、narrow NBSP、word joiner；即使相邻
@@ -2771,3 +4605,230 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 裁定记录归档：SDD 台账（含全部评审裁定与 SAFE-TO-LEAVE 设计边界）入库于
   `docs/superpowers/ledgers/2026-08-29-rule-engine-full-parity.md`；完整工作区（任务
   简报/报告、评审包、诊断）留盘于 `.superpowers/sdd/`（`.git/info/exclude` 排除）。
+
+## myui 边界安全收口（2026-09-02）
+
+- `my_vgcanvas_set_font()` 统一拒绝 `size <= 0`，四个渲染后端均保持“先校验、后提交”语义：
+  无效字号不会覆盖当前字体或字号；`font == NULL` 仍表示复用当前字体并只更新字号。
+- 几何、路径和状态栈的动态数组补齐 `SIZE_MAX` 回绕检查；Vulkan 延迟纹理退休队列补齐
+  计数及字节容量检查。扩容失败不替换旧指针、不改变旧计数。
+- 文本布局、paragraph、syntax 和 YAML 行表/标量扩容补齐终止字节与倍增边界检查，继续
+  使用有界输入和摊销扩容，不在正常热路径引入逐项分配。
+- TDD 新增无效字号且旧状态保持测试；普通 `myui` 相关 12 项测试 **12/12**，backend
+  ASan/UBSan 定向测试 **1/1**。全量 CTest 在既有 `test_vulkan` runtime 长时间无输出后
+  主动中止，不能宣称全量通过；此前已完成的相关测试仍保持通过。
+
+## 图形集成测试同步稳定性修复（2026-09-02）
+
+- `engine/src/test_vulkan.c` 在测试设备创建后显式关闭 vsync，避免 OpenGL/GLX 集成测试
+  依赖 compositor refresh event；不改变运行时默认 vsync 策略。
+- 复验 OpenGL 图形集成测试：IBL、golden image、camera golden、indirect draw、material
+  array、deferred gbuffer array 全部通过；全量 CTest **82/82** 通过。
+- 该修复只改变测试同步条件，仍需在真实 Vulkan、Wayland、Windows/macOS runtime 矩阵
+  执行平台特定 smoke；headless 通过不等于所有平台 runtime 已验证。
+
+## 跨平台窗口配置契约（2026-09-04）
+
+- 新增无平台依赖的 `platform_config_valid()`，统一拒绝空配置、空标题、零尺寸及超过
+  `PLATFORM_MAX_WINDOW_DIMENSION` 的尺寸；限制在进入 X11、Wayland、Win32 或 Cocoa
+  原生 API 前执行，并拒绝非法 UTF-8 标题，避免空指针解引用、平台间标题行为漂移及
+  `u32` 到平台尺寸类型转换溢出。
+- 新增 `test_platform_config` 覆盖有效值、NULL、零尺寸、边界尺寸和超限尺寸；Windows
+  原生 smoke 额外覆盖 `platform_create(NULL)` 与非法尺寸的早期拒绝。该测试证明 API
+  参数契约，不代表当前主机具备真实 X11/Wayland compositor 或 GPU runtime。
+- 平台对象的查询与控制 API 同步采用 NULL-safe 生命周期语义：空对象的句柄/输入返回
+  `NULL`，尺寸返回零，DPI/scale 返回基准值，操作函数无副作用；媒体快照失败时先清零
+  输出，分配型剪贴板查询先清空输出指针。新增 `test_platform_null_safety`，X11 与
+  Wayland 配置均通过，ASan 也通过；这仍不替代各平台真实窗口线程 runtime smoke。
+- 新增 `test_platform_x11_runtime` 与 `test_platform_wayland_runtime`。两者在没有可连接
+  的显示服务器/compositor 时返回 CTest 标准 skip；Linux graphics CI 的 Xvfb job 执行
+  X11 创建/resize/轮询/销毁 smoke，Wayland GL/Vulkan jobs 使用 Weston headless 执行
+  Wayland proxy 创建/初始 configure/轮询/销毁 smoke。该证据仍不覆盖真实 GPU、IME、
+  buffer-age 保留语义或 Windows/macOS runtime。
+
+## 引擎初始化失败态契约（2026-09-04）
+
+- `engine_init()` 现在在创建平台前校验 `Engine`/配置指针、重复初始化状态和平台配置；
+初始化失败时保证 `platform == NULL`，避免宿主随后调用 `engine_shutdown()` 触发随机
+指针访问。
+
+## RHI 资源 API 安全契约（2026-09-04）
+
+- 公共 RHI 层新增无分配、无锁的 `rhi_buffer_desc_validate()`、
+  `rhi_texture_desc_validate()` 和 `rhi_cubemap_desc_validate()`；所有后端在调用图形 API
+  前拒绝 NULL 设备/描述符、零尺寸、未知 usage 位、非法格式和超过 mip/尺寸上限的请求。
+- GL/Vulkan 的 shader、pipeline、buffer、texture、sampler、cubemap、shadow map 与 depth
+  cubemap FBO 创建/销毁入口统一采用 NULL-safe 快速失败；资源查询拒绝 NULL 设备、空句柄和
+  generation 不匹配句柄，避免旁路 UAF/空指针解引用。
+- buffer 更新/读回使用减法形式进行范围裁剪，避免 `offset + size` 整数回绕；数组纹理层数
+  限制为 `RHI_MAX_TEXTURE_ARRAY_LAYERS`（2048）。
+- 资源池的 generation 检查补充为 `(generation, alive, type)` 三元验证；GL/Vulkan 所有
+  shader、pipeline、buffer、texture、sampler、cubemap 和各类 FBO 访问均通过 O(1) typed
+  lookup，阻断同代际跨资源类型句柄的 payload 类型混淆。
+- 离屏和 MRT 创建入口新增公共尺寸/格式/attachment 校验，拒绝 NULL 格式数组、深度颜色
+  attachment、零尺寸及超过 `RHI_MAX_DRAWABLE_DIMENSION` 的目标，避免把非法 framebuffer
+  描述传入 GL/Vulkan。TDD 增加对应边界用例，四套后端矩阵继续通过。
+- TDD 新增 `test_rhi_capabilities` 的资源非法输入、边界 descriptor 和旁路资源回归；普通
+  OpenGL、Wayland/OpenGL、X11/Vulkan、Wayland/Vulkan 四套构建均通过。ASan 断言均通过，
+  但本机 CTest 在 ptrace 环境下由 LeakSanitizer 启动限制退出，不能将其记为完整 sanitizer PASS。
+- 命令录制层补齐“无当前帧设备即无副作用”的统一契约：GL/Vulkan 的绑定、绘制、清除、
+  shadow/FBO、viewport/scissor、image/texture、barrier 和 dispatch 入口均在驱动调用前
+  快速返回；GL 纹理/image 单元与共享缓存限制为 0..15。Vulkan 同时修正 MRT LOAD 以
+  `RHI_RES_MRT_FBO` 查询，避免把 MRT payload 当普通 framebuffer 解读。buffer 录制更新与
+  fill 的剩余 `offset + size` 检查也改为减法裁剪，彻底消除无符号回绕旁路。
+- TDD 将无设备命令表面扩大到 draw、间接 draw、阴影和 depth 命令；该用例先在 GL 上以
+  段错误失败，补齐 guard 后通过。2026-09-04 复验 `test_rhi_capabilities`、`test_ibl`、
+  `test_indirect_draw`：OpenGL、Wayland/OpenGL、X11/Vulkan、Wayland/Vulkan 均为 3/3；
+  `build-myui-sanitize` 的目标 RHI 测试在 `ASAN_OPTIONS=detect_leaks=0` 下通过。
+- `engine_frame()` 对 NULL 引擎或未初始化平台返回 `false`，`engine_shutdown()` 保持可
+  重复调用；新增 `test_engine_lifecycle` 覆盖无效配置、NULL 参数、失败后 frame/shutdown
+  和重复初始化。普通构建与 ASan 定向测试均通过。
+
+## RHI 后端生命周期审计（2026-09-04）
+
+- GL/Vulkan 的 uniform 查询统一拒绝 NULL 设备或名称；Vulkan GPU timer 创建在
+  `backend_data` 缺失时安全返回，不再解引用未完成初始化的后端状态。
+- Vulkan 的设备销毁、resize、frame begin/end/present、frame index 和 vsync 入口在使用
+  backend 状态前统一检查 `backend_data`；失败初始化对象不会进入驱动 API。
+- 纹理/image 命令继续遵循先校验后修改状态的事务顺序；`RHI_MAX_TEXTURE_UNITS == 16`
+  是 GL/Vulkan 的共同绑定上限。
+- TDD 将 NULL uniform 查询和 timer 创建加入 `test_rhi_capabilities`；完整四后端矩阵
+  与 sanitizer 定向验证需在本轮收口后复跑，真实 Vulkan/Wayland runtime 仍以环境证据为准。
+
+## RHI 句柄设备隔离（2026-09-04）
+
+- 资源池代际序号改为进程级原子单调分配，而不是每个设备从相同初值开始；保留现有
+  `RHIHandle { index, generation }` ABI，不增加句柄尺寸或后端分支。
+- 相同槽位在不同设备上不会生成相同的索引/代际组合，跨设备句柄传入 typed lookup
+  会稳定失败；销毁后再次分配仍保证旧句柄失效。
+- 新增资源池级 TDD，覆盖跨设备误用、销毁后的陈旧句柄和槽位复用；普通、Wayland、
+  Vulkan、Wayland/Vulkan 四套 `test_rhi_capabilities` 均通过。
+## myui PAL timer 堆调度优化（2026-09-03）
+
+针对冷却按钮和其他周期任务数量增长后的主循环开销，PAL timer manager 已从每次
+`due_in_ms()`/`fire()` 的全量线性扫描改为按 deadline+ID 排序的最小堆。添加、重新调度
+和到期条目处理为 O(log n) 摊销，下一次等待时间为 O(1)；按 ID 删除仍为 O(n) 定位、
+O(log n) 堆调整，且只发生在生命周期路径；回调期间新增条目进入 pending，
+当前回调条目使用内联 current 槽位并在回调完成后直接回到活动堆，保持“本轮新增不触发”、
+回调内删除安全和周期任务公平性；因此正常 fire 路径不分配 deferred 容器。该路径不接触
+OS/RHI 类型、不增加锁或线程，不改变单线程 owner-loop 的 API 契约。
+
+TDD 增加回调内新增/删除和非根失效节点顺序回归；普通 `test_myui_window_manager`
+**123/123** 通过。时钟回拨、`UINT64_MAX` deadline 饱和、零间隔拒绝和既有冷却按钮测试
+同时通过。
+- 2026-09-05：MVVM 适配层新增跨线程属性提交：值在 worker 侧深拷贝，setter、通知和绑定刷新
+ 统一转发至窗口所属 UI loop；借用 pointer 值拒绝提交。context/manager 销毁取消排队请求，
+  `test_myui_mvvm` 当前通过 33/33。异步 session 增加 64 个 pending 的无锁配额和 4 KiB 字符串
+  快照上限，完成/失败/丢弃均归还配额。保留异步通知 API 但明确其前提是宿主已同步模型存储，
+  核心 `mymvvm` 不引入 PAL 依赖。
+## 本轮补充：myui 可复用构建依赖边界（2026-09-06）
+
+修复独立 myui CMake 入口对 `${CMAKE_SOURCE_DIR}` 的隐式依赖。`myc`、`myr`、`myui`、
+`mymvvm`、`mymvvm_myui` 和新增 `mypal` 均从自身目录推导 `MYUI_SOURCE_DIR`（myui
+模块头）与 `MYUI_ENGINE_SOURCE_DIR`（仓库 `engine/src` 公共头），宿主工程可以从任意
+顶层目录加入这些模块。新增 `mypal` target 包含 PAL 公共实现、事件/媒体/timer 和
+headless dummy port；真实平台 port 仍由 engine 宿主按平台选择。
+
+TDD 配置测试 `test_myr_dependency_config` 覆盖路径和 target 契约。隔离顶层关闭字体、
+YAML、BiDi、图像可选项后，六个模块完成 **87/87** 编译；主工程字体、loader、文本布局
+及依赖配置专项 **4/4** 通过。此项不改变渲染热路径或运行时 ABI。
+
+## 本轮补充：myui 渲染后端显式开关与 Vulkan shader 生成（2026-09-07）
+
+TDD 先扩展 `test_myr_dependency_config` 与 `test_myui_subproject_config`，要求可复用
+入口声明 `MYUI_GLES2`、`MYUI_GL_DESKTOP`、`MYUI_VULKAN`，并要求 GLES2/OpenGL/Vulkan
+依赖探测均受对应选项保护；同时禁止 Vulkan shader 目标依赖宿主
+`${CMAKE_SOURCE_DIR}/tools`。修复后，关闭后端时不执行对应 pkg-config/Vulkan 探测，也不向
+`myui_core` 添加图形头文件或链接库；Vulkan 默认关闭，Engine Vulkan/macOS 继续通过宿主
+策略自动启用。
+
+废弃不存在的 Python 生成器路径，新增模块内
+`engine/src/myui/myr/vulkan_shaders/generate_includes.cmake`。启用 Vulkan 且存在
+`glslangValidator` 时，`vulkan_shaders_regen` 可在任意宿主顶层执行并生成五个 SPIR-V
+include；没有生成器时保留已提交 include 并安全跳过可选重生成目标。headless 聚合入口
+关闭全部图形后端编译通过，Vulkan 开启构建及实际 shader regeneration 均通过。
+
+验证：`test_myui_font`、`test_myui_loader_disabled`、`test_myui_text_layout`、
+`test_myr_dependency_config`、`test_myui_subproject_config`、
+`test_myui_vulkan_shader_generator` **6/6**；关闭 `MYUI_GLES2/MYUI_GL_DESKTOP/MYUI_VULKAN`
+的 `myui_core` 构建通过；Vulkan 开启的 `myr` 与 `vulkan_shaders_regen` 通过；
+`git diff --check` 通过。仍需真实 Windows/macOS 图形运行时、Vulkan validation layers
+和跨编译器/交叉编译矩阵证据。
+
+同轮继续收口 Vulkan WSI 边界：`my_vgcanvas_vulkan.c` 不再依赖任何平台 WSI 宏或
+平台头文件，扩展名以规范字符串探测；离屏 canvas 只要求 Vulkan core 与 graphics
+queue，不强制 `VK_KHR_surface`/`VK_KHR_swapchain`，窗口 canvas 在创建前显式检查
+surface 与 swapchain 能力。这样无窗口/无 WSI 的 headless Vulkan 设备仍可运行离屏
+渲染，Windows、macOS、Linux 的 surface 创建完全由 PAL/宿主负责。
+
+TDD 扩展 `test_myr_dependency_config`，直接读取 Vulkan 源文件拒绝 Linux WSI 宏并锁定
+WSI capability gate。Vulkan `myr`、Vulkan shader regeneration、headless UI 专项和
+配置契约均通过；真实各平台 WSI surface 仍需对应宿主 CI 验证。
+
+补充验证：当前源码重新配置的 Vulkan 构建在 lavapipe 无显示环境下运行
+`test_myui_vgcanvas_backend`，离屏路径 **1/1** 通过；完整 headless CTest（排除
+graphics/platform runtime）**98/98** 通过。
+
+可复用入口补齐独立 `project(myui LANGUAGES C)` 与 strict C11 baseline；关闭可选
+图形/字体/loader 后的 standalone 聚合构建六个模块 **100%** 通过，且不再产生缺少
+`project()` 的 CMake 开发者警告。`test_myr_dependency_config`、
+`test_myui_subproject_config` 与 shader generator 契约 **3/3** 通过。
+
+Vulkan 生命周期审计继续修复 instance peek 泄漏：窗口 surface 创建改用显式 acquire/release
+临时 lease，surface 或 canvas 创建失败会释放 lease；无副作用 peek 不再初始化全局
+instance/device。所有初始化失败路径统一清零全局状态，避免后续调用复用失效句柄。
+Vulkan `myr`、主工程 `myui_core` 和 lavapipe 离屏回归重新通过。
+## Vulkan initialization failure safety (2026-09-07)
+
+The Vulkan initialization path now routes all post-allocation failures through
+`vk_init_cleanup()` and uses handle-presence checks in `vk_shutdown()`. Creation
+counts protect partial swapchain view/framebuffer/semaphore and command-buffer
+cleanup. Depth, render-pass and framebuffer creation now propagate failure;
+swapchain recreation rebuilds render passes before attachments.
+
+Graphics and present queue families are both requested when distinct. The
+swapchain uses `VK_SHARING_MODE_CONCURRENT` with both family indices only in
+that case, preserving exclusive sharing for the common same-family path.
+
+TDD coverage: `test_shader_io` 20/20, `test_rhi_capabilities` 40/40, Vulkan
+core targets build successfully, and `git diff --check` passes. Platform WSI
+runtime CI and allocator/device-lost fault injection remain open coverage.
+
+Surface format/present-mode queries now check both enumeration stages and reject
+empty results. All Vulkan memory allocation call sites use `vk_allocate_memory()`
+to fail closed on the `UINT32_MAX` memory-type sentinel before entering the
+driver. TDD coverage is `test_shader_io` 22/22 and `test_rhi_capabilities` 40/40;
+the full headless suite remains the required cross-module regression gate.
+
+Extension negotiation is now explicit: required instance/device extensions are
+checked before Vulkan object creation, optional validation/debug-utils and
+device-fault extensions degrade safely, and both physical-device enumeration
+queries check their return values. TDD coverage is `test_shader_io` 23/23 and
+`test_rhi_capabilities` 40/40; full headless regression remains the acceptance
+gate. The complete headless CTest is `98/98` when local socket binding is
+available; the restricted sandbox can fail only `test_network` and
+`test_net_replication` at socket creation.
+
+Deferred mip uploads now record their owning `VKBackend`; cross-device reclaim
+and overwrite are rejected, while the owning device retains the existing
+non-blocking reclaim behavior. TDD coverage is `test_shader_io` 24/24 and
+`test_rhi_capabilities` 40/40. Multi-device concurrent submit/teardown still
+needs dedicated Vulkan runtime or fault-injection coverage.
+
+## Vulkan physical-device suitability selection (2026-09-07)
+
+Physical-device selection now applies one suitability gate to both automatic
+selection and `RE_VK_DEVICE_INDEX`. A candidate must expose
+`VK_KHR_swapchain`, successfully answer surface capability, format, and
+present-mode queries, and provide graphics and present-capable queue families.
+Present-support query errors are no longer ignored. An invalid or unsuitable
+explicit index fails initialization, while automatic selection tries the next
+candidate and fails closed when none is suitable; the old unconditional
+`gpus[0]` fallback is removed. The probes run only on the initialization cold
+path, preserving the frame-time fast path.
+
+TDD coverage is now `test_shader_io` 25/25 and `test_rhi_capabilities` 40/40;
+the Vulkan engine target builds successfully and `git diff --check` remains
+the local documentation/source gate. Real X11, Wayland, Win32, macOS WSI
+matrices, allocator fault injection, device-lost recovery, and multi-device
+runtime teardown remain open validation work.

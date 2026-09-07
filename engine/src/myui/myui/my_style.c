@@ -50,6 +50,8 @@ static my_style_prop_t* find_prop(my_style_t* style, my_widget_state_t state,
 my_ret_t my_style_set(my_style_t* style, my_widget_state_t state, const char* key,
                       const my_value_t* value) {
   my_style_prop_t* prop;
+  my_value_t copied;
+  my_ret_t ret;
   if (style == NULL || key == NULL || value == NULL || state >= MY_STATE_COUNT ||
       strlen(key) >= MY_STYLE_KEY_LEN) {
     return MY_RET_INVALID_PARAMS;
@@ -59,9 +61,19 @@ my_ret_t my_style_set(my_style_t* style, my_widget_state_t state, const char* ke
     if (style->counts[state] >= MY_STYLE_MAX_PROPS) {
       return MY_RET_OOM;
     }
-    prop = &style->props[state][style->counts[state]++];
+    my_value_init(&copied, style->allocator);
+    ret = my_value_copy(&copied, value);
+    if (ret != MY_RET_OK) {
+      my_value_reset(&copied);
+      return ret;
+    }
+    prop = &style->props[state][style->counts[state]];
     strncpy(prop->key, key, MY_STYLE_KEY_LEN - 1);
     prop->key[MY_STYLE_KEY_LEN - 1] = '\0';
+    my_value_reset(&prop->value);
+    prop->value = copied;
+    style->counts[state]++;
+    return MY_RET_OK;
   }
   return my_value_copy(&prop->value, value);
 }

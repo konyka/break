@@ -187,6 +187,14 @@ bool                platform_get_monitor_info(Platform *p, u32 index, MonitorInf
 互换。X11 返回 `Window`/`Display*`，Win32 返回 `HWND`/`HINSTANCE`，Cocoa 的两个
 窗口目标都返回 `CAMetalLayer*`。
 
+`platform_config_valid()` 是所有平台创建路径的统一前置契约：配置、标题必须非空，标题
+必须是合法 UTF-8 且包含 NUL 在内不超过 `PLATFORM_MAX_WINDOW_TITLE_BYTES`（4096 字节），
+宽高必须为非零且不超过 `PLATFORM_MAX_WINDOW_DIMENSION`（16384）。
+各 backend 在调用 X11/Wayland/Win32/Cocoa 原生 API 之前执行该检查，避免把非法输入
+带入平台库。标题校验按字符串已知长度逐字节检查剩余 continuation byte，截断序列、
+非法 lead、overlong、surrogate 和超出 Unicode 上限的码点均拒绝；因此 malformed UTF-8
+不会触发越界读取。调用方仍须提供以 NUL 结尾的 C 字符串，这是该 API 的输入边界。
+
 IME 文本事件统一从 `platform_poll_text` 取出。常见文本使用 64 字节内联存储，长文本
 由事件拥有动态 UTF-8 缓冲；消费方必须调用 `platform_text_event_destroy`。单事件上限
 为 16 MiB，队列总 payload 上限为 32 MiB、事件数上限为 4096，超限时非阻塞丢弃，
@@ -367,9 +375,13 @@ typedef struct { u32 index; u32 generation; } RHIHandle;
 ```
 
 **特性**：
-- **代际计数（Generation）**: 每次资源销毁后 generation 递增，防止 use-after-free
+- **代际计数（Generation）**: 资源句柄使用进程级单调代际序号；销毁后旧句柄失效，且不同设备不会生成相同的索引/代际组合
 - **4096 槽位资源池**: 固定大小池分配，O(1) 创建/销毁
 - **强类型别名**: `RHIBuffer`, `RHIShader`, `RHIPipeline`, `RHITexture`, `RHIFramebuffer` 等
+- **统一快速失败契约**: 所有后端在创建前拒绝 NULL 设备/描述符、零尺寸、未知 usage 位和无效格式；资源句柄查询对 NULL 设备及 generation 为 0 的句柄无副作用
+- **有界资源**: drawable/纹理边长上限为 `RHI_MAX_DRAWABLE_DIMENSION`（16384），mip 链最多 16 层，2D 数组最多 2048 层；不会把非法尺寸交给 GL/Vulkan API
+- **运行时类型验证**: 后端的资源访问同时检查 slot type、generation 和存活状态；将 texture 传给 buffer/pipeline/cubemap API 等类型混淆会在 O(1) 内安全失败，不会把错误 payload 转换为后端对象
+- **设备生命周期隔离**: 后端入口在使用 backend 状态前检查设备和 `backend_data`；销毁或未完成初始化的设备不会进入 GL/Vulkan API。句柄属于创建它的 `RHIDevice`，不能跨设备复用；进程级代际命名空间会让此类误用在 typed lookup 中失败。
 
 ### 3.2 资源类型
 
@@ -380,6 +392,14 @@ typedef struct { u32 index; u32 generation; } RHIHandle;
 | **Pipeline** | `RHIPipeline` | `RHIPipelineDesc` | vert/frag shader, vertex_stride, 深度/混合/剔除状态 |
 | **Texture** | `RHITexture` | `RHITextureDesc` | width, height, format, mip_levels, data |
 | **Sampler** | `RHISampler` | `RHISamplerDesc` | min/mag filter, wrap mode (U/V/W) |
+
+资源描述符可先通过 `rhi_buffer_desc_validate()`、`rhi_texture_desc_validate()` 和
+`rhi_cubemap_desc_validate()` 做无分配、无锁校验。更新/读回接口同样拒绝 NULL 数据、零
+长度和越界范围；GL 与 Vulkan 使用相同的边界语义，后端只负责执行已验证的请求。
+离屏与 MRT 目标分别通过 `rhi_offscreen_fbo_desc_validate()` 和
+`rhi_mrt_desc_validate()` 校验；颜色 attachment、尺寸及 attachment 数量在进入图形 API
+前完成边界检查，NULL 格式数组和深度格式误用直接返回空目标。
+
 | **Framebuffer** | `RHIFramebuffer` | — | 离屏渲染目标(color + depth) |
 | **Cubemap** | `RHICubemap` | `RHICubemapDesc` | size, faces[6] |
 
@@ -392,6 +412,33 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev);  // 获取本帧命令缓冲
 void          rhi_frame_end(RHIDevice *dev);    // 提交命令
 void          rhi_present(RHIDevice *dev);      // 交换链呈现
 ```
+
+帧入口遵循统一的失败安全契约：传入 `NULL` 设备时，`rhi_frame_begin()` 返回 `NULL`，
+`rhi_frame_end()` 和 `rhi_present()` 无副作用，`rhi_frame_index()` 返回 0。有效设备
+必须按 `begin -> command recording -> end -> present` 顺序使用；若 `begin` 返回 `NULL`，
+调用方不得记录命令，也不得调用后续帧提交操作。GL、Wayland/EGL 和 Vulkan 共享该
+边界行为，damage 帧接口在输入非法时退化为安全的普通全屏帧。
+
+命令入口以当前帧设备为显式前置条件：命令句柄必须是本次 `rhi_frame_begin()` 返回的
+设备绑定句柄，且对应设备仍是当前设备、帧仍处于 active 状态。在尚未成功
+`rhi_frame_begin()`、切换设备、帧已结束或当前设备为空时，绑定、绘制、清除、
+viewport/scissor、FBO、纹理/image、barrier 和 dispatch 命令均安全返回，绝不直接调用
+后端驱动。GL 与 Vulkan 都在入口执行 O(1) 句柄/设备/帧状态检查；不分配、不加锁，也不
+改变有效帧的热路径。显式设备参数的间接绘制同样要求设备是当前 active frame 的 owner。
+texture/image 绑定单元限制在 `RHI_MAX_TEXTURE_UNITS`（16，编号
+0..15）；GL 与 Vulkan 共享该上限，超限请求安全
+丢弃，避免 GL/Vulkan 描述符语义分歧。Vulkan 的 image/texture 事务遵循“先验证设备、
+句柄、单元和 mip，再挂起 render pass 并写 barrier/descriptor”的顺序；失败输入不改变
+当前 pass 状态。
+
+`rhi_device_create()` 在进入原生图形 API 前拒绝错误 backend、NULL 原生句柄、零尺寸和
+超过 `RHI_MAX_DRAWABLE_DIMENSION`（16384）的 drawable。`rhi_device_resize()` 对 NULL、
+零宽、零高或超限尺寸无副作用；`rhi_set_vsync()` 对 NULL 设备无副作用。有效设备的
+resize 仍由各后端执行交换链/默认 framebuffer 重建。
+
+当前 `g_current_device` 仍是进程级渲染上下文选择器，RHI 命令录制契约因此是单线程、单
+active device；它不是可在多个线程或多个设备之间并行录制的同步原语。需要并行录制时，
+应先设计显式 command-context/queue ownership，再扩展 ABI，不能绕过当前句柄检查。
 
 #### 渲染命令
 
@@ -1314,7 +1361,7 @@ typedef struct {
     u32         width;
     u32         height;
     const char *title;
-    f64         target_fps;    // 0 = 不限帧率
+    f64         target_fps;    // 0 = 不限帧率；必须为有限非负数
 } EngineConfig;
 
 typedef struct {
@@ -1342,11 +1389,17 @@ void engine_shutdown(Engine *e);
 // → platform_destroy() → 清理
 ```
 
+`EngineConfig.target_fps` 必须为有限非负数；`0` 表示不限帧率。`Engine` 应先以
+`Engine engine = {0}` 初始化，并检查 `engine_init()` 的返回值。初始化
+失败会留下 `platform == NULL`；此时 `engine_frame()` 返回 `false`，`engine_shutdown()`
+仍可安全调用且可重复调用。活动平台不允许重复 `engine_init()`，以避免覆盖窗口和 RHI
+关联的原生资源。
+
 ### 13.3 典型主循环
 
 ```c
 int main(void) {
-    Engine engine;
+    Engine engine = {0};
     EngineConfig cfg = { .width = 1280, .height = 720,
                           .title = "Break Engine", .target_fps = 60.0 };
 

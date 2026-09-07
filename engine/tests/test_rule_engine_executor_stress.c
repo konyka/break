@@ -25,7 +25,10 @@ static re_status_t busy_action(re_engine_t *engine, re_facts_t *facts,
     probe->fired++;
     probe->run_reentry = re_engine_run(engine, facts, NULL, NULL);
     probe->txn_begin = re_facts_begin(facts, &txn);
-    if (probe->txn_begin == RE_STATUS_OK) re_facts_rollback(txn);
+    if (probe->txn_begin == RE_STATUS_OK) {
+        re_facts_rollback(txn);
+        re_facts_txn_destroy(txn);
+    }
     probe->reset = re_engine_reset_with_deffacts(engine, facts);
     return RE_STATUS_OK;
 }

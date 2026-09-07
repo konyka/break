@@ -4,6 +4,7 @@
  */
 #include "myui/widgets/my_edit.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "myc/my_str.h"
@@ -24,6 +25,23 @@ static size_t edit_len_bytes(my_edit_t* e) {
 
 static size_t utf8_cp_count(const char* s) {
   return my_str_utf8_strlen(s);
+}
+
+static size_t utf8_cp_count_n(const char* s, size_t n) {
+  size_t i = 0;
+  size_t count = 0;
+  if (s == NULL) {
+    return 0;
+  }
+  while (i < n) {
+    size_t step = my_str_utf8_char_len(s + i);
+    if (step == 0 || step > n - i) {
+      step = 1;
+    }
+    i += step;
+    count++;
+  }
+  return count;
 }
 
 /** @brief Byte offset one codepoint to the left of pos (0 if at start). */
@@ -59,29 +77,76 @@ static void emit_changed(my_edit_t* e) {
                   e->text != NULL ? e->text : "");
 }
 
-static my_ret_t rebuild_masked(my_edit_t* e) {
-  size_t n, i;
-  my_mem_free(e->allocator, e->masked);
-  e->masked = NULL;
-  if (!e->password) {
-    return MY_RET_OK;
+static bool edit_size_add(size_t a, size_t b, size_t* out) {
+  if (b > SIZE_MAX - a) {
+    return false;
   }
-  n = e->text != NULL ? utf8_cp_count(e->text) : 0;
-  e->masked = (char*)my_mem_alloc(e->allocator, n + 1);
-  if (e->masked == NULL) {
+  *out = a + b;
+  return true;
+}
+
+static int32_t edit_sat_i64(int64_t value) {
+  if (value > INT32_MAX) {
+    return INT32_MAX;
+  }
+  if (value < INT32_MIN) {
+    return INT32_MIN;
+  }
+  return (int32_t)value;
+}
+
+static int32_t edit_sat_add(int32_t a, int32_t b) {
+  return edit_sat_i64((int64_t)a + b);
+}
+
+static int32_t edit_sat_sub(int32_t a, int32_t b) {
+  return edit_sat_i64((int64_t)a - b);
+}
+
+static bool edit_masked_build(my_edit_t* e, const char* text, size_t text_len,
+                              char** out) {
+  size_t n = text != NULL ? utf8_cp_count_n(text, text_len) : 0;
+  char* masked;
+  if (out == NULL) {
+    return false;
+  }
+  *out = NULL;
+  if (!e->password) {
+    return true;
+  }
+  if (n == SIZE_MAX) {
+    return false;
+  }
+  masked = (char*)my_mem_alloc(e->allocator, n + 1);
+  if (masked == NULL) {
+    return false;
+  }
+  memset(masked, '*', n);
+  masked[n] = '\0';
+  *out = masked;
+  return true;
+}
+
+static my_ret_t rebuild_masked(my_edit_t* e) {
+  char* masked = NULL;
+  if (!edit_masked_build(e, e->text, edit_len_bytes(e), &masked)) {
     return MY_RET_OOM;
   }
-  for (i = 0; i < n; i++) {
-    e->masked[i] = '*';
-  }
-  e->masked[n] = '\0';
+  my_mem_free(e->allocator, e->masked);
+  e->masked = masked;
   return MY_RET_OK;
 }
 
-static void edit_set_text_internal(my_edit_t* e, const char* text, bool notify) {
+static my_ret_t edit_set_text_internal(my_edit_t* e, const char* text,
+                                       bool notify) {
   char* copy = my_strdup(e->allocator, text != NULL ? text : "");
+  char* masked = NULL;
   if (copy == NULL) {
-    return;
+    return MY_RET_OOM;
+  }
+  if (!edit_masked_build(e, copy, strlen(copy), &masked)) {
+    my_mem_free(e->allocator, copy);
+    return MY_RET_OOM;
   }
   /* programmatic replacement: not undoable; the document diverged. In
    * shared mode only THIS widget's entries are dropped (M11b). */
@@ -91,55 +156,116 @@ static void edit_set_text_internal(my_edit_t* e, const char* text, bool notify) 
     my_undo_stack_clear(e->undo);
   }
   my_mem_free(e->allocator, e->text);
+  my_mem_free(e->allocator, e->masked);
   e->text = copy;
+  e->masked = masked;
   e->cursor = strlen(copy);
   e->anchor = e->cursor;
-  rebuild_masked(e);
   if (notify) {
     emit_changed(e);
   }
   my_widget_invalidate((my_widget_t*)e, NULL);
+  return MY_RET_OK;
 }
 
-/** @brief Delete [start, end) bytes. */
-static void edit_delete_range(my_edit_t* e, size_t start, size_t end) {
-  size_t len = edit_len_bytes(e);
-  if (start >= end || end > len || e->text == NULL) {
+static my_ret_t edit_replace(my_edit_t* e, size_t start, size_t end,
+                             const char* bytes, size_t n);
+
+typedef struct edit_candidate_t {
+  char* text;
+  char* masked;
+  size_t cursor;
+  size_t anchor;
+} edit_candidate_t;
+
+static void edit_candidate_discard(my_edit_t* e, edit_candidate_t* candidate) {
+  if (candidate == NULL) {
     return;
   }
-  memmove(e->text + start, e->text + end, len - end + 1);
-  e->cursor = start;
-  e->anchor = start;
-  rebuild_masked(e);
+  my_mem_free(e->allocator, candidate->text);
+  my_mem_free(e->allocator, candidate->masked);
+  memset(candidate, 0, sizeof(*candidate));
 }
 
-static void edit_insert(my_edit_t* e, const char* bytes, size_t n) {
+static my_ret_t edit_prepare_replace(my_edit_t* e, size_t start, size_t end,
+                                     const char* bytes, size_t n,
+                                     edit_candidate_t* candidate) {
   size_t len = edit_len_bytes(e);
   size_t cur_count;
-  char* p;
-  if (e->readonly || n == 0) {
-    return;
+  size_t removed_count;
+  size_t inserted_len;
+  size_t allocation_size;
+  if (candidate == NULL || e->readonly ||
+      (bytes == NULL && n > 0) || start > end || end > len) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  memset(candidate, 0, sizeof(*candidate));
+  if (n == 0 && start == end) {
+    candidate->cursor = start;
+    candidate->anchor = start;
+    return MY_RET_OK;
   }
   cur_count = e->text != NULL ? utf8_cp_count(e->text) : 0;
-  if (e->max_len > 0 && cur_count + 1 > e->max_len) {
-    return; /* at the limit: drop the input */
+  removed_count = utf8_cp_count(e->text != NULL ? e->text + start : "") -
+                  utf8_cp_count(e->text != NULL ? e->text + end : "");
+  inserted_len = utf8_cp_count_n(bytes, n);
+  if (removed_count > cur_count) {
+    return MY_RET_INVALID_PARAMS;
   }
-  p = (char*)my_mem_alloc(e->allocator, len + n + 1);
-  if (p == NULL) {
-    return;
+  if (e->max_len > 0) {
+    size_t remaining = cur_count - removed_count;
+    if (inserted_len > e->max_len ||
+        remaining > e->max_len - inserted_len) {
+      return MY_RET_FAIL;
+    }
   }
-  if (e->text != NULL) {
-    memcpy(p, e->text, e->cursor);
-    memcpy(p + e->cursor + n, e->text + e->cursor, len - e->cursor + 1);
-  } else {
-    p[n] = '\0';
+  if (!edit_size_add(len - (end - start), n, &allocation_size) ||
+      !edit_size_add(allocation_size, 1, &allocation_size)) {
+    return MY_RET_OOM;
   }
-  memcpy(p + e->cursor, bytes, n);
+  candidate->text = (char*)my_mem_alloc(e->allocator, allocation_size);
+  if (candidate->text == NULL) {
+    return MY_RET_OOM;
+  }
+  if (start > 0) {
+    memcpy(candidate->text, e->text, start);
+  }
+  if (n > 0) {
+    memcpy(candidate->text + start, bytes, n);
+  }
+  if (len > end) {
+    memcpy(candidate->text + start + n, e->text + end, len - end);
+  }
+  candidate->text[allocation_size - 1] = '\0';
+  if (!edit_masked_build(e, candidate->text, allocation_size - 1,
+                         &candidate->masked)) {
+    edit_candidate_discard(e, candidate);
+    return MY_RET_OOM;
+  }
+  candidate->cursor = start + n;
+  candidate->anchor = candidate->cursor;
+  return MY_RET_OK;
+}
+
+static void edit_commit_candidate(my_edit_t* e, edit_candidate_t* candidate) {
   my_mem_free(e->allocator, e->text);
-  e->text = p;
-  e->cursor += n;
-  e->anchor = e->cursor;
-  rebuild_masked(e);
+  my_mem_free(e->allocator, e->masked);
+  e->text = candidate->text;
+  e->masked = candidate->masked;
+  e->cursor = candidate->cursor;
+  e->anchor = candidate->anchor;
+  memset(candidate, 0, sizeof(*candidate));
+}
+
+static my_ret_t edit_replace(my_edit_t* e, size_t start, size_t end,
+                             const char* bytes, size_t n) {
+  edit_candidate_t candidate;
+  my_ret_t result = edit_prepare_replace(e, start, end, bytes, n, &candidate);
+  if (result != MY_RET_OK) {
+    return result;
+  }
+  edit_commit_candidate(e, &candidate);
+  return MY_RET_OK;
 }
 
 static bool has_selection(my_edit_t* e) {
@@ -149,48 +275,112 @@ static bool has_selection(my_edit_t* e) {
 static void edit_after_edit(my_edit_t* e); /* fwd: IME section (M13a) */
 static my_ret_t edit_paste_tick(void* ctx);
 
-static void delete_selection(my_edit_t* e) {
-  size_t a = e->cursor < e->anchor ? e->cursor : e->anchor;
-  size_t b = e->cursor < e->anchor ? e->anchor : e->cursor;
-  edit_delete_range(e, a, b);
-}
-
 static void user_delete_range(my_edit_t* e, size_t start, size_t end) {
+  my_widget_t* held = my_widget_ref((my_widget_t*)e);
+  size_t removed_len;
+  char* removed;
+  edit_candidate_t candidate;
+  my_ret_t result;
   if (e->readonly) {
-    return;
+    goto done;
+  }
+  if (e->text == NULL || start >= end || end > edit_len_bytes(e)) {
+    goto done;
+  }
+  removed_len = end - start;
+  if (!edit_size_add(removed_len, 1, &removed_len)) {
+    goto done;
+  }
+  removed = (char*)my_mem_alloc(e->allocator, removed_len);
+  if (removed == NULL) {
+    goto done;
+  }
+  memcpy(removed, e->text + start, removed_len - 1);
+  removed[removed_len - 1] = '\0';
+  result = edit_prepare_replace(e, start, end, NULL, 0, &candidate);
+  if (result != MY_RET_OK) {
+    my_mem_free(e->allocator, removed);
+    goto done;
   }
   if (!e->applying_history) {
     if (e->undo_shared != NULL) {
-      my_undo_manager_record_delete(e->undo_shared, e, start, e->text + start,
-                                    end - start);
+      result = my_undo_manager_record_delete(e->undo_shared, e, start, removed,
+                                             removed_len - 1);
     } else if (e->undo != NULL) {
-      my_undo_stack_record_delete(e->undo, start, e->text + start, end - start);
+      result = my_undo_stack_record_delete(e->undo, start, removed,
+                                           removed_len - 1);
+    }
+    if (result != MY_RET_OK) {
+      edit_candidate_discard(e, &candidate);
+      my_mem_free(e->allocator, removed);
+      goto done;
     }
   }
-  edit_delete_range(e, start, end);
+  edit_commit_candidate(e, &candidate);
+  my_mem_free(e->allocator, removed);
   emit_changed(e);
   edit_after_edit(e);
   my_widget_invalidate((my_widget_t*)e, NULL);
+done:
+  my_widget_unref(held);
 }
 
 static void user_insert(my_edit_t* e, const char* bytes, size_t n) {
+  my_widget_t* held = my_widget_ref((my_widget_t*)e);
+  size_t start;
+  size_t end;
+  size_t deleted_len = 0;
+  char* deleted = NULL;
+  edit_candidate_t candidate;
+  my_ret_t result;
   if (e->readonly) {
-    return;
+    goto done;
   }
-  if (has_selection(e)) {
-    delete_selection(e);
+  start = e->cursor < e->anchor ? e->cursor : e->anchor;
+  end = e->cursor < e->anchor ? e->anchor : e->cursor;
+  if (start != end) {
+    deleted_len = end - start;
+    if (!edit_size_add(deleted_len, 1, &deleted_len)) {
+      goto done;
+    }
+    deleted = (char*)my_mem_alloc(e->allocator, deleted_len);
+    if (deleted == NULL) {
+      goto done;
+    }
+    memcpy(deleted, e->text + start, deleted_len - 1);
+    deleted[deleted_len - 1] = '\0';
+  }
+  result = edit_prepare_replace(e, start, end, bytes, n, &candidate);
+  if (result != MY_RET_OK) {
+    my_mem_free(e->allocator, deleted);
+    goto done;
   }
   if (!e->applying_history) {
-    if (e->undo_shared != NULL) {
-      my_undo_manager_record_insert(e->undo_shared, e, e->cursor, bytes, n);
+    if (deleted != NULL && e->undo_shared != NULL) {
+      result = my_undo_manager_record_replace(
+          e->undo_shared, e, start, deleted, deleted_len - 1, bytes, n);
+    } else if (deleted != NULL && e->undo != NULL) {
+      result = my_undo_stack_record_replace(e->undo, start, deleted,
+                                            deleted_len - 1, bytes, n);
+    } else if (e->undo_shared != NULL) {
+      result = my_undo_manager_record_insert(e->undo_shared, e, start, bytes,
+                                             n);
     } else if (e->undo != NULL) {
-      my_undo_stack_record_insert(e->undo, e->cursor, bytes, n);
+      result = my_undo_stack_record_insert(e->undo, start, bytes, n);
+    }
+    if (result != MY_RET_OK) {
+      edit_candidate_discard(e, &candidate);
+      my_mem_free(e->allocator, deleted);
+      goto done;
     }
   }
-  edit_insert(e, bytes, n);
+  edit_commit_candidate(e, &candidate);
+  my_mem_free(e->allocator, deleted);
   emit_changed(e);
   edit_after_edit(e);
   my_widget_invalidate((my_widget_t*)e, NULL);
+done:
+  my_widget_unref(held);
 }
 
 static my_ret_t edit_paste(my_edit_t* e) {
@@ -236,16 +426,30 @@ static my_ret_t edit_paste(my_edit_t* e) {
   return MY_RET_OK;
 }
 /** @brief Apply one undo/redo op (shared-mode apply callback, M11b). */
-static void edit_apply_undo_op(void* widget, const my_undo_op_t* op) {
+static my_ret_t edit_apply_undo_op(void* widget, const my_undo_op_t* op) {
   my_edit_t* e = (my_edit_t*)widget;
+  my_widget_t* held = my_widget_ref(widget);
+  my_ret_t result;
   e->applying_history = true;
-  edit_delete_range(e, op->offset, op->offset + op->remove_len);
-  edit_insert(e, op->bytes, op->bytes_len);
+  if (op->offset > SIZE_MAX - op->remove_len) {
+    e->applying_history = false;
+    my_widget_unref(held);
+    return MY_RET_INVALID_PARAMS;
+  }
+  result = edit_replace(e, op->offset, op->offset + op->remove_len,
+                        op->bytes, op->bytes_len);
+  if (result != MY_RET_OK) {
+    e->applying_history = false;
+    my_widget_unref(held);
+    return result;
+  }
   e->cursor = op->offset + op->bytes_len;
   e->anchor = e->cursor;
   e->applying_history = false;
   emit_changed(e);
   my_widget_invalidate((my_widget_t*)e, NULL);
+  my_widget_unref(held);
+  return MY_RET_OK;
 }
 
 /* ---------------- measuring ---------------- */
@@ -263,7 +467,7 @@ static int32_t text_px(my_edit_t* e, const char* s, size_t n) {
         cps++;
       }
     }
-    return (int32_t)cps * EDIT_CELL_W;
+    return edit_sat_i64((int64_t)cps * EDIT_CELL_W);
   }
   if (n >= sizeof(buf)) {
     n = sizeof(buf) - 1;
@@ -346,7 +550,7 @@ static int32_t edit_cursor_px(my_edit_t* e, const char* shown,
 static size_t locate_cursor(my_edit_t* e, int32_t local_x) {
   const char* s = e->password ? e->masked : e->text;
   size_t pos = 0, len;
-  int32_t target = local_x - EDIT_PAD_X + e->scroll_x;
+  int32_t target = edit_sat_add(edit_sat_sub(local_x, EDIT_PAD_X), e->scroll_x);
   if (s == NULL || target <= 0) {
     return 0;
   }
@@ -365,7 +569,7 @@ static size_t locate_cursor(my_edit_t* e, int32_t local_x) {
     size_t next = cp_next(s, pos);
     int32_t w0 = text_px(e, s, pos);
     int32_t w1 = text_px(e, s, next);
-    if (target < (w0 + w1) / 2) {
+    if ((int64_t)target < ((int64_t)w0 + w1) / 2) {
       return pos;
     }
     pos = next;
@@ -381,10 +585,10 @@ static void ensure_cursor_visible(my_edit_t* e) {
   if (inner_w <= 0) {
     return;
   }
-  if (cx - e->scroll_x > inner_w) {
-    e->scroll_x = cx - inner_w;
+  if ((int64_t)cx - e->scroll_x > inner_w) {
+    e->scroll_x = edit_sat_sub(cx, inner_w);
   }
-  if (cx - e->scroll_x < 0) {
+  if ((int64_t)cx - e->scroll_x < 0) {
     e->scroll_x = cx;
   }
 }
@@ -407,8 +611,11 @@ static void edit_update_ime_spot(my_edit_t* e) {
     return;
   }
   shown = e->password ? e->masked : e->text;
-  x = EDIT_PAD_X + (shown != NULL ? edit_cursor_px(e, shown, e->cursor) : 0) -
-      e->scroll_x;
+  x = edit_sat_sub(edit_sat_add(EDIT_PAD_X,
+                                shown != NULL ? edit_cursor_px(e, shown,
+                                                               e->cursor)
+                                              : 0),
+                   e->scroll_x);
   y = ((my_widget_t*)e)->rect.h; /* bottom of the line */
   my_widget_local_to_global((my_widget_t*)e, &x, &y);
   my_pal_window_ime_set_spot(win->pal_window, x, y);
@@ -502,11 +709,12 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
     }
     {
       my_undo_op_t op;
-      my_ret_t r = ((mods & MY_KEYMOD_SHIFT) != 0)
-                       ? my_undo_stack_redo(e->undo, &op)
-                       : my_undo_stack_undo(e->undo, &op);
-      if (r == MY_RET_OK) {
-        edit_apply_undo_op(e, &op);
+      bool redo = (mods & MY_KEYMOD_SHIFT) != 0;
+      my_ret_t r = redo ? my_undo_stack_redo_peek_tagged(e->undo, &op, NULL)
+                        : my_undo_stack_undo_peek_tagged(e->undo, &op, NULL);
+      if (r == MY_RET_OK && edit_apply_undo_op(e, &op) == MY_RET_OK) {
+        if (redo) my_undo_stack_commit_redo(e->undo);
+        else my_undo_stack_commit_undo(e->undo);
       }
     }
     return MY_RET_OK;
@@ -518,8 +726,9 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
     }
     {
       my_undo_op_t op;
-      if (my_undo_stack_redo(e->undo, &op) == MY_RET_OK) {
-        edit_apply_undo_op(e, &op);
+      if (my_undo_stack_redo_peek_tagged(e->undo, &op, NULL) == MY_RET_OK &&
+          edit_apply_undo_op(e, &op) == MY_RET_OK) {
+        my_undo_stack_commit_redo(e->undo);
       }
     }
     return MY_RET_OK;
@@ -644,7 +853,8 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
   return MY_RET_FAIL;
 }
 
-static my_ret_t edit_on_event(my_widget_t* widget, const my_event_t* event) {
+static my_ret_t edit_on_event_impl(my_widget_t* widget,
+                                   const my_event_t* event) {
   my_edit_t* e = (my_edit_t*)widget;
   int32_t lx, ly;
   switch (event->type) {
@@ -674,18 +884,32 @@ static my_ret_t edit_on_event(my_widget_t* widget, const my_event_t* event) {
   }
 }
 
+static my_ret_t edit_on_event(my_widget_t* widget, const my_event_t* event) {
+  my_widget_t* held = my_widget_ref(widget);
+  my_ret_t result = edit_on_event_impl(widget, event);
+  my_widget_unref(held);
+  return result;
+}
+
 static my_ret_t edit_paste_tick(void* ctx) {
   my_edit_t* e = (my_edit_t*)ctx;
-  if (e->focused && edit_paste(e) == MY_RET_PENDING) return MY_RET_OK;
+  my_widget_t* held = my_widget_ref((my_widget_t*)e);
+  if (e->focused && edit_paste(e) == MY_RET_PENDING) {
+    my_widget_unref(held);
+    return MY_RET_OK;
+  }
   e->paste_timer_id = 0;
   e->paste_loop = NULL;
+  my_widget_unref(held);
   return MY_RET_FAIL;
 }
 
 static my_ret_t edit_blink_tick(void* ctx) {
   my_edit_t* e = (my_edit_t*)ctx;
+  my_widget_t* held = my_widget_ref((my_widget_t*)e);
   e->cursor_visible = !e->cursor_visible;
   my_widget_invalidate((my_widget_t*)e, NULL);
+  my_widget_unref(held);
   return MY_RET_OK; /* repeat */
 }
 
@@ -764,6 +988,9 @@ static void edit_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                             (float)widget->rect.h});
 
   my_vgcanvas_save(vg);
+  if (edit_eff_font(e) != NULL) {
+    (void)my_vgcanvas_set_font(vg, edit_eff_font(e), edit_eff_font_size(e));
+  }
   my_vgcanvas_clip_rect(vg, &(my_rectf_t){EDIT_PAD_X, 0,
                                           (float)(widget->rect.w - 2 * EDIT_PAD_X),
                                           (float)widget->rect.h});
@@ -791,36 +1018,45 @@ static void edit_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
         size_t k;
         for (k = 0; k < n && k < 4; k++) {
           my_vgcanvas_fill_rect(
-              vg, &(my_rectf_t){(float)(EDIT_PAD_X + (int32_t)rects[k].x -
-                                        e->scroll_x),
+              vg, &(my_rectf_t){
+                                (float)edit_sat_sub(
+                                    edit_sat_add(EDIT_PAD_X,
+                                                 edit_sat_i64((int64_t)rects[k].x)),
+                                    e->scroll_x),
                                 EDIT_PAD_Y, rects[k].w,
                                 (float)(widget->rect.h - 2 * EDIT_PAD_Y)});
         }
         my_text_layout_destroy(l);
       } else {
-        int32_t x0 = text_px(e, shown, a) - e->scroll_x;
-        int32_t x1 = text_px(e, shown, b) - e->scroll_x;
-        my_vgcanvas_fill_rect(vg, &(my_rectf_t){(float)(EDIT_PAD_X + x0),
-                                                EDIT_PAD_Y, (float)(x1 - x0),
+        int32_t x0 = edit_sat_sub(text_px(e, shown, a), e->scroll_x);
+        int32_t x1 = edit_sat_sub(text_px(e, shown, b), e->scroll_x);
+        my_vgcanvas_fill_rect(
+            vg, &(my_rectf_t){(float)edit_sat_add(EDIT_PAD_X, x0), EDIT_PAD_Y,
+                              (float)edit_sat_i64((int64_t)x1 - x0),
                                                 (float)(widget->rect.h - 2 * EDIT_PAD_Y)});
       }
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(fg));
-    my_vgcanvas_draw_text(vg, shown, (float)(EDIT_PAD_X - e->scroll_x),
+    my_vgcanvas_draw_text(vg, shown,
+                          (float)edit_sat_sub(EDIT_PAD_X, e->scroll_x),
                           (float)text_y);
     /* IME composing text (M13a): underlined at the cursor, NOT part of
      * the document (no undo, no "changed") */
     if (e->ime_preedit != NULL) {
       int32_t cx = edit_cursor_px(e, shown, e->cursor);
       int32_t pw = 0;
-      my_vgcanvas_draw_text(vg, e->ime_preedit,
-                            (float)(EDIT_PAD_X + cx - e->scroll_x),
+        my_vgcanvas_draw_text(
+            vg, e->ime_preedit,
+                            (float)edit_sat_sub(edit_sat_add(EDIT_PAD_X, cx),
+                                                e->scroll_x),
                             (float)text_y);
       if (my_vgcanvas_measure_text(vg, e->ime_preedit, &pw, NULL) ==
               MY_RET_OK &&
           pw > 0) {
         my_vgcanvas_fill_rect(
-            vg, &(my_rectf_t){(float)(EDIT_PAD_X + cx - e->scroll_x),
+            vg, &(my_rectf_t){
+                              (float)edit_sat_sub(edit_sat_add(EDIT_PAD_X, cx),
+                                                  e->scroll_x),
                               (float)(text_y + edit_eff_font_size(e) + 1), (float)pw,
                               1.0f});
       }
@@ -832,11 +1068,15 @@ static void edit_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (e->focused && e->cursor_visible) {
     int32_t cx = shown != NULL ? edit_cursor_px(e, shown, e->cursor) : 0;
     if (e->ime_preedit != NULL && e->ime_caret > 0) {
-      cx += text_px(e, e->ime_preedit,
-                    edit_byte_of_cp(e->ime_preedit, (size_t)e->ime_caret));
+      cx = edit_sat_add(
+          cx, text_px(e, e->ime_preedit,
+                      edit_byte_of_cp(e->ime_preedit, (size_t)e->ime_caret)));
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(fg));
-    my_vgcanvas_fill_rect(vg, &(my_rectf_t){(float)(EDIT_PAD_X + cx - e->scroll_x),
+    my_vgcanvas_fill_rect(
+        vg, &(my_rectf_t){
+                                (float)edit_sat_sub(
+                                    edit_sat_add(EDIT_PAD_X, cx), e->scroll_x),
                                             EDIT_PAD_Y + 1, 1,
                                             (float)(widget->rect.h - 2 * EDIT_PAD_Y - 2)});
   }
@@ -845,6 +1085,10 @@ static void edit_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
 
 static const my_widget_vtable_t s_edit_vtable = {edit_on_paint, edit_on_event,
                                                  NULL, NULL};
+
+bool my_edit_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_edit_vtable;
+}
 
 static void edit_destroy_chain(my_object_t* obj) {
   my_edit_t* e = (my_edit_t*)obj;
@@ -893,22 +1137,32 @@ my_widget_t* my_edit_create(const my_allocator_t* allocator) {
 }
 
 my_ret_t my_edit_set_text(my_widget_t* edit, const char* text) {
-  if (edit == NULL) {
+  if (!my_edit_is_instance(edit)) {
     return MY_RET_INVALID_PARAMS;
   }
-  edit_set_text_internal((my_edit_t*)edit, text, false);
-  return MY_RET_OK;
+  return edit_set_text_internal((my_edit_t*)edit, text, false);
 }
 
 const char* my_edit_get_text(my_widget_t* edit) {
   my_edit_t* e = (my_edit_t*)edit;
-  return edit == NULL || e->text == NULL ? "" : e->text;
+  return !my_edit_is_instance(edit) || e->text == NULL ? "" : e->text;
 }
 
 my_ret_t my_edit_set_undo_shared(my_widget_t* edit, void* mgr) {
   my_edit_t* e = (my_edit_t*)edit;
-  if (edit == NULL) {
+  my_undo_manager_t* next = (my_undo_manager_t*)mgr;
+  my_ret_t result;
+  if (!my_edit_is_instance(edit)) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (e->undo_shared == next) {
+    return MY_RET_OK;
+  }
+  if (next != NULL) {
+    result = my_undo_manager_register(next, e, edit_apply_undo_op);
+    if (result != MY_RET_OK) {
+      return result;
+    }
   }
   if (e->undo_shared != NULL) {
     /* leaving shared mode discards the widget's shared history
@@ -917,17 +1171,14 @@ my_ret_t my_edit_set_undo_shared(my_widget_t* edit, void* mgr) {
     my_undo_manager_clear_widget(e->undo_shared, e);
     my_undo_manager_unregister(e->undo_shared, e);
   }
-  e->undo_shared = (my_undo_manager_t*)mgr;
-  if (e->undo_shared != NULL) {
-    return my_undo_manager_register(e->undo_shared, e, edit_apply_undo_op);
-  }
+  e->undo_shared = next;
   return MY_RET_OK;
 }
 
 my_ret_t my_edit_set_hint(my_widget_t* edit, const char* hint) {
   my_edit_t* e = (my_edit_t*)edit;
   char* copy;
-  if (edit == NULL) {
+  if (!my_edit_is_instance(edit)) {
     return MY_RET_INVALID_PARAMS;
   }
   copy = my_strdup(e->allocator, hint);
@@ -941,7 +1192,7 @@ my_ret_t my_edit_set_hint(my_widget_t* edit, const char* hint) {
 }
 
 my_ret_t my_edit_set_readonly(my_widget_t* edit, bool readonly) {
-  if (edit == NULL) {
+  if (!my_edit_is_instance(edit)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_edit_t*)edit)->readonly = readonly;
@@ -950,17 +1201,24 @@ my_ret_t my_edit_set_readonly(my_widget_t* edit, bool readonly) {
 
 my_ret_t my_edit_set_password(my_widget_t* edit, bool password) {
   my_edit_t* e = (my_edit_t*)edit;
-  if (edit == NULL) {
+  bool old_password;
+  my_ret_t result;
+  if (!my_edit_is_instance(edit)) {
     return MY_RET_INVALID_PARAMS;
   }
+  old_password = e->password;
   e->password = password;
-  rebuild_masked(e);
+  result = rebuild_masked(e);
+  if (result != MY_RET_OK) {
+    e->password = old_password;
+    return result;
+  }
   my_widget_invalidate(edit, NULL);
   return MY_RET_OK;
 }
 
 my_ret_t my_edit_set_max_len(my_widget_t* edit, size_t max_codepoints) {
-  if (edit == NULL) {
+  if (!my_edit_is_instance(edit)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_edit_t*)edit)->max_len = max_codepoints;
@@ -969,7 +1227,7 @@ my_ret_t my_edit_set_max_len(my_widget_t* edit, size_t max_codepoints) {
 
 void my_edit_set_font(my_widget_t* edit, my_font_t* font, int32_t size) {
   my_edit_t* e = (my_edit_t*)edit;
-  if (edit != NULL) {
+  if (my_edit_is_instance(edit)) {
     if (font != NULL) {
       e->font = font;
     }
@@ -982,7 +1240,7 @@ void my_edit_set_font(my_widget_t* edit, my_font_t* font, int32_t size) {
 void my_edit_get_selection(my_widget_t* edit, size_t* start, size_t* end) {
   my_edit_t* e = (my_edit_t*)edit;
   size_t a, b;
-  if (edit == NULL) {
+  if (!my_edit_is_instance(edit)) {
     return;
   }
   a = e->cursor < e->anchor ? e->cursor : e->anchor;

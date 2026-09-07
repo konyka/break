@@ -10,6 +10,10 @@
  *  4. the platform entry point my_pal_create() (port chosen at compile
  *     time: MYUI_PAL_X11 / MYUI_PAL_DUMMY, CMake option MYUI_PAL).
  *
+ * Public inline wrappers validate object/vtable pointers before dispatch.
+ * Missing required slots return MY_RET_INVALID_PARAMS; missing optional
+ * slots return MY_RET_NOT_SUPPORTED or a documented safe default.
+ *
  * Events (my_event_t) are delivered to the single application handler
  * registered with my_pal_set_event_handler(). Ports: dummy/ (headless,
  * tests) and x11/ (Linux desktop). See docs/porting.md to add a port.
@@ -23,10 +27,112 @@
 #include "mypal/my_timer.h"
 #include "myr/my_lcd.h"
 
+#include <stddef.h>
+#include <string.h>
+
 typedef struct my_pal_t my_pal_t;
 typedef struct my_pal_window_t my_pal_window_t;
 typedef struct my_pal_main_loop_t my_pal_main_loop_t;
 typedef struct my_pal_gl_t my_pal_gl_t;
+
+#ifndef MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS
+#define MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS 8u
+#endif
+#ifndef MYUI_VULKAN_MAX_EXTENSION_NAME
+#define MYUI_VULKAN_MAX_EXTENSION_NAME 256u
+#endif
+
+/** @brief Platform-neutral media facts sampled on a cold UI path. */
+typedef enum my_pal_media_capability_t {
+  MY_PAL_MEDIA_CAP_HOVER = 1u << 0,
+  MY_PAL_MEDIA_CAP_POINTER_COARSE = 1u << 1,
+  MY_PAL_MEDIA_CAP_POINTER_FINE = 1u << 2,
+  MY_PAL_MEDIA_CAP_ANY_POINTER_COARSE = 1u << 3,
+  MY_PAL_MEDIA_CAP_ANY_POINTER_FINE = 1u << 4,
+  MY_PAL_MEDIA_CAP_COLOR_SRGB = 1u << 5,
+  MY_PAL_MEDIA_CAP_COLOR_P3 = 1u << 6,
+  MY_PAL_MEDIA_CAP_COLOR_REC2020 = 1u << 7,
+  MY_PAL_MEDIA_CAP_HDR = 1u << 8
+} my_pal_media_capability_t;
+
+#define MY_PAL_MEDIA_CAP_ALL ((uint32_t)(MY_PAL_MEDIA_CAP_HOVER | \
+                                         MY_PAL_MEDIA_CAP_POINTER_COARSE | \
+                                         MY_PAL_MEDIA_CAP_POINTER_FINE | \
+                                         MY_PAL_MEDIA_CAP_ANY_POINTER_COARSE | \
+                                         MY_PAL_MEDIA_CAP_ANY_POINTER_FINE | \
+                                         MY_PAL_MEDIA_CAP_COLOR_SRGB | \
+                                         MY_PAL_MEDIA_CAP_COLOR_P3 | \
+                                         MY_PAL_MEDIA_CAP_COLOR_REC2020 | \
+                                         MY_PAL_MEDIA_CAP_HDR))
+
+#define MY_PAL_MEDIA_KNOWN_HOVER (1u << 0)
+#define MY_PAL_MEDIA_KNOWN_POINTER (1u << 1)
+#define MY_PAL_MEDIA_KNOWN_ANY_POINTER (1u << 2)
+#define MY_PAL_MEDIA_KNOWN_COLOR_GAMUT (1u << 3)
+#define MY_PAL_MEDIA_KNOWN_HDR (1u << 4)
+#define MY_PAL_MEDIA_KNOWN_COLOR_SCHEME (1u << 5)
+#define MY_PAL_MEDIA_KNOWN_REDUCED_MOTION (1u << 6)
+#define MY_PAL_MEDIA_KNOWN_ALL ((uint32_t)(MY_PAL_MEDIA_KNOWN_HOVER | \
+                                            MY_PAL_MEDIA_KNOWN_POINTER | \
+                                            MY_PAL_MEDIA_KNOWN_ANY_POINTER | \
+                                            MY_PAL_MEDIA_KNOWN_COLOR_GAMUT | \
+                                            MY_PAL_MEDIA_KNOWN_HDR | \
+                                            MY_PAL_MEDIA_KNOWN_COLOR_SCHEME | \
+                                            MY_PAL_MEDIA_KNOWN_REDUCED_MOTION))
+
+typedef struct my_pal_media_context_t {
+  bool screen;
+  bool prefers_dark;
+  bool prefers_reduced_motion;
+  uint32_t capabilities;
+} my_pal_media_context_t;
+
+/** @brief Extended media snapshot with explicit fact knowledge. */
+typedef struct my_pal_media_context_ex_t {
+  my_pal_media_context_t base;
+  uint32_t known;
+} my_pal_media_context_ex_t;
+
+typedef my_ret_t (*my_pal_media_provider_fn)(
+    void* context, my_pal_media_context_ex_t* out);
+typedef void (*my_pal_media_provider_release_fn)(void* context);
+
+/** @brief Versioned optional PAL extension; the frozen PAL vtable is unchanged. */
+typedef struct my_pal_media_provider_t {
+  uint32_t size;
+  uint32_t abi_version;
+  my_pal_media_provider_fn get_context;
+  void* context;
+  my_pal_media_provider_release_fn release_context;
+} my_pal_media_provider_t;
+
+#define MY_PAL_MEDIA_PROVIDER_ABI_VERSION 1u
+
+/** @brief Versioned optional Vulkan WSI extension provider. */
+typedef my_ret_t (*my_pal_vulkan_instance_extensions_fn)(
+    void* context, my_pal_window_t* window, const char* const** names,
+    uint32_t* count);
+typedef void (*my_pal_vulkan_provider_release_fn)(void* context);
+
+typedef struct my_pal_vulkan_provider_t {
+  uint32_t size;
+  uint32_t abi_version;
+  my_pal_vulkan_instance_extensions_fn get_instance_extensions;
+  void* context;
+  my_pal_vulkan_provider_release_fn release_context;
+} my_pal_vulkan_provider_t;
+
+#define MY_PAL_VULKAN_PROVIDER_ABI_VERSION 1u
+#define MY_PAL_VULKAN_MAX_INSTANCE_EXTENSIONS \
+  MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS
+#define MY_PAL_VULKAN_MAX_EXTENSION_NAME MYUI_VULKAN_MAX_EXTENSION_NAME
+
+/** @brief Owned copy of the Vulkan instance extension set. */
+typedef struct my_pal_vulkan_instance_extensions_t {
+  uint32_t count;
+  char names[MY_PAL_VULKAN_MAX_INSTANCE_EXTENSIONS]
+           [MY_PAL_VULKAN_MAX_EXTENSION_NAME];
+} my_pal_vulkan_instance_extensions_t;
 
 /**
  * @brief Mouse cursor shape over a window (M21a). ARROW is the default
@@ -117,7 +223,7 @@ typedef struct my_pal_window_vtable_t {
    * is a VkInstance and the return a VkSurfaceKHR — both as void* so
    * this header stays free of Vulkan types. NULL slot or NULL return =
    * the port has no Vulkan support (dummy, linux_fb).
-   */
+  */
   void* (*vk_create_surface)(my_pal_window_t* win, void* vk_instance);
 } my_pal_window_vtable_t;
 
@@ -132,29 +238,44 @@ struct my_pal_window_t {
 
 static inline my_ret_t my_pal_window_set_title(my_pal_window_t* win,
                                                const char* title) {
+  if (win == NULL || win->vtable == NULL || win->vtable->set_title == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return win->vtable->set_title(win, title);
 }
 
 static inline my_ret_t my_pal_window_resize(my_pal_window_t* win, int32_t w,
                                             int32_t h) {
+  if (win == NULL || win->vtable == NULL || win->vtable->resize == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return win->vtable->resize(win, w, h);
 }
 
 static inline my_ret_t my_pal_window_show(my_pal_window_t* win) {
+  if (win == NULL || win->vtable == NULL || win->vtable->show == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return win->vtable->show(win);
 }
 
 static inline my_ret_t my_pal_window_get_size(my_pal_window_t* win, int32_t* w,
                                               int32_t* h) {
+  if (win == NULL || win->vtable == NULL || win->vtable->get_size == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return win->vtable->get_size(win, w, h);
 }
 
 static inline my_lcd_t* my_pal_window_get_lcd(my_pal_window_t* win) {
+  if (win == NULL || win->vtable == NULL || win->vtable->get_lcd == NULL) {
+    return NULL;
+  }
   return win->vtable->get_lcd(win);
 }
 
 static inline void my_pal_window_destroy(my_pal_window_t* win) {
-  if (win != NULL) {
+  if (win != NULL && win->vtable != NULL && win->vtable->destroy != NULL) {
     win->vtable->destroy(win);
   }
 }
@@ -184,29 +305,47 @@ struct my_pal_gl_t {
 };
 
 static inline my_ret_t my_pal_gl_make_current(my_pal_gl_t* gl) {
+  if (gl == NULL || gl->vtable == NULL ||
+      gl->vtable->make_current == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return gl->vtable->make_current(gl);
 }
 
 static inline my_ret_t my_pal_gl_swap_buffers(my_pal_gl_t* gl) {
+  if (gl == NULL || gl->vtable == NULL ||
+      gl->vtable->swap_buffers == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return gl->vtable->swap_buffers(gl);
 }
 
 static inline my_ret_t my_pal_gl_get_size(my_pal_gl_t* gl, int32_t* w,
                                           int32_t* h) {
+  if (gl == NULL || gl->vtable == NULL || gl->vtable->get_size == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return gl->vtable->get_size(gl, w, h);
 }
 
 static inline bool my_pal_gl_has_multisample(my_pal_gl_t* gl) {
+  if (gl == NULL || gl->vtable == NULL ||
+      gl->vtable->has_multisample == NULL) {
+    return false;
+  }
   return gl->vtable->has_multisample(gl);
 }
 
 static inline void my_pal_gl_destroy(my_pal_gl_t* gl) {
-  if (gl != NULL) {
+  if (gl != NULL && gl->vtable != NULL && gl->vtable->destroy != NULL) {
     gl->vtable->destroy(gl);
   }
 }
 
 static inline my_pal_gl_t* my_pal_window_gl_enable(my_pal_window_t* win) {
+  if (win == NULL || win->vtable == NULL || win->vtable->gl_enable == NULL) {
+    return NULL;
+  }
   return win->vtable->gl_enable(win);
 }
 
@@ -216,10 +355,15 @@ static inline my_pal_gl_t* my_pal_window_gl_enable(my_pal_window_t* win) {
  */
 static inline my_pal_gl_t* my_pal_window_gl_enable_api(my_pal_window_t* win,
                                                        int api) {
+  if (win == NULL || win->vtable == NULL) {
+    return NULL;
+  }
   if (win->vtable->gl_enable_api != NULL) {
     return win->vtable->gl_enable_api(win, api);
   }
-  return api == MY_PAL_GL_API_GLES2 ? win->vtable->gl_enable(win) : NULL;
+  return api == MY_PAL_GL_API_GLES2 && win->vtable->gl_enable != NULL
+             ? win->vtable->gl_enable(win)
+             : NULL;
 }
 
 /**
@@ -229,14 +373,16 @@ static inline my_pal_gl_t* my_pal_window_gl_enable_api(my_pal_window_t* win,
  */
 static inline void* my_pal_window_vk_create_surface(my_pal_window_t* win,
                                                     void* vk_instance) {
-  return win->vtable->vk_create_surface != NULL
+  return win != NULL && win->vtable != NULL &&
+                 win->vtable->vk_create_surface != NULL
              ? win->vtable->vk_create_surface(win, vk_instance)
              : NULL;
 }
 
 static inline void my_pal_window_ime_set_enabled(my_pal_window_t* win,
                                                  bool enabled) {
-  if (win->vtable->ime_set_enabled != NULL) {
+  if (win != NULL && win->vtable != NULL &&
+      win->vtable->ime_set_enabled != NULL) {
     win->vtable->ime_set_enabled(win, enabled);
   }
 }
@@ -245,26 +391,34 @@ static inline void my_pal_window_ime_set_surrounding(my_pal_window_t* win,
                                                       const char* utf8,
                                                       int32_t cursor,
                                                       int32_t anchor) {
-  if (win->vtable->ime_set_surrounding != NULL) {
+  if (win != NULL && win->vtable != NULL &&
+      win->vtable->ime_set_surrounding != NULL) {
     win->vtable->ime_set_surrounding(win, utf8, cursor, anchor);
   }
 }
 
 static inline void my_pal_window_ime_set_spot(my_pal_window_t* win, int32_t x,
                                               int32_t y) {
-  if (win->vtable->ime_set_spot != NULL) {
+  if (win != NULL && win->vtable != NULL &&
+      win->vtable->ime_set_spot != NULL) {
     win->vtable->ime_set_spot(win, x, y);
   }
 }
 
 static inline my_ret_t my_pal_window_move(my_pal_window_t* win, int32_t x,
                                           int32_t y) {
+  if (win == NULL || win->vtable == NULL || win->vtable->move == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return win->vtable->move(win, x, y);
 }
 
 /** @brief Start an interactive move (M16 CSD). NOT_SUPPORTED/no-op when
  * the port has no such concept. */
 static inline my_ret_t my_pal_window_begin_move(my_pal_window_t* win) {
+  if (win == NULL || win->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   if (win->vtable->begin_move == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
@@ -275,6 +429,9 @@ static inline my_ret_t my_pal_window_begin_move(my_pal_window_t* win) {
  * NOT_SUPPORTED when the port has no cursor control (NULL slot). */
 static inline my_ret_t my_pal_window_set_cursor(my_pal_window_t* win,
                                                 my_cursor_t cursor) {
+  if (win == NULL || win->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   if (win->vtable->set_cursor == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
@@ -290,8 +447,9 @@ typedef struct my_pal_main_loop_vtable_t {
   /** @brief Ask run() to return (safe from any thread). */
   my_ret_t (*quit)(my_pal_main_loop_t* loop);
   /**
-   * @brief Enqueue a (copied) event for dispatch on the loop thread;
-   * wakes the loop. Safe from any thread.
+   * @brief Enqueue a copied event for dispatch on the loop thread.
+   * Safe from any thread while the loop object remains alive. IME text is
+   * copied by ports; MY_EVENT_USER.data remains an application-owned borrow.
    */
   my_ret_t (*post_event)(my_pal_main_loop_t* loop, const my_event_t* event);
   /** @brief Add a timer driven by this loop (see my_timer.h). */
@@ -307,32 +465,51 @@ struct my_pal_main_loop_t {
 };
 
 static inline my_ret_t my_pal_main_loop_run(my_pal_main_loop_t* loop) {
+  if (loop == NULL || loop->vtable == NULL || loop->vtable->run == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return loop->vtable->run(loop);
 }
 
 static inline my_ret_t my_pal_main_loop_quit(my_pal_main_loop_t* loop) {
+  if (loop == NULL || loop->vtable == NULL || loop->vtable->quit == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return loop->vtable->quit(loop);
 }
 
 static inline my_ret_t my_pal_main_loop_post_event(my_pal_main_loop_t* loop,
                                                    const my_event_t* event) {
+  if (loop == NULL || loop->vtable == NULL ||
+      loop->vtable->post_event == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return loop->vtable->post_event(loop, event);
 }
+
 
 static inline uint32_t my_pal_main_loop_add_timer(my_pal_main_loop_t* loop,
                                                   my_timer_callback_t callback,
                                                   void* ctx,
                                                   uint32_t interval_ms) {
+  if (loop == NULL || loop->vtable == NULL ||
+      loop->vtable->add_timer == NULL) {
+    return 0u;
+  }
   return loop->vtable->add_timer(loop, callback, ctx, interval_ms);
 }
 
 static inline my_ret_t my_pal_main_loop_remove_timer(my_pal_main_loop_t* loop,
                                                      uint32_t id) {
+  if (loop == NULL || loop->vtable == NULL ||
+      loop->vtable->remove_timer == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return loop->vtable->remove_timer(loop, id);
 }
 
 static inline void my_pal_main_loop_destroy(my_pal_main_loop_t* loop) {
-  if (loop != NULL) {
+  if (loop != NULL && loop->vtable != NULL && loop->vtable->destroy != NULL) {
     loop->vtable->destroy(loop);
   }
 }
@@ -392,30 +569,54 @@ struct my_pal_t {
 static inline my_pal_window_t* my_pal_window_create(my_pal_t* pal, int32_t w,
                                                     int32_t h,
                                                     const char* title) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->window_create == NULL) {
+    return NULL;
+  }
   return pal->vtable->window_create(pal, w, h, title);
 }
 
 static inline my_pal_main_loop_t* my_pal_main_loop_create(my_pal_t* pal) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->main_loop_create == NULL) {
+    return NULL;
+  }
   return pal->vtable->main_loop_create(pal);
 }
 
 static inline uint64_t my_pal_time_now_ms(my_pal_t* pal) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->time_now_ms == NULL) {
+    return 0u;
+  }
   return pal->vtable->time_now_ms(pal);
 }
 
 static inline my_ret_t my_pal_set_event_handler(my_pal_t* pal,
                                                 my_pal_event_handler_t handler,
                                                 void* ctx) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->set_event_handler == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return pal->vtable->set_event_handler(pal, handler, ctx);
 }
 
 static inline my_ret_t my_pal_clipboard_set_text(my_pal_t* pal,
                                                  const char* text) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->clipboard_set_text == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return pal->vtable->clipboard_set_text(pal, text);
 }
 
 static inline my_ret_t my_pal_clipboard_get_text(my_pal_t* pal, char* buf,
                                                  size_t size) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->clipboard_get_text == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   return pal->vtable->clipboard_get_text(pal, buf, size);
 }
 
@@ -425,6 +626,9 @@ static inline my_ret_t my_pal_clipboard_get_text_alloc(
     return MY_RET_INVALID_PARAMS;
   }
   *out = NULL;
+  if (pal == NULL || pal->vtable == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
   if (pal->vtable->clipboard_get_text_alloc == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
@@ -432,18 +636,62 @@ static inline my_ret_t my_pal_clipboard_get_text_alloc(
 }
 
 static inline float my_pal_get_scale_factor(my_pal_t* pal) {
+  if (pal == NULL || pal->vtable == NULL ||
+      pal->vtable->get_scale_factor == NULL) {
+    return 1.0f;
+  }
   return pal->vtable->get_scale_factor(pal);
 }
 
 /** @brief M16: true when the port's compositor gives no SSD and windows
  * must draw their own title bar (NULL slot = false). */
 static inline bool my_pal_needs_client_decoration(my_pal_t* pal) {
-  return pal->vtable->needs_client_decoration != NULL &&
+  return pal != NULL && pal->vtable != NULL &&
+         pal->vtable->needs_client_decoration != NULL &&
          pal->vtable->needs_client_decoration(pal);
 }
 
+/** @brief Register a versioned optional extension without changing PAL ABI. */
+my_ret_t my_pal_register_media_provider(my_pal_t* pal,
+                                        const my_pal_media_provider_t* provider);
+
+/** @brief Remove the optional media provider before destroying the PAL. */
+void my_pal_unregister_media_provider(my_pal_t* pal);
+
+/** @brief Register a Vulkan WSI provider without changing the PAL ABI. */
+my_ret_t my_pal_register_vulkan_provider(
+    my_pal_t* pal, const my_pal_vulkan_provider_t* provider);
+
+/** @brief Remove the Vulkan WSI provider before destroying the PAL. */
+void my_pal_unregister_vulkan_provider(my_pal_t* pal);
+
+/** @brief Copy instance extension names for one window into caller storage. */
+my_ret_t my_pal_get_vulkan_instance_extensions(
+    my_pal_t* pal, my_pal_window_t* window,
+    my_pal_vulkan_instance_extensions_t* out);
+
+/** @brief Cold-path media snapshot including known/unknown fact bits. */
+my_ret_t my_pal_get_media_context_ex(my_pal_t* pal,
+                                     my_pal_media_context_ex_t* out);
+
+/** @brief Legacy snapshot API; the extension's knowledge bits are discarded. */
+static inline my_ret_t my_pal_get_media_context(
+    my_pal_t* pal, my_pal_media_context_t* out) {
+  my_pal_media_context_ex_t extended;
+  my_ret_t ret;
+  if (out == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  memset(out, 0, sizeof(*out));
+  ret = my_pal_get_media_context_ex(pal, &extended);
+  if (ret == MY_RET_OK) {
+    *out = extended.base;
+  }
+  return ret;
+}
+
 static inline void my_pal_destroy(my_pal_t* pal) {
-  if (pal != NULL) {
+  if (pal != NULL && pal->vtable != NULL && pal->vtable->destroy != NULL) {
     pal->vtable->destroy(pal);
   }
 }

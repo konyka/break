@@ -35,7 +35,16 @@ add_library(myui STATIC
   my_css.c
 )
 
-target_include_directories(myui PUBLIC ${CMAKE_SOURCE_DIR}/src)
+set(MYUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
+  "myui source root used by myui public headers")
+set(MYUI_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
+  "engine source root used by myui public headers")
+target_include_directories(myui PUBLIC ${MYUI_SOURCE_DIR} ${MYUI_ENGINE_SOURCE_DIR})
+
+if(NOT TARGET mypal)
+  message(FATAL_ERROR
+    "myui requires the reusable mypal target; add mypal before myui")
+endif()
 target_link_libraries(myui PUBLIC myc myr mypal)
 
 set(MYUI_THIRD_PARTY_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../external" CACHE PATH

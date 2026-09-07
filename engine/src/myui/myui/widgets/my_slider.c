@@ -34,7 +34,9 @@ static void slider_set_internal(my_widget_t* widget, float v, bool notify) {
     s->value = v;
     my_widget_invalidate(widget, NULL);
     if (notify) {
+      my_widget_ref(widget);
       my_emitter_emit(widget->emitter, "changed", NULL);
+      my_widget_unref(widget);
     }
   }
 }
@@ -119,6 +121,10 @@ static my_ret_t slider_on_event(my_widget_t* widget, const my_event_t* event) {
 static const my_widget_vtable_t s_slider_vtable = {slider_on_paint,
                                                    slider_on_event, NULL, NULL};
 
+bool my_slider_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_slider_vtable;
+}
+
 my_widget_t* my_slider_create(const my_allocator_t* allocator) {
   my_slider_t* s = (my_slider_t*)my_mem_calloc(allocator, 1, sizeof(my_slider_t));
   if (s == NULL) {
@@ -137,7 +143,7 @@ my_widget_t* my_slider_create(const my_allocator_t* allocator) {
 }
 
 my_ret_t my_slider_set_value(my_widget_t* slider, float value) {
-  if (slider == NULL) {
+  if (!my_slider_is_instance(slider)) {
     return MY_RET_INVALID_PARAMS;
   }
   slider_set_internal(slider, value, false);
@@ -145,12 +151,12 @@ my_ret_t my_slider_set_value(my_widget_t* slider, float value) {
 }
 
 float my_slider_get_value(my_widget_t* slider) {
-  return slider != NULL ? ((my_slider_t*)slider)->value : 0.0f;
+  return my_slider_is_instance(slider) ? ((my_slider_t*)slider)->value : 0.0f;
 }
 
 my_ret_t my_slider_set_range(my_widget_t* slider, float min, float max) {
   my_slider_t* s = (my_slider_t*)slider;
-  if (slider == NULL || min >= max) {
+  if (!my_slider_is_instance(slider) || min >= max) {
     return MY_RET_INVALID_PARAMS;
   }
   s->min = min;
@@ -160,7 +166,7 @@ my_ret_t my_slider_set_range(my_widget_t* slider, float min, float max) {
 }
 
 my_ret_t my_slider_set_step(my_widget_t* slider, float step) {
-  if (slider == NULL || step < 0.0f) {
+  if (!my_slider_is_instance(slider) || step < 0.0f) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_slider_t*)slider)->step = step;

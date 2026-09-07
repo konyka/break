@@ -80,6 +80,7 @@ struct Platform {
     u32                   seat_global_name;
     struct wl_keyboard   *keyboard;
     struct wl_pointer    *pointer;
+    bool                  seat_has_touch;
     struct wl_data_device_manager *data_device_manager;
     struct wl_data_device *data_device;
     WaylandClipboardSource *clipboard_source;
@@ -177,6 +178,9 @@ struct Platform {
     /* DPI / Monitor — R443: per-output data lives in output_list (converted
      * to MonitorInfo on query); dpi/scale mirror the primary (slot 0) output. */
     f32 dpi;
+    u64 media_generation;
+    PlatformMediaContext media_context;
+    bool media_context_valid;
 };
 
 /* Forward decls for relative-pointer wiring. */
@@ -213,7 +217,8 @@ static void wayland_clipboard_destroy_sources(Platform *p) {
 static bool wayland_clipboard_set_cached(Platform *p, const char *text,
                                          usize length) {
     char *copy;
-    if (length >= WAYLAND_CLIPBOARD_MAX_BYTES) return false;
+    if (length > WAYLAND_CLIPBOARD_MAX_BYTES ||
+        !platform_utf8_validate(text, length)) return false;
     copy = malloc(length + 1);
     if (copy == NULL) return false;
     if (length > 0 && text != NULL) memcpy(copy, text, length);
@@ -248,7 +253,9 @@ static void wayland_clipboard_finish_read(Platform *p, bool success) {
         close(p->clipboard_read_fd);
         p->clipboard_read_fd = -1;
     }
-    if (success && p->clipboard_read_buffer != NULL) {
+    if (success && p->clipboard_read_buffer != NULL &&
+        platform_utf8_validate(p->clipboard_read_buffer,
+                               p->clipboard_read_length)) {
         p->clipboard_read_buffer[p->clipboard_read_length] = '\0';
         wayland_clipboard_free_text(p);
         p->clipboard_text = p->clipboard_read_buffer;
@@ -284,6 +291,22 @@ static void wayland_clipboard_drain(Platform *p) {
     for (;;) {
         ssize_t count;
         if (p->clipboard_read_fd < 0) return;
+        if (p->clipboard_read_length >= WAYLAND_CLIPBOARD_MAX_BYTES) {
+            char extra;
+            count = read(p->clipboard_read_fd, &extra, 1);
+            if (count == 0) {
+                wayland_clipboard_finish_read(p, true);
+                return;
+            }
+            if (count > 0) {
+                wayland_clipboard_finish_read(p, false);
+                return;
+            }
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            wayland_clipboard_finish_read(p, false);
+            return;
+        }
         if (!wayland_clipboard_grow_read_buffer(p)) {
             wayland_clipboard_finish_read(p, false);
             return;
@@ -1098,6 +1121,9 @@ static const struct zwp_relative_pointer_v1_listener relative_pointer_listener =
 
 static void seat_capabilities(void *data, struct wl_seat *seat, u32 caps) {
     Platform *p = data;
+    bool had_pointer = p->pointer != NULL;
+    bool had_touch = p->seat_has_touch;
+    p->seat_has_touch = (caps & WL_SEAT_CAPABILITY_TOUCH) != 0u;
 
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !p->keyboard) {
         p->keyboard = wl_seat_get_keyboard(seat);
@@ -1124,6 +1150,10 @@ static void seat_capabilities(void *data, struct wl_seat *seat, u32 caps) {
         wl_pointer_destroy(p->pointer);
         p->pointer = NULL;
         p->pointer_enter_serial = 0;
+    }
+    if (had_pointer != (p->pointer != NULL) || had_touch != p->seat_has_touch) {
+        p->media_context_valid = false;
+        if (p->media_generation != UINT64_MAX) p->media_generation++;
     }
 }
 
@@ -1338,6 +1368,7 @@ static void output_done(void *data, struct wl_output *output) {
     WaylandOutputInfo *o = wayland_output_from_ctx(ctx, &slot);
     if (o == NULL) return;
     o->done = true;
+    if (p->media_generation != UINT64_MAX) p->media_generation++;
     /* Slot 0 is the primary output; keep the global dpi/scale mirroring it
      * (single-output behavior unchanged from the pre-R443 implementation). */
     if (slot == 0) {
@@ -1743,8 +1774,13 @@ static void wayland_create_fail(Platform *p) {
 }
 
 Platform *platform_create(const PlatformConfig *cfg) {
+    if (!platform_config_valid(cfg)) {
+        LOG_ERROR("Invalid platform configuration");
+        return NULL;
+    }
     Platform *p = calloc(1, sizeof(Platform));
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
+    p->media_generation = 1u;
 
     p->width  = cfg->width;
     p->height = cfg->height;
@@ -1916,6 +1952,7 @@ void platform_destroy(Platform *p) {
 }
 
 PlatformEventResult platform_poll(Platform *p) {
+    if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
 
     if (wl_display_dispatch_pending(p->display) < 0) {
@@ -1996,24 +2033,24 @@ void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
 }
 
 InputState *platform_input(Platform *p) {
-    return &p->input;
+    return p != NULL ? &p->input : NULL;
 }
 
 void *platform_window_native(Platform *p) {
-    return (void *)p->egl_window;
+    return p != NULL ? (void *)p->egl_window : NULL;
 }
 
 void *platform_display_native(Platform *p) {
-    return (void *)p->display;
+    return p != NULL ? (void *)p->display : NULL;
 }
 
 void *platform_surface_native(Platform *p) {
-    return (void *)p->surface;
+    return p != NULL ? (void *)p->surface : NULL;
 }
 
 void platform_get_size(Platform *p, u32 *w, u32 *h) {
-    if (w) *w = p->width;
-    if (h) *h = p->height;
+    if (w) *w = p != NULL ? p->width : 0;
+    if (h) *h = p != NULL ? p->height : 0;
 }
 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
@@ -2028,7 +2065,7 @@ void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
 }
 
 f32 platform_get_dpi(Platform *p) {
-    return p->dpi;
+    return p != NULL ? p->dpi : 96.0f;
 }
 
 f32 platform_get_content_scale(Platform *p) {
@@ -2043,19 +2080,55 @@ f32 platform_get_input_scale(Platform *p) {
 }
 
 i32 platform_get_scale_factor(Platform *p) {
-    return p->scale;
+    return p != NULL ? p->scale : 1;
+}
+
+bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
+    PlatformMediaContext next;
+    if (out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    if (p == NULL) return false;
+    if (!p->media_context_valid) {
+        memset(&next, 0, sizeof(next));
+        next.screen = true;
+        next.capabilities = PLATFORM_MEDIA_CAP_COLOR_SRGB;
+        next.known = PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
+        if (p->pointer != NULL) {
+            next.capabilities |= PLATFORM_MEDIA_CAP_HOVER |
+                             PLATFORM_MEDIA_CAP_POINTER_FINE |
+                             PLATFORM_MEDIA_CAP_ANY_POINTER_FINE;
+            next.known |= PLATFORM_MEDIA_KNOWN_HOVER |
+                      PLATFORM_MEDIA_KNOWN_POINTER |
+                      PLATFORM_MEDIA_KNOWN_ANY_POINTER;
+        }
+        if (p->seat_has_touch) {
+            next.capabilities |= PLATFORM_MEDIA_CAP_ANY_POINTER_COARSE;
+            if (p->pointer == NULL) {
+                next.capabilities |= PLATFORM_MEDIA_CAP_POINTER_COARSE;
+            }
+        }
+        p->media_context = next;
+        p->media_context_valid = true;
+    }
+    *out = p->media_context;
+    return true;
+}
+
+u64 platform_get_media_generation(Platform *p) {
+    return p != NULL ? p->media_generation : 0u;
 }
 
 u32 platform_get_monitor_count(Platform *p) {
     /* R443: count outputs whose initial event burst completed (done). */
     u32 n = 0;
+    if (p == NULL) return 0;
     for (u32 i = 0; i < p->output_list.count; i++)
         if (p->output_list.items[i].done) n++;
     return n;
 }
 
 bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
-    if (!out) return false;
+    if (p == NULL || !out) return false;
     /* R443: map the public packed index onto the nth completed output slot. */
     for (u32 i = 0; i < p->output_list.count; i++) {
         const WaylandOutputInfo *o = &p->output_list.items[i];
@@ -2077,6 +2150,7 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
 }
 
 void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL || p->toplevel == NULL || p->surface == NULL) return;
     if (p->is_fullscreen) {
         xdg_toplevel_unset_fullscreen(p->toplevel);
     } else {
@@ -2202,12 +2276,14 @@ static void wayland_clear_relative(Platform *p) {
 
 void platform_mouse_capture(Platform *p, bool capture) {
     /* On Wayland "capture" maps to a persistent pointer lock. */
+    if (p == NULL) return;
     p->mouse_captured = capture;
     if (capture) wayland_apply_relative(p);
     else if (!p->mouse_relative) wayland_clear_relative(p);
 }
 
 void platform_mouse_set_visible(Platform *p, bool visible) {
+    if (p == NULL) return;
     p->mouse_visible = visible;
     wayland_update_cursor_visibility(p);
 }
@@ -2305,8 +2381,9 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
                                                            char **out) {
     int fds[2];
     int flags;
-    if (p == NULL || out == NULL) return PLATFORM_CLIPBOARD_EMPTY;
+    if (out == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     *out = NULL;
+    if (p == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     if ((p->clipboard_offer == NULL || p->clipboard_offer_read_complete) &&
         p->clipboard_text != NULL) {
         *out = wayland_clipboard_duplicate(p->clipboard_text);
@@ -2336,6 +2413,7 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
 }
 
 void platform_mouse_set_relative(Platform *p, bool relative) {
+    if (p == NULL) return;
     p->mouse_relative = relative;
     if (relative) {
         wayland_apply_relative(p);

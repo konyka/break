@@ -28,8 +28,12 @@ typedef enum my_event_type_t {
   MY_EVENT_IME_DELETE_SURROUNDING, /**< delete UTF-8 bytes around caret */
   MY_EVENT_RESIZE, /**< window size changed */
   MY_EVENT_PAINT,  /**< window needs redraw */
-  MY_EVENT_USER    /**< app-defined, posted via main loop */
+  MY_EVENT_USER,   /**< app-defined, posted via main loop */
+  MY_EVENT_COMMAND /**< owned UI command, posted via my_ui_command_submit */
 } my_event_type_t;
+
+/** @brief Destructor for an owned command payload. */
+typedef void (*my_event_command_destroy_fn_t)(void* data);
 
 /**
  * @brief Key code. Printable ASCII (32..126) maps to itself.
@@ -102,6 +106,10 @@ typedef struct my_event_t {
     struct {
       void* data; /**< app-defined payload for MY_EVENT_USER */
     } user;
+    struct {
+      void* data; /**< owned by the queued event */
+      my_event_command_destroy_fn_t destroy;
+    } command;
   } u;
 } my_event_t;
 
@@ -114,5 +122,8 @@ static inline my_event_t my_event_init(my_event_type_t type) {
                                  * garbage modifiers otherwise */
   return e;
 }
+
+/** @brief Release an owned command payload after dispatch or queue discard. */
+void my_event_release_payload(my_event_t* event);
 
 #endif /* MY_EVENT_H */

@@ -39,6 +39,52 @@ bool break_ui_drawable_damage_to_logical(
 #define BREAK_UI_DEFAULT_MAX_DAMAGE_RECTS 8u
 #define BREAK_UI_DEFAULT_MAX_SCISSOR_AREA_PERCENT 60u
 
+static bool break_ui_present_damage_is_valid(const RHIPresentRect* damage,
+                                             uint32_t count,
+                                             uint32_t width,
+                                             uint32_t height) {
+  uint32_t i;
+  if (count > RHI_MAX_PRESENT_DAMAGE_RECTS ||
+      (count != 0u && damage == NULL)) {
+    return false;
+  }
+  for (i = 0u; i < count; ++i) {
+    const RHIPresentRect* rect = &damage[i];
+    if (rect->x < 0 || rect->y < 0 || rect->w == 0u || rect->h == 0u ||
+        (uint64_t)rect->x + rect->w > width ||
+        (uint64_t)rect->y + rect->h > height) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool break_ui_present_frame_decide(
+    bool partial_requested, bool surface_valid, bool target_preserved,
+    bool present_damage_supported, bool buffer_age_supported,
+    const RHIPresentRect* damage,
+    uint32_t damage_count, uint32_t drawable_width, uint32_t drawable_height,
+    break_ui_present_frame_decision_t* out) {
+  if (out == NULL || drawable_width == 0u || drawable_height == 0u ||
+      !break_ui_present_damage_is_valid(damage, damage_count, drawable_width,
+                                        drawable_height)) {
+    return false;
+  }
+  out->mode = BREAK_UI_PRESENT_FRAME_FULL;
+  out->partial_active = false;
+  if (!partial_requested || !surface_valid || !target_preserved ||
+      !present_damage_supported) {
+    return true;
+  }
+  if (damage_count == 0u && !buffer_age_supported) {
+    out->mode = BREAK_UI_PRESENT_FRAME_SKIP;
+    return true;
+  }
+  out->mode = BREAK_UI_PRESENT_FRAME_PARTIAL;
+  out->partial_active = true;
+  return true;
+}
+
 bool break_ui_damage_to_drawable_scissor(
     const my_dirty_rects_t* damage, uint32_t logical_width,
     uint32_t logical_height, uint32_t drawable_width,
@@ -125,7 +171,8 @@ bool break_ui_surface_composite_decide(
       options->drawable_width == 0u || options->drawable_height == 0u) {
     return true;
   }
-  if (!options->retained_surface_valid || !options->present_target_preserved) {
+  if (!options->retained_surface_valid || !options->present_target_preserved ||
+      !options->present_damage_supported) {
     return true;
   }
   if (my_dirty_rects_count(damage) == 0u) {

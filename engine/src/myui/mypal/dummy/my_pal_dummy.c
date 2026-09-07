@@ -4,10 +4,10 @@
  */
 #include "mypal/dummy/my_pal_dummy.h"
 
-#include "myc/my_darray.h"
 #include "myc/my_str.h"
 #include "myr/my_lcd_mem.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 /* ---------------- platform ---------------- */
@@ -16,12 +16,22 @@ typedef struct dummy_pal_t {
   my_pal_t base;
   const my_allocator_t* allocator;
   uint64_t now_ms;                    /**< injectable fake clock */
+  uint64_t time_step_ms;              /**< test-only query increment */
+  uint32_t time_query_count;          /**< test-only clock call counter */
   my_pal_event_handler_t handler;
   void* handler_ctx;
   char* clipboard;                    /**< in-memory clipboard text */
+  uint32_t clipboard_pending_reads;   /**< test-only async read budget */
   float scale;                        /**< injectable (M12c, default 1) */
   bool needs_csd;  /**< injectable (M16, default false = zero regression) */
+  struct dummy_media_provider_t *media_provider;
 } dummy_pal_t;
+
+typedef struct dummy_media_provider_t {
+  const my_allocator_t *allocator;
+  my_pal_media_context_t media;
+  uint32_t known;
+} dummy_media_provider_t;
 
 static dummy_pal_t* pal_from(my_pal_t* pal) {
   return (dummy_pal_t*)pal;
@@ -165,6 +175,22 @@ static bool dummy_needs_csd(my_pal_t* pal) {
   return pal_from(pal)->needs_csd; /* injectable test hook (M16) */
 }
 
+static my_ret_t dummy_get_media_context(void* context,
+                                        my_pal_media_context_ex_t* out) {
+  dummy_media_provider_t* provider = (dummy_media_provider_t*)context;
+  if (out == NULL) return MY_RET_INVALID_PARAMS;
+  out->base = provider->media;
+  out->known = provider->known;
+  return MY_RET_OK;
+}
+
+static void dummy_release_media_context(void* context) {
+  dummy_media_provider_t *provider = (dummy_media_provider_t *)context;
+  if (provider != NULL) {
+    my_mem_free(provider->allocator, provider);
+  }
+}
+
 static const my_pal_window_vtable_t s_dummy_window_vtable = {
     dummy_win_set_title, dummy_win_resize,  dummy_win_show,
     dummy_win_get_size,  dummy_win_get_lcd, dummy_win_destroy,
@@ -211,15 +237,20 @@ static my_pal_window_t* dummy_window_create(my_pal_t* pal, int32_t w, int32_t h,
 typedef struct queued_event_t {
   my_event_t event;
   my_pal_window_t* window; /**< NULL for posted events */
+  char* ime_text;          /**< owned copy for posted IME events */
+  struct queued_event_t* next;
 } queued_event_t;
 
 typedef struct dummy_loop_t {
   my_pal_main_loop_t base;
   dummy_pal_t* pal;
   const my_allocator_t* allocator;
-  my_darray_t* queue; /**< queued_event_t* */
+  queued_event_t* event_head;
+  queued_event_t* event_tail;
   my_timer_manager_t* timers;
-  bool quit;
+  atomic_flag event_lock;
+  atomic_bool accepting_events;
+  atomic_bool quit;
 } dummy_loop_t;
 
 static uint64_t dummy_timer_now(void* ctx) {
@@ -239,32 +270,61 @@ static my_ret_t dummy_loop_post_event(my_pal_main_loop_t* loop,
   }
   qe->event = *event;
   qe->window = NULL;
-  if (my_darray_push(l->queue, qe) != MY_RET_OK) {
-    my_mem_free(l->allocator, qe);
-    return MY_RET_OOM;
+  if ((event->type == MY_EVENT_IME_PREEDIT ||
+       event->type == MY_EVENT_IME_COMMIT) &&
+      event->u.ime.text != NULL) {
+    qe->ime_text = my_strdup(l->allocator, event->u.ime.text);
+    if (qe->ime_text == NULL) {
+      my_mem_free(l->allocator, qe);
+      return MY_RET_OOM;
+    }
+    qe->event.u.ime.text = qe->ime_text;
   }
+  while (atomic_flag_test_and_set_explicit(&l->event_lock,
+                                           memory_order_acquire)) {
+  }
+  if (!atomic_load_explicit(&l->accepting_events, memory_order_relaxed)) {
+    atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
+    my_mem_free(l->allocator, qe->ime_text);
+    my_mem_free(l->allocator, qe);
+    return MY_RET_PENDING;
+  }
+  if (l->event_tail != NULL)
+    l->event_tail->next = qe;
+  else
+    l->event_head = qe;
+  l->event_tail = qe;
+  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
   return MY_RET_OK;
 }
 
 /** @brief Dispatch one queued event, FIFO. Returns false when queue is empty. */
 static bool dummy_loop_pump_one(dummy_loop_t* l) {
   queued_event_t* qe;
-  if (my_darray_size(l->queue) == 0) {
+  while (atomic_flag_test_and_set_explicit(&l->event_lock,
+                                           memory_order_acquire)) {
+  }
+  if (l->event_head == NULL) {
+    atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
     return false;
   }
-  qe = (queued_event_t*)my_darray_get(l->queue, 0);
-  my_darray_remove_at(l->queue, 0);
+  qe = l->event_head;
+  l->event_head = qe->next;
+  if (l->event_head == NULL) l->event_tail = NULL;
+  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
   if (l->pal->handler != NULL) {
     l->pal->handler(l->pal->handler_ctx, qe->window, &qe->event);
   }
+  my_event_release_payload(&qe->event);
+  my_mem_free(l->allocator, qe->ime_text);
   my_mem_free(l->allocator, qe);
   return true;
 }
 
 static my_ret_t dummy_loop_run(my_pal_main_loop_t* loop) {
   dummy_loop_t* l = (dummy_loop_t*)loop;
-  l->quit = false;
-  while (!l->quit) {
+  atomic_store_explicit(&l->quit, false, memory_order_release);
+  while (!atomic_load_explicit(&l->quit, memory_order_acquire)) {
     if (!dummy_loop_pump_one(l)) {
       /* starved: dummy loop does not block; fire due timers, then exit
        * when nothing more can happen with a frozen clock */
@@ -277,7 +337,8 @@ static my_ret_t dummy_loop_run(my_pal_main_loop_t* loop) {
 }
 
 static my_ret_t dummy_loop_quit(my_pal_main_loop_t* loop) {
-  ((dummy_loop_t*)loop)->quit = true;
+  atomic_store_explicit(&((dummy_loop_t*)loop)->quit, true,
+                        memory_order_release);
   return MY_RET_OK;
 }
 
@@ -297,12 +358,19 @@ static void dummy_loop_destroy(my_pal_main_loop_t* loop) {
   if (l == NULL) {
     return;
   }
-  while (my_darray_size(l->queue) > 0) {
-    qe = (queued_event_t*)my_darray_get(l->queue, 0);
-    my_darray_remove_at(l->queue, 0);
+  while (atomic_flag_test_and_set_explicit(&l->event_lock,
+                                           memory_order_acquire)) {
+  }
+  atomic_store_explicit(&l->accepting_events, false, memory_order_release);
+  while (l->event_head != NULL) {
+    qe = l->event_head;
+    l->event_head = qe->next;
+    my_mem_free(l->allocator, qe->ime_text);
+    my_event_release_payload(&qe->event);
     my_mem_free(l->allocator, qe);
   }
-  my_darray_destroy(l->queue);
+  l->event_tail = NULL;
+  atomic_flag_clear_explicit(&l->event_lock, memory_order_release);
   my_timer_manager_destroy(l->timers);
   my_mem_free(l->allocator, l);
 }
@@ -320,9 +388,11 @@ static my_pal_main_loop_t* dummy_main_loop_create(my_pal_t* pal) {
   l->base.vtable = &s_dummy_loop_vtable;
   l->pal = p;
   l->allocator = p->allocator;
-  l->queue = my_darray_create(p->allocator, 0);
   l->timers = my_timer_manager_create(p->allocator, dummy_timer_now, p);
-  if (l->queue == NULL || l->timers == NULL) {
+  atomic_flag_clear(&l->event_lock);
+  atomic_init(&l->accepting_events, true);
+  atomic_init(&l->quit, false);
+  if (l->timers == NULL) {
     dummy_loop_destroy((my_pal_main_loop_t*)l);
     return NULL;
   }
@@ -345,7 +415,17 @@ uint32_t my_pal_main_loop_pump_n(my_pal_main_loop_t* loop, uint32_t n) {
 /* ---------------- platform vtable ---------------- */
 
 static uint64_t dummy_time_now_ms(my_pal_t* pal) {
-  return pal_from(pal)->now_ms;
+  dummy_pal_t* dummy = pal_from(pal);
+  uint64_t now = dummy->now_ms;
+  if (dummy->time_query_count != UINT32_MAX) {
+    dummy->time_query_count++;
+  }
+  if (UINT64_MAX - dummy->now_ms < dummy->time_step_ms) {
+    dummy->now_ms = UINT64_MAX;
+  } else {
+    dummy->now_ms += dummy->time_step_ms;
+  }
+  return now;
 }
 
 static my_ret_t dummy_set_event_handler(my_pal_t* pal,
@@ -384,6 +464,11 @@ static my_ret_t dummy_clipboard_get_alloc(my_pal_t* pal,
                                           char** out) {
   dummy_pal_t* p = pal_from(pal);
   if (out == NULL) return MY_RET_INVALID_PARAMS;
+  *out = NULL;
+  if (p->clipboard_pending_reads > 0u) {
+    p->clipboard_pending_reads--;
+    return MY_RET_PENDING;
+  }
   *out = my_strdup(allocator, p->clipboard);
   if (p->clipboard == NULL) return MY_RET_NOT_FOUND;
   return *out != NULL ? MY_RET_OK : MY_RET_OOM;
@@ -396,6 +481,7 @@ static float dummy_get_scale(my_pal_t* pal) {
 static void dummy_pal_destroy(my_pal_t* pal) {
   dummy_pal_t* p = pal_from(pal);
   if (p != NULL) {
+    my_pal_unregister_media_provider(pal);
     my_mem_free(p->allocator, p->clipboard);
     my_mem_free(p->allocator, p);
   }
@@ -411,6 +497,22 @@ void my_pal_dummy_set_scale_factor(my_pal_t* pal, float scale) {
   if (pal != NULL && scale > 0.0f) {
     pal_from(pal)->scale = scale;
   }
+}
+
+void my_pal_dummy_set_media_context(my_pal_t* pal,
+                                    const my_pal_media_context_t* context) {
+  if (pal == NULL || context == NULL) return;
+  pal_from(pal)->media_provider->media = *context;
+  pal_from(pal)->media_provider->media.capabilities &= MY_PAL_MEDIA_CAP_ALL;
+  pal_from(pal)->media_provider->known = 0u;
+}
+
+void my_pal_dummy_set_media_context_ex(
+    my_pal_t* pal, const my_pal_media_context_ex_t* context) {
+  if (pal == NULL || context == NULL) return;
+  pal_from(pal)->media_provider->media = context->base;
+  pal_from(pal)->media_provider->media.capabilities &= MY_PAL_MEDIA_CAP_ALL;
+  pal_from(pal)->media_provider->known = context->known & MY_PAL_MEDIA_KNOWN_ALL;
 }
 
 void my_pal_dummy_get_ime_spot(my_pal_window_t* win, int32_t* x,
@@ -437,12 +539,37 @@ void my_pal_dummy_inject_event(my_pal_t* pal, my_pal_window_t* win,
 
 my_pal_t* my_pal_dummy_create(const my_allocator_t* allocator) {
   dummy_pal_t* p = (dummy_pal_t*)my_mem_calloc(allocator, 1, sizeof(dummy_pal_t));
+  dummy_media_provider_t* media_provider;
   if (p == NULL) {
+    return NULL;
+  }
+  media_provider = (dummy_media_provider_t *)my_mem_calloc(
+      allocator, 1, sizeof(*media_provider));
+  if (media_provider == NULL) {
+    my_mem_free(allocator, p);
     return NULL;
   }
   p->base.vtable = &s_dummy_pal_vtable;
   p->allocator = allocator;
   p->scale = 1.0f;
+  p->media_provider = media_provider;
+  media_provider->allocator = allocator;
+  media_provider->media.screen = true;
+  media_provider->media.capabilities = MY_PAL_MEDIA_CAP_COLOR_SRGB;
+  media_provider->known = MY_PAL_MEDIA_KNOWN_HOVER |
+                          MY_PAL_MEDIA_KNOWN_POINTER |
+                          MY_PAL_MEDIA_KNOWN_ANY_POINTER |
+                          MY_PAL_MEDIA_KNOWN_COLOR_GAMUT;
+  {
+    const my_pal_media_provider_t provider = {
+        sizeof(provider), MY_PAL_MEDIA_PROVIDER_ABI_VERSION,
+        dummy_get_media_context, media_provider, dummy_release_media_context};
+    if (my_pal_register_media_provider((my_pal_t*)p, &provider) != MY_RET_OK) {
+      my_mem_free(allocator, media_provider);
+      my_mem_free(allocator, p);
+      return NULL;
+    }
+  }
   return (my_pal_t*)p;
 }
 
@@ -450,6 +577,29 @@ void my_pal_dummy_set_now_ms(my_pal_t* pal, uint64_t now_ms) {
   if (pal != NULL && pal->vtable == &s_dummy_pal_vtable) {
     pal_from(pal)->now_ms = now_ms;
   }
+}
+
+void my_pal_dummy_set_clipboard_pending_reads(my_pal_t* pal, uint32_t count) {
+  if (pal != NULL && pal->vtable == &s_dummy_pal_vtable) {
+    pal_from(pal)->clipboard_pending_reads = count;
+  }
+}
+
+void my_pal_dummy_set_time_step_ms(my_pal_t* pal, uint64_t step_ms) {
+  if (pal != NULL && pal->vtable == &s_dummy_pal_vtable) {
+    pal_from(pal)->time_step_ms = step_ms;
+  }
+}
+
+void my_pal_dummy_reset_time_query_count(my_pal_t* pal) {
+  if (pal != NULL && pal->vtable == &s_dummy_pal_vtable) {
+    pal_from(pal)->time_query_count = 0u;
+  }
+}
+
+uint32_t my_pal_dummy_time_query_count(const my_pal_t* pal) {
+  if (pal == NULL || pal->vtable != &s_dummy_pal_vtable) return 0u;
+  return ((const dummy_pal_t*)pal)->time_query_count;
 }
 
 void my_pal_dummy_set_needs_csd(my_pal_t* pal, bool needs) {

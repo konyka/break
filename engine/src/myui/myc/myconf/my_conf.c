@@ -146,12 +146,30 @@ my_ret_t my_conf_object_set(my_conf_node_t* node, const char* key,
       return MY_RET_OK;
     }
   }
-  my_mem_free(child->allocator, child->key);
-  child->key = copy;
   if (my_darray_push(node->children, child) != MY_RET_OK) {
+    my_mem_free(node->allocator, copy);
     return MY_RET_OOM;
   }
+  my_mem_free(child->allocator, child->key);
+  child->key = copy;
   return MY_RET_OK;
+}
+
+my_conf_node_t* my_conf_object_take(my_conf_node_t* node, const char* key) {
+  size_t i;
+  if (node == NULL || key == NULL || node->type != MY_CONF_OBJECT) {
+    return NULL;
+  }
+  for (i = 0; i < my_darray_size(node->children); i++) {
+    my_conf_node_t* child = (my_conf_node_t*)my_darray_get(node->children, i);
+    if (my_str_eq(child->key, key)) {
+      if (my_darray_remove_at(node->children, i) != MY_RET_OK) {
+        return NULL;
+      }
+      return child;
+    }
+  }
+  return NULL;
 }
 
 my_ret_t my_conf_array_push(my_conf_node_t* node, my_conf_node_t* child) {

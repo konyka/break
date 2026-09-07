@@ -110,12 +110,22 @@ static my_ret_t grow_bytes(const my_allocator_t *allocator, void **array,
                            size_t *cap, size_t need, size_t elem_size) {
   void *p;
   size_t next;
+  if (elem_size == 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
   if (need <= *cap) {
     return MY_RET_OK;
   }
   next = *cap > 0 ? *cap : BREAK_RHI_INITIAL_VERT_CAP;
   while (next < need) {
+    if (next > SIZE_MAX / 2u) {
+      next = need;
+      break;
+    }
     next *= 2;
+  }
+  if (next > SIZE_MAX / elem_size) {
+    return MY_RET_OOM;
   }
   p = my_mem_realloc(allocator, *array, next * elem_size);
   if (p == NULL) {
@@ -232,8 +242,12 @@ static my_ret_t emit_device_rect(my_vgcanvas_break_rhi_t *c, my_rect_t r,
                                  my_color_t color) {
   my_vggeometry_set_transform(&c->geo, 0.0f, 0.0f, 1.0f);
   my_vggeometry_begin_verts(&c->geo);
-  my_vggeometry_rect(&c->geo, (float)r.x, (float)r.y, (float)(r.x + r.w),
-                     (float)(r.y + r.h));
+  my_vggeometry_rect(&c->geo, (float)r.x, (float)r.y,
+                     (float)my_rect_right_i64(&r),
+                     (float)my_rect_bottom_i64(&r));
+  if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&c->geo);
+  }
   return emit_geometry(c, color);
 }
 
@@ -243,6 +257,9 @@ static my_ret_t emit_device_stroke_rect(my_vgcanvas_break_rhi_t *c, my_rect_t r,
   my_vggeometry_begin_verts(&c->geo);
   my_vggeometry_stroke_rect(&c->geo, (float)r.x, (float)r.y, (float)r.w,
                             (float)r.h, line_width);
+  if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&c->geo);
+  }
   return emit_geometry(c, color);
 }
 
@@ -253,6 +270,9 @@ static my_ret_t emit_device_rounded_rect(my_vgcanvas_break_rhi_t *c,
   my_vggeometry_begin_verts(&c->geo);
   my_vggeometry_fill_rounded_rect(&c->geo, (float)r.x, (float)r.y, (float)r.w,
                                   (float)r.h, radius);
+  if (my_vggeometry_status(&c->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&c->geo);
+  }
   return emit_geometry(c, color);
 }
 
@@ -397,18 +417,21 @@ static void draw_glyph_bitmap(my_vgcanvas_break_rhi_t *c, my_font_t *font,
 
 static void draw_codepoint(my_vgcanvas_break_rhi_t *c, uint32_t cp,
                            float *pen_x, float top, int32_t ascent) {
-  my_glyph_t g;
+  my_glyph_t g = {0};
   int32_t dev_font_size =
       (int32_t)((float)c->state.font_size * c->state.scale + 0.5f);
+  if (my_font_is_variation_selector(cp)) return;
   if (dev_font_size < 1) dev_font_size = 1;
   if (my_font_get_glyph(c->state.font, cp, dev_font_size, &g) != MY_RET_OK ||
       g.w <= 0 || g.h <= 0 || g.bitmap == NULL) {
     *pen_x += g.advance > 0 ? (float)g.advance : 0.0f;
+    my_font_glyph_release(&g);
     return;
   }
   draw_glyph_bitmap(c, c->state.font, cp, false, &g, (float)g.advance, 0.0f,
                     0.0f,
                     pen_x, top, ascent);
+  my_font_glyph_release(&g);
 }
 
 static void draw_shaped_glyph(my_vgcanvas_break_rhi_t *c,
@@ -424,6 +447,7 @@ static void draw_shaped_glyph(my_vgcanvas_break_rhi_t *c,
       g.w <= 0 || g.h <= 0 ||
       g.bitmap == NULL) {
     *pen_x += (float)shaped->advance_x_26_6 / 64.0f;
+    my_font_glyph_release(&g);
     return;
   }
   draw_glyph_bitmap(c, shaped->font != NULL ? shaped->font : c->state.font,
@@ -432,6 +456,7 @@ static void draw_shaped_glyph(my_vgcanvas_break_rhi_t *c,
                     (float)shaped->offset_x_26_6 / 64.0f,
                     (float)shaped->offset_y_26_6 / 64.0f, pen_x, top,
                     ascent);
+  my_font_glyph_release(&g);
 }
 
 static my_ret_t rhi_draw_text(my_vgcanvas_t *vg, const char *text, float x,
@@ -740,7 +765,8 @@ static my_ret_t rhi_reset_clip(my_vgcanvas_t *vg, const my_rectf_t *rect) {
 
 static my_ret_t rhi_set_scale_vtable(my_vgcanvas_t *vg, float scale) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
-  if (c == NULL || scale <= 0.0f) return MY_RET_INVALID_PARAMS;
+  if (c == NULL || !isfinite(scale) || scale <= 0.0f)
+    return MY_RET_INVALID_PARAMS;
   c->state.scale = scale;
   return MY_RET_OK;
 }
@@ -788,6 +814,7 @@ static my_ret_t rhi_set_stroke_color(my_vgcanvas_t *vg, my_color_t color) {
 }
 
 static my_ret_t rhi_set_line_width(my_vgcanvas_t *vg, float width) {
+  if (!isfinite(width) || width <= 0.0f) return MY_RET_INVALID_PARAMS;
   rhi_canvas(vg)->state.line_width = width;
   return MY_RET_OK;
 }
@@ -863,28 +890,41 @@ static my_ret_t rhi_fill(my_vgcanvas_t *vg) {
 
 static my_ret_t rhi_stroke(my_vgcanvas_t *vg) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
+  my_ret_t ret;
   my_vggeometry_set_transform(&c->geo, c->state.tx, c->state.ty,
                               c->state.scale);
   my_vggeometry_begin_verts(&c->geo);
-  my_vggeometry_stroke(&c->geo, c->state.line_width * c->state.scale,
-                       c->state.line_cap, c->state.line_join);
+  ret = my_vggeometry_stroke(&c->geo,
+                             c->state.line_width * c->state.scale,
+                             c->state.line_cap, c->state.line_join);
+  if (ret != MY_RET_OK) return ret;
   return emit_geometry(c, c->state.stroke_color);
 }
 
 static my_ret_t rhi_set_line_cap(my_vgcanvas_t *vg, my_line_cap_t cap) {
+  if (vg == NULL || (cap != MY_LINE_CAP_BUTT && cap != MY_LINE_CAP_ROUND &&
+                     cap != MY_LINE_CAP_SQUARE)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   rhi_canvas(vg)->state.line_cap = cap;
   return MY_RET_OK;
 }
 
 static my_ret_t rhi_set_line_join(my_vgcanvas_t *vg, my_line_join_t join) {
+  if (vg == NULL || (join != MY_LINE_JOIN_MITER &&
+                     join != MY_LINE_JOIN_ROUND &&
+                     join != MY_LINE_JOIN_BEVEL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   rhi_canvas(vg)->state.line_join = join;
   return MY_RET_OK;
 }
 
 static my_ret_t rhi_set_font(my_vgcanvas_t *vg, my_font_t *font, int32_t size) {
   my_vgcanvas_break_rhi_t *c = rhi_canvas(vg);
+  if (size <= 0) return MY_RET_INVALID_PARAMS;
   if (font != NULL) c->state.font = font;
-  if (size > 0) c->state.font_size = size;
+  c->state.font_size = size;
   return MY_RET_OK;
 }
 
@@ -1010,7 +1050,9 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   RHISamplerDesc samp_desc;
   const char *font_vert, *font_frag, *image_vert, *image_frag;
   size_t i;
-  if (device == NULL || width == 0 || height == 0) return NULL;
+  if (device == NULL || !my_vgcanvas_break_rhi_size_valid(width, height)) {
+    return NULL;
+  }
 
   c = (my_vgcanvas_break_rhi_t *)my_mem_calloc(
       allocator, 1, sizeof(my_vgcanvas_break_rhi_t));
@@ -1148,10 +1190,19 @@ int my_vgcanvas_break_rhi_pending_antialias_level(const my_vgcanvas_t *vg) {
   return c->pending_antialias_level;
 }
 
+void my_vgcanvas_break_rhi_cancel_pending_antialias_level(my_vgcanvas_t *vg) {
+  my_vgcanvas_break_rhi_t *c;
+  if (vg == NULL) return;
+  c = rhi_canvas(vg);
+  c->pending_antialias_level = -1;
+}
+
 my_ret_t my_vgcanvas_break_rhi_resize(my_vgcanvas_t *vg, u32 width,
                                       u32 height) {
   my_vgcanvas_break_rhi_t *c;
-  if (vg == NULL || width == 0 || height == 0) return MY_RET_INVALID_PARAMS;
+  if (vg == NULL || !my_vgcanvas_break_rhi_size_valid(width, height)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   c = rhi_canvas(vg);
   c->state.clip = my_vgcanvas_break_rhi_resize_clip(
       c->state.clip, c->width, c->height, width, height);

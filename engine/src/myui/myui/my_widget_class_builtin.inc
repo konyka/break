@@ -27,7 +27,9 @@
 #define MYUI_EVENTS_WIDGET(E)
 
 #define MYUI_PROPS_BUTTON(P) \
-  P("text", MY_PROP_STRING, button_prop_set_text, button_prop_get_text)
+  P("text", MY_PROP_STRING, button_prop_set_text, button_prop_get_text) \
+  P("cooldown", MY_PROP_INT, button_prop_set_cooldown, \
+    button_prop_get_cooldown)
 #define MYUI_EVENTS_BUTTON(E) E("click")
 
 #define MYUI_PROPS_LABEL(P)                          \

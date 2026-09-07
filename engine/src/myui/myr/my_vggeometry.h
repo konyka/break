@@ -5,7 +5,7 @@
  * Extracted verbatim from the gles2 backend (my_vgcanvas_gles2.c) so the
  * Vulkan backend consumes the exact same triangulation: path point /
  * contour accumulation, even-odd scanline fill, stroke strip generation
- * (segment quads + round caps/joins), rounded-rect subdivision and
+ * (segment quads + bounded cap/join geometry), rounded-rect subdivision and
  * bezier subdivision point collection. Output is a flat array of
  * device-space xy float pairs, triangles, ready to upload.
  *
@@ -40,6 +40,7 @@ typedef struct my_vggeometry_t {
   float* verts;
   size_t vert_count, vert_cap;
   float tx, ty, scale; /**< applied at push() time */
+  my_ret_t status; /**< first output-generation error, reset by begin_verts() */
 } my_vggeometry_t;
 
 void my_vggeometry_init(my_vggeometry_t* g, const my_allocator_t* allocator);
@@ -49,9 +50,12 @@ void my_vggeometry_set_transform(my_vggeometry_t* g, float tx, float ty,
 
 /** @brief Clear the triangle output (not the path). */
 void my_vggeometry_begin_verts(my_vggeometry_t* g);
-/** @brief Append one vertex, transform applied (grow-fail drops it, same
- * semantics as the pre-extraction gles2 writer). */
+/** @brief Append one vertex, transform applied. Failed or invalid output is
+ * recorded in my_vggeometry_status() and no partial vertex is appended. */
 void my_vggeometry_push(my_vggeometry_t* g, float x, float y);
+
+/** @brief Read the current output-generation status. */
+my_ret_t my_vggeometry_status(const my_vggeometry_t* g);
 
 /* primitives (append triangles to the output) */
 void my_vggeometry_rect(my_vggeometry_t* g, float x0, float y0, float x1,
@@ -76,7 +80,8 @@ my_ret_t my_vggeometry_curve_to(my_vggeometry_t* g, float cx1, float cy1,
  * space) clip rect; every filled span becomes one rect (2 triangles).
  */
 my_ret_t my_vggeometry_fill(my_vggeometry_t* g, const my_rect_t* clip);
-/** @brief Stroke the current path: segment quads + round caps/joins. */
+/** @brief Stroke the current path with butt/round/square caps and
+ * miter/round/bevel joins. Miter joins are bounded to four half-widths. */
 my_ret_t my_vggeometry_stroke(my_vggeometry_t* g, float line_width,
                               my_line_cap_t cap, my_line_join_t join);
 

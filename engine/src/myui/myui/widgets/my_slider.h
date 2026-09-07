@@ -22,6 +22,7 @@ typedef struct my_slider_t {
 } my_slider_t;
 
 my_widget_t* my_slider_create(const my_allocator_t* allocator);
+bool my_slider_is_instance(const my_widget_t* widget);
 my_ret_t my_slider_set_value(my_widget_t* slider, float value);
 float my_slider_get_value(my_widget_t* slider);
 my_ret_t my_slider_set_range(my_widget_t* slider, float min, float max);

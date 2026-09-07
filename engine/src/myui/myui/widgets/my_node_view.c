@@ -69,6 +69,12 @@ typedef struct my_node_view_t {
   my_widget_t* child_grab; /**< weak, NULL = none */
 } my_node_view_t;
 
+static const my_widget_vtable_t s_nv_vtable;
+
+bool my_node_view_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_nv_vtable;
+}
+
 #define NV_ZOOM_MIN 0.25f
 #define NV_ZOOM_MAX 2.0f
 #define NV_MAGNET_DIST 20.0f /* px, canvas coords */
@@ -82,6 +88,8 @@ typedef struct link_pts_t {
 static my_ret_t link_pts_emit(void* ctx, float x, float y);
 static void nv_flow_sync_timer(my_node_view_t* v);
 
+static void nv_child_removed(my_widget_t* parent, my_widget_t* child);
+
 /** @brief true when w is `ancestor` itself or lives under it. */
 static bool nv_in_subtree(const my_widget_t* w, const my_widget_t* ancestor) {
   while (w != NULL) {
@@ -93,13 +101,69 @@ static bool nv_in_subtree(const my_widget_t* w, const my_widget_t* ancestor) {
   return false;
 }
 
+static bool nv_owns_node(const my_node_view_t* view,
+                         const my_widget_t* node) {
+  return my_node_is_instance(node) && node->parent == (const my_widget_t*)view &&
+         !node->floating;
+}
+
+static void nv_forget_node(my_node_view_t* v, my_widget_t* node) {
+  size_t i;
+  if (!nv_owns_node(v, node)) {
+    return;
+  }
+  i = 0;
+  while (i < my_darray_size(v->links)) {
+    node_link_t* link = (node_link_t*)my_darray_get(v->links, i);
+    if (link->out_node == node || link->in_node == node) {
+      my_mem_free(((my_object_t*)v)->allocator, link);
+      my_darray_remove_at(v->links, i);
+    } else {
+      i++;
+    }
+  }
+  if (v->selected_node == node) {
+    v->selected_node = NULL;
+  }
+  i = 0;
+  while (i < my_darray_size(v->selection)) {
+    if (my_darray_get(v->selection, i) == node) {
+      my_darray_remove_at(v->selection, i);
+    } else {
+      i++;
+    }
+  }
+  if (v->preview.out_node == node || v->preview.magnet_node == node) {
+    v->preview.active = false;
+    v->preview.out_node = NULL;
+    v->preview.magnet_node = NULL;
+    v->preview.out_slot = 0;
+    v->preview.magnet_slot = 0;
+  }
+  if (v->child_grab != NULL && nv_in_subtree(v->child_grab, node)) {
+    v->child_grab = NULL;
+  }
+  if (v->drag_node == node) {
+    v->drag_node = NULL;
+  }
+  v->selected = -1;
+  my_node_detach_view(node);
+  nv_flow_sync_timer(v);
+  my_widget_invalidate((my_widget_t*)v, NULL);
+}
+
+static void nv_child_removed(my_widget_t* parent, my_widget_t* child) {
+  my_node_view_t* v = (my_node_view_t*)parent;
+  nv_forget_node(v, child);
+}
+
 /* ---------------- selection set (M20b) ---------------- */
 
 bool my_node_view_is_selected(const my_widget_t* view,
                               const my_widget_t* node) {
   const my_node_view_t* v = (const my_node_view_t*)view;
   size_t i, n;
-  if (view == NULL || node == NULL) {
+  if (!my_node_view_is_instance(view) || !my_node_is_instance(node)) {
     return false;
   }
   n = my_darray_size(v->selection);
@@ -112,14 +176,14 @@ bool my_node_view_is_selected(const my_widget_t* view,
 }
 
 size_t my_node_view_selected_count(const my_widget_t* view) {
-  return view != NULL
+  return my_node_view_is_instance(view)
              ? my_darray_size(((const my_node_view_t*)view)->selection)
              : 0;
 }
 
 my_widget_t* my_node_view_selected_at(const my_widget_t* view, size_t i) {
   const my_node_view_t* v = (const my_node_view_t*)view;
-  if (view == NULL || i >= my_darray_size(v->selection)) {
+  if (!my_node_view_is_instance(view) || i >= my_darray_size(v->selection)) {
     return NULL;
   }
   return (my_widget_t*)my_darray_get(v->selection, i);
@@ -165,6 +229,9 @@ static void nv_select_clear(my_node_view_t* v) {
 void my_node_view_screen_to_canvas(const my_widget_t* view, int32_t sx,
                                    int32_t sy, float* cx, float* cy) {
   const my_node_view_t* v = (const my_node_view_t*)view;
+  if (!my_node_view_is_instance(view) || cx == NULL || cy == NULL) {
+    return;
+  }
   *cx = ((float)sx - v->pan_off_x) / v->zoom;
   *cy = ((float)sy - v->pan_off_y) / v->zoom;
 }
@@ -172,13 +239,16 @@ void my_node_view_screen_to_canvas(const my_widget_t* view, int32_t sx,
 void my_node_view_canvas_to_screen(const my_widget_t* view, float cx,
                                    float cy, float* sx, float* sy) {
   const my_node_view_t* v = (const my_node_view_t*)view;
+  if (!my_node_view_is_instance(view) || sx == NULL || sy == NULL) {
+    return;
+  }
   *sx = cx * v->zoom + v->pan_off_x;
   *sy = cy * v->zoom + v->pan_off_y;
 }
 
 void my_node_view_set_zoom(my_widget_t* view, float zoom) {
   my_node_view_t* v = (my_node_view_t*)view;
-  if (view == NULL) {
+  if (!my_node_view_is_instance(view)) {
     return;
   }
   if (zoom < NV_ZOOM_MIN) {
@@ -194,14 +264,15 @@ void my_node_view_set_zoom(my_widget_t* view, float zoom) {
 }
 
 float my_node_view_get_zoom(const my_widget_t* view) {
-  return view != NULL ? ((const my_node_view_t*)view)->zoom : 1.0f;
+  return my_node_view_is_instance(view) ? ((const my_node_view_t*)view)->zoom
+                                         : 1.0f;
 }
 
 void my_node_view_zoom_at(my_widget_t* view, int32_t sx, int32_t sy,
                           float factor) {
   my_node_view_t* v = (my_node_view_t*)view;
   float cx, cy, nz;
-  if (view == NULL || factor <= 0.0f) {
+  if (!my_node_view_is_instance(view) || factor <= 0.0f) {
     return;
   }
   my_node_view_screen_to_canvas(view, sx, sy, &cx, &cy);
@@ -223,7 +294,7 @@ void my_node_view_zoom_at(my_widget_t* view, int32_t sx, int32_t sy,
 
 void my_node_view_set_flow_enabled(my_widget_t* view, bool enabled) {
   my_node_view_t* v = (my_node_view_t*)view;
-  if (view == NULL) {
+  if (!my_node_view_is_instance(view)) {
     return;
   }
   v->flow_all = enabled;
@@ -232,21 +303,24 @@ void my_node_view_set_flow_enabled(my_widget_t* view, bool enabled) {
 }
 
 bool my_node_view_get_flow_enabled(const my_widget_t* view) {
-  return view != NULL ? ((const my_node_view_t*)view)->flow_all : false;
+  return my_node_view_is_instance(view) ? ((const my_node_view_t*)view)->flow_all
+                                         : false;
 }
 
 float my_node_view_flow_offset(const my_widget_t* view) {
-  return view != NULL ? ((const my_node_view_t*)view)->flow_offset : 0.0f;
+  return my_node_view_is_instance(view)
+             ? ((const my_node_view_t*)view)->flow_offset
+             : 0.0f;
 }
 
 void my_node_view_get_pan(const my_widget_t* view, float* out_x,
                           float* out_y) {
   const my_node_view_t* v = (const my_node_view_t*)view;
   if (out_x != NULL) {
-    *out_x = view != NULL ? v->pan_off_x : 0.0f;
+    *out_x = my_node_view_is_instance(view) ? v->pan_off_x : 0.0f;
   }
   if (out_y != NULL) {
-    *out_y = view != NULL ? v->pan_off_y : 0.0f;
+    *out_y = my_node_view_is_instance(view) ? v->pan_off_y : 0.0f;
   }
 }
 
@@ -362,8 +436,8 @@ static bool nv_socket_at(my_node_view_t* v, int32_t x, int32_t y,
     for (i = 0; i < cnt; i++) {
       int32_t sx = 0, sy = 0;
       if (my_node_socket_center(node, dir, i, &sx, &sy) &&
-          abs(x - sx) <= MY_NODE_SOCKET_HIT &&
-          abs(y - sy) <= MY_NODE_SOCKET_HIT) {
+          llabs((long long)x - sx) <= MY_NODE_SOCKET_HIT &&
+          llabs((long long)y - sy) <= MY_NODE_SOCKET_HIT) {
         *out_node = node;
         *out_slot = i;
         return true;
@@ -380,7 +454,10 @@ my_ret_t my_node_view_connect(my_widget_t* view, my_widget_t* out_node,
                               size_t in_slot) {
   my_node_view_t* v = (my_node_view_t*)view;
   node_link_t* l;
-  if (view == NULL || out_node == NULL || in_node == NULL) {
+  if (!my_node_view_is_instance(view) || !nv_owns_node(v, out_node) ||
+      !nv_owns_node(v, in_node) ||
+      out_slot >= my_node_socket_count(out_node, MY_SOCKET_OUT) ||
+      in_slot >= my_node_socket_count(in_node, MY_SOCKET_IN)) {
     return MY_RET_INVALID_PARAMS;
   }
   /* input slots are unique: replace (Blender semantics, documented) */
@@ -401,15 +478,15 @@ my_ret_t my_node_view_connect(my_widget_t* view, my_widget_t* out_node,
   l->in_node = in_node;
   l->in_slot = in_slot;
   my_widget_invalidate(view, NULL);
+  my_widget_ref(view);
   my_emitter_emit(view->emitter, "changed", NULL);
+  my_widget_unref(view);
   return MY_RET_OK;
 }
 
 my_ret_t my_node_view_remove_node(my_widget_t* view, const char* node_id) {
-  my_node_view_t* v = (my_node_view_t*)view;
   size_t ci, n;
-  size_t li;
-  if (view == NULL || node_id == NULL) {
+  if (!my_node_view_is_instance(view) || node_id == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
   n = my_widget_child_count(view);
@@ -421,55 +498,13 @@ my_ret_t my_node_view_remove_node(my_widget_t* view, const char* node_id) {
     }
     id = my_node_get_id(node);
     if (id != NULL && strcmp(id, node_id) == 0) {
-      /* cascade: drop every link referencing this node */
-      li = 0;
-      while (li < my_darray_size(v->links)) {
-        node_link_t* l = (node_link_t*)my_darray_get(v->links, li);
-        if (l->out_node == node || l->in_node == node) {
-          my_mem_free(((my_object_t*)view)->allocator, l);
-          my_darray_remove_at(v->links, li);
-        } else {
-          li++;
-        }
-      }
-      if (v->selected_node == node) {
-        v->selected_node = NULL;
-      }
-      /* M20b: also purge from the selection set */
-      {
-        size_t si = 0;
-        while (si < my_darray_size(v->selection)) {
-          if (my_darray_get(v->selection, si) == node) {
-            my_darray_remove_at(v->selection, si);
-          } else {
-            si++;
-          }
-        }
-      }
-      if (v->preview.active && v->preview.out_node == node) {
-        v->preview.active = false;
-        v->preview.out_node = NULL;
-        v->preview.magnet_node = NULL;
-      }
-      if (v->preview.magnet_node == node) {
-        /* drag TARGET removed (source still alive): cancel the preview,
-         * otherwise overlay paint / POINTER_UP dereference the freed node */
-        v->preview.active = false;
-        v->preview.out_node = NULL;
-        v->preview.magnet_node = NULL;
-      }
-      if (v->child_grab != NULL && nv_in_subtree(v->child_grab, node)) {
-        v->child_grab = NULL; /* grabbed embedded widget dies with the node */
-      }
-      if (v->drag_node == node) {
-        v->drag_node = NULL;
-      }
-      v->selected = -1;
       /* the tree held the node's only reference (add_node unreffed
        * after add_child) — remove_child destroys it right here */
       my_widget_remove_child(view, node);
       my_widget_invalidate(view, NULL);
+      my_widget_ref(view);
       my_emitter_emit(view->emitter, "changed", NULL);
+      my_widget_unref(view);
       return MY_RET_OK;
     }
   }
@@ -480,7 +515,8 @@ my_ret_t my_node_view_disconnect_in(my_widget_t* view, my_widget_t* in_node,
                                     size_t in_slot) {
   my_node_view_t* v = (my_node_view_t*)view;
   size_t i, n;
-  if (view == NULL || in_node == NULL) {
+  if (!my_node_view_is_instance(view) || !nv_owns_node(v, in_node) ||
+      in_slot >= my_node_socket_count(in_node, MY_SOCKET_IN)) {
     return MY_RET_INVALID_PARAMS;
   }
   n = my_darray_size(v->links);
@@ -491,7 +527,9 @@ my_ret_t my_node_view_disconnect_in(my_widget_t* view, my_widget_t* in_node,
       my_darray_remove_at(v->links, i);
       v->selected = -1;
       my_widget_invalidate(view, NULL);
+      my_widget_ref(view);
       my_emitter_emit(view->emitter, "changed", NULL);
+      my_widget_unref(view);
       return MY_RET_OK;
     }
   }
@@ -500,7 +538,7 @@ my_ret_t my_node_view_disconnect_in(my_widget_t* view, my_widget_t* in_node,
 
 size_t my_node_view_link_count(const my_widget_t* view) {
   const my_node_view_t* v = (const my_node_view_t*)view;
-  return view != NULL ? my_darray_size(v->links) : 0;
+  return my_node_view_is_instance(view) ? my_darray_size(v->links) : 0;
 }
 
 bool my_node_view_get_link(const my_widget_t* view, size_t index,
@@ -508,7 +546,7 @@ bool my_node_view_get_link(const my_widget_t* view, size_t index,
                            my_widget_t** in_node, size_t* in_slot) {
   const my_node_view_t* v = (const my_node_view_t*)view;
   node_link_t* l;
-  if (view == NULL || index >= my_darray_size(v->links)) {
+  if (!my_node_view_is_instance(view) || index >= my_darray_size(v->links)) {
     return false;
   }
   l = (node_link_t*)my_darray_get(v->links, index);
@@ -520,12 +558,13 @@ bool my_node_view_get_link(const my_widget_t* view, size_t index,
 }
 
 int32_t my_node_view_get_selected(const my_widget_t* view) {
-  return view != NULL ? ((const my_node_view_t*)view)->selected : -1;
+  return my_node_view_is_instance(view) ? ((const my_node_view_t*)view)->selected
+                                         : -1;
 }
 
 void my_node_view_pan_by(my_widget_t* view, int32_t dx, int32_t dy) {
   my_node_view_t* v = (my_node_view_t*)view;
-  if (view == NULL) {
+  if (!my_node_view_is_instance(view)) {
     return;
   }
   /* M20a: pan is a view-level screen-px offset (node rects stay in
@@ -602,7 +641,7 @@ static float link_pts_dist(const link_pts_t* p, float px, float py) {
 int32_t my_node_view_find_link_at(my_widget_t* view, int32_t x, int32_t y) {
   my_node_view_t* v = (my_node_view_t*)view;
   size_t i, n;
-  if (view == NULL) {
+  if (!my_node_view_is_instance(view)) {
     return -1;
   }
   n = my_darray_size(v->links);
@@ -924,8 +963,12 @@ static void nv_minimap_fit(const my_node_view_t* v, float* bx0, float* by0,
     }
     if (node->rect.x < x0) x0 = (float)node->rect.x;
     if (node->rect.y < y0) y0 = (float)node->rect.y;
-    if (node->rect.x + node->rect.w > x1) x1 = (float)(node->rect.x + node->rect.w);
-    if (node->rect.y + node->rect.h > y1) y1 = (float)(node->rect.y + node->rect.h);
+    if ((float)my_rect_right_i64(&node->rect) > x1) {
+      x1 = (float)my_rect_right_i64(&node->rect);
+    }
+    if ((float)my_rect_bottom_i64(&node->rect) > y1) {
+      y1 = (float)my_rect_bottom_i64(&node->rect);
+    }
   }
   x0 -= 20.0f;
   y0 -= 20.0f;
@@ -1146,9 +1189,13 @@ static my_widget_t* nv_node_at(my_node_view_t* v, float cx, float cy,
     if (node->floating) {
       continue; /* overlay/minimap is not a node (M20b) */
     }
-    if (cx >= node->rect.x && cx < node->rect.x + node->rect.w &&
-        cy >= node->rect.y && cy < node->rect.y + node->rect.h) {
-      *out_titlebar = cy < node->rect.y + MY_NODE_HEADER_H;
+    if (cx >= (float)node->rect.x &&
+        (double)cx < (double)my_rect_right_i64(&node->rect) &&
+        cy >= (float)node->rect.y &&
+        (double)cy < (double)my_rect_bottom_i64(&node->rect)) {
+      *out_titlebar = (double)cy <
+                      (double)my_rect_offset_i32(node->rect.y,
+                                                  MY_NODE_HEADER_H);
       return node;
     }
   }
@@ -1343,14 +1390,18 @@ static my_ret_t nv_event(my_widget_t* widget, const my_event_t* event) {
             my_widget_t* m =
                 (my_widget_t*)my_darray_get(v->selection, si);
             my_rect_t rect = m->rect;
-            rect.x += (int32_t)(dx >= 0.0f ? dx + 0.5f : dx - 0.5f);
-            rect.y += (int32_t)(dy >= 0.0f ? dy + 0.5f : dy - 0.5f);
+            rect.x = my_rect_offset_i32(
+                rect.x, (int64_t)(dx >= 0.0f ? dx + 0.5f : dx - 0.5f));
+            rect.y = my_rect_offset_i32(
+                rect.y, (int64_t)(dy >= 0.0f ? dy + 0.5f : dy - 0.5f));
             (void)my_widget_set_layout_rect(m, &rect);
           }
         } else {
           my_rect_t rect = v->drag_node->rect;
-          rect.x += (int32_t)(dx >= 0.0f ? dx + 0.5f : dx - 0.5f);
-          rect.y += (int32_t)(dy >= 0.0f ? dy + 0.5f : dy - 0.5f);
+          rect.x = my_rect_offset_i32(
+              rect.x, (int64_t)(dx >= 0.0f ? dx + 0.5f : dx - 0.5f));
+          rect.y = my_rect_offset_i32(
+              rect.y, (int64_t)(dy >= 0.0f ? dy + 0.5f : dy - 0.5f));
           (void)my_widget_set_layout_rect(v->drag_node, &rect);
         }
         my_widget_invalidate(widget, NULL);
@@ -1429,8 +1480,10 @@ static my_ret_t nv_event(my_widget_t* widget, const my_event_t* event) {
             if (node->floating) {
               continue;
             }
-            if (node->rect.x < bx1 && node->rect.x + node->rect.w > bx0 &&
-                node->rect.y < by1 && node->rect.y + node->rect.h > by0) {
+            if ((float)node->rect.x < bx1 &&
+                (float)my_rect_right_i64(&node->rect) > bx0 &&
+                (float)node->rect.y < by1 &&
+                (float)my_rect_bottom_i64(&node->rect) > by0) {
               my_darray_push(v->selection, node);
             }
           }
@@ -1523,6 +1576,10 @@ static void nv_destroy_chain(my_object_t* obj) {
   if (v->selection != NULL) {
     my_darray_destroy(v->selection);
   }
+  n = my_widget_child_count((my_widget_t*)v);
+  for (i = 0; i < n; i++) {
+    my_node_detach_view(my_widget_get_child((my_widget_t*)v, i));
+  }
   my_widget_destroy((my_widget_t*)v);
   my_object_destroy(obj);
 }
@@ -1561,6 +1618,7 @@ my_widget_t* my_node_view_create(const my_allocator_t* allocator) {
   }
   v->selected = -1;
   ((my_widget_t*)v)->focusable = true;
+  ((my_widget_t*)v)->child_removed_hook = nv_child_removed;
   /* overlay child (floating, painted LAST: minimap + rubber band) */
   overlay = my_widget_create(allocator, "nv_overlay");
   if (overlay != NULL) {
@@ -1593,7 +1651,7 @@ my_widget_t* my_node_view_add_node(my_widget_t* view, const char* id,
                                    int32_t x, int32_t y, int32_t w,
                                    int32_t h) {
   my_widget_t* node;
-  if (view == NULL) {
+  if (!my_node_view_is_instance(view)) {
     return NULL;
   }
   node = my_node_create(((my_object_t*)view)->allocator, view, id, title,

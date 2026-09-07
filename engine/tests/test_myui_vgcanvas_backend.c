@@ -1,10 +1,15 @@
 #include "test_framework.h"
 
+#include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "myr/my_gl.h"
 #include "myr/my_lcd_mem.h"
 #include "myr/my_vgcanvas_gles2.h"
+#include "myr/my_vgcanvas_break_rhi.h"
+#include "myr/my_vgcanvas_break_rhi_internal.h"
 #include "myr/my_vgcanvas_quality_transaction.h"
 #include "myr/my_vgcanvas_soft.h"
 #include "myr/my_vgcanvas_vulkan.h"
@@ -27,6 +32,185 @@ typedef struct mock_gl_t {
   bool multisample_available;
   int32_t multisample_calls;
 } mock_gl_t;
+
+TEST(vgcanvas_public_api_rejects_null_canvas)
+{
+  my_color_t color = my_color_rgba(1, 2, 3, 4);
+  my_rectf_t rect = {0, 0, 1, 1};
+  uint8_t pixel[4] = {0};
+  int32_t width = 0;
+  int32_t height = 0;
+
+  ASSERT_EQ(my_vgcanvas_begin_frame(NULL, NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_end_frame(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_save(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_restore(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_translate(NULL, 0, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_clip_rect(NULL, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_fill_color(NULL, color), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_stroke_color(NULL, color), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_width(NULL, 1), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_fill_rect(NULL, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_stroke_rect(NULL, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_fill_rounded_rect(NULL, &rect, 1),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_begin_path(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_move_to(NULL, 0, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_line_to(NULL, 0, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_close_path(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_fill(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_stroke(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_draw_text(NULL, "x", 0, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_draw_text_ex(NULL, "x", 0, 0, NULL),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_font(NULL, NULL, 12), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_measure_text(NULL, "x", &width, &height),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_measure_text_ex(NULL, "x", &width, &height, NULL),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_draw_image(NULL, pixel, 1, 1, &rect, NULL),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_cap(NULL, MY_LINE_CAP_BUTT),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_join(NULL, MY_LINE_JOIN_MITER),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_curve_to(NULL, 0, 0, 0, 0, 0, 0),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_reset_clip(NULL, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_scale(NULL, 1), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(NULL, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(NULL, MY_SCALE_FILTER_NEAREST),
+            MY_RET_INVALID_PARAMS);
+}
+
+TEST(vgcanvas_public_api_reports_missing_backend_slots)
+{
+  my_vgcanvas_t canvas = {0};
+  my_vgcanvas_vtable_t vtable = {0};
+
+  canvas.vtable = &vtable;
+  ASSERT_EQ(my_vgcanvas_curve_to(&canvas, 0, 0, 0, 0, 0, 0),
+            MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_vgcanvas_reset_clip(&canvas, NULL), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_vgcanvas_set_scale(&canvas, 1), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(&canvas, 0),
+            MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(&canvas, MY_SCALE_FILTER_NEAREST),
+            MY_RET_NOT_SUPPORTED);
+}
+
+TEST(lcd_public_api_rejects_missing_backend_slots)
+{
+  my_lcd_t lcd = {0};
+  my_lcd_vtable_t vtable = {0};
+  my_rect_t rect = {0, 0, 1, 1};
+  uint8_t pixel = 0u;
+
+  ASSERT_EQ(my_lcd_get_width(NULL), 0u);
+  ASSERT_EQ(my_lcd_get_height(NULL), 0u);
+  ASSERT_EQ(my_lcd_get_format(NULL), (my_pixel_format_t)-1);
+  ASSERT_TRUE(my_lcd_get_buffer(NULL) == NULL);
+  ASSERT_EQ(my_lcd_get_stride(NULL), 0u);
+  ASSERT_EQ(my_lcd_begin_frame(NULL, NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_lcd_end_frame(NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_lcd_get_width(&lcd), 0u);
+  ASSERT_EQ(my_lcd_get_height(&lcd), 0u);
+  ASSERT_EQ(my_lcd_get_format(&lcd), (my_pixel_format_t)-1);
+  ASSERT_TRUE(my_lcd_get_buffer(&lcd) == NULL);
+  ASSERT_EQ(my_lcd_get_stride(&lcd), 0u);
+  ASSERT_EQ(my_lcd_begin_frame(&lcd, NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_lcd_end_frame(&lcd), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_lcd_draw_pixels(&lcd, &pixel, 0, 0, 1u, 1u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_lcd_fill_rect(&lcd, &rect, my_color_rgba(0, 0, 0, 0)),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_lcd_blend_span(&lcd, 0, 0, &pixel, 1,
+                               my_color_rgba(0, 0, 0, 0)),
+            MY_RET_INVALID_PARAMS);
+
+  lcd.vtable = &vtable;
+  ASSERT_EQ(my_lcd_get_width(&lcd), 0u);
+  ASSERT_EQ(my_lcd_get_height(&lcd), 0u);
+  ASSERT_EQ(my_lcd_get_format(&lcd), (my_pixel_format_t)-1);
+  ASSERT_TRUE(my_lcd_get_buffer(&lcd) == NULL);
+  ASSERT_EQ(my_lcd_get_stride(&lcd), 0u);
+  ASSERT_EQ(my_lcd_begin_frame(&lcd, NULL), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_lcd_end_frame(&lcd), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_lcd_draw_pixels(&lcd, &pixel, 0, 0, 1u, 1u),
+            MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_lcd_fill_rect(&lcd, &rect, my_color_rgba(0, 0, 0, 0)),
+            MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_lcd_blend_span(&lcd, 0, 0, &pixel, 1,
+                               my_color_rgba(0, 0, 0, 0)),
+            MY_RET_NOT_SUPPORTED);
+  my_lcd_destroy(&lcd);
+}
+
+TEST(vgcanvas_rejects_nonfinite_state_values)
+{
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
+  my_vgcanvas_t *canvas;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_translate(canvas, NAN, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_width(canvas, NAN), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_width(canvas, -1), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_scale(canvas, INFINITY), MY_RET_INVALID_PARAMS);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(vgcanvas_rejects_invalid_stroke_styles)
+{
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
+  my_vgcanvas_t *canvas;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_line_cap(canvas, (my_line_cap_t)99),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_join(canvas, (my_line_join_t)99),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_line_cap(canvas, MY_LINE_CAP_SQUARE), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_line_join(canvas, MY_LINE_JOIN_BEVEL), MY_RET_OK);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
+TEST(vgcanvas_rejects_nonfinite_geometry_values)
+{
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
+  my_vgcanvas_t *canvas;
+  my_rectf_t rect = {NAN, 0, 1, 1};
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_stroke_rect(canvas, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_fill_rounded_rect(canvas, &(my_rectf_t){0, 0, 1, 1},
+                                          INFINITY),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_fill_rounded_rect(canvas, &(my_rectf_t){0, 0, 1, 1},
+                                          -1),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_clip_rect(canvas, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_reset_clip(canvas, &rect), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_move_to(canvas, NAN, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_line_to(canvas, 0, INFINITY), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_curve_to(canvas, 0, 0, NAN, 0, 0, 0),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "x", NAN, 0),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_draw_image(canvas, (const uint8_t *)"", 1, 1, &rect,
+                                   NULL),
+            MY_RET_INVALID_PARAMS);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
 
 static void mock_viewport(void* ctx, int32_t w, int32_t h) {
   mock_gl_t* mock = (mock_gl_t*)ctx;
@@ -272,7 +456,7 @@ static my_ret_t test_font_shape_ex(
     my_font_shape_result_t* result) {
   my_ret_t ret = test_font_shape(font, text, size, false, allocator, result);
   if (ret == MY_RET_OK && params != NULL && params->features != NULL &&
-      strcmp(params->features, "wide") == 0) {
+      strcmp(params->features, "wide=1") == 0) {
     result->glyphs[0].advance_x_26_6 = 6 * 64;
   }
   return ret;
@@ -316,7 +500,7 @@ static void test_font_destroy(my_font_t* font) {
 static const my_font_vtable_t s_test_font_vtable = {
     test_font_measure,     test_font_get_glyph, test_font_ascent,
     test_font_descent,     test_font_line_height, test_font_destroy, NULL,
-    test_font_shape,       test_font_get_glyph_id, NULL};
+    test_font_shape,       test_font_get_glyph_id, NULL, NULL, NULL};
 
 static const my_font_vtable_t s_test_shape_ex_font_vtable = {
     .measure = test_font_measure,
@@ -328,6 +512,27 @@ static const my_font_vtable_t s_test_shape_ex_font_vtable = {
     .shape = test_font_shape,
     .get_glyph_id = test_font_get_glyph_id,
     .shape_ex = test_font_shape_ex};
+
+TEST(vgcanvas_set_font_rejects_invalid_size_without_state_change)
+{
+  static const uint8_t bitmap[] = {0xFF};
+  test_font_t font = {{&s_test_font_vtable}, bitmap, bitmap, 0};
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 16, 16, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas;
+  int32_t width = 0;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, (my_font_t*)&font, 12), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, NULL, 0), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_font(canvas, (my_font_t*)&font, -1),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_measure_text(canvas, "A", &width, NULL), MY_RET_OK);
+  ASSERT_EQ(width, 3);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
 
 TEST(gles2_image_vertices_apply_canvas_scale)
 {
@@ -528,7 +733,7 @@ TEST(vgcanvas_shape_ex_forwards_parameters)
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 32, 16, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas;
   my_font_shape_params_t params = {false, MY_FONT_SCRIPT_LATN, "en",
-                                   "wide"};
+                                   "wide=1"};
   int32_t width = 0;
 
   ASSERT_NOT_NULL(lcd);
@@ -1001,7 +1206,65 @@ TEST(vgcanvas_antialias_levels_use_explicit_sample_contract)
                 MY_VGCANVAS_AA_LEVEL_BIT(2));
 }
 
+TEST(break_rhi_pending_quality_can_be_cancelled_by_active_request)
+{
+  ASSERT_EQ(my_vgcanvas_break_rhi_pending_after_request(0, 2, 0), -1);
+  ASSERT_EQ(my_vgcanvas_break_rhi_pending_after_request(0, 2, 2), 2);
+  ASSERT_EQ(my_vgcanvas_break_rhi_pending_after_request(2, 0, 2), -1);
+  ASSERT_EQ(my_vgcanvas_break_rhi_pending_after_request(0, -1, 0), -1);
+  ASSERT_EQ(my_vgcanvas_break_rhi_pending_after_request(0, 2, -1), 2);
+  ASSERT_EQ(my_vgcanvas_break_rhi_pending_after_request(0, 2, 3), 2);
+}
+
 #ifdef MYUI_HAS_VULKAN
+typedef struct vulkan_instance_race_state_t {
+  atomic_uint failures;
+  atomic_uint successes;
+} vulkan_instance_race_state_t;
+
+static void* vulkan_instance_acquire_release_worker(void* context) {
+  vulkan_instance_race_state_t* state =
+      (vulkan_instance_race_state_t*)context;
+  uint32_t i;
+  for (i = 0; i < 32u; ++i) {
+    void* instance = my_vgcanvas_vulkan_instance_acquire();
+    if (instance == NULL) {
+      atomic_fetch_add_explicit(&state->failures, 1u, memory_order_relaxed);
+      continue;
+    }
+    atomic_fetch_add_explicit(&state->successes, 1u, memory_order_relaxed);
+    my_vgcanvas_vulkan_instance_release();
+  }
+  return NULL;
+}
+
+TEST(vulkan_instance_acquire_release_is_race_safe)
+{
+  enum { worker_count = 4 };
+  vulkan_instance_race_state_t state;
+  pthread_t workers[worker_count];
+  uint32_t created = 0;
+  uint32_t i;
+
+  atomic_init(&state.failures, 0u);
+  atomic_init(&state.successes, 0u);
+  for (i = 0; i < worker_count; ++i) {
+    if (pthread_create(&workers[i], NULL,
+                       vulkan_instance_acquire_release_worker, &state) != 0) {
+      break;
+    }
+    created++;
+  }
+  ASSERT_EQ(created, (uint32_t)worker_count);
+  for (i = 0; i < created; ++i) {
+    ASSERT_EQ(pthread_join(workers[i], NULL), 0);
+  }
+  ASSERT_TRUE(atomic_load_explicit(&state.successes, memory_order_relaxed) > 0u ||
+              atomic_load_explicit(&state.failures, memory_order_relaxed) ==
+                  worker_count * 32u);
+  ASSERT_TRUE(my_vgcanvas_vulkan_instance() == NULL);
+}
+
 TEST(vulkan_offscreen_quality_and_resize_commit_as_one_transaction)
 {
   my_vgcanvas_t* canvas;
@@ -1112,7 +1375,23 @@ TEST(lcd_rejects_dimension_and_stride_overflow)
   my_lcd_destroy(lcd);
 }
 
+TEST(break_rhi_rejects_dimensions_that_do_not_fit_ui_rect)
+{
+  ASSERT_TRUE(!my_vgcanvas_break_rhi_size_valid(
+      (uint32_t)INT32_MAX + 1u, 1u));
+  ASSERT_TRUE(!my_vgcanvas_break_rhi_size_valid(1u,
+                                                 (uint32_t)INT32_MAX + 1u));
+  ASSERT_TRUE(my_vgcanvas_break_rhi_size_valid((uint32_t)INT32_MAX, 1u));
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(vgcanvas_public_api_rejects_null_canvas);
+    RUN_TEST(vgcanvas_public_api_reports_missing_backend_slots);
+    RUN_TEST(lcd_public_api_rejects_missing_backend_slots);
+    RUN_TEST(vgcanvas_rejects_nonfinite_state_values);
+    RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);
+    RUN_TEST(vgcanvas_rejects_nonfinite_geometry_values);
+    RUN_TEST(vgcanvas_set_font_rejects_invalid_size_without_state_change);
     RUN_TEST(gles2_image_vertices_apply_canvas_scale);
     RUN_TEST(gles2_image_filter_reaches_texture_backend);
     RUN_TEST(gles2_accepts_filtered_upload_without_legacy_callback);
@@ -1134,12 +1413,17 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sample_transaction_uses_explicit_power_of_two_capability_bits);
     RUN_TEST(sample_transaction_rejects_successful_empty_candidate_without_touching_active);
     RUN_TEST(sample_transaction_rejects_candidate_alias_without_destroying_active);
+ #ifdef MYUI_HAS_VULKAN
+    RUN_TEST(vulkan_instance_acquire_release_is_race_safe);
+ #endif
     RUN_TEST(sample_transaction_builds_missing_initial_candidate);
     RUN_TEST(vgcanvas_antialias_levels_use_explicit_sample_contract);
+    RUN_TEST(break_rhi_pending_quality_can_be_cancelled_by_active_request);
 #ifdef MYUI_HAS_VULKAN
     RUN_TEST(vulkan_offscreen_quality_and_resize_commit_as_one_transaction);
 #endif
     RUN_TEST(soft_fill_closes_open_subpaths);
     RUN_TEST(soft_mono_image_uses_ordered_dither);
     RUN_TEST(lcd_rejects_dimension_and_stride_overflow);
+    RUN_TEST(break_rhi_rejects_dimensions_that_do_not_fit_ui_rect);
 TEST_MAIN_END()

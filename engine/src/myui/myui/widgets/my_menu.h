@@ -18,6 +18,7 @@
 typedef struct my_menu_t my_menu_t;
 
 typedef void (*my_menu_select_cb)(void* ctx, int32_t id);
+typedef void (*my_menu_context_destroy_fn)(void* ctx);
 
 my_menu_t* my_menu_create(const my_allocator_t* allocator);
 void my_menu_destroy(my_menu_t* menu);
@@ -32,6 +33,16 @@ my_menu_t* my_menu_add_submenu(my_menu_t* menu, const char* text);
  * edges. cb fires with the leaf item's id. */
 my_ret_t my_menu_popup(my_window_t* win, my_menu_t* menu, int32_t x,
                        int32_t y, my_menu_select_cb cb, void* ctx);
+
+/** @brief Popup with a callback context released exactly once on close. */
+my_ret_t my_menu_popup_owned(my_window_t* win, my_menu_t* menu, int32_t x,
+                             int32_t y, my_menu_select_cb cb, void* ctx,
+                             my_menu_context_destroy_fn destroy_ctx);
+
+/** @brief Popup with a callback context guarded by an invalidatable lease. */
+my_ret_t my_menu_popup_lease(my_window_t* win, my_menu_t* menu, int32_t x,
+                             int32_t y, my_menu_select_cb cb,
+                             my_emitter_context_lease_t* lease);
 
 /** @brief Dismiss the popup (and cascaded children). */
 void my_menu_dismiss(my_menu_t* menu);

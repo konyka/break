@@ -94,6 +94,7 @@ TEST(transaction_begin_isolated_and_commit_notifies_in_order) {
     ASSERT_EQ(re_facts_get(facts, text("Extra"), &output), RE_STATUS_NOT_FOUND);
     ASSERT_EQ(events.count, 0u);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(events.count, 1u);
     ASSERT_EQ(events.kinds[0], RE_FACT_INSERT);
     ASSERT_EQ(re_facts_get(facts, text("Extra"), &output), RE_STATUS_OK);
@@ -112,6 +113,7 @@ TEST(transaction_rollback_discards_mutations_and_busy_statuses_are_stable) {
     ASSERT_EQ(re_facts_begin(facts, &nested), RE_STATUS_BUSY);
     ASSERT_EQ(re_facts_txn_set(transaction, text("Temp"), &value), RE_STATUS_OK);
     re_facts_rollback(transaction);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(re_facts_get(facts, text("Temp"), &value), RE_STATUS_NOT_FOUND);
     re_facts_rollback(NULL);
     re_facts_destroy(facts);
@@ -127,6 +129,7 @@ TEST(transaction_retract_is_staged_and_generation_remains_safe) {
     ASSERT_EQ(re_facts_txn_retract(transaction, id), RE_STATUS_OK);
     ASSERT_EQ(re_facts_get(facts, text("Score"), &value), RE_STATUS_OK);
     re_facts_rollback(transaction);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(re_facts_update(facts, id, &value), RE_STATUS_OK);
     re_facts_destroy(facts);
 }
@@ -141,6 +144,7 @@ TEST(transaction_begin_after_retract_preserves_stale_slots) {
     ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
     ASSERT_EQ(re_facts_txn_set(transaction, text("Other"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(re_facts_update(facts, id, &value), RE_STATUS_NOT_FOUND);
     re_facts_destroy(facts);
 }
@@ -159,6 +163,7 @@ TEST(transaction_effective_lifecycle_is_ordered_and_reinsert_is_not_update) {
     ASSERT_EQ(re_facts_txn_retract(transaction, id), RE_STATUS_OK);
     ASSERT_EQ(re_facts_txn_insert(transaction, text("A"), &value, &id), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(events.count, 2u);
     ASSERT_EQ(events.kinds[0], RE_FACT_RETRACT);
     ASSERT_EQ(events.kinds[1], RE_FACT_INSERT);
@@ -180,6 +185,7 @@ TEST(transaction_structured_reads_use_staged_overlay_and_serial_is_swapped) {
     ASSERT_EQ(output.as.int64_value, 3);
     ASSERT_EQ(re_facts_txn_set(transaction, text("Score"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(re_facts_set(facts, text("After"), &value), RE_STATUS_OK);
     re_value_destroy(object);
     re_facts_destroy(facts);
@@ -201,6 +207,19 @@ TEST(transaction_callbacks_are_busy_and_destroy_is_deferred) {
     ASSERT_EQ(state.begin_status, RE_STATUS_BUSY);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_INVALID_ARGUMENT);
     ASSERT_EQ(re_facts_txn_set(transaction, text("B"), &value), RE_STATUS_INVALID_ARGUMENT);
+    re_facts_txn_destroy(transaction);
+}
+
+TEST(transaction_destroy_releases_retired_handle) {
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_fact_txn_t *transaction = NULL;
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
+    ASSERT_NOT_NULL(facts);
+    ASSERT_EQ(re_facts_set(facts, text("A"), &value), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+    re_facts_txn_destroy(transaction);
+    re_facts_destroy(facts);
 }
 
 TEST(transaction_begin_is_busy_while_facts_are_running) {
@@ -228,6 +247,7 @@ TEST(transaction_allocator_failures_leave_no_live_handle) {
     ASSERT_EQ(re_facts_txn_set(transaction, text("A"), &value), RE_STATUS_OUT_OF_MEMORY);
     state.fail_at = 0u;
     re_facts_rollback(transaction);
+    re_facts_txn_destroy(transaction);
     re_facts_destroy(facts);
 }
 
@@ -242,6 +262,7 @@ TEST(transaction_noop_commit_emits_no_event_and_preserves_serial) {
     { uint64_t serial = facts->mutation_serial;
       ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
       ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+      re_facts_txn_destroy(transaction);
       ASSERT_EQ(facts->mutation_serial, serial); }
     ASSERT_EQ(events.count, 0u);
     re_subscription_destroy(subscription);
@@ -258,6 +279,7 @@ TEST(transaction_event_payload_is_owned_snapshot) {
     ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
     ASSERT_EQ(re_facts_txn_set(transaction, text("A"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_OK);
+    re_facts_txn_destroy(transaction);
     ASSERT_EQ(state.calls, 1u);
     ASSERT_EQ(state.name_size, 1u);
     ASSERT_EQ(state.value, 7);
@@ -297,6 +319,7 @@ TEST(transaction_begin_tms_clone_failure_leaves_no_dangling_handle) {
             /* fail_at landed past the last allocation of begin. */
             ASSERT_NOT_NULL(transaction);
             re_facts_rollback(transaction);
+            re_facts_txn_destroy(transaction);
             transaction = NULL;
             break;
         }
@@ -308,6 +331,7 @@ TEST(transaction_begin_tms_clone_failure_leaves_no_dangling_handle) {
     /* The facts handle stays fully usable after the failed attempts. */
     ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
     re_facts_rollback(transaction);
+    re_facts_txn_destroy(transaction);
     re_facts_destroy(facts);
 }
 
@@ -319,6 +343,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(transaction_effective_lifecycle_is_ordered_and_reinsert_is_not_update);
     RUN_TEST(transaction_structured_reads_use_staged_overlay_and_serial_is_swapped);
     RUN_TEST(transaction_callbacks_are_busy_and_destroy_is_deferred);
+    RUN_TEST(transaction_destroy_releases_retired_handle);
     RUN_TEST(transaction_begin_is_busy_while_facts_are_running);
     RUN_TEST(transaction_allocator_failures_leave_no_live_handle);
     RUN_TEST(transaction_noop_commit_emits_no_event_and_preserves_serial);

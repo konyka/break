@@ -69,7 +69,9 @@ static my_ret_t checkbox_on_event(my_widget_t* widget, const my_event_t* event) 
       c->checked = !c->checked;
       c->mixed = false;
       my_widget_invalidate(widget, NULL);
+      my_widget_ref(widget);
       my_emitter_emit(widget->emitter, "changed", NULL);
+      my_widget_unref(widget);
       return MY_RET_OK;
     default:
       return MY_RET_FAIL;
@@ -78,6 +80,10 @@ static my_ret_t checkbox_on_event(my_widget_t* widget, const my_event_t* event) 
 
 static const my_widget_vtable_t s_checkbox_vtable = {checkbox_on_paint,
                                                      checkbox_on_event, NULL, NULL};
+
+bool my_checkbox_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_checkbox_vtable;
+}
 
 static void checkbox_destroy_chain(my_object_t* obj) {
   my_checkbox_t* c = (my_checkbox_t*)obj;
@@ -115,7 +121,7 @@ my_widget_t* my_checkbox_create(const my_allocator_t* allocator,
 my_ret_t my_checkbox_set_text(my_widget_t* checkbox, const char* text) {
   my_checkbox_t* c = (my_checkbox_t*)checkbox;
   char* copy;
-  if (checkbox == NULL) {
+  if (!my_checkbox_is_instance(checkbox)) {
     return MY_RET_INVALID_PARAMS;
   }
   copy = my_strdup(c->allocator, text);
@@ -130,7 +136,7 @@ my_ret_t my_checkbox_set_text(my_widget_t* checkbox, const char* text) {
 
 my_ret_t my_checkbox_set_checked(my_widget_t* checkbox, bool checked) {
   my_checkbox_t* c = (my_checkbox_t*)checkbox;
-  if (checkbox == NULL) {
+  if (!my_checkbox_is_instance(checkbox)) {
     return MY_RET_INVALID_PARAMS;
   }
   if (c->checked != checked || c->mixed) {
@@ -142,12 +148,13 @@ my_ret_t my_checkbox_set_checked(my_widget_t* checkbox, bool checked) {
 }
 
 bool my_checkbox_get_checked(my_widget_t* checkbox) {
-  return checkbox != NULL && ((my_checkbox_t*)checkbox)->checked;
+  return my_checkbox_is_instance(checkbox) &&
+         ((my_checkbox_t*)checkbox)->checked;
 }
 
 my_ret_t my_checkbox_set_mixed(my_widget_t* checkbox, bool mixed) {
   my_checkbox_t* c = (my_checkbox_t*)checkbox;
-  if (checkbox == NULL) {
+  if (!my_checkbox_is_instance(checkbox)) {
     return MY_RET_INVALID_PARAMS;
   }
   c->mixed = mixed;

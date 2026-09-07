@@ -16,6 +16,7 @@
 #include "myc/my_darray.h"
 #include "myc/my_str.h"
 #include "myui/my_layout.h"
+#include "myui/my_window_manager.h"
 
 #define MENU_MAX_DEPTH 3
 #define MENU_ITEM_H 24
@@ -29,16 +30,30 @@ typedef struct menu_item_t {
 
 typedef struct hover_open_ctx_t hover_open_ctx_t;
 
+static my_menu_t* menu_root(my_menu_t* menu);
+
+typedef struct menu_callback_state_t {
+  const my_allocator_t* allocator;
+  my_menu_select_cb callback;
+  my_menu_context_destroy_fn destroy_ctx;
+  void* context;
+  my_emitter_context_lease_t* lease;
+} menu_callback_state_t;
+
 struct my_menu_t {
   const my_allocator_t* allocator;
   my_darray_t* items;        /**< menu_item_t* */
   my_menu_t* parent;         /**< weak: cascade parent */
   my_menu_t* open_sub;       /**< weak: currently open child */
   my_window_t* win;          /**< weak while open */
+  my_window_manager_t* wm;   /**< weak while open */
+  uint32_t wm_destroy_listener_id;
+  uint32_t window_close_listener_id;
   my_widget_t* overlay;      /**< weak: owned by the window tree while open */
   my_widget_t* box;
   my_menu_select_cb cb;
   void* cb_ctx;
+  menu_callback_state_t* callback_state;
   int32_t active;            /**< highlighted item index (-1 none) */
   int32_t hover_index;       /**< last hovered item index (-1 none) */
   int32_t max_depth;    /**< cascade depth limit, default 3 */
@@ -46,6 +61,9 @@ struct my_menu_t {
   hover_open_ctx_t* hover_ctx; /**< owned: pending hover timer ctx (freed on
                                     fire by the callback, on cancel by
                                     menu_cancel_hover_timer) */
+  uint32_t operation_depth;
+  bool destroy_requested;
+  bool destroying;
 };
 
 /* ---------------- item widget ---------------- */
@@ -95,9 +113,119 @@ static void menu_close_all(my_menu_t* m) {
   my_menu_dismiss(m);
 }
 
+static void menu_destroy_internal(my_menu_t* menu);
+static void menu_destroy_now(my_menu_t* menu);
+
 static void menu_open_sub(my_menu_t* parent, menu_item_t* item,
                           int32_t item_y);
 static void menu_cancel_hover_timer(my_menu_t* m);
+
+static void menu_operation_end(my_menu_t* menu);
+
+static void menu_operation_begin(my_menu_t* menu) {
+  if (menu != NULL) {
+    menu->operation_depth++;
+  }
+}
+
+static void menu_operation_end(my_menu_t* menu) {
+  if (menu == NULL || menu->operation_depth == 0) {
+    return;
+  }
+  menu->operation_depth--;
+  if (menu->operation_depth == 0 && menu->destroy_requested &&
+      !menu->destroying) {
+    menu->destroy_requested = false;
+    menu_destroy_now(menu);
+  }
+}
+
+static my_menu_t* menu_root(my_menu_t* menu) {
+  while (menu != NULL && menu->parent != NULL) {
+    menu = menu->parent;
+  }
+  return menu;
+}
+
+static void menu_callback_state_destroy(menu_callback_state_t* state) {
+  if (state == NULL) {
+    return;
+  }
+  if (state->destroy_ctx != NULL) {
+    state->destroy_ctx(state->context);
+  }
+  my_emitter_context_lease_unref(state->lease);
+  my_mem_free(state->allocator, state);
+}
+
+static menu_callback_state_t* menu_callback_state_detach(my_menu_t* menu) {
+  my_menu_t* root = menu_root(menu);
+  menu_callback_state_t* state;
+  if (root == NULL) {
+    return NULL;
+  }
+  state = root->callback_state;
+  root->callback_state = NULL;
+  root->cb = NULL;
+  root->cb_ctx = NULL;
+  return state;
+}
+
+static void menu_dispatch_selection(my_menu_t* menu, int32_t id) {
+  my_menu_select_cb cb;
+  void* context;
+  menu_callback_state_t* state;
+
+  if (menu == NULL) {
+    return;
+  }
+  cb = menu->cb;
+  context = menu->cb_ctx;
+  state = menu_callback_state_detach(menu);
+  if (state != NULL) {
+    cb = state->callback;
+    context = state->context;
+    if (state->lease != NULL) {
+      if (!my_emitter_context_lease_is_valid(state->lease)) {
+        cb = NULL;
+      } else {
+        context = my_emitter_context_lease_context(state->lease);
+      }
+    }
+  }
+  menu_close_all(menu);
+  if (cb != NULL) {
+    cb(context, id);
+  }
+  menu_callback_state_destroy(state);
+}
+
+static void menu_on_window_close(void* ctx) {
+  my_menu_t* m = (my_menu_t*)ctx;
+  if (m == NULL) {
+    return;
+  }
+  m->window_close_listener_id = 0;
+  if (m->overlay != NULL) {
+    my_menu_dismiss(m);
+  } else {
+    menu_cancel_hover_timer(m);
+    m->win = NULL;
+    m->wm = NULL;
+  }
+}
+
+static void menu_on_manager_destroy(void* ctx) {
+  my_menu_t* m = (my_menu_t*)ctx;
+  if (m == NULL) {
+    return;
+  }
+  if (m->overlay != NULL) {
+    my_menu_dismiss(m);
+  }
+  m->wm = NULL;
+  m->wm_destroy_listener_id = 0;
+}
 
 struct hover_open_ctx_t {
   my_menu_t* menu;
@@ -132,13 +260,8 @@ static my_ret_t menu_item_event(my_widget_t* widget, const my_event_t* event) {
       menu_cancel_hover_timer(iw->menu);
       menu_open_sub(iw->menu, iw->item, widget->rect.y);
     } else {
-      my_menu_select_cb cb = iw->menu->cb;
-      void* cb_ctx = iw->menu->cb_ctx;
       int32_t id = iw->item->id;
-      menu_close_all(iw->menu);
-      if (cb != NULL) {
-        cb(cb_ctx, id);
-      }
+      menu_dispatch_selection(iw->menu, id);
     }
     return MY_RET_OK;
   }
@@ -226,6 +349,7 @@ static int32_t menu_box_width(my_menu_t* m) {
   for (i = 0; i < n; i++) {
     menu_item_t* it = (menu_item_t*)my_darray_get(m->items, i);
     int32_t tw;
+    int64_t tw64;
     if (m->win != NULL && m->win->font != NULL) {
       /* real measure at the 13px menu font */
       my_font_measure(m->win->font, it->text, 13, &tw, NULL);
@@ -237,10 +361,11 @@ static int32_t menu_box_width(my_menu_t* m) {
         tw += cp < 0x80 ? 7 : 13;
       }
     }
-    tw += 28;
+    tw64 = (int64_t)tw + 28;
     if (it->sub != NULL) {
-      tw += 12; /* submenu arrow */
+      tw64 += 12; /* submenu arrow */
     }
+    tw = tw64 > INT32_MAX ? INT32_MAX : tw64 < 0 ? 0 : (int32_t)tw64;
     if (tw > w) {
       w = tw;
     }
@@ -250,14 +375,25 @@ static int32_t menu_box_width(my_menu_t* m) {
 
 /** @brief Dismiss this menu's overlay only (not children). */
 static void menu_close_overlay(my_menu_t* m) {
+  my_window_t* win = m != NULL ? m->win : NULL;
   if (m->overlay != NULL && m->win != NULL) {
     /* the tree owns the only overlay ref: removal destroys it, and its
      * destroy chain clears m->overlay/box/win (kept below for clarity) */
     my_widget_remove_child(my_window_widget(m->win), m->overlay);
     m->overlay = NULL;
     m->box = NULL;
-    m->win = NULL;
   }
+  if (win != NULL && m->window_close_listener_id != 0) {
+    (void)my_window_remove_close_listener(win, m->window_close_listener_id);
+    m->window_close_listener_id = 0;
+  }
+  m->win = NULL;
+  if (m->wm != NULL && m->wm_destroy_listener_id != 0) {
+    (void)my_window_manager_remove_destroy_listener(
+        m->wm, m->wm_destroy_listener_id);
+    m->wm_destroy_listener_id = 0;
+  }
+  m->wm = NULL;
 }
 
 static void menu_cancel_hover_timer(my_menu_t* m) {
@@ -285,14 +421,33 @@ static void menu_cancel_hover_timer(my_menu_t* m) {
 static void menu_overlay_destroy_chain(my_object_t* obj) {
   my_widget_t* ov = (my_widget_t*)obj;
   my_menu_t* m = NULL;
+  menu_callback_state_t* callback_state = NULL;
   if (my_widget_child_count(ov) > 0) {
     m = (my_menu_t*)my_widget_get_user_data(my_widget_get_child(ov, 0));
   }
   if (m != NULL && m->overlay == ov) {
+    menu_operation_begin(m);
     menu_cancel_hover_timer(m);
+    if (m->win != NULL && m->window_close_listener_id != 0) {
+      (void)my_window_remove_close_listener(m->win,
+                                            m->window_close_listener_id);
+      m->window_close_listener_id = 0;
+    }
+    if (m->wm != NULL && m->wm_destroy_listener_id != 0) {
+      (void)my_window_manager_remove_destroy_listener(
+          m->wm, m->wm_destroy_listener_id);
+      m->wm_destroy_listener_id = 0;
+    }
+    m->window_close_listener_id = 0;
     m->overlay = NULL;
     m->box = NULL;
     m->win = NULL;
+    m->wm = NULL;
+    if (menu_root(m) == m) {
+      callback_state = menu_callback_state_detach(m);
+    }
+    menu_callback_state_destroy(callback_state);
+    menu_operation_end(m);
   }
   my_widget_destroy(ov);
   my_object_destroy(obj);
@@ -305,6 +460,7 @@ void my_menu_dismiss(my_menu_t* menu) {
   if (menu == NULL) {
     return;
   }
+  menu_operation_begin(menu);
   parent = menu->parent;
   parent_overlay =
       (parent != NULL && parent->overlay != NULL) ? parent->overlay : NULL;
@@ -319,6 +475,7 @@ void my_menu_dismiss(my_menu_t* menu) {
   if (parent_overlay != NULL && win != NULL) {
     my_event_dispatcher_set_focus(&win->dispatcher, parent_overlay);
   }
+  menu_operation_end(menu);
 }
 
 my_widget_t* my_menu_widget(my_menu_t* menu) {
@@ -330,6 +487,7 @@ static my_ret_t menu_popup_at(my_menu_t* m, int32_t x, int32_t y);
 static void menu_open_sub(my_menu_t* parent, menu_item_t* item,
                           int32_t item_y) {
   int32_t bx = 0;
+  int32_t by;
   if (parent->open_sub == item->sub) {
     return; /* already open */
   }
@@ -338,13 +496,15 @@ static void menu_open_sub(my_menu_t* parent, menu_item_t* item,
   }
   parent->open_sub = item->sub;
   if (parent->box != NULL && parent->win != NULL) {
-    bx = parent->box->rect.x + parent->box->rect.w;
+    bx = my_rect_offset_i32(parent->box->rect.x, parent->box->rect.w);
+    by = my_rect_offset_i32(parent->box->rect.y, item_y);
     item->sub->cb = parent->cb;
     item->sub->cb_ctx = parent->cb_ctx;
+    item->sub->callback_state = parent->callback_state;
     item->sub->win = parent->win;
+    item->sub->wm = parent->wm;
     item->sub->parent = parent;
-    menu_popup_at(item->sub, bx,
-                  parent->box->rect.y + item_y);
+    menu_popup_at(item->sub, bx, by);
   }
 }
 
@@ -384,8 +544,7 @@ static my_ret_t menu_overlay_on_event(my_widget_t* widget,
     if (box != NULL) {
       int32_t px = event->u.pointer.x;
       int32_t py = event->u.pointer.y;
-      if (px < box->rect.x || px >= box->rect.x + box->rect.w ||
-          py < box->rect.y || py >= box->rect.y + box->rect.h) {
+      if (!my_rect_contains(&box->rect, px, py)) {
         my_menu_dismiss(m);
         return MY_RET_FAIL;
       }
@@ -418,12 +577,7 @@ static my_ret_t menu_key_event(my_widget_t* widget, const my_event_t* event) {
         if (it->sub != NULL) {
           menu_open_sub(m, it, m->active * MENU_ITEM_H);
         } else {
-          my_menu_select_cb cb = m->cb;
-          void* cb_ctx = m->cb_ctx;
-          menu_close_all(m);
-          if (cb != NULL) {
-            cb(cb_ctx, it->id);
-          }
+          menu_dispatch_selection(m, it->id);
         }
       }
       return MY_RET_OK;
@@ -441,6 +595,8 @@ static my_ret_t menu_popup_at(my_menu_t* m, int32_t x, int32_t y) {
   my_widget_t* box;
   size_t i, n;
   int32_t bw, bh;
+  int64_t bh64;
+  int64_t x64, y64;
   if (m->win == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
@@ -450,20 +606,25 @@ static my_ret_t menu_popup_at(my_menu_t* m, int32_t x, int32_t y) {
     return MY_RET_FAIL;
   }
   bw = menu_box_width(m);
-  bh = (int32_t)n * MENU_ITEM_H + 2 * MENU_PAD;
+  bh64 = (int64_t)n * MENU_ITEM_H + 2 * MENU_PAD;
+  bh = bh64 > INT32_MAX ? INT32_MAX : (int32_t)bh64;
   /* edge flip: keep the box inside the window */
-  if (x + bw > root->rect.w) {
-    x = root->rect.w - bw;
+  x64 = x;
+  y64 = y;
+  if (x64 + bw > root->rect.w) {
+    x64 = (int64_t)root->rect.w - bw;
   }
-  if (y + bh > root->rect.h) {
-    y = root->rect.h - bh;
+  if (y64 + bh > root->rect.h) {
+    y64 = (int64_t)root->rect.h - bh;
   }
-  if (x < 0) {
-    x = 0;
+  if (x64 < 0) {
+    x64 = 0;
   }
-  if (y < 0) {
-    y = 0;
+  if (y64 < 0) {
+    y64 = 0;
   }
+  x = x64 > INT32_MAX ? INT32_MAX : (int32_t)x64;
+  y = y64 > INT32_MAX ? INT32_MAX : (int32_t)y64;
 
   ov = my_widget_create(m->allocator, "menu_overlay");
   box = my_widget_create(m->allocator, "menu_box");
@@ -523,24 +684,110 @@ static my_ret_t menu_popup_at(my_menu_t* m, int32_t x, int32_t y) {
                         * destroy chain invalidates the model */
   m->overlay = ov;
   m->box = box;
+  m->window_close_listener_id = my_window_add_close_listener(
+      m->win, menu_on_window_close, m);
+  if (m->window_close_listener_id == 0) {
+    my_menu_dismiss(m);
+    return MY_RET_OOM;
+  }
   m->active = -1;
   my_event_dispatcher_set_focus(&m->win->dispatcher, ov);
   my_widget_invalidate(root, NULL);
   return MY_RET_OK;
 }
 
-my_ret_t my_menu_popup(my_window_t* win, my_menu_t* menu, int32_t x,
-                       int32_t y, my_menu_select_cb cb, void* ctx) {
-  if (win == NULL || menu == NULL) {
+static my_ret_t menu_popup_with_callback(
+    my_window_t* win, my_menu_t* menu, int32_t x, int32_t y,
+    my_menu_select_cb cb, void* ctx, my_menu_context_destroy_fn destroy_ctx,
+    my_emitter_context_lease_t* lease) {
+  menu_callback_state_t* callback_state = NULL;
+  if (win == NULL || menu == NULL ||
+      (lease != NULL && !my_emitter_context_lease_is_valid(lease))) {
     return MY_RET_INVALID_PARAMS;
   }
   if (menu->overlay != NULL) {
     my_menu_dismiss(menu);
   }
   menu->win = win;
+  menu->wm = win->wm;
+  if (menu->wm != NULL) {
+    menu->wm_destroy_listener_id = my_window_manager_add_destroy_listener(
+        menu->wm, menu_on_manager_destroy, menu);
+    if (menu->wm_destroy_listener_id == 0) {
+      menu->win = NULL;
+      menu->wm = NULL;
+      return MY_RET_OOM;
+    }
+  }
+  if (destroy_ctx != NULL || lease != NULL) {
+    callback_state = (menu_callback_state_t*)my_mem_calloc(
+        menu->allocator, 1u, sizeof(*callback_state));
+    if (callback_state == NULL) {
+      if (menu->wm != NULL && menu->wm_destroy_listener_id != 0) {
+        (void)my_window_manager_remove_destroy_listener(
+            menu->wm, menu->wm_destroy_listener_id);
+      }
+      menu->wm_destroy_listener_id = 0;
+      menu->win = NULL;
+      menu->wm = NULL;
+      return MY_RET_OOM;
+    }
+    callback_state->allocator = menu->allocator;
+    callback_state->callback = cb;
+    callback_state->destroy_ctx = destroy_ctx;
+    callback_state->context = ctx;
+    callback_state->lease = my_emitter_context_lease_ref(lease);
+    if (lease != NULL && callback_state->lease == NULL) {
+      my_mem_free(menu->allocator, callback_state);
+      if (menu->wm != NULL && menu->wm_destroy_listener_id != 0) {
+        (void)my_window_manager_remove_destroy_listener(
+            menu->wm, menu->wm_destroy_listener_id);
+      }
+      menu->wm_destroy_listener_id = 0;
+      menu->win = NULL;
+      menu->wm = NULL;
+      return MY_RET_OOM;
+    }
+  }
+  menu->callback_state = callback_state;
   menu->cb = cb;
   menu->cb_ctx = ctx;
-  return menu_popup_at(menu, x, y);
+  {
+    my_ret_t ret = menu_popup_at(menu, x, y);
+    if (ret != MY_RET_OK) {
+      if (menu->wm != NULL && menu->wm_destroy_listener_id != 0) {
+        (void)my_window_manager_remove_destroy_listener(
+            menu->wm, menu->wm_destroy_listener_id);
+      }
+      menu->wm_destroy_listener_id = 0;
+      menu->win = NULL;
+      menu->wm = NULL;
+      menu_callback_state_destroy(menu_callback_state_detach(menu));
+    }
+    return ret;
+  }
+}
+
+my_ret_t my_menu_popup(my_window_t* win, my_menu_t* menu, int32_t x,
+                       int32_t y, my_menu_select_cb cb, void* ctx) {
+  return menu_popup_with_callback(win, menu, x, y, cb, ctx, NULL, NULL);
+}
+
+my_ret_t my_menu_popup_owned(my_window_t* win, my_menu_t* menu, int32_t x,
+                             int32_t y, my_menu_select_cb cb, void* ctx,
+                             my_menu_context_destroy_fn destroy_ctx) {
+  return menu_popup_with_callback(win, menu, x, y, cb, ctx, destroy_ctx, NULL);
+}
+
+my_ret_t my_menu_popup_lease(my_window_t* win, my_menu_t* menu, int32_t x,
+                             int32_t y, my_menu_select_cb cb,
+                             my_emitter_context_lease_t* lease) {
+  if (lease == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  return menu_popup_with_callback(win, menu, x, y, cb,
+                                  my_emitter_context_lease_context(lease),
+                                  NULL, lease);
 }
 
 /* ---------------- model ---------------- */
@@ -573,23 +820,72 @@ int32_t my_menu_max_depth(const my_menu_t* menu) {
   return menu != NULL ? menu->max_depth : MENU_MAX_DEPTH;
 }
 
-void my_menu_destroy(my_menu_t* menu) {
+static void menu_destroy_internal(my_menu_t* menu) {
   size_t i, n;
   if (menu == NULL) {
     return;
   }
+  if (menu->destroying) {
+    return;
+  }
+  menu->destroying = true;
   my_menu_dismiss(menu);
   n = my_darray_size(menu->items);
   for (i = 0; i < n; i++) {
     menu_item_t* it = (menu_item_t*)my_darray_get(menu->items, i);
     if (it->sub != NULL) {
-      my_menu_destroy(it->sub);
+      it->sub->parent = NULL;
+      menu_destroy_internal(it->sub);
     }
     my_mem_free(menu->allocator, it->text);
     my_mem_free(menu->allocator, it);
   }
   my_darray_destroy(menu->items);
   my_mem_free(menu->allocator, menu);
+}
+
+static void menu_destroy_now(my_menu_t* menu) {
+  my_menu_t* parent;
+  size_t i, n;
+  if (menu == NULL || menu->destroying) {
+    return;
+  }
+  parent = menu->parent;
+  /* Close the parent popup before freeing this menu's item model. */
+  if (parent != NULL && parent->overlay != NULL) {
+    menu_close_all(parent);
+  }
+  menu_destroy_internal(menu);
+  if (parent == NULL) {
+    return;
+  }
+  if (parent->open_sub == menu) {
+    parent->open_sub = NULL;
+  }
+  n = my_darray_size(parent->items);
+  for (i = 0; i < n; i++) {
+    menu_item_t* item = (menu_item_t*)my_darray_get(parent->items, i);
+    if (item != NULL && item->sub == menu) {
+      my_darray_remove_at(parent->items, i);
+      my_mem_free(parent->allocator, item->text);
+      my_mem_free(parent->allocator, item);
+      break;
+    }
+  }
+}
+
+void my_menu_destroy(my_menu_t* menu) {
+  if (menu == NULL) {
+    return;
+  }
+  if (menu->destroying) {
+    return;
+  }
+  if (menu->operation_depth != 0) {
+    menu->destroy_requested = true;
+    return;
+  }
+  menu_destroy_now(menu);
 }
 
 my_ret_t my_menu_add_item(my_menu_t* menu, const char* text, int32_t id) {

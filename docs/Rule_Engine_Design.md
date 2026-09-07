@@ -101,6 +101,16 @@ notification callback observes committed state; if it fails, the commit remains
 committed, no compensating rollback event is emitted, and the RETE network is
 invalidated for rebuild. Failed
 begin operations return `RE_STATUS_OUT_OF_MEMORY` without changing live facts.
+After commit or rollback, the transaction handle is an inactive tombstone and
+must be released with `re_facts_txn_destroy`. This explicit release keeps stale
+handle probes safe without retaining every retired handle for the lifetime of
+the facts store. The engine-owned firing path performs this release
+automatically after commit/rollback.
+
+Fact retraction marks the slot inactive but retains its copied name and value
+storage until facts destruction. This keeps the `re_fact_event_t` snapshot
+valid after the callback returns and ensures string/structured-value ownership
+is released exactly once; later assertions use a fresh generation-safe slot.
 
 Loading and installation are separate so a caller can parse and validate a
 candidate before replacing live rules. `re_engine_run` must not be called
@@ -930,9 +940,13 @@ source path is useful for reproducible builds and does not expose hiredis in
 the public ABI.
 The adapter mirrors the in-memory provider's vtable over the synchronous
 hiredis API: keys are `<prefix>:<name>`, values are raw bytes (a type tag
-followed by the payload), TTL uses millisecond PSETEX/PTTL with SET/GET/DEL,
-and failures record `RE_PROVIDER_ERROR_UNAVAILABLE` with a message in
-`last_error`. Because the v1 provider options carry no connection field, the
+followed by the payload), TTL uses millisecond PSETEX/PTTL with SET/GET/DEL;
+PSETEX TTL values above `INT64_MAX` milliseconds are rejected before network I/O,
+and failures record `RE_PROVIDER_ERROR_TIMEOUT` for configured I/O timeouts or
+`RE_PROVIDER_ERROR_UNAVAILABLE` for other connection/command failures, with a
+message in `last_error`. `last_error` preserves the most recent diagnostic
+failure until another diagnostic failure replaces it; successful and
+`RE_STATUS_NOT_FOUND` operations do not erase it. Because the v1 provider options carry no connection field, the
 adapter takes its connection from the `RE_REDIS_URL` environment variable
 (default `redis://127.0.0.1:6379`) with the fixed key prefix `re`. Discovery
 alone is not runtime evidence: enablement still requires the integration

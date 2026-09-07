@@ -155,6 +155,7 @@ TEST(tms_transaction_rollback_leaves_store_unchanged) {
         ASSERT_EQ(status, RE_STATUS_OK);
     }
     re_facts_rollback(txn);
+    re_facts_txn_destroy(txn);
     ASSERT_EQ(re_facts_get(facts, text("d"), &(re_value_t){0}), RE_STATUS_NOT_FOUND);
     ASSERT_EQ(re_facts_justification_count(facts, derived), 0u);
     re_facts_destroy(facts);
@@ -172,6 +173,7 @@ TEST(tms_transaction_updates_logical_target_in_staged_store) {
     ASSERT_EQ(re_facts_justification_add(facts, derived, text("R2"), &premise, 1u), RE_STATUS_OK);
     ASSERT_EQ(re_facts_justification_count(facts, derived), 2u);
     re_facts_rollback(txn);
+    re_facts_txn_destroy(txn);
     ASSERT_EQ(re_facts_justification_count(facts, derived), 1u);
     re_facts_destroy(facts);
 }
@@ -187,6 +189,7 @@ TEST(tms_transaction_commit_preserves_live_justifications) {
         &premise, 1u, &derived), RE_STATUS_OK);
     ASSERT_EQ(re_facts_begin(facts, &txn), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(txn), RE_STATUS_OK);
+    re_facts_txn_destroy(txn);
     ASSERT_EQ(re_facts_justification_count(facts, derived), 1u);
     ASSERT_EQ(re_facts_retract(facts, premise), RE_STATUS_OK);
     ASSERT_EQ(re_facts_justification_count(facts, derived), 0u);
@@ -338,6 +341,7 @@ TEST(tms_explicit_support_survives_transaction_commit) {
     ASSERT_EQ(re_facts_begin(facts, &txn), RE_STATUS_OK);
     ASSERT_EQ(re_facts_retract(facts, premise), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(txn), RE_STATUS_OK);
+    re_facts_txn_destroy(txn);
     ASSERT_EQ(re_facts_get(facts, text("d"), &(re_value_t){0}), RE_STATUS_OK);
     ASSERT_EQ(re_facts_justification_count(facts, derived), 0u);
     re_facts_destroy(facts);

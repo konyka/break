@@ -12,6 +12,8 @@ typedef struct syntax_line_t {
   my_syntax_state_t in_state;
   my_syntax_state_t out_state;
   bool ready;
+  bool snapshot_valid;
+  bool source_dirty;
 } syntax_line_t;
 
 struct my_syntax_cache_t {
@@ -50,6 +52,45 @@ static size_t syntax_cp_len(const char* text, size_t len, size_t at) {
   return 1;
 }
 
+static my_syntax_state_t syntax_scan_out_state(my_syntax_language_t language,
+                                               const char* text, size_t len,
+                                               my_syntax_state_t state) {
+  size_t at = 0;
+  if (language == MY_SYNTAX_YAML) return MY_SYNTAX_STATE_NORMAL;
+  while (at < len) {
+    if (state == MY_SYNTAX_STATE_BLOCK_COMMENT) {
+      if (at + 1u < len && text[at] == '*' && text[at + 1u] == '/') {
+        at += 2u;
+        state = MY_SYNTAX_STATE_NORMAL;
+      } else {
+        at += syntax_cp_len(text, len, at);
+      }
+      continue;
+    }
+    if (text[at] == '"' || text[at] == '\'') {
+      unsigned char quote = (unsigned char)text[at++];
+      while (at < len) {
+        size_t step = syntax_cp_len(text, len, at);
+        if (text[at] == '\\' && at + step < len) {
+          at += step;
+          at += syntax_cp_len(text, len, at);
+        } else {
+          at += step;
+          if ((unsigned char)text[at - step] == quote) break;
+        }
+      }
+    } else if (at + 1u < len && text[at] == '/' && text[at + 1u] == '/') {
+      break;
+    } else if (at + 1u < len && text[at] == '/' && text[at + 1u] == '*') {
+      at += 2u;
+      state = MY_SYNTAX_STATE_BLOCK_COMMENT;
+    } else {
+      at += syntax_cp_len(text, len, at);
+    }
+  }
+  return state;
+}
+
 static bool syntax_keyword(my_syntax_language_t language, const char* text,
                            size_t len) {
   static const char* const c_words[] = {
@@ -83,10 +124,18 @@ static my_ret_t syntax_token_push(const my_allocator_t* allocator,
     return MY_RET_INVALID_PARAMS;
   }
   if (line->token_count == line->token_capacity) {
-    capacity = line->token_capacity == 0 ? 16 : line->token_capacity * 2;
+    capacity = line->token_capacity == 0 ? 16 : line->token_capacity;
+    if (capacity < MY_SYNTAX_MAX_TOKENS_PER_LINE) {
+      if (capacity > MY_SYNTAX_MAX_TOKENS_PER_LINE / 2u) {
+        capacity = MY_SYNTAX_MAX_TOKENS_PER_LINE;
+      } else {
+        capacity *= 2u;
+      }
+    }
     if (capacity > MY_SYNTAX_MAX_TOKENS_PER_LINE) {
       capacity = MY_SYNTAX_MAX_TOKENS_PER_LINE;
     }
+    if (capacity > SIZE_MAX / sizeof(*grown)) return MY_RET_OOM;
     grown = (my_syntax_token_t*)my_mem_realloc(
         allocator, line->tokens, capacity * sizeof(*grown));
     if (grown == NULL) return MY_RET_OOM;
@@ -227,8 +276,11 @@ static my_ret_t syntax_lines_reserve(my_syntax_cache_t* cache, size_t count) {
   if (count <= cache->line_capacity) return MY_RET_OK;
   capacity = cache->line_capacity == 0 ? 8 : cache->line_capacity;
   while (capacity < count) {
-    if (capacity > (size_t)-1 / 2) return MY_RET_OOM;
-    capacity *= 2;
+    if (capacity > SIZE_MAX / 2u) {
+      capacity = count;
+      break;
+    }
+    capacity *= 2u;
   }
   if (capacity > (size_t)-1 / sizeof(*lines)) return MY_RET_OOM;
   lines = (syntax_line_t*)my_mem_realloc(cache->allocator, cache->lines,
@@ -244,7 +296,9 @@ static my_ret_t syntax_lines_reserve(my_syntax_cache_t* cache, size_t count) {
 static my_ret_t syntax_set_line(syntax_line_t* line,
                                 const my_allocator_t* allocator,
                                 const char* text, size_t len) {
-  char* copy = (char*)my_mem_alloc(allocator, len + 1);
+  char* copy;
+  if (len == SIZE_MAX) return MY_RET_OOM;
+  copy = (char*)my_mem_alloc(allocator, len + 1);
   if (copy == NULL) return MY_RET_OOM;
   if (len > 0) memcpy(copy, text, len);
   copy[len] = '\0';
@@ -256,6 +310,25 @@ static my_ret_t syntax_set_line(syntax_line_t* line,
   line->token_count = 0;
   line->token_capacity = 0;
   line->ready = false;
+  line->snapshot_valid = false;
+  line->source_dirty = false;
+  return MY_RET_OK;
+}
+
+static my_ret_t syntax_replace_line_text(syntax_line_t* line,
+                                         const my_allocator_t* allocator,
+                                         const char* text, size_t len) {
+  char* copy;
+  if (line == NULL || text == NULL || len == SIZE_MAX) return MY_RET_OOM;
+  copy = (char*)my_mem_alloc(allocator, len + 1u);
+  if (copy == NULL) return MY_RET_OOM;
+  if (len > 0u) memcpy(copy, text, len);
+  copy[len] = '\0';
+  my_mem_free(allocator, line->text);
+  line->text = copy;
+  line->text_len = len;
+  line->ready = false;
+  line->source_dirty = true;
   return MY_RET_OK;
 }
 
@@ -268,6 +341,23 @@ static void syntax_cache_lines_destroy(my_syntax_cache_t* cache) {
   cache->lines = NULL;
   cache->line_count = 0;
   cache->line_capacity = 0;
+}
+
+static void syntax_restore_converged_suffix(my_syntax_cache_t* cache,
+                                            size_t row) {
+  size_t index;
+  for (index = row; index < cache->line_count; index++) {
+    if (cache->lines[index].source_dirty) {
+      cache->dirty_from = index;
+      return;
+    }
+    if (!cache->lines[index].snapshot_valid) {
+      cache->dirty_from = index;
+      return;
+    }
+    cache->lines[index].ready = true;
+  }
+  cache->dirty_from = cache->line_count;
 }
 
 my_syntax_cache_t* my_syntax_cache_create(const my_allocator_t* allocator,
@@ -352,18 +442,37 @@ my_ret_t my_syntax_cache_replace_line(my_syntax_cache_t* cache, size_t row,
 
 my_ret_t my_syntax_cache_replace_line_n(my_syntax_cache_t* cache, size_t row,
                                         const char* text, size_t len) {
-  size_t index;
   if (cache == NULL || text == NULL || row >= cache->line_count) {
     return MY_RET_INVALID_PARAMS;
   }
   if (len > MY_SYNTAX_MAX_LINE_BYTES) return MY_RET_INVALID_PARAMS;
+  if (cache->lines[row].ready) {
+    my_syntax_state_t old_in_state = cache->lines[row].in_state;
+    my_syntax_state_t old_out_state = cache->lines[row].out_state;
+    my_syntax_state_t new_out_state =
+        syntax_scan_out_state(cache->language, text, len, old_in_state);
+    if (syntax_replace_line_text(&cache->lines[row], cache->allocator, text,
+                                 len) !=
+        MY_RET_OK) {
+      return MY_RET_OOM;
+    }
+    /* Keep the old state as a convergence snapshot; lexing stays lazy. */
+    cache->lines[row].in_state = old_in_state;
+    cache->lines[row].out_state = old_out_state;
+    if (new_out_state != old_out_state) {
+      size_t index;
+      for (index = row + 1u; index < cache->line_count; index++) {
+        cache->lines[index].ready = false;
+      }
+    }
+    if (row < cache->dirty_from) cache->dirty_from = row;
+    return MY_RET_OK;
+  }
   if (syntax_set_line(&cache->lines[row], cache->allocator, text, len) !=
       MY_RET_OK) {
     return MY_RET_OOM;
   }
-  for (index = row + 1; index < cache->line_count; index++) {
-    cache->lines[index].ready = false;
-  }
+  cache->lines[row].source_dirty = true;
   if (row < cache->dirty_from) cache->dirty_from = row;
   return MY_RET_OK;
 }
@@ -375,6 +484,7 @@ my_ret_t my_syntax_cache_set_language(my_syntax_cache_t* cache,
   cache->language = language;
   cache->dirty_from = 0;
   for (i = 0; i < cache->line_count; i++) cache->lines[i].ready = false;
+  for (i = 0; i < cache->line_count; i++) cache->lines[i].snapshot_valid = false;
   return MY_RET_OK;
 }
 
@@ -389,15 +499,44 @@ my_ret_t my_syntax_cache_ensure(my_syntax_cache_t* cache, size_t line_budget) {
   if (line_budget == 0) return MY_RET_OK;
   for (row = cache->dirty_from; row < cache->line_count && line_budget > 0;
        row++, line_budget--) {
+    bool old_source_dirty = cache->lines[row].source_dirty;
+    bool old_snapshot_valid = cache->lines[row].snapshot_valid;
+    my_syntax_state_t old_in_state = cache->lines[row].in_state;
+    my_syntax_state_t old_out_state = cache->lines[row].out_state;
     if (row > 0) state = cache->lines[row - 1].out_state;
+    if (old_snapshot_valid && !old_source_dirty && state == old_in_state) {
+      syntax_restore_converged_suffix(cache, row);
+      return MY_RET_OK;
+    }
     {
       my_ret_t status = syntax_lex_line(
           cache->allocator, cache->language, cache->lines[row].text,
           cache->lines[row].text_len, state, &cache->lines[row]);
       if (status != MY_RET_OK) {
-      cache->lines[row].ready = false;
+        cache->lines[row].ready = false;
+        cache->dirty_from = row;
         return status;
       }
+    }
+    cache->lines[row].snapshot_valid = true;
+    cache->lines[row].source_dirty = false;
+    if (old_snapshot_valid &&
+        state == old_in_state &&
+        cache->lines[row].out_state == old_out_state) {
+      size_t index;
+      for (index = row + 1u; index < cache->line_count; index++) {
+        if (cache->lines[index].source_dirty) {
+          cache->dirty_from = index;
+          return MY_RET_OK;
+        }
+        if (!cache->lines[index].snapshot_valid) {
+          cache->dirty_from = index;
+          return MY_RET_OK;
+        }
+        cache->lines[index].ready = true;
+      }
+      cache->dirty_from = cache->line_count;
+      return MY_RET_OK;
     }
   }
   cache->dirty_from = row < cache->line_count ? row : cache->line_count;
@@ -411,7 +550,8 @@ bool my_syntax_cache_line_ready(const my_syntax_cache_t* cache, size_t row) {
 const my_syntax_token_t* my_syntax_cache_line_tokens(
     const my_syntax_cache_t* cache, size_t row, size_t* count) {
   if (count != NULL) *count = 0;
-  if (cache == NULL || row >= cache->line_count || !cache->lines[row].ready) {
+  if (cache == NULL || row >= cache->line_count ||
+      !my_syntax_cache_line_ready(cache, row)) {
     return NULL;
   }
   if (count != NULL) *count = cache->lines[row].token_count;

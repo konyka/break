@@ -13,4 +13,8 @@ add_library(myc STATIC
   myconf/my_conf_yaml.c
 )
 
-target_include_directories(myc PUBLIC ${CMAKE_SOURCE_DIR}/src)
+set(MYUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH
+  "myui source root used by myui public headers")
+set(MYUI_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
+  "engine source root used by myui public headers")
+target_include_directories(myc PUBLIC ${MYUI_SOURCE_DIR} ${MYUI_ENGINE_SOURCE_DIR})

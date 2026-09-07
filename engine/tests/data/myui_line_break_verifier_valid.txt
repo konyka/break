@@ -1,0 +1,8 @@
+# Minimal Unicode LineBreakTest-compatible regression corpus.
+× 0041 × 0042 ÷
+× 0023 × 0020 ÷
+× 0020 ÷ 0023 ÷
+× 000D × 000A ÷
+× 000D ÷ 0023 ÷
+× 1F1E6 × 1F1E7 ÷
+× 1F1E6 × 1F1E7 ÷ 1F1E8 × 1F1E9 ÷

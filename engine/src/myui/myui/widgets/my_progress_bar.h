@@ -14,6 +14,7 @@ typedef struct my_progress_bar_t {
 } my_progress_bar_t;
 
 my_widget_t* my_progress_bar_create(const my_allocator_t* allocator);
+bool my_progress_bar_is_instance(const my_widget_t* widget);
 my_ret_t my_progress_bar_set_value(my_widget_t* bar, float value);
 float my_progress_bar_get_value(my_widget_t* bar);
 

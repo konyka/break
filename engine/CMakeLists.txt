@@ -6,6 +6,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+find_package(Threads REQUIRED)
+
 # Platform detection
 option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
@@ -20,6 +22,9 @@ option(MYUI_IMAGE_STB "Image decode via stb_image" ON)
 option(MYUI_UI_YAML "YAML UI loader" ON)
 option(MYUI_BIDI "BiDi reorder + Arabic shaping via vendored SheenBidi" ON)
 option(MYUI_HARFBUZZ "Optional OpenType shaping through HarfBuzz + FreeType" ON)
+option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
+option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
+option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 
 if(UNIX)
     if(APPLE)
@@ -34,6 +39,9 @@ if(UNIX)
             find_package(X11 REQUIRED)
             if(NOT X11_Xrandr_FOUND)
                 message(FATAL_ERROR "Xrandr not found (required for multi-monitor support)")
+            endif()
+            if(X11_Xi_FOUND)
+                set(ENGINE_X11_XINPUT2 1)
             endif()
         endif()
         set(ENGINE_PLATFORM "linux")
@@ -75,6 +83,7 @@ endif()
 # Sanitizers
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
 if(ENGINE_USE_ASAN)
     if(MSVC)
@@ -94,6 +103,18 @@ if(ENGINE_USE_UBSAN)
     else()
         message(FATAL_ERROR
             "ENGINE_USE_UBSAN requires GCC or Clang; compiler ${CMAKE_C_COMPILER_ID} is unsupported")
+    endif()
+endif()
+if(ENGINE_USE_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR
+            "ENGINE_USE_TSAN requires GCC or Clang; MSVC is unsupported")
+    elseif(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        message(FATAL_ERROR
+            "ENGINE_USE_TSAN requires GCC or Clang; compiler ${CMAKE_C_COMPILER_ID} is unsupported")
+    else()
+        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=thread)
     endif()
 endif()
 
@@ -124,6 +145,8 @@ add_library(engine STATIC
     src/core/string.c
     src/core/profiler.c
     src/platform/input.c
+    src/platform/platform_config.c
+    src/platform/platform_display_media.c
     src/platform/platform_text.c
     src/platform/time.c
     src/platform/filewatch.c
@@ -252,6 +275,7 @@ set(MYUI_CORE_SOURCES
     src/myui/myc/myconf/my_conf_toml.c
     src/myui/myc/myconf/my_conf_yaml.c
     src/myui/myr/my_dirty_rects.c
+    src/myui/myr/my_ui_metrics.c
     src/myui/myr/my_lcd_mem.c
     src/myui/myr/my_vgcanvas_quality_transaction.c
     src/myui/myr/my_vgcanvas_soft.c
@@ -270,9 +294,13 @@ set(MYUI_CORE_SOURCES
     src/myui/myr/my_line_break.c
     src/myui/myr/my_syntax.c
     src/myui/mypal/my_timer.c
+    src/myui/mypal/my_event.c
+    src/myui/mypal/my_pal_media.c
+    src/myui/mypal/my_pal_vulkan.c
     src/myui/myui/my_widget.c
     src/myui/myui/my_layout.c
     src/myui/myui/my_event_dispatch.c
+    src/myui/myui/my_ui_command.c
     src/myui/myui/my_style.c
     src/myui/myui/my_theme.c
     src/myui/myui/my_animator.c
@@ -382,13 +410,53 @@ endif()
 if(MYUI_UI_YAML)
     target_compile_definitions(myui_core PUBLIC MYUI_UI_YAML=1)
 endif()
+
+# Keep the in-tree aggregate aligned with the reusable myui project. Backend
+# discovery remains conditional so disabled backends add no headers or link
+# dependencies to consumers.
+if(MYUI_GLES2 AND ENGINE_PLATFORM STREQUAL "linux")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(MYUI_GLESV2 QUIET IMPORTED_TARGET glesv2)
+    endif()
+    if(MYUI_GLESV2_FOUND AND TARGET PkgConfig::MYUI_GLESV2)
+        target_compile_definitions(myui_core PUBLIC MYUI_HAS_GLES2=1)
+        target_link_libraries(myui_core PUBLIC PkgConfig::MYUI_GLESV2)
+    endif()
+elseif(MYUI_GLES2 AND WIN32)
+    target_compile_definitions(myui_core PUBLIC MYUI_HAS_GLES2=1)
+    target_link_libraries(myui_core PUBLIC opengles32)
+endif()
+
+if(MYUI_GL_DESKTOP AND ENGINE_PLATFORM STREQUAL "linux")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(MYUI_OPENGL QUIET IMPORTED_TARGET gl)
+    endif()
+    if(MYUI_OPENGL_FOUND AND TARGET PkgConfig::MYUI_OPENGL)
+        target_compile_definitions(myui_core PUBLIC MYUI_HAS_GL_DESKTOP=1)
+        target_link_libraries(myui_core PUBLIC PkgConfig::MYUI_OPENGL)
+    endif()
+elseif(MYUI_GL_DESKTOP AND WIN32)
+    target_compile_definitions(myui_core PUBLIC MYUI_HAS_GL_DESKTOP=1)
+    target_link_libraries(myui_core PUBLIC opengl32)
+endif()
+
+set(MYUI_VULKAN_ENABLED ${MYUI_VULKAN})
 if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+    set(MYUI_VULKAN_ENABLED ON)
+endif()
+if(MYUI_VULKAN_ENABLED)
+    if(NOT TARGET Vulkan::Vulkan)
+        find_package(Vulkan REQUIRED)
+    endif()
     target_compile_definitions(myui_core PUBLIC MYUI_HAS_VULKAN=1)
     target_link_libraries(myui_core PUBLIC Vulkan::Vulkan)
 endif()
 
 target_link_libraries(myui_core PUBLIC
     m
+    Threads::Threads
     stb_truetype
     stb_image
     stb_image_write
@@ -624,6 +692,9 @@ if(ENGINE_PLATFORM STREQUAL "linux")
             src/platform/gamepad_linux.c
         )
         target_include_directories(engine PRIVATE ${X11_INCLUDE_DIRS})
+        if(ENGINE_X11_XINPUT2)
+            target_compile_definitions(engine PRIVATE ENGINE_X11_XINPUT2=1)
+        endif()
     endif()
 
     if(ENGINE_VULKAN)
@@ -632,13 +703,13 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         if(ENGINE_ENABLE_WAYLAND)
             target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
         else()
-            target_link_libraries(engine PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
+            target_link_libraries(engine PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${X11_Xi_LIB} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
         endif()
     else()
         if(ENGINE_ENABLE_WAYLAND)
             target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
         else()
-            target_link_libraries(engine PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
+            target_link_libraries(engine PRIVATE ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${X11_Xi_LIB} GL dl pthread)
         endif()
     endif()
 
@@ -657,7 +728,7 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(engine PRIVATE opengl32 gdi32)
     endif()
 
-    target_link_libraries(engine PRIVATE user32 kernel32 shell32 imm32)
+    target_link_libraries(engine PRIVATE user32 kernel32 shell32 imm32 advapi32)
     # XInput (gamepad) is loaded dynamically at runtime — no import lib needed.
     # Winsock2 for network module
     target_link_libraries(engine PRIVATE ws2_32)
@@ -836,6 +907,20 @@ target_include_directories(verify_pak PRIVATE
 if(ENGINE_PLATFORM STREQUAL "windows")
     target_compile_definitions(verify_pak PRIVATE _WIN32_WINNT=0x0601)
 endif()
+
+# Strict, allocation-free verifier for Unicode LineBreakTest-compatible files.
+add_executable(verify_myui_line_break tools/verify_myui_line_break.c)
+target_include_directories(verify_myui_line_break PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+)
+target_link_libraries(verify_myui_line_break PRIVATE myui_core)
+
+# Strict, bounded verifier for versioned SA dictionary golden corpora.
+add_executable(verify_myui_sa_dictionary tools/verify_myui_sa_dictionary.c)
+target_include_directories(verify_myui_sa_dictionary PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+)
+target_link_libraries(verify_myui_sa_dictionary PRIVATE myui_core)
 
 # --- Unit Tests ---
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
@@ -1022,12 +1107,72 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_text PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_platform_text COMMAND test_platform_text)
 
+    add_executable(test_platform_config tests/test_platform_config.c
+        src/platform/platform_config.c)
+    target_include_directories(test_platform_config PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_config COMMAND test_platform_config)
+
+    add_executable(test_platform_display_media tests/test_platform_display_media.c
+        src/platform/platform_display_media.c)
+    target_include_directories(test_platform_display_media PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_display_media COMMAND test_platform_display_media)
+
+    add_executable(test_engine_lifecycle tests/test_engine_lifecycle.c)
+    target_include_directories(test_engine_lifecycle PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_engine_lifecycle PRIVATE engine m)
+    add_test(NAME test_engine_lifecycle COMMAND test_engine_lifecycle)
+
+    add_executable(test_platform_null_safety tests/test_platform_null_safety.c)
+    target_include_directories(test_platform_null_safety PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_null_safety PRIVATE engine m)
+    add_test(NAME test_platform_null_safety COMMAND test_platform_null_safety)
+
+    if(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_ENABLE_WAYLAND)
+        add_executable(test_platform_x11_runtime tests/test_platform_x11_runtime.c)
+        target_include_directories(test_platform_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
+        if(ENGINE_X11_XINPUT2)
+            target_compile_definitions(test_platform_x11_runtime PRIVATE ENGINE_X11_XINPUT2=1)
+        endif()
+        target_link_libraries(test_platform_x11_runtime PRIVATE engine m)
+        add_test(NAME test_platform_x11_runtime COMMAND test_platform_x11_runtime)
+        set_tests_properties(test_platform_x11_runtime PROPERTIES
+            LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+        if(NOT ENGINE_VULKAN)
+            add_executable(test_rhi_x11_runtime tests/test_rhi_x11_runtime.c)
+            target_include_directories(test_rhi_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
+            target_link_libraries(test_rhi_x11_runtime PRIVATE engine m)
+            add_test(NAME test_rhi_x11_runtime COMMAND test_rhi_x11_runtime)
+            set_tests_properties(test_rhi_x11_runtime PROPERTIES
+                LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+        endif()
+    endif()
+
+    if(ENGINE_PLATFORM STREQUAL "linux" AND ENGINE_ENABLE_WAYLAND)
+        add_executable(test_platform_wayland_runtime tests/test_platform_wayland_runtime.c)
+        target_include_directories(test_platform_wayland_runtime PRIVATE
+            ${TEST_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
+        target_link_libraries(test_platform_wayland_runtime PRIVATE engine m
+            ${WAYLAND_LIBRARIES})
+        add_test(NAME test_platform_wayland_runtime
+            COMMAND test_platform_wayland_runtime)
+        set_tests_properties(test_platform_wayland_runtime PROPERTIES
+            LABELS platform_runtime SKIP_RETURN_CODE 77)
+    endif()
+
     if(ENGINE_PLATFORM STREQUAL "windows")
         add_executable(test_platform_win32_runtime tests/test_platform_win32_runtime.c)
         target_include_directories(test_platform_win32_runtime PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_platform_win32_runtime PRIVATE engine m)
         add_test(NAME test_platform_win32_runtime COMMAND test_platform_win32_runtime)
         set_tests_properties(test_platform_win32_runtime PROPERTIES LABELS platform_runtime)
+    endif()
+
+    if(ENGINE_PLATFORM STREQUAL "macos")
+        add_executable(test_platform_cocoa_runtime tests/test_platform_cocoa_runtime.c)
+        target_include_directories(test_platform_cocoa_runtime PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m)
+        add_test(NAME test_platform_cocoa_runtime COMMAND test_platform_cocoa_runtime)
+        set_tests_properties(test_platform_cocoa_runtime PROPERTIES LABELS platform_runtime)
     endif()
 
     add_executable(test_imgui_compat tests/test_imgui_compat.c
@@ -1068,12 +1213,14 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_myui_window_manager COMMAND test_myui_window_manager)
 
     add_executable(test_myui_break_pal tests/test_myui_break_pal.c
-        src/myui/mypal/break/my_pal_break.c)
+        src/myui/mypal/break/my_pal_break.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
     target_include_directories(test_myui_break_pal PRIVATE
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     )
-    target_link_libraries(test_myui_break_pal PRIVATE myui_core engine m)
+    target_link_libraries(test_myui_break_pal PRIVATE myui_core engine m
+        Threads::Threads)
     add_test(NAME test_myui_break_pal COMMAND test_myui_break_pal)
 
     add_executable(test_myui_font tests/test_myui_font.c)
@@ -1081,10 +1228,11 @@ if(ENGINE_BUILD_TESTS)
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     )
-    target_link_libraries(test_myui_font PRIVATE myui_core m)
+    target_link_libraries(test_myui_font PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_font COMMAND test_myui_font)
 
-    add_executable(test_myui_mvvm tests/test_myui_mvvm.c)
+    add_executable(test_myui_mvvm tests/test_myui_mvvm.c
+        src/myui/mypal/dummy/my_pal_dummy.c)
     target_include_directories(test_myui_mvvm PRIVATE
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
@@ -1098,11 +1246,12 @@ if(ENGINE_BUILD_TESTS)
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     )
-    target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m)
+    target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
         src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
+    target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_LINUX=1)
@@ -1111,8 +1260,39 @@ if(ENGINE_BUILD_TESTS)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_MACOS=1)
     endif()
-    if(ENGINE_PLATFORM STREQUAL "windows")
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_include_directories(test_rhi_capabilities PRIVATE
+            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        if(ENGINE_ENABLE_WAYLAND)
+            target_compile_definitions(test_rhi_capabilities PRIVATE
+                ENGINE_PLATFORM_WAYLAND=1)
+        endif()
+        if(ENGINE_VULKAN)
+            target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_VULKAN=1)
+        endif()
+        if(ENGINE_ENABLE_WAYLAND)
+            if(ENGINE_VULKAN)
+                target_link_libraries(test_rhi_capabilities PRIVATE
+                    ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
+                    ${SHADERC_LIB} dl pthread)
+            else()
+                target_link_libraries(test_rhi_capabilities PRIVATE
+                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+            endif()
+        elseif(ENGINE_VULKAN)
+            target_link_libraries(test_rhi_capabilities PRIVATE
+                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
+                ${SHADERC_LIB} dl pthread)
+        else()
+            target_link_libraries(test_rhi_capabilities PRIVATE
+                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
+        endif()
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_rhi_capabilities PRIVATE glad opengl32)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_link_libraries(test_rhi_capabilities PRIVATE
+            ${Vulkan_LIBRARIES} ${SHADERC_LIB}
+            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     endif()
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         target_compile_options(test_rhi_capabilities PRIVATE
@@ -1137,13 +1317,24 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_myui_css PRIVATE myui_core m)
     add_test(NAME test_myui_css COMMAND test_myui_css)
 
-    add_executable(test_myui_loader tests/test_myui_loader.c)
-    target_include_directories(test_myui_loader PRIVATE
-        ${TEST_INCLUDE_DIRS}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-    )
-    target_link_libraries(test_myui_loader PRIVATE myui_core m)
-    add_test(NAME test_myui_loader COMMAND test_myui_loader)
+    if(MYUI_UI_YAML)
+        add_executable(test_myui_loader tests/test_myui_loader.c
+            src/myui/mypal/dummy/my_pal_dummy.c)
+        target_include_directories(test_myui_loader PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+        )
+        target_link_libraries(test_myui_loader PRIVATE myui_core m)
+        add_test(NAME test_myui_loader COMMAND test_myui_loader)
+    else()
+        add_executable(test_myui_loader_disabled tests/test_myui_loader_disabled.c)
+        target_include_directories(test_myui_loader_disabled PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+        )
+        target_link_libraries(test_myui_loader_disabled PRIVATE myui_core m)
+        add_test(NAME test_myui_loader_disabled COMMAND test_myui_loader_disabled)
+    endif()
 
     add_executable(test_myui_text_layout tests/test_myui_text_layout.c)
     target_include_directories(test_myui_text_layout PRIVATE
@@ -1152,11 +1343,89 @@ if(ENGINE_BUILD_TESTS)
     )
     target_link_libraries(test_myui_text_layout PRIVATE myui_core m)
     add_test(NAME test_myui_text_layout COMMAND test_myui_text_layout)
+
+    add_executable(test_myui_metrics tests/test_myui_metrics.c)
+    target_include_directories(test_myui_metrics PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_metrics PRIVATE myui_core m)
+    add_test(NAME test_myui_metrics COMMAND test_myui_metrics)
+
+    add_executable(test_myui_syntax tests/test_myui_syntax.c)
+    target_include_directories(test_myui_syntax PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_syntax PRIVATE myui_core m)
+    add_test(NAME test_myui_syntax COMMAND test_myui_syntax)
+    add_test(NAME verify_myui_line_break_valid
+        COMMAND verify_myui_line_break
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_line_break_verifier_valid.txt)
+    add_test(NAME verify_myui_line_break_rejects_mismatch
+        COMMAND verify_myui_line_break
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_line_break_verifier_invalid.txt)
+    set_tests_properties(verify_myui_line_break_rejects_mismatch
+        PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME verify_myui_line_break_rejects_malformed
+        COMMAND verify_myui_line_break
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_line_break_verifier_malformed.txt)
+    set_tests_properties(verify_myui_line_break_rejects_malformed
+        PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME verify_myui_sa_dictionary_valid
+        COMMAND verify_myui_sa_dictionary
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_valid.yaml)
+    add_test(NAME verify_myui_sa_dictionary_rejects_invalid
+        COMMAND verify_myui_sa_dictionary
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_invalid.yaml)
+    set_tests_properties(verify_myui_sa_dictionary_rejects_invalid
+        PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME verify_myui_sa_dictionary_rejects_invalid_scalar
+        COMMAND verify_myui_sa_dictionary
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_rejects_invalid_scalar.yaml)
+    set_tests_properties(verify_myui_sa_dictionary_rejects_invalid_scalar
+        PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME verify_myui_sa_dictionary_rejects_invalid_locale
+        COMMAND verify_myui_sa_dictionary
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_rejects_invalid_locale.yaml)
+    set_tests_properties(verify_myui_sa_dictionary_rejects_invalid_locale
+        PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME verify_myui_sa_dictionary_rejects_mismatch
+        COMMAND verify_myui_sa_dictionary
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_rejects_mismatch.yaml)
+    set_tests_properties(verify_myui_sa_dictionary_rejects_mismatch
+        PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME verify_myui_sa_dictionary_rejects_malformed
+        COMMAND verify_myui_sa_dictionary
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/myui_sa_dictionary_rejects_malformed.yaml)
+    set_tests_properties(verify_myui_sa_dictionary_rejects_malformed
+        PROPERTIES WILL_FAIL TRUE)
+
     add_test(NAME test_myr_dependency_config
         COMMAND ${CMAKE_COMMAND}
             -DMYR_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/CMakeLists.txt
             -DMYUI_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myui/CMakeLists.txt
+            -DMYC_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myc/CMakeLists.txt
+            -DMYMVVM_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/mymvvm/CMakeLists.txt
+            -DMYMVVM_UI_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/mymvvm_myui/CMakeLists.txt
+            -DMYPAL_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/mypal/CMakeLists.txt
+            -DMYR_VULKAN_C=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/my_vgcanvas_vulkan.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
+    add_test(NAME test_myui_subproject_config
+        COMMAND ${CMAKE_COMMAND}
+            -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
+    find_program(MYUI_GLSLANG_VALIDATOR glslangValidator)
+    if(MYUI_GLSLANG_VALIDATOR)
+        add_test(NAME test_myui_vulkan_shader_generator
+            COMMAND ${CMAKE_COMMAND}
+                -DCMAKE_BIN=${CMAKE_COMMAND}
+                -DGLSLANG_VALIDATOR=${MYUI_GLSLANG_VALIDATOR}
+                -DGENERATOR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/vulkan_shaders/generate_includes.cmake
+                -DSHADER_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/vulkan_shaders
+                -DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/myui-vulkan-generator-test
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_vulkan_shader_generator.cmake)
+    endif()
     add_test(NAME test_redis_dependency_config
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_LIST_FILE}

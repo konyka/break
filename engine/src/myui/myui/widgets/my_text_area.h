@@ -10,7 +10,9 @@
  * the PAL clipboard (newlines preserved). Scrolls to keep the cursor
  * visible. Optional word wrap (M10b): a visual-line cache maps each
  * physical line to width-limited segments; shaping-aware greedy wrapping
- * uses the UAX#14 subset and never splits a shaping cluster. Undo/redo is supported
+ * uses the UAX#14 subset and never splits a shaping cluster. Single-line edits
+ * rewrap only the changed physical line when safe; structural edits use the
+ * transactional dirty-suffix paragraph path. Undo/redo is supported
  * through the private or shared undo manager. Optional physical line numbers
  * and physically ordered folding ranges (including strict containment nesting)
  * are supported.
@@ -35,6 +37,20 @@ typedef struct my_visual_line_t {
   size_t len_cp;   /**< visual line length in codepoints */
 } my_visual_line_t;
 
+#define MY_TEXT_AREA_RTL_CACHE_CAPACITY 4u
+
+typedef struct my_text_area_rtl_cache_entry_t {
+  my_text_layout_t* layout;
+  size_t phys;
+  size_t start_byte;
+  size_t len_bytes;
+  uint64_t text_revision;
+  uint64_t shaping_revision;
+  my_font_t* font;
+  int32_t font_size;
+  uint64_t last_used;
+} my_text_area_rtl_cache_entry_t;
+
 /** @brief Multi-line text area (IS-A widget). */
 typedef struct my_text_area_t {
   my_widget_t base;
@@ -51,6 +67,10 @@ typedef struct my_text_area_t {
   my_darray_t* vlines;      /**< my_visual_line_t* (wrap on only) */
   bool vlines_dirty;        /**< vlines need a rebuild */
   size_t vlines_dirty_from; /**< first physical row requiring rebuild */
+  bool vlines_reuse_suffix;
+  size_t vlines_reuse_old_line_index;
+  size_t vlines_reuse_old_phys;
+  size_t vlines_reuse_new_phys;
   size_t* vline_first_by_phys; /**< first visual index for each visible row */
   size_t* vline_last_by_phys;  /**< last visual index for each visible row */
   size_t vline_index_count;    /**< physical-row count covered by the maps */
@@ -60,6 +80,10 @@ typedef struct my_text_area_t {
   size_t anchor_row;        /**< selection anchor (== cursor = no sel) */
   size_t anchor_col;
   size_t goal_col;          /**< target col for vertical moves */
+  size_t navigation_visual_index; /**< last visual line used by arrow navigation */
+  size_t navigation_row;
+  size_t navigation_col;
+  bool navigation_valid;
   int32_t scroll_x;
   int32_t scroll_y;
   struct my_undo_stack_t* undo; /**< user-edit history (M10a) */
@@ -69,7 +93,8 @@ typedef struct my_text_area_t {
   size_t max_len;           /**< codepoints cap, 0 = unlimited */
   bool readonly;
   char* hint;               /**< owned, shown when empty and unfocused */
-  my_widget_t* scroll_bar;     /**< weak; linked scroll_bar (M9c) */
+  my_widget_t* scroll_bar;     /**< owned link reference (M9c) */
+  uint32_t scroll_bar_listener_id;
   bool focused;
   bool cursor_visible;
   uint32_t blink_timer_id;
@@ -92,14 +117,16 @@ typedef struct my_text_area_t {
   char* paint_text;
   size_t paint_text_cap;
   size_t paint_text_len;
-  my_text_layout_t* paint_layout;
-  char* rtl_text;
-  size_t rtl_text_len;
+  my_text_area_rtl_cache_entry_t
+      rtl_cache[MY_TEXT_AREA_RTL_CACHE_CAPACITY];
+  uint64_t rtl_cache_tick;
+  /* Compatibility mirror for callers that inspect the most recent layout. */
   my_text_layout_t* rtl_layout;
   size_t rtl_phys;
   size_t rtl_start_byte;
   size_t rtl_len_bytes;
   uint64_t rtl_revision;
+  uint64_t rtl_shaping_revision;
   my_font_t* rtl_font;
   int32_t rtl_font_size;
   uint64_t text_revision;
@@ -114,6 +141,7 @@ typedef struct my_text_area_t {
 } my_text_area_t;
 
 my_widget_t* my_text_area_create(const my_allocator_t* allocator);
+bool my_text_area_is_instance(const my_widget_t* widget);
 
 /** @brief Replace the whole text (cursor to end, no "changed" emit). */
 my_ret_t my_text_area_set_text(my_widget_t* area, const char* text);
@@ -199,7 +227,8 @@ bool my_text_area_syntax_line_ready(const my_widget_t* area, size_t row);
 /** @brief Visual line count (wrap on; 0 when off). */
 size_t my_text_area_visual_line_count(my_widget_t* area);
 
-/** @brief Visual line by index (wrap off = physical line view). */
+/** @brief Visual line by index (wrap off = physical line view).
+ * Returns NULL when `index` is outside the current visual-line count. */
 const my_visual_line_t* my_text_area_visual_line_at(my_widget_t* area,
                                                     size_t index);
 
@@ -207,7 +236,9 @@ const my_visual_line_t* my_text_area_visual_line_at(my_widget_t* area,
 size_t my_text_area_visual_line_of_pos(my_widget_t* area, size_t row,
                                        size_t col, size_t* col_in_v);
 
-/** @brief Link a scroll_bar (weak): synced with scroll_y/content height. */
+/** @brief Link a scroll_bar (owned link reference): synced with scroll_y/content height.
+ * Rebinding is idempotent and destruction removes the active listener and
+ * link reference. */
 my_ret_t my_text_area_set_scroll_bar(my_widget_t* area, my_widget_t* bar);
 
 #endif /* MY_TEXT_AREA_H */

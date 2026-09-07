@@ -36,9 +36,85 @@ static const my_widget_vtable_t s_dialog_content_vtable = {
 
 static void dialog_report(my_dialog_t* dlg, int32_t result) {
   my_dialog_result_cb cb = dlg->on_result;
+  void* cb_ctx = dlg->cb_ctx;
+  my_emitter_context_lease_t* cb_lease = dlg->cb_lease;
+  my_dialog_context_destroy_fn destroy_ctx = dlg->cb_destroy;
+  bool owns_context = dlg->cb_owns_context;
   dlg->on_result = NULL; /* one-shot: guard against re-entry */
-  if (cb != NULL) {
-    cb(dlg->cb_ctx, result);
+  dlg->cb_ctx = NULL;
+  dlg->cb_lease = NULL;
+  dlg->cb_destroy = NULL;
+  dlg->cb_owns_context = false;
+  if (cb != NULL &&
+      (cb_lease == NULL || my_emitter_context_lease_is_valid(cb_lease))) {
+    if (cb_lease != NULL) {
+      cb_ctx = my_emitter_context_lease_context(cb_lease);
+    }
+    cb(cb_ctx, result);
+  }
+  if (owns_context && destroy_ctx != NULL) {
+    destroy_ctx(cb_ctx);
+  }
+  my_emitter_context_lease_unref(cb_lease);
+}
+
+static void dialog_release_callback_context(my_dialog_t* dlg) {
+  my_dialog_context_destroy_fn destroy_ctx;
+  void* cb_ctx;
+  my_emitter_context_lease_t* cb_lease;
+  bool owns_context;
+  if (dlg == NULL) {
+    return;
+  }
+  destroy_ctx = dlg->cb_destroy;
+  cb_ctx = dlg->cb_ctx;
+  cb_lease = dlg->cb_lease;
+  owns_context = dlg->cb_owns_context;
+  dlg->cb_destroy = NULL;
+  dlg->cb_ctx = NULL;
+  dlg->cb_lease = NULL;
+  dlg->cb_owns_context = false;
+  if (owns_context && destroy_ctx != NULL) {
+    destroy_ctx(cb_ctx);
+  }
+  my_emitter_context_lease_unref(cb_lease);
+}
+
+static void dialog_on_manager_destroy(void* ctx) {
+  my_dialog_t* dlg = (my_dialog_t*)ctx;
+  if (dlg == NULL) {
+    return;
+  }
+  dlg->wm = NULL;
+  dlg->wm_destroy_listener_id = 0;
+  dialog_release_callback_context(dlg);
+  dlg->on_result = NULL;
+  dlg->cb_ctx = NULL;
+  dlg->cb_destroy = NULL;
+  dlg->cb_owns_context = false;
+}
+
+static void dialog_on_window_close(void* ctx) {
+  my_dialog_t* dlg = (my_dialog_t*)ctx;
+  my_window_manager_t* wm;
+  if (dlg == NULL) {
+    return;
+  }
+  wm = dlg->wm;
+  if (wm != NULL && dlg->wm_destroy_listener_id != 0) {
+    (void)my_window_manager_remove_destroy_listener(
+        wm, dlg->wm_destroy_listener_id);
+  }
+  dlg->window_close_listener_id = 0;
+  dlg->wm = NULL;
+  dlg->wm_destroy_listener_id = 0;
+  if (dlg->win != NULL) {
+    dlg->win->modal = false;
+  }
+  if (!dlg->closing) {
+    dlg->on_result = NULL;
+    dialog_release_callback_context(dlg);
+    dlg->cb_ctx = NULL;
   }
 }
 
@@ -58,6 +134,11 @@ static void dialog_close_now(my_dialog_t* dlg, int32_t result) {
       /* dlg->win stays valid (creator's ref): my_dialog_destroy() drops it,
      * which finally destroys the window and its PAL window. NULL-ing it
      * here leaked the window (ghost surface on wayland). */
+    if (dlg->wm_destroy_listener_id != 0) {
+      (void)my_window_manager_remove_destroy_listener(
+          wm, dlg->wm_destroy_listener_id);
+      dlg->wm_destroy_listener_id = 0;
+    }
   }
   dlg->wm = NULL;
   dialog_report(dlg, result);
@@ -175,17 +256,36 @@ my_ret_t my_dialog_add_button(my_dialog_t* dlg, const char* text,
   return MY_RET_OK;
 }
 
-my_ret_t my_dialog_open(my_dialog_t* dlg, my_window_manager_t* wm,
-                        my_dialog_result_cb cb, void* ctx) {
+static my_ret_t dialog_open_with_callback(
+    my_dialog_t* dlg, my_window_manager_t* wm, my_dialog_result_cb cb,
+    void* ctx, my_dialog_context_destroy_fn destroy_ctx,
+    my_emitter_context_lease_t* lease) {
   my_window_t* below;
+  my_emitter_context_lease_t* callback_lease = NULL;
   int32_t pw = 0, ph = 0;
-  if (dlg == NULL || wm == NULL) {
+  if (dlg == NULL || wm == NULL || dlg->win == NULL || dlg->wm != NULL ||
+      (lease != NULL && !my_emitter_context_lease_is_valid(lease))) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (lease != NULL) {
+    callback_lease = my_emitter_context_lease_ref(lease);
+    if (callback_lease == NULL) {
+      return MY_RET_OOM;
+    }
+  }
+  dlg->cb_lease = callback_lease;
+  dlg->wm_destroy_listener_id = my_window_manager_add_destroy_listener(
+      wm, dialog_on_manager_destroy, dlg);
+  if (dlg->wm_destroy_listener_id == 0) {
+    dialog_release_callback_context(dlg);
+    return MY_RET_OOM;
   }
   dlg->wm = wm;
   dlg->closing = false;
   dlg->on_result = cb;
   dlg->cb_ctx = ctx;
+  dlg->cb_destroy = destroy_ctx;
+  dlg->cb_owns_context = false;
   below = my_window_manager_top(wm);
   if (below != NULL) {
     below->scrim = true;
@@ -199,7 +299,72 @@ my_ret_t my_dialog_open(my_dialog_t* dlg, my_window_manager_t* wm,
   dlg->win->modal = true;
   /* ESC lands on the content container even without a focused button */
   my_event_dispatcher_set_focus(&dlg->win->dispatcher, dlg->content);
-  return my_window_manager_open(wm, dlg->win);
+  {
+    my_ret_t ret = my_window_manager_open(wm, dlg->win);
+    if (ret != MY_RET_OK) {
+      (void)my_window_manager_remove_destroy_listener(
+          wm, dlg->wm_destroy_listener_id);
+      dlg->wm_destroy_listener_id = 0;
+      if (below != NULL) {
+        below->scrim = false;
+        my_widget_invalidate((my_widget_t*)below, NULL);
+      }
+      dlg->wm = NULL;
+      dlg->on_result = NULL;
+      dlg->cb_ctx = NULL;
+      dialog_release_callback_context(dlg);
+      dlg->cb_destroy = NULL;
+      dlg->closing = false;
+      dlg->win->modal = false;
+    } else {
+      dlg->window_close_listener_id = my_window_add_close_listener(
+          dlg->win, dialog_on_window_close, dlg);
+      if (dlg->window_close_listener_id == 0) {
+        my_window_manager_close(wm, dlg->win);
+        (void)my_window_manager_remove_destroy_listener(
+            wm, dlg->wm_destroy_listener_id);
+        dlg->wm_destroy_listener_id = 0;
+        dlg->wm = NULL;
+        dlg->on_result = NULL;
+        dlg->cb_ctx = NULL;
+        dialog_release_callback_context(dlg);
+        dlg->cb_destroy = NULL;
+        dlg->closing = false;
+        dlg->win->modal = false;
+        if (below != NULL) {
+          below->scrim = false;
+          my_widget_invalidate((my_widget_t*)below, NULL);
+        }
+        return MY_RET_OOM;
+      }
+    }
+    if (ret == MY_RET_OK && destroy_ctx != NULL) {
+      dlg->cb_owns_context = true;
+    }
+    return ret;
+  }
+}
+
+my_ret_t my_dialog_open(my_dialog_t* dlg, my_window_manager_t* wm,
+                        my_dialog_result_cb cb, void* ctx) {
+  return dialog_open_with_callback(dlg, wm, cb, ctx, NULL, NULL);
+}
+
+my_ret_t my_dialog_open_owned(my_dialog_t* dlg, my_window_manager_t* wm,
+                              my_dialog_result_cb cb, void* ctx,
+                              my_dialog_context_destroy_fn destroy_ctx) {
+  return dialog_open_with_callback(dlg, wm, cb, ctx, destroy_ctx, NULL);
+}
+
+my_ret_t my_dialog_open_lease(my_dialog_t* dlg, my_window_manager_t* wm,
+                              my_dialog_result_cb cb,
+                              my_emitter_context_lease_t* lease) {
+  if (lease == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  return dialog_open_with_callback(dlg, wm, cb,
+                                   my_emitter_context_lease_context(lease),
+                                   NULL, lease);
 }
 
 void my_dialog_destroy(my_dialog_t* dlg) {
@@ -207,6 +372,17 @@ void my_dialog_destroy(my_dialog_t* dlg) {
   size_t i, n;
   if (dlg == NULL) {
     return;
+  }
+  dialog_release_callback_context(dlg);
+  if (dlg->wm != NULL && dlg->wm_destroy_listener_id != 0) {
+    (void)my_window_manager_remove_destroy_listener(
+        dlg->wm, dlg->wm_destroy_listener_id);
+    dlg->wm_destroy_listener_id = 0;
+  }
+  if (dlg->win != NULL && dlg->window_close_listener_id != 0) {
+    (void)my_window_remove_close_listener(dlg->win,
+                                          dlg->window_close_listener_id);
+    dlg->window_close_listener_id = 0;
   }
   n = my_darray_size(st->btn_ctxs);
   for (i = 0; i < n; i++) {

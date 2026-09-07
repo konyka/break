@@ -29,7 +29,14 @@ static my_ret_t my_darray_reserve(my_darray_t* arr, size_t capacity) {
   void** items;
   size_t new_capacity = arr->capacity > 0 ? arr->capacity : MY_DARRAY_DEFAULT_CAPACITY;
   while (new_capacity < capacity) {
+    if (new_capacity > SIZE_MAX / 2u) {
+      new_capacity = capacity;
+      break;
+    }
     new_capacity *= 2;
+  }
+  if (new_capacity > SIZE_MAX / sizeof(void*)) {
+    return MY_RET_OOM;
   }
   items = (void**)my_mem_realloc(arr->allocator, arr->items,
                                  new_capacity * sizeof(void*));
@@ -44,6 +51,9 @@ static my_ret_t my_darray_reserve(my_darray_t* arr, size_t capacity) {
 my_ret_t my_darray_push(my_darray_t* arr, void* item) {
   if (arr == NULL) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (arr->size == SIZE_MAX) {
+    return MY_RET_OOM;
   }
   if (arr->size >= arr->capacity) {
     my_ret_t ret = my_darray_reserve(arr, arr->size + 1);
@@ -66,7 +76,7 @@ my_ret_t my_darray_remove_at(my_darray_t* arr, size_t index) {
   if (arr == NULL || index >= arr->size) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (index + 1 < arr->size) {
+  if (index < arr->size - 1u) {
     memmove(arr->items + index, arr->items + index + 1,
             (arr->size - index - 1) * sizeof(void*));
   }

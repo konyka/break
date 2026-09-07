@@ -1,0 +1,2 @@
+# The first boundary is intentionally wrong: AL x AL is not breakable.
+× 0041 ÷ 0042 ÷

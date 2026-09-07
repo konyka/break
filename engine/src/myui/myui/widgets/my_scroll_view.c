@@ -12,10 +12,18 @@
 struct my_scroll_view_t {
   my_widget_t base;
   my_widget_t* content;    /**< weak (the tree owns it) */
-  my_widget_t* scroll_bar; /**< weak, external sibling */
+  my_widget_t* scroll_bar; /**< owned link reference, external sibling */
+  uint32_t scroll_bar_listener_id;
   int32_t offset;
   int32_t content_h;       /**< explicit height, 0 = auto */
 };
+
+static const my_widget_vtable_t s_sv_vtable;
+
+bool my_scroll_view_is_instance(const my_scroll_view_t* sv) {
+  const my_widget_t* widget = (const my_widget_t*)sv;
+  return widget != NULL && widget->vtable == &s_sv_vtable;
+}
 
 static int32_t sv_content_height(my_scroll_view_t* sv) {
   int32_t m;
@@ -64,7 +72,7 @@ static void sv_layout_content(my_scroll_view_t* sv) {
 
 void my_scroll_view_set_offset(my_scroll_view_t* sv, int32_t offset) {
   int32_t max;
-  if (sv == NULL) {
+  if (!my_scroll_view_is_instance(sv)) {
     return;
   }
   max = sv_max_offset(sv);
@@ -82,11 +90,11 @@ void my_scroll_view_set_offset(my_scroll_view_t* sv, int32_t offset) {
 }
 
 int32_t my_scroll_view_get_offset(my_scroll_view_t* sv) {
-  return sv != NULL ? sv->offset : 0;
+  return my_scroll_view_is_instance(sv) ? sv->offset : 0;
 }
 
 void my_scroll_view_set_content_height(my_scroll_view_t* sv, int32_t height) {
-  if (sv == NULL) {
+  if (!my_scroll_view_is_instance(sv)) {
     return;
   }
   sv->content_h = height > 0 ? height : 0;
@@ -124,6 +132,17 @@ static void sv_on_layout(my_widget_t* widget) {
 static const my_widget_vtable_t s_sv_vtable = {NULL, sv_on_event, sv_on_layout,
                                                sv_on_measure};
 
+static void sv_destroy_chain(my_object_t* obj);
+
+static void sv_child_removed(my_widget_t* parent, my_widget_t* child) {
+  my_scroll_view_t* sv = (my_scroll_view_t*)parent;
+  if (sv->content == child) {
+    sv->content = NULL;
+    sv->offset = 0;
+    sv_sync_bar(sv);
+  }
+}
+
 my_scroll_view_t* my_scroll_view_create(const my_allocator_t* allocator) {
   my_scroll_view_t* sv =
       (my_scroll_view_t*)my_mem_calloc(allocator, 1, sizeof(my_scroll_view_t));
@@ -135,6 +154,8 @@ my_scroll_view_t* my_scroll_view_create(const my_allocator_t* allocator) {
     my_mem_free(allocator, sv);
     return NULL;
   }
+  ((my_object_t*)sv)->destroy = sv_destroy_chain;
+  ((my_widget_t*)sv)->child_removed_hook = sv_child_removed;
   return sv;
 }
 
@@ -142,16 +163,20 @@ my_ret_t my_scroll_view_set_content(my_scroll_view_t* sv,
                                     my_widget_t* content) {
   my_widget_t* w = (my_widget_t*)sv;
   my_ret_t ret;
-  if (sv == NULL || content == NULL) {
+  if (!my_scroll_view_is_instance(sv) || content == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (sv->content != NULL) {
-    my_widget_remove_child(w, sv->content);
-    sv->content = NULL;
+  if (content == sv->content) {
+    sv_layout_content(sv);
+    sv_sync_bar(sv);
+    return MY_RET_OK;
   }
   ret = my_widget_add_child(w, content);
   if (ret != MY_RET_OK) {
     return ret;
+  }
+  if (sv->content != NULL) {
+    (void)my_widget_remove_child(w, sv->content);
   }
   sv->content = content;
   sv->offset = 0;
@@ -161,11 +186,11 @@ my_ret_t my_scroll_view_set_content(my_scroll_view_t* sv,
 }
 
 my_widget_t* my_scroll_view_get_content(my_scroll_view_t* sv) {
-  return sv != NULL ? sv->content : NULL;
+  return my_scroll_view_is_instance(sv) ? sv->content : NULL;
 }
 
 my_widget_t* my_scroll_view_widget(my_scroll_view_t* sv) {
-  return (my_widget_t*)sv; /* IS-A widget; NULL-safe like any cast */
+  return my_scroll_view_is_instance(sv) ? (my_widget_t*)sv : NULL;
 }
 
 /** @brief scroll_bar "changed" -> offset. */
@@ -181,13 +206,48 @@ static void sv_on_bar_changed(void* ctx, const char* event, void* data) {
 
 my_ret_t my_scroll_view_set_scroll_bar(my_scroll_view_t* sv,
                                        my_widget_t* bar) {
-  if (sv == NULL) {
+  uint32_t listener_id;
+  if (!my_scroll_view_is_instance(sv)) {
     return MY_RET_INVALID_PARAMS;
   }
-  sv->scroll_bar = bar;
-  if (bar != NULL) {
-    my_widget_on(bar, "changed", sv_on_bar_changed, sv);
-    sv_sync_bar(sv);
+  if (bar != NULL && !my_scroll_bar_is_instance(bar)) {
+    return MY_RET_INVALID_PARAMS;
   }
+  if (bar == sv->scroll_bar) {
+    sv_sync_bar(sv);
+    return MY_RET_OK;
+  }
+  if (bar != NULL) {
+    listener_id = my_widget_on(bar, "changed", sv_on_bar_changed, sv);
+    if (listener_id == 0u) return MY_RET_OOM;
+  } else {
+    listener_id = 0u;
+  }
+  if (sv->scroll_bar != NULL && sv->scroll_bar_listener_id != 0u) {
+    (void)my_widget_off(sv->scroll_bar, sv->scroll_bar_listener_id);
+  }
+  if (sv->scroll_bar != NULL) {
+    my_widget_unref(sv->scroll_bar);
+  }
+  sv->scroll_bar = bar;
+  sv->scroll_bar_listener_id = listener_id;
+  if (sv->scroll_bar != NULL) {
+    my_widget_ref(sv->scroll_bar);
+  }
+  sv_sync_bar(sv);
   return MY_RET_OK;
+}
+
+static void sv_destroy_chain(my_object_t* obj) {
+  my_scroll_view_t* sv = (my_scroll_view_t*)obj;
+  if (sv->scroll_bar != NULL && sv->scroll_bar_listener_id != 0u) {
+    (void)my_widget_off(sv->scroll_bar, sv->scroll_bar_listener_id);
+    sv->scroll_bar_listener_id = 0u;
+  }
+  if (sv->scroll_bar != NULL) {
+    my_widget_unref(sv->scroll_bar);
+    sv->scroll_bar = NULL;
+  }
+  my_widget_destroy((my_widget_t*)sv);
+  my_object_destroy(obj);
 }

@@ -17,6 +17,12 @@
 
 typedef struct BreakUI BreakUI;
 
+/** @brief Whether a public BreakUI size fits myui's signed rectangle ABI. */
+static inline bool break_ui_dimensions_fit_myui(u32 width, u32 height) {
+  return width != 0u && height != 0u && width <= (u32)INT32_MAX &&
+         height <= (u32)INT32_MAX;
+}
+
 struct my_window_t;
 struct my_font_source_t;
 struct my_pal_t;
@@ -34,6 +40,14 @@ bool break_ui_init_with_fonts(BreakUI *ui, Platform *platform,
 void break_ui_shutdown(BreakUI *ui);
 void break_ui_destroy(BreakUI *ui);
 void break_ui_pump(BreakUI *ui);
+/* Apply CSS media changes reported by the platform event loop. */
+void break_ui_refresh_media(BreakUI *ui);
+/* Begin a frame after damage collection. A NULL result with out_skip=true is
+ * an intentional no-op; otherwise callers must use the returned command.
+ * A successful command also opens the optional MyUI metrics owner frame;
+ * break_ui_render() commits it or discards it on any render failure. */
+RHICmdBuffer *break_ui_frame_begin(BreakUI *ui, u32 width, u32 height,
+                                   bool *out_skip, bool *out_partial);
 void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height);
 bool break_ui_get_present_damage(BreakUI *ui, u32 width, u32 height,
                                  RHIPresentRect *rects, u32 capacity,

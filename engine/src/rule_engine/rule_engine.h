@@ -554,6 +554,9 @@ void re_value_destroy(re_value_handle_t *value);
 re_status_t re_facts_begin(re_facts_t *facts, re_fact_txn_t **out_transaction);
 re_status_t re_facts_commit(re_fact_txn_t *transaction);
 void re_facts_rollback(re_fact_txn_t *transaction);
+/* Releases an inactive transaction handle. The handle remains a safe
+ * tombstone after commit/rollback until this function is called. */
+void re_facts_txn_destroy(re_fact_txn_t *transaction);
 re_status_t re_facts_txn_set(re_fact_txn_t *transaction, re_string_t name,
                              const re_value_t *value);
 re_status_t re_facts_txn_insert(re_fact_txn_t *transaction, re_string_t name,
@@ -1156,6 +1159,8 @@ re_status_t re_engine_set_state_provider_v1(
     re_engine_t *engine, const re_state_provider_options_t *options,
     const re_state_provider_descriptor_t *descriptor,
     re_state_provider_t **out_provider);
+/* Copies the provider's most recent diagnostic error. Successful operations
+ * and RE_STATUS_NOT_FOUND do not clear a previously recorded error. */
 re_status_t re_state_provider_last_error(
     const re_state_provider_t *provider, re_provider_error_info_t *out_error);
 re_status_t re_state_provider_get(re_state_provider_t *provider,

@@ -1194,7 +1194,8 @@ static stbtt__buf stbtt__cff_get_index(stbtt__buf *b)
    count = stbtt__buf_get16(b);
    if (count) {
       offsize = stbtt__buf_get8(b);
-      STBTT_assert(offsize >= 1 && offsize <= 4);
+      if (offsize < 1 || offsize > 4)
+         return stbtt__new_buf(NULL, 0);
       stbtt__buf_skip(b, offsize * count);
       stbtt__buf_skip(b, stbtt__buf_get(b, offsize) - 1);
    }
@@ -1262,9 +1263,11 @@ static stbtt__buf stbtt__cff_index_get(stbtt__buf b, int i)
    int count, offsize, start, end;
    stbtt__buf_seek(&b, 0);
    count = stbtt__buf_get16(&b);
+   if (i < 0 || i >= count)
+      return stbtt__new_buf(NULL, 0);
    offsize = stbtt__buf_get8(&b);
-   STBTT_assert(i >= 0 && i < count);
-   STBTT_assert(offsize >= 1 && offsize <= 4);
+   if (offsize < 1 || offsize > 4)
+      return stbtt__new_buf(NULL, 0);
    stbtt__buf_skip(&b, i*offsize);
    start = stbtt__buf_get(&b, offsize);
    end = stbtt__buf_get(&b, offsize);
@@ -1312,6 +1315,19 @@ static stbtt_uint32 stbtt__find_table(stbtt_uint8 *data, stbtt_uint32 fontstart,
       stbtt_uint32 loc = tabledir + 16*i;
       if (stbtt_tag(data+loc+0, tag))
          return ttULONG(data+loc+8);
+   }
+   return 0;
+}
+
+static stbtt_uint32 stbtt__find_table_size(stbtt_uint8 *data, stbtt_uint32 fontstart, const char *tag)
+{
+   stbtt_int32 num_tables = ttUSHORT(data+fontstart+4);
+   stbtt_uint32 tabledir = fontstart + 12;
+   stbtt_int32 i;
+   for (i=0; i < num_tables; ++i) {
+      stbtt_uint32 loc = tabledir + 16*i;
+      if (stbtt_tag(data+loc+0, tag))
+         return ttULONG(data+loc+12);
    }
    return 0;
 }
@@ -1407,16 +1423,16 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
       // initialization for CFF / Type2 fonts (OTF)
       stbtt__buf b, topdict, topdictidx;
       stbtt_uint32 cstype = 2, charstrings = 0, fdarrayoff = 0, fdselectoff = 0;
-      stbtt_uint32 cff;
+      stbtt_uint32 cff, cff_size, maxp;
 
       cff = stbtt__find_table(data, fontstart, "CFF ");
-      if (!cff) return 0;
+      cff_size = stbtt__find_table_size(data, fontstart, "CFF ");
+      if (!cff || !cff_size) return 0;
 
       info->fontdicts = stbtt__new_buf(NULL, 0);
       info->fdselect = stbtt__new_buf(NULL, 0);
 
-      // @TODO this should use size from table (not 512MB)
-      info->cff = stbtt__new_buf(data+cff, 512*1024*1024);
+      info->cff = stbtt__new_buf(data+cff, cff_size);
       b = info->cff;
 
       // read the header
@@ -1451,6 +1467,10 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
 
       stbtt__buf_seek(&b, charstrings);
       info->charstrings = stbtt__cff_get_index(&b);
+      maxp = stbtt__find_table(data, fontstart, "maxp");
+      if (!maxp || stbtt__cff_index_count(&info->charstrings) !=
+                       ttUSHORT(data + maxp + 4))
+         return 0;
    }
 
    t = stbtt__find_table(data, fontstart, "maxp");
@@ -2003,7 +2023,9 @@ static stbtt__buf stbtt__cid_get_glyph_subrs(const stbtt_fontinfo *info, int gly
          start = end;
       }
    }
-   if (fdselector == -1) stbtt__new_buf(NULL, 0);
+   if (fdselector < 0 ||
+       fdselector >= stbtt__cff_index_count(&info->fontdicts))
+      return stbtt__new_buf(NULL, 0);
    return stbtt__get_subrs(info->cff, stbtt__cff_index_get(info->fontdicts, fdselector));
 }
 
@@ -2018,6 +2040,9 @@ static int stbtt__run_charstring(const stbtt_fontinfo *info, int glyph_index, st
 #define STBTT__CSERR(s) (0)
 
    // this currently ignores the initial width value, which isn't needed if we have hmtx
+   if (glyph_index < 0 ||
+       glyph_index >= stbtt__cff_index_count(&info->charstrings))
+      return 0;
    b = stbtt__cff_index_get(info->charstrings, glyph_index);
    while (b.cursor < b.size) {
       i = 0;

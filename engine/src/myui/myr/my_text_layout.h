@@ -33,6 +33,23 @@
 #include "myr/my_rect.h"
 
 #define MY_TEXT_LAYOUT_MAX_BYTES (4u * 1024u * 1024u)
+#define MY_TEXT_LAYOUT_SHAPE_CACHE_MAX_GLYPHS 4096u
+#define MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY 4u
+
+typedef struct my_text_layout_shape_cache_entry_t {
+  my_font_shape_glyph_t* glyphs;
+  size_t count;
+  const my_font_t* font;
+  int32_t size;
+  bool params_valid;
+  bool rtl;
+  uint32_t script;
+  char* language;
+  char* features;
+  bool result_rtl;
+  bool used_complex_shaping;
+  uint64_t last_used;
+} my_text_layout_shape_cache_entry_t;
 
 /** @brief One laid-out string (caller-owned copy). */
 typedef struct my_text_layout_t {
@@ -63,6 +80,9 @@ typedef struct my_text_layout_t {
   size_t visual_shaped_span_capacity;
   const my_font_t* visual_shaped_span_font;
   int32_t visual_shaped_span_size;
+  my_text_layout_shape_cache_entry_t
+      shaped_cache[MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY];
+  uint64_t shaped_cache_tick;
 } my_text_layout_t;
 
 /**
@@ -71,6 +91,10 @@ typedef struct my_text_layout_t {
  */
 my_text_layout_t* my_text_layout_process(const my_allocator_t* allocator,
                                          const char* text);
+
+/** @brief Build a layout from an exact, NUL-free UTF-8 byte slice. */
+my_text_layout_t* my_text_layout_process_n(const my_allocator_t* allocator,
+                                           const char* text, size_t byte_len);
 
 /** @brief Destroy a layout returned by my_text_layout_process. */
 void my_text_layout_destroy(my_text_layout_t* layout);
@@ -83,7 +107,7 @@ void my_text_layout_destroy(my_text_layout_t* layout);
  */
 bool my_text_layout_may_need_bidi(const char* text);
 
-/** @brief Bounded bidi pre-scan for a valid UTF-8 byte slice. */
+/** @brief Bounded bidi pre-scan for a UTF-8 byte slice. */
 bool my_text_layout_may_need_bidi_n(const char* text, size_t byte_len);
 
 /** @brief Drop all cached layouts (tests / shutdown). */
@@ -100,6 +124,8 @@ size_t my_text_layout_cache_size(void);
  * then returned in visual order. Glyph clusters are absolute UTF-8 byte
  * offsets in `logical_text`, and each glyph retains its owning face. The
  * result is caller-owned and must be released with my_font_shape_destroy().
+ * The layout retains a bounded glyph-run cache; keep `font` and any face
+ * identities returned by it alive until the layout is destroyed.
  * Returns MY_RET_NOT_SUPPORTED when the selected font has no shaping
  * provider; other failures leave an empty result.
  */

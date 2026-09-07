@@ -25,6 +25,7 @@
     #include <windows.h>
 
     typedef HANDLE              PlatformThread;
+    typedef DWORD               PlatformThreadId;
     typedef CRITICAL_SECTION    PlatformMutex;
     typedef CONDITION_VARIABLE  PlatformCond;
 
@@ -55,11 +56,21 @@
         WaitForSingleObject(t, INFINITE);
         CloseHandle(t);
     }
+    static inline PlatformThreadId platform_thread_current_id(void) {
+        return GetCurrentThreadId();
+    }
+    static inline bool platform_thread_id_equal(PlatformThreadId a,
+                                                PlatformThreadId b) {
+        return a == b;
+    }
+    static inline void platform_thread_yield(void) { SwitchToThread(); }
 #else
     #define PLATFORM_THREAD_POSIX 1
+    #include <sched.h>
     #include <pthread.h>
 
     typedef pthread_t       PlatformThread;
+    typedef pthread_t       PlatformThreadId;
     typedef pthread_mutex_t PlatformMutex;
     typedef pthread_cond_t  PlatformCond;
 
@@ -85,4 +96,12 @@
         return pthread_create(t, NULL, fn, arg) == 0;
     }
     static inline void platform_thread_join(PlatformThread t) { pthread_join(t, NULL); }
+    static inline PlatformThreadId platform_thread_current_id(void) {
+        return pthread_self();
+    }
+    static inline bool platform_thread_id_equal(PlatformThreadId a,
+                                                PlatformThreadId b) {
+        return pthread_equal(a, b) != 0;
+    }
+    static inline void platform_thread_yield(void) { sched_yield(); }
 #endif

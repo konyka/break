@@ -75,8 +75,8 @@ void re_facts_destroy(re_facts_t *facts) {
     }
     re_free(&facts->allocator, facts->entries);
     re_tms_destroy(facts->tms);
-    /* Retired transaction records intentionally outlive facts so stale opaque
-     * handles remain safe to query as inactive tombstones. */
+    /* Retired transaction records are caller-owned opaque tombstones. They
+     * keep the handle safe to probe until re_facts_txn_destroy is called. */
     re_free(&facts->allocator, facts);
 }
 
@@ -348,10 +348,6 @@ re_status_t re_facts_retract(re_facts_t *facts, re_fact_id_t id) {
     name = facts->entries[id.slot].name;
     name_size = facts->entries[id.slot].name_size;
     value = facts->entries[id.slot].value;
-    facts->entries[id.slot].name = NULL;
-    facts->entries[id.slot].name_size = 0u;
-    facts->entries[id.slot].string_data = NULL;
-    facts->entries[id.slot].structured = NULL;
     facts->entries[id.slot].active = 0;
     facts->entries[id.slot].name = name;
     facts->entries[id.slot].name_size = name_size;

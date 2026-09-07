@@ -126,6 +126,7 @@ static my_ret_t lcd_mem_fill_rect(my_lcd_t* lcd, const my_rect_t* rect,
   my_lcd_mem_t* m = (my_lcd_mem_t*)lcd;
   my_rect_t bounds, clipped;
   int32_t y;
+  int64_t y_end;
 
   if (rect == NULL) {
     return MY_RET_INVALID_PARAMS;
@@ -134,6 +135,7 @@ static my_ret_t lcd_mem_fill_rect(my_lcd_t* lcd, const my_rect_t* rect,
   if (!my_rect_intersect(rect, &bounds, &clipped)) {
     return MY_RET_OK; /* fully outside: nothing to do */
   }
+  y_end = my_rect_bottom_i64(&clipped);
 
   if (m->format == MY_PIXEL_FORMAT_MONO) {
     fill_mono_bits(m, &clipped, mono_is_on(color));
@@ -142,14 +144,14 @@ static my_ret_t lcd_mem_fill_rect(my_lcd_t* lcd, const my_rect_t* rect,
 
   /* translucent color: per-pixel src-over (opaque keeps the fast path) */
   if (color.a < 255) {
-    for (y = clipped.y; y < clipped.y + clipped.h; y++) {
+    for (y = clipped.y; (int64_t)y < y_end; y++) {
       blend_row(m, m->buffer + (size_t)y * m->stride, clipped.x,
                 (uint32_t)clipped.w, color);
     }
     return MY_RET_OK;
   }
 
-  for (y = clipped.y; y < clipped.y + clipped.h; y++) {
+  for (y = clipped.y; (int64_t)y < y_end; y++) {
     uint8_t* row = m->buffer + (size_t)y * m->stride;
     uint32_t n = (uint32_t)clipped.w;
     switch (m->format) {

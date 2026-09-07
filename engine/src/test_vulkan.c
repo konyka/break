@@ -392,6 +392,7 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
 
     rs->device = rhi_device_create(TV_BACKEND, window, display, w, h);
     if (!rs->device) { LOG_ERROR("FAIL: device create"); return false; }
+    rhi_set_vsync(rs->device, false);
     LOG_INFO("PASS: RHI device created (backend=%d)", (int)TV_BACKEND);
 
     usize vs_len = 0, fs_len = 0;

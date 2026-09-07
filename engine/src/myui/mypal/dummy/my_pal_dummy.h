@@ -16,10 +16,25 @@ my_pal_t* my_pal_dummy_create(const my_allocator_t* allocator);
 
 /** @brief Test hook: set the dummy platform's monotonic clock. */
 void my_pal_dummy_set_now_ms(my_pal_t* pal, uint64_t now_ms);
+/** @brief Test hook: make the next clipboard reads return PENDING. */
+void my_pal_dummy_set_clipboard_pending_reads(my_pal_t* pal, uint32_t count);
+
+/** @brief Test hook: advance the dummy clock after each time query. */
+void my_pal_dummy_set_time_step_ms(my_pal_t* pal, uint64_t step_ms);
+void my_pal_dummy_reset_time_query_count(my_pal_t* pal);
+uint32_t my_pal_dummy_time_query_count(const my_pal_t* pal);
 
 /** @brief Test hook (M12c): inject a display scale factor (default 1).
  * Takes effect for windows created/resized afterwards. */
 void my_pal_dummy_set_scale_factor(my_pal_t* pal, float scale);
+
+/** @brief Test hook: configure the platform media capability snapshot. */
+void my_pal_dummy_set_media_context(my_pal_t* pal,
+                                    const my_pal_media_context_t* context);
+
+/** @brief Test hook: set media facts including known/unknown bits. */
+void my_pal_dummy_set_media_context_ex(
+    my_pal_t* pal, const my_pal_media_context_ex_t* context);
 
 /** @brief Test hook (M13a): last IME spot reported to this window. */
 void my_pal_dummy_get_ime_spot(my_pal_window_t* win, int32_t* x,
@@ -48,6 +63,7 @@ uint32_t my_pal_main_loop_pump_n(my_pal_main_loop_t* loop, uint32_t n);
 /** @brief Test hook (M16): pretend the compositor gives no SSD, so
  * windows are created with client-side decoration. Default false. */
 void my_pal_dummy_set_needs_csd(my_pal_t* pal, bool needs);
+
 
 /** @brief Test hook (M16): how often begin_move was requested. */
 uint32_t my_pal_dummy_begin_move_count(my_pal_window_t* win);

@@ -40,6 +40,7 @@ struct Platform {
     i32         ime_spot_x;
     i32         ime_spot_y;
     NSUInteger  marked_length;
+    u64         media_generation;
 };
 
 /* ---- Key mapping (Carbon virtual key codes) ---- */
@@ -358,6 +359,13 @@ static void cocoa_update_drawable_size(Platform *p) {
 - (void)windowDidChangeBackingProperties:(NSNotification *)n {
     (void)n;
     cocoa_update_drawable_size(self.platform);
+    if (self.platform->media_generation != UINT64_MAX)
+        self.platform->media_generation++;
+}
+- (void)windowDidChangeScreen:(NSNotification *)n {
+    (void)n;
+    if (self.platform->media_generation != UINT64_MAX)
+        self.platform->media_generation++;
 }
 /* R368: match X11 FocusOut / Wayland keyboard_leave — release stuck keys. */
 - (void)windowDidResignKey:(NSNotification *)n {
@@ -370,8 +378,13 @@ static void cocoa_update_drawable_size(Platform *p) {
 
 Platform *platform_create(const PlatformConfig *cfg) {
     @autoreleasepool {
+        if (!platform_config_valid(cfg)) {
+            LOG_ERROR("Invalid platform configuration");
+            return NULL;
+        }
         Platform *p = calloc(1, sizeof(Platform));
         if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
+        p->media_generation = 1u;
 
         p->width = cfg->width;
         p->height = cfg->height;
@@ -429,6 +442,7 @@ void platform_destroy(Platform *p) {
 }
 
 PlatformEventResult platform_poll(Platform *p) {
+    if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
     @autoreleasepool {
         NSEvent *e;
@@ -474,14 +488,14 @@ void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
     }
 }
 
-InputState *platform_input(Platform *p)        { return &p->input; }
-void *platform_window_native(Platform *p)      { return (void *)p->layer; }
+InputState *platform_input(Platform *p)        { return p != NULL ? &p->input : NULL; }
+void *platform_window_native(Platform *p)      { return p != NULL ? (void *)p->layer : NULL; }
 void *platform_display_native(Platform *p)     { (void)p; return NULL; }
-void *platform_surface_native(Platform *p)     { return (void *)p->layer; }
+void *platform_surface_native(Platform *p)     { return p != NULL ? (void *)p->layer : NULL; }
 
 void platform_get_size(Platform *p, u32 *w, u32 *h) {
-    if (w) *w = p->width;
-    if (h) *h = p->height;
+    if (w) *w = p != NULL ? p->width : 0;
+    if (h) *h = p != NULL ? p->height : 0;
 }
 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
@@ -500,6 +514,7 @@ void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
 }
 
 f32 platform_get_dpi(Platform *p) {
+    if (p == NULL) return 96.0f;
     f32 scale = (f32)[p->window backingScaleFactor];
     return 96.0f * scale;
 }
@@ -517,14 +532,96 @@ i32 platform_get_scale_factor(Platform *p) {
     return (i32)(platform_get_content_scale(p) + 0.5f);
 }
 
+static void cocoa_apply_display_media(NSScreen *screen,
+                                      PlatformMediaContext *out) {
+    NSColorSpace *color_space;
+    CGColorSpaceRef cg_color_space;
+    CFStringRef color_space_name;
+    SEL edr_selector;
+    typedef CGFloat (*CocoaEDRGetter)(id, SEL);
+    CocoaEDRGetter edr_getter;
+
+    if (screen == nil || out == NULL) return;
+    color_space = [screen colorSpace];
+    cg_color_space = [color_space CGColorSpace];
+    color_space_name = cg_color_space != NULL
+                           ? CGColorSpaceGetName(cg_color_space)
+                           : NULL;
+    if (color_space_name != NULL && kCGColorSpaceITUR_2020 != NULL &&
+        CFEqual(color_space_name, kCGColorSpaceITUR_2020)) {
+        out->capabilities |= PLATFORM_MEDIA_CAP_COLOR_REC2020 |
+                             PLATFORM_MEDIA_CAP_COLOR_P3 |
+                             PLATFORM_MEDIA_CAP_COLOR_SRGB;
+    } else if (color_space_name != NULL &&
+               ((kCGColorSpaceDisplayP3 != NULL &&
+                 CFEqual(color_space_name, kCGColorSpaceDisplayP3)) ||
+                (kCGColorSpaceExtendedDisplayP3 != NULL &&
+                 CFEqual(color_space_name, kCGColorSpaceExtendedDisplayP3)) ||
+                (kCGColorSpaceExtendedLinearDisplayP3 != NULL &&
+                 CFEqual(color_space_name, kCGColorSpaceExtendedLinearDisplayP3)))) {
+        out->capabilities |= PLATFORM_MEDIA_CAP_COLOR_P3 |
+                             PLATFORM_MEDIA_CAP_COLOR_SRGB;
+    }
+
+    edr_selector = sel_registerName(
+        "maximumPotentialExtendedDynamicRangeColorComponentValue");
+    if (![screen respondsToSelector:edr_selector]) return;
+    edr_getter = (CocoaEDRGetter)[screen methodForSelector:edr_selector];
+    if (edr_getter == NULL) return;
+    out->known |= PLATFORM_MEDIA_KNOWN_HDR;
+    if (edr_getter(screen, edr_selector) > 1.0) {
+        out->capabilities |= PLATFORM_MEDIA_CAP_HDR;
+    }
+}
+
+bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
+    NSAppearance *appearance;
+    NSArray<NSAppearanceName> *appearance_names;
+    NSScreen *screen;
+    if (out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    if (p == NULL) return false;
+    out->screen = true;
+    out->capabilities = PLATFORM_MEDIA_CAP_HOVER |
+                        PLATFORM_MEDIA_CAP_POINTER_FINE |
+                        PLATFORM_MEDIA_CAP_ANY_POINTER_FINE |
+                        PLATFORM_MEDIA_CAP_COLOR_SRGB;
+    out->known = PLATFORM_MEDIA_KNOWN_HOVER |
+                 PLATFORM_MEDIA_KNOWN_POINTER |
+                 PLATFORM_MEDIA_KNOWN_ANY_POINTER |
+                 PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
+    screen = [p->window screen];
+    if (screen == nil) screen = [NSScreen mainScreen];
+    cocoa_apply_display_media(screen, out);
+    appearance = [p->window effectiveAppearance];
+    appearance_names = @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua];
+    if (appearance != nil) {
+        NSAppearanceName match = [appearance bestMatchFromAppearancesWithNames:
+                                             appearance_names];
+        if (match != nil) {
+            out->prefers_dark = [match isEqualToString:NSAppearanceNameDarkAqua];
+            out->known |= PLATFORM_MEDIA_KNOWN_COLOR_SCHEME;
+        }
+    }
+    if ([NSWorkspace respondsToSelector:
+             @selector(accessibilityDisplayShouldReduceMotion)]) {
+        out->prefers_reduced_motion =
+            [NSWorkspace accessibilityDisplayShouldReduceMotion];
+        out->known |= PLATFORM_MEDIA_KNOWN_REDUCED_MOTION;
+    }
+    return true;
+}
+
+u64 platform_get_media_generation(Platform *p) {
+    return p != NULL ? p->media_generation : 0u;
+}
+
 u32 platform_get_monitor_count(Platform *p) {
-    (void)p;
-    return (u32)[[NSScreen screens] count];
+    return p != NULL ? (u32)[[NSScreen screens] count] : 0;
 }
 
 bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
-    (void)p;
-    if (!out) return false;
+    if (p == NULL || !out) return false;
     NSArray<NSScreen *> *screens = [NSScreen screens];
     if (index >= [screens count]) return false;
     NSScreen *s = screens[index];
@@ -543,6 +640,7 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
 }
 
 void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL || p->window == nil) return;
     [p->window toggleFullScreen:nil];
     p->is_fullscreen = !p->is_fullscreen;
 }
@@ -552,6 +650,7 @@ void platform_mouse_capture(Platform *p, bool capture) {
 }
 
 void platform_mouse_set_visible(Platform *p, bool visible) {
+    if (p == NULL) return;
     if (visible == p->mouse_visible) return;
     p->mouse_visible = visible;
     if (visible) [NSCursor unhide];
@@ -583,8 +682,8 @@ bool platform_needs_client_decoration(Platform *p) {
 bool platform_clipboard_set_text(Platform *p, const char *utf8) {
     NSString *text;
     NSPasteboard *pasteboard;
-    (void)p;
-    if (utf8 == NULL) return false;
+    if (p == NULL || utf8 == NULL ||
+        !platform_utf8_validate(utf8, strlen(utf8))) return false;
     text = [NSString stringWithUTF8String:utf8];
     if (text == nil) return false;
     pasteboard = [NSPasteboard generalPasteboard];
@@ -595,8 +694,7 @@ bool platform_clipboard_set_text(Platform *p, const char *utf8) {
 bool platform_clipboard_get_text(Platform *p, char *out, usize out_size) {
     NSString *text;
     const char *utf8;
-    (void)p;
-    if (out == NULL || out_size == 0) return false;
+    if (p == NULL || out == NULL || out_size == 0) return false;
     text = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
     utf8 = text != nil ? [text UTF8String] : NULL;
     if (utf8 == NULL) return false;
@@ -608,9 +706,9 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
                                                            char **out) {
     NSString *text;
     const char *utf8;
-    (void)p;
     if (out == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     *out = NULL;
+    if (p == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     text = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
     utf8 = text != nil ? [text UTF8String] : NULL;
     if (utf8 == NULL) return PLATFORM_CLIPBOARD_EMPTY;
@@ -620,6 +718,7 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
 }
 
 void platform_mouse_set_relative(Platform *p, bool relative) {
+    if (p == NULL) return;
     p->mouse_relative = relative;
     /* Decouple the hardware cursor from deltas so relative motion is unbounded. */
     CGAssociateMouseAndMouseCursorPosition(relative ? false : true);

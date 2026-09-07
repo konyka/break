@@ -22,6 +22,15 @@ static inline int my_vgcanvas_break_rhi_preserved_pending_level(
   return pending_level;
 }
 
+static inline int my_vgcanvas_break_rhi_pending_after_request(
+    int active_level, int pending_level, int requested_level) {
+  if (requested_level >= 0 && requested_level <= 2 && pending_level >= 0 &&
+      active_level == requested_level) {
+    return -1;
+  }
+  return pending_level;
+}
+
 /* Keep an implicit full-surface clip full after a drawable resize. Explicit
  * clips stay in device coordinates and are clamped to the new surface. */
 static inline my_rect_t my_vgcanvas_break_rhi_resize_clip(my_rect_t clip,

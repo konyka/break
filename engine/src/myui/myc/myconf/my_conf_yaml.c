@@ -100,6 +100,10 @@ static bool y_split(yaml_p_t* p) {
     }
     if (p->n_lines == cap) {
       yline_t* bigger;
+      if (cap > SIZE_MAX / 2u || cap * 2u > SIZE_MAX / sizeof(yline_t)) {
+        y_fail(p, lineno, 1, "YAML line table exceeds resource budget");
+        return false;
+      }
       cap *= 2;
       bigger = (yline_t*)my_mem_realloc(p->allocator, p->lines,
                                         cap * sizeof(yline_t));
@@ -201,6 +205,9 @@ static char* yv_dq(yv_t* v) {
     }
     if (n + 2 > cap) {
       char* b2;
+      if (cap > SIZE_MAX / 2u) {
+        goto fail;
+      }
       cap *= 2;
       b2 = (char*)my_mem_realloc(v->allocator, out, cap);
       if (b2 == NULL) {
@@ -244,6 +251,9 @@ static char* yv_sq(yv_t* v) {
     }
     if (n + 2 > cap) {
       char* b2;
+      if (cap > SIZE_MAX / 2u) {
+        goto fail;
+      }
       cap *= 2;
       b2 = (char*)my_mem_realloc(v->allocator, out, cap);
       if (b2 == NULL) {

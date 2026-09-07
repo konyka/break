@@ -70,6 +70,18 @@ TEST(utf8_copy_handles_truncated_sequences)
     ASSERT_EQ(platform_utf8_byte_to_codepoints(text, 1), 1);
 }
 
+TEST(utf8_validate_rejects_malformed_bounded_payloads)
+{
+    const char valid[] = {'a', (char)0xE4, (char)0xB8, (char)0xAD};
+    ASSERT_TRUE(platform_utf8_validate(valid, sizeof(valid)));
+    ASSERT_TRUE(platform_utf8_validate("", 0));
+    ASSERT_FALSE(platform_utf8_validate("\xC0\x80", 2));
+    ASSERT_FALSE(platform_utf8_validate("\xED\xA0\x80", 3));
+    ASSERT_FALSE(platform_utf8_validate("\xF4\x90\x80\x80", 4));
+    ASSERT_FALSE(platform_utf8_validate("\xE4\xB8", 2));
+    ASSERT_FALSE(platform_utf8_validate("a\0b", 3));
+}
+
 TEST(queue_grows_without_dropping_events)
 {
     PlatformTextQueue queue = {0};
@@ -263,6 +275,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(queue_preserves_long_utf8_text);
     RUN_TEST(utf8_copy_keeps_codepoint_boundaries);
     RUN_TEST(utf8_copy_handles_truncated_sequences);
+    RUN_TEST(utf8_validate_rejects_malformed_bounded_payloads);
     RUN_TEST(queue_grows_without_dropping_events);
     RUN_TEST(queue_wraps_without_reordering_events);
     RUN_TEST(queue_coalesces_adjacent_preedit_events);

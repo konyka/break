@@ -33,6 +33,8 @@ const char *platform_text_event_utf8(const PlatformTextEvent *event);
 void platform_text_event_destroy(PlatformTextEvent *event);
 void platform_text_queue_destroy(PlatformTextQueue *queue);
 usize platform_utf8_copy(char *out, usize out_size, const char *text);
+/** @brief Validate exactly length bytes of UTF-8 clipboard/text payload. */
+bool platform_utf8_validate(const char *text, usize length);
 void platform_ime_surrounding_set(PlatformImeSurrounding *surrounding,
                                   const char *text, usize cursor,
                                   usize anchor);

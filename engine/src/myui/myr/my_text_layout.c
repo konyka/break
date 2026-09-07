@@ -11,13 +11,16 @@
 
 #include "myc/my_str.h" /* my_strdup */
 #include "myr/my_font.h" /* my_utf8_next */
+#include "myr/generated/my_script_extensions_data.h"
 
 #if defined(MYUI_BIDI)
 #include <SheenBidi/SBAlgorithm.h>
+#include <SheenBidi/SBCodepoint.h>
 #include <SheenBidi/SBCodepointSequence.h>
 #include <SheenBidi/SBLine.h>
 #include <SheenBidi/SBParagraph.h>
 #include <SheenBidi/SBRun.h>
+#include <SheenBidi/SBScript.h>
 
 #include "myr/my_arabic_shape.h"
 #include "myr/my_bidi_mirror_data.h"
@@ -42,6 +45,9 @@ static uint32_t tl_mirror_cp(uint32_t cp) {
 #endif
 
 /* ---------------- utf-8 helpers ---------------- */
+
+static uint32_t tl_utf8_next_n(const char* text, size_t remaining,
+                               size_t* consumed);
 
 static bool tl_bounded_text_len(const char* text, size_t* out_len) {
   size_t text_len = 0;
@@ -68,8 +74,14 @@ static uint32_t* tl_decode(const my_allocator_t* alloc, const char* text,
   if (cps == NULL) {
     return NULL;
   }
-  while (*p != '\0') {
-    cps[n++] = my_utf8_next(&p);
+  while ((size_t)(p - text) < text_len) {
+    size_t consumed = 0u;
+    cps[n++] = tl_utf8_next_n(p, text_len - (size_t)(p - text), &consumed);
+    if (consumed == 0u) {
+      my_mem_free(alloc, cps);
+      return NULL;
+    }
+    p += consumed;
   }
   *out_len = n;
   return cps;
@@ -117,21 +129,58 @@ static char* tl_encode_all(const my_allocator_t* alloc, const uint32_t* cps,
 }
 
 static bool tl_cp_needs_bidi(uint32_t cp) {
+#if defined(MYUI_BIDI)
+  SBBidiType bidi_type = SBCodepointGetBidiType((SBCodepoint)cp);
+  return bidi_type == SBBidiTypeR || bidi_type == SBBidiTypeAL ||
+         bidi_type == SBBidiTypeAN || bidi_type >= SBBidiTypeLRI;
+#else
+  if (my_font_is_variation_selector(cp)) {
+    return false;
+  }
+  if ((cp >= 0x0600u && cp <= 0x060Fu) || cp == 0x061Bu ||
+      (cp >= 0x061Du && cp <= 0x061Fu)) {
+    return false;
+  }
   return (cp >= 0x0590u && cp <= 0x08FFu) || /* Hebrew, Arabic, Syriac... */
          (cp >= 0xFB1Du && cp <= 0xFEFCu) || /* presentation forms */
          cp == 0x061Cu ||                    /* Arabic letter mark */
          cp == 0x200Eu || cp == 0x200Fu ||   /* LRM/RLM */
          (cp >= 0x202Au && cp <= 0x202Eu) || /* embeddings/overrides */
          (cp >= 0x2066u && cp <= 0x2069u);   /* isolates */
+#endif
 }
 
 static uint32_t tl_script_tag(uint32_t cp) {
+#if defined(MYUI_BIDI)
+  SBScript script = SBCodepointGetScript((SBCodepoint)cp);
+  if (script <= SBScriptZYYY || script == SBScriptZZZZ) {
+    return 0u;
+  }
+  return (uint32_t)SBScriptGetUnicodeTag(script);
+#else
+  if (my_font_is_variation_selector(cp)) {
+    return 0u;
+  }
+  if (cp == 0x309Bu || cp == 0x309Cu || cp == 0x30FBu ||
+      cp == 0x30FCu || cp == 0xFF70u) {
+    return 0u;
+  }
+  if (cp >= 0xFF66u && cp <= 0xFF9Fu) return MY_FONT_SCRIPT_KANA;
+  if ((cp >= 0x0600u && cp <= 0x060Fu) || cp == 0x061Bu ||
+      (cp >= 0x061Du && cp <= 0x061Fu)) {
+    return 0u;
+  }
   if ((cp >= 0x0041u && cp <= 0x024Fu) ||
       (cp >= 0x1E00u && cp <= 0x1EFFu)) {
     return MY_FONT_SCRIPT_LATN;
   }
   if (cp >= 0x0370u && cp <= 0x03FFu) return MY_FONT_SCRIPT_GREK;
+  if (cp >= 0x1F00u && cp <= 0x1FFFu) return MY_FONT_SCRIPT_GREK;
   if (cp >= 0x0400u && cp <= 0x052Fu) return MY_FONT_SCRIPT_CYRL;
+  if ((cp >= 0x0530u && cp <= 0x058Fu) ||
+      (cp >= 0xFB13u && cp <= 0xFB17u)) {
+    return MY_FONT_SCRIPT_ARMN;
+  }
   if (cp >= 0x0590u && cp <= 0x05FFu) return MY_FONT_SCRIPT_HEBR;
   if ((cp >= 0x0600u && cp <= 0x08FFu) ||
       (cp >= 0xFB50u && cp <= 0xFEFFu)) {
@@ -139,15 +188,111 @@ static uint32_t tl_script_tag(uint32_t cp) {
   }
   if (cp >= 0x0900u && cp <= 0x097Fu) return MY_FONT_SCRIPT_DEVA;
   if (cp >= 0x0980u && cp <= 0x09FFu) return MY_FONT_SCRIPT_BENG;
+  if (cp >= 0x0B80u && cp <= 0x0BFFu) return MY_FONT_SCRIPT_TAML;
+  if (cp >= 0x0C00u && cp <= 0x0C7Fu) return MY_FONT_SCRIPT_TELU;
+  if (cp >= 0x0C80u && cp <= 0x0CFFu) return MY_FONT_SCRIPT_KNDA;
+  if (cp >= 0x0D00u && cp <= 0x0D7Fu) return MY_FONT_SCRIPT_MLYM;
   if (cp >= 0x0780u && cp <= 0x07BFu) return MY_FONT_SCRIPT_THAA;
   if (cp >= 0x0E00u && cp <= 0x0E7Fu) return MY_FONT_SCRIPT_THAI;
+  if (cp >= 0x0E80u && cp <= 0x0EFFu) return MY_FONT_SCRIPT_LAOO;
+  if (cp >= 0x3040u && cp <= 0x309Fu) return MY_FONT_SCRIPT_HIRA;
+  if ((cp >= 0x30A0u && cp <= 0x30FFu) ||
+      (cp >= 0x31F0u && cp <= 0x31FFu)) {
+    return MY_FONT_SCRIPT_KANA;
+  }
+  if ((cp >= 0x1000u && cp <= 0x109Fu) ||
+      (cp >= 0xA9E0u && cp <= 0xA9FFu) ||
+      (cp >= 0xAA60u && cp <= 0xAA7Fu)) {
+    return MY_FONT_SCRIPT_MYMR;
+  }
+  if ((cp >= 0x10A0u && cp <= 0x10FFu) ||
+      (cp >= 0x1C90u && cp <= 0x1CBFu) ||
+      (cp >= 0x2D00u && cp <= 0x2D2Fu)) {
+    return MY_FONT_SCRIPT_GEOR;
+  }
+  if ((cp >= 0x1200u && cp <= 0x137Fu) ||
+      (cp >= 0x1380u && cp <= 0x139Fu) ||
+      (cp >= 0x2D80u && cp <= 0x2DDF)) {
+    return MY_FONT_SCRIPT_ETHI;
+  }
+  if ((cp >= 0x1780u && cp <= 0x17FFu) ||
+      (cp >= 0x19E0u && cp <= 0x19FFu)) {
+    return MY_FONT_SCRIPT_KHMR;
+  }
   if (cp >= 0xAC00u && cp <= 0xD7AFu) return MY_FONT_SCRIPT_HANG;
   if ((cp >= 0x3400u && cp <= 0x4DBFu) ||
       (cp >= 0x4E00u && cp <= 0x9FFFu) ||
       (cp >= 0xF900u && cp <= 0xFAFFu)) {
-    return MY_FONT_SCRIPT_HANI;
+      return MY_FONT_SCRIPT_HANI;
   }
   return 0u;
+#endif
+}
+
+static const uint32_t* tl_script_extensions(uint32_t cp,
+                                             size_t* out_count) {
+  size_t lo = 0;
+  size_t hi = MY_SCRIPT_EXTENSION_RANGE_COUNT;
+
+  *out_count = 0;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2u;
+    const my_script_extension_range_t* range =
+        &my_script_extension_ranges[mid];
+    if (cp < range->first) {
+      hi = mid;
+    } else if (cp > range->last) {
+      lo = mid + 1u;
+    } else {
+      *out_count = range->count;
+      return my_script_extension_tags + range->offset;
+    }
+  }
+  return NULL;
+}
+
+static bool tl_script_tag_list_contains(const uint32_t* scripts, size_t count,
+                                        uint32_t script) {
+  size_t i;
+
+  if (script == 0u) return false;
+  for (i = 0; i < count; ++i) {
+    if (scripts[i] == script) return true;
+  }
+  return false;
+}
+
+static uint32_t tl_resolve_common_script(const uint32_t* cps,
+                                         uint32_t* scripts, size_t index,
+                                         size_t count) {
+  const uint32_t* extensions;
+  uint32_t previous = 0u;
+  uint32_t next = 0u;
+  size_t extension_count = 0;
+  size_t i;
+
+  for (i = index; i > 0u; --i) {
+    if (scripts[i - 1u] != 0u) {
+      previous = scripts[i - 1u];
+      break;
+    }
+  }
+  for (i = index + 1u; i < count; ++i) {
+    if (scripts[i] != 0u) {
+      next = scripts[i];
+      break;
+    }
+  }
+  extensions = tl_script_extensions(cps[index], &extension_count);
+  if (extensions != NULL) {
+    if (tl_script_tag_list_contains(extensions, extension_count, previous)) {
+      return previous;
+    }
+    if (tl_script_tag_list_contains(extensions, extension_count, next)) {
+      return next;
+    }
+  }
+  return previous != 0u ? previous : next;
 }
 
 bool my_text_layout_may_need_bidi(const char* text) {
@@ -163,21 +308,40 @@ bool my_text_layout_may_need_bidi(const char* text) {
   return false;
 }
 
+static uint32_t tl_utf8_next_n(const char* text, size_t remaining,
+                               size_t* consumed) {
+  char bytes[5];
+  const char* cursor = bytes;
+  size_t copy_count = remaining < 4u ? remaining : 4u;
+
+  memcpy(bytes, text, copy_count);
+  bytes[copy_count] = '\0';
+  *consumed = 1u;
+  {
+    uint32_t codepoint = my_utf8_next(&cursor);
+    size_t decoded = (size_t)(cursor - bytes);
+    if (decoded <= copy_count) *consumed = decoded;
+    return codepoint;
+  }
+}
+
 bool my_text_layout_may_need_bidi_n(const char* text, size_t byte_len) {
   size_t consumed = 0;
   if (text == NULL) {
     return false;
   }
   while (consumed < byte_len) {
-    const char* p = text + consumed;
-    const char* next = p;
-    if (tl_cp_needs_bidi(my_utf8_next(&next))) {
+    size_t codepoint_bytes = 0u;
+    uint32_t codepoint = tl_utf8_next_n(text + consumed,
+                                        byte_len - consumed,
+                                        &codepoint_bytes);
+    if (tl_cp_needs_bidi(codepoint)) {
       return true;
     }
-    if (next <= p || (size_t)(next - p) > byte_len - consumed) {
+    if (codepoint_bytes == 0u || codepoint_bytes > byte_len - consumed) {
       return false;
     }
-    consumed += (size_t)(next - p);
+    consumed += codepoint_bytes;
   }
   return false;
 }
@@ -216,7 +380,14 @@ static bool tl_master_compute(tl_master_t* m, const char* text,
   size_t source_len = 0, i;
   bool may = false;
   memset(m, 0, sizeof(*m));
-  m->text = my_strdup(NULL, text);
+  if (text_len == SIZE_MAX) {
+    return false;
+  }
+  m->text = (char*)my_mem_alloc(NULL, text_len + 1u);
+  if (m->text != NULL) {
+    memcpy(m->text, text, text_len);
+    m->text[text_len] = '\0';
+  }
   m->cps = tl_decode(NULL, text, text_len, &source_len);
   if (m->text == NULL || m->cps == NULL) {
     tl_master_free(m);
@@ -438,17 +609,28 @@ static my_text_layout_t* tl_copy(const my_allocator_t* alloc,
 
 my_text_layout_t* my_text_layout_process(const my_allocator_t* allocator,
                                          const char* text) {
-  size_t i, slot = 0, text_len;
+  size_t text_len;
+  if (text == NULL || !tl_bounded_text_len(text, &text_len)) return NULL;
+  return my_text_layout_process_n(allocator, text, text_len);
+}
+
+static bool tl_cache_slice_equal(const char* cached, const char* text,
+                                 size_t text_len) {
+  return cached != NULL && text != NULL && strlen(cached) == text_len &&
+         memcmp(cached, text, text_len) == 0;
+}
+
+my_text_layout_t* my_text_layout_process_n(const my_allocator_t* allocator,
+                                           const char* text, size_t text_len) {
+  size_t i, slot = 0;
   uint64_t oldest;
-  if (text == NULL) {
-    return NULL;
-  }
-  if (!tl_bounded_text_len(text, &text_len)) {
+  if (text == NULL || text_len > MY_TEXT_LAYOUT_MAX_BYTES ||
+      memchr(text, '\0', text_len) != NULL) {
     return NULL;
   }
   g_tick++;
   for (i = 0; i < TL_CACHE_CAP; i++) {
-    if (g_cache[i].text != NULL && strcmp(g_cache[i].text, text) == 0) {
+    if (tl_cache_slice_equal(g_cache[i].text, text, text_len)) {
       g_cache[i].tick = g_tick;
       return tl_copy(allocator, &g_cache[i]);
     }
@@ -487,6 +669,17 @@ void my_text_layout_destroy(my_text_layout_t* layout) {
     my_mem_free(alloc, layout->logical_utf8);
     my_mem_free(alloc, layout->logical_byte_offsets);
     my_mem_free(alloc, layout->visual_shaped_span);
+    {
+      size_t cache_index;
+      for (cache_index = 0u;
+           cache_index < MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY; cache_index++) {
+        my_text_layout_shape_cache_entry_t* entry =
+            &layout->shaped_cache[cache_index];
+        my_mem_free(alloc, entry->glyphs);
+        my_mem_free(alloc, entry->language);
+        my_mem_free(alloc, entry->features);
+      }
+    }
     my_mem_free(alloc, layout->visual_utf8);
     my_mem_free(alloc, layout);
   }
@@ -519,6 +712,10 @@ static my_ret_t tl_shape_append(
   size_t i;
   my_font_shape_glyph_t* glyphs;
 
+  if (shaped->count > MY_FONT_SHAPE_MAX_GLYPHS ||
+      result->count > MY_FONT_SHAPE_MAX_GLYPHS - shaped->count) {
+    return MY_RET_FAIL;
+  }
   if (shaped->count > SIZE_MAX - result->count) return MY_RET_OOM;
   required = result->count + shaped->count;
   if (required > *capacity) {
@@ -582,6 +779,158 @@ static my_ret_t tl_shape_run(my_font_t* font, const char* text, int32_t size,
   return ret;
 }
 
+static bool tl_shape_cache_string_equal(const char* cached, const char* value,
+                                        size_t max_bytes) {
+  size_t length;
+  if (cached == NULL || value == NULL) return cached == value;
+  for (length = 0u; length <= max_bytes; length++) {
+    if (value[length] == '\0') return strcmp(cached, value) == 0;
+  }
+  return false;
+}
+
+static bool tl_shape_cache_normalize_language(const char* value, char* output,
+                                              size_t output_size) {
+  size_t length;
+  size_t i;
+  if (value == NULL) return true;
+  length = strlen(value);
+  if (length + 1u > output_size) return false;
+  for (i = 0u; i < length; i++) {
+    char character = value[i];
+    output[i] = character >= 'A' && character <= 'Z'
+                    ? (char)(character - 'A' + 'a')
+                    : character;
+  }
+  output[length] = '\0';
+  return true;
+}
+
+static size_t tl_shape_cache_find(const my_text_layout_t* layout,
+                                  const my_font_t* font, int32_t size,
+                                  const my_font_shape_params_t* params) {
+  char normalized_language[MY_FONT_SHAPE_MAX_LANGUAGE_BYTES + 1u];
+  const char* language = params->language;
+  size_t i;
+  if (language != NULL) {
+    if (!tl_shape_cache_normalize_language(
+            language, normalized_language, sizeof(normalized_language))) {
+      return MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY;
+    }
+    language = normalized_language;
+  }
+  for (i = 0u; i < MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY; i++) {
+    const my_text_layout_shape_cache_entry_t* entry =
+        &layout->shaped_cache[i];
+    if (entry->params_valid && entry->font == font && entry->size == size &&
+        entry->rtl == params->rtl && entry->script == params->script &&
+        tl_shape_cache_string_equal(
+            entry->language, language,
+            MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) &&
+        tl_shape_cache_string_equal(entry->features, params->features,
+                                    MY_FONT_SHAPE_MAX_FEATURE_BYTES)) {
+      return i;
+    }
+  }
+  return MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY;
+}
+
+static bool tl_shape_cache_copy_result(
+    const my_text_layout_shape_cache_entry_t* entry,
+    const my_allocator_t* allocator, my_font_shape_result_t* result) {
+  size_t bytes;
+  if (entry == NULL || !entry->params_valid) return false;
+  if (entry->count > 0u) {
+    if (entry->glyphs == NULL ||
+        entry->count > SIZE_MAX / sizeof(*entry->glyphs)) {
+      return false;
+    }
+    bytes = entry->count * sizeof(*entry->glyphs);
+    result->glyphs = (my_font_shape_glyph_t*)my_mem_alloc(allocator, bytes);
+    if (result->glyphs == NULL) return false;
+    memcpy(result->glyphs, entry->glyphs, bytes);
+  }
+  result->count = entry->count;
+  result->rtl = entry->result_rtl;
+  result->used_complex_shaping = entry->used_complex_shaping;
+  return true;
+}
+
+static void tl_shape_cache_store(my_text_layout_t* layout,
+                                 const my_font_t* font, int32_t size,
+                                 const my_font_shape_params_t* params,
+                                 const my_font_shape_result_t* result) {
+  my_font_shape_glyph_t* glyphs = NULL;
+  char* language = NULL;
+  char normalized_language[MY_FONT_SHAPE_MAX_LANGUAGE_BYTES + 1u];
+  const char* canonical_language = params->language;
+  char* features = NULL;
+  size_t glyph_bytes = 0u;
+  size_t cache_slot = 0u;
+  size_t cache_index;
+  uint64_t oldest = UINT64_MAX;
+  if (result->count > MY_TEXT_LAYOUT_SHAPE_CACHE_MAX_GLYPHS) return;
+  if (result->count > 0u) {
+    if (result->count > SIZE_MAX / sizeof(*result->glyphs)) return;
+    glyph_bytes = result->count * sizeof(*result->glyphs);
+    glyphs = (my_font_shape_glyph_t*)my_mem_alloc(layout->allocator,
+                                                   glyph_bytes);
+    if (glyphs == NULL) return;
+    memcpy(glyphs, result->glyphs, glyph_bytes);
+  }
+  if (canonical_language != NULL &&
+      !tl_shape_cache_normalize_language(
+          canonical_language, normalized_language,
+          sizeof(normalized_language))) {
+    goto failed;
+  }
+  if (canonical_language != NULL) {
+    canonical_language = normalized_language;
+    language = my_strdup(layout->allocator, canonical_language);
+    if (language == NULL) goto failed;
+  }
+  if (params->features != NULL) {
+    features = my_strdup(layout->allocator, params->features);
+    if (features == NULL) goto failed;
+  }
+  for (cache_index = 0u;
+       cache_index < MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY; cache_index++) {
+    if (!layout->shaped_cache[cache_index].params_valid) {
+      cache_slot = cache_index;
+      break;
+    }
+    if (layout->shaped_cache[cache_index].last_used < oldest) {
+      oldest = layout->shaped_cache[cache_index].last_used;
+      cache_slot = cache_index;
+    }
+  }
+  {
+    my_text_layout_shape_cache_entry_t* entry =
+        &layout->shaped_cache[cache_slot];
+    my_mem_free(layout->allocator, entry->glyphs);
+    my_mem_free(layout->allocator, entry->language);
+    my_mem_free(layout->allocator, entry->features);
+    entry->glyphs = glyphs;
+    entry->count = result->count;
+    entry->font = font;
+    entry->size = size;
+    entry->params_valid = true;
+    entry->rtl = params->rtl;
+    entry->result_rtl = result->rtl;
+    entry->script = params->script;
+    entry->language = language;
+    entry->features = features;
+    entry->used_complex_shaping = result->used_complex_shaping;
+    entry->last_used = ++layout->shaped_cache_tick;
+  }
+  return;
+
+failed:
+  my_mem_free(layout->allocator, glyphs);
+  my_mem_free(layout->allocator, language);
+  my_mem_free(layout->allocator, features);
+}
+
 my_ret_t my_text_layout_shape_ex(
     const my_text_layout_t* layout, const char* logical_text, my_font_t* font,
     int32_t size, const my_font_shape_params_t* params,
@@ -596,8 +945,9 @@ my_ret_t my_text_layout_shape_ex(
   size_t i;
   my_ret_t ret = MY_RET_OK;
   my_font_shape_params_t default_params = {false, 0u, NULL, NULL};
-  const my_font_shape_params_t* effective_params =
-      params != NULL ? params : &default_params;
+  my_font_shape_params_t normalized_params;
+  char normalized_features[MY_FONT_SHAPE_MAX_FEATURE_BYTES + 1u];
+  const my_font_shape_params_t* effective_params;
 
   if (result == NULL) return MY_RET_INVALID_PARAMS;
   memset(result, 0, sizeof(*result));
@@ -606,12 +956,41 @@ my_ret_t my_text_layout_shape_ex(
   if (layout == NULL || logical_text == NULL || font == NULL || size <= 0) {
     return MY_RET_INVALID_PARAMS;
   }
+  normalized_params = params != NULL ? *params : default_params;
+  if (!my_font_shape_params_valid(&normalized_params)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (normalized_params.features != NULL &&
+      !my_font_shape_features_normalize(normalized_params.features,
+                                        normalized_features,
+                                        sizeof(normalized_features))) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (normalized_params.features != NULL) {
+    normalized_params.features = normalized_features[0] != '\0'
+                                     ? normalized_features
+                                     : NULL;
+  }
+  effective_params = &normalized_params;
   if (!tl_bounded_text_len(logical_text, &text_len)) {
     return MY_RET_INVALID_PARAMS;
   }
   if (layout->logical_utf8 == NULL || strcmp(layout->logical_utf8,
                                              logical_text) != 0) {
     return MY_RET_INVALID_PARAMS;
+  }
+  {
+    size_t cache_slot = tl_shape_cache_find((const my_text_layout_t*)layout,
+                                             font, size, effective_params);
+    if (cache_slot < MY_TEXT_LAYOUT_SHAPE_CACHE_CAPACITY) {
+      my_text_layout_shape_cache_entry_t* entry =
+          &((my_text_layout_t*)layout)->shaped_cache[cache_slot];
+      entry->last_used = ++((my_text_layout_t*)layout)->shaped_cache_tick;
+      if (tl_shape_cache_copy_result(entry, allocator, result)) {
+        return MY_RET_OK;
+      }
+      return MY_RET_OOM;
+    }
   }
   if (layout->logical_len > SIZE_MAX / sizeof(*source_cps) ||
       layout->logical_len > SIZE_MAX / sizeof(*source_bytes) ||
@@ -656,7 +1035,6 @@ my_ret_t my_text_layout_shape_ex(
     ret = MY_RET_INVALID_PARAMS;
     goto done;
   }
-
   while (visual_start < layout->len) {
     size_t visual_end = visual_start + 1u;
     bool rtl = layout->visual_rtl[visual_start] != 0;
@@ -688,8 +1066,7 @@ my_ret_t my_text_layout_shape_ex(
       }
       run_count += span;
     }
-    if (run_count == 0 || run_count > SIZE_MAX / 4u ||
-        run_count + 1u < run_count) {
+    if (run_count == 0 || run_count > (SIZE_MAX - 1u) / 4u) {
       ret = MY_RET_OOM;
       goto run_done;
     }
@@ -775,25 +1152,10 @@ my_ret_t my_text_layout_shape_ex(
       for (i = 0u; i < units; ++i) {
         run_scripts[i] = tl_script_tag(source_cps[run_logical[i]]);
       }
-      {
-        uint32_t previous_script = 0u;
-        for (i = 0u; i < units; ++i) {
-          if (run_scripts[i] != 0u) {
-            previous_script = run_scripts[i];
-          } else if (previous_script != 0u) {
-            run_scripts[i] = previous_script;
-          }
-        }
-      }
-      {
-        uint32_t next_script = 0u;
-        for (i = units; i > 0u; --i) {
-          size_t index = i - 1u;
-          if (run_scripts[index] != 0u) {
-            next_script = run_scripts[index];
-          } else {
-            run_scripts[index] = next_script;
-          }
+      for (i = 0u; i < units; ++i) {
+        if (run_scripts[i] == 0u) {
+          run_scripts[i] = tl_resolve_common_script(
+              source_cps, run_scripts, i, units);
         }
       }
     }
@@ -875,6 +1237,8 @@ my_ret_t my_text_layout_shape_ex(
     }
   }
   result->used_complex_shaping = true;
+  tl_shape_cache_store((my_text_layout_t*)layout, font, size, effective_params,
+                       result);
 
 done:
   my_mem_free(allocator, seen);
@@ -909,7 +1273,11 @@ static float tl_cp_w(const my_font_t* font, int32_t size, uint32_t cp) {
   if (my_font_get_glyph((my_font_t*)font, cp, size, &g) != MY_RET_OK) {
     return 0.0f;
   }
-  return (float)g.advance;
+  {
+    float advance = (float)g.advance;
+    my_font_glyph_release(&g);
+    return advance;
+  }
 }
 
 static bool tl_logical_offsets_ensure(my_text_layout_t* l) {
@@ -982,11 +1350,7 @@ static bool tl_shape_param_string_valid(const char* value, size_t max_bytes) {
 }
 
 static bool tl_shape_params_valid(const my_font_shape_params_t* params) {
-  return params != NULL &&
-         tl_shape_param_string_valid(params->language,
-                                     MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) &&
-         tl_shape_param_string_valid(params->features,
-                                     MY_FONT_SHAPE_MAX_FEATURE_BYTES);
+  return my_font_shape_params_valid(params);
 }
 
 static bool tl_shape_key_string_equal(const char* cached, const char* value,
@@ -998,16 +1362,37 @@ static bool tl_shape_key_string_equal(const char* cached, const char* value,
 
 static bool tl_boundaries_key_matches(
     const my_text_layout_t* l, const my_font_shape_params_t* params) {
+  char normalized_features[MY_FONT_SHAPE_MAX_FEATURE_BYTES + 1u];
+  char normalized_language[MY_FONT_SHAPE_MAX_LANGUAGE_BYTES + 1u];
+  const char* language;
+  const char* features;
   if (!l->visual_boundaries_params_valid || !tl_shape_params_valid(params)) {
     return false;
+  }
+  language = params->language;
+  if (language != NULL) {
+    if (!tl_shape_cache_normalize_language(
+            language, normalized_language, sizeof(normalized_language))) {
+      return false;
+    }
+    language = normalized_language;
+  }
+  features = params->features;
+  if (features != NULL &&
+      !my_font_shape_features_normalize(features, normalized_features,
+                                        sizeof(normalized_features))) {
+    return false;
+  }
+  if (features != NULL) {
+    features = normalized_features[0] != '\0' ? normalized_features : NULL;
   }
   return l->visual_boundaries_rtl == params->rtl &&
          l->visual_boundaries_script == params->script &&
          tl_shape_key_string_equal(l->visual_boundaries_language,
-                                   params->language,
+                                   language,
                                    MY_FONT_SHAPE_MAX_LANGUAGE_BYTES) &&
          tl_shape_key_string_equal(l->visual_boundaries_features,
-                                   params->features,
+                                   features,
                                    MY_FONT_SHAPE_MAX_FEATURE_BYTES);
 }
 
@@ -1024,19 +1409,44 @@ static void tl_boundaries_key_clear(my_text_layout_t* l) {
 static bool tl_boundaries_key_set(my_text_layout_t* l,
                                   const my_font_shape_params_t* params) {
   char* language = NULL;
+  char normalized_language[MY_FONT_SHAPE_MAX_LANGUAGE_BYTES + 1u];
+  const char* canonical_language = params->language;
   char* features = NULL;
+  char normalized_features[MY_FONT_SHAPE_MAX_FEATURE_BYTES + 1u];
+  const char* canonical_features;
   if (!tl_shape_params_valid(params)) {
     tl_boundaries_key_clear(l);
     return false;
   }
-  if (params->language != NULL) {
-    language = my_strdup(l->allocator, params->language);
+  if (canonical_language != NULL &&
+      !tl_shape_cache_normalize_language(
+          canonical_language, normalized_language,
+          sizeof(normalized_language))) {
+    tl_boundaries_key_clear(l);
+    return false;
   }
-  if (params->features != NULL) {
-    features = my_strdup(l->allocator, params->features);
+  if (canonical_language != NULL) canonical_language = normalized_language;
+  canonical_features = params->features;
+  if (canonical_features != NULL &&
+      !my_font_shape_features_normalize(canonical_features,
+                                        normalized_features,
+                                        sizeof(normalized_features))) {
+    tl_boundaries_key_clear(l);
+    return false;
   }
-  if ((params->language != NULL && language == NULL) ||
-      (params->features != NULL && features == NULL)) {
+  if (canonical_features != NULL) {
+    canonical_features = normalized_features[0] != '\0'
+                             ? normalized_features
+                             : NULL;
+  }
+  if (canonical_language != NULL) {
+    language = my_strdup(l->allocator, canonical_language);
+  }
+  if (canonical_features != NULL) {
+    features = my_strdup(l->allocator, canonical_features);
+  }
+  if ((canonical_language != NULL && language == NULL) ||
+      (canonical_features != NULL && features == NULL)) {
     my_mem_free(l->allocator, language);
     my_mem_free(l->allocator, features);
     tl_boundaries_key_clear(l);

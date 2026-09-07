@@ -77,6 +77,9 @@ void my_conf_destroy(my_conf_node_t* node);
 my_ret_t my_conf_object_set(my_conf_node_t* node, const char* key,
                             my_conf_node_t* child);
 
+/** @brief Remove and return an OBJECT child, transferring ownership. */
+my_conf_node_t* my_conf_object_take(my_conf_node_t* node, const char* key);
+
 /** @brief Append child to an ARRAY node (takes over the child). */
 my_ret_t my_conf_array_push(my_conf_node_t* node, my_conf_node_t* child);
 

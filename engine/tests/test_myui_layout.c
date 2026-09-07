@@ -1,6 +1,38 @@
 #include "test_framework.h"
 
+#include <stdint.h>
+
+#include "myc/my_darray.h"
 #include "myui/my_layout.h"
+
+TEST(darray_rejects_capacity_growth_overflow)
+{
+  my_darray_t array = {(void*)(uintptr_t)1, SIZE_MAX / 2u + 1u,
+                       SIZE_MAX / 2u + 1u, NULL};
+
+  ASSERT_EQ(my_darray_push(&array, NULL), MY_RET_OOM);
+  ASSERT_EQ(array.size, SIZE_MAX / 2u + 1u);
+  ASSERT_EQ(array.capacity, SIZE_MAX / 2u + 1u);
+  ASSERT_EQ(array.items, (void**)(uintptr_t)1);
+}
+
+TEST(darray_rejects_size_increment_overflow)
+{
+  my_darray_t array = {(void*)(uintptr_t)1, SIZE_MAX, SIZE_MAX, NULL};
+
+  ASSERT_EQ(my_darray_push(&array, NULL), MY_RET_OOM);
+  ASSERT_EQ(array.size, SIZE_MAX);
+  ASSERT_EQ(array.capacity, SIZE_MAX);
+  ASSERT_EQ(array.items, (void**)(uintptr_t)1);
+}
+
+TEST(darray_remove_does_not_wrap_last_index)
+{
+  my_darray_t array = {(void*)(uintptr_t)1, SIZE_MAX, SIZE_MAX, NULL};
+
+  ASSERT_EQ(my_darray_remove_at(&array, SIZE_MAX - 1u), MY_RET_OK);
+  ASSERT_EQ(array.size, SIZE_MAX - 1u);
+}
 
 TEST(layout_parser_rejects_unsafe_values)
 {
@@ -86,6 +118,9 @@ TEST(grid_layout_skips_invisible_and_floating_children)
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(darray_rejects_capacity_growth_overflow);
+    RUN_TEST(darray_rejects_size_increment_overflow);
+    RUN_TEST(darray_remove_does_not_wrap_last_index);
     RUN_TEST(layout_parser_rejects_unsafe_values);
     RUN_TEST(grid_layout_places_rows_in_linear_order);
     RUN_TEST(grid_layout_skips_invisible_and_floating_children);

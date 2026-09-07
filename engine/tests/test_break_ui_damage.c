@@ -5,6 +5,69 @@
 #include "myui/my_layout.h"
 #include "ui/myui_break_damage.h"
 
+TEST(rect_helpers_do_not_wrap_endpoints)
+{
+  my_rect_t right = {INT32_MAX - 4, 10, 10, 5};
+  my_rect_t lower = {20, INT32_MAX - 4, 5, 10};
+  my_rect_t normal = {INT32_MAX - 6, 10, 4, 5};
+  my_rect_t out = {0};
+
+  ASSERT_TRUE(my_rect_contains(&right, INT32_MAX - 1, 12));
+  ASSERT_TRUE(my_rect_contains(&right, INT32_MAX, 12));
+  ASSERT_TRUE(my_rect_intersect(&right, &normal, &out));
+  ASSERT_EQ(out.x, INT32_MAX - 4);
+  ASSERT_EQ(out.w, 2);
+  my_rect_union(&right, &normal, &out);
+  ASSERT_EQ(out.x, INT32_MAX - 6);
+  ASSERT_EQ(out.w, 12);
+  ASSERT_FALSE(my_rect_intersect(&right, &lower, NULL));
+}
+
+TEST(dirty_rect_merge_does_not_wrap_endpoints)
+{
+  my_dirty_rects_t damage;
+  const my_rect_t *rect;
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage,
+                               &(my_rect_t){INT32_MAX - 8, 0, 6, 4}),
+            MY_RET_OK);
+  ASSERT_EQ(my_dirty_rects_add(&damage,
+                               &(my_rect_t){INT32_MAX - 2, 0, 4, 4}),
+            MY_RET_OK);
+  ASSERT_EQ(my_dirty_rects_count(&damage), 1u);
+  rect = my_dirty_rects_get(&damage, 0);
+  ASSERT_NOT_NULL(rect);
+  ASSERT_EQ(rect->x, INT32_MAX - 8);
+  ASSERT_EQ(rect->w, 10);
+}
+
+TEST(rect_helpers_handle_negative_and_saturated_extents)
+{
+  my_rect_t left = {INT32_MIN, -20, 20, 10};
+  my_rect_t crossing = {INT32_MAX - 2, 4, 10, 5};
+  my_rect_t overlap = {INT32_MAX - 1, 4, 10, 5};
+  my_rect_t out = {0};
+
+  ASSERT_TRUE(my_rect_contains(&left, INT32_MIN, -20));
+  ASSERT_TRUE(my_rect_contains(&left, INT32_MIN + 19, -11));
+  ASSERT_FALSE(my_rect_contains(&left, INT32_MIN + 20, -11));
+  ASSERT_TRUE(my_rect_intersect(&crossing, &overlap, &out));
+  ASSERT_EQ(out.x, INT32_MAX - 1);
+  ASSERT_EQ(out.w, 9);
+  my_rect_union(&left, &crossing, &out);
+  ASSERT_EQ(out.x, INT32_MIN);
+  ASSERT_EQ(out.w, INT32_MAX);
+}
+
+TEST(rect_centering_does_not_wrap_coordinates)
+{
+  ASSERT_EQ(my_rect_center_axis_i32(INT32_MAX - 10, 20, 10),
+            INT32_MAX - 5);
+  ASSERT_EQ(my_rect_center_axis_i32(INT32_MAX - 2, 20, 2), INT32_MAX);
+  ASSERT_EQ(my_rect_center_axis_i32(INT32_MIN + 2, 20, 2), INT32_MIN + 11);
+  ASSERT_EQ(my_rect_center_axis_i32(10, 20, 40), 0);
+}
+
 typedef struct failing_allocator_ctx_t {
   bool fail;
 } failing_allocator_ctx_t;
@@ -198,6 +261,7 @@ TEST(surface_composite_requires_all_retention_capabilities)
   options.drawable_height = 200;
   options.retained_surface_valid = true;
   options.present_target_preserved = true;
+  options.present_damage_supported = true;
   options.scissor_supported = true;
 
   ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
@@ -212,10 +276,82 @@ TEST(surface_composite_requires_all_retention_capabilities)
   ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
 
   options.present_target_preserved = true;
+  options.present_damage_supported = true;
   options.scissor_supported = false;
   ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options, &decision));
   ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
   my_dirty_rects_clear(&damage);
+}
+
+TEST(surface_composite_requires_present_damage_capability)
+{
+  my_dirty_rects_t damage;
+  break_ui_surface_composite_options_t options = {0};
+  break_ui_surface_composite_decision_t decision;
+
+  my_dirty_rects_init(&damage);
+  ASSERT_EQ(my_dirty_rects_add(&damage, &(my_rect_t){10, 10, 10, 10}),
+            MY_RET_OK);
+  options.logical_width = 100;
+  options.logical_height = 100;
+  options.drawable_width = 200;
+  options.drawable_height = 200;
+  options.retained_surface_valid = true;
+  options.present_target_preserved = true;
+  options.present_damage_supported = false;
+  options.scissor_supported = true;
+  ASSERT_TRUE(break_ui_surface_composite_decide(&damage, &options,
+                                                &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_COMPOSITE_FULL);
+  my_dirty_rects_clear(&damage);
+}
+
+TEST(present_frame_requires_all_partial_capabilities)
+{
+  break_ui_present_frame_decision_t decision;
+  RHIPresentRect damage = {10, 10, 10u, 10u};
+
+  ASSERT_TRUE(break_ui_present_frame_decide(
+      true, true, true, true, false, &damage, 1u, 100u, 100u, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_PRESENT_FRAME_PARTIAL);
+  ASSERT_TRUE(decision.partial_active);
+
+  ASSERT_TRUE(break_ui_present_frame_decide(
+      true, true, true, false, false, &damage, 1u, 100u, 100u, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_PRESENT_FRAME_FULL);
+  ASSERT_FALSE(decision.partial_active);
+}
+
+TEST(present_frame_skips_only_when_damage_is_empty_and_preserved)
+{
+  break_ui_present_frame_decision_t decision;
+
+  ASSERT_TRUE(break_ui_present_frame_decide(
+      true, true, true, true, false, NULL, 0u, 100u, 100u, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_PRESENT_FRAME_SKIP);
+
+  ASSERT_TRUE(break_ui_present_frame_decide(
+      true, false, true, true, false, NULL, 0u, 100u, 100u, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_PRESENT_FRAME_FULL);
+}
+
+TEST(present_frame_does_not_skip_buffer_age_history)
+{
+  break_ui_present_frame_decision_t decision;
+
+  ASSERT_TRUE(break_ui_present_frame_decide(
+      true, true, true, true, true, NULL, 0u, 100u, 100u, &decision));
+  ASSERT_EQ(decision.mode, BREAK_UI_PRESENT_FRAME_PARTIAL);
+  ASSERT_TRUE(decision.partial_active);
+}
+
+TEST(present_frame_rejects_invalid_damage)
+{
+  break_ui_present_frame_decision_t decision;
+  RHIPresentRect invalid = {-1, 0, 1u, 1u};
+
+  ASSERT_FALSE(break_ui_present_frame_decide(
+      true, true, true, true, false, &invalid, 1u, 100u, 100u, &decision));
 }
 
 TEST(surface_composite_skips_empty_damage_only_when_target_is_preserved)
@@ -228,6 +364,7 @@ TEST(surface_composite_skips_empty_damage_only_when_target_is_preserved)
       .drawable_height = 200,
       .retained_surface_valid = true,
       .present_target_preserved = true,
+      .present_damage_supported = true,
       .scissor_supported = true};
   break_ui_surface_composite_decision_t decision;
 
@@ -249,6 +386,7 @@ TEST(surface_composite_merges_fragmented_or_large_damage_to_fullscreen)
       .drawable_height = 100,
       .retained_surface_valid = true,
       .present_target_preserved = true,
+      .present_damage_supported = true,
       .scissor_supported = true,
       .max_damage_rects = 2,
       .max_scissor_area_percent = 50};
@@ -278,6 +416,7 @@ TEST(surface_composite_area_threshold_does_not_overflow)
       .drawable_height = UINT32_MAX,
       .retained_surface_valid = true,
       .present_target_preserved = true,
+      .present_damage_supported = true,
       .scissor_supported = true};
   break_ui_surface_composite_decision_t decision;
 
@@ -658,6 +797,10 @@ TEST(paint_child_snapshot_handles_tree_mutation)
 }
 
 TEST_MAIN_BEGIN()
+    RUN_TEST(rect_helpers_do_not_wrap_endpoints);
+    RUN_TEST(dirty_rect_merge_does_not_wrap_endpoints);
+    RUN_TEST(rect_helpers_handle_negative_and_saturated_extents);
+    RUN_TEST(rect_centering_does_not_wrap_coordinates);
     RUN_TEST(collects_damage_from_all_windows);
     RUN_TEST(expands_damage_across_overlapping_stack);
     RUN_TEST(structural_window_changes_invalidate_shared_surface);
@@ -675,6 +818,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(damage_scissor_clips_outside_logical_surface);
     RUN_TEST(empty_damage_has_no_drawable_scissor);
     RUN_TEST(surface_composite_requires_all_retention_capabilities);
+    RUN_TEST(surface_composite_requires_present_damage_capability);
+    RUN_TEST(present_frame_requires_all_partial_capabilities);
+    RUN_TEST(present_frame_skips_only_when_damage_is_empty_and_preserved);
+    RUN_TEST(present_frame_does_not_skip_buffer_age_history);
+    RUN_TEST(present_frame_rejects_invalid_damage);
     RUN_TEST(surface_composite_skips_empty_damage_only_when_target_is_preserved);
     RUN_TEST(surface_composite_merges_fragmented_or_large_damage_to_fullscreen);
     RUN_TEST(surface_composite_area_threshold_does_not_overflow);

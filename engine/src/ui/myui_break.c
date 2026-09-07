@@ -8,6 +8,8 @@
 #include "mypal/break/my_pal_break.h"
 #include "mypal/my_event.h"
 #include "myr/my_vgcanvas_break_rhi.h"
+#include "myr/my_vgcanvas_break_rhi_internal.h"
+#include "myr/my_ui_metrics.h"
 #include "myui/my_window.h"
 #include "myui/my_window_manager.h"
 #include "platform/input.h"
@@ -35,6 +37,9 @@ struct BreakUI {
   bool prev_has_mouse;
   bool surface_valid;
   bool present_partial_active;
+  bool frame_partial_active;
+  bool metrics_frame_open;
+  u64 media_generation;
   RHICapabilities rhi_caps;
   my_dirty_rects_t *dirty_snapshots;
   size_t dirty_snapshot_capacity;
@@ -62,6 +67,16 @@ static char *break_ui_read_shader(const char *path, usize *out_len) {
     }
   }
   return NULL;
+}
+
+static void break_ui_finish_metrics(BreakUI *ui, bool success) {
+  if (ui == NULL || !ui->metrics_frame_open) return;
+  if (success) {
+    my_ui_metrics_end_frame();
+  } else {
+    my_ui_metrics_abort_frame();
+  }
+  ui->metrics_frame_open = false;
 }
 
 static RHIPipeline break_ui_create_composite_pipeline(RHIDevice *device) {
@@ -171,6 +186,9 @@ static bool break_ui_ensure_dirty_snapshots(BreakUI *ui, size_t count) {
   }
   if (count <= ui->dirty_snapshot_capacity) {
     return true;
+  }
+  if (count > SIZE_MAX / sizeof(*snapshots)) {
+    return false;
   }
   snapshots = (my_dirty_rects_t *)realloc(
       ui->dirty_snapshots, count * sizeof(my_dirty_rects_t));
@@ -322,8 +340,10 @@ static void break_ui_on_window_open(struct my_window_manager_t *wm,
     my_widget_t *below_root = (my_widget_t *)below;
     my_widget_t *root = (my_widget_t *)win;
     my_rect_t bounds = root->rect;
-    bounds.x = below_root->rect.x + (below_root->rect.w - root->rect.w) / 2;
-    bounds.y = below_root->rect.y + (below_root->rect.h - root->rect.h) / 2;
+    bounds.x = my_rect_center_axis_i32(
+        below_root->rect.x, below_root->rect.w, root->rect.w);
+    bounds.y = my_rect_center_axis_i32(
+        below_root->rect.y, below_root->rect.h, root->rect.h);
     (void)my_widget_set_rect(root, &bounds);
     (void)my_pal_window_move(win->pal_window, bounds.x, bounds.y);
   }
@@ -359,8 +379,8 @@ bool break_ui_init_with_fonts(BreakUI *ui, Platform *platform,
                               const my_font_source_t *font_sources,
                               size_t font_source_count, u32 width,
                               u32 height) {
-  if (ui == NULL || platform == NULL || device == NULL || width == 0 ||
-      height == 0) {
+  if (ui == NULL || platform == NULL || device == NULL ||
+      !break_ui_dimensions_fit_myui(width, height)) {
     return false;
   }
   memset(ui, 0, sizeof(*ui));
@@ -422,6 +442,7 @@ bool break_ui_init_with_fonts(BreakUI *ui, Platform *platform,
     break_ui_shutdown(ui);
     return false;
   }
+  ui->media_generation = platform_get_media_generation(platform);
   return true;
 }
 
@@ -441,6 +462,7 @@ bool break_ui_init(BreakUI *ui, Platform *platform, RHIDevice *device,
 
 void break_ui_shutdown(BreakUI *ui) {
   if (ui == NULL) return;
+  break_ui_finish_metrics(ui, false);
   if (ui->wm != NULL) {
     my_window_manager_destroy(ui->wm);
     ui->wm = NULL;
@@ -475,14 +497,93 @@ void break_ui_pump(BreakUI *ui) {
   InputState *input;
   if (ui == NULL || ui->platform == NULL || ui->window == NULL) return;
   (void)my_pal_break_pump(ui->loop);
+  break_ui_refresh_media(ui);
   input = platform_input(ui->platform);
   pump_keys(ui, input);
   pump_mouse(ui, input);
   pump_text(ui);
 }
 
+void break_ui_refresh_media(BreakUI *ui) {
+  u64 generation;
+  bool changed;
+  my_ret_t ret;
+  if (ui == NULL || ui->platform == NULL || ui->wm == NULL) return;
+  generation = platform_get_media_generation(ui->platform);
+  if (generation == 0u || generation == ui->media_generation) return;
+  ret = my_window_manager_refresh_media_ex(ui->wm, &changed);
+  if (ret == MY_RET_OK) ui->media_generation = generation;
+}
+
+RHICmdBuffer *break_ui_frame_begin(BreakUI *ui, u32 width, u32 height,
+                                   bool *out_skip, bool *out_partial) {
+  RHIPresentRect damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
+  break_ui_present_frame_decision_t decision;
+  u32 damage_count = 0u;
+  bool partial = false;
+  RHICmdBuffer *cmd;
+
+  if (out_skip != NULL) *out_skip = false;
+  if (out_partial != NULL) *out_partial = false;
+  if (ui != NULL) break_ui_finish_metrics(ui, false);
+  if (ui == NULL || ui->device == NULL ||
+      !break_ui_dimensions_fit_myui(width, height)) {
+    return NULL;
+  }
+  if (ui->present_partial_active &&
+      !break_ui_get_present_damage(ui, width, height, damage,
+                                   RHI_MAX_PRESENT_DAMAGE_RECTS,
+                                   &damage_count)) {
+    damage[0] = (RHIPresentRect){0, 0, width, height};
+    damage_count = 1u;
+  }
+  if (!ui->present_partial_active) {
+    damage[0] = (RHIPresentRect){0, 0, width, height};
+    damage_count = 1u;
+  }
+  if (!break_ui_present_frame_decide(
+          ui->present_partial_active, ui->surface_valid,
+          ui->rhi_caps.present_target_preserved,
+          ui->rhi_caps.present_damage_supported,
+          ui->rhi_caps.present_buffer_age_supported, damage, damage_count,
+          width, height, &decision)) {
+    break_ui_finish_metrics(ui, false);
+    return NULL;
+  }
+  if (decision.mode == BREAK_UI_PRESENT_FRAME_SKIP) {
+    break_ui_finish_metrics(ui, false);
+    ui->frame_partial_active = false;
+    if (out_skip != NULL) *out_skip = true;
+    return NULL;
+  }
+  if (decision.mode == BREAK_UI_PRESENT_FRAME_PARTIAL) {
+    cmd = rhi_frame_begin_damage(ui->device, damage, damage_count, &partial);
+  } else {
+    cmd = rhi_frame_begin(ui->device);
+  }
+  ui->frame_partial_active = cmd != NULL && partial;
+  if (cmd != NULL) {
+    /* Keep layout, damage and nested canvas work in one host frame. */
+    break_ui_finish_metrics(ui, false);
+    my_ui_metrics_begin_frame();
+    ui->metrics_frame_open = true;
+  } else {
+    break_ui_finish_metrics(ui, false);
+  }
+  if (out_partial != NULL) *out_partial = ui->frame_partial_active;
+  return cmd;
+}
+
 my_ret_t break_ui_set_antialias_level(BreakUI *ui, int level) {
+  my_vgcanvas_capabilities_t caps;
+  int pending;
   if (ui == NULL || ui->vg == NULL) return MY_RET_INVALID_PARAMS;
+  pending = my_vgcanvas_break_rhi_pending_antialias_level(ui->vg);
+  if (pending >= 0 && my_vgcanvas_get_capabilities(ui->vg, &caps) == MY_RET_OK &&
+      my_vgcanvas_break_rhi_pending_after_request(
+          (int)caps.active_antialias_level, pending, level) < 0) {
+    my_vgcanvas_break_rhi_cancel_pending_antialias_level(ui->vg);
+  }
   return my_vgcanvas_set_antialias_level(ui->vg, level);
 }
 
@@ -494,10 +595,15 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   bool force_full_composite;
   my_dirty_rects_t composite_damage;
   bool composite_damage_available = false;
+  bool metrics_success = true;
   break_ui_surface_composite_decision_t composite_decision;
   /* The injected canvas is resized here; windows only receive the layout
    * resize event and never destroy or resize the shared RHI target. */
-  if (ui == NULL || ui->window == NULL || ui->vg == NULL || cmd == NULL) return;
+  if (ui == NULL || ui->window == NULL || ui->vg == NULL || cmd == NULL ||
+      !break_ui_dimensions_fit_myui(width, height)) {
+    break_ui_finish_metrics(ui, false);
+    return;
+  }
   my_dirty_rects_init(&composite_damage);
   force_full_composite = !ui->surface_valid;
   platform_get_logical_size(ui->platform, &logical_width, &logical_height);
@@ -520,6 +626,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
             .color_format = RHI_FORMAT_R8G8B8A8_UNORM,
             .sample_count = sample_count});
     if (!rhi_handle_valid(candidate.fb)) {
+      break_ui_finish_metrics(ui, false);
       return;
     }
     ui->surface_fbo = candidate;
@@ -586,6 +693,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
     size_t i;
     if (my_window_manager_snapshot_windows(ui->wm, &windows, &n) !=
         MY_RET_OK) {
+      break_ui_finish_metrics(ui, false);
       return;
     }
     if (n == 0) {
@@ -597,6 +705,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
     for (i = 0; i < n; i++) {
       if (my_window_prepare_layout(windows[i]) != MY_RET_OK) {
         my_window_manager_release_snapshot(ui->wm, windows, n);
+        break_ui_finish_metrics(ui, false);
         return;
       }
       if (my_window_manager_windows_epoch(ui->wm) != epoch) {
@@ -611,6 +720,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
     if (my_dirty_rects_count(&damage) > 0) {
       if (!break_ui_ensure_dirty_snapshots(ui, n)) {
         my_window_manager_release_snapshot(ui->wm, windows, n);
+        break_ui_finish_metrics(ui, false);
         return;
       }
       break_ui_expand_surface_damage_for_windows(windows, n, &damage);
@@ -641,12 +751,14 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
         if (frame_ok) {
           ui->surface_valid = true;
         } else {
+          metrics_success = false;
           break_ui_restore_surface_dirty_for_windows(windows, n,
                                                      ui->dirty_snapshots);
           ui->surface_valid = false;
           break_ui_invalidate_all_windows(ui->wm);
         }
       } else {
+        metrics_success = false;
         break_ui_restore_surface_dirty_for_windows(windows, n,
                                                    ui->dirty_snapshots);
         ui->surface_valid = false;
@@ -660,7 +772,7 @@ void break_ui_render(BreakUI *ui, RHICmdBuffer *cmd, u32 width, u32 height) {
   }
 composite_surface:
   if (ui->surface_valid) {
-    if (ui->present_partial_active) {
+    if (ui->frame_partial_active) {
       RHIPresentRect effective_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
       u32 effective_count = 0u;
       u32 i;
@@ -685,15 +797,16 @@ composite_surface:
         .drawable_height = height,
         .retained_surface_valid = ui->surface_valid,
         .present_target_preserved =
-            ui->rhi_caps.present_target_preserved && ui->present_partial_active &&
+            ui->rhi_caps.present_target_preserved && ui->frame_partial_active &&
             !force_full_composite,
+        .present_damage_supported = ui->rhi_caps.present_damage_supported,
         .scissor_supported = ui->rhi_caps.scissor_supported};
     if (!composite_damage_available) {
       my_dirty_rects_init(&composite_damage);
     }
     (void)break_ui_surface_composite_decide(
         &composite_damage, &composite_options, &composite_decision);
-    if (composite_decision.mode == BREAK_UI_COMPOSITE_SKIP) return;
+    if (composite_decision.mode == BREAK_UI_COMPOSITE_SKIP) goto metrics_done;
     if (composite_decision.mode == BREAK_UI_COMPOSITE_PARTIAL) {
       rhi_cmd_set_scissor_top_left(cmd, composite_decision.scissor.x,
                                    composite_decision.scissor.y,
@@ -710,6 +823,8 @@ composite_surface:
       rhi_cmd_set_scissor_top_left(cmd, 0, 0, width, height);
     }
   }
+metrics_done:
+  break_ui_finish_metrics(ui, metrics_success);
 }
 
 bool break_ui_get_present_damage(BreakUI *ui, u32 width, u32 height,
@@ -719,7 +834,7 @@ bool break_ui_get_present_damage(BreakUI *ui, u32 width, u32 height,
   break_ui_damage_scissor_t scissor;
 
   if (out_count == NULL || ui == NULL || ui->platform == NULL ||
-      ui->vg == NULL || width == 0u || height == 0u) {
+      ui->vg == NULL || !break_ui_dimensions_fit_myui(width, height)) {
     return false;
   }
   *out_count = 0u;

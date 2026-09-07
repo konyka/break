@@ -28,6 +28,18 @@ typedef struct my_node_t {
   bool auto_h;          /**< height tracks the content (M21b) */
 } my_node_t;
 
+static const my_widget_vtable_t s_node_vtable;
+
+bool my_node_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_node_vtable;
+}
+
+void my_node_detach_view(my_widget_t* node) {
+  if (my_node_is_instance(node)) {
+    ((my_node_t*)node)->view = NULL;
+  }
+}
+
 /* auto-size layout constants (M21b) */
 #define MY_NODE_MARGIN 8    /**< side/bottom padding */
 #define MY_NODE_MIN_W 80    /**< auto width floor */
@@ -84,12 +96,16 @@ static int32_t node_text_w(my_widget_t* node, const char* text,
   if (font != NULL && my_font_measure(font, text, pt, &w, &h) == MY_RET_OK) {
     return w;
   }
-  return (int32_t)strlen(text) * 7;
+  {
+    size_t length = strlen(text);
+    return length > (size_t)(INT32_MAX / 7) ? INT32_MAX
+                                           : (int32_t)(length * 7u);
+  }
 }
 
 void my_node_set_auto_size(my_widget_t* node, bool auto_w, bool auto_h) {
   my_node_t* n;
-  if (node == NULL) {
+  if (!my_node_is_instance(node)) {
     return;
   }
   n = (my_node_t*)node;
@@ -101,10 +117,12 @@ void my_node_auto_size(my_widget_t* node) {
   my_node_t* n;
   size_t i, cnt;
   size_t in_cnt, out_cnt, rows;
-  int32_t w = MY_NODE_MIN_W;
+  int64_t w64 = MY_NODE_MIN_W;
+  int64_t h64;
+  int32_t w;
   int32_t h;
   bool changed = false;
-  if (node == NULL) {
+  if (!my_node_is_instance(node)) {
     return;
   }
   n = (my_node_t*)node;
@@ -112,10 +130,10 @@ void my_node_auto_size(my_widget_t* node) {
     return; /* explicit size always wins */
   }
   if (n->title != NULL) {
-    int32_t tw = node_text_w(node, n->title, MY_NODE_TITLE_PT) +
+    int64_t tw = (int64_t)node_text_w(node, n->title, MY_NODE_TITLE_PT) +
                  2 * MY_NODE_MARGIN;
-    if (tw > w) {
-      w = tw;
+    if (tw > w64) {
+      w64 = tw;
     }
   }
   cnt = my_darray_size(n->sockets);
@@ -128,7 +146,7 @@ void my_node_auto_size(my_widget_t* node) {
     size_t ri;
     for (ri = 0; ri < rows; ri++) {
       size_t seen_in = 0, seen_out = 0;
-      int32_t rw = 0;
+      int64_t rw = 0;
       bool has_in = false, has_out = false;
       for (i = 0; i < cnt; i++) {
         node_socket_t* s = (node_socket_t*)my_darray_get(n->sockets, i);
@@ -147,26 +165,28 @@ void my_node_auto_size(my_widget_t* node) {
         rw += MY_NODE_MARGIN; /* inner gap between the two labels */
       }
       rw += 2 * MY_NODE_MARGIN;
-      if (rw > w) {
-        w = rw;
+      if (rw > w64) {
+        w64 = rw;
       }
     }
   }
-  h = MY_NODE_HEADER_H + (int32_t)rows * MY_NODE_ROW_H;
+  h64 = (int64_t)MY_NODE_HEADER_H + (int64_t)rows * MY_NODE_ROW_H;
   /* embedded children (declared rects): widen/lower to contain them */
   cnt = my_widget_child_count(node);
   for (i = 0; i < cnt; i++) {
     my_widget_t* ch = my_widget_get_child(node, i);
-    int32_t cw = ch->rect.x + ch->rect.w + MY_NODE_MARGIN;
-    int32_t cb = ch->rect.y + ch->rect.h;
-    if (cw > w) {
-      w = cw;
+    int64_t cw = (int64_t)ch->rect.x + ch->rect.w + MY_NODE_MARGIN;
+    int64_t cb = (int64_t)ch->rect.y + ch->rect.h;
+    if (cw > w64) {
+      w64 = cw;
     }
-    if (cb > h) {
-      h = cb;
+    if (cb > h64) {
+      h64 = cb;
     }
   }
-  h += MY_NODE_MARGIN;
+  h64 += MY_NODE_MARGIN;
+  w = w64 > INT32_MAX ? INT32_MAX : w64 < 0 ? 0 : (int32_t)w64;
+  h = h64 > INT32_MAX ? INT32_MAX : h64 < 0 ? 0 : (int32_t)h64;
   {
     my_rect_t rect = node->rect;
     if (n->auto_w) {
@@ -377,7 +397,8 @@ my_ret_t my_node_add_socket(my_widget_t* node, my_socket_dir_t dir,
                             const char* name, uint32_t type_color) {
   my_node_t* n = (my_node_t*)node;
   node_socket_t* s;
-  if (node == NULL) {
+  if (!my_node_is_instance(node) ||
+      (dir != MY_SOCKET_IN && dir != MY_SOCKET_OUT)) {
     return MY_RET_INVALID_PARAMS;
   }
   s = (node_socket_t*)my_mem_calloc(((my_object_t*)node)->allocator, 1,
@@ -405,7 +426,7 @@ my_ret_t my_node_add_socket(my_widget_t* node, my_socket_dir_t dir,
 size_t my_node_socket_count(const my_widget_t* node, my_socket_dir_t dir) {
   const my_node_t* n = (const my_node_t*)node;
   size_t i, cnt, hit = 0;
-  if (node == NULL) {
+  if (!my_node_is_instance(node)) {
     return 0;
   }
   cnt = my_darray_size(n->sockets);
@@ -422,7 +443,7 @@ bool my_node_socket_center(const my_widget_t* node, my_socket_dir_t dir,
                            size_t slot, int32_t* out_x, int32_t* out_y) {
   const my_node_t* n = (const my_node_t*)node;
   size_t i, cnt, seen = 0;
-  if (node == NULL) {
+  if (!my_node_is_instance(node) || out_x == NULL || out_y == NULL) {
     return false;
   }
   cnt = my_darray_size(n->sockets);
@@ -430,10 +451,12 @@ bool my_node_socket_center(const my_widget_t* node, my_socket_dir_t dir,
     const node_socket_t* s = (const node_socket_t*)my_darray_get(n->sockets, i);
     if (s->dir == dir) {
       if (seen == slot) {
-        *out_x = node->rect.x +
-                 (dir == MY_SOCKET_IN ? 0 : node->rect.w);
-        *out_y = node->rect.y + MY_NODE_HEADER_H + (int32_t)slot * MY_NODE_ROW_H +
-                 MY_NODE_ROW_H / 2;
+        *out_x = my_rect_offset_i32(
+            node->rect.x, dir == MY_SOCKET_IN ? 0 : node->rect.w);
+        *out_y = my_rect_offset_i32(
+            node->rect.y, (int64_t)MY_NODE_HEADER_H +
+                              (int64_t)slot * MY_NODE_ROW_H +
+                              MY_NODE_ROW_H / 2);
         return true;
       }
       seen++;
@@ -443,14 +466,14 @@ bool my_node_socket_center(const my_widget_t* node, my_socket_dir_t dir,
 }
 
 const char* my_node_get_id(const my_widget_t* node) {
-  return node != NULL ? ((const my_node_t*)node)->id : NULL;
+  return my_node_is_instance(node) ? ((const my_node_t*)node)->id : NULL;
 }
 
 uint32_t my_node_socket_type_color(const my_widget_t* node,
                                    my_socket_dir_t dir, size_t slot) {
   const my_node_t* n;
   size_t i, cnt, seen = 0;
-  if (node == NULL) {
+  if (!my_node_is_instance(node)) {
     return 0;
   }
   n = (const my_node_t*)node;

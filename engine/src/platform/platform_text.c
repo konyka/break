@@ -29,6 +29,50 @@ static usize utf8_sequence_length(const unsigned char *text) {
     return 1;
 }
 
+bool platform_utf8_validate(const char *text, usize length) {
+    const unsigned char *bytes = (const unsigned char *)text;
+    usize offset = 0;
+
+    if (text == NULL) return length == 0;
+    while (offset < length) {
+        unsigned char first = bytes[offset];
+        usize sequence_length;
+        if (first < 0x80u) {
+            if (first == 0u) return false;
+            sequence_length = 1u;
+        } else if (first >= 0xC2u && first <= 0xDFu) {
+            if (length - offset < 2u ||
+                bytes[offset + 1u] < 0x80u ||
+                bytes[offset + 1u] > 0xBFu) return false;
+            sequence_length = 2u;
+        } else if (first >= 0xE0u && first <= 0xEFu) {
+            if (length - offset < 3u ||
+                bytes[offset + 1u] < 0x80u ||
+                bytes[offset + 1u] > 0xBFu ||
+                bytes[offset + 2u] < 0x80u ||
+                bytes[offset + 2u] > 0xBFu ||
+                (first == 0xE0u && bytes[offset + 1u] < 0xA0u) ||
+                (first == 0xEDu && bytes[offset + 1u] >= 0xA0u)) return false;
+            sequence_length = 3u;
+        } else if (first >= 0xF0u && first <= 0xF4u) {
+            if (length - offset < 4u ||
+                bytes[offset + 1u] < 0x80u ||
+                bytes[offset + 1u] > 0xBFu ||
+                bytes[offset + 2u] < 0x80u ||
+                bytes[offset + 2u] > 0xBFu ||
+                bytes[offset + 3u] < 0x80u ||
+                bytes[offset + 3u] > 0xBFu ||
+                (first == 0xF0u && bytes[offset + 1u] < 0x90u) ||
+                (first == 0xF4u && bytes[offset + 1u] >= 0x90u)) return false;
+            sequence_length = 4u;
+        } else {
+            return false;
+        }
+        offset += sequence_length;
+    }
+    return true;
+}
+
 static usize utf8_prefix_length(const char *text, usize capacity) {
     usize offset = 0;
     while (text[offset] != '\0') {

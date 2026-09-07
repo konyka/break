@@ -7,7 +7,8 @@
  * triangulated on the CPU (rects -> 2 triangles, rounded corners -> fans,
  * path fill -> even-odd scanline spans batched as triangles, strokes ->
  * segment quads) and submitted as small batches with a single pos+color
- * program. No anti-aliasing, draw_text NOT_SUPPORTED (same as soft).
+ * program. Text uses the shared glyph texture path; anti-aliasing is
+ * negotiated separately from this geometry backend.
  */
 #ifndef MY_VGCANVAS_GLES2_H
 #define MY_VGCANVAS_GLES2_H

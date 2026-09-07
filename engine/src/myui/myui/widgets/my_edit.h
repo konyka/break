@@ -47,6 +47,7 @@ typedef struct my_edit_t {
 } my_edit_t;
 
 my_widget_t* my_edit_create(const my_allocator_t* allocator);
+bool my_edit_is_instance(const my_widget_t* widget);
 
 /** @brief Set text (cursor moves to end, selection cleared). No "changed". */
 my_ret_t my_edit_set_text(my_widget_t* edit, const char* text);

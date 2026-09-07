@@ -11,6 +11,18 @@ static void record_failure(const char *message)
     g_test_fail++;
 }
 
+TEST(platform_create_rejects_invalid_configuration_before_native_calls)
+{
+    const PlatformConfig zero_width = {0, 240, "break invalid"};
+    const PlatformConfig oversized = {
+        PLATFORM_MAX_WINDOW_DIMENSION + 1u, 240, "break invalid"
+    };
+
+    ASSERT_EQ(platform_create(NULL), NULL);
+    ASSERT_EQ(platform_create(&zero_width), NULL);
+    ASSERT_EQ(platform_create(&oversized), NULL);
+}
+
 TEST(invalid_utf8_title_is_rejected_without_creating_a_window)
 {
     const char invalid_utf8[] = "\xE4\xB8";
@@ -310,11 +322,177 @@ TEST(gamepad_init_is_idempotent)
     platform_destroy(platform);
 }
 
+TEST(media_context_reports_windows_preferences_when_queryable)
+{
+    PlatformConfig config = {320, 240, "break media"};
+    Platform *platform = platform_create(&config);
+    PlatformMediaContext media;
+    HKEY personalize = NULL;
+    DWORD expected_theme = 0;
+    DWORD expected_theme_size = sizeof(expected_theme);
+    DWORD expected_theme_type = 0;
+    bool theme_queryable =
+        RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_READ, &personalize) == ERROR_SUCCESS &&
+        RegQueryValueExW(personalize, L"AppsUseLightTheme", NULL,
+                         &expected_theme_type, (LPBYTE)&expected_theme,
+                         &expected_theme_size) == ERROR_SUCCESS &&
+        expected_theme_type == REG_DWORD &&
+        expected_theme_size == sizeof(expected_theme);
+    BOOL animations_enabled = TRUE;
+    bool reduce_motion_queryable;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    reduce_motion_queryable = SystemParametersInfoW(
+        SPI_GETCLIENTAREAANIMATION, 0, &animations_enabled, 0) != FALSE;
+    if (!platform_get_media_context(platform, &media)) {
+        record_failure("platform_get_media_context failed");
+    } else {
+        if (theme_queryable &&
+            ((media.known & PLATFORM_MEDIA_KNOWN_COLOR_SCHEME) == 0u ||
+             media.prefers_dark != (expected_theme == 0u))) {
+            record_failure("Windows color-scheme media fact is incorrect");
+        }
+        if (reduce_motion_queryable &&
+            ((media.known & PLATFORM_MEDIA_KNOWN_REDUCED_MOTION) == 0u ||
+             media.prefers_reduced_motion != (animations_enabled == FALSE))) {
+            record_failure("Windows reduced-motion media fact is incorrect");
+        }
+    }
+    if (personalize != NULL) RegCloseKey(personalize);
+    platform_destroy(platform);
+}
+
+TEST(media_context_pointer_capabilities_follow_windows_metrics)
+{
+    PlatformConfig config = {320, 240, "break pointer media"};
+    Platform *platform = platform_create(&config);
+    PlatformMediaContext media;
+    bool mouse_present;
+    bool touch_present = false;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    mouse_present = GetSystemMetrics(SM_MOUSEPRESENT) != 0;
+#ifdef SM_DIGITIZER
+    touch_present = (GetSystemMetrics(SM_DIGITIZER) &
+                     (NID_INTEGRATED_TOUCH | NID_EXTERNAL_TOUCH)) != 0;
+#endif
+    if (!platform_get_media_context(platform, &media)) {
+        record_failure("platform_get_media_context failed");
+    } else {
+        if ((media.known & PLATFORM_MEDIA_KNOWN_POINTER) == 0u ||
+            (media.known & PLATFORM_MEDIA_KNOWN_ANY_POINTER) == 0u) {
+            record_failure("Windows pointer facts are not known");
+        }
+        if (mouse_present !=
+            ((media.capabilities & PLATFORM_MEDIA_CAP_POINTER_FINE) != 0u) ||
+            mouse_present !=
+            ((media.capabilities & PLATFORM_MEDIA_CAP_HOVER) != 0u)) {
+            record_failure("Windows mouse capabilities are incorrect");
+        }
+        if (touch_present !=
+            ((media.capabilities & PLATFORM_MEDIA_CAP_ANY_POINTER_COARSE) != 0u)) {
+            record_failure("Windows touch capability is incorrect");
+        }
+    }
+    platform_destroy(platform);
+}
+
+TEST(media_context_hdr_capability_has_explicit_knowledge)
+{
+    PlatformConfig config = {320, 240, "break hdr media"};
+    Platform *platform = platform_create(&config);
+    PlatformMediaContext media;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    if (!platform_get_media_context(platform, &media)) {
+        record_failure("platform_get_media_context failed");
+    } else if ((media.capabilities & PLATFORM_MEDIA_CAP_HDR) != 0u &&
+               (media.known & PLATFORM_MEDIA_KNOWN_HDR) == 0u) {
+        record_failure("Windows HDR capability is not marked known");
+    }
+    platform_destroy(platform);
+}
+
+TEST(media_context_cache_invalidates_on_settings_change)
+{
+    PlatformConfig config = {320, 240, "break media invalidation"};
+    Platform *platform = platform_create(&config);
+    HWND hwnd;
+    PlatformMediaContext media;
+    u64 before;
+    u64 after;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    before = platform_get_media_generation(platform);
+    if (!platform_get_media_context(platform, &media)) {
+        record_failure("initial platform_get_media_context failed");
+    }
+    if (!PostMessageW(hwnd, WM_SETTINGCHANGE, 0, 0)) {
+        record_failure("PostMessageW(WM_SETTINGCHANGE) failed");
+    } else {
+        (void)platform_poll(platform);
+        after = platform_get_media_generation(platform);
+        if (after <= before) {
+            record_failure("settings change did not invalidate media generation");
+        }
+        if (!platform_get_media_context(platform, &media)) {
+            record_failure("refreshed platform_get_media_context failed");
+        }
+    }
+    platform_destroy(platform);
+}
+
+TEST(malformed_dpi_change_message_is_ignored)
+{
+    PlatformConfig config = {320, 240, "break malformed dpi"};
+    Platform *platform = platform_create(&config);
+    HWND hwnd;
+    u32 width = 0;
+    u32 height = 0;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    if (!PostMessageW(hwnd, WM_DPICHANGED, 0, 0)) {
+        record_failure("PostMessageW(WM_DPICHANGED) failed");
+    } else {
+        (void)platform_poll(platform);
+        platform_get_size(platform, &width, &height);
+        if (width == 0u || height == 0u) {
+            record_failure("malformed DPI message corrupted window size");
+        }
+    }
+    platform_destroy(platform);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(platform_create_rejects_invalid_configuration_before_native_calls);
     RUN_TEST(invalid_utf8_title_is_rejected_without_creating_a_window);
     RUN_TEST(real_window_preserves_title_size_and_destroys_cleanly);
     RUN_TEST(alt_f4_requests_close_through_default_system_key_handling);
     RUN_TEST(relative_mouse_mode_ignores_absolute_move_deltas);
     RUN_TEST(clipboard_read_bounds_unterminated_unicode_text);
     RUN_TEST(gamepad_init_is_idempotent);
+    RUN_TEST(media_context_reports_windows_preferences_when_queryable);
+    RUN_TEST(media_context_pointer_capabilities_follow_windows_metrics);
+    RUN_TEST(media_context_hdr_capability_has_explicit_knowledge);
+    RUN_TEST(media_context_cache_invalidates_on_settings_change);
+    RUN_TEST(malformed_dpi_change_message_is_ignored);
 TEST_MAIN_END()

@@ -20,6 +20,11 @@ typedef struct my_image_data_t {
 } my_image_data_t;
 
 typedef struct my_image_loader_t my_image_loader_t;
+typedef struct my_image_loader_lease_t my_image_loader_lease_t;
+
+/** @brief Releases a loader when the final lease reference is dropped. */
+typedef void (*my_image_loader_release_fn)(my_image_loader_t* loader,
+                                           void* context);
 
 /** @brief Image loader vtable. */
 typedef struct my_image_loader_vtable_t {
@@ -35,20 +40,45 @@ struct my_image_loader_t {
   const my_image_loader_vtable_t* vtable;
 };
 
+/** @brief O(1) validation for a complete loader vtable. */
+static inline bool my_image_loader_is_valid(const my_image_loader_t* loader) {
+  return loader != NULL && loader->vtable != NULL &&
+         loader->vtable->load != NULL && loader->vtable->free_data != NULL &&
+         loader->vtable->destroy != NULL;
+}
+
+/**
+ * @brief Reference-counted lifetime token for a loader.
+ *
+ * A lease owns only the lifetime contract supplied by `release`; it does not
+ * require a particular loader allocation strategy. The loader and its vtable
+ * must remain immutable while the lease is alive.
+ */
+my_image_loader_lease_t* my_image_loader_lease_create(
+    const my_allocator_t* allocator, my_image_loader_t* loader,
+    void* context, my_image_loader_release_fn release);
+my_image_loader_lease_t* my_image_loader_lease_ref(
+    my_image_loader_lease_t* lease);
+void my_image_loader_lease_unref(my_image_loader_lease_t* lease);
+my_image_loader_t* my_image_loader_lease_loader(
+    const my_image_loader_lease_t* lease);
+
 static inline my_image_data_t* my_image_loader_load(my_image_loader_t* loader,
                                                     const char* path) {
-  return loader->vtable->load(loader, path);
+  return my_image_loader_is_valid(loader) && path != NULL
+             ? loader->vtable->load(loader, path)
+             : NULL;
 }
 
 static inline void my_image_loader_free_data(my_image_loader_t* loader,
                                              my_image_data_t* data) {
-  if (data != NULL) {
+  if (data != NULL && my_image_loader_is_valid(loader)) {
     loader->vtable->free_data(loader, data);
   }
 }
 
 static inline void my_image_loader_destroy(my_image_loader_t* loader) {
-  if (loader != NULL) {
+  if (my_image_loader_is_valid(loader)) {
     loader->vtable->destroy(loader);
   }
 }

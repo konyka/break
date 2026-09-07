@@ -4,13 +4,105 @@
  */
 #include "myui/widgets/my_list_view.h"
 
+#include <float.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "myui/widgets/my_scroll_bar.h"
+#include "myc/my_ref_count.h"
 
 static void lv_sync_rows(my_list_view_t* lv);
+
+struct my_list_adapter_lease_t {
+  atomic_uint ref_count;
+  const my_allocator_t* allocator;
+  my_list_adapter_t* adapter;
+  void* context;
+  my_list_adapter_destroy_fn destroy;
+};
+
+my_list_adapter_lease_t* my_list_adapter_lease_create(
+    const my_allocator_t* allocator, my_list_adapter_t* adapter,
+    void* context, my_list_adapter_destroy_fn destroy) {
+  my_list_adapter_lease_t* lease;
+  if (adapter == NULL) {
+    return NULL;
+  }
+  lease = (my_list_adapter_lease_t*)my_mem_calloc(
+      allocator, 1u, sizeof(*lease));
+  if (lease == NULL) {
+    return NULL;
+  }
+  atomic_init(&lease->ref_count, 1u);
+  lease->allocator = allocator;
+  lease->adapter = adapter;
+  lease->context = context;
+  lease->destroy = destroy;
+  return lease;
+}
+
+my_list_adapter_lease_t* my_list_adapter_lease_ref(
+    my_list_adapter_lease_t* lease) {
+  if (lease != NULL) {
+    (void)my_ref_count_try_ref(&lease->ref_count);
+  }
+  return lease;
+}
+
+void my_list_adapter_lease_unref(my_list_adapter_lease_t* lease) {
+  if (lease == NULL || !my_ref_count_release(&lease->ref_count)) {
+    return;
+  }
+  if (lease->destroy != NULL) {
+    lease->destroy(lease->adapter, lease->context);
+  }
+  my_mem_free(lease->allocator, lease);
+}
+
+static bool lv_adapter_valid(const my_list_adapter_t* adapter) {
+  return adapter != NULL && adapter->vtable != NULL &&
+         adapter->vtable->get_count != NULL &&
+         adapter->vtable->create_row != NULL &&
+         adapter->vtable->bind_row != NULL;
+}
+
+static int32_t lv_i64_to_i32(int64_t value) {
+  if (value > INT32_MAX) return INT32_MAX;
+  if (value < INT32_MIN) return INT32_MIN;
+  return (int32_t)value;
+}
+
+static bool lv_psum_reserve(my_list_view_t* lv, size_t required) {
+  size_t capacity = lv->psum_capacity > 0 ? lv->psum_capacity : 8u;
+  int64_t* values;
+  if (required <= lv->psum_capacity) return true;
+  while (capacity < required) {
+    if (capacity > SIZE_MAX / 2u) {
+      capacity = required;
+      break;
+    }
+    capacity *= 2u;
+  }
+  if (capacity > SIZE_MAX / sizeof(*values)) return false;
+  values = (int64_t*)my_mem_realloc(lv->allocator, lv->psum_values,
+                                    capacity * sizeof(*values));
+  if (values == NULL) return false;
+  lv->psum_values = values;
+  lv->psum_capacity = capacity;
+  return true;
+}
+
+static void lv_psum_reset(my_list_view_t* lv) {
+  if (lv_psum_reserve(lv, 1u)) {
+    lv->psum_values[0] = 0;
+    lv->psum_count = 1u;
+  } else {
+    lv->psum_count = 0u;
+  }
+}
 
 typedef struct row_slot_t {
   my_widget_t* widget;
@@ -18,48 +110,69 @@ typedef struct row_slot_t {
 } row_slot_t;
 
 static size_t lv_count(my_list_view_t* lv) {
-  return lv->adapter != NULL ? lv->adapter->vtable->get_count(lv->adapter) : 0;
+  return lv_adapter_valid(lv->adapter)
+             ? lv->adapter->vtable->get_count(lv->adapter)
+             : 0;
 }
 
 static bool lv_variable(const my_list_view_t* lv) {
-  return lv->adapter != NULL && lv->adapter->vtable->row_height != NULL;
+  return lv_adapter_valid(lv->adapter) &&
+         lv->adapter->vtable->row_height != NULL;
+}
+
+static int32_t lv_row_height(my_list_view_t* lv, size_t index) {
+  int32_t height;
+  if (!lv_variable(lv)) {
+    return lv->row_height > 0 ? lv->row_height : 1;
+  }
+  height = lv->adapter->vtable->row_height(lv->adapter, index);
+  /* A malformed adapter must not create zero-length rows or reverse the
+   * prefix sum. Fall back to the configured fixed-row estimate. */
+  return height > 0 ? height : (lv->row_height > 0 ? lv->row_height : 1);
 }
 
 /** @brief Prefix sum: height of rows [0, i). Lazily filled (M9c). */
 static int64_t lv_psum_to(my_list_view_t* lv, size_t i) {
   int64_t acc;
-  if (lv->psum == NULL) { /* lazily created (only used in variable mode) */
-    lv->psum = my_darray_create(lv->allocator, 0);
-    if (lv->psum == NULL) {
-      return 0;
-    }
-    my_darray_push(lv->psum, (void*)0); /* psum[0] = height of rows [0,0) = 0 */
+  if (lv->psum_count == 0u) { /* lazily created (only used in variable mode) */
+    lv_psum_reset(lv);
+    if (lv->psum_count == 0u) return 0;
   }
-  while (my_darray_size(lv->psum) <= i) {
+  while (lv->psum_count <= i) {
     /* psum[n] = psum[n-1] + height(row n-1): psum[i] = height of [0, i) */
-    size_t n = my_darray_size(lv->psum);
-    int32_t h = lv->adapter->vtable->row_height(lv->adapter, n - 1);
-    acc = n > 0 ? (int64_t)(size_t)my_darray_get(lv->psum, n - 1) : 0;
-    my_darray_push(lv->psum, (void*)(size_t)(acc + h));
+    size_t n = lv->psum_count;
+    int32_t h = lv_row_height(lv, n - 1);
+    acc = lv->psum_values[n - 1];
+    if (acc > INT64_MAX - h) {
+      /* Keep the last valid prefix entry and stop extending the cache. */
+      return acc;
+    }
+    if (!lv_psum_reserve(lv, n + 1u)) {
+      return acc;
+    }
+    lv->psum_values[lv->psum_count++] = acc + h;
   }
-  return (int64_t)(size_t)my_darray_get(lv->psum, i);
+  return lv->psum_values[i];
 }
 
 /** @brief Total content height; estimated until all rows are measured. */
 static int64_t lv_content_height(my_list_view_t* lv) {
   size_t count = lv_count(lv);
   if (!lv_variable(lv)) {
+    if (count > (size_t)(INT64_MAX / lv->row_height)) return INT64_MAX;
     return (int64_t)count * lv->row_height;
   }
-  if (my_darray_size(lv->psum) >= count) {
+  if (lv->psum_count >= count) {
     return count > 0 ? lv_psum_to(lv, count) : 0;
   }
   {
     /* measured part + unmeasured part x average seen so far */
-    size_t filled = my_darray_size(lv->psum);
+    size_t filled = lv->psum_count;
     int64_t known = filled > 0 ? lv_psum_to(lv, filled) : 0;
     double avg = filled > 0 ? (double)known / (double)filled : 24.0;
-    return known + (int64_t)(avg * (double)(count - filled));
+    double estimated = avg * (double)(count - filled);
+    if (estimated >= (double)INT64_MAX - (double)known) return INT64_MAX;
+    return known + (int64_t)estimated;
   }
 }
 
@@ -69,6 +182,10 @@ static void lv_sync_scroll_bar(my_list_view_t* lv) {
   if (lv->scroll_bar == NULL) {
     return;
   }
+  if (lv->syncing_scroll_bar) {
+    return;
+  }
+  lv->syncing_scroll_bar = true;
   content = lv_content_height(lv);
   max = content - ((my_widget_t*)lv)->rect.h;
   my_scroll_bar_set_page_size(
@@ -78,6 +195,7 @@ static void lv_sync_scroll_bar(my_list_view_t* lv) {
   my_scroll_bar_set_value(lv->scroll_bar,
                           max > 0 ? (float)lv->scroll_offset / (float)max
                                   : 0.0f);
+  lv->syncing_scroll_bar = false;
 }
 
 static void on_scroll_bar_changed(void* ctx, const char* event, void* data) {
@@ -85,6 +203,10 @@ static void on_scroll_bar_changed(void* ctx, const char* event, void* data) {
   int64_t max;
   (void)event;
   (void)data;
+  if (lv == NULL || lv->syncing || lv->syncing_scroll_bar ||
+      lv->scroll_bar == NULL) {
+    return;
+  }
   max = lv_content_height(lv) - ((my_widget_t*)lv)->rect.h;
   if (max < 0) {
     max = 0;
@@ -99,7 +221,7 @@ static void on_scroll_bar_changed(void* ctx, const char* event, void* data) {
 static int32_t lv_max_offset(my_list_view_t* lv) {
   int64_t content = lv_content_height(lv);
   int64_t max = content - ((my_widget_t*)lv)->rect.h;
-  return max > 0 ? (int32_t)max : 0;
+  return max > INT32_MAX ? INT32_MAX : max > 0 ? (int32_t)max : 0;
 }
 
 static void lv_clamp_scroll(my_list_view_t* lv) {
@@ -131,18 +253,45 @@ static void lv_recycle_all(my_list_view_t* lv) {
     my_darray_remove_at(lv->active, my_darray_size(lv->active) - 1);
     my_widget_ref(slot->widget); /* pool takes its ref BEFORE the tree's goes */
     my_widget_remove_child(self, slot->widget);
-    my_darray_push(lv->pool, slot->widget);
+    if (my_darray_push(lv->pool, slot->widget) != MY_RET_OK) {
+      /* The extra reference acquired for the pool has no owner on OOM. */
+      my_widget_unref(slot->widget);
+    }
     my_mem_free(lv->allocator, slot);
+  }
+}
+
+static void lv_discard_pool(my_list_view_t* lv) {
+  while (my_darray_size(lv->pool) > 0) {
+    size_t index = my_darray_size(lv->pool) - 1;
+    my_widget_t* row = (my_widget_t*)my_darray_get(lv->pool, index);
+    my_darray_remove_at(lv->pool, index);
+    my_widget_unref(row);
+  }
+}
+
+static void lv_drop_adapter_lease(my_list_view_t* lv) {
+  my_list_adapter_lease_t* lease = lv->adapter_lease;
+  lv->adapter_lease = NULL;
+  if (lease != NULL) {
+    my_list_adapter_lease_unref(lease);
   }
 }
 
 /** @brief Rebuild the visible row set from the adapter. */
 static void lv_sync_rows(my_list_view_t* lv) {
   my_widget_t* self = (my_widget_t*)lv;
-  size_t count = lv_count(lv);
+  size_t count;
   size_t first, need, i;
-  if (lv->adapter == NULL || lv->row_height <= 0 || self->rect.h <= 0) {
+  if (lv == NULL || lv->syncing) {
     return;
+  }
+  lv->syncing = true;
+  my_widget_ref(self);
+  count = lv_count(lv);
+  if (!lv_adapter_valid(lv->adapter) || lv->row_height <= 0 ||
+      self->rect.h <= 0) {
+    goto done;
   }
   lv_clamp_scroll(lv);
   lv_recycle_all(lv);
@@ -164,7 +313,7 @@ static void lv_sync_rows(my_list_view_t* lv) {
       need = 0;
       while (first + need < count &&
              y < (int64_t)lv->scroll_offset + self->rect.h + lv->row_height) {
-        y += lv->adapter->vtable->row_height(lv->adapter, first + need);
+        y += lv_row_height(lv, first + need);
         need++;
       }
       if (need == 0 && first > 0) {
@@ -177,7 +326,7 @@ static void lv_sync_rows(my_list_view_t* lv) {
     need = (size_t)(self->rect.h / lv->row_height) + 2; /* +1 buffer row */
   }
   if (first >= count) {
-    return;
+    goto done;
   }
   if (first + need > count) {
     need = count - first;
@@ -190,23 +339,26 @@ static void lv_sync_rows(my_list_view_t* lv) {
     if (row == NULL) {
       row = lv->adapter->vtable->create_row(lv->adapter);
       if (row == NULL) {
-        return;
+        goto done;
       }
       lv->rows_created_total++;
     }
     lv->adapter->vtable->bind_row(lv->adapter, row, index);
     if (lv_variable(lv)) {
-      row_y = (int32_t)(lv_psum_to(lv, index) - lv->scroll_offset);
-      row_h = lv->adapter->vtable->row_height(lv->adapter, index);
+      row_y = lv_i64_to_i32(lv_psum_to(lv, index) - lv->scroll_offset);
+      row_h = lv_row_height(lv, index);
     } else {
-      row_y = (int32_t)(index * (size_t)lv->row_height) - lv->scroll_offset;
+      row_y = lv_i64_to_i32(
+          index > (size_t)(INT64_MAX / lv->row_height)
+              ? INT64_MAX
+              : (int64_t)index * lv->row_height - lv->scroll_offset);
       row_h = lv->row_height;
     }
     my_widget_set_rect(row, &(my_rect_t){0, row_y, self->rect.w, row_h});
     slot = (row_slot_t*)my_mem_calloc(lv->allocator, 1, sizeof(row_slot_t));
     if (slot == NULL) {
       my_widget_unref(row);
-      return;
+      goto done;
     }
     slot->widget = row;
     slot->index = index;
@@ -214,15 +366,18 @@ static void lv_sync_rows(my_list_view_t* lv) {
       /* not attached: row is still ours; slot must not dangle on it */
       my_widget_unref(row);
       my_mem_free(lv->allocator, slot);
-      return;
+      goto done;
     }
     my_widget_unref(row); /* tree holds the ref while visible */
     if (my_darray_push(lv->active, slot) != MY_RET_OK) {
       my_widget_remove_child(self, row); /* tree drops its ref, row dies */
       my_mem_free(lv->allocator, slot);
-      return;
+      goto done;
     }
   }
+done:
+  lv->syncing = false;
+  my_widget_unref(self);
 }
 
 static void lv_on_layout_changed(my_list_view_t* lv) {
@@ -234,12 +389,36 @@ static void lv_on_layout_changed(my_list_view_t* lv) {
 my_ret_t my_list_view_set_scroll_bar(my_widget_t* list_view,
                                      my_widget_t* bar) {
   my_list_view_t* lv = (my_list_view_t*)list_view;
-  if (list_view == NULL) {
+  uint32_t listener_id;
+  if (!my_list_view_is_instance(list_view)) {
     return MY_RET_INVALID_PARAMS;
   }
-  lv->scroll_bar = bar;
+  if (lv->syncing) {
+    return MY_RET_PENDING;
+  }
+  if (bar != NULL && !my_scroll_bar_is_instance(bar)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (bar == lv->scroll_bar) {
+    lv_sync_scroll_bar(lv);
+    return MY_RET_OK;
+  }
   if (bar != NULL) {
-    my_widget_on(bar, "changed", on_scroll_bar_changed, lv);
+    listener_id = my_widget_on(bar, "changed", on_scroll_bar_changed, lv);
+    if (listener_id == 0u) return MY_RET_OOM;
+  } else {
+    listener_id = 0u;
+  }
+  if (lv->scroll_bar != NULL && lv->scroll_bar_listener_id != 0u) {
+    (void)my_widget_off(lv->scroll_bar, lv->scroll_bar_listener_id);
+  }
+  if (lv->scroll_bar != NULL) {
+    my_widget_unref(lv->scroll_bar);
+  }
+  lv->scroll_bar = bar;
+  lv->scroll_bar_listener_id = listener_id;
+  if (lv->scroll_bar != NULL) {
+    my_widget_ref(lv->scroll_bar);
   }
   lv_sync_scroll_bar(lv);
   return MY_RET_OK;
@@ -257,9 +436,11 @@ static void lv_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                           (float)widget->rect.h});
   /* scrollbar indicator */
   if (max > 0) {
-    size_t count = lv_count(lv);
     float track = (float)widget->rect.h;
-    float content = (float)(count * (size_t)lv->row_height);
+    float content = (float)lv_content_height(lv);
+    if (content <= 0.0f || !isfinite(content)) {
+      content = FLT_MAX;
+    }
     float thumb_h = track * (float)widget->rect.h / content;
     float thumb_y = track * (float)lv->scroll_offset / content;
     if (thumb_h < 12.0f) {
@@ -328,9 +509,21 @@ static void lv_on_layout(my_widget_t* widget) {
 static const my_widget_vtable_t s_lv_vtable = {lv_on_paint, lv_on_event,
                                                lv_on_layout, NULL};
 
+bool my_list_view_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_lv_vtable;
+}
+
 static void lv_destroy_chain(my_object_t* obj) {
   my_list_view_t* lv = (my_list_view_t*)obj;
   size_t i, n;
+  if (lv->scroll_bar != NULL && lv->scroll_bar_listener_id != 0u) {
+    (void)my_widget_off(lv->scroll_bar, lv->scroll_bar_listener_id);
+    lv->scroll_bar_listener_id = 0u;
+  }
+  if (lv->scroll_bar != NULL) {
+    my_widget_unref(lv->scroll_bar);
+    lv->scroll_bar = NULL;
+  }
   if (lv->active != NULL) {
     n = my_darray_size(lv->active);
     for (i = 0; i < n; i++) {
@@ -345,6 +538,8 @@ static void lv_destroy_chain(my_object_t* obj) {
     }
     my_darray_destroy(lv->pool);
   }
+  lv_drop_adapter_lease(lv);
+  my_mem_free(lv->allocator, lv->psum_values);
   my_darray_destroy(lv->psum);
   my_widget_destroy((my_widget_t*)lv);
   my_object_destroy(obj);
@@ -377,8 +572,11 @@ my_widget_t* my_list_view_create(const my_allocator_t* allocator) {
 }
 
 my_ret_t my_list_view_set_row_height(my_widget_t* list_view, int32_t height) {
-  if (list_view == NULL || height <= 0) {
+  if (!my_list_view_is_instance(list_view) || height <= 0) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (((my_list_view_t*)list_view)->syncing) {
+    return MY_RET_PENDING;
   }
   ((my_list_view_t*)list_view)->row_height = height;
   lv_on_layout_changed((my_list_view_t*)list_view);
@@ -387,18 +585,71 @@ my_ret_t my_list_view_set_row_height(my_widget_t* list_view, int32_t height) {
 
 my_ret_t my_list_view_set_adapter(my_widget_t* list_view,
                                   my_list_adapter_t* adapter) {
-  if (list_view == NULL) {
+  my_list_view_t* lv = (my_list_view_t*)list_view;
+  if (!my_list_view_is_instance(list_view)) {
     return MY_RET_INVALID_PARAMS;
   }
-  ((my_list_view_t*)list_view)->adapter = adapter;
-  ((my_list_view_t*)list_view)->scroll_offset = 0;
-  lv_on_layout_changed((my_list_view_t*)list_view);
+  if (lv->syncing) {
+    return MY_RET_PENDING;
+  }
+  if (adapter != NULL && !lv_adapter_valid(adapter)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lv->adapter == adapter) {
+    lv_on_layout_changed(lv);
+    return MY_RET_OK;
+  }
+  /* Rows belong to their factory. Never recycle an old adapter's widgets
+   * through a replacement adapter with a different private row contract. */
+  lv_recycle_all(lv);
+  lv_discard_pool(lv);
+  lv_psum_reset(lv);
+  lv_drop_adapter_lease(lv);
+  lv->adapter = adapter;
+  lv->scroll_offset = 0;
+  lv_on_layout_changed(lv);
+  return MY_RET_OK;
+}
+
+my_ret_t my_list_view_set_adapter_lease(
+    my_widget_t* list_view, my_list_adapter_lease_t* lease) {
+  my_list_view_t* lv = (my_list_view_t*)list_view;
+  my_list_adapter_t* adapter = lease != NULL ? lease->adapter : NULL;
+  if (!my_list_view_is_instance(list_view)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lv->syncing) {
+    return MY_RET_PENDING;
+  }
+  if (adapter != NULL && !lv_adapter_valid(adapter)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lease != NULL && lv->adapter == adapter &&
+      lv->adapter_lease != NULL && lv->adapter_lease != lease) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (lv->adapter == adapter && lv->adapter_lease == lease) {
+    lv_on_layout_changed(lv);
+    return MY_RET_OK;
+  }
+  my_list_adapter_lease_ref(lease);
+  lv_recycle_all(lv);
+  lv_discard_pool(lv);
+  lv_psum_reset(lv);
+  lv_drop_adapter_lease(lv);
+  lv->adapter = adapter;
+  lv->adapter_lease = lease;
+  lv->scroll_offset = 0;
+  lv_on_layout_changed(lv);
   return MY_RET_OK;
 }
 
 my_ret_t my_list_view_refresh(my_widget_t* list_view) {
-  if (list_view == NULL) {
+  if (!my_list_view_is_instance(list_view)) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (((my_list_view_t*)list_view)->syncing) {
+    return MY_RET_PENDING;
   }
   lv_on_layout_changed((my_list_view_t*)list_view);
   return MY_RET_OK;
@@ -406,13 +657,13 @@ my_ret_t my_list_view_refresh(my_widget_t* list_view) {
 
 my_ret_t my_list_view_invalidate_row_heights(my_widget_t* list_view) {
   my_list_view_t* lv = (my_list_view_t*)list_view;
-  if (list_view == NULL) {
+  if (!my_list_view_is_instance(list_view)) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (lv->psum != NULL) {
-    my_darray_clear(lv->psum);
-    my_darray_push(lv->psum, (void*)0); /* keep the psum[0] = 0 invariant */
+  if (((my_list_view_t*)list_view)->syncing) {
+    return MY_RET_PENDING;
   }
+  lv_psum_reset(lv);
   lv_on_layout_changed(lv);
   return MY_RET_OK;
 }
@@ -420,13 +671,19 @@ my_ret_t my_list_view_invalidate_row_heights(my_widget_t* list_view) {
 my_ret_t my_list_view_invalidate_row_height(my_widget_t* list_view,
                                             size_t index) {
   my_list_view_t* lv = (my_list_view_t*)list_view;
-  if (list_view == NULL) {
+  if (!my_list_view_is_instance(list_view)) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (lv->psum != NULL) {
+  if (lv->syncing) {
+    return MY_RET_PENDING;
+  }
+  if (lv->psum_count > 0u) {
     /* keep psum[0..index] (heights of rows < index), drop the tail */
-    while (my_darray_size(lv->psum) > index + 1) {
-      my_darray_remove_at(lv->psum, my_darray_size(lv->psum) - 1);
+    if (index == SIZE_MAX) {
+      return MY_RET_INVALID_PARAMS;
+    }
+    if (lv->psum_count > index + 1u) {
+      lv->psum_count = index + 1u;
     }
   }
   lv_on_layout_changed(lv);
@@ -435,8 +692,11 @@ my_ret_t my_list_view_invalidate_row_height(my_widget_t* list_view,
 
 my_ret_t my_list_view_set_scroll_offset(my_widget_t* list_view, int32_t offset) {
   my_list_view_t* lv = (my_list_view_t*)list_view;
-  if (list_view == NULL) {
+  if (!my_list_view_is_instance(list_view)) {
     return MY_RET_INVALID_PARAMS;
+  }
+  if (lv->syncing) {
+    return MY_RET_PENDING;
   }
   lv->scroll_offset = offset;
   lv_clamp_scroll(lv);
@@ -445,9 +705,13 @@ my_ret_t my_list_view_set_scroll_offset(my_widget_t* list_view, int32_t offset) 
 }
 
 int32_t my_list_view_get_scroll_offset(my_widget_t* list_view) {
-  return list_view != NULL ? ((my_list_view_t*)list_view)->scroll_offset : 0;
+  return my_list_view_is_instance(list_view)
+             ? ((my_list_view_t*)list_view)->scroll_offset
+             : 0;
 }
 
 size_t my_list_view_rows_created_total(my_widget_t* list_view) {
-  return list_view != NULL ? ((my_list_view_t*)list_view)->rows_created_total : 0;
+  return my_list_view_is_instance(list_view)
+             ? ((my_list_view_t*)list_view)->rows_created_total
+             : 0;
 }

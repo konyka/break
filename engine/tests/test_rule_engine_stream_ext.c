@@ -3,6 +3,15 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+#include <arpa/inet.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern int kill(pid_t, int);
+#endif
+
 /*
  * Stream window aggregate extensions (Task 16): MIN/MAX/FIRST/LAST over the
  * retained, type/key-filtered event set, sharing the count/sum filter.
@@ -482,20 +491,234 @@ extern int unsetenv(const char *name);
 #endif
 static void redis_test_set_url(const char *url) {
 #if defined(_WIN32)
-    char buffer[256];
-    snprintf(buffer, sizeof(buffer), "RE_REDIS_URL=%s", url);
-    _putenv(buffer);
+    (void)_putenv_s("RE_REDIS_URL", url);
 #else
     setenv("RE_REDIS_URL", url, 1);
 #endif
 }
 static void redis_test_clear_url(void) {
 #if defined(_WIN32)
-    _putenv("RE_REDIS_URL=");
+    (void)_putenv_s("RE_REDIS_URL", "");
 #else
     unsetenv("RE_REDIS_URL");
 #endif
 }
+
+#if !defined(_WIN32)
+static int redis_test_start_delayed_server(pid_t *out_pid) {
+    struct sockaddr_in address;
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int server_fd;
+    pid_t child;
+    int port;
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0u);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    port = (int)ntohs(address.sin_port);
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char request[256];
+        if (client_fd >= 0) {
+            (void)recv(client_fd, request, sizeof(request), 0);
+            (void)sleep(1u);
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(0);
+    }
+    close(server_fd);
+    *out_pid = child;
+    return port;
+}
+
+static void redis_test_stop_delayed_server(pid_t child) {
+    int status;
+    if (waitpid(child, &status, WNOHANG) == 0) {
+        (void)kill(child, SIGTERM);
+        (void)waitpid(child, &status, 0);
+    }
+}
+
+static int redis_test_start_invalid_ttl_server(pid_t *out_pid) {
+    struct sockaddr_in address;
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int server_fd;
+    pid_t child;
+    int port;
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0u);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    port = (int)ntohs(address.sin_port);
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char request[256];
+        if (client_fd >= 0) {
+            (void)recv(client_fd, request, sizeof(request), 0);
+            (void)send(client_fd, ":-3\r\n", 5u, 0);
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(0);
+    }
+    close(server_fd);
+    *out_pid = child;
+    return port;
+}
+
+static int redis_test_start_invalid_del_server(pid_t *out_pid) {
+    struct sockaddr_in address;
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int server_fd;
+    pid_t child;
+    int port;
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0u);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    port = (int)ntohs(address.sin_port);
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char request[256];
+        if (client_fd >= 0) {
+            (void)recv(client_fd, request, sizeof(request), 0);
+            (void)send(client_fd, ":-3\r\n", 5u, 0);
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(0);
+    }
+    close(server_fd);
+    *out_pid = child;
+    return port;
+}
+
+static int redis_test_start_invalid_get_server(pid_t *out_pid) {
+    struct sockaddr_in address;
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int server_fd;
+    pid_t child;
+    int port;
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0u);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    port = (int)ntohs(address.sin_port);
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char request[256];
+        if (client_fd >= 0) {
+            (void)recv(client_fd, request, sizeof(request), 0);
+            (void)send(client_fd, ":7\r\n", 4u, 0);
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(0);
+    }
+    close(server_fd);
+    *out_pid = child;
+    return port;
+}
+
+static int redis_test_start_malformed_value_server(pid_t *out_pid) {
+    struct sockaddr_in address;
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int server_fd;
+    pid_t child;
+    int port;
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0u);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    port = (int)ntohs(address.sin_port);
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char request[256];
+        const char response[] = "$4\r\n\0\0\0\0\r\n";
+        if (client_fd >= 0) {
+            (void)recv(client_fd, request, sizeof(request), 0);
+            (void)send(client_fd, response, sizeof(response) - 1u, 0);
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(0);
+    }
+    close(server_fd);
+    *out_pid = child;
+    return port;
+}
+#endif
 #endif
 
 TEST(redis_kind_disabled_without_native_client) {
@@ -506,11 +729,12 @@ TEST(redis_kind_disabled_without_native_client) {
 #if defined(RE_HAS_HIREDIS)
     {
         const char *saved = getenv("RE_REDIS_URL");
-        char saved_copy[256];
-        saved_copy[0] = '\0';
+        char *saved_copy = NULL;
         if (saved != NULL) {
-            strncpy(saved_copy, saved, sizeof(saved_copy) - 1u);
-            saved_copy[sizeof(saved_copy) - 1u] = '\0';
+            size_t saved_size = strlen(saved);
+            saved_copy = malloc(saved_size + 1u);
+            ASSERT_NOT_NULL(saved_copy);
+            memcpy(saved_copy, saved, saved_size + 1u);
         }
         /* Nothing answers on 127.0.0.1:6390; the connect failure must surface
          * as RE_STATUS_ERROR (no provider instance exists to carry
@@ -519,8 +743,12 @@ TEST(redis_kind_disabled_without_native_client) {
         ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
                   RE_STATUS_ERROR);
         ASSERT_TRUE(provider == NULL);
-        if (saved != NULL) redis_test_set_url(saved_copy);
-        else redis_test_clear_url();
+        if (saved_copy != NULL) {
+            redis_test_set_url(saved_copy);
+            free(saved_copy);
+        } else {
+            redis_test_clear_url();
+        }
     }
 #else
     /* Boundary lock: without the native client the kind is rejected before any
@@ -532,6 +760,347 @@ TEST(redis_kind_disabled_without_native_client) {
     re_engine_destroy(engine);
 }
 
+TEST(redis_provider_rejects_bounded_url_and_timeout_inputs) {
+#if defined(RE_HAS_HIREDIS)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u,
+        24ull * 60ull * 60ull * 1000ull + 1ull};
+    char oversized_url[4097];
+    static const char prefix_url[] = "redis://127.0.0.1:6390?prefix=";
+    char oversized_prefix[sizeof(prefix_url) + 129u];
+    size_t i;
+
+    if (saved != NULL) {
+        size_t size = strlen(saved);
+        saved_copy = malloc(size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, size + 1u);
+    }
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+
+    options.operation_timeout_ms = 100u;
+    redis_test_set_url("redis://127.0.0.1:6390?prefix=stable&unexpected=1");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    redis_test_set_url("redis://127.0.0.1:6390?prefix=stable?extra");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    /* A valid prefix must get past parsing and fail only at the unreachable
+     * test endpoint. This distinguishes accepted query syntax from an
+     * accidental parser rejection without needing a Redis service. */
+    redis_test_set_url("redis://127.0.0.1:6390?prefix=stable");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_ERROR);
+    ASSERT_TRUE(provider == NULL);
+
+    redis_test_set_url("redis://127.0.0.1:6390/999999999999999999999999");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    for (i = 0u; i < sizeof(oversized_url) - 1u; ++i) oversized_url[i] = 'a';
+    oversized_url[sizeof(oversized_url) - 1u] = '\0';
+    redis_test_set_url(oversized_url);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    memcpy(oversized_prefix, prefix_url, sizeof(prefix_url) - 1u);
+    for (i = sizeof(prefix_url) - 1u; i < sizeof(oversized_prefix) - 1u;
+         ++i) {
+        oversized_prefix[i] = 'p';
+    }
+    oversized_prefix[sizeof(oversized_prefix) - 1u] = '\0';
+    redis_test_set_url(oversized_prefix);
+    options.operation_timeout_ms = 100u;
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    redis_test_set_url("redis://127.0.0.1:6390");
+    options.operation_timeout_ms = 24ull * 60ull * 60ull * 1000ull + 1ull;
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+    re_engine_destroy(engine);
+#else
+    printf("SKIP: native Redis adapter not compiled (RE_HAS_HIREDIS undefined)\n");
+#endif
+}
+
+TEST(redis_provider_applies_command_timeout_and_classifies_expiry) {
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    char url[96];
+    pid_t child = -1;
+    int port;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u, 50u};
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_provider_error_info_t error = {sizeof(error), 0, {NULL, 0u}};
+    re_status_t operation_status;
+    re_status_t error_status;
+
+    if (saved != NULL) {
+        size_t saved_size = strlen(saved);
+        saved_copy = malloc(saved_size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, saved_size + 1u);
+    }
+    port = redis_test_start_delayed_server(&child);
+    ASSERT_TRUE(port > 0 && child > 0);
+    snprintf(url, sizeof(url), "redis://127.0.0.1:%d", port);
+    redis_test_set_url(url);
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
+              RE_STATUS_OK);
+    ASSERT_NOT_NULL(provider);
+    ASSERT_EQ(re_state_provider_put(provider, text("ttl-overflow"), &value,
+                                    UINT64_MAX),
+              RE_STATUS_LIMIT);
+    operation_status = re_state_provider_put(provider, text("timeout"), &value, 0u);
+    error_status = re_state_provider_last_error(provider, &error);
+    re_state_provider_destroy(provider);
+    re_engine_destroy(engine);
+    redis_test_stop_delayed_server(child);
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+
+    ASSERT_EQ(operation_status, RE_STATUS_ERROR);
+    ASSERT_EQ(error_status, RE_STATUS_OK);
+    ASSERT_EQ(error.kind, RE_PROVIDER_ERROR_TIMEOUT);
+#else
+    printf("SKIP: delayed Redis timeout probe requires native hiredis on POSIX\n");
+#endif
+}
+
+TEST(redis_provider_rejects_unknown_negative_ttl_reply) {
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    char url[96];
+    pid_t child = -1;
+    int port;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u, 500u};
+    re_provider_error_info_t error = {sizeof(error), 0, {NULL, 0u}};
+    uint64_t ttl = 123u;
+    re_status_t status;
+
+    if (saved != NULL) {
+        size_t saved_size = strlen(saved);
+        saved_copy = malloc(saved_size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, saved_size + 1u);
+    }
+    port = redis_test_start_invalid_ttl_server(&child);
+    ASSERT_TRUE(port > 0 && child > 0);
+    snprintf(url, sizeof(url), "redis://127.0.0.1:%d", port);
+    redis_test_set_url(url);
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
+              RE_STATUS_OK);
+    ASSERT_NOT_NULL(provider);
+    status = re_state_provider_ttl(provider, text("invalid-ttl"), &ttl);
+    ASSERT_EQ(status, RE_STATUS_ERROR);
+    ASSERT_EQ(ttl, 123u);
+    ASSERT_EQ(re_state_provider_last_error(provider, &error), RE_STATUS_OK);
+    ASSERT_EQ(error.kind, RE_PROVIDER_ERROR_SERIALIZATION);
+    re_state_provider_destroy(provider);
+    re_engine_destroy(engine);
+    redis_test_stop_delayed_server(child);
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+#else
+    printf("SKIP: invalid Redis TTL probe requires native hiredis on POSIX\n");
+#endif
+}
+
+TEST(redis_provider_rejects_negative_del_reply) {
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    char url[96];
+    pid_t child = -1;
+    int port;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u, 500u};
+    re_provider_error_info_t error = {sizeof(error), 0, {NULL, 0u}};
+    re_status_t status;
+
+    if (saved != NULL) {
+        size_t saved_size = strlen(saved);
+        saved_copy = malloc(saved_size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, saved_size + 1u);
+    }
+    port = redis_test_start_invalid_del_server(&child);
+    ASSERT_TRUE(port > 0 && child > 0);
+    snprintf(url, sizeof(url), "redis://127.0.0.1:%d", port);
+    redis_test_set_url(url);
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
+              RE_STATUS_OK);
+    ASSERT_NOT_NULL(provider);
+    status = re_state_provider_delete(provider, text("invalid-del"));
+    ASSERT_EQ(status, RE_STATUS_ERROR);
+    ASSERT_EQ(re_state_provider_last_error(provider, &error), RE_STATUS_OK);
+    ASSERT_EQ(error.kind, RE_PROVIDER_ERROR_SERIALIZATION);
+    re_state_provider_destroy(provider);
+    re_engine_destroy(engine);
+    redis_test_stop_delayed_server(child);
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+#else
+    printf("SKIP: invalid Redis DEL probe requires native hiredis on POSIX\n");
+#endif
+}
+
+TEST(redis_provider_classifies_invalid_get_reply_as_serialization) {
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    char url[96];
+    pid_t child = -1;
+    int port;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u, 500u};
+    re_provider_error_info_t error = {sizeof(error), 0, {NULL, 0u}};
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 99}};
+    re_status_t status;
+
+    if (saved != NULL) {
+        size_t saved_size = strlen(saved);
+        saved_copy = malloc(saved_size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, saved_size + 1u);
+    }
+    port = redis_test_start_invalid_get_server(&child);
+    ASSERT_TRUE(port > 0 && child > 0);
+    snprintf(url, sizeof(url), "redis://127.0.0.1:%d", port);
+    redis_test_set_url(url);
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
+              RE_STATUS_OK);
+    ASSERT_NOT_NULL(provider);
+    status = re_state_provider_get(provider, text("invalid-get"), &value);
+    ASSERT_EQ(status, RE_STATUS_ERROR);
+    ASSERT_EQ(value.type, RE_VALUE_INT64);
+    ASSERT_EQ(value.as.int64_value, 99);
+    ASSERT_EQ(re_state_provider_last_error(provider, &error), RE_STATUS_OK);
+    ASSERT_EQ(error.kind, RE_PROVIDER_ERROR_SERIALIZATION);
+    re_state_provider_destroy(provider);
+    re_engine_destroy(engine);
+    redis_test_stop_delayed_server(child);
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+#else
+    printf("SKIP: invalid Redis GET probe requires native hiredis on POSIX\n");
+#endif
+}
+
+TEST(redis_provider_keeps_output_on_malformed_value) {
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    char url[96];
+    pid_t child = -1;
+    int port;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u, 500u};
+    re_provider_error_info_t error = {sizeof(error), 0, {NULL, 0u}};
+    re_value_t value = {RE_VALUE_INT64, {.int64_value = 99}};
+    re_status_t status;
+
+    if (saved != NULL) {
+        size_t saved_size = strlen(saved);
+        saved_copy = malloc(saved_size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, saved_size + 1u);
+    }
+    port = redis_test_start_malformed_value_server(&child);
+    ASSERT_TRUE(port > 0 && child > 0);
+    snprintf(url, sizeof(url), "redis://127.0.0.1:%d", port);
+    redis_test_set_url(url);
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
+              RE_STATUS_OK);
+    ASSERT_NOT_NULL(provider);
+    status = re_state_provider_get(provider, text("malformed-value"), &value);
+    ASSERT_EQ(status, RE_STATUS_ERROR);
+    ASSERT_EQ(value.type, RE_VALUE_INT64);
+    ASSERT_EQ(value.as.int64_value, 99);
+    ASSERT_EQ(re_state_provider_last_error(provider, &error), RE_STATUS_OK);
+    ASSERT_EQ(error.kind, RE_PROVIDER_ERROR_SERIALIZATION);
+    re_state_provider_destroy(provider);
+    re_engine_destroy(engine);
+    redis_test_stop_delayed_server(child);
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+#else
+    printf("SKIP: malformed Redis value probe requires native hiredis on POSIX\n");
+#endif
+}
+
 TEST(redis_roundtrip_when_service_available) {
 #if defined(RE_HAS_HIREDIS)
     const char *url = getenv("RE_TEST_REDIS_URL");
@@ -541,7 +1110,10 @@ TEST(redis_roundtrip_when_service_available) {
         RE_STATE_PROVIDER_REDIS, 0u, 1000u};
     re_value_t stored = {RE_VALUE_STRING, {.string = {"v1", 2u}}};
     re_value_t number = {RE_VALUE_INT64, {.int64_value = 42}};
+    re_value_t oversized_value = {RE_VALUE_STRING, {.string = {"x", 16u * 1024u * 1024u + 1u}}};
     re_value_t out;
+    char oversized_key[4097];
+    size_t oversized_key_size;
     uint64_t ttl = 0u;
     if (url == NULL) {
         printf("SKIP: RE_TEST_REDIS_URL unset (no integration service)\n");
@@ -552,6 +1124,13 @@ TEST(redis_roundtrip_when_service_available) {
     ASSERT_NOT_NULL(engine);
     ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider), RE_STATUS_OK);
     ASSERT_NOT_NULL(provider);
+    memset(oversized_key, 'k', sizeof(oversized_key));
+    oversized_key_size = sizeof(oversized_key);
+    ASSERT_EQ(re_state_provider_put(provider,
+                                    (re_string_t){oversized_key, oversized_key_size},
+                                    &number, 0u), RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_EQ(re_state_provider_put(provider, text("rt_oversized_value"),
+                                    &oversized_value, 0u), RE_STATUS_LIMIT);
     /* String set/get/delete roundtrip. */
     ASSERT_EQ(re_state_provider_put(provider, text("rt_string"), &stored, 0u), RE_STATUS_OK);
     ASSERT_EQ(re_state_provider_get(provider, text("rt_string"), &out), RE_STATUS_OK);
@@ -618,7 +1197,10 @@ static re_status_t busy_action(re_engine_t *engine, re_facts_t *facts,
      * callback, so no data race is possible. */
     probe->run_reentry = re_engine_run(engine, facts, NULL, NULL);
     probe->txn_begin = re_facts_begin(facts, &txn);
-    if (probe->txn_begin == RE_STATUS_OK) re_facts_rollback(txn);
+    if (probe->txn_begin == RE_STATUS_OK) {
+        re_facts_rollback(txn);
+        re_facts_txn_destroy(txn);
+    }
     probe->reset = re_engine_reset_with_deffacts(engine, facts);
     return RE_STATUS_OK;
 }
@@ -651,6 +1233,7 @@ TEST(run_reentry_conflicting_mutation_returns_busy) {
         re_fact_txn_t *txn = NULL;
         ASSERT_EQ(re_facts_begin(facts, &txn), RE_STATUS_OK);
         re_facts_rollback(txn);
+        re_facts_txn_destroy(txn);
     }
     re_facts_destroy(facts);
     re_engine_destroy(engine);
@@ -675,7 +1258,10 @@ static re_status_t notify_reentry(re_facts_t *facts, const re_fact_event_t *even
     probe->set_during_notify = re_facts_set(facts, text("other"), &v);
     probe->insert_during_notify = re_facts_insert(facts, text("other"), &v, &id);
     probe->begin_during_notify = re_facts_begin(facts, &txn);
-    if (probe->begin_during_notify == RE_STATUS_OK) re_facts_rollback(txn);
+    if (probe->begin_during_notify == RE_STATUS_OK) {
+        re_facts_rollback(txn);
+        re_facts_txn_destroy(txn);
+    }
     probe->get_during_notify = re_facts_get(facts, text("watched"), &out);
     return RE_STATUS_OK;
 }
@@ -1905,6 +2491,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(stream_c1_numeric_kinds_reject_non_numeric);
     RUN_TEST(stream_c1_result_struct_size_compat);
     RUN_TEST(redis_kind_disabled_without_native_client);
+    RUN_TEST(redis_provider_rejects_bounded_url_and_timeout_inputs);
+    RUN_TEST(redis_provider_applies_command_timeout_and_classifies_expiry);
+    RUN_TEST(redis_provider_rejects_unknown_negative_ttl_reply);
+    RUN_TEST(redis_provider_rejects_negative_del_reply);
+    RUN_TEST(redis_provider_classifies_invalid_get_reply_as_serialization);
+    RUN_TEST(redis_provider_keeps_output_on_malformed_value);
     RUN_TEST(redis_roundtrip_when_service_available);
     RUN_TEST(run_reentry_conflicting_mutation_returns_busy);
     RUN_TEST(notify_reentry_mutation_returns_busy_read_allowed);

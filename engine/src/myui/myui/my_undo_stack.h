@@ -15,7 +15,8 @@
  *
  * The stack does NOT own the document: undo/redo return an operation
  * {offset, remove_len, bytes} that the caller applies (without
- * re-recording).
+ * re-recording). Record operations are transactional: allocation failure
+ * leaves existing entries, undo position, and redo entries unchanged.
  */
 #ifndef MY_UNDO_STACK_H
 #define MY_UNDO_STACK_H
@@ -33,6 +34,9 @@ typedef struct my_undo_op_t {
   size_t bytes_len;
 } my_undo_op_t;
 
+/** @brief Transactional document apply callback. */
+typedef my_ret_t (*my_undo_apply_fn)(void* context, const my_undo_op_t* op);
+
 /** @brief Undo stack (opaque). */
 typedef struct my_undo_stack_t my_undo_stack_t;
 
@@ -48,6 +52,11 @@ my_ret_t my_undo_stack_record_insert(my_undo_stack_t* stack, size_t offset,
 my_ret_t my_undo_stack_record_delete(my_undo_stack_t* stack, size_t offset,
                                      const char* bytes, size_t len);
 
+/** @brief Record one non-batched replacement of a byte range. */
+my_ret_t my_undo_stack_record_replace(my_undo_stack_t* stack, size_t offset,
+                                      const char* deleted, size_t deleted_len,
+                                      const char* inserted, size_t inserted_len);
+
 /**
  * @brief Tagged variants (M11b): entries carry an opaque owner tag (e.g.
  * the editing widget). A tag change breaks the open batch naturally --
@@ -60,6 +69,9 @@ my_ret_t my_undo_stack_record_insert_tagged(my_undo_stack_t* stack, void* tag,
 my_ret_t my_undo_stack_record_delete_tagged(my_undo_stack_t* stack, void* tag,
                                             size_t offset, const char* bytes,
                                             size_t len);
+my_ret_t my_undo_stack_record_replace_tagged(
+    my_undo_stack_t* stack, void* tag, size_t offset, const char* deleted,
+    size_t deleted_len, const char* inserted, size_t inserted_len);
 
 /** @brief Drop all entries owned by `tag` (undo_pos adjusted). */
 void my_undo_stack_clear_tagged(my_undo_stack_t* stack, const void* tag);
@@ -69,6 +81,12 @@ my_ret_t my_undo_stack_undo_tagged(my_undo_stack_t* stack, my_undo_op_t* op,
                                    void** tag);
 my_ret_t my_undo_stack_redo_tagged(my_undo_stack_t* stack, my_undo_op_t* op,
                                    void** tag);
+my_ret_t my_undo_stack_undo_peek_tagged(my_undo_stack_t* stack,
+                                        my_undo_op_t* op, void** tag);
+my_ret_t my_undo_stack_redo_peek_tagged(my_undo_stack_t* stack,
+                                        my_undo_op_t* op, void** tag);
+my_ret_t my_undo_stack_commit_undo(my_undo_stack_t* stack);
+my_ret_t my_undo_stack_commit_redo(my_undo_stack_t* stack);
 
 /** @brief Close the current batch (focus loss, cursor jumps, etc). */
 void my_undo_stack_break_batch(my_undo_stack_t* stack);

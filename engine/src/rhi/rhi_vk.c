@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
 #include <stdatomic.h>
 
 #define VK_MAX_FRAMES 2
@@ -301,6 +302,9 @@ typedef struct {
     VkImageView            *swap_views;
     VkFramebuffer          *framebuffers;
     u32                     swap_count;
+    u32                     swap_view_count;
+    u32                     framebuffer_count;
+    u32                     render_semaphore_count;
 
     VkRenderPass  render_pass;
     VkImage       depth_image;
@@ -309,6 +313,7 @@ typedef struct {
 
     VkCommandPool   cmd_pool;
     VkCommandBuffer cmd_buffers[VK_MAX_FRAMES];
+    u32             cmd_buffer_count;
 
     VkSemaphore image_semaphores[VK_MAX_FRAMES];
     VkSemaphore *render_semaphores;
@@ -417,6 +422,7 @@ static void vk_rebind_uniform_buffers(VKBackend *vk);
 /* R175: One in-flight mip upload — reclaim on next upload / device shutdown
  * so async_loader_tick does not stall the main thread on every level. */
 typedef struct {
+    VKBackend      *owner_backend;
     VkFence         fence;
     VkBuffer        staging;
     VkDeviceMemory  staging_mem;
@@ -428,6 +434,10 @@ static VKMipUploadPending g_mip_upload_pending;
 
 static void vk_mip_upload_reclaim(VKBackend *vk) {
     if (!g_mip_upload_pending.pending || !vk) return;
+    if (g_mip_upload_pending.owner_backend != NULL &&
+        g_mip_upload_pending.owner_backend != vk) {
+        return;
+    }
     if (g_mip_upload_pending.fence) {
         if (vkWaitForFences(vk->device, 1, &g_mip_upload_pending.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
             LOG_WARN("VK: vkWaitForFences failed reclaiming mip upload");
@@ -442,9 +452,37 @@ static void vk_mip_upload_reclaim(VKBackend *vk) {
     memset(&g_mip_upload_pending, 0, sizeof(g_mip_upload_pending));
 }
 
+static bool vk_mip_upload_owned_by_other(VKBackend *vk) {
+    return g_mip_upload_pending.pending &&
+           g_mip_upload_pending.owner_backend != NULL &&
+           g_mip_upload_pending.owner_backend != vk;
+}
+
 static VKBackend *vk_backend(RHIDevice *dev) {
     return (VKBackend *)dev->backend_data;
 }
+
+static VKBackend *vk_cmd_backend(RHICmdBuffer *cmd) {
+    extern _Thread_local RHIDevice *g_current_device;
+    VKBackend *vk;
+    if (cmd == NULL || g_current_device == NULL) return NULL;
+    vk = vk_backend(g_current_device);
+    return vk != NULL && vk->frame_started && (void *)cmd == (void *)vk
+               ? vk
+               : NULL;
+}
+
+#ifdef ENGINE_RHI_TEST
+static _Thread_local RHIDevice *g_vk_test_cache_owner;
+
+void rhi_test_gl_cache_sync(RHIDevice *dev) {
+    g_vk_test_cache_owner = dev;
+}
+
+RHIDevice *rhi_test_gl_cache_owner(void) {
+    return g_vk_test_cache_owner;
+}
+#endif
 
 static void vk_wait_frames(VKBackend *vk) {
     if (vkWaitForFences(vk->device, VK_MAX_FRAMES, vk->fences, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
@@ -498,6 +536,106 @@ static u32 vk_find_memory(VKBackend *vk, u32 type_filter, VkMemoryPropertyFlags 
             return i;
     }
     return UINT32_MAX;
+}
+
+static bool vk_allocate_memory(VKBackend *vk, VkMemoryAllocateInfo *info,
+                               VkDeviceMemory *out_memory) {
+    if (!vk || !info || !out_memory || info->memoryTypeIndex == UINT32_MAX)
+        return false;
+    return vkAllocateMemory(vk->device, info, NULL, out_memory) == VK_SUCCESS;
+}
+
+static bool vk_instance_extension_available(const char *name) {
+    u32 count = 0u;
+    if (!name || vkEnumerateInstanceExtensionProperties(NULL, &count, NULL) != VK_SUCCESS)
+        return false;
+    VkExtensionProperties *props = calloc(count ? count : 1u, sizeof(*props));
+    if (!props) return false;
+    if (vkEnumerateInstanceExtensionProperties(NULL, &count, props) != VK_SUCCESS) {
+        free(props);
+        return false;
+    }
+    bool found = false;
+    for (u32 i = 0; i < count; i++) {
+        if (strcmp(props[i].extensionName, name) == 0) {
+            found = true;
+            break;
+        }
+    }
+    free(props);
+    return found;
+}
+
+static bool vk_device_extension_available(VkPhysicalDevice physical,
+                                          const char *name) {
+    u32 count = 0u;
+    if (physical == VK_NULL_HANDLE || !name ||
+        vkEnumerateDeviceExtensionProperties(physical, NULL, &count, NULL) != VK_SUCCESS)
+        return false;
+    VkExtensionProperties *props = calloc(count ? count : 1u, sizeof(*props));
+    if (!props) return false;
+    if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, props) != VK_SUCCESS) {
+        free(props);
+        return false;
+    }
+    bool found = false;
+    for (u32 i = 0; i < count; i++) {
+        if (strcmp(props[i].extensionName, name) == 0) {
+            found = true;
+            break;
+        }
+    }
+    free(props);
+    return found;
+}
+
+/* Suitability is checked before selecting a device so a broken or compute-
+ * only adapter cannot win selection and fail later during device creation. */
+static bool vk_physical_device_suitable(VkPhysicalDevice physical,
+                                        VkSurfaceKHR surface) {
+    if (physical == VK_NULL_HANDLE || surface == VK_NULL_HANDLE ||
+        !vk_device_extension_available(physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+        return false;
+
+    VkSurfaceCapabilitiesKHR caps;
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps) != VK_SUCCESS)
+        return false;
+
+    u32 format_count = 0u;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &format_count, NULL) != VK_SUCCESS ||
+        format_count == 0u)
+        return false;
+    u32 mode_count = 0u;
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &mode_count, NULL) != VK_SUCCESS ||
+        mode_count == 0u)
+        return false;
+
+    u32 queue_count = 0u;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &queue_count, NULL);
+    if (queue_count == 0u)
+        return false;
+    VkQueueFamilyProperties *queues = calloc(queue_count, sizeof(*queues));
+    if (!queues)
+        return false;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &queue_count, queues);
+
+    bool has_graphics = false;
+    bool has_present = false;
+    for (u32 q = 0u; q < queue_count; q++) {
+        if (queues[q].queueCount > 0u &&
+            (queues[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0)
+            has_graphics = true;
+        VkBool32 can_present = VK_FALSE;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(physical, q, surface,
+                                                  &can_present) != VK_SUCCESS) {
+            free(queues);
+            return false;
+        }
+        if (queues[q].queueCount > 0u && can_present)
+            has_present = true;
+    }
+    free(queues);
+    return has_graphics && has_present;
 }
 
 /* Build a LOAD-op "resume" twin of a CLEAR render pass: same subpasses and
@@ -706,10 +844,23 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     VkColorSpaceKHR swap_colorspace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     {
         u32 fmt_count = 0;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface, &fmt_count, NULL);
-        VkSurfaceFormatKHR *formats = calloc(fmt_count ? fmt_count : 1u, sizeof(VkSurfaceFormatKHR));
+        if (vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface,
+                                                 &fmt_count, NULL) != VK_SUCCESS) {
+            LOG_FATAL("VK: surface format query failed");
+            return false;
+        }
+        if (fmt_count == 0u) {
+            LOG_FATAL("VK: surface reports no formats");
+            return false;
+        }
+        VkSurfaceFormatKHR *formats = calloc(fmt_count, sizeof(VkSurfaceFormatKHR));
         if (!formats) { LOG_FATAL("VK: OOM surface formats"); return false; }
-        vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface, &fmt_count, formats);
+        if (vkGetPhysicalDeviceSurfaceFormatsKHR(vk->physical, vk->surface,
+                                                 &fmt_count, formats) != VK_SUCCESS) {
+            LOG_FATAL("VK: surface format list query failed");
+            free(formats);
+            return false;
+        }
         VkFormat chosen = VK_FORMAT_UNDEFINED;
         if (fmt_count == 1u && formats[0].format == VK_FORMAT_UNDEFINED) {
             chosen = VK_FORMAT_B8G8R8A8_SRGB; /* "any format" sentinel */
@@ -759,6 +910,7 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     }
 
     VkSwapchainCreateInfoKHR sci = {0};
+    u32 queue_families[2] = { vk->graphics_family, vk->present_family };
     sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     sci.surface = vk->surface;
     sci.minImageCount = img_count;
@@ -769,16 +921,37 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     /* R430: TRANSFER_SRC — rhi_screenshot vkCmdCopyImageToBuffer reads a
      * swapchain image (VUID-00126). */
     sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    {
+        if (vk->graphics_family != vk->present_family) {
+            sci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+            sci.queueFamilyIndexCount = 2u;
+            sci.pQueueFamilyIndices = queue_families;
+        } else {
+            sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        }
+    }
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     {
         u32 mode_count = 0;
-        vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface, &mode_count, NULL);
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface,
+                                                      &mode_count, NULL) != VK_SUCCESS) {
+            LOG_FATAL("VK: present mode query failed");
+            return false;
+        }
+        if (mode_count == 0u) {
+            LOG_FATAL("VK: surface reports no present modes");
+            return false;
+        }
         VkPresentModeKHR *modes = calloc(mode_count, sizeof(VkPresentModeKHR));
         if (!modes) { LOG_FATAL("VK: OOM present modes"); return false; }
-        vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface, &mode_count, modes);
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(vk->physical, vk->surface,
+                                                      &mode_count, modes) != VK_SUCCESS) {
+            LOG_FATAL("VK: present mode list query failed");
+            free(modes);
+            return false;
+        }
         if (!vk->vsync) {
             for (u32 i = 0; i < mode_count; i++) {
                 if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
@@ -804,6 +977,12 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         LOG_FATAL("VK: vkGetSwapchainImagesKHR count query failed");
         return false;
     }
+    if (vk->swap_count == 0u) {
+        LOG_FATAL("VK: swapchain returned no images");
+        vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL);
+        vk->swapchain = VK_NULL_HANDLE;
+        return false;
+    }
     vk->swap_images = calloc(vk->swap_count, sizeof(VkImage));
     if (!vk->swap_images) { LOG_FATAL("VK: OOM swap images"); return false; }
     vk->swap_views = calloc(vk->swap_count, sizeof(VkImageView));
@@ -811,6 +990,8 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
     if (vkGetSwapchainImagesKHR(vk->device, vk->swapchain, &vk->swap_count, vk->swap_images) != VK_SUCCESS) {
         LOG_FATAL("VK: vkGetSwapchainImagesKHR image query failed");
         free(vk->swap_images);
+        vk->swap_images = NULL;
+        vk->swap_count = 0u;
         return false;
     }
 
@@ -825,8 +1006,10 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         vci.subresourceRange.layerCount = 1;
         if (vkCreateImageView(vk->device, &vci, NULL, &vk->swap_views[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create swapchain image view %u", i);
+            vk->swap_view_count = i;
             return false;
         }
+        vk->swap_view_count = i + 1u;
     }
 
     vk->render_semaphores = calloc(vk->swap_count, sizeof(VkSemaphore));
@@ -836,13 +1019,15 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         sci2.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         if (vkCreateSemaphore(vk->device, &sci2, NULL, &vk->render_semaphores[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create render semaphore %u", i);
+            vk->render_semaphore_count = i;
             return false;
         }
+        vk->render_semaphore_count = i + 1u;
     }
     return true;
 }
 
-static void vk_create_depth(VKBackend *vk) {
+static bool vk_create_depth(VKBackend *vk) {
     VkImageCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -860,7 +1045,7 @@ static void vk_create_depth(VKBackend *vk) {
 
     if (vkCreateImage(vk->device, &ci, NULL, &vk->depth_image) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create depth image");
-        return;
+        return false;
     }
 
     VkMemoryRequirements mem_req;
@@ -871,13 +1056,17 @@ static void vk_create_depth(VKBackend *vk) {
     ai.allocationSize = mem_req.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits,
                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, &vk->depth_memory) != VK_SUCCESS) {
+    if (ai.memoryTypeIndex == UINT32_MAX) {
+        LOG_FATAL("VK: no device-local memory type for depth image");
+        return false;
+    }
+    if (vk_allocate_memory(vk, &ai, &vk->depth_memory) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate depth memory");
-        return;
+        return false;
     }
     if (vkBindImageMemory(vk->device, vk->depth_image, vk->depth_memory, 0) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to bind depth image memory");
-        return;
+        return false;
     }
 
     VkImageViewCreateInfo vci = {0};
@@ -890,18 +1079,21 @@ static void vk_create_depth(VKBackend *vk) {
     vci.subresourceRange.layerCount = 1;
     if (vkCreateImageView(vk->device, &vci, NULL, &vk->depth_view) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create depth image view");
-        return;
+        return false;
     }
+    return true;
 }
 
-static void vk_create_framebuffers(VKBackend *vk) {
+static bool vk_create_framebuffers(VKBackend *vk) {
     /* R149: Guard against NULL swap_views — vk_create_swapchain may have failed
      * (e.g., vkCreateSwapchainKHR error, OOM on swap_images/swap_views), leaving
      * swap_count at a stale non-zero value while swap_views is NULL.
      * Without this check, vk->swap_views[i] dereferences NULL. */
-    if (!vk->swap_views || vk->swap_count == 0) return;
+    if (!vk->swap_views || vk->swap_count == 0 ||
+        vk->depth_view == VK_NULL_HANDLE || vk->render_pass == VK_NULL_HANDLE)
+        return false;
     vk->framebuffers = calloc(vk->swap_count, sizeof(VkFramebuffer));
-    if (!vk->framebuffers) { LOG_FATAL("VK: OOM framebuffers"); return; }
+    if (!vk->framebuffers) { LOG_FATAL("VK: OOM framebuffers"); return false; }
     for (u32 i = 0; i < vk->swap_count; i++) {
         VkImageView attachments[2] = { vk->swap_views[i], vk->depth_view };
         VkFramebufferCreateInfo ci = {0};
@@ -914,12 +1106,15 @@ static void vk_create_framebuffers(VKBackend *vk) {
         ci.layers = 1;
         if (vkCreateFramebuffer(vk->device, &ci, NULL, &vk->framebuffers[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create framebuffer %u", i);
-            return;
+            vk->framebuffer_count = i;
+            return false;
         }
+        vk->framebuffer_count = i + 1u;
     }
+    return true;
 }
 
-static void vk_create_render_pass(VKBackend *vk) {
+static bool vk_create_render_pass(VKBackend *vk) {
     VkAttachmentDescription attachments[2] = {0};
 
     attachments[0].format = vk->swap_format;
@@ -969,35 +1164,50 @@ static void vk_create_render_pass(VKBackend *vk) {
 
     if (vkCreateRenderPass(vk->device, &ci, NULL, &vk->render_pass) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create render pass");
-        return;
+        return false;
     }
     if (vk->render_pass_load != VK_NULL_HANDLE) {
         vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
     }
     vk->render_pass_load = vk_make_resume_render_pass(vk, &ci);
+    if (vk->render_pass_load == VK_NULL_HANDLE) {
+        vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
+        vk->render_pass = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
 }
 
 static void vk_cleanup_swapchain(VKBackend *vk) {
     if (vk->framebuffers) {
-        for (u32 i = 0; i < vk->swap_count; i++)
-            vkDestroyFramebuffer(vk->device, vk->framebuffers[i], NULL);
+        for (u32 i = 0; i < vk->framebuffer_count; i++)
+            if (vk->framebuffers[i] != VK_NULL_HANDLE)
+                vkDestroyFramebuffer(vk->device, vk->framebuffers[i], NULL);
         free(vk->framebuffers);
         vk->framebuffers = NULL;
     }
+    vk->framebuffer_count = 0u;
     if (vk->depth_view) { vkDestroyImageView(vk->device, vk->depth_view, NULL); vk->depth_view = VK_NULL_HANDLE; }
     if (vk->depth_image) { vkDestroyImage(vk->device, vk->depth_image, NULL); vk->depth_image = VK_NULL_HANDLE; }
     if (vk->depth_memory) { vkFreeMemory(vk->device, vk->depth_memory, NULL); vk->depth_memory = VK_NULL_HANDLE; }
     if (vk->swap_views) {
-        for (u32 i = 0; i < vk->swap_count; i++) vkDestroyImageView(vk->device, vk->swap_views[i], NULL);
+        for (u32 i = 0; i < vk->swap_view_count; i++)
+            if (vk->swap_views[i] != VK_NULL_HANDLE)
+                vkDestroyImageView(vk->device, vk->swap_views[i], NULL);
         free(vk->swap_views);
         vk->swap_views = NULL;
     }
+    vk->swap_view_count = 0u;
     if (vk->swap_images) { free(vk->swap_images); vk->swap_images = NULL; }
     if (vk->render_semaphores) {
-        for (u32 i = 0; i < vk->swap_count; i++) vkDestroySemaphore(vk->device, vk->render_semaphores[i], NULL);
+        for (u32 i = 0; i < vk->render_semaphore_count; i++)
+            if (vk->render_semaphores[i] != VK_NULL_HANDLE)
+                vkDestroySemaphore(vk->device, vk->render_semaphores[i], NULL);
         free(vk->render_semaphores);
         vk->render_semaphores = NULL;
     }
+    vk->render_semaphore_count = 0u;
+    vk->swap_count = 0u;
     if (vk->swapchain) { vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL); vk->swapchain = VK_NULL_HANDLE; }
 }
 
@@ -1005,20 +1215,49 @@ static void vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in recreate_swapchain");
     vk_cleanup_swapchain(vk);
+    if (vk->render_pass_load != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
+        vk->render_pass_load = VK_NULL_HANDLE;
+    }
+    if (vk->render_pass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
+        vk->render_pass = VK_NULL_HANDLE;
+    }
     if (!vk_create_swapchain(vk, w, h)) {
         /* R430: cannot recover mid-run; do not continue with NULL swapchain. */
         LOG_FATAL("VK: swapchain recreation failed");
+        vk_cleanup_swapchain(vk);
         return;
     }
-    vk_create_depth(vk);
-    vk_create_framebuffers(vk);
+    if (!vk_create_render_pass(vk) || !vk_create_depth(vk) ||
+        !vk_create_framebuffers(vk)) {
+        LOG_FATAL("VK: swapchain attachment recreation failed");
+        vk_cleanup_swapchain(vk);
+        if (vk->render_pass_load != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
+            vk->render_pass_load = VK_NULL_HANDLE;
+        }
+        if (vk->render_pass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
+            vk->render_pass = VK_NULL_HANDLE;
+        }
+    }
 }
 
 /* ---- Init/Shutdown ---- */
 
+static void vk_shutdown(RHIDevice *dev);
+
+static void vk_init_cleanup(RHIDevice *dev, VKBackend *vk) {
+    if (!vk) return;
+    if (dev) dev->backend_data = vk;
+    vk_shutdown(dev);
+}
+
 static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u32 w, u32 h) {
     VKBackend *vk = calloc(1, sizeof(VKBackend));
     if (!vk) return false;
+    dev->backend_data = vk;
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     vk->hinstance = (HINSTANCE)display_native;
@@ -1060,6 +1299,13 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 #else
     extensions[ext_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #endif
+    for (u32 i = 0; i < ext_count; i++) {
+        if (!vk_instance_extension_available(extensions[i])) {
+            LOG_FATAL("VK: required instance extension unavailable: %s", extensions[i]);
+            vk_init_cleanup(dev, vk);
+            return false;
+        }
+    }
     if (validation_on) {
         /* R438: enable VK_EXT_debug_utils when present so validation messages
          * can be counted in-process (test gate). Absence only disables the
@@ -1092,7 +1338,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         u32 layer_count = 0;
         vkEnumerateInstanceLayerProperties(&layer_count, NULL);
         VkLayerProperties *props = calloc(layer_count, sizeof(VkLayerProperties));
-        if (!props) { LOG_FATAL("VK: OOM layer properties"); free(vk); return false; }
+        if (!props) { LOG_FATAL("VK: OOM layer properties"); vk_init_cleanup(dev, vk); return false; }
         vkEnumerateInstanceLayerProperties(&layer_count, props);
         bool found = false;
         for (u32 i = 0; i < layer_count; i++) {
@@ -1107,7 +1353,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 
     if (vkCreateInstance(&ici, NULL, &vk->instance) != VK_SUCCESS) {
         LOG_FATAL("Vulkan: failed to create instance");
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 
@@ -1145,7 +1391,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     sci.hwnd = vk->hwnd;
     if (vkCreateWin32SurfaceKHR(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
         LOG_ERROR("Failed to create Win32 Vulkan surface");
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 #elif defined(ENGINE_PLATFORM_MACOS)
@@ -1159,7 +1405,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         if (!create_metal ||
             create_metal(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
             LOG_ERROR("Failed to create Metal (MoltenVK) Vulkan surface");
-            free(vk);
+            vk_init_cleanup(dev, vk);
             return false;
         }
     }
@@ -1170,7 +1416,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     sci.surface = vk->wl_surface;
     if (vkCreateWaylandSurfaceKHR(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
         LOG_ERROR("Failed to create Wayland Vulkan surface");
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 #else
@@ -1180,54 +1426,68 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     sci.window = vk->window;
     if (vkCreateXlibSurfaceKHR(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
         LOG_ERROR("Failed to create Xlib Vulkan surface");
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 #endif
 
     u32 gpu_count = 0;
-    vkEnumeratePhysicalDevices(vk->instance, &gpu_count, NULL);
-    if (gpu_count == 0) { LOG_FATAL("Vulkan: no GPUs"); free(vk); return false; }
+    if (vkEnumeratePhysicalDevices(vk->instance, &gpu_count, NULL) != VK_SUCCESS) {
+        LOG_FATAL("VK: physical device enumeration failed");
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
+    if (gpu_count == 0) { LOG_FATAL("Vulkan: no GPUs"); vk_init_cleanup(dev, vk); return false; }
     VkPhysicalDevice *gpus = calloc(gpu_count, sizeof(VkPhysicalDevice));
-    if (!gpus) { LOG_FATAL("VK: OOM GPU list"); free(vk); return false; }
-    vkEnumeratePhysicalDevices(vk->instance, &gpu_count, gpus);
-    /* R574 (ROBUSTNESS): prefer the first GPU whose surface capabilities are
-     * actually queryable AND that can present to the surface. On
-     * hybrid-graphics laptops an iGPU driver can fail the caps query outright
-     * (observed: AMD Radeon iGPU returning VK_ERROR_UNKNOWN while the NVIDIA
-     * dGPU works) — picking gpus[0] blindly then crashed
-     * vkCreateSwapchainKHR on garbage capabilities. */
+    if (!gpus) { LOG_FATAL("VK: OOM GPU list"); vk_init_cleanup(dev, vk); return false; }
+    if (vkEnumeratePhysicalDevices(vk->instance, &gpu_count, gpus) != VK_SUCCESS) {
+        LOG_FATAL("VK: physical device enumeration failed");
+        free(gpus);
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
+    /* R574/R576 (ROBUSTNESS): select only a GPU with a usable surface,
+     * graphics/present queues, and VK_KHR_swapchain. On hybrid-graphics
+     * laptops an iGPU driver can fail the caps query while another adapter
+     * remains usable; never select a candidate that will fail later. */
     vk->physical = VK_NULL_HANDLE;
-    /* R575 (ENV OVERRIDE): RE_VK_DEVICE_INDEX=<n> pins the physical device
-     * (for bring-up on a specific GPU, e.g. a hybrid laptop whose iGPU driver
-     * has a broken surface-caps query). Out-of-range values are ignored. */
+    /* R575/R576 (ENV OVERRIDE): a requested GPU is still subject to the same
+     * suitability checks. Invalid or unsuitable pins fail explicitly rather
+     * than silently selecting a different adapter. */
     {
         const char *env_idx = getenv("RE_VK_DEVICE_INDEX");
         if (env_idx && env_idx[0]) {
-            u32 want = (u32)strtoul(env_idx, NULL, 10);
-            if (want < gpu_count) vk->physical = gpus[want];
+            char *end = NULL;
+            errno = 0;
+            unsigned long parsed = strtoul(env_idx, &end, 10);
+            if (errno == ERANGE || end == env_idx || *end != '\0' ||
+                parsed > UINT32_MAX || parsed >= gpu_count) {
+                LOG_FATAL("VK: invalid RE_VK_DEVICE_INDEX: %s", env_idx);
+                free(gpus);
+                vk_init_cleanup(dev, vk);
+                return false;
+            }
+            if (!vk_physical_device_suitable(gpus[parsed], vk->surface)) {
+                LOG_FATAL("VK: requested GPU is not suitable: %lu", parsed);
+                free(gpus);
+                vk_init_cleanup(dev, vk);
+                return false;
+            }
+            vk->physical = gpus[parsed];
         }
     }
     if (vk->physical == VK_NULL_HANDLE)
     for (u32 i = 0; i < gpu_count; i++) {
-        VkSurfaceCapabilitiesKHR probe_caps;
-        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpus[i], vk->surface,
-                                                      &probe_caps) != VK_SUCCESS)
-            continue;
-        u32 qcount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(gpus[i], &qcount, NULL);
-        VkBool32 can_present = VK_FALSE;
-        for (u32 q = 0; q < qcount && !can_present; q++) {
-            vkGetPhysicalDeviceSurfaceSupportKHR(gpus[i], q, vk->surface,
-                                                 &can_present);
+        if (vk_physical_device_suitable(gpus[i], vk->surface)) {
+            vk->physical = gpus[i];
+            break;
         }
-        if (!can_present) continue;
-        vk->physical = gpus[i];
-        break;
     }
     if (vk->physical == VK_NULL_HANDLE) {
-        LOG_WARN("VK: no GPU passed the surface probes; falling back to the first device");
-        vk->physical = gpus[0];
+        LOG_FATAL("VK: no suitable Vulkan GPU found");
+        free(gpus);
+        vk_init_cleanup(dev, vk);
+        return false;
     }
     free(gpus);
     vkGetPhysicalDeviceProperties(vk->physical, &vk->device_props);
@@ -1275,7 +1535,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     u32 queue_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(vk->physical, &queue_count, NULL);
     VkQueueFamilyProperties *queues = calloc(queue_count, sizeof(VkQueueFamilyProperties));
-    if (!queues) { LOG_FATAL("VK: OOM queue list"); free(vk); return false; }
+    if (!queues) { LOG_FATAL("VK: OOM queue list"); vk_init_cleanup(dev, vk); return false; }
     vkGetPhysicalDeviceQueueFamilyProperties(vk->physical, &queue_count, queues);
     vk->graphics_family = UINT32_MAX;
     vk->present_family = UINT32_MAX;
@@ -1283,23 +1543,35 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && vk->graphics_family == UINT32_MAX)
             vk->graphics_family = i;
         VkBool32 present = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(vk->physical, i, vk->surface, &present);
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(vk->physical, i, vk->surface,
+                                                  &present) != VK_SUCCESS) {
+            free(queues);
+            LOG_FATAL("Vulkan: surface support query failed");
+            vk_init_cleanup(dev, vk);
+            return false;
+        }
         if (present && vk->present_family == UINT32_MAX)
             vk->present_family = i;
     }
     free(queues);
     if (vk->graphics_family == UINT32_MAX || vk->present_family == UINT32_MAX) {
         LOG_FATAL("Vulkan: no suitable queue family");
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 
     f32 queue_priority = 1.0f;
-    VkDeviceQueueCreateInfo qci = {0};
-    qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qci.queueFamilyIndex = vk->graphics_family;
-    qci.queueCount = 1;
-    qci.pQueuePriorities = &queue_priority;
+    VkDeviceQueueCreateInfo queue_infos[2] = {0};
+    u32 queue_info_count = 1u;
+    queue_infos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_infos[0].queueFamilyIndex = vk->graphics_family;
+    queue_infos[0].queueCount = 1;
+    queue_infos[0].pQueuePriorities = &queue_priority;
+    if (vk->present_family != vk->graphics_family) {
+        queue_info_count = 2u;
+        queue_infos[1] = queue_infos[0];
+        queue_infos[1].queueFamilyIndex = vk->present_family;
+    }
 
     /* Enable only features we actually use and that the device supports.
      * drawIndirectCount is a Vulkan 1.2 feature queried via the feature2 chain;
@@ -1355,11 +1627,23 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 
     const char *dev_extensions[4];
     u32 dev_extension_count = 0u;
+    if (!vk_device_extension_available(vk->physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        LOG_FATAL("VK: required device extension unavailable: %s",
+                  VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
     dev_extensions[dev_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef ENGINE_PLATFORM_MACOS
     /* Mandatory on MoltenVK: a portability driver must have its subset
      * extension enabled whenever the device advertises it. */
-    dev_extensions[dev_extension_count++] = "VK_KHR_portability_subset";
+    if (vk_device_extension_available(vk->physical, "VK_KHR_portability_subset"))
+        dev_extensions[dev_extension_count++] = "VK_KHR_portability_subset";
+    else {
+        LOG_FATAL("VK: required device extension unavailable: VK_KHR_portability_subset");
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
 #endif
     /* R576: enable VK_EXT_device_fault when offered (vendor fault forensics —
      * after a DEVICE_LOST, vkGetDeviceFaultInfoEXT reports the faulting
@@ -1367,10 +1651,19 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     {
         u32 avail = 0;
         vk->has_device_fault = false;
-        vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, NULL);
+        if (vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, NULL) != VK_SUCCESS) {
+            LOG_WARN("VK: optional device extension query failed");
+            avail = 0u;
+        }
         VkExtensionProperties *props = calloc(avail ? avail : 1u, sizeof(*props));
         if (props) {
-            vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, props);
+            if (vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, props) != VK_SUCCESS) {
+                free(props);
+                props = NULL;
+                avail = 0u;
+            }
+        }
+        if (props) {
             for (u32 i = 0; i < avail; i++) {
                 if (strcmp(props[i].extensionName, VK_EXT_DEVICE_FAULT_EXTENSION_NAME) == 0) {
                     dev_extensions[dev_extension_count++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
@@ -1384,15 +1677,15 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     VkDeviceCreateInfo dci = {0};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.pNext = &enabled_vk11; /* R441: 1.1 chain head (-> 1.2 features) */
-    dci.queueCreateInfoCount = 1;
-    dci.pQueueCreateInfos = &qci;
+    dci.queueCreateInfoCount = queue_info_count;
+    dci.pQueueCreateInfos = queue_infos;
     dci.enabledExtensionCount = dev_extension_count;
     dci.ppEnabledExtensionNames = dev_extensions;
     dci.pEnabledFeatures = &enabled_features;
 
     if (vkCreateDevice(vk->physical, &dci, NULL, &vk->device) != VK_SUCCESS) {
         LOG_FATAL("Vulkan: failed to create device");
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 
@@ -1401,12 +1694,15 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 
     if (!vk_create_swapchain(vk, w, h)) {
         /* R430: fail init instead of running with a NULL swapchain. */
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
-    vk_create_render_pass(vk);
-    vk_create_depth(vk);
-    vk_create_framebuffers(vk);
+    if (!vk_create_render_pass(vk) || !vk_create_depth(vk) ||
+        !vk_create_framebuffers(vk)) {
+        LOG_FATAL("VK: failed to create swapchain attachments");
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
 
     VkCommandPoolCreateInfo cpci = {0};
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -1414,7 +1710,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     cpci.queueFamilyIndex = vk->graphics_family;
     if (vkCreateCommandPool(vk->device, &cpci, NULL, &vk->cmd_pool) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create command pool");
-        free(vk); return false;
+        vk_init_cleanup(dev, vk); return false;
     }
 
     VkCommandBufferAllocateInfo cbai = {0};
@@ -1424,8 +1720,9 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     cbai.commandBufferCount = VK_MAX_FRAMES;
     if (vkAllocateCommandBuffers(vk->device, &cbai, vk->cmd_buffers) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate command buffers");
-        free(vk); return false;
+        vk_init_cleanup(dev, vk); return false;
     }
+    vk->cmd_buffer_count = VK_MAX_FRAMES;
 
     vk->uniform_ring_size = 4 * 1024 * 1024;
     for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
@@ -1436,7 +1733,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateBuffer(vk->device, &bci, NULL, &vk->uniform_ring[i].buffer) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create uniform buffer %u", i);
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
 
         VkMemoryRequirements mem_req;
@@ -1447,67 +1744,56 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         mai.allocationSize = mem_req.size;
         mai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(vk->device, &mai, NULL, &vk->uniform_ring[i].memory) != VK_SUCCESS) {
+        if (vk_allocate_memory(vk, &mai, &vk->uniform_ring[i].memory) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to allocate uniform memory %u", i);
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
         if (vkBindBufferMemory(vk->device, vk->uniform_ring[i].buffer, vk->uniform_ring[i].memory, 0) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to bind uniform buffer %u", i);
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
         if (vkMapMemory(vk->device, vk->uniform_ring[i].memory, 0, vk->uniform_ring_size, 0, (void **)&vk->uniform_mapped[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to map uniform memory %u", i);
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
         vk->uniform_offset[i] = 0;
     }
 
     {
-        VkDescriptorSetLayoutBinding binds[10];
+        VkDescriptorSetLayoutBinding binds[RHI_MAX_TEXTURE_UNITS];
         memset(binds, 0, sizeof(binds));
-        for (int i = 0; i < 6; i++) {
+        for (u32 i = 0; i < RHI_MAX_TEXTURE_UNITS; i++) {
             binds[i].binding = i;
             binds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             binds[i].descriptorCount = 1;
             binds[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
-        /* IBL textures (bindings 6-8): brdf_lut, irradiance_map, prefilter_map */
-        for (int i = 6; i < 9; i++) {
-            binds[i].binding = i;
-            binds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            binds[i].descriptorCount = 1;
-            binds[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        }
-
         /* Binding 5 doubles as the forward shaders' single u_ssao and the
          * deferred lighting shader's u_point_shadow_cubes[4]. Forward point-light
          * shadows use binding 10 so SSAO at binding 5 stays valid. Layout array
-         * has 10 entries: bindings 0-8 plus binding 10 at index 9. */
-        VkDescriptorBindingFlags bind_flags[10] = {0};
+         * keeps every generic texture unit addressable. */
+        VkDescriptorBindingFlags bind_flags[RHI_MAX_TEXTURE_UNITS] = {0};
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci = {0};
         flags_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flags_ci.bindingCount = 10;
+        flags_ci.bindingCount = RHI_MAX_TEXTURE_UNITS;
         flags_ci.pBindingFlags = bind_flags;
-        binds[9].binding = 10;
-        binds[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binds[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         if (vk->feat_partially_bound) {
             binds[5].descriptorCount = 4;
             bind_flags[5] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-            binds[9].descriptorCount = 4;
-            bind_flags[9] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+            binds[10].descriptorCount = 4;
+            bind_flags[10] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
         } else {
-            binds[9].descriptorCount = 1;
+            binds[10].descriptorCount = 1;
         }
 
         VkDescriptorSetLayoutCreateInfo dli = {0};
         dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dli.bindingCount = 10;
+        dli.bindingCount = RHI_MAX_TEXTURE_UNITS;
         dli.pBindings = binds;
         if (vk->feat_partially_bound) dli.pNext = &flags_ci;
         if (vkCreateDescriptorSetLayout(vk->device, &dli, NULL, &vk->desc_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create desc layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1528,7 +1814,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         tli.pBindings = texel_binds;
         if (vkCreateDescriptorSetLayout(vk->device, &tli, NULL, &vk->texel_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create texel layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1548,7 +1834,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         sli.pBindings = storage_binds;
         if (vkCreateDescriptorSetLayout(vk->device, &sli, NULL, &vk->storage_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create storage layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1567,7 +1853,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         svli.pBindings = svb;
         if (vkCreateDescriptorSetLayout(vk->device, &svli, NULL, &vk->storage_vtx_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create storage vtx layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1590,7 +1876,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         sili.pBindings = sib;
         if (vkCreateDescriptorSetLayout(vk->device, &sili, NULL, &vk->storage_image_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create storage image layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1610,7 +1896,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         smli.pBindings = smb;
         if (vkCreateDescriptorSetLayout(vk->device, &smli, NULL, &vk->sampler_mip_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create sampler mip layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1631,7 +1917,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         uli.pBindings = ub;
         if (vkCreateDescriptorSetLayout(vk->device, &uli, NULL, &vk->ubo_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create UBO layout");
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1657,7 +1943,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
             if (vkCreateDescriptorPool(vk->device, &dpi, NULL, &vk->desc_pools[i]) != VK_SUCCESS) {
                 LOG_FATAL("VK: failed to create descriptor pool %u", i);
-                free(vk); return false;
+                vk_init_cleanup(dev, vk); return false;
             }
         }
     }
@@ -1667,14 +1953,14 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         sci2.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         if (vkCreateSemaphore(vk->device, &sci2, NULL, &vk->image_semaphores[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create image semaphore %u", i);
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
         VkFenceCreateInfo fci = {0};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         if (vkCreateFence(vk->device, &fci, NULL, &vk->fences[i]) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create fence %u", i);
-            free(vk); return false;
+            vk_init_cleanup(dev, vk); return false;
         }
     }
 
@@ -1688,7 +1974,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         /* R425: treat as init failure — returning true with a NULL compiler
          * makes the first rhi_shader_create crash in shaderc_compile_into_spv. */
         dev->backend_data = NULL;
-        free(vk);
+        vk_init_cleanup(dev, vk);
         return false;
     }
 
@@ -1699,63 +1985,62 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 static void vk_shutdown(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     if (!vk) return;
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk->device != VK_NULL_HANDLE && vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shutdown");
     /* R175: Device idle — free deferred mip-upload resources without waiting. */
-    if (g_mip_upload_pending.pending) {
-        if (g_mip_upload_pending.fence)
-            vkDestroyFence(vk->device, g_mip_upload_pending.fence, NULL);
-        if (g_mip_upload_pending.cb)
-            vkFreeCommandBuffers(vk->device, g_mip_upload_pending.pool, 1, &g_mip_upload_pending.cb);
-        if (g_mip_upload_pending.staging)
-            vkDestroyBuffer(vk->device, g_mip_upload_pending.staging, NULL);
-        if (g_mip_upload_pending.staging_mem)
-            vkFreeMemory(vk->device, g_mip_upload_pending.staging_mem, NULL);
-        memset(&g_mip_upload_pending, 0, sizeof(g_mip_upload_pending));
-    }
+    if (vk->device != VK_NULL_HANDLE && !vk_mip_upload_owned_by_other(vk))
+        vk_mip_upload_reclaim(vk);
 
     if (vk->shaderc_compiler) {
         shaderc_compiler_release(vk->shaderc_compiler);
         vk->shaderc_compiler = NULL;
     }
 
-    for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
-        vkDestroySemaphore(vk->device, vk->image_semaphores[i], NULL);
-        vkDestroyFence(vk->device, vk->fences[i], NULL);
-        vkUnmapMemory(vk->device, vk->uniform_ring[i].memory);
-        vkDestroyBuffer(vk->device, vk->uniform_ring[i].buffer, NULL);
-        vkFreeMemory(vk->device, vk->uniform_ring[i].memory, NULL);
-    }
+    if (vk->device != VK_NULL_HANDLE) {
+        for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
+            if (vk->image_semaphores[i]) vkDestroySemaphore(vk->device, vk->image_semaphores[i], NULL);
+            if (vk->fences[i]) vkDestroyFence(vk->device, vk->fences[i], NULL);
+            if (vk->uniform_mapped[i] && vk->uniform_ring[i].memory)
+                vkUnmapMemory(vk->device, vk->uniform_ring[i].memory);
+            if (vk->uniform_ring[i].buffer) vkDestroyBuffer(vk->device, vk->uniform_ring[i].buffer, NULL);
+            if (vk->uniform_ring[i].memory) vkFreeMemory(vk->device, vk->uniform_ring[i].memory, NULL);
+        }
 
-    vkFreeCommandBuffers(vk->device, vk->cmd_pool, VK_MAX_FRAMES, vk->cmd_buffers);
-    vkDestroyCommandPool(vk->device, vk->cmd_pool, NULL);
-    for (u32 i = 0; i < VK_MAX_FRAMES; i++)
-        vkDestroyDescriptorPool(vk->device, vk->desc_pools[i], NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->desc_layout, NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->texel_layout, NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->storage_layout, NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->storage_vtx_layout, NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->storage_image_layout, NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->sampler_mip_layout, NULL);
-    vkDestroyDescriptorSetLayout(vk->device, vk->ubo_layout, NULL);
-    vk_cleanup_swapchain(vk);
-    if (vk->render_pass) vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
-    if (vk->render_pass_load) vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
-    for (u32 i = 0; i < vk->pipe_rp_count; i++) {
-        vkDestroyRenderPass(vk->device, vk->pipe_rp_cache[i], NULL);
+        if (vk->cmd_pool != VK_NULL_HANDLE) {
+            if (vk->cmd_buffer_count)
+                vkFreeCommandBuffers(vk->device, vk->cmd_pool, vk->cmd_buffer_count, vk->cmd_buffers);
+            vkDestroyCommandPool(vk->device, vk->cmd_pool, NULL);
+        }
+        for (u32 i = 0; i < VK_MAX_FRAMES; i++)
+            if (vk->desc_pools[i]) vkDestroyDescriptorPool(vk->device, vk->desc_pools[i], NULL);
+        if (vk->desc_layout) vkDestroyDescriptorSetLayout(vk->device, vk->desc_layout, NULL);
+        if (vk->texel_layout) vkDestroyDescriptorSetLayout(vk->device, vk->texel_layout, NULL);
+        if (vk->storage_layout) vkDestroyDescriptorSetLayout(vk->device, vk->storage_layout, NULL);
+        if (vk->storage_vtx_layout) vkDestroyDescriptorSetLayout(vk->device, vk->storage_vtx_layout, NULL);
+        if (vk->storage_image_layout) vkDestroyDescriptorSetLayout(vk->device, vk->storage_image_layout, NULL);
+        if (vk->sampler_mip_layout) vkDestroyDescriptorSetLayout(vk->device, vk->sampler_mip_layout, NULL);
+        if (vk->ubo_layout) vkDestroyDescriptorSetLayout(vk->device, vk->ubo_layout, NULL);
+        vk_cleanup_swapchain(vk);
+        if (vk->render_pass) vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
+        if (vk->render_pass_load) vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
+        for (u32 i = 0; i < vk->pipe_rp_count; i++) {
+            if (vk->pipe_rp_cache[i]) vkDestroyRenderPass(vk->device, vk->pipe_rp_cache[i], NULL);
+        }
+        vkDestroyDevice(vk->device, NULL);
+        vk->device = VK_NULL_HANDLE;
     }
-    vkDestroyDevice(vk->device, NULL);
-    vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
     /* R438: symmetric cleanup of the validation-gate debug messenger (only
      * ever non-NULL when the gate was enabled at init). */
-    if (vk->debug_messenger) {
+    if (vk->debug_messenger && vk->instance != VK_NULL_HANDLE) {
         PFN_vkDestroyDebugUtilsMessengerEXT destroy_dbg =
             (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
                 vk->instance, "vkDestroyDebugUtilsMessengerEXT");
         if (destroy_dbg) destroy_dbg(vk->instance, vk->debug_messenger, NULL);
         vk->debug_messenger = VK_NULL_HANDLE;
     }
-    vkDestroyInstance(vk->instance, NULL);
+    if (vk->surface && vk->instance) vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
+    if (vk->instance) vkDestroyInstance(vk->instance, NULL);
+    g_validation_gate_active = false;
     free(vk);
     dev->backend_data = NULL;
 }
@@ -1785,7 +2070,16 @@ static u32 rhi_format_bpp(RHIFormat fmt) {
 }
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
-    (void)backend;
+    if (backend != RHI_BACKEND_VULKAN || !rhi_drawable_dimensions_valid(w, h)) {
+        return NULL;
+    }
+#ifdef ENGINE_PLATFORM_WINDOWS
+    if (window_native == NULL || display_native == NULL) return NULL;
+#elif defined(ENGINE_PLATFORM_MACOS)
+    if (window_native == NULL) return NULL;
+#else
+    if (window_native == NULL || display_native == NULL) return NULL;
+#endif
     RHIDevice *dev = calloc(1, sizeof(RHIDevice));
     if (!dev) return NULL;
     rhi_init_freelist(dev);
@@ -1799,7 +2093,13 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
 
 void rhi_device_destroy(RHIDevice *dev) {
     if (!dev) return;
+    if (!rhi_frame_owner_begin_destroy(dev)) return;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) {
+        if (g_current_device == dev) g_current_device = NULL;
+        free(dev);
+        return;
+    }
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in device_destroy");
 
@@ -1942,23 +2242,34 @@ void rhi_device_destroy(RHIDevice *dev) {
 
     vk_shutdown(dev);
     if (g_current_device == dev) g_current_device = NULL;
+    rhi_frame_owner_release(dev);
     free(dev);
 }
 
 void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
+    if (!rhi_drawable_dimensions_valid(w, h) ||
+        !rhi_device_control_try_acquire(dev)) return;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) {
+        rhi_device_control_release(dev);
+        return;
+    }
     vk_recreate_swapchain(vk, w, h);
     dev->width = w;
     dev->height = h;
+    rhi_device_control_release(dev);
 }
 
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
+    if (dev == NULL) return NULL;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) return NULL;
+    if (!rhi_frame_owner_begin_backend(dev)) return NULL;
     g_current_device = dev;
     dev->frame_partial_active = false;
     vk->frame_submitted = false;
 
-    /* R175: Ensure deferred mip uploads finished before this frame samples them. */
+    /* R175: Ensure this device's deferred mip upload finished before sampling. */
     vk_mip_upload_reclaim(vk);
 
     VkResult fence_res = vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX);
@@ -1966,16 +2277,19 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         LOG_FATAL("VK: vkWaitForFences failed in frame_begin (res=%d)", (int)fence_res);
         vk_dump_device_fault(vk, "frame_begin");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
     if (vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetFences failed in frame_begin");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
     if (vkResetDescriptorPool(vk->device, vk->desc_pools[vk->current_frame], 0) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetDescriptorPool failed in frame_begin");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
 
@@ -1987,6 +2301,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
             vk->image_semaphores[vk->current_frame], VK_NULL_HANDLE, &vk->image_index);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
             vk->frame_started = false;
+            rhi_frame_owner_release(dev);
             return NULL;
         }
     } else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
@@ -1996,6 +2311,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
          * framebuffer and causing a cascade of GPU errors. */
         LOG_ERROR("VK: vkAcquireNextImageKHR failed (res=%d)", (int)res);
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
     /* VK_SUBOPTIMAL_KHR is a success — swapchain rebuild deferred to rhi_present */
@@ -2007,12 +2323,14 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (!vk->framebuffers) {
         LOG_ERROR("VK: framebuffers not available in frame_begin");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
 
     if (vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0) != VK_SUCCESS) {
         LOG_FATAL("VK: vkResetCommandBuffer failed in frame_begin");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
     vk->current_pipeline = VK_NULL_HANDLE; /* R89-1: reset pipeline cache for new command buffer */
@@ -2025,6 +2343,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (vkBeginCommandBuffer(vk->cmd_buffers[vk->current_frame], &bi) != VK_SUCCESS) {
         LOG_FATAL("VK: vkBeginCommandBuffer failed in frame_begin");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return NULL;
     }
 
@@ -2119,7 +2438,7 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
                                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     VkDeviceMemory staging_mem;
-    if (vkAllocateMemory(vk->device, &alloc, NULL, &staging_mem) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &alloc, &staging_mem) != VK_SUCCESS) {
         LOG_WARN("screenshot: failed to allocate staging memory");
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         return false;
@@ -2258,15 +2577,19 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
 struct RHIGPUTimer {
     VkQueryPool query_pool;
     VkDevice    vkdev;
+    RHIDevice  *owner;
     f64         timestamp_period;
     bool        result_ready;
 };
 
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
+    if (dev == NULL) return NULL;
     VKBackend *vk = vk_backend(dev);
+    if (vk == NULL) return NULL;
     RHIGPUTimer *t = calloc(1, sizeof(RHIGPUTimer));
     if (!t) return NULL;
     t->vkdev = vk->device;
+    t->owner = dev;
     t->timestamp_period = (f64)vk->device_props.limits.timestampPeriod;
     VkQueryPoolCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -2281,15 +2604,18 @@ RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
 }
 
 void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
-    (void)dev;
     if (!t) return;
-    if (t->query_pool != VK_NULL_HANDLE) vkDestroyQueryPool(t->vkdev, t->query_pool, NULL);
+    if (dev != NULL && dev == t->owner && g_current_device == dev &&
+        t->query_pool != VK_NULL_HANDLE)
+        vkDestroyQueryPool(t->vkdev, t->query_pool, NULL);
     free(t);
 }
 
 void rhi_gpu_timer_begin(RHIGPUTimer *t) {
     if (!t) return;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = (g_current_device == t->owner) ?
+        vk_backend(g_current_device) : NULL;
+    if (!vk) return;
     /* vkCmdResetQueryPool is forbidden inside a render pass. */
     vk_suspend_pass_for_compute(vk);
     vkCmdResetQueryPool(vk->cmd_buffers[vk->current_frame], t->query_pool, 0, 2);
@@ -2299,14 +2625,16 @@ void rhi_gpu_timer_begin(RHIGPUTimer *t) {
 
 void rhi_gpu_timer_end(RHIGPUTimer *t) {
     if (!t) return;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = (g_current_device == t->owner) ?
+        vk_backend(g_current_device) : NULL;
+    if (!vk) return;
     vkCmdWriteTimestamp(vk->cmd_buffers[vk->current_frame],
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, t->query_pool, 1);
     t->result_ready = true;
 }
 
 f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
-    if (!t || !t->result_ready) return 0.0;
+    if (!t || !t->result_ready || g_current_device != t->owner) return 0.0;
     /* R430: drop VK_QUERY_RESULT_WAIT_BIT — the draw-bench path queries
      * timestamps recorded into the current, not-yet-submitted command
      * buffer, so waiting never completes (deadlock under BREAK_DRAW_BENCH=1).
@@ -2324,7 +2652,10 @@ f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
 
 
 void rhi_frame_end(RHIDevice *dev) {
+    if (dev == NULL) return;
+    if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) return;
     if (!vk->frame_started) return;
 
     /* If a compute dispatch left a pass suspended with no following draw,
@@ -2337,6 +2668,7 @@ void rhi_frame_end(RHIDevice *dev) {
     if (vkEndCommandBuffer(vk->cmd_buffers[vk->current_frame]) != VK_SUCCESS) {
         LOG_FATAL("VK: vkEndCommandBuffer failed in frame_end");
         vk->frame_started = false;
+        rhi_frame_owner_release(dev);
         return;
     }
 
@@ -2358,6 +2690,7 @@ void rhi_frame_end(RHIDevice *dev) {
         vk_dump_device_fault(vk, "frame_end");
         vk->frame_started = false;
         vk->frame_submitted = false;
+        rhi_frame_owner_release(dev);
         return;
     }
     vk->frame_started = false;
@@ -2365,12 +2698,16 @@ void rhi_frame_end(RHIDevice *dev) {
 }
 
 void rhi_present(RHIDevice *dev) {
+    if (dev == NULL) return;
+    if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) return;
     if (!vk->frame_submitted) {
         dev->frame_damage_requested = false;
         dev->frame_damage_count = 0u;
         dev->frame_current_damage_count = 0u;
         dev->frame_partial_active = false;
+        rhi_frame_owner_release(dev);
         return;
     }
 
@@ -2393,6 +2730,7 @@ void rhi_present(RHIDevice *dev) {
     dev->frame_damage_count = 0u;
     dev->frame_current_damage_count = 0u;
     dev->frame_partial_active = false;
+    rhi_frame_owner_release(dev);
 }
 
 void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w,
@@ -2401,17 +2739,26 @@ void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w,
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {
+    if (dev == NULL) return 0u;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) return 0u;
     return vk->current_frame;
 }
 
 void rhi_set_vsync(RHIDevice *dev, bool enabled) {
+    if (!rhi_device_control_try_acquire(dev)) return;
     VKBackend *vk = vk_backend(dev);
+    if (!vk) {
+        rhi_device_control_release(dev);
+        return;
+    }
     vk->vsync = enabled;
     vk_recreate_swapchain(vk, dev->width, dev->height);
+    rhi_device_control_release(dev);
 }
 
 RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment) {
+    if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
     u32 *spirv = NULL; usize spirv_size = 0;
     VkShaderModule mod = vk_compile_glsl(vk, source, len, is_fragment, &spirv, &spirv_size);
@@ -2429,8 +2776,9 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
 }
 
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKShaderData *sd = (VKShaderData *)rhi_get_resource(dev, shader);
+    VKShaderData *sd = (VKShaderData *)rhi_get_resource_typed(dev, shader, RHI_RES_SHADER);
     if (!sd) return;
     vkDestroyShaderModule(vk->device, sd->module, NULL);
     free(sd->spirv);
@@ -2439,6 +2787,7 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
 }
 
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
+    if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
     shaderc_compile_options_t opts = shaderc_compile_options_initialize();
     shaderc_compile_options_set_target_env(opts, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
@@ -2769,7 +3118,7 @@ static bool vk_create_attachment_image(VKBackend *vk, VkFormat format,
     alloc_info.memoryTypeIndex = vk_find_memory(vk, requirements.memoryTypeBits,
                                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (alloc_info.memoryTypeIndex == UINT32_MAX ||
-        vkAllocateMemory(vk->device, &alloc_info, NULL, out_memory) != VK_SUCCESS) {
+        vk_allocate_memory(vk, &alloc_info, out_memory) != VK_SUCCESS) {
         vkDestroyImage(vk->device, *out_image, NULL);
         *out_image = VK_NULL_HANDLE;
         return false;
@@ -3162,7 +3511,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     }
 
     if (desc->is_compute) {
-        VKShaderData *cs_data = (VKShaderData *)rhi_get_resource(dev, desc->frag);
+        VKShaderData *cs_data = (VKShaderData *)rhi_get_resource_typed(dev, desc->frag, RHI_RES_SHADER);
         if (!cs_data) return RHI_HANDLE_NULL;
 
         VkPipelineShaderStageCreateInfo stage = {0};
@@ -3235,8 +3584,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         return rhi_make_handle(idx, dev->slots[idx].generation);
     }
 
-    VKShaderData *vs_data = (VKShaderData *)rhi_get_resource(dev, desc->vert);
-    VKShaderData *fs_data = (VKShaderData *)rhi_get_resource(dev, desc->frag);
+    VKShaderData *vs_data = (VKShaderData *)rhi_get_resource_typed(dev, desc->vert, RHI_RES_SHADER);
+    VKShaderData *fs_data = (VKShaderData *)rhi_get_resource_typed(dev, desc->frag, RHI_RES_SHADER);
     if (!vs_data || !fs_data) return RHI_HANDLE_NULL;
     /* The pipeline layout is render-pass-independent and shared by the base
      * pipeline and all its render-pass-format variants. */
@@ -3376,8 +3725,9 @@ static void vk_pipeline_data_free(VKBackend *vk, VKPipelineData *pd) {
 }
 
 void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource(dev, pipe);
+    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
     if (!pd) return;
     vk_wait_frames(vk);
     vk_pipeline_data_free(vk, pd);
@@ -3405,7 +3755,7 @@ static bool vk_buffer_staging_upload(VKBackend *vk, VkBuffer dst, usize dst_offs
     smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (smi.memoryTypeIndex == UINT32_MAX ||
-        vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+        vk_allocate_memory(vk, &smi, &staging_mem) != VK_SUCCESS) {
         vkDestroyBuffer(vk->device, staging, NULL);
         return false;
     }
@@ -3494,7 +3844,7 @@ static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_of
     smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (smi.memoryTypeIndex == UINT32_MAX ||
-        vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+        vk_allocate_memory(vk, &smi, &staging_mem) != VK_SUCCESS) {
         vkDestroyBuffer(vk->device, staging, NULL);
         return false;
     }
@@ -3564,6 +3914,7 @@ static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_of
 }
 
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
+    if (dev == NULL || !rhi_buffer_desc_validate(desc)) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
 
     VkBufferCreateInfo ci = {0};
@@ -3623,7 +3974,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     }
 
     VkDeviceMemory mem;
-    if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &mem) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate buffer memory");
         vkDestroyBuffer(vk->device, buf, NULL);
         return RHI_HANDLE_NULL;
@@ -3679,8 +4030,9 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
 }
 
 void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return;
     vk_wait_frames(vk);
     if (bd->mapped) vkUnmapMemory(vk->device, bd->memory);
@@ -3692,6 +4044,7 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
 }
 
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
+    if (dev == NULL || !rhi_texture_desc_validate(desc)) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
     VkFormat fmt = vk_format_from_rhi(desc->format);
     bool is_depth = (desc->format == RHI_FORMAT_D32_FLOAT);
@@ -3745,7 +4098,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     ai.allocationSize = mem_req.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkDeviceMemory mem;
-    if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &mem) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate texture memory");
         vkDestroyImage(vk->device, image, NULL);
         return RHI_HANDLE_NULL;
@@ -3803,7 +4156,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         smi.allocationSize = smr.size;
         smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+        if (vk_allocate_memory(vk, &smi, &staging_mem) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to allocate staging memory");
             vkDestroyBuffer(vk->device, staging, NULL);
             vkDestroyImageView(vk->device, view, NULL);
@@ -4068,8 +4421,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
 
 void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
                             u32 width, u32 height, const void *data, usize size) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!td || !data || size == 0) return;
     if (mip_level >= td->mip_levels) return;
 
@@ -4082,6 +4436,10 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     if (size < (usize)width * height * 4u) return;
 
     /* R175: Reclaim previous fire-and-forget upload before allocating a new one. */
+    if (vk_mip_upload_owned_by_other(vk)) {
+        LOG_WARN("VK: mip upload slot is owned by another device");
+        return;
+    }
     vk_mip_upload_reclaim(vk);
 
     /* Host-visible staging buffer holding the mip's pixels. */
@@ -4102,7 +4460,7 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VkDeviceMemory staging_mem;
-    if (vkAllocateMemory(vk->device, &smi, NULL, &staging_mem) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &smi, &staging_mem) != VK_SUCCESS) {
         vkDestroyBuffer(vk->device, staging, NULL);
         return;
     }
@@ -4215,6 +4573,7 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
         return;
     }
     /* R175: Do not stall the main thread — reclaim on next upload / shutdown. */
+    g_mip_upload_pending.owner_backend = vk;
     g_mip_upload_pending.fence = fence;
     g_mip_upload_pending.staging = staging;
     g_mip_upload_pending.staging_mem = staging_mem;
@@ -4354,7 +4713,7 @@ static bool vk_texture_staging_alloc(VKBackend *vk, VkDeviceSize size, const voi
     smi.allocationSize = smr.size;
     smi.memoryTypeIndex = vk_find_memory(vk, smr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(vk->device, &smi, NULL, out_mem) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &smi, out_mem) != VK_SUCCESS) {
         vkDestroyBuffer(vk->device, *out_buf, NULL);
         return false;
     }
@@ -4380,8 +4739,12 @@ static bool vk_texture_staging_alloc(VKBackend *vk, VkDeviceSize size, const voi
  * content), per-layer uploads transition individual layers. */
 RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
                                     u32 layers, RHIFormat fmt) {
+    if (dev == NULL) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
-    if (!vk || width == 0 || height == 0 || layers == 0) return RHI_HANDLE_NULL;
+    if (!vk || width == 0 || height == 0 || layers == 0 ||
+        width > RHI_MAX_DRAWABLE_DIMENSION ||
+        height > RHI_MAX_DRAWABLE_DIMENSION ||
+        layers > RHI_MAX_TEXTURE_ARRAY_LAYERS) return RHI_HANDLE_NULL;
     if (fmt != RHI_FORMAT_R8G8B8A8_UNORM && fmt != RHI_FORMAT_B8G8R8A8_UNORM) {
         LOG_WARN("VK: texture array only supports 8-bit RGBA formats");
         return RHI_HANDLE_NULL;
@@ -4414,7 +4777,7 @@ RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
     ai.allocationSize = mem_req.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkDeviceMemory mem;
-    if (vkAllocateMemory(vk->device, &ai, NULL, &mem) != VK_SUCCESS ||
+    if (vk_allocate_memory(vk, &ai, &mem) != VK_SUCCESS ||
         vkBindImageMemory(vk->device, image, mem, 0) != VK_SUCCESS) {
         LOG_WARN("VK: failed to allocate/bind texture array memory");
         vkDestroyImage(vk->device, image, NULL);
@@ -4484,7 +4847,7 @@ RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
 void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
                                     u32 layer, const void *rgba8, usize size) {
     VKBackend *vk = vk_backend(dev);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!vk || !td || td->layers == 0 || !rgba8) return;
     if (layer >= td->layers) return;
     /* R441: same host-OOB guard class as R417 — the copy reads w*h*4 bytes. */
@@ -4515,7 +4878,7 @@ void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
 }
 
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!td || !out_w || !out_h) return false;
     *out_w = td->width;
     *out_h = td->height;
@@ -4524,7 +4887,7 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h
 
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
     VKBackend *vk = vk_backend(dev);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!vk || !td || !dst_rgba8 || td->layers > 1) return false;
     /* R445: bytes-per-pixel must follow the image format — the old hard-coded
      * 4B/px read back only half of an RGBA16F texel stream (and the copy
@@ -4579,8 +4942,9 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
 }
 
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!td) return;
     /* The material-texture fallback caches this view
      * (rhi_cmd_bind_shadow_texture) — drop the cache before destroying it. */
@@ -4610,6 +4974,7 @@ static VkSamplerAddressMode vk_wrap(RHIWrapMode w) {
 }
 
 RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
+    if (dev == NULL || desc == NULL) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
 
     VkSamplerCreateInfo ci = {0};
@@ -4650,8 +5015,9 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
 }
 
 void rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(dev, sampler);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(dev, sampler, RHI_RES_SAMPLER);
     if (!sd) return;
     vkDestroySampler(vk->device, sd->sampler, NULL);
     free(sd);
@@ -4662,7 +5028,8 @@ void rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler) {
 
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (vk->render_pass_active) return;
     if (!vk->framebuffers) return;  /* R150: guard against NULL framebuffers */
 
@@ -4693,7 +5060,8 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
 
 void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
         vk->render_pass_active = false;
@@ -4704,8 +5072,9 @@ void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
 
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource(g_current_device, pipe);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(g_current_device, pipe, RHI_RES_PIPELINE);
     if (!pd) return;
     VkPipelineBindPoint bind_point = pd->is_compute ?
         VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -4731,8 +5100,9 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
 
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER);
     if (!bd) return;
     VkDeviceSize off = (VkDeviceSize)offset;
     vkCmdBindVertexBuffers(vk->cmd_buffers[vk->current_frame], 0, 1, &bd->buffer, &off);
@@ -4740,8 +5110,9 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
 
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER);
     if (!bd) return;
     /* R224-A: Honor recorded index width (was hard-coded UINT32). */
     VkIndexType itype = is_u32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
@@ -4751,7 +5122,8 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, b
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
                           f32 min_depth, f32 max_depth) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (vk->vp_valid && vk->cached_vp_x == x && vk->cached_vp_y == y &&
         vk->cached_vp_w == w && vk->cached_vp_h == h &&
         vk->cached_vp_min_d == min_depth && vk->cached_vp_max_d == max_depth)
@@ -4766,7 +5138,8 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (vk->sc_valid && vk->cached_sc_x == x && vk->cached_sc_y == y &&
         vk->cached_sc_w == w && vk->cached_sc_h == h) return;  /* R94-2: cache hit */
     VkRect2D sc = {{x, y}, {w, h}};
@@ -4777,7 +5150,8 @@ void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     /* Non-flipped: shadow depth passes use a top-left-origin viewport (see
      * rhi_cmd_bind_shadow_map), so cascade quadrants must match that. */
     if (!vk->vp_valid || vk->cached_vp_x != (f32)x || vk->cached_vp_y != (f32)y ||
@@ -4809,7 +5183,8 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
 void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
                        u32 first_vertex) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDraw(vk->cmd_buffers[vk->current_frame], vertex_count, instance_count,
@@ -4823,7 +5198,8 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count,
                                u32 first_index, i32 vertex_offset) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDrawIndexed(vk->cmd_buffers[vk->current_frame], index_count, instance_count,
@@ -4832,8 +5208,10 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                            u32 draw_count, u32 stride) {
+    if (!dev || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, cmd_buf);
+    if (!vk || !vk->frame_started) return;
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
     if (!bd) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);
@@ -4844,8 +5222,10 @@ void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
 
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                                    u32 draw_count, u32 stride) {
+    if (!dev || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, cmd_buf);
+    if (!vk || !vk->frame_started) return;
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
     if (!bd) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
@@ -4857,9 +5237,11 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset,
                                          RHIBuffer count_buf, u32 count_offset,
                                          u32 max_draws, u32 stride) {
+    if (!dev || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *cmd_bd   = (VKBufferData *)rhi_get_resource(dev, cmd_buf);
-    VKBufferData *count_bd = (VKBufferData *)rhi_get_resource(dev, count_buf);
+    if (!vk || !vk->frame_started) return;
+    VKBufferData *cmd_bd   = (VKBufferData *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
+    VKBufferData *count_bd = (VKBufferData *)rhi_get_resource_typed(dev, count_buf, RHI_RES_BUFFER);
     if (!cmd_bd || !count_bd) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
@@ -4881,7 +5263,8 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
 
 void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     /* Vulkan forbids vkCmdDispatch inside a render pass. Suspend the active
      * pass (its attachments are STOREd); the next draw/clear resumes it. */
     vk_suspend_pass_for_compute(vk);
@@ -4891,10 +5274,11 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
 
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (!vk->current_pipeline_data) return;
     VKPipelineData *cpd = vk->current_pipeline_data;
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER);
     if (!bd) return;
 
     VkDescriptorSetLayout layout_to_use = cpd->is_compute ?
@@ -4945,7 +5329,8 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     vk_suspend_pass_for_compute(vk);
     VkMemoryBarrier barrier = {0};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -4967,9 +5352,13 @@ void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
 
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, tex);
-    if (!td || td->image == VK_NULL_HANDLE) return;
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= 4u) return;
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, tex, RHI_RES_TEXTURE);
+    if (!td || td->image == VK_NULL_HANDLE || mip_level >= td->mip_levels ||
+        mip_level >= VK_MAX_MIP_VIEWS) return;
+    VKPipelineData *cpd = vk->current_pipeline_data;
+    if (!cpd || cpd->storage_image_set == (u8)VK_INVALID_SET) return;
     vk_suspend_pass_for_compute(vk);
 
     /* Transition the requested mip to VK_IMAGE_LAYOUT_GENERAL so it can
@@ -5008,10 +5397,6 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
      * view (cached on the texture).  This requires the currently bound
      * pipeline to declare a storage_image_layout set, which is true for
      * every compute pipeline created through this backend. */
-    VKPipelineData *cpd = vk->current_pipeline_data;
-    if (!cpd || cpd->storage_image_set == (u8)VK_INVALID_SET) return;
-    if (mip_level >= VK_MAX_MIP_VIEWS) return;
-
     if (td->mip_views[mip_level] == VK_NULL_HANDLE) {
         VkImageViewCreateInfo vci = {0};
         vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -5071,14 +5456,14 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
 
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face, u32 mip, u32 unit, bool write_only) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource(g_current_device, cm);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= 4u) return;
+    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource_typed(g_current_device, cm, RHI_RES_CUBEMAP);
     if (!cd || face >= 6u) return;
     if (mip >= cd->mip_levels || mip >= VK_MAX_MIP_VIEWS) return;
-    vk_suspend_pass_for_compute(vk);
-
     VKPipelineData *cpd = vk->current_pipeline_data;
     if (!cpd || cpd->storage_image_set == (u8)VK_INVALID_SET) return;
+    vk_suspend_pass_for_compute(vk);
 
     /* Transition the target face+mip to GENERAL layout for compute write. */
     VkImageMemoryBarrier barrier = {0};
@@ -5151,9 +5536,10 @@ void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face,
 
 void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource(g_current_device, cm);
-    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= 4u) return;
+    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource_typed(g_current_device, cm, RHI_RES_CUBEMAP);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!cd || !sd || !vk->current_pipeline_data) return;
 
     VKPipelineData *cpd = vk->current_pipeline_data;
@@ -5193,9 +5579,13 @@ void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler s
 
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit, u32 mip_level) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, tex);
-    if (!td || td->image == VK_NULL_HANDLE) return;
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= 4u) return;
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, tex, RHI_RES_TEXTURE);
+    if (!td || td->image == VK_NULL_HANDLE || mip_level >= td->mip_levels ||
+        mip_level >= VK_MAX_MIP_VIEWS) return;
+    VKPipelineData *cpd = vk->current_pipeline_data;
+    if (!cpd || cpd->sampler_mip_set == (u8)VK_INVALID_SET) return;
     vk_suspend_pass_for_compute(vk);
 
     /* Ensure the source mip is in SHADER_READ_ONLY_OPTIMAL layout before
@@ -5227,11 +5617,7 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler samp
     }
 
     /* Bind a COMBINED_IMAGE_SAMPLER referencing a per-mip image view. */
-    VKPipelineData *cpd = vk->current_pipeline_data;
-    if (!cpd || cpd->sampler_mip_set == (u8)VK_INVALID_SET) return;
-    if (mip_level >= VK_MAX_MIP_VIEWS) return;
-
-    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!sd) return;
 
     if (td->mip_views[mip_level] == VK_NULL_HANDLE) {
@@ -5283,12 +5669,13 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler samp
 
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, tex);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= 4u) return;
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, tex, RHI_RES_TEXTURE);
     if (!td || td->image == VK_NULL_HANDLE) return;
     VKPipelineData *cpd = vk->current_pipeline_data;
     if (!cpd || cpd->sampler_mip_set == (u8)VK_INVALID_SET) return;
-    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!sd) return;
 
     /* R179: Full-view sampling requires every mip in READ_ONLY — Hi-Z writes
@@ -5353,8 +5740,9 @@ void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler 
 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, depth_tex);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, depth_tex, RHI_RES_TEXTURE);
     if (!td) return;
     /* Idempotent: if the depth is already shader-readable, nothing to do.  This
      * lets callers re-issue the transition after a post-fx pass (tonemap /
@@ -5388,7 +5776,8 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
 
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     vk_resume_pass_if_needed(vk);
     VkClearAttachment att = {0};
     att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -5408,7 +5797,8 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
 void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment,
                                     f32 r, f32 g, f32 b, f32 a) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (!vk || attachment >= RHI_MRT_MAX_ATTACHMENTS) return;
     vk_resume_pass_if_needed(vk);
     VkClearAttachment att = {0};
@@ -5473,7 +5863,9 @@ static void vk_flush_push_constants(VKBackend *vk) {
 /* Push constants map to rhi_cmd_set_uniform_*. Location is used as byte offset. */
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    if (m == NULL) return;
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VK_PUSH_HELPER_CHECK(vk, location, 64u);
     memcpy(vk->push_staging + location, m, 64);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 64);
@@ -5482,7 +5874,8 @@ void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
 
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VK_PUSH_HELPER_CHECK(vk, location, 12u);
     f32 v[3] = {x, y, z};
     memcpy(vk->push_staging + location, v, 12);  /* R94-3: stage, flush at draw */
@@ -5492,7 +5885,8 @@ void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
 
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VK_PUSH_HELPER_CHECK(vk, location, 8u);
     f32 v[2] = {x, y};
     memcpy(vk->push_staging + location, v, 8);  /* R94-3: stage, flush at draw */
@@ -5502,7 +5896,8 @@ void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
 
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VK_PUSH_HELPER_CHECK(vk, location, 16u);
     f32 v[4] = {x, y, z, w};
     memcpy(vk->push_staging + location, v, 16);  /* R94-3: stage, flush at draw */
@@ -5512,7 +5907,8 @@ void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
 
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VK_PUSH_HELPER_CHECK(vk, location, 4u);
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
@@ -5525,7 +5921,8 @@ void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
 void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size) {
     (void)cmd;
     if (!data || size == 0u) return;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VKPipelineData *pd = vk->current_pipeline_data;
     if (!pd) return;
     u32 range = pd->is_compute ? 128u : pd->push_range_size;
@@ -5547,7 +5944,8 @@ void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data
 
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VK_PUSH_HELPER_CHECK(vk, location, 4u);
     memcpy(vk->push_staging + location, &v, 4);  /* R94-3: stage, flush at draw */
     VK_PUSH_MARK(vk, location, 4);
@@ -5555,8 +5953,8 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
 }
 
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {
-    (void)dev;
-    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource(dev, pipe);
+    if (dev == NULL || name == NULL) return -1;
+    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
 
     /* R560: skinned G-Buffer vertex stage — same 256B push block as
      * gbuffer_vk.vert: u_model@0 u_view@64 u_proj@128 u_prev_mvp@192.
@@ -5933,16 +6331,17 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture shadow, RHITexture ssao, RHISampler sampler) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (!vk->current_pipeline_data) return;
 
-    VKTextureData *td_alb = (VKTextureData *)rhi_get_resource(g_current_device, albedo);
-    VKTextureData *td_mr  = (VKTextureData *)rhi_get_resource(g_current_device, mr);
-    VKTextureData *td_nrm = (VKTextureData *)rhi_get_resource(g_current_device, normal);
-    VKTextureData *td_em  = (VKTextureData *)rhi_get_resource(g_current_device, emissive);
-    VKTextureData *td_ssao = (VKTextureData *)rhi_get_resource(g_current_device, ssao);
-    VKTextureData *td_shadow = (VKTextureData *)rhi_get_resource(g_current_device, shadow);
-    VKSamplerData *sd     = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    VKTextureData *td_alb = (VKTextureData *)rhi_get_resource_typed(g_current_device, albedo, RHI_RES_TEXTURE);
+    VKTextureData *td_mr  = (VKTextureData *)rhi_get_resource_typed(g_current_device, mr, RHI_RES_TEXTURE);
+    VKTextureData *td_nrm = (VKTextureData *)rhi_get_resource_typed(g_current_device, normal, RHI_RES_TEXTURE);
+    VKTextureData *td_em  = (VKTextureData *)rhi_get_resource_typed(g_current_device, emissive, RHI_RES_TEXTURE);
+    VKTextureData *td_ssao = (VKTextureData *)rhi_get_resource_typed(g_current_device, ssao, RHI_RES_TEXTURE);
+    VKTextureData *td_shadow = (VKTextureData *)rhi_get_resource_typed(g_current_device, shadow, RHI_RES_TEXTURE);
+    VKSamplerData *sd     = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!sd) return;
 
     VkDescriptorSetAllocateInfo dsai = {0};
@@ -6019,19 +6418,22 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map,
     const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (!vk->current_pipeline_data) return;
 
-    VKTextureData *td_alb = (VKTextureData *)rhi_get_resource(g_current_device, albedo);
-    VKTextureData *td_mr  = (VKTextureData *)rhi_get_resource(g_current_device, mr);
-    VKTextureData *td_nrm = (VKTextureData *)rhi_get_resource(g_current_device, normal);
-    VKTextureData *td_em  = (VKTextureData *)rhi_get_resource(g_current_device, emissive);
-    VKTextureData *td_ssao = (VKTextureData *)rhi_get_resource(g_current_device, ssao);
-    VKTextureData *td_shadow = (VKTextureData *)rhi_get_resource(g_current_device, shadow);
-    VKTextureData *td_brdf = (VKTextureData *)rhi_get_resource(g_current_device, brdf_lut);
-    VKCubemapData *cd_irr  = (VKCubemapData *)rhi_get_resource(g_current_device, irradiance_map);
-    VKCubemapData *cd_pref = (VKCubemapData *)rhi_get_resource(g_current_device, prefilter_map);
-    VKSamplerData *sd     = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    VKTextureData *td_alb = (VKTextureData *)rhi_get_resource_typed(g_current_device, albedo, RHI_RES_TEXTURE);
+    VKTextureData *td_mr  = (VKTextureData *)rhi_get_resource_typed(g_current_device, mr, RHI_RES_TEXTURE);
+    VKTextureData *td_nrm = (VKTextureData *)rhi_get_resource_typed(g_current_device, normal, RHI_RES_TEXTURE);
+    VKTextureData *td_em  = (VKTextureData *)rhi_get_resource_typed(g_current_device, emissive, RHI_RES_TEXTURE);
+    VKTextureData *td_ssao = (VKTextureData *)rhi_get_resource_typed(g_current_device, ssao, RHI_RES_TEXTURE);
+    VKTextureData *td_shadow = (VKTextureData *)rhi_get_resource_typed(g_current_device, shadow, RHI_RES_TEXTURE);
+    VKTextureData *td_brdf = (VKTextureData *)rhi_get_resource_typed(g_current_device, brdf_lut, RHI_RES_TEXTURE);
+    VKCubemapData *cd_irr  = (VKCubemapData *)rhi_get_resource_typed(
+        g_current_device, irradiance_map, RHI_RES_CUBEMAP);
+    VKCubemapData *cd_pref = (VKCubemapData *)rhi_get_resource_typed(
+        g_current_device, prefilter_map, RHI_RES_CUBEMAP);
+    VKSamplerData *sd     = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!sd) return;
 
     VkDescriptorSetAllocateInfo dsai = {0};
@@ -6059,7 +6461,7 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     for (u32 i = 0u; i < 4u; i++) {
         VkImageView v = alb_view;
         if (pt_shadow_at_bind5 && i < pt_n) {
-            VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, point_shadow_cubes[i]);
+            VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, point_shadow_cubes[i], RHI_RES_TEXTURE);
             if (td && td->view != VK_NULL_HANDLE) v = td->view;
         } else if (!pt_shadow_at_bind5 && i == 0u) {
             v = td_ssao ? td_ssao->view : alb_view;
@@ -6074,7 +6476,7 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     for (u32 i = 0u; i < 4u; i++) {
         VkImageView v = alb_view;
         if (use_pt_shadow && !pt_shadow_at_bind5 && i < pt_n) {
-            VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, point_shadow_cubes[i]);
+            VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, point_shadow_cubes[i], RHI_RES_TEXTURE);
             if (td && td->view != VK_NULL_HANDLE) v = td->view;
         }
         bind10_infos[i].sampler = sd->sampler;
@@ -6157,10 +6559,11 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
     RHITexture *textures, int count, RHISampler sampler) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
-    if (!vk->current_pipeline_data || count <= 0 || count > 6) return;
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    if (!vk->current_pipeline_data || !textures || count <= 0 || count > 6) return;
 
-    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!sd) return;
 
     VkDescriptorSetAllocateInfo dsai = {0};
@@ -6178,7 +6581,7 @@ void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
     /* R97-4: Single vkUpdateDescriptorSets write with descriptorCount=count
      * for consecutive bindings 0..count-1, instead of count separate writes. */
     for (int i = 0; i < count; i++) {
-        VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, textures[i]);
+        VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, textures[i], RHI_RES_TEXTURE);
         img_infos[i].sampler = sd->sampler;
         img_infos[i].imageView = td ? td->view : VK_NULL_HANDLE;
         img_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -6199,24 +6602,56 @@ void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
 }
 
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
-    rhi_cmd_bind_material_textures(cmd, tex, tex, tex, tex, tex, tex, sampler);
-    (void)unit;
+    (void)cmd;
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= RHI_MAX_TEXTURE_UNITS || !vk->current_pipeline_data) return;
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(
+        g_current_device, tex, RHI_RES_TEXTURE);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(
+        g_current_device, sampler, RHI_RES_SAMPLER);
+    if (!td || td->view == VK_NULL_HANDLE || !sd) return;
+
+    VkDescriptorSetAllocateInfo dsai = {0};
+    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool = vk->desc_pools[vk->current_frame];
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &vk->desc_layout;
+    VkDescriptorSet ds;
+    if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
+
+    VkDescriptorImageInfo image_info = {0};
+    image_info.sampler = sd->sampler;
+    image_info.imageView = td->view;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet write = {0};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = ds;
+    write.dstBinding = unit;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
+    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+        VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
+        0, 1, &ds, 0, NULL);
 }
 
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISampler sampler) {
     (void)cmd; (void)sampler;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(g_current_device, shadow_tex);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, shadow_tex, RHI_RES_TEXTURE);
     vk->shadow_tex_view = td ? td->view : VK_NULL_HANDLE;
 }
 
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     VKPipelineData *cpd = vk->current_pipeline_data;
     if (!cpd || cpd->ubo_set == (u8)VK_INVALID_SET) return;
 
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER);
     if (!bd || bd->buffer == VK_NULL_HANDLE) return;
     vk->bound_ubo = buf;
     vk->bound_ubo_binding = binding;
@@ -6256,13 +6691,15 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 
 static void vk_rebind_uniform_buffers(VKBackend *vk) {
     if (!vk || !rhi_handle_valid(vk->bound_ubo)) return;
-    RHICmdBuffer *cmd = NULL;
-    rhi_cmd_bind_uniform_buffer(cmd, vk->bound_ubo, vk->bound_ubo_binding);
+    rhi_cmd_bind_uniform_buffer((RHICmdBuffer *)vk, vk->bound_ubo, vk->bound_ubo_binding);
 }
 
 /* ---- Shadow map ---- */
 
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
+    if (dev == NULL || !rhi_drawable_dimensions_valid(width, height)) {
+        return (RHIShadowMap){0};
+    }
     VKBackend *vk = vk_backend(dev);
     RHIShadowMap sm = {0};
     sm.width = width;
@@ -6298,7 +6735,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, &sd->depth_memory) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &sd->depth_memory) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate shadow memory");
         vkDestroyImage(vk->device, sd->depth_image, NULL);
         free(sd);
@@ -6427,7 +6864,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
 void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     if (!dev || !sm) return;
     VKBackend *vk = vk_backend(dev);
-    VKShadowData *sd = rhi_get_resource(dev, sm->fbo);
+    VKShadowData *sd = rhi_get_resource_typed(dev, sm->fbo, RHI_RES_FRAMEBUFFER);
     if (!sd) return;
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shadow_map_destroy");
@@ -6448,7 +6885,8 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     /* R425: free the VKTextureData behind the depth_tex slot (calloc'd at
      * create) — the old code freed only the slot, leaking the struct. */
     if (rhi_handle_valid(sm->depth_tex)) {
-        VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, sm->depth_tex);
+        VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(
+            dev, sm->depth_tex, RHI_RES_TEXTURE);
         if (td) free(td);
         if (dev->slots[sm->depth_tex.index].ptr == td)
             dev->slots[sm->depth_tex.index].ptr = NULL;
@@ -6462,8 +6900,9 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     (void)cmd;
     if (!sm) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKShadowData *sd = rhi_get_resource(g_current_device, sm->fbo);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKShadowData *sd = rhi_get_resource_typed(g_current_device, sm->fbo, RHI_RES_FRAMEBUFFER);
     if (!sd) return;
 
     if (vk->render_pass_active) {
@@ -6497,7 +6936,8 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
@@ -6536,7 +6976,8 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     vk_resume_pass_if_needed(vk);
     VkClearAttachment att = {0};
     att.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -6550,6 +6991,7 @@ void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
 /* ---- Cubemap ---- */
 
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
+    if (dev == NULL || !rhi_cubemap_desc_validate(desc)) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
 
     VKCubemapData *cd = calloc(1, sizeof(VKCubemapData));
@@ -6557,7 +6999,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
 
     VkFormat fmt = vk_format_from_rhi(desc->format);
     u32 mips = desc->mip_levels ? desc->mip_levels : 1u;
-    if (mips > VK_MAX_MIP_VIEWS) mips = VK_MAX_MIP_VIEWS;
+    if (mips > VK_MAX_MIP_VIEWS) return RHI_HANDLE_NULL;
     cd->format = fmt;
     cd->mip_levels = mips;
 
@@ -6588,7 +7030,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, &cd->memory) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &cd->memory) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate cubemap memory");
         vkDestroyImage(vk->device, cd->image, NULL);
         free(cd);
@@ -6723,7 +7165,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
     if (!dev || !rhi_handle_valid(cm)) return;
     VKBackend *vk = vk_backend(dev);
-    VKCubemapData *cd = rhi_get_resource(dev, cm);
+    VKCubemapData *cd = rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
     if (!cd) return;
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_destroy");
@@ -6742,7 +7184,7 @@ void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
 void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
     if (!dev || !rhi_handle_valid(cm)) return;
     VKBackend *vk = vk_backend(dev);
-    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource(dev, cm);
+    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
     if (!cd) return;
 
     /* Prior compute writes ran in earlier queue submissions; make sure they
@@ -6817,7 +7259,7 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
 void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     if (!dev || !rhi_handle_valid(tex)) return;
     VKBackend *vk = vk_backend(dev);
-    VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, tex);
+    VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!td || td->image == VK_NULL_HANDLE) return;
 
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
@@ -6890,10 +7332,11 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
 }
 
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
-    (void)cmd; (void)unit;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource(g_current_device, cm);
-    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource(g_current_device, sampler);
+    (void)cmd;
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || unit >= RHI_MAX_TEXTURE_UNITS) return;
+    VKCubemapData *cd = (VKCubemapData *)rhi_get_resource_typed(g_current_device, cm, RHI_RES_CUBEMAP);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
     if (!cd || !sd || !vk->current_pipeline_data) return;
 
     VkDescriptorSetAllocateInfo dsai = {0};
@@ -6905,22 +7348,18 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
     VkDescriptorSet ds;
     if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
 
-    /* R98-1: Single write with descriptorCount=2 for consecutive bindings 0-1.
-     * Both bindings use the same cubemap view (was 2 separate identical writes). */
-    VkDescriptorImageInfo img_infos[2];
-    memset(img_infos, 0, sizeof(img_infos));
-    img_infos[0].sampler = sd->sampler;
-    img_infos[0].imageView = cd->view;
-    img_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    img_infos[1] = img_infos[0];
+    VkDescriptorImageInfo image_info = {0};
+    image_info.sampler = sd->sampler;
+    image_info.imageView = cd->view;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkWriteDescriptorSet write = {0};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = ds;
-    write.dstBinding = 0;
-    write.descriptorCount = 2;
+    write.dstBinding = unit;
+    write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = img_infos;
+    write.pImageInfo = &image_info;
     vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
 
     vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
@@ -6935,16 +7374,27 @@ void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, 
  * is NOT enabled, so calling vkCmdSetDepthCompareOp would be a validation error.
  * skybox_render is the sole caller; the skybox pipeline descriptor sets
  * depth_compare_lequal=true which maps to VK_COMPARE_OP_LESS_OR_EQUAL. */
-void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) { (void)cmd; }
-void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) { (void)cmd; }
+void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) {
+    (void)vk_cmd_backend(cmd);
+}
+void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
+    (void)vk_cmd_backend(cmd);
+}
 
 /* R80-2: Vulkan no-ops — depth mask and cull face are handled by pipeline state. */
-void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) { (void)cmd; (void)enabled; }
-void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) { (void)cmd; (void)enabled; }
+void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) {
+    (void)enabled;
+    (void)vk_cmd_backend(cmd);
+}
+void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
+    (void)enabled;
+    (void)vk_cmd_backend(cmd);
+}
 
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd || !data || size == 0u) return;
     /* R417: clamp to buffer size on all paths — the persistent-mapped memcpy
      * below was unclamped (OOB write past the mapped allocation). */
@@ -6967,11 +7417,12 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
 }
 
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd || !data || size == 0u) return;
     if (offset >= bd->size) return;
-    if (offset + size > bd->size) size = bd->size - offset;
+    if (size > bd->size - offset) size = bd->size - offset;
     if (bd->mapped) {
         memcpy(bd->mapped + offset, data, size);
     } else if (bd->device_local) {
@@ -6988,8 +7439,9 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const
 }
 
 void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
+    if (dev == NULL) return NULL;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return NULL;
     if (bd->mapped) return bd->mapped;
     /* R186: DEVICE_LOCAL cannot be persistently mapped — use rhi_buffer_read. */
@@ -7006,19 +7458,21 @@ void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
 }
 
 void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
+    if (dev == NULL) return;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return;
     if (bd->mapped || bd->device_local) return; /* persistent / no map */
     vkUnmapMemory(vk->device, bd->memory);
 }
 
 bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size) {
+    if (dev == NULL) return false;
     VKBackend *vk = vk_backend(dev);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(dev, buf);
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd || !dst || size == 0u) return false;
     if (offset >= bd->size) return false;
-    if (offset + size > bd->size) size = bd->size - offset;
+    if (size > bd->size - offset) size = bd->size - offset;
     if (bd->mapped) {
         memcpy(dst, bd->mapped + offset, size);
         return true;
@@ -7039,13 +7493,13 @@ void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                            const void *data, usize size) {
     (void)cmd;
     if (!data || size == 0u) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER);
     if (!bd) return;
-    if (offset + size > bd->size) {
-        if (offset >= bd->size) return;
-        size = bd->size - offset;
-    }
+    if (offset >= bd->size) return;
+    if (size > bd->size - offset) size = bd->size - offset;
+    if (size == 0u) return;
     vk_suspend_pass_for_compute(vk);
     VkCommandBuffer cb = vk->cmd_buffers[vk->current_frame];
 
@@ -7077,9 +7531,10 @@ void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
     (void)cmd;
     if (size == 0u) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKBufferData *src_bd = (VKBufferData *)rhi_get_resource(g_current_device, src);
-    VKBufferData *dst_bd = (VKBufferData *)rhi_get_resource(g_current_device, dst);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKBufferData *src_bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, src, RHI_RES_BUFFER);
+    VKBufferData *dst_bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, dst, RHI_RES_BUFFER);
     if (!src_bd || !dst_bd) return;
     /* R425: clamp against both buffer sizes like rhi_cmd_update_buffer —
      * an oversized copy would read/write past the smaller buffer. */
@@ -7140,14 +7595,14 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value) {
     (void)cmd;
     if (size == 0u) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKBufferData *bd = (VKBufferData *)rhi_get_resource(g_current_device, buf);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER);
     if (!bd) return;
     /* R425: clamp offset+size against the buffer like rhi_cmd_update_buffer. */
-    if (offset + size > bd->size) {
-        if (offset >= bd->size) return;
-        size = bd->size - offset;
-    }
+    if (offset >= bd->size) return;
+    if (size > bd->size - offset) size = bd->size - offset;
+    if (size == 0u) return;
     /* vkCmdFillBuffer requires 4-byte alignment. */
     if ((offset & 3u) || (size & 3u)) {
         LOG_WARN("VK: rhi_cmd_fill_buffer requires 4-byte aligned offset/size");
@@ -7194,10 +7649,11 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
     if (!vk->current_pipeline_data) return;
 
-    VKBufferData *bd0 = (VKBufferData *)rhi_get_resource(g_current_device, buf0);
+    VKBufferData *bd0 = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf0, RHI_RES_BUFFER);
     if (!bd0 || bd0->texel_view == VK_NULL_HANDLE) return;
 
     VkDescriptorSet desc_set;
@@ -7224,7 +7680,7 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
 
     VKBufferData *bd1 = NULL;
     if (rhi_handle_valid(buf1)) {
-        bd1 = (VKBufferData *)rhi_get_resource(g_current_device, buf1);
+        bd1 = (VKBufferData *)rhi_get_resource_typed(g_current_device, buf1, RHI_RES_BUFFER);
     }
     if (bd1 && bd1->texel_view != VK_NULL_HANDLE) {
         writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -7322,7 +7778,7 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, &fd->color_memory) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &fd->color_memory) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate MRT color memory");
         vkDestroyImage(vk->device, fd->color_image, NULL);
         free(fd);
@@ -7370,7 +7826,7 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, &fd->depth_memory) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &fd->depth_memory) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate MRT depth memory");
         vkDestroyImage(vk->device, fd->depth_image, NULL);
         vkDestroyImageView(vk->device, fd->color_view, NULL);
@@ -7653,7 +8109,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height) 
 void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (!dev || !fbo) return;
     VKBackend *vk = vk_backend(dev);
-    VKFBOData *fd = rhi_get_resource(dev, fbo->fb);
+    VKFBOData *fd = rhi_get_resource_typed(dev, fbo->fb, RHI_RES_FRAMEBUFFER);
     if (!fd) return;
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in offscreen_fbo_destroy");
@@ -7662,13 +8118,15 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
      * slots (calloc'd at create) — the old code freed only the slots,
      * leaking 2 structs per destroy (resize recreates all post FBOs). */
     if (rhi_handle_valid(fbo->color_tex)) {
-        VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, fbo->color_tex);
+        VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(
+            dev, fbo->color_tex, RHI_RES_TEXTURE);
         if (td) free(td);
         if (dev->slots[fbo->color_tex.index].ptr == td)
             dev->slots[fbo->color_tex.index].ptr = NULL;
     }
     if (rhi_handle_valid(fbo->depth_tex)) {
-        VKTextureData *dd = (VKTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        VKTextureData *dd = (VKTextureData *)rhi_get_resource_typed(
+            dev, fbo->depth_tex, RHI_RES_TEXTURE);
         if (dd) free(dd);
         if (dev->slots[fbo->depth_tex.index].ptr == dd)
             dev->slots[fbo->depth_tex.index].ptr = NULL;
@@ -7682,8 +8140,9 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     (void)cmd;
     if (!fbo) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKFBOData *fd = rhi_get_resource_typed(g_current_device, fbo->fb, RHI_RES_FRAMEBUFFER);
     if (!fd) return;
 
     /* This pass clears + writes the depth attachment and ends with it in
@@ -7691,7 +8150,8 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
      * that so a later rhi_cmd_transition_depth_to_read re-makes it readable
      * (post-fx like tonemap/cinematic re-bind the scene FBO then god rays /
      * debug viz sample its depth). */
-    VKTextureData *dtd = (VKTextureData *)rhi_get_resource(g_current_device, fbo->depth_tex);
+    VKTextureData *dtd = (VKTextureData *)rhi_get_resource_typed(
+        g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
     if (dtd) dtd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     if (vk->render_pass_active) {
@@ -7730,8 +8190,9 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
 void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     (void)cmd;
     if (!fbo) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKFBOData *fd = rhi_get_resource(g_current_device, fbo->fb);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKFBOData *fd = rhi_get_resource_typed(g_current_device, fbo->fb, RHI_RES_FRAMEBUFFER);
     if (!fd || !fd->render_pass_load) {
         /* Fallback if LOAD twin missing. */
         rhi_offscreen_fbo_bind(cmd, fbo);
@@ -7740,7 +8201,8 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
 
     /* Depth may be SHADER_READ_ONLY after transition_depth_to_read; LOAD twin
      * expects DEPTH_STENCIL_ATTACHMENT (finalLayout of the clear pass). */
-    VKTextureData *dtd = (VKTextureData *)rhi_get_resource(g_current_device, fbo->depth_tex);
+    VKTextureData *dtd = (VKTextureData *)rhi_get_resource_typed(
+        g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
     if (dtd && dtd->cur_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         vk_suspend_pass_for_compute(vk);
         VkImageMemoryBarrier barrier = {0};
@@ -7791,7 +8253,8 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     (void)cmd;
-    VKBackend *vk = vk_backend(g_current_device);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
@@ -7867,7 +8330,7 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, out_mem) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, out_mem) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate MRT color memory (helper)");
         vkDestroyImage(vk->device, *out_img, NULL);
         return;
@@ -7902,7 +8365,8 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
                               const RHIFormat *formats, u32 attachment_count) {
     RHIMRTFBO fbo = {0};
-    if (attachment_count == 0u || attachment_count > RHI_MRT_MAX_ATTACHMENTS) return fbo;
+    if (dev == NULL || !rhi_mrt_desc_validate(width, height, formats,
+                                               attachment_count)) return fbo;
     fbo.attachment_count = attachment_count;
     fbo.width  = width;
     fbo.height = height;
@@ -7970,7 +8434,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         ai.allocationSize = mr.size;
         ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (vkAllocateMemory(vk->device, &ai, NULL, &md->depth_memory) != VK_SUCCESS) {
+        if (vk_allocate_memory(vk, &ai, &md->depth_memory) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to allocate MRT depth memory");
             vkDestroyImage(vk->device, md->depth_image, NULL);
             for (u32 i = 0; i < attachment_count; i++) {
@@ -8147,7 +8611,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     if (!dev || !fbo) return;
     VKBackend *vk = vk_backend(dev);
-    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource(dev, fbo->fb);
+    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource_typed(dev, fbo->fb, RHI_RES_MRT_FBO);
     if (!md) { memset(fbo, 0, sizeof(*fbo)); return; }
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in mrt_fbo_destroy");
@@ -8161,7 +8625,8 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
         vkFreeMemory(vk->device, md->color_memories[i], NULL);
         /* Null the shared texture slot so device-destroy skips double-free. */
         if (rhi_handle_valid(fbo->color_tex[i])) {
-            VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, fbo->color_tex[i]);
+            VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(
+                dev, fbo->color_tex[i], RHI_RES_TEXTURE);
             if (td) free(td);
             if (dev->slots[fbo->color_tex[i].index].ptr == td)
                 dev->slots[fbo->color_tex[i].index].ptr = NULL;
@@ -8172,7 +8637,8 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     vkDestroyImage(vk->device, md->depth_image, NULL);
     vkFreeMemory(vk->device, md->depth_memory, NULL);
     if (rhi_handle_valid(fbo->depth_tex)) {
-        VKTextureData *dd = (VKTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        VKTextureData *dd = (VKTextureData *)rhi_get_resource_typed(
+            dev, fbo->depth_tex, RHI_RES_TEXTURE);
         if (dd) free(dd);
         if (dev->slots[fbo->depth_tex.index].ptr == dd)
             dev->slots[fbo->depth_tex.index].ptr = NULL;
@@ -8186,8 +8652,10 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
 void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     (void)cmd;
     if (!fbo) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource_typed(
+        g_current_device, fbo->fb, RHI_RES_MRT_FBO);
     if (!md) return;
 
     /* R258 (CORRECTNESS): this MRT (G-buffer) render pass ends with the depth
@@ -8203,7 +8671,8 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
      * (LATE_FRAGMENT_TESTS) → compute-read dependency (occlusion flicker /
      * validation errors). Mirrors rhi_offscreen_fbo_bind, which tracks its own
      * ATTACHMENT_OPTIMAL finalLayout. GL is unaffected (transition is a no-op). */
-    VKTextureData *dtd = (VKTextureData *)rhi_get_resource(g_current_device, fbo->depth_tex);
+    VKTextureData *dtd = (VKTextureData *)rhi_get_resource_typed(
+        g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
     if (dtd) dtd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
     if (vk->render_pass_active) {
@@ -8246,8 +8715,9 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
 void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     (void)cmd;
     if (!fbo) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource(g_current_device, fbo->fb);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource_typed(g_current_device, fbo->fb, RHI_RES_MRT_FBO);
     if (!md || !md->render_pass_load) {
         rhi_mrt_fbo_bind(cmd, fbo);
         return;
@@ -8288,6 +8758,9 @@ void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 /* ======================================================================== */
 
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
+    if (dev == NULL || size == 0u || size > RHI_MAX_DRAWABLE_DIMENSION) {
+        return (RHICubemapDepthFBO){0};
+    }
     RHICubemapDepthFBO fbo = {0};
     fbo.size = size;
 
@@ -8325,7 +8798,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = vk_find_memory(vk, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(vk->device, &ai, NULL, &cd->depth_memory) != VK_SUCCESS) {
+    if (vk_allocate_memory(vk, &ai, &cd->depth_memory) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate cubemap depth memory");
         vkDestroyImage(vk->device, cd->depth_image, NULL);
         free(cd);
@@ -8494,7 +8967,8 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
 void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
     if (!dev || !fbo) return;
     VKBackend *vk = vk_backend(dev);
-    VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource(dev, fbo->fb);
+    VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource_typed(
+        dev, fbo->fb, RHI_RES_CUBEMAP_DEPTH_FBO);
     if (!cd) { memset(fbo, 0, sizeof(*fbo)); return; }
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_depth_fbo_destroy");
@@ -8512,7 +8986,8 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
 
     /* Free the registered texture slot. */
     if (rhi_handle_valid(fbo->depth_tex)) {
-        VKTextureData *td = (VKTextureData *)rhi_get_resource(dev, fbo->depth_tex);
+        VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(
+            dev, fbo->depth_tex, RHI_RES_TEXTURE);
         if (td) free(td);
         if (dev->slots[fbo->depth_tex.index].ptr == td)
             dev->slots[fbo->depth_tex.index].ptr = NULL;
@@ -8526,8 +9001,10 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
 void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo, u32 face) {
     (void)cmd;
     if (!fbo || face >= 6u) return;
-    VKBackend *vk = vk_backend(g_current_device);
-    VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource(g_current_device, fbo->fb);
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk) return;
+    VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource_typed(
+        g_current_device, fbo->fb, RHI_RES_CUBEMAP_DEPTH_FBO);
     if (!cd) return;
 
     if (vk->render_pass_active) {

@@ -92,6 +92,7 @@ re_status_t re_tms_clone(const re_tms_t *source, const re_allocator_impl_t *allo
             copy->items = grown; copy->capacity = capacity;
         }
         item = &copy->items[copy->count]; *item = source->items[i]; item->producer_rule = NULL; item->premises = NULL;
+        ++copy->count;
         if (item->producer_rule_size != 0u) {
             item->producer_rule = re_alloc(allocator, item->producer_rule_size + 1u);
             if (item->producer_rule == NULL) { re_tms_destroy(copy); return RE_STATUS_OUT_OF_MEMORY; }
@@ -104,7 +105,6 @@ re_status_t re_tms_clone(const re_tms_t *source, const re_allocator_impl_t *allo
             if (item->premises == NULL) { re_tms_destroy(copy); return RE_STATUS_OUT_OF_MEMORY; }
             memcpy(item->premises, source->items[i].premises, bytes);
         }
-        ++copy->count;
     }
     *out = copy;
     return RE_STATUS_OK;

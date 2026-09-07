@@ -19,6 +19,7 @@ typedef struct my_label_t {
 
 /** @brief Create a label (NULL allocator = default, NULL text allowed). */
 my_widget_t* my_label_create(const my_allocator_t* allocator, const char* text);
+bool my_label_is_instance(const my_widget_t* widget);
 
 /** @brief Replace the label text (owned copy). */
 my_ret_t my_label_set_text(my_widget_t* label, const char* text);

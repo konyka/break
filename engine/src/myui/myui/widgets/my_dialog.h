@@ -18,6 +18,7 @@
 #define MY_DIALOG_CANCEL (-1)
 
 typedef void (*my_dialog_result_cb)(void* ctx, int32_t result);
+typedef void (*my_dialog_context_destroy_fn)(void* ctx);
 
 /** @brief Modal dialog (composition over my_window). */
 typedef struct my_dialog_t {
@@ -26,8 +27,13 @@ typedef struct my_dialog_t {
   my_widget_t* content;  /**< inside win's tree; add children here */
   my_widget_t* btn_row;  /**< inside win's tree */
   my_window_manager_t* wm; /**< borrowed (set by my_dialog_open) */
+  uint32_t wm_destroy_listener_id;
+  uint32_t window_close_listener_id;
   my_dialog_result_cb on_result;
   void* cb_ctx;
+  my_emitter_context_lease_t* cb_lease;
+  my_dialog_context_destroy_fn cb_destroy;
+  bool cb_owns_context;
   bool closing;
 } my_dialog_t;
 
@@ -54,6 +60,16 @@ my_ret_t my_dialog_add_button(my_dialog_t* dlg, const char* text,
  * ESC reports MY_DIALOG_CANCEL. */
 my_ret_t my_dialog_open(my_dialog_t* dlg, my_window_manager_t* wm,
                         my_dialog_result_cb cb, void* ctx);
+
+/** @brief Open with a callback context released exactly once after close. */
+my_ret_t my_dialog_open_owned(my_dialog_t* dlg, my_window_manager_t* wm,
+                              my_dialog_result_cb cb, void* ctx,
+                              my_dialog_context_destroy_fn destroy_ctx);
+
+/** @brief Open with a callback context guarded by an invalidatable lease. */
+my_ret_t my_dialog_open_lease(my_dialog_t* dlg, my_window_manager_t* wm,
+                              my_dialog_result_cb cb,
+                              my_emitter_context_lease_t* lease);
 
 /** @brief Close programmatically (reports `result`). */
 void my_dialog_close(my_dialog_t* dlg, int32_t result);

@@ -620,6 +620,7 @@ static re_status_t fire_activation(re_engine_t *engine, re_facts_t *facts,
         status = callbacks->action(engine, facts, &event, callbacks->context);
     if (status == RE_STATUS_OK) status = re_facts_commit(transaction);
     else re_facts_rollback(transaction);
+    re_facts_txn_destroy(transaction);
     return status;
 }
 

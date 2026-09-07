@@ -23,6 +23,20 @@
 
 #include "myui/my_widget_class_builtin.inc"
 
+my_ret_t my_widget_class_register_builtin_entry(const my_widget_class_t* cls);
+
+#define BUILTIN_INSTANCE_create_widget my_widget_is_instance
+#define BUILTIN_INSTANCE_create_button my_button_is_instance
+#define BUILTIN_INSTANCE_create_label my_label_is_instance
+#define BUILTIN_INSTANCE_create_edit my_edit_is_instance
+#define BUILTIN_INSTANCE_create_checkbox my_checkbox_is_instance
+#define BUILTIN_INSTANCE_create_slider my_slider_is_instance
+#define BUILTIN_INSTANCE_create_progress_bar my_progress_bar_is_instance
+#define BUILTIN_INSTANCE_create_text_area my_text_area_is_instance
+#define BUILTIN_INSTANCE_create_list_view my_list_view_is_instance
+#define BUILTIN_INSTANCE_create_image my_image_is_instance
+#define BUILTIN_INSTANCE_create_scroll_bar my_scroll_bar_is_instance
+
 /* ---------------- value coercion helpers ---------------- */
 
 static float value_as_float(const my_value_t* v) {
@@ -83,6 +97,16 @@ static my_ret_t button_prop_set_text(my_widget_t* w, const my_value_t* v) {
 }
 static my_ret_t button_prop_get_text(const my_widget_t* w, my_value_t* v) {
   return my_value_set_str(v, ((const my_button_t*)w)->text);
+}
+static my_ret_t button_prop_set_cooldown(my_widget_t* w, const my_value_t* v) {
+  int32_t duration = value_as_int32(v);
+  if (duration < 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  return my_button_set_cooldown(w, (uint32_t)duration);
+}
+static my_ret_t button_prop_get_cooldown(const my_widget_t* w, my_value_t* v) {
+  return my_value_set_int32(v, (int32_t)((const my_button_t*)w)->cooldown_ms);
 }
 
 /* ---------------- label ---------------- */
@@ -249,14 +273,17 @@ static my_ret_t image_prop_set_scale(my_widget_t* w, const my_value_t* v) {
 MYUI_BUILTIN_CLASSES(EMIT_CLASS_TABLES)
 
 #define EMIT_CLASS_ROW(tag, create_fn, create_str, PROPS, EVENTS) \
-  {tag, create_fn, props_of_##create_fn, events_of_##create_fn},
+  {tag, create_fn, props_of_##create_fn, events_of_##create_fn, \
+   BUILTIN_INSTANCE_##create_fn},
 
 static const my_widget_class_t BUILTIN_CLASSES[] = {
     MYUI_BUILTIN_CLASSES(EMIT_CLASS_ROW)};
 
-void my_widget_class_register_builtins(void) {
+my_ret_t my_widget_class_register_builtins(void) {
   size_t i;
   for (i = 0; i < sizeof(BUILTIN_CLASSES) / sizeof(BUILTIN_CLASSES[0]); i++) {
-    my_widget_class_register(&BUILTIN_CLASSES[i]);
+    my_ret_t ret = my_widget_class_register_builtin_entry(&BUILTIN_CLASSES[i]);
+    if (ret != MY_RET_OK) return ret;
   }
+  return MY_RET_OK;
 }

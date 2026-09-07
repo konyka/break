@@ -15,6 +15,11 @@
 #include "myui/my_widget.h"
 
 typedef struct my_list_adapter_t my_list_adapter_t;
+typedef struct my_list_adapter_lease_t my_list_adapter_lease_t;
+
+/** @brief Releases an adapter after the last lease reference is dropped. */
+typedef void (*my_list_adapter_destroy_fn)(my_list_adapter_t* adapter,
+                                           void* context);
 
 /** @brief List adapter vtable. */
 typedef struct my_list_adapter_vtable_t {
@@ -35,11 +40,24 @@ struct my_list_adapter_t {
   const my_list_adapter_vtable_t* vtable;
 };
 
+/**
+ * @brief Reference-counted lifetime token for an adapter.
+ *
+ * The adapter vtable and instance must remain immutable while leased. The
+ * destroy callback runs on the thread that drops the final reference.
+ */
+my_list_adapter_lease_t* my_list_adapter_lease_create(
+    const my_allocator_t* allocator, my_list_adapter_t* adapter,
+    void* context, my_list_adapter_destroy_fn destroy);
+my_list_adapter_lease_t* my_list_adapter_lease_ref(
+    my_list_adapter_lease_t* lease);
+void my_list_adapter_lease_unref(my_list_adapter_lease_t* lease);
+
 /** @brief Virtualized list view (IS-A widget). */
 typedef struct my_list_view_t {
   my_widget_t base;
   const my_allocator_t* allocator;
-  my_list_adapter_t* adapter;  /**< borrowed */
+  my_list_adapter_t* adapter;  /**< borrowed, or protected by adapter_lease */
   int32_t row_height;          /**< fixed row height (default 24) */
   int32_t scroll_offset;       /**< px, clamped */
   my_darray_t* active;         /**< row_slot_t* currently visible */
@@ -47,16 +65,34 @@ typedef struct my_list_view_t {
   size_t rows_created_total;   /**< diagnostics: create_row call count */
   int32_t drag_y;              /**< drag scroll tracking (-1 = off) */
   int32_t drag_start_offset;
-  my_widget_t* scroll_bar;     /**< weak; linked scroll_bar (M9c) */
-  my_darray_t* psum;           /**< variable-height prefix sums (lazy) */
+  my_widget_t* scroll_bar;     /**< owned link reference (M9c) */
+  uint32_t scroll_bar_listener_id;
+  my_darray_t* psum;           /**< reserved for ABI compatibility */
   bool psum_all;               /**< psum filled to the end */
+  int64_t* psum_values;        /**< explicit 64-bit prefix sums */
+  size_t psum_count;
+  size_t psum_capacity;
+  bool syncing;
+  bool syncing_scroll_bar;
+  my_list_adapter_lease_t* adapter_lease; /**< owned lease, if installed */
 } my_list_view_t;
 
 my_widget_t* my_list_view_create(const my_allocator_t* allocator);
+bool my_list_view_is_instance(const my_widget_t* widget);
 my_ret_t my_list_view_set_row_height(my_widget_t* list_view, int32_t height);
 /** @brief Install an adapter (borrowed) and refresh. */
 my_ret_t my_list_view_set_adapter(my_widget_t* list_view,
                                   my_list_adapter_t* adapter);
+/**
+ * @brief Install an adapter while retaining a reference to its lifetime
+ * token. The view acquires a lease reference on success; the caller may
+ * release its reference immediately. NULL clears the current adapter.
+ *
+ * Unlike the legacy borrowed API, this prevents adapter destruction while
+ * rows are owned by the view. On failure the current adapter is unchanged.
+ */
+my_ret_t my_list_view_set_adapter_lease(
+    my_widget_t* list_view, my_list_adapter_lease_t* lease);
 /** @brief Re-read the adapter and refresh visible rows (data changed). */
 my_ret_t my_list_view_refresh(my_widget_t* list_view);
 /**
@@ -80,8 +116,9 @@ int32_t my_list_view_get_scroll_offset(my_widget_t* list_view);
 /** @brief Diagnostics: total rows ever created via the adapter. */
 size_t my_list_view_rows_created_total(my_widget_t* list_view);
 
-/** @brief Link a scroll_bar (weak): kept in sync with scroll_offset and
- * content/viewport size; dragging the bar scrolls the list. */
+/** @brief Link a scroll_bar (owned link reference): kept in sync with scroll_offset and
+ * content/viewport size; dragging the bar scrolls the list. Rebinding is
+ * idempotent and destruction removes the active listener and link reference. */
 my_ret_t my_list_view_set_scroll_bar(my_widget_t* list_view,
                                      my_widget_t* bar);
 

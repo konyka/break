@@ -14,6 +14,7 @@ typedef struct my_condition_binding_t {
   my_binding_target_t* target; /**< weak */
   my_binding_rule_t rule;
   uint32_t vm_listener_id;
+  uint32_t vm_all_listener_id;
 } my_condition_binding_t;
 
 my_condition_binding_t* my_condition_binding_create(

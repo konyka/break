@@ -31,8 +31,8 @@ bool my_str_end_with(const char* s, const char* suffix);
 
 /**
  * @brief Byte length of the UTF-8 character starting at s.
- * @return 1-4 for a valid lead byte, 1 for an invalid lead byte (skip
- *         strategy), 0 for NULL or empty string.
+ * @return 1-4 for a valid scalar UTF-8 sequence, 1 for malformed input
+ *         (skip one byte), 0 for NULL or empty string.
  */
 size_t my_str_utf8_char_len(const char* s);
 

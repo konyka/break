@@ -334,7 +334,10 @@ remains an explicit `RE_STATUS_NOT_SUPPORTED` boundary. The adapter connects
 through the `RE_REDIS_URL` environment variable (default
 `redis://127.0.0.1:6379`) with the fixed key prefix `re`, stores raw-byte
 values under `<prefix>:<name>` keys via PSETEX/SET/GET/DEL/PTTL, and reports
-failures as `RE_PROVIDER_ERROR_UNAVAILABLE` through `last_error`. Runtime
+failures as `RE_PROVIDER_ERROR_TIMEOUT` or `RE_PROVIDER_ERROR_UNAVAILABLE`
+through `last_error`. The error
+query returns the most recent diagnostic failure; a successful operation or
+`RE_STATUS_NOT_FOUND` does not erase it. Runtime
 enablement additionally requires a separately supplied controlled Redis
 integration endpoint; absent either prerequisite, configuration must keep the
 adapter disabled. A source-backed build with Redis 8.10.1 and a controlled
@@ -344,6 +347,30 @@ checkout or its `deps/hiredis` directory and builds a private static hiredis
 target before compiling the adapter; this has the same no-fallback behavior.
 Redis failures must propagate as provider errors and must
 never fall back to empty or in-memory state.
+
+The native adapter applies fixed bounds independent of Redis: URLs are limited
+to 4096 bytes, the optional key prefix to 128 bytes, provider keys to 4096
+bytes, decoded values to 16 MiB, and operation timeouts to 24 hours. Redis
+PSETEX TTL is additionally bounded to `INT64_MAX` milliseconds because Redis
+parses that command argument as a signed 64-bit integer. Invalid or
+oversized values are rejected before network I/O or payload allocation; remote
+payloads above the same limit are reported as serialization failures. A finite
+`operation_timeout_ms` is applied to both connect and blocking command socket
+I/O. Hiredis timeout failures surface as `RE_PROVIDER_ERROR_TIMEOUT`; other
+connection/command failures surface as `RE_PROVIDER_ERROR_UNAVAILABLE`. A zero
+timeout preserves hiredis's no-command-timeout behavior and is therefore a
+caller-owned blocking contract. These adapter-local limits do not change the
+frozen state-provider ABI.
+
+RESP reply validation is strict: `DEL` accepts only a non-negative integer,
+while `PTTL` accepts only `-2`, `-1`, or a non-negative integer. Other reply
+types or negative integers are serialization failures and never become a
+successful delete or an unsigned TTL value.
+`GET` accepts only `NIL` or a bulk string; all other reply types are likewise
+serialization failures and do not overwrite the caller's output.
+Even a valid bulk string is decoded transactionally: invalid type tags,
+payload lengths, or allocation failures leave the caller's existing value
+unchanged and publish no new borrowed string.
 
 ## Lifetime and ownership
 
@@ -502,6 +529,13 @@ must not re-enter any rule-engine API on a handle involved in the in-flight
 operation; and the optional C11 executor evaluates only read-only conditions
 in private workers, merging matches back on the engine thread for serial
 actions and callbacks.
+
+Transaction lifetime is explicit: commit/rollback release the cloned fact
+stores but retain an inactive handle for safe status checks. The caller then
+calls `re_facts_txn_destroy`; this removes the handle from the retired list and
+reclaims it. A deferred facts destroy marks retired handles detached, so their
+allocator copy remains sufficient for safe final release without touching the
+destroyed facts object.
 
 Extension limits are inherited from `re_limits_t` and may only add bounded
 fields through a later versioned options struct. Implementations must reject

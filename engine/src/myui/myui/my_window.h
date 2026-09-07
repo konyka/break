@@ -12,8 +12,13 @@
 
 #include "mypal/my_pal.h"
 #include "myui/my_event_dispatch.h"
+#include "myui/my_css.h"
 
 struct my_window_manager_t;
+struct my_ui_command_scope_t;
+
+typedef void (*my_window_close_listener_t)(void* ctx);
+typedef void (*my_window_close_context_destroy_fn_t)(void* ctx);
 
 /** @brief GPU backends selectable through my_window_enable_gpu (M25a). */
 typedef enum my_gpu_backend_t {
@@ -35,11 +40,15 @@ typedef struct my_window_t {
   bool vg_owned;
   my_pal_gl_t* gl;                   /**< GL mount when GL enabled (M10c) */
   bool gl_owned;
-  void* undo_manager;      /**< borrowed my_undo_manager_t (M11b) */
+  void* undo_manager;      /**< retained my_undo_manager_t (M11b) */
   float scale;             /**< cached display scale (M12c HiDPI) */
   my_color_t bg_color;
   my_theme_t* theme;                 /**< active theme */
   bool theme_owned;
+  my_theme_t* css_base_theme;        /**< baseline before responsive CSS */
+  char* css_source;                  /**< owned responsive CSS source */
+  my_css_media_context_ex_t css_media_context;
+  bool css_media_context_valid;
   my_font_t* font;                   /**< borrowed default font */
   int32_t font_size;
   my_dirty_rects_t dirty;            /**< frame dirty collector (sink) */
@@ -55,15 +64,36 @@ typedef struct my_window_t {
                        * dispatcher's hover tracking drives it) */
   char* title;       /**< owned copy (M16: CSD bar text) */
   struct my_window_manager_t* wm; /**< weak: set by wm open (M16) */
+  my_darray_t* close_listeners; /**< owned lifecycle listener records */
+  uint32_t close_listener_next_id;
+  bool close_notified;
   bool csd;                 /**< client-side decoration active (M16) */
   my_widget_t* csd_content; /**< CSD content container (weak; the root
                              * holds the tree ref) */
   my_gpu_backend_t gpu_backend; /**< active backend (M25a/b; SOFT init) */
+  struct my_ui_command_scope_t* command_scope; /**< owned async lifetime */
 } my_window_t;
 
 /** @brief Create a window (hidden) of w x h with the given title. */
 my_window_t* my_window_create(const my_allocator_t* allocator, my_pal_t* pal,
                               int32_t w, int32_t h, const char* title);
+
+/** @brief Retain the window scope for commands tied to its lifetime. */
+struct my_ui_command_scope_t* my_window_command_scope_ref(my_window_t* win);
+
+uint32_t my_window_add_close_listener(my_window_t* win,
+                                      my_window_close_listener_t callback,
+                                      void* ctx);
+/** @brief Register a close listener whose context is released exactly once. */
+uint32_t my_window_add_close_listener_owned(
+    my_window_t* win, my_window_close_listener_t callback, void* ctx,
+    my_window_close_context_destroy_fn_t destroy_ctx);
+/** @brief Register a close listener guarded by an invalidatable lease. */
+uint32_t my_window_add_close_listener_lease(
+    my_window_t* win, my_window_close_listener_t callback,
+    my_emitter_context_lease_t* lease);
+my_ret_t my_window_remove_close_listener(my_window_t* win, uint32_t id);
+void my_window_notify_closed(my_window_t* win);
 
 /**
  * @brief The widget apps add children to. In CSD mode (M16: the port's
@@ -146,6 +176,7 @@ void my_window_font_of_widget(my_widget_t* widget, my_font_t** font,
  * destroys it). Widgets can then find it via
  * my_window_undo_manager_of_widget.
  */
+/** @brief Attach a shared undo manager; the window retains one reference. */
 void my_window_set_undo_manager(my_window_t* win, void* mgr);
 
 /** @brief The undo manager of the window at the root of widget's tree
@@ -192,5 +223,17 @@ void my_window_set_font(my_window_t* win, my_font_t* font, int32_t size);
  */
 void my_window_set_theme(my_window_t* win, my_theme_t* theme,
                          bool take_ownership);
+
+/** @brief Apply CSS and retain its source for logical viewport re-evaluation. */
+my_ret_t my_window_set_css_style(my_window_t* win, const char* css);
+
+/** @brief Re-evaluate retained CSS against a new logical viewport. */
+my_ret_t my_window_refresh_css_style(my_window_t* win, int32_t width,
+                                     int32_t height);
+
+/** @brief Re-evaluate retained CSS after platform media facts change.
+ * Returns MY_RET_NOT_FOUND when no CSS is retained or the effective media
+ * snapshot is unchanged. The active theme remains intact on failure. */
+my_ret_t my_window_refresh_media_style(my_window_t* win);
 
 #endif /* MY_WINDOW_H */

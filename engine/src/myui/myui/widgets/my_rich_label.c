@@ -20,6 +20,12 @@ typedef struct my_rich_label_t {
   my_darray_t* segs; /**< rich_seg_t* */
 } my_rich_label_t;
 
+static const my_widget_vtable_t s_rich_label_vtable;
+
+bool my_rich_label_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_rich_label_vtable;
+}
+
 /** @brief Segment width: vg font measure, 8px-cell fallback. */
 static int32_t seg_width(my_vgcanvas_t* vg, const rich_seg_t* s, int32_t* out_h) {
   int32_t tw = 0, th = 0;
@@ -103,7 +109,7 @@ my_ret_t my_rich_label_add_segment(my_widget_t* label, const char* text,
                                    uint32_t rgba_color, bool bold) {
   my_rich_label_t* rl = (my_rich_label_t*)label;
   rich_seg_t* s;
-  if (label == NULL || text == NULL) {
+  if (!my_rich_label_is_instance(label) || text == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
   s = (rich_seg_t*)my_mem_calloc(((my_object_t*)label)->allocator, 1,
@@ -126,7 +132,7 @@ my_ret_t my_rich_label_add_segment(my_widget_t* label, const char* text,
 void my_rich_label_clear(my_widget_t* label) {
   my_rich_label_t* rl = (my_rich_label_t*)label;
   size_t i, n;
-  if (label == NULL) {
+  if (!my_rich_label_is_instance(label)) {
     return;
   }
   n = my_darray_size(rl->segs);
@@ -143,7 +149,7 @@ int32_t my_rich_label_content_width(my_widget_t* label) {
   my_rich_label_t* rl = (my_rich_label_t*)label;
   size_t i, n;
   int32_t w = 0;
-  if (label == NULL) {
+  if (!my_rich_label_is_instance(label)) {
     return 0;
   }
   n = my_darray_size(rl->segs);

@@ -26,19 +26,24 @@
 #include "myr/my_font.h"
 #include "myr/my_rect.h"
 #include "myr/my_text_layout.h"
+#include "myr/my_ui_metrics.h"
+
+#include <math.h>
 
 typedef struct my_vgcanvas_t my_vgcanvas_t;
 
 /** @brief Stroke cap style (M9c). */
 typedef enum my_line_cap_t {
   MY_LINE_CAP_BUTT = 0,
-  MY_LINE_CAP_ROUND
+  MY_LINE_CAP_ROUND,
+  MY_LINE_CAP_SQUARE
 } my_line_cap_t;
 
 /** @brief Stroke join style (M9c). */
 typedef enum my_line_join_t {
   MY_LINE_JOIN_MITER = 0,
-  MY_LINE_JOIN_ROUND
+  MY_LINE_JOIN_ROUND,
+  MY_LINE_JOIN_BEVEL
 } my_line_join_t;
 
 /** @brief Image scaling filter (draw_image, M9b). */
@@ -119,8 +124,8 @@ typedef struct my_vgcanvas_vtable_t {
                          int32_t h, const my_rectf_t* dst,
                          const my_color_t* bg);
   /**
-   * @brief Stroke cap/join styles (M9c). SOFT backend implements ROUND
-   * (coverage-AA circles); other backends may ignore (documented TODO).
+   * @brief Stroke cap/join styles. All bundled backends use the same bounded
+   * geometry contract: butt/round/square caps and miter/round/bevel joins.
    * Part of the save/restore state.
    */
   my_ret_t (*set_line_cap)(my_vgcanvas_t* vg, my_line_cap_t cap);
@@ -196,71 +201,142 @@ static inline my_ret_t my_vgcanvas_get_capabilities(
   return MY_RET_OK;
 }
 
+#define MY_VGCANVAS_REQUIRE_SLOT(canvas, slot)                              \
+  do {                                                                      \
+    if ((canvas) == NULL || (canvas)->vtable == NULL)                       \
+      return MY_RET_INVALID_PARAMS;                                        \
+    if ((canvas)->vtable->slot == NULL) return MY_RET_NOT_SUPPORTED;        \
+  } while (0)
+
+static inline bool my_vgcanvas_finite_float(float value) {
+  return isfinite(value) != 0;
+}
+
+static inline bool my_vgcanvas_finite_rect(const my_rectf_t* rect) {
+  return rect != NULL && my_vgcanvas_finite_float(rect->x) &&
+         my_vgcanvas_finite_float(rect->y) &&
+         my_vgcanvas_finite_float(rect->w) &&
+         my_vgcanvas_finite_float(rect->h);
+}
+
 static inline my_ret_t my_vgcanvas_begin_frame(my_vgcanvas_t* vg,
                                                const my_rect_t* dirty) {
-  return vg->vtable->begin_frame(vg, dirty);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, begin_frame);
+  {
+    my_ret_t ret = vg->vtable->begin_frame(vg, dirty);
+    if (ret == MY_RET_OK) my_ui_metrics_begin_frame();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_end_frame(my_vgcanvas_t* vg) {
-  return vg->vtable->end_frame(vg);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, end_frame);
+  {
+    my_ret_t ret = vg->vtable->end_frame(vg);
+    if (ret == MY_RET_OK) {
+      my_ui_metrics_end_frame();
+    } else {
+      my_ui_metrics_abort_frame();
+    }
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_save(my_vgcanvas_t* vg) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, save);
   return vg->vtable->save(vg);
 }
 
 static inline my_ret_t my_vgcanvas_restore(my_vgcanvas_t* vg) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, restore);
   return vg->vtable->restore(vg);
 }
 
 static inline my_ret_t my_vgcanvas_translate(my_vgcanvas_t* vg, float dx, float dy) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, translate);
+  if (!my_vgcanvas_finite_float(dx) || !my_vgcanvas_finite_float(dy))
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->translate(vg, dx, dy);
 }
 
 static inline my_ret_t my_vgcanvas_clip_rect(my_vgcanvas_t* vg,
                                              const my_rectf_t* rect) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, clip_rect);
+  if (!my_vgcanvas_finite_rect(rect)) return MY_RET_INVALID_PARAMS;
   return vg->vtable->clip_rect(vg, rect);
 }
 
 static inline my_ret_t my_vgcanvas_set_fill_color(my_vgcanvas_t* vg,
                                                   my_color_t color) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_fill_color);
   return vg->vtable->set_fill_color(vg, color);
 }
 
 static inline my_ret_t my_vgcanvas_set_stroke_color(my_vgcanvas_t* vg,
                                                     my_color_t color) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_stroke_color);
   return vg->vtable->set_stroke_color(vg, color);
 }
 
 static inline my_ret_t my_vgcanvas_set_line_width(my_vgcanvas_t* vg, float width) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_line_width);
+  if (!my_vgcanvas_finite_float(width) || width <= 0.0f)
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->set_line_width(vg, width);
 }
 
 static inline my_ret_t my_vgcanvas_fill_rect(my_vgcanvas_t* vg,
                                              const my_rectf_t* rect) {
-  return vg->vtable->fill_rect(vg, rect);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, fill_rect);
+  if (!my_vgcanvas_finite_rect(rect)) return MY_RET_INVALID_PARAMS;
+  {
+    my_ret_t ret = vg->vtable->fill_rect(vg, rect);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_stroke_rect(my_vgcanvas_t* vg,
                                                const my_rectf_t* rect) {
-  return vg->vtable->stroke_rect(vg, rect);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, stroke_rect);
+  if (!my_vgcanvas_finite_rect(rect)) return MY_RET_INVALID_PARAMS;
+  {
+    my_ret_t ret = vg->vtable->stroke_rect(vg, rect);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_fill_rounded_rect(my_vgcanvas_t* vg,
                                                      const my_rectf_t* rect,
                                                      float radius) {
-  return vg->vtable->fill_rounded_rect(vg, rect, radius);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, fill_rounded_rect);
+  if (!my_vgcanvas_finite_rect(rect) || !my_vgcanvas_finite_float(radius) ||
+      radius < 0.0f)
+    return MY_RET_INVALID_PARAMS;
+  {
+    my_ret_t ret = vg->vtable->fill_rounded_rect(vg, rect, radius);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_begin_path(my_vgcanvas_t* vg) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, begin_path);
   return vg->vtable->begin_path(vg);
 }
 
 static inline my_ret_t my_vgcanvas_move_to(my_vgcanvas_t* vg, float x, float y) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, move_to);
+  if (!my_vgcanvas_finite_float(x) || !my_vgcanvas_finite_float(y))
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->move_to(vg, x, y);
 }
 
 static inline my_ret_t my_vgcanvas_line_to(my_vgcanvas_t* vg, float x, float y) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, line_to);
+  if (!my_vgcanvas_finite_float(x) || !my_vgcanvas_finite_float(y))
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->line_to(vg, x, y);
 }
 
@@ -269,60 +345,88 @@ static inline my_ret_t my_vgcanvas_line_to(my_vgcanvas_t* vg, float x, float y) 
 static inline my_ret_t my_vgcanvas_curve_to(my_vgcanvas_t* vg, float cx1,
                                             float cy1, float cx2, float cy2,
                                             float x, float y) {
-  if (vg->vtable->curve_to == NULL) {
-    return MY_RET_NOT_SUPPORTED;
-  }
+  MY_VGCANVAS_REQUIRE_SLOT(vg, curve_to);
+  if (!my_vgcanvas_finite_float(cx1) || !my_vgcanvas_finite_float(cy1) ||
+      !my_vgcanvas_finite_float(cx2) || !my_vgcanvas_finite_float(cy2) ||
+      !my_vgcanvas_finite_float(x) || !my_vgcanvas_finite_float(y))
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->curve_to(vg, cx1, cy1, cx2, cy2, x, y);
 }
 
 static inline my_ret_t my_vgcanvas_close_path(my_vgcanvas_t* vg) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, close_path);
   return vg->vtable->close_path(vg);
 }
 
 static inline my_ret_t my_vgcanvas_fill(my_vgcanvas_t* vg) {
-  return vg->vtable->fill(vg);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, fill);
+  {
+    my_ret_t ret = vg->vtable->fill(vg);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_stroke(my_vgcanvas_t* vg) {
-  return vg->vtable->stroke(vg);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, stroke);
+  {
+    my_ret_t ret = vg->vtable->stroke(vg);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_draw_text(my_vgcanvas_t* vg, const char* text,
                                              float x, float y) {
-  return vg->vtable->draw_text(vg, text, x, y);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, draw_text);
+  if (!my_vgcanvas_finite_float(x) || !my_vgcanvas_finite_float(y))
+    return MY_RET_INVALID_PARAMS;
+  {
+    my_ret_t ret = vg->vtable->draw_text(vg, text, x, y);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_draw_text_ex(
     my_vgcanvas_t* vg, const char* text, float x, float y,
     const my_font_shape_params_t* params) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, draw_text);
+  if (!my_vgcanvas_finite_float(x) || !my_vgcanvas_finite_float(y))
+    return MY_RET_INVALID_PARAMS;
   const my_font_shape_params_t* previous = vg->active_shape_params;
   my_ret_t ret;
   vg->active_shape_params = params;
   ret = vg->vtable->draw_text(vg, text, x, y);
   vg->active_shape_params = previous;
+  if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
   return ret;
 }
 
 static inline void my_vgcanvas_destroy(my_vgcanvas_t* vg) {
-  if (vg != NULL) {
+  if (vg != NULL && vg->vtable != NULL && vg->vtable->destroy != NULL) {
     vg->vtable->destroy(vg);
   }
 }
 
 static inline my_ret_t my_vgcanvas_set_font(my_vgcanvas_t* vg, my_font_t* font,
                                             int32_t size) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_font);
+  if (size <= 0) return MY_RET_INVALID_PARAMS;
   return vg->vtable->set_font(vg, font, size);
 }
 
 static inline my_ret_t my_vgcanvas_measure_text(my_vgcanvas_t* vg,
                                                 const char* text, int32_t* w,
                                                 int32_t* h) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, measure_text);
   return vg->vtable->measure_text(vg, text, w, h);
 }
 
 static inline my_ret_t my_vgcanvas_measure_text_ex(
     my_vgcanvas_t* vg, const char* text, int32_t* w, int32_t* h,
     const my_font_shape_params_t* params) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, measure_text);
   const my_font_shape_params_t* previous = vg->active_shape_params;
   my_ret_t ret;
   vg->active_shape_params = params;
@@ -335,16 +439,30 @@ static inline my_ret_t my_vgcanvas_draw_image(my_vgcanvas_t* vg,
                                               const uint8_t* rgba, int32_t w,
                                               int32_t h, const my_rectf_t* dst,
                                               const my_color_t* bg) {
-  return vg->vtable->draw_image(vg, rgba, w, h, dst, bg);
+  MY_VGCANVAS_REQUIRE_SLOT(vg, draw_image);
+  if (!my_vgcanvas_finite_rect(dst)) return MY_RET_INVALID_PARAMS;
+  {
+    my_ret_t ret = vg->vtable->draw_image(vg, rgba, w, h, dst, bg);
+    if (ret == MY_RET_OK) my_ui_metrics_record_draw_call();
+    return ret;
+  }
 }
 
 static inline my_ret_t my_vgcanvas_set_line_cap(my_vgcanvas_t* vg,
                                                 my_line_cap_t cap) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_line_cap);
+  if (cap != MY_LINE_CAP_BUTT && cap != MY_LINE_CAP_ROUND &&
+      cap != MY_LINE_CAP_SQUARE)
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->set_line_cap(vg, cap);
 }
 
 static inline my_ret_t my_vgcanvas_set_line_join(my_vgcanvas_t* vg,
                                                  my_line_join_t join) {
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_line_join);
+  if (join != MY_LINE_JOIN_MITER && join != MY_LINE_JOIN_ROUND &&
+      join != MY_LINE_JOIN_BEVEL)
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->set_line_join(vg, join);
 }
 
@@ -352,24 +470,21 @@ static inline my_ret_t my_vgcanvas_set_line_join(my_vgcanvas_t* vg,
  * backend has no reset_clip slot (M25). */
 static inline my_ret_t my_vgcanvas_reset_clip(my_vgcanvas_t* vg,
                                               const my_rectf_t* rect) {
-  if (vg->vtable->reset_clip == NULL) {
-    return MY_RET_NOT_SUPPORTED;
-  }
+  MY_VGCANVAS_REQUIRE_SLOT(vg, reset_clip);
+  if (!my_vgcanvas_finite_rect(rect)) return MY_RET_INVALID_PARAMS;
   return vg->vtable->reset_clip(vg, rect);
 }
 
 static inline my_ret_t my_vgcanvas_set_scale(my_vgcanvas_t* vg, float scale) {
-  if (vg == NULL || vg->vtable->set_scale == NULL) {
-    return MY_RET_NOT_SUPPORTED;
-  }
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_scale);
+  if (!my_vgcanvas_finite_float(scale) || scale <= 0.0f)
+    return MY_RET_INVALID_PARAMS;
   return vg->vtable->set_scale(vg, scale);
 }
 
 static inline my_ret_t my_vgcanvas_set_antialias_level(my_vgcanvas_t* vg,
                                                        int level) {
-  if (vg == NULL || vg->vtable->set_antialias_level == NULL) {
-    return MY_RET_NOT_SUPPORTED;
-  }
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_antialias_level);
   if (level < 0 || level > 2) {
     return MY_RET_INVALID_PARAMS;
   }
@@ -391,9 +506,7 @@ static inline my_ret_t my_vgcanvas_set_antialias_level(my_vgcanvas_t* vg,
 
 static inline my_ret_t my_vgcanvas_set_scale_filter(my_vgcanvas_t* vg,
                                                      my_scale_filter_t filter) {
-  if (vg == NULL || vg->vtable->set_scale_filter == NULL) {
-    return MY_RET_NOT_SUPPORTED;
-  }
+  MY_VGCANVAS_REQUIRE_SLOT(vg, set_scale_filter);
   if (filter != MY_SCALE_FILTER_NEAREST &&
       filter != MY_SCALE_FILTER_BILINEAR) {
     return MY_RET_INVALID_PARAMS;
@@ -413,5 +526,7 @@ static inline my_ret_t my_vgcanvas_set_scale_filter(my_vgcanvas_t* vg,
     return ret;
   }
 }
+
+#undef MY_VGCANVAS_REQUIRE_SLOT
 
 #endif /* MY_VGCANVAS_H */

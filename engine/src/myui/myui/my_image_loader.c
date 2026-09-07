@@ -4,6 +4,61 @@
  */
 #include "myui/my_image_loader.h"
 
+#include <stdatomic.h>
+
+#include "myc/my_ref_count.h"
+
+struct my_image_loader_lease_t {
+  atomic_uint ref_count;
+  const my_allocator_t* allocator;
+  my_image_loader_t* loader;
+  void* context;
+  my_image_loader_release_fn release;
+};
+
+my_image_loader_lease_t* my_image_loader_lease_create(
+    const my_allocator_t* allocator, my_image_loader_t* loader,
+    void* context, my_image_loader_release_fn release) {
+  my_image_loader_lease_t* lease;
+  if (!my_image_loader_is_valid(loader)) {
+    return NULL;
+  }
+  lease = (my_image_loader_lease_t*)my_mem_calloc(
+      allocator, 1u, sizeof(*lease));
+  if (lease == NULL) {
+    return NULL;
+  }
+  atomic_init(&lease->ref_count, 1u);
+  lease->allocator = allocator;
+  lease->loader = loader;
+  lease->context = context;
+  lease->release = release;
+  return lease;
+}
+
+my_image_loader_lease_t* my_image_loader_lease_ref(
+    my_image_loader_lease_t* lease) {
+  if (lease != NULL) {
+    (void)my_ref_count_try_ref(&lease->ref_count);
+  }
+  return lease;
+}
+
+void my_image_loader_lease_unref(my_image_loader_lease_t* lease) {
+  if (lease == NULL || !my_ref_count_release(&lease->ref_count)) {
+    return;
+  }
+  if (lease->release != NULL) {
+    lease->release(lease->loader, lease->context);
+  }
+  my_mem_free(lease->allocator, lease);
+}
+
+my_image_loader_t* my_image_loader_lease_loader(
+    const my_image_loader_lease_t* lease) {
+  return lease != NULL ? lease->loader : NULL;
+}
+
 #ifdef MYUI_IMAGE_STB
 
 #include <stb_image.h>

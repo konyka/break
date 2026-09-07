@@ -23,12 +23,29 @@
 #include "myc/my_mem.h"
 #include "myr/my_vgcanvas.h"
 
+#ifndef MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS
+#define MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS 8u
+#endif
+#ifndef MYUI_VULKAN_MAX_EXTENSION_NAME
+#define MYUI_VULKAN_MAX_EXTENSION_NAME 256u
+#endif
+
 /**
- * @brief The shared VkInstance (as void*), lazily created. NULL when
- * built without Vulkan or no usable device exists. Owned by the
- * backend (released with the last canvas), do NOT destroy.
+ * @brief Peek at an already initialized shared VkInstance (as void*).
+ * Returns NULL without initializing resources. Use the acquire API when
+ * initialization and a temporary lifetime lease are required.
  */
 void* my_vgcanvas_vulkan_instance(void);
+
+/** @brief Acquire the shared instance for PAL surface creation. */
+void* my_vgcanvas_vulkan_instance_acquire(void);
+
+/** @brief Acquire the shared instance with a PAL-provided WSI extension set. */
+void* my_vgcanvas_vulkan_instance_acquire_with_extensions(
+    const char* const* extensions, uint32_t extension_count);
+
+/** @brief Release a temporary instance-acquire lease. */
+void my_vgcanvas_vulkan_instance_release(void);
 
 /**
  * @brief Create the windowed backend on a PAL-created VkSurfaceKHR

@@ -16,14 +16,16 @@
 
 #include "mymvvm/my_binding_target.h"
 #include "myui/my_widget.h"
+#include "myui/widgets/my_list_view.h"
 
 /** @brief Widget binding target (created by my_widget_target_create). */
 typedef struct my_widget_target_t {
   my_binding_target_t base;
   const my_allocator_t* allocator;
-  my_widget_t* widget; /**< weak */
+  my_widget_t* widget; /**< owned target-lifetime reference */
   my_value_t value;    /**< generic "value" property slot */
-  void* items_adapter; /**< owned when widget is a list_view (M8b) */
+  void* items_adapter; /**< leased adapter instance when widget is a list_view */
+  my_list_adapter_lease_t* items_adapter_lease; /**< target-held lease */
 } my_widget_target_t;
 
 /** @brief Wrap a widget (weak ref) as a binding target. */

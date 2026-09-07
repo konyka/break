@@ -31,9 +31,11 @@ typedef struct my_image_t {
   my_image_scale_t scale_mode;
   my_scale_filter_t scale_filter; /**< sampling filter (M9b) */
   my_image_loader_t* loader;      /**< borrowed; NULL = default stb loader */
+  my_image_loader_lease_t* loader_lease; /**< owned lease, when installed */
 } my_image_t;
 
 my_widget_t* my_image_create(const my_allocator_t* allocator);
+bool my_image_is_instance(const my_widget_t* widget);
 my_ret_t my_image_set_image(my_widget_t* image, const char* path);
 my_ret_t my_image_set_scale_mode(my_widget_t* image, my_image_scale_t mode);
 /** @brief Sampling filter preference (BILINEAR default; backend-dependent). */
@@ -41,8 +43,14 @@ my_ret_t my_image_set_scale_filter(my_widget_t* image,
                                    my_scale_filter_t filter);
 /** @brief Override the loader (borrowed; NULL resets to the stb default). */
 my_ret_t my_image_set_loader(my_widget_t* image, my_image_loader_t* loader);
+/** @brief Install a loader protected by a reference-counted lifetime lease. */
+my_ret_t my_image_set_loader_lease(my_widget_t* image,
+                                   my_image_loader_lease_t* lease);
 
-/** @brief Diagnostics: global image cache hit/miss counters. */
+/** @brief Diagnostics: process-wide atomic image cache hit/miss counters. */
 void my_image_cache_stats(size_t* hits, size_t* misses);
+
+/** @brief Clear the calling thread's fixed-size image cache. */
+void my_image_cache_clear(void);
 
 #endif /* MY_IMAGE_H */

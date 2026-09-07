@@ -4,6 +4,8 @@
  */
 #include "myui/my_window.h"
 
+#include "myui/my_ui_command.h"
+
 #include <string.h>
 
 #include "myc/my_str.h"
@@ -12,7 +14,9 @@
 #include "myr/my_vgcanvas_soft.h"
 #include "myr/my_vgcanvas_vulkan.h"
 #include "myui/my_animator.h"
+#include "myui/my_css.h"
 #include "myui/my_layout.h"
+#include "myui/my_undo_manager.h"
 #include "myui/my_window_manager.h"
 
 /* ---------------- widget vtable ---------------- */
@@ -23,6 +27,68 @@ static void csd_bar_layout(my_widget_t* widget);
 static void window_release_gpu_resources(my_window_t* win);
 static void window_configure_vgcanvas(const my_window_t* win,
                                       my_vgcanvas_t* vg);
+
+typedef struct window_close_listener_t {
+  uint32_t id;
+  my_window_close_listener_t callback;
+  void* ctx;
+  my_window_close_context_destroy_fn_t destroy_ctx;
+  my_emitter_context_lease_t* lease;
+} window_close_listener_t;
+
+static bool window_media_equal(const my_css_media_context_ex_t* left,
+                               const my_css_media_context_ex_t* right) {
+  return left != NULL && right != NULL &&
+         left->base.viewport_width_px == right->base.viewport_width_px &&
+         left->base.viewport_height_px == right->base.viewport_height_px &&
+         left->base.screen == right->base.screen &&
+         left->base.prefers_dark == right->base.prefers_dark &&
+         left->base.prefers_reduced_motion ==
+             right->base.prefers_reduced_motion &&
+         left->base.capabilities == right->base.capabilities &&
+         left->known == right->known;
+}
+
+static void window_get_media_context(const my_window_t* win, int32_t width,
+                                     int32_t height,
+                                     my_css_media_context_ex_t* out) {
+  my_pal_media_context_ex_t pal_media;
+  memset(out, 0, sizeof(*out));
+  out->base.viewport_width_px = (uint32_t)width;
+  out->base.viewport_height_px = (uint32_t)height;
+  out->base.screen = true;
+  if (my_pal_get_media_context_ex(win->pal, &pal_media) == MY_RET_OK) {
+    out->base.screen = pal_media.base.screen;
+    out->base.prefers_dark = pal_media.base.prefers_dark;
+    out->base.prefers_reduced_motion = pal_media.base.prefers_reduced_motion;
+    out->base.capabilities = pal_media.base.capabilities & MY_PAL_MEDIA_CAP_ALL;
+    out->known = pal_media.known & MY_PAL_MEDIA_KNOWN_ALL;
+  }
+}
+
+static my_theme_t* window_build_css_theme(
+    my_window_t* win, const my_theme_t* base, const char* css, int32_t width,
+    int32_t height, my_css_media_context_ex_t* out_media) {
+  my_css_media_context_ex_t media;
+  my_theme_t* candidate;
+  if (win == NULL || base == NULL || css == NULL || width <= 0 ||
+      height <= 0) {
+    return NULL;
+  }
+  candidate = my_theme_clone(base);
+  if (candidate == NULL) {
+    return NULL;
+  }
+  window_get_media_context(win, width, height, &media);
+  if (my_theme_load_css_media_ex2(candidate, css,
+                                  MY_CSS_PARSE_STRICT_AT_RULES, &media) !=
+      MY_RET_OK) {
+    my_theme_destroy(candidate);
+    return NULL;
+  }
+  if (out_media != NULL) *out_media = media;
+  return candidate;
+}
 
 bool my_window_refresh_scale(my_window_t* win) {
   float scale;
@@ -214,6 +280,8 @@ static void window_on_subtree_removed(my_widget_t* root, my_widget_t* removed) {
 
 static void window_destroy_chain(my_object_t* obj) {
   my_window_t* win = (my_window_t*)obj;
+  my_window_notify_closed(win);
+  my_ui_command_scope_close(win->command_scope);
   tip_cancel_timer(win);
   tip_hide(win); /* we hold one ref; the tree holds the other */
   win->tip_target = NULL;
@@ -225,13 +293,145 @@ static void window_destroy_chain(my_object_t* obj) {
   if (win->theme_owned) {
     my_theme_destroy(win->theme);
   }
+  if (win->undo_manager != NULL) {
+    my_undo_manager_unref((my_undo_manager_t*)win->undo_manager);
+    win->undo_manager = NULL;
+  }
+  my_theme_destroy(win->css_base_theme);
+  my_mem_free(win->allocator, win->css_source);
   win->theme = NULL;
   my_mem_free(win->allocator, win->title);
   win->title = NULL;
   my_pal_window_destroy(win->pal_window);
   win->pal_window = NULL;
   my_widget_destroy((my_widget_t*)win);
+  my_darray_destroy(win->close_listeners);
+  win->close_listeners = NULL;
+  my_ui_command_scope_unref(win->command_scope);
+  win->command_scope = NULL;
   my_object_destroy(obj);
+}
+
+uint32_t my_window_add_close_listener(my_window_t* win,
+                                      my_window_close_listener_t callback,
+                                      void* ctx) {
+  return my_window_add_close_listener_owned(win, callback, ctx, NULL);
+}
+
+uint32_t my_window_add_close_listener_owned(
+    my_window_t* win, my_window_close_listener_t callback, void* ctx,
+    my_window_close_context_destroy_fn_t destroy_ctx) {
+  window_close_listener_t* listener;
+  if (win == NULL || callback == NULL || win->close_notified ||
+      win->close_listeners == NULL) {
+    return 0u;
+  }
+  listener = (window_close_listener_t*)my_mem_calloc(
+      win->allocator, 1, sizeof(*listener));
+  if (listener == NULL) {
+    return 0u;
+  }
+  listener->id = ++win->close_listener_next_id;
+  if (listener->id == 0u) {
+    listener->id = ++win->close_listener_next_id;
+  }
+  listener->callback = callback;
+  listener->ctx = ctx;
+  listener->destroy_ctx = destroy_ctx;
+  if (my_darray_push(win->close_listeners, listener) != MY_RET_OK) {
+    my_mem_free(win->allocator, listener);
+    return 0u;
+  }
+  return listener->id;
+}
+
+uint32_t my_window_add_close_listener_lease(
+    my_window_t* win, my_window_close_listener_t callback,
+    my_emitter_context_lease_t* lease) {
+  window_close_listener_t* listener;
+  if (win == NULL || callback == NULL || lease == NULL ||
+      !my_emitter_context_lease_is_valid(lease) || win->close_notified ||
+      win->close_listeners == NULL) {
+    return 0u;
+  }
+  listener = (window_close_listener_t*)my_mem_calloc(
+      win->allocator, 1, sizeof(*listener));
+  if (listener == NULL) return 0u;
+  listener->id = ++win->close_listener_next_id;
+  if (listener->id == 0u) listener->id = ++win->close_listener_next_id;
+  listener->lease = my_emitter_context_lease_ref(lease);
+  if (listener->lease == NULL) {
+    my_mem_free(win->allocator, listener);
+    return 0u;
+  }
+  listener->callback = callback;
+  if (my_darray_push(win->close_listeners, listener) != MY_RET_OK) {
+    my_emitter_context_lease_unref(listener->lease);
+    my_mem_free(win->allocator, listener);
+    return 0u;
+  }
+  return listener->id;
+}
+
+my_ret_t my_window_remove_close_listener(my_window_t* win, uint32_t id) {
+  size_t i;
+  if (win == NULL || id == 0u || win->close_listeners == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  for (i = 0; i < my_darray_size(win->close_listeners); i++) {
+    window_close_listener_t* listener = (window_close_listener_t*)
+        my_darray_get(win->close_listeners, i);
+    if (listener != NULL && listener->id == id) {
+      my_window_close_context_destroy_fn_t destroy_ctx =
+          listener->destroy_ctx;
+      void *ctx = listener->ctx;
+      my_emitter_context_lease_t* lease = listener->lease;
+      const my_allocator_t *allocator = win->allocator;
+      my_darray_remove_at(win->close_listeners, i);
+      my_mem_free(allocator, listener);
+      if (destroy_ctx != NULL) {
+        destroy_ctx(ctx);
+      }
+      my_emitter_context_lease_unref(lease);
+      return MY_RET_OK;
+    }
+  }
+  return MY_RET_NOT_FOUND;
+}
+
+void my_window_notify_closed(my_window_t* win) {
+  if (win == NULL || win->close_notified) {
+    return;
+  }
+  win->close_notified = true;
+  my_ui_command_scope_close(win->command_scope);
+  while (win->close_listeners != NULL &&
+         my_darray_size(win->close_listeners) > 0) {
+    size_t index = my_darray_size(win->close_listeners) - 1u;
+    window_close_listener_t* listener = (window_close_listener_t*)
+        my_darray_get(win->close_listeners, index);
+    my_window_close_listener_t callback;
+    void* ctx;
+    my_darray_remove_at(win->close_listeners, index);
+    if (listener == NULL) {
+      continue;
+    }
+    callback = listener->callback;
+    ctx = listener->ctx;
+    {
+      my_window_close_context_destroy_fn_t destroy_ctx =
+          listener->destroy_ctx;
+      my_emitter_context_lease_t* lease = listener->lease;
+      if (lease != NULL) ctx = my_emitter_context_lease_context(lease);
+      my_mem_free(win->allocator, listener);
+      if (ctx != NULL) callback(ctx);
+      if (destroy_ctx != NULL) {
+        destroy_ctx(ctx);
+      }
+      my_emitter_context_lease_unref(lease);
+      continue;
+    }
+  }
 }
 
 my_window_t* my_window_create(const my_allocator_t* allocator, my_pal_t* pal,
@@ -252,8 +452,16 @@ my_window_t* my_window_create(const my_allocator_t* allocator, my_pal_t* pal,
   ((my_object_t*)win)->destroy = window_destroy_chain;
   win->allocator = allocator;
   win->pal = pal;
+  win->command_scope = my_ui_command_scope_create(allocator);
+  if (win->command_scope == NULL) {
+    my_widget_destroy((my_widget_t*)win);
+    my_mem_free(allocator, win);
+    return NULL;
+  }
   win->pal_window = my_pal_window_create(pal, w, h, title);
   if (win->pal_window == NULL) {
+    my_ui_command_scope_unref(win->command_scope);
+    win->command_scope = NULL;
     my_object_unref((my_object_t*)win);
     return NULL;
   }
@@ -270,6 +478,15 @@ my_window_t* my_window_create(const my_allocator_t* allocator, my_pal_t* pal,
   win->modal = false;
   win->theme = my_theme_default_create(allocator);
   win->theme_owned = win->theme != NULL;
+  win->css_base_theme = NULL;
+  win->css_source = NULL;
+  win->css_media_context = (my_css_media_context_ex_t){0};
+  win->css_media_context_valid = false;
+  win->close_listeners = my_darray_create(allocator, 0);
+  if (win->close_listeners == NULL) {
+    my_widget_unref((my_widget_t*)win);
+    return NULL;
+  }
   ((my_widget_t*)win)->rect = my_rect_init(0, 0, w, h);
   ((my_widget_t*)win)->widget_type = "window";
   ((my_widget_t*)win)->dirty_sink = &win->dirty;
@@ -281,6 +498,10 @@ my_window_t* my_window_create(const my_allocator_t* allocator, my_pal_t* pal,
     window_setup_csd(win); /* M16: compositor gives no SSD (mutter/wl) */
   }
   return win;
+}
+
+struct my_ui_command_scope_t* my_window_command_scope_ref(my_window_t* win) {
+  return win != NULL ? my_ui_command_scope_ref(win->command_scope) : NULL;
 }
 
 static void window_configure_vgcanvas(const my_window_t* win,
@@ -477,6 +698,9 @@ static const my_pal_gl_vtable_t VK_ADAPTER_VTABLE = {
 static my_ret_t window_enable_gpu_vulkan(my_window_t* win) {
   void* inst;
   void* surf;
+  my_pal_vulkan_instance_extensions_t instance_extensions;
+  const char* extension_names[MYUI_VULKAN_MAX_INSTANCE_EXTENSIONS];
+  uint32_t extension_index;
   my_vgcanvas_t* vg;
   vk_present_adapter_t* ad;
   int32_t w = 0, h = 0;
@@ -484,12 +708,26 @@ static my_ret_t window_enable_gpu_vulkan(my_window_t* win) {
       win->vg != NULL) {
     return MY_RET_OK;
   }
-  inst = my_vgcanvas_vulkan_instance();
+  memset(&instance_extensions, 0, sizeof(instance_extensions));
+  if (my_pal_get_vulkan_instance_extensions(
+          win->pal, win->pal_window, &instance_extensions) == MY_RET_OK &&
+      instance_extensions.count != 0u) {
+    for (extension_index = 0; extension_index < instance_extensions.count;
+         ++extension_index) {
+      extension_names[extension_index] = instance_extensions.names[extension_index];
+    }
+    inst = my_vgcanvas_vulkan_instance_acquire_with_extensions(
+        extension_names, instance_extensions.count);
+  } else {
+    /* Legacy PALs have no sidecar; retain their existing compatibility path. */
+    inst = my_vgcanvas_vulkan_instance_acquire();
+  }
   if (inst == NULL) {
     return MY_RET_NOT_SUPPORTED;
   }
   surf = my_pal_window_vk_create_surface(win->pal_window, inst);
   if (surf == NULL) {
+    my_vgcanvas_vulkan_instance_release();
     return MY_RET_NOT_SUPPORTED;
   }
   my_pal_window_get_size(win->pal_window, &w, &h);
@@ -499,8 +737,10 @@ static my_ret_t window_enable_gpu_vulkan(my_window_t* win) {
                                  h > 0 ? h : 1);
   if (vg == NULL) {
     my_vgcanvas_vulkan_destroy_surface(surf);
+    my_vgcanvas_vulkan_instance_release();
     return MY_RET_FAIL;
   }
+  my_vgcanvas_vulkan_instance_release();
   ad = (vk_present_adapter_t*)my_mem_calloc(win->allocator, 1,
                                             sizeof(vk_present_adapter_t));
   if (ad == NULL) {
@@ -571,9 +811,104 @@ void my_window_set_theme(my_window_t* win, my_theme_t* theme,
   if (win->theme_owned) {
     my_theme_destroy(win->theme);
   }
+  my_theme_destroy(win->css_base_theme);
+  win->css_base_theme = NULL;
+  my_mem_free(win->allocator, win->css_source);
+  win->css_source = NULL;
+  win->css_media_context = (my_css_media_context_ex_t){0};
+  win->css_media_context_valid = false;
   win->theme = theme;
   win->theme_owned = take_ownership;
   my_widget_apply_theme((my_widget_t*)win, theme);
+}
+
+my_ret_t my_window_refresh_css_style(my_window_t* win, int32_t width,
+                                     int32_t height) {
+  my_theme_t* candidate;
+  my_css_media_context_ex_t media;
+  if (win == NULL || win->css_base_theme == NULL || win->css_source == NULL ||
+      width <= 0 || height <= 0) {
+    return MY_RET_NOT_FOUND;
+  }
+  candidate = window_build_css_theme(win, win->css_base_theme,
+                                     win->css_source, width, height, &media);
+  if (candidate == NULL) return MY_RET_OOM;
+  if (win->theme_owned) {
+    my_theme_destroy(win->theme);
+  }
+  win->theme = candidate;
+  win->theme_owned = true;
+  win->css_media_context = media;
+  win->css_media_context_valid = true;
+  (void)my_widget_apply_theme((my_widget_t*)win, candidate);
+  return MY_RET_OK;
+}
+
+my_ret_t my_window_refresh_media_style(my_window_t* win) {
+  my_theme_t* candidate;
+  my_css_media_context_ex_t media;
+  int32_t width = 0;
+  int32_t height = 0;
+  if (win == NULL || win->css_base_theme == NULL || win->css_source == NULL) {
+    return MY_RET_NOT_FOUND;
+  }
+  if (my_pal_window_get_size(win->pal_window, &width, &height) != MY_RET_OK ||
+      width <= 0 || height <= 0) {
+    return MY_RET_NOT_FOUND;
+  }
+  window_get_media_context(win, width, height, &media);
+  if (win->css_media_context_valid &&
+      window_media_equal(&media, &win->css_media_context)) {
+    return MY_RET_NOT_FOUND;
+  }
+  candidate = window_build_css_theme(win, win->css_base_theme,
+                                     win->css_source, width, height, &media);
+  if (candidate == NULL) return MY_RET_OOM;
+  if (win->theme_owned) my_theme_destroy(win->theme);
+  win->theme = candidate;
+  win->theme_owned = true;
+  win->css_media_context = media;
+  win->css_media_context_valid = true;
+  (void)my_widget_apply_theme((my_widget_t*)win, candidate);
+  return MY_RET_OK;
+}
+
+my_ret_t my_window_set_css_style(my_window_t* win, const char* css) {
+  my_theme_t* base;
+  char* source;
+  my_theme_t* candidate;
+  int32_t width = 0;
+  int32_t height = 0;
+  if (win == NULL || css == NULL || win->theme == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  base = my_theme_clone(win->css_base_theme != NULL ? win->css_base_theme
+                                                     : win->theme);
+  source = my_strdup(win->allocator, css);
+  if (base == NULL || source == NULL) {
+    my_theme_destroy(base);
+    my_mem_free(win->allocator, source);
+    return MY_RET_OOM;
+  }
+  (void)my_pal_window_get_size(win->pal_window, &width, &height);
+  my_css_media_context_ex_t media;
+  candidate = window_build_css_theme(win, base, source, width, height, &media);
+  if (candidate == NULL) {
+    my_mem_free(win->allocator, source);
+    my_theme_destroy(base);
+    return MY_RET_FAIL;
+  }
+  my_mem_free(win->allocator, win->css_source);
+  my_theme_destroy(win->css_base_theme);
+  win->css_source = source;
+  win->css_base_theme = base;
+  win->css_media_context = media;
+  win->css_media_context_valid = true;
+  if (win->theme_owned) my_theme_destroy(win->theme);
+  win->theme = candidate;
+  win->theme_owned = true;
+  (void)my_widget_apply_theme((my_widget_t*)win, candidate);
+  return MY_RET_OK;
 }
 
 /* ---------------- painting ---------------- */
@@ -612,6 +947,7 @@ my_ret_t my_window_prepare_layout(my_window_t* win) {
        pass < MY_WINDOW_LAYOUT_MAX_PASSES &&
        (root->need_layout || root->subtree_need_layout);
        pass++) {
+    my_ui_metrics_record_layout_pass();
     my_widget_relayout_pending(root);
   }
   return root->need_layout || root->subtree_need_layout ? MY_RET_FAIL
@@ -645,6 +981,10 @@ static my_ret_t window_record_dirty(my_window_t* win) {
   n = my_dirty_rects_count(&frame_dirty);
   for (i = 0; i < n; i++) {
     const my_rect_t* r = my_dirty_rects_get(&frame_dirty, i);
+    if (r->w > 0 && r->h > 0) {
+      my_ui_metrics_record_damage((uint64_t)(uint32_t)r->w *
+                                   (uint64_t)(uint32_t)r->h);
+    }
     my_vgcanvas_save(vg);
     my_vgcanvas_clip_rect(vg, &(my_rectf_t){(float)r->x, (float)r->y, (float)r->w,
                                             (float)r->h});
@@ -786,6 +1126,8 @@ static my_ret_t tip_on_timer(void* ctx) {
   my_widget_t* tip;
   const char* text;
   int32_t w, h, x, y;
+  int64_t x64, y64;
+  size_t text_len;
   win->tip_timer = 0;
   if (win->tip_target == NULL) {
     return MY_RET_FAIL;
@@ -794,22 +1136,32 @@ static my_ret_t tip_on_timer(void* ctx) {
   if (text == NULL || text[0] == '\0') {
     return MY_RET_FAIL;
   }
-  w = (int32_t)strlen(text) * 8 + 12;
+  text_len = strlen(text);
+  if (text_len > (SIZE_MAX - 12u) / 8u || text_len > (INT32_MAX - 12) / 8) {
+    w = INT32_MAX;
+  } else {
+    w = (int32_t)(text_len * 8u + 12u);
+  }
+  if (w > root->rect.w) {
+    w = root->rect.w;
+  }
   h = 22;
-  x = win->tip_x + TIP_DX;
-  y = win->tip_y + TIP_DY;
-  if (x + w > root->rect.w) {
-    x = root->rect.w - w;
+  x64 = (int64_t)win->tip_x + TIP_DX;
+  y64 = (int64_t)win->tip_y + TIP_DY;
+  if (x64 + w > root->rect.w) {
+    x64 = (int64_t)root->rect.w - w;
   }
-  if (y + h > root->rect.h) {
-    y = win->tip_y - TIP_DY - h; /* flip above the cursor */
+  if (y64 + h > root->rect.h) {
+    y64 = (int64_t)win->tip_y - TIP_DY - h; /* flip above the cursor */
   }
-  if (x < 0) {
-    x = 0;
+  if (x64 < 0) {
+    x64 = 0;
   }
-  if (y < 0) {
-    y = 0;
+  if (y64 < 0) {
+    y64 = 0;
   }
+  x = x64 > INT32_MAX ? INT32_MAX : (int32_t)x64;
+  y = y64 > INT32_MAX ? INT32_MAX : (int32_t)y64;
   tip = my_widget_create(win->allocator, "tooltip");
   if (tip == NULL) {
     return MY_RET_FAIL;
@@ -929,6 +1281,15 @@ my_pal_main_loop_t* my_window_loop_of_widget(my_widget_t* widget) {
 
 void my_window_set_undo_manager(my_window_t* win, void* mgr) {
   if (win != NULL) {
+    if (win->undo_manager == mgr) {
+      return;
+    }
+    if (mgr != NULL) {
+      my_undo_manager_ref((my_undo_manager_t*)mgr);
+    }
+    if (win->undo_manager != NULL) {
+      my_undo_manager_unref((my_undo_manager_t*)win->undo_manager);
+    }
     win->undo_manager = mgr;
   }
 }
@@ -966,6 +1327,8 @@ my_ret_t my_window_on_pal_event(my_window_t* win, const my_event_t* event) {
       (void)my_widget_set_rect(
           root, &(my_rect_t){root->rect.x, root->rect.y, event->u.resize.w,
                              event->u.resize.h});
+      (void)my_window_refresh_css_style(win, event->u.resize.w,
+                                        event->u.resize.h);
       if (win->gpu_backend == MY_GPU_SOFT && win->vg_owned &&
           win->vg != NULL) {
         my_vgcanvas_destroy(win->vg);
@@ -1002,6 +1365,9 @@ my_ret_t my_window_on_pal_event(my_window_t* win, const my_event_t* event) {
       break;
     case MY_EVENT_USER:
       my_emitter_emit(root->emitter, "user", event->u.user.data);
+      break;
+    case MY_EVENT_COMMAND:
+      my_ui_command_dispatch((my_ui_command_t*)event->u.command.data);
       break;
     default:
       break;

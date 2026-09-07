@@ -17,6 +17,12 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #define WM_DPICHANGED 0x02E0
 #endif
 
+#ifndef WM_INPUT_DEVICE_CHANGE
+#define WM_INPUT_DEVICE_CHANGE 0x00FE
+#endif
+
+#define BREAK_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 15
+
 #include <platform/platform.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
@@ -51,7 +57,33 @@ struct Platform {
     i32         ime_spot_y;
     WINDOWPLACEMENT windowed_placement;  /* R566: keeps maximized state */
     DWORD       windowed_style;
+    u64         media_generation;
+    PlatformMediaContext media_context;
+    bool        media_context_valid;
 };
+
+typedef struct {
+    UINT32 advanced_color_supported : 1;
+    UINT32 advanced_color_active : 1;
+    UINT32 reserved1 : 1;
+    UINT32 advanced_color_limited_by_policy : 1;
+    UINT32 high_dynamic_range_supported : 1;
+    UINT32 high_dynamic_range_user_enabled : 1;
+    UINT32 wide_color_supported : 1;
+    UINT32 wide_color_user_enabled : 1;
+    UINT32 reserved : 24;
+} BreakDisplayConfigAdvancedColorFlags;
+
+typedef struct {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    union {
+        BreakDisplayConfigAdvancedColorFlags flags;
+        UINT32 value;
+    } color;
+    UINT32 color_encoding;
+    UINT32 bits_per_color_channel;
+    UINT32 active_color_mode;
+} BreakDisplayConfigAdvancedColorInfo2;
 
 static void win_apply_cursor(Platform *p) {
     LPCSTR resource;
@@ -341,6 +373,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_DPICHANGED: {
         /* Use the suggested rect from lParam to keep window visually consistent */
         RECT *suggested = (RECT *)lParam;
+        if (suggested == NULL) return 0;
         SetWindowPos(hwnd, NULL,
                      suggested->left, suggested->top,
                      suggested->right - suggested->left,
@@ -352,8 +385,17 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         GetClientRect(hwnd, &client);
         p->width  = (u32)(client.right - client.left);
         p->height = (u32)(client.bottom - client.top);
+        p->media_context_valid = false;
+        if (p->media_generation != UINT64_MAX) p->media_generation++;
         return 0;
     }
+
+    case WM_DISPLAYCHANGE:
+    case WM_SETTINGCHANGE:
+    case WM_INPUT_DEVICE_CHANGE:
+        p->media_context_valid = false;
+        if (p->media_generation != UINT64_MAX) p->media_generation++;
+        break;
 
     case WM_MOUSEMOVE:
         /* R423: GET_*_LPARAM sign-extends — LOWORD/HIWORD are unsigned, so
@@ -440,10 +482,15 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 /* ---- Platform API ---- */
 
 Platform *platform_create(const PlatformConfig *cfg) {
+    if (!platform_config_valid(cfg)) {
+        LOG_ERROR("Invalid platform configuration");
+        return NULL;
+    }
     Platform *p = calloc(1, sizeof(Platform));
     int title_units;
     wchar_t *title;
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
+    p->media_generation = 1u;
 
     p->hinstance = GetModuleHandleW(NULL);
     p->width  = cfg->width;
@@ -545,6 +592,7 @@ void platform_destroy(Platform *p) {
 }
 
 PlatformEventResult platform_poll(Platform *p) {
+    if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
 
     MSG msg;
@@ -627,24 +675,24 @@ void platform_ime_set_spot(Platform *p, i32 x, i32 y) {
 }
 
 InputState *platform_input(Platform *p) {
-    return &p->input;
+    return p != NULL ? &p->input : NULL;
 }
 
 void *platform_window_native(Platform *p) {
-    return (void *)p->hwnd;
+    return p != NULL ? (void *)p->hwnd : NULL;
 }
 
 void *platform_display_native(Platform *p) {
-    return (void *)p->hinstance;
+    return p != NULL ? (void *)p->hinstance : NULL;
 }
 
 void *platform_surface_native(Platform *p) {
-    return (void *)p->hwnd;
+    return p != NULL ? (void *)p->hwnd : NULL;
 }
 
 void platform_get_size(Platform *p, u32 *w, u32 *h) {
-    if (w) *w = p->width;
-    if (h) *h = p->height;
+    if (w) *w = p != NULL ? p->width : 0;
+    if (h) *h = p != NULL ? p->height : 0;
 }
 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
@@ -666,6 +714,7 @@ void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
 }
 
 f32 platform_get_dpi(Platform *p) {
+    if (p == NULL) return 96.0f;
     /* Use GetDpiForWindow (Win10 1607+) via dynamic loading */
     typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
     static PFN_GetDpiForWindow fn_get_dpi = NULL;
@@ -696,9 +745,197 @@ i32 platform_get_scale_factor(Platform *p) {
     return (i32)(platform_get_content_scale(p) + 0.5f);
 }
 
+static bool win_query_display_hdr(Platform *p, bool *out_known,
+                                  bool *out_hdr) {
+    HMODULE user32;
+    HMONITOR monitor;
+    MONITORINFOEXW monitor_info;
+    UINT32 path_count = 0u;
+    UINT32 mode_count = 0u;
+    DISPLAYCONFIG_PATH_INFO *paths = NULL;
+    DISPLAYCONFIG_MODE_INFO *modes = NULL;
+    typedef LONG (WINAPI *GetDisplayConfigBufferSizesFn)(
+        UINT32, UINT32 *, UINT32 *);
+    typedef LONG (WINAPI *QueryDisplayConfigFn)(
+        UINT32, UINT32 *, DISPLAYCONFIG_PATH_INFO *, UINT32 *,
+        DISPLAYCONFIG_MODE_INFO *, DISPLAYCONFIG_TOPOLOGY_ID *);
+    typedef LONG (WINAPI *DisplayConfigGetDeviceInfoFn)(
+        DISPLAYCONFIG_DEVICE_INFO_HEADER *);
+    GetDisplayConfigBufferSizesFn get_buffer_sizes;
+    QueryDisplayConfigFn query_config;
+    DisplayConfigGetDeviceInfoFn get_device_info;
+    LONG status;
+    UINT32 i;
+
+    if (out_known == NULL || out_hdr == NULL) return false;
+    *out_known = false;
+    *out_hdr = false;
+    if (p == NULL) return false;
+
+    monitor = MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST);
+    memset(&monitor_info, 0, sizeof(monitor_info));
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (monitor == NULL || !GetMonitorInfoW(monitor,
+                                             (MONITORINFO *)&monitor_info)) {
+        return false;
+    }
+
+    user32 = GetModuleHandleA("user32.dll");
+    if (user32 == NULL) return false;
+    get_buffer_sizes = (GetDisplayConfigBufferSizesFn)GetProcAddress(
+        user32, "GetDisplayConfigBufferSizes");
+    query_config = (QueryDisplayConfigFn)GetProcAddress(
+        user32, "QueryDisplayConfig");
+    get_device_info = (DisplayConfigGetDeviceInfoFn)GetProcAddress(
+        user32, "DisplayConfigGetDeviceInfo");
+    if (get_buffer_sizes == NULL || query_config == NULL ||
+        get_device_info == NULL) {
+        return false;
+    }
+
+    status = get_buffer_sizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count);
+    if (status != ERROR_SUCCESS || path_count == 0u || mode_count == 0u ||
+        path_count > 128u || mode_count > 2048u) {
+        return false;
+    }
+    paths = calloc(path_count, sizeof(*paths));
+    modes = calloc(mode_count, sizeof(*modes));
+    if (paths == NULL || modes == NULL) {
+        free(paths);
+        free(modes);
+        return false;
+    }
+    status = query_config(QDC_ONLY_ACTIVE_PATHS, &path_count, paths,
+                          &mode_count, modes, NULL);
+    if (status != ERROR_SUCCESS) {
+        free(paths);
+        free(modes);
+        return false;
+    }
+
+    for (i = 0u; i < path_count; ++i) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source;
+        BreakDisplayConfigAdvancedColorInfo2 color;
+        if ((paths[i].flags & DISPLAYCONFIG_PATH_ACTIVE) == 0u) continue;
+        memset(&source, 0, sizeof(source));
+        source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source.header.size = sizeof(source);
+        source.header.adapterId = paths[i].sourceInfo.adapterId;
+        source.header.id = paths[i].sourceInfo.id;
+        if (get_device_info(&source.header) != ERROR_SUCCESS ||
+            wcscmp(source.viewGdiDeviceName, monitor_info.szDevice) != 0) {
+            continue;
+        }
+        memset(&color, 0, sizeof(color));
+        color.header.type = (DISPLAYCONFIG_DEVICE_INFO_TYPE)
+                            BREAK_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2;
+        color.header.size = sizeof(color);
+        color.header.adapterId = paths[i].targetInfo.adapterId;
+        color.header.id = paths[i].targetInfo.id;
+        if (get_device_info(&color.header) == ERROR_SUCCESS) {
+            *out_known = true;
+            *out_hdr = color.color.flags.high_dynamic_range_supported != 0u &&
+                       color.color.flags.high_dynamic_range_user_enabled != 0u &&
+                       color.active_color_mode == 2u;
+        }
+        break;
+    }
+    free(paths);
+    free(modes);
+    return true;
+}
+
+static bool win_collect_media_context(Platform *p,
+                                      PlatformMediaContext *out) {
+    HKEY personalize = NULL;
+    DWORD value = 0;
+    DWORD value_size = sizeof(value);
+    DWORD value_type = 0;
+    LONG color_scheme_status;
+    BOOL animations_enabled = TRUE;
+    BOOL reduced_motion_queryable;
+    bool mouse_present;
+    bool touch_present = false;
+    if (out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    if (p == NULL) return false;
+    out->screen = true;
+    mouse_present = GetSystemMetrics(SM_MOUSEPRESENT) != 0;
+#ifdef SM_DIGITIZER
+#ifdef NID_INTEGRATED_TOUCH
+    touch_present = (GetSystemMetrics(SM_DIGITIZER) &
+                     (NID_INTEGRATED_TOUCH | NID_EXTERNAL_TOUCH)) != 0;
+#endif
+#endif
+    out->capabilities = PLATFORM_MEDIA_CAP_COLOR_SRGB;
+    if (mouse_present) {
+        out->capabilities |= PLATFORM_MEDIA_CAP_HOVER |
+                             PLATFORM_MEDIA_CAP_POINTER_FINE |
+                             PLATFORM_MEDIA_CAP_ANY_POINTER_FINE;
+    }
+    if (touch_present) {
+        out->capabilities |= PLATFORM_MEDIA_CAP_ANY_POINTER_COARSE;
+        if (!mouse_present) {
+            out->capabilities |= PLATFORM_MEDIA_CAP_POINTER_COARSE;
+        }
+    }
+    out->known = PLATFORM_MEDIA_KNOWN_HOVER |
+                 PLATFORM_MEDIA_KNOWN_POINTER |
+                 PLATFORM_MEDIA_KNOWN_ANY_POINTER |
+                 PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
+    color_scheme_status = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        0, KEY_READ, &personalize);
+    if (color_scheme_status == ERROR_SUCCESS) {
+        value_size = sizeof(value);
+        if (RegQueryValueExW(personalize, L"AppsUseLightTheme", NULL,
+                             &value_type, (LPBYTE)&value, &value_size) ==
+                ERROR_SUCCESS &&
+            value_type == REG_DWORD &&
+            value_size == sizeof(value)) {
+            out->prefers_dark = value == 0u;
+            out->known |= PLATFORM_MEDIA_KNOWN_COLOR_SCHEME;
+        }
+        RegCloseKey(personalize);
+    }
+    reduced_motion_queryable = SystemParametersInfoW(
+        SPI_GETCLIENTAREAANIMATION, 0, &animations_enabled, 0);
+    if (reduced_motion_queryable) {
+        out->prefers_reduced_motion = animations_enabled == FALSE;
+        out->known |= PLATFORM_MEDIA_KNOWN_REDUCED_MOTION;
+    }
+    {
+        bool hdr_known = false;
+        bool hdr_enabled = false;
+        if (win_query_display_hdr(p, &hdr_known, &hdr_enabled) && hdr_known) {
+            out->known |= PLATFORM_MEDIA_KNOWN_HDR;
+            if (hdr_enabled) out->capabilities |= PLATFORM_MEDIA_CAP_HDR;
+        }
+    }
+    return true;
+}
+
+bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
+    PlatformMediaContext next;
+    if (out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    if (p == NULL) return false;
+    if (!p->media_context_valid) {
+        if (!win_collect_media_context(p, &next)) return false;
+        p->media_context = next;
+        p->media_context_valid = true;
+    }
+    *out = p->media_context;
+    return true;
+}
+
+u64 platform_get_media_generation(Platform *p) {
+    return p != NULL ? p->media_generation : 0u;
+}
+
 u32 platform_get_monitor_count(Platform *p) {
-    (void)p;
-    return (u32)GetSystemMetrics(SM_CMONITORS);
+    return p != NULL ? (u32)GetSystemMetrics(SM_CMONITORS) : 0;
 }
 
 /* ---- Multi-monitor enumeration ---- */
@@ -762,8 +999,7 @@ static BOOL CALLBACK monitor_enum_proc(HMONITOR hmon, HDC hdc, LPRECT rect, LPAR
 }
 
 bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
-    (void)p;
-    if (!out) return false;
+    if (p == NULL || !out) return false;
 
     MonitorInfo infos[PLATFORM_MAX_MONITORS];
     MonitorEnumData data = { infos, 0, PLATFORM_MAX_MONITORS };
@@ -775,6 +1011,7 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
 }
 
 void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL || p->hwnd == NULL) return;
     if (!p->is_fullscreen) {
         /* Save current windowed state. R566: GetWindowPlacement (unlike
          * GetWindowRect) also captures the maximized/minimized show state
@@ -809,6 +1046,7 @@ void platform_toggle_fullscreen(Platform *p) {
 }
 
 void platform_mouse_capture(Platform *p, bool capture) {
+    if (p == NULL || p->hwnd == NULL) return;
     if (capture) {
         SetCapture(p->hwnd);
     } else {
@@ -849,7 +1087,9 @@ bool platform_clipboard_set_text(Platform *p, const char *utf8) {
     int units;
     HGLOBAL memory;
     wchar_t *wide;
-    if (p == NULL || utf8 == NULL || !OpenClipboard(p->hwnd)) return false;
+    if (p == NULL || utf8 == NULL ||
+        !platform_utf8_validate(utf8, strlen(utf8)) ||
+        !OpenClipboard(p->hwnd)) return false;
     units = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
     if (units <= 0) {
         CloseClipboard();
@@ -909,6 +1149,7 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
     (void)p;
     if (out == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     *out = NULL;
+    if (p == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     if (!OpenClipboard(p != NULL ? p->hwnd : NULL)) return PLATFORM_CLIPBOARD_EMPTY;
     handle = GetClipboardData(CF_UNICODETEXT);
     wide = handle != NULL ? GlobalLock(handle) : NULL;

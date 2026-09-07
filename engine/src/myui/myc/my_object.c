@@ -4,6 +4,7 @@
  */
 #include "myc/my_object.h"
 
+#include "myc/my_ref_count.h"
 #include "myc/my_str.h"
 
 my_object_t* my_object_create(const my_allocator_t* allocator, const char* name) {
@@ -11,7 +12,7 @@ my_object_t* my_object_create(const my_allocator_t* allocator, const char* name)
   if (obj == NULL) {
     return NULL;
   }
-  obj->ref_count = 1;
+  atomic_init(&obj->ref_count, 1u);
   obj->destroy = my_object_destroy;
   obj->allocator = allocator;
   if (name != NULL) {
@@ -26,7 +27,7 @@ my_object_t* my_object_create(const my_allocator_t* allocator, const char* name)
 
 my_object_t* my_object_ref(my_object_t* obj) {
   if (obj != NULL) {
-    obj->ref_count++;
+    (void)my_ref_count_try_ref(&obj->ref_count);
   }
   return obj;
 }
@@ -35,7 +36,7 @@ void my_object_unref(my_object_t* obj) {
   if (obj == NULL) {
     return;
   }
-  if (--obj->ref_count <= 0 && obj->destroy != NULL) {
+  if (my_ref_count_release(&obj->ref_count) && obj->destroy != NULL) {
     obj->destroy(obj);
   }
 }

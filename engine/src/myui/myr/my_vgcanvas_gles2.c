@@ -148,11 +148,24 @@ static my_ret_t gles_grow(const my_allocator_t* alloc, void** arr, size_t* cap,
                           size_t need, size_t elem) {
   void* p;
   size_t new_cap = *cap > 0 ? *cap : 64;
+  if (elem == 0) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (need == SIZE_MAX) {
+    return MY_RET_OOM;
+  }
   if (need <= *cap) {
     return MY_RET_OK;
   }
   while (new_cap < need) {
+    if (new_cap > SIZE_MAX / 2u) {
+      new_cap = need;
+      break;
+    }
     new_cap *= 2;
+  }
+  if (new_cap > SIZE_MAX / elem) {
+    return MY_RET_OOM;
   }
   p = my_mem_realloc(alloc, *arr, new_cap * elem);
   if (p == NULL) {
@@ -213,7 +226,8 @@ static my_ret_t gles_end_frame(my_vgcanvas_t* vg) {
 
 static my_ret_t gles_save(my_vgcanvas_t* vg) {
   my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
-  if (gles_grow(s->allocator, (void**)&s->stack, &s->stack_cap,
+  if (s->stack_count == SIZE_MAX ||
+      gles_grow(s->allocator, (void**)&s->stack, &s->stack_cap,
                 s->stack_count + 1, sizeof(gles_state_t)) != MY_RET_OK) {
     return MY_RET_OOM;
   }
@@ -289,6 +303,7 @@ static my_ret_t gles_set_stroke_color(my_vgcanvas_t* vg, my_color_t color) {
 }
 
 static my_ret_t gles_set_line_width(my_vgcanvas_t* vg, float width) {
+  if (!isfinite(width) || width <= 0.0f) return MY_RET_INVALID_PARAMS;
   ((my_vgcanvas_gles2_t*)vg)->state.line_width = width;
   return MY_RET_OK;
 }
@@ -303,6 +318,9 @@ static my_ret_t gles_fill_rect(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   gles_geo_setup(s);
   my_vggeometry_rect(&s->geo, rect->x, rect->y, rect->x + rect->w,
                      rect->y + rect->h);
+  if (my_vggeometry_status(&s->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&s->geo);
+  }
   gles_draw_geo(s, s->state.fill_color);
   return MY_RET_OK;
 }
@@ -315,6 +333,9 @@ static my_ret_t gles_stroke_rect(my_vgcanvas_t* vg, const my_rectf_t* rect) {
   gles_geo_setup(s);
   my_vggeometry_stroke_rect(&s->geo, rect->x, rect->y, rect->w, rect->h,
                             s->state.line_width);
+  if (my_vggeometry_status(&s->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&s->geo);
+  }
   gles_draw_geo(s, s->state.stroke_color);
   return MY_RET_OK;
 }
@@ -328,6 +349,9 @@ static my_ret_t gles_fill_rounded_rect(my_vgcanvas_t* vg, const my_rectf_t* rect
   gles_geo_setup(s);
   my_vggeometry_fill_rounded_rect(&s->geo, rect->x, rect->y, rect->w,
                                   rect->h, radius);
+  if (my_vggeometry_status(&s->geo) != MY_RET_OK) {
+    return my_vggeometry_status(&s->geo);
+  }
   gles_draw_geo(s, s->state.fill_color);
   return MY_RET_OK;
 }
@@ -364,36 +388,47 @@ static my_ret_t gles_curve_to(my_vgcanvas_t* vg, float cx1, float cy1,
  */
 static my_ret_t gles_fill(my_vgcanvas_t* vg) {
   my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
+  my_ret_t ret;
   gles_geo_setup(s);
-  if (my_vggeometry_fill(&s->geo, &s->state.clip) == MY_RET_OOM) {
-    return MY_RET_OOM;
-  }
+  ret = my_vggeometry_fill(&s->geo, &s->state.clip);
+  if (ret != MY_RET_OK) return ret;
   gles_draw_geo(s, s->state.fill_color);
   return MY_RET_OK;
 }
 
 static my_ret_t gles_stroke(my_vgcanvas_t* vg) {
   my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
+  my_ret_t ret;
   gles_geo_setup(s);
-  my_vggeometry_stroke(&s->geo, s->state.line_width, s->state.line_cap,
-                       s->state.line_join);
+  ret = my_vggeometry_stroke(&s->geo, s->state.line_width,
+                             s->state.line_cap, s->state.line_join);
+  if (ret != MY_RET_OK) return ret;
   gles_draw_geo(s, s->state.stroke_color);
   return MY_RET_OK;
 }
 
 static my_ret_t gles_set_line_cap(my_vgcanvas_t* vg, my_line_cap_t cap) {
+  if (vg == NULL || (cap != MY_LINE_CAP_BUTT && cap != MY_LINE_CAP_ROUND &&
+                     cap != MY_LINE_CAP_SQUARE)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ((my_vgcanvas_gles2_t*)vg)->state.line_cap = cap;
   return MY_RET_OK;
 }
 
 static my_ret_t gles_set_line_join(my_vgcanvas_t* vg, my_line_join_t join) {
+  if (vg == NULL || (join != MY_LINE_JOIN_MITER &&
+                     join != MY_LINE_JOIN_ROUND &&
+                     join != MY_LINE_JOIN_BEVEL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
   ((my_vgcanvas_gles2_t*)vg)->state.line_join = join;
   return MY_RET_OK;
 }
 
 static my_ret_t gles_set_scale_vtable(my_vgcanvas_t* vg, float scale) {
   my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
-  if (s == NULL || scale <= 0.0f) {
+  if (s == NULL || !isfinite(scale) || scale <= 0.0f) {
     return MY_RET_INVALID_PARAMS;
   }
   s->state.scale = scale;
@@ -428,10 +463,12 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
   my_glyph_t g = {0};
   uint32_t slot;
   float gx, gy, quad[24];
+  if (my_font_is_variation_selector(cp)) return;
   if (my_font_get_glyph(s->state.font, cp, gles_dev_font_size(s), &g) !=
           MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += g.advance > 0 ? (float)g.advance : 0.0f;
+    my_font_glyph_release(&g);
     return;
   }
   /* direct-mapped texture cache: evict on slot collision */
@@ -468,6 +505,7 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
   s->gl.draw_textured_quads(s->gl.ctx, s->text_program,
                             s->tex_cache[slot].texture, quad, 6);
   *pen_x += (float)g.advance;
+  my_font_glyph_release(&g);
 }
 
 static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
@@ -482,6 +520,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
           font, shaped->glyph_id, gles_dev_font_size(s), &g) != MY_RET_OK ||
       g.bitmap == NULL || g.w <= 0 || g.h <= 0) {
     *pen_x += advance;
+    my_font_glyph_release(&g);
     return;
   }
   slot = (shaped->glyph_id ^ (uint32_t)gles_dev_font_size(s)) %
@@ -518,6 +557,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
   s->gl.draw_textured_quads(s->gl.ctx, s->text_program,
                             s->tex_cache[slot].texture, quad, 6);
   *pen_x += advance;
+  my_font_glyph_release(&g);
 }
 
 static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
@@ -600,12 +640,11 @@ static my_ret_t gles_draw_text(my_vgcanvas_t* vg, const char* text, float x,
 static my_ret_t gles_set_font(my_vgcanvas_t* vg, my_font_t* font,
                               int32_t size) {
   my_vgcanvas_gles2_t* s = (my_vgcanvas_gles2_t*)vg;
+  if (size <= 0) return MY_RET_INVALID_PARAMS;
   if (font != NULL) {
     s->state.font = font;
   }
-  if (size > 0) {
-    s->state.font_size = size;
-  }
+  s->state.font_size = size;
   return MY_RET_OK;
 }
 
@@ -663,6 +702,9 @@ static my_ret_t gles_draw_image(my_vgcanvas_t* vg, const uint8_t* rgba,
     gles_geo_setup(s);
     my_vggeometry_rect(&s->geo, dst->x, dst->y, dst->x + dst->w,
                        dst->y + dst->h);
+    if (my_vggeometry_status(&s->geo) != MY_RET_OK) {
+      return my_vggeometry_status(&s->geo);
+    }
     gles_draw_geo(s, *bg);
   }
   if (s->img_program == 0) {

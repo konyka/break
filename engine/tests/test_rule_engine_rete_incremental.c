@@ -169,7 +169,7 @@ TEST(unchanged_lineage_preserves_activation_sequence_across_unrelated_events) {
 TEST(token_provenance_and_transaction_effective_change) {
     re_facts_t *facts = re_facts_create(NULL, NULL); re_rete_network_t *network = NULL; re_fact_txn_t *txn = NULL;
     re_fact_id_t a, b; re_rete_activation_t activation; re_value_t one = {RE_VALUE_INT64, {.int64_value = 1}}, two = {RE_VALUE_INT64, {.int64_value = 2}};
-    ASSERT_EQ(make_network(facts, &network), RE_STATUS_OK); network->producer_rule = text("Join"); ASSERT_EQ(re_facts_begin(facts, &txn), RE_STATUS_OK); ASSERT_EQ(re_facts_txn_insert(txn, text("A"), &one, &a), RE_STATUS_OK); ASSERT_EQ(re_facts_txn_insert(txn, text("B"), &two, &b), RE_STATUS_OK); ASSERT_EQ(re_facts_commit(txn), RE_STATUS_OK);
+    ASSERT_EQ(make_network(facts, &network), RE_STATUS_OK); network->producer_rule = text("Join"); ASSERT_EQ(re_facts_begin(facts, &txn), RE_STATUS_OK); ASSERT_EQ(re_facts_txn_insert(txn, text("A"), &one, &a), RE_STATUS_OK); ASSERT_EQ(re_facts_txn_insert(txn, text("B"), &two, &b), RE_STATUS_OK); ASSERT_EQ(re_facts_commit(txn), RE_STATUS_OK); re_facts_txn_destroy(txn);
     ASSERT_EQ(re_rete_activation_count(network), 1u); ASSERT_EQ(re_rete_activation_get(network, 0u, &activation), RE_STATUS_OK); ASSERT_EQ(activation.lineage_count, 2u); ASSERT_EQ(activation.lineage[0].slot, a.slot); ASSERT_EQ(activation.lineage[1].slot, b.slot); ASSERT_EQ(activation.producer_rule.size, 4u);
     re_rete_network_destroy_internal(network); re_facts_destroy(facts);
 }
@@ -210,6 +210,7 @@ TEST(transaction_notification_failure_propagates_and_invalidates_rete_state) {
     ASSERT_EQ(re_facts_begin(facts, &transaction), RE_STATUS_OK);
     ASSERT_EQ(re_facts_txn_set(transaction, text("A"), &value), RE_STATUS_OK);
     ASSERT_EQ(re_facts_commit(transaction), RE_STATUS_ERROR);
+    re_facts_txn_destroy(transaction);
     ASSERT_FALSE(facts->notifying);
     ASSERT_EQ(re_rete_activation_count(network), 0u);
     ASSERT_EQ(re_facts_get(facts, text("A"), &value), RE_STATUS_OK);
@@ -272,6 +273,7 @@ TEST(repeated_condition_network_creation_replaces_owner_safely) {
     ASSERT_EQ(re_facts_set(facts, text("A"), &(re_value_t){RE_VALUE_INT64, {.int64_value = 1}}), RE_STATUS_OK);
     ASSERT_EQ(re_rete_activation_count(second), 0u);
     re_rete_network_destroy_internal(second);
+    re_rete_network_destroy_internal(first);
     re_facts_destroy(facts);
 }
 

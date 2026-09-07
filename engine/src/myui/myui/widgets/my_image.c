@@ -3,7 +3,9 @@
  * @brief Image widget with a path-keyed LRU decode cache.
  */
 #include "myui/widgets/my_image.h"
+#include "myr/my_ui_metrics.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "myc/my_str.h"
@@ -13,6 +15,8 @@
 #define MY_IMAGE_CACHE_SIZE 8
 
 typedef struct image_cache_entry_t {
+  my_image_loader_t* loader;
+  my_image_loader_lease_t* lease;
   char* path;
   uint8_t* pixels; /**< RGBA8888 */
   int32_t w, h;
@@ -20,26 +24,63 @@ typedef struct image_cache_entry_t {
   bool occupied;
 } image_cache_entry_t;
 
-static image_cache_entry_t g_cache[MY_IMAGE_CACHE_SIZE];
-static uint64_t g_cache_tick = 0;
-static size_t g_cache_hits = 0;
-static size_t g_cache_misses = 0;
-static my_image_loader_t* g_default_loader = NULL;
+typedef struct image_cache_state_t {
+  image_cache_entry_t entries[MY_IMAGE_CACHE_SIZE];
+  uint64_t tick;
+} image_cache_state_t;
+
+static _Thread_local image_cache_state_t g_cache;
+static atomic_size_t g_cache_hits;
+static atomic_size_t g_cache_misses;
+static _Atomic(my_image_loader_t*) g_default_loader;
+
+static bool image_loader_valid(const my_image_loader_t* loader) {
+  return my_image_loader_is_valid(loader);
+}
+
+static void image_cache_drop_entry(image_cache_entry_t* entry) {
+  if (entry == NULL || !entry->occupied) {
+    return;
+  }
+  my_mem_free(NULL, entry->path);
+  my_mem_free(NULL, entry->pixels);
+  my_image_loader_lease_unref(entry->lease);
+  memset(entry, 0, sizeof(*entry));
+}
 
 void my_image_cache_stats(size_t* hits, size_t* misses) {
   if (hits != NULL) {
-    *hits = g_cache_hits;
+    *hits = atomic_load_explicit(&g_cache_hits, memory_order_relaxed);
   }
   if (misses != NULL) {
-    *misses = g_cache_misses;
+    *misses = atomic_load_explicit(&g_cache_misses, memory_order_relaxed);
+  }
+}
+
+void my_image_cache_clear(void) {
+  size_t i;
+  for (i = 0; i < MY_IMAGE_CACHE_SIZE; i++) {
+    image_cache_drop_entry(&g_cache.entries[i]);
   }
 }
 
 static my_image_loader_t* default_loader(void) {
-  if (g_default_loader == NULL) {
-    g_default_loader = my_image_loader_stb_create(NULL);
+  my_image_loader_t* loader =
+      atomic_load_explicit(&g_default_loader, memory_order_acquire);
+  if (loader == NULL) {
+    my_image_loader_t* candidate = my_image_loader_stb_create(NULL);
+    if (candidate == NULL) {
+      return NULL;
+    }
+    if (!atomic_compare_exchange_strong_explicit(
+            &g_default_loader, &loader, candidate, memory_order_release,
+            memory_order_acquire)) {
+      my_image_loader_destroy(candidate);
+    } else {
+      loader = candidate;
+    }
   }
-  return g_default_loader;
+  return loader;
 }
 
 /** @brief Decoded image ref into the cache (owned by the cache). */
@@ -47,32 +88,53 @@ typedef struct cached_image_t {
   const uint8_t* pixels;
   int32_t w;
   int32_t h;
+  my_image_data_t* transient;
+  my_image_loader_t* transient_loader;
 } cached_image_t;
 
-static bool cache_get(my_image_loader_t* loader, const char* path,
+static void image_release_transient(cached_image_t* image) {
+  if (image != NULL && image->transient != NULL &&
+      image->transient_loader != NULL) {
+    my_image_loader_free_data(image->transient_loader, image->transient);
+    image->transient = NULL;
+    image->transient_loader = NULL;
+  }
+}
+
+static bool cache_get(my_image_loader_t* loader, my_image_loader_lease_t* lease,
+                      const char* path,
                       cached_image_t* out) {
   size_t i;
-  image_cache_entry_t* lru = &g_cache[0];
-  for (i = 0; i < MY_IMAGE_CACHE_SIZE; i++) {
-    image_cache_entry_t* e = &g_cache[i];
-    if (!e->occupied) {
-      lru = e;
-      continue;
-    }
-    if (e->last_used < lru->last_used) {
-      lru = e;
-    }
-    if (my_str_eq(e->path, path)) {
-      e->last_used = ++g_cache_tick;
-      g_cache_hits++;
-      out->pixels = e->pixels;
-      out->w = e->w;
-      out->h = e->h;
-      return true;
+  image_cache_entry_t* lru = &g_cache.entries[0];
+  if (image_loader_valid(loader)) {
+    my_image_loader_t* default_loader_instance =
+        atomic_load_explicit(&g_default_loader, memory_order_acquire);
+    bool cacheable = lease != NULL || loader == default_loader_instance;
+    if (cacheable) {
+      for (i = 0; i < MY_IMAGE_CACHE_SIZE; i++) {
+        image_cache_entry_t* e = &g_cache.entries[i];
+        if (!e->occupied) {
+          lru = e;
+          continue;
+        }
+        if (e->last_used < lru->last_used) {
+          lru = e;
+        }
+        if (e->loader == loader && e->lease == lease &&
+            my_str_eq(e->path, path)) {
+          e->last_used = ++g_cache.tick;
+          atomic_fetch_add_explicit(&g_cache_hits, 1u, memory_order_relaxed);
+          out->pixels = e->pixels;
+          out->w = e->w;
+          out->h = e->h;
+          return true;
+        }
+      }
     }
   }
-  g_cache_misses++;
-  if (loader == NULL) {
+  atomic_fetch_add_explicit(&g_cache_misses, 1u, memory_order_relaxed);
+  my_ui_metrics_record_image_cache_miss();
+  if (!image_loader_valid(loader)) {
     return false;
   }
   {
@@ -80,21 +142,49 @@ static bool cache_get(my_image_loader_t* loader, const char* path,
     if (data == NULL) {
       return false;
     }
-    if (lru->occupied) {
-      my_mem_free(NULL, lru->path);
-      my_mem_free(NULL, lru->pixels);
+    if (lease == NULL &&
+        loader != atomic_load_explicit(&g_default_loader, memory_order_acquire)) {
+      if (data->pixels == NULL || data->w <= 0 || data->h <= 0) {
+        my_image_loader_free_data(loader, data);
+        return false;
+      }
+      out->pixels = data->pixels;
+      out->w = data->w;
+      out->h = data->h;
+      out->transient = data;
+      out->transient_loader = loader;
+      return true;
     }
-    lru->occupied = true;
-    lru->path = my_strdup(NULL, path);
-    lru->pixels = data->pixels;
-    lru->w = data->w;
-    lru->h = data->h;
-    lru->last_used = ++g_cache_tick;
-    my_mem_free(NULL, data); /* pixels taken over by the cache */
-    out->pixels = lru->pixels;
-    out->w = lru->w;
-    out->h = lru->h;
-    return true;
+    if (data->pixels != NULL && data->w > 0 && data->h > 0 &&
+        (size_t)data->w <= SIZE_MAX / (size_t)data->h &&
+        (size_t)data->w * (size_t)data->h <= SIZE_MAX / 4u) {
+      int32_t data_w = data->w;
+      int32_t data_h = data->h;
+      size_t pixel_bytes = (size_t)data->w * (size_t)data->h * 4u;
+      uint8_t* pixels = (uint8_t*)my_mem_alloc(NULL, pixel_bytes);
+      char* key = my_strdup(NULL, path);
+      if (pixels != NULL && key != NULL) {
+        memcpy(pixels, data->pixels, pixel_bytes);
+        my_image_loader_free_data(loader, data);
+        image_cache_drop_entry(lru);
+        lru->loader = loader;
+        lru->lease = my_image_loader_lease_ref(lease);
+        lru->occupied = true;
+        lru->path = key;
+        lru->pixels = pixels;
+        lru->w = data_w;
+        lru->h = data_h;
+        lru->last_used = ++g_cache.tick;
+        out->pixels = lru->pixels;
+        out->w = lru->w;
+        out->h = lru->h;
+        return true;
+      }
+      my_mem_free(NULL, key);
+      my_mem_free(NULL, pixels);
+    }
+    my_image_loader_free_data(loader, data);
+    return false;
   }
 }
 
@@ -118,7 +208,7 @@ static void image_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_image_t* im = (my_image_t*)widget;
   uint32_t bg = my_widget_style_get_color(widget, MY_STATE_NORMAL, MY_STYLE_BG_COLOR,
                                           0x00000000u);
-  cached_image_t img;
+  cached_image_t img = {0};
   int32_t dw, dh, dx, dy;
   my_color_t bgc = my_color_from_rgba32(bg);
 
@@ -127,15 +217,17 @@ static void image_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
                                             (float)widget->rect.h});
   }
-  if (im->path == NULL ||
-      !cache_get(im->loader != NULL ? im->loader : default_loader(), im->path,
-                 &img)) {
-    /* placeholder: empty frame box */
-    my_vgcanvas_set_stroke_color(vg, my_color_rgb(150, 150, 150));
-    my_vgcanvas_set_line_width(vg, 1);
-    my_vgcanvas_stroke_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
-                                              (float)widget->rect.h});
-    return;
+  {
+    my_image_loader_t* loader = im->loader != NULL ? im->loader : default_loader();
+    my_image_loader_lease_t* lease = im->loader_lease;
+    if (im->path == NULL || !cache_get(loader, lease, im->path, &img)) {
+      /* placeholder: empty frame box */
+      my_vgcanvas_set_stroke_color(vg, my_color_rgb(150, 150, 150));
+      my_vgcanvas_set_line_width(vg, 1);
+      my_vgcanvas_stroke_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
+                                                (float)widget->rect.h});
+      return;
+    }
   }
 
   switch (im->scale_mode) {
@@ -170,15 +262,23 @@ static void image_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     }
   }
   if (dw <= 0 || dh <= 0) {
+    image_release_transient(&img);
     return;
   }
   image_on_paint_blit(widget, vg, &img, dx, dy, dw, dh);
+  image_release_transient(&img);
 }
 
 static const my_widget_vtable_t s_image_vtable = {image_on_paint, NULL, NULL, NULL};
 
+bool my_image_is_instance(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_image_vtable;
+}
+
 static void image_destroy_chain(my_object_t* obj) {
   my_image_t* im = (my_image_t*)obj;
+  my_image_loader_lease_unref(im->loader_lease);
+  im->loader_lease = NULL;
   my_mem_free(im->allocator, im->path);
   my_widget_destroy((my_widget_t*)im);
   my_object_destroy(obj);
@@ -206,7 +306,7 @@ my_widget_t* my_image_create(const my_allocator_t* allocator) {
 my_ret_t my_image_set_image(my_widget_t* image, const char* path) {
   my_image_t* im = (my_image_t*)image;
   char* copy;
-  if (image == NULL) {
+  if (!my_image_is_instance(image)) {
     return MY_RET_INVALID_PARAMS;
   }
   copy = my_strdup(im->allocator, path);
@@ -220,7 +320,7 @@ my_ret_t my_image_set_image(my_widget_t* image, const char* path) {
 }
 
 my_ret_t my_image_set_scale_mode(my_widget_t* image, my_image_scale_t mode) {
-  if (image == NULL) {
+  if (!my_image_is_instance(image)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_image_t*)image)->scale_mode = mode;
@@ -230,7 +330,7 @@ my_ret_t my_image_set_scale_mode(my_widget_t* image, my_image_scale_t mode) {
 
 my_ret_t my_image_set_scale_filter(my_widget_t* image,
                                    my_scale_filter_t filter) {
-  if (image == NULL) {
+  if (!my_image_is_instance(image)) {
     return MY_RET_INVALID_PARAMS;
   }
   ((my_image_t*)image)->scale_filter = filter;
@@ -239,9 +339,33 @@ my_ret_t my_image_set_scale_filter(my_widget_t* image,
 }
 
 my_ret_t my_image_set_loader(my_widget_t* image, my_image_loader_t* loader) {
-  if (image == NULL) {
+  if (!my_image_is_instance(image)) {
     return MY_RET_INVALID_PARAMS;
   }
+  if (loader != NULL && !image_loader_valid(loader)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  my_image_loader_lease_unref(((my_image_t*)image)->loader_lease);
+  ((my_image_t*)image)->loader_lease = NULL;
   ((my_image_t*)image)->loader = loader;
+  return MY_RET_OK;
+}
+
+my_ret_t my_image_set_loader_lease(my_widget_t* image,
+                                   my_image_loader_lease_t* lease) {
+  my_image_t* im = (my_image_t*)image;
+  my_image_loader_t* loader;
+  my_image_loader_lease_t* retained;
+  if (!my_image_is_instance(image) || lease == NULL) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  loader = my_image_loader_lease_loader(lease);
+  if (!image_loader_valid(loader)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  retained = my_image_loader_lease_ref(lease);
+  my_image_loader_lease_unref(im->loader_lease);
+  im->loader_lease = retained;
+  im->loader = loader;
   return MY_RET_OK;
 }

@@ -28,12 +28,28 @@ void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
     re_expr_t **stack = NULL;
     size_t count = 0u;
     size_t capacity = 0u;
-    while (expr != NULL || count != 0u) {
-        if (expr != NULL) {
-            if (count == capacity) {
-                size_t next = capacity == 0u ? 16u : capacity * 2u;
+    if (expr != NULL) {
+        stack = re_alloc(a, 16u * sizeof(*stack));
+        if (stack == NULL) return;
+        capacity = 16u;
+        stack[count++] = expr;
+    }
+    while (count != 0u) {
+        re_expr_t *current = stack[--count];
+        if (current->first != NULL || current->second != NULL) {
+            size_t needed = count + (current->first != NULL ? 1u : 0u) +
+                            (current->second != NULL ? 1u : 0u);
+            if (needed > capacity) {
+                size_t next = capacity;
                 re_expr_t **grown;
-                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) {
+                while (next < needed) {
+                    if (next > (size_t)-1 / 2u) {
+                        re_free(a, stack);
+                        return;
+                    }
+                    next *= 2u;
+                }
+                if (next > (size_t)-1 / sizeof(*grown)) {
                     re_free(a, stack);
                     return;
                 }
@@ -45,44 +61,23 @@ void re_expr_destroy(const re_allocator_impl_t *a, re_expr_t *expr) {
                 stack = grown;
                 capacity = next;
             }
-            stack[count++] = expr;
-            expr = expr->first;
-            continue;
+            if (current->first != NULL) stack[count++] = current->first;
+            if (current->second != NULL) stack[count++] = current->second;
         }
-        expr = stack[--count];
-        if (expr->second != NULL) {
-            if (count == capacity) {
-                size_t next = capacity == 0u ? 16u : capacity * 2u;
-                re_expr_t **grown;
-                if (next < capacity || next > (size_t)-1 / sizeof(*grown)) {
-                    re_free(a, stack);
-                    return;
-                }
-                grown = re_realloc(a, stack, next * sizeof(*grown));
-                if (grown == NULL) {
-                    re_free(a, stack);
-                    return;
-                }
-                stack = grown;
-                capacity = next;
-            }
-            stack[count++] = expr->second;
-        }
-        re_operand_destroy(a, &expr->left);
-        re_operand_destroy(a, &expr->right);
+        re_operand_destroy(a, &current->left);
+        re_operand_destroy(a, &current->right);
         { size_t i; /* A6: the accumulate payload strings (NULL/0 on other kinds). */
-          for (i = 0u; i < expr->accumulate_condition_count; ++i) re_free(a, expr->accumulate_conditions[i]);
-          re_free(a, expr->accumulate_conditions);
-          re_free(a, expr->accumulate_type);
-          re_free(a, expr->accumulate_field);
-          re_free(a, expr->accumulate_func_name);
-          re_free(a, expr->typed_type); /* A9 typed-form payload (NULL on other kinds). */
+          for (i = 0u; i < current->accumulate_condition_count; ++i) re_free(a, current->accumulate_conditions[i]);
+          re_free(a, current->accumulate_conditions);
+          re_free(a, current->accumulate_type);
+          re_free(a, current->accumulate_field);
+          re_free(a, current->accumulate_func_name);
+          re_free(a, current->typed_type); /* A9 typed-form payload (NULL on other kinds). */
           /* C3 stream-pattern payload (NULL/0 on other kinds). */
-          re_free(a, expr->stream_var);
-          re_free(a, expr->stream_event_type);
-          re_free(a, expr->stream_name); }
-        re_free(a, expr);
-        expr = NULL;
+          re_free(a, current->stream_var);
+          re_free(a, current->stream_event_type);
+          re_free(a, current->stream_name); }
+        re_free(a, current);
     }
     re_free(a, stack);
 }

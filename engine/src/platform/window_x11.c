@@ -2,6 +2,7 @@
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/monitor_selection.h>
+#include <platform/platform_display_media.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
 #include <X11/Xlib.h>
@@ -11,6 +12,9 @@
 #include <X11/Xatom.h>
 #include <X11/cursorfont.h>
 #include <X11/extensions/Xrandr.h>
+#ifdef ENGINE_X11_XINPUT2
+#include <X11/extensions/XInput2.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -46,6 +50,7 @@ struct Platform {
     i32         scale_factor;
     MonitorInfo monitors[PLATFORM_MAX_MONITORS];
     u32         monitor_count;
+    char        active_monitor_name[64];
     i32         randr_event_base;
     PlatformTextQueue text_queue;
     bool        ime_enabled;
@@ -70,6 +75,12 @@ struct Platform {
     char       *clipboard_send_text;
     usize       clipboard_send_length;
     usize       clipboard_send_offset;
+    u64         media_generation;
+    PlatformMediaContext media_context;
+    bool        media_context_valid;
+#ifdef ENGINE_X11_XINPUT2
+    int         xinput_opcode;
+#endif
 };
 
 static void x11_apply_cursor(Platform *p) {
@@ -93,7 +104,8 @@ static void x11_apply_cursor(Platform *p) {
 static bool x11_clipboard_replace(Platform *p, const char *text,
                                   usize length) {
     char *copy;
-    if (p == NULL || length > X11_CLIPBOARD_MAX_BYTES) return false;
+    if (p == NULL || length > X11_CLIPBOARD_MAX_BYTES ||
+        !platform_utf8_validate(text, length)) return false;
     copy = malloc(length + 1);
     if (copy == NULL) return false;
     if (length > 0 && text != NULL) memcpy(copy, text, length);
@@ -511,13 +523,16 @@ static void x11_update_active_monitor(Platform *p) {
     int root_x = 0;
     int root_y = 0;
     i32 index;
+    char previous_name[sizeof(p->active_monitor_name)];
     if (p == NULL || p->monitor_count == 0) {
         if (p != NULL) {
             p->dpi = 96.0f;
             p->scale_factor = 1;
+            p->active_monitor_name[0] = '\0';
         }
         return;
     }
+    memcpy(previous_name, p->active_monitor_name, sizeof(previous_name));
     if (!XTranslateCoordinates(p->display, p->window,
                                DefaultRootWindow(p->display), 0, 0,
                                &root_x, &root_y, &child)) {
@@ -526,7 +541,17 @@ static void x11_update_active_monitor(Platform *p) {
     }
     index = platform_monitor_select(p->monitors, p->monitor_count,
                                     root_x, root_y, p->width, p->height);
-    if (index < 0) return;
+    if (index < 0) {
+        p->active_monitor_name[0] = '\0';
+        return;
+    }
+    strncpy(p->active_monitor_name, p->monitors[index].name,
+            sizeof(p->active_monitor_name) - 1u);
+    p->active_monitor_name[sizeof(p->active_monitor_name) - 1u] = '\0';
+    if (strcmp(previous_name, p->active_monitor_name) != 0) {
+        p->media_context_valid = false;
+        if (p->media_generation != UINT64_MAX) p->media_generation++;
+    }
     p->dpi = p->monitors[index].dpi;
     p->scale_factor = p->monitors[index].scale > 0
                           ? p->monitors[index].scale : 1;
@@ -604,9 +629,153 @@ static void x11_query_monitors(Platform *p) {
     x11_update_active_monitor(p);
 }
 
+static void x11_set_core_media_context(PlatformMediaContext *out) {
+    memset(out, 0, sizeof(*out));
+    out->screen = true;
+    out->capabilities = PLATFORM_MEDIA_CAP_COLOR_SRGB |
+                        PLATFORM_MEDIA_CAP_HOVER |
+                        PLATFORM_MEDIA_CAP_POINTER_FINE |
+                        PLATFORM_MEDIA_CAP_ANY_POINTER_FINE;
+    out->known = PLATFORM_MEDIA_KNOWN_HOVER |
+                 PLATFORM_MEDIA_KNOWN_POINTER |
+                 PLATFORM_MEDIA_KNOWN_ANY_POINTER |
+                 PLATFORM_MEDIA_KNOWN_COLOR_GAMUT;
+}
+
+static void x11_refresh_display_media(Platform *p,
+                                      PlatformMediaContext *out) {
+    enum { X11_EDID_MAX_BYTES = 128u * 9u };
+    enum { X11_EDID_MAX_LONG_LENGTH = (X11_EDID_MAX_BYTES + 3u) / 4u };
+    Window root;
+    Atom edid_atom;
+    XRRScreenResources *resources;
+    int output_index;
+
+    if (p == NULL || out == NULL || p->active_monitor_name[0] == '\0') return;
+    root = DefaultRootWindow(p->display);
+    edid_atom = XInternAtom(p->display, "EDID", True);
+    if (edid_atom == None) return;
+    resources = XRRGetScreenResources(p->display, root);
+    if (resources == NULL) return;
+    for (output_index = 0; output_index < resources->noutput; ++output_index) {
+        XRROutputInfo *output = XRRGetOutputInfo(
+            p->display, resources, resources->outputs[output_index]);
+        Atom actual_type = None;
+        int actual_format = 0;
+        unsigned long item_count = 0u;
+        unsigned long bytes_after = 0u;
+        unsigned char *property = NULL;
+        int status;
+
+        if (output == NULL) continue;
+        if (output->connection != RR_Connected ||
+            strcmp(output->name, p->active_monitor_name) != 0) {
+            XRRFreeOutputInfo(output);
+            continue;
+        }
+        status = XRRGetOutputProperty(
+            p->display, resources->outputs[output_index], edid_atom, 0,
+            X11_EDID_MAX_LONG_LENGTH, False, False, AnyPropertyType,
+            &actual_type,
+            &actual_format, &item_count, &bytes_after, &property);
+        if (status == Success && actual_type != None && actual_format == 8 &&
+            bytes_after == 0u && item_count <= X11_EDID_MAX_BYTES &&
+            property != NULL) {
+            u32 capabilities = 0u;
+            bool gamut_known = false;
+            bool hdr_known = false;
+            if (platform_display_parse_edid(property, (usize)item_count,
+                                            &capabilities, &gamut_known,
+                                            &hdr_known)) {
+                if (gamut_known) {
+                    out->capabilities |= capabilities &
+                        (PLATFORM_MEDIA_CAP_COLOR_P3 |
+                         PLATFORM_MEDIA_CAP_COLOR_REC2020);
+                }
+                if (hdr_known) {
+                    out->known |= PLATFORM_MEDIA_KNOWN_HDR;
+                    if ((capabilities & PLATFORM_MEDIA_CAP_HDR) != 0u)
+                        out->capabilities |= PLATFORM_MEDIA_CAP_HDR;
+                }
+            }
+        }
+        if (property != NULL) XFree(property);
+        XRRFreeOutputInfo(output);
+        break;
+    }
+    XRRFreeScreenResources(resources);
+}
+
+static void x11_refresh_media_context(Platform *p) {
+    PlatformMediaContext next;
+#ifdef ENGINE_X11_XINPUT2
+    int xi_major = 2;
+    int xi_minor = 0;
+    int device_count = 0;
+    XIDeviceInfo *devices = NULL;
+    bool has_fine_pointer = false;
+    bool has_touch = false;
+#endif
+    if (p == NULL || p->display == NULL) return;
+    x11_set_core_media_context(&next);
+    x11_refresh_display_media(p, &next);
+#ifdef ENGINE_X11_XINPUT2
+    if (p->xinput_opcode != 0 &&
+        XIQueryVersion(p->display, &xi_major, &xi_minor) == Success &&
+        xi_major >= 2 &&
+        (devices = XIQueryDevice(p->display, XIAllDevices, &device_count)) != NULL) {
+        for (int i = 0; i < device_count; i++) {
+            XIDeviceInfo *device = &devices[i];
+            bool touch_device = false;
+            for (int j = 0; j < device->num_classes; j++) {
+                if (device->classes[j]->type == XITouchClass) {
+                    touch_device = true;
+                    break;
+                }
+            }
+            if (device->use == XISlavePointer) {
+                if (touch_device) {
+                    has_touch = true;
+                } else {
+                    for (int j = 0; j < device->num_classes; j++) {
+                        if (device->classes[j]->type == XIButtonClass) {
+                            has_fine_pointer = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        XIFreeDeviceInfo(devices);
+        next.capabilities = PLATFORM_MEDIA_CAP_COLOR_SRGB;
+        if (has_fine_pointer) {
+            next.capabilities |= PLATFORM_MEDIA_CAP_HOVER |
+                                 PLATFORM_MEDIA_CAP_POINTER_FINE |
+                                 PLATFORM_MEDIA_CAP_ANY_POINTER_FINE;
+        }
+        if (has_touch) {
+            next.capabilities |= PLATFORM_MEDIA_CAP_ANY_POINTER_COARSE;
+            if (!has_fine_pointer)
+                next.capabilities |= PLATFORM_MEDIA_CAP_POINTER_COARSE;
+        }
+    }
+#endif
+    if (!p->media_context_valid ||
+        memcmp(&p->media_context, &next, sizeof(next)) != 0) {
+        p->media_context = next;
+        p->media_context_valid = true;
+        if (p->media_generation != UINT64_MAX) p->media_generation++;
+    }
+}
+
 Platform *platform_create(const PlatformConfig *cfg) {
+    if (!platform_config_valid(cfg)) {
+        LOG_ERROR("Invalid platform configuration");
+        return NULL;
+    }
     Platform *p = calloc(1, sizeof(Platform));
     if (!p) { LOG_FATAL("Failed to allocate Platform"); return NULL; }
+    p->media_generation = 1u;
 
     p->display = XOpenDisplay(NULL);
     if (!p->display) {
@@ -624,6 +793,21 @@ Platform *platform_create(const PlatformConfig *cfg) {
     }
 
     i32 screen = DefaultScreen(p->display);
+#ifdef ENGINE_X11_XINPUT2
+    p->xinput_opcode = 0;
+    {
+        int xi_event;
+        int xi_error;
+        if (XQueryExtension(p->display, "XInputExtension", &p->xinput_opcode,
+                            &xi_event, &xi_error)) {
+            unsigned char mask[XIMaskLen(XI_LASTEVENT)] = {0};
+            XIEventMask event_mask = {XIAllDevices, sizeof(mask), mask};
+            XISetMask(mask, XI_HierarchyChanged);
+            XISelectEvents(p->display, RootWindow(p->display, screen),
+                           &event_mask, 1);
+        }
+    }
+#endif
     p->randr_event_base = -1;
     {
         int randr_error_base;
@@ -707,6 +891,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
     gamepad_init();
 
     x11_query_monitors(p);
+    x11_refresh_media_context(p);
 
     LOG_INFO("Platform initialized: %ux%u \"%s\" (DPI=%.1f scale=%d monitors=%u)",
              cfg->width, cfg->height, cfg->title, p->dpi, p->scale_factor, p->monitor_count);
@@ -774,11 +959,24 @@ static void x11_collect_text(Platform *p, XKeyEvent *key) {
 }
 
 PlatformEventResult platform_poll(Platform *p) {
+    if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
 
     while (XPending(p->display) > 0) {
         XEvent ev;
         XNextEvent(p->display, &ev);
+
+#ifdef ENGINE_X11_XINPUT2
+        if (ev.type == GenericEvent &&
+            ev.xcookie.extension == p->xinput_opcode) {
+            if (XGetEventData(p->display, &ev.xcookie)) {
+                if (ev.xcookie.evtype == XI_HierarchyChanged)
+                    x11_refresh_media_context(p);
+                XFreeEventData(p->display, &ev.xcookie);
+            }
+            continue;
+        }
+#endif
 
         if (p->randr_event_base >= 0 &&
             (ev.type == p->randr_event_base + RRScreenChangeNotify ||
@@ -786,6 +984,8 @@ PlatformEventResult platform_poll(Platform *p) {
             if (ev.type == p->randr_event_base + RRScreenChangeNotify)
                 XRRUpdateConfiguration(&ev);
             x11_query_monitors(p);
+            p->media_context_valid = false;
+            if (p->media_generation != UINT64_MAX) p->media_generation++;
             continue;
         }
 
@@ -960,24 +1160,24 @@ void platform_ime_set_surrounding(Platform *p, const char *utf8, i32 cursor,
 }
 
 InputState *platform_input(Platform *p) {
-    return &p->input;
+    return p != NULL ? &p->input : NULL;
 }
 
 void *platform_window_native(Platform *p) {
-    return (void *)(uintptr_t)p->window;
+    return p != NULL ? (void *)(uintptr_t)p->window : NULL;
 }
 
 void *platform_display_native(Platform *p) {
-    return (void *)p->display;
+    return p != NULL ? (void *)p->display : NULL;
 }
 
 void *platform_surface_native(Platform *p) {
-    return (void *)(uintptr_t)p->window;
+    return p != NULL ? (void *)(uintptr_t)p->window : NULL;
 }
 
 void platform_get_size(Platform *p, u32 *w, u32 *h) {
-    if (w) *w = p->width;
-    if (h) *h = p->height;
+    if (w) *w = p != NULL ? p->width : 0;
+    if (h) *h = p != NULL ? p->height : 0;
 }
 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
@@ -992,6 +1192,7 @@ void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
 }
 
 void platform_mouse_capture(Platform *p, bool capture) {
+    if (p == NULL) return;
     if (capture && !p->mouse_captured) {
         XGrabPointer(p->display, p->window, True,
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
@@ -1091,8 +1292,9 @@ bool platform_clipboard_get_text(Platform *p, char *out, usize out_size) {
 PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
                                                            char **out) {
     Window owner;
-    if (out == NULL || p == NULL) return PLATFORM_CLIPBOARD_EMPTY;
+    if (out == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     *out = NULL;
+    if (p == NULL) return PLATFORM_CLIPBOARD_EMPTY;
     owner = XGetSelectionOwner(p->display, p->clipboard);
     if (p->clipboard_cache_valid && owner == p->clipboard_cache_owner &&
         p->clipboard_text != NULL) {
@@ -1111,6 +1313,7 @@ PlatformClipboardResult platform_clipboard_get_text_alloc(Platform *p,
 }
 
 void platform_mouse_set_relative(Platform *p, bool relative) {
+    if (p == NULL) return;
     p->mouse_relative = relative;
     if (relative) {
         platform_mouse_capture(p, true);
@@ -1125,7 +1328,7 @@ void platform_mouse_set_relative(Platform *p, bool relative) {
 }
 
 f32 platform_get_dpi(Platform *p) {
-    return p->dpi;
+    return p != NULL ? p->dpi : 96.0f;
 }
 
 f32 platform_get_content_scale(Platform *p) {
@@ -1137,21 +1340,36 @@ f32 platform_get_input_scale(Platform *p) {
 }
 
 i32 platform_get_scale_factor(Platform *p) {
-    return p->scale_factor;
+    return p != NULL ? p->scale_factor : 1;
+}
+
+bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
+    if (out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    if (p == NULL) return false;
+    if (!p->media_context_valid) x11_refresh_media_context(p);
+    if (!p->media_context_valid) return false;
+    *out = p->media_context;
+    return true;
+}
+
+u64 platform_get_media_generation(Platform *p) {
+    return p != NULL ? p->media_generation : 0u;
 }
 
 u32 platform_get_monitor_count(Platform *p) {
-    return p->monitor_count;
+    return p != NULL ? p->monitor_count : 0;
 }
 
 bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
-    if (index >= p->monitor_count || !out) return false;
+    if (p == NULL || index >= p->monitor_count || !out) return false;
     *out = p->monitors[index];
     return true;
 }
 
 void platform_toggle_fullscreen(Platform *p) {
     XEvent ev = {0};
+    if (p == NULL) return;
     ev.type = ClientMessage;
     ev.xclient.window = p->window;
     ev.xclient.message_type = p->wm_state;

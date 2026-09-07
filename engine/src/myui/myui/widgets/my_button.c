@@ -11,14 +11,43 @@
 
 #define BUTTON_COOLDOWN_TICK_MS 16
 
+static const my_widget_vtable_t s_button_vtable;
+static void button_cancel_release_timer(my_button_t* b);
+static uint32_t button_cooldown_remaining_at(const my_button_t* button,
+                                             uint64_t now);
+
+static void button_on_blur(void* ctx, const char* event, void* event_data) {
+  my_button_t* b = (my_button_t*)ctx;
+  (void)event;
+  (void)event_data;
+  if (b == NULL) return;
+  b->keyboard_pressed = false;
+  b->keyboard_key = MY_KEY_UNKNOWN;
+  if (!b->pointer_pressed) {
+    b->pressed = false;
+    button_cancel_release_timer(b);
+  }
+  my_widget_invalidate((my_widget_t*)b, NULL);
+}
+
+static bool button_widget_valid(const my_widget_t* widget) {
+  return widget != NULL && widget->vtable == &s_button_vtable;
+}
+
+bool my_button_is_instance(const my_widget_t* widget) {
+  return button_widget_valid(widget);
+}
+
 static uint64_t button_now_ms(const my_button_t* b) {
   my_pal_t* pal = my_window_pal_of_widget((my_widget_t*)b);
   return pal != NULL ? my_pal_time_now_ms(pal) : 0;
 }
 
-static uint64_t button_saturating_deadline(uint64_t now, uint32_t duration) {
+static uint64_t button_saturating_deadline(uint64_t now, uint32_t duration,
+                                           bool* saturated) {
   uint64_t deadline = now + (uint64_t)duration;
-  return deadline < now ? UINT64_MAX : deadline;
+  *saturated = deadline < now;
+  return *saturated ? UINT64_MAX : deadline;
 }
 
 static void button_stop_cooldown_timer(my_button_t* b) {
@@ -40,22 +69,44 @@ static void button_cancel_release_timer(my_button_t* b) {
 }
 
 static my_ret_t button_cooldown_cb(void* ctx);
+static bool button_cooldown_configured(const my_button_t* b);
+
+static bool button_prefers_reduced_motion(const my_button_t* b) {
+  my_pal_media_context_ex_t media;
+  my_pal_t* pal;
+  if (b == NULL) return false;
+  pal = my_window_pal_of_widget((my_widget_t*)b);
+  if (pal == NULL || my_pal_get_media_context_ex(pal, &media) != MY_RET_OK) {
+    return false;
+  }
+  return (media.known & MY_PAL_MEDIA_KNOWN_REDUCED_MOTION) != 0u &&
+         media.base.prefers_reduced_motion;
+}
 
 static void button_ensure_cooldown_timer(my_button_t* b) {
   my_pal_main_loop_t* loop;
-  if (!my_button_is_cooling_down((const my_widget_t*)b) ||
-      b->cooldown_timer != 0) {
+  uint32_t interval_ms;
+  if (!button_cooldown_configured(b) ||
+      b->cooldown_timer != 0 || b->cooldown_deadline_saturated) {
     return;
   }
   loop = my_window_loop_of_widget((my_widget_t*)b);
   if (loop == NULL) {
     return;
   }
+  /* Reduced-motion uses one deadline-scale wakeup instead of a 16 ms
+   * animation timer, so the static mask is still removed at expiry. */
+  interval_ms = b->cooldown_reduced_motion ? b->cooldown_active_ms
+                                           : BUTTON_COOLDOWN_TICK_MS;
   b->cooldown_timer = my_pal_main_loop_add_timer(
-      loop, button_cooldown_cb, b, BUTTON_COOLDOWN_TICK_MS);
+      loop, button_cooldown_cb, b, interval_ms);
   if (b->cooldown_timer != 0) {
     b->cooldown_loop = loop;
   }
+}
+
+static bool button_cooldown_configured(const my_button_t* b) {
+  return b->cooldown_until_ms != 0 && b->cooldown_active_ms != 0;
 }
 
 static my_color_t button_state_color(my_button_t* b) {
@@ -84,7 +135,16 @@ static my_color_t button_state_color(my_button_t* b) {
 
 static void button_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_button_t* b = (my_button_t*)widget;
-  button_ensure_cooldown_timer(b);
+  bool cooling_down = false;
+  uint32_t cooldown_remaining = 0;
+  if (button_cooldown_configured(b)) {
+    uint64_t now = button_now_ms(b);
+    cooldown_remaining = button_cooldown_remaining_at(b, now);
+    cooling_down = cooldown_remaining != 0;
+    if (cooling_down) {
+      button_ensure_cooldown_timer(b);
+    }
+  }
   my_widget_state_t state = my_widget_current_state(widget, b->pressed);
   uint32_t border = my_widget_style_get_color(
       widget, state, MY_STYLE_BORDER_COLOR, 0x000000FFu);
@@ -98,8 +158,11 @@ static void button_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_vgcanvas_set_line_width(vg, 1);
   my_vgcanvas_stroke_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
                                             (float)widget->rect.h});
-  if (my_button_is_cooling_down((const my_widget_t*)b)) {
-    float progress = my_button_cooldown_progress((const my_widget_t*)b);
+  if (cooling_down) {
+    float progress = cooldown_remaining >= b->cooldown_active_ms
+                         ? 1.0f
+                         : (float)cooldown_remaining /
+                               (float)b->cooldown_active_ms;
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x00000040u));
     my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
                                            (float)widget->rect.h * progress});
@@ -129,37 +192,62 @@ static bool button_point_inside(my_widget_t* widget, int32_t gx, int32_t gy) {
   return lx >= 0 && ly >= 0 && lx < widget->rect.w && ly < widget->rect.h;
 }
 
+static bool button_is_activation_key(uint32_t key) {
+  return key == MY_KEY_RETURN || key == ' ';
+}
+
+static uint32_t button_cooldown_remaining_at(const my_button_t* button,
+                                             uint64_t now) {
+  uint64_t remaining;
+  uint64_t elapsed;
+  if (button->cooldown_until_ms == 0 || button->cooldown_active_ms == 0) {
+    return 0;
+  }
+  if (button->cooldown_deadline_saturated) {
+    if (now < button->cooldown_started_ms) {
+      return button->cooldown_active_ms;
+    }
+    elapsed = now - button->cooldown_started_ms;
+    if (elapsed >= button->cooldown_active_ms) return 0;
+    return button->cooldown_active_ms - (uint32_t)elapsed;
+  }
+  if (now >= button->cooldown_until_ms) return 0;
+  remaining = button->cooldown_until_ms - now;
+  return remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+}
+
 bool my_button_is_cooling_down(const my_widget_t* button) {
   const my_button_t* b;
-  if (button == NULL) {
+  if (!button_widget_valid(button)) {
     return false;
   }
   b = (const my_button_t*)button;
-  return b->cooldown_until_ms != 0 && button_now_ms(b) < b->cooldown_until_ms;
+  return button_cooldown_remaining_at(b, button_now_ms(b)) != 0;
 }
 
 uint32_t my_button_cooldown_remaining_ms(const my_widget_t* button) {
   const my_button_t* b;
-  uint64_t remaining;
-  if (!my_button_is_cooling_down(button)) {
+  if (!button_widget_valid(button)) {
     return 0;
   }
   b = (const my_button_t*)button;
-  remaining = b->cooldown_until_ms - button_now_ms(b);
-  return remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+  return button_cooldown_remaining_at(b, button_now_ms(b));
 }
 
 float my_button_cooldown_progress(const my_widget_t* button) {
   const my_button_t* b;
   uint32_t remaining;
-  if (button == NULL) {
+  if (!button_widget_valid(button)) {
     return 0.0f;
   }
   b = (const my_button_t*)button;
-  if (b->cooldown_active_ms == 0 || !my_button_is_cooling_down(button)) {
+  if (b->cooldown_active_ms == 0) {
     return 0.0f;
   }
-  remaining = my_button_cooldown_remaining_ms(button);
+  remaining = button_cooldown_remaining_at(b, button_now_ms(b));
+  if (remaining == 0) {
+    return 0.0f;
+  }
   if (remaining >= b->cooldown_active_ms) {
     return 1.0f;
   }
@@ -175,6 +263,7 @@ static my_ret_t button_cooldown_cb(void* ctx) {
   if (!my_button_is_cooling_down((const my_widget_t*)b)) {
     b->cooldown_until_ms = 0;
     b->cooldown_active_ms = 0;
+    b->cooldown_deadline_saturated = false;
     b->cooldown_timer = 0;
     b->cooldown_loop = NULL;
     my_widget_invalidate((my_widget_t*)b, NULL);
@@ -188,12 +277,18 @@ static void button_start_cooldown(my_button_t* b) {
   if (b->cooldown_ms == 0) {
     b->cooldown_until_ms = 0;
     b->cooldown_active_ms = 0;
+    b->cooldown_started_ms = 0;
+    b->cooldown_deadline_saturated = false;
+    b->cooldown_reduced_motion = false;
     button_stop_cooldown_timer(b);
     return;
   }
   b->cooldown_active_ms = b->cooldown_ms;
-  b->cooldown_until_ms =
-      button_saturating_deadline(button_now_ms(b), b->cooldown_ms);
+  b->cooldown_started_ms = button_now_ms(b);
+  b->cooldown_reduced_motion = button_prefers_reduced_motion(b);
+  b->cooldown_until_ms = button_saturating_deadline(
+      b->cooldown_started_ms, b->cooldown_ms,
+      &b->cooldown_deadline_saturated);
   button_ensure_cooldown_timer(b);
   my_widget_invalidate((my_widget_t*)b, NULL);
 }
@@ -202,7 +297,9 @@ static my_ret_t button_release_cb(void* ctx) {
   my_button_t* b = (my_button_t*)ctx;
   b->release_timer = 0;
   b->release_loop = NULL;
-  b->pressed = false;
+  if (!b->keyboard_pressed) {
+    b->pressed = false;
+  }
   my_widget_invalidate((my_widget_t*)b, NULL);
   return MY_RET_FAIL; /* one-shot */
 }
@@ -212,21 +309,29 @@ static void button_release(my_button_t* b) {
   my_pal_t* pal = my_window_pal_of_widget(w);
   my_pal_main_loop_t* loop = my_window_loop_of_widget(w);
   uint64_t now = pal != NULL ? my_pal_time_now_ms(pal) : 0;
-  if (loop != NULL && pal != NULL && now - b->down_ms < BUTTON_PRESS_MIN_MS) {
+  uint64_t elapsed = now >= b->down_ms ? now - b->down_ms : 0;
+  if (loop != NULL && pal != NULL && elapsed < BUTTON_PRESS_MIN_MS) {
+    b->pointer_pressed = false;
     if (b->release_timer == 0) {
       b->release_timer = my_pal_main_loop_add_timer(
           loop, button_release_cb, b,
-          (uint32_t)(BUTTON_PRESS_MIN_MS - (now - b->down_ms)));
+          (uint32_t)(BUTTON_PRESS_MIN_MS - elapsed));
       if (b->release_timer != 0) {
         b->release_loop = loop;
       }
     }
-    return;
+    if (b->release_timer != 0) {
+      return;
+    }
   }
-  b->pressed = false;
+  b->pointer_pressed = false;
+  if (!b->keyboard_pressed) {
+    b->pressed = false;
+  }
 }
 
-static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
+static my_ret_t button_on_event_impl(my_widget_t* widget,
+                                     const my_event_t* event) {
   my_button_t* b = (my_button_t*)widget;
   switch (event->type) {
     case MY_EVENT_POINTER_DOWN: {
@@ -242,6 +347,7 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
       }
       pal = my_window_pal_of_widget(widget);
       b->down_ms = pal != NULL ? my_pal_time_now_ms(pal) : 0;
+      b->pointer_pressed = true;
       b->pressed = true;
       my_widget_invalidate(widget, NULL);
       return MY_RET_OK;
@@ -253,7 +359,7 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
         my_widget_invalidate(widget, NULL);
         return MY_RET_FAIL;
       }
-      if (!b->pressed) {
+      if (!b->pointer_pressed) {
         return MY_RET_FAIL;
       }
       button_release(b);
@@ -263,9 +369,50 @@ static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
         my_emitter_emit(widget->emitter, "click", (void*)event);
       }
       return MY_RET_OK;
+    case MY_EVENT_KEY_DOWN:
+      if (!button_is_activation_key(event->u.key.key) ||
+          b->keyboard_pressed) {
+        return MY_RET_FAIL;
+      }
+      if (my_button_is_cooling_down((const my_widget_t*)b)) {
+        b->pressed = false;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_FAIL;
+      }
+      b->keyboard_pressed = true;
+      b->keyboard_key = event->u.key.key;
+      b->pressed = true;
+      my_widget_invalidate(widget, NULL);
+      return MY_RET_OK;
+    case MY_EVENT_KEY_UP:
+      if (!b->keyboard_pressed || b->keyboard_key != event->u.key.key) {
+        return MY_RET_FAIL;
+      }
+      b->keyboard_pressed = false;
+      b->keyboard_key = MY_KEY_UNKNOWN;
+      if (my_button_is_cooling_down((const my_widget_t*)b)) {
+        b->pressed = false;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_FAIL;
+      }
+      b->pressed = b->pointer_pressed;
+      if (!b->pointer_pressed) {
+        b->pressed = false;
+        button_start_cooldown(b);
+        my_emitter_emit(widget->emitter, "click", (void*)event);
+      }
+      my_widget_invalidate(widget, NULL);
+      return MY_RET_OK;
     default:
       return MY_RET_FAIL;
   }
+}
+
+static my_ret_t button_on_event(my_widget_t* widget, const my_event_t* event) {
+  my_widget_t* held = my_widget_ref(widget);
+  my_ret_t result = button_on_event_impl(widget, event);
+  my_widget_unref(held);
+  return result;
 }
 
 static const my_widget_vtable_t s_button_vtable = {button_on_paint,
@@ -300,13 +447,17 @@ my_widget_t* my_button_create(const my_allocator_t* allocator, const char* text)
   }
   ((my_widget_t*)b)->focusable = true;
   ((my_widget_t*)b)->widget_type = "button";
+  if (my_widget_on((my_widget_t*)b, "blur", button_on_blur, b) == 0u) {
+    my_widget_unref((my_widget_t*)b);
+    return NULL;
+  }
   return (my_widget_t*)b;
 }
 
 my_ret_t my_button_set_text(my_widget_t* button, const char* text) {
   my_button_t* b = (my_button_t*)button;
   char* copy;
-  if (button == NULL) {
+  if (!button_widget_valid(button)) {
     return MY_RET_INVALID_PARAMS;
   }
   copy = my_strdup(((my_object_t*)button)->allocator, text);
@@ -321,7 +472,7 @@ my_ret_t my_button_set_text(my_widget_t* button, const char* text) {
 
 my_ret_t my_button_set_cooldown(my_widget_t* button, uint32_t duration_ms) {
   my_button_t* b;
-  if (button == NULL) {
+  if (!button_widget_valid(button)) {
     return MY_RET_INVALID_PARAMS;
   }
   b = (my_button_t*)button;
@@ -329,6 +480,9 @@ my_ret_t my_button_set_cooldown(my_widget_t* button, uint32_t duration_ms) {
   if (duration_ms == 0) {
     b->cooldown_until_ms = 0;
     b->cooldown_active_ms = 0;
+    b->cooldown_started_ms = 0;
+    b->cooldown_deadline_saturated = false;
+    b->cooldown_reduced_motion = false;
     button_stop_cooldown_timer(b);
     my_widget_invalidate(button, NULL);
   }

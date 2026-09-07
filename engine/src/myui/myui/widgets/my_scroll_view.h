@@ -22,6 +22,9 @@ typedef struct my_scroll_view_t my_scroll_view_t;
 
 my_scroll_view_t* my_scroll_view_create(const my_allocator_t* allocator);
 
+/** @brief Return whether the opaque handle is a live scroll-view widget. */
+bool my_scroll_view_is_instance(const my_scroll_view_t* sv);
+
 /** @brief Replace the content child (the view takes the tree reference;
  * callers still unref their own). */
 my_ret_t my_scroll_view_set_content(my_scroll_view_t* sv,
@@ -45,8 +48,10 @@ int32_t my_scroll_view_get_offset(my_scroll_view_t* sv);
 /** @brief Set the scroll offset (clamped). */
 void my_scroll_view_set_offset(my_scroll_view_t* sv, int32_t offset);
 
-/** @brief Link an external scroll_bar (weak ref, sibling widget);
- * value/page_size sync both ways. NULL unlinks. */
+/** @brief Link an external scroll_bar (owned link reference, sibling widget);
+ * value/page_size sync both ways. NULL unlinks. Rebinding is idempotent and
+ * removes the previous listener. The link keeps the bar alive until unlinked
+ * or the scroll view is destroyed. */
 my_ret_t my_scroll_view_set_scroll_bar(my_scroll_view_t* sv,
                                        my_widget_t* bar);
 

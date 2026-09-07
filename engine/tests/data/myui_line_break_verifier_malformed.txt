@@ -1,0 +1,2 @@
+# Surrogate code points are not Unicode scalar values.
+× D800 ÷

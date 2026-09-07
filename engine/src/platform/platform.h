@@ -4,6 +4,36 @@
 
 typedef struct Platform Platform;
 
+enum {
+    PLATFORM_MEDIA_CAP_HOVER = 1u << 0,
+    PLATFORM_MEDIA_CAP_POINTER_COARSE = 1u << 1,
+    PLATFORM_MEDIA_CAP_POINTER_FINE = 1u << 2,
+    PLATFORM_MEDIA_CAP_ANY_POINTER_COARSE = 1u << 3,
+    PLATFORM_MEDIA_CAP_ANY_POINTER_FINE = 1u << 4,
+    PLATFORM_MEDIA_CAP_COLOR_SRGB = 1u << 5,
+    PLATFORM_MEDIA_CAP_COLOR_P3 = 1u << 6,
+    PLATFORM_MEDIA_CAP_COLOR_REC2020 = 1u << 7,
+    PLATFORM_MEDIA_CAP_HDR = 1u << 8,
+};
+
+enum {
+    PLATFORM_MEDIA_KNOWN_HOVER = 1u << 0,
+    PLATFORM_MEDIA_KNOWN_POINTER = 1u << 1,
+    PLATFORM_MEDIA_KNOWN_ANY_POINTER = 1u << 2,
+    PLATFORM_MEDIA_KNOWN_COLOR_GAMUT = 1u << 3,
+    PLATFORM_MEDIA_KNOWN_HDR = 1u << 4,
+    PLATFORM_MEDIA_KNOWN_COLOR_SCHEME = 1u << 5,
+    PLATFORM_MEDIA_KNOWN_REDUCED_MOTION = 1u << 6,
+};
+
+typedef struct {
+    bool screen;
+    bool prefers_dark;
+    bool prefers_reduced_motion;
+    u32 capabilities;
+    u32 known;
+} PlatformMediaContext;
+
 typedef enum {
     PLATFORM_CURSOR_ARROW = 0,
     PLATFORM_CURSOR_TEXT,
@@ -15,6 +45,12 @@ typedef struct {
     u32 height;
     const char *title;
 } PlatformConfig;
+
+/* Keep native window dimensions representable on every supported backend. */
+#define PLATFORM_MAX_WINDOW_DIMENSION 16384u
+#define PLATFORM_MAX_WINDOW_TITLE_BYTES 4096u
+
+bool platform_config_valid(const PlatformConfig *cfg);
 
 typedef enum {
     PLATFORM_EVENT_NONE,
@@ -97,6 +133,10 @@ f32                 platform_get_content_scale(Platform *p);
 /* Input coordinates are divided by this factor before UI dispatch. */
 f32                 platform_get_input_scale(Platform *p);
 i32                 platform_get_scale_factor(Platform *p);
+bool                platform_get_media_context(Platform *p,
+                                                PlatformMediaContext *out);
+/* Monotonic generation for media facts; zero means no platform object. */
+u64                 platform_get_media_generation(Platform *p);
 
 /* Multi-monitor */
 u32                 platform_get_monitor_count(Platform *p);
