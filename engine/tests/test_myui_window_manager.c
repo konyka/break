@@ -1647,6 +1647,33 @@ TEST(timer_pending_heap_oom_preserves_added_timer)
   my_timer_manager_destroy(timers);
 }
 
+TEST(timer_index_keeps_pending_removal_and_heap_order)
+{
+  my_timer_manager_t* timers;
+  timer_mutation_test_t state = {0};
+  uint32_t ids[3];
+
+  g_timer_test_now = 100u;
+  timers = my_timer_manager_create(NULL, timer_test_now, NULL);
+  ASSERT_NOT_NULL(timers);
+  state.manager = timers;
+  ids[0] = my_timer_add(timers, timer_mutation_callback, &state, 10u);
+  ids[1] = my_timer_add(timers, timer_test_callback, NULL, 10u);
+  ids[2] = my_timer_add(timers, timer_test_callback, NULL, 20u);
+  ASSERT_TRUE(ids[0] != 0u && ids[1] != 0u && ids[2] != 0u);
+  state.remove_id = ids[1];
+
+  g_timer_test_now = 110u;
+  ASSERT_EQ(my_timer_manager_fire(timers), 1u);
+  ASSERT_TRUE(state.added_id != 0u);
+  ASSERT_EQ(my_timer_remove(timers, state.added_id), MY_RET_OK);
+  ASSERT_EQ(my_timer_remove(timers, ids[2]), MY_RET_OK);
+  ASSERT_EQ(my_timer_manager_due_in_ms(timers), UINT32_MAX);
+  ASSERT_EQ(my_timer_manager_fire(timers), 0u);
+
+  my_timer_manager_destroy(timers);
+}
+
 TEST(animator_delay_saturates_without_early_completion)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -8634,6 +8661,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(emitter_listener_id_wrap_skips_zero_and_live_ids);
     RUN_TEST(timer_fire_does_not_allocate_deferred_storage);
     RUN_TEST(timer_pending_heap_oom_preserves_added_timer);
+    RUN_TEST(timer_index_keeps_pending_removal_and_heap_order);
     RUN_TEST(animator_delay_saturates_without_early_completion);
     RUN_TEST(animator_reentrant_stop_defers_record_sweep);
     RUN_TEST(animator_manager_destroy_from_callback_is_deferred);

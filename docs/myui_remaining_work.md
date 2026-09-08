@@ -1,5 +1,17 @@
 # myui 后续阶段方案与状态
 
+## 本轮完成：Timer ID 取消索引（2026-09-08）
+
+冷却按钮、动画、编辑 blink、菜单 hover 和窗口自动绘制共同使用 PAL timer。此前按 ID 取消会顺序
+扫描 heap/pending/current，timer 数量增大时会放大控件销毁与 cooldown 取消成本。现在采用固定负载
+上限的开放寻址 ID 索引，entry 同步保存 heap 或 pending 位置：正常取消是均摊 O(1) 定位加 O(log n)
+堆恢复；pending/current callback 仍遵循原先延迟释放与重入安全协议。索引扩容失败时 timer 添加返回 0，
+不发布半初始化 entry，也不影响已注册 timer。
+
+TDD 新增 callback 删除、pending 转 heap 后取消和 deadline 顺序回归。普通窗口管理器 **227/227**、
+ASan/UBSan **236/236**，普通与 sanitizer（关闭 LeakSanitizer 的既有字体 fixture 泄漏）完整 headless
+CTest 都为 **101/101**。该工作不改变跨线程 timer 操作限制；PAL loop 仍是唯一 owner。
+
 ## 本轮补充：Vulkan 关闭配置链接缺陷修复（2026-09-07）
 
 TDD 先在非 Vulkan 后端测试中锁定完整 instance API 的安全失败契约，随后补齐

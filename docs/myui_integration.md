@@ -1,5 +1,12 @@
 # myui 集成与 Break RHI 后端
 
+## Timer 取消性能契约（2026-09-08）
+
+PAL timer manager 以 deadline min-heap 处理唤醒，同时以私有 ID 索引定位活动 timer。删除一个
+未执行 timer 不扫描同一 loop 的其他 timer：查找为均摊 O(1)，从 heap 摘除和恢复顺序为 O(log n)。
+callback 运行中的 timer 保持既有延迟失活语义；callback 新增的 pending timer 在最外层 fire
+结束后才进入 heap，索引位置在每次移动时同步更新。该优化不改变 PAL/UI 的单线程事件循环约束。
+
 ## Vulkan 关闭时的 ABI 契约（2026-09-07）
 
 `MYUI_VULKAN=OFF` 或 Vulkan SDK 不可用时，Vulkan canvas 源文件仍提供完整的公共入口桩。

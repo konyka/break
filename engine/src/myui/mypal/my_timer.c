@@ -6,7 +6,22 @@
 
 #include "myc/my_darray.h"
 
-typedef struct my_timer_entry_t {
+typedef struct my_timer_entry_t my_timer_entry_t;
+
+typedef enum my_timer_location_t {
+  MY_TIMER_LOCATION_NONE = 0,
+  MY_TIMER_LOCATION_HEAP,
+  MY_TIMER_LOCATION_PENDING,
+  MY_TIMER_LOCATION_CURRENT
+} my_timer_location_t;
+
+typedef struct my_timer_index_slot_t {
+  uint32_t id;
+  struct my_timer_entry_t* entry;
+  uint8_t state;
+} my_timer_index_slot_t;
+
+struct my_timer_entry_t {
   uint32_t id;
   my_timer_callback_t callback;
   void* ctx;
@@ -15,8 +30,12 @@ typedef struct my_timer_entry_t {
   uint64_t next_fire_ms;
   bool active; /**< false after remove; swept after fire */
   bool blocked_at_clock_limit; /**< saturated periodic deadline already fired */
+  bool indexed;
+  my_timer_location_t location;
+  size_t heap_index;
+  size_t pending_index;
   struct my_timer_entry_t* previous_current;
-} my_timer_entry_t;
+};
 
 struct my_timer_manager_t {
   const my_allocator_t* allocator;
@@ -31,56 +50,150 @@ struct my_timer_manager_t {
   unsigned int operating;
   int firing; /**< > 0 while callbacks run */
   my_timer_entry_t* current; /**< callback entry, temporarily outside arrays */
+  my_timer_index_slot_t* index_slots;
+  size_t index_capacity;
+  size_t index_size;
+  size_t index_tombstones;
 };
+
+#define MY_TIMER_INDEX_EMPTY 0u
+#define MY_TIMER_INDEX_USED 1u
+#define MY_TIMER_INDEX_DELETED 2u
+#define MY_TIMER_HEAP_INDEX_NONE SIZE_MAX
+
+static size_t timer_index_hash(uint32_t id, size_t capacity) {
+  uint32_t value = id;
+  value ^= value >> 16;
+  value *= 0x7feb352du;
+  value ^= value >> 15;
+  value *= 0x846ca68bu;
+  value ^= value >> 16;
+  return (size_t)value & (capacity - 1u);
+}
+
+static my_timer_entry_t* timer_index_find(const my_timer_manager_t* mgr,
+                                          uint32_t id) {
+  size_t index;
+  size_t probes;
+  if (mgr == NULL || mgr->index_capacity == 0u || id == 0u) return NULL;
+  index = timer_index_hash(id, mgr->index_capacity);
+  for (probes = 0u; probes < mgr->index_capacity; ++probes) {
+    const my_timer_index_slot_t* slot = &mgr->index_slots[index];
+    if (slot->state == MY_TIMER_INDEX_EMPTY) return NULL;
+    if (slot->state == MY_TIMER_INDEX_USED && slot->id == id) {
+      return slot->entry;
+    }
+    index = (index + 1u) & (mgr->index_capacity - 1u);
+  }
+  return NULL;
+}
+
+static my_ret_t timer_index_rehash(my_timer_manager_t* mgr,
+                                   size_t capacity) {
+  my_timer_index_slot_t* slots;
+  size_t i;
+  if (mgr == NULL || capacity < 16u ||
+      (capacity & (capacity - 1u)) != 0u) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  slots = (my_timer_index_slot_t*)my_mem_calloc(
+      mgr->allocator, capacity, sizeof(my_timer_index_slot_t));
+  if (slots == NULL) return MY_RET_OOM;
+  for (i = 0u; i < mgr->index_capacity; ++i) {
+    const my_timer_index_slot_t* old = &mgr->index_slots[i];
+    size_t index;
+    if (old->state != MY_TIMER_INDEX_USED) continue;
+    index = timer_index_hash(old->id, capacity);
+    while (slots[index].state == MY_TIMER_INDEX_USED) {
+      index = (index + 1u) & (capacity - 1u);
+    }
+    slots[index] = *old;
+  }
+  my_mem_free(mgr->allocator, mgr->index_slots);
+  mgr->index_slots = slots;
+  mgr->index_capacity = capacity;
+  mgr->index_tombstones = 0u;
+  return MY_RET_OK;
+}
+
+static my_ret_t timer_index_prepare_insert(my_timer_manager_t* mgr) {
+  size_t occupied;
+  size_t threshold;
+  if (mgr->index_capacity == 0u) {
+    return timer_index_rehash(mgr, 16u);
+  }
+  threshold = mgr->index_capacity - mgr->index_capacity / 4u;
+  occupied = mgr->index_size + mgr->index_tombstones;
+  if (occupied >= threshold) {
+    if (mgr->index_size >= threshold) {
+      if (mgr->index_capacity > SIZE_MAX / 2u) return MY_RET_OOM;
+      return timer_index_rehash(mgr, mgr->index_capacity * 2u);
+    }
+    return timer_index_rehash(mgr, mgr->index_capacity);
+  }
+  return MY_RET_OK;
+}
+
+static my_ret_t timer_index_insert(my_timer_manager_t* mgr,
+                                   my_timer_entry_t* timer) {
+  size_t index;
+  size_t first_deleted = SIZE_MAX;
+  my_ret_t ret;
+  if (mgr == NULL || timer == NULL || timer->id == 0u) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  ret = timer_index_prepare_insert(mgr);
+  if (ret != MY_RET_OK) return ret;
+  index = timer_index_hash(timer->id, mgr->index_capacity);
+  for (;;) {
+    my_timer_index_slot_t* slot = &mgr->index_slots[index];
+    if (slot->state == MY_TIMER_INDEX_EMPTY) {
+      if (first_deleted != SIZE_MAX) slot = &mgr->index_slots[first_deleted];
+      slot->id = timer->id;
+      slot->entry = timer;
+      slot->state = MY_TIMER_INDEX_USED;
+      mgr->index_size++;
+      if (first_deleted != SIZE_MAX) mgr->index_tombstones--;
+      timer->indexed = true;
+      return MY_RET_OK;
+    }
+    if (slot->state == MY_TIMER_INDEX_DELETED) {
+      if (first_deleted == SIZE_MAX) first_deleted = index;
+    } else if (slot->id == timer->id) {
+      return MY_RET_FAIL;
+    }
+    index = (index + 1u) & (mgr->index_capacity - 1u);
+  }
+}
+
+static void timer_index_remove(my_timer_manager_t* mgr,
+                               my_timer_entry_t* timer) {
+  size_t index;
+  size_t probes;
+  if (mgr == NULL || timer == NULL || !timer->indexed ||
+      mgr->index_capacity == 0u) {
+    return;
+  }
+  index = timer_index_hash(timer->id, mgr->index_capacity);
+  for (probes = 0u; probes < mgr->index_capacity; ++probes) {
+    my_timer_index_slot_t* slot = &mgr->index_slots[index];
+    if (slot->state == MY_TIMER_INDEX_EMPTY) break;
+    if (slot->state == MY_TIMER_INDEX_USED && slot->id == timer->id &&
+        slot->entry == timer) {
+      slot->entry = NULL;
+      slot->state = MY_TIMER_INDEX_DELETED;
+      mgr->index_size--;
+      mgr->index_tombstones++;
+      break;
+    }
+    index = (index + 1u) & (mgr->index_capacity - 1u);
+  }
+  timer->indexed = false;
+}
 
 static uint64_t timer_deadline(uint64_t now, uint32_t interval_ms) {
   uint64_t interval = (uint64_t)interval_ms;
   return interval > UINT64_MAX - now ? UINT64_MAX : now + interval;
-}
-
-static bool timer_id_in_use(const my_timer_manager_t* mgr, uint32_t id) {
-  size_t i, n = my_darray_size(mgr->timers);
-  for (i = 0; i < n; i++) {
-    const my_timer_entry_t* t =
-        (const my_timer_entry_t*)my_darray_get(mgr->timers, i);
-    if (t->id == id) {
-      return true;
-    }
-  }
-  n = my_darray_size(mgr->pending);
-  for (i = 0; i < n; i++) {
-    const my_timer_entry_t* t =
-        (const my_timer_entry_t*)my_darray_get(mgr->pending, i);
-    if (t->id == id) {
-      return true;
-    }
-  }
-  {
-    const my_timer_entry_t* current = mgr->current;
-    while (current != NULL) {
-      if (current->id == id) return true;
-      current = current->previous_current;
-    }
-  }
-  return false;
-}
-
-static size_t timer_entry_count(const my_timer_manager_t* mgr) {
-  size_t count = my_darray_size(mgr->timers);
-  size_t pending = my_darray_size(mgr->pending);
-  if (count > SIZE_MAX - pending) {
-    return SIZE_MAX;
-  }
-  count += pending;
-  {
-    const my_timer_entry_t* current = mgr->current;
-    while (current != NULL) {
-      if (count == SIZE_MAX) return SIZE_MAX;
-      count++;
-      current = current->previous_current;
-    }
-  }
-  return count;
 }
 
 static bool timer_before(const my_timer_entry_t* left,
@@ -90,9 +203,11 @@ static bool timer_before(const my_timer_entry_t* left,
 }
 
 static void timer_heap_swap(my_darray_t* heap, size_t left, size_t right) {
-  void* item = heap->items[left];
+  my_timer_entry_t* item = (my_timer_entry_t*)heap->items[left];
   heap->items[left] = heap->items[right];
   heap->items[right] = item;
+  ((my_timer_entry_t*)heap->items[left])->heap_index = left;
+  ((my_timer_entry_t*)heap->items[right])->heap_index = right;
 }
 
 static void timer_heap_sift_up(my_darray_t* heap, size_t index) {
@@ -140,14 +255,46 @@ static my_timer_entry_t* timer_heap_pop(my_darray_t* heap) {
   heap->size--;
   if (heap->size != 0u) {
     heap->items[0] = heap->items[heap->size];
+    ((my_timer_entry_t*)heap->items[0])->heap_index = 0u;
     timer_heap_sift_down(heap, 0u);
   }
+  result->location = MY_TIMER_LOCATION_NONE;
+  result->heap_index = MY_TIMER_HEAP_INDEX_NONE;
+  return result;
+}
+
+static my_timer_entry_t* timer_heap_remove_at(my_darray_t* heap,
+                                               size_t index) {
+  my_timer_entry_t* result;
+  size_t last;
+  if (heap == NULL || index >= heap->size) return NULL;
+  result = (my_timer_entry_t*)heap->items[index];
+  last = heap->size - 1u;
+  if (index != last) {
+    heap->items[index] = heap->items[last];
+    ((my_timer_entry_t*)heap->items[index])->heap_index = index;
+  }
+  heap->size = last;
+  if (index < heap->size) {
+    if (index != 0u &&
+        timer_before((const my_timer_entry_t*)heap->items[index],
+                     (const my_timer_entry_t*)heap->items[(index - 1u) / 2u])) {
+      timer_heap_sift_up(heap, index);
+    } else {
+      timer_heap_sift_down(heap, index);
+    }
+  }
+  result->location = MY_TIMER_LOCATION_NONE;
+  result->heap_index = MY_TIMER_HEAP_INDEX_NONE;
   return result;
 }
 
 static my_ret_t timer_heap_push(my_darray_t* heap, my_timer_entry_t* timer) {
   my_ret_t ret = my_darray_push(heap, timer);
   if (ret == MY_RET_OK) {
+    timer->location = MY_TIMER_LOCATION_HEAP;
+    timer->heap_index = heap->size - 1u;
+    timer->pending_index = SIZE_MAX;
     timer_heap_sift_up(heap, heap->size - 1u);
   }
   return ret;
@@ -156,6 +303,7 @@ static my_ret_t timer_heap_push(my_darray_t* heap, my_timer_entry_t* timer) {
 static void timer_entry_free(const my_timer_manager_t* mgr,
                              my_timer_entry_t* timer) {
   if (timer == NULL) return;
+  timer_index_remove((my_timer_manager_t*)mgr, timer);
   my_emitter_context_lease_unref(timer->lease);
   my_mem_free(mgr->allocator, timer);
 }
@@ -185,19 +333,19 @@ static uint32_t timer_allocate_id(my_timer_manager_t* mgr) {
     }
     return candidate;
   }
-  entry_count = timer_entry_count(mgr);
+  entry_count = mgr->index_size;
   if (entry_count >= (size_t)UINT32_MAX) {
     return 0u;
   }
   /* There is a free non-zero id after at most entry_count occupied ids. */
-  if (!timer_id_in_use(mgr, candidate)) {
+  if (timer_index_find(mgr, candidate) == NULL) {
     mgr->next_id = candidate == UINT32_MAX ? 1u : candidate + 1u;
     return candidate;
   }
   while (attempts < entry_count) {
     candidate = candidate == UINT32_MAX ? 1u : candidate + 1u;
     attempts++;
-    if (!timer_id_in_use(mgr, candidate)) {
+    if (timer_index_find(mgr, candidate) == NULL) {
       mgr->next_id = candidate == UINT32_MAX ? 1u : candidate + 1u;
       return candidate;
     }
@@ -240,6 +388,7 @@ static void timer_manager_dispose(my_timer_manager_t* mgr) {
   timer_free_array(mgr, mgr->pending);
   my_darray_destroy(mgr->timers);
   my_darray_destroy(mgr->pending);
+  my_mem_free(mgr->allocator, mgr->index_slots);
   my_mem_free(mgr->allocator, mgr);
 }
 
@@ -294,11 +443,21 @@ static uint32_t timer_add_internal(
   t->next_fire_ms = timer_deadline(
       mgr->now_fn != NULL ? mgr->now_fn(mgr->now_ctx) : 0, interval_ms);
   t->active = true;
-  if ((mgr->firing == 0 ? timer_heap_push(mgr->timers, t)
-                         : my_darray_push(mgr->pending, t)) != MY_RET_OK) {
+  t->location = mgr->firing == 0 ? MY_TIMER_LOCATION_HEAP
+                                 : MY_TIMER_LOCATION_PENDING;
+  t->heap_index = MY_TIMER_HEAP_INDEX_NONE;
+  t->pending_index = mgr->firing == 0 ? SIZE_MAX : mgr->pending->size;
+  if (timer_index_insert(mgr, t) != MY_RET_OK) {
     timer_entry_free(mgr, t);
     return 0;
   }
+  if ((mgr->firing == 0 ? timer_heap_push(mgr->timers, t)
+                        : my_darray_push(mgr->pending, t)) != MY_RET_OK) {
+    timer_index_remove(mgr, t);
+    timer_entry_free(mgr, t);
+    return 0;
+  }
+  if (mgr->firing != 0) t->location = MY_TIMER_LOCATION_PENDING;
   return t->id;
 }
 
@@ -314,6 +473,8 @@ uint32_t my_timer_add_lease(my_timer_manager_t* mgr,
   return timer_add_internal(mgr, callback, NULL, lease, interval_ms);
 }
 
+static void timer_pending_reindex_from(my_timer_manager_t* mgr, size_t start);
+
 static void my_timer_sweep_array(my_timer_manager_t* mgr,
                                  my_darray_t* array, bool heap) {
   size_t i = 0;
@@ -325,6 +486,7 @@ static void my_timer_sweep_array(my_timer_manager_t* mgr,
         array->items[i] = array->items[last];
         array->size--;
         if (i < array->size) {
+          ((my_timer_entry_t*)array->items[i])->heap_index = i;
           if (i != 0u &&
               timer_before((const my_timer_entry_t*)array->items[i],
                            (const my_timer_entry_t*)array->items[(i - 1u) / 2u])) {
@@ -335,6 +497,7 @@ static void my_timer_sweep_array(my_timer_manager_t* mgr,
         }
       } else {
         my_darray_remove_at(array, i);
+        timer_pending_reindex_from(mgr, i);
       }
       timer_entry_free(mgr, t);
     } else {
@@ -348,40 +511,41 @@ static void my_timer_sweep(my_timer_manager_t* mgr) {
   my_timer_sweep_array(mgr, mgr->pending, false);
 }
 
-static bool timer_mark_inactive(my_darray_t* array, uint32_t id) {
-  size_t i, n = my_darray_size(array);
-  for (i = 0; i < n; i++) {
-    my_timer_entry_t* t = (my_timer_entry_t*)my_darray_get(array, i);
-    if (t->id == id) {
-      t->active = false;
-      return true;
-    }
+static void timer_pending_reindex_from(my_timer_manager_t* mgr, size_t start) {
+  size_t i;
+  if (mgr == NULL) return;
+  for (i = start; i < mgr->pending->size; ++i) {
+    ((my_timer_entry_t*)mgr->pending->items[i])->pending_index = i;
   }
-  return false;
-}
-
-static bool timer_mark_current_inactive(my_timer_manager_t* mgr, uint32_t id) {
-  my_timer_entry_t* current = mgr->current;
-  while (current != NULL) {
-    if (current->id == id) {
-      current->active = false;
-      return true;
-    }
-    current = current->previous_current;
-  }
-  return false;
 }
 
 my_ret_t my_timer_remove(my_timer_manager_t* mgr, uint32_t id) {
+  my_timer_entry_t* timer;
   if (mgr == NULL || mgr->destroy_requested || mgr->disposing ||
       mgr->operating != 0u) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (timer_mark_inactive(mgr->timers, id) ||
-      timer_mark_inactive(mgr->pending, id) ||
-      timer_mark_current_inactive(mgr, id)) {
+  timer = timer_index_find(mgr, id);
+  if (timer != NULL) {
+    timer->active = false;
     if (mgr->firing == 0) {
-      my_timer_sweep(mgr);
+      if (timer->location == MY_TIMER_LOCATION_HEAP) {
+        timer = timer_heap_remove_at(mgr->timers, timer->heap_index);
+        timer_entry_free(mgr, timer);
+      } else if (timer->location == MY_TIMER_LOCATION_PENDING) {
+        size_t last = mgr->pending->size - 1u;
+        size_t index = timer->pending_index;
+        if (index < mgr->pending->size) {
+          if (index != last) {
+            mgr->pending->items[index] = mgr->pending->items[last];
+            ((my_timer_entry_t*)mgr->pending->items[index])->pending_index = index;
+          }
+          mgr->pending->size = last;
+          timer_entry_free(mgr, timer);
+        }
+      } else {
+        my_timer_sweep(mgr);
+      }
     }
     return MY_RET_OK;
   }
@@ -498,6 +662,7 @@ uint32_t my_timer_manager_fire(my_timer_manager_t* mgr) {
       fired++;
       t->previous_current = mgr->current;
       mgr->current = t;
+      t->location = MY_TIMER_LOCATION_CURRENT;
       callback_result = t->callback(callback_context);
       mgr->current = previous;
       t->previous_current = NULL;
@@ -530,9 +695,12 @@ uint32_t my_timer_manager_fire(my_timer_manager_t* mgr) {
     while ((t = (my_timer_entry_t*)my_darray_get(mgr->pending, 0u)) != NULL) {
       if (!t->active) {
         (void)my_darray_remove_at(mgr->pending, 0u);
+        timer_pending_reindex_from(mgr, 0u);
         timer_entry_free(mgr, t);
       } else if (timer_heap_push(mgr->timers, t) == MY_RET_OK) {
         (void)my_darray_remove_at(mgr->pending, 0u);
+        timer_pending_reindex_from(mgr, 0u);
+        t->location = MY_TIMER_LOCATION_HEAP;
         continue;
       } else {
         break;
