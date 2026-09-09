@@ -3402,6 +3402,7 @@ TEST(shaped_glyph_id_rasterization_is_separate_from_unicode)
   FILE *file = fopen(path, "rb");
   my_font_t *font;
   my_glyph_t glyph;
+  my_glyph_t rejected = {0};
   if (file == NULL) {
     printf("  SKIP: no shaping test font\n");
     return;
@@ -3418,8 +3419,8 @@ TEST(shaped_glyph_id_rasterization_is_separate_from_unicode)
             MY_RET_OK);
   ASSERT_TRUE(glyph.advance > 0);
   ASSERT_TRUE(glyph_has_coverage(&glyph));
-  ASSERT_EQ(my_font_get_glyph_id(font, 0u, 24, &glyph), MY_RET_NOT_FOUND);
   my_font_glyph_release(&glyph);
+  ASSERT_EQ(my_font_get_glyph_id(font, 0u, 24, &rejected), MY_RET_NOT_FOUND);
   my_font_shape_destroy(&shaped);
 #else
   ASSERT_EQ(my_font_get_glyph_id(font, 1u, 24, &glyph), MY_RET_OK);

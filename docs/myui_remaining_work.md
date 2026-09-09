@@ -1,5 +1,16 @@
 # myui 后续阶段方案与状态
 
+## 本轮完成：字体 glyph 租约泄漏回归（2026-09-09）
+
+`shaped_glyph_id_rasterization_is_separate_from_unicode` 先释放成功 glyph-id raster 查询的
+glyph 租约，再以独立、零初始化输出对象验证预期的 `MY_RET_NOT_FOUND`。这保持 API 既有规则：
+每一个成功 glyph 查询的输出对象必须在复用前调用 `my_font_glyph_release()`；失败查询不接管已有
+lease。修复只收紧回归夹具，不更改运行时缓存、线程或性能路径。
+
+普通和启用 LeakSanitizer 的 ASan/UBSan `test_myui_font` 都通过 **82/82**；既有 fixture
+不再需要 `detect_leaks=0`。随后完整普通与启用 LeakSanitizer 的 ASan/UBSan CTest 均通过
+**101/101**。
+
 ## 本轮完成：Timer ID 取消索引（2026-09-08）
 
 冷却按钮、动画、编辑 blink、菜单 hover 和窗口自动绘制共同使用 PAL timer。此前按 ID 取消会顺序
@@ -9,8 +20,8 @@
 不发布半初始化 entry，也不影响已注册 timer。
 
 TDD 新增 callback 删除、pending 转 heap 后取消和 deadline 顺序回归。普通窗口管理器 **227/227**、
-ASan/UBSan **236/236**，普通与 sanitizer（关闭 LeakSanitizer 的既有字体 fixture 泄漏）完整 headless
-CTest 都为 **101/101**。该工作不改变跨线程 timer 操作限制；PAL loop 仍是唯一 owner。
+ASan/UBSan **236/236**，普通与 sanitizer 完整 headless CTest 都为 **101/101**。该工作不改变跨线程
+timer 操作限制；PAL loop 仍是唯一 owner。
 
 ## 本轮补充：Vulkan 关闭配置链接缺陷修复（2026-09-07）
 

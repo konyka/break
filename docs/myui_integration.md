@@ -1589,6 +1589,9 @@ bitmap、stb、FreeType 和字体链的 measure 宽度使用宽累加并在 `INT
 `test_myui_font` 现为 `51/51`。STB glyph cache 在驱逐旧 entry 前完成位图复制；OOM
 或尺寸溢出只失败当前请求，不污染旧 cache entry，回归由
 `stb_glyph_oom_does_not_poison_cache` 覆盖。FreeType 使用同等的提交前缓存契约。
+每个成功的 `my_font_get_glyph()` 或 `my_font_get_glyph_id()` 调用都会把输出 glyph 作为租约交给
+调用方；调用方必须在复用该输出对象、销毁字体或离开其使用范围前调用
+`my_font_glyph_release()`。失败查询不会替调用方释放已有 lease，因此需要独立输出对象或先显式释放。
 STB 的 `my_font_stb_create_ex()` 与字体链支持显式 TrueType Collection face index；普通
 TTF 的非零 index 会明确拒绝，避免无意加载 face 0。
 STB 文件读取还受 `MY_FONT_STB_MAX_FILE_BYTES`（64 MiB）限制，超限文件在 payload

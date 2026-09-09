@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：字体 glyph 租约泄漏回归（2026-09-09）
+
+- `test_myui_font` 的 shaped glyph-id 失败查询现在先归还成功 raster 查询获得的 glyph 租约，
+  再使用独立输出对象验证失败路径；这与公共 API 的调用方租约契约一致，不改变运行时代码或缓存所有权。
+- TDD 回归在启用 LeakSanitizer 的 ASan/UBSan 配置下通过 **82/82**，普通配置同样通过 **82/82**；
+  字体 fixture 不再需要 `detect_leaks=0` 豁免。
+
 ## 本轮补充：Timer 取消路径索引化（2026-09-08）
 
 - `my_timer_manager_t` 在截止时间最小堆之外维护 timer ID 的开放寻址索引，并由 heap/pending/current
@@ -7,7 +14,7 @@
 - 索引只存在于 timer 管理冷路径；到期查询仍是堆根 O(1)，fire 不新增堆分配，callback 重入、
   pending 延迟提交、lease 失效和 manager 延迟销毁语义保持不变。
 - TDD 覆盖 callback 删除、pending 转移后的取消与堆顺序；窗口管理器普通 **227/227**、
-  ASan/UBSan **236/236**，完整普通与 sanitizer（`detect_leaks=0`）headless CTest 均为 **101/101**。
+  ASan/UBSan **236/236**，完整普通与 sanitizer headless CTest 均为 **101/101**。
 
 ## 本轮补充：Vulkan 关闭配置的安全桩闭合（2026-09-07）
 
