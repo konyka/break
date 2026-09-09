@@ -732,6 +732,21 @@ static uint64_t timer_test_now(void* context) {
   return g_timer_test_now;
 }
 
+typedef struct timer_manager_layout_test_t {
+  const my_allocator_t* allocator;
+  my_timer_now_fn_t now_fn;
+  void* now_ctx;
+  void* timers;
+  void* pending;
+  uint32_t next_id;
+  bool id_wrapped;
+} timer_manager_layout_test_t;
+
+static void timer_test_set_next_id(my_timer_manager_t* manager,
+                                   uint32_t next_id) {
+  ((timer_manager_layout_test_t*)manager)->next_id = next_id;
+}
+
 static my_ret_t timer_test_callback(void* context) {
   (void)context;
   g_timer_test_fires++;
@@ -1671,6 +1686,29 @@ TEST(timer_index_keeps_pending_removal_and_heap_order)
   ASSERT_EQ(my_timer_manager_due_in_ms(timers), UINT32_MAX);
   ASSERT_EQ(my_timer_manager_fire(timers), 0u);
 
+  my_timer_manager_destroy(timers);
+}
+
+TEST(timer_index_skips_active_ids_after_wrap)
+{
+  my_timer_manager_t* timers;
+  uint32_t first_id;
+  uint32_t max_id;
+  uint32_t wrapped_id;
+
+  g_timer_test_now = 100u;
+  timers = my_timer_manager_create(NULL, timer_test_now, NULL);
+  ASSERT_NOT_NULL(timers);
+  first_id = my_timer_add(timers, timer_test_callback, NULL, 1000u);
+  ASSERT_EQ(first_id, 1u);
+  timer_test_set_next_id(timers, UINT32_MAX);
+  max_id = my_timer_add(timers, timer_test_callback, NULL, 1000u);
+  ASSERT_EQ(max_id, UINT32_MAX);
+  wrapped_id = my_timer_add(timers, timer_test_callback, NULL, 1000u);
+  ASSERT_EQ(wrapped_id, 2u);
+  ASSERT_EQ(my_timer_remove(timers, first_id), MY_RET_OK);
+  ASSERT_EQ(my_timer_remove(timers, max_id), MY_RET_OK);
+  ASSERT_EQ(my_timer_remove(timers, wrapped_id), MY_RET_OK);
   my_timer_manager_destroy(timers);
 }
 
@@ -8662,6 +8700,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(timer_fire_does_not_allocate_deferred_storage);
     RUN_TEST(timer_pending_heap_oom_preserves_added_timer);
     RUN_TEST(timer_index_keeps_pending_removal_and_heap_order);
+    RUN_TEST(timer_index_skips_active_ids_after_wrap);
     RUN_TEST(animator_delay_saturates_without_early_completion);
     RUN_TEST(animator_reentrant_stop_defers_record_sweep);
     RUN_TEST(animator_manager_destroy_from_callback_is_deferred);

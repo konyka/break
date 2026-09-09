@@ -1281,9 +1281,9 @@ Wayland/X11/Win32 runtime quiesce。
 
 PAL timer manager 现在使用按截止时间和稳定 ID 排序的最小堆：添加定时器为
 O(log n)，读取下一次等待时间为 O(1)，处理到期条目为每项 O(log n)，不再为
-每次主循环等待或 tick 扫描全部按钮和其他 timer。按 ID 删除仍需 O(n) 查找，找到后
-堆调整为 O(log n)；删除不是逐 tick 热路径，后续若生命周期规模成为瓶颈再引入有界
-ID 索引表。回调期间新增的 timer 放入 bounded
+每次主循环等待或 tick 扫描全部按钮和其他 timer。按 ID 删除通过有界开放寻址索引
+均摊 O(1) 定位，随后堆调整为 O(log n)；删除不是逐 tick 热路径。索引扩容失败会回滚
+整个 timer 添加事务，不发布半初始化条目。回调期间新增的 timer 放入 bounded
 生命周期内的 pending 队列；当前回调条目放在内联 current 槽位，回调结束后直接回到
 活动堆，因此正常 fire 不需要 deferred 动态容器。回调内新增 timer 不会在同一轮提前触发，
 回调内删除、周期重调度和销毁仍保持原有安全语义。pending 条目只有成功进入活动堆后才
@@ -1299,11 +1299,11 @@ manager teardown 进入幂等 disposing 状态；lease destructor 重入 destroy
 或 fire 均 fail-closed，不访问已开始释放的 timer 数组；`due_in_ms()` 会在计算等待时间时
 清理失效的堆根，避免向主循环返回短暂的 `0ms` 忙等。
 
-该优化不引入线程、平台或 RHI 依赖；堆仅使用既有 allocator/darray，deadline 仍采用
+该优化不引入线程、平台或 RHI 依赖；堆和 ID 索引仅使用既有 allocator/darray，deadline 仍采用
 `uint64_t` 饱和加法，ID 回绕仍检查 active、pending 和 current 条目。普通
 `test_myui_window_manager` **123/123** 通过，覆盖回调内新增/删除、非根失效项、时钟
 回拨、`UINT64_MAX` 边界、fire 零分配、pending OOM 保留和嵌套 fire 的 current 链安全。
-后续若引入跨线程 timer API，必须另行设计 owner loop 和
+TDD 另覆盖 ID 回绕时跳过仍活动的 ID，避免 0 或 live ID 冲突。后续若引入跨线程 timer API，必须另行设计 owner loop 和
 同步契约，不能直接把当前单线程 manager 当作线程安全队列。
 
 ## 本轮补充：Window manager 回调重入销毁（2026-09-06）
