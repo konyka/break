@@ -376,7 +376,8 @@ static void redis_release(void *context) {
     re_free(&state->allocator, state);
 }
 
-/* Parses "redis://host[:port][/db][?prefix=name]". Returns RE_STATUS_OK on a
+/* Parses "redis://host[:port][/db][?prefix=name]" or a bracketed IPv6 host.
+ * Returns RE_STATUS_OK on a
  * well-formed URL; empty host/port/db segments keep their defaults. */
 static re_status_t redis_parse_url(const char *url, char *host, size_t host_capacity,
                                    int *port, long *database,
@@ -394,15 +395,31 @@ static re_status_t redis_parse_url(const char *url, char *host, size_t host_capa
         return RE_STATUS_INVALID_ARGUMENT;
     }
     cursor = url + sizeof(scheme) - 1u;
-    host_end = cursor;
-    while ((size_t)(host_end - url) < url_size && *host_end != ':' &&
-           *host_end != '/' && *host_end != '?')
-        ++host_end;
-    host_size = (size_t)(host_end - cursor);
-    if (host_size == 0u || host_size >= host_capacity) return RE_STATUS_INVALID_ARGUMENT;
-    memcpy(host, cursor, host_size);
-    host[host_size] = '\0';
-    cursor = host_end;
+    if (*cursor == '[') {
+        host_end = cursor + 1u;
+        while ((size_t)(host_end - url) < url_size && *host_end != ']')
+            ++host_end;
+        if ((size_t)(host_end - url) >= url_size || host_end == cursor + 1u)
+            return RE_STATUS_INVALID_ARGUMENT;
+        host_size = (size_t)(host_end - (cursor + 1u));
+        if (host_size >= host_capacity) return RE_STATUS_INVALID_ARGUMENT;
+        memcpy(host, cursor + 1u, host_size);
+        host[host_size] = '\0';
+        cursor = host_end + 1u;
+        if (*cursor != '\0' && *cursor != ':' && *cursor != '/' && *cursor != '?')
+            return RE_STATUS_INVALID_ARGUMENT;
+    } else {
+        host_end = cursor;
+        while ((size_t)(host_end - url) < url_size && *host_end != ':' &&
+               *host_end != '/' && *host_end != '?')
+            ++host_end;
+        host_size = (size_t)(host_end - cursor);
+        if (host_size == 0u || host_size >= host_capacity)
+            return RE_STATUS_INVALID_ARGUMENT;
+        memcpy(host, cursor, host_size);
+        host[host_size] = '\0';
+        cursor = host_end;
+    }
     if (*cursor == ':') {
         errno = 0;
         long parsed = strtol(cursor + 1, &end, 10);

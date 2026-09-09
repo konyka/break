@@ -1,5 +1,15 @@
 # myui 后续阶段方案与状态
 
+## 本轮完成：Redis IPv6 URL 解析（2026-09-09）
+
+Redis state provider 的 URL parser 现在支持标准括号 IPv6 host，并在连接前剥离括号；IPv4、
+主机名、端口、database 和 prefix 语义保持兼容。非法缺失右括号及右括号后缺少 `:`、`/`、
+`?` 分隔符的 URL 会 fail-closed，不进入网络连接。新增 TDD 回归覆盖上述合法/非法边界。
+
+使用 `/home/timeshift/opensource/redis-8.10.1` 的 source-backed hiredis 构建中，
+`test_rule_engine_stream_ext` 为 **54/54**，完整 CTest 为 **101/101**；该解析位于连接冷路径，
+不增加正常 Redis 命令路径的分配或锁开销。
+
 ## 本轮完成：字体 glyph 租约泄漏回归（2026-09-09）
 
 `shaped_glyph_id_rasterization_is_separate_from_unicode` 先释放成功 glyph-id raster 查询的

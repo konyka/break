@@ -805,6 +805,24 @@ TEST(redis_provider_rejects_bounded_url_and_timeout_inputs) {
               RE_STATUS_ERROR);
     ASSERT_TRUE(provider == NULL);
 
+    redis_test_set_url("redis://[::1]:6390?prefix=stable");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_ERROR);
+    ASSERT_TRUE(provider == NULL);
+
+    redis_test_set_url("redis://[::1:6390");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
+    redis_test_set_url("redis://[::1]6390");
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
+                                               &provider),
+              RE_STATUS_INVALID_ARGUMENT);
+    ASSERT_TRUE(provider == NULL);
+
     redis_test_set_url("redis://127.0.0.1:6390/999999999999999999999999");
     ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL,
                                                &provider),

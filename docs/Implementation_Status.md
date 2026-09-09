@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：Redis IPv6 URL 解析（2026-09-09）
+
+- Redis provider 现在支持标准的括号 IPv6 literal，例如
+  `redis://[::1]:6379[/db][?prefix=name]`；传给 hiredis 的 host 会去除 URL 括号，
+  IPv4/主机名路径保持不变。
+- TDD 覆盖合法 IPv6 URL 到达连接阶段，以及缺失右括号、右括号后缺少分隔符等拒绝路径；
+  Redis 8.10.1 source-backed `test_rule_engine_stream_ext` **54/54**，完整 CTest **101/101**。
+  解析仍是一次有界扫描，不增加运行期命令路径开销。
+
 ## 本轮补充：Timer ID 回绕冲突回归（2026-09-09）
 
 - 新增 TDD 用例，将 timer ID 游标置于 `UINT32_MAX` 边界，验证回绕后跳过仍活动的 ID，
