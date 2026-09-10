@@ -388,7 +388,9 @@ typedef enum re_state_provider_kind_t {
    * otherwise re_engine_set_state_provider_v1 returns
    * RE_STATUS_NOT_SUPPORTED. The v1 options carry no connection field,
    * so the native adapter connects via the RE_REDIS_URL environment
-   * variable (default redis://127.0.0.1:6379) with key prefix "re". */
+   * variable (default redis://127.0.0.1:6379) with key prefix "re". Mutating
+   * SET/PSETEX and initial SELECT commands fail closed unless the Redis reply
+   * is a status reply exactly matching "OK". */
   RE_STATE_PROVIDER_REDIS = 2
 } re_state_provider_kind_t;
 

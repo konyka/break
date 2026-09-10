@@ -249,7 +249,7 @@ features:
     family: streaming-redis
     requirement: optional
     syntax: 'cargo build --features streaming-redis'
-    expected_behavior: Define an optional state-provider boundary with callback and Redis kinds, direct provider errors, and no public network/client types; a native Redis adapter compiles only when RULE_ENGINE_ENABLE_REDIS is ON and CMake discovers hiredis or builds it from RULE_ENGINE_REDIS_SOURCE_DIR, and the Redis kind keeps returning RE_STATUS_NOT_SUPPORTED without a client/source dependency.
+    expected_behavior: Define an optional state-provider boundary with callback and Redis kinds, direct provider errors, and no public network/client types; a native Redis adapter compiles only when RULE_ENGINE_ENABLE_REDIS is ON and CMake discovers hiredis or builds it from RULE_ENGINE_REDIS_SOURCE_DIR, requiring exact OK status replies for SELECT and SET/PSETEX, and the Redis kind keeps returning RE_STATUS_NOT_SUPPORTED without a client/source dependency.
     upstream_refs: [Cargo.toml, docs/advanced-features/REDIS_STATE_BACKEND.md, .github/workflows/rust.yml]
     upstream_status: verified_upstream
     local_status: optional_backend

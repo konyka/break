@@ -3402,7 +3402,6 @@ TEST(shaped_glyph_id_rasterization_is_separate_from_unicode)
   FILE *file = fopen(path, "rb");
   my_font_t *font;
   my_glyph_t glyph;
-  my_glyph_t rejected = {0};
   if (file == NULL) {
     printf("  SKIP: no shaping test font\n");
     return;
@@ -3411,6 +3410,7 @@ TEST(shaped_glyph_id_rasterization_is_separate_from_unicode)
   font = my_font_ft_create(NULL, path, 0, 32);
   ASSERT_NOT_NULL(font);
 #ifdef MYUI_FONT_HARFBUZZ
+  my_glyph_t rejected = {0};
   my_font_shape_result_t shaped = {0};
   ASSERT_EQ(my_font_shape(font, "office", 24, false, NULL, &shaped),
             MY_RET_OK);

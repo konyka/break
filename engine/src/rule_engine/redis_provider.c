@@ -131,6 +131,12 @@ static redisReply *redis_checked(re_state_provider_t *provider, redis_state_t *s
     return reply;
 }
 
+static bool redis_reply_is_ok_status(const redisReply *reply) {
+    return reply != NULL && reply->type == REDIS_REPLY_STATUS &&
+           reply->str != NULL && reply->len == 2 &&
+           memcmp(reply->str, "OK", 2u) == 0;
+}
+
 /* Builds the owned "<prefix>:<name>" key buffer; NULL for an invalid key. */
 static char *redis_key(redis_state_t *state, re_string_t key, size_t *out_size) {
     char *full;
@@ -299,10 +305,10 @@ static re_status_t redis_put(re_state_provider_t *provider, re_string_t key,
     re_free(&state->allocator, full_key);
     re_free(&state->allocator, encoded);
     if (reply == NULL) return RE_STATUS_ERROR;
-    if (reply->type != REDIS_REPLY_STATUS) {
+    if (!redis_reply_is_ok_status(reply)) {
         freeReplyObject(reply);
         return redis_fail(provider, state, RE_PROVIDER_ERROR_UNAVAILABLE,
-                          "unexpected redis SET/PSETEX reply type");
+                          "unexpected redis SET/PSETEX status reply");
     }
     freeReplyObject(reply);
     return RE_STATUS_OK;
@@ -524,7 +530,7 @@ re_status_t re_redis_provider_create(re_engine_t *engine,
         redisReply *reply;
         snprintf(db_text, sizeof(db_text), "%ld", database);
         reply = redisCommand(state->connection, "SELECT %s", db_text);
-        if (reply == NULL || reply->type != REDIS_REPLY_STATUS) {
+        if (!redis_reply_is_ok_status(reply)) {
             if (reply != NULL) {
                 freeReplyObject(reply);
             }

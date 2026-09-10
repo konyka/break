@@ -2529,3 +2529,11 @@ Vulkan 构建通过。真实多设备同时提交、设备销毁竞态和 alloca
 graphics 与 present queue。`RE_VK_DEVICE_INDEX` 现在也必须通过同一门禁；非法或不适配的
 显式索引会安全失败，不再回退到 `gpus[0]`。这些检查仅位于 Vulkan 初始化冷路径，帧提交
 热路径不增加查询或分配；真实多厂商 GPU/WSI 组合仍需平台 CI 验证。
+
+## 本轮补充：Redis 状态响应严格校验与 Fail-Closed（2026-09-10）
+
+收紧原生 Redis 适配器的状态响应校验：`SELECT` 与 `SET`/`PSETEX` 之前仅匹配
+`REDIS_REPLY_STATUS`，任意非 OK 状态响应（例如 `+PONG` 等）会被静默接受。
+现统一经 `redis_reply_is_ok_status()` 校验，严格要求状态类型且内容必须为 `"OK"`；
+否则安全失败关闭。`SELECT` 握手失败直接销毁连接返回错误，`SET`/`PSETEX` 记录
+`RE_PROVIDER_ERROR_UNAVAILABLE`，保证冷路径严格契约且不增加热路径分配。
