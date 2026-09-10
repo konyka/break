@@ -2016,8 +2016,16 @@ re_status_t re_engine_query_aggregate(re_engine_t *engine, re_facts_t *facts,
                         int_accumulator = binding.value.as.int64_value;
                     double_accumulator = value;
                 } else if (kind == RE_ACCUM_SUM || kind == RE_ACCUM_AVERAGE) {
-                    if (binding.value.type == RE_VALUE_INT64)
-                        int_accumulator += binding.value.as.int64_value;
+                    if (binding.value.type == RE_VALUE_INT64) {
+                        int64_t value_int = binding.value.as.int64_value;
+                        if ((value_int > 0 && int_accumulator > INT64_MAX - value_int) ||
+                            (value_int < 0 && int_accumulator < INT64_MIN - value_int)) {
+                            re_proof_destroy(proof);
+                            re_query_destroy(query);
+                            return RE_STATUS_LIMIT;
+                        }
+                        int_accumulator += value_int;
+                    }
                     double_accumulator += value;
                 } else if (kind == RE_ACCUM_MIN) {
                     if (binding.value.type == RE_VALUE_INT64 &&

@@ -703,8 +703,9 @@ void re_proof_destroy(re_proof_t *proof);
  * applies). Result typing: COUNT -> RE_VALUE_INT64; AVERAGE ->
  * RE_VALUE_DOUBLE; SUM/MIN/MAX -> RE_VALUE_INT64 when every folded value was
  * INT64, else RE_VALUE_DOUBLE - a deliberate divergence from
- * re_accumulator_evaluate's always-DOUBLE result. The INT64 fold accumulates
- * with unchecked addition, so extreme sums overflow (wrap) without a status.
+ * re_accumulator_evaluate's always-DOUBLE result. An INT64 SUM or AVERAGE
+ * returns RE_STATUS_LIMIT rather than wrapping when
+ * its intermediate sum exceeds the signed 64-bit range.
  * FIRST/LAST copy the binding value of the first/last solution carrying
  * field; a STRING result reports RE_STATUS_NOT_SUPPORTED because proof string
  * storage is freed with the internal query. kind outside [1, 7] and NULL

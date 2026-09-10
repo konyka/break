@@ -355,6 +355,31 @@ TEST(aggregate_sum_promotes_to_double) {
     re_engine_destroy(engine);
 }
 
+TEST(aggregate_int64_sum_overflow_fails_closed) {
+    re_engine_t *engine = re_engine_create(NULL, NULL);
+    re_facts_t *facts = re_facts_create(NULL, NULL);
+    re_value_t first = {RE_VALUE_INT64, {.int64_value = INT64_MAX}};
+    re_value_t second = {RE_VALUE_INT64, {.int64_value = 1}};
+    re_value_t out;
+    aggregate_install(engine,
+        "rule \"Pick\"(V) { when User.A == V then A = 1; }"
+        "rule \"Pick\"(V) { when User.B == V then B = 1; }");
+    ASSERT_EQ(re_facts_set(facts, text("User.A"), &first), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("User.B"), &second), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_SUM, text("?s"),
+                                        text("goal(\"Pick\", ?s)"), &out),
+              RE_STATUS_LIMIT);
+    first.as.int64_value = INT64_MIN;
+    second.as.int64_value = -1;
+    ASSERT_EQ(re_facts_set(facts, text("User.A"), &first), RE_STATUS_OK);
+    ASSERT_EQ(re_facts_set(facts, text("User.B"), &second), RE_STATUS_OK);
+    ASSERT_EQ(re_engine_query_aggregate(engine, facts, RE_ACCUM_SUM, text("?s"),
+                                        text("goal(\"Pick\", ?s)"), &out),
+              RE_STATUS_LIMIT);
+    re_facts_destroy(facts);
+    re_engine_destroy(engine);
+}
+
 TEST(aggregate_rejects_invalid_arguments) {
     re_engine_t *engine = re_engine_create(NULL, NULL);
     re_facts_t *facts = re_facts_create(NULL, NULL);
@@ -1938,6 +1963,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(aggregate_non_numeric_rejected);
     RUN_TEST(aggregate_first_last_string_not_supported);
     RUN_TEST(aggregate_sum_promotes_to_double);
+    RUN_TEST(aggregate_int64_sum_overflow_fails_closed);
     RUN_TEST(aggregate_rejects_invalid_arguments);
     RUN_TEST(bfs_finds_shallowest_proof_first);
     RUN_TEST(default_strategy_is_dfs_unchanged);

@@ -1,5 +1,12 @@
 # myui 后续阶段方案与状态
 
+## 本轮完成：查询聚合 INT64 溢出收口（2026-09-10）
+
+规则引擎查询聚合的 INT64 `SUM`/`AVERAGE` 现在对每次中间加法执行有符号范围检查。发生正溢出或
+负溢出时返回 `RE_STATUS_LIMIT`，释放当前 query/proof，并保持输出值不被部分结果污染；不再静默
+回绕。TDD 覆盖 `INT64_MAX + 1` 和 `INT64_MIN - 1`，`test_rule_engine_backward_ext` 为
+**55/55**。检查位于聚合冷路径，正常查询和 UI 渲染热路径无额外开销。
+
 ## 本轮完成：Redis SELECT 回复 fail-closed（2026-09-10）
 
 Redis provider 初始化现在只把 `REDIS_REPLY_STATUS` 视为成功的 `SELECT` 回复。整数、bulk、nil、
@@ -7,8 +14,9 @@ error 或空回复均在 provider 发布前 fail-closed，并释放 hiredis conn
 临时 provider/state，避免错误连接状态或半初始化 provider 泄漏到引擎。TDD 使用伪 Redis 服务返回
 `:1` 锁定该边界，Redis 8.10.1 source-backed `test_rule_engine_stream_ext` 为 **55/55**。
 
-完整 CTest 为 **100/101**；仅 `test_rhi_x11_runtime` 因当前 X11/GLX 环境销毁 drawable 后仍触发
-`GLXBadDrawable` 失败，与 Redis 改动无关。该平台 runtime 缺陷仍需在稳定的 X11 runner 中处理。
+完整 CTest 已为 **101/101**；X11/GLX 的 `BadDrawable` 问题已由窗口 visual 匹配修复，
+`test_rhi_x11_runtime` 当前通过。真实 Windows/macOS/Wayland compositor 及 GPU 故障注入仍需
+对应平台 runner 验证。
 
 ## 本轮完成：Redis IPv6 URL 解析（2026-09-09）
 

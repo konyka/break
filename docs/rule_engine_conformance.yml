@@ -198,7 +198,7 @@ features:
     doc_ref: docs/Rule_Engine_Design.md
     parity: bounded_behavior
     behavior_scope: internal_bounded_query_max_depth_64_max_solutions_1024; seven_kinds_including_first_last; int64_preserving_sum_min_max; empty_set_count_zero_others_not_found; first_last_string_not_supported; non_numeric_fold_rejected
-    note: Reaching the 1024-solution cap reports RE_STATUS_LIMIT because an exact fit cannot be told apart from a truncated set, as does a depth-limited internal search. Percentile, stddev, count-distinct, GROUP BY, and nested or multi-variable aggregation are excluded; upstream's GRL query-block/WHERE surface is not parsed. The INT64 fold accumulates with unchecked addition, so extreme sums overflow (wrap) without a status.
+    note: Reaching the 1024-solution cap reports RE_STATUS_LIMIT because an exact fit cannot be told apart from a truncated set, as does a depth-limited internal search. Percentile, stddev, count-distinct, GROUP BY, and nested or multi-variable aggregation are excluded; upstream's GRL query-block/WHERE surface is not parsed. INT64 SUM/AVERAGE intermediate addition is range-checked and returns RE_STATUS_LIMIT on signed overflow instead of wrapping.
   - id: search-strategies
     family: backward-chaining
     requirement: optional

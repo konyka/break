@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：查询聚合 INT64 溢出收口（2026-09-10）
+
+- `re_engine_query_aggregate()` 的 INT64 `SUM`/`AVERAGE` 中间加法现在在执行前检查正溢出和负溢出；
+  超出有符号 64 位范围时返回 `RE_STATUS_LIMIT`，销毁当前 proof/query，不发布回绕结果。
+- TDD 覆盖 `INT64_MAX + 1` 与 `INT64_MIN - 1` 两条路径；查询聚合专项为 **55/55**，既有
+  COUNT、平均值、混合类型和 solution-cap 语义保持通过。
+- 该检查是聚合冷路径上的 O(1) 分支，不增加规则识别、渲染、布局或后端热路径开销。
+
 ## 本轮补充：X11 GLX visual 绑定修复（2026-09-10）
 
 - OpenGL/GLX 初始化不再盲选第一个 `GLXFBConfig`；现在查询现有 X11 window 的 `VisualID`，
@@ -17,8 +25,9 @@
 - TDD 新增伪 Redis 服务返回 `:1` 的回归，验证 `re_engine_set_state_provider_v1()` 返回
   `RE_STATUS_ERROR` 且输出 provider 保持 `NULL`；使用 Redis 8.10.1 source-backed 构建的
   `test_rule_engine_stream_ext` 为 **55/55**。
-- 完整 CTest 为 **100/101**；唯一失败是无关的 `test_rhi_x11_runtime`，在当前 X11 runtime 中因
-  GLX `BadDrawable` 失败，Redis、headless 和其余测试均通过。`git diff --check` 通过。
+- 完整 CTest 已为 **101/101**；X11/GLX 的 `BadDrawable` 问题已由窗口 visual 匹配修复，
+  `test_rhi_x11_runtime` 当前通过。真实 Windows/macOS/Wayland compositor 及 GPU 故障注入仍需
+  对应平台 runner 验证。
 
 ## 本轮补充：Redis IPv6 URL 解析（2026-09-09）
 
@@ -4205,7 +4214,8 @@ R272 延迟光照从不采样屏幕 SSAO（每帧算出却弃用）— 修复 1 
 - 当前限制：缓存条目按 facts 指针值键控（从不解引用，无 UAF；销毁+同地址重分配且代际
   匹配时可能别名——已记录为挂起的残留风险，未修复）；失效为粗粒度（同一 facts 任意变更
   在下次查询时丢弃其全部条目）；NOT 查询的统计计入子目标查询（一次新的 `NOT X` 记录
-  2 次 miss）；INT64 折拢使用未检查加法，极端求和会溢出（回绕）且无状态报告；
+  2 次 miss）；INT64 `SUM`/`AVERAGE` 中间加法执行有符号范围检查，溢出返回
+  `RE_STATUS_LIMIT`，不再静默回绕；
   `RE_CAP2_BACKWARD_PROOFS` 能力位仍保持清零——任意谓词合一与上游共享子图
   producer provenance 未实现，位通告暂不提升。
 
