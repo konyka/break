@@ -463,6 +463,23 @@ void net_set_nonblocking(NetSocket *s, bool nonblock)
 #endif
 }
 
+bool net_set_recv_timeout(NetSocket *s, u32 milliseconds)
+{
+    if (!s) return false;
+
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    DWORD ms = (DWORD)milliseconds;
+    return setsockopt(s->fd, SOL_SOCKET, SO_RCVTIMEO,
+                      (const char *)&ms, sizeof(ms)) == 0;
+#else
+    struct timeval tv;
+    tv.tv_sec  = (time_t)(milliseconds / 1000u);
+    tv.tv_usec = (suseconds_t)(milliseconds % 1000u) * 1000;
+    return setsockopt(s->fd, SOL_SOCKET, SO_RCVTIMEO,
+                      &tv, sizeof(tv)) == 0;
+#endif
+}
+
 /* ---------- poll ---------- */
 
 i32 net_poll(NetPollFd *fds, u32 count, i32 timeout_ms)

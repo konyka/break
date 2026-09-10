@@ -72,7 +72,12 @@ TEST(transform_snapshot_loopback)
 
     NetReplicator recv_rep = {0};
     ASSERT_TRUE(net_replicator_init(&recv_rep, (u16)TEST_PORT));
-    net_set_nonblocking(recv_rep.socket, true);
+    /* Loopback UDP delivery is asynchronous — on some stacks (macOS) the
+     * datagram is not yet queued when an immediate non-blocking recv runs.
+     * Block in recvfrom with a kernel timeout: the kernel wakes us the moment
+     * the datagram arrives (single syscall, no polling, no busy loop). */
+    net_set_nonblocking(recv_rep.socket, false);
+    ASSERT_TRUE(net_set_recv_timeout(recv_rep.socket, 2000u));
 
     NetReplicator send_rep = {0};
     ASSERT_TRUE(net_replicator_init(&send_rep, 0));
@@ -92,12 +97,6 @@ TEST(transform_snapshot_loopback)
     NetTransformSnapshot out[4] = {0};
     u32 out_count = 0u;
     NetAddress from = {0};
-    /* Loopback UDP delivery is asynchronous — on some stacks (macOS) the
-     * datagram is not yet queued when an immediate recv runs. Wait for
-     * readability via net_poll instead of busy-polling. */
-    NetPollFd pfd = { recv_rep.socket, NET_POLL_READ, 0 };
-    ASSERT_TRUE(net_poll(&pfd, 1u, 1000) > 0);
-    ASSERT_TRUE((pfd.revents & NET_POLL_READ) != 0u);
     i32 received = net_replicator_recv(&recv_rep, out, 4u, &out_count, &from);
     ASSERT_TRUE(received > 0);
     ASSERT_EQ(out_count, 2u);

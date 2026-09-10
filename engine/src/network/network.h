@@ -48,6 +48,10 @@ i32 net_recvfrom(NetSocket *s, void *buf, u32 buf_size, NetAddress *out_addr);
 /* Set non-blocking mode */
 void net_set_nonblocking(NetSocket *s, bool nonblock);
 
+/* Set blocking recv timeout (SO_RCVTIMEO); 0 disables it.
+ * A timeout-expired recv reports NET_WOULD_BLOCK. */
+bool net_set_recv_timeout(NetSocket *s, u32 milliseconds);
+
 /* Multiplexing */
 typedef enum {
     NET_POLL_READ  = 1,
