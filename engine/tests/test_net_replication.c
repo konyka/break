@@ -93,14 +93,12 @@ TEST(transform_snapshot_loopback)
     u32 out_count = 0u;
     NetAddress from = {0};
     /* Loopback UDP delivery is asynchronous — on some stacks (macOS) the
-     * datagram is not yet queued when the immediate non-blocking recv runs.
-     * Poll briefly instead of assuming instant delivery. */
-    i32 received = 0;
-    for (u32 attempt = 0u; attempt < 200u; attempt++) {
-        received = net_replicator_recv(&recv_rep, out, 4u, &out_count, &from);
-        if (received > 0) break;
-        time_sleep_us(1000);
-    }
+     * datagram is not yet queued when an immediate recv runs. Wait for
+     * readability via net_poll instead of busy-polling. */
+    NetPollFd pfd = { recv_rep.socket, NET_POLL_READ, 0 };
+    ASSERT_TRUE(net_poll(&pfd, 1u, 1000) > 0);
+    ASSERT_TRUE((pfd.revents & NET_POLL_READ) != 0u);
+    i32 received = net_replicator_recv(&recv_rep, out, 4u, &out_count, &from);
     ASSERT_TRUE(received > 0);
     ASSERT_EQ(out_count, 2u);
     ASSERT_EQ(out[0].entity_id, 42u);
