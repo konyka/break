@@ -50,6 +50,22 @@ elseif(WIN32)
     set(ENGINE_PLATFORM "windows")
 endif()
 
+# net_loop backend: platform-optimal event notification mechanism.
+#   macOS   -> kqueue        (net_loop_kqueue.c)
+#   Linux   -> epoll         (net_loop_epoll.c), or io_uring when
+#               ENGINE_NET_IOURING=ON (net_loop_iouring.c, experimental)
+#   Windows -> IOCP          (net_loop_iocp.c)
+option(ENGINE_NET_IOURING "Use io_uring net_loop backend on Linux (experimental)" OFF)
+if(ENGINE_PLATFORM STREQUAL "macos")
+    set(NET_LOOP_BACKEND_SRC src/network/net_loop_kqueue.c)
+elseif(ENGINE_PLATFORM STREQUAL "windows")
+    set(NET_LOOP_BACKEND_SRC src/network/net_loop_iocp.c)
+elseif(ENGINE_NET_IOURING)
+    set(NET_LOOP_BACKEND_SRC src/network/net_loop_iouring.c)
+else()
+    set(NET_LOOP_BACKEND_SRC src/network/net_loop_epoll.c)
+endif()
+
 # === Compiler flags ===
 if(MSVC)
     # MSVC-compatible frontends require C mode for this C-only project.
@@ -214,6 +230,7 @@ src/renderer/lens_effects.c
     src/network/network.c
     src/network/packet.c
     src/network/net_replication.c
+    ${NET_LOOP_BACKEND_SRC}
     src/scene/scene_serial.c
     src/scene/scene_state.c
     src/engine.c
@@ -530,6 +547,9 @@ target_include_directories(engine PUBLIC
 
 if(ENGINE_PLATFORM STREQUAL "linux")
     target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    if(ENGINE_NET_IOURING)
+        target_compile_definitions(engine PRIVATE ENGINE_NET_IOURING=1)
+    endif()
 
     if(ENGINE_ENABLE_WAYLAND)
         # Generate xdg-shell protocol bindings
@@ -730,8 +750,8 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
 
     target_link_libraries(engine PRIVATE user32 kernel32 shell32 imm32 advapi32)
     # XInput (gamepad) is loaded dynamically at runtime — no import lib needed.
-    # Winsock2 for network module
-    target_link_libraries(engine PRIVATE ws2_32)
+    # Winsock2 for network module; mswsock for the IOCP net_loop backend
+    target_link_libraries(engine PRIVATE ws2_32 mswsock)
 
 elseif(ENGINE_PLATFORM STREQUAL "macos")
     # macOS reuses the Vulkan backend via MoltenVK; the window is a Cocoa
@@ -1529,6 +1549,26 @@ if(ENGINE_BUILD_TESTS)
         target_link_libraries(test_network PRIVATE ws2_32)
     endif()
     add_test(NAME test_network COMMAND test_network)
+
+    # test_net_loop: platform-optimal event loop (kqueue/epoll/IOCP).
+    # Backend source is selected the same way the engine target does it.
+    add_executable(test_net_loop tests/test_net_loop.c
+        src/network/network.c src/platform/time.c ${NET_LOOP_BACKEND_SRC})
+    target_include_directories(test_net_loop PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        target_link_libraries(test_net_loop PRIVATE pthread)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_net_loop PRIVATE ws2_32 mswsock)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_MACOS=1)
+        target_link_libraries(test_net_loop PRIVATE pthread)
+    endif()
+    if(ENGINE_NET_IOURING AND ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_net_loop PRIVATE ENGINE_NET_IOURING=1)
+    endif()
+    add_test(NAME test_net_loop COMMAND test_net_loop)
 
     # test_net_replication: transform snapshot broadcast over UDP loopback
     add_executable(test_net_replication tests/test_net_replication.c

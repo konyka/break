@@ -463,6 +463,16 @@ void net_set_nonblocking(NetSocket *s, bool nonblock)
 #endif
 }
 
+intptr_t net_socket_native_handle(const NetSocket *s)
+{
+    if (!s || s->fd == INVALID_RAW_SOCKET) return (intptr_t)-1;
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    return (intptr_t)s->fd;
+#else
+    return (intptr_t)s->fd;
+#endif
+}
+
 bool net_set_recv_timeout(NetSocket *s, u32 milliseconds)
 {
     if (!s) return false;
