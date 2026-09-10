@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：X11 GLX visual 绑定修复（2026-09-10）
+
+- OpenGL/GLX 初始化不再盲选第一个 `GLXFBConfig`；现在查询现有 X11 window 的 `VisualID`，
+  只使用与窗口 visual 匹配的 framebuffer config，避免 GLX 在 buffer-age 查询或交换阶段
+  访问不兼容 drawable，触发 `BadDrawable`。
+- 无法查询窗口 visual 或不存在匹配 config 时安全失败，不创建半初始化 GLX device；该校验只在
+  RHI 初始化冷路径执行，不增加绘制、布局或 present 热路径成本。
+- TDD/X11 runtime 回归 `test_rhi_x11_runtime` 为 **1/1**，完整 Redis 8.10.1 source-backed
+  CTest 为 **101/101**，`git diff --check` 通过。
+
 ## 本轮补充：Redis SELECT 回复 fail-closed（2026-09-10）
 
 - Redis provider 初始化现在只接受 `SELECT` 的 `REDIS_REPLY_STATUS` 回复；整数、bulk、nil、error

@@ -481,16 +481,41 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     };
 
     int fb_count = 0;
-    GLXFBConfig *fbc = glXChooseFBConfig(dpy, DefaultScreen(dpy), visual_attribs, &fb_count);
-    if (!fbc || fb_count == 0) { LOG_FATAL("GL: no framebuffer config"); free(gl); return false; }
+    Window win = (Window)(uintptr_t)window_native;
+    XWindowAttributes window_attributes;
+    VisualID window_visual_id;
+    GLXFBConfig best_fbc = NULL;
+    GLXFBConfig *fbc;
+    int fbc_index;
 
-    GLXFBConfig best_fbc = fbc[0];
+    if (!XGetWindowAttributes(dpy, win, &window_attributes) ||
+        window_attributes.visual == NULL) {
+        LOG_FATAL("GL: failed to query X11 window visual");
+        free(gl);
+        return false;
+    }
+    window_visual_id = XVisualIDFromVisual(window_attributes.visual);
+    fbc = glXChooseFBConfig(dpy, DefaultScreen(dpy), visual_attribs, &fb_count);
+    if (!fbc || fb_count == 0) { LOG_FATAL("GL: no framebuffer config"); free(gl); return false; }
+    for (fbc_index = 0; fbc_index < fb_count; ++fbc_index) {
+        XVisualInfo *visual = glXGetVisualFromFBConfig(dpy, fbc[fbc_index]);
+        bool matches = visual != NULL && visual->visualid == window_visual_id;
+        if (visual != NULL) XFree(visual);
+        if (matches) {
+            best_fbc = fbc[fbc_index];
+            break;
+        }
+    }
     XFree(fbc);
+    if (best_fbc == NULL) {
+        LOG_FATAL("GL: no framebuffer config matches X11 window visual");
+        free(gl);
+        return false;
+    }
 
     gl->gl_ctx = glXCreateNewContext(dpy, best_fbc, GLX_RGBA_TYPE, NULL, True);
     if (!gl->gl_ctx) { LOG_FATAL("GL: failed to create context"); free(gl); return false; }
 
-    Window win = (Window)(uintptr_t)window_native;
     if (!glXMakeCurrent(dpy, win, gl->gl_ctx)) {
         LOG_FATAL("GL: failed to make context current");
         glXDestroyContext(dpy, gl->gl_ctx);
