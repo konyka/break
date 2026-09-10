@@ -603,10 +603,12 @@ bool platform_get_media_context(Platform *p, PlatformMediaContext *out) {
             out->known |= PLATFORM_MEDIA_KNOWN_COLOR_SCHEME;
         }
     }
-    if ([NSWorkspace respondsToSelector:
+    /* accessibilityDisplayShouldReduceMotion is an instance method — probe
+     * the class with instancesRespondToSelector, not the class object. */
+    if ([NSWorkspace instancesRespondToSelector:
              @selector(accessibilityDisplayShouldReduceMotion)]) {
         out->prefers_reduced_motion =
-            [NSWorkspace accessibilityDisplayShouldReduceMotion];
+            [[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceMotion];
         out->known |= PLATFORM_MEDIA_KNOWN_REDUCED_MOTION;
     }
     return true;

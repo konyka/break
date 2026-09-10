@@ -538,11 +538,11 @@ static u32 vk_find_memory(VKBackend *vk, u32 type_filter, VkMemoryPropertyFlags 
     return UINT32_MAX;
 }
 
-static bool vk_allocate_memory(VKBackend *vk, VkMemoryAllocateInfo *info,
-                               VkDeviceMemory *out_memory) {
+static VkResult vk_allocate_memory(VKBackend *vk, VkMemoryAllocateInfo *info,
+                                   VkDeviceMemory *out_memory) {
     if (!vk || !info || !out_memory || info->memoryTypeIndex == UINT32_MAX)
-        return false;
-    return vkAllocateMemory(vk->device, info, NULL, out_memory) == VK_SUCCESS;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    return vkAllocateMemory(vk->device, info, NULL, out_memory);
 }
 
 static bool vk_instance_extension_available(const char *name) {

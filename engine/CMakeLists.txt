@@ -753,7 +753,7 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
         COMPILE_OPTIONS "-Wno-error;-Wno-pedantic")
 
     target_link_libraries(engine PRIVATE
-        ${Vulkan_LIBRARIES}
+        Vulkan::Vulkan
         ${SHADERC_LIB}
         "-framework Cocoa"
         "-framework QuartzCore"
@@ -1259,6 +1259,7 @@ if(ENGINE_BUILD_TESTS)
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
         target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_PLATFORM_MACOS=1)
+        target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_VULKAN=1)
     endif()
     if(ENGINE_PLATFORM STREQUAL "linux")
         target_include_directories(test_rhi_capabilities PRIVATE
@@ -1291,12 +1292,15 @@ if(ENGINE_BUILD_TESTS)
         target_link_libraries(test_rhi_capabilities PRIVATE glad opengl32)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
         target_link_libraries(test_rhi_capabilities PRIVATE
-            ${Vulkan_LIBRARIES} ${SHADERC_LIB}
+            Vulkan::Vulkan ${SHADERC_LIB}
             "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     endif()
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         target_compile_options(test_rhi_capabilities PRIVATE
             -ffunction-sections -fdata-sections)
+    endif()
+    if(NOT APPLE)
+        # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
     endif()
     add_test(NAME test_rhi_capabilities COMMAND test_rhi_capabilities)
@@ -1654,7 +1658,8 @@ if(ENGINE_BUILD_TESTS)
 
     # R393: hotreload shader read_file bounds (RHI stubs in test).
     add_executable(test_hotreload tests/test_hotreload.c
-        src/asset/hotreload.c src/core/shader_io.c src/platform/filewatch.c src/core/log.c
+        src/asset/hotreload.c src/core/shader_io.c src/platform/filewatch.c
+        src/platform/filewatch_backend.c src/core/log.c
         external/stb_image_impl.c)
     target_include_directories(test_hotreload PRIVATE ${TEST_INCLUDE_DIRS})
     # R433: filewatch.c compiles the Win32 backend only under
@@ -1664,6 +1669,13 @@ if(ENGINE_BUILD_TESTS)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_hotreload PRIVATE kernel32)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_hotreload PRIVATE ENGINE_PLATFORM_MACOS=1)
+        # filewatch.c FSEvents backend needs CoreServices/CoreFoundation.
+        set_source_files_properties(src/platform/filewatch.c PROPERTIES
+            COMPILE_OPTIONS "-Wno-error;-Wno-pedantic")
+        target_link_libraries(test_hotreload PRIVATE
+            "-framework CoreServices" "-framework CoreFoundation")
     endif()
     target_link_libraries(test_hotreload PRIVATE m)
     add_test(NAME test_hotreload COMMAND test_hotreload)

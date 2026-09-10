@@ -3,7 +3,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <emmintrin.h>  /* SSE2 for SoA→AoS pack */
+
+/* SSE2 guarded like simd.h/lighting.c: arm64 builds fall back to scalar. */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    #include <emmintrin.h>  /* SSE2 for SoA→AoS pack */
+    #define GPUCULL_SSE2 1
+#else
+    #define GPUCULL_SSE2 0
+#endif
+
 #include <core/shader_io.h>
 
 
@@ -469,11 +477,17 @@ void gpucull_upload_objects_unified(GPUCullSystem *gc, const GPUCullObject *obje
 
     /* Use persistent pack buffer (cap = GPUCULL_MAX_OBJECTS * 4, always sufficient) */
     f32 *packed = gc->_pack_buf;
-    /* SSE2 SoA→AoS pack: position[4] is already (x,y,z,r), direct store */
+    /* SoA→AoS pack: position[4] is already (x,y,z,r), direct store */
     u32 i = 0;
+#if GPUCULL_SSE2
     for (; i + 1 <= count; i++) {
         _mm_storeu_ps(&packed[i * 4], _mm_loadu_ps(objects[i].position));
     }
+#else
+    for (; i + 1 <= count; i++) {
+        memcpy(&packed[i * 4], objects[i].position, 4 * sizeof(f32));
+    }
+#endif
     rhi_buffer_update_region(gc->device, gc->object_ssbo, 0,
                              packed, (usize)count * 4 * sizeof(f32));
     gc->object_count = count;

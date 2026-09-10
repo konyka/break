@@ -86,6 +86,7 @@ TEST(cocoa_media_context_preserves_color_capability_levels)
     }
     if (!platform_get_media_context(platform, &media)) {
         printf("  FAIL: Cocoa media query failed\n");
+        g_test_fail++;
     } else {
         if ((media.capabilities & PLATFORM_MEDIA_CAP_COLOR_P3) != 0u &&
             (media.capabilities & PLATFORM_MEDIA_CAP_COLOR_SRGB) == 0u) {

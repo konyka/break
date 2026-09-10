@@ -9,8 +9,12 @@
 /* R419: this target does not link audio.c (headless, no device), so the
  * source-handle generation guard is tested by including the TU directly.
  * Mirror the POSIX feature level the engine target compiles audio.c with.
- * Must precede all system includes. */
+ * Must precede all system includes. On macOS the engine does not pin
+ * _POSIX_C_SOURCE (Linux-only, see CMakeLists), and defining it there hides
+ * snprintf/vsnprintf from the SDK headers under strict c11. */
+#if !defined(__APPLE__)
 #define _POSIX_C_SOURCE 199309L
+#endif
 
 #include "test_framework.h"
 #include <audio/audio.h>

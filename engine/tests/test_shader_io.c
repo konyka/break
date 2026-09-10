@@ -352,7 +352,8 @@ TEST(vulkan_memory_allocation_rejects_invalid_type)
 {
     static char src[524288];
     ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
-    ASSERT_NOT_NULL(strstr(src, "static bool vk_allocate_memory"));
+    /* Returns VkResult so callers can compare against VK_SUCCESS directly. */
+    ASSERT_NOT_NULL(strstr(src, "static VkResult vk_allocate_memory"));
     ASSERT_NOT_NULL(strstr(src, "info->memoryTypeIndex == UINT32_MAX"));
     ASSERT_TRUE(strstr(src, "vkAllocateMemory(vk->device, &") == NULL);
 }

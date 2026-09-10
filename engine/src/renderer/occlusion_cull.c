@@ -3,7 +3,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <emmintrin.h>  /* SSE2 for visibility count */
+
+/* SSE2 guarded like simd.h/lighting.c: arm64 builds fall back to scalar. */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    #include <emmintrin.h>  /* SSE2 for visibility count */
+    #define OCCLUSION_CULL_SSE2 1
+#else
+    #define OCCLUSION_CULL_SSE2 0
+#endif
+
 #include <core/shader_io.h>
 
 /* ---- Helper: file read ---- */
@@ -477,6 +485,7 @@ u32 occlusion_cull_visible_count(const OcclusionCullSystem *sys) {
     u32 i = 0;
 
     /* SIMD path: 4 elements per iteration */
+#if OCCLUSION_CULL_SSE2
     for (; i + 4 <= n; i += 4) {
         __m128i v = _mm_loadu_si128((const __m128i *)(rb + i));
         __m128i zero = _mm_setzero_si128();
@@ -493,6 +502,7 @@ u32 occlusion_cull_visible_count(const OcclusionCullSystem *sys) {
         }
         count += set_bits / 4u;
     }
+#endif
 
     /* Scalar tail */
     for (; i < n; i++) {
