@@ -1,5 +1,15 @@
 # myui 后续阶段方案与状态
 
+## 本轮完成：Redis SELECT 回复 fail-closed（2026-09-10）
+
+Redis provider 初始化现在只把 `REDIS_REPLY_STATUS` 视为成功的 `SELECT` 回复。整数、bulk、nil、
+error 或空回复均在 provider 发布前 fail-closed，并释放 hiredis connection、回复对象、前缀和
+临时 provider/state，避免错误连接状态或半初始化 provider 泄漏到引擎。TDD 使用伪 Redis 服务返回
+`:1` 锁定该边界，Redis 8.10.1 source-backed `test_rule_engine_stream_ext` 为 **55/55**。
+
+完整 CTest 为 **100/101**；仅 `test_rhi_x11_runtime` 因当前 X11/GLX 环境销毁 drawable 后仍触发
+`GLXBadDrawable` 失败，与 Redis 改动无关。该平台 runtime 缺陷仍需在稳定的 X11 runner 中处理。
+
 ## 本轮完成：Redis IPv6 URL 解析（2026-09-09）
 
 Redis state provider 的 URL parser 现在支持标准括号 IPv6 host，并在连接前剥离括号；IPv4、

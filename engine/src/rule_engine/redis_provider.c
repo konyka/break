@@ -524,8 +524,10 @@ re_status_t re_redis_provider_create(re_engine_t *engine,
         redisReply *reply;
         snprintf(db_text, sizeof(db_text), "%ld", database);
         reply = redisCommand(state->connection, "SELECT %s", db_text);
-        if (reply != NULL && reply->type == REDIS_REPLY_ERROR) {
-            freeReplyObject(reply);
+        if (reply == NULL || reply->type != REDIS_REPLY_STATUS) {
+            if (reply != NULL) {
+                freeReplyObject(reply);
+            }
             reply = NULL;
         }
         if (reply == NULL) {

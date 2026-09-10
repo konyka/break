@@ -677,6 +677,47 @@ static int redis_test_start_invalid_get_server(pid_t *out_pid) {
     return port;
 }
 
+static int redis_test_start_invalid_select_server(pid_t *out_pid) {
+    struct sockaddr_in address;
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int server_fd;
+    pid_t child;
+    int port;
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) return -1;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0u);
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server_fd, 1) != 0 ||
+        getsockname(server_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        close(server_fd);
+        return -1;
+    }
+    port = (int)ntohs(address.sin_port);
+    child = fork();
+    if (child < 0) {
+        close(server_fd);
+        return -1;
+    }
+    if (child == 0) {
+        int client_fd = accept(server_fd, NULL, NULL);
+        char request[256];
+        if (client_fd >= 0) {
+            (void)recv(client_fd, request, sizeof(request), 0);
+            (void)send(client_fd, ":1\r\n", 4u, 0);
+            close(client_fd);
+        }
+        close(server_fd);
+        _exit(0);
+    }
+    close(server_fd);
+    *out_pid = child;
+    return port;
+}
+
 static int redis_test_start_malformed_value_server(pid_t *out_pid) {
     struct sockaddr_in address;
     socklen_t address_size = (socklen_t)sizeof(address);
@@ -866,6 +907,46 @@ TEST(redis_provider_rejects_bounded_url_and_timeout_inputs) {
     re_engine_destroy(engine);
 #else
     printf("SKIP: native Redis adapter not compiled (RE_HAS_HIREDIS undefined)\n");
+#endif
+}
+
+TEST(redis_provider_rejects_non_status_select_reply) {
+#if defined(RE_HAS_HIREDIS) && !defined(_WIN32)
+    const char *saved = getenv("RE_REDIS_URL");
+    char *saved_copy = NULL;
+    char url[96];
+    pid_t child = -1;
+    int port;
+    re_engine_t *engine;
+    re_state_provider_t *provider = NULL;
+    re_state_provider_options_t options = {sizeof(options),
+        RE_STATE_PROVIDER_ABI_VERSION, RE_STATE_PROVIDER_REDIS, 0u, 500u};
+
+    if (saved != NULL) {
+        size_t saved_size = strlen(saved);
+        saved_copy = malloc(saved_size + 1u);
+        ASSERT_NOT_NULL(saved_copy);
+        memcpy(saved_copy, saved, saved_size + 1u);
+    }
+    port = redis_test_start_invalid_select_server(&child);
+    ASSERT_TRUE(port > 0 && child > 0);
+    snprintf(url, sizeof(url), "redis://127.0.0.1:%d/1", port);
+    redis_test_set_url(url);
+    engine = re_engine_create(NULL, NULL);
+    ASSERT_NOT_NULL(engine);
+    ASSERT_EQ(re_engine_set_state_provider_v1(engine, &options, NULL, &provider),
+              RE_STATUS_ERROR);
+    ASSERT_TRUE(provider == NULL);
+    re_engine_destroy(engine);
+    redis_test_stop_delayed_server(child);
+    if (saved_copy != NULL) {
+        redis_test_set_url(saved_copy);
+        free(saved_copy);
+    } else {
+        redis_test_clear_url();
+    }
+#else
+    printf("SKIP: invalid Redis SELECT probe requires native hiredis on POSIX\n");
 #endif
 }
 
@@ -2515,6 +2596,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(redis_provider_rejects_negative_del_reply);
     RUN_TEST(redis_provider_classifies_invalid_get_reply_as_serialization);
     RUN_TEST(redis_provider_keeps_output_on_malformed_value);
+    RUN_TEST(redis_provider_rejects_non_status_select_reply);
     RUN_TEST(redis_roundtrip_when_service_available);
     RUN_TEST(run_reentry_conflicting_mutation_returns_busy);
     RUN_TEST(notify_reentry_mutation_returns_busy_read_allowed);

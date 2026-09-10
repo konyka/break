@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：Redis SELECT 回复 fail-closed（2026-09-10）
+
+- Redis provider 初始化现在只接受 `SELECT` 的 `REDIS_REPLY_STATUS` 回复；整数、bulk、nil、error
+  以及空回复都会释放回复对象、连接和临时 provider 状态，不发布半初始化 provider。
+- TDD 新增伪 Redis 服务返回 `:1` 的回归，验证 `re_engine_set_state_provider_v1()` 返回
+  `RE_STATUS_ERROR` 且输出 provider 保持 `NULL`；使用 Redis 8.10.1 source-backed 构建的
+  `test_rule_engine_stream_ext` 为 **55/55**。
+- 完整 CTest 为 **100/101**；唯一失败是无关的 `test_rhi_x11_runtime`，在当前 X11 runtime 中因
+  GLX `BadDrawable` 失败，Redis、headless 和其余测试均通过。`git diff --check` 通过。
+
 ## 本轮补充：Redis IPv6 URL 解析（2026-09-09）
 
 - Redis provider 现在支持标准的括号 IPv6 literal，例如
