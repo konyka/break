@@ -281,3 +281,6 @@ jobs:
         run: |
           cmake --build build --target test_platform_config test_platform_null_safety test_platform_cocoa_runtime --parallel
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$'
+
+      - name: Test (headless suite)
+        run: ctest --test-dir build -LE graphics --output-on-failure

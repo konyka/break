@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：macOS headless CI 门禁（2026-09-11）
+
+- macOS Cocoa + MoltenVK job 在原生 platform runtime smoke 后新增完整非 graphics CTest，
+  与 Linux、Windows 门禁保持一致，覆盖 myui、规则引擎、网络循环和资源生命周期等跨模块
+  回归；graphics/WSI 测试仍由各自平台 smoke 单独执行。
+- 本机 Linux 基线 `build-redis-current` 全量 CTest 为 **102/102**，io_uring
+  `test_net_loop` 为 **12/12**；macOS 结果以 GitHub Actions runner 为准。
+
 ## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11）
 
 - `net_loop_wait()` 在 epoll、kqueue 和 IOCP 后端复用 `NetLoop` 内部事件缓冲，避免每次

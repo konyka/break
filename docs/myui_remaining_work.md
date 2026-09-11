@@ -1,5 +1,12 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：macOS headless CI 门禁（2026-09-11）
+
+macOS Cocoa + MoltenVK CI 在原生 platform runtime smoke 后现在执行完整非 graphics CTest，
+与 Linux、Windows job 保持相同的跨模块回归门禁；graphics/WSI 测试仍单独执行，避免把无显示
+环境误当成窗口渲染成功。当前 Linux 本机基线为全量 **102/102**，macOS 实际结果由 runner
+提供；Windows/macOS 的 HiDPI、IME、present、buffer-age 仍需对应平台专用 smoke 完整覆盖。
+
 ## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11）
 
 等待路径现在复用 epoll/kqueue/IOCP 的后端事件数组，避免每次 `net_loop_wait()` 产生临时堆
