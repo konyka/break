@@ -132,7 +132,7 @@ void net_loop_destroy(NetLoop *loop)
 
 bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 {
-    if (!loop || !socket) return false;
+    if (!loop || !socket || !net_loop_interest_valid(events)) return false;
     SOCKET s = (SOCKET)net_socket_native_handle(socket);
     if (s == INVALID_SOCKET) return false;
 
@@ -171,7 +171,7 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 
 bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
 {
-    if (!loop || !socket) return false;
+    if (!loop || !socket || !net_loop_interest_valid(events)) return false;
     u32 idx = iocp_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     NetLoopSlot *slot = &loop->slots[idx];

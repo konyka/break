@@ -164,6 +164,35 @@ TEST(loop_modify_drops_read)
     net_shutdown();
 }
 
+TEST(loop_rejects_invalid_interest_masks)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_FALSE(net_loop_add(loop, recv_s, 0u, NULL));
+    ASSERT_FALSE(net_loop_add(loop, recv_s, NET_LOOP_ERROR, NULL));
+    ASSERT_FALSE(net_loop_add(loop, recv_s, NET_LOOP_READ | 8u, NULL));
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, NULL));
+    ASSERT_FALSE(net_loop_modify(loop, recv_s, NET_LOOP_ERROR));
+    ASSERT_FALSE(net_loop_modify(loop, recv_s, NET_LOOP_WRITE | 8u));
+
+    const char payload[] = "mask";
+    ASSERT_TRUE(net_sendto(send_s, payload, (u32)sizeof(payload), &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
 TEST(loop_batched_events_two_sockets)
 {
     ASSERT_TRUE(net_init());
@@ -261,20 +290,23 @@ TEST(loop_stress_throughput)
     ASSERT_NOT_NULL(loop);
     ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, NULL));
 
-    /* Blast datagrams without waiting, then drain via batched waits. */
+    /* Produce bounded batches so the kernel's UDP receive queue cannot drop
+     * datagrams before the readiness consumer gets scheduled. */
     const char p[] = "datagram";
-    for (u32 i = 0; i < NET_LOOP_STRESS_DATAGRAMS; i++) {
-        i32 rc = net_sendto(send_s, p, (u32)sizeof(p), &dst);
-        if (rc == NET_WOULD_BLOCK) {
-            i--; /* socket buffer full; drain below will free space */
-        }
-    }
-
+    u32 sent = 0;
     u32 received = 0;
     u64 deadline = time_microseconds() + 5000000ull;
     NetLoopEvent ev[32];
-    while (received < NET_LOOP_STRESS_DATAGRAMS &&
+    while (sent < NET_LOOP_STRESS_DATAGRAMS &&
            time_microseconds() < deadline) {
+        u32 batch = 0;
+        while (batch < 16u && sent < NET_LOOP_STRESS_DATAGRAMS) {
+            i32 rc = net_sendto(send_s, p, (u32)sizeof(p), &dst);
+            if (rc == NET_WOULD_BLOCK) break;
+            ASSERT_EQ(rc, (i32)sizeof(p));
+            sent++;
+            batch++;
+        }
         i32 n = net_loop_wait(loop, ev, 32, 500);
         if (n == NET_ERROR) break;
         if (n > 0) {
@@ -285,6 +317,17 @@ TEST(loop_stress_throughput)
             }
         }
     }
+    while (received < sent && time_microseconds() < deadline) {
+        i32 n = net_loop_wait(loop, ev, 32, 500);
+        if (n == NET_ERROR) break;
+        if (n > 0) {
+            char buf[64];
+            while (net_recvfrom(recv_s, buf, sizeof(buf), NULL) > 0) {
+                received++;
+            }
+        }
+    }
+    ASSERT_EQ(sent, NET_LOOP_STRESS_DATAGRAMS);
     ASSERT_EQ(received, NET_LOOP_STRESS_DATAGRAMS);
 
     net_loop_destroy(loop);
@@ -300,6 +343,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_no_event_without_send);
     RUN_TEST(loop_remove_stops_events);
     RUN_TEST(loop_modify_drops_read);
+    RUN_TEST(loop_rejects_invalid_interest_masks);
     RUN_TEST(loop_batched_events_two_sockets);
 #if !defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(loop_wakeup_from_thread);

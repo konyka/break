@@ -1,5 +1,18 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11）
+
+跨平台网络事件循环现在统一采用严格兴趣掩码：`net_loop_add()` 与 `net_loop_modify()` 只接受
+`NET_LOOP_READ`、`NET_LOOP_WRITE` 的非空组合，拒绝 `NET_LOOP_ERROR` 和未知位；这避免 epoll、
+io_uring、kqueue、IOCP 对相同非法调用产生不同结果。检查只在注册冷路径执行，正常批量等待和
+事件分发不增加锁、分配或系统调用。
+
+io_uring 后端同时完成失败清理和生命周期收口：部分环映射失败会释放已经建立的映射及 fd，
+completion 使用稳定的 slot index+generation 令牌而非可被 `realloc` 失效的指针，旧 poll 使用
+`POLL_REMOVE.addr` 精确取消。POSIX 独立网络目标补齐 `sys/time.h`，UDP 压测改为有界生产/消费。
+epoll 和 io_uring 的 `test_net_loop` 均通过 **10/10**。真实 Windows IOCP、macOS/BSD kqueue
+运行时与不同 Linux 内核版本仍需平台 CI 验证。
+
 ## 本轮完成：查询聚合 INT64 溢出收口（2026-09-10）
 
 规则引擎查询聚合的 INT64 `SUM`/`AVERAGE` 现在对每次中间加法执行有符号范围检查。发生正溢出或

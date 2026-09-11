@@ -31,6 +31,9 @@
 #  define SYS_io_uring_setup __NR_io_uring_setup
 #endif
 
+/* Strict POSIX feature macros hide the variadic syscall declaration. */
+extern long syscall(long number, ...);
+
 struct iouring_ring {
     unsigned *head, *tail, *ring_mask, *ring_entries, *flags, *array;
     struct io_uring_sqe *sqes;
@@ -38,12 +41,14 @@ struct iouring_ring {
     struct io_uring_cqe *cqes;
     void *sq_ptr, *cq_ptr;
     size_t sq_sz, cq_sz;
+    size_t sqes_sz;
 };
 
 typedef struct {
     NetSocket *socket;
     void      *tag;
     u32        events;
+    u32        generation;
     bool       used;
     bool       polled;   /* multishot poll currently armed */
 } NetLoopSlot;
@@ -86,23 +91,47 @@ static bool uring_map(struct NetLoop *loop, unsigned entries)
     r->sq_sz = p.sq_off.array + p.sq_entries * sizeof(unsigned);
     r->cq_sz = p.cq_off.cqes + p.cq_entries * sizeof(struct io_uring_cqe);
     if (p.features & IORING_FEAT_SINGLE_MMAP) {
-        if (r->cq_sz > r->sq_sz) r->sq_sz = r.cq_sz;
+        if (r->cq_sz > r->sq_sz) r->sq_sz = r->cq_sz;
         r->cq_sz = r->sq_sz;
     }
     r->sq_ptr = mmap(0, r->sq_sz, PROT_READ | PROT_WRITE,
                      MAP_SHARED | MAP_POPULATE, fd, IORING_OFF_SQ_RING);
-    if (r->sq_ptr == MAP_FAILED) return false;
+    if (r->sq_ptr == MAP_FAILED) {
+        r->sq_ptr = NULL;
+        close(fd);
+        loop->ring_fd = -1;
+        return false;
+    }
     if (p.features & IORING_FEAT_SINGLE_MMAP) {
         r->cq_ptr = r->sq_ptr;
     } else {
         r->cq_ptr = mmap(0, r->cq_sz, PROT_READ | PROT_WRITE,
                          MAP_SHARED | MAP_POPULATE, fd, IORING_OFF_CQ_RING);
-        if (r->cq_ptr == MAP_FAILED) return false;
+        if (r->cq_ptr == MAP_FAILED) {
+            r->cq_ptr = NULL;
+            munmap(r->sq_ptr, r->sq_sz);
+            r->sq_ptr = NULL;
+            close(fd);
+            loop->ring_fd = -1;
+            return false;
+        }
     }
-    r->sqes = mmap(0, p.sq_entries * sizeof(struct io_uring_sqe),
+    r->sqes_sz = p.sq_entries * sizeof(struct io_uring_sqe);
+    r->sqes = mmap(0, r->sqes_sz,
                    PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
                    fd, IORING_OFF_SQES);
-    if (r->sqes == MAP_FAILED) return false;
+    if (r->sqes == MAP_FAILED) {
+        r->sqes = NULL;
+        if (r->cq_ptr && r->cq_ptr != r->sq_ptr) {
+            munmap(r->cq_ptr, r->cq_sz);
+            r->cq_ptr = NULL;
+        }
+        munmap(r->sq_ptr, r->sq_sz);
+        r->sq_ptr = NULL;
+        close(fd);
+        loop->ring_fd = -1;
+        return false;
+    }
 
     r->head         = (unsigned *)((char *)r->sq_ptr + p.sq_off.head);
     r->tail         = (unsigned *)((char *)r->sq_ptr + p.sq_off.tail);
@@ -139,14 +168,30 @@ static u32 poll_mask_for(u32 events)
     return m;
 }
 
-static bool uring_arm_poll(NetLoop *loop, NetLoopSlot *slot, intptr_t fd)
+static u64 uring_slot_token(u32 index, u32 generation)
+{
+    return ((u64)generation << 32) | (u64)(index + 3u);
+}
+
+static bool uring_cancel_poll(NetLoop *loop, u32 index, u32 generation)
+{
+    struct io_uring_sqe *sqe = uring_get_sqe(loop);
+    if (!sqe) return false;
+    sqe->opcode = IORING_OP_POLL_REMOVE;
+    sqe->addr = uring_slot_token(index, generation);
+    sqe->user_data = 1u; /* control op, never surfaced */
+    return uring_enter(loop->ring_fd, 1, 0, 0) >= 0;
+}
+
+static bool uring_arm_poll(NetLoop *loop, NetLoopSlot *slot, u32 index,
+                           intptr_t fd)
 {
     struct io_uring_sqe *sqe = uring_get_sqe(loop);
     if (!sqe) return false;
     sqe->opcode = IORING_OP_POLL_ADD;
     sqe->fd = (int)fd;
     sqe->poll32_events = poll_mask_for(slot->events);
-    sqe->user_data = (u64)(uintptr_t)slot;
+    sqe->user_data = uring_slot_token(index, slot->generation);
     /* IORING_POLL_ADD_MULTI for multishot (stays armed after each event). */
     sqe->len = IORING_POLL_ADD_MULTI;
     return uring_enter(loop->ring_fd, 1, 0, 0) >= 0;
@@ -203,7 +248,7 @@ void net_loop_destroy(NetLoop *loop)
     if (r->cq_ptr && r->cq_ptr != MAP_FAILED && r->cq_ptr != r->sq_ptr)
         munmap(r->cq_ptr, r->cq_sz);
     if (r->sqes && r->sqes != MAP_FAILED)
-        munmap(r->sqes, 64u * sizeof(struct io_uring_sqe));
+        munmap(r->sqes, r->sqes_sz);
     if (loop->wake_fd >= 0) close(loop->wake_fd);
     if (loop->ring_fd >= 0) close(loop->ring_fd);
     free(loop->slots);
@@ -212,7 +257,7 @@ void net_loop_destroy(NetLoop *loop)
 
 bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 {
-    if (!loop || !socket) return false;
+    if (!loop || !socket || !net_loop_interest_valid(events)) return false;
     intptr_t fd = net_socket_native_handle(socket);
     if (fd < 0) return false;
 
@@ -226,29 +271,11 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
                    (new_cap - loop->slot_cap) * sizeof(*ns));
             loop->slots = ns;
             loop->slot_cap = new_cap;
-            /* Slots moved: re-arm live registrations so user_data tracks
-             * the new addresses. POLL_REMOVE then POLL_ADD. */
-            for (u32 i = 0; i < loop->slot_count; i++) {
-                if (!loop->slots[i].used || !loop->slots[i].polled) continue;
-                intptr_t rfd = net_socket_native_handle(loop->slots[i].socket);
-                if (rfd < 0) continue;
-                struct io_uring_sqe *rm = uring_get_sqe(loop);
-                if (rm) {
-                    rm->opcode = IORING_OP_POLL_REMOVE;
-                    rm->fd = (int)rfd;
-                    rm->user_data = 1u; /* control op, never surfaced */
-                }
-            }
-            (void)uring_enter(loop->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
-            for (u32 i = 0; i < loop->slot_count; i++) {
-                if (!loop->slots[i].used || !loop->slots[i].polled) continue;
-                intptr_t rfd = net_socket_native_handle(loop->slots[i].socket);
-                if (rfd >= 0) (void)uring_arm_poll(loop, &loop->slots[i], rfd);
-            }
         }
         idx = loop->slot_count++;
         loop->slots[idx].used = false;
         loop->slots[idx].polled = false;
+        loop->slots[idx].generation = 1u;
     }
     loop->slots[idx].socket = socket;
     loop->slots[idx].tag = tag;
@@ -256,23 +283,20 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
     loop->slots[idx].used = true;
     if (loop->slots[idx].polled) {
         /* Re-arm with the new mask. */
-        struct io_uring_sqe *rm = uring_get_sqe(loop);
-        if (rm) {
-            rm->opcode = IORING_OP_POLL_REMOVE;
-            rm->fd = (int)fd;
-            rm->user_data = 1u;
-            (void)uring_enter(loop->ring_fd, 1, 0, 0);
-        }
+        if (!uring_cancel_poll(loop, idx, loop->slots[idx].generation))
+            return false;
         loop->slots[idx].polled = false;
+        loop->slots[idx].generation++;
+        if (loop->slots[idx].generation == 0u) loop->slots[idx].generation = 1u;
     }
-    if (!uring_arm_poll(loop, &loop->slots[idx], fd)) return false;
+    if (!uring_arm_poll(loop, &loop->slots[idx], idx, fd)) return false;
     loop->slots[idx].polled = true;
     return true;
 }
 
 bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
 {
-    if (!loop || !socket) return false;
+    if (!loop || !socket || !net_loop_interest_valid(events)) return false;
     u32 idx = ur_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     /* Reuse the re-arm path: modify == add on an existing socket. */
@@ -284,20 +308,15 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
     if (!loop || !socket) return false;
     u32 idx = ur_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
-    intptr_t fd = net_socket_native_handle(socket);
     bool ok = true;
-    if (fd >= 0 && loop->slots[idx].polled) {
-        struct io_uring_sqe *rm = uring_get_sqe(loop);
-        if (rm) {
-            rm->opcode = IORING_OP_POLL_REMOVE;
-            rm->fd = (int)fd;
-            rm->user_data = 1u;
-            ok = uring_enter(loop->ring_fd, 1, 0, 0) >= 0;
-        }
+    if (loop->slots[idx].polled) {
+        ok = uring_cancel_poll(loop, idx, loop->slots[idx].generation);
     }
     loop->slots[idx].used = false;
     loop->slots[idx].socket = NULL;
     loop->slots[idx].polled = false;
+    loop->slots[idx].generation++;
+    if (loop->slots[idx].generation == 0u) loop->slots[idx].generation = 1u;
     return ok;
 }
 
@@ -344,8 +363,13 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
             continue;
         }
         if (ud == 1u || ud == 2u) continue; /* control ops */
-        NetLoopSlot *slot = (NetLoopSlot *)(uintptr_t)ud;
-        if (!slot->used) continue;
+        u32 encoded_index = (u32)ud;
+        u32 generation = (u32)(ud >> 32);
+        if (encoded_index < 3u) continue;
+        u32 index = encoded_index - 3u;
+        if (index >= loop->slot_count) continue;
+        NetLoopSlot *slot = &loop->slots[index];
+        if (!slot->used || slot->generation != generation) continue;
         u32 events = 0;
         if (cqe->res >= 0) {
             u32 mask = (u32)cqe->res;

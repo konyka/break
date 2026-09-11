@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11）
+
+- `net_loop_add()`/`net_loop_modify()` 现在在 epoll、io_uring、kqueue 和 IOCP 后端统一拒绝
+  空兴趣集、`NET_LOOP_ERROR` 输出位及未知位；非法输入不会修改已有注册，避免后端静默忽略
+  请求而产生平台间行为漂移。该检查位于注册/修改冷路径，不增加等待和事件分发热路径开销。
+- 独立 `test_net_loop` 的 POSIX 头文件依赖补齐 `<sys/time.h>`，压力测试改为有界生产/消费，
+  避免把 UDP 内核接收队列溢出误报为事件循环丢事件。
+- io_uring 失败路径现在回收部分成功的 SQ/CQ/SQE 映射和 ring fd，并记录实际 SQE 映射大小；
+  poll completion 改用 slot 索引+代际令牌，`POLL_REMOVE` 使用正确的 `addr` 目标，避免
+  `realloc` 后悬空 slot 指针及 `modify()` 残留旧兴趣事件。epoll 与 io_uring 的
+  `test_net_loop` 均为 **10/10**。
+
 ## 本轮补充：查询聚合 INT64 溢出收口（2026-09-10）
 
 - `re_engine_query_aggregate()` 的 INT64 `SUM`/`AVERAGE` 中间加法现在在执行前检查正溢出和负溢出；

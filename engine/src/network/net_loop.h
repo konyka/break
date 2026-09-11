@@ -32,6 +32,12 @@
 #define NET_LOOP_READ  1u
 #define NET_LOOP_WRITE 2u
 #define NET_LOOP_ERROR 4u
+#define NET_LOOP_INTEREST_MASK (NET_LOOP_READ | NET_LOOP_WRITE)
+
+static inline bool net_loop_interest_valid(u32 events)
+{
+    return events != 0u && (events & ~NET_LOOP_INTEREST_MASK) == 0u;
+}
 
 typedef struct NetLoop NetLoop;
 
@@ -44,7 +50,9 @@ typedef struct {
 NetLoop *net_loop_create(void);
 void     net_loop_destroy(NetLoop *loop);
 
-/* Register/unregister. tag is echoed back in NetLoopEvent; the loop does not
+/* Register/unregister. Interest masks must contain at least READ or WRITE and
+ * no output-only flags such as ERROR; invalid masks are rejected without
+ * changing an existing registration. tag is echoed back in NetLoopEvent; the loop does not
  * own the socket — callers must remove it before closing. add() on an
  * already-registered socket acts like modify(). */
 bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag);
