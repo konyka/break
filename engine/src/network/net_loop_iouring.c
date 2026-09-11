@@ -63,6 +63,7 @@ struct NetLoop {
     /* Timeout SQE target; must outlive the wait (stack lifetime is too short
      * if the completion is reaped by a later wait call). */
     struct __kernel_timespec timeout_ts;
+    bool                timeout_active;
 };
 
 /* ---- raw io_uring plumbing ---- */
@@ -180,6 +181,19 @@ static bool uring_cancel_poll(NetLoop *loop, u32 index, u32 generation)
     sqe->opcode = IORING_OP_POLL_REMOVE;
     sqe->addr = uring_slot_token(index, generation);
     sqe->user_data = 1u; /* control op, never surfaced */
+    return uring_enter(loop->ring_fd, 1, 0, 0) >= 0;
+}
+
+static bool uring_cancel_timeout(NetLoop *loop)
+{
+    struct io_uring_sqe *sqe;
+    if (!loop->timeout_active) return true;
+    sqe = uring_get_sqe(loop);
+    if (!sqe) return false;
+    sqe->opcode = IORING_OP_TIMEOUT_REMOVE;
+    sqe->addr = 2u; /* timeout request user_data */
+    sqe->user_data = 2u; /* control op, never surfaced */
+    loop->timeout_active = false;
     return uring_enter(loop->ring_fd, 1, 0, 0) >= 0;
 }
 
@@ -322,7 +336,7 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
 
 i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 {
-    if (!loop || !out || max == 0u) return NET_ERROR;
+    if (!loop || !out || !net_loop_wait_count_valid(max)) return NET_ERROR;
 
     struct iouring_ring *r = &loop->ring;
     /* Block until at least one completion. io_uring_enter takes no timeout;
@@ -336,12 +350,12 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         loop->timeout_ts.tv_sec = timeout_ms / 1000;
         loop->timeout_ts.tv_nsec = (long long)(timeout_ms % 1000) * 1000000LL;
         struct io_uring_sqe *to = uring_get_sqe(loop);
-        if (to) {
-            to->opcode = IORING_OP_TIMEOUT;
-            to->addr = (u64)(uintptr_t)&loop->timeout_ts;
-            to->len = 1;
-            to->user_data = 2u; /* control op */
-        }
+        if (!to) return NET_ERROR;
+        to->opcode = IORING_OP_TIMEOUT;
+        to->addr = (u64)(uintptr_t)&loop->timeout_ts;
+        to->len = 1;
+        to->user_data = 2u; /* control op */
+        loop->timeout_active = true;
         rc = uring_enter(loop->ring_fd, 1, 1, flags);
     } else {
         rc = uring_enter(loop->ring_fd, 0, 1, flags);
@@ -349,6 +363,8 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
     if (rc < 0) return NET_ERROR;
 
     i32 count = 0;
+    bool timeout_completed = false;
+    bool other_completion = false;
     unsigned head = __atomic_load_n(r->cq_head, __ATOMIC_ACQUIRE);
     unsigned tail = __atomic_load_n(r->cq_tail, __ATOMIC_ACQUIRE);
     while (head != tail && (u32)count < max) {
@@ -357,12 +373,18 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         head++;
         if (ud == 0u) {
             /* Wakeup: drain the eventfd counter. */
+            other_completion = true;
             u64 discard;
             while (read(loop->wake_fd, &discard, sizeof(discard)) ==
                    (ssize_t)sizeof(discard)) {}
             continue;
         }
-        if (ud == 1u || ud == 2u) continue; /* control ops */
+        if (ud == 1u) continue; /* control op */
+        if (ud == 2u) {
+            timeout_completed = true;
+            loop->timeout_active = false;
+            continue;
+        }
         u32 encoded_index = (u32)ud;
         u32 generation = (u32)(ud >> 32);
         if (encoded_index < 3u) continue;
@@ -370,6 +392,7 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         if (index >= loop->slot_count) continue;
         NetLoopSlot *slot = &loop->slots[index];
         if (!slot->used || slot->generation != generation) continue;
+        other_completion = true;
         u32 events = 0;
         if (cqe->res >= 0) {
             u32 mask = (u32)cqe->res;
@@ -385,6 +408,8 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         count++;
     }
     __atomic_store_n(r->cq_head, head, __ATOMIC_RELEASE);
+    if (!timeout_completed && loop->timeout_active && other_completion)
+        (void)uring_cancel_timeout(loop);
     return count;
 }
 

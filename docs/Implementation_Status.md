@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11）
+
+- `net_loop_wait()` 在 epoll、kqueue 和 IOCP 后端复用 `NetLoop` 内部事件缓冲，避免每次
+  轮询 `calloc/free`；`max` 统一限制为非零且不超过 `NET_LOOP_MAX_EVENTS`，拒绝超大请求，
+  保持内存使用有界。io_uring 同步采用相同的输入边界。
+- io_uring 短等待在 socket 或 wakeup 先完成时会提交 `IORING_OP_TIMEOUT_REMOVE`，不再让旧的
+  timeout SQE 悬挂并累积 CQ 条目；timeout SQE 获取失败也不再提交错误的陈旧请求。
+- TDD 新增重复短等待、不可表示事件数量和 UDP 有界压力覆盖；epoll 与 io_uring 的
+  `test_net_loop` 均为 **12/12**，默认构建全量 CTest **102/102**。
+
 ## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11）
 
 - `net_loop_add()`/`net_loop_modify()` 现在在 epoll、io_uring、kqueue 和 IOCP 后端统一拒绝

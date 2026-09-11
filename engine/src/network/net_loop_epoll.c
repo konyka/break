@@ -36,6 +36,8 @@ struct NetLoop {
     NetLoopSlot *slots;
     u32          slot_count;
     u32          slot_cap;
+    struct epoll_event *wait_events;
+    u32          wait_cap;
 };
 
 static u32 ep_find_slot(const NetLoop *loop, NetSocket *socket)
@@ -88,6 +90,7 @@ void net_loop_destroy(NetLoop *loop)
     if (loop->wake_fd >= 0) close(loop->wake_fd);
     if (loop->epfd >= 0) close(loop->epfd);
     free(loop->slots);
+    free(loop->wait_events);
     free(loop);
 }
 
@@ -173,23 +176,24 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
 
 i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 {
-    if (!loop || !out || max == 0u) return NET_ERROR;
-
-    struct epoll_event *evs = (struct epoll_event *)calloc(max, sizeof(*evs));
-    if (!evs) return NET_ERROR;
+    if (!loop || !out || !net_loop_wait_count_valid(max)) return NET_ERROR;
+    if (max > loop->wait_cap) {
+        struct epoll_event *events = (struct epoll_event *)realloc(
+            loop->wait_events, (size_t)max * sizeof(*events));
+        if (!events) return NET_ERROR;
+        loop->wait_events = events;
+        loop->wait_cap = max;
+    }
 
     int n;
     do {
-        n = epoll_wait(loop->epfd, evs, (int)max, timeout_ms);
+        n = epoll_wait(loop->epfd, loop->wait_events, (int)max, timeout_ms);
     } while (n < 0 && errno == EINTR);
-    if (n < 0) {
-        free(evs);
-        return NET_ERROR;
-    }
+    if (n < 0) return NET_ERROR;
 
     i32 count = 0;
     for (int i = 0; i < n; i++) {
-        NetLoopSlot *slot = (NetLoopSlot *)evs[i].data.ptr;
+        NetLoopSlot *slot = (NetLoopSlot *)loop->wait_events[i].data.ptr;
         if (!slot) {
             /* Wakeup: drain the eventfd counter (edge cases: repeated wakes). */
             u64 discard;
@@ -199,16 +203,15 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         }
         if (!slot->used) continue; /* removed since the event queued */
         u32 events = 0;
-        if (evs[i].events & EPOLLIN)                 events |= NET_LOOP_READ;
-        if (evs[i].events & EPOLLOUT)                events |= NET_LOOP_WRITE;
-        if (evs[i].events & (EPOLLERR | EPOLLHUP))   events |= NET_LOOP_ERROR;
+        if (loop->wait_events[i].events & EPOLLIN)                 events |= NET_LOOP_READ;
+        if (loop->wait_events[i].events & EPOLLOUT)                events |= NET_LOOP_WRITE;
+        if (loop->wait_events[i].events & (EPOLLERR | EPOLLHUP))   events |= NET_LOOP_ERROR;
         out[count].socket = slot->socket;
         out[count].events = events;
         out[count].tag = slot->tag;
         count++;
         if ((u32)count == max) break;
     }
-    free(evs);
     return count;
 }
 

@@ -33,10 +33,16 @@
 #define NET_LOOP_WRITE 2u
 #define NET_LOOP_ERROR 4u
 #define NET_LOOP_INTEREST_MASK (NET_LOOP_READ | NET_LOOP_WRITE)
+#define NET_LOOP_MAX_EVENTS 65536u
 
 static inline bool net_loop_interest_valid(u32 events)
 {
     return events != 0u && (events & ~NET_LOOP_INTEREST_MASK) == 0u;
+}
+
+static inline bool net_loop_wait_count_valid(u32 max)
+{
+    return max != 0u && max <= NET_LOOP_MAX_EVENTS;
 }
 
 typedef struct NetLoop NetLoop;

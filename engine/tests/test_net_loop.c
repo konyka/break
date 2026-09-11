@@ -279,6 +279,30 @@ TEST(loop_wakeup_from_thread)
 }
 #endif
 
+TEST(loop_repeated_short_waits)
+{
+    ASSERT_TRUE(net_init());
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    NetLoopEvent ev[4];
+    for (u32 i = 0; i < 64u; i++) {
+        ASSERT_EQ(net_loop_wait(loop, ev, 4, 1), 0);
+    }
+    net_loop_destroy(loop);
+    net_shutdown();
+}
+
+TEST(loop_rejects_unrepresentable_event_count)
+{
+    ASSERT_TRUE(net_init());
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    NetLoopEvent ev[1];
+    ASSERT_EQ(net_loop_wait(loop, ev, UINT32_MAX, 0), NET_ERROR);
+    net_loop_destroy(loop);
+    net_shutdown();
+}
+
 TEST(loop_stress_throughput)
 {
     ASSERT_TRUE(net_init());
@@ -348,5 +372,7 @@ TEST_MAIN_BEGIN()
 #if !defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(loop_wakeup_from_thread);
 #endif
+    RUN_TEST(loop_repeated_short_waits);
+    RUN_TEST(loop_rejects_unrepresentable_event_count);
     RUN_TEST(loop_stress_throughput);
 TEST_MAIN_END()

@@ -1,5 +1,16 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11）
+
+等待路径现在复用 epoll/kqueue/IOCP 的后端事件数组，避免每次 `net_loop_wait()` 产生临时堆
+分配；所有后端将 `max` 限制为 `1..NET_LOOP_MAX_EVENTS`，阻断超大请求造成的资源消耗。
+io_uring 的有限超时在 socket/wakeup 先完成时主动取消 timeout SQE，避免高频短等待积累陈旧
+请求，同时在 SQE 获取失败时 fail-closed，不提交错误数量。
+
+TDD 新增重复短等待和超大事件数边界，epoll 与 io_uring 的 `test_net_loop` 均通过 **12/12**；
+默认构建全量 CTest 为 **102/102**。真实 Windows IOCP、macOS/BSD kqueue 运行时及不同 Linux
+内核版本仍需平台 CI 验证。
+
 ## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11）
 
 跨平台网络事件循环现在统一采用严格兴趣掩码：`net_loop_add()` 与 `net_loop_modify()` 只接受

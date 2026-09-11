@@ -42,6 +42,8 @@ struct NetLoop {
     struct kevent *pending;
     u32            pending_count;
     u32            pending_cap;
+    struct kevent *wait_events;
+    u32            wait_cap;
 };
 
 static u32 kq_find_slot(const NetLoop *loop, NetSocket *socket)
@@ -101,6 +103,7 @@ void net_loop_destroy(NetLoop *loop)
     if (loop->kq >= 0) close(loop->kq);
     free(loop->slots);
     free(loop->pending);
+    free(loop->wait_events);
     free(loop);
 }
 
@@ -202,11 +205,16 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
 
 i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 {
-    if (!loop || !out || max == 0u) return NET_ERROR;
+    if (!loop || !out || !net_loop_wait_count_valid(max)) return NET_ERROR;
     if (!kq_flush(loop)) return NET_ERROR;
 
-    struct kevent *kev = (struct kevent *)calloc(max, sizeof(*kev));
-    if (!kev) return NET_ERROR;
+    if (max > loop->wait_cap) {
+        struct kevent *events = (struct kevent *)realloc(
+            loop->wait_events, (size_t)max * sizeof(*events));
+        if (!events) return NET_ERROR;
+        loop->wait_events = events;
+        loop->wait_cap = max;
+    }
 
     struct timespec ts;
     struct timespec *tsp = NULL;
@@ -216,28 +224,24 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         tsp = &ts;
     }
 
-    int n = kevent(loop->kq, NULL, 0, kev, (int)max, tsp);
-    if (n < 0) {
-        free(kev);
-        return NET_ERROR;
-    }
+    int n = kevent(loop->kq, NULL, 0, loop->wait_events, (int)max, tsp);
+    if (n < 0) return NET_ERROR;
 
     i32 count = 0;
     for (int i = 0; i < n; i++) {
-        if (kev[i].filter == EVFILT_USER) continue; /* wakeup: no socket event */
-        NetLoopSlot *slot = (NetLoopSlot *)kev[i].udata;
+        if (loop->wait_events[i].filter == EVFILT_USER) continue; /* wakeup: no socket event */
+        NetLoopSlot *slot = (NetLoopSlot *)loop->wait_events[i].udata;
         if (!slot || !slot->used) continue; /* removed since the event queued */
         u32 events = 0;
-        if (kev[i].filter == EVFILT_READ)  events |= NET_LOOP_READ;
-        if (kev[i].filter == EVFILT_WRITE) events |= NET_LOOP_WRITE;
-        if (kev[i].flags & EV_ERROR)       events |= NET_LOOP_ERROR;
+        if (loop->wait_events[i].filter == EVFILT_READ)  events |= NET_LOOP_READ;
+        if (loop->wait_events[i].filter == EVFILT_WRITE) events |= NET_LOOP_WRITE;
+        if (loop->wait_events[i].flags & EV_ERROR)       events |= NET_LOOP_ERROR;
         out[count].socket = slot->socket;
         out[count].events = events;
         out[count].tag = slot->tag;
         count++;
         if ((u32)count == max) break;
     }
-    free(kev);
     return count;
 }
 

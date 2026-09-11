@@ -53,6 +53,8 @@ struct NetLoop {
     NetLoopSlot *slots;
     u32          slot_count;
     u32          slot_cap;
+    OVERLAPPED_ENTRY *wait_events;
+    u32          wait_cap;
 };
 
 static u32 iocp_find_slot(const NetLoop *loop, NetSocket *socket)
@@ -127,6 +129,7 @@ void net_loop_destroy(NetLoop *loop)
     if (!loop) return;
     if (loop->iocp) CloseHandle(loop->iocp);
     free(loop->slots);
+    free(loop->wait_events);
     free(loop);
 }
 
@@ -217,17 +220,19 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
 
 i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 {
-    if (!loop || !out || max == 0u) return NET_ERROR;
-
-    OVERLAPPED_ENTRY *entries =
-        (OVERLAPPED_ENTRY *)calloc(max, sizeof(*entries));
-    if (!entries) return NET_ERROR;
+    if (!loop || !out || !net_loop_wait_count_valid(max)) return NET_ERROR;
+    if (max > loop->wait_cap) {
+        OVERLAPPED_ENTRY *entries = (OVERLAPPED_ENTRY *)realloc(
+            loop->wait_events, (size_t)max * sizeof(*entries));
+        if (!entries) return NET_ERROR;
+        loop->wait_events = entries;
+        loop->wait_cap = max;
+    }
 
     ULONG got = 0;
     DWORD ms = timeout_ms < 0 ? INFINITE : (DWORD)timeout_ms;
-    if (!GetQueuedCompletionStatusEx(loop->iocp, entries, (ULONG)max, &got,
+    if (!GetQueuedCompletionStatusEx(loop->iocp, loop->wait_events, (ULONG)max, &got,
                                      ms, FALSE)) {
-        free(entries);
         DWORD err = GetLastError();
         if (err == WAIT_TIMEOUT) return 0;
         return NET_ERROR;
@@ -235,9 +240,9 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 
     i32 count = 0;
     for (ULONG i = 0; i < got; i++) {
-        if (entries[i].lpCompletionKey == IOCP_WAKEUP_KEY) continue;
-        if (!entries[i].lpOverlapped) continue;
-        WSAOVERLAPPED *ovl = entries[i].lpOverlapped;
+        if (loop->wait_events[i].lpCompletionKey == IOCP_WAKEUP_KEY) continue;
+        if (!loop->wait_events[i].lpOverlapped) continue;
+        WSAOVERLAPPED *ovl = loop->wait_events[i].lpOverlapped;
         /* read_ovl is the first member, so a read completion's overlapped
          * pointer IS the slot address; a write completion needs the offset. */
         NetLoopSlot *slot = (NetLoopSlot *)
@@ -263,7 +268,6 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         count++;
         if ((u32)count == max) break;
     }
-    free(entries);
     return count;
 }
 
