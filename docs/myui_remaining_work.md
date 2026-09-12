@@ -1,5 +1,13 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：IOCP 取消 completion 生命周期收口（2026-09-12）
+
+IOCP 后端现在区分“兴趣仍需要”和“overlapped 仍在飞行”：取消读写后不提前清除在途状态，
+晚到 completion 会被识别、回收并按当前兴趣安全丢弃；loop 销毁时先取消并排空所有在途
+completion，再释放槽内的 overlapped 存储。这样覆盖 `modify()`、`remove()`、幂等 `add()`
+以及注册数组扩容的生命周期边界。Linux 默认定向回归 `1/1`、io_uring `13/13`，Windows
+目标对象编译通过，实际 Windows runtime 结果仍由 CI runner 提供。
+
 ## 本轮补充：IOCP 注册槽生命周期与 completion key 修复（2026-09-12）
 
 IOCP 后端现在使用非零 completion key（槽索引加一），避免首个槽与唤醒 key 冲突；每个

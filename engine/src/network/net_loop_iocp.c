@@ -98,17 +98,56 @@ static bool iocp_arm_write(NetLoopSlot *slot)
     return false;
 }
 
-/* Re-arm after a completion fired (readiness is edge-like under IOCP). */
-static void iocp_rearm(NetLoopSlot *slot)
+static void iocp_cancel_slots(NetLoop *loop)
 {
-    if (!slot->used || slot->removed) return;
-    if (slot->read_armed) {
-        slot->read_armed = false;
-        if (slot->events & NET_LOOP_READ) (void)iocp_arm_read(slot);
+    u32 i;
+    for (i = 0; i < loop->slot_count; ++i) {
+        NetLoopSlot *slot = loop->slots[i];
+        if (!slot || !slot->socket) continue;
+        if (slot->read_armed)
+            (void)CancelIoEx((HANDLE)net_socket_native_handle(slot->socket),
+                             &slot->read_ovl);
+        if (slot->write_armed)
+            (void)CancelIoEx((HANDLE)net_socket_native_handle(slot->socket),
+                             &slot->write_ovl);
     }
-    if (slot->write_armed) {
-        slot->write_armed = false;
-        if (slot->events & NET_LOOP_WRITE) (void)iocp_arm_write(slot);
+}
+
+static void iocp_drain_slots(NetLoop *loop)
+{
+    OVERLAPPED_ENTRY entries[32];
+    u32 pending = 0;
+    u32 i;
+    for (i = 0; i < loop->slot_count; ++i) {
+        NetLoopSlot *slot = loop->slots[i];
+        if (!slot) continue;
+        if (slot->read_armed) pending++;
+        if (slot->write_armed) pending++;
+    }
+    while (pending != 0u) {
+        ULONG got = 0;
+        ULONG j;
+        if (!GetQueuedCompletionStatusEx(loop->iocp, entries, 32u, &got,
+                                         INFINITE, FALSE)) {
+            continue;
+        }
+        for (j = 0; j < got; ++j) {
+            ULONG_PTR key = entries[j].lpCompletionKey;
+            NetLoopSlot *slot;
+            WSAOVERLAPPED *ovl;
+            if (key == IOCP_WAKEUP_KEY || entries[j].lpOverlapped == NULL ||
+                key - 1u >= loop->slot_count) continue;
+            slot = loop->slots[key - 1u];
+            if (!slot) continue;
+            ovl = entries[j].lpOverlapped;
+            if (ovl == &slot->read_ovl && slot->read_armed) {
+                slot->read_armed = false;
+                pending--;
+            } else if (ovl == &slot->write_ovl && slot->write_armed) {
+                slot->write_armed = false;
+                pending--;
+            }
+        }
     }
 }
 
@@ -129,6 +168,8 @@ void net_loop_destroy(NetLoop *loop)
 {
     u32 i;
     if (!loop) return;
+    iocp_cancel_slots(loop);
+    iocp_drain_slots(loop);
     if (loop->iocp) CloseHandle(loop->iocp);
     for (i = 0; i < loop->slot_count; ++i) free(loop->slots[i]);
     free(loop->slots);
@@ -175,8 +216,16 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
     slot->removed = false;
 
     bool ok = true;
-    if (events & NET_LOOP_READ)  ok = iocp_arm_read(slot) && ok;
-    if (events & NET_LOOP_WRITE) ok = iocp_arm_write(slot) && ok;
+    if ((events & NET_LOOP_READ) && !slot->read_armed)
+        ok = iocp_arm_read(slot) && ok;
+    if ((events & NET_LOOP_WRITE) && !slot->write_armed)
+        ok = iocp_arm_write(slot) && ok;
+    if (!(events & NET_LOOP_READ) && slot->read_armed) {
+        (void)CancelIoEx((HANDLE)s, &slot->read_ovl);
+    }
+    if (!(events & NET_LOOP_WRITE) && slot->write_armed) {
+        (void)CancelIoEx((HANDLE)s, &slot->write_ovl);
+    }
     return ok;
 }
 
@@ -197,12 +246,10 @@ bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
     if (!(events & NET_LOOP_READ) && slot->read_armed) {
         (void)CancelIoEx((HANDLE)net_socket_native_handle(socket),
                          &slot->read_ovl);
-        slot->read_armed = false;
     }
     if (!(events & NET_LOOP_WRITE) && slot->write_armed) {
         (void)CancelIoEx((HANDLE)net_socket_native_handle(socket),
                          &slot->write_ovl);
-        slot->write_armed = false;
     }
     return ok;
 }
@@ -221,8 +268,6 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
     slot->removed = true;
     slot->used = false;
     slot->socket = NULL;
-    slot->read_armed = false;
-    slot->write_armed = false;
     return true;
 }
 
@@ -256,7 +301,17 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         if (!slot) continue;
         WSAOVERLAPPED *ovl = loop->wait_events[i].lpOverlapped;
         bool was_write = (ovl == &slot->write_ovl);
+        if (ovl != &slot->read_ovl && !was_write) continue;
+        if (was_write) {
+            if (!slot->write_armed) continue;
+            slot->write_armed = false;
+        } else {
+            if (!slot->read_armed) continue;
+            slot->read_armed = false;
+        }
         if (!slot->used || slot->removed) continue;
+        if (!(slot->events & (was_write ? NET_LOOP_WRITE : NET_LOOP_READ)))
+            continue;
 
         u32 events = 0;
         DWORD bytes = 0, flags = 0;
@@ -269,7 +324,11 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
             events |= NET_LOOP_ERROR;
         }
         /* Rearm before reporting so an immediate drain is observable. */
-        iocp_rearm(slot);
+        if (was_write) {
+            if (slot->events & NET_LOOP_WRITE) (void)iocp_arm_write(slot);
+        } else if (slot->events & NET_LOOP_READ) {
+            (void)iocp_arm_read(slot);
+        }
         out[count].socket = slot->socket;
         out[count].events = events;
         out[count].tag = slot->tag;

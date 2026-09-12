@@ -193,6 +193,33 @@ TEST(loop_rejects_invalid_interest_masks)
     net_shutdown();
 }
 
+TEST(loop_add_existing_registration_is_idempotent)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, NULL));
+    /* add() is modify() for an existing socket and must not duplicate I/O. */
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+
+    const char payload[] = "idempotent";
+    ASSERT_TRUE(net_sendto(send_s, payload, (u32)sizeof(payload), &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
 TEST(loop_batched_events_two_sockets)
 {
     ASSERT_TRUE(net_init());
@@ -411,6 +438,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_remove_stops_events);
     RUN_TEST(loop_modify_drops_read);
     RUN_TEST(loop_rejects_invalid_interest_masks);
+    RUN_TEST(loop_add_existing_registration_is_idempotent);
     RUN_TEST(loop_batched_events_two_sockets);
 #if !defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(loop_wakeup_from_thread);

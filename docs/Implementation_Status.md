@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：IOCP 取消 completion 生命周期收口（2026-09-12）
+
+- IOCP 的 `read_armed`/`write_armed` 现在表示 overlapped 操作仍在飞行，而不是仅表示
+  当前兴趣；`modify()`/`remove()` 取消操作后保留该状态，晚到的取消 completion 会先清除
+  状态再安全丢弃，不会误报 `NET_LOOP_ERROR` 或提前释放槽。
+- `net_loop_destroy()` 先取消并排空所有在途 completion，再关闭 completion port 和释放槽，
+  消除 Windows 下 overlapped 仍引用槽内内存时的 UAF 风险。
+- 幂等 `add()`、取消后重配置和扩容注册回归均已加入 TDD；默认 epoll `test_net_loop`
+  `1/1`、io_uring `13/13`，Windows GNU 目标对象编译通过。
+
 ## 本轮补充：IOCP 注册槽生命周期与 completion key 修复（2026-09-12）
 
 - IOCP completion key 改为 `slot_index + 1`，保留 `0` 作为显式唤醒事件；此前第一个
