@@ -10,7 +10,9 @@
  *   - EVFILT_USER implements cross-thread wakeup with zero extra fds.
  */
 
-#if defined(ENGINE_PLATFORM_MACOS) || defined(__APPLE__)
+typedef int net_loop_kqueue_translation_unit;
+
+#if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS) || defined(__APPLE__)
 
 #include "net_loop.h"
 
@@ -248,11 +250,11 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 void net_loop_wakeup(NetLoop *loop)
 {
     if (!loop || loop->kq < 0) return;
-    /* Commit staged changes first so this wakeup lands after them. */
-    (void)kq_flush(loop);
+    /* Do not touch staged registration state here: wakeup() is the only
+     * operation permitted from a thread other than the loop owner. */
     struct kevent kev;
     EV_SET(&kev, NET_LOOP_WAKEUP_IDENT, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
     (void)kevent(loop->kq, &kev, 1, NULL, 0, NULL);
 }
 
-#endif /* ENGINE_PLATFORM_MACOS */
+#endif /* ENGINE_PLATFORM_MACOS || ENGINE_PLATFORM_IOS */

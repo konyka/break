@@ -12,7 +12,8 @@
  * Linux man pages (epoll_create1/epoll_ctl/epoll_wait/eventfd).
  */
 
-#if defined(ENGINE_PLATFORM_LINUX) && !defined(ENGINE_NET_IOURING)
+#if (defined(ENGINE_PLATFORM_LINUX) || defined(ENGINE_PLATFORM_ANDROID) || \
+     defined(ENGINE_PLATFORM_HARMONYOS)) && !defined(ENGINE_NET_IOURING)
 
 #include "net_loop.h"
 
