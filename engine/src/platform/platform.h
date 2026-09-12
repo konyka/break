@@ -44,6 +44,8 @@ typedef struct {
     u32 width;
     u32 height;
     const char *title;
+    void *native_window;
+    void *native_display;
 } PlatformConfig;
 
 /* Keep native window dimensions representable on every supported backend. */
