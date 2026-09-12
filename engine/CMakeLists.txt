@@ -1220,17 +1220,17 @@ if(ENGINE_BUILD_TESTS)
 
     foreach(_mobile_name IN ITEMS IOS ANDROID HARMONYOS)
         string(TOLOWER "${_mobile_name}" _mobile_lower)
-        add_executable(test_platform_mobile_${_mobile_lower}
+        add_executable(test_platform_mobile_layer_${_mobile_lower}
             tests/test_platform_mobile.c
             src/platform/window_mobile.c
             src/platform/input.c
             src/platform/platform_config.c)
-        target_include_directories(test_platform_mobile_${_mobile_lower}
+        target_include_directories(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ${TEST_INCLUDE_DIRS})
-        target_compile_definitions(test_platform_mobile_${_mobile_lower}
+        target_compile_definitions(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ENGINE_PLATFORM_${_mobile_name}=1)
-        add_test(NAME test_platform_mobile_${_mobile_lower}
-            COMMAND test_platform_mobile_${_mobile_lower})
+        add_test(NAME test_platform_mobile_layer_${_mobile_lower}
+            COMMAND test_platform_mobile_layer_${_mobile_lower})
     endforeach()
 
     add_executable(test_platform_display_media tests/test_platform_display_media.c
