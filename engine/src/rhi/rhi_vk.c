@@ -1,16 +1,23 @@
 #ifdef ENGINE_PLATFORM_WINDOWS
     #define VK_USE_PLATFORM_WIN32_KHR
     #include <windows.h>
-#elif defined(ENGINE_PLATFORM_MACOS)
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     #define VK_USE_PLATFORM_METAL_EXT
 #elif defined(ENGINE_PLATFORM_WAYLAND)
     #define VK_USE_PLATFORM_WAYLAND_KHR
     #include <wayland-client.h>
-#else
+#elif defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
+    #define VK_USE_PLATFORM_ANDROID_KHR
+    #include <android/native_window.h>
+#elif defined(ENGINE_PLATFORM_ANDROID) || defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_HARMONYOS)
+    #error "Vulkan surface support requires a supplied native surface implementation"
+#elif defined(ENGINE_PLATFORM_LINUX)
     #define VK_USE_PLATFORM_XLIB_KHR
+#else
+    #error "Vulkan surface support requires a supported platform surface backend"
 #endif
 #include <vulkan/vulkan.h>
-#if !defined(ENGINE_PLATFORM_WINDOWS) && !defined(ENGINE_PLATFORM_WAYLAND) && !defined(ENGINE_PLATFORM_MACOS)
+#if defined(ENGINE_PLATFORM_LINUX)
 #include <X11/Xlib.h>
 #endif
 #include <shaderc/shaderc.h>
@@ -342,12 +349,14 @@ typedef struct {
 #ifdef ENGINE_PLATFORM_WINDOWS
     HINSTANCE hinstance;
     HWND      hwnd;
-#elif defined(ENGINE_PLATFORM_MACOS)
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     void *metal_layer;   /* CAMetalLayer* from the Cocoa window */
 #elif defined(ENGINE_PLATFORM_WAYLAND)
     struct wl_display *wl_display;
     struct wl_surface *wl_surface;
-#else
+#elif defined(ENGINE_PLATFORM_ANDROID)
+    struct ANativeWindow *native_window;
+#elif defined(ENGINE_PLATFORM_LINUX)
     Display *display;
     Window   window;
 #endif
@@ -1262,13 +1271,16 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 #ifdef ENGINE_PLATFORM_WINDOWS
     vk->hinstance = (HINSTANCE)display_native;
     vk->hwnd = (HWND)window_native;
-#elif defined(ENGINE_PLATFORM_MACOS)
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     (void)display_native;
     vk->metal_layer = window_native;   /* CAMetalLayer* */
 #elif defined(ENGINE_PLATFORM_WAYLAND)
     vk->wl_display = (struct wl_display *)display_native;
     vk->wl_surface = (struct wl_surface *)window_native;
-#else
+#elif defined(ENGINE_PLATFORM_ANDROID)
+    vk->native_window = (struct ANativeWindow *)window_native;
+    ANativeWindow_acquire(vk->native_window);
+#elif defined(ENGINE_PLATFORM_LINUX)
     vk->display = (Display *)display_native;
     vk->window = (Window)(uintptr_t)window_native;
 #endif
@@ -1290,13 +1302,15 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     extensions[ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
 #ifdef ENGINE_PLATFORM_WINDOWS
     extensions[ext_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
-#elif defined(ENGINE_PLATFORM_MACOS)
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     extensions[ext_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
     extensions[ext_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
     extensions[ext_count++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
 #elif defined(ENGINE_PLATFORM_WAYLAND)
     extensions[ext_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
-#else
+#elif defined(ENGINE_PLATFORM_ANDROID)
+    extensions[ext_count++] = VK_KHR_ANDROID_SURFACE_EXTENSION_NAME;
+#elif defined(ENGINE_PLATFORM_LINUX)
     extensions[ext_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #endif
     for (u32 i = 0; i < ext_count; i++) {
@@ -1330,7 +1344,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     ici.pApplicationInfo = &app;
     ici.enabledExtensionCount = ext_count;
     ici.ppEnabledExtensionNames = extensions;
-#ifdef ENGINE_PLATFORM_MACOS
+#if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     /* MoltenVK is a portability driver — must opt in to enumeration. */
     ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 #endif
@@ -1394,7 +1408,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_init_cleanup(dev, vk);
         return false;
     }
-#elif defined(ENGINE_PLATFORM_MACOS)
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     VkMetalSurfaceCreateInfoEXT sci = {0};
     sci.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
     sci.pLayer = vk->metal_layer;   /* CAMetalLayer* supplied by the Cocoa window */
@@ -1419,7 +1433,17 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_init_cleanup(dev, vk);
         return false;
     }
-#else
+#elif defined(ENGINE_PLATFORM_ANDROID)
+    VkAndroidSurfaceCreateInfoKHR sci = {0};
+    sci.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    sci.window = vk->native_window;
+    if (!vk->native_window || vkCreateAndroidSurfaceKHR(vk->instance, &sci, NULL,
+                                                         &vk->surface) != VK_SUCCESS) {
+        LOG_ERROR("Failed to create Android Vulkan surface from ANativeWindow");
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
+#elif defined(ENGINE_PLATFORM_LINUX)
     VkXlibSurfaceCreateInfoKHR sci = {0};
     sci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
     sci.dpy = vk->display;
@@ -1634,7 +1658,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         return false;
     }
     dev_extensions[dev_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-#ifdef ENGINE_PLATFORM_MACOS
+#if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     /* Mandatory on MoltenVK: a portability driver must have its subset
      * extension enabled whenever the device advertises it. */
     if (vk_device_extension_available(vk->physical, "VK_KHR_portability_subset"))
@@ -1991,6 +2015,13 @@ static void vk_shutdown(RHIDevice *dev) {
     if (vk->device != VK_NULL_HANDLE && !vk_mip_upload_owned_by_other(vk))
         vk_mip_upload_reclaim(vk);
 
+#if defined(ENGINE_PLATFORM_ANDROID)
+    if (vk->native_window) {
+        ANativeWindow_release(vk->native_window);
+        vk->native_window = NULL;
+    }
+#endif
+
     if (vk->shaderc_compiler) {
         shaderc_compiler_release(vk->shaderc_compiler);
         vk->shaderc_compiler = NULL;
@@ -2075,7 +2106,9 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
     }
 #ifdef ENGINE_PLATFORM_WINDOWS
     if (window_native == NULL || display_native == NULL) return NULL;
-#elif defined(ENGINE_PLATFORM_MACOS)
+#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
+    if (window_native == NULL) return NULL;
+#elif defined(ENGINE_PLATFORM_ANDROID)
     if (window_native == NULL) return NULL;
 #else
     if (window_native == NULL || display_native == NULL) return NULL;

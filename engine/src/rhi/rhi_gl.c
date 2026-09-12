@@ -23,7 +23,9 @@ static bool gl_extension_has(const char *extensions, const char *name);
     #include <wayland-egl.h>
     typedef EGLBoolean (*PFN_break_egl_swap_buffers_with_damage)(
         EGLDisplay, EGLSurface, const EGLint *, EGLint);
-#else
+#elif defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_ANDROID) || defined(ENGINE_PLATFORM_HARMONYOS)
+    #error "OpenGL host surface integration is not provided for this mobile target"
+#elif defined(ENGINE_PLATFORM_LINUX)
     #include <GL/glx.h>
     #include <X11/Xlib.h>
     #ifndef GLX_BACK_BUFFER_AGE_EXT
@@ -31,6 +33,8 @@ static bool gl_extension_has(const char *extensions, const char *name);
     #endif
     typedef void (*PFN_break_glx_swap_buffers_with_damage)(
         Display *, GLXDrawable, const int *, int);
+#else
+    #error "OpenGL host surface integration is not provided for this platform"
 #endif
 
 #include "rhi/rhi_present_history.h"
