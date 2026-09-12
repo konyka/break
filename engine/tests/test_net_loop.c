@@ -428,6 +428,75 @@ TEST(loop_iocp_registration_growth_keeps_inflight_slots_stable)
     net_close(sender);
     net_shutdown();
 }
+
+TEST(loop_iocp_remove_allows_close_before_destroy)
+{
+    NetSocket *receiver = NULL;
+    NetLoop *loop = NULL;
+
+    ASSERT_TRUE(net_init());
+    receiver = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, NULL));
+    ASSERT_TRUE(net_loop_remove(loop, receiver));
+    net_close(receiver);
+    receiver = NULL;
+    /* The canceled completion remains drainable from stable slot storage
+     * after the caller closes the socket required by the public contract. */
+    net_loop_destroy(loop);
+    net_shutdown();
+}
+
+TEST(loop_iocp_reenable_ignores_cancelled_completion)
+{
+    NetSocket *receiver = NULL;
+    NetSocket *sender = NULL;
+    NetLoop *loop = NULL;
+    NetAddress destination = {0};
+    NetLoopEvent events[8];
+    bool saw_read = false;
+    u64 deadline;
+
+    ASSERT_TRUE(net_init());
+    receiver = net_udp_create(0);
+    sender = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    ASSERT_NOT_NULL(sender);
+    net_set_nonblocking(receiver, true);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_socket_get_local_address(receiver, &destination));
+    if (strcmp(destination.host, "0.0.0.0") == 0) {
+        strncpy(destination.host, "127.0.0.1", sizeof(destination.host) - 1u);
+        destination.host[sizeof(destination.host) - 1u] = '\0';
+    }
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, NULL));
+    ASSERT_TRUE(net_loop_modify(loop, receiver, NET_LOOP_WRITE));
+    ASSERT_TRUE(net_loop_modify(loop, receiver, NET_LOOP_READ));
+    ASSERT_TRUE(net_sendto(sender, "reenable", 9u, &destination) > 0);
+
+    deadline = time_microseconds() + 2000000ull;
+    while (!saw_read && time_microseconds() < deadline) {
+        i32 n = net_loop_wait(loop, events, 8u, 100);
+        ASSERT_TRUE(n != NET_ERROR);
+        for (i32 i = 0; i < n; ++i) {
+            if (events[i].socket == receiver &&
+                (events[i].events & NET_LOOP_READ)) {
+                saw_read = true;
+                break;
+            }
+            ASSERT_FALSE((events[i].events & NET_LOOP_ERROR) != 0u);
+        }
+    }
+    ASSERT_TRUE(saw_read);
+
+    net_loop_destroy(loop);
+    net_close(receiver);
+    net_close(sender);
+    net_shutdown();
+}
 #endif
 
 TEST_MAIN_BEGIN()
@@ -448,5 +517,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_stress_throughput);
 #if defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(loop_iocp_registration_growth_keeps_inflight_slots_stable);
+    RUN_TEST(loop_iocp_remove_allows_close_before_destroy);
+    RUN_TEST(loop_iocp_reenable_ignores_cancelled_completion);
 #endif
 TEST_MAIN_END()

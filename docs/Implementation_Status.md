@@ -1,5 +1,25 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：IOCP 取消重启状态机（2026-09-12）
+
+- IOCP 为读、写 overlapped 分别记录取消在途状态。兴趣取消后又在 completion 到达前恢复时，
+  取消 completion 被丢弃并按最新兴趣重臂，不再向调用方伪造 `NET_LOOP_ERROR`；热路径仍是每个
+  completion 的常数次状态更新，无额外分配或轮询。
+- 新增 Windows TDD 回归，覆盖 READ -> WRITE -> READ 的取消重启与真实 UDP 可读事件；slot
+  原生句柄显式初始化为 `INVALID_SOCKET`，避免把零值当作有效句柄取消。
+- `net_loop` 除 `wakeup()` 外明确为 loop-thread-affine，禁止与 `wait()` 或 `destroy()` 并发，
+  使 IOCP 销毁排空计数不会被其他消费者竞争。默认 epoll 全量 CTest 为 **102/102**，io_uring
+  `test_net_loop` 为 **13/13**；Zig Windows GNU 已编译 IOCP 源和 Windows 测试对象，真实
+  Windows runtime 仍由 CI/原生主机门禁验证（预期 `test_net_loop` **15/15**）。
+
+## 本轮补充：IOCP remove 后关闭安全（2026-09-12）
+
+- IOCP slot 保持稳定的 overlapped 存储，`remove()` 发出取消后立即使原生 `SOCKET` 失效；销毁
+  仍可按在途标记排空 completion，但绝不对调用方已关闭且可能被内核复用的句柄再次取消。
+- 新增 remove-close-destroy 回归，保持“调用方先 remove 再 close”的跨后端 API 契约；默认 epoll
+  全量 CTest 为 **102/102**，io_uring
+  `test_net_loop` 为 **13/13**，Windows GNU 目标对象编译通过。
+
 ## 本轮补充：IOCP 取消 completion 生命周期收口（2026-09-12）
 
 - IOCP 的 `read_armed`/`write_armed` 现在表示 overlapped 操作仍在飞行，而不是仅表示

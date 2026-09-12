@@ -1,5 +1,20 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：IOCP 取消重启状态机（2026-09-12）
+
+网络循环的 Windows IOCP 实现补齐了取消状态机：当某一兴趣在 overlapped completion 到达前
+被取消又重新启用时，旧取消 completion 仅完成内部回收并按最新兴趣重新投递，不会泄漏为
+`NET_LOOP_ERROR`。实现保持每次 completion O(1)、无热路径分配；读写状态独立，避免一个方向
+的取消影响另一方向。`net_loop` 除 wakeup 外采用 loop-thread-affine 契约，排空和释放不能与
+wait 并发。新增 Windows READ -> WRITE -> READ TDD；Linux 默认 CTest **102/102**、io_uring
+`test_net_loop` **13/13**，Zig Windows GNU 源/测试对象编译通过，真实 Windows 运行仍待 CI。
+
+## 本轮补充：IOCP remove 后关闭安全（2026-09-12）
+
+IOCP 后端的 slot 保持 overlapped 存储直到 completion 排空，但 `remove()` 已发出取消后会立即
+使原生 socket handle 失效。这样销毁仍能安全排空 completion，却不会在调用方按契约 close 后对
+可能已被 Windows 复用的句柄再次取消。新增 Windows remove-close-destroy TDD 回归。
+
 ## 本轮补充：IOCP 取消 completion 生命周期收口（2026-09-12）
 
 IOCP 后端现在区分“兴趣仍需要”和“overlapped 仍在飞行”：取消读写后不提前清除在途状态，

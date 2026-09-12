@@ -69,8 +69,9 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket);
  * timeout or wakeup-with-no-events, NET_ERROR on failure. */
 i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms);
 
-/* Wake another thread blocked in net_loop_wait (thread-safe, signal-safe
- * on POSIX backends). */
+/* All operations except wakeup() are loop-thread-affine and must not run
+ * concurrently with wait() or destroy(). Wake another thread blocked in
+ * net_loop_wait (thread-safe, signal-safe on POSIX backends). */
 void net_loop_wakeup(NetLoop *loop);
 
 #endif /* NET_LOOP_H */
