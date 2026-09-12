@@ -15,6 +15,7 @@ option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match execu
 option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
 set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
     "Redis source tree or hiredis source directory used to build the native client")
+option(ENGINE_ANDROID_NATIVE_WINDOW "Compile Android Vulkan support for supplied ANativeWindow handles" OFF)
 # myui integration options
 option(MYUI_FONT_STB "TrueType fonts via stb_truetype" ON)
 option(MYUI_FONT_FREETYPE "Hinted fonts via FreeType when available" ON)
@@ -26,9 +27,17 @@ option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 
-if(UNIX)
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set(ENGINE_PLATFORM "android")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+    set(ENGINE_PLATFORM "harmonyos")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     if(APPLE)
-        set(ENGINE_PLATFORM "macos")
+        if(CMAKE_OSX_SYSROOT MATCHES "iphone")
+            set(ENGINE_PLATFORM "ios")
+        else()
+            set(ENGINE_PLATFORM "macos")
+        endif()
     else()
         if(ENGINE_ENABLE_WAYLAND)
             find_package(PkgConfig REQUIRED)
@@ -50,16 +59,23 @@ elseif(WIN32)
     set(ENGINE_PLATFORM "windows")
 endif()
 
+if(NOT ENGINE_PLATFORM)
+    message(FATAL_ERROR
+        "Unsupported target platform: configure with a supported Linux, Windows, macOS, iOS, Android, or OHOS toolchain")
+endif()
+
 # net_loop backend: platform-optimal event notification mechanism.
 #   macOS   -> kqueue        (net_loop_kqueue.c)
 #   Linux   -> epoll         (net_loop_epoll.c), or io_uring when
 #               ENGINE_NET_IOURING=ON (net_loop_iouring.c, experimental)
 #   Windows -> IOCP          (net_loop_iocp.c)
 option(ENGINE_NET_IOURING "Use io_uring net_loop backend on Linux (experimental)" OFF)
-if(ENGINE_PLATFORM STREQUAL "macos")
+if(ENGINE_PLATFORM STREQUAL "macos" OR ENGINE_PLATFORM STREQUAL "ios")
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_kqueue.c)
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_iocp.c)
+elseif(ENGINE_PLATFORM STREQUAL "android" OR ENGINE_PLATFORM STREQUAL "harmonyos")
+    set(NET_LOOP_BACKEND_SRC src/network/net_loop_epoll.c)
 elseif(ENGINE_NET_IOURING)
     set(NET_LOOP_BACKEND_SRC src/network/net_loop_iouring.c)
 else()
@@ -101,6 +117,14 @@ option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
+if(ENGINE_PLATFORM STREQUAL "android" AND ENGINE_VULKAN)
+    find_path(ANDROID_NATIVE_WINDOW_INCLUDE_DIR android/native_window.h)
+    if(NOT ENGINE_ANDROID_NATIVE_WINDOW OR NOT ANDROID_NATIVE_WINDOW_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "ENGINE_VULKAN on Android requires ENGINE_ANDROID_NATIVE_WINDOW=ON and "
+            "an NDK android/native_window.h include path (ANativeWindow)")
+    endif()
+endif()
 if(ENGINE_USE_ASAN)
     if(MSVC)
         add_compile_options(/fsanitize=address)
@@ -235,6 +259,38 @@ src/renderer/lens_effects.c
     src/scene/scene_state.c
     src/engine.c
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(test_platform_compat tests/test_platform_compat.c)
+    target_include_directories(test_platform_compat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_MACOS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "ios")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_IOS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "android")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_ANDROID=1)
+    elseif(ENGINE_PLATFORM STREQUAL "harmonyos")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_HARMONYOS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_platform_compat PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
+    add_test(NAME test_platform_compat COMMAND test_platform_compat)
+
+    foreach(_compat_name IN ITEMS MACOS IOS ANDROID HARMONYOS)
+        string(TOLOWER "${_compat_name}" _compat_lower)
+        add_executable(test_platform_compat_${_compat_lower}
+            tests/test_platform_compat_simulated.c)
+        target_include_directories(test_platform_compat_${_compat_lower}
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_compile_definitions(test_platform_compat_${_compat_lower}
+            PRIVATE SIMULATE_${_compat_name}=1)
+        add_test(NAME test_platform_compat_${_compat_lower}
+            COMMAND test_platform_compat_${_compat_lower})
+    endforeach()
+endif()
 
 # glad.c is generated code — suppress pedantic warnings (void* to fn ptr casts)
 add_library(glad STATIC external/glad.c)
@@ -782,6 +838,36 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
         "-framework CoreServices"
         "-framework CoreFoundation"
     )
+elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
+    target_sources(engine PRIVATE src/platform/window_mobile.c)
+    if(ENGINE_PLATFORM STREQUAL "ios")
+        target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_IOS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "android")
+        target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_ANDROID=1)
+        if(ENGINE_ANDROID_NATIVE_WINDOW)
+            target_compile_definitions(engine PUBLIC ENGINE_ANDROID_NATIVE_WINDOW=1)
+            target_include_directories(engine PRIVATE ${ANDROID_NATIVE_WINDOW_INCLUDE_DIR})
+        endif()
+    else()
+        target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_HARMONYOS=1)
+    endif()
+    if(NOT ENGINE_VULKAN)
+        message(FATAL_ERROR
+            "Graphics support on ${ENGINE_PLATFORM} requires ENGINE_VULKAN=ON and a native surface host")
+    else()
+        if(ENGINE_PLATFORM STREQUAL "harmonyos")
+            message(FATAL_ERROR
+                "ENGINE_VULKAN on ${ENGINE_PLATFORM} requires a supplied native surface implementation; none is present")
+        endif()
+        find_package(Vulkan REQUIRED)
+        find_library(SHADERC_LIB NAMES shaderc_shared REQUIRED)
+        target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
+        target_link_libraries(engine PRIVATE Vulkan::Vulkan ${SHADERC_LIB} dl)
+        if(ENGINE_PLATFORM STREQUAL "android")
+            target_link_libraries(engine PRIVATE android)
+        endif()
+    endif()
 endif()
 
 # Executable
@@ -1131,6 +1217,21 @@ if(ENGINE_BUILD_TESTS)
         src/platform/platform_config.c)
     target_include_directories(test_platform_config PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_platform_config COMMAND test_platform_config)
+
+    foreach(_mobile_name IN ITEMS IOS ANDROID HARMONYOS)
+        string(TOLOWER "${_mobile_name}" _mobile_lower)
+        add_executable(test_platform_mobile_${_mobile_lower}
+            tests/test_platform_mobile.c
+            src/platform/window_mobile.c
+            src/platform/input.c
+            src/platform/platform_config.c)
+        target_include_directories(test_platform_mobile_${_mobile_lower}
+            PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_platform_mobile_${_mobile_lower}
+            PRIVATE ENGINE_PLATFORM_${_mobile_name}=1)
+        add_test(NAME test_platform_mobile_${_mobile_lower}
+            COMMAND test_platform_mobile_${_mobile_lower})
+    endforeach()
 
     add_executable(test_platform_display_media tests/test_platform_display_media.c
         src/platform/platform_display_media.c)
@@ -1542,7 +1643,8 @@ if(ENGINE_BUILD_TESTS)
     # test_network: needs network.c (BSD sockets / Winsock)
     add_executable(test_network tests/test_network.c src/network/network.c)
     target_include_directories(test_network PRIVATE ${TEST_INCLUDE_DIRS})
-    if(ENGINE_PLATFORM STREQUAL "linux")
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
         target_compile_definitions(test_network PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_network PRIVATE ENGINE_PLATFORM_WINDOWS=1)
@@ -1555,13 +1657,14 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_net_loop tests/test_net_loop.c
         src/network/network.c src/platform/time.c ${NET_LOOP_BACKEND_SRC})
     target_include_directories(test_net_loop PRIVATE ${TEST_INCLUDE_DIRS})
-    if(ENGINE_PLATFORM STREQUAL "linux")
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
         target_link_libraries(test_net_loop PRIVATE pthread)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_net_loop PRIVATE ws2_32 mswsock)
-    elseif(ENGINE_PLATFORM STREQUAL "macos")
+    elseif(ENGINE_PLATFORM STREQUAL "macos" OR ENGINE_PLATFORM STREQUAL "ios")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_MACOS=1)
         target_link_libraries(test_net_loop PRIVATE pthread)
     endif()
