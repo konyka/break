@@ -17,7 +17,7 @@ static bool x11_runtime_available(void)
 
 TEST(x11_glx_damage_frame_lifecycle)
 {
-    const PlatformConfig config = {320, 240, "Break GLX damage runtime"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break GLX damage runtime"};
     Platform *platform = platform_create(&config);
     RHIDevice *device = NULL;
     RHICapabilities capabilities;

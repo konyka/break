@@ -4,7 +4,7 @@
 
 TEST(cocoa_window_create_poll_and_destroy)
 {
-    const PlatformConfig config = {320, 240, "Break Cocoa runtime"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break Cocoa runtime"};
     Platform *platform = platform_create(&config);
     PlatformMediaContext media;
     u32 width = 0;
@@ -48,7 +48,7 @@ TEST(cocoa_window_create_poll_and_destroy)
 
 TEST(cocoa_media_context_reports_system_preferences)
 {
-    const PlatformConfig config = {320, 240, "Break Cocoa media"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break Cocoa media"};
     Platform *platform = platform_create(&config);
     PlatformMediaContext media;
 
@@ -75,7 +75,7 @@ TEST(cocoa_media_context_reports_system_preferences)
 
 TEST(cocoa_media_context_preserves_color_capability_levels)
 {
-    const PlatformConfig config = {320, 240, "Break Cocoa color media"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break Cocoa color media"};
     Platform *platform = platform_create(&config);
     PlatformMediaContext media;
 

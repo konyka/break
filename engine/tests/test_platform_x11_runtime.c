@@ -24,7 +24,7 @@ static int x11_runtime_available(void)
 
 TEST(x11_window_create_resize_and_destroy)
 {
-    const PlatformConfig config = {320, 240, "Break X11 runtime"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break X11 runtime"};
     Platform *platform;
     Display *display;
     Window window;

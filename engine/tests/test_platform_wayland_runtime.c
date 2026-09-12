@@ -20,7 +20,7 @@ static int wayland_runtime_available(void)
 
 TEST(wayland_window_create_poll_and_destroy)
 {
-    const PlatformConfig config = {320, 240, "Break Wayland runtime"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break Wayland runtime"};
     Platform *platform;
     PlatformMediaContext media;
     u32 width = 0;
@@ -81,7 +81,7 @@ cleanup:
 
 TEST(wayland_media_snapshot_is_stable_between_queries)
 {
-    const PlatformConfig config = {320, 240, "Break Wayland media cache"};
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break Wayland media cache"};
     Platform *platform = platform_create(&config);
     PlatformMediaContext first;
     PlatformMediaContext second;
