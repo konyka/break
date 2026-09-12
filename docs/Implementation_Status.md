@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：IOCP 注册槽生命周期与 completion key 修复（2026-09-12）
+
+- IOCP completion key 改为 `slot_index + 1`，保留 `0` 作为显式唤醒事件；此前第一个
+  注册 socket 的 key 为 `0`，其可读/可写完成会被等待路径错误丢弃。
+- 注册槽改为独立分配，槽数组只保存稳定指针；新增 socket 扩容时不会移动仍被 Winsock
+  overlapped 操作引用的 `WSAOVERLAPPED`，避免扩容后的悬空指针和跨平台生命周期破坏。
+- TDD 新增 Windows 注册扩容与飞行中 completion 回归；Linux 默认网络循环仍为
+  `12/12`，Windows 源文件与测试使用 Zig Windows GNU 目标严格对象编译通过。
+
 ## 本轮补充：macOS headless CI 门禁（2026-09-11）
 
 - macOS Cocoa + MoltenVK job 在原生 platform runtime smoke 后新增完整非 graphics CTest，

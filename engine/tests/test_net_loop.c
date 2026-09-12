@@ -360,6 +360,49 @@ TEST(loop_stress_throughput)
     net_shutdown();
 }
 
+#if defined(ENGINE_PLATFORM_WINDOWS)
+TEST(loop_iocp_registration_growth_keeps_inflight_slots_stable)
+{
+    NetSocket *receivers[32] = {0};
+    NetSocket *sender = NULL;
+    NetAddress destination = {0};
+    NetLoop *loop = NULL;
+    NetLoopEvent events[4];
+    i32 n;
+    u32 i;
+
+    ASSERT_TRUE(net_init());
+    sender = net_udp_create(0);
+    ASSERT_NOT_NULL(sender);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    for (i = 0u; i < 32u; ++i) {
+        receivers[i] = net_udp_create(0);
+        ASSERT_NOT_NULL(receivers[i]);
+        net_set_nonblocking(receivers[i], true);
+        ASSERT_TRUE(net_loop_add(loop, receivers[i], NET_LOOP_READ,
+                                 receivers[i]));
+        if (i == 0u) {
+            ASSERT_TRUE(net_socket_get_local_address(receivers[i],
+                                                     &destination));
+        }
+    }
+    if (strcmp(destination.host, "0.0.0.0") == 0) {
+        strncpy(destination.host, "127.0.0.1", sizeof(destination.host) - 1u);
+        destination.host[sizeof(destination.host) - 1u] = '\0';
+    }
+    ASSERT_TRUE(net_sendto(sender, "iocp", 5u, &destination) > 0);
+    n = net_loop_wait(loop, events, 4u, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(events[0].socket == receivers[0]);
+
+    net_loop_destroy(loop);
+    for (i = 0u; i < 32u; ++i) net_close(receivers[i]);
+    net_close(sender);
+    net_shutdown();
+}
+#endif
+
 TEST_MAIN_BEGIN()
     RUN_TEST(loop_create_destroy);
     RUN_TEST(loop_wait_timeout);
@@ -375,4 +418,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_repeated_short_waits);
     RUN_TEST(loop_rejects_unrepresentable_event_count);
     RUN_TEST(loop_stress_throughput);
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    RUN_TEST(loop_iocp_registration_growth_keeps_inflight_slots_stable);
+#endif
 TEST_MAIN_END()

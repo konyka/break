@@ -1,5 +1,12 @@
 # myui 后续阶段方案与状态
 
+## 本轮补充：IOCP 注册槽生命周期与 completion key 修复（2026-09-12）
+
+IOCP 后端现在使用非零 completion key（槽索引加一），避免首个槽与唤醒 key 冲突；每个
+注册槽独立分配，扩容只移动指针数组，不移动仍被 overlapped I/O 引用的槽对象。TDD 增加
+32 个 socket 扩容后仍能收到首个 socket completion 的 Windows 回归。Linux 默认构建与
+io_uring 定向回归保持通过，Windows 实际运行结果仍由 Windows CI runner 提供。
+
 ## 本轮补充：macOS headless CI 门禁（2026-09-11）
 
 macOS Cocoa + MoltenVK CI 在原生 platform runtime smoke 后现在执行完整非 graphics CTest，
