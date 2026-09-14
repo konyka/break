@@ -72,6 +72,7 @@ struct NetLoop {
     u64                 timeout_token;
 #if defined(ENGINE_NET_LOOP_TESTING)
     bool                fail_next_submit;
+    bool                fail_next_timeout_cancel;
 #endif
 };
 
@@ -126,6 +127,11 @@ static int uring_enter_wait(NetLoop *loop, unsigned to_submit,
 void net_loop_iouring_test_fail_next_submit(NetLoop *loop)
 {
     if (loop) loop->fail_next_submit = true;
+}
+
+void net_loop_iouring_test_fail_next_timeout_cancel(NetLoop *loop)
+{
+    if (loop) loop->fail_next_timeout_cancel = true;
 }
 #endif
 
@@ -278,6 +284,13 @@ static bool uring_cancel_timeout(NetLoop *loop)
     if (!loop->timeout_active) return true;
     sqe = uring_get_sqe(loop);
     if (!sqe) return false;
+#if defined(ENGINE_NET_LOOP_TESTING)
+    if (loop->fail_next_timeout_cancel) {
+        loop->fail_next_timeout_cancel = false;
+        uring_discard_last_sqe(loop);
+        return false;
+    }
+#endif
     sqe->opcode = IORING_OP_TIMEOUT_REMOVE;
     sqe->addr = loop->timeout_token;
     sqe->user_data = uring_next_request_token(loop, URING_CONTROL_TOKEN);
@@ -667,8 +680,13 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         uring_reap_cqes(loop, out, max, &count, timeout_token,
                         &timeout_completed, &other_completion);
         if (count != 0 || timeout_completed || other_completion) {
-            if (!timeout_completed && loop->timeout_active && other_completion)
-                (void)uring_cancel_timeout(loop);
+            if (!timeout_completed && loop->timeout_active && other_completion &&
+                !uring_cancel_timeout(loop)) {
+                /* The old timeout is still live in the kernel. Closing the
+                 * ring prevents a later wait from reusing its shared state. */
+                uring_abort_destroy(loop);
+                return NET_ERROR;
+            }
             return count;
         }
     }

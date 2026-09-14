@@ -566,6 +566,7 @@ TEST(loop_repeated_short_waits)
 extern bool net_loop_iouring_test_next_capacity(u32 current, u32 required,
                                                 u32 *next);
 extern void net_loop_iouring_test_fail_next_submit(NetLoop *loop);
+extern void net_loop_iouring_test_fail_next_timeout_cancel(NetLoop *loop);
 extern u32 net_loop_iouring_test_pending_sqes(const NetLoop *loop);
 
 TEST(loop_iouring_stale_timeout_does_not_complete_next_wait)
@@ -659,6 +660,30 @@ TEST(loop_iouring_failed_wait_submit_does_not_leave_pending_sqe)
     ASSERT_EQ(net_loop_iouring_test_pending_sqes(loop), 0u);
 
     net_loop_destroy(loop);
+    net_shutdown();
+}
+
+TEST(loop_iouring_timeout_cancel_failure_aborts_loop)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, NULL));
+
+    const char payload[] = "timeout-cancel";
+    ASSERT_EQ(net_sendto(send_s, payload, (u32)sizeof(payload), &dst),
+              (i32)sizeof(payload));
+    net_loop_iouring_test_fail_next_timeout_cancel(loop);
+    NetLoopEvent ev[1];
+    ASSERT_EQ(net_loop_wait(loop, ev, 1, 5000), NET_ERROR);
+    ASSERT_EQ(net_loop_wait(loop, ev, 1, 1), NET_ERROR);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
     net_shutdown();
 }
 #endif
@@ -1021,6 +1046,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_iouring_destroy_aborts_on_cancel_submit_failure);
     RUN_TEST(loop_iouring_failed_submit_does_not_leave_pending_sqe);
     RUN_TEST(loop_iouring_failed_wait_submit_does_not_leave_pending_sqe);
+    RUN_TEST(loop_iouring_timeout_cancel_failure_aborts_loop);
 #endif
     RUN_TEST(loop_rejects_unrepresentable_event_count);
     RUN_TEST(loop_stress_throughput);
