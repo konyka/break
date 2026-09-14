@@ -64,6 +64,18 @@ jobs:
       - name: Test (headless suite)
         run: ctest --test-dir build -LE graphics --output-on-failure
 
+      - name: Test Vulkan graphics smoke
+        run: |
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers xvfb x11-utils
+          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-vk.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid"' EXIT
+          export DISPLAY=:99
+          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          test -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          ctest --test-dir build -L graphics --output-on-failure
+
   linux-clang-release:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
@@ -190,6 +202,7 @@ jobs:
           done
           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
           ctest --test-dir build -LE graphics --output-on-failure
+          ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure
 
   wayland-vk:
     name: Linux Wayland + Vulkan (GCC)
@@ -234,8 +247,9 @@ jobs:
             }
             sleep 0.1
           done
-          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-          ctest --test-dir build -LE graphics --output-on-failure
+           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+           ctest --test-dir build -LE graphics --output-on-failure
+           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure
 
   windows-clang:
     name: Windows + Clang (headless)

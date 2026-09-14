@@ -26,6 +26,7 @@ option(MYUI_HARFBUZZ "Optional OpenType shaping through HarfBuzz + FreeType" ON)
 option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
+option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     set(ENGINE_PLATFORM "android")
@@ -261,7 +262,7 @@ src/renderer/lens_effects.c
 )
 
 include(CTest)
-if(BUILD_TESTING)
+if(ENGINE_BUILD_TESTS)
     add_executable(test_platform_compat tests/test_platform_compat.c)
     target_include_directories(test_platform_compat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -874,17 +875,19 @@ endif()
 add_executable(engine_demo src/main.c)
 target_link_libraries(engine_demo PRIVATE engine break_myui m)
 
-# Vulkan test executable
-add_executable(test_vulkan src/test_vulkan.c)
-# R550-E: keep the VK validation gate live for the integration test in every
-# build type. rhi_vk.c is compiled into the engine static lib, so the define
-# cannot reach the backend from here; instead it arms the explicit
-# rhi_vk_validation_set_enabled(true) call at the top of test_vulkan's main.
-target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
-if(MSVC)
-    target_compile_options(test_vulkan PRIVATE /wd4702)
+if(ENGINE_BUILD_TESTS)
+    # Vulkan test executable
+    add_executable(test_vulkan src/test_vulkan.c)
+    # R550-E: keep the VK validation gate live for the integration test in every
+    # build type. rhi_vk.c is compiled into the engine static lib, so the define
+    # cannot reach the backend from here; instead it arms the explicit
+    # rhi_vk_validation_set_enabled(true) call at the top of test_vulkan's main.
+    target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
+    if(MSVC)
+        target_compile_options(test_vulkan PRIVATE /wd4702)
+    endif()
+    target_link_libraries(test_vulkan PRIVATE engine m)
 endif()
-target_link_libraries(test_vulkan PRIVATE engine m)
 
 add_executable(packer tools/packer.c)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
@@ -1029,7 +1032,6 @@ target_include_directories(verify_myui_sa_dictionary PRIVATE
 target_link_libraries(verify_myui_sa_dictionary PRIVATE myui_core)
 
 # --- Unit Tests ---
-option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 if(ENGINE_BUILD_TESTS)
     enable_testing()
 
@@ -1660,12 +1662,14 @@ if(ENGINE_BUILD_TESTS)
     if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "android" OR
        ENGINE_PLATFORM STREQUAL "harmonyos")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=200112L)
+        target_compile_definitions(test_net_loop PRIVATE ENGINE_NET_LOOP_TESTING=1)
         target_link_libraries(test_net_loop PRIVATE pthread)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_WINDOWS=1)
         target_link_libraries(test_net_loop PRIVATE ws2_32 mswsock)
     elseif(ENGINE_PLATFORM STREQUAL "macos" OR ENGINE_PLATFORM STREQUAL "ios")
         target_compile_definitions(test_net_loop PRIVATE ENGINE_PLATFORM_MACOS=1)
+        target_compile_definitions(test_net_loop PRIVATE ENGINE_NET_LOOP_TESTING=1)
         target_link_libraries(test_net_loop PRIVATE pthread)
     endif()
     if(ENGINE_NET_IOURING AND ENGINE_PLATFORM STREQUAL "linux")
