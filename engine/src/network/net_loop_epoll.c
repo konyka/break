@@ -34,17 +34,20 @@ typedef struct {
 struct NetLoop {
     int          epfd;
     int          wake_fd;
-    NetLoopSlot *slots;
+    NetLoopSlot **slots;
     u32          slot_count;
     u32          slot_cap;
     struct epoll_event *wait_events;
     u32          wait_cap;
+#if defined(ENGINE_NET_LOOP_TESTING)
+    bool         fail_next_ctl;
+#endif
 };
 
 static u32 ep_find_slot(const NetLoop *loop, NetSocket *socket)
 {
     for (u32 i = 0; i < loop->slot_count; i++) {
-        if (loop->slots[i].used && loop->slots[i].socket == socket) return i;
+        if (loop->slots[i]->used && loop->slots[i]->socket == socket) return i;
     }
     return UINT32_MAX;
 }
@@ -56,6 +59,61 @@ static u32 ep_native_events(u32 events)
     if (events & NET_LOOP_WRITE) e |= EPOLLOUT;
     return e;
 }
+
+static bool ep_next_capacity(u32 current, u32 required, u32 *next)
+{
+    u32 capacity = current ? current : 16u;
+    while (capacity < required) {
+        if (capacity > UINT32_MAX / 2u) return false;
+        capacity *= 2u;
+    }
+    size_t bytes = (size_t)capacity * sizeof(*((NetLoop *)0)->slots);
+    if (bytes / sizeof(*((NetLoop *)0)->slots) != (size_t)capacity) {
+        return false;
+    }
+    *next = capacity;
+    return true;
+}
+
+static bool ep_ensure_capacity(NetLoop *loop, u32 required)
+{
+    if (required <= loop->slot_cap) return true;
+
+    u32 new_cap;
+    if (!ep_next_capacity(loop->slot_cap, required, &new_cap)) return false;
+    NetLoopSlot **slots = (NetLoopSlot **)realloc(
+        loop->slots, (size_t)new_cap * sizeof(*slots));
+    if (!slots) return false;
+    memset(slots + loop->slot_cap, 0,
+           (size_t)(new_cap - loop->slot_cap) * sizeof(*slots));
+    loop->slots = slots;
+    loop->slot_cap = new_cap;
+    return true;
+}
+
+static int ep_ctl(NetLoop *loop, int op, int fd, struct epoll_event *event)
+{
+#if defined(ENGINE_NET_LOOP_TESTING)
+    if (loop->fail_next_ctl) {
+        loop->fail_next_ctl = false;
+        errno = EIO;
+        return -1;
+    }
+#endif
+    return epoll_ctl(loop->epfd, op, fd, event);
+}
+
+#if defined(ENGINE_NET_LOOP_TESTING)
+void net_loop_epoll_test_fail_next_ctl(NetLoop *loop)
+{
+    if (loop) loop->fail_next_ctl = true;
+}
+
+bool net_loop_epoll_test_next_capacity(u32 current, u32 required, u32 *next)
+{
+    return next && ep_next_capacity(current, required, next);
+}
+#endif
 
 NetLoop *net_loop_create(void)
 {
@@ -90,6 +148,7 @@ void net_loop_destroy(NetLoop *loop)
     if (!loop) return;
     if (loop->wake_fd >= 0) close(loop->wake_fd);
     if (loop->epfd >= 0) close(loop->epfd);
+    for (u32 i = 0; i < loop->slot_count; i++) free(loop->slots[i]);
     free(loop->slots);
     free(loop->wait_events);
     free(loop);
@@ -104,43 +163,33 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
     u32 idx = ep_find_slot(loop, socket);
     int op = EPOLL_CTL_ADD;
     if (idx == UINT32_MAX) {
-        if (loop->slot_count == loop->slot_cap) {
-            u32 new_cap = loop->slot_cap ? loop->slot_cap * 2u : 16u;
-            NetLoopSlot *ns = realloc(loop->slots, new_cap * sizeof(*ns));
-            if (!ns) return false;
-            memset(ns + loop->slot_cap, 0,
-                   (new_cap - loop->slot_cap) * sizeof(*ns));
-            loop->slots = ns;
-            loop->slot_cap = new_cap;
-            /* realloc moved the slots; re-MOD every live registration so
-             * epoll's data.ptr tracks the new addresses. */
-            for (u32 i = 0; i < loop->slot_count; i++) {
-                if (!loop->slots[i].used) continue;
-                struct epoll_event rev;
-                memset(&rev, 0, sizeof(rev));
-                rev.events = ep_native_events(loop->slots[i].events);
-                rev.data.ptr = &loop->slots[i];
-                intptr_t rfd = net_socket_native_handle(loop->slots[i].socket);
-                if (rfd >= 0) {
-                    (void)epoll_ctl(loop->epfd, EPOLL_CTL_MOD, (int)rfd, &rev);
-                }
-            }
-        }
-        idx = loop->slot_count++;
-        loop->slots[idx].used = false;
+        if (loop->slot_count == UINT32_MAX ||
+            !ep_ensure_capacity(loop, loop->slot_count + 1u)) return false;
+        NetLoopSlot *slot = (NetLoopSlot *)calloc(1, sizeof(*slot));
+        if (!slot) return false;
+        idx = loop->slot_count;
+        loop->slots[idx] = slot;
     } else {
         op = EPOLL_CTL_MOD;
     }
-    loop->slots[idx].socket = socket;
-    loop->slots[idx].tag = tag;
-    loop->slots[idx].events = events;
-    loop->slots[idx].used = true;
+    NetLoopSlot *slot = loop->slots[idx];
 
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.events = ep_native_events(events);
-    ev.data.ptr = &loop->slots[idx];
-    if (epoll_ctl(loop->epfd, op, (int)fd, &ev) < 0) return false;
+    ev.data.ptr = slot;
+    if (ep_ctl(loop, op, (int)fd, &ev) < 0) {
+        if (op == EPOLL_CTL_ADD) {
+            free(slot);
+            loop->slots[idx] = NULL;
+        }
+        return false;
+    }
+    slot->socket = socket;
+    slot->tag = tag;
+    slot->events = events;
+    slot->used = true;
+    if (op == EPOLL_CTL_ADD) loop->slot_count++;
     return true;
 }
 
@@ -149,14 +198,16 @@ bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
     if (!loop || !socket || !net_loop_interest_valid(events)) return false;
     u32 idx = ep_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
-    loop->slots[idx].events = events;
     intptr_t fd = net_socket_native_handle(socket);
     if (fd < 0) return false;
+    NetLoopSlot *slot = loop->slots[idx];
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
     ev.events = ep_native_events(events);
-    ev.data.ptr = &loop->slots[idx];
-    return epoll_ctl(loop->epfd, EPOLL_CTL_MOD, (int)fd, &ev) == 0;
+    ev.data.ptr = slot;
+    if (ep_ctl(loop, EPOLL_CTL_MOD, (int)fd, &ev) < 0) return false;
+    slot->events = events;
+    return true;
 }
 
 bool net_loop_remove(NetLoop *loop, NetSocket *socket)
@@ -168,10 +219,10 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
     bool ok = true;
     if (fd >= 0) {
         /* Linux >= 2.6.9 allows a NULL event pointer for EPOLL_CTL_DEL. */
-        ok = epoll_ctl(loop->epfd, EPOLL_CTL_DEL, (int)fd, NULL) == 0;
+        ok = ep_ctl(loop, EPOLL_CTL_DEL, (int)fd, NULL) == 0;
     }
-    loop->slots[idx].used = false;
-    loop->slots[idx].socket = NULL;
+    loop->slots[idx]->used = false;
+    loop->slots[idx]->socket = NULL;
     return ok;
 }
 

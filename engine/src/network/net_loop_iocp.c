@@ -6,9 +6,8 @@
  * each registered socket runs a persistent overlapped WSARecv with a
  * zero-length buffer and MSG_PEEK: the operation completes (without consuming
  * data) exactly when the socket becomes readable, which maps a completion
- * port to readiness notification. Writes use WSAGetOverlappedResult-free
- * polling via a zero-length overlapped WSASend, which completes when the
- * socket is writable.
+ * port to readiness notification. IOCP does not arm NET_LOOP_WRITE because a
+ * zero-length WSASend would complete immediately and spin.
  *
  * Throughput: GetQueuedCompletionStatusEx reaps a batch of completions in one
  * syscall, matching the kqueue/epoll batched-wait pattern.
@@ -32,24 +31,25 @@
 
 #define IOCP_WAKEUP_KEY 0u
 
+typedef struct NetLoopSlot NetLoopSlot;
 typedef struct {
-    /* Overlapped structs must outlive the operation; read and write need
-     * separate ones since both may be in flight concurrently. Slots are
-     * individually allocated so their addresses remain stable while an
-     * operation is in flight. */
-    WSAOVERLAPPED read_ovl;
-    WSAOVERLAPPED write_ovl;
+    WSAOVERLAPPED ovl;
+    NetLoopSlot  *slot;
+    u64           generation;
+    bool          cancelled;
+} NetLoopOperation;
+
+struct NetLoopSlot {
     NetSocket    *socket;
     SOCKET        native_socket;
     void         *tag;
     u32           events;
     bool          used;
-    bool          read_armed;
-    bool          write_armed;
-    bool          read_cancel_pending;
-    bool          write_cancel_pending;
-    bool          removed;  /* completion in flight after remove() */
-} NetLoopSlot;
+    bool          removed;
+    u64           generation;
+    NetLoopOperation *read_op;
+    u32           active_ops;
+};
 
 struct NetLoop {
     HANDLE       iocp;
@@ -63,7 +63,7 @@ struct NetLoop {
 static u32 iocp_find_slot(const NetLoop *loop, NetSocket *socket)
 {
     for (u32 i = 0; i < loop->slot_count; i++) {
-        if (loop->slots[i] != NULL && loop->slots[i]->used &&
+        if (loop->slots[i] != NULL &&
             loop->slots[i]->socket == socket) return i;
     }
     return UINT32_MAX;
@@ -74,48 +74,28 @@ static bool iocp_arm_read(NetLoopSlot *slot)
 {
     SOCKET s = slot->native_socket;
     if (s == INVALID_SOCKET) return false;
-    memset(&slot->read_ovl, 0, sizeof(slot->read_ovl));
+    NetLoopOperation *op = (NetLoopOperation *)calloc(1, sizeof(*op));
+    if (!op) return false;
+    op->slot = slot;
+    op->generation = slot->generation;
     WSABUF buf = { 0, NULL }; /* zero-length: consumes nothing */
     DWORD flags = MSG_PEEK;
     DWORD recvd = 0;
-    int rc = WSARecv(s, &buf, 1, &recvd, &flags, &slot->read_ovl, NULL);
+    int rc = WSARecv(s, &buf, 1, &recvd, &flags, &op->ovl, NULL);
     if (rc == 0 || WSAGetLastError() == WSA_IO_PENDING) {
-        slot->read_armed = true;
-        slot->read_cancel_pending = false;
+        slot->read_op = op;
+        slot->active_ops++;
         return true;
     }
-    return false;
-}
-
-static bool iocp_arm_write(NetLoopSlot *slot)
-{
-    SOCKET s = slot->native_socket;
-    if (s == INVALID_SOCKET) return false;
-    memset(&slot->write_ovl, 0, sizeof(slot->write_ovl));
-    WSABUF buf = { 0, NULL };
-    DWORD sent = 0;
-    int rc = WSASend(s, &buf, 1, &sent, 0, &slot->write_ovl, NULL);
-    if (rc == 0 || WSAGetLastError() == WSA_IO_PENDING) {
-        slot->write_armed = true;
-        slot->write_cancel_pending = false;
-        return true;
-    }
+    free(op);
     return false;
 }
 
 static bool iocp_cancel_read(NetLoopSlot *slot)
 {
-    if (!slot->read_armed) return true;
-    slot->read_cancel_pending = true;
-    if (CancelIoEx((HANDLE)slot->native_socket, &slot->read_ovl)) return true;
-    return GetLastError() == ERROR_NOT_FOUND;
-}
-
-static bool iocp_cancel_write(NetLoopSlot *slot)
-{
-    if (!slot->write_armed) return true;
-    slot->write_cancel_pending = true;
-    if (CancelIoEx((HANDLE)slot->native_socket, &slot->write_ovl)) return true;
+    if (!slot->read_op) return true;
+    slot->read_op->cancelled = true;
+    if (CancelIoEx((HANDLE)slot->native_socket, &slot->read_op->ovl)) return true;
     return GetLastError() == ERROR_NOT_FOUND;
 }
 
@@ -126,7 +106,6 @@ static void iocp_cancel_slots(NetLoop *loop)
         NetLoopSlot *slot = loop->slots[i];
         if (!slot || slot->native_socket == INVALID_SOCKET) continue;
         (void)iocp_cancel_read(slot);
-        (void)iocp_cancel_write(slot);
     }
 }
 
@@ -138,8 +117,7 @@ static void iocp_drain_slots(NetLoop *loop)
     for (i = 0; i < loop->slot_count; ++i) {
         NetLoopSlot *slot = loop->slots[i];
         if (!slot) continue;
-        if (slot->read_armed) pending++;
-        if (slot->write_armed) pending++;
+        pending += slot->active_ops;
     }
     while (pending != 0u) {
         ULONG got = 0;
@@ -152,18 +130,20 @@ static void iocp_drain_slots(NetLoop *loop)
             ULONG_PTR key = entries[j].lpCompletionKey;
             NetLoopSlot *slot;
             WSAOVERLAPPED *ovl;
-            if (key == IOCP_WAKEUP_KEY || entries[j].lpOverlapped == NULL ||
-                key - 1u >= loop->slot_count) continue;
-            slot = loop->slots[key - 1u];
+            if (key == IOCP_WAKEUP_KEY || entries[j].lpOverlapped == NULL) continue;
+            slot = (NetLoopSlot *)key;
             if (!slot) continue;
             ovl = entries[j].lpOverlapped;
-            if (ovl == &slot->read_ovl && slot->read_armed) {
-                slot->read_armed = false;
-                pending--;
-            } else if (ovl == &slot->write_ovl && slot->write_armed) {
-                slot->write_armed = false;
+            NetLoopOperation *op = CONTAINING_RECORD(ovl, NetLoopOperation, ovl);
+            if (op->slot != slot) continue;
+            if (slot->read_op == op) {
+                slot->read_op = NULL;
+            }
+            if (slot->active_ops != 0u) {
+                slot->active_ops--;
                 pending--;
             }
+            free(op);
         }
     }
 }
@@ -197,13 +177,19 @@ void net_loop_destroy(NetLoop *loop)
 bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 {
     if (!loop || !socket || !net_loop_interest_valid(events)) return false;
+    if ((events & NET_LOOP_WRITE) != 0u) return false;
     SOCKET s = (SOCKET)net_socket_native_handle(socket);
     if (s == INVALID_SOCKET) return false;
 
     u32 idx = iocp_find_slot(loop, socket);
+    bool was_removed = false;
     if (idx == UINT32_MAX) {
         if (loop->slot_count == loop->slot_cap) {
-            u32 new_cap = loop->slot_cap ? loop->slot_cap * 2u : 16u;
+            u32 new_cap;
+            if (loop->slot_cap == 0u) new_cap = 16u;
+            else if (loop->slot_cap > UINT32_MAX / 2u) return false;
+            else new_cap = loop->slot_cap * 2u;
+            if ((size_t)new_cap > (size_t)-1 / sizeof(*loop->slots)) return false;
             NetLoopSlot **ns = realloc(loop->slots, new_cap * sizeof(*ns));
             if (!ns) return false;
             memset(ns + loop->slot_cap, 0,
@@ -217,9 +203,9 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
         loop->slots[idx]->native_socket = INVALID_SOCKET;
         loop->slot_count++;
         /* Associate the socket with the completion port; the key is the slot
-         * index plus one. Zero is reserved for explicit wakeups. */
+         * pointer. Zero is reserved for explicit wakeups. */
         if (!CreateIoCompletionPort((HANDLE)s, loop->iocp,
-                                    (ULONG_PTR)(idx + 1u), 0)) {
+                                     (ULONG_PTR)loop->slots[idx], 0)) {
             free(loop->slots[idx]);
             loop->slots[idx] = NULL;
             loop->slot_count--;
@@ -227,23 +213,20 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
         }
     }
     NetLoopSlot *slot = loop->slots[idx];
+    was_removed = slot->removed;
     slot->socket = socket;
     slot->native_socket = s;
     slot->tag = tag;
     slot->events = events;
     slot->used = true;
     slot->removed = false;
+    if (was_removed) slot->generation++;
 
     bool ok = true;
-    if ((events & NET_LOOP_READ) && !slot->read_armed)
+    if ((events & NET_LOOP_READ) && !slot->read_op)
         ok = iocp_arm_read(slot) && ok;
-    if ((events & NET_LOOP_WRITE) && !slot->write_armed)
-        ok = iocp_arm_write(slot) && ok;
-    if (!(events & NET_LOOP_READ) && slot->read_armed) {
+    if (!(events & NET_LOOP_READ) && slot->read_op) {
         ok = iocp_cancel_read(slot) && ok;
-    }
-    if (!(events & NET_LOOP_WRITE) && slot->write_armed) {
-        ok = iocp_cancel_write(slot) && ok;
     }
     return ok;
 }
@@ -251,6 +234,7 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
 {
     if (!loop || !socket || !net_loop_interest_valid(events)) return false;
+    if ((events & NET_LOOP_WRITE) != 0u) return false;
     u32 idx = iocp_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     NetLoopSlot *slot = loop->slots[idx];
@@ -258,15 +242,10 @@ bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
     /* Arm whatever newly-requested interests are not armed; IOCP has no
      * unarm — CancelIoEx cancels the pending op when an interest is dropped. */
     bool ok = true;
-    if ((events & NET_LOOP_READ) && !slot->read_armed)
+    if ((events & NET_LOOP_READ) && !slot->read_op)
         ok = iocp_arm_read(slot) && ok;
-    if ((events & NET_LOOP_WRITE) && !slot->write_armed)
-        ok = iocp_arm_write(slot) && ok;
-    if (!(events & NET_LOOP_READ) && slot->read_armed) {
+    if (!(events & NET_LOOP_READ) && slot->read_op) {
         ok = iocp_cancel_read(slot) && ok;
-    }
-    if (!(events & NET_LOOP_WRITE) && slot->write_armed) {
-        ok = iocp_cancel_write(slot) && ok;
     }
     return ok;
 }
@@ -277,13 +256,13 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
     u32 idx = iocp_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     NetLoopSlot *slot = loop->slots[idx];
-    /* Cancel in-flight ops; their completions may still arrive and are
-     * dropped in wait() via the removed flag. */
+    /* Cancel in-flight ops; their completions may still arrive after the slot
+     * is detached and are dropped by the operation generation check. */
     bool ok = iocp_cancel_read(slot);
-    ok = iocp_cancel_write(slot) && ok;
+    slot->read_op = NULL;
     slot->removed = true;
     slot->used = false;
-    slot->socket = NULL;
+    slot->generation++;
     /* The cancellation request owns the outstanding operations; do not retain
      * a handle that the caller may close and the kernel may subsequently reuse. */
     slot->native_socket = INVALID_SOCKET;
@@ -315,35 +294,30 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         ULONG_PTR key = loop->wait_events[i].lpCompletionKey;
         if (key == IOCP_WAKEUP_KEY) continue;
         if (!loop->wait_events[i].lpOverlapped) continue;
-        if (key - 1u >= loop->slot_count) continue;
-        NetLoopSlot *slot = loop->slots[key - 1u];
+        NetLoopSlot *slot = (NetLoopSlot *)key;
         if (!slot) continue;
         WSAOVERLAPPED *ovl = loop->wait_events[i].lpOverlapped;
-        bool was_write = (ovl == &slot->write_ovl);
-        if (ovl != &slot->read_ovl && !was_write) continue;
-        bool cancelled;
-        if (was_write) {
-            if (!slot->write_armed) continue;
-            slot->write_armed = false;
-            cancelled = slot->write_cancel_pending;
-            slot->write_cancel_pending = false;
-        } else {
-            if (!slot->read_armed) continue;
-            slot->read_armed = false;
-            cancelled = slot->read_cancel_pending;
-            slot->read_cancel_pending = false;
+        NetLoopOperation *op = CONTAINING_RECORD(ovl, NetLoopOperation, ovl);
+        if (op->slot != slot) continue;
+        bool current = slot->read_op == op;
+        bool valid = current && op->generation == slot->generation &&
+                     slot->used && !slot->removed && !op->cancelled;
+        if (current) {
+            slot->read_op = NULL;
         }
-        if (!slot->used || slot->removed) continue;
-        if (cancelled) {
-            if (was_write) {
-                if (slot->events & NET_LOOP_WRITE) (void)iocp_arm_write(slot);
-            } else if (slot->events & NET_LOOP_READ) {
+        if (slot->active_ops != 0u) slot->active_ops--;
+        if (!valid) {
+            if (current && slot->used && !slot->removed &&
+                (slot->events & NET_LOOP_READ))
                 (void)iocp_arm_read(slot);
-            }
+            free(op);
             continue;
         }
-        if (!(slot->events & (was_write ? NET_LOOP_WRITE : NET_LOOP_READ)))
+        if (!(slot->events & NET_LOOP_READ))
+        {
+            free(op);
             continue;
+        }
 
         u32 events = 0;
         DWORD bytes = 0, flags = 0;
@@ -351,16 +325,16 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
             (SOCKET)net_socket_native_handle(slot->socket),
             ovl, &bytes, FALSE, &flags);
         if (ok) {
-            events |= was_write ? NET_LOOP_WRITE : NET_LOOP_READ;
+            events |= NET_LOOP_READ;
         } else {
             events |= NET_LOOP_ERROR;
         }
-        /* Rearm before reporting so an immediate drain is observable. */
-        if (was_write) {
-            if (slot->events & NET_LOOP_WRITE) (void)iocp_arm_write(slot);
-        } else if (slot->events & NET_LOOP_READ) {
+        /* Re-arm after consuming this completion so readiness remains
+         * persistent, but never re-arm removed, canceled, or stale work. */
+        if (slot->used && !slot->removed &&
+            (slot->events & NET_LOOP_READ))
             (void)iocp_arm_read(slot);
-        }
+        free(op);
         out[count].socket = slot->socket;
         out[count].events = events;
         out[count].tag = slot->tag;
@@ -377,3 +351,8 @@ void net_loop_wakeup(NetLoop *loop)
 }
 
 #endif /* ENGINE_PLATFORM_WINDOWS */
+
+/* Keep a declaration in non-Windows editor/LSP preprocessing contexts. */
+#if !defined(ENGINE_PLATFORM_WINDOWS)
+typedef int net_loop_iocp_translation_unit;
+#endif

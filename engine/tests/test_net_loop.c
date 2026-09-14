@@ -14,6 +14,7 @@
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 #include <pthread.h>
+#include <unistd.h>
 #endif
 
 #define NET_LOOP_STRESS_DATAGRAMS 512u
@@ -220,6 +221,248 @@ TEST(loop_add_existing_registration_is_idempotent)
     net_shutdown();
 }
 
+#if defined(ENGINE_PLATFORM_LINUX) && !defined(ENGINE_NET_IOURING)
+extern void net_loop_epoll_test_fail_next_ctl(NetLoop *loop);
+extern bool net_loop_epoll_test_next_capacity(u32 current, u32 required,
+                                              u32 *next);
+
+TEST(loop_failed_modify_preserves_registration)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+
+    net_loop_epoll_test_fail_next_ctl(loop);
+    ASSERT_FALSE(net_loop_modify(loop, recv_s, NET_LOOP_WRITE));
+
+    /* The failed MOD must not change the old kernel registration or metadata. */
+    const char payload[] = "failed-modify";
+    ASSERT_TRUE(net_sendto(send_s, payload, (u32)sizeof(payload), &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_failed_add_preserves_existing_registration)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+
+    net_loop_epoll_test_fail_next_ctl(loop);
+    ASSERT_FALSE(net_loop_add(loop, recv_s, NET_LOOP_WRITE, (void *)2));
+
+    /* add() aliases modify() for an existing socket, so failure must retain
+     * the old kernel interest and user tag. */
+    ASSERT_TRUE(net_sendto(send_s, "failed-add", 11u, &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_failed_new_add_does_not_publish_slot)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    net_loop_epoll_test_fail_next_ctl(loop);
+    ASSERT_FALSE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+
+    /* The failed ADD must leave no half-published slot behind. */
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+    ASSERT_TRUE(net_sendto(send_s, "retry-add", 10u, &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_registration_growth_rejects_capacity_overflow)
+{
+    u32 next = 0;
+    ASSERT_TRUE(net_loop_epoll_test_next_capacity(15u, 16u, &next));
+    ASSERT_EQ(next, 30u);
+    ASSERT_FALSE(net_loop_epoll_test_next_capacity(UINT32_MAX / 2u + 1u,
+                                                   UINT32_MAX, &next));
+}
+
+TEST(loop_registration_growth_keeps_slot_addresses_stable)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *receivers[17] = {0};
+    NetSocket *sender = net_udp_create(0);
+    ASSERT_NOT_NULL(sender);
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+
+    for (u32 i = 0; i < 17u; ++i) {
+        receivers[i] = net_udp_create(0);
+        ASSERT_NOT_NULL(receivers[i]);
+        net_set_nonblocking(receivers[i], true);
+        ASSERT_TRUE(net_loop_add(loop, receivers[i], NET_LOOP_READ,
+                                 (void *)(uintptr_t)(i + 1u)));
+    }
+
+    NetAddress dst = {0};
+    ASSERT_TRUE(net_socket_get_local_address(receivers[0], &dst));
+    strcpy(dst.host, "127.0.0.1");
+    ASSERT_TRUE(net_sendto(sender, "growth", 7u, &dst) > 0);
+
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == receivers[0]);
+    ASSERT_TRUE(ev[0].tag == (void *)(uintptr_t)1u);
+
+    net_loop_destroy(loop);
+    for (u32 i = 0; i < 17u; ++i) net_close(receivers[i]);
+    net_close(sender);
+    net_shutdown();
+}
+#endif
+
+#if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
+extern void net_loop_kqueue_test_fail_stage_after(NetLoop *loop,
+                                                  u32 successful_stages);
+extern void net_loop_kqueue_test_fail_next_flush(NetLoop *loop);
+extern bool net_loop_kqueue_test_next_capacity(u32 current, u32 required,
+                                               u32 *next);
+
+TEST(loop_kqueue_failed_stage_preserves_registration)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+    NetLoopEvent setup_ev[1];
+    ASSERT_EQ(net_loop_wait(loop, setup_ev, 1, 0), 0);
+
+    net_loop_kqueue_test_fail_stage_after(loop, 1u);
+    ASSERT_FALSE(net_loop_modify(loop, recv_s, NET_LOOP_WRITE));
+
+    ASSERT_TRUE(net_sendto(send_s, "failed-stage", 13u, &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_kqueue_failed_flush_preserves_registration)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+    NetLoopEvent setup_ev[1];
+    ASSERT_EQ(net_loop_wait(loop, setup_ev, 1, 0), 0);
+
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_WRITE, (void *)2));
+    net_loop_kqueue_test_fail_next_flush(loop);
+    ASSERT_EQ(net_loop_wait(loop, setup_ev, 1, 0), NET_ERROR);
+
+    ASSERT_TRUE(net_sendto(send_s, "failed-flush", 13u, &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)1);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+
+TEST(loop_kqueue_registration_growth_rejects_capacity_overflow)
+{
+    u32 next = 0;
+    ASSERT_TRUE(net_loop_kqueue_test_next_capacity(15u, 16u, &next));
+    ASSERT_EQ(next, 30u);
+    ASSERT_FALSE(net_loop_kqueue_test_next_capacity(UINT32_MAX / 2u + 1u,
+                                                    UINT32_MAX, &next));
+}
+
+TEST(loop_kqueue_remove_readd_preserves_udata)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *recv_s = NULL, *send_s = NULL;
+    NetAddress dst = {0};
+    make_loopback_pair(&recv_s, &send_s, &dst);
+
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)1));
+    ASSERT_EQ(net_loop_wait(loop, (NetLoopEvent[1]){{0}}, 1, 0), 0);
+    ASSERT_TRUE(net_loop_remove(loop, recv_s));
+    ASSERT_TRUE(net_loop_add(loop, recv_s, NET_LOOP_READ, (void *)2));
+
+    ASSERT_TRUE(net_sendto(send_s, "readd", 6u, &dst) > 0);
+    NetLoopEvent ev[4] = {0};
+    i32 n = net_loop_wait(loop, ev, 4, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(ev[0].socket == recv_s);
+    ASSERT_TRUE(ev[0].tag == (void *)2);
+    ASSERT_TRUE((ev[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(recv_s);
+    net_close(send_s);
+    net_shutdown();
+}
+#endif
+
 TEST(loop_batched_events_two_sockets)
 {
     ASSERT_TRUE(net_init());
@@ -318,6 +561,107 @@ TEST(loop_repeated_short_waits)
     net_loop_destroy(loop);
     net_shutdown();
 }
+
+#if defined(ENGINE_PLATFORM_LINUX) && defined(ENGINE_NET_IOURING)
+extern bool net_loop_iouring_test_next_capacity(u32 current, u32 required,
+                                                u32 *next);
+extern void net_loop_iouring_test_fail_next_submit(NetLoop *loop);
+extern u32 net_loop_iouring_test_pending_sqes(const NetLoop *loop);
+
+TEST(loop_iouring_stale_timeout_does_not_complete_next_wait)
+{
+    ASSERT_TRUE(net_init());
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+
+    net_loop_wakeup(loop);
+    NetLoopEvent ev[4];
+    ASSERT_EQ(net_loop_wait(loop, ev, 4, 5000), 0);
+
+    u64 start = time_microseconds();
+    ASSERT_EQ(net_loop_wait(loop, ev, 4, 30), 0);
+    u64 elapsed_us = time_microseconds() - start;
+    ASSERT_TRUE(elapsed_us >= 10000ull);
+
+    net_loop_destroy(loop);
+    net_shutdown();
+}
+
+TEST(loop_iouring_destroy_drains_live_requests)
+{
+    ASSERT_TRUE(net_init());
+    for (u32 i = 0; i < 32u; ++i) {
+        NetSocket *receiver = net_udp_create(0);
+        ASSERT_NOT_NULL(receiver);
+        NetLoop *loop = net_loop_create();
+        ASSERT_NOT_NULL(loop);
+        ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, NULL));
+
+        net_loop_wakeup(loop);
+        NetLoopEvent ev[1];
+        ASSERT_EQ(net_loop_wait(loop, ev, 1, 5000), 0);
+        net_loop_destroy(loop);
+        net_close(receiver);
+    }
+    net_shutdown();
+}
+
+TEST(loop_iouring_registration_growth_rejects_capacity_overflow)
+{
+    u32 next = 0;
+    ASSERT_TRUE(net_loop_iouring_test_next_capacity(16u, 17u, &next));
+    ASSERT_EQ(next, 32u);
+    ASSERT_FALSE(net_loop_iouring_test_next_capacity(UINT32_MAX / 2u + 1u,
+                                                     UINT32_MAX, &next));
+}
+
+TEST(loop_iouring_destroy_aborts_on_cancel_submit_failure)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *receiver = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, NULL));
+
+    net_loop_iouring_test_fail_next_submit(loop);
+    net_loop_destroy(loop);
+    net_close(receiver);
+    net_shutdown();
+}
+
+TEST(loop_iouring_failed_submit_does_not_leave_pending_sqe)
+{
+    ASSERT_TRUE(net_init());
+    NetSocket *receiver = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+
+    net_loop_iouring_test_fail_next_submit(loop);
+    ASSERT_FALSE(net_loop_add(loop, receiver, NET_LOOP_READ, NULL));
+    ASSERT_EQ(net_loop_iouring_test_pending_sqes(loop), 0u);
+
+    net_loop_destroy(loop);
+    net_close(receiver);
+    net_shutdown();
+}
+
+TEST(loop_iouring_failed_wait_submit_does_not_leave_pending_sqe)
+{
+    ASSERT_TRUE(net_init());
+    NetLoop *loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    NetLoopEvent ev[1];
+
+    net_loop_iouring_test_fail_next_submit(loop);
+    ASSERT_EQ(net_loop_wait(loop, ev, 1, 30), NET_ERROR);
+    ASSERT_EQ(net_loop_iouring_test_pending_sqes(loop), 0u);
+
+    net_loop_destroy(loop);
+    net_shutdown();
+}
+#endif
 
 TEST(loop_rejects_unrepresentable_event_count)
 {
@@ -497,6 +841,150 @@ TEST(loop_iocp_reenable_ignores_cancelled_completion)
     net_close(sender);
     net_shutdown();
 }
+
+TEST(loop_iocp_read_rearms_across_waits)
+{
+    NetSocket *receiver = NULL;
+    NetSocket *sender = NULL;
+    NetLoop *loop = NULL;
+    NetAddress destination = {0};
+    NetLoopEvent events[4] = {0};
+    char buffer[32];
+    NetAddress source;
+    i32 n;
+
+    ASSERT_TRUE(net_init());
+    receiver = net_udp_create(0);
+    sender = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    ASSERT_NOT_NULL(sender);
+    net_set_nonblocking(receiver, true);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_socket_get_local_address(receiver, &destination));
+    if (strcmp(destination.host, "0.0.0.0") == 0) {
+        strncpy(destination.host, "127.0.0.1", sizeof(destination.host) - 1u);
+        destination.host[sizeof(destination.host) - 1u] = '\0';
+    }
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, NULL));
+    ASSERT_TRUE(net_sendto(sender, "first", 6u, &destination) > 0);
+    ASSERT_TRUE(net_sendto(sender, "second", 7u, &destination) > 0);
+
+    n = net_loop_wait(loop, events, 4u, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE((events[0].events & NET_LOOP_READ) != 0u);
+    ASSERT_EQ(net_recvfrom(receiver, buffer, sizeof(buffer), &source), 6);
+
+    memset(events, 0, sizeof(events));
+    n = net_loop_wait(loop, events, 4u, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE((events[0].events & NET_LOOP_READ) != 0u);
+    ASSERT_EQ(net_recvfrom(receiver, buffer, sizeof(buffer), &source), 7);
+
+    net_loop_destroy(loop);
+    net_close(receiver);
+    net_close(sender);
+    net_shutdown();
+}
+
+TEST(loop_iocp_write_completion_is_one_shot)
+{
+    NetSocket *socket = NULL;
+    NetLoop *loop = NULL;
+    NetLoopEvent events[4];
+    i32 n;
+
+    ASSERT_TRUE(net_init());
+    socket = net_udp_create(0);
+    ASSERT_NOT_NULL(socket);
+    net_set_nonblocking(socket, true);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    /* IOCP does not synthesize writable readiness with zero-byte WSASend. */
+    ASSERT_FALSE(net_loop_add(loop, socket, NET_LOOP_WRITE, NULL));
+    ASSERT_EQ(net_loop_wait(loop, events, 4u, 20), 0);
+
+    net_loop_destroy(loop);
+    net_close(socket);
+    net_shutdown();
+}
+
+TEST(loop_iocp_write_rejection_preserves_read_registration)
+{
+    NetSocket *receiver = NULL;
+    NetSocket *sender = NULL;
+    NetLoop *loop = NULL;
+    NetAddress destination = {0};
+    NetLoopEvent events[4] = {0};
+    i32 n;
+
+    ASSERT_TRUE(net_init());
+    receiver = net_udp_create(0);
+    sender = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    ASSERT_NOT_NULL(sender);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_socket_get_local_address(receiver, &destination));
+    if (strcmp(destination.host, "0.0.0.0") == 0) {
+        strncpy(destination.host, "127.0.0.1", sizeof(destination.host) - 1u);
+        destination.host[sizeof(destination.host) - 1u] = '\0';
+    }
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, (void *)1));
+    ASSERT_FALSE(net_loop_modify(loop, receiver, NET_LOOP_WRITE));
+    ASSERT_TRUE(net_sendto(sender, "read", 5u, &destination) > 0);
+    n = net_loop_wait(loop, events, 4u, 1000);
+    ASSERT_TRUE(n > 0);
+    ASSERT_TRUE(events[0].socket == receiver);
+    ASSERT_TRUE(events[0].tag == (void *)1);
+    ASSERT_TRUE((events[0].events & NET_LOOP_READ) != 0u);
+
+    net_loop_destroy(loop);
+    net_close(receiver);
+    net_close(sender);
+    net_shutdown();
+}
+
+TEST(loop_iocp_readd_isolated_from_stale_completion)
+{
+    NetSocket *receiver = NULL;
+    NetSocket *sender = NULL;
+    NetLoop *loop = NULL;
+    NetAddress destination = {0};
+    NetLoopEvent events[8];
+    i32 n;
+
+    ASSERT_TRUE(net_init());
+    receiver = net_udp_create(0);
+    sender = net_udp_create(0);
+    ASSERT_NOT_NULL(receiver);
+    ASSERT_NOT_NULL(sender);
+    net_set_nonblocking(receiver, true);
+    loop = net_loop_create();
+    ASSERT_NOT_NULL(loop);
+    ASSERT_TRUE(net_socket_get_local_address(receiver, &destination));
+    if (strcmp(destination.host, "0.0.0.0") == 0) {
+        strncpy(destination.host, "127.0.0.1", sizeof(destination.host) - 1u);
+        destination.host[sizeof(destination.host) - 1u] = '\0';
+    }
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, (void *)1));
+    ASSERT_TRUE(net_loop_remove(loop, receiver));
+    ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, (void *)2));
+    ASSERT_TRUE(net_sendto(sender, "readd", 6u, &destination) > 0);
+
+    n = net_loop_wait(loop, events, 8u, 1000);
+    ASSERT_TRUE(n > 0);
+    for (i32 i = 0; i < n; ++i) {
+        ASSERT_TRUE(events[i].socket == receiver);
+        ASSERT_TRUE(events[i].tag == (void *)2);
+        ASSERT_TRUE((events[i].events & NET_LOOP_READ) != 0u);
+    }
+
+    net_loop_destroy(loop);
+    net_close(receiver);
+    net_close(sender);
+    net_shutdown();
+}
 #endif
 
 TEST_MAIN_BEGIN()
@@ -508,16 +996,41 @@ TEST_MAIN_BEGIN()
     RUN_TEST(loop_modify_drops_read);
     RUN_TEST(loop_rejects_invalid_interest_masks);
     RUN_TEST(loop_add_existing_registration_is_idempotent);
+#if defined(ENGINE_PLATFORM_LINUX) && !defined(ENGINE_NET_IOURING)
+    RUN_TEST(loop_failed_modify_preserves_registration);
+    RUN_TEST(loop_failed_add_preserves_existing_registration);
+    RUN_TEST(loop_failed_new_add_does_not_publish_slot);
+    RUN_TEST(loop_registration_growth_rejects_capacity_overflow);
+    RUN_TEST(loop_registration_growth_keeps_slot_addresses_stable);
+#endif
+#if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
+    RUN_TEST(loop_kqueue_failed_stage_preserves_registration);
+    RUN_TEST(loop_kqueue_failed_flush_preserves_registration);
+    RUN_TEST(loop_kqueue_registration_growth_rejects_capacity_overflow);
+    RUN_TEST(loop_kqueue_remove_readd_preserves_udata);
+#endif
     RUN_TEST(loop_batched_events_two_sockets);
 #if !defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(loop_wakeup_from_thread);
 #endif
     RUN_TEST(loop_repeated_short_waits);
+#if defined(ENGINE_PLATFORM_LINUX) && defined(ENGINE_NET_IOURING)
+    RUN_TEST(loop_iouring_stale_timeout_does_not_complete_next_wait);
+    RUN_TEST(loop_iouring_destroy_drains_live_requests);
+    RUN_TEST(loop_iouring_registration_growth_rejects_capacity_overflow);
+    RUN_TEST(loop_iouring_destroy_aborts_on_cancel_submit_failure);
+    RUN_TEST(loop_iouring_failed_submit_does_not_leave_pending_sqe);
+    RUN_TEST(loop_iouring_failed_wait_submit_does_not_leave_pending_sqe);
+#endif
     RUN_TEST(loop_rejects_unrepresentable_event_count);
     RUN_TEST(loop_stress_throughput);
 #if defined(ENGINE_PLATFORM_WINDOWS)
     RUN_TEST(loop_iocp_registration_growth_keeps_inflight_slots_stable);
     RUN_TEST(loop_iocp_remove_allows_close_before_destroy);
     RUN_TEST(loop_iocp_reenable_ignores_cancelled_completion);
+    RUN_TEST(loop_iocp_read_rearms_across_waits);
+    RUN_TEST(loop_iocp_write_completion_is_one_shot);
+    RUN_TEST(loop_iocp_write_rejection_preserves_read_registration);
+    RUN_TEST(loop_iocp_readd_isolated_from_stale_completion);
 #endif
 TEST_MAIN_END()
