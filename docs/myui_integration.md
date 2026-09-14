@@ -348,9 +348,10 @@ the primary face; narrow-width wrapping therefore cannot split the cluster. The 
 backend-neutral and applies to soft, GLES2, Vulkan, and Break RHI consumers through the shared
 paragraph model. This does not provide full cross-face GSUB/GPOS context negotiation.
 
-The regression uses `a + U+0305 + b` with Cantarell and Noto Sans fallback faces. Default
-paragraph/font/window-manager gates pass at **119/119**, **66/66**, and **138/138**; the
-full default CTest suite passes **99/99**. ASan and STB-only font/text gates also pass.
+The regression uses `a + U+0305 + b` with Cantarell and Noto Sans fallback faces. The dated
+2026-09-05 paragraph/font/window-manager gates passed at **119/119**, **66/66**, and **138/138**;
+the full default CTest suite passed **99/99** in that configuration. ASan and STB-only font/text
+gates also passed. These are historical test results, not a current test count.
 
 ## Profile-aware SA dictionaries (2026-09-05)
 
@@ -511,10 +512,10 @@ undo/redo 使用 `peek -> apply -> commit` 提交点：公共栈先只读 patch�
 YAML 时注册 `test_myui_loader_disabled`，而不是执行依赖 YAML 的完整 loader 测试，确保
 size-trimmed 构建的测试结果与实际能力一致。
 
-当前最终门禁：默认核心定向测试为 syntax **7/7**、metrics **6/6**、window-manager
+截至本文记录的配置，默认核心定向测试为 syntax **7/7**、metrics **6/6**、window-manager
 **124/124**、vgcanvas backend **34/34**；Vulkan 对应 window/backend 为 **124/124**、
 **35/35**；ASan/UBSan syntax/window 为 **7/7、124/124**；YAML-off CTest **83/83**
-及禁用 loader **2/2**；Redis 源码 hiredis 配置 CTest **84/84**。这些是 headless/build
+及禁用 loader **2/2**；Redis 源码 hiredis 配置 CTest **84/84**。这些是记录时的 headless/build
 矩阵证据，不替代真实 Wayland/X11/Win32/Cocoa/Vulkan runtime smoke。
 
 ## Wrap dirty suffix 批量处理
@@ -1945,8 +1946,8 @@ surface；它不是独立 Metal RHI。
 
 - X11 OpenGL/Vulkan、Wayland OpenGL/Vulkan 均严格构建 `dxx_break`；四个 Linux 后端
   均完成 8 秒窗口启动烟测且无崩溃。
-- 全量 `ENGINE_BUILD_TESTS=ON` 构建通过，`ctest -LE graphics` 为 `53/53`，且是 CI
-  门禁。
+- 历史全量 `ENGINE_BUILD_TESTS=ON` 快照中的 `ctest -LE graphics` 为 `53/53`；当前
+  非图形/图形分组和总数以 CI 配置及最新 CTest 运行结果为准。
 - `test_break_ui_input`、`test_break_ui_damage`、`test_myui_vggeometry`、
   `test_myui_window_manager`、`test_myui_break_pal`、`test_myui_mvvm`、`test_imgui_compat`、
   `test_myui_font` 通过；`test_myui_font` 验证 UTF-8 中文码点、TTC 简体中文字面和

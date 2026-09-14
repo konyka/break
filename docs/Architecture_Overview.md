@@ -26,7 +26,7 @@
 | **项目名称** | Break Engine |
 | **定位** | 纯 C (C11) 跨平台 3D 渲染引擎 |
 | **核心目标** | 避免 C++ 隐式成本，提供高性能、可移植的渲染引擎框架 |
-| **当前状态** | Phase 0-8Y 完成，188 FPS (Intel UHD TGL GT1 @1280×720)，CTest 主套件与图形集成套件持续维护 |
+| **当前状态** | Phase 0-8Y 文档记录已完成；CTest 主套件与图形集成套件持续维护，性能数字以具体日期、硬件和配置为准 |
 
 ### 技术优势
 
@@ -190,13 +190,13 @@ graph TB
 | 类别 | 技术 |
 |------|------|
 | **语言** | C11（引擎核心）、C++11（框架层） |
-| **构建系统** | CMake 3.20+，支持多配置（GL/VK/ASAN/Debug） |
+| **构建系统** | `engine/` 要求 CMake 3.20+；仓库根项目要求 CMake 3.25+，支持 GL/VK/ASAN/UBSAN/TSAN/Debug 配置 |
 | **图形 API** | OpenGL 4.x（主要开发）、Vulkan 1.x（高性能路径） |
-| **窗口系统** | X11 / Wayland（Linux，编译时互斥）、Win32（Windows） |
+| **窗口系统** | X11 / Wayland（Linux，编译时互斥）、Win32（Windows）、Cocoa（macOS）；iOS/Android/OHOS 的 CMake 平台识别不等于完整窗口 runtime 支持 |
 | **着色器语言** | GLSL 450、SPIR-V（Vulkan 路径使用 shaderc 编译） |
 | **编译器** | GCC、Clang、MSVC（/W4 /WX 级别警告） |
 | **静态分析** | -Wall -Wextra -Werror -pedantic |
-| **运行时检测** | AddressSanitizer（可选） |
+| **运行时检测** | AddressSanitizer、UBSan、TSAN（均可选；TSAN 不在当前 CI gate） |
 | **第三方库** | cgltf、glad、miniaudio、stb_image、stb_truetype |
 
 ---
@@ -244,23 +244,30 @@ graph TB
 
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
-| **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ 全功能支持 |
-| **Linux** | X11 | Vulkan 1.x | `build-verify-x11-vk/` | ✅ 全功能支持 |
-| **Linux** | Wayland | OpenGL 4.x (EGL) | `build-verify-wl-gl/` | ✅ 全功能支持 |
-| **Linux** | Wayland | Vulkan 1.x | `build-verify-wl-vk/` | ✅ 全功能支持 |
+| **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
+| **Linux** | X11 | Vulkan 1.x | `build-verify-x11-vk/` | ✅ 构建/headless 已验证；graphics 依赖环境 |
+| **Linux** | Wayland | OpenGL 4.x (EGL) | `build-verify-wl-gl/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
+| **Linux** | Wayland | Vulkan 1.x | `build-verify-wl-vk/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Windows** | Win32 | OpenGL (WGL) / Vulkan (Win32 Surface) | `build-win/` | ✅ 已实现 |
-| **macOS** | — | Metal | — | 📋 规划中 |
-| **WebAssembly** | Canvas | WebGPU | — | 📋 规划中 |
+| **macOS** | Cocoa | Vulkan via MoltenVK | macOS CI 配置 | ✅ 平台 smoke/headless CI；不声明 Metal 后端 |
+| **iOS** | — | — | iOS toolchain | ⚠️ CMake 平台识别与 kqueue 路径；无仓库 runtime/CI 证据 |
+| **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ 编译路径；无仓库 runtime/CI 证据 |
+| **OHOS** | — | — | OHOS toolchain | ⚠️ CMake 平台识别与 epoll 路径；无仓库 runtime/CI 证据 |
+| **WebAssembly** | — | — | — | 📋 规划中 |
 
-### Linux 全功能支持说明
+### Linux 已验证范围
 
-Linux 平台已完成全功能支持，覆盖窗口、输入、音频、文件系统等所有子系统：
+Linux 的 X11、Wayland 配置和部分 runtime 路径已有实现与 CI 验证，但下表不代表所有 GPU、驱动或 compositor 组合都已覆盖：
 
 - **窗口系统**：X11（Xlib）与 Wayland（XDG Shell + xkbcommon）双后端，编译时通过 `ENGINE_ENABLE_WAYLAND` 选项互斥切换；Wayland 后端通过 EGL 管理 OpenGL 上下文，并支持 Vulkan `VK_KHR_wayland_surface`。
 - **输入系统**：键盘、鼠标（含侧键、捕获/隐藏/相对模式）、游戏手柄（基于 evdev，支持热插拔、摇杆/扳机归一化、最多 4 个手柄）。
 - **音频设备**：基于 miniaudio 的设备枚举与选择 API（`audio_get_device_count` / `audio_set_device`）。
 - **文件监视**：Linux 基于 inotify 的递归目录监视与结构化事件解析，macOS 基于 kqueue/FSEvents 自适应监视，驱动 Shader/资源热重载。
 - **高 DPI / 多显示器**：`platform_get_dpi` / `platform_get_scale_factor` / `platform_get_monitor_info` 统一 API。
+
+### 线程与任务边界
+
+`engine/src/task/task.h` 定义的 `TaskSystem` 是进程内单实例 API，创建第二个存活实例会与全局任务释放状态冲突。任务提交可来自外部线程，系统内部使用 worker 线程；`task_wait()` 和 `task_wait_handle()` 不能从 worker task 调用，否则会形成自等待死锁并按头文件契约直接返回。UI 和窗口 API 仍必须在所属主循环线程执行，跨线程 UI 操作应投递 command。规则引擎的 engine、facts、windows 和 provider handle 是单线程句柄，调用方必须为同一 handle 提供外部同步；可选 C11 executor 只在私有 worker 中评估只读条件，再回到 engine 线程合并结果。
 
 ### 构建变体
 

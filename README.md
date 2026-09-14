@@ -2,16 +2,19 @@
 
 [![CI](https://github.com/konyka/break/actions/workflows/ci.yml/badge.svg)](https://github.com/konyka/break/actions/workflows/ci.yml)
 
-Pure C/C11 3D render framework and engine playground.
+Pure C11 3D rendering engine with a separate C++11 application framework.
 
 ## Quick Start
 
 ```bash
-cd engine
-cmake -S . -B build-verify-x11-gl -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-verify-x11-gl
-ctest --test-dir build-verify-x11-gl -LE graphics --output-on-failure
+cmake -S engine -B engine/build-verify-x11-gl -DCMAKE_BUILD_TYPE=Debug
+cmake --build engine/build-verify-x11-gl
+ctest --test-dir engine/build-verify-x11-gl -LE graphics --output-on-failure
 ```
+
+The engine requires CMake 3.20 or newer. An X11 OpenGL build also needs X11,
+Xrandr, OpenGL, and Threads development packages. FreeType is optional, but is
+needed for the hinted font path and CJK TTC support.
 
 `test_vulkan` exercises the Vulkan backend path. Run the full graphics integration
 suite from a Vulkan build:
@@ -23,9 +26,8 @@ ctest --test-dir engine/build-verify-x11-vk -L graphics --output-on-failure
 ```
 
 Release builds enable IPO/LTO for the `engine` static library when the active
-toolchain supports it. The Linux Clang toolchain selects `lld` explicitly so
-the final link can consume LLVM bitcode; disable IPO with
-`-DENGINE_ENABLE_IPO=OFF` if a platform linker does not support it.
+toolchain supports it. The Linux Clang CI configuration selects `lld`; disable
+IPO with `-DENGINE_ENABLE_IPO=OFF` when the platform linker does not support it.
 
 ## Documentation
 

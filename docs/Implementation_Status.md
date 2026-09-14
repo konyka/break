@@ -8,17 +8,15 @@
 - 新增 Windows TDD 回归，覆盖 READ -> WRITE -> READ 的取消重启与真实 UDP 可读事件；slot
   原生句柄显式初始化为 `INVALID_SOCKET`，避免把零值当作有效句柄取消。
 - `net_loop` 除 `wakeup()` 外明确为 loop-thread-affine，禁止与 `wait()` 或 `destroy()` 并发，
-  使 IOCP 销毁排空计数不会被其他消费者竞争。默认 epoll 全量 CTest 为 **102/102**，io_uring
-  `test_net_loop` 为 **13/13**；Zig Windows GNU 已编译 IOCP 源和 Windows 测试对象，真实
-  Windows runtime 仍由 CI/原生主机门禁验证（预期 `test_net_loop` **15/15**）。
+  使 IOCP 销毁排空计数不会被其他消费者竞争。历史 Linux 基线曾为 **102/102**，当前默认
+  配置已通过 **110/110**；io_uring 与 Windows runtime 结果仍按具体 CI/原生主机记录。
 
 ## 本轮补充：IOCP remove 后关闭安全（2026-09-12）
 
 - IOCP slot 保持稳定的 overlapped 存储，`remove()` 发出取消后立即使原生 `SOCKET` 失效；销毁
   仍可按在途标记排空 completion，但绝不对调用方已关闭且可能被内核复用的句柄再次取消。
-- 新增 remove-close-destroy 回归，保持“调用方先 remove 再 close”的跨后端 API 契约；默认 epoll
-  全量 CTest 为 **102/102**，io_uring
-  `test_net_loop` 为 **13/13**，Windows GNU 目标对象编译通过。
+- 新增 remove-close-destroy 回归，保持“调用方先 remove 再 close”的跨后端 API 契约；该历史条目
+  的旧版 Linux/Windows 验证数字不作为当前基线，当前默认配置以 **110/110** 为准。
 
 ## 本轮补充：IOCP 取消 completion 生命周期收口（2026-09-12）
 
@@ -44,8 +42,9 @@
 - macOS Cocoa + MoltenVK job 在原生 platform runtime smoke 后新增完整非 graphics CTest，
   与 Linux、Windows 门禁保持一致，覆盖 myui、规则引擎、网络循环和资源生命周期等跨模块
   回归；graphics/WSI 测试仍由各自平台 smoke 单独执行。
-- 本机 Linux 基线 `build-redis-current` 全量 CTest 为 **102/102**，io_uring
-  `test_net_loop` 为 **12/12**；macOS 结果以 GitHub Actions runner 为准。
+- 历史本机 Linux 基线 `build-redis-current` 曾为 **102/102**，io_uring
+  `test_net_loop` 曾为 **12/12**；当前默认配置以本文件顶部的 **110/110** 为准，macOS
+  结果以 GitHub Actions runner 为准。
 
 ## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11）
 
@@ -54,8 +53,8 @@
   保持内存使用有界。io_uring 同步采用相同的输入边界。
 - io_uring 短等待在 socket 或 wakeup 先完成时会提交 `IORING_OP_TIMEOUT_REMOVE`，不再让旧的
   timeout SQE 悬挂并累积 CQ 条目；timeout SQE 获取失败也不再提交错误的陈旧请求。
-- TDD 新增重复短等待、不可表示事件数量和 UDP 有界压力覆盖；epoll 与 io_uring 的
-  `test_net_loop` 均为 **12/12**，默认构建全量 CTest **102/102**。
+- TDD 新增重复短等待、不可表示事件数量和 UDP 有界压力覆盖；该条目的历史 epoll/io_uring
+  定向结果为 **12/12**，当前默认构建全量 CTest 为 **110/110**。
 
 ## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11）
 

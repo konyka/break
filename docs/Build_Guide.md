@@ -3,21 +3,22 @@
 ## 1. 环境要求
 
 ### 1.1 编译器
-- GCC 11+ 或 Clang 14+（C11 支持；Linux Clang Release 的默认 IPO/LTO 构建还需要 `lld`）
-- CMake 3.20+（engine）/ CMake 3.25+（framework）
+- `engine/` 是严格 C11 项目；CMake 会选择 GCC、Clang/AppleClang 或 MSVC 的 C 编译器，并启用严格警告。仓库没有在 CMake 中声明 GCC 11 或 Clang 14 的最低版本，因此具体工具链仍需能编译 C11 原子和项目依赖。
+- `framework/` 的 `common` 目标使用 C++11；仓库根 CMake 项目要求 CMake 3.25+。
+- `engine/` 的 CMake 最低版本是 3.20+。Linux Clang Release 的 IPO/LTO 配置还需要 `lld`。
 
 #### 编译器支持矩阵
 
 | 平台 | 编译器 | 状态 | 工具链文件 | 备注 |
 |------|--------|------|-----------|------|
-| Linux | GCC 7+ | 完整支持 | (默认) | 推荐，CI 主线 |
-| Linux | Clang 10+ + lld | 完整支持 | `toolchain-clang-linux.cmake` | 零警告通过 |
+| Linux | GCC | CI 验证 | (默认) | GCC X11/OpenGL、Vulkan、ASan/UBSan 配置见 CI |
+| Linux | Clang + lld | CI 验证 | `toolchain-clang-linux.cmake` | Release 配置启用 IPO |
 | Windows | MSVC (cl) | 支持 | `toolchain-msvc.cmake` | 原生 Windows 开发 |
 | Windows | Clang | 支持 | `toolchain-clang-win.cmake` | clang + lld-link |
 | Windows | MinGW GCC | 支持 | `toolchain-mingw.cmake` | Linux 交叉编译 |
 
 ### 1.2 系统依赖（Linux）
-- X11 开发库 (libx11-dev) 或 Wayland 开发库（二选一，编译时互斥）
+- X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
 - OpenGL (libgl1-mesa-dev) 或 Vulkan SDK
 - FreeType 开发库（推荐；`dxx_break` 默认 CJK TTC 字体和中文显示需要它）
 - pthread
@@ -27,6 +28,12 @@
 - Visual Studio 2019+ 或 MinGW
 - Windows SDK
 - DirectX 11 SDK (可选，用于 platform 演示)
+
+### 1.4 macOS、iOS、Android 与 OHOS
+- macOS 由 CMake 识别为 `macos`，当前 Cocoa 平台路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。这不是 Metal 后端声明。
+- iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
+- Android 由 CMake 识别为 `android`，使用 epoll。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这只描述 supplied `ANativeWindow` 编译路径，不代表完整 Android runtime 支持。
+- OHOS 由 CMake 识别为 `harmonyos`，使用 epoll；仓库没有声明 OHOS runtime 或 CI 覆盖。
 
 ## 2. 构建配置
 
@@ -95,6 +102,29 @@ FreeType，独立 TTF/OTF 仍可通过 `stb_truetype` 使用，但可变 TTC（�
 Noto Sans CJK）不可用。
 
 详细架构、渲染后端与 IME 状态见 `docs/myui_integration.md`。
+
+### 2.3 CMake 选项
+
+`engine/CMakeLists.txt` 当前提供以下选项：
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `ENGINE_ENABLE_WAYLAND` | OFF | Linux 原生 Wayland，关闭时使用 X11 |
+| `ENGINE_ENABLE_IPO` | ON | Release 且工具链支持时启用 IPO/LTO |
+| `ENGINE_NET_IOURING` | OFF | Linux 实验性 io_uring 网络后端 |
+| `ENGINE_ANDROID_NATIVE_WINDOW` | OFF | Android supplied `ANativeWindow` Vulkan 路径 |
+| `ENGINE_VULKAN` | OFF | 使用 Vulkan 后端，并查找 Vulkan 与 shaderc |
+| `ENGINE_BUILD_TESTS` | ON | 构建 engine 单元测试 |
+| `ENGINE_USE_ASAN` / `ENGINE_USE_UBSAN` / `ENGINE_USE_TSAN` | OFF | 分别启用地址、未定义行为、线程消毒器 |
+| `RULE_ENGINE_ENABLE_C11_PARALLEL` | OFF | 可选 C11 规则匹配执行器 |
+| `RULE_ENGINE_ENABLE_REDIS` | OFF | hiredis 状态提供器；不提供 live Redis 服务 |
+| `RULE_ENGINE_REDIS_SOURCE_DIR` | 空 | 可选 Redis/hiredis 源码目录，用于构建私有 hiredis 静态目标 |
+| `MYUI_FONT_STB` / `MYUI_FONT_FREETYPE` / `MYUI_IMAGE_STB` | ON | myui 字体与图像后端 |
+| `MYUI_UI_YAML` / `MYUI_BIDI` / `MYUI_HARFBUZZ` | ON | YAML、BiDi、可选 OpenType shaping |
+| `MYUI_GLES2` / `MYUI_GL_DESKTOP` | ON | 可复用 myui GLES2、桌面 OpenGL 后端 |
+| `MYUI_VULKAN` | OFF | 可复用 myui Vulkan 后端 |
+
+关闭的可选后端不会执行对应依赖探测。TSAN 是本地配置选项，不是当前 CI gate。
 
 ### 2.2.1 Rule-engine core
 
@@ -300,7 +330,9 @@ cmake --build build-cross
 
 ### 2.5 macOS 平台构建
 
-macOS 使用 Xcode Command Line Tools 提供的系统框架；文件监视模块额外链接 `CoreServices` 与 `CoreFoundation`，无需单独安装第三方依赖。
+macOS 使用 Xcode Command Line Tools 提供系统框架；当前 Cocoa 渲染路径还需要
+MoltenVK/Vulkan、`shaderc_shared` 和 FreeType。文件监视模块额外链接 `CoreServices`
+与 `CoreFoundation`。
 
 ```bash
 cd engine
@@ -319,7 +351,7 @@ cmake --build build-macos --parallel
 
 #### macOS 依赖
 - Xcode Command Line Tools（Clang、Xcode/Ninja 构建工具）
-- Vulkan SDK（如使用 Vulkan/MoltenVK 后端）
+- MoltenVK/Vulkan SDK、`shaderc_shared` 和 FreeType（当前 Cocoa 路径会探测并链接）
 - Metal、QuartzCore、IOKit、CoreServices、CoreFoundation（系统框架，自动链接）
 
 #### macOS 文件监视
@@ -337,20 +369,33 @@ cmake --build build-gl
 ### 2.7 CMake 选项
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合） |
+| ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合）；macOS Cocoa 路径自动使用 Vulkan/MoltenVK |
 | ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
 | ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
 | ENGINE_USE_TSAN | OFF | 启用 ThreadSanitizer（GCC/Clang 使用 `-fsanitize=thread`；用于线程安全专项验证） |
 | ENGINE_USE_UBSAN | OFF | 启用 UndefinedBehaviorSanitizer（GCC/Clang 使用 `-fsanitize=undefined`；MSVC 不启用） |
+| ENGINE_BUILD_TESTS | ON | 构建并注册 CTest 测试；关闭后不注册测试 |
 | ENGINE_ENABLE_IPO | ON | Release 构建中在工具链支持时启用 IPO/LTO，仅作用于 `engine` 静态库 |
 | MYUI_FONT_FREETYPE | ON | 找到 FreeType 时启用 hinted 字形和 TTC 多字面选择；CJK 默认字体需要此选项 |
 | MYUI_FONT_STB | ON | 启用 `stb_truetype` 独立 TTF/OTF 回退 |
+| MYUI_GLES2 | ON | 探测可用依赖后启用可复用 GLES2 后端 |
+| MYUI_GL_DESKTOP | ON | 探测可用依赖后启用桌面 OpenGL 后端 |
+| MYUI_VULKAN | OFF | 启用可复用 Vulkan 后端；需要 Vulkan/shaderc 依赖 |
+| ENGINE_ANDROID_NATIVE_WINDOW | OFF | Android Vulkan 必须开启，并提供 NDK `android/native_window.h` |
+| RULE_ENGINE_ENABLE_C11_PARALLEL | OFF | 启用可选 C11 规则并行执行器；不代表全引擎句柄线程安全 |
+| RULE_ENGINE_ENABLE_REDIS | OFF | 启用 Redis 状态提供者；需要 hiredis/Redis 源目录 |
+| RULE_ENGINE_REDIS_SOURCE_DIR | (空) | 指定 Redis/hiredis 源目录，仅在 Redis 选项启用时使用 |
 | CMAKE_C_STANDARD | 11 | C 语言标准 |
 | CMAKE_C_COMPILER | (自动) | 指定 C 编译器（`gcc` / `clang` / `cl`） |
 | CMAKE_CXX_COMPILER | (自动) | 指定 C++ 编译器（`g++` / `clang++` / `cl`） |
 | CMAKE_TOOLCHAIN_FILE | (无) | 使用工具链文件（见上方编译器支持矩阵） |
 
 > 编译器标志由 CMake 根据 MSVC / Clang / GCC **自动检测并应用三路分支**，无需手动指定告警/优化标志。
+
+`net_loop` 的 `add`、`modify`、`remove`、`wait` 和 `destroy` 必须在同一个
+loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IOCP 后端只提供
+`NET_LOOP_READ`，会拒绝包含 `NET_LOOP_WRITE` 的注册，避免用立即完成的零字节发送伪造
+可写边沿并造成忙循环。其他后端按各自原生 readiness/completion 语义提供 READ/WRITE。
 
 ### 2.8 完整构建矩阵
 
@@ -361,15 +406,19 @@ cmake --build build-gl
 | Linux | X11 | Vulkan | GCC | 通过 |
 | Linux | X11 | Vulkan | Clang | 通过 |
 | Linux | Wayland | OpenGL | GCC | 通过 |
-| Linux | Wayland | OpenGL | Clang | 通过 |
+| Linux | Wayland | OpenGL | Clang | 待 CI 验证 |
 | Linux | Wayland | Vulkan | GCC | 通过 |
-| Linux | Wayland | Vulkan | Clang | 通过 |
+| Linux | Wayland | Vulkan | Clang | 待 CI 验证 |
 | Windows | Win32 | OpenGL | MinGW | 待验证 |
 | Windows | Win32 | OpenGL | MSVC | 原生构建 + 非图形 Win32 smoke 已验证 |
 | Windows | Win32 | OpenGL | Clang | 待验证 |
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 待验证 |
 | Windows | Win32 | Vulkan | Clang | 待验证 |
+| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | CI/headless 与平台 smoke；需第三方依赖 |
+| iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
+| Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
+| OHOS/HarmonyOS | 宿主注入 | — | OHOS 工具链 | 网络 epoll 路径；无原生 surface/CI 验证 |
 
 ## 3. 构建产物
 

@@ -1,13 +1,13 @@
 # myui 后续阶段方案与状态
 
-## 本轮补充：IOCP 取消重启状态机（2026-09-12）
+## 本轮补充：IOCP 取消重启状态机（2026-09-12，历史证据）
 
 网络循环的 Windows IOCP 实现补齐了取消状态机：当某一兴趣在 overlapped completion 到达前
 被取消又重新启用时，旧取消 completion 仅完成内部回收并按最新兴趣重新投递，不会泄漏为
 `NET_LOOP_ERROR`。实现保持每次 completion O(1)、无热路径分配；读写状态独立，避免一个方向
 的取消影响另一方向。`net_loop` 除 wakeup 外采用 loop-thread-affine 契约，排空和释放不能与
-wait 并发。新增 Windows READ -> WRITE -> READ TDD；Linux 默认 CTest **102/102**、io_uring
-`test_net_loop` **13/13**，Zig Windows GNU 源/测试对象编译通过，真实 Windows 运行仍待 CI。
+wait 并发。新增 Windows READ -> WRITE -> READ TDD；历史 Linux 默认基线为 **102/102**，当前
+默认配置验证为 **110/110**；真实 Windows 运行仍待 CI/原生主机。
 
 ## 本轮补充：IOCP remove 后关闭安全（2026-09-12）
 
@@ -30,14 +30,14 @@ IOCP 后端现在使用非零 completion key（槽索引加一），避免首个
 32 个 socket 扩容后仍能收到首个 socket completion 的 Windows 回归。Linux 默认构建与
 io_uring 定向回归保持通过，Windows 实际运行结果仍由 Windows CI runner 提供。
 
-## 本轮补充：macOS headless CI 门禁（2026-09-11）
+## 本轮补充：macOS headless CI 门禁（2026-09-11，历史证据）
 
 macOS Cocoa + MoltenVK CI 在原生 platform runtime smoke 后现在执行完整非 graphics CTest，
 与 Linux、Windows job 保持相同的跨模块回归门禁；graphics/WSI 测试仍单独执行，避免把无显示
 环境误当成窗口渲染成功。当前 Linux 本机基线为全量 **102/102**，macOS 实际结果由 runner
 提供；Windows/macOS 的 HiDPI、IME、present、buffer-age 仍需对应平台专用 smoke 完整覆盖。
 
-## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11）
+## 本轮补充：net_loop 等待路径性能与边界收口（2026-09-11，历史证据）
 
 等待路径现在复用 epoll/kqueue/IOCP 的后端事件数组，避免每次 `net_loop_wait()` 产生临时堆
 分配；所有后端将 `max` 限制为 `1..NET_LOOP_MAX_EVENTS`，阻断超大请求造成的资源消耗。
@@ -48,7 +48,7 @@ TDD 新增重复短等待和超大事件数边界，epoll 与 io_uring 的 `test
 默认构建全量 CTest 为 **102/102**。真实 Windows IOCP、macOS/BSD kqueue 运行时及不同 Linux
 内核版本仍需平台 CI 验证。
 
-## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11）
+## 本轮补充：跨平台 net_loop 事件循环契约收口（2026-09-11，历史证据）
 
 跨平台网络事件循环现在统一采用严格兴趣掩码：`net_loop_add()` 与 `net_loop_modify()` 只接受
 `NET_LOOP_READ`、`NET_LOOP_WRITE` 的非空组合，拒绝 `NET_LOOP_ERROR` 和未知位；这避免 epoll、
