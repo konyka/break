@@ -70,6 +70,7 @@ struct NetLoop {
     struct __kernel_timespec timeout_ts;
     bool                timeout_active;
     u64                 timeout_token;
+    bool                aborted;
 #if defined(ENGINE_NET_LOOP_TESTING)
     bool                fail_next_submit;
     bool                fail_next_timeout_cancel;
@@ -321,6 +322,7 @@ static void uring_abort_destroy(NetLoop *loop)
     loop->wake_polled = false;
     loop->timeout_active = false;
     loop->timeout_token = 0;
+    loop->aborted = true;
 }
 
 static bool uring_arm_poll(NetLoop *loop, NetLoopSlot *slot, u32 index,
@@ -560,7 +562,8 @@ void net_loop_destroy(NetLoop *loop)
 
 bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 {
-    if (!loop || !socket || !net_loop_interest_valid(events)) return false;
+    if (!loop || loop->aborted || !socket || !net_loop_interest_valid(events))
+        return false;
     intptr_t fd = net_socket_native_handle(socket);
     if (fd < 0) return false;
 
@@ -610,7 +613,8 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 
 bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
 {
-    if (!loop || !socket || !net_loop_interest_valid(events)) return false;
+    if (!loop || loop->aborted || !socket || !net_loop_interest_valid(events))
+        return false;
     u32 idx = ur_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     /* Reuse the re-arm path: modify == add on an existing socket. */
@@ -619,7 +623,7 @@ bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
 
 bool net_loop_remove(NetLoop *loop, NetSocket *socket)
 {
-    if (!loop || !socket) return false;
+    if (!loop || loop->aborted || !socket) return false;
     u32 idx = ur_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     bool ok = true;
@@ -636,7 +640,8 @@ bool net_loop_remove(NetLoop *loop, NetSocket *socket)
 
 i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 {
-    if (!loop || !out || !net_loop_wait_count_valid(max)) return NET_ERROR;
+    if (!loop || loop->aborted || !out || !net_loop_wait_count_valid(max))
+        return NET_ERROR;
 
     /* Block until at least one completion. io_uring_enter takes no timeout;
      * a timeout SQE bounds the wait (see below). */
@@ -694,7 +699,7 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
 
 void net_loop_wakeup(NetLoop *loop)
 {
-    if (!loop || loop->wake_fd < 0) return;
+    if (!loop || loop->aborted || loop->wake_fd < 0) return;
     u64 one = 1;
     (void)!write(loop->wake_fd, &one, sizeof(one));
 }

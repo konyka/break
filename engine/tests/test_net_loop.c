@@ -680,6 +680,9 @@ TEST(loop_iouring_timeout_cancel_failure_aborts_loop)
     NetLoopEvent ev[1];
     ASSERT_EQ(net_loop_wait(loop, ev, 1, 5000), NET_ERROR);
     ASSERT_EQ(net_loop_wait(loop, ev, 1, 1), NET_ERROR);
+    ASSERT_FALSE(net_loop_add(loop, recv_s, NET_LOOP_READ, NULL));
+    ASSERT_FALSE(net_loop_modify(loop, recv_s, NET_LOOP_READ));
+    ASSERT_FALSE(net_loop_remove(loop, recv_s));
 
     net_loop_destroy(loop);
     net_close(recv_s);
