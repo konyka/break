@@ -170,10 +170,15 @@ endif()
 # name instead of linking a bare name (which fails with an unhelpful -l error).
 if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
     find_library(SHADERC_LIB NAMES shaderc_shared shaderc)
+    find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.h)
     if(NOT SHADERC_LIB)
         message(FATAL_ERROR
             "shaderc_shared not found — install shaderc (e.g. libshaderc-dev / shaderc) "
             "or configure without -DENGINE_VULKAN=ON")
+    endif()
+    if(NOT SHADERC_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "shaderc headers not found — install shaderc development headers or set SHADERC_INCLUDE_DIR")
     endif()
     find_package(Vulkan REQUIRED)
 endif()
@@ -261,6 +266,9 @@ src/renderer/lens_effects.c
     src/scene/scene_state.c
     src/engine.c
 )
+if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+    target_include_directories(engine PRIVATE ${SHADERC_INCLUDE_DIR})
+endif()
 
 include(CTest)
 if(ENGINE_BUILD_TESTS)

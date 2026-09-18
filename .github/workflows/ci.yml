@@ -261,7 +261,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DMYUI_GLES2=OFF
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DMYUI_GLES2=OFF -DMYUI_GL_DESKTOP=OFF
 
       - name: Build
         run: cmake --build build --parallel
@@ -292,10 +292,12 @@ jobs:
           export VULKAN_SDK="$(brew --prefix molten-vk)"
           export VULKAN_HEADERS="$(brew --prefix vulkan-headers)"
           export SHADERC_LIB="$(brew --prefix shaderc)/lib/libshaderc_shared.dylib"
+          export SHADERC_INCLUDE_DIR="$(brew --prefix shaderc)/include"
           cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug \
             -DVulkan_LIBRARY="$VULKAN_SDK/lib/libvulkan.dylib" \
             -DVulkan_INCLUDE_DIR="$VULKAN_HEADERS/include" \
-            -DSHADERC_LIB="$SHADERC_LIB"
+            -DSHADERC_LIB="$SHADERC_LIB" \
+            -DSHADERC_INCLUDE_DIR="$SHADERC_INCLUDE_DIR"
 
       - name: Build Break myui demo
         run: cmake --build build --target dxx_break --parallel
