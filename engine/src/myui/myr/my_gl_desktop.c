@@ -18,7 +18,9 @@
 #include <windows.h>
 #endif
 #include <GL/gl.h>
+#ifndef _WIN32
 #include <GL/glext.h>
+#endif
 
 static void gl_viewport(void* ctx, int32_t w, int32_t h) {
   (void)ctx;

@@ -72,8 +72,9 @@ jobs:
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-          test -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
+           test -n "$vk_icd"
+           export VK_ICD_FILENAMES="$vk_icd"
           ctest --test-dir build -L graphics --output-on-failure
 
   linux-clang-release:
@@ -146,7 +147,8 @@ jobs:
       - name: Test graphics smoke
         run: |
           test -x "$(command -v Xvfb)"
-          test -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
+          test -n "$vk_icd"
           Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
@@ -154,7 +156,7 @@ jobs:
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
           export LIBGL_ALWAYS_SOFTWARE=1
           export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          export VK_ICD_FILENAMES="$vk_icd"
           ctest --test-dir build -L graphics --output-on-failure
 
   wayland-gl:
@@ -283,15 +285,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install molten-vk shaderc freetype
+        run: brew install molten-vk vulkan-headers shaderc freetype
 
       - name: Configure
         run: |
           export VULKAN_SDK="$(brew --prefix molten-vk)"
+          export VULKAN_HEADERS="$(brew --prefix vulkan-headers)"
           export SHADERC_LIB="$(brew --prefix shaderc)/lib/libshaderc_shared.dylib"
           cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug \
             -DVulkan_LIBRARY="$VULKAN_SDK/lib/libvulkan.dylib" \
-            -DVulkan_INCLUDE_DIR="$VULKAN_SDK/include" \
+            -DVulkan_INCLUDE_DIR="$VULKAN_HEADERS/include" \
             -DSHADERC_LIB="$SHADERC_LIB"
 
       - name: Build Break myui demo
