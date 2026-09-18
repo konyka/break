@@ -1482,7 +1482,7 @@ static void registry_global(void *data, struct wl_registry *reg, u32 name,
          * data when the compositor lacks it. */
         if (p->xdg_output_mgr == NULL) {
             p->xdg_output_mgr = wl_registry_bind(reg, name,
-                &zxdg_output_manager_v1_interface, 3);
+                &zxdg_output_manager_v1_interface, 2);
             wl_out_optional_global_set(&p->optional_globals,
                                        WAYLAND_OPTIONAL_XDG_OUTPUT_MANAGER, name);
             for (u32 i = 0; i < p->output_list.count; i++)

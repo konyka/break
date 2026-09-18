@@ -14,6 +14,9 @@
 #ifdef MYUI_HAS_GL_DESKTOP
 
 #define GL_GLEXT_PROTOTYPES /* declare the GL 2.0 shader/texture API */
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <GL/gl.h>
 #include <GL/glext.h>
 
