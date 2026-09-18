@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补充：字体 shader atlas 契约收口（2026-09-18）
+
+- `my_vgcanvas_break_rhi` 的字体 atlas 保存的是原始 glyph coverage alpha，且同一 atlas
+  也承载矩形绘制所需的 opaque white patch；OpenGL/Vulkan 字体 fragment shader 统一直接
+  采样 alpha，不再把 coverage 当作 SDF 使用。这样可避免 glyph 边缘和实心 patch 被
+  `smoothstep` 错误处理。
+- `test_font_shader_contract` 的 shader 契约断言已同步为 raw-coverage 路径，并明确拒绝
+  残留的 `smoothstep`/`fwidth` 采样。此前 R439 条目中关于字体 SDF 的历史描述不代表
+  当前 atlas 实现，当前行为以 shader 与该回归测试为准。
+- 文档后部的 R439 字体条目是历史发布记录，不是当前实现矩阵；其中的 SDF 烘焙与
+  `smoothstep`/`fwidth` 描述已被 raw-coverage atlas 契约取代。
+
 ## 本轮补充：IOCP 取消重启状态机（2026-09-12）
 
 - IOCP 为读、写 overlapped 分别记录取消在途状态。兴趣取消后又在 completion 到达前恢复时，
