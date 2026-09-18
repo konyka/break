@@ -430,6 +430,7 @@ target_include_directories(myui_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
+target_link_libraries(myui_core PUBLIC m)
 if(MYUI_BIDI)
     target_include_directories(myui_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/SheenBidi/Headers

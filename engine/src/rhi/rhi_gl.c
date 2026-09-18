@@ -6,7 +6,9 @@
 #include <limits.h>
 #include <string.h>
 
+#if !defined(ENGINE_PLATFORM_WINDOWS)
 static bool gl_extension_has(const char *extensions, const char *name);
+#endif
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <GL/gl.h>
@@ -737,6 +739,7 @@ RHIDevice *rhi_test_gl_cache_owner(void) {
 }
 #endif
 
+#if !defined(ENGINE_PLATFORM_WINDOWS)
 static bool gl_extension_has(const char *extensions, const char *name) {
     size_t name_len;
     const char *cursor;
@@ -752,6 +755,7 @@ static bool gl_extension_has(const char *extensions, const char *name) {
     }
     return false;
 }
+#endif
 
 static void *gl_frame_begin(RHIDevice *dev) {
 #if defined(ENGINE_PLATFORM_WAYLAND) || !defined(ENGINE_PLATFORM_WINDOWS)

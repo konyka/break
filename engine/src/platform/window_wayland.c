@@ -698,31 +698,6 @@ static void text_input_done(void *data, struct zwp_text_input_v3 *text_input,
     p->pending_delete_set = false;
 }
 
-static void text_input_action(void *data, struct zwp_text_input_v3 *text_input,
-                              u32 action, u32 serial) {
-    (void)data;
-    (void)text_input;
-    (void)action;
-    (void)serial;
-}
-
-static void text_input_language(void *data, struct zwp_text_input_v3 *text_input,
-                                const char *language) {
-    (void)data;
-    (void)text_input;
-    (void)language;
-}
-
-static void text_input_preedit_hint(void *data,
-                                    struct zwp_text_input_v3 *text_input,
-                                    u32 start, u32 end, u32 hint) {
-    (void)data;
-    (void)text_input;
-    (void)start;
-    (void)end;
-    (void)hint;
-}
-
 static const struct zwp_text_input_v3_listener text_input_listener = {
     .enter = text_input_enter,
     .leave = text_input_leave,
@@ -730,9 +705,6 @@ static const struct zwp_text_input_v3_listener text_input_listener = {
     .commit_string = text_input_commit_string,
     .delete_surrounding_text = text_input_delete_surrounding,
     .done = text_input_done,
-    .action = text_input_action,
-    .language = text_input_language,
-    .preedit_hint = text_input_preedit_hint,
 };
 
 static void wayland_clear_text_input(Platform *p) {
