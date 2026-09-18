@@ -392,6 +392,7 @@ set(MYUI_CORE_SOURCES
     src/myui/myui/widgets/my_checkbox.c
     src/myui/myui/widgets/my_slider.c
     src/myui/myui/widgets/my_progress_bar.c
+    src/myui/myui/widgets/my_chart.c
     src/myui/myui/widgets/my_list_view.c
     src/myui/myui/widgets/my_image.c
     src/myui/myui/widgets/my_text_area.c
@@ -1353,6 +1354,18 @@ if(ENGINE_BUILD_TESTS)
     )
     target_link_libraries(test_myui_font PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_font COMMAND test_myui_font)
+
+    add_executable(test_myui_chart tests/test_myui_chart.c)
+    target_include_directories(test_myui_chart PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_chart PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_chart COMMAND test_myui_chart)
+
+    add_executable(test_font_shader_contract tests/test_font_shader_contract.c)
+    target_include_directories(test_font_shader_contract PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_font_shader_contract PRIVATE
+        TEST_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME test_font_shader_contract COMMAND test_font_shader_contract)
 
     add_executable(test_myui_mvvm tests/test_myui_mvvm.c
         src/myui/mypal/dummy/my_pal_dummy.c)

@@ -1,0 +1,111 @@
+#include "test_framework.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "myr/my_lcd_mem.h"
+#include "myr/my_vgcanvas_soft.h"
+#include "myui/widgets/my_chart.h"
+
+static void dump_ppm_if_requested(const uint8_t* pixels, uint32_t width,
+                                  uint32_t height, uint32_t stride) {
+  const char* path = getenv("MYUI_CHART_DUMP_PPM");
+  FILE* file;
+  uint32_t y;
+  if (path == NULL) return;
+  file = fopen(path, "wb");
+  if (file == NULL) return;
+  fprintf(file, "P6\n%u %u\n255\n", width, height);
+  for (y = 0u; y < height; y++) {
+    uint32_t x;
+    for (x = 0u; x < width; x++) {
+      const uint8_t* pixel = pixels + y * stride + x * 4u;
+      uint8_t rgb[3] = {pixel[2], pixel[1], pixel[0]};
+      fwrite(rgb, 1u, sizeof(rgb), file);
+    }
+  }
+  fclose(file);
+}
+
+TEST(chart_rejects_invalid_series_and_range) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_chart_series_t series = {"Revenue", NULL, 0u, 0xE85D75FFu};
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_TRUE(my_chart_is_instance(chart));
+  ASSERT_EQ(my_chart_set_series(chart, MY_CHART_MAX_SERIES, &series),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, NULL), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_range(chart, 10.0f, 10.0f), MY_RET_INVALID_PARAMS);
+  my_widget_unref(chart);
+}
+
+TEST(chart_clamps_values_and_formats_hover_tooltip) {
+  static const float values[] = {10.0f, 20.0f, 30.0f};
+  static const char* labels[] = {"Mon", "Tue", "Wed"};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  char tooltip[64];
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_set_labels(chart, labels, 3u), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_range(chart, 10.0f, 30.0f), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_chart_value_to_y(40.0f, 10.0f, 30.0f, 4.0f, 100.0f),
+                  4.0f, 1e-5f);
+  ASSERT_FLOAT_EQ(my_chart_value_to_y(0.0f, 10.0f, 30.0f, 4.0f, 100.0f),
+                  104.0f, 1e-5f);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  {
+    my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+    event.u.pointer.x = 180;
+    event.u.pointer.y = 80;
+    ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  }
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)), MY_RET_OK);
+  ASSERT_TRUE(strstr(tooltip, "Revenue: 20.00") != NULL);
+  my_widget_unref(chart);
+}
+
+TEST(chart_paints_visible_series_to_software_canvas) {
+  static const float values[] = {5.0f, 30.0f, 15.0f};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t i;
+  size_t non_white = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  dump_ppm_if_requested(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd));
+  for (i = 0u; i < 320u * 180u * 4u; i += 4u) {
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu ||
+        pixels[i + 2u] != 0xFFu) {
+      non_white++;
+    }
+  }
+  ASSERT_TRUE(non_white > 100u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
+TEST_MAIN_BEGIN()
+  RUN_TEST(chart_rejects_invalid_series_and_range);
+  RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
+  RUN_TEST(chart_paints_visible_series_to_software_canvas);
+TEST_MAIN_END()

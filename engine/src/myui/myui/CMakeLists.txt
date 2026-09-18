@@ -22,6 +22,7 @@ add_library(myui STATIC
   widgets/my_checkbox.c
   widgets/my_slider.c
   widgets/my_progress_bar.c
+  widgets/my_chart.c
   widgets/my_list_view.c
   widgets/my_image.c
   widgets/my_text_area.c
