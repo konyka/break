@@ -189,6 +189,8 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (chart->labels != NULL && chart->label_count > 0u) {
     size_t label_count = chart->label_count;
     size_t label_index;
+    size_t data_count = chart->series_count > 0u ? chart->series[0].count : 0u;
+    if (data_count > 0u && label_count > data_count) label_count = data_count;
     my_vgcanvas_set_font(vg, NULL, 10);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
     for (label_index = 0; label_index < label_count; label_index++) {
@@ -234,10 +236,10 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     my_vgcanvas_set_font(vg, NULL, 10);
     for (i = 0; i < chart->series_count; i++) {
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(chart->series[i].color));
-      my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){legend_x, 15, 7, 7}, 2);
+      my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){legend_x, 21, 7, 7}, 2);
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
       my_vgcanvas_draw_text(vg, chart->series[i].name != NULL ? chart->series[i].name : "",
-                            legend_x + 11, 12);
+                            legend_x + 11, 18);
       legend_x += 70.0f;
     }
   }
@@ -320,6 +322,7 @@ my_ret_t my_chart_set_series(my_widget_t* widget, size_t index,
   my_chart_t* chart = chart_cast(widget);
   size_t i;
   if (chart == NULL || series == NULL || index >= MY_CHART_MAX_SERIES ||
+      index > chart->series_count ||
       (series->count > 0u && series->values == NULL)) return MY_RET_INVALID_PARAMS;
   for (i = 0; i < series->count; i++) {
     if (!isfinite(series->values[i])) return MY_RET_INVALID_PARAMS;

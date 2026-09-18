@@ -38,6 +38,7 @@ TEST(chart_rejects_invalid_series_and_range) {
   ASSERT_TRUE(my_chart_is_instance(chart));
   ASSERT_EQ(my_chart_set_series(chart, MY_CHART_MAX_SERIES, &series),
             MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_series(chart, 2u, &series), MY_RET_INVALID_PARAMS);
   ASSERT_EQ(my_chart_set_series(chart, 0u, NULL), MY_RET_INVALID_PARAMS);
   series.values = (const float[]){NAN};
   series.count = 1u;
