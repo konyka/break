@@ -1,0 +1,43 @@
+# myui Chart Widget
+
+`my_chart` is a native `myui` widget inspired by the useful parts of ECharts:
+borrowed data series, line/bar modes, automatic or explicit Y ranges, labels,
+legends, pointer-driven hover state, and a compact tooltip.
+
+## Basic usage
+
+```c
+#include "myui/widgets/my_chart.h"
+
+static const float revenue[] = {10.0f, 18.0f, 15.0f, 26.0f};
+static const char* days[] = {"Mon", "Tue", "Wed", "Thu"};
+my_chart_series_t series = {"Revenue", revenue, 4u, 0xE85D75FFu};
+my_widget_t* chart = my_chart_create(allocator, MY_CHART_LINE);
+
+my_chart_set_title(chart, "Weekly revenue");
+my_chart_set_labels(chart, days, 4u);
+my_chart_set_series(chart, 0u, &series);
+my_chart_set_range(chart, 0.0f, 30.0f);
+```
+
+Series values, names, and labels are borrowed. They must remain valid for the
+lifetime of the chart. The widget supports up to `MY_CHART_MAX_SERIES` line
+series; bar mode uses the first series and draws values around the zero axis.
+
+Pointer movement over the plot selects the nearest point. Applications can
+read `my_chart_get_hover_index()` or `my_chart_get_tooltip()` to integrate a
+custom overlay; the built-in paint path also shows a compact tooltip.
+
+## Verification
+
+The contract and interaction tests are registered as `test_myui_chart`:
+
+```bash
+cmake -S engine -B engine/build-ui-chart -DENGINE_BUILD_TESTS=ON
+cmake --build engine/build-ui-chart --target test_myui_chart
+ctest --test-dir engine/build-ui-chart -R '^test_myui_chart$' --output-on-failure
+```
+
+The software canvas and native X11/RHI test suites should also be run before a
+release. The widget intentionally uses the backend-neutral `my_vgcanvas` API,
+so the same chart code is shared by software, OpenGL, and Vulkan UI paths.

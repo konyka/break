@@ -33,6 +33,7 @@ IPO with `-DENGINE_ENABLE_IPO=OFF` when the platform linker does not support it.
 
 - Build and platform matrix: `docs/Build_Guide.md`
 - myui integration and Break RHI backend: `docs/myui_integration.md`
+- Native ECharts-inspired chart widget: `docs/myui_chart.md`
 - myui now shares one RHI surface across logical windows and supports IME, cursor,
   non-blocking clipboard transfer, and OpenGL/Vulkan on X11 and Wayland; see
   `docs/myui_integration.md` for the platform matrix.

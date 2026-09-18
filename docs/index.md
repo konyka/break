@@ -29,7 +29,7 @@ Scene (POM) → SSAO → ContactShadow → VolumetricFog → LensFlare
 | **ECS** | `src/ecs/` | 实体-组件系统 |
 | **Script** | `src/script/` | Lua 脚本绑定 |
 | **Task** | `src/task/` | 任务调度器 |
-| **UI** | `src/ui/` | 调试 UI、TrueType 字体渲染 |
+| **UI** | `src/ui/` | 调试 UI、TrueType 字体渲染、myui 图表组件 |
 | **Core** | `src/core/` | 类型、日志、断言、内存分配、性能分析 |
 
 ## 渲染子系统详解
