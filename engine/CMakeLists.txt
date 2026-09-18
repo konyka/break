@@ -165,10 +165,11 @@ if(WIN32)
     add_library(m INTERFACE)
 endif()
 
-# R433: shaderc_shared ships no CMake package config; locate it explicitly
-# instead of linking the bare name (which fails with unhelpful -l errors).
+# R433: shaderc ships no CMake package config on several Linux distributions;
+# locate either the shared runtime name or the distro's libshaderc development
+# name instead of linking a bare name (which fails with an unhelpful -l error).
 if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
-    find_library(SHADERC_LIB NAMES shaderc_shared)
+    find_library(SHADERC_LIB NAMES shaderc_shared shaderc)
     if(NOT SHADERC_LIB)
         message(FATAL_ERROR
             "shaderc_shared not found — install shaderc (e.g. libshaderc-dev / shaderc) "
@@ -863,7 +864,7 @@ elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
                 "ENGINE_VULKAN on ${ENGINE_PLATFORM} requires a supplied native surface implementation; none is present")
         endif()
         find_package(Vulkan REQUIRED)
-        find_library(SHADERC_LIB NAMES shaderc_shared REQUIRED)
+        find_library(SHADERC_LIB NAMES shaderc_shared shaderc REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
         target_link_libraries(engine PRIVATE Vulkan::Vulkan ${SHADERC_LIB} dl)
         if(ENGINE_PLATFORM STREQUAL "android")

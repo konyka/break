@@ -91,7 +91,7 @@ jobs:
             libfreetype6-dev fonts-noto-cjk
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=engine/toolchain-clang-linux.cmake -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
+        run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
 
       - name: Build
         run: cmake --build build --parallel
