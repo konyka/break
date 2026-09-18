@@ -23,10 +23,15 @@ my_chart_set_range(chart, 0.0f, 30.0f);
 Series values, names, and labels are borrowed. They must remain valid for the
 lifetime of the chart. The widget supports up to `MY_CHART_MAX_SERIES` line
 series; bar mode uses the first series and draws values around the zero axis.
+Series values must be finite; `my_chart_set_series()` rejects `NaN` and
+infinite samples. Explicit ranges must be finite and strictly increasing.
 
 Pointer movement over the plot selects the nearest point. Applications can
 read `my_chart_get_hover_index()` or `my_chart_get_tooltip()` to integrate a
 custom overlay; the built-in paint path also shows a compact tooltip.
+The built-in plot includes horizontal grid lines, Y labels, X labels, and
+explicit X/Y axis strokes. Hover state is cleared when the widget receives a
+`hover_leave` event.
 
 ## Verification
 

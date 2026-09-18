@@ -25,6 +25,16 @@
 static const uint32_t s_colors[MY_CHART_MAX_SERIES] = {
     0xE85D75FFu, 0x3A86FFFF, 0xF4A261FFu, 0x2A9D8FFF};
 
+static void chart_hover_leave(void* ctx, const char* event, void* data) {
+  my_chart_t* chart = (my_chart_t*)ctx;
+  (void)event;
+  (void)data;
+  if (chart != NULL && chart->hover_index != CHART_HOVER_NONE) {
+    chart->hover_index = CHART_HOVER_NONE;
+    my_widget_invalidate((my_widget_t*)chart, NULL);
+  }
+}
+
 static my_chart_t* chart_cast(my_widget_t* widget) {
   return my_chart_is_instance(widget) ? (my_chart_t*)widget : NULL;
 }
@@ -79,7 +89,8 @@ static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
 
 float my_chart_value_to_y(float value, float y_min, float y_max,
                           float plot_top, float plot_height) {
-  float span;
+  long double span;
+  long double normalized;
   if (!isfinite(value) || !isfinite(y_min) || !isfinite(y_max) ||
       !isfinite(plot_top) || !isfinite(plot_height) || y_max <= y_min ||
       plot_height < 0.0f) {
@@ -87,8 +98,10 @@ float my_chart_value_to_y(float value, float y_min, float y_max,
   }
   if (value < y_min) value = y_min;
   if (value > y_max) value = y_max;
-  span = y_max - y_min;
-  return plot_top + plot_height * (1.0f - (value - y_min) / span);
+  span = (long double)y_max - (long double)y_min;
+  normalized = ((long double)value - (long double)y_min) / span;
+  return (float)((long double)plot_top +
+                 (long double)plot_height * (1.0L - normalized));
 }
 
 static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
@@ -108,6 +121,12 @@ static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
     my_vgcanvas_draw_text(vg, text, 5.0f, line_y - 5.0f);
   }
+  my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xAAB4C0FFu));
+  my_vgcanvas_begin_path(vg);
+  my_vgcanvas_move_to(vg, x, y);
+  my_vgcanvas_line_to(vg, x, y + h);
+  my_vgcanvas_line_to(vg, x + w, y + h);
+  my_vgcanvas_stroke(vg);
   (void)widget;
 }
 
@@ -270,6 +289,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->hover_index = CHART_HOVER_NONE;
   chart->show_legend = true;
   chart->base.widget_type = "chart";
+  my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
   return (my_widget_t*)chart;
 }
 
@@ -298,8 +318,12 @@ my_ret_t my_chart_set_labels(my_widget_t* widget, const char* const* labels,
 my_ret_t my_chart_set_series(my_widget_t* widget, size_t index,
                              const my_chart_series_t* series) {
   my_chart_t* chart = chart_cast(widget);
+  size_t i;
   if (chart == NULL || series == NULL || index >= MY_CHART_MAX_SERIES ||
       (series->count > 0u && series->values == NULL)) return MY_RET_INVALID_PARAMS;
+  for (i = 0; i < series->count; i++) {
+    if (!isfinite(series->values[i])) return MY_RET_INVALID_PARAMS;
+  }
   chart->series[index] = *series;
   if (chart->series[index].color == 0u) chart->series[index].color = s_colors[index];
   if (index >= chart->series_count) chart->series_count = index + 1u;
@@ -350,7 +374,12 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
     return MY_RET_NOT_SUPPORTED;
   series = &chart->series[0];
   if (series->values == NULL || chart->hover_index >= series->count) return MY_RET_NOT_SUPPORTED;
-  snprintf(buffer, capacity, "%s: %.2f", series->name != NULL ? series->name : "Series",
-           (double)series->values[chart->hover_index]);
+  if (snprintf(buffer, capacity, "%s: %.2f",
+               series->name != NULL ? series->name : "Series",
+               (double)series->values[chart->hover_index]) < 0 ||
+      strlen(buffer) + 1u >= capacity) {
+    buffer[capacity - 1u] = '\0';
+    return MY_RET_FAIL;
+  }
   return MY_RET_OK;
 }

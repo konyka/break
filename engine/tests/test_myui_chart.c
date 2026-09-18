@@ -1,6 +1,8 @@
 #include "test_framework.h"
 
 #include <stdio.h>
+#include <float.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,7 +39,11 @@ TEST(chart_rejects_invalid_series_and_range) {
   ASSERT_EQ(my_chart_set_series(chart, MY_CHART_MAX_SERIES, &series),
             MY_RET_INVALID_PARAMS);
   ASSERT_EQ(my_chart_set_series(chart, 0u, NULL), MY_RET_INVALID_PARAMS);
+  series.values = (const float[]){NAN};
+  series.count = 1u;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_INVALID_PARAMS);
   ASSERT_EQ(my_chart_set_range(chart, 10.0f, 10.0f), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_range(chart, -FLT_MAX, FLT_MAX), MY_RET_OK);
   my_widget_unref(chart);
 }
 
@@ -68,6 +74,13 @@ TEST(chart_clamps_values_and_formats_hover_tooltip) {
   ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
   ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)), MY_RET_OK);
   ASSERT_TRUE(strstr(tooltip, "Revenue: 20.00") != NULL);
+  {
+    my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+    event.u.pointer.x = 2;
+    event.u.pointer.y = 2;
+    ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_NOT_SUPPORTED);
+    ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  }
   my_widget_unref(chart);
 }
 
