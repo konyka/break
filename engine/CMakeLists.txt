@@ -320,6 +320,9 @@ endif()
 # pipeline, myui's font/image backends, and the dxx application.
 add_library(stb_truetype STATIC external/stb_truetype_impl.c)
 target_include_directories(stb_truetype PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+if(NOT WIN32)
+    target_link_libraries(stb_truetype PUBLIC m)
+endif()
 
 add_library(stb_image STATIC external/stb_image_impl.c)
 target_include_directories(stb_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
