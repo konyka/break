@@ -152,23 +152,39 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
 
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
-  const my_chart_series_t* series;
-  size_t i;
+  size_t category_count = 0u;
+  size_t series_index;
   float zero_y;
   if (chart->series_count == 0u) return;
-  series = &chart->series[0];
-  if (series->values == NULL || series->count == 0u) return;
+  for (series_index = 0u; series_index < chart->series_count; series_index++) {
+    if (chart->series[series_index].count > category_count)
+      category_count = chart->series[series_index].count;
+  }
+  if (category_count == 0u) return;
   zero_y = my_chart_value_to_y(0.0f, y_min, y_max, y, h);
-  for (i = 0; i < series->count; i++) {
-    float slot = w / (float)series->count;
-    float bar_w = slot * 0.68f;
-    float bar_x = x + slot * (float)i + (slot - bar_w) * 0.5f;
-    float value_y = my_chart_value_to_y(series->values[i], y_min, y_max, y, h);
-    float top = value_y < zero_y ? value_y : zero_y;
-    float height = fabsf(value_y - zero_y);
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
-    my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){bar_x, top, bar_w, height},
-                                  3.0f);
+  for (size_t category = 0u; category < category_count; category++) {
+    float slot = w / (float)category_count;
+    float group_width = slot * 0.82f;
+    float group_left = x + slot * (float)category + (slot - group_width) * 0.5f;
+    float group_slot = group_width / (float)chart->series_count;
+    for (series_index = 0u; series_index < chart->series_count; series_index++) {
+      const my_chart_series_t* series = &chart->series[series_index];
+      float bar_w;
+      float bar_x;
+      float value_y;
+      float top;
+      float height;
+      if (series->values == NULL || category >= series->count) continue;
+      bar_w = group_slot * 0.82f;
+      bar_x = group_left + group_slot * (float)series_index +
+              (group_slot - bar_w) * 0.5f;
+      value_y = my_chart_value_to_y(series->values[category], y_min, y_max, y, h);
+      top = value_y < zero_y ? value_y : zero_y;
+      height = fabsf(value_y - zero_y);
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
+      my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){bar_x, top, bar_w, height},
+                                    3.0f);
+    }
   }
 }
 

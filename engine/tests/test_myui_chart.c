@@ -10,9 +10,8 @@
 #include "myr/my_vgcanvas_soft.h"
 #include "myui/widgets/my_chart.h"
 
-static void dump_ppm_if_requested(const uint8_t* pixels, uint32_t width,
-                                  uint32_t height, uint32_t stride) {
-  const char* path = getenv("MYUI_CHART_DUMP_PPM");
+static void dump_ppm(const uint8_t* pixels, uint32_t width, uint32_t height,
+                     uint32_t stride, const char* path) {
   FILE* file;
   uint32_t y;
   if (path == NULL) return;
@@ -28,6 +27,11 @@ static void dump_ppm_if_requested(const uint8_t* pixels, uint32_t width,
     }
   }
   fclose(file);
+}
+
+static void dump_ppm_if_requested(const uint8_t* pixels, uint32_t width,
+                                  uint32_t height, uint32_t stride) {
+  dump_ppm(pixels, width, height, stride, getenv("MYUI_CHART_DUMP_PPM"));
 }
 
 TEST(chart_rejects_invalid_series_and_range) {
@@ -118,8 +122,59 @@ TEST(chart_paints_visible_series_to_software_canvas) {
   my_widget_unref(chart);
 }
 
+TEST(chart_paints_grouped_bar_series_to_software_canvas) {
+  static const float primary_values[] = {10.0f, 24.0f, 16.0f};
+  static const float secondary_values[] = {18.0f, 12.0f, 28.0f};
+  my_chart_series_t primary = {"Primary", primary_values, 3u, 0xE85D75FFu};
+  my_chart_series_t secondary = {"Secondary", secondary_values, 3u,
+                                 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t primary_pixels = 0u;
+  size_t secondary_pixels = 0u;
+  uint32_t y;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &primary), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &secondary), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+
+  pixels = my_lcd_mem_get_buffer(lcd);
+  dump_ppm(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd),
+           getenv("MYUI_CHART_BAR_DUMP_PPM"));
+  for (y = 30u; y < 154u; y++) {
+    uint32_t x;
+    for (x = 42u; x < 308u; x++) {
+      size_t i = ((size_t)y * 320u + x) * 4u;
+      if (pixels[i] == 0x75u && pixels[i + 1u] == 0x5Du &&
+          pixels[i + 2u] == 0xE8u && pixels[i + 3u] == 0xFFu) {
+        primary_pixels++;
+      }
+      if (pixels[i] == 0xFFu && pixels[i + 1u] == 0x86u &&
+          pixels[i + 2u] == 0x3Au && pixels[i + 3u] == 0xFFu) {
+        secondary_pixels++;
+      }
+    }
+  }
+  ASSERT_TRUE(primary_pixels > 0u);
+  ASSERT_TRUE(secondary_pixels > 0u);
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
+  RUN_TEST(chart_paints_grouped_bar_series_to_software_canvas);
 TEST_MAIN_END()

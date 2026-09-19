@@ -21,12 +21,17 @@ my_chart_set_range(chart, 0.0f, 30.0f);
 ```
 
 Series values, names, and labels are borrowed. They must remain valid for the
-lifetime of the chart. The widget supports up to `MY_CHART_MAX_SERIES` line
-series; bar mode uses the first series and draws values around the zero axis.
+lifetime of the chart. The widget supports up to `MY_CHART_MAX_SERIES` series
+for both modes. Line mode overlays series in declaration order; bar mode lays
+series out as grouped bars per category and draws values around the zero axis.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and
 infinite samples. Explicit ranges must be finite and strictly increasing.
+
+For grouped bars, add series contiguously and keep the category index aligned
+across series. A shorter series simply omits its bar in later categories; the
+automatic range still considers every supplied finite value.
 
 Pointer movement over the plot selects the nearest point. Applications can
 read `my_chart_get_hover_index()` or `my_chart_get_tooltip()` to integrate a
@@ -48,3 +53,8 @@ ctest --test-dir engine/build-ui-chart -R '^test_myui_chart$' --output-on-failur
 The software canvas and native X11/RHI test suites should also be run before a
 release. The widget intentionally uses the backend-neutral `my_vgcanvas` API,
 so the same chart code is shared by software, OpenGL, and Vulkan UI paths.
+
+Set `MYUI_CHART_DUMP_PPM=/tmp/chart.ppm` while running `test_myui_chart` to
+inspect the line-chart software render. Set
+`MYUI_CHART_BAR_DUMP_PPM=/tmp/chart-bars.ppm` to capture the grouped-bar
+regression frame used for visual verification.
