@@ -55,6 +55,16 @@ static bool chart_plot_rect(const my_widget_t* widget, float* x, float* y,
   return *w > 0.0f && *h > 0.0f;
 }
 
+static size_t chart_category_count(const my_chart_t* chart) {
+  size_t count = 0u;
+  size_t i;
+  if (chart == NULL) return 0u;
+  for (i = 0u; i < chart->series_count; i++) {
+    if (chart->series[i].count > count) count = chart->series[i].count;
+  }
+  return count;
+}
+
 static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
   size_t i;
   float lo = 0.0f;
@@ -205,7 +215,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (chart->labels != NULL && chart->label_count > 0u) {
     size_t label_count = chart->label_count;
     size_t label_index;
-    size_t data_count = chart->series_count > 0u ? chart->series[0].count : 0u;
+    size_t data_count = chart_category_count(chart);
     if (data_count > 0u && label_count > data_count) label_count = data_count;
     my_vgcanvas_set_font(vg, NULL, 10);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
@@ -227,12 +237,13 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                              y_max);
     }
   }
-  if (chart->hover_index != CHART_HOVER_NONE && chart->series_count > 0u &&
-      chart->series[0].count > 0u) {
+  if (chart->hover_index != CHART_HOVER_NONE &&
+      chart_category_count(chart) > 0u) {
     char tooltip[64];
-    float hover_x = x + (chart->series[0].count > 1u
+    size_t category_count = chart_category_count(chart);
+    float hover_x = x + (category_count > 1u
                              ? w * (float)chart->hover_index /
-                                   (float)(chart->series[0].count - 1u)
+                                   (float)(category_count - 1u)
                              : w * 0.5f);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933CCu));
     my_vgcanvas_fill_rect(vg, &(my_rectf_t){hover_x, y, 1.0f, h});
@@ -267,22 +278,26 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   int32_t local_x, local_y;
   size_t index;
   if (event == NULL || event->type != MY_EVENT_POINTER_MOVE ||
-      !chart_plot_rect(widget, &x, &y, &w, &h) || chart->series_count == 0u) {
+      !chart_plot_rect(widget, &x, &y, &w, &h) ||
+      chart_category_count(chart) == 0u) {
     return MY_RET_NOT_SUPPORTED;
   }
   local_x = event->u.pointer.x;
   local_y = event->u.pointer.y;
   my_widget_global_to_local(widget, &local_x, &local_y);
   if ((float)local_x < x || (float)local_x > x + w || (float)local_y < y ||
-      (float)local_y > y + h || chart->series[0].count == 0u) {
+       (float)local_y > y + h) {
     chart->hover_index = CHART_HOVER_NONE;
     return MY_RET_NOT_SUPPORTED;
   }
-  index = chart->series[0].count > 1u
-              ? (size_t)lroundf(((float)local_x - x) / w *
-                                (float)(chart->series[0].count - 1u))
-              : 0u;
-  if (index >= chart->series[0].count) index = chart->series[0].count - 1u;
+  {
+    size_t category_count = chart_category_count(chart);
+    index = category_count > 1u
+               ? (size_t)lroundf(((float)local_x - x) / w *
+                                 (float)(category_count - 1u))
+               : 0u;
+    if (index >= category_count) index = category_count - 1u;
+  }
   if (chart->hover_index != index) {
     chart->hover_index = index;
     my_widget_invalidate(widget, NULL);
@@ -387,18 +402,28 @@ size_t my_chart_get_hover_index(const my_widget_t* widget) {
 my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
                               size_t capacity) {
   const my_chart_t* chart = chart_const_cast(widget);
-  const my_chart_series_t* series;
+  size_t i;
+  size_t written = 0u;
+  bool found = false;
   if (chart == NULL || buffer == NULL || capacity == 0u) return MY_RET_INVALID_PARAMS;
   if (chart->hover_index == CHART_HOVER_NONE || chart->series_count == 0u)
     return MY_RET_NOT_SUPPORTED;
-  series = &chart->series[0];
-  if (series->values == NULL || chart->hover_index >= series->count) return MY_RET_NOT_SUPPORTED;
-  if (snprintf(buffer, capacity, "%s: %.2f",
-               series->name != NULL ? series->name : "Series",
-               (double)series->values[chart->hover_index]) < 0 ||
-      strlen(buffer) + 1u >= capacity) {
-    buffer[capacity - 1u] = '\0';
-    return MY_RET_FAIL;
+  buffer[0] = '\0';
+  for (i = 0u; i < chart->series_count; i++) {
+    const my_chart_series_t* series = &chart->series[i];
+    int result;
+    if (series->values == NULL || chart->hover_index >= series->count) continue;
+    result = snprintf(buffer + written, capacity - written, "%s%s: %.2f",
+                      found ? ", " : "",
+                      series->name != NULL ? series->name : "Series",
+                      (double)series->values[chart->hover_index]);
+    if (result < 0 || (size_t)result >= capacity - written) {
+      buffer[capacity - 1u] = '\0';
+      return MY_RET_FAIL;
+    }
+    written += (size_t)result;
+    found = true;
   }
+  if (!found) return MY_RET_NOT_SUPPORTED;
   return MY_RET_OK;
 }

@@ -89,6 +89,38 @@ TEST(chart_clamps_values_and_formats_hover_tooltip) {
   my_widget_unref(chart);
 }
 
+TEST(chart_hover_tooltip_includes_all_series_at_category) {
+  static const float first_values[] = {10.0f, 20.0f};
+  static const float second_values[] = {4.0f, 8.0f, 12.0f, 16.0f};
+  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu};
+  my_chart_series_t second = {"Orders", second_values, 4u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  char tooltip[128];
+  my_event_t event;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &first), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &second), MY_RET_OK);
+  event = my_event_init(MY_EVENT_POINTER_MOVE);
+  event.u.pointer.x = 220;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 2u);
+  ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)), MY_RET_OK);
+  ASSERT_TRUE(strstr(tooltip, "Orders: 12.00") != NULL);
+  ASSERT_TRUE(strstr(tooltip, "Revenue") == NULL);
+
+  event.u.pointer.x = 140;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)), MY_RET_OK);
+  ASSERT_TRUE(strstr(tooltip, "Revenue: 20.00") != NULL);
+  ASSERT_TRUE(strstr(tooltip, "Orders: 8.00") != NULL);
+  my_widget_unref(chart);
+}
+
 TEST(chart_paints_visible_series_to_software_canvas) {
   static const float values[] = {5.0f, 30.0f, 15.0f};
   my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu};
@@ -175,6 +207,7 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
+  RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
   RUN_TEST(chart_paints_grouped_bar_series_to_software_canvas);
 TEST_MAIN_END()
