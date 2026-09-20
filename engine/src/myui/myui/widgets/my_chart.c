@@ -25,6 +25,21 @@
 static const uint32_t s_colors[MY_CHART_MAX_SERIES] = {
     0xE85D75FFu, 0x3A86FFFF, 0xF4A261FFu, 0x2A9D8FFF};
 
+my_ret_t my_chart_format_tick(float value, char* buffer, size_t capacity) {
+  int written;
+  if (!isfinite(value) || buffer == NULL || capacity == 0u) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  written = snprintf(buffer, capacity, "%.4f", (double)value);
+  if (written < 0 || (size_t)written >= capacity) {
+    buffer[capacity - 1u] = '\0';
+    return MY_RET_FAIL;
+  }
+  while (written > 0 && buffer[written - 1] == '0') buffer[--written] = '\0';
+  if (written > 0 && buffer[written - 1] == '.') buffer[--written] = '\0';
+  return MY_RET_OK;
+}
+
 static void chart_hover_leave(void* ctx, const char* event, void* data) {
   my_chart_t* chart = (my_chart_t*)ctx;
   (void)event;
@@ -127,7 +142,8 @@ static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
     my_vgcanvas_move_to(vg, x, line_y);
     my_vgcanvas_line_to(vg, x + w, line_y);
     my_vgcanvas_stroke(vg);
-    snprintf(text, sizeof(text), "%.0f", (double)(y_max - (y_max - y_min) * ratio));
+    (void)my_chart_format_tick(y_max - (y_max - y_min) * ratio, text,
+                               sizeof(text));
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
     my_vgcanvas_draw_text(vg, text, 5.0f, line_y - 5.0f);
   }

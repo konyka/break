@@ -43,6 +43,10 @@ The built-in plot includes horizontal grid lines, Y labels, X labels, and
 explicit X/Y axis strokes. Hover state is cleared when the widget receives a
 `hover_leave` event.
 
+Y-axis ticks preserve up to four fractional digits and trim trailing zeroes;
+for example, an explicit range produces labels such as `1.25`, `0.5`, and
+`-0.5` instead of rounding all ticks to integers.
+
 ## Verification
 
 The contract and interaction tests are registered as `test_myui_chart`:

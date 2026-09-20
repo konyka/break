@@ -52,6 +52,18 @@ TEST(chart_rejects_invalid_series_and_range) {
   my_widget_unref(chart);
 }
 
+TEST(chart_formats_fractional_axis_ticks) {
+  char tick[32];
+
+  ASSERT_EQ(my_chart_format_tick(12.0f, tick, sizeof(tick)), MY_RET_OK);
+  ASSERT_TRUE(strcmp(tick, "12") == 0);
+  ASSERT_EQ(my_chart_format_tick(1.25f, tick, sizeof(tick)), MY_RET_OK);
+  ASSERT_TRUE(strcmp(tick, "1.25") == 0);
+  ASSERT_EQ(my_chart_format_tick(-0.5f, tick, sizeof(tick)), MY_RET_OK);
+  ASSERT_TRUE(strcmp(tick, "-0.5") == 0);
+  ASSERT_EQ(my_chart_format_tick(1.25f, tick, 3u), MY_RET_FAIL);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -207,6 +219,7 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
 
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
+  RUN_TEST(chart_formats_fractional_axis_ticks);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
