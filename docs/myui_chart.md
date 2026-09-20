@@ -37,7 +37,8 @@ Pointer movement over the plot selects the nearest category across the longest
 series. Applications can read `my_chart_get_hover_index()` or
 `my_chart_get_tooltip()` to integrate a custom overlay. The tooltip includes
 every series that has a value at the selected category, formatted as a
-comma-separated list; the built-in paint path also shows a compact tooltip.
+comma-separated list, prefixed by the matching X-axis label when one is
+available; the built-in paint path also shows a compact tooltip.
 The built-in plot includes horizontal grid lines, Y labels, X labels, and
 explicit X/Y axis strokes. Hover state is cleared when the widget receives a
 `hover_leave` event.

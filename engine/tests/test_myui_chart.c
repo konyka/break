@@ -78,6 +78,7 @@ TEST(chart_clamps_values_and_formats_hover_tooltip) {
   }
   ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
   ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)), MY_RET_OK);
+  ASSERT_TRUE(strstr(tooltip, "Tue") != NULL);
   ASSERT_TRUE(strstr(tooltip, "Revenue: 20.00") != NULL);
   {
     my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);

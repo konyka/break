@@ -405,16 +405,28 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
   size_t i;
   size_t written = 0u;
   bool found = false;
+  bool has_series = false;
   if (chart == NULL || buffer == NULL || capacity == 0u) return MY_RET_INVALID_PARAMS;
   if (chart->hover_index == CHART_HOVER_NONE || chart->series_count == 0u)
     return MY_RET_NOT_SUPPORTED;
   buffer[0] = '\0';
+  if (chart->labels != NULL && chart->hover_index < chart->label_count &&
+      chart->labels[chart->hover_index] != NULL &&
+      chart->labels[chart->hover_index][0] != '\0') {
+    int result = snprintf(buffer, capacity, "%s: ",
+                          chart->labels[chart->hover_index]);
+    if (result < 0 || (size_t)result >= capacity) {
+      buffer[capacity - 1u] = '\0';
+      return MY_RET_FAIL;
+    }
+    written = (size_t)result;
+  }
   for (i = 0u; i < chart->series_count; i++) {
     const my_chart_series_t* series = &chart->series[i];
     int result;
     if (series->values == NULL || chart->hover_index >= series->count) continue;
     result = snprintf(buffer + written, capacity - written, "%s%s: %.2f",
-                      found ? ", " : "",
+                      has_series ? ", " : "",
                       series->name != NULL ? series->name : "Series",
                       (double)series->values[chart->hover_index]);
     if (result < 0 || (size_t)result >= capacity - written) {
@@ -423,6 +435,7 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
     }
     written += (size_t)result;
     found = true;
+    has_series = true;
   }
   if (!found) return MY_RET_NOT_SUPPORTED;
   return MY_RET_OK;
