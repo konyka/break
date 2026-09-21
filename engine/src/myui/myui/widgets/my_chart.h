@@ -29,6 +29,7 @@ typedef struct my_chart_t {
   const char* const* labels;
   size_t label_count;
   my_chart_series_t series[MY_CHART_MAX_SERIES];
+  bool series_visible[MY_CHART_MAX_SERIES];
   size_t series_count;
   float y_min;
   float y_max;
@@ -44,7 +45,10 @@ my_ret_t my_chart_set_title(my_widget_t* chart, const char* title);
 my_ret_t my_chart_set_labels(my_widget_t* chart, const char* const* labels,
                              size_t count);
 my_ret_t my_chart_set_series(my_widget_t* chart, size_t index,
-                             const my_chart_series_t* series);
+                              const my_chart_series_t* series);
+my_ret_t my_chart_set_series_visible(my_widget_t* chart, size_t index,
+                                     bool visible);
+bool my_chart_get_series_visible(const my_widget_t* chart, size_t index);
 my_ret_t my_chart_clear_series(my_widget_t* chart);
 my_ret_t my_chart_set_range(my_widget_t* chart, float y_min, float y_max);
 my_ret_t my_chart_set_legend_visible(my_widget_t* chart, bool visible);

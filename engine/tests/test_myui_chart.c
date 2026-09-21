@@ -64,6 +64,34 @@ TEST(chart_formats_fractional_axis_ticks) {
   ASSERT_EQ(my_chart_format_tick(1.25f, tick, 3u), MY_RET_FAIL);
 }
 
+TEST(chart_series_visibility_controls_tooltip) {
+  static const float first_values[] = {10.0f, 20.0f};
+  static const float second_values[] = {4.0f, 8.0f};
+  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu};
+  my_chart_series_t second = {"Orders", second_values, 2u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  char tooltip[128];
+  my_event_t event;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &first), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &second), MY_RET_OK);
+  ASSERT_TRUE(my_chart_get_series_visible(chart, 1u));
+  ASSERT_EQ(my_chart_set_series_visible(chart, 1u, false), MY_RET_OK);
+  ASSERT_FALSE(my_chart_get_series_visible(chart, 1u));
+  ASSERT_EQ(my_chart_set_series_visible(chart, 2u, false), MY_RET_INVALID_PARAMS);
+  event = my_event_init(MY_EVENT_POINTER_MOVE);
+  event.u.pointer.x = 180;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)), MY_RET_OK);
+  ASSERT_TRUE(strstr(tooltip, "Revenue: 20.00") != NULL);
+  ASSERT_TRUE(strstr(tooltip, "Orders") == NULL);
+  my_widget_unref(chart);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -220,6 +248,7 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
+  RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);

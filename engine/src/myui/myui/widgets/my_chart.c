@@ -75,6 +75,7 @@ static size_t chart_category_count(const my_chart_t* chart) {
   size_t i;
   if (chart == NULL) return 0u;
   for (i = 0u; i < chart->series_count; i++) {
+    if (!chart->series_visible[i]) continue;
     if (chart->series[i].count > count) count = chart->series[i].count;
   }
   return count;
@@ -183,6 +184,7 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
   float zero_y;
   if (chart->series_count == 0u) return;
   for (series_index = 0u; series_index < chart->series_count; series_index++) {
+    if (!chart->series_visible[series_index]) continue;
     if (chart->series[series_index].count > category_count)
       category_count = chart->series[series_index].count;
   }
@@ -200,7 +202,8 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
       float value_y;
       float top;
       float height;
-      if (series->values == NULL || category >= series->count) continue;
+      if (!chart->series_visible[series_index] || series->values == NULL ||
+          category >= series->count) continue;
       bar_w = group_slot * 0.82f;
       bar_x = group_left + group_slot * (float)series_index +
               (group_slot - bar_w) * 0.5f;
@@ -249,6 +252,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
   } else {
     for (i = 0; i < chart->series_count; i++) {
+      if (!chart->series_visible[i]) continue;
       chart_draw_line_series(chart, vg, &chart->series[i], x, y, w, h, y_min,
                              y_max);
     }
@@ -278,6 +282,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     float legend_x = x;
     my_vgcanvas_set_font(vg, NULL, 10);
     for (i = 0; i < chart->series_count; i++) {
+      if (!chart->series_visible[i]) continue;
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(chart->series[i].color));
       my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){legend_x, 21, 7, 7}, 2);
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
@@ -337,6 +342,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->mode = mode;
   chart->hover_index = CHART_HOVER_NONE;
   chart->show_legend = true;
+  for (size_t i = 0u; i < MY_CHART_MAX_SERIES; i++) chart->series_visible[i] = true;
   chart->base.widget_type = "chart";
   my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
   return (my_widget_t*)chart;
@@ -376,6 +382,7 @@ my_ret_t my_chart_set_series(my_widget_t* widget, size_t index,
   }
   chart->series[index] = *series;
   if (chart->series[index].color == 0u) chart->series[index].color = s_colors[index];
+  chart->series_visible[index] = true;
   if (index >= chart->series_count) chart->series_count = index + 1u;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
@@ -389,6 +396,21 @@ my_ret_t my_chart_clear_series(my_widget_t* widget) {
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
+}
+
+my_ret_t my_chart_set_series_visible(my_widget_t* widget, size_t index,
+                                     bool visible) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || index >= chart->series_count) return MY_RET_INVALID_PARAMS;
+  chart->series_visible[index] = visible;
+  chart->hover_index = CHART_HOVER_NONE;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+bool my_chart_get_series_visible(const my_widget_t* widget, size_t index) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL && index < chart->series_count && chart->series_visible[index];
 }
 
 my_ret_t my_chart_set_range(my_widget_t* widget, float y_min, float y_max) {
@@ -440,7 +462,8 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
   for (i = 0u; i < chart->series_count; i++) {
     const my_chart_series_t* series = &chart->series[i];
     int result;
-    if (series->values == NULL || chart->hover_index >= series->count) continue;
+    if (!chart->series_visible[i] || series->values == NULL ||
+        chart->hover_index >= series->count) continue;
     result = snprintf(buffer + written, capacity - written, "%s%s: %.2f",
                       has_series ? ", " : "",
                       series->name != NULL ? series->name : "Series",
