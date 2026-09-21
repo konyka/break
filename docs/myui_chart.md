@@ -39,6 +39,8 @@ series. Applications can read `my_chart_get_hover_index()` or
 every series that has a value at the selected category, formatted as a
 comma-separated list, prefixed by the matching X-axis label when one is
 available; the built-in paint path also shows a compact tooltip.
+The selected data items receive a dark-and-light marker emphasis in the plot,
+so the active category remains visible even when several series overlap.
 Series visibility can be controlled independently with
 `my_chart_set_series_visible()` or by clicking a legend entry. Hidden series
 are removed from rendering, automatic ranges, and tooltip values; their

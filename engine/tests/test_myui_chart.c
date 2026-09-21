@@ -113,6 +113,24 @@ TEST(chart_legend_click_toggles_series_visibility) {
   my_widget_unref(chart);
 }
 
+TEST(chart_hover_emphasis_is_reported) {
+  static const float values[] = {10.0f, 30.0f};
+  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_event_t event;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  event = my_event_init(MY_EVENT_POINTER_MOVE);
+  event.u.pointer.x = 180;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  my_widget_unref(chart);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -199,6 +217,12 @@ TEST(chart_paints_visible_series_to_software_canvas) {
   chart->rect.w = 320;
   chart->rect.h = 180;
   ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  {
+    my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+    event.u.pointer.x = 180;
+    event.u.pointer.y = 80;
+    ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  }
   ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
   chart->vtable->on_paint(chart, canvas);
   ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
@@ -237,6 +261,12 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
   chart->rect.h = 180;
   ASSERT_EQ(my_chart_set_series(chart, 0u, &primary), MY_RET_OK);
   ASSERT_EQ(my_chart_set_series(chart, 1u, &secondary), MY_RET_OK);
+  {
+    my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+    event.u.pointer.x = 180;
+    event.u.pointer.y = 80;
+    ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  }
   ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
   chart->vtable->on_paint(chart, canvas);
   ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
@@ -271,6 +301,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_formats_fractional_axis_ticks);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
+  RUN_TEST(chart_hover_emphasis_is_reported);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);

@@ -217,6 +217,36 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
   }
 }
 
+static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                     float x, float y, float w, float h,
+                                     float y_min, float y_max) {
+  size_t i;
+  size_t category_count = chart_category_count(chart);
+  if (chart->hover_index == CHART_HOVER_NONE || category_count == 0u) return;
+  for (i = 0u; i < chart->series_count; i++) {
+    const my_chart_series_t* series = &chart->series[i];
+    float point_x;
+    float point_y;
+    if (!chart->series_visible[i] || series->values == NULL ||
+        chart->hover_index >= series->count) continue;
+    point_x = x + (category_count > 1u
+                       ? w * (float)chart->hover_index / (float)(category_count - 1u)
+                       : w * 0.5f);
+    point_y = my_chart_value_to_y(series->values[chart->hover_index], y_min, y_max,
+                                  y, h);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
+    my_vgcanvas_fill_rounded_rect(vg,
+                                  &(my_rectf_t){point_x - 5.0f, point_y - 5.0f,
+                                                10.0f, 10.0f},
+                                  3.0f);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xFFFFFFFFu));
+    my_vgcanvas_fill_rounded_rect(vg,
+                                  &(my_rectf_t){point_x - 2.0f, point_y - 2.0f,
+                                                4.0f, 4.0f},
+                                  1.5f);
+  }
+}
+
 static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_chart_t* chart = (my_chart_t*)widget;
   float x, y, w, h, y_min, y_max;
@@ -257,6 +287,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                              y_max);
     }
   }
+  chart_draw_hover_markers(chart, vg, x, y, w, h, y_min, y_max);
   if (chart->hover_index != CHART_HOVER_NONE &&
       chart_category_count(chart) > 0u) {
     char tooltip[64];
