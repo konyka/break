@@ -131,6 +131,15 @@ TEST(chart_hover_emphasis_is_reported) {
   my_widget_unref(chart);
 }
 
+TEST(chart_supports_stacked_bar_mode) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_FALSE(my_chart_get_stacked(chart));
+  ASSERT_EQ(my_chart_set_stacked(chart, true), MY_RET_OK);
+  ASSERT_TRUE(my_chart_get_stacked(chart));
+  my_widget_unref(chart);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -302,6 +311,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);
+  RUN_TEST(chart_supports_stacked_bar_mode);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);

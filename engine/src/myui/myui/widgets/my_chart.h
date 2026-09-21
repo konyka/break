@@ -35,6 +35,7 @@ typedef struct my_chart_t {
   float y_max;
   bool range_set;
   bool show_legend;
+  bool stacked;
   size_t hover_index;
 } my_chart_t;
 
@@ -52,6 +53,8 @@ bool my_chart_get_series_visible(const my_widget_t* chart, size_t index);
 my_ret_t my_chart_clear_series(my_widget_t* chart);
 my_ret_t my_chart_set_range(my_widget_t* chart, float y_min, float y_max);
 my_ret_t my_chart_set_legend_visible(my_widget_t* chart, bool visible);
+my_ret_t my_chart_set_stacked(my_widget_t* chart, bool stacked);
+bool my_chart_get_stacked(const my_widget_t* chart);
 size_t my_chart_get_hover_index(const my_widget_t* chart);
 my_ret_t my_chart_get_tooltip(const my_widget_t* chart, char* buffer,
                               size_t capacity);

@@ -91,7 +91,29 @@ static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
     *y_max = chart->y_max;
     return;
   }
-  for (i = 0; i < chart->series_count; i++) {
+  if (chart->stacked && chart->mode == MY_CHART_BAR) {
+    size_t category_count = chart_category_count(chart);
+    for (size_t category = 0u; category < category_count; category++) {
+      float positive = 0.0f;
+      float negative = 0.0f;
+      for (i = 0u; i < chart->series_count; i++) {
+        if (!chart->series_visible[i] || chart->series[i].values == NULL ||
+            category >= chart->series[i].count) continue;
+        if (chart->series[i].values[category] >= 0.0f)
+          positive += chart->series[i].values[category];
+        else
+          negative += chart->series[i].values[category];
+      }
+      if (positive != 0.0f) {
+        if (!found || positive > hi) hi = positive;
+        found = true;
+      }
+      if (negative != 0.0f) {
+        if (!found || negative < lo) lo = negative;
+        found = true;
+      }
+    }
+  } else for (i = 0; i < chart->series_count; i++) {
     size_t j;
     const my_chart_series_t* series = &chart->series[i];
     for (j = 0; j < series->count; j++) {
@@ -195,6 +217,8 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
     float group_width = slot * 0.82f;
     float group_left = x + slot * (float)category + (slot - group_width) * 0.5f;
     float group_slot = group_width / (float)chart->series_count;
+    float positive_base = 0.0f;
+    float negative_base = 0.0f;
     for (series_index = 0u; series_index < chart->series_count; series_index++) {
       const my_chart_series_t* series = &chart->series[series_index];
       float bar_w;
@@ -208,8 +232,24 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
       bar_x = group_left + group_slot * (float)series_index +
               (group_slot - bar_w) * 0.5f;
       value_y = my_chart_value_to_y(series->values[category], y_min, y_max, y, h);
-      top = value_y < zero_y ? value_y : zero_y;
-      height = fabsf(value_y - zero_y);
+      if (chart->stacked) {
+        float value = series->values[category];
+        float base = value >= 0.0f ? positive_base : negative_base;
+        float base_y = my_chart_value_to_y(base, y_min, y_max, y, h);
+        float end_y = my_chart_value_to_y(base + value, y_min, y_max, y, h);
+        if (value >= 0.0f) {
+          top = end_y < base_y ? end_y : base_y;
+          height = fabsf(end_y - base_y);
+          positive_base += value;
+        } else {
+          top = base_y < end_y ? base_y : end_y;
+          height = fabsf(end_y - base_y);
+          negative_base += value;
+        }
+      } else {
+        top = value_y < zero_y ? value_y : zero_y;
+        height = fabsf(value_y - zero_y);
+      }
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
       my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){bar_x, top, bar_w, height},
                                     3.0f);
@@ -388,6 +428,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->mode = mode;
   chart->hover_index = CHART_HOVER_NONE;
   chart->show_legend = true;
+  chart->stacked = false;
   for (size_t i = 0u; i < MY_CHART_MAX_SERIES; i++) chart->series_visible[i] = true;
   chart->base.widget_type = "chart";
   my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
@@ -476,6 +517,19 @@ my_ret_t my_chart_set_legend_visible(my_widget_t* widget, bool visible) {
   chart->show_legend = visible;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
+}
+
+my_ret_t my_chart_set_stacked(my_widget_t* widget, bool stacked) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  chart->stacked = stacked;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+bool my_chart_get_stacked(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL && chart->stacked;
 }
 
 size_t my_chart_get_hover_index(const my_widget_t* widget) {
