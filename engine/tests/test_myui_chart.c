@@ -92,6 +92,27 @@ TEST(chart_series_visibility_controls_tooltip) {
   my_widget_unref(chart);
 }
 
+TEST(chart_legend_click_toggles_series_visibility) {
+  static const float values[] = {1.0f, 2.0f};
+  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_event_t event;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  event = my_event_init(MY_EVENT_POINTER_DOWN);
+  event.u.pointer.x = 48;
+  event.u.pointer.y = 21;
+  event.u.pointer.button = 1u;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_FALSE(my_chart_get_series_visible(chart, 0u));
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_TRUE(my_chart_get_series_visible(chart, 0u));
+  my_widget_unref(chart);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -249,6 +270,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
   RUN_TEST(chart_series_visibility_controls_tooltip);
+  RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);

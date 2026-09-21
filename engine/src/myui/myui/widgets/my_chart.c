@@ -282,10 +282,12 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     float legend_x = x;
     my_vgcanvas_set_font(vg, NULL, 10);
     for (i = 0; i < chart->series_count; i++) {
-      if (!chart->series_visible[i]) continue;
-      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(chart->series[i].color));
+      uint32_t color = chart->series_visible[i] ? chart->series[i].color
+                                                : 0xB8C2CC88u;
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
       my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){legend_x, 21, 7, 7}, 2);
-      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+          chart->series_visible[i] ? 0x52606DFFu : 0x9AA5B1FFu));
       my_vgcanvas_draw_text(vg, chart->series[i].name != NULL ? chart->series[i].name : "",
                             legend_x + 11, 18);
       legend_x += 70.0f;
@@ -298,14 +300,27 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   float x, y, w, h;
   int32_t local_x, local_y;
   size_t index;
-  if (event == NULL || event->type != MY_EVENT_POINTER_MOVE ||
-      !chart_plot_rect(widget, &x, &y, &w, &h) ||
-      chart_category_count(chart) == 0u) {
+  if (event == NULL || !chart_plot_rect(widget, &x, &y, &w, &h)) {
     return MY_RET_NOT_SUPPORTED;
   }
   local_x = event->u.pointer.x;
   local_y = event->u.pointer.y;
   my_widget_global_to_local(widget, &local_x, &local_y);
+  if (event->type == MY_EVENT_POINTER_DOWN && event->u.pointer.button == 1u &&
+      chart->show_legend && local_y >= 10 && local_y <= 32) {
+    size_t index = (size_t)((float)local_x - x) / 70u;
+    if (index < chart->series_count && (float)local_x >= x + index * 70.0f &&
+        (float)local_x < x + index * 70.0f + 70.0f) {
+      chart->series_visible[index] = !chart->series_visible[index];
+      chart->hover_index = CHART_HOVER_NONE;
+      my_widget_invalidate(widget, NULL);
+      return MY_RET_OK;
+    }
+    return MY_RET_NOT_SUPPORTED;
+  }
+  if (event->type != MY_EVENT_POINTER_MOVE || chart_category_count(chart) == 0u) {
+    return MY_RET_NOT_SUPPORTED;
+  }
   if ((float)local_x < x || (float)local_x > x + w || (float)local_y < y ||
        (float)local_y > y + h) {
     chart->hover_index = CHART_HOVER_NONE;

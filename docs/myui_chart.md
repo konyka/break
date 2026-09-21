@@ -40,9 +40,10 @@ every series that has a value at the selected category, formatted as a
 comma-separated list, prefixed by the matching X-axis label when one is
 available; the built-in paint path also shows a compact tooltip.
 Series visibility can be controlled independently with
-`my_chart_set_series_visible()`. Hidden series are removed from rendering,
-legend output, automatic ranges, and tooltip values, matching ECharts legend
-selection behavior.
+`my_chart_set_series_visible()` or by clicking a legend entry. Hidden series
+are removed from rendering, automatic ranges, and tooltip values; their
+legend entry remains dimmed so it can be clicked again, matching ECharts
+legend selection behavior.
 The built-in plot includes horizontal grid lines, Y labels, X labels, and
 explicit X/Y axis strokes. Hover state is cleared when the widget receives a
 `hover_leave` event.
