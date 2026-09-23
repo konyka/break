@@ -152,6 +152,12 @@ float my_chart_value_to_y(float value, float y_min, float y_max,
                  (long double)plot_height * (1.0L - normalized));
 }
 
+float my_chart_stacked_value_to_y(float value, float base, float y_min,
+                                  float y_max, float plot_top,
+                                  float plot_height) {
+  return my_chart_value_to_y(base + value, y_min, y_max, plot_top, plot_height);
+}
+
 static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
                        float w, float h, float y_min, float y_max) {
   size_t i;
@@ -272,8 +278,28 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
     point_x = x + (category_count > 1u
                        ? w * (float)chart->hover_index / (float)(category_count - 1u)
                        : w * 0.5f);
-    point_y = my_chart_value_to_y(series->values[chart->hover_index], y_min, y_max,
-                                  y, h);
+    if (chart->stacked && chart->mode == MY_CHART_BAR) {
+      float positive_base = 0.0f;
+      float negative_base = 0.0f;
+      for (size_t previous = 0u; previous < i; previous++) {
+        if (!chart->series_visible[previous] ||
+            chart->series[previous].values == NULL ||
+            chart->hover_index >= chart->series[previous].count) continue;
+        if (chart->series[previous].values[chart->hover_index] >= 0.0f)
+          positive_base += chart->series[previous].values[chart->hover_index];
+        else
+          negative_base += chart->series[previous].values[chart->hover_index];
+      }
+      if (series->values[chart->hover_index] >= 0.0f)
+        point_y = my_chart_stacked_value_to_y(
+            series->values[chart->hover_index], positive_base, y_min, y_max, y, h);
+      else
+        point_y = my_chart_stacked_value_to_y(
+            series->values[chart->hover_index], negative_base, y_min, y_max, y, h);
+    } else {
+      point_y = my_chart_value_to_y(series->values[chart->hover_index], y_min,
+                                    y_max, y, h);
+    }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
     my_vgcanvas_fill_rounded_rect(vg,
                                   &(my_rectf_t){point_x - 5.0f, point_y - 5.0f,

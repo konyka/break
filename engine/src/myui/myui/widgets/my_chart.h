@@ -63,6 +63,11 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* chart, char* buffer,
 float my_chart_value_to_y(float value, float y_min, float y_max,
                           float plot_top, float plot_height);
 
+/** @brief Convert a stacked segment endpoint to plot-local y. */
+float my_chart_stacked_value_to_y(float value, float base, float y_min,
+                                  float y_max, float plot_top,
+                                  float plot_height);
+
 /** @brief Format a Y-axis tick while preserving useful fractional precision. */
 my_ret_t my_chart_format_tick(float value, char* buffer, size_t capacity);
 

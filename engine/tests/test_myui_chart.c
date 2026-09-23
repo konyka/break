@@ -140,6 +140,13 @@ TEST(chart_supports_stacked_bar_mode) {
   my_widget_unref(chart);
 }
 
+TEST(chart_stacked_endpoint_matches_segment_geometry) {
+  ASSERT_FLOAT_EQ(my_chart_stacked_value_to_y(20.0f, 10.0f, 0.0f, 30.0f,
+                                              30.0f, 120.0f),
+                  my_chart_value_to_y(30.0f, 0.0f, 30.0f, 30.0f, 120.0f),
+                  1e-5f);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -312,6 +319,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);
   RUN_TEST(chart_supports_stacked_bar_mode);
+  RUN_TEST(chart_stacked_endpoint_matches_segment_geometry);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
