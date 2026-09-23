@@ -24,6 +24,9 @@ Series values, names, and labels are borrowed. They must remain valid for the
 lifetime of the chart. The widget supports up to `MY_CHART_MAX_SERIES` series
 for both modes. Line mode overlays series in declaration order; bar mode lays
 series out as grouped bars per category and draws values around the zero axis.
+Line and bar modes share one category axis: series with different lengths keep
+their samples aligned to the same category positions instead of stretching to
+the full plot width.
 Call `my_chart_set_stacked(chart, true)` for stacked bar mode. Positive values
 stack upward from zero and negative values stack downward; line charts ignore
 this flag. The automatic range includes the positive and negative stack totals.

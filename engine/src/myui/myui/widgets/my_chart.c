@@ -116,6 +116,7 @@ static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
   } else for (i = 0; i < chart->series_count; i++) {
     size_t j;
     const my_chart_series_t* series = &chart->series[i];
+    if (!chart->series_visible[i]) continue;
     for (j = 0; j < series->count; j++) {
       float value = series->values[j];
       if (!isfinite(value)) continue;
@@ -158,6 +159,15 @@ float my_chart_stacked_value_to_y(float value, float base, float y_min,
   return my_chart_value_to_y(base + value, y_min, y_max, plot_top, plot_height);
 }
 
+my_ret_t my_chart_get_range(const my_widget_t* widget, float* y_min,
+                            float* y_max) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || y_min == NULL || y_max == NULL)
+    return MY_RET_INVALID_PARAMS;
+  chart_range(chart, y_min, y_max);
+  return MY_RET_OK;
+}
+
 static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
                        float w, float h, float y_min, float y_max) {
   size_t i;
@@ -190,14 +200,16 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
                                    float y, float w, float h, float y_min,
                                    float y_max) {
   size_t i;
-  (void)chart;
+  size_t category_count = chart_category_count(chart);
   if (series->values == NULL || series->count == 0u) return;
+  if (category_count < series->count) category_count = series->count;
   my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(series->color));
   my_vgcanvas_set_line_width(vg, 2.0f);
   my_vgcanvas_begin_path(vg);
   for (i = 0; i < series->count; i++) {
-    float px = x + (series->count > 1u ? w * (float)i / (float)(series->count - 1u)
-                                       : w * 0.5f);
+    float px = x + (category_count > 1u
+                        ? w * (float)i / (float)(category_count - 1u)
+                        : w * 0.5f);
     float py = my_chart_value_to_y(series->values[i], y_min, y_max, y, h);
     if (i == 0u) my_vgcanvas_move_to(vg, px, py);
     else my_vgcanvas_line_to(vg, px, py);
@@ -410,13 +422,16 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   my_widget_global_to_local(widget, &local_x, &local_y);
   if (event->type == MY_EVENT_POINTER_DOWN && event->u.pointer.button == 1u &&
       chart->show_legend && local_y >= 10 && local_y <= 32) {
-    size_t index = (size_t)((float)local_x - x) / 70u;
-    if (index < chart->series_count && (float)local_x >= x + index * 70.0f &&
-        (float)local_x < x + index * 70.0f + 70.0f) {
-      chart->series_visible[index] = !chart->series_visible[index];
-      chart->hover_index = CHART_HOVER_NONE;
-      my_widget_invalidate(widget, NULL);
-      return MY_RET_OK;
+    float offset = (float)local_x - x;
+    if (offset >= 0.0f) {
+      size_t index = (size_t)(offset / 70.0f);
+      if (index < chart->series_count && offset >= index * 70.0f &&
+          offset < index * 70.0f + 70.0f) {
+        chart->series_visible[index] = !chart->series_visible[index];
+        chart->hover_index = CHART_HOVER_NONE;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_OK;
+      }
     }
     return MY_RET_NOT_SUPPORTED;
   }

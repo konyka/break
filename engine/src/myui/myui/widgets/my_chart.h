@@ -52,6 +52,9 @@ my_ret_t my_chart_set_series_visible(my_widget_t* chart, size_t index,
 bool my_chart_get_series_visible(const my_widget_t* chart, size_t index);
 my_ret_t my_chart_clear_series(my_widget_t* chart);
 my_ret_t my_chart_set_range(my_widget_t* chart, float y_min, float y_max);
+/** @brief Report the effective Y range (explicit or automatic). */
+my_ret_t my_chart_get_range(const my_widget_t* chart, float* y_min,
+                            float* y_max);
 my_ret_t my_chart_set_legend_visible(my_widget_t* chart, bool visible);
 my_ret_t my_chart_set_stacked(my_widget_t* chart, bool stacked);
 bool my_chart_get_stacked(const my_widget_t* chart);

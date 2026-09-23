@@ -64,6 +64,25 @@ TEST(chart_formats_fractional_axis_ticks) {
   ASSERT_EQ(my_chart_format_tick(1.25f, tick, 3u), MY_RET_FAIL);
 }
 
+TEST(chart_hidden_series_excluded_from_auto_range) {
+  static const float small_values[] = {1.0f, 2.0f};
+  static const float huge_values[] = {1.0f, 1000.0f};
+  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu};
+  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  float y_min = 0.0f, y_max = 0.0f;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &small), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &huge), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_range(chart, &y_min, &y_max), MY_RET_OK);
+  ASSERT_TRUE(y_max >= 1000.0f);
+  ASSERT_EQ(my_chart_set_series_visible(chart, 1u, false), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_range(chart, &y_min, &y_max), MY_RET_OK);
+  ASSERT_TRUE(y_max < 1000.0f);
+  my_widget_unref(chart);
+}
+
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
@@ -359,9 +378,54 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
   my_widget_unref(chart);
 }
 
+TEST(chart_line_series_share_category_positions) {
+  static const float long_values[] = {10.0f, 20.0f, 30.0f, 40.0f};
+  static const float short_values[] = {15.0f, 25.0f};
+  my_chart_series_t long_series = {"Long", long_values, 4u, 0xE85D75FFu};
+  my_chart_series_t short_series = {"Short", short_values, 2u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  bool short_at_first = false;
+  bool short_at_far_right = false;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &long_series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &short_series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+
+  pixels = my_lcd_mem_get_buffer(lcd);
+  /* The short series has a sample at category 1 only. With a shared category
+   * axis it must not stretch to the far-right category slot. */
+  for (uint32_t y = 30u; y < 154u; y++) {
+    for (uint32_t x = 42u; x < 308u; x++) {
+      size_t i = ((size_t)y * 320u + x) * 4u;
+      bool is_short = pixels[i] == 0xFFu && pixels[i + 1u] == 0x86u &&
+                      pixels[i + 2u] == 0x3Au && pixels[i + 3u] == 0xFFu;
+      if (!is_short) continue;
+      if (x < 130u) short_at_first = true;
+      if (x > 290u) short_at_far_right = true;
+    }
+  }
+  ASSERT_TRUE(short_at_first);
+  ASSERT_FALSE(short_at_far_right);
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
+  RUN_TEST(chart_hidden_series_excluded_from_auto_range);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);
@@ -372,4 +436,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
   RUN_TEST(chart_paints_grouped_bar_series_to_software_canvas);
+  RUN_TEST(chart_line_series_share_category_positions);
 TEST_MAIN_END()
