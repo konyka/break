@@ -147,6 +147,53 @@ TEST(chart_stacked_endpoint_matches_segment_geometry) {
                   1e-5f);
 }
 
+TEST(chart_stacked_bars_share_category_slot) {
+  static const float first_values[] = {10.0f};
+  static const float second_values[] = {20.0f};
+  my_chart_series_t first = {"A", first_values, 1u, 0xE85D75FFu};
+  my_chart_series_t second = {"B", second_values, 1u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t first_min = SIZE_MAX, first_max = 0u;
+  size_t second_min = SIZE_MAX, second_max = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &first), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &second), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_stacked(chart, true), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (uint32_t y = 30u; y < 154u; y++) {
+    for (uint32_t x = 42u; x < 308u; x++) {
+      size_t i = ((size_t)y * 320u + x) * 4u;
+      if (pixels[i] == 0x75u && pixels[i + 1u] == 0x5Du &&
+          pixels[i + 2u] == 0xE8u && pixels[i + 3u] == 0xFFu) {
+        if (x < first_min) first_min = x;
+        if (x > first_max) first_max = x;
+      }
+      if (pixels[i] == 0xFFu && pixels[i + 1u] == 0x86u &&
+          pixels[i + 2u] == 0x3Au && pixels[i + 3u] == 0xFFu) {
+        if (x < second_min) second_min = x;
+        if (x > second_max) second_max = x;
+      }
+    }
+  }
+  ASSERT_TRUE(first_min != SIZE_MAX && second_min != SIZE_MAX);
+  ASSERT_TRUE(first_min == second_min);
+  ASSERT_TRUE(first_max == second_max);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
@@ -320,6 +367,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_hover_emphasis_is_reported);
   RUN_TEST(chart_supports_stacked_bar_mode);
   RUN_TEST(chart_stacked_endpoint_matches_segment_geometry);
+  RUN_TEST(chart_stacked_bars_share_category_slot);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);

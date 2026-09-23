@@ -27,6 +27,8 @@ series out as grouped bars per category and draws values around the zero axis.
 Call `my_chart_set_stacked(chart, true)` for stacked bar mode. Positive values
 stack upward from zero and negative values stack downward; line charts ignore
 this flag. The automatic range includes the positive and negative stack totals.
+All segments in one category share the same horizontal bar slot; grouped mode
+remains the default when stacking is disabled.
 Hover markers on stacked bars follow the visible segment endpoint rather than
 the raw unstacked value.
 Series must be added contiguously starting at index `0`; attempting to create a

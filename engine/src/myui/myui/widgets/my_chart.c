@@ -234,9 +234,14 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
       float height;
       if (!chart->series_visible[series_index] || series->values == NULL ||
           category >= series->count) continue;
-      bar_w = group_slot * 0.82f;
-      bar_x = group_left + group_slot * (float)series_index +
-              (group_slot - bar_w) * 0.5f;
+      if (chart->stacked) {
+        bar_w = group_width;
+        bar_x = group_left;
+      } else {
+        bar_w = group_slot * 0.82f;
+        bar_x = group_left + group_slot * (float)series_index +
+                (group_slot - bar_w) * 0.5f;
+      }
       value_y = my_chart_value_to_y(series->values[category], y_min, y_max, y, h);
       if (chart->stacked) {
         float value = series->values[category];
