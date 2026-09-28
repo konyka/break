@@ -289,6 +289,35 @@ Pop-Location
 图形集成测试仍需具备 WGL/Vulkan/GPU 环境后单独验证（`test_myui_gl_desktop_runtime` 已在
 真实 ICD 上端到端通过 program 编译与纹理上传，但不覆盖帧级 present/swap 行为）。
 
+**engine_demo Windows 运行时验证（2026-09-28）**：main() 含约 4.4 MB 局部结构（按 Linux 8 MB
+默认栈设计），Windows 链接器默认 1 MB 栈保留会在序言栈探测即故障；CMake 现在对 engine_demo
+在 Windows 显式设置 8 MB 栈保留（`/STACK:8388608`）。已在本机验证：
+
+```powershell
+cd engine
+$env:BREAK_FRAMES = "120"; $env:BREAK_UI = "0"
+..\build-win-clang\engine_demo.exe    # GL: 完整 120 帧 + 优雅关闭 + 0 FATAL
+..\build-win-vk\engine_demo.exe       # Vulkan: NVIDIA 真卡 120 帧完整跑通
+```
+
+**Windows Vulkan 构建（2026-09-28 已验证）**：无头解包 Vulkan SDK 到
+`engine/external/VulkanSDK/` 后：
+
+```powershell
+$sdk = "E:\work\break\engine\external\VulkanSDK"
+cmake -S engine -B build-win-vk -G Ninja -DCMAKE_C_COMPILER=clang `
+  -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON `
+  -DVulkan_LIBRARY="$sdk\Lib\vulkan-1.lib" -DVulkan_INCLUDE_DIR="$sdk\Include" `
+  -DSHADERC_LIB="$sdk\Lib\shaderc_shared.lib" -DSHADERC_INCLUDE_DIR="$sdk\Include"
+cmake --build build-win-vk --parallel
+ctest --test-dir build-win-vk -LE graphics --output-on-failure
+```
+
+运行 `test_vulkan` 需 `$env:PATH = "$sdk\Bin;$env:PATH"; $env:VK_LAYER_PATH = "$sdk\Bin"`，
+工作目录 engine/ 源码根。当前边界：TEST 1-8 在 NVIDIA 真卡通过，TEST 9（unified cull smoke）
+首个 `rhi_frame_begin` 处 DEVICE_LOST（设备死于更早提交，异步上报），待逐测试 GPU 二分；
+Vulkan engine_demo 主循环跑同一 unified cull 路径 120 帧无故障，指向测试路径时序。
+
 #### 使用 MSVC (Visual Studio)
 
 已在 MSVC 19.51.36246 / Visual Studio 2026 Developer Command Prompt 中使用 Ninja 完成
@@ -425,7 +454,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 | Windows | Win32 | OpenGL | Clang | 原生构建 + 非图形 CTest + WGL 桌面 GL runtime smoke 已验证 |
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 待验证 |
-| Windows | Win32 | Vulkan | Clang | 待验证 |
+| Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-8 已验证；TEST 9 unified cull 存 DEVICE_LOST 待查 |
 | macOS | Cocoa | Vulkan via MoltenVK | AppleClang | CI/headless 与平台 smoke；需第三方依赖 |
 | iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
 | Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
@@ -661,8 +690,8 @@ MSVC 19.51.36246 / Visual Studio 2026 Developer Command Prompt + Ninja 已完成
 ### 待验证项
 
 1. **MinGW 交叉编译验证** — 在 Linux 上安装 mingw-w64 后使用 `toolchain-mingw.cmake` 交叉编译，验证产出物可在 Windows 运行
-2. **OpenGL WGL 后端运行验证** — 在 Windows 上运行 engine_demo (OpenGL 模式)，确认窗口创建、渲染、输入响应正常
-3. **Vulkan Win32 Surface 运行验证** — 在 Windows 上运行 engine_demo (Vulkan 模式)，确认 Surface 创建和渲染正常
+2. ~~**OpenGL WGL 后端运行验证**~~ — **已验证（2026-09-28）**：8 MB 栈保留修复后，engine_demo GL 模式在真实 ICD 完整 120 帧 + 优雅关闭；输入响应的交互级验证仍待人工桌面会话确认
+3. ~~**Vulkan Win32 Surface 运行验证**~~ — **已验证（2026-09-28）**：engine_demo Vulkan 模式在 NVIDIA 真卡完整 120 帧；test_vulkan TEST 9 存 DEVICE_LOST 待查（见 §2.5）
 4. **高 DPI 验证** — 在 4K/高分屏 Windows 设备上测试 WM_DPICHANGED 响应和窗口缩放行为
 5. **文件热重载验证** — 确认 FindFirstChangeNotification 在 Windows 上正确检测着色器/资源文件修改
 

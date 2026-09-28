@@ -50,7 +50,11 @@ float hash3(vec3 p) {
     return fract((p.x + p.y) * p.z);
 }
 
-float noise3(vec3 p) {
+/* R573: renamed from noise3 — GLSL defines a builtin vec3 noise3(vec3);
+ * overloading it with a float return violates the spec ("overloaded
+ * functions must have the same return type") and strict Windows drivers
+ * (AMD GL 4.5 core) reject the shader that Mesa accepts. */
+float sky_noise3(vec3 p) {
     vec3 i = floor(p);
     vec3 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
@@ -67,7 +71,7 @@ float fbm(vec2 p) {
     float a = 0.5;
     vec2 shift = vec2(100.0);
     for (int i = 0; i < 4; i++) {
-        v += a * noise3(vec3(p, float(i) * 0.3));
+        v += a * sky_noise3(vec3(p, float(i) * 0.3));
         p = p * 2.0 + shift;
         a *= 0.5;
     }

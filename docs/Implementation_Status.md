@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows 运行时验证轮 — engine_demo 栈保留 / skybox shader 可移植性 / combined_color 描述符 / Windows Vulkan 构建验证
+
+承接上轮 Windows 平台收口，关闭三项文档级"待验证"并修复两个真实跨平台缺陷：
+
+- **engine_demo Windows 栈溢出修复（"OpenGL WGL 后端运行验证"关闭）**：main() 含约 4.4 MB 渲染器/子系统局部结构（按 Linux 默认 8 MB 栈设计），MSVC 系链接器默认 1 MB 栈保留在函数序言栈探测阶段即故障（实证：主线程冻结于 `__probestack` 写入指令、RAX=0x464758、CPU 零增量；llvm-symbolizer 定位 main.c:2123）。Windows 链接选项对齐 Linux 8 MB 保留（`/STACK:8388608`，MSVC 前端与 GNU 前端 clang 分支处理；MinGW 保持原状待验证），保留仅虚拟地址空间、按需提交，零运行时成本。验证：真实 ICD（AMD GL 4.5 Core）上 engine_demo 完整 120 帧 + 全子系统优雅关闭 + 0 FATAL；Vulkan 构建（NVIDIA RTX 4060）同样完整跑通。
+- **skybox shader 重载冲突修复（跨驱动可移植性）**：`skybox.frag`/`skybox_vk.frag` 自定义 `float noise3(vec3)` 与 GLSL 内置 `vec3 noise3(vec3)` 仅返回类型不同，违反 GLSL 重载规则；Mesa 宽容而 AMD Windows GL 4.5 驱动拒绝（"overloaded functions must have the same return type"）导致天空盒 shader 编译失败。重命名为 `sky_noise3`（两个变体同步），GL demo 120 帧 0 FATAL。
+- **combined_color Vulkan 描述符缺陷修复（VUID 08114；疑似 Linux CI graphics smoke 存量红根因）**：`combined_color_apply` 在 auto_exposure 关闭路径仅绑定 unit 0，而 `combined_color_vk.frag` 静态声明并总是采样 `u_tm_lum@1`——未更新描述符触发 VUID-vkCmdDraw-None-08114（与同文件 R437 `u_taa_velocity` 同类），NVIDIA Windows 驱动将未定义读升级为 DEVICE_LOST。改为 `rhi_cmd_bind_textures_multi` 始终写 binding 0/1（lum 不可用时以 HDR 源为合法占位）。验证：test_vulkan validation 消息 7+→0。
+- **Windows Vulkan 构建验证（"Windows Vulkan 构建也仍待验证"关闭）**：本机 Vulkan SDK 1.4.357 + Clang 22 + Ninja，`-DENGINE_VULKAN=ON` 全量构建 593/593 通过、非图形 CTest 111/111、Vulkan engine_demo 真实 GPU 120 帧完整跑通；test_vulkan TEST 1-8（离屏/阴影/后处理/RT1 速度/IBL 等）在 NVIDIA 真卡全部通过。
+- **遗留边界（有证据记录）**：test_vulkan TEST 9（unified cull smoke）首个 `rhi_frame_begin` 处 `vkWaitForFences` 返回 DEVICE_LOST（res=-4）——设备死于更早提交（异步上报），关验证消息与 validation 层实例化无关，需逐测试 GPU 二分；注意 Vulkan engine_demo 主循环跑同一 unified cull 路径 120 帧无故障，指向测试路径时序而非通用管线缺陷。Linux CI 两个 graphics smoke job 与 macOS dxx_break 构建为本轮推送前已存在的存量红（run #299 与 #300 失败点一致）；u_tm_lum 修复可能使 Linux vk-smoke 转绿，待推送后 CI 证实。本机开发环境内存压力（物理空闲 ~3 MB）已记录为环境因素。
+
+验证：Windows 双构建（GL/Vulkan）全绿；GL 与 Vulkan engine_demo 各 120 帧真实 GPU 优雅退出；两树非图形 CTest 各 111/111；test_vulkan validation 消息清零。
+
 ## 本轮更新：Windows 平台缺口收口（TDD）— 桌面 GL WGL 加载 / IOCP 事件循环修复 / pthread 测试跨平台化
 
 本机 Windows + Clang 22 + Ninja 全量构建暴露五处编译失败与七处从未在 Windows 编译运行过的测试缺陷，逐一收口：

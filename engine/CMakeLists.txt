@@ -907,6 +907,20 @@ endif()
 # Executable
 add_executable(engine_demo src/main.c)
 target_link_libraries(engine_demo PRIVATE engine break_myui m)
+# main() holds ~4.4 MB of renderer/subsystem structs as locals, sized
+# against the Linux default 8 MB stack; the MSVC-family linker default
+# reserve is 1 MB, which faults during the prologue stack probe on
+# Windows. Match the Linux reserve (virtual only; pages commit on
+# demand, zero runtime cost).
+if(WIN32)
+    if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" OR MSVC)
+        target_link_options(engine_demo PRIVATE "/STACK:8388608")
+    elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_link_options(engine_demo PRIVATE "-Wl,/STACK:8388608")
+    endif()
+    # MinGW (GNU ld) is left untouched: its flag syntax differs and the
+    # MinGW native/cross builds remain unverified pending validation.
+endif()
 
 if(ENGINE_BUILD_TESTS)
     # Vulkan test executable

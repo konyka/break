@@ -354,7 +354,16 @@ void combined_color_apply(CombinedColor *cc, RHICmdBuffer *cmd,
             rhi_cmd_bind_material_textures(cmd, hdr_tex, hdr_tex, hdr_tex,
                                            hdr_tex, lum_tex, hdr_tex, cc->sampler);
         } else {
-            rhi_cmd_bind_texture(cmd, hdr_tex, cc->sampler, 0);
+            /* R573: combined_color_vk.frag statically samples u_tm_lum@1 even
+             * when auto-exposure is off, so binding only unit 0 leaves that
+             * descriptor unupdated (VUID-vkCmdDraw-None-08114; R437
+             * u_taa_velocity precedent) and strict drivers (NVIDIA on
+             * Windows) escalate the undefined read to DEVICE_LOST. Always
+             * write bindings 0 and 1, using the luminance texture when
+             * available and the HDR source as a valid dummy otherwise. */
+            RHITexture tex[2] = { hdr_tex,
+                                  rhi_handle_valid(lum_tex) ? lum_tex : hdr_tex };
+            rhi_cmd_bind_textures_multi(cmd, tex, 2, cc->sampler);
         }
 
         if (cc->loc_exposure >= 0)    rhi_cmd_set_uniform_f32(cmd, cc->loc_exposure, exposure);
