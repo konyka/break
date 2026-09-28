@@ -1,9 +1,12 @@
 #include "test_framework.h"
 
 #include <math.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
+
+/* Cross-platform worker threads: Win32 uses the platform_thread.h
+ * CRITICAL_SECTION-era primitives, POSIX maps to pthreads. */
+#include <core/platform_thread.h>
 
 #include "myr/my_gl.h"
 #include "myr/my_lcd_mem.h"
@@ -1222,7 +1225,8 @@ typedef struct vulkan_instance_race_state_t {
   atomic_uint successes;
 } vulkan_instance_race_state_t;
 
-static void* vulkan_instance_acquire_release_worker(void* context) {
+static PLATFORM_THREAD_RET vulkan_instance_acquire_release_worker(
+    PLATFORM_THREAD_ARG context) {
   vulkan_instance_race_state_t* state =
       (vulkan_instance_race_state_t*)context;
   uint32_t i;
@@ -1235,29 +1239,30 @@ static void* vulkan_instance_acquire_release_worker(void* context) {
     atomic_fetch_add_explicit(&state->successes, 1u, memory_order_relaxed);
     my_vgcanvas_vulkan_instance_release();
   }
-  return NULL;
+  return PLATFORM_THREAD_RETURN;
 }
 
 TEST(vulkan_instance_acquire_release_is_race_safe)
 {
   enum { worker_count = 4 };
   vulkan_instance_race_state_t state;
-  pthread_t workers[worker_count];
+  PlatformThread workers[worker_count];
   uint32_t created = 0;
   uint32_t i;
 
   atomic_init(&state.failures, 0u);
   atomic_init(&state.successes, 0u);
   for (i = 0; i < worker_count; ++i) {
-    if (pthread_create(&workers[i], NULL,
-                       vulkan_instance_acquire_release_worker, &state) != 0) {
+    if (!platform_thread_create(&workers[i],
+                                vulkan_instance_acquire_release_worker,
+                                &state)) {
       break;
     }
     created++;
   }
   ASSERT_EQ(created, (uint32_t)worker_count);
   for (i = 0; i < created; ++i) {
-    ASSERT_EQ(pthread_join(workers[i], NULL), 0);
+    platform_thread_join(workers[i]);
   }
   ASSERT_TRUE(atomic_load_explicit(&state.successes, memory_order_relaxed) > 0u ||
               atomic_load_explicit(&state.failures, memory_order_relaxed) ==

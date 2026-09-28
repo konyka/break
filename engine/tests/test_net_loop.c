@@ -920,7 +920,6 @@ TEST(loop_iocp_write_completion_is_one_shot)
     NetSocket *socket = NULL;
     NetLoop *loop = NULL;
     NetLoopEvent events[4];
-    i32 n;
 
     ASSERT_TRUE(net_init());
     socket = net_udp_create(0);
@@ -959,7 +958,11 @@ TEST(loop_iocp_write_rejection_preserves_read_registration)
         destination.host[sizeof(destination.host) - 1u] = '\0';
     }
     ASSERT_TRUE(net_loop_add(loop, receiver, NET_LOOP_READ, (void *)1));
-    ASSERT_FALSE(net_loop_modify(loop, receiver, NET_LOOP_WRITE));
+    /* A write-only mask is the one add() shape IOCP rejects (nothing could
+     * ever fire); the rejection must leave the READ registration intact.
+     * modify() accepts WRITE masks for interest narrowing (shared contract,
+     * see loop_modify_drops_read / loop_iocp_reenable_ignores_cancelled). */
+    ASSERT_FALSE(net_loop_add(loop, receiver, NET_LOOP_WRITE, (void *)2));
     ASSERT_TRUE(net_sendto(sender, "read", 5u, &destination) > 0);
     n = net_loop_wait(loop, events, 4u, 1000);
     ASSERT_TRUE(n > 0);

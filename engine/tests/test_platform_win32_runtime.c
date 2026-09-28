@@ -442,17 +442,16 @@ TEST(media_context_cache_invalidates_on_settings_change)
     if (!platform_get_media_context(platform, &media)) {
         record_failure("initial platform_get_media_context failed");
     }
-    if (!PostMessageW(hwnd, WM_SETTINGCHANGE, 0, 0)) {
-        record_failure("PostMessageW(WM_SETTINGCHANGE) failed");
-    } else {
-        (void)platform_poll(platform);
-        after = platform_get_media_generation(platform);
-        if (after <= before) {
-            record_failure("settings change did not invalidate media generation");
-        }
-        if (!platform_get_media_context(platform, &media)) {
-            record_failure("refreshed platform_get_media_context failed");
-        }
+    /* WM_SETTINGCHANGE must be delivered synchronously: recent Windows
+     * rejects PostMessage for it with ERROR_MESSAGE_SYNC_ONLY. */
+    SendMessageW(hwnd, WM_SETTINGCHANGE, 0, 0);
+    (void)platform_poll(platform);
+    after = platform_get_media_generation(platform);
+    if (after <= before) {
+        record_failure("settings change did not invalidate media generation");
+    }
+    if (!platform_get_media_context(platform, &media)) {
+        record_failure("refreshed platform_get_media_context failed");
     }
     platform_destroy(platform);
 }
@@ -470,14 +469,13 @@ TEST(malformed_dpi_change_message_is_ignored)
         return;
     }
     hwnd = (HWND)platform_window_native(platform);
-    if (!PostMessageW(hwnd, WM_DPICHANGED, 0, 0)) {
-        record_failure("PostMessageW(WM_DPICHANGED) failed");
-    } else {
-        (void)platform_poll(platform);
-        platform_get_size(platform, &width, &height);
-        if (width == 0u || height == 0u) {
-            record_failure("malformed DPI message corrupted window size");
-        }
+    /* WM_DPICHANGED must be delivered synchronously: recent Windows
+     * rejects PostMessage for it with ERROR_MESSAGE_SYNC_ONLY. */
+    SendMessageW(hwnd, WM_DPICHANGED, 0, 0);
+    (void)platform_poll(platform);
+    platform_get_size(platform, &width, &height);
+    if (width == 0u || height == 0u) {
+        record_failure("malformed DPI message corrupted window size");
     }
     platform_destroy(platform);
 }

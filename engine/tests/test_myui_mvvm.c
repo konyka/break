@@ -1,6 +1,8 @@
 #include "test_framework.h"
 
-#include <pthread.h>
+/* Cross-platform worker threads: Win32 uses the platform_thread.h
+ * CRITICAL_SECTION-era primitives, POSIX maps to pthreads. */
+#include <core/platform_thread.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -969,27 +971,27 @@ typedef struct async_submit_worker_t {
 
 typedef struct manager_race_worker_t {
   my_mvvm_context_t* context;
-  pthread_mutex_t* mutex;
-  pthread_cond_t* condition;
+  PlatformMutex* mutex;
+  PlatformCond* condition;
   bool* ready;
   my_ret_t result;
 } manager_race_worker_t;
 
-static void* async_binding_notify_thread(void* data) {
+static PLATFORM_THREAD_RET async_binding_notify_thread(PLATFORM_THREAD_ARG data) {
   async_binding_thread_args_t* args =
       (async_binding_thread_args_t*)data;
   args->result = my_mvvm_context_notify_change_async(args->context, "title");
-  return NULL;
+  return PLATFORM_THREAD_RETURN;
 }
 
-static void* async_binding_bulk_notify_thread(void* data) {
+static PLATFORM_THREAD_RET async_binding_bulk_notify_thread(PLATFORM_THREAD_ARG data) {
   async_binding_thread_args_t* args =
       (async_binding_thread_args_t*)data;
   args->result = my_mvvm_context_notify_change_async(args->context, NULL);
-  return NULL;
+  return PLATFORM_THREAD_RETURN;
 }
 
-static void* async_binding_set_property_thread(void* data) {
+static PLATFORM_THREAD_RET async_binding_set_property_thread(PLATFORM_THREAD_ARG data) {
   async_binding_thread_args_t* args =
       (async_binding_thread_args_t*)data;
   my_value_t value;
@@ -1002,10 +1004,10 @@ static void* async_binding_set_property_thread(void* data) {
   }
   my_value_reset(&value);
   text[0] = 'X';
-  return NULL;
+  return PLATFORM_THREAD_RETURN;
 }
 
-static void* async_submit_worker(void* data) {
+static PLATFORM_THREAD_RET async_submit_worker(PLATFORM_THREAD_ARG data) {
   async_submit_worker_t* worker = (async_submit_worker_t*)data;
   my_value_t value;
   unsigned int i;
@@ -1023,27 +1025,20 @@ static void* async_submit_worker(void* data) {
   }
   my_value_reset(&value);
   my_mvvm_context_unref(worker->context);
-  return NULL;
+  return PLATFORM_THREAD_RETURN;
 }
 
-static void* manager_race_worker(void* data) {
+static PLATFORM_THREAD_RET manager_race_worker(PLATFORM_THREAD_ARG data) {
   manager_race_worker_t* worker = (manager_race_worker_t*)data;
-  if (pthread_mutex_lock(worker->mutex) != 0) {
-    return NULL;
-  }
+  platform_mutex_lock(worker->mutex);
   while (!*worker->ready) {
-    if (pthread_cond_wait(worker->condition, worker->mutex) != 0) {
-      (void)pthread_mutex_unlock(worker->mutex);
-      return NULL;
-    }
+    platform_cond_wait(worker->condition, worker->mutex);
   }
-  if (pthread_mutex_unlock(worker->mutex) != 0) {
-    return NULL;
-  }
+  platform_mutex_unlock(worker->mutex);
   worker->result = my_mvvm_context_notify_change_async(worker->context,
                                                        "title");
   my_mvvm_context_unref(worker->context);
-  return NULL;
+  return PLATFORM_THREAD_RETURN;
 }
 
 TEST(binding_context_async_notify_runs_only_on_bound_loop)
@@ -1058,7 +1053,7 @@ TEST(binding_context_async_notify_runs_only_on_bound_loop)
   my_widget_target_t* target;
   my_mvvm_context_t* context;
   my_value_t value;
-  pthread_t thread;
+  PlatformThread thread;
   async_binding_thread_args_t args;
 
   ASSERT_NOT_NULL(pal);
@@ -1089,8 +1084,8 @@ TEST(binding_context_async_notify_runs_only_on_bound_loop)
 
   args.context = context;
   args.result = MY_RET_FAIL;
-  ASSERT_EQ(pthread_create(&thread, NULL, async_binding_notify_thread, &args), 0);
-  ASSERT_EQ(pthread_join(thread, NULL), 0);
+  ASSERT_TRUE(platform_thread_create(&thread, async_binding_notify_thread, &args));
+  platform_thread_join(thread);
   ASSERT_EQ(args.result, MY_RET_OK);
   ASSERT_EQ(strcmp(((my_label_t*)label)->text, "old"), 0);
   ASSERT_EQ(my_pal_main_loop_pump_n(loop, 1u), 1u);
@@ -1116,7 +1111,7 @@ TEST(binding_context_async_notify_is_cancelled_on_destroy)
   my_view_model_t* vm = quiet != NULL ? &quiet->base : NULL;
   my_mvvm_context_t* context;
   async_binding_thread_args_t args;
-  pthread_t thread;
+  PlatformThread thread;
 
   ASSERT_NOT_NULL(pal);
   loop = my_pal_main_loop_create(pal);
@@ -1131,8 +1126,8 @@ TEST(binding_context_async_notify_is_cancelled_on_destroy)
   ASSERT_NOT_NULL(context);
   args.context = context;
   args.result = MY_RET_FAIL;
-  ASSERT_EQ(pthread_create(&thread, NULL, async_binding_notify_thread, &args), 0);
-  ASSERT_EQ(pthread_join(thread, NULL), 0);
+  ASSERT_TRUE(platform_thread_create(&thread, async_binding_notify_thread, &args));
+  platform_thread_join(thread);
   ASSERT_EQ(args.result, MY_RET_OK);
   my_mvvm_context_destroy(context);
   ASSERT_EQ(my_pal_main_loop_pump_n(loop, 1u), 1u);
@@ -1152,7 +1147,7 @@ TEST(mvvm_async_notify_is_cancelled_on_manager_destroy)
   my_view_model_t* vm = my_view_model_dummy_create(NULL);
   my_mvvm_context_t* context;
   async_binding_thread_args_t args;
-  pthread_t thread;
+  PlatformThread thread;
 
   ASSERT_NOT_NULL(pal);
   loop = my_pal_main_loop_create(pal);
@@ -1167,8 +1162,8 @@ TEST(mvvm_async_notify_is_cancelled_on_manager_destroy)
   ASSERT_NOT_NULL(context);
   args.context = context;
   args.result = MY_RET_FAIL;
-  ASSERT_EQ(pthread_create(&thread, NULL, async_binding_notify_thread, &args), 0);
-  ASSERT_EQ(pthread_join(thread, NULL), 0);
+  ASSERT_TRUE(platform_thread_create(&thread, async_binding_notify_thread, &args));
+  platform_thread_join(thread);
   ASSERT_EQ(args.result, MY_RET_OK);
   my_window_manager_destroy(wm);
   ASSERT_EQ(my_pal_main_loop_pump_n(loop, 1u), 1u);
@@ -1191,7 +1186,7 @@ TEST(mvvm_async_property_write_copies_value_and_updates_binding)
   my_mvvm_context_t* context;
   async_binding_thread_args_t args;
   my_value_t pointer_value;
-  pthread_t thread;
+  PlatformThread thread;
 
   ASSERT_NOT_NULL(pal);
   loop = my_pal_main_loop_create(pal);
@@ -1211,9 +1206,10 @@ TEST(mvvm_async_property_write_copies_value_and_updates_binding)
 
   args.context = context;
   args.result = MY_RET_FAIL;
-  ASSERT_EQ(pthread_create(&thread, NULL, async_binding_set_property_thread,
-                           &args), 0);
-  ASSERT_EQ(pthread_join(thread, NULL), 0);
+  ASSERT_TRUE(platform_thread_create(&thread,
+                                     async_binding_set_property_thread,
+                                     &args));
+  platform_thread_join(thread);
   ASSERT_EQ(args.result, MY_RET_OK);
   ASSERT_EQ(strcmp(((my_label_t*)label)->text, "old"), 0);
   ASSERT_EQ(my_pal_main_loop_pump_n(loop, 1u), 1u);
@@ -1302,7 +1298,7 @@ TEST(mvvm_context_ref_keeps_async_submission_alive)
   my_view_model_t* vm = my_view_model_dummy_create(NULL);
   my_mvvm_context_t* context;
   async_binding_thread_args_t args;
-  pthread_t thread;
+  PlatformThread thread;
 
   ASSERT_NOT_NULL(pal);
   loop = my_pal_main_loop_create(pal);
@@ -1319,8 +1315,8 @@ TEST(mvvm_context_ref_keeps_async_submission_alive)
   args.result = MY_RET_FAIL;
 
   my_mvvm_context_destroy(context);
-  ASSERT_EQ(pthread_create(&thread, NULL, async_binding_notify_thread, &args), 0);
-  ASSERT_EQ(pthread_join(thread, NULL), 0);
+  ASSERT_TRUE(platform_thread_create(&thread, async_binding_notify_thread, &args));
+  platform_thread_join(thread);
   ASSERT_EQ(args.result, MY_RET_OK);
   my_window_manager_destroy(wm);
   my_mvvm_context_unref(args.context);
@@ -1344,7 +1340,7 @@ TEST(mvvm_async_bulk_refreshes_data_condition_and_items)
   my_widget_t* list = my_list_view_create(NULL);
   my_mvvm_context_t* context;
   async_binding_thread_args_t args;
-  pthread_t thread;
+  PlatformThread thread;
 
   ASSERT_NOT_NULL(pal);
   ASSERT_NOT_NULL(vm);
@@ -1385,10 +1381,10 @@ TEST(mvvm_async_bulk_refreshes_data_condition_and_items)
   quiet->show_marker = true;
   args.context = context;
   args.result = MY_RET_FAIL;
-  ASSERT_EQ(pthread_create(&thread, NULL, async_binding_bulk_notify_thread,
-                           &args),
-            0);
-  ASSERT_EQ(pthread_join(thread, NULL), 0);
+  ASSERT_TRUE(platform_thread_create(&thread,
+                                     async_binding_bulk_notify_thread,
+                                     &args));
+  platform_thread_join(thread);
   ASSERT_EQ(args.result, MY_RET_OK);
   ASSERT_EQ(strcmp(((my_label_t*)label)->text, "old"), 0);
   ASSERT_FALSE(marker->visible);
@@ -1419,7 +1415,7 @@ TEST(mvvm_async_concurrent_workers_release_context_on_workers)
   my_view_model_t* vm = my_view_model_dummy_create(NULL);
   my_mvvm_context_t* context;
   async_submit_worker_t workers[worker_count];
-  pthread_t threads[worker_count];
+  PlatformThread threads[worker_count];
   unsigned int i, accepted = 0u, pending = 0u;
 
   ASSERT_NOT_NULL(pal);
@@ -1439,12 +1435,12 @@ TEST(mvvm_async_concurrent_workers_release_context_on_workers)
     workers[i].accepted = 0u;
     workers[i].pending = 0u;
     ASSERT_NOT_NULL(workers[i].context);
-    ASSERT_EQ(pthread_create(&threads[i], NULL, async_submit_worker,
-                             &workers[i]), 0);
+    ASSERT_TRUE(platform_thread_create(&threads[i], async_submit_worker,
+                                       &workers[i]));
   }
   my_mvvm_context_destroy(context);
   for (i = 0u; i < worker_count; i++) {
-    ASSERT_EQ(pthread_join(threads[i], NULL), 0);
+    platform_thread_join(threads[i]);
     accepted += workers[i].accepted;
     pending += workers[i].pending;
   }
@@ -1469,10 +1465,10 @@ TEST(mvvm_manager_destroy_races_worker_context_release)
   my_window_t* win;
   my_view_model_t* vm = my_view_model_dummy_create(NULL);
   my_mvvm_context_t* context;
-  pthread_t threads[worker_count];
+  PlatformThread threads[worker_count];
   manager_race_worker_t args[worker_count];
-  pthread_mutex_t mutex;
-  pthread_cond_t condition;
+  PlatformMutex mutex;
+  PlatformCond condition;
   bool ready = false;
   unsigned int i;
 
@@ -1487,29 +1483,29 @@ TEST(mvvm_manager_destroy_races_worker_context_release)
   ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
   context = my_mvvm_bind(wm, win, vm);
   ASSERT_NOT_NULL(context);
-  ASSERT_EQ(pthread_mutex_init(&mutex, NULL), 0);
-  ASSERT_EQ(pthread_cond_init(&condition, NULL), 0);
+  platform_mutex_init(&mutex);
+  platform_cond_init(&condition);
   for (i = 0u; i < worker_count; i++) {
     args[i].context = my_mvvm_context_ref(context);
     args[i].mutex = &mutex;
     args[i].condition = &condition;
     args[i].ready = &ready;
     args[i].result = MY_RET_FAIL;
-    ASSERT_EQ(pthread_create(&threads[i], NULL, manager_race_worker,
-                             &args[i]), 0);
+    ASSERT_TRUE(platform_thread_create(&threads[i], manager_race_worker,
+                                       &args[i]));
   }
   my_window_manager_destroy(wm);
   my_mvvm_context_destroy(context);
-  ASSERT_EQ(pthread_mutex_lock(&mutex), 0);
+  platform_mutex_lock(&mutex);
   ready = true;
-  ASSERT_EQ(pthread_cond_broadcast(&condition), 0);
-  ASSERT_EQ(pthread_mutex_unlock(&mutex), 0);
+  platform_cond_broadcast(&condition);
+  platform_mutex_unlock(&mutex);
   for (i = 0u; i < worker_count; i++) {
-    ASSERT_EQ(pthread_join(threads[i], NULL), 0);
+    platform_thread_join(threads[i]);
     ASSERT_EQ(args[i].result, MY_RET_PENDING);
   }
-  ASSERT_EQ(pthread_cond_destroy(&condition), 0);
-  ASSERT_EQ(pthread_mutex_destroy(&mutex), 0);
+  platform_cond_destroy(&condition);
+  platform_mutex_destroy(&mutex);
   ASSERT_EQ(my_pal_main_loop_pump_n(loop, UINT32_MAX), 1u);
 
   my_view_model_unref(vm);

@@ -261,7 +261,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DMYUI_GLES2=OFF -DMYUI_GL_DESKTOP=OFF
+        # GL backends stay at defaults: the desktop GL backend is WGL-loaded
+        # on Windows (my_gl_desktop.c), and GLES2 honestly stubs without a
+        # GLES2 SDK (configure-time discovery in engine/CMakeLists.txt).
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: cmake --build build --parallel

@@ -511,8 +511,20 @@ if(MYUI_GLES2 AND ENGINE_PLATFORM STREQUAL "linux")
         target_link_libraries(myui_core PUBLIC PkgConfig::MYUI_GLESV2)
     endif()
 elseif(MYUI_GLES2 AND WIN32)
-    target_compile_definitions(myui_core PUBLIC MYUI_HAS_GLES2=1)
-    target_link_libraries(myui_core PUBLIC opengles32)
+    # Stock Windows toolchains ship no GLES2 SDK (only GL 1.1 headers and
+    # opengl32). Define the backend only when both the header and an import
+    # library are actually discoverable — the same honest-discovery policy
+    # as the standalone myr build; otherwise my_gl_real.c stays a stub.
+    find_path(MYUI_GLES2_INCLUDE_DIR NAMES GLES2/gl2.h)
+    find_library(MYUI_GLES2_LIBRARY NAMES GLESv2 opengles32)
+    if(MYUI_GLES2_INCLUDE_DIR AND MYUI_GLES2_LIBRARY)
+        target_compile_definitions(myui_core PUBLIC MYUI_HAS_GLES2=1)
+        target_include_directories(myui_core PUBLIC ${MYUI_GLES2_INCLUDE_DIR})
+        target_link_libraries(myui_core PUBLIC ${MYUI_GLES2_LIBRARY})
+        message(STATUS "myui: GLES2 backend enabled (native SDK discovery)")
+    else()
+        message(STATUS "myui: GLES2 backend stubbed (GLES2/gl2.h not found)")
+    endif()
 endif()
 
 if(MYUI_GL_DESKTOP AND ENGINE_PLATFORM STREQUAL "linux")
@@ -1408,6 +1420,33 @@ if(ENGINE_BUILD_TESTS)
     )
     target_link_libraries(test_myui_vgcanvas_backend PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_vgcanvas_backend COMMAND test_myui_vgcanvas_backend)
+
+    # Win32 headless contract for the desktop GL WGL pointer resolution.
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        add_executable(test_myui_gl_desktop_win32
+            tests/test_myui_gl_desktop_win32.c)
+        target_include_directories(test_myui_gl_desktop_win32 PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+        )
+        target_link_libraries(test_myui_gl_desktop_win32 PRIVATE myui_core m)
+        add_test(NAME test_myui_gl_desktop_win32
+            COMMAND test_myui_gl_desktop_win32)
+
+        # Real WGL context end-to-end smoke; needs a GL ICD, so headless
+        # CI excludes it via the graphics label (test_vulkan precedent).
+        add_executable(test_myui_gl_desktop_runtime
+            tests/test_myui_gl_desktop_runtime.c)
+        target_include_directories(test_myui_gl_desktop_runtime PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+        )
+        target_link_libraries(test_myui_gl_desktop_runtime PRIVATE myui_core m)
+        add_test(NAME test_myui_gl_desktop_runtime
+            COMMAND test_myui_gl_desktop_runtime)
+        set_tests_properties(test_myui_gl_desktop_runtime PROPERTIES
+            LABELS graphics)
+    endif()
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
         src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)

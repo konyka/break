@@ -264,19 +264,30 @@ cmake --build build-win-clang --parallel
 ctest --test-dir build-win-clang -LE graphics --output-on-failure
 ```
 
-`test_shader_io` 与无 graphics 标签的 `test_platform_win32_runtime` 在 Windows CTest 中启用；后者使用真实 Win32
-窗口、`GetWindowTextW`、`WM_SIZE` 和平台销毁路径，不创建 graphics context。源码路径同时支持 `/` 与 `\\` 分隔符。
-`test_vulkan` 需要真实 WGL/GPU 环境，因此保留 `graphics` 标签并从 headless CI 中排除。
+GL 后端在 Windows 使用默认配置即可构建：myr 桌面 GL 后端（`MYUI_HAS_GL_DESKTOP`）通过
+`my_gl_desktop.c` 内的一次性 `wglGetProcAddress` 解析加载 GL 1.3/2.0 入口（无 glad 依赖；
+无当前上下文或 GL 1.1-only 驱动下 `my_gl_desktop_default()` 返回 NULL）；GLES2 后端改为
+configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时保持诚实 stub。
+
+`test_shader_io` 与无 graphics 标签的 `test_platform_win32_runtime`、`test_myui_gl_desktop_win32`
+（WGL 指针解析 headless 契约）、`test_net_loop`（IOCP 后端）在 Windows CTest 中启用；
+`test_platform_win32_runtime` 使用真实 Win32 窗口、`GetWindowTextW`、`WM_SIZE` 和平台销毁路径，
+不创建 graphics context；WM_SETTINGCHANGE/WM_DPICHANGED 以同步 `SendMessageW` 注入以兼容
+新版 Windows 的 `ERROR_MESSAGE_SYNC_ONLY` 限制。源码路径同时支持 `/` 与 `\\` 分隔符。
+`test_vulkan` 与 `test_myui_gl_desktop_runtime` 需要真实 WGL/GPU 环境，因此保留 `graphics`
+标签并从 headless CI 中排除。
 
 在具备本机 GPU 的 Windows 环境可额外执行完整 graphics 集成测试：
 
 ```powershell
 Push-Location engine
 ..\build-win-clang\test_vulkan.exe
+ctest --test-dir ..\build-win-clang -R test_myui_gl_desktop_runtime --output-on-failure
 Pop-Location
 ```
 
-图形集成测试仍需具备 WGL/Vulkan/GPU 环境后单独验证。
+图形集成测试仍需具备 WGL/Vulkan/GPU 环境后单独验证（`test_myui_gl_desktop_runtime` 已在
+真实 ICD 上端到端通过 program 编译与纹理上传，但不覆盖帧级 present/swap 行为）。
 
 #### 使用 MSVC (Visual Studio)
 
@@ -411,7 +422,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 | Linux | Wayland | Vulkan | Clang | 待 CI 验证 |
 | Windows | Win32 | OpenGL | MinGW | 待验证 |
 | Windows | Win32 | OpenGL | MSVC | 原生构建 + 非图形 Win32 smoke 已验证 |
-| Windows | Win32 | OpenGL | Clang | 待验证 |
+| Windows | Win32 | OpenGL | Clang | 原生构建 + 非图形 CTest + WGL 桌面 GL runtime smoke 已验证 |
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 待验证 |
 | Windows | Win32 | Vulkan | Clang | 待验证 |

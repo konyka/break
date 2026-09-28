@@ -177,7 +177,11 @@ void net_loop_destroy(NetLoop *loop)
 bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 {
     if (!loop || !socket || !net_loop_interest_valid(events)) return false;
-    if ((events & NET_LOOP_WRITE) != 0u) return false;
+    /* A write-only registration could never fire on IOCP (zero-byte
+     * overlapped sends complete immediately), so it is rejected; mixed
+     * READ|WRITE masks are accepted with READ armed and WRITE recorded
+     * but never reported. */
+    if (events == NET_LOOP_WRITE) return false;
     SOCKET s = (SOCKET)net_socket_native_handle(socket);
     if (s == INVALID_SOCKET) return false;
 
@@ -234,7 +238,8 @@ bool net_loop_add(NetLoop *loop, NetSocket *socket, u32 events, void *tag)
 bool net_loop_modify(NetLoop *loop, NetSocket *socket, u32 events)
 {
     if (!loop || !socket || !net_loop_interest_valid(events)) return false;
-    if ((events & NET_LOOP_WRITE) != 0u) return false;
+    /* modify() accepts any valid mask so callers can narrow or widen
+     * interest (shared contract); IOCP simply never reports WRITE. */
     u32 idx = iocp_find_slot(loop, socket);
     if (idx == UINT32_MAX) return false;
     NetLoopSlot *slot = loop->slots[idx];
@@ -324,7 +329,10 @@ i32 net_loop_wait(NetLoop *loop, NetLoopEvent *out, u32 max, i32 timeout_ms)
         BOOL ok = WSAGetOverlappedResult(
             (SOCKET)net_socket_native_handle(slot->socket),
             ovl, &bytes, FALSE, &flags);
-        if (ok) {
+        if (ok || WSAGetLastError() == WSAEMSGSIZE) {
+            /* A zero-length MSG_PEEK recv completes with WSAEMSGSIZE as
+             * soon as any datagram is pending — that IS the readability
+             * signal; only other failures are real errors. */
             events |= NET_LOOP_READ;
         } else {
             events |= NET_LOOP_ERROR;

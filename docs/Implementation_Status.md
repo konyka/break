@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows 平台缺口收口（TDD）— 桌面 GL WGL 加载 / IOCP 事件循环修复 / pthread 测试跨平台化
+
+本机 Windows + Clang 22 + Ninja 全量构建暴露五处编译失败与七处从未在 Windows 编译运行过的测试缺陷，逐一收口：
+
+- **myr 桌面 GL 后端 Windows 实现（此前 CI 以 `-DMYUI_GL_DESKTOP=OFF` 绕行）**：Windows SDK 的 `GL/gl.h` 只有 GL 1.1 原型且 opengl32.dll 不导出 GL 2.0 入口；`my_gl_desktop.c` 现在在 `_WIN32` 下以一次性 `wglGetProcAddress` 解析 19 个 GL 1.3/2.0 入口（union 类型双关拒绝 0/1/2/3/-1 垃圾哨兵，pedantic-clean，无 glad 依赖，standalone myr 同样受益），`#define` 名字映射使共享函数体与 POSIX 路径逐字节一致，逐调用成本恒为函数指针直调；无当前上下文或 GL 1.1-only 驱动下 `my_gl_desktop_default()` 诚实返回 NULL。新增 `test_myui_gl_desktop_win32`（headless 契约：垃圾哨兵拒绝、无上下文稳定性）与 `test_myui_gl_desktop_runtime`（graphics 标签：真实 WGL 上下文端到端 program 编译/纹理上传，GDI 软驱环境 SKIP 报边界）；本机真实 ICD 上端到端通过。
+- **engine CMake WIN32 GLES2 接线纠正**：原分支盲定义 `MYUI_HAS_GLES2` 并链接 opengles32，但 stock Windows 无 `GLES2/gl2.h` 必然编译失败；改为 `find_path`+`find_library` 真实探测（与 standalone myr 策略一致），无 SDK 时 `my_gl_real.c` 保持诚实 stub。
+- **IOCP net_loop 首次在 Windows 编译并修复两处真缺陷**：①零长 MSG_PEEK 的 WSARecv 在 UDP 数据报待读时以 `WSAEMSGSIZE` 完成——这就是可读信号本身，原实现误判为 `NET_LOOP_ERROR`（TCP 无消息边界故 Linux 路径与 TCP 测试从未暴露）；现 `WSAGetOverlappedResult` 失败时 `WSAEMSGSIZE` 映射为 READ。②WRITE 兴趣契约按共享测试裁定：`modify()` 接受含 WRITE 的合法掩码（记录兴趣、按掩码武装/取消 READ、wait 永不报告 WRITE），`add()` 仅拒绝 WRITE-only（无可武装事件）；`net_loop.h` 契约注释同步。修正 `loop_iocp_write_rejection_preserves_read_registration` 与被共享测试矛盾的 modify 预期（改用 add-write-only 拒绝保持原不变量），及 IOCP 测试块中 Linux 下从未编译故漏网的未使用变量。`test_net_loop` Windows 19/19。
+- **pthread 测试跨平台化**：`test_myui_mvvm`/`test_myui_vgcanvas_backend` 无条件 `pthread.h` 在 Windows 阻塞两个测试套件；改用引擎既有 `core/platform_thread.h`（Win32 CRITICAL_SECTION/CONDITION_VARIABLE 用户态快路径，POSIX 原样映射），POSIX 行为零变化。
+- **Win32 runtime 测试适配新 Windows 消息限制**：本机（提升会话的新版 Windows）`PostMessageW(WM_SETTINGCHANGE/WM_DPICHANGED)` 以 `ERROR_MESSAGE_SYNC_ONLY`（1159）被拒，独立最小复现证实为 OS 行为而非引擎缺陷；两处改用同步 `SendMessageW`，新旧 Windows 皆可。
+
+验证：Windows + Clang 22 + Ninja Debug 全量构建通过（零警告，`-Wall -Wextra -Werror -pedantic`）；非图形 CTest **111/111**（含新增 2 项、mvvm/vgcanvas/net_loop/win32 runtime）；graphics 标签 `test_myui_gl_desktop_runtime` 在本机真实 ICD 通过。CI windows-clang 移除 GL 绕行开关，回归默认配置。仍待验证：WGL present/swap 的帧级图形行为（runtime smoke 不覆盖）与 Windows Vulkan 构建。
+
 ## 本轮补充：字体 shader atlas 契约收口（2026-09-18）
 
 - `my_vgcanvas_break_rhi` 的字体 atlas 保存的是原始 glyph coverage alpha，且同一 atlas

@@ -18,11 +18,16 @@
  *
  * All backends expose readiness semantics: NET_LOOP_READ means a non-blocking
  * recvfrom/recv will not return EWOULDBLOCK right now; NET_LOOP_WRITE means a
- * non-blocking send will proceed on backends that support it. IOCP rejects
- * WRITE because zero-byte overlapped sends complete immediately rather than
- * representing a writable transition. Edge-triggered backends (kqueue EV_CLEAR,
- * epoll EPOLLET) require the caller to drain the socket fully on each event —
- * which is also the high-throughput pattern (one wakeup, one batch drain).
+ * non-blocking send will proceed on backends that support it. Edge-triggered
+ * backends (kqueue EV_CLEAR, epoll EPOLLET) require the caller to drain the
+ * socket fully on each event — which is also the high-throughput pattern (one
+ * wakeup, one batch drain).
+ *
+ * IOCP WRITE handling: add() rejects a write-only mask (a registration that
+ * could never fire), while add(READ|WRITE) and modify() accept WRITE bits —
+ * the interest is recorded, READ is armed/unarmed per the mask, and wait()
+ * never reports WRITE, because zero-byte overlapped sends complete
+ * immediately rather than representing a writable transition.
  *
  * Batching: net_loop_wait fills a caller-provided array, so a single syscall
  * returns many events; add/modify/remove on the kqueue backend are staged
