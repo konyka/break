@@ -314,9 +314,11 @@ ctest --test-dir build-win-vk -LE graphics --output-on-failure
 ```
 
 运行 `test_vulkan` 需 `$env:PATH = "$sdk\Bin;$env:PATH"; $env:VK_LAYER_PATH = "$sdk\Bin"`，
-工作目录 engine/ 源码根。当前边界：TEST 1-8 在 NVIDIA 真卡通过，TEST 9（unified cull smoke）
-首个 `rhi_frame_begin` 处 DEVICE_LOST（设备死于更早提交，异步上报），待逐测试 GPU 二分；
-Vulkan engine_demo 主循环跑同一 unified cull 路径 120 帧无故障，指向测试路径时序。
+工作目录 engine/ 源码根。当前边界：TEST 1-8 + FBO/MSAA/stress/1000-draw/10K/compute 在 NVIDIA
+真卡通过（validation 0 消息，测试间 `rhi_device_idle` 探针全部健康）；TEST 9（unified cull）
+在 NVIDIA 混合 GPU 环境因 dispatch 帧提交触发驱动级 DEVICE_LOST（nvlddmkm Event 153；已二分
+排除原子压缩、compute 纹理绑定与 mip reclaim；Linux lavapipe CI 通过该测试）——细节见
+`docs/Implementation_Status.md`，需 GPU 捕获工具进一步定位。
 
 #### 使用 MSVC (Visual Studio)
 

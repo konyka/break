@@ -1407,6 +1407,18 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
     return gen_ok && sample_ok;
 }
 
+/* Diagnostic: attribute an asynchronous DEVICE_LOST to the faulting test
+ * window. The loss is normally only observed at a much later fence wait
+ * (often TEST 9's first frame_begin); probing after each test group pins
+ * the window that contains the faulting GPU submission. */
+static void tv_probe_device(RHIDevice *dev, const char *after) {
+    if (rhi_device_idle(dev)) {
+        LOG_INFO("DEVICE PROBE: ok after %s", after);
+    } else {
+        LOG_ERROR("DEVICE PROBE: LOST after %s (faulting submission window)", after);
+    }
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     log_set_level(LOG_DEBUG);
@@ -2026,6 +2038,7 @@ int main(int argc, char **argv) {
     } else {
         LOG_ERROR("RESULT: COMPUTE SHADER TEST FAILED");
     }
+    tv_probe_device(render.device, "TEST 5 compute");
 
     /* ---- TEST 6: Combined post-process (no fallback to multi-pass) ---- */
     LOG_INFO("============================================");
@@ -2153,6 +2166,7 @@ int main(int argc, char **argv) {
     } else {
         LOG_ERROR("RESULT: COMBINED POST-PROCESS TEST FAILED");
     }
+    tv_probe_device(render.device, "TEST 6 combined post-process");
 
     /* ---- TEST 7: Real cubemap IBL (capture + convolve + sample) -------- */
     LOG_INFO("============================================");
@@ -2168,6 +2182,7 @@ int main(int argc, char **argv) {
     } else {
         LOG_ERROR("RESULT: IBL TEST FAILED");
     }
+    tv_probe_device(render.device, "TEST 7 IBL");
 
     /* ---- TEST 9: Unified GPU cull + compact (indirect count draw) ---- */
     LOG_INFO("============================================");
@@ -2191,6 +2206,7 @@ int main(int argc, char **argv) {
             obj.position[3] = 2.0f;
             gpucull_upload_draw_cmds(&uc, &dcmd, 1);
             gpucull_upload_objects_unified(&uc, &obj, 1);
+            tv_probe_device(render.device, "TEST 9 gpucull init + uploads");
 
             Mat4 proj = mat4_ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
             Mat4 view = mat4_identity();

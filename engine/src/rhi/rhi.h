@@ -498,6 +498,15 @@ void rhi_vk_validation_message_count_reset(void);
 bool rhi_vk_validation_gate_active(void);
 void rhi_vk_validation_set_enabled(bool enabled);
 
+/* Diagnostic probe: waits for full device idle and reports whether the
+ * device is still alive. DEVICE_LOST from a faulting earlier submission
+ * is reported asynchronously and normally only surfaces at a much later
+ * fence wait; test harnesses probe between test groups to attribute the
+ * loss to the faulting submission window. GL maps to glFinish()+error
+ * check (no equivalent loss concept). Returns false only on a lost/failed
+ * device or null arguments. */
+bool rhi_device_idle(RHIDevice *dev);
+
 typedef struct RHIGPUTimer RHIGPUTimer;
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev);
 void         rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t);

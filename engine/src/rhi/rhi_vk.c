@@ -2006,6 +2006,21 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     return true;
 }
 
+bool rhi_device_idle(RHIDevice *dev) {
+    VKBackend *vk = dev ? vk_backend(dev) : NULL;
+    if (!vk || vk->device == VK_NULL_HANDLE) return false;
+    /* Diagnostic probe: DEVICE_LOST from an earlier faulting submission is
+     * reported asynchronously and otherwise only surfaces at the next
+     * fence wait, often far from the faulting test. A full idle wait makes
+     * the loss observable at the probe site (test_vulkan bisection). */
+    VkResult r = vkDeviceWaitIdle(vk->device);
+    if (r != VK_SUCCESS) {
+        LOG_ERROR("rhi_device_idle: vkDeviceWaitIdle = %d", (int)r);
+        return false;
+    }
+    return true;
+}
+
 static void vk_shutdown(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     if (!vk) return;

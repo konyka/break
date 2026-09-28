@@ -641,6 +641,19 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     return true;
 }
 
+bool rhi_device_idle(RHIDevice *dev) {
+    /* Diagnostic probe (see rhi.h): GL has no asynchronous loss reporting;
+     * drain the pipeline and surface a sticky context-lost error if any.
+     * The drain is bounded — a persistent GL_CONTEXT_LOST never clears and
+     * would otherwise spin forever. */
+    if (!dev) return false;
+    glFinish();
+    for (int i = 0; i < 32; i++) {
+        if (glGetError() == GL_NO_ERROR) break;
+    }
+    return true;
+}
+
 static void gl_shutdown(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
     if (!gl) return;
