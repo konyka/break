@@ -480,6 +480,74 @@ TEST(malformed_dpi_change_message_is_ignored)
     platform_destroy(platform);
 }
 
+TEST(ime_enable_disable_round_trips_through_imm32)
+{
+    PlatformConfig config = {320, 240, "break ime roundtrip"};
+    Platform *platform = platform_create(&config);
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    if (platform_ime_is_enabled(platform)) {
+        record_failure("IME should be disabled by default");
+    }
+    /* Enable -> disable -> enable exercises both ImmAssociateContext paths
+     * (detach on disable, re-attach on re-enable); a fault in either would
+     * take the process down before the destroy. */
+    platform_ime_set_enabled(platform, true);
+    if (!platform_ime_is_enabled(platform)) {
+        record_failure("platform_ime_is_enabled false after enable");
+    }
+    (void)platform_poll(platform);
+    platform_ime_set_enabled(platform, false);
+    if (platform_ime_is_enabled(platform)) {
+        record_failure("platform_ime_is_enabled true after disable");
+    }
+    (void)platform_poll(platform);
+    platform_ime_set_enabled(platform, true);
+    if (!platform_ime_is_enabled(platform)) {
+        record_failure("platform_ime_is_enabled false after re-enable");
+    }
+    (void)platform_poll(platform);
+    platform_destroy(platform);
+}
+
+TEST(ime_surrounding_and_spot_accept_cjk_and_hostile_input)
+{
+    PlatformConfig config = {320, 240, "break ime smoke"};
+    Platform *platform = platform_create(&config);
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    platform_ime_set_enabled(platform, true);
+    /* Valid CJK context with mid-string cursor and anchor. */
+    platform_ime_set_surrounding(platform,
+                                 "\xE4\xB8\xAD\xE6\x96\x87 mixed \xE6\x96\x87\xE6\x9C\xAC",
+                                 4, 4);
+    /* Hostile input: truncated UTF-8 sequence + negative cursor/anchor must
+     * be clamped/rejected by the surrounding helper without faulting. */
+    platform_ime_set_surrounding(platform, "\xE4\xB8", -1, -1);
+    platform_ime_set_surrounding(platform, NULL, 0, 0);
+    /* Candidate/composition window placement through the real HIMC. */
+    platform_ime_set_spot(platform, 100, 200);
+    platform_ime_set_spot(platform, -5, 1 << 20);
+    (void)platform_poll(platform);
+    platform_destroy(platform);
+}
+
+TEST(ime_api_null_platform_is_rejected_without_fault)
+{
+    platform_ime_set_enabled(NULL, true);
+    if (platform_ime_is_enabled(NULL)) {
+        record_failure("platform_ime_is_enabled(NULL) must be false");
+    }
+    platform_ime_set_surrounding(NULL, "text", 1, 1);
+    platform_ime_set_spot(NULL, 1, 2);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(platform_create_rejects_invalid_configuration_before_native_calls);
     RUN_TEST(invalid_utf8_title_is_rejected_without_creating_a_window);
@@ -493,4 +561,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(media_context_hdr_capability_has_explicit_knowledge);
     RUN_TEST(media_context_cache_invalidates_on_settings_change);
     RUN_TEST(malformed_dpi_change_message_is_ignored);
+    RUN_TEST(ime_enable_disable_round_trips_through_imm32);
+    RUN_TEST(ime_surrounding_and_spot_accept_cjk_and_hostile_input);
+    RUN_TEST(ime_api_null_platform_is_rejected_without_fault);
 TEST_MAIN_END()

@@ -1,5 +1,9 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows IME 平台 smoke 补齐
+
+`myui_remaining_work.md` 记录的"Windows IME 专项 smoke 空缺"关闭：`test_platform_win32_runtime` 新增 3 项——①enable/disable/re-enable 状态回读（真实穿越 `ImmAssociateContext` 的 detach 与 re-attach 双路径，任一故障会在 destroy 前击穿进程）；②CJK 混排 surrounding + 候选框 spot 经真实 HIMC 的 `ImmSetCompositionWindow/ImmSetCandidateWindow`，叠加敌意输入契约（截断 UTF-8、负 cursor/anchor、NULL 文本、越界 spot 坐标全部无故障）；③全 IME API 的 NULL platform 拒绝契约。实现本身首次实测即全过（无缺陷发现，价值为回归保护）；`test_platform_win32_runtime` 现 **15/15**。Windows headless CI（windows-clang job）将自动执行新增项。
+
 ## 本轮更新：Windows 高 DPI 与文件热重载实机验证关闭
 
 Build_Guide 两项"待验证"在本机（144 DPI / 150% 缩放 / 2560×1600 混合 GPU 笔记本）实机关闭：
