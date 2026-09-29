@@ -379,6 +379,7 @@ jobs:
           set -o pipefail
           ctest --test-dir build -LE graphics --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
             echo "::error::macOS headless suite failures:"
-            grep -m 8 -E "\(Failed\)|\(Not Run\)|\(Timeout\)" /tmp/macos_headless.log | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 1 -A 8 "The following tests FAILED:" /tmp/macos_headless.log | tail -n +2 \
+              | grep -m 8 -E "\(" | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
