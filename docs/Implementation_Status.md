@@ -5,7 +5,7 @@
 macOS job（09-07 引入起从未成功过构建）经 12 轮注解外显诊断逐层修复：
 
 - **构建层三连修**：①`-DVulkan_LIBRARY` 指向 brew molten-vk keg 中不存在的 `libvulkan.dylib`（make 秒级 "No rule to make target"）→ 改链 `libMoltenVK.dylib` 本体；②headless ctest 前未构建测试二进制（8 个 `(Not Run)`）→ Cocoa 步骤改全量构建；③`rhi_vk.c` 的 `shaderc/shaderc.h` 编译失败 → engine 的 shaderc include 改为"找到即加"（去平台条件）+ CI 传全局 `CMAKE_C_FLAGS=-I`（engine `C_INCLUDES` 探针曾确认 -I 存在却仍失败，全局 flag 结构性绕过该未解之谜；Windows/Linux 同机制验证无回归）。
-- **现状**：全量构建 + Cocoa runtime 测试 + headless **108/110** 通过；仅 `test_myui_window_manager` 与 `test_myui_vgcanvas_backend`（Subprocess aborted）失败——恰为 pthread→platform_thread 转换的两个文件，Linux 同代码通过，疑 macOS 真实平台差异（abort 文本经注解通道不可得，需 log 权限或 macOS 复现）。
+- **现状**：全量构建 + Cocoa runtime 测试 + headless **108/110** 通过；仅 `test_myui_window_manager` 与 `test_myui_vgcanvas_backend`（Subprocess aborted）失败。**20 轮递进诊断**（注解外显 → lldb 回溯）已确认：两测试非 dyld 加载失败——正常启动、前序子测试通过、随后 SIGABRT；window_manager 在 lldb 慢启动下从第 4 项推进到第 9 项（**竞态特征**）；vgcanvas 的 abort 发生在**线程 #2（非主线程）**，栈帧止于 `libsystem_kernel`__pthread_kill`（上层帧不可回溯，Apple 框架内部断言特征）。两二进制均链接 MoltenVK（macOS myui_core 恒开 MYUI_HAS_VULKAN），vgcanvas 序列含 4 线程并发 `vkCreateInstance` 竞态测试——GitHub macOS runner 无显示会话，Metal 设备路径疑点最大但**无日志权限无法定案**。CI 的 lldb 包装器已留在 workflow 中，具备日志权限者一条命令即可拿到完整回溯。
 - **方法论沉淀**：CI wrapper 将错误行/ctest 失败摘要/brew 布局/CMake cache/编译 flags 全部以 `::error/::warning` 注解外显——绕过日志 API 需认证的限制，任何后续失败无需 log 权限即可远程诊断。
 
 ## 本轮更新：Windows IME 平台 smoke 补齐
