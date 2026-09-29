@@ -381,8 +381,9 @@ jobs:
             echo "::error::macOS headless suite failures:"
             grep -m 1 -A 8 "The following tests FAILED:" /tmp/macos_headless.log | tail -n +2 \
               | grep -m 8 -E "\(" | while IFS= read -r line; do echo "::error::${line}"; done
-            echo "::error::last diagnostics before abort:"
-            grep -B 2 -m 4 -E "FAIL: |Assertion failed|Assertion|SIGABRT|Abort" /tmp/macos_headless.log \
-              | grep -v "^--$" | head -8 | while IFS= read -r line; do echo "::error::${line}"; done
+            echo "::error::output tail before each abort:"
+            grep -B 14 "Subprocess aborted" /tmp/macos_headless.log | grep -v "^--$" \
+              | grep -E "\[[0-9]+\]|FAIL|Assertion|abort|fatal|error" | tail -10 \
+              | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
