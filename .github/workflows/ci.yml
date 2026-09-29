@@ -383,8 +383,9 @@ jobs:
             # message is the only actionable diagnostic.
             for t in test_myui_window_manager test_myui_vgcanvas_backend; do
               if [ -x "build/$t" ]; then
-                echo "::error::direct-run $t:"
-                ( cd build && ./"$t" 2>&1 || true ) | head -4 \
+                echo "::error::lldb backtrace $t:"
+                ( cd build && lldb --batch -o run -o "bt 8" ./"$t" 2>&1 || true ) \
+                  | grep -E "frame|stop reason|Assertion|abort|Testing" | head -10 \
                   | while IFS= read -r line; do echo "::error::${line}"; done
               else
                 echo "::error::binary missing: build/$t"
