@@ -322,8 +322,11 @@ jobs:
       - name: Build and test Cocoa runtime
         run: |
           set -o pipefail
-          cmake --build build --target test_platform_config test_platform_null_safety test_platform_cocoa_runtime --parallel 2>&1 | tee /tmp/macos_cocoa.log || {
-            grep -m 5 -E "error:|fatal error:|No rule to make target|ld: " /tmp/macos_cocoa.log \
+          # Full build: the headless suite below runs every non-graphics test,
+          # so all test executables must exist (the dxx_break-only build above
+          # leaves ctest with "(Not Run)" entries for every other test).
+          cmake --build build --parallel 2>&1 | tee /tmp/macos_full.log || {
+            grep -m 5 -E "error:|fatal error:|No rule to make target|ld: " /tmp/macos_full.log \
               | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
