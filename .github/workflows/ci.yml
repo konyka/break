@@ -340,9 +340,18 @@ jobs:
           # Full build: the headless suite below runs every non-graphics test,
           # so all test executables must exist (the dxx_break-only build above
           # leaves ctest with "(Not Run)" entries for every other test).
-          cmake --build build --parallel 2>&1 | tee /tmp/macos_full.log || {
+          cmake --build build --parallel -- VERBOSE=1 2>&1 | tee /tmp/macos_full.log || {
             grep -m 5 -E "error:|fatal error:|No rule to make target|ld: " /tmp/macos_full.log \
               | while IFS= read -r line; do echo "::error::${line}"; done
+            FM="build/engine/CMakeFiles/engine.dir/flags.make"
+            if [ -f "$FM" ]; then
+              echo "::warning::flags.make shaderc -I count: $(grep -c shaderc "$FM")"
+              grep "C_INCLUDES" "$FM" | head -c 300 | while IFS= read -r c; do echo "::warning::engine C_INCLUDES head: $c"; done
+            else
+              echo "::warning::flags.make not found at $FM"
+            fi
+            grep -m 1 "rhi_vk.c" /tmp/macos_full.log | head -c 200 \
+              | while IFS= read -r c; do echo "::warning::rhi_vk cmd head: $c"; done
             exit 1
           }
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$' 2>&1 | tee /tmp/macos_cocoa_test.log || {
