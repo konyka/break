@@ -26,6 +26,8 @@ layout(push_constant) uniform PushConstants {
     float u_underwater; /* 204 */
     float u_point_shadow_far_planes[4]; /* 208 */
     float u_pom_enabled;                /* 224 */
+    vec2  u_mr_factor;                  /* 232 — R579 glTF metallic/roughness factors
+                                         * (std430: vec2 aligns 8, pads 228->232) */
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -364,6 +366,7 @@ void main() {
     vec3 albedo = texture(u_albedo, pom_uv).rgb;
 
     vec2 mr = texture(u_metallic_roughness, pom_uv).bg;
+    mr *= pc.u_mr_factor; /* R579: glTF factor * texture composition */
     float metallic  = mr.x;
     float roughness = mr.y;
 

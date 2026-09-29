@@ -6403,6 +6403,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_underwater") == 0)  return 204;
         if (strcmp(name, "u_point_shadow_far_planes") == 0) return 208;
         if (strcmp(name, "u_pom_enabled") == 0) return 224;
+        if (strcmp(name, "u_mr_factor") == 0)  return 232; /* R579 */
     } else if (pd && pd->no_vertex_input && pd->uses_texel_buffer && !pd->is_compute) {
         /* deferred_light_vk: clustered lighting + IBL full-screen pass. */
         if (strcmp(name, "u_inv_vp") == 0)       return 0;

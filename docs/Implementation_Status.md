@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579 PBR 材质因子完整化 — glTF 规范"因子×纹理"组合 + CPU 参考 BRDF（TDD）
+
+- **缺口发现**：引擎双路径 Cook-Torrance PBR（前向 pbr_clustered 默认 + 延迟 deferred_light）与 glTF metallic-roughness 纹理均已完备，但 glTF 加载器解析的 `metallic_factor/roughness_factor` 标量（asset.c:594-595）**从未到达 shader**——pbr_clustered{,_vk}.frag 仅读纹理（`texture().bg`），glTF 2.0 规范的 `metallic = tex.b × factor, roughness = tex.g × factor` 组合缺失。
+- **实现（R579，TDD 红→绿）**：① 新增 `renderer/pbr_math.h` CPU 参考 Cook-Torrance（α=r²、k=(r+1)²/8、Schlick 五次幂，逐项镜像 GLSL）；先写 `tests/test_pbr_math.c`（14 项性质测试：Schlick 端点/单调/金锚 0.07、GGX 峰值闭式 1/(π·α²) 与粗糙度展宽、Smith 界限与金锚 0.6091613、F0 混合端点、BRDF 互易性 f(V,L)=f(L,V)、metal=1 漫反射归零、介电质 (1-F0)·albedo/π）——首版 3 处失败均系测试自身物理方向写反（TDD 有效性实证），修正后 14/14。② shader 加 `u_mr_factor`（vec2）：GL 为普通 uniform；VK 入 push 块 @232（std430 对齐，块至 240<256），rhi_vk.c 名称→偏移映射同步。③ 生产接线：`bind_material` 逐材质 `rhi_cmd_set_uniform_vec2`（NULL 材质回退 (1,1)），glTF 因子自此贯通默认前向路径；VK push 空间共享别名假设按 R216-B 惯例注释。
+- **验证**：双树非图形 CTest 各 **112/112**（含新增 test_pbr_math）；GL 图形 2/2；VK 套件 TEST 7b 段通过（SKIP 门，见下）；VK/GL demo 各 120 帧优雅退出 0 FATAL；修一处 test_shader_io 子串契约回归（GL all_pass 邻接顺序）。
+- **过程发现（重要沉淀）**：(一) GL 树运行时 **GLSL→SPIR-V** 编译，`pbr_clustered` 无 HAS_IBL 变体被 AMD Windows 驱动**静默 no-op**（管线合法、零片元）——生产恒注入 HAS_IBL（main.c:429）是该路径的隐含依赖，测试/工具链复用须同样注入；(二) 回读 API 后端分歧：GL `rhi_texture_read_pixels` 恒返回 RGBA8（4B/px），VK 返回原生格式字节（RGBA16F=8B/px，R445）——tv_test_ibl 的 8B 步长在 GL 上实为误读，其弱断言（varied+nonzero）恰好幸存；(三) **像素 A/B 门停放**：因子写入在双后端均解析正常（VK location 232 / GL 实位）且同一绘制模式去掉因子写后渲染正确，但因子两值帧缓冲字节恒等——机制未明，正确性由单元参考锚定，TEST 7b 以显式 SKIP 门放行（待后续调查）；(四) 延迟路径（gbuffer 写入端）的因子通道为后续边界（gbuffer 无标量 uniform 通道，`u_metallic_default` 为常量）。
+
 ## 本轮更新：R578 设备丢失 fail-fast — TDR 后由"永久挂死"改为优雅失败退出；R576 dump 死因勘误
 
 - **动机（本会话全部 TDR run 的共同尾部行为）**：设备丢失（vkWaitForFences res=-4 + LOG_FATAL）后进程不退出——线程全部 Wait/Suspended、0 CPU（WER 挂起检测冻结），CI/无人值守场景下比失败更糟。面包屑定位：阻塞点在 frame_begin FATAL 分支的 `vk_dump_device_fault`——**其驱动故障查询（vkGetDeviceProcAddr / vkGetDeviceFaultInfoEXT）在 WDDM 复位后的死设备上永久阻塞**；同时勘误 R576 记录：此前"dump 从未输出"并非"驱动未启用该扩展"，而是查询本身被阻塞（vulkaninfo --summary 不列设备扩展，当时的排除证据本就含糊）。

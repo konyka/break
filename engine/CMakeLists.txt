@@ -1810,6 +1810,12 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_alloc PRIVATE m)
     add_test(NAME test_alloc COMMAND test_alloc)
 
+    # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
+    add_executable(test_pbr_math tests/test_pbr_math.c)
+    target_include_directories(test_pbr_math PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_pbr_math PRIVATE m)
+    add_test(NAME test_pbr_math COMMAND test_pbr_math)
+
     # test_pool: fixed-size block allocator
     add_executable(test_pool tests/test_pool.c src/core/pool.c src/core/log.c)
     target_include_directories(test_pool PRIVATE ${TEST_INCLUDE_DIRS})

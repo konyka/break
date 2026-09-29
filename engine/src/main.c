@@ -261,6 +261,7 @@ typedef struct {
     i32 cl_loc_fog_color, cl_loc_fog_near, cl_loc_fog_far, cl_loc_underwater;
     i32 cl_loc_point_shadow_far_planes;
     i32 cl_loc_pom_enabled;
+    i32 cl_loc_mr_factor;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
     i32 sk_loc_view, sk_loc_proj;
@@ -461,6 +462,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->cl_loc_underwater = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_underwater");
     rs->cl_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_shadow_far_planes");
     rs->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_pom_enabled");
+    rs->cl_loc_mr_factor = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_mr_factor");
     }
 
     RHISamplerDesc sdesc = {
@@ -915,6 +917,17 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
                                         g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+    /* R579: glTF metallic/roughness scalar factors compose with the MR
+     * texture (metallic = tex.b * factor, roughness = tex.g * factor).
+     * NULL material or absent factors default to (1, 1) = texture-only.
+     * VK note: push offset 232-239 is shared staging space; blinn-family
+     * pipelines alias it with u_ambient.z — they rewrite their ambient per
+     * draw (same assumption as R216-B), so this clustered-only bind site
+     * is safe. */
+    if (rs->cl_loc_mr_factor >= 0)
+        rhi_cmd_set_uniform_vec2(cmd, rs->cl_loc_mr_factor,
+                                 mat ? mat->metallic_factor : 1.0f,
+                                 mat ? mat->roughness_factor : 1.0f);
     /* R216-B: Do not write cl_loc_pom_enabled here — offset is clustered@224,
      * which aliases blinn_phong u_ambient; clustered draws are skipped (R75-1). */
     (void)scene;

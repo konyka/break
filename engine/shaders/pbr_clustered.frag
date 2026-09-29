@@ -20,6 +20,7 @@ uniform mat4 u_view;
 uniform float u_shadow_bias;
 uniform float u_point_shadow_far_planes[4];
 uniform float u_pom_enabled; /* R84-1: 0=no height map, skip POM */
+uniform vec2 u_mr_factor;    /* R579: glTF metallic/roughness scalar factors */
 
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 1) uniform sampler2D u_shadow_map;
@@ -352,6 +353,7 @@ void main() {
     vec3 albedo = texture(u_albedo, pom_uv).rgb;
 
     vec2 mr = texture(u_metallic_roughness, pom_uv).bg;
+    mr *= u_mr_factor; /* R579: glTF factor * texture composition */
     float metallic  = mr.x;
     float roughness = mr.y;
 
