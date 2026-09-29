@@ -329,7 +329,7 @@ jobs:
           }
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$' 2>&1 | tee /tmp/macos_cocoa_test.log || {
             echo "::error::macOS Cocoa runtime test failures:"
-            grep -m 5 "Failed " /tmp/macos_cocoa_test.log | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 5 -E "\(Failed\)|\(Not Run\)|\(Timeout\)" /tmp/macos_cocoa_test.log | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
 
@@ -338,6 +338,6 @@ jobs:
           set -o pipefail
           ctest --test-dir build -LE graphics --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
             echo "::error::macOS headless suite failures:"
-            grep -m 8 "Failed " /tmp/macos_headless.log | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 8 -E "\(Failed\)|\(Not Run\)|\(Timeout\)" /tmp/macos_headless.log | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
