@@ -323,6 +323,19 @@ jobs:
           fi
           ls "$SHADERC_INCLUDE_DIR" 2>&1 | head -5 \
             | while IFS= read -r f; do echo "::warning::include dir entry: $f"; done
+          # Definitive: generate engine's compile flags (no compilation) and
+          # dump the include list. This runs in Configure, before any build
+          # failure can short-circuit later steps.
+          (cd build && make CMakeFiles/engine.dir/flags.make >/dev/null 2>&1 || true)
+          FM="build/CMakeFiles/engine.dir/flags.make"
+          if [ -f "$FM" ]; then
+            echo "::warning::engine flags shaderc count: $(grep -c shaderc "$FM")"
+            grep -m 1 "C_INCLUDES" "$FM" | head -c 250 \
+              | while IFS= read -r c; do echo "::warning::engine C_INCLUDES: $c"; done
+          else
+            echo "::warning::engine flags.make MISSING at $FM"
+            find build -name flags.make | head -5 | while IFS= read -r f; do echo "::warning::flags.make found: $f"; done
+          fi
 
       - name: Build Break myui demo
         run: |
