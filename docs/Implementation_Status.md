@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：TEST 10"驱动级故障"定案为环境伪影（R577）— nvlddmkm TDR 时间戳取证；上轮四层穷尽结论作废
+
+- **决定性证据：FATAL 写入时刻与 nvlddmkm Event 153 逐秒对齐，7/7 次**。以日志文件 LastWriteTime（=最后一条 FATAL 行写入时刻）对照 Windows 事件日志：sv8 16:33:20、sv13b 18:50:47、sv13c 18:59:59、sv13m5 19:08:49、sv13p 19:18:43、sv13runA 19:30:00、干净代码复验 run 19:45:49——每次设备丢失（vkWaitForFences res=-4）都与一例 Event 153 精确到秒。其中干净代码复验 run（`git checkout` 后重建、无任何诊断改动）在 TEST 10 首个 frame_begin 处 FATAL@19:45:49 ↔ 153@19:45:49，即"原始 TEST 10 故障"本身在提交代码上的复现。
+- **153 与测试进程相互独立**：空闲期 153 对以 ~5-11 分钟节奏持续出现（18:44:19 无任何测试运行时仍发生）；153 成对（间隔 ~5 秒）。机制定性：本机为 ToDesk 远程主机，ToDesk 进程实测持续占用 NVIDIA dGPU 3D 引擎 15.7%；test_vulkan 渲染与其视频编码并发压同一块卡 → 驱动 TDR 复位适配器 → 同卡全部 Vulkan 设备连带 DEVICE_LOST。sv12a 曾在开跑 14 秒的 153 对后存续 6.5 分钟、死于下一对——WDDM 恢复不完全/丢失延迟上报的观察，非每对 153 都立刻致命。
+- **"死于哪一段"是彩票**：故障表面点谱系——TEST 10（提交代码，开跑 ~18 秒）→ TEST 5 后 checkpoint（19 秒）→ motion-blur 后首个探针/offscreen（7 秒）——全部与 153 秒级对齐。健康套件全程仅 ~18-20 秒（800+ 帧高帧率离屏）；demo 120 帧 ≈ 2 秒暴露窗口每次幸免；同套件 Linux CI lavapipe 全绿；全程 0 validation；管线/布局/SPIR-V 与 demo 逐字节一致。上轮四层穷尽的全部单次运行 verdict（空 main 干净/任意缓冲访问故障等）在此彩票下**统计无效**，其"故障严格跟随 compact_draws.comp SPIR-V 缓冲访问指令"的结论**作废**；四层穷尽数据本身保留为"代码无罪"的旁证。
+- **重分类**：TEST 10 边界从"NVIDIA 混合驱动 × compact 模块（需 GPU 捕获）"改判为**本机环境伪影（ToDesk 编码 × 测试渲染并发 TDR）**。R574（TEST 9 生产帧形态）修复保留（独立正确性价值），但其"compute-only 帧确定性触发丢失"的机制归因同为 TDR 彩票下的幸存者偏差，存疑。复验指引：关闭 ToDesk 或本地控制台会话重跑全套件；仅环境隔离后仍复现才需 RenderDoc/Nsight。
+- **顺带取证：test_platform_win32_runtime 剪贴板子项持续失败为外部持锁**：子项 [6] clipboard_read_bounds_unterminated_unicode_text 3/3 重跑失败（`FAIL: OpenClipboard failed`）；同刻独立 P/Invoke 探针 `OpenClipboard(NULL)` 系统级失败、`GetOpenClipboardWindow()=NULL`（持有者跨会话/无窗口，疑 ToDesk 剪贴板同步或交易软件服务）——环境持锁实锤，非代码回归（该测试提交时 15/15）。本轮非图形 CTest **110/111**，唯一失败即此外部锁。
+
+验证：master 无代码变更（纯取证 + 文档，诊断脚本手脚架已全部回退、status 干净）；干净代码 FATAL↔153 秒级对齐即核心证据；全程遵守"不用 PowerShell 改非 ASCII 文件"纪律。
+
 ## 本轮更新：macOS CI 全绿（R575）— 9/9 首次达成
 
 macOS job 自 09-07 引入起 300+ 次 run 全部失败，经 22 轮递进诊断后**首次全绿**。最后一层根因：`libc++abi: terminating due to uncaught exception of type NSException`，完整栈 `vulkan_instance_acquire_release_worker → my_vgcanvas_vulkan_instance_acquire → vk_global_acquire → vk_global_init(vkCreateInstance)`——**MoltenVK 在无 Metal 窗口会话的 GitHub runner 上从 Obj-C 层抛 NSException，穿透 C 栈直接 SIGABRT**（vkCreateInstance 永不返回，C 代码无从观察错误）。window_manager 二进制同样受 MoltenVK 加载期后台行为拖累（abort 位置随时序漂移的竞态特征）。
@@ -26,7 +36,7 @@ Build_Guide 两项"待验证"在本机（144 DPI / 150% 缩放 / 2560×1600 混�
 
 - **高 DPI 静态链路验证通过**：一次性探针程序（链接 engine 静态库创建真实窗口）实测 `platform_get_dpi=144.0`、`platform_get_content_scale=1.500`、`platform_get_input_scale=1.500`、`platform_get_scale_factor=2`（1.5 舍入，M12c 约定）、`drawable/logical=1.501`——DPI 读取、三层尺寸换算全链路精确。语义事实记录：`PlatformConfig` 尺寸按物理像素解释（cfg 1280×720 → 逻辑 853×480），与 myui PAL 的逻辑像素约定不同但自洽。WM_DPICHANGED 跨屏拖动的动态响应仍需交互验证（静态消息处理已有 `test_platform_win32_runtime` 覆盖）。
 - **文件热重载完整链路验证通过**：GL demo（1800 帧）运行 8 秒后向 `shaders/blinn_phong.frag` 追加注释，日志实证 "changed, recompiling pipeline" → "pipeline recompiled successfully" → 优雅退出——覆盖 FindFirstChangeNotification 检测、shader 重编译、管线重建全链路。
-- Windows 平台矩阵仅剩：MinGW 交叉编译（需 Linux 工具链）、WM_DPICHANGED 动态响应（需交互）、test_vulkan TEST 10 起的 compact 类 compute 驱动级故障（需 GPU 捕获，见上轮）。
+- Windows 平台矩阵仅剩：MinGW 交叉编译（需 Linux 工具链）、WM_DPICHANGED 动态响应（需交互）；test_vulkan TEST 10 类偶发丢失已定案为本机 ToDesk×NVIDIA 并发 TDR 环境伪影（见 R577 轮时间戳取证），仅环境隔离后复现才需 GPU 捕获。
 
 ## 本轮更新：test_vulkan TEST 9 在 NVIDIA Windows 转绿（R574）— 生产帧形态对齐；TEST 10 边界精化
 
