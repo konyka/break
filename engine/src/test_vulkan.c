@@ -578,7 +578,9 @@ cleanup:
  * ======================================================================== */
 
 /* TEST 10 body: R437 grouped indirect_draw compact gate. */
-static bool tv_test_grouped_compact(const TestRenderState *rs) {
+static void tv_probe_device(RHIDevice *dev, const char *after);
+static bool tv_test_grouped_compact(const TestRenderState *rs,
+                                    RHIBuffer vbo, RHIBuffer ibo) {
     /* R437: regression gate for the merged per-material compact. 3 material
      * groups {3,3,2} = 8 cmds with mixed visibility; a single merged compact
      * must (a) report per-group visible counts {2,2,1} + total 5,
@@ -600,6 +602,7 @@ static bool tv_test_grouped_compact(const TestRenderState *rs) {
     }
     const u32 gsizes[3] = {3u, 3u, 2u};
     indirect_draw_upload_grouped(&ids, rs->device, cmds, gsizes, 3);
+    tv_probe_device(rs->device, "TEST 10 init + uploads");
     /* group-sorted visibility: g0 {1,0,1} g1 {1,1,0} g2 {0,1} */
     const u32 vis[8] = {1u, 0u, 1u,  1u, 1u, 0u,  0u, 1u};
 
@@ -608,7 +611,20 @@ static bool tv_test_grouped_compact(const TestRenderState *rs) {
     for (u32 f = 0; f < 3; f++) {
         RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
         if (!cmd) break;
-        rhi_cmd_end_render_pass(cmd);
+        /* R574: production frame shape — a graphics draw precedes the compact
+         * dispatch and the pass stays active (suspend/resume); compute-only
+         * frames with a manually ended pass fault strict cross-GPU drivers. */
+        if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
+            Mat4 mid = mat4_identity();
+            rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &mid.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &mid.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &mid.e[0][0]);
+            rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 3, 1);
+        }
         indirect_draw_upload_visibility(&ids, rs->device, vis, 8);
         indirect_draw_compact_no_barrier(&ids, rs->device, cmd);
         rhi_cmd_memory_barrier(cmd);
@@ -1507,7 +1523,7 @@ int main(int argc, char **argv) {
         LOG_INFO("============================================");
         LOG_INFO("TEST 10: INDIRECT DRAW GROUPED COMPACT");
         LOG_INFO("============================================");
-        bool idraw_pass = tv_test_grouped_compact(&render);
+        bool idraw_pass = tv_test_grouped_compact(&render, vbo, ibo);
         LOG_INFO("RESULT: INDIRECT DRAW GROUPED COMPACT TEST %s",
                  idraw_pass ? "PASSED ✓" : "FAILED");
 
@@ -2215,7 +2231,24 @@ int main(int argc, char **argv) {
             for (u32 sync = 0; sync < 3; sync++) {
                 RHICmdBuffer *cmd = rhi_frame_begin(render.device);
                 if (!cmd) { break; }
-                rhi_cmd_end_render_pass(cmd);
+                /* R574: production frame shape — a graphics draw precedes the
+                 * unified dispatch and the swapchain pass stays active
+                 * (suspend/resume), matching the demo's per-frame GPU-cull
+                 * shape. A compute-only frame with a manually ended pass
+                 * faults strict cross-GPU drivers (NVIDIA hybrid: device lost
+                 * within 2-3 frames, nvlddmkm event 153); the demo shape runs
+                 * 120+ frames on the same GPU. */
+                if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
+                    Mat4 mid = mat4_identity();
+                    rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                    rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &mid.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &mid.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &mid.e[0][0]);
+                    rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
+                    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                    rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                    rhi_cmd_draw_indexed(cmd, 3, 1);
+                }
                 gpucull_dispatch_unified(&uc, cmd, &vp.e[0][0], NULL, RHI_HANDLE_NULL, 0, 0, RHI_HANDLE_NULL, true, false);
                 rhi_frame_end(render.device);
                 rhi_present(render.device);
@@ -2274,7 +2307,20 @@ int main(int argc, char **argv) {
                     for (u32 f = 0; f < 4; f++) {
                         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
                         if (!cmd) break;
-                        rhi_cmd_end_render_pass(cmd);
+                        /* R574: production frame shape — a graphics draw, then
+                         * the dispatch suspends the active pass; frame_end
+                         * resumes and ends it. */
+                        if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
+                            Mat4 mid = mat4_identity();
+                            rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &mid.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &mid.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &mid.e[0][0]);
+                            rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
+                            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                            rhi_cmd_draw_indexed(cmd, 3, 1);
+                        }
                         gpucull_dispatch_unified(&uc, cmd, &vp_id.e[0][0], NULL,
                                                  RHI_HANDLE_NULL, 0, 0,
                                                  RHI_HANDLE_NULL, true, true);
@@ -2307,7 +2353,13 @@ int main(int argc, char **argv) {
                         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
                         rhi_cmd_draw_indexed(cmd, 3, 1);
                         rhi_offscreen_fbo_unbind(cmd, HW, HH);
-                        rhi_cmd_end_render_pass(cmd);
+                        /* R574: keep the demo shape — Hi-Z generation and the
+                         * unified dispatch run with the swapchain pass
+                         * suspend/resumed rather than manually ended first.
+                         * vk13-vk15 bisection: adding a swapchain draw here
+                         * (before OR after the pyramid consumption) breaks the
+                         * {1,0} occlusion assertion, so the real phase keeps
+                         * the offscreen-draws-only shape that passes it. */
                         occlusion_cull_generate_hi_z(&occ, cmd, hz_fbo.depth_tex);
                         hiz_dispatches = occlusion_cull_hiz_dispatch_count(&occ);
                         gpucull_dispatch_unified(&uc, cmd, &vp_id.e[0][0], NULL,
@@ -2331,6 +2383,7 @@ int main(int argc, char **argv) {
                                   hiz_dispatches, want_dispatches);
 
                     hiz_occ_ok = fallback_ok && real_ok && count_ok;
+                    tv_probe_device(render.device, "TEST 9 Hi-Z phases");
                 } else {
                     LOG_ERROR("FAIL: Hi-Z occlusion setup (occ=%d fbo=%d)",
                               (int)occ_ok, (int)rhi_handle_valid(hz_fbo.depth_tex));
@@ -2366,7 +2419,7 @@ int main(int argc, char **argv) {
 
     /* R442: VK/GL share the backend-neutral body (tv_test_grouped_compact);
      * the GL build runs it in its own early-exit branch above. */
-    bool idraw_pass = tv_test_grouped_compact(&render);
+    bool idraw_pass = tv_test_grouped_compact(&render, vbo, ibo);
 
     if (idraw_pass) {
         LOG_INFO("RESULT: INDIRECT DRAW GROUPED COMPACT TEST PASSED ✓");

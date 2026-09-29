@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：test_vulkan TEST 9 在 NVIDIA Windows 转绿（R574）— 生产帧形态对齐；TEST 10 边界精化
+
+- **TEST 9（unified cull + Hi-Z 断言）NVIDIA Windows 首次全绿**：根因经逐帧 `rhi_device_idle` 探针定位为——**compute-only 帧（swapchain pass 手动 end 后仅含 compact/compute dispatch）在 NVIDIA 混合 GPU 驱动上确定性触发设备丢失**（首帧提交即错，2-3 帧后异步上报；nvlddmkm Event 153；validation 全程 0 消息）。修复 R574：三个 TEST 9 帧循环对齐生产帧形态——去掉手动 `rhi_cmd_end_render_pass`（pass 由 `vk_suspend_pass_for_compute`/`frame_end` 恢复收尾），smoke 与 control 相位在 dispatch 前加真实图形绘制；real 相位保持 offscreen 绘制形态（vk13-vk15 二分证明在其中加 swapchain 绘制会破坏 {1,0} 金字塔断言）。验证：smoke 3 帧 + fallback {1,1} + pyramid {1,0} + dispatches=2 全过，段后探针设备健康；Vulkan demo 主循环（同 dispatch 路径、含前置绘制）120 帧佐证。
+- **TEST 10 边界精化**：grouped compact（`indirect_draw_compact_no_barrier`）帧即使加前置绘制仍触发同类异步设备丢失——**draw 免疫是 TEST 9 特效而非通用规则**；两故障 shader 的共同点为原子写 STORAGE|INDIRECT 用法缓冲（TEST 5 纯 compute 到普通 STORAGE 缓冲通过）。已排除：mip reclaim、compute 纹理 set、u_tm_lum 类描述符缺失、原子压缩路径（compact_draws=false 仍挂）。需 RenderDoc/Nsight 捕获定位（无 validation 消息的驱动级故障）。另观察：Hi-Z {1,0} 断言在多次运行间存在闪变（vk16 过/vk19 挂/vk21 过），疑 1-frame pipelined readback 时序，待独立复核。
+- **工具教训记录**：两次因用 PowerShell 重写含非 ASCII（✓/emoji）源文件造成 UTF-8 双重编码损坏；一律使用编辑工具改源文件。
+
+验证：Windows VK 树非图形 CTest 111/111；test_vulkan TEST 1-9 + FBO/MSAA/stress/1000-draw/10K/compute 全过；TEST 10 起为上述待捕获边界。
+
 ## 本轮更新：Windows 运行时验证轮 — engine_demo 栈保留 / skybox shader 可移植性 / combined_color 描述符 / Windows Vulkan 构建验证
 
 承接上轮 Windows 平台收口，关闭三项文档级"待验证"并修复两个真实跨平台缺陷：
