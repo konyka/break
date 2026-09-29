@@ -321,8 +321,23 @@ jobs:
 
       - name: Build and test Cocoa runtime
         run: |
-          cmake --build build --target test_platform_config test_platform_null_safety test_platform_cocoa_runtime --parallel
-          ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$'
+          set -o pipefail
+          cmake --build build --target test_platform_config test_platform_null_safety test_platform_cocoa_runtime --parallel 2>&1 | tee /tmp/macos_cocoa.log || {
+            grep -m 5 -E "error:|fatal error:|No rule to make target|ld: " /tmp/macos_cocoa.log \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
+          ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$' 2>&1 | tee /tmp/macos_cocoa_test.log || {
+            echo "::error::macOS Cocoa runtime test failures:"
+            grep -m 5 "Failed " /tmp/macos_cocoa_test.log | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE graphics --output-on-failure
+        run: |
+          set -o pipefail
+          ctest --test-dir build -LE graphics --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
+            echo "::error::macOS headless suite failures:"
+            grep -m 8 "Failed " /tmp/macos_headless.log | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
