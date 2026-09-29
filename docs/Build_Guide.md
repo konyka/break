@@ -457,7 +457,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 待验证 |
 | Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-8 已验证；TEST 9 unified cull 存 DEVICE_LOST 待查 |
-| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | CI/headless 与平台 smoke；需第三方依赖 |
+| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | **CI 全绿（2026-09-29 首次）**：全量构建 + dxx_break + Cocoa runtime + headless 套件；GPU-less runner 上链接 MoltenVK 的两个测试按 `BREAK_MYUI_SKIP_VK_SENSITIVE` 显式 SKIP（MoltenVK NSException），本机有 GPU 时全量执行 |
 | iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
 | Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
 | OHOS/HarmonyOS | 宿主注入 | — | OHOS 工具链 | 网络 epoll 路径；无原生 surface/CI 验证 |

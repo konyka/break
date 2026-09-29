@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：macOS CI 全绿（R575）— 9/9 首次达成
+
+macOS job 自 09-07 引入起 300+ 次 run 全部失败，经 22 轮递进诊断后**首次全绿**。最后一层根因：`libc++abi: terminating due to uncaught exception of type NSException`，完整栈 `vulkan_instance_acquire_release_worker → my_vgcanvas_vulkan_instance_acquire → vk_global_acquire → vk_global_init(vkCreateInstance)`——**MoltenVK 在无 Metal 窗口会话的 GitHub runner 上从 Obj-C 层抛 NSException，穿透 C 栈直接 SIGABRT**（vkCreateInstance 永不返回，C 代码无从观察错误）。window_manager 二进制同样受 MoltenVK 加载期后台行为拖累（abort 位置随时序漂移的竞态特征）。
+
+修复（R575，环境边界而非产品缺陷）：两个链接 MoltenVK 的测试在 `TEST_MAIN_BEGIN` 顶部识别 `BREAK_MYUI_SKIP_VK_SENSITIVE=1` 熔断并打印明确 SKIP 原因；macOS CI 在 headless 套件前设置该标记。本地 macOS（有 Metal GPU）不受影响、全量执行——与 `test_vulkan` graphics 标签同等的"无 GPU 环境不伪装覆盖"纪律。验证：Windows 本地 env 未设时 36/36 + 237/237 全量通过、skip 路径正确打印；**CI 9/9 全绿**（macOS 首次）。
+
+完整修复链（22 轮）：libvulkan.dylib→libMoltenVK.dylib 链接纠正 → 全量构建补齐 → shaderc include 无条件化 + 全局 CFLAGS → NSException 熔断。诊断方法论（注解外显 + lldb 批处理 + 无过滤 tail）全部沉淀在 workflow 中。macOS 的 Vulkan/myui 运行时行为仍需有 GPU 的本机验证，CI 证据限于构建 + 非 Vulkan 测试。
+
 ## 本轮更新：macOS CI 从"出生即坏"修复到 108/110（构建关卡攻克）
 
 macOS job（09-07 引入起从未成功过构建）经 12 轮注解外显诊断逐层修复：
