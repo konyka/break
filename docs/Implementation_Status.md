@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R578 设备丢失 fail-fast — TDR 后由"永久挂死"改为优雅失败退出；R576 dump 死因勘误
+
+- **动机（本会话全部 TDR run 的共同尾部行为）**：设备丢失（vkWaitForFences res=-4 + LOG_FATAL）后进程不退出——线程全部 Wait/Suspended、0 CPU（WER 挂起检测冻结），CI/无人值守场景下比失败更糟。面包屑定位：阻塞点在 frame_begin FATAL 分支的 `vk_dump_device_fault`——**其驱动故障查询（vkGetDeviceProcAddr / vkGetDeviceFaultInfoEXT）在 WDDM 复位后的死设备上永久阻塞**；同时勘误 R576 记录：此前"dump 从未输出"并非"驱动未启用该扩展"，而是查询本身被阻塞（vulkaninfo --summary 不列设备扩展，当时的排除证据本就含糊）。
+- **修复（rhi_vk.c / rhi.h / rhi_gl.c）**：① `VKBackend` 增加 `device_lost` 闩锁，`vk_note_result` 首次观测 `VK_ERROR_DEVICE_LOST` 时置位并输出一条日志；② 新增 `vk_wait_fence` 有界等待（10 秒 + 一次重试，二次超时按丢失处理）——替换全部 9 处 `vkWaitForFences(..., UINT64_MAX)`（帧 fence、全部帧等待、mip reclaim、纹理/cubemap 上传与布局、readback、截图），`vk_wait_frames` 改为逐 fence 有界等待；③ 闩锁后阻塞路径全部秒退——frame_begin 顶部安静早退（防 FATAL 刷屏）、rhi_present 顶部早退、staging download 早退；frame_end/staging 的 submit 与 waitIdle、`rhi_device_idle` 均接入闩锁；④ `vk_dump_device_fault` 在 device_lost 时直接返回（根因点）；⑤ 新增公开 API `rhi_device_lost()`（Vulkan 查询闩锁；GL 恒 false 存根）供上层退出决策。
+- **验证（本机 TDR 即测试台）**：修复前 100% 挂死（需手动 kill）；修复后两轮复验——TDR 照常发生（TEST 10 帧内 res=-4），随后 frame_begin 干净返回 NULL、readback 秒退、TEST 11/12/golden 逐段优雅失败、`FINAL RESULT: FAILED`、`Clean shutdown completed`，**进程 19 秒自行退出**。健康路径回归：双树非图形 CTest 各 **111/111**、GL demo 120 帧优雅退出、双树全量构建通过；有界等待对健康路径无影响（正常帧 fence 毫秒级完成，10 秒界加重试余量 100 倍以上）。
+
 ## 本轮更新：TEST 10"驱动级故障"定案（R577，含修订）— 套件负载形态 × 本机 NVIDIA 驱动 TDR；三连否证 + 秒级对齐取证
 
 - **核心证据：FATAL 写入时刻与 nvlddmkm Event 153 秒级对齐，8/8 次**（sv8 16:33:20、sv13b 18:50:47、sv13c 18:59:59、sv13m5 19:08:49、sv13p 19:18:43、sv13runA 19:30:00、干净提交代码复验 19:45:49、最小化窗口 run 20:24:13）。设备丢失（vkWaitForFences res=-4）即 TDR 复位时刻；故障点随套件所在段漂移——提交代码的死亡窗口稳定在开跑 14-20 秒（TEST 6-10 重负载段入口；最小化 run 的 TDR 落点直接表现为 TEST 6/7 readback 失败），诊断构建加早期探针负载则 7 秒死。

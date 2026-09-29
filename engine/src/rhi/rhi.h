@@ -507,6 +507,13 @@ void rhi_vk_validation_set_enabled(bool enabled);
  * device or null arguments. */
 bool rhi_device_idle(RHIDevice *dev);
 
+/* R578: sticky device-lost latch. Vulkan: set on the first observed
+ * VK_ERROR_DEVICE_LOST (or a fence unsignaled for 20 s); all blocking
+ * waits then fail fast so callers wind down instead of hanging on a
+ * post-TDR device (WDDM resets can leave fences permanently unsignaled).
+ * GL: no asynchronous loss concept yet — currently always false. */
+bool rhi_device_lost(RHIDevice *dev);
+
 typedef struct RHIGPUTimer RHIGPUTimer;
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev);
 void         rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t);

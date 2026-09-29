@@ -641,6 +641,11 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     return true;
 }
 
+bool rhi_device_lost(RHIDevice *dev) {
+    (void)dev; /* R578: GL has no asynchronous loss latch (see rhi.h). */
+    return false;
+}
+
 bool rhi_device_idle(RHIDevice *dev) {
     /* Diagnostic probe (see rhi.h): GL has no asynchronous loss reporting;
      * drain the pipeline and surface a sticky context-lost error if any.

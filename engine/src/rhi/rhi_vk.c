@@ -293,6 +293,11 @@ typedef struct {
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
     bool             feat_depth_stencil_resolve;
     bool             has_device_fault; /* R576: VK_EXT_device_fault enabled */
+    bool             device_lost;      /* R578: latched VK_ERROR_DEVICE_LOST — all
+                                        * blocking waits fail fast once set (a
+                                        * WDDM TDR reset can leave fences
+                                        * permanently unsignaled, so unbounded
+                                        * waits would hang the process). */
     VkResolveModeFlagBits depth_resolve_mode;
     VkDevice                 device;
     VkQueue          graphics_queue;
@@ -441,6 +446,35 @@ typedef struct {
 } VKMipUploadPending;
 static VKMipUploadPending g_mip_upload_pending;
 
+/* R578: latch DEVICE_LOST the first time it is observed; every blocking
+ * wait consults the latch and fails fast instead of blocking forever on a
+ * post-TDR device (WDDM resets can leave fences permanently unsignaled). */
+static void vk_note_result(VKBackend *vk, VkResult r) {
+    if (r == VK_ERROR_DEVICE_LOST && !vk->device_lost) {
+        vk->device_lost = true;
+        LOG_ERROR("VK: device lost — latched; blocking waits now fail fast (R578)");
+    }
+}
+
+/* R578: bounded fence wait. Healthy frames signal within milliseconds; the
+ * 10 s bound plus a single retry tolerates extreme load, and a second
+ * timeout means the GPU is gone (TDR detection itself takes 2-8 s), so the
+ * device is latched lost rather than risk an unbounded hang. */
+static VkResult vk_wait_fence(VKBackend *vk, VkFence fence) {
+    if (vk->device_lost) return VK_ERROR_DEVICE_LOST;
+    const u64 bound_ns = 10ull * 1000ull * 1000ull * 1000ull;
+    VkResult r = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, bound_ns);
+    if (r == VK_TIMEOUT)
+        r = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, bound_ns);
+    if (r == VK_TIMEOUT) {
+        LOG_ERROR("VK: fence unsignaled after 20 s — treating device as lost (R578)");
+        vk->device_lost = true;
+        return VK_ERROR_DEVICE_LOST;
+    }
+    vk_note_result(vk, r);
+    return r;
+}
+
 static void vk_mip_upload_reclaim(VKBackend *vk) {
     if (!g_mip_upload_pending.pending || !vk) return;
     if (g_mip_upload_pending.owner_backend != NULL &&
@@ -448,7 +482,7 @@ static void vk_mip_upload_reclaim(VKBackend *vk) {
         return;
     }
     if (g_mip_upload_pending.fence) {
-        if (vkWaitForFences(vk->device, 1, &g_mip_upload_pending.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        if (vk_wait_fence(vk, g_mip_upload_pending.fence) != VK_SUCCESS)
             LOG_WARN("VK: vkWaitForFences failed reclaiming mip upload");
         vkDestroyFence(vk->device, g_mip_upload_pending.fence, NULL);
     }
@@ -494,13 +528,21 @@ RHIDevice *rhi_test_gl_cache_owner(void) {
 #endif
 
 static void vk_wait_frames(VKBackend *vk) {
-    if (vkWaitForFences(vk->device, VK_MAX_FRAMES, vk->fences, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
-        LOG_WARN("VK: vkWaitForFences failed in wait_frames");
+    /* R578: sequential bounded waits — never block forever on a dead device. */
+    for (u32 i = 0; i < VK_MAX_FRAMES; i++)
+        if (vk_wait_fence(vk, vk->fences[i]) != VK_SUCCESS) {
+            LOG_WARN("VK: vkWaitForFences failed in wait_frames");
+            return;
+        }
 }
 
 /* R576: device-fault forensics — after a DEVICE_LOST, report the driver's
  * fault description and faulting address ranges (VK_EXT_device_fault). */
 static void vk_dump_device_fault(VKBackend *vk, const char *site) {
+    /* R578: driver fault queries can BLOCK FOREVER on a post-TDR device
+     * (observed: vkGetDeviceProcAddr hangs after WDDM reset, which also
+     * explains why R576's dump never produced output on faulting runs). */
+    if (vk->device_lost) return;
     if (!vk->has_device_fault) return;
     PFN_vkGetDeviceFaultInfoEXT get_fault =
         (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(vk->device, "vkGetDeviceFaultInfoEXT");
@@ -1675,6 +1717,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     {
         u32 avail = 0;
         vk->has_device_fault = false;
+        vk->device_lost = false; /* R578 */
         if (vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &avail, NULL) != VK_SUCCESS) {
             LOG_WARN("VK: optional device extension query failed");
             avail = 0u;
@@ -2014,11 +2057,17 @@ bool rhi_device_idle(RHIDevice *dev) {
      * fence wait, often far from the faulting test. A full idle wait makes
      * the loss observable at the probe site (test_vulkan bisection). */
     VkResult r = vkDeviceWaitIdle(vk->device);
+    vk_note_result(vk, r); /* R578 */
     if (r != VK_SUCCESS) {
         LOG_ERROR("rhi_device_idle: vkDeviceWaitIdle = %d", (int)r);
         return false;
     }
     return true;
+}
+
+bool rhi_device_lost(RHIDevice *dev) {
+    VKBackend *vk = dev ? vk_backend(dev) : NULL;
+    return vk ? vk->device_lost : false; /* R578 */
 }
 
 static void vk_shutdown(RHIDevice *dev) {
@@ -2320,7 +2369,12 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     /* R175: Ensure this device's deferred mip upload finished before sampling. */
     vk_mip_upload_reclaim(vk);
 
-    VkResult fence_res = vkWaitForFences(vk->device, 1, &vk->fences[vk->current_frame], VK_TRUE, UINT64_MAX);
+    if (vk->device_lost) { /* R578: latched loss — quiet fail-fast, no spam */
+        vk->frame_started = false;
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    VkResult fence_res = vk_wait_fence(vk, vk->fences[vk->current_frame]);
     if (fence_res != VK_SUCCESS) {
         LOG_FATAL("VK: vkWaitForFences failed in frame_begin (res=%d)", (int)fence_res);
         vk_dump_device_fault(vk, "frame_begin");
@@ -2733,6 +2787,7 @@ void rhi_frame_end(RHIDevice *dev) {
     si.pSignalSemaphores = &vk->render_semaphores[vk->image_index];
 
     VkResult submit_res = vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]);
+    vk_note_result(vk, submit_res); /* R578 */
     if (submit_res != VK_SUCCESS) {
         LOG_FATAL("VK: vkQueueSubmit failed in frame_end (res=%d)", (int)submit_res);
         vk_dump_device_fault(vk, "frame_end");
@@ -2750,6 +2805,14 @@ void rhi_present(RHIDevice *dev) {
     if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
     if (!vk) return;
+    if (vk->device_lost) { /* R578: acquire/present can block on a dead device */
+        dev->frame_damage_requested = false;
+        dev->frame_damage_count = 0u;
+        dev->frame_current_damage_count = 0u;
+        dev->frame_partial_active = false;
+        rhi_frame_owner_release(dev);
+        return;
+    }
     if (!vk->frame_submitted) {
         dev->frame_damage_requested = false;
         dev->frame_damage_count = 0u;
@@ -3875,6 +3938,7 @@ static bool vk_buffer_staging_upload(VKBackend *vk, VkBuffer dst, usize dst_offs
 static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_offset,
                                        void *dst, usize size) {
     if (!dst || size == 0u) return true;
+    if (vk->device_lost) return false; /* R578: fail fast on a dead device */
     VkBuffer staging;
     VkDeviceMemory staging_mem;
     VkBufferCreateInfo bci = {0};
@@ -3938,13 +4002,17 @@ static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_of
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+    VkResult sr = vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE);
+    vk_note_result(vk, sr); /* R578 */
+    if (sr != VK_SUCCESS) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
         vkFreeMemory(vk->device, staging_mem, NULL);
         vkDestroyBuffer(vk->device, staging, NULL);
         return false;
     }
-    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+    VkResult wr = vkQueueWaitIdle(vk->graphics_queue);
+    vk_note_result(vk, wr); /* R578 */
+    if (wr != VK_SUCCESS)
         LOG_WARN("VK: queue wait failed after buffer staging download");
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
 
@@ -4347,7 +4415,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
             vkFreeMemory(vk->device, mem, NULL);
             return RHI_HANDLE_NULL;
         }
-        if (vkWaitForFences(vk->device, 1, &upload_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        if (vk_wait_fence(vk, upload_fence) != VK_SUCCESS)
             LOG_WARN("VK: vkWaitForFences failed for texture staging");
 
         vkDestroyFence(vk->device, upload_fence, NULL);
@@ -4428,7 +4496,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
             vkFreeMemory(vk->device, mem, NULL);
             return RHI_HANDLE_NULL;
         }
-        if (vkWaitForFences(vk->device, 1, &layout_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        if (vk_wait_fence(vk, layout_fence) != VK_SUCCESS) {
             LOG_FATAL("VK: vkWaitForFences failed for texture layout");
             vkDestroyFence(vk->device, layout_fence, NULL);
             vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -4736,7 +4804,7 @@ static bool vk_texture_sync_submit(VKBackend *vk, VkBuffer staging,
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
     bool ok = vkQueueSubmit(vk->graphics_queue, 1, &si, fence) == VK_SUCCESS &&
-              vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+              vk_wait_fence(vk, fence) == VK_SUCCESS;
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
     if (staging) vkDestroyBuffer(vk->device, staging, NULL);
@@ -7190,7 +7258,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
             free(cd);
             return RHI_HANDLE_NULL;
         }
-        if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        if (vk_wait_fence(vk, fence) != VK_SUCCESS) {
             LOG_FATAL("VK: vkWaitForFences failed for cubemap layout");
             vkDestroyFence(vk->device, fence, NULL);
             vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -7298,7 +7366,7 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
         return;
     }
-    if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+    if (vk_wait_fence(vk, fence) != VK_SUCCESS)
         LOG_WARN("VK: vkWaitForFences failed for cubemap transition");
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -7371,7 +7439,7 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
         return;
     }
-    if (vkWaitForFences(vk->device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+    if (vk_wait_fence(vk, fence) != VK_SUCCESS)
         LOG_WARN("VK: vkWaitForFences failed for texture transition");
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
