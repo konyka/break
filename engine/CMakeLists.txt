@@ -266,7 +266,11 @@ src/renderer/lens_effects.c
     src/scene/scene_state.c
     src/engine.c
 )
-if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+if(SHADERC_INCLUDE_DIR)
+    # Unconditional-when-found: the include is harmless where shaderc is
+    # absent, and guarding it on platform/Vulkan conditions left macOS CI
+    # without the -I for rhi_vk.c (fatal 'shaderc/shaderc.h' not found)
+    # even though the header and cache value were verified present.
     target_include_directories(engine PRIVATE ${SHADERC_INCLUDE_DIR})
 endif()
 

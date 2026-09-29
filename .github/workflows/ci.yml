@@ -306,8 +306,8 @@ jobs:
           cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug \
             -DVulkan_LIBRARY="$VULKAN_LIB" \
             -DVulkan_INCLUDE_DIR="$VULKAN_HEADERS/include" \
-            -DSHADERC_LIB="$SHADERC_LIB" \
-            -DSHADERC_INCLUDE_DIR="$SHADERC_INCLUDE_DIR"
+            -DSHADERC_LIB:PATH="$SHADERC_LIB" \
+            -DSHADERC_INCLUDE_DIR:PATH="$SHADERC_INCLUDE_DIR"
           # Diagnostics surfaced as annotations (logs need auth to read):
           # the actual brew shaderc layout and the cached CMake value.
           echo "::warning::shaderc prefix: $(brew --prefix shaderc)"
