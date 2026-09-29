@@ -311,10 +311,18 @@ jobs:
           # Diagnostics surfaced as annotations (logs need auth to read):
           # the actual brew shaderc layout and the cached CMake value.
           echo "::warning::shaderc prefix: $(brew --prefix shaderc)"
-          find "$(brew --prefix shaderc)" -name "shaderc.h" 2>/dev/null | head -3 \
+          find -H "$(brew --prefix shaderc)" -name "shaderc.h" 2>/dev/null | head -3 \
             | while IFS= read -r f; do echo "::warning::shaderc header at: $f"; done
           grep -m 1 "SHADERC_INCLUDE_DIR:" build/CMakeCache.txt \
             | while IFS= read -r line; do echo "::warning::cmake cache: $line"; done
+          printf '#include <shaderc/shaderc.h>\nint main(void){return 0;}\n' > /tmp/sc_probe.c
+          if cc -c /tmp/sc_probe.c -I"$SHADERC_INCLUDE_DIR" -o /tmp/sc_probe.o 2>/dev/null; then
+            echo "::warning::shaderc header probe: COMPILES"
+          else
+            echo "::error::shaderc header probe FAILED for -I$SHADERC_INCLUDE_DIR"
+          fi
+          ls "$SHADERC_INCLUDE_DIR" 2>&1 | head -5 \
+            | while IFS= read -r f; do echo "::warning::include dir entry: $f"; done
 
       - name: Build Break myui demo
         run: |
