@@ -314,11 +314,12 @@ ctest --test-dir build-win-vk -LE graphics --output-on-failure
 ```
 
 运行 `test_vulkan` 需 `$env:PATH = "$sdk\Bin;$env:PATH"; $env:VK_LAYER_PATH = "$sdk\Bin"`，
-工作目录 engine/ 源码根。当前边界：TEST 1-8 + FBO/MSAA/stress/1000-draw/10K/compute 在 NVIDIA
-真卡通过（validation 0 消息，测试间 `rhi_device_idle` 探针全部健康）；TEST 9（unified cull）
-在 NVIDIA 混合 GPU 环境因 dispatch 帧提交触发驱动级 DEVICE_LOST（nvlddmkm Event 153；已二分
-排除原子压缩、compute 纹理绑定与 mip reclaim；Linux lavapipe CI 通过该测试）——细节见
-`docs/Implementation_Status.md`，需 GPU 捕获工具进一步定位。
+工作目录 engine/ 源码根。当前边界：TEST 1-7 + FBO/MSAA/stress/1000-draw/10K 在 NVIDIA 真卡
+稳定通过（段前缀二分 0/4 TDR；validation 0 消息）；TEST 9→10 边界区负载（unified cull + Hi-Z +
+grouped compact 初始化/上传链）在本机驱动（RTX 4060 Laptop × NVIDIA 616.56，混合 AMD 显示）
+概率→近确定触发驱动级 TDR/DEVICE_LOST（nvlddmkm Event 153 与 FATAL 秒级对齐 8/8；demo 同
+子系统家族 240 秒免疫；Linux lavapipe CI 通过全部测试）——细节与证据见
+`docs/Implementation_Status.md` R577；根因定位需 GPU 捕获或异地 NVIDIA 复现。
 
 #### 使用 MSVC (Visual Studio)
 
