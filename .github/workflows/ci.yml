@@ -383,9 +383,8 @@ jobs:
             # message is the only actionable diagnostic.
             t=test_myui_vgcanvas_backend
             if [ -x "build/$t" ]; then
-              echo "::error::lldb backtrace $t:"
-              ( cd build && lldb --batch -o run -o bt ./"$t" 2>&1 || true ) \
-                | grep -E "stop reason|frame #[0-7]" | head -9 \
+              echo "::error::final output lines $t (unfiltered tail):"
+              ( cd build && ./"$t" 2>&1 || true ) | tail -8 \
                 | while IFS= read -r line; do echo "::error::${line}"; done
             fi
             exit 1
