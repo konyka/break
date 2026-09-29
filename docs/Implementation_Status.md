@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows 高 DPI 与文件热重载实机验证关闭
+
+Build_Guide 两项"待验证"在本机（144 DPI / 150% 缩放 / 2560×1600 混合 GPU 笔记本）实机关闭：
+
+- **高 DPI 静态链路验证通过**：一次性探针程序（链接 engine 静态库创建真实窗口）实测 `platform_get_dpi=144.0`、`platform_get_content_scale=1.500`、`platform_get_input_scale=1.500`、`platform_get_scale_factor=2`（1.5 舍入，M12c 约定）、`drawable/logical=1.501`——DPI 读取、三层尺寸换算全链路精确。语义事实记录：`PlatformConfig` 尺寸按物理像素解释（cfg 1280×720 → 逻辑 853×480），与 myui PAL 的逻辑像素约定不同但自洽。WM_DPICHANGED 跨屏拖动的动态响应仍需交互验证（静态消息处理已有 `test_platform_win32_runtime` 覆盖）。
+- **文件热重载完整链路验证通过**：GL demo（1800 帧）运行 8 秒后向 `shaders/blinn_phong.frag` 追加注释，日志实证 "changed, recompiling pipeline" → "pipeline recompiled successfully" → 优雅退出——覆盖 FindFirstChangeNotification 检测、shader 重编译、管线重建全链路。
+- Windows 平台矩阵仅剩：MinGW 交叉编译（需 Linux 工具链）、WM_DPICHANGED 动态响应（需交互）、test_vulkan TEST 10 起的 compact 类 compute 驱动级故障（需 GPU 捕获，见上轮）。
+
 ## 本轮更新：test_vulkan TEST 9 在 NVIDIA Windows 转绿（R574）— 生产帧形态对齐；TEST 10 边界精化
 
 - **TEST 9（unified cull + Hi-Z 断言）NVIDIA Windows 首次全绿**：根因经逐帧 `rhi_device_idle` 探针定位为——**compute-only 帧（swapchain pass 手动 end 后仅含 compact/compute dispatch）在 NVIDIA 混合 GPU 驱动上确定性触发设备丢失**（首帧提交即错，2-3 帧后异步上报；nvlddmkm Event 153；validation 全程 0 消息）。修复 R574：三个 TEST 9 帧循环对齐生产帧形态——去掉手动 `rhi_cmd_end_render_pass`（pass 由 `vk_suspend_pass_for_compute`/`frame_end` 恢复收尾），smoke 与 control 相位在 dispatch 前加真实图形绘制；real 相位保持 offscreen 绘制形态（vk13-vk15 二分证明在其中加 swapchain 绘制会破坏 {1,0} 金字塔断言）。验证：smoke 3 帧 + fallback {1,1} + pyramid {1,0} + dispatches=2 全过，段后探针设备健康；Vulkan demo 主循环（同 dispatch 路径、含前置绘制）120 帧佐证。

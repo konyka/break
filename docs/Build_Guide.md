@@ -693,9 +693,9 @@ MSVC 19.51.36246 / Visual Studio 2026 Developer Command Prompt + Ninja 已完成
 
 1. **MinGW 交叉编译验证** — 在 Linux 上安装 mingw-w64 后使用 `toolchain-mingw.cmake` 交叉编译，验证产出物可在 Windows 运行
 2. ~~**OpenGL WGL 后端运行验证**~~ — **已验证（2026-09-28）**：8 MB 栈保留修复后，engine_demo GL 模式在真实 ICD 完整 120 帧 + 优雅关闭；输入响应的交互级验证仍待人工桌面会话确认
-3. ~~**Vulkan Win32 Surface 运行验证**~~ — **已验证（2026-09-28）**：engine_demo Vulkan 模式在 NVIDIA 真卡完整 120 帧；test_vulkan TEST 9 存 DEVICE_LOST 待查（见 §2.5）
-4. **高 DPI 验证** — 在 4K/高分屏 Windows 设备上测试 WM_DPICHANGED 响应和窗口缩放行为
-5. **文件热重载验证** — 确认 FindFirstChangeNotification 在 Windows 上正确检测着色器/资源文件修改
+3. ~~**Vulkan Win32 Surface 运行验证**~~ — **已验证（2026-09-28）**：engine_demo Vulkan 模式在 NVIDIA 真卡完整 120 帧；test_vulkan TEST 1-9 通过（TEST 10 起见 §2.5 边界）
+4. ~~**高 DPI 验证**~~ — **已验证（2026-09-29，静态链路）**：在 144 DPI / 150% 缩放 / 2560×1600 实机探针验证 `platform_get_dpi=144.0`、`content_scale=1.500`、`input_scale=1.500`、`scale_factor=2`、`drawable/logical=1.501` 全部精确。语义备注：`PlatformConfig` 尺寸按物理像素解释（1280×720 物理 = 853×480 逻辑），与 myui PAL 的逻辑像素约定不同但自洽。WM_DPICHANGED 跨屏动态响应仍需交互验证
+5. ~~**文件热重载验证**~~ — **已验证（2026-09-29）**：GL demo 运行中修改 `blinn_phong.frag`，完整链路实证："changed, recompiling pipeline" → "pipeline recompiled successfully" → 优雅退出
 
 ### 环境准备
 
