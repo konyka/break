@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：macOS CI 从"出生即坏"修复到 108/110（构建关卡攻克）
+
+macOS job（09-07 引入起从未成功过构建）经 12 轮注解外显诊断逐层修复：
+
+- **构建层三连修**：①`-DVulkan_LIBRARY` 指向 brew molten-vk keg 中不存在的 `libvulkan.dylib`（make 秒级 "No rule to make target"）→ 改链 `libMoltenVK.dylib` 本体；②headless ctest 前未构建测试二进制（8 个 `(Not Run)`）→ Cocoa 步骤改全量构建；③`rhi_vk.c` 的 `shaderc/shaderc.h` 编译失败 → engine 的 shaderc include 改为"找到即加"（去平台条件）+ CI 传全局 `CMAKE_C_FLAGS=-I`（engine `C_INCLUDES` 探针曾确认 -I 存在却仍失败，全局 flag 结构性绕过该未解之谜；Windows/Linux 同机制验证无回归）。
+- **现状**：全量构建 + Cocoa runtime 测试 + headless **108/110** 通过；仅 `test_myui_window_manager` 与 `test_myui_vgcanvas_backend`（Subprocess aborted）失败——恰为 pthread→platform_thread 转换的两个文件，Linux 同代码通过，疑 macOS 真实平台差异（abort 文本经注解通道不可得，需 log 权限或 macOS 复现）。
+- **方法论沉淀**：CI wrapper 将错误行/ctest 失败摘要/brew 布局/CMake cache/编译 flags 全部以 `::error/::warning` 注解外显——绕过日志 API 需认证的限制，任何后续失败无需 log 权限即可远程诊断。
+
 ## 本轮更新：Windows IME 平台 smoke 补齐
 
 `myui_remaining_work.md` 记录的"Windows IME 专项 smoke 空缺"关闭：`test_platform_win32_runtime` 新增 3 项——①enable/disable/re-enable 状态回读（真实穿越 `ImmAssociateContext` 的 detach 与 re-attach 双路径，任一故障会在 destroy 前击穿进程）；②CJK 混排 surrounding + 候选框 spot 经真实 HIMC 的 `ImmSetCompositionWindow/ImmSetCandidateWindow`，叠加敌意输入契约（截断 UTF-8、负 cursor/anchor、NULL 文本、越界 spot 坐标全部无故障）；③全 IME API 的 NULL platform 拒绝契约。实现本身首次实测即全过（无缺陷发现，价值为回归保护）；`test_platform_win32_runtime` 现 **15/15**。Windows headless CI（windows-clang job）将自动执行新增项。
