@@ -303,7 +303,14 @@ jobs:
             -DSHADERC_INCLUDE_DIR="$SHADERC_INCLUDE_DIR"
 
       - name: Build Break myui demo
-        run: cmake --build build --target dxx_break --parallel
+        run: |
+          set -o pipefail
+          cmake --build build --target dxx_break --parallel 2>&1 | tee /tmp/macos_build.log || {
+            echo "::error::macOS dxx_break build failed; first diagnostics:"
+            grep -m 5 -E "error:|fatal error:|No rule to make target|Cannot find|ld: " /tmp/macos_build.log \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
 
       - name: Build and test Cocoa runtime
         run: |
