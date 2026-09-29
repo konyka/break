@@ -5,9 +5,10 @@
 - **核心证据：FATAL 写入时刻与 nvlddmkm Event 153 秒级对齐，8/8 次**（sv8 16:33:20、sv13b 18:50:47、sv13c 18:59:59、sv13m5 19:08:49、sv13p 19:18:43、sv13runA 19:30:00、干净提交代码复验 19:45:49、最小化窗口 run 20:24:13）。设备丢失（vkWaitForFences res=-4）即 TDR 复位时刻；故障点随套件所在段漂移——提交代码的死亡窗口稳定在开跑 14-20 秒（TEST 6-10 重负载段入口；最小化 run 的 TDR 落点直接表现为 TEST 6/7 readback 失败），诊断构建加早期探针负载则 7 秒死。
 - **三个候选机制逐一否证（修订声明：本条目首版误判为"ToDesk 并发周期 TDR"，经对照实验推翻）**：(一) "外部周期 TDR、与测试独立"——36 分钟空闲窗口（19:45:49→20:22:16）零 153 事件，此前观察到的 153 对逐条核对全部与测试 run 死亡时刻重合（唯一真空闲事件 18:44:19 单例）；(二) "ToDesk 远程编码并发"——窗口最小化（屏幕静态、编码负载归零）后仍于开跑 14 秒 TDR；(三) "机器级持续负载不稳定"——**demo 同机同环境连续 240 秒 ~14000 帧零故障、零 153**，且 demo 每帧执行 compact dispatch（R437 计数器：11 材质组）——**compact dispatch 彻底洗清（demo 干净执行约 1.4 万次）**。
 - **存活结论**：test_vulkan 套件特有的负载形态（多段资源 create/destroy churn、RG16F/MSAA/cubemap 格式矩阵、段间 device-wait 探针、readback）在本机混合 NVIDIA 驱动（RTX 4060 Laptop + AMD 显示）上 ~14-20 秒内触发 TDR；demo 的稳定工作集（一次性分配、每帧同一 dispatch 路径）同机免疫；CI（Linux lavapipe 软件渲染）全绿。引擎提交全程 0 validation、管线/布局/SPIR-V 与 demo 逐字节一致（上轮四层穷尽数据保留为合规性旁证；其全部单次运行 verdict 在负载-时机模型下统计无效、"故障跟随 compact SPIR-V 缓冲访问"结论作废）。R574（TEST 9 生产帧形态）修复保留（独立正确性价值）。根因定位需对**套件运行**（非 demo）做 RenderDoc/Nsight 捕获或在另一台 NVIDIA 机器复现——维持 owner 资源边界；复验指引：异地 NVIDIA 机器跑全套件对照。
-- **顺带取证：test_platform_win32_runtime 剪贴板子项持续失败为外部持锁**：子项 [6] clipboard_read_bounds_unterminated_unicode_text 3/3 重跑失败（`FAIL: OpenClipboard failed`）；同刻独立 P/Invoke 探针 `OpenClipboard(NULL)` 系统级失败、`GetOpenClipboardWindow()=NULL`（持有者跨会话/无窗口，疑 ToDesk 剪贴板同步或交易软件服务）——环境持锁实锤，非代码回归（该测试提交时 15/15）。本轮非图形 CTest **110/111**，唯一失败即此外部锁。
+- **补充定位（同轮后续段前缀二分；TV_STOP_AFTER/TV_HOLD 门控已回退）**：段 1-7（motion-blur/offscreen/MSAA/stress/1000-draw/10K/TEST5-7）+ 3600 帧平凡绘制保持 **0/4 TDR**（总 GPU 活动约 20 秒=完整套件死亡窗口却幸存——排除时长驱动）；+TEST 9（unified cull + Hi-Z 32x32/6mips）**1/3**（死于 TEST 9 体内）；再 +TEST 10 后 **3/3 且签名完全一致**："ok after TEST 10 init + uploads" 探针通过 → TEST 10 首个 frame_begin 即 -4。TDR 检测有 ≥2 秒异步延迟，微观归因在"TEST 9 晚段帧 vs TEST 10 init/upload"间存在模糊带；宏观结论：**触发负载位于 TEST 9→10 边界区（unified cull/Hi-Z/grouped-compact 初始化与上传链），与渲染时长无关**。demo 实证同样初始化 GPUCull+UnifiedCull+OcclusionCull Hi-Z（320x180/9mips）且每帧 compact（11 组）而 240 秒免疫——触发依赖测试侧具体形态（32x32 微型金字塔、强制可见性模式、断言 readback、8-draw grouped 上传链），而非子系统家族。
+- **顺带取证：test_platform_win32_runtime 剪贴板子项持续失败为外部持锁**：子项 [6] clipboard_read_bounds_unterminated_unicode_text 3/3 重跑失败（`FAIL: OpenClipboard failed`）；同刻独立 P/Invoke 探针 `OpenClipboard(NULL)` 系统级失败、`GetOpenClipboardWindow()=NULL`（持有者跨会话/无窗口，疑 ToDesk 剪贴板同步或交易软件服务）——环境持锁实锤，非代码回归（该测试提交时 15/15）。本轮非图形 CTest 首测 **110/111**（唯一失败即此外部锁）；约 1.5 小时后持锁自行释放，复测该测试 **15/15 通过**（111/111 恢复）——瞬态外部持锁的完整证实。
 
-验证：master 无代码变更（纯取证 + 文档，诊断脚本手脚架已全部回退、status 干净）；非图形 CTest 110/111（唯一失败=外部剪贴板锁）；8/8 秒级对齐 + 三连否证 + demo 240 秒对照为本轮核心证据；全程遵守"不用 PowerShell 改非 ASCII 文件"纪律。
+验证：master 无代码变更（纯取证 + 文档，诊断脚本手脚架已全部回退、status 干净）；非图形 CTest 在剪贴板外部锁释放后复测 **111/111**；8/8 秒级对齐 + 三连否证 + demo 240 秒对照 + 段前缀二分阶梯（0/4→1/3→3/3）为本轮核心证据；全程遵守"不用 PowerShell 改非 ASCII 文件"纪律。
 
 ## 本轮更新：macOS CI 全绿（R575）— 9/9 首次达成
 
@@ -35,7 +36,7 @@ Build_Guide 两项"待验证"在本机（144 DPI / 150% 缩放 / 2560×1600 混�
 
 - **高 DPI 静态链路验证通过**：一次性探针程序（链接 engine 静态库创建真实窗口）实测 `platform_get_dpi=144.0`、`platform_get_content_scale=1.500`、`platform_get_input_scale=1.500`、`platform_get_scale_factor=2`（1.5 舍入，M12c 约定）、`drawable/logical=1.501`——DPI 读取、三层尺寸换算全链路精确。语义事实记录：`PlatformConfig` 尺寸按物理像素解释（cfg 1280×720 → 逻辑 853×480），与 myui PAL 的逻辑像素约定不同但自洽。WM_DPICHANGED 跨屏拖动的动态响应仍需交互验证（静态消息处理已有 `test_platform_win32_runtime` 覆盖）。
 - **文件热重载完整链路验证通过**：GL demo（1800 帧）运行 8 秒后向 `shaders/blinn_phong.frag` 追加注释，日志实证 "changed, recompiling pipeline" → "pipeline recompiled successfully" → 优雅退出——覆盖 FindFirstChangeNotification 检测、shader 重编译、管线重建全链路。
-- Windows 平台矩阵仅剩：MinGW 交叉编译（需 Linux 工具链）、WM_DPICHANGED 动态响应（需交互）；test_vulkan TEST 10 类偶发丢失定案为套件负载形态 × 本机 NVIDIA 驱动 TDR（见 R577 轮三连否证），根因定位需对套件运行做 GPU 捕获或异地 NVIDIA 复现。
+- Windows 平台矩阵仅剩：MinGW 交叉编译（需 Linux 工具链）、WM_DPICHANGED 动态响应（需交互）；test_vulkan TEST 10 类偶发丢失定案为套件负载形态 × 本机 NVIDIA 驱动 TDR（见 R577 轮三连否证 + 段前缀二分：触发负载位于 TEST 9→10 边界区），根因定位需 GPU 捕获或异地 NVIDIA 复现。
 
 ## 本轮更新：test_vulkan TEST 9 在 NVIDIA Windows 转绿（R574）— 生产帧形态对齐；TEST 10 边界精化
 
