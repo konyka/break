@@ -2004,6 +2004,9 @@ int main(int argc, char **argv) {
 
                 if (rhi_handle_valid(ssbo)) {
                     RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                    /* R578: NULL (device lost) skips the dispatch frames; the
+                     * map/verify below then fails and the section reports FAILED. */
+                    if (cmd) {
                     rhi_cmd_end_render_pass(cmd);
                     rhi_cmd_bind_pipeline(cmd, comp_pipe);
                     rhi_cmd_bind_storage_buffer(cmd, ssbo, 0);
@@ -2011,6 +2014,7 @@ int main(int argc, char **argv) {
                     rhi_cmd_memory_barrier(cmd);
                     rhi_frame_end(render.device);
                     rhi_present(render.device);
+                    }
 
                     rhi_frame_begin(render.device);
                     rhi_frame_end(render.device);

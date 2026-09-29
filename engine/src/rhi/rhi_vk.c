@@ -7557,6 +7557,7 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const
 void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     if (dev == NULL) return NULL;
     VKBackend *vk = vk_backend(dev);
+    if (vk->device_lost) return NULL; /* R578: vkMapMemory can block on a dead device */
     VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return NULL;
     if (bd->mapped) return bd->mapped;
@@ -7595,6 +7596,7 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usi
     }
     if (bd->device_local)
         return vk_buffer_staging_download(vk, bd->buffer, offset, dst, size);
+    if (vk->device_lost) return false; /* R578: vkMapMemory can block on a dead device */
     void *mapped = NULL;
     if (vkMapMemory(vk->device, bd->memory, offset, size, 0, &mapped) != VK_SUCCESS)
         return false;

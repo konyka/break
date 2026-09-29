@@ -5373,6 +5373,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
 
         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+        if (!cmd) {
+            /* R578: device lost (or fatal frame error) — exit gracefully
+             * instead of spinning NULL frames on a dead device. */
+            LOG_ERROR("frame_begin returned NULL (device lost?) — exiting demo loop");
+            break;
+        }
         draw_calls = 0;
         culled_count = 0;
         tri_count = 0; /* R445: matches the old loop-local redeclaration cadence */
