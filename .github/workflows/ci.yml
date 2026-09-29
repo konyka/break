@@ -381,15 +381,12 @@ jobs:
             # Annotation budget is ~10/step: spend it all on direct binary
             # runs — instant-abort tests are dyld terminations whose loader
             # message is the only actionable diagnostic.
-            for t in test_myui_window_manager test_myui_vgcanvas_backend; do
-              if [ -x "build/$t" ]; then
-                echo "::error::lldb backtrace $t:"
-                ( cd build && lldb --batch -o run -o "bt 8" ./"$t" 2>&1 || true ) \
-                  | grep -E "frame|stop reason|Assertion|abort|Testing" | head -10 \
-                  | while IFS= read -r line; do echo "::error::${line}"; done
-              else
-                echo "::error::binary missing: build/$t"
-              fi
-            done
+            t=test_myui_vgcanvas_backend
+            if [ -x "build/$t" ]; then
+              echo "::error::lldb backtrace $t:"
+              ( cd build && lldb --batch -o run -o "thread backtrace -x false" ./"$t" 2>&1 || true ) \
+                | grep -E "stop reason|^ *frame #[0-5]" | head -8 \
+                | while IFS= read -r line; do echo "::error::${line}"; done
+            fi
             exit 1
           }
