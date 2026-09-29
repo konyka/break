@@ -308,6 +308,13 @@ jobs:
             -DVulkan_INCLUDE_DIR="$VULKAN_HEADERS/include" \
             -DSHADERC_LIB="$SHADERC_LIB" \
             -DSHADERC_INCLUDE_DIR="$SHADERC_INCLUDE_DIR"
+          # Diagnostics surfaced as annotations (logs need auth to read):
+          # the actual brew shaderc layout and the cached CMake value.
+          echo "::warning::shaderc prefix: $(brew --prefix shaderc)"
+          find "$(brew --prefix shaderc)" -name "shaderc.h" 2>/dev/null | head -3 \
+            | while IFS= read -r f; do echo "::warning::shaderc header at: $f"; done
+          grep -m 1 "SHADERC_INCLUDE_DIR:" build/CMakeCache.txt \
+            | while IFS= read -r line; do echo "::warning::cmake cache: $line"; done
 
       - name: Build Break myui demo
         run: |
