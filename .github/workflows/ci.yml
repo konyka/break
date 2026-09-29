@@ -292,12 +292,19 @@ jobs:
 
       - name: Configure
         run: |
-          export VULKAN_SDK="$(brew --prefix molten-vk)"
-          export VULKAN_HEADERS="$(brew --prefix vulkan-headers)"
-          export SHADERC_LIB="$(brew --prefix shaderc)/lib/libshaderc_shared.dylib"
-          export SHADERC_INCLUDE_DIR="$(brew --prefix shaderc)/include"
+          # The brew molten-vk keg ships libMoltenVK.dylib only — there is no
+          # libvulkan.dylib in it (the historical path this job passed made
+          # make fail instantly with "No rule to make target"; CMake does not
+          # validate an explicit Vulkan_LIBRARY cache value at configure
+          # time). Link the MoltenVK dylib directly: it exports the full
+          # Vulkan API entry points.
+          VULKAN_LIB="$(brew --prefix molten-vk)/lib/libMoltenVK.dylib"
+          test -f "$VULKAN_LIB" || echo "::error::MoltenVK dylib not found at $VULKAN_LIB"
+          VULKAN_HEADERS="$(brew --prefix vulkan-headers)"
+          SHADERC_LIB="$(brew --prefix shaderc)/lib/libshaderc_shared.dylib"
+          SHADERC_INCLUDE_DIR="$(brew --prefix shaderc)/include"
           cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug \
-            -DVulkan_LIBRARY="$VULKAN_SDK/lib/libvulkan.dylib" \
+            -DVulkan_LIBRARY="$VULKAN_LIB" \
             -DVulkan_INCLUDE_DIR="$VULKAN_HEADERS/include" \
             -DSHADERC_LIB="$SHADERC_LIB" \
             -DSHADERC_INCLUDE_DIR="$SHADERC_INCLUDE_DIR"
