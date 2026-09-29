@@ -343,15 +343,15 @@ jobs:
           cmake --build build --parallel -- VERBOSE=1 2>&1 | tee /tmp/macos_full.log || {
             grep -m 5 -E "error:|fatal error:|No rule to make target|ld: " /tmp/macos_full.log \
               | while IFS= read -r line; do echo "::error::${line}"; done
-            FM="build/engine/CMakeFiles/engine.dir/flags.make"
-            if [ -f "$FM" ]; then
-              echo "::warning::flags.make shaderc -I count: $(grep -c shaderc "$FM")"
-              grep "C_INCLUDES" "$FM" | head -c 300 | while IFS= read -r c; do echo "::warning::engine C_INCLUDES head: $c"; done
-            else
-              echo "::warning::flags.make not found at $FM"
+            # Which target owns the failing rhi_vk.c compile? The object path
+            # encodes it: CMakeFiles/<target>.dir/...
+            grep -m 1 -o "CMakeFiles/[^/]*/[^ ]*rhi_vk\.c\.o" /tmp/macos_full.log \
+              | while IFS= read -r t; do echo "::error::rhi_vk object target: $t"; done
+            FM=$(find build -name flags.make -path "*engine.dir*" 2>/dev/null | head -1)
+            echo "::warning::engine flags.make at: ${FM:-NOT FOUND}"
+            if [ -n "$FM" ]; then
+              echo "::warning::shaderc occurrences in engine flags: $(grep -c shaderc "$FM")"
             fi
-            grep -m 1 "rhi_vk.c" /tmp/macos_full.log | head -c 200 \
-              | while IFS= read -r c; do echo "::warning::rhi_vk cmd head: $c"; done
             exit 1
           }
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$' 2>&1 | tee /tmp/macos_cocoa_test.log || {
