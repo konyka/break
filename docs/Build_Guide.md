@@ -456,7 +456,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 | Windows | Win32 | OpenGL | Clang | 原生构建 + 非图形 CTest + WGL 桌面 GL runtime smoke 已验证 |
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 待验证 |
-| Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-8 已验证；TEST 9 unified cull 存 DEVICE_LOST 待查 |
+| Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-9 已验证（TEST 9 unified cull/Hi-Z 全断言通过）；TEST 10 起 grouped compact 类 compute 在 NVIDIA 混合 GPU 驱动上 DEVICE_LOST 待 GPU 捕获 |
 | macOS | Cocoa | Vulkan via MoltenVK | AppleClang | **CI 全绿（2026-09-29 首次）**：全量构建 + dxx_break + Cocoa runtime + headless 套件；GPU-less runner 上链接 MoltenVK 的两个测试按 `BREAK_MYUI_SKIP_VK_SENSITIVE` 显式 SKIP（MoltenVK NSException），本机有 GPU 时全量执行 |
 | iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
 | Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
