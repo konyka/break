@@ -377,10 +377,14 @@ jobs:
       - name: Test (headless suite)
         run: |
           set -o pipefail
+          # GitHub macOS runners have no Metal window session: MoltenVK
+          # raises an NSException from inside vkCreateInstance (and from its
+          # own load-time background work) that terminates the process with
+          # SIGABRT before C code can observe an error. The two tests that
+          # link MoltenVK honor this marker and skip with a printed reason;
+          # a local macOS machine with a GPU runs them in full.
+          export BREAK_MYUI_SKIP_VK_SENSITIVE=1
           ctest --test-dir build -LE graphics --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
-            # Annotation budget is ~10/step: spend it all on direct binary
-            # runs — instant-abort tests are dyld terminations whose loader
-            # message is the only actionable diagnostic.
             t=test_myui_vgcanvas_backend
             if [ -x "build/$t" ]; then
               echo "::error::final output lines $t (unfiltered tail):"

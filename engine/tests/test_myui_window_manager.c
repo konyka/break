@@ -8570,6 +8570,16 @@ TEST(node_socket_hit_distance_does_not_wrap)
 }
 
 TEST_MAIN_BEGIN()
+    /* R575: this binary links MoltenVK through myui_core; on GPU-less
+     * macOS CI hosts MoltenVK's own initialization raises an NSException
+     * (SIGABRT, abort position drifts with timing). Skip under the same
+     * GPU-less marker the vgcanvas backend test uses. */
+    if (getenv("BREAK_MYUI_SKIP_VK_SENSITIVE") != NULL) {
+        printf("SKIP: GPU-less host (MoltenVK NSException); full suite "
+               "requires a Metal-capable session\n");
+        printf("\n=== Results: skipped (GPU-less host) ===\n");
+        return 0;
+    }
     RUN_TEST(ui_command_runs_on_manager_loop_and_survives_window_close);
     RUN_TEST(ui_command_destroyed_with_manager_does_not_execute);
     RUN_TEST(ui_command_does_not_require_an_open_window);
