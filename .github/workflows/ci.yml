@@ -378,19 +378,13 @@ jobs:
         run: |
           set -o pipefail
           ctest --test-dir build -LE graphics --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
-            echo "::error::macOS headless suite failures:"
-            grep -m 1 -A 8 "The following tests FAILED:" /tmp/macos_headless.log | tail -n +2 \
-              | grep -m 8 -E "\(" | while IFS= read -r line; do echo "::error::${line}"; done
-            echo "::error::output tail before each abort:"
-            grep -B 14 "Subprocess aborted" /tmp/macos_headless.log | grep -v "^--$" \
-              | grep -E "\[[0-9]+\]|FAIL|Assertion|abort|fatal|error" | tail -10 \
-              | while IFS= read -r line; do echo "::error::${line}"; done
-            # Instant zero-output aborts are dyld terminations: run the two
-            # binaries directly so the loader's own message is captured.
+            # Annotation budget is ~10/step: spend it all on direct binary
+            # runs — instant-abort tests are dyld terminations whose loader
+            # message is the only actionable diagnostic.
             for t in test_myui_window_manager test_myui_vgcanvas_backend; do
               if [ -x "build/$t" ]; then
                 echo "::error::direct-run $t:"
-                ( cd build && ./"$t" 2>&1 || true ) | head -6 \
+                ( cd build && ./"$t" 2>&1 || true ) | head -4 \
                   | while IFS= read -r line; do echo "::error::${line}"; done
               else
                 echo "::error::binary missing: build/$t"
