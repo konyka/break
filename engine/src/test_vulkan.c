@@ -605,6 +605,30 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     char *fsrc = shader_read_file(TV_FS_PBR, &fl);
     usize fl_ibl = 0;
     char *fsrc_ibl = fsrc ? tv_inject_define(fsrc, fl, "HAS_IBL", &fl_ibl) : NULL;
+    /* R579-C: TV_MR_DEBUG injects an early-return echo of the post-multiply
+     * mr vector straight into FragColor — one readback answers whether the
+     * MR sample is zero (binding defect) or the factor is dead (delivery). */
+    if (fsrc_ibl && getenv("TV_MR_DEBUG")) {
+        const char *marker = "/* R579: glTF factor * texture composition */";
+        char *m = strstr(fsrc_ibl, marker);
+        if (m) {
+            const char *ins = " FragColor = vec4(mr, 0.0, 1.0); return;";
+            usize ilen = strlen(ins), mlen = strlen(marker), off = (usize)(m - fsrc_ibl) + mlen;
+            char *nb = malloc(fl_ibl + ilen + 1u);
+            if (nb) {
+                memcpy(nb, fsrc_ibl, off);
+                memcpy(nb + off, ins, ilen);
+                memcpy(nb + off + ilen, fsrc_ibl + off, fl_ibl - off);
+                nb[fl_ibl + ilen] = '\0';
+                free(fsrc_ibl);
+                fsrc_ibl = nb;
+                fl_ibl += ilen;
+                LOG_INFO("RDBG: MR echo injected into pbr frag");
+            }
+        } else {
+            LOG_ERROR("RDBG: MR echo marker not found in shader source");
+        }
+    }
     if (vsrc && fsrc_ibl) {
         RHIShader vs = rhi_shader_create(rs->device, vsrc, vl, false);
         RHIShader fs = rhi_shader_create(rs->device, fsrc_ibl, fl_ibl, true);
@@ -642,17 +666,141 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     }
     (void)gpu_cull_ok;
 
+    if (!getenv("TV_MR_DEBUG")) {
+    LOG_INFO("SKIP: PBR factor pixel gate (real defect confirmed by CI lavapipe; see R579-B)");
+    /* R579-C diagnostic: verify the MR texel round-trips through the
+     * texture creation/readback path. Expected {0,140,180,255} — if this
+     * reads zeros the defect is texture creation, not the binding. */
+    {
+        u8 mrb[4] = {0u, 0u, 0u, 0u};
+        if (rhi_texture_read_pixels(rs->device, mr_tex, mrb, 4u))
+            LOG_INFO("RDBG: mr_texel readback = {%u,%u,%u,%u} (want {0,140,180,255})",
+                     mrb[0], mrb[1], mrb[2], mrb[3]);
+        else
+            LOG_ERROR("RDBG: mr_texel readback FAILED");
+    }
+    if (rhi_handle_valid(mr_tex)) rhi_texture_destroy(rs->device, mr_tex);
+    if (ls) {
+        light_system_shutdown(ls);
+        free(ls);
+    }
+    if (rhi_handle_valid(pipe)) rhi_pipeline_destroy(rs->device, pipe);
+    ibl_destroy(&ibl, rs->device);
+    return true;
+    }
+
+    /* ---- TV_MR_DEBUG: echo render (FragColor = post-factor mr) ---- */
     bool pass = false;
     (void)pass;
-    /* R579-B: the pixel A/B gate detects a REAL cross-backend defect (CI
-     * lavapipe red on 9e45701 confirms it is not the local R577 TDR
-     * machine): u_mr_factor writes resolve (VK map 232 == SPIR-V Offset
-     * 232 per spirv-dis; GL real location), push range/flush verified, fog
-     * neutralized — yet frames stay byte-identical. Remaining suspect: the
-     * MR texture binding path (a zero-channel fallback would make
-     * (0,0)*factor invisible on both passes). Unit reference stays locked
-     * in tests/test_pbr_math.c; production wiring unchanged. */
-    LOG_INFO("SKIP: PBR factor pixel gate (real defect confirmed by CI lavapipe; see R579-B)");
+    RHIOffscreenFBO scene = {0};
+    if (ls && rhi_handle_valid(pipe) && rhi_handle_valid(mr_tex) && iw > 0u && ih > 0u) {
+        scene = rhi_offscreen_fbo_create_fmt(
+            rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
+        Mat4 model = mat4_identity(), view = mat4_identity(), proj = mat4_identity();
+        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
+        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
+        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+        i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
+        i32 l_fog_n = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
+        i32 l_fog_f = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
+        i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
+        i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
+        i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
+        i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
+        i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
+        i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
+        i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
+#ifdef ENGINE_VULKAN
+        const u32 px_stride = 8u;
+#else
+        const u32 px_stride = 4u;
+#endif
+        usize bytes = (usize)iw * ih * px_stride;
+        u8 *pix_a = malloc(bytes);
+        u8 *pix_b = malloc(bytes);
+        if (pix_a && pix_b && l_mr >= 0 && rhi_handle_valid(scene.fb)) {
+            const f32 factors[2][2] = { {1.0f, 1.0f}, {0.0f, 0.2f} };
+            u8 *dst[2] = { pix_a, pix_b };
+            u32 ierr = 0u;
+            for (u32 p = 0u; p < 2u; p++) {
+                if (gpu_cull_ok) {
+                    light_system_upload_lights(ls);
+                } else {
+                    light_system_cull(ls, &view, &proj, iw, ih);
+                    light_system_upload(ls);
+                }
+                RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+                if (!cmd) { ierr++; continue; }
+                rhi_offscreen_fbo_bind(cmd, &scene);
+                rhi_cmd_clear_color(cmd, 0.02f, 0.02f, 0.04f, 1.0f);
+                rhi_cmd_clear_depth(cmd);
+                if (gpu_cull_ok) {
+                    Mat4 vp = mat4_mul(proj, view);
+                    light_system_cull_gpu(ls, cmd, &vp.e[0][0], iw, ih);
+                }
+                rhi_cmd_bind_pipeline(cmd, pipe);
+                rhi_cmd_set_uniform_mat4(cmd, l_model, &model.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
+                rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
+                if (l_fog_n >= 0) rhi_cmd_set_uniform_f32(cmd, l_fog_n, 1000.0f);
+                if (l_fog_f >= 0) rhi_cmd_set_uniform_f32(cmd, l_fog_f, 2000.0f);
+                rhi_cmd_set_uniform_f32(cmd, l_sw, (f32)iw);
+                rhi_cmd_set_uniform_f32(cmd, l_sh, (f32)ih);
+                rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
+                rhi_cmd_set_uniform_f32(cmd, l_far, 100.0f);
+                rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls->point_count);
+                rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls->dir_count);
+                rhi_cmd_set_uniform_vec2(cmd, l_mr, factors[p][0], factors[p][1]);
+                rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                                           light_system_grid_slot(ls));
+                rhi_cmd_bind_material_textures_ibl(cmd,
+                    rs->test_tex, mr_tex, rs->test_tex, rs->test_tex,
+                    rs->test_tex, rs->test_tex, rs->sampler,
+                    ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
+                rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                rhi_cmd_draw_indexed(cmd, 3, 1);
+                rhi_offscreen_fbo_unbind(cmd, iw, ih);
+                rhi_frame_end(rs->device);
+                rhi_present(rs->device);
+                if (!rhi_texture_read_pixels(rs->device, scene.color_tex, dst[p], bytes))
+                    ierr++;
+            }
+            if (ierr == 0u) {
+                /* Find the first pixel that differs from the clear color
+                 * (0.02,0.02,0.04) in both passes and dump it. */
+                const u8 *ea = NULL, *eb = NULL;
+                for (usize i = 0u; i < (usize)iw * ih; i++) {
+                    const u8 *pa = pix_a + i * px_stride;
+                    const u8 *pb = pix_b + i * px_stride;
+                    bool ca = true, cb = true;
+                    for (u32 b = 0u; b < px_stride; b++) {
+                        if (pa[b] != pix_a[b]) ca = false;
+                        if (pb[b] != pix_a[b]) cb = false;
+                    }
+                    if (!ca && !ea) ea = pa;
+                    if (!cb && !eb) eb = pb;
+                    if (ea && eb) break;
+                }
+                if (ea && eb) {
+                    bool same = memcmp(ea, eb, px_stride) == 0;
+                    LOG_INFO("RDBG: echo first-lit A=[%02x %02x %02x %02x %02x %02x %02x %02x] "
+                             "B=[%02x %02x %02x %02x %02x %02x %02x %02x] identical=%d",
+                             ea[0], ea[1], ea[2], ea[3], ea[4], ea[5], ea[6], ea[7],
+                             eb[0], eb[1], eb[2], eb[3], eb[4], eb[5], eb[6], eb[7], (int)same);
+                } else {
+                    LOG_INFO("RDBG: echo no lit pixels found (ea=%d eb=%d)",
+                             ea != NULL, eb != NULL);
+                }
+            } else {
+                LOG_ERROR("RDBG: echo frames/readback ierr=%u", ierr);
+            }
+        }
+        free(pix_a);
+        free(pix_b);
+    }
+    if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
     if (rhi_handle_valid(mr_tex)) rhi_texture_destroy(rs->device, mr_tex);
     if (ls) {
         light_system_shutdown(ls);
@@ -1568,6 +1716,19 @@ int main(int argc, char **argv) {
     RHIBuffer ibo = rhi_buffer_create(render.device, &ibdesc);
     if (!rhi_handle_valid(ibo)) { LOG_ERROR("FAIL: index buffer"); }
     else { LOG_INFO("PASS: Index buffer created"); }
+
+    /* R579-C: TV_MR_DEBUG runs the MR-echo diagnostic FIRST (~3 s, before
+     * the local R577 TDR window at 14-20 s) and exits. */
+    if (getenv("TV_MR_DEBUG")) {
+        u32 dw, dh;
+        platform_get_drawable_size(engine.platform, &dw, &dh);
+        tv_test_pbr_factor(&render, vbo, ibo, dw, dh);
+        if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
+        if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
+        test_render_shutdown(&render);
+        engine_shutdown(&engine);
+        return 0;
+    }
 
 #ifdef ENGINE_VULKAN
     /* Include the shared RT1 gate in the validation-window measurement. */
