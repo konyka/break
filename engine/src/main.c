@@ -917,17 +917,14 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
                                         g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
-    /* R579: glTF metallic/roughness scalar factors compose with the MR
-     * texture (metallic = tex.b * factor, roughness = tex.g * factor).
-     * NULL material or absent factors default to (1, 1) = texture-only.
-     * VK note: push offset 232-239 is shared staging space; blinn-family
-     * pipelines alias it with u_ambient.z — they rewrite their ambient per
-     * draw (same assumption as R216-B), so this clustered-only bind site
-     * is safe. */
-    if (rs->cl_loc_mr_factor >= 0)
-        rhi_cmd_set_uniform_vec2(cmd, rs->cl_loc_mr_factor,
-                                 mat ? mat->metallic_factor : 1.0f,
-                                 mat ? mat->roughness_factor : 1.0f);
+    /* R579-D: the u_mr_factor write was REMOVED from this shared helper —
+     * bind_material serves skinned/base/megabuffer pipelines whose push
+     * layouts alias offset 232 with u_ambient.z (R216-B hazard), and the
+     * clustered pipeline it was resolved for is never bound for drawing
+     * (vestigial — see R579-D docs). The factor uniform, shader multiply
+     * and unit-locked reference stay in place for when the clustered path
+     * is actually wired. */
+    (void)scene;
     /* R216-B: Do not write cl_loc_pom_enabled here — offset is clustered@224,
      * which aliases blinn_phong u_ambient; clustered draws are skipped (R75-1). */
     (void)scene;

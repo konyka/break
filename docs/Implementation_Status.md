@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579-D 战略级勘误 — pbr_clustered 是"从未绘制"的死管线；R579 生产接线撤除（ambient 别名腐蚀）
+
+- **证据链**：`cl_loc_model` 仅声明+初始化、全仓库零使用；`bind_pipeline(..., clustered_pipeline)` 零命中；demo 默认前向绘制走 `active_pipeline`（基础 blinn 家族：skinned/base/megabuffer-arr；5843/5880/6907），延迟路径走 gbuffer/deferred_light（后者才是**活的** Cook-Torrance PBR）。deferred.c:4"前向 pbr_clustered 为引擎默认"的注释与现实不符（志向性/过时）。
+- **推论**：R579-C 的"测试管线 VK 零光栅化"实为**该管线从未工作过**——我的 TEST 7b 是史上第一次尝试在 VK 上绘制 pbr_clustered，暴露的是潜伏缺陷（vert/frag push 块布局矛盾 + 零片元，根因待查）；R579-B 的像素门检测完全正确。
+- **危害与撤除**：R579 在共享助手 `bind_material` 中的 u_mr_factor 写（push@232）服务于多个非 clustered 管线——blinn 家族 frag 块的 `u_ambient@224-235` 与 232-235 重叠，且基础路径每帧 5886 写 ambient 后、bind_material 逐材质再写 232 → **每帧腐蚀所有前向网格的 ambient.z（蓝通道）**（e11175c 引入的真实视觉回归；demo 无像素校验故未察觉）。已撤除该写（shader 声明、rhi_vk 映射、单元参考保留——待 clustered 路径真正接线时启用）。
+- **"PBR 渲染"现状重述**：活路径 = 延迟 deferred_light（Cook-Torrance+split-sum IBL，CI 全绿）+ 前向 blinn 家族（非 PBR）；pbr_clustered（含 IBL/POM/因子）为待修复的休眠资产。若"默认前向 PBR 化"仍是目标，工作量 = 修复 clustered 管线（零片元根因+块布局统一）并接入 active_pipeline 选择。
+- 验证：双树构建通过、VK/GL demo 各 120 帧优雅退出 0 FATAL（撤除后回归）。
+
 ## 本轮更新：R579 PBR 材质因子完整化 — glTF 规范"因子×纹理"组合 + CPU 参考 BRDF（TDD）
 
 - **缺口发现**：引擎双路径 Cook-Torrance PBR（前向 pbr_clustered 默认 + 延迟 deferred_light）与 glTF metallic-roughness 纹理均已完备，但 glTF 加载器解析的 `metallic_factor/roughness_factor` 标量（asset.c:594-595）**从未到达 shader**——pbr_clustered{,_vk}.frag 仅读纹理（`texture().bg`），glTF 2.0 规范的 `metallic = tex.b × factor, roughness = tex.g × factor` 组合缺失。
