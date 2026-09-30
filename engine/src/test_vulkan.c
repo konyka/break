@@ -697,6 +697,9 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
         scene = rhi_offscreen_fbo_create_fmt(
             rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
         Mat4 model = mat4_identity(), view = mat4_identity(), proj = mat4_identity();
+    proj.e[1][1] = -1.0f; /* R579-E: Y-flip like production projection —
+                           * without it the triangle winds back-facing under
+                           * VK and is culled (zero fragments). */
         i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
         i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
         i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
@@ -742,15 +745,18 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                 rhi_cmd_set_uniform_mat4(cmd, l_model, &model.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
-                rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
-                if (l_fog_n >= 0) rhi_cmd_set_uniform_f32(cmd, l_fog_n, 1000.0f);
-                if (l_fog_f >= 0) rhi_cmd_set_uniform_f32(cmd, l_fog_f, 2000.0f);
-                rhi_cmd_set_uniform_f32(cmd, l_sw, (f32)iw);
-                rhi_cmd_set_uniform_f32(cmd, l_sh, (f32)ih);
-                rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
-                rhi_cmd_set_uniform_f32(cmd, l_far, 100.0f);
-                rhi_cmd_set_uniform_i32(cmd, l_pc, (i32)ls->point_count);
-                rhi_cmd_set_uniform_i32(cmd, l_dc, (i32)ls->dir_count);
+                /* R579-E: NOTHING else may be written. The two stages
+                 * declare contradictory push layouts: the vert's u_proj
+                 * spans 128-192, which the frag block carves into
+                 * camera/fog/ambient/screen/near/far/counts slots. Every
+                 * such write clobbers a proj column (camera@128 kills
+                 * column 0 -> degenerate x=0 line; sw@160 corrupts the
+                 * depth clip; ...) — the R579-B "zero fragments" root
+                 * cause. Stale values are constant across the A/B passes,
+                 * which is all this factor gate needs. */
+                (void)l_cam; (void)l_fog_n; (void)l_fog_f;
+                (void)l_sw; (void)l_sh; (void)l_near; (void)l_far;
+                (void)l_pc; (void)l_dc;
                 rhi_cmd_set_uniform_vec2(cmd, l_mr, factors[p][0], factors[p][1]);
                 rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
                                            light_system_grid_slot(ls));
