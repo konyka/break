@@ -697,9 +697,8 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
         scene = rhi_offscreen_fbo_create_fmt(
             rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
         Mat4 model = mat4_identity(), view = mat4_identity(), proj = mat4_identity();
-    proj.e[1][1] = -1.0f; /* R579-E: Y-flip like production projection —
-                           * without it the triangle winds back-facing under
-                           * VK and is culled (zero fragments). */
+    /* R579-E: identity (NO Y-flip — frontFace=CLOCKWISE makes the flipped
+     * variant back-facing and culled). */
         i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
         i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
         i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
