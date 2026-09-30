@@ -604,10 +604,11 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     /* R579-E2 VERDICT: the clustered pair's VERT push block is the blocker
      * (every correct-shaped write still yields zero fragments); the IBL
      * test's push-free vert renders AND the factor provably flows (echo
-     * showed exactly metallic*0=0 / roughness*0.2=0.11). Use it. */
+     * showed exactly metallic*0=0 / roughness*0.2=0.11). The gate uses it;
+     * TV_MR_DEBUG keeps the clustered vert for diagnostics on the dead path. */
     char *vsrc = shader_read_file(
-#ifdef ENGINE_VULKAN
-        "shaders/pbr_ibl_test_vk.vert",
+#if defined(ENGINE_VULKAN)
+        getenv("TV_MR_DEBUG") ? "shaders/pbr_clustered_vk.vert" : "shaders/pbr_ibl_test_vk.vert",
 #else
         TV_VS_PBR,
 #endif
@@ -619,6 +620,25 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
      * mr vector straight into FragColor — one readback answers whether the
      * MR sample is zero (binding defect) or the factor is dead (delivery). */
     if (fsrc_ibl && getenv("TV_MR_DEBUG")) {
+        /* R579-F: top-of-main echo — isolates fragment EXECUTION from
+         * rasterization. Injected before everything (POM/normal/mr). */
+        const char *marker2 = "void main() {";
+        char *m2 = strstr(fsrc_ibl, marker2);
+        const char *ins2 = " FragColor = vec4(1.0, 0.0, 0.0, 1.0); return;";
+        if (m2) {
+            usize ilen = strlen(ins2), off = (usize)(m2 - fsrc_ibl) + strlen(marker2);
+            char *nb = malloc(fl_ibl + ilen + 1u);
+            if (nb) {
+                memcpy(nb, fsrc_ibl, off);
+                memcpy(nb + off, ins2, ilen);
+                memcpy(nb + off + ilen, fsrc_ibl + off, fl_ibl - off);
+                nb[fl_ibl + ilen] = '\0';
+                free(fsrc_ibl);
+                fsrc_ibl = nb;
+                fl_ibl += ilen;
+                LOG_INFO("RDBG: top-echo injected (red = fragments execute)");
+            }
+        }
         const char *marker = "/* R579: glTF factor * texture composition */";
         char *m = strstr(fsrc_ibl, marker);
         if (m) {

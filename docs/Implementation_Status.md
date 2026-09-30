@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579-F 终裁 — top-of-main 红色早退仍零片元；悬案降至不可再分核
+
+- **实验**：echo 注入点移至 frag `void main() {` 首语句（`FragColor=vec4(1,0,0,1); return;`——先于 POM/法线扰动/mr 一切逻辑），配合 clustered vert 运行：**仍零片元（ea=0 eb=0）**。TV_MR_DEBUG 诊断模式现固定使用 clustered vert（正常门保持 push-free vert）。
+- **终裁**：frag 被简化为平凡无条件写入后光栅化依旧零输出 ⇒ **阻断与 frag 内容、POM 残值、所有 uniform 值完全无关**——叠加既有消除表（顶点输入✓/矩阵写入✓/cull 双向✓/创建诚实✓/绑定反证✓）⇒ **pbr_clustered_vk.vert 的 SPIR-V 本体（或其与管线的交互）在驱动级被隐形拒绝/死亡，且全程无任何错误上报**（validation 零消息、编译零失败、创建零失败）。
+- **下一步若继续**：dump 运行时 shaderc 产出的 vert SPIR-V blob → spirv-dis 与 glslangValidator 离线产物逐指令对比；或 Nsight 反汇编管线。此为 RenderDoc/Nsight 边界的最小化形态。
+
 ## 本轮更新：R579 终局 — 十一轮调查闭环，真实像素门双端通过（12a6df2）
 
 - **判定**：clustered vert 的 push 块为"从未工作过"的最终阻断点——换用 IBL 作者的免 push vert（`pbr_ibl_test_vk.vert`，其注释自证前人已知此坑："production clustered Vulkan pair has compact, stage-specific push layouts"）后**三角形渲染 + 因子端到端流通**：echo 实证 `metallic×0=0`、`roughness×0.2=0.11`（f16 字节精确吻合）；真实 A/B 像素门**本地 VK 通过 + CI lavapipe 通过**（12a6df2 起 CI 9/9 含真实门）。R579-B 缺陷正式关闭。
