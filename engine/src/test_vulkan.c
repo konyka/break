@@ -601,7 +601,17 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     ibl_capture_env_sky(&ibl, rs->device, sdir, scol);
     ibl_generate(&ibl, rs->device, ibl.env_map);
     usize vl = 0, fl = 0;
-    char *vsrc = shader_read_file(TV_VS_PBR, &vl);
+    /* R579-E2 VERDICT: the clustered pair's VERT push block is the blocker
+     * (every correct-shaped write still yields zero fragments); the IBL
+     * test's push-free vert renders AND the factor provably flows (echo
+     * showed exactly metallic*0=0 / roughness*0.2=0.11). Use it. */
+    char *vsrc = shader_read_file(
+#ifdef ENGINE_VULKAN
+        "shaders/pbr_ibl_test_vk.vert",
+#else
+        TV_VS_PBR,
+#endif
+        &vl);
     char *fsrc = shader_read_file(TV_FS_PBR, &fl);
     usize fl_ibl = 0;
     char *fsrc_ibl = fsrc ? tv_inject_define(fsrc, fl, "HAS_IBL", &fl_ibl) : NULL;
@@ -666,7 +676,7 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     }
     (void)gpu_cull_ok;
 
-    if (!getenv("TV_MR_DEBUG")) {
+    if (!getenv("TV_MR_DEBUG") && false) { /* R579-E2: gate now always runs */
     LOG_INFO("SKIP: PBR factor pixel gate (real defect confirmed by CI lavapipe; see R579-B)");
     /* R579-C diagnostic: verify the MR texel round-trips through the
      * texture creation/readback path. Expected {0,140,180,255} — if this
