@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579-H 全层免责完成 — C 侧接线亦清白；案件正式移交 GPU 捕获（无更廉价路径）
+
+- **R579-G 假设推翻**：审计完成——`vk_compile_glsl` 的 stage 旗标正确（`is_fragment ? fragment : vertex`）、`rhi_pipeline_create` 的 stage 组装教科书级正确（vert@VERTEX/frag@FRAGMENT、pName="main"、模块填装无误）。
+- **全层免责总表**（R579 悬案终版）：SPIR-V 源头（双编译器全同）✓、编译 stage 旗标 ✓、管线 stage 组装 ✓、uniform 映射（u_model 已修）✓、push 范围与 flush ✓、顶点输入派生 ✓、绑定（validation 反证）✓、cull 双向 ✓、frag 内容（top-of-main 退化）✓——**所有可静态审计层全部清白，零片元仍在**。
+- **结论**：阻断存在于管线对象/驱动交互的最深处，**RenderDoc/Nsight 或最小独立 Vulkan 复现工程是唯一剩余路径**（owner 资源，与 R577 的 GPU 捕获边界合流）。生产的 push-free vert 方案（12a6df2）继续有效。
+
 ## 本轮更新：R579-G 终极收窄 — vert SPIR-V 本体无罪；现场锁定 rhi_vk 的 C 侧着色器模块/管线 stage 接线
 
 - **双编译器全量对比**：glslc（shaderc CLI，与运行时同一编译器家族）与 glslangValidator 对 `pbr_clustered_vk.vert` 的产物经 spirv-dis 全量比对——**push 块 13 个成员偏移逐一相同**（0/64/128/192/204/208/220/224/228/232/236/240/244，块 248B）、能力/内存模型一致；唯一差异为 OpEntryPoint 接口列表是否列 %pc（两者皆合法装饰）。**SPIR-V 源头无罪**。
