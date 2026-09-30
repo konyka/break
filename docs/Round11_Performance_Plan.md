@@ -1382,6 +1382,12 @@ VK 版 `gbuffer_vk.frag` 使用 push constant offset 256-268，同样从未设�
 
 **验收**：全部 23/23 测试通过。BVH/VK/GL 三个构建路径均编译成功。
 
+> **R580  supersede**：本条"const float 兜底"已被 R580 取代——glTF metallic/roughness
+> 因子通道已正式接入延迟路径（辅助 UBO:GL binding 0 / VK aux set；arr 路径为按
+> v_layer 索引的 64 层因子表），`metal = tex.b × factor`、`rough = tex.g × factor`
+> （乘法，与 R579 前向路径一致）；`u_ao_default`/`u_emissive_flag` 仍为 const。
+> 详见 Implementation_Status.md 顶部 R580 条目。
+
 ## R94 着色器gamma校正pow→exp2 + VK viewport/scissor缓存 + VK push constant批量发出
 
 ### R94-1 gamma校正 pow() → exp2() (MEDIUM GPU)

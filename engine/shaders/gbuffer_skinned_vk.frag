@@ -1,29 +1,28 @@
 #version 450 core
 
-/* R442: texture-array variant of gbuffer_vk.frag — bindings 0 and 2 become
- * sampler2DArray (the shared COMBINED_IMAGE_SAMPLER layout accepts a
- * 2D_ARRAY view unchanged), layer selected by v_layer (flat, from
- * gl_BaseInstanceARB). MRT writes are byte-identical to gbuffer_vk.frag. */
+/* G-Buffer write pass -- fragment stage (Vulkan, skinned variant).
+ * R580: split from gbuffer_vk.frag because the skinned pipeline layout
+ * inserts the joint texel-buffer set at index 1, moving the auxiliary UBO
+ * set to index 2 (base pipeline: textures@0, ubo@1). Everything else is
+ * byte-identical to gbuffer_vk.frag — keep the two in sync. */
 
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_texcoord;
 layout(location = 3) in vec2 v_velocity;
-layout(location = 4) flat in uint v_layer;
 
 layout(location = 0) out vec4 out_albedo_metallic;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_roughness_ao;
 layout(location = 3) out vec4 out_velocity;
 
-layout(binding = 0) uniform sampler2DArray u_albedo;
-layout(binding = 2) uniform sampler2DArray u_metallic_roughness;
+layout(binding = 0) uniform sampler2D u_albedo;
+layout(binding = 2) uniform sampler2D u_metallic_roughness;
 
-/* R580: per-layer glTF metallic/roughness factors via the aux UBO
- * (set=1 binding=0 — the arr pipeline has no texel set, so the aux UBO set
- * lands at index 1). Indexed by v_layer; std140 vec4 stride; capacity 64 =
- * MAT_ARR_MAX_LAYERS (main.c). Default (1,1) = passthrough. */
-layout(std140, set = 1, binding = 0) uniform GbufMRArr { vec4 u_mr_factor_arr[64]; };
+/* R580: glTF per-material metallic/roughness factors via the aux UBO —
+ * set=2 binding=0 in the skinned pipeline layout (see header). Default
+ * (1,1) = texture passthrough. */
+layout(std140, set = 2, binding = 0) uniform GbufMR { vec2 u_mr_factor; };
 const float u_ao_default = 1.0;
 const float u_emissive_flag = 0.0;
 
@@ -40,9 +39,9 @@ vec2 octahedron_encode(vec3 n) {
 }
 
 void main() {
-    vec3  base  = texture(u_albedo, vec3(v_texcoord, float(v_layer))).rgb;
-    vec2  mr    = texture(u_metallic_roughness, vec3(v_texcoord, float(v_layer))).bg;
-    vec2  mrf   = mr * u_mr_factor_arr[min(v_layer, 63u)].xy; /* R580 */
+    vec3  base  = texture(u_albedo, v_texcoord).rgb;
+    vec2  mr    = texture(u_metallic_roughness, v_texcoord).bg;
+    vec2  mrf   = mr * u_mr_factor; /* R580: glTF factor x texture composition */
     float metal = clamp(mrf.x, 0.0, 1.0);
     float rough = clamp(mrf.y, 0.04, 1.0);
     float ao    = clamp(u_ao_default, 0.0, 1.0);

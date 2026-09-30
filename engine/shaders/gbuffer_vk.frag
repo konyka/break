@@ -15,11 +15,13 @@ layout(location = 3) out vec4 out_velocity;
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 
-/* R204-A: Vert already fills the 256B push block (model/view/proj/prev_vp).
- * Offsets 256+ exceeded maxPushConstantsSize and staging[256], so AO read as 0
- * (full darkening). Match gbuffer.frag consts — C never uploaded these. */
-const float u_metallic_default = 0.0;
-const float u_roughness_default = 0.0;
+/* R580: glTF per-material metallic/roughness factors via the aux UBO.
+ * The vert stage fills all 256B of push space (R204-A), so factors ride the
+ * always-appended auxiliary UBO set instead: set=1 binding=0 here (base
+ * pipeline layout: textures@0, ubo@1); the skinned variant uses
+ * gbuffer_skinned_vk.frag with set=2 (its layout inserts the joint texel
+ * set at index 1). Default (1,1) = texture passthrough. */
+layout(std140, set = 1, binding = 0) uniform GbufMR { vec2 u_mr_factor; };
 const float u_ao_default = 1.0;
 const float u_emissive_flag = 0.0;
 
@@ -38,8 +40,9 @@ vec2 octahedron_encode(vec3 n) {
 void main() {
     vec3  base  = texture(u_albedo, v_texcoord).rgb;
     vec2  mr    = texture(u_metallic_roughness, v_texcoord).bg;
-    float metal = clamp(mr.x + u_metallic_default, 0.0, 1.0);
-    float rough = clamp(mr.y + u_roughness_default, 0.04, 1.0);
+    vec2  mrf   = mr * u_mr_factor; /* R580: glTF factor x texture composition */
+    float metal = clamp(mrf.x, 0.0, 1.0);
+    float rough = clamp(mrf.y, 0.04, 1.0);
     float ao    = clamp(u_ao_default, 0.0, 1.0);
 
     out_albedo_metallic = vec4(base, metal);

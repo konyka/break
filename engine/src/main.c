@@ -930,6 +930,21 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     (void)scene;
 }
 
+/* R580: G-Buffer pass variant of bind_material — additionally feeds the
+ * per-material glTF metallic/roughness factors to the gbuffer shaders via
+ * the deferred system's factor UBO (the deferred counterpart of R579's
+ * forward u_mr_factor). Factors ride the auxiliary uniform buffer because
+ * the gbuffer vertex stage fills all 256B of push space (R204-A); this is
+ * safe to use from the shared helper's call sites ONLY in the deferred
+ * G-Buffer pass — forward pipelines alias UBO binding 0 with
+ * ForwardTemporal. Fallback/textureless materials get (1,1) = passthrough. */
+static void gbuffer_bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
+    bind_material(cmd, rs, mat, scene);
+    deferred_bind_gbuffer_mr_factor(&rs->deferred, rs->device, cmd,
+                                    mat ? mat->metallic_factor : 1.0f,
+                                    mat ? mat->roughness_factor : 1.0f);
+}
+
 /* ---- Precomputed node bounding sphere ---- */
 typedef struct { f32 cx, cy, cz, r; } NodeSphere;
 
@@ -1137,7 +1152,17 @@ typedef struct {
     RHITexture mr_array;     /* R442 */
     u32        width, height, layers;
     bool       ready;
+    /* R580: per-layer glTF metallic/roughness factors, same layer indexing
+     * as the texture arrays (layer 0 = neutral (1,1)). Consumed by the
+     * deferred gbuffer_arr path via deferred_set_gbuffer_mr_factor_array();
+     * part of the layer dedup key, so materials sharing a texture pair but
+     * with different factors get distinct layers. */
+    f32        mr_factors[MAT_ARR_MAX_LAYERS][2];
 } MatArraySet;
+
+/* R580: the deferred factor table must hold one entry per array layer. */
+_Static_assert(MAT_ARR_MAX_LAYERS == DEFERRED_MR_FACTOR_MAX_LAYERS,
+               "MatArraySet layers vs deferred MR factor table mismatch");
 
 /* R442: handle equality treating invalid==invalid as equal. */
 static bool mat_arr_tex_same(RHITexture a, RHITexture b) {
@@ -1202,6 +1227,7 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
      * (the layer then carries the channel's neutral fill). */
     RHITexture uniq_alb[MAT_ARR_MAX_LAYERS - 1u];
     RHITexture uniq_mr[MAT_ARR_MAX_LAYERS - 1u];
+    f32        uniq_fac[MAT_ARR_MAX_LAYERS - 1u][2]; /* R580: part of the dedup key */
     u32 ntex = 0;
     u32 arr_w = 1u, arr_h = 1u;
     for (u32 g = 0; g < group_count && ntex < MAT_ARR_MAX_LAYERS - 1u; g++) {
@@ -1229,16 +1255,25 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
             if (tw > arr_w) arr_w = tw;
             if (th > arr_h) arr_h = th;
         }
-        if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr)) continue; /* layer 0 */
+        /* R580: textureless materials keep layer 0 ONLY when their factors
+         * are also neutral; otherwise they need a real layer (neutral-filled
+         * textures + their own factors) so the factors survive. */
+        f32 fac_m = scene->materials[mi].metallic_factor;
+        f32 fac_r = scene->materials[mi].roughness_factor;
+        if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr) &&
+            fac_m == 1.0f && fac_r == 1.0f) continue; /* layer 0 */
         bool dup = false;
         for (u32 i = 0; i < ntex; i++)
-            if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr)) {
+            if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr) &&
+                uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r) {
                 dup = true;
                 break;
             }
         if (dup) continue;
         uniq_alb[ntex] = alb;
         uniq_mr[ntex]  = mr;
+        uniq_fac[ntex][0] = fac_m;
+        uniq_fac[ntex][1] = fac_r;
         ntex++;
     }
 
@@ -1295,6 +1330,14 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         return false;
     }
 
+    /* R580: per-layer factor table (layer 0 = glTF-neutral (1,1)). */
+    set->mr_factors[0][0] = 1.0f;
+    set->mr_factors[0][1] = 1.0f;
+    for (u32 i = 0; i < ntex; i++) {
+        set->mr_factors[i + 1u][0] = uniq_fac[i][0];
+        set->mr_factors[i + 1u][1] = uniq_fac[i][1];
+    }
+
     /* Group -> layer mapping (materials without a unique pair stay 0). */
     for (u32 g = 0; g < group_count; g++) {
         u32 mi = mat_indices[g];
@@ -1311,9 +1354,15 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         if (rhi_handle_valid(mr) &&
             (!rhi_texture_get_size(dev, mr, &qw, &qh) || qw == 0 || qh == 0))
             mr = RHI_HANDLE_NULL;
-        if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr)) continue;
+        /* R580: same key as the collect pass — texture pair + factors; a
+         * textureless material with neutral factors stays on layer 0. */
+        f32 fac_m = scene->materials[mi].metallic_factor;
+        f32 fac_r = scene->materials[mi].roughness_factor;
+        if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr) &&
+            fac_m == 1.0f && fac_r == 1.0f) continue;
         for (u32 i = 0; i < ntex; i++) {
-            if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr)) {
+            if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr) &&
+                uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r) {
                 out_group_layer[g] = i + 1u;
                 break;
             }
@@ -1562,6 +1611,11 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         render->fallback_emissive, render->shadow_map.depth_tex, render->ssao_tex,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
         render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+
+    /* R580: bind the per-layer MR factor UBO (uploads when the bake staged
+     * a new table) before the single execute — layer i multiplies the MR
+     * texel of array layer i in gbuffer_arr.{frag,_vk.frag}. */
+    deferred_bind_gbuffer_mr_factor_array(dsys, cmd);
 
     indirect_draw_execute(&mb->array_system, render->device);
     return 1u;
@@ -3163,6 +3217,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             if (mega_buf.array_system_ready) {
                                 indirect_draw_upload(&mega_buf.array_system, render.device,
                                                      cmds, mesh_cmd_count);
+                                /* R580: hand the baked per-layer factor table
+                                 * to the deferred G-Buffer path (no-op when
+                                 * the deferred system is uninitialized). */
+                                deferred_set_gbuffer_mr_factor_array(&render.deferred,
+                                    &mega_buf.mats.mr_factors[0][0], mega_buf.mats.layers);
                             } else {
                                 LOG_WARN("MatArray: array indirect system init failed");
                                 /* R442: both arrays go — ready is shared. */
@@ -7090,7 +7149,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     for (u32 si = 0; si < scene.skinned_mesh_count; si++) {
                         SkinnedMesh *sm = &scene.skinned_meshes[si];
                         Material *mat = (sm->material_idx < scene.material_count) ? &scene.materials[sm->material_idx] : NULL;
-                        bind_material(cmd, &render, mat, &scene);
+                        gbuffer_bind_material(cmd, &render, mat, &scene); /* R580 */
                         rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                         rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
                         if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
@@ -7105,7 +7164,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     /* R445: the procedural arm geometry references joints 0-3 --
                      * skip it if a glTF with fewer joints overrode the skeleton
                      * (joint index 3 would read past the uploaded pose set). */
-                    bind_material(cmd, &render, NULL, &scene);
+                    gbuffer_bind_material(cmd, &render, NULL, &scene); /* R580 */
                     rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                     rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0, true);
@@ -7123,7 +7182,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
             /* Render terrain. */
             if (rhi_handle_valid(terrain.vbo)) {
-                bind_material(cmd, &render, NULL, &scene);
+                gbuffer_bind_material(cmd, &render, NULL, &scene); /* R580 */
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);
                 rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
@@ -7259,7 +7318,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                     u32 mat_idx = mega_buf.mat_indices[g];
                     Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene);
+                    gbuffer_bind_material(cmd, &render, mat, &scene); /* R580 */
                     if (mega_buf.group_system_ready)
                         indirect_draw_execute_group(&mega_buf.group_system, render.device, g);
                     draw_calls++;
@@ -7279,7 +7338,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (node->mesh_index >= scene.mesh_count) continue;
                 Mesh *m = &scene.meshes[node->mesh_index];
                 Material *mat = (node->material_idx < scene.material_count) ? &scene.materials[node->material_idx] : NULL;
-                bind_material(cmd, &render, mat, &scene);
+                gbuffer_bind_material(cmd, &render, mat, &scene); /* R580 */
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &node->world_transform.e[0][0]);
                 if (dsys->_loc_gbuf_prev_mvp >= 0) {

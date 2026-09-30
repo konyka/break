@@ -258,7 +258,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         skinned_desc.uses_texel_buffer  = true;
 #ifdef ENGINE_VULKAN
         sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer_skinned_vk.vert", "shaders/gbuffer_vk.frag", &skinned_desc);
+            dev, "shaders/gbuffer_skinned_vk.vert", "shaders/gbuffer_skinned_vk.frag", &skinned_desc);
 #else
         sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
             dev, "shaders/gbuffer_skinned.vert", "shaders/gbuffer.frag", &skinned_desc);
@@ -312,6 +312,34 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         sys->_linear_sampler = rhi_sampler_create(dev, &lsd);
     }
 
+    /* R580: MR factor UBOs — double-buffered single factor (base/skinned
+     * pipelines) + fixed-capacity per-layer array (gbuffer_arr path). The
+     * initial content is the glTF-neutral (1,1), so a draw issued before any
+     * factor bind still passes texture values through unchanged. */
+    {
+        f32 fac_ident[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+        RHIBufferDesc fbd;
+        memset(&fbd, 0, sizeof(fbd));
+        fbd.usage        = RHI_BUFFER_USAGE_UNIFORM;
+        fbd.size         = sizeof(fac_ident);
+        fbd.initial_data = fac_ident;
+        for (u32 i = 0; i < 2u; i++)
+            sys->_mr_factor_buf[i] = rhi_buffer_create(dev, &fbd);
+
+        f32 arr_ident[DEFERRED_MR_FACTOR_MAX_LAYERS][4];
+        for (u32 i = 0; i < DEFERRED_MR_FACTOR_MAX_LAYERS; i++) {
+            arr_ident[i][0] = 1.0f;
+            arr_ident[i][1] = 1.0f;
+            arr_ident[i][2] = 0.0f;
+            arr_ident[i][3] = 0.0f;
+        }
+        fbd.size         = sizeof(arr_ident);
+        fbd.initial_data = arr_ident;
+        sys->_mr_factor_arr_buf = rhi_buffer_create(dev, &fbd);
+        memcpy(sys->_mr_factor_arr, arr_ident, sizeof(arr_ident));
+        sys->_mr_factor_arr_dirty = false;
+    }
+
     if (!rhi_handle_valid(sys->gbuffer_pipeline) ||
         !rhi_handle_valid(sys->lighting_pipeline)) {
         LOG_WARN("deferred: pipeline creation failed -- system disabled");
@@ -328,7 +356,10 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         !rhi_handle_valid(sys->_mrt_fbo.color_tex[3]) ||
         !rhi_handle_valid(sys->_mrt_fbo.depth_tex) ||
         !rhi_handle_valid(sys->_gbuf_sampler) ||
-        !rhi_handle_valid(sys->_linear_sampler)) {
+        !rhi_handle_valid(sys->_linear_sampler) ||
+        !rhi_handle_valid(sys->_mr_factor_buf[0]) ||
+        !rhi_handle_valid(sys->_mr_factor_buf[1]) ||
+        !rhi_handle_valid(sys->_mr_factor_arr_buf)) {
         LOG_WARN("deferred: MRT/sampler creation failed -- system disabled");
         deferred_destroy(sys, dev);
         return;
@@ -369,6 +400,19 @@ void deferred_destroy(DeferredSystem *sys, RHIDevice *dev) {
         rhi_pipeline_destroy(dev, sys->gbuffer_skinned_pipeline);
         sys->gbuffer_skinned_pipeline = RHI_HANDLE_NULL;
     }
+
+    /* R580 */
+    for (u32 i = 0; i < 2u; i++) {
+        if (rhi_handle_valid(sys->_mr_factor_buf[i])) {
+            rhi_buffer_destroy(dev, sys->_mr_factor_buf[i]);
+            sys->_mr_factor_buf[i] = RHI_HANDLE_NULL;
+        }
+    }
+    if (rhi_handle_valid(sys->_mr_factor_arr_buf)) {
+        rhi_buffer_destroy(dev, sys->_mr_factor_arr_buf);
+        sys->_mr_factor_arr_buf = RHI_HANDLE_NULL;
+    }
+    sys->_mr_factor_arr_dirty = false;
 
     defrd_release_targets(sys, dev);
 
@@ -420,6 +464,51 @@ void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
 void deferred_end_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd) {
     if (!sys || !dev || !sys->initialized) return;
     rhi_mrt_fbo_unbind(cmd, sys->width, sys->height);
+}
+
+/* R580: per-material MR factor bind for the base/skinned G-Buffer pipelines.
+ * The update+rebind between draws is the intended per-material pattern:
+ * VK records vkCmdUpdateBuffer (with its built-in transfer->shader barrier)
+ * plus a fresh aux-set descriptor bind; GL is a glBufferSubData +
+ * glBindBufferBase. Double-buffered by frame index so the previous in-flight
+ * frame keeps its own copy. */
+void deferred_bind_gbuffer_mr_factor(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd,
+                                     f32 metallic_factor, f32 roughness_factor) {
+    if (!sys || !dev || !cmd || !sys->initialized) return;
+    RHIBuffer slot = sys->_mr_factor_buf[rhi_frame_index(dev) & 1u];
+    if (!rhi_handle_valid(slot)) return;
+    f32 f[2] = { metallic_factor, roughness_factor };
+    rhi_cmd_update_buffer(cmd, slot, 0u, f, sizeof(f));
+    rhi_cmd_bind_uniform_buffer(cmd, slot, 0u);
+}
+
+void deferred_set_gbuffer_mr_factor_array(DeferredSystem *sys, const f32 *mr_factors_xy, u32 count) {
+    if (!sys) return;
+    u32 n = count;
+    if (n > DEFERRED_MR_FACTOR_MAX_LAYERS) n = DEFERRED_MR_FACTOR_MAX_LAYERS;
+    for (u32 i = 0; i < DEFERRED_MR_FACTOR_MAX_LAYERS; i++) {
+        f32 x = 1.0f, y = 1.0f; /* layers beyond count stay glTF-neutral */
+        if (mr_factors_xy && i < n) {
+            x = mr_factors_xy[i * 2u + 0u];
+            y = mr_factors_xy[i * 2u + 1u];
+        }
+        sys->_mr_factor_arr[i][0] = x;
+        sys->_mr_factor_arr[i][1] = y;
+        sys->_mr_factor_arr[i][2] = 0.0f;
+        sys->_mr_factor_arr[i][3] = 0.0f;
+    }
+    sys->_mr_factor_arr_dirty = true;
+}
+
+void deferred_bind_gbuffer_mr_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd) {
+    if (!sys || !cmd || !sys->initialized) return;
+    if (!rhi_handle_valid(sys->_mr_factor_arr_buf)) return;
+    if (sys->_mr_factor_arr_dirty) {
+        rhi_cmd_update_buffer(cmd, sys->_mr_factor_arr_buf, 0u,
+                              sys->_mr_factor_arr, sizeof(sys->_mr_factor_arr));
+        sys->_mr_factor_arr_dirty = false;
+    }
+    rhi_cmd_bind_uniform_buffer(cmd, sys->_mr_factor_arr_buf, 0u);
 }
 
 void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd,

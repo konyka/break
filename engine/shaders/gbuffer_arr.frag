@@ -19,9 +19,14 @@ layout(location = 3) out vec4 out_velocity;        /* NDC delta xy */
 layout(binding = 0) uniform sampler2DArray u_albedo;
 layout(binding = 2) uniform sampler2DArray u_metallic_roughness;
 
-/* R93-1: match gbuffer.frag consts — C never uploaded these. */
-const float u_metallic_default = 0.0;
-const float u_roughness_default = 0.0;
+/* R580: per-layer glTF metallic/roughness factors — indexed by v_layer, the
+ * same layer that selects the albedo/MR array texels. std140 vec4 stride;
+ * capacity 64 = MAT_ARR_MAX_LAYERS (main.c). Production fills it from
+ * MatArraySet via deferred_set_gbuffer_mr_factor_array(); layer 0 and
+ * textureless materials get (1,1) = passthrough. The R93-1 additive
+ * defaults are retired (glTF composes multiplicatively); ao/emissive have
+ * no engine channel yet. */
+layout(std140, binding = 0) uniform GbufMRArr { vec4 u_mr_factor_arr[64]; };
 const float u_ao_default = 1.0;
 const float u_emissive_flag = 0.0;
 
@@ -41,8 +46,9 @@ vec2 octahedron_encode(vec3 n) {
 void main() {
     vec3  base    = texture(u_albedo, vec3(v_texcoord, float(v_layer))).rgb;
     vec2  mr      = texture(u_metallic_roughness, vec3(v_texcoord, float(v_layer))).bg;
-    float metal   = clamp(mr.x + u_metallic_default, 0.0, 1.0);
-    float rough   = clamp(mr.y + u_roughness_default, 0.04, 1.0);
+    vec2  mrf     = mr * u_mr_factor_arr[min(v_layer, 63u)].xy; /* R580 */
+    float metal   = clamp(mrf.x, 0.0, 1.0);
+    float rough   = clamp(mrf.y, 0.04, 1.0);
     float ao      = clamp(u_ao_default, 0.0, 1.0);
 
     out_albedo_metallic = vec4(base, metal);

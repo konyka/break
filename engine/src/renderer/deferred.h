@@ -32,6 +32,11 @@ typedef enum {
 
 #define DEFERRED_MAX_POINT_LIGHTS 8u
 
+/* R580: capacity of the per-layer MR factor table consumed by the
+ * texture-array G-Buffer variant (gbuffer_arr*). Must equal
+ * MAT_ARR_MAX_LAYERS (main.c) — main.c static-asserts this. */
+#define DEFERRED_MR_FACTOR_MAX_LAYERS 64u
+
 typedef struct {
     /* G-Buffer textures (publicly readable, used as inputs by lighting pass). */
     RHITexture gbuf_albedo_metallic;  /* RGBA8: rgb=albedo, a=metallic         */
@@ -82,6 +87,18 @@ typedef struct {
     i32 _loc_gbuf_skinned_proj;
     i32 _loc_gbuf_skinned_prev_mvp;
 
+    /* R580: per-material glTF metallic/roughness factor channel for the
+     * G-Buffer pass. The gbuffer vertex stage already fills all 256B of
+     * push-constant space (R204-A), so factors ride the backend's auxiliary
+     * uniform buffer instead (GL binding 0 / VK aux UBO set). Double-buffered
+     * single-factor UBO serves the base/skinned pipelines (rebound per
+     * material); the fixed-capacity vec4-strided array UBO serves the
+     * gbuffer_arr single-execute path (indexed by v_layer). */
+    RHIBuffer _mr_factor_buf[2];
+    RHIBuffer _mr_factor_arr_buf;
+    f32       _mr_factor_arr[DEFERRED_MR_FACTOR_MAX_LAYERS][4];
+    bool      _mr_factor_arr_dirty;
+
     /* Cached lighting-pass uniform locations (-1 if absent). */
     i32 _loc_inv_vp;
     i32 _loc_view;
@@ -105,6 +122,25 @@ void deferred_resize(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height)
  * obtained from `rhi_frame_begin`. */
 void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);
 void deferred_end_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);
+
+/* R580: G-Buffer metallic/roughness factor channel — the deferred
+ * counterpart of R579's forward u_mr_factor (glTF composes texture x
+ * factor). Backed by the auxiliary uniform buffer, never push constants.
+ *
+ * deferred_bind_gbuffer_mr_factor(): call after bind_material, before each
+ * draw group of the G-Buffer pass; pass (1,1) for fallback/textureless
+ * materials. The single-factor UBO is double-buffered by frame index.
+ *
+ * deferred_set_gbuffer_mr_factor_array(): CPU-side stage of the per-layer
+ * factor table for the texture-array (mega single-execute) path — xy pairs,
+ * count clamped to DEFERRED_MR_FACTOR_MAX_LAYERS, layer 0 = fallback (1,1).
+ * deferred_bind_gbuffer_mr_factor_array(): uploads when dirty, then binds;
+ * call once before the arr execute. All entries are safe no-ops when the
+ * deferred system is uninitialized or the buffers are absent. */
+void deferred_bind_gbuffer_mr_factor(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd,
+                                     f32 metallic_factor, f32 roughness_factor);
+void deferred_set_gbuffer_mr_factor_array(DeferredSystem *sys, const f32 *mr_factors_xy, u32 count);
+void deferred_bind_gbuffer_mr_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd);
 
 /* Deferred lighting pass: full-screen triangle that decodes the G-Buffer
  * and runs the same Cook-Torrance + clustered-lighting evaluation as the

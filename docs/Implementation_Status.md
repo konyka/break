@@ -1,5 +1,21 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R580 延迟路径 G-Buffer 的 glTF MR 因子通道（TDD）— R579 遗留边界关闭
+
+- **缺口**（R579 遗留）：glTF `metallic_factor/roughness_factor` 经 R579 接入前向路径（`u_mr_factor`），但**延迟路径（G-Buffer 写入端）从未有因子通道**——gbuffer 四 shader（base/arr × GL/VK）以 `const float u_metallic_default=0.0` 等加法常量凑数（R93-1 权宜），材质因子在 deferred 下完全丢失。
+- **通道选型（关键约束）**：gbuffer 顶点阶段 push 块已占满 256B（model/view/proj/prev_mvp，R204-A 证明 256+ 越限），且 R579-J/K 证明本机驱动对 texel 集管线的 vert push 越界加载隐形致死——**因子因此走辅助 UBO 而非 push**：VK 后端本就为每条图形管线附加 aux UBO 集（`rhi_cmd_bind_uniform_buffer`），GL 用 `binding=0` std140 块。set 索引按管线布局分流：base/arr=set 1（无 texel 集），skinned=set 2（texel 集在 1）——skinned 拆出 `gbuffer_skinned_vk.frag`（仅此差异，注释互锁保持同步）。
+- **实现**：① 四 shader + 新 skinned_vk：`mr * u_mr_factor`（glTF 乘法语义，与 R579 前向一致），ao/emissive 保持 const；② `DeferredSystem` 新增双缓冲单因子 UBO（base/skinned 逐材质 update+bind）与 64 层 vec4 因子表 UBO（arr 路径按 `v_layer` 索引），`deferred_bind_gbuffer_mr_factor` / `deferred_set_gbuffer_mr_factor_array`（CPU 暂存 + dirty 标记）/ `deferred_bind_gbuffer_mr_factor_array`（脏才上传再绑定）；③ main.c 新增 `gbuffer_bind_material` 包装接管 gbuffer pass 全部 5 个绘制点（skinned/臂/地形/逐节点/R437 逐组），arr 路径在 execute 前绑定因子表；④ `MatArraySet` 去重键加入因子（同纹理对不同因子=不同层；无纹理但因子非 (1,1) 的材质不再错误归入 layer 0），bake 成功后因子表移交 deferred。
+- **TDD（红→绿实证）**：先改测试——TEST 12（arr）每层因子 UBO + 新断言（layer1 ×(0.5,2.0)、layer2 ×(1,0.5)），新增 TEST 12b（base 管线：双 quad 共享纹理、逐绘制重绑 UBO (1,1)→(0,0.5)，断言 RT0.a/RT2.r 字节级跟踪因子且 albedo 不受染）。RED 双端如实失败（VK：q0 mr{26,255} 而非 {52,...}；12b 右 quad 与左恒等）；GREEN 后双端通过：VK（NVIDIA 616.56）TEST 12+12b ✓，GL（AMD）全套件 ALL PASSED 含 12/12b ✓。
+- **测试基础设施**：新增两个默认惰性的 env 门——`TV_SKIP_CULL_COMPACT`（跳过 TEST 9/10 体）与 `TV_ONLY_GBUFFER`（只跑 TEST 12/12b 早退）。动机：本机当前处于 R577 TDR 易感态，全套件在 TEST 10/11 区 3/3 确定性设备丢失（与提交代码无关，基线同死），屏蔽延迟测试；CI lavapipe 从不设置、完整跑全区。门内 run 验证：R577 区前全部测试不受影响。
+- **回归**：双树非图形 CTest 各 111/112（唯一失败=test_platform_win32_runtime 剪贴板子项的外部持锁，R577 已定性为环境问题，与本 diff 无关）；GL deferred demo（BREAK_RENDER_PATH=deferred）120 帧优雅退出 0 FATAL（arr 单 execute 路径逐帧行使因子表绑定）；GL/VK 前向 demo 120 帧。**VK deferred/前向 demo 在本机 ~2-4 帧后设备丢失=既有 R577 驱动边界（基线逐帧行为逐字节一致，validation 消息剖面相同——仅 destroy 级联，无绘制期错误），非本轮引入**。
+- **边界**：arr 因子表容量 64=MAT_ARR_MAX_LAYERS（static_assert 互锁）；`u_ao_default`/`u_emissive_flag` 仍无引擎通道（原样保留 const）；clustered 管线接入生产仍是独立后续边界（R579 终局条目）。
+
+## 本轮更新：R579-K 根因精化 — 交叉验证驳倒纯 >128B 论；触发="texel 集管线 × vert push 加载>128B"驱动交互
+
+- **交叉验证**：`gbuffer_vk.vert` 加载全部 4×mat4（含 u_prev_mvp@192-256）且 TEST 12 本地 VK 像素级通过——**单纯">128B 加载"理论被驳**。
+- **精化根因**：gbuffer 管线**无 texel 描述符集**；全部死亡案例（clustered 与 R579-I 探针族）均为 **texel-buffer 管线（双 set 布局）**——触发条件为二者交集：**"携带 texel 集的管线 × vertex 阶段 push 加载越过 128B" → 本驱动零片元**。deferred_light（texel 管线但 vert 加载 ≤128B 的全屏直通）存活 ✓；免 push vert 存活 ✓；全部已知案例无一矛盾。
+- **生产结论不变**：push-free vert（12a6df2）为最终答案；上游报告签名更新为此精化形态（NVIDIA 616.56 hybrid：pipeline with texel-buffer set + vert push loads >128B → zero fragments, validation silent）。
+
 ## 本轮更新：R579-J 根因捕获 — vertex 阶段 push 常量加载>128B 杀死光栅化（探针二分链）
 
 - **二分链**：单 mat4@64B（活）→ 2×mat4 用第二矩阵@64（活）→ 3×mat4 声明 192B 仅用前两（活，未用成员被 DCE 缩小有效接口）→ 3×mat4 声明+全用（死）→ 同声明仅写 model（死，残值矩阵平凡解释）。**唯一决定性变量 = vert 对 push 字节 [128,192) 的加载**。

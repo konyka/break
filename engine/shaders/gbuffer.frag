@@ -19,10 +19,12 @@ layout(location = 3) out vec4 out_velocity;        /* NDC delta xy */
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 
-/* R93-1: These uniforms are never set from C code. Use const defaults.
- * u_ao_default=1.0 (full AO, no darkening) — was 0.0 (no AO) which was a bug. */
-const float u_metallic_default = 0.0;
-const float u_roughness_default = 0.0;
+/* R580: glTF per-material metallic/roughness scalar factors arrive via the
+ * aux UBO (std140 vec2; GL binding 0), written per material by
+ * deferred_bind_gbuffer_mr_factor(). Default (1,1) = texture passthrough.
+ * The R93-1 additive defaults for metal/rough are retired (glTF composes
+ * multiplicatively); ao/emissive have no engine channel yet. */
+layout(std140, binding = 0) uniform GbufMR { vec2 u_mr_factor; };
 const float u_ao_default = 1.0;
 const float u_emissive_flag = 0.0;
 
@@ -43,8 +45,9 @@ vec2 octahedron_encode(vec3 n) {
 void main() {
     vec3  base    = texture(u_albedo, v_texcoord).rgb;
     vec2  mr      = texture(u_metallic_roughness, v_texcoord).bg;
-    float metal   = clamp(mr.x + u_metallic_default, 0.0, 1.0);
-    float rough   = clamp(mr.y + u_roughness_default, 0.04, 1.0);
+    vec2  mrf     = mr * u_mr_factor; /* R580: glTF factor x texture composition */
+    float metal   = clamp(mrf.x, 0.0, 1.0);
+    float rough   = clamp(mrf.y, 0.04, 1.0);
     float ao      = clamp(u_ao_default, 0.0, 1.0);
 
     out_albedo_metallic = vec4(base, metal);
