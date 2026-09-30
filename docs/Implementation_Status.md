@@ -3,7 +3,7 @@
 ## 本轮更新：R579-E 像素门根因纵深 — push 别名实锤（vert 的 u_proj@128-192 被 frag 侧全部标量踩踏）；零片元余疑收窄至顶点输入
 
 - **别名机制完整解明**：两 stage 矛盾布局下，vert 的 `u_proj` 矩阵领土（128-192）恰好被 frag 块的 camera@128/fog_near@140/ambient@144/fog_far@156/screen_w@160/screen_h@164/near@168/far@172/point_count@176/dir_count@180 切分——测试此前全量写入，camera 覆盖 col0（x_clip≡0→退化线）、sw@160 腐蚀深度裁剪、计数整数写进 col3 位模式——**R579-B"零片元"的（部分）根因实锤**。测试已改为只写 model/view/proj/mr_factor（其余残值双 pass 恒定，门依然有效）。
-- **余疑**：只写三矩阵后 echo 仍零片元；Y 翻转（生产投影翻 Y、单位阵导致绕序反面被剔除假说）也非解。**下轮首要嫌疑：管线顶点输入派生**（RHIPipelineDesc 无显式顶点布局——VK 侧如何从 vert 推导 vertexInputState？demo 网格与本测试 VBO 同为 32B pos3+normal3+uv2，但该管线从未被绘制=派生路径从未验证）。
+- **余疑**：只写三矩阵后 echo 仍零片元；Y 翻转（生产投影翻 Y、单位阵导致绕序反面被剔除假说）也非解。**顶点输入派生已验证正确**（rhi_vk.c:3431-3441 else 分支：stride 缺省 32 + pos3@0/normal3@12/uv2@24——与测试 VBO 的 8 浮点交错布局精确匹配）——该嫌疑排除。**剩余嫌疑（下轮入口）**：① 光栅化态 cullMode（读 3445+ 的 rasterizer 声明）；② rhi_pipeline_create 失败时是否返回"合法句柄"的静默回退（若 vkCreateGraphicsPipelines 失败被吞，两 stage 矛盾 push 块可能正是创建失败源）。
 - 验证：默认路径无回归（TEST 7b SKIP、套件优雅退出、GL 构建通过）；TV_MR_DEBUG 诊断机制同步精化。
 
 ## 本轮更新：R579-D 战略级勘误 — pbr_clustered 是"从未绘制"的死管线；R579 生产接线撤除（ambient 别名腐蚀）
