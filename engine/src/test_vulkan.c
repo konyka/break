@@ -757,12 +757,14 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                 (void)l_sw; (void)l_sh; (void)l_near; (void)l_far;
                 (void)l_pc; (void)l_dc;
                 rhi_cmd_set_uniform_vec2(cmd, l_mr, factors[p][0], factors[p][1]);
+                if (!getenv("TV_NOBIND")) { /* R579-E2 bisect: bare-pipeline draw */
                 rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
                                            light_system_grid_slot(ls));
                 rhi_cmd_bind_material_textures_ibl(cmd,
                     rs->test_tex, mr_tex, rs->test_tex, rs->test_tex,
                     rs->test_tex, rs->test_tex, rs->sampler,
                     ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
+                }
                 rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
                 rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, 3, 1);
