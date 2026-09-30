@@ -6388,6 +6388,11 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {
         /* Layout matches pbr_clustered_vk.frag's push block (u_proj removed). */
+        /* R579-E: the VERT stage block has u_model@0/u_view@64/u_proj@128 —
+         * without this entry the model-matrix write is silently skipped
+         * (location -1) and draws render with stale push garbage (the
+         * R579-B/C/E "zero fragments" final root cause). */
+        if (strcmp(name, "u_model") == 0)      return 0;
         if (strcmp(name, "u_camera_pos") == 0)  return 128;
         if (strcmp(name, "u_fog_near") == 0)    return 140;
         if (strcmp(name, "u_ambient") == 0)     return 144;
