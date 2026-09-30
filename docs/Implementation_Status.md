@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579 终局 — 十一轮调查闭环，真实像素门双端通过（12a6df2）
+
+- **判定**：clustered vert 的 push 块为"从未工作过"的最终阻断点——换用 IBL 作者的免 push vert（`pbr_ibl_test_vk.vert`，其注释自证前人已知此坑："production clustered Vulkan pair has compact, stage-specific push layouts"）后**三角形渲染 + 因子端到端流通**：echo 实证 `metallic×0=0`、`roughness×0.2=0.11`（f16 字节精确吻合）；真实 A/B 像素门**本地 VK 通过 + CI lavapipe 通过**（12a6df2 起 CI 9/9 含真实门）。R579-B 缺陷正式关闭。
+- **调查期间修复的真实缺陷**（独立于悬案）：① clustered uniform 映射缺 `u_model→0`（模型矩阵写入被静默跳过）；② R579 初版 bind_material 的因子写腐蚀 blinn ambient.z（R579-D 撤除）。
+- **门终态**：TEST 7b = 真实像素差分门（VK 路径，>1% 像素变化断言）；echo/first-lit 诊断仅在 TV_MR_DEBUG 下输出；GL 分支维持 SKIP（AMD-Windows GL 对该绘制 no-op，R579(一) 记录）。
+- **遗留**：clustered 管线接入生产（需先统一 vert/frag push 块声明——本调查已证明其为从未工作过的根因层）仍为后续边界；gbuffer 因子通道同前。
+
 ## 本轮更新：R579-E 像素门根因纵深 — push 别名实锤（vert 的 u_proj@128-192 被 frag 侧全部标量踩踏）；零片元余疑收窄至顶点输入
 
 - **别名机制完整解明**：两 stage 矛盾布局下，vert 的 `u_proj` 矩阵领土（128-192）恰好被 frag 块的 camera@128/fog_near@140/ambient@144/fog_far@156/screen_w@160/screen_h@164/near@168/far@172/point_count@176/dir_count@180 切分——测试此前全量写入，camera 覆盖 col0（x_clip≡0→退化线）、sw@160 腐蚀深度裁剪、计数整数写进 col3 位模式——**R579-B"零片元"的（部分）根因实锤**。测试已改为只写 model/view/proj/mr_factor（其余残值双 pass 恒定，门依然有效）。

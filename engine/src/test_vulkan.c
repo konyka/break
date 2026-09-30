@@ -676,30 +676,10 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     }
     (void)gpu_cull_ok;
 
-    if (!getenv("TV_MR_DEBUG") && false) { /* R579-E2: gate now always runs */
-    LOG_INFO("SKIP: PBR factor pixel gate (real defect confirmed by CI lavapipe; see R579-B)");
-    /* R579-C diagnostic: verify the MR texel round-trips through the
-     * texture creation/readback path. Expected {0,140,180,255} — if this
-     * reads zeros the defect is texture creation, not the binding. */
-    {
-        u8 mrb[4] = {0u, 0u, 0u, 0u};
-        if (rhi_texture_read_pixels(rs->device, mr_tex, mrb, 4u))
-            LOG_INFO("RDBG: mr_texel readback = {%u,%u,%u,%u} (want {0,140,180,255})",
-                     mrb[0], mrb[1], mrb[2], mrb[3]);
-        else
-            LOG_ERROR("RDBG: mr_texel readback FAILED");
-    }
-    if (rhi_handle_valid(mr_tex)) rhi_texture_destroy(rs->device, mr_tex);
-    if (ls) {
-        light_system_shutdown(ls);
-        free(ls);
-    }
-    if (rhi_handle_valid(pipe)) rhi_pipeline_destroy(rs->device, pipe);
-    ibl_destroy(&ibl, rs->device);
-    return true;
-    }
+    /* R579 resolved (12a6df2): the real pixel gate runs unconditionally —
+     * the push-free vert renders and the factor provably flows. */
 
-    /* ---- TV_MR_DEBUG: echo render (FragColor = post-factor mr) ---- */
+    /* ---- A/B factor gate (echo variant under TV_MR_DEBUG) ---- */
     bool pass = false;
     (void)pass;
     RHIOffscreenFBO scene = {0};
@@ -800,13 +780,13 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                     if (!cb && !eb) eb = pb;
                     if (ea && eb) break;
                 }
-                if (ea && eb) {
+                if (ea && eb && getenv("TV_MR_DEBUG")) {
                     bool same = memcmp(ea, eb, px_stride) == 0;
                     LOG_INFO("RDBG: echo first-lit A=[%02x %02x %02x %02x %02x %02x %02x %02x] "
                              "B=[%02x %02x %02x %02x %02x %02x %02x %02x] identical=%d",
                              ea[0], ea[1], ea[2], ea[3], ea[4], ea[5], ea[6], ea[7],
                              eb[0], eb[1], eb[2], eb[3], eb[4], eb[5], eb[6], eb[7], (int)same);
-                } else {
+                } else if (getenv("TV_MR_DEBUG")) {
                     LOG_INFO("RDBG: echo no lit pixels found (ea=%d eb=%d)",
                              ea != NULL, eb != NULL);
                 }
