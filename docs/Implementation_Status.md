@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579-J 根因捕获 — vertex 阶段 push 常量加载>128B 杀死光栅化（探针二分链）
+
+- **二分链**：单 mat4@64B（活）→ 2×mat4 用第二矩阵@64（活）→ 3×mat4 声明 192B 仅用前两（活，未用成员被 DCE 缩小有效接口）→ 3×mat4 声明+全用（死）→ 同声明仅写 model（死，残值矩阵平凡解释）。**唯一决定性变量 = vert 对 push 字节 [128,192) 的加载**。
+- **根因表述**：本机 NVIDIA 混合驱动（RTX 4060 Laptop）上，**vertex 阶段加载超过 128 字节的 push 常量内容使管线产出零片元**（无任何错误上报；声明/写入/布局全部合规——R579-G/H 全层免责与此自洽：静态层无罪，是驱动对越界加载的隐形失败）。
+- **工程结论**：clustered vert（u_proj@128 必用）在此驱动上不可用=结构性死路；**push-free vert 方案（12a6df2）即最终生产答案**（其 本就为此绕行）。上游报告线索：NVIDIA 616.56 hybrid，vert push load >128B → zero fragments，validation 全静默。
+- 探针工具链（pbr_probe_vk.vert + TV_MR_DEBUG/TV_1WRITE）入库供复验。
 ## 本轮更新：R579-H 全层免责完成 — C 侧接线亦清白；案件正式移交 GPU 捕获（无更廉价路径）
 
 - **R579-G 假设推翻**：审计完成——`vk_compile_glsl` 的 stage 旗标正确（`is_fragment ? fragment : vertex`）、`rhi_pipeline_create` 的 stage 组装教科书级正确（vert@VERTEX/frag@FRAGMENT、pName="main"、模块填装无误）。
