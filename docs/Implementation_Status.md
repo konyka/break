@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R579-G 终极收窄 — vert SPIR-V 本体无罪；现场锁定 rhi_vk 的 C 侧着色器模块/管线 stage 接线
+
+- **双编译器全量对比**：glslc（shaderc CLI，与运行时同一编译器家族）与 glslangValidator 对 `pbr_clustered_vk.vert` 的产物经 spirv-dis 全量比对——**push 块 13 个成员偏移逐一相同**（0/64/128/192/204/208/220/224/228/232/236/240/244，块 248B）、能力/内存模型一致；唯一差异为 OpEntryPoint 接口列表是否列 %pc（两者皆合法装饰）。**SPIR-V 源头无罪**。
+- **现场最终锁定**：叠加 R579-F（frag 退化仍零片元）与全部消除表 ⇒ 剩余唯一未审区域 = **rhi_vk.c 的运行时着色器模块创建与管线 stage 组装路径**（rhi_shader_create 的 vert 分支编译选项/stage 旗标、vkCreateGraphicsPipelines 的 stage 填装——纯 C 侧可 grep 代码，无需 GPU 工具）。下轮入口：审计 rhi_shader_create(vert=true) 的 shaderc 选项与 pName/stage 填装约 50 行。
+
 ## 本轮更新：R579-F 终裁 — top-of-main 红色早退仍零片元；悬案降至不可再分核
 
 - **实验**：echo 注入点移至 frag `void main() {` 首语句（`FragColor=vec4(1,0,0,1); return;`——先于 POM/法线扰动/mr 一切逻辑），配合 clustered vert 运行：**仍零片元（ea=0 eb=0）**。TV_MR_DEBUG 诊断模式现固定使用 clustered vert（正常门保持 push-free vert）。
