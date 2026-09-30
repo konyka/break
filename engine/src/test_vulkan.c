@@ -608,7 +608,7 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
      * TV_MR_DEBUG keeps the clustered vert for diagnostics on the dead path. */
     char *vsrc = shader_read_file(
 #if defined(ENGINE_VULKAN)
-        getenv("TV_MR_DEBUG") ? "shaders/pbr_clustered_vk.vert" : "shaders/pbr_ibl_test_vk.vert",
+        getenv("TV_MR_DEBUG") ? "shaders/pbr_probe_vk.vert" : "shaders/pbr_ibl_test_vk.vert",
 #else
         TV_VS_PBR,
 #endif
@@ -752,8 +752,10 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                 }
                 rhi_cmd_bind_pipeline(cmd, pipe);
                 rhi_cmd_set_uniform_mat4(cmd, l_model, &model.e[0][0]);
+                if (!getenv("TV_1WRITE")) { /* R579-I: decouple declaration vs writes */
                 rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
+                }
                 /* R579-E: NOTHING else may be written. The two stages
                  * declare contradictory push layouts: the vert's u_proj
                  * spans 128-192, which the frag block carves into
