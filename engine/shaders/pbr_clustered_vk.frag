@@ -63,6 +63,11 @@ layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 #endif
 
 layout(location = 0) out vec4 FragColor;
+/* R589: FORWARD_MRT — RT1 per-object velocity (blinn_phong_vk precedent). */
+#ifdef FORWARD_MRT
+layout(location = 3) in vec2 v_velocity;
+layout(location = 1) out vec2 out_velocity;
+#endif
 
 const float PI = 3.14159265359;
 
@@ -472,4 +477,7 @@ void main() {
     color = exp2(log2(max(color, vec3(0.0))) * (1.0 / 2.2));  /* R94-1: exp2 replaces pow */
 
     FragColor = vec4(color, 1.0);
+#ifdef FORWARD_MRT
+    out_velocity = v_velocity;
+#endif
 }

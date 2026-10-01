@@ -262,6 +262,10 @@ typedef struct {
     i32 cl_loc_point_shadow_far_planes;
     i32 cl_loc_pom_enabled;
     i32 cl_loc_mr_factor;
+    i32 cl_loc_emissive_factor;
+    /* R589: VK proj aux UBO for the clustered forward pipeline (R586 moved
+     * u_proj out of the push block to set=2 binding=0). GL uses cl_loc_proj. */
+    RHIBuffer     clustered_proj_ubo;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
     i32 sk_loc_view, sk_loc_proj;
@@ -424,19 +428,31 @@ static bool render_init(RenderState *rs, Platform *platform) {
         if (cv && cf) {
             /* Enable the split-sum IBL path and point-light shadows for the
              * clustered forward shader. The HAS_POINT_SHADOW path declares
-             * samplerCube bindings but only samples when shadow_index >= 0. */
+             * samplerCube bindings but only samples when shadow_index >= 0.
+             * R589: also inject FORWARD_MRT (both stages) and build against
+             * the 2-attachment forward pass — the R579 终局 opt-in
+             * (BREAK_FORWARD_CLUSTERED) draws inside the forward MRT render
+             * pass, whose RT1 carries per-object velocity. */
             usize cfl_ibl = 0;
             char *cf_ibl = shader_inject_define(cf, cfl, "HAS_IBL", &cfl_ibl);
             usize cfl_ps = 0;
             char *cf_ps = cf_ibl ? shader_inject_define(cf_ibl, cfl_ibl, "HAS_POINT_SHADOW", &cfl_ps)
                                  : shader_inject_define(cf, cfl, "HAS_POINT_SHADOW", &cfl_ps);
-            RHIShader cvs = rhi_shader_create(rs->device, cv, cvl, false);
-            RHIShader cfs = cf_ps ? rhi_shader_create(rs->device, cf_ps, cfl_ps, true)
-                                  : rhi_shader_create(rs->device, cf, cfl, true);
-            free(cv); free(cf); free(cf_ibl); free(cf_ps);
+            usize cvl_mrt = 0, cfl_mrt = 0;
+            char *cv_mrt = shader_inject_define(cv, cvl, "FORWARD_MRT", &cvl_mrt);
+            char *cf_mrt = cf_ps ? shader_inject_define(cf_ps, cfl_ps, "FORWARD_MRT", &cfl_mrt)
+                                 : shader_inject_define(cf, cfl, "FORWARD_MRT", &cfl_mrt);
+            RHIShader cvs = rhi_shader_create(rs->device, cv_mrt ? cv_mrt : cv,
+                                              cv_mrt ? cvl_mrt : cvl, false);
+            RHIShader cfs = cf_mrt ? rhi_shader_create(rs->device, cf_mrt, cfl_mrt, true)
+                                   : (cf_ps ? rhi_shader_create(rs->device, cf_ps, cfl_ps, true)
+                                            : rhi_shader_create(rs->device, cf, cfl, true));
+            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt);
             if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
                 RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
-                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                       .mrt_attachment_count = 2u,
+                                       .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
                 rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
                 rhi_shader_destroy(rs->device, cvs);
                 rhi_shader_destroy(rs->device, cfs);
@@ -463,6 +479,18 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->cl_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_shadow_far_planes");
     rs->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_pom_enabled");
     rs->cl_loc_mr_factor = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_mr_factor");
+        rs->cl_loc_emissive_factor = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_emissive_factor");
+        {
+            /* R589: clustered frame UBO {prev_vp, prev_model, proj} — the RHI
+             * binds one UBO descriptor set per call, so proj (VK) and the
+             * FORWARD_MRT temporal pair share a single binding (VK set=2
+             * binding=0, GL binding=0). The temporal pair leads so an
+             * accidental rebind into a ForwardTemporal-expecting blinn
+             * pipeline still reads correct values. Refreshed per frame. */
+            RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                                  .size = 3u * sizeof(Mat4), .initial_data = NULL };
+            rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
+        }
     }
 
     RHISamplerDesc sdesc = {
@@ -869,6 +897,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->instance_buf[0])) rhi_buffer_destroy(rs->device, rs->instance_buf[0]);
     if (rhi_handle_valid(rs->instance_buf[1])) rhi_buffer_destroy(rs->device, rs->instance_buf[1]);
     if (rhi_handle_valid(rs->clustered_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_pipeline);
+    if (rhi_handle_valid(rs->clustered_proj_ubo)) rhi_buffer_destroy(rs->device, rs->clustered_proj_ubo);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
     if (rhi_handle_valid(rs->fallback_mr)) rhi_texture_destroy(rs->device, rs->fallback_mr);
@@ -888,6 +917,10 @@ static void render_shutdown(RenderState *rs) {
 /* Frame-level point shadow cache — gathered once per frame, consumed by
  * bind_material, clustered_set_point_shadow_uniforms, and terrain. */
 static struct { RHITexture tex[4]; f32 far_planes[4]; u32 count; } g_psc;
+/* R589: per-frame count of clustered forward static-pass emissions
+ * (BREAK_FORWARD_CLUSTERED) — logged next to the R438 counter, then reset.
+ * Declared here: forward_clustered_bind_frame below increments it. */
+static u32 g_fwd_clustered_taken;
 
 static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, f32 psc_far_planes[4]) {
     for (u32 i = 0u; i < 4u; i++) psc_far_planes[i] = 25.0f;
@@ -932,6 +965,91 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     /* R216-B: Do not write cl_loc_pom_enabled here — offset is clustered@224,
      * which aliases blinn_phong u_ambient; clustered draws are skipped (R75-1). */
     (void)scene;
+}
+
+/* R589: clustered-pipeline material bind — the BREAK_FORWARD_CLUSTERED
+ * counterpart of bind_material. Texture binding is shared (the common helper
+ * already feeds the full IBL/shadow/point-shadow layout R586 verified in
+ * TEST 7c/7d); on top it writes the per-material glTF factor uniforms the
+ * shared helper must NOT emit for blinn-family pipelines (R579-D ambient
+ * aliasing): u_mr_factor + u_emissive_factor. The emissive composition is
+ * CPU-precomposed rgb = emissiveFactor x emissiveStrength (R582 deferred
+ * semantics), with the white-1x1 substitution for factor-only materials
+ * (R580 precedent) since the shared emissive fallback is black. */
+static void clustered_bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
+    Material sub;
+    f32 er = 0.0f, eg = 0.0f, eb = 0.0f;
+    if (mat) {
+        er = mat->emissive_factor[0] * mat->emissive_strength;
+        eg = mat->emissive_factor[1] * mat->emissive_strength;
+        eb = mat->emissive_factor[2] * mat->emissive_strength;
+        if (!rhi_handle_valid(mat->emissive) &&
+            (er != 0.0f || eg != 0.0f || eb != 0.0f)) {
+            sub = *mat;
+            sub.emissive = rs->fallback_tex; /* white 1x1 */
+            mat = &sub;
+        }
+    }
+    bind_material(cmd, rs, mat, scene);
+    rhi_cmd_set_uniform_vec2(cmd, rs->cl_loc_mr_factor,
+                             mat ? mat->metallic_factor : 1.0f,
+                             mat ? mat->roughness_factor : 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_emissive_factor, er, eg, eb);
+}
+
+/* R589: bind the clustered pipeline and emit every per-frame uniform it
+ * consumes, plus the light-grid texel buffers and (VK) the proj aux UBO.
+ * Called at each forward static-pass entry — after a compact compute or a
+ * blinn-family draw the pipeline/descriptor state must be re-established.
+ * Uniform VALUES persist across pipeline binds (VK push bytes are host-side
+ * until the next draw flush, GL uniforms are program state), so per-material
+ * sites only need clustered_bind_material. */
+static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
+                                         const LightSystem *ls,
+                                         const Mat4 *view, const Mat4 *proj,
+                                         const Mat4 *prev_vp,
+                                         const Vec3 *cam_pos, const Vec3 *ambient,
+                                         f32 near_p, f32 far_p,
+                                         bool fog_on, f32 fog_n, f32 fog_f,
+                                         const Vec3 *fog_col, bool underwater,
+                                         u32 screen_w, u32 screen_h, f32 shadow_bias) {
+    rhi_cmd_bind_pipeline(cmd, rs->clustered_pipeline);
+    rhi_cmd_set_uniform_mat4(cmd, rs->cl_loc_view, &view->e[0][0]);
+    /* Frame UBO {prev_vp, prev_model(identity — mega verts are world-space
+     * and static nodes match the blinn bind_forward_temporal approximation),
+     * proj} — one buffer, one binding, both backends (RHI single-UBO model). */
+    if (rhi_handle_valid(rs->clustered_proj_ubo)) {
+        Mat4 ubo_data[3];
+        ubo_data[0] = *prev_vp;
+        ubo_data[1] = mat4_identity();
+        ubo_data[2] = *proj;
+        rhi_buffer_update(rs->device, rs->clustered_proj_ubo, ubo_data, sizeof(ubo_data));
+        rhi_cmd_bind_uniform_buffer(cmd, rs->clustered_proj_ubo, 0u);
+    }
+#ifndef ENGINE_VULKAN
+    rhi_cmd_set_uniform_mat4(cmd, rs->cl_loc_proj, &proj->e[0][0]);
+#endif
+    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_camera_pos, cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
+    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_ambient, ambient->e[0], ambient->e[1], ambient->e[2]);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_screen_w, (f32)screen_w);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_screen_h, (f32)screen_h);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_near, near_p);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_far, far_p);
+    rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_count, (i32)ls->point_count);
+    rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_dir_count, (i32)ls->dir_count);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_shadow_bias, shadow_bias);
+    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_fog_color, fog_col->e[0], fog_col->e[1], fog_col->e[2]);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_fog_near, fog_on ? fog_n : 1e6f);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_fog_far,  fog_on ? fog_f : 2e6f);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_underwater, underwater ? 1.0f : 0.0f);
+    /* Point-shadow far planes ride g_psc (gathered earlier this frame). */
+    rhi_cmd_set_uniform_vec4(cmd, rs->cl_loc_point_shadow_far_planes,
+                             g_psc.far_planes[0], g_psc.far_planes[1],
+                             g_psc.far_planes[2], g_psc.far_planes[3]);
+    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_pom_enabled, 0.0f);
+    rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                               light_system_grid_slot(ls));
+    g_fwd_clustered_taken++;
 }
 
 /* R580: G-Buffer pass variant of bind_material — additionally feeds the
@@ -1639,7 +1757,13 @@ static bool mega_unified_vis_flags(GPUCullSystem *gc, RHICmdBuffer *cmd,
 static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *scene,
                                 MegaBuffer *mb,
                                 const u32 *draw_vis,
-                                RHIPipeline restore_pipe) {
+                                RHIPipeline restore_pipe,
+                                /* R589: non-NULL = clustered forward mode
+                                 * (BREAK_FORWARD_CLUSTERED): rebind the light
+                                 * grid texel buffers after the compact compute
+                                 * and feed per-material glTF factors via the
+                                 * clustered wrapper. NULL = legacy behavior. */
+                                const LightSystem *cl_lights) {
     u32 calls = 0u;
     if (!mb || !mb->valid || !mb->group_system_ready) return 0u;
     /* R437: ONE merged compact for all groups (was G per-group compacts).
@@ -1657,10 +1781,17 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
      * only binds textures. Rebind before indirect execute (VK cache hit is cheap). */
     if (rhi_handle_valid(restore_pipe))
         rhi_cmd_bind_pipeline(cmd, restore_pipe);
+    if (cl_lights) {
+        /* The compact dispatch binds its own storage descriptor sets; rebind
+         * the clustered light grid (set 1) before the grouped executes. */
+        rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(cl_lights),
+                                   light_system_grid_slot(cl_lights));
+    }
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 mat_idx = mb->mat_indices[g];
         Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
-        bind_material(cmd, render, mat, scene);
+        if (cl_lights) clustered_bind_material(cmd, render, mat, scene);
+        else           bind_material(cmd, render, mat, scene);
         indirect_draw_execute_group(&mb->group_system, render->device, g);
         calls++;
     }
@@ -2835,6 +2966,11 @@ MegaBuffer mega_buf = {0};
 IndirectDrawSystem indirect_sys = {0};
 GPUCullSystem gpucull_sys = {0};
 bool gpu_indirect_enabled = false;
+/* R589: opt-in forward clustered PBR for the static-scene draws
+ * (BREAK_FORWARD_CLUSTERED=1). Default off — blinn stays the default while
+ * the clustered path is evaluated; instanced/skinned/mat-arr/terrain/water
+ * draws are unaffected (documented boundary). */
+bool fwd_clustered_mode = false;
 f32 cg_saturation = 1.1f;
 f32 cg_contrast = 1.05f;
 f32 cg_brightness = 1.0f;
@@ -3107,6 +3243,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     /* R441: parsed before the mega bake — the bake builds (or skips) the
      * material texture array. Default on; 0 keeps the R437 per-group path. */
     { const char *e = getenv("BREAK_MAT_INDIRECT"); if (e && !atoi(e)) mat_indirect_enabled = false; }
+    /* R589: opt-in forward clustered PBR for static-scene draws. */
+    { const char *e = getenv("BREAK_FORWARD_CLUSTERED"); if (e && atoi(e)) fwd_clustered_mode = true; }
+    if (fwd_clustered_mode)
+        LOG_INFO("Forward clustered PBR: ON (BREAK_FORWARD_CLUSTERED) — static-scene draws use pbr_clustered; instanced/skinned/mat-arr/terrain/water unchanged");
     {
         typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } MegaVert;
         u32 total_verts = 0, total_idxs = 0, mesh_cmd_count = 0;
@@ -4343,6 +4483,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         /* Use hot-reloaded pipeline as active pipeline when available */
         RHIPipeline active_pipeline = wireframe_mode && rhi_handle_valid(render.wire_pipeline) ? render.wire_pipeline : render.pipeline;
+        /* R589: BREAK_FORWARD_CLUSTERED — swap the forward STATIC-SCENE draws
+         * (R438 mega/fallback block) to the repaired pbr_clustered pipeline
+         * (R579 终局, R586/R588 pixel gates). Wireframe wins (debug solid
+         * fill); instanced/skinned/mat-arr/terrain/water draws keep their own
+         * pipelines — the per-draw sites below branch on fwd_clustered. */
+        const bool fwd_clustered = !wireframe_mode && fwd_clustered_mode &&
+                                   render.render_path == RENDER_PATH_FORWARD &&
+                                   rhi_handle_valid(render.clustered_pipeline);
+        RHIPipeline fwd_static_pipeline = fwd_clustered ? render.clustered_pipeline
+                                                        : active_pipeline;
         /* Hot-reloaded shaders are single-attachment variants; keep them out
          * of the forward MRT pass until hotreload preserves the MRT contract. */
         if (render.render_path != RENDER_PATH_FORWARD &&
@@ -5921,7 +6071,27 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
             /* R75-1: forward path skips clustered cull/upload/bind (the clustered
              * terrain draw was depth-culled away in R74-2, so no forward draw
-             * consumes the light grid). Deferred DOES cull/upload below. */
+             * consumes the light grid). Deferred DOES cull/upload below.
+             * R589: ...unless BREAK_FORWARD_CLUSTERED puts the light grid back
+             * on the forward menu — then the prep runs right after this block. */
+        }
+
+        /* R589: clustered forward light prep (mirrors the deferred block at the
+         * lighting pass): shadow indices + cascade VPs + camera depth range,
+         * then GPU cluster cull (fallback CPU cull + upload). Legal mid-frame
+         * on VK only since R588 (vk_wait_frames no longer waits on the
+         * recording frame's own fence for the CPU-path grid staging upload). */
+        if (fwd_clustered) {
+            light_system_set_point_shadow_indices(&lights, &pt_shadows);
+            light_system_set_cascade_vp(&lights, render.cascade_vp);
+            light_system_set_depth_range(&lights, camera.near_plane, camera.far_plane);
+            if (lights.gpu_cull) {
+                light_system_upload_lights(&lights);
+                light_system_cull_gpu(&lights, cmd, &curr_view_proj.e[0][0], rw, rh);
+            } else {
+                light_system_cull(&lights, &view, &proj, rw, rh);
+                light_system_upload(&lights);
+            }
         }
 
         if (rhi_handle_valid(render.skinned_pipeline)) {
@@ -7037,13 +7207,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * only rendered in the shadow pass). Now overlaid after instanced /
          * per-entity drawing: mega first, CPU batch cull fallback — same
          * internal semantics as before, just no longer gated. */
+        /* R589: clustered mode — bind pbr_clustered + emit the per-frame
+         * uniform set before any static-pass draw (the blinn-family ECS /
+         * instanced draws above left their own pipeline bound). */
+        if (fwd_clustered) {
+            Vec3 fog_col = vec3(bg_r, bg_g, bg_b);
+            forward_clustered_bind_frame(cmd, &render, &lights, &view, &proj,
+                                         &prev_view_proj,
+                                         &camera.position, &ambient_col,
+                                         camera.near_plane, camera.far_plane,
+                                         fog_enabled, fog_near, fog_far,
+                                         &fog_col, underwater, rw, rh, shadow_bias);
+        }
         if (scene.node_count > 0) {
                 /* R441: snapshot for the forward mega execute-delta log. */
                 u32 fwd_exec_before = indirect_draw_debug_execute_count();
 
                 if (mega_buf.valid && gpu_indirect_enabled && mega_buf.mat_group_count > 0) {
                     g_fwd_mega_taken++;  /* R438: observability — see per-frame log near R437 compact count */
-                    rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl_loc_model : render.loc_model, &frame_identity.e[0][0]);
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
 
@@ -7065,7 +7247,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                                    &ambient_col, &camera.position)
                             : mega_mat_groups_draw(cmd, &render, &scene,
                                                    &mega_buf, g_draw_vis,
-                                                   active_pipeline);
+                                                   fwd_static_pipeline,
+                                                   fwd_clustered ? &lights : NULL);
                         draw_calls += mc;
                         draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                         draw_bench_mark_unified();
@@ -7124,13 +7307,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
                     }
                     rhi_cmd_memory_barrier(cmd);
-                    /* R234-A: restore graphics pipeline after compact compute. */
-                    if (rhi_handle_valid(active_pipeline))
+                    /* R234-A: restore graphics pipeline after compact compute.
+                     * R589: clustered mode re-emits the full frame state (the
+                     * helper rebinds pipeline + light-grid texel buffers). */
+                    if (fwd_clustered) {
+                        Vec3 fog_col2 = vec3(bg_r, bg_g, bg_b);
+                        forward_clustered_bind_frame(cmd, &render, &lights, &view, &proj,
+                                                     &prev_view_proj,
+                                                     &camera.position, &ambient_col,
+                                                     camera.near_plane, camera.far_plane,
+                                                     fog_enabled, fog_near, fog_far,
+                                                     &fog_col2, underwater, rw, rh, shadow_bias);
+                    } else if (rhi_handle_valid(active_pipeline)) {
                         rhi_cmd_bind_pipeline(cmd, active_pipeline);
+                    }
                     for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                         u32 mat_idx = mega_buf.mat_indices[g];
                         Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                        bind_material(cmd, &render, mat, &scene);
+                        if (fwd_clustered) clustered_bind_material(cmd, &render, mat, &scene);
+                        else               bind_material(cmd, &render, mat, &scene);
                         if (mega_buf.group_system_ready)
                             indirect_draw_execute_group(&mega_buf.group_system, render.device, g);
                         draw_calls++;
@@ -7205,10 +7400,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         (void)lod_level;
                     }
 
-                    rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &node->world_transform.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl_loc_model : render.loc_model, &node->world_transform.e[0][0]);
 
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene);
+                    if (fwd_clustered) clustered_bind_material(cmd, &render, mat, &scene);
+                    else               bind_material(cmd, &render, mat, &scene);
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -7228,10 +7424,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* R438: node_count==0 now explicit (was implied by the old gate). */
         } else if (!drew_any && scene.node_count == 0) {                for (u32 i = 0; i < scene.mesh_count; i++) {
                     Mesh *m = &scene.meshes[i];
-                    rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &frame_identity.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl_loc_model : render.loc_model, &frame_identity.e[0][0]);
 
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    bind_material(cmd, &render, mat, &scene);
+                    if (fwd_clustered) clustered_bind_material(cmd, &render, mat, &scene);
+                    else               bind_material(cmd, &render, mat, &scene);
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -7389,7 +7586,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                                        &prev_view_proj)
                         : mega_mat_groups_draw(cmd, &render, &scene,
                                                &mega_buf, g_draw_vis,
-                                               dsys->gbuffer_pipeline);
+                                               dsys->gbuffer_pipeline, NULL);
                     draw_calls += mc;
                     draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                     draw_bench_mark_unified();
@@ -7598,6 +7795,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * that the static scene draw is decoupled from ECS entity draws. */
         LOG_DEBUG("R438: forward mega branch taken this frame: %u", g_fwd_mega_taken);
         g_fwd_mega_taken = 0;
+        /* R589: clustered forward emissions — 1 per frame when the mode is
+         * active (plus 1 extra per legacy-branch compact rebind). */
+        LOG_DEBUG("R589: forward clustered emissions this frame: %u", g_fwd_clustered_taken);
+        g_fwd_clustered_taken = 0;
         /* R441: execute draws this frame — 1 when the material-array
          * single-execute path ran, mat_group_count for the R437 loop. */
         LOG_DEBUG("R441: execute draws this frame: %u (total indirect executes: %u)",

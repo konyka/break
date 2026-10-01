@@ -17,20 +17,43 @@ layout(push_constant) uniform PushConstants {
     mat4 u_view;        /*  64 — same offset as pbr_clustered_vk.frag */
 } pc;
 
+/* R589: FORWARD_MRT velocity contract (blinn_phong_vk precedent) — required
+ * for the production forward MRT pass (RT1 = per-object velocity). The aux
+ * UBO carries {prev_vp, prev_model, proj} in ONE binding: the RHI binds a
+ * single UBO descriptor set per call, so two bindings never coexist; the
+ * temporal pair sits at offsets 0/64 so an accidental rebind of this buffer
+ * into a ForwardTemporal-expecting (blinn-family) pipeline still reads the
+ * correct {prev_vp, prev_model}. */
+#ifdef FORWARD_MRT
+layout(std140, set = 2, binding = 0) uniform ClusterVertUBO {
+    mat4 u_prev_vp;
+    mat4 u_prev_model;
+    mat4 u_proj;
+} cvp;
+#else
 layout(std140, set = 2, binding = 0) uniform ClusterVertProj {
     mat4 u_proj;
 } cvp;
+#endif
 
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
+#ifdef FORWARD_MRT
+layout(location = 3) out vec2 v_velocity;
+#endif
 
 void main() {
     vec4 world_pos = pc.u_model * vec4(aPos, 1.0);
     vWorldPos = world_pos.xyz;
     vNormal = mat3(pc.u_model) * aNormal;
     vUV = aUV;
-    gl_Position = cvp.u_proj * pc.u_view * world_pos;
+    vec4 curr_clip = cvp.u_proj * pc.u_view * world_pos;
+#ifdef FORWARD_MRT
+    vec4 prev_clip = cvp.u_prev_vp * cvp.u_prev_model * vec4(aPos, 1.0);
+    v_velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
+#endif
+    gl_Position = curr_clip;
     /* R214-A: OpenGL proj → Vulkan clip.z [0,1] (match depth_only / CSM). */
     gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
 }

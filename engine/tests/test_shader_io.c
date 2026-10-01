@@ -573,6 +573,45 @@ TEST(static_mega_geometry_contract_is_documented_and_unchanged)
     ASSERT_TRUE(strstr(src, "u_model") == NULL);
 }
 
+/* R589: BREAK_FORWARD_CLUSTERED opt-in — the repaired pbr_clustered pipeline
+ * (R579 终局 / R586 像素门实证) becomes reachable in production for the
+ * forward static-scene draws. Lock the wiring markers: env gate, effective
+ * pipeline selector, emissive-factor location, VK proj aux UBO, clustered
+ * material wrapper (factor writes the shared blinn helper must not emit,
+ * R579-D), per-frame observability counter. */
+TEST(forward_clustered_opt_in_production_wiring)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "BREAK_FORWARD_CLUSTERED"));
+    ASSERT_NOT_NULL(strstr(src, "fwd_static_pipeline"));
+    ASSERT_NOT_NULL(strstr(src, "cl_loc_emissive_factor"));
+    ASSERT_NOT_NULL(strstr(src, "clustered_proj_ubo"));
+    ASSERT_NOT_NULL(strstr(src, "clustered_bind_material"));
+    ASSERT_NOT_NULL(strstr(src, "g_fwd_clustered_taken"));
+    /* R589 MRT contract: the production clustered pipeline draws inside the
+     * 2-attachment forward pass — shaders carry FORWARD_MRT velocity output
+     * and the pipeline desc carries the 2-format MRT contract (validation
+     * VUID-vkCmdDrawIndexedIndirectCount-renderPass-02684 otherwise). */
+    ASSERT_NOT_NULL(strstr(src, "cfl_mrt"));
+    const char *cfiles[] = {
+        "pbr_clustered.vert", "pbr_clustered_vk.vert",
+        "pbr_clustered.frag", "pbr_clustered_vk.frag"
+    };
+    for (usize i = 0; i < sizeof(cfiles) / sizeof(cfiles[0]); i++) {
+        char sh[24576];
+        ASSERT_TRUE(read_shader_source(cfiles[i], sh, sizeof(sh)));
+        ASSERT_NOT_NULL(strstr(sh, "FORWARD_MRT"));
+        ASSERT_NOT_NULL(strstr(sh, "v_velocity"));
+    }
+    char vsh[24576];
+    ASSERT_TRUE(read_shader_source("pbr_clustered_vk.vert", vsh, sizeof(vsh)));
+    /* R589: single aux-UBO binding {prev_vp, prev_model, proj} — the RHI
+     * binds one UBO descriptor set per call, so two bindings never coexist. */
+    ASSERT_NOT_NULL(strstr(vsh, "mat4 u_prev_model;"));
+    ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -600,4 +639,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(deferred_skinned_gbuffer_contract);
     RUN_TEST(deferred_skinned_gbuffer_regressions_are_guarded);
     RUN_TEST(static_mega_geometry_contract_is_documented_and_unchanged);
+    RUN_TEST(forward_clustered_opt_in_production_wiring);
 TEST_MAIN_END()
