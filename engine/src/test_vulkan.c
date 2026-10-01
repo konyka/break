@@ -72,6 +72,21 @@ static f32 tv_f16_to_f32(u16 h) {
     return (h & 0x8000u) ? -v : v;
 }
 
+/* R593: half-float encode for the f16 upload-direction gate — same scope as
+ * the decoder (normals only, no inf/nan/subnormal-on-underflow handling). */
+static u16 tv_f32_to_f16(f32 f) {
+    u16 sign = (f < 0.0f) ? 0x8000u : 0u;
+    f32 a = fabsf(f);
+    if (a == 0.0f) return sign;
+    int e = 0;
+    f32 m = frexpf(a, &e);              /* a = m * 2^e, m in [0.5,1) */
+    int exp = e + 14;                   /* f16 biased exponent (m*2 in [1,2)) */
+    if (exp < 1 || exp > 30) return sign;
+    u32 mant = (u32)((m * 2.0f - 1.0f) * 1024.0f + 0.5f);
+    if (mant > 1023u) { mant = 0; exp++; }
+    return (u16)(sign | (u16)(exp << 10) | (u16)mant);
+}
+
 /* ---- Golden image regression helpers ------------------------------------
  * The presented frame is read back via rhi_screenshot, box-downsampled to a
  * tiny grid (robust against single-pixel driver noise) and compared against a
@@ -511,7 +526,10 @@ static bool tv_test_motion_blur_rt1(const TestRenderState *rs,
     RHITexture velocity_tex = RHI_HANDLE_NULL;
     bool pass = false;
 
-    const f32 velocity_data[] = {0.25f, 0.0f};
+    /* R593: f16 textures take native half-float upload bytes on both
+     * backends — the old f32 pair was driver-converted on GL but raw-misread
+     * as two f16 on VK ((0.0, ~0.954) instead of (0.25, 0.0)). */
+    const u16 velocity_data[] = {tv_f32_to_f16(0.25f), tv_f32_to_f16(0.0f)};
     RHITextureDesc velocity_desc = {
         .width = 1, .height = 1, .format = RHI_FORMAT_R16G16_SFLOAT,
         .mip_levels = 1, .data = velocity_data,
@@ -585,6 +603,74 @@ cleanup:
     if (rhi_handle_valid(velocity_tex)) rhi_texture_destroy(rs->device, velocity_tex);
     if (rhi_handle_valid(src.fb)) rhi_offscreen_fbo_destroy(rs->device, &src);
     motion_blur_shutdown(&mb);
+    return pass;
+}
+
+/* R593: f16-format textures move NATIVE half-float bytes in both directions
+ * on both backends — upload (.data) and readback (rhi_texture_read_pixels).
+ * VK always moved raw bytes; GL pre-R593 expected f32 upload bytes (driver-
+ * converted) and read RG16F back as clamped RGBA8 — the same 4B/px with
+ * silently different semantics (the R587 boundary). Exact-representable
+ * values only, so an aligned backend round-trips bit-exact. */
+static bool tv_test_f16_roundtrip(RHIDevice *dev) {
+    bool pass = true;
+
+    /* RG16F 2x1: pixels (0.25,-0.5) and (1.5,1.0). Backing arrays are
+     * oversized (16B) so the pre-R593 GL f32 upload path stays in-bounds. */
+    u16 rg_src[8] = {
+        tv_f32_to_f16(0.25f), tv_f32_to_f16(-0.5f),
+        tv_f32_to_f16(1.5f),  tv_f32_to_f16(1.0f),
+        0, 0, 0, 0,
+    };
+    RHITextureDesc rg_desc = {
+        .width = 2, .height = 1, .format = RHI_FORMAT_R16G16_SFLOAT,
+        .mip_levels = 1, .data = rg_src,
+    };
+    RHITexture rg = rhi_texture_create(dev, &rg_desc);
+    u16 rg_rb[4] = {0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu};
+    if (!rhi_handle_valid(rg)) {
+        LOG_ERROR("FAIL: RG16F roundtrip texture create failed");
+        pass = false;
+    } else if (!rhi_texture_read_pixels(dev, rg, rg_rb, sizeof(rg_rb))) {
+        LOG_ERROR("FAIL: RG16F roundtrip readback failed");
+        pass = false;
+    } else if (memcmp(rg_rb, rg_src, sizeof(rg_rb)) != 0) {
+        LOG_ERROR("FAIL: RG16F roundtrip mismatch "
+                  "(got %04x %04x %04x %04x, want %04x %04x %04x %04x)",
+                  rg_rb[0], rg_rb[1], rg_rb[2], rg_rb[3],
+                  rg_src[0], rg_src[1], rg_src[2], rg_src[3]);
+        pass = false;
+    }
+    if (rhi_handle_valid(rg)) rhi_texture_destroy(dev, rg);
+
+    /* RGBA16F 1x1: (0.25,-0.5,1.5,1.0). Readback was aligned by R587; this
+     * round aligns the upload direction (GL expected f32 bytes there). */
+    u16 rgba_src[8] = {
+        tv_f32_to_f16(0.25f), tv_f32_to_f16(-0.5f),
+        tv_f32_to_f16(1.5f),  tv_f32_to_f16(1.0f),
+        0, 0, 0, 0,
+    };
+    RHITextureDesc rgba_desc = {
+        .width = 1, .height = 1, .format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+        .mip_levels = 1, .data = rgba_src,
+    };
+    RHITexture rgba = rhi_texture_create(dev, &rgba_desc);
+    u16 rgba_rb[4] = {0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu};
+    if (!rhi_handle_valid(rgba)) {
+        LOG_ERROR("FAIL: RGBA16F roundtrip texture create failed");
+        pass = false;
+    } else if (!rhi_texture_read_pixels(dev, rgba, rgba_rb, sizeof(rgba_rb))) {
+        LOG_ERROR("FAIL: RGBA16F roundtrip readback failed");
+        pass = false;
+    } else if (memcmp(rgba_rb, rgba_src, sizeof(rgba_rb)) != 0) {
+        LOG_ERROR("FAIL: RGBA16F roundtrip mismatch "
+                  "(got %04x %04x %04x %04x, want %04x %04x %04x %04x)",
+                  rgba_rb[0], rgba_rb[1], rgba_rb[2], rgba_rb[3],
+                  rgba_src[0], rgba_src[1], rgba_src[2], rgba_src[3]);
+        pass = false;
+    }
+    if (rhi_handle_valid(rgba)) rhi_texture_destroy(dev, rgba);
+
     return pass;
 }
 
@@ -3389,6 +3475,13 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: MOTION BLUR RT1 TEST %s",
              motion_rt1_pass ? "PASSED ✓" : "FAILED");
 
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: F16 TEXTURE NATIVE-BYTE ROUNDTRIP");
+    LOG_INFO("============================================");
+    bool f16rt_pass = tv_test_f16_roundtrip(render.device);
+    LOG_INFO("RESULT: F16 ROUNDTRIP TEST %s",
+             f16rt_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -3482,7 +3575,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = motion_rt1_pass && f16rt_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -4488,7 +4581,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = motion_rt1_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = motion_rt1_pass && f16rt_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrc_pass && psh_pass && golden_pass &&

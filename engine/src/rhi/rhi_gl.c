@@ -1809,10 +1809,16 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     u32 mips = desc->mip_levels ? desc->mip_levels : 1u;
     GLenum internal = rhi_format_to_gl_internal(desc->format);
     GLenum fmt = rhi_format_to_gl_format(desc->format);
+    /* R593: f16 formats take NATIVE half-float upload bytes, matching the VK
+     * backend's raw memcpy semantics — pre-R593 GL expected f32 here and the
+     * driver converted, so the same .data produced different texels per
+     * backend (the motion-blur velocity test texture was silently misread on
+     * VK). D32/R32 keep f32; everything else stays RGBA8. */
     GLenum typ = (desc->format == RHI_FORMAT_D32_FLOAT
-                  || desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
-                  || desc->format == RHI_FORMAT_R16G16_SFLOAT
-                  || desc->format == RHI_FORMAT_R32_FLOAT) ? GL_FLOAT : GL_UNSIGNED_BYTE;
+                  || desc->format == RHI_FORMAT_R32_FLOAT) ? GL_FLOAT
+               : (desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
+                  || desc->format == RHI_FORMAT_R16G16_SFLOAT) ? GL_HALF_FLOAT
+               : GL_UNSIGNED_BYTE;
 
     /* R550-B: immutable storage (glTexStorage2D) so rhi_cmd_bind_texture_mip
      * can carve single-mip glTextureViews — views require immutable storage.
@@ -1952,14 +1958,19 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     /* R587: RGBA16F reads back NATIVE half-float bytes (8B/px), aligning the
      * VK backend's semantics (the R579-(三) divergence — GL always returned
      * clamped RGBA8 — is retired). HDR values past 1.0 are no longer lost to
-     * the UNORM clamp; tests assert exact f16 on both backends. All other
-     * formats keep the legacy RGBA8 (4B/px) behavior. */
-    bool f16 = (td->gl_internal_format == GL_RGBA16F);
-    usize need = (usize)td->width * td->height * (f16 ? 8u : 4u);
+     * the UNORM clamp; tests assert exact f16 on both backends.
+     * R593: RG16F joins the native-byte semantics (GL_RG/GL_HALF_FLOAT,
+     * 4B/px) — pre-R593 it fell into the RGBA8 clamp at the same byte count,
+     * silently diverging from VK's native RG f16 stream. All other formats
+     * keep the legacy RGBA8 (4B/px) behavior. */
+    bool f16_rgba = (td->gl_internal_format == GL_RGBA16F);
+    bool f16_rg   = (td->gl_internal_format == GL_RG16F);
+    usize need = (usize)td->width * td->height * (f16_rgba ? 8u : 4u);
     if (size < need) return false;
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA,
-                  f16 ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, dst_rgba8);
+    glGetTexImage(GL_TEXTURE_2D, 0, f16_rg ? GL_RG : GL_RGBA,
+                  (f16_rgba || f16_rg) ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
+                  dst_rgba8);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
     return true;

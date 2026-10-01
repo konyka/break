@@ -153,6 +153,9 @@ typedef struct {
     u32         height;
     RHIFormat   format;
     u32         mip_levels;
+    /* R593: initial texel bytes in the format's NATIVE layout on both
+     * backends (RGBA8→4B/px; RG16F→4B/px f16 pairs; RGBA16F→8B/px f16
+     * quads; R32F/D32F→4B/px f32). NULL leaves the texture undefined. */
     const void *data;
 } RHITextureDesc;
 
@@ -240,9 +243,11 @@ RHITexture  rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
 /* Upload one full layer (RGBA8, size >= w*h*4 of the array extent). */
 void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
                                            u32 layer, const void *rgba8, usize size);
-/* R441: size query + synchronous RGBA8 readback of mip 0 — used once at bake
- * time to pack material albedos into a texture array (staging on VK,
- * glGetTexImage on GL; not a per-frame API). */
+/* R441: size query + synchronous readback of mip 0 — used once at bake time
+ * to pack material albedos into a texture array (staging on VK, glGetTexImage
+ * on GL; not a per-frame API). Byte semantics follow the texture format on
+ * BOTH backends (R587/R593): RGBA8/BGRA8 → 4B/px RGBA8; RG16F → 4B/px native
+ * f16 pairs; RGBA16F → 8B/px native f16 quads. */
 bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
 bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.

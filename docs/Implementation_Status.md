@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R593 f16 纹理原生字节语义双向对齐（TDD）— RG16F/RGBA16F 上传与回读双端统一；钓出 motion-blur 速度纹理 VK 端误读活雷
+
+- **缺口**（R587 落账边界"RG16F 等非 RGBA16F 回读语义维持"）：调研发现 f16 格式**两个方向**均双端分歧——回读：VK 返回原生字节（RG16F 4B/px f16 对、RGBA16F 8B/px）而 GL 仅 RGBA16F 对齐（R587)、RG16F 仍落 RGBA8 钳制（同 4B/px，语义静默不同）；上传：VK `memcpy` 原生字节而 GL 期望 f32 由驱动转换（RG16F 8B/px、RGBA16F 16B/px）——**同一 `.data` 双端产出不同纹素**。
+- **钓出的活雷（本轮修复）**：motion-blur RT1 测试的速度纹理 `velocity_data = {0.25f, 0.0f}`(f32)——GL 端驱动转换正确，VK 端被 `memcpy` 前 4 字节误读为两枚 f16（≈(0.0, 0.954))，测试纹理内容双端从不一致（当时仅"速度影响输出"弱断言未暴露）。生产速度走 RT1 渲染目标不受影响，但语义地雷对任何未来调用方张开。
+- **方案**（沿 R587 的 VK 语义方向）：f16 家族统一**原生字节进、原生字节出**。`rhi_gl.c` ① create 上传类型 f16 格式 → `GL_HALF_FLOAT`(D32/R32 保持 f32，其余 RGBA8 不变）;② read_pixels 增 `GL_RG16F` 分支（`GL_RG`/`GL_HALF_FLOAT` 4B/px);③ motion-blur 速度数据改原生 f16 位样；④ `rhi.h` `RHITextureDesc.data` 与 `rhi_texture_read_pixels` 注释写明逐格式字节语义（RGBA8→4B/px;RG16F→4B/px f16 对；RGBA16F→8B/px f16 四元；R32F/D32F→4B/px f32)。
+- **TDD（红→绿实证）**：新增共享段（双端同跑）**F16 TEXTURE NATIVE-BYTE ROUNDTRIP** 门——RG16F 2×1 与 RGBA16F 1×1 精确可表示值（0.25/-0.5/1.5/1.0）原生 f16 上传→回读→位精确断言；配套 `tv_f32_to_f16` 编码器（与 R584 解码器同域：normals only)。背衬数组放大至 16B 使 RED 期 GL 旧 f32 读取不越界。RED 实证：GL 双格式均垃圾字节红、VK 全绿（鉴别力完备）;GREEN 后双端过、聚合进双端 all_pass。
+- **回归**:GL 全套件 ALL PASSED(golden 双项 MAE 0.00)+ 全树 CTest **114/114**（剪贴板瞬态本轮未现）;VK 套件 F16/RT1 过、失败项恰为已知本机基线（12b 驱动边界 + golden 双项异机漂移，MAE 28.75/13.54 与改前逐值一致）,VK 树 CTest 113/114（唯一失败=test_vulkan 同基线）;demo 双端 120 帧 rc=0,VK validation 0。
+- **边界**:`rhi_texture_upload_mip` 维持 RGBA8 流式语义（mip 流专用，文档已明）;R8 等其余非 f16 格式回读仍走遗留 RGBA8（无调用方，语义随需再对齐）;RGBA16F 上传方向本次由潜在分歧转为有门覆盖（生产零调用方）;motion-blur 深度重建回退路径（TEST 6）不涉 f16 上传。
+
 ## 本轮更新：R592 clustered 材质数组变体（TDD）— arr 单 execute 路径并入，前向 clustered 模式 blinn 回退面清零；R591 CI 补记
 
 - **缺口**（R591 落账的最后回退面）：`BREAK_FORWARD_CLUSTERED` 下默认 mega 分支（mat_arr 单 execute）仍走 blinn arr 管线——启用时静态场景主绘制路径仍是 blinn。
