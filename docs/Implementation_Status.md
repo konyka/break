@@ -1,5 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R592 clustered 材质数组变体（TDD）— arr 单 execute 路径并入，前向 clustered 模式 blinn 回退面清零；R591 CI 补记
+
+- **缺口**（R591 落账的最后回退面）：`BREAK_FORWARD_CLUSTERED` 下默认 mega 分支（mat_arr 单 execute）仍走 blinn arr 管线——启用时静态场景主绘制路径仍是 blinn。
+- **方案**：共享 pbr_clustered frag 增 **`CLUSTERED_ARR` 条件块**（不复制 470 行 shader）——五个采样器按同绑定位切换 2D_ARRAY 类型（共享 COMBINED_IMAGE_SAMPLER 布局原样接受数组视图，blinn arr 先例）；`vLayer`（location 3）与 `v_velocity`（移 location 4,blinn arr 契约）按 define 分流；**逐层因子表**（mat_factors/emissive_factors 各 64×vec4）走共享帧 UBO 新增的因子区（偏移 192..2240，帧 UBO 192B→2240B,std140 布局逐字节对齐；vert 头 192B 布局不变，静态/实例/蒙皮变体零影响）。新增双端 `pbr_clustered_arr{,_vk}.vert`(gl_BaseInstanceARB→vLayer，无 storage 集——ubo 集序与静态变体同）。AO strength 逐层生效（arr 变体顺带关闭 R586"前向 strength 不支持"边界的 arr 段）。
+- **接线**：`ClusteredLocs` 第四实例 `rs->car`;`mega_mat_arrays_draw` 增 `clustered_arr` 参数（发射在调用点——其内部 compact 不扰双端已绑图形描述符/UBO/texel 状态）——变体管线绑定 + 因子区 `rhi_buffer_update_region` ×2 + 五数组经共享 IBL helper 一次绑定 + 单 execute；两处前向 mat_arr 调用点（unified/legacy vis）按 `arr_clustered` 发射。
+- **钓出的真实缺陷（本轮修复）**：arr 烘焙体系**没有法线数组**(MatArraySet 仅 albedo/mr/emissive/occlusion——gbuffer_arr 也只读前两张），变体 frag 的 `sampler2DArray` 法线槽收到 2D 回退视图即视图类型违例（Arrayed=1 vs 2D,10 条 validation)。修复=新增 `fallback_normal_arr`(1 层 2D_ARRAY 平法线回退）;**法线贴图在 arr 变体下不生效**（烘焙范围外，记为边界）。
+- **TDD（红→绿实证）**：契约测试 `forward_clustered_array_variant_wiring`（管线/arr vert/因子区更新/数组绑定/双端 frag 条件块标记）如实红；GREEN 后过。真机阶梯：法线槽违例 10 条 → 数组回退后 **VK arr 路径（默认配置）120 帧 validation 0 零故障**、分组路径 0;GL 双配置 120 帧优雅退出。
+- **回归**：双树非图形 CTest 各 111/112（唯一失败=test_platform_win32_runtime 剪贴板子项，**系统级独立探针再证外部持锁**——OpenClipboard 系统范围 err=5、无窗口持有者，R577 同型瞬态，本 diff 不涉平台层）;GL 全套件 ALL PASSED;VK 套件基线（7d/12/12c/12d 全过，12b+golden 漂移本机既有残余）；默认 demo 矩阵——GL 前向/延迟 120 帧 rc=0,VK 前向 120 帧/延迟 240 帧 rc=0 validation 0（默认路径零行为变化）。
+- **边界**：法线贴图不进 arr 变体（需烘焙体系增 normal_array——MatArraySet 扩容+去重键扩展，独立后续）;POM 在 arr 变体读数组法线 .b（高度通道语义随平法线回退退化，生产 u_pom_enabled=0 不受影响）;ECS 每实体回退与无节点回退的 prev_model 近似沿 R589 边界。**R591 CI 补记**:8/9(Clang/LLD 于 apt 装包阶段取消=runner flake 同型，未达构建），代码经本轮 CI 与后续重触发覆盖验证。
+- **前向 clustered 四变体至此齐备**（静态/实例/蒙皮/数组）,`BREAK_FORWARD_CLUSTERED` 启用时 blinn 回退面仅剩：ECS 每实体回退（instanced 管线无效时）与 wireframe/terrain/water/后处理等自有管线绘制（设计内）。
+
 ## 本轮更新：R591 clustered skinned 变体（TDD）— 蒙皮绘制并入前向 clustered 模式，blinn 回退面仅剩材质数组；R590 CI 9/9 全绿补记
 
 - **缺口**（R590 落账边界"clustered 仍无 skinned/材质数组变体"）：`BREAK_FORWARD_CLUSTERED` 下蒙皮网格与程序化手臂仍走 blinn-skinned。

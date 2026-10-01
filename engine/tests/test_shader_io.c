@@ -690,6 +690,44 @@ TEST(forward_clustered_skinned_variant_wiring)
     ASSERT_NOT_NULL(strstr(vsh, "aJoints"));
 }
 
+/* R592: clustered texture-ARRAY variant — the material-array single-execute
+ * path (the default mega branch) joins the opt-in clustered forward mode.
+ * The shared pbr_clustered frag gains a CLUSTERED_ARR conditional block
+ * (2D_ARRAY samplers at the same bindings + per-layer factor tables from
+ * the frame UBO's factor region at offsets 192+); the vert forwards
+ * gl_BaseInstanceARB as the layer (blinn_phong_arr precedent). */
+TEST(forward_clustered_array_variant_wiring)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "clustered_arr_pipeline"));
+    ASSERT_NOT_NULL(strstr(src, "pbr_clustered_arr_vk.vert"));
+    /* factor region update into the shared frame UBO (offsets 192+) */
+    ASSERT_NOT_NULL(strstr(src, "rhi_buffer_update_region"));
+    /* the five arrays bound through the shared IBL helper */
+    ASSERT_NOT_NULL(strstr(src, "mb->mats.mr_array"));
+
+    /* Shared frag carries the CLUSTERED_ARR block with array samplers and
+     * the factor-table block (both backends). */
+    const char *frags[] = { "pbr_clustered.frag", "pbr_clustered_vk.frag" };
+    for (usize i = 0; i < sizeof(frags) / sizeof(frags[0]); i++) {
+        char fsh[24576];
+        ASSERT_TRUE(read_shader_source(frags[i], fsh, sizeof(fsh)));
+        ASSERT_NOT_NULL(strstr(fsh, "CLUSTERED_ARR"));
+        ASSERT_NOT_NULL(strstr(fsh, "sampler2DArray"));
+        ASSERT_NOT_NULL(strstr(fsh, "u_factor_arr[64]"));
+        ASSERT_NOT_NULL(strstr(fsh, "vLayer"));
+    }
+
+    /* VK vert: ARB base-instance layer forward + velocity at location 4. */
+    char vsh[8192];
+    ASSERT_TRUE(read_shader_source("pbr_clustered_arr_vk.vert", vsh, sizeof(vsh)));
+    ASSERT_NOT_NULL(strstr(vsh, "gl_BaseInstanceARB"));
+    ASSERT_NOT_NULL(strstr(vsh, "location = 3) flat out uint vLayer"));
+    ASSERT_NOT_NULL(strstr(vsh, "location = 4) out vec2 v_velocity"));
+    ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -720,4 +758,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_opt_in_production_wiring);
     RUN_TEST(forward_clustered_instanced_variant_wiring);
     RUN_TEST(forward_clustered_skinned_variant_wiring);
+    RUN_TEST(forward_clustered_array_variant_wiring);
 TEST_MAIN_END()

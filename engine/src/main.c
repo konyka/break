@@ -251,6 +251,9 @@ typedef struct {
     RHITexture    fallback_mr;
     RHITexture    fallback_normal;
     RHITexture    fallback_emissive;
+    /* R592: 1-layer 2D_ARRAY twin of fallback_normal for the CLUSTERED_ARR
+     * variant (its sampler2DArray slots reject plain 2D views). */
+    RHITexture    fallback_normal_arr;
     RHITexture    terrain_tex;
     RHIShadowMap  shadow_map;   /* 2048x2048 CSM atlas: 4 cascades in 2x2 quadrants */
     RHIPipeline   depth_pipeline;
@@ -276,6 +279,10 @@ typedef struct {
      * uses_storage, rhi_vk classification narrowed to the clustered table). */
     ClusteredLocs csk;
     RHIPipeline   clustered_skin_pipeline;
+    /* R592: texture-array variant (CLUSTERED_ARR frag branch; per-layer
+     * factor tables ride the frame UBO's factor region at offsets 192+). */
+    ClusteredLocs car;
+    RHIPipeline   clustered_arr_pipeline;
     /* R589: shared clustered frame UBO {prev_vp, prev_model, proj} — VK set
      * index differs per variant (static: set=2, instanced: set=3), but the
      * bind call resolves the pipeline's own ubo_set. */
@@ -454,20 +461,22 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_camera_pos");
     rs->loc_albedo      = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_albedo");
 
-    /* Clustered lighting pipelines (static + R590 instanced + R591 skinned) */
+    /* Clustered lighting pipelines (static + R590 instanced + R591 skinned + R592 array) */
     {
-        usize cvl = 0, cfl = 0, civl = 0, csvl = 0;
-        char *cv = NULL, *cf = NULL, *civ = NULL, *csv = NULL;
+        usize cvl = 0, cfl = 0, civl = 0, csvl = 0, cavl = 0;
+        char *cv = NULL, *cf = NULL, *civ = NULL, *csv = NULL, *cav = NULL;
 #ifdef ENGINE_VULKAN
         cv = shader_read_file("shaders/pbr_clustered_vk.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered_vk.frag", &cfl);
         civ = shader_read_file("shaders/pbr_clustered_inst_vk.vert", &civl);
         csv = shader_read_file("shaders/pbr_clustered_skin_vk.vert", &csvl);
+        cav = shader_read_file("shaders/pbr_clustered_arr_vk.vert", &cavl);
 #else
         cv = shader_read_file("shaders/pbr_clustered.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered.frag", &cfl);
         civ = shader_read_file("shaders/pbr_clustered_inst.vert", &civl);
         csv = shader_read_file("shaders/pbr_clustered_skin.vert", &csvl);
+        cav = shader_read_file("shaders/pbr_clustered_arr.vert", &cavl);
 #endif
         if (cv && cf) {
             /* Enable the split-sum IBL path and point-light shadows for the
@@ -510,7 +519,23 @@ static bool render_init(RenderState *rs, Platform *platform) {
                                          csv_mrt ? csvm_len : csvl, false);
                 free(csv_mrt);
             }
-            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ); free(csv);
+            /* R592: texture-array variant — own frag object (CLUSTERED_ARR
+             * define switches samplers to 2D_ARRAY + per-layer factor tables)
+             * + layer-forwarding vert. */
+            RHIShader cavs = RHI_HANDLE_NULL, cafs = RHI_HANDLE_NULL;
+            char *cf_arr = NULL;
+            if (cav) {
+                usize cavm_len = 0;
+                char *cav_mrt = shader_inject_define(cav, cavl, "FORWARD_MRT", &cavm_len);
+                cavs = rhi_shader_create(rs->device, cav_mrt ? cav_mrt : cav,
+                                         cav_mrt ? cavm_len : cavl, false);
+                free(cav_mrt);
+                usize cfa_len = 0;
+                cf_arr = cf_mrt ? shader_inject_define(cf_mrt, cfl_mrt, "CLUSTERED_ARR", &cfa_len) : NULL;
+                if (cf_arr)
+                    cafs = rhi_shader_create(rs->device, cf_arr, cfa_len, true);
+            }
+            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ); free(csv); free(cav); free(cf_arr);
             if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
                 RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
                                        .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
@@ -537,12 +562,24 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     cpd.skinned_vertex = true;
                     rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
                 }
+                if (rhi_handle_valid(cavs) && rhi_handle_valid(cafs)) {
+                    /* R592: array variant — no storage set (ubo stays at
+                     * set=2 like the static pipeline); NOT .is_instanced
+                     * (same R590 classification reason). */
+                    cpd.vert = cavs;
+                    cpd.frag = cafs;
+                    cpd.uses_storage = false;
+                    cpd.skinned_vertex = false;
+                    rs->clustered_arr_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                }
                 rhi_shader_destroy(rs->device, cvs);
                 rhi_shader_destroy(rs->device, cfs);
             }
             if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
             if (rhi_handle_valid(csvs)) rhi_shader_destroy(rs->device, csvs);
-        } else { free(cv); free(cf); free(civ); free(csv); }
+            if (rhi_handle_valid(cavs)) rhi_shader_destroy(rs->device, cavs);
+            if (rhi_handle_valid(cafs)) rhi_shader_destroy(rs->device, cafs);
+        } else { free(cv); free(cf); free(civ); free(csv); free(cav); }
     }
     if (rhi_handle_valid(rs->clustered_pipeline)) {
         clustered_query_locs(rs, rs->clustered_pipeline, &rs->cl);
@@ -552,9 +589,12 @@ static bool render_init(RenderState *rs, Platform *platform) {
              * FORWARD_MRT temporal pair share a single binding (VK set=2
              * binding=0, GL binding=0). The temporal pair leads so an
              * accidental rebind into a ForwardTemporal-expecting blinn
-             * pipeline still reads correct values. Refreshed per frame. */
+             * pipeline still reads correct values. Refreshed per frame.
+             * R592: +2x64 vec4 factor tables (offsets 192..2240) consumed by
+             * the CLUSTERED_ARR frag branch's per-layer factor lookups. */
             RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
-                                  .size = 3u * sizeof(Mat4), .initial_data = NULL };
+                                  .size = 3u * sizeof(Mat4) + 2u * 64u * 4u * sizeof(f32),
+                                  .initial_data = NULL };
             rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
         }
     }
@@ -562,6 +602,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
         clustered_query_locs(rs, rs->clustered_inst_pipeline, &rs->cli);
     if (rhi_handle_valid(rs->clustered_skin_pipeline))
         clustered_query_locs(rs, rs->clustered_skin_pipeline, &rs->csk);
+    if (rhi_handle_valid(rs->clustered_arr_pipeline))
+        clustered_query_locs(rs, rs->clustered_arr_pipeline, &rs->car);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -586,6 +628,15 @@ static bool render_init(RenderState *rs, Platform *platform) {
     u8 flat_normal[] = {128, 128, 255, 255};
     RHITextureDesc nrm_desc = { .width = 1, .height = 1, .format = RHI_FORMAT_R8G8B8A8_UNORM, .mip_levels = 1, .data = flat_normal };
     rs->fallback_normal = rhi_texture_create(rs->device, &nrm_desc);
+
+    /* R592: 1-layer 2D_ARRAY twin of fallback_normal — the CLUSTERED_ARR
+     * variant's sampler2DArray normal slot rejects a plain 2D view
+     * (Arrayed=1 vs VK_IMAGE_VIEW_TYPE_2D). */
+    rs->fallback_normal_arr = rhi_texture_array_create(rs->device, 1u, 1u, 1u,
+                                                       RHI_FORMAT_R8G8B8A8_UNORM);
+    if (rhi_handle_valid(rs->fallback_normal_arr))
+        rhi_texture_array_upload_layer(rs->device, rs->fallback_normal_arr,
+                                       0u, flat_normal, sizeof(flat_normal));
 
     u8 black[] = {0, 0, 0, 255};
     RHITextureDesc em_desc = { .width = 1, .height = 1, .format = RHI_FORMAT_R8G8B8A8_UNORM, .mip_levels = 1, .data = black };
@@ -972,9 +1023,11 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->clustered_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_pipeline);
     if (rhi_handle_valid(rs->clustered_inst_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_inst_pipeline);
     if (rhi_handle_valid(rs->clustered_skin_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_skin_pipeline);
+    if (rhi_handle_valid(rs->clustered_arr_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_arr_pipeline);
     if (rhi_handle_valid(rs->clustered_proj_ubo)) rhi_buffer_destroy(rs->device, rs->clustered_proj_ubo);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
+    if (rhi_handle_valid(rs->fallback_normal_arr)) rhi_texture_destroy(rs->device, rs->fallback_normal_arr);
     if (rhi_handle_valid(rs->fallback_mr)) rhi_texture_destroy(rs->device, rs->fallback_mr);
     if (rhi_handle_valid(rs->fallback_normal)) rhi_texture_destroy(rs->device, rs->fallback_normal);
     if (rhi_handle_valid(rs->fallback_emissive)) rhi_texture_destroy(rs->device, rs->fallback_emissive);
@@ -1888,9 +1941,18 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
                                 const u32 *draw_vis,
                                 const Mat4 *view, const Mat4 *proj,
                                 const Vec3 *light_dir, const Vec3 *light_color,
-                                const Vec3 *ambient, const Vec3 *cam_pos) {
+                                const Vec3 *ambient, const Vec3 *cam_pos,
+                                /* R592: true = clustered forward mode
+                                 * (BREAK_FORWARD_CLUSTERED): bind the
+                                 * CLUSTERED_ARR variant pipeline, publish the
+                                 * per-layer factor tables, and feed all five
+                                 * texture arrays. The call site emits the
+                                 * frame state (emitter + light grid). */
+                                bool clustered_arr) {
     if (!mb || !mb->valid || !mb->array_system_ready || !mb->mats.ready) return 0u;
-    if (!rhi_handle_valid(render->arr_pipeline)) return 0u;
+    if (clustered_arr && !rhi_handle_valid(render->clustered_arr_pipeline))
+        clustered_arr = false;
+    if (!clustered_arr && !rhi_handle_valid(render->arr_pipeline)) return 0u;
 
     u32 total = mb->draw_cmd_count;
     for (u32 ci = 0; ci < total; ci++)
@@ -1901,7 +1963,8 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
 
     /* R234-A: GL compute clobbers the graphics program — rebind, then push
      * the same lighting uniforms the blinn path set (arr pipeline locations). */
-    rhi_cmd_bind_pipeline(cmd, render->arr_pipeline);
+    rhi_cmd_bind_pipeline(cmd, clustered_arr ? render->clustered_arr_pipeline
+                                             : render->arr_pipeline);
     /* R551-B: GL element/vertex buffer bindings are VAO state — the mega
      * VBO/IBO binds at the call site landed on the previous pipeline's VAO,
      * so the arr VAO has no element buffer and the indirect-count draw below
@@ -1910,6 +1973,32 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
     rhi_cmd_bind_vertex_buffer(cmd, mb->vbo, 0);
     rhi_cmd_bind_index_buffer(cmd, mb->ibo, 0, true);
     Mat4 idm = mat4_identity(); /* mega verts are pre-transformed to world space */
+    if (clustered_arr) {
+        /* R592: frame state was emitted at the call site (uniform VALUES
+         * persist across the compact compute on both backends). Publish the
+         * per-layer factor tables into the frame UBO's factor region
+         * (offsets 192+; R592 layout note at the buffer's creation). */
+        rhi_cmd_set_uniform_mat4(cmd, render->car.cl_loc_model, &idm.e[0][0]);
+        if (rhi_handle_valid(render->clustered_proj_ubo)) {
+            rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
+                                     3u * sizeof(Mat4),
+                                     mb->mats.mat_factors, sizeof(mb->mats.mat_factors));
+            rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
+                                     3u * sizeof(Mat4) + sizeof(mb->mats.mat_factors),
+                                     mb->mats.emissive_factors, sizeof(mb->mats.emissive_factors));
+        }
+        /* One bind for the whole pass: the four baked arrays (2D_ARRAY views
+         * ride the shared COMBINED_IMAGE_SAMPLER layout unchanged), flat
+         * normal fallback (the arr system does not bake a normal array —
+         * documented boundary), plus the same shadow/SSAO/IBL/point-shadow
+         * slots bind_material would use. */
+        rhi_cmd_bind_material_textures_ibl(cmd,
+            mb->mats.albedo_array, mb->mats.mr_array, render->fallback_normal_arr,
+            mb->mats.emissive_array, mb->mats.occlusion_array,
+            render->shadow_map.depth_tex, render->ssao_tex,
+            render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
+            render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+    } else {
     rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_model, &idm.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_view, &view->e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, render->arr_loc_proj, &proj->e[0][0]);
@@ -1930,6 +2019,7 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
         render->shadow_map.depth_tex, render->ssao_tex,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
         render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
+    }
 
     indirect_draw_execute(&mb->array_system, render->device);
     return 1u;
@@ -7378,14 +7468,35 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                                mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
                         /* g_draw_vis is bake-ordered — the array system consumes
                          * it directly; the grouped path re-sorts internally. */
-                        u32 mc = mat_arr
-                            ? mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
-                                                   &view, &proj, &sun_dir_vec, &sun_color,
-                                                   &ambient_col, &camera.position)
-                            : mega_mat_groups_draw(cmd, &render, &scene,
-                                                   &mega_buf, g_draw_vis,
-                                                   fwd_static_pipeline,
-                                                   fwd_clustered ? &lights : NULL);
+                        /* R592: clustered array path — emit the frame state
+                         * for the CLUSTERED_ARR variant before the call (the
+                         * function's internal compact does not disturb
+                         * already-bound graphics descriptor/UBO/texel state
+                         * on either backend). */
+                        const bool arr_clustered = fwd_clustered &&
+                                                   rhi_handle_valid(render.clustered_arr_pipeline);
+                        u32 mc;
+                        if (mat_arr) {
+                            if (arr_clustered) {
+                                Vec3 fog_ca = vec3(bg_r, bg_g, bg_b);
+                                forward_clustered_bind_frame(cmd, &render,
+                                                             render.clustered_arr_pipeline, &render.car,
+                                                             &lights, &view, &proj, &prev_view_proj,
+                                                             &camera.position, &ambient_col,
+                                                             camera.near_plane, camera.far_plane,
+                                                             fog_enabled, fog_near, fog_far,
+                                                             &fog_ca, underwater, rw, rh, shadow_bias);
+                            }
+                            mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
+                                                      &view, &proj, &sun_dir_vec, &sun_color,
+                                                      &ambient_col, &camera.position,
+                                                      arr_clustered);
+                        } else {
+                            mc = mega_mat_groups_draw(cmd, &render, &scene,
+                                                      &mega_buf, g_draw_vis,
+                                                      fwd_static_pipeline,
+                                                      fwd_clustered ? &lights : NULL);
+                        }
                         draw_calls += mc;
                         draw_bench_add(mc, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, g_draw_vis) : 0u);
                         draw_bench_mark_unified();
@@ -7422,9 +7533,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                             if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
                         }
+                        /* R592: clustered array path — frame-state emission
+                         * before the call (same reasoning as the unified
+                         * branch above). */
+                        const bool arr_clustered = fwd_clustered &&
+                                                   rhi_handle_valid(render.clustered_arr_pipeline);
+                        if (arr_clustered) {
+                            Vec3 fog_ca2 = vec3(bg_r, bg_g, bg_b);
+                            forward_clustered_bind_frame(cmd, &render,
+                                                         render.clustered_arr_pipeline, &render.car,
+                                                         &lights, &view, &proj, &prev_view_proj,
+                                                         &camera.position, &ambient_col,
+                                                         camera.near_plane, camera.far_plane,
+                                                         fog_enabled, fog_near, fog_far,
+                                                         &fog_ca2, underwater, rw, rh, shadow_bias);
+                        }
                         u32 mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
                                                       &view, &proj, &sun_dir_vec, &sun_color,
-                                                      &ambient_col, &camera.position);
+                                                      &ambient_col, &camera.position,
+                                                      arr_clustered);
                         draw_calls += mc;
                         draw_bench_add(mc,
                                        draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);

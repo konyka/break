@@ -62,10 +62,52 @@ layout(set = 0, binding = 8) uniform samplerCube u_prefilter_map;
 layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 #endif
 
-layout(location = 0) out vec4 FragColor;
-/* R589: FORWARD_MRT — RT1 per-object velocity (blinn_phong_vk precedent). */
+/* R592: CLUSTERED_ARR — texture-array single-execute variant. Same binding
+ * numbers with 2D_ARRAY sampler types (the shared COMBINED_IMAGE_SAMPLER
+ * layout accepts array views unchanged — blinn_phong_arr precedent);
+ * per-layer factors ride the frame UBO's factor region (offsets 192+). */
+#ifdef CLUSTERED_ARR
+layout(location = 3) flat in uint vLayer;
 #ifdef FORWARD_MRT
+layout(location = 4) in vec2 v_velocity;
+#endif
+layout(std140, set = 2, binding = 0) uniform ClusterArrFactors {
+    mat4 _vert_header[3];     /*   0..192  — vert stage's matrices, unused here */
+    vec4 u_factor_arr[64];    /* 192..1216 — x metallic, y roughness, z AO strength, w flag */
+    vec4 u_emissive_arr[64];  /* 1216..2240 — rgb factor x strength (R582 semantics) */
+} arrf;
+#define CL_ALBEDO(uv) texture(u_albedo_arr, vec3(uv, float(vLayer))).rgb
+#define CL_MR(uv) texture(u_metallic_roughness_arr, vec3(uv, float(vLayer))).bg
+#define CL_NRM(uv) texture(u_normal_map_arr, vec3(uv, float(vLayer)))
+#define CL_EMISSIVE(uv) texture(u_emissive_arr, vec3(uv, float(vLayer))).rgb
+#define CL_OCC(uv) texture(u_occlusion_arr, vec3(uv, float(vLayer))).r
+#define CL_MR_FACTOR (arrf.u_factor_arr[vLayer].xy)
+#define CL_EMISSIVE_FACTOR (arrf.u_emissive_arr[vLayer].rgb)
+#define CL_OCC_STRENGTH (arrf.u_factor_arr[vLayer].z)
+layout(binding = 0) uniform sampler2DArray u_albedo_arr;
+layout(binding = 2) uniform sampler2DArray u_metallic_roughness_arr;
+layout(binding = 3) uniform sampler2DArray u_normal_map_arr;
+layout(binding = 4) uniform sampler2DArray u_emissive_arr;
+layout(set = 0, binding = 9) uniform sampler2DArray u_occlusion_arr;
+#else
+#define CL_ALBEDO(uv) texture(u_albedo, uv).rgb
+#define CL_MR(uv) texture(u_metallic_roughness, uv).bg
+#define CL_NRM(uv) texture(u_normal_map, uv)
+#define CL_EMISSIVE(uv) texture(u_emissive, uv).rgb
+#define CL_OCC(uv) texture(u_occlusion, uv).r
+#define CL_MR_FACTOR (pc.u_mr_factor)
+#define CL_EMISSIVE_FACTOR (pc.u_emissive_factor)
+#define CL_OCC_STRENGTH (1.0)
+#endif
+
+layout(location = 0) out vec4 FragColor;
+/* R589: FORWARD_MRT — RT1 per-object velocity (blinn_phong_vk precedent).
+ * R592: CLUSTERED_ARR moves the layer to location 3 and velocity to 4
+ * (declared in the CLUSTERED_ARR block above, blinn_phong_arr contract). */
+#ifdef FORWARD_MRT
+#ifndef CLUSTERED_ARR
 layout(location = 3) in vec2 v_velocity;
+#endif
 layout(location = 1) out vec2 out_velocity;
 #endif
 
@@ -329,7 +371,7 @@ float point_shadow_test(vec3 wpos, int shadow_idx, vec3 light_pos, float light_r
 #endif
 
 vec3 perturb_normal(vec3 N, vec3 V, vec2 uv) {
-    vec3 map = texture(u_normal_map, uv).rgb * 2.0 - 1.0;
+    vec3 map = CL_NRM(uv).rgb * 2.0 - 1.0;
     vec3 Q1 = dFdx(vWorldPos);
     vec3 Q2 = dFdy(vWorldPos);
     vec2 st1 = dFdx(uv);
@@ -363,15 +405,15 @@ vec2 parallax_occlusion_mapping(vec3 V, vec3 N, vec2 uv) {
     float current_depth = 0.0;
 
     for (float i = 0.0; i < num_layers; i += 1.0) {
-        float h = texture(u_normal_map, current_uv).b;
+        float h = CL_NRM(current_uv).b;
         if (current_depth >= h) break;
         current_depth += layer_depth;
         current_uv -= delta_uv;
     }
 
     vec2 prev_uv = current_uv + delta_uv;
-    float after = texture(u_normal_map, current_uv).b - current_depth;
-    float before = current_depth - layer_depth - texture(u_normal_map, prev_uv).b;
+    float after = CL_NRM(current_uv).b - current_depth;
+    float before = current_depth - layer_depth - CL_NRM(prev_uv).b;
     float weight = after / max(after - before, 0.001);
     return mix(prev_uv, current_uv, weight);
 }
@@ -383,16 +425,16 @@ void main() {
     /* R84-1: Gate POM */
     vec2 pom_uv = pc.u_pom_enabled > 0.5 ? parallax_occlusion_mapping(V, N, vUV) : vUV;
 
-    vec3 albedo = texture(u_albedo, pom_uv).rgb;
+    vec3 albedo = CL_ALBEDO(pom_uv);
 
-    vec2 mr = texture(u_metallic_roughness, pom_uv).bg;
-    mr *= pc.u_mr_factor; /* R579: glTF factor * texture composition */
+    vec2 mr = CL_MR(pom_uv);
+    mr *= CL_MR_FACTOR; /* R579: glTF factor * texture composition */
     float metallic  = mr.x;
     float roughness = mr.y;
 
     N = perturb_normal(N, V, pom_uv);
 
-    vec3 emissive = texture(u_emissive, pom_uv).rgb * pc.u_emissive_factor; /* R586: glTF composition (deferred R582 semantics) */
+    vec3 emissive = CL_EMISSIVE(pom_uv) * CL_EMISSIVE_FACTOR; /* R586: glTF composition (deferred R582 semantics) */
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     /* R85-4: Compute F_Schlick once — reuse for both IBL and fallback paths. */
@@ -424,7 +466,7 @@ void main() {
     vec3 specular_ibl = prefiltered * (F * brdf.x + brdf.y);
 #endif
 
-    float ao = texture(u_ssao, vUV).r * texture(u_occlusion, pom_uv).r; /* R586: material occlusion (strength unsupported — full effect) */
+    float ao = texture(u_ssao, vUV).r * mix(1.0, CL_OCC(pom_uv), clamp(CL_OCC_STRENGTH, 0.0, 1.0)); /* R586/R592: material occlusion (strength applied in CLUSTERED_ARR via the per-layer table; static path full effect) */
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
 
     /* R84-3: shadow_test doesn't depend on loop variable */
