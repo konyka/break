@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R585 BSCN 序列化扩容 v1→v2（TDD）— R581/R582/R583 材质字段入库
+
+- **缺口**（R581/R582/R583 落账边界）：RESOURCES chunk 的材质描述符 `f[8]` 已满（base_color4+metallic+roughness+emissive_strength+cutoff）——`occlusion_strength`(R581)、`emissive_factor[3]`(R582) 不入库，`occlusion` 纹理句柄(R583) 也不入纹理引用收集（emissive 等四通道本在收集内）。BSCN 清单是材质数据的唯一序列化载体（main.c 不回填 Material，供外部工具/身份追踪）。
+- **版本策略（关键决策）**：`BSCN_VERSION` 1→2，`SceneResource.f[8]`→`f[12]`（f[8]=occlusion_strength、f[9..11]=emissive_factor rgb；f[0..7] v1 布局原样）。**读取端双版本兼容**：二进制 probe/load 与 JSON load 均接受 v1+v2（JSON 无 RESOURCES chunk，v1/v2 文档结构全同——既有 JSON 测试套件本就手写 `"version":1` 字面量要求永久可读，该项是 RED 阶段由既有测试直接证实的硬约束）；`load_resources_chunk` 按文件版本读 8 或 12 个浮点，v1 回填 glTF 默认（occlusion_strength=1.0、emissive_factor=0，与 cgltf 零默认一致）。材质 `u2` 由保留位启用为纹理存在位（bit0 mr/bit1 normal/bit2 emissive/bit3 occlusion；v1 写者恒为 0）。guid 哈希域随描述符扩为 u0..u2+f[0..11]（v1↔v2 同内容 guid 不同=格式升版的自然语义）。写出端恒 v2。
+- **TDD（红→绿实证）**：先改测试——① `resources_roundtrip_include` 双材质断言 f[8..11] 往返+无纹理材质 u2=0；② 新增 `resources_material_extended_descriptor_roundtrip`：单材质全字段+五假纹理句柄（含 occlusion {55,1}），断言 6 资源（1 材质+5 纹理）、u2=0xF、f[8..11] 精确往返、纹理掩码含 occlusion；③ 新增 `load_binary_v1_resources_defaults`：手工构造 v1 二进制（header v1 + 单材质 f[8] 线格式），断言 probe/load 均接受、v1 布局保留、v2 字段回填默认、u2=0；④ `bscn_version` 钉 2。RED 如实失败：① f[8]=0（写出端仍 8 浮点）；② 资源数 5≠6（occlusion 未收集）；③ probe 拒 v1；**另 6 个既有 JSON 测试同红**（手写 v1 JSON 被 v2-only 读取端拒绝——非计划内的 v1-JSON 兼容 RED 证据）。GREEN 后 **94/94 全过**（首轮 93/94：自造 v1 文件 payload 声明尺寸多算 4 字节致 chunk 布局校验拒绝——测试自身 bug，修正后过）。
+- **回归**：双树非图形 CTest 各 **111/112**（唯一失败=test_platform_win32_runtime 剪贴板子项的外部持锁，R577 定性环境瞬态，本 diff 不涉平台层）；GL deferred/前向 demo 各 120 帧优雅退出；VK deferred demo 复现 R577 基线。写出端 v2 与读取端 v1 兼容构成双向迁移窗：旧引擎拒读新文件（版本检查如实拒绝，非静默错读），新引擎读旧文件默认回填。
+- **边界**：RESOURCES 清单仍不回填 Material（加载后材质重建/纹理重绑定是独立后续，需先定义纹理持久化身份——句柄 index 跨进程无意义）；`path[64]` 仍为空（源路径追踪未实现）；BSCN v3 候选=材质全量往返（纹理身份+全部因子）+ `base_color_texture` 等视图参数。
+
 ## 本轮更新：R584 延迟路径 HDR emissive（RT4 升 RGBA16F；TDD）— R582 遗留边界关闭
 
 - **缺口**（R582 遗留）：RT4 为 R8G8B8A8_UNORM + shader 内 `clamp(emis,0,1)`——glTF `emissiveStrength`（KHR_materials_emissive_strength）推过 1.0 的发光在 G-Buffer 被 LDR 截断，HDR emissive 在延迟路径不存在。

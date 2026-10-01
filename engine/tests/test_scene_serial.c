@@ -28,7 +28,11 @@ TEST(bscn_magic_value)
 
 TEST(bscn_version)
 {
-    ASSERT_EQ(BSCN_VERSION, 1u);
+    /* R585: v2 — RESOURCES material descriptor f[8]->f[12] (+occlusion strength,
+     * +emissive factor rgb) + u2 texture-presence bits; v1 files stay loadable
+     * (see load_binary_v1_resources_defaults). */
+    ASSERT_EQ(BSCN_VERSION, 2u);
+    ASSERT_EQ(BSCN_VERSION_V1, 1u);
 }
 
 TEST(bscn_header_size)
@@ -1392,10 +1396,18 @@ static void make_scene(Scene *s) {
     s->materials[0].base_color[2] = 0.75f; s->materials[0].base_color[3] = 1.0f;
     s->materials[0].metallic_factor = 0.1f; s->materials[0].roughness_factor = 0.8f;
     s->materials[0].emissive_strength = 0.0f; s->materials[0].alpha_cutoff = 0.5f;
+    /* R585: v2 descriptor fields — occlusion strength + emissive factor rgb. */
+    s->materials[0].occlusion_strength = 0.7f;
+    s->materials[0].emissive_factor[0] = 0.2f;
+    s->materials[0].emissive_factor[1] = 0.4f;
+    s->materials[0].emissive_factor[2] = 0.6f;
     s->materials[0].alpha_mode = ALPHA_OPAQUE;
     s->materials[1].base_color[0] = 1.0f; s->materials[1].base_color[1] = 0.0f;
     s->materials[1].base_color[2] = 0.0f; s->materials[1].base_color[3] = 0.5f;
     s->materials[1].metallic_factor = 0.9f; s->materials[1].roughness_factor = 0.2f;
+    s->materials[1].occlusion_strength = 1.0f; /* R585 */
+    s->materials[1].emissive_factor[0] = 1.0f;
+    s->materials[1].emissive_factor[2] = 0.5f;
     s->materials[1].alpha_mode = ALPHA_BLEND;
 }
 
@@ -1827,7 +1839,7 @@ TEST(resources_roundtrip_include)
     ASSERT_EQ(dst.resource_count, 4u);
 
     /* Find mesh 0 and material 1, verify inlined descriptors round-tripped. */
-    bool found_mesh0 = false, found_mat1 = false;
+    bool found_mesh0 = false, found_mat0 = false, found_mat1 = false;
     for (u32 i = 0; i < dst.resource_count; i++) {
         SceneResource *r = &dst.resources[i];
         ASSERT_TRUE((r->flags & 1u) != 0);   /* descriptor inlined */
@@ -1836,14 +1848,29 @@ TEST(resources_roundtrip_include)
             ASSERT_EQ(r->u0, 36u);   /* index_count */
             ASSERT_EQ(r->u1, 24u);   /* vertex_count */
         }
+        if (r->type == BSCN_RES_MATERIAL && r->ref_index == 0) {
+            found_mat0 = true;
+            /* R585: v2 descriptor fields round-trip */
+            ASSERT_TRUE(fabsf(r->f[8] - 0.7f) < 1e-6f);  /* occlusion_strength */
+            ASSERT_TRUE(fabsf(r->f[9] - 0.2f) < 1e-6f);  /* emissive_factor.r */
+            ASSERT_TRUE(fabsf(r->f[10] - 0.4f) < 1e-6f);
+            ASSERT_TRUE(fabsf(r->f[11] - 0.6f) < 1e-6f);
+            ASSERT_EQ(r->u2, 0u); /* no textures -> no presence bits */
+        }
         if (r->type == BSCN_RES_MATERIAL && r->ref_index == 1) {
             found_mat1 = true;
             ASSERT_TRUE(fabsf(r->f[0] - 1.0f) < 1e-6f);  /* base_color.r */
             ASSERT_TRUE(fabsf(r->f[3] - 0.5f) < 1e-6f);  /* base_color.a */
             ASSERT_EQ(r->u0, (u32)ALPHA_BLEND);
+            /* R585: v2 descriptor fields round-trip */
+            ASSERT_TRUE(fabsf(r->f[8] - 1.0f) < 1e-6f);  /* occlusion_strength */
+            ASSERT_TRUE(fabsf(r->f[9] - 1.0f) < 1e-6f);  /* emissive_factor.r */
+            ASSERT_TRUE(fabsf(r->f[10] - 0.0f) < 1e-6f);
+            ASSERT_TRUE(fabsf(r->f[11] - 0.5f) < 1e-6f);
         }
     }
     ASSERT_TRUE(found_mesh0);
+    ASSERT_TRUE(found_mat0);
     ASSERT_TRUE(found_mat1);
 
     free_scene_src(&dst);
@@ -1880,6 +1907,136 @@ TEST(resources_roundtrip_refs_only)
     free_scene_src(&src);
     world_destroy(w);
     world_destroy(w2);
+    remove(path);
+}
+
+/* R585: v2 material descriptor — occlusion_strength (f[8]) + emissive_factor
+ * rgb (f[9..11]) + u2 texture-presence bits, and the occlusion texture handle
+ * joins the texture-reference collection. */
+TEST(resources_material_extended_descriptor_roundtrip)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_res_mat_v2.bscn");
+    World *w = world_create();
+    Scene src; memset(&src, 0, sizeof(src));
+    src.material_count = 1;
+    src.materials = (Material *)calloc(1, sizeof(Material));
+    ASSERT_NOT_NULL(src.materials);
+    Material *m = &src.materials[0];
+    m->alpha_mode = ALPHA_MASK;
+    m->base_color[0] = 0.5f;
+    m->metallic_factor = 0.3f; m->roughness_factor = 0.6f;
+    m->emissive_strength = 2.5f; m->alpha_cutoff = 0.33f;
+    m->occlusion_strength = 0.65f;
+    m->emissive_factor[0] = 0.1f; m->emissive_factor[1] = 0.9f;
+    m->emissive_factor[2] = 0.3f;
+    m->albedo.index = 11u;             m->albedo.generation = 1u;
+    m->metallic_roughness.index = 22u; m->metallic_roughness.generation = 1u;
+    m->normal_map.index = 33u;         m->normal_map.generation = 1u;
+    m->emissive.index = 44u;           m->emissive.generation = 1u;
+    m->occlusion.index = 55u;          m->occlusion.generation = 1u;
+
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+
+    /* 1 material + 5 texture references (albedo/mr/normal/emissive/occlusion). */
+    ASSERT_EQ(dst.resource_count, 6u);
+    bool found_mat = false;
+    u32 tex_mask = 0;
+    for (u32 i = 0; i < dst.resource_count; i++) {
+        SceneResource *r = &dst.resources[i];
+        if (r->type == BSCN_RES_TEXTURE) {
+            if (r->ref_index == 11u) tex_mask |= 1u;
+            if (r->ref_index == 22u) tex_mask |= 2u;
+            if (r->ref_index == 33u) tex_mask |= 4u;
+            if (r->ref_index == 44u) tex_mask |= 8u;
+            if (r->ref_index == 55u) tex_mask |= 16u; /* occlusion collected */
+            continue;
+        }
+        ASSERT_EQ(r->type, (u32)BSCN_RES_MATERIAL);
+        found_mat = true;
+        ASSERT_TRUE((r->flags & 1u) != 0);
+        ASSERT_EQ(r->u0, (u32)ALPHA_MASK);
+        ASSERT_EQ(r->u1, 1u);        /* has_albedo */
+        ASSERT_EQ(r->u2, 0xFu);      /* mr | normal | emissive | occlusion */
+        ASSERT_TRUE(fabsf(r->f[0] - 0.5f) < 1e-6f);
+        ASSERT_TRUE(fabsf(r->f[4] - 0.3f) < 1e-6f);
+        ASSERT_TRUE(fabsf(r->f[5] - 0.6f) < 1e-6f);
+        ASSERT_TRUE(fabsf(r->f[6] - 2.5f) < 1e-6f);  /* emissive_strength */
+        ASSERT_TRUE(fabsf(r->f[7] - 0.33f) < 1e-6f);
+        ASSERT_TRUE(fabsf(r->f[8] - 0.65f) < 1e-6f); /* occlusion_strength */
+        ASSERT_TRUE(fabsf(r->f[9] - 0.1f) < 1e-6f);  /* emissive_factor rgb */
+        ASSERT_TRUE(fabsf(r->f[10] - 0.9f) < 1e-6f);
+        ASSERT_TRUE(fabsf(r->f[11] - 0.3f) < 1e-6f);
+    }
+    ASSERT_TRUE(found_mat);
+    ASSERT_EQ(tex_mask, 31u);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* R585: a BSCN v1 file (f[8] material descriptors, no u2 presence bits) must
+ * still load — the reader back-fills the v2 fields with glTF defaults. */
+TEST(load_binary_v1_resources_defaults)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_res_v1_compat.bscn");
+    /* Hand-craft a minimal v1 file: header(v1) + one RESOURCES chunk holding
+     * a single material entry with the v1 wire layout (u0,u1,u2 + f[8]). */
+    const f32 f8[8] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
+    {
+        BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION_V1,
+                              .chunk_count = 1 };
+        const u32 payload_off = (u32)sizeof(BscnHeader) + (u32)sizeof(BscnChunkEntry);
+        /* count(4) + guid(8) + type/ref/flags(12) + u(12) + f(32) + plen(4) */
+        const u32 payload_size = 4u + 8u + 4u * 3u + 12u + 32u + 4u;
+        BscnChunkEntry entry = { .type = BSCN_CHUNK_RESOURCES,
+                                 .offset = payload_off, .size = payload_size };
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+        u32 count = 1u;
+        u64 guid = 0x1122334455667788ull;
+        u32 type = (u32)BSCN_RES_MATERIAL, ref = 0u, flags = 1u;
+        u32 u0 = (u32)ALPHA_OPAQUE, u1 = 1u, u2 = 0u, plen = 0u;
+        ASSERT_EQ(fwrite(&count, sizeof(count), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&guid, sizeof(guid), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&type, sizeof(type), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&ref, sizeof(ref), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&flags, sizeof(flags), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u0, sizeof(u0), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u1, sizeof(u1), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u2, sizeof(u2), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(f8, sizeof(f8), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&plen, sizeof(plen), 1, fp), (usize)1);
+        ASSERT_EQ(fclose(fp), 0);
+    }
+
+    ASSERT_TRUE(scene_probe_binary(path));
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w, &dst, path));
+    ASSERT_EQ(dst.resource_count, 1u);
+    const SceneResource *r = &dst.resources[0];
+    ASSERT_EQ(r->type, (u32)BSCN_RES_MATERIAL);
+    ASSERT_EQ(r->u0, (u32)ALPHA_OPAQUE);
+    ASSERT_EQ(r->u2, 0u);                          /* v1: no presence bits */
+    ASSERT_TRUE(fabsf(r->f[0] - 0.1f) < 1e-6f);    /* v1 layout preserved */
+    ASSERT_TRUE(fabsf(r->f[7] - 0.8f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r->f[8] - 1.0f) < 1e-6f);    /* glTF defaults back-filled */
+    ASSERT_TRUE(fabsf(r->f[9]) < 1e-9f);
+    ASSERT_TRUE(fabsf(r->f[10]) < 1e-9f);
+    ASSERT_TRUE(fabsf(r->f[11]) < 1e-9f);
+
+    free_scene_src(&dst);
+    world_destroy(w);
     remove(path);
 }
 
@@ -2521,6 +2678,8 @@ TEST_MAIN_BEGIN()
     /* Round 8: resources + generation */
     RUN_TEST(resources_roundtrip_include);
     RUN_TEST(resources_roundtrip_refs_only);
+    RUN_TEST(resources_material_extended_descriptor_roundtrip);
+    RUN_TEST(load_binary_v1_resources_defaults);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
     RUN_TEST(save_prefab_rejects_files_above_load_limit);

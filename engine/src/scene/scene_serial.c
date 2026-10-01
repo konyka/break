@@ -347,7 +347,8 @@ static bool emit_one_resource(ByteBuf *out, const SceneResource *res, bool inlin
     if (inline_desc) {
         if (!bb_u32(out, res->u0) || !bb_u32(out, res->u1) || !bb_u32(out, res->u2))
             return false;
-        for (u32 i = 0; i < 8; i++) if (!bb_f32(out, res->f[i])) return false;
+        /* R585: v2 descriptors carry 12 floats (v1 wrote the first 8). */
+        for (u32 i = 0; i < 12; i++) if (!bb_f32(out, res->f[i])) return false;
     }
     u32 plen = 0;
     while (plen < sizeof(res->path) && res->path[plen] != '\0') plen++;
@@ -364,15 +365,17 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
     if ((s->mesh_count && !s->meshes) ||
         (s->material_count && !s->materials)) return false;
 
-    /* Collect distinct texture handle indices referenced by materials. */
+    /* Collect distinct texture handle indices referenced by materials
+     * (R585: occlusion joined the set with the v2 descriptor). */
 #define BSCN_MAX_RESOURCE_TEXTURES 256u
     u32 tex_handles[BSCN_MAX_RESOURCE_TEXTURES];
     u32 tex_count = 0;
     for (u32 i = 0; i < s->material_count; i++) {
         const Material *mat = &s->materials[i];
-        const RHITexture cand[4] = { mat->albedo, mat->metallic_roughness,
-                                     mat->normal_map, mat->emissive };
-        for (u32 c = 0; c < 4; c++) {
+        const RHITexture cand[5] = { mat->albedo, mat->metallic_roughness,
+                                     mat->normal_map, mat->emissive,
+                                     mat->occlusion };
+        for (u32 c = 0; c < 5; c++) {
             if (!rhi_handle_valid(cand[c])) continue;
             u32 hidx = cand[c].index;
             bool seen = false;
@@ -404,7 +407,8 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
         r.u2 = me->material_idx;
         r.f[0] = me->aabb_min.e[0]; r.f[1] = me->aabb_min.e[1]; r.f[2] = me->aabb_min.e[2];
         r.f[3] = me->aabb_max.e[0]; r.f[4] = me->aabb_max.e[1]; r.f[5] = me->aabb_max.e[2];
-        r.guid = resource_guid(r.type, r.ref_index, &r.u0, sizeof(u32) * 3 + sizeof(f32) * 8);
+        /* R585: guid hashes the full v2 descriptor (f[6..11] stay 0 for meshes). */
+        r.guid = resource_guid(r.type, r.ref_index, &r.u0, sizeof(u32) * 3 + sizeof(f32) * 12);
         if (!emit_one_resource(out, &r, include)) return false;
     }
 
@@ -417,11 +421,21 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
         r.ref_index = i;
         r.u0 = (u32)mat->alpha_mode;
         r.u1 = rhi_handle_valid(mat->albedo) ? 1u : 0u;
+        /* R585: v2 — texture-presence bits (was 0 in v1). */
+        r.u2 = (rhi_handle_valid(mat->metallic_roughness) ? 1u : 0u) |
+               (rhi_handle_valid(mat->normal_map)         ? 2u : 0u) |
+               (rhi_handle_valid(mat->emissive)           ? 4u : 0u) |
+               (rhi_handle_valid(mat->occlusion)          ? 8u : 0u);
         r.f[0] = mat->base_color[0]; r.f[1] = mat->base_color[1];
         r.f[2] = mat->base_color[2]; r.f[3] = mat->base_color[3];
         r.f[4] = mat->metallic_factor; r.f[5] = mat->roughness_factor;
         r.f[6] = mat->emissive_strength; r.f[7] = mat->alpha_cutoff;
-        r.guid = resource_guid(r.type, r.ref_index, &r.u0, sizeof(u32) * 3 + sizeof(f32) * 8);
+        /* R585: v2 descriptor extension (f[8..11]). */
+        r.f[8] = mat->occlusion_strength;
+        r.f[9]  = mat->emissive_factor[0];
+        r.f[10] = mat->emissive_factor[1];
+        r.f[11] = mat->emissive_factor[2];
+        r.guid = resource_guid(r.type, r.ref_index, &r.u0, sizeof(u32) * 3 + sizeof(f32) * 12);
         if (!emit_one_resource(out, &r, include)) return false;
     }
 
@@ -535,7 +549,8 @@ static bool scene_mat4_finite(const Mat4 *m) {
 }
 
 static bool scene_resource_finite(const SceneResource *res) {
-    for (u32 i = 0; i < 8u; i++) {
+    /* R585: the v2 struct carries 12 floats (v1 wire holds the first 8). */
+    for (u32 i = 0; i < 12u; i++) {
         if (!isfinite(res->f[i])) return false;
     }
     return true;
@@ -562,7 +577,7 @@ void scene_serial_free(Scene *s) {
 #define BSCN_RESOURCE_MIN_BYTES 24u
 #define SCENE_RESOURCE_FLAG_MASK 1u
 
-static bool load_resources_chunk(Scene *s, Reader *r) {
+static bool load_resources_chunk(Scene *s, Reader *r, u32 file_version) {
     u32 n = 0;
     if (!rd_u32(r, &n)) return false;
     /* R387: ENTITIES and SCENE_NODES bound their counts before allocating; this
@@ -570,6 +585,8 @@ static bool load_resources_chunk(Scene *s, Reader *r) {
      * each) straight into calloc — 0xFFFFFFFF asks for ~1.2TB. Derive the bound
      * from the chunk's own size so no valid file can be rejected. */
     if ((u64)n * (u64)BSCN_RESOURCE_MIN_BYTES > (u64)(r->end - r->p)) return false;
+    /* R585: descriptor float count by file version (v1 = 8, v2 = 12). */
+    const u32 fcount = (file_version == BSCN_VERSION_V1) ? 8u : 12u;
     SceneResource *arr = NULL;
     if (s && n) {
         arr = (SceneResource *)calloc(n, sizeof(SceneResource));
@@ -589,9 +606,13 @@ static bool load_resources_chunk(Scene *s, Reader *r) {
             if (!rd_u32(r, &tmp.u0) || !rd_u32(r, &tmp.u1) || !rd_u32(r, &tmp.u2)) {
                 free(arr); return false;
             }
-            for (u32 k = 0; k < 8; k++) {
+            for (u32 k = 0; k < fcount; k++) {
                 if (!rd_bytes(r, &tmp.f[k], sizeof(f32))) { free(arr); return false; }
             }
+            /* R585: v1 files predate the descriptor extension — back-fill
+             * glTF defaults (no occlusion = strength 1.0; no emissiveFactor
+             * = black). u2 presence bits did not exist in v1 (writers put 0). */
+            if (fcount == 8u) tmp.f[8] = 1.0f;
         }
         u32 plen = 0;
         if (!rd_u32(r, &plen)) { free(arr); return false; }
@@ -877,7 +898,8 @@ bool scene_probe_binary(const char *path) {
     fclose(fp);
     BscnHeader h;
     memcpy(&h, buf, sizeof(h));
-    if (h.magic != BSCN_MAGIC || h.version != BSCN_VERSION) { free(buf); return false; }
+    if (h.magic != BSCN_MAGIC ||
+        (h.version != BSCN_VERSION && h.version != BSCN_VERSION_V1)) { free(buf); return false; }
     if (h.chunk_count > 64) { free(buf); return false; }
     u32 table_off = (u32)sizeof(BscnHeader);
     u64 table_end = (u64)table_off + (u64)h.chunk_count * (u64)sizeof(BscnChunkEntry);
@@ -904,7 +926,8 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
 
     BscnHeader h;
     memcpy(&h, buf, sizeof(h));
-    if (h.magic != BSCN_MAGIC || h.version != BSCN_VERSION) { free(buf); return false; }
+    if (h.magic != BSCN_MAGIC ||
+        (h.version != BSCN_VERSION && h.version != BSCN_VERSION_V1)) { free(buf); return false; }
 
     u32 table_off = (u32)sizeof(BscnHeader);
     if (h.chunk_count > 64) { free(buf); return false; }
@@ -970,7 +993,7 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         case BSCN_CHUNK_RESOURCES:
             if (seen_resources) { ok = false; break; }
             seen_resources = true;
-            ok = load_resources_chunk(dst, &r) && r.p == r.end; break;
+            ok = load_resources_chunk(dst, &r, h.version) && r.p == r.end; break;
         case BSCN_CHUNK_HIERARCHY:
         default:
             /* Hierarchy is implicit in SceneNode.parent_index. Skip silently. */
@@ -1514,7 +1537,9 @@ bool scene_load_json(World *w, Scene *s, const char *path) {
             if (seen_version) { ok = false; break; }
             seen_version = true;
             u32 v = 0;
-            ok = js_u32(&r, &v) && (v == BSCN_VERSION);
+            /* R585: JSON carries no RESOURCES chunk, so v1 and v2 documents
+             * are structurally identical — accept both. */
+            ok = js_u32(&r, &v) && (v == BSCN_VERSION || v == BSCN_VERSION_V1);
         } else if (js_key(&r, "entities")) {
             if (seen_entities) { ok = false; break; }
             seen_entities = true;

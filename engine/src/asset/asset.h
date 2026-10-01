@@ -89,9 +89,15 @@ typedef struct {
     u32  ref_index;
     u32  flags;       /* bit0: descriptor inlined */
     u32  u0, u1, u2;  /* mesh: index_count, vertex_count, material_idx
-                         material: alpha_mode, has_albedo, 0 */
-    f32  f[8];        /* mesh: aabb_min(3)+aabb_max(3)
-                         material: base_color(4)+metallic+roughness+emissive+cutoff */
+                         material: alpha_mode, has_albedo, texture-presence
+                         bits (R585, BSCN v2: bit0 mr, bit1 normal,
+                         bit2 emissive, bit3 occlusion; 0 in v1 files) */
+    f32  f[12];       /* mesh: aabb_min(3)+aabb_max(3)
+                         material: base_color(4)+metallic+roughness+
+                         emissive_strength+cutoff (f[0..7], v1 layout) +
+                         occlusion_strength (f[8], R585; v1 loads default
+                         1.0) + emissive_factor rgb (f[9..11], R585; v1
+                         loads default 0) */
     char path[64];    /* optional source path; empty when unknown */
 } SceneResource;
 

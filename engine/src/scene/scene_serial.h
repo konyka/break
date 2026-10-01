@@ -17,7 +17,12 @@
  */
 
 #define BSCN_MAGIC   0x4E534342u   /* "BSCN" little-endian */
-#define BSCN_VERSION 1u
+/* R585: v2 — the RESOURCES material descriptor grows from f[8] to f[12]
+ * (+occlusion_strength, +emissive_factor rgb) and u2 gains texture-presence
+ * bits; v1 files (f[8] descriptors) remain loadable and get glTF defaults
+ * (occlusion_strength 1.0, emissive_factor 0). */
+#define BSCN_VERSION    2u
+#define BSCN_VERSION_V1 1u
 /* R398: load paths read the whole file into memory; cap before malloc. */
 #define BSCN_MAX_FILE_BYTES (64u << 20)  /* 64 MiB */
 
