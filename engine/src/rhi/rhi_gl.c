@@ -2091,7 +2091,7 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
 
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
-    RHITexture shadow, RHITexture ssao, RHISampler sampler,
+    RHITexture occlusion, RHITexture shadow, RHITexture ssao, RHISampler sampler,
     RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map,
     const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
     if (!gl_cmd_device_ready(cmd)) return;
@@ -2100,6 +2100,10 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     gl_bind_tex_unit(2, mr, sampler);
     gl_bind_tex_unit(3, normal, sampler);
     gl_bind_tex_unit(4, emissive, sampler);
+    /* R583: occlusion at unit 15 — 5/6 are vertex-stage texel-buffer units
+     * (joints/instances), 7-14 taken above; 15 is free in this pass (it is
+     * the deferred LIGHTING pass's emissive unit — different pass). */
+    gl_bind_tex_unit(15, occlusion, sampler);
     if (point_shadow_cubes && point_shadow_count > 0u) {
         u32 n = point_shadow_count > 4u ? 4u : point_shadow_count;
         for (u32 i = 0u; i < n; i++)

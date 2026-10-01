@@ -599,9 +599,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
              * [0,0,0]) when the JSON omits it. */
             memcpy(mat->emissive_factor, cm->emissive_factor,
                    sizeof(mat->emissive_factor));
-            /* R581: occlusion strength rides the deferred factor channel as
-             * the material AO scalar (cgltf texture_view.scale defaults to
-             * 1.0 when the view exists but omits "strength"). */
+            /* R581: occlusion strength rides the deferred factor channel;
+             * R583: it scales the per-pixel occlusion texture in the
+             * gbuffer shaders (cgltf texture_view.scale defaults to 1.0
+             * when the view exists but omits "strength"). */
             mat->occlusion_strength = cm->occlusion_texture.texture ?
                 cm->occlusion_texture.scale : 1.0f;
             if (cm->alpha_mode == cgltf_alpha_mode_opaque) mat->alpha_mode = ALPHA_OPAQUE;
@@ -620,6 +621,12 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 data, image_tex_cache, image_tex_tried);
             mat->emissive = load_gltf_texture_cached(ctx, path,
                 cm->emissive_texture.texture,
+                data, image_tex_cache, image_tex_tried);
+            /* R583: glTF occlusionTexture — the R channel modulates ambient
+             * occlusion per-pixel in the deferred G-Buffer (strength already
+             * parsed above into occlusion_strength). */
+            mat->occlusion = load_gltf_texture_cached(ctx, path,
+                cm->occlusion_texture.texture,
                 data, image_tex_cache, image_tex_tried);
         }
         free(image_tex_cache);
@@ -1215,6 +1222,7 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
         if (rhi_handle_valid(mat->metallic_roughness))  asset_texture_free(ctx, mat->metallic_roughness);
         if (rhi_handle_valid(mat->normal_map))          asset_texture_free(ctx, mat->normal_map);
         if (rhi_handle_valid(mat->emissive))            asset_texture_free(ctx, mat->emissive);
+        if (rhi_handle_valid(mat->occlusion))           asset_texture_free(ctx, mat->occlusion); /* R583 */
     }
     free(scene->materials);
     free(scene->nodes);

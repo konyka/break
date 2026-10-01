@@ -6536,7 +6536,7 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
 
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
-    RHITexture shadow, RHITexture ssao, RHISampler sampler,
+    RHITexture occlusion, RHITexture shadow, RHITexture ssao, RHISampler sampler,
     RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map,
     const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
     (void)cmd;
@@ -6548,6 +6548,7 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     VKTextureData *td_mr  = (VKTextureData *)rhi_get_resource_typed(g_current_device, mr, RHI_RES_TEXTURE);
     VKTextureData *td_nrm = (VKTextureData *)rhi_get_resource_typed(g_current_device, normal, RHI_RES_TEXTURE);
     VKTextureData *td_em  = (VKTextureData *)rhi_get_resource_typed(g_current_device, emissive, RHI_RES_TEXTURE);
+    VKTextureData *td_occ = (VKTextureData *)rhi_get_resource_typed(g_current_device, occlusion, RHI_RES_TEXTURE); /* R583 */
     VKTextureData *td_ssao = (VKTextureData *)rhi_get_resource_typed(g_current_device, ssao, RHI_RES_TEXTURE);
     VKTextureData *td_shadow = (VKTextureData *)rhi_get_resource_typed(g_current_device, shadow, RHI_RES_TEXTURE);
     VKTextureData *td_brdf = (VKTextureData *)rhi_get_resource_typed(g_current_device, brdf_lut, RHI_RES_TEXTURE);
@@ -6633,6 +6634,12 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     img_infos[8].sampler = sd->sampler;
     img_infos[8].imageView = cd_pref ? cd_pref->view : alb_view;
     img_infos[8].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    /* R583: occlusion at binding 9 — the shared layout's only unwritten slot
+     * (the deferred LIGHTING pass uses binding 9 for its emissive target,
+     * but that pass binds its own descriptor set). */
+    img_infos[9].sampler = sd->sampler;
+    img_infos[9].imageView = td_occ ? td_occ->view : alb_view;
+    img_infos[9].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     /* R97-3: Batch descriptor writes — 4 consecutive-group writes instead of 10
      * individual writes. Bindings 0-4, 5, 6-8, 10 are grouped by consecutiveness. */
@@ -6656,11 +6663,11 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo = bind5_infos;
 
-    /* Bindings 6-8: brdf_lut, irradiance, prefilter */
+    /* Bindings 6-9: brdf_lut, irradiance, prefilter, occlusion (R583) */
     writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[2].dstSet = ds;
     writes[2].dstBinding = 6;
-    writes[2].descriptorCount = 3;
+    writes[2].descriptorCount = 4;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].pImageInfo = &img_infos[6];
 

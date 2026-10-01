@@ -26,6 +26,10 @@ typedef struct {
     RHITexture metallic_roughness;
     RHITexture normal_map;
     RHITexture emissive;
+    /* R583: glTF occlusionTexture (R channel = occlusion). Consumed by the
+     * deferred G-Buffer as ao = mix(1.0, tex.r, occlusion_strength); the
+     * white 1x1 fallback preserves the textureless behavior (ao = 1). */
+    RHITexture occlusion;
     float      base_color[4];
     float      metallic_factor;
     float      roughness_factor;
@@ -35,8 +39,8 @@ typedef struct {
      * emissive_strength into the deferred G-Buffer emissive target. */
     float      emissive_factor[3];
     /* R581: glTF occlusionTexture.strength (1.0 when the material has no
-     * occlusion texture). Consumed by the deferred G-Buffer factor channel
-     * as a scalar AO until a per-pixel occlusion texture path exists. */
+     * occlusion texture). R583: consumed by the deferred G-Buffer as the
+     * strength of the per-pixel occlusion mix(1.0, tex.r, strength). */
     float      occlusion_strength;
     AlphaMode  alpha_mode;
     float      alpha_cutoff;

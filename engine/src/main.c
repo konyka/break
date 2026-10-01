@@ -907,6 +907,10 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     RHITexture mr  = (mat && rhi_handle_valid(mat->metallic_roughness)) ? mat->metallic_roughness : rs->fallback_mr;
     RHITexture nrm = (mat && rhi_handle_valid(mat->normal_map)) ? mat->normal_map : rs->fallback_normal;
     RHITexture em  = (mat && rhi_handle_valid(mat->emissive)) ? mat->emissive : rs->fallback_emissive;
+    /* R583: occlusion falls back to the white 1x1 (r=1.0 = no occlusion,
+     * glTF); the gbuffer shader's mix(1.0, tex.r, strength) then yields 1.0
+     * for textureless materials — same as the retired scalar-only channel. */
+    RHITexture occ = (mat && rhi_handle_valid(mat->occlusion)) ? mat->occlusion : rs->fallback_tex;
     RHITexture shadow = rs->shadow_map.depth_tex;
     /* The IBL cubemaps are always created in ibl_init (black until generated),
      * so bind them unconditionally: the HAS_IBL shader path declares
@@ -914,7 +918,7 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
     RHITexture brdf_lut = rs->ibl.brdf_lut;
     RHICubemap irr_map  = rs->ibl.irradiance_map;
     RHICubemap pref_map = rs->ibl.prefilter_map;
-    rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, shadow, rs->ssao_tex, rs->sampler,
+    rhi_cmd_bind_material_textures_ibl(cmd, alb, mr, nrm, em, occ, shadow, rs->ssao_tex, rs->sampler,
                                         brdf_lut, irr_map, pref_map,
                                         g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
     /* R579-D: the u_mr_factor write was REMOVED from this shared helper —
@@ -1164,7 +1168,9 @@ static bool node_occ_visible(u32 ni) {
  * the albedo AND the metallic-roughness texture of a material (a single
  * gl_BaseInstance layer index drives the sampler2DArrays), so dedup is by
  * texture handle set. R582: emissive_array added — the same layer index
- * now drives three arrays (albedo/MR/emissive). MR layer 0 is the neutral
+ * now drives three arrays (albedo/MR/emissive); R583: occlusion_array —
+ * four arrays (layer 0 and textureless occlusion layers white-filled so
+ * the shader's mix(1.0, tex.r, strength) yields 1.0). MR layer 0 is the neutral
  * {255,128,0,255} —
  * matching fallback_mr (gbuffer shaders sample .bg: b=0 → metallic 0,
  * g=128 → roughness ~0.5), the same neutral the forward path binds for
@@ -1176,6 +1182,9 @@ typedef struct {
     RHITexture albedo_array;
     RHITexture mr_array;     /* R442 */
     RHITexture emissive_array; /* R582 */
+    RHITexture occlusion_array; /* R583: glTF occlusion (R channel); layer 0
+                                 * and textureless layers white-filled so
+                                 * mix(1.0, tex.r, strength) = 1.0 */
     u32        width, height, layers;
     bool       ready;
     /* R580/R581: per-layer glTF material factors, same layer indexing as
@@ -1256,12 +1265,14 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     for (u32 g = 0; g < group_count; g++) out_group_layer[g] = 0u;
     if (!dev || !scene || group_count == 0) return false;
 
-    /* Collect unique readable (albedo, MR, emissive) texture triples (handle
-     * dedup). A texture that fails the size query degrades to "absent" for
-     * that channel (the layer then carries the channel's neutral fill). */
+    /* Collect unique readable (albedo, MR, emissive, occlusion) texture
+     * quads (handle dedup). A texture that fails the size query degrades to
+     * "absent" for that channel (the layer then carries the channel's
+     * neutral fill). */
     RHITexture uniq_alb[MAT_ARR_MAX_LAYERS - 1u];
     RHITexture uniq_mr[MAT_ARR_MAX_LAYERS - 1u];
     RHITexture uniq_em[MAT_ARR_MAX_LAYERS - 1u]; /* R582 */
+    RHITexture uniq_occ[MAT_ARR_MAX_LAYERS - 1u]; /* R583 */
     f32        uniq_fac[MAT_ARR_MAX_LAYERS - 1u][4];  /* R580/R581: part of the dedup key */
     f32        uniq_efac[MAT_ARR_MAX_LAYERS - 1u][4]; /* R582: rgb x strength, w flag */
     u32 ntex = 0;
@@ -1272,6 +1283,7 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         RHITexture alb = scene->materials[mi].albedo;
         RHITexture mr  = scene->materials[mi].metallic_roughness;
         RHITexture em  = scene->materials[mi].emissive; /* R582 */
+        RHITexture occ = scene->materials[mi].occlusion; /* R583 */
         u32 tw = 0, th = 0;
         if (rhi_handle_valid(alb) &&
             (!rhi_texture_get_size(dev, alb, &tw, &th) || tw == 0 || th == 0))
@@ -1302,11 +1314,22 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
             if (tw > arr_w) arr_w = tw;
             if (th > arr_h) arr_h = th;
         }
+        tw = th = 0;
+        if (rhi_handle_valid(occ) &&
+            (!rhi_texture_get_size(dev, occ, &tw, &th) || tw == 0 || th == 0))
+            occ = RHI_HANDLE_NULL;
+        if (rhi_handle_valid(occ)) {
+            if (tw > MAT_ARR_MAX_SIZE) tw = MAT_ARR_MAX_SIZE;
+            if (th > MAT_ARR_MAX_SIZE) th = MAT_ARR_MAX_SIZE;
+            if (tw > arr_w) arr_w = tw;
+            if (th > arr_h) arr_h = th;
+        }
         /* R580/R581/R582: textureless materials keep layer 0 ONLY when
          * their factors are also neutral; otherwise they need a real layer
          * (neutral-filled textures + their own factors) so the factors
          * survive. The emissive flag = "emits" (any emissiveFactor x
-         * strength component nonzero). */
+         * strength component nonzero). R583: an occlusion texture alone
+         * also forces a real layer (its texels would otherwise be lost). */
         f32 fac_m  = scene->materials[mi].metallic_factor;
         f32 fac_r  = scene->materials[mi].roughness_factor;
         f32 fac_ao = scene->materials[mi].occlusion_strength;
@@ -1315,13 +1338,13 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         f32 eb = scene->materials[mi].emissive_factor[2] * scene->materials[mi].emissive_strength;
         f32 fac_em = (er != 0.0f || eg != 0.0f || eb != 0.0f) ? 1.0f : 0.0f;
         if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr) &&
-            !rhi_handle_valid(em) &&
+            !rhi_handle_valid(em) && !rhi_handle_valid(occ) &&
             fac_m == 1.0f && fac_r == 1.0f && fac_ao == 1.0f && fac_em == 0.0f)
             continue; /* layer 0 */
         bool dup = false;
         for (u32 i = 0; i < ntex; i++)
             if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr) &&
-                mat_arr_tex_same(uniq_em[i], em) &&
+                mat_arr_tex_same(uniq_em[i], em) && mat_arr_tex_same(uniq_occ[i], occ) &&
                 uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r &&
                 uniq_fac[i][2] == fac_ao && uniq_fac[i][3] == fac_em &&
                 uniq_efac[i][0] == er && uniq_efac[i][1] == eg && uniq_efac[i][2] == eb) {
@@ -1332,6 +1355,7 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         uniq_alb[ntex] = alb;
         uniq_mr[ntex]  = mr;
         uniq_em[ntex]  = em;
+        uniq_occ[ntex] = occ;
         uniq_fac[ntex][0] = fac_m;
         uniq_fac[ntex][1] = fac_r;
         uniq_fac[ntex][2] = fac_ao;
@@ -1349,8 +1373,10 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
                                                  RHI_FORMAT_R8G8B8A8_UNORM);
     set->emissive_array = rhi_texture_array_create(dev, arr_w, arr_h, ntex + 1u,
                                                    RHI_FORMAT_R8G8B8A8_UNORM); /* R582 */
+    set->occlusion_array = rhi_texture_array_create(dev, arr_w, arr_h, ntex + 1u,
+                                                    RHI_FORMAT_R8G8B8A8_UNORM); /* R583 */
     if (!rhi_handle_valid(set->albedo_array) || !rhi_handle_valid(set->mr_array) ||
-        !rhi_handle_valid(set->emissive_array)) {
+        !rhi_handle_valid(set->emissive_array) || !rhi_handle_valid(set->occlusion_array)) {
         LOG_WARN("MatArray: array create failed (%ux%ux%u)", arr_w, arr_h, ntex + 1u);
         if (rhi_handle_valid(set->albedo_array))
             rhi_texture_destroy(dev, set->albedo_array);
@@ -1358,9 +1384,12 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
             rhi_texture_destroy(dev, set->mr_array);
         if (rhi_handle_valid(set->emissive_array))
             rhi_texture_destroy(dev, set->emissive_array);
-        set->albedo_array   = RHI_HANDLE_NULL;
-        set->mr_array       = RHI_HANDLE_NULL;
-        set->emissive_array = RHI_HANDLE_NULL;
+        if (rhi_handle_valid(set->occlusion_array))
+            rhi_texture_destroy(dev, set->occlusion_array);
+        set->albedo_array    = RHI_HANDLE_NULL;
+        set->mr_array        = RHI_HANDLE_NULL;
+        set->emissive_array  = RHI_HANDLE_NULL;
+        set->occlusion_array = RHI_HANDLE_NULL;
         return false;
     }
 
@@ -1370,9 +1399,11 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         rhi_texture_destroy(dev, set->albedo_array);
         rhi_texture_destroy(dev, set->mr_array);
         rhi_texture_destroy(dev, set->emissive_array);
-        set->albedo_array   = RHI_HANDLE_NULL;
-        set->mr_array       = RHI_HANDLE_NULL;
-        set->emissive_array = RHI_HANDLE_NULL;
+        rhi_texture_destroy(dev, set->occlusion_array);
+        set->albedo_array    = RHI_HANDLE_NULL;
+        set->mr_array        = RHI_HANDLE_NULL;
+        set->emissive_array  = RHI_HANDLE_NULL;
+        set->occlusion_array = RHI_HANDLE_NULL;
         return false;
     }
 
@@ -1380,7 +1411,8 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
      * must fill the whole layer) + neutral MR {255,128,0,255} (R442: the
      * fallback_mr neutral — metallic 0, roughness ~0.5) + white emissive
      * (R582: the white x factor convention; layer0's emissive factor is
-     * zero, so the texel is irrelevant but the rule stays uniform). */
+     * zero, so the texel is irrelevant but the rule stays uniform) + white
+     * occlusion (R583: r=1 -> ao=1 regardless of strength). */
     static const u8 white_rgba[4]   = {255u, 255u, 255u, 255u};
     static const u8 neutral_mr[4]   = {255u, 128u, 0u, 255u};
     bool ok = mat_arr_fill_layer(dev, RHI_HANDLE_NULL, white_rgba,
@@ -1392,6 +1424,9 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     if (ok) ok = mat_arr_fill_layer(dev, RHI_HANDLE_NULL, white_rgba,
                                     layer_buf, arr_w, arr_h);
     if (ok) rhi_texture_array_upload_layer(dev, set->emissive_array, 0u, layer_buf, layer_bytes);
+    if (ok) ok = mat_arr_fill_layer(dev, RHI_HANDLE_NULL, white_rgba,
+                                    layer_buf, arr_w, arr_h);
+    if (ok) rhi_texture_array_upload_layer(dev, set->occlusion_array, 0u, layer_buf, layer_bytes);
 
     for (u32 i = 0; i < ntex && ok; i++) {
         ok = mat_arr_fill_layer(dev, uniq_alb[i], white_rgba, layer_buf, arr_w, arr_h);
@@ -1402,6 +1437,10 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
          * materials emit exactly their factor (glTF). */
         if (ok) ok = mat_arr_fill_layer(dev, uniq_em[i], white_rgba, layer_buf, arr_w, arr_h);
         if (ok) rhi_texture_array_upload_layer(dev, set->emissive_array, i + 1u, layer_buf, layer_bytes);
+        /* R583: textureless occlusion channels white-fill so the shader's
+         * mix(1.0, tex.r, strength) yields 1.0 (no occlusion, glTF). */
+        if (ok) ok = mat_arr_fill_layer(dev, uniq_occ[i], white_rgba, layer_buf, arr_w, arr_h);
+        if (ok) rhi_texture_array_upload_layer(dev, set->occlusion_array, i + 1u, layer_buf, layer_bytes);
     }
     free(layer_buf);
 
@@ -1409,9 +1448,11 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         rhi_texture_destroy(dev, set->albedo_array);
         rhi_texture_destroy(dev, set->mr_array);
         rhi_texture_destroy(dev, set->emissive_array);
-        set->albedo_array   = RHI_HANDLE_NULL;
-        set->mr_array       = RHI_HANDLE_NULL;
-        set->emissive_array = RHI_HANDLE_NULL;
+        rhi_texture_destroy(dev, set->occlusion_array);
+        set->albedo_array    = RHI_HANDLE_NULL;
+        set->mr_array        = RHI_HANDLE_NULL;
+        set->emissive_array  = RHI_HANDLE_NULL;
+        set->occlusion_array = RHI_HANDLE_NULL;
         return false;
     }
 
@@ -1673,7 +1714,8 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
      * fallback/shadow/SSAO/IBL slots bind_material would use. */
     rhi_cmd_bind_material_textures_ibl(cmd,
         mb->mats.albedo_array, render->fallback_mr, render->fallback_normal,
-        render->fallback_emissive, render->shadow_map.depth_tex, render->ssao_tex,
+        render->fallback_emissive, render->fallback_tex,
+        render->shadow_map.depth_tex, render->ssao_tex,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
         render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
 
@@ -1718,11 +1760,13 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_mvp, &prev_mvp->e[0][0]);
 
     /* One bind for the whole pass: slot 0 = albedo array, slot 2 = MR array,
-     * slot 4 = emissive array (R582); the rest reuse the shared
-     * fallback/shadow/SSAO/IBL slots (unsampled by the gbuffer_arr shaders). */
+     * slot 4 = emissive array (R582), slot 15/9 = occlusion array (R583);
+     * the rest reuse the shared fallback/shadow/SSAO/IBL slots (unsampled
+     * by the gbuffer_arr shaders). */
     rhi_cmd_bind_material_textures_ibl(cmd,
         mb->mats.albedo_array, mb->mats.mr_array, render->fallback_normal,
-        mb->mats.emissive_array, render->shadow_map.depth_tex, render->ssao_tex,
+        mb->mats.emissive_array, mb->mats.occlusion_array,
+        render->shadow_map.depth_tex, render->ssao_tex,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
         render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
 
@@ -3346,9 +3390,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 rhi_texture_destroy(render.device, mega_buf.mats.albedo_array);
                                 rhi_texture_destroy(render.device, mega_buf.mats.mr_array);
                                 rhi_texture_destroy(render.device, mega_buf.mats.emissive_array);
-                                mega_buf.mats.albedo_array   = RHI_HANDLE_NULL;
-                                mega_buf.mats.mr_array       = RHI_HANDLE_NULL;
-                                mega_buf.mats.emissive_array = RHI_HANDLE_NULL;
+                                rhi_texture_destroy(render.device, mega_buf.mats.occlusion_array);
+                                mega_buf.mats.albedo_array    = RHI_HANDLE_NULL;
+                                mega_buf.mats.mr_array        = RHI_HANDLE_NULL;
+                                mega_buf.mats.emissive_array  = RHI_HANDLE_NULL;
+                                mega_buf.mats.occlusion_array = RHI_HANDLE_NULL;
                                 mega_buf.mats.ready = false;
                             }
                         }
@@ -8079,6 +8125,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* R582: emissive array shares the MatArraySet lifetime. */
         if (rhi_handle_valid(mega_buf.mats.emissive_array))
             rhi_texture_destroy(render.device, mega_buf.mats.emissive_array);
+        /* R583: occlusion array shares the MatArraySet lifetime. */
+        if (rhi_handle_valid(mega_buf.mats.occlusion_array))
+            rhi_texture_destroy(render.device, mega_buf.mats.occlusion_array);
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);

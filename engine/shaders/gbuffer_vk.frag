@@ -16,6 +16,10 @@ layout(location = 4) out vec4 out_emissive; /* R582 */
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 layout(binding = 4) uniform sampler2D u_emissive; /* R582 */
+/* R583: glTF occlusionTexture at set 0 binding 9 — the shared layout's only
+ * otherwise-unwritten slot (the deferred LIGHTING pass uses binding 9 for
+ * its emissive target, but binds its own descriptor set). */
+layout(binding = 9) uniform sampler2D u_occlusion;
 
 /* R580/R581: glTF per-material factors via the aux UBO (std140).
  * The vert stage fills all 256B of push space (R204-A), so factors ride the
@@ -23,7 +27,9 @@ layout(binding = 4) uniform sampler2D u_emissive; /* R582 */
  * pipeline layout: textures@0, ubo@1); the skinned variant uses
  * gbuffer_skinned_vk.frag with set=2 (its layout inserts the joint texel
  * set at index 1). u_factors: x/y = metallic/roughness factors,
- * z = AO strength, w = emissive flag; u_emissive_factor (R582): rgb =
+ * z = AO strength (R583: scales the per-pixel occlusion texture as
+ * mix(1.0, tex.r, z) — textureless materials bind the white 1x1 fallback
+ * so ao = 1.0), w = emissive flag; u_emissive_factor (R582): rgb =
  * emissiveFactor x strength, composed with u_emissive into out_emissive.
  * Defaults (1,1,1,0)+(0,0,0,0) = passthrough, full AO, no emissive. */
 layout(std140, set = 1, binding = 0) uniform GbufFactors { vec4 u_factors; vec4 u_emissive_factor; };
@@ -46,7 +52,8 @@ void main() {
     vec2  mrf   = mr * u_factors.xy; /* R580: glTF factor x texture composition */
     float metal = clamp(mrf.x, 0.0, 1.0);
     float rough = clamp(mrf.y, 0.04, 1.0);
-    float ao    = clamp(u_factors.z, 0.0, 1.0); /* R581: material AO strength */
+    float ao    = mix(1.0, texture(u_occlusion, v_texcoord).r,
+                      clamp(u_factors.z, 0.0, 1.0)); /* R583: glTF occlusion x strength */
     vec3  emis  = texture(u_emissive, v_texcoord).rgb * u_emissive_factor.rgb; /* R582 */
 
     out_albedo_metallic = vec4(base, metal);

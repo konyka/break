@@ -20,6 +20,10 @@ layout(location = 4) out vec4 out_emissive;        /* R582: RGBA8 LDR emissive *
 layout(binding = 0) uniform sampler2DArray u_albedo;
 layout(binding = 2) uniform sampler2DArray u_metallic_roughness;
 layout(binding = 4) uniform sampler2DArray u_emissive; /* R582 */
+/* R583: glTF occlusion array at unit 15 (GL; VK uses binding 9) — see
+ * gbuffer.frag for the slot rationale. Textureless layers are white-filled
+ * by the bake so mix(1.0, 1.0, z) = 1.0 (no occlusion). */
+layout(binding = 15) uniform sampler2DArray u_occlusion;
 
 /* R580/R581: per-layer glTF material factors — indexed by v_layer, the
  * same layer that selects the albedo/MR/emissive array texels. std140
@@ -29,7 +33,8 @@ layout(binding = 4) uniform sampler2DArray u_emissive; /* R582 */
  * materials get (1,1,1,0)+(0,0,0,0) = passthrough.
  * u_factor_arr: x/y = metallic/roughness factors (glTF composes
  * multiplicatively — the R93-1 additive defaults are retired);
- * z = AO strength, w = emissive flag.
+ * z = AO strength (R583: scales the per-pixel occlusion texel as
+ * mix(1.0, tex.r, z)), w = emissive flag.
  * u_emissive_arr (R582): rgb = emissiveFactor x emissiveStrength. */
 layout(std140, binding = 0) uniform GbufFactorArr { vec4 u_factor_arr[64]; vec4 u_emissive_arr[64]; };
 
@@ -54,7 +59,8 @@ void main() {
     vec2  mrf     = mr * fac.xy; /* R580: glTF factor x texture composition */
     float metal   = clamp(mrf.x, 0.0, 1.0);
     float rough   = clamp(mrf.y, 0.04, 1.0);
-    float ao      = clamp(fac.z, 0.0, 1.0); /* R581: per-layer AO strength */
+    float ao      = mix(1.0, texture(u_occlusion, vec3(v_texcoord, float(v_layer))).r,
+                        clamp(fac.z, 0.0, 1.0)); /* R583: per-layer occlusion x strength */
     vec3  emis    = texture(u_emissive, vec3(v_texcoord, float(v_layer))).rgb * efac.rgb; /* R582 */
 
     out_albedo_metallic = vec4(base, metal);

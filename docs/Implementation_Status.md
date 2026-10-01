@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R583 延迟路径 G-Buffer 的 glTF occlusion 纹理逐像素采样（TDD）— R581/R582 遗留边界关闭
+
+- **缺口**（R581/R582 遗留）：RT2.g 仅携带标量 `occlusion_strength`（ao=strength），glTF occlusionTexture 虽已解析 strength 但纹理本体从未加载/采样——逐像素 AO 在延迟路径不存在。
+- **语义升级（glTF 规范式）**：gbuffer 五 shader 的 AO 由 `clamp(strength)` 改为 **`ao = mix(1.0, occ_tex.r, clamp(strength))`**；无纹理材质绑白色 1x1 回退（r=1 → ao=1.0 与强度无关，即规范"无 occlusion"语义）。规范兼容资产行为不变（cgltf 在无 occlusionTexture 时 strength 恒为 1.0，旧通道同样得 1.0）；仅"无纹理却强度≠1"的非规范假想材质语义精化（旧=强度直写，新=1.0）。deferred_light 已乘 rao.g，光照端零改动。
+- **绑定位选型（关键约束）**：`rhi_cmd_bind_material_textures_ibl` 增 occlusion 参数（签名第 5 位，emissive 后；9 处调用点全量跟进——main.c 3 + test_vulkan.c 6）。槽位 **GL unit 15 / VK set0 binding 9**：GL 5/6 是顶点阶段 texel-buffer 单元（skinned joints/instanced/clustered 灯光，gbuffer_skinned 管线冲突实锤），7-14 被共享材质/IBL 图占满；VK 5 是 ssao/pt-shadow 数组（PARTIALLY_BOUND）、6-8 是 IBL。15/9 恰是 deferred **光照** pass 的 emissive 槽——不同 pass、不同描述符集/管线，共享布局仅声明类型（COMBINED_IMAGE_SAMPLER 双方一致），无冲突。VK helper 的 6-8 连续写组扩为 6-9（img_infos[9]，无效句柄回退 albedo view 与既有通道同约）。
+- **通道实现**：`Material` 新增 `occlusion`（asset.c 经 `load_gltf_texture_cached` 解析 `cm->occlusion_texture.texture`，与 strength 同视图；scene 释放点同步）；`bind_material`（前向/延迟共享助手）解析白色回退后随统一绑定下发——前向 shader 不声明该槽，绑定惰性无害（前向逐像素 AO 仍属 clustered 终局边界）。`MatArraySet` 增第四张 `occlusion_array`：去重键扩为（四纹理+七因子），**仅持 occlusion 纹理的材质不再错误坍缩入 layer 0**，layer 0 与无纹理层白色填充（mix 得 1.0），arr execute 绑定位挂 occlusion_array，三处销毁点同步。
+- **TDD（红→绿实证）**：先改测试——TEST 12（arr）第四张 occlusion 数组（layer1 r=64、layer2 r=128、layer0/3 白），RT2.g 断言改混合期望 layer1 mix(1,64/255,0.25)=207、layer2 mix(1,128/255,0.75)=160（旧标量值 64/191 双双出窗）；TEST 12b（base）共享 occlusion 纹理 r=64 + 双强度（0.5/0.75），断言 160/112（强度独写 128/191、纹理独写 64 均出窗——三向判别）。RED 双树如实失败且仅 AO 通道失败（GL：arr 64/191、base 128/191；VK arr 同签名；VK 12b 为既有"末次写入"边界签名 191）。GREEN：**GL 全套件 ALL PASSED（12/12b/12c）**；**VK TEST 12 ✓、TEST 12c ✓**；VK 12b 仍为本机既有边界，其 AO 分量 {112} 精确=右侧 mix(1,64/255,0.75)——**occlusion 纹理通道在 VK base 管线确实流通**（旧常量/旧标量不可能产生 112），唯逐绘制隔离不可本机验证（GREEN 权威=GL 本机+CI lavapipe）。
+- **回归**：双树非图形 CTest 各 **112/112**；GL deferred/前向 demo 各 120 帧优雅退出 0 FATAL；VK deferred demo 复现 R577 基线（deferred 初始化成功、arr execute 录制后设备丢失，validation 仅 destroy 级联，新 occlusion 数组/新绑定位/新 shader 零绘制期错误）。
+- **边界**：HDR emissive（RT4 升 R16F，双端回读格式分歧）仍为独立后续；`occlusion` 纹理句柄不入 BSCN 序列化（同 emissive，SceneResource f[8] 已满——格式兼容需版本策略）；前向路径无逐像素 AO（clustered 管线接入生产仍是 R579 终局边界，其休眠的 raw-texture 语义接入时须与 R582/R583 的 glTF 组成统一）。
+
 ## 本轮更新：R582 延迟路径 emissive 颜色通道（TDD）— R581 遗留边界关闭
 
 - **缺口**（R581 遗留）：RT2.b 的 emissive 标记已通但 deferred_light 无消费方——G-Buffer 无 emissive 颜色载体，glTF emissive 在延迟路径完全不可见。

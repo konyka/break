@@ -779,7 +779,7 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                                            light_system_grid_slot(ls));
                 rhi_cmd_bind_material_textures_ibl(cmd,
                     rs->test_tex, mr_tex, rs->test_tex, rs->test_tex,
-                    rs->test_tex, rs->test_tex, rs->sampler,
+                    rs->test_tex, rs->test_tex, rs->test_tex, rs->sampler,
                     ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
                 }
                 rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
@@ -1114,7 +1114,7 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             rhi_cmd_set_uniform_vec3(cmd, l_amb, 0.35f, 0.35f, 0.35f);
             rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_material_textures_ibl(cmd,
-                arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex,
+                arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex,
                 rs->sampler,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
             rhi_cmd_bind_vertex_buffer(cmd, arr_vbo, 0);
@@ -1225,17 +1225,22 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
      * path. 4 quads (one per NDC quadrant) draw through ONE indirect
      * execute into a 5-attachment MRT matching the deferred G-Buffer
      * layout; each cmd's first_instance carries the sampler2DArray layer
-     * shared by the albedo AND metallic-roughness AND emissive arrays:
-     *   quad0 layer1: red   albedo, MR metal=1.0 rough=0.1, emissive fac (1,0.5,0)
-     *   quad1 layer2: green albedo, MR metal=0.0 rough=0.9, gray em tex x (0.5,0.5,1)
+     * shared by the albedo AND metallic-roughness AND emissive AND
+     * occlusion (R583) arrays:
+     *   quad0 layer1: red   albedo, MR metal=1.0 rough=0.1, emissive fac (1,0.5,0),
+     *                 occlusion tex r=64 x strength 0.25 (R583)
+     *   quad1 layer2: green albedo, MR metal=0.0 rough=0.9, gray em tex x (0.5,0.5,1),
+     *                 occlusion tex r=128 x strength 0.75 (R583)
      *   quad2 layer3: blue  albedo, MR metal=0.5 rough=0.5 (CULLED)
      *   quad3 layer0: white fallback albedo + neutral MR (metal=0,
      *                 rough=0.5 — the {255,128,0,255} neutral matching
-     *                 main.c's fallback_mr) + zero emissive factor.
+     *                 main.c's fallback_mr) + zero emissive factor +
+     *                 white occlusion (ao = 1).
      * Assertions (all pixel-level on the raw UNORM attachments, no sRGB):
      *   albedo_metallic (RT0): per-quadrant hue, alpha = metallic;
-     *   roughness_ao    (RT2): r = roughness per layer, g = per-layer AO
-     *   strength, b = per-layer emissive flag (R581);
+     *   roughness_ao    (RT2): r = roughness per layer, g = per-layer
+     *   occlusion mix(1, tex.r, strength) (R583), b = per-layer emissive
+     *   flag (R581);
      *   emissive        (RT4): rgb = per-layer emissive texel x factor (R582);
      *   exactly 1 indirect execute per frame. */
     const u32 GBW = 256u, GBH = 256u;
@@ -1245,6 +1250,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     RHIPipeline gb_pipe = RHI_HANDLE_NULL;
     RHITexture  gb_alb_arr = RHI_HANDLE_NULL, gb_mr_arr = RHI_HANDLE_NULL;
     RHITexture  gb_em_arr = RHI_HANDLE_NULL; /* R582 */
+    RHITexture  gb_occ_arr = RHI_HANDLE_NULL; /* R583 */
     RHIBuffer   gb_vbo = RHI_HANDLE_NULL, gb_ibo = RHI_HANDLE_NULL;
     RHIBuffer   gb_ubo = RHI_HANDLE_NULL; /* R580/R581/R582: per-layer factor + emissive tables */
     IndirectDrawSystem gids;
@@ -1259,8 +1265,11 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     u8 *mr_l2     = malloc((usize)GA * GA * 4u);
     u8 *mr_l3     = malloc((usize)GA * GA * 4u);
     u8 *em_l2     = malloc((usize)GA * GA * 4u); /* R582 */
+    u8 *occ_l1    = malloc((usize)GA * GA * 4u); /* R583 */
+    u8 *occ_l2    = malloc((usize)GA * GA * 4u); /* R583 */
     u8 *glayer    = malloc((usize)GA * GA * 4u);
-    if (alb_red && alb_green && alb_blue && mr_l1 && mr_l2 && mr_l3 && em_l2 && glayer) {
+    if (alb_red && alb_green && alb_blue && mr_l1 && mr_l2 && mr_l3 && em_l2 &&
+        occ_l1 && occ_l2 && glayer) {
         for (u32 p = 0; p < GA * GA; p++) {
             u8 *pr = &alb_red[(usize)p * 4u];
             u8 *pg = &alb_green[(usize)p * 4u];
@@ -1280,6 +1289,14 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
              * texture x factor composition (not factor alone). */
             u8 *e2 = &em_l2[(usize)p * 4u];
             e2[0] = 128; e2[1] = 128; e2[2] = 128; e2[3] = 255;
+            /* R583: occlusion layers (R channel = occlusion) — distinct
+             * per-layer values so RT2.g discriminates the texture x strength
+             * composition mix(1, tex.r, strength) from the retired scalar
+             * channel (which wrote strength alone: 64 / 191). */
+            u8 *o1 = &occ_l1[(usize)p * 4u];
+            u8 *o2 = &occ_l2[(usize)p * 4u];
+            o1[0] = 64;  o1[1] = 64;  o1[2] = 64;  o1[3] = 255;
+            o2[0] = 128; o2[1] = 128; o2[2] = 128; o2[3] = 255;
         }
 
         gb_alb_arr = rhi_texture_array_create(rs->device, GA, GA, 4u,
@@ -1288,15 +1305,19 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                                               RHI_FORMAT_R8G8B8A8_UNORM);
         gb_em_arr  = rhi_texture_array_create(rs->device, GA, GA, 4u,
                                               RHI_FORMAT_R8G8B8A8_UNORM);
+        gb_occ_arr = rhi_texture_array_create(rs->device, GA, GA, 4u,
+                                              RHI_FORMAT_R8G8B8A8_UNORM); /* R583 */
         if (rhi_handle_valid(gb_alb_arr) && rhi_handle_valid(gb_mr_arr) &&
-            rhi_handle_valid(gb_em_arr)) {
+            rhi_handle_valid(gb_em_arr) && rhi_handle_valid(gb_occ_arr)) {
             const usize lbytes = (usize)GA * GA * 4u;
             /* Layer 0: white albedo fallback + neutral MR {255,128,0,255}
              * (metal 0, rough ~0.5 — main.c fallback_mr) + white emissive
-             * (the white x factor convention — layer0's factor is zero). */
+             * (the white x factor convention — layer0's factor is zero) +
+             * white occlusion (R583: r=1 -> ao=1 regardless of strength). */
             memset(glayer, 0xFF, lbytes);
             rhi_texture_array_upload_layer(rs->device, gb_alb_arr, 0u, glayer, lbytes);
             rhi_texture_array_upload_layer(rs->device, gb_em_arr, 0u, glayer, lbytes);
+            rhi_texture_array_upload_layer(rs->device, gb_occ_arr, 0u, glayer, lbytes);
             for (u32 p = 0; p < GA * GA; p++) {
                 u8 *d = &glayer[(usize)p * 4u];
                 d[0] = 255; d[1] = 128; d[2] = 0; d[3] = 255;
@@ -1314,6 +1335,11 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             rhi_texture_array_upload_layer(rs->device, gb_em_arr, 1u, glayer, lbytes);
             rhi_texture_array_upload_layer(rs->device, gb_em_arr, 2u, em_l2, lbytes);
             rhi_texture_array_upload_layer(rs->device, gb_em_arr, 3u, glayer, lbytes);
+            /* R583: occlusion layers 1/2 carry their distinct gray levels,
+             * layers 0/3 stay white (no occlusion). */
+            rhi_texture_array_upload_layer(rs->device, gb_occ_arr, 1u, occ_l1, lbytes);
+            rhi_texture_array_upload_layer(rs->device, gb_occ_arr, 2u, occ_l2, lbytes);
+            rhi_texture_array_upload_layer(rs->device, gb_occ_arr, 3u, glayer, lbytes);
 
             /* G-Buffer MRT (same layout as deferred.c defrd_alloc_targets —
              * R582: 5 attachments, RT4 = emissive).
@@ -1366,10 +1392,12 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
              *   u_emissive_arr[64] — rgb emissive factor (x strength), w spare.
              *   layer 0 (fallback): (1,1,1,0) + (0,0,0,0) — neutral;
              *   layer 1 (quad0):    (0.5, 2.0, 0.25, 1.0) — metal 1.0→0.5,
-             *                       rough 0.1→0.2, ao 1→0.25, emissive flag on;
+             *                       rough 0.1→0.2; R583: ao = mix(1, 64/255,
+             *                       0.25) ≈ 0.8127 (207); emissive flag on;
              *                       emissive (1,0.5,0) x white tex → (255,128,0);
              *   layer 2 (quad1):    (1.0, 0.5, 0.75, 1.0) — metal 0,
-             *                       rough 0.9→0.45, ao 1→0.75, flag on;
+             *                       rough 0.9→0.45; R583: ao = mix(1,
+             *                       128/255, 0.75) ≈ 0.6265 (160), flag on;
              *                       emissive (0.5,0.5,1) x gray(128) → (64,64,128);
              *   layer 3 (quad2):    (1,1,1,0) + (1,1,1,0) — culled, irrelevant. */
             f32 gb_ubo_data[128][4];
@@ -1444,6 +1472,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                        rhi_handle_valid(gb_mrt.color_tex[0]) &&
                        rhi_handle_valid(gb_mrt.color_tex[2]) &&
                        rhi_handle_valid(gb_mrt.color_tex[4]) &&
+                       rhi_handle_valid(gb_occ_arr) &&
                        rhi_handle_valid(gb_vbo) && rhi_handle_valid(gb_ibo) &&
                        rhi_handle_valid(gb_ubo) && gids_ok;
         }
@@ -1485,10 +1514,11 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             rhi_cmd_set_uniform_mat4(cmd, l_proj,    &idm.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, l_prev_vp, &idm.e[0][0]);
             /* Slot 0 = albedo array, slot 2 = MR array, slot 4 = emissive
-             * array (R582); the remaining slots are unsampled by
-             * gbuffer_arr — reuse the arrays. */
+             * array (R582), slot 15/9 = occlusion array (R583); the
+             * remaining slots are unsampled by gbuffer_arr — reuse the
+             * arrays. */
             rhi_cmd_bind_material_textures_ibl(cmd,
-                gb_alb_arr, gb_mr_arr, gb_alb_arr, gb_em_arr,
+                gb_alb_arr, gb_mr_arr, gb_alb_arr, gb_em_arr, gb_occ_arr,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, rs->sampler,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
             rhi_cmd_bind_vertex_buffer(cmd, gb_vbo, 0);
@@ -1542,14 +1572,14 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             bool q0 = qa[0][0] > 200 && qa[0][1] < 80 && qa[0][2] < 80 &&
                       qa[0][3] > 124 && qa[0][3] < 132 &&  /* red, metal 1.0x0.5 -> 0.5 */
                       qr[0][0] > 46 && qr[0][0] < 58 &&    /* rough 0.1x2.0 -> 0.2 (52) */
-                      qr[0][1] > 58 && qr[0][1] < 70 &&    /* R581: ao 1.0x0.25 (64) */
+                      qr[0][1] > 200 && qr[0][1] < 214 &&  /* R583: mix(1,64/255,0.25) (207) */
                       qr[0][2] > 200 &&                    /* R581: emissive on */
                       qe[0][0] > 200 && qe[0][1] > 122 && qe[0][1] < 134 &&
                       qe[0][2] < 10;                       /* R582: (1,0.5,0)xwhite */
             bool q1 = qa[1][1] > 200 && qa[1][0] < 80 && qa[1][2] < 80 &&
                       qa[1][3] < 10 &&                     /* green, metal 0 */
                       qr[1][0] > 108 && qr[1][0] < 122 && /* rough 0.9x0.5 -> 0.45 (115) */
-                      qr[1][1] > 185 && qr[1][1] < 197 && /* R581: ao 1.0x0.75 (191) */
+                      qr[1][1] > 153 && qr[1][1] < 167 && /* R583: mix(1,128/255,0.75) (160) */
                       qr[1][2] > 200 &&                   /* R582: flag on */
                       qe[1][0] > 58 && qe[1][0] < 70 &&
                       qe[1][1] > 58 && qe[1][1] < 70 &&
@@ -1592,44 +1622,50 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     if (defarr_pass)
         LOG_INFO("PASS: deferred gbuffer array single execute (4 layers incl. "
                  "neutral MR fallback, 1 execute/frame, RT0 hue+metallic & "
-                 "RT2 roughness/ao/flag & RT4 emissive layer differences verified)");
+                 "RT2 roughness/occlusion/flag & RT4 emissive layer differences verified)");
 
     if (gids_ok) indirect_draw_destroy(&gids, rs->device);
     if (rhi_handle_valid(gb_pipe))    rhi_pipeline_destroy(rs->device, gb_pipe);
     if (rhi_handle_valid(gb_alb_arr)) rhi_texture_destroy(rs->device, gb_alb_arr);
     if (rhi_handle_valid(gb_mr_arr))  rhi_texture_destroy(rs->device, gb_mr_arr);
     if (rhi_handle_valid(gb_em_arr))  rhi_texture_destroy(rs->device, gb_em_arr);
+    if (rhi_handle_valid(gb_occ_arr)) rhi_texture_destroy(rs->device, gb_occ_arr);
     if (rhi_handle_valid(gb_ibo))     rhi_buffer_destroy(rs->device, gb_ibo);
     if (rhi_handle_valid(gb_vbo))     rhi_buffer_destroy(rs->device, gb_vbo);
     if (rhi_handle_valid(gb_ubo))     rhi_buffer_destroy(rs->device, gb_ubo);
     if (rhi_handle_valid(gb_mrt.fb))  rhi_mrt_fbo_destroy(rs->device, &gb_mrt);
     free(alb_red); free(alb_green); free(alb_blue);
-    free(mr_l1); free(mr_l2); free(mr_l3); free(em_l2); free(glayer);
+    free(mr_l1); free(mr_l2); free(mr_l3); free(em_l2);
+    free(occ_l1); free(occ_l2); free(glayer);
     return defarr_pass;
 }
 
-/* TEST 12b body: R580/R581/R582 deferred G-Buffer per-material factor
+/* TEST 12b body: R580/R581/R582/R583 deferred G-Buffer per-material factor
  * channel (base, non-array pipeline). Two quads share ONE albedo, ONE
- * metallic-roughness (metal 1.0 / rough ~0.5) and ONE emissive texture
- * ({200,100,50}); the only difference between the two draws is the factor
- * UBO content — one std140 block of TWO vec4s:
+ * metallic-roughness (metal 1.0 / rough ~0.5), ONE emissive texture
+ * ({200,100,50}) and ONE occlusion texture (r=64, R583); the only difference
+ * between the two draws is the factor UBO content — one std140 block of TWO
+ * vec4s:
  *   u_factors  = x metallic, y roughness, z AO strength, w emissive flag
  *   u_emissive = rgb emissive factor (x strength), w spare
- *   left  (1,1,0.5,1) + em (1,0.5,0):   neutral MR, AO 0.5, em on;
+ *   left  (1,1,0.5,1) + em (1,0.5,0):   neutral MR, AO strength 0.5, em on;
  *   right (0,0.5,0.75,1) + em (0,0.25,1): metal x0, rough x0.5, AO 0.75, on.
  * glTF composition (mirrors the R579 forward path): metal = tex.b * factor.x,
- * rough = tex.g * factor.y, emissive = tex.rgb * emissive.rgb (R582).
+ * rough = tex.g * factor.y, emissive = tex.rgb * emissive.rgb (R582),
+ * occlusion = mix(1.0, occ_tex.r, factor.z) (R583).
  * Pixel expectations (raw UNORM bytes):
  *   left : RT0.a = 255 (metal 1.0*1), RT2.r = 128 (0.502*1),
- *          RT2.g = 128 (ao 0.5), RT2.b = 255 (emissive),
+ *          RT2.g = 160 (mix(1, 64/255, 0.5) ~= 0.6255, R583), RT2.b = 255,
  *          RT4 = (200,50,0) ({200,100,50} x (1,0.5,0));
  *   right: RT0.a = 0   (metal 1.0*0), RT2.r = 64  (0.502*0.5),
- *          RT2.g = 191 (ao 0.75), RT2.b = 255,
+ *          RT2.g = 112 (mix(1, 64/255, 0.75) ~= 0.4382, R583), RT2.b = 255,
  *          RT4 = (0,25,50) ({200,100,50} x (0,0.25,1));
  *   albedo RGB identical on both quads (factors must not leak into RGB).
- * (Both right-side z/w deviate from the retired const defaults 1.0/0.0, so a
- * shader that still hardcodes ao/emissive fails on BOTH quads — including on
- * backends where the per-draw UBO rebind itself is under driver suspicion.)
+ * (The occlusion texel and both strengths deviate from the retired scalar
+ * channel's outputs — strength alone would give 128/191, texture alone 64 —
+ * so a shader that still hardcodes ao or ignores the texture fails on BOTH
+ * quads — including on backends where the per-draw UBO rebind itself is
+ * under driver suspicion.)
  * Runs on BOTH backends (the suite is shared; UBO binding 0 on GL, the aux
  * UBO set on VK). */
 static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
@@ -1640,21 +1676,25 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     RHIPipeline pipe = RHI_HANDLE_NULL;
     RHITexture  tex_alb = RHI_HANDLE_NULL, tex_mr = RHI_HANDLE_NULL;
     RHITexture  tex_em  = RHI_HANDLE_NULL; /* R582 */
+    RHITexture  tex_occ = RHI_HANDLE_NULL; /* R583 */
     RHIBuffer   vbo = RHI_HANDLE_NULL, ibo = RHI_HANDLE_NULL;
     RHIBuffer   ubo = RHI_HANDLE_NULL;
 
     /* 4x4 fixtures: flat gray albedo + MR {r=0, g=128, b=255} (metal 1.0,
      * rough 128/255 ~= 0.502 — gbuffer shaders sample .bg) + R582 emissive
      * {200,100,50} (distinct per-channel values discriminate texture x
-     * factor composition). */
-    u8 alb_px[4 * 4 * 4], mr_px[4 * 4 * 4], em_px[4 * 4 * 4];
+     * factor composition) + R583 occlusion {64} (R channel: mix(1, 64/255,
+     * strength) discriminates texture x strength from strength alone). */
+    u8 alb_px[4 * 4 * 4], mr_px[4 * 4 * 4], em_px[4 * 4 * 4], occ_px[4 * 4 * 4];
     for (u32 p = 0; p < 16u; p++) {
         u8 *a = &alb_px[(usize)p * 4u];
         u8 *m = &mr_px[(usize)p * 4u];
         u8 *e = &em_px[(usize)p * 4u];
+        u8 *o = &occ_px[(usize)p * 4u];
         a[0] = 64;  a[1] = 64;  a[2] = 64;  a[3] = 255;
         m[0] = 0;   m[1] = 128; m[2] = 255; m[3] = 255;
         e[0] = 200; e[1] = 100; e[2] = 50;  e[3] = 255;
+        o[0] = 64;  o[1] = 64;  o[2] = 64;  o[3] = 255;
     }
     RHITextureDesc atd = { .width = 4, .height = 4,
                            .format = RHI_FORMAT_R8G8B8A8_UNORM,
@@ -1665,9 +1705,13 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     RHITextureDesc etd = { .width = 4, .height = 4,
                            .format = RHI_FORMAT_R8G8B8A8_UNORM,
                            .mip_levels = 1, .data = em_px };
+    RHITextureDesc otd = { .width = 4, .height = 4,
+                           .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                           .mip_levels = 1, .data = occ_px };
     tex_alb = rhi_texture_create(rs->device, &atd);
     tex_mr  = rhi_texture_create(rs->device, &mtd);
     tex_em  = rhi_texture_create(rs->device, &etd);
+    tex_occ = rhi_texture_create(rs->device, &otd); /* R583 */
 
     /* Two NDC quads: left x in [-0.9,-0.1], right x in [0.1,0.9],
      * y in [-0.8,0.8]; pos3+nrm3+uv2 (32B stride), local indices. */
@@ -1744,14 +1788,15 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                rhi_handle_valid(mrt.color_tex[2]) &&
                rhi_handle_valid(mrt.color_tex[4]) &&
                rhi_handle_valid(tex_alb) && rhi_handle_valid(tex_mr) &&
-               rhi_handle_valid(tex_em) &&
+               rhi_handle_valid(tex_em) && rhi_handle_valid(tex_occ) &&
                rhi_handle_valid(vbo) && rhi_handle_valid(ibo) &&
                rhi_handle_valid(ubo);
     if (!setup_ok)
-        LOG_ERROR("FAIL: gbuffer-factor setup (pipe=%d mrt=%d alb=%d mr=%d em=%d ubo=%d)",
+        LOG_ERROR("FAIL: gbuffer-factor setup (pipe=%d mrt=%d alb=%d mr=%d em=%d occ=%d ubo=%d)",
                   (int)rhi_handle_valid(pipe), (int)rhi_handle_valid(mrt.fb),
                   (int)rhi_handle_valid(tex_alb), (int)rhi_handle_valid(tex_mr),
-                  (int)rhi_handle_valid(tex_em), (int)rhi_handle_valid(ubo));
+                  (int)rhi_handle_valid(tex_em), (int)rhi_handle_valid(tex_occ),
+                  (int)rhi_handle_valid(ubo));
 
     u32 frames_ok = 0;
     if (setup_ok) {
@@ -1774,11 +1819,12 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
             rhi_cmd_set_uniform_mat4(cmd, l_view,  &idm.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, l_proj,  &idm.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, l_prev,  &idm.e[0][0]);
-            /* Slots 0/2/4 are the only samplers gbuffer reads (R582: slot 4
-             * is now the emissive texture); reuse the fixtures for the rest
+            /* Slots 0/2/4 + 15/9 are the only samplers gbuffer reads (R582:
+             * slot 4 is the emissive texture; R583: GL unit 15 / VK binding
+             * 9 is the occlusion texture); reuse the fixtures for the rest
              * (same convention as TEST 12). */
             rhi_cmd_bind_material_textures_ibl(cmd,
-                tex_alb, tex_mr, tex_alb, tex_em,
+                tex_alb, tex_mr, tex_alb, tex_em, tex_occ,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, rs->sampler,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
             /* Left quad with factors+emissive fac_l, then re-update + rebind
@@ -1833,13 +1879,13 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                             qa[1][2] > 60 && qa[1][2] < 68;
             bool left_ok  = qa[0][3] > 200 &&                 /* metal 1.0*1 */
                             qr[0][0] > 122 && qr[0][0] < 134 && /* rough x1 (128) */
-                            qr[0][1] > 122 && qr[0][1] < 134 && /* R581: ao 0.5 (128) */
+                            qr[0][1] > 152 && qr[0][1] < 167 && /* R583: mix(1,64/255,0.5) (160) */
                             qr[0][2] > 200 &&                   /* R581: emissive on */
                             qe[0][0] > 194 && qe[0][1] > 44 && qe[0][1] < 56 &&
                             qe[0][2] < 10;                    /* R582: (200,50,0) */
             bool right_ok = qa[1][3] < 10 &&                  /* metal 1.0*0 */
                             qr[1][0] > 58 && qr[1][0] < 70 &&   /* rough x0.5 (64) */
-                            qr[1][1] > 185 && qr[1][1] < 197 && /* R581: ao 0.75 (191) */
+                            qr[1][1] > 105 && qr[1][1] < 119 && /* R583: mix(1,64/255,0.75) (112) */
                             qr[1][2] > 200 &&                   /* R582: emissive on */
                             qe[1][0] < 10 && qe[1][1] > 19 && qe[1][1] < 31 &&
                             qe[1][2] > 44 && qe[1][2] < 56;   /* R582: (0,25,50) */
@@ -1866,6 +1912,7 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     if (rhi_handle_valid(tex_alb)) rhi_texture_destroy(rs->device, tex_alb);
     if (rhi_handle_valid(tex_mr))  rhi_texture_destroy(rs->device, tex_mr);
     if (rhi_handle_valid(tex_em))  rhi_texture_destroy(rs->device, tex_em);
+    if (rhi_handle_valid(tex_occ)) rhi_texture_destroy(rs->device, tex_occ);
     if (rhi_handle_valid(ubo))     rhi_buffer_destroy(rs->device, ubo);
     if (rhi_handle_valid(ibo))     rhi_buffer_destroy(rs->device, ibo);
     if (rhi_handle_valid(vbo))     rhi_buffer_destroy(rs->device, vbo);
@@ -2016,7 +2063,7 @@ static bool tv_test_deferred_emissive_lighting(const TestRenderState *rs) {
             rhi_cmd_set_uniform_mat4(cmd, dsys._loc_gbuf_proj, &ident.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, dsys._loc_gbuf_prev_mvp, &ident.e[0][0]);
             rhi_cmd_bind_material_textures_ibl(cmd,
-                alb, mr, alb, em,
+                alb, mr, alb, em, em /* R583: white tex = neutral occlusion */,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, rs->sampler,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
             rhi_cmd_update_buffer(cmd, ubo, 0u, fac, sizeof(fac_emissive));
@@ -2206,7 +2253,7 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
                                        light_system_grid_slot(ls));
             rhi_cmd_bind_material_textures_ibl(cmd,
                 rs->test_tex, rs->test_tex, rs->test_tex, rs->test_tex,
-                rs->test_tex, rs->test_tex, rs->sampler,
+                rs->test_tex, rs->test_tex, rs->test_tex, rs->sampler,
                 ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);

@@ -386,11 +386,18 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture shadow, RHITexture ssao, RHISampler sampler);
 
-/* Material + IBL textures: binds material (0-4) + shadow (1) + ssao (11) +
- * brdf_lut/irradiance/prefilter (7-9) + point_shadow_cubes (10-13). */
+/* Material + IBL textures: binds material (0-4) + occlusion (R583) + shadow
+ * (1) + ssao (14) + brdf_lut/irradiance/prefilter (7-9) + point_shadow_cubes
+ * (10-13). R583 occlusion slot: GL unit 15 / VK set 0 binding 9 — the only
+ * slots free in the G-Buffer pass on each backend (GL 5/6 are vertex-stage
+ * texel-buffer units: joints/instances/light data; VK 5 is the ssao/pt-shadow
+ * array). They coincide with the deferred LIGHTING pass's emissive slots —
+ * a different pass with its own descriptor set, so no conflict. Callers
+ * resolve the white 1x1 fallback (no occlusion texture = 1.0 per glTF)
+ * before calling. */
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive,
-    RHITexture shadow, RHITexture ssao, RHISampler sampler,
+    RHITexture occlusion, RHITexture shadow, RHITexture ssao, RHISampler sampler,
     RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map,
     const RHITexture *point_shadow_cubes, u32 point_shadow_count);
 
