@@ -1,5 +1,20 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R588 点影 cubemap 像素门（TDD）— 钓出四个真实缺陷；vk_wait_frames 修复连带翻案 R577 本机"TDR 边界"
+
+- **缺口**（R586 落账边界"GL 点影 cube 绑定路径未专项验证"）：点影深度 cube 双端槽型分歧——GL 注册 `RHI_RES_CUBEMAP`（R586 前从未真正绑定）、VK 注册 `RHI_RES_TEXTURE`（一直可走）。新增 **TEST 7d**（硬门，真实 pbr_clustered vert+frag + 生产 point_shadow.c 六面深度 pass）：白 albedo 接收面 + 点光在原点 + 黑 IBL，相位 A 仅清深度（受光）、相位 B 双向绕序遮挡体入 cube（0.15 地板），断言 A 受光且 B 明确变暗。遮挡体必须双向绕序 12 索引（深度管线剔背面，单面 quad 在 -Z 面被剔除——实证）；生产顺序依赖：先建 CSM 填充 `vk->shadow_render_pass`，否则 VK is_shadow_depth 管线静默返 NULL。
+- **RED→GREEN 连环牵出的四个真实缺陷（全部修复）**：
+  ① `pbr_clustered{,_vk}.frag` 的 `uint u_point_count/u_dir_count`→`int`（glUniform1i 对 uint 报 INVALID_OPERATION，计数恒 0→GL 点光全灭；deferred_light 的 int 惯例为既有先例）；
+  ② `float u_point_shadow_far_planes[4]`→`vec4`（glUniform4f 对 float 数组同样拒绝，far 恒 0→全场景 0.15 阴影；`deferred_light_vk.frag` 同步）；
+  ③ `lighting.c` `light_system_cull` 屏幕 AABB：光源球横跨相机平面（view z+radius>0）时带符号倒数 `1/(-view.z)` 产出**倒置 AABB**→光源从所有格剔除（相机平面附近点光整帧消失，生产真实隐患）——改为横跨者全屏覆盖；
+  ④ **rhi_vk.c `vk_wait_frames` 等待当前录制帧自身的已复位 fence**（见下）。
+- **VK 首帧硬挂二分→根因**：TEST 7d 在本机 VK 套件内与隔离门（新增 `TV_ONLY_PSHADOW`，R577 诊断族）均首帧 20s fence 超时（R578 误闩 device-lost）。逐级二分门（`TV_7D_SKIP_DEPTH`/`TV_7D_SKIP_RECV`/`TV_7D_NO_PSINIT`/`TV_7D_NO_CSM`/`TV_7D_NO_LIGHTSYS`/`TV_7D_NO_LSUPLOAD`/`TV_7D_LIGHTS_ONLY`，全部默认惰性保留）排除深度 pass、接收绘制、点影 FBO、CSM，定位到**帧中 `light_system_upload` 的 DEVICE_LOCAL 网格 staging 上传**：`vk_buffer_staging_upload`→`vk_wait_frames` 等待全部 VK_MAX_FRAMES fence，**含当前录制帧的 fence——frame_begin 已 vkResetFences、frame_end 才提交，永远不可能应答**→烧满 20s 界→R578 误闩丢失并级联。非 TDR、非驱动边界——逻辑缺陷，任何驱动必现。修复=`vk_wait_frames` 跳过当前录制帧（`frame_started && i==current_frame`）——语义安全：录制中帧的命令尚未提交不可能在飞；单发拷贝即刻提交按队列序先于本帧执行。该路径是 VK 上首个"CPU 聚簇 + 帧中全量上传"调用方（生产 VK 走 GPU 聚簇 dispatch 写网格、仅上传 host-visible 灯光数据；staging download 与 buffer/texture/pipeline 的 deferred destroy 共享同一修复）。
+- **R577 本机"TDR 边界"实质翻案**：修复后 **VK 全套件本机首次零环境门跑到尾**（TEST 9 无 TV_SKIP_CULL_COMPACT 全过、10/11 全过；原"TEST 10/11 区确定性 TDR"不复存在）；**VK deferred demo 240 帧 rc=0、validation 0 条**（原 R577 基线：初始化成功、~2 帧设备丢失、validation 仅 destroy 级联）；**VK 本机 TEST 7d PASSED**（六面 cube 深度 + cube 绑定 + 接收绘制全链）。R577 定性为本机驱动 TDR 的套件死区与 demo 掉设备，主要（甚至全部）就是这个 fence 等待缺陷；`TV_SKIP_CULL_COMPACT`/`TV_ONLY_*` 门默认惰性保留。
+- **本机残余（非回归）**：VK 12b 保持既有"同 pass 两次 vkCmdUpdateBuffer 逐绘制隔离失效"驱动边界（R581 stash A/B 证，GREEN 权威=GL 本机+CI lavapipe）；VK golden 双项 MAE 漂移（28.75/13.54）——参考图为异机生成，本机 AMD iGPU 因套件此前死在 golden 段之前而**首次观测**；GL 同场景 golden 全过证本轮 diff 不影响其像素（golden 走 TEST 1 基础管线，不触本轮任何 shader/光照路径）；graphics 标签项不入主门禁，CI lavapipe 权威。
+- **TDD（红→绿实证）**：7d 初红（GL 点光全灭/全场景阴影），四缺陷修复后 **GL 全套件 ALL PASSED**（7d A≈0.637/B≈0.319，7c/golden/12 全数无回归）；VK 隔离门与套件内 7d 均 PASSED。
+- **回归**：双树非图形 CTest 各 **112/112**；GL deferred/前向 demo 各 120 帧 rc=0；VK deferred demo 240 帧 rc=0 validation 0（见上，R577 基线翻案）。
+- **边界**：帧中销毁仍被当前帧引用的资源仍是调用方责任（fence 等待救不了未提交命令）；RG16F 等非 RGBA16F 回读语义维持 R587 边界；clustered 管线接入 production `active_pipeline` 仍为后续决策；blinn_clustered 变体维持休眠。
+
 ## 本轮更新：R587 GL 回读格式原生化（RGBA16F→f16 8B/px；TDD）— R579(三)/R584 双端回读语义分歧关闭
 
 - **缺口**（R579(三) 发现、R584 落账）：VK `rhi_texture_read_pixels` 回原生格式字节（RGBA16F=8B/px，R445 修正），GL 恒回钳制 RGBA8（4B/px）——HDR 值在 GL 回读被 UNORM 钳断，tv_test_ibl 的 8B 步长在 GL 实为误读（弱断言幸存），R584 的 HDR 断言被迫分端（VK 精确 f16 / GL 弱 LDR）。

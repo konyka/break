@@ -529,11 +529,21 @@ RHIDevice *rhi_test_gl_cache_owner(void) {
 
 static void vk_wait_frames(VKBackend *vk) {
     /* R578: sequential bounded waits — never block forever on a dead device. */
-    for (u32 i = 0; i < VK_MAX_FRAMES; i++)
+    for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
+        /* R588: never wait on the fence of the frame that is currently being
+         * RECORDED — rhi_frame_begin reset it and it will not be submitted
+         * until rhi_frame_end, so the wait can never succeed: it burns the
+         * full 20 s bound and then falsely latches the device lost. Mid-frame
+         * callers (one-off staging upload/download, deferred destroys) only
+         * need prior in-flight frames drained; the recording frame's commands
+         * execute after any immediately-submitted work by queue order. */
+        if (vk->frame_started && i == vk->current_frame)
+            continue;
         if (vk_wait_fence(vk, vk->fences[i]) != VK_SUCCESS) {
             LOG_WARN("VK: vkWaitForFences failed in wait_frames");
             return;
         }
+    }
 }
 
 /* R576: device-fault forensics — after a DEVICE_LOST, report the driver's

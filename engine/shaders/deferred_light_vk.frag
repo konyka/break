@@ -38,7 +38,9 @@ layout(push_constant) uniform Push {
     vec4  u_clip_params;   /* 160  x=near y=far z=shadow_bias */
     uint  u_point_count;   /* 176 */
     uint  u_dir_count;     /* 180 */
-    float u_point_shadow_far_planes[4]; /* 184 */
+    vec4 u_point_shadow_far_planes; /* 184 — R588: was float[4] (identical
+                                     * 16B layout); aligns the family with
+                                     * the GL-side deferred_light.frag. */
 } pc;
 
 const float PI = 3.14159265359;

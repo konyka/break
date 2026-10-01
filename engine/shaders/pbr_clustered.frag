@@ -14,11 +14,20 @@ uniform float u_screen_w;
 uniform float u_screen_h;
 uniform float u_near;
 uniform float u_far;
-uniform uint u_point_count;
-uniform uint u_dir_count;
+uniform int u_point_count;  /* R588: uint->int — glUniform1i cannot write a
+                             * uint uniform (INVALID_OPERATION, value stuck
+                             * at 0 -> every light loop skipped on GL);
+                             * matches the deferred_light.frag convention. */
+uniform int u_dir_count;
 uniform mat4 u_view;
 uniform float u_shadow_bias;
-uniform float u_point_shadow_far_planes[4];
+uniform vec4 u_point_shadow_far_planes; /* R588: was float[4] — the production
+                                         * write path is glUniform4f, which a
+                                         * float-array uniform rejects
+                                         * (INVALID_OPERATION, stays 0 ->
+                                         * compare=dist/0=inf -> everything
+                                         * shadowed on GL); matches the
+                                         * deferred_light.frag convention. */
 uniform float u_pom_enabled; /* R84-1: 0=no height map, skip POM */
 uniform vec2 u_mr_factor;    /* R579: glTF metallic/roughness scalar factors */
 uniform vec3 u_emissive_factor; /* R586: glTF emissiveFactor (deferred R582
@@ -404,12 +413,12 @@ void main() {
 
     /* R84-3: shadow_test doesn't depend on loop variable */
     float dir_shadow = shadow_test(vWorldPos);
-    for (uint di = 0u; di < u_dir_count; di++) {
+    for (int di = 0; di < u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
         color += cook_torrance_brdf(N, V, (-dl.dir)  /* R96-3: dl.dir pre-normalized in light_system_add_dir */, dl.color * dir_shadow, albedo, metallic, roughness);
     }
 
-    if (u_point_count > 0u && u_screen_w > 0.0) {
+    if (u_point_count > 0 && u_screen_w > 0.0) {
         vec4 vp = u_view * vec4(vWorldPos, 1.0);
         float ld = -vp.z;
         uint cx = min(uint(gl_FragCoord.x / (u_screen_w / 16.0)), 15u);

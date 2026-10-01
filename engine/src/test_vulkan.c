@@ -4,6 +4,7 @@
 #include <renderer/skybox.h>
 #include <renderer/terrain.h>
 #include <renderer/lighting.h>
+#include <renderer/point_shadow.h> /* R588: TEST 7d point shadow gate */
 #include <renderer/combined_post_process.h>
 #include <renderer/motion_blur.h>
 #include <renderer/gpucull.h>
@@ -1141,6 +1142,411 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
     if (rhi_handle_valid(alb_white))  rhi_texture_destroy(rs->device, alb_white);
     if (rhi_handle_valid(alb_black))  rhi_texture_destroy(rs->device, alb_black);
     if (rhi_handle_valid(pipe))       rhi_pipeline_destroy(rs->device, pipe);
+    return pass;
+}
+
+/* TEST 7d body: R588 point-light shadow cubemap gate (both backends). The
+ * R586 GL cubemap-bind repair made the point-shadow depth cube bindable on
+ * GL for the first time (it shares the RHI_RES_CUBEMAP slot family that
+ * gl_bind_tex_unit silently dropped); this gate pixel-proves the full chain:
+ *   point_shadow depth pass -> cube bind -> pbr_clustered point-light loop.
+ * Two phases (per-phase frames):
+ *   A: cube faces cleared only -> the receiver quad is LIT by the point light;
+ *   B: an occluder quad is rendered into the cube -> receiver SHADOWED
+ *      (the shader's 0.15 floor). If the cube bind is dropped, the sampled
+ *      depth is 0 and EVERYTHING falls to the 0.15 floor, so A == B and the
+ *      gate fails. Geometry lives in z in [-1,0] so the identity-projection
+ *      draws stay in clip range (R214-A remap). Ambient is black (black IBL
+ *      cubes): the point light is the only illumination. */
+static bool tv_test_point_shadow_gate(const TestRenderState *rs, u32 iw, u32 ih) {
+    bool ok = true;
+
+    /* Geometry: receiver quad at z=-0.9, occluder quad at z=-0.5 between
+     * the light (origin) and the receiver. pos3+nrm3+uv2, 32B stride. */
+    f32 recv_v[4 * 8], occ_v[4 * 8];
+    const f32 rpos[4][2] = { {-0.85f, -0.85f}, {0.85f, -0.85f}, {0.85f, 0.85f}, {-0.85f, 0.85f} };
+    const f32 opos[4][2] = { {-0.60f, -0.60f}, {0.60f, -0.60f}, {0.60f, 0.60f}, {-0.60f, 0.60f} };
+    const f32 quv[4][2]  = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+    for (u32 v = 0; v < 4; v++) {
+        f32 *d = &recv_v[v * 8];
+        d[0] = rpos[v][0]; d[1] = rpos[v][1]; d[2] = -0.9f;
+        d[3] = 0.0f; d[4] = 0.0f; d[5] = 1.0f;
+        d[6] = quv[v][0];  d[7] = quv[v][1];
+        d = &occ_v[v * 8];
+        d[0] = opos[v][0]; d[1] = opos[v][1]; d[2] = -0.5f;
+        d[3] = 0.0f; d[4] = 0.0f; d[5] = 1.0f;
+        d[6] = quv[v][0];  d[7] = quv[v][1];
+    }
+    /* The depth pipeline may cull back faces, and a one-sided quad's winding
+     * flips between cube faces — issue BOTH windings so the occluder is
+     * front-facing in every face regardless of handedness. */
+    u32 qi[6]  = { 0, 1, 2, 0, 2, 3 };
+    u32 qir[12] = { 0, 1, 2, 0, 2, 3,  0, 2, 1, 0, 3, 2 };
+    RHIBufferDesc rvb = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(recv_v), .initial_data = recv_v };
+    RHIBufferDesc ovb = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(occ_v), .initial_data = occ_v };
+    RHIBufferDesc qib = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(qi), .initial_data = qi };
+    RHIBufferDesc rib = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(qir), .initial_data = qir };
+    RHIBuffer recv_vbo = rhi_buffer_create(rs->device, &rvb);
+    RHIBuffer occ_vbo  = rhi_buffer_create(rs->device, &ovb);
+    RHIBuffer q_ibo    = rhi_buffer_create(rs->device, &qib);
+    RHIBuffer occ_ibo  = rhi_buffer_create(rs->device, &rib);
+
+    /* Pipeline: real clustered pair + HAS_IBL + HAS_POINT_SHADOW. */
+    usize vl = 0, fl = 0;
+    char *vsrc = shader_read_file(TV_VS_PBR, &vl);
+    char *fsrc = shader_read_file(TV_FS_PBR, &fl);
+    usize fl2 = 0, fl3 = 0;
+    char *fsrc_ibl = fsrc ? tv_inject_define(fsrc, fl, "HAS_IBL", &fl2) : NULL;
+    char *fsrc_ps  = fsrc_ibl ? tv_inject_define(fsrc_ibl, fl2, "HAS_POINT_SHADOW", &fl3) : NULL;
+    /* TV_7D_ECHO=1..4 (diagnostic, default off): inside the point-light loop,
+     * right after the shadow sample —
+     * 1: pl.color*att  2: pshadow  3: gc (binned light count)  4: li/shadow_index/att */
+    const char *echo7d = getenv("TV_7D_ECHO");
+    if (fsrc_ps && echo7d) {
+        const char *anchor = "float pshadow = point_shadow_test(vWorldPos, int(pl.shadow_index), pl.pos, pl.radius);";
+        char *m = strstr(fsrc_ps, anchor);
+        const char *ins = NULL;
+        if (echo7d[0] == '1') ins = " FragColor = vec4(pl.color * att, 1.0); return;";
+        if (echo7d[0] == '2') ins = " FragColor = vec4(vec3(pshadow), 1.0); return;";
+        if (echo7d[0] == '3') ins = " FragColor = vec4(vec3(float(gc)), 1.0); return;";
+        if (echo7d[0] == '4') ins = " FragColor = vec4(float(li) + 1.0, float(pl.shadow_index) + 2.0, att, 1.0); return;";
+        if (echo7d[0] == '5') ins = " FragColor = vec4(1.0, 0.5, 0.25, 1.0); return;";
+        if (echo7d[0] == '6') ins = " FragColor = vec4(0.0, 1.0, 0.0, 1.0); return;";
+        if (echo7d[0] == '7') ins = " PointLight pl0 = read_point_light(0); FragColor = vec4(pl0.pos + vec3(0.5), pl0.radius / 10.0); return;";
+        if (echo7d[0] == '8') ins = " FragColor = vec4(vec3(float(grid_u32(ci * 2u + 1u))), 1.0); return;";
+        if (echo7d[0] == '9') ins = NULL; /* resolved below (sampler prefix differs) */
+        const char *anc = anchor;
+        char *mm = m;
+        if (echo7d[0] == '9') {
+            /* Main scope (inside the light loop, after the pshadow call) —
+             * recomputes the cube sample. Prefix u_ vs pc. per shader. */
+            if (strstr(fsrc_ps, "pc.u_point_shadow_cubes"))
+                ins = " vec3 ftl_ = vWorldPos - pl.pos; FragColor = vec4(vec3(texture(pc.u_point_shadow_cubes[int(pl.shadow_index)], ftl_).r), 1.0); return;";
+            else
+                ins = " vec3 ftl_ = vWorldPos - pl.pos; FragColor = vec4(vec3(texture(u_point_shadow_cubes[int(pl.shadow_index)], ftl_).r), 1.0); return;";
+        } else if (echo7d[0] == '7') {
+            anc = "uint ci = cx + cy * 16u + cz * 128u;";
+            mm = strstr(fsrc_ps, anc);
+        } else if (echo7d[0] == '8') {
+            anc = "uint ci = cx + cy * 16u + cz * 128u;";
+            mm = strstr(fsrc_ps, anc);
+        } else if (echo7d[0] == '5') {
+            anc = "if (pc.u_point_count > 0 && pc.u_screen_w > 0.0) {";
+            mm = strstr(fsrc_ps, anc);
+            if (!mm) {
+                anc = "if (u_point_count > 0 && u_screen_w > 0.0) {";
+                mm = strstr(fsrc_ps, anc);
+            }
+            if (!mm) { /* pre-R588 text */
+                anc = "if (pc.u_point_count > 0u && pc.u_screen_w > 0.0) {";
+                mm = strstr(fsrc_ps, anc);
+            }
+            if (!mm) {
+                anc = "if (u_point_count > 0u && u_screen_w > 0.0) {";
+                mm = strstr(fsrc_ps, anc);
+            }
+        } else if (echo7d[0] == '6') {
+            anc = "vec3 N = normalize(vNormal);";
+            mm = strstr(fsrc_ps, anc);
+        }
+        if (mm && ins) {
+            usize ilen = strlen(ins), off = (usize)(mm - fsrc_ps) + strlen(anc);
+            char *nb = malloc(fl3 + ilen + 1u);
+            if (nb) {
+                memcpy(nb, fsrc_ps, off);
+                memcpy(nb + off, ins, ilen);
+                memcpy(nb + off + ilen, fsrc_ps + off, fl3 - off);
+                nb[fl3 + ilen] = '\0';
+                free(fsrc_ps);
+                fsrc_ps = nb;
+                fl3 += ilen;
+                LOG_INFO("7D-DBG: echo %c injected", echo7d[0]);
+            }
+        }
+    }
+    RHIPipeline pipe = RHI_HANDLE_NULL;
+    if (vsrc && fsrc_ps) {
+        RHIShader vs = rhi_shader_create(rs->device, vsrc, vl, false);
+        RHIShader fs = rhi_shader_create(rs->device, fsrc_ps, fl3, true);
+        if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
+            RHIPipelineDesc d = {.vert = vs, .frag = fs, .uses_textures = true,
+                                 .uses_texel_buffer = true,
+                                 .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+            pipe = rhi_pipeline_create(rs->device, &d);
+        }
+        rhi_shader_destroy(rs->device, vs);
+        rhi_shader_destroy(rs->device, fs);
+    }
+    free(vsrc); free(fsrc); free(fsrc_ibl); free(fsrc_ps);
+
+    /* Fixtures: white albedo, neutral MR, flat normal, white emissive
+     * (factor 0 anyway), white occlusion/ssao, black BRDF + black IBL cubes
+     * (point light is the ONLY illumination). */
+    u8 px_white[4] = {255u, 255u, 255u, 255u};
+    u8 px_mr[4] = {0u, 128u, 0u, 255u};
+    u8 px_nrm[4] = {128u, 128u, 255u, 255u};
+    u8 px_black[4] = {0u, 0u, 0u, 255u};
+    RHITextureDesc t1 = { .width = 1, .height = 1,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 1, .data = px_white };
+    RHITexture alb_white  = rhi_texture_create(rs->device, &t1);
+    RHITexture em_white   = rhi_texture_create(rs->device, &t1);
+    RHITexture occ_white  = rhi_texture_create(rs->device, &t1);
+    RHITexture ssao_white = rhi_texture_create(rs->device, &t1);
+    t1.data = px_mr;
+    RHITexture mr_neu = rhi_texture_create(rs->device, &t1);
+    t1.data = px_nrm;
+    RHITexture nrm_flat = rhi_texture_create(rs->device, &t1);
+    t1.data = px_black;
+    RHITexture brdf_black = rhi_texture_create(rs->device, &t1);
+    RHICubemapDesc cmd_d;
+    memset(&cmd_d, 0, sizeof(cmd_d));
+    cmd_d.size = 1u;
+    cmd_d.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    for (u32 i = 0; i < 6u; i++) cmd_d.faces[i] = px_black;
+    /* TV_7D_NO_IBLCUBES: local setup-bisect gate — skip the two IBL
+     * cubemap creations (receiver bind degrades to null handles). */
+    RHICubemap irr_black = RHI_HANDLE_NULL, pref_black = RHI_HANDLE_NULL;
+    if (!getenv("TV_7D_NO_IBLCUBES")) {
+        irr_black  = rhi_cubemap_create(rs->device, &cmd_d);
+        pref_black = rhi_cubemap_create(rs->device, &cmd_d);
+    }
+
+    /* Point-light shadow system + one shadow-casting point light.
+     * The is_shadow_depth pipeline builds against the CSM shadow render
+     * pass, which only exists after a shadow map is created (production
+     * creates the CSM atlas at startup before point_shadow_init — mirror
+     * that order here, or the VK pipeline silently comes back NULL).
+     * TV_7D_NO_PSINIT / TV_7D_NO_CSM: local setup-bisect gates — skip the
+     * point-shadow system / CSM creation entirely (depth pass and cube
+     * bind degrade to null automatically via !ps.ready). */
+    RHIShadowMap csm = {0};
+    if (!getenv("TV_7D_NO_CSM"))
+        csm = rhi_shadow_map_create(rs->device, 64u, 64u);
+    PointShadowSystem ps;
+    memset(&ps, 0, sizeof(ps));
+    if (!getenv("TV_7D_NO_PSINIT"))
+        point_shadow_init(&ps, rs->device, 64u);
+    Vec3 lpos = {{ 0.0f, 0.0f, 0.0f }};
+    Vec3 cam3 = {{ 0.0f, 0.0f, 2.0f }};
+    f32  lrad = 10.0f;
+    point_shadow_update(&ps, &lpos, &lrad, 1u, cam3);
+
+    /* TV_7D_NO_LIGHTSYS: local setup-bisect gate — no light system at all
+     * (no compute pipeline, no per-frame buffer updates, no texel bind). */
+    LightSystem *ls = NULL;
+    if (!getenv("TV_7D_NO_LIGHTSYS")) {
+        ls = calloc(1, sizeof(*ls));
+        if (ls) {
+            light_system_init(ls, rs->device);
+            (void)light_system_init_gpu_cull(ls);
+            light_system_add_point(ls, 0.0f, 0.0f, 0.0f, 10.0f, 2.0f, 2.0f, 2.0f);
+            light_system_set_point_shadow_indices(ls, &ps);
+        }
+    }
+
+    Mat4 ident = mat4_identity();
+#ifdef ENGINE_VULKAN
+    RHIBufferDesc pud = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                          .size = sizeof(Mat4), .initial_data = &ident };
+    RHIBuffer proj_ubo = rhi_buffer_create(rs->device, &pud);
+#endif
+    RHIOffscreenFBO scene = {0};
+    if (iw > 0u && ih > 0u)
+        scene = rhi_offscreen_fbo_create_fmt(rs->device, iw, ih,
+                                             RHI_FORMAT_R16G16B16A16_SFLOAT);
+
+    ok = rhi_handle_valid(recv_vbo) && rhi_handle_valid(occ_vbo) &&
+         rhi_handle_valid(q_ibo) && rhi_handle_valid(occ_ibo) && rhi_handle_valid(pipe) &&
+         rhi_handle_valid(alb_white) && rhi_handle_valid(em_white) &&
+         rhi_handle_valid(occ_white) && rhi_handle_valid(ssao_white) &&
+         rhi_handle_valid(mr_neu) && rhi_handle_valid(nrm_flat) &&
+         rhi_handle_valid(brdf_black) &&
+         (getenv("TV_7D_NO_IBLCUBES") != NULL ||
+          (rhi_handle_valid(irr_black) && rhi_handle_valid(pref_black))) &&
+         (getenv("TV_7D_NO_PSINIT") != NULL ||
+          (ps.ready && ps.active_count == 1u)) &&
+         (getenv("TV_7D_NO_CSM") != NULL || rhi_handle_valid(csm.fbo)) &&
+         (getenv("TV_7D_NO_LIGHTSYS") != NULL || ls != NULL) &&
+#ifdef ENGINE_VULKAN
+         rhi_handle_valid(proj_ubo) &&
+#endif
+         rhi_handle_valid(scene.fb) && rhi_handle_valid(scene.color_tex);
+    if (!ok)
+        LOG_ERROR("FAIL: point-shadow setup (pipe=%d ps.ready=%d active=%u)",
+                  (int)rhi_handle_valid(pipe), (int)ps.ready, ps.active_count);
+
+    i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
+    i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
+    i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
+    i32 l_fogn  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
+    i32 l_fogf  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
+    i32 l_fogc  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_color");
+    i32 l_uw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_underwater");
+    i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
+    i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
+    i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
+    i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
+    i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
+    i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
+    i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
+    i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
+    i32 l_pom   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_pom_enabled");
+    i32 l_bias  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_shadow_bias");
+    i32 l_psf   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_shadow_far_planes");
+#ifndef ENGINE_VULKAN
+    i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+#endif
+
+    RHITexture null_pt_tex = RHI_HANDLE_NULL;
+    f32 pix[2][3];
+    memset(pix, 0, sizeof(pix));
+    for (u32 phase = 0; phase < 2u && ok; phase++) {
+        const bool occluded = (phase == 1u);
+        u32 frames = 0;
+        for (u32 f = 0; f < 2u; f++) {
+            RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+            if (!cmd) break;
+            /* 1) Point-shadow depth pass: 6 faces per the production flow.
+             * TV_7D_SKIP_DEPTH bisect gate: skip the pass entirely (local
+             * hang bisection). */
+            if (!getenv("TV_7D_SKIP_DEPTH") && ps.ready) {
+                for (u32 face = 0; face < 6u; face++) {
+                    point_shadow_render_begin(&ps, cmd, 0u, face);
+                    if (occluded) {
+                        rhi_cmd_bind_vertex_buffer(cmd, occ_vbo, 0);
+                        rhi_cmd_bind_index_buffer(cmd, occ_ibo, 0, true);
+                        rhi_cmd_draw_indexed(cmd, 12, 1);
+                    }
+                }
+                point_shadow_render_end(&ps, cmd, iw, ih);
+            }
+
+            /* 2) Receiver draw with the point light + cube bound.
+             * TV_7D_SKIP_RECV bisect gate: clear-only frame, no draw. */
+            const bool skip_recv = getenv("TV_7D_SKIP_RECV") != NULL;
+            /* TV_7D_NO_LSUPLOAD bisect gate: keep the light system (init +
+             * compute pipeline) but skip the per-frame cull/upload. */
+            if (ls && !getenv("TV_7D_NO_LSUPLOAD")) {
+                light_system_cull(ls, &ident, &ident, iw, ih);
+                /* TV_7D_LIGHTS_ONLY bisect gate: upload light data only,
+                 * skip the DEVICE_LOCAL grid staging upload. */
+                if (getenv("TV_7D_LIGHTS_ONLY"))
+                    light_system_upload_lights(ls);
+                else
+                    light_system_upload(ls);
+            }
+            rhi_offscreen_fbo_bind(cmd, &scene);
+            rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+            rhi_cmd_clear_depth(cmd);
+            if (!skip_recv) {
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            rhi_cmd_set_uniform_mat4(cmd, l_model, &ident.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, l_view,  &ident.e[0][0]);
+            rhi_cmd_set_uniform_vec3(cmd, l_cam,  0.0f, 0.0f, 2.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_fogn, 1000.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_fogf, 2000.0f);
+            rhi_cmd_set_uniform_vec3(cmd, l_fogc, 0.0f, 0.0f, 0.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_uw,   0.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_sw,   (f32)iw);
+            rhi_cmd_set_uniform_f32(cmd, l_sh,   (f32)ih);
+            rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
+            rhi_cmd_set_uniform_f32(cmd, l_far,  100.0f);
+            rhi_cmd_set_uniform_i32(cmd, l_pc,   1);
+            rhi_cmd_set_uniform_i32(cmd, l_dc,   0);
+            rhi_cmd_set_uniform_vec2(cmd, l_mr,  1.0f, 1.0f);
+            rhi_cmd_set_uniform_vec3(cmd, l_ef,  0.0f, 0.0f, 0.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_pom,  0.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_bias, 0.005f);
+            rhi_cmd_set_uniform_vec4(cmd, l_psf, 10.0f, 25.0f, 25.0f, 25.0f);
+#ifdef ENGINE_VULKAN
+            rhi_cmd_bind_uniform_buffer(cmd, proj_ubo, 0u);
+#else
+            rhi_cmd_set_uniform_mat4(cmd, l_proj, &ident.e[0][0]);
+#endif
+            if (ls)
+                rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                                           light_system_grid_slot(ls));
+            rhi_cmd_bind_material_textures_ibl(cmd,
+                alb_white, mr_neu, nrm_flat, em_white, occ_white,
+                RHI_HANDLE_NULL, ssao_white, rs->sampler,
+                brdf_black, irr_black, pref_black,
+                /* TV_7D_NO_PTCUBE bisect gate: bind null instead of the
+                 * point-shadow cube depth texture. */
+                (getenv("TV_7D_NO_PTCUBE") || !ps.ready)
+                    ? &null_pt_tex
+                    : &ps.cubemap_fbos[0].depth_tex,
+                1u);
+            rhi_cmd_bind_vertex_buffer(cmd, recv_vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, q_ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 6, 1);
+            } /* !skip_recv */
+            rhi_offscreen_fbo_unbind(cmd, iw, ih);
+            rhi_frame_end(rs->device);
+            rhi_present(rs->device);
+            frames++;
+        }
+        if (frames != 2u) { ok = false; break; }
+        const usize stride = 8u; /* R587: RGBA16F native readback, both backends */
+        const usize bytes = (usize)iw * ih * stride;
+        u8 *rb = malloc(bytes);
+        if (!rb || !rhi_texture_read_pixels(rs->device, scene.color_tex, rb, bytes)) {
+            LOG_ERROR("FAIL: point-shadow readback (phase %u)", phase);
+            ok = false;
+        } else {
+            const u8 *p = &rb[((usize)(ih / 2u) * iw + iw / 2u) * stride];
+            for (u32 c = 0; c < 3u; c++) {
+                u16 h = (u16)(p[c * 2u] | ((u16)p[c * 2u + 1u] << 8));
+                pix[phase][c] = tv_f16_to_f32(h);
+            }
+        }
+        free(rb);
+    }
+
+    bool pass = false;
+    if (ok) {
+        bool lit  = pix[0][0] > 0.45f && pix[0][0] < 0.95f;
+        bool dark = pix[1][0] < 0.75f * pix[0][0] &&
+                    (pix[0][0] - pix[1][0]) > 0.15f;
+        pass = lit && dark;
+        if (!pass)
+            LOG_ERROR("FAIL: point-shadow pixels A{%.3f,%.3f,%.3f} B{%.3f,%.3f,%.3f} "
+                      "(want A lit >0.45, B clearly darker)",
+                      pix[0][0], pix[0][1], pix[0][2],
+                      pix[1][0], pix[1][1], pix[1][2]);
+    }
+    if (pass)
+        LOG_INFO("PASS: point shadow cubemap gate (receiver lit without occluder, "
+                 "clearly shadowed with occluder — cube bind + depth chain verified)");
+
+    if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
+#ifdef ENGINE_VULKAN
+    if (rhi_handle_valid(proj_ubo)) rhi_buffer_destroy(rs->device, proj_ubo);
+#endif
+    if (ls) {
+        light_system_shutdown(ls);
+        free(ls);
+    }
+    point_shadow_destroy(&ps, rs->device);
+    if (rhi_handle_valid(csm.fbo)) rhi_shadow_map_destroy(rs->device, &csm);
+    if (rhi_handle_valid(pref_black)) rhi_cubemap_destroy(rs->device, pref_black);
+    if (rhi_handle_valid(irr_black))  rhi_cubemap_destroy(rs->device, irr_black);
+    if (rhi_handle_valid(brdf_black)) rhi_texture_destroy(rs->device, brdf_black);
+    if (rhi_handle_valid(nrm_flat))   rhi_texture_destroy(rs->device, nrm_flat);
+    if (rhi_handle_valid(mr_neu))     rhi_texture_destroy(rs->device, mr_neu);
+    if (rhi_handle_valid(ssao_white)) rhi_texture_destroy(rs->device, ssao_white);
+    if (rhi_handle_valid(occ_white))  rhi_texture_destroy(rs->device, occ_white);
+    if (rhi_handle_valid(em_white))   rhi_texture_destroy(rs->device, em_white);
+    if (rhi_handle_valid(alb_white))  rhi_texture_destroy(rs->device, alb_white);
+    if (rhi_handle_valid(pipe))       rhi_pipeline_destroy(rs->device, pipe);
+    if (rhi_handle_valid(q_ibo))      rhi_buffer_destroy(rs->device, q_ibo);
+    if (rhi_handle_valid(occ_ibo))    rhi_buffer_destroy(rs->device, occ_ibo);
+    if (rhi_handle_valid(occ_vbo))    rhi_buffer_destroy(rs->device, occ_vbo);
+    if (rhi_handle_valid(recv_vbo))   rhi_buffer_destroy(rs->device, recv_vbo);
     return pass;
 }
 
@@ -2926,6 +3332,24 @@ int main(int argc, char **argv) {
     }
 
 #ifdef ENGINE_VULKAN
+    /* R588: TV_ONLY_PSHADOW runs ONLY TEST 7d (point shadow gate) and exits —
+     * diagnostic isolation gate of the R577-boundary family (TV_ONLY_GBUFFER
+     * etc.). Created while hunting the "7d first-frame hang", whose root cause
+     * turned out to be vk_wait_frames waiting on the recording frame's own
+     * reset fence (fixed in rhi_vk.c, R588) — not a TDR. Inert by default;
+     * CI (lavapipe) never sets it and runs the full suite. */
+    if (getenv("TV_ONLY_PSHADOW")) {
+        u32 psw = 0, psh = 0;
+        platform_get_drawable_size(engine.platform, &psw, &psh);
+        bool psh_only = tv_test_point_shadow_gate(&render, psw, psh);
+        LOG_INFO("RESULT: POINT SHADOW CUBEMAP GATE %s", psh_only ? "PASSED ✓" : "FAILED");
+        if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
+        if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
+        test_render_shutdown(&render);
+        engine_shutdown(&engine);
+        return psh_only ? 0 : 1;
+    }
+
     /* R580: TV_ONLY_GBUFFER runs ONLY the deferred G-Buffer tests (TEST 12
      * array path + TEST 12b factor channel + TEST 12c emissive lighting +
      * TEST 12d HDR emissive, R584)
@@ -3008,6 +3432,13 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                  pbrc_pass ? "PASSED ✓" : "FAILED");
 
         LOG_INFO("============================================");
+        LOG_INFO("TEST 7d: POINT SHADOW CUBEMAP GATE");
+        LOG_INFO("============================================");
+        bool psh_pass = tv_test_point_shadow_gate(&render, gw, gh);
+        LOG_INFO("RESULT: POINT SHADOW CUBEMAP GATE TEST %s",
+                 psh_pass ? "PASSED ✓" : "FAILED");
+
+        LOG_INFO("============================================");
         LOG_INFO("TEST 10: INDIRECT DRAW GROUPED COMPACT");
         LOG_INFO("============================================");
         bool idraw_pass = tv_test_grouped_compact(&render, vbo, ibo);
@@ -3051,7 +3482,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass && pbrc_pass;
+        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -3731,6 +4162,15 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
     tv_probe_device(render.device, "TEST 7c clustered real");
 
+    /* ---- TEST 7d: R588 point-light shadow cubemap gate ---- */
+    bool psh_pass = tv_test_point_shadow_gate(&render, iw, ih);
+    if (psh_pass) {
+        LOG_INFO("RESULT: POINT SHADOW CUBEMAP GATE TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: POINT SHADOW CUBEMAP GATE TEST FAILED");
+    }
+    tv_probe_device(render.device, "TEST 7d point shadow");
+
     /* ---- TEST 9: Unified GPU cull + compact (indirect count draw) ---- */
     LOG_INFO("============================================");
     LOG_INFO("TEST 9: UNIFIED GPU CULL + COMPACT");
@@ -4051,7 +4491,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool all_pass = motion_rt1_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrc_pass && golden_pass &&
+idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrc_pass && psh_pass && golden_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

@@ -203,6 +203,20 @@ void light_system_cull(LightSystem *ls, const Mat4 *view, const Mat4 *proj, u32 
         view_pos[li] = mat4_vec4(view, wp);
         clip_pos[li] = mat4_vec4(proj, view_pos[li]);  /* proj * view_pos */
 
+        /* R588: a light sphere straddling the camera plane (view z + radius
+         * > 0) makes the perspective radius singular — the old signed
+         * reciprocal produced an INVERTED AABB (xmin > xmax) and the light
+         * was culled from EVERY cell, blinking out while crossing the plane.
+         * Cover the full screen instead (any fragment may be inside). */
+        if (view_pos[li].e[2] + pl->radius > 0.0f) {
+            screen_xmin[li] = 0.0f;
+            screen_xmax[li] = (f32)screen_w;
+            screen_ymin[li] = 0.0f;
+            screen_ymax[li] = (f32)screen_h;
+            screen_ok[li]   = true;
+            continue;
+        }
+
         /* Pre-compute screen-space projection (depends only on light, not cluster) */
         Vec4 sp = clip_pos[li];
         if (sp.e[3] > 0.001f) {

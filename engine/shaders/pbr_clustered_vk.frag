@@ -22,12 +22,16 @@ layout(push_constant) uniform PushConstants {
     float u_screen_h;   /* 164 */
     float u_near;       /* 168 */
     float u_far;        /* 172 */
-    uint u_point_count; /* 176 */
-    uint u_dir_count;   /* 180 */
+    int u_point_count;  /* 176 — R588: uint->int (same GL write-path reason
+                         * as pbr_clustered.frag; identical 4-byte layout,
+                         * VK push bits unchanged) */
+    int u_dir_count;    /* 180 */
     float u_shadow_bias;/* 184 */
     vec3 u_fog_color;   /* 192 */
     float u_underwater; /* 204 */
-    float u_point_shadow_far_planes[4]; /* 208 */
+    vec4 u_point_shadow_far_planes; /* 208 — R588: was float[4] (identical
+                                     * 16B layout); see pbr_clustered.frag
+                                     * for the GL write-path reason. */
     float u_pom_enabled;                /* 224 */
     vec2  u_mr_factor;                  /* 232 — R579 glTF metallic/roughness factors
                                          * (std430: vec2 aligns 8, pads 228->232) */
@@ -420,12 +424,12 @@ void main() {
 
     /* R84-3: shadow_test doesn't depend on loop variable */
     float dir_shadow = shadow_test(vWorldPos);
-    for (uint di = 0u; di < pc.u_dir_count; di++) {
+    for (int di = 0; di < pc.u_dir_count; di++) {
         DirLight dl = read_dir_light(int(di));
         color += cook_torrance_brdf(N, V, (-dl.dir)  /* R96-3: dl.dir pre-normalized in light_system_add_dir */, dl.color * dir_shadow, albedo, metallic, roughness);
     }
 
-    if (pc.u_point_count > 0u && pc.u_screen_w > 0.0) {
+    if (pc.u_point_count > 0 && pc.u_screen_w > 0.0) {
         vec4 vp = pc.u_view * vec4(vWorldPos, 1.0);
         float ld = -vp.z;
         uint cx = min(uint(gl_FragCoord.x / (pc.u_screen_w / 16.0)), 15u);
