@@ -58,6 +58,20 @@ static void tv_resample_nearest_rgba8(const u8 *src, u32 sw, u32 sh,
     }
 }
 
+/* R584: half-float decode for HDR RT4 readback assertions. VK returns native
+ * RGBA16F bytes (8B/px); GL's readback is always RGBA8 (R579-(三)) so only the
+ * VK path decodes — normals/solar ranges only, no inf/nan handling. */
+#ifdef ENGINE_VULKAN
+static f32 tv_f16_to_f32(u16 h) {
+    u32 exp  = (h >> 10) & 0x1Fu;
+    u32 mant = h & 0x3FFu;
+    f32 v;
+    if (exp == 0) v = ldexpf((f32)mant / 1024.0f, -14);
+    else          v = ldexpf(1.0f + (f32)mant / 1024.0f, (int)exp - 15);
+    return (h & 0x8000u) ? -v : v;
+}
+#endif
+
 /* ---- Golden image regression helpers ------------------------------------
  * The presented frame is read back via rhi_screenshot, box-downsampled to a
  * tiny grid (robust against single-pixel driver noise) and compared against a
@@ -1227,7 +1241,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
      * layout; each cmd's first_instance carries the sampler2DArray layer
      * shared by the albedo AND metallic-roughness AND emissive AND
      * occlusion (R583) arrays:
-     *   quad0 layer1: red   albedo, MR metal=1.0 rough=0.1, emissive fac (1,0.5,0),
+     *   quad0 layer1: red   albedo, MR metal=1.0 rough=0.1, HDR emissive fac (2,0.5,0),
      *                 occlusion tex r=64 x strength 0.25 (R583)
      *   quad1 layer2: green albedo, MR metal=0.0 rough=0.9, gray em tex x (0.5,0.5,1),
      *                 occlusion tex r=128 x strength 0.75 (R583)
@@ -1236,12 +1250,15 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
      *                 rough=0.5 — the {255,128,0,255} neutral matching
      *                 main.c's fallback_mr) + zero emissive factor +
      *                 white occlusion (ao = 1).
-     * Assertions (all pixel-level on the raw UNORM attachments, no sRGB):
+     * Assertions (all pixel-level on the raw attachments, no sRGB):
      *   albedo_metallic (RT0): per-quadrant hue, alpha = metallic;
      *   roughness_ao    (RT2): r = roughness per layer, g = per-layer
      *   occlusion mix(1, tex.r, strength) (R583), b = per-layer emissive
      *   flag (R581);
-     *   emissive        (RT4): rgb = per-layer emissive texel x factor (R582);
+     *   emissive        (RT4, R584 HDR RGBA16F): rgb = per-layer emissive
+     *   texel x factor UNCLAMPED (layer1 r=2.0 gates HDR; VK asserts the
+     *   native f16 value, GL's clamped RGBA8 readback asserts the LDR
+     *   residue — TEST 12d is the cross-backend HDR authority);
      *   exactly 1 indirect execute per frame. */
     const u32 GBW = 256u, GBH = 256u;
     bool setup_ok = false;
@@ -1342,7 +1359,9 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             rhi_texture_array_upload_layer(rs->device, gb_occ_arr, 3u, glayer, lbytes);
 
             /* G-Buffer MRT (same layout as deferred.c defrd_alloc_targets —
-             * R582: 5 attachments, RT4 = emissive).
+             * R582: 5 attachments, RT4 = emissive; R584: RT4 upgraded to
+             * RGBA16F so HDR emissive (strength pushing rgb past 1.0)
+             * survives unclamped into the lighting pass's Reinhard).
              * GL ignores the R440 mrt_formats pipeline fields (glDrawBuffers
              * needs no render-pass compatibility), but they are set identically
              * so the shared body stays byte-for-byte backend-neutral. */
@@ -1351,7 +1370,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                 RHI_FORMAT_R16G16B16A16_SFLOAT,
                 RHI_FORMAT_R8G8B8A8_UNORM,
                 RHI_FORMAT_R16G16B16A16_SFLOAT,
-                RHI_FORMAT_R8G8B8A8_UNORM,
+                RHI_FORMAT_R16G16B16A16_SFLOAT,
             };
             gb_mrt = rhi_mrt_fbo_create(rs->device, GBW, GBH, gfmts, 5u);
 
@@ -1394,11 +1413,14 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
              *   layer 1 (quad0):    (0.5, 2.0, 0.25, 1.0) — metal 1.0→0.5,
              *                       rough 0.1→0.2; R583: ao = mix(1, 64/255,
              *                       0.25) ≈ 0.8127 (207); emissive flag on;
-             *                       emissive (1,0.5,0) x white tex → (255,128,0);
+             *                       R584: emissive (2,0.5,0) x white tex —
+             *                       HDR r=2.0 must survive unclamped (VK f16;
+             *                       GL readback clamps to 1.0 — R579-(三));
              *   layer 2 (quad1):    (1.0, 0.5, 0.75, 1.0) — metal 0,
              *                       rough 0.9→0.45; R583: ao = mix(1,
              *                       128/255, 0.75) ≈ 0.6265 (160), flag on;
-             *                       emissive (0.5,0.5,1) x gray(128) → (64,64,128);
+             *                       emissive (0.5,0.5,1) x gray(128) →
+             *                       (0.251,0.251,0.502) — all LDR;
              *   layer 3 (quad2):    (1,1,1,0) + (1,1,1,0) — culled, irrelevant. */
             f32 gb_ubo_data[128][4];
             memset(gb_ubo_data, 0, sizeof(gb_ubo_data));
@@ -1411,7 +1433,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                 };
                 const f32 emi[4][4] = {
                     { 0.0f, 0.0f, 0.0f, 0.0f },
-                    { 1.0f, 0.5f, 0.0f, 0.0f },
+                    { 2.0f, 0.5f, 0.0f, 0.0f },
                     { 0.5f, 0.5f, 1.0f, 0.0f },
                     { 1.0f, 1.0f, 1.0f, 0.0f },
                 };
@@ -1440,13 +1462,14 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                     dpd.uses_textures = true;
                     dpd.depth_compare_lequal = true;
                     /* R440: pipeline must be render-pass-compatible with
-                     * the 5-attachment G-Buffer MRT (R582: +RT4 emissive). */
+                     * the 5-attachment G-Buffer MRT (R582: +RT4 emissive,
+                     * R584: RT4 HDR RGBA16F). */
                     dpd.mrt_attachment_count = 5u;
                     dpd.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
                     dpd.mrt_formats[1] = RHI_FORMAT_R16G16B16A16_SFLOAT;
                     dpd.mrt_formats[2] = RHI_FORMAT_R8G8B8A8_UNORM;
                     dpd.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
-                    dpd.mrt_formats[4] = RHI_FORMAT_R8G8B8A8_UNORM;
+                    dpd.mrt_formats[4] = RHI_FORMAT_R16G16B16A16_SFLOAT;
                     gb_pipe = rhi_pipeline_create(rs->device, &dpd);
                 }
                 if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
@@ -1536,8 +1559,12 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     }
 
     /* Readback of RT0 (albedo+metallic), RT2 (roughness+ao+emissive flag)
-     * and RT4 (emissive rgb, R582): raw UNORM attachment values — no
-     * lighting, no sRGB encode on this path.
+     * and RT4 (emissive rgb, R582 — R584: HDR RGBA16F). RT0/RT2 are raw
+     * UNORM bytes (no lighting, no sRGB on this path); RT4 readback is
+     * backend-split (R579-(三)): VK returns native f16 (8B/px, HDR values
+     * past 1.0 asserted exactly), GL returns clamped RGBA8 (4B/px — the
+     * >1.0 channel is only weakly assertable; TEST 12d is the HDR
+     * authority on GL).
      * R442 (GL): glGetTexImage row 0 = texture t 0 = window-y 0 (bottom);
      * VK row 0 = image top. The NDC->row formula below lands on the same
      * index under both conventions because GL's viewport is NOT flipped
@@ -1546,16 +1573,23 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         const usize gbytes = (usize)GBW * GBH * 4u;
+#ifdef ENGINE_VULKAN
+        const usize ebpp = 8u; /* R584: RT4 RGBA16F native readback */
+#else
+        const usize ebpp = 4u; /* GL readback is always RGBA8 (clamped) */
+#endif
+        const usize ebytes = (usize)GBW * GBH * ebpp;
         u8 *rt0 = malloc(gbytes);
         u8 *rt2 = malloc(gbytes);
-        u8 *rt4 = malloc(gbytes);
+        u8 *rt4 = malloc(ebytes);
         if (rt0 && rt2 && rt4 &&
             rhi_texture_read_pixels(rs->device, gb_mrt.color_tex[0], rt0, gbytes) &&
             rhi_texture_read_pixels(rs->device, gb_mrt.color_tex[2], rt2, gbytes) &&
-            rhi_texture_read_pixels(rs->device, gb_mrt.color_tex[4], rt4, gbytes)) {
+            rhi_texture_read_pixels(rs->device, gb_mrt.color_tex[4], rt4, ebytes)) {
             const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
             const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };
-            u8 qa[4][4], qr[4][4], qe[4][4]; /* per-quad RGBA of RT0 / RT2 / RT4 */
+            u8  qa[4][4], qr[4][4]; /* per-quad RGBA of RT0 / RT2 */
+            f32 qe[4][3];           /* per-quad emissive rgb (decoded, R584) */
             for (u32 k = 0; k < 4; k++) {
                 u32 px = (u32)((qcx[k] + 1.0f) * 0.5f * (f32)GBW);
                 u32 py = (u32)((qcy[k] + 1.0f) * 0.5f * (f32)GBH);
@@ -1563,43 +1597,61 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                 if (py >= GBH) py = GBH - 1;
                 const u8 *p0 = &rt0[((usize)py * GBW + px) * 4u];
                 const u8 *p2 = &rt2[((usize)py * GBW + px) * 4u];
-                const u8 *p4 = &rt4[((usize)py * GBW + px) * 4u];
                 memcpy(qa[k], p0, 4u);
                 memcpy(qr[k], p2, 4u);
-                memcpy(qe[k], p4, 4u);
+#ifdef ENGINE_VULKAN
+                const u8 *p4 = &rt4[((usize)py * GBW + px) * 8u];
+                for (u32 c = 0; c < 3u; c++) {
+                    u16 h = (u16)(p4[c * 2u] | ((u16)p4[c * 2u + 1u] << 8));
+                    qe[k][c] = tv_f16_to_f32(h);
+                }
+#else
+                const u8 *p4 = &rt4[((usize)py * GBW + px) * 4u];
+                for (u32 c = 0; c < 3u; c++)
+                    qe[k][c] = (f32)p4[c] / 255.0f;
+#endif
             }
 
+            /* R584 emissive expectations (linear floats): layer1 (2,0.5,0)
+             * x white — r is HDR (VK: exact 2.0; GL: readback clamps to 1);
+             * layer2 (0.5,0.5,1) x gray(128) = (0.251,0.251,0.502) — LDR,
+             * byte-identical expectations on both backends. */
+#ifdef ENGINE_VULKAN
+            bool q0e = qe[0][0] > 1.9f && qe[0][0] < 2.1f;
+#else
+            bool q0e = qe[0][0] > 0.94f;
+#endif
+            q0e = q0e && qe[0][1] > 0.47f && qe[0][1] < 0.53f && qe[0][2] < 0.02f;
             bool q0 = qa[0][0] > 200 && qa[0][1] < 80 && qa[0][2] < 80 &&
                       qa[0][3] > 124 && qa[0][3] < 132 &&  /* red, metal 1.0x0.5 -> 0.5 */
                       qr[0][0] > 46 && qr[0][0] < 58 &&    /* rough 0.1x2.0 -> 0.2 (52) */
                       qr[0][1] > 200 && qr[0][1] < 214 &&  /* R583: mix(1,64/255,0.25) (207) */
                       qr[0][2] > 200 &&                    /* R581: emissive on */
-                      qe[0][0] > 200 && qe[0][1] > 122 && qe[0][1] < 134 &&
-                      qe[0][2] < 10;                       /* R582: (1,0.5,0)xwhite */
+                      q0e;                                 /* R584: HDR (2,0.5,0) */
             bool q1 = qa[1][1] > 200 && qa[1][0] < 80 && qa[1][2] < 80 &&
                       qa[1][3] < 10 &&                     /* green, metal 0 */
                       qr[1][0] > 108 && qr[1][0] < 122 && /* rough 0.9x0.5 -> 0.45 (115) */
                       qr[1][1] > 153 && qr[1][1] < 167 && /* R583: mix(1,128/255,0.75) (160) */
                       qr[1][2] > 200 &&                   /* R582: flag on */
-                      qe[1][0] > 58 && qe[1][0] < 70 &&
-                      qe[1][1] > 58 && qe[1][1] < 70 &&
-                      qe[1][2] > 122 && qe[1][2] < 134;   /* R582: (0.5,0.5,1)xgray */
+                      qe[1][0] > 0.22f && qe[1][0] < 0.28f &&
+                      qe[1][1] > 0.22f && qe[1][1] < 0.28f &&
+                      qe[1][2] > 0.47f && qe[1][2] < 0.53f; /* R584: (0.5,0.5,1)xgray */
             bool q2 = qa[2][0] < 10 && qa[2][1] < 10 && qa[2][2] < 10 &&
                       qa[2][3] < 10 &&                     /* culled = clear */
                       qr[2][0] < 10 && qr[2][1] < 10 && qr[2][2] < 10 &&
-                      qe[2][0] < 10 && qe[2][1] < 10 && qe[2][2] < 10;
+                      qe[2][0] < 0.02f && qe[2][1] < 0.02f && qe[2][2] < 0.02f;
             bool q3 = qa[3][0] > 200 && qa[3][1] > 200 && qa[3][2] > 200 &&
                       qa[3][3] < 10 &&                     /* white, neutral metal 0 */
                       qr[3][0] > 120 && qr[3][0] < 136 &&  /* neutral rough 0.5 (128) */
                       qr[3][1] > 200 &&                    /* neutral ao 1.0 */
                       qr[3][2] < 10 &&                     /* neutral emissive off */
-                      qe[3][0] < 10 && qe[3][1] < 10 && qe[3][2] < 10;
+                      qe[3][0] < 0.02f && qe[3][1] < 0.02f && qe[3][2] < 0.02f;
             pixels_ok = q0 && q1 && q2 && q3;
             if (!pixels_ok)
                 LOG_ERROR("FAIL: gbuffer pixels "
-                          "q0 alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%u,%u,%u} "
-                          "q1 alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%u,%u,%u} "
-                          "q2 alb{%u,%u,%u,%u} q3 alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%u,%u,%u}",
+                          "q0 alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%.3f,%.3f,%.3f} "
+                          "q1 alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%.3f,%.3f,%.3f} "
+                          "q2 alb{%u,%u,%u,%u} q3 alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%.3f,%.3f,%.3f}",
                           qa[0][0], qa[0][1], qa[0][2], qa[0][3], qr[0][0], qr[0][1], qr[0][2],
                           qe[0][0], qe[0][1], qe[0][2],
                           qa[1][0], qa[1][1], qa[1][2], qa[1][3], qr[1][0], qr[1][1], qr[1][2],
@@ -1622,7 +1674,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     if (defarr_pass)
         LOG_INFO("PASS: deferred gbuffer array single execute (4 layers incl. "
                  "neutral MR fallback, 1 execute/frame, RT0 hue+metallic & "
-                 "RT2 roughness/occlusion/flag & RT4 emissive layer differences verified)");
+                 "RT2 roughness/occlusion/flag & RT4 HDR emissive layer differences verified)");
 
     if (gids_ok) indirect_draw_destroy(&gids, rs->device);
     if (rhi_handle_valid(gb_pipe))    rhi_pipeline_destroy(rs->device, gb_pipe);
@@ -1640,8 +1692,8 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     return defarr_pass;
 }
 
-/* TEST 12b body: R580/R581/R582/R583 deferred G-Buffer per-material factor
- * channel (base, non-array pipeline). Two quads share ONE albedo, ONE
+/* TEST 12b body: R580/R581/R582/R583/R584 deferred G-Buffer per-material
+ * factor channel (base, non-array pipeline). Two quads share ONE albedo, ONE
  * metallic-roughness (metal 1.0 / rough ~0.5), ONE emissive texture
  * ({200,100,50}) and ONE occlusion texture (r=64, R583); the only difference
  * between the two draws is the factor UBO content — one std140 block of TWO
@@ -1649,17 +1701,19 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
  *   u_factors  = x metallic, y roughness, z AO strength, w emissive flag
  *   u_emissive = rgb emissive factor (x strength), w spare
  *   left  (1,1,0.5,1) + em (1,0.5,0):   neutral MR, AO strength 0.5, em on;
- *   right (0,0.5,0.75,1) + em (0,0.25,1): metal x0, rough x0.5, AO 0.75, on.
+ *   right (0,0.5,0.75,1) + em (0,0.25,8): metal x0, rough x0.5, AO 0.75,
+ *         HDR emissive b=8 (R584).
  * glTF composition (mirrors the R579 forward path): metal = tex.b * factor.x,
- * rough = tex.g * factor.y, emissive = tex.rgb * emissive.rgb (R582),
- * occlusion = mix(1.0, occ_tex.r, factor.z) (R583).
- * Pixel expectations (raw UNORM bytes):
+ * rough = tex.g * factor.y, emissive = tex.rgb * emissive.rgb UNCLAMPED
+ * (R584: RT4 is RGBA16F), occlusion = mix(1.0, occ_tex.r, factor.z) (R583).
+ * Pixel expectations (linear floats; VK reads native f16, GL clamped RGBA8):
  *   left : RT0.a = 255 (metal 1.0*1), RT2.r = 128 (0.502*1),
  *          RT2.g = 160 (mix(1, 64/255, 0.5) ~= 0.6255, R583), RT2.b = 255,
- *          RT4 = (200,50,0) ({200,100,50} x (1,0.5,0));
+ *          RT4 = (0.784, 0.196, 0) ({200,100,50}/255 x (1,0.5,0));
  *   right: RT0.a = 0   (metal 1.0*0), RT2.r = 64  (0.502*0.5),
  *          RT2.g = 112 (mix(1, 64/255, 0.75) ~= 0.4382, R583), RT2.b = 255,
- *          RT4 = (0,25,50) ({200,100,50} x (0,0.25,1));
+ *          RT4 = (0, 0.098, 1.569) (x (0,0.25,8) — b is HDR: VK exact,
+ *          GL readback clamps to 1.0; TEST 12d is the GL HDR authority);
  *   albedo RGB identical on both quads (factors must not leak into RGB).
  * (The occlusion texel and both strengths deviate from the retired scalar
  * channel's outputs — strength alone would give 128/191, texture alone 64 —
@@ -1752,7 +1806,7 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
         RHI_FORMAT_R16G16B16A16_SFLOAT,
         RHI_FORMAT_R8G8B8A8_UNORM,
         RHI_FORMAT_R16G16B16A16_SFLOAT,
-        RHI_FORMAT_R8G8B8A8_UNORM,
+        RHI_FORMAT_R16G16B16A16_SFLOAT, /* R584: RT4 HDR emissive */
     };
     mrt = rhi_mrt_fbo_create(rs->device, GBW, GBH, gfmts, 5u);
 
@@ -1775,7 +1829,7 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
             dpd.mrt_formats[1] = RHI_FORMAT_R16G16B16A16_SFLOAT;
             dpd.mrt_formats[2] = RHI_FORMAT_R8G8B8A8_UNORM;
             dpd.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
-            dpd.mrt_formats[4] = RHI_FORMAT_R8G8B8A8_UNORM;
+            dpd.mrt_formats[4] = RHI_FORMAT_R16G16B16A16_SFLOAT; /* R584: RT4 HDR */
             pipe = rhi_pipeline_create(rs->device, &dpd);
         }
         if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
@@ -1805,9 +1859,10 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
         i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
         i32 l_prev  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_prev_mvp");
         Mat4 idm = mat4_identity();
-        /* {factors vec4, emissive vec4} per draw (R580/R581/R582). */
+        /* {factors vec4, emissive vec4} per draw (R580/R581/R582; R584:
+         * right-side emissive b=8.0 pushes tex.b 0.196 to 1.569 — HDR). */
         const f32 fac_l[8] = { 1.0f, 1.0f, 0.5f,  1.0f,  1.0f, 0.5f,  0.0f, 0.0f };
-        const f32 fac_r[8] = { 0.0f, 0.5f, 0.75f, 1.0f,  0.0f, 0.25f, 1.0f, 0.0f };
+        const f32 fac_r[8] = { 0.0f, 0.5f, 0.75f, 1.0f,  0.0f, 0.25f, 8.0f, 0.0f };
         for (u32 f = 0; f < 3; f++) {
             RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
             if (!cmd) break;
@@ -1846,30 +1901,48 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     }
 
     /* Readback RT0 (albedo+metallic) / RT2 (roughness+ao+flag) / RT4
-     * (emissive, R582); same NDC->row convention as TEST 12 (GL/VK origin
-     * flips cancel). */
+     * (emissive, R582 — R584: HDR RGBA16F; VK reads native f16, GL clamped
+     * RGBA8 — the right quad's HDR b is exact on VK only, TEST 12d is the
+     * cross-backend HDR authority); same NDC->row convention as TEST 12
+     * (GL/VK origin flips cancel). */
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         const usize gbytes = (usize)GBW * GBH * 4u;
+#ifdef ENGINE_VULKAN
+        const usize ebpp = 8u; /* R584: RT4 RGBA16F native readback */
+#else
+        const usize ebpp = 4u; /* GL readback is always RGBA8 (clamped) */
+#endif
+        const usize ebytes = (usize)GBW * GBH * ebpp;
         u8 *rt0 = malloc(gbytes);
         u8 *rt2 = malloc(gbytes);
-        u8 *rt4 = malloc(gbytes);
+        u8 *rt4 = malloc(ebytes);
         if (rt0 && rt2 && rt4 &&
             rhi_texture_read_pixels(rs->device, mrt.color_tex[0], rt0, gbytes) &&
             rhi_texture_read_pixels(rs->device, mrt.color_tex[2], rt2, gbytes) &&
-            rhi_texture_read_pixels(rs->device, mrt.color_tex[4], rt4, gbytes)) {
+            rhi_texture_read_pixels(rs->device, mrt.color_tex[4], rt4, ebytes)) {
             const f32 sx[2] = { -0.5f, 0.5f }; /* quad centers (NDC) */
-            u8 qa[2][4], qr[2][4], qe[2][4];
+            u8  qa[2][4], qr[2][4];
+            f32 qe[2][3]; /* R584: decoded linear emissive */
             for (u32 k = 0; k < 2; k++) {
                 u32 px = (u32)((sx[k] + 1.0f) * 0.5f * (f32)GBW);
                 u32 py = GBH / 2u;
                 if (px >= GBW) px = GBW - 1;
                 const u8 *p0 = &rt0[((usize)py * GBW + px) * 4u];
                 const u8 *p2 = &rt2[((usize)py * GBW + px) * 4u];
-                const u8 *p4 = &rt4[((usize)py * GBW + px) * 4u];
                 memcpy(qa[k], p0, 4u);
                 memcpy(qr[k], p2, 4u);
-                memcpy(qe[k], p4, 4u);
+#ifdef ENGINE_VULKAN
+                const u8 *p4 = &rt4[((usize)py * GBW + px) * 8u];
+                for (u32 c = 0; c < 3u; c++) {
+                    u16 h = (u16)(p4[c * 2u] | ((u16)p4[c * 2u + 1u] << 8));
+                    qe[k][c] = tv_f16_to_f32(h);
+                }
+#else
+                const u8 *p4 = &rt4[((usize)py * GBW + px) * 4u];
+                for (u32 c = 0; c < 3u; c++)
+                    qe[k][c] = (f32)p4[c] / 255.0f;
+#endif
             }
             bool alb_same = qa[0][0] > 60 && qa[0][0] < 68 &&
                             qa[1][0] > 60 && qa[1][0] < 68 &&
@@ -1877,22 +1950,29 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                             qa[1][1] > 60 && qa[1][1] < 68 &&
                             qa[0][2] > 60 && qa[0][2] < 68 &&
                             qa[1][2] > 60 && qa[1][2] < 68;
+#ifdef ENGINE_VULKAN
+            bool rb_hdr = qe[1][2] > 1.47f && qe[1][2] < 1.67f; /* 0.196x8 = 1.569 */
+#else
+            bool rb_hdr = qe[1][2] > 0.94f; /* GL readback clamps HDR to 1.0 */
+#endif
             bool left_ok  = qa[0][3] > 200 &&                 /* metal 1.0*1 */
                             qr[0][0] > 122 && qr[0][0] < 134 && /* rough x1 (128) */
                             qr[0][1] > 152 && qr[0][1] < 167 && /* R583: mix(1,64/255,0.5) (160) */
                             qr[0][2] > 200 &&                   /* R581: emissive on */
-                            qe[0][0] > 194 && qe[0][1] > 44 && qe[0][1] < 56 &&
-                            qe[0][2] < 10;                    /* R582: (200,50,0) */
+                            qe[0][0] > 0.75f && qe[0][0] < 0.82f &&
+                            qe[0][1] > 0.16f && qe[0][1] < 0.23f &&
+                            qe[0][2] < 0.02f;                 /* R584: (0.784,0.196,0) */
             bool right_ok = qa[1][3] < 10 &&                  /* metal 1.0*0 */
                             qr[1][0] > 58 && qr[1][0] < 70 &&   /* rough x0.5 (64) */
                             qr[1][1] > 105 && qr[1][1] < 119 && /* R583: mix(1,64/255,0.75) (112) */
                             qr[1][2] > 200 &&                   /* R582: emissive on */
-                            qe[1][0] < 10 && qe[1][1] > 19 && qe[1][1] < 31 &&
-                            qe[1][2] > 44 && qe[1][2] < 56;   /* R582: (0,25,50) */
+                            qe[1][0] < 0.02f &&
+                            qe[1][1] > 0.07f && qe[1][1] < 0.13f &&
+                            rb_hdr;                           /* R584: HDR b=1.569 */
             pixels_ok = alb_same && left_ok && right_ok;
             if (!pixels_ok)
-                LOG_ERROR("FAIL: gbuffer-factor pixels L alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%u,%u,%u} "
-                          "R alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%u,%u,%u}",
+                LOG_ERROR("FAIL: gbuffer-factor pixels L alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%.3f,%.3f,%.3f} "
+                          "R alb{%u,%u,%u,%u} mr{%u,%u,%u} em{%.3f,%.3f,%.3f}",
                           qa[0][0], qa[0][1], qa[0][2], qa[0][3], qr[0][0], qr[0][1], qr[0][2],
                           qe[0][0], qe[0][1], qe[0][2],
                           qa[1][0], qa[1][1], qa[1][2], qa[1][3], qr[1][0], qr[1][1], qr[1][2],
@@ -2114,6 +2194,212 @@ static bool tv_test_deferred_emissive_lighting(const TestRenderState *rs) {
     if (pass)
         LOG_INFO("PASS: deferred emissive end-to-end (gbuffer RT4 -> lighting "
                  "color += emissive, Reinhard-verified {128,85,0}, control black)");
+
+    if (rhi_handle_valid(off.fb)) rhi_offscreen_fbo_destroy(rs->device, &off);
+    if (rhi_handle_valid(ubo))    rhi_buffer_destroy(rs->device, ubo);
+    if (rhi_handle_valid(ibo))    rhi_buffer_destroy(rs->device, ibo);
+    if (rhi_handle_valid(vbo))    rhi_buffer_destroy(rs->device, vbo);
+    if (rhi_handle_valid(light_grid)) rhi_buffer_destroy(rs->device, light_grid);
+    if (rhi_handle_valid(light_data)) rhi_buffer_destroy(rs->device, light_data);
+    if (rhi_handle_valid(pref_black)) rhi_cubemap_destroy(rs->device, pref_black);
+    if (rhi_handle_valid(irr_black))  rhi_cubemap_destroy(rs->device, irr_black);
+    if (rhi_handle_valid(brdf_black)) rhi_texture_destroy(rs->device, brdf_black);
+    if (rhi_handle_valid(ssao_white)) rhi_texture_destroy(rs->device, ssao_white);
+    if (rhi_handle_valid(em))     rhi_texture_destroy(rs->device, em);
+    if (rhi_handle_valid(mr))     rhi_texture_destroy(rs->device, mr);
+    if (rhi_handle_valid(alb))    rhi_texture_destroy(rs->device, alb);
+    deferred_destroy(&dsys, rs->device);
+    return pass;
+}
+
+/* TEST 12d body: R584 HDR emissive END-TO-END — same harness as TEST 12c
+ * (real DeferredSystem, gbuffer -> lighting, zero lights, black IBL), but
+ * the emissive factor is (2,1,0): with the R584 HDR RT4 (RGBA16F) the
+ * G-Buffer carries emissive (2,1,0) UNCLAMPED and the lighting Reinhard
+ * maps it to (2/3, 1/2, 0) = bytes (170, 128, 0). The retired LDR path
+ * (UNORM RT4 + in-shader clamp) yields (1,0.5,0) -> (128,85,0) instead —
+ * outside every window — so this gate is the cross-backend HDR authority
+ * (the offscreen readback is RGBA8 on BOTH backends; TEST 12/12b assert the
+ * raw RT4 values, native f16 on VK only). Phase B (zero factor) stays black,
+ * gating "the channel is the source". Per-phase frames avoid intra-pass UBO
+ * rebinds (R581 note). Runs on BOTH backends. */
+static bool tv_test_deferred_emissive_hdr(const TestRenderState *rs) {
+    const u32 LW = 64u, LH = 64u;
+    bool ok = true;
+
+    DeferredSystem dsys;
+    deferred_init(&dsys, rs->device, LW, LH);
+    if (!dsys.initialized) {
+        LOG_ERROR("FAIL: emissive-hdr deferred_init");
+        return false;
+    }
+
+    /* Fixtures: black albedo, neutral-ish MR (metal 0, rough 0.5), white
+     * emissive, white SSAO, black BRDF LUT, black IBL cubemaps. */
+    u8 alb_px[4 * 4 * 4], mr_px[4 * 4 * 4], em_px[4 * 4 * 4];
+    for (u32 p = 0; p < 16u; p++) {
+        u8 *a = &alb_px[(usize)p * 4u];
+        u8 *m = &mr_px[(usize)p * 4u];
+        u8 *e = &em_px[(usize)p * 4u];
+        a[0] = 0; a[1] = 0;   a[2] = 0;   a[3] = 255;
+        m[0] = 0; m[1] = 128; m[2] = 0;   m[3] = 255;
+        e[0] = 255; e[1] = 255; e[2] = 255; e[3] = 255;
+    }
+    RHITextureDesc t4 = { .width = 4, .height = 4,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 1, .data = alb_px };
+    RHITexture alb = rhi_texture_create(rs->device, &t4);
+    t4.data = mr_px;
+    RHITexture mr = rhi_texture_create(rs->device, &t4);
+    t4.data = em_px;
+    RHITexture em = rhi_texture_create(rs->device, &t4);
+    u8 white_px[4] = {255, 255, 255, 255};
+    u8 black_px[4] = {0, 0, 0, 255};
+    RHITextureDesc t1 = { .width = 1, .height = 1,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 1, .data = white_px };
+    RHITexture ssao_white = rhi_texture_create(rs->device, &t1);
+    t1.data = black_px;
+    RHITexture brdf_black = rhi_texture_create(rs->device, &t1);
+    RHICubemapDesc cmd_d;
+    memset(&cmd_d, 0, sizeof(cmd_d));
+    cmd_d.size = 1u;
+    cmd_d.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    for (u32 i = 0; i < 6u; i++) cmd_d.faces[i] = black_px;
+    RHICubemap irr_black = rhi_cubemap_create(rs->device, &cmd_d);
+    RHICubemap pref_black = rhi_cubemap_create(rs->device, &cmd_d);
+
+    /* No shadow map (see TEST 12c for the UNDEFINED-depth-layout rationale). */
+
+    /* Minimal light texel buffers (never sampled: 0 lights). */
+    u8 zeros[4096];
+    memset(zeros, 0, sizeof(zeros));
+    RHIBufferDesc tbd = { .usage = RHI_BUFFER_USAGE_TEXEL,
+                          .size = sizeof(zeros), .initial_data = zeros };
+    RHIBuffer light_data = rhi_buffer_create(rs->device, &tbd);
+    RHIBuffer light_grid = rhi_buffer_create(rs->device, &tbd);
+
+    /* One NDC quad, pos3+nrm3+uv2 (32B stride). */
+    f32 qv[4 * 8];
+    u32 qi[6] = { 0, 1, 2, 0, 2, 3 };
+    const f32 qpos[4][2] = { {-0.9f, -0.9f}, {0.9f, -0.9f}, {0.9f, 0.9f}, {-0.9f, 0.9f} };
+    const f32 quv[4][2]  = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+    for (u32 v = 0; v < 4; v++) {
+        f32 *d = &qv[v * 8];
+        d[0] = qpos[v][0]; d[1] = qpos[v][1]; d[2] = 0.0f;
+        d[3] = 0.0f; d[4] = 0.0f; d[5] = 1.0f;
+        d[6] = quv[v][0];  d[7] = quv[v][1];
+    }
+    RHIBufferDesc vbd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(qv), .initial_data = qv };
+    RHIBufferDesc ibd = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(qi), .initial_data = qi };
+    RHIBuffer vbo = rhi_buffer_create(rs->device, &vbd);
+    RHIBuffer ibo = rhi_buffer_create(rs->device, &ibd);
+
+    /* Raw factor UBO, base-pipeline layout {u_factors, u_emissive}. */
+    f32 fac_init[8] = { 1.0f, 1.0f, 1.0f, 0.0f,  0.0f, 0.0f, 0.0f, 0.0f };
+    RHIBufferDesc ubd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                          .size = sizeof(fac_init), .initial_data = fac_init };
+    RHIBuffer ubo = rhi_buffer_create(rs->device, &ubd);
+
+    RHIOffscreenFBO off;
+    memset(&off, 0, sizeof(off));
+    /* R8G8B8A8 (not the B8G8R8A8 legacy default) so the readback byte order
+     * is RGBA on BOTH backends (VK returns native bytes — R579-(三)). */
+    off = rhi_offscreen_fbo_create_fmt(rs->device, LW, LH, RHI_FORMAT_R8G8B8A8_UNORM);
+
+    ok = rhi_handle_valid(alb) && rhi_handle_valid(mr) && rhi_handle_valid(em) &&
+         rhi_handle_valid(ssao_white) && rhi_handle_valid(brdf_black) &&
+         rhi_handle_valid(irr_black) && rhi_handle_valid(pref_black) &&
+         rhi_handle_valid(light_data) &&
+         rhi_handle_valid(light_grid) && rhi_handle_valid(vbo) &&
+         rhi_handle_valid(ibo) && rhi_handle_valid(ubo) &&
+         rhi_handle_valid(off.fb) && rhi_handle_valid(off.color_tex);
+    if (!ok)
+        LOG_ERROR("FAIL: emissive-hdr setup");
+
+    Mat4 ident = mat4_identity();
+    f32 cam[19];
+    memcpy(cam, &ident.e[0][0], sizeof(ident));
+    cam[16] = cam[17] = cam[18] = 0.0f;
+
+    /* Per-phase UBO content: {u_factors, u_emissive}. R584: phase A's
+     * emissive rgb (2,1,0) is HDR — the white emissive texel scales to
+     * exactly the factor. */
+    const f32 fac_emissive[8] = { 1.0f, 1.0f, 1.0f, 1.0f,  2.0f, 1.0f, 0.0f, 0.0f };
+    const f32 fac_control[8]  = { 1.0f, 1.0f, 1.0f, 0.0f,  0.0f, 0.0f, 0.0f, 0.0f };
+    u8 pix[2][4];
+    memset(pix, 0, sizeof(pix));
+    for (u32 phase = 0; phase < 2u && ok; phase++) {
+        const f32 *fac = phase == 0u ? fac_emissive : fac_control;
+        u32 frames = 0;
+        for (u32 f = 0; f < 2u; f++) {
+            RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+            if (!cmd) break;
+            /* Bind the deferred system's MRT directly (same non-flipped
+             * viewport convention as TEST 12c). */
+            rhi_mrt_fbo_bind(cmd, &dsys._mrt_fbo);
+            rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
+            rhi_cmd_clear_depth(cmd);
+            rhi_cmd_bind_pipeline(cmd, dsys.gbuffer_pipeline);
+            rhi_cmd_set_uniform_mat4(cmd, dsys._loc_gbuf_model, &ident.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, dsys._loc_gbuf_view, &ident.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, dsys._loc_gbuf_proj, &ident.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, dsys._loc_gbuf_prev_mvp, &ident.e[0][0]);
+            rhi_cmd_bind_material_textures_ibl(cmd,
+                alb, mr, alb, em, em /* R583: white tex = neutral occlusion */,
+                RHI_HANDLE_NULL, RHI_HANDLE_NULL, rs->sampler,
+                RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+            rhi_cmd_update_buffer(cmd, ubo, 0u, fac, sizeof(fac_emissive));
+            rhi_cmd_bind_uniform_buffer(cmd, ubo, 0u);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed_base(cmd, 6, 1, 0u, 0);
+            rhi_mrt_fbo_unbind(cmd, LW, LH);
+
+            rhi_offscreen_fbo_bind(cmd, &off);
+            deferred_lighting_pass(&dsys, rs->device, cmd,
+                light_data, light_grid, 0u, 0u,
+                RHI_HANDLE_NULL, brdf_black, irr_black, pref_black,
+                0u, NULL, NULL, 0.1f, 100.0f, 0.005f,
+                &ident.e[0][0], cam, ssao_white);
+            rhi_offscreen_fbo_unbind(cmd, LW, LH);
+            rhi_frame_end(rs->device);
+            rhi_present(rs->device);
+            frames++;
+        }
+        if (frames != 2u) { ok = false; break; }
+        const usize bytes = (usize)LW * LH * 4u;
+        u8 *rb = malloc(bytes);
+        if (!rb || !rhi_texture_read_pixels(rs->device, off.color_tex, rb, bytes)) {
+            LOG_ERROR("FAIL: emissive-hdr readback (phase %u)", phase);
+            ok = false;
+        } else {
+            memcpy(pix[phase], &rb[((usize)(LH / 2u) * LW + LW / 2u) * 4u], 4u);
+        }
+        free(rb);
+    }
+
+    bool pass = false;
+    if (ok) {
+        /* Phase A: Reinhard(2.0, 1.0, 0) -> (170, 128, 0) — HDR through the
+         * R584 RGBA16F RT4. The retired LDR chain gives (128, 85, 0).
+         * Phase B: no emissive -> black. */
+        bool emissive_ok = pix[0][0] > 162 && pix[0][0] < 178 &&
+                           pix[0][1] > 120 && pix[0][1] < 136 &&
+                           pix[0][2] < 10;
+        bool control_ok  = pix[1][0] < 10 && pix[1][1] < 10 && pix[1][2] < 10;
+        pass = emissive_ok && control_ok;
+        if (!pass)
+            LOG_ERROR("FAIL: emissive-hdr pixels A{%u,%u,%u} B{%u,%u,%u} "
+                      "(want A~{170,128,0} B{0,0,0})",
+                      pix[0][0], pix[0][1], pix[0][2],
+                      pix[1][0], pix[1][1], pix[1][2]);
+    }
+    if (pass)
+        LOG_INFO("PASS: deferred emissive HDR end-to-end (RGBA16F RT4 carries "
+                 "(2,1,0) unclamped, Reinhard-verified {170,128,0}, control black)");
 
     if (rhi_handle_valid(off.fb)) rhi_offscreen_fbo_destroy(rs->device, &off);
     if (rhi_handle_valid(ubo))    rhi_buffer_destroy(rs->device, ubo);
@@ -2376,7 +2662,8 @@ int main(int argc, char **argv) {
 
 #ifdef ENGINE_VULKAN
     /* R580: TV_ONLY_GBUFFER runs ONLY the deferred G-Buffer tests (TEST 12
-     * array path + TEST 12b factor channel + TEST 12c emissive lighting)
+     * array path + TEST 12b factor channel + TEST 12c emissive lighting +
+     * TEST 12d HDR emissive, R584)
      * and exits — local diagnostic for the R577 boundary: on the NVIDIA
      * 616.56 hybrid machine the suite's cumulative load TDRs the device
      * around TEST 10/11 even with TV_SKIP_CULL_COMPACT, masking the
@@ -2386,10 +2673,12 @@ int main(int argc, char **argv) {
         bool defarr_only = tv_test_deferred_gbuffer_array(&render);
         bool gbf_only    = tv_test_deferred_gbuffer_factor(&render);
         bool emi_only    = tv_test_deferred_emissive_lighting(&render);
+        bool hdr_only    = tv_test_deferred_emissive_hdr(&render);
         LOG_INFO("RESULT: DEFERRED GBUFFER ARRAY %s", defarr_only ? "PASSED ✓" : "FAILED");
         LOG_INFO("RESULT: DEFERRED GBUFFER FACTOR %s", gbf_only ? "PASSED ✓" : "FAILED");
         LOG_INFO("RESULT: DEFERRED EMISSIVE LIGHTING %s", emi_only ? "PASSED ✓" : "FAILED");
-        bool only_ok = defarr_only && gbf_only && emi_only;
+        LOG_INFO("RESULT: DEFERRED EMISSIVE HDR %s", hdr_only ? "PASSED ✓" : "FAILED");
+        bool only_ok = defarr_only && gbf_only && emi_only && hdr_only;
         LOG_INFO("FINAL RESULT: %s", only_ok ? "ALL PASSED ✓" : "FAILED");
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
@@ -2481,9 +2770,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_INFO("RESULT: DEFERRED EMISSIVE LIGHTING TEST %s",
                  emi_pass ? "PASSED ✓" : "FAILED");
 
+        LOG_INFO("============================================");
+        LOG_INFO("TEST 12d: DEFERRED EMISSIVE HDR");
+        LOG_INFO("============================================");
+        bool hdr_pass = tv_test_deferred_emissive_hdr(&render);
+        LOG_INFO("RESULT: DEFERRED EMISSIVE HDR TEST %s",
+                 hdr_pass ? "PASSED ✓" : "FAILED");
+
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && pbrf_pass;
+        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -3437,6 +3733,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     LOG_INFO("RESULT: DEFERRED EMISSIVE LIGHTING TEST %s",
              emi_pass ? "PASSED ✓" : "FAILED");
 
+    /* ---- TEST 12d: R584 HDR emissive end-to-end (RGBA16F RT4 -> lighting) ---- */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST 12d: DEFERRED EMISSIVE HDR");
+    LOG_INFO("============================================");
+    bool hdr_pass = tv_test_deferred_emissive_hdr(&render);
+    LOG_INFO("RESULT: DEFERRED EMISSIVE HDR TEST %s",
+             hdr_pass ? "PASSED ✓" : "FAILED");
+
     /* ---- TEST 8: Golden image regression ---- */
     u32 gw2, gh2;
     platform_get_drawable_size(engine.platform, &gw2, &gh2);
@@ -3465,7 +3769,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool all_pass = motion_rt1_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && golden_pass &&
+idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && golden_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

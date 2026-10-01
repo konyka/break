@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R584 延迟路径 HDR emissive（RT4 升 RGBA16F；TDD）— R582 遗留边界关闭
+
+- **缺口**（R582 遗留）：RT4 为 R8G8B8A8_UNORM + shader 内 `clamp(emis,0,1)`——glTF `emissiveStrength`（KHR_materials_emissive_strength）推过 1.0 的发光在 G-Buffer 被 LDR 截断，HDR emissive 在延迟路径不存在。
+- **升级**：RT4 由 UNORM 升 **R16G16B16A16_SFLOAT**（deferred.c `defrd_alloc_targets` + gbuffer 管线 desc 同步；RT1/RT3 早有 SFLOAT 先例，MRT 混合格式既受支持），五 gbuffer shader 去除 in-shader clamp 直写 `emis`（= 纹理.rgb × factor.rgb × strength，无上限）。deferred_light 零改动——`color += emissive` 本在 Reinhard 之前，HDR 值经 `c/(c+1)` 自然压缩（LDR 值 ≤1.0 行为逐字节不变，TEST 12c 原锚 {128,85,0} 继续通过为证）。
+- **测试暴露的真实缺陷修复（前置，R445 同族）**：VK `rhi_mrt_fbo_create` 注册颜色附件包装纹理时**从未写 `td->format`**——`rhi_texture_read_pixels` 的 R445 bpp 推导（SFLOAT→8B/px）对全部 MRT 附件恒退化为 4B/px。UNORM 附件侥幸正确；TEST 12 的 SFLOAT RT4 首个回读即 staging 分配 w×h×4 却拷入 w×h×8 → GPU 越界写 → 设备 fault 级联（后续全部纹理创建 FATAL）。修复=注册时 `td->format = vk_format_from_rhi(formats[i])`（一行+注释；GL 路径 glGetTexImage 归一化转换无此险）。
+- **TDD（红→绿实证）**：先改测试——TEST 12（arr）RT4 升 SFLOAT，layer1 emissive 因子 (2,0.5,0)（HDR r=2.0），回读按端分流（VK 原生 f16 8B/px 经新 `tv_f16_to_f32` 解码精确断言 2.0；GL 恒 RGBA8 钳制回读——R579(三)——只弱断言 LDR 余量）；TEST 12b（base）右侧 emissive b 因子 8.0 → 0.196×8=1.569（HDR）；**新增 TEST 12d 跨端权威门**——12c 同构端到端（真 DeferredSystem，零灯+黑 IBL），emissive 因子 (2,1,0)：HDR 链 Reinhard 得 (2/3,1/2,0)=**{170,128,0}**，旧 LDR 链钳 (1,1,0) 得 {128,128,0}——离屏回读双端同为 RGBA8，HDR 判别双端有效。RED 如实失败：GL 12d {128,128,0}（12/12b 弱断言按设计放行，文档注明）；VK 12 arr q0.r=1.000（钳制值）≠2.0、12b 右侧 b=1.000≠1.569、12d {128,128,0}；VK 12c 全程通过（既有通道无染）。GREEN：**GL 全套件 ALL PASSED（12/12b/12c/12d）**；**VK TEST 12 ✓（f16 精确 2.0）、12c ✓、12d ✓（{170,128,0}）**；VK 12b 仍为本机既有"末次写入"边界，其 emissive b 签名由 RED 的 1.000 精确迁移为 **1.568**=未钳制右侧值——HDR 在 VK base 管线流通的实证（逐绘制隔离 GREEN 权威=GL 本机+CI lavapipe）。
+- **回归**：双树非图形 CTest 各 **112/112**（test_shader_io 两处 128KB 栈缓冲被 TEST 12d 增量推过截断点——R582 沉淀④同族，按既有 512KB static 先例扩四处）；GL deferred/前向 demo 各 120 帧优雅退出 0 FATAL；VK deferred demo 复现 R577 基线（deferred 初始化成功、arr execute 录制 2 帧后设备丢失，validation 仅 destroy 级联，HDR RT4/新 shader 零绘制期错误）。
+- **边界**：RT4 alpha 通道未用（HDR bloom 阈值/亮度提取若启用可直接消费）；emissive HDR 上界=f16 max（65504，足够）；前向路径仍无 emissive 通道（clustered 终局）；`occlusion`/`emissive_factor` 仍不入 BSCN（R583 边界）；`tv_test_ibl` 的 GL 8B 步长误读（R579(三)记录）随 GL 回读语义未动而保留。
+
 ## 本轮更新：R583 延迟路径 G-Buffer 的 glTF occlusion 纹理逐像素采样（TDD）— R581/R582 遗留边界关闭
 
 - **缺口**（R581/R582 遗留）：RT2.g 仅携带标量 `occlusion_strength`（ao=strength），glTF occlusionTexture 虽已解析 strength 但纹理本体从未加载/采样——逐像素 AO 在延迟路径不存在。

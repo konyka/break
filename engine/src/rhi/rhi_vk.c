@@ -8827,6 +8827,11 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         td->memory = md->color_memories[i];
         td->width = width;
         td->height = height;
+        /* R584: keep the attachment format on the wrapper — without it
+         * rhi_texture_read_pixels falls back to 4B/px and its staging
+         * buffer overflows on SFLOAT MRT attachments (GPU fault; the same
+         * bug class R445 fixed for standalone textures). */
+        td->format = vk_format_from_rhi(formats[i]);
         dev->slots[cidx].ptr  = td;
         dev->slots[cidx].type = RHI_RES_TEXTURE;
         fbo.color_tex[i] = rhi_make_handle(cidx, dev->slots[cidx].generation);

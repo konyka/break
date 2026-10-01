@@ -15,7 +15,7 @@ layout(location = 0) out vec4 out_albedo_metallic; /* RGBA8 */
 layout(location = 1) out vec4 out_normal;          /* RGBA16F (rg used) */
 layout(location = 2) out vec4 out_roughness_ao;    /* RGBA8 */
 layout(location = 3) out vec4 out_velocity;        /* NDC delta xy */
-layout(location = 4) out vec4 out_emissive;        /* R582: RGBA8 LDR emissive */
+layout(location = 4) out vec4 out_emissive;        /* R584: RGBA16F HDR emissive */
 
 layout(binding = 0) uniform sampler2DArray u_albedo;
 layout(binding = 2) uniform sampler2DArray u_metallic_roughness;
@@ -66,6 +66,6 @@ void main() {
     out_albedo_metallic = vec4(base, metal);
     out_normal          = vec4(octahedron_encode(v_normal), 0.0, 1.0);
     out_roughness_ao    = vec4(rough, ao, clamp(fac.w, 0.0, 1.0), 1.0);
-    out_emissive        = vec4(clamp(emis, 0.0, 1.0), 1.0); /* R582: LDR */
+    out_emissive        = vec4(emis, 1.0); /* R584: HDR — no LDR clamp (RGBA16F) */
     out_velocity        = vec4(v_velocity, 0.0, 1.0);
 }

@@ -211,7 +211,9 @@ TEST(gl_ibl_graphics_gate_runs_real_shared_test)
 #if defined(ENGINE_PLATFORM_WINDOWS)
     return;
 #else
-    char src[131072];
+    /* R584: test_vulkan.c outgrew 128KiB (TEST 12d) — static, per the
+     * line-279 precedent; the grepped contracts sit past the old cut. */
+    static char src[524288];
     ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "static bool tv_test_ibl"));
     ASSERT_NOT_NULL(strstr(src, "bool ibl_pass = tv_test_ibl(&render"));
@@ -223,7 +225,7 @@ TEST(gl_ibl_graphics_gate_runs_real_shared_test)
  * thread stack cannot hold it as a local in the graphics integration test. */
 TEST(ibl_graphics_gate_keeps_cluster_grid_off_stack)
 {
-    char src[131072];
+    static char src[524288]; /* R584: test_vulkan.c > 128KiB (see line ~215) */
     ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
     const char *ibl = strstr(src, "static bool tv_test_ibl");
     ASSERT_NOT_NULL(ibl);
@@ -267,7 +269,7 @@ TEST(forward_velocity_uses_single_pass_mrt_contract)
 
 TEST(vulkan_ibl_gate_uses_compatible_vertex_contract)
 {
-    char src[131072];
+    static char src[524288]; /* R584: test_vulkan.c > 128KiB (see line ~215) */
     ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "pbr_ibl_test_vk.vert"));
     ASSERT_TRUE(read_shader_source("pbr_ibl_test_vk.vert", src, sizeof(src)));
@@ -421,7 +423,7 @@ TEST(vulkan_deferred_mip_upload_is_backend_owned)
 
 TEST(motion_blur_prefers_per_object_velocity_texture)
 {
-    char src[131072];
+    static char src[524288]; /* R584: test_vulkan.c > 128KiB (see line ~215) */
     ASSERT_TRUE(read_engine_source("renderer/motion_blur.h", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "RHITexture velocity_tex"));
     ASSERT_TRUE(read_engine_source("renderer/motion_blur.c", src, sizeof(src)));

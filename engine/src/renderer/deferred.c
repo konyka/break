@@ -97,14 +97,16 @@ static void defrd_alloc_targets(DeferredSystem *sys, RHIDevice *dev,
      *   RT1 = R16G16B16A16_SFLOAT (oct-encoded normal)
      *   RT2 = R8G8B8A8_UNORM  (roughness + ao + emissive flag)
      *   RT3 = R16G16B16A16_SFLOAT (velocity NDC delta)
-     *   RT4 = R8G8B8A8_UNORM  (emissive rgb, LDR — R582)
+     *   RT4 = R16G16B16A16_SFLOAT (emissive rgb, HDR — R582 channel,
+     *         R584: UNORM -> SFLOAT so strength-driven values past 1.0
+     *         survive unclamped into the lighting pass's Reinhard)
      * Plus a shared D32F depth attachment. */
     RHIFormat fmts[5] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
         RHI_FORMAT_R16G16B16A16_SFLOAT,
         RHI_FORMAT_R8G8B8A8_UNORM,
         RHI_FORMAT_R16G16B16A16_SFLOAT,
-        RHI_FORMAT_R8G8B8A8_UNORM,
+        RHI_FORMAT_R16G16B16A16_SFLOAT,
     };
     sys->_mrt_fbo = rhi_mrt_fbo_create(dev, width, height, fmts, 5);
 
@@ -224,13 +226,13 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         /* R440: this pipeline only ever draws into the 5-attachment G-buffer
          * MRT above — tell the backend so the pipeline is built against a
          * compatible multi-attachment render pass (formats must match
-         * defrd_alloc_targets). R582: +RT4 emissive. */
+         * defrd_alloc_targets). R582: +RT4 emissive; R584: RT4 HDR SFLOAT. */
         gbuf_desc.mrt_attachment_count = 5;
         gbuf_desc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
         gbuf_desc.mrt_formats[1] = RHI_FORMAT_R16G16B16A16_SFLOAT;
         gbuf_desc.mrt_formats[2] = RHI_FORMAT_R8G8B8A8_UNORM;
         gbuf_desc.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
-        gbuf_desc.mrt_formats[4] = RHI_FORMAT_R8G8B8A8_UNORM;
+        gbuf_desc.mrt_formats[4] = RHI_FORMAT_R16G16B16A16_SFLOAT;
 
 #ifdef ENGINE_VULKAN
         sys->gbuffer_pipeline = defrd_compile_pipeline(
