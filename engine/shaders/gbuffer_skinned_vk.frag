@@ -19,12 +19,11 @@ layout(location = 3) out vec4 out_velocity;
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 
-/* R580: glTF per-material metallic/roughness factors via the aux UBO —
- * set=2 binding=0 in the skinned pipeline layout (see header). Default
- * (1,1) = texture passthrough. */
-layout(std140, set = 2, binding = 0) uniform GbufMR { vec2 u_mr_factor; };
-const float u_ao_default = 1.0;
-const float u_emissive_flag = 0.0;
+/* R580/R581: glTF per-material factors via the aux UBO (std140 vec4) —
+ * set=2 binding=0 in the skinned pipeline layout (see header). x/y =
+ * metallic/roughness factors, z = AO strength, w = emissive flag; default
+ * (1,1,1,0) = texture passthrough, full AO, no emissive. */
+layout(std140, set = 2, binding = 0) uniform GbufFactors { vec4 u_factors; };
 
 vec2 octahedron_encode(vec3 n) {
     n = normalize(n);
@@ -41,13 +40,13 @@ vec2 octahedron_encode(vec3 n) {
 void main() {
     vec3  base  = texture(u_albedo, v_texcoord).rgb;
     vec2  mr    = texture(u_metallic_roughness, v_texcoord).bg;
-    vec2  mrf   = mr * u_mr_factor; /* R580: glTF factor x texture composition */
+    vec2  mrf   = mr * u_factors.xy; /* R580: glTF factor x texture composition */
     float metal = clamp(mrf.x, 0.0, 1.0);
     float rough = clamp(mrf.y, 0.04, 1.0);
-    float ao    = clamp(u_ao_default, 0.0, 1.0);
+    float ao    = clamp(u_factors.z, 0.0, 1.0); /* R581: material AO strength */
 
     out_albedo_metallic = vec4(base, metal);
     out_normal          = vec4(octahedron_encode(v_normal), 0.0, 1.0);
-    out_roughness_ao    = vec4(rough, ao, u_emissive_flag, 1.0);
+    out_roughness_ao    = vec4(rough, ao, clamp(u_factors.w, 0.0, 1.0), 1.0);
     out_velocity        = vec4(v_velocity, 0.0, 1.0);
 }

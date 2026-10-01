@@ -595,6 +595,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             mat->roughness_factor = cm->pbr_metallic_roughness.roughness_factor;
             mat->emissive_strength = cm->has_emissive_strength ?
                 cm->emissive_strength.emissive_strength : 1.0f;
+            /* R581: occlusion strength rides the deferred factor channel as
+             * the material AO scalar (cgltf texture_view.scale defaults to
+             * 1.0 when the view exists but omits "strength"). */
+            mat->occlusion_strength = cm->occlusion_texture.texture ?
+                cm->occlusion_texture.scale : 1.0f;
             if (cm->alpha_mode == cgltf_alpha_mode_opaque) mat->alpha_mode = ALPHA_OPAQUE;
             else if (cm->alpha_mode == cgltf_alpha_mode_mask) mat->alpha_mode = ALPHA_MASK;
             else mat->alpha_mode = ALPHA_BLEND;

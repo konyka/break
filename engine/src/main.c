@@ -933,16 +933,20 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
 /* R580: G-Buffer pass variant of bind_material — additionally feeds the
  * per-material glTF metallic/roughness factors to the gbuffer shaders via
  * the deferred system's factor UBO (the deferred counterpart of R579's
- * forward u_mr_factor). Factors ride the auxiliary uniform buffer because
- * the gbuffer vertex stage fills all 256B of push space (R204-A); this is
- * safe to use from the shared helper's call sites ONLY in the deferred
- * G-Buffer pass — forward pipelines alias UBO binding 0 with
- * ForwardTemporal. Fallback/textureless materials get (1,1) = passthrough. */
+ * forward u_mr_factor, extended by R581 with AO strength + emissive flag).
+ * Factors ride the auxiliary uniform buffer because the gbuffer vertex
+ * stage fills all 256B of push space (R204-A); this is safe to use from the
+ * shared helper's call sites ONLY in the deferred G-Buffer pass — forward
+ * pipelines alias UBO binding 0 with ForwardTemporal.
+ * Fallback/textureless materials get (1,1,1,0) = passthrough; the emissive
+ * flag tracks emissive-texture presence (1 = has emissive content). */
 static void gbuffer_bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
     bind_material(cmd, rs, mat, scene);
-    deferred_bind_gbuffer_mr_factor(&rs->deferred, rs->device, cmd,
-                                    mat ? mat->metallic_factor : 1.0f,
-                                    mat ? mat->roughness_factor : 1.0f);
+    deferred_bind_gbuffer_factors(&rs->deferred, rs->device, cmd,
+                                  mat ? mat->metallic_factor : 1.0f,
+                                  mat ? mat->roughness_factor : 1.0f,
+                                  mat ? mat->occlusion_strength : 1.0f,
+                                  (mat && rhi_handle_valid(mat->emissive)) ? 1.0f : 0.0f);
 }
 
 /* ---- Precomputed node bounding sphere ---- */
@@ -1152,17 +1156,19 @@ typedef struct {
     RHITexture mr_array;     /* R442 */
     u32        width, height, layers;
     bool       ready;
-    /* R580: per-layer glTF metallic/roughness factors, same layer indexing
-     * as the texture arrays (layer 0 = neutral (1,1)). Consumed by the
-     * deferred gbuffer_arr path via deferred_set_gbuffer_mr_factor_array();
-     * part of the layer dedup key, so materials sharing a texture pair but
-     * with different factors get distinct layers. */
-    f32        mr_factors[MAT_ARR_MAX_LAYERS][2];
+    /* R580/R581: per-layer glTF material factors, same layer indexing as
+     * the texture arrays (layer 0 = neutral (1,1,1,0)). Each vec4 packs
+     * x metallic factor, y roughness factor, z AO strength, w emissive
+     * flag. Consumed by the deferred gbuffer_arr path via
+     * deferred_set_gbuffer_factor_array(); part of the layer dedup key, so
+     * materials sharing a texture pair but with different factors get
+     * distinct layers. */
+    f32        mat_factors[MAT_ARR_MAX_LAYERS][4];
 } MatArraySet;
 
 /* R580: the deferred factor table must hold one entry per array layer. */
-_Static_assert(MAT_ARR_MAX_LAYERS == DEFERRED_MR_FACTOR_MAX_LAYERS,
-               "MatArraySet layers vs deferred MR factor table mismatch");
+_Static_assert(MAT_ARR_MAX_LAYERS == DEFERRED_FACTOR_MAX_LAYERS,
+               "MatArraySet layers vs deferred factor table mismatch");
 
 /* R442: handle equality treating invalid==invalid as equal. */
 static bool mat_arr_tex_same(RHITexture a, RHITexture b) {
@@ -1227,7 +1233,7 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
      * (the layer then carries the channel's neutral fill). */
     RHITexture uniq_alb[MAT_ARR_MAX_LAYERS - 1u];
     RHITexture uniq_mr[MAT_ARR_MAX_LAYERS - 1u];
-    f32        uniq_fac[MAT_ARR_MAX_LAYERS - 1u][2]; /* R580: part of the dedup key */
+    f32        uniq_fac[MAT_ARR_MAX_LAYERS - 1u][4]; /* R580/R581: part of the dedup key */
     u32 ntex = 0;
     u32 arr_w = 1u, arr_h = 1u;
     for (u32 g = 0; g < group_count && ntex < MAT_ARR_MAX_LAYERS - 1u; g++) {
@@ -1255,17 +1261,22 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
             if (tw > arr_w) arr_w = tw;
             if (th > arr_h) arr_h = th;
         }
-        /* R580: textureless materials keep layer 0 ONLY when their factors
-         * are also neutral; otherwise they need a real layer (neutral-filled
-         * textures + their own factors) so the factors survive. */
-        f32 fac_m = scene->materials[mi].metallic_factor;
-        f32 fac_r = scene->materials[mi].roughness_factor;
+        /* R580/R581: textureless materials keep layer 0 ONLY when their
+         * factors are also neutral; otherwise they need a real layer
+         * (neutral-filled textures + their own factors) so the factors
+         * survive. The emissive flag tracks emissive-texture presence. */
+        f32 fac_m  = scene->materials[mi].metallic_factor;
+        f32 fac_r  = scene->materials[mi].roughness_factor;
+        f32 fac_ao = scene->materials[mi].occlusion_strength;
+        f32 fac_em = rhi_handle_valid(scene->materials[mi].emissive) ? 1.0f : 0.0f;
         if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr) &&
-            fac_m == 1.0f && fac_r == 1.0f) continue; /* layer 0 */
+            fac_m == 1.0f && fac_r == 1.0f && fac_ao == 1.0f && fac_em == 0.0f)
+            continue; /* layer 0 */
         bool dup = false;
         for (u32 i = 0; i < ntex; i++)
             if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr) &&
-                uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r) {
+                uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r &&
+                uniq_fac[i][2] == fac_ao && uniq_fac[i][3] == fac_em) {
                 dup = true;
                 break;
             }
@@ -1274,6 +1285,8 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         uniq_mr[ntex]  = mr;
         uniq_fac[ntex][0] = fac_m;
         uniq_fac[ntex][1] = fac_r;
+        uniq_fac[ntex][2] = fac_ao;
+        uniq_fac[ntex][3] = fac_em;
         ntex++;
     }
 
@@ -1330,12 +1343,16 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         return false;
     }
 
-    /* R580: per-layer factor table (layer 0 = glTF-neutral (1,1)). */
-    set->mr_factors[0][0] = 1.0f;
-    set->mr_factors[0][1] = 1.0f;
+    /* R580/R581: per-layer factor table (layer 0 = glTF-neutral (1,1,1,0)). */
+    set->mat_factors[0][0] = 1.0f;
+    set->mat_factors[0][1] = 1.0f;
+    set->mat_factors[0][2] = 1.0f;
+    set->mat_factors[0][3] = 0.0f;
     for (u32 i = 0; i < ntex; i++) {
-        set->mr_factors[i + 1u][0] = uniq_fac[i][0];
-        set->mr_factors[i + 1u][1] = uniq_fac[i][1];
+        set->mat_factors[i + 1u][0] = uniq_fac[i][0];
+        set->mat_factors[i + 1u][1] = uniq_fac[i][1];
+        set->mat_factors[i + 1u][2] = uniq_fac[i][2];
+        set->mat_factors[i + 1u][3] = uniq_fac[i][3];
     }
 
     /* Group -> layer mapping (materials without a unique pair stay 0). */
@@ -1354,15 +1371,19 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
         if (rhi_handle_valid(mr) &&
             (!rhi_texture_get_size(dev, mr, &qw, &qh) || qw == 0 || qh == 0))
             mr = RHI_HANDLE_NULL;
-        /* R580: same key as the collect pass — texture pair + factors; a
-         * textureless material with neutral factors stays on layer 0. */
-        f32 fac_m = scene->materials[mi].metallic_factor;
-        f32 fac_r = scene->materials[mi].roughness_factor;
+        /* R580/R581: same key as the collect pass — texture pair + factors;
+         * a textureless material with neutral factors stays on layer 0. */
+        f32 fac_m  = scene->materials[mi].metallic_factor;
+        f32 fac_r  = scene->materials[mi].roughness_factor;
+        f32 fac_ao = scene->materials[mi].occlusion_strength;
+        f32 fac_em = rhi_handle_valid(scene->materials[mi].emissive) ? 1.0f : 0.0f;
         if (!rhi_handle_valid(alb) && !rhi_handle_valid(mr) &&
-            fac_m == 1.0f && fac_r == 1.0f) continue;
+            fac_m == 1.0f && fac_r == 1.0f && fac_ao == 1.0f && fac_em == 0.0f)
+            continue;
         for (u32 i = 0; i < ntex; i++) {
             if (mat_arr_tex_same(uniq_alb[i], alb) && mat_arr_tex_same(uniq_mr[i], mr) &&
-                uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r) {
+                uniq_fac[i][0] == fac_m && uniq_fac[i][1] == fac_r &&
+                uniq_fac[i][2] == fac_ao && uniq_fac[i][3] == fac_em) {
                 out_group_layer[g] = i + 1u;
                 break;
             }
@@ -1612,10 +1633,10 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,
         render->ibl.prefilter_map, g_psc.count > 0u ? g_psc.tex : NULL, g_psc.count);
 
-    /* R580: bind the per-layer MR factor UBO (uploads when the bake staged
-     * a new table) before the single execute — layer i multiplies the MR
-     * texel of array layer i in gbuffer_arr.{frag,_vk.frag}. */
-    deferred_bind_gbuffer_mr_factor_array(dsys, cmd);
+    /* R580/R581: bind the per-layer factor UBO (uploads when the bake staged
+     * a new table) before the single execute — layer i scales the MR texel,
+     * AO and emissive flag of array layer i in gbuffer_arr.{frag,_vk.frag}. */
+    deferred_bind_gbuffer_factor_array(dsys, cmd);
 
     indirect_draw_execute(&mb->array_system, render->device);
     return 1u;
@@ -1991,6 +2012,7 @@ static u32 demo_scene_push_material(Scene *s, RHITexture albedo, RHITexture mr) 
     m->base_color[0] = m->base_color[1] = m->base_color[2] = m->base_color[3] = 1.0f;
     m->metallic_factor = 1.0f;
     m->roughness_factor = 1.0f;
+    m->occlusion_strength = 1.0f; /* R581 */
     return s->material_count++;
 }
 
@@ -3217,11 +3239,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             if (mega_buf.array_system_ready) {
                                 indirect_draw_upload(&mega_buf.array_system, render.device,
                                                      cmds, mesh_cmd_count);
-                                /* R580: hand the baked per-layer factor table
-                                 * to the deferred G-Buffer path (no-op when
-                                 * the deferred system is uninitialized). */
-                                deferred_set_gbuffer_mr_factor_array(&render.deferred,
-                                    &mega_buf.mats.mr_factors[0][0], mega_buf.mats.layers);
+                                /* R580/R581: hand the baked per-layer factor
+                                 * table to the deferred G-Buffer path (no-op
+                                 * when the deferred system is uninitialized). */
+                                deferred_set_gbuffer_factor_array(&render.deferred,
+                                    &mega_buf.mats.mat_factors[0][0], mega_buf.mats.layers);
                             } else {
                                 LOG_WARN("MatArray: array indirect system init failed");
                                 /* R442: both arrays go — ready is shared. */

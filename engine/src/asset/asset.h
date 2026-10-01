@@ -30,6 +30,10 @@ typedef struct {
     float      metallic_factor;
     float      roughness_factor;
     float      emissive_strength;
+    /* R581: glTF occlusionTexture.strength (1.0 when the material has no
+     * occlusion texture). Consumed by the deferred G-Buffer factor channel
+     * as a scalar AO until a per-pixel occlusion texture path exists. */
+    float      occlusion_strength;
     AlphaMode  alpha_mode;
     float      alpha_cutoff;
     void      *_material_ptr;

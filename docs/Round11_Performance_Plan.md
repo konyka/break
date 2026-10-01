@@ -1387,6 +1387,11 @@ VK 版 `gbuffer_vk.frag` 使用 push constant offset 256-268，同样从未设�
 > v_layer 索引的 64 层因子表），`metal = tex.b × factor`、`rough = tex.g × factor`
 > （乘法，与 R579 前向路径一致）；`u_ao_default`/`u_emissive_flag` 仍为 const。
 > 详见 Implementation_Status.md 顶部 R580 条目。
+>
+> **R581  supersede**：`u_ao_default`/`u_emissive_flag` 的 const 兜底亦被取代——因子
+> UBO 扩为 vec4（z=AO 强度，源自 glTF occlusionTexture.strength；w=emissive 标记，
+> 源自材质 emissive 纹理存在性），arr 表同构。详见 Implementation_Status.md 顶部
+> R581 条目。
 
 ## R94 着色器gamma校正pow→exp2 + VK viewport/scissor缓存 + VK push constant批量发出
 

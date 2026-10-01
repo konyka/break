@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R581 延迟路径 G-Buffer 的 AO/emissive 因子通道（TDD）— R580 遗留边界关闭
+
+- **缺口**（R580 遗留）：gbuffer 五 shader 的 `u_ao_default=1.0`/`u_emissive_flag=0.0` 为编译期常量——RT2.g（材质 AO）与 RT2.b（emissive 标记）在延迟路径恒为默认值，无引擎通道。
+- **通道复用 R580 基础设施**：因子 UBO 由 vec2 扩为 **vec4**（x 金属因子、y 粗糙因子、z AO 强度、w emissive 标记；std140 块尺寸同为 16B，缓冲分配不变）；arr 路径 64 层 vec4 表的 .zw 保留位启用。生产来源：`Material` 新增 `occlusion_strength`（glTF `occlusionTexture.strength`，即 cgltf `texture_view.scale`，无纹理=1.0；asset.c 解析、demo 程序化材质默认 1.0）；emissive 标记=材质持有 emissive 纹理（glTF emissiveFactor vec3 颜色仍无通道）。
+- **API 正名**（引擎内部，随语义扩展一并更名）：`deferred_bind_gbuffer_mr_factor`→`deferred_bind_gbuffer_factors(m,r,ao,emissive)`、`deferred_set_gbuffer_mr_factor_array`→`deferred_set_gbuffer_factor_array`（xyzw/层，中性 (1,1,1,0)）、`deferred_bind_gbuffer_mr_factor_array`→`deferred_bind_gbuffer_factor_array`；字段与宏同步（`_factor_buf`/`_factor_arr*`/`DEFERRED_FACTOR_MAX_LAYERS`，static_assert 互锁保持）。main.c：`gbuffer_bind_material` 传四元；`MatArraySet` 去重键扩为四元（同纹理对不同 AO/emissive=不同层；无纹理但因子非中性者不错误归入 layer 0），bake 移交 arr 因子表。
+- **TDD（红→绿实证）**：TEST 12（arr）四层因子表区分 .z/.w（layer1 (0.25,on)、layer2 (0.75,off)、layer0 中性），断言 RT2.g/.b 逐层跟踪；TEST 12b（base）双 quad 因子扩为四元（左 (1,1,0.5,1)、右 (0,0.5,0.75,1)——右侧 z/w 亦偏离旧常量，shader 若仍硬编码则双 quad 均失败）。RED 双端如实失败（GL：RT2.g 恒 255/RT2.b 恒 0；VK arr 同；VK 12b 见下）。GREEN：**GL 全套件 ALL PASSED 含 12/12b**（arr 每层因子 + 逐绘制重绑全跟踪）；**VK TEST 12 ✓**（arr .z/.w 通道流通）。
+- **VK 12b 本机失败为既有环境边界（stash A/B 实证，非本轮引入）**：HEAD（R580 提交态）复验同样失败——同一 pass 内两次 `vkCmdUpdateBuffer` 的逐绘制隔离在本机失效，双 quad 均见**最后一次**写入（屏障覆盖 FRAGMENT_SHADER_BIT，机制教科书级合规；CI lavapipe 全绿）——与 R577/R579 同族的本机 NVIDIA 616.56 驱动边界。本轮该测试本机失败签名从基线 `{64,255,0}`（const ao/emissive）精确变为 `{64,191,255}`=右因子 {0,0.5,0.75,1.0}——**新 .z/.w 通道在 VK base 管线上确实流通**（常量不可能产生 191/255），唯逐绘制隔离语义不可本机验证，其 GREEN 权威=GL 本机 + CI lavapipe。
+- **回归**：双树非图形 CTest 各 **112/112**（R577 轮的剪贴板外部持锁已自行释放，111→112 恢复）；GL deferred demo（BREAK_RENDER_PATH=deferred，arr 单 execute 路径逐帧行使因子表绑定）与前向 demo 各 120 帧优雅退出 0 FATAL；VK deferred demo 复现 R577 基线（deferred 初始化成功、arr execute 正常录制 2 帧后设备丢失，仅 destroy 级联 validation 8 条=基线同型，新 gbuffer_vk shader 编译与管线运行零绘制期错误）。
+- **边界**：RT2.b 的 emissive 标记在 deferred_light 仍无消费方（无 emissive 颜色 RT——发光颜色需新 RT 或打包，独立后续）；AO 为标量强度通道（glTF occlusion 纹理逐像素采样需 G-Buffer 新增纹理通道）；glTF emissiveFactor(vec3) 未解析；SceneResource 序列化 f[8] 已满，`occlusion_strength` 不入 BSCN；clustered 管线接入生产仍为 R579 终局边界。
+
 ## 本轮更新：R580 延迟路径 G-Buffer 的 glTF MR 因子通道（TDD）— R579 遗留边界关闭
 
 - **缺口**（R579 遗留）：glTF `metallic_factor/roughness_factor` 经 R579 接入前向路径（`u_mr_factor`），但**延迟路径（G-Buffer 写入端）从未有因子通道**——gbuffer 四 shader（base/arr × GL/VK）以 `const float u_metallic_default=0.0` 等加法常量凑数（R93-1 权宜），材质因子在 deferred 下完全丢失。

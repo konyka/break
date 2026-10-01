@@ -1233,7 +1233,8 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
      *                 main.c's fallback_mr).
      * Assertions (all pixel-level on the raw UNORM attachments, no sRGB):
      *   albedo_metallic (RT0): per-quadrant hue, alpha = metallic;
-     *   roughness_ao    (RT2): r = roughness per layer, g = 255 (ao 1.0);
+     *   roughness_ao    (RT2): r = roughness per layer, g = per-layer AO
+     *   strength, b = per-layer emissive flag (R581);
      *   exactly 1 indirect execute per frame. */
     const u32 GBW = 256u, GBH = 256u;
     bool setup_ok = false;
@@ -1242,7 +1243,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     RHIPipeline gb_pipe = RHI_HANDLE_NULL;
     RHITexture  gb_alb_arr = RHI_HANDLE_NULL, gb_mr_arr = RHI_HANDLE_NULL;
     RHIBuffer   gb_vbo = RHI_HANDLE_NULL, gb_ibo = RHI_HANDLE_NULL;
-    RHIBuffer   gb_ubo = RHI_HANDLE_NULL; /* R580: per-layer MR factors */
+    RHIBuffer   gb_ubo = RHI_HANDLE_NULL; /* R580/R581: per-layer factors */
     IndirectDrawSystem gids;
     memset(&gids, 0, sizeof(gids));
     bool gids_ok = false;
@@ -1335,18 +1336,22 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             gb_vbo = rhi_buffer_create(rs->device, &qvb);
             gb_ibo = rhi_buffer_create(rs->device, &qib);
 
-            /* R580: per-layer glTF metallic/roughness factor UBO — vec4
-             * stride (std140 array), layer i's factors multiply that layer's
-             * MR texel in gbuffer_arr.{frag,_vk.frag} (production: MatArraySet):
-             *   layer 0 (fallback): (1,1) — neutral, unchanged;
-             *   layer 1 (quad0):    (0.5, 2.0) — metal 1.0→0.5, rough 0.1→0.2;
-             *   layer 2 (quad1):    (1.0, 0.5) — metal 0, rough 0.9→0.45;
-             *   layer 3 (quad2):    (1,1) — culled, irrelevant. */
+            /* R580/R581: per-layer glTF material factor UBO — vec4 stride
+             * (std140 array), layer i's factors multiply that layer's MR
+             * texel in gbuffer_arr.{frag,_vk.frag} (production: MatArraySet).
+             * Layout: x = metallic factor, y = roughness factor,
+             *         z = AO strength (R581), w = emissive flag (R581):
+             *   layer 0 (fallback): (1,1,1,0) — neutral, unchanged;
+             *   layer 1 (quad0):    (0.5, 2.0, 0.25, 1.0) — metal 1.0→0.5,
+             *                       rough 0.1→0.2, ao 1→0.25, emissive on;
+             *   layer 2 (quad1):    (1.0, 0.5, 0.75, 0.0) — metal 0,
+             *                       rough 0.9→0.45, ao 1→0.75, emissive off;
+             *   layer 3 (quad2):    (1,1,1,0) — culled, irrelevant. */
             f32 gb_factors[4][4] = {
-                { 1.0f, 1.0f, 0.0f, 0.0f },
-                { 0.5f, 2.0f, 0.0f, 0.0f },
-                { 1.0f, 0.5f, 0.0f, 0.0f },
-                { 1.0f, 1.0f, 0.0f, 0.0f },
+                { 1.0f, 1.0f, 1.0f,  0.0f },
+                { 0.5f, 2.0f, 0.25f, 1.0f },
+                { 1.0f, 0.5f, 0.75f, 0.0f },
+                { 1.0f, 1.0f, 1.0f,  0.0f },
             };
             RHIBufferDesc fbd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
                                   .size = sizeof(gb_factors),
@@ -1490,27 +1495,30 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             bool q0 = qa[0][0] > 200 && qa[0][1] < 80 && qa[0][2] < 80 &&
                       qa[0][3] > 124 && qa[0][3] < 132 &&  /* red, metal 1.0x0.5 -> 0.5 */
                       qr[0][0] > 46 && qr[0][0] < 58 &&    /* rough 0.1x2.0 -> 0.2 (52) */
-                      qr[0][1] > 200;                      /* ao 1.0 */
+                      qr[0][1] > 58 && qr[0][1] < 70 &&    /* R581: ao 1.0x0.25 (64) */
+                      qr[0][2] > 200;                      /* R581: emissive on */
             bool q1 = qa[1][1] > 200 && qa[1][0] < 80 && qa[1][2] < 80 &&
                       qa[1][3] < 10 &&                     /* green, metal 0 */
                       qr[1][0] > 108 && qr[1][0] < 122 && /* rough 0.9x0.5 -> 0.45 (115) */
-                      qr[1][1] > 200;
+                      qr[1][1] > 185 && qr[1][1] < 197 && /* R581: ao 1.0x0.75 (191) */
+                      qr[1][2] < 10;                      /* R581: emissive off */
             bool q2 = qa[2][0] < 10 && qa[2][1] < 10 && qa[2][2] < 10 &&
                       qa[2][3] < 10 &&                     /* culled = clear */
-                      qr[2][0] < 10 && qr[2][1] < 10;
+                      qr[2][0] < 10 && qr[2][1] < 10 && qr[2][2] < 10;
             bool q3 = qa[3][0] > 200 && qa[3][1] > 200 && qa[3][2] > 200 &&
                       qa[3][3] < 10 &&                     /* white, neutral metal 0 */
                       qr[3][0] > 120 && qr[3][0] < 136 &&  /* neutral rough 0.5 (128) */
-                      qr[3][1] > 200;
+                      qr[3][1] > 200 &&                    /* neutral ao 1.0 */
+                      qr[3][2] < 10;                       /* neutral emissive off */
             pixels_ok = q0 && q1 && q2 && q3;
             if (!pixels_ok)
                 LOG_ERROR("FAIL: gbuffer pixels "
-                          "q0 alb{%u,%u,%u,%u} mr{%u,%u} q1 alb{%u,%u,%u,%u} mr{%u,%u} "
-                          "q2 alb{%u,%u,%u,%u} q3 alb{%u,%u,%u,%u} mr{%u,%u}",
-                          qa[0][0], qa[0][1], qa[0][2], qa[0][3], qr[0][0], qr[0][1],
-                          qa[1][0], qa[1][1], qa[1][2], qa[1][3], qr[1][0], qr[1][1],
+                          "q0 alb{%u,%u,%u,%u} mr{%u,%u,%u} q1 alb{%u,%u,%u,%u} mr{%u,%u,%u} "
+                          "q2 alb{%u,%u,%u,%u} q3 alb{%u,%u,%u,%u} mr{%u,%u,%u}",
+                          qa[0][0], qa[0][1], qa[0][2], qa[0][3], qr[0][0], qr[0][1], qr[0][2],
+                          qa[1][0], qa[1][1], qa[1][2], qa[1][3], qr[1][0], qr[1][1], qr[1][2],
                           qa[2][0], qa[2][1], qa[2][2], qa[2][3],
-                          qa[3][0], qa[3][1], qa[3][2], qa[3][3], qr[3][0], qr[3][1]);
+                          qa[3][0], qa[3][1], qa[3][2], qa[3][3], qr[3][0], qr[3][1], qr[3][2]);
         } else {
             LOG_ERROR("FAIL: gbuffer attachment readback");
         }
@@ -1526,7 +1534,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     if (defarr_pass)
         LOG_INFO("PASS: deferred gbuffer array single execute (4 layers incl. "
                  "neutral MR fallback, 1 execute/frame, RT0 hue+metallic & "
-                 "RT2 roughness layer differences verified)");
+                 "RT2 roughness/ao/emissive layer differences verified)");
 
     if (gids_ok) indirect_draw_destroy(&gids, rs->device);
     if (rhi_handle_valid(gb_pipe))    rhi_pipeline_destroy(rs->device, gb_pipe);
@@ -1541,15 +1549,22 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     return defarr_pass;
 }
 
-/* TEST 12b body: R580 deferred G-Buffer per-material MR factor channel
+/* TEST 12b body: R580/R581 deferred G-Buffer per-material factor channel
  * (base, non-array pipeline). Two quads share ONE albedo and ONE
  * metallic-roughness texture (metal 1.0 / rough ~0.5); the only difference
- * between the two draws is the factor UBO content: left (1,1), right (0,0.5).
+ * between the two draws is the factor UBO content:
+ *   left  (1,1,0.5,1): neutral MR, AO strength 0.5, emissive on;
+ *   right (0,0.5,0.75,1): metal x0, rough x0.5, AO 0.75, emissive on.
  * glTF composition (mirrors the R579 forward path): metal = tex.b * factor.x,
  * rough = tex.g * factor.y. Pixel expectations (raw UNORM bytes):
- *   left : RT0.a = 255 (metal 1.0*1), RT2.r = 128 (0.502*1);
- *   right: RT0.a = 0   (metal 1.0*0), RT2.r = 64  (0.502*0.5);
+ *   left : RT0.a = 255 (metal 1.0*1), RT2.r = 128 (0.502*1),
+ *          RT2.g = 128 (ao 0.5), RT2.b = 255 (emissive);
+ *   right: RT0.a = 0   (metal 1.0*0), RT2.r = 64  (0.502*0.5),
+ *          RT2.g = 191 (ao 0.75), RT2.b = 255;
  *   albedo RGB identical on both quads (factors must not leak into RGB).
+ * (Both right-side z/w differ from the retired const defaults 1.0/0.0, so a
+ * shader that still hardcodes ao/emissive fails on BOTH quads — including on
+ * backends where the per-draw UBO rebind itself is under driver suspicion.)
  * Runs on BOTH backends (the suite is shared; UBO binding 0 on GL, the aux
  * UBO set on VK). */
 static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
@@ -1606,8 +1621,9 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     vbo = rhi_buffer_create(rs->device, &vbd);
     ibo = rhi_buffer_create(rs->device, &ibd);
 
-    /* Factor UBO: one vec2 (metallic, roughness), 16B allocation. */
-    f32 fac_init[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+    /* Factor UBO: one vec4 — x metallic, y roughness, z AO strength,
+     * w emissive flag (R580/R581). */
+    f32 fac_init[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
     RHIBufferDesc ubd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
                           .size = sizeof(fac_init), .initial_data = fac_init };
     ubo = rhi_buffer_create(rs->device, &ubd);
@@ -1665,8 +1681,8 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
         i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
         i32 l_prev  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_prev_mvp");
         Mat4 idm = mat4_identity();
-        const f32 fac_l[2] = { 1.0f, 1.0f };   /* left:  neutral  */
-        const f32 fac_r[2] = { 0.0f, 0.5f };   /* right: metal x0, rough x0.5 */
+        const f32 fac_l[4] = { 1.0f, 1.0f, 0.5f,  1.0f }; /* left:  neutral MR, ao 0.5, emissive on */
+        const f32 fac_r[4] = { 0.0f, 0.5f, 0.75f, 1.0f }; /* right: metal x0, rough x0.5, ao 0.75, on */
         for (u32 f = 0; f < 3; f++) {
             RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
             if (!cmd) break;
@@ -1684,9 +1700,9 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                 tex_alb, tex_mr, tex_alb, tex_alb,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, rs->sampler,
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
-            /* Left quad with factors (1,1), then re-update + rebind the UBO
-             * and draw the right quad with (0, 0.5) — the production
-             * per-material pattern (deferred_bind_gbuffer_mr_factor). */
+            /* Left quad with factors (1,1,0.5,1), then re-update + rebind
+             * the UBO and draw the right quad with (0,0.5,0.75,1) — the
+             * production per-material pattern (deferred_bind_gbuffer_factors). */
             rhi_cmd_update_buffer(cmd, ubo, 0u, fac_l, sizeof(fac_l));
             rhi_cmd_bind_uniform_buffer(cmd, ubo, 0u);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
@@ -1731,16 +1747,18 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                             qa[1][2] > 60 && qa[1][2] < 68;
             bool left_ok  = qa[0][3] > 200 &&                 /* metal 1.0*1 */
                             qr[0][0] > 122 && qr[0][0] < 134 && /* rough x1 (128) */
-                            qr[0][1] > 200;                     /* ao 1.0 */
+                            qr[0][1] > 122 && qr[0][1] < 134 && /* R581: ao 0.5 (128) */
+                            qr[0][2] > 200;                     /* R581: emissive on */
             bool right_ok = qa[1][3] < 10 &&                  /* metal 1.0*0 */
                             qr[1][0] > 58 && qr[1][0] < 70 &&   /* rough x0.5 (64) */
-                            qr[1][1] > 200;
+                            qr[1][1] > 185 && qr[1][1] < 197 && /* R581: ao 0.75 (191) */
+                            qr[1][2] > 200;                     /* R581: emissive on */
             pixels_ok = alb_same && left_ok && right_ok;
             if (!pixels_ok)
-                LOG_ERROR("FAIL: gbuffer-factor pixels L alb{%u,%u,%u,%u} mr{%u,%u} "
-                          "R alb{%u,%u,%u,%u} mr{%u,%u}",
-                          qa[0][0], qa[0][1], qa[0][2], qa[0][3], qr[0][0], qr[0][1],
-                          qa[1][0], qa[1][1], qa[1][2], qa[1][3], qr[1][0], qr[1][1]);
+                LOG_ERROR("FAIL: gbuffer-factor pixels L alb{%u,%u,%u,%u} mr{%u,%u,%u} "
+                          "R alb{%u,%u,%u,%u} mr{%u,%u,%u}",
+                          qa[0][0], qa[0][1], qa[0][2], qa[0][3], qr[0][0], qr[0][1], qr[0][2],
+                          qa[1][0], qa[1][1], qa[1][2], qa[1][3], qr[1][0], qr[1][1], qr[1][2]);
         } else {
             LOG_ERROR("FAIL: gbuffer-factor attachment readback");
         }
@@ -1749,8 +1767,8 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
 
     bool pass = setup_ok && pixels_ok;
     if (pass)
-        LOG_INFO("PASS: deferred gbuffer MR factor channel (per-draw UBO rebind, "
-                 "RT0 alpha & RT2.r track glTF factors, albedo untouched)");
+        LOG_INFO("PASS: deferred gbuffer factor channel (per-draw UBO rebind, "
+                 "RT0 alpha & RT2.r/g/b track glTF factors, albedo untouched)");
 
     if (rhi_handle_valid(pipe))    rhi_pipeline_destroy(rs->device, pipe);
     if (rhi_handle_valid(tex_alb)) rhi_texture_destroy(rs->device, tex_alb);
@@ -2006,7 +2024,7 @@ int main(int argc, char **argv) {
 
 #ifdef ENGINE_VULKAN
     /* R580: TV_ONLY_GBUFFER runs ONLY the deferred G-Buffer tests (TEST 12
-     * array path + TEST 12b MR factor channel) and exits — local diagnostic
+     * array path + TEST 12b factor channel) and exits — local diagnostic
      * for the R577 boundary: on the NVIDIA 616.56 hybrid machine the suite's
      * cumulative load TDRs the device around TEST 10/11 even with
      * TV_SKIP_CULL_COMPACT, masking the deferred tests. Inert by default;
@@ -2015,7 +2033,7 @@ int main(int argc, char **argv) {
         bool defarr_only = tv_test_deferred_gbuffer_array(&render);
         bool gbf_only    = tv_test_deferred_gbuffer_factor(&render);
         LOG_INFO("RESULT: DEFERRED GBUFFER ARRAY %s", defarr_only ? "PASSED ✓" : "FAILED");
-        LOG_INFO("RESULT: DEFERRED GBUFFER MR FACTOR %s", gbf_only ? "PASSED ✓" : "FAILED");
+        LOG_INFO("RESULT: DEFERRED GBUFFER FACTOR %s", gbf_only ? "PASSED ✓" : "FAILED");
         bool only_ok = defarr_only && gbf_only;
         LOG_INFO("FINAL RESULT: %s", only_ok ? "ALL PASSED ✓" : "FAILED");
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
@@ -2095,10 +2113,10 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                  defarr_pass ? "PASSED ✓" : "FAILED");
 
         LOG_INFO("============================================");
-        LOG_INFO("TEST 12b: DEFERRED GBUFFER MR FACTOR CHANNEL");
+        LOG_INFO("TEST 12b: DEFERRED GBUFFER FACTOR CHANNEL");
         LOG_INFO("============================================");
         bool gbf_pass = tv_test_deferred_gbuffer_factor(&render);
-        LOG_INFO("RESULT: DEFERRED GBUFFER MR FACTOR TEST %s",
+        LOG_INFO("RESULT: DEFERRED GBUFFER FACTOR TEST %s",
                  gbf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
@@ -3041,12 +3059,12 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_ERROR("RESULT: DEFERRED GBUFFER ARRAY SINGLE-EXECUTE TEST FAILED");
     }
 
-    /* ---- TEST 12b: R580 deferred G-Buffer MR factor channel (base) ---- */
+    /* ---- TEST 12b: R580/R581 deferred G-Buffer factor channel (base) ---- */
     LOG_INFO("============================================");
-    LOG_INFO("TEST 12b: DEFERRED GBUFFER MR FACTOR CHANNEL");
+    LOG_INFO("TEST 12b: DEFERRED GBUFFER FACTOR CHANNEL");
     LOG_INFO("============================================");
     bool gbf_pass = tv_test_deferred_gbuffer_factor(&render);
-    LOG_INFO("RESULT: DEFERRED GBUFFER MR FACTOR TEST %s",
+    LOG_INFO("RESULT: DEFERRED GBUFFER FACTOR TEST %s",
              gbf_pass ? "PASSED ✓" : "FAILED");
 
     /* ---- TEST 8: Golden image regression ---- */
