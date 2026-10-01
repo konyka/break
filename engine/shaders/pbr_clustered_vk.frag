@@ -6,8 +6,11 @@ layout(location = 2) in vec2 vUV;
 
 /* Vulkan GLSL forbids non-opaque uniforms outside a block, so fog colour and
  * the underwater flag live in the push-constant block. u_proj was unused by
- * this fragment shader, so its 64-byte slot is reclaimed (block = 232 bytes,
- * within the 256-byte push limit). Offsets must match rhi_vk.c's clustered map. */
+ * this fragment shader, so its 64-byte slot is reclaimed (block = 256 bytes,
+ * at the push limit). Offsets must match rhi_vk.c's clustered map.
+ * R586: the vert stage now declares only the first two members (u_model/u_view)
+ * at these same offsets and reads proj from the aux UBO — the old
+ * contradictory u_proj@128 vert layout (R579-C/E) is retired. */
 layout(push_constant) uniform PushConstants {
     mat4 u_model;       /*   0 */
     mat4 u_view;        /*  64 */
@@ -28,6 +31,11 @@ layout(push_constant) uniform PushConstants {
     float u_pom_enabled;                /* 224 */
     vec2  u_mr_factor;                  /* 232 — R579 glTF metallic/roughness factors
                                          * (std430: vec2 aligns 8, pads 228->232) */
+    vec3  u_emissive_factor;            /* 240 — R586 glTF emissiveFactor
+                                         * (std430: vec3 aligns 16), composed with
+                                         * u_emissive (matches the deferred R582
+                                         * semantics; 0 = no emission) */
+    float _pad_r586;                    /* 252 — block exactly 256 */
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -36,6 +44,9 @@ layout(binding = 2) uniform sampler2D u_metallic_roughness;
 layout(binding = 3) uniform sampler2D u_normal_map;
 layout(binding = 4) uniform sampler2D u_emissive;
 layout(set = 0, binding = 5) uniform sampler2D u_ssao;
+/* R586: material occlusion texture — the R583 slot (GL unit 15 / VK binding
+ * 9) the shared material binder already feeds. White fallback = neutral. */
+layout(set = 0, binding = 9) uniform sampler2D u_occlusion;
 layout(set = 1, binding = 0) uniform samplerBuffer u_light_data;
 layout(set = 1, binding = 1) uniform samplerBuffer u_light_grid;
 #ifdef HAS_IBL
@@ -372,7 +383,7 @@ void main() {
 
     N = perturb_normal(N, V, pom_uv);
 
-    vec3 emissive = texture(u_emissive, pom_uv).rgb;
+    vec3 emissive = texture(u_emissive, pom_uv).rgb * pc.u_emissive_factor; /* R586: glTF composition (deferred R582 semantics) */
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     /* R85-4: Compute F_Schlick once — reuse for both IBL and fallback paths. */
@@ -404,7 +415,7 @@ void main() {
     vec3 specular_ibl = prefiltered * (F * brdf.x + brdf.y);
 #endif
 
-    float ao = texture(u_ssao, vUV).r;
+    float ao = texture(u_ssao, vUV).r * texture(u_occlusion, pom_uv).r; /* R586: material occlusion (strength unsupported — full effect) */
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
 
     /* R84-3: shadow_test doesn't depend on loop variable */

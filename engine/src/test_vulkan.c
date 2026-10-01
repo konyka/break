@@ -775,15 +775,13 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                 rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
                 }
-                /* R579-E: NOTHING else may be written. The two stages
-                 * declare contradictory push layouts: the vert's u_proj
-                 * spans 128-192, which the frag block carves into
-                 * camera/fog/ambient/screen/near/far/counts slots. Every
-                 * such write clobbers a proj column (camera@128 kills
-                 * column 0 -> degenerate x=0 line; sw@160 corrupts the
-                 * depth clip; ...) — the R579-B "zero fragments" root
-                 * cause. Stale values are constant across the A/B passes,
-                 * which is all this factor gate needs. */
+                /* R579-E: historically NOTHING else could be written here —
+                 * the two stages declared contradictory push layouts and the
+                 * extra writes clobbered proj columns (the R579-B "zero
+                 * fragments" root cause). R586 repaired the vert (proj now
+                 * rides the aux UBO; see TEST 7c); this gate keeps its
+                 * minimal-write discipline anyway since stale values are
+                 * constant across the A/B passes, which is all it needs. */
                 (void)l_cam; (void)l_fog_n; (void)l_fog_f;
                 (void)l_sw; (void)l_sh; (void)l_near; (void)l_far;
                 (void)l_pc; (void)l_dc;
@@ -848,6 +846,314 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     ibl_destroy(&ibl, rs->device);
     return true;
 }
+/* TEST 7c body: R586 — the REAL pbr_clustered pair end-to-end. TEST 7b gates
+ * the clustered FRAG via a substitute push-free vert (R579 verdict); this
+ * gate draws through the production clustered VERT+FRAG themselves. Four
+ * hard phases (per-phase frames; no intra-pass rebinding):
+ *   A  black albedo + white emissive tex + emissiveFactor (1,0,0), black IBL,
+ *      zero lights -> pure red, Reinhard+gamma anchored (~0.73 linear).
+ *      Raw-texture emissive gives WHITE (g/b lit); the never-worked vert
+ *      gives zero fragments (black).
+ *   B  same with factor (0,0,0) -> black (raw emissive stays white).
+ *   C1 white albedo + real sky IBL + zero lights, white material occlusion;
+ *   C2 same with occlusion tex r=64 -> ambient must darken (an unsampled
+ *      occlusion texture cannot darken anything).
+ * VK: proj rides the aux UBO (set=2 binding=0) so the vert's push loads stay
+ * within [0,128) per the R579-K driver verdict; EVERY other push field is
+ * written deterministically — the R579-E contradictory-layout class that
+ * made such writes fatal is gone. GL: plain uniforms as before. Values are
+ * asserted as normalized linear floats on both backends (VK reads native
+ * f16; GL's RGBA8 readback is divided by 255 — the offscreen is post-tonemap
+ * LDR, so the anchors are shared). */
+static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
+                                       RHIBuffer ibo, u32 iw, u32 ih) {
+    bool ok = true;
+
+    /* Pipeline: the REAL clustered pair + HAS_IBL (production always injects
+     * it — the GL runtime no-ops this draw without it, R579-(一)). */
+    usize vl = 0, fl = 0;
+    char *vsrc = shader_read_file(TV_VS_PBR, &vl);
+    char *fsrc = shader_read_file(TV_FS_PBR, &fl);
+    usize fl_ibl = 0;
+    char *fsrc_ibl = fsrc ? tv_inject_define(fsrc, fl, "HAS_IBL", &fl_ibl) : NULL;
+    /* TV_7C_ECHO=1..5 (diagnostic, default off): early-return echo of
+     * N / diffuse_ibl / ao / albedo / kD_env right after the ambient line. */
+    const char *echo7 = getenv("TV_7C_ECHO");
+    if (fsrc_ibl && echo7) {
+        const char *anchor = "vec3 color = (diffuse_ibl + specular_ibl) * ao;";
+        char *m = strstr(fsrc_ibl, anchor);
+        const char *ins = NULL;
+        if (echo7[0] == '1') ins = " FragColor = vec4(N * 0.5 + 0.5, 1.0); return;";
+        if (echo7[0] == '2') ins = " FragColor = vec4(diffuse_ibl, 1.0); return;";
+        if (echo7[0] == '3') ins = " FragColor = vec4(vec3(ao), 1.0); return;";
+        if (echo7[0] == '4') ins = " FragColor = vec4(albedo, 1.0); return;";
+        if (echo7[0] == '5') ins = " FragColor = vec4(vec3(kD_env), 1.0); return;";
+        if (m && ins) {
+            usize ilen = strlen(ins), off = (usize)(m - fsrc_ibl) + strlen(anchor);
+            char *nb = malloc(fl_ibl + ilen + 1u);
+            if (nb) {
+                memcpy(nb, fsrc_ibl, off);
+                memcpy(nb + off, ins, ilen);
+                memcpy(nb + off + ilen, fsrc_ibl + off, fl_ibl - off);
+                nb[fl_ibl + ilen] = '\0';
+                free(fsrc_ibl);
+                fsrc_ibl = nb;
+                fl_ibl += ilen;
+                LOG_INFO("7C-DBG: echo %c injected", echo7[0]);
+            }
+        }
+    }
+    RHIPipeline pipe = RHI_HANDLE_NULL;
+    if (vsrc && fsrc_ibl) {
+        RHIShader vs = rhi_shader_create(rs->device, vsrc, vl, false);
+        RHIShader fs = rhi_shader_create(rs->device, fsrc_ibl, fl_ibl, true);
+        if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
+            RHIPipelineDesc d = {.vert = vs, .frag = fs, .uses_textures = true,
+                                 .uses_texel_buffer = true,
+                                 .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT};
+            pipe = rhi_pipeline_create(rs->device, &d);
+        }
+        rhi_shader_destroy(rs->device, vs);
+        rhi_shader_destroy(rs->device, fs);
+    }
+    free(vsrc); free(fsrc); free(fsrc_ibl);
+
+    /* 1x1 fixtures. */
+    u8 px_black[4] = {0u, 0u, 0u, 255u}, px_white[4] = {255u, 255u, 255u, 255u};
+    u8 px_mr[4] = {0u, 128u, 0u, 255u};       /* metal 0, rough ~0.5 (.bg) */
+    u8 px_occ[4] = {64u, 64u, 64u, 255u};     /* occlusion r=64 */
+    u8 px_nrm[4] = {128u, 128u, 255u, 255u};  /* flat tangent-space normal —
+     * rs->test_tex ({255,128,64}) as a normal map drives perturb_normal's
+     * TBN into NaN on this triangle and the whole IBL term dies */
+    RHITextureDesc t1 = { .width = 1, .height = 1,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 1, .data = px_black };
+    RHITexture alb_black = rhi_texture_create(rs->device, &t1);
+    t1.data = px_white;
+    RHITexture alb_white = rhi_texture_create(rs->device, &t1);
+    RHITexture em_white  = rhi_texture_create(rs->device, &t1);
+    RHITexture occ_white = rhi_texture_create(rs->device, &t1);
+    RHITexture ssao_white = rhi_texture_create(rs->device, &t1);
+    t1.data = px_nrm;
+    RHITexture nrm_flat = rhi_texture_create(rs->device, &t1);
+    t1.data = px_mr;
+    RHITexture mr_neu = rhi_texture_create(rs->device, &t1);
+    t1.data = px_occ;
+    RHITexture occ_gray = rhi_texture_create(rs->device, &t1);
+    t1.data = px_black;
+    RHITexture brdf_black = rhi_texture_create(rs->device, &t1);
+    RHICubemapDesc cmd_d;
+    memset(&cmd_d, 0, sizeof(cmd_d));
+    cmd_d.size = 1u;
+    cmd_d.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    for (u32 i = 0; i < 6u; i++) cmd_d.faces[i] = px_black;
+    RHICubemap irr_black = rhi_cubemap_create(rs->device, &cmd_d);
+    RHICubemap pref_black = rhi_cubemap_create(rs->device, &cmd_d);
+    /* Phase C ambient: WHITE 1x1 irradiance/prefilter cubemaps + black BRDF
+     * LUT give a deterministic ambient (irradiance 1.0 x albedo x kD; spec
+     * zeroed by the black LUT) — hermetic across GPUs/sky implementations.
+     * The real sky IBL path stays covered by TEST 7. */
+    for (u32 i = 0; i < 6u; i++) cmd_d.faces[i] = px_white;
+    RHICubemap irr_white = rhi_cubemap_create(rs->device, &cmd_d);
+    RHICubemap pref_white = rhi_cubemap_create(rs->device, &cmd_d);
+
+    /* Zero-light LightSystem (tv_test_ibl stack caveat applies). */
+    LightSystem *ls = calloc(1, sizeof(*ls));
+    bool gpu_cull_ok = false;
+    if (ls) {
+        light_system_init(ls, rs->device);
+        gpu_cull_ok = light_system_init_gpu_cull(ls);
+    }
+    (void)gpu_cull_ok;
+
+    /* proj: VK rides the aux UBO (set=2 binding=0 — see header); GL uses the
+     * plain uniform. */
+    Mat4 ident = mat4_identity();
+#ifdef ENGINE_VULKAN
+    RHIBufferDesc pud = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                          .size = sizeof(Mat4), .initial_data = &ident };
+    RHIBuffer proj_ubo = rhi_buffer_create(rs->device, &pud);
+#endif
+
+    RHIOffscreenFBO scene = {0};
+    if (iw > 0u && ih > 0u)
+        scene = rhi_offscreen_fbo_create_fmt(rs->device, iw, ih,
+                                             RHI_FORMAT_R16G16B16A16_SFLOAT);
+
+    ok = rhi_handle_valid(pipe) &&
+         rhi_handle_valid(alb_black) && rhi_handle_valid(alb_white) &&
+         rhi_handle_valid(em_white) && rhi_handle_valid(occ_white) &&
+         rhi_handle_valid(ssao_white) && rhi_handle_valid(mr_neu) &&
+         rhi_handle_valid(occ_gray) && rhi_handle_valid(brdf_black) &&
+         rhi_handle_valid(nrm_flat) &&
+         rhi_handle_valid(irr_black) && rhi_handle_valid(pref_black) &&
+         rhi_handle_valid(irr_white) && rhi_handle_valid(pref_white) && ls &&
+#ifdef ENGINE_VULKAN
+         rhi_handle_valid(proj_ubo) &&
+#endif
+         rhi_handle_valid(scene.fb) && rhi_handle_valid(scene.color_tex);
+    if (!ok)
+        LOG_ERROR("FAIL: clustered-real setup (pipe=%d ls=%d fbo=%d)",
+                  (int)rhi_handle_valid(pipe), (int)(ls != NULL),
+                  (int)rhi_handle_valid(scene.fb));
+
+    i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
+    i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
+    i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
+    i32 l_fogn  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
+    i32 l_fogf  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
+    i32 l_fogc  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_color");
+    i32 l_uw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_underwater");
+    i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
+    i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
+    i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
+    i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
+    i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
+    i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
+    i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
+    i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
+#ifndef ENGINE_VULKAN
+    i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+#endif
+
+    /* phase: 0=A red, 1=B black, 2=C1 white occ, 3=C2 gray occ */
+    f32 pix[4][3];
+    memset(pix, 0, sizeof(pix));
+    for (u32 phase = 0; phase < 4u && ok; phase++) {
+        const bool real_ibl = (phase >= 2u);
+        RHITexture alb = real_ibl ? alb_white : alb_black;
+        RHITexture occ = (phase == 3u) ? occ_gray : occ_white;
+        const f32 ef[3] = { phase == 0u ? 1.0f : 0.0f, 0.0f, 0.0f };
+        u32 frames = 0;
+        for (u32 f = 0; f < 2u; f++) {
+            if (gpu_cull_ok) {
+                light_system_upload_lights(ls);
+            } else {
+                light_system_cull(ls, &ident, &ident, iw, ih);
+                light_system_upload(ls);
+            }
+            RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+            if (!cmd) break;
+            rhi_offscreen_fbo_bind(cmd, &scene);
+            rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+            rhi_cmd_clear_depth(cmd);
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            /* EVERY push field is written (see header): the R579-E layout
+             * contradiction is repaired, so these writes are safe again. */
+            rhi_cmd_set_uniform_mat4(cmd, l_model, &ident.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, l_view,  &ident.e[0][0]);
+            /* Camera at (0,0,2): with the camera at the origin V lies in the
+             * triangle's z=0 plane, N·V=0 -> grazing Fresnel F=1 -> kD=0 and
+             * the IBL diffuse term dies (phase C's black-by-construction).
+             * At z=2 the center pixel sees N·V=1 -> kD=0.96. */
+            rhi_cmd_set_uniform_vec3(cmd, l_cam,  0.0f, 0.0f, 2.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_fogn, 1000.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_fogf, 2000.0f);
+            rhi_cmd_set_uniform_vec3(cmd, l_fogc, 0.0f, 0.0f, 0.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_uw,   0.0f);
+            rhi_cmd_set_uniform_f32(cmd, l_sw,   (f32)iw);
+            rhi_cmd_set_uniform_f32(cmd, l_sh,   (f32)ih);
+            rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
+            rhi_cmd_set_uniform_f32(cmd, l_far,  100.0f);
+            rhi_cmd_set_uniform_i32(cmd, l_pc,   0);
+            rhi_cmd_set_uniform_i32(cmd, l_dc,   0);
+            rhi_cmd_set_uniform_vec2(cmd, l_mr,  1.0f, 1.0f);
+            rhi_cmd_set_uniform_vec3(cmd, l_ef,  ef[0], ef[1], ef[2]);
+#ifdef ENGINE_VULKAN
+            rhi_cmd_bind_uniform_buffer(cmd, proj_ubo, 0u);
+#else
+            rhi_cmd_set_uniform_mat4(cmd, l_proj, &ident.e[0][0]);
+#endif
+            rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                                       light_system_grid_slot(ls));
+            rhi_cmd_bind_material_textures_ibl(cmd,
+                alb, mr_neu, nrm_flat, em_white, occ,
+                RHI_HANDLE_NULL, ssao_white, rs->sampler,
+                brdf_black,
+                real_ibl ? irr_white : irr_black,
+                real_ibl ? pref_white : pref_black, NULL, 0u);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 3, 1);
+            rhi_offscreen_fbo_unbind(cmd, iw, ih);
+            rhi_frame_end(rs->device);
+            rhi_present(rs->device);
+            frames++;
+        }
+        if (frames != 2u) { ok = false; break; }
+#ifdef ENGINE_VULKAN
+        const usize stride = 8u;
+#else
+        const usize stride = 4u;
+#endif
+        const usize bytes = (usize)iw * ih * stride;
+        u8 *rb = malloc(bytes);
+        if (!rb || !rhi_texture_read_pixels(rs->device, scene.color_tex, rb, bytes)) {
+            LOG_ERROR("FAIL: clustered-real readback (phase %u)", phase);
+            ok = false;
+        } else {
+            const u8 *p = &rb[((usize)(ih / 2u) * iw + iw / 2u) * stride];
+#ifdef ENGINE_VULKAN
+            for (u32 c = 0; c < 3u; c++) {
+                u16 h = (u16)(p[c * 2u] | ((u16)p[c * 2u + 1u] << 8));
+                pix[phase][c] = tv_f16_to_f32(h);
+            }
+#else
+            for (u32 c = 0; c < 3u; c++)
+                pix[phase][c] = (f32)p[c] / 255.0f;
+#endif
+        }
+        free(rb);
+    }
+
+    bool pass = false;
+    if (ok) {
+        bool pa = pix[0][0] > 0.55f && pix[0][0] < 0.90f &&
+                  pix[0][1] < 0.08f && pix[0][2] < 0.08f;
+        bool pb = pix[1][0] < 0.05f && pix[1][1] < 0.05f && pix[1][2] < 0.05f;
+        bool pc1 = pix[2][0] > 0.15f;
+        bool pc2 = pix[3][0] < 0.85f * pix[2][0] &&
+                   (pix[2][0] - pix[3][0]) > 0.06f;
+        pass = pa && pb && pc1 && pc2;
+        if (!pass)
+            LOG_ERROR("FAIL: clustered-real pixels A{%.3f,%.3f,%.3f} B{%.3f,%.3f,%.3f} "
+                      "C1{%.3f,%.3f,%.3f} C2{%.3f,%.3f,%.3f} "
+                      "(want A~{0.73,0,0} B{0,0,0} C1 bright C2 darker)",
+                      pix[0][0], pix[0][1], pix[0][2],
+                      pix[1][0], pix[1][1], pix[1][2],
+                      pix[2][0], pix[2][1], pix[2][2],
+                      pix[3][0], pix[3][1], pix[3][2]);
+    }
+    if (pass)
+        LOG_INFO("PASS: pbr clustered REAL pair (renders through the production "
+                 "vert+frag; glTF emissiveFactor composition gated {0.73,0,0}/black; "
+                 "material occlusion darkens IBL ambient)");
+
+    if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
+#ifdef ENGINE_VULKAN
+    if (rhi_handle_valid(proj_ubo)) rhi_buffer_destroy(rs->device, proj_ubo);
+#endif
+    if (ls) {
+        light_system_shutdown(ls);
+        free(ls);
+    }
+    if (rhi_handle_valid(pref_white)) rhi_cubemap_destroy(rs->device, pref_white);
+    if (rhi_handle_valid(irr_white))  rhi_cubemap_destroy(rs->device, irr_white);
+    if (rhi_handle_valid(pref_black)) rhi_cubemap_destroy(rs->device, pref_black);
+    if (rhi_handle_valid(irr_black))  rhi_cubemap_destroy(rs->device, irr_black);
+    if (rhi_handle_valid(brdf_black)) rhi_texture_destroy(rs->device, brdf_black);
+    if (rhi_handle_valid(occ_gray))   rhi_texture_destroy(rs->device, occ_gray);
+    if (rhi_handle_valid(nrm_flat))   rhi_texture_destroy(rs->device, nrm_flat);
+    if (rhi_handle_valid(mr_neu))     rhi_texture_destroy(rs->device, mr_neu);
+    if (rhi_handle_valid(ssao_white)) rhi_texture_destroy(rs->device, ssao_white);
+    if (rhi_handle_valid(occ_white))  rhi_texture_destroy(rs->device, occ_white);
+    if (rhi_handle_valid(em_white))   rhi_texture_destroy(rs->device, em_white);
+    if (rhi_handle_valid(alb_white))  rhi_texture_destroy(rs->device, alb_white);
+    if (rhi_handle_valid(alb_black))  rhi_texture_destroy(rs->device, alb_black);
+    if (rhi_handle_valid(pipe))       rhi_pipeline_destroy(rs->device, pipe);
+    return pass;
+}
+
 static bool tv_test_grouped_compact(const TestRenderState *rs,
                                     RHIBuffer vbo, RHIBuffer ibo) {
     /* R580: TV_SKIP_CULL_COMPACT — local-only escape for the R577 TDR
@@ -2736,6 +3042,13 @@ LOG_INFO("RESULT: PBR MATERIAL FACTOR TEST %s",
 pbrf_pass ? "PASSED ✓" : "FAILED");
 
         LOG_INFO("============================================");
+        LOG_INFO("TEST 7c: PBR CLUSTERED REAL PIPELINE");
+        LOG_INFO("============================================");
+        bool pbrc_pass = tv_test_pbr_clustered_real(&render, vbo, ibo, gw, gh);
+        LOG_INFO("RESULT: PBR CLUSTERED REAL PIPELINE TEST %s",
+                 pbrc_pass ? "PASSED ✓" : "FAILED");
+
+        LOG_INFO("============================================");
         LOG_INFO("TEST 10: INDIRECT DRAW GROUPED COMPACT");
         LOG_INFO("============================================");
         bool idraw_pass = tv_test_grouped_compact(&render, vbo, ibo);
@@ -2779,7 +3092,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass;
+        bool all_pass = motion_rt1_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass && pbrc_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -3449,6 +3762,15 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
     tv_probe_device(render.device, "TEST 7b PBR factors");
 
+    /* ---- TEST 7c: R586 real pbr_clustered pair (vert+frag) pixel gate ---- */
+    bool pbrc_pass = tv_test_pbr_clustered_real(&render, vbo, ibo, iw, ih);
+    if (pbrc_pass) {
+        LOG_INFO("RESULT: PBR CLUSTERED REAL PIPELINE TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: PBR CLUSTERED REAL PIPELINE TEST FAILED");
+    }
+    tv_probe_device(render.device, "TEST 7c clustered real");
+
     /* ---- TEST 9: Unified GPU cull + compact (indirect count draw) ---- */
     LOG_INFO("============================================");
     LOG_INFO("TEST 9: UNIFIED GPU CULL + COMPACT");
@@ -3769,7 +4091,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool all_pass = motion_rt1_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && golden_pass &&
+idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrc_pass && golden_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

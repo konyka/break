@@ -21,12 +21,18 @@ uniform float u_shadow_bias;
 uniform float u_point_shadow_far_planes[4];
 uniform float u_pom_enabled; /* R84-1: 0=no height map, skip POM */
 uniform vec2 u_mr_factor;    /* R579: glTF metallic/roughness scalar factors */
+uniform vec3 u_emissive_factor; /* R586: glTF emissiveFactor (deferred R582
+                                 * semantics; GL uniforms zero-init = no
+                                 * emission until written) */
 
 layout(binding = 0) uniform sampler2D u_albedo;
 layout(binding = 1) uniform sampler2D u_shadow_map;
 layout(binding = 2) uniform sampler2D u_metallic_roughness;
 layout(binding = 3) uniform sampler2D u_normal_map;
 layout(binding = 4) uniform sampler2D u_emissive;
+/* R586: material occlusion texture — the R583 GL slot (unit 15) the shared
+ * material binder already feeds. White fallback = neutral. */
+layout(binding = 15) uniform sampler2D u_occlusion;
 layout(binding = 14) uniform sampler2D u_ssao; /* R213-B: was 11, collided with cubes[1] */
 layout(binding = 5) uniform samplerBuffer u_light_data;
 layout(binding = 6) uniform samplerBuffer u_light_grid;
@@ -359,7 +365,7 @@ void main() {
 
     N = perturb_normal(N, V, pom_uv);
 
-    vec3 emissive = texture(u_emissive, pom_uv).rgb;
+    vec3 emissive = texture(u_emissive, pom_uv).rgb * u_emissive_factor; /* R586: glTF composition (deferred R582 semantics) */
 
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     /* R85-4: Compute F_Schlick once — reuse for both IBL and fallback paths. */
@@ -393,7 +399,7 @@ void main() {
     vec3 specular_ibl = prefiltered * (F * brdf.x + brdf.y);
 #endif
 
-    float ao = texture(u_ssao, vUV).r;
+    float ao = texture(u_ssao, vUV).r * texture(u_occlusion, pom_uv).r; /* R586: material occlusion (strength unsupported — full effect) */
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
 
     /* R84-3: shadow_test doesn't depend on loop variable */

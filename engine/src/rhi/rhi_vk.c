@@ -6388,10 +6388,11 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     if (strcmp(name, "u_proj") == 0)        return 128;
     if (clustered) {
         /* Layout matches pbr_clustered_vk.frag's push block (u_proj removed). */
-        /* R579-E: the VERT stage block has u_model@0/u_view@64/u_proj@128 —
-         * without this entry the model-matrix write is silently skipped
-         * (location -1) and draws render with stale push garbage (the
-         * R579-B/C/E "zero fragments" final root cause). */
+        /* R579-E: the model-matrix write must resolve or draws render with
+         * stale push garbage (the R579-B/C/E "zero fragments" final root
+         * cause). R586: the vert now declares only u_model@0/u_view@64 at
+         * these same offsets and reads proj from the aux UBO — the
+         * contradictory u_proj@128 vert layout is retired. */
         if (strcmp(name, "u_model") == 0)      return 0;
         if (strcmp(name, "u_camera_pos") == 0)  return 128;
         if (strcmp(name, "u_fog_near") == 0)    return 140;
@@ -6409,6 +6410,7 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_point_shadow_far_planes") == 0) return 208;
         if (strcmp(name, "u_pom_enabled") == 0) return 224;
         if (strcmp(name, "u_mr_factor") == 0)  return 232; /* R579 */
+        if (strcmp(name, "u_emissive_factor") == 0) return 240; /* R586 */
     } else if (pd && pd->no_vertex_input && pd->uses_texel_buffer && !pd->is_compute) {
         /* deferred_light_vk: clustered lighting + IBL full-screen pass. */
         if (strcmp(name, "u_inv_vp") == 0)       return 0;
@@ -7398,6 +7400,39 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
         }
         vkDestroyFence(vk->device, fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
+    }
+
+    /* R586: upload CPU-provided faces — previously the faces[] payload was
+     * silently dropped, so a faces-provided cubemap sampled UNDEFINED content
+     * on VK (only compute-generated IBL cubemaps had real content; tests that
+     * expected black "worked" by accident). A cubemap is a 6-layer array:
+     * reuse the texture-array transfer machinery per face. Mirrors the GL
+     * contract: mip 0 only, RGBA8 source (HDR faces are compute-filled). */
+    if (desc->format != RHI_FORMAT_R16G16B16A16_SFLOAT) {
+        const VkDeviceSize face_bytes = (VkDeviceSize)desc->size * desc->size * 4u;
+        for (u32 i = 0; i < 6u; i++) {
+            if (!desc->faces[i]) continue;
+            VkBuffer staging;
+            VkDeviceMemory staging_mem;
+            if (!vk_texture_staging_alloc(vk, face_bytes, desc->faces[i],
+                                          &staging, &staging_mem)) {
+                LOG_WARN("VK: cubemap face %u staging alloc failed", i);
+                continue;
+            }
+            VKArrayTransferCtx ctx = {0};
+            ctx.image = cd->image;
+            ctx.staging = staging;
+            ctx.width = desc->size;
+            ctx.height = desc->size;
+            ctx.base_layer = i;
+            ctx.layer_count = 1;
+            ctx.old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            ctx.copy = true;
+            if (!vk_texture_sync_submit(vk, staging, staging_mem,
+                                        vk_array_transfer_record, &ctx))
+                LOG_WARN("VK: cubemap face %u upload failed", i);
+        }
     }
 
     u32 idx = rhi_alloc_slot(dev);

@@ -2030,6 +2030,12 @@ static void gl_bind_tex_unit(u32 unit, RHITexture tex, RHISampler sampler) {
     extern _Thread_local RHIDevice *g_current_device;
     if (!g_current_device || unit >= RHI_MAX_TEXTURE_UNITS) return;
     GLTextureData *td = (GLTextureData *)rhi_get_resource_typed(g_current_device, tex, RHI_RES_TEXTURE);
+    /* R586: cubemap handles carry RHI_RES_CUBEMAP slots — the texture-only
+     * lookup silently dropped EVERY cubemap bind (the R78-1 target branch
+     * below was unreachable), so irradiance/prefilter sampled stale-or-empty
+     * units (black) on GL. Fall back to the cubemap slot type. */
+    if (!td)
+        td = (GLTextureData *)rhi_get_resource_typed(g_current_device, tex, RHI_RES_CUBEMAP);
     GLSamplerData *sd = (GLSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
 
     /* R77-1: Cache variables promoted to file scope — see definitions above. */

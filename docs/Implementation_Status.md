@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R586 pbr_clustered 真实管线修复 + glTF 语义统一（TDD）— R579 终局首要边界推进；新测试钓出两个潜伏引擎缺陷
+
+- **缺口**（R579 终局首要边界）：clustered 管线"从未工作过"——vert push 块 u_proj@128/u_camera_pos@160 与 frag 块 u_camera_pos@128 布局矛盾（R579-C），且 vert 加载越过 128B push 线在本机 NVIDIA 混合驱动的 texel 集管线上必死（R579-J/K）；frag 的 emissive 为 raw 纹理（无 glTF 因子组成，R582 边界），材质 occlusion 纹理前向无通道（R583 边界）。production `active_pipeline` 切换留作后续小决策（避免 golden 大面积重基线），本轮修管线本体并以像素门实证。
+- **管线修复**：`pbr_clustered_vk.vert` push 块裁到 vert 实际加载的两个成员 **u_model@0/u_view@64**（与 frag 块前两成员逐字节同偏移，矛盾类就此消除），**proj 改走 aux UBO**（`layout(std140, set=2, binding=0)`——texel 管线集序：纹理@0/texel@1/ubo@2，经既有 `rhi_cmd_bind_uniform_buffer` 绑定；push 加载全程 ≤128B，满足 R579-K 精化根因的安全区）。GL vert 用普通 uniform 无此问题，不动。
+- **语义统一（双端 frag）**：emissive = 纹理.rgb × **u_emissiveFactor**（glTF，与 R582 延迟语义一致；VK 入 push 块 @240（std430 vec3 对齐 16，块恰好 256B），rhi_vk clustered 映射同步；GL 为普通 uniform，零初始化=不发光）；AO = ssao.r × **u_occlusion.r**（材质 occlusion 纹理走 R583 既有槽位 GL 15/VK binding 9——共享材质绑定器自 R583 起已在喂该槽，白色回退中性；strength 缩放不支持，记为边界）。
+- **测试钓出的真实缺陷（两个，均已修复）**：① **GL cubemap 绑定死代码**——`gl_bind_tex_unit` 以 `RHI_RES_TEXTURE` 过滤查槽，cubemap 句柄槽型为 `RHI_RES_CUBEMAP` 恒返 NULL，整个绑定块（含 R78-1 注释宣称的 cubemap target 逻辑）不可达——**GL 上 irradiance/prefilter cubemap 从未真正绑定**（units 8/9 采样陈旧/空单元；生产前向/延迟 GL 的 IBL ambient 静默为黑，直接被主光掩盖+ golden 与缺陷同生，从未被非零断言捕获）。修复=查槽回退 CUBEMAP 型。② **VK cubemap 面上传缺失**——`rhi_cubemap_create` 只做布局转换，**faces[] 载荷被整体静默丢弃**（全文件零引用）；faces 提供的 cubemap 在 VK 采样到未定义内容（仅计算生成的 IBL cubemap 有真实内容；TEST 12c/12d 的黑 cubemap "恰好该黑"而长期幸存）。修复=按 GL 契约补 mip0/RGBA8 逐面上传（复用 texture-array 传输机械，cubemap=6 层数组）。
+- **TDD（红→绿实证）**：新增 **TEST 7c**（硬门，真实 clustered vert+frag，HAS_IBL 注入，四相位逐帧）——A：黑 albedo+白 emissive 纹理×因子 (1,0,0) → Reinhard+gamma 锚 {0.73,0,0}；B：因子 (0,0,0) → 全黑；C1/C2：白 albedo+白 1x1 辐照 cubemap+occlusion 白/r=64 → 环境项随 occlusion 变暗。RED 如实失败：**GL 语义红**（A/B/C 全 {0.729,0.729,0.729}=raw emissive 白色，真实管线对在 GL 上能绘制）；**VK 零片元红**（四相位全黑，R579-J 驱动边界签名）。GREEN 过程经 TV_7C_ECHO 分段回显（N/diffuse_ibl/ao/albedo/kD_env 逐量定位）连环牵出上述两个 cubemap 缺陷；测试装置两度自证陷阱（相机在原点致 N·V=0 掠射 F=1 环境项自杀——移 (0,0,2)；test_tex 当法线图 TBN 崩坏——换平法线）。GREEN：**GL 全套件 ALL PASSED（含 7c 与既有 golden/TEST 7/12 全数无回归）**；**VK 本机 TEST 7c PASSED**——真实 clustered 管线对首次在本机 NVIDIA 616.56 混合驱动上渲染（push 加载 ≤128B 安全区实证 R579-K），四相位全过；VK 套件其余段仍为 R577 TDR 基线（7c 位于死区前完整执行）。
+- **回归**：双树非图形 CTest 各 **112/112**；GL deferred/前向 demo 各 120 帧优雅退出（GL cubemap 修复使生产 IBL ambient 首次真正生效——正确性修复的预期视觉变化）；VK deferred demo 复现 R577 基线。TV_7C_ECHO 诊断门默认关闭保留（RDBG 同约）。
+- **边界**：clustered 管线接入 production `active_pipeline` 选择仍为后续决策（本轮管线本体已修复并实证）；材质 occlusion 的 strength 缩放在前向不支持（full effect，需 push 外通道）；blinn_clustered 变体维持休眠未修；GL 点影 cubemap（深度 cube）绑定路径与本次修复的交互未专项验证（其走 R215-A 无采样器对象路径）。
+
 ## 本轮更新：R585 BSCN 序列化扩容 v1→v2（TDD）— R581/R582/R583 材质字段入库
 
 - **缺口**（R581/R582/R583 落账边界）：RESOURCES chunk 的材质描述符 `f[8]` 已满（base_color4+metallic+roughness+emissive_strength+cutoff）——`occlusion_strength`(R581)、`emissive_factor[3]`(R582) 不入库，`occlusion` 纹理句柄(R583) 也不入纹理引用收集（emissive 等四通道本在收集内）。BSCN 清单是材质数据的唯一序列化载体（main.c 不回填 Material，供外部工具/身份追踪）。
