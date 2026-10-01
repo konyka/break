@@ -1,5 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R590 clustered instanced 变体（TDD）— ECS 实体绘制并入前向 clustered 模式；附带修复 rhi_vk 存储集硬编码 + UPDATE_AFTER_BIND 误用
+
+- **缺口**（R589 落账边界"clustered 无 instanced/skinned/材质数组变体，对应绘制在启用时仍走 blinn 族"）：`BREAK_FORWARD_CLUSTERED` 下 ECS 实体（instanced 绘制）仍走 blinn-instanced，是启用时画面内最大的 blinn 回退面。
+- **方案（关键选型）**：实例数据改走**顶点阶段 SSBO**——共享 texel 集仅 2 绑定位（已被 light_data/light_grid 占满），GL 纹理单元亦耗尽（5/6 texel、7-15 共享/IBL），第三 texel 缓冲双端皆不可行；particles 渲染管线已实证双端顶点 SSBO 路径。**frag 原样复用** pbr_clustered（灯光 texel 集零改动）。新管线集序（VK）：纹理@0/texel@1/storage@2/ubo@3。
+- **新资产**：`pbr_clustered_inst{,_vk}.vert`（SSBO `ClusterInstances` 8 vec4/实例：model+prev_model，FORWARD_MRT 速度沿用 R589 合并帧 UBO——VK set=3 binding=0 / GL uniform binding 0，布局同为 {prev_vp, prev_model_unused, proj}；VK 用 gl_InstanceIndex，GL 用 gl_InstanceID）；`instance_buf` usage 增 STORAGE（lighting.c 网格缓冲同款 TEXEL|STORAGE 组合，blinn 路径 texel 视图不受影响）。
+- **钓出的两个 rhi_vk 真实缺陷（本轮修复）**：① `rhi_cmd_bind_storage_buffer` 图形分支**硬编码绑到集 0**——仅在无纹理管线（particles）偶然正确；textures+texel+storage 管线会把存储集绑进纹理集布局（incompatible）。修复=`VKPipelineData.storage_set` 记录创建期真实集索引，图形分支按之绑定（compute 分支维持 0——compute 布局存储恒在首位）。② 逐网格循环内重复 `rhi_cmd_bind_storage_buffer` 触发 **UPDATE_AFTER_BIND 违规**——R90-1 缓存路径对已绑定且已被绘制消耗的描述符集再执行 vkUpdateDescriptorSets，命令缓冲区回溯失效（200 条 validation 级联）。修复=SSBO 在循环外**绑定一次**（缓冲句柄恒定，内容变化走 rhi_cmd_update_buffer 无需描述符更新）。
+- **uniform 分类陷阱（规避）**：新管线**不设** `.is_instanced`——该旗标在 rhi_vk 中无顶点输入作用，仅把 `rhi_pipeline_get_uniform_location` 重分类到 blinn-instanced 映射表；保持 `uses_texel_buffer && !is_instanced` 以命中 clustered 映射（R560 注释同款判据）。配套重构：19 个 `cl_loc_*` 平铺字段收编为 `ClusteredLocs` 双实例（`rs->cl`/`rs->cli`，成员名保留 cl_loc_* 前缀使 R589 契约标记与注释持续准确），`clustered_query_locs` 统一查询，`forward_clustered_bind_frame`/`clustered_bind_material` 参数化 (pipe, L)。
+- **TDD（红→绿实证）**：契约测试 `forward_clustered_instanced_variant_wiring`（管线/实例缓冲 STORAGE 用法/SSBO 绑定调用/双端 vert 标记/storage_set 修复锚）如实红；GREEN 后过。真机阶梯：首跑 200 条 validation（缺陷②）→ 单次绑定后 **VK 双配置（mat_arr 默认/分组路径）120 帧 validation 0 零故障**、GL 双配置 120 帧优雅退出。
+- **回归**：双树非图形 CTest 各 **112/112**；GL 全套件 ALL PASSED；VK 套件基线同 R588/589（7c/7d/12/12c/12d 全过，12b 与 golden 漂移两项本机既有残余）；默认 demo 矩阵——GL 前向/延迟 120 帧 rc=0，VK 前向 120 帧 / 延迟 240 帧 rc=0 validation 0（默认路径零行为变化）。
+- **边界**：clustered 仍无 skinned/材质数组变体（skinned 需关节 texel+灯光网格三 texel 缓冲或关节 SSBO 同类改造，材质数组需数组纹理+因子表通道——各自独立后续）；ECS 每实体回退路径（instanced 管线无效时）在 clustered 模式下仍走 blinn 族（与 R589 同约）；非 mega 静态回退的 prev_model 近似沿用 R589 边界；`storage_set` 修复对 particles 等既有存储管线行为不变（其存储集本就位于 0）。
+
 ## 本轮更新：R589 前向 clustered PBR 生产接线（TDD）— R579 终局落地：`BREAK_FORWARD_CLUSTERED` 使修复后的 pbr_clustered 首次在生产可见
 
 - **缺口**（R586/R588 落账）：clustered 管线本体已修复并双端像素门实证（TEST 7c/7d），但 production 从不绑定它（R579-D：`cl_loc_model` 全仓零使用）——"默认前向 PBR 化"的最后一步未走。

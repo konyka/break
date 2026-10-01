@@ -612,6 +612,45 @@ TEST(forward_clustered_opt_in_production_wiring)
     ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
 }
 
+/* R590: clustered INSTANCED variant — the ECS entity draws join the opt-in
+ * clustered forward mode. Instance data rides a vertex-stage SSBO (the
+ * shared texel set is capped at 2 bindings and GL texture units are
+ * exhausted; particles.c proves vertex SSBO on both backends); the
+ * clustered frag is reused unchanged (light texel set untouched). */
+TEST(forward_clustered_instanced_variant_wiring)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "clustered_inst_pipeline"));
+    ASSERT_NOT_NULL(strstr(src, "pbr_clustered_inst_vk.vert"));
+    /* instance_buf gains STORAGE usage so the same dual-slot buffer binds
+     * as the variant's vertex SSBO (blinn path keeps the texel view). */
+    ASSERT_NOT_NULL(strstr(src, "RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE"));
+    /* per-mesh instanced draw binds the instance SSBO */
+    ASSERT_NOT_NULL(strstr(src, "rhi_cmd_bind_storage_buffer(cmd, inst_slot"));
+
+    /* VK vert: SSBO at set=2 (textures@0 texel@1 storage@2 ubo@3), frame
+     * UBO at set=3, same merged {prev_vp, prev_model, proj} layout. */
+    char vsh[8192];
+    ASSERT_TRUE(read_shader_source("pbr_clustered_inst_vk.vert", vsh, sizeof(vsh)));
+    ASSERT_NOT_NULL(strstr(vsh, "readonly buffer"));
+    ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
+    ASSERT_NOT_NULL(strstr(vsh, "set = 3, binding = 0"));
+    ASSERT_NOT_NULL(strstr(vsh, "gl_InstanceIndex"));
+    ASSERT_NOT_NULL(strstr(vsh, "v_velocity"));
+
+    /* GL vert: plain uniforms + SSBO at storage binding 0. */
+    ASSERT_TRUE(read_shader_source("pbr_clustered_inst.vert", vsh, sizeof(vsh)));
+    ASSERT_NOT_NULL(strstr(vsh, "readonly buffer"));
+    ASSERT_NOT_NULL(strstr(vsh, "binding = 0"));
+
+    /* R590 RHI fix: graphics storage binds must target the pipeline's OWN
+     * storage set index (hardcoded 0 only worked for texture-less
+     * pipelines like particles). */
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "storage_set"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -640,4 +679,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(deferred_skinned_gbuffer_regressions_are_guarded);
     RUN_TEST(static_mega_geometry_contract_is_documented_and_unchanged);
     RUN_TEST(forward_clustered_opt_in_production_wiring);
+    RUN_TEST(forward_clustered_instanced_variant_wiring);
 TEST_MAIN_END()

@@ -216,6 +216,19 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
 #include <renderer/lighting.h>
 #include <renderer/ibl.h>
 
+/* R590: clustered uniform-location set (one per clustered pipeline variant). */
+typedef struct {
+    i32 cl_loc_model, cl_loc_view, cl_loc_proj, cl_loc_camera_pos;
+    i32 cl_loc_ambient, cl_loc_screen_w, cl_loc_screen_h, cl_loc_near, cl_loc_far;
+    i32 cl_loc_point_count, cl_loc_dir_count;
+    i32 cl_loc_shadow_bias;
+    i32 cl_loc_fog_color, cl_loc_fog_near, cl_loc_fog_far, cl_loc_underwater;
+    i32 cl_loc_point_shadow_far_planes;
+    i32 cl_loc_pom_enabled;
+    i32 cl_loc_mr_factor;
+    i32 cl_loc_emissive_factor;
+} ClusteredLocs;
+
 typedef struct {
     RHIDevice    *device;
     RHIPipeline   pipeline;
@@ -254,17 +267,14 @@ typedef struct {
     i32 loc_model, loc_view, loc_proj;
     i32 loc_light_dir, loc_light_color, loc_ambient, loc_camera_pos;
     i32 loc_albedo, loc_shadow_map, loc_light_vp;
-    i32 cl_loc_model, cl_loc_view, cl_loc_proj, cl_loc_camera_pos;
-    i32 cl_loc_ambient, cl_loc_screen_w, cl_loc_screen_h, cl_loc_near, cl_loc_far;
-    i32 cl_loc_point_count, cl_loc_dir_count;
-    i32 cl_loc_shadow_bias;
-    i32 cl_loc_fog_color, cl_loc_fog_near, cl_loc_fog_far, cl_loc_underwater;
-    i32 cl_loc_point_shadow_far_planes;
-    i32 cl_loc_pom_enabled;
-    i32 cl_loc_mr_factor;
-    i32 cl_loc_emissive_factor;
-    /* R589: VK proj aux UBO for the clustered forward pipeline (R586 moved
-     * u_proj out of the push block to set=2 binding=0). GL uses cl_loc_proj. */
+    /* R590: clustered uniform-location set — one per clustered pipeline
+     * variant (cl = static, cli = instanced). Member names keep the cl_loc_*
+     * prefix (contract markers + R589 comments stay accurate). */
+    ClusteredLocs cl, cli;
+    RHIPipeline   clustered_inst_pipeline;
+    /* R589: shared clustered frame UBO {prev_vp, prev_model, proj} — VK set
+     * index differs per variant (static: set=2, instanced: set=3), but the
+     * bind call resolves the pipeline's own ubo_set. */
     RHIBuffer     clustered_proj_ubo;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
@@ -279,6 +289,32 @@ typedef struct {
 } RenderState;
 
 static void render_shutdown(RenderState *rs);
+
+/* R590: query the full clustered uniform-location set for one pipeline
+ * variant (static cl / instanced cli — identical names, per-pipeline values
+ * on GL; identical push offsets on VK). */
+static void clustered_query_locs(RenderState *rs, RHIPipeline pipe, ClusteredLocs *L) {
+    L->cl_loc_model       = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
+    L->cl_loc_view        = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
+    L->cl_loc_proj        = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+    L->cl_loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
+    L->cl_loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_ambient");
+    L->cl_loc_screen_w    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
+    L->cl_loc_screen_h    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
+    L->cl_loc_near        = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
+    L->cl_loc_far         = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
+    L->cl_loc_point_count = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
+    L->cl_loc_dir_count   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
+    L->cl_loc_shadow_bias = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_shadow_bias");
+    L->cl_loc_fog_color   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_color");
+    L->cl_loc_fog_near    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
+    L->cl_loc_fog_far     = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
+    L->cl_loc_underwater  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_underwater");
+    L->cl_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_shadow_far_planes");
+    L->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_pom_enabled");
+    L->cl_loc_mr_factor   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
+    L->cl_loc_emissive_factor = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
+}
 
 static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
                                   const Mat4 *previous_vp, const Mat4 *previous_model) {
@@ -414,16 +450,18 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_camera_pos");
     rs->loc_albedo      = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_albedo");
 
-    /* Clustered lighting pipeline */
+    /* Clustered lighting pipelines (static + R590 instanced variant) */
     {
-        usize cvl = 0, cfl = 0;
-        char *cv = NULL, *cf = NULL;
+        usize cvl = 0, cfl = 0, civl = 0;
+        char *cv = NULL, *cf = NULL, *civ = NULL;
 #ifdef ENGINE_VULKAN
         cv = shader_read_file("shaders/pbr_clustered_vk.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered_vk.frag", &cfl);
+        civ = shader_read_file("shaders/pbr_clustered_inst_vk.vert", &civl);
 #else
         cv = shader_read_file("shaders/pbr_clustered.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered.frag", &cfl);
+        civ = shader_read_file("shaders/pbr_clustered_inst.vert", &civl);
 #endif
         if (cv && cf) {
             /* Enable the split-sum IBL path and point-light shadows for the
@@ -447,39 +485,41 @@ static bool render_init(RenderState *rs, Platform *platform) {
             RHIShader cfs = cf_mrt ? rhi_shader_create(rs->device, cf_mrt, cfl_mrt, true)
                                    : (cf_ps ? rhi_shader_create(rs->device, cf_ps, cfl_ps, true)
                                             : rhi_shader_create(rs->device, cf, cfl, true));
-            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt);
+            /* R590: instanced variant vert (instances ride a vertex SSBO;
+             * the frag object is SHARED with the static pipeline). */
+            RHIShader civs = RHI_HANDLE_NULL;
+            if (civ) {
+                usize civm_len = 0;
+                char *civ_mrt = shader_inject_define(civ, civl, "FORWARD_MRT", &civm_len);
+                civs = rhi_shader_create(rs->device, civ_mrt ? civ_mrt : civ,
+                                         civ_mrt ? civm_len : civl, false);
+                free(civ_mrt);
+            }
+            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ);
             if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
                 RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
                                        .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
                                        .mrt_attachment_count = 2u,
                                        .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
                 rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                if (rhi_handle_valid(civs)) {
+                    /* R590: NOT .is_instanced — that flag only reclassifies
+                     * the uniform mapping to the blinn-instanced table (it
+                     * has no vertex-input role, RHI source comment); the
+                     * clustered table (uses_texel_buffer && !is_instanced)
+                     * must apply. */
+                    cpd.vert = civs;
+                    cpd.uses_storage = true;
+                    rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                }
                 rhi_shader_destroy(rs->device, cvs);
                 rhi_shader_destroy(rs->device, cfs);
             }
-        } else { free(cv); free(cf); }
+            if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
+        } else { free(cv); free(cf); free(civ); }
     }
     if (rhi_handle_valid(rs->clustered_pipeline)) {
-        rs->cl_loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_model");
-        rs->cl_loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_view");
-        rs->cl_loc_proj        = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_proj");
-        rs->cl_loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_camera_pos");
-        rs->cl_loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_ambient");
-        rs->cl_loc_screen_w    = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_screen_w");
-        rs->cl_loc_screen_h    = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_screen_h");
-        rs->cl_loc_near        = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_near");
-        rs->cl_loc_far         = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_far");
-        rs->cl_loc_point_count = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_count");
-        rs->cl_loc_dir_count   = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_dir_count");
-        rs->cl_loc_shadow_bias = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_shadow_bias");
-    rs->cl_loc_fog_color  = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_fog_color");
-    rs->cl_loc_fog_near   = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_fog_near");
-    rs->cl_loc_fog_far    = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_fog_far");
-    rs->cl_loc_underwater = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_underwater");
-    rs->cl_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_point_shadow_far_planes");
-    rs->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_pom_enabled");
-    rs->cl_loc_mr_factor = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_mr_factor");
-        rs->cl_loc_emissive_factor = rhi_pipeline_get_uniform_location(rs->device, rs->clustered_pipeline, "u_emissive_factor");
+        clustered_query_locs(rs, rs->clustered_pipeline, &rs->cl);
         {
             /* R589: clustered frame UBO {prev_vp, prev_model, proj} — the RHI
              * binds one UBO descriptor set per call, so proj (VK) and the
@@ -492,6 +532,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
             rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
         }
     }
+    if (rhi_handle_valid(rs->clustered_inst_pipeline))
+        clustered_query_locs(rs, rs->clustered_inst_pipeline, &rs->cli);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -617,7 +659,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
 
     {
         RHIBufferDesc bdesc = {0};
-        bdesc.usage = RHI_BUFFER_USAGE_TEXEL;
+        /* R590: STORAGE added — the clustered-instanced variant binds the
+         * same dual-slot buffer as a vertex SSBO (blinn path keeps the
+         * texel view). lighting.c grid buffers use the same combo. */
+        bdesc.usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE;
         bdesc.size = 10000 * 8 * 4 * sizeof(f32);
         rs->instance_buf[0] = rhi_buffer_create(rs->device, &bdesc);
         rs->instance_buf[1] = rhi_buffer_create(rs->device, &bdesc);
@@ -897,6 +942,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->instance_buf[0])) rhi_buffer_destroy(rs->device, rs->instance_buf[0]);
     if (rhi_handle_valid(rs->instance_buf[1])) rhi_buffer_destroy(rs->device, rs->instance_buf[1]);
     if (rhi_handle_valid(rs->clustered_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_pipeline);
+    if (rhi_handle_valid(rs->clustered_inst_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_inst_pipeline);
     if (rhi_handle_valid(rs->clustered_proj_ubo)) rhi_buffer_destroy(rs->device, rs->clustered_proj_ubo);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
@@ -976,7 +1022,9 @@ static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Sce
  * CPU-precomposed rgb = emissiveFactor x emissiveStrength (R582 deferred
  * semantics), with the white-1x1 substitution for factor-only materials
  * (R580 precedent) since the shared emissive fallback is black. */
-static void clustered_bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
+static void clustered_bind_material(RHICmdBuffer *cmd, RenderState *rs,
+                                    const ClusteredLocs *L,
+                                    Material *mat, Scene *scene) {
     Material sub;
     f32 er = 0.0f, eg = 0.0f, eb = 0.0f;
     if (mat) {
@@ -991,20 +1039,23 @@ static void clustered_bind_material(RHICmdBuffer *cmd, RenderState *rs, Material
         }
     }
     bind_material(cmd, rs, mat, scene);
-    rhi_cmd_set_uniform_vec2(cmd, rs->cl_loc_mr_factor,
+    rhi_cmd_set_uniform_vec2(cmd, L->cl_loc_mr_factor,
                              mat ? mat->metallic_factor : 1.0f,
                              mat ? mat->roughness_factor : 1.0f);
-    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_emissive_factor, er, eg, eb);
+    rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_emissive_factor, er, eg, eb);
 }
 
 /* R589: bind the clustered pipeline and emit every per-frame uniform it
- * consumes, plus the light-grid texel buffers and (VK) the proj aux UBO.
+ * consumes, plus the light-grid texel buffers and the shared frame UBO.
  * Called at each forward static-pass entry — after a compact compute or a
  * blinn-family draw the pipeline/descriptor state must be re-established.
  * Uniform VALUES persist across pipeline binds (VK push bytes are host-side
  * until the next draw flush, GL uniforms are program state), so per-material
- * sites only need clustered_bind_material. */
+ * sites only need clustered_bind_material.
+ * R590: parameterized on (pipe, L) so the static and instanced variants
+ * share the emitter. */
 static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
+                                         RHIPipeline pipe, const ClusteredLocs *L,
                                          const LightSystem *ls,
                                          const Mat4 *view, const Mat4 *proj,
                                          const Mat4 *prev_vp,
@@ -1013,10 +1064,11 @@ static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
                                          bool fog_on, f32 fog_n, f32 fog_f,
                                          const Vec3 *fog_col, bool underwater,
                                          u32 screen_w, u32 screen_h, f32 shadow_bias) {
-    rhi_cmd_bind_pipeline(cmd, rs->clustered_pipeline);
-    rhi_cmd_set_uniform_mat4(cmd, rs->cl_loc_view, &view->e[0][0]);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, L->cl_loc_view, &view->e[0][0]);
     /* Frame UBO {prev_vp, prev_model(identity — mega verts are world-space
-     * and static nodes match the blinn bind_forward_temporal approximation),
+     * and static nodes match the blinn bind_forward_temporal approximation;
+     * the instanced variant reads per-instance prev_model from its SSBO),
      * proj} — one buffer, one binding, both backends (RHI single-UBO model). */
     if (rhi_handle_valid(rs->clustered_proj_ubo)) {
         Mat4 ubo_data[3];
@@ -1027,26 +1079,26 @@ static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
         rhi_cmd_bind_uniform_buffer(cmd, rs->clustered_proj_ubo, 0u);
     }
 #ifndef ENGINE_VULKAN
-    rhi_cmd_set_uniform_mat4(cmd, rs->cl_loc_proj, &proj->e[0][0]);
+    rhi_cmd_set_uniform_mat4(cmd, L->cl_loc_proj, &proj->e[0][0]);
 #endif
-    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_camera_pos, cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
-    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_ambient, ambient->e[0], ambient->e[1], ambient->e[2]);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_screen_w, (f32)screen_w);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_screen_h, (f32)screen_h);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_near, near_p);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_far, far_p);
-    rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_point_count, (i32)ls->point_count);
-    rhi_cmd_set_uniform_i32(cmd, rs->cl_loc_dir_count, (i32)ls->dir_count);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_shadow_bias, shadow_bias);
-    rhi_cmd_set_uniform_vec3(cmd, rs->cl_loc_fog_color, fog_col->e[0], fog_col->e[1], fog_col->e[2]);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_fog_near, fog_on ? fog_n : 1e6f);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_fog_far,  fog_on ? fog_f : 2e6f);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_underwater, underwater ? 1.0f : 0.0f);
+    rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_camera_pos, cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
+    rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_ambient, ambient->e[0], ambient->e[1], ambient->e[2]);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_screen_w, (f32)screen_w);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_screen_h, (f32)screen_h);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_near, near_p);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_far, far_p);
+    rhi_cmd_set_uniform_i32(cmd, L->cl_loc_point_count, (i32)ls->point_count);
+    rhi_cmd_set_uniform_i32(cmd, L->cl_loc_dir_count, (i32)ls->dir_count);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_shadow_bias, shadow_bias);
+    rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_fog_color, fog_col->e[0], fog_col->e[1], fog_col->e[2]);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_fog_near, fog_on ? fog_n : 1e6f);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_fog_far,  fog_on ? fog_f : 2e6f);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_underwater, underwater ? 1.0f : 0.0f);
     /* Point-shadow far planes ride g_psc (gathered earlier this frame). */
-    rhi_cmd_set_uniform_vec4(cmd, rs->cl_loc_point_shadow_far_planes,
+    rhi_cmd_set_uniform_vec4(cmd, L->cl_loc_point_shadow_far_planes,
                              g_psc.far_planes[0], g_psc.far_planes[1],
                              g_psc.far_planes[2], g_psc.far_planes[3]);
-    rhi_cmd_set_uniform_f32(cmd, rs->cl_loc_pom_enabled, 0.0f);
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_pom_enabled, 0.0f);
     rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
                                light_system_grid_slot(ls));
     g_fwd_clustered_taken++;
@@ -1790,7 +1842,7 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
     for (u32 g = 0; g < mb->mat_group_count; g++) {
         u32 mat_idx = mb->mat_indices[g];
         Material *mat = (mat_idx < scene->material_count) ? &scene->materials[mat_idx] : NULL;
-        if (cl_lights) clustered_bind_material(cmd, render, mat, scene);
+        if (cl_lights) clustered_bind_material(cmd, render, &render->cl, mat, scene);
         else           bind_material(cmd, render, mat, scene);
         indirect_draw_execute_group(&mb->group_system, render->device, g);
         calls++;
@@ -7048,6 +7100,28 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             /* R438: drew_any hoisted above the instanced/per-entity split. */
             if (instance_count > 0) {
                 RHIBuffer inst_slot = render.instance_buf[rhi_frame_index(render.device) & 1u];
+                /* R590: clustered mode swaps the ECS instanced draws to the
+                 * clustered-instanced variant (SSBO instances + shared
+                 * clustered frag); the blinn-instanced uniform writes are
+                 * skipped — the frame emitter covers view/frame state. */
+                const bool inst_clustered = fwd_clustered &&
+                                            rhi_handle_valid(render.clustered_inst_pipeline);
+                if (inst_clustered) {
+                    Vec3 fog_ci = vec3(bg_r, bg_g, bg_b);
+                    forward_clustered_bind_frame(cmd, &render,
+                                                 render.clustered_inst_pipeline, &render.cli,
+                                                 &lights, &view, &proj, &prev_view_proj,
+                                                 &camera.position, &ambient_col,
+                                                 camera.near_plane, camera.far_plane,
+                                                 fog_enabled, fog_near, fog_far,
+                                                 &fog_ci, underwater, rw, rh, shadow_bias);
+                    /* Instances ride the vertex SSBO (R590) — bound ONCE
+                     * here: re-updating an already-bound-and-consumed
+                     * descriptor set between draws invalidates the command
+                     * buffer (no UPDATE_AFTER_BIND). Content changes ride
+                     * rhi_cmd_update_buffer below; the binding is constant. */
+                    rhi_cmd_bind_storage_buffer(cmd, inst_slot, 0u);
+                } else {
                 rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ? render.wire_instanced_pipeline : render.instanced_pipeline);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_view, &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_proj, &proj.e[0][0]);
@@ -7056,6 +7130,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
                 rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
                     camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                }
 
                 /* R445: group instances by MeshRef.mesh_index — previously every
                  * scene mesh was drawn at EVERY entity transform, so adding the
@@ -7073,8 +7148,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
+                    if (inst_clustered) {
+                        clustered_bind_material(cmd, &render, &render.cli, mat, &scene);
+                    } else {
                     bind_material(cmd, &render, mat, &scene);
                     rhi_cmd_bind_texel_buffers(cmd, inst_slot, inst_slot);
+                    }
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                     if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
                         rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
@@ -7212,7 +7291,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * instanced draws above left their own pipeline bound). */
         if (fwd_clustered) {
             Vec3 fog_col = vec3(bg_r, bg_g, bg_b);
-            forward_clustered_bind_frame(cmd, &render, &lights, &view, &proj,
+            forward_clustered_bind_frame(cmd, &render, render.clustered_pipeline, &render.cl, &lights, &view, &proj,
                                          &prev_view_proj,
                                          &camera.position, &ambient_col,
                                          camera.near_plane, camera.far_plane,
@@ -7225,7 +7304,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
                 if (mega_buf.valid && gpu_indirect_enabled && mega_buf.mat_group_count > 0) {
                     g_fwd_mega_taken++;  /* R438: observability — see per-frame log near R437 compact count */
-                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl_loc_model : render.loc_model, &frame_identity.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl.cl_loc_model : render.loc_model, &frame_identity.e[0][0]);
                     rhi_cmd_bind_vertex_buffer(cmd, mega_buf.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, mega_buf.ibo, 0, true);
 
@@ -7312,7 +7391,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                      * helper rebinds pipeline + light-grid texel buffers). */
                     if (fwd_clustered) {
                         Vec3 fog_col2 = vec3(bg_r, bg_g, bg_b);
-                        forward_clustered_bind_frame(cmd, &render, &lights, &view, &proj,
+                        forward_clustered_bind_frame(cmd, &render, render.clustered_pipeline, &render.cl, &lights, &view, &proj,
                                                      &prev_view_proj,
                                                      &camera.position, &ambient_col,
                                                      camera.near_plane, camera.far_plane,
@@ -7324,7 +7403,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     for (u32 g = 0; g < mega_buf.mat_group_count; g++) {
                         u32 mat_idx = mega_buf.mat_indices[g];
                         Material *mat = (mat_idx < scene.material_count) ? &scene.materials[mat_idx] : NULL;
-                        if (fwd_clustered) clustered_bind_material(cmd, &render, mat, &scene);
+                        if (fwd_clustered) clustered_bind_material(cmd, &render, &render.cl, mat, &scene);
                         else               bind_material(cmd, &render, mat, &scene);
                         if (mega_buf.group_system_ready)
                             indirect_draw_execute_group(&mega_buf.group_system, render.device, g);
@@ -7400,10 +7479,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         (void)lod_level;
                     }
 
-                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl_loc_model : render.loc_model, &node->world_transform.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl.cl_loc_model : render.loc_model, &node->world_transform.e[0][0]);
 
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    if (fwd_clustered) clustered_bind_material(cmd, &render, mat, &scene);
+                    if (fwd_clustered) clustered_bind_material(cmd, &render, &render.cl, mat, &scene);
                     else               bind_material(cmd, &render, mat, &scene);
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
@@ -7424,10 +7503,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* R438: node_count==0 now explicit (was implied by the old gate). */
         } else if (!drew_any && scene.node_count == 0) {                for (u32 i = 0; i < scene.mesh_count; i++) {
                     Mesh *m = &scene.meshes[i];
-                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl_loc_model : render.loc_model, &frame_identity.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, fwd_clustered ? render.cl.cl_loc_model : render.loc_model, &frame_identity.e[0][0]);
 
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                    if (fwd_clustered) clustered_bind_material(cmd, &render, mat, &scene);
+                    if (fwd_clustered) clustered_bind_material(cmd, &render, &render.cl, mat, &scene);
                     else               bind_material(cmd, &render, mat, &scene);
 
                     rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);

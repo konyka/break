@@ -137,6 +137,12 @@ typedef struct {
     u8                storage_image_set;
     u8                sampler_mip_set;
     u8                ubo_set;
+    /* R590: graphics storage-buffer set index (storage_vtx_layout) — the
+     * graphics branch of rhi_cmd_bind_storage_buffer used to hardcode 0,
+     * which only holds for texture-less pipelines (particles). A pipeline
+     * combining textures/texel/storage (clustered-instanced) places the
+     * storage set later; VK_INVALID_SET = no storage set. */
+    u8                storage_set;
     /* Render-pass-format variant support (graphics only). A pipeline must be
      * render-pass-compatible with whatever FBO it is drawn into; since the same
      * logical pipeline (e.g. a post-fx blit) can be bound across targets of
@@ -3730,7 +3736,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     if (desc->uses_texel_buffer) {
         set_layouts[set_count++] = vk->texel_layout;
     }
+    u32 graphics_storage_set = VK_INVALID_SET;
     if (desc->uses_storage) {
+        graphics_storage_set = set_count; /* R590: record the real index */
         set_layouts[set_count++] = vk->storage_vtx_layout;
     }
     /* Append the auxiliary UBO set so rhi_cmd_bind_uniform_buffer can
@@ -3798,6 +3806,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->storage_image_set = (u8)VK_INVALID_SET;
     pd->sampler_mip_set = (u8)VK_INVALID_SET;
     pd->ubo_set = (u8)graphics_ubo_set;
+    pd->storage_set = (u8)graphics_storage_set; /* R590 */
     /* Variant support: depth-only shadow pipelines never need color variants
      * (marked UNDEFINED); color pipelines retain their SPIR-V + desc so a
      * render-pass-format variant can be built lazily at bind time. */
@@ -5447,9 +5456,14 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     if (need_bind) {
         VkPipelineBindPoint bp = cpd->is_compute ?
             VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        /* R590: graphics pipelines place the storage set at their OWN index
+         * (textures/texel shift it past 0); compute keeps the historical 0
+         * (compute layouts wire storage first). */
+        u32 first_set = cpd->is_compute ? 0u :
+            (cpd->storage_set != (u8)VK_INVALID_SET ? (u32)cpd->storage_set : 0u);
         vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
             bp, cpd->layout,
-            0, 1, &ds, 0, NULL);
+            first_set, 1, &ds, 0, NULL);
     }
 }
 
