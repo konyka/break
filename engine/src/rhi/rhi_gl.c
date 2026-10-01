@@ -1949,9 +1949,17 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!td || !dst_rgba8 || td->is_array) return false;
-    if (size < (usize)td->width * td->height * 4u) return false;
+    /* R587: RGBA16F reads back NATIVE half-float bytes (8B/px), aligning the
+     * VK backend's semantics (the R579-(三) divergence — GL always returned
+     * clamped RGBA8 — is retired). HDR values past 1.0 are no longer lost to
+     * the UNORM clamp; tests assert exact f16 on both backends. All other
+     * formats keep the legacy RGBA8 (4B/px) behavior. */
+    bool f16 = (td->gl_internal_format == GL_RGBA16F);
+    usize need = (usize)td->width * td->height * (f16 ? 8u : 4u);
+    if (size < need) return false;
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst_rgba8);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA,
+                  f16 ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, dst_rgba8);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
     return true;

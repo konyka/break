@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R587 GL 回读格式原生化（RGBA16F→f16 8B/px；TDD）— R579(三)/R584 双端回读语义分歧关闭
+
+- **缺口**（R579(三) 发现、R584 落账）：VK `rhi_texture_read_pixels` 回原生格式字节（RGBA16F=8B/px，R445 修正），GL 恒回钳制 RGBA8（4B/px）——HDR 值在 GL 回读被 UNORM 钳断，tv_test_ibl 的 8B 步长在 GL 实为误读（弱断言幸存），R584 的 HDR 断言被迫分端（VK 精确 f16 / GL 弱 LDR）。
+- **对齐**：GL 回读按内部格式分流——`gl_internal_format == GL_RGBA16F` 时 `glGetTexImage(GL_RGBA, GL_HALF_FLOAT)` 回原生半浮点字节（8B/px，与 VK 逐位一致；源自 f16 的值往返精确），其余格式保持既有 RGBA8 行为；尺寸校验同步（w*h*8）。**R579(三) 分歧就此退役**。
+- **影响面（全仓调用点核定）**：TEST 12/12b/7c 升级为双端统一 f16 解码断言（分端 `#ifdef` 与 GL 弱窗口全部删除，`tv_f16_to_f32` 解除 VK-only 守卫）；tv_test_ibl 的 8B 步长在 GL 变为诚实全量数据（弱断言自然成立，无需改动）；motion-blur RT1(SFLOAT 8B 缓冲恰好匹配）、TEST 11、combined-color 读回（注释同步——"top half" 语义变为 f16 流前半幅）、mat_arr 烘焙读回（RGBA8 纹理，不受影响）、rhi_screenshot（独立路径，不受影响）。生产 demo 不调用该 API 于浮点纹理。
+- **TDD（红→绿实证）**：先改测试——三处统一 f16 断言后 GL 如实失败（回读只填半缓冲，调试堆 0xCDCD 解码签名 -23.203 全部出窗；RT0/RT2 既有通道不受影响）；GREEN 后 **GL 全套件 ALL PASSED**（含 7c/golden/TEST 7/12 全数，GL 自此具备精确 HDR 断言能力）；**VK 复验无回归**（TEST 12 ✓/12c ✓/12d ✓/7c ✓，12b 保持既有"末次写入"边界签名 {0,0.098,1.568} 不变）。
+- **回归**：双树非图形 CTest 各 **111/112**（唯一失败=test_platform_win32_runtime 剪贴板外部持锁瞬态，直接重跑 15/15——R577 定性环境问题）；GL deferred/前向 demo 各 120 帧优雅退出；VK deferred demo 复现 R577 基线。
+- **边界**：RG16F 等非 RGBA16F 浮点格式的"原生"语义双端定义不同（VK=原始通道字节 4B/px，GL 若按 RGBA 填充则 8B/px）——本轮刻意只对齐 RGBA16F（既有 RG16F 用户均为弱断言，不受影响）；GL 回读仍不支持 texture array（既有行为）。
+
 ## 本轮更新：R586 pbr_clustered 真实管线修复 + glTF 语义统一（TDD）— R579 终局首要边界推进；新测试钓出两个潜伏引擎缺陷
 
 - **缺口**（R579 终局首要边界）：clustered 管线"从未工作过"——vert push 块 u_proj@128/u_camera_pos@160 与 frag 块 u_camera_pos@128 布局矛盾（R579-C），且 vert 加载越过 128B push 线在本机 NVIDIA 混合驱动的 texel 集管线上必死（R579-J/K）；frag 的 emissive 为 raw 纹理（无 glTF 因子组成，R582 边界），材质 occlusion 纹理前向无通道（R583 边界）。production `active_pipeline` 切换留作后续小决策（避免 golden 大面积重基线），本轮修管线本体并以像素门实证。

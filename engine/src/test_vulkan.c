@@ -59,9 +59,9 @@ static void tv_resample_nearest_rgba8(const u8 *src, u32 sw, u32 sh,
 }
 
 /* R584: half-float decode for HDR RT4 readback assertions. VK returns native
- * RGBA16F bytes (8B/px); GL's readback is always RGBA8 (R579-(三)) so only the
- * VK path decodes — normals/solar ranges only, no inf/nan handling. */
-#ifdef ENGINE_VULKAN
+ * RGBA16F bytes (8B/px); R587 aligns GL readback to the same native-byte
+ * semantics, so BOTH backends decode f16 now — normals/solar ranges only,
+ * no inf/nan handling. */
 static f32 tv_f16_to_f32(u16 h) {
     u32 exp  = (h >> 10) & 0x1Fu;
     u32 mant = h & 0x3FFu;
@@ -70,7 +70,6 @@ static f32 tv_f16_to_f32(u16 h) {
     else          v = ldexpf(1.0f + (f32)mant / 1024.0f, (int)exp - 15);
     return (h & 0x8000u) ? -v : v;
 }
-#endif
 
 /* ---- Golden image regression helpers ------------------------------------
  * The presented frame is read back via rhi_screenshot, box-downsampled to a
@@ -1081,11 +1080,7 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
             frames++;
         }
         if (frames != 2u) { ok = false; break; }
-#ifdef ENGINE_VULKAN
-        const usize stride = 8u;
-#else
-        const usize stride = 4u;
-#endif
+        const usize stride = 8u; /* R587: RGBA16F native readback, both backends */
         const usize bytes = (usize)iw * ih * stride;
         u8 *rb = malloc(bytes);
         if (!rb || !rhi_texture_read_pixels(rs->device, scene.color_tex, rb, bytes)) {
@@ -1093,15 +1088,10 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
             ok = false;
         } else {
             const u8 *p = &rb[((usize)(ih / 2u) * iw + iw / 2u) * stride];
-#ifdef ENGINE_VULKAN
             for (u32 c = 0; c < 3u; c++) {
                 u16 h = (u16)(p[c * 2u] | ((u16)p[c * 2u + 1u] << 8));
                 pix[phase][c] = tv_f16_to_f32(h);
             }
-#else
-            for (u32 c = 0; c < 3u; c++)
-                pix[phase][c] = (f32)p[c] / 255.0f;
-#endif
         }
         free(rb);
     }
@@ -1866,11 +1856,10 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
 
     /* Readback of RT0 (albedo+metallic), RT2 (roughness+ao+emissive flag)
      * and RT4 (emissive rgb, R582 — R584: HDR RGBA16F). RT0/RT2 are raw
-     * UNORM bytes (no lighting, no sRGB on this path); RT4 readback is
-     * backend-split (R579-(三)): VK returns native f16 (8B/px, HDR values
-     * past 1.0 asserted exactly), GL returns clamped RGBA8 (4B/px — the
-     * >1.0 channel is only weakly assertable; TEST 12d is the HDR
-     * authority on GL).
+     * UNORM bytes (no lighting, no sRGB on this path); RT4 reads native f16
+     * on BOTH backends (R587 aligned GL readback to VK's native-byte
+     * semantics — the R579-(三) divergence is retired), so the HDR values
+     * past 1.0 are asserted exactly everywhere.
      * R442 (GL): glGetTexImage row 0 = texture t 0 = window-y 0 (bottom);
      * VK row 0 = image top. The NDC->row formula below lands on the same
      * index under both conventions because GL's viewport is NOT flipped
@@ -1879,11 +1868,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         const usize gbytes = (usize)GBW * GBH * 4u;
-#ifdef ENGINE_VULKAN
-        const usize ebpp = 8u; /* R584: RT4 RGBA16F native readback */
-#else
-        const usize ebpp = 4u; /* GL readback is always RGBA8 (clamped) */
-#endif
+        const usize ebpp = 8u; /* R587: RT4 RGBA16F native readback, both backends */
         const usize ebytes = (usize)GBW * GBH * ebpp;
         u8 *rt0 = malloc(gbytes);
         u8 *rt2 = malloc(gbytes);
@@ -1895,7 +1880,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
             const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
             const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };
             u8  qa[4][4], qr[4][4]; /* per-quad RGBA of RT0 / RT2 */
-            f32 qe[4][3];           /* per-quad emissive rgb (decoded, R584) */
+            f32 qe[4][3];           /* per-quad emissive rgb (f16-decoded, R587) */
             for (u32 k = 0; k < 4; k++) {
                 u32 px = (u32)((qcx[k] + 1.0f) * 0.5f * (f32)GBW);
                 u32 py = (u32)((qcy[k] + 1.0f) * 0.5f * (f32)GBH);
@@ -1905,29 +1890,18 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                 const u8 *p2 = &rt2[((usize)py * GBW + px) * 4u];
                 memcpy(qa[k], p0, 4u);
                 memcpy(qr[k], p2, 4u);
-#ifdef ENGINE_VULKAN
                 const u8 *p4 = &rt4[((usize)py * GBW + px) * 8u];
                 for (u32 c = 0; c < 3u; c++) {
                     u16 h = (u16)(p4[c * 2u] | ((u16)p4[c * 2u + 1u] << 8));
                     qe[k][c] = tv_f16_to_f32(h);
                 }
-#else
-                const u8 *p4 = &rt4[((usize)py * GBW + px) * 4u];
-                for (u32 c = 0; c < 3u; c++)
-                    qe[k][c] = (f32)p4[c] / 255.0f;
-#endif
             }
 
             /* R584 emissive expectations (linear floats): layer1 (2,0.5,0)
-             * x white — r is HDR (VK: exact 2.0; GL: readback clamps to 1);
-             * layer2 (0.5,0.5,1) x gray(128) = (0.251,0.251,0.502) — LDR,
-             * byte-identical expectations on both backends. */
-#ifdef ENGINE_VULKAN
-            bool q0e = qe[0][0] > 1.9f && qe[0][0] < 2.1f;
-#else
-            bool q0e = qe[0][0] > 0.94f;
-#endif
-            q0e = q0e && qe[0][1] > 0.47f && qe[0][1] < 0.53f && qe[0][2] < 0.02f;
+             * x white — r is HDR (exact 2.0 on both backends now); layer2
+             * (0.5,0.5,1) x gray(128) = (0.251,0.251,0.502) — LDR. */
+            bool q0e = qe[0][0] > 1.9f && qe[0][0] < 2.1f &&
+                       qe[0][1] > 0.47f && qe[0][1] < 0.53f && qe[0][2] < 0.02f;
             bool q0 = qa[0][0] > 200 && qa[0][1] < 80 && qa[0][2] < 80 &&
                       qa[0][3] > 124 && qa[0][3] < 132 &&  /* red, metal 1.0x0.5 -> 0.5 */
                       qr[0][0] > 46 && qr[0][0] < 58 &&    /* rough 0.1x2.0 -> 0.2 (52) */
@@ -2207,18 +2181,13 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     }
 
     /* Readback RT0 (albedo+metallic) / RT2 (roughness+ao+flag) / RT4
-     * (emissive, R582 — R584: HDR RGBA16F; VK reads native f16, GL clamped
-     * RGBA8 — the right quad's HDR b is exact on VK only, TEST 12d is the
-     * cross-backend HDR authority); same NDC->row convention as TEST 12
-     * (GL/VK origin flips cancel). */
+     * (emissive, R582 — R584: HDR RGBA16F; R587: native f16 on BOTH
+     * backends, HDR asserted exactly everywhere); same NDC->row convention
+     * as TEST 12 (GL/VK origin flips cancel). */
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         const usize gbytes = (usize)GBW * GBH * 4u;
-#ifdef ENGINE_VULKAN
-        const usize ebpp = 8u; /* R584: RT4 RGBA16F native readback */
-#else
-        const usize ebpp = 4u; /* GL readback is always RGBA8 (clamped) */
-#endif
+        const usize ebpp = 8u; /* R587: RT4 RGBA16F native readback, both backends */
         const usize ebytes = (usize)GBW * GBH * ebpp;
         u8 *rt0 = malloc(gbytes);
         u8 *rt2 = malloc(gbytes);
@@ -2229,7 +2198,7 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
             rhi_texture_read_pixels(rs->device, mrt.color_tex[4], rt4, ebytes)) {
             const f32 sx[2] = { -0.5f, 0.5f }; /* quad centers (NDC) */
             u8  qa[2][4], qr[2][4];
-            f32 qe[2][3]; /* R584: decoded linear emissive */
+            f32 qe[2][3]; /* R587: f16-decoded linear emissive */
             for (u32 k = 0; k < 2; k++) {
                 u32 px = (u32)((sx[k] + 1.0f) * 0.5f * (f32)GBW);
                 u32 py = GBH / 2u;
@@ -2238,17 +2207,11 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                 const u8 *p2 = &rt2[((usize)py * GBW + px) * 4u];
                 memcpy(qa[k], p0, 4u);
                 memcpy(qr[k], p2, 4u);
-#ifdef ENGINE_VULKAN
                 const u8 *p4 = &rt4[((usize)py * GBW + px) * 8u];
                 for (u32 c = 0; c < 3u; c++) {
                     u16 h = (u16)(p4[c * 2u] | ((u16)p4[c * 2u + 1u] << 8));
                     qe[k][c] = tv_f16_to_f32(h);
                 }
-#else
-                const u8 *p4 = &rt4[((usize)py * GBW + px) * 4u];
-                for (u32 c = 0; c < 3u; c++)
-                    qe[k][c] = (f32)p4[c] / 255.0f;
-#endif
             }
             bool alb_same = qa[0][0] > 60 && qa[0][0] < 68 &&
                             qa[1][0] > 60 && qa[1][0] < 68 &&
@@ -2256,11 +2219,7 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                             qa[1][1] > 60 && qa[1][1] < 68 &&
                             qa[0][2] > 60 && qa[0][2] < 68 &&
                             qa[1][2] > 60 && qa[1][2] < 68;
-#ifdef ENGINE_VULKAN
             bool rb_hdr = qe[1][2] > 1.47f && qe[1][2] < 1.67f; /* 0.196x8 = 1.569 */
-#else
-            bool rb_hdr = qe[1][2] > 0.94f; /* GL readback clamps HDR to 1.0 */
-#endif
             bool left_ok  = qa[0][3] > 200 &&                 /* metal 1.0*1 */
                             qr[0][0] > 122 && qr[0][0] < 134 && /* rough x1 (128) */
                             qr[0][1] > 152 && qr[0][1] < 167 && /* R583: mix(1,64/255,0.5) (160) */
@@ -3700,7 +3659,8 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                 u8 *pix = (u8 *)malloc(psz);
                 if (dims_ok && pix && rhi_texture_read_pixels(render.device, cc_out, pix, psz)) {
                     /* 4-byte units over the first w*h*4 bytes: full image for
-                     * RGBA8, top half for RGBA16F — either way plenty of
+                     * RGBA8; for RGBA16F the R587 native 8B/px readback makes
+                     * that span the image's first half — either way plenty of
                      * coverage for a flat-color check. */
                     u32 units = ow * oh;
                     bool varied = false;
