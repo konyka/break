@@ -595,6 +595,10 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             mat->roughness_factor = cm->pbr_metallic_roughness.roughness_factor;
             mat->emissive_strength = cm->has_emissive_strength ?
                 cm->emissive_strength.emissive_strength : 1.0f;
+            /* R582: cgltf zero-defaults emissive_factor (glTF spec default
+             * [0,0,0]) when the JSON omits it. */
+            memcpy(mat->emissive_factor, cm->emissive_factor,
+                   sizeof(mat->emissive_factor));
             /* R581: occlusion strength rides the deferred factor channel as
              * the material AO scalar (cgltf texture_view.scale defaults to
              * 1.0 when the view exists but omits "strength"). */

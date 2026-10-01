@@ -8,9 +8,10 @@
  *
  * Capacity matrix (current RHI):
  *   - The RHI now exposes native MRT (Multiple Render Targets) support.
- *     The G-Buffer is backed by a single RHIMRTFBO with three color
- *     attachments plus a shared depth attachment.  Geometry is rendered
- *     once and all attachments are populated in a single pass.
+ *     The G-Buffer is backed by a single RHIMRTFBO with five color
+ *     attachments plus a shared depth attachment (R582: +RT4 emissive).
+ *     Geometry is rendered once and all attachments are populated in a
+ *     single pass.
  *
  * Strict warnings: this file compiles cleanly under -Wall -Wextra -Werror
  * -pedantic with both GCC and Clang.
@@ -91,24 +92,27 @@ static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
 
 static void defrd_alloc_targets(DeferredSystem *sys, RHIDevice *dev,
                                 u32 width, u32 height) {
-    /* Build a single MRT with four color attachments:
+    /* Build a single MRT with five color attachments:
      *   RT0 = R8G8B8A8_UNORM  (albedo + metallic)
      *   RT1 = R16G16B16A16_SFLOAT (oct-encoded normal)
-     *   RT2 = R8G8B8A8_UNORM  (roughness + ao + emissive)
+     *   RT2 = R8G8B8A8_UNORM  (roughness + ao + emissive flag)
      *   RT3 = R16G16B16A16_SFLOAT (velocity NDC delta)
+     *   RT4 = R8G8B8A8_UNORM  (emissive rgb, LDR — R582)
      * Plus a shared D32F depth attachment. */
-    RHIFormat fmts[4] = {
+    RHIFormat fmts[5] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
         RHI_FORMAT_R16G16B16A16_SFLOAT,
         RHI_FORMAT_R8G8B8A8_UNORM,
         RHI_FORMAT_R16G16B16A16_SFLOAT,
+        RHI_FORMAT_R8G8B8A8_UNORM,
     };
-    sys->_mrt_fbo = rhi_mrt_fbo_create(dev, width, height, fmts, 4);
+    sys->_mrt_fbo = rhi_mrt_fbo_create(dev, width, height, fmts, 5);
 
     sys->gbuf_albedo_metallic = sys->_mrt_fbo.color_tex[0];
     sys->gbuf_normal          = sys->_mrt_fbo.color_tex[1];
     sys->gbuf_roughness_ao    = sys->_mrt_fbo.color_tex[2];
     sys->gbuf_velocity        = sys->_mrt_fbo.color_tex[3];
+    sys->gbuf_emissive        = sys->_mrt_fbo.color_tex[4];
     sys->gbuf_depth           = sys->_mrt_fbo.depth_tex;
     sys->gbuf_fbo             = sys->_mrt_fbo.fb;
     sys->width                = width;
@@ -124,6 +128,7 @@ static void defrd_release_targets(DeferredSystem *sys, RHIDevice *dev) {
     sys->gbuf_normal          = RHI_HANDLE_NULL;
     sys->gbuf_roughness_ao    = RHI_HANDLE_NULL;
     sys->gbuf_velocity        = RHI_HANDLE_NULL;
+    sys->gbuf_emissive        = RHI_HANDLE_NULL;
     sys->gbuf_depth           = RHI_HANDLE_NULL;
     sys->gbuf_fbo             = RHI_HANDLE_NULL;
 }
@@ -216,15 +221,16 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         gbuf_desc.vertex_stride        = 8u * sizeof(f32); /* pos3 + normal3 + uv2 */
         gbuf_desc.uses_textures        = true;
         gbuf_desc.depth_compare_lequal = true;
-        /* R440: this pipeline only ever draws into the 4-attachment G-buffer
+        /* R440: this pipeline only ever draws into the 5-attachment G-buffer
          * MRT above — tell the backend so the pipeline is built against a
          * compatible multi-attachment render pass (formats must match
-         * defrd_alloc_targets). */
-        gbuf_desc.mrt_attachment_count = 4;
+         * defrd_alloc_targets). R582: +RT4 emissive. */
+        gbuf_desc.mrt_attachment_count = 5;
         gbuf_desc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
         gbuf_desc.mrt_formats[1] = RHI_FORMAT_R16G16B16A16_SFLOAT;
         gbuf_desc.mrt_formats[2] = RHI_FORMAT_R8G8B8A8_UNORM;
         gbuf_desc.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        gbuf_desc.mrt_formats[4] = RHI_FORMAT_R8G8B8A8_UNORM;
 
 #ifdef ENGINE_VULKAN
         sys->gbuffer_pipeline = defrd_compile_pipeline(
@@ -312,14 +318,14 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         sys->_linear_sampler = rhi_sampler_create(dev, &lsd);
     }
 
-    /* R580/R581: factor UBOs — double-buffered single factor (base/skinned
-     * pipelines) + fixed-capacity per-layer array (gbuffer_arr path). Each
-     * vec4 packs x metallic, y roughness, z AO strength, w emissive flag.
-     * The initial content is the glTF-neutral (1,1,1,0), so a draw issued
-     * before any factor bind still passes texture values through unchanged
-     * with full AO and no emissive. */
+    /* R580/R581/R582: factor UBOs — double-buffered single factor
+     * (base/skinned pipelines: {u_factors, u_emissive_factor} = 32B) +
+     * fixed-capacity per-layer tables (gbuffer_arr path: u_factor_arr[64]
+     * then u_emissive_arr[64], 8KB). The initial content is glTF-neutral
+     * (1,1,1,0)+(0,0,0,0), so a draw issued before any factor bind passes
+     * texture values through unchanged with full AO and no emissive. */
     {
-        f32 fac_ident[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+        f32 fac_ident[8] = { 1.0f, 1.0f, 1.0f, 0.0f,  0.0f, 0.0f, 0.0f, 0.0f };
         RHIBufferDesc fbd;
         memset(&fbd, 0, sizeof(fbd));
         fbd.usage        = RHI_BUFFER_USAGE_UNIFORM;
@@ -328,18 +334,26 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         for (u32 i = 0; i < 2u; i++)
             sys->_factor_buf[i] = rhi_buffer_create(dev, &fbd);
 
-        f32 arr_ident[DEFERRED_FACTOR_MAX_LAYERS][4];
+        /* arr UBO: 64 factor vec4s then 64 emissive vec4s. */
+        f32 arr_ident[DEFERRED_FACTOR_MAX_LAYERS * 2u][4];
         for (u32 i = 0; i < DEFERRED_FACTOR_MAX_LAYERS; i++) {
             arr_ident[i][0] = 1.0f;
             arr_ident[i][1] = 1.0f;
             arr_ident[i][2] = 1.0f;
             arr_ident[i][3] = 0.0f;
+            arr_ident[DEFERRED_FACTOR_MAX_LAYERS + i][0] = 0.0f;
+            arr_ident[DEFERRED_FACTOR_MAX_LAYERS + i][1] = 0.0f;
+            arr_ident[DEFERRED_FACTOR_MAX_LAYERS + i][2] = 0.0f;
+            arr_ident[DEFERRED_FACTOR_MAX_LAYERS + i][3] = 0.0f;
         }
         fbd.size         = sizeof(arr_ident);
         fbd.initial_data = arr_ident;
         sys->_factor_arr_buf = rhi_buffer_create(dev, &fbd);
-        memcpy(sys->_factor_arr, arr_ident, sizeof(arr_ident));
+        memcpy(sys->_factor_arr, arr_ident, sizeof(sys->_factor_arr));
+        memcpy(sys->_emissive_arr, arr_ident + DEFERRED_FACTOR_MAX_LAYERS,
+               sizeof(sys->_emissive_arr));
         sys->_factor_arr_dirty = false;
+        sys->_emissive_arr_dirty = false;
     }
 
     if (!rhi_handle_valid(sys->gbuffer_pipeline) ||
@@ -350,12 +364,13 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     }
 
     /* R348/R360: MRT/sampler failure must not leave initialized=true (empty GBuffer bind).
-     * Require all 4 color attachments + depth — partial MRT used to publish valid fb only. */
+     * Require all 5 color attachments + depth — partial MRT used to publish valid fb only. */
     if (!rhi_handle_valid(sys->_mrt_fbo.fb) ||
         !rhi_handle_valid(sys->_mrt_fbo.color_tex[0]) ||
         !rhi_handle_valid(sys->_mrt_fbo.color_tex[1]) ||
         !rhi_handle_valid(sys->_mrt_fbo.color_tex[2]) ||
         !rhi_handle_valid(sys->_mrt_fbo.color_tex[3]) ||
+        !rhi_handle_valid(sys->_mrt_fbo.color_tex[4]) ||
         !rhi_handle_valid(sys->_mrt_fbo.depth_tex) ||
         !rhi_handle_valid(sys->_gbuf_sampler) ||
         !rhi_handle_valid(sys->_linear_sampler) ||
@@ -415,6 +430,7 @@ void deferred_destroy(DeferredSystem *sys, RHIDevice *dev) {
         sys->_factor_arr_buf = RHI_HANDLE_NULL;
     }
     sys->_factor_arr_dirty = false;
+    sys->_emissive_arr_dirty = false;
 
     defrd_release_targets(sys, dev);
 
@@ -453,7 +469,7 @@ void deferred_resize(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height)
 void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd) {
     if (!sys || !dev || !sys->initialized) return;
 
-    /* Bind the MRT FBO — all three color attachments + shared depth are
+    /* Bind the MRT FBO — all five color attachments + shared depth are
      * cleared and ready in a single bind. */
     rhi_mrt_fbo_bind(cmd, &sys->_mrt_fbo);
     rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -468,20 +484,23 @@ void deferred_end_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd
     rhi_mrt_fbo_unbind(cmd, sys->width, sys->height);
 }
 
-/* R580/R581: per-material factor bind for the base/skinned G-Buffer
+/* R580/R581/R582: per-material factor bind for the base/skinned G-Buffer
  * pipelines. The update+rebind between draws is the intended per-material
  * pattern: VK records vkCmdUpdateBuffer (with its built-in transfer->shader
  * barrier) plus a fresh aux-set descriptor bind; GL is a glBufferSubData +
  * glBindBufferBase. Double-buffered by frame index so the previous in-flight
- * frame keeps its own copy. Each vec4 packs x metallic, y roughness,
- * z AO strength, w emissive flag. */
+ * frame keeps its own copy. The block packs u_factors (x metallic,
+ * y roughness, z AO strength, w emissive flag) + u_emissive_factor
+ * (rgb emissiveFactor x strength). */
 void deferred_bind_gbuffer_factors(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd,
                                    f32 metallic_factor, f32 roughness_factor,
-                                   f32 ao_strength, f32 emissive_flag) {
+                                   f32 ao_strength, f32 emissive_flag,
+                                   f32 emissive_r, f32 emissive_g, f32 emissive_b) {
     if (!sys || !dev || !cmd || !sys->initialized) return;
     RHIBuffer slot = sys->_factor_buf[rhi_frame_index(dev) & 1u];
     if (!rhi_handle_valid(slot)) return;
-    f32 f[4] = { metallic_factor, roughness_factor, ao_strength, emissive_flag };
+    f32 f[8] = { metallic_factor, roughness_factor, ao_strength, emissive_flag,
+                 emissive_r, emissive_g, emissive_b, 0.0f };
     rhi_cmd_update_buffer(cmd, slot, 0u, f, sizeof(f));
     rhi_cmd_bind_uniform_buffer(cmd, slot, 0u);
 }
@@ -506,13 +525,42 @@ void deferred_set_gbuffer_factor_array(DeferredSystem *sys, const f32 *factors_x
     sys->_factor_arr_dirty = true;
 }
 
+/* R582: per-layer emissive table (rgb emissiveFactor x strength). Layers
+ * beyond count stay black (no emission). */
+void deferred_set_gbuffer_emissive_array(DeferredSystem *sys, const f32 *emissive_xyzw, u32 count) {
+    if (!sys) return;
+    u32 n = count;
+    if (n > DEFERRED_FACTOR_MAX_LAYERS) n = DEFERRED_FACTOR_MAX_LAYERS;
+    for (u32 i = 0; i < DEFERRED_FACTOR_MAX_LAYERS; i++) {
+        f32 x = 0.0f, y = 0.0f, z = 0.0f, w = 0.0f;
+        if (emissive_xyzw && i < n) {
+            x = emissive_xyzw[i * 4u + 0u];
+            y = emissive_xyzw[i * 4u + 1u];
+            z = emissive_xyzw[i * 4u + 2u];
+            w = emissive_xyzw[i * 4u + 3u];
+        }
+        sys->_emissive_arr[i][0] = x;
+        sys->_emissive_arr[i][1] = y;
+        sys->_emissive_arr[i][2] = z;
+        sys->_emissive_arr[i][3] = w;
+    }
+    sys->_emissive_arr_dirty = true;
+}
+
 void deferred_bind_gbuffer_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd) {
     if (!sys || !cmd || !sys->initialized) return;
     if (!rhi_handle_valid(sys->_factor_arr_buf)) return;
+    /* The shader block lays u_factor_arr[64] then u_emissive_arr[64]; the
+     * two tables upload into their offsets of the one 8KB UBO. */
     if (sys->_factor_arr_dirty) {
         rhi_cmd_update_buffer(cmd, sys->_factor_arr_buf, 0u,
                               sys->_factor_arr, sizeof(sys->_factor_arr));
         sys->_factor_arr_dirty = false;
+    }
+    if (sys->_emissive_arr_dirty) {
+        rhi_cmd_update_buffer(cmd, sys->_factor_arr_buf, sizeof(sys->_factor_arr),
+                              sys->_emissive_arr, sizeof(sys->_emissive_arr));
+        sys->_emissive_arr_dirty = false;
     }
     rhi_cmd_bind_uniform_buffer(cmd, sys->_factor_arr_buf, 0u);
 }
@@ -544,48 +592,23 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     u32 psc_n = psc_count;
     if (psc_n > 4u) psc_n = 4u;
 
-#ifdef ENGINE_VULKAN
-    /* R272: pass the screen-space SSAO as the ssao arg (was RHI_HANDLE_NULL).
-     * With a valid handle, bind_material_textures_ibl routes SSAO to binding 5
-     * and point-shadow cubes to binding 10 — the same layout the forward path
-     * uses, matched by deferred_light_vk.frag's u_ssao@5 / cubes@10. */
-    rhi_cmd_bind_material_textures_ibl(cmd,
+    /* R582: one-shot binder for the whole lighting texture set (see rhi.h
+     * for the backend binding maps), including the RT4 emissive target.
+     * Replaces the old split (VK: bind_material_textures_ibl with gbuf_depth
+     * riding the forward emissive slot / GL: 7 sequential per-unit binds).
+     * Point-shadow cubes keep the LINEAR sampler on GL (legacy behavior). */
+    rhi_cmd_bind_deferred_gbuf_textures(cmd,
         sys->gbuf_albedo_metallic,
         sys->gbuf_roughness_ao,
         sys->gbuf_normal,
         sys->gbuf_depth,
+        sys->gbuf_emissive,
         shadow_map,
         ssao_tex,
         sys->_gbuf_sampler,
         brdf_lut, irradiance, prefilter,
-        psc_n > 0u ? psc_tex : NULL, psc_n);
-#else
-    rhi_cmd_bind_texture(cmd, sys->gbuf_albedo_metallic, sys->_gbuf_sampler, 0);
-    rhi_cmd_bind_texture(cmd, sys->gbuf_normal,          sys->_gbuf_sampler, 1);
-    rhi_cmd_bind_texture(cmd, sys->gbuf_roughness_ao,    sys->_gbuf_sampler, 2);
-    rhi_cmd_bind_texture(cmd, sys->gbuf_depth,           sys->_gbuf_sampler, 3);
-    if (rhi_handle_valid(shadow_map)) {
-        rhi_cmd_bind_texture(cmd, shadow_map, sys->_gbuf_sampler, 4);
-    }
-    for (u32 i = 0u; i < psc_n; i++) {
-        if (psc_tex && rhi_handle_valid(psc_tex[i]))
-            rhi_cmd_bind_texture(cmd, psc_tex[i], sys->_linear_sampler, 10u + i);
-    }
-    if (rhi_handle_valid(brdf_lut)) {
-        rhi_cmd_bind_texture(cmd, brdf_lut, sys->_gbuf_sampler, 7);
-    }
-    if (rhi_handle_valid(irradiance)) {
-        rhi_cmd_bind_cubemap(cmd, irradiance, sys->_gbuf_sampler, 8);
-    }
-    if (rhi_handle_valid(prefilter)) {
-        rhi_cmd_bind_cubemap(cmd, prefilter, sys->_gbuf_sampler, 9);
-    }
-    /* R272: screen-space SSAO at unit 14 (u_ssao in deferred_light.frag),
-     * matching the forward path's R213-B binding. */
-    if (rhi_handle_valid(ssao_tex)) {
-        rhi_cmd_bind_texture(cmd, ssao_tex, sys->_gbuf_sampler, 14);
-    }
-#endif
+        psc_n > 0u ? psc_tex : NULL, psc_n,
+        sys->_linear_sampler);
 
     if (rhi_handle_valid(light_data_buf)) {
         rhi_cmd_bind_texel_buffers(cmd, light_data_buf, light_grid_buf);

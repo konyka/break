@@ -15,18 +15,23 @@ layout(location = 0) out vec4 out_albedo_metallic; /* RGBA8 */
 layout(location = 1) out vec4 out_normal;          /* RGBA16F (rg used) */
 layout(location = 2) out vec4 out_roughness_ao;    /* RGBA8 */
 layout(location = 3) out vec4 out_velocity;        /* NDC delta xy */
+layout(location = 4) out vec4 out_emissive;        /* R582: RGBA8 LDR emissive */
 
 layout(binding = 0) uniform sampler2DArray u_albedo;
 layout(binding = 2) uniform sampler2DArray u_metallic_roughness;
+layout(binding = 4) uniform sampler2DArray u_emissive; /* R582 */
 
 /* R580/R581: per-layer glTF material factors — indexed by v_layer, the
- * same layer that selects the albedo/MR array texels. std140 vec4 stride;
- * capacity 64 = MAT_ARR_MAX_LAYERS (main.c). Production fills it from
- * MatArraySet via deferred_set_gbuffer_factor_array(); layer 0 and
- * textureless materials get (1,1,1,0) = passthrough. x/y = metallic/
- * roughness factors (glTF composes multiplicatively — the R93-1 additive
- * defaults are retired); z = AO strength, w = emissive flag. */
-layout(std140, binding = 0) uniform GbufFactorArr { vec4 u_factor_arr[64]; };
+ * same layer that selects the albedo/MR/emissive array texels. std140
+ * vec4 stride; capacity 64 = MAT_ARR_MAX_LAYERS (main.c). Production fills
+ * it from MatArraySet via deferred_set_gbuffer_factor_array() /
+ * deferred_set_gbuffer_emissive_array() (R582); layer 0 and textureless
+ * materials get (1,1,1,0)+(0,0,0,0) = passthrough.
+ * u_factor_arr: x/y = metallic/roughness factors (glTF composes
+ * multiplicatively — the R93-1 additive defaults are retired);
+ * z = AO strength, w = emissive flag.
+ * u_emissive_arr (R582): rgb = emissiveFactor x emissiveStrength. */
+layout(std140, binding = 0) uniform GbufFactorArr { vec4 u_factor_arr[64]; vec4 u_emissive_arr[64]; };
 
 /* Octahedron normal encoding (Cigolle et al.). */
 vec2 octahedron_encode(vec3 n) {
@@ -42,16 +47,19 @@ vec2 octahedron_encode(vec3 n) {
 }
 
 void main() {
-    vec4  fac     = u_factor_arr[min(v_layer, 63u)]; /* R580/R581 */
+    vec4  fac     = u_factor_arr[min(v_layer, 63u)];   /* R580/R581 */
+    vec4  efac    = u_emissive_arr[min(v_layer, 63u)]; /* R582 */
     vec3  base    = texture(u_albedo, vec3(v_texcoord, float(v_layer))).rgb;
     vec2  mr      = texture(u_metallic_roughness, vec3(v_texcoord, float(v_layer))).bg;
     vec2  mrf     = mr * fac.xy; /* R580: glTF factor x texture composition */
     float metal   = clamp(mrf.x, 0.0, 1.0);
     float rough   = clamp(mrf.y, 0.04, 1.0);
     float ao      = clamp(fac.z, 0.0, 1.0); /* R581: per-layer AO strength */
+    vec3  emis    = texture(u_emissive, vec3(v_texcoord, float(v_layer))).rgb * efac.rgb; /* R582 */
 
     out_albedo_metallic = vec4(base, metal);
     out_normal          = vec4(octahedron_encode(v_normal), 0.0, 1.0);
     out_roughness_ao    = vec4(rough, ao, clamp(fac.w, 0.0, 1.0), 1.0);
+    out_emissive        = vec4(clamp(emis, 0.0, 1.0), 1.0); /* R582: LDR */
     out_velocity        = vec4(v_velocity, 0.0, 1.0);
 }

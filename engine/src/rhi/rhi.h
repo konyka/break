@@ -90,8 +90,11 @@ typedef enum {
 
 /* ---- Descriptors ---- */
 /* R440: moved above RHIPipelineDesc so the desc can carry per-pipeline MRT
- * attachment formats (still bounds RHIMRTFBO below). */
-#define RHI_MRT_MAX_ATTACHMENTS 4
+ * attachment formats (still bounds RHIMRTFBO below).
+ * R582: 4 -> 5 for the deferred G-Buffer's emissive target (RT4). All MRT
+ * code paths are macro/count-driven, so existing <=4-attachment users are
+ * unaffected. */
+#define RHI_MRT_MAX_ATTACHMENTS 5
 
 typedef struct {
     RHIBufferUsage usage;
@@ -390,6 +393,24 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     RHITexture shadow, RHITexture ssao, RHISampler sampler,
     RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map,
     const RHITexture *point_shadow_cubes, u32 point_shadow_count);
+
+/* R582: one-shot texture bind for the deferred lighting pass. The deferred
+ * lighting binding maps have diverged from the forward material layout
+ * (G-Buffer targets + shadow + SSAO + IBL + point-shadow cubes + the R582
+ * emissive target), so they get a dedicated binder instead of riding
+ * forward-arg slots.
+ *   VK set 0: 0=albedo_metallic 1=shadow 2=roughness_ao 3=normal 4=depth
+ *             5=ssao 6=brdf 7=irradiance 8=prefilter 9=emissive 10-13=cubes
+ *   GL units: 0=albedo_metallic 1=normal 2=roughness_ao 3=depth 4=shadow
+ *             7=brdf 8=irradiance 9=prefilter 10-13=cubes 14=ssao 15=emissive
+ * Handles that are invalid fall back to the albedo view (VK) / skip (GL,
+ * matching the existing per-unit bind behavior). */
+void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
+    RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,
+    RHITexture depth, RHITexture emissive, RHITexture shadow, RHITexture ssao,
+    RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
+    RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
+    u32 point_shadow_count, RHISampler cube_sampler);
 
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
     RHITexture *textures, int count, RHISampler sampler);

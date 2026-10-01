@@ -30,6 +30,10 @@ typedef struct {
     float      metallic_factor;
     float      roughness_factor;
     float      emissive_strength;
+    /* R582: glTF emissiveFactor (spec default [0,0,0] — an emissive texture
+     * alone emits nothing). Composed with the emissive texture and
+     * emissive_strength into the deferred G-Buffer emissive target. */
+    float      emissive_factor[3];
     /* R581: glTF occlusionTexture.strength (1.0 when the material has no
      * occlusion texture). Consumed by the deferred G-Buffer factor channel
      * as a scalar AO until a per-pixel occlusion texture path exists. */

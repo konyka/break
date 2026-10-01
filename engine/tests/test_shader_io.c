@@ -233,7 +233,10 @@ TEST(ibl_graphics_gate_keeps_cluster_grid_off_stack)
 
 TEST(forward_velocity_uses_single_pass_mrt_contract)
 {
-    char src[131072];
+    /* main.c is ~460 KB — the old 128 KB stack buffer silently truncated it
+     * (the markers below live past the cut). Static, per the line-277
+     * precedent, and sized with headroom. */
+    static char src[524288];
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "FORWARD_MRT"));
     ASSERT_NOT_NULL(strstr(src, "RHI_FORMAT_R16G16_SFLOAT"));

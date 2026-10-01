@@ -6678,6 +6678,121 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
         0, 1, &ds, 0, NULL);
 }
 
+/* R582: one-shot set-0 binder for the deferred lighting pass (see rhi.h for
+ * the binding map). Mirrors the ibl helper's batching/fallback conventions:
+ * invalid handles fall back to the albedo view so descriptors stay valid. */
+void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
+    RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,
+    RHITexture depth, RHITexture emissive, RHITexture shadow, RHITexture ssao,
+    RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
+    RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
+    u32 point_shadow_count, RHISampler cube_sampler) {
+    (void)cmd;
+    (void)cube_sampler; /* GL-only: linear filter for point-shadow cubes;
+                         * VK binds everything with `sampler` (legacy behavior). */
+    VKBackend *vk = vk_cmd_backend(cmd);
+    if (!vk || !vk->current_pipeline_data) return;
+
+    VKTextureData *td_am  = (VKTextureData *)rhi_get_resource_typed(g_current_device, albedo_metallic, RHI_RES_TEXTURE);
+    VKTextureData *td_rao = (VKTextureData *)rhi_get_resource_typed(g_current_device, roughness_ao, RHI_RES_TEXTURE);
+    VKTextureData *td_nrm = (VKTextureData *)rhi_get_resource_typed(g_current_device, normal, RHI_RES_TEXTURE);
+    VKTextureData *td_dep = (VKTextureData *)rhi_get_resource_typed(g_current_device, depth, RHI_RES_TEXTURE);
+    VKTextureData *td_em  = (VKTextureData *)rhi_get_resource_typed(g_current_device, emissive, RHI_RES_TEXTURE);
+    VKTextureData *td_sh  = (VKTextureData *)rhi_get_resource_typed(g_current_device, shadow, RHI_RES_TEXTURE);
+    VKTextureData *td_ss  = (VKTextureData *)rhi_get_resource_typed(g_current_device, ssao, RHI_RES_TEXTURE);
+    VKTextureData *td_br  = (VKTextureData *)rhi_get_resource_typed(g_current_device, brdf_lut, RHI_RES_TEXTURE);
+    VKCubemapData *cd_irr  = (VKCubemapData *)rhi_get_resource_typed(g_current_device, irradiance_map, RHI_RES_CUBEMAP);
+    VKCubemapData *cd_pref = (VKCubemapData *)rhi_get_resource_typed(g_current_device, prefilter_map, RHI_RES_CUBEMAP);
+    VKSamplerData *sd = (VKSamplerData *)rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
+    if (!sd) return;
+
+    VkDescriptorSetAllocateInfo dsai = {0};
+    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool = vk->desc_pools[vk->current_frame];
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &vk->desc_layout;
+    VkDescriptorSet ds;
+    if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
+
+    VkImageView alb_view = td_am ? td_am->view : VK_NULL_HANDLE;
+    VkDescriptorImageInfo img[11];
+    memset(img, 0, sizeof(img));
+    const VkImageView views[11] = {
+        td_am  ? td_am->view  : alb_view, /* 0 albedo_metallic */
+        td_sh  ? td_sh->view  : alb_view, /* 1 shadow          */
+        td_rao ? td_rao->view : alb_view, /* 2 roughness_ao    */
+        td_nrm ? td_nrm->view : alb_view, /* 3 normal          */
+        td_dep ? td_dep->view : alb_view, /* 4 depth           */
+        td_ss  ? td_ss->view  : alb_view, /* 5 ssao            */
+        td_br  ? td_br->view  : alb_view, /* 6 brdf_lut        */
+        cd_irr  ? cd_irr->view  : alb_view, /* 7 irradiance    */
+        cd_pref ? cd_pref->view : alb_view, /* 8 prefilter     */
+        td_em  ? td_em->view  : alb_view, /* 9 emissive (R582) */
+        alb_view,                         /* 10 (cubes below)  */
+    };
+    for (u32 i = 0; i < 11u; i++) {
+        img[i].sampler = sd->sampler;
+        img[i].imageView = views[i];
+        img[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    /* Point-shadow cubes at binding 10 (count 4 under PARTIALLY_BOUND). */
+    u32 pt_n = point_shadow_cubes ? point_shadow_count : 0u;
+    if (pt_n > 4u) pt_n = 4u;
+    u32 pt_write_n = vk->feat_partially_bound ? 4u : 1u;
+    VkDescriptorImageInfo cube_infos[4];
+    memset(cube_infos, 0, sizeof(cube_infos));
+    for (u32 i = 0; i < 4u; i++) {
+        VkImageView v = alb_view;
+        if (i < pt_n) {
+            VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, point_shadow_cubes[i], RHI_RES_TEXTURE);
+            if (td && td->view != VK_NULL_HANDLE) v = td->view;
+        }
+        cube_infos[i].sampler = sd->sampler;
+        cube_infos[i].imageView = v;
+        cube_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    /* Write splitting mirrors the ibl helper: a single VkWriteDescriptorSet
+     * may not span bindings whose VkDescriptorBindingFlags differ — binding 5
+     * carries PARTIALLY_BOUND (when the feature is on) while 0-4 do not. */
+    VkWriteDescriptorSet writes[4];
+    memset(writes, 0, sizeof(writes));
+    /* Bindings 0-4: albedo_metallic, shadow, roughness_ao, normal, depth */
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = ds;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 5;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &img[0];
+    /* Binding 5: ssao */
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = ds;
+    writes[1].dstBinding = 5;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &img[5];
+    /* Bindings 6-9: brdf_lut, irradiance, prefilter, emissive */
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = ds;
+    writes[2].dstBinding = 6;
+    writes[2].descriptorCount = 4;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &img[6];
+    /* Binding 10: point_shadow_cubes */
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = ds;
+    writes[3].dstBinding = 10;
+    writes[3].descriptorCount = pt_write_n;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = cube_infos;
+
+    vkUpdateDescriptorSets(vk->device, 4, writes, 0, NULL);
+    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+        VK_PIPELINE_BIND_POINT_GRAPHICS, vk->current_pipeline_data->layout,
+        0, 1, &ds, 0, NULL);
+}
+
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
     RHITexture *textures, int count, RHISampler sampler) {
     (void)cmd;

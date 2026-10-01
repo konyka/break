@@ -2116,6 +2116,38 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
         rhi_cmd_bind_cubemap(cmd, prefilter_map, sampler, 9u);
 }
 
+/* R582: per-unit bind for the deferred lighting pass (see rhi.h for the
+ * binding map). Mirrors the old deferred.c GL branch exactly, plus the
+ * emissive target at unit 15. */
+void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
+    RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,
+    RHITexture depth, RHITexture emissive, RHITexture shadow, RHITexture ssao,
+    RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
+    RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
+    u32 point_shadow_count, RHISampler cube_sampler) {
+    if (!gl_cmd_device_ready(cmd)) return;
+    gl_bind_tex_unit(0, albedo_metallic, sampler);
+    gl_bind_tex_unit(1, normal, sampler);
+    gl_bind_tex_unit(2, roughness_ao, sampler);
+    gl_bind_tex_unit(3, depth, sampler);
+    if (rhi_handle_valid(shadow))
+        gl_bind_tex_unit(4, shadow, sampler);
+    u32 n = point_shadow_cubes ? point_shadow_count : 0u;
+    if (n > 4u) n = 4u;
+    for (u32 i = 0u; i < n; i++)
+        if (rhi_handle_valid(point_shadow_cubes[i]))
+            gl_bind_tex_unit(10u + i, point_shadow_cubes[i], cube_sampler);
+    if (rhi_handle_valid(brdf_lut))
+        gl_bind_tex_unit(7, brdf_lut, sampler);
+    if (rhi_handle_valid(irradiance_map))
+        rhi_cmd_bind_cubemap(cmd, irradiance_map, sampler, 8u);
+    if (rhi_handle_valid(prefilter_map))
+        rhi_cmd_bind_cubemap(cmd, prefilter_map, sampler, 9u);
+    if (rhi_handle_valid(ssao))
+        gl_bind_tex_unit(14, ssao, sampler);
+    gl_bind_tex_unit(15, emissive, sampler);
+}
+
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd,
     RHITexture *textures, int count, RHISampler sampler) {
     (void)cmd;

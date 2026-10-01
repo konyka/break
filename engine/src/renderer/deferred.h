@@ -15,10 +15,11 @@
  *   RT2  R8G8B8A8_UNORM        r   = roughness,     g = ao,
  *                              b   = emissive flag, a = spare
  *   RT3  R16G16B16A16_SFLOAT   rg  = screen-space velocity (NDC delta)
+ *   RT4  R8G8B8A8_UNORM        rgb = emissive (LDR; R582), a = spare
  *   D    D32_FLOAT             scene depth (re-used for position reconstruction)
  *
  * The G-Buffer is backed by a single MRT (Multiple Render Targets) FBO
- * that writes all three color attachments in one geometry pass, plus a
+ * that writes all five color attachments in one geometry pass, plus a
  * shared depth attachment used for position reconstruction.
  * -------------------------------------------------------------------------- */
 
@@ -41,8 +42,9 @@ typedef struct {
     /* G-Buffer textures (publicly readable, used as inputs by lighting pass). */
     RHITexture gbuf_albedo_metallic;  /* RGBA8: rgb=albedo, a=metallic         */
     RHITexture gbuf_normal;           /* RG16F-equivalent: oct-encoded normal  */
-    RHITexture gbuf_roughness_ao;     /* RGBA8: r=roughness g=ao b=emissive    */
+    RHITexture gbuf_roughness_ao;     /* RGBA8: r=roughness g=ao b=emissive flag */
     RHITexture gbuf_velocity;         /* RG16F-equivalent: NDC motion vector    */
+    RHITexture gbuf_emissive;         /* R582 RGBA8: rgb=emissive (LDR)        */
     RHITexture gbuf_depth;            /* D32F: shared with depth attachment    */
 
     /* Primary G-Buffer MRT handle. */
@@ -87,19 +89,22 @@ typedef struct {
     i32 _loc_gbuf_skinned_proj;
     i32 _loc_gbuf_skinned_prev_mvp;
 
-    /* R580/R581: per-material glTF factor channel for the G-Buffer pass.
-     * The gbuffer vertex stage already fills all 256B of push-constant space
-     * (R204-A), so factors ride the backend's auxiliary uniform buffer
-     * instead (GL binding 0 / VK aux UBO set). Each vec4 entry packs
-     * x = metallic factor, y = roughness factor, z = AO strength,
-     * w = emissive flag. Double-buffered single-factor UBO serves the
-     * base/skinned pipelines (rebound per material); the fixed-capacity
-     * vec4-strided array UBO serves the gbuffer_arr single-execute path
-     * (indexed by v_layer). */
+    /* R580/R581/R582: per-material glTF factor channel for the G-Buffer
+     * pass. The gbuffer vertex stage already fills all 256B of push-constant
+     * space (R204-A), so factors ride the backend's auxiliary uniform buffer
+     * instead (GL binding 0 / VK aux UBO set). The shader block packs
+     * u_factors (x metallic, y roughness, z AO strength, w emissive flag)
+     * and u_emissive_factor (rgb emissiveFactor x strength) — 32B per
+     * entry. Double-buffered single-factor UBO serves the base/skinned
+     * pipelines (rebound per material); the fixed-capacity vec4-strided
+     * array UBO (two 64-entry tables: factors then emissive, 8KB) serves
+     * the gbuffer_arr single-execute path (indexed by v_layer). */
     RHIBuffer _factor_buf[2];
     RHIBuffer _factor_arr_buf;
     f32       _factor_arr[DEFERRED_FACTOR_MAX_LAYERS][4];
+    f32       _emissive_arr[DEFERRED_FACTOR_MAX_LAYERS][4]; /* R582 */
     bool      _factor_arr_dirty;
+    bool      _emissive_arr_dirty;
 
     /* Cached lighting-pass uniform locations (-1 if absent). */
     i32 _loc_inv_vp;
@@ -125,27 +130,32 @@ void deferred_resize(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height)
 void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);
 void deferred_end_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd);
 
-/* R580/R581: G-Buffer material factor channel — the deferred counterpart
- * of R579's forward u_mr_factor (glTF composes texture x factor), extended
- * with per-material AO strength and emissive flag. Each factor set packs
- * x = metallic factor, y = roughness factor, z = AO strength, w = emissive
- * flag. Backed by the auxiliary uniform buffer, never push constants.
+/* R580/R581/R582: G-Buffer material factor channel — the deferred
+ * counterpart of R579's forward u_mr_factor (glTF composes texture x
+ * factor), extended with per-material AO strength, emissive flag and
+ * emissive color. The shader block packs u_factors = (x metallic factor,
+ * y roughness factor, z AO strength, w emissive flag) and
+ * u_emissive_factor = (rgb emissiveFactor x emissiveStrength, w spare).
+ * Backed by the auxiliary uniform buffer, never push constants.
  *
  * deferred_bind_gbuffer_factors(): call after bind_material, before each
- * draw group of the G-Buffer pass; pass (1,1,1,0) for fallback/textureless
- * materials. The single-factor UBO is double-buffered by frame index.
+ * draw group of the G-Buffer pass; pass (1,1,1,0)+(0,0,0) for
+ * fallback/textureless materials. The single-factor UBO is
+ * double-buffered by frame index.
  *
- * deferred_set_gbuffer_factor_array(): CPU-side stage of the per-layer
- * factor table for the texture-array (mega single-execute) path — xyzw
- * quads, count clamped to DEFERRED_FACTOR_MAX_LAYERS, layer 0 = fallback
- * (1,1,1,0).
- * deferred_bind_gbuffer_factor_array(): uploads when dirty, then binds;
+ * deferred_set_gbuffer_factor_array() / deferred_set_gbuffer_emissive_array():
+ * CPU-side stage of the per-layer tables for the texture-array (mega
+ * single-execute) path — xyzw quads, count clamped to
+ * DEFERRED_FACTOR_MAX_LAYERS, layer 0 = fallback (1,1,1,0) / (0,0,0,0).
+ * deferred_bind_gbuffer_factor_array(): uploads dirty tables, then binds;
  * call once before the arr execute. All entries are safe no-ops when the
  * deferred system is uninitialized or the buffers are absent. */
 void deferred_bind_gbuffer_factors(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd,
                                    f32 metallic_factor, f32 roughness_factor,
-                                   f32 ao_strength, f32 emissive_flag);
+                                   f32 ao_strength, f32 emissive_flag,
+                                   f32 emissive_r, f32 emissive_g, f32 emissive_b);
 void deferred_set_gbuffer_factor_array(DeferredSystem *sys, const f32 *factors_xyzw, u32 count);
+void deferred_set_gbuffer_emissive_array(DeferredSystem *sys, const f32 *emissive_xyzw, u32 count);
 void deferred_bind_gbuffer_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd);
 
 /* Deferred lighting pass: full-screen triangle that decodes the G-Buffer

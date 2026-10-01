@@ -16,6 +16,9 @@ layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 /* R272: screen-space SSAO at unit 14 (matches forward pbr_clustered.frag R213-B;
  * deferred gbuffer uses 0-4, IBL 7-9, point-shadow cubes 10-13, so 14 is free). */
 layout(binding = 14) uniform sampler2D u_ssao;
+/* R582: G-Buffer emissive target (RT4) at unit 15 — the only free unit left
+ * in the GL binding map; VK keeps it at set=0 binding=9 (see _vk variant). */
+layout(binding = 15) uniform sampler2D u_gbuf_emissive;
 layout(binding = 5) uniform samplerBuffer u_light_data;
 layout(binding = 6) uniform samplerBuffer u_light_grid;
 #ifdef HAS_IBL
@@ -264,6 +267,10 @@ void main() {
 #endif
 
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
+
+    /* R582: emissive is additive AFTER the AO-scaled ambient/IBL term and
+     * goes through the same Reinhard tonemap as lit color. */
+    color += texture(u_gbuf_emissive, uv).rgb;
 
     /* R84-3: shadow_test doesn't depend on loop variable */
     float dir_shadow = shadow_test(wpos);

@@ -17,6 +17,10 @@ layout(binding = 4) uniform sampler2D u_gbuf_depth;
  * valid ssao handle to binding 5 and the cubes to binding 10 (the exact path the
  * forward draws exercise every frame). */
 layout(set = 0, binding = 5) uniform sampler2D u_ssao;
+/* R582: G-Buffer emissive target (RT4). Binding 9 was the last free slot in
+ * the set-0 map (0-5 gbuf/shadow/ssao, 6-8 IBL, 10 cubes) — bound by
+ * rhi_cmd_bind_deferred_gbuf_textures. GL keeps it at unit 15. */
+layout(set = 0, binding = 9) uniform sampler2D u_gbuf_emissive;
 layout(set = 0, binding = 10) uniform samplerCube u_point_shadow_cubes[4];
 layout(set = 1, binding = 0) uniform samplerBuffer u_light_data;
 layout(set = 1, binding = 1) uniform samplerBuffer u_light_grid;
@@ -260,6 +264,10 @@ void main() {
 #endif
 
     vec3 color = (diffuse_ibl + specular_ibl) * ao;
+
+    /* R582: emissive is additive AFTER the AO-scaled ambient/IBL term and
+     * goes through the same Reinhard tonemap as lit color. */
+    color += texture(u_gbuf_emissive, uv).rgb;
 
     /* R84-3: shadow_test doesn't depend on loop variable */
     float dir_shadow = shadow_test(wpos);

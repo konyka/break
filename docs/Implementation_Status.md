@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R582 延迟路径 emissive 颜色通道（TDD）— R581 遗留边界关闭
+
+- **缺口**（R581 遗留）：RT2.b 的 emissive 标记已通但 deferred_light 无消费方——G-Buffer 无 emissive 颜色载体，glTF emissive 在延迟路径完全不可见。
+- **通道设计**：新增 **RT4**（R8G8B8A8_UNORM，rgb=LDR emissive）——RHI MRT 上限 4→5（全代码宏/计数驱动，既有 ≤4 附件用户不受影响）。组成语义 glTF 完整链：`Material` 新增 `emissive_factor[3]`（cgltf 解析，规范默认 [0,0,0]），**emissive = 纹理.rgb × factor.rgb × strength**，写入 RT4；无纹理材质在 gbuffer 通道替换白色 1x1 回退（factor-only 材质按规范发光；共享的黑色 fallback_emissive 不动，前向路径不受影响）。RT2.b 标记语义精化="有发射"（任一 rgb 分量非零，CPU 计算），替代 R581 的"持有纹理"。HDR（strength 推过 1.0 的 LDR 截断）记为边界。
+- **UBO 扩展**：因子块 `{vec4 u_factors; vec4 u_emissive_factor;}`（base/skinned 32B，std140）；arr 块 `{u_factor_arr[64]; u_emissive_arr[64];}`（8KB 单缓冲，两表各自 dirty 标记分段上传）。deferred API：`deferred_bind_gbuffer_factors(m,r,ao,flag,er,eg,eb)`、新增 `deferred_set_gbuffer_emissive_array`。
+- **光照消费**：`deferred_light{,_vk}.frag` 新增 `u_gbuf_emissive`（GL 单元 15 / VK set0 binding9——双端绑定图唯一的共同空位），`color += emissive` 在 AO 缩放环境项之后、Reinhard tonemap 之前。新增专用一次性 binder `rhi_cmd_bind_deferred_gbuf_textures`（rhi.h/rhi_vk.c/rhi_gl.c），取代旧的 VK 借道 ibl helper（gbuf_depth 骑 forward emissive 槽）+ GL 七次逐单元绑定——deferred.c 的 #ifdef 双分支就此合并；GL 点影 cubemap 保留 LINEAR 采样器（旧行为），VK 写拆分镜像 ibl helper（binding 5 的 PARTIALLY_BOUND 旗标不允许跨写）。
+- **生产接线**：`gbuffer_bind_material` 计算 rgb×strength+flag 并做白色回退替换；`MatArraySet` 增第三张纹理数组（emissive_array，无纹理层白色填充）+ 每层 emissive 表，去重键扩为（三纹理+七因子），bake 双表移交 deferred，arr execute 绑定位 4 换挂 emissive_array；三处销毁点同步。
+- **TDD（红→绿实证）**：先改测试——TEST 12（arr）MRT/管线升 5 附件，第三张 emissive 数组 + 第二因子表（layer2 灰纹理×因子判别纹理乘法），断言 RT4 逐层字节；TEST 12b（base）emissive 纹理 {200,100,50} + 双 vec4 UBO 逐绘制重绑，断言 RT4 L{200,50,0}/R{0,25,50}；**新增 TEST 12c 端到端**——经 deferred.c 真系统：黑 albedo + 白 emissive 纹理×因子 (1,0.5,0)，零灯+黑 IBL，光照输出经 shader 内 Reinhard 锚定 {128,85,0}，对照相（零因子）必须全黑。RED 双树如实失败（GL/VK：RT4 全 0、12c A 相 {0,0,0}；R581 既有通道不受影响）。GREEN：**GL 全套件 ALL PASSED（12/12b/12c）**；**VK TEST 12 ✓、TEST 12c ✓**（12c 双相位设计绕开逐绘制重绑，在本机 AMD VK 上完整通过）；VK 12b 仍为本机既有"末次写入"签名（stash A/B 证于 R581），其 emissive 分量 {0,25,50} 精确=右因子——新通道在 VK 流通，唯逐绘制隔离不可本机验证（GREEN 权威=GL 本机+CI lavapipe）。
+- **排障沉淀**（入库注释各载其位）：① VK 12c 初败=测试 quad 被 `deferred_begin_gbuffer` 的**翻转视口**剔除（R442 注释早警：rhi_cmd_set_viewport 为翻转变体）——改为直绑 MRT 用非翻转视口，与 TEST 12/12b 同约；② VK offscreen 默认 B8G8R8A8，回读原生字节致 RGB/BGR 端异——12c 用 `rhi_offscreen_fbo_create_fmt(R8G8B8A8)` 统一；③ `rhi_cmd_transition_depth_to_read` 将 tracked-UNDEFINED 映射为 ATTACHMENT-oldLayout，仅对**已渲染过**的 FBO 深度成立——从未渲染的阴影图不能走此路径（12c 零灯不需要阴影图，binder 回退 albedo view 合规）；④ test_shader_io 的 `forward_velocity_uses_single_pass_mrt_contract` 以 128KB 栈缓冲读 main.c（~460KB）静默截断致标记丢失——按既有 256KB static 先例扩为 512KB static。
+- **回归**：双树非图形 CTest 各 **111/112**（唯一失败=test_platform_win32_runtime 剪贴板子项的外部持锁，R577 定性的环境瞬态，与代码无关）；GL deferred/前向 demo 各 120 帧优雅退出 0 FATAL；VK deferred demo 复现 R577 基线（deferred 初始化成功、arr execute 录制 2 帧后设备丢失，validation 仅 destroy 级联 8 条，新 5 附件 MRT/新 binder/新 shader 零绘制期错误）。
+- **边界**：HDR emissive（strength>1）在 RT4 LDR 截断（升 R16F 需解决双端回读格式分歧，独立后续）；occlusion 纹理逐像素采样仍无（R581 边界）；前向路径无 emissive 通道（clustered 管线接入生产仍是 R579 终局边界；其休眠的 raw-texture emissive 与本通道的 glTF 语义不同，接入时需统一）；`emissive_factor` 不入 BSCN 序列化（f[8] 已满，同 R581）。
+
 ## 本轮更新：R581 延迟路径 G-Buffer 的 AO/emissive 因子通道（TDD）— R580 遗留边界关闭
 
 - **缺口**（R580 遗留）：gbuffer 五 shader 的 `u_ao_default=1.0`/`u_emissive_flag=0.0` 为编译期常量——RT2.g（材质 AO）与 RT2.b（emissive 标记）在延迟路径恒为默认值，无引擎通道。
