@@ -3796,8 +3796,14 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->uses_texel_buffer = desc->uses_texel_buffer;
     pd->is_instanced = desc->is_instanced;
     pd->uses_storage = desc->uses_storage;
+    /* R591: && !uses_storage — a skinned_vertex pipeline WITH a storage set
+     * is the clustered-skinned variant (joint matrices ride the vertex SSBO
+     * there); it must fall through to the clustered uniform table
+     * (uses_texel_buffer && !is_instanced), not the G-Buffer table. The
+     * existing skinned forward/G-Buffer pipelines never set uses_storage. */
     pd->skinned_gbuffer_layout =
-        desc->skinned_vertex && desc->uses_texel_buffer && !desc->is_instanced;
+        desc->skinned_vertex && desc->uses_texel_buffer && !desc->is_instanced &&
+        !desc->uses_storage;
     pd->terrain_layout = desc->terrain_layout;
     pd->water_layout = desc->water_layout;
     pd->combined_aa_layout = desc->combined_aa_layout;

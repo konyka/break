@@ -1,5 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R591 clustered skinned 变体（TDD）— 蒙皮绘制并入前向 clustered 模式，blinn 回退面仅剩材质数组；R590 CI 9/9 全绿补记
+
+- **缺口**（R590 落账边界"clustered 仍无 skinned/材质数组变体"）：`BREAK_FORWARD_CLUSTERED` 下蒙皮网格与程序化手臂仍走 blinn-skinned。
+- **方案**（R590 同型，调研定论）：关节矩阵改走**顶点阶段 SSBO**——texel 集 2 绑定位已被 light_data/light_grid 占满、GL 单元耗尽，关节 texel 缓冲无处可放；**frag 原样复用** pbr_clustered。新管线集序（VK）纹理@0/texel@1/storage@2/ubo@3（R590 的 `storage_set` 修复覆盖）。新资产 `pbr_clustered_skin{,_vk}.vert`（64B 五属性蒙皮顶点契约；SSBO `ClusterJoints` 沿用 blinn skinned 的当前/前一帧姿态对半布局 [0,512)/[512,1024) vec4 槽，FORWARD_MRT prev_skin 自姿态后半合成）；`skeleton.c` 关节缓冲 usage 增 STORAGE（blinn 路径 texel 视图不受影响）。
+- **分类收窄（rhi_vk）**：变体管线 `skinned_vertex=true` + `uses_texel_buffer` + `!is_instanced` 恰好命中 R560 的 `skinned_gbuffer_layout` 公式——会错配到 G-Buffer uniform 表（clustered 名字全 -1）。修复=公式加 `&& !uses_storage`：既有前向/延迟蒙皮管线从不设 uses_storage（行为不变），变体落入 clustered 表（`uses_texel_buffer && !is_instanced`）。
+- **接线**：`ClusteredLocs` 第三实例 `rs->csk`；管线创建复用共享 frag（同一块内三管线：静态/实例/蒙皮）；skinned 绘制块按 `sk_clustered` 分流——发射器出帧状态 + **关节 SSBO 循环外单次绑定**（R590 UPDATE_AFTER_BIND 教训）+ 逐网格 `clustered_bind_material`；销毁点同步。
+- **TDD（红→绿实证）**：契约测试 `forward_clustered_skinned_variant_wiring`（管线/关节 SSBO 绑定调用/缓冲 usage/分类收窄锚/双端 vert 标记）如实红；GREEN 后过。真机：**VK 双配置 120 帧 validation 0 零故障**（程序化手臂经变体绘制）,GL 双配置 120 帧优雅退出。
+- **回归**：双树非图形 CTest 各 111/112——唯一失败 `test_platform_win32_runtime` 剪贴板子项，**系统级独立探针实证外部持锁**（OpenClipboard 系统范围 err=5、持有者无窗口——R577 同型瞬态，本 diff 不涉平台层）；GL 全套件 ALL PASSED;VK 套件基线（7d/12/12c/12d 全过，12b+golden 漂移两项本机既有残余）；默认 demo 矩阵——GL 前向/延迟 120 帧 rc=0,VK 前向 120 帧/延迟 240 帧 rc=0 validation 0。
+- **边界**：clustered 仍无材质数组变体（arr 单 execute 路径在启用时仍走 blinn arr——需数组纹理+因子表通道，独立后续）;skinned 变体的 prev_skin 语义与 blinn 完全一致（同一姿态对半缓冲）;R591 分类收窄对不设 uses_storage 的既有蒙皮管线零影响（公式仅增条件）。
+- **R590 CI 补记**：首轮 8/9(Linux Wayland + Vulkan 在 apt 装包阶段超时被取消=runner flake，未达构建）；空提交重触发后 **9/9 全绿**。
+
 ## 本轮更新：R590 clustered instanced 变体（TDD）— ECS 实体绘制并入前向 clustered 模式；附带修复 rhi_vk 存储集硬编码 + UPDATE_AFTER_BIND 误用
 
 - **缺口**（R589 落账边界"clustered 无 instanced/skinned/材质数组变体，对应绘制在启用时仍走 blinn 族"）：`BREAK_FORWARD_CLUSTERED` 下 ECS 实体（instanced 绘制）仍走 blinn-instanced，是启用时画面内最大的 blinn 回退面。

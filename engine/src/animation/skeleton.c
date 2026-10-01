@@ -31,7 +31,10 @@ void skeleton_set_joints(Skeleton *sk, u32 count, const u32 *parents, const Mat4
 
     if (!rhi_handle_valid(sk->joint_buf[0])) {
         RHIBufferDesc desc = {0};
-        desc.usage = RHI_BUFFER_USAGE_TEXEL;
+        /* R591: STORAGE added — the clustered-skinned variant binds the same
+         * dual-slot joint buffer as a vertex SSBO (blinn path keeps the
+         * texel view; lighting.c grid buffers use the same combo). */
+        desc.usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE;
         desc.size = 2u * SKELETON_MAX_JOINTS * sizeof(Mat4);
         sk->joint_buf[0] = rhi_buffer_create(sk->device, &desc);
         sk->joint_buf[1] = rhi_buffer_create(sk->device, &desc);

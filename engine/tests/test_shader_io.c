@@ -651,6 +651,45 @@ TEST(forward_clustered_instanced_variant_wiring)
     ASSERT_NOT_NULL(strstr(src, "storage_set"));
 }
 
+/* R591: clustered SKINNED variant — skinned draws join the opt-in clustered
+ * forward mode. Joint matrices ride a vertex SSBO (same R590 rationale:
+ * texel set capped at 2, GL units exhausted); the clustered frag is reused
+ * unchanged. The skinned_gbuffer_layout classification must NOT claim the
+ * variant (it carries uses_storage for the joint SSBO — the formula is
+ * narrowed so clustered mapping applies). */
+TEST(forward_clustered_skinned_variant_wiring)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "clustered_skin_pipeline"));
+    ASSERT_NOT_NULL(strstr(src, "pbr_clustered_skin_vk.vert"));
+    ASSERT_NOT_NULL(strstr(src, "rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot"));
+
+    /* Joint buffer gains STORAGE usage for the vertex SSBO bind. */
+    ASSERT_TRUE(read_engine_source("animation/skeleton.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE"));
+
+    /* R591 classification narrowing: a skinned_vertex pipeline WITH
+     * uses_storage is the clustered-skinned variant — it must fall through
+     * to the clustered uniform table, not the G-Buffer table. */
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "!desc->uses_storage"));
+
+    /* VK vert: joints SSBO at set=2, frame UBO at set=3, joint attributes. */
+    char vsh[8192];
+    ASSERT_TRUE(read_shader_source("pbr_clustered_skin_vk.vert", vsh, sizeof(vsh)));
+    ASSERT_NOT_NULL(strstr(vsh, "readonly buffer"));
+    ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
+    ASSERT_NOT_NULL(strstr(vsh, "set = 3, binding = 0"));
+    ASSERT_NOT_NULL(strstr(vsh, "aJoints"));
+    ASSERT_NOT_NULL(strstr(vsh, "v_velocity"));
+
+    /* GL vert: plain uniforms + joints SSBO at storage binding 0. */
+    ASSERT_TRUE(read_shader_source("pbr_clustered_skin.vert", vsh, sizeof(vsh)));
+    ASSERT_NOT_NULL(strstr(vsh, "readonly buffer"));
+    ASSERT_NOT_NULL(strstr(vsh, "aJoints"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -680,4 +719,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(static_mega_geometry_contract_is_documented_and_unchanged);
     RUN_TEST(forward_clustered_opt_in_production_wiring);
     RUN_TEST(forward_clustered_instanced_variant_wiring);
+    RUN_TEST(forward_clustered_skinned_variant_wiring);
 TEST_MAIN_END()

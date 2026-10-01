@@ -272,6 +272,10 @@ typedef struct {
      * prefix (contract markers + R589 comments stay accurate). */
     ClusteredLocs cl, cli;
     RHIPipeline   clustered_inst_pipeline;
+    /* R591: skinned variant (joints ride a vertex SSBO; skinned_vertex +
+     * uses_storage, rhi_vk classification narrowed to the clustered table). */
+    ClusteredLocs csk;
+    RHIPipeline   clustered_skin_pipeline;
     /* R589: shared clustered frame UBO {prev_vp, prev_model, proj} — VK set
      * index differs per variant (static: set=2, instanced: set=3), but the
      * bind call resolves the pipeline's own ubo_set. */
@@ -450,18 +454,20 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_camera_pos");
     rs->loc_albedo      = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_albedo");
 
-    /* Clustered lighting pipelines (static + R590 instanced variant) */
+    /* Clustered lighting pipelines (static + R590 instanced + R591 skinned) */
     {
-        usize cvl = 0, cfl = 0, civl = 0;
-        char *cv = NULL, *cf = NULL, *civ = NULL;
+        usize cvl = 0, cfl = 0, civl = 0, csvl = 0;
+        char *cv = NULL, *cf = NULL, *civ = NULL, *csv = NULL;
 #ifdef ENGINE_VULKAN
         cv = shader_read_file("shaders/pbr_clustered_vk.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered_vk.frag", &cfl);
         civ = shader_read_file("shaders/pbr_clustered_inst_vk.vert", &civl);
+        csv = shader_read_file("shaders/pbr_clustered_skin_vk.vert", &csvl);
 #else
         cv = shader_read_file("shaders/pbr_clustered.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered.frag", &cfl);
         civ = shader_read_file("shaders/pbr_clustered_inst.vert", &civl);
+        csv = shader_read_file("shaders/pbr_clustered_skin.vert", &csvl);
 #endif
         if (cv && cf) {
             /* Enable the split-sum IBL path and point-light shadows for the
@@ -495,7 +501,16 @@ static bool render_init(RenderState *rs, Platform *platform) {
                                          civ_mrt ? civm_len : civl, false);
                 free(civ_mrt);
             }
-            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ);
+            /* R591: skinned variant vert (joints ride a vertex SSBO). */
+            RHIShader csvs = RHI_HANDLE_NULL;
+            if (csv) {
+                usize csvm_len = 0;
+                char *csv_mrt = shader_inject_define(csv, csvl, "FORWARD_MRT", &csvm_len);
+                csvs = rhi_shader_create(rs->device, csv_mrt ? csv_mrt : csv,
+                                         csv_mrt ? csvm_len : csvl, false);
+                free(csv_mrt);
+            }
+            free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ); free(csv);
             if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
                 RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
                                        .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
@@ -512,11 +527,22 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     cpd.uses_storage = true;
                     rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
                 }
+                if (rhi_handle_valid(csvs)) {
+                    /* R591: skinned variant — 64B joint vertex contract via
+                     * .skinned_vertex; uses_storage keeps it off the
+                     * skinned_gbuffer classification (R591 rhi_vk narrowing)
+                     * so the clustered uniform table applies. */
+                    cpd.vert = csvs;
+                    cpd.uses_storage = true;
+                    cpd.skinned_vertex = true;
+                    rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                }
                 rhi_shader_destroy(rs->device, cvs);
                 rhi_shader_destroy(rs->device, cfs);
             }
             if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
-        } else { free(cv); free(cf); free(civ); }
+            if (rhi_handle_valid(csvs)) rhi_shader_destroy(rs->device, csvs);
+        } else { free(cv); free(cf); free(civ); free(csv); }
     }
     if (rhi_handle_valid(rs->clustered_pipeline)) {
         clustered_query_locs(rs, rs->clustered_pipeline, &rs->cl);
@@ -534,6 +560,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
     if (rhi_handle_valid(rs->clustered_inst_pipeline))
         clustered_query_locs(rs, rs->clustered_inst_pipeline, &rs->cli);
+    if (rhi_handle_valid(rs->clustered_skin_pipeline))
+        clustered_query_locs(rs, rs->clustered_skin_pipeline, &rs->csk);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -943,6 +971,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->instance_buf[1])) rhi_buffer_destroy(rs->device, rs->instance_buf[1]);
     if (rhi_handle_valid(rs->clustered_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_pipeline);
     if (rhi_handle_valid(rs->clustered_inst_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_inst_pipeline);
+    if (rhi_handle_valid(rs->clustered_skin_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_skin_pipeline);
     if (rhi_handle_valid(rs->clustered_proj_ubo)) rhi_buffer_destroy(rs->device, rs->clustered_proj_ubo);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
@@ -6284,6 +6313,26 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         if (rhi_handle_valid(render.skinned_pipeline)) {
 
+            /* R591: clustered mode swaps the skinned draws to the
+             * clustered-skinned variant (joint SSBO + shared clustered
+             * frag); blinn skinned uniform writes are skipped — the frame
+             * emitter covers view/frame state. */
+            const bool sk_clustered = fwd_clustered &&
+                                      rhi_handle_valid(render.clustered_skin_pipeline);
+            if (sk_clustered) {
+                Vec3 fog_sk = vec3(bg_r, bg_g, bg_b);
+                forward_clustered_bind_frame(cmd, &render,
+                                             render.clustered_skin_pipeline, &render.csk,
+                                             &lights, &view, &proj, &prev_view_proj,
+                                             &camera.position, &ambient_col,
+                                             camera.near_plane, camera.far_plane,
+                                             fog_enabled, fog_near, fog_far,
+                                             &fog_sk, underwater, rw, rh, shadow_bias);
+                /* Joints ride the vertex SSBO (R591) — bound ONCE here (the
+                 * R590 UPDATE_AFTER_BIND lesson: never re-update a consumed
+                 * descriptor set between draws). */
+                rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot(&render.skeleton), 0u);
+            } else {
             rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_skinned_pipeline) ? render.wire_skinned_pipeline : render.skinned_pipeline);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_view, &view.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_proj, &proj.e[0][0]);
@@ -6292,13 +6341,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
             rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_camera_pos,
                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            }
 
             if (scene.skinned_mesh_count > 0) {
                 for (u32 si = 0; si < scene.skinned_mesh_count; si++) {
                     SkinnedMesh *sm = &scene.skinned_meshes[si];
                     Material *mat = (sm->material_idx < scene.material_count) ? &scene.materials[sm->material_idx] : NULL;
+                    if (sk_clustered) {
+                        clustered_bind_material(cmd, &render, &render.csk, mat, &scene);
+                    } else {
                     bind_material(cmd, &render, mat, &scene);
                     rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
+                    }
                     rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
                     if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
                         rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
@@ -6312,8 +6366,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 /* R445: the procedural arm geometry references joints 0-3 —
                  * skip it if a glTF with fewer joints overrode the skeleton
                  * (joint index 3 would read past the uploaded pose set). */
+                if (sk_clustered) {
+                    clustered_bind_material(cmd, &render, &render.csk, NULL, &scene);
+                } else {
                 bind_material(cmd, &render, NULL, &scene);
                 rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
+                }
                 rhi_cmd_bind_vertex_buffer(cmd, render.skinned_vbo, 0);
                 rhi_cmd_bind_index_buffer(cmd, render.skinned_ibo, 0, true);
                 rhi_cmd_draw_indexed(cmd, render.skinned_index_count, 1);
