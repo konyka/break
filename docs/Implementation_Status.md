@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R601 R32F/BGRA8 回读语义对齐（TDD）— 颜色格式回读全家族原生字节化；R593 边界清零（D32 为文档化边界）
+
+- **缺口**（R593 落账"R8 等其余非 f16 格式回读语义随需再对齐")：枚举全部六格式定位两类残余分歧——**R32_FLOAT**:VK 原生 f32 4B/px vs GL RGBA8 钳制（同字节数静默不同语义，Hi-Z 金字塔纹理所用，GPU 写从不回读=潜在雷）;**B8G8R8A8_UNORM**：字节序分歧——GL 以 GL_BGRA 上传进 RGBA8 存储、回读给 RGBA 序（R/B 通道交换）,VK 原生 B,G,R,A 流（默认离屏 FBO 与 MSAA 测试 FBO 所用）。
+- **方案**:`GLTextureData` 增 `rhi_format` 字段（GL_RGBA8 内部格式混淆 RGBA/BGRA，回读时无法区分）,create/array/cubemap/offscreen FBO 颜色+深度/MRT 六处填充；回读增两分支——R32F(GL_RED/GL_FLOAT)、BGRA(GL_BGRA/UNSIGNED_BYTE，驱动回绕回格式契约序）;`rhi.h` 回读字节语义注释全家族化（RGBA8/BGRA8/RG16F/RGBA16F/R32F 逐格式 + D32 无定义语义）。
+- **TDD（红→绿实证）**:R593 的 roundtrip 门扩 R32F(0.25/-1.5 位精确）与 BGRA8({10,20,30,40} 通道值可辨序）；门名改 TEXTURE NATIVE-BYTE ROUNDTRIP。RED 实证——R32F 回读垃圾（钳制字节重解读）、BGRA8 恰 {30,20,10,40}(R/B 交换）;GREEN 后双端过（VK 原生语义本就正确，门在其上首验）。GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）。
+- **回归**：默认 demo 双端 120 帧 rc=0、VK validation 0;CTest GL **114/114**（剪贴板锁再释）、VK 113/114（唯一失败=test_vulkan 同基线）;build-gate 全量构建过（曾现 test_myui_break_pal 链接瞬态，干净树复建即愈，与 diff 无关）。
+- **边界**:D32 深度回读仍无定义语义（双端皆然，文档化——深度走采样非回读）;R32F/BGRA8 回读仍无活调用方（潜在雷排雷，语义自此有门）;`rhi_texture_upload_mip` 维持 RGBA8 流式（R593 起沿约）。
+
 ## 本轮更新：R600 套件门健康全审计（R599 方法论横向推广）— 负结果：除 7b(R599 已修）外无同类真空/弱场景，全门条件化非空转
 
 - **方法与范围**：枚举 `test_vulkan.c` 全部 16 个 `tv_test_*`/`tv_run_*` 门函数 + VK 主流内联门（stress/draw/inst/fbo/msaa/compute/unified)，按 R599 教训逐一核断言体——`return true`/`(void)pass`/无条件 `pass = true` 模式扫描 + 逐门人工判读断言是否真消费其声称的通道。

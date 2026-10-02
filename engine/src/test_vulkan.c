@@ -606,12 +606,12 @@ cleanup:
     return pass;
 }
 
-/* R593: f16-format textures move NATIVE half-float bytes in both directions
- * on both backends — upload (.data) and readback (rhi_texture_read_pixels).
- * VK always moved raw bytes; GL pre-R593 expected f32 upload bytes (driver-
- * converted) and read RG16F back as clamped RGBA8 — the same 4B/px with
- * silently different semantics (the R587 boundary). Exact-representable
- * values only, so an aligned backend round-trips bit-exact. */
+/* R593/R601: texture upload (.data) and readback (rhi_texture_read_pixels)
+ * move NATIVE format bytes in both directions on both backends. VK always
+ * moved raw bytes; GL pre-R593 expected f32 upload for f16 formats and read
+ * RG16F back as clamped RGBA8 (R593 fixed); pre-R601 GL read R32F back as
+ * clamped RGBA8 and BGRA8 in RGBA channel order. Exact-representable values
+ * only, so an aligned backend round-trips bit-exact. */
 static bool tv_test_f16_roundtrip(RHIDevice *dev) {
     bool pass = true;
 
@@ -670,6 +670,54 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev) {
         pass = false;
     }
     if (rhi_handle_valid(rgba)) rhi_texture_destroy(dev, rgba);
+
+    /* R601: the remaining color formats join the native-byte semantics.
+     * R32_FLOAT 2x1: VK readback native f32 (4B/px); GL pre-R601 fell into
+     * the RGBA8 clamp at the same byte count. Values exact in f32. */
+    const f32 r32_src[2] = {0.25f, -1.5f};
+    RHITextureDesc r32_desc = {
+        .width = 2, .height = 1, .format = RHI_FORMAT_R32_FLOAT,
+        .mip_levels = 1, .data = r32_src,
+    };
+    RHITexture r32 = rhi_texture_create(dev, &r32_desc);
+    f32 r32_rb[2] = {999.0f, 999.0f};
+    if (!rhi_handle_valid(r32)) {
+        LOG_ERROR("FAIL: R32F roundtrip texture create failed");
+        pass = false;
+    } else if (!rhi_texture_read_pixels(dev, r32, r32_rb, sizeof(r32_rb))) {
+        LOG_ERROR("FAIL: R32F roundtrip readback failed");
+        pass = false;
+    } else if (memcmp(r32_rb, r32_src, sizeof(r32_src)) != 0) {
+        LOG_ERROR("FAIL: R32F roundtrip mismatch (got %g %g, want 0.25 -1.5)",
+                  (double)r32_rb[0], (double)r32_rb[1]);
+        pass = false;
+    }
+    if (rhi_handle_valid(r32)) rhi_texture_destroy(dev, r32);
+
+    /* R601: B8G8R8A8_UNORM 1x1 — byte-ORDER semantics. VK returns the native
+     * B,G,R,A byte stream; GL stores it as RGBA8 and pre-R601 read back
+     * GL_RGBA order (channel-swapped vs the format's contract). Distinct
+     * channel values make the order observable. */
+    const u8 bgra_src[4] = {10u, 20u, 30u, 40u}; /* B=10 G=20 R=30 A=40 */
+    RHITextureDesc bgra_desc = {
+        .width = 1, .height = 1, .format = RHI_FORMAT_B8G8R8A8_UNORM,
+        .mip_levels = 1, .data = bgra_src,
+    };
+    RHITexture bgra = rhi_texture_create(dev, &bgra_desc);
+    u8 bgra_rb[4] = {0xFFu, 0xFFu, 0xFFu, 0xFFu};
+    if (!rhi_handle_valid(bgra)) {
+        LOG_ERROR("FAIL: BGRA8 roundtrip texture create failed");
+        pass = false;
+    } else if (!rhi_texture_read_pixels(dev, bgra, bgra_rb, sizeof(bgra_rb))) {
+        LOG_ERROR("FAIL: BGRA8 roundtrip readback failed");
+        pass = false;
+    } else if (memcmp(bgra_rb, bgra_src, sizeof(bgra_src)) != 0) {
+        LOG_ERROR("FAIL: BGRA8 roundtrip mismatch "
+                  "(got {%u,%u,%u,%u}, want {10,20,30,40} BGRA order)",
+                  bgra_rb[0], bgra_rb[1], bgra_rb[2], bgra_rb[3]);
+        pass = false;
+    }
+    if (rhi_handle_valid(bgra)) rhi_texture_destroy(dev, bgra);
 
     return pass;
 }
@@ -3730,10 +3778,10 @@ int main(int argc, char **argv) {
              motion_rt1_pass ? "PASSED ✓" : "FAILED");
 
     LOG_INFO("============================================");
-    LOG_INFO("TEST: F16 TEXTURE NATIVE-BYTE ROUNDTRIP");
+    LOG_INFO("TEST: TEXTURE NATIVE-BYTE ROUNDTRIP");
     LOG_INFO("============================================");
     bool f16rt_pass = tv_test_f16_roundtrip(render.device);
-    LOG_INFO("RESULT: F16 ROUNDTRIP TEST %s",
+    LOG_INFO("RESULT: NATIVE-BYTE ROUNDTRIP TEST %s",
              f16rt_pass ? "PASSED ✓" : "FAILED");
 
 #ifndef ENGINE_VULKAN

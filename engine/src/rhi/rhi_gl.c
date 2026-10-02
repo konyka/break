@@ -101,6 +101,9 @@ typedef struct {
     u32    height;
     u32    mip_levels;          /* R194-A: for MAX_LEVEL / incomplete-texture guard */
     GLenum gl_internal_format;  /* GL internal format for image binding */
+    /* R601: source RHI format — RGBA8 storage conflates R8G8B8A8/B8G8R8A8,
+     * and the readback channel order must follow the format's contract. */
+    RHIFormat rhi_format;
     /* R441: GL_TEXTURE_2D_ARRAY (material-indirect path). Arrays bind to a
      * different GL target than 2D, so gl_bind_tex_unit must know. */
     bool   is_array;
@@ -1854,6 +1857,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     td->height            = desc->height;
     td->mip_levels        = mips;
     td->gl_internal_format = internal;
+    td->rhi_format        = desc->format; /* R601 */
     dev->slots[idx].ptr  = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1922,6 +1926,7 @@ RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
     td->height            = height;
     td->mip_levels        = 1;
     td->gl_internal_format = rhi_format_to_gl_internal(fmt);
+    td->rhi_format        = fmt; /* R601 */
     td->is_array          = true;
     td->layers            = layers;
     dev->slots[idx].ptr  = td;
@@ -1961,15 +1966,24 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
      * the UNORM clamp; tests assert exact f16 on both backends.
      * R593: RG16F joins the native-byte semantics (GL_RG/GL_HALF_FLOAT,
      * 4B/px) — pre-R593 it fell into the RGBA8 clamp at the same byte count,
-     * silently diverging from VK's native RG f16 stream. All other formats
-     * keep the legacy RGBA8 (4B/px) behavior. */
+     * silently diverging from VK's native RG f16 stream.
+     * R601: R32F reads back native f32 (GL_RED/GL_FLOAT, 4B/px) and BGRA8 in
+     * the format's own B,G,R,A byte order (GL_BGRA) — pre-R601 R32F fell
+     * into the RGBA8 clamp and BGRA8 returned channel-swapped RGBA bytes,
+     * both silently diverging from VK at the same 4B/px. R8G8B8A8 keeps the
+     * legacy RGBA8 behavior (already native); D32 depth readback has no
+     * defined semantic (documented boundary). */
     bool f16_rgba = (td->gl_internal_format == GL_RGBA16F);
     bool f16_rg   = (td->gl_internal_format == GL_RG16F);
+    bool r32f     = (td->gl_internal_format == GL_R32F);
+    bool bgra     = (td->rhi_format == RHI_FORMAT_B8G8R8A8_UNORM);
     usize need = (usize)td->width * td->height * (f16_rgba ? 8u : 4u);
     if (size < need) return false;
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
-    glGetTexImage(GL_TEXTURE_2D, 0, f16_rg ? GL_RG : GL_RGBA,
-                  (f16_rgba || f16_rg) ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
+    glGetTexImage(GL_TEXTURE_2D, 0,
+                  f16_rg ? GL_RG : r32f ? GL_RED : (bgra ? GL_BGRA : GL_RGBA),
+                  (f16_rgba || f16_rg) ? GL_HALF_FLOAT
+                                       : (r32f ? GL_FLOAT : GL_UNSIGNED_BYTE),
                   dst_rgba8);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
@@ -2432,6 +2446,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     td->height            = desc->size;
     td->mip_levels        = mips;
     td->gl_internal_format = internal;
+    td->rhi_format        = desc->format; /* R601 */
     dev->slots[idx].ptr   = td;
     dev->slots[idx].type  = RHI_RES_CUBEMAP;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -2776,6 +2791,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
     td->height             = height;
     td->mip_levels         = 1u;
     td->gl_internal_format = gl_internal;
+    td->rhi_format         = color_fmt; /* R601 */
     dev->slots[cidx].ptr  = td;
     dev->slots[cidx].type = RHI_RES_TEXTURE;
 
@@ -2794,6 +2810,7 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
     dtd->height             = height;
     dtd->mip_levels         = 1u;
     dtd->gl_internal_format = GL_DEPTH_COMPONENT32F;
+    dtd->rhi_format         = RHI_FORMAT_D32_FLOAT; /* R601 */
     dev->slots[didx].ptr  = dtd;
     dev->slots[didx].type = RHI_RES_TEXTURE;
 
@@ -3201,6 +3218,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         td->height            = height;
         td->mip_levels        = 1u;
         td->gl_internal_format = rhi_format_to_gl_internal(formats[i]);
+        td->rhi_format         = formats[i]; /* R601 */
         dev->slots[cidx].ptr  = td;
         dev->slots[cidx].type = RHI_RES_TEXTURE;
         fbo.color_tex[i] = rhi_make_handle(cidx, dev->slots[cidx].generation);
