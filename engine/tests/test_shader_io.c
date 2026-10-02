@@ -822,6 +822,22 @@ TEST(forward_clustered_per_entity_fallback_wiring)
     ASSERT_NOT_NULL(strstr(src, "highlight is a blinn-era debug"));
 }
 
+/* R597: forward clustered PBR becomes the DEFAULT forward path after the
+ * blinn-vs-clustered comparison landed in clustered's favor on BOTH
+ * backends (steady-state median GPU ms over 120 frames: VK 10.71 -> 8.75,
+ * GL 23.92 -> 12.81 — and clustered carries the PBR + point-light feature
+ * set blinn lacks). BREAK_FORWARD_CLUSTERED=0 opts out back to blinn. */
+TEST(forward_clustered_default_on_after_bench)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    /* Default ON at declaration; env semantics inverted to opt-out. */
+    ASSERT_NOT_NULL(strstr(src, "bool fwd_clustered_mode = true"));
+    ASSERT_NOT_NULL(strstr(src, "if (e && !atoi(e)) fwd_clustered_mode = false"));
+    /* The startup log names the opt-out. */
+    ASSERT_NOT_NULL(strstr(src, "BREAK_FORWARD_CLUSTERED=0"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -856,4 +872,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mat_array_bake_includes_normal_array);
     RUN_TEST(deferred_gbuffer_normal_mapping_wiring);
     RUN_TEST(forward_clustered_per_entity_fallback_wiring);
+    RUN_TEST(forward_clustered_default_on_after_bench);
 TEST_MAIN_END()

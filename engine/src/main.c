@@ -3183,11 +3183,13 @@ MegaBuffer mega_buf = {0};
 IndirectDrawSystem indirect_sys = {0};
 GPUCullSystem gpucull_sys = {0};
 bool gpu_indirect_enabled = false;
-/* R589: opt-in forward clustered PBR for the static-scene draws
- * (BREAK_FORWARD_CLUSTERED=1). Default off — blinn stays the default while
- * the clustered path is evaluated; instanced/skinned/mat-arr/terrain/water
- * draws are unaffected (documented boundary). */
-bool fwd_clustered_mode = false;
+/* R589: forward clustered PBR for the static-scene draws
+ * (BREAK_FORWARD_CLUSTERED). R597: DEFAULT ON — the blinn-vs-clustered
+ * comparison (steady-state median GPU ms over 120 frames: VK 10.71 -> 8.75,
+ * GL 23.92 -> 12.81) landed in clustered's favor on both backends, and it
+ * carries the PBR + point-light feature set blinn lacks; env=0 opts out.
+ * terrain/water/wireframe/postfx draws keep their own pipelines (design). */
+bool fwd_clustered_mode = true;
 /* R596: BREAK_FORCE_PER_ENTITY=1 — diagnostic that bypasses the ECS instanced
  * branch so the per-entity fallback loop runs with real entities (it
  * otherwise requires an instanced-pipeline creation failure to trigger). */
@@ -3464,12 +3466,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     /* R441: parsed before the mega bake — the bake builds (or skips) the
      * material texture array. Default on; 0 keeps the R437 per-group path. */
     { const char *e = getenv("BREAK_MAT_INDIRECT"); if (e && !atoi(e)) mat_indirect_enabled = false; }
-    /* R589: opt-in forward clustered PBR for static-scene draws. */
-    { const char *e = getenv("BREAK_FORWARD_CLUSTERED"); if (e && atoi(e)) fwd_clustered_mode = true; }
+    /* R589/R597: forward clustered PBR is the DEFAULT forward path
+     * (R597 bench: faster on both backends); BREAK_FORWARD_CLUSTERED=0
+     * opts out back to the blinn forward family. */
+    { const char *e = getenv("BREAK_FORWARD_CLUSTERED"); if (e && !atoi(e)) fwd_clustered_mode = false; }
     /* R596: diagnostic — force the ECS per-entity fallback branch. */
     { const char *e = getenv("BREAK_FORCE_PER_ENTITY"); if (e && atoi(e)) force_per_entity = true; }
     if (fwd_clustered_mode)
-        LOG_INFO("Forward clustered PBR: ON (BREAK_FORWARD_CLUSTERED) — static-scene draws use pbr_clustered; instanced/skinned/mat-arr/terrain/water unchanged");
+        LOG_INFO("Forward clustered PBR: ON (default since R597 — BREAK_FORWARD_CLUSTERED=0 opts out to blinn)");
+    else
+        LOG_INFO("Forward clustered PBR: OFF (BREAK_FORWARD_CLUSTERED=0) — blinn forward family active");
     {
         typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } MegaVert;
         u32 total_verts = 0, total_idxs = 0, mesh_cmd_count = 0;

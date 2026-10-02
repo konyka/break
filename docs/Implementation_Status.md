@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R597 前向 clustered PBR 升默认（测量驱动决策落地）— R589 opt-in 终局；blinn 前向族退居 `BREAK_FORWARD_CLUSTERED=0` opt-out
+
+- **决策依据**(R589 落账"默认切换留待资产/性能对照"的兑现）:DrawBench 逐帧 GPU 计时（shadow+forward+scene 三计时器和）,600 帧跑取稳态末 120 帧样本，同机同场景四跑——**VK:blinn 中位 10.71ms / clustered 8.75ms(−18%);GL:blinn 中位 23.92ms / clustered 12.81ms(−46%)**。clustered 双端全胜，且功能面为严格超集（PBR+聚簇点光 vs blinn 无点光）；资产侧经 R589-R596 八轮真机验证（默认 mega/分组/实例/蒙皮/蒙皮手臂/per-entity 全路径 validation 0），切换无画面正确性悬念。
+- **切换内容**:`fwd_clustered_mode` 声明默认 true;env 语义反转为 **`BREAK_FORWARD_CLUSTERED=0` opt-out**（回 blinn 前向族）；启动日志双向命名（ON 标注 default since R597/OFF 标注 blinn active)。wireframe 调试仍优先于 clustered（既有顺序）;deferred 路径无涉（fwd_clustered 仅门前向）。
+- **影响面审计（切换前）**:golden/套件全部像素门走自建 TEST 管线，不经生产 blinn/clustered 选择——零影响；CI demo 步骤自此在 lavapipe 上默认演 clustered（R589 起 opt-in 从未被 CI 覆盖——本轮起默认路径即 clustered,CI 成为其常驻权威）;opt-out 路径（blinn 族）保留全部既有代码，零删除。
+- **TDD（红→绿实证）**：契约测试 `forward_clustered_default_on_after_bench`（声明默认/env 反转/日志命名三锚）如实红；GREEN 后 34/34。真机：**默认（无 env）双端 120 帧 rc=0、VK validation 0**（日志确认 ON);opt-out 双端 120 帧 rc=0、validation 0（日志确认 blinn active);VK deferred 默认 120 帧 rc=0 validation 0（无涉验证）。
+- **回归**:GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）;CTest GL **114/114**、VK 113/114（唯一失败=test_vulkan 同基线）。
+- **边界**：基准为单机单场景（32 轨道点光 demo）——更大灯光数下 clustered 优势只会放大（聚簇本意），更小场景下差距收窄但无反转机理；blinn 族管线/着色器全量保留（opt-out 与 TEST 1 基础管线仍消费）;terrain/water/wireframe/后处理/选中高亮维持自有管线（设计内）;测量原始数据（CSV）为本机一次性采集，结论记录于此，采集机制（BREAK_DRAW_BENCH）常驻可复测。
+
 ## 本轮更新：R596 ECS 每实体回退并入前向 clustered（TDD）— R592 落账的最后 blinn 回退面清零（除设计内自有管线）
 
 - **缺口**（R592 落账"blinn 回退面仅剩 ECS 每实体回退与自有管线绘制"):ECS 每实体回退是 instanced 分支的**外层 else**(instanced 管线创建失败时跑）——逐实体 blinn 管线 + `render.loc_model`/`bind_material`;branch 内选中实体高亮块同为 blinn。调研顺带澄清：内层 `if (instance_count > 0)` 无 else，该回退在 instanced 管线有效时永不运行。
