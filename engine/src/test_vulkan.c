@@ -1098,17 +1098,20 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
     i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
     i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
     i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
+    i32 l_occstr = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_occlusion_strength"); /* R598 */
 #ifndef ENGINE_VULKAN
     i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
 #endif
 
-    /* phase: 0=A red, 1=B black, 2=C1 white occ, 3=C2 gray occ */
-    f32 pix[4][3];
+    /* phase: 0=A red, 1=B black, 2=C1 white occ, 3=C2 gray occ,
+     * 4=C3 gray occ strength 0.5, 5=C4 gray occ strength 0 (R598) */
+    f32 pix[6][3];
     memset(pix, 0, sizeof(pix));
-    for (u32 phase = 0; phase < 4u && ok; phase++) {
+    for (u32 phase = 0; phase < 6u && ok; phase++) {
         const bool real_ibl = (phase >= 2u);
         RHITexture alb = real_ibl ? alb_white : alb_black;
-        RHITexture occ = (phase == 3u) ? occ_gray : occ_white;
+        RHITexture occ = (phase >= 3u) ? occ_gray : occ_white;
+        const f32 occ_str = (phase == 4u) ? 0.5f : (phase == 5u) ? 0.0f : 1.0f;
         const f32 ef[3] = { phase == 0u ? 1.0f : 0.0f, 0.0f, 0.0f };
         u32 frames = 0;
         for (u32 f = 0; f < 2u; f++) {
@@ -1145,6 +1148,7 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
             rhi_cmd_set_uniform_i32(cmd, l_dc,   0);
             rhi_cmd_set_uniform_vec2(cmd, l_mr,  1.0f, 1.0f);
             rhi_cmd_set_uniform_vec3(cmd, l_ef,  ef[0], ef[1], ef[2]);
+            rhi_cmd_set_uniform_f32(cmd, l_occstr, occ_str); /* R598 */
 #ifdef ENGINE_VULKAN
             rhi_cmd_bind_uniform_buffer(cmd, proj_ubo, 0u);
 #else
@@ -1191,20 +1195,29 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
         bool pc1 = pix[2][0] > 0.15f;
         bool pc2 = pix[3][0] < 0.85f * pix[2][0] &&
                    (pix[2][0] - pix[3][0]) > 0.06f;
-        pass = pa && pb && pc1 && pc2;
+        /* R598: occlusion STRENGTH scales the mix (glTF) — half strength
+         * lands strictly between full occlusion and none; zero strength
+         * reproduces the unoccluded phase. */
+        bool ps_half = pix[4][0] > pix[3][0] + 0.05f &&
+                       pix[4][0] < pix[2][0] - 0.03f;
+        bool ps_zero = fabsf(pix[5][0] - pix[2][0]) < 0.05f;
+        pass = pa && pb && pc1 && pc2 && ps_half && ps_zero;
         if (!pass)
             LOG_ERROR("FAIL: clustered-real pixels A{%.3f,%.3f,%.3f} B{%.3f,%.3f,%.3f} "
-                      "C1{%.3f,%.3f,%.3f} C2{%.3f,%.3f,%.3f} "
-                      "(want A~{0.73,0,0} B{0,0,0} C1 bright C2 darker)",
+                      "C1{%.3f,%.3f,%.3f} C2{%.3f,%.3f,%.3f} C3{%.3f} C4{%.3f} "
+                      "(want A~{0.73,0,0} B{0,0,0} C1 bright C2 darker, "
+                      "C2<C3<C1 C4=C1 — R598 occlusion strength)",
                       pix[0][0], pix[0][1], pix[0][2],
                       pix[1][0], pix[1][1], pix[1][2],
                       pix[2][0], pix[2][1], pix[2][2],
-                      pix[3][0], pix[3][1], pix[3][2]);
+                      pix[3][0], pix[3][1], pix[3][2],
+                      pix[4][0], pix[5][0]);
     }
     if (pass)
         LOG_INFO("PASS: pbr clustered REAL pair (renders through the production "
                  "vert+frag; glTF emissiveFactor composition gated {0.73,0,0}/black; "
-                 "material occlusion darkens IBL ambient)");
+                 "material occlusion darkens IBL ambient; R598 occlusion strength "
+                 "scales the mix C2<C3<C1, C4=C1)");
 
     if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
 #ifdef ENGINE_VULKAN

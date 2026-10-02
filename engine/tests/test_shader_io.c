@@ -838,6 +838,34 @@ TEST(forward_clustered_default_on_after_bench)
     ASSERT_NOT_NULL(strstr(src, "BREAK_FORWARD_CLUSTERED=0"));
 }
 
+/* R598: glTF occlusion STRENGTH in the non-arr clustered forward variants
+ * (R586's residual boundary — strength was hardcoded 1.0 outside
+ * CLUSTERED_ARR). The push-constant block has a free std430 pad at 228
+ * (u_pom_enabled@224 + vec2@232): u_occlusion_strength lands there, the
+ * block stays exactly 256B; GL gets the plain float uniform. Written per
+ * material by clustered_bind_material (default 1.0 = full effect). */
+TEST(forward_clustered_occlusion_strength_wiring)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "cl_loc_occ_strength"));
+    ASSERT_NOT_NULL(strstr(src, "occlusion_strength : 1.0f"));
+
+    char fsh[24576];
+    ASSERT_TRUE(read_shader_source("pbr_clustered.frag", fsh, sizeof(fsh)));
+    ASSERT_NOT_NULL(strstr(fsh, "uniform float u_occlusion_strength"));
+    ASSERT_NOT_NULL(strstr(fsh, "CL_OCC_STRENGTH (u_occlusion_strength)"));
+
+    ASSERT_TRUE(read_shader_source("pbr_clustered_vk.frag", fsh, sizeof(fsh)));
+    ASSERT_NOT_NULL(strstr(fsh, "float u_occlusion_strength;"));
+    ASSERT_NOT_NULL(strstr(fsh, "228"));
+    ASSERT_NOT_NULL(strstr(fsh, "CL_OCC_STRENGTH (pc.u_occlusion_strength)"));
+
+    /* VK push-offset map entry in the clustered uniform table. */
+    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
+    ASSERT_NOT_NULL(strstr(src, "\"u_occlusion_strength\""));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -873,4 +901,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(deferred_gbuffer_normal_mapping_wiring);
     RUN_TEST(forward_clustered_per_entity_fallback_wiring);
     RUN_TEST(forward_clustered_default_on_after_bench);
+    RUN_TEST(forward_clustered_occlusion_strength_wiring);
 TEST_MAIN_END()

@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R598 非 arr clustered 变体 glTF occlusion strength（TDD）— R586 最后残余边界清零；VK push 块 228 空位启用
+
+- **缺口**（R586 起沿用的"材质 occlusion strength 缩放前向不支持",R592 仅关闭 arr 段）：非 arr clustered 变体（静态/实例/蒙皮/per-entity)frag 的 `CL_OCC_STRENGTH` 硬编码 `(1.0)`——材质 `occlusionTexture.strength` 在 clustered 前向被忽略（deferred 与 blinn 族早已支持，arr 变体 R592 走逐层表）。
+- **方案（零布局代价）**:VK push 块恰 256B（上限）不可扩 vec2→vec4，但 std430 布局在 `u_pom_enabled`@224 与 `u_mr_factor`@232 之间留有 4B 空位——新增 `float u_occlusion_strength`@**228**(std430 float 对齐 4，块仍 256B);GL 端同名普通 float uniform;`rhi_vk.c` clustered uniform 映射表增 228 条目；`clustered_bind_material` 逐材质写入（`mat ? mat->occlusion_strength : 1.0f`,textureless/默认=全效，白回退下 `mix(1,1,z)=1` 恒等）。四变体共享同一 frag/写入点，一处改动全覆盖。
+- **TDD（红→绿实证）**:① 契约测试 `forward_clustered_occlusion_strength_wiring`(main.c 位置/写入锚+双端 frag 标记+rhi_vk 228 映射锚）如实红；② **TEST 7c 扩相位 4/5**：灰 occ(r=64）配 strength 0.5/0.0，断言 C2<C3<C1（半强度严格居中）且 C4=C1（零强度=无遮蔽）。RED 实证 C3=C4=C2=0.475(uniform 缺失→写入 no-op→硬编码 1.0);GREEN 后双端过（C1=0.723, C2=0.475, ao 无关地板项下容差稳健）。
+- **回归**：契约 35/35;GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）；默认 demo 双端 120 帧 rc=0、VK validation 0;CTest GL 113/114、VK 112/114——失败=test_platform_win32_runtime 剪贴板子项（OpenClipboard 外部持锁，R577 同型环境瞬态复发）+VK test_vulkan 同基线。
+- **边界**:blinn 前向族不采样材质 occlusion 贴图（设计内，blinn 无该通道）;CLUSTERED_ARR 逐层 strength 路径（R592）不受影响（宏分流）;R586 起的"前向 occlusion strength 不支持"边界至此全段落清（arr 段 R592、非 arr 段本轮）。
+
 ## 本轮更新：R597 前向 clustered PBR 升默认（测量驱动决策落地）— R589 opt-in 终局；blinn 前向族退居 `BREAK_FORWARD_CLUSTERED=0` opt-out
 
 - **决策依据**(R589 落账"默认切换留待资产/性能对照"的兑现）:DrawBench 逐帧 GPU 计时（shadow+forward+scene 三计时器和）,600 帧跑取稳态末 120 帧样本，同机同场景四跑——**VK:blinn 中位 10.71ms / clustered 8.75ms(−18%);GL:blinn 中位 23.92ms / clustered 12.81ms(−46%)**。clustered 双端全胜，且功能面为严格超集（PBR+聚簇点光 vs blinn 无点光）；资产侧经 R589-R596 八轮真机验证（默认 mega/分组/实例/蒙皮/蒙皮手臂/per-entity 全路径 validation 0），切换无画面正确性悬念。

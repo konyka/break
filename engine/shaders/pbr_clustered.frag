@@ -30,6 +30,8 @@ uniform vec4 u_point_shadow_far_planes; /* R588: was float[4] — the production
                                          * deferred_light.frag convention. */
 uniform float u_pom_enabled; /* R84-1: 0=no height map, skip POM */
 uniform vec2 u_mr_factor;    /* R579: glTF metallic/roughness scalar factors */
+uniform float u_occlusion_strength; /* R598: glTF occlusionTexture.strength
+                                     * (was hardcoded 1.0 = full effect) */
 uniform vec3 u_emissive_factor; /* R586: glTF emissiveFactor (deferred R582
                                  * semantics; GL uniforms zero-init = no
                                  * emission until written) */
@@ -87,7 +89,7 @@ layout(binding = 15) uniform sampler2DArray u_occlusion_arr;
 #define CL_OCC(uv) texture(u_occlusion, uv).r
 #define CL_MR_FACTOR (u_mr_factor)
 #define CL_EMISSIVE_FACTOR (u_emissive_factor)
-#define CL_OCC_STRENGTH (1.0)
+#define CL_OCC_STRENGTH (u_occlusion_strength)
 #endif
 
 layout(location = 0) out vec4 FragColor;

@@ -33,8 +33,11 @@ layout(push_constant) uniform PushConstants {
                                      * 16B layout); see pbr_clustered.frag
                                      * for the GL write-path reason. */
     float u_pom_enabled;                /* 224 */
+    float u_occlusion_strength;         /* 228 — R598: glTF occlusionTexture.strength
+                                         * (fills the std430 pad before u_mr_factor;
+                                         * block stays exactly 256B) */
     vec2  u_mr_factor;                  /* 232 — R579 glTF metallic/roughness factors
-                                         * (std430: vec2 aligns 8, pads 228->232) */
+                                         * (std430: vec2 aligns 8) */
     vec3  u_emissive_factor;            /* 240 — R586 glTF emissiveFactor
                                          * (std430: vec3 aligns 16), composed with
                                          * u_emissive (matches the deferred R582
@@ -97,7 +100,7 @@ layout(set = 0, binding = 9) uniform sampler2DArray u_occlusion_arr;
 #define CL_OCC(uv) texture(u_occlusion, uv).r
 #define CL_MR_FACTOR (pc.u_mr_factor)
 #define CL_EMISSIVE_FACTOR (pc.u_emissive_factor)
-#define CL_OCC_STRENGTH (1.0)
+#define CL_OCC_STRENGTH (pc.u_occlusion_strength)
 #endif
 
 layout(location = 0) out vec4 FragColor;

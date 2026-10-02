@@ -226,6 +226,7 @@ typedef struct {
     i32 cl_loc_point_shadow_far_planes;
     i32 cl_loc_pom_enabled;
     i32 cl_loc_mr_factor;
+    i32 cl_loc_occ_strength; /* R598 */
     i32 cl_loc_emissive_factor;
 } ClusteredLocs;
 
@@ -321,6 +322,7 @@ static void clustered_query_locs(RenderState *rs, RHIPipeline pipe, ClusteredLoc
     L->cl_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_shadow_far_planes");
     L->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_pom_enabled");
     L->cl_loc_mr_factor   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
+    L->cl_loc_occ_strength = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_occlusion_strength"); /* R598 */
     L->cl_loc_emissive_factor = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
 }
 
@@ -1111,6 +1113,10 @@ static void clustered_bind_material(RHICmdBuffer *cmd, RenderState *rs,
     rhi_cmd_set_uniform_vec2(cmd, L->cl_loc_mr_factor,
                              mat ? mat->metallic_factor : 1.0f,
                              mat ? mat->roughness_factor : 1.0f);
+    /* R598: glTF occlusion strength (was hardcoded 1.0 in the non-arr
+     * clustered variants — R586's residual boundary). */
+    rhi_cmd_set_uniform_f32(cmd, L->cl_loc_occ_strength,
+                            mat ? mat->occlusion_strength : 1.0f);
     rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_emissive_factor, er, eg, eb);
 }
 
