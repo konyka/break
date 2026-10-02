@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R602 D32 深度回读语义定义（TDD）— 回读家族最后未定义格式清零；全 RHIFormat 回读语义自此有门
+
+- **缺口**（R601 落账"D32 深度回读仍无定义语义（双端皆然，文档化）"）：回读家族六格式的最后一块，调研定论双端同为**静默垃圾雷**——GL 落入 GL_RGBA/UNSIGNED_BYTE 分支对深度纹理发 `glGetTexImage`（GL 错误，dst 原样=调用方收未定义字节而函数仍返回 true）;VK 的 R445 bpp 推导恰为 4B/px，但传输机械硬编码 COLOR aspect 且深度纹理创建缺 TRANSFER_SRC usage——AMD 驱动宽容下值碰巧正确，规格层面六条 validation 的活雷（与 R593/R601 排雷哲学同宗：语义地雷对任何未来调用方张开）。
+- **方案**:GL 回读增 D32 分支（`gl_internal_format == GL_DEPTH_COMPONENT32F` → `GL_DEPTH_COMPONENT`/`GL_FLOAT`，4B/px，内部格式无歧义故无需 rhi_format);VK 两端——① 深度纹理 usage 增 `TRANSFER_SRC`（R552-A 颜色侧同族，许可性旗标对阴影/atlas 路径零行为影响）;② `VKArrayTransferCtx` 增 `aspect` 字段，`vk_array_transfer_record` 的 barrier 与 copy 子资源 aspect 由硬编码 COLOR 改取 ctx——**四处**调用点核定：数组布局转换/数组层上传/cubemap 面上传（R586 机械复用，首轮 grep 漏网被 validation 钓出）均显式 COLOR 保原语义，`rhi_texture_read_pixels` 按 `td->format` 分流 DEPTH/COLOR。`rhi.h` 与 rhi_gl.c 头注释全家族化（D32→4B/px f32 depth)。
+- **TDD（红→绿实证）**:R601 的 TEXTURE NATIVE-BYTE ROUNDTRIP 门扩 D32 相位（2×1,{0.25,1.0} 位精确 f32,[0,1] 深度域内）。RED 实证——GL **值红**（哨兵 999 原样=glGetTexImage 错误静默）;VK **规格红**(6 条 validation:aspect 09601/09105 三条类 + usage 00186 两条类 + layout 不兼容，值因驱动宽容偶绿——R599 同型"违规通过非真绿")。GREEN 后双端门绿，**VK 全套件 validation 0**。
+- **回归**:GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）;CTest GL **114/114**、VK 113/114（唯一失败=test_vulkan 同基线）;默认 demo 双端 120 帧 rc=0、VK validation 0。
+- **边界**:D32 回读仍无活调用方（与 R32F/BGRA8 同为排雷+有门）;FBO 附件深度（offscreen/MRT/shadow）走 `vk_create_attachment_image` 独立创建路径、usage 不含 TRANSFER_SRC——**附件深度回读仍无定义语义**（深度内容校验走采样，如需回读属独立后续）;`rhi_texture_upload_mip` 维持 RGBA8 流式（R593 起沿约）。
+
 ## 本轮更新：R601 R32F/BGRA8 回读语义对齐（TDD）— 颜色格式回读全家族原生字节化；R593 边界清零（D32 为文档化边界）
 
 - **缺口**（R593 落账"R8 等其余非 f16 格式回读语义随需再对齐")：枚举全部六格式定位两类残余分歧——**R32_FLOAT**:VK 原生 f32 4B/px vs GL RGBA8 钳制（同字节数静默不同语义，Hi-Z 金字塔纹理所用，GPU 写从不回读=潜在雷）;**B8G8R8A8_UNORM**：字节序分歧——GL 以 GL_BGRA 上传进 RGBA8 存储、回读给 RGBA 序（R/B 通道交换）,VK 原生 B,G,R,A 流（默认离屏 FBO 与 MSAA 测试 FBO 所用）。

@@ -4217,8 +4217,12 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
      * VUID-vkCmdCopyImageToBuffer-srcImage-00186 /
      * VUID-VkImageMemoryBarrier-oldLayout-01212 without it). */
     if (is_depth) {
-        /* Depth textures are rendered into (shadow/atlas paths). */
-        ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        /* Depth textures are rendered into (shadow/atlas paths).
+         * R602: +TRANSFER_SRC so D32 can be read back via
+         * rhi_texture_read_pixels (native f32 depth semantics — same class
+         * as the R552-A color-side fix). */
+        ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     } else {
         ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
@@ -4738,6 +4742,11 @@ typedef struct {
     u32           base_layer, layer_count;
     VkImageLayout old_layout, mid_layout;
     bool          copy;
+    /* R602: aspect for the barrier + copy subresource — COLOR for every
+     * pre-existing caller (texture-array paths), DEPTH when reading back a
+     * D32 texture (pre-R602 the hardcoded COLOR aspect tripped
+     * VUID-09601/09105 on depth images). */
+    VkImageAspectFlags aspect;
 } VKArrayTransferCtx;
 
 static void vk_array_transfer_record(VkCommandBuffer cb, void *p) {
@@ -4751,7 +4760,7 @@ static void vk_array_transfer_record(VkCommandBuffer cb, void *p) {
     pre.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     pre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     pre.image = c->image;
-    pre.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pre.subresourceRange.aspectMask = c->aspect;
     pre.subresourceRange.levelCount = 1;
     pre.subresourceRange.baseArrayLayer = c->base_layer;
     pre.subresourceRange.layerCount = c->layer_count;
@@ -4772,7 +4781,7 @@ static void vk_array_transfer_record(VkCommandBuffer cb, void *p) {
                          0, 0, NULL, 0, NULL, 1, &pre);
 
     VkBufferImageCopy region = {0};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.aspectMask = c->aspect;
     region.imageSubresource.mipLevel = 0;
     region.imageSubresource.baseArrayLayer = c->base_layer;
     region.imageSubresource.layerCount = c->layer_count;
@@ -4968,6 +4977,7 @@ RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
     ctx.old_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     ctx.mid_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     ctx.copy = false;
+    ctx.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     if (!vk_texture_sync_submit(vk, VK_NULL_HANDLE, VK_NULL_HANDLE,
                                 vk_array_transfer_record, &ctx)) {
         LOG_WARN("VK: texture array layout transition failed");
@@ -5012,6 +5022,7 @@ void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
     ctx.old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     ctx.copy = true;
+    ctx.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     if (!vk_texture_sync_submit(vk, staging, staging_mem,
                                 vk_array_transfer_record, &ctx)) {
         LOG_WARN("VK: texture array layer upload failed");
@@ -5062,6 +5073,11 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     ctx.old_layout = old_layout;
     ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     ctx.copy = true;
+    /* R602: D32 readback copies the DEPTH aspect (pre-R602 the hardcoded
+     * COLOR aspect + missing TRANSFER_SRC usage made depth readback
+     * spec-noncompliant; the value only survived by driver leniency). */
+    ctx.aspect = (td->format == VK_FORMAT_D32_SFLOAT)
+               ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     /* NULL staging args: the caller still needs the mapped memory afterwards,
      * so sync_submit must not free it here. */
     if (!vk_texture_sync_submit(vk, VK_NULL_HANDLE, VK_NULL_HANDLE,
@@ -7460,6 +7476,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
             ctx.old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             ctx.copy = true;
+            ctx.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
             if (!vk_texture_sync_submit(vk, staging, staging_mem,
                                         vk_array_transfer_record, &ctx))
                 LOG_WARN("VK: cubemap face %u upload failed", i);

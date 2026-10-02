@@ -1971,19 +1971,25 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
      * the format's own B,G,R,A byte order (GL_BGRA) — pre-R601 R32F fell
      * into the RGBA8 clamp and BGRA8 returned channel-swapped RGBA bytes,
      * both silently diverging from VK at the same 4B/px. R8G8B8A8 keeps the
-     * legacy RGBA8 behavior (already native); D32 depth readback has no
-     * defined semantic (documented boundary). */
+     * legacy RGBA8 behavior (already native).
+     * R602: D32 reads back native f32 depth (GL_DEPTH_COMPONENT/GL_FLOAT,
+     * 4B/px) — pre-R602 this issued GL_RGBA on a depth texture (GL error,
+     * dst untouched garbage). Every RHIFormat now has defined readback
+     * semantics. */
     bool f16_rgba = (td->gl_internal_format == GL_RGBA16F);
     bool f16_rg   = (td->gl_internal_format == GL_RG16F);
     bool r32f     = (td->gl_internal_format == GL_R32F);
+    bool d32      = (td->gl_internal_format == GL_DEPTH_COMPONENT32F);
     bool bgra     = (td->rhi_format == RHI_FORMAT_B8G8R8A8_UNORM);
     usize need = (usize)td->width * td->height * (f16_rgba ? 8u : 4u);
     if (size < need) return false;
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
     glGetTexImage(GL_TEXTURE_2D, 0,
-                  f16_rg ? GL_RG : r32f ? GL_RED : (bgra ? GL_BGRA : GL_RGBA),
+                  f16_rg ? GL_RG : r32f ? GL_RED : d32 ? GL_DEPTH_COMPONENT
+                                                     : (bgra ? GL_BGRA : GL_RGBA),
                   (f16_rgba || f16_rg) ? GL_HALF_FLOAT
-                                       : (r32f ? GL_FLOAT : GL_UNSIGNED_BYTE),
+                                       : ((r32f || d32) ? GL_FLOAT
+                                                        : GL_UNSIGNED_BYTE),
                   dst_rgba8);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;

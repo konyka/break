@@ -246,9 +246,10 @@ void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
 /* R441: size query + synchronous readback of mip 0 — used once at bake time
  * to pack material albedos into a texture array (staging on VK, glGetTexImage
  * on GL; not a per-frame API). Byte semantics follow the texture format on
- * BOTH backends (R587/R593/R601): RGBA8 → 4B/px RGBA; BGRA8 → 4B/px BGRA
+ * BOTH backends (R587/R593/R601/R602): RGBA8 → 4B/px RGBA; BGRA8 → 4B/px BGRA
  * order; RG16F → 4B/px f16 pairs; RGBA16F → 8B/px f16 quads; R32F → 4B/px
- * f32. D32 depth readback has no defined semantic. */
+ * f32; D32 → 4B/px f32 depth (R602: the last undefined format joined — every
+ * RHIFormat now has defined readback semantics). */
 bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
 bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.

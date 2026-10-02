@@ -606,12 +606,15 @@ cleanup:
     return pass;
 }
 
-/* R593/R601: texture upload (.data) and readback (rhi_texture_read_pixels)
+/* R593/R601/R602: texture upload (.data) and readback (rhi_texture_read_pixels)
  * move NATIVE format bytes in both directions on both backends. VK always
  * moved raw bytes; GL pre-R593 expected f32 upload for f16 formats and read
  * RG16F back as clamped RGBA8 (R593 fixed); pre-R601 GL read R32F back as
- * clamped RGBA8 and BGRA8 in RGBA channel order. Exact-representable values
- * only, so an aligned backend round-trips bit-exact. */
+ * clamped RGBA8 and BGRA8 in RGBA channel order; pre-R602 D32 read back as
+ * garbage on both ends (GL issued GL_RGBA on a depth texture, VK copied the
+ * COLOR aspect of an image that also lacked TRANSFER_SRC usage).
+ * Exact-representable values only, so an aligned backend round-trips
+ * bit-exact. */
 static bool tv_test_f16_roundtrip(RHIDevice *dev) {
     bool pass = true;
 
@@ -718,6 +721,32 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev) {
         pass = false;
     }
     if (rhi_handle_valid(bgra)) rhi_texture_destroy(dev, bgra);
+
+    /* R602: D32_FLOAT 2x1 — the LAST undefined readback format joins the
+     * native-byte semantics (4B/px f32 depth). GL pre-R602 issued
+     * glGetTexImage(GL_RGBA) on a depth texture (GL error, dst untouched);
+     * VK copied with the COLOR aspect of a depth image that also lacked
+     * TRANSFER_SRC usage. Values exact in f32 and inside the [0,1] depth
+     * range. */
+    const f32 d32_src[2] = {0.25f, 1.0f};
+    RHITextureDesc d32_desc = {
+        .width = 2, .height = 1, .format = RHI_FORMAT_D32_FLOAT,
+        .mip_levels = 1, .data = d32_src,
+    };
+    RHITexture d32 = rhi_texture_create(dev, &d32_desc);
+    f32 d32_rb[2] = {999.0f, 999.0f};
+    if (!rhi_handle_valid(d32)) {
+        LOG_ERROR("FAIL: D32 roundtrip texture create failed");
+        pass = false;
+    } else if (!rhi_texture_read_pixels(dev, d32, d32_rb, sizeof(d32_rb))) {
+        LOG_ERROR("FAIL: D32 roundtrip readback failed");
+        pass = false;
+    } else if (memcmp(d32_rb, d32_src, sizeof(d32_src)) != 0) {
+        LOG_ERROR("FAIL: D32 roundtrip mismatch (got %g %g, want 0.25 1.0)",
+                  (double)d32_rb[0], (double)d32_rb[1]);
+        pass = false;
+    }
+    if (rhi_handle_valid(d32)) rhi_texture_destroy(dev, d32);
 
     return pass;
 }
