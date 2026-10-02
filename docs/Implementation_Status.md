@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R600 套件门健康全审计（R599 方法论横向推广）— 负结果：除 7b(R599 已修）外无同类真空/弱场景，全门条件化非空转
+
+- **方法与范围**：枚举 `test_vulkan.c` 全部 16 个 `tv_test_*`/`tv_run_*` 门函数 + VK 主流内联门（stress/draw/inst/fbo/msaa/compute/unified)，按 R599 教训逐一核断言体——`return true`/`(void)pass`/无条件 `pass = true` 模式扫描 + 逐门人工判读断言是否真消费其声称的通道。
+- **逐门判定（全健康）**:golden 双门=像素 MAE（最强类）;motion_blur_rt1/f16_roundtrip=位级门（R587/R593 硬化）;pbr_factor=R599 恢复的真门；pbr_clustered_real=六相位像素门（R586/R598);point_shadow=双相位像素门（R588);grouped_compact=计数/scatter/清零断言（TV_SKIP_CULL_COMPACT 为 R577 族文档化诊断逃逸，默认惰性）;material_array=象限像素+execute 计数（R442);deferred 12/12b/12c/12d/12e=真实像素门族；msaa_offscreen=完成级 smoke(VK-only 设计，skip 路径文档化）;ibl=varied&&nonzero（弱但真实——真实天空 IBL 链的适当强度，数值锚由 7c 相位 C 承担）;main-flow 各门=完成+错误计数 smoke 类，全部条件化（TEST 9 另有 R436 Hi-Z 真实断言）。
+- **结论**:`tv_test_pbr_factor` 是套件中唯一的真空门（R599 修复）——审计为**负结果**，无新缺陷，无代码变更。套件 16 门+内联门的断言真实性至此全量验证。
+- **登记**：本轮为审计轮（文档-only 提交），验证=审计过程本身（模式扫描+逐门判读）+ 既有套件基线不变（GL 全套件 ALL PASSED、VK 已知基线、CTest 双树同 R599);CI 对文档提交的全绿确认即为套件事后状态快照。
+- **边界**:ibl 门的 varied&&nonzero 弱断言留作已知弱项（真实天空链的数值脆弱性风险高于收益，7c 相位 C 已承担数值锚）;engine/tests/*.c 单元测试走 test_framework 硬断言（宏即失败，无真空形态），不在本轮范围。
+
 ## 本轮更新：R599 TEST 7b 停驻门重评估与真实化（TDD/systematic-debugging）— GL 公园退役；钓出并修复门自 R579 起的双层潜伏缺陷
 
 - **重评估起点**:R579-B 起 GL 公园（"AMD 驱动零片段 no-op,GL 跳过 7b 像素门")。先用现成 `TV_MR_DEBUG` 钩子零改动实测——钩子自身 R587 遗留 stride(GL RGBA16F 已 8B/px 原生，钩子仍 4B/px→readback 全败），修复后探针显示**当前驱动（24.10.38）三角形正常光栅化**，零片段已逝。
