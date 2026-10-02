@@ -728,6 +728,37 @@ TEST(forward_clustered_array_variant_wiring)
     ASSERT_NOT_NULL(strstr(vsh, "set = 2, binding = 0"));
 }
 
+/* R594: the material-array bake gains a NORMAL array — the clustered arr
+ * variant's u_normal_map_arr slot (R592) finally receives per-layer normal
+ * maps instead of the 1-layer flat fallback. MatArraySet grows normal_array;
+ * BOTH dedup passes gain the normal handle; the mapping pass's R583-era
+ * occlusion key drift (collect keyed on occ, mapping did not — materials
+ * differing only in occlusion collapsed onto one layer) is repaired so the
+ * two passes key identically. */
+TEST(mat_array_bake_includes_normal_array)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    /* MatArraySet fifth array + unique-handle table + per-layer bake */
+    ASSERT_NOT_NULL(strstr(src, "normal_array"));
+    ASSERT_NOT_NULL(strstr(src, "uniq_nrm"));
+    /* flat-normal fill for layer 0 and textureless layers */
+    ASSERT_NOT_NULL(strstr(src, "flat_normal_rgba"));
+    /* clustered arr path binds the baked array (not the 1-layer fallback) */
+    ASSERT_NOT_NULL(strstr(src, "mb->mats.normal_array"));
+    /* Both dedup passes key on the normal handle. */
+    int nrm_key_hits = 0;
+    for (const char *p = src; (p = strstr(p, "mat_arr_tex_same(uniq_nrm[i], nrm)")) != NULL; p++)
+        nrm_key_hits++;
+    ASSERT_TRUE(nrm_key_hits >= 2);
+    /* R583 drift repair: the group->layer mapping pass matches on occlusion
+     * too (previously only the collect pass did). */
+    int occ_key_hits = 0;
+    for (const char *p = src; (p = strstr(p, "mat_arr_tex_same(uniq_occ[i], occ)")) != NULL; p++)
+        occ_key_hits++;
+    ASSERT_TRUE(occ_key_hits >= 2);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -759,4 +790,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_instanced_variant_wiring);
     RUN_TEST(forward_clustered_skinned_variant_wiring);
     RUN_TEST(forward_clustered_array_variant_wiring);
+    RUN_TEST(mat_array_bake_includes_normal_array);
 TEST_MAIN_END()

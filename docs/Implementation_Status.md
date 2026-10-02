@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R594 材质数组烘焙增 normal_array（TDD）— arr 变体法线贴图生效；顺带修复 R583 遗留的 occ 去重键漂移
+
+- **缺口**（R592 落账边界"法线贴图在 arr 变体下不生效——烘焙范围外"):clustered arr 变体 frag 的 `u_normal_map_arr` 槽自 R592 起恒收 1 层平法线回退（`fallback_normal_arr`),MatArraySet 烘焙体系没有法线数组。调研定论：法线扰动（屏幕导数 TBN，无切线属性依赖）在引擎内**仅前向 clustered PBR 消费**——blinn 族不采样法线图、deferred gbuffer（双变体）直接 oct 编码顶点法线（引擎级设计，非 arr 缺口）——故唯一生效点即 clustered arr 路径，arr vert 零改动。
+- **钓出的遗留缺陷（本轮修复）**:R583 接线把 collect pass 去重键扩为纹理四元（含 occlusion）却**漏改 group→layer mapping pass**（停留 R582 时代三元）——仅 occlusion 纹理不同的两材质会坍缩到首个匹配层，后者的 occlusion 纹素永不被采样。本轮两 pass 键锁步（occ+nrm 同增，降级/skip/匹配三处对齐）。
+- **方案**:`MatArraySet` 增第五数组 `normal_array`(ntex+1 层 RGBA8 2D_ARRAY)——layer 0 与 textureless 层平法线填充 {128,128,255,255}(`perturb_normal` 对切向 (0,0,1) 恒等，fallback_normal 同约）；法线纹理参与 extent 上限（MAT_ARR_MAX_SIZE）与去重；clustered arr 绑定 `render->fallback_normal_arr`→`mb->mats.normal_array`;**`fallback_normal_arr` 死资源移除**（唯一消费方被替换）。三处烘焙清理路径与关停销毁同步。
+- **TDD（红→绿实证）**：契约测试 `mat_array_bake_includes_normal_array`(normal_array/uniq_nrm/flat_normal_rgba/mb->mats.normal_array 标记 + 双 pass nrm/occ 键出现次数 ≥2 锚）如实红（首锚即缺）;GREEN 后 31/31 过。
+- **回归**：真机六配置——VK/GL × clustered(arr 默认/分组 BREAK_MAT_INDIRECT=0）各 120 帧 rc=0、VK validation 0（法线数组绑定路径零违例），默认双端 120 帧 rc=0;GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）;CTest GL 113/114、VK 112/114——失败=test_platform_win32_runtime 剪贴板子项（OpenClipboard 系统范围外部持锁，隔离重跑仍 err=5,R577 同型环境瞬态，本 diff 不涉平台层）+VK test_vulkan 同基线。
+- **边界**:deferred gbuffer 路径（arr 与否）仍不扰动法线（引擎级 deferred 设计——gbuf_normal 恒为顶点法线 oct 编码，法线贴图接入 deferred 属独立大项）;blinn 前向族不采样法线图（设计内）;POM 高度通道在 arr 变体读取烘焙法线数组 .b（无高度图的层读平法线 .b=1.0，语义与 R592 平法线回退一致；生产 u_pom_enabled=0 不受影响）;R594 仅扩展烘焙与绑定，非 mega 回退路径（逐节点/无节点）材质法线行为不变。
+
 ## 本轮更新：R593 f16 纹理原生字节语义双向对齐（TDD）— RG16F/RGBA16F 上传与回读双端统一；钓出 motion-blur 速度纹理 VK 端误读活雷
 
 - **缺口**（R587 落账边界"RG16F 等非 RGBA16F 回读语义维持"）：调研发现 f16 格式**两个方向**均双端分歧——回读：VK 返回原生字节（RG16F 4B/px f16 对、RGBA16F 8B/px）而 GL 仅 RGBA16F 对齐（R587)、RG16F 仍落 RGBA8 钳制（同 4B/px，语义静默不同）；上传：VK `memcpy` 原生字节而 GL 期望 f32 由驱动转换（RG16F 8B/px、RGBA16F 16B/px）——**同一 `.data` 双端产出不同纹素**。
