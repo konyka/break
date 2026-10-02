@@ -688,10 +688,11 @@ static void tv_probe_device(RHIDevice *dev, const char *after);
  * reference is unit-locked in tests/test_pbr_math.c; this gates the shader
  * path end-to-end: the same draw with u_mr_factor (1,1) vs (0, 0.2) must
  * produce visibly different pixels (glTF 2.0: metallic = tex.b * factor,
- * roughness = tex.g * factor). Render/capture follows the PROVEN golden
- * pattern (R577): default framebuffer, rhi_screenshot between frame_end
- * and present — the offscreen-FBO + post-present texture readback used by
- * tv_test_ibl is backend-divergent on GL (RGBA8) vs VK (native bytes). */
+ * roughness = tex.g * factor). R599: GL park retired — the R579-B "zero
+ * fragments" AMD driver no-op is gone on driver 24.10.38; the RGBA16F
+ * readback is native 8B/px on both backends (R587/R593), and the A/B
+ * lit-pixel assertion (restored this round — it had decayed to
+ * return-true) now runs on BOTH backends. */
 static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                                RHIBuffer ibo, u32 iw, u32 ih) {
     (void)vbo; (void)ibo; (void)iw; (void)ih; /* gate parked (see below) */
@@ -726,9 +727,13 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
      * MR sample is zero (binding defect) or the factor is dead (delivery). */
     if (fsrc_ibl && getenv("TV_MR_DEBUG")) {
         /* R579-F: top-of-main echo — isolates fragment EXECUTION from
-         * rasterization. Injected before everything (POM/normal/mr). */
+         * rasterization. Injected before everything (POM/normal/mr).
+         * R599: TV_MR_DEBUG=2 skips this echo so the MR echo below answers
+         * factor DELIVERY (top-echo's early return shadows it). */
+        const char *mrdbg = getenv("TV_MR_DEBUG");
+        const bool top_echo = mrdbg[0] != '2';
         const char *marker2 = "void main() {";
-        char *m2 = strstr(fsrc_ibl, marker2);
+        char *m2 = top_echo ? strstr(fsrc_ibl, marker2) : NULL;
         const char *ins2 = " FragColor = vec4(1.0, 0.0, 0.0, 1.0); return;";
         if (m2) {
             usize ilen = strlen(ins2), off = (usize)(m2 - fsrc_ibl) + strlen(marker2);
@@ -789,6 +794,19 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                               .mip_levels = 1u, .data = mr_texel};
     RHITexture mr_tex = rhi_texture_create(rs->device, &mr_desc);
 
+    /* R599: flat normal fixture — binding rs->test_tex ({255,128,64}) in the
+     * normal slot (as this gate historically did) drives perturb_normal's
+     * TBN into NaN on this triangle (TEST 7c's nrm_flat comment documents
+     * the same hazard): the whole shading output collapses to a constant
+     * that is IDENTICAL across the A/B passes, so the restored assertion
+     * measured moved=0 even though the factor multiply works (MR echo:
+     * A=(0.70,0.55) B=(0,0.11)). */
+    u8 nrm_texel[4] = {128u, 128u, 255u, 255u};
+    RHITextureDesc nrm_desc = {.width = 1u, .height = 1u,
+                               .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                               .mip_levels = 1u, .data = nrm_texel};
+    RHITexture nrm_flat = rhi_texture_create(rs->device, &nrm_desc);
+
     /* LightSystem contains the full clustered-light grid (stack caveat from
      * tv_test_ibl applies here too). */
     LightSystem *ls = calloc(1, sizeof(*ls));
@@ -801,12 +819,12 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     }
     (void)gpu_cull_ok;
 
-    /* R579 resolved (12a6df2): the real pixel gate runs unconditionally —
-     * the push-free vert renders and the factor provably flows. */
+    /* R599: the gate ASSERTS again (A/B lit-pixel discrimination below) —
+     * the R579-era "runs unconditionally" note referred to the shader path
+     * only; the pass/fail check itself had decayed to return-true. */
 
     /* ---- A/B factor gate (echo variant under TV_MR_DEBUG) ---- */
     bool pass = false;
-    (void)pass;
     RHIOffscreenFBO scene = {0};
     if (ls && rhi_handle_valid(pipe) && rhi_handle_valid(mr_tex) && iw > 0u && ih > 0u) {
         scene = rhi_offscreen_fbo_create_fmt(
@@ -827,11 +845,11 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
         i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
         i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
         i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
-#ifdef ENGINE_VULKAN
+        i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor"); /* R599 */
+        /* R599: RGBA16F native readback is 8B/px on BOTH backends since R587
+         * — the GL 4B/px stride here was an R587-era leftover that made the
+         * readback itself fail (ierr), masking the diagnostic's answer. */
         const u32 px_stride = 8u;
-#else
-        const u32 px_stride = 4u;
-#endif
         usize bytes = (usize)iw * ih * px_stride;
         u8 *pix_a = malloc(bytes);
         u8 *pix_b = malloc(bytes);
@@ -861,22 +879,32 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                 rhi_cmd_set_uniform_mat4(cmd, l_view,  &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, l_proj,  &proj.e[0][0]);
                 }
-                /* R579-E: historically NOTHING else could be written here —
-                 * the two stages declared contradictory push layouts and the
-                 * extra writes clobbered proj columns (the R579-B "zero
-                 * fragments" root cause). R586 repaired the vert (proj now
-                 * rides the aux UBO; see TEST 7c); this gate keeps its
-                 * minimal-write discipline anyway since stale values are
-                 * constant across the A/B passes, which is all it needs. */
-                (void)l_cam; (void)l_fog_n; (void)l_fog_f;
-                (void)l_sw; (void)l_sh; (void)l_near; (void)l_far;
-                (void)l_pc; (void)l_dc;
+                /* R599: the gate's scene must actually CONSUME mr for the
+                 * A/B discrimination to be observable — the R579-E minimal-
+                 * write discipline (a workaround for the since-repaired vert,
+                 * R586) left every frame uniform at GLSL defaults: camera at
+                 * the origin (V in-plane -> grazing Fresnel kills diffuse),
+                 * light counts 0 (the dir+point lights added above never
+                 * evaluated), fog 0/0 (0-division NaN risk), emissive factor
+                 * 0 — the output was mr-INDEPENDENT (moved=0) even though the
+                 * factor multiply works (MR echo: A=(0.70,0.55) B=(0,0.11)).
+                 * Mirror TEST 7c's full frame-state write set. */
+                rhi_cmd_set_uniform_vec3(cmd, l_cam,  0.0f, 0.0f, 2.0f);
+                rhi_cmd_set_uniform_f32(cmd, l_fog_n, 1000.0f);
+                rhi_cmd_set_uniform_f32(cmd, l_fog_f, 2000.0f);
+                rhi_cmd_set_uniform_f32(cmd, l_sw,   (f32)iw);
+                rhi_cmd_set_uniform_f32(cmd, l_sh,   (f32)ih);
+                rhi_cmd_set_uniform_f32(cmd, l_near, 0.1f);
+                rhi_cmd_set_uniform_f32(cmd, l_far,  100.0f);
+                rhi_cmd_set_uniform_i32(cmd, l_pc,   1);
+                rhi_cmd_set_uniform_i32(cmd, l_dc,   1);
+                rhi_cmd_set_uniform_vec3(cmd, l_ef,  0.0f, 0.0f, 0.0f);
                 rhi_cmd_set_uniform_vec2(cmd, l_mr, factors[p][0], factors[p][1]);
                 if (!getenv("TV_NOBIND")) { /* R579-E2 bisect: bare-pipeline draw */
                 rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
                                            light_system_grid_slot(ls));
                 rhi_cmd_bind_material_textures_ibl(cmd,
-                    rs->test_tex, mr_tex, rs->test_tex, rs->test_tex,
+                    rs->test_tex, mr_tex, nrm_flat, rs->test_tex,
                     rs->test_tex, rs->test_tex, rs->test_tex, rs->sampler,
                     ibl.brdf_lut, ibl.irradiance_map, ibl.prefilter_map, NULL, 0u);
                 }
@@ -890,27 +918,44 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
                     ierr++;
             }
             if (ierr == 0u) {
-                /* Find the first pixel that differs from the clear color
-                 * (0.02,0.02,0.04) in both passes and dump it. */
+                /* R599: REAL A/B assertion restored — the gate had decayed to
+                 * diagnostic-only (it returned true unconditionally, so TEST
+                 * 7b passed vacuously on VK too). Pass A draws with factors
+                 * (1,1), pass B with (0,0.2) (mr texel b~0.7 g~0.55): lit
+                 * pixels must exist (fragments execute) and the factor change
+                 * must move at least one of them (the factor provably flows).
+                 * 8B/px native RGBA16F readback on both backends (R587/R593). */
+                const f32 clear_rgb[3] = { 0.02f, 0.02f, 0.04f };
+                usize lit = 0u, moved = 0u;
                 const u8 *ea = NULL, *eb = NULL;
                 for (usize i = 0u; i < (usize)iw * ih; i++) {
                     const u8 *pa = pix_a + i * px_stride;
                     const u8 *pb = pix_b + i * px_stride;
-                    bool ca = true, cb = true;
-                    for (u32 b = 0u; b < px_stride; b++) {
-                        if (pa[b] != pix_a[b]) ca = false;
-                        if (pb[b] != pix_a[b]) cb = false;
+                    bool is_clear = true;
+                    for (u32 c = 0u; c < 3u; c++) {
+                        u16 h = (u16)(pa[c * 2u] | ((u16)pa[c * 2u + 1u] << 8));
+                        if (fabsf(tv_f16_to_f32(h) - clear_rgb[c]) > 0.03f) {
+                            is_clear = false;
+                            break;
+                        }
                     }
-                    if (!ca && !ea) ea = pa;
-                    if (!cb && !eb) eb = pb;
-                    if (ea && eb) break;
+                    if (is_clear) continue;
+                    lit++;
+                    if (!ea) { ea = pa; eb = pb; }
+                    if (memcmp(pa, pb, 6u) != 0) moved++;
                 }
+                pass = lit > 0u && moved > 0u;
+                if (!pass)
+                    LOG_ERROR("FAIL: pbr factor A/B gate — lit=%zu moved=%zu "
+                              "(want lit>0 and moved>0; factors (1,1) vs (0,0.2))",
+                              lit, moved);
                 if (ea && eb && getenv("TV_MR_DEBUG")) {
                     bool same = memcmp(ea, eb, px_stride) == 0;
                     LOG_INFO("RDBG: echo first-lit A=[%02x %02x %02x %02x %02x %02x %02x %02x] "
-                             "B=[%02x %02x %02x %02x %02x %02x %02x %02x] identical=%d",
+                             "B=[%02x %02x %02x %02x %02x %02x %02x %02x] identical=%d lit=%zu moved=%zu",
                              ea[0], ea[1], ea[2], ea[3], ea[4], ea[5], ea[6], ea[7],
-                             eb[0], eb[1], eb[2], eb[3], eb[4], eb[5], eb[6], eb[7], (int)same);
+                             eb[0], eb[1], eb[2], eb[3], eb[4], eb[5], eb[6], eb[7],
+                             (int)same, lit, moved);
                 } else if (getenv("TV_MR_DEBUG")) {
                     LOG_INFO("RDBG: echo no lit pixels found (ea=%d eb=%d)",
                              ea != NULL, eb != NULL);
@@ -923,6 +968,7 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
         free(pix_b);
     }
     if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
+    if (rhi_handle_valid(nrm_flat)) rhi_texture_destroy(rs->device, nrm_flat);
     if (rhi_handle_valid(mr_tex)) rhi_texture_destroy(rs->device, mr_tex);
     if (ls) {
         light_system_shutdown(ls);
@@ -930,7 +976,7 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     }
     if (rhi_handle_valid(pipe)) rhi_pipeline_destroy(rs->device, pipe);
     ibl_destroy(&ibl, rs->device);
-    return true;
+    return pass;
 }
 /* TEST 7c body: R586 — the REAL pbr_clustered pair end-to-end. TEST 7b gates
  * the clustered FRAG via a substitute push-free vert (R579 verdict); this
@@ -3713,15 +3759,11 @@ ibl_pass ? "PASSED ✓" : "FAILED");
 LOG_INFO("============================================");
 LOG_INFO("TEST 7b: PBR METALLIC/ROUGHNESS FACTORS");
 LOG_INFO("============================================");
-#ifdef ENGINE_VULKAN
+/* R599: gate restored on GL — the R579-B "zero fragments" driver no-op is
+ * gone on the current AMD driver (24.10.38): the TV_MR_DEBUG probe (its
+ * R587-stale readback stride repaired this round) shows the triangle
+ * rasterizing, and the real A/B factor gate below now passes locally. */
 bool pbrf_pass = tv_test_pbr_factor(&render, vbo, ibo, gw, gh);
-#else
-/* VK-verified pixel gate. The Windows AMD GL driver no-ops this PBR draw
- * (valid pipeline, zero fragments — same driver-strictness family as the
- * sky_noise3 portability find); GL builds skip the pixel gate. */
-bool pbrf_pass = true;
-LOG_INFO("SKIP: PBR factor pixel gate (real defect confirmed by CI lavapipe; see R579-B)");
-#endif
 LOG_INFO("RESULT: PBR MATERIAL FACTOR TEST %s",
 pbrf_pass ? "PASSED ✓" : "FAILED");
 

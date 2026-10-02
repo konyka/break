@@ -866,6 +866,30 @@ TEST(forward_clustered_occlusion_strength_wiring)
     ASSERT_NOT_NULL(strstr(src, "\"u_occlusion_strength\""));
 }
 
+/* R599: TEST 7b restored as a REAL, both-backend gate. Two latent defects
+ * had stacked since R579: (1) the gate returned true unconditionally —
+ * diagnostic-only, vacuous even on VK; (2) its scene never consumed mr
+ * (minimal-write discipline from the broken-vert era left the camera
+ * in-plane, light counts 0, fog 0/0 — the output was mr-independent, so
+ * any real assertion measured moved=0). The GL park was retired after the
+ * driver probe (24.10.38 rasterizes the draw fine; the R579-B "zero
+ * fragments" no-op is gone) and the scene was rebuilt to TEST 7c's full
+ * frame-state write set. */
+TEST(pbr_factor_gate_restored_real_assertion)
+{
+    static char src[524288]; /* test_vulkan.c lives in engine/src */
+    ASSERT_TRUE(read_engine_source("test_vulkan.c", src, sizeof(src)));
+    /* Non-vacuous assertion: lit pixels must exist AND the factor change
+     * must move at least one of them. */
+    ASSERT_NOT_NULL(strstr(src, "REAL A/B assertion restored"));
+    ASSERT_NOT_NULL(strstr(src, "lit > 0u && moved > 0u"));
+    ASSERT_NOT_NULL(strstr(src, "return pass;"));
+    /* GL park retired — the call site runs the gate on both backends. */
+    ASSERT_NOT_NULL(strstr(src, "R599: gate restored on GL"));
+    /* The scene writes the full frame state (light counts evaluated). */
+    ASSERT_NOT_NULL(strstr(src, "rhi_cmd_set_uniform_i32(cmd, l_pc,   1)"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -902,4 +926,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_per_entity_fallback_wiring);
     RUN_TEST(forward_clustered_default_on_after_bench);
     RUN_TEST(forward_clustered_occlusion_strength_wiring);
+    RUN_TEST(pbr_factor_gate_restored_real_assertion);
 TEST_MAIN_END()

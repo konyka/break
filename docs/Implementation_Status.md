@@ -1,5 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R599 TEST 7b 停驻门重评估与真实化（TDD/systematic-debugging）— GL 公园退役；钓出并修复门自 R579 起的双层潜伏缺陷
+
+- **重评估起点**:R579-B 起 GL 公园（"AMD 驱动零片段 no-op,GL 跳过 7b 像素门")。先用现成 `TV_MR_DEBUG` 钩子零改动实测——钩子自身 R587 遗留 stride(GL RGBA16F 已 8B/px 原生，钩子仍 4B/px→readback 全败），修复后探针显示**当前驱动（24.10.38）三角形正常光栅化**，零片段已逝。
+- **systematic-debugging 连环根因（两个独立潜伏层）**:
+  ① 恢复 GL 调用点后实测发现**门体整体真空**——`tv_test_pbr_factor` 的 A/B 区块只做 RDBG 日志、`return true`,VK 端的"通过"自 R579 起同样是空转（"real pixel gate runs unconditionally"注释为陈旧表述）。恢复真实断言（lit>0 且 moved>0，双端 8B/px f16 回读）。
+  ② 断言首跑 moved=0(lit=240000)——MR echo 二分（新增 `TV_MR_DEBUG=2` 跳过 top-echo，保留 MR echo，永久二分面）证因子乘法正确到达（A=(0.70,0.55) B=(0,0.11))，缺陷在**门的场景构造**:R579-E 最小写入戒律（为已修复 vert 的权宜）使全部帧 uniform 停留默认——相机在原点（V 在三角形平面内→grazing Fresnel 杀 diffuse)、灯光计数 0（测试自加的 dir+point 两灯从不被求值）、fog 0/0(0 除 NaN 风险）、emissive 因子 0——**输出与 mr 无关**，任何真实断言必然 moved=0。修法=对齐 TEST 7c 全量帧状态写入（相机 (0,0,2)、计数 1/1、fog/screen/near/far、emissive 置零）。
+  附带排雷：7b 历史把 `test_tex`({255,128,64}）绑进法线槽（7c 注释记载同型 NaN 危害），一并换平法线夹具。
+- **TDD（红→绿实证）**：真实断言恢复后 GL/VK 均如实红（moved=0，场景 mr 无关）→场景重构后**双端 7b PASSED**(GL 全套件 ALL PASSED;VK 失败项恰为已知基线 12b+golden 双项）。鉴别力有自然负控：场景修复前两轮 moved=0 失败即门"该红则红"的实证。契约测试 `pbr_factor_gate_restored_real_assertion`（非真空锚/双端调用点/计数写入锚）36/36。
+- **回归**:CTest GL 113/114、VK 112/114——失败=test_platform_win32_runtime 剪贴板子项（外部持锁环境瞬态，本轮持续）+VK test_vulkan 同基线；本轮为测试侧-only 变更（test_vulkan.c+契约），生产零改动。
+- **边界**:7b 的 VK 路径继续用 pbr_ibl_test_vk.vert(push-free,R579-E2 既定）,view/proj 写入为 no-op(-1 位置守卫）;VK 真路径自此同样被真实断言覆盖（历史上首次）;`TV_MR_DEBUG=1` 行为不变（top-echo+MR echo 双注入）,`=2` 新增单 MR echo 二分；法线槽平法线夹具与 7c 同约。
+
 ## 本轮更新：R598 非 arr clustered 变体 glTF occlusion strength（TDD）— R586 最后残余边界清零；VK push 块 228 空位启用
 
 - **缺口**（R586 起沿用的"材质 occlusion strength 缩放前向不支持",R592 仅关闭 arr 段）：非 arr clustered 变体（静态/实例/蒙皮/per-entity)frag 的 `CL_OCC_STRENGTH` 硬编码 `(1.0)`——材质 `occlusionTexture.strength` 在 clustered 前向被忽略（deferred 与 blinn 族早已支持，arr 变体 R592 走逐层表）。
