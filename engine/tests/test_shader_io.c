@@ -799,6 +799,29 @@ TEST(deferred_gbuffer_normal_mapping_wiring)
     ASSERT_TRUE(nrm_bind_hits >= 2);
 }
 
+/* R596: the ECS PER-ENTITY fallback (the outer else of the instanced-pipeline
+ * branch — runs when the instanced pipeline is invalid, or under the new
+ * BREAK_FORCE_PER_ENTITY diagnostic) joins the opt-in clustered forward
+ * mode: the STATIC clustered variant is bound with per-draw model via
+ * cl_loc_model and clustered_bind_material per entity, instead of the
+ * blinn pipeline. The selected-entity highlight stays blinn (debug tint
+ * draw) and rebinds the blinn frame state. */
+TEST(forward_clustered_per_entity_fallback_wiring)
+{
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    /* Diagnostic env that forces the fallback branch (makes the path
+     * exercisable without an instanced-pipeline failure). */
+    ASSERT_NOT_NULL(strstr(src, "BREAK_FORCE_PER_ENTITY"));
+    /* Per-entity branch clustered split: frame emit + per-draw model +
+     * per-material bind through the static clustered variant. */
+    ASSERT_NOT_NULL(strstr(src, "pe_clustered"));
+    ASSERT_NOT_NULL(strstr(src, "pe_clustered ? render.cl.cl_loc_model"));
+    /* The blinn-era highlight rebinds the blinn frame state after the
+     * clustered per-entity loop. */
+    ASSERT_NOT_NULL(strstr(src, "highlight is a blinn-era debug"));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -832,4 +855,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_array_variant_wiring);
     RUN_TEST(mat_array_bake_includes_normal_array);
     RUN_TEST(deferred_gbuffer_normal_mapping_wiring);
+    RUN_TEST(forward_clustered_per_entity_fallback_wiring);
 TEST_MAIN_END()

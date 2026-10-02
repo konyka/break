@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R596 ECS 每实体回退并入前向 clustered（TDD）— R592 落账的最后 blinn 回退面清零（除设计内自有管线）
+
+- **缺口**（R592 落账"blinn 回退面仅剩 ECS 每实体回退与自有管线绘制"):ECS 每实体回退是 instanced 分支的**外层 else**(instanced 管线创建失败时跑）——逐实体 blinn 管线 + `render.loc_model`/`bind_material`;branch 内选中实体高亮块同为 blinn。调研顺带澄清：内层 `if (instance_count > 0)` 无 else，该回退在 instanced 管线有效时永不运行。
+- **方案**：回退分支按 `fwd_clustered` 分流——入口发射 `forward_clustered_bind_frame`（静态变体 `render.cl`)，逐实体 `pe_clustered ? render.cl.cl_loc_model : render.loc_model` + `clustered_bind_material`/`bind_material` 二选一；**高亮块维持 blinn**(loc_albedo 纯色 tint 无 clustered 对应物，编辑调试绘制）,clustered 循环后重发射 blinn 帧状态（六 uniform 镜像帧首）。新增诊断 env **`BREAK_FORCE_PER_ENTITY=1`**(6533 门加 `&& !force_per_entity`)——该回退否则需真实 instanced 管线创建失败才可达，诊断门使其本地/CI 可演（TV_ONLY_* 同族）。
+- **TDD（红→绿实证）**：契约测试 `forward_clustered_per_entity_fallback_wiring`(env 标记/pe_clustered/三元 model 写/高亮重绑锚）如实红；GREEN 后 33/33（首轮锚串跨行失配一修即过）。真机实证：**VK/GL × clustered 开关 × 强制 per-entity 四配置 120 帧全 rc=0、VK validation 0**;clustered+强制配置下逐帧 clustered 发射计数 3→**4**（第四发即 per-entity 路径发射，10 物理立方体经静态变体逐实体绘制——非空转）。
+- **回归**:GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）;CTest GL **114/114**、VK 113/114（唯一失败=test_vulkan 同基线；test_shader_io 双树重建后过）。
+- **边界**:`BREAK_FORWARD_CLUSTERED` 下剩余 blinn 面均为设计内自有管线——wireframe 调试族/terrain/water/后处理/选中高亮；`BREAK_FORCE_PER_ENTITY` 为诊断门（文档化），默认关；deferred 路径无 per-entity 概念（ECS 实体仅前向绘制）；高亮块在 instanced 管线有效时本就不运行（既有行为，未动）。
+
 ## 本轮更新：R595 deferred G-Buffer 法线贴图扰动（TDD）— 引擎级 deferred 法线缺口落地，五 gbuffer frag 统一采样；R594 烘焙 normal_array 获第二消费方
 
 - **缺口**（R594 落账边界"法线贴图接入 deferred 属独立大项")：调研定论——生产 `bind_material` **一直**把材质 normal_map 绑在共享布局槽 3，但五个 gbuffer frag(base GL/VK、skinned VK、arr GL/VK;GL 蒙皮路径复用 gbuffer.frag）从不声明/采样它，gbuf_normal 恒为顶点法线 oct 编码。CPU 侧零接线缺口，缺的只是 shader。

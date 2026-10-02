@@ -3188,6 +3188,10 @@ bool gpu_indirect_enabled = false;
  * the clustered path is evaluated; instanced/skinned/mat-arr/terrain/water
  * draws are unaffected (documented boundary). */
 bool fwd_clustered_mode = false;
+/* R596: BREAK_FORCE_PER_ENTITY=1 — diagnostic that bypasses the ECS instanced
+ * branch so the per-entity fallback loop runs with real entities (it
+ * otherwise requires an instanced-pipeline creation failure to trigger). */
+bool force_per_entity = false;
 f32 cg_saturation = 1.1f;
 f32 cg_contrast = 1.05f;
 f32 cg_brightness = 1.0f;
@@ -3462,6 +3466,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     { const char *e = getenv("BREAK_MAT_INDIRECT"); if (e && !atoi(e)) mat_indirect_enabled = false; }
     /* R589: opt-in forward clustered PBR for static-scene draws. */
     { const char *e = getenv("BREAK_FORWARD_CLUSTERED"); if (e && atoi(e)) fwd_clustered_mode = true; }
+    /* R596: diagnostic — force the ECS per-entity fallback branch. */
+    { const char *e = getenv("BREAK_FORCE_PER_ENTITY"); if (e && atoi(e)) force_per_entity = true; }
     if (fwd_clustered_mode)
         LOG_INFO("Forward clustered PBR: ON (BREAK_FORWARD_CLUSTERED) — static-scene draws use pbr_clustered; instanced/skinned/mat-arr/terrain/water unchanged");
     {
@@ -6530,7 +6536,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * static glTF scene draws are no longer mutually exclusive; drew_any
          * now only gates the identity-mesh fallback below. */
         bool drew_any = false;
-        if (scene.mesh_count > 0 && rhi_handle_valid(render.instanced_pipeline)) {
+        if (scene.mesh_count > 0 && rhi_handle_valid(render.instanced_pipeline) &&
+            !force_per_entity /* R596 */) {
             ComponentType mesh_query_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
             Query *mq = world_query_cached(world, mesh_query_types, 2);
             u32 instance_count = 0;
@@ -7362,6 +7369,23 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
             /* instance_data is persistent — no free here */
         } else if (scene.mesh_count > 0) {
+            /* R596: clustered mode covers the per-entity fallback (instanced
+             * pipeline invalid, or BREAK_FORCE_PER_ENTITY diagnostics) with
+             * the STATIC clustered variant — per-draw model via cl_loc_model
+             * and clustered_bind_material per entity; the blinn pipeline
+             * bound above stays untouched for the non-clustered case. */
+            const bool pe_clustered = fwd_clustered &&
+                                      rhi_handle_valid(render.clustered_pipeline);
+            if (pe_clustered) {
+                Vec3 fog_pe = vec3(bg_r, bg_g, bg_b);
+                forward_clustered_bind_frame(cmd, &render,
+                                             render.clustered_pipeline, &render.cl,
+                                             &lights, &view, &proj, &prev_view_proj,
+                                             &camera.position, &ambient_col,
+                                             camera.near_plane, camera.far_plane,
+                                             fog_enabled, fog_near, fog_far,
+                                             &fog_pe, underwater, rw, rh, shadow_bias);
+            }
             ComponentType mesh_query_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
             Query *mq = world_query_cached(world, mesh_query_types, 2);
 
@@ -7394,10 +7418,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             model.e[3][0] = et->pos[0];
                             model.e[3][1] = et->pos[1];
                             model.e[3][2] = et->pos[2];
-                            rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, pe_clustered ? render.cl.cl_loc_model : render.loc_model, &model.e[0][0]);
 
                             Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
-                            bind_material(cmd, &render, mat, &scene);
+                            if (pe_clustered) {
+                                clustered_bind_material(cmd, &render, &render.cl, mat, &scene);
+                            } else {
+                                bind_material(cmd, &render, mat, &scene);
+                            }
 
                             rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
                             if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
@@ -7416,6 +7444,20 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             /* cached query — no query_done() needed */
 
             if (selected_entity_count > 0 && selected_entity_id > 0 && scene.mesh_count > 0) {
+                /* R596: the selected-entity highlight is a blinn-era debug
+                 * draw (loc_albedo solid tint has no clustered equivalent) —
+                 * after a clustered per-entity loop the blinn frame state
+                 * must be re-emitted for it. */
+                if (pe_clustered) {
+                    rhi_cmd_bind_pipeline(cmd, active_pipeline);
+                    rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
+                    rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
+                                             camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                }
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
                 CMeshRef   *sm = world_get_component(world, se, COMP_MESH_REF);
