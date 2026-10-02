@@ -2757,6 +2757,201 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
     return pass;
 }
 
+/* TEST 12e body: R595 deferred G-Buffer NORMAL MAP perturbation. One NDC
+ * quad (normal (0,0,1)) drawn twice with identical state except the slot-3
+ * normal texture: phase A binds the flat tangent normal (128,128,255 ->
+ * TBN*(0,0,1) = N identity), phase B a tilted map (204,128,230 -> tangent
+ * (0.6,0,0.8)). The gbuffer shaders must sample the normal map and perturb
+ * via derivative TBN (no tangent attribute in the 32B contract), so RT1's
+ * oct-encoded normal moves from ~(0.5,0.5) (A) to ~(0.71,0.50) (B). RT1 is
+ * RGBA16F — R587 native f16 readback on BOTH backends. Runs on both
+ * backends (production bind_material already binds the material's normal
+ * map at slot 3 — only the shaders were missing). */
+static bool tv_test_deferred_gbuffer_normalmap(const TestRenderState *rs) {
+    const u32 GBW = 256u, GBH = 256u;
+    bool setup_ok = false;
+    RHIMRTFBO   mrt;
+    memset(&mrt, 0, sizeof(mrt));
+    RHIPipeline pipe = RHI_HANDLE_NULL;
+    RHITexture  tex_alb = RHI_HANDLE_NULL, tex_nflat = RHI_HANDLE_NULL;
+    RHITexture  tex_ntilt = RHI_HANDLE_NULL;
+    RHIBuffer   vbo = RHI_HANDLE_NULL, ibo = RHI_HANDLE_NULL;
+    RHIBuffer   ubo = RHI_HANDLE_NULL;
+
+    u8 alb_px[4 * 4 * 4], nfl_px[4 * 4 * 4], ntl_px[4 * 4 * 4];
+    for (u32 p = 0; p < 16u; p++) {
+        u8 *a  = &alb_px[(usize)p * 4u];
+        u8 *nf = &nfl_px[(usize)p * 4u];
+        u8 *nt = &ntl_px[(usize)p * 4u];
+        a[0] = 64;  a[1] = 64;  a[2] = 64;  a[3] = 255;
+        nf[0] = 128; nf[1] = 128; nf[2] = 255; nf[3] = 255; /* flat (0,0,1) */
+        nt[0] = 204; nt[1] = 128; nt[2] = 230; nt[3] = 255; /* tilt ~(0.6,0,0.8) */
+    }
+    RHITextureDesc atd = { .width = 4, .height = 4,
+                           .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                           .mip_levels = 1, .data = alb_px };
+    RHITextureDesc nfd = { .width = 4, .height = 4,
+                           .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                           .mip_levels = 1, .data = nfl_px };
+    RHITextureDesc ntd = { .width = 4, .height = 4,
+                           .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                           .mip_levels = 1, .data = ntl_px };
+    tex_alb   = rhi_texture_create(rs->device, &atd);
+    tex_nflat = rhi_texture_create(rs->device, &nfd);
+    tex_ntilt = rhi_texture_create(rs->device, &ntd);
+
+    /* Single centered NDC quad (pos3+nrm3+uv2, 32B stride). */
+    f32 qv[4 * 8];
+    u32 qi[6] = { 0, 1, 2, 0, 2, 3 };
+    const f32 qpos[4][2] = { {-0.5f, -0.5f}, {0.5f, -0.5f}, {0.5f, 0.5f}, {-0.5f, 0.5f} };
+    const f32 quv[4][2]  = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+    for (u32 v = 0; v < 4; v++) {
+        f32 *d = &qv[v * 8];
+        d[0] = qpos[v][0]; d[1] = qpos[v][1]; d[2] = 0.0f;
+        d[3] = 0.0f; d[4] = 0.0f; d[5] = 1.0f;
+        d[6] = quv[v][0]; d[7] = quv[v][1];
+    }
+    RHIBufferDesc vbd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(qv), .initial_data = qv };
+    RHIBufferDesc ibd = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(qi), .initial_data = qi };
+    vbo = rhi_buffer_create(rs->device, &vbd);
+    ibo = rhi_buffer_create(rs->device, &ibd);
+
+    f32 fac_init[8] = { 1.0f, 1.0f, 1.0f, 0.0f,  0.0f, 0.0f, 0.0f, 0.0f };
+    RHIBufferDesc ubd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                          .size = sizeof(fac_init), .initial_data = fac_init };
+    ubo = rhi_buffer_create(rs->device, &ubd);
+
+    RHIFormat gfmts[5] = {
+        RHI_FORMAT_R8G8B8A8_UNORM,
+        RHI_FORMAT_R16G16B16A16_SFLOAT,
+        RHI_FORMAT_R8G8B8A8_UNORM,
+        RHI_FORMAT_R16G16B16A16_SFLOAT,
+        RHI_FORMAT_R16G16B16A16_SFLOAT,
+    };
+    mrt = rhi_mrt_fbo_create(rs->device, GBW, GBH, gfmts, 5u);
+
+    usize vl = 0, fl = 0;
+    char *vs_src = shader_read_file(TV_VS_GBUFFER, &vl);
+    char *fs_src = shader_read_file(TV_FS_GBUFFER, &fl);
+    if (vs_src && fs_src) {
+        RHIShader svs = rhi_shader_create(rs->device, vs_src, vl, false);
+        RHIShader sfs = rhi_shader_create(rs->device, fs_src, fl, true);
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            RHIPipelineDesc dpd;
+            memset(&dpd, 0, sizeof(dpd));
+            dpd.vert = svs;
+            dpd.frag = sfs;
+            dpd.vertex_stride = 8u * sizeof(f32);
+            dpd.uses_textures = true;
+            dpd.depth_compare_lequal = true;
+            dpd.mrt_attachment_count = 5u;
+            dpd.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+            dpd.mrt_formats[1] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+            dpd.mrt_formats[2] = RHI_FORMAT_R8G8B8A8_UNORM;
+            dpd.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+            dpd.mrt_formats[4] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+            pipe = rhi_pipeline_create(rs->device, &dpd);
+        }
+        if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
+        if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
+    }
+    free(vs_src); free(fs_src);
+
+    setup_ok = rhi_handle_valid(pipe) && rhi_handle_valid(mrt.fb) &&
+               rhi_handle_valid(mrt.color_tex[1]) &&
+               rhi_handle_valid(tex_alb) && rhi_handle_valid(tex_nflat) &&
+               rhi_handle_valid(tex_ntilt) &&
+               rhi_handle_valid(vbo) && rhi_handle_valid(ibo) &&
+               rhi_handle_valid(ubo);
+    if (!setup_ok)
+        LOG_ERROR("FAIL: gbuffer-normalmap setup (pipe=%d mrt=%d rt1=%d nrm=%d/%d)",
+                  (int)rhi_handle_valid(pipe), (int)rhi_handle_valid(mrt.fb),
+                  (int)rhi_handle_valid(mrt.color_tex[1]),
+                  (int)rhi_handle_valid(tex_nflat), (int)rhi_handle_valid(tex_ntilt));
+
+    /* Two phases, two frames each (the second frame is the one read back —
+     * matches the present-mapped readback convention of TEST 12b). */
+    f32 oct[2][2] = { {0.0f, 0.0f}, {0.0f, 0.0f} };
+    u32 phases_ok = 0;
+    if (setup_ok) {
+        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
+        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
+        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+        i32 l_prev  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_prev_mvp");
+        Mat4 idm = mat4_identity();
+        const RHITexture phase_nrm[2] = { tex_nflat, tex_ntilt };
+        const usize rt1_bytes = (usize)GBW * GBH * 8u; /* RGBA16F native */
+        u8 *rt1 = (u8 *)malloc(rt1_bytes);
+        for (u32 ph = 0; ph < 2 && rt1; ph++) {
+            for (u32 f = 0; f < 2; f++) {
+                RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+                if (!cmd) break;
+                rhi_mrt_fbo_bind(cmd, &mrt);
+                rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
+                rhi_cmd_clear_depth(cmd);
+                rhi_cmd_bind_pipeline(cmd, pipe);
+                rhi_cmd_set_uniform_mat4(cmd, l_model, &idm.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_view,  &idm.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_proj,  &idm.e[0][0]);
+                rhi_cmd_set_uniform_mat4(cmd, l_prev,  &idm.e[0][0]);
+                /* Slot 3 is the ONLY varying input (flat vs tilted normal);
+                 * the remaining samplers are inert fixtures (TEST 12b
+                 * convention — the gbuffer frag reads 0/2/4 + 15/9). */
+                rhi_cmd_bind_material_textures_ibl(cmd,
+                    tex_alb, tex_alb, phase_nrm[ph], tex_alb, tex_alb,
+                    RHI_HANDLE_NULL, RHI_HANDLE_NULL, rs->sampler,
+                    RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+                rhi_cmd_update_buffer(cmd, ubo, 0u, fac_init, sizeof(fac_init));
+                rhi_cmd_bind_uniform_buffer(cmd, ubo, 0u);
+                rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                rhi_cmd_draw_indexed(cmd, 6, 1);
+                rhi_mrt_fbo_unbind(cmd, GBW, GBH);
+                rhi_frame_end(rs->device);
+                rhi_present(rs->device);
+            }
+            if (rhi_texture_read_pixels(rs->device, mrt.color_tex[1], rt1, rt1_bytes)) {
+                const u8 *p = &rt1[((usize)(GBH / 2u) * GBW + GBW / 2u) * 8u];
+                for (u32 c = 0; c < 2u; c++) {
+                    u16 h = (u16)(p[c * 2u] | ((u16)p[c * 2u + 1u] << 8));
+                    oct[ph][c] = tv_f16_to_f32(h);
+                }
+                phases_ok++;
+            }
+        }
+        free(rt1);
+    }
+
+    bool flat_ok  = phases_ok == 2u &&
+                    oct[0][0] > 0.45f && oct[0][0] < 0.55f &&
+                    oct[0][1] > 0.45f && oct[0][1] < 0.55f; /* identity (0.5,0.5) */
+    bool tilt_ok  = phases_ok == 2u &&
+                    oct[1][0] > 0.62f && oct[1][0] < 0.80f && /* ~(0.71,0.50) */
+                    oct[1][1] > 0.44f && oct[1][1] < 0.56f &&
+                    oct[1][0] > oct[0][0] + 0.10f;
+    bool pass = setup_ok && flat_ok && tilt_ok;
+    if (!pass)
+        LOG_ERROR("FAIL: gbuffer-normalmap RT1 oct A=(%.3f,%.3f) B=(%.3f,%.3f) "
+                  "(want A~(0.50,0.50), B~(0.71,0.50); phases=%u)",
+                  oct[0][0], oct[0][1], oct[1][0], oct[1][1], phases_ok);
+    else
+        LOG_INFO("PASS: deferred gbuffer normal map perturbation "
+                 "(RT1 oct (%.3f,%.3f) -> (%.3f,%.3f), slot-3 map drives derivative TBN)",
+                 oct[0][0], oct[0][1], oct[1][0], oct[1][1]);
+
+    if (rhi_handle_valid(pipe))      rhi_pipeline_destroy(rs->device, pipe);
+    if (rhi_handle_valid(tex_alb))   rhi_texture_destroy(rs->device, tex_alb);
+    if (rhi_handle_valid(tex_nflat)) rhi_texture_destroy(rs->device, tex_nflat);
+    if (rhi_handle_valid(tex_ntilt)) rhi_texture_destroy(rs->device, tex_ntilt);
+    if (rhi_handle_valid(ubo))       rhi_buffer_destroy(rs->device, ubo);
+    if (rhi_handle_valid(ibo))       rhi_buffer_destroy(rs->device, ibo);
+    if (rhi_handle_valid(vbo))       rhi_buffer_destroy(rs->device, vbo);
+    if (rhi_handle_valid(mrt.fb))    rhi_mrt_fbo_destroy(rs->device, &mrt);
+    return pass;
+}
+
 /* TEST 12c body: R582 deferred emissive END-TO-END through the real
  * DeferredSystem — G-Buffer write via sys->gbuffer_pipeline followed by
  * deferred_lighting_pass. One quad with black albedo + white emissive
@@ -3573,9 +3768,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_INFO("RESULT: DEFERRED EMISSIVE HDR TEST %s",
                  hdr_pass ? "PASSED ✓" : "FAILED");
 
+        LOG_INFO("============================================");
+        LOG_INFO("TEST 12e: DEFERRED GBUFFER NORMAL MAP");
+        LOG_INFO("============================================");
+        bool nmap_pass = tv_test_deferred_gbuffer_normalmap(&render);
+        LOG_INFO("RESULT: DEFERRED GBUFFER NORMAL MAP TEST %s",
+                 nmap_pass ? "PASSED ✓" : "FAILED");
+
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && f16rt_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = motion_rt1_pass && f16rt_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -4556,6 +4758,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     LOG_INFO("RESULT: DEFERRED EMISSIVE HDR TEST %s",
              hdr_pass ? "PASSED ✓" : "FAILED");
 
+    /* ---- TEST 12e: R595 deferred G-Buffer normal-map perturbation ---- */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST 12e: DEFERRED GBUFFER NORMAL MAP");
+    LOG_INFO("============================================");
+    bool nmap_pass = tv_test_deferred_gbuffer_normalmap(&render);
+    LOG_INFO("RESULT: DEFERRED GBUFFER NORMAL MAP TEST %s",
+             nmap_pass ? "PASSED ✓" : "FAILED");
+
     /* ---- TEST 8: Golden image regression ---- */
     u32 gw2, gh2;
     platform_get_drawable_size(engine.platform, &gw2, &gh2);
@@ -4584,7 +4794,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool all_pass = motion_rt1_pass && f16rt_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && pbrc_pass && psh_pass && golden_pass &&
+idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

@@ -2107,11 +2107,12 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_mvp, &prev_mvp->e[0][0]);
 
     /* One bind for the whole pass: slot 0 = albedo array, slot 2 = MR array,
-     * slot 4 = emissive array (R582), slot 15/9 = occlusion array (R583);
-     * the rest reuse the shared fallback/shadow/SSAO/IBL slots (unsampled
-     * by the gbuffer_arr shaders). */
+     * slot 3 = normal array (R595: R594's baked per-layer normal maps drive
+     * the gbuffer_arr perturbation), slot 4 = emissive array (R582),
+     * slot 15/9 = occlusion array (R583); the rest reuse the shared
+     * fallback/shadow/SSAO/IBL slots (unsampled by the gbuffer_arr shaders). */
     rhi_cmd_bind_material_textures_ibl(cmd,
-        mb->mats.albedo_array, mb->mats.mr_array, render->fallback_normal,
+        mb->mats.albedo_array, mb->mats.mr_array, mb->mats.normal_array,
         mb->mats.emissive_array, mb->mats.occlusion_array,
         render->shadow_map.depth_tex, render->ssao_tex,
         render->sampler, render->ibl.brdf_lut, render->ibl.irradiance_map,

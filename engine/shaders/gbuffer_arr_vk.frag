@@ -24,6 +24,10 @@ layout(binding = 4) uniform sampler2DArray u_emissive; /* R582 */
  * Textureless layers are white-filled by the bake so mix(1.0, 1.0, z) = 1.0. */
 layout(binding = 9) uniform sampler2DArray u_occlusion;
 
+/* R595: tangent-space normal map array at set 0 binding 3 — layer follows
+ * v_layer; the pass binds the R594 baked per-layer normal_array. */
+layout(binding = 3) uniform sampler2DArray u_normal_map_arr;
+
 /* R580/R581: per-layer glTF material factors via the aux UBO (set=1
  * binding=0 — the arr pipeline has no texel set, so the aux UBO set lands at
  * index 1). Indexed by v_layer; std140 vec4 stride; capacity 64 =
@@ -46,6 +50,20 @@ vec2 octahedron_encode(vec3 n) {
     return n.xy * 0.5 + 0.5;
 }
 
+/* R595: tangent-space normal map perturbation — derivative TBN (the 32B
+ * vertex contract carries no tangent attribute); the map layer follows
+ * v_layer like every other array sampler in this pass. */
+vec3 perturb_normal(vec3 n, vec2 uv) {
+    vec3 map = texture(u_normal_map_arr, vec3(uv, float(v_layer))).rgb * 2.0 - 1.0;
+    vec3 q1  = dFdx(v_world_pos);
+    vec3 q2  = dFdy(v_world_pos);
+    vec2 st1 = dFdx(uv);
+    vec2 st2 = dFdy(uv);
+    vec3 t = normalize(q1 * st2.t - q2 * st1.t);
+    vec3 b = -normalize(cross(n, t));
+    return normalize(mat3(t, b, n) * map);
+}
+
 void main() {
     vec4  fac   = u_factor_arr[min(v_layer, 63u)];   /* R580/R581 */
     vec4  efac  = u_emissive_arr[min(v_layer, 63u)]; /* R582 */
@@ -59,7 +77,8 @@ void main() {
     vec3  emis  = texture(u_emissive, vec3(v_texcoord, float(v_layer))).rgb * efac.rgb; /* R582 */
 
     out_albedo_metallic = vec4(base, metal);
-    out_normal          = vec4(octahedron_encode(v_normal), 0.0, 1.0);
+    vec3 nrm = perturb_normal(normalize(v_normal), v_texcoord); /* R595 */
+    out_normal          = vec4(octahedron_encode(nrm), 0.0, 1.0);
     out_roughness_ao    = vec4(rough, ao, clamp(fac.w, 0.0, 1.0), 1.0);
     out_emissive        = vec4(emis, 1.0); /* R584: HDR — no LDR clamp (RGBA16F) */
     out_velocity        = vec4(v_velocity, 0.0, 1.0);

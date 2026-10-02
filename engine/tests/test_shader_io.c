@@ -759,6 +759,46 @@ TEST(mat_array_bake_includes_normal_array)
     ASSERT_TRUE(occ_key_hits >= 2);
 }
 
+/* R595: deferred G-Buffer normal-map perturbation — the five gbuffer frags
+ * (base GL/VK, skinned VK, arr GL/VK; the GL skinned path shares gbuffer.frag)
+ * sample the slot-3 normal map and perturb via derivative TBN (no tangent
+ * attribute in the 32B/64B vertex contracts). Production bind_material has
+ * always bound the material's normal map at slot 3 — only the shaders were
+ * missing; the arr gbuffer path upgrades from fallback_normal to the R594
+ * baked per-layer normal_array. */
+TEST(deferred_gbuffer_normal_mapping_wiring)
+{
+    /* Base + skinned frags: 2D sampler at binding 3 + derivative TBN. */
+    const char *base_frags[] = { "gbuffer.frag", "gbuffer_vk.frag",
+                                 "gbuffer_skinned_vk.frag" };
+    for (usize i = 0; i < sizeof(base_frags) / sizeof(base_frags[0]); i++) {
+        char fsh[16384];
+        ASSERT_TRUE(read_shader_source(base_frags[i], fsh, sizeof(fsh)));
+        ASSERT_NOT_NULL(strstr(fsh, "binding = 3"));
+        ASSERT_NOT_NULL(strstr(fsh, "u_normal_map"));
+        ASSERT_NOT_NULL(strstr(fsh, "dFdx"));
+        ASSERT_NOT_NULL(strstr(fsh, "octahedron_encode(nrm"));
+    }
+    /* Arr frags: per-layer 2D_ARRAY sampler, same perturbation. */
+    const char *arr_frags[] = { "gbuffer_arr.frag", "gbuffer_arr_vk.frag" };
+    for (usize i = 0; i < sizeof(arr_frags) / sizeof(arr_frags[0]); i++) {
+        char fsh[16384];
+        ASSERT_TRUE(read_shader_source(arr_frags[i], fsh, sizeof(fsh)));
+        ASSERT_NOT_NULL(strstr(fsh, "binding = 3"));
+        ASSERT_NOT_NULL(strstr(fsh, "u_normal_map_arr"));
+        ASSERT_NOT_NULL(strstr(fsh, "dFdx"));
+        ASSERT_NOT_NULL(strstr(fsh, "float(v_layer)"));
+    }
+    /* The arr gbuffer path binds the R594 baked per-layer normal array
+     * (forward clustered arr bind is the other consumer — count both). */
+    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+    int nrm_bind_hits = 0;
+    for (const char *p = src; (p = strstr(p, "mb->mats.normal_array")) != NULL; p++)
+        nrm_bind_hits++;
+    ASSERT_TRUE(nrm_bind_hits >= 2);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -791,4 +831,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_skinned_variant_wiring);
     RUN_TEST(forward_clustered_array_variant_wiring);
     RUN_TEST(mat_array_bake_includes_normal_array);
+    RUN_TEST(deferred_gbuffer_normal_mapping_wiring);
 TEST_MAIN_END()

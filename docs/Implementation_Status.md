@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R595 deferred G-Buffer 法线贴图扰动（TDD）— 引擎级 deferred 法线缺口落地，五 gbuffer frag 统一采样；R594 烘焙 normal_array 获第二消费方
+
+- **缺口**（R594 落账边界"法线贴图接入 deferred 属独立大项")：调研定论——生产 `bind_material` **一直**把材质 normal_map 绑在共享布局槽 3，但五个 gbuffer frag(base GL/VK、skinned VK、arr GL/VK;GL 蒙皮路径复用 gbuffer.frag）从不声明/采样它，gbuf_normal 恒为顶点法线 oct 编码。CPU 侧零接线缺口，缺的只是 shader。
+- **方案**：五个 gbuffer frag 统一增 `binding = 3` 法线采样器（arr 变体为 `sampler2DArray u_normal_map_arr`，层随 v_layer)+ **导数 TBN 扰动**（顶点契约无切线属性，pbr_clustered `perturb_normal` 先例）,oct 编码扰动后法线写入 RT1。非 arr 路径 CPU 零改动（bind_material 现有行为即正确——textureless 材质本就骑平法线 1x1 回退，扰动恒等）;arr gbuffer 路径绑定 `render->fallback_normal`→`mb->mats.normal_array`(R594 烘焙数组第二消费方，textureless 层平法线填充同约）。
+- **TDD（红→绿实证）**:① 契约测试 `deferred_gbuffer_normal_mapping_wiring`（五 frag 的 binding 3/采样器/dFdx 标记 + main.c `mb->mats.normal_array` 双消费计数锚）如实红；② 新增 **TEST 12e**（双端共享像素门）：单 NDC quad 双相位——相位 A 平法线 {128,128,255}、相位 B 斜法线 {204,128,230}（切向 (0.6,0,0.8))，其余状态全同，RT1(RGBA16F 原生 f16,R593 语义）oct 断言 A≈(0.5,0.5)、B≈(0.71,0.50) 且 B.x>A.x+0.1。RED 实证 A=B=(0.500,0.500)（斜图已绑未采样）;GREEN 后双端实测 (0.501,0.498)→(0.713,0.499)，与手算 (0.713,0.4985) 逐位吻合。
+- **回归**：契约 32/32;GL 全套件 ALL PASSED;VK 套件 12e 绿、失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）;demo 六配置——VK/GL × deferred(arr 默认/分组 BREAK_MAT_INDIRECT=0)/前向默认 120 帧（VK deferred 240 帧）全 rc=0、VK validation 0（五个改动 frag 的生产路径全覆盖）;CTest GL **114/114**（剪贴板外部锁本轮已释放）、VK 113/114（唯一失败=test_vulkan 同基线）。
+- **边界**：蒙皮 GL 路径复用 gbuffer.frag 自动获益（deferred.c:272 同文件）,VK 蒙皮独立 frag 同步修改（头部"keep in sync"约定履行）;blinn 前向族仍不采样法线图（设计内）;POM 高度通道语义不受影响（gbuffer 无 POM);12e 的 T/B 手算基于 NDC quad 屏幕对齐导数，曲面网格的扰动方向依赖导数 TBN 常规性质（与 pbr_clustered 同法，无双端分歧面）。
+
 ## 本轮更新：R594 材质数组烘焙增 normal_array（TDD）— arr 变体法线贴图生效；顺带修复 R583 遗留的 occ 去重键漂移
 
 - **缺口**（R592 落账边界"法线贴图在 arr 变体下不生效——烘焙范围外"):clustered arr 变体 frag 的 `u_normal_map_arr` 槽自 R592 起恒收 1 层平法线回退（`fallback_normal_arr`),MatArraySet 烘焙体系没有法线数组。调研定论：法线扰动（屏幕导数 TBN，无切线属性依赖）在引擎内**仅前向 clustered PBR 消费**——blinn 族不采样法线图、deferred gbuffer（双变体）直接 oct 编码顶点法线（引擎级设计，非 arr 缺口）——故唯一生效点即 clustered arr 路径，arr vert 零改动。
