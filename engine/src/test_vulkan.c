@@ -606,16 +606,18 @@ cleanup:
     return pass;
 }
 
-/* R593/R601/R602: texture upload (.data) and readback (rhi_texture_read_pixels)
- * move NATIVE format bytes in both directions on both backends. VK always
- * moved raw bytes; GL pre-R593 expected f32 upload for f16 formats and read
- * RG16F back as clamped RGBA8 (R593 fixed); pre-R601 GL read R32F back as
- * clamped RGBA8 and BGRA8 in RGBA channel order; pre-R602 D32 read back as
- * garbage on both ends (GL issued GL_RGBA on a depth texture, VK copied the
- * COLOR aspect of an image that also lacked TRANSFER_SRC usage).
+/* R593/R601/R602/R603: texture upload (.data) and readback
+ * (rhi_texture_read_pixels) move NATIVE format bytes in both directions on
+ * both backends. VK always moved raw bytes; GL pre-R593 expected f32 upload
+ * for f16 formats and read RG16F back as clamped RGBA8 (R593 fixed);
+ * pre-R601 GL read R32F back as clamped RGBA8 and BGRA8 in RGBA channel
+ * order; pre-R602 D32 read back as garbage on both ends (GL issued GL_RGBA
+ * on a depth texture, VK copied the COLOR aspect of an image that also
+ * lacked TRANSFER_SRC usage); pre-R603 the offscreen FBO depth ATTACHMENT
+ * was still unreadable on VK (no TRANSFER_SRC + wrong layout source).
  * Exact-representable values only, so an aligned backend round-trips
  * bit-exact. */
-static bool tv_test_f16_roundtrip(RHIDevice *dev) {
+static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
     bool pass = true;
 
     /* RG16F 2x1: pixels (0.25,-0.5) and (1.5,1.0). Backing arrays are
@@ -747,6 +749,53 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev) {
         pass = false;
     }
     if (rhi_handle_valid(d32)) rhi_texture_destroy(dev, d32);
+
+    /* R603: offscreen FBO depth ATTACHMENT joins the readback family — the
+     * wrapped fbo.depth_tex reads back native f32 like a standalone D32
+     * texture. GL was already aligned (R601 wrapper fields + R602 branch);
+     * VK pre-R603 lacked TRANSFER_SRC on the attachment image and derived
+     * the readback layout from mip_layout[0] (UNDEFINED on depth wrappers)
+     * instead of the transition_depth_to_read-owned cur_layout.
+     * rhi_cmd_clear_depth is fixed 1.0f, so all 16 texels must read 1.0. */
+    RHIOffscreenFBO dfbo = rhi_offscreen_fbo_create(dev, 4, 4);
+    f32 dfb_rb[16];
+    for (u32 i = 0; i < 16u; i++) dfb_rb[i] = 999.0f;
+    if (!rhi_handle_valid(dfbo.fb)) {
+        LOG_ERROR("FAIL: FBO depth roundtrip fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: FBO depth roundtrip frame begin failed");
+            pass = false;
+        } else {
+            rhi_offscreen_fbo_bind(cmd, &dfbo);
+            rhi_cmd_clear_depth(cmd);
+            /* unbind takes the RETURN-TO surface dims (GL restores viewport/
+             * scissor from them) — passing the FBO size would leave a 4x4
+             * viewport latched and break later default-framebuffer gates. */
+            rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_cmd_transition_depth_to_read(cmd, dfbo.depth_tex);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, dfbo.depth_tex, dfb_rb,
+                                         sizeof(dfb_rb))) {
+                LOG_ERROR("FAIL: FBO depth roundtrip readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 16u; i++) {
+                    if (dfb_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: FBO depth roundtrip mismatch "
+                                  "(px%u got %g, want 1.0)",
+                                  i, (double)dfb_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_offscreen_fbo_destroy(dev, &dfbo);
+    }
 
     return pass;
 }
@@ -3809,7 +3858,7 @@ int main(int argc, char **argv) {
     LOG_INFO("============================================");
     LOG_INFO("TEST: TEXTURE NATIVE-BYTE ROUNDTRIP");
     LOG_INFO("============================================");
-    bool f16rt_pass = tv_test_f16_roundtrip(render.device);
+    bool f16rt_pass = tv_test_f16_roundtrip(render.device, motion_w, motion_h);
     LOG_INFO("RESULT: NATIVE-BYTE ROUNDTRIP TEST %s",
              f16rt_pass ? "PASSED ✓" : "FAILED");
 

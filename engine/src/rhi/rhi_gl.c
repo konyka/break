@@ -1983,6 +1983,15 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     bool bgra     = (td->rhi_format == RHI_FORMAT_B8G8R8A8_UNORM);
     usize need = (usize)td->width * td->height * (f16_rgba ? 8u : 4u);
     if (size < need) return false;
+    /* R603: sync before reading back depth. The AMD Windows GL driver
+     * (24.10.38 observed) returns correct values from glGetTexImage on an
+     * FBO-attached depth texture but leaves its internal state corrupted —
+     * subsequent gates in the same process then fail at random and the NEXT
+     * process may die before first flush (bisected: 4/6 bad runs with the
+     * FBO-depth readback, 0/3 without, 7/7 clean with this glFinish). This
+     * is a bake-time API (rhi.h: not per-frame), so the full pipeline drain
+     * is acceptable. */
+    if (d32) glFinish();
     glBindTexture(GL_TEXTURE_2D, td->gl_tex);
     glGetTexImage(GL_TEXTURE_2D, 0,
                   f16_rg ? GL_RG : r32f ? GL_RED : d32 ? GL_DEPTH_COMPONENT

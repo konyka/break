@@ -5059,8 +5059,18 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
         return false;
     }
 
-    VkImageLayout old_layout = td->mip_layout[0];
-    if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+    /* R603: the offscreen-FBO depth wrapper (mip_levels == 0 by design — see
+     * vk_offscreen_fbo_create) tracks its layout in cur_layout, owned by
+     * rhi_cmd_transition_depth_to_read / the FBO bind paths. Everything else
+     * (standalone textures, MRT/offscreen color wrappers — their mip_levels
+     * may also be 0 but they are COLOR formats) keeps the mip_layout[0]
+     * derivation with the SHADER_READ_ONLY fallback. A virgin depth wrapper
+     * (never rendered) keeps UNDEFINED: the copy then yields undefined
+     * contents, the honest semantic for reading before any render. */
+    bool fbo_depth = (td->mip_levels == 0 &&
+                      td->format == VK_FORMAT_D32_SFLOAT);
+    VkImageLayout old_layout = fbo_depth ? td->cur_layout : td->mip_layout[0];
+    if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED && !fbo_depth)
         old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VKArrayTransferCtx ctx = {0};
@@ -8142,7 +8152,12 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
     vk_init_image_layout(vk, fd->color_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     ci.format = VK_FORMAT_D32_SFLOAT;
-    ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    /* R603: +TRANSFER_SRC so the wrapped depth texture (fbo.depth_tex) can
+     * be read back via rhi_texture_read_pixels — native f32 depth semantics
+     * for FBO attachment depth, completing the readback family (R602 did
+     * standalone D32 textures). Permissive flag; rendering is unaffected. */
+    ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (vkCreateImage(vk->device, &ci, NULL, &fd->depth_image) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to create MRT depth image");
         vkDestroyImageView(vk->device, fd->color_view, NULL);

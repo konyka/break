@@ -15,7 +15,7 @@
  *   RT2  R8G8B8A8_UNORM        r   = roughness,     g = ao,
  *                              b   = emissive flag, a = spare
  *   RT3  R16G16B16A16_SFLOAT   rg  = screen-space velocity (NDC delta)
- *   RT4  R8G8B8A8_UNORM        rgb = emissive (LDR; R582), a = spare
+ *   RT4  R16G16B16A16_SFLOAT   rgb = emissive (HDR; R582 channel, R584 SFLOAT), a = spare
  *   D    D32_FLOAT             scene depth (re-used for position reconstruction)
  *
  * The G-Buffer is backed by a single MRT (Multiple Render Targets) FBO
@@ -44,7 +44,7 @@ typedef struct {
     RHITexture gbuf_normal;           /* RG16F-equivalent: oct-encoded normal  */
     RHITexture gbuf_roughness_ao;     /* RGBA8: r=roughness g=ao b=emissive flag */
     RHITexture gbuf_velocity;         /* RG16F-equivalent: NDC motion vector    */
-    RHITexture gbuf_emissive;         /* R582 RGBA8: rgb=emissive (LDR)        */
+    RHITexture gbuf_emissive;         /* R582/R584 RGBA16F: rgb=emissive (HDR) */
     RHITexture gbuf_depth;            /* D32F: shared with depth attachment    */
 
     /* Primary G-Buffer MRT handle. */

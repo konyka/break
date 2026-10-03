@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R603 离屏 FBO 附件深度回读语义定义（TDD/systematic-debugging）— 回读弧最终残片清零；钓出并固化 AMD GL 附件深度 GetTexImage 驱动陷阱
+
+- **缺口**（R602 落账"FBO 附件深度回读仍无定义语义")：调研定论——GL 附件深度包装字段 R601/R602 已齐（`gl_internal_format=GL_DEPTH_COMPONENT32F`)，读回即通；VK 双缺口：`fd->depth_image` usage 缺 `TRANSFER_SRC`(VUID-00186 + layout 不兼容），且读回 old_layout 从 `mip_layout[0]` 推导（深度包装刻意 `mip_levels=0` → UNDEFINED→SHADER_READ_ONLY 回退——正确来源是 `rhi_cmd_transition_depth_to_read`/FBO 绑定路径持有的 `cur_layout`)。
+- **方案**:VK ① 离屏深度 usage 增 `TRANSFER_SRC`（许可性旗标）;② 读回 old_layout 按 `fbo_depth = (mip_levels==0 && format==D32_SFLOAT)` 分流 `cur_layout`——**判别式首版过宽被钓出**:MRT 彩色包装同样 `mip_levels==0`(R584 注册不设 mip 字段），误判致 post-barrier `newLayout=UNDEFINED` 8 条 + TEST 12 值红（UNDEFINED 源转换丢内容）；收窄为"深度格式且零 mip"后 MRT 路径逐字节复旧。GL 端见下。
+- **连环钓出（systematic-debugging，占本轮主体）**:GL 相位上线后套件出现跨门随机失败（TEST 12 回读败/golden 平面色）+次进程零输出早夭（缓冲丢失型早崩）+TEST 7 IBL compute 挂起。控制变量实证：HEAD(53a417e)3/3 稳、本 diff 去回读 3/3 稳、含回读 ~4/6 坏——根因=**AMD Windows GL 驱动（24.10.38）对 FBO 附件深度纹理 `glGetTexImage` 后内部状态损坏**（当次值正确，后续操作随机失败，驱动级状态残留甚至击垮下一进程初始化）。修法=生产 `rhi_texture_read_pixels` 的 d32 分支前置 **`glFinish`**(bake-time 非逐帧 API，全管线排空可接受）——固化后 **7/7 连跑全稳**（含无间隔压测）。附带装置修正：`rhi_offscreen_fbo_unbind` 的 w/h 是**返回目标**尺寸（GL 据此恢复视口），门首版误传 FBO 尺寸致 golden 平面色；顺手清扫 deferred.h 的 R584 遗留 RT4"LDR"陈旧注释。
+- **TDD（红→绿实证）**:roundtrip 门扩 FBO 深度相位（4×4 离屏 FBO,`rhi_cmd_clear_depth` 固定 1.0f→`transition_depth_to_read`→回读 16px 全 1.0)。RED——**VK validation 计数门 3 条 FAIL**（值因驱动宽容偶绿，但套件的 validation 窗口门如实红，比 R602 的纯规格红更硬）;GL 相位即绿。GREEN 后：**VK 全套件 0 validation**(VALIDATION GATE ✓)、双端门绿、TEST 12 恢复。
+- **回归**:GL 全套件 ALL PASSED(glFinish 后 7/7 连跑稳定）;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）;CTest GL 113/114、VK 112/114——失败=test_platform_win32_runtime 剪贴板子项（OpenClipboard 外部持锁，隔离重跑仍 err=5,R577/R598 同型环境瞬态，本 diff 不涉平台层）+VK test_vulkan 同基线；demo——VK 默认/deferred 120 帧 validation 0、GL 120 帧 rc=0(VK demo 首跑现"OOM instance buffers"瞬态，与被 kill 挂起进程的 GPU 内存清理滞后相关，复跑即净，与本 diff 无关面）。
+- **边界**:MRT 深度与阴影图（atlas/cube）附件回读仍无定义语义（各自独立创建路径、无 TRANSFER_SRC——深度内容校验走采样）;MSAA 离屏深度回读未定义（多采样镜像不可直拷，需先 resolve);`glFinish` 仅 d32 分支（其余格式无此驱动交互实证，不付排空代价）。
+
 ## 本轮更新：R602 D32 深度回读语义定义（TDD）— 回读家族最后未定义格式清零；全 RHIFormat 回读语义自此有门
 
 - **缺口**（R601 落账"D32 深度回读仍无定义语义（双端皆然，文档化）"）：回读家族六格式的最后一块，调研定论双端同为**静默垃圾雷**——GL 落入 GL_RGBA/UNSIGNED_BYTE 分支对深度纹理发 `glGetTexImage`（GL 错误，dst 原样=调用方收未定义字节而函数仍返回 true）;VK 的 R445 bpp 推导恰为 4B/px，但传输机械硬编码 COLOR aspect 且深度纹理创建缺 TRANSFER_SRC usage——AMD 驱动宽容下值碰巧正确，规格层面六条 validation 的活雷（与 R593/R601 排雷哲学同宗：语义地雷对任何未来调用方张开）。
