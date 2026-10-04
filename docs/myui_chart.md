@@ -86,6 +86,8 @@ reports the current value.
 linear ECharts `visualMap`-style color interpolation for data values. It is
 applied to line/scatter strokes and points, bars, and their annotations;
 `my_chart_clear_visual_map()` restores each series' configured color.
+An enabled visualMap also renders a compact continuous gradient legend with
+its low/high numeric labels in the plot header.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

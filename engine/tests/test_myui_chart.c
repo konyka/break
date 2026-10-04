@@ -373,6 +373,40 @@ TEST(chart_visual_map_configuration) {
   my_widget_unref(chart);
 }
 
+TEST(chart_paints_visual_map_legend) {
+  static const float values[] = {0.0f, 50.0f, 100.0f};
+  my_chart_series_t series = {"v", values, 3u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_SCATTER);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t map_pixels = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_visual_map(chart, 0.0f, 100.0f, 0x0000FFFFu,
+                                    0xFF0000FFu), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (uint32_t y = 30u; y < 42u; y++) {
+    for (uint32_t x = 210u; x < 306u; x++) {
+      size_t i = ((size_t)y * 320u + x) * 4u;
+      if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu ||
+          pixels[i + 2u] != 0xFFu) map_pixels++;
+    }
+  }
+  ASSERT_TRUE(map_pixels > 100u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST(chart_stacked_endpoint_matches_segment_geometry) {
   ASSERT_FLOAT_EQ(my_chart_stacked_value_to_y(20.0f, 10.0f, 0.0f, 30.0f,
                                               30.0f, 120.0f),
@@ -733,6 +767,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_scatter_mode);
   RUN_TEST(chart_supports_pie_mode);
   RUN_TEST(chart_visual_map_configuration);
+  RUN_TEST(chart_paints_visual_map_legend);
   RUN_TEST(chart_stacked_endpoint_matches_segment_geometry);
   RUN_TEST(chart_stacked_bars_share_category_slot);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);

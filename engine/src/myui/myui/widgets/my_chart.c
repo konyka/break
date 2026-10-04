@@ -141,6 +141,30 @@ static uint32_t chart_visual_color(const my_chart_t* chart, float value,
          (uint32_t)(la + (uint8_t)((ha - la) * t));
 }
 
+static void chart_draw_visual_map(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                  float x, float y, float w) {
+  const float map_w = 96.0f;
+  char low[24], high[24];
+  if (!chart->visual_map_set) return;
+  (void)my_chart_format_tick(chart->visual_map_min, low, sizeof(low));
+  (void)my_chart_format_tick(chart->visual_map_max, high, sizeof(high));
+  for (unsigned i = 0u; i < 16u; i++) {
+    float t0 = (float)i / 16.0f;
+    float t1 = (float)(i + 1u) / 16.0f;
+    float value = chart->visual_map_min +
+                  (chart->visual_map_max - chart->visual_map_min) *
+                      (t0 + t1) * 0.5f;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        chart_visual_color(chart, value, chart->visual_map_low_color)));
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){x + w - map_w + map_w * t0, y,
+                                           map_w * (t1 - t0), 8.0f});
+  }
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
+  my_vgcanvas_set_font(vg, NULL, 9);
+  my_vgcanvas_draw_text(vg, low, x + w - map_w, y + 19.0f);
+  my_vgcanvas_draw_text(vg, high, x + w - 18.0f, y + 19.0f);
+}
+
 /* Stacked base for a value at `category_index`: the sum of same-sign visible
  * samples from lower series indices. Used by both hover markers and marks so
  * annotations land on the rendered segment instead of the raw value. */
@@ -703,6 +727,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (!chart_plot_rect(widget, &x, &y, &w, &h)) return;
   chart_range(chart, &y_min, &y_max);
   chart_grid(widget, vg, x, y, w, h, y_min, y_max);
+  chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
   if (chart->labels != NULL && chart->label_count > 0u) {
     size_t label_count = chart->label_count;
     size_t label_index;
