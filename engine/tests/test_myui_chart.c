@@ -406,6 +406,39 @@ TEST(chart_brush_selects_category_window) {
   my_widget_unref(chart);
 }
 
+TEST(chart_accessible_description_and_keyboard_navigation) {
+  static const float values[] = {10.0f, 20.0f, 30.0f};
+  static const char* labels[] = {"Mon", "Tue", "Wed"};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  char description[256];
+  my_event_t event;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_title(chart, "Weekly revenue"), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_labels(chart, labels, 3u), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_accessible_description(chart, description,
+                                                sizeof(description)), MY_RET_OK);
+  ASSERT_TRUE(strstr(description, "Weekly revenue") != NULL);
+  ASSERT_TRUE(strstr(description, "Revenue") != NULL);
+  ASSERT_TRUE(strstr(description, "3 categories") != NULL);
+
+  event = my_event_init(MY_EVENT_KEY_DOWN);
+  event.u.key.key = MY_KEY_RIGHT;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  event.u.key.key = MY_KEY_RIGHT;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 2u);
+  event.u.key.key = MY_KEY_LEFT;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  my_widget_unref(chart);
+}
+
 TEST(chart_paints_visual_map_legend) {
   static const float values[] = {0.0f, 50.0f, 100.0f};
   my_chart_series_t series = {"v", values, 3u, 0x3A86FFFFu, 0u};
@@ -801,6 +834,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_pie_mode);
   RUN_TEST(chart_visual_map_configuration);
   RUN_TEST(chart_brush_selects_category_window);
+  RUN_TEST(chart_accessible_description_and_keyboard_navigation);
   RUN_TEST(chart_paints_visual_map_legend);
   RUN_TEST(chart_stacked_endpoint_matches_segment_geometry);
   RUN_TEST(chart_stacked_bars_share_category_slot);

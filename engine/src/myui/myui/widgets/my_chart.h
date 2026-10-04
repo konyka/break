@@ -146,6 +146,8 @@ size_t my_chart_get_mark_area_count(const my_widget_t* chart);
 size_t my_chart_get_hover_index(const my_widget_t* chart);
 my_ret_t my_chart_get_tooltip(const my_widget_t* chart, char* buffer,
                               size_t capacity);
+my_ret_t my_chart_get_accessible_description(const my_widget_t* chart,
+                                             char* buffer, size_t capacity);
 
 /** @brief Convert a value to plot-local y for deterministic layout tests. */
 float my_chart_value_to_y(float value, float y_min, float y_max,

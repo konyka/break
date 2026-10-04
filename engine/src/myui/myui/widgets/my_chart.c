@@ -831,6 +831,22 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   if (event == NULL || !chart_plot_rect(widget, &x, &y, &w, &h)) {
     return MY_RET_NOT_SUPPORTED;
   }
+  if (event->type == MY_EVENT_KEY_DOWN && chart_category_count(chart) > 0u) {
+    size_t begin, window;
+    size_t next = chart->hover_index == CHART_HOVER_NONE ? 0u : chart->hover_index;
+    chart_zoom_range(chart, &begin, &window);
+    if (window == 0u) return MY_RET_NOT_SUPPORTED;
+    if (event->u.key.key == MY_KEY_LEFT) {
+      if (next > begin) next--;
+    } else if (event->u.key.key == MY_KEY_RIGHT) {
+      if (next + 1u < begin + window) next++;
+    } else {
+      return MY_RET_NOT_SUPPORTED;
+    }
+    chart->hover_index = next;
+    my_widget_invalidate(widget, NULL);
+    return MY_RET_OK;
+  }
   local_x = event->u.pointer.x;
   local_y = event->u.pointer.y;
   my_widget_global_to_local(widget, &local_x, &local_y);
@@ -1352,5 +1368,38 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
     has_series = true;
   }
   if (!found) return MY_RET_NOT_SUPPORTED;
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_get_accessible_description(const my_widget_t* widget,
+                                             char* buffer, size_t capacity) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  size_t category_count;
+  const char* mode;
+  int written;
+  if (chart == NULL || buffer == NULL || capacity == 0u)
+    return MY_RET_INVALID_PARAMS;
+  category_count = chart_category_count(chart);
+  mode = chart->mode == MY_CHART_LINE ? "line" :
+         chart->mode == MY_CHART_BAR ? "bar" :
+         chart->mode == MY_CHART_SCATTER ? "scatter" : "pie";
+  written = snprintf(buffer, capacity, "%s: %s chart, %zu series, %zu categories",
+                     chart->title[0] != '\0' ? chart->title : "Chart", mode,
+                     chart->series_count, category_count);
+  if (written < 0 || (size_t)written >= capacity) {
+    buffer[capacity - 1u] = '\0';
+    return MY_RET_FAIL;
+  }
+  for (size_t i = 0u; i < chart->series_count && (size_t)written < capacity; i++) {
+    int appended = snprintf(buffer + written, capacity - (size_t)written,
+                            "%s%s", i == 0u ? "; " : ", ",
+                            chart->series[i].name != NULL ? chart->series[i].name
+                                                           : "Series");
+    if (appended < 0 || (size_t)appended >= capacity - (size_t)written) {
+      buffer[capacity - 1u] = '\0';
+      return MY_RET_FAIL;
+    }
+    written += appended;
+  }
   return MY_RET_OK;
 }
